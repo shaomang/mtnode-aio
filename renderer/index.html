@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'">
+<title>MTNode AI编排器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">
+    <div class="logo-mark"></div>
+    <span class="logo-txt">MTNode AI编排器<span class="logo-sub">MTNODE AI ORCHESTRATOR · WORKFLOW</span></span>
+  </div>
+  <div class="actions">
+    <button id="btnToolWf" class="corner on" title="AI 工作流编排：画布式节点编排">工作流编排</button>
+    <span class="sep"></span>
+    <button id="btnUndo" class="corner mini" title="撤销（Ctrl+Z）">↶ 撤销</button>
+    <button id="btnRedo" class="corner mini" title="重做（Ctrl+Y / Ctrl+Shift+Z）">↷ 重做</button>
+    <button id="btnDup" class="corner mini" title="复制选中节点（Ctrl+C）">⧉ 复制节点</button>
+    <button id="btnFit" class="corner mini" title="一键居中：缩放并定位到全部节点">⤢ 居中</button>
+    <input id="wfName" class="fn-search tb-wfname" type="text" placeholder="工作流名称…">
+    <span class="sep"></span>
+    <button id="btnSettings" class="corner primary" title="APIs/Config 全局配置：API Key 与接口地址，所有模型节点自动读取">设置 · API/配置</button>
+    <button id="btnNewWf" class="corner" title="新建工作流">新建</button>
+    <select id="wfSelect" class="wf-select" title="打开工作流"></select>
+    <button id="btnDelWf" class="corner" title="删除当前工作流">删除</button>
+    <span class="sep"></span>
+    <button id="btnSaveNow" class="corner" title="立即保存当前工作流到本地磁盘">立即保存</button>
+    <button id="btnOpenStorage" class="corner" title="打开存档位置：工作流保存的文件夹">存档位置</button>
+    <button id="btnHelp" class="ghost corner" title="使用说明">说明</button>
+    <span id="appVer" class="ver-tag" title="版本号"></span>
+  </div>
+</header>
+
+<div class="layout">
+  <section class="pane">
+    <div class="wf-wrap">
+      <div class="fn-toolbar">
+        <span class="fn-hint" id="canvasHint">右键画布添加节点 · 拖线连接节点 · 滚轮缩放画布</span>
+      </div>
+      <div id="canvas" class="fn-canvas">
+        <div id="stage" class="fn-stage">
+          <svg id="wfSvg" class="fn-svg"></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<footer class="statusbar">
+  <span id="statWf">未加载工作流</span>
+  <span id="statCounts">— 节点 · — 连线</span>
+  <span id="statProviders">服务商 0</span>
+  <span id="statGrid">网格 24px</span>
+  <span class="spacer"></span>
+  <span id="statZoom">100%</span>
+  <span id="saveState">就绪</span>
+  <span id="authorLink" class="author" title="作者">@ms2308</span>
+</footer>
+
+<div id="overlay">
+  <div class="overlay-box">
+    <div class="overlay-head"><b id="ovTitle">设置</b><span class="tag">PIPELINE CONSOLE</span></div>
+    <div class="overlay-body" id="ovBody"></div>
+    <div class="overlay-foot" id="ovFoot"></div>
+  </div>
+</div>
+
+<div id="ctx" class="fn-ctx"></div>
+<div id="refMenu" class="fn-ctx ref-menu" style="display:none"></div>
+<div id="toastBox"></div>
+
+<script src="vendor/marked.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

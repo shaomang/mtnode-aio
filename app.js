@@ -1,0 +1,5268 @@
+﻿"use strict";
+/* MTNode AI编排器 · 节点编辑器 */
+const $ = (s) => document.querySelector(s);
+const svgNS = "http://www.w3.org/2000/svg";
+
+const HEAD = 28;
+const PORT_STEP = 26;
+const PORT_R = 6.5;
+
+const KIND_CLS = {
+  input_text: "in",
+  input_image: "in",
+  proc_text: "proc",
+  proc_image: "proc",
+  save_text: "sv",
+  save_image: "sv",
+  anim: "anim",
+  chat: "proc",
+};
+/* gpt-image-2-vip 支持的尺寸（含 auto） */
+const IMAGE_SIZES = [
+  "auto",
+  "1280x1280",
+  "848x1280",
+  "1280x848",
+  "960x1280",
+  "1280x960",
+  "1024x1280",
+  "1280x1024",
+  "720x1280",
+  "1280x720",
+  "1280x544",
+  "2048x2048",
+  "1360x2048",
+  "2048x1360",
+  "1536x2048",
+  "2048x1536",
+  "1632x2048",
+  "2048x1632",
+  "1152x2048",
+  "2048x1152",
+  "2048x864",
+  "2880x2880",
+  "2336x3520",
+  "3520x2336",
+  "2480x3312",
+  "3312x2480",
+  "2560x3216",
+  "3216x2560",
+  "2160x3840",
+  "3840x2160",
+  "3840x1632",
+];
+const DEFAULT_IMAGE_SIZE = "2048x1360";
+const NODE_DEFAULTS = {
+  input_text: {
+    w: 240,
+    h: 130,
+    title: "文本",
+    text: "",
+    batch: false,
+    entries: [],
+  },
+  input_image: {
+    w: 220,
+    h: 170,
+    title: "图像",
+    imageAsset: "",
+    batch: false,
+    entries: [],
+  },
+  proc_text: {
+    w: 330,
+    h: 200,
+    title: "文本处理",
+    prompt: "",
+    providerId: "",
+    model: "",
+    batchMode: "batch",
+    output: null,
+    batchOutputs: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  proc_image: {
+    w: 330,
+    h: 200,
+    title: "图像生成",
+    prompt: "",
+    providerId: "",
+    model: "",
+    size: DEFAULT_IMAGE_SIZE,
+    batchMode: "batch",
+    output: null,
+    batchOutputs: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  save_text: {
+    w: 320,
+    h: 220,
+    title: "保存文本",
+    savePath: "",
+    auto: false,
+    batchMode: "batch",
+    savedPath: "",
+    savedPaths: [],
+    savedAt: 0,
+  },
+  save_image: {
+    w: 290,
+    h: 240,
+    title: "保存图像",
+    savePath: "",
+    auto: false,
+    batchMode: "batch",
+    savedPath: "",
+    savedPaths: [],
+    savedAt: 0,
+  },
+  split: { w: 260, h: 190, title: "拆分" },
+  merge: { w: 230, h: 150, title: "合并" },
+  anim: {
+    w: 280,
+    h: 300,
+    title: "动画",
+    animCols: 4,
+    animRows: 4,
+    animKey: "#FF00FF",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  chat: {
+    w: 340,
+    h: 380,
+    title: "对话",
+    providerId: "",
+    model: "",
+    temperature: 0.7,
+    systemPrompt: "",
+    messages: [],
+    running: false,
+  },
+};
+const PROVIDER_TYPE_LABELS = [
+  ["text_openai", "文本 · OpenAI 兼容（chat/completions）"],
+  ["image_openai", "图像 · OpenAI 兼容（images/generations / edits）"],
+  ["image_stability", "图像 · Stability AI（v2beta core）"],
+  ["image_mj", "图像 · Midjourney（自定义接口）"],
+];
+
+const S = {
+  config: null,
+  wf: null,
+  cam: { x: 90, y: 80, z: 1 },
+  sel: null,
+  selWire: null,
+  drag: null,
+  saveTimer: null,
+  saving: false,
+  lastSaved: null,
+  refMenu: null,
+  uiOpenNode: null,
+  undoStack: [],
+  redoStack: [],
+  preDragSnap: null,
+  runPromises: new Map(),
+  appVersion: "0.0.0",
+  /* 运行时思考内容（不持久化）：S.thinking[nodeId] = [尝试0文本, 尝试1…] */
+  thinking: {},
+  thinkOpen: null,
+};
+
+/* ============ 撤销 / 重做 ============ */
+
+function snapshotState() {
+  return JSON.parse(JSON.stringify({ nodes: S.wf.nodes, wires: S.wf.wires }));
+}
+/* 在操作前调用：把「操作前状态」压入撤销栈 */
+function pushHistory(snap) {
+  S.undoStack.push(snap || snapshotState());
+  if (S.undoStack.length > 100) S.undoStack.shift();
+  S.redoStack = [];
+}
+function applySnap(s) {
+  S.wf.nodes = s.nodes;
+  S.wf.wires = s.wires;
+  S.sel = null;
+  S.selWire = null;
+  S.uiOpenNode = null;
+  renderCanvas();
+  renderStatus();
+  scheduleSave(true);
+}
+function undo() {
+  if (!S.undoStack.length) {
+    toast("没有可撤销的操作", "warn");
+    return;
+  }
+  S.redoStack.push(snapshotState());
+  applySnap(S.undoStack.pop());
+  toast("已撤销", "ok");
+}
+function redo() {
+  if (!S.redoStack.length) {
+    toast("没有可重做的操作", "warn");
+    return;
+  }
+  S.undoStack.push(snapshotState());
+  applySnap(S.redoStack.pop());
+  toast("已重做", "ok");
+}
+function clearHistory() {
+  S.undoStack = [];
+  S.redoStack = [];
+}
+
+/* ============ 基础工具 ============ */
+
+function uid(p) {
+  return (
+    (p || "n") +
+    Date.now().toString(36) +
+    Math.floor(Math.random() * 46656).toString(36)
+  );
+}
+function grid() {
+  return Math.max(4, Math.min(64, Number(S.config && S.config.snap) || 24));
+}
+function snap(v) {
+  return Math.round(v / grid()) * grid();
+}
+function fmtTime(d) {
+  const x = new Date(d);
+  return (
+    String(x.getHours()).padStart(2, "0") +
+    ":" +
+    String(x.getMinutes()).padStart(2, "0") +
+    ":" +
+    String(x.getSeconds()).padStart(2, "0")
+  );
+}
+function nodeById(id) {
+  return S.wf ? S.wf.nodes.find((n) => n.id === id) : null;
+}
+function wiresTo(id) {
+  return S.wf.wires
+    .filter((w) => w.to === id)
+    .sort((a, b) => a.toIndex - b.toIndex);
+}
+function hasOutput(n) {
+  return n.kind !== "save_text" && n.kind !== "save_image" && n.kind !== "chat";
+}
+function isTextSource(n) {
+  return (
+    n.kind === "input_text" ||
+    n.kind === "proc_text" ||
+    n.kind === "merge" ||
+    n.kind === "split"
+  );
+}
+function isImageSource(n) {
+  return (
+    n.kind === "input_image" ||
+    n.kind === "proc_image" ||
+    n.kind === "merge" ||
+    n.kind === "split" ||
+    n.kind === "anim"
+  );
+}
+
+function inputCount(node) {
+  if (node.kind === "save_image" || node.kind === "split") return 1;
+  if (node.ro || node.kind === "chat") return 0;
+  return Math.max(1, wiresTo(node.id).length + 1);
+}
+function minWFor(n) {
+  return n.kind === "input_image" ? 180 : 240;
+}
+function minHFor(n) {
+  return 96;
+}
+
+/* ============ 多次尝试（attempts） ============ */
+
+function attemptCount(n) {
+  return Math.max(1, Math.min(10, Math.round(Number(n && n.attempts) || 1)));
+}
+function attemptIdx(n) {
+  return Math.min(Math.max(0, (n && n.attemptIdx) || 0), attemptCount(n) - 1);
+}
+/* 某次尝试的结果槽：{output, batchOutputs, error, ranAt}。
+   单次尝试（attempts<=1）兼容旧数据：节点自身即为结果槽。 */
+function resultOf(n, i) {
+  if (!n) return null;
+  if (attemptCount(n) > 1) {
+    const a = (n.attemptOutputs || [])[i];
+    return a || null;
+  }
+  return n;
+}
+function selResult(n) {
+  return resultOf(n, attemptIdx(n));
+}
+
+function toast(msg, kind) {
+  const box = $("#toastBox");
+  const d = document.createElement("div");
+  d.className = "toast" + (kind ? " " + kind : "");
+  d.textContent = msg;
+  box.appendChild(d);
+  setTimeout(() => d.remove(), 3400);
+}
+
+let overlayPersistent = false;
+function openOverlay(title) {
+  overlayPersistent = false;
+  S.thinkOpen = null; // 打开新弹窗时结束上一弹窗的思考流式更新
+  $("#ovTitle").textContent = title;
+  $("#ovBody").innerHTML = "";
+  $("#ovFoot").innerHTML = "";
+  $("#overlay").style.display = "flex";
+}
+function closeOverlay() {
+  S.thinkOpen = null;
+  $("#overlay").style.display = "none";
+}
+
+function yamlEscape(s) {
+  s = String(s == null ? "" : s);
+  if (s === "") return "''";
+  if (/^[A-Za-z0-9_.\-，。、\u4e00-\u9fa5]+$/.test(s) && !s.includes(":"))
+    return s;
+  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+function yamlDump(entries) {
+  const counts = {};
+  for (const e of entries) {
+    const k = e.key || "input";
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  const used = {};
+  const lines = [];
+  for (const e of entries) {
+    let key = e.key || "input";
+    used[key] = (used[key] || 0) + 1;
+    if (counts[key] > 1 && used[key] > 1) key = key + " (" + used[key] + ")";
+    const text = String(e.text == null ? "" : e.text);
+    if (text.includes("\n")) {
+      lines.push(yamlEscape(key) + ": |");
+      for (const ln of text.split("\n")) lines.push("  " + ln);
+    } else {
+      lines.push(yamlEscape(key) + ": " + yamlEscape(text));
+    }
+  }
+  return lines.join("\n") + "\n";
+}
+
+/* 简单 YAML 解析（缩进感知）：
+   - 顶层（基准缩进）的 key: value / key: | 块 / - key: value 列表项 → 条目
+   - 更深缩进的行视为当前条目的续行内容（嵌套结构不会产生垃圾条目） */
+function unquoteYaml(s) {
+  s = String(s);
+  if (
+    s.length >= 2 &&
+    ((s[0] === '"' && s.endsWith('"')) || (s[0] === "'" && s.endsWith("'")))
+  )
+    return s.slice(1, -1);
+  return s;
+}
+function parseSimpleYaml(text) {
+  const entries = [];
+  let cur = null;
+  let baseIndent = -1;
+  const push = () => {
+    if (cur && cur.title) entries.push(cur);
+    cur = null;
+  };
+  for (const raw of String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")) {
+    const line = raw.replace(/\t/g, "  ");
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = line.length - line.replace(/^\s+/, "").length;
+    if (baseIndent === -1) baseIndent = indent;
+    if (indent > baseIndent) {
+      if (cur) {
+        // 块续行 / 嵌套内容 → 归入当前条目，不新建条目
+        const content = trimmed;
+        cur.content = cur.content ? cur.content + "\n" + content : content;
+      }
+      continue;
+    }
+    push();
+    if (trimmed.startsWith("- ")) {
+      const m = trimmed
+        .slice(2)
+        .trim()
+        .match(/^([^:]+):\s*(.*)$/);
+      if (m)
+        cur = {
+          title: unquoteYaml(m[1].trim()),
+          content: unquoteYaml(m[2].trim()),
+        };
+      continue;
+    }
+    const block = trimmed.match(/^([^:]+):\s*\|/);
+    const kv = trimmed.match(/^([^:]+):\s*(.*)$/);
+    if (block) cur = { title: unquoteYaml(block[1].trim()), content: "" };
+    else if (kv)
+      cur = {
+        title: unquoteYaml(kv[1].trim()),
+        content: unquoteYaml(kv[2].trim()),
+      };
+  }
+  push();
+  return entries;
+}
+
+function safeFile(s) {
+  return (
+    String(s || "item")
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+      .replace(/\s+/g, "_")
+      .replace(/^_+|_+$/g, "") || "item"
+  );
+}
+function extOf(p) {
+  const m = /\.([^.\\/]+)$/.exec(String(p));
+  return m ? m[0] : "";
+}
+function batchOutPath(p, title) {
+  const e = extOf(p);
+  const base = e ? String(p).slice(0, -e.length) : String(p);
+  return base + "_" + safeFile(title) + e;
+}
+function fileName(p) {
+  return String(p).split(/[\\/]/).pop() || p;
+}
+
+/* ============ 端子 / 连线几何（居中分布） ============ */
+
+function inPortY(node, i, ic) {
+  const span = Math.max(0, ic - 1) * PORT_STEP;
+  return Math.max(34, Math.round(node.h / 2 - span / 2 + i * PORT_STEP));
+}
+function outPos(n) {
+  return { x: n.x + n.w, y: n.y + Math.round(n.h / 2) };
+}
+function inPos(n, i) {
+  return { x: n.x, y: n.y + inPortY(n, i, inputCount(n)) };
+}
+function wirePathAB(ax, ay, bx, by) {
+  const dx = Math.max(26, Math.abs(bx - ax) * 0.45);
+  return `M ${ax} ${ay} C ${ax + dx} ${ay}, ${bx - dx} ${by}, ${bx} ${by}`;
+}
+function wirePath(from, to, idx) {
+  const a = outPos(from),
+    b = inPos(to, idx);
+  return wirePathAB(a.x, a.y, b.x, b.y);
+}
+function toStage(cx, cy) {
+  const r = $("#canvas").getBoundingClientRect();
+  /* 用 stage 实际渲染比例（getBoundingClientRect / 布局宽）反推坐标，
+     避免浏览器对 zoom 归一化导致的微小偏差（连线末端严格跟随鼠标） */
+  const st = $("#stage");
+  const baseW = parseFloat(st.style.width) || 1;
+  const effZ = st.getBoundingClientRect().width / baseW;
+  const z = effZ > 0 && isFinite(effZ) ? effZ : S.cam.z;
+  return { x: (cx - r.left - S.cam.x) / z, y: (cy - r.top - S.cam.y) / z };
+}
+function applyTransform() {
+  const st = $("#stage");
+  st.style.transform = `translate(${S.cam.x}px, ${S.cam.y}px) scale(${S.cam.z})`;
+}
+
+/* 一键居中：重新定位到全部节点中心，缩放以涵盖所有节点 */
+function fitCanvas() {
+  const nodes = S.wf.nodes;
+  if (!nodes.length) return;
+  const pad = 60;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.w);
+    maxY = Math.max(maxY, n.y + n.h);
+  }
+  const vw = $("#canvas").clientWidth;
+  const vh = $("#canvas").clientHeight;
+  const z = Math.min(
+    vw / (maxX - minX + pad * 2),
+    vh / (maxY - minY + pad * 2),
+    1.2,
+  );
+  S.cam.z = Math.max(0.3, Math.min(2.5, z));
+  S.cam.x = (vw - (maxX - minX) * S.cam.z) / 2 - minX * S.cam.z;
+  S.cam.y = (vh - (maxY - minY) * S.cam.z) / 2 - minY * S.cam.z;
+  applyTransform();
+  updateWires();
+  renderStatus();
+}
+
+/* ============ 批量模式 / 输入继承 ============ */
+
+/* 输入节点是否已有连线（内容将变为只读并继承输入） */
+function inputInherited(n) {
+  return (
+    !!n &&
+    (n.kind === "input_text" || n.kind === "input_image") &&
+    wiresTo(n.id).length > 0
+  );
+}
+function firstSource(n) {
+  const w = wiresTo(n.id)[0];
+  return w ? nodeById(w.from) : null;
+}
+
+/* 合并节点：每个输入 = 批次中的一项（含批量源的展开） */
+function mergeItems(node) {
+  const out = [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src) continue;
+    for (const it of allTextItems(src))
+      out.push({
+        kind: "text",
+        title: it.title,
+        value: { kind: "text", text: it.text },
+      });
+    for (const it of allImageItems(src))
+      out.push({
+        kind: "image",
+        title: it.title,
+        value: { kind: "image", path: it.path },
+      });
+  }
+  return out;
+}
+
+/* 拆分节点：批次中选中项的实时副本（单输入单输出；输入不存在该项 → 空） */
+function splitItems(node) {
+  const out = [];
+  const src = firstSource(node);
+  if (!src) return out;
+  for (const it of allTextItems(src))
+    out.push({ title: it.title, value: { kind: "text", text: it.text } });
+  for (const it of allImageItems(src))
+    out.push({ title: it.title, value: { kind: "image", path: it.path } });
+  return out;
+}
+function splitSelected(node) {
+  if (node.splitItemTitle == null) return null;
+  return splitItems(node).find((i) => i.title === node.splitItemTitle) || null;
+}
+
+function isBatchInput(n) {
+  if (!n || (n.kind !== "input_text" && n.kind !== "input_image")) return false;
+  if (n.ro) return false;
+  if (inputInherited(n)) {
+    const src = firstSource(n);
+    if (n.kind === "input_text") {
+      const v = inheritedValue(n, 0);
+      if (v && v.kind === "text" && parseSimpleYaml(v.text).length) return true; // 继承文本符合 YAML → 批量
+    }
+    return src ? isBatch(src) : false;
+  }
+  return !!n.batch;
+}
+
+function batchMemo(id, seen) {
+  if (seen[id]) return false;
+  seen[id] = true;
+  const n = nodeById(id);
+  if (!n) return false;
+  for (const w of S.wf.wires) {
+    if (w.to !== id) continue;
+    const src = nodeById(w.from);
+    if (!src) continue;
+    if (isBatchInput(src)) return true;
+    if (src.kind === "merge" && wiresTo(src.id).length) return true; // 合并节点输出恒为批次
+    if (src.kind === "split") continue; // 拆分节点输出为单个项 → 下游不再批量
+    if (
+      (src.kind === "proc_text" || src.kind === "proc_image") &&
+      src.batchMode === "agg"
+    )
+      continue; // 聚合模式输出为单个 → 下游不再批量
+    if (batchMemo(src.id, seen)) return true;
+  }
+  return false;
+}
+function isBatch(node) {
+  if (!node) return false;
+  if (node.kind === "input_text" || node.kind === "input_image")
+    return isBatchInput(node);
+  if (node.kind === "merge") return wiresTo(node.id).length > 0;
+  return batchMemo(node.id, {});
+}
+
+function originBatchInput(node, seen) {
+  seen = seen || {};
+  if (seen[node.id]) return null;
+  seen[node.id] = 1;
+  if (node.kind === "merge") return node;
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src) continue;
+    if (src.kind === "input_text" || src.kind === "input_image") {
+      if (src.batch && (src.entries || []).length) return src; // 自有批量
+      if (src.kind === "input_text" && inputInherited(src)) {
+        const v = inheritedValue(src, 0);
+        if (v && v.kind === "text" && parseSimpleYaml(v.text).length)
+          return src; // YAML 继承批量
+      }
+      continue; // 普通继承的输入节点 → 继续向上找真正的批量源
+    }
+    if (isBatch(src)) {
+      const o = originBatchInput(src, seen);
+      if (o) return o;
+    }
+  }
+  return null;
+}
+
+function dedupeTitles(titles) {
+  const seen = {},
+    out = [];
+  for (const t of titles) {
+    let k = t,
+      n = 1;
+    while (seen[k]) {
+      n++;
+      k = t + " (" + n + ")";
+    }
+    seen[k] = 1;
+    out.push(k);
+  }
+  return out;
+}
+function batchTitles(node) {
+  if (!isBatch(node)) return null;
+  if (node.kind === "merge") {
+    const es = mergeItems(node)
+      .map((i) => i.title)
+      .filter(Boolean);
+    return es.length ? dedupeTitles(es) : ["条目"];
+  }
+  let o = originBatchInput(node);
+  if (!o && (node.kind === "input_text" || node.kind === "input_image")) {
+    // 节点自身就是批量源（自有批量 或 YAML 继承）
+    if (node.batch && (node.entries || []).length) o = node;
+    else if (node.kind === "input_text" && inputInherited(node)) {
+      const v = inheritedValue(node, 0);
+      if (v && v.kind === "text" && parseSimpleYaml(v.text).length) o = node;
+    }
+  }
+  if (!o) return ["条目"];
+  let es = null;
+  if (o.kind === "merge") {
+    es = mergeItems(o).map((i) => ({ title: i.title }));
+  } else if (o.kind === "input_text" && inputInherited(o)) {
+    const v = inheritedValue(o, 0);
+    es = v && v.kind === "text" ? parseSimpleYaml(v.text) : [];
+  } else {
+    es = o.entries || [];
+  }
+  es = es.filter((e) => e.title);
+  return es.length ? dedupeTitles(es.map((e) => e.title)) : [o.title || "条目"];
+}
+
+function clearDownstream(startId) {
+  const seen = new Set([startId]);
+  const q = [startId];
+  while (q.length) {
+    const id = q.shift();
+    for (const w of S.wf.wires) {
+      if (w.from !== id) continue;
+      const n = nodeById(w.to);
+      if (!n || seen.has(n.id)) continue;
+      seen.add(n.id);
+      q.push(n.id);
+      if (n.kind === "proc_text" || n.kind === "proc_image") {
+        n.output = null;
+        n.batchOutputs = null;
+        n.error = null;
+        n.ranAt = 0;
+        n.attemptOutputs = null;
+        n.attemptsDone = 0;
+      }
+      if (n.kind === "anim") {
+        n.output = null;
+        n.error = null;
+        n.ranAt = 0;
+        n.attemptOutputs = null;
+        n.attemptsDone = 0;
+      }
+      if (S.thinking && S.thinking[n.id]) S.thinking[n.id] = [];
+      if (n.kind === "save_text" || n.kind === "save_image") {
+        n.savedPaths = [];
+        n.savedPath = n.savePath;
+      }
+    }
+  }
+}
+
+/* ============ @ 引用 ============ */
+
+function refCandidates(node) {
+  /* 仅允许引用「已连接」的节点（直接输入端） */
+  const out = [];
+  const seen = new Set();
+  for (const w of wiresTo(node.id)) {
+    const n = nodeById(w.from);
+    if (!n || seen.has(n.id)) continue;
+    if (
+      n.kind === "input_text" ||
+      n.kind === "input_image" ||
+      n.kind === "proc_text" ||
+      n.kind === "proc_image" ||
+      n.kind === "merge" ||
+      n.kind === "split" ||
+      n.kind === "anim"
+    ) {
+      seen.add(n.id);
+      out.push(n);
+    }
+  }
+  return out;
+}
+
+function valueForInput(src, idx) {
+  if (!src) return null;
+  if (src.kind === "anim") {
+    const r = selResult(src);
+    return r && r.output ? { kind: "image", path: r.output.path } : null;
+  }
+  if (src.kind === "split") {
+    const it = splitSelected(src);
+    return it ? it.value : null;
+  }
+  if (src.kind === "merge") {
+    const items = mergeItems(src);
+    if (!items.length) return null;
+    const it = items[Math.min(idx || 0, items.length - 1)];
+    return it ? it.value : null;
+  }
+  if (src.kind === "input_text") {
+    if (inputInherited(src)) {
+      const up = valueForInput(firstSource(src), idx);
+      if (up && up.kind === "text") {
+        const es = parseSimpleYaml(up.text);
+        if (es.length) {
+          // 继承文本符合 YAML → 按批量条目取值
+          const e = es[Math.min(idx || 0, es.length - 1)];
+          return e ? { kind: "text", text: e.content || "" } : null;
+        }
+      }
+      return up;
+    }
+    if (src.batch) {
+      const es = src.entries || [];
+      const e = es[idx] || es[es.length - 1];
+      return e ? { kind: "text", text: e.content || "" } : null;
+    }
+    return { kind: "text", text: src.text || "" };
+  }
+  if (src.kind === "input_image") {
+    if (inputInherited(src)) return valueForInput(firstSource(src), idx);
+    if (src.batch) {
+      const es = (src.entries || []).filter((e) => e.path);
+      const e = es[idx] || es[es.length - 1];
+      return e ? { kind: "image", path: e.path } : null;
+    }
+    return src.imageAsset ? { kind: "image", path: src.imageAsset } : null;
+  }
+  if (src.kind === "proc_text") {
+    const r = selResult(src);
+    if (r && r.batchOutputs && r.batchOutputs.length) {
+      const x =
+        r.batchOutputs[idx] || r.batchOutputs[r.batchOutputs.length - 1];
+      return x && x.ok && x.output
+        ? { kind: "text", text: x.output.text }
+        : null;
+    }
+    return r && r.output && r.output.kind === "text"
+      ? { kind: "text", text: r.output.text }
+      : null;
+  }
+  if (src.kind === "proc_image") {
+    const r = selResult(src);
+    if (r && r.batchOutputs && r.batchOutputs.length) {
+      const x =
+        r.batchOutputs[idx] || r.batchOutputs[r.batchOutputs.length - 1];
+      return x && x.ok && x.output
+        ? { kind: "image", path: x.output.path }
+        : null;
+    }
+    return r && r.output && r.output.kind === "image"
+      ? { kind: "image", path: r.output.path }
+      : null;
+  }
+  return null;
+}
+
+/* 输入节点的继承值（取第一个输入） */
+function inheritedValue(n, idx) {
+  if (!inputInherited(n)) return null;
+  return valueForInput(firstSource(n), idx);
+}
+
+/* 聚合模式：取某个源的全部条目（批量源 → 每个条目；普通源 → 单个） */
+function allTextItems(src) {
+  if (!src) return [];
+  if (src.kind === "split") {
+    const it = splitSelected(src);
+    return it && it.value.kind === "text"
+      ? [{ title: it.title, text: it.value.text }]
+      : [];
+  }
+  if (src.kind === "merge")
+    return mergeItems(src)
+      .filter((i) => i.kind === "text")
+      .map((i) => ({ title: i.title, text: i.value.text }));
+  if (src.kind === "input_text") {
+    if (inputInherited(src)) {
+      const inner = allTextItems(firstSource(src));
+      if (inner.length > 1) return inner; // 继承批量 → 全部条目
+      if (inner.length === 1) {
+        const es = parseSimpleYaml(inner[0].text); // 继承文本符合 YAML → 解析为条目
+        if (es.length)
+          return es.map((e) => ({ title: e.title, text: e.content }));
+        return [{ title: src.title, text: inner[0].text }];
+      }
+      return [];
+    }
+    if (src.batch && (src.entries || []).length)
+      return src.entries.map((e) => ({
+        title: e.title,
+        text: e.content || "",
+      }));
+    return [{ title: src.title, text: src.text || "" }];
+  }
+  if (src.kind === "proc_text") {
+    const r = selResult(src);
+    if (r && r.batchOutputs && r.batchOutputs.length)
+      return r.batchOutputs.map((x) => ({
+        title: x.title,
+        text: x.ok && x.output ? x.output.text : "",
+      }));
+    if (r && r.output && r.output.kind === "text")
+      return [{ title: src.title, text: r.output.text }];
+    return [];
+  }
+  return [];
+}
+function allImageItems(src) {
+  if (!src) return [];
+  if (src.kind === "anim") {
+    const r = selResult(src);
+    return r && r.output ? [{ title: src.title, path: r.output.path }] : [];
+  }
+  if (src.kind === "split") {
+    const it = splitSelected(src);
+    return it && it.value.kind === "image"
+      ? [{ title: it.title, path: it.value.path }]
+      : [];
+  }
+  if (src.kind === "merge")
+    return mergeItems(src)
+      .filter((i) => i.kind === "image")
+      .map((i) => ({ title: i.title, path: i.value.path }));
+  if (src.kind === "input_image") {
+    if (inputInherited(src)) {
+      const inner = allImageItems(firstSource(src));
+      if (inner.length > 1) return inner;
+      if (inner.length === 1)
+        return [{ title: src.title, path: inner[0].path }];
+      return [];
+    }
+    if (src.batch && (src.entries || []).length)
+      return (src.entries || [])
+        .filter((e) => e.path)
+        .map((e) => ({ title: e.title, path: e.path }));
+    return src.imageAsset ? [{ title: src.title, path: src.imageAsset }] : [];
+  }
+  if (src.kind === "proc_image") {
+    const r = selResult(src);
+    if (r && r.batchOutputs && r.batchOutputs.length)
+      return r.batchOutputs
+        .filter((x) => x.ok && x.output)
+        .map((x) => ({ title: x.title, path: x.output.path }));
+    if (r && r.output && r.output.kind === "image")
+      return [{ title: src.title, path: r.output.path }];
+    return [];
+  }
+  return [];
+}
+function dedupeBlockTitles(blocks) {
+  const seen = {};
+  return blocks.map((b) => {
+    let t = b.title || "输入";
+    const base = t;
+    let n = 1;
+    while (seen[t]) {
+      n++;
+      t = base + " (" + n + ")";
+    }
+    seen[t] = 1;
+    return { title: t, text: b.text };
+  });
+}
+
+/* 某源在第 idx 个条目上的标题：批量源的条目 field，非批量 = 节点标题 */
+function itemTitleOf(src, idx) {
+  if (!src) return "输入";
+  const fallback = src.title || "输入";
+  const at = Math.min(idx || 0, 999999);
+  if (src.kind === "split") {
+    const it = splitSelected(src);
+    return it ? it.title : fallback;
+  }
+  if (src.kind === "merge") {
+    const items = mergeItems(src);
+    if (items.length) {
+      const it = items[Math.min(at, items.length - 1)];
+      return it.title || fallback;
+    }
+    return fallback;
+  }
+  if (src.kind === "input_text") {
+    if (inputInherited(src)) {
+      const v = inheritedValue(src, 0);
+      if (v && v.kind === "text") {
+        const es = parseSimpleYaml(v.text);
+        if (es.length) {
+          const e = es[Math.min(at, es.length - 1)];
+          return e.title || fallback;
+        }
+      }
+      return fallback;
+    }
+    if (src.batch && (src.entries || []).length) {
+      const e = src.entries[Math.min(at, src.entries.length - 1)];
+      return e.title || fallback;
+    }
+    return fallback;
+  }
+  if (src.kind === "proc_text") {
+    const r = selResult(src);
+    if (r && r.batchOutputs && r.batchOutputs.length) {
+      const x = r.batchOutputs[Math.min(at, r.batchOutputs.length - 1)];
+      return x.title || fallback;
+    }
+    return fallback;
+  }
+  return fallback;
+}
+
+/* 用于只读展示的节点值描述：{text} | {image} | {items:[{title,content}]} | {images:[{title,path}]} */
+function displayValueOf(src) {
+  if (!src) return null;
+  if (src.kind === "anim") {
+    const r = selResult(src);
+    return r && r.output ? { image: r.output.path } : null;
+  }
+  if (src.kind === "split") {
+    const it = splitSelected(src);
+    if (!it) return null;
+    return it.value.kind === "text"
+      ? { text: it.value.text }
+      : { image: it.value.path };
+  }
+  if (src.kind === "merge") {
+    const items = mergeItems(src);
+    const t = items
+      .filter((i) => i.kind === "text")
+      .map((i) => ({ title: i.title, content: i.value.text }));
+    const g = items
+      .filter((i) => i.kind === "image")
+      .map((i) => ({ title: i.title, path: i.value.path }));
+    if (t.length && g.length) return { items: t, images: g };
+    if (t.length) return { items: t };
+    if (g.length) return { images: g };
+    return null;
+  }
+  if (src.kind === "input_text") {
+    if (inputInherited(src)) return displayValueOf(firstSource(src));
+    if (src.batch && (src.entries || []).length)
+      return {
+        items: src.entries.map((e) => ({ title: e.title, content: e.content })),
+      };
+    return { text: src.text || "" };
+  }
+  if (src.kind === "input_image") {
+    if (inputInherited(src)) return displayValueOf(firstSource(src));
+    if (src.batch && (src.entries || []).length)
+      return {
+        images: (src.entries || [])
+          .filter((e) => e.path)
+          .map((e) => ({ title: e.title, path: e.path })),
+      };
+    return src.imageAsset ? { image: src.imageAsset } : null;
+  }
+  if (src.kind === "proc_text") {
+    const r = selResult(src);
+    if (r && r.batchOutputs && r.batchOutputs.length)
+      return {
+        items: r.batchOutputs.map((x) => ({
+          title: x.title,
+          content: x.ok && x.output ? x.output.text : "(失败)",
+        })),
+      };
+    if (r && r.output && r.output.kind === "text")
+      return { text: r.output.text };
+    return null;
+  }
+  if (src.kind === "proc_image") {
+    const r = selResult(src);
+    if (r && r.batchOutputs && r.batchOutputs.length)
+      return {
+        images: r.batchOutputs
+          .filter((x) => x.ok && x.output)
+          .map((x) => ({ title: x.title, path: x.output.path })),
+      };
+    if (r && r.output && r.output.kind === "image")
+      return { image: r.output.path };
+    return null;
+  }
+  return null;
+}
+
+function inputValuesFor(node, idx) {
+  return wiresTo(node.id).map((w) => {
+    const src = nodeById(w.from);
+    return { title: src ? src.title : "输入", value: valueForInput(src, idx) };
+  });
+}
+
+function findCandidateByTitle(cands, tok) {
+  let t = tok;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const c = cands.find((c) => c.title === t);
+    if (c) return c;
+    if (attempt === 0) t = tok.replace(/[，。；、！？：,.!?;:]+$/, "");
+  }
+  return cands.find((c) => c.title && c.title.startsWith(tok)) || null;
+}
+
+function resolveRefs(prompt, node, idx, opts) {
+  const refImages = [];
+  const unresolved = new Set();
+  const textSources = [];
+  const seen = new Set();
+  const addText = (c) => {
+    if (seen.has(c.id)) return;
+    seen.add(c.id);
+    const v = valueForInput(c, idx);
+    if (v && v.kind === "text" && v.text != null)
+      textSources.push({ id: c.id, title: itemTitleOf(c, idx), text: v.text });
+  };
+  const cands = refCandidates(node);
+  if (!opts || !opts.skipConnected) {
+    for (const w of wiresTo(node.id)) {
+      const src = nodeById(w.from);
+      if (src && (src.kind === "input_text" || src.kind === "proc_text"))
+        addText(src);
+    }
+  }
+  const out = String(prompt || "").replace(
+    /@([^\s@，。；、！？：,!?;:]+)/g,
+    (m, tok) => {
+      const c = findCandidateByTitle(cands, tok);
+      if (!c) {
+        unresolved.add(tok);
+        return m;
+      }
+      const v = valueForInput(c, idx);
+      if (v && v.kind === "text") {
+        addText(c);
+        return c.title;
+      }
+      if (v && v.kind === "image") {
+        refImages.push(v.path);
+        return "【参考图像：" + c.title + "】";
+      }
+      return m;
+    },
+  );
+  return { prompt: out, refImages, unresolved: [...unresolved], textSources };
+}
+
+/* 将输入文字与 prompt 组合：背景信息（### 标题 + 内容） + 【内容】prompt */
+function assemblePrompt(prompt, sources) {
+  const blocks = [];
+  for (const s of sources) {
+    if (s.text === "") continue;
+    blocks.push("### " + s.title + "\n" + s.text);
+  }
+  if (!blocks.length) return prompt;
+  return "【背景信息】\n" + blocks.join("\n\n") + "\n\n【内容】\n" + prompt;
+}
+
+/* @ 输入时的临时下拉菜单 */
+function caretXY(ta) {
+  const r = ta.getBoundingClientRect();
+  const cs = getComputedStyle(ta);
+  const mirror = document.createElement("div");
+  mirror.style.cssText =
+    "position:absolute;visibility:hidden;white-space:pre-wrap;word-break:break-all;" +
+    "font-family:" +
+    cs.fontFamily +
+    ";font-size:" +
+    cs.fontSize +
+    ";line-height:" +
+    cs.lineHeight +
+    ";" +
+    "padding:" +
+    cs.paddingTop +
+    " " +
+    cs.paddingRight +
+    " " +
+    cs.paddingBottom +
+    " " +
+    cs.paddingLeft +
+    ";" +
+    "width:" +
+    ta.clientWidth +
+    "px;letter-spacing:" +
+    cs.letterSpacing +
+    ";";
+  mirror.textContent = ta.value.slice(0, ta.selectionStart || 0);
+  document.body.appendChild(mirror);
+  const span = document.createElement("span");
+  span.textContent = "|";
+  mirror.appendChild(span);
+  const x = span.offsetLeft;
+  const y = span.offsetTop + span.offsetHeight - (ta.scrollTop || 0);
+  mirror.remove();
+  return { x: r.left + x, y: r.top + y };
+}
+
+function closeRefMenu() {
+  if (S.refMenu) {
+    const m = $("#refMenu");
+    if (m) m.style.display = "none";
+    S.refMenu = null;
+  }
+}
+
+function showRefMenu(ta, node, items) {
+  items = items || refCandidates(node);
+  if (!items.length) return;
+  const menu = $("#refMenu");
+  menu.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "ref-head";
+  head.textContent =
+    node && node.batchMode === "agg"
+      ? "引用聚合条目（@条目标题）"
+      : "引用输入节点（@标题）";
+  menu.appendChild(head);
+  const list = document.createElement("div");
+  list.className = "ref-list";
+  items.forEach((n, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ref-item";
+    const imgKind =
+      n.kind === "image" || n.kind === "input_image" || n.kind === "proc_image";
+    const tag = imgKind ? "I" : "T";
+    const cls = imgKind ? "img" : "text";
+    const tagEl = document.createElement("span");
+    tagEl.className = "ref-tag " + cls;
+    tagEl.textContent = tag;
+    const nm = document.createElement("span");
+    nm.textContent = n.title;
+    b.appendChild(tagEl);
+    b.appendChild(nm);
+    b.onmousedown = (ev) => ev.preventDefault();
+    b.onclick = () => selectRef(n, i);
+    b.dataset.idx = String(i);
+    list.appendChild(b);
+  });
+  menu.appendChild(list);
+  const pos = caretXY(ta);
+  const mw = menu.offsetWidth || 240;
+  menu.style.left =
+    Math.max(8, Math.min(pos.x, window.innerWidth - mw - 8)) + "px";
+  menu.style.top = pos.y + 4 + "px";
+  menu.style.display = "block";
+  S.refMenu = { ta, node, items, sel: 0, focusable: list };
+  paintRefSel();
+}
+
+function paintRefSel() {
+  if (!S.refMenu) return;
+  const menu = $("#refMenu");
+  menu
+    .querySelectorAll(".ref-item")
+    .forEach((b, i) => b.classList.toggle("on", i === S.refMenu.sel));
+}
+
+function selectRef(node, i) {
+  const rm = S.refMenu;
+  if (!rm) return;
+  const v = rm.ta.value;
+  const caret = rm.ta.selectionStart || 0;
+  const before = v.slice(0, caret);
+  const at = before.lastIndexOf("@");
+  const prefix = at >= 0 ? v.slice(0, at) : before;
+  const suffix = v.slice(caret);
+  const token = "@" + node.title;
+  rm.ta.value = prefix + token + suffix;
+  const np = prefix.length + token.length;
+  rm.ta.setSelectionRange(np, np);
+  rm.node.prompt = rm.ta.value;
+  rm.ta.focus();
+  closeRefMenu();
+}
+
+function refTick(ta, node) {
+  const v = ta.value;
+  const pos = ta.selectionStart || 0;
+  if (v[pos - 1] === "@") {
+    const prev = pos >= 2 ? v[pos - 2] : "";
+    if (!prev || /[\s，。；、！？：,.!?;:()（）"'「」【】]/.test(prev)) {
+      const isAgg =
+        (node.kind === "proc_text" || node.kind === "proc_image") &&
+        node.batchMode === "agg" &&
+        batchTitles(node);
+      showRefMenu(ta, node, isAgg ? aggCandidates(node) : null);
+      return;
+    }
+  }
+  closeRefMenu();
+}
+
+function refKey(ta, ev, node) {
+  if (!S.refMenu) return;
+  const rm = S.refMenu;
+  const items = rm.focusable.querySelectorAll(".ref-item");
+  if (ev.key === "ArrowDown") {
+    ev.preventDefault();
+    rm.sel = (rm.sel - 1 + items.length) % items.length;
+    paintRefSel();
+  } else if (ev.key === "ArrowUp") {
+    ev.preventDefault();
+    rm.sel = (rm.sel + 1) % items.length;
+    paintRefSel();
+  } else if (ev.key === "Enter") {
+    ev.preventDefault();
+    if (items[rm.sel]) items[rm.sel].click();
+  } else if (ev.key === "Escape") {
+    ev.preventDefault();
+    closeRefMenu();
+  } else if (ev.key === "Tab") {
+    ev.preventDefault();
+    if (items[rm.sel]) items[rm.sel].click();
+  }
+}
+
+/* ============ 画布渲染 ============ */
+
+function renderCanvas() {
+  closeRefMenu();
+  const stage = $("#stage"),
+    svg = $("#wfSvg");
+  stage.querySelectorAll(".wf-node").forEach((n) => n.remove());
+  svg.innerHTML = "";
+  const extX = Math.max(2000, ...S.wf.nodes.map((n) => n.x + n.w)) + 1200;
+  const extY = Math.max(1400, ...S.wf.nodes.map((n) => n.y + n.h)) + 1200;
+  stage.style.width = extX + "px";
+  stage.style.height = extY + "px";
+  svg.setAttribute("width", extX);
+  svg.setAttribute("height", extY);
+  for (const n of S.wf.nodes) stage.appendChild(nodeElement(n));
+  applyTransform();
+  updateWires();
+  fillPreviews();
+}
+
+function updateWires() {
+  const svg = $("#wfSvg");
+  for (const w of S.wf.wires) {
+    const from = nodeById(w.from),
+      to = nodeById(w.to);
+    if (!from || !to) continue;
+    const id = "wire-" + w.id;
+    let p = svg.querySelector("#" + id);
+    if (!p) {
+      p = document.createElementNS(svgNS, "path");
+      p.id = id;
+      p.addEventListener("mousedown", (ev) => {
+        ev.stopPropagation();
+        S.sel = null;
+        S.selWire = w.id;
+        renderCanvas();
+      });
+      svg.appendChild(p);
+    }
+    p.setAttribute("d", wirePath(from, to, w.toIndex));
+    p.setAttribute("class", "fn-edge" + (S.selWire === w.id ? " sel" : ""));
+  }
+  let t = svg.querySelector("#wireTemp");
+  if (!t) {
+    t = document.createElementNS(svgNS, "path");
+    t.id = "wireTemp";
+    t.setAttribute("class", "fn-edge temp");
+    svg.appendChild(t);
+  }
+  if (S.drag && S.drag.mode === "wire") {
+    const from = nodeById(S.drag.fromId);
+    if (from) {
+      const a = outPos(from),
+        b = toStage(S.drag.mx, S.drag.my);
+      t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
+      t.style.display = "";
+    }
+  } else {
+    t.style.display = "none";
+  }
+}
+
+function refreshPorts(el, node) {
+  const ic = inputCount(node);
+  el.querySelectorAll(".port.in").forEach((p, i) => {
+    p.style.top = inPortY(node, i, ic) - PORT_R + "px";
+  });
+  const op = el.querySelector(".port.out");
+  if (op) op.style.top = Math.round(node.h / 2) - PORT_R + "px";
+}
+
+function statusOf(node) {
+  const r = selResult(node);
+  if (r && r.error) return { cls: "err", txt: "✕ " + r.error };
+  if (node.running) {
+    const n = attemptCount(node);
+    const prog = n > 1 ? " " + (node.attemptsDone || 0) + "/" + n : "";
+    return { cls: "run", txt: "◉ 处理中" + prog + "…" };
+  }
+  if (r && r.batchOutputs && r.batchOutputs.length) {
+    return {
+      cls: "done",
+      txt: "✓ 批量 " + r.batchOutputs.length + " 项 · " + fmtTime(r.ranAt),
+    };
+  }
+  if (r && r.ranAt) {
+    const len =
+      r.output && r.output.kind === "text"
+        ? " · " + r.output.text.length + " 字符"
+        : "";
+    const att =
+      attemptCount(node) > 1
+        ? "尝试 " + (attemptIdx(node) + 1) + "/" + attemptCount(node) + " · "
+        : "";
+    return {
+      cls: "done",
+      txt: "✓ " + att + "已处理 " + fmtTime(r.ranAt) + len,
+    };
+  }
+  return { cls: "", txt: "○ 未处理 · 点击 ▶ 基于提示词+输入处理" };
+}
+
+function nodeElement(node) {
+  const el = document.createElement("div");
+  el.className =
+    "wf-node " + KIND_CLS[node.kind] + (S.sel === node.id ? " sel" : "");
+  el.dataset.nid = node.id;
+  el.style.left = node.x + "px";
+  el.style.top = node.y + "px";
+  el.style.width = node.w + "px";
+  el.style.height = node.h + "px";
+
+  const head = document.createElement("div");
+  head.className = "n-head";
+  const title = document.createElement("div");
+  title.className = "n-title";
+  title.textContent = node.title || "（未命名）";
+  if (node.ro) {
+    title.title = "拆分出的只读节点（不可编辑）";
+  } else {
+    title.title = "点击就地编辑标题";
+    title.onclick = (ev) => {
+      ev.stopPropagation();
+      startTitleEdit(node, title);
+    };
+  }
+  head.appendChild(title);
+  if (!node.ro) {
+    const ren = document.createElement("button");
+    ren.className = "n-ren";
+    ren.textContent = "✎";
+    ren.title = "重命名节点";
+    ren.onclick = (ev) => {
+      ev.stopPropagation();
+      startTitleEdit(node, title);
+    };
+    head.appendChild(ren);
+  }
+  if (node.ro) {
+    const chip = document.createElement("span");
+    chip.className = "n-chip on";
+    chip.textContent = "只读 · 拆分";
+    chip.title = "由拆分节点生成的只读节点：标题为原批次项名，内容为该项内容";
+    head.appendChild(chip);
+  }
+  if (node.kind === "merge" && isBatch(node)) {
+    const chip = document.createElement("span");
+    chip.className = "n-chip on";
+    chip.textContent = "BATCH";
+    chip.title = "合并节点：每个输入 = 批次中的一项，输出为批次";
+    head.appendChild(chip);
+  }
+  if (node.kind === "input_text" || node.kind === "input_image") {
+    if (node.ro) {
+      /* 拆分出的只读节点：头部已显示只读徽标，无批量开关 */
+    } else if (inputInherited(node)) {
+      const chip = document.createElement("span");
+      chip.className = "n-chip on";
+      chip.textContent = "只读 · 继承输入";
+      chip.title =
+        "该节点已连接输入：内容只读，自动继承输入内容（符合 YAML 则转为批量）";
+      head.appendChild(chip);
+    } else {
+      const tb = document.createElement("button");
+      tb.className = "n-play n-batch-toggle" + (node.batch ? " on" : "");
+      tb.textContent =
+        "批量" +
+        (node.batch && node.entries && node.entries.length
+          ? "·" + node.entries.length
+          : "");
+      tb.title = node.batch
+        ? "批量模式已开启（" + (node.entries || []).length + " 条）· 点击关闭"
+        : "开启批量模式：以多个「标题+内容」条目运行，下游自动批量处理";
+      tb.onclick = (ev) => {
+        ev.stopPropagation();
+        toggleBatch(node);
+      };
+      head.appendChild(tb);
+    }
+  }
+  if (
+    (node.kind === "proc_text" || node.kind === "proc_image") &&
+    isBatch(node)
+  ) {
+    const agg = node.batchMode === "agg";
+    const chip = document.createElement("span");
+    chip.className = "n-chip on";
+    chip.textContent = agg ? "聚合" : "BATCH";
+    chip.title = agg
+      ? "聚合模式：所有条目作为独立输入一次运行，输出单个结果"
+      : "批量模式：逐条运行，输出批量结果";
+    head.appendChild(chip);
+    const modeBtn = document.createElement("button");
+    modeBtn.className = "n-play n-mode-toggle" + (agg ? " on" : "");
+    modeBtn.textContent = agg ? "批量" : "聚合";
+    modeBtn.title =
+      "批量输入的处理方式切换：" +
+      (agg
+        ? "当前聚合 → 点击改为批量（逐条运行）"
+        : "当前批量 → 点击改为聚合（所有条目作为独立输入一次运行）");
+    modeBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      node.batchMode = agg ? "batch" : "agg";
+      pushHistory();
+      clearDownstream(node.id);
+      scheduleSave();
+      renderCanvas();
+    };
+    head.appendChild(modeBtn);
+  }
+  if (node.kind === "proc_text" || node.kind === "proc_image") {
+    const apiBtn = document.createElement("button");
+    apiBtn.className =
+      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
+    apiBtn.textContent = "API";
+    apiBtn.title = "服务商 / 模型（点击展开选择）";
+    apiBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
+      renderCanvas();
+    };
+    head.appendChild(apiBtn);
+    const pv = document.createElement("button");
+    pv.className = "n-play n-preview";
+    pv.textContent = "◈";
+    pv.title = "预览：查看运行时将发送的完整请求";
+    pv.onclick = (ev) => {
+      ev.stopPropagation();
+      previewNode(node);
+    };
+    head.appendChild(pv);
+    if (node.kind === "proc_text") {
+      const hasThink = !!(
+        S.thinking &&
+        S.thinking[node.id] &&
+        S.thinking[node.id].some((s) => s && s.length)
+      );
+      const th = document.createElement("button");
+      th.className =
+        "n-think" +
+        (hasThink ? " show" : "") +
+        (node.running && hasThink ? " live" : "");
+      th.textContent = node.running ? "◉ 思考中" : "◉ 思考";
+      th.title = "点击查看模型思考内容（流式显示）";
+      th.onclick = (ev) => {
+        ev.stopPropagation();
+        showThinking(node);
+      };
+      head.appendChild(th);
+    }
+    const ab = document.createElement("button");
+    ab.className = "n-play n-att-btn" + (attemptCount(node) > 1 ? " on" : "");
+    ab.textContent =
+      "多次尝试" + (attemptCount(node) > 1 ? " ×" + attemptCount(node) : "");
+    ab.title =
+      "多次尝试：并行运行 N 次（1-10）。N>1 时输出面板出现 1..N 方块 Tab，" +
+      "点击切换查看对应尝试结果，下游节点引用当前选中的尝试内容";
+    ab.onclick = (ev) => {
+      ev.stopPropagation();
+      promptAttempts(node);
+    };
+    head.appendChild(ab);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title =
+      node.kind === "proc_text"
+        ? "运行：基于提示词与输入内容调用文本模型"
+        : "运行：基于提示词与输入内容生成图像";
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+  }
+  if (node.kind === "anim") {
+    const ab = document.createElement("button");
+    ab.className = "n-play n-att-btn" + (attemptCount(node) > 1 ? " on" : "");
+    ab.textContent =
+      "多次尝试" + (attemptCount(node) > 1 ? " ×" + attemptCount(node) : "");
+    ab.title =
+      "多次尝试：并行运行 N 次（1-10）。N>1 时输出下方出现 1..N 方块 Tab，" +
+      "点击切换查看对应尝试结果，下游节点引用当前选中的尝试内容";
+    ab.onclick = (ev) => {
+      ev.stopPropagation();
+      promptAttempts(node);
+    };
+    head.appendChild(ab);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = "运行：把输入图像按网格（行×列）切割成 GIF 帧动画，支持透明色键";
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playAnimNode(node);
+    };
+    head.appendChild(b);
+  }
+  if (node.kind === "save_text" || node.kind === "save_image") {
+    if (isBatch(node)) {
+      const agg = node.batchMode === "agg";
+      const chip = document.createElement("span");
+      chip.className = "n-chip on";
+      chip.textContent = agg ? "聚合" : "BATCH";
+      chip.title = agg
+        ? "聚合输出：全部条目合并为一个文件"
+        : "批量输出：按 {文件名}_{输入节点标题} 命名";
+      head.appendChild(chip);
+      const modeBtn = document.createElement("button");
+      modeBtn.className = "n-play n-mode-toggle" + (agg ? " on" : "");
+      modeBtn.textContent = agg ? "批量" : "聚合";
+      modeBtn.title = agg
+        ? "当前聚合（合并为一个文件）→ 点击改为批量（逐项保存）"
+        : "当前批量（逐项保存）→ 点击改为聚合（合并为一个文件）";
+      modeBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        node.batchMode = agg ? "batch" : "agg";
+        pushHistory();
+        scheduleSave();
+        renderCanvas();
+      };
+      head.appendChild(modeBtn);
+    }
+    const b = document.createElement("button");
+    b.className = "n-play";
+    b.textContent = "▶";
+    b.title = "保存输出到本地（YAML / 图像）";
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      saveNodeAction(node);
+    };
+    head.appendChild(b);
+  }
+  const del = document.createElement("button");
+  del.className = "n-play n-del";
+  del.textContent = "✕";
+  del.title = "删除节点（Delete）";
+  del.onclick = (ev) => {
+    ev.stopPropagation();
+    deleteNode(node.id);
+  };
+  head.appendChild(del);
+  el.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "n-body";
+  buildBody(node, body);
+  el.appendChild(body);
+
+  if (
+    node.kind === "proc_text" ||
+    node.kind === "proc_image" ||
+    node.kind === "chat"
+  ) {
+    const panel = document.createElement("div");
+    panel.className = "n-api-panel";
+    if (S.uiOpenNode !== node.id) panel.style.display = "none";
+    const f1 = document.createElement("label");
+    f1.className = "n-field";
+    f1.appendChild(document.createTextNode("服务商（自动读取全局 API 配置）"));
+    const provSel = document.createElement("select");
+    const want =
+      node.kind === "proc_text" || node.kind === "chat" ? "text_openai" : null;
+    const provs = S.config.providers.filter((p) =>
+      want ? p.type === want : p.type.startsWith("image_"),
+    );
+    const o0 = document.createElement("option");
+    o0.value = "";
+    o0.textContent = "（未选择服务商）";
+    provSel.appendChild(o0);
+    for (const p of provs) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = p.name;
+      provSel.appendChild(o);
+    }
+    if (!provs.some((p) => p.id === node.providerId))
+      node.providerId = provs.length ? provs[0].id : "";
+    provSel.value = node.providerId;
+    provSel.addEventListener("change", () => {
+      pushHistory();
+      node.providerId = provSel.value;
+      const prov = provs.find((p) => p.id === node.providerId);
+      node.model =
+        prov && prov.models && prov.models.length ? prov.models[0] : "";
+      scheduleSave();
+      renderCanvas();
+    });
+    f1.appendChild(provSel);
+    panel.appendChild(f1);
+    const f2 = document.createElement("label");
+    f2.className = "n-field";
+    f2.appendChild(document.createTextNode("模型"));
+    const mod = document.createElement("input");
+    mod.type = "text";
+    const prov = provs.find((p) => p.id === node.providerId);
+    mod.value = node.model || (prov && prov.models && prov.models[0]) || "";
+    const dl = document.createElement("datalist");
+    dl.id = "dl-" + node.id;
+    for (const m of (prov && prov.models) || []) {
+      const o = document.createElement("option");
+      o.value = m;
+      dl.appendChild(o);
+    }
+    mod.setAttribute("list", dl.id);
+    mod.addEventListener("change", () => {
+      pushHistory();
+      node.model = mod.value.trim();
+      scheduleSave();
+    });
+    mod.addEventListener("input", () => {
+      node.model = mod.value.trim();
+    });
+    f2.appendChild(mod);
+    f2.appendChild(dl);
+    panel.appendChild(f2);
+    if (node.kind === "proc_text" || node.kind === "chat") {
+      const f3 = document.createElement("label");
+      f3.className = "n-field";
+      f3.appendChild(document.createTextNode("温度 Temperature（0-2）"));
+      const temp = document.createElement("input");
+      temp.type = "number";
+      temp.step = 0.1;
+      temp.min = 0;
+      temp.max = 2;
+      temp.value = node.temperature == null ? 0.7 : node.temperature;
+      temp.addEventListener("input", () => {
+        node.temperature = Math.max(0, Math.min(2, Number(temp.value) || 0));
+      });
+      f3.appendChild(temp);
+      panel.appendChild(f3);
+    }
+    if (node.kind === "chat") {
+      const f5 = document.createElement("label");
+      f5.className = "n-field";
+      f5.appendChild(document.createTextNode("系统提示词 System Prompt"));
+      const sys = document.createElement("textarea");
+      sys.className = "bentry-text";
+      sys.style.minHeight = "40px";
+      sys.value = node.systemPrompt || "";
+      sys.addEventListener("input", () => {
+        node.systemPrompt = sys.value;
+      });
+      f5.appendChild(sys);
+      panel.appendChild(f5);
+    }
+    if (node.kind === "proc_image") {
+      const f4 = document.createElement("label");
+      f4.className = "n-field";
+      f4.appendChild(
+        document.createTextNode("尺寸 Size（gpt-image-2-vip · auto 或 30 档）"),
+      );
+      const selS = document.createElement("select");
+      for (const s of IMAGE_SIZES) {
+        const o = document.createElement("option");
+        o.value = s;
+        o.textContent = s;
+        selS.appendChild(o);
+      }
+      selS.value = IMAGE_SIZES.includes(node.size)
+        ? node.size
+        : DEFAULT_IMAGE_SIZE;
+      selS.addEventListener("change", () => {
+        node.size = selS.value;
+        scheduleSave();
+      });
+      f4.appendChild(selS);
+      panel.appendChild(f4);
+    }
+    el.appendChild(panel);
+  }
+
+  const ic = inputCount(node);
+  for (let i = 0; i < ic; i++) {
+    const p = document.createElement("div");
+    p.className = "port in" + (i >= wiresTo(node.id).length ? " spare" : "");
+    p.dataset.node = node.id;
+    p.dataset.idx = String(i);
+    p.title =
+      "输入端子 " +
+      (i + 1) +
+      (i >= wiresTo(node.id).length ? "（空闲，连接后自动新增一个）" : "");
+    p.style.top = inPortY(node, i, ic) - PORT_R + "px";
+    p.style.left = -PORT_R - 1 + "px";
+    p.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+    });
+    el.appendChild(p);
+  }
+  if (hasOutput(node)) {
+    const p = document.createElement("div");
+    p.className = "port out";
+    p.dataset.node = node.id;
+    p.title = "输出端子（输出本节点内容）";
+    p.style.top = Math.round(node.h / 2) - PORT_R + "px";
+    p.style.right = -PORT_R - 1 + "px";
+    p.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      startWireDrag(node.id, ev);
+    });
+    el.appendChild(p);
+  }
+
+  const rz = document.createElement("div");
+  rz.className = "n-resize";
+  rz.title = "拖拽调整尺寸";
+  rz.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    S.sel = node.id;
+    S.selWire = null;
+    S.preDragSnap = snapshotState();
+    renderCanvas();
+    S.drag = {
+      mode: "resize",
+      id: node.id,
+      sx: ev.clientX,
+      sy: ev.clientY,
+      ow: node.w,
+      oh: node.h,
+    };
+  });
+  el.appendChild(rz);
+
+  el.addEventListener("mousedown", (ev) => {
+    if (
+      ev.target.closest(".n-text") ||
+      ev.target.closest("input") ||
+      ev.target.closest("select") ||
+      ev.target.closest("button") ||
+      ev.target.closest(".port") ||
+      ev.target.closest(".n-resize") ||
+      ev.target.closest(".sv-path") ||
+      ev.target.closest(".sv-auto") ||
+      ev.target.closest(".n-out") ||
+      ev.target.closest(".bentry-title") ||
+      ev.target.closest(".bentry-text") ||
+      ev.target.closest(".n-title")
+    )
+      return;
+    startNodeDrag(ev, node);
+  });
+  el.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    S.sel = node.id;
+    S.selWire = null;
+    renderCanvas();
+    const groups = [
+      [
+        "节点操作",
+        [
+          ...(node.ro
+            ? []
+            : [
+                {
+                  label: "✎ 重命名…",
+                  run: () => {
+                    const t = document.querySelector(
+                      '.wf-node[data-nid="' + node.id + '"] .n-title',
+                    );
+                    if (t) startTitleEdit(node, t);
+                  },
+                },
+              ]),
+          { label: "⧉ 复制节点", run: () => duplicateNode(node) },
+        ],
+      ],
+    ];
+    if (
+      !node.ro &&
+      (node.kind === "input_text" || node.kind === "input_image")
+    ) {
+      groups[0].items.push({
+        label: node.batch ? "☒ 退出批量模式" : "☑ 开启批量模式",
+        run: () => toggleBatch(node),
+      });
+    }
+    groups[0].items.push({
+      label: "✕ 删除节点",
+      cls: "ctx-danger",
+      run: () => deleteNode(node.id),
+    });
+    showCtx(ev.clientX, ev.clientY, groups);
+  });
+  return el;
+}
+
+/* 批量条目行 */
+function bentryTextRow(node, e) {
+  const row = document.createElement("div");
+  row.className = "n-bentry";
+  const main = document.createElement("div");
+  main.className = "bentry-main";
+  const ti = document.createElement("input");
+  ti.className = "bentry-title";
+  ti.value = e.title || "";
+  ti.placeholder = "标题（YAML 字段名 / 输出文件后缀）";
+  ti.addEventListener("input", () => {
+    e.title = ti.value;
+    refreshDerived();
+  });
+  const del = document.createElement("button");
+  del.className = "mini danger";
+  del.textContent = "✕";
+  del.title = "删除该条目";
+  del.onclick = () => {
+    pushHistory();
+    node.entries = node.entries.filter((x) => x !== e);
+    clearDownstream(node.id);
+    scheduleSave();
+    renderCanvas();
+  };
+  main.appendChild(ti);
+  main.appendChild(del);
+  const tx = document.createElement("textarea");
+  tx.className = "bentry-text";
+  tx.dataset.eid = e.id;
+  tx.value = e.content || "";
+  tx.style.height = (e.h || 42) + "px";
+  tx.placeholder = "内容";
+  tx.addEventListener("input", () => {
+    e.content = tx.value;
+    refreshDerived();
+  });
+  row.appendChild(main);
+  row.appendChild(tx);
+  const rz = document.createElement("div");
+  rz.className = "bentry-resize";
+  rz.title = "拖拽调整该条目高度";
+  rz.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    S.preDragSnap = snapshotState();
+    S.drag = {
+      mode: "entryresize",
+      id: node.id,
+      eid: e.id,
+      sx: ev.clientX,
+      sy: ev.clientY,
+      oh: e.h || 42,
+      moved: false,
+    };
+  });
+  row.appendChild(rz);
+  return row;
+}
+
+function bentryImageRow(node, e) {
+  const row = document.createElement("div");
+  row.className = "n-bentry n-bentry-img";
+  const main = document.createElement("div");
+  main.className = "bentry-main";
+  const ti = document.createElement("input");
+  ti.className = "bentry-title";
+  ti.value = e.title || "";
+  ti.placeholder = "标题（输出文件后缀）";
+  ti.addEventListener("input", () => {
+    e.title = ti.value;
+    refreshDerived();
+  });
+  const pick = document.createElement("button");
+  pick.className = "mini";
+  pick.textContent = "选择图像";
+  pick.onclick = async () => {
+    const r = await window.api.fileOpenDialog({
+      title: "选择图像",
+      filters: [
+        {
+          name: "图像",
+          extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+        },
+      ],
+    });
+    if (!r.path) return;
+    const res = await window.api.assetCopy(
+      r.path,
+      S.wf.id,
+      (e.id || "it") + "_" + Date.now(),
+    );
+    e.path = res.path;
+    scheduleSave();
+    renderCanvas();
+  };
+  const del = document.createElement("button");
+  del.className = "mini danger";
+  del.textContent = "✕";
+  del.onclick = () => {
+    pushHistory();
+    node.entries = node.entries.filter((x) => x !== e);
+    clearDownstream(node.id);
+    scheduleSave();
+    renderCanvas();
+  };
+  main.appendChild(ti);
+  main.appendChild(pick);
+  main.appendChild(del);
+  row.appendChild(main);
+  if (e.path) {
+    const img = document.createElement("img");
+    img.className = "bentry-thumb";
+    img.src = window.api.toFileUrl(e.path);
+    row.appendChild(img);
+  }
+  return row;
+}
+
+/* 只读的批量条目展示（继承输入 / YAML 转换） */
+function readonlyBatchRows(items, list, isImage) {
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "n-bentry n-bentry-ro";
+    const t = document.createElement("div");
+    t.className = "bi-title-ro";
+    t.textContent = it.title || "条目";
+    row.appendChild(t);
+    if (isImage) {
+      const img = document.createElement("img");
+      img.className = "bentry-thumb";
+      img.src = window.api.toFileUrl(it.path);
+      row.appendChild(img);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.className = "n-text bi-text";
+      ta.readOnly = true;
+      ta.value = it.content || "";
+      row.appendChild(ta);
+    }
+    list.appendChild(row);
+  }
+}
+
+function buildBody(node, body) {
+  if (node.kind === "input_text") {
+    if (node.ro) {
+      const ta = document.createElement("textarea");
+      ta.className = "n-text";
+      ta.readOnly = true;
+      ta.spellcheck = false;
+      ta.value = node.text || "";
+      body.appendChild(ta);
+    } else if (inputInherited(node)) {
+      /* 只读：继承输入内容；符合 YAML → 批量条目展示 */
+      const disp = displayValueOf(firstSource(node));
+      if (disp && disp.items && disp.items.length) {
+        const list = document.createElement("div");
+        list.className = "n-bentries";
+        readonlyBatchRows(disp.items, list, false);
+        body.appendChild(list);
+      } else if (disp && disp.text != null) {
+        const es = parseSimpleYaml(disp.text);
+        if (es.length) {
+          const list = document.createElement("div");
+          list.className = "n-bentries";
+          readonlyBatchRows(
+            es.map((e) => ({ title: e.title, content: e.content })),
+            list,
+            false,
+          );
+          body.appendChild(list);
+          const note = document.createElement("div");
+          note.className = "n-empty";
+          note.textContent =
+            "继承文本符合 YAML · 已转为批量（" + es.length + " 条，只读）";
+          body.appendChild(note);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.className = "n-text";
+          ta.readOnly = true;
+          ta.spellcheck = false;
+          ta.value = disp.text;
+          body.appendChild(ta);
+        }
+      } else if (disp && disp.image) {
+        const wrap = document.createElement("div");
+        wrap.className = "n-img";
+        const img = document.createElement("img");
+        img.src = window.api.toFileUrl(disp.image);
+        wrap.appendChild(img);
+        body.appendChild(wrap);
+      } else {
+        const hint = document.createElement("div");
+        hint.className = "n-empty";
+        hint.textContent = "（等待上游输出…）内容只读 · 继承输入";
+        body.appendChild(hint);
+      }
+    } else if (node.batch) {
+      const list = document.createElement("div");
+      list.className = "n-bentries";
+      for (const e of node.entries) list.appendChild(bentryTextRow(node, e));
+      if (!node.entries.length) {
+        const hint = document.createElement("div");
+        hint.className = "n-empty";
+        hint.textContent = "暂无条目 · 点击下方按钮添加或导入 YAML";
+        list.appendChild(hint);
+      }
+      body.appendChild(list);
+      const ops = document.createElement("div");
+      ops.className = "bentry-ops";
+      const add = document.createElement("button");
+      add.className = "mini";
+      add.textContent = "＋ 添加条目";
+      add.onclick = () => {
+        pushHistory();
+        node.entries.push({
+          id: uid("e"),
+          title: "条目 " + (node.entries.length + 1),
+          content: "",
+        });
+        clearDownstream(node.id);
+        scheduleSave();
+        renderCanvas();
+      };
+      const imp = document.createElement("button");
+      imp.className = "mini";
+      imp.textContent = "导入 YAML";
+      imp.title = "从文件导入条目（field=标题，内容=内容）";
+      imp.onclick = () => importYaml(node);
+      const paste = document.createElement("button");
+      paste.className = "mini";
+      paste.textContent = "粘贴 YAML";
+      paste.title = "从剪贴板读取 YAML（field=标题，内容=内容）并写入条目";
+      paste.onclick = () => pasteYaml(node);
+      ops.appendChild(add);
+      ops.appendChild(imp);
+      ops.appendChild(paste);
+      body.appendChild(ops);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.className = "n-text";
+      ta.spellcheck = false;
+      ta.placeholder = "在此输入文本内容";
+      ta.value = node.text || "";
+      ta.addEventListener("input", () => {
+        node.text = ta.value;
+      });
+      body.appendChild(ta);
+    }
+  } else if (node.kind === "input_image") {
+    if (node.ro) {
+      if (node.imageAsset) {
+        const wrap = document.createElement("div");
+        wrap.className = "n-img";
+        const img = document.createElement("img");
+        img.src = window.api.toFileUrl(node.imageAsset);
+        wrap.appendChild(img);
+        body.appendChild(wrap);
+      } else {
+        const hint = document.createElement("div");
+        hint.className = "n-empty";
+        hint.textContent = "（无图像）";
+        body.appendChild(hint);
+      }
+    } else if (inputInherited(node)) {
+      /* 只读：继承输入内容 */
+      const disp = displayValueOf(firstSource(node));
+      if (disp && disp.images && disp.images.length) {
+        const list = document.createElement("div");
+        list.className = "n-bentries";
+        readonlyBatchRows(disp.images, list, true);
+        body.appendChild(list);
+      } else if (disp && disp.image) {
+        const wrap = document.createElement("div");
+        wrap.className = "n-img";
+        const img = document.createElement("img");
+        img.src = window.api.toFileUrl(disp.image);
+        wrap.appendChild(img);
+        body.appendChild(wrap);
+      } else if (disp && disp.text != null) {
+        const ta = document.createElement("textarea");
+        ta.className = "n-text";
+        ta.readOnly = true;
+        ta.spellcheck = false;
+        ta.value = disp.text;
+        body.appendChild(ta);
+      } else {
+        const hint = document.createElement("div");
+        hint.className = "n-empty";
+        hint.textContent = "（等待上游输出中）内容只读 · 继承输入";
+        body.appendChild(hint);
+      }
+    } else if (node.batch) {
+      const list = document.createElement("div");
+      list.className = "n-bentries";
+      for (const e of node.entries) list.appendChild(bentryImageRow(node, e));
+      if (!node.entries.length) {
+        const hint = document.createElement("div");
+        hint.className = "n-empty";
+        hint.textContent = "暂无条目 · 添加图像或拖拽多张图像到节点上";
+        list.appendChild(hint);
+      }
+      body.appendChild(list);
+      const ops = document.createElement("div");
+      ops.className = "bentry-ops";
+      const add = document.createElement("button");
+      add.className = "mini";
+      add.textContent = "＋ 添加图像";
+      add.onclick = async () => {
+        const r = await window.api.fileOpenDialog({
+          title: "添加图像（可多选）",
+          filters: [
+            {
+              name: "图像",
+              extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+            },
+          ],
+          multi: true,
+        });
+        if (!r.paths || !r.paths.length) return;
+        for (const p of r.paths) {
+          const res = await window.api.assetCopy(
+            p,
+            S.wf.id,
+            node.id + "_" + Date.now() + "_" + Math.floor(Math.random() * 1e4),
+          );
+          node.entries.push({
+            id: uid("e"),
+            title: fileName(p).replace(/\.[^.]+$/, ""),
+            path: res.path,
+          });
+        }
+        clearDownstream(node.id);
+        scheduleSave();
+        renderCanvas();
+        toast("已添加 " + r.paths.length + " 张图像", "ok");
+      };
+      ops.appendChild(add);
+      body.appendChild(ops);
+    } else {
+      const wrap = document.createElement("div");
+      wrap.className = "n-img";
+      wrap.title = "点击选择图像，或直接拖拽图像文件到节点上";
+      wrap.onclick = () => pickImage(node);
+      fillImageArea(node, wrap);
+      body.appendChild(wrap);
+      const ops = document.createElement("div");
+      ops.className = "n-img-ops";
+      const b1 = document.createElement("button");
+      b1.className = "mini";
+      b1.textContent = "选择图像";
+      b1.onclick = () => pickImage(node);
+      const b2 = document.createElement("button");
+      b2.className = "mini";
+      b2.textContent = "清除";
+      b2.onclick = () => {
+        node.imageAsset = "";
+        scheduleSave();
+        renderCanvas();
+      };
+      ops.appendChild(b1);
+      ops.appendChild(b2);
+      body.appendChild(ops);
+    }
+  } else if (node.kind === "proc_text" || node.kind === "proc_image") {
+    const row = document.createElement("div");
+    row.className = "n-proc-row";
+    const left = document.createElement("div");
+    left.className = "n-proc-left";
+    const f3 = document.createElement("label");
+    f3.className = "n-field n-prompt";
+    f3.appendChild(
+      document.createTextNode(
+        "提示词 Prompt（@ 引用输入节点 · 输入内容自动附加）",
+      ),
+    );
+    const ta = document.createElement("textarea");
+    ta.className = "n-text";
+    ta.spellcheck = false;
+    ta.placeholder =
+      node.kind === "proc_text"
+        ? "例如：将输入内容总结为三句话… 输入 @ 引用已连接节点"
+        : "例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图";
+    ta.value = node.prompt || "";
+    ta.addEventListener("input", () => {
+      node.prompt = ta.value;
+      refTick(ta, node);
+    });
+    ta.addEventListener("keydown", (ev) => refKey(ta, ev, node));
+    ta.addEventListener("click", () => {
+      if (S.refMenu) refTick(ta, node);
+    });
+    ta.addEventListener("scroll", closeRefMenu);
+    ta.addEventListener("blur", () => setTimeout(closeRefMenu, 150));
+    f3.appendChild(ta);
+    left.appendChild(f3);
+
+    const st = document.createElement("div");
+    st.className =
+      "n-status" + (statusOf(node).cls ? " " + statusOf(node).cls : "");
+    st.id = "st-" + node.id;
+    st.textContent = statusOf(node).txt;
+    st.title = st.textContent;
+    left.appendChild(st);
+    row.appendChild(left);
+
+    const r = selResult(node);
+    const hasOut = r && (r.output || r.batchOutputs || r.error);
+    if (hasOut) {
+      if (node.outW == null) node.outW = 210;
+      const out = document.createElement("div");
+      out.className = "n-out";
+      out.style.width = node.outW + "px";
+      const rz = document.createElement("div");
+      rz.className = "n-out-resize";
+      rz.title = "拖拽调整输出面板宽度";
+      rz.addEventListener("mousedown", (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        S.preDragSnap = snapshotState();
+        S.drag = {
+          mode: "outresize",
+          id: node.id,
+          sx: ev.clientX,
+          sy: ev.clientY,
+          ow: node.outW,
+          moved: false,
+        };
+      });
+      out.appendChild(rz);
+      const oh = document.createElement("div");
+      oh.className = "n-out-head";
+      const nA = attemptCount(node);
+      oh.appendChild(
+        document.createTextNode(
+          (r.error ? "ERROR" : r.batchOutputs ? "OUTPUT · 批量" : "OUTPUT") +
+            (nA > 1 ? " · 尝试 " + (attemptIdx(node) + 1) + "/" + nA : ""),
+        ),
+      );
+      if (r.output && r.output.kind === "text") {
+        const cp = document.createElement("span");
+        cp.className = "copy";
+        cp.textContent = "复制";
+        cp.onclick = () => {
+          navigator.clipboard
+            .writeText(r.output.text)
+            .then(() => toast("已复制到剪贴板", "ok"));
+        };
+        oh.appendChild(cp);
+      }
+      const cl = document.createElement("span");
+      cl.className = "copy";
+      cl.textContent = "清空";
+      cl.title = "清空本节点输出（回到未处理状态）";
+      cl.onclick = () => clearOutput(node);
+      oh.appendChild(cl);
+      out.appendChild(oh);
+      if (nA > 1) out.appendChild(attemptTabsEl(node));
+      if (r.batchOutputs && r.batchOutputs.length) {
+        const list = document.createElement("div");
+        list.className = "n-bout-list";
+        r.batchOutputs.forEach((x, idx) => {
+          const rr = document.createElement("div");
+          rr.className = "n-bout-row" + (x.ok ? "" : " err");
+          const t = document.createElement("span");
+          t.className = "n-bout-title";
+          t.textContent = x.title;
+          t.title = x.title;
+          rr.appendChild(t);
+          if (x.ok && x.output) {
+            if (x.output.kind === "text") {
+              const s = document.createElement("span");
+              s.className = "n-bout-snip";
+              s.textContent =
+                x.output.text.slice(0, 80) +
+                (x.output.text.length > 80 ? "…" : "");
+              s.title = x.output.text;
+              rr.appendChild(s);
+            } else {
+              const img = document.createElement("img");
+              img.id = "outimg-" + node.id + "-" + idx;
+              img.alt = x.title;
+              rr.appendChild(img);
+            }
+          } else if (x.error) {
+            const s = document.createElement("span");
+            s.className = "n-bout-snip err";
+            s.textContent = "✕ " + x.error;
+            s.title = x.error;
+            rr.appendChild(s);
+          }
+          list.appendChild(rr);
+        });
+        out.appendChild(list);
+      } else if (r.output && r.output.kind === "text") {
+        const pre = document.createElement("pre");
+        pre.textContent = r.output.text;
+        out.appendChild(pre);
+      } else if (r.output && r.output.kind === "image") {
+        const img = document.createElement("img");
+        img.id = "out-img-" + node.id;
+        img.alt = "输出图像";
+        out.appendChild(img);
+      } else {
+        const e = document.createElement("div");
+        e.className = "n-empty";
+        e.textContent = r.error;
+        out.appendChild(e);
+      }
+      row.appendChild(out);
+      node.w = Math.max(node.w, 196 + node.outW + 10);
+    }
+    body.appendChild(row);
+  } else if (node.kind === "split") {
+    const items = splitItems(node);
+    const selIdx =
+      node.splitItemTitle != null
+        ? items.findIndex((i) => i.title === node.splitItemTitle)
+        : -1;
+    const st = document.createElement("div");
+    st.className = "n-status" + (items.length ? " done" : "");
+    st.textContent = items.length
+      ? "输入批次共 " + items.length + " 项"
+      : "（等待批次输入…）";
+    body.appendChild(st);
+    const lab = document.createElement("label");
+    lab.className = "n-field";
+    lab.appendChild(document.createTextNode("选择拆出的项"));
+    const sel = document.createElement("select");
+    if (!items.length) {
+      const o = document.createElement("option");
+      o.textContent = "（无批次项）";
+      o.disabled = true;
+      sel.appendChild(o);
+      sel.disabled = true;
+    } else {
+      if (selIdx < 0) {
+        const o = document.createElement("option");
+        o.value = "-1";
+        o.textContent = "（请选择）";
+        sel.appendChild(o);
+      }
+      items.forEach((it, i) => {
+        const o = document.createElement("option");
+        o.value = String(i);
+        o.textContent =
+          (it.value.kind === "image" ? "[图像] " : "") +
+          (it.title || "条目 " + (i + 1));
+        sel.appendChild(o);
+      });
+      if (selIdx >= 0) sel.value = String(selIdx);
+    }
+    sel.addEventListener("change", () => {
+      const it = items[Number(sel.value)];
+      pushHistory();
+      node.splitItemTitle = it ? it.title : null;
+      clearDownstream(node.id);
+      scheduleSave();
+      renderCanvas();
+    });
+    lab.appendChild(sel);
+    body.appendChild(lab);
+    /* 内容随输入实时变化；输入不存在所选项目时显示为空 */
+    const disp = document.createElement("div");
+    disp.className = "sv-prev";
+    if (selIdx >= 0 && items[selIdx]) {
+      const it = items[selIdx];
+      if (it.value.kind === "text") {
+        const pre = document.createElement("pre");
+        pre.textContent = it.value.text;
+        pre.style.color = "var(--ink)";
+        disp.appendChild(pre);
+      } else {
+        const img = document.createElement("img");
+        img.className = "sv-thumb";
+        img.style.width = "100%";
+        img.style.height = "auto";
+        img.src = window.api.toFileUrl(it.value.path);
+        disp.appendChild(img);
+      }
+    } else {
+      const e = document.createElement("div");
+      e.className = "sv-empty";
+      e.textContent = "（空）— 输入中不存在所选项目";
+      disp.appendChild(e);
+    }
+    body.appendChild(disp);
+  } else if (node.kind === "merge") {
+    const items = mergeItems(node);
+    const st = document.createElement("div");
+    st.className = "n-status" + (items.length ? " done" : "");
+    st.textContent = items.length
+      ? "✓ 已合并 " + items.length + " 项 → 输出为批次"
+      : "○ 等待输入（每个输入 = 批次中的一项）";
+    body.appendChild(st);
+    const list = document.createElement("div");
+    list.className = "n-bentries";
+    readonlyBatchRows(
+      items
+        .filter((i) => i.kind === "text")
+        .map((i) => ({ title: i.title, content: i.value.text })),
+      list,
+      false,
+    );
+    readonlyBatchRows(
+      items
+        .filter((i) => i.kind === "image")
+        .map((i) => ({ title: i.title, path: i.value.path })),
+      list,
+      true,
+    );
+    body.appendChild(list);
+  } else if (node.kind === "anim") {
+    const src = firstSource(node);
+    const hasImg = src
+      ? valueForInput(src, 0) && valueForInput(src, 0).kind === "image"
+      : false;
+    const st = document.createElement("div");
+    st.className = "n-status" + (hasImg ? " done" : "");
+    st.textContent = hasImg ? "输入图像就绪" : "（等待图像输入…）";
+    body.appendChild(st);
+    const row1 = document.createElement("div");
+    row1.className = "bentry-main anim-params";
+    const f1 = document.createElement("label");
+    f1.className = "n-field";
+    f1.appendChild(document.createTextNode("切割列数"));
+    const cIn = document.createElement("input");
+    cIn.type = "number";
+    cIn.min = 2;
+    cIn.step = 1;
+    cIn.value = node.animCols || 4;
+    cIn.addEventListener("change", () => {
+      node.animCols = Math.max(2, Math.round(Number(cIn.value) || 4));
+      scheduleSave();
+    });
+    f1.appendChild(cIn);
+    const f2 = document.createElement("label");
+    f2.className = "n-field";
+    f2.appendChild(document.createTextNode("切割行数"));
+    const rIn = document.createElement("input");
+    rIn.type = "number";
+    rIn.min = 2;
+    rIn.step = 1;
+    rIn.value = node.animRows || 4;
+    rIn.addEventListener("change", () => {
+      node.animRows = Math.max(2, Math.round(Number(rIn.value) || 4));
+      scheduleSave();
+    });
+    f2.appendChild(rIn);
+    row1.appendChild(f1);
+    row1.appendChild(f2);
+    body.appendChild(row1);
+    const f3 = document.createElement("label");
+    f3.className = "n-field";
+    f3.appendChild(document.createTextNode("透明色键（Hex）"));
+    const keyRow = document.createElement("div");
+    keyRow.className = "bentry-main";
+    const kIn = document.createElement("input");
+    kIn.type = "text";
+    kIn.placeholder = "#FF00FF";
+    kIn.value = node.animKey || "#FF00FF";
+    const swatch = document.createElement("div");
+    swatch.className = "anim-key-swatch";
+    swatch.title = "色键颜色";
+    const paintSwatch = () => {
+      const c = parseHexColor(kIn.value);
+      swatch.style.background = c
+        ? "rgb(" + c.r + "," + c.g + "," + c.b + ")"
+        : "repeating-conic-gradient(#555 0% 25%, #222 0% 50%) 0 0 / 8px 8px";
+    };
+    kIn.addEventListener("input", () => {
+      node.animKey = kIn.value.trim();
+      paintSwatch();
+    });
+    paintSwatch();
+    keyRow.appendChild(kIn);
+    keyRow.appendChild(swatch);
+    f3.appendChild(keyRow);
+    body.appendChild(f3);
+    if (node.running) {
+      const run = document.createElement("div");
+      run.className = "n-status run";
+      const nA = attemptCount(node);
+      run.textContent =
+        "◉ 正在生成帧动画" +
+        (nA > 1 ? " " + (node.attemptsDone || 0) + "/" + nA : "") +
+        "…";
+      body.appendChild(run);
+    }
+    const r = selResult(node);
+    if (r && r.output) {
+      const meta = document.createElement("div");
+      meta.className = "n-status done";
+      meta.textContent =
+        "✓ " +
+        (node.animCols || 4) +
+        "×" +
+        (node.animRows || 4) +
+        " 帧动画 · " +
+        fileName(r.output.path);
+      const cl = document.createElement("span");
+      cl.className = "copy";
+      cl.textContent = "清空";
+      cl.style.cssText = "margin-left:8px;cursor:pointer;color:var(--cyan)";
+      cl.onclick = () => clearOutput(node);
+      meta.appendChild(cl);
+      body.appendChild(meta);
+      if (attemptCount(node) > 1) {
+        const m = document.createElement("div");
+        m.className = "n-status";
+        m.textContent =
+          "尝试 " + (attemptIdx(node) + 1) + "/" + attemptCount(node);
+        m.style.color = "var(--muted)";
+        body.appendChild(m);
+        body.appendChild(attemptTabsEl(node));
+      }
+      const prev = document.createElement("div");
+      prev.className = "sv-prev checker";
+      const img = document.createElement("img");
+      img.id = "animimg-" + node.id;
+      img.className = "sv-thumb";
+      img.style.cssText =
+        "width:100%;height:auto;max-height:220px;object-fit:contain";
+      prev.appendChild(img);
+      body.appendChild(prev);
+    } else if (r && r.error) {
+      const err = document.createElement("div");
+      err.className = "n-status err";
+      err.textContent = "✕ " + r.error;
+      body.appendChild(err);
+    } else {
+      const hint = document.createElement("div");
+      hint.className = "n-empty";
+      hint.textContent =
+        "点击 ▶ 将输入图像按网格均匀切割为 GIF 帧动画（依次行、从左到右）";
+      body.appendChild(hint);
+    }
+  } else if (node.kind === "chat") {
+    /* 文本对话节点：微信风格聊天气泡 + 底部输入框 */
+    const list = document.createElement("div");
+    list.className = "chat-list";
+    const msgs = node.messages || [];
+    if (!msgs.length && !node.running) {
+      const hint = document.createElement("div");
+      hint.className = "n-empty";
+      hint.textContent = "开始对话吧…";
+      list.appendChild(hint);
+    }
+    for (const m of msgs) {
+      const row = document.createElement("div");
+      row.className = "chat-msg " + (m.role === "user" ? "me" : "ai");
+      const b = document.createElement("div");
+      b.className = "chat-bubble";
+      b.textContent = m.content;
+      row.appendChild(b);
+      list.appendChild(row);
+    }
+    if (node.running) {
+      const row = document.createElement("div");
+      row.className = "chat-msg ai";
+      const b = document.createElement("div");
+      b.className = "chat-bubble chat-typing";
+      b.textContent = "…";
+      row.appendChild(b);
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+    const inputRow = document.createElement("div");
+    inputRow.className = "chat-input-row";
+    const ta = document.createElement("textarea");
+    ta.className = "chat-input";
+    ta.rows = 1;
+    ta.placeholder = "输入消息…（Enter 发送，Shift+Enter 换行）";
+    const btn = document.createElement("button");
+    btn.className = "mini primary";
+    btn.textContent = "执行";
+    btn.title = "发送消息（Enter）";
+    const send = () => {
+      const t = ta.value;
+      if (!t.trim()) return;
+      ta.value = "";
+      chatSend(node, t);
+    };
+    ta.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        send();
+      }
+    });
+    btn.onclick = send;
+    inputRow.appendChild(ta);
+    inputRow.appendChild(btn);
+    body.appendChild(inputRow);
+  } else if (node.kind === "save_text" || node.kind === "save_image") {
+    const pRow = document.createElement("div");
+    pRow.className = "sv-path";
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.placeholder = isBatch(node)
+      ? node.batchMode === "agg"
+        ? node.kind === "save_text"
+          ? "聚合：全部条目合并保存为 {路径}.yaml"
+          : "聚合：保存为 {路径}.png"
+        : node.kind === "save_text"
+          ? "批量：保存为 {路径}_{输入节点标题}.yaml"
+          : "批量：保存为 {路径}_{输入节点标题}.png"
+      : node.kind === "save_text"
+        ? "保存路径（*.yaml）…"
+        : "保存路径（*.png / *.jpg）…";
+    inp.value = node.savePath || "";
+    inp.title =
+      "输出文件路径（批量模式下自动生成 {文件名}_{输入节点标题} 系列文件）";
+    inp.addEventListener("change", () => {
+      node.savePath = inp.value.trim();
+      scheduleSave();
+    });
+    inp.addEventListener("input", () => {
+      node.savePath = inp.value.trim();
+    });
+    const br = document.createElement("button");
+    br.className = "mini";
+    br.textContent = "浏览";
+    br.onclick = async () => {
+      const r = await window.api.fileSaveDialog({
+        title:
+          node.kind === "save_text" ? "选择 YAML 保存位置" : "选择图像保存位置",
+        defaultName:
+          (node.title || "output") +
+          (node.kind === "save_text" ? ".yaml" : ".png"),
+        filters:
+          node.kind === "save_text"
+            ? [
+                { name: "YAML", extensions: ["yaml", "yml"] },
+                { name: "全部文件", extensions: ["*"] },
+              ]
+            : [
+                { name: "图像", extensions: ["png", "jpg", "jpeg", "webp"] },
+                { name: "全部文件", extensions: ["*"] },
+              ],
+      });
+      if (r.path) {
+        node.savePath = r.path;
+        scheduleSave();
+        renderCanvas();
+      }
+    };
+    pRow.appendChild(inp);
+    pRow.appendChild(br);
+    if (node.savedPaths && node.savedPaths.length) {
+      const op = document.createElement("button");
+      op.className = "mini";
+      op.textContent = "位置";
+      op.title = "在文件夹中显示已保存文件";
+      op.onclick = () =>
+        window.api.shellShowItem(
+          node.savedPaths[node.savedPaths.length - 1] || node.savePath,
+        );
+      pRow.appendChild(op);
+    }
+    body.appendChild(pRow);
+
+    if (node.kind === "save_text") {
+      const auto = document.createElement("label");
+      auto.className = "sv-auto";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!node.auto;
+      cb.onchange = () => {
+        node.auto = cb.checked;
+        scheduleSave();
+      };
+      auto.appendChild(cb);
+      auto.appendChild(
+        document.createTextNode(
+          "输入变化时自动保存（批量=每条目一个文件，YAML 项 = 输入节点标题）",
+        ),
+      );
+      body.appendChild(auto);
+    }
+
+    const prev = document.createElement("div");
+    prev.className = "sv-prev";
+    if (node.kind === "save_text") {
+      const pre = document.createElement("pre");
+      pre.id = "svpre-" + node.id;
+      pre.textContent = "尚未保存";
+      prev.appendChild(pre);
+    } else {
+      if (isBatch(node) && node.savedPaths && node.savedPaths.length) {
+        const thumbs = document.createElement("div");
+        thumbs.className = "sv-thumbs";
+        node.savedPaths.slice(0, 6).forEach((p, i) => {
+          const img = document.createElement("img");
+          img.className = "sv-thumb";
+          img.dataset.idx = String(i);
+          img.alt = fileName(p);
+          img.title = p;
+          thumbs.appendChild(img);
+        });
+        prev.appendChild(thumbs);
+        if (node.savedPaths.length > 6) {
+          const note = document.createElement("div");
+          note.className = "sv-note";
+          note.textContent = "… 共 " + node.savedPaths.length + " 个文件";
+          prev.appendChild(note);
+        }
+      } else {
+        const img = document.createElement("img");
+        img.id = "svimg-" + node.id;
+        img.style.display = "none";
+        prev.appendChild(img);
+        if (!node.savedPath) {
+          const e = document.createElement("div");
+          e.className = "sv-empty";
+          e.textContent = "尚未保存（指定路径后点击 ▶，预览显示所保存的图像）";
+          prev.appendChild(e);
+        }
+      }
+    }
+    body.appendChild(prev);
+  }
+}
+
+function fillImageArea(node, wrap) {
+  wrap.innerHTML = "";
+  if (node.imageAsset) {
+    const img = document.createElement("img");
+    img.src = window.api.toFileUrl(node.imageAsset);
+    img.alt = "输入图像";
+    img.onerror = () => {
+      wrap.innerHTML = "";
+      const g = document.createElement("div");
+      g.className = "img-ghost";
+      g.textContent = "文件不存在或无法预览";
+      wrap.appendChild(g);
+    };
+    wrap.appendChild(img);
+  } else {
+    const g = document.createElement("div");
+    g.className = "img-ghost";
+    g.textContent = "点击选择图像\n或拖拽文件到此节点";
+    g.style.whiteSpace = "pre-line";
+    wrap.appendChild(g);
+  }
+}
+
+async function fillPreviews() {
+  for (const n of S.wf.nodes) {
+    const r = selResult(n);
+    if (n.kind === "anim" && r && r.output) {
+      const img = document.querySelector("#animimg-" + n.id);
+      if (img) img.src = window.api.toFileUrl(r.output.path);
+    }
+    if (n.kind === "proc_image") {
+      if (r && r.batchOutputs && r.batchOutputs.length) {
+        r.batchOutputs.forEach((x, idx) => {
+          const img = document.querySelector("#outimg-" + n.id + "-" + idx);
+          if (img && x.ok && x.output && x.output.path)
+            img.src = window.api.toFileUrl(x.output.path);
+        });
+      } else if (r && r.output && r.output.kind === "image") {
+        const img = document.querySelector("#out-img-" + n.id);
+        if (img) img.src = window.api.toFileUrl(r.output.path);
+      }
+    }
+    if (n.kind === "save_text") {
+      const pre = document.querySelector("#svpre-" + n.id);
+      if (pre) {
+        const paths =
+          n.savedPaths && n.savedPaths.length
+            ? n.savedPaths
+            : n.savedPath
+              ? [n.savedPath]
+              : [];
+        if (paths.length) {
+          const parts = [];
+          const cap = paths.slice(0, 8);
+          for (const p of cap) {
+            const r = await window.api.fileReadText(p);
+            if (r.exists)
+              parts.push("──── " + fileName(p) + " ────\n" + r.content);
+            else parts.push("──── " + fileName(p) + " ────\n（文件不存在）");
+          }
+          if (paths.length > 8) parts.push("… 共 " + paths.length + " 个文件");
+          pre.textContent = parts.join("\n\n");
+          pre.style.color = "";
+        } else {
+          pre.textContent = "尚未保存（指定路径后点击 ▶）";
+          pre.style.color = "";
+        }
+      }
+    }
+    if (n.kind === "save_image") {
+      const paths =
+        n.savedPaths && n.savedPaths.length
+          ? n.savedPaths
+          : n.savedPath
+            ? [n.savedPath]
+            : [];
+      const thumbs = document.querySelector(".sv-thumbs");
+      if (thumbs) {
+        thumbs.querySelectorAll("img").forEach((img) => {
+          const i = Number(img.dataset.idx);
+          if (paths[i]) img.src = window.api.toFileUrl(paths[i]);
+        });
+      } else {
+        const img = document.querySelector("#svimg-" + n.id);
+        if (img) {
+          if (paths.length) {
+            img.src = window.api.toFileUrl(paths[0]);
+            img.style.display = "";
+          } else {
+            img.style.display = "none";
+          }
+        }
+      }
+    }
+  }
+}
+
+/* ============ 处理（Play / 批量） ============ */
+
+function buildSpec(node, prov, idx) {
+  const ins = inputValuesFor(node, idx);
+  const images = [];
+  for (const i of ins) {
+    if (i.value && i.value.kind === "image") images.push(i.value.path);
+  }
+  const refs = resolveRefs(node.prompt || "", node, idx);
+  return {
+    provider: prov,
+    kind: node.kind === "proc_text" ? "text" : "image",
+    model: node.model || (prov.models || [])[0] || "",
+    temperature:
+      node.temperature == null
+        ? 0.7
+        : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+    size:
+      node.kind === "proc_image"
+        ? IMAGE_SIZES.includes(node.size)
+          ? node.size
+          : DEFAULT_IMAGE_SIZE
+        : "",
+    prompt: assemblePrompt(refs.prompt, refs.textSources),
+    texts: [],
+    images: refs.refImages.concat(images),
+    refImage: refs.refImages[0] || "",
+  };
+}
+
+/* 流式文本调用：resolve {text}；reasoning 增量回调（思考内容，按尝试槽存储） */
+function apiCallTextStream(spec, onReasoning) {
+  return new Promise((resolve, reject) => {
+    window.api.apiCallStream(spec, (ev) => {
+      if (ev.type === "reasoning") {
+        if (onReasoning) onReasoning(ev.text || "");
+      } else if (ev.type === "delta") {
+        /* 正文增量（当前仅在结束时整体渲染） */
+      } else if (ev.type === "done") {
+        resolve(ev);
+      } else if (ev.type === "error") {
+        reject(new Error(ev.error || "调用失败"));
+      }
+    });
+  });
+}
+
+/* 图像资产文件名：含随机后缀，避免并行尝试（同毫秒）文件名冲突覆盖 */
+function assetName(node, itemTitle, attemptT, tag) {
+  return (
+    node.id.slice(-8) +
+    "_" +
+    (itemTitle ? safeFile(itemTitle) : "") +
+    (tag ? "_" + tag : "") +
+    "_" +
+    Date.now().toString(36) +
+    Math.random().toString(36).slice(2, 6) +
+    (attemptT ? "_t" + attemptT : "")
+  );
+}
+
+async function runOnce(node, prov, idx, itemTitle, attemptT) {
+  const spec = buildSpec(node, prov, idx);
+  if (node.kind === "proc_text") {
+    const r = await apiCallTextStream(spec, (t) =>
+      pushThinking(node.id, attemptT || 0, t),
+    );
+    if (!r.text) throw new Error("响应无文本内容");
+    return { kind: "text", text: r.text };
+  }
+  const rr = await window.api.apiCall(spec);
+  if (!rr.ok) throw new Error(rr.error || "调用失败");
+  const res = await window.api.assetWriteBase64(
+    S.wf.id,
+    assetName(node, itemTitle, attemptT, ""),
+    rr.base64,
+    rr.ext || "png",
+  );
+  return { kind: "image", path: res.path };
+}
+
+/* 聚合模式：每个批量条目 = 一个「虚拟输入节点」（条目标题=标题，条目内容=内容），
+   允许通过 @条目标题 引用任意一个条目 */
+function aggCandidates(node) {
+  const out = [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src) continue;
+    for (const it of allTextItems(src))
+      out.push({ title: it.title || src.title, kind: "text", text: it.text });
+    for (const it of allImageItems(src))
+      out.push({ title: it.title || src.title, kind: "image", path: it.path });
+  }
+  return out;
+}
+function resolveRefsAgg(prompt, node) {
+  const refImages = [];
+  const unresolved = new Set();
+  const cands = aggCandidates(node);
+  const out = String(prompt || "").replace(
+    /@([^\s@，。；、！？：,!?;:]+)/g,
+    (m, tok) => {
+      const c = findCandidateByTitle(cands, tok);
+      if (!c) {
+        unresolved.add(tok);
+        return m;
+      }
+      if (c.kind === "text") return c.title; // 去掉 @，指向背景中对应条目块
+      refImages.push(c.path);
+      return "【参考图像：" + c.title + "】";
+    },
+  );
+  return { prompt: out, refImages, unresolved: [...unresolved] };
+}
+
+/* 聚合模式：所有条目的内容合并为一次请求（每条目作为独立输入块） */
+function buildSpecAgg(node, prov) {
+  const images = [];
+  const textBlocks = [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src) continue;
+    for (const it of allTextItems(src)) textBlocks.push(it);
+    for (const it of allImageItems(src)) images.push(it.path);
+  }
+  const refs = resolveRefsAgg(node.prompt || "", node);
+  const blocks = dedupeBlockTitles(textBlocks);
+  const prompt = blocks.length
+    ? "【背景信息】\n" +
+      blocks.map((b) => "### " + b.title + "\n" + b.text).join("\n\n") +
+      "\n\n【内容】\n" +
+      refs.prompt
+    : refs.prompt;
+  return {
+    provider: prov,
+    kind: node.kind === "proc_text" ? "text" : "image",
+    model: node.model || (prov.models || [])[0] || "",
+    temperature:
+      node.temperature == null
+        ? 0.7
+        : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+    size:
+      node.kind === "proc_image"
+        ? IMAGE_SIZES.includes(node.size)
+          ? node.size
+          : DEFAULT_IMAGE_SIZE
+        : "",
+    prompt,
+    texts: [],
+    images: refs.refImages.concat(images),
+    refImage: refs.refImages[0] || "",
+  };
+}
+
+async function runOnceAgg(node, prov, attemptT) {
+  const spec = buildSpecAgg(node, prov);
+  if (node.kind === "proc_text") {
+    const r = await apiCallTextStream(spec, (t) =>
+      pushThinking(node.id, attemptT || 0, t),
+    );
+    if (!r.text) throw new Error("响应无文本内容");
+    return { kind: "text", text: r.text };
+  }
+  const rr = await window.api.apiCall(spec);
+  if (!rr.ok) throw new Error(rr.error || "调用失败");
+  const res = await window.api.assetWriteBase64(
+    S.wf.id,
+    assetName(node, "", attemptT, "agg"),
+    rr.base64,
+    rr.ext || "png",
+  );
+  return { kind: "image", path: res.path };
+}
+
+async function previewNode(node) {
+  const prov = S.config.providers.find((p) => p.id === node.providerId);
+  if (!prov) {
+    toast("未配置服务商（设置 · API/配置）", "warn");
+    return;
+  }
+  if (!String(prov.apiKey || "").trim()) {
+    toast("该服务商未填写 API Key（设置 · API/配置）", "warn");
+    return;
+  }
+  const spec = buildSpec(node, prov, 0);
+  const r = await window.api.apiPreview(spec);
+  if (!r.ok) {
+    toast("预览失败：" + r.error, "err");
+    return;
+  }
+  openOverlay("请求预览 · 运行时将发送以下完整请求");
+  const bodyEl = $("#ovBody");
+  const q = r.request;
+  let txt = q.method + "  " + q.url + "\n\nHeaders:\n";
+  for (const [k, v] of Object.entries(q.headers))
+    txt += "  " + k + ": " + v + "\n";
+  txt += "\nBody:\n" + JSON.stringify(q.body, null, 2);
+  const pre = document.createElement("pre");
+  pre.className = "preview-req";
+  pre.textContent = txt;
+  bodyEl.appendChild(pre);
+  const foot = $("#ovFoot");
+  const copy = document.createElement("button");
+  copy.className = "mini primary";
+  copy.textContent = "复制请求";
+  copy.onclick = () => {
+    navigator.clipboard
+      .writeText(pre.textContent)
+      .then(() => toast("已复制请求", "ok"));
+  };
+  const close = document.createElement("button");
+  close.className = "mini";
+  close.textContent = "关闭";
+  close.onclick = closeOverlay;
+  foot.appendChild(copy);
+  foot.appendChild(close);
+}
+
+/* 递归确保上游处理节点均已产生结果（未被处理过的先执行，直到所有输入都有内容） */
+async function ensureProcessed(node, ran) {
+  ran = ran || [];
+  if (!node) return ran;
+  if (node.kind !== "proc_text" && node.kind !== "proc_image") return ran;
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (src && (src.kind === "proc_text" || src.kind === "proc_image"))
+      await ensureProcessed(src, ran);
+  }
+  if (node.running) {
+    const p = S.runPromises.get(node.id);
+    if (p) await p;
+    return ran;
+  }
+  if (attemptCount(node) > 1) {
+    const outs = node.attemptOutputs || [];
+    if (
+      outs.some(
+        (o) => o && (o.output || (o.batchOutputs && o.batchOutputs.length)),
+      )
+    )
+      return ran;
+    if (outs.some((o) => o && o.error)) return ran; // 已有错误则不再自动重试
+  } else {
+    if (node.output || (node.batchOutputs && node.batchOutputs.length))
+      return ran;
+    if (node.error) return ran; // 已有错误则不再自动重试
+  }
+  ran.push(node.title);
+  await playNode(node, true);
+  return ran;
+}
+
+/* 单次尝试的运行体：{output, batchOutputs, error, ranAt}，错误不抛出（记入槽内） */
+async function runAttempt(node, prov, t) {
+  const res = { output: null, batchOutputs: null, error: null, ranAt: 0 };
+  try {
+    const titles = batchTitles(node);
+    if (titles && node.batchMode === "agg") {
+      /* 聚合模式：所有条目作为独立输入，单次运行，输出单个结果 */
+      res.output = await runOnceAgg(node, prov, t);
+      res.ranAt = Date.now();
+    } else if (titles) {
+      const tasks = titles.map((title, idx) =>
+        runOnce(node, prov, idx, title, t)
+          .then((output) => ({ title, ok: true, output }))
+          .catch((e) => ({
+            title,
+            ok: false,
+            error: e.message || String(e),
+          })),
+      );
+      res.batchOutputs = await Promise.all(tasks);
+      res.ranAt = Date.now();
+    } else {
+      res.output = await runOnce(node, prov, 0, null, t);
+      res.ranAt = Date.now();
+    }
+  } catch (e) {
+    res.error = e.message || String(e);
+  }
+  return res;
+}
+
+async function playNode(node, quiet) {
+  if (node.running) {
+    const p = S.runPromises.get(node.id);
+    if (p) await p;
+    return;
+  }
+  if (!quiet) {
+    const ran = [];
+    for (const w of wiresTo(node.id)) {
+      const src = nodeById(w.from);
+      if (src && (src.kind === "proc_text" || src.kind === "proc_image"))
+        await ensureProcessed(src, ran);
+    }
+    if (ran.length) toast("已自动执行上游节点：" + ran.join("、"), "ok");
+    const un =
+      node.batchMode === "agg" && batchTitles(node)
+        ? resolveRefsAgg(node.prompt || "", node).unresolved
+        : resolveRefs(node.prompt || "", node, 0).unresolved;
+    if (un.length) toast("未解析的 @引用：" + un.join("、"), "warn");
+  }
+  const prov = S.config.providers.find((p) => p.id === node.providerId);
+  if (!prov) {
+    node.error = "未配置服务商（设置 · API/配置）";
+    renderCanvas();
+    return;
+  }
+  if (!String(prov.apiKey || "").trim()) {
+    node.error = "该服务商未填写 API Key（设置 · API/配置）";
+    renderCanvas();
+    return;
+  }
+  node.running = true;
+  node.error = null;
+  node.attemptsDone = 0;
+  if (!S.thinking) S.thinking = {};
+  S.thinking[node.id] = []; // 重置思考缓冲（按尝试槽）
+  renderCanvas();
+  renderStatus();
+  const runP = (async () => {
+    try {
+      const nA = attemptCount(node);
+      if (nA > 1) {
+        /* 多次尝试：并行运行 N 次，结果按尝试槽存放 */
+        node.attemptOutputs = Array.from({ length: nA }, () => ({
+          output: null,
+          batchOutputs: null,
+          error: null,
+          ranAt: 0,
+        }));
+        const results = await Promise.all(
+          Array.from({ length: nA }, (_, t) =>
+            runAttempt(node, prov, t).then((res) => {
+              node.attemptsDone = t + 1;
+              return res;
+            }),
+          ),
+        );
+        node.attemptOutputs = results;
+        node.attemptIdx = Math.min(node.attemptIdx || 0, nA - 1);
+        node.ranAt = Date.now();
+        const okc = results.filter((r) => !r.error).length;
+        if (!quiet)
+          toast(
+            "多次尝试完成：" + okc + "/" + nA + " 次成功",
+            okc === nA ? "ok" : "warn",
+          );
+      } else {
+        const res = await runAttempt(node, prov, 0);
+        node.output = res.output;
+        node.batchOutputs = res.batchOutputs;
+        node.error = res.error;
+        node.ranAt = res.ranAt;
+        if (res.error) {
+          if (!quiet) toast("处理失败：" + res.error, "err");
+        } else if (res.batchOutputs && res.batchOutputs.length) {
+          const okc = res.batchOutputs.filter((r) => r.ok).length;
+          if (!quiet)
+            toast(
+              "批量处理完成：" +
+                okc +
+                "/" +
+                res.batchOutputs.length +
+                " 项成功",
+              okc === res.batchOutputs.length ? "ok" : "warn",
+            );
+        } else if (res.output) {
+          if (!quiet)
+            toast(
+              node.kind === "proc_text"
+                ? "文本生成完成（" + res.output.text.length + " 字符）"
+                : "图像生成完成",
+              "ok",
+            );
+        }
+      }
+    } catch (e) {
+      node.error = e.message || String(e);
+      if (!quiet) toast("处理失败：" + node.error, "err");
+    } finally {
+      node.running = false;
+      renderCanvas();
+      renderStatus();
+      scheduleSave(true);
+      autoSaveSaves();
+    }
+  })();
+  S.runPromises.set(node.id, runP);
+  try {
+    await runP;
+  } finally {
+    S.runPromises.delete(node.id);
+  }
+}
+
+/* ============ 保存节点（单条 / 批量 / 聚合） ============ */
+
+/* 聚合保存：所有条目合并为一个 YAML（键 = 条目 field） */
+async function saveTextAgg(node, quiet) {
+  const entries = [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src) continue;
+    const items = allTextItems(src);
+    if (items.length) {
+      for (const it of items)
+        entries.push({ key: it.title || src.title || "input", text: it.text });
+    } else {
+      const v = valueForInput(src, 0);
+      if (v && v.kind === "text")
+        entries.push({ key: src.title || "input", text: v.text });
+    }
+  }
+  if (!entries.length) {
+    if (!quiet) toast("没有可保存的文本输入", "warn");
+    return false;
+  }
+  const r = await window.api.fileWriteText(node.savePath, yamlDump(entries));
+  if (!r.ok) {
+    if (!quiet) toast("保存失败", "err");
+    return false;
+  }
+  node.savedPath = node.savePath;
+  node.savedPaths = [node.savePath];
+  node.savedAt = Date.now();
+  if (!quiet) toast("已保存聚合 YAML → " + node.savePath, "ok");
+  return true;
+}
+
+async function saveTextOnce(node, quiet) {
+  const titles = batchTitles(node);
+  if (titles && node.batchMode === "agg") return saveTextAgg(node, quiet);
+  if (titles) {
+    const paths = [];
+    for (let idx = 0; idx < titles.length; idx++) {
+      const entries = [];
+      for (const w of wiresTo(node.id)) {
+        const src = nodeById(w.from);
+        const v = valueForInput(src, idx);
+        if (v && v.kind === "text")
+          entries.push({
+            key: itemTitleOf(src, idx) || src.title || "input",
+            text: v.text,
+          });
+      }
+      if (!entries.length) continue;
+      const p = batchOutPath(node.savePath, titles[idx]);
+      const r = await window.api.fileWriteText(p, yamlDump(entries));
+      if (!r.ok) {
+        if (!quiet) toast("保存失败：" + p, "err");
+        continue;
+      }
+      paths.push(p);
+    }
+    if (!paths.length) {
+      if (!quiet) toast("没有可保存的文本输入", "warn");
+      return false;
+    }
+    node.savedPaths = paths;
+    node.savedPath = node.savePath;
+    node.savedAt = Date.now();
+    if (!quiet)
+      toast(
+        "已保存 " +
+          paths.length +
+          " 个 YAML 文件 → " +
+          fileName(paths[0]) +
+          " …",
+        "ok",
+      );
+    return true;
+  }
+  const ins = inputValuesFor(node, 0);
+  const entries = [];
+  let missing = false;
+  for (const i of ins) {
+    if (!i.value || i.value.kind !== "text") {
+      missing = true;
+      continue;
+    }
+    entries.push({ key: i.title || "input", text: i.value.text });
+  }
+  if (!entries.length) {
+    if (!quiet) toast("没有可保存的文本输入", "warn");
+    return false;
+  }
+  if (missing && !quiet) toast("部分输入节点尚无文本输出，已跳过", "warn");
+  const yaml = yamlDump(entries);
+  const r = await window.api.fileWriteText(node.savePath, yaml);
+  if (!r.ok) {
+    if (!quiet) toast("保存失败", "err");
+    return false;
+  }
+  node.savedPath = node.savePath;
+  node.savedPaths = [node.savePath];
+  node.savedAt = Date.now();
+  if (!quiet) toast("已保存 YAML → " + node.savePath, "ok");
+  return true;
+}
+
+/* 聚合保存（图像）：所有条目合并取第一张写入单文件 */
+async function saveImageAgg(node, quiet) {
+  const paths = [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    for (const it of allImageItems(src)) paths.push(it.path);
+  }
+  if (!paths.length) {
+    if (!quiet) toast("图像保存节点需要一个图像输入", "warn");
+    return false;
+  }
+  const r = await window.api.fileCopyAssetTo(paths[0], node.savePath);
+  if (!r.ok) {
+    if (!quiet) toast("保存失败", "err");
+    return false;
+  }
+  node.savedPath = node.savePath;
+  node.savedPaths = [node.savePath];
+  node.savedAt = Date.now();
+  if (!quiet) toast("已保存图像 → " + node.savePath, "ok");
+  return true;
+}
+
+async function saveImageOnce(node, quiet) {
+  const titles = batchTitles(node);
+  if (titles && node.batchMode === "agg") return saveImageAgg(node, quiet);
+  if (titles) {
+    const paths = [];
+    for (let idx = 0; idx < titles.length; idx++) {
+      const ins = inputValuesFor(node, idx);
+      const v = ins[0] && ins[0].value;
+      if (!v || v.kind !== "image") continue;
+      const p = batchOutPath(node.savePath, titles[idx]);
+      const r = await window.api.fileCopyAssetTo(v.path, p);
+      if (!r.ok) {
+        if (!quiet) toast("保存失败：" + p, "err");
+        continue;
+      }
+      paths.push(p);
+    }
+    if (!paths.length) {
+      if (!quiet) toast("图像保存节点需要一个图像输入", "warn");
+      return false;
+    }
+    node.savedPaths = paths;
+    node.savedPath = node.savePath;
+    node.savedAt = Date.now();
+    if (!quiet)
+      toast(
+        "已保存 " + paths.length + " 个图像文件 → " + fileName(paths[0]) + " …",
+        "ok",
+      );
+    return true;
+  }
+  const ins = inputValuesFor(node, 0);
+  if (!ins.length || !ins[0].value || ins[0].value.kind !== "image") {
+    if (!quiet) toast("图像保存节点需要一个图像输入", "warn");
+    return false;
+  }
+  const r = await window.api.fileCopyAssetTo(ins[0].value.path, node.savePath);
+  if (!r.ok) {
+    if (!quiet) toast("保存失败", "err");
+    return false;
+  }
+  node.savedPath = node.savePath;
+  node.savedPaths = [node.savePath];
+  node.savedAt = Date.now();
+  if (!quiet) toast("已保存图像 → " + node.savePath, "ok");
+  return true;
+}
+
+async function saveNodeAction(node) {
+  if (!node.savePath) {
+    toast("请先指定保存路径（可用「浏览」选择）", "warn");
+    return;
+  }
+  const ran = [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (src && (src.kind === "proc_text" || src.kind === "proc_image"))
+      await ensureProcessed(src, ran);
+  }
+  if (ran.length) toast("已自动执行上游节点：" + ran.join("、"), "ok");
+  let ok = false;
+  if (node.kind === "save_text") ok = await saveTextOnce(node, false);
+  else if (node.kind === "save_image") ok = await saveImageOnce(node, false);
+  if (ok) {
+    renderCanvas();
+    renderStatus();
+    scheduleSave();
+  }
+}
+async function autoSaveSaves() {
+  let changed = false;
+  for (const n of S.wf.nodes) {
+    if (!n.auto || !n.savePath) continue;
+    try {
+      if (n.kind === "save_text" && (await saveTextOnce(n, true)))
+        changed = true;
+      else if (n.kind === "save_image" && (await saveImageOnce(n, true)))
+        changed = true;
+    } catch {
+      /* 忽略自动保存错误 */
+    }
+  }
+  if (changed) renderCanvas();
+}
+
+/* 清空节点输出：回到无输出内容的状态 */
+function clearOutput(node) {
+  pushHistory();
+  node.output = null;
+  node.batchOutputs = null;
+  node.error = null;
+  node.ranAt = 0;
+  node.attemptOutputs = null;
+  node.attemptsDone = 0;
+  if (S.thinking && S.thinking[node.id]) S.thinking[node.id] = [];
+  clearDownstream(node.id);
+  scheduleSave();
+  renderCanvas();
+  renderStatus();
+}
+
+/* 局部刷新派生显示节点（拆分/合并的内容随输入实时变化） */
+function refreshNodeEl(id) {
+  const old = document.querySelector('.wf-node[data-nid="' + id + '"]');
+  const n = nodeById(id);
+  if (!old || !n) return;
+  const el = nodeElement(n);
+  old.replaceWith(el);
+  updateWires();
+  fillPreviews();
+}
+function refreshDerived() {
+  for (const n of S.wf.nodes) {
+    if (n.kind === "split" || n.kind === "merge") refreshNodeEl(n.id);
+  }
+}
+
+/* ============ 连线 ============ */
+
+function wouldCycle(fromId, toId) {
+  const adj = {};
+  for (const w of S.wf.wires) (adj[w.from] = adj[w.from] || []).push(w.to);
+  const q = [toId],
+    seen = new Set(q);
+  while (q.length) {
+    const n = q.pop();
+    if (n === fromId) return true;
+    for (const m of adj[n] || []) {
+      if (!seen.has(m)) {
+        seen.add(m);
+        q.push(m);
+      }
+    }
+  }
+  return false;
+}
+
+function connect(fromId, toId, toIndex) {
+  const from = nodeById(fromId),
+    to = nodeById(toId);
+  if (!from || !to) return;
+  if (!hasOutput(from)) {
+    toast("该节点没有输出端子", "warn");
+    return;
+  }
+  if (inputCount(to) === 0) {
+    toast("该节点不接受输入", "warn");
+    return;
+  }
+  if (fromId === toId || wouldCycle(fromId, toId)) {
+    toast("不能连接成回路", "warn");
+    return;
+  }
+  if (to.kind === "save_image") {
+    if (wiresTo(toId).length) {
+      toast("图像保存节点仅接受 1 个输入", "warn");
+      return;
+    }
+    if (toIndex !== 0) return;
+    if (!isImageSource(from)) {
+      toast("图像保存节点需要图像来源", "warn");
+      return;
+    }
+  } else if (to.kind === "save_text") {
+    if (!isTextSource(from)) {
+      toast("文本保存节点需要文本来源", "warn");
+      return;
+    }
+  }
+  const cur = wiresTo(toId).length;
+  if (toIndex < cur) {
+    toast("该输入端子已被占用", "warn");
+    return;
+  }
+  pushHistory();
+  S.wf.wires.push({ id: uid("w"), from: fromId, to: toId, toIndex });
+  clearDownstream(toId);
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+}
+
+function removeWire(id) {
+  const i = S.wf.wires.findIndex((w) => w.id === id);
+  if (i < 0) return;
+  pushHistory();
+  const [w] = S.wf.wires.splice(i, 1);
+  for (const x of S.wf.wires) {
+    if (x.to === w.to && x.toIndex > w.toIndex) x.toIndex--;
+  }
+  clearDownstream(w.to);
+}
+
+function deleteNode(id) {
+  const i = S.wf.nodes.findIndex((n) => n.id === id);
+  if (i < 0) return;
+  pushHistory();
+  S.wf.nodes.splice(i, 1);
+  S.wf.wires = S.wf.wires.filter((w) => w.from !== id && w.to !== id);
+  if (S.sel === id) S.sel = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+}
+
+function duplicateNode(node) {
+  pushHistory();
+  const cp = JSON.parse(JSON.stringify(node));
+  cp.id = uid("n");
+  cp.x = snap(cp.x + grid() * 4);
+  cp.y = snap(cp.y + grid() * 4);
+  cp.title = node.title + " 副本";
+  cp.output = null;
+  cp.batchOutputs = null;
+  cp.error = null;
+  cp.ranAt = 0;
+  cp.attemptOutputs = null;
+  cp.attemptIdx = 0;
+  cp.attemptsDone = 0;
+  if (cp.kind === "save_text" || cp.kind === "save_image") {
+    cp.savedPaths = [];
+    cp.savedPath = "";
+  }
+  S.wf.nodes.push(cp);
+  S.sel = cp.id;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+}
+
+function startTitleEdit(node, titleEl) {
+  if (!titleEl) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "n-title-input";
+  input.value = node.title || "";
+  input.spellcheck = false;
+  input.title = "回车确认 · Esc 取消";
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = (save) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (save && v && v !== node.title) {
+      pushHistory();
+      node.title = v;
+      scheduleSave();
+    }
+    renderCanvas();
+  };
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      commit(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", () => commit(true));
+  input.addEventListener("mousedown", (ev) => ev.stopPropagation());
+}
+
+/* ============ 拖拽交互（平移 / 节点 / 缩放 / 连线） ============ */
+
+function startNodeDrag(ev, node) {
+  if (S.drag) return;
+  S.sel = node.id;
+  S.selWire = null;
+  S.preDragSnap = snapshotState();
+  renderCanvas();
+  const el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+  S.drag = {
+    mode: "node",
+    id: node.id,
+    sx: ev.clientX,
+    sy: ev.clientY,
+    ox: node.x,
+    oy: node.y,
+    moved: false,
+    el,
+  };
+}
+function startWireDrag(fromId, ev) {
+  S.drag = {
+    mode: "wire",
+    fromId,
+    sx: ev.clientX,
+    sy: ev.clientY,
+    mx: ev.clientX,
+    my: ev.clientY,
+  };
+  updateWires();
+}
+
+function bindCanvas() {
+  const canvas = $("#canvas");
+  canvas.addEventListener("mousedown", (ev) => {
+    if (ev.target === canvas || ev.target.id === "stage") {
+      S.drag = {
+        mode: "pan",
+        sx: ev.clientX,
+        sy: ev.clientY,
+        px: S.cam.x,
+        py: S.cam.y,
+        moved: false,
+      };
+    }
+  });
+  canvas.addEventListener(
+    "wheel",
+    (ev) => {
+      if (ev.target.closest(".wf-node")) return; // 节点内滚轮仅作用于节点内部滚动，不缩放画布
+      ev.preventDefault();
+      const z = S.cam.z * (ev.deltaY < 0 ? 1.12 : 1 / 1.12);
+      S.cam.z = Math.min(2.5, Math.max(0.3, z));
+      applyTransform();
+      updateWires();
+      renderStatus();
+    },
+    { passive: false },
+  );
+
+  window.addEventListener("mousemove", (ev) => {
+    const d = S.drag;
+    if (!d) return;
+    const dx = ev.clientX - d.sx,
+      dy = ev.clientY - d.sy;
+    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
+    if (d.mode === "pan") {
+      S.cam.x = d.px + dx;
+      S.cam.y = d.py + dy;
+      applyTransform();
+      updateWires();
+    } else if (d.mode === "node") {
+      const n = nodeById(d.id);
+      if (!n) return;
+      n.x = snap(d.ox + dx);
+      n.y = snap(d.oy + dy);
+      const el = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
+      if (el) {
+        el.style.left = n.x + "px";
+        el.style.top = n.y + "px";
+      }
+      updateWires();
+    } else if (d.mode === "resize") {
+      const n = nodeById(d.id);
+      if (!n) return;
+      n.w = Math.max(minWFor(n), d.ow + dx);
+      n.h = Math.max(minHFor(n), d.oh + dy);
+      const el = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
+      if (el) {
+        el.style.width = n.w + "px";
+        el.style.height = n.h + "px";
+        refreshPorts(el, n);
+      }
+      updateWires();
+    } else if (d.mode === "outresize") {
+      const n = nodeById(d.id);
+      if (!n) return;
+      n.outW = Math.max(120, Math.min(440, Math.round(d.ow + dx / S.cam.z)));
+      const el = document.querySelector(
+        '.wf-node[data-nid="' + n.id + '"] .n-out',
+      );
+      if (el) el.style.width = n.outW + "px";
+    } else if (d.mode === "entryresize") {
+      const n = nodeById(d.id);
+      if (!n) return;
+      const e = (n.entries || []).find((x) => x.id === d.eid);
+      if (!e) return;
+      e.h = Math.max(40, Math.min(320, Math.round(d.oh + dy / S.cam.z)));
+      const el = document.querySelector(
+        '.wf-node[data-nid="' +
+          n.id +
+          '"] .bentry-text[data-eid="' +
+          e.id +
+          '"]',
+      );
+      if (el) el.style.height = e.h + "px";
+    } else if (d.mode === "wire") {
+      d.mx = ev.clientX;
+      d.my = ev.clientY;
+      document
+        .querySelectorAll(".port.in.hover")
+        .forEach((p) => p.classList.remove("hover"));
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const port = el && el.closest ? el.closest(".port.in") : null;
+      if (port) port.classList.add("hover");
+      updateWires();
+    }
+  });
+  window.addEventListener("mouseup", (ev) => {
+    const d = S.drag;
+    if (!d) return;
+    document
+      .querySelectorAll(".port.in.hover")
+      .forEach((p) => p.classList.remove("hover"));
+    if (d.mode === "wire") {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const port = el && el.closest ? el.closest(".port.in") : null;
+      S.drag = null;
+      updateWires();
+      if (port) connect(d.fromId, port.dataset.node, Number(port.dataset.idx));
+    } else if (d.mode === "node") {
+      S.drag = null;
+      if (d.moved && S.preDragSnap) {
+        pushHistory(S.preDragSnap);
+        S.preDragSnap = null;
+      }
+      scheduleSave();
+    } else if (
+      d.mode === "resize" ||
+      d.mode === "outresize" ||
+      d.mode === "entryresize"
+    ) {
+      S.drag = null;
+      if (d.moved && S.preDragSnap) {
+        pushHistory(S.preDragSnap);
+        S.preDragSnap = null;
+      }
+      scheduleSave();
+    } else if (d.mode === "pan") {
+      S.drag = null;
+      if (!d.moved) {
+        S.sel = null;
+        S.selWire = null;
+        renderCanvas();
+      }
+    }
+  });
+
+  canvas.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.target === canvas || ev.target.id === "stage") {
+      const pt = toStage(ev.clientX, ev.clientY);
+      showCtx(ev.clientX, ev.clientY, [
+        [
+          "输入节点（仅输出）",
+          [
+            {
+              label: "＋ 文本节点",
+              run: () => addNode("input_text", pt.x, pt.y),
+            },
+            {
+              label: "＋ 图像节点",
+              run: () => addNode("input_image", pt.x, pt.y),
+            },
+          ],
+        ],
+        [
+          "处理节点（提示词 + Play）",
+          [
+            {
+              label: "▶ 文本处理（LLM）",
+              run: () => addNode("proc_text", pt.x, pt.y),
+            },
+            {
+              label: "▶ 图像生成（文生图）",
+              run: () => addNode("proc_image", pt.x, pt.y),
+            },
+          ],
+        ],
+        [
+          "保存节点（接收最终输出）",
+          [
+            {
+              label: "⤓ 保存文本（YAML）",
+              run: () => addNode("save_text", pt.x, pt.y),
+            },
+            {
+              label: "⤓ 保存图像",
+              run: () => addNode("save_image", pt.x, pt.y),
+            },
+          ],
+        ],
+        [
+          "工具节点（批次拆分 / 合并）",
+          [
+            {
+              label: "⧉ 拆分（批次 → 单项只读节点）",
+              run: () => addNode("split", pt.x, pt.y),
+            },
+            {
+              label: "⧉ 合并（多节点 → 批次）",
+              run: () => addNode("merge", pt.x, pt.y),
+            },
+          ],
+        ],
+        [
+          "动画节点",
+          [
+            {
+              label: "⧗ 动画（图像 → GIF 帧动画）",
+              run: () => addNode("anim", pt.x, pt.y),
+            },
+          ],
+        ],
+        [
+          "对话节点",
+          [
+            {
+              label: "💬 文本对话（Chat）",
+              run: () => addNode("chat", pt.x, pt.y),
+            },
+          ],
+        ],
+      ]);
+    }
+  });
+
+  canvas.addEventListener("dragover", (ev) => ev.preventDefault());
+  canvas.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
+    const files = [...(ev.dataTransfer.files || [])];
+    if (!files.length) return;
+    const pt = toStage(ev.clientX, ev.clientY);
+    const target = S.wf.nodes.find(
+      (n) =>
+        n.kind === "input_image" &&
+        pt.x >= n.x &&
+        pt.x <= n.x + n.w &&
+        pt.y >= n.y &&
+        pt.y <= n.y + n.h,
+    );
+    if (!target) {
+      toast("请将图像文件拖到「图像输入节点」上", "warn");
+      return;
+    }
+    if (target.ro) {
+      toast("拆分出的只读节点，不可修改", "warn");
+      return;
+    }
+    if (inputInherited(target)) {
+      toast("该节点已继承输入，内容只读", "warn");
+      return;
+    }
+    if (target.batch) {
+      let added = 0;
+      for (const f of files) {
+        const p = window.api.getPathForFile(f);
+        if (!p) continue;
+        const res = await window.api.assetCopy(
+          p,
+          S.wf.id,
+          target.id + "_" + Date.now() + "_" + added,
+        );
+        target.entries.push({
+          id: uid("e"),
+          title: fileName(p).replace(/\.[^.]+$/, ""),
+          path: res.path,
+        });
+        added++;
+      }
+      if (added) {
+        clearDownstream(target.id);
+        scheduleSave();
+        renderCanvas();
+        toast("已载入 " + added + " 张图像到批量节点", "ok");
+      }
+      return;
+    }
+    const p = window.api.getPathForFile(files[0]);
+    if (!p) {
+      toast("无法读取该文件路径", "err");
+      return;
+    }
+    const res = await window.api.assetCopy(
+      p,
+      S.wf.id,
+      target.id + "_" + Date.now(),
+    );
+    target.imageAsset = res.path;
+    scheduleSave();
+    renderCanvas();
+    toast("图像已载入输入节点", "ok");
+  });
+
+  window.addEventListener("keydown", (ev) => {
+    const tag = (ev.target.tagName || "").toLowerCase();
+    const inField = tag === "input" || tag === "textarea" || tag === "select";
+    if (inField) {
+      if (tag === "textarea" && S.refMenu) refKey(ev.target, ev);
+      return;
+    }
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (mod && ev.key.toLowerCase() === "z") {
+      ev.preventDefault();
+      if (ev.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if (mod && ev.key.toLowerCase() === "y") {
+      ev.preventDefault();
+      redo();
+      return;
+    }
+    if (mod && ev.key.toLowerCase() === "c") {
+      ev.preventDefault();
+      if (S.sel) {
+        const n = nodeById(S.sel);
+        if (n) duplicateNode(n);
+      } else toast("请先选中节点", "warn");
+      return;
+    }
+    if (ev.key === "Delete" || ev.key === "Backspace") {
+      ev.preventDefault();
+      if (S.selWire) {
+        removeWire(S.selWire);
+        S.selWire = null;
+        renderCanvas();
+        scheduleSave(true);
+        renderStatus();
+      } else if (S.sel) deleteNode(S.sel);
+    } else if (ev.key === "Escape") {
+      S.sel = null;
+      S.selWire = null;
+      closeRefMenu();
+      renderCanvas();
+    }
+  });
+
+  window.addEventListener(
+    "mousedown",
+    (ev) => {
+      if (S.refMenu) {
+        const m = $("#refMenu");
+        if (!m.contains(ev.target)) closeRefMenu();
+      }
+      if (S.uiOpenNode) {
+        const el = document.querySelector(
+          '.wf-node[data-nid="' + S.uiOpenNode + '"]',
+        );
+        if (!el || !el.contains(ev.target)) {
+          S.uiOpenNode = null;
+          renderCanvas();
+        }
+      }
+    },
+    true,
+  );
+}
+
+/* ============ 右键菜单 ============ */
+
+function showCtx(x, y, groups) {
+  const ctx = $("#ctx");
+  ctx.innerHTML = "";
+  for (const [gtitle, items] of groups) {
+    const g = document.createElement("div");
+    g.className = "ctx-group";
+    g.textContent = gtitle;
+    ctx.appendChild(g);
+    for (const it of items) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = it.label;
+      if (it.cls) b.className = it.cls;
+      b.onclick = () => {
+        hideCtx();
+        it.run();
+      };
+      ctx.appendChild(b);
+    }
+  }
+  ctx.style.display = "block";
+  const vw = window.innerWidth,
+    vh = window.innerHeight;
+  ctx.style.left = Math.min(x, vw - 200) + "px";
+  ctx.style.top = Math.min(y, vh - 60) + "px";
+}
+function hideCtx() {
+  $("#ctx").style.display = "none";
+}
+
+function addNode(kind, x, y) {
+  const d = NODE_DEFAULTS[kind];
+  const node = { id: uid("n"), kind, x: snap(x), y: snap(y), w: d.w, h: d.h };
+  for (const [k, v] of Object.entries(d)) {
+    if (k === "w" || k === "h") continue;
+    node[k] = JSON.parse(JSON.stringify(v));
+  }
+  const base = d.title + "节点";
+  const same = S.wf.nodes.filter((n) => n.title === base).length;
+  node.title = same ? base + " " + (same + 1) : base;
+  if (kind === "proc_text") {
+    const prov = S.config.providers.find((p) => p.type === "text_openai");
+    if (prov) {
+      node.providerId = prov.id;
+      node.model = (prov.models || [])[0] || "";
+    }
+  }
+  if (kind === "proc_image") {
+    const prov = S.config.providers.find((p) => p.type.startsWith("image_"));
+    if (prov) {
+      node.providerId = prov.id;
+      node.model = (prov.models || [])[0] || "";
+    }
+  }
+  pushHistory();
+  S.wf.nodes.push(node);
+  S.sel = node.id;
+  S.selWire = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  toast("已添加节点：" + node.title, "ok");
+}
+
+function toggleBatch(node) {
+  pushHistory();
+  node.batch = !node.batch;
+  if (node.batch) {
+    if (node.kind === "input_text" && !node.entries.length && node.text) {
+      node.entries.push({
+        id: uid("e"),
+        title: node.title,
+        content: node.text,
+      });
+    }
+    if (
+      node.kind === "input_image" &&
+      !node.entries.length &&
+      node.imageAsset
+    ) {
+      node.entries.push({
+        id: uid("e"),
+        title: fileName(node.imageAsset).replace(/\.[^.]+$/, ""),
+        path: node.imageAsset,
+      });
+    }
+  }
+  clearDownstream(node.id);
+  scheduleSave();
+  renderCanvas();
+}
+
+/* 文本对话节点：发送消息并获取 AI 回复（微信风格对话记录） */
+async function chatSend(node, text) {
+  if (node.running) return;
+  const prov = S.config.providers.find((p) => p.id === node.providerId);
+  if (!prov) {
+    toast("未配置服务商（设置 · API/配置）", "warn");
+    return;
+  }
+  if (!String(prov.apiKey || "").trim()) {
+    toast("该服务商未填写 API Key（设置 · API/配置）", "warn");
+    return;
+  }
+  if (!Array.isArray(node.messages)) node.messages = [];
+  node.messages.push({ role: "user", content: text.trim() });
+  node.running = true;
+  renderCanvas();
+  const messages = [
+    { role: "system", content: node.systemPrompt || "" },
+  ].concat(node.messages);
+  const spec = {
+    provider: prov,
+    kind: "text",
+    model: node.model || (prov.models || [])[0] || "",
+    temperature:
+      node.temperature == null
+        ? 0.7
+        : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+    prompt: "",
+    texts: [],
+    images: [],
+    chatMessages: messages,
+  };
+  try {
+    const r = await window.api.apiCall(spec);
+    if (!r.ok) throw new Error(r.error || "调用失败");
+    node.messages.push({ role: "assistant", content: r.text });
+  } catch (e) {
+    node.messages.push({
+      role: "assistant",
+      content: "（错误：" + (e.message || String(e)) + "）",
+    });
+    toast("对话失败：" + (e.message || String(e)), "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    renderStatus();
+    scheduleSave(true);
+  }
+}
+
+/* 解析 Hex 颜色（#RRGGBB / RRGGBB） */
+function parseHexColor(h) {
+  if (typeof h !== "string") return null;
+  const m = h.trim().match(/^#?([0-9a-fA-F]{6})$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/* ============ 思考内容（模型 reasoning，流式） ============ */
+
+/* 追加思考增量到 nodeId 的尝试槽；刷新节点 icon 与思考弹窗（rAF 节流） */
+const thinkRAF = {};
+function pushThinking(nid, attempt, txt) {
+  if (!txt) return;
+  if (!S.thinking) S.thinking = {};
+  if (!S.thinking[nid]) S.thinking[nid] = [];
+  if (!S.thinking[nid][attempt]) S.thinking[nid][attempt] = "";
+  S.thinking[nid][attempt] += txt;
+  refreshThinkingUI(nid);
+}
+function thinkingTextOf(node) {
+  if (!node || !S.thinking || !S.thinking[node.id]) return "";
+  return S.thinking[node.id][attemptIdx(node)] || "";
+}
+function refreshThinkingUI(nid) {
+  const node = nodeById(nid);
+  if (!node) return;
+  const icon = document.querySelector(
+    '.wf-node[data-nid="' + nid + '"] .n-think',
+  );
+  const has = !!(
+    S.thinking &&
+    S.thinking[nid] &&
+    S.thinking[nid].some((s) => s && s.length)
+  );
+  if (icon) {
+    icon.classList.toggle("show", !!has);
+    icon.classList.toggle("live", !!has && !!node.running);
+    icon.textContent = node.running ? "◉ 思考中" : "◉ 思考";
+  }
+  if (S.thinkOpen === nid) {
+    if (thinkRAF[nid]) cancelAnimationFrame(thinkRAF[nid]);
+    thinkRAF[nid] = requestAnimationFrame(() => {
+      const pre = document.getElementById("thinkPre");
+      if (pre) {
+        pre.textContent = thinkingTextOf(node);
+        pre.scrollTop = pre.scrollHeight;
+      }
+    });
+  }
+}
+
+/* 点击思考 icon：弹窗实时显示当前选中尝试的思考内容 */
+function showThinking(node) {
+  const running = !!node.running;
+  openOverlay((running ? "思考中 · " : "思考内容 · ") + node.title);
+  S.thinkOpen = node.id;
+  const bodyEl = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.textContent = running
+    ? "模型正在思考，内容流式显示中…（模型支持思考时自动出现此弹窗入口）"
+    : "以下为模型运行时的思考内容（仅保留在内存中，不写入存档）。";
+  bodyEl.appendChild(hint);
+  const pre = document.createElement("pre");
+  pre.id = "thinkPre";
+  pre.className = "think-pre";
+  pre.textContent = thinkingTextOf(node);
+  bodyEl.appendChild(pre);
+  const foot = $("#ovFoot");
+  const close = document.createElement("button");
+  close.className = "mini";
+  close.textContent = "关闭";
+  close.onclick = closeOverlay;
+  const copy = document.createElement("button");
+  copy.className = "mini primary";
+  copy.textContent = "复制";
+  copy.onclick = () => {
+    const pre2 = document.getElementById("thinkPre");
+    if (!pre2 || !pre2.textContent) {
+      toast("暂无思考内容", "warn");
+      return;
+    }
+    navigator.clipboard
+      .writeText(pre2.textContent)
+      .then(() => toast("已复制思考内容", "ok"));
+  };
+  foot.appendChild(close);
+  foot.appendChild(copy);
+}
+
+/* ============ 多次尝试（attempts）UI ============ */
+
+/* Output 下一行的方形 Tabs：1..N 左对齐小方块，点击切换选中尝试（下游引用随之切换） */
+function attemptTabsEl(node) {
+  const tabs = document.createElement("div");
+  tabs.className = "n-att-tabs";
+  const nA = attemptCount(node);
+  for (let t = 0; t < nA; t++) {
+    const sq = document.createElement("button");
+    sq.type = "button";
+    sq.className = "n-att-tab" + (t === attemptIdx(node) ? " on" : "");
+    sq.textContent = String(t + 1);
+    sq.title =
+      "尝试 " +
+      (t + 1) +
+      "：点击切换查看该次结果，后续节点引用当前选中的尝试内容";
+    sq.onclick = (ev) => {
+      ev.stopPropagation();
+      setAttempt(node, t);
+    };
+    tabs.appendChild(sq);
+  }
+  return tabs;
+}
+
+/* 切换选中尝试：pushHistory 支持撤销；下游派生（拆分/合并）内容随之更新 */
+function setAttempt(node, i) {
+  if (i === attemptIdx(node)) return;
+  pushHistory();
+  node.attemptIdx = i;
+  scheduleSave();
+  renderCanvas();
+  toast("已切换到尝试 " + (i + 1), "ok");
+}
+
+/* 多次尝试按钮：弹出次数输入（整数 1-10，默认 1） */
+function promptAttempts(node) {
+  openOverlay("多次尝试 · " + node.title);
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.innerHTML =
+    "并行运行 <b>N</b> 次该节点（N 为 1-10 的整数）。N &gt; 1 时：运行后输出面板（Output 下一行）出现 <b>1..N 方块 Tab</b>，" +
+    "点击切换查看对应尝试的结果，<b>下游节点引用当前选中的尝试内容</b>。";
+  body.appendChild(hint);
+  const lab = document.createElement("label");
+  lab.className = "n-field";
+  lab.appendChild(document.createTextNode("尝试次数（1-10，默认 1）"));
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.min = 1;
+  inp.max = 10;
+  inp.step = 1;
+  inp.value = attemptCount(node);
+  lab.appendChild(inp);
+  body.appendChild(lab);
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = "确定";
+  ok.onclick = () => {
+    let v = Math.round(Number(inp.value));
+    if (!Number.isFinite(v)) v = 1;
+    v = Math.max(1, Math.min(10, v));
+    closeOverlay();
+    if (v === attemptCount(node)) {
+      if (v === 1 && !node.attemptOutputs) return; // 本就是单次且无结果，无需操作
+      toast("尝试次数未变化（" + v + "）", "warn");
+      return;
+    }
+    pushHistory();
+    node.attempts = v;
+    node.attemptIdx = 0;
+    node.attemptOutputs = null;
+    node.output = null;
+    node.batchOutputs = null;
+    node.error = null;
+    node.ranAt = 0;
+    node.attemptsDone = 0;
+    if (S.thinking && S.thinking[node.id]) S.thinking[node.id] = [];
+    clearDownstream(node.id);
+    scheduleSave();
+    renderCanvas();
+    toast(v > 1 ? "已设置多次尝试 ×" + v : "已恢复单次尝试", "ok");
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = "取消";
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  inp.focus();
+  inp.select();
+}
+
+/* 动画节点：把输入图像按 行×列 均匀切割（依次行、从左到右）为 GIF 帧动画，支持透明色键。
+   支持多次尝试：N>1 时并行生成 N 个 GIF，输出下方出现 1..N 方块 Tab。 */
+async function playAnimNode(node) {
+  if (node.running) return;
+  const src = firstSource(node);
+  const v = src ? valueForInput(src, 0) : null;
+  if (!v || v.kind !== "image") {
+    node.error = "需要图像输入（图像节点或图像生成节点）";
+    renderCanvas();
+    return;
+  }
+  node.running = true;
+  node.error = null;
+  node.attemptsDone = 0;
+  renderCanvas();
+  try {
+    const cols = Math.max(2, Math.round(node.animCols || 4));
+    const rows = Math.max(2, Math.round(node.animRows || 4));
+    const makeOne = async () => {
+      const img = new Image();
+      img.src = window.api.toFileUrl(v.path);
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = () => rej(new Error("无法读取输入图像"));
+      });
+      const tw = Math.max(1, Math.floor(img.naturalWidth / cols));
+      const th = Math.max(1, Math.floor(img.naturalHeight / rows));
+      const canvas = document.createElement("canvas");
+      canvas.width = tw;
+      canvas.height = th;
+      const ctx = canvas.getContext("2d");
+      const key = parseHexColor(node.animKey);
+      const frames = [];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          ctx.clearRect(0, 0, tw, th);
+          ctx.drawImage(img, c * tw, r * th, tw, th, 0, 0, tw, th);
+          const data = ctx.getImageData(0, 0, tw, th);
+          if (key) {
+            const d = data.data;
+            for (let p = 0; p < d.length; p += 4) {
+              if (
+                Math.abs(d[p] - key.r) <= 8 &&
+                Math.abs(d[p + 1] - key.g) <= 8 &&
+                Math.abs(d[p + 2] - key.b) <= 8
+              )
+                d[p + 3] = 0;
+            }
+          }
+          frames.push({ data: data.data.buffer, w: tw, h: th });
+        }
+      }
+      const res = await window.api.gifMake(
+        S.wf.id,
+        node.id.slice(-8) +
+          "_anim_" +
+          Date.now() +
+          "_" +
+          Math.floor(Math.random() * 1e4),
+        frames,
+        160,
+      );
+      if (!res.ok) throw new Error(res.error || "GIF 编码失败");
+      return {
+        output: { kind: "image", path: res.path },
+        ranAt: Date.now(),
+        frames: res.frames,
+      };
+    };
+    const nA = attemptCount(node);
+    if (nA > 1) {
+      const results = await Promise.all(
+        Array.from({ length: nA }, (_, t) =>
+          makeOne()
+            .then((r) => {
+              node.attemptsDone = t + 1;
+              return r;
+            })
+            .catch((e) => ({
+              output: null,
+              error: e.message || String(e),
+              ranAt: 0,
+              frames: 0,
+            })),
+        ),
+      );
+      node.attemptOutputs = results.map((r) => ({
+        output: r.output,
+        batchOutputs: null,
+        error: r.error || null,
+        ranAt: r.ranAt,
+      }));
+      node.attemptIdx = Math.min(node.attemptIdx || 0, nA - 1);
+      node.ranAt = Date.now();
+      const okc = results.filter((r) => r.output).length;
+      toast(
+        "多次尝试完成：" + okc + "/" + nA + " 次成功",
+        okc === nA ? "ok" : "warn",
+      );
+    } else {
+      const r = await makeOne();
+      node.output = r.output;
+      node.ranAt = r.ranAt;
+      toast(
+        "帧动画生成完成（" +
+          r.frames +
+          " 帧 · " +
+          cols +
+          "×" +
+          rows +
+          " 切割）",
+        "ok",
+      );
+    }
+  } catch (e) {
+    node.error = e.message || String(e);
+    toast("帧动画生成失败：" + node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    renderStatus();
+    scheduleSave(true);
+  }
+}
+
+async function importYaml(node) {
+  const r = await window.api.fileOpenDialog({
+    title: "导入 YAML（field=标题，内容=内容）",
+    filters: [{ name: "YAML", extensions: ["yaml", "yml", "txt"] }],
+  });
+  if (!r.path) return;
+  const rd = await window.api.fileReadText(r.path);
+  if (!rd.exists) {
+    toast("文件不存在", "err");
+    return;
+  }
+  const es = parseSimpleYaml(rd.content);
+  if (!es.length) {
+    toast("未解析到条目（格式：标题: 内容）", "warn");
+    return;
+  }
+  pushHistory();
+  node.entries = es.map((e) => ({
+    id: uid("e"),
+    title: e.title,
+    content: e.content,
+  }));
+  clearDownstream(node.id);
+  scheduleSave();
+  renderCanvas();
+  toast("已导入 " + es.length + " 条", "ok");
+}
+
+async function pasteYaml(node) {
+  const text = await window.api.clipboardReadText();
+  if (!text || !text.trim()) {
+    toast("剪贴板为空", "warn");
+    return;
+  }
+  const es = parseSimpleYaml(text);
+  if (!es.length) {
+    toast("未解析到条目（格式：标题: 内容）", "warn");
+    return;
+  }
+  pushHistory();
+  node.entries = es.map((e) => ({
+    id: uid("e"),
+    title: e.title,
+    content: e.content,
+  }));
+  clearDownstream(node.id);
+  scheduleSave();
+  renderCanvas();
+  toast("已从剪贴板写入 " + es.length + " 条", "ok");
+}
+
+/* ============ 节点内小工具 ============ */
+
+async function pickImage(node) {
+  if (node.ro) {
+    toast("拆分出的只读节点，不可修改", "warn");
+    return;
+  }
+  if (inputInherited(node)) {
+    toast("该节点已继承输入，内容只读", "warn");
+    return;
+  }
+  const r = await window.api.fileOpenDialog({
+    title: "选择图像（输入节点）",
+    filters: [
+      {
+        name: "图像",
+        extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+      },
+      { name: "全部文件", extensions: ["*"] },
+    ],
+  });
+  if (!r.path) return;
+  const res = await window.api.assetCopy(
+    r.path,
+    S.wf.id,
+    node.id + "_" + Date.now(),
+  );
+  node.imageAsset = res.path;
+  scheduleSave();
+  renderCanvas();
+  toast("图像已载入输入节点", "ok");
+}
+
+/* ============ 实时保存 ============ */
+
+function persist() {
+  if (!S.wf) return;
+  clearTimeout(S.saveTimer);
+  S.saving = true;
+  renderStatus();
+  let data;
+  try {
+    data = JSON.parse(JSON.stringify(S.wf)); // 去除 Promise/函数等不可克隆字段，防御 IPC 序列化失败
+  } catch (e) {
+    S.saving = false;
+    const msg = "工作流包含无法序列化的数据：" + (e.message || e);
+    $("#saveState").textContent = "保存失败：" + msg;
+    $("#saveState").className = "err";
+    toast("保存失败：" + msg, "err");
+    return;
+  }
+  window.api
+    .wfSave(S.wf.id, data)
+    .then(() => {
+      S.saving = false;
+      S.lastSaved = Date.now();
+      renderStatus();
+      autoSaveSaves();
+    })
+    .catch((err) => {
+      S.saving = false;
+      const msg = err && err.message ? err.message : String(err);
+      $("#saveState").textContent = "保存失败：" + msg;
+      $("#saveState").className = "err";
+      toast("保存失败：" + msg, "err");
+    });
+}
+function scheduleSave(immediate) {
+  if (!S.wf) return;
+  if (immediate) {
+    clearTimeout(S.saveTimer);
+    persist();
+    return;
+  }
+  clearTimeout(S.saveTimer);
+  S.saveTimer = setTimeout(persist, 250);
+  $("#saveState").textContent = "待保存…";
+  $("#saveState").className = "warn";
+}
+
+/* 窗口失焦 / 关闭前立即落盘：确保最后的输出/编辑一定写入存档 */
+function flushNow() {
+  if (!S.wf) return;
+  clearTimeout(S.saveTimer);
+  persist();
+}
+
+/* ============ 工作流管理 ============ */
+
+function migrateWf(wf) {
+  wf.nodes = wf.nodes || [];
+  wf.wires = wf.wires || [];
+  for (const n of wf.nodes) {
+    n.title = n.title || "未命名节点";
+    delete n.runPromise; // 清理旧版本误存的运行期 Promise
+    if (n.kind === "input_text" || n.kind === "input_image") {
+      if (n.batch == null) n.batch = false;
+      if (!Array.isArray(n.entries)) n.entries = [];
+    }
+    if (
+      n.kind === "proc_text" ||
+      n.kind === "proc_image" ||
+      n.kind === "save_text" ||
+      n.kind === "save_image"
+    ) {
+      if (n.batchMode !== "agg") n.batchMode = "batch";
+    }
+    if (n.kind === "proc_text" || n.kind === "proc_image") {
+      if (!n.size) n.size = DEFAULT_IMAGE_SIZE;
+      n.batchOutputs = n.batchOutputs || null;
+      n.running = false;
+    }
+    if (n.kind === "anim") {
+      if (!n.animCols || n.animCols < 2) n.animCols = 4;
+      if (!n.animRows || n.animRows < 2) n.animRows = 4;
+      if (n.animKey == null) n.animKey = "#FF00FF";
+      n.running = false;
+    }
+    if (
+      n.kind === "proc_text" ||
+      n.kind === "proc_image" ||
+      n.kind === "anim"
+    ) {
+      if (n.attempts == null) n.attempts = 1;
+      if (n.attemptIdx == null) n.attemptIdx = 0;
+    }
+    if (n.kind === "save_text" || n.kind === "save_image") {
+      if (!Array.isArray(n.savedPaths))
+        n.savedPaths = n.savedPath ? [n.savedPath] : [];
+      n.savedPaths = n.savedPaths.filter(Boolean);
+    }
+  }
+  return wf;
+}
+
+async function ensureWorkflow() {
+  S.uiOpenNode = null;
+  clearHistory();
+  const list = await window.api.wfList();
+  let id = S.config.activeWorkflowId;
+  if (!list.some((w) => w.id === id)) id = "default";
+  if (!list.some((w) => w.id === id)) id = list.length ? list[0].id : null;
+  if (!id) {
+    id = "default";
+    S.wf = { id, name: "默认工作流", nodes: [], wires: [] };
+    await window.api.wfSave(id, S.wf);
+  } else {
+    const r = await window.api.wfLoad(id);
+    S.wf = r.ok ? r.data : { id, name: id, nodes: [], wires: [] };
+  }
+  S.wf.id = id;
+  migrateWf(S.wf);
+  S.config.activeWorkflowId = id;
+  await window.api.configSave(S.config);
+}
+
+async function loadWorkflow(id) {
+  const r = await window.api.wfLoad(id);
+  if (!r.ok) {
+    toast("打开失败：" + r.error, "err");
+    return;
+  }
+  S.uiOpenNode = null;
+  clearHistory();
+  S.wf = r.data;
+  S.wf.id = id;
+  migrateWf(S.wf);
+  S.config.activeWorkflowId = id;
+  await window.api.configSave(S.config);
+  renderAll();
+  toast("已打开工作流：" + (S.wf.name || id), "ok");
+}
+
+async function refreshWfSelect() {
+  const list = await window.api.wfList();
+  const sel = $("#wfSelect");
+  sel.innerHTML = "";
+  for (const w of list) {
+    const o = document.createElement("option");
+    o.value = w.id;
+    o.textContent = w.name + "（" + w.nodes + " 节点）";
+    sel.appendChild(o);
+  }
+  sel.value = S.wf ? S.wf.id : "";
+  sel.title = "打开工作流（共 " + list.length + " 个，切换即加载）";
+}
+
+function newWorkflowDialog() {
+  openOverlay("新建工作流");
+  const body = $("#ovBody");
+  const lab = document.createElement("label");
+  lab.className = "n-field";
+  lab.appendChild(document.createTextNode("工作流名称"));
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.value = "工作流 " + new Date().toLocaleDateString().replace(/\//g, "-");
+  lab.appendChild(inp);
+  body.appendChild(lab);
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = "创建";
+  ok.onclick = async () => {
+    const id = "wf_" + Date.now().toString(36);
+    clearHistory();
+    S.wf = {
+      id,
+      name: inp.value.trim() || "未命名工作流",
+      nodes: [],
+      wires: [],
+    };
+    await window.api.wfSave(id, S.wf);
+    S.config.activeWorkflowId = id;
+    await window.api.configSave(S.config);
+    closeOverlay();
+    renderAll();
+    toast("已创建新工作流", "ok");
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = "取消";
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  inp.focus();
+}
+
+function deleteWorkflowDialog() {
+  const wf = S.wf;
+  openOverlay("删除工作流");
+  const body = $("#ovBody");
+  const w = document.createElement("div");
+  w.className = "settings-hint";
+  w.innerHTML =
+    "将删除工作流 <b>" +
+    esc(wf.name) +
+    "</b> 及其全部本地数据文件（含节点图像资产）。此操作不可恢复。";
+  body.appendChild(w);
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini danger";
+  ok.textContent = "确认删除";
+  ok.onclick = async () => {
+    await window.api.wfDelete(wf.id);
+    closeOverlay();
+    const id = "default";
+    clearHistory();
+    S.wf = { id, name: "默认工作流", nodes: [], wires: [] };
+    await window.api.wfSave(id, S.wf);
+    S.config.activeWorkflowId = id;
+    await window.api.configSave(S.config);
+    renderAll();
+    toast("工作流已删除，已重建默认工作流", "ok");
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = "取消";
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+}
+
+/* ============ 设置（APIs/Config） ============ */
+
+function openSettings() {
+  openOverlay("设置 · APIs/Config");
+  overlayPersistent = true; // 设置栏：点击外部不关闭，仅通过「取消 / 保存」关闭
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.innerHTML =
+    "模型节点的鉴权信息统一保存于此：新增 / 修改服务商后，节点上的「服务商 / 模型」下拉自动读取。API Key 仅保存在本机磁盘。<br>支持：<b>文本</b> — OpenAI 兼容接口（POST <code>{base}/chat/completions</code>）；<b>图像</b> — OpenAI 兼容（<code>images/generations</code>）、Stability AI（<code>v2beta/stable-image/generate/core</code>，支持 @参考图作为 init image）、Midjourney 自定义接口（POST JSON <code>{prompt, api_key}</code>，返回 <code>{image: url|base64}</code>）。";
+  body.appendChild(hint);
+
+  const snapRow = document.createElement("label");
+  snapRow.className = "n-field";
+  snapRow.style.flexDirection = "row";
+  snapRow.style.alignItems = "center";
+  snapRow.appendChild(document.createTextNode("画布网格间距（px）："));
+  const snapInp = document.createElement("input");
+  snapInp.type = "number";
+  snapInp.min = 4;
+  snapInp.max = 64;
+  snapInp.step = 2;
+  snapInp.value = S.config.snap || 24;
+  snapInp.style.width = "80px";
+  snapRow.appendChild(snapInp);
+  body.appendChild(snapRow);
+
+  const list = document.createElement("div");
+  list.style.marginTop = "10px";
+  S.config.providers.forEach((p, i) => list.appendChild(provCard(p, i, list)));
+  body.appendChild(list);
+
+  const add = document.createElement("button");
+  add.className = "mini";
+  add.textContent = "＋ 添加服务商";
+  add.onclick = () => {
+    S.config.providers.push({
+      id: uid("p"),
+      name: "新服务商",
+      type: "text_openai",
+      baseUrl: "",
+      apiKey: "",
+      models: [],
+      vision: false,
+    });
+    openSettings();
+  };
+  body.appendChild(add);
+
+  const foot = $("#ovFoot");
+  const save = document.createElement("button");
+  save.className = "mini primary";
+  save.textContent = "保存设置";
+  save.onclick = async () => {
+    const snap = Math.max(4, Math.min(64, Number(snapInp.value) || 24));
+    S.config.snap = snap;
+    for (const p of S.config.providers) {
+      p.name = String(p.name || "").trim();
+      p.baseUrl = String(p.baseUrl || "").trim();
+      p.apiKey = String(p.apiKey || "").trim();
+      p.models = String(p.models || "")
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean);
+    }
+    S.config.providers = S.config.providers.filter((p) => p.name);
+    await window.api.configSave(S.config);
+    closeOverlay();
+    renderCanvas();
+    renderStatus();
+    toast("设置已保存（" + S.config.providers.length + " 个服务商）", "ok");
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = "取消";
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(save);
+}
+
+function provCard(prov, i, list) {
+  const card = document.createElement("div");
+  card.className = "prov-card";
+  const head = document.createElement("div");
+  head.className = "prov-head";
+  const idx = document.createElement("span");
+  idx.className = "idx";
+  idx.textContent = "#" + (i + 1);
+  head.appendChild(idx);
+  head.appendChild(document.createTextNode(prov.name || "（未命名）"));
+  const del = document.createElement("span");
+  del.className = "del";
+  del.textContent = "✕ 删除";
+  del.title = "删除该服务商";
+  del.onclick = () => {
+    S.config.providers.splice(i, 1);
+    openSettings();
+  };
+  head.appendChild(del);
+  card.appendChild(head);
+
+  const gridEl = document.createElement("div");
+  gridEl.className = "prov-grid";
+
+  const mkField = (label, ctrl, wide) => {
+    const f = document.createElement("label");
+    f.className = "pf" + (wide ? " pf-wide" : "");
+    f.appendChild(document.createTextNode(label));
+    f.appendChild(ctrl);
+    gridEl.appendChild(f);
+    return f;
+  };
+
+  const typeSel = document.createElement("select");
+  for (const [v, l] of PROVIDER_TYPE_LABELS) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = l;
+    typeSel.appendChild(o);
+  }
+  typeSel.value = prov.type;
+  typeSel.onchange = () => {
+    prov.type = typeSel.value;
+    openSettings();
+  };
+  mkField("类型", typeSel);
+
+  const nameInp = document.createElement("input");
+  nameInp.type = "text";
+  nameInp.value = prov.name || "";
+  nameInp.placeholder = "服务商名称";
+  nameInp.oninput = () => {
+    prov.name = nameInp.value;
+    head.childNodes[1].textContent = nameInp.value || "（未命名）";
+  };
+  mkField("名称", nameInp);
+
+  const urlInp = document.createElement("input");
+  urlInp.type = "text";
+  urlInp.value = prov.baseUrl || "";
+  urlInp.placeholder = "https://api.example.com/v1";
+  urlInp.oninput = () => {
+    prov.baseUrl = urlInp.value;
+  };
+  mkField("接口地址 Base URL", urlInp, true);
+
+  const keyInp = document.createElement("input");
+  keyInp.type = "text";
+  keyInp.value = prov.apiKey || "";
+  keyInp.placeholder = "API Key";
+  keyInp.oninput = () => {
+    prov.apiKey = keyInp.value;
+  };
+  mkField("API Key（明文）", keyInp, true);
+
+  const modelInp = document.createElement("input");
+  modelInp.type = "text";
+  modelInp.value = (prov.models || []).join(", ");
+  modelInp.placeholder = "模型列表，逗号分隔，如 gpt-4o-mini, gpt-4o";
+  modelInp.oninput = () => {
+    prov.models = modelInp.value
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean);
+  };
+  mkField("模型列表", modelInp, true);
+
+  if (prov.type === "text_openai") {
+    const inline = document.createElement("label");
+    inline.className = "pf pf-inline";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!prov.vision;
+    cb.onchange = () => {
+      prov.vision = cb.checked;
+    };
+    inline.appendChild(cb);
+    inline.appendChild(
+      document.createTextNode("支持视觉（图片输入转为多模态消息）"),
+    );
+    gridEl.appendChild(inline);
+  }
+
+  card.appendChild(gridEl);
+  return card;
+}
+
+/* ============ 帮助 ============ */
+
+function openHelp() {
+  openOverlay("工作流说明");
+  $("#ovBody").innerHTML = `
+  <div class="help-body">
+  <h3>① 节点添加</h3>
+  <p>在画布<b>空白处右键</b>弹出菜单添加节点：<b>输入节点</b>（文本 / 图像）、<b>处理节点</b>（文本 LLM / 图像生成）、<b>保存节点</b>（文本 YAML / 图像）。节点位置自动<b>吸附到网格</b>（默认 24px，可在设置中调整）。</p>
+  <h3>② 输入节点</h3>
+  <p><b>文本节点</b>：内容直接在节点内编辑，实时保存。<b>图像节点</b>：点击选择文件，或直接把图像文件<b>拖到节点上</b>；仅预览。两种节点均可拖动右下角自由缩放，<b>点击标题</b>可重命名，均只有一个<b>输出端子</b>。<b>右上角「批量」小按钮</b>开启批量模式（见 ④）。<b>输入节点也允许输入</b>（左侧端子）：一旦连线，内容变为<b>只读并自动继承输入的内容</b>（文本/图像/批量均可），断开连接即恢复可编辑；若继承的文本<b>符合 YAML 格式</b>（含缩进、列表项），则自动转为<b>批量节点</b>（只读条目，下游自动批量处理）。</p>
+  <h3>③ @ 引用（Prompt 内输入 @）</h3>
+  <p>在处理节点的提示词中直接输入 <code>@</code>，会弹出<b>已连接输入节点</b>下拉菜单（↑↓ 选择、Enter 确认；<b>未连接的节点不允许引用</b>）。运行时<b>输入文字与提示词组合为结构化消息</b>：所有输入内容放在 <code>【背景信息】</code> 中（每条以 <code>### 标题</code> 开头），提示词放在 <code>【内容】</code> 中，提示词里的 <code>@标题</code> 会<b>去掉 @ 字符</b>并指向对应背景条目；例如：<code>【背景信息】### 泰山<br>泰山位于山东省…<br><br>【内容】比较 泰山 和 衡山…</code>。图像节点引用以<b>参考图像</b>方式传入（视觉模型或 Stability 生成时生效）。</p>
+  <h3>④ 批量处理</h3>
+  <p>点击<b>输入节点右上角「批量」小按钮</b>开启批量模式：文本节点可通过 <b>＋ 添加条目</b>（标题+内容）、<b>导入 YAML</b> 或 <b>粘贴 YAML</b>（field=标题，内容=内容；<b>缩进感知</b>，嵌套结构不会产生多余条目）维护多个条目；图像节点可多选 / 多拖图像。开启后，<b>下游所有连接的节点自动切换为批量处理</b>（BATCH 徽标），且处理节点头部出现<b>「批量 / 聚合」模式切换按钮</b>：<b>批量</b> = 逐条运行、输出批量结果（下游继续批量）；<b>聚合</b> = 所有条目作为<b>独立输入</b>合并为<b>一次</b>运行（每条目一个 <code>### 标题</code> 背景块），输出<b>单个</b>结果，下游恢复单条处理。保存节点在批量链上按 <code>{文件名}_{输入节点标题}</code> 命名输出。</p>
+  <h3>⑤ 处理节点（点击 ▶ 运行）</h3>
+  <p>每个处理节点<b>只处理自己的直接输入</b>（想包含更上游的内容，就把上游节点连进来）。<b>当输入包含未处理过的处理节点时，会自动递归执行上游节点，直到所有输入都有内容</b>，再处理当前节点（提示「已自动执行上游节点」）；保存节点手动 ▶ 保存时同样会先自动执行上游。输入端子默认 1 个，<b>每连上一个会自动在下方新增一个</b>（端子<b>垂直居中分布</b>）；输出端子 1 个。右上角 <b>「API」toggle 按钮</b>展开服务商 / 模型 / 参数选择（默认文本服务商 <b>DeepSeek</b>、默认图像服务商 <b>GPT Image 2</b> = gpt-image-2-vip，可调<b>尺寸 Size</b>：auto 或 30 档，如 2048x1360）；<b>◈ 预览按钮</b>（位于运行按钮左侧）可在运行前查看将要发送的完整请求。图像节点<b>带参考图时自动走 <code>/images/edits</code> 图片编辑接口</b>（多图按顺序 = 提示词中的图1/图2/…），无参考图时走 <code>/images/generations</code> 文生图接口（不支持 n/quality/aspect_ratio）。生成完成后节点<b>右侧展开</b>显示输出；批量模式显示全部条目的结果列表。</p>
+  <h3>⑥ 保存节点</h3>
+  <p><b>保存文本</b>：多个输入端（自动增长），每个输入端在 YAML 中对应一项，<b>键名为批量条目的 field（批次中每一项的标题）</b>；指定路径后点击 ▶ 保存 <code>.yaml</code>，勾选「自动保存」则输入变化即写盘。<b>保存图像</b>：固定 1 个输入端，保存为图像文件。节点预览显示已保存文件的内容。<b>批量输入时头部分出现「批量 / 聚合」切换</b>：<b>聚合</b> = 全部条目合并为一个 YAML / 图像文件直接保存；<b>批量</b> = 按每一项的 field 分别保存（文本=每个条目一个 YAML，键为该项 field；图像=每个条目一个文件）。</p>
+  <h3>⑦ 鉴权与模型（设置 · API/配置）</h3>
+  <p>默认提供 <b>DeepSeek</b>（文本 · deepseek-v4-flash / deepseek-v4-pro，接口 <code>https://api.deepseek.com</code>）与 <b>GPT Image 2</b>（图像 · <code>gpt-image-2-vip</code>，接口 <code></code>）。「类型」下拉仍可选 Stability AI / Midjourney（自定义接口）等服务商类型自行添加。API Key 明文保存于本机；<b>设置栏点击外部不会关闭</b>，只能通过「取消 / 保存」关闭。</p>
+  <h3>⑧ 拆分 / 合并节点</h3>
+  <p><b>拆分节点</b>（单输入单输出）：连接一个<b>批次输入</b>，节点内<b>下拉菜单选择要拆出的项</b>，选中后节点内部<b>实时显示该项内容</b>（文本或图像预览）——内容<b>随输入批次变化而同步更新</b>；当输入中<b>不存在所选项目时显示为空</b>。输出端子输出该项内容，可继续连接下游。<b>合并节点</b>：多个输入（每个输入 = 批次中的一项，批量输入则展开为多项），输出为一个<b>批次</b>，下游自动批量处理；批量/聚合模式、保存命名均适用。</p>
+  <h3>⑨ 动画节点（图像 → GIF 帧动画）</h3>
+  <p>连接一个<b>图像输入</b>（图像节点或图像生成节点），设置<b>切割列数与切割行数</b>（整数，最少 2，默认 4），以及<b>透明色键 Hex</b>（默认 <code>#FF00FF</code>，输入框旁显示颜色块）。点击 ▶ 后按<b>依次行、从左到右</b>将图像均匀切割为 行×列 帧，编码为 GIF 动画并显示在节点内（匹配色键的像素变为<b>透明</b>，<b>预览背景为灰白格</b>，用于检查透明）。输出端子输出该 GIF 文件，可连接图像保存节点保存。</p>
+  <h3>⑩ 文本对话节点（Chat）</h3>
+  <p>独立的 AI 对话节点：上方为<b>微信风格聊天记录</b>（AI 回复 = 白色气泡居左，用户发送 = 绿色气泡居右），下方为输入框，<b>「执行」按钮</b>位于输入框右侧（或按 Enter 发送，Shift+Enter 换行）。点击「API」可配置服务商 / 模型 / 温度 / <b>系统提示词</b>；对话记录随工作流实时保存。</p>
+  <h3>⑪ 保存 / 读取（save 文件夹）</h3>
+  <p>所有工作流保存在应用的 <code>save/</code> 文件夹中（<code>%APPDATA%\\pipeline-console\\pipeline-console\\save\\</code>），每个工作流一个 JSON 文件。<b>默认工作流为 <code>default</code></b>，应用<b>启动时自动读取</b>并恢复上次内容（节点、连线、条目、输出路径全部还原）；顶栏「立即保存」手动写盘，任何编辑都会在数百毫秒内自动保存。顶栏可新建 / 切换 / 删除工作流（删除后自动重建 default）。</p>
+  <h3>⑩ 撤销 / 重做 / 复制 / 快捷键</h3>
+  <p>快捷键：<code>Ctrl+Z</code> 撤销 · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> 重做 · <code>Ctrl+C</code> 复制选中节点（顶栏 ⧉ 复制节点按钮）· <code>Delete</code> 删除选中节点 / 连线（节点头部最右 ✕ 按钮等效）· <code>Esc</code> 取消选择 · <b>点击节点标题</b>就地编辑重命名。<b>⤢ 居中</b>按钮自动缩放并定位到全部节点。处理节点 API 面板可调节<b>温度</b>；输出面板头部<b>「清空」</b>可移除输出（回到未处理状态）；批量节点的<b>每个条目右下角</b>可拖拽调整高度。右下角 <b>@ms2308</b> 为作者信息。</p>
+  </div>`;
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = "关闭";
+  ok.onclick = closeOverlay;
+  foot.appendChild(ok);
+}
+
+/* 作者弹窗：居中小窗口，显示 @ms2308 与 B 站主页超链接 */
+function openAuthorPopup() {
+  openOverlay("");
+  $("#overlay").style.alignItems = "center";
+  const box = $("#overlay .overlay-box");
+  if (box)
+    box.style.cssText =
+      "width:min(340px,92%);max-height:none;border-top:3px solid var(--cyan)";
+  const body = $("#ovBody");
+  const pop = document.createElement("div");
+  pop.className = "author-pop";
+  const name = document.createElement("div");
+  name.className = "author-name";
+  name.textContent = "@ms2308";
+  const ver = document.createElement("div");
+  ver.className = "author-ver";
+  ver.textContent = "v" + S.appVersion;
+  const link = document.createElement("a");
+  link.className = "author-link";
+  link.textContent = "https://space.bilibili.com/16411347";
+  link.href = "https://space.bilibili.com/16411347";
+  link.title = "在浏览器中打开";
+  link.onclick = (ev) => {
+    ev.preventDefault();
+    window.api.openExternal(link.href);
+  };
+  pop.appendChild(name);
+  pop.appendChild(ver);
+  pop.appendChild(link);
+  body.appendChild(pop);
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = "关闭";
+  ok.onclick = closeOverlay;
+  foot.appendChild(ok);
+}
+
+/* ============ 渲染外壳 ============ */
+
+function renderTop() {
+  $("#wfName").value = S.wf ? S.wf.name : "";
+  refreshWfSelect();
+}
+function renderStatus() {
+  if (!S.wf) return;
+  const bcount = S.wf.nodes.filter((n) => isBatchInput(n)).length;
+  $("#statWf").textContent = "工作流：" + S.wf.name;
+  $("#statCounts").textContent =
+    S.wf.nodes.length +
+    " 节点 · " +
+    S.wf.wires.length +
+    " 连线" +
+    (bcount ? " · 批量 " + bcount : "");
+  $("#statProviders").textContent = "服务商 " + S.config.providers.length;
+  $("#statGrid").textContent = "网格 " + grid() + "px";
+  $("#statZoom").textContent = Math.round(S.cam.z * 100) + "%";
+  const st = $("#saveState");
+  if (S.saving) {
+    st.textContent = "保存中…";
+    st.className = "warn";
+  } else if (S.lastSaved) {
+    st.textContent = "已保存 " + fmtTime(S.lastSaved);
+    st.className = "ok";
+  } else {
+    st.textContent = "就绪";
+    st.className = "";
+  }
+}
+function renderAll() {
+  renderTop();
+  renderCanvas();
+  renderStatus();
+}
+
+/* ============ 启动 ============ */
+
+/* 渲染层错误自诊断：未捕获错误显示为 toast + 状态栏，便于定位 */
+window.addEventListener("error", (ev) => {
+  const msg =
+    (ev.message || "") +
+    (ev.filename
+      ? " @ " + ev.filename.split(/[\\/]/).pop() + ":" + ev.lineno
+      : "");
+  try {
+    toast("渲染错误：" + msg.slice(0, 200), "err");
+  } catch {}
+  console.error("renderer uncaught:", ev.error || msg);
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason;
+  const msg = r && r.message ? r.message : String(r);
+  try {
+    toast("未处理异常：" + msg.slice(0, 200), "err");
+  } catch {}
+  console.error("renderer unhandledRejection:", r);
+});
+
+/* 保证默认服务商存在（DeepSeek 文本 / GPT Image 2 图像），并置于列表首位 */
+function ensureDefaultProviders() {
+  let provs = S.config.providers || [];
+  provs = provs.filter(
+    (p) =>
+      !(
+        (p.id === "stability" || p.id === "mj") &&
+        !String(p.apiKey || "").trim()
+      ),
+  );
+  if (!provs.some((p) => p.id === "deepseek")) {
+    provs.unshift({
+      id: "deepseek",
+      name: "DeepSeek",
+      type: "text_openai",
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "",
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      vision: false,
+    });
+  } else {
+    const d = provs.find((p) => p.id === "deepseek");
+    if (!(d.models || []).some((m) => String(m).includes("deepseek-v4")))
+      d.models = ["deepseek-v4-flash", "deepseek-v4-pro"];
+  }
+  if (!provs.some((p) => p.id === "gpt_image_2")) {
+    provs.push({
+      id: "gpt_image_2",
+      name: "GPT Image 2",
+      type: "image_openai",
+      baseUrl: "  ",
+      apiKey: "",
+      models: ["gpt-image-2-vip"],
+    });
+  } else {
+    const g = provs.find((p) => p.id === "gpt_image_2");
+    if (!String(g.baseUrl || "").trim()) g.baseUrl = "";
+    if (!(g.models || []).includes("gpt-image-2-vip"))
+      g.models = ["gpt-image-2-vip"];
+  }
+  const text = provs.filter((p) => p.type === "text_openai");
+  const img = provs.filter((p) => p.type.startsWith("image_"));
+  const rest = provs.filter(
+    (p) => !p.type.startsWith("text_openai") && !p.type.startsWith("image_"),
+  );
+  text.sort((a, b) => (a.id === "deepseek" ? -1 : b.id === "deepseek" ? 1 : 0));
+  img.sort((a, b) =>
+    a.id === "gpt_image_2" ? -1 : b.id === "gpt_image_2" ? 1 : 0,
+  );
+  S.config.providers = text.concat(img, rest);
+}
+
+async function init() {
+  S.config = await window.api.configLoad();
+  const vr = await window.api.appVersion();
+  if (vr && vr.ok) S.appVersion = vr.version || "0.0.0";
+  $("#appVer").textContent = "v" + S.appVersion;
+  $("#appVer").title = "版本 " + S.appVersion + "（源码目录 version 文件）";
+  ensureDefaultProviders();
+  await ensureWorkflow();
+
+  $("#btnNewWf").onclick = newWorkflowDialog;
+  $("#btnDelWf").onclick = deleteWorkflowDialog;
+  $("#btnSaveNow").onclick = () => scheduleSave(true);
+  $("#btnSettings").onclick = openSettings;
+  $("#btnHelp").onclick = openHelp;
+  $("#authorLink").onclick = openAuthorPopup;
+  $("#btnUndo").onclick = undo;
+  $("#btnRedo").onclick = redo;
+  $("#btnFit").onclick = fitCanvas;
+  $("#btnDup").onclick = () => {
+    if (S.sel) {
+      const n = nodeById(S.sel);
+      if (n) duplicateNode(n);
+    } else toast("请先选中节点", "warn");
+  };
+  $("#wfSelect").onchange = (ev) => {
+    if (ev.target.value) loadWorkflow(ev.target.value);
+  };
+  $("#wfName").addEventListener("input", (ev) => {
+    if (!S.wf) return;
+    S.wf.name = ev.target.value;
+    renderStatus();
+  });
+  $("#overlay").addEventListener("click", (ev) => {
+    if (ev.target.id === "overlay" && !overlayPersistent) closeOverlay();
+  });
+  /* 打字时不保存：仅当焦点移出输入控件后才落盘（避免保存触发重渲染导致失焦） */
+  document.addEventListener("focusout", (ev) => {
+    const t = ev.target;
+    if (
+      t &&
+      (t.tagName === "INPUT" ||
+        t.tagName === "TEXTAREA" ||
+        t.tagName === "SELECT") &&
+      S.wf
+    ) {
+      clearTimeout(S.saveTimer);
+      persist();
+    }
+  });
+  window.addEventListener("blur", flushNow);
+  window.addEventListener("beforeunload", flushNow);
+  window.addEventListener("click", hideCtx);
+  window.addEventListener("contextmenu", hideCtx);
+
+  bindCanvas();
+  renderAll();
+}
+
+init();

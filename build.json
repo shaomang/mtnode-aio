@@ -1,0 +1,39 @@
+{
+  "appId": "com.mtnode.pipeline-console",
+  "productName": "MTNode AI编排器",
+  "directories": {
+    "output": "dist"
+  },
+  "files": [
+    "main.js",
+    "preload.js",
+    "renderer/**",
+    "package.json",
+    "version",
+    "!smoke.js",
+    "!cap.js",
+    "!cmp.js",
+    "!fonttest.js"
+  ],
+  "asar": true,
+  "compression": "maximum",
+  "electronVersion": "31.7.7",
+  "win": {
+    "target": [
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "dir", "arch": ["x64"] }
+    ],
+    "executableName": "MTNodeAIO"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "MTNode AI编排器",
+    "include": "installer.nsh",
+    "runAfterFinish": true,
+    "artifactName": "MTNodeAIO-Setup-${version}.${ext}"
+  }
+}
