@@ -2420,6 +2420,8 @@ function buildBody(node, body) {
               const img = document.createElement("img");
               img.id = "outimg-" + node.id + "-" + idx;
               img.alt = x.title;
+              img.dataset.path = (x.output && x.output.path) || "";
+              bindImgSaveAs(img);
               rr.appendChild(img);
             }
           } else if (x.error) {
@@ -2441,6 +2443,8 @@ function buildBody(node, body) {
         const img = document.createElement("img");
         img.id = "out-img-" + node.id;
         img.alt = "输出图像";
+        img.dataset.path = r.output.path || "";
+        bindImgSaveAs(img);
         out.appendChild(img);
       } else {
         const e = document.createElement("div");
@@ -2900,12 +2904,17 @@ async function fillPreviews() {
       if (r && r.batchOutputs && r.batchOutputs.length) {
         r.batchOutputs.forEach((x, idx) => {
           const img = document.querySelector("#outimg-" + n.id + "-" + idx);
-          if (img && x.ok && x.output && x.output.path)
+          if (img && x.ok && x.output && x.output.path) {
             img.src = window.api.toFileUrl(x.output.path);
+            img.dataset.path = x.output.path;
+          }
         });
       } else if (r && r.output && r.output.kind === "image") {
         const img = document.querySelector("#out-img-" + n.id);
-        if (img) img.src = window.api.toFileUrl(r.output.path);
+        if (img) {
+          img.src = window.api.toFileUrl(r.output.path);
+          img.dataset.path = r.output.path;
+        }
       }
     }
     if (n.kind === "save_text") {
@@ -4122,6 +4131,9 @@ function bindCanvas() {
       return;
     }
     if (mod && ev.key.toLowerCase() === "c") {
+      const sel = window.getSelection();
+      const hasSel = sel && !sel.isCollapsed && !!sel.toString().trim();
+      if (hasSel) return; /* 有文本选区时走默认复制，不拦截 */
       ev.preventDefault();
       if (S.sel) {
         const n = nodeById(S.sel);
@@ -4199,6 +4211,48 @@ function showCtx(x, y, groups) {
 }
 function hideCtx() {
   $("#ctx").style.display = "none";
+}
+
+/* 输出面板图像右键菜单：另存为 */
+function bindImgSaveAs(img) {
+  img.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const p = img.dataset.path;
+    showCtx(ev.clientX, ev.clientY, [
+      [
+        "图像操作",
+        [
+          p
+            ? { label: "另存为…", run: () => saveImageAs(p) }
+            : { label: "（图像尚未生成）", run: () => {} },
+        ],
+      ],
+    ]);
+  });
+}
+async function saveImageAs(p) {
+  const ext = (extOf(p) || ".png").toLowerCase();
+  const filters =
+    ext === ".jpg" || ext === ".jpeg"
+      ? [{ name: "JPEG 图像", extensions: ["jpg", "jpeg"] }]
+      : ext === ".gif"
+        ? [{ name: "GIF 图像", extensions: ["gif"] }]
+        : ext === ".webp"
+          ? [{ name: "WebP 图像", extensions: ["webp"] }]
+          : [{ name: "PNG 图像", extensions: ["png"] }];
+  const r = await window.api.fileSaveDialog({
+    title: "另存为",
+    defaultName: fileName(p),
+    filters,
+  });
+  if (!r.path) return;
+  try {
+    await window.api.fileCopyAssetTo(p, r.path);
+    toast("已保存：" + r.path, "ok");
+  } catch {
+    toast("保存失败", "err");
+  }
 }
 
 function addNode(kind, x, y) {

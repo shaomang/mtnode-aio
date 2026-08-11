@@ -249,6 +249,7 @@ button:disabled{opacity:.45; cursor:not-allowed}
 .n-out{
   flex:none; align-self:stretch; border:1px dashed var(--bd2); border-radius:3px; background:rgba(0,0,0,.28);
   overflow:auto; display:flex; flex-direction:column; gap:4px; padding:6px; position:relative; min-width:0;
+  user-select:text; -webkit-user-select:text;
 }
 .n-out-head{font-size:10px; letter-spacing:2px; color:var(--muted); display:flex; align-items:center; gap:6px; flex:none}
 .n-out-head .copy{color:var(--cyan); cursor:pointer; font-size:10px; margin-left:auto; font-family:var(--mono); letter-spacing:0}
