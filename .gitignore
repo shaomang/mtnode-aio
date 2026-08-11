@@ -1,3 +1,13 @@
+# ===== 依赖 / 构建产物 =====
 node_modules/
 dist/
+
+# ===== 编译与打包脚本 / 资源（不入库，避免误上传）=====
+build.json
+build/
+installer.nsh
+scripts/
+
+# ===== 运行时数据 / 日志 =====
+data/
 *.log
