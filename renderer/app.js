@@ -5329,6 +5329,16 @@ function openAuthorPopup() {
   pop.appendChild(name);
   pop.appendChild(ver);
   pop.appendChild(link);
+  const home = document.createElement("a");
+  home.className = "author-link";
+  home.textContent = "主页 · 下载 http://mt-agent.com/mtnode";
+  home.href = "http://mt-agent.com/mtnode";
+  home.title = "在浏览器中打开主页与下载页";
+  home.onclick = (ev) => {
+    ev.preventDefault();
+    window.api.openExternal(home.href);
+  };
+  pop.appendChild(home);
   body.appendChild(pop);
   const foot = $("#ovFoot");
   const ok = document.createElement("button");
