@@ -1361,6 +1361,9 @@ function renderCanvas() {
   updateGroupFrames();
   updateWires();
   fillPreviews();
+  /* 对话节点：每次渲染后自动滚动到最底部（而非回到顶端） */
+  for (const n of S.wf.nodes)
+    if (n.kind === "chat") scrollChatToBottom(n);
   syncGroupBtns();
   if (S.sidebarOpen) renderSidebar();
 }
@@ -4647,6 +4650,8 @@ function bindCanvas() {
   const canvas = $("#canvas");
   canvas.addEventListener("mousedown", (ev) => {
     if (ev.target === canvas || ev.target.id === "stage") {
+      /* 阻止原生拖选（否则拖动画布会误选到上方菜单等文字） */
+      ev.preventDefault();
       const doBox = S.boxMode || ev.ctrlKey || ev.metaKey;
       if (ev.button === 0 && doBox) {
         /* 框选：拖拽矩形选择节点 */
@@ -4680,8 +4685,18 @@ function bindCanvas() {
     (ev) => {
       if (ev.target.closest(".wf-node")) return; // 节点内滚轮仅作用于节点内部滚动，不缩放画布
       ev.preventDefault();
-      const z = S.cam.z * (ev.deltaY < 0 ? 1.12 : 1 / 1.12);
-      S.cam.z = Math.min(2.5, Math.max(0.3, z));
+      /* 以鼠标位置为中心缩放：缩放前后鼠标下的舞台坐标保持不变 */
+      const rect = canvas.getBoundingClientRect();
+      const mx = ev.clientX - rect.left,
+        my = ev.clientY - rect.top;
+      const nz = Math.min(
+        2.5,
+        Math.max(0.3, S.cam.z * (ev.deltaY < 0 ? 1.12 : 1 / 1.12)),
+      );
+      const ratio = nz / S.cam.z;
+      S.cam.x = mx - (mx - S.cam.x) * ratio;
+      S.cam.y = my - (my - S.cam.y) * ratio;
+      S.cam.z = nz;
       applyTransform();
       updateWires();
       renderStatus();
@@ -5332,6 +5347,7 @@ async function chatSend(node, text) {
     renderCanvas();
     renderStatus();
     scheduleSave(true);
+    scrollChatToBottom(node);
   }
 }
 
@@ -5382,6 +5398,13 @@ function thinkingTextOf(node) {
   if (!node || !S.thinking || !S.thinking[node.id]) return "";
   return S.thinking[node.id][attemptIdx(node)] || "";
 }
+/* 对话节点：聊天列表滚动到底部（新消息 / 思考流式时保持最新） */
+function scrollChatToBottom(node) {
+  const list = document.querySelector(
+    '.wf-node[data-nid="' + node.id + '"] .chat-list',
+  );
+  if (list) list.scrollTop = list.scrollHeight;
+}
 function refreshThinkingUI(nid) {
   const node = nodeById(nid);
   if (!node) return;
@@ -5404,6 +5427,7 @@ function refreshThinkingUI(nid) {
     const t = thinkingTextOf(node);
     chatBubble.textContent = t || "输入中…";
     chatBubble.scrollTop = chatBubble.scrollHeight;
+    scrollChatToBottom(node);
   }
   if (S.thinkOpen === nid) {
     if (thinkRAF[nid]) cancelAnimationFrame(thinkRAF[nid]);

@@ -146,6 +146,7 @@ button:disabled{opacity:.45; cursor:not-allowed}
 .fn-hint{color:var(--muted); font-size:11.5px; margin:0 auto}
 .fn-canvas{
   position:relative; flex:1; overflow:hidden; min-height:360px;
+  user-select:none; -webkit-user-select:none;
   background:
     radial-gradient(circle at 1px 1px, rgba(122,138,146,.16) 1px, transparent 1.5px) 0 0 / 24px 24px,
     linear-gradient(180deg,#0c1116,#0a0e13);
