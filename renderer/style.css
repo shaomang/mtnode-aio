@@ -79,6 +79,40 @@ button:disabled{opacity:.45; cursor:not-allowed}
 /* ===== 主体布局 ===== */
 .layout{flex:1; display:flex; min-height:0; position:relative}
 .pane{display:flex; flex-direction:column; min-width:0; min-height:0; position:relative; background:var(--bg); flex:1}
+
+/* ===== 左侧边栏（节点树状图） ===== */
+.sidebar{
+  display:none; flex:none; width:232px; flex-direction:column; min-height:0;
+  background:var(--panel); border-right:1px solid var(--bd); z-index:4;
+}
+.layout.sidebar-open .sidebar{display:flex; animation:sideIn .16s ease-out}
+@keyframes sideIn{from{opacity:0; transform:translateX(-14px)}}
+.sidebar-search{padding:8px; border-bottom:1px solid var(--bd); flex:none}
+.sidebar-search input{
+  width:100%; background:var(--code); color:var(--ink); border:1px solid var(--bd2);
+  border-radius:3px; padding:6px 8px; font-size:12px; outline:none;
+}
+.sidebar-search input:focus{border-color:var(--orange)}
+.sidebar-tree{flex:1; overflow:auto; padding:6px 8px}
+.side-cat{margin-bottom:2px}
+.side-cat-head{
+  display:flex; align-items:center; gap:6px; font-size:11px; letter-spacing:2px;
+  color:var(--orange); padding:6px 4px; cursor:pointer; user-select:none; border-radius:3px;
+}
+.side-cat-head:hover{background:var(--bd); color:var(--orange2)}
+.side-item{
+  display:flex; align-items:center; gap:6px; padding:4px 6px 4px 16px; font-size:12px;
+  color:var(--ink); cursor:pointer; border-radius:3px; user-select:none; overflow:hidden;
+}
+.side-item:hover{background:var(--bd); color:var(--orange2)}
+.side-item.sel{background:rgba(56,214,255,.14); color:var(--cyan2)}
+.side-tag{
+  flex:none; font-size:9px; border:1px solid var(--bd2); border-radius:2px; padding:0 4px;
+  color:var(--muted); font-family:var(--mono); letter-spacing:0;
+}
+.side-item .t{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.side-empty{padding:14px 6px; font-size:11px; color:var(--muted); text-align:center; letter-spacing:1px}
+.btn-sq{width:34px; padding:6px 0; text-align:center; letter-spacing:0}
 .pane-head{
   flex:none; display:flex; align-items:center; gap:10px;
   padding:6px 12px; background:var(--panel); border-bottom:2px solid var(--bd);
@@ -124,6 +158,63 @@ button:disabled{opacity:.45; cursor:not-allowed}
 .fn-edge:hover{stroke:var(--cyan2)}
 .fn-edge.sel{stroke:var(--orange); stroke-width:2.6}
 .fn-edge.temp{stroke:var(--cyan); stroke-width:1.8; stroke-dasharray:6 4}
+
+/* ===== 框选矩形 ===== */
+.box-sel{
+  position:absolute; border:1px dashed var(--cyan); background:rgba(56,214,255,.12);
+  z-index:4; pointer-events:none;
+}
+
+/* ===== 组（虚线圆角边框） ===== */
+.wf-group{
+  position:absolute; border:2px dashed var(--muted); border-radius:10px;
+  background:rgba(127,138,156,.05); z-index:0; cursor:move;
+  box-shadow:0 0 0 0 transparent;
+}
+.wf-group:hover{border-color:var(--bd2)}
+.wf-group.sel{border-color:var(--orange); background:rgba(255,143,46,.07)}
+.wf-group .wg-title{
+  position:absolute; top:-11px; left:10px; padding:1px 8px; font-size:10.5px; letter-spacing:1px;
+  background:var(--panel2); border:1px solid var(--muted); border-radius:3px; color:var(--muted);
+  cursor:move; user-select:none; white-space:nowrap; line-height:16px;
+}
+.wf-group.sel .wg-title{border-color:var(--orange); color:var(--orange2)}
+.wf-group .wg-title:hover{border-color:var(--orange); color:var(--orange2)}
+.wf-group .wg-del{
+  position:absolute; top:-11px; right:8px; width:18px; height:18px; line-height:1;
+  padding:0; display:flex; align-items:center; justify-content:center; font-size:9px;
+  background:var(--panel2); border:1px solid var(--muted); border-radius:3px;
+  color:var(--muted); cursor:pointer;
+}
+.wf-group .wg-del:hover{border-color:var(--red); color:var(--red); background:#4a1f1c}
+.wf-group .wg-title-input{
+  position:absolute; top:-12px; left:8px; width:auto; min-width:80px; max-width:200px;
+  background:var(--code); color:var(--orange2); border:1px solid var(--orange); border-radius:3px;
+  padding:1px 6px; font-size:11px; letter-spacing:1px; outline:none; z-index:5;
+}
+.wf-group .wg-resize{
+  position:absolute; right:-6px; bottom:-6px; width:15px; height:15px; cursor:nwse-resize; z-index:5;
+  background:linear-gradient(135deg,transparent 45%,var(--muted) 50%,var(--muted) 60%,transparent 65%);
+  border:1px solid var(--muted); border-radius:2px; background-color:var(--panel2);
+}
+.wf-group .wg-resize-x{
+  position:absolute; right:-8px; top:50%; margin-top:-9px; width:6px; height:18px;
+  cursor:ew-resize; z-index:5;
+  background:linear-gradient(90deg,transparent 30%,var(--muted) 45%,var(--muted) 55%,transparent 70%);
+  border:1px solid var(--muted); border-radius:2px; background-color:var(--panel2);
+}
+.wf-group .wg-resize-y{
+  position:absolute; bottom:-8px; left:50%; margin-left:-9px; width:18px; height:6px;
+  cursor:ns-resize; z-index:5;
+  background:linear-gradient(180deg,transparent 30%,var(--muted) 45%,var(--muted) 55%,transparent 70%);
+  border:1px solid var(--muted); border-radius:2px; background-color:var(--panel2);
+}
+.wf-group.sel .wg-resize{background:linear-gradient(135deg,transparent 45%,var(--orange2) 50%,var(--orange2) 60%,transparent 65%); border-color:var(--orange); background-color:var(--panel2)}
+.wf-group.sel .wg-resize-x{background:linear-gradient(90deg,transparent 30%,var(--orange2) 45%,var(--orange2) 55%,transparent 70%); border-color:var(--orange); background-color:var(--panel2)}
+.wf-group.sel .wg-resize-y{background:linear-gradient(180deg,transparent 30%,var(--orange2) 45%,var(--orange2) 55%,transparent 70%); border-color:var(--orange); background-color:var(--panel2)}
+.wf-group .wg-resize:hover{background:linear-gradient(135deg,transparent 45%,var(--cyan2) 50%,var(--cyan2) 60%,transparent 65%); border-color:var(--cyan); background-color:var(--panel2)}
+.wf-group .wg-resize-x:hover{background:linear-gradient(90deg,transparent 30%,var(--cyan2) 45%,var(--cyan2) 55%,transparent 70%); border-color:var(--cyan); background-color:var(--panel2)}
+.wf-group .wg-resize-y:hover{background:linear-gradient(180deg,transparent 30%,var(--cyan2) 45%,var(--cyan2) 55%,transparent 70%); border-color:var(--cyan); background-color:var(--panel2)}
 
 /* ===== 节点 ===== */
 .wf-node{
@@ -180,7 +271,23 @@ button:disabled{opacity:.45; cursor:not-allowed}
 }
 .chat-msg.me .chat-bubble{background:#95ec69; color:#0d1016; border-top-right-radius:2px}
 .chat-msg.ai .chat-bubble{background:#ffffff; color:#1a1a1a; border-top-left-radius:2px}
-.chat-typing{color:var(--muted); font-weight:700; letter-spacing:2px}
+.chat-col{display:flex; flex-direction:column; align-items:flex-start; gap:4px; max-width:82%}
+.chat-col .chat-bubble{max-width:100%}
+.chat-msg .chat-col{margin:0}
+.chat-think-btn{
+  align-self:flex-start; border:1px dashed var(--bd2); border-radius:10px;
+  background:rgba(56,214,255,.07); color:var(--muted); font-size:10.5px; padding:3px 9px;
+  cursor:pointer; letter-spacing:1px; user-select:none;
+}
+.chat-think-btn:hover{border-color:var(--cyan); color:var(--cyan2); background:rgba(56,214,255,.16)}
+/* 思考中：灰色字体流式显示在「输入中」位置 */
+.chat-typing{
+  color:var(--muted); font-weight:400; letter-spacing:0; font-style:italic; font-size:12px;
+  background:#f0f1f3; max-height:150px; overflow:auto; white-space:pre-wrap;
+}
+/* 回复正文流式（:empty 时隐藏） */
+.chat-stream{background:#eef4ff}
+.chat-stream:empty{display:none}
 .chat-input-row{flex:none; display:flex; gap:6px; align-items:flex-end}
 .chat-input{
   flex:1; min-width:0; resize:vertical; background:var(--code); color:var(--ink);
@@ -254,6 +361,16 @@ button:disabled{opacity:.45; cursor:not-allowed}
 .n-out-head{font-size:10px; letter-spacing:2px; color:var(--muted); display:flex; align-items:center; gap:6px; flex:none}
 .n-out-head .copy{color:var(--cyan); cursor:pointer; font-size:10px; margin-left:auto; font-family:var(--mono); letter-spacing:0}
 .n-out-head .copy:hover{color:#fff}
+/* 输出面板头部右对齐方形按钮组（复制 / 清空 / 浏览） */
+.n-out-btns{margin-left:auto; display:flex; gap:4px; flex:none; align-items:center}
+.n-out-btn{
+  width:26px; height:18px; display:flex; align-items:center; justify-content:center;
+  border:1px solid var(--bd2); border-radius:2px; background:var(--code); color:var(--muted);
+  font-size:9px; cursor:pointer; padding:0; letter-spacing:0; font-family:var(--sans);
+  line-height:1;
+}
+.n-out-btn:hover{border-color:var(--cyan); color:var(--cyan2); background:rgba(56,214,255,.12)}
+.n-out-btn.danger:hover{border-color:var(--red); color:var(--red); background:rgba(255,95,86,.1)}
 .n-out img{max-width:100%; max-height:100%; min-height:0; flex:1; object-fit:contain; image-rendering:pixelated; border:1px solid var(--bd); background:var(--code)}
 .n-out pre{
   flex:1; min-height:0; max-height:none; overflow:auto; background:var(--code); border:1px solid var(--bd);
@@ -328,6 +445,12 @@ button:disabled{opacity:.45; cursor:not-allowed}
   background:var(--panel); border:1px solid var(--bd2); border-top:3px solid var(--orange);
   width:min(900px,100%); max-height:100%; display:flex; flex-direction:column;
 }
+/* 输出浏览大窗 */
+.overlay-box.wide{width:min(1200px,96%)}
+.browse-body{display:flex; flex-direction:column; gap:10px; min-height:0}
+.browse-row{border:1px solid var(--bd); border-radius:4px; background:var(--code); padding:8px}
+.browse-title{color:var(--orange2); font-size:11px; font-weight:700; margin-bottom:4px; font-family:var(--mono); letter-spacing:.5px}
+.browse-img{max-width:100%; max-height:68vh; object-fit:contain; image-rendering:pixelated; margin:auto; border:1px solid var(--bd)}
 .overlay-head{
   display:flex; align-items:center; gap:10px; padding:10px 14px;
   border-bottom:2px solid var(--bd); font-size:13px; letter-spacing:2px; color:var(--muted);
@@ -406,6 +529,8 @@ button:disabled{opacity:.45; cursor:not-allowed}
 .n-batch-toggle{width:auto; padding:0 5px; font-size:9px; letter-spacing:1px; color:var(--muted); background:rgba(56,214,255,.05)}
 .n-batch-toggle:hover{border-color:var(--cyan); color:var(--cyan2)}
 .n-batch-toggle.on{color:var(--cyan2); border-color:var(--cyan); background:rgba(56,214,255,.16)}
+.n-file-ref{color:var(--muted); background:rgba(56,214,255,.05); font-size:11px; line-height:1}
+.n-file-ref:hover{border-color:var(--cyan); color:var(--cyan2); background:rgba(56,214,255,.16)}
 .n-api-toggle{width:auto; padding:0 5px; font-size:9px; letter-spacing:1px; color:var(--muted)}
 .n-api-toggle:hover{border-color:var(--orange); color:var(--orange2)}
 .n-api-toggle.on{color:var(--orange2); border-color:var(--orange); background:rgba(255,143,46,.14)}
@@ -414,6 +539,10 @@ button:disabled{opacity:.45; cursor:not-allowed}
 .n-mode-toggle.on{color:var(--green); border-color:var(--green); background:rgba(95,214,138,.12)}
 .n-preview{color:var(--cyan2); border-color:var(--bd2)}
 .n-preview:hover{border-color:var(--cyan); background:rgba(56,214,255,.15)}
+/* 思考强度按钮（对话节点：无 / 低 / 中 / 高） */
+.n-effort{width:auto; padding:0 5px; font-size:9px; letter-spacing:1px; color:var(--muted)}
+.n-effort:hover{border-color:var(--cyan); color:var(--cyan2)}
+.n-effort.on{color:var(--orange2); border-color:var(--orange); background:rgba(255,143,46,.14)}
 .n-stop{
   width:14px; height:14px; padding:0; margin:0 3px; flex:none;
   background:var(--red); border:none; border-radius:2px; cursor:pointer;
@@ -475,6 +604,16 @@ button:disabled{opacity:.45; cursor:not-allowed}
 }
 .n-drag-handle:hover{border-color:var(--cyan); color:var(--cyan2); background:rgba(56,214,255,.12)}
 .n-drag-handle:active{cursor:grabbing}
+/* 继承文本符合 YAML 的「YAML」闪烁开关按钮 */
+.yaml-chip{
+  flex:none; font-size:9px; letter-spacing:1px; padding:0 6px; line-height:15px;
+  border:1px solid var(--orange); border-radius:2px; color:var(--orange2);
+  background:rgba(255,143,46,.12); cursor:pointer; user-select:none; font-family:var(--sans);
+  animation:blink 1.6s infinite;
+}
+.yaml-chip:hover{color:#fff; background:rgba(255,143,46,.25)}
+.yaml-chip.off{color:var(--muted); border-color:var(--bd2); background:rgba(127,138,156,.08); animation:none}
+.yaml-chip.off:hover{border-color:var(--orange); color:var(--orange2); background:rgba(255,143,46,.12)}
 .n-batch-bar{flex:none; display:flex; align-items:center; gap:8px; font-size:11px; color:var(--muted)}
 .n-batch-bar label{display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none}
 .n-batch-bar input[type=checkbox]{accent-color:var(--orange)}

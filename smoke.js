@@ -658,8 +658,8 @@ mockServer.listen(0, '127.0.0.1', () => {
       await importFileToText(fr, bigPath);
       log('file ref >500KB rejected=' + (fr.text === ''));
       renderCanvas();
-      const frBtn = document.querySelector('.wf-node[data-nid="' + fr.id + '"] .n-img-ops .mini');
-      log('file ref btn=' + (frBtn && frBtn.textContent === '文件参考'));
+      const frBtn = document.querySelector('.wf-node[data-nid="' + fr.id + '"] .n-head .n-file-ref');
+      log('file ref btn=' + (frBtn && frBtn.title.indexOf('文件参考') >= 0));
 
       // —— 停止按钮：运行中显示红方块，点击立即中止 ——
       addNode('proc_text', 100, 2750);

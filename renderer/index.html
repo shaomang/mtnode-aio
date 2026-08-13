@@ -20,6 +20,8 @@
     <button id="btnRedo" class="corner mini" title="重做（Ctrl+Y / Ctrl+Shift+Z）">↷ 重做</button>
     <button id="btnDup" class="corner mini" title="复制选中节点（Ctrl+C）">⧉ 复制节点</button>
     <button id="btnFit" class="corner mini" title="一键居中：缩放并定位到全部节点">⤢ 居中</button>
+    <button id="btnBox" class="corner mini" title="框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）">▭ 框选</button>
+    <button id="btnGroup" class="corner mini" title="组：把选中的节点组成一个组（快捷键 G）；选中组后再次点击解散">◫ 组</button>
     <input id="wfName" class="fn-search tb-wfname" type="text" placeholder="工作流名称…">
     <span class="sep"></span>
     <button id="btnSettings" class="corner primary" title="APIs/Config 全局配置：API Key 与接口地址，所有模型节点自动读取">设置 · API/配置</button>
@@ -34,11 +36,18 @@
   </div>
 </header>
 
-<div class="layout">
+<div class="layout" id="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-search">
+      <input id="sideFilter" type="text" placeholder="筛选节点标题…">
+    </div>
+    <div class="sidebar-tree" id="sideTree"></div>
+  </aside>
   <section class="pane">
     <div class="wf-wrap">
       <div class="fn-toolbar">
-        <span class="fn-hint" id="canvasHint">右键画布添加节点 · 拖线连接节点 · 滚轮缩放画布</span>
+        <button id="btnSidebar" class="corner mini btn-sq" title="节点列表边栏（树状图）">☰</button>
+        <span class="fn-hint" id="canvasHint">右键画布添加节点 · 拖线连接节点 · Ctrl+拖拽框选 · 滚轮缩放画布</span>
       </div>
       <div id="canvas" class="fn-canvas">
         <div id="stage" class="fn-stage">

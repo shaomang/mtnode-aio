@@ -536,6 +536,7 @@ function buildRequestSpec(
   temperature,
   size,
   chatMessages,
+  effort,
 ) {
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const auth = {
@@ -569,15 +570,19 @@ function buildRequestSpec(
       chatMessages && chatMessages.length
         ? chatMessages
         : [{ role: "user", content: parts }];
+    const body = {
+      model,
+      messages,
+      temperature: temperature == null ? 0.7 : temperature,
+    };
+    /* 思考强度（reasoning_effort）：无 / 低 / 中 / 高；
+       「无」也发送 "none"（显式关闭思维链，避免默认出思维链） */
+    if (effort) body.reasoning_effort = effort;
     return {
       method: "POST",
       url: base + "/chat/completions",
       headers: auth,
-      body: {
-        model,
-        messages,
-        temperature: temperature == null ? 0.7 : temperature,
-      },
+      body,
     };
   }
   if (provider.type === "image_openai") {
@@ -682,6 +687,7 @@ async function apiCall({
   temperature,
   size,
   chatMessages,
+  effort,
   abKey,
 }) {
   checkProvider(provider);
@@ -696,6 +702,7 @@ async function apiCall({
     temperature,
     size,
     chatMessages,
+    effort,
   );
 
   if (kind === "text" || provider.type === "image_mj") {
@@ -955,6 +962,7 @@ ipcMain.handle("api:callStream", async (e, spec) => {
       spec.temperature,
       spec.size,
       spec.chatMessages,
+      spec.effort,
     );
     if (spec.abKey) req.abKey = spec.abKey;
     const { text, reasoning } = await streamTextChat(req, emit);
@@ -991,6 +999,7 @@ ipcMain.handle("api:preview", async (e, spec) => {
       spec.temperature,
       spec.size,
       spec.chatMessages,
+      spec.effort,
     );
     const readable = JSON.parse(
       JSON.stringify(req.body, (k, v) => {

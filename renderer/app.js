@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /* MTNode AI编排器 · 节点编辑器 */
 const $ = (s) => document.querySelector(s);
 const svgNS = "http://www.w3.org/2000/svg";
@@ -77,6 +77,8 @@ const NODE_DEFAULTS = {
     prompt: "",
     providerId: "",
     model: "",
+    temperature: 0.7,
+    effort: "low",
     batchMode: "batch",
     output: null,
     batchOutputs: null,
@@ -142,6 +144,7 @@ const NODE_DEFAULTS = {
     providerId: "",
     model: "",
     temperature: 0.7,
+    effort: "low",
     systemPrompt: "",
     messages: [],
     running: false,
@@ -174,12 +177,24 @@ const S = {
   /* 运行时思考内容（不持久化）：S.thinking[nodeId] = [尝试0文本, 尝试1…] */
   thinking: {},
   thinkOpen: null,
+  /* 多选节点集合（框选 / Ctrl+点击），S.sel 保持为主选中项（兼容旧逻辑） */
+  selSet: new Set(),
+  selGroup: null, /* 选中的「组」id */
+  boxMode: false, /* 框选模式开关 */
+  sidebarOpen: false,
+  sideCollapsed: {}, /* 边栏分类折叠状态 */
 };
 
 /* ============ 撤销 / 重做 ============ */
 
 function snapshotState() {
-  return JSON.parse(JSON.stringify({ nodes: S.wf.nodes, wires: S.wf.wires }));
+  return JSON.parse(
+    JSON.stringify({
+      nodes: S.wf.nodes,
+      wires: S.wf.wires,
+      groups: S.wf.groups,
+    }),
+  );
 }
 /* 在操作前调用：把「操作前状态」压入撤销栈 */
 function pushHistory(snap) {
@@ -190,8 +205,8 @@ function pushHistory(snap) {
 function applySnap(s) {
   S.wf.nodes = s.nodes;
   S.wf.wires = s.wires;
-  S.sel = null;
-  S.selWire = null;
+  S.wf.groups = s.groups || [];
+  clearSelection();
   S.uiOpenNode = null;
   renderCanvas();
   renderStatus();
@@ -218,6 +233,28 @@ function redo() {
 function clearHistory() {
   S.undoStack = [];
   S.redoStack = [];
+}
+
+/* ============ 多选 / 选择辅助 ============ */
+
+function clearSelection() {
+  S.sel = null;
+  S.selWire = null;
+  S.selGroup = null;
+  if (S.selSet) S.selSet.clear();
+}
+function isSel(id) {
+  return !!S.selSet && S.selSet.has(id);
+}
+function selNodes() {
+  return S.wf.nodes.filter((n) => S.selSet.has(n.id));
+}
+/* 当前选中的节点列表：selSet 为空时回退到 S.sel（兼容直接设置 S.sel 的调用方） */
+function currentSelection() {
+  const ns = selNodes();
+  if (ns.length) return ns;
+  const p = S.sel ? nodeById(S.sel) : null;
+  return p ? [p] : [];
 }
 
 /* ============ 基础工具 ============ */
@@ -329,6 +366,8 @@ function openOverlay(title) {
 }
 function closeOverlay() {
   S.thinkOpen = null;
+  const box = $("#overlay .overlay-box");
+  if (box) box.classList.remove("wide");
   $("#overlay").style.display = "none";
 }
 
@@ -571,7 +610,13 @@ function isBatchInput(n) {
     const src = firstSource(n);
     if (n.kind === "input_text") {
       const v = inheritedValue(n, 0);
-      if (v && v.kind === "text" && parseSimpleYaml(v.text).length) return true; // 继承文本符合 YAML → 批量
+      if (
+        !n.yamlOff &&
+        v &&
+        v.kind === "text" &&
+        parseSimpleYaml(v.text).length
+      )
+        return true; // 继承文本符合 YAML → 批量（可被 yamlOff 关闭）
     }
     return src ? isBatch(src) : false;
   }
@@ -617,7 +662,7 @@ function originBatchInput(node, seen) {
     if (!src) continue;
     if (src.kind === "input_text" || src.kind === "input_image") {
       if (src.batch && (src.entries || []).length) return src; // 自有批量
-      if (src.kind === "input_text" && inputInherited(src)) {
+      if (src.kind === "input_text" && inputInherited(src) && !src.yamlOff) {
         const v = inheritedValue(src, 0);
         if (v && v.kind === "text" && parseSimpleYaml(v.text).length)
           return src; // YAML 继承批量
@@ -774,7 +819,7 @@ function valueForInput(src, idx) {
   if (src.kind === "input_text") {
     if (inputInherited(src)) {
       const up = valueForInput(firstSource(src), idx);
-      if (up && up.kind === "text") {
+      if (up && up.kind === "text" && !src.yamlOff) {
         const es = parseSimpleYaml(up.text);
         if (es.length) {
           // 继承文本符合 YAML → 按批量条目取值
@@ -856,13 +901,13 @@ function allTextItems(src) {
     if (inputInherited(src)) {
       const inner = allTextItems(firstSource(src));
       if (inner.length > 1) return inner; // 继承批量 → 全部条目
-      if (inner.length === 1) {
+      if (inner.length === 1 && !src.yamlOff) {
         const es = parseSimpleYaml(inner[0].text); // 继承文本符合 YAML → 解析为条目
         if (es.length)
           return es.map((e) => ({ title: e.title, text: e.content }));
         return [{ title: src.title, text: inner[0].text }];
       }
-      return [];
+      return inner.length === 1 ? [{ title: src.title, text: inner[0].text }] : [];
     }
     if (src.batch && (src.entries || []).length)
       return src.entries.map((e) => ({
@@ -1301,6 +1346,7 @@ function renderCanvas() {
   const stage = $("#stage"),
     svg = $("#wfSvg");
   stage.querySelectorAll(".wf-node").forEach((n) => n.remove());
+  stage.querySelectorAll(".wf-group").forEach((n) => n.remove());
   svg.innerHTML = "";
   const extX = Math.max(2000, ...S.wf.nodes.map((n) => n.x + n.w)) + 1200;
   const extY = Math.max(1400, ...S.wf.nodes.map((n) => n.y + n.h)) + 1200;
@@ -1308,10 +1354,15 @@ function renderCanvas() {
   stage.style.height = extY + "px";
   svg.setAttribute("width", extX);
   svg.setAttribute("height", extY);
+  /* 组框置于节点下层（虚线圆角边框，节点可正常交互） */
+  for (const g of S.wf.groups || []) stage.appendChild(groupElement(g));
   for (const n of S.wf.nodes) stage.appendChild(nodeElement(n));
   applyTransform();
+  updateGroupFrames();
   updateWires();
   fillPreviews();
+  syncGroupBtns();
+  if (S.sidebarOpen) renderSidebar();
 }
 
 function updateWires() {
@@ -1327,14 +1378,14 @@ function updateWires() {
       p.id = id;
       p.addEventListener("mousedown", (ev) => {
         ev.stopPropagation();
-        S.sel = null;
+        clearSelection();
         S.selWire = w.id;
         renderCanvas();
       });
       p.addEventListener("contextmenu", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        S.sel = null;
+        clearSelection();
         S.selWire = w.id;
         renderCanvas();
         showCtx(ev.clientX, ev.clientY, [
@@ -1422,10 +1473,65 @@ function statusOf(node) {
   return { cls: "", txt: "○ 未处理 · 点击 ▶ 基于提示词+输入处理" };
 }
 
+/* API 展开按钮 + 预览按钮（proc_text / proc_image / chat 共用） */
+function apiPreviewButtons(node) {
+  const apiBtn = document.createElement("button");
+  apiBtn.className =
+    "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
+  apiBtn.textContent = "API";
+  apiBtn.title = "服务商 / 模型（点击展开选择）";
+  apiBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
+    renderCanvas();
+  };
+  const pv = document.createElement("button");
+  pv.className = "n-play n-preview";
+  pv.textContent = "◈";
+  pv.title = "预览：查看运行时将发送的完整请求";
+  pv.onclick = (ev) => {
+    ev.stopPropagation();
+    previewNode(node);
+  };
+  return [apiBtn, pv];
+}
+
+/* 思考强度按钮（proc_text / chat 文本模型共用）：无 / 低 / 中 / 高，点击切换，默认低 */
+const EFFORT_LEVELS = ["none", "low", "medium", "high"];
+const EFFORT_LABELS = { none: "无", low: "低", medium: "中", high: "高" };
+function effortButtonEl(node) {
+  const effortBtn = document.createElement("button");
+  effortBtn.type = "button";
+  const paintEffort = () => {
+    const cur = EFFORT_LEVELS.includes(node.effort) ? node.effort : "low";
+    effortBtn.className = "n-play n-effort" + (cur === "none" ? "" : " on");
+    effortBtn.textContent = EFFORT_LABELS[cur];
+    effortBtn.title =
+      "思考强度：当前「" +
+      EFFORT_LABELS[cur] +
+      "」· 点击切换（无 / 低 / 中 / 高）";
+  };
+  paintEffort();
+  effortBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    const cur = EFFORT_LEVELS.includes(node.effort) ? node.effort : "low";
+    node.effort =
+      EFFORT_LEVELS[(EFFORT_LEVELS.indexOf(cur) + 1) % EFFORT_LEVELS.length];
+    pushHistory();
+    scheduleSave();
+    paintEffort();
+    toast(
+      "思考强度 → " + EFFORT_LABELS[node.effort],
+      node.effort === "none" ? "warn" : "ok",
+    );
+  };
+  return effortBtn;
+}
+
 function nodeElement(node) {
   const el = document.createElement("div");
   el.className =
-    "wf-node " + KIND_CLS[node.kind] + (S.sel === node.id ? " sel" : "");
+    "wf-node " + KIND_CLS[node.kind] + (isSel(node.id) ? " sel" : "");
   el.dataset.nid = node.id;
   el.style.left = node.x + "px";
   el.style.top = node.y + "px";
@@ -1477,10 +1583,36 @@ function nodeElement(node) {
     } else if (inputInherited(node)) {
       const chip = document.createElement("span");
       chip.className = "n-chip on";
-      chip.textContent = "只读 · 继承输入";
+      chip.textContent = "只读";
       chip.title =
         "该节点已连接输入：内容只读，自动继承输入内容（符合 YAML 则转为批量）";
       head.appendChild(chip);
+      /* 符合 YAML：闪烁「YAML」按钮，点击可关闭解析（仅显示原始内容） */
+      if (node.kind === "input_text") {
+        const disp = displayValueOf(firstSource(node));
+        const es =
+          disp && disp.text != null ? parseSimpleYaml(disp.text) : [];
+        if (es.length) {
+          const yb = document.createElement("button");
+          yb.type = "button";
+          yb.className = "yaml-chip" + (node.yamlOff ? " off" : "");
+          yb.textContent = "YAML";
+          yb.title = node.yamlOff
+            ? "YAML 解析已关闭：仅显示原始内容 · 点击恢复为批量条目"
+            : "内容符合 YAML，已解析为 " +
+              es.length +
+              " 条批量 · 点击关闭，仅显示原始内容";
+          yb.onclick = (ev) => {
+            ev.stopPropagation();
+            pushHistory();
+            node.yamlOff = !node.yamlOff;
+            clearDownstream(node.id);
+            scheduleSave();
+            renderCanvas();
+          };
+          head.appendChild(yb);
+        }
+      }
     } else {
       const tb = document.createElement("button");
       tb.className = "n-play n-batch-toggle" + (node.batch ? " on" : "");
@@ -1498,6 +1630,18 @@ function nodeElement(node) {
       };
       head.appendChild(tb);
     }
+  }
+  if (node.kind === "input_text" && !node.ro && !inputInherited(node) && !node.batch) {
+    /* 文件参考：右上角小图标按钮（导入文本文件内容，不占用节点空间） */
+    const fr = document.createElement("button");
+    fr.className = "n-play n-file-ref";
+    fr.textContent = "📄";
+    fr.title = "文件参考：导入文本文件内容到本节点（超过 500KB 会提示拒绝）";
+    fr.onclick = (ev) => {
+      ev.stopPropagation();
+      importFileToText(node);
+    };
+    head.appendChild(fr);
   }
   if (
     (node.kind === "proc_text" || node.kind === "proc_image") &&
@@ -1530,26 +1674,7 @@ function nodeElement(node) {
     head.appendChild(modeBtn);
   }
   if (node.kind === "proc_text" || node.kind === "proc_image") {
-    const apiBtn = document.createElement("button");
-    apiBtn.className =
-      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
-    apiBtn.textContent = "API";
-    apiBtn.title = "服务商 / 模型（点击展开选择）";
-    apiBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
-      renderCanvas();
-    };
-    head.appendChild(apiBtn);
-    const pv = document.createElement("button");
-    pv.className = "n-play n-preview";
-    pv.textContent = "◈";
-    pv.title = "预览：查看运行时将发送的完整请求";
-    pv.onclick = (ev) => {
-      ev.stopPropagation();
-      previewNode(node);
-    };
-    head.appendChild(pv);
+    head.append(...apiPreviewButtons(node));
     if (node.kind === "proc_text") {
       const hasThink = !!(
         S.thinking &&
@@ -1568,6 +1693,7 @@ function nodeElement(node) {
         showThinking(node);
       };
       head.appendChild(th);
+      head.appendChild(effortButtonEl(node));
     }
     const ab = document.createElement("button");
     ab.className = "n-play n-att-btn" + (attemptCount(node) > 1 ? " on" : "");
@@ -1661,6 +1787,10 @@ function nodeElement(node) {
       saveNodeAction(node);
     };
     head.appendChild(b);
+  }
+  if (node.kind === "chat") {
+    head.append(...apiPreviewButtons(node));
+    head.appendChild(effortButtonEl(node));
   }
   if (node.kind === "chat" && node.running) {
     const stop = document.createElement("button");
@@ -1890,8 +2020,10 @@ function nodeElement(node) {
   rz.addEventListener("mousedown", (ev) => {
     ev.stopPropagation();
     ev.preventDefault();
+    S.selSet = new Set([node.id]);
     S.sel = node.id;
     S.selWire = null;
+    S.selGroup = null;
     S.preDragSnap = snapshotState();
     renderCanvas();
     S.drag = {
@@ -1920,7 +2052,11 @@ function nodeElement(node) {
       ev.target.closest(".bentry-text") ||
       ev.target.closest(".n-title") ||
       ev.target.closest(".chat-input") ||
-      ev.target.closest(".chat-input-row")
+      ev.target.closest(".chat-input-row") ||
+      ev.target.closest(".chat-list") ||
+      ev.target.closest(".chat-col") ||
+      ev.target.closest(".chat-bubble") ||
+      ev.target.closest(".chat-think-btn")
     )
       return;
     startNodeDrag(ev, node);
@@ -2082,7 +2218,7 @@ function buildBody(node, body) {
       ta.value = node.text || "";
       body.appendChild(ta);
     } else if (inputInherited(node)) {
-      /* 只读：继承输入内容；符合 YAML → 批量条目展示 */
+      /* 只读：继承输入内容；符合 YAML → 批量条目展示（yamlOff 时仅显示原始内容） */
       const disp = displayValueOf(firstSource(node));
       if (disp && disp.items && disp.items.length) {
         const list = document.createElement("div");
@@ -2090,7 +2226,7 @@ function buildBody(node, body) {
         readonlyBatchRows(disp.items, list, false);
         body.appendChild(list);
       } else if (disp && disp.text != null) {
-        const es = parseSimpleYaml(disp.text);
+        const es = !node.yamlOff ? parseSimpleYaml(disp.text) : [];
         if (es.length) {
           const list = document.createElement("div");
           list.className = "n-bentries";
@@ -2100,11 +2236,6 @@ function buildBody(node, body) {
             false,
           );
           body.appendChild(list);
-          const note = document.createElement("div");
-          note.className = "n-empty";
-          note.textContent =
-            "继承文本符合 YAML · 已转为批量（" + es.length + " 条，只读）";
-          body.appendChild(note);
         } else {
           const ta = document.createElement("textarea");
           ta.className = "n-text";
@@ -2123,7 +2254,7 @@ function buildBody(node, body) {
       } else {
         const hint = document.createElement("div");
         hint.className = "n-empty";
-        hint.textContent = "（等待上游输出…）内容只读 · 继承输入";
+        hint.textContent = "（等待上游输出…）内容只读";
         body.appendChild(hint);
       }
     } else if (node.batch) {
@@ -2177,15 +2308,6 @@ function buildBody(node, body) {
         node.text = ta.value;
       });
       body.appendChild(ta);
-      const ops = document.createElement("div");
-      ops.className = "n-img-ops";
-      const imp = document.createElement("button");
-      imp.className = "mini";
-      imp.textContent = "文件参考";
-      imp.title = "导入文本文件内容到本节点（超过 500KB 会提示拒绝）";
-      imp.onclick = () => importFileToText(node);
-      ops.appendChild(imp);
-      body.appendChild(ops);
     }
   } else if (node.kind === "input_image") {
     if (node.ro) {
@@ -2227,7 +2349,7 @@ function buildBody(node, body) {
       } else {
         const hint = document.createElement("div");
         hint.className = "n-empty";
-        hint.textContent = "（等待上游输出中）内容只读 · 继承输入";
+        hint.textContent = "（等待上游输出中）内容只读";
         body.appendChild(hint);
       }
     } else if (node.batch) {
@@ -2377,23 +2499,33 @@ function buildBody(node, body) {
             (nA > 1 ? " · 尝试 " + (attemptIdx(node) + 1) + "/" + nA : ""),
         ),
       );
-      if (r.output && r.output.kind === "text") {
-        const cp = document.createElement("span");
-        cp.className = "copy";
-        cp.textContent = "复制";
-        cp.onclick = () => {
+      /* 右对齐方形按钮组：复制 / 清空 / 浏览 */
+      const ob = document.createElement("div");
+      ob.className = "n-out-btns";
+      const mkOutBtn = (label, title, fn) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "n-out-btn";
+        b.textContent = label;
+        b.title = title || label;
+        b.onclick = (ev) => {
+          ev.stopPropagation();
+          fn();
+        };
+        ob.appendChild(b);
+        return b;
+      };
+      if (r.output && r.output.kind === "text")
+        mkOutBtn("复制", "复制输出文本", () =>
           navigator.clipboard
             .writeText(r.output.text)
-            .then(() => toast("已复制到剪贴板", "ok"));
-        };
-        oh.appendChild(cp);
-      }
-      const cl = document.createElement("span");
-      cl.className = "copy";
-      cl.textContent = "清空";
-      cl.title = "清空本节点输出（回到未处理状态）";
-      cl.onclick = () => clearOutput(node);
-      oh.appendChild(cl);
+            .then(() => toast("已复制到剪贴板", "ok")),
+        );
+      mkOutBtn("清空", "清空本节点输出（回到未处理状态）", () =>
+        clearOutput(node),
+      );
+      mkOutBtn("浏览", "弹窗大窗显示本节点输出内容", () => browseOutput(node));
+      oh.appendChild(ob);
       out.appendChild(oh);
       if (nA > 1) out.appendChild(attemptTabsEl(node));
       if (r.batchOutputs && r.batchOutputs.length) {
@@ -2643,6 +2775,13 @@ function buildBody(node, body) {
         (node.animRows || 4) +
         " 帧动画 · " +
         fileName(r.output.path);
+      const br = document.createElement("span");
+      br.className = "copy";
+      br.textContent = "浏览";
+      br.style.cssText = "margin-left:8px;cursor:pointer;color:var(--cyan)";
+      br.title = "弹窗大窗显示输出 GIF";
+      br.onclick = () => browseOutput(node);
+      meta.appendChild(br);
       const cl = document.createElement("span");
       cl.className = "copy";
       cl.textContent = "清空";
@@ -2694,23 +2833,51 @@ function buildBody(node, body) {
     for (const m of msgs) {
       const row = document.createElement("div");
       row.className = "chat-msg " + (m.role === "user" ? "me" : "ai");
-      const b = document.createElement("div");
-      b.className = "chat-bubble";
       if (m.role === "user") {
+        const b = document.createElement("div");
+        b.className = "chat-bubble";
         b.textContent = m.content;
+        row.appendChild(b);
       } else {
+        const col = document.createElement("div");
+        col.className = "chat-col";
+        if (m.reasoning && String(m.reasoning).trim()) {
+          const tb = document.createElement("button");
+          tb.type = "button";
+          tb.className = "chat-think-btn";
+          tb.textContent = "◉ 思考内容";
+          tb.title = "查看本条回复的模型思考内容";
+          tb.onclick = (ev) => {
+            ev.stopPropagation();
+            showMsgThinking(node, m);
+          };
+          col.appendChild(tb);
+        }
+        const b = document.createElement("div");
+        b.className = "chat-bubble";
         b.innerHTML = '<div class="md">' + renderMarkdown(m.content) + "</div>";
+        col.appendChild(b);
+        row.appendChild(col);
       }
-      row.appendChild(b);
       list.appendChild(row);
     }
     if (node.running) {
       const row = document.createElement("div");
       row.className = "chat-msg ai";
-      const b = document.createElement("div");
-      b.className = "chat-bubble chat-typing";
-      b.textContent = "…";
-      row.appendChild(b);
+      const col = document.createElement("div");
+      col.className = "chat-col";
+      /* 思考中：灰色字体流式显示在「输入中」位置 */
+      const tb = document.createElement("div");
+      tb.className = "chat-bubble chat-typing";
+      tb.id = "chat-think-" + node.id;
+      tb.textContent = thinkingTextOf(node) || "输入中…";
+      col.appendChild(tb);
+      const sb = document.createElement("div");
+      sb.className = "chat-bubble chat-stream";
+      sb.id = "chat-stream-" + node.id;
+      sb.textContent = node._pendingAnswer || "";
+      col.appendChild(sb);
+      row.appendChild(col);
       list.appendChild(row);
     }
     body.appendChild(list);
@@ -2811,6 +2978,8 @@ function buildBody(node, body) {
     if (node.kind === "save_text") {
       const auto = document.createElement("label");
       auto.className = "sv-auto";
+      auto.title =
+        "输入变化时自动保存（批量 = 每条目一个文件，YAML 项 = 输入节点标题）";
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = !!node.auto;
@@ -2819,11 +2988,7 @@ function buildBody(node, body) {
         scheduleSave();
       };
       auto.appendChild(cb);
-      auto.appendChild(
-        document.createTextNode(
-          "输入变化时自动保存（批量=每条目一个文件，YAML 项 = 输入节点标题）",
-        ),
-      );
+      auto.appendChild(document.createTextNode("输入变化时自动保存"));
       body.appendChild(auto);
     }
 
@@ -2989,6 +3154,12 @@ function buildSpec(node, prov, idx) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+    /* 思考强度：无 = 发送 "none"（显式关闭思维链，避免默认出思维链） */
+    effort:
+      node.kind === "proc_text" &&
+      EFFORT_LEVELS.includes(node.effort)
+        ? node.effort
+        : undefined,
     size:
       node.kind === "proc_image"
         ? IMAGE_SIZES.includes(node.size)
@@ -3002,14 +3173,15 @@ function buildSpec(node, prov, idx) {
   };
 }
 
-/* 流式文本调用：resolve {text}；reasoning 增量回调（思考内容，按尝试槽存储） */
-function apiCallTextStream(spec, onReasoning) {
+/* 流式文本调用：resolve {text, reasoning}；reasoning 增量回调（思考内容，按尝试槽存储）；
+   delta 增量回调（正文流式） */
+function apiCallTextStream(spec, onReasoning, onDelta) {
   return new Promise((resolve, reject) => {
     window.api.apiCallStream(spec, (ev) => {
       if (ev.type === "reasoning") {
         if (onReasoning) onReasoning(ev.text || "");
       } else if (ev.type === "delta") {
-        /* 正文增量（当前仅在结束时整体渲染） */
+        if (onDelta) onDelta(ev.text || "");
       } else if (ev.type === "done") {
         resolve(ev);
       } else if (ev.type === "error") {
@@ -3017,6 +3189,27 @@ function apiCallTextStream(spec, onReasoning) {
       }
     });
   });
+}
+
+/* 对话节点的请求规格：chatMessages = 系统提示 + 全部消息记录 */
+function buildChatSpec(node, prov) {
+  return {
+    provider: prov,
+    kind: "text",
+    model: node.model || (prov.models || [])[0] || "",
+    temperature:
+      node.temperature == null
+        ? 0.7
+        : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+    /* 思考强度：无 = 发送 "none"（显式关闭思维链，避免默认出思维链） */
+    effort: EFFORT_LEVELS.includes(node.effort) ? node.effort : undefined,
+    prompt: "",
+    texts: [],
+    images: [],
+    chatMessages: [{ role: "system", content: node.systemPrompt || "" }].concat(
+      node.messages || [],
+    ),
+  };
 }
 
 /* 图像资产文件名：含随机后缀，避免并行尝试（同毫秒）文件名冲突覆盖 */
@@ -3125,6 +3318,12 @@ function buildSpecAgg(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+    /* 思考强度：无 = 发送 "none"（显式关闭思维链，避免默认出思维链） */
+    effort:
+      node.kind === "proc_text" &&
+      EFFORT_LEVELS.includes(node.effort)
+        ? node.effort
+        : undefined,
     size:
       node.kind === "proc_image"
         ? IMAGE_SIZES.includes(node.size)
@@ -3170,7 +3369,8 @@ async function previewNode(node) {
     toast("该服务商未填写 API Key（设置 · API/配置）", "warn");
     return;
   }
-  const spec = buildSpec(node, prov, 0);
+  const spec =
+    node.kind === "chat" ? buildChatSpec(node, prov) : buildSpec(node, prov, 0);
   const r = await window.api.apiPreview(spec);
   if (!r.ok) {
     toast("预览失败：" + r.error, "err");
@@ -3183,7 +3383,11 @@ async function previewNode(node) {
   for (const [k, v] of Object.entries(q.headers))
     txt += "  " + k + ": " + v + "\n";
   txt += "\nBody:\n" + JSON.stringify(q.body, null, 2);
-  if (node.kind === "proc_text" && spec.images.length && !prov.vision) {
+  if (
+    node.kind === "proc_text" &&
+    spec.images.length &&
+    !prov.vision
+  ) {
     txt = "⚠ " + VISION_HINT + "\n（以下请求将忽略图像输入）\n\n" + txt;
   }
   const pre = document.createElement("pre");
@@ -3630,6 +3834,112 @@ function clearOutput(node) {
   renderStatus();
 }
 
+/* ============ 输出浏览（大窗对话显示 Output 内容） ============ */
+
+/* 节点输出中的纯文本（批量 = 全部条目拼接；供复制） */
+function outputTextOf(node) {
+  const r = selResult(node);
+  if (!r) return "";
+  if (r.error) return r.error;
+  if (r.batchOutputs && r.batchOutputs.length)
+    return r.batchOutputs
+      .map(
+        (x) =>
+          "──── " + (x.title || "条目") + " ────\n" +
+          (x.ok && x.output && x.output.kind === "text"
+            ? x.output.text
+            : x.error || ""),
+      )
+      .join("\n\n");
+  if (r.output && r.output.kind === "text") return r.output.text;
+  return "";
+}
+/* 弹窗大窗显示节点输出（文本 / 图像 / 批量 / 错误） */
+function browseOutput(node) {
+  const r = selResult(node);
+  if (!r || (!r.output && !r.batchOutputs && !r.error)) {
+    toast("该节点暂无输出", "warn");
+    return;
+  }
+  openOverlay("输出浏览 · " + (node.title || ""));
+  const box = $("#overlay .overlay-box");
+  if (box) box.classList.add("wide");
+  const bodyEl = $("#ovBody");
+  const content = document.createElement("div");
+  content.className = "browse-body";
+  if (r.error) {
+    const e = document.createElement("div");
+    e.className = "n-status err";
+    e.textContent = "✕ " + r.error;
+    content.appendChild(e);
+  } else if (r.batchOutputs && r.batchOutputs.length) {
+    for (const x of r.batchOutputs) {
+      const row = document.createElement("div");
+      row.className = "browse-row";
+      const t = document.createElement("div");
+      t.className = "browse-title";
+      t.textContent = x.title || "条目";
+      row.appendChild(t);
+      if (x.ok && x.output) {
+        if (x.output.kind === "text") {
+          const md = document.createElement("div");
+          md.className = "md";
+          md.innerHTML = renderMarkdown(x.output.text);
+          row.appendChild(md);
+        } else {
+          const img = document.createElement("img");
+          img.className = "browse-img";
+          img.src = window.api.toFileUrl(x.output.path);
+          row.appendChild(img);
+        }
+      } else if (x.error) {
+        const e = document.createElement("div");
+        e.className = "n-status err";
+        e.textContent = "✕ " + x.error;
+        row.appendChild(e);
+      }
+      content.appendChild(row);
+    }
+  } else if (r.output) {
+    if (r.output.kind === "text") {
+      const md = document.createElement("div");
+      md.className = "md";
+      md.innerHTML = renderMarkdown(r.output.text);
+      content.appendChild(md);
+    } else {
+      const img = document.createElement("img");
+      img.className = "browse-img";
+      img.src = window.api.toFileUrl(r.output.path);
+      content.appendChild(img);
+    }
+  } else {
+    const e = document.createElement("div");
+    e.className = "n-empty";
+    e.textContent = "（无输出内容）";
+    content.appendChild(e);
+  }
+  bodyEl.appendChild(content);
+  const foot = $("#ovFoot");
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "mini primary";
+  copyBtn.textContent = "复制文本";
+  copyBtn.title = "复制输出中的全部文本";
+  copyBtn.onclick = () => {
+    const txt = outputTextOf(node);
+    if (!txt) {
+      toast("无可复制的文本（输出为图像）", "warn");
+      return;
+    }
+    navigator.clipboard.writeText(txt).then(() => toast("已复制", "ok"));
+  };
+  const close = document.createElement("button");
+  close.className = "mini";
+  close.textContent = "关闭";
+  close.onclick = closeOverlay;
+  foot.appendChild(copyBtn);
+  foot.appendChild(close);
+}
+
 /* 局部刷新派生显示节点（拆分/合并的内容随输入实时变化） */
 function refreshNodeEl(id) {
   const old = document.querySelector('.wf-node[data-nid="' + id + '"]');
@@ -3723,40 +4033,11 @@ function removeWire(id) {
 }
 
 function deleteNode(id) {
-  const i = S.wf.nodes.findIndex((n) => n.id === id);
-  if (i < 0) return;
-  pushHistory();
-  S.wf.nodes.splice(i, 1);
-  S.wf.wires = S.wf.wires.filter((w) => w.from !== id && w.to !== id);
-  if (S.sel === id) S.sel = null;
-  renderCanvas();
-  scheduleSave(true);
-  renderStatus();
+  deleteNodes([id]);
 }
 
 function duplicateNode(node) {
-  pushHistory();
-  const cp = JSON.parse(JSON.stringify(node));
-  cp.id = uid("n");
-  cp.x = snap(cp.x + grid() * 4);
-  cp.y = snap(cp.y + grid() * 4);
-  cp.title = node.title + " 副本";
-  cp.output = null;
-  cp.batchOutputs = null;
-  cp.error = null;
-  cp.ranAt = 0;
-  cp.attemptOutputs = null;
-  cp.attemptIdx = 0;
-  cp.attemptsDone = 0;
-  if (cp.kind === "save_text" || cp.kind === "save_image") {
-    cp.savedPaths = [];
-    cp.savedPath = "";
-  }
-  S.wf.nodes.push(cp);
-  S.sel = cp.id;
-  renderCanvas();
-  scheduleSave(true);
-  renderStatus();
+  duplicateNodes([node]);
 }
 
 function startTitleEdit(node, titleEl) {
@@ -3800,20 +4081,38 @@ function startTitleEdit(node, titleEl) {
 
 function startNodeDrag(ev, node) {
   if (S.drag) return;
-  S.sel = node.id;
+  S.selGroup = null;
   S.selWire = null;
+  const already = S.selSet.has(node.id);
+  if (ev.ctrlKey || ev.metaKey) {
+    /* Ctrl+点击：切换该节点的多选状态 */
+    if (already) {
+      S.selSet.delete(node.id);
+      S.sel = S.selSet.size ? [...S.selSet][S.selSet.size - 1] : null;
+      renderCanvas();
+      return;
+    }
+    S.selSet.add(node.id);
+    S.sel = node.id;
+    renderCanvas();
+  } else if (!already) {
+    S.selSet = new Set([node.id]);
+    S.sel = node.id;
+    renderCanvas();
+  }
   S.preDragSnap = snapshotState();
-  renderCanvas();
-  const el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+  const orig = {};
+  for (const id of S.selSet) {
+    const n = nodeById(id);
+    if (n) orig[id] = { x: n.x, y: n.y };
+  }
   S.drag = {
     mode: "node",
-    id: node.id,
+    ids: [...S.selSet],
+    orig,
     sx: ev.clientX,
     sy: ev.clientY,
-    ox: node.x,
-    oy: node.y,
     moved: false,
-    el,
   };
 }
 function startWireDrag(fromId, ev) {
@@ -3828,10 +4127,544 @@ function startWireDrag(fromId, ev) {
   updateWires();
 }
 
+/* ============ 组（虚线圆角框）与框选 ============ */
+
+function groupById(gid) {
+  return (S.wf.groups || []).find((g) => g.id === gid) || null;
+}
+/* 组边框矩形：由成员节点实时计算（自动贴合成员移动 / 缩放） */
+function groupBounds(g) {
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const id of g.nodeIds || []) {
+    const n = nodeById(id);
+    if (!n) continue;
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.w);
+    maxY = Math.max(maxY, n.y + n.h);
+  }
+  if (minX === Infinity) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+const GROUP_PAD = 16;
+/* 同步所有组框的 DOM 位置（节点拖拽 / 缩放后调用） */
+function updateGroupFrames() {
+  for (const g of S.wf.groups || []) {
+    const el = document.querySelector('.wf-group[data-gid="' + g.id + '"]');
+    if (!el) continue;
+    const b = groupBounds(g);
+    if (!b) {
+      el.style.display = "none";
+      continue;
+    }
+    el.style.display = "";
+    const pad = GROUP_PAD;
+    el.style.left = b.x - pad + "px";
+    el.style.top = b.y - pad + "px";
+    el.style.width = b.w + pad * 2 + "px";
+    el.style.height = b.h + pad * 2 + "px";
+  }
+}
+/* 组框元素：虚线圆角边框 + 标题（可双击改名）+ ✕ 删除 + 右下缩放把手 */
+function groupElement(g) {
+  const el = document.createElement("div");
+  el.className = "wf-group" + (S.selGroup === g.id ? " sel" : "");
+  el.dataset.gid = g.id;
+  const head = document.createElement("div");
+  head.className = "wg-title";
+  head.textContent = g.title || "组";
+  head.title = "拖动移动组 · 双击重命名";
+  head.onmousedown = (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startGroupDrag(g, ev);
+  };
+  head.onclick = (ev) => {
+    ev.stopPropagation();
+    selectGroup(g.id);
+  };
+  head.ondblclick = (ev) => {
+    ev.stopPropagation();
+    startGroupTitleEdit(g, head);
+  };
+  el.appendChild(head);
+  const del = document.createElement("button");
+  del.className = "wg-del";
+  del.textContent = "✕";
+  del.title = "删除该组（连同内部节点）";
+  del.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+  });
+  del.onclick = (ev) => {
+    ev.stopPropagation();
+    deleteGroup(g.id);
+  };
+  el.appendChild(del);
+  const rzX = document.createElement("div");
+  rzX.className = "wg-resize wg-resize-x";
+  rzX.title = "横向缩放（仅改变横向布局，纵向不变）";
+  rzX.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startGroupResize(g, ev, "x");
+  });
+  el.appendChild(rzX);
+  const rzY = document.createElement("div");
+  rzY.className = "wg-resize wg-resize-y";
+  rzY.title = "纵向缩放（仅改变纵向布局，横向不变）";
+  rzY.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startGroupResize(g, ev, "y");
+  });
+  el.appendChild(rzY);
+  const rz = document.createElement("div");
+  rz.className = "wg-resize";
+  rz.title = "整体缩放（横竖可分别拉伸；成员达到最小尺寸后停止缩放）";
+  rz.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startGroupResize(g, ev, "both");
+  });
+  el.appendChild(rz);
+  el.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startGroupDrag(g, ev);
+  });
+  el.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    selectGroup(g.id);
+    showCtx(ev.clientX, ev.clientY, [
+      [
+        "组操作",
+        [
+          {
+            label: "✕ 删除组（连同内部节点）",
+            cls: "ctx-danger",
+            run: () => deleteGroup(g.id),
+          },
+          {
+            label: "解散组（保留节点）",
+            run: () => disbandGroup(g.id),
+          },
+        ],
+      ],
+    ]);
+  });
+  return el;
+}
+function selectGroup(gid) {
+  S.sel = null;
+  S.selWire = null;
+  S.selSet.clear();
+  S.selGroup = gid;
+  renderCanvas();
+}
+/* 组缩放（横竖独立）：以锚点 (ax, ay)（组左上角，拖拽时固定）为基准，
+   每次按「拖拽起始时的成员原始几何」重算 → 组的右下角严格跟随鼠标指针，不累积漂移。
+   系数先按成员原始最小尺寸钳制：任一成员达到最小宽/高后，外部整体不再继续缩放（不崩坏） */
+function clampGroupScale(g, sx, sy, orig) {
+  let minSx = 0.3,
+    minSy = 0.3;
+  for (const id of g.nodeIds || []) {
+    const n = nodeById(id);
+    if (!n) continue;
+    const o = orig && orig[id];
+    minSx = Math.max(minSx, minWFor(n) / (o ? o.w : n.w));
+    minSy = Math.max(minSy, minHFor(n) / (o ? o.h : n.h));
+  }
+  sx = Math.max(0.3, Math.min(3, sx));
+  sy = Math.max(0.3, Math.min(3, sy));
+  return { sx: Math.max(sx, minSx), sy: Math.max(sy, minSy) };
+}
+function scaleGroup(g, sx, sy, ax, ay, orig) {
+  for (const id of g.nodeIds || []) {
+    const n = nodeById(id);
+    if (!n) continue;
+    const o = orig && orig[id];
+    if (!o) continue;
+    n.x = ax + (o.x - ax) * sx;
+    n.y = ay + (o.y - ay) * sy;
+    n.w = Math.round(o.w * sx);
+    n.h = Math.round(o.h * sy);
+    const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+    if (el) {
+      el.style.left = n.x + "px";
+      el.style.top = n.y + "px";
+      el.style.width = n.w + "px";
+      el.style.height = n.h + "px";
+      refreshPorts(el, n);
+    }
+  }
+}
+function startGroupDrag(g, ev) {
+  if (S.drag) return;
+  S.preDragSnap = snapshotState();
+  selectGroup(g.id);
+  const orig = {};
+  for (const id of g.nodeIds || []) {
+    const n = nodeById(id);
+    if (n) orig[id] = { x: n.x, y: n.y };
+  }
+  S.drag = {
+    mode: "group",
+    gid: g.id,
+    orig,
+    sx: ev.clientX,
+    sy: ev.clientY,
+    moved: false,
+  };
+}
+/* axes: "x"（右边缘把手·仅横向）| "y"（下边缘把手·仅纵向）| "both"（右下角把手） */
+function startGroupResize(g, ev, axes) {
+  if (S.drag) return;
+  const b = groupBounds(g);
+  if (!b) return;
+  S.preDragSnap = snapshotState();
+  selectGroup(g.id);
+  /* 记录拖拽起始时的成员原始几何：每次 mousemove 从原始值重算，避免累积漂移 */
+  const orig = {};
+  for (const id of g.nodeIds || []) {
+    const n = nodeById(id);
+    if (n) orig[id] = { x: n.x, y: n.y, w: n.w, h: n.h };
+  }
+  S.drag = {
+    mode: "groupresize",
+    gid: g.id,
+    sx: ev.clientX,
+    sy: ev.clientY,
+    w0: b.w,
+    h0: b.h,
+    ax: b.x,
+    ay: b.y,
+    orig,
+    axes: axes || "both",
+    moved: false,
+  };
+}
+function startGroupTitleEdit(g, headEl) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "wg-title-input";
+  input.value = g.title || "组";
+  input.title = "回车确认 · Esc 取消";
+  headEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = (save) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (save && v && v !== g.title) {
+      pushHistory();
+      g.title = v;
+      scheduleSave();
+    }
+    renderCanvas();
+  };
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      commit(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", () => commit(true));
+  input.addEventListener("mousedown", (ev) => ev.stopPropagation());
+}
+/* 「组」按钮 / 快捷键 G：有组选中 → 解散；有节点选中 → 创建组 */
+function toggleGroupAction() {
+  if (S.selGroup) {
+    disbandGroup(S.selGroup);
+    return;
+  }
+  const ids = [...S.selSet].filter(
+    (id) => !(S.wf.groups || []).some((g) => g.nodeIds.includes(id)),
+  );
+  if (!ids.length) {
+    toast("请先框选 / 选中节点（所选节点不能在组内）", "warn");
+    return;
+  }
+  promptGroupTitle(ids);
+}
+function promptGroupTitle(ids) {
+  openOverlay("创建组");
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.innerHTML =
+    "将选中的 <b>" + ids.length + "</b> 个节点组成一个组（快捷键 G）。组标题仅用于显示；点击组框可整体移动 / 缩放 / 删除。";
+  body.appendChild(hint);
+  const lab = document.createElement("label");
+  lab.className = "n-field";
+  lab.appendChild(document.createTextNode("组标题"));
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.placeholder = "组 1";
+  lab.appendChild(inp);
+  body.appendChild(lab);
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = "创建";
+  ok.onclick = () => {
+    closeOverlay();
+    const t = inp.value.trim();
+    pushHistory();
+    S.wf.groups.push({
+      id: uid("g"),
+      title: t || "组",
+      nodeIds: ids.slice(),
+    });
+    S.selGroup = S.wf.groups[S.wf.groups.length - 1].id;
+    S.sel = null;
+    S.selWire = null;
+    S.selSet.clear();
+    renderCanvas();
+    scheduleSave(true);
+    renderStatus();
+    toast("已创建组：" + (t || "组"), "ok");
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = "取消";
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  inp.focus();
+}
+/* 解散组：删除组框，节点全部保留 */
+function disbandGroup(gid) {
+  const g = groupById(gid);
+  if (!g) return;
+  pushHistory();
+  S.wf.groups = S.wf.groups.filter((x) => x.id !== gid);
+  if (S.selGroup === gid) S.selGroup = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  toast("已解散组（节点保留）", "ok");
+}
+/* 删除组：连同内部节点与相关连线一起删除 */
+function deleteGroup(gid) {
+  const g = groupById(gid);
+  if (!g) return;
+  const n = g.nodeIds.length;
+  deleteNodes([...g.nodeIds], true);
+  if (S.selGroup === gid) S.selGroup = null;
+  toast("已删除组（含 " + n + " 个节点）", "ok");
+}
+/* 批量删除节点：同时清理相关连线与组 */
+function deleteNodes(ids, quiet) {
+  if (!ids || !ids.length) return;
+  pushHistory();
+  const set = new Set(ids);
+  S.wf.nodes = S.wf.nodes.filter((n) => !set.has(n.id));
+  S.wf.wires = S.wf.wires.filter(
+    (w) => !set.has(w.from) && !set.has(w.to),
+  );
+  for (const g of S.wf.groups || [])
+    g.nodeIds = (g.nodeIds || []).filter((id) => !set.has(id));
+  S.wf.groups = (S.wf.groups || []).filter((g) => g.nodeIds.length);
+  for (const id of ids) if (S.thinking && S.thinking[id]) S.thinking[id] = [];
+  if (ids.includes(S.sel)) S.sel = null;
+  S.selGroup = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  if (!quiet) toast("已删除 " + ids.length + " 个节点", "ok");
+}
+/* 批量复制选中节点（各自错开一格网格） */
+function duplicateNodes(nodes) {
+  if (!nodes || !nodes.length) return;
+  pushHistory();
+  const cps = [];
+  nodes.forEach((node, i) => {
+    const cp = JSON.parse(JSON.stringify(node));
+    cp.id = uid("n");
+    cp.x = snap(cp.x + grid() * 4);
+    cp.y = snap(cp.y + grid() * 4 + i * grid());
+    cp.title = node.title + " 副本";
+    cp.output = null;
+    cp.batchOutputs = null;
+    cp.error = null;
+    cp.ranAt = 0;
+    cp.attemptOutputs = null;
+    cp.attemptIdx = 0;
+    cp.attemptsDone = 0;
+    if (cp.kind === "save_text" || cp.kind === "save_image") {
+      cp.savedPaths = [];
+      cp.savedPath = "";
+    }
+    cps.push(cp);
+  });
+  S.wf.nodes.push(...cps);
+  S.selSet = new Set(cps.map((c) => c.id));
+  S.sel = cps[0].id;
+  S.selGroup = null;
+  S.selWire = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+}
+/* 组按钮选中态同步 */
+function syncGroupBtns() {
+  const bg = $("#btnGroup");
+  if (bg) {
+    bg.classList.toggle("on", !!S.selGroup);
+    bg.title = S.selGroup
+      ? "组已选中：再次点击解散该组（节点保留）"
+      : "组：把选中的节点组成一个组（快捷键 G）；选中组后再次点击解散";
+  }
+}
+
+/* ============ 左侧边栏（节点树状图 + 筛选） ============ */
+
+const SIDE_CATS = [
+  ["输入节点", ["input_text", "input_image"]],
+  ["处理节点", ["proc_text", "proc_image"]],
+  ["保存节点", ["save_text", "save_image"]],
+  ["工具节点", ["split", "merge"]],
+  ["动画节点", ["anim"]],
+  ["对话节点", ["chat"]],
+];
+const KIND_TAGS = {
+  input_text: "文本",
+  input_image: "图像",
+  proc_text: "LLM",
+  proc_image: "文生图",
+  save_text: "存文",
+  save_image: "存图",
+  split: "拆分",
+  merge: "合并",
+  anim: "动画",
+  chat: "对话",
+};
+function toggleSidebar() {
+  S.sidebarOpen = !S.sidebarOpen;
+  const layout = $("#layout");
+  if (layout) layout.classList.toggle("sidebar-open", S.sidebarOpen);
+  const btn = $("#btnSidebar");
+  if (btn) btn.classList.toggle("on", S.sidebarOpen);
+  if (S.sidebarOpen) renderSidebar();
+  renderStatus();
+}
+function renderSidebar() {
+  const tree = $("#sideTree");
+  if (!tree) return;
+  const filterEl = $("#sideFilter");
+  const f = filterEl ? filterEl.value.trim().toLowerCase() : "";
+  tree.innerHTML = "";
+  if (!S.wf || !S.wf.nodes.length) {
+    const e = document.createElement("div");
+    e.className = "side-empty";
+    e.textContent = "暂无节点";
+    tree.appendChild(e);
+    return;
+  }
+  let any = false;
+  for (const [cat, kinds] of SIDE_CATS) {
+    const items = S.wf.nodes.filter((n) => kinds.includes(n.kind));
+    if (!items.length) continue;
+    const shown = f
+      ? items.filter((n) => (n.title || "").toLowerCase().includes(f))
+      : items;
+    if (!shown.length) continue;
+    any = true;
+    const catEl = document.createElement("div");
+    catEl.className = "side-cat";
+    const head = document.createElement("div");
+    head.className = "side-cat-head";
+    const collapsed = !!S.sideCollapsed[cat];
+    head.textContent =
+      (collapsed ? "▸ " : "▾ ") +
+      cat +
+      "（" +
+      items.length +
+      "）" +
+      (f ? " · " + shown.length : "");
+    head.title = collapsed ? "展开分类" : "折叠分类";
+    head.onclick = () => {
+      S.sideCollapsed[cat] = !collapsed;
+      renderSidebar();
+    };
+    catEl.appendChild(head);
+    if (!collapsed) {
+      for (const n of shown) {
+        const it = document.createElement("div");
+        it.className = "side-item" + (isSel(n.id) ? " sel" : "");
+        it.title = "画布居中定位到：" + (n.title || "");
+        const tag = document.createElement("span");
+        tag.className = "side-tag";
+        tag.textContent = KIND_TAGS[n.kind] || n.kind;
+        const t = document.createElement("span");
+        t.className = "t";
+        t.textContent = n.title || "（未命名）";
+        it.appendChild(tag);
+        it.appendChild(t);
+        it.onclick = () => focusNode(n.id);
+        catEl.appendChild(it);
+      }
+    }
+    tree.appendChild(catEl);
+  }
+  if (!any) {
+    const e = document.createElement("div");
+    e.className = "side-empty";
+    e.textContent = "没有匹配「" + (filterEl ? filterEl.value : "") + "」的节点";
+    tree.appendChild(e);
+  }
+}
+/* 画布居中到指定节点并选中 */
+function focusNode(id) {
+  const n = nodeById(id);
+  if (!n) return;
+  const vw = $("#canvas").clientWidth,
+    vh = $("#canvas").clientHeight;
+  S.cam.x = vw / 2 - (n.x + n.w / 2) * S.cam.z;
+  S.cam.y = vh / 2 - (n.y + n.h / 2) * S.cam.z;
+  applyTransform();
+  updateWires();
+  S.selSet = new Set([id]);
+  S.sel = id;
+  S.selGroup = null;
+  S.selWire = null;
+  renderCanvas();
+  renderStatus();
+}
+
 function bindCanvas() {
   const canvas = $("#canvas");
   canvas.addEventListener("mousedown", (ev) => {
     if (ev.target === canvas || ev.target.id === "stage") {
+      const doBox = S.boxMode || ev.ctrlKey || ev.metaKey;
+      if (ev.button === 0 && doBox) {
+        /* 框选：拖拽矩形选择节点 */
+        const pt = toStage(ev.clientX, ev.clientY);
+        S.drag = {
+          mode: "box",
+          sx: ev.clientX,
+          sy: ev.clientY,
+          x0: pt.x,
+          y0: pt.y,
+          moved: false,
+        };
+        const r = document.createElement("div");
+        r.id = "boxSel";
+        r.className = "box-sel";
+        $("#stage").appendChild(r);
+        return;
+      }
       S.drag = {
         mode: "pan",
         sx: ev.clientX,
@@ -3868,15 +4701,63 @@ function bindCanvas() {
       applyTransform();
       updateWires();
     } else if (d.mode === "node") {
-      const n = nodeById(d.id);
-      if (!n) return;
-      n.x = snap(d.ox + dx);
-      n.y = snap(d.oy + dy);
-      const el = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
-      if (el) {
-        el.style.left = n.x + "px";
-        el.style.top = n.y + "px";
+      const dx = ev.clientX - d.sx,
+        dy = ev.clientY - d.sy;
+      for (const id of d.ids) {
+        const n = nodeById(id);
+        if (!n) continue;
+        const o = d.orig[id];
+        if (!o) continue;
+        n.x = snap(o.x + dx);
+        n.y = snap(o.y + dy);
+        const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+        if (el) {
+          el.style.left = n.x + "px";
+          el.style.top = n.y + "px";
+        }
       }
+      updateGroupFrames();
+      updateWires();
+    } else if (d.mode === "box") {
+      const pt = toStage(ev.clientX, ev.clientY);
+      const r = document.getElementById("boxSel");
+      if (r) {
+        const x = Math.min(d.x0, pt.x),
+          y = Math.min(d.y0, pt.y);
+        r.style.left = x + "px";
+        r.style.top = y + "px";
+        r.style.width = Math.abs(pt.x - d.x0) + "px";
+        r.style.height = Math.abs(pt.y - d.y0) + "px";
+      }
+      if (Math.abs(ev.clientX - d.sx) + Math.abs(ev.clientY - d.sy) > 3)
+        d.moved = true;
+    } else if (d.mode === "group") {
+      const dx = ev.clientX - d.sx,
+        dy = ev.clientY - d.sy;
+      for (const id of Object.keys(d.orig)) {
+        const n = nodeById(id);
+        if (!n) continue;
+        n.x = snap(d.orig[id].x + dx);
+        n.y = snap(d.orig[id].y + dy);
+        const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+        if (el) {
+          el.style.left = n.x + "px";
+          el.style.top = n.y + "px";
+        }
+      }
+      updateGroupFrames();
+      updateWires();
+    } else if (d.mode === "groupresize") {
+      const g = groupById(d.gid);
+      if (!g) return;
+      const pt = toStage(ev.clientX, ev.clientY);
+      /* 组框右下角 = (ax + w0*sx + pad, ay + h0*sy + pad)：直接令其等于指针位置，
+         不受把手抓取偏移影响，组的右下角与鼠标指针严格一致 */
+      let sx = d.axes !== "y" ? (pt.x - d.ax - GROUP_PAD) / d.w0 : 1;
+      let sy = d.axes !== "x" ? (pt.y - d.ay - GROUP_PAD) / d.h0 : 1;
+      const c = clampGroupScale(g, sx, sy, d.orig);
+      scaleGroup(g, c.sx, c.sy, d.ax, d.ay, d.orig);
+      updateGroupFrames();
       updateWires();
     } else if (d.mode === "resize") {
       const n = nodeById(d.id);
@@ -3889,6 +4770,7 @@ function bindCanvas() {
         el.style.height = n.h + "px";
         refreshPorts(el, n);
       }
+      updateGroupFrames();
       updateWires();
     } else if (d.mode === "outresize") {
       const n = nodeById(d.id);
@@ -3936,13 +4818,44 @@ function bindCanvas() {
       S.drag = null;
       updateWires();
       if (port) connect(d.fromId, port.dataset.node, Number(port.dataset.idx));
+    } else if (d.mode === "box") {
+      const pt = toStage(ev.clientX, ev.clientY);
+      const r = document.getElementById("boxSel");
+      if (r) r.remove();
+      S.drag = null;
+      if (d.moved) {
+        const x0 = Math.min(d.x0, pt.x),
+          y0 = Math.min(d.y0, pt.y),
+          x1 = Math.max(d.x0, pt.x),
+          y1 = Math.max(d.y0, pt.y);
+        const sel = S.wf.nodes.filter(
+          (n) => n.x <= x1 && n.x + n.w >= x0 && n.y <= y1 && n.y + n.h >= y0,
+        );
+        S.selSet = new Set(sel.map((n) => n.id));
+        S.sel = sel.length ? sel[sel.length - 1].id : null;
+        S.selGroup = null;
+        S.selWire = null;
+      } else {
+        clearSelection();
+      }
+      renderCanvas();
     } else if (d.mode === "node") {
       S.drag = null;
       if (d.moved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
         S.preDragSnap = null;
       }
+      updateGroupFrames();
       scheduleSave();
+    } else if (d.mode === "group" || d.mode === "groupresize") {
+      S.drag = null;
+      if (d.moved && S.preDragSnap) {
+        pushHistory(S.preDragSnap);
+        S.preDragSnap = null;
+      }
+      updateGroupFrames();
+      scheduleSave();
+      renderStatus();
     } else if (
       d.mode === "resize" ||
       d.mode === "outresize" ||
@@ -3957,8 +4870,7 @@ function bindCanvas() {
     } else if (d.mode === "pan") {
       S.drag = null;
       if (!d.moved) {
-        S.sel = null;
-        S.selWire = null;
+        clearSelection();
         renderCanvas();
       }
     }
@@ -4135,10 +5047,14 @@ function bindCanvas() {
       const hasSel = sel && !sel.isCollapsed && !!sel.toString().trim();
       if (hasSel) return; /* 有文本选区时走默认复制，不拦截 */
       ev.preventDefault();
-      if (S.sel) {
-        const n = nodeById(S.sel);
-        if (n) duplicateNode(n);
-      } else toast("请先选中节点", "warn");
+      const ns = currentSelection();
+      if (ns.length) duplicateNodes(ns);
+      else toast("请先选中节点", "warn");
+      return;
+    }
+    if (ev.key.toLowerCase() === "g" && !mod) {
+      ev.preventDefault();
+      toggleGroupAction();
       return;
     }
     if (ev.key === "Delete" || ev.key === "Backspace") {
@@ -4150,10 +5066,16 @@ function bindCanvas() {
         renderCanvas();
         scheduleSave(true);
         renderStatus();
-      } else if (S.sel) deleteNode(S.sel);
+      } else if (S.selGroup) {
+        deleteGroup(S.selGroup);
+      } else if (S.selSet.size) {
+        deleteNodes([...S.selSet]);
+      }
     } else if (ev.key === "Escape") {
-      S.sel = null;
-      S.selWire = null;
+      const box = document.getElementById("boxSel");
+      if (box) box.remove();
+      if (S.drag && S.drag.mode === "box") S.drag = null;
+      clearSelection();
       closeRefMenu();
       renderCanvas();
     }
@@ -4272,6 +5194,13 @@ function addNode(kind, x, y) {
       node.model = (prov.models || [])[0] || "";
     }
   }
+  if (kind === "chat") {
+    const prov = S.config.providers.find((p) => p.type === "text_openai");
+    if (prov) {
+      node.providerId = prov.id;
+      node.model = (prov.models || [])[0] || "";
+    }
+  }
   if (kind === "proc_image") {
     const prov = S.config.providers.find((p) => p.type.startsWith("image_"));
     if (prov) {
@@ -4329,7 +5258,7 @@ async function stopNode(node) {
   scheduleSave(true);
 }
 
-/* 文本对话节点：发送消息并获取 AI 回复（微信风格对话记录） */
+/* 文本对话节点：发送消息并获取 AI 回复（微信风格对话记录，思考内容灰色流式显示） */
 async function chatSend(node, text) {
   if (node.running) return;
   const prov = S.config.providers.find((p) => p.id === node.providerId);
@@ -4346,10 +5275,10 @@ async function chatSend(node, text) {
   node.running = true;
   node._abKey = uid("ab");
   node._aborted = false;
+  node._pendingAnswer = "";
+  if (!S.thinking) S.thinking = {};
+  S.thinking[node.id] = [""]; // 重置思考缓冲
   renderCanvas();
-  const messages = [
-    { role: "system", content: node.systemPrompt || "" },
-  ].concat(node.messages);
   const spec = {
     provider: prov,
     kind: "text",
@@ -4358,17 +5287,37 @@ async function chatSend(node, text) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+    effort: EFFORT_LEVELS.includes(node.effort) ? node.effort : undefined,
     prompt: "",
     texts: [],
     images: [],
-    chatMessages: messages,
+    chatMessages: [
+      { role: "system", content: node.systemPrompt || "" },
+    ].concat(node.messages),
     abKey: node._abKey,
   };
   try {
-    const r = await window.api.apiCall(spec);
-    if (!r.ok) throw new Error(r.error || "调用失败");
-    if (!node._aborted)
-      node.messages.push({ role: "assistant", content: r.text });
+    const r = await apiCallTextStream(
+      spec,
+      (t) => pushThinking(node.id, 0, t),
+      (t) => {
+        node._pendingAnswer = (node._pendingAnswer || "") + t;
+        const el = document.getElementById("chat-stream-" + node.id);
+        if (el) {
+          el.textContent = node._pendingAnswer;
+          el.scrollIntoView({ block: "nearest" });
+        }
+      },
+    );
+    if (!node._aborted) {
+      const msg = {
+        role: "assistant",
+        content: r.text || node._pendingAnswer || "",
+      };
+      const rsn = r.reasoning || thinkingTextOf(node) || "";
+      if (String(rsn).trim()) msg.reasoning = rsn;
+      node.messages.push(msg);
+    }
   } catch (e) {
     if (!node._aborted) {
       node.messages.push({
@@ -4379,6 +5328,7 @@ async function chatSend(node, text) {
     }
   } finally {
     node.running = false;
+    if (S.thinking && S.thinking[node.id]) S.thinking[node.id] = [];
     renderCanvas();
     renderStatus();
     scheduleSave(true);
@@ -4448,6 +5398,13 @@ function refreshThinkingUI(nid) {
     icon.classList.toggle("live", !!has && !!node.running);
     icon.textContent = node.running ? "◉ 思考中" : "◉ 思考";
   }
+  /* 对话节点：思考内容灰色流式显示在「输入中」位置 */
+  const chatBubble = document.getElementById("chat-think-" + nid);
+  if (chatBubble) {
+    const t = thinkingTextOf(node);
+    chatBubble.textContent = t || "输入中…";
+    chatBubble.scrollTop = chatBubble.scrollHeight;
+  }
   if (S.thinkOpen === nid) {
     if (thinkRAF[nid]) cancelAnimationFrame(thinkRAF[nid]);
     thinkRAF[nid] = requestAnimationFrame(() => {
@@ -4493,6 +5450,36 @@ function showThinking(node) {
     }
     navigator.clipboard
       .writeText(pre2.textContent)
+      .then(() => toast("已复制思考内容", "ok"));
+  };
+  foot.appendChild(close);
+  foot.appendChild(copy);
+}
+
+/* 对话节点：点击回复前的「思考内容」按钮 → 弹窗显示该条回复的思考内容 */
+function showMsgThinking(node, msg) {
+  openOverlay("思考内容 · " + (node ? node.title : "对话"));
+  const bodyEl = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.textContent =
+    "以下为模型生成该条回复前的思考内容（随对话记录保存）。";
+  bodyEl.appendChild(hint);
+  const pre = document.createElement("pre");
+  pre.className = "think-pre";
+  pre.textContent = (msg && msg.reasoning) || "";
+  bodyEl.appendChild(pre);
+  const foot = $("#ovFoot");
+  const close = document.createElement("button");
+  close.className = "mini";
+  close.textContent = "关闭";
+  close.onclick = closeOverlay;
+  const copy = document.createElement("button");
+  copy.className = "mini primary";
+  copy.textContent = "复制";
+  copy.onclick = () => {
+    navigator.clipboard
+      .writeText(pre.textContent || "")
       .then(() => toast("已复制思考内容", "ok"));
   };
   foot.appendChild(close);
@@ -4916,6 +5903,7 @@ function flushNow() {
 function migrateWf(wf) {
   wf.nodes = wf.nodes || [];
   wf.wires = wf.wires || [];
+  wf.groups = Array.isArray(wf.groups) ? wf.groups : [];
   for (const n of wf.nodes) {
     n.title = n.title || "未命名节点";
     delete n.runPromise; // 清理旧版本误存的运行期 Promise
@@ -4955,7 +5943,17 @@ function migrateWf(wf) {
         n.savedPaths = n.savedPath ? [n.savedPath] : [];
       n.savedPaths = n.savedPaths.filter(Boolean);
     }
+    if (n.kind === "chat" && !n.effort) n.effort = "low";
+    if (n.kind === "proc_text" && !n.effort) n.effort = "low";
   }
+  /* 清理组：移除指向不存在节点的引用，空组删除 */
+  for (const g of wf.groups) {
+    g.nodeIds = (g.nodeIds || []).filter((id) =>
+      wf.nodes.some((n) => n.id === id),
+    );
+    g.title = g.title || "组";
+  }
+  wf.groups = wf.groups.filter((g) => g.nodeIds.length);
   return wf;
 }
 
@@ -4968,11 +5966,11 @@ async function ensureWorkflow() {
   if (!list.some((w) => w.id === id)) id = list.length ? list[0].id : null;
   if (!id) {
     id = "default";
-    S.wf = { id, name: "默认工作流", nodes: [], wires: [] };
+    S.wf = { id, name: "默认工作流", nodes: [], wires: [], groups: [] };
     await window.api.wfSave(id, S.wf);
   } else {
     const r = await window.api.wfLoad(id);
-    S.wf = r.ok ? r.data : { id, name: id, nodes: [], wires: [] };
+    S.wf = r.ok ? r.data : { id, name: id, nodes: [], wires: [], groups: [] };
   }
   S.wf.id = id;
   migrateWf(S.wf);
@@ -5071,7 +6069,7 @@ function deleteWorkflowDialog() {
     closeOverlay();
     const id = "default";
     clearHistory();
-    S.wf = { id, name: "默认工作流", nodes: [], wires: [] };
+    S.wf = { id, name: "默认工作流", nodes: [], wires: [], groups: [] };
     await window.api.wfSave(id, S.wf);
     S.config.activeWorkflowId = id;
     await window.api.configSave(S.config);
@@ -5322,6 +6320,7 @@ function openHelp() {
     <li><b>运行</b>：点击节点上的 ▶，自动递归执行上游并处理当前节点。</li>
     <li><b>预览</b>：◈ 按钮在运行前查看将要发送的完整请求。</li>
     <li><b>参数</b>：右上角「API」按钮展开服务商 / 模型 / 温度 / 尺寸选择；「多次尝试」可自动重试。</li>
+    <li><b>浏览</b>：输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>
     <li><b>清空</b>：输出面板头部「清空」移除输出，回到未处理状态。</li>
   </ul>
 
@@ -5339,11 +6338,20 @@ function openHelp() {
   <h3>⑧ 其他节点</h3>
   <ul>
     <li><b>对话节点</b>：微信风格聊天气泡（AI 白左 · 用户绿右），支持系统提示词，对话记录随工作流保存，输出端子输出整个对话记录。</li>
-    <li><b>文件参考</b>：文本节点可导入 txt / md / json / yaml / csv / log 等文件内容（超过 500KB 拒绝导入）。</li>
+    <li><b>文件参考</b>：文本节点右上角 📄 小按钮可导入 txt / md / json / yaml / csv / log 等文件内容（超过 500KB 拒绝导入），不占用节点空间。</li>
   </ul>
 
   <h3>⑨ 快捷键</h3>
-  <p><code>Ctrl+Z</code> 撤销 · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> 重做 · <code>Ctrl+C</code> 复制选中节点 · <code>Delete</code> 删除选中节点 / 连线（节点头部 ✕ 等效）· <code>Esc</code> 取消选择 · 点击节点标题就地重命名 · <code>⤢ 居中</code> 缩放定位全部节点。</p>
+  <p><code>Ctrl+Z</code> 撤销 · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> 重做 · <code>Ctrl+C</code> 复制选中节点 · <code>Delete</code> 删除选中节点 / 连线 / 组 · <code>G</code> 把选中节点组成组 / 解散选中组 · <code>Esc</code> 取消选择 · 点击节点标题就地重命名 · <code>⤢ 居中</code> 缩放定位全部节点。</p>
+
+  <h3>⑩ 框选与组</h3>
+  <ul>
+    <li><b>框选</b>：按住 <code>Ctrl + 左键</code> 拖拽画布空白处（或开启顶栏「▭ 框选」模式后直接左键拖拽），松开后框内节点全部选中，可整体移动 / 删除 / 复制。</li>
+    <li><b>组</b>：选中多个节点后按 <code>G</code> 或点「◫ 组」→ 输入标题创建组；组为虚线圆角边框，可整体拖动、边缘/角落把手<b>横竖分别缩放</b>（成员达到最小尺寸后整体停止缩放，内部比例不变）、✕ 或右键删除；再次点击「组」按钮 / 按 <code>G</code> 解散组（节点保留）。</li>
+    <li><b>边栏</b>：工具栏左侧「☰」打开节点树状列表，顶部输入框可按标题筛选，点击条目画布自动居中定位到该节点。</li>
+    <li><b>输出浏览</b>：处理节点 / 动画节点输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>
+    <li><b>对话思考</b>：对话节点支持服务商 / 模型选择与请求预览；模型思考时灰色内容流式显示在「输入中」位置，回复完成后在回答前方出现「思考内容」按钮，点击可查看本条思考全文。</li>
+  </ul>
 
   </div>`;
   const foot = $("#ovFoot");
@@ -5540,11 +6548,26 @@ async function init() {
   $("#btnUndo").onclick = undo;
   $("#btnRedo").onclick = redo;
   $("#btnFit").onclick = fitCanvas;
+  $("#btnBox").onclick = () => {
+    S.boxMode = !S.boxMode;
+    const b = $("#btnBox");
+    b.classList.toggle("on", S.boxMode);
+    b.title = S.boxMode
+      ? "框选模式已开启：左键拖拽即可框选（再点关闭）"
+      : "框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）";
+    toast(
+      S.boxMode ? "框选模式已开启：左键拖拽框选节点" : "框选模式已关闭",
+      "ok",
+    );
+    renderStatus();
+  };
+  $("#btnGroup").onclick = toggleGroupAction;
+  $("#btnSidebar").onclick = toggleSidebar;
+  $("#sideFilter").addEventListener("input", renderSidebar);
   $("#btnDup").onclick = () => {
-    if (S.sel) {
-      const n = nodeById(S.sel);
-      if (n) duplicateNode(n);
-    } else toast("请先选中节点", "warn");
+    const ns = currentSelection();
+    if (ns.length) duplicateNodes(ns);
+    else toast("请先选中节点", "warn");
   };
   $("#wfSelect").onchange = (ev) => {
     if (ev.target.value) loadWorkflow(ev.target.value);
