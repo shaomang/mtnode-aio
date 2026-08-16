@@ -9,6 +9,35 @@ contextBridge.exposeInMainWorld('api', {
 
   appVersion: () => ipcRenderer.invoke('app:version'),
 
+  updateStatus: () => ipcRenderer.invoke('update:status'),
+  updateCheck: (opts) => ipcRenderer.invoke('update:check', opts || {}),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateInstall: () => ipcRenderer.invoke('update:install'),
+  updateConfirmAndStart: () => ipcRenderer.invoke('update:confirmAndStart'),
+  onUpdateEvent: (cb) => {
+    const chans = [
+      'update:available',
+      'update:progress',
+      'update:downloaded',
+      'update:error',
+      'update:status',
+    ];
+    const handler = (ev, data) => {
+      try { cb(ev && ev.type ? ev : { channel: null }, data); } catch (_) {}
+    };
+    /* 分别监听；回调收到 {channel, data} */
+    const wraps = {};
+    for (const ch of chans) {
+      wraps[ch] = (_e, data) => {
+        try { cb(ch, data); } catch (e) { console.error('onUpdateEvent', e); }
+      };
+      ipcRenderer.on(ch, wraps[ch]);
+    }
+    return () => {
+      for (const ch of chans) ipcRenderer.removeListener(ch, wraps[ch]);
+    };
+  },
+
   configLoad: () => ipcRenderer.invoke('config:load'),
   configSave: (c) => ipcRenderer.invoke('config:save', c),
 
@@ -26,6 +55,7 @@ contextBridge.exposeInMainWorld('api', {
   fileWriteText: (p, c) => ipcRenderer.invoke('file:writeText', { path: p, content: c }),
   fileCopyAssetTo: (a, d) => ipcRenderer.invoke('file:copyAssetTo', { assetPath: a, destPath: d }),
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
+  fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),
   fileSaveDialog: (o) => ipcRenderer.invoke('file:saveDialog', o),
   saveTextFile: (o) => ipcRenderer.invoke('file:saveText', o),
   fileOpenDialog: (o) => ipcRenderer.invoke('file:openDialog', o),

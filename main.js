@@ -25,6 +25,10 @@ function gifenc() {
    本文件与渲染层不 import 任何 dsh 代码，dsh 升级只触及 dsh/gateway/。 */
 const { createDshAdapter } = require("./dsh/main-dsh.js");
 const I18n = require("./renderer/i18n.js");
+const {
+  registerUpdateIpc,
+  startBackgroundCheck,
+} = require("./updater.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -376,6 +380,15 @@ ipcMain.handle("file:copyAssetTo", (e, { assetPath, destPath }) => {
 ipcMain.handle("file:exists", (e, p) => {
   try {
     return fs.existsSync(p);
+  } catch {
+    return false;
+  }
+});
+ipcMain.handle("file:isDir", (e, p) => {
+  try {
+    const s = String(p || "");
+    if (!s) return false;
+    return fs.existsSync(s) && fs.statSync(s).isDirectory();
   } catch {
     return false;
   }
@@ -1686,6 +1699,10 @@ app.whenReady().then(() => {
   mainWin.loadFile(join(__dirname, "renderer", "index.html"));
   mainWin.on("closed", () => {
     mainWin = null;
+  });
+  registerUpdateIpc(() => mainWin);
+  mainWin.webContents.once("did-finish-load", () => {
+    startBackgroundCheck(() => mainWin);
   });
 });
 

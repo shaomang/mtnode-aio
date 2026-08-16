@@ -841,8 +841,22 @@ function dshRunTask(input, opts) {
       baseUrl = "";
     }
   }
+  return Promise.resolve()
+    .then(async () => {
+      let ws = String(opts.workspace || dshWorkspaceOf(opts.node) || "").trim();
+      if (ws && typeof pathIsExistingDir === "function") {
+        if (!(await pathIsExistingDir(ws))) {
+          await wipeMatchingWorkspaces(ws);
+          ws = String(dshWorkspaceOf(opts.node) || "").trim();
+          if (ws && !(await pathIsExistingDir(ws))) ws = "";
+          toast(I18n.t("工作目录无效，已改用默认目录"), "warn");
+        }
+      }
+      return ws || S.dshWorkspaceFallback || "";
+    })
+    .then((workspace) => {
   const runParams = {
-    workspace: opts.workspace || dshWorkspaceOf(opts.node),
+    workspace,
     input: String(input || ""),
     model: opts.model || d.model || "deepseek-v4-flash",
     maxTokens: Number(d.maxTokens) || 49152,
@@ -963,6 +977,7 @@ function dshRunTask(input, opts) {
         }
       });
   });
+    });
 }
 
 /* 智能任务节点正在跑、且已关联到该会话时,会话页应镜像节点的流式日志 */
@@ -14918,6 +14933,7 @@ async function ensureWorkflow() {
   migrateWf(S.wf);
   rememberWf(S.wf);
   S.config.activeWorkflowId = id;
+  await sanitizeWfEnvironment({ quiet: false });
   await window.api.configSave(S.config);
   trackWorkflow(id, S.wf.name);
 }
@@ -14960,6 +14976,7 @@ async function loadWorkflow(id) {
   S.wf = wf;
   rememberWf(wf);
   S.config.activeWorkflowId = id;
+  await sanitizeWfEnvironment({ quiet: false });
   await window.api.configSave(S.config);
   renderAll();
   trackWorkflow(id, S.wf.name);
@@ -15038,9 +15055,24 @@ function renderWfWorkspace() {
   inp.type = "text";
   inp.value = wfWorkspace();
   inp.placeholder = I18n.t("统一目录(留空 = 各节点单独设置)…");
-  inp.addEventListener("change", () => {
+  inp.addEventListener("change", async () => {
     if (!S.wf) return;
-    S.wf.workspace = inp.value.trim();
+    const v = inp.value.trim();
+    if (v && !(await pathIsExistingDir(v))) {
+      S.wf.workspace = "";
+      scheduleSave(true);
+      renderWfWorkspace();
+      renderCanvas();
+      await showInfoOverlay(
+        I18n.t("工作目录无效"),
+        I18n.t(
+          "该路径不存在或不是有效文件夹，已自动清空。请重新选择有效的工作目录。",
+        ),
+        v,
+      );
+      return;
+    }
+    S.wf.workspace = v;
     scheduleSave(true);
     renderCanvas();
     renderWfWorkspace();
@@ -15466,13 +15498,18 @@ function mkIconBtn(icon, title, onclick, opts) {
   b.onclick = onclick;
   return b;
 }
-/* 模板商店网格：按可用面积估算每页张数（上限 48） */
+/* 模板商店：按视图与可用面积估算每页条数（上限 48） */
 function tplBrowsePageSize() {
   const box = document.querySelector("#overlay .overlay-box");
   const body = $("#ovBody");
   const w = Math.max(360, (body && body.clientWidth) || (box && box.clientWidth) || 900);
   const boxH = (box && box.clientHeight) || Math.min(window.innerHeight * 0.9, 860);
   const availH = Math.max(220, boxH - 230);
+  if (TPL_ST.view === "list") {
+    const rowH = 72;
+    const rows = Math.max(4, Math.floor(availH / rowH));
+    return Math.min(48, Math.max(10, rows));
+  }
   const cardW = 136;
   const cardH = 206;
   const cols = Math.max(2, Math.floor((w - 24) / cardW));
@@ -15529,12 +15566,451 @@ async function adoptImportedWorkflow(workflow) {
   S.wf.id = workflow.id;
   migrateWf(S.wf);
   S.config.activeWorkflowId = S.wf.id;
+  await sanitizeWfEnvironment({ quiet: false });
   await window.api.wfSave(S.wf.id, S.wf);
   await window.api.configSave(S.config);
   renderAll();
   refreshWfSelect();
   trackWorkflow(S.wf.id, S.wf.name);
   toast(I18n.t("画布已导入：") + (S.wf.name || S.wf.id), "ok");
+}
+
+/* ── 无效工作目录 / 服务商 · 模型：导入或打开他人模板后的修复 ── */
+async function wipeMatchingWorkspaces(badPath) {
+  const bad = String(badPath || "").trim();
+  if (!bad) return;
+  let changed = false;
+  const clr = (obj, key) => {
+    if (obj && String(obj[key] || "").trim() === bad) {
+      obj[key] = "";
+      changed = true;
+    }
+  };
+  if (S.wf) {
+    clr(S.wf, "workspace");
+    for (const n of S.wf.nodes || []) {
+      clr(n, "workspace");
+      clr(n, "agentWorkspace");
+    }
+  }
+  if (String(S.assistWorkspace || "").trim() === bad) {
+    S.assistWorkspace = "";
+    if (S.config) S.config.assistWorkspace = "";
+    changed = true;
+  }
+  for (const sess of agentSessions()) clr(sess, "workspace");
+  if (changed) {
+    scheduleSave(true);
+    try {
+      if (S.config) await window.api.configSave(S.config);
+    } catch (_) {}
+  }
+}
+
+async function pathIsExistingDir(p) {
+  const s = String(p || "").trim();
+  if (!s) return true;
+  try {
+    return !!(await window.api.fileIsDir(s));
+  } catch (_) {
+    return false;
+  }
+}
+
+function showInfoOverlay(title, summary, detail) {
+  return new Promise((resolve) => {
+    openOverlay(title || I18n.t("提示"));
+    overlayPersistent = true;
+    const body = $("#ovBody");
+    const foot = $("#ovFoot");
+    body.innerHTML = "";
+    const p = document.createElement("p");
+    p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
+    p.textContent = summary || "";
+    body.appendChild(p);
+    if (detail) {
+      const pre = document.createElement("pre");
+      pre.style.cssText =
+        "max-height:280px; overflow:auto; background:var(--code); border:1px solid var(--bd); padding:8px; font-size:11px; white-space:pre-wrap; word-break:break-all";
+      pre.textContent = detail;
+      body.appendChild(pre);
+    }
+    foot.innerHTML = "";
+    const ok = document.createElement("button");
+    ok.className = "mini primary";
+    ok.textContent = I18n.t("知道了");
+    ok.onclick = () => {
+      closeOverlay();
+      resolve();
+    };
+    foot.appendChild(ok);
+  });
+}
+
+async function sanitizeInvalidWorkspaces(opts) {
+  opts = opts || {};
+  const cleared = [];
+  const wipe = async (label, getter, setter) => {
+    const v = String(getter() || "").trim();
+    if (!v) return;
+    if (await pathIsExistingDir(v)) return;
+    setter("");
+    cleared.push(label + "\n  " + v);
+  };
+  if (S.wf) {
+    await wipe(I18n.t("画布工作目录"), () => S.wf.workspace, (v) => {
+      S.wf.workspace = v;
+    });
+    for (const n of S.wf.nodes || []) {
+      const title = n.title || n.id || I18n.t("节点");
+      if (typeof n.workspace === "string" && n.workspace.trim()) {
+        await wipe(title + " · workspace", () => n.workspace, (v) => {
+          n.workspace = v;
+        });
+      }
+      if (typeof n.agentWorkspace === "string" && n.agentWorkspace.trim()) {
+        await wipe(title + " · agentWorkspace", () => n.agentWorkspace, (v) => {
+          n.agentWorkspace = v;
+        });
+      }
+    }
+  }
+  await wipe(
+    I18n.t("全局助手工作目录"),
+    () => S.assistWorkspace,
+    (v) => {
+      S.assistWorkspace = v;
+      if (S.config) S.config.assistWorkspace = v;
+    },
+  );
+  for (const sess of agentSessions()) {
+    if (!sess || typeof sess.workspace !== "string") continue;
+    await wipe(
+      I18n.t("智能会话") + " · " + (sess.title || sess.id || ""),
+      () => sess.workspace,
+      (v) => {
+        sess.workspace = v;
+      },
+    );
+  }
+  if (!cleared.length) return 0;
+  scheduleSave(true);
+  if (S.config) {
+    try {
+      await window.api.configSave(S.config);
+    } catch (_) {}
+  }
+  if (!opts.quiet) {
+    await showInfoOverlay(
+      I18n.t("工作目录无效"),
+      I18n.t(
+        "以下工作目录不存在或不是有效文件夹，已自动清空。请重新选择有效目录，以免影响全局助手、智能任务与相对路径保存。",
+      ),
+      cleared.join("\n\n"),
+    );
+  }
+  return cleared.length;
+}
+
+function apiProvidersForKind(kind) {
+  const list = (S.config && S.config.providers) || [];
+  if (kind === "proc_image" || kind === "image")
+    return list.filter((p) => String(p.type || "").startsWith("image_"));
+  return list.filter((p) => p.type === "text_openai");
+}
+
+function agentProviderRouteValid(route) {
+  const s = String(route || "").trim() || "deepseek-official";
+  if (s === "deepseek-official") return true;
+  if (s.startsWith("mtnode_")) {
+    const id = s.slice("mtnode_".length);
+    return (S.config.providers || []).some(
+      (p) => p.id === id && p.type === "text_openai",
+    );
+  }
+  return false;
+}
+
+function apiProviderValid(providerId, kind) {
+  const p = (S.config.providers || []).find((x) => x.id === providerId);
+  if (!p) return false;
+  if (kind === "proc_image") return String(p.type || "").startsWith("image_");
+  return p.type === "text_openai";
+}
+
+/* 按「无效服务商键」分组：每组稍后单独弹窗批量替换 */
+function collectInvalidProviderGroups(wf) {
+  const map = new Map();
+  const bump = (key, meta, node) => {
+    let g = map.get(key);
+    if (!g) {
+      g = Object.assign({ key, nodes: [] }, meta);
+      map.set(key, g);
+    }
+    g.nodes.push(node);
+  };
+  for (const n of (wf && wf.nodes) || []) {
+    const agentish =
+      n.kind === "agent_task" ||
+      (n.kind === "proc_text" && n.agent) ||
+      (n.kind === "chat" && n.agent);
+    if (agentish) {
+      const route = String(n.provider || "deepseek-official").trim() || "deepseek-official";
+      if (!agentProviderRouteValid(route)) {
+        bump("agent:" + route, {
+          mode: "agent",
+          type: "text",
+          badLabel: route,
+          modelOnly: false,
+        }, n);
+      } else {
+        const models = agentModelsForRoute(route);
+        if (n.model && models.length && !models.includes(String(n.model))) {
+          bump("agent-model:" + route + ":" + n.model, {
+            mode: "agent",
+            type: "text",
+            badLabel: route + " · " + n.model,
+            modelOnly: true,
+            keepRoute: route,
+          }, n);
+        }
+      }
+      continue;
+    }
+    if (
+      n.kind !== "proc_text" &&
+      n.kind !== "proc_image" &&
+      n.kind !== "chat"
+    )
+      continue;
+    const pid = String(n.providerId || "").trim();
+    if (!apiProviderValid(pid, n.kind)) {
+      bump("api:" + (pid || "(empty)") + ":" + n.kind, {
+        mode: "api",
+        type: n.kind === "proc_image" ? "image" : "text",
+        badLabel: pid || I18n.t("（未设置）"),
+        modelOnly: false,
+        nodeKind: n.kind,
+      }, n);
+    } else {
+      const p = (S.config.providers || []).find((x) => x.id === pid);
+      const models = ((p && p.models) || []).map(String);
+      if (n.model && models.length && !models.includes(String(n.model))) {
+        bump("api-model:" + pid + ":" + n.model, {
+          mode: "api",
+          type: n.kind === "proc_image" ? "image" : "text",
+          badLabel: (p.name || pid) + " · " + n.model,
+          modelOnly: true,
+          keepProviderId: pid,
+          nodeKind: n.kind,
+        }, n);
+      }
+    }
+  }
+  return [...map.values()];
+}
+
+function promptReplaceProviderGroup(group) {
+  return new Promise((resolve) => {
+    openOverlay(I18n.t("无效服务商 / 模型"));
+    overlayPersistent = true;
+    const body = $("#ovBody");
+    const foot = $("#ovFoot");
+    body.innerHTML = "";
+    const titles = group.nodes
+      .map((n) => n.title || n.id)
+      .filter(Boolean)
+      .slice(0, 12);
+    const more =
+      group.nodes.length > titles.length
+        ? I18n.t(" …共 ") + group.nodes.length + I18n.t(" 个节点")
+        : "";
+    const p = document.createElement("p");
+    p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
+    p.textContent =
+      I18n.t("检测到无效服务商 / 模型「") +
+      group.badLabel +
+      I18n.t("」，影响节点：") +
+      titles.join("、") +
+      more +
+      I18n.t("。请选择要批量替换成的本地服务商与模型。");
+    body.appendChild(p);
+
+    const provLab = document.createElement("label");
+    provLab.className = "n-field";
+    provLab.style.display = "block";
+    provLab.style.marginBottom = "8px";
+    provLab.appendChild(document.createTextNode(I18n.t("替换为服务商")));
+    const provSel = document.createElement("select");
+    provSel.className = "n-field";
+    provSel.style.width = "100%";
+    const modelLab = document.createElement("label");
+    modelLab.className = "n-field";
+    modelLab.style.display = "block";
+    modelLab.appendChild(document.createTextNode(I18n.t("模型")));
+    const modelSel = document.createElement("select");
+    modelSel.className = "n-field";
+    modelSel.style.width = "100%";
+
+    const fillModels = () => {
+      modelSel.innerHTML = "";
+      let models = [];
+      if (group.mode === "agent") {
+        models = agentModelsForRoute(provSel.value).map((id) => ({
+          id,
+          name: id,
+        }));
+      } else {
+        const p = (S.config.providers || []).find((x) => x.id === provSel.value);
+        models = ((p && p.models) || []).map((id) => ({ id, name: id }));
+      }
+      if (!models.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = I18n.t("（无可用模型）");
+        modelSel.appendChild(o);
+        return;
+      }
+      for (const m of models) {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = m.name || m.id;
+        modelSel.appendChild(o);
+      }
+    };
+
+    if (group.mode === "agent") {
+      const dp = dshProvider();
+      {
+        const o = document.createElement("option");
+        o.value = "deepseek-official";
+        o.textContent = (dp && dp.name) || I18n.t("DeepSeek 官方");
+        provSel.appendChild(o);
+      }
+      for (const p of mtnodePiProviders()) {
+        const o = document.createElement("option");
+        o.value = "mtnode_" + p.route;
+        o.textContent = p.name;
+        provSel.appendChild(o);
+      }
+      if (group.modelOnly && group.keepRoute) {
+        const hit = [...provSel.options].some((o) => o.value === group.keepRoute);
+        if (hit) provSel.value = group.keepRoute;
+      }
+    } else {
+      const list = apiProvidersForKind(group.type);
+      if (!list.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = I18n.t("（请先在设置中添加服务商）");
+        provSel.appendChild(o);
+      } else {
+        for (const p of list) {
+          const o = document.createElement("option");
+          o.value = p.id;
+          o.textContent = p.name || p.id;
+          provSel.appendChild(o);
+        }
+        if (group.modelOnly && group.keepProviderId) {
+          const hit = list.some((p) => p.id === group.keepProviderId);
+          if (hit) provSel.value = group.keepProviderId;
+        }
+      }
+    }
+    provSel.onchange = fillModels;
+    fillModels();
+    provLab.appendChild(provSel);
+    modelLab.appendChild(modelSel);
+    body.appendChild(provLab);
+    body.appendChild(modelLab);
+
+    foot.innerHTML = "";
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      closeOverlay();
+      resolve(val);
+    };
+    const skip = document.createElement("button");
+    skip.className = "mini";
+    skip.textContent = I18n.t("跳过此服务商");
+    skip.onclick = () => finish(null);
+    const ok = document.createElement("button");
+    ok.className = "mini primary";
+    ok.textContent = I18n.t("批量替换");
+    ok.onclick = () => {
+      const pv = provSel.value;
+      const mv = modelSel.value;
+      if (!pv) {
+        toast(I18n.t("请先在设置中添加可用的服务商"), "warn");
+        return;
+      }
+      if (!mv) {
+        toast(I18n.t("请选择模型"), "warn");
+        return;
+      }
+      if (group.mode === "agent") finish({ route: pv, model: mv });
+      else finish({ providerId: pv, model: mv });
+    };
+    foot.appendChild(skip);
+    foot.appendChild(ok);
+  });
+}
+
+async function sanitizeInvalidProviders(wf, opts) {
+  opts = opts || {};
+  if (!wf) return 0;
+  const groups = collectInvalidProviderGroups(wf);
+  if (!groups.length) return 0;
+  if (!opts.quiet) {
+    await showInfoOverlay(
+      I18n.t("检测到无效模型配置"),
+      I18n.t(
+        "当前画布含有本机不存在的服务商或模型（常见于他人模板）。接下来将按每个无效服务商分别询问，批量替换为你自己的服务商。",
+      ),
+      groups
+        .map(
+          (g) =>
+            "· " +
+            g.badLabel +
+            " → " +
+            g.nodes.length +
+            I18n.t(" 个节点"),
+        )
+        .join("\n"),
+    );
+  }
+  let nChanged = 0;
+  for (const g of groups) {
+    const pick = await promptReplaceProviderGroup(g);
+    if (!pick) continue;
+    for (const node of g.nodes) {
+      if (g.mode === "agent") {
+        node.provider = pick.route;
+        node.model = pick.model;
+        node.vision = null;
+      } else {
+        node.providerId = pick.providerId;
+        node.model = pick.model;
+      }
+      nChanged++;
+    }
+  }
+  if (nChanged) scheduleSave(true);
+  return nChanged;
+}
+
+async function sanitizeWfEnvironment(opts) {
+  opts = opts || {};
+  if (S._sanitizingEnv) return;
+  S._sanitizingEnv = true;
+  try {
+    await sanitizeInvalidWorkspaces(opts);
+    if (S.wf) await sanitizeInvalidProviders(S.wf, opts);
+  } finally {
+    S._sanitizingEnv = false;
+  }
 }
 
 /* Base64 导出结果展示：含多媒体或体积较大时提示改用文件 */
@@ -15649,6 +16125,7 @@ function importWorkflowDialog() {
 const TPL_PREV_CACHE = new Map();
 const TPL_ST = {
   tab: "browse",
+  view: "grid", /* grid | list，默认网格 */
   q: "",
   tag: "",
   sort: "new",
@@ -16196,8 +16673,9 @@ async function openTemplateStore() {
   }
 
   function cardEl(item, mine) {
+    const list = TPL_ST.view === "list";
     const card = document.createElement("div");
-    card.className = "tpl-card";
+    card.className = "tpl-card" + (list ? " list" : "");
     const thumb = document.createElement("div");
     card.appendChild(thumb);
     fillThumb(thumb, item);
@@ -16323,9 +16801,41 @@ async function openTemplateStore() {
         row.appendChild(del);
       }
     }
-    body.appendChild(row);
-    card.appendChild(body);
+    if (list) {
+      card.appendChild(body);
+      card.appendChild(row);
+    } else {
+      body.appendChild(row);
+      card.appendChild(body);
+    }
     return card;
+  }
+
+  function appendTplViewToggle(host) {
+    const wrap = document.createElement("span");
+    wrap.className = "tpl-view-tog";
+    const gridBtn = mkIconBtn("▦", I18n.t("网格视图"), () => {
+      if (TPL_ST.view === "grid") return;
+      TPL_ST.view = "grid";
+      TPL_ST.page = 1;
+      paint();
+    }, { on: TPL_ST.view !== "list" });
+    const listBtn = mkIconBtn("☰", I18n.t("列表视图"), () => {
+      if (TPL_ST.view === "list") return;
+      TPL_ST.view = "list";
+      TPL_ST.page = 1;
+      paint();
+    }, { on: TPL_ST.view === "list" });
+    wrap.appendChild(gridBtn);
+    wrap.appendChild(listBtn);
+    host.appendChild(wrap);
+  }
+
+  function appendTplItems(host, items, mine) {
+    const grid = document.createElement("div");
+    grid.className = "tpl-grid" + (TPL_ST.view === "list" ? " tpl-list" : "");
+    items.forEach((it) => grid.appendChild(cardEl(it, mine)));
+    host.appendChild(grid);
   }
 
   function appendTplPager(host, total, pageSize) {
@@ -16448,7 +16958,10 @@ async function openTemplateStore() {
     const usedSize = r.data.pageSize || pageSize;
     const head = document.createElement("div");
     head.className = "tpl-grid-head";
-    head.textContent = I18n.t("共 ") + total + I18n.t(" 个模板");
+    const headLab = document.createElement("span");
+    headLab.textContent = I18n.t("共 ") + total + I18n.t(" 个模板");
+    head.appendChild(headLab);
+    appendTplViewToggle(head);
     pane.appendChild(head);
     if (!items.length) {
       pane.appendChild(
@@ -16460,10 +16973,7 @@ async function openTemplateStore() {
       );
       return;
     }
-    const grid = document.createElement("div");
-    grid.className = "tpl-grid";
-    items.forEach((it) => grid.appendChild(cardEl(it, false)));
-    pane.appendChild(grid);
+    appendTplItems(pane, items, false);
     appendTplPager(pane, total, usedSize);
   }
 
@@ -16765,7 +17275,8 @@ async function openTemplateStore() {
 
     const head = document.createElement("div");
     head.className = "tpl-grid-head";
-    head.textContent =
+    const headLab = document.createElement("span");
+    headLab.textContent =
       I18n.t("获赞 ") +
       (u.likesReceived || 0) +
       " · " +
@@ -16775,15 +17286,14 @@ async function openTemplateStore() {
       I18n.t("共 ") +
       total +
       I18n.t(" 个模板");
+    head.appendChild(headLab);
+    appendTplViewToggle(head);
     pane.appendChild(head);
     if (!total) {
       pane.appendChild(hintEl(I18n.t("暂无模板")));
       return;
     }
-    const grid = document.createElement("div");
-    grid.className = "tpl-grid";
-    items.forEach((it) => grid.appendChild(cardEl(it, true)));
-    pane.appendChild(grid);
+    appendTplItems(pane, items, true);
     appendTplPager(pane, total, pageSize);
   }
 
@@ -20000,6 +20510,105 @@ function paintLangBtn() {
   btn.classList.toggle("is-en", en);
 }
 
+/* ── 内置版本更新：有新版本时顶栏高光「更新」── */
+let _updateOff = null;
+let _updateInfo = null;
+function paintUpdateBtn(st) {
+  const btn = $("#btnUpdate");
+  const bar = $(".topbar");
+  if (!btn) return;
+  const avail = !!(st && st.available && st.version);
+  const busy = !!(st && st.downloading);
+  const txt = btn.querySelector(".btn-update-txt");
+  if (avail) {
+    btn.hidden = false;
+    btn.setAttribute("aria-hidden", "false");
+    btn.classList.add("show");
+    if (bar) bar.classList.add("has-update");
+    const ver = st.version || (_updateInfo && _updateInfo.version) || "";
+    btn.title = busy
+      ? I18n.t("正在下载更新…")
+      : I18n.t("发现新版本 v") + ver + I18n.t("，点击下载并安装");
+    if (txt)
+      txt.textContent = busy
+        ? I18n.t("下载中")
+        : I18n.t("更新");
+    btn.classList.toggle("busy", busy);
+  } else {
+    btn.hidden = true;
+    btn.setAttribute("aria-hidden", "true");
+    btn.classList.remove("show", "busy");
+    if (bar) bar.classList.remove("has-update");
+  }
+}
+function bindUpdateUi() {
+  const btn = $("#btnUpdate");
+  if (!btn || !window.api || !window.api.updateConfirmAndStart) return;
+  if (_updateOff) {
+    try {
+      _updateOff();
+    } catch (_) {}
+    _updateOff = null;
+  }
+  btn.onclick = async () => {
+    if (btn.classList.contains("busy")) return;
+    try {
+      const r = await window.api.updateConfirmAndStart();
+      if (r && r.cancelled) return;
+      if (r && r.ok === false) {
+        toast(
+          I18n.t("更新失败：") + (r.error || I18n.t("未知错误")),
+          "err",
+        );
+        return;
+      }
+      if (r && r.downloading) {
+        btn.classList.add("busy");
+        const txt = btn.querySelector(".btn-update-txt");
+        if (txt) txt.textContent = I18n.t("下载中");
+        toast(I18n.t("开始下载更新（差分包）…"), "ok");
+      }
+    } catch (e) {
+      toast(I18n.t("更新失败：") + ((e && e.message) || String(e)), "err");
+    }
+  };
+  if (window.api.onUpdateEvent) {
+    _updateOff = window.api.onUpdateEvent((channel, data) => {
+      if (channel === "update:available") {
+        _updateInfo = data || null;
+        paintUpdateBtn({
+          available: true,
+          version: data && data.version,
+          downloading: false,
+        });
+      } else if (channel === "update:progress") {
+        const pct =
+          data && data.percent != null ? Math.round(data.percent) : 0;
+        const txt = btn.querySelector(".btn-update-txt");
+        if (txt) txt.textContent = pct > 0 ? pct + "%" : I18n.t("下载中");
+        btn.classList.add("busy", "show");
+        btn.hidden = false;
+        const bar = $(".topbar");
+        if (bar) bar.classList.add("has-update");
+      } else if (channel === "update:downloaded") {
+        toast(I18n.t("更新已下载，即将安装并重启…"), "ok");
+        paintUpdateBtn({
+          available: true,
+          version: (data && data.version) || (_updateInfo && _updateInfo.version),
+          downloading: false,
+        });
+      } else if (channel === "update:error") {
+        btn.classList.remove("busy");
+        if (data && data.error)
+          toast(I18n.t("更新失败：") + data.error, "err");
+      } else if (channel === "update:status") {
+        paintUpdateBtn(data);
+      }
+    });
+  }
+  window.api.updateStatus().then((st) => paintUpdateBtn(st)).catch(() => {});
+}
+
 function applyLocale(locale, persist) {
   const loc = I18n.setLocale(locale === "en" ? "en" : "zh");
   document.documentElement.lang = loc === "en" ? "en" : "zh-CN";
@@ -20049,6 +20658,7 @@ async function init() {
   if (apprBtn) {
     apprBtn.onclick = () => toggleApprovalsPanel();
   }
+  bindUpdateUi();
   if (window.api.setLocale) window.api.setLocale(S.config.locale);
   /* dsh 配置缺省合并；workspaceFallback 由主进程给出（应用数据目录） */
   S.config.dsh = Object.assign(
