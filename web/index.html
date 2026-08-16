@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<!--
+  发布到 http://mt-agent.com/mtnode/
+  1. 上传本文件为 index.html，并上传同目录 screenshot.png
+  2. 将安装包 / 源码包放到 downloads/
+     MTNodeAIO-Setup-1.1.9.exe
+     MTNodeAIO-src-1.1.9.zip
+  改版本：只改下方脚本里的 VER
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MTNode AI编排器 · 下载</title>
+<meta name="description" content="MTNode AI编排器 v1.1 — 可视化 AI 工作流编排桌面应用，内置 DeepSeek Harness Agent 引擎。永久免费、MIT 开源。Windows 安装包与源码下载。">
+<meta property="og:title" content="MTNode AI编排器 v1.1">
+<meta property="og:description" content="从画布编排到 Agent 办事：智能会话、视觉模型、插件 / 技能 / MCP、AI 直接搭建工作流。永久免费开源。">
+<meta property="og:image" content="screenshot.png">
+<meta name="theme-color" content="#161b25">
+<style>
+:root{
+  --bg:#0d1016; --bg2:#12161f; --panel:#161b25; --panel2:#1b2230;
+  --bd:#2a3342; --bd2:#39465c; --ink:#d8dee8; --muted:#7f8a9c;
+  --orange:#ff8f2e; --orange2:#ffb066; --cyan:#38d6ff; --cyan2:#7ce8ff;
+  --green:#5fd68a; --red:#ff5f56; --code:#0c0f15;
+  --mono:'Consolas','Cascadia Code','JetBrains Mono',monospace;
+  --sans:'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.8}
+::selection{background:rgba(255,143,46,.35)}
+a{color:var(--cyan);text-decoration:none}
+a:hover{color:#fff;text-decoration:underline}
+button{font-family:var(--sans)}
+
+.wrap{max-width:980px;margin:0 auto;padding:0 20px}
+.topbar{
+  position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;
+  padding:10px 20px;background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border-bottom:3px solid var(--bd);
+}
+.logo{display:flex;align-items:center;gap:10px;flex:none}
+.logo-mark{
+  width:28px;height:28px;position:relative;flex:none;
+  background:linear-gradient(135deg,var(--panel2),#0f1320);
+  border:2px solid var(--orange);
+}
+.logo-mark::before,.logo-mark::after{content:"";position:absolute;background:var(--cyan);width:5px;height:5px}
+.logo-mark::before{top:3px;left:3px}
+.logo-mark::after{bottom:3px;right:3px}
+.logo-txt{font-weight:800;letter-spacing:2px;font-size:15px;color:var(--orange);line-height:1.15}
+.logo-sub{display:block;font-size:9px;letter-spacing:2px;color:var(--muted);font-weight:400}
+.nav{display:flex;flex-wrap:wrap;gap:4px 14px;flex:1;justify-content:center}
+.nav a{color:var(--muted);font-size:12px;letter-spacing:1px;font-weight:600}
+.nav a:hover{color:var(--orange2);text-decoration:none}
+.top-right{display:flex;align-items:center;gap:10px;flex:none}
+.ver-tag{font-size:11px;letter-spacing:1px;color:var(--muted);font-family:var(--mono)}
+.btn-lang{
+  width:36px;height:32px;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:1px;background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:2px solid var(--bd2);color:var(--ink);cursor:pointer;line-height:1;
+}
+.btn-lang:hover{border-color:var(--cyan);color:var(--cyan2)}
+.btn-lang svg{width:14px;height:14px}
+.btn-lang span{font-size:9px;font-weight:800;font-family:var(--mono);color:var(--cyan2);letter-spacing:0}
+
+section{padding:8px 0 6px}
+h1{font-size:30px;font-weight:800;letter-spacing:4px;margin:8px 0 8px}
+h1 b{color:var(--orange)}
+h2{font-size:17px;letter-spacing:3px;margin:28px 0 12px;color:var(--ink)}
+h2::before{content:"■ ";color:var(--orange);font-size:12px;vertical-align:1px}
+h3{font-size:14px;letter-spacing:1px;margin:0 0 6px}
+p{margin:8px 0;color:var(--ink)}
+p.muted,.muted{color:var(--muted);font-size:13px}
+code{font-family:var(--mono);font-size:12px;background:rgba(0,0,0,.45);border:1px solid var(--bd);border-radius:3px;padding:1px 6px;color:var(--cyan2)}
+ul{margin:8px 0 8px 22px;color:var(--ink)}
+li{margin:5px 0}
+b.hl{color:var(--orange2)}
+
+.hero{padding:36px 0 10px}
+.hero p.lead{font-size:15px;max-width:760px}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 6px}
+.pill{
+  font-size:11px;letter-spacing:1px;color:var(--cyan2);font-family:var(--mono);
+  border:1px solid var(--bd2);border-radius:3px;padding:2px 9px;background:rgba(0,0,0,.25);
+}
+.pill.accent{border-color:var(--orange);color:var(--orange2)}
+.hero-cta{margin-top:18px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.hero-cta a.dl-btn{padding:10px 22px;font-size:14px}
+
+.dl-zone{
+  border:1.5px solid var(--orange);border-radius:6px;padding:22px 24px;margin:22px 0 10px;
+  background:linear-gradient(180deg,#221a12,#171310);box-shadow:0 8px 30px rgba(0,0,0,.4);
+}
+.dl-zone h2{margin:0 0 10px;color:var(--orange2)}
+.dl-zone h2::before{content:""}
+.dl-row{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px}
+.dl-item{flex:1 1 320px;border:1px solid var(--bd2);border-radius:5px;padding:16px 18px;background:rgba(0,0,0,.25)}
+.dl-item h3{font-size:14px;letter-spacing:2px;color:var(--ink);margin-bottom:8px}
+.dl-item h3 b{color:var(--orange)}
+.dl-item .desc{font-size:12.5px;color:var(--muted);line-height:1.8;margin-bottom:12px}
+a.dl-btn{
+  display:inline-block;background:linear-gradient(180deg,#3a2a18,#241a0f);
+  border:2px solid var(--orange);color:var(--orange2);padding:9px 20px;font-size:13px;
+  letter-spacing:2px;font-weight:700;border-radius:3px;
+}
+a.dl-btn:hover{color:#fff;text-decoration:none;border-color:var(--orange2)}
+a.dl-btn.ghost{background:transparent;border-color:var(--bd2);color:var(--ink);font-weight:600}
+a.dl-btn.ghost:hover{border-color:var(--cyan);color:var(--cyan2)}
+.dl-item .meta{display:block;margin-top:9px;font-size:10.5px;color:var(--muted);font-family:var(--mono);letter-spacing:1px}
+.dl-note{margin-top:12px;font-size:12px;color:var(--muted)}
+.app-shot{display:block;width:100%;height:auto;margin:28px 0 6px;border:1px solid var(--bd);border-radius:6px;box-shadow:0 8px 30px rgba(0,0,0,.45)}
+.shot-cap{font-size:12px;color:var(--muted);margin:0 0 18px}
+
+.shift{
+  display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0 8px;
+}
+.shift-card{
+  border:1px solid var(--bd);border-radius:5px;padding:14px 16px;background:var(--panel);
+}
+.shift-card .k{font-size:10px;letter-spacing:2px;color:var(--muted);font-family:var(--mono);margin-bottom:4px}
+.shift-card.from{opacity:.85}
+.shift-card.to{border-color:var(--orange);background:linear-gradient(180deg,#221a12,#161b25)}
+
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:12px 0 8px}
+.card{
+  border:1px solid var(--bd);border-radius:5px;padding:14px 16px;background:var(--panel);
+}
+.card .ico{font-size:16px;margin-right:6px}
+.card p{margin:4px 0 0;font-size:13px;color:var(--muted)}
+
+.steps{counter-reset:step;list-style:none;margin:8px 0 8px 0}
+.steps li{
+  position:relative;margin:0 0 10px;padding:10px 14px 10px 48px;
+  border:1px solid var(--bd);border-radius:5px;background:var(--panel);
+}
+.steps li::before{
+  counter-increment:step;content:counter(step);
+  position:absolute;left:12px;top:12px;width:24px;height:24px;
+  border:1px solid var(--orange);color:var(--orange2);font-family:var(--mono);
+  font-size:12px;font-weight:700;text-align:center;line-height:22px;border-radius:3px;
+}
+
+.faq details{
+  border:1px solid var(--bd);border-radius:5px;padding:8px 14px;margin:8px 0;background:var(--panel);
+}
+.faq summary{cursor:pointer;font-weight:700;color:var(--orange2);letter-spacing:.5px}
+.faq details p{margin:6px 0 4px;color:var(--muted);font-size:13px}
+
+footer{
+  margin-top:44px;padding:16px 20px;background:var(--panel2);border-top:3px solid var(--bd);
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  font-size:11.5px;letter-spacing:1px;color:var(--muted);font-family:var(--mono);
+}
+footer .spacer{flex:1}
+footer .author{color:var(--cyan);cursor:pointer;font-weight:700;border:1px solid var(--bd2);border-radius:3px;padding:1px 8px}
+footer .author:hover{color:#fff;border-color:var(--cyan)}
+
+html[lang="en"] h1{letter-spacing:1px}
+html[lang="en"] .logo-txt{letter-spacing:.4px;font-size:14px}
+html[lang="en"] h2{letter-spacing:1px}
+
+@media (max-width:760px){
+  .nav{display:none}
+  .grid,.shift{grid-template-columns:1fr}
+  h1{font-size:24px;letter-spacing:2px}
+  .dl-zone{padding:16px}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="logo" href="#top" style="text-decoration:none">
+    <span class="logo-mark" aria-hidden="true"></span>
+    <span class="logo-txt">MTNode AI编排器<span class="logo-sub">MTNODE AI ORCHESTRATOR</span></span>
+  </a>
+  <nav class="nav">
+    <a href="#download" data-i18n="nav.dl">下载</a>
+    <a href="#whatsnew" data-i18n="nav.new">1.1 新能力</a>
+    <a href="#features" data-i18n="nav.feat">功能</a>
+    <a href="#guide" data-i18n="nav.guide">使用</a>
+    <a href="#opensource" data-i18n="nav.oss">开源</a>
+  </nav>
+  <div class="top-right">
+    <span class="ver-tag" id="verTag">v1.1.9</span>
+    <button type="button" class="btn-lang" id="btnLang" title="Switch to English" aria-label="Switch to English">
+      <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">
+        <circle cx="8" cy="8" r="6.2"/>
+        <ellipse cx="8" cy="8" rx="2.55" ry="6.2"/>
+        <path d="M1.8 8h12.4M3.1 4.8h9.8M3.1 11.2h9.8"/>
+      </svg>
+      <span id="btnLangBadge">中</span>
+    </button>
+  </div>
+</header>
+
+<div class="wrap" id="top">
+
+  <div class="hero">
+    <div class="pills">
+      <span class="pill accent" data-i18n="pill.ver">v1.1 大版本</span>
+      <span class="pill" data-i18n="pill.free">永久免费 · MIT</span>
+      <span class="pill" data-i18n="pill.win">Windows 10 / 11 x64</span>
+      <span class="pill" data-i18n="pill.dsh">内置 DeepSeek Harness</span>
+    </div>
+    <h1>MTNode <b>AI</b> <span data-i18n="hero.title">编排器</span></h1>
+    <p class="lead" data-i18n="hero.lead">从「调用 API 生成文字 / 图像」进化为完整的 Agent 编排器：画布节点照旧好用，同时自带智能引擎——可读文件、联网搜索、执行命令、调用子代理；支持全屏智能会话、视觉模型、插件 / 技能 / MCP，以及让 AI 直接在画布上搭建工作流。</p>
+    <div class="hero-cta">
+      <a class="dl-btn" id="ctaSetup" href="downloads/MTNodeAIO-Setup-1.1.9.exe" download data-i18n="cta.setup">下载 Windows 安装包</a>
+      <a class="dl-btn ghost" href="#whatsnew" data-i18n="cta.new">查看 1.1 新能力</a>
+    </div>
+  </div>
+
+  <!-- 下载 -->
+  <div class="dl-zone" id="download">
+    <h2 data-i18n="dl.h">下载应用与源码</h2>
+    <p class="muted" data-i18n="dl.sub">Windows 10 / 11 x64 · NSIS 一键安装 · MIT License · 离线可用。安装包内置 Node 运行时与 dsh 引擎，无需另行安装。文件由阿里云 OSS 分发。</p>
+    <div class="dl-row">
+      <div class="dl-item">
+        <h3>MTNode <b>AIO</b> <span data-i18n="dl.setup.h">安装包</span></h3>
+        <div class="desc" data-i18n="dl.setup.desc">Windows x64 一键安装（NSIS），含桌面快捷方式与开始菜单。当前版本 v1.1.9 · Electron 39 · 约 120 MB（含内置运行时）。</div>
+        <a class="dl-btn" id="btnSetup" href="downloads/MTNodeAIO-Setup-1.1.9.exe" download data-i18n="dl.setup.btn">下载安装包</a>
+        <span class="meta" id="metaSetup">MTNodeAIO-Setup-1.1.9.exe</span>
+      </div>
+      <div class="dl-item">
+        <h3 data-i18n="dl.src.h">应用源码压缩包</h3>
+        <div class="desc" data-i18n="dl.src.desc">完整源码（Electron 主进程 + 渲染层 + dsh 网关），含构建脚本与图标，可自行打包。当前版本 v1.1.9 · MIT License。</div>
+        <a class="dl-btn" id="btnSrc" href="downloads/MTNodeAIO-src-1.1.9.zip" download data-i18n="dl.src.btn">下载源码包</a>
+        <span class="meta" id="metaSrc">MTNodeAIO-src-1.1.9.zip · 不含 node_modules</span>
+      </div>
+    </div>
+    <p class="dl-note" data-i18n="dl.note">安装后首次使用：打开「设置 · API/配置」，填写文本 / 图像服务商 API Key（可从服务商目录选择 → 填 Key → 自动载入模型）。智能能力永久启用，任意带 Key 的 OpenAI 兼容文本服务商即可。</p>
+  </div>
+
+  <img class="app-shot" src="screenshot.png" alt="MTNode AI编排器 界面截图" width="1920" height="1080">
+  <p class="shot-cap" data-i18n="shot.cap">工作流画布：节点编排 · @ 引用 · 批量 / 聚合 · 自动递归执行。v1.1 另有全屏「智能会话」与右侧全局助手。</p>
+
+  <!-- 1.0 → 1.1 -->
+  <section id="whatsnew">
+    <h2 data-i18n="new.h">v1.1 大版本：从生成到办事</h2>
+    <p class="muted" data-i18n="new.p">v1.0.25 是可视化画布工具。v1.1 植入 DeepSeek Harness（dsh）后，模型能在你指定的工作目录里真正执行任务，过程可追溯、权限可审批、扩展可安装。</p>
+    <div class="shift">
+      <div class="shift-card from">
+        <div class="k" data-i18n="new.from.k">v1.0 · 生成</div>
+        <p data-i18n="new.from">喂给模型提示词与输入，它还你一段文字或一张图。链路停在 API 调用。</p>
+      </div>
+      <div class="shift-card to">
+        <div class="k" data-i18n="new.to.k">v1.1 · Agent</div>
+        <p data-i18n="new.to">提示词变成任务：读文件、写文件、联网、跑命令、提问确认、调用子代理，做完再交结果。节点与会话双向同步。</p>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h3><span class="ico">🐋</span><span data-i18n="c.engine.h">智能引擎（dsh）</span></h3>
+        <p data-i18n="c.engine">随应用启动的 Agent 网关。Node 运行时随包装入（Electron 39 / Node 22），零配置。可读文件 / 联网 / 执行命令 / 子代理与后台任务。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">💬</span><span data-i18n="c.session.h">全屏智能会话</span></h3>
+        <p data-i18n="c.session">顶栏「编排 / 会话」双视图。多会话（按工作目录分组、分支、归档、删除），斜杠命令，流式思考与工具轨迹，运行中可终止。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">✦</span><span data-i18n="c.assist.h">全局助手 · AI 搭工作流</span></h3>
+        <p data-i18n="c.assist">右侧助手能看全局状态、切换画布、居中节点；也可创建 / 连线 / 排版节点。改图与删除工作流会弹窗确认。智能任务同样可直接搭管道。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">🖼</span><span data-i18n="c.vision.h">图像输入 + 视觉模型</span></h3>
+        <p data-i18n="c.vision">智能任务接上图像节点后出现「图」徽标，用 @标题 引用。当前模型不支持识图时列出视觉模型候选，确认后记住选择。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">🛒</span><span data-i18n="c.store.h">在线扩展商店</span></h3>
+        <p data-i18n="c.store">插件 / 技能 / MCP 三个线上目录，卡片搜索、已安装标记、一键安装卸载。支持自定义源。权限预设：无人值守 / 逐项审批 / 只读 / 完全放行。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">🔌</span><span data-i18n="c.prov.h">多供应商路由</span></h3>
+        <p data-i18n="c.prov">DeepSeek 官方 · MTNode 自配服务商 · pi-ai 目录统一选择。添加服务商可从目录选 → 填 Key → 自动载入模型与接口。Key 隐藏显示，仅存本机。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">📦</span><span data-i18n="c.pack.h">工作流导入 / 导出</span></h3>
+        <p data-i18n="c.pack">整张画布导出为 .mtnodes 包（含节点、连线、提示词与图像资产），或复制 Base64。跨机器无损迁移，模板可开源分享。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">◉</span><span data-i18n="c.trace.h">过程可追溯</span></h3>
+        <p data-i18n="c.trace">思考块、工具 chip（参数 / 结果可展开）、轮数与 token / 缓存命中 / tok/s。提问卡片与权限审批实时弹出。10 款主题色，中英界面。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 功能全表 -->
+  <section id="features">
+    <h2 data-i18n="feat.h">功能特性</h2>
+    <ul>
+      <li data-i18n="feat.1" data-i18n-html="1"><b class="hl">输入节点</b>：文本就地编辑、实时保存；图像点击选择或直接拖入。连线后自动继承，识别 YAML 自动转为批量节点。文本节点 📄 可导入参考文件。</li>
+      <li data-i18n="feat.2" data-i18n-html="1"><b class="hl">处理节点</b>：文本 LLM 与图像生成；提示词输入 @ 引用已连接节点；带参考图走图生图。可预览完整请求、多次尝试、思考强度。</li>
+      <li data-i18n="feat.3" data-i18n-html="1"><b class="hl">智能任务 / 智能模式</b>：独立「智能任务」节点，或在文本处理上开 🐋 智能、对话节点开「智能助手」。任务描述支持 @ 引用、批量 / 聚合、一键扩展为会话并双向同步。</li>
+      <li data-i18n="feat.4" data-i18n-html="1"><b class="hl">保存节点</b>：输出保存为 .yaml 或图像，支持自动保存；批量链按 {文件名}_{输入节点标题} 命名。</li>
+      <li data-i18n="feat.5" data-i18n-html="1"><b class="hl">批量 / 拆分 / 合并</b>：按条目并行运行或聚合一次；拆分抽取批次单项，合并把多输入汇成批次。</li>
+      <li data-i18n="feat.6" data-i18n-html="1"><b class="hl">动画节点</b>：图像按 列×行 切割为帧序列并编码 GIF，支持透明色键。</li>
+      <li data-i18n="feat.7" data-i18n-html="1"><b class="hl">对话节点</b>：dsh 风格消息流（角色行 + 思考折叠 + 工具 chips），记录随工作流保存，可输出整段对话。</li>
+      <li data-i18n="feat.8" data-i18n-html="1"><b class="hl">画布操作</b>：多标签工作流（上限 12）、撤销 / 重做 / 复制、框选与组（横竖分别缩放）、节点树边栏、一键居中、统一工作目录。</li>
+      <li data-i18n="feat.9" data-i18n-html="1"><b class="hl">自动递归执行</b>：每个处理节点只处理直接输入；上游未就绪时自动跑完再继续，链路清晰可溯。</li>
+      <li data-i18n="feat.10" data-i18n-html="1"><b class="hl">人机互动</b>：模型可中途提问（ask_user）；权限越界弹出审批。斜杠命令：/new /compact /plan /rename /export /permissions /help。</li>
+    </ul>
+  </section>
+
+  <section id="guide">
+    <h2 data-i18n="guide.h">使用流程</h2>
+    <ol class="steps">
+      <li data-i18n="guide.1" data-i18n-html="1"><b class="hl">安装启动</b>：下载安装包一键安装。无需单独安装 Node。启动即恢复上次工作流现场。</li>
+      <li data-i18n="guide.2" data-i18n-html="1"><b class="hl">配置服务商</b>：设置 · API/配置 → 从目录添加或手动填写 API Key。文本服务商用于 LLM / 智能能力，图像服务商用于生图。</li>
+      <li data-i18n="guide.3" data-i18n-html="1"><b class="hl">编排节点</b>：右键画布添加节点，拖线连接，提示词里 @ 引用上游，点 ▶ 自动递归执行。</li>
+      <li data-i18n="guide.4" data-i18n-html="1"><b class="hl">交给 Agent</b>：切到「智能会话」，或放一个智能任务节点，直接描述要办的事（可读文件 / 联网 / 写结果）。也可让全局助手按你的目标搭好节点再运行。</li>
+      <li data-i18n="guide.5" data-i18n-html="1"><b class="hl">批量、保存、分享</b>：开启批量或聚合，YAML / 图像自动命名落盘。整张画布可导出 .mtnodes 与他人无损分享。</li>
+    </ol>
+  </section>
+
+  <section id="opensource">
+    <h2 data-i18n="oss.h">永久免费开源</h2>
+    <p data-i18n="oss.p">MTNode 永久免费，无订阅、无账号墙。源码以 MIT License 发布，随版本提供源码包。可自由使用、修改、分发。工作流可导出为 .mtnodes 整体开源，社区可发布「剧本人设框架」一类模板，由大家填充创意角色。</p>
+    <p class="muted" data-i18n="oss.lic">Copyright (c) 2026 M.S · MIT License</p>
+  </section>
+
+  <section id="faq">
+    <h2 data-i18n="faq.h">常见问题</h2>
+    <div class="faq">
+      <details open>
+        <summary data-i18n="faq.1.q">需要单独安装 Node 或 Python 吗？</summary>
+        <p data-i18n="faq.1.a">不需要。智能引擎使用应用自带的 Node（与主程序同版本），开箱即用，引擎随应用启动。</p>
+      </details>
+      <details>
+        <summary data-i18n="faq.2.q">智能能力必须用 DeepSeek 吗？</summary>
+        <p data-i18n="faq.2.a">v1.1.1 起，任意带 API Key 的 OpenAI 兼容文本服务商都可以启用智能能力。DeepSeek 官方仍是默认选项之一；识图需选择支持视觉的模型。</p>
+      </details>
+      <details>
+        <summary data-i18n="faq.3.q">数据会上传到 MTNode 服务器吗？</summary>
+        <p data-i18n="faq.3.a">不会。工作流只保存在本机。仅在你主动运行节点时，把提示词与输入发给你配置的服务商 API。API Key 以密文框保存，不出本机。</p>
+      </details>
+      <details>
+        <summary data-i18n="faq.4.q">Agent 会改我的文件吗？安全吗？</summary>
+        <p data-i18n="faq.4.a">会，这正是智能模式的能力。请指定正确的工作目录。默认「无人值守」允许工作区内读写；可改为逐项审批或只读。运行过程全程可见，可随时终止。</p>
+      </details>
+      <details>
+        <summary data-i18n="faq.5.q">从 v1.0.25 升级会丢存档吗？</summary>
+        <p data-i18n="faq.5.a">不会。旧工作流会自动补齐新字段（智能开关、工作目录、预设、思考强度、会话关联等），原节点行为保持兼容。</p>
+      </details>
+    </div>
+  </section>
+
+  <section id="privacy">
+    <h2 data-i18n="priv.h">数据与隐私</h2>
+    <p data-i18n="priv.p">所有工作流数据保存在本机（%APPDATA%\pipeline-console\pipeline-console\save\），不上传任何服务器；仅在你主动运行节点时，将提示词与输入内容发送至你配置的服务商 API。</p>
+  </section>
+
+</div>
+
+<footer>
+  <span id="footVer">MTNode AI编排器 v1.1.9</span>
+  <span style="color:var(--green)">● OSS</span>
+  <span class="spacer"></span>
+  <span class="author" onclick="location.href='https://space.bilibili.com/16411347'" title="作者主页">ms2308</span>
+</footer>
+
+<script>
+(function () {
+  var VER = "1.1.9";
+  var setupName = "MTNodeAIO-Setup-" + VER + ".exe";
+  var srcName = "MTNodeAIO-src-" + VER + ".zip";
+  document.getElementById("verTag").textContent = "v" + VER;
+  document.getElementById("footVer").textContent = "MTNode AI编排器 v" + VER;
+  document.getElementById("ctaSetup").href = "downloads/" + setupName;
+  document.getElementById("btnSetup").href = "downloads/" + setupName;
+  document.getElementById("btnSrc").href = "downloads/" + srcName;
+  document.getElementById("metaSetup").textContent = setupName;
+  document.getElementById("metaSrc").textContent = srcName + " · 不含 node_modules";
+
+  var I18N = {
+    zh: {
+      "nav.dl": "下载", "nav.new": "1.1 新能力", "nav.feat": "功能", "nav.guide": "使用", "nav.oss": "开源",
+      "pill.ver": "v1.1 大版本", "pill.free": "永久免费 · MIT", "pill.win": "Windows 10 / 11 x64", "pill.dsh": "内置 DeepSeek Harness",
+      "hero.title": "编排器",
+      "hero.lead": "从「调用 API 生成文字 / 图像」进化为完整的 Agent 编排器：画布节点照旧好用，同时自带智能引擎——可读文件、联网搜索、执行命令、调用子代理；支持全屏智能会话、视觉模型、插件 / 技能 / MCP，以及让 AI 直接在画布上搭建工作流。",
+      "cta.setup": "下载 Windows 安装包", "cta.new": "查看 1.1 新能力",
+      "dl.h": "下载应用与源码",
+      "dl.sub": "Windows 10 / 11 x64 · NSIS 一键安装 · MIT License · 离线可用。安装包内置 Node 运行时与 dsh 引擎，无需另行安装。文件由阿里云 OSS 分发。",
+      "dl.setup.h": "安装包",
+      "dl.setup.desc": "Windows x64 一键安装（NSIS），含桌面快捷方式与开始菜单。当前版本 v" + VER + " · Electron 39 · 约 120 MB（含内置运行时）。",
+      "dl.setup.btn": "下载安装包",
+      "dl.src.h": "应用源码压缩包",
+      "dl.src.desc": "完整源码（Electron 主进程 + 渲染层 + dsh 网关），含构建脚本与图标，可自行打包。当前版本 v" + VER + " · MIT License。",
+      "dl.src.btn": "下载源码包",
+      "dl.note": "安装后首次使用：打开「设置 · API/配置」，填写文本 / 图像服务商 API Key（可从服务商目录选择 → 填 Key → 自动载入模型）。智能能力永久启用，任意带 Key 的 OpenAI 兼容文本服务商即可。",
+      "shot.cap": "工作流画布：节点编排 · @ 引用 · 批量 / 聚合 · 自动递归执行。v1.1 另有全屏「智能会话」与右侧全局助手。",
+      "new.h": "v1.1 大版本：从生成到办事",
+      "new.p": "v1.0.25 是可视化画布工具。v1.1 植入 DeepSeek Harness（dsh）后，模型能在你指定的工作目录里真正执行任务，过程可追溯、权限可审批、扩展可安装。",
+      "new.from.k": "v1.0 · 生成",
+      "new.from": "喂给模型提示词与输入，它还你一段文字或一张图。链路停在 API 调用。",
+      "new.to.k": "v1.1 · Agent",
+      "new.to": "提示词变成任务：读文件、写文件、联网、跑命令、提问确认、调用子代理，做完再交结果。节点与会话双向同步。",
+      "c.engine.h": "智能引擎（dsh）",
+      "c.engine": "随应用启动的 Agent 网关。Node 运行时随包装入（Electron 39 / Node 22），零配置。可读文件 / 联网 / 执行命令 / 子代理与后台任务。",
+      "c.session.h": "全屏智能会话",
+      "c.session": "顶栏「编排 / 会话」双视图。多会话（按工作目录分组、分支、归档、删除），斜杠命令，流式思考与工具轨迹，运行中可终止。",
+      "c.assist.h": "全局助手 · AI 搭工作流",
+      "c.assist": "右侧助手能看全局状态、切换画布、居中节点；也可创建 / 连线 / 排版节点。改图与删除工作流会弹窗确认。智能任务同样可直接搭管道。",
+      "c.vision.h": "图像输入 + 视觉模型",
+      "c.vision": "智能任务接上图像节点后出现「图」徽标，用 @标题 引用。当前模型不支持识图时列出视觉模型候选，确认后记住选择。",
+      "c.store.h": "在线扩展商店",
+      "c.store": "插件 / 技能 / MCP 三个线上目录，卡片搜索、已安装标记、一键安装卸载。支持自定义源。权限预设：无人值守 / 逐项审批 / 只读 / 完全放行。",
+      "c.prov.h": "多供应商路由",
+      "c.prov": "DeepSeek 官方 · MTNode 自配服务商 · pi-ai 目录统一选择。添加服务商可从目录选 → 填 Key → 自动载入模型与接口。Key 隐藏显示，仅存本机。",
+      "c.pack.h": "工作流导入 / 导出",
+      "c.pack": "整张画布导出为 .mtnodes 包（含节点、连线、提示词与图像资产），或复制 Base64。跨机器无损迁移，模板可开源分享。",
+      "c.trace.h": "过程可追溯",
+      "c.trace": "思考块、工具 chip（参数 / 结果可展开）、轮数与 token / 缓存命中 / tok/s。提问卡片与权限审批实时弹出。10 款主题色，中英界面。",
+      "feat.h": "功能特性",
+      "feat.1": "<b class=\"hl\">输入节点</b>：文本就地编辑、实时保存；图像点击选择或直接拖入。连线后自动继承，识别 YAML 自动转为批量节点。文本节点 📄 可导入参考文件。",
+      "feat.2": "<b class=\"hl\">处理节点</b>：文本 LLM 与图像生成；提示词输入 @ 引用已连接节点；带参考图走图生图。可预览完整请求、多次尝试、思考强度。",
+      "feat.3": "<b class=\"hl\">智能任务 / 智能模式</b>：独立「智能任务」节点，或在文本处理上开 🐋 智能、对话节点开「智能助手」。任务描述支持 @ 引用、批量 / 聚合、一键扩展为会话并双向同步。",
+      "feat.4": "<b class=\"hl\">保存节点</b>：输出保存为 .yaml 或图像，支持自动保存；批量链按 {文件名}_{输入节点标题} 命名。",
+      "feat.5": "<b class=\"hl\">批量 / 拆分 / 合并</b>：按条目并行运行或聚合一次；拆分抽取批次单项，合并把多输入汇成批次。",
+      "feat.6": "<b class=\"hl\">动画节点</b>：图像按 列×行 切割为帧序列并编码 GIF，支持透明色键。",
+      "feat.7": "<b class=\"hl\">对话节点</b>：dsh 风格消息流（角色行 + 思考折叠 + 工具 chips），记录随工作流保存，可输出整段对话。",
+      "feat.8": "<b class=\"hl\">画布操作</b>：多标签工作流（上限 12）、撤销 / 重做 / 复制、框选与组（横竖分别缩放）、节点树边栏、一键居中、统一工作目录。",
+      "feat.9": "<b class=\"hl\">自动递归执行</b>：每个处理节点只处理直接输入；上游未就绪时自动跑完再继续，链路清晰可溯。",
+      "feat.10": "<b class=\"hl\">人机互动</b>：模型可中途提问（ask_user）；权限越界弹出审批。斜杠命令：/new /compact /plan /rename /export /permissions /help。",
+      "guide.h": "使用流程",
+      "guide.1": "<b class=\"hl\">安装启动</b>：下载安装包一键安装。无需单独安装 Node。启动即恢复上次工作流现场。",
+      "guide.2": "<b class=\"hl\">配置服务商</b>：设置 · API/配置 → 从目录添加或手动填写 API Key。文本服务商用于 LLM / 智能能力，图像服务商用于生图。",
+      "guide.3": "<b class=\"hl\">编排节点</b>：右键画布添加节点，拖线连接，提示词里 @ 引用上游，点 ▶ 自动递归执行。",
+      "guide.4": "<b class=\"hl\">交给 Agent</b>：切到「智能会话」，或放一个智能任务节点，直接描述要办的事（可读文件 / 联网 / 写结果）。也可让全局助手按你的目标搭好节点再运行。",
+      "guide.5": "<b class=\"hl\">批量、保存、分享</b>：开启批量或聚合，YAML / 图像自动命名落盘。整张画布可导出 .mtnodes 与他人无损分享。",
+      "oss.h": "永久免费开源",
+      "oss.p": "MTNode 永久免费，无订阅、无账号墙。源码以 MIT License 发布，随版本提供源码包。可自由使用、修改、分发。工作流可导出为 .mtnodes 整体开源，社区可发布「剧本人设框架」一类模板，由大家填充创意角色。",
+      "oss.lic": "Copyright (c) 2026 M.S · MIT License",
+      "faq.h": "常见问题",
+      "faq.1.q": "需要单独安装 Node 或 Python 吗？",
+      "faq.1.a": "不需要。智能引擎使用应用自带的 Node（与主程序同版本），开箱即用，引擎随应用启动。",
+      "faq.2.q": "智能能力必须用 DeepSeek 吗？",
+      "faq.2.a": "v1.1.1 起，任意带 API Key 的 OpenAI 兼容文本服务商都可以启用智能能力。DeepSeek 官方仍是默认选项之一；识图需选择支持视觉的模型。",
+      "faq.3.q": "数据会上传到 MTNode 服务器吗？",
+      "faq.3.a": "不会。工作流只保存在本机。仅在你主动运行节点时，把提示词与输入发给你配置的服务商 API。API Key 以密文框保存，不出本机。",
+      "faq.4.q": "Agent 会改我的文件吗？安全吗？",
+      "faq.4.a": "会，这正是智能模式的能力。请指定正确的工作目录。默认「无人值守」允许工作区内读写；可改为逐项审批或只读。运行过程全程可见，可随时终止。",
+      "faq.5.q": "从 v1.0.25 升级会丢存档吗？",
+      "faq.5.a": "不会。旧工作流会自动补齐新字段（智能开关、工作目录、预设、思考强度、会话关联等），原节点行为保持兼容。",
+      "priv.h": "数据与隐私",
+      "priv.p": "所有工作流数据保存在本机（%APPDATA%\\pipeline-console\\pipeline-console\\save\\），不上传任何服务器；仅在你主动运行节点时，将提示词与输入内容发送至你配置的服务商 API。"
+    },
+    en: {
+      "nav.dl": "Download", "nav.new": "What's new", "nav.feat": "Features", "nav.guide": "Guide", "nav.oss": "Open source",
+      "pill.ver": "v1.1 major", "pill.free": "Free forever · MIT", "pill.win": "Windows 10 / 11 x64", "pill.dsh": "DeepSeek Harness inside",
+      "hero.title": "Orchestrator",
+      "hero.lead": "From “call an API to generate text / images” to a full agent orchestrator. The node canvas still works as before, now with a built-in engine that can read files, search the web, run commands, and spawn sub-agents — plus a full-screen agent session, vision models, plugins / skills / MCP, and AI that can build workflows on the canvas.",
+      "cta.setup": "Download Windows installer", "cta.new": "See v1.1 capabilities",
+      "dl.h": "Download app & source",
+      "dl.sub": "Windows 10 / 11 x64 · NSIS one-click install · MIT License · works offline. The installer bundles the Node runtime and dsh engine — nothing else to install. Files are served from Aliyun OSS.",
+      "dl.setup.h": "installer",
+      "dl.setup.desc": "Windows x64 NSIS installer with desktop and Start Menu shortcuts. Current v" + VER + " · Electron 39 · ~120 MB (runtime included).",
+      "dl.setup.btn": "Download installer",
+      "dl.src.h": "Source archive",
+      "dl.src.desc": "Full source (Electron main + renderer + dsh gateway), including build scripts and icons, so you can pack it yourself. Current v" + VER + " · MIT License.",
+      "dl.src.btn": "Download source",
+      "dl.note": "First launch: open Settings · API/Config and fill in text / image provider API keys (pick from the catalog → paste the key → models load automatically). Agent capability is always on for any OpenAI-compatible text provider with a key.",
+      "shot.cap": "Workflow canvas: node graph · @ refs · batch / aggregate · auto recursive run. v1.1 also adds a full-screen Agent session and a right-side global assistant.",
+      "new.h": "v1.1: from generate to get things done",
+      "new.p": "v1.0.25 was a visual canvas. With DeepSeek Harness (dsh) in v1.1, the model can actually execute tasks in a workspace you choose — traces are visible, permissions can require approval, and extensions are installable.",
+      "new.from.k": "v1.0 · Generate",
+      "new.from": "You feed a prompt and inputs; you get text or an image back. The chain stops at the API call.",
+      "new.to.k": "v1.1 · Agent",
+      "new.to": "The prompt becomes a task: read/write files, search, run commands, ask you to confirm, call sub-agents, then return the result. Nodes and sessions stay in sync.",
+      "c.engine.h": "Agent engine (dsh)",
+      "c.engine": "Gateway starts with the app. Node runtime is bundled (Electron 39 / Node 22) — zero setup. Read files / network / commands / sub-agents and background tasks.",
+      "c.session.h": "Full-screen agent session",
+      "c.session": "Toolbar switches Workflow / Session. Multiple sessions (grouped by workspace, fork, archive, delete), slash commands, streaming thoughts and tool traces, stoppable mid-run.",
+      "c.assist.h": "Global assistant · AI builds workflows",
+      "c.assist": "The right-side assistant sees app state, can switch/create canvases and focus nodes, or create / wire / layout nodes. Graph edits and workflow deletion ask for confirm. Agent tasks can build pipelines the same way.",
+      "c.vision.h": "Image input + vision models",
+      "c.vision": "Wire an image node into an agent task to get an Img badge; cite it with @title. If the current model cannot see images, vision candidates are listed and remembered after you confirm.",
+      "c.store.h": "Online extension store",
+      "c.store": "Plugins / Skills / MCP catalogs with search, installed marks, one-click install/uninstall, and custom sources. Permission presets: unattended / approve each / read-only / full access.",
+      "c.prov.h": "Multi-provider routing",
+      "c.prov": "DeepSeek Official · MTNode providers · pi-ai catalog in one picker. Add a provider from the catalog → paste the key → models and endpoint load. Keys are masked and stay on this machine.",
+      "c.pack.h": "Workflow import / export",
+      "c.pack": "Export a canvas as a .mtnodes pack (nodes, wires, prompts, image assets) or as Base64. Move across machines losslessly; share templates as open workflows.",
+      "c.trace.h": "Everything is inspectable",
+      "c.trace": "Thought blocks, tool chips (expand args / results), turns and tokens / cache hit / tok/s. Ask-user and approval cards pop in real time. Ten color themes, Chinese / English UI.",
+      "feat.h": "Features",
+      "feat.1": "<b class=\"hl\">Input nodes</b>: edit text in place (auto-saved); click or drop images. Wiring inherits content; YAML becomes a batch. Text nodes can import a reference file via 📄.",
+      "feat.2": "<b class=\"hl\">Process nodes</b>: text LLM and image generation; type @ in the prompt to cite connected nodes; reference images use img2img. Preview the full request, multi-attempt, thinking effort.",
+      "feat.3": "<b class=\"hl\">Agent task / agent mode</b>: a dedicated Agent Task node, or 🐋 Agent on text-process and Agent assistant on chat. Tasks support @ refs, batch / aggregate, and one-click expand to a synced session.",
+      "feat.4": "<b class=\"hl\">Save nodes</b>: write .yaml or images, with auto-save. Batch chains name files {filename}_{input node title}.",
+      "feat.5": "<b class=\"hl\">Batch / Split / Merge</b>: run all items in parallel, or aggregate once. Split extracts one batch item; Merge gathers inputs into a batch.",
+      "feat.6": "<b class=\"hl\">Anim node</b>: slice an image by cols × rows into a GIF, with chroma key.",
+      "feat.7": "<b class=\"hl\">Chat node</b>: dsh-style message stream (role row + folded thinking + tool chips). History is saved with the workflow; the output port emits the full transcript.",
+      "feat.8": "<b class=\"hl\">Canvas</b>: up to 12 workflow tabs, undo / redo / duplicate, marquee and groups (scale X/Y independently), node-tree sidebar, fit-all, shared working directory.",
+      "feat.9": "<b class=\"hl\">Auto recursive run</b>: each process node handles only its direct inputs; unreadied upstream is run first. The chain stays inspectable.",
+      "feat.10": "<b class=\"hl\">Human-in-the-loop</b>: the model can ask (ask_user); out-of-sandbox tools raise an approval card. Slash commands: /new /compact /plan /rename /export /permissions /help.",
+      "guide.h": "How to use",
+      "guide.1": "<b class=\"hl\">Install</b>: one-click installer. No separate Node install. Last workflow is restored on launch.",
+      "guide.2": "<b class=\"hl\">Providers</b>: Settings · API/Config → add from the catalog or paste a key. Text providers drive LLM / agent; image providers drive generation.",
+      "guide.3": "<b class=\"hl\">Orchestrate</b>: right-click to add nodes, drag wires, @-cite upstream in prompts, click ▶ to recurse and run.",
+      "guide.4": "<b class=\"hl\">Hand it to an agent</b>: switch to Agent session, or drop an Agent Task node and describe the job (read files / search / write results). Or let the global assistant lay out the nodes, then hit ▶.",
+      "guide.5": "<b class=\"hl\">Batch, save, share</b>: turn on batch or aggregate; YAML / images land with auto names. Export the canvas as .mtnodes to share losslessly.",
+      "oss.h": "Free and open source, forever",
+      "oss.p": "MTNode is free forever — no subscription, no account wall. Source is released under the MIT License, with a source zip for each version. Use, modify, and redistribute freely. Workflows can be published as .mtnodes templates for the community to fill in.",
+      "oss.lic": "Copyright (c) 2026 M.S · MIT License",
+      "faq.h": "FAQ",
+      "faq.1.q": "Do I need to install Node or Python?",
+      "faq.1.a": "No. The agent engine uses the Node bundled with the app (same version as the main process). It starts with the app.",
+      "faq.2.q": "Does agent capability require DeepSeek?",
+      "faq.2.a": "From v1.1.1, any OpenAI-compatible text provider with an API key works. DeepSeek Official remains a default option. Vision needs a model that actually supports images.",
+      "faq.3.q": "Is my data uploaded to MTNode servers?",
+      "faq.3.a": "No. Workflows stay on this machine. Only when you run a node are the prompt and inputs sent to the provider API you configured. API keys are stored locally in a password field.",
+      "faq.4.q": "Will the agent change my files? Is that safe?",
+      "faq.4.a": "Yes — that is the point of agent mode. Set the working directory carefully. Default Unattended allows read/write inside the workspace; switch to approve-each or read-only. The run is fully visible and can be stopped.",
+      "faq.5.q": "Will upgrading from v1.0.25 lose my archives?",
+      "faq.5.a": "No. Old workflows are migrated with new fields (agent flags, workspace, preset, effort, session links). Original node behavior stays compatible.",
+      "priv.h": "Data & privacy",
+      "priv.p": "All workflow data is stored locally (%APPDATA%\\pipeline-console\\pipeline-console\\save\\) and is never uploaded to our servers. Only when you actively run a node are the prompt and inputs sent to the provider API you configured."
+    }
+  };
+
+  function apply(lang) {
+    var dict = I18N[lang] || I18N.zh;
+    document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+    document.querySelectorAll("[data-i18n]").forEach(function (el) {
+      var k = el.getAttribute("data-i18n");
+      if (!dict[k]) return;
+      if (el.getAttribute("data-i18n-html") === "1") el.innerHTML = dict[k];
+      else el.textContent = dict[k];
+    });
+    document.title = lang === "en"
+      ? "MTNode AI Orchestrator · Download"
+      : "MTNode AI编排器 · 下载";
+    var btn = document.getElementById("btnLang");
+    var badge = document.getElementById("btnLangBadge");
+    if (lang === "en") {
+      badge.textContent = "EN";
+      btn.title = "切换为中文";
+      btn.setAttribute("aria-label", "切换为中文");
+      document.getElementById("footVer").textContent = "MTNode AI Orchestrator v" + VER;
+      document.getElementById("metaSrc").textContent = srcName + " · without node_modules";
+    } else {
+      badge.textContent = "中";
+      btn.title = "Switch to English";
+      btn.setAttribute("aria-label", "Switch to English");
+      document.getElementById("footVer").textContent = "MTNode AI编排器 v" + VER;
+      document.getElementById("metaSrc").textContent = srcName + " · 不含 node_modules";
+    }
+    try { localStorage.setItem("mtnode-web-lang", lang); } catch (e) {}
+  }
+
+  var start = "zh";
+  try {
+    var saved = localStorage.getItem("mtnode-web-lang");
+    if (saved === "en" || saved === "zh") start = saved;
+  } catch (e) {}
+  apply(start);
+  document.getElementById("btnLang").onclick = function () {
+    apply(document.documentElement.lang === "en" ? "zh" : "en");
+  };
+})();
+</script>
+</body>
+</html>

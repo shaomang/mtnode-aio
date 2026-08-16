@@ -1,0 +1,409 @@
+# MTNode agent runtime: unattended stdio JSON-RPC deployment over the
+# published @deepseek-ai/dsh-base 0.1.0-rc.6 spine.
+# stdout is reserved for JSON-RPC frames; never add a console logger or terminal UI.
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: true
+
+- id: timer
+  name: '@deepseek-ai/cordis-plugin-timer'
+
+- id: llm
+  name: '@deepseek-ai/dsh-llm'
+
+- id: session
+  name: '@deepseek-ai/dsh-session'
+
+- id: typert
+  name: '@deepseek-ai/dsh-typert-registry'
+
+- id: typert-loader
+  name: '@deepseek-ai/dsh-typert-loader'
+
+- id: typert-gateway
+  name: '@deepseek-ai/dsh-api-gateway'
+
+- id: session-title
+  name: '@deepseek-ai/dsh-session-title'
+  config:
+    fallbackMaxWords: 5
+    fallbackMaxBytes: 40
+    maxTitleBytes: 80
+
+- id: session-title-llm
+  name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
+  config:
+    targetWords: 5
+    targetCjkCharacters: 10
+    maxInputBytes: 4096
+    maxOutputTokens: 64
+    timeoutMs: 60000
+
+- id: user-questions
+  name: '@deepseek-ai/dsh-user-questions'
+
+# 模型提问工具:模型可在任务中途调用 ask_user_question,经 mtnode-bridge
+# 转发到宿主应用弹窗,等待用户回答后继续。
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+# MTNode 交互桥:注册提问 provider 与审批 answerer,经 localhost TCP 转发给
+# gateway(端口由宿主在 spawn 时经 MTNODE_BRIDGE_PORT 注入)。
+- id: mtnode-bridge
+  name: './bridge-plugin.mjs'
+
+# MTNode 画布工具:模型可在当前工作流中创建/改标题/连线/@引用/自动排版节点。
+- id: mtnode-canvas
+  name: './canvas-plugin.mjs'
+
+- id: agent
+  name: '@deepseek-ai/dsh-agent'
+
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: deepseek-v4-flash
+
+- id: jobs
+  name: '@deepseek-ai/dsh-jobs-local'
+
+- id: llm-retry
+  name: '@deepseek-ai/dsh-llm-retry'
+
+- id: settings
+  name: '@deepseek-ai/dsh-settings-file'
+  config:
+    path: !!js dshHomePath('settings.yaml')
+
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+
+# 附件存储:智能任务携带图像时,网关把图像写入 DSH_HOME/attachments/v1
+# 的内容寻址对象库,llm-pi-ai 经 attachments.readImage 读取后发给视觉模型。
+- id: attachments
+  name: '@deepseek-ai/dsh-attachment-local'
+
+# pi-ai 多服务商适配器:休眠挂载,供应商/模型目录见设置(MTNode 服务商自动写入)
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+
+- id: session-query-sqlite
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  config:
+    path: ':memory:'
+    openAt: never
+
+- id: session-projection
+  name: '@deepseek-ai/dsh-session-projection'
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: sandbox
+  name: '@deepseek-ai/dsh-sandbox-local'
+
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+
+- id: bash-sandbox
+  name: '@deepseek-ai/dsh-bash-sandbox'
+  disabled: !!js process.platform === 'win32'
+  config:
+    timeoutMs: 60000
+
+- id: pwsh-sandbox
+  name: '@deepseek-ai/dsh-pwsh-sandbox'
+  disabled: !!js process.platform !== 'win32'
+
+# Approval policy per session comes from the permission preset below; the
+# "ask" presets route requests to the mtnode-bridge answerer (host-app UI).
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: never
+
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+      # Default: confinement stays on, asks stay off. The hosting app switches
+      # the preset per run (settings 段 + 本行 defaultPreset 双写,见 gateway)。
+      mtnode-unattended:
+        sandbox: workspace-write
+        approval: never
+    defaultPreset: mtnode-unattended
+
+- id: shell-env
+  name: '@deepseek-ai/dsh-shell-env'
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+- id: skill
+  name: '@deepseek-ai/dsh-skill'
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: skill-badge
+  name: '@deepseek-ai/dsh-skill-badge'
+  disabled: true
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: commands
+  name: '@deepseek-ai/dsh-commands'
+
+- id: command-feedback
+  name: '@deepseek-ai/dsh-command-feedback'
+
+- id: goal
+  name: '@deepseek-ai/dsh-goal'
+
+- id: goal-round-driver
+  name: '@deepseek-ai/dsh-goal-round-driver'
+
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
+
+- id: plan-mode
+  name: '@deepseek-ai/dsh-plan-mode'
+  config:
+    section: |
+          You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it.
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+
+- id: command-compact
+  name: '@deepseek-ai/dsh-command-compact'
+
+- id: subagent
+  name: '@deepseek-ai/dsh-subagent'
+
+- id: subagent-spawn-in-process
+  name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+  config:
+    providerName: spawn
+
+- id: subagent-fork-in-process
+  name: '@deepseek-ai/dsh-subagent-fork-in-process'
+  config:
+    providerName: fork
+
+- id: tool-subagent-control
+  name: '@deepseek-ai/dsh-tool-subagent-control'
+
+- id: tool-subagent-list-agents
+  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+- id: tool-subagent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent
+    backgroundMode: continuable
+
+- id: tool-subagent-fork
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: fork
+    toolName: subagent_fork
+    backgroundMode: one-shot
+
+- id: tool-subagent-report
+  name: '@deepseek-ai/dsh-tool-subagent-report'
+
+- id: workflow-worker-thread
+  name: '@deepseek-ai/dsh-workflow-worker-thread'
+  config:
+    provider: spawn
+
+- id: tool-workflow
+  name: '@deepseek-ai/dsh-tool-workflow'
+
+- id: timeout-policy
+  name: '@deepseek-ai/dsh-tool-call-timeout-policy'
+
+- id: spill-local
+  name: '@deepseek-ai/dsh-spill-local'
+
+- id: spill-policy
+  name: '@deepseek-ai/dsh-spill-policy'
+  config:
+    maxInlineBytes: 50000
+
+- id: session-checkpoint-policy
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
+
+- id: tool-result-pruner
+  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+  config:
+    thresholdChars: 8192
+    headChars: 4096
+    tailChars: 1024
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+- id: tool-ralph
+  name: '@deepseek-ai/dsh-tool-ralph'
+  config:
+    subagentProvider: spawn
+    maxRounds: 64
+
+- id: tool-str-replace-editor
+  name: '@deepseek-ai/dsh-tool-str-replace-editor'
+  config:
+    maxOutputChars: 16000
+
+- id: repeat-tool-reminder
+  name: '@deepseek-ai/dsh-repeat-tool-reminder'
+  config:
+    thresholds: [3, 5, 8]
+    argumentsPreviewChars: 500
+
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: deepseek-official
+
+- id: web-search-deepseek
+  name: '@deepseek-ai/dsh-web-search-deepseek'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000
+
+- id: tools
+  name: '@deepseek-ai/dsh-tools'
+
+# MTNode persona: a general assistant for desktop content/media/file tasks,
+# not a coding agent. The hosting app describes the concrete task per run.
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    persona: >-
+      You are the agent engine inside MTNode, a visual AI-workflow desktop app.
+      You help ordinary users finish concrete content and file tasks: read and
+      write files, search the web, run commands when needed, and produce text
+      or image descriptions. You can also build the visual canvas the user is
+      looking at: use mtnode_canvas_get / mtnode_canvas_edit / mtnode_app to
+      create nodes, set unique titles, wire them, put @Title in prompts,
+      auto-layout, focus or fit the camera, and switch or create workflows so
+      nothing overlaps. Keep text processing and image→text (multimodal)
+      isolated: a dedicated vision/agent node turns images into text; downstream
+      pure-text nodes consume that text (not raw images) so language steps can
+      use a better text-only model. For per-item batch (batchMode batch) prefer
+      ordinary proc_text / proc_image (avoid agent_task and proc_text agent
+      mode); aggregate mode (batchMode agg) may use smart/agent nodes.
+      CRITICAL batch safety: batchMode=batch runs once per item — each run must
+      see ONLY that item; never also feed the whole batch of N into every run
+      (≈N² image/API calls, huge token waste). Prefer a split node to pick one
+      item before heavy text-to-image; use agg only when one run should see all.
+      CRITICAL: proc_image (text-to-image) produces exactly ONE image per run —
+      never write prompts asking for multiple images in one generation; for many
+      images use 1:1 batch items, multiple proc_image nodes, or attempts N.
+      Set proc_image size from imageSizes in mtnode_canvas_get (e.g. 2048x1360,
+      1280x1280, auto) according to portrait/landscape/square needs.
+      Prefer user-editable canvas layouts: createMarks (box/text) to separate
+      zones such as edit / docs / process / output, and add control nodes
+      (ctrlAction run/clear) wired to processing nodes for one-click re-run.
+      CRITICAL UX: place nodes the user must edit or operate (inputs, editable
+      prompts, control ▶) toward the TOP of the canvas (smaller y) so they are
+      easy to see and use; put heavy processing / save / docs lower or to the right.
+      Mid-task pixel reading (game UI, screenshot OCR, verify a generated image):
+      call mtnode_vision with absolute imagePath + question — do not stuff large
+      image batches into the main agent prompt; the host asks permission the
+      first time (Allow once / Always allow / Deny).
+      CRITICAL: never create save_text / save_image after agent_task or
+      proc_text with agent:true — those smart nodes can write files themselves;
+      a save_* node would dump irrelevant chat/task text. Use save_* only after
+      ordinary (non-agent) proc_text / proc_image.
+      CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs to
+      other nodes (session noise; weak key transfer). Prefer file handoff:
+      smart node writes a document, then wait_file (waitPath) as a control
+      wire OUT to downstream blocks until that file exists; wait_file has no
+      input ports and outputs nothing — later nodes read the agreed path
+      themselves. Never wire into wait_file.
+      When the user asks to implement a workflow (for example generating item
+      configs and writing them to a project table), create an editable
+      left-to-right pipeline they can re-run, rather than only doing the work
+      yourself. Work step by step, show the user what you are doing, and end
+      with a clear, complete result.
+
+- id: agent-loop
+  name: '@deepseek-ai/dsh-agent-loop'
+  config:
+    agents: []
+
+- id: fs-sandbox
+  name: '@deepseek-ai/dsh-fs-sandbox'
+
+# Key and base URL come from the hosting app's own provider settings, injected
+# as environment; the managed credential file is never used here.
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    baseUrlEnv: DEEPSEEK_BASE_URL
+    thinking: enabled
+
+# ── user plugins (managed from MTNode settings) ──

@@ -1,0 +1,633 @@
+"use strict";
+/**
+ * MTNode 模板商店 — 零依赖 Node 18 HTTP 服务。
+ * 数据：JSON 库 + files/ previews/
+ * 环境：PORT（默认 8787）、HOST（默认 127.0.0.1）、DATA_DIR
+ */
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
+const FILE_DIR = path.join(DATA_DIR, "files");
+const PREV_DIR = path.join(DATA_DIR, "previews");
+const DB_PATH = path.join(DATA_DIR, "db.json");
+const PORT = Number(process.env.PORT) || 8787;
+const HOST = process.env.HOST || "127.0.0.1";
+const MAX_BODY = 40 * 1024 * 1024;
+const MAX_TEMPLATE = 10 * 1024 * 1024;
+const MAX_PREVIEW = 500 * 1024;
+const SESSION_MS = 30 * 24 * 3600 * 1000;
+const MAGIC = Buffer.from("MTNODES", "ascii");
+const ADMIN_USERS = new Set(
+  String(process.env.MTNODE_STORE_ADMINS || "ms2308")
+    .split(/[,;\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+function mkdirp(p) {
+  fs.mkdirSync(p, { recursive: true });
+}
+mkdirp(FILE_DIR);
+mkdirp(PREV_DIR);
+
+function emptyDb() {
+  return { users: [], sessions: [], templates: [], likes: [] };
+}
+
+function loadDb() {
+  try {
+    const raw = fs.readFileSync(DB_PATH, "utf8");
+    const d = JSON.parse(raw);
+    if (!Array.isArray(d.users)) d.users = [];
+    if (!Array.isArray(d.sessions)) d.sessions = [];
+    if (!Array.isArray(d.templates)) d.templates = [];
+    if (!Array.isArray(d.likes)) d.likes = [];
+    return d;
+  } catch {
+    return emptyDb();
+  }
+}
+
+let db = loadDb();
+let saving = Promise.resolve();
+
+function saveDb() {
+  saving = saving.then(() => {
+    const tmp = DB_PATH + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(db));
+    fs.renameSync(tmp, DB_PATH);
+  }).catch((e) => {
+    console.error("[store] save failed", e);
+  });
+  return saving;
+}
+
+function uid(prefix) {
+  return prefix + crypto.randomBytes(8).toString("hex");
+}
+
+function hashPass(password, salt) {
+  return crypto.scryptSync(String(password), salt, 32).toString("hex");
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function now() {
+  return Date.now();
+}
+
+function isAdmin(u) {
+  return !!(u && ADMIN_USERS.has(String(u.username || "").toLowerCase()));
+}
+
+function publicUser(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    nickname: u.nickname,
+    downloadsReceived: u.downloadsReceived || 0,
+    likesReceived: u.likesReceived || 0,
+    createdAt: u.createdAt,
+    isAdmin: isAdmin(u),
+  };
+}
+
+function publicTemplate(t, viewer) {
+  const viewerId = viewer && viewer.id;
+  const owner = db.users.find((u) => u.id === t.userId);
+  return {
+    id: t.id,
+    title: t.title,
+    description: t.description || "",
+    tags: t.tags || [],
+    downloads: t.downloads || 0,
+    likes: t.likes || 0,
+    bytes: t.bytes || 0,
+    hasPreview: !!t.hasPreview,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    owner: owner
+      ? { id: owner.id, username: owner.username, nickname: owner.nickname }
+      : { id: t.userId, username: "", nickname: "" },
+    liked: viewerId ? db.likes.some((l) => l.userId === viewerId && l.templateId === t.id) : false,
+    mine: !!(viewerId && viewerId === t.userId),
+    canDelete: !!(viewerId && (viewerId === t.userId || isAdmin(viewer))),
+  };
+}
+
+function tagCounts() {
+  const map = new Map();
+  for (const t of db.templates) {
+    for (const tag of t.tags || []) {
+      map.set(tag, (map.get(tag) || 0) + 1);
+    }
+  }
+  return [...map.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh"));
+}
+
+function normalizeTag(s) {
+  let t = String(s || "").trim().replace(/\s+/g, " ");
+  if (!t) return "";
+  if (/^[A-Za-z0-9._-]+$/.test(t)) t = t.toLowerCase();
+  if (t.length > 24) t = t.slice(0, 24);
+  return t;
+}
+
+function parseTags(input) {
+  const raw = Array.isArray(input)
+    ? input
+    : String(input || "")
+        .split(/[,，]/);
+  const out = [];
+  const seen = new Set();
+  for (const x of raw) {
+    const t = normalizeTag(x);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function findUserByName(name) {
+  const n = String(name || "").toLowerCase();
+  return db.users.find((u) => u.username.toLowerCase() === n);
+}
+
+function authUser(req) {
+  const h = req.headers.authorization || "";
+  const m = /^Bearer\s+(\S+)/i.exec(h);
+  if (!m) return null;
+  const th = hashToken(m[1]);
+  const sess = db.sessions.find((s) => s.tokenHash === th && s.expiresAt > now());
+  if (!sess) return null;
+  return db.users.find((u) => u.id === sess.userId) || null;
+}
+
+function send(res, status, obj, extraHeaders) {
+  const body = JSON.stringify(obj);
+  const headers = Object.assign(
+    {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": Buffer.byteLength(body),
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+    },
+    extraHeaders || {},
+  );
+  res.writeHead(status, headers);
+  res.end(body);
+}
+
+function sendBin(res, status, buf, contentType, extraHeaders) {
+  res.writeHead(status, Object.assign({
+    "Content-Type": contentType || "application/octet-stream",
+    "Content-Length": buf.length,
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "public, max-age=3600",
+  }, extraHeaders || {}));
+  res.end(buf);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let n = 0;
+    req.on("data", (c) => {
+      n += c.length;
+      if (n > MAX_BODY) {
+        reject(new Error("body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+function decodeMtNodes(b64) {
+  const s = String(b64 || "").trim().replace(/\s+/g, "");
+  if (!s) throw new Error("empty");
+  const buf = Buffer.from(s, "base64");
+  if (buf.length < 8) throw new Error("too small");
+  if (!buf.slice(0, 7).equals(MAGIC)) throw new Error("not mtnodes");
+  if (buf[7] !== 1) throw new Error("unsupported version");
+  return buf;
+}
+
+function decodePreview(b64) {
+  if (b64 == null || b64 === "") return null;
+  let s = String(b64).trim();
+  const m = /^data:image\/(png|jpe?g|webp);base64,/i.exec(s);
+  if (m) s = s.slice(m[0].length);
+  const buf = Buffer.from(s.replace(/\s+/g, ""), "base64");
+  if (!buf.length) return null;
+  if (buf.length > MAX_PREVIEW) throw new Error("preview too large");
+  const png = buf[0] === 0x89 && buf[1] === 0x50;
+  const jpg = buf[0] === 0xff && buf[1] === 0xd8;
+  const webp = buf[0] === 0x52 && buf[8] === 0x57;
+  if (!png && !jpg && !webp) throw new Error("preview must be png/jpeg/webp");
+  return { buf, ext: png ? "png" : webp ? "webp" : "jpg" };
+}
+
+function writePreview(id, prev, thumb) {
+  const dest = path.join(PREV_DIR, id + "." + prev.ext);
+  for (const ext of ["png", "jpg", "webp"]) {
+    const p = path.join(PREV_DIR, id + "." + ext);
+    if (p !== dest) try { fs.unlinkSync(p); } catch {}
+    try { fs.unlinkSync(path.join(PREV_DIR, id + ".thumb." + ext)); } catch {}
+  }
+  fs.writeFileSync(dest, prev.buf);
+  if (thumb && thumb.buf) {
+    fs.writeFileSync(path.join(PREV_DIR, id + ".thumb." + thumb.ext), thumb.buf);
+  }
+}
+
+function previewPath(id, size) {
+  const wantThumb = size === "thumb" || size === "sm" || size === "small";
+  if (wantThumb) {
+    for (const ext of ["jpg", "png", "webp"]) {
+      const p = path.join(PREV_DIR, id + ".thumb." + ext);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  for (const ext of ["jpg", "png", "webp"]) {
+    const p = path.join(PREV_DIR, id + "." + ext);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function clearPreviews(id) {
+  for (const ext of ["png", "jpg", "webp"]) {
+    try { fs.unlinkSync(path.join(PREV_DIR, id + "." + ext)); } catch {}
+    try { fs.unlinkSync(path.join(PREV_DIR, id + ".thumb." + ext)); } catch {}
+  }
+}
+
+function previewMime(p) {
+  if (p.endsWith(".png")) return "image/png";
+  if (p.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
+}
+
+function requireFields(obj, keys) {
+  for (const k of keys) {
+    if (obj[k] == null || String(obj[k]).trim() === "") {
+      const err = new Error("missing " + k);
+      err.status = 400;
+      throw err;
+    }
+  }
+}
+
+async function handle(req, res) {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+    });
+    res.end();
+    return;
+  }
+
+  const url = new URL(req.url || "/", "http://local");
+  const p = url.pathname.replace(/\/+$/, "") || "/";
+  const method = req.method || "GET";
+  const user = authUser(req);
+
+  const jsonBody = async () => {
+    const raw = await readBody(req);
+    if (!raw.length) return {};
+    try {
+      return JSON.parse(raw.toString("utf8"));
+    } catch {
+      const err = new Error("invalid json");
+      err.status = 400;
+      throw err;
+    }
+  };
+
+  if (method === "GET" && p === "/api/health") {
+    return send(res, 200, { ok: true, service: "mtnode-template-store", templates: db.templates.length });
+  }
+
+  if (method === "POST" && p === "/api/register") {
+    const b = await jsonBody();
+    const username = String(b.username || "").trim();
+    const password = String(b.password || "");
+    const nickname = String(b.nickname || "").trim();
+    if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) {
+      return send(res, 400, { ok: false, error: "用户名为 3-24 位字母、数字或下划线" });
+    }
+    if (password.length < 6 || password.length > 72) {
+      return send(res, 400, { ok: false, error: "密码长度为 6-72 位" });
+    }
+    if (!nickname || nickname.length > 32) {
+      return send(res, 400, { ok: false, error: "昵称长度为 1-32 位" });
+    }
+    if (findUserByName(username)) {
+      return send(res, 409, { ok: false, error: "用户名已被占用" });
+    }
+    const salt = crypto.randomBytes(16).toString("hex");
+    const u = {
+      id: uid("u_"),
+      username,
+      nickname,
+      salt,
+      pass: hashPass(password, salt),
+      createdAt: now(),
+      downloadsReceived: 0,
+      likesReceived: 0,
+    };
+    db.users.push(u);
+    const token = crypto.randomBytes(24).toString("hex");
+    db.sessions.push({ tokenHash: hashToken(token), userId: u.id, expiresAt: now() + SESSION_MS });
+    await saveDb();
+    return send(res, 200, { ok: true, token, user: publicUser(u) });
+  }
+
+  if (method === "POST" && p === "/api/login") {
+    const b = await jsonBody();
+    const u = findUserByName(b.username);
+    if (!u || hashPass(b.password, u.salt) !== u.pass) {
+      return send(res, 401, { ok: false, error: "用户名或密码错误" });
+    }
+    const token = crypto.randomBytes(24).toString("hex");
+    db.sessions = db.sessions.filter((s) => s.expiresAt > now() && s.userId !== u.id);
+    db.sessions.push({ tokenHash: hashToken(token), userId: u.id, expiresAt: now() + SESSION_MS });
+    await saveDb();
+    return send(res, 200, { ok: true, token, user: publicUser(u) });
+  }
+
+  if (method === "POST" && p === "/api/logout") {
+    const h = req.headers.authorization || "";
+    const m = /^Bearer\s+(\S+)/i.exec(h);
+    if (m) {
+      const th = hashToken(m[1]);
+      db.sessions = db.sessions.filter((s) => s.tokenHash !== th);
+      await saveDb();
+    }
+    return send(res, 200, { ok: true });
+  }
+
+  if (method === "GET" && p === "/api/me") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    return send(res, 200, { ok: true, user: publicUser(user) });
+  }
+
+  if (method === "GET" && p === "/api/me/templates") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    const items = db.templates
+      .filter((t) => t.userId === user.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((t) => publicTemplate(t, user));
+    return send(res, 200, { ok: true, items, user: publicUser(user) });
+  }
+
+  if (method === "GET" && p === "/api/tags") {
+    return send(res, 200, { ok: true, tags: tagCounts() });
+  }
+
+  if (method === "GET" && p === "/api/templates") {
+    const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const tag = normalizeTag(url.searchParams.get("tag") || "");
+    const sort = String(url.searchParams.get("sort") || "new");
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.get("pageSize") || "20", 10) || 20));
+    let list = db.templates.slice();
+    if (tag) list = list.filter((t) => (t.tags || []).includes(tag));
+    if (q) {
+      list = list.filter((t) => {
+        const owner = db.users.find((u) => u.id === t.userId);
+        const blob = [
+          t.title,
+          t.description,
+          (t.tags || []).join(" "),
+          owner && owner.nickname,
+          owner && owner.username,
+        ]
+          .join(" ")
+          .toLowerCase();
+        return blob.includes(q);
+      });
+    }
+    if (sort === "downloads") list.sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || b.createdAt - a.createdAt);
+    else if (sort === "likes") list.sort((a, b) => (b.likes || 0) - (a.likes || 0) || b.createdAt - a.createdAt);
+    else list.sort((a, b) => b.createdAt - a.createdAt);
+    const total = list.length;
+    const items = list.slice((page - 1) * pageSize, page * pageSize).map((t) => publicTemplate(t, user));
+    return send(res, 200, { ok: true, items, total, page, pageSize, tags: tagCounts() });
+  }
+
+  const one = /^\/api\/templates\/([^/]+)$/.exec(p);
+  const fileR = /^\/api\/templates\/([^/]+)\/file$/.exec(p);
+  const prevR = /^\/api\/templates\/([^/]+)\/preview$/.exec(p);
+  const likeR = /^\/api\/templates\/([^/]+)\/like$/.exec(p);
+
+  if (fileR && method === "GET") {
+    const t = db.templates.find((x) => x.id === fileR[1]);
+    if (!t) return send(res, 404, { ok: false, error: "模板不存在" });
+    const fp = path.join(FILE_DIR, t.id + ".mtnodes");
+    if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
+    t.downloads = (t.downloads || 0) + 1;
+    const owner = db.users.find((u) => u.id === t.userId);
+    if (owner) owner.downloadsReceived = (owner.downloadsReceived || 0) + 1;
+    await saveDb();
+    const buf = fs.readFileSync(fp);
+    if (url.searchParams.get("format") === "raw") {
+      return sendBin(res, 200, buf, "application/octet-stream");
+    }
+    return send(res, 200, {
+      ok: true,
+      id: t.id,
+      title: t.title,
+      bytes: buf.length,
+      base64: buf.toString("base64"),
+    });
+  }
+
+  if (prevR && method === "GET") {
+    const t = db.templates.find((x) => x.id === prevR[1]);
+    if (!t || !t.hasPreview) return send(res, 404, { ok: false, error: "无预览图" });
+    const size = String(url.searchParams.get("size") || "thumb").toLowerCase();
+    const fp = previewPath(t.id, size === "full" || size === "large" ? "full" : "thumb");
+    if (!fp) return send(res, 404, { ok: false, error: "无预览图" });
+    const headers = {
+      "Cache-Control": size === "full" || size === "large" ? "public, max-age=3600" : "public, max-age=86400",
+    };
+    return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), headers);
+  }
+
+  if (one && method === "GET") {
+    const t = db.templates.find((x) => x.id === one[1]);
+    if (!t) return send(res, 404, { ok: false, error: "模板不存在" });
+    return send(res, 200, { ok: true, item: publicTemplate(t, user) });
+  }
+
+  if (method === "POST" && p === "/api/templates") {
+    if (!user) return send(res, 401, { ok: false, error: "上传需要登录" });
+    const b = await jsonBody();
+    requireFields(b, ["title", "fileBase64"]);
+    const title = String(b.title).trim().slice(0, 80);
+    const description = String(b.description || "").trim().slice(0, 2000);
+    const tags = parseTags(b.tags);
+    let buf;
+    try {
+      buf = decodeMtNodes(b.fileBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "不是有效的 .mtnodes 模板：" + e.message });
+    }
+    if (buf.length > MAX_TEMPLATE) {
+      return send(res, 413, { ok: false, error: "模板文件不能超过 10MB" });
+    }
+    let prev = null;
+    let thumb = null;
+    try {
+      prev = decodePreview(b.previewBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "预览图无效：" + e.message });
+    }
+    try {
+      thumb = decodePreview(b.previewThumbBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "缩略图无效：" + e.message });
+    }
+    const id = uid("t_");
+    fs.writeFileSync(path.join(FILE_DIR, id + ".mtnodes"), buf);
+    if (prev) writePreview(id, prev, thumb);
+    const t = {
+      id,
+      userId: user.id,
+      title,
+      description,
+      tags,
+      downloads: 0,
+      likes: 0,
+      bytes: buf.length,
+      hasPreview: !!prev,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    db.templates.push(t);
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicTemplate(t, user) });
+  }
+
+  if (one && method === "PATCH") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    const t = db.templates.find((x) => x.id === one[1]);
+    if (!t) return send(res, 404, { ok: false, error: "模板不存在" });
+    if (t.userId !== user.id) return send(res, 403, { ok: false, error: "只能编辑自己的模板" });
+    const b = await jsonBody();
+    if (b.title != null) {
+      const title = String(b.title).trim().slice(0, 80);
+      if (!title) return send(res, 400, { ok: false, error: "标题不能为空" });
+      t.title = title;
+    }
+    if (b.description != null) t.description = String(b.description).trim().slice(0, 2000);
+    if (b.tags != null) t.tags = parseTags(b.tags);
+    if (b.fileBase64) {
+      let buf;
+      try {
+        buf = decodeMtNodes(b.fileBase64);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: "不是有效的 .mtnodes 模板：" + e.message });
+      }
+      if (buf.length > MAX_TEMPLATE) {
+        return send(res, 413, { ok: false, error: "模板文件不能超过 10MB" });
+      }
+      fs.writeFileSync(path.join(FILE_DIR, t.id + ".mtnodes"), buf);
+      t.bytes = buf.length;
+    }
+    if (b.previewBase64 === "") {
+      clearPreviews(t.id);
+      t.hasPreview = false;
+    } else if (b.previewBase64) {
+      let prev;
+      let thumb = null;
+      try {
+        prev = decodePreview(b.previewBase64);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: "预览图无效：" + e.message });
+      }
+      try {
+        thumb = decodePreview(b.previewThumbBase64);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: "缩略图无效：" + e.message });
+      }
+      if (prev) {
+        writePreview(t.id, prev, thumb);
+        t.hasPreview = true;
+      }
+    }
+    t.updatedAt = now();
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicTemplate(t, user) });
+  }
+
+  if (one && method === "DELETE") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    const idx = db.templates.findIndex((x) => x.id === one[1]);
+    if (idx < 0) return send(res, 404, { ok: false, error: "模板不存在" });
+    const t = db.templates[idx];
+    if (t.userId !== user.id && !isAdmin(user)) {
+      return send(res, 403, { ok: false, error: "只能删除自己的模板" });
+    }
+    const owner = db.users.find((u) => u.id === t.userId) || user;
+    owner.downloadsReceived = Math.max(0, (owner.downloadsReceived || 0) - (t.downloads || 0));
+    owner.likesReceived = Math.max(0, (owner.likesReceived || 0) - (t.likes || 0));
+    db.likes = db.likes.filter((l) => l.templateId !== t.id);
+    db.templates.splice(idx, 1);
+    try { fs.unlinkSync(path.join(FILE_DIR, t.id + ".mtnodes")); } catch {}
+    clearPreviews(t.id);
+    await saveDb();
+    return send(res, 200, { ok: true });
+  }
+
+  if (likeR && method === "POST") {
+    if (!user) return send(res, 401, { ok: false, error: "点赞需要登录" });
+    const t = db.templates.find((x) => x.id === likeR[1]);
+    if (!t) return send(res, 404, { ok: false, error: "模板不存在" });
+    const hit = db.likes.find((l) => l.userId === user.id && l.templateId === t.id);
+    const owner = db.users.find((u) => u.id === t.userId);
+    if (hit) {
+      db.likes = db.likes.filter((l) => !(l.userId === user.id && l.templateId === t.id));
+      t.likes = Math.max(0, (t.likes || 0) - 1);
+      if (owner) owner.likesReceived = Math.max(0, (owner.likesReceived || 0) - 1);
+    } else {
+      db.likes.push({ userId: user.id, templateId: t.id, at: now() });
+      t.likes = (t.likes || 0) + 1;
+      if (owner) owner.likesReceived = (owner.likesReceived || 0) + 1;
+    }
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicTemplate(t, user) });
+  }
+
+  send(res, 404, { ok: false, error: "not found" });
+}
+
+const server = http.createServer((req, res) => {
+  handle(req, res).catch((e) => {
+    const status = e.status || (String(e.message).includes("too large") ? 413 : 500);
+    if (!res.headersSent) send(res, status, { ok: false, error: e.message || String(e) });
+  });
+});
+
+server.listen(PORT, HOST, () => {
+  console.log("[mtnode-store] http://" + HOST + ":" + PORT);
+});

@@ -1,0 +1,17 @@
+[Unit]
+Description=MTNode template store
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mtnode-store
+Environment=PORT=8787
+Environment=HOST=127.0.0.1
+Environment=DATA_DIR=/opt/mtnode-store/data
+ExecStart=/usr/bin/node /opt/mtnode-store/server.mjs
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+{
+  "name": "mtnode-template-store",
+  "private": true,
+  "type": "module",
+  "description": "MTNode 模板商店 SaaS：注册登录、上传/下载 .mtnodes、标签、点赞与统计",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
