@@ -11,3 +11,10 @@ scripts/
 # ===== 运行时数据 / 日志 =====
 data/
 *.log
+
+# ===== dsh 集成（见 dsh/DESIGN.md）=====
+.dsh-probe/
+dsh/gateway/node_modules/
+dsh/gateway/pnpm-lock.yaml
+dsh/smoke-home*/
+dsh/smoke-ws*/

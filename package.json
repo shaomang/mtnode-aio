@@ -1,18 +1,18 @@
 {
   "name": "mtnode-ai-orchestrator",
   "productName": "MTNode AI编排器",
-  "version": "1.0.26",
+  "version": "1.1.12",
   "description": "MTNode AI编排器（MTNode AI Orchestrator）— AI 工作流编排",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "pack": "electron-packager . MTNodeAIO --platform=win32 --arch=x64 --out=E:/dev/tools/dist --overwrite --electron-version=31.7.7 --executable-name=MTNodeAIO --prune=true --icon=E:/dev/tools/pipeline-console/build/icon.ico --ignore=\"^/smoke\\.js$|^/dist($|/)|^/node_modules/\\.cache($|/)\"",
+    "pack": "electron-packager . MTNodeAIO --platform=win32 --arch=x64 --out=E:/dev/tools/dist --overwrite --electron-version=39.8.10 --executable-name=MTNodeAIO --prune=true --icon=E:/dev/tools/pipeline-console/build/icon.ico --ignore=\"^/smoke\\.js$|^/dist($|/)|^/node_modules/\\.cache($|/)\"",
     "dist": "electron-builder --win --config build.json"
   },
   "author": "New Earth Habitat",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^31.7.7",
+    "electron": "^39.8.10",
     "electron-builder": "^26.0.12",
     "electron-packager": "^17.1.2"
   },

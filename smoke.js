@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -182,6 +182,30 @@ mockServer.listen(0, '127.0.0.1', () => {
       const rdAgg = await window.api.fileReadText(aggPath);
       log('save agg ok=' + okAgg + ' hasA=' + (rdAgg.content.indexOf('产品A: 宣传语A') >= 0) + ' hasB=' + (rdAgg.content.indexOf('产品B: 宣传语B') >= 0) + ' singleFile=' + (n3.savedPaths.length === 1));
       n3.batchMode = 'batch';
+
+      // —— 保存路径：相对工作目录（改目录统一切换） ——
+      const ws1 = ${JSON.stringify(path.join(process.env.TEMP || '.', 'mtnode_save_ws1').replace(/\\/g, '/'))};
+      const ws2 = ${JSON.stringify(path.join(process.env.TEMP || '.', 'mtnode_save_ws2').replace(/\\/g, '/'))};
+      S.wf.workspace = ws1;
+      addNode('save_text', 700, 520);
+      const nRel = S.wf.nodes[S.wf.nodes.length - 1];
+      log('save defaultRel=' + (!isAbsPath(nRel.savePath) && !!nRel.savePath) + ' path=' + nRel.savePath);
+      nRel.savePath = 'rel_out.yaml';
+      connect(n2.id, nRel.id, 0);
+      nRel.batchMode = 'agg';
+      const okRel1 = await saveTextOnce(nRel, true);
+      const abs1 = resolveSavePath(nRel.savePath).path;
+      const rdRel1 = await window.api.fileReadText(abs1);
+      const abs1n = String(abs1).replace(/\\\\/g, '/');
+      log('save rel ws1 ok=' + okRel1 + ' absEnds=' + abs1n.endsWith('/rel_out.yaml') + ' exists=' + rdRel1.exists);
+      log('preferRel=' + (preferRelativeSavePath(window.api.pathJoin(ws1, 'sub', 'a.yaml')) === 'sub/a.yaml'));
+      S.wf.workspace = ws2;
+      const okRel2 = await saveTextOnce(nRel, true);
+      const abs2 = resolveSavePath(nRel.savePath).path;
+      const rdRel2 = await window.api.fileReadText(abs2);
+      const abs2n = String(abs2).replace(/\\\\/g, '/');
+      log('save rel ws2 ok=' + okRel2 + ' switched=' + (abs2n.endsWith('/rel_out.yaml') && abs2 !== abs1) + ' exists=' + rdRel2.exists);
+      S.wf.workspace = '';
 
       // —— YAML 导入解析 ——
       const parsed = parseSimpleYaml('设计需求: 赛博朋克\\n产品A: |\\n  第一行\\n  第二行\\n产品B: 普通值');
@@ -514,7 +538,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       portOut.dispatchEvent(new MouseEvent('mousedown', { clientX: mdX, clientY: mdY, bubbles: true }));
       log('drag after mousedown=' + (S.drag ? S.drag.mode : 'null') + ' ports=' + document.querySelectorAll('.port.out').length);
       const mvX = mdX + 300, mvY = mdY + 200;
-      window.dispatchEvent(new MouseEvent('mousemove', { clientX: mvX, clientY: mvY, bubbles: true }));
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: mvX, clientY: mvY, buttons: 1, bubbles: true }));
       const temp = document.querySelector('#wireTemp');
       log('temp exists=' + (!!temp) + ' dragMode=' + (S.drag && S.drag.mode) + ' mx=' + (S.drag && S.drag.mx) + ' d=' + JSON.stringify(temp && temp.getAttribute('d')));
       const dAttr = temp.getAttribute('d');
@@ -557,6 +581,32 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('anim file exists=' + (an.output && (await window.api.fileExists(an.output.path))));
       log('anim value=' + (valueForInput(an, 0) && valueForInput(an, 0).kind));
 
+      // —— 画布资产图像：超过 1080p 自动降采样 ——
+      const cvBig = document.createElement('canvas');
+      cvBig.width = 1920; cvBig.height = 1200;
+      const cBig = cvBig.getContext('2d');
+      cBig.fillStyle = '#336699'; cBig.fillRect(0, 0, 1920, 1200);
+      const bigB64 = cvBig.toDataURL('image/png').split(',')[1];
+      const bigAsset = await window.api.assetWriteBase64(S.wf.id, 'cap_1080', bigB64, 'png');
+      const bigSz = await new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = () => resolve({ w: 0, h: 0 });
+        im.src = window.api.toFileUrl(bigAsset.path);
+      });
+      log('asset cap1080=' + (bigSz.w <= 1080 && bigSz.h <= 1080 && bigSz.w > 0) + ' size=' + bigSz.w + 'x' + bigSz.h + ' expect<=1080');
+      const cvOk = document.createElement('canvas');
+      cvOk.width = 800; cvOk.height = 600;
+      cvOk.getContext('2d').fillRect(0, 0, 800, 600);
+      const okAsset = await window.api.assetWriteBase64(S.wf.id, 'keep_800', cvOk.toDataURL('image/png').split(',')[1], 'png');
+      const okSz = await new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = () => resolve({ w: 0, h: 0 });
+        im.src = window.api.toFileUrl(okAsset.path);
+      });
+      log('asset keepUnder=' + (okSz.w === 800 && okSz.h === 600) + ' size=' + okSz.w + 'x' + okSz.h);
+
       // —— 实际渲染位置 vs 坐标公式（scale 生效验证） ——
       S.cam = { x: 300, y: 250, z: 2 };
       applyTransform();
@@ -569,7 +619,8 @@ mockServer.listen(0, '127.0.0.1', () => {
 
       // —— 布局：WORKFLOW 行移除 / 提示行 / 作者弹窗 / Ctrl+C ——
       log('pane-head removed=' + (document.querySelector('.pane-head') === null));
-      log('hint text=' + JSON.stringify($('#canvasHint').textContent));
+      log('hint text=' + JSON.stringify($('#canvasHint') ? $('#canvasHint').textContent : '(hint removed, new toolbar)'));
+      log('toolbar layout=' + (!!$('#wfTabs') && !!$('#wfWsBox') && !!document.querySelector('.fn-toolbar')));
       log('author link=' + ($('#authorLink').textContent === '@ms2308'));
       openAuthorPopup();
       const apText = $('#ovBody').textContent;
@@ -621,7 +672,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       const chPr = chPort.getBoundingClientRect();
       const chMX = chPr.left + chPr.width / 2, chMY = chPr.top + chPr.height / 2;
       chPort.dispatchEvent(new MouseEvent('mousedown', { clientX: chMX, clientY: chMY, bubbles: true }));
-      window.dispatchEvent(new MouseEvent('mousemove', { clientX: chMX + 250, clientY: chMY + 100, bubbles: true }));
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: chMX + 250, clientY: chMY + 100, buttons: 1, bubbles: true }));
       const chTemp = document.querySelector('#wireTemp');
       const chD = chTemp.getAttribute('d');
       const nums2 = chD.match(/[\\d.]+/g).map(Number);
@@ -630,6 +681,97 @@ mockServer.listen(0, '127.0.0.1', () => {
       const tempVis = getComputedStyle(chTemp).display !== 'none' && chD.length > 5;
       log('chat wire temp: vis=' + tempVis + ' end=' + end2.map((v) => Math.round(v)) + ' want=' + [Math.round(want2.x), Math.round(want2.y)] + ' d=' + chD.slice(0, 40));
       window.dispatchEvent(new MouseEvent('mouseup', { clientX: chMX + 250, clientY: chMY + 100, bubbles: true }));
+
+      // —— 控制节点：金色边框/连线、指挥线不占用数据、批量清空 ——
+      addNode('proc_text', 100, 3100);
+      const cProc = S.wf.nodes[S.wf.nodes.length - 1];
+      cProc.title = '受控处理';
+      cProc.output = { kind: 'text', text: 'to-clear' };
+      cProc.ranAt = Date.now();
+      addNode('input_text', 100, 3280);
+      const cIn = S.wf.nodes[S.wf.nodes.length - 1];
+      cIn.text = 'keep-me';
+      addNode('control', 420, 3100);
+      const ctrl = S.wf.nodes[S.wf.nodes.length - 1];
+      log('control title=' + ctrl.title + ' action=' + ctrl.ctrlAction);
+      addWire(ctrl.id, cProc.id);
+      addWire(ctrl.id, cIn.id);
+      log('ctrl dataWires proc=' + wiresTo(cProc.id).length + ' all=' + allWiresTo(cProc.id).length + ' expect 0/1');
+      log('ctrl not inherit input=' + (inputInherited(cIn) === false) + ' text=' + cIn.text);
+      renderCanvas();
+      const ctrlEl = document.querySelector('.wf-node[data-nid="' + ctrl.id + '"]');
+      log('ctrl class=' + (ctrlEl && ctrlEl.classList.contains('ctrl')) + ' toggles=' + (ctrlEl ? ctrlEl.querySelectorAll('.n-ctrl-toggle').length : 0));
+      addNode('proc_image', 700, 3100);
+      const cImg = S.wf.nodes[S.wf.nodes.length - 1];
+      renderCanvas();
+      const imgEl = document.querySelector('.wf-node[data-nid="' + cImg.id + '"]');
+      log('proc_image class=' + (imgEl && imgEl.classList.contains('proc-img')));
+      const cw = S.wf.wires.find((w) => w.from === ctrl.id && w.to === cProc.id);
+      const cwEl = cw && document.getElementById('wire-' + cw.id);
+      log('ctrl wire class=' + (cwEl && (' ' + cwEl.getAttribute('class') + ' ').indexOf(' ctrl ') >= 0));
+      ctrl.ctrlAction = 'clear';
+      await playControlNode(ctrl);
+      log('ctrl clear proc=' + (cProc.output == null) + ' input cleared=' + (cIn.text === ''));
+      // —— 控制节点执行：拓扑上游优先，避免下游吃旧结果 ——
+      addNode('proc_text', 100, 3400);
+      const upP = S.wf.nodes[S.wf.nodes.length - 1];
+      upP.title = '上游处理'; upP.providerId = 'local'; upP.model = 'm';
+      upP.output = { kind: 'text', text: 'OLD-UP' }; upP.ranAt = 1;
+      addNode('proc_text', 360, 3400);
+      const dnP = S.wf.nodes[S.wf.nodes.length - 1];
+      dnP.title = '下游处理'; dnP.providerId = 'local'; dnP.model = 'm';
+      dnP.output = { kind: 'text', text: 'OLD-DN' }; dnP.ranAt = 1;
+      connect(upP.id, dnP.id, 0);
+      addNode('control', 620, 3400);
+      const ctrl2 = S.wf.nodes[S.wf.nodes.length - 1];
+      ctrl2.ctrlAction = 'run';
+      addWire(ctrl2.id, dnP.id);
+      addWire(ctrl2.id, upP.id);
+      const ord = controlRunOrder([dnP, upP]);
+      log('ctrl topo order=' + ord.map((n) => n.title).join('>') + ' expect 上游处理>下游处理');
+      const layersDep = controlRunLayers([dnP, upP]);
+      log('ctrl layers dep=' + layersDep.map((w) => w.map((n) => n.title).join('+')).join('|') + ' expect 上游处理|下游处理');
+      await playControlNode(ctrl2);
+      log('ctrl run upstreamFirst=' + (
+        !!(upP.output && upP.output.text !== 'OLD-UP' && dnP.output && dnP.output.text !== 'OLD-DN'
+          && upP.ranAt > 0 && dnP.ranAt >= upP.ranAt)
+      ));
+      addNode('input_text', 100, 3550);
+      const parIn = S.wf.nodes[S.wf.nodes.length - 1];
+      parIn.text = 'p';
+      addNode('proc_text', 360, 3550);
+      const parA = S.wf.nodes[S.wf.nodes.length - 1];
+      parA.title = '并行A'; parA.providerId = 'local'; parA.model = 'm';
+      addNode('proc_text', 620, 3550);
+      const parB = S.wf.nodes[S.wf.nodes.length - 1];
+      parB.title = '并行B'; parB.providerId = 'local'; parB.model = 'm';
+      connect(parIn.id, parA.id, 0);
+      connect(parIn.id, parB.id, 0);
+      addNode('control', 880, 3550);
+      const ctrl3 = S.wf.nodes[S.wf.nodes.length - 1];
+      ctrl3.ctrlAction = 'run';
+      addWire(ctrl3.id, parA.id);
+      addWire(ctrl3.id, parB.id);
+      const layersPar = controlRunLayers([parA, parB]);
+      log('ctrl layers par=' + layersPar.length + ':' + (layersPar[0] && layersPar[0].length) + ' expect 1:2');
+      const tPar0 = Date.now();
+      await playControlNode(ctrl3);
+      const tPar = Date.now() - tPar0;
+      log('ctrl parallel both=' + !!(parA.output && parB.output) + ' ms=' + tPar + ' fast=' + (tPar < 900));
+
+      // —— 画布绘制标注（文本 / 框体 / 箭头，纯展示） ——
+      const mkT = addMark('text', 100, 3600);
+      const mkB = addMark('box', 320, 3600);
+      const mkA = addMark('arrow', 600, 3650);
+      renderCanvas();
+      log('mark kinds=' + [mkT.kind, mkB.kind, mkA.kind].join(',') + ' n=' + marksOf().length);
+      log('mark dom=' + !!document.querySelector('.wf-mark.mk-text') + '/' + !!document.querySelector('.wf-mark.mk-box') + '/' + !!document.querySelector('.wf-mark.mk-arrow'));
+      log('mark tools=' + (document.querySelectorAll('.wf-mark .mk-tools').length >= 3));
+      cycleMarkColor(mkB);
+      bumpMarkSize(mkT, 1);
+      log('mark edit color=' + (mkB.color !== MARK_DEFAULTS.box.color) + ' font=' + (mkT.fontSize > MARK_DEFAULTS.text.fontSize));
+      deleteMarks([mkT.id, mkB.id, mkA.id]);
+      log('mark deleted=' + (marksOf().length === 0));
 
       // —— Markdown 渲染 ——
       const mdSrc = "# 标题\\n**加粗** 和 \`代码\`\\n\\n\`\`\`js\\nconst x = 1;\\n\`\`\`\\n\\n[链接](https://example.com) 与 <script>alert(1)</script>";
@@ -676,7 +818,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       renderCanvas();
       log('stop btn hidden after=' + (document.querySelector('.wf-node[data-nid="' + stNode.id + '"] .n-stop') === null));
 
-      // —— 多模态识图：无视觉服务商时接入图像被阻止；有视觉服务商时可运行 ——
+      // —— 多模态识图：无视觉服务商时接入图像被阻止；有视觉服务商时自动切换并可运行 ——
       addNode('input_image', 700, 2750);
       const vi = S.wf.nodes[S.wf.nodes.length - 1];
       vi.imageAsset = (await window.api.assetWriteBase64(S.wf.id, 'vi_src', (() => { const c = document.createElement('canvas'); c.width = 4; c.height = 4; const x = c.getContext('2d'); x.fillStyle = '#123456'; x.fillRect(0, 0, 4, 4); return c.toDataURL('image/png').split(',')[1]; })(), 'png')).path;
@@ -690,7 +832,9 @@ mockServer.listen(0, '127.0.0.1', () => {
       const mockCount1 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length;
       log('vision blocked=' + (vp.error && vp.error.indexOf('未添加多模态模型') >= 0) + ' noRequest=' + (mockCount1 === mockCount0));
       S.config.providers.push({ id: 'vision1', name: 'Vision', type: 'text_openai', baseUrl: 'http://127.0.0.1:' + ${MOCK_PORT}, apiKey: 'k', models: ['vision-model'], vision: true });
-      vp.providerId = 'vision1'; vp.model = 'vision-model'; vp.error = null;
+      vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-flash'; vp.error = null; vp.output = null;
+      const auto = ensureProcTextVision(vp, { notify: false });
+      log('vision autoSwitch=' + (!!auto.ok && auto.switched && vp.providerId === 'vision1' && vp.model === 'vision-model'));
       await playNode(vp, false);
       const mockCount2 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length;
       log('vision runs=' + (vp.output && vp.output.kind === 'text') + ' requestSent=' + (mockCount2 > mockCount1));
@@ -766,6 +910,86 @@ mockServer.listen(0, '127.0.0.1', () => {
       await playNode(th1, false);
       const cntA3 = await rdCnt();
       log('attempts reset single req=1:' + (cntA3 - cntA2 === 1) + ' legacy output=' + (th1.output && th1.output.kind === 'text'));
+
+      // —— 画布插件:创建物品配置工作流并自动排版(不重叠、可 @引用) ——
+      const beforeN = S.wf.nodes.length;
+      const beforeW = S.wf.wires.length;
+      const rCanvas = await applyCanvasOp('edit', {
+        setWorkflowName: '',
+        create: [
+          { alias: 'req', kind: 'input_text', title: '物品需求', text: '新剑: 攻击+10' },
+          { alias: 'fmt', kind: 'input_text', title: '配置表格式', text: 'id: name\\n  atk: n' },
+          { alias: 'gen', kind: 'proc_text', title: '生成物品配置', prompt: '按格式输出 YAML', refs: ['物品需求', '配置表格式'] },
+          { alias: 'save', kind: 'save_text', title: '写入配置表', savePath: 'E:/game/items.yaml', auto: true },
+        ],
+        connect: [
+          { from: 'req', to: 'gen' },
+          { from: 'fmt', to: 'gen' },
+          { from: 'gen', to: 'save' },
+        ],
+        group: { title: '物品配置工作流' },
+        layout: true,
+      });
+      const afterN = S.wf.nodes.length;
+      const afterW = S.wf.wires.length;
+      const reqN = S.wf.nodes.find((n) => n.title === '物品需求');
+      const fmtN = S.wf.nodes.find((n) => n.title === '配置表格式');
+      const genN = S.wf.nodes.find((n) => n.title === '生成物品配置');
+      const saveN = S.wf.nodes.find((n) => n.title === '写入配置表');
+      const gItem = (S.wf.groups || []).find((g) => g.title === '物品配置工作流');
+      let overlap = false;
+      const neu = [reqN, fmtN, genN, saveN];
+      for (let i = 0; i < neu.length; i++) {
+        for (let j = i + 1; j < neu.length; j++) {
+          if (rectsOverlap(neu[i], neu[j], 8)) overlap = true;
+        }
+      }
+      const genRefs = genN && genN.prompt && genN.prompt.indexOf('@物品需求') >= 0 && genN.prompt.indexOf('@配置表格式') >= 0;
+      const wired = genN && reqN && fmtN && saveN &&
+        S.wf.wires.some((w) => w.from === reqN.id && w.to === genN.id) &&
+        S.wf.wires.some((w) => w.from === fmtN.id && w.to === genN.id) &&
+        S.wf.wires.some((w) => w.from === genN.id && w.to === saveN.id);
+      log('canvas edit ok=' + (rCanvas && rCanvas.ok) + ' +nodes=' + (afterN - beforeN) + ' +wires=' + (afterW - beforeW));
+      log('canvas refs=' + genRefs + ' wired=' + wired + ' group=' + !!(gItem && gItem.nodeIds && gItem.nodeIds.length >= 4) + ' noOverlap=' + !overlap);
+
+      // —— 画布编辑：替换节点模型 / 服务商 ——
+      S.config.providers.push({ id: 'swap_prov', name: 'SwapProv', type: 'text_openai', baseUrl: 'http://127.0.0.1:' + ${MOCK_PORT}, apiKey: 'k', models: ['swap-model-a', 'swap-model-b'], vision: false });
+      genN.providerId = 'local'; genN.model = 'm';
+      const rModel = await applyCanvasOp('edit', {
+        update: [
+          { title: '生成物品配置', providerId: 'SwapProv', model: 'swap-model-b' },
+        ],
+        layout: false,
+      });
+      log('canvas model swap=' + (genN.providerId === 'swap_prov' && genN.model === 'swap-model-b' && rModel && rModel.ok));
+      const rModelBad = await applyCanvasOp('edit', {
+        update: [{ title: '生成物品配置', providerId: 'no-such-provider', model: 'x' }],
+        layout: false,
+      });
+      log('canvas model badProv warn=' + (!!(rModelBad && rModelBad.warnings && rModelBad.warnings.some((w) => String(w).indexOf('找不到服务商') >= 0))) + ' kept=' + (genN.providerId === 'swap_prov'));
+      addNode('agent_task', 100, 3600);
+      const agM = S.wf.nodes[S.wf.nodes.length - 1];
+      agM.title = '模型任务';
+      agM.provider = 'deepseek-official';
+      agM.model = 'deepseek-v4-flash';
+      const rAg = await applyCanvasOp('edit', {
+        update: [{ title: '模型任务', provider: 'deepseek-official', model: 'deepseek-v4-pro' }],
+        layout: false,
+      });
+      log('canvas agent model=' + (agM.model === 'deepseek-v4-pro' && rAg && rAg.ok));
+      const colsOk = genN && reqN && saveN && genN.x > reqN.x && saveN.x > genN.x;
+      log('canvas edit ok=' + (rCanvas && rCanvas.ok) + ' +nodes=' + (afterN - beforeN) + ' +wires=' + (afterW - beforeW));
+      log('canvas titles=' + !!(reqN && fmtN && genN && saveN) + ' refs=' + !!genRefs + ' wired=' + !!wired);
+      log('canvas layout noOverlap=' + !overlap + ' leftToRight=' + !!colsOk + ' grouped=' + !!(gItem && gItem.nodeIds.length === 4));
+      log('canvas savePath=' + (saveN && saveN.savePath) + ' auto=' + !!(saveN && saveN.auto));
+      const snap = applyCanvasOp('get', {});
+      log('canvas get nodes>=4=' + (snap.nodes && snap.nodes.length >= 4) + ' kinds=' + (snap.kinds && snap.kinds.length));
+      const blocked = applyCanvasOp('edit', {
+        create: [{ alias: 'loop', kind: 'input_text', title: '回路测试' }],
+        connect: [{ from: '生成物品配置', to: '物品需求' }],
+        layout: false,
+      });
+      log('canvas cycle blocked=' + ((blocked.warnings || []).some((w) => String(w).indexOf('回路') >= 0)));
 
       window.__chatId = ch.id;
       window.__procId = la.id;

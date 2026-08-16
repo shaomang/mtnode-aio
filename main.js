@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 const {
   app,
   BrowserWindow,
@@ -11,6 +11,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
 /* gifenc 延迟加载：模块缺失时仅影响 GIF 生成，不会导致启动崩溃 */
@@ -20,7 +21,59 @@ function gifenc() {
   return _gifenc;
 }
 
+/* dsh agent 适配器（网关侧车）：全部 dsh 能力经此模块，契约见 dsh/DESIGN.md。
+   本文件与渲染层不 import 任何 dsh 代码，dsh 升级只触及 dsh/gateway/。 */
+const { createDshAdapter } = require("./dsh/main-dsh.js");
+const I18n = require("./renderer/i18n.js");
+let dshAdapter = null;
+function dshConfig() {
+  const cfg = readJson(join(DATA(), "config.json"), {});
+  const d = cfg.dsh || {};
+  return {
+    enabled: d.enabled !== false,
+    nodePath: typeof d.nodePath === "string" ? d.nodePath : "",
+    model: typeof d.model === "string" && d.model ? d.model : "deepseek-v4-flash",
+    maxTokens: Number(d.maxTokens) || 49152,
+    defaultWorkspace: typeof d.defaultWorkspace === "string" ? d.defaultWorkspace : "",
+    workspaceFallback: join(DATA(), "dsh-workspace"),
+  };
+}
+function dshLog(p) {
+  try {
+    fs.appendFileSync(join(DATA(), "dsh.log"), "[" + new Date().toISOString() + "] " + p + "\n");
+  } catch {}
+}
+function dsh() {
+  if (!dshAdapter) {
+    dshAdapter = createDshAdapter({
+      dataDir: DATA(),
+      errLog,
+      log: dshLog,
+      onEvent: (ev) => {
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send("dsh:event", ev);
+        }
+      },
+    });
+  }
+  return dshAdapter;
+}
+
 const DATA = () => path.join(app.getPath("userData"), "pipeline-console");
+function applyMainLocale(l) {
+  I18n.setLocale(l === "en" ? "en" : "zh");
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.setTitle(I18n.t("MTNode AI编排器 · MTNode AI Orchestrator"));
+  }
+}
+function localeFromDisk() {
+  try {
+    const cfg = readJson(join(DATA(), "config.json"), {});
+    return cfg && cfg.locale === "en" ? "en" : "zh";
+  } catch {
+    return "zh";
+  }
+}
 const mk = (p) => {
   fs.mkdirSync(p, { recursive: true });
   return p;
@@ -51,9 +104,9 @@ process.on("uncaughtException", (err) => {
   errLog("main uncaught: " + (err && err.stack ? err.stack : err));
   if (mainWin && !mainWin.isDestroyed()) {
     dialog.showErrorBox(
-      "MTNode AI编排器 发生错误",
+      I18n.t("MTNode AI编排器 发生错误"),
       String(err && err.message ? err.message : err) +
-        "\n\n详细信息已写入：" +
+        I18n.t("\n\n详细信息已写入：") +
         join(DATA(), "error.log"),
     );
   }
@@ -114,6 +167,10 @@ function appVersion() {
   }
 }
 ipcMain.handle("app:version", () => ({ ok: true, version: appVersion() }));
+ipcMain.handle("i18n:setLocale", (e, locale) => {
+  applyMainLocale(locale);
+  return { ok: true, locale: I18n.getLocale() };
+});
 
 ipcMain.handle("config:load", () =>
   readJson(join(DATA(), "config.json"), {
@@ -143,6 +200,7 @@ ipcMain.handle("config:load", () =>
 );
 ipcMain.handle("config:save", (e, cfg) => {
   writeJson(join(DATA(), "config.json"), cfg);
+  if (cfg && (cfg.locale === "en" || cfg.locale === "zh")) applyMainLocale(cfg.locale);
   return { ok: true };
 });
 
@@ -163,12 +221,12 @@ ipcMain.handle("workflow:list", () => {
     .sort((a, b) => b.mtime - a.mtime);
 });
 ipcMain.handle("workflow:load", (e, id) => {
-  if (!wfIdOk(id)) return { ok: false, error: "非法工作流 id" };
+  if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
   const j = readJson(wfPath(id));
-  return j ? { ok: true, data: j } : { ok: false, error: "工作流不存在" };
+  return j ? { ok: true, data: j } : { ok: false, error: I18n.t("工作流不存在") };
 });
 ipcMain.handle("workflow:save", (e, { id, data }) => {
-  if (!wfIdOk(id)) return { ok: false, error: "非法工作流 id" };
+  if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
   writeJson(wfPath(id), data);
   return { ok: true, mtime: Date.now() };
 });
@@ -185,21 +243,77 @@ ipcMain.handle("workflow:delete", (e, id) => {
 
 /* ---------------- IPC：资产 / 文件 ---------------- */
 
+/* 画布资产图像上限：长/宽任一超过 1080px（1080p）时等比缩小后落盘，
+   避免存档过大并加快后续图像处理。API 发送另有更严的 720 上限。 */
+const ASSET_IMAGE_MAX_DIM = 1080;
+const IMAGE_MAX_DIM = 720;
+
+/* 等比缩小图像缓冲；无法解码或已达标时原样返回。
+   重编码：jpg/jpeg → JPEG(85)，其余超限时 → PNG。 */
+function shrinkImageBuffer(raw, ext, maxDim) {
+  const e0 = String(ext || "png")
+    .toLowerCase()
+    .replace(/^\./, "");
+  let img;
+  try {
+    img = nativeImage.createFromBuffer(raw);
+  } catch {
+    return { buf: raw, ext: e0 || "png" };
+  }
+  if (!img || img.isEmpty()) return { buf: raw, ext: e0 || "png" };
+  const { width: w, height: h } = img.getSize();
+  if (!(w > maxDim || h > maxDim)) return { buf: raw, ext: e0 || "png" };
+  const scale = Math.min(maxDim / w, maxDim / h);
+  const resized = img.resize({
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+  });
+  const isJpeg = e0 === "jpg" || e0 === "jpeg";
+  return {
+    buf: isJpeg ? resized.toJPEG(85) : resized.toPNG(),
+    ext: isJpeg ? (e0 === "jpg" ? "jpg" : "jpeg") : "png",
+  };
+}
+
+function assetOutExt(srcExt, outExt) {
+  const s = String(srcExt || "")
+    .toLowerCase()
+    .replace(/^\./, "");
+  const o = String(outExt || "png")
+    .toLowerCase()
+    .replace(/^\./, "");
+  if (o === "jpg" || o === "jpeg") {
+    if (s === "jpg") return ".jpg";
+    if (s === "jpeg") return ".jpeg";
+    return ".jpg";
+  }
+  return "." + o;
+}
+
 ipcMain.handle("asset:copy", (e, { srcPath, wfId, name }) => {
-  const ext = path.extname(String(srcPath || "")).toLowerCase() || ".png";
+  const src = String(srcPath || "");
+  if (!src || !fs.existsSync(src)) {
+    throw new Error("文件不存在: " + src);
+  }
+  const srcExt = path.extname(src).toLowerCase().replace(/^\./, "") || "png";
+  const raw = fs.readFileSync(src);
+  const { buf, ext } = shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
   const dest = join(
     assetDir(wfId),
-    String(name).replace(/[^\w.-]/g, "_") + ext,
+    String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, ext),
   );
-  fs.copyFileSync(srcPath, dest);
+  fs.writeFileSync(dest, buf);
   return { ok: true, path: dest };
 });
 ipcMain.handle("asset:writeBase64", (e, { wfId, name, base64, ext }) => {
+  const srcExt = String(ext || "png").toLowerCase().replace(/^\./, "");
+  const raw = Buffer.from(String(base64), "base64");
+  const shrunk = shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
   const dest = join(
     assetDir(wfId),
-    String(name).replace(/[^\w.-]/g, "_") + "." + (ext || "png"),
+    String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, shrunk.ext),
   );
-  fs.writeFileSync(dest, Buffer.from(String(base64), "base64"));
+  fs.writeFileSync(dest, shrunk.buf);
   return { ok: true, path: dest };
 });
 ipcMain.handle("asset:readDataUrl", (e, p) => {
@@ -219,6 +333,27 @@ ipcMain.handle("asset:readDataUrl", (e, p) => {
     ok: true,
     dataUrl: "data:" + mime + ";base64," + buf.toString("base64"),
   };
+});
+/* 图像文件大小 + 像素尺寸（输入节点展示，便于估算视觉 token） */
+ipcMain.handle("asset:meta", (e, p) => {
+  try {
+    const file = String(p || "");
+    if (!file || !fs.existsSync(file)) return { ok: false };
+    const st = fs.statSync(file);
+    let width = 0,
+      height = 0;
+    try {
+      const img = nativeImage.createFromPath(file);
+      if (img && !img.isEmpty()) {
+        const sz = img.getSize();
+        width = sz.width || 0;
+        height = sz.height || 0;
+      }
+    } catch (_) {}
+    return { ok: true, bytes: st.size || 0, width, height };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
 });
 
 ipcMain.handle("file:readText", (e, p) => {
@@ -249,29 +384,495 @@ ipcMain.handle(
   "file:saveDialog",
   async (e, { title, defaultName, filters }) => {
     const r = await dialog.showSaveDialog(win(), {
-      title: title || "选择保存位置",
+      title: title || I18n.t("选择保存位置"),
       defaultPath: defaultName || "output.yaml",
-      filters: filters || [{ name: "全部文件", extensions: ["*"] }],
+      filters: filters || [{ name: I18n.t("全部文件"), extensions: ["*"] }],
     });
     return r.canceled ? { path: null } : { path: r.filePath };
   },
 );
-ipcMain.handle("file:openDialog", async (e, { title, filters, multi }) => {
+/* 导出文本:保存对话框 + 直接写盘(智能会话 /export 命令) */
+ipcMain.handle("file:saveText", async (e, { name, content }) => {
+  const r = await dialog.showSaveDialog(win(), {
+    title: I18n.t("导出会话"),
+    defaultPath: name || "session.txt",
+    filters: [{ name: I18n.t("文本文件"), extensions: ["txt", "md"] }],
+  });
+  if (r.canceled || !r.filePath) return { ok: false, error: I18n.t("已取消") };
+  try {
+    fs.writeFileSync(r.filePath, String(content || ""), "utf8");
+    return { ok: true, path: r.filePath };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("file:openDialog", async (e, { title, filters, multi, directory }) => {
+  const props = directory
+    ? multi
+      ? ["openDirectory", "multiSelections"]
+      : ["openDirectory"]
+    : multi
+      ? ["openFile", "multiSelections"]
+      : ["openFile"];
   const r = await dialog.showOpenDialog(win(), {
-    title: title || "选择文件",
-    properties: multi ? ["openFile", "multiSelections"] : ["openFile"],
-    filters: filters || [{ name: "全部文件", extensions: ["*"] }],
+    title: title || (directory ? I18n.t("选择文件夹") : I18n.t("选择文件")),
+    properties: props,
+    filters: filters || [{ name: I18n.t("全部文件"), extensions: ["*"] }],
   });
   return r.canceled
     ? { path: null, paths: [] }
     : { path: r.filePaths[0] || null, paths: r.filePaths };
 });
 ipcMain.handle("shell:showItem", (e, p) => shell.showItemInFolder(p));
+ipcMain.handle("shell:openPath", async (e, p) => {
+  try {
+    const dir = String(p || "").trim();
+    if (!dir) return { ok: false, error: "empty path" };
+    const err = await shell.openPath(dir);
+    if (err) return { ok: false, error: err };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
 ipcMain.handle("shell:openExternal", (e, url) => {
   if (typeof url === "string" && /^https?:\/\//.test(url))
     shell.openExternal(url);
 });
 ipcMain.handle("clipboard:readText", () => clipboard.readText());
+
+/* ---------------- 画布导出/导入（.mtnodes 二进制包） ----------------
+   .mtnodes 容器 = 7 字节魔数 "MTNODES" + 1 字节版本 + 4 字节清单长度 +
+   gzip(清单 JSON) + 4 字节资产数 + 逐资产 [4 字节名长 + 名 + 4 字节数据长 + 数据]。
+   清单 JSON = { format, version, app, exportedAt, workflowName, workflow, assets }；
+   workflow 内所有指向应用数据目录的资产绝对路径被替换为 "@asset/<i>" 占位，
+   导入时按 assets 顺序写回并重映射为新工作流下的绝对路径。 */
+
+const MTNODES_MAGIC = "MTNODES";
+const MTNODES_VERSION = 1;
+
+/* 深拷贝遍历所有字符串值：fn 返回替换后的字符串（未变化原样返回） */
+function mapStrings(v, fn) {
+  if (typeof v === "string") return fn(v);
+  if (Array.isArray(v)) return v.map((x) => mapStrings(x, fn));
+  if (v && typeof v === "object") {
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = mapStrings(v[k], fn);
+    return out;
+  }
+  return v;
+}
+
+/* 只读遍历所有字符串值 */
+function walkStrings(v, fn) {
+  if (typeof v === "string") {
+    fn(v);
+    return;
+  }
+  if (Array.isArray(v)) {
+    for (const x of v) walkStrings(x, fn);
+    return;
+  }
+  if (v && typeof v === "object") {
+    for (const k of Object.keys(v)) walkStrings(v[k], fn);
+  }
+}
+
+/* 是否可打包的资产：应用数据目录下真实存在的文件（不打包用户自选的外部输出路径） */
+function isBundlablePath(p) {
+  if (typeof p !== "string" || !p || !path.isAbsolute(p)) return false;
+  try {
+    const st = fs.statSync(p);
+    if (!st.isFile()) return false;
+  } catch {
+    return false;
+  }
+  const rel = path.relative(DATA(), p);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/* 收集工作流中引用的全部资产绝对路径（去重、保序） */
+function collectAssetPaths(wf) {
+  const seen = new Set();
+  const paths = [];
+  walkStrings(wf, (s) => {
+    if (seen.has(s) || !isBundlablePath(s)) return;
+    seen.add(s);
+    paths.push(s);
+  });
+  return paths;
+}
+
+function sanitizeBase(name) {
+  const s = String(name || "asset").replace(/[^\w.-]/g, "_");
+  return s || "asset";
+}
+
+function packMtNodes(wf) {
+  const clone = JSON.parse(JSON.stringify(wf || {}));
+  const paths = collectAssetPaths(clone);
+  const map = new Map();
+  const files = [];
+  paths.forEach((p, i) => {
+    const key = "@asset/" + i;
+    map.set(p, key);
+    files.push({ name: path.basename(p), rel: path.relative(DATA(), p), bytes: fs.readFileSync(p) });
+  });
+  const workflow = mapStrings(clone, (s) => map.get(s) || s);
+  const manifest = {
+    format: "mtnodes",
+    version: MTNODES_VERSION,
+    app: "MTNode",
+    exportedAt: new Date().toISOString(),
+    workflowName: workflow.name || "",
+    workflow,
+    assets: files.map((f, i) => ({ key: "@asset/" + i, name: f.name, rel: f.rel })),
+  };
+  const manifestBuf = zlib.gzipSync(Buffer.from(JSON.stringify(manifest), "utf8"));
+  const head = Buffer.alloc(4);
+  head.writeUInt32LE(manifestBuf.length, 0);
+  const count = Buffer.alloc(4);
+  count.writeUInt32LE(files.length, 0);
+  const chunks = [Buffer.from(MTNODES_MAGIC, "ascii"), Buffer.from([MTNODES_VERSION]), head, manifestBuf, count];
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name, "utf8");
+    const nl = Buffer.alloc(4);
+    nl.writeUInt32LE(nameBuf.length, 0);
+    const dl = Buffer.alloc(4);
+    dl.writeUInt32LE(f.bytes.length, 0);
+    chunks.push(nl, nameBuf, dl, f.bytes);
+  }
+  return { buf: Buffer.concat(chunks), assetCount: files.length };
+}
+
+/* 导入落盘：把容器里的资产写回新工作流目录，并把 "@asset/<i>" 占位重映射为新绝对路径 */
+function materializeImport(manifest, files) {
+  const wf = manifest.workflow || {};
+  const newId = "imp_" + Date.now().toString(36);
+  const dir = assetDir(newId);
+  const used = new Set();
+  const map = new Map();
+  for (let i = 0; i < files.length; i++) {
+    const asset = manifest.assets && manifest.assets[i];
+    const key = asset && asset.key ? asset.key : "@asset/" + i;
+    let name = sanitizeBase(files[i].name || ("asset" + i));
+    let dest = path.join(dir, name);
+    let k = 1;
+    while (used.has(dest.toLowerCase())) {
+      const dot = name.lastIndexOf(".");
+      const base = dot > 0 ? name.slice(0, dot) : name;
+      const ext = dot > 0 ? name.slice(dot) : "";
+      dest = path.join(dir, base + "_" + k + ext);
+      k++;
+    }
+    used.add(dest.toLowerCase());
+    const srcExt = path.extname(dest).toLowerCase().replace(/^\./, "") || "png";
+    const shrunk = shrinkImageBuffer(files[i].data, srcExt, ASSET_IMAGE_MAX_DIM);
+    let outDest = dest;
+    const wantExt = assetOutExt(srcExt, shrunk.ext);
+    if (path.extname(dest).toLowerCase() !== wantExt) {
+      outDest = dest.slice(0, dest.length - path.extname(dest).length) + wantExt;
+      used.delete(dest.toLowerCase());
+      used.add(outDest.toLowerCase());
+    }
+    fs.writeFileSync(outDest, shrunk.buf);
+    map.set(key, outDest);
+  }
+  const workflow = mapStrings(wf, (s) => map.get(s) || s);
+  workflow.id = newId;
+  return workflow;
+}
+
+function unpackMtNodes(buf) {
+  if (buf.length < 8) throw new Error(I18n.t("文件太小，不是有效的画布包"));
+  const magic = buf.slice(0, 7).toString("ascii");
+  if (magic !== MTNODES_MAGIC) throw new Error(I18n.t("不是有效的 .mtnodes 画布文件"));
+  const version = buf[7];
+  if (version !== MTNODES_VERSION) throw new Error(I18n.t("不支持的画布包版本：") + version);
+  let off = 8;
+  const ml = buf.readUInt32LE(off);
+  off += 4;
+  if (off + ml > buf.length) throw new Error(I18n.t("画布包已损坏（清单越界）"));
+  const manifest = JSON.parse(zlib.gunzipSync(buf.slice(off, off + ml)).toString("utf8"));
+  off += ml;
+  const fc = buf.readUInt32LE(off);
+  off += 4;
+  const files = [];
+  for (let i = 0; i < fc; i++) {
+    const nl = buf.readUInt32LE(off);
+    off += 4;
+    const name = buf.slice(off, off + nl).toString("utf8");
+    off += nl;
+    const dl = buf.readUInt32LE(off);
+    off += 4;
+    const data = buf.slice(off, off + dl);
+    off += dl;
+    files.push({ name, data });
+  }
+  if (manifest.format !== "mtnodes") throw new Error(I18n.t("不是有效的 .mtnodes 画布文件"));
+  return { manifest, files };
+}
+
+ipcMain.handle("mtnodes:export", async (e, wf) => {
+  try {
+    const { buf } = packMtNodes(wf);
+    const r = await dialog.showSaveDialog(win(), {
+      title: I18n.t("导出画布"),
+      defaultPath: sanitizeBase((wf && wf.name) || "workflow") + ".mtnodes",
+      filters: [{ name: I18n.t("MTNode 画布"), extensions: ["mtnodes"] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, error: I18n.t("已取消") };
+    fs.writeFileSync(r.filePath, buf);
+    return { ok: true, path: r.filePath, bytes: buf.length };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("mtnodes:import", async () => {
+  try {
+    const r = await dialog.showOpenDialog(win(), {
+      title: I18n.t("导入画布"),
+      properties: ["openFile"],
+      filters: [{ name: I18n.t("MTNode 画布"), extensions: ["mtnodes"] }],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, error: I18n.t("已取消") };
+    const { manifest, files } = unpackMtNodes(fs.readFileSync(r.filePaths[0]));
+    return { ok: true, workflow: materializeImport(manifest, files) };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("mtnodes:exportBase64", (e, wf) => {
+  try {
+    const { buf, assetCount } = packMtNodes(wf);
+    return { ok: true, base64: buf.toString("base64"), bytes: buf.length, assets: assetCount };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("mtnodes:importBase64", (e, base64) => {
+  try {
+    if (typeof base64 !== "string" || !base64.trim()) return { ok: false, error: I18n.t("Base64 内容为空") };
+    const buf = Buffer.from(base64.trim(), "base64");
+    if (!buf.length) return { ok: false, error: I18n.t("Base64 解码失败") };
+    const { manifest, files } = unpackMtNodes(buf);
+    return { ok: true, workflow: materializeImport(manifest, files) };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+/* 只解析清单中的工作流结构（不落盘资产），供模板商店节点预览 */
+ipcMain.handle("mtnodes:peekBase64", (e, base64) => {
+  try {
+    if (typeof base64 !== "string" || !base64.trim()) return { ok: false, error: I18n.t("Base64 内容为空") };
+    const buf = Buffer.from(base64.trim(), "base64");
+    if (!buf.length) return { ok: false, error: I18n.t("Base64 解码失败") };
+    const { manifest } = unpackMtNodes(buf);
+    const wf = manifest && manifest.workflow;
+    if (!wf || typeof wf !== "object") return { ok: false, error: I18n.t("不是有效的 .mtnodes 画布文件") };
+    return {
+      ok: true,
+      workflow: JSON.parse(JSON.stringify(wf)),
+      name: (manifest && manifest.workflowName) || (wf && wf.name) || "",
+      assets: ((manifest && manifest.assets) || []).length,
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("clipboard:writeText", (e, text) => {
+  try {
+    clipboard.writeText(String(text || ""));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+/* 在线浏览:主进程代取远程内容(无 CORS/CSP 限制;渲染层 connect-src 保持 'self') */
+ipcMain.handle("net:fetch", async (e, url) => {
+  if (typeof url !== "string" || !/^https?:\/\//.test(url)) {
+    return { ok: false, error: I18n.t("非法 URL") };
+  }
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "MTNodeAIO/1.1" },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return { ok: false, error: "HTTP " + res.status };
+    return { ok: true, text: await res.text() };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/* 模板商店 SaaS（经本机 nginx /mtnode/store-api 反代到 127.0.0.1:8787） */
+const STORE_BASE =
+  process.env.MTNODE_STORE_URL || "http://mt-agent.com/mtnode/store-api";
+
+ipcMain.handle("store:request", async (e, opts) => {
+  try {
+    const o = opts || {};
+    const p = String(o.path || "");
+    if (!p.startsWith("/")) return { ok: false, error: I18n.t("非法 URL") };
+    const method = String(o.method || "GET").toUpperCase();
+    const headers = {
+      Accept: "*/*",
+      "User-Agent": "MTNodeAIO/1.1",
+    };
+    if (o.token) headers.Authorization = "Bearer " + String(o.token);
+    let body;
+    if (o.json != null) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(o.json);
+    }
+    const res = await fetch(STORE_BASE + p, {
+      method,
+      headers,
+      body,
+      signal: AbortSignal.timeout(120000),
+    });
+    const ct = String(res.headers.get("content-type") || "");
+    if (ct.includes("application/json")) {
+      const data = await res.json();
+      return { ok: !!res.ok && data && data.ok !== false, status: res.status, data };
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    return {
+      ok: res.ok,
+      status: res.status,
+      base64: buf.toString("base64"),
+      contentType: ct,
+      bytes: buf.length,
+    };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle("store:pickMtNodes", async () => {
+  try {
+    const r = await dialog.showOpenDialog(win(), {
+      title: I18n.t("选择 .mtnodes 模板文件"),
+      properties: ["openFile"],
+      filters: [{ name: I18n.t("MTNode 画布"), extensions: ["mtnodes"] }],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, error: I18n.t("已取消") };
+    const buf = fs.readFileSync(r.filePaths[0]);
+    if (buf.length < 8 || buf.slice(0, 7).toString("ascii") !== "MTNODES") {
+      return { ok: false, error: I18n.t("不是有效的 .mtnodes 画布文件") };
+    }
+    return {
+      ok: true,
+      base64: buf.toString("base64"),
+      bytes: buf.length,
+      name: path.basename(r.filePaths[0]),
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:pickPreview", async () => {
+  try {
+    const r = await dialog.showOpenDialog(win(), {
+      title: I18n.t("选择预览图像"),
+      properties: ["openFile"],
+      filters: [{ name: I18n.t("图像"), extensions: ["png", "jpg", "jpeg", "webp"] }],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, error: I18n.t("已取消") };
+    const raw = fs.readFileSync(r.filePaths[0]);
+    const ext = path.extname(r.filePaths[0]);
+    const fullShrunk = shrinkImageBuffer(raw, ext, 640);
+    let fullImg = nativeImage.createFromBuffer(fullShrunk.buf);
+    if (!fullImg || fullImg.isEmpty()) return { ok: false, error: I18n.t("无法读取该文件路径") };
+    const jpg = fullImg.toJPEG(82);
+    const thumbShrunk = shrinkImageBuffer(jpg, ".jpg", 240);
+    let thumbImg = nativeImage.createFromBuffer(thumbShrunk.buf);
+    const thumbJpg =
+      thumbImg && !thumbImg.isEmpty() ? thumbImg.toJPEG(72) : jpg;
+    const sz = fullImg.getSize();
+    return {
+      ok: true,
+      base64: jpg.toString("base64"),
+      thumbBase64: thumbJpg.toString("base64"),
+      mime: "image/jpeg",
+      bytes: jpg.length,
+      thumbBytes: thumbJpg.length,
+      width: sz.width,
+      height: sz.height,
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+const storeCacheDir = () => mk(join(DATA(), "store-cache"));
+function storeCachePath(id) {
+  return join(storeCacheDir(), String(id).replace(/[^\w.-]/g, "_") + ".mtnodes");
+}
+function storeCacheMetaPath(id) {
+  return join(storeCacheDir(), String(id).replace(/[^\w.-]/g, "_") + ".json");
+}
+
+ipcMain.handle("store:cacheGet", (e, id) => {
+  try {
+    const tid = String(id || "");
+    if (!tid) return { ok: false };
+    const fp = storeCachePath(tid);
+    if (!fs.existsSync(fp)) return { ok: false };
+    const buf = fs.readFileSync(fp);
+    let meta = {};
+    try {
+      meta = JSON.parse(fs.readFileSync(storeCacheMetaPath(tid), "utf8"));
+    } catch {}
+    return {
+      ok: true,
+      base64: buf.toString("base64"),
+      bytes: buf.length,
+      title: meta.title || "",
+      cachedAt: meta.cachedAt || 0,
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:cachePut", (e, opts) => {
+  try {
+    const o = opts || {};
+    const tid = String(o.id || "");
+    if (!tid || !o.base64) return { ok: false, error: "missing" };
+    const buf = Buffer.from(String(o.base64).replace(/\s+/g, ""), "base64");
+    if (buf.length < 8 || buf.slice(0, 7).toString("ascii") !== "MTNODES") {
+      return { ok: false, error: I18n.t("不是有效的 .mtnodes 画布文件") };
+    }
+    fs.writeFileSync(storeCachePath(tid), buf);
+    writeJson(storeCacheMetaPath(tid), {
+      id: tid,
+      title: String(o.title || ""),
+      cachedAt: Date.now(),
+      bytes: buf.length,
+    });
+    return { ok: true, bytes: buf.length };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:cacheHas", (e, id) => {
+  try {
+    return { ok: true, has: fs.existsSync(storeCachePath(String(id || ""))) };
+  } catch {
+    return { ok: true, has: false };
+  }
+});
+
 /* 打开存档目录（工作流 save 文件夹） */
 ipcMain.handle("storage:open", () => {
   try {
@@ -356,7 +957,7 @@ function registerRequest(key, req) {
 ipcMain.handle("api:abort", (e, key) => {
   if (key) {
     const s = activeRequests.get(key);
-    if (s) for (const req of [...s]) req.destroy(new Error("请求已中止"));
+    if (s) for (const req of [...s]) req.destroy(new Error(I18n.t("请求已中止")));
   }
   return { ok: true };
 });
@@ -422,7 +1023,7 @@ async function fetchJson(url, opts, timeoutMs = 180000, reqKey) {
         res.on("error", (e) => reject(e));
       },
     );
-    req.setTimeout(timeoutMs, () => req.destroy(new Error("请求超时")));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(I18n.t("请求超时"))));
     req.on("error", (e) => reject(e));
     if (reqKey) registerRequest(reqKey, req);
     if (payload) req.write(payload);
@@ -446,7 +1047,7 @@ async function fetchRaw(url, timeoutMs = 60000, reqKey) {
         res.on("error", (e) => reject(e));
       },
     );
-    req.setTimeout(timeoutMs, () => req.destroy(new Error("下载图像超时")));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(I18n.t("下载图像超时"))));
     req.on("error", (e) => reject(e));
     if (reqKey) registerRequest(reqKey, req);
     req.end();
@@ -498,30 +1099,11 @@ function normB64(v) {
   return v;
 }
 
-/* 图像输入上限：长/宽任一超过 720px（720p）时等比缩小后再发送，
-   避免大图 base64 占用过多输入 token 与上传体积 */
-const IMAGE_MAX_DIM = 720;
-
-/* 读取图像并缩放到不超过 720x720（等比）。无法解码或已达标时原样返回。
-   返回 {buf, ext}；重编码规则：jpg/jpeg → JPEG(85)，其余 → PNG */
+/* 读取图像并缩放到不超过 720（等比）后再发 API。无法解码或已达标时原样返回。 */
 function shrinkImageForApi(p) {
   const raw = fs.readFileSync(p);
-  const ext = String(path.extname(p)).slice(1).toLowerCase();
-  const img = nativeImage.createFromBuffer(raw);
-  if (img.isEmpty()) return { buf: raw, ext: ext || "png" };
-  const { width: w, height: h } = img.getSize();
-  if (w <= IMAGE_MAX_DIM && h <= IMAGE_MAX_DIM)
-    return { buf: raw, ext: ext || "png" };
-  const scale = Math.min(IMAGE_MAX_DIM / w, IMAGE_MAX_DIM / h);
-  const resized = img.resize({
-    width: Math.max(1, Math.round(w * scale)),
-    height: Math.max(1, Math.round(h * scale)),
-  });
-  const isJpeg = ext === "jpg" || ext === "jpeg";
-  return {
-    buf: isJpeg ? resized.toJPEG(85) : resized.toPNG(),
-    ext: isJpeg ? "jpeg" : "png",
-  };
+  const ext = String(path.extname(p)).slice(1).toLowerCase() || "png";
+  return shrinkImageBuffer(raw, ext, IMAGE_MAX_DIM);
 }
 
 /* 构建完整请求描述（预览与真实调用共用，保证一致） */
@@ -638,7 +1220,7 @@ function buildRequestSpec(
       body: { prompt, api_key: provider.apiKey, model: model || "imagine" },
     };
   }
-  throw new Error("未知服务商类型：" + provider.type);
+  throw new Error(I18n.t("未知服务商类型：") + provider.type);
 }
 
 /* multipart 表单请求：image 字段支持字符串（单张）或数组（多张参考图，顺序=图1/图2/…） */
@@ -669,11 +1251,11 @@ async function sendMultipart(url, headers, form, timeoutMs = 180000, reqKey) {
 }
 
 function checkProvider(provider) {
-  if (!provider) throw new Error("未配置服务商");
+  if (!provider) throw new Error(I18n.t("未配置服务商"));
   if (!String(provider.baseUrl || "").trim())
-    throw new Error("未配置接口地址（设置 · API/配置）");
+    throw new Error(I18n.t("未配置接口地址（设置 · API/配置）"));
   if (!String(provider.apiKey || "").trim())
-    throw new Error("未配置 API Key（请在「设置 · API/配置」中填写）");
+    throw new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
 }
 
 async function apiCall({
@@ -724,7 +1306,7 @@ async function apiCall({
         j.choices[0] &&
         j.choices[0].message &&
         j.choices[0].message.content;
-      if (content == null) throw new Error("响应无文本内容");
+      if (content == null) throw new Error(I18n.t("响应无文本内容"));
       return { ok: true, text: String(content) };
     }
     let b64 = null,
@@ -749,11 +1331,11 @@ async function apiCall({
     }
     if (!b64 && !url)
       throw new Error(
-        "响应无图像数据（请检查自定义接口返回格式：{image: url|base64}）",
+        I18n.t("响应无图像数据（请检查自定义接口返回格式：{image: url|base64}）"),
       );
     if (url) {
       const r = await fetchRaw(url, 60000, abKey);
-      if (r.status >= 400) throw new Error("下载图像失败 HTTP " + r.status);
+      if (r.status >= 400) throw new Error(I18n.t("下载图像失败 HTTP ") + r.status);
       b64 = r.buf.toString("base64");
     }
     return { ok: true, base64: b64, ext: "png" };
@@ -783,7 +1365,7 @@ async function apiCall({
     }
     if (status >= 400) throw new Error(apiErr(status, j, text));
     const b64 = normB64(j && j.data && j.data[0] && j.data[0].b64_json);
-    if (!b64) throw new Error("响应无图像数据");
+    if (!b64) throw new Error(I18n.t("响应无图像数据"));
     return { ok: true, base64: b64, ext: "png" };
   }
 
@@ -800,11 +1382,11 @@ async function apiCall({
       (j && j.image) ||
         (j && j.artifacts && j.artifacts[0] && j.artifacts[0].base64),
     );
-    if (!b64) throw new Error("响应无图像数据");
+    if (!b64) throw new Error(I18n.t("响应无图像数据"));
     return { ok: true, base64: b64, ext: "png" };
   }
 
-  throw new Error("未知服务商类型：" + provider.type);
+  throw new Error(I18n.t("未知服务商类型：") + provider.type);
 }
 ipcMain.handle("api:call", async (e, spec) => {
   try {
@@ -924,7 +1506,7 @@ function streamTextChat(req, emit) {
         res.on("error", (e) => reject(e));
       },
     );
-    rq.setTimeout(180000, () => rq.destroy(new Error("请求超时")));
+    rq.setTimeout(180000, () => rq.destroy(new Error(I18n.t("请求超时"))));
     rq.on("error", (e) => reject(e));
     if (req.abKey) registerRequest(req.abKey, rq);
     rq.write(payload);
@@ -1004,9 +1586,9 @@ ipcMain.handle("api:preview", async (e, spec) => {
     const readable = JSON.parse(
       JSON.stringify(req.body, (k, v) => {
         if (k === "image" && Array.isArray(v))
-          return v.map((x) => "<参考图: " + x + ">");
+          return v.map((x) => I18n.t("<参考图: ") + x + ">");
         if (k === "image" && typeof v === "string" && v && !v.startsWith("<"))
-          return "<参考图: " + v + ">";
+          return I18n.t("<参考图: ") + v + ">";
         return v;
       }),
     );
@@ -1024,18 +1606,74 @@ ipcMain.handle("api:preview", async (e, spec) => {
   }
 });
 
+/* ---------------- dsh agent 网关 IPC ----------------
+   事件推送走 dsh:event（main → renderer），见 dsh/DESIGN.md 本地协议一节。 */
+
+ipcMain.handle("dsh:config", () => dshConfig());
+
+ipcMain.handle("dsh:status", () =>
+  dsh()
+    .status()
+    .catch((e) => ({ ok: false, error: e.message || String(e) }))
+);
+
+ipcMain.handle("dsh:run", (event, params) =>
+  dsh()
+    .run(params)
+    .catch((e) => ({ ok: false, error: e.message || String(e) }))
+);
+
+ipcMain.handle("dsh:pluginList", () =>
+  dsh()
+    .pluginList()
+    .catch((e) => ({ ok: false, error: e.message || String(e) }))
+);
+
+ipcMain.handle("dsh:pluginAdd", (event, pkg) => dsh().pluginAdd(pkg));
+
+ipcMain.handle("dsh:pluginRemove", (event, pkg) => dsh().pluginRemove(pkg));
+
+ipcMain.handle("dsh:pluginSetEnabled", (event, { pkg, enabled }) =>
+  dsh().pluginSetEnabled(pkg, enabled)
+);
+
+ipcMain.handle("dsh:mcpList", () => dsh().mcpList());
+
+ipcMain.handle("dsh:mcpAdd", (event, cfg) => dsh().mcpAdd(cfg));
+
+ipcMain.handle("dsh:mcpRemove", (event, serverName) => dsh().mcpRemove(serverName));
+
+ipcMain.handle("dsh:mcpSetEnabled", (event, { serverName, enabled }) =>
+  dsh().mcpSetEnabled(serverName, enabled)
+);
+
+ipcMain.handle("dsh:cancel", (event, params) => dsh().cancel(params));
+
+ipcMain.handle("dsh:interact", (event, params) => dsh().interact(params));
+
+ipcMain.handle("dsh:providerCatalog", () => dsh().providerCatalog());
+
+ipcMain.handle("skill:list", () => dsh().skillList());
+
+ipcMain.handle("skill:add", (event, skill) => dsh().skillAdd(skill));
+
+ipcMain.handle("skill:remove", (event, name) => dsh().skillRemove(name));
+
 /* ---------------- 窗口 ---------------- */
 
 app.whenReady().then(() => {
   /* 隐藏原生窗口菜单栏（File/Edit/View/Window/Help），按键快捷方式由渲染层自行处理 */
   Menu.setApplicationMenu(null);
   migrateLegacyWorkflows();
+  applyMainLocale(localeFromDisk());
+  /* dsh 网关随应用启动(幂等,失败不阻塞应用;引擎自愈见 main-dsh.js) */
+  dsh().ensureStarted().catch(() => {});
   mainWin = new BrowserWindow({
     width: 1500,
     height: 940,
     minWidth: 1000,
     minHeight: 640,
-    title: "MTNode AI编排器 · MTNode AI Orchestrator",
+    title: I18n.t("MTNode AI编排器 · MTNode AI Orchestrator"),
     icon: join(__dirname, "build", "icon.png"),
     backgroundColor: "#0d1016",
     webPreferences: {
@@ -1053,6 +1691,13 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+/* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程 */
+app.on("before-quit", () => {
+  if (dshAdapter) {
+    try { dshAdapter.shutdown(); } catch {}
+  }
 });
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

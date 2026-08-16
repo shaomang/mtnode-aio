@@ -11,43 +11,55 @@
 <header class="topbar">
   <div class="logo">
     <div class="logo-mark"></div>
-    <span class="logo-txt">MTNode AI编排器<span class="logo-sub">MTNODE AI ORCHESTRATOR · WORKFLOW</span></span>
+    <span class="logo-txt"><span data-i18n="MTNode AI编排器">MTNode AI编排器</span><span class="logo-sub" id="logoSub"></span></span>
   </div>
   <div class="actions">
-    <button id="btnToolWf" class="corner on" title="AI 工作流编排：画布式节点编排">工作流编排</button>
+    <button id="btnToolWf" class="corner on" data-i18n="工作流编排" data-i18n-title="AI 工作流编排：画布式节点编排">工作流编排</button>
+    <button id="btnToolAgent" class="corner" data-i18n="智能会话" data-i18n-title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）">智能会话</button>
     <span class="sep"></span>
-    <button id="btnUndo" class="corner mini" title="撤销（Ctrl+Z）">↶ 撤销</button>
-    <button id="btnRedo" class="corner mini" title="重做（Ctrl+Y / Ctrl+Shift+Z）">↷ 重做</button>
-    <button id="btnDup" class="corner mini" title="复制选中节点（Ctrl+C）">⧉ 复制节点</button>
-    <button id="btnFit" class="corner mini" title="一键居中：缩放并定位到全部节点">⤢ 居中</button>
-    <button id="btnBox" class="corner mini" title="框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）">▭ 框选</button>
-    <button id="btnGroup" class="corner mini" title="组：把选中的节点组成一个组（快捷键 G）；选中组后再次点击解散">◫ 组</button>
-    <input id="wfName" class="fn-search tb-wfname" type="text" placeholder="工作流名称…">
+    <button id="btnUndo" class="corner mini" data-i18n="↶ 撤销" data-i18n-title="撤销（Ctrl+Z）">↶ 撤销</button>
+    <button id="btnRedo" class="corner mini" data-i18n="↷ 重做" data-i18n-title="重做（Ctrl+Y / Ctrl+Shift+Z）">↷ 重做</button>
+    <button id="btnDup" class="corner mini" data-i18n="⧉ 复制节点" data-i18n-title="复制选中节点（Ctrl+C）">⧉ 复制节点</button>
+    <button id="btnFit" class="corner mini" data-i18n="⤢ 居中" data-i18n-title="一键居中：缩放并定位到全部节点">⤢ 居中</button>
+    <button id="btnBox" class="corner mini" data-i18n="▭ 框选" data-i18n-title="框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）">▭ 框选</button>
+    <button id="btnGroup" class="corner mini" data-i18n="◫ 组" data-i18n-title="组：把选中的节点组成一个组（快捷键 G）；选中组后再次点击解散">◫ 组</button>
+    <button id="btnAutoLayout" class="corner mini" data-i18n="▦ 排版" data-i18n-title="一键排版：交由全局助手执行整洁排版（可撤销）">▦ 排版</button>
+    <input id="wfName" class="fn-search tb-wfname" type="text" data-i18n-placeholder="工作流名称…" placeholder="工作流名称…" style="display:none">
     <span class="sep"></span>
-    <button id="btnSettings" class="corner primary" title="APIs/Config 全局配置：API Key 与接口地址，所有模型节点自动读取">设置 · API/配置</button>
-    <button id="btnNewWf" class="corner" title="新建工作流">新建</button>
-    <select id="wfSelect" class="wf-select" title="打开工作流"></select>
-    <button id="btnDelWf" class="corner" title="删除当前工作流">删除</button>
-    <span class="sep"></span>
-    <button id="btnSaveNow" class="corner" title="立即保存当前工作流到本地磁盘">立即保存</button>
-    <button id="btnOpenStorage" class="corner" title="打开存档位置：工作流保存的文件夹">存档位置</button>
-    <button id="btnHelp" class="ghost corner" title="使用说明">说明</button>
-    <span id="appVer" class="ver-tag" title="版本号"></span>
+    <button id="btnSettings" class="corner primary" data-i18n="设置 · API/配置" data-i18n-title="APIs/Config 全局配置：API Key 与接口地址，所有模型节点自动读取">设置 · API/配置</button>
+    <button id="btnNewWf" class="corner" data-i18n="新建" data-i18n-title="新建工作流">新建</button>
+    <select id="wfSelect" class="wf-select" data-i18n-title="打开工作流" title="打开工作流"></select>
+    <button id="btnRenameWf" class="corner" data-i18n="更改名称" data-i18n-title="更改当前画布名称">更改名称</button>
+    <button id="btnExport" class="corner" data-i18n="导出" data-i18n-title="导出画布：把当前工作流（含图像等资产）打包为 .mtnodes 文件，可迁移到其他电脑">导出</button>
+    <button id="btnStore" class="corner" data-i18n="模板商店" data-i18n-title="模板商店：浏览 / 下载公开模板，登录后可上传与管理自己的模板">模板商店</button>
+    <button id="btnImport" class="corner" data-i18n="导入" data-i18n-title="导入画布：从 .mtnodes 文件恢复完整工作流">导入</button>
+    <button id="btnDelWf" class="corner" data-i18n="删除" data-i18n-title="删除当前工作流">删除</button>
   </div>
+  <button type="button" id="btnApprovals" class="corner mini btn-approvals" data-i18n="审批" data-i18n-title="审批与权限：权限预设 / 识图许可，可随时调整" title="审批与权限：权限预设 / 识图许可，可随时调整">审批</button>
+  <button type="button" id="btnLang" class="corner mini btn-lang" title="切换为英文" aria-label="切换为英文">
+    <svg class="btn-lang-globe" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.35"/>
+      <ellipse cx="8" cy="8" rx="2.55" ry="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <path d="M1.8 8h12.4M3.1 4.8h9.8M3.1 11.2h9.8" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    </svg>
+    <span class="btn-lang-badge" id="btnLangBadge">中</span>
+  </button>
 </header>
 
 <div class="layout" id="layout">
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-search">
-      <input id="sideFilter" type="text" placeholder="筛选节点标题…">
+      <input id="sideFilter" type="text" data-i18n-placeholder="筛选节点标题…" placeholder="筛选节点标题…">
     </div>
     <div class="sidebar-tree" id="sideTree"></div>
   </aside>
   <section class="pane">
-    <div class="wf-wrap">
+    <div class="wf-wrap" id="wfWrap">
       <div class="fn-toolbar">
-        <button id="btnSidebar" class="corner mini btn-sq" title="节点列表边栏（树状图）">☰</button>
-        <span class="fn-hint" id="canvasHint">右键画布添加节点 · 拖线连接节点 · Ctrl+拖拽框选 · 滚轮缩放画布</span>
+        <button id="btnSidebar" class="corner mini btn-sq" data-i18n-title="节点列表边栏（树状图）" title="节点列表边栏（树状图）">☰</button>
+        <div id="wfTabs" class="wf-tabs"></div>
+        <div id="wfWsBox" class="wf-ws-box"></div>
+        <button id="btnAssist" class="corner mini btn-sq" data-i18n-title="全局 AI 助手（右侧栏）" title="全局 AI 助手（右侧栏）">✦</button>
       </div>
       <div id="canvas" class="fn-canvas">
         <div id="stage" class="fn-stage">
@@ -55,7 +67,108 @@
         </div>
       </div>
     </div>
+    <div class="agent-pane" id="agentPane" style="display:none">
+      <div class="agent-head">
+        <button id="agentSidebarBtn" class="corner mini btn-sq" data-i18n-title="会话列表边栏（按工作目录归类）" title="会话列表边栏（按工作目录归类）">☰</button>
+        <div class="agent-title-block">
+          <span class="agent-title" data-i18n="智能会话">智能会话</span>
+          <span class="agent-sub">DeepSeek Harness</span>
+        </div>
+        <div class="agent-ctrl">
+          <label class="agent-ctrl-item"><span data-i18n="预设">预设</span>
+            <select id="agentPresetSel">
+              <option value="standard" data-i18n="通用助手">通用助手</option>
+              <option value="minimal" data-i18n="精简执行">精简执行</option>
+              <option value="code" data-i18n="代码专家">代码专家</option>
+              <option value="cordis" data-i18n="Cordis 插件开发">Cordis 插件开发</option>
+            </select>
+          </label>
+          <label class="agent-ctrl-item"><span data-i18n="供应商">供应商</span>
+            <select id="agentProvSel"></select>
+          </label>
+          <label class="agent-ctrl-item"><span data-i18n="模型">模型</span>
+            <select id="agentModelSel"></select>
+          </label>
+          <label class="agent-ctrl-item"><span data-i18n="思考强度">思考强度</span>
+            <select id="agentEffortSel">
+              <option value="off" data-i18n="无">无</option>
+              <option value="high" data-i18n="标准">标准</option>
+              <option value="max" data-i18n="最强">最强</option>
+            </select>
+          </label>
+          <span class="agent-ctrl-item agent-ctx" id="agentCtx" data-i18n-title="上下文用量(最近一次运行的输入 token)" title="上下文用量(最近一次运行的输入 token)"></span>
+          <button id="agentNew" class="mini" data-i18n="＋ 新会话" data-i18n-title="新建会话(沿用当前工作目录)">＋ 新会话</button>
+          <button id="btnAssistAgent" class="mini btn-sq" data-i18n-title="全局 AI 助手（右侧栏）" title="全局 AI 助手（右侧栏）">✦</button>
+        </div>
+        <div class="agent-ws-line">
+          <span class="agent-ws-label" data-i18n="工作目录">工作目录</span>
+          <input id="agentWsInput" type="text" data-i18n-placeholder="留空 = 应用默认数据目录…" placeholder="留空 = 应用默认数据目录…">
+          <button id="agentWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
+          <button id="agentWsBrowse" class="mini" data-i18n="浏览" data-i18n-title="弹出文件夹窗口选择工作目录">浏览</button>
+        </div>
+      </div>
+      <div class="agent-body">
+        <div class="agent-list" id="agentList"></div>
+        <div class="agent-cmd-hint" id="agentCmdHint" data-i18n="命令:/new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help">命令:/new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help</div>
+        <div class="agent-input-row">
+          <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="描述任务…（Enter 发送，Shift+Enter 换行）" placeholder="描述任务…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button id="agentSend" class="mini primary">执行</button>
+        </div>
+      </div>
+    </div>
   </section>
+  <aside class="assist-pane" id="assistPane" aria-label="全局 AI 助手">
+    <div class="assist-resize" id="assistResize" data-i18n-title="拖动边框中部调整助手栏宽度" title="拖动边框中部调整助手栏宽度"></div>
+    <div class="assist-head">
+      <b data-i18n="全局助手">全局助手</b>
+      <span class="assist-sub" data-i18n="可见全局状态 · 危险操作需确认">可见全局状态 · 危险操作需确认</span>
+      <button type="button" id="btnAssistClear" class="mini" data-i18n="清空" data-i18n-title="清空助手对话">清空</button>
+      <button type="button" id="btnAssistClose" class="mini btn-sq" data-i18n-title="关闭右侧助手栏" title="关闭右侧助手栏">✕</button>
+    </div>
+    <div class="assist-ctrl" id="assistCtrl">
+      <label class="assist-ctrl-item"><span data-i18n="预设">预设</span>
+        <select id="assistPresetSel">
+          <option value="standard" data-i18n="通用助手">通用助手</option>
+          <option value="minimal" data-i18n="精简执行">精简执行</option>
+          <option value="code" data-i18n="代码专家">代码专家</option>
+          <option value="cordis" data-i18n="Cordis 插件开发">Cordis 插件开发</option>
+        </select>
+      </label>
+      <label class="assist-ctrl-item"><span data-i18n="供应商">供应商</span>
+        <select id="assistProvSel"></select>
+      </label>
+      <label class="assist-ctrl-item"><span data-i18n="模型">模型</span>
+        <select id="assistModelSel"></select>
+      </label>
+      <label class="assist-ctrl-item"><span data-i18n="思考强度">思考强度</span>
+        <select id="assistEffortSel">
+          <option value="off" data-i18n="无">无</option>
+          <option value="high" data-i18n="标准">标准</option>
+          <option value="max" data-i18n="最强">最强</option>
+        </select>
+      </label>
+    </div>
+    <div class="assist-ws-line">
+      <span class="assist-ws-label" data-i18n="工作目录">工作目录</span>
+      <input id="assistWsInput" type="text" data-i18n-placeholder="留空 = 当前画布 / 应用默认目录…" placeholder="留空 = 当前画布 / 应用默认目录…">
+      <button id="assistWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
+      <button id="assistWsBrowse" class="mini" data-i18n="浏览" data-i18n-title="弹出文件夹窗口选择工作目录">浏览</button>
+    </div>
+    <div class="assist-live2d" id="assistLive2d" hidden>
+      <div class="assist-live2d-slot" id="assistLive2dSlot">
+        <div class="assist-live2d-ph">
+          <span class="assist-live2d-mark">Live2D</span>
+          <span data-i18n="预留位 · 可接入角色模型">预留位 · 可接入角色模型</span>
+        </div>
+      </div>
+    </div>
+    <div class="assist-list" id="assistList"></div>
+    <div class="assist-hint" data-i18n="可切换/新建画布、居中节点；改节点图或删除工作流会弹窗确认">可切换/新建画布、居中节点；改节点图或删除工作流会弹窗确认</div>
+    <div class="assist-input-row">
+      <textarea id="assistInput" class="chat-input" rows="2" data-i18n-placeholder="问助手…（Enter 发送，Shift+Enter 换行）" placeholder="问助手…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="assistSend" class="mini primary" data-i18n="发送">发送</button>
+    </div>
+  </aside>
 </div>
 
 <footer class="statusbar">
@@ -63,15 +176,16 @@
   <span id="statCounts">— 节点 · — 连线</span>
   <span id="statProviders">服务商 0</span>
   <span id="statGrid">网格 24px</span>
+  <span id="statDsh" class="dsh-stat" data-i18n-title="最近一次智能运行的统计" title="最近一次智能运行的统计"></span>
   <span class="spacer"></span>
   <span id="statZoom">100%</span>
   <span id="saveState">就绪</span>
-  <span id="authorLink" class="author" title="作者">@ms2308</span>
+  <span id="authorLink" class="author" data-i18n-title="作者" title="作者">@ms2308</span>
 </footer>
 
 <div id="overlay">
   <div class="overlay-box">
-    <div class="overlay-head"><b id="ovTitle">设置</b><span class="tag">PIPELINE CONSOLE</span></div>
+    <div class="overlay-head"><b id="ovTitle">设置</b></div>
     <div class="overlay-body" id="ovBody"></div>
     <div class="overlay-foot" id="ovFoot"></div>
   </div>
@@ -79,9 +193,12 @@
 
 <div id="ctx" class="fn-ctx"></div>
 <div id="refMenu" class="fn-ctx ref-menu" style="display:none"></div>
+<div id="portTip" class="port-tip" hidden></div>
+<div id="runQueue" class="run-queue" hidden aria-live="polite"></div>
 <div id="toastBox"></div>
 
 <script src="vendor/marked.min.js"></script>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
