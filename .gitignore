@@ -12,6 +12,10 @@ scripts/
 # ===== 运行时数据 / 日志 =====
 data/
 *.log
+dist/pet-publish/
+
+# ===== 桌宠可选包源（入库；勿打进安装包，见 build.json !pet-pack/**）=====
+# pet-pack/ 保留在仓库，供开发回退安装与 release:pet 打包
 
 # ===== dsh 集成（见 dsh/DESIGN.md）=====
 .dsh-probe/

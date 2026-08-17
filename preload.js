@@ -88,6 +88,26 @@ contextBridge.exposeInMainWorld('api', {
   storeCacheHas: (id) => ipcRenderer.invoke('store:cacheHas', id),
   gifMake: (wfId, name, frames, delay) => ipcRenderer.invoke('gif:make', { wfId, name, frames, delay }),
 
+  petStatus: () => ipcRenderer.invoke('pet:status'),
+  petInstall: () => ipcRenderer.invoke('pet:install'),
+  petUninstall: () => ipcRenderer.invoke('pet:uninstall'),
+  petStart: () => ipcRenderer.invoke('pet:start'),
+  petStop: () => ipcRenderer.invoke('pet:stop'),
+  petToggle: () => ipcRenderer.invoke('pet:toggle'),
+  petGetConfig: () => ipcRenderer.invoke('pet:getConfig'),
+  petSetConfig: (partial) => ipcRenderer.invoke('pet:setConfig', partial || {}),
+  petListSkins: () => ipcRenderer.invoke('pet:listSkins'),
+  petImportSkin: () => ipcRenderer.invoke('pet:importSkin'),
+  petSetSkin: (id) => ipcRenderer.invoke('pet:setSkin', id),
+  onPetProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('pet:progress', handler);
+    return () => ipcRenderer.removeListener('pet:progress', handler);
+  },
+
+
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),
   apiPreview: (spec) => ipcRenderer.invoke('api:preview', spec),

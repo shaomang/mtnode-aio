@@ -1,8 +1,8 @@
 // MTNode canvas tools (runs INSIDE the dsh runtime process).
 //
 // Registers mtnode_canvas_get / mtnode_canvas_edit / mtnode_app so the agent can
-// create, title, connect, @-reference, auto-layout nodes, and control the app
-// (navigate camera, switch/create workflows, change view, …). Mutations travel
+// create, title, connect, @-reference, and auto-layout nodes. The agent must
+// NOT switch canvases or pan/zoom/fit the user's camera. Mutations travel
 // over the same localhost TCP bridge as bridge-plugin.mjs (port from
 // MTNODE_BRIDGE_PORT). This file may import @deepseek-ai/dsh-tools (defineTool);
 // dsh API churn stays inside dsh/.
@@ -25,25 +25,24 @@ const KINDS = [
 ]
 
 const GET_DESC =
-  'Read the current MTNode canvas PLUS app context: workflow name, every node (id, kind, title, position, prompt/text/task/savePath/waitPath/waitIntervalSec, providerId/provider/model, size for proc_image, ctrlAction for control), marks (canvas drawings: text/box/arrow), wires, groups, camera, UI view, imageSizes, markColors, and the list of all workflows. Call this before editing. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title only resolves if that node is wired in. To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every node (id, kind, title, position, prompt/text/task/savePath/waitPath/waitIntervalSec, providerId/provider/model, size for proc_image, ctrlAction for control), marks (canvas drawings: text/box/arrow), wires, groups, camera (read-only snapshot — do not try to pan/zoom), UI view, imageSizes, markColors, and workflows. When the run is locked to the current canvas (agent_task / agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title only resolves if that node is wired in. To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
 
-const APP_DESC = `Control the MTNode desktop app beyond node graph edits. Prefer this for navigation and workflow management.
+const APP_DESC = `Control the MTNode desktop app beyond node graph edits. Workflow management only — NEVER change the user's viewpoint.
+
+FORBIDDEN (will error; do not call):
+- switch_workflow / create_workflow: do not switch or steal the canvas the user is looking at
+- fit_canvas / focus_node / set_view: do not pan, zoom, center the camera, or switch the main UI pane
 
 SAFE (no user confirmation — do these freely):
-- status / list_workflows: inspect app + workflow catalog
-- fit_canvas: zoom/pan so all nodes are visible
-- focus_node: center camera on a node (by id or unique title)
-- set_view: switch UI between "workflow" (node canvas) and "agent" (fullscreen agent session)
-- switch_workflow: open another workflow by id or exact name
-- create_workflow: create and open a new blank workflow (optional name)
-- rename_workflow: rename the current (or specified) workflow
-- select_nodes: select nodes by id/title (optional; empty clears selection)
+- status / list_workflows: inspect app + workflow catalog. When locked to the current canvas (agent_task nodes, agent session, assistant "current" scope), the catalog contains ONLY that canvas — other workflows are omitted.
+- rename_workflow: rename the current (or specified) workflow — other canvases are rejected when locked
+- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — does NOT pan/zoom.
 - undo / redo: undo or redo the last canvas edit
 
 NEEDS USER CONFIRMATION (UI will prompt; may be rejected):
-- delete_workflow: permanently delete a workflow and its local assets
+- delete_workflow: permanently delete a workflow and its local assets (other canvases rejected when locked)
 
-For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
+For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session). Canvas edits do not move the camera.`
 
 const EDIT_DESC = `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
 
@@ -102,6 +101,7 @@ Rules:
 - One edit call should create the whole subgraph. layout defaults true when create is non-empty.
 - Marks are created AFTER layout when around is used; absolute x/y also allowed (set layout false if you place everything yourself).
 - Never remove or overlap the node that is currently running this task.
+- NEVER pan, zoom, fit, or focus the camera, and NEVER switch workflows or the main UI view. Leave the user's viewport exactly as they left it; they will look around themselves.
 - After building, tell the user they can edit inputs / marks and use control ▶ to re-run.`
 
 const MARK_SPEC = {
@@ -435,22 +435,17 @@ export function apply(ctx) {
         enum: [
           'status',
           'list_workflows',
-          'fit_canvas',
-          'focus_node',
-          'set_view',
-          'switch_workflow',
-          'create_workflow',
           'rename_workflow',
           'delete_workflow',
           'select_nodes',
           'undo',
           'redo',
         ],
-        description: 'App-level action to perform.',
+        description: 'App-level action to perform. Do not use this to pan, zoom, switch canvases, or change the user view.',
       },
       node: {
         type: 'string',
-        description: 'For focus_node / select_nodes: node id or unique title.',
+        description: 'For select_nodes: node id or unique title.',
       },
       nodes: {
         type: 'array',
@@ -459,16 +454,11 @@ export function apply(ctx) {
       },
       workflow: {
         type: 'string',
-        description: 'For switch/rename/delete: workflow id or exact name.',
+        description: 'For rename/delete: workflow id or exact name.',
       },
       name: {
         type: 'string',
-        description: 'For create_workflow / rename_workflow: display name.',
-      },
-      view: {
-        type: 'string',
-        enum: ['workflow', 'agent'],
-        description: 'For set_view: which main UI pane to show.',
+        description: 'For rename_workflow: display name.',
       },
     },
     timeoutMs: 30000,

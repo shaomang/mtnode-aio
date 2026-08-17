@@ -35,6 +35,7 @@
     <button id="btnImport" class="corner" data-i18n="导入" data-i18n-title="导入画布：从 .mtnodes 文件恢复完整工作流">导入</button>
     <button id="btnDelWf" class="corner" data-i18n="删除" data-i18n-title="删除当前工作流">删除</button>
   </div>
+  <button type="button" id="btnPlugins" class="corner mini btn-plugins" data-i18n="插件" data-i18n-title="插件：可选组件（桌宠等），按需下载安装" title="插件：可选组件（桌宠等），按需下载安装">插件</button>
   <button type="button" id="btnApprovals" class="corner mini btn-approvals" data-i18n="审批" data-i18n-title="审批与权限：权限预设 / 识图许可，可随时调整" title="审批与权限：权限预设 / 识图许可，可随时调整">审批</button>
   <button type="button" id="btnUpdate" class="corner mini btn-update" hidden aria-hidden="true" data-i18n-title="发现新版本，点击下载并安装" title="发现新版本，点击下载并安装">
     <svg class="btn-update-ico" viewBox="0 0 16 16" aria-hidden="true">
@@ -98,7 +99,6 @@
           </label>
           <label class="agent-ctrl-item"><span data-i18n="思考强度">思考强度</span>
             <select id="agentEffortSel">
-              <option value="off" data-i18n="无">无</option>
               <option value="high" data-i18n="标准">标准</option>
               <option value="max" data-i18n="最强">最强</option>
             </select>
@@ -149,7 +149,6 @@
       </label>
       <label class="assist-ctrl-item"><span data-i18n="思考强度">思考强度</span>
         <select id="assistEffortSel">
-          <option value="off" data-i18n="无">无</option>
           <option value="high" data-i18n="标准">标准</option>
           <option value="max" data-i18n="最强">最强</option>
         </select>
@@ -174,7 +173,7 @@
       </div>
     </div>
     <div class="assist-list" id="assistList"></div>
-    <div class="assist-hint" data-i18n="可切换/新建画布、居中节点；改节点图或删除工作流会弹窗确认">可切换/新建画布、居中节点；改节点图或删除工作流会弹窗确认</div>
+    <div class="assist-hint" data-i18n="可查看全部画布列表，但不会切换画布或移动你的视角；改节点图或删除工作流会弹窗确认">可查看全部画布列表，但不会切换画布或移动你的视角；改节点图或删除工作流会弹窗确认</div>
     <div class="assist-input-row">
       <textarea id="assistInput" class="chat-input" rows="2" data-i18n-placeholder="问助手…（Enter 发送，Shift+Enter 换行）" placeholder="问助手…（Enter 发送，Shift+Enter 换行）"></textarea>
       <button id="assistSend" class="mini primary" data-i18n="发送">发送</button>

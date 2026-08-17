@@ -1,4 +1,10 @@
 "use strict";
+/* 桌宠独立进程：必须带 --mtnode-pet（勿用环境变量判角色，避免污染主程序启动） */
+if (process.argv.includes("--mtnode-pet")) {
+  require("./pet/standalone-main.js");
+  return;
+}
+
 const {
   app,
   BrowserWindow,
@@ -29,6 +35,7 @@ const {
   registerUpdateIpc,
   startBackgroundCheck,
 } = require("./updater.js");
+const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -1339,23 +1346,17 @@ function shrinkImageForApi(p) {
 }
 
 /* 文本模型思考强度 → Chat Completions 字段。
-   DeepSeek V4 默认 thinking=enabled；「无」不可省略字段（省略仍会思考），
-   须显式 thinking.disabled。reasoning_effort 在关思考时写 "none"（兼容网关；
-   与 UI「无」对应），开启时写 low/high/max（medium→high）。 */
+   DeepSeek V4：thinking 默认开启；reasoning_effort 仅 low/high/max（无「关思考」档）。
+   旧 UI 的 none/off 按 low 处理。 */
 function applyTextThinkingEffort(body, effort) {
   const raw = String(effort == null ? "" : effort)
     .trim()
     .toLowerCase();
   if (!raw) return;
-  if (raw === "none" || raw === "off" || raw === "无") {
-    body.thinking = { type: "disabled" };
-    body.reasoning_effort = "none";
-    return;
-  }
   body.thinking = { type: "enabled" };
   let e = raw;
+  if (e === "none" || e === "off" || e === "无" || e === "minimal") e = "low";
   if (e === "medium" || e === "xhigh") e = "high";
-  if (e === "minimal") e = "low";
   if (e === "low" || e === "high" || e === "max") body.reasoning_effort = e;
   else body.reasoning_effort = "high";
 }
@@ -1411,9 +1412,7 @@ function buildRequestSpec(
       messages,
       temperature: temperature == null ? 0.7 : temperature,
     };
-    /* DeepSeek V4 等默认开启思考：仅省略字段或传无效档位仍会思考。
-       「无」必须显式 thinking.disabled；并带 reasoning_effort=none（兼容网关 / 与 UI 档位一致）。
-       有思考时再传 low/high/max（medium→high）。 */
+    /* DeepSeek V4：thinking 默认开启，附带 reasoning_effort */
     applyTextThinkingEffort(body, effort);
     return {
       method: "POST",
@@ -1991,6 +1990,11 @@ app.whenReady().then(() => {
     mainWin = null;
   });
   registerUpdateIpc(() => mainWin);
+  registerPetIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+  });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });
@@ -2002,6 +2006,7 @@ app.on("window-all-closed", () => {
 
 /* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程 */
 app.on("before-quit", () => {
+  try { shutdownPet(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }

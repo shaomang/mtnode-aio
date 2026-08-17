@@ -19,10 +19,10 @@ input,select,textarea{font-family:var(--sans)}
 /* ===== 顶栏 ===== */
 .topbar{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
-  padding:8px 96px 8px 14px; background:linear-gradient(180deg,var(--panel2),var(--panel));
+  padding:8px 160px 8px 14px; background:linear-gradient(180deg,var(--panel2),var(--panel));
   border-bottom:3px solid var(--bd); position:relative; z-index:5; flex-wrap:wrap;
 }
-.topbar.has-update{padding-right:168px}
+.topbar.has-update{padding-right:232px}
 .logo{display:flex; align-items:center; gap:10px; user-select:none}
 .logo-mark{
   width:34px; height:34px; position:relative; flex:none;
@@ -103,8 +103,38 @@ button:disabled{opacity:.45; cursor:not-allowed}
   min-width:44px; height:36px; padding:0 8px; flex:none;
   font-size:12px; letter-spacing:1px; font-weight:700;
 }
+.btn-plugins{
+  position:absolute; top:8px; right:104px; z-index:6;
+  min-width:44px; height:36px; padding:0 8px; flex:none;
+  font-size:12px; letter-spacing:1px; font-weight:700;
+}
 .topbar.has-update .btn-approvals{right:124px}
+.topbar.has-update .btn-plugins{right:176px}
 .btn-approvals:hover,.btn-approvals.on{color:var(--orange2); border-color:var(--orange)}
+.btn-plugins:hover,.btn-plugins.on{color:var(--cyan2); border-color:var(--cyan)}
+.plugin-card{
+  border:2px solid var(--bd2); background:linear-gradient(180deg,var(--panel2),var(--panel));
+  padding:12px 14px; margin:0 0 12px;
+}
+.plugin-card-head{
+  display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:8px;
+}
+.plugin-card-title{font-size:14px; font-weight:800; letter-spacing:1px; color:var(--orange2)}
+.plugin-card-sub{font-size:11px; color:var(--muted); margin-top:4px; line-height:1.45}
+.plugin-card-status{
+  font-family:var(--mono); font-size:11px; color:var(--cyan2); white-space:nowrap; padding-top:2px;
+}
+.plugin-card-status.warn{color:var(--orange2)}
+.plugin-card-status.ok{color:var(--green)}
+.plugin-card-actions{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+.plugin-progress{
+  margin-top:10px; height:6px; background:var(--code); border:1px solid var(--bd); overflow:hidden;
+}
+.plugin-progress > i{
+  display:block; height:100%; width:0; background:linear-gradient(90deg,var(--orange),var(--cyan));
+  transition:width .15s;
+}
+.plugin-progress-txt{font-size:11px; color:var(--muted); margin-top:6px; font-family:var(--mono)}
 .approvals-panel{
   position:fixed; top:52px; right:10px; z-index:1300;
   width:min(380px,94vw); max-height:min(78vh,560px); overflow:auto;

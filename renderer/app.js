@@ -776,13 +776,13 @@ function recordDshMetrics(node, m) {
 }
 
 /* 思考强度映射:
-   - 文本处理节点智能模式沿用 无/低/中/高 → dsh 三档 off/标准/最强(高→最强)
-   - 智能任务节点与智能会话直接使用 dsh 三档 off/high/max,原样传递
-   - 「无」必须落到 off（写入 settings），不可省略（省略默认 high，仍会思考） */
+   - DeepSeek Chat Completions 仅支持 reasoning_effort: low/high/max（无「关思考」档）
+   - 文本智能模式：低/中/高 → dsh 标准/最强（高→最强）
+   - 智能任务 / 会话：标准(high) / 最强(max)
+   - 旧档 none/off/无 → high（兼容已存工作流） */
 function dshEffortOf(v, fromProcText) {
   let raw = String(v == null || v === "" ? "high" : v).toLowerCase();
-  if (raw === "无") raw = "none";
-  if (raw === "off" || raw === "none") return "off";
+  if (raw === "无" || raw === "off" || raw === "none") return "high";
   if (raw === "max") return "max";
   if (raw === "high") return fromProcText ? "max" : "high";
   if (raw === "medium" || raw === "low") return "high";
@@ -887,6 +887,8 @@ function dshRunTask(input, opts) {
   /* 绑定本次运行的画布：后续 canvas 事件写入该 wf，切画布也不会串到别的工作流 */
   const boundWf = S.wf;
   beginCanvasRun(boundWf);
+  const scopeLock = isCanvasScopedAgentNode(opts.node);
+  if (scopeLock) S._canvasNodeAgentDepth = (S._canvasNodeAgentDepth || 0) + 1;
   if (opts.node && boundWf) {
     S.nodeWfId = S.nodeWfId || {};
     S.nodeWfId[opts.node.id] = boundWf.id;
@@ -908,6 +910,11 @@ function dshRunTask(input, opts) {
       S.activeRunCancel = null;
       ixDropRun();
       endCanvasRun(boundWf);
+      if (scopeLock)
+        S._canvasNodeAgentDepth = Math.max(
+          0,
+          (S._canvasNodeAgentDepth || 1) - 1,
+        );
       if (ok) resolve(val);
       else reject(val instanceof Error ? val : new Error(String(val || "")));
     };
@@ -4696,34 +4703,38 @@ function apiPreviewButtons(node) {
   return [apiBtn, pv];
 }
 
-/* 思考强度按钮（proc_text / chat 文本模型共用）：无 / 低 / 中 / 高，点击切换，默认低 */
-const EFFORT_LEVELS = ["none", "low", "medium", "high"];
-const EFFORT_LABELS = { none: "无", low: "低", medium: "中", high: "高" };
+/* 思考强度按钮（proc_text / chat 文本模型共用）：低 / 中 / 高，点击切换，默认低
+   （API 无「关思考」档；旧 none/off 归一为 low） */
+const EFFORT_LEVELS = ["low", "medium", "high"];
+const EFFORT_LABELS = { low: "低", medium: "中", high: "高" };
+function normalizeTextEffort(v) {
+  const raw = String(v == null ? "" : v).trim().toLowerCase();
+  if (raw === "none" || raw === "off" || raw === "无") return "low";
+  return EFFORT_LEVELS.includes(raw) ? raw : "low";
+}
 function effortButtonEl(node) {
   const effortBtn = document.createElement("button");
   effortBtn.type = "button";
   const paintEffort = () => {
-    const cur = EFFORT_LEVELS.includes(node.effort) ? node.effort : "low";
-    effortBtn.className = "n-play n-effort" + (cur === "none" ? "" : " on");
+    const cur = normalizeTextEffort(node.effort);
+    if (node.effort !== cur) node.effort = cur;
+    effortBtn.className = "n-play n-effort on";
     effortBtn.textContent = I18n.t(EFFORT_LABELS[cur]);
     effortBtn.title =
       I18n.t("思考强度：当前「") +
       I18n.t(EFFORT_LABELS[cur]) +
-      I18n.t("」· 点击切换（无 / 低 / 中 / 高）");
+      I18n.t("」· 点击切换（低 / 中 / 高）");
   };
   paintEffort();
   effortBtn.onclick = (ev) => {
     ev.stopPropagation();
-    const cur = EFFORT_LEVELS.includes(node.effort) ? node.effort : "low";
+    const cur = normalizeTextEffort(node.effort);
     node.effort =
       EFFORT_LEVELS[(EFFORT_LEVELS.indexOf(cur) + 1) % EFFORT_LEVELS.length];
     pushHistory();
     scheduleSave();
     paintEffort();
-    toast(
-      I18n.t("思考强度 → ") + I18n.t(EFFORT_LABELS[node.effort]),
-      node.effort === "none" ? "warn" : "ok",
-    );
+    toast(I18n.t("思考强度 → ") + I18n.t(EFFORT_LABELS[node.effort]), "ok");
   };
   return effortBtn;
 }
@@ -5345,15 +5356,17 @@ function nodeElement(node) {
       panel.appendChild(f2);
       const fe = document.createElement("label");
       fe.className = "n-field";
-      fe.appendChild(document.createTextNode(I18n.t("思考强度（无 / 标准 / 最强）")));
+      fe.appendChild(document.createTextNode(I18n.t("思考强度（标准 / 最强）")));
       const eff = document.createElement("select");
-      for (const [v, l] of [["off", I18n.t("无")], ["high", I18n.t("标准")], ["max", I18n.t("最强")]]) {
+      for (const [v, l] of [["high", I18n.t("标准")], ["max", I18n.t("最强")]]) {
         const o = document.createElement("option");
         o.value = v;
         o.textContent = l;
         eff.appendChild(o);
       }
-      eff.value = ["off", "high", "max"].includes(node.effort) ? node.effort : "high";
+      /* 旧档 off/none → 标准 */
+      eff.value = node.effort === "max" ? "max" : "high";
+      if (node.effort !== eff.value) node.effort = eff.value;
       eff.addEventListener("change", () => {
         node.effort = eff.value;
         scheduleSave();
@@ -7360,14 +7373,9 @@ function buildSpec(node, prov, idx) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：无/"none"/"off" 均显式下发（勿省略，否则模型默认仍会思考） */
+    /* 思考强度：始终下发 low/medium/high（旧 none/off → low） */
     effort:
-      node.kind === "proc_text" &&
-      (EFFORT_LEVELS.includes(node.effort) || node.effort === "off")
-        ? node.effort === "off"
-          ? "none"
-          : node.effort
-        : undefined,
+      node.kind === "proc_text" ? normalizeTextEffort(node.effort) : undefined,
     size:
       node.kind === "proc_image"
         ? IMAGE_SIZES.includes(node.size)
@@ -7409,13 +7417,8 @@ function buildChatSpec(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：无/"none"/"off" 均显式下发（勿省略，否则模型默认仍会思考） */
-    effort:
-      EFFORT_LEVELS.includes(node.effort) || node.effort === "off"
-        ? node.effort === "off"
-          ? "none"
-          : node.effort
-        : undefined,
+    /* 思考强度：始终下发 low/medium/high（旧 none/off → low） */
+    effort: normalizeTextEffort(node.effort),
     prompt: "",
     texts: [],
     images: [],
@@ -7528,6 +7531,10 @@ async function runDshOnce(node, spec, attemptT, images) {
     effort: node.effort != null && node.effort !== "" ? node.effort : undefined,
     preset: node.preset || undefined,
     images,
+    systemPrompt:
+      "你绑定在当前画布工作流上。只能用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 操作本画布；" +
+      "禁止 switch_workflow / create_workflow；list_workflows 与 canvas_get 不会返回其他画布。" +
+      "回答简洁，中文优先。",
     onEvent: (type, data) => onDshNodeEvent(node, attemptT, type, data),
     onDone: (d) => recordDshMetrics(node, d.metrics),
   });
@@ -7696,14 +7703,9 @@ function buildSpecAgg(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：无/"none"/"off" 均显式下发（勿省略，否则模型默认仍会思考） */
+    /* 思考强度：始终下发 low/medium/high（旧 none/off → low） */
     effort:
-      node.kind === "proc_text" &&
-      (EFFORT_LEVELS.includes(node.effort) || node.effort === "off")
-        ? node.effort === "off"
-          ? "none"
-          : node.effort
-        : undefined,
+      node.kind === "proc_text" ? normalizeTextEffort(node.effort) : undefined,
     size:
       node.kind === "proc_image"
         ? IMAGE_SIZES.includes(node.size)
@@ -9405,19 +9407,39 @@ function assistScopeIsCurrent() {
   return (S.assistScope || "current") !== "global";
 }
 
-/* 全局助手「当前画布」范围：运行中禁止读/切其他画布 */
+/* 画布智能节点（智能任务 / 文本智能 / 对话智能）运行中：锁定本画布 */
+function isCanvasScopedAgentNode(n) {
+  return !!(
+    n &&
+    (n.kind === "agent_task" ||
+      (n.kind === "proc_text" && n.agent) ||
+      (n.kind === "chat" && n.agent))
+  );
+}
+
+/* 禁止跨画布：智能任务/会话始终锁定；全局助手仅在「当前画布」范围时锁定 */
+function restrictOtherCanvases() {
+  if ((S._canvasNodeAgentDepth || 0) > 0) return true;
+  if (S.agentSessionRunActive) return true;
+  if (S.assistRunActive && assistScopeIsCurrent()) return true;
+  return false;
+}
+/* 旧名兼容 */
 function assistRestrictOtherCanvases() {
-  return !!S.assistRunActive && assistScopeIsCurrent();
+  return restrictOtherCanvases();
 }
 
 function applyAssistScopeToSnapshot(snap, opts) {
   if (!snap || typeof snap !== "object") return snap;
-  const scope = assistScopeIsCurrent() ? "current" : "global";
-  snap.assistScope = scope;
-  const restrict =
-    (opts && opts.restrict === true) || assistRestrictOtherCanvases();
-  if (!restrict) return snap;
-  const cur = S.wf;
+  const locked = restrictOtherCanvases() || (opts && opts.restrict === true);
+  snap.assistScope = locked
+    ? "current"
+    : assistScopeIsCurrent()
+      ? "current"
+      : "global";
+  if (!locked) return snap;
+  /* 以运行绑定画布为准（用户切走可见画布时仍锁在任务所在画布） */
+  const cur = canvasTargetWf() || S.wf;
   snap.workflows = cur
     ? [
         {
@@ -9569,62 +9591,45 @@ async function applyAppOp(params) {
   const action = String(params.action || "").trim();
   const warnings = [];
   if (!action) throw new Error(I18n.t("缺少 action"));
-  const scopeBlocked =
-    I18n.t(
-      "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。",
-    );
+  const scopeBlocked = S.assistRunActive && assistScopeIsCurrent()
+    ? I18n.t(
+        "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。",
+      )
+    : I18n.t(
+        "智能任务仅能访问当前画布，无法读取、切换或新建其他画布。",
+      );
+  const viewBlocked = I18n.t(
+    "智能助手不能切换画布或改变你的视角（平移 / 缩放 / 居中 / 切视图）。请自行切换工作流，或使用顶栏「居中」。",
+  );
+
+  if (
+    action === "fit_canvas" ||
+    action === "focus_node" ||
+    action === "set_view" ||
+    action === "switch_workflow" ||
+    action === "create_workflow"
+  ) {
+    throw new Error(viewBlocked);
+  }
 
   if (action === "status" || action === "list_workflows") {
     return Object.assign({ ok: true, action }, await canvasSnapshotFull());
   }
 
-  if (action === "fit_canvas") {
-    if (S.view !== "workflow") setView("workflow");
-    fitCanvas();
-    return { ok: true, action, cam: S.cam };
-  }
-
-  if (action === "focus_node") {
-    if (S.view !== "workflow") setView("workflow");
-    if (!S.wf) throw new Error(I18n.t("当前没有打开的工作流"));
-    const n = resolveAppNode(params.node || params.id || params.title, warnings);
-    if (!n) throw new Error(warnings[0] || I18n.t("找不到节点"));
-    S.selSet = new Set([n.id]);
-    S.sel = n.id;
-    S.selGroup = null;
-    S.selWire = null;
-    renderCanvas();
-    fitNodes([n]);
-    toast(I18n.t("画布居中定位到：") + (n.title || n.id), "ok");
-    return { ok: true, action, node: { id: n.id, title: n.title, kind: n.kind }, warnings };
-  }
-
-  if (action === "set_view") {
-    const v = params.view === "agent" ? "agent" : "workflow";
-    setView(v);
-    return { ok: true, action, view: S.view };
-  }
-
-  if (action === "switch_workflow") {
-    if (assistRestrictOtherCanvases()) throw new Error(scopeBlocked);
-    const w = await resolveWorkflowRef(params.workflow || params.id || params.name);
-    if (S.view !== "workflow") setView("workflow");
-    await loadWorkflow(w.id);
-    return Object.assign({ ok: true, action }, await canvasSnapshotFull());
-  }
-
-  if (action === "create_workflow") {
-    if (assistRestrictOtherCanvases()) throw new Error(scopeBlocked);
-    if (S.view !== "workflow") setView("workflow");
-    const created = await createWorkflowNamed(params.name);
-    return Object.assign({ ok: true, action, created }, await canvasSnapshotFull());
-  }
-
   if (action === "rename_workflow") {
     if (assistRestrictOtherCanvases()) {
+      const bound = canvasTargetWf() || S.wf;
       const ref = String(params.workflow || params.id || "").trim();
-      if (ref && S.wf && ref !== S.wf.id && ref !== S.wf.name)
+      if (ref && bound && ref !== bound.id && ref !== bound.name)
         throw new Error(scopeBlocked);
+      /* 无 ref 时改绑定画布，避免用户已切走可见画布时误改别的 */
+      if (!ref && bound) {
+        const renamed = await renameWorkflowByRef(
+          bound.id,
+          params.name || params.setName || params.title,
+        );
+        return { ok: true, action, renamed };
+      }
     }
     const renamed = await renameWorkflowByRef(
       params.workflow || params.id || "",
@@ -9635,9 +9640,14 @@ async function applyAppOp(params) {
 
   if (action === "delete_workflow") {
     if (assistRestrictOtherCanvases()) {
+      const bound = canvasTargetWf() || S.wf;
       const ref = String(params.workflow || params.id || params.name || "").trim();
-      if (ref && S.wf && ref !== S.wf.id && ref !== S.wf.name)
+      if (ref && bound && ref !== bound.id && ref !== bound.name)
         throw new Error(scopeBlocked);
+      if (!ref && bound) {
+        const deleted = await deleteWorkflowByRef(bound.id);
+        return Object.assign({ ok: true, action }, deleted, await canvasSnapshotFull());
+      }
     }
     const deleted = await deleteWorkflowByRef(params.workflow || params.id || params.name);
     return Object.assign({ ok: true, action }, deleted, await canvasSnapshotFull());
@@ -9645,7 +9655,6 @@ async function applyAppOp(params) {
 
   if (action === "select_nodes") {
     if (!S.wf) throw new Error(I18n.t("当前没有打开的工作流"));
-    if (S.view !== "workflow") setView("workflow");
     const tokens = [];
     if (Array.isArray(params.nodes)) tokens.push(...params.nodes);
     if (params.node) tokens.push(params.node);
@@ -9660,7 +9669,6 @@ async function applyAppOp(params) {
     }
     if (picked.length) S.sel = picked[picked.length - 1].id;
     renderCanvas();
-    if (picked.length) fitNodes(picked.map((p) => nodeById(p.id)).filter(Boolean));
     return { ok: true, action, selected: picked, warnings };
   }
 
@@ -10848,7 +10856,7 @@ function oneClickAutoLayout(opts) {
     return;
   }
   const msg = I18n.t(
-    "请整理当前画布排版：先 mtnode_canvas_get 查看每个节点与绘制的 x/y/w/h，再根据现状自行判断，用一次 mtnode_canvas_edit（layout:false）通过 update / updateMarks 校准位置与尺寸。要求美观整洁、间距舒适、图像节点便于观察、面向用户可编辑/操作的节点靠上；框体/文字/箭头等绘制要跟着节点一起调整。不要增删节点、不要改连线，不要调用任何 layout action。完成后用一句话确认。",
+    "请整理当前画布排版：先 mtnode_canvas_get 查看每个节点与绘制的 x/y/w/h，再根据现状自行判断，用一次 mtnode_canvas_edit（layout:false）通过 update / updateMarks 校准位置与尺寸。要求美观整洁、间距舒适、图像节点便于观察、面向用户可编辑/操作的节点靠上；框体/文字/箭头等绘制要跟着节点一起调整。不要增删节点、不要改连线，不要调用任何 layout action，也不要 fit_canvas / focus_node / 移动相机。完成后用一句话确认。",
   );
   setAssistOpen(true);
   const aInp = $("#assistInput");
@@ -11626,11 +11634,9 @@ async function applyCanvasEdit(params) {
     }
   }
 
-  const focus = createdLive.length ? createdLive : null;
   if (S._canvasEditVisible !== false) {
     renderCanvas();
-    if (focus && focus.length) fitNodes(focus);
-    else if (doLayout || createdMarks.length) fitCanvas();
+    /* 不平移/缩放用户视角：节点在世界坐标中更新，相机保持不动 */
     renderStatus();
     if (typeof renderSidebar === "function" && S.sidebarOpen) renderSidebar();
     scheduleSave(true);
@@ -13972,12 +13978,7 @@ async function chatSend(node, text) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    effort:
-      EFFORT_LEVELS.includes(node.effort) || node.effort === "off"
-        ? node.effort === "off"
-          ? "none"
-          : node.effort
-        : undefined,
+    effort: normalizeTextEffort(node.effort),
     prompt: "",
     texts: [],
     images: [],
@@ -14054,7 +14055,10 @@ async function chatSendAgent(node, text) {
     const final = await dshRunTask(input, {
       node,
       model: node.model || undefined,
-      systemPrompt: node.systemPrompt || "",
+      systemPrompt:
+        (node.systemPrompt || "") +
+        (node.systemPrompt ? "\n" : "") +
+        "你绑定在当前画布。禁止 switch_workflow / create_workflow；list_workflows / canvas_get 不会返回其他画布。",
       onEvent: (type, data) => {
         if (type === "reasoning" && data.text) {
           pushThinking(node.id, 0, data.text);
@@ -15444,8 +15448,16 @@ function migrateWf(wf) {
         n.savedPaths = n.savedPath ? [n.savedPath] : [];
       n.savedPaths = n.savedPaths.filter(Boolean);
     }
-    if (n.kind === "chat" && !n.effort) n.effort = "low";
-    if (n.kind === "proc_text" && !n.effort) n.effort = "low";
+    if (n.kind === "chat") n.effort = normalizeTextEffort(n.effort);
+    if (n.kind === "proc_text") {
+      if (n.agent) {
+        /* 智能模式走 dsh：标准/最强；旧 off/none → high */
+        const e = String(n.effort || "").toLowerCase();
+        n.effort = e === "max" ? "max" : "high";
+      } else {
+        n.effort = normalizeTextEffort(n.effort);
+      }
+    }
     if (n.kind === "proc_text") {
       if (n.agent == null) n.agent = false;
       if (typeof n.agentWorkspace !== "string") n.agentWorkspace = "";
@@ -15460,7 +15472,10 @@ function migrateWf(wf) {
       if (!Array.isArray(n.messages)) n.messages = [];
       if (typeof n.workspace !== "string") n.workspace = "";
       if (n.batchMode !== "agg") n.batchMode = "batch";
-      if (!n.effort) n.effort = "high";
+      {
+        const e = String(n.effort || "").toLowerCase();
+        n.effort = e === "max" ? "max" : "high";
+      }
       if (!n.preset) n.preset = "standard";
       if (typeof n.agentSessionId !== "string") n.agentSessionId = "";
       if (!n.convH || n.convH < 60) n.convH = 140; /* 会话历史框高度 */
@@ -17990,6 +18005,311 @@ async function openTemplateStore() {
   await paint();
 }
 
+/* ============ 顶栏「插件」：可选组件（桌宠等） ============ */
+let _petProgressOff = null;
+function petStatusLabel(st) {
+  if (!st || !st.installed) return { text: I18n.t("未安装"), cls: "warn" };
+  if (st.running) return { text: I18n.t("运行中") + (st.version ? " · v" + st.version : ""), cls: "ok" };
+  return { text: I18n.t("已安装") + (st.version ? " · v" + st.version : ""), cls: "ok" };
+}
+function ensurePetExtras(root) {
+  let extras = root.querySelector("[data-pet-extras]");
+  if (extras) return extras;
+  extras = document.createElement("div");
+  extras.setAttribute("data-pet-extras", "1");
+  extras.style.marginTop = "10px";
+  extras.style.display = "none";
+  root.appendChild(extras);
+  return extras;
+}
+async function paintPetExtras(root, st) {
+  const extras = ensurePetExtras(root);
+  if (!st || !st.installed) {
+    extras.style.display = "none";
+    extras.innerHTML = "";
+    return;
+  }
+  extras.style.display = "block";
+  extras.innerHTML = "";
+  const cfg = (st.config || {});
+  const row = document.createElement("div");
+  row.className = "plugin-card-actions";
+  row.style.marginTop = "0";
+
+  const mkCheck = (label, key) => {
+    const lab = document.createElement("label");
+    lab.style.display = "inline-flex";
+    lab.style.alignItems = "center";
+    lab.style.gap = "6px";
+    lab.style.fontSize = "12px";
+    lab.style.color = "var(--muted)";
+    const inp = document.createElement("input");
+    inp.type = "checkbox";
+    inp.checked = !!cfg[key];
+    inp.onchange = async () => {
+      const patch = {};
+      patch[key] = !!inp.checked;
+      await window.api.petSetConfig(patch);
+      refreshPetPluginCard(root);
+    };
+    lab.appendChild(inp);
+    lab.appendChild(document.createTextNode(label));
+    row.appendChild(lab);
+  };
+  mkCheck(I18n.t("窗口穿透"), "penetrable");
+  mkCheck(I18n.t("始终置顶"), "alwaysOnTop");
+  mkCheck(I18n.t("镜像"), "mirror");
+  mkCheck(I18n.t("悬停隐藏"), "hideOnHover");
+  extras.appendChild(row);
+
+  const row2 = document.createElement("div");
+  row2.className = "plugin-card-actions";
+  const scaleLab = document.createElement("label");
+  scaleLab.style.fontSize = "12px";
+  scaleLab.style.color = "var(--muted)";
+  scaleLab.textContent = I18n.t("缩放");
+  const scaleSel = document.createElement("select");
+  [50, 75, 100, 125, 150].forEach((v) => {
+    const o = document.createElement("option");
+    o.value = String(v);
+    o.textContent = v + "%";
+    if (Number(cfg.scale) === v) o.selected = true;
+    scaleSel.appendChild(o);
+  });
+  scaleSel.onchange = async () => {
+    await window.api.petSetConfig({ scale: Number(scaleSel.value) });
+    refreshPetPluginCard(root);
+  };
+  scaleLab.appendChild(document.createTextNode(" "));
+  scaleLab.appendChild(scaleSel);
+  row2.appendChild(scaleLab);
+
+  const opLab = document.createElement("label");
+  opLab.style.fontSize = "12px";
+  opLab.style.color = "var(--muted)";
+  opLab.textContent = I18n.t("透明度");
+  const opSel = document.createElement("select");
+  [40, 60, 80, 100].forEach((v) => {
+    const o = document.createElement("option");
+    o.value = String(v);
+    o.textContent = v + "%";
+    if (Number(cfg.opacity) === v) o.selected = true;
+    opSel.appendChild(o);
+  });
+  opSel.onchange = async () => {
+    await window.api.petSetConfig({ opacity: Number(opSel.value) });
+    refreshPetPluginCard(root);
+  };
+  opLab.appendChild(document.createTextNode(" "));
+  opLab.appendChild(opSel);
+  row2.appendChild(opLab);
+  extras.appendChild(row2);
+
+  const row3 = document.createElement("div");
+  row3.className = "plugin-card-actions";
+  const skinLab = document.createElement("label");
+  skinLab.style.fontSize = "12px";
+  skinLab.style.color = "var(--muted)";
+  skinLab.textContent = I18n.t("形象");
+  const skinSel = document.createElement("select");
+  (st.skins || []).forEach((s) => {
+    const o = document.createElement("option");
+    o.value = s.id;
+    o.textContent = s.name || s.id;
+    if ((cfg.skinId || "default") === s.id) o.selected = true;
+    skinSel.appendChild(o);
+  });
+  skinSel.onchange = async () => {
+    await window.api.petSetSkin(skinSel.value);
+    refreshPetPluginCard(root);
+  };
+  skinLab.appendChild(document.createTextNode(" "));
+  skinLab.appendChild(skinSel);
+  row3.appendChild(skinLab);
+  const importBtn = document.createElement("button");
+  importBtn.className = "mini";
+  importBtn.textContent = I18n.t("导入形象…");
+  importBtn.onclick = async () => {
+    const r = await window.api.petImportSkin();
+    if (r && r.ok) toast(I18n.t("已导入形象：") + (r.name || r.id), "ok");
+    else if (r && r.error && r.error !== "cancelled")
+      toast(I18n.t("导入失败：") + r.error, "err");
+    refreshPetPluginCard(root);
+  };
+  row3.appendChild(importBtn);
+  extras.appendChild(row3);
+
+  if (st.running && st.hook === false) {
+    const tip = document.createElement("div");
+    tip.className = "plugin-progress-txt";
+    tip.style.display = "block";
+    tip.textContent = I18n.t("全局键鼠钩子未就绪（仍可使用窗口与形象功能）");
+    extras.appendChild(tip);
+  }
+}
+async function refreshPetPluginCard(root) {
+  if (!root || !window.api || !window.api.petStatus) return;
+  const st = await window.api.petStatus();
+  const statusEl = root.querySelector("[data-pet-status]");
+  const actions = root.querySelector("[data-pet-actions]");
+  const prog = root.querySelector("[data-pet-progress]");
+  const progTxt = root.querySelector("[data-pet-progress-txt]");
+  if (!statusEl || !actions) return;
+  const lab = petStatusLabel(st);
+  statusEl.textContent = lab.text;
+  statusEl.className = "plugin-card-status " + lab.cls;
+  actions.innerHTML = "";
+  const addBtn = (label, cls, onClick, disabled) => {
+    const b = document.createElement("button");
+    b.className = "mini" + (cls ? " " + cls : "");
+    b.textContent = label;
+    b.disabled = !!disabled;
+    b.onclick = onClick;
+    actions.appendChild(b);
+    return b;
+  };
+  if (!st.installed) {
+    addBtn(I18n.t("下载安装"), "primary", async () => {
+      if (prog) prog.style.display = "block";
+      if (progTxt) {
+        progTxt.style.display = "block";
+        progTxt.textContent = I18n.t("准备下载…");
+      }
+      const bar = prog && prog.querySelector("i");
+      if (bar) bar.style.width = "2%";
+      const r = await window.api.petInstall();
+      if (prog) prog.style.display = "none";
+      if (progTxt) progTxt.style.display = "none";
+      if (r && r.ok) {
+        toast(
+          I18n.t("桌宠已安装") +
+            (r.version ? " v" + r.version : "") +
+            (r.source === "local-fallback" ? I18n.t("（本地包）") : ""),
+          "ok",
+        );
+      } else {
+        toast(I18n.t("桌宠安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      }
+      refreshPetPluginCard(root);
+    }, !!st.installing);
+  } else {
+    if (st.running) {
+      addBtn(I18n.t("停止"), "", async () => {
+        await window.api.petStop();
+        refreshPetPluginCard(root);
+      });
+    } else {
+      addBtn(I18n.t("运行"), "primary", async () => {
+        const r = await window.api.petStart();
+        if (!r || !r.ok) {
+          toast(I18n.t("启动桌宠失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+        }
+        refreshPetPluginCard(root);
+      });
+    }
+    addBtn(I18n.t("卸载"), "danger", async () => {
+      if (!confirm(I18n.t("卸载桌宠？将删除已下载的运行时文件。"))) return;
+      await window.api.petUninstall();
+      toast(I18n.t("桌宠已卸载"), "ok");
+      refreshPetPluginCard(root);
+    });
+    addBtn(I18n.t("更新运行时"), "", async () => {
+      if (prog) prog.style.display = "block";
+      if (progTxt) {
+        progTxt.style.display = "block";
+        progTxt.textContent = I18n.t("准备下载…");
+      }
+      const wasRunning = !!st.running;
+      if (wasRunning) await window.api.petStop();
+      const r = await window.api.petInstall();
+      if (prog) prog.style.display = "none";
+      if (progTxt) progTxt.style.display = "none";
+      if (r && r.ok) {
+        toast(I18n.t("桌宠已安装") + (r.version ? " v" + r.version : ""), "ok");
+        if (wasRunning) await window.api.petStart();
+      } else {
+        toast(I18n.t("桌宠安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      }
+      refreshPetPluginCard(root);
+    });
+  }
+  /* 桌宠设置改走托盘菜单，插件面板仅保留安装/运行/停止/卸载 */
+  const extras = root.querySelector("[data-pet-extras]");
+  if (extras) {
+    extras.style.display = "none";
+    extras.innerHTML = "";
+  }
+}
+function openAppPluginsDialog() {
+  openOverlay(I18n.t("插件"));
+  overlayPersistent = true;
+  const body = $("#ovBody");
+  const foot = $("#ovFoot");
+  body.innerHTML = "";
+  foot.innerHTML = "";
+
+  const intro = document.createElement("div");
+  intro.className = "settings-hint";
+  intro.style.marginBottom = "12px";
+  intro.textContent = I18n.t("可选组件按需下载，不随主程序安装包分发。");
+  body.appendChild(intro);
+
+  const card = document.createElement("div");
+  card.className = "plugin-card";
+  card.innerHTML =
+    '<div class="plugin-card-head">' +
+    '<div><div class="plugin-card-title"></div><div class="plugin-card-sub"></div></div>' +
+    '<div class="plugin-card-status warn" data-pet-status>—</div>' +
+    "</div>" +
+    '<div class="plugin-card-actions" data-pet-actions></div>' +
+    '<div class="plugin-progress" data-pet-progress style="display:none"><i></i></div>' +
+    '<div class="plugin-progress-txt" data-pet-progress-txt style="display:none"></div>';
+  card.querySelector(".plugin-card-title").textContent = I18n.t("BongoChat");
+  card.querySelector(".plugin-card-sub").textContent = I18n.t(
+    "可以聊天的BongoCat！",
+  );
+  body.appendChild(card);
+
+  if (_petProgressOff) {
+    try { _petProgressOff(); } catch {}
+    _petProgressOff = null;
+  }
+  if (window.api && window.api.onPetProgress) {
+    _petProgressOff = window.api.onPetProgress((data) => {
+      const prog = card.querySelector("[data-pet-progress]");
+      const progTxt = card.querySelector("[data-pet-progress-txt]");
+      const bar = prog && prog.querySelector("i");
+      if (!data) return;
+      if (prog) prog.style.display = "block";
+      if (progTxt) progTxt.style.display = "block";
+      const pct = Math.max(0, Math.min(100, Number(data.percent) || 0));
+      if (bar) bar.style.width = pct + "%";
+      const phase = data.phase || "";
+      let msg = pct + "%";
+      if (phase === "manifest") msg = I18n.t("读取清单…");
+      else if (phase === "download") msg = I18n.t("下载中…") + " " + pct + "%";
+      else if (phase === "extract" || phase === "copy") msg = I18n.t("解压安装中…");
+      else if (phase === "done") msg = I18n.t("完成");
+      else if (phase === "error") msg = I18n.t("失败：") + (data.error || "");
+      if (progTxt) progTxt.textContent = msg;
+    });
+  }
+
+  refreshPetPluginCard(card);
+
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "mini";
+  closeBtn.textContent = I18n.t("关闭");
+  closeBtn.onclick = () => {
+    if (_petProgressOff) {
+      try { _petProgressOff(); } catch {}
+      _petProgressOff = null;
+    }
+    closeOverlay();
+  };
+  foot.appendChild(closeBtn);
+}
+
 /* ============ 设置（APIs/Config） ============ */
 
 function openSettings() {
@@ -18383,7 +18703,7 @@ function openSettings() {
     plTitle.className = "settings-sec-title settings-sec-title-row";
     plTitle.style.marginTop = "8px";
     const plTitleSpan = document.createElement("span");
-    plTitleSpan.textContent = I18n.t("插件（扩展 agent 能力；安装后自动重启引擎）");
+    plTitleSpan.textContent = I18n.t("DSH 插件（扩展 agent 能力；安装后自动重启引擎）");
     plTitle.appendChild(plTitleSpan);
     const plRow = document.createElement("div");
     plRow.className = "dsh-btn-row";
@@ -18393,7 +18713,7 @@ function openSettings() {
     plInp.style.flex = "1";
     const plAdd = document.createElement("button");
     plAdd.className = "mini primary";
-    plAdd.textContent = I18n.t("＋ 安装插件");
+    plAdd.textContent = I18n.t("＋ 安装 DSH 插件");
     const storeBtn = document.createElement("button");
     storeBtn.className = "mini";
     storeBtn.textContent = I18n.t("🌐 在线浏览");
@@ -18407,12 +18727,12 @@ function openSettings() {
     const plFold = document.createElement("details");
     plFold.className = "dsh-plugin-fold";
     const plFoldSum = document.createElement("summary");
-    plFoldSum.textContent = I18n.t("已安装插件（点击展开查看 / 管理）");
+    plFoldSum.textContent = I18n.t("已安装 DSH 插件（点击展开查看 / 管理）");
     plFold.appendChild(plFoldSum);
     const plSearch = document.createElement("input");
     plSearch.type = "text";
     plSearch.className = "dsh-plugin-search";
-    plSearch.placeholder = I18n.t("筛选插件（按包名 / 行 id）…");
+    plSearch.placeholder = I18n.t("筛选 DSH 插件（按包名 / 行 id）…");
     plFold.appendChild(plSearch);
     const plGrid = document.createElement("div");
     plGrid.className = "dsh-plugin-grid";
@@ -18436,7 +18756,7 @@ function openSettings() {
       if (!list.length) {
         const em = document.createElement("div");
         em.className = "dsh-plugin-empty";
-        em.textContent = q ? I18n.t("无匹配插件") : I18n.t("暂无插件（在上方输入 npm 包名安装）");
+        em.textContent = q ? I18n.t("无匹配 DSH 插件") : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
         plGrid.appendChild(em);
         return;
       }
@@ -18494,7 +18814,7 @@ function openSettings() {
           rm.className = "mini";
           rm.textContent = I18n.t("移除");
           rm.onclick = async () => {
-            if (!confirm(I18n.t("移除插件 ") + p.name + I18n.t("？引擎将自动重启。"))) return;
+            if (!confirm(I18n.t("移除 DSH 插件 ") + p.name + I18n.t("？引擎将自动重启。"))) return;
             try {
               const rr = await window.api.dshPluginRemove(p.name);
               if (rr && rr.ok === false) throw new Error(rr.error);
@@ -18531,7 +18851,7 @@ function openSettings() {
         renderPluginCards();
         plGrid.insertAdjacentHTML(
           "beforebegin",
-          I18n.t('<div class="dsh-plugin-empty">插件列表不可用（') +
+          I18n.t('<div class="dsh-plugin-empty">DSH 插件列表不可用（') +
             ((r && r.error) || I18n.t("引擎未连接")) +
             I18n.t("）· 重新打开设置重试</div>"),
         );
@@ -18799,7 +19119,7 @@ function openSettings() {
       try {
         const rr = await window.api.dshPluginAdd(pkg);
         if (rr && rr.ok === false) throw new Error(rr.error);
-        toast(I18n.t("插件已安装：") + pkg, "ok");
+        toast(I18n.t("DSH 插件已安装：") + pkg, "ok");
       } catch (e) {
         toast(I18n.t("安装失败：") + (e.message || String(e)), "err");
       }
@@ -20086,9 +20406,8 @@ async function assistAppSnapshot() {
     full = canvasSnapshot();
   }
   applyAssistScopeToSnapshot(full, { restrict: scopeCurrent });
-  const safeApp = scopeCurrent
-    ? "mtnode_app:status|list_workflows|fit_canvas|focus_node|set_view|rename_workflow|select_nodes|undo|redo"
-    : "mtnode_app:status|list_workflows|fit_canvas|focus_node|set_view|switch_workflow|create_workflow|rename_workflow|select_nodes|undo|redo";
+  const safeApp =
+    "mtnode_app:status|list_workflows|rename_workflow|select_nodes|undo|redo";
   return {
     view: S.view,
     locale: I18n.getLocale(),
@@ -20404,8 +20723,8 @@ function updateAssistScopeChrome() {
   const hint = document.querySelector("#assistPane .assist-hint");
   if (hint) {
     hint.textContent = scopeCurrent
-      ? I18n.t("仅操作当前画布；改节点图或删除本画布会弹窗确认")
-      : I18n.t("可切换/新建画布、居中节点；改节点图或删除工作流会弹窗确认");
+      ? I18n.t("仅操作当前画布，不会切换画布或移动视角；改节点图或删除本画布会弹窗确认")
+      : I18n.t("可查看全部画布列表，但不会切换画布或移动你的视角；改节点图或删除工作流会弹窗确认");
   }
 }
 
@@ -20418,12 +20737,12 @@ function renderAssistPanel() {
   if (!msgs.length && !S.assistRunning) {
     const empty = document.createElement("div");
     empty.className = "assist-empty";
-    empty.textContent = scopeCurrent
+        empty.textContent = scopeCurrent
       ? I18n.t(
-          "当前工作范围是本画布。我能查看并修改当前工作流节点与配置、居中到节点。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
+          "当前工作范围是本画布。我能查看并修改当前工作流节点与配置，但不会切换画布或移动视角。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
         )
       : I18n.t(
-          "我能看到当前工作流、节点与配置，也能切换/新建画布、居中到节点。\n可以说「居中到某某节点」「新建画布」「切换到某某工作流」或「搭一个 xxx 工作流」。\n改节点图或删除工作流前会请你确认。",
+          "我能看到当前工作流、节点与配置，也可参考其他画布列表，但不会切换画布或平移/缩放你的视角。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除工作流前会请你确认。",
         );
     list.appendChild(empty);
   }
@@ -20471,8 +20790,10 @@ function renderAssistPanel() {
   if (presetSel && document.activeElement !== presetSel)
     presetSel.value = S.assistPreset || "standard";
   const effortSel = $("#assistEffortSel");
-  if (effortSel && document.activeElement !== effortSel)
-    effortSel.value = S.assistEffort || "high";
+  if (effortSel && document.activeElement !== effortSel) {
+    effortSel.value = S.assistEffort === "max" ? "max" : "high";
+    if (S.assistEffort !== effortSel.value) S.assistEffort = effortSel.value;
+  }
   const ws = $("#assistWsInput");
   if (ws && document.activeElement !== ws) ws.value = S.assistWorkspace || "";
   fillAssistScopeControl();
@@ -20533,14 +20854,14 @@ async function assistSend(text) {
       wfName +
       "」。禁止读取、切换、新建或操作其他画布；list_workflows / canvas_get 也只会看到本画布。\n" +
       "工具：\n" +
-      "- mtnode_canvas_get：读取当前画布 + 相机/视图（不含其他工作流内容）\n" +
-      "- mtnode_app：fit_canvas / focus_node / set_view / rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）。禁止 switch_workflow / create_workflow；delete_workflow 仅可删本画布且需确认。\n"
-    : "工作范围：全局。可参考全部工作流列表，并可切换/新建画布（画布较多时列表会变长）。\n" +
+      "- mtnode_canvas_get：读取当前画布（相机/视图仅作只读快照，不要据此去改视角）\n" +
+      "- mtnode_app：rename_workflow（仅本画布）/ select_nodes（仅高亮选中，不平移）/ undo / redo / status / list_workflows（仅本画布）。禁止 switch_workflow / create_workflow / fit_canvas / focus_node / set_view；delete_workflow 仅可删本画布且需确认。\n"
+    : "工作范围：全局。可参考全部工作流列表，但禁止切换或新建画布，也禁止平移、缩放、居中或切换主视图。\n" +
       "工具：\n" +
-      "- mtnode_canvas_get：读取当前画布 + 全部工作流列表 + 相机/视图\n" +
-      "- mtnode_app：应用级操作。安全操作无需确认：fit_canvas / focus_node / set_view / switch_workflow / create_workflow / rename_workflow / select_nodes / undo / redo / status / list_workflows。危险操作 delete_workflow 会弹窗确认。\n";
+      "- mtnode_canvas_get：读取当前画布 + 全部工作流列表（相机/视图只读）\n" +
+      "- mtnode_app：rename_workflow / select_nodes（不平移）/ undo / redo / status / list_workflows。禁止 switch_workflow / create_workflow / fit_canvas / focus_node / set_view。危险操作 delete_workflow 会弹窗确认。\n";
   const systemPrompt =
-    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内工作流、节点画布、视图切换、相机定位、服务商与智能配置摘要。\n" +
+    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内工作流、节点画布、服务商与智能配置摘要。禁止切换用户正在看的画布，禁止 pan/zoom/居中/切视图，用户视角必须保持不动。\n" +
     scopeBlock +
     "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。\n" +
     "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
@@ -20556,10 +20877,10 @@ async function assistSend(text) {
     "  · 文生图尺寸：create/update 传 size，须为 mtnode_canvas_get 返回的 imageSizes 之一（如 2048x1360 / 1280x1280 / auto）；按横竖构图选择，省略则默认 defaultImageSize。\n" +
     "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run/clear，ctrlFillOnly=true 时仅补跑无输出节点）连到处理/保存节点，方便用户一键重跑、补缺或清空。\n" +
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
-    "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
+    "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action，禁止 fit_canvas / focus_node / 移动相机；勿增删节点、勿改连线；然后简短确认。\n" +
     (scopeCurrent
-      ? "原则：仅操作当前画布；导航、居中、重命名本画布可先直接做；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n"
-      : "原则：导航、切换、新建、重命名、居中等先直接做；改节点图或删除工作流再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n") +
+      ? "原则：仅操作当前画布；不要切换画布或移动视角；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n"
+      : "原则：可参考其他画布列表，但不要切换画布或移动视角；改节点图或删除工作流再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n") +
     "当前应用状态 JSON：\n" +
     stateJson;
   let input = hist ? hist + "\n\n用户(最新)：" + t : t;
@@ -21092,7 +21413,10 @@ function renderAgentSession() {
     };
   }
   const effortSel = $("#agentEffortSel");
-  if (effortSel) effortSel.value = st.effort || "high";
+  if (effortSel) {
+    effortSel.value = st.effort === "max" ? "max" : "high";
+    if (st.effort !== effortSel.value) st.effort = effortSel.value;
+  }
   const ctx = $("#agentCtx");
   if (ctx) {
     if (st.metrics && st.metrics.contextWindow > 0) {
@@ -21358,6 +21682,8 @@ async function agentSessionSend(text) {
       "【要求】先制定并展示分步计划,再开始执行。\n\n" + input;
   const systemPrompt =
     "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布工作流（节点、连线、排版等）。\n" +
+    "你仅能访问当前画布：禁止 switch_workflow / create_workflow；list_workflows / canvas_get 不会返回其他画布内容。\n" +
+    "禁止平移/缩放/居中相机或切换主视图：用户的视角必须保持不动。\n" +
     "mtnode_canvas_edit 与危险操作 delete_workflow 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝，本次任务会立即停止，不要再继续改画布。\n" +
     "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
   try {
@@ -21793,6 +22119,7 @@ async function init() {
   $("#btnImport").onclick = importWorkflowDialog;
   $("#btnDelWf").onclick = deleteWorkflowDialog;
   $("#btnSettings").onclick = openSettings;
+  if ($("#btnPlugins")) $("#btnPlugins").onclick = openAppPluginsDialog;
   $("#authorLink").onclick = openAuthorPopup;
   $("#btnToolWf").onclick = () => setView("workflow");
   $("#btnToolAgent").onclick = () => setView("agent");

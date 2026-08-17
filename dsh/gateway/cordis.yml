@@ -146,6 +146,10 @@
       danger-full-access:
         sandbox: danger-full-access
         approval: never
+      bongochat:
+        # 桌宠对话：每项工具都走审批，宿主自动放行 web/搜索、拒绝文件/终端/画布
+        sandbox: read-only
+        approval: ask
       # Default: confinement stays on, asks stay off. The hosting app switches
       # the preset per run (settings 段 + 本行 defaultPreset 双写,见 gateway)。
       mtnode-unattended:
@@ -346,9 +350,10 @@
       write files, search the web, run commands when needed, and produce text
       or image descriptions. You can also build the visual canvas the user is
       looking at: use mtnode_canvas_get / mtnode_canvas_edit / mtnode_app to
-      create nodes, set unique titles, wire them, put @Title in prompts,
-      auto-layout, focus or fit the camera, and switch or create workflows so
-      nothing overlaps. Keep text processing and image→text (multimodal)
+      create nodes, set unique titles, wire them, put @Title in prompts, and
+      auto-layout so nothing overlaps. Never switch workflows, never pan/zoom
+      or fit/focus the camera, and never change the user's view. Keep text
+      processing and image→text (multimodal)
       isolated: a dedicated vision/agent node turns images into text; downstream
       pure-text nodes consume that text (not raw images) so language steps can
       use a better text-only model. For per-item batch (batchMode batch) prefer
