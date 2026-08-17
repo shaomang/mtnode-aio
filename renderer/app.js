@@ -776,10 +776,11 @@ function recordDshMetrics(node, m) {
 }
 
 /* 思考强度映射:
-   - 文本处理节点智能模式沿用 无/低/中/高 → dsh 三档 无/标准/最强(高→最强)
-   - 智能任务节点与智能会话直接使用 dsh 三档 off/high/max,原样传递 */
+   - 文本处理节点智能模式沿用 无/低/中/高 → dsh 三档 off/标准/最强(高→最强)
+   - 智能任务节点与智能会话直接使用 dsh 三档 off/high/max,原样传递
+   - 「无」必须落到 off（写入 settings），不可省略（省略默认 high，仍会思考） */
 function dshEffortOf(v, fromProcText) {
-  let raw = String(v || "high").toLowerCase();
+  let raw = String(v == null || v === "" ? "high" : v).toLowerCase();
   if (raw === "无") raw = "none";
   if (raw === "off" || raw === "none") return "off";
   if (raw === "max") return "max";
@@ -1464,6 +1465,8 @@ const S = {
   assistModel: "",
   assistEffort: "high",
   assistWorkspace: "",
+  /* current = 仅当前画布；global = 可参考/切换其他画布 */
+  assistScope: "current",
   assistW: 320, /* 右侧助手栏宽度：最小 320，最大半屏 */
   /* 排队等待上游执行的节点 id（▶ 显示 pending 动效） */
   pendingRun: new Set(),
@@ -2806,6 +2809,15 @@ function cloneDownstreamForExplode(src, entryTitle, x, y) {
     cp.batch = false;
     cp.entries = [];
   }
+  /* 批量保存曾用 {路径}_{条目标题}；拆成单链后把该后缀写进 savePath，与拆解前落盘名一致 */
+  if (
+    (cp.kind === "save_text" || cp.kind === "save_image") &&
+    suffix &&
+    String(src.savePath || "").trim()
+  ) {
+    const fb = cp.kind === "save_text" ? ".yaml" : ".png";
+    cp.savePath = batchOutPath(String(src.savePath).trim(), suffix, fb);
+  }
   return cp;
 }
 
@@ -2817,6 +2829,12 @@ function explodeBatchNode(root) {
     toast(I18n.t("该节点不是可拆分的批次（至少 2 条）"), "warn");
     return;
   }
+  /* 与批量保存 batchTitles / batchOutPath 同一套去重后缀，保证文件名一致 */
+  const fileTitles = dedupeTitles(
+    entries.map(
+      (e, idx) => String((e && e.title) || "").trim() || "item" + (idx + 1),
+    ),
+  );
   const downIds = collectDataDownstreamIds(root.id);
   const fanInCount = downIds.filter((id) => isAggFanInNode(nodeById(id))).length;
   const explodeCount = downIds.filter((id) => {
@@ -2876,7 +2894,7 @@ function explodeBatchNode(root) {
     map[oldId] = [];
     for (let i = 0; i < N; i++) {
       const y = snap(old.y + i * ((old.h || 120) + g * 2));
-      const cp = cloneDownstreamForExplode(old, entries[i].title, old.x, y);
+      const cp = cloneDownstreamForExplode(old, fileTitles[i], old.x, y);
       S.wf.nodes.push(cp);
       map[oldId].push(cp.id);
     }
@@ -3458,13 +3476,34 @@ function resolveRefs(prompt, node, idx, opts) {
         return c.title;
       }
       if (v && v.kind === "image") {
-        refImages.push(v.path);
-        return "【参考图像：" + itemTitleOf(c, idx) + "】";
+        const path = v.path;
+        let n = refImages.indexOf(path);
+        if (n < 0) {
+          refImages.push(path);
+          n = refImages.length - 1;
+        }
+        /* 图生图 edits 按 multipart 顺序认图，无法靠标题文字定位 → 写成「第 N 张参考图」 */
+        return I18n.t("第{n}张参考图", { n: n + 1 });
       }
       return m;
     },
   );
   return { prompt: out, refImages, unresolved: [...unresolved], textSources };
+}
+
+/* 合并参考图路径：@ 引用优先（与「第 N 张」一致），再补连线输入；同路径只保留一次 */
+function mergeImagePaths(primary, secondary) {
+  const out = [];
+  const seen = new Set();
+  for (const list of [primary, secondary]) {
+    for (const p of list || []) {
+      const s = String(p || "");
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+  }
+  return out;
 }
 
 /* 将输入文字与 prompt 组合：背景信息（### 标题 + 内容） + 【内容】prompt */
@@ -7275,7 +7314,12 @@ function buildSpec(node, prov, idx) {
     }
   }
   const refs = resolveRefs(procPromptForRun(node), node, idx);
-  const sources = (refs.textSources || []).concat(imageSources);
+  /* 图生图：连线图已可能被 @ 引用进 refImages，再 concat 会翻倍；文生图背景仍可带标题说明 */
+  const sources =
+    node.kind === "proc_image"
+      ? refs.textSources || []
+      : (refs.textSources || []).concat(imageSources);
+  const mergedImages = mergeImagePaths(refs.refImages, images);
   return {
     provider: prov,
     kind:
@@ -7285,11 +7329,13 @@ function buildSpec(node, prov, idx) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：无 = 发送 "none"（显式关闭思维链，避免默认出思维链） */
+    /* 思考强度：无/"none"/"off" 均显式下发（勿省略，否则模型默认仍会思考） */
     effort:
       node.kind === "proc_text" &&
-      EFFORT_LEVELS.includes(node.effort)
-        ? node.effort
+      (EFFORT_LEVELS.includes(node.effort) || node.effort === "off")
+        ? node.effort === "off"
+          ? "none"
+          : node.effort
         : undefined,
     size:
       node.kind === "proc_image"
@@ -7299,8 +7345,8 @@ function buildSpec(node, prov, idx) {
         : "",
     prompt: withBgRmPrompt(node, assemblePrompt(refs.prompt, sources)),
     texts: [],
-    images: refs.refImages.concat(images),
-    refImage: refs.refImages[0] || "",
+    images: mergedImages,
+    refImage: mergedImages[0] || "",
   };
 }
 
@@ -7332,8 +7378,13 @@ function buildChatSpec(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：无 = 发送 "none"（显式关闭思维链，避免默认出思维链） */
-    effort: EFFORT_LEVELS.includes(node.effort) ? node.effort : undefined,
+    /* 思考强度：无/"none"/"off" 均显式下发（勿省略，否则模型默认仍会思考） */
+    effort:
+      EFFORT_LEVELS.includes(node.effort) || node.effort === "off"
+        ? node.effort === "off"
+          ? "none"
+          : node.effort
+        : undefined,
     prompt: "",
     texts: [],
     images: [],
@@ -7443,7 +7494,7 @@ async function runDshOnce(node, spec, attemptT, images) {
     node,
     model: spec.vm || node.model || undefined,
     provider: spec.vmProvider || node.provider || undefined,
-    effort: node.effort || undefined,
+    effort: node.effort != null && node.effort !== "" ? node.effort : undefined,
     preset: node.preset || undefined,
     images,
     onEvent: (type, data) => onDshNodeEvent(node, attemptT, type, data),
@@ -7555,8 +7606,14 @@ function resolveRefsAgg(prompt, node) {
         return m;
       }
       if (c.kind === "text") return c.title; // 去掉 @，指向背景中对应条目块
-      refImages.push(c.path);
-      return "【参考图像：" + c.title + "】";
+      const path = c.path;
+      let n = refImages.indexOf(path);
+      if (n < 0) {
+        refImages.push(path);
+        n = refImages.length - 1;
+      }
+      /* 与 resolveRefs 一致：按请求包中参考图顺序编号 */
+      return I18n.t("第{n}张参考图", { n: n + 1 });
     },
   );
   return { prompt: out, refImages, unresolved: [...unresolved] };
@@ -7583,13 +7640,22 @@ function buildSpecAgg(node, prov) {
     }
   }
   const refs = resolveRefsAgg(procPromptForRun(node), node);
-  const blocks = dedupeBlockTitles(textBlocks);
-  const prompt = blocks.length
+  /* 聚合图生图：去掉「（图像输入）」标题块，避免与「第 N 张参考图」重复说明 */
+  const promptBlocks =
+    node.kind === "proc_image"
+      ? textBlocks.filter((b) => {
+          const t = String(b.text || "");
+          return !t.startsWith(I18n.t("（图像输入）"));
+        })
+      : textBlocks;
+  const useBlocks = dedupeBlockTitles(promptBlocks);
+  const prompt = useBlocks.length
     ? "【背景信息】\n" +
-      blocks.map((b) => "### " + b.title + "\n" + b.text).join("\n\n") +
+      useBlocks.map((b) => "### " + b.title + "\n" + b.text).join("\n\n") +
       "\n\n【内容】\n" +
       refs.prompt
     : refs.prompt;
+  const mergedImages = mergeImagePaths(refs.refImages, images);
   return {
     provider: prov,
     kind:
@@ -7599,11 +7665,13 @@ function buildSpecAgg(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：无 = 发送 "none"（显式关闭思维链，避免默认出思维链） */
+    /* 思考强度：无/"none"/"off" 均显式下发（勿省略，否则模型默认仍会思考） */
     effort:
       node.kind === "proc_text" &&
-      EFFORT_LEVELS.includes(node.effort)
-        ? node.effort
+      (EFFORT_LEVELS.includes(node.effort) || node.effort === "off")
+        ? node.effort === "off"
+          ? "none"
+          : node.effort
         : undefined,
     size:
       node.kind === "proc_image"
@@ -7613,8 +7681,8 @@ function buildSpecAgg(node, prov) {
         : "",
     prompt: withBgRmPrompt(node, prompt),
     texts: [],
-    images: refs.refImages.concat(images),
-    refImage: refs.refImages[0] || "",
+    images: mergedImages,
+    refImage: mergedImages[0] || "",
   };
 }
 
@@ -9293,6 +9361,39 @@ function canvasSnapshot() {
   };
 }
 
+function assistScopeIsCurrent() {
+  return (S.assistScope || "current") !== "global";
+}
+
+/* 全局助手「当前画布」范围：运行中禁止读/切其他画布 */
+function assistRestrictOtherCanvases() {
+  return !!S.assistRunActive && assistScopeIsCurrent();
+}
+
+function applyAssistScopeToSnapshot(snap, opts) {
+  if (!snap || typeof snap !== "object") return snap;
+  const scope = assistScopeIsCurrent() ? "current" : "global";
+  snap.assistScope = scope;
+  const restrict =
+    (opts && opts.restrict === true) || assistRestrictOtherCanvases();
+  if (!restrict) return snap;
+  const cur = S.wf;
+  snap.workflows = cur
+    ? [
+        {
+          id: cur.id,
+          name: cur.name,
+          nodes: (cur.nodes || []).length,
+          active: true,
+        },
+      ]
+    : [];
+  snap.scopeNote = I18n.t(
+    "工作范围=当前画布：不得读取、切换或操作其他画布内容。",
+  );
+  return snap;
+}
+
 async function canvasSnapshotFull() {
   const snap = canvasSnapshot();
   let workflows = [];
@@ -9312,7 +9413,7 @@ async function canvasSnapshotFull() {
   }));
   snap.assistOpen = !!S.assistOpen;
   snap.sidebarOpen = !!S.sidebarOpen;
-  return snap;
+  return applyAssistScopeToSnapshot(snap);
 }
 
 function resolveAppNode(token, warnings) {
@@ -9428,6 +9529,10 @@ async function applyAppOp(params) {
   const action = String(params.action || "").trim();
   const warnings = [];
   if (!action) throw new Error(I18n.t("缺少 action"));
+  const scopeBlocked =
+    I18n.t(
+      "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。",
+    );
 
   if (action === "status" || action === "list_workflows") {
     return Object.assign({ ok: true, action }, await canvasSnapshotFull());
@@ -9461,6 +9566,7 @@ async function applyAppOp(params) {
   }
 
   if (action === "switch_workflow") {
+    if (assistRestrictOtherCanvases()) throw new Error(scopeBlocked);
     const w = await resolveWorkflowRef(params.workflow || params.id || params.name);
     if (S.view !== "workflow") setView("workflow");
     await loadWorkflow(w.id);
@@ -9468,12 +9574,18 @@ async function applyAppOp(params) {
   }
 
   if (action === "create_workflow") {
+    if (assistRestrictOtherCanvases()) throw new Error(scopeBlocked);
     if (S.view !== "workflow") setView("workflow");
     const created = await createWorkflowNamed(params.name);
     return Object.assign({ ok: true, action, created }, await canvasSnapshotFull());
   }
 
   if (action === "rename_workflow") {
+    if (assistRestrictOtherCanvases()) {
+      const ref = String(params.workflow || params.id || "").trim();
+      if (ref && S.wf && ref !== S.wf.id && ref !== S.wf.name)
+        throw new Error(scopeBlocked);
+    }
     const renamed = await renameWorkflowByRef(
       params.workflow || params.id || "",
       params.name || params.setName || params.title,
@@ -9482,6 +9594,11 @@ async function applyAppOp(params) {
   }
 
   if (action === "delete_workflow") {
+    if (assistRestrictOtherCanvases()) {
+      const ref = String(params.workflow || params.id || params.name || "").trim();
+      if (ref && S.wf && ref !== S.wf.id && ref !== S.wf.name)
+        throw new Error(scopeBlocked);
+    }
     const deleted = await deleteWorkflowByRef(params.workflow || params.id || params.name);
     return Object.assign({ ok: true, action }, deleted, await canvasSnapshotFull());
   }
@@ -13815,7 +13932,12 @@ async function chatSend(node, text) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    effort: EFFORT_LEVELS.includes(node.effort) ? node.effort : undefined,
+    effort:
+      EFFORT_LEVELS.includes(node.effort) || node.effort === "off"
+        ? node.effort === "off"
+          ? "none"
+          : node.effort
+        : undefined,
     prompt: "",
     texts: [],
     images: [],
@@ -19916,20 +20038,27 @@ async function assistAppSnapshot() {
     kind: n.kind,
     title: n.title,
   }));
+  const scopeCurrent = assistScopeIsCurrent();
   let full;
   try {
     full = await canvasSnapshotFull();
   } catch {
     full = canvasSnapshot();
   }
+  applyAssistScopeToSnapshot(full, { restrict: scopeCurrent });
+  const safeApp = scopeCurrent
+    ? "mtnode_app:status|list_workflows|fit_canvas|focus_node|set_view|rename_workflow|select_nodes|undo|redo"
+    : "mtnode_app:status|list_workflows|fit_canvas|focus_node|set_view|switch_workflow|create_workflow|rename_workflow|select_nodes|undo|redo";
   return {
     view: S.view,
     locale: I18n.getLocale(),
     sidebarOpen: !!S.sidebarOpen,
     assistOpen: !!S.assistOpen,
+    assistScope: scopeCurrent ? "current" : "global",
     cam: full.cam || null,
     workflow: full.workflow,
     workflows: full.workflows || [],
+    scopeNote: full.scopeNote || "",
     nodeCount: (full.nodes || []).length,
     wireCount: (full.wires || []).length,
     groupCount: (full.groups || []).length,
@@ -19956,10 +20085,7 @@ async function assistAppSnapshot() {
     },
     agentSessionCount: agentSessions().length,
     tools: {
-      safe: [
-        "mtnode_canvas_get",
-        "mtnode_app:status|list_workflows|fit_canvas|focus_node|set_view|switch_workflow|create_workflow|rename_workflow|select_nodes|undo|redo",
-      ],
+      safe: ["mtnode_canvas_get", safeApp],
       confirm: [
         "mtnode_canvas_edit",
         "mtnode_app:delete_workflow",
@@ -20021,6 +20147,8 @@ function persistAssistUi() {
   S.config.assistModel = S.assistModel || "";
   S.config.assistEffort = S.assistEffort || "high";
   S.config.assistWorkspace = S.assistWorkspace || "";
+  S.config.assistScope =
+    S.assistScope === "global" ? "global" : "current";
   S.config.assistW = clampAssistW(S.assistW || 320);
   S.config.assistMessages = (S.assistMessages || []).slice(-80).map((m) => {
     const o = {
@@ -20206,17 +20334,57 @@ function fillAssistModelControls() {
   }
 }
 
+function fillAssistScopeControl() {
+  const sel = $("#assistScopeSel");
+  if (!sel) return;
+  const curName =
+    (S.wf && String(S.wf.name || "").trim()) || I18n.t("未命名工作流");
+  const v = S.assistScope === "global" ? "global" : "current";
+  sel.innerHTML = "";
+  const optCur = document.createElement("option");
+  optCur.value = "current";
+  optCur.textContent = I18n.t("当前画布") + " · " + curName;
+  const optG = document.createElement("option");
+  optG.value = "global";
+  optG.textContent = I18n.t("全局");
+  sel.appendChild(optCur);
+  sel.appendChild(optG);
+  sel.value = v;
+  sel.disabled = !!S.assistRunning;
+}
+
+function updateAssistScopeChrome() {
+  const scopeCurrent = assistScopeIsCurrent();
+  const sub = document.querySelector("#assistPane .assist-sub");
+  if (sub) {
+    sub.textContent = scopeCurrent
+      ? I18n.t("仅当前画布 · 危险操作需确认")
+      : I18n.t("可见全局状态 · 危险操作需确认");
+  }
+  const hint = document.querySelector("#assistPane .assist-hint");
+  if (hint) {
+    hint.textContent = scopeCurrent
+      ? I18n.t("仅操作当前画布；改节点图或删除本画布会弹窗确认")
+      : I18n.t("可切换/新建画布、居中节点；改节点图或删除工作流会弹窗确认");
+  }
+}
+
 function renderAssistPanel() {
   const list = $("#assistList");
   if (!list) return;
   list.innerHTML = "";
   const msgs = S.assistMessages || [];
+  const scopeCurrent = assistScopeIsCurrent();
   if (!msgs.length && !S.assistRunning) {
     const empty = document.createElement("div");
     empty.className = "assist-empty";
-    empty.textContent = I18n.t(
-      "我能看到当前工作流、节点与配置，也能切换/新建画布、居中到节点。\n可以说「居中到某某节点」「新建画布」「切换到某某工作流」或「搭一个 xxx 工作流」。\n改节点图或删除工作流前会请你确认。",
-    );
+    empty.textContent = scopeCurrent
+      ? I18n.t(
+          "当前工作范围是本画布。我能查看并修改当前工作流节点与配置、居中到节点。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
+        )
+      : I18n.t(
+          "我能看到当前工作流、节点与配置，也能切换/新建画布、居中到节点。\n可以说「居中到某某节点」「新建画布」「切换到某某工作流」或「搭一个 xxx 工作流」。\n改节点图或删除工作流前会请你确认。",
+        );
     list.appendChild(empty);
   }
   for (const m of msgs) list.appendChild(dshMsgBlock(m, "assist"));
@@ -20267,6 +20435,8 @@ function renderAssistPanel() {
     effortSel.value = S.assistEffort || "high";
   const ws = $("#assistWsInput");
   if (ws && document.activeElement !== ws) ws.value = S.assistWorkspace || "";
+  fillAssistScopeControl();
+  updateAssistScopeChrome();
   fillAssistModelControls();
   list.scrollTop = list.scrollHeight;
 }
@@ -20315,11 +20485,23 @@ async function assistSend(text) {
     .slice(-16)
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
+  const scopeCurrent = assistScopeIsCurrent();
+  const wfName =
+    (S.wf && S.wf.name) || I18n.t("未命名工作流");
+  const scopeBlock = scopeCurrent
+    ? "工作范围：仅当前画布「" +
+      wfName +
+      "」。禁止读取、切换、新建或操作其他画布；list_workflows / canvas_get 也只会看到本画布。\n" +
+      "工具：\n" +
+      "- mtnode_canvas_get：读取当前画布 + 相机/视图（不含其他工作流内容）\n" +
+      "- mtnode_app：fit_canvas / focus_node / set_view / rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）。禁止 switch_workflow / create_workflow；delete_workflow 仅可删本画布且需确认。\n"
+    : "工作范围：全局。可参考全部工作流列表，并可切换/新建画布（画布较多时列表会变长）。\n" +
+      "工具：\n" +
+      "- mtnode_canvas_get：读取当前画布 + 全部工作流列表 + 相机/视图\n" +
+      "- mtnode_app：应用级操作。安全操作无需确认：fit_canvas / focus_node / set_view / switch_workflow / create_workflow / rename_workflow / select_nodes / undo / redo / status / list_workflows。危险操作 delete_workflow 会弹窗确认。\n";
   const systemPrompt =
-    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内几乎一切：工作流、节点画布、视图切换、相机定位、服务商与智能配置摘要。\n" +
-    "工具：\n" +
-    "- mtnode_canvas_get：读取当前画布 + 全部工作流列表 + 相机/视图\n" +
-    "- mtnode_app：应用级操作。安全操作无需确认：fit_canvas / focus_node / set_view / switch_workflow / create_workflow / rename_workflow / select_nodes / undo / redo / status / list_workflows。危险操作 delete_workflow 会弹窗确认。\n" +
+    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内工作流、节点画布、视图切换、相机定位、服务商与智能配置摘要。\n" +
+    scopeBlock +
     "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。\n" +
     "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
     "  · 可改节点模型：update/create 传 model；文本/图像/对话节点用 providerId（服务商 id 或唯一名称），智能任务用 provider（deepseek-official 或 mtnode_<id>/名称）。\n" +
@@ -20335,7 +20517,9 @@ async function assistSend(text) {
     "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run/clear，ctrlFillOnly=true 时仅补跑无输出节点）连到处理/保存节点，方便用户一键重跑、补缺或清空。\n" +
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
     "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
-    "原则：导航、切换、新建、重命名、居中等先直接做；改节点图或删除工作流再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n" +
+    (scopeCurrent
+      ? "原则：仅操作当前画布；导航、居中、重命名本画布可先直接做；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n"
+      : "原则：导航、切换、新建、重命名、居中等先直接做；改节点图或删除工作流再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n") +
     "当前应用状态 JSON：\n" +
     stateJson;
   let input = hist ? hist + "\n\n用户(最新)：" + t : t;
@@ -21532,6 +21716,7 @@ async function init() {
   S.assistModel = S.config.assistModel || "";
   S.assistEffort = S.config.assistEffort || "high";
   S.assistWorkspace = S.config.assistWorkspace || "";
+  S.assistScope = S.config.assistScope === "global" ? "global" : "current";
   S.assistW = clampAssistW(S.config.assistW || 320);
   S.assistMessages = Array.isArray(S.config.assistMessages)
     ? S.config.assistMessages.map((m) => {
@@ -21762,6 +21947,29 @@ async function init() {
         S.assistEffort = effortSel.value;
         persistAssistUi();
       };
+    const scopeSel = $("#assistScopeSel");
+    if (scopeSel && !scopeSel._bound) {
+      scopeSel._bound = true;
+      scopeSel.onchange = () => {
+        const next = scopeSel.value === "global" ? "global" : "current";
+        if (next === "global" && S.assistScope !== "global") {
+          const ok = window.confirm(
+            I18n.t(
+              "该操作允许助手参考其他画布内容，当画布较多时可能导致速度较慢。确定切换为「全局」？",
+            ),
+          );
+          if (!ok) {
+            fillAssistScopeControl();
+            return;
+          }
+        }
+        S.assistScope = next;
+        persistAssistUi();
+        updateAssistScopeChrome();
+        fillAssistScopeControl();
+        renderAssistPanel();
+      };
+    }
     const wsInput = $("#assistWsInput");
     if (wsInput)
       wsInput.addEventListener("change", () => {

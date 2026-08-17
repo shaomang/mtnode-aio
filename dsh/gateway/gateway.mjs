@@ -159,14 +159,24 @@ async function warmStartHarness(harness) {
   throw lastErr
 }
 
-function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, provHash) {
+function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, provHash, effort) {
   const secret = crypto.createHash('sha1').update(apiKey ?? '').digest('hex').slice(0, 12)
-  return [workspace, model, maxTokens, provider, secret, baseUrl ?? '', provHash].join('|')
+  const eff = String(effort || 'high').toLowerCase()
+  return [workspace, model, maxTokens, provider, secret, baseUrl ?? '', provHash, eff].join('|')
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort) {
   const home = dshHome || process.env.DSH_HOME || ''
-  const key = runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, envPatch ? JSON.stringify(envPatch) : '')
+  const key = runtimeKey(
+    workspace,
+    model,
+    maxTokens,
+    provider,
+    apiKey,
+    baseUrl,
+    envPatch ? JSON.stringify(envPatch) : '',
+    effort,
+  )
   const existing = runtimes.get(key)
   if (existing) {
     existing.order = ++runtimeOrder
@@ -397,7 +407,7 @@ async function handleRun(params) {
       blocks.push(...imgBlocks)
     }
     const rt = await getRuntime(
-      workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch,
+      workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, effort,
     )
     runKey = rt.key
     keyToReqId.set(runKey, reqId)

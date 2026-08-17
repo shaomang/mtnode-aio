@@ -513,6 +513,22 @@
     "节点操作": "Node actions",
     "这是<b>智能会话</b>画布:与智能任务节点能力一致,模型可读文件 / 联网 / 执行命令；也可修改当前画布工作流（会弹窗确认，拒绝即停止）。直接描述你要完成的任务即可。":
       "This is an <b>agent session</b> canvas: same capabilities as an agent-task node; the model can read files / network / run commands, and can edit the current workflow canvas (asks for confirm; reject stops the run). Just describe the task you want done.",
+    "工作范围": "Work scope",
+    "限制助手可访问的画布范围": "Limit which canvases the assistant may access",
+    "当前画布": "Current canvas",
+    "全局": "Global",
+    "仅当前画布 · 危险操作需确认": "Current canvas only · risky ops need confirm",
+    "仅操作当前画布；改节点图或删除本画布会弹窗确认":
+      "Current canvas only; graph edits or deleting this canvas ask for confirm",
+    "该操作允许助手参考其他画布内容，当画布较多时可能导致速度较慢。确定切换为「全局」？":
+      "This allows the assistant to reference other canvases; many canvases may slow it down. Switch to Global?",
+    "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。":
+      "Work scope is Current canvas; other canvases are blocked. Switch scope to Global and try again.",
+    "工作范围=当前画布：不得读取、切换或操作其他画布内容。":
+      "Work scope=current canvas: do not read, switch, or modify other canvases.",
+    "当前工作范围是本画布。我能查看并修改当前工作流节点与配置、居中到节点。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。":
+      "Scope is this canvas. I can view/edit the current workflow and focus nodes.\nTry \"summarize the canvas\" or \"build a xxx workflow\".\nGraph edits ask for confirm; switch work scope to Global to reference other canvases.",
+    "第{n}张参考图": "reference image {n}",
   });
 
   var locale = "zh";

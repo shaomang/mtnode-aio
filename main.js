@@ -1338,6 +1338,28 @@ function shrinkImageForApi(p) {
   return shrinkImageBuffer(raw, ext, IMAGE_MAX_DIM);
 }
 
+/* 文本模型思考强度 → Chat Completions 字段。
+   DeepSeek V4 默认 thinking=enabled；「无」不可省略字段（省略仍会思考），
+   须显式 thinking.disabled。reasoning_effort 在关思考时写 "none"（兼容网关；
+   与 UI「无」对应），开启时写 low/high/max（medium→high）。 */
+function applyTextThinkingEffort(body, effort) {
+  const raw = String(effort == null ? "" : effort)
+    .trim()
+    .toLowerCase();
+  if (!raw) return;
+  if (raw === "none" || raw === "off" || raw === "无") {
+    body.thinking = { type: "disabled" };
+    body.reasoning_effort = "none";
+    return;
+  }
+  body.thinking = { type: "enabled" };
+  let e = raw;
+  if (e === "medium" || e === "xhigh") e = "high";
+  if (e === "minimal") e = "low";
+  if (e === "low" || e === "high" || e === "max") body.reasoning_effort = e;
+  else body.reasoning_effort = "high";
+}
+
 /* 构建完整请求描述（预览与真实调用共用，保证一致） */
 function buildRequestSpec(
   provider,
@@ -1389,9 +1411,10 @@ function buildRequestSpec(
       messages,
       temperature: temperature == null ? 0.7 : temperature,
     };
-    /* 思考强度（reasoning_effort）：无 / 低 / 中 / 高；
-       「无」也发送 "none"（显式关闭思维链，避免默认出思维链） */
-    if (effort) body.reasoning_effort = effort;
+    /* DeepSeek V4 等默认开启思考：仅省略字段或传无效档位仍会思考。
+       「无」必须显式 thinking.disabled；并带 reasoning_effort=none（兼容网关 / 与 UI 档位一致）。
+       有思考时再传 low/high/max（medium→high）。 */
+    applyTextThinkingEffort(body, effort);
     return {
       method: "POST",
       url: base + "/chat/completions",

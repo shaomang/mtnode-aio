@@ -1764,6 +1764,11 @@ button.mini.btn-sq.tpl-ico{
   border-radius:3px; padding:4px 6px; font-size:11px; outline:none; font-family:var(--mono);
 }
 .assist-ws-line input:focus{border-color:var(--cyan)}
+.assist-scope-sel{
+  flex:1; min-width:0; background:var(--code); color:var(--ink); border:1px solid var(--bd2);
+  border-radius:3px; padding:4px 6px; font-size:11px; outline:none; max-width:none;
+}
+.assist-scope-sel:focus{border-color:var(--cyan)}
 .assist-live2d{
   flex:none; height:168px; border-bottom:1px solid var(--bd);
   background:radial-gradient(ellipse at 50% 70%, rgba(56,214,255,.12), transparent 65%),
