@@ -2044,6 +2044,37 @@ function yamlDump(entries) {
   return lines.join("\n") + "\n";
 }
 
+/* YAML 键：仅批条目标题 / 字段名；节点标题与空键一律不加外壳 */
+function yamlSaveKey(preferred, nodeTitle) {
+  const k = String(preferred == null ? "" : preferred).trim();
+  const nt = String(nodeTitle == null ? "" : nodeTitle).trim();
+  if (k && (!nt || k !== nt)) return k;
+  return "";
+}
+
+/* 落盘正文：单路原样写出（纯 YAML/文本，不包节点标题或 input:）；
+   多路且均有批字段名 → YAML 映射；否则多文档拼接 */
+function yamlSaveBody(entries) {
+  const list = (entries || []).filter((e) => e && e.text != null);
+  if (!list.length) return "";
+  if (list.length === 1) {
+    const t = String(list[0].text || "");
+    return t.endsWith("\n") ? t : t + "\n";
+  }
+  const keyed = [];
+  for (const e of list) {
+    const k = String(e.key || "").trim();
+    if (k) keyed.push({ key: k, text: e.text });
+  }
+  if (keyed.length === list.length) return yamlDump(keyed);
+  return (
+    list
+      .map((e) => String(e.text || "").replace(/\s+$/g, ""))
+      .filter((t) => t.length)
+      .join("\n---\n") + "\n"
+  );
+}
+
 /* 简单 YAML 解析（缩进感知）：
    - 顶层（基准缩进）的 key: value / key: | 块 / - key: value 列表项 → 条目
    - 更深缩进的行视为当前条目的续行内容（嵌套结构不会产生垃圾条目） */
@@ -8323,29 +8354,32 @@ function absSaveDest(node, quiet) {
   return null;
 }
 
-/* 聚合保存：所有条目合并为一个 YAML（键 = 条目 field） */
+/* 聚合保存：所有条目合并为一个 YAML（键 = 条目 field，不用节点标题） */
 async function saveTextAgg(node, quiet) {
   const dest = absSaveDest(node, quiet);
   if (!dest) return false;
   const entries = [];
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
-    if (!src) continue;
+    if (!src || isControlKind(src)) continue;
     const items = allTextItems(src);
     if (items.length) {
       for (const it of items)
-        entries.push({ key: it.title || src.title || "input", text: it.text });
+        entries.push({
+          key: yamlSaveKey(it.title, src.title),
+          text: it.text,
+        });
     } else {
       const v = valueForInput(src, 0);
       if (v && v.kind === "text")
-        entries.push({ key: src.title || "input", text: v.text });
+        entries.push({ key: "", text: v.text });
     }
   }
   if (!entries.length) {
     if (!quiet) toast(I18n.t("没有可保存的文本输入"), "warn");
     return false;
   }
-  const r = await window.api.fileWriteText(dest, yamlDump(entries));
+  const r = await window.api.fileWriteText(dest, yamlSaveBody(entries));
   if (!r.ok) {
     if (!quiet) toast(I18n.t("保存失败"), "err");
     return false;
@@ -8368,16 +8402,17 @@ async function saveTextOnce(node, quiet) {
       const entries = [];
       for (const w of wiresTo(node.id)) {
         const src = nodeById(w.from);
+        if (!src || isControlKind(src)) continue;
         const v = valueForInput(src, idx);
         if (v && v.kind === "text")
           entries.push({
-            key: itemTitleOf(src, idx) || src.title || "input",
+            key: yamlSaveKey(itemTitleOf(src, idx), src.title),
             text: v.text,
           });
       }
       if (!entries.length) continue;
       const p = batchOutPath(destBase, titles[idx], ".yaml");
-      const r = await window.api.fileWriteText(p, yamlDump(entries));
+      const r = await window.api.fileWriteText(p, yamlSaveBody(entries));
       if (!r.ok) {
         if (!quiet) toast(I18n.t("保存失败：") + p, "err");
         continue;
@@ -8402,22 +8437,27 @@ async function saveTextOnce(node, quiet) {
       );
     return true;
   }
-  const ins = inputValuesFor(node, 0);
   const entries = [];
   let missing = false;
-  for (const i of ins) {
-    if (!i.value || i.value.kind !== "text") {
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src || isControlKind(src)) continue;
+    const v = valueForInput(src, 0);
+    if (!v || v.kind !== "text") {
       missing = true;
       continue;
     }
-    entries.push({ key: i.title || "input", text: i.value.text });
+    entries.push({
+      key: yamlSaveKey(itemTitleOf(src, 0), src.title),
+      text: v.text,
+    });
   }
   if (!entries.length) {
     if (!quiet) toast(I18n.t("没有可保存的文本输入"), "warn");
     return false;
   }
   if (missing && !quiet) toast(I18n.t("部分输入节点尚无文本输出，已跳过"), "warn");
-  const yaml = yamlDump(entries);
+  const yaml = yamlSaveBody(entries);
   const r = await window.api.fileWriteText(destBase, yaml);
   if (!r.ok) {
     if (!quiet) toast(I18n.t("保存失败"), "err");
