@@ -1381,6 +1381,35 @@ function workspaceOpenButton(getPath) {
   return b;
 }
 
+/* 设置项目目的地文件夹：文件夹 + 定位针图标 */
+const WS_BROWSE_ICON_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true">' +
+  '<path d="M2.4 4.3h3.4l1.1 1.15h6.7c.44 0 .8.36.8.8v5.55c0 .44-.36.8-.8.8H2.4a.8.8 0 0 1-.8-.8V5.1c0-.44.36-.8.8-.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/>' +
+  '<path d="M8.1 7.05c1.05 0 1.9.82 1.9 1.82 0 1.35-1.9 3.05-1.9 3.05S6.2 10.22 6.2 8.87c0-1 .85-1.82 1.9-1.82z" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/>' +
+  '<circle cx="8.1" cy="8.85" r=".55" fill="currentColor"/>' +
+  "</svg>";
+
+function fillWorkspaceBrowseIcon(btn) {
+  if (!btn) return;
+  btn.innerHTML = WS_BROWSE_ICON_SVG;
+  btn.setAttribute("aria-label", I18n.t("设置项目目的地文件夹"));
+  btn.title = I18n.t("设置项目目的地文件夹");
+}
+
+/* 弹出系统文件夹窗口，回填输入框（设置项目目的地） */
+function workspaceBrowseButton(inp, onPicked) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mini btn-sq ws-browse";
+  fillWorkspaceBrowseIcon(b);
+  b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    pickFolder(inp, onPicked);
+  };
+  return b;
+}
+
 const S = {
   config: null,
   wf: null,
@@ -1429,6 +1458,7 @@ const S = {
   assistPending: "",
   assistLiveTools: [],
   assistRunActive: false, /* 全局助手运行中：画布 edit 需用户确认 */
+  agentSessionRunActive: false, /* 智能会话运行中：改本画布工作流需确认；拒绝则停止 */
   assistPreset: "standard",
   assistProvider: "deepseek-official",
   assistModel: "",
@@ -1932,6 +1962,15 @@ function stopAllRuns() {
     } catch (_) {
       S.assistRunActive = false;
     }
+  }
+  /* 智能会话（非节点绑定）若在跑，一并终止 */
+  const sess = agentSessions().find((s) => s.running);
+  if (sess) {
+    sess._cancelled = true;
+    sess.running = false;
+    S.agentSessionRunActive = false;
+    if (!needDsh && !assistOn) dshCancelActive();
+    nStop++;
   }
   renderCanvas();
   renderStatus();
@@ -2615,6 +2654,323 @@ function clearDownstream(startId) {
         n.savedAt = 0;
       }
     }
+  }
+}
+
+/* ── 批次拆分：批次源 → N 个单一节点，下游级联拆分；聚合节点扇入连接 ── */
+
+function isAggFanInNode(n) {
+  if (!n) return false;
+  if (
+    n.kind !== "proc_text" &&
+    n.kind !== "proc_image" &&
+    n.kind !== "agent_task" &&
+    n.kind !== "save_text" &&
+    n.kind !== "save_image"
+  )
+    return false;
+  return n.batchMode === "agg";
+}
+
+/* 可拆成单一节点的批次条目（优先自有 entries / YAML） */
+function explodeBatchEntriesOf(node) {
+  if (!node) return [];
+  if (node.kind === "input_text") {
+    if (node.batch && (node.entries || []).length)
+      return (node.entries || []).map((e, idx) => ({
+        title: entryDisplayTitle(e, idx),
+        kind: "text",
+        text: (e && e.content) || "",
+      }));
+    if (inputInherited(node) && !node.yamlOff) {
+      const v = inheritedValue(node, 0);
+      if (v && v.kind === "text") {
+        const es = parseSimpleYaml(v.text);
+        if (es.length >= 2)
+          return es.map((e, idx) => ({
+            title: entryDisplayTitle(e, idx),
+            kind: "text",
+            text: (e && e.content) || "",
+          }));
+      }
+    }
+    return [];
+  }
+  if (node.kind === "input_image") {
+    if (node.batch && (node.entries || []).length) {
+      return (node.entries || [])
+        .filter((e) => e && e.path)
+        .map((e, idx) => ({
+          title: entryDisplayTitle(e, idx),
+          kind: "image",
+          path: e.path,
+          sourceName: e.sourceName || "",
+        }));
+    }
+    const imgs = allImageItems(node);
+    if (imgs.length >= 2)
+      return imgs.map((it) => ({
+        title: it.title,
+        kind: "image",
+        path: it.path,
+        sourceName: "",
+      }));
+    return [];
+  }
+  return [];
+}
+
+function canExplodeBatch(node) {
+  return explodeBatchEntriesOf(node).length >= 2;
+}
+
+function collectDataDownstreamIds(startId) {
+  const seen = new Set([startId]);
+  const order = [];
+  const q = [startId];
+  while (q.length) {
+    const id = q.shift();
+    for (const w of S.wf.wires) {
+      if (w.from !== id) continue;
+      const n = nodeById(w.to);
+      if (!n || seen.has(n.id) || isControlKind(n)) continue;
+      seen.add(n.id);
+      order.push(n.id);
+      if (isAggFanInNode(n)) continue; /* 聚合节点扇入终点，不再向下级联拆分 */
+      q.push(n.id);
+    }
+  }
+  return order;
+}
+
+function clearNodeRunState(cp) {
+  cp.output = null;
+  cp.batchOutputs = null;
+  cp.error = null;
+  cp.ranAt = 0;
+  cp.attemptOutputs = null;
+  cp.attemptIdx = 0;
+  cp.attemptsDone = 0;
+  cp.running = false;
+  cp.agentSessionId = "";
+  if (cp.kind === "save_text" || cp.kind === "save_image") {
+    cp.savedPaths = [];
+    cp.savedPath = "";
+    cp.savedAt = 0;
+  }
+  if (cp.kind === "wait_file") {
+    cp.waitStatus = "";
+    cp.waitReady = false;
+  }
+}
+
+function materializeSingleFromBatchEntry(root, entry, x, y) {
+  const title = uniqueNodeTitle(entry.title || root.title || I18n.t("条目"));
+  if (root.kind === "input_image" || entry.kind === "image") {
+    const n = makeNode("input_image", x, y);
+    n.w = root.w || n.w;
+    n.h = root.h || n.h;
+    n.batch = false;
+    n.entries = [];
+    n.imageAsset = entry.path || "";
+    n.sourceName = entry.sourceName || "";
+    n.title = title;
+    n.ro = false;
+    return n;
+  }
+  const n = makeNode("input_text", x, y);
+  n.w = root.w || n.w;
+  n.h = root.h || n.h;
+  n.batch = false;
+  n.entries = [];
+  n.text = entry.text || "";
+  n.yamlOff = false;
+  n.title = title;
+  n.ro = false;
+  return n;
+}
+
+function cloneDownstreamForExplode(src, entryTitle, x, y) {
+  const cp = JSON.parse(JSON.stringify(src));
+  cp.id = uid("n");
+  cp.x = snap(x);
+  cp.y = snap(y);
+  clearNodeRunState(cp);
+  const suffix = String(entryTitle || "").trim();
+  cp.title = uniqueNodeTitle(
+    suffix ? src.title + " · " + suffix : src.title + I18n.t(" 副本"),
+  );
+  /* 拆分后每条链为单一输入，不再以批次模式运行 */
+  if (cp.batchMode === "batch") cp.batchMode = "batch";
+  if (cp.kind === "input_text" || cp.kind === "input_image") {
+    cp.batch = false;
+    cp.entries = [];
+  }
+  return cp;
+}
+
+function explodeBatchNode(root) {
+  if (!S.wf || !root) return;
+  const entries = explodeBatchEntriesOf(root);
+  const N = entries.length;
+  if (N < 2) {
+    toast(I18n.t("该节点不是可拆分的批次（至少 2 条）"), "warn");
+    return;
+  }
+  const downIds = collectDataDownstreamIds(root.id);
+  const fanInCount = downIds.filter((id) => isAggFanInNode(nodeById(id))).length;
+  const explodeCount = downIds.filter((id) => {
+    const n = nodeById(id);
+    return n && !isAggFanInNode(n) && n.kind !== "split";
+  }).length;
+  if (
+    !confirm(
+      I18n.t("将批次拆分为 ") +
+        N +
+        I18n.t(" 个单一节点") +
+        (explodeCount
+          ? I18n.t("，并级联拆分下游 ") + explodeCount + I18n.t(" 个节点")
+          : "") +
+        (fanInCount
+          ? I18n.t("；") + fanInCount + I18n.t(" 个聚合节点将接入全部新节点")
+          : "") +
+        I18n.t("。原批次节点会被移除。是否继续？"),
+    )
+  )
+    return;
+
+  pushHistory();
+  const g = grid();
+  const fanInIds = new Set(
+    downIds.filter((id) => isAggFanInNode(nodeById(id))),
+  );
+  const skipIds = new Set(
+    downIds.filter((id) => {
+      const n = nodeById(id);
+      return n && n.kind === "split";
+    }),
+  );
+  const explodeIds = downIds.filter(
+    (id) => !fanInIds.has(id) && !skipIds.has(id),
+  );
+
+  /* oldId → [newId × N]；聚合节点不进 map */
+  const map = Object.create(null);
+  map[root.id] = [];
+
+  for (let i = 0; i < N; i++) {
+    const y = snap(root.y + i * ((root.h || 120) + g * 2));
+    const single = materializeSingleFromBatchEntry(
+      root,
+      entries[i],
+      root.x,
+      y,
+    );
+    S.wf.nodes.push(single);
+    map[root.id].push(single.id);
+  }
+
+  for (const oldId of explodeIds) {
+    const old = nodeById(oldId);
+    if (!old) continue;
+    map[oldId] = [];
+    for (let i = 0; i < N; i++) {
+      const y = snap(old.y + i * ((old.h || 120) + g * 2));
+      const cp = cloneDownstreamForExplode(old, entries[i].title, old.x, y);
+      S.wf.nodes.push(cp);
+      map[oldId].push(cp.id);
+    }
+  }
+
+  const pending = []; /* {from, to, toIndex?} */
+  const pushPending = (from, to, toIndex) => {
+    if (!from || !to || from === to) return;
+    pending.push({ from, to, toIndex: toIndex == null ? null : toIndex });
+  };
+
+  for (const w of S.wf.wires.slice()) {
+    const fromId = w.from;
+    const toId = w.to;
+    if (skipIds.has(fromId) || skipIds.has(toId)) continue;
+
+    const fromArr = map[fromId];
+    const toArr = map[toId];
+    const fromFan = fanInIds.has(fromId);
+    const toFan = fanInIds.has(toId);
+    const fromCtrl = isControlKind(nodeById(fromId));
+
+    /* 控制线 → 拆分后的各副本 */
+    if (fromCtrl) {
+      if (toArr) {
+        for (let i = 0; i < N; i++) pushPending(fromId, toArr[i], null);
+      } else if (toId === root.id) {
+        for (let i = 0; i < N; i++) pushPending(fromId, map[root.id][i], null);
+      }
+      continue;
+    }
+
+    if (toFan && fromArr) {
+      for (let i = 0; i < N; i++) pushPending(fromArr[i], toId, null);
+      continue;
+    }
+    if (fromArr && toArr) {
+      for (let i = 0; i < N; i++) pushPending(fromArr[i], toArr[i], w.toIndex);
+      continue;
+    }
+    if (fromFan && toArr) {
+      for (let i = 0; i < N; i++) pushPending(fromId, toArr[i], w.toIndex);
+      continue;
+    }
+    /* 外部 → 被拆节点：接到每一条链 */
+    if (!fromArr && !fromFan && toArr) {
+      for (let i = 0; i < N; i++) pushPending(fromId, toArr[i], w.toIndex);
+      continue;
+    }
+    /* 被拆节点 → 外部非聚合：扇入到该外部节点 */
+    if (fromArr && !toArr && !toFan && !skipIds.has(toId) && nodeById(toId)) {
+      for (let i = 0; i < N; i++) pushPending(fromArr[i], toId, null);
+      continue;
+    }
+  }
+
+  const toDelete = [root.id].concat(explodeIds, [...skipIds]);
+  /* 断开智能会话关联，避免 quiet 删除时顺带清掉会话记录 */
+  for (const id of toDelete) {
+    const n = nodeById(id);
+    if (n && n.kind === "agent_task") n.agentSessionId = "";
+  }
+  deleteNodes(toDelete, true);
+
+  for (const p of pending) {
+    if (!nodeById(p.from) || !nodeById(p.to)) continue;
+    if (wouldCycle(p.from, p.to)) continue;
+    const err = connectError(p.from, p.to, null);
+    if (err) continue;
+    addWire(p.from, p.to, null, { notify: false, save: false });
+  }
+
+  const created = map[root.id] || [];
+  S.selSet = new Set(created);
+  S.sel = created[0] || null;
+  S.selGroup = null;
+  S.selWire = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  toast(
+    I18n.t("已拆分批次：") + N + I18n.t(" 条") +
+      (explodeCount ? I18n.t(" · 下游 ") + explodeCount + I18n.t(" 个节点") : ""),
+    "ok",
+  );
+
+  if (
+    confirm(
+      I18n.t(
+        "批次拆分已完成。是否进行 AI 重新排版？\n\n将由全局助手分析并调整节点位置，可能需要等待一段时间。",
+      ),
+    )
+  ) {
+    oneClickAutoLayout({ skipConfirm: true });
   }
 }
 
@@ -4408,6 +4764,17 @@ function nodeElement(node) {
         toggleBatch(node);
       };
       head.appendChild(tb);
+      if (canExplodeBatch(node)) {
+        const xb = document.createElement("button");
+        xb.className = "n-play n-batch-explode";
+        xb.textContent = I18n.t("拆");
+        xb.title = I18n.t("将批次拆成单一节点，并级联拆分下游（聚合节点改为接入全部）");
+        xb.onclick = (ev) => {
+          ev.stopPropagation();
+          explodeBatchNode(node);
+        };
+        head.appendChild(xb);
+      }
     }
   }
   if (node.kind === "input_text" && !node.ro && !inputInherited(node) && !node.batch) {
@@ -5178,6 +5545,48 @@ function nodeElement(node) {
       return;
     startNodeDrag(ev, node);
   });
+  el.addEventListener("contextmenu", (ev) => {
+    if (
+      ev.target.closest(".n-text") ||
+      ev.target.closest("textarea") ||
+      ev.target.closest("input") ||
+      ev.target.closest("select") ||
+      ev.target.closest(".bentry-text") ||
+      ev.target.closest(".chat-input") ||
+      ev.target.closest(".chat-list")
+    )
+      return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    S.sel = node.id;
+    if (!S.selSet) S.selSet = new Set();
+    if (!ev.shiftKey && !ev.ctrlKey && !ev.metaKey) {
+      S.selSet.clear();
+      S.selSet.add(node.id);
+    } else {
+      S.selSet.add(node.id);
+    }
+    S.selGroup = null;
+    S.selWire = null;
+    renderCanvas();
+    const items = [];
+    if (canExplodeBatch(node)) {
+      items.push({
+        label: I18n.t("拆分批次"),
+        run: () => explodeBatchNode(node),
+      });
+    }
+    items.push({
+      label: I18n.t("复制"),
+      run: () => duplicateNodes([node]),
+    });
+    items.push({
+      label: I18n.t("删除"),
+      cls: "ctx-danger",
+      run: () => deleteNodes([node.id]),
+    });
+    showCtx(ev.clientX, ev.clientY, [[I18n.t("节点操作"), items]]);
+  });
   return el;
 }
 
@@ -5673,17 +6082,12 @@ function buildBody(node, body) {
         workspaceOpenButton(() => (wfWs ? wfWs : ws.value || dshWsOf(node))),
       );
       if (!wfWs) {
-        const br = document.createElement("button");
-        br.className = "mini";
-        br.textContent = I18n.t("浏览");
-        br.title = I18n.t("弹出文件夹窗口选择工作目录");
-        br.onclick = () => {
-          pickFolder(ws, (p) => {
+        wsRow.appendChild(
+          workspaceBrowseButton(ws, (p) => {
             setDshWs(node, p);
             scheduleSave();
-          });
-        };
-        wsRow.appendChild(br);
+          }),
+        );
       }
       left.appendChild(wsRow);
     }
@@ -6228,17 +6632,12 @@ function buildBody(node, body) {
         ),
       );
       if (!wfWs) {
-        const br = document.createElement("button");
-        br.className = "mini";
-        br.textContent = I18n.t("浏览");
-        br.title = I18n.t("弹出文件夹窗口选择工作目录");
-        br.onclick = () => {
-          pickFolder(ws, (p) => {
+        agRow.appendChild(
+          workspaceBrowseButton(ws, (p) => {
             node.agentWorkspace = p;
             scheduleSave(true);
-          });
-        };
-        agRow.appendChild(br);
+          }),
+        );
       }
     }
     body.appendChild(agRow);
@@ -9121,11 +9520,32 @@ async function applyAppOp(params) {
 }
 
 function canvasOpNeedsConfirm(op, params) {
-  if (!S.assistRunActive) return false;
+  if (!S.assistRunActive && !S.agentSessionRunActive) return false;
   if (S.config && S.config.dsh && S.config.dsh.assistAutoApprove) return false;
   if (op === "edit") return true;
   if (op === "app" && params && params.action === "delete_workflow") return true;
   return false;
+}
+
+function canvasConfirmFromAgentSession() {
+  return !!S.agentSessionRunActive && !S.assistRunActive;
+}
+
+/* 用户拒绝智能会话的画布修改：立即中止该次 agent，不再继续工具调用 */
+function abortAgentSessionOnCanvasDeny() {
+  if (!S.agentSessionRunActive) return;
+  try {
+    const st = agentSessionState();
+    if (st) st._cancelled = true;
+  } catch (_) {}
+  S.agentSessionRunActive = false;
+  dshCancelActive();
+  toast(I18n.t("已拒绝画布修改，智能会话已停止"), "warn");
+  if (S.view === "agent") {
+    try {
+      renderAgentSession();
+    } catch (_) {}
+  }
 }
 
 /* 识图子代理：首次需用户许可；「始终允许」写入 dsh.visionInspectAllowed。
@@ -9301,7 +9721,7 @@ function openApprovalsPanel() {
   sec3.className = "ap-sec";
   const lab3 = document.createElement("label");
   lab3.className = "ap-label";
-  lab3.textContent = I18n.t("全局助手改画布");
+  lab3.textContent = I18n.t("助手改画布（全局助手 / 智能会话）");
   sec3.appendChild(lab3);
   const row3 = document.createElement("div");
   row3.className = "dsh-btn-row";
@@ -9315,8 +9735,8 @@ function openApprovalsPanel() {
     window.api.configSave(S.config).catch(() => {});
     toast(
       autoCb.checked
-        ? I18n.t("已开启：全局助手改画布不再弹确认")
-        : I18n.t("已关闭：全局助手改画布需确认"),
+        ? I18n.t("已开启：助手改画布不再弹确认")
+        : I18n.t("已关闭：助手改画布需确认"),
       "ok",
     );
   };
@@ -9623,8 +10043,9 @@ function summarizeAppOp(params) {
   };
 }
 
-function confirmAssistAction(title, info) {
+function confirmAssistAction(title, info, opts) {
   info = info || {};
+  opts = opts || {};
   return new Promise((resolve) => {
     openOverlay(title || I18n.t("确认操作"));
     overlayPersistent = true;
@@ -9650,7 +10071,9 @@ function confirmAssistAction(title, info) {
     }
     const note = document.createElement("div");
     note.style.cssText = "margin-top:10px; color:var(--orange2); font-size:11.5px";
-    note.textContent = I18n.t("拒绝后本次修改不会生效；可让助手改方案后再试。");
+    note.textContent = opts.rejectStopsAgent
+      ? I18n.t("拒绝后本次修改不会生效，并立即停止智能会话继续工作。")
+      : I18n.t("拒绝后本次修改不会生效；可让助手改方案后再试。");
     body.appendChild(note);
     foot.innerHTML = "";
     let done = false;
@@ -9675,14 +10098,26 @@ function confirmAssistAction(title, info) {
 
 function confirmAssistCanvasEdit(params) {
   const info = summarizeCanvasEdit(params);
-  info.summary = I18n.t("全局助手请求修改当前画布：") + info.summary;
-  return confirmAssistAction(I18n.t("确认画布修改"), info);
+  const fromSession = canvasConfirmFromAgentSession();
+  info.summary =
+    (fromSession
+      ? I18n.t("智能会话请求修改当前画布：")
+      : I18n.t("全局助手请求修改当前画布：")) + info.summary;
+  return confirmAssistAction(I18n.t("确认画布修改"), info, {
+    rejectStopsAgent: fromSession,
+  });
 }
 
 function confirmAssistAppOp(params) {
   const info = summarizeAppOp(params);
-  info.summary = I18n.t("全局助手请求：") + info.summary;
-  return confirmAssistAction(I18n.t("确认危险操作"), info);
+  const fromSession = canvasConfirmFromAgentSession();
+  info.summary =
+    (fromSession
+      ? I18n.t("智能会话请求：")
+      : I18n.t("全局助手请求：")) + info.summary;
+  return confirmAssistAction(I18n.t("确认危险操作"), info, {
+    rejectStopsAgent: fromSession,
+  });
 }
 
 async function applyCanvasOp(op, params) {
@@ -9734,6 +10169,7 @@ function handleCanvasEvent(data) {
             { ok: false, error: I18n.t("用户拒绝了此次操作") },
             I18n.t("用户拒绝了此次操作"),
           );
+          if (canvasConfirmFromAgentSession()) abortAgentSessionOnCanvasDeny();
           return;
         }
         run();
@@ -9743,6 +10179,7 @@ function handleCanvasEvent(data) {
           { ok: false, error: I18n.t("用户拒绝了此次操作") },
           I18n.t("用户拒绝了此次操作"),
         );
+        if (canvasConfirmFromAgentSession()) abortAgentSessionOnCanvasDeny();
       });
     return;
   }
@@ -10233,12 +10670,14 @@ function tidyLayoutWorkflow(opts) {
 }
 
 /* 顶栏一键排版：交由全局助手根据节点坐标/尺寸自行校准（mtnode_canvas_edit） */
-function oneClickAutoLayout() {
+function oneClickAutoLayout(opts) {
+  opts = opts || {};
   if (!S.wf || !(S.wf.nodes || []).length) {
     toast(I18n.t("画布上没有节点"), "warn");
     return;
   }
   if (
+    !opts.skipConfirm &&
     !confirm(
       I18n.t(
         "确定进行一键排版？\n\n将由全局助手基于 AI 分析并调整画布节点位置，可能需要等待一段时间，请耐心等候。操作可撤销。",
@@ -15077,22 +15516,16 @@ function renderWfWorkspace() {
     renderCanvas();
     renderWfWorkspace();
   });
-  const br = document.createElement("button");
-  br.className = "mini";
-  br.textContent = I18n.t("浏览");
-  br.title = I18n.t("弹出文件夹窗口选择统一工作目录");
-  br.onclick = () => {
-    pickFolder(inp, (p) => {
-      if (!S.wf) return;
-      S.wf.workspace = p;
-      scheduleSave(true);
-      renderCanvas();
-      renderWfWorkspace();
-    });
-  };
+  const br = workspaceBrowseButton(inp, (p) => {
+    if (!S.wf) return;
+    S.wf.workspace = p;
+    scheduleSave(true);
+    renderCanvas();
+    renderWfWorkspace();
+  });
   const openBtn = workspaceOpenButton(() => inp.value || wfWorkspace());
   const cl = document.createElement("button");
-  cl.className = "mini";
+  cl.className = "mini btn-sq";
   cl.textContent = "×";
   cl.title = I18n.t("清除统一目录,恢复各节点单独设置");
   cl.onclick = () => {
@@ -15531,6 +15964,26 @@ function cloneWfForExport() {
   } catch (e) {
     return null;
   }
+}
+
+/* 创意工坊上传：去掉工作流/节点上的本机工作目录 */
+function stripWorkspacesForStoreUpload(wf) {
+  if (!wf || typeof wf !== "object") return wf;
+  wf.workspace = "";
+  for (const n of wf.nodes || []) {
+    if (!n || typeof n !== "object") continue;
+    if (typeof n.workspace === "string") n.workspace = "";
+    if (typeof n.agentWorkspace === "string") n.agentWorkspace = "";
+  }
+  return wf;
+}
+
+async function stripStoreMtNodesBase64(base64) {
+  const r = await window.api.mtnodesStripWorkspaceBase64(base64);
+  if (!r || !r.ok) {
+    throw new Error((r && r.error) || I18n.t("未知错误"));
+  }
+  return r;
 }
 
 /* 文件导出（复用主进程保存对话框） */
@@ -16398,7 +16851,7 @@ async function tplFetchFileCached(item) {
 }
 
 async function openTemplateStore() {
-  openOverlay(I18n.t("模板商店"));
+  openOverlay(I18n.t("创意工坊"));
   overlayPersistent = true;
   overlayKind = "tplstore";
   const box = document.querySelector("#overlay .overlay-box");
@@ -16892,7 +17345,7 @@ async function openTemplateStore() {
 
   async function paintBrowse() {
     pane.className = "tpl-pane";
-    pane.appendChild(hintEl(I18n.t("商店加载中…")));
+    pane.appendChild(hintEl(I18n.t("工坊加载中…")));
     const pageSize = tplBrowsePageSize();
     const qs =
       "?q=" +
@@ -16908,7 +17361,7 @@ async function openTemplateStore() {
     const r = await tplApi("GET", "/api/templates" + qs);
     pane.innerHTML = "";
     if (!r || !r.ok || !r.data) {
-      pane.appendChild(hintEl(I18n.t("模板商店不可用：") + tplErr(r)));
+      pane.appendChild(hintEl(I18n.t("创意工坊不可用：") + tplErr(r)));
       return;
     }
     const tags = r.data.tags || [];
@@ -17153,7 +17606,7 @@ async function openTemplateStore() {
     const fileHint = hintEl(
       TPL_ST.fileHint ||
         (TPL_ST.editId
-          ? I18n.t("编辑时可不重新选文件（仅改标题等）；选择新画布将覆盖商店模板")
+          ? I18n.t("编辑时可不重新选文件（仅改标题等）；选择新画布将覆盖工坊模板")
           : ""),
     );
     const fileRow = document.createElement("div");
@@ -17165,6 +17618,7 @@ async function openTemplateStore() {
           toast(I18n.t("导出失败：工作流包含无法序列化的数据"), "err");
           return;
         }
+        stripWorkspacesForStoreUpload(data);
         const r = await window.api.mtnodesExportBase64(data);
         if (!r || !r.ok) {
           toast(I18n.t("导出失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
@@ -17236,7 +17690,7 @@ async function openTemplateStore() {
             TPL_ST.editId &&
             replacingFile &&
             !window.confirm(
-              I18n.t("确认覆盖商店中的模板画布？本地预览/下载缓存将同步更新。"),
+              I18n.t("确认覆盖工坊中的模板画布？本地预览/下载缓存将同步更新。"),
             )
           ) {
             return;
@@ -17246,11 +17700,20 @@ async function openTemplateStore() {
             description: TPL_ST.description || "",
             tags: TPL_ST.tags.slice(),
           };
-          if (TPL_ST.fileBase64) payload.fileBase64 = TPL_ST.fileBase64;
           if (TPL_ST.fileBase64) {
-            /* base64 长度约 = 4/3 * bytes；粗估解码后体积 */
-            const approx = Math.floor((String(TPL_ST.fileBase64).replace(/\s+/g, "").length * 3) / 4);
-            if (tplTooLarge(approx)) return;
+            try {
+              const stripped = await stripStoreMtNodesBase64(TPL_ST.fileBase64);
+              TPL_ST.fileBase64 = stripped.base64;
+              payload.fileBase64 = stripped.base64;
+              const approx = stripped.bytes || 0;
+              if (tplTooLarge(approx)) return;
+            } catch (e) {
+              toast(
+                I18n.t("导出失败：") + ((e && e.message) || String(e)),
+                "err",
+              );
+              return;
+            }
           }
           if (TPL_ST._clearPreview) payload.previewBase64 = "";
           else if (TPL_ST.previewBase64) {
@@ -17299,7 +17762,7 @@ async function openTemplateStore() {
       paintAuthForm(pane);
       return;
     }
-    pane.appendChild(hintEl(I18n.t("商店加载中…")));
+    pane.appendChild(hintEl(I18n.t("工坊加载中…")));
     const r = await tplApi("GET", "/api/me/templates");
     pane.innerHTML = "";
     if (!r || !r.ok || !r.data) {
@@ -20282,7 +20745,7 @@ function renderAgentSession() {
     const hint = document.createElement("div");
     hint.className = "agent-empty";
     hint.innerHTML =
-      I18n.t("这是<b>智能会话</b>画布:与智能任务节点能力一致,模型可读文件 / 联网 / 执行命令。直接描述你要完成的任务即可。");
+      I18n.t("这是<b>智能会话</b>画布:与智能任务节点能力一致,模型可读文件 / 联网 / 执行命令；也可修改当前画布工作流（会弹窗确认，拒绝即停止）。直接描述你要完成的任务即可。");
     list.appendChild(hint);
   }
   for (const m of st.messages) list.appendChild(dshMsgBlock(m));
@@ -20655,6 +21118,7 @@ async function agentSessionSend(text) {
   st._pending = "";
   st._liveTools = [];
   st.metrics = null;
+  S.agentSessionRunActive = true;
   if (!S.thinking) S.thinking = {};
   S.thinking.agentSession = [""];
   await persistAgentSession();
@@ -20668,6 +21132,10 @@ async function agentSessionSend(text) {
   if (st.planNext)
     input =
       "【要求】先制定并展示分步计划,再开始执行。\n\n" + input;
+  const systemPrompt =
+    "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布工作流（节点、连线、排版等）。\n" +
+    "mtnode_canvas_edit 与危险操作 delete_workflow 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝，本次任务会立即停止，不要再继续改画布。\n" +
+    "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
   try {
     const final = await dshRunTask(input, {
       workspace:
@@ -20678,7 +21146,7 @@ async function agentSessionSend(text) {
       provider: st.provider || "deepseek-official",
       model: st.model || undefined,
       effort: st.effort || "high",
-      systemPrompt: "",
+      systemPrompt,
       onEvent: (type, data) => {
         if (type === "reasoning" && data.text) {
           pushThinking("agentSession", 0, data.text);
@@ -20750,6 +21218,7 @@ async function agentSessionSend(text) {
     st.running = false;
     st._cancelled = false;
     st._liveTools = [];
+    S.agentSessionRunActive = false;
     if (S.thinking) S.thinking.agentSession = [""];
     await persistAgentSession();
     renderAgentSession();
@@ -21175,6 +21644,7 @@ async function init() {
       });
     }
     const wsBr = $("#agentWsBrowse");
+    if (wsBr) fillWorkspaceBrowseIcon(wsBr);
     if (wsBr && wsInput)
       wsBr.onclick = () => {
         pickFolder(wsInput, (p) => {
@@ -21238,6 +21708,7 @@ async function init() {
           return;
         }
         st._cancelled = true;
+        S.agentSessionRunActive = false;
         dshCancelActive();
         toast(I18n.t("已请求终止,正在重启该工作目录的引擎…"), "warn");
         return;
@@ -21298,6 +21769,7 @@ async function init() {
         persistAssistUi();
       });
     const wsBr = $("#assistWsBrowse");
+    if (wsBr) fillWorkspaceBrowseIcon(wsBr);
     if (wsBr && wsInput)
       wsBr.onclick = () => {
         pickFolder(wsInput, (p) => {

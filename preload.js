@@ -69,6 +69,7 @@ contextBridge.exposeInMainWorld('api', {
   mtnodesExportBase64: (wf) => ipcRenderer.invoke('mtnodes:exportBase64', wf),
   mtnodesImportBase64: (base64) => ipcRenderer.invoke('mtnodes:importBase64', base64),
   mtnodesPeekBase64: (base64) => ipcRenderer.invoke('mtnodes:peekBase64', base64),
+  mtnodesStripWorkspaceBase64: (base64) => ipcRenderer.invoke('mtnodes:stripWorkspaceBase64', base64),
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   storageOpen: () => ipcRenderer.invoke('storage:open'),

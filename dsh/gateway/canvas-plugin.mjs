@@ -43,9 +43,9 @@ SAFE (no user confirmation — do these freely):
 NEEDS USER CONFIRMATION (UI will prompt; may be rejected):
 - delete_workflow: permanently delete a workflow and its local assets
 
-For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (also confirmed when called from the global assistant).`
+For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
-const EDIT_DESC = `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar, each edit is confirmed by the user before applying.
+const EDIT_DESC = `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
 
 Typical pattern for a user-editable pipeline:
 1. Optionally mtnode_canvas_get first.

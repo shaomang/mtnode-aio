@@ -31,7 +31,7 @@
     <select id="wfSelect" class="wf-select" data-i18n-title="打开工作流" title="打开工作流"></select>
     <button id="btnRenameWf" class="corner" data-i18n="更改名称" data-i18n-title="更改当前画布名称">更改名称</button>
     <button id="btnExport" class="corner" data-i18n="导出" data-i18n-title="导出画布：把当前工作流（含图像等资产）打包为 .mtnodes 文件，可迁移到其他电脑">导出</button>
-    <button id="btnStore" class="corner" data-i18n="模板商店" data-i18n-title="模板商店：浏览 / 下载公开模板，登录后可上传与管理自己的模板">模板商店</button>
+    <button id="btnStore" class="corner" data-i18n="创意工坊" data-i18n-title="创意工坊：浏览 / 下载公开模板，登录后可上传与管理自己的模板">创意工坊</button>
     <button id="btnImport" class="corner" data-i18n="导入" data-i18n-title="导入画布：从 .mtnodes 文件恢复完整工作流">导入</button>
     <button id="btnDelWf" class="corner" data-i18n="删除" data-i18n-title="删除当前工作流">删除</button>
   </div>
@@ -111,7 +111,7 @@
           <span class="agent-ws-label" data-i18n="工作目录">工作目录</span>
           <input id="agentWsInput" type="text" data-i18n-placeholder="留空 = 应用默认数据目录…" placeholder="留空 = 应用默认数据目录…">
           <button id="agentWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
-          <button id="agentWsBrowse" class="mini" data-i18n="浏览" data-i18n-title="弹出文件夹窗口选择工作目录">浏览</button>
+          <button id="agentWsBrowse" class="mini btn-sq ws-browse" type="button" data-i18n-title="设置项目目的地文件夹" title="设置项目目的地文件夹" aria-label="设置项目目的地文件夹"></button>
         </div>
       </div>
       <div class="agent-body">
@@ -159,7 +159,7 @@
       <span class="assist-ws-label" data-i18n="工作目录">工作目录</span>
       <input id="assistWsInput" type="text" data-i18n-placeholder="留空 = 当前画布 / 应用默认目录…" placeholder="留空 = 当前画布 / 应用默认目录…">
       <button id="assistWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
-      <button id="assistWsBrowse" class="mini" data-i18n="浏览" data-i18n-title="弹出文件夹窗口选择工作目录">浏览</button>
+      <button id="assistWsBrowse" class="mini btn-sq ws-browse" type="button" data-i18n-title="设置项目目的地文件夹" title="设置项目目的地文件夹" aria-label="设置项目目的地文件夹"></button>
     </div>
     <div class="assist-live2d" id="assistLive2d" hidden>
       <div class="assist-live2d-slot" id="assistLive2dSlot">

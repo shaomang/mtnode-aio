@@ -650,6 +650,80 @@ function unpackMtNodes(buf) {
   return { manifest, files };
 }
 
+/* 模板上传：去掉本机工作目录，避免把路径泄漏给下载方 */
+function stripWorkspacesFromWf(wf) {
+  if (!wf || typeof wf !== "object") return wf;
+  if (typeof wf.workspace === "string") wf.workspace = "";
+  for (const n of wf.nodes || []) {
+    if (!n || typeof n !== "object") continue;
+    if (typeof n.workspace === "string") n.workspace = "";
+    if (typeof n.agentWorkspace === "string") n.agentWorkspace = "";
+  }
+  return wf;
+}
+
+function stripWorkspaceFromMtNodesBuf(buf) {
+  const { manifest, files } = unpackMtNodes(buf);
+  stripWorkspacesFromWf(manifest.workflow);
+  const workflow = manifest.workflow || {};
+  const assets = [];
+  for (let i = 0; i < files.length; i++) {
+    const a = (manifest.assets && manifest.assets[i]) || {};
+    assets.push({
+      key: a.key || "@asset/" + i,
+      name: a.name || files[i].name || "asset" + i,
+      rel: a.rel || "",
+    });
+  }
+  const outManifest = {
+    format: "mtnodes",
+    version: MTNODES_VERSION,
+    app: "MTNode",
+    exportedAt: new Date().toISOString(),
+    workflowName: workflow.name || "",
+    workflow,
+    assets,
+  };
+  const manifestBuf = zlib.gzipSync(
+    Buffer.from(JSON.stringify(outManifest), "utf8"),
+  );
+  const head = Buffer.alloc(4);
+  head.writeUInt32LE(manifestBuf.length, 0);
+  const count = Buffer.alloc(4);
+  count.writeUInt32LE(files.length, 0);
+  const chunks = [
+    Buffer.from(MTNODES_MAGIC, "ascii"),
+    Buffer.from([MTNODES_VERSION]),
+    head,
+    manifestBuf,
+    count,
+  ];
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name || "asset", "utf8");
+    const nl = Buffer.alloc(4);
+    nl.writeUInt32LE(nameBuf.length, 0);
+    const dl = Buffer.alloc(4);
+    dl.writeUInt32LE(f.data.length, 0);
+    chunks.push(nl, nameBuf, dl, f.data);
+  }
+  return { buf: Buffer.concat(chunks), assetCount: files.length };
+}
+
+ipcMain.handle("mtnodes:stripWorkspaceBase64", (e, base64) => {
+  try {
+    const raw = Buffer.from(String(base64 || ""), "base64");
+    const { buf, assetCount } = stripWorkspaceFromMtNodesBuf(raw);
+    return {
+      ok: true,
+      base64: buf.toString("base64"),
+      bytes: buf.length,
+      assetCount,
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
 ipcMain.handle("mtnodes:export", async (e, wf) => {
   try {
     const { buf } = packMtNodes(wf);

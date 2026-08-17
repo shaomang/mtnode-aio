@@ -183,7 +183,13 @@ button:disabled{opacity:.45; cursor:not-allowed}
 }
 .side-item .t{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .side-empty{padding:14px 6px; font-size:11px; color:var(--muted); text-align:center; letter-spacing:1px}
-.btn-sq{width:34px; padding:6px 0; text-align:center; letter-spacing:0}
+.btn-sq{width:34px; padding:6px 0; text-align:center; letter-spacing:0; box-sizing:border-box}
+/* 与旁侧 mini.btn-sq（📂）同高：沿用 button.mini 的上下 padding */
+button.mini.btn-sq.ws-browse{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:34px; min-width:34px; padding:2px 0; line-height:1; vertical-align:middle;
+}
+button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:none}
 .pane-head{
   flex:none; display:flex; align-items:center; gap:10px;
   padding:6px 12px; background:var(--panel); border-bottom:2px solid var(--bd);
