@@ -72,6 +72,10 @@ contextBridge.exposeInMainWorld('api', {
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   storageOpen: () => ipcRenderer.invoke('storage:open'),
+  dataGetRoot: () => ipcRenderer.invoke('data:getRoot'),
+  dataSetRoot: (opts) => ipcRenderer.invoke('data:setRoot', opts || {}),
+  dataOpenRoot: () => ipcRenderer.invoke('data:openRoot'),
+  appRelaunch: () => ipcRenderer.invoke('app:relaunch'),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:readText'),
   netFetch: (url) => ipcRenderer.invoke('net:fetch', url),
   storeRequest: (opts) => ipcRenderer.invoke('store:request', opts),
@@ -79,12 +83,14 @@ contextBridge.exposeInMainWorld('api', {
   storePickPreview: () => ipcRenderer.invoke('store:pickPreview'),
   storeCacheGet: (id) => ipcRenderer.invoke('store:cacheGet', id),
   storeCachePut: (opts) => ipcRenderer.invoke('store:cachePut', opts),
+  storeCacheDelete: (id) => ipcRenderer.invoke('store:cacheDelete', id),
   storeCacheHas: (id) => ipcRenderer.invoke('store:cacheHas', id),
   gifMake: (wfId, name, frames, delay) => ipcRenderer.invoke('gif:make', { wfId, name, frames, delay }),
 
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),
   apiPreview: (spec) => ipcRenderer.invoke('api:preview', spec),
+  apiValidateKey: (provider) => ipcRenderer.invoke('api:validateKey', provider),
 
   /* 流式调用：回调接收 {type:'reasoning'|'delta'|'done'|'error', text?, error?}；
      done/error 后自动移除监听。返回 invoke 的 Promise（{ok}）。 */

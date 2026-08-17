@@ -16354,11 +16354,35 @@ function paintReadonlyWfPreview(host, wf) {
   });
 }
 
+async function tplInvalidateTplCache(id) {
+  if (!id) return;
+  try {
+    await window.api.storeCacheDelete(id);
+  } catch (_) {}
+  TPL_PREV_CACHE.delete(id + ":thumb");
+  TPL_PREV_CACHE.delete(id + ":full");
+}
+
 async function tplFetchFileCached(item) {
   const id = item.id;
+  const remoteUpdated = item.updatedAt != null ? Number(item.updatedAt) || 0 : 0;
+  const remoteBytes = item.bytes != null ? Number(item.bytes) || 0 : 0;
   const cached = await window.api.storeCacheGet(id);
   if (cached && cached.ok && cached.base64) {
-    return { base64: cached.base64, fromCache: true, title: cached.title || item.title };
+    const stale =
+      (remoteUpdated && cached.updatedAt && cached.updatedAt !== remoteUpdated) ||
+      (remoteBytes && cached.bytes && cached.bytes !== remoteBytes) ||
+      (remoteUpdated && !cached.updatedAt);
+    if (!stale) {
+      return {
+        base64: cached.base64,
+        fromCache: true,
+        title: cached.title || item.title,
+      };
+    }
+    try {
+      await window.api.storeCacheDelete(id);
+    } catch (_) {}
   }
   const r = await tplApi("GET", "/api/templates/" + encodeURIComponent(id) + "/file");
   if (!r || !r.ok || !r.data || !r.data.base64) {
@@ -16368,6 +16392,7 @@ async function tplFetchFileCached(item) {
     id,
     base64: r.data.base64,
     title: item.title || r.data.title || "",
+    updatedAt: remoteUpdated || item.updatedAt || 0,
   });
   return { base64: r.data.base64, fromCache: false, title: item.title || r.data.title };
 }
@@ -16792,8 +16817,7 @@ async function openTemplateStore() {
             toast(tplErr(r), "err");
             return;
           }
-          TPL_PREV_CACHE.delete(item.id + ":thumb");
-          TPL_PREV_CACHE.delete(item.id + ":full");
+          await tplInvalidateTplCache(item.id);
           toast(I18n.t("已删除模板"), "ok");
           await refreshMe();
           paint();
@@ -17126,7 +17150,12 @@ async function openTemplateStore() {
 
     const fileLab = document.createElement("label");
     fileLab.textContent = ".mtnodes（" + I18n.t("最大 10MB") + "）";
-    const fileHint = hintEl(TPL_ST.fileHint || (TPL_ST.editId ? I18n.t("（请选择）") : ""));
+    const fileHint = hintEl(
+      TPL_ST.fileHint ||
+        (TPL_ST.editId
+          ? I18n.t("编辑时可不重新选文件（仅改标题等）；选择新画布将覆盖商店模板")
+          : ""),
+    );
     const fileRow = document.createElement("div");
     fileRow.className = "dsh-btn-row";
     fileRow.appendChild(
@@ -17202,6 +17231,16 @@ async function openTemplateStore() {
             toast(I18n.t("请先选择或粘贴模板文件"), "err");
             return;
           }
+          const replacingFile = !!TPL_ST.fileBase64;
+          if (
+            TPL_ST.editId &&
+            replacingFile &&
+            !window.confirm(
+              I18n.t("确认覆盖商店中的模板画布？本地预览/下载缓存将同步更新。"),
+            )
+          ) {
+            return;
+          }
           const payload = {
             title: titleV,
             description: TPL_ST.description || "",
@@ -17219,14 +17258,30 @@ async function openTemplateStore() {
             if (TPL_ST.previewThumbBase64)
               payload.previewThumbBase64 = TPL_ST.previewThumbBase64;
           }
-          const r = TPL_ST.editId
-            ? await tplApi("PATCH", "/api/templates/" + encodeURIComponent(TPL_ST.editId), payload)
+          const editId = TPL_ST.editId;
+          const r = editId
+            ? await tplApi("PATCH", "/api/templates/" + encodeURIComponent(editId), payload)
             : await tplApi("POST", "/api/templates", payload);
           if (!r || !r.ok) {
             toast(tplErr(r), "err");
             return;
           }
-          toast(TPL_ST.editId ? I18n.t("已保存修改") : I18n.t("上传成功"), "ok");
+          if (editId && replacingFile) {
+            const item = (r.data && r.data.item) || {};
+            await tplInvalidateTplCache(editId);
+            if (payload.fileBase64) {
+              await window.api.storeCachePut({
+                id: editId,
+                base64: payload.fileBase64,
+                title: titleV,
+                updatedAt: item.updatedAt || Date.now(),
+              });
+            }
+          } else if (editId && (TPL_ST._clearPreview || payload.previewBase64)) {
+            TPL_PREV_CACHE.delete(editId + ":thumb");
+            TPL_PREV_CACHE.delete(editId + ":full");
+          }
+          toast(editId ? I18n.t("已保存修改") : I18n.t("上传成功"), "ok");
           tplResetDraft();
           TPL_ST._clearPreview = false;
           TPL_ST.tab = "mine";
@@ -17375,6 +17430,194 @@ function openSettings() {
   themeRow.appendChild(themeSel);
   body.appendChild(themeRow);
   const themeSelEl = themeSel;
+
+  /* ── 配置数据目录（API Key / 工作流等；更改后需重启）── */
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("配置数据目录");
+    sec.appendChild(secTitle);
+
+    const hint = document.createElement("div");
+    hint.className = "n-field";
+    hint.textContent = I18n.t(
+      "存放 config.json（API Key 等）、工作流存档与本地资产。更改后需重启应用生效。",
+    );
+    sec.appendChild(hint);
+
+    const pathRow = document.createElement("div");
+    pathRow.className = "n-field";
+    pathRow.style.flexDirection = "row";
+    pathRow.style.alignItems = "center";
+    pathRow.style.gap = "8px";
+    pathRow.style.flexWrap = "wrap";
+    const pathLab = document.createElement("span");
+    pathLab.textContent = I18n.t("当前路径：");
+    const pathEl = document.createElement("code");
+    pathEl.style.wordBreak = "break-all";
+    pathEl.style.fontSize = "12px";
+    pathEl.textContent = "…";
+    pathRow.appendChild(pathLab);
+    pathRow.appendChild(pathEl);
+    sec.appendChild(pathRow);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "n-field";
+    btnRow.style.flexDirection = "row";
+    btnRow.style.gap = "8px";
+    btnRow.style.flexWrap = "wrap";
+
+    const changeBtn = document.createElement("button");
+    changeBtn.className = "mini";
+    changeBtn.textContent = I18n.t("更改目录…");
+    changeBtn.title = I18n.t("选择新的配置数据目录，保存后需重启");
+
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "mini";
+    resetBtn.textContent = I18n.t("恢复默认");
+    resetBtn.title = I18n.t("清除自定义路径，回到应用默认数据目录");
+
+    const openBtn = document.createElement("button");
+    openBtn.className = "mini";
+    openBtn.textContent = I18n.t("打开目录");
+    openBtn.title = I18n.t("在资源管理器中打开当前配置数据目录");
+
+    let rootInfo = null;
+    const refreshRoot = async () => {
+      try {
+        rootInfo = await window.api.dataGetRoot();
+      } catch (e) {
+        rootInfo = { ok: false, error: e.message || String(e) };
+      }
+      if (!rootInfo || !rootInfo.ok) {
+        pathEl.textContent = (rootInfo && rootInfo.error) || I18n.t("未知错误");
+        changeBtn.disabled = true;
+        resetBtn.disabled = true;
+        return;
+      }
+      pathEl.textContent = rootInfo.path || "";
+      const locked = !!rootInfo.envLocked;
+      changeBtn.disabled = locked;
+      resetBtn.disabled = locked || !rootInfo.isCustom;
+      if (locked) {
+        changeBtn.title = I18n.t(
+          "当前由环境变量 MTNODE_DATA_DIR 指定数据目录，无法在设置中更改",
+        );
+        resetBtn.title = changeBtn.title;
+      }
+    };
+    refreshRoot();
+
+    const relaunchAfter = async () => {
+      toast(I18n.t("正在重启应用…"), "ok");
+      try {
+        await window.api.appRelaunch();
+      } catch (e) {
+        toast(I18n.t("重启失败：") + (e.message || String(e)), "err");
+      }
+    };
+
+    changeBtn.onclick = async () => {
+      if (
+        !confirm(
+          I18n.t(
+            "更改配置数据目录后需要重启应用才能生效。是否继续选择新目录？",
+          ),
+        )
+      )
+        return;
+      const picked = await window.api.fileOpenDialog({
+        title: I18n.t("选择配置数据目录"),
+        directory: true,
+      });
+      const next = picked && picked.path;
+      if (!next) return;
+      const migrate = confirm(
+        I18n.t("是否将现有配置（API Key、工作流等）复制到新目录？") +
+          "\n\n" +
+          I18n.t("若新目录已有 config.json，则不会覆盖。"),
+      );
+      try {
+        const r = await window.api.dataSetRoot({ path: next, migrate });
+        if (!r || !r.ok) {
+          toast(
+            I18n.t("更改失败：") +
+              ((r && r.error) || I18n.t("未知错误")),
+            "err",
+          );
+          return;
+        }
+        if (r.unchanged) {
+          toast(I18n.t("目录未变化"), "ok");
+          return;
+        }
+        if (
+          !confirm(
+            I18n.t("配置数据目录已更新。需要立即重启应用才能生效，是否现在重启？"),
+          )
+        ) {
+          toast(I18n.t("已保存新路径，请手动重启应用后生效"), "ok");
+          await refreshRoot();
+          return;
+        }
+        await relaunchAfter();
+      } catch (e) {
+        toast(I18n.t("更改失败：") + (e.message || String(e)), "err");
+      }
+    };
+
+    resetBtn.onclick = async () => {
+      if (
+        !confirm(
+          I18n.t(
+            "恢复默认配置数据目录后需要重启应用才能生效。是否继续？",
+          ),
+        )
+      )
+        return;
+      try {
+        const r = await window.api.dataSetRoot({ path: null });
+        if (!r || !r.ok) {
+          toast(
+            I18n.t("更改失败：") +
+              ((r && r.error) || I18n.t("未知错误")),
+            "err",
+          );
+          return;
+        }
+        if (
+          !confirm(
+            I18n.t("已恢复默认目录。需要立即重启应用才能生效，是否现在重启？"),
+          )
+        ) {
+          toast(I18n.t("已恢复默认路径，请手动重启应用后生效"), "ok");
+          await refreshRoot();
+          return;
+        }
+        await relaunchAfter();
+      } catch (e) {
+        toast(I18n.t("更改失败：") + (e.message || String(e)), "err");
+      }
+    };
+
+    openBtn.onclick = async () => {
+      const r = await window.api.dataOpenRoot();
+      if (!r || !r.ok)
+        toast(
+          I18n.t("无法打开目录：") +
+            ((r && r.error) || I18n.t("未知错误")),
+          "err",
+        );
+    };
+
+    btnRow.appendChild(changeBtn);
+    btnRow.appendChild(resetBtn);
+    btnRow.appendChild(openBtn);
+    sec.appendChild(btnRow);
+    body.appendChild(sec);
+  }
 
   /* ── 智能能力（dsh）区块 ── */
   const dshEls = {};
@@ -18139,10 +18382,33 @@ function addProviderDialog() {
   const keyRow = document.createElement("label");
   keyRow.className = "n-field";
   keyRow.appendChild(document.createTextNode("API Key"));
+  const keyWrap = document.createElement("div");
+  keyWrap.style.display = "flex";
+  keyWrap.style.gap = "4px";
   const keyInp = document.createElement("input");
   keyInp.type = "password";
   keyInp.placeholder = I18n.t("输入 API Key（隐藏显示，仅存本机）");
-  keyRow.appendChild(keyInp);
+  keyInp.style.flex = "1";
+  const keyTest = document.createElement("button");
+  keyTest.type = "button";
+  keyTest.className = "mini";
+  keyTest.textContent = I18n.t("验证");
+  keyTest.title = I18n.t("向服务商发起无 Token 消耗的校验请求");
+  keyTest.onclick = async (ev) => {
+    ev.preventDefault();
+    const p = catalogAddableProviders().find((x) => x.id === provSel.value);
+    await validateProviderApiKey(
+      {
+        type: "text_openai",
+        baseUrl: (p && p.baseUrl) || "",
+        apiKey: keyInp.value,
+      },
+      keyTest,
+    );
+  };
+  keyWrap.appendChild(keyInp);
+  keyWrap.appendChild(keyTest);
+  keyRow.appendChild(keyWrap);
   catBox.appendChild(keyRow);
   const infoRow = document.createElement("div");
   infoRow.className = "settings-hint";
@@ -18183,9 +18449,31 @@ function addProviderDialog() {
   const mKey = document.createElement("label");
   mKey.className = "n-field";
   mKey.appendChild(document.createTextNode(I18n.t("API Key（隐藏显示）")));
+  const mKeyWrap = document.createElement("div");
+  mKeyWrap.style.display = "flex";
+  mKeyWrap.style.gap = "4px";
   const mKeyInp = document.createElement("input");
   mKeyInp.type = "password";
-  mKey.appendChild(mKeyInp);
+  mKeyInp.style.flex = "1";
+  const mKeyTest = document.createElement("button");
+  mKeyTest.type = "button";
+  mKeyTest.className = "mini";
+  mKeyTest.textContent = I18n.t("验证");
+  mKeyTest.title = I18n.t("向服务商发起无 Token 消耗的校验请求");
+  mKeyTest.onclick = async (ev) => {
+    ev.preventDefault();
+    await validateProviderApiKey(
+      {
+        type: mTypeSel.value,
+        baseUrl: mUrlInp.value,
+        apiKey: mKeyInp.value,
+      },
+      mKeyTest,
+    );
+  };
+  mKeyWrap.appendChild(mKeyInp);
+  mKeyWrap.appendChild(mKeyTest);
+  mKey.appendChild(mKeyWrap);
   manBox.appendChild(mKey);
   const mModels = document.createElement("label");
   mModels.className = "n-field";
@@ -18711,6 +18999,54 @@ function openAddStoreSource() {
   foot.appendChild(ok);
 }
 
+/* 设置页：无 Token 消耗校验 API Key（主进程 GET /models 等） */
+async function validateProviderApiKey(prov, btn) {
+  const apiKey = String((prov && prov.apiKey) || "").trim();
+  const baseUrl = String((prov && prov.baseUrl) || "").trim();
+  if (!apiKey) {
+    toast(I18n.t("请填写 API Key"), "warn");
+    return false;
+  }
+  if (!baseUrl) {
+    toast(I18n.t("未配置接口地址（设置 · API/配置）"), "warn");
+    return false;
+  }
+  const label = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = I18n.t("验证中…");
+  }
+  try {
+    const r = await window.api.apiValidateKey({
+      type: (prov && prov.type) || "text_openai",
+      baseUrl,
+      apiKey,
+    });
+    if (r && r.ok) {
+      toast(I18n.t("API Key 验证成功（无 Token 消耗）"), "ok");
+      return true;
+    }
+    const detail = r && r.error ? String(r.error) : "";
+    toast(
+      detail.indexOf(I18n.t("API Key 验证失败")) === 0
+        ? detail
+        : I18n.t("API Key 验证失败") + (detail ? "：" + detail : ""),
+      "err",
+    );
+    return false;
+  } catch (e) {
+    toast(
+      I18n.t("API Key 验证失败") + "：" + ((e && e.message) || String(e)),
+      "err",
+    );
+    return false;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = label || I18n.t("验证");
+    }
+  }
+}
 
 function provCard(prov, i, list) {
   const card = document.createElement("div");
@@ -18849,7 +19185,17 @@ function provCard(prov, i, list) {
         .then(() => toast(I18n.t("API Key 已复制到剪贴板"), "ok"))
         .catch(() => toast(I18n.t("复制失败"), "err"));
     };
+    const testBtn = document.createElement("button");
+    testBtn.className = "mini";
+    testBtn.textContent = I18n.t("验证");
+    testBtn.title = I18n.t("向服务商发起无 Token 消耗的校验请求");
+    testBtn.type = "button";
+    testBtn.onclick = (ev) => {
+      ev.preventDefault();
+      validateProviderApiKey(prov, testBtn);
+    };
     wrap.appendChild(inp);
+    wrap.appendChild(testBtn);
     wrap.appendChild(cp);
     return wrap;
   })(), true);

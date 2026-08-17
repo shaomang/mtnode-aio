@@ -84,6 +84,10 @@
     "请填写标题": "Enter a title",
     "上传成功": "Uploaded",
     "已保存修改": "Changes saved",
+    "确认覆盖商店中的模板画布？本地预览/下载缓存将同步更新。":
+      "Overwrite the published template canvas? Local preview/download cache will be updated.",
+    "编辑时可不重新选文件（仅改标题等）；选择新画布将覆盖商店模板":
+      "You can skip the file to edit title/tags only; choosing a new canvas overwrites the store template",
     "已删除模板": "Template deleted",
     "导入将打开为新画布，当前画布会保留。确定下载？": "This will open as a new canvas; the current one is kept. Download?",
     "点赞需要登录": "Sign in to like",
@@ -426,6 +430,53 @@
     "点击定位到该节点": "Click to focus this node",
     "项目目录: ": "Project folder: ",
     "工作目录最外层文件夹: ": "Project folder: ",
+    "配置数据目录": "Config data directory",
+    "存放 config.json（API Key 等）、工作流存档与本地资产。更改后需重启应用生效。":
+      "Stores config.json (API keys, etc.), workflow archives, and local assets. Restart required after changing.",
+    "当前路径：": "Current path: ",
+    "更改目录…": "Change folder…",
+    "选择新的配置数据目录，保存后需重启":
+      "Choose a new config data folder; restart required after saving",
+    "恢复默认": "Reset to default",
+    "清除自定义路径，回到应用默认数据目录":
+      "Clear custom path and return to the app default data directory",
+    "打开目录": "Open folder",
+    "在资源管理器中打开当前配置数据目录":
+      "Open the current config data folder in the file manager",
+    "当前由环境变量 MTNODE_DATA_DIR 指定数据目录，无法在设置中更改":
+      "Data directory is set by MTNODE_DATA_DIR; cannot change it in Settings",
+    "正在重启应用…": "Restarting app…",
+    "重启失败：": "Restart failed: ",
+    "更改配置数据目录后需要重启应用才能生效。是否继续选择新目录？":
+      "Changing the config data directory requires a restart. Continue and choose a new folder?",
+    "选择配置数据目录": "Choose config data directory",
+    "是否将现有配置（API Key、工作流等）复制到新目录？":
+      "Copy existing config (API keys, workflows, etc.) to the new folder?",
+    "若新目录已有 config.json，则不会覆盖。":
+      "If the new folder already has config.json, it will not be overwritten.",
+    "更改失败：": "Change failed: ",
+    "目录未变化": "Directory unchanged",
+    "配置数据目录已更新。需要立即重启应用才能生效，是否现在重启？":
+      "Config data directory updated. Restart now for it to take effect?",
+    "已保存新路径，请手动重启应用后生效":
+      "New path saved; restart the app manually for it to take effect",
+    "恢复默认配置数据目录后需要重启应用才能生效。是否继续？":
+      "Resetting to the default config data directory requires a restart. Continue?",
+    "已恢复默认目录。需要立即重启应用才能生效，是否现在重启？":
+      "Default directory restored. Restart now for it to take effect?",
+    "已恢复默认路径，请手动重启应用后生效":
+      "Default path restored; restart the app manually for it to take effect",
+    "无法打开目录：": "Cannot open folder: ",
+    "请选择绝对路径": "Choose an absolute path",
+    "目录不可写": "Directory is not writable",
+    "复制现有配置失败：": "Failed to copy existing config: ",
+    "验证": "Verify",
+    "验证中…": "Verifying…",
+    "向服务商发起无 Token 消耗的校验请求":
+      "Send a token-free validation request to the provider",
+    "API Key 验证成功（无 Token 消耗）":
+      "API Key verified (no token usage)",
+    "API Key 验证失败": "API Key validation failed",
   });
 
   var locale = "zh";

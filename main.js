@@ -63,7 +63,42 @@ function dsh() {
   return dshAdapter;
 }
 
-const DATA = () => path.join(app.getPath("userData"), "pipeline-console");
+const mk = (p) => {
+  fs.mkdirSync(p, { recursive: true });
+  return p;
+};
+const join = (...a) => path.join(...a);
+
+/* 默认 userData 固定在 appData/pipeline-console；可配置的「配置数据目录」
+   （config.json / API Key / 工作流等）经指针文件指向，指针本身不可随数据目录迁移。 */
+const APP_DATA_ROOT = path.join(app.getPath("appData"), "pipeline-console");
+const DATA_ROOT_POINTER = path.join(APP_DATA_ROOT, "data-root.json");
+
+function readDataRootOverride() {
+  try {
+    const j = JSON.parse(fs.readFileSync(DATA_ROOT_POINTER, "utf8"));
+    const p = j && typeof j.path === "string" ? String(j.path).trim() : "";
+    if (p && path.isAbsolute(p)) return path.resolve(p);
+  } catch {}
+  return null;
+}
+
+app.setPath(
+  "userData",
+  process.env.MTNODE_DATA_DIR || APP_DATA_ROOT,
+);
+
+function defaultDataDir() {
+  return path.join(app.getPath("userData"), "pipeline-console");
+}
+
+/* 启动时解析一次：改目录后需重启才生效 */
+const RESOLVED_DATA_DIR = (() => {
+  if (process.env.MTNODE_DATA_DIR) return defaultDataDir();
+  return readDataRootOverride() || defaultDataDir();
+})();
+const DATA = () => RESOLVED_DATA_DIR;
+
 function applyMainLocale(l) {
   I18n.setLocale(l === "en" ? "en" : "zh");
   if (mainWin && !mainWin.isDestroyed()) {
@@ -78,22 +113,11 @@ function localeFromDisk() {
     return "zh";
   }
 }
-const mk = (p) => {
-  fs.mkdirSync(p, { recursive: true });
-  return p;
-};
-const join = (...a) => path.join(...a);
 
 let mainWin = null;
 function win() {
   return mainWin;
 }
-
-app.setPath(
-  "userData",
-  process.env.MTNODE_DATA_DIR ||
-    path.join(app.getPath("appData"), "pipeline-console"),
-);
 
 /* 错误自诊断：未捕获异常写入日志 + 弹窗显示，避免静默崩溃 */
 function errLog(p) {
@@ -850,6 +874,7 @@ ipcMain.handle("store:cacheGet", (e, id) => {
       bytes: buf.length,
       title: meta.title || "",
       cachedAt: meta.cachedAt || 0,
+      updatedAt: meta.updatedAt || 0,
     };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
@@ -871,8 +896,25 @@ ipcMain.handle("store:cachePut", (e, opts) => {
       title: String(o.title || ""),
       cachedAt: Date.now(),
       bytes: buf.length,
+      updatedAt: o.updatedAt != null ? Number(o.updatedAt) || 0 : 0,
     });
     return { ok: true, bytes: buf.length };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:cacheDelete", (e, id) => {
+  try {
+    const tid = String(id || "");
+    if (!tid) return { ok: false };
+    try {
+      fs.unlinkSync(storeCachePath(tid));
+    } catch {}
+    try {
+      fs.unlinkSync(storeCacheMetaPath(tid));
+    } catch {}
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }
@@ -895,6 +937,109 @@ ipcMain.handle("storage:open", () => {
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
+});
+
+function copyDirRecursive(src, dest) {
+  mk(dest);
+  for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = join(src, ent.name);
+    const d = join(dest, ent.name);
+    if (ent.isDirectory()) copyDirRecursive(s, d);
+    else fs.copyFileSync(s, d);
+  }
+}
+
+function writeDataRootPointer(dataPath) {
+  mk(APP_DATA_ROOT);
+  if (!dataPath) {
+    try {
+      fs.unlinkSync(DATA_ROOT_POINTER);
+    } catch {}
+    return;
+  }
+  writeJson(DATA_ROOT_POINTER, { path: dataPath });
+}
+
+/* 配置数据目录（config.json / API Key / 工作流等）；更改后需重启 */
+ipcMain.handle("data:getRoot", () => {
+  try {
+    const def = defaultDataDir();
+    const cur = DATA();
+    const override = process.env.MTNODE_DATA_DIR ? null : readDataRootOverride();
+    return {
+      ok: true,
+      path: cur,
+      defaultPath: def,
+      isCustom: !!(override && path.resolve(override) !== path.resolve(def)),
+      envLocked: !!process.env.MTNODE_DATA_DIR,
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("data:setRoot", async (e, opts) => {
+  try {
+    if (process.env.MTNODE_DATA_DIR) {
+      return {
+        ok: false,
+        error: I18n.t("当前由环境变量 MTNODE_DATA_DIR 指定数据目录，无法在设置中更改"),
+      };
+    }
+    const o = opts || {};
+    const migrate = o.migrate !== false;
+    let next = o.path == null ? "" : String(o.path).trim();
+    if (!next) {
+      writeDataRootPointer(null);
+      return { ok: true, path: defaultDataDir(), needsRestart: true, reset: true };
+    }
+    if (!path.isAbsolute(next)) {
+      return { ok: false, error: I18n.t("请选择绝对路径") };
+    }
+    next = path.resolve(next);
+    const cur = path.resolve(DATA());
+    if (next === cur) {
+      return { ok: true, path: cur, needsRestart: false, unchanged: true };
+    }
+    mk(next);
+    try {
+      fs.accessSync(next, fs.constants.W_OK);
+    } catch {
+      return { ok: false, error: I18n.t("目录不可写") };
+    }
+    const destCfg = join(next, "config.json");
+    if (migrate && !fs.existsSync(destCfg) && fs.existsSync(join(cur, "config.json"))) {
+      try {
+        copyDirRecursive(cur, next);
+      } catch (err) {
+        return {
+          ok: false,
+          error:
+            I18n.t("复制现有配置失败：") + ((err && err.message) || String(err)),
+        };
+      }
+    }
+    writeDataRootPointer(next);
+    return { ok: true, path: next, needsRestart: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("data:openRoot", () => {
+  try {
+    const dir = mk(DATA());
+    shell.openPath(dir);
+    return { ok: true, path: dir };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("app:relaunch", () => {
+  app.relaunch();
+  app.quit();
+  return { ok: true };
 });
 
 /* GIF 帧动画编码：frames = [{data: ArrayBuffer(RGBA), w, h}]；alpha=0 像素透明 */
@@ -1401,6 +1546,54 @@ async function apiCall({
 
   throw new Error(I18n.t("未知服务商类型：") + provider.type);
 }
+
+/* 无 Token 消耗的 API Key 校验：OpenAI 兼容走 GET /models；
+   Stability 走账户信息；均不触发计费推理/生图。 */
+async function validateApiKey(provider) {
+  checkProvider(provider);
+  const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
+  const headers = {
+    Authorization: "Bearer " + String(provider.apiKey).trim(),
+    Accept: "application/json",
+  };
+  let url = base + "/models";
+  if (provider.type === "image_stability") {
+    url = base + "/v1/user/account";
+  } else if (provider.type === "image_mj") {
+    /* 自定义 MJ 网关多为单点 POST；用 GET 探测鉴权，不发起生图 */
+    url = base;
+  }
+  const { status, j, text } = await fetchJson(
+    url,
+    { method: "GET", headers },
+    30000,
+  );
+  if (status === 401 || status === 403) {
+    return { ok: false, error: I18n.t("API Key 验证失败") };
+  }
+  if (status >= 400) {
+    return {
+      ok: false,
+      error: I18n.t("API Key 验证失败") + "：" + apiErr(status, j, text),
+    };
+  }
+  return { ok: true };
+}
+
+ipcMain.handle("api:validateKey", async (e, provider) => {
+  try {
+    return await validateApiKey(provider || {});
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        I18n.t("API Key 验证失败") +
+        "：" +
+        ((err && err.message) || String(err)),
+    };
+  }
+});
+
 ipcMain.handle("api:call", async (e, spec) => {
   try {
     return await apiCall(spec);
