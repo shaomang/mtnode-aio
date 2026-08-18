@@ -559,27 +559,70 @@ mockServer.listen(0, '127.0.0.1', () => {
       await new Promise((r) => setTimeout(r, 400));
       log('blur saves=' + (S.lastSaved !== lastSave1) + ' text=' + inA.text);
 
-      // —— 动画节点：图像 → GIF 帧动画（透明色键） ——
-      log('anim key parse=' + JSON.stringify(parseHexColor('#FF00FF')));
-      const cvA = document.createElement('canvas');
-      cvA.width = 8; cvA.height = 8;
-      const cA = cvA.getContext('2d');
-      cA.fillStyle = '#ff00ff'; cA.fillRect(0, 0, 8, 8);
-      cA.fillStyle = '#ffffff'; cA.fillRect(0, 0, 4, 4);
-      const pngB64 = cvA.toDataURL('image/png').split(',')[1];
-      const animImg = await window.api.assetWriteBase64(S.wf.id, 'anim_src', pngB64, 'png');
-      addNode('input_image', 100, 2200);
-      const an0 = S.wf.nodes[S.wf.nodes.length - 1];
-      an0.imageAsset = animImg.path;
-      addNode('anim', 360, 2200);
-      const an = S.wf.nodes[S.wf.nodes.length - 1];
-      an.title = '动画器';
-      an.animCols = 2; an.animRows = 2; an.animKey = '#FF00FF';
-      connect(an0.id, an.id, 0);
-      await playAnimNode(an);
-      log('anim output=' + (an.output && an.output.kind === 'image') + ' error=' + (an.error || 'none'));
-      log('anim file exists=' + (an.output && (await window.api.fileExists(an.output.path))));
-      log('anim value=' + (valueForInput(an, 0) && valueForInput(an, 0).kind));
+      // —— 任务节点：脚手架 / 控制流成功终点 ——
+      const tk = addNode('task', 100, 2200);
+      tk.title = '总计划';
+      tk.goal = '验证控制流';
+      const start = S.wf.nodes.find((n) => n.parentTaskId === tk.id && n.ctrlRole === 'start');
+      const endOk = S.wf.nodes.find((n) => n.parentTaskId === tk.id && n.ctrlRole === 'endSuccess');
+      const endFail = S.wf.nodes.find((n) => n.parentTaskId === tk.id && n.ctrlRole === 'endFail');
+      log('task scaffold=' + !!(start && endOk && endFail && start.ctrlPinned && endOk.ctrlPinned));
+      addWire(start.id, endOk.id, 0, { fromIndex: 0, notify: false, save: false });
+      await playTaskNode(tk, true);
+      log('task play success=' + (tk.taskStatus === 'done'));
+      const nBeforePin = S.wf.nodes.length;
+      deleteNodes([start.id], true);
+      log('task pin undeletable=' + (S.wf.nodes.length === nBeforePin && !!nodeById(start.id)));
+      addInnerTask(tk);
+      log('task inner child=' + (taskChildTasksOf(tk.id).length >= 1));
+      const jg = addNode('judge', 400, 2200);
+      log('judge ports=' + (outputCount(jg) === 2 && inputCount(jg) >= 1));
+      setTaskFocus('');
+      log('task top visible=' + visibleWfNodes().some((n) => n.id === tk.id) + ' inner hidden=' + !visibleWfNodes().some((n) => n.parentTaskId === tk.id));
+      log('task value=' + (valueForInput(tk, 0) && valueForInput(tk, 0).kind));
+
+      // —— 控制流到达失败终点 ——
+      const tkFail = addNode('task', 100, 2600);
+      tkFail.title = '失败任务';
+      const stF = S.wf.nodes.find((n) => n.parentTaskId === tkFail.id && n.ctrlRole === 'start');
+      const endF = S.wf.nodes.find((n) => n.parentTaskId === tkFail.id && n.ctrlRole === 'endFail');
+      addWire(stF.id, endF.id, 0, { fromIndex: 0, notify: false, save: false });
+      await playTaskNode(tkFail, true);
+      log('task play fail=' + (tkFail.taskStatus === 'failed'));
+      renderCanvas();
+      const failEl = document.querySelector('.wf-node[data-nid="' + tkFail.id + '"]');
+      log('task empty grid hidden=' + !!(failEl && !failEl.querySelector('.task-grid')));
+      const tkOpen = addNode('task', 100, 2800);
+      await playTaskNode(tkOpen, true);
+      log('task play open fail=' + (tkOpen.taskStatus === 'failed'));
+
+      // —— 定时触发器：cron / 下次时间 ——
+      const tm = addNode('timer', 100, 2900);
+      tm.timerMode = 'cron';
+      tm.timerCron = '0 * * * *';
+      const nextT = computeTimerNextAt(tm, Date.now());
+      log('timer cron next=' + (nextT > Date.now() && nextT < Date.now() + 3660 * 1000));
+      tm.timerMode = 'interval';
+      tm.timerEverySec = 60;
+      tm.timerLastAt = 0;
+      const nextI = computeTimerNextAt(tm, Date.now());
+      log('timer interval next=' + (nextI > Date.now() && nextI <= Date.now() + 61000));
+      log('timer no input=' + (inputCount(tm) === 0 && hasOutput(tm)));
+
+      // —— 进入任务时自动整理内部排版 ——
+      const tkLay = addNode('task', 100, 3000);
+      tkLay.title = '排版父任务';
+      const cA = makeNode('task', 900, 3100);
+      cA.title = uniqueNodeTitle('排版子A');
+      cA.parentTaskId = tkLay.id;
+      const cB = makeNode('task', 200, 3400);
+      cB.title = uniqueNodeTitle('排版子B');
+      cB.parentTaskId = tkLay.id;
+      S.wf.nodes.push(cA, cB);
+      enterTask(tkLay, { toast: false });
+      const moved = cA.x !== 900 || cB.x !== 200 || cA.y !== 3100 || cB.y !== 3400;
+      log('task enter layout=' + (S.taskFocus === tkLay.id && moved));
+      setTaskFocus('');
 
       // —— 画布资产图像：超过 1080p 自动降采样 ——
       const cvBig = document.createElement('canvas');
@@ -621,6 +664,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('pane-head removed=' + (document.querySelector('.pane-head') === null));
       log('hint text=' + JSON.stringify($('#canvasHint') ? $('#canvasHint').textContent : '(hint removed, new toolbar)'));
       log('toolbar layout=' + (!!$('#wfTabs') && !!$('#wfWsBox') && !!document.querySelector('.fn-toolbar')));
+      log('task crumb before tabs=' + ($('#taskCrumb') && $('#taskCrumb').nextElementSibling && $('#taskCrumb').nextElementSibling.id === 'wfTabs'));
       log('author link=' + ($('#authorLink').textContent === '@ms2308'));
       openAuthorPopup();
       const apText = $('#ovBody').textContent;
@@ -631,16 +675,15 @@ mockServer.listen(0, '127.0.0.1', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }));
       log('ctrl+c duplicates=' + (S.wf.nodes.length === ccBefore + 1));
 
-      // —— 动画节点修复：标签无括号 / 默认色键 / 不越界 ——
-      addNode('anim', 700, 2200);
-      const an2 = S.wf.nodes[S.wf.nodes.length - 1];
+      // —— 任务节点：面包屑 / grid / 待办 ——
+      const tk2 = addNode('task', 700, 2200);
+      addInnerTask(tk2);
       renderCanvas();
-      const an2El = document.querySelector('.wf-node[data-nid="' + an2.id + '"]');
-      const labelsTxt = an2El.textContent;
-      log('anim labels no parens=' + (labelsTxt.indexOf('（长）') < 0 && labelsTxt.indexOf('（宽）') < 0));
-      log('anim default key=' + an2.animKey + ' expect #FF00FF');
-      const paramsRow = an2El.querySelector('.anim-params');
-      log('anim no overflow=' + (paramsRow.scrollWidth <= an2El.clientWidth + 1) + ' scroll=' + paramsRow.scrollWidth + ' node=' + an2El.clientWidth);
+      const tk2El = document.querySelector('.wf-node[data-nid="' + tk2.id + '"]');
+      log('task labels=' + (!!tk2El && tk2El.textContent.indexOf('待办') >= 0));
+      log('task default status=' + tk2.taskStatus + ' expect pending');
+      const gridCell = tk2El && tk2El.querySelector('.task-cell');
+      log('task grid cell=' + !!gridCell);
 
       // —— 文本对话节点 ——
       addNode('chat', 100, 2450);
@@ -990,6 +1033,30 @@ mockServer.listen(0, '127.0.0.1', () => {
         layout: false,
       });
       log('canvas cycle blocked=' + ((blocked.warnings || []).some((w) => String(w).indexOf('回路') >= 0)));
+      ensureAgentToolPresets();
+      const tp = agentToolActivePreset();
+      const prevDraw = tp.allow.canvas_draw;
+      tp.allow.canvas_draw = false;
+      let drawDenied = false;
+      try {
+        await applyCanvasOp('edit', {
+          createMarks: [{ alias: 'mdeny', kind: 'box', x: 10, y: 10, w: 40, h: 20 }],
+          layout: false,
+        });
+      } catch (e) {
+        drawDenied = String((e && e.message) || e).indexOf('不允许') >= 0;
+      }
+      tp.allow.canvas_draw = prevDraw;
+      const prevRead = tp.allow.canvas_read;
+      tp.allow.canvas_read = false;
+      let getDenied = false;
+      try {
+        await applyCanvasOp('get', {});
+      } catch (e) {
+        getDenied = String((e && e.message) || e).indexOf('不允许') >= 0;
+      }
+      tp.allow.canvas_read = prevRead;
+      log('agent tool deny draw=' + drawDenied + ' get=' + getDenied);
 
       window.__chatId = ch.id;
       window.__procId = la.id;

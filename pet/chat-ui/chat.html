@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>BongoChat</title>
+<style>
+:root {
+  --bg: #0d1016;
+  --bg2: #12161f;
+  --panel: #161b25;
+  --panel2: #1b2230;
+  --bd: #2a3544;
+  --tx: #e8eef7;
+  --tx2: #9aa8bc;
+  --orange: #ff8f2e;
+  --orange2: #ffb066;
+  --green: #3ecf8e;
+  --green2: #95ec69;
+  --slot-empty: #3a4556;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%;
+  overflow: hidden; background: transparent;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  user-select: none;
+  color: var(--tx);
+}
+/* 用 inset 避免 height:100%+margin 把底栏裁掉 */
+.panel {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid rgba(255, 143, 46, 0.4);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+  -webkit-app-region: drag;
+  overflow: hidden;
+}
+.head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--bd);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+}
+.head .title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--orange2);
+  letter-spacing: 0.02em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.head .btns { -webkit-app-region: no-drag; display: flex; gap: 5px; flex: none; }
+.head button {
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  width: 28px; height: 24px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0;
+}
+.head button:hover {
+  border-color: var(--orange);
+  color: #fff;
+  background: rgba(255,143,46,0.18);
+}
+.slots {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  -webkit-app-region: no-drag;
+}
+.slot {
+  width: 18px; height: 18px;
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: var(--slot-empty);
+  cursor: pointer;
+  padding: 0;
+  transition: background .15s, box-shadow .15s, border-color .15s;
+}
+.slot.has {
+  background: var(--green);
+  border-color: rgba(62, 207, 142, 0.7);
+}
+.slot.active {
+  box-shadow: 0 0 0 2px rgba(255, 143, 46, 0.85);
+  border-color: var(--orange);
+}
+.slot:hover { filter: brightness(1.12); }
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  -webkit-app-region: no-drag;
+  font-size: 13px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg);
+}
+.msg { max-width: 82%; display: flex; }
+.msg.user { margin-left: auto; justify-content: flex-end; }
+.msg.assistant { margin-right: auto; }
+.msg .bubble {
+  display: inline-block;
+  padding: 8px 10px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  max-width: 100%;
+}
+.msg.user .bubble {
+  background: var(--green2);
+  color: var(--bg);
+  border-top-right-radius: 2px;
+}
+.msg.assistant .bubble {
+  background: #ffffff;
+  color: #1a1a1a;
+  border-top-left-radius: 2px;
+  white-space: normal;
+}
+.msg.assistant .bubble.md { font-size: 12.5px; line-height: 1.65; }
+.msg.assistant .bubble.md > *:first-child { margin-top: 0; }
+.msg.assistant .bubble.md > *:last-child { margin-bottom: 0; }
+.msg.assistant .bubble.md h1,
+.msg.assistant .bubble.md h2,
+.msg.assistant .bubble.md h3,
+.msg.assistant .bubble.md h4 { color: #9a5b00; margin: 8px 0 4px; line-height: 1.35; }
+.msg.assistant .bubble.md h1 { font-size: 16px; }
+.msg.assistant .bubble.md h2 { font-size: 14.5px; }
+.msg.assistant .bubble.md h3 { font-size: 13px; }
+.msg.assistant .bubble.md p { margin: 5px 0; }
+.msg.assistant .bubble.md ul,
+.msg.assistant .bubble.md ol { margin: 5px 0; padding-left: 20px; }
+.msg.assistant .bubble.md li { margin: 2px 0; }
+.msg.assistant .bubble.md code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  background: rgba(0,0,0,.08);
+  border: 1px solid rgba(0,0,0,.18);
+  border-radius: 3px;
+  padding: 1px 4px;
+  color: #c7254e;
+}
+.msg.assistant .bubble.md pre {
+  background: rgba(0,0,0,.06);
+  border: 1px solid rgba(0,0,0,.18);
+  border-radius: 4px;
+  padding: 8px;
+  overflow: auto;
+  margin: 6px 0;
+}
+.msg.assistant .bubble.md pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #222;
+  display: block;
+  line-height: 1.55;
+}
+.msg.assistant .bubble.md a { color: #1267c9; }
+.msg.assistant .bubble.md blockquote {
+  border-left: 3px solid var(--orange);
+  margin: 6px 0;
+  padding: 2px 10px;
+  color: #555;
+  background: rgba(255,143,46,.08);
+}
+.msg.assistant .bubble.md table { border-collapse: collapse; margin: 6px 0; font-size: 11.5px; }
+.msg.assistant .bubble.md th,
+.msg.assistant .bubble.md td { border: 1px solid #ccc; padding: 3px 8px; }
+.msg.assistant .bubble.md th { background: #f3f3f3; }
+.msg.assistant .bubble.md hr { border: none; border-top: 1px dashed #ccc; margin: 8px 0; }
+.msg.assistant .bubble.md img { max-width: 100%; }
+.msg.sys, .msg.status {
+  max-width: 100%;
+  align-self: center;
+  font-size: 12px;
+  color: var(--tx2);
+}
+.msg.status { color: var(--orange2); font-style: italic; }
+.foot {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--bd);
+  background: var(--panel);
+  -webkit-app-region: no-drag;
+}
+.foot input {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--tx);
+  border-radius: 6px;
+  padding: 8px 10px;
+  outline: none;
+}
+.foot input:focus { border-color: var(--orange); }
+.foot button {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 14px;
+  height: 34px;
+  background: linear-gradient(180deg, #ffc878, var(--orange));
+  color: var(--bg);
+  font-weight: 700;
+  cursor: pointer;
+}
+.foot button:disabled { opacity: 0.5; cursor: default; }
+.prov-panel {
+  display: none;
+  position: absolute;
+  top: 44px; right: 10px; left: 10px;
+  z-index: 5;
+  -webkit-app-region: no-drag;
+  background: var(--panel2);
+  border: 1px solid rgba(255,143,46,0.4);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+}
+.prov-panel.open { display: block; }
+.prov-panel label { display: block; font-size: 11px; color: var(--tx2); margin: 6px 0 4px; }
+.prov-panel select {
+  width: 100%;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--tx);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.prov-panel .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.prov-panel .row button {
+  border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 12px;
+}
+.prov-panel .ok { background: var(--orange); color: #111; font-weight: 600; }
+.prov-panel .cancel { background: var(--bd); color: var(--tx); }
+.prov-empty { font-size: 12px; color: var(--tx2); padding: 4px 0; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div class="head">
+      <span class="title" id="title">BongoChat</span>
+      <div class="btns">
+        <button type="button" id="btnProv" title="模型提供商">🐋</button>
+        <button type="button" id="btnClear" title="清空当前会话">清</button>
+        <button type="button" id="btnClose" title="关闭">×</button>
+      </div>
+    </div>
+    <div class="slots" id="slots" title="会话槽位"></div>
+    <div id="provPanel" class="prov-panel">
+      <div class="prov-empty" id="provEmpty" style="display:none">未找到文本服务商，请先在 MTNode 设置中配置。</div>
+      <label>服务商</label>
+      <select id="provSel"></select>
+      <label>模型</label>
+      <select id="modelSel"></select>
+      <div class="row">
+        <button type="button" class="cancel" id="provCancel">取消</button>
+        <button type="button" class="ok" id="provOk">保存</button>
+      </div>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="foot">
+      <input id="input" type="text" placeholder="和我说点什么…" maxlength="2000">
+      <button type="button" id="btnSend">发送</button>
+    </div>
+  </div>
+  <script src="chat.js"></script>
+</body>
+</html>

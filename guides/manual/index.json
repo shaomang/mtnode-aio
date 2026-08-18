@@ -1,0 +1,222 @@
+{
+  "defaultPage": "overview",
+  "sections": [
+    {
+      "id": "start",
+      "title": {
+        "zh": "入门",
+        "en": "Getting started"
+      },
+      "pages": [
+        {
+          "id": "overview",
+          "title": {
+            "zh": "欢迎与产品简介",
+            "en": "Welcome"
+          }
+        },
+        {
+          "id": "first-run",
+          "title": {
+            "zh": "第一次使用",
+            "en": "First run"
+          }
+        },
+        {
+          "id": "ui-tour",
+          "title": {
+            "zh": "界面导览",
+            "en": "Interface tour"
+          }
+        },
+        {
+          "id": "shortcuts",
+          "title": {
+            "zh": "快捷键",
+            "en": "Shortcuts"
+          }
+        }
+      ]
+    },
+    {
+      "id": "canvas",
+      "title": {
+        "zh": "画布",
+        "en": "Canvas"
+      },
+      "pages": [
+        {
+          "id": "nodes-wires",
+          "title": {
+            "zh": "节点、端子与连线",
+            "en": "Nodes and wires"
+          }
+        },
+        {
+          "id": "batch",
+          "title": {
+            "zh": "批量、拆分与合并",
+            "en": "Batch, split, merge"
+          }
+        },
+        {
+          "id": "marks-groups",
+          "title": {
+            "zh": "绘制、框选与组",
+            "en": "Marks, box, groups"
+          }
+        },
+        {
+          "id": "workflows",
+          "title": {
+            "zh": "工作流与创意工坊",
+            "en": "Workflows & workshop"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nodes",
+      "title": {
+        "zh": "节点",
+        "en": "Nodes"
+      },
+      "pages": [
+        {
+          "id": "io-proc",
+          "title": {
+            "zh": "输入 / 处理 / 保存",
+            "en": "Input / process / save"
+          }
+        },
+        {
+          "id": "task-chat",
+          "title": {
+            "zh": "任务与对话",
+            "en": "Tasks and chat"
+          }
+        },
+        {
+          "id": "agent-nodes",
+          "title": {
+            "zh": "智能任务与智能会话",
+            "en": "Agent task & session"
+          }
+        },
+        {
+          "id": "node-guide",
+          "title": {
+            "zh": "节点指南",
+            "en": "Node guides"
+          }
+        }
+      ]
+    },
+    {
+      "id": "flow",
+      "title": {
+        "zh": "控制流",
+        "en": "Control flow"
+      },
+      "pages": [
+        {
+          "id": "task-flow",
+          "title": {
+            "zh": "任务控制流",
+            "en": "Task graph"
+          }
+        },
+        {
+          "id": "timers",
+          "title": {
+            "zh": "定时与延时",
+            "en": "Timer and delay"
+          }
+        },
+        {
+          "id": "routing",
+          "title": {
+            "zh": "闸门、分发与互斥",
+            "en": "Gate, split, mutex"
+          }
+        }
+      ]
+    },
+    {
+      "id": "agent",
+      "title": {
+        "zh": "智能能力",
+        "en": "Agent"
+      },
+      "pages": [
+        {
+          "id": "dsh",
+          "title": {
+            "zh": "智能能力是什么",
+            "en": "What agent mode is"
+          }
+        },
+        {
+          "id": "approvals",
+          "title": {
+            "zh": "审批与权限",
+            "en": "Approvals & permissions"
+          }
+        },
+        {
+          "id": "plugins-skills",
+          "title": {
+            "zh": "插件、技能与 MCP",
+            "en": "Plugins, skills, MCP"
+          }
+        }
+      ]
+    },
+    {
+      "id": "setup",
+      "title": {
+        "zh": "设置与数据",
+        "en": "Settings & data"
+      },
+      "pages": [
+        {
+          "id": "providers",
+          "title": {
+            "zh": "服务商与 API",
+            "en": "Providers & API"
+          }
+        },
+        {
+          "id": "workspace",
+          "title": {
+            "zh": "工作目录与存档",
+            "en": "Workspace & archives"
+          }
+        },
+        {
+          "id": "update",
+          "title": {
+            "zh": "版本更新",
+            "en": "Updates"
+          }
+        }
+      ]
+    },
+    {
+      "id": "faq",
+      "title": {
+        "zh": "问答",
+        "en": "FAQ"
+      },
+      "pages": [
+        {
+          "id": "faq",
+          "title": {
+            "zh": "常见问题",
+            "en": "Common questions"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "pet-pack",
+  "version": "1.0.0",
+  "description": "本目录内容**不会**打进 MTNode AIO 安装包。用户通过顶栏「插件」对话框下载安装到 `%APPDATA%/pipeline-console/.../pet/runtime/`。",
+  "main": "app.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "easy-live2d": "^0.4.4",
+    "pixi.js": "^8.18.1"
+  }
+}

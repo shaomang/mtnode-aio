@@ -12,7 +12,7 @@ import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import { getBuiltinProviders, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { createRequire } from 'node:module'
 import { createInterface } from 'node:readline'
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import path from 'node:path'
@@ -25,11 +25,59 @@ const GATEWAY_DIR = import.meta.dirname
 const GATEWAY_VERSION = '0.1.0'
 const MAX_RUNTIMES = 3
 
+/* Node ESM cannot import a directory. Local plugin rows must name a file
+   (package.json "main" / index.js). Rewrite in place so an old
+   `./plugins/foo` row still boots after pack. */
+function toCordisRel(absFile) {
+  let rel = path.relative(GATEWAY_DIR, absFile).replace(/\\/g, '/')
+  if (!rel.startsWith('.')) rel = './' + rel
+  return rel
+}
+
+function resolveLocalPluginEntry(name) {
+  const n = String(name || '').trim()
+  if (!/^\.\.?[/\\]/.test(n)) return n
+  const abs = path.resolve(GATEWAY_DIR, n)
+  try {
+    if (!statSync(abs).isDirectory()) return n.replace(/\\/g, '/')
+  } catch {
+    return n
+  }
+  if (existsSync(path.join(abs, 'package.json'))) {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(abs, 'package.json'), 'utf8'))
+      const exp = pkg.exports && pkg.exports['.']
+      const main = (typeof exp === 'string' ? exp : exp && exp.default) || pkg.main
+      if (typeof main === 'string') {
+        const file = path.resolve(abs, main)
+        if (existsSync(file) && statSync(file).isFile()) return toCordisRel(file)
+      }
+    } catch { /* fall through to index candidates */ }
+  }
+  for (const cand of ['index.js', 'index.mjs', 'lib/index.js', 'lib/index.mjs']) {
+    const file = path.join(abs, cand)
+    if (existsSync(file) && statSync(file).isFile()) return toCordisRel(file)
+  }
+  return n
+}
+
+function ensureFilePluginEntries() {
+  if (!existsSync(CORDIS_PATH)) return
+  const text = readFileSync(CORDIS_PATH, 'utf8')
+  const next = text.replace(/^(\s*name:\s*')([^']+)(')/gm, (full, a, name, b) => {
+    const resolved = resolveLocalPluginEntry(name)
+    return resolved === name ? full : a + resolved + b
+  })
+  if (next !== text) writeFileSync(CORDIS_PATH, next, 'utf8')
+}
+
+ensureFilePluginEntries()
+
 /* Agent 预设(迁移自 dsh 的 agent-presets 概念):作为每次运行的角色前缀,
    由宿主应用在设置中选择,随 run 参数下发。 */
 const PRESETS = {
   standard:
-    'You are the agent engine inside MTNode, a visual AI-workflow desktop app. Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You can build the visual canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app: create nodes, unique titles, wires, @Title references, and auto-layout. Never switch workflows, never pan/zoom/fit/focus the camera, and never change the user's view — leave the viewport exactly as the user left it. Prefer user-editable layouts: use createMarks (box/text) to zone 编辑区 / 说明 / 处理区, and add control nodes (run/clear) wired to processing nodes so users can re-run easily. Place nodes the user must edit or operate (inputs, editable prompts, control ▶) toward the TOP of the canvas so they are easy to see and use; put heavy processing / save / docs lower or to the right. For image input nodes use kind input_image and set imagePath to an absolute file path so the app loads the image (do not ask the user to drag-drop when the path is known). Keep text processing and image→text (multimodal) isolated: use a dedicated vision/agent node to turn images into text, then wire that text into pure-text nodes so language steps can use a better text-only model — do not hang images on text-only reasoning nodes. Mid-task pixel reading (game UI, screenshot OCR, verify a generated image): call mtnode_vision with imagePath + question instead of stuffing large image batches into the main prompt; the host asks the user for permission the first time. CRITICAL batch safety: batchMode=batch runs once per item — each run must see only that item; never feed the whole batch of N into every run (that causes ~N² image/API calls and huge token waste). Prefer a split node to pick one item before heavy 文生图; use batchMode=agg only when one run should see all items. For per-item batch prefer ordinary proc_text/proc_image (not agent_task / agent mode). CRITICAL for image generation (proc_image): each run produces exactly ONE image — never write prompts that ask for multiple images in one generation; for many images use 1:1 batch items, multiple proc_image nodes, or attempts N. Set proc_image size from imageSizes returned by mtnode_canvas_get (e.g. 2048x1360 / 1280x1280 / auto) to match portrait/landscape/square needs. CRITICAL: never create save_text/save_image after agent_task or proc_text with agent:true — smart nodes write files themselves; a save node would dump irrelevant transcript text. Use save_* only after ordinary (non-agent) proc nodes. CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs into other nodes (session noise; weak key transfer). Prefer file handoff: smart node writes a document, then wait_file (waitPath) wires OUT as a control blocker until the file exists; wait_file has no input ports and outputs nothing — later nodes read the agreed path themselves. Never wire into wait_file. When asked to implement a workflow, create an editable pipeline the user can re-run. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, a visual AI-workflow desktop app. Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You can build the visual canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app: create nodes, unique titles, wires, @Title references, and auto-layout. Never switch workflows, never pan/zoom/fit/focus the camera, and never change the user\'s view — leave the viewport exactly as the user left it. Prefer user-editable layouts: use createMarks (box/text) to zone 编辑区 / 说明 / 处理区, and add control nodes (run/clear) wired to processing nodes so users can re-run easily. Place nodes the user must edit or operate (inputs, editable prompts, control ▶) toward the TOP of the canvas so they are easy to see and use; put heavy processing / save / docs lower or to the right. For image input nodes use kind input_image and set imagePath to an absolute file path so the app loads the image (do not ask the user to drag-drop when the path is known). Keep text processing and image→text (multimodal) isolated: use a dedicated vision/agent node to turn images into text, then wire that text into pure-text nodes so language steps can use a better text-only model — do not hang images on text-only reasoning nodes. Mid-task pixel reading (game UI, screenshot OCR, verify a generated image): call mtnode_vision with imagePath + question instead of stuffing large image batches into the main prompt; the host asks the user for permission the first time. CRITICAL batch safety: batchMode=batch runs once per item — each run must see only that item; never feed the whole batch of N into every run (that causes ~N² image/API calls and huge token waste). Prefer a split node to pick one item before heavy 文生图; use batchMode=agg only when one run should see all items. For per-item batch prefer ordinary proc_text/proc_image (not agent_task / agent mode). CRITICAL for image generation (proc_image): each run produces exactly ONE image — never write prompts that ask for multiple images in one generation; for many images use 1:1 batch items, multiple proc_image nodes, or attempts N. Set proc_image size from imageSizes returned by mtnode_canvas_get (e.g. 2048x1360 / 1280x1280 / auto) to match portrait/landscape/square needs. CRITICAL: never create save_text/save_image after agent_task or proc_text with agent:true — smart nodes write files themselves; a save node would dump irrelevant transcript text. Use save_* only after ordinary (non-agent) proc nodes. CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs into other nodes (session noise; weak key transfer). Prefer file handoff: smart node writes a document, then wait_file (waitPath) wires OUT as a control blocker until the file exists; wait_file has no input ports and outputs nothing — later nodes read the agreed path themselves. Never wire into wait_file. CRITICAL planning: for a complex requirement FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId and kind "judge" for YES/NO branches — do not dump a mixed graph of many proc/save/chat nodes at the top level. When asked to implement a workflow, create an editable pipeline the user can re-run. Work step by step, show the user what you are doing, and end with a clear, complete result.',
   minimal:
     'You are a direct executor. Finish the task with minimal steps and minimal talk; reply only with what matters, and end with the result itself.',
   code:
@@ -501,7 +549,24 @@ async function handleRun(params) {
       },
     })
   } catch (err) {
-    emit('error', { message: String((err && err.message) || err).slice(0, 800) })
+    const message = String((err && err.message) || err).slice(0, 800)
+    /* 运行时进程已死:清掉池里的僵尸 harness,下次 run 重新 spawn */
+    if (
+      runKey &&
+      /runtime is not running|TransportClosed|Harness runtime closed|EPIPE|EOF/i.test(
+        message,
+      )
+    ) {
+      const dead = runtimes.get(runKey)
+      if (dead) {
+        runtimes.delete(runKey)
+        closeBridge(runKey)
+        try {
+          void dead.harness.then((h) => h.close()).catch(() => {})
+        } catch {}
+      }
+    }
+    emit('error', { message })
     emit('done', { finalResponse: '' })
   } finally {
     if (runKey) {
@@ -728,73 +793,320 @@ function readRows() {
   return { shipped, userPart, marker }
 }
 
-/* 完整清单:运行时内置插件(组合中的全部行)+ 用户插件(含停用状态与详情) */
+/* 运行时组合里可在设置中挂载/卸载的非核心行(其余 shipped 行为引擎核心,只读)。
+   平台条件行(disabled: !!js)即使列入此处也不允许手动切换。 */
+const OPTIONAL_RUNTIME_IDS = new Set([
+  'llm-pi-ai',
+  'skill-badge',
+  'web', 'web-search-deepseek', 'tool-web',
+  'subagent', 'subagent-spawn-in-process', 'subagent-fork-in-process',
+  'tool-subagent-control', 'tool-subagent-list-agents',
+  'tool-subagent', 'tool-subagent-fork', 'tool-subagent-report',
+  'workflow-worker-thread', 'tool-workflow',
+  'tool-ralph', 'tool-todo', 'tool-goal',
+  'token-meter', 'compaction-basic', 'command-compact', 'tool-result-pruner',
+  'plan-mode', 'commands', 'command-feedback', 'command-goal',
+  'goal', 'goal-round-driver',
+  'agent-instructions', 'skill', 'skill-filesystem', 'tool-skill',
+  'spill-local', 'spill-policy', 'timeout-policy', 'session-checkpoint-policy',
+  'repeat-tool-reminder', 'tool-jobs',
+])
+
+function isBundledPluginName(name) {
+  return /^\.\.?[/\\]/.test(String(name || ''))
+}
+
+function readJsonSafe(p) {
+  try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null }
+}
+
+function readTextSafe(p) {
+  try { return readFileSync(p, 'utf8') } catch { return '' }
+}
+
+function parsePresetYml(text) {
+  const name = (text.match(/^name:\s*(.+)$/m) || [])[1]
+  const desc = (text.match(/^description:\s*(.+)$/m) || [])[1]
+  const strip = (s) => String(s || '').replace(/^["']|["']$/g, '').trim()
+  return { title: strip(name), description: strip(desc) }
+}
+
+/* Resolve package.json / preset.yml next to a plugin entry.
+   Never use the gateway's own package.json for `./foo.mjs` rows. */
+function lookupPkgDir(name) {
+  const n = String(name || '').trim()
+  if (!n) return { dir: '', pkg: null }
+  const gatewayRoot = path.resolve(GATEWAY_DIR)
+  if (/^\.\.?[/\\]/.test(n)) {
+    const abs = path.resolve(GATEWAY_DIR, n)
+    let dir = abs
+    try {
+      if (statSync(abs).isFile()) dir = path.dirname(abs)
+    } catch {
+      return { dir: '', pkg: null }
+    }
+    let cur = dir
+    for (let i = 0; i < 5; i++) {
+      if (path.resolve(cur) === gatewayRoot) break
+      const pj = path.join(cur, 'package.json')
+      if (existsSync(pj)) return { dir: cur, pkg: readJsonSafe(pj) }
+      const parent = path.dirname(cur)
+      if (parent === cur) break
+      cur = parent
+    }
+    return { dir: path.resolve(dir) === gatewayRoot ? '' : dir, pkg: null }
+  }
+  const pkgRoot = n.startsWith('@')
+    ? n.split('/').slice(0, 2).join('/')
+    : n.split('/')[0]
+  const pkgPath = path.join(GATEWAY_DIR, 'node_modules', pkgRoot, 'package.json')
+  if (existsSync(pkgPath)) {
+    return { dir: path.dirname(pkgPath), pkg: readJsonSafe(pkgPath) }
+  }
+  return { dir: '', pkg: null }
+}
+
+function resolvePluginMeta(name) {
+  const { dir, pkg } = lookupPkgDir(name)
+  let title = ''
+  let description = pkg ? String(pkg.description || '').trim() : ''
+  const version = pkg ? String(pkg.version || '') : ''
+  const presetCandidates = []
+  if (dir) {
+    presetCandidates.push(path.join(dir, 'preset.yml'))
+    presetCandidates.push(path.join(path.dirname(dir), 'preset.yml'))
+  }
+  for (const pp of presetCandidates) {
+    if (!existsSync(pp)) continue
+    const pre = parsePresetYml(readTextSafe(pp))
+    if (pre.title) title = pre.title
+    if (pre.description) description = pre.description
+    break
+  }
+  return {
+    title,
+    description: description.slice(0, 800),
+    version,
+  }
+}
+
+function isUsefulComment(s) {
+  const t = String(s || '').trim()
+  if (t.length < 8) return false
+  if (/^https?:\/\//i.test(t)) return false
+  if (/ESM cannot import/i.test(t)) return false
+  if (/^Bundled optional suite/i.test(t)) return false
+  return true
+}
+
+/* Associate `#` comments immediately above each `- id:` row (blank / `──` resets). */
+function parsePluginRows(text) {
+  const lines = String(text || '').split(/\r?\n/)
+  const rows = []
+  let pending = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    const trimmed = line.trim()
+    if (/^#\s*──/.test(trimmed)) {
+      pending = []
+      i += 1
+      continue
+    }
+    if (trimmed.startsWith('#')) {
+      const c = trimmed.replace(/^#\s?/, '').trim()
+      if (c) pending.push(c)
+      i += 1
+      continue
+    }
+    if (/^- id:/.test(line)) {
+      const id = line.replace(/^- id:\s*/, '').trim()
+      const blockLines = [line]
+      i += 1
+      while (i < lines.length) {
+        const nxt = lines[i]
+        if (/^- id:/.test(nxt) || /^#\s*──/.test(nxt.trim())) break
+        if (nxt.trim() === '') {
+          let j = i + 1
+          while (j < lines.length && lines[j].trim() === '') j += 1
+          if (j >= lines.length || /^- id:/.test(lines[j]) || lines[j].trim().startsWith('#')) break
+        }
+        if (/^\s/.test(nxt) || nxt.trim() === '') {
+          blockLines.push(nxt)
+          i += 1
+          continue
+        }
+        break
+      }
+      rows.push({ id, comments: pending.slice(), block: blockLines.join('\n') })
+      pending = []
+      continue
+    }
+    pending = []
+    i += 1
+  }
+  return rows
+}
+
+function describePlugin(block, kind, extra = {}) {
+  const namem = block.match(/^\s*name:\s*'([^']+)'/m)
+  if (!namem) return null
+  const idm = block.match(/^- id:\s*(\S+)/m)
+  const id = String(extra.id || (idm && idm[1]) || (block.match(/^([^\n]*)/) || ['', ''])[1] || '').trim()
+  const dynamic = /^\s*disabled:\s*!!js\b/m.test(block)
+  const disabled = /^\s*disabled:\s*true\s*$/m.test(block)
+  const core = kind === 'runtime' && (dynamic || !OPTIONAL_RUNTIME_IDS.has(id))
+  const meta = resolvePluginMeta(namem[1])
+  const purpose = (extra.comments || []).filter(isUsefulComment).join('\n').slice(0, 600)
+  const description = (meta.description || purpose).slice(0, 800)
+  return {
+    id,
+    name: namem[1],
+    kind,
+    core,
+    disabled,
+    toggleable: !core && !dynamic,
+    removable: kind === 'user' && !isBundledPluginName(namem[1]),
+    detail: block.trim().slice(0, 600),
+    title: meta.title || id,
+    description,
+    purpose: purpose && purpose !== description ? purpose : '',
+    version: meta.version || '',
+  }
+}
+
+/* 完整清单:运行时内置插件(组合中的全部行)+ 用户/套装插件(含挂载状态) */
 function listPlugins() {
   const { shipped, userPart } = readRows()
   const out = []
-  for (const block of shipped.split(/\n\s*-\s+id:/).slice(1)) {
-    const m = block.match(/^\s*name:\s*'([^']+)'/m)
-    if (!m) continue
-    const idm = block.match(/^([^\n]*)/)
-    out.push({
-      id: (idm && idm[1]) || '',
-      name: m[1],
-      kind: 'runtime',
-      detail: block.trim().slice(0, 600),
-    })
+  for (const row of parsePluginRows(shipped)) {
+    const p = describePlugin(row.block, 'runtime', row)
+    if (p) out.push(p)
   }
-  const userRows = userPart.split(/\n\s*-\s+id:/)
-  for (const block of userRows.slice(1)) {
-    const m = block.match(/^\s*name:\s*'([^']+)'/m)
-    if (!m) continue
-    const idm = block.match(/^([^\n]*)/)
-    out.push({
-      id: (idm && idm[1]) || '',
-      name: m[1],
-      kind: 'user',
-      disabled: /^\s*disabled:\s*true\s*$/m.test(block),
-      detail: block.trim().slice(0, 600),
-    })
+  for (const row of parsePluginRows(userPart)) {
+    const p = describePlugin(row.block, 'user', row)
+    if (p) out.push(p)
   }
   return out
 }
 
-/* 通用用户行启停:在匹配行所在行块增删 disabled 标记 */
+function findPlugin(pkg, id) {
+  return listPlugins().find((p) => (id && p.id === id) || (!id && p.name === pkg))
+}
+
+function rewritePluginBlocks(mutator) {
+  const text = readFileSync(CORDIS_PATH, 'utf8')
+  const first = text.search(/^- id: /m)
+  if (first < 0) throw new Error('cordis.yml 无插件行')
+  const head = text.slice(0, first)
+  const blocks = text.slice(first).split(/^(?=- id: )/m)
+  const next = blocks.map(mutator).join('')
+  writeFileSync(CORDIS_PATH, head + next, 'utf8')
+}
+
+/* 通用行启停:在匹配行块增删 disabled: true(不碰 disabled: !!js 平台条件) */
 function toggleUserRow(matchText, enabled) {
   const { shipped, userPart } = readRows()
   const lines = userPart.split('\n')
   const out = []
   let inTarget = false
+  let added = false
   for (const line of lines) {
-    if (/^\s*-\s+id:/.test(line)) inTarget = false
+    if (/^\s*-\s+id:/.test(line)) {
+      inTarget = false
+      added = false
+    }
     if (line.includes(matchText)) inTarget = true
     if (/^\s*disabled:\s*true\s*$/.test(line) && inTarget && enabled) continue
     out.push(line)
-    if (inTarget && line.includes(matchText) && !enabled) out.push('  disabled: true')
+    if (inTarget && line.includes(matchText) && !enabled && !added) {
+      out.push('  disabled: true')
+      added = true
+    }
   }
   writeFileSync(CORDIS_PATH, shipped + out.join('\n'), 'utf8')
 }
 
-function setPluginEnabled(pkg, enabled) {
-  toggleUserRow(`name: '${pkg}'`, enabled)
+function setPluginEnabled(pkg, enabled, id) {
+  const target = findPlugin(pkg, id)
+  if (!target) throw new Error('未找到该插件')
+  if (!target.toggleable) throw new Error('核心插件不能取消挂载')
+  let found = 0
+  rewritePluginBlocks((block) => {
+    const idm = block.match(/^- id:\s*(\S+)/)
+    const namem = block.match(/^\s*name:\s*'([^']+)'/m)
+    const hit = id
+      ? (idm && idm[1] === id)
+      : (namem && namem[1] === pkg)
+    if (!hit) return block
+    found++
+    if (/^\s*disabled:\s*!!js\b/m.test(block)) {
+      throw new Error('该插件由平台条件控制，不能手动挂载/卸载')
+    }
+    if (enabled) return block.replace(/^\s*disabled:\s*true\s*\n/m, '')
+    if (/^\s*disabled:\s*true\s*$/m.test(block)) return block
+    return block.replace(/^(  name: '[^']+'\n)/m, "$1  disabled: true\n")
+  })
+  if (!found) throw new Error('未找到该插件')
 }
 
 function addPluginRow(pkg) {
   const { shipped, userPart, marker } = readRows()
+  if (userPart.includes(`name: '${pkg}'`)) return
+  const rest = userPart.startsWith(marker) ? userPart.slice(marker.length) : userPart
   const row = `\n- id: user-plugin-${Date.now().toString(36)}\n  name: '${pkg}'\n`
-  writeFileSync(CORDIS_PATH, shipped + marker + userPart + row, 'utf8')
+  writeFileSync(CORDIS_PATH, shipped + marker + rest + row, 'utf8')
 }
 
 function removePluginRow(pkg) {
   const { shipped, userPart, marker } = readRows()
-  const blocks = userPart.split(/\n- id: /)
+  const rest = userPart.startsWith(marker) ? userPart.slice(marker.length) : userPart
+  const blocks = rest.split(/\n- id: /)
   const kept = blocks
-    .filter((block) => {
-      if (!block.includes(`name: '${pkg}'`)) return true
-      return false
-    })
+    .filter((block) => !block.includes(`name: '${pkg}'`))
     .map((block, i) => (i === 0 ? block : '- id: ' + block))
   writeFileSync(CORDIS_PATH, shipped + marker + kept.join(''), 'utf8')
+}
+
+function normalizePluginSpec(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  if (/dsh-routing-suite/i.test(s)) {
+    return { kind: 'suite', install: s, name: s, raw: s }
+  }
+  const ghUrl = s.match(/^https?:\/\/github\.com\/([^/\s]+)\/([^/\s#?]+)(?:\.git)?/i)
+  if (ghUrl) {
+    const repo = ghUrl[2].replace(/\.git$/i, '')
+    return { kind: 'github', install: 'github:' + ghUrl[1] + '/' + repo, name: repo, raw: s }
+  }
+  if (/^github:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(s)) {
+    return { kind: 'github', install: s, name: s.slice(s.indexOf('/') + 1), raw: s }
+  }
+  if (/^https?:\/\/\S+\.tgz(\?|$)/i.test(s)) {
+    return { kind: 'tgz', install: s, name: path.basename(s).replace(/\.tgz$/i, ''), raw: s }
+  }
+  if (isBundledPluginName(s) && existsSync(path.resolve(GATEWAY_DIR, s))) {
+    return { kind: 'bundled', install: s, name: s.replace(/\\/g, '/'), raw: s }
+  }
+  if ((/^[A-Za-z]:[\\/]/.test(s) || s.startsWith('/')) && existsSync(s)) {
+    return { kind: 'local', install: s, name: s, raw: s }
+  }
+  if (/^(@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/.test(s)) {
+    return { kind: 'npm', install: s, name: s, raw: s }
+  }
+  return null
+}
+
+function depNames(pkgJson) {
+  return new Set(Object.keys((pkgJson && pkgJson.dependencies) || {}))
+}
+
+function newDepName(before, after) {
+  const b = depNames(before)
+  for (const n of depNames(after)) {
+    if (!b.has(n)) return n
+  }
+  return ''
 }
 
 function runPackageManager(args) {
@@ -827,17 +1139,49 @@ function runPackageManager(args) {
 }
 
 async function handlePluginAdd(pkg) {
-  if (typeof pkg !== 'string' || !/^(@[a-z0-9-]+\/)?[a-z0-9-]+$/.test(pkg)) {
-    return { ok: false, error: '插件名格式无效' }
+  const spec = normalizePluginSpec(pkg)
+  if (!spec) {
+    return { ok: false, error: '插件名格式无效（支持 npm 包名、GitHub 地址、本地路径或 .tgz）' }
   }
-  await runPackageManager(['add', pkg, '--save-exact'])
-  addPluginRow(pkg)
+  if (spec.kind === 'suite') {
+    return {
+      ok: true,
+      restarted: false,
+      plugins: listPlugins(),
+      message: 'dsh-routing-suite 已内置：请在插件列表中挂载/取消挂载注入器与路由预设',
+    }
+  }
+  if (spec.kind === 'bundled') {
+    addPluginRow(spec.name)
+    await closeAllRuntimes()
+    return { ok: true, restarted: true, plugins: listPlugins() }
+  }
+  let pkgJsonBefore = {}
+  try {
+    pkgJsonBefore = JSON.parse(readFileSync(path.join(GATEWAY_DIR, 'package.json'), 'utf8'))
+  } catch {}
+  await runPackageManager(['add', spec.install, '--save-exact'])
+  let name = spec.name
+  try {
+    const pkgJsonAfter = JSON.parse(readFileSync(path.join(GATEWAY_DIR, 'package.json'), 'utf8'))
+    name = newDepName(pkgJsonBefore, pkgJsonAfter) || spec.name
+  } catch {}
+  addPluginRow(name)
   await closeAllRuntimes()
   return { ok: true, restarted: true, plugins: listPlugins() }
 }
 
 async function handlePluginRemove(pkg) {
-  await runPackageManager(['remove', pkg])
+  const target = findPlugin(pkg)
+  if (target && !target.removable) {
+    return { ok: false, error: '内置套装插件只能取消挂载，不能移除' }
+  }
+  if (target && isBundledPluginName(target.name)) {
+    return { ok: false, error: '内置套装插件只能取消挂载，不能移除' }
+  }
+  if (!isBundledPluginName(pkg) && !/^[A-Za-z]:[\\/]/.test(pkg) && !pkg.startsWith('/')) {
+    try { await runPackageManager(['remove', pkg]) } catch { /* 本地/套装行可能不在 package.json */ }
+  }
   removePluginRow(pkg)
   await closeAllRuntimes()
   return { ok: true, restarted: true, plugins: listPlugins() }
@@ -967,11 +1311,12 @@ rl.on('line', (line) => {
         case 'pluginEnable':
         case 'pluginDisable': {
           const pkg = (msg.params ?? {}).pkg
-          if (typeof pkg !== 'string' || !pkg) {
+          const pid = (msg.params ?? {}).id
+          if ((typeof pkg !== 'string' || !pkg) && (typeof pid !== 'string' || !pid)) {
             reply(undefined, '缺少插件名')
             break
           }
-          setPluginEnabled(pkg, msg.method === 'pluginEnable')
+          setPluginEnabled(pkg, msg.method === 'pluginEnable', pid)
           await closeAllRuntimes()
           reply({ ok: true, restarted: true, plugins: listPlugins() })
           break

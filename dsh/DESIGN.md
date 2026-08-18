@@ -82,7 +82,7 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `interact` | `{kind:'question'\|'approval'\|'canvas', id, answers?\|outcome?\|result?}` | 回答提问 / 审批 / 画布工具结果,按交互 id 路由回对应运行时 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
-| `pluginList` / `pluginAdd` / `pluginRemove` / `pluginEnable` / `pluginDisable` | `{pkg}` 等 | 读取/安装/移除/启停 cordis.yml 用户插件,变更后重启运行时 |
+| `pluginList` / `pluginAdd` / `pluginRemove` / `pluginEnable` / `pluginDisable` | `{pkg, id?}` 等 | 读取/安装/移除/挂载/卸载 cordis.yml 插件。`pluginList` 每项含 `title`/`description`/`purpose`/`version`(来自 package.json、preset.yml、行上注释)。核心运行时行只读;非核心(用户插件、套装、可选 shipped 行)可在设置中挂载/卸载;变更后重启运行时 |
 | `mcpList` / `mcpAdd` / `mcpRemove` / `mcpSetEnabled` | `{serverName, …}` | MCP 服务器管理(cordis 用户段,变更后重启运行时) |
 | `shutdown` | — | 关闭全部运行时并退出 gateway |
 
@@ -100,6 +100,33 @@ questions}`)、`approval`(越权审批,`{id, sessionId, toolName, callId?, reaso
 | `chat` 对话 | 新增「智能助手」开关:开启后走 dsh 会话(历史由节点自持),有记忆、会动手、流式思考;工作目录用文件夹窗口选择 | 开关关闭 = 原 API 路径,一字不改 |
 | `proc_text` 文本处理 | 新增「agent 模式」开关:提示词成为任务,可读文件/联网,输出回填 output 槽;批量 = 每条一次 run(全部并行) | 关闭 = 原 buildSpec/apiCall 路径 |
 | `agent_task`(新) | 通用 agent 节点:与 proc_text 功能对齐(@引用 / 多输入 / 批量 / 聚合 / 模型选择 / 输出浏览 / 停止),无「多次尝试」;服务商固定 DeepSeek 路由 | dsh 不可用时节点报错置灰,不落盘脏数据 |
+| `wait_file` 需求等待 | 监视路径,文件就绪后放行;无输入、不输出内容 | 仅控制线 |
+| `timer` 定时触发器 | 一次计划 / 间隔(天时分) / Cron(本地时间);Cron 旁可「智能填写」;武装后到点启用输出端目标;也可接在控制流中等待下一次触发点 | 无输入端子 |
+| `delayer` 延时器 | 控制脉冲到达后等待指定时长(天/时/分)再继续;也可 ▶ 立即延时并启用目标 | 有输入 |
+| `sequencer` 序列器 | 多路输出(2–8);按序逐路点燃,可设步间间隔;也可 ▶ 试跑 | 有输入 |
+| `gate` 闸门 | 多路输入 AND:按配置路数(2–8)每一口都到达后放行一次并清零;未接线口也挡住放行;▶ 强制放行 | 有输入(2–8) |
+| `splitter` 分发 | 一路入同时点亮多路出(并行扇出) | 有输入 |
+| `counter` 计数 | 每 N 次控制脉冲放行一次 | 有输入 |
+| `mutex` 互斥 | 多入选一(OR);任一输入到达即放行;▶ 按先到/端口优先/随机标记 | 有输入(2–8) |
+| `judge` 判断 | 用文本模型对照任务目标裁决 YES/NO,两个输出端子(fromIndex 0=是, 1=否) | 无 Key 时任务进入需干涉 |
+
+### 控制流节点方案(全集)
+
+| 类别 | 节点 | 状态 | 作用 |
+|---|---|---|---|
+| 边界 | 起点 / 成功终点 / 失败终点 | 已有 | 任务控制流入口与终态 |
+| 批控 | 执行 / 清空 | 已有 | 对已连接目标批量 ▶ 或清空 |
+| 等待 | 需求等待 `wait_file` | 已有 | 监视文件就绪后放行 |
+| 时间 | 定时触发器 `timer` | 已有 | 计划/间隔/Cron 主动触发 |
+| 时间 | 延时器 `delayer` | 已有 | 脉冲到达后延迟再继续(单次) |
+| 分支 | 判断 `judge` | 已有 | YES/NO 双路径 |
+| 编排 | 序列器 `sequencer` | 已有 | 按序扇出多路 |
+| 编排 | 闸门 `gate` | **已实现** | 多路控制入全部到达才放行(AND) |
+| 编排 | 分发 `splitter` | **已实现** | 一路入同时点亮多路出(并行扇出) |
+| 编排 | 计数 `counter` | **已实现** | 每经过 N 次放行一次 |
+| 编排 | 互斥 `mutex` | **已实现** | 多入选一路(先到/优先/随机) |
+
+控制类节点画布上统一金色外圈(`.is-ctrl`),内部底色与标题色按种类区分。
 
 所有 dsh 工作目录输入框都提供「浏览」按钮(系统文件夹窗口),同时保留手填。
 
@@ -119,6 +146,10 @@ questions}`)、`approval`(越权审批,`{id, sessionId, toolName, callId?, reaso
   "preset": "standard",            // agent 预设: standard/minimal/code/cordis
   "chatEnter": "send",             // 对话发送行为: send(Enter 发送) / newline(Ctrl+Enter 发送)
   "permissionPreset": "mtnode-unattended", // 权限预设: mtnode-unattended/workspace-write/read-only/danger-full-access
+  "agentToolPresetId": "default",          // 当前 Agent 工具许可预设 id
+  "agentToolPresets": [                    // 工具许可预设列表；default 为内置「当前能力全开」
+    { "id": "default", "name": "默认（当前能力）", "builtin": true, "allow": { "canvas_read": true, "canvas_nodes": true, "canvas_control": true, "canvas_draw": true, "canvas_layout": true, "app_ops": true, "app_delete": true, "fs_read": true, "fs_write": true, "shell": true, "web": true, "subagent": true, "ask_user": true, "vision": true } }
+  ],
   "doneSound": true,               // 长任务(>5 分钟)完成音效
   "theme": "industrial"            // 主题色(10 款,见 app.js THEMES)
 }
@@ -141,8 +172,14 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 
 ## 插件扩展(需求 3)
 
-- 插件 = npm 包名 + cordis.yml 追加行。设置面板提供列表/添加/移除;gateway 用捆绑
-  pnpm 在 `dsh/gateway/` 安装,成功后重启运行时。
+- 插件 = npm 包名 / GitHub 地址 / 本地路径 + cordis.yml 追加行。设置面板提供列表/
+  添加/移除;非核心插件(用户安装、bundled 套装、可选 shipped 行)可 **挂载 / 取消挂载**,
+  核心运行时行只读。gateway 用捆绑 pnpm 在 `dsh/gateway/` 安装,成功后重启运行时。
+- 已内置 [dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite):
+  注入器(`./plugins/dsh-super-injector/lib/index.js`)默认挂载;router-standard 默认挂载
+  (assemble 永不抛错,保留 MTNode persona 与 `mtnode_*` 工具);router-spec
+  默认卸载(与 standard 互斥)。
+  见 `dsh/gateway/plugins/README.md`。
 - 高级用户可直接编辑 cordis.yml(只读展示 + 复制路径)。
 - 插件声明自己不保证 rc 版本兼容;安装失败回滚 package.json 与 cordis.yml。
 
@@ -158,6 +195,8 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 | `mtnode_vision` | 识图子代理:对本地绝对路径图片调用视觉模型作答;首次需用户许可(允许一次/始终允许/拒绝) |
 
 渲染层 `applyCanvasOp` 是唯一写画布的地方:校验节点类型与回路、拒绝删除正在运行的节点、一次编辑一条撤销记录。典型任务(「实现物品配置工作流」)由模型一次 `edit` 创建「需求 → 生成 → 写入配置表」管道,用户可继续改提示词并点 ▶ 运行。
+
+右上角「审批」另有 **Agent 工具许可预设**(与 `permissionPreset` 正交):按类别开关画布读/节点/控制/绘图/排版、应用操作、引擎基础能力、识图。内置 `default` 预设为当前产品能力全开;用户可克隆自定义。`applyCanvasOp` / `applyAppOp` / `applyVisionInspect` 对画布/应用/识图做硬拦截;读文件/终端/联网等经 `dshRunTask` 注入系统提示约束。
 
 ## 指引(需求 4)
 

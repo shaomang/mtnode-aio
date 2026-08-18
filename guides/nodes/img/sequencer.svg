@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 200" width="520" height="200">
+  <rect width="520" height="200" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="20" y="64" width="80" height="44" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="60" y="90" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">脉冲</text>
+  <line x1="100" y1="86" x2="150" y2="86" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="150" y="64" width="90" height="44" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="195" y="90" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">序列器</text>
+  <line x1="240" y1="86" x2="300" y2="40" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="240" y1="86" x2="300" y2="86" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="240" y1="86" x2="300" y2="132" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="300" y="20" width="90" height="36" rx="6" fill="#181220" stroke="#c9a0ff" stroke-width="1.6"/>
+  <text x="345" y="42" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">1 →</text>
+  <rect x="300" y="68" width="90" height="36" rx="6" fill="#181220" stroke="#c9a0ff" stroke-width="1.6"/>
+  <text x="345" y="90" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">2 →</text>
+  <rect x="300" y="116" width="90" height="36" rx="6" fill="#181220" stroke="#c9a0ff" stroke-width="1.6"/>
+  <text x="345" y="138" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">3 →</text>
+  <text x="260" y="190" text-anchor="middle" fill="#5a6472" font-size="10" font-family="Segoe UI,sans-serif">placeholder · sequencer · replace guides/nodes/img/sequencer.svg</text>
+</svg>

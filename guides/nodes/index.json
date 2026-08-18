@@ -1,0 +1,29 @@
+{
+  "localeDefault": "zh",
+  "ids": [
+    "input_text",
+    "input_image",
+    "proc_text",
+    "proc_image",
+    "save_text",
+    "save_image",
+    "split",
+    "merge",
+    "task",
+    "chat",
+    "agent_task",
+    "control",
+    "ctrl-start",
+    "ctrl-end-ok",
+    "ctrl-end-fail",
+    "judge",
+    "wait_file",
+    "timer",
+    "delayer",
+    "sequencer",
+    "gate",
+    "splitter",
+    "counter",
+    "mutex"
+  ]
+}

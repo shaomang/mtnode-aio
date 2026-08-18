@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: file: blob:; media-src 'self' file:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' file:">
+<title>MTNode Pet</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <img id="bgImg" class="layer bg" src="models/bongocat-standard/resources/background.png" alt="">
+  <canvas id="live2dCanvas" class="layer live2d"></canvas>
+  <!-- Live2D 就绪前显示；就绪后隐藏，避免静置爪与按键爪重叠 -->
+  <img id="coverImg" class="layer cover" src="models/bongocat-standard/resources/cover.png" alt="">
+  <div id="overlays" class="overlays"></div>
+  <div class="btn-bar">
+    <button type="button" id="btnChat" class="btn-icon" title="对话">💬</button>
+    <button type="button" id="btnMenu" class="btn-icon" title="菜单">☰</button>
+  </div>
+  <script src="vendor/live2dcubismcore.min.js"></script>
+  <script src="live2d.bundle.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

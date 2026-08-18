@@ -55,6 +55,31 @@ if (!pluginNames.includes('./canvas-plugin.mjs')) {
   process.exit(1)
 }
 console.log('[2] canvas plugin present')
+if (!pluginNames.includes('./plugins/dsh-super-injector/lib/index.js')) {
+  console.log('[fail] bundled injector missing from pluginList')
+  process.exit(1)
+}
+const injector = ((pl.result && pl.result.plugins) || []).find((p) => p.name === './plugins/dsh-super-injector/lib/index.js')
+if (!injector || injector.core || !injector.toggleable) {
+  console.log('[fail] injector should be non-core and toggleable', injector)
+  process.exit(1)
+}
+if (!injector.description) {
+  console.log('[fail] injector missing description', injector)
+  process.exit(1)
+}
+console.log('[2] injector bundled (toggleable)')
+const canvas = ((pl.result && pl.result.plugins) || []).find((p) => p.name === './canvas-plugin.mjs')
+if (!canvas || !canvas.description) {
+  console.log('[fail] canvas plugin missing description', canvas)
+  process.exit(1)
+}
+const router = ((pl.result && pl.result.plugins) || []).find((p) => p.id === 'dsh-router-standard')
+if (!router || !/routing/i.test(router.description || '')) {
+  console.log('[fail] router-standard missing preset description', router)
+  process.exit(1)
+}
+console.log('[2] plugin descriptions present')
 
 const accepted = await req('run', {
   reqId: runReqId, workspace, input: '测试任务', model: 'deepseek-v4-flash',

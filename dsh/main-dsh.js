@@ -179,8 +179,8 @@ function createDshAdapter(opts) {
       return request('pluginRemove', { pkg }, 600000)
     },
 
-    pluginSetEnabled(pkg, enabled) {
-      return request(enabled ? 'pluginEnable' : 'pluginDisable', { pkg }, 120000)
+    pluginSetEnabled(pkg, enabled, id) {
+      return request(enabled ? 'pluginEnable' : 'pluginDisable', { pkg, id }, 120000)
     },
 
     mcpList() {

@@ -202,6 +202,131 @@ function appVersion() {
   }
 }
 ipcMain.handle("app:version", () => ({ ok: true, version: appVersion() }));
+function loadMarkdownPack(root, id, locale) {
+  const safe = String(id || "").replace(/[^a-z0-9_-]/gi, "");
+  if (!safe) return { ok: false, error: "bad id" };
+  const loc = String(locale || "").toLowerCase().startsWith("en") ? "en" : "zh";
+  const candidates = [];
+  if (loc === "en") candidates.push(join(root, "en", safe + ".md"));
+  candidates.push(join(root, safe + ".md"));
+  let mdPath = "";
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      mdPath = p;
+      break;
+    }
+  }
+  if (!mdPath) return { ok: false, error: "missing", id: safe };
+  let markdown = "";
+  try {
+    markdown = fs.readFileSync(mdPath, "utf8");
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+  const assets = {};
+  const re = /!\[[^\]]*\]\(([^)]+)\)/g;
+  let m;
+  while ((m = re.exec(markdown))) {
+    const rel = String(m[1] || "").trim().replace(/\\/g, "/");
+    if (!rel || rel.indexOf("..") >= 0 || /^[a-z]+:/i.test(rel)) continue;
+    const abs = join(root, rel);
+    const normRoot = root.replace(/\\/g, "/").toLowerCase();
+    const normAbs = abs.replace(/\\/g, "/").toLowerCase();
+    if (normAbs !== normRoot && !normAbs.startsWith(normRoot + "/")) continue;
+    if (!fs.existsSync(abs)) continue;
+    try {
+      const buf = fs.readFileSync(abs);
+      const ext = path.extname(abs).toLowerCase();
+      const mime =
+        ext === ".svg"
+          ? "image/svg+xml"
+          : ext === ".png"
+            ? "image/png"
+            : ext === ".webp"
+              ? "image/webp"
+              : ext === ".gif"
+                ? "image/gif"
+                : ext === ".jpg" || ext === ".jpeg"
+                  ? "image/jpeg"
+                  : "application/octet-stream";
+      assets[rel] = "data:" + mime + ";base64," + buf.toString("base64");
+    } catch (_) {}
+  }
+  return { ok: true, id: safe, markdown, assets };
+}
+
+function docsManualRoot() {
+  return join(__dirname, "guides", "manual");
+}
+
+function loadDocsCatalog() {
+  const p = join(docsManualRoot(), "index.json");
+  try {
+    const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+    if (!raw || !Array.isArray(raw.sections))
+      return { ok: false, error: "bad catalog" };
+    return { ok: true, catalog: raw };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+
+ipcMain.handle("guide:load", (e, opts) => {
+  opts = opts || {};
+  return loadMarkdownPack(
+    join(__dirname, "guides", "nodes"),
+    opts.id,
+    opts.locale,
+  );
+});
+ipcMain.handle("docs:catalog", () => loadDocsCatalog());
+ipcMain.handle("docs:load", (e, opts) => {
+  opts = opts || {};
+  return loadMarkdownPack(docsManualRoot(), opts.id, opts.locale);
+});
+ipcMain.handle("docs:bundle", (e, opts) => {
+  opts = opts || {};
+  const cat = loadDocsCatalog();
+  if (!cat.ok) return cat;
+  const locale = String(opts.locale || "").toLowerCase().startsWith("en")
+    ? "en"
+    : "zh";
+  const locKey = locale === "en" ? "en" : "zh";
+  const parts = [];
+  let total = 0;
+  const MAX = 80000;
+  const PAGE_MAX = 4500;
+  const sections = (cat.catalog && cat.catalog.sections) || [];
+  for (const sec of sections) {
+    const secTitle =
+      (sec.title && (sec.title[locKey] || sec.title.zh || sec.title.en)) ||
+      sec.id ||
+      "";
+    for (const page of sec.pages || []) {
+      if (total >= MAX) break;
+      const pid = page && page.id;
+      const pack = loadMarkdownPack(docsManualRoot(), pid, locale);
+      if (!pack.ok) continue;
+      const pageTitle =
+        (page.title && (page.title[locKey] || page.title.zh || page.title.en)) ||
+        pid;
+      let body = String(pack.markdown || "")
+        .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+        .trim();
+      if (body.length > PAGE_MAX) body = body.slice(0, PAGE_MAX) + "\n…";
+      const chunk =
+        "\n\n## " + secTitle + " / " + pageTitle + "\n\n" + body;
+      if (total + chunk.length > MAX) {
+        parts.push(chunk.slice(0, Math.max(0, MAX - total)));
+        total = MAX;
+        break;
+      }
+      parts.push(chunk);
+      total += chunk.length;
+    }
+  }
+  return { ok: true, text: parts.join(""), bytes: total };
+});
 ipcMain.handle("i18n:setLocale", (e, locale) => {
   applyMainLocale(locale);
   return { ok: true, locale: I18n.getLocale() };
@@ -1935,8 +2060,8 @@ ipcMain.handle("dsh:pluginAdd", (event, pkg) => dsh().pluginAdd(pkg));
 
 ipcMain.handle("dsh:pluginRemove", (event, pkg) => dsh().pluginRemove(pkg));
 
-ipcMain.handle("dsh:pluginSetEnabled", (event, { pkg, enabled }) =>
-  dsh().pluginSetEnabled(pkg, enabled)
+ipcMain.handle("dsh:pluginSetEnabled", (event, { pkg, enabled, id }) =>
+  dsh().pluginSetEnabled(pkg, enabled, id)
 );
 
 ipcMain.handle("dsh:mcpList", () => dsh().mcpList());

@@ -47,11 +47,19 @@ const KIND_CLS = {
   proc_image: "proc-img",
   save_text: "sv",
   save_image: "sv",
-  anim: "anim",
+  task: "task",
   chat: "proc",
   agent_task: "agent",
   control: "ctrl",
   wait_file: "wait",
+  timer: "timer",
+  judge: "judge",
+  delayer: "delayer",
+  sequencer: "sequencer",
+  gate: "gate",
+  splitter: "splitter",
+  counter: "counter",
+  mutex: "mutex",
 };
 
 /* 节点标题栏拖动手柄图标（SVG，stroke=currentColor） */
@@ -74,9 +82,9 @@ const KIND_ICON_SVG = {
   /* 保存 · 图像 */
   save_image:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="10.2" y="3" width="3.2" height="2.6" rx=".4" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
-  /* 动画 */
-  anim:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="4" width="11" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 4V3M8 4V3M10.5 4V3M5.5 13v-1M8 13v-1M10.5 13v-1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M6.6 6.6l4 2.2-4 2.2V6.6z" fill="currentColor"/></svg>',
+  /* 任务 · 规划步骤 */
+  task:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 6.1l1.5 1.5 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 10.6h6.8M4.6 12.4h4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
   /* 对话 */
   chat:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.5h7.2a1.4 1.4 0 0 1 1.4 1.4v3.4a1.4 1.4 0 0 1-1.4 1.4H7.2L4.6 12V9.7H3.2A1.4 1.4 0 0 1 1.8 8.3V4.9a1.4 1.4 0 0 1 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8.8 4.8h4a1.2 1.2 0 0 1 1.2 1.2v2.6a1.2 1.2 0 0 1-1.2 1.2h-.8V12l-2-1.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>',
@@ -86,21 +94,92 @@ const KIND_ICON_SVG = {
   /* 控制 */
   control:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.6 5.8l4.2 2.2-4.2 2.2V5.8z" fill="currentColor"/></svg>',
+  ctrl_start:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 5.6l4.4 2.4-4.4 2.4V5.6z" fill="currentColor"/></svg>',
+  ctrl_end_ok:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 8.2l1.8 1.8 3.8-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  ctrl_end_fail:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 6l4 4M10 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  judge:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4l5.4 5.6L8 13.6 2.6 8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 6.2v2.2M8 10.4h.01" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   /* 需求等待 */
   wait_file:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h5.2L12 5.6V13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.1 2.9V5.5H11.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="9.2" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 8.1v1.4l.9.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 定时触发器 */
+  timer:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.6v3.6l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 2.8l1.3 1.3M12.8 2.8l-1.3 1.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  /* 延时器 */
+  delayer:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h4.2M8.8 8H13" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 6.6v1.6l1.1.7" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 序列器 */
+  sequencer:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.2" cy="4.2" r="1.15" fill="currentColor"/><circle cx="3.2" cy="8" r="1.15" fill="currentColor"/><circle cx="3.2" cy="11.8" r="1.15" fill="currentColor"/><path d="M5.2 4.2h3.2L12 8 8.4 11.8H5.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 6.4V9.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  /* 闸门 AND */
+  gate:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 3.6v8.8" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><path d="M2.8 8h3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6 4.2c3.2 0 5.6 1.7 5.6 3.8S9.2 11.8 6 11.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="3.2" cy="4.4" r="1" fill="currentColor"/><circle cx="3.2" cy="8" r="1" fill="currentColor"/><circle cx="3.2" cy="11.6" r="1" fill="currentColor"/><circle cx="13" cy="8" r="1.15" fill="currentColor"/></svg>',
+  /* 分发 并行扇出 */
+  splitter:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.2" cy="8" r="1.2" fill="currentColor"/><path d="M4.6 8h3.2M7.8 8l3.4-3.4M7.8 8l3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12.4" cy="4.2" r="1.15" fill="currentColor"/><circle cx="12.4" cy="8" r="1.15" fill="currentColor"/><circle cx="12.4" cy="11.8" r="1.15" fill="currentColor"/></svg>',
+  /* 计数 */
+  counter:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2.8" width="10" height="10.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.4 10.2V5.8h1.7c1.15 0 1.85.55 1.85 1.45 0 .7-.4 1.2-1.05 1.4L9.8 10.2H8.3l-1.1-1.85H6.7v1.85H5.4z" fill="currentColor"/></svg>',
+  /* 互斥 */
+  mutex:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.2" cy="4.2" r="1.15" fill="currentColor"/><circle cx="3.2" cy="11.8" r="1.15" fill="currentColor"/><path d="M4.6 4.2h2.4L9.4 8 7 11.8H4.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12.2" cy="8" r="1.2" fill="currentColor"/><path d="M9.4 6.2l1.8 1.8-1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  /* 节点指南 */
+  node_guide:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h7.4A1.4 1.4 0 0 1 12.2 4v9.2H4.6A1.2 1.2 0 0 1 3.4 12V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M12.2 13.2h.8V4.4A1.4 1.4 0 0 0 11.6 3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M5.6 5.2h4.2M5.6 7.4h4.2M5.6 9.6h2.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
   /* 拆分 */
   split:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h4.2M7.7 8l3.3-3.2M7.7 8l3.3 3.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><circle cx="3.2" cy="8" r="1.2" fill="currentColor"/><circle cx="12.3" cy="4.5" r="1.2" fill="currentColor"/><circle cx="12.3" cy="11.5" r="1.2" fill="currentColor"/></svg>',
   /* 合并 */
   merge:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 8H8.3M8.3 8L5 4.8M8.3 8L5 11.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12.8" cy="8" r="1.2" fill="currentColor"/><circle cx="3.7" cy="4.5" r="1.2" fill="currentColor"/><circle cx="3.7" cy="11.5" r="1.2" fill="currentColor"/></svg>',
+  /* 绘制 · 笔 + 画板 */
+  draw:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="8.6" height="7.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.4 12.6l5.2-5.2 1.15 1.15-5.2 5.2H7.4v-1.15z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 8.5l1.15 1.15" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.2h5.2M4 7.2h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
+  /* 菜单操作 */
+  menu_copy:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.2" y="4.2" width="7.2" height="8.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.6 10.6V3.8A1.1 1.1 0 0 1 4.7 2.7h6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
+  menu_delete:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 4.6h9.2M6.2 4.6V3.5h3.6v1.1M5.2 4.6l.6 8h4.4l.6-8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  menu_color:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6c2.9 0 5.4 2.1 5.4 5.1 0 1.7-1.1 2.6-2.2 2.6-.7 0-1.1-.4-1.1-1.1 0-.3.1-.7.1-1 0-1.5-1.2-2.6-2.2-2.6S5.8 6.7 5.8 8.2c0 .3.1.7.1 1 0 .7-.4 1.1-1.1 1.1-1.1 0-2.2-.9-2.2-2.6C2.6 4.7 5.1 2.6 8 2.6z" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="5.6" cy="6.4" r=".8" fill="currentColor"/><circle cx="8" cy="5.2" r=".8" fill="currentColor"/><circle cx="10.4" cy="6.4" r=".8" fill="currentColor"/></svg>',
+  menu_ungroup:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="3.4" width="6.4" height="5.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.4"/><rect x="7" y="7.2" width="6.4" height="5.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>',
+  menu_cut:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.2" cy="11.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11.8" cy="11.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 10.4L12.2 3.4M10.5 10.4L3.8 3.4" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
+  menu_saveas:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v7.4M5.4 7.4L8 10.2 10.6 7.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.4 12.6h9.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  menu_preview:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 8c1.6-2.8 3.6-4.2 5.6-4.2S12 5.2 13.6 8c-1.6 2.8-3.6 4.2-5.6 4.2S4 10.8 2.4 8z" fill="none" stroke="currentColor" stroke-width="1.25"/><circle cx="8" cy="8" r="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>',
+  mark_text:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3.4h8M8 3.4v9.2M5.4 12.6h5.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
+  mark_box:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3.4" width="10" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+  mark_arrow:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 8h9.2M9.2 4.8L13.2 8 9.2 11.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
 function nodeKindIconKey(node) {
   if (!node) return "proc_text";
   if (node.kind === "proc_text" && node.agent) return "agent_task";
+  if (node.kind === "control") {
+    if (node.ctrlRole === "start") return "ctrl_start";
+    if (node.ctrlRole === "endSuccess") return "ctrl_end_ok";
+    if (node.ctrlRole === "endFail") return "ctrl_end_fail";
+  }
   return node.kind || "proc_text";
+}
+
+function nodeKindIconCls(node) {
+  if (!node) return "proc";
+  if (node.kind === "control") {
+    if (node.ctrlRole === "endSuccess") return "ctrl-ok";
+    if (node.ctrlRole === "endFail") return "ctrl-fail";
+    if (node.ctrlRole === "start") return "ctrl-start";
+  }
+  return KIND_CLS[node.kind] || "proc";
 }
 
 function fillNodeKindIcon(el, node) {
@@ -224,13 +303,14 @@ const NODE_DEFAULTS = {
   },
   split: { w: 260, h: 190, title: "拆分" },
   merge: { w: 230, h: 150, title: "合并" },
-  anim: {
-    w: 280,
-    h: 300,
-    title: "动画",
-    animCols: 4,
-    animRows: 4,
-    animKey: "#FF00FF",
+  task: {
+    w: 320,
+    h: 280,
+    title: "任务",
+    goal: "",
+    steps: [],
+    parentTaskId: "",
+    taskStatus: "pending",
     output: null,
     error: null,
     ranAt: 0,
@@ -276,7 +356,22 @@ const NODE_DEFAULTS = {
     title: "控制",
     ctrlAction: "run",
     ctrlFillOnly: false,
+    ctrlRole: "",
+    ctrlPinned: false,
     running: false,
+  },
+  judge: {
+    w: 260,
+    h: 180,
+    title: "判断",
+    prompt: "",
+    providerId: "",
+    model: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+    judgeResult: "",
   },
   wait_file: {
     w: 300,
@@ -291,7 +386,459 @@ const NODE_DEFAULTS = {
     waitStatus: "",
     waitReady: false,
   },
+  timer: {
+    w: 340,
+    h: 280,
+    title: "定时触发器",
+    timerMode: "interval",
+    timerAt: "",
+    timerEverySec: 3600,
+    timerCron: "0 * * * *",
+    timerArmed: false,
+    timerLastAt: 0,
+    timerNextAt: 0,
+    timerFireCount: 0,
+    timerStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  delayer: {
+    w: 320,
+    h: 220,
+    title: "延时器",
+    delaySec: 60,
+    delayStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  sequencer: {
+    w: 320,
+    h: 240,
+    title: "序列器",
+    seqOutputs: 3,
+    seqGapSec: 0,
+    seqStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  gate: {
+    w: 300,
+    h: 220,
+    title: "闸门",
+    gateInputs: 2,
+    gateArrived: {},
+    gateStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  splitter: {
+    w: 300,
+    h: 220,
+    title: "分发",
+    splitOutputs: 3,
+    splitStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  counter: {
+    w: 300,
+    h: 200,
+    title: "计数",
+    counterEvery: 2,
+    counterCount: 0,
+    counterStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  mutex: {
+    w: 300,
+    h: 240,
+    title: "互斥",
+    mutexInputs: 2,
+    mutexMode: "first",
+    mutexStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
 };
+
+const TASK_STATUS_LABEL = {
+  pending: "待办",
+  running: "进行中",
+  done: "完成",
+  failed: "失败",
+  blocked: "需干涉",
+  skipped: "跳过",
+};
+
+function currentTaskFocus() {
+  return S.taskFocus || "";
+}
+function nodeParentTaskId(n) {
+  return (n && n.parentTaskId) || "";
+}
+function markParentTaskId(m) {
+  return (m && m.parentTaskId) || "";
+}
+function nodeInCurrentScope(n) {
+  return !!n && nodeParentTaskId(n) === currentTaskFocus();
+}
+function visibleWfNodes() {
+  return ((S.wf && S.wf.nodes) || []).filter(nodeInCurrentScope);
+}
+function visibleMarks() {
+  const f = currentTaskFocus();
+  return marksOf().filter((m) => markParentTaskId(m) === f);
+}
+function taskChildrenOf(id) {
+  if (!id || !S.wf) return [];
+  return (S.wf.nodes || []).filter((n) => n.parentTaskId === id);
+}
+function taskChildTasksOf(id) {
+  return taskChildrenOf(id).filter((n) => n.kind === "task");
+}
+function ctrlRoleOf(n) {
+  return n && n.kind === "control" ? String(n.ctrlRole || "") : "";
+}
+function isExecStart(n) {
+  return ctrlRoleOf(n) === "start";
+}
+function isExecEnd(n) {
+  const r = ctrlRoleOf(n);
+  return r === "endSuccess" || r === "endFail";
+}
+function isPinnedCtrl(n) {
+  return !!(n && n.kind === "control" && n.ctrlPinned);
+}
+function outputCount(n) {
+  if (!n) return 0;
+  if (n.kind === "save_text" || n.kind === "save_image") return 0;
+  if (isExecEnd(n)) return 0;
+  if (n.kind === "judge") return 2;
+  if (n.kind === "sequencer")
+    return Math.max(2, Math.min(8, Math.round(Number(n.seqOutputs) || 3)));
+  if (n.kind === "splitter")
+    return Math.max(2, Math.min(8, Math.round(Number(n.splitOutputs) || 3)));
+  return 1;
+}
+function uniqueTitleInWf(wf, desired) {
+  const base = String(desired || I18n.t("节点")).trim() || I18n.t("节点");
+  const taken = new Set(((wf && wf.nodes) || []).map((n) => n.title));
+  if (!taken.has(base)) return base;
+  let i = 2;
+  while (taken.has(base + " " + i)) i++;
+  return base + " " + i;
+}
+function ensureTaskScaffold(task, wf) {
+  wf = wf || S.wf;
+  if (!task || task.kind !== "task" || !wf) return;
+  if (!Array.isArray(wf.nodes)) wf.nodes = [];
+  const kids = wf.nodes.filter((n) => n.parentTaskId === task.id);
+  const mk = (role, x, y, title) => {
+    const d = NODE_DEFAULTS.control;
+    const node = {
+      id: uid("n"),
+      kind: "control",
+      x: snap(x),
+      y: snap(y),
+      w: 180,
+      h: 96,
+    };
+    for (const [k, v] of Object.entries(d)) {
+      if (k === "w" || k === "h") continue;
+      node[k] = JSON.parse(JSON.stringify(v));
+    }
+    node.parentTaskId = task.id;
+    node.ctrlRole = role;
+    node.ctrlPinned = true;
+    node.ctrlAction = "run";
+    node.title = uniqueTitleInWf(wf, I18n.t(title));
+    wf.nodes.push(node);
+    return node;
+  };
+  if (!kids.some(isExecStart)) mk("start", 48, 96, "起点");
+  if (!kids.some((n) => ctrlRoleOf(n) === "endSuccess"))
+    mk("endSuccess", 520, 48, "成功终点");
+  if (!kids.some((n) => ctrlRoleOf(n) === "endFail"))
+    mk("endFail", 520, 200, "失败终点");
+}
+function taskStartOf(taskId, wf) {
+  wf = wf || S.wf;
+  return (
+    ((wf && wf.nodes) || []).find(
+      (n) => n.parentTaskId === taskId && isExecStart(n),
+    ) || null
+  );
+}
+function taskDescendantIds(taskId, wf) {
+  wf = wf || S.wf;
+  const out = [];
+  const q = [taskId];
+  const seen = new Set();
+  while (q.length) {
+    const id = q.shift();
+    for (const n of (wf && wf.nodes) || []) {
+      if (n.parentTaskId !== id || seen.has(n.id)) continue;
+      seen.add(n.id);
+      out.push(n.id);
+      if (n.kind === "task") q.push(n.id);
+    }
+  }
+  return out;
+}
+function normalizeTaskSteps(node) {
+  if (!node || node.kind !== "task") return;
+  if (!Array.isArray(node.steps)) node.steps = [];
+  for (const s of node.steps) {
+    if (!s || typeof s !== "object") continue;
+    if (!s.id) s.id = uid("ts");
+    if (typeof s.title !== "string") s.title = "";
+    s.done = !!s.done;
+  }
+  node.steps = node.steps.filter((s) => s && typeof s === "object");
+  if (typeof node.goal !== "string") node.goal = "";
+  if (!node.taskStatus) node.taskStatus = "pending";
+  if (typeof node.parentTaskId !== "string") node.parentTaskId = "";
+}
+function taskAncestorChain(taskId) {
+  const chain = [];
+  const seen = new Set();
+  let id = taskId;
+  while (id && !seen.has(id)) {
+    seen.add(id);
+    const n = nodeById(id);
+    if (!n || n.kind !== "task") break;
+    chain.unshift(n);
+    id = n.parentTaskId || "";
+  }
+  return chain;
+}
+function resetTaskFocus() {
+  S.taskFocus = "";
+  S.taskStack = [];
+  renderTaskCrumb();
+}
+function setTaskFocus(taskId, opts) {
+  opts = opts || {};
+  const id = taskId || "";
+  if (id) {
+    const n = nodeById(id);
+    if (!n || n.kind !== "task") return;
+    S.taskFocus = id;
+    S.taskStack = taskAncestorChain(id).map((x) => x.id);
+  } else {
+    S.taskFocus = "";
+    S.taskStack = [];
+  }
+  S.sel = null;
+  if (S.selSet) S.selSet.clear();
+  S.selWire = null;
+  S.selGroup = null;
+  renderTaskCrumb();
+  if (opts.render !== false) {
+    renderCanvas();
+    renderStatus();
+  }
+}
+function tidyLayoutScope(nodes, opts) {
+  opts = opts || {};
+  const list = (nodes || []).filter(Boolean);
+  if (!list.length) return { ok: false, nodes: 0 };
+  if (opts.history && !S._skipCanvasHistory) pushHistory();
+  const ids = new Set(list.map((n) => n.id));
+  const wires = ((S.wf && S.wf.wires) || []).filter(
+    (w) => ids.has(w.from) && ids.has(w.to),
+  );
+  for (const n of list) sizeNodeForTidy(n);
+  const origin = opts.origin || { x: snap(48), y: snap(48) };
+  layoutFlowEx(list, wires, origin, [], {
+    gapX: opts.gapX != null ? opts.gapX : 80,
+    gapY: opts.gapY != null ? opts.gapY : 48,
+    prioritizeEditable: true,
+  });
+  if (opts.fit !== false) fitNodes(list);
+  if (opts.render !== false) {
+    renderCanvas();
+    if (opts.save !== false) scheduleSave(true);
+  }
+  return { ok: true, nodes: list.length };
+}
+function enterTask(node, opts) {
+  opts = opts || {};
+  if (!node || node.kind !== "task") return;
+  setTaskFocus(node.id, { render: false });
+  const kids = taskChildrenOf(node.id);
+  if (kids.length) {
+    tidyLayoutScope(kids, {
+      history: false,
+      fit: true,
+      render: false,
+      save: false,
+      origin: { x: snap(48), y: snap(48) },
+    });
+  }
+  renderCanvas();
+  renderStatus();
+  if (opts.toast !== false)
+    toast(I18n.t("已进入任务：") + (node.title || I18n.t("任务")), "ok");
+}
+function leaveTask() {
+  const stack = S.taskStack || [];
+  if (!stack.length) {
+    resetTaskFocus();
+    renderCanvas();
+    renderStatus();
+    return;
+  }
+  stack.pop();
+  const prev = stack[stack.length - 1] || "";
+  setTaskFocus(prev);
+}
+function renderTaskCrumb() {
+  const el = $("#taskCrumb");
+  if (!el) return;
+  const focus = currentTaskFocus();
+  if (!focus) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = "";
+  const root = document.createElement("button");
+  root.type = "button";
+  root.className = "task-crumb-item";
+  root.textContent = I18n.t("画布");
+  root.title = I18n.t("返回顶层画布");
+  root.onclick = (ev) => {
+    ev.stopPropagation();
+    setTaskFocus("");
+  };
+  el.appendChild(root);
+  const chain = taskAncestorChain(focus);
+  chain.forEach((n, i) => {
+    const sep = document.createElement("span");
+    sep.className = "task-crumb-sep";
+    sep.textContent = "/";
+    el.appendChild(sep);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      "task-crumb-item" + (i === chain.length - 1 ? " on" : "");
+    b.textContent = n.title || I18n.t("任务");
+    b.title = I18n.t("进入任务：") + (n.title || "");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      if (i === chain.length - 1) return;
+      enterTask(n, { toast: false });
+    };
+    el.appendChild(b);
+  });
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "task-crumb-back mini";
+  back.textContent = I18n.t("← 返回");
+  back.title = I18n.t("返回上一层");
+  back.onclick = (ev) => {
+    ev.stopPropagation();
+    leaveTask();
+  };
+  el.appendChild(back);
+}
+function groupVisibleInScope(g) {
+  if (!g) return false;
+  ensureGroupArrays(g);
+  if ((g.nodeIds || []).some((id) => nodeInCurrentScope(nodeById(id))))
+    return true;
+  const f = currentTaskFocus();
+  return (g.markIds || []).some((id) => {
+    const m = (S.wf.marks || []).find((x) => x.id === id);
+    return m && markParentTaskId(m) === f;
+  });
+}
+function topoOrderByWires(nodes) {
+  const list = (nodes || []).filter(Boolean);
+  if (list.length <= 1) return list.slice();
+  const ids = new Set(list.map((n) => n.id));
+  const incoming = {};
+  for (const n of list) incoming[n.id] = 0;
+  for (const w of (S.wf && S.wf.wires) || []) {
+    if (!ids.has(w.from) || !ids.has(w.to)) continue;
+    incoming[w.to] = (incoming[w.to] || 0) + 1;
+  }
+  const ready = list
+    .filter((n) => !incoming[n.id])
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const out = [];
+  const seen = new Set();
+  while (ready.length) {
+    const n = ready.shift();
+    if (seen.has(n.id)) continue;
+    seen.add(n.id);
+    out.push(n);
+    for (const w of S.wf.wires || []) {
+      if (w.from !== n.id || !ids.has(w.to)) continue;
+      incoming[w.to] -= 1;
+      if (incoming[w.to] <= 0) {
+        const t = list.find((x) => x.id === w.to);
+        if (t && !seen.has(t.id)) ready.push(t);
+        ready.sort((a, b) => a.y - b.y || a.x - b.x);
+      }
+    }
+  }
+  for (const n of list.sort((a, b) => a.y - b.y || a.x - b.x)) {
+    if (!seen.has(n.id)) out.push(n);
+  }
+  return out;
+}
+function taskSummaryText(node, ran) {
+  normalizeTaskSteps(node);
+  const lines = [];
+  lines.push("# " + (node.title || I18n.t("任务")));
+  if (node.goal) {
+    lines.push("");
+    lines.push(node.goal);
+  }
+  if (node.steps.length) {
+    lines.push("");
+    lines.push(I18n.t("步骤："));
+    for (const s of node.steps) {
+      lines.push((s.done ? "- [x] " : "- [ ] ") + (s.title || ""));
+    }
+  }
+  const kids = taskChildTasksOf(node.id);
+  if (kids.length) {
+    lines.push("");
+    lines.push(I18n.t("子任务："));
+    for (const k of kids) {
+      const st = TASK_STATUS_LABEL[k.taskStatus] || k.taskStatus || "pending";
+      lines.push("- " + (k.title || I18n.t("任务")) + " · " + I18n.t(st));
+    }
+  }
+  if (ran && ran.length) {
+    lines.push("");
+    lines.push(I18n.t("已执行：") + I18n.listJoin(ran));
+  }
+  const r = selResult(node);
+  if (r && r.output && r.output.kind === "text" && r.output.text && !ran)
+    return r.output.text;
+  return lines.join("\n");
+}
+
 const PROVIDER_TYPE_LABELS = [
   ["text_openai", "文本 · OpenAI 兼容（chat/completions）"],
   ["image_openai", "图像 · OpenAI 兼容（images/generations / edits）"],
@@ -797,6 +1344,18 @@ function dshCancelActive() {
   return window.api.dshCancel(p).catch(() => {})
 }
 
+function isCancelishError(msg) {
+  return /中止|取消|cancel|abort|aborted|已终止|已手动停止|已请求终止|已请求中断/i.test(
+    String(msg || ""),
+  );
+}
+
+function stripStreamErrors(text) {
+  return String(text || "")
+    .replace(/(?:^|\n)⚠[^\n]*/g, "")
+    .trim();
+}
+
 /* mtnode 服务商(非 DeepSeek 官方)同步给引擎:经 pi-ai 手写 profile 路由 */
 function mtnodePiProviders() {
   const out = [];
@@ -863,7 +1422,9 @@ function dshRunTask(input, opts) {
     maxTokens: Number(d.maxTokens) || 49152,
     apiKey,
     baseUrl,
-    systemPrompt: opts.systemPrompt || "",
+    systemPrompt: [opts.systemPrompt || "", agentToolPolicySystemNote()]
+      .filter(Boolean)
+      .join("\n\n"),
     preset: opts.preset || d.preset || "standard",
     effort: dshEffortOf(opts.effort, !!(opts.node && opts.node.kind === "proc_text")),
     provider,
@@ -967,7 +1528,12 @@ function dshRunTask(input, opts) {
             if (opts.onDone) {
               try { opts.onDone(data); } catch {}
             }
-            finish(true, String(accText || data.finalResponse || ""));
+            /* 网关常先 emit error 再 done(空正文);不可吞掉 seenError 当成成功空回复 */
+            if (seenError) {
+              finish(false, new Error(String(seenError)));
+            } else {
+              finish(true, String(accText || data.finalResponse || ""));
+            }
           }
         }
       )
@@ -1038,6 +1604,23 @@ function onDshNodeEvent(node, attemptT, type, data) {
   const viewing = !!(owner && S.wf && owner.id === S.wf.id);
   if (type === "text" && data.text) {
     node._pendingAnswer = (node._pendingAnswer || "") + data.text;
+    if (viewing) {
+      const el = document.getElementById("dsh-out-stream-" + node.id);
+      if (el) {
+        el.classList.remove("n-empty");
+        el.textContent = node._pendingAnswer;
+      }
+      const nel = document.getElementById("agent-node-stream-" + node.id);
+      if (nel) nel.textContent = node._pendingAnswer;
+      autoFitOutputHeight(node);
+      scrollAgentConv(node);
+    }
+  }
+  if (type === "error" && data && data.message) {
+    if (node._aborted || isCancelishError(data.message)) return;
+    const errLine = "\n⚠ " + data.message;
+    node._pendingAnswer = (node._pendingAnswer || "") + errLine;
+    pushThinking(node.id, attemptT || 0, errLine + "\n");
     if (viewing) {
       const el = document.getElementById("dsh-out-stream-" + node.id);
       if (el) {
@@ -1477,6 +2060,9 @@ const S = {
   assistW: 320, /* 右侧助手栏宽度：最小 320，最大半屏 */
   /* 排队等待上游执行的节点 id（▶ 显示 pending 动效） */
   pendingRun: new Set(),
+  /* 任务节点「进入」：只显示 parentTaskId === taskFocus 的节点 */
+  taskFocus: "",
+  taskStack: [],
 };
 
 /* ============ 撤销 / 重做 ============ */
@@ -1653,8 +2239,23 @@ function nodeById(id) {
   return S.wf ? S.wf.nodes.find((n) => n.id === id) : null;
 }
 function isControlKind(n) {
-  /* 控制：批量清空/执行；需求等待：仅阻塞后续，不产生数据输出 */
-  return !!(n && (n.kind === "control" || n.kind === "wait_file"));
+  /* 控制 / 起点终点 / 需求等待 / 定时 / 延时 / 序列 / 闸门 / 分发 / 计数 / 互斥 / 判断：指挥线 */
+  return !!(
+    n &&
+    (n.kind === "control" ||
+      n.kind === "wait_file" ||
+      n.kind === "timer" ||
+      n.kind === "delayer" ||
+      n.kind === "sequencer" ||
+      n.kind === "gate" ||
+      n.kind === "splitter" ||
+      n.kind === "counter" ||
+      n.kind === "mutex" ||
+      n.kind === "judge")
+  );
+}
+function hasFixedInPorts(n) {
+  return !!(n && (n.kind === "gate" || n.kind === "mutex"));
 }
 function wireFromIsControl(w) {
   return isControlKind(nodeById(w && w.from));
@@ -1672,13 +2273,14 @@ function allWiresTo(id) {
     .sort((a, b) => a.toIndex - b.toIndex);
 }
 function hasOutput(n) {
-  return n.kind !== "save_text" && n.kind !== "save_image";
+  return outputCount(n) > 0;
 }
 function isTextSource(n) {
   return (
     n.kind === "input_text" ||
     n.kind === "proc_text" ||
     n.kind === "agent_task" ||
+    n.kind === "task" ||
     n.kind === "merge" ||
     n.kind === "split" ||
     n.kind === "chat"
@@ -1689,8 +2291,7 @@ function isImageSource(n) {
     n.kind === "input_image" ||
     n.kind === "proc_image" ||
     n.kind === "merge" ||
-    n.kind === "split" ||
-    n.kind === "anim"
+    n.kind === "split"
   );
 }
 /* 连线着色：从图像类节点拉出的数据线（控制线仍用金色） */
@@ -1698,14 +2299,24 @@ function isImageWireFrom(n) {
   return !!(
     n &&
     (n.kind === "input_image" ||
-      n.kind === "proc_image" ||
-      n.kind === "anim")
+      n.kind === "proc_image")
   );
 }
 
 function inputCount(node) {
-  /* chat / 只读 / 需求等待：无输入端子（等待节点仅监视文件，用输出控制线阻塞下游） */
-  if (node.ro || node.kind === "chat" || node.kind === "wait_file") return 0;
+  /* chat / 只读 / 需求等待 / 定时 / 起点：无输入端子 */
+  if (
+    node.ro ||
+    node.kind === "chat" ||
+    node.kind === "wait_file" ||
+    node.kind === "timer" ||
+    isExecStart(node)
+  )
+    return 0;
+  if (node.kind === "gate")
+    return Math.max(2, Math.min(8, Math.round(Number(node.gateInputs) || 2)));
+  if (node.kind === "mutex")
+    return Math.max(2, Math.min(8, Math.round(Number(node.mutexInputs) || 2)));
   return Math.max(1, allWiresTo(node.id).length + 1);
 }
 function minWFor(n) {
@@ -1761,9 +2372,18 @@ function nodeKindLabel(node) {
     agent_task: "智能任务",
     save_text: "存文",
     save_image: "存图",
-    anim: "动画",
+    task: "任务",
     chat: "对话",
+    wait_file: "等待",
+    timer: "定时",
+    delayer: "延时",
+    sequencer: "序列",
+    gate: "闸门",
+    splitter: "分发",
+    counter: "计数",
+    mutex: "互斥",
     control: "控制",
+    judge: "判断",
     input_text: "文本",
     input_image: "图像",
   };
@@ -2021,6 +2641,719 @@ function closeOverlay() {
   $("#overlay").style.display = "none";
 }
 
+/* 独立于 #overlay 的深色确认 / 输入框（设置等弹窗打开时也能用，不冲掉内容） */
+let _mtDialogSeq = 0;
+function ensureMtDialog() {
+  let host = document.getElementById("mtDialog");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "mtDialog";
+  host.className = "mt-dialog";
+  host.innerHTML =
+    '<div class="mt-dialog-box" role="dialog" aria-modal="true">' +
+    '<div class="mt-dialog-head"><b id="mtDlgTitle"></b></div>' +
+    '<div class="mt-dialog-body" id="mtDlgBody"></div>' +
+    '<div class="mt-dialog-foot" id="mtDlgFoot"></div>' +
+    "</div>";
+  document.body.appendChild(host);
+  return host;
+}
+
+function closeMtDialog() {
+  const host = document.getElementById("mtDialog");
+  if (host) host.classList.remove("on");
+}
+
+function confirmDialog(message, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const host = ensureMtDialog();
+    const seq = ++_mtDialogSeq;
+    const titleEl = document.getElementById("mtDlgTitle");
+    const body = document.getElementById("mtDlgBody");
+    const foot = document.getElementById("mtDlgFoot");
+    if (titleEl) titleEl.textContent = opts.title || I18n.t("确认");
+    if (body) {
+      body.innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "mt-dialog-msg";
+      p.textContent = String(message || "");
+      body.appendChild(p);
+    }
+    if (foot) foot.innerHTML = "";
+    let done = false;
+    const onKey = (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        finish(false);
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        finish(true);
+      }
+    };
+    const finish = (ok) => {
+      if (done || seq !== _mtDialogSeq) return;
+      done = true;
+      host.removeEventListener("keydown", onKey);
+      closeMtDialog();
+      resolve(!!ok);
+    };
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "mini";
+    cancel.textContent = opts.cancelText || I18n.t("取消");
+    cancel.onclick = () => finish(false);
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = opts.danger ? "mini danger" : "mini primary";
+    ok.textContent = opts.okText || I18n.t("确定");
+    ok.onclick = () => finish(true);
+    if (foot) {
+      foot.appendChild(cancel);
+      foot.appendChild(ok);
+    }
+    host.classList.add("on");
+    host.addEventListener("keydown", onKey);
+    setTimeout(() => {
+      try {
+        ok.focus();
+      } catch (_) {}
+    }, 0);
+  });
+}
+
+function promptDialog(message, defaultValue, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const host = ensureMtDialog();
+    const seq = ++_mtDialogSeq;
+    const titleEl = document.getElementById("mtDlgTitle");
+    const body = document.getElementById("mtDlgBody");
+    const foot = document.getElementById("mtDlgFoot");
+    if (titleEl) titleEl.textContent = opts.title || I18n.t("输入");
+    let inp = null;
+    if (body) {
+      body.innerHTML = "";
+      if (message) {
+        const p = document.createElement("p");
+        p.className = "mt-dialog-msg";
+        p.textContent = String(message);
+        body.appendChild(p);
+      }
+      inp = document.createElement("input");
+      inp.type = opts.inputType || "text";
+      inp.className = "mt-dialog-input";
+      inp.value = defaultValue == null ? "" : String(defaultValue);
+      if (opts.placeholder) inp.placeholder = opts.placeholder;
+      body.appendChild(inp);
+    }
+    if (foot) foot.innerHTML = "";
+    let done = false;
+    const onKey = (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        finish(null);
+      }
+    };
+    const finish = (val) => {
+      if (done || seq !== _mtDialogSeq) return;
+      done = true;
+      host.removeEventListener("keydown", onKey);
+      closeMtDialog();
+      resolve(val);
+    };
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "mini";
+    cancel.textContent = opts.cancelText || I18n.t("取消");
+    cancel.onclick = () => finish(null);
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "mini primary";
+    ok.textContent = opts.okText || I18n.t("确定");
+    ok.onclick = () => finish(inp ? inp.value : "");
+    if (inp) {
+      inp.onkeydown = (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          finish(inp.value);
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          finish(null);
+        }
+      };
+      setTimeout(() => {
+        try {
+          inp.focus();
+          inp.select();
+        } catch (_) {}
+      }, 0);
+    }
+    if (foot) {
+      foot.appendChild(cancel);
+      foot.appendChild(ok);
+    }
+    host.classList.add("on");
+    host.addEventListener("keydown", onKey);
+  });
+}
+
+function nodeGuideId(node) {
+  if (!node) return "";
+  if (node.kind === "control") {
+    if (node.ctrlRole === "start") return "ctrl-start";
+    if (node.ctrlRole === "endSuccess") return "ctrl-end-ok";
+    if (node.ctrlRole === "endFail") return "ctrl-end-fail";
+    return "control";
+  }
+  return node.kind || "";
+}
+
+function closeNodeGuideDlg() {
+  const host = document.getElementById("nodeGuideDlg");
+  if (host) host.classList.remove("on");
+}
+
+function ensureNodeGuideDlg() {
+  let host = document.getElementById("nodeGuideDlg");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "nodeGuideDlg";
+  host.className = "mt-dialog node-guide-dlg";
+  host.innerHTML =
+    '<div class="mt-dialog-box node-guide-box" role="dialog" aria-modal="false">' +
+    '<div class="mt-dialog-head node-guide-head">' +
+    '<b id="nodeGuideTitle"></b>' +
+    '<button type="button" class="mini node-guide-x" id="nodeGuideClose" title="">✕</button>' +
+    "</div>" +
+    '<div class="mt-dialog-body node-guide-body md" id="nodeGuideBody"></div>' +
+    '<div class="mt-dialog-foot">' +
+    '<button type="button" class="mini" id="nodeGuideOk"></button>' +
+    "</div></div>";
+  document.body.appendChild(host);
+  const close = () => closeNodeGuideDlg();
+  host.querySelector("#nodeGuideClose").onclick = close;
+  host.querySelector("#nodeGuideOk").onclick = close;
+  host.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      close();
+    }
+  });
+  return host;
+}
+
+function renderGuideMarkdown(text, assets) {
+  let html = renderMarkdown(text);
+  assets = assets || {};
+  html = html.replace(/<img src="([^"]+)"/g, (m, u) => {
+    const raw = String(u || "").trim();
+    const hit = assets[raw] || assets[decodeURIComponent(raw)];
+    if (hit) return '<img src="' + hit + '"';
+    return m;
+  });
+  return html;
+}
+
+async function openNodeGuide(node) {
+  const id = nodeGuideId(node);
+  if (!id) {
+    toast(I18n.t("找不到该节点指南"), "warn");
+    return;
+  }
+  const host = ensureNodeGuideDlg();
+  const titleEl = host.querySelector("#nodeGuideTitle");
+  const body = host.querySelector("#nodeGuideBody");
+  const footBtn = host.querySelector("#nodeGuideOk");
+  const xBtn = host.querySelector("#nodeGuideClose");
+  const name = node.title || I18n.t(nodeKindLabel(node)) || id;
+  if (titleEl) titleEl.textContent = I18n.t("节点指南") + " · " + name;
+  if (footBtn) footBtn.textContent = I18n.t("关闭");
+  if (xBtn) xBtn.title = I18n.t("关闭");
+  if (body) body.innerHTML = "<p class='n-empty'>" + I18n.t("载入中…") + "</p>";
+  host.classList.add("on");
+  try {
+    const loc = I18n.getLocale ? I18n.getLocale() : "zh";
+    const r = await window.api.guideLoad(id, loc);
+    if (!r || !r.ok) {
+      if (body)
+        body.innerHTML =
+          "<p class='n-empty'>" +
+          I18n.t("找不到该节点指南") +
+          " <code>" +
+          id +
+          "</code></p>";
+      return;
+    }
+    if (body) body.innerHTML = renderGuideMarkdown(r.markdown, r.assets);
+  } catch (e) {
+    if (body)
+      body.innerHTML =
+        "<p class='n-empty'>" +
+        I18n.t("载入失败：") +
+        ((e && e.message) || String(e)) +
+        "</p>";
+  }
+}
+
+const APP_DOCS = {
+  catalog: null,
+  pageId: "",
+  filter: "",
+  chat: [],
+  busy: false,
+  askOpen: false,
+  bundle: "",
+  pageTitle: "",
+};
+
+function docsLocale() {
+  return I18n.getLocale && I18n.getLocale() === "en" ? "en" : "zh";
+}
+
+function docsLocText(obj, fallback) {
+  if (!obj) return fallback || "";
+  if (typeof obj === "string") return obj;
+  if (typeof obj !== "object") return fallback || "";
+  const loc = docsLocale();
+  return obj[loc] || obj.zh || obj.en || fallback || "";
+}
+
+function closeAppDocs() {
+  const host = document.getElementById("appDocsDlg");
+  if (!host) return;
+  host.classList.remove("on", "ask-on");
+  APP_DOCS.askOpen = false;
+  const btn = $("#btnDocs");
+  if (btn) btn.classList.remove("on");
+}
+
+function appDocsOnEscape() {
+  const host = document.getElementById("appDocsDlg");
+  if (!host || !host.classList.contains("on")) return;
+  if (APP_DOCS.askOpen) {
+    setDocsAskOpen(false);
+    return;
+  }
+  closeAppDocs();
+}
+
+function setDocsAskOpen(on) {
+  APP_DOCS.askOpen = !!on;
+  const host = document.getElementById("appDocsDlg");
+  if (host) host.classList.toggle("ask-on", APP_DOCS.askOpen);
+  const toggle = host && host.querySelector("#appDocsAskBtn");
+  if (toggle) toggle.classList.toggle("on", APP_DOCS.askOpen);
+  if (APP_DOCS.askOpen) {
+    const ta = host && host.querySelector("#appDocsAskInput");
+    if (ta) setTimeout(() => ta.focus(), 0);
+  }
+}
+
+function paintAppDocsChrome() {
+  const host = document.getElementById("appDocsDlg");
+  if (!host) return;
+  const title = host.querySelector("#appDocsTitle");
+  const askBtn = host.querySelector("#appDocsAskBtn");
+  const closeBtn = host.querySelector("#appDocsClose");
+  const filter = host.querySelector("#appDocsFilter");
+  const askTitle = host.querySelector("#appDocsAskTitle");
+  const askSub = host.querySelector("#appDocsAskSub");
+  const askSend = host.querySelector("#appDocsAskSend");
+  const askHide = host.querySelector("#appDocsAskHide");
+  const inp = host.querySelector("#appDocsAskInput");
+  if (title) title.textContent = I18n.t("使用手册");
+  if (askBtn) {
+    askBtn.textContent = I18n.t("答疑");
+    askBtn.title = I18n.t("文档答疑：仅根据本手册回答，不会操作画布");
+  }
+  if (closeBtn) closeBtn.title = I18n.t("关闭");
+  if (filter) filter.placeholder = I18n.t("筛选目录…");
+  if (askTitle) askTitle.textContent = I18n.t("文档答疑");
+  if (askSub)
+    askSub.textContent = I18n.t("仅根据内置手册作答，不会改画布");
+  if (askSend) askSend.textContent = I18n.t("发送");
+  if (askHide) askHide.title = I18n.t("关闭");
+  if (inp)
+    inp.placeholder = I18n.t("问手册…（Enter 发送，Shift+Enter 换行）");
+}
+
+function ensureAppDocsDlg() {
+  let host = document.getElementById("appDocsDlg");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "appDocsDlg";
+  host.className = "mt-dialog app-docs-dlg";
+  host.innerHTML =
+    '<div class="mt-dialog-box app-docs-box" role="dialog" aria-modal="true">' +
+    '<div class="app-docs-head">' +
+    '<b id="appDocsTitle"></b>' +
+    '<div class="app-docs-head-actions">' +
+    '<button type="button" class="mini" id="appDocsAskBtn"></button>' +
+    '<button type="button" class="mini node-guide-x" id="appDocsClose">✕</button>' +
+    "</div></div>" +
+    '<div class="app-docs-main">' +
+    '<aside class="app-docs-nav">' +
+    '<input id="appDocsFilter" class="app-docs-filter" type="text">' +
+    '<nav class="app-docs-tree" id="appDocsTree"></nav>' +
+    "</aside>" +
+    '<article class="app-docs-article md" id="appDocsBody"></article>' +
+    '<aside class="app-docs-ask" id="appDocsAskPane">' +
+    '<div class="app-docs-ask-head">' +
+    '<b id="appDocsAskTitle"></b>' +
+    '<span class="app-docs-ask-sub" id="appDocsAskSub"></span>' +
+    '<button type="button" class="mini" id="appDocsAskHide">✕</button>' +
+    "</div>" +
+    '<div class="app-docs-ask-list" id="appDocsAskList"></div>' +
+    '<div class="app-docs-ask-foot">' +
+    '<textarea id="appDocsAskInput" rows="2"></textarea>' +
+    '<button type="button" class="mini primary" id="appDocsAskSend"></button>' +
+    "</div></aside></div></div>";
+  document.body.appendChild(host);
+  host.querySelector("#appDocsClose").onclick = () => closeAppDocs();
+  host.querySelector("#appDocsAskBtn").onclick = () =>
+    setDocsAskOpen(!APP_DOCS.askOpen);
+  host.querySelector("#appDocsAskHide").onclick = () => setDocsAskOpen(false);
+  host.querySelector("#appDocsAskSend").onclick = () => sendDocsAsk();
+  host.addEventListener("click", (ev) => {
+    if (ev.target === host) closeAppDocs();
+  });
+  const filter = host.querySelector("#appDocsFilter");
+  filter.addEventListener("input", () => {
+    APP_DOCS.filter = filter.value || "";
+    renderDocsNav();
+  });
+  host.querySelector("#appDocsBody").addEventListener("click", (ev) => {
+    const a = ev.target.closest && ev.target.closest("a");
+    if (!a) return;
+    const href = String(a.getAttribute("href") || "");
+    if (href.charAt(0) === "#") {
+      ev.preventDefault();
+      const id = href.slice(1).replace(/[^a-z0-9_-]/gi, "");
+      if (id) loadDocsPage(id);
+      return;
+    }
+    if (/^https?:/i.test(href)) {
+      ev.preventDefault();
+      if (window.api && window.api.openExternal) window.api.openExternal(href);
+    }
+  });
+  const ta = host.querySelector("#appDocsAskInput");
+  ta.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      sendDocsAsk();
+    }
+  });
+  renderDocsAskList();
+  return host;
+}
+
+function renderDocsNav() {
+  const host = document.getElementById("appDocsDlg");
+  const tree = host && host.querySelector("#appDocsTree");
+  if (!tree) return;
+  const cat = APP_DOCS.catalog;
+  const q = String(APP_DOCS.filter || "")
+    .trim()
+    .toLowerCase();
+  tree.innerHTML = "";
+  if (!cat || !Array.isArray(cat.sections)) {
+    const empty = document.createElement("p");
+    empty.className = "n-empty";
+    empty.textContent = I18n.t("找不到该文档");
+    tree.appendChild(empty);
+    return;
+  }
+  let shown = 0;
+  for (const sec of cat.sections) {
+    const pages = (sec.pages || []).filter((p) => {
+      if (!q) return true;
+      const t =
+        docsLocText(p.title, p.id) +
+        " " +
+        docsLocText(sec.title, sec.id) +
+        " " +
+        (p.id || "");
+      return t.toLowerCase().indexOf(q) >= 0;
+    });
+    if (!pages.length) continue;
+    const wrap = document.createElement("div");
+    wrap.className = "app-docs-sec";
+    const h = document.createElement("div");
+    h.className = "app-docs-sec-title";
+    h.textContent = docsLocText(sec.title, sec.id);
+    wrap.appendChild(h);
+    for (const page of pages) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "app-docs-page-btn";
+      if (page.id === APP_DOCS.pageId) b.classList.add("on");
+      b.textContent = docsLocText(page.title, page.id);
+      b.onclick = () => loadDocsPage(page.id);
+      wrap.appendChild(b);
+      shown += 1;
+    }
+    tree.appendChild(wrap);
+  }
+  if (!shown) {
+    const empty = document.createElement("p");
+    empty.className = "n-empty";
+    empty.textContent = I18n.t("无匹配项");
+    tree.appendChild(empty);
+  }
+}
+
+function docsPageMeta(id) {
+  const cat = APP_DOCS.catalog;
+  if (!cat) return null;
+  for (const sec of cat.sections || []) {
+    for (const page of sec.pages || []) {
+      if (page.id === id)
+        return {
+          section: docsLocText(sec.title, sec.id),
+          title: docsLocText(page.title, page.id),
+        };
+    }
+  }
+  return null;
+}
+
+async function loadDocsPage(id) {
+  const host = ensureAppDocsDlg();
+  const body = host.querySelector("#appDocsBody");
+  const safe = String(id || "").replace(/[^a-z0-9_-]/gi, "");
+  if (!safe) return;
+  APP_DOCS.pageId = safe;
+  const meta = docsPageMeta(safe);
+  APP_DOCS.pageTitle = meta
+    ? meta.section + " / " + meta.title
+    : safe;
+  renderDocsNav();
+  if (body) body.innerHTML = "<p class='n-empty'>" + I18n.t("载入中…") + "</p>";
+  try {
+    const r = await window.api.docsLoad(safe, docsLocale());
+    if (!r || !r.ok) {
+      if (body)
+        body.innerHTML =
+          "<p class='n-empty'>" +
+          I18n.t("找不到该文档") +
+          " <code>" +
+          safe +
+          "</code></p>";
+      return;
+    }
+    if (body) {
+      body.innerHTML = renderGuideMarkdown(r.markdown, r.assets);
+      body.scrollTop = 0;
+    }
+  } catch (e) {
+    if (body)
+      body.innerHTML =
+        "<p class='n-empty'>" +
+        I18n.t("载入失败：") +
+        ((e && e.message) || String(e)) +
+        "</p>";
+  }
+}
+
+function renderDocsAskList() {
+  const host = document.getElementById("appDocsDlg");
+  const list = host && host.querySelector("#appDocsAskList");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!APP_DOCS.chat.length) {
+    const hint = document.createElement("div");
+    hint.className = "app-docs-ask-hint";
+    hint.textContent = I18n.t(
+      "可以问「闸门为什么不放行」「如何配置 API Key」等。回答只依据左侧手册。",
+    );
+    list.appendChild(hint);
+    return;
+  }
+  for (const msg of APP_DOCS.chat) {
+    const row = document.createElement("div");
+    row.className =
+      "app-docs-ask-msg " + (msg.role === "user" ? "me" : "ai");
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble";
+    if (msg.role === "assistant") {
+      const md = document.createElement("div");
+      md.className = "md";
+      md.innerHTML = renderMarkdown(msg.content || "");
+      bubble.appendChild(md);
+    } else {
+      bubble.textContent = msg.content || "";
+    }
+    row.appendChild(bubble);
+    list.appendChild(row);
+  }
+  list.scrollTop = list.scrollHeight;
+}
+
+function docsSystemPrompt() {
+  const loc = docsLocale();
+  if (loc === "en") {
+    return (
+      "You are the built-in manual assistant for MTNode AI Orchestrator. " +
+      "Answer ONLY from the manual text provided. Do not operate the canvas, " +
+      "call tools, or invent features. If the manual does not say, say you don't know " +
+      "and point the user to a section name or the per-node right-click Node guide. " +
+      "Cite section titles when possible. Reply in the user's language.\n\n" +
+      "Current page: " +
+      (APP_DOCS.pageTitle || APP_DOCS.pageId || "") +
+      "\n\n--- MANUAL ---\n" +
+      (APP_DOCS.bundle || "")
+    );
+  }
+  return (
+    "你是 MTNode AI编排器 的内置文档答疑助手。只能根据下方「内置手册」回答。" +
+    "不要操作画布、不要调用工具、不要编造手册里没有的功能。" +
+    "手册没写到就明确说不知道，并建议用户去对应章节，或右键节点打开「节点指南」。" +
+    "回答时尽量指出一级/二级章节名。用用户提问的语言作答。\n\n" +
+    "当前页面：" +
+    (APP_DOCS.pageTitle || APP_DOCS.pageId || "") +
+    "\n\n--- 内置手册 ---\n" +
+    (APP_DOCS.bundle || "")
+  );
+}
+
+async function sendDocsAsk() {
+  const host = document.getElementById("appDocsDlg");
+  const ta = host && host.querySelector("#appDocsAskInput");
+  const text = ta ? String(ta.value || "").trim() : "";
+  if (!text || APP_DOCS.busy) return;
+  const prov =
+    (S.config &&
+      (S.config.providers || []).find(
+        (p) => p.type === "text_openai" && String(p.apiKey || "").trim(),
+      )) ||
+    null;
+  if (!prov) {
+    toast(
+      I18n.t("未配置带 API Key 的文本服务商（设置 · API/配置 → 模型服务）"),
+      "warn",
+    );
+    return;
+  }
+  if (ta) ta.value = "";
+  APP_DOCS.chat.push({ role: "user", content: text });
+  APP_DOCS.chat.push({ role: "assistant", content: "" });
+  APP_DOCS.busy = true;
+  renderDocsAskList();
+  const last = APP_DOCS.chat[APP_DOCS.chat.length - 1];
+  if (!APP_DOCS.bundle) {
+    try {
+      const b = await window.api.docsBundle(docsLocale());
+      APP_DOCS.bundle = (b && b.ok && b.text) || "";
+    } catch (_) {
+      APP_DOCS.bundle = "";
+    }
+  }
+  if (!APP_DOCS.bundle) {
+    last.content = I18n.t("找不到该文档");
+    APP_DOCS.busy = false;
+    renderDocsAskList();
+    return;
+  }
+  const history = [];
+  const prior = APP_DOCS.chat.slice(0, -1);
+  const start = Math.max(0, prior.length - 8);
+  for (let i = start; i < prior.length; i++) {
+    const m = prior[i];
+    history.push({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: String(m.content || "").slice(0, 4000),
+    });
+  }
+  const spec = {
+    provider: prov,
+    kind: "text",
+    model: (prov.models && prov.models[0]) || "",
+    temperature: 0.2,
+    prompt: "",
+    texts: [],
+    images: [],
+    chatMessages: [{ role: "system", content: docsSystemPrompt() }].concat(
+      history,
+    ),
+  };
+  let acc = "";
+  let raf = 0;
+  const flush = () => {
+    raf = 0;
+    last.content = acc;
+    renderDocsAskList();
+  };
+  try {
+    const r = await apiCallTextStream(spec, null, (t) => {
+      acc += t || "";
+      if (!raf) raf = requestAnimationFrame(flush);
+    });
+    last.content = (r && r.text) || acc || last.content || "";
+  } catch (e) {
+    last.content =
+      I18n.t("助手失败：") + ((e && e.message) || String(e));
+  } finally {
+    if (raf) cancelAnimationFrame(raf);
+    APP_DOCS.busy = false;
+    renderDocsAskList();
+  }
+}
+
+async function refreshAppDocsIfOpen() {
+  const host = document.getElementById("appDocsDlg");
+  if (!host || !host.classList.contains("on")) return;
+  paintAppDocsChrome();
+  APP_DOCS.bundle = "";
+  try {
+    const r = await window.api.docsCatalog();
+    if (r && r.ok) APP_DOCS.catalog = r.catalog;
+  } catch (_) {}
+  renderDocsNav();
+  if (APP_DOCS.pageId) await loadDocsPage(APP_DOCS.pageId);
+  renderDocsAskList();
+}
+
+async function openAppDocs(pageId) {
+  const host = ensureAppDocsDlg();
+  paintAppDocsChrome();
+  host.classList.add("on");
+  const btn = $("#btnDocs");
+  if (btn) btn.classList.add("on");
+  if (APP_DOCS.askOpen) host.classList.add("ask-on");
+  const body = host.querySelector("#appDocsBody");
+  if (body && !APP_DOCS.pageId)
+    body.innerHTML = "<p class='n-empty'>" + I18n.t("载入中…") + "</p>";
+  try {
+    const r = await window.api.docsCatalog();
+    if (!r || !r.ok) {
+      if (body)
+        body.innerHTML =
+          "<p class='n-empty'>" +
+          I18n.t("载入失败：") +
+          ((r && r.error) || I18n.t("找不到该文档")) +
+          "</p>";
+      APP_DOCS.catalog = { sections: [] };
+      renderDocsNav();
+      return;
+    }
+    APP_DOCS.catalog = r.catalog;
+  } catch (e) {
+    if (body)
+      body.innerHTML =
+        "<p class='n-empty'>" +
+        I18n.t("载入失败：") +
+        ((e && e.message) || String(e)) +
+        "</p>";
+    return;
+  }
+  const fallback =
+    (APP_DOCS.catalog && APP_DOCS.catalog.defaultPage) || "overview";
+  const want = String(pageId || APP_DOCS.pageId || fallback);
+  await loadDocsPage(want);
+}
+
 function yamlEscape(s) {
   s = String(s == null ? "" : s);
   if (s === "") return "''";
@@ -2229,8 +3562,17 @@ function inPortY(node, i, ic) {
   const span = Math.max(0, ic - 1) * PORT_STEP;
   return Math.max(34, Math.round(node.h / 2 - span / 2 + i * PORT_STEP));
 }
-function outPos(n) {
-  return { x: n.x + n.w + PORT_OFF, y: n.y + Math.round(n.h / 2) };
+function outPortY(node, i, oc) {
+  const n = oc == null ? outputCount(node) : oc;
+  if (n <= 1) return Math.round(node.h / 2);
+  const span = Math.max(0, n - 1) * PORT_STEP;
+  return Math.max(34, Math.round(node.h / 2 - span / 2 + i * PORT_STEP));
+}
+function outPos(n, i) {
+  return {
+    x: n.x + n.w + PORT_OFF,
+    y: n.y + outPortY(n, i || 0),
+  };
 }
 function inPos(n, i) {
   return { x: n.x - PORT_OFF, y: n.y + inPortY(n, i, inputCount(n)) };
@@ -2239,8 +3581,8 @@ function wirePathAB(ax, ay, bx, by) {
   const dx = Math.max(26, Math.abs(bx - ax) * 0.45);
   return `M ${ax} ${ay} C ${ax + dx} ${ay}, ${bx - dx} ${by}, ${bx} ${by}`;
 }
-function wirePath(from, to, idx) {
-  const a = outPos(from),
+function wirePath(from, to, idx, fromIndex) {
+  const a = outPos(from, fromIndex || 0),
     b = inPos(to, idx);
   return wirePathAB(a.x, a.y, b.x, b.y);
 }
@@ -2263,7 +3605,8 @@ function portLinkedNodes(node, dir, idx) {
     }
   } else {
     for (const w of S.wf.wires || []) {
-      if (w.from === node.id) add(nodeById(w.to));
+      if (w.from === node.id && Number(w.fromIndex || 0) === Number(idx || 0))
+        add(nodeById(w.to));
     }
   }
   return out;
@@ -2680,12 +4023,11 @@ function clearDownstream(startId) {
         n.waitStatus = "";
         n.waitReady = false;
       }
-      if (n.kind === "anim") {
+      if (n.kind === "task") {
         n.output = null;
         n.error = null;
         n.ranAt = 0;
-        n.attemptOutputs = null;
-        n.attemptsDone = 0;
+        n.taskStatus = "pending";
       }
       if (S.thinking && S.thinking[n.id]) S.thinking[n.id] = [];
       if (n.kind === "save_text" || n.kind === "save_image") {
@@ -2803,6 +4145,31 @@ function clearNodeRunState(cp) {
     cp.waitStatus = "";
     cp.waitReady = false;
   }
+  if (cp.kind === "timer") {
+    cp.timerArmed = false;
+    cp.timerStatus = "";
+    cp.timerNextAt = 0;
+  }
+  if (cp.kind === "delayer") {
+    cp.delayStatus = "";
+  }
+  if (cp.kind === "sequencer") {
+    cp.seqStatus = "";
+  }
+  if (cp.kind === "gate") {
+    cp.gateStatus = "";
+    cp.gateArrived = {};
+  }
+  if (cp.kind === "splitter") {
+    cp.splitStatus = "";
+  }
+  if (cp.kind === "counter") {
+    cp.counterStatus = "";
+    cp.counterCount = 0;
+  }
+  if (cp.kind === "mutex") {
+    cp.mutexStatus = "";
+  }
 }
 
 function materializeSingleFromBatchEntry(root, entry, x, y) {
@@ -2859,7 +4226,7 @@ function cloneDownstreamForExplode(src, entryTitle, x, y) {
   return cp;
 }
 
-function explodeBatchNode(root) {
+async function explodeBatchNode(root) {
   if (!S.wf || !root) return;
   const entries = explodeBatchEntriesOf(root);
   const N = entries.length;
@@ -2880,7 +4247,7 @@ function explodeBatchNode(root) {
     return n && !isAggFanInNode(n) && n.kind !== "split";
   }).length;
   if (
-    !confirm(
+    !(await confirmDialog(
       I18n.t("将批次拆分为 ") +
         N +
         I18n.t(" 个单一节点") +
@@ -2891,7 +4258,8 @@ function explodeBatchNode(root) {
           ? I18n.t("；") + fanInCount + I18n.t(" 个聚合节点将接入全部新节点")
           : "") +
         I18n.t("。原批次节点会被移除。是否继续？"),
-    )
+      { title: I18n.t("拆分批次"), danger: true },
+    ))
   )
     return;
 
@@ -3020,10 +4388,11 @@ function explodeBatchNode(root) {
   );
 
   if (
-    confirm(
+    await confirmDialog(
       I18n.t(
         "批次拆分已完成。是否进行 AI 重新排版？\n\n将由全局助手分析并调整节点位置，可能需要等待一段时间。",
       ),
+      { title: I18n.t("一键排版"), okText: I18n.t("开始排版") },
     )
   ) {
     oneClickAutoLayout({ skipConfirm: true });
@@ -3045,9 +4414,9 @@ function refCandidates(node) {
       n.kind === "proc_text" ||
       n.kind === "proc_image" ||
       n.kind === "agent_task" ||
+      n.kind === "task" ||
       n.kind === "merge" ||
       n.kind === "split" ||
-      n.kind === "anim" ||
       n.kind === "chat"
     ) {
       seen.add(n.id);
@@ -3075,9 +4444,11 @@ function valueForInput(src, idx) {
     const t = chatTranscript(src);
     return t ? { kind: "text", text: t } : null;
   }
-  if (src.kind === "anim") {
+  if (src.kind === "task") {
     const r = selResult(src);
-    return r && r.output ? { kind: "image", path: r.output.path } : null;
+    return r && r.output && r.output.kind === "text"
+      ? { kind: "text", text: r.output.text }
+      : { kind: "text", text: taskSummaryText(src) };
   }
   if (src.kind === "split") {
     const it = splitSelected(src);
@@ -3216,14 +4587,18 @@ function allTextItems(src) {
       return [{ title: src.title, text: r.output.text }];
     return [];
   }
+  if (src.kind === "task") {
+    const r = selResult(src);
+    const t =
+      r && r.output && r.output.kind === "text"
+        ? r.output.text
+        : taskSummaryText(src);
+    return t ? [{ title: src.title, text: t }] : [];
+  }
   return [];
 }
 function allImageItems(src) {
   if (!src) return [];
-  if (src.kind === "anim") {
-    const r = selResult(src);
-    return r && r.output ? [{ title: src.title, path: r.output.path }] : [];
-  }
   if (src.kind === "split") {
     const it = splitSelected(src);
     return it && it.value.kind === "image"
@@ -3370,9 +4745,11 @@ function displayValueOf(src) {
     const t = chatTranscript(src);
     return t ? { text: t } : null;
   }
-  if (src.kind === "anim") {
+  if (src.kind === "task") {
     const r = selResult(src);
-    return r && r.output ? { image: r.output.path } : null;
+    if (r && r.output && r.output.kind === "text") return { text: r.output.text };
+    const t = taskSummaryText(src);
+    return t ? { text: t } : null;
   }
   if (src.kind === "split") {
     const it = splitSelected(src);
@@ -3767,6 +5144,7 @@ function addMark(kind, x, y) {
     x: snap(x),
     y: snap(y),
     color: d.color,
+    parentTaskId: currentTaskFocus(),
   };
   if (kind === "text") {
     m.w = d.w;
@@ -3859,6 +5237,10 @@ function makeMarkFromSpec(spec, warnings) {
     x: snap(Number(spec.x) || 0),
     y: snap(Number(spec.y) || 0),
     color: normalizeMarkColor(spec.color, d.color),
+    parentTaskId:
+      spec.parentTaskId != null
+        ? String(spec.parentTaskId)
+        : currentTaskFocus(),
   };
   if (kind === "text") {
     m.w = Math.max(40, snapDim(Number(spec.w) || d.w, 40));
@@ -4436,6 +5818,8 @@ function markElement(m) {
         [
           {
             label: I18n.t("⧉ 复制绘制"),
+            iconKey: "menu_copy",
+            iconCls: "copy",
             run: () => {
               const list = selectedMarks();
               duplicateMarks(list.length ? list : [m]);
@@ -4443,6 +5827,8 @@ function markElement(m) {
           },
           {
             label: I18n.t("✕ 删除绘制"),
+            iconKey: "menu_delete",
+            iconCls: "danger",
             cls: "ctx-danger",
             run: () => {
               const ids = selectedMarks().map((x) => x.id);
@@ -4451,6 +5837,8 @@ function markElement(m) {
           },
           {
             label: I18n.t("切换颜色"),
+            iconKey: "menu_color",
+            iconCls: "color",
             run: () => {
               pushHistory();
               cycleMarkColor(m);
@@ -4497,9 +5885,10 @@ function renderCanvas() {
     stage.querySelectorAll(".wf-group").forEach(detachStageChild);
     stage.querySelectorAll(".wf-mark").forEach(detachStageChild);
     svg.innerHTML = "";
-    const markList = marksOf();
-    let extX = Math.max(2000, ...S.wf.nodes.map((n) => n.x + n.w), 0);
-    let extY = Math.max(1400, ...S.wf.nodes.map((n) => n.y + n.h), 0);
+    const markList = visibleMarks();
+    const visNodes = visibleWfNodes();
+    let extX = Math.max(2000, ...visNodes.map((n) => n.x + n.w), 0);
+    let extY = Math.max(1400, ...visNodes.map((n) => n.y + n.h), 0);
     for (const m of markList) {
       const b = markBounds(m);
       extX = Math.max(extX, b.x + b.w);
@@ -4512,9 +5901,12 @@ function renderCanvas() {
     svg.setAttribute("width", extX);
     svg.setAttribute("height", extY);
     /* 绘制在组之上、节点之下：不挡节点，仍可点选编辑 */
-    for (const g of S.wf.groups || []) stage.appendChild(groupElement(g));
+    for (const g of S.wf.groups || []) {
+      if (!groupVisibleInScope(g)) continue;
+      stage.appendChild(groupElement(g));
+    }
     for (const m of markList) stage.appendChild(markElement(m));
-    for (const n of S.wf.nodes) stage.appendChild(nodeElement(n));
+    for (const n of visNodes) stage.appendChild(nodeElement(n));
     applyTransform();
     updateGroupFrames();
     updateWires();
@@ -4542,6 +5934,7 @@ function renderCanvas() {
     }
     syncGroupBtns();
     if (S.sidebarOpen) renderSidebar();
+    renderTaskCrumb();
   } finally {
     S._ignoreMarkBlurFlush = false;
     S._renderingCanvas = false;
@@ -4568,6 +5961,7 @@ function updateWires(touchIds) {
     const from = nodeById(w.from),
       to = nodeById(w.to);
     if (!from || !to) continue;
+    if (!nodeInCurrentScope(from) || !nodeInCurrentScope(to)) continue;
     const id = "wire-" + w.id;
     let p = document.getElementById(id);
     if (!p) {
@@ -4591,6 +5985,8 @@ function updateWires(touchIds) {
             [
               {
                 label: I18n.t("✕ 删除连线"),
+                iconKey: "menu_cut",
+                iconCls: "danger",
                 cls: "ctx-danger",
                 run: () => {
                   pushHistory();
@@ -4607,7 +6003,7 @@ function updateWires(touchIds) {
       });
       svg.appendChild(p);
     }
-    p.setAttribute("d", wirePath(from, to, w.toIndex));
+    p.setAttribute("d", wirePath(from, to, w.toIndex, w.fromIndex || 0));
     let wcls = "fn-edge";
     if (S.selWire === w.id) wcls += " sel";
     if (isControlKind(from) || isControlKind(to)) wcls += " ctrl";
@@ -4624,7 +6020,7 @@ function updateWires(touchIds) {
   if (S.drag && S.drag.mode === "wire") {
     const from = nodeById(S.drag.fromId);
     if (from) {
-      const a = outPos(from),
+      const a = outPos(from, S.drag.fromIndex || 0),
         b = toStage(S.drag.mx, S.drag.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
@@ -4677,6 +6073,19 @@ function statusOf(node) {
   }
   if (node.kind === "agent_task")
     return { cls: "", txt: I18n.t("○ 未处理 · 点击 ▶ 描述任务并运行") };
+  if (node.kind === "task") {
+    const st = node.taskStatus || "pending";
+    const lab = I18n.t(TASK_STATUS_LABEL[st] || "待办");
+    const nChild = taskChildTasksOf(node.id).length;
+    const extra = nChild
+      ? I18n.t(" · ") + nChild + I18n.t(" 个任务")
+      : "";
+    if (st === "done")
+      return { cls: "done", txt: "✓ " + lab + extra };
+    if (st === "running" || node.running)
+      return { cls: "run", txt: I18n.t("◉ 进行中") + extra };
+    return { cls: "", txt: I18n.t("○ ") + lab + extra + I18n.t(" · 点击 ▶ 按序执行") };
+  }
   return { cls: "", txt: I18n.t("○ 未处理 · 点击 ▶ 基于提示词+输入处理") };
 }
 
@@ -4745,8 +6154,18 @@ function nodeElement(node) {
   const kindCls =
     node.kind === "proc_text" && node.agent
       ? "agent"
-      : KIND_CLS[node.kind] || "proc";
+      : nodeKindIconCls(node) === "ctrl-ok" ||
+          nodeKindIconCls(node) === "ctrl-fail" ||
+          nodeKindIconCls(node) === "ctrl-start"
+        ? "ctrl " + nodeKindIconCls(node)
+        : KIND_CLS[node.kind] || "proc";
   el.className = "wf-node " + kindCls + (isSel(node.id) ? " sel" : "");
+  if (isControlKind(node)) el.classList.add("is-ctrl");
+  if (node.kind === "task") {
+    const st = node.taskStatus || "pending";
+    el.classList.add("st-" + st);
+    if (st === "blocked") el.classList.add("st-block");
+  }
   el.dataset.nid = node.id;
   el.style.left = node.x + "px";
   el.style.top = node.y + "px";
@@ -5040,18 +6459,27 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
-  if (node.kind === "anim") {
-    const ab = document.createElement("button");
-    ab.className = "n-play n-att-btn" + (attemptCount(node) > 1 ? " on" : "");
-    ab.textContent = "×" + attemptCount(node);
-    ab.title =
-      I18n.t("多次尝试：并行运行 N 次（1-10）。N>1 时输出下方出现 1..N 方块 Tab，") +
-      I18n.t("点击切换查看对应尝试结果，下游节点引用当前选中的尝试内容");
-    ab.onclick = (ev) => {
+  if (node.kind === "task") {
+    const chip = document.createElement("span");
+    chip.className =
+      "n-chip" +
+      (node.taskStatus === "done"
+        ? " on"
+        : node.taskStatus === "running" || node.running
+          ? " on"
+          : "");
+    chip.textContent = I18n.t(TASK_STATUS_LABEL[node.taskStatus] || "待办");
+    chip.title = I18n.t("任务状态");
+    head.appendChild(chip);
+    const enter = document.createElement("button");
+    enter.className = "n-play";
+    enter.textContent = "↪";
+    enter.title = I18n.t("进入任务：在内部画布分段编排实现");
+    enter.onclick = (ev) => {
       ev.stopPropagation();
-      promptAttempts(node);
+      enterTask(node);
     };
-    head.appendChild(ab);
+    head.appendChild(enter);
     const b = document.createElement("button");
     const pending = isNodePending(node);
     b.className =
@@ -5060,12 +6488,22 @@ function nodeElement(node) {
     b.textContent = node.running || pending ? "…" : "▶";
     b.title = pending
       ? I18n.t("排队等待中…")
-      : I18n.t("运行：把输入图像按网格（行×列）切割成 GIF 帧动画，支持透明色键");
+      : I18n.t("按序执行：从起点沿控制流跑到成功/失败终点");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playAnimNode(node);
+      playNode(node);
     };
     head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("停止运行");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
   }
   if (node.kind === "save_text" || node.kind === "save_image") {
     if (isBatch(node)) {
@@ -5114,7 +6552,7 @@ function nodeElement(node) {
     b.textContent = node.running || pending ? "…" : "▶";
     b.title = pending
       ? I18n.t("排队等待中…")
-      : I18n.t("监视文件：未生成则阻塞后续节点，就绪后放行（不输出内容）");
+      : I18n.t("开始监视文件");
     b.onclick = (ev) => {
       ev.stopPropagation();
       playNode(node, false);
@@ -5131,6 +6569,178 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
+  if (node.kind === "timer") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.timerArmed ? " on" : "");
+    chip.textContent = node.timerArmed ? I18n.t("武装") : I18n.t("定时");
+    chip.title = I18n.t("按系统时间计划触发，启用输出端连接的目标节点");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" +
+      (node.running || node.timerArmed
+        ? " running"
+        : node.error
+          ? " error"
+          : "");
+    b.textContent = node.timerArmed || node.running ? "…" : "▶";
+    b.title = node.timerArmed
+      ? I18n.t("停止定时触发器")
+      : I18n.t("武装定时触发器：到点后启用已连接目标");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playTimerNode(node, false);
+    };
+    head.appendChild(b);
+    if (node.timerArmed || node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("停止定时触发器");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  if (node.kind === "delayer") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("延时");
+    chip.title = I18n.t("控制脉冲到达后等待指定时长再继续");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = node.running
+      ? I18n.t("取消延时")
+      : I18n.t("立即延时并启用输出端目标");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playDelayerNode(node, false);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消延时");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  if (node.kind === "sequencer") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("序列");
+    chip.title = I18n.t("按顺序逐个点燃多路输出");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = node.running
+      ? I18n.t("取消序列")
+      : I18n.t("按序触发各输出端连接的目标");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playSequencerNode(node, false);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消序列");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  if (node.kind === "gate") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("闸门");
+    chip.title = I18n.t("全部输入到达后才放行");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = I18n.t("强制放行（清除到达状态并启用目标）");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playGateNode(node, false);
+    };
+    head.appendChild(b);
+  }
+  if (node.kind === "splitter") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("分发");
+    chip.title = I18n.t("一路入同时点亮多路出");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = node.running ? "…" : "▶";
+    b.title = node.running
+      ? I18n.t("取消分发")
+      : I18n.t("并行触发各输出端连接的目标");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playSplitterNode(node, false);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消分发");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  if (node.kind === "counter") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("计数");
+    chip.title = I18n.t("每经过 N 次脉冲放行一次");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = "▶";
+    b.title = I18n.t("计入一次并在达到阈值时放行");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playCounterNode(node, false);
+    };
+    head.appendChild(b);
+  }
+  if (node.kind === "mutex") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("互斥");
+    chip.title = I18n.t("多路输入择一路放行");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    b.className =
+      "n-play" + (node.running ? " running" : node.error ? " error" : "");
+    b.textContent = "▶";
+    b.title = I18n.t("按模式从已连接输入择一路放行");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playMutexNode(node, false);
+    };
+    head.appendChild(b);
+  }
   if (node.kind === "chat") {
     head.append(...apiPreviewButtons(node));
     head.appendChild(effortButtonEl(node));
@@ -5146,6 +6756,27 @@ function nodeElement(node) {
     head.appendChild(stop);
   }
   if (node.kind === "control") {
+    const role = ctrlRoleOf(node);
+    if (role === "start" || role === "endSuccess" || role === "endFail") {
+      const chip = document.createElement("span");
+      chip.className =
+        "n-chip on " +
+        (role === "endSuccess"
+          ? "ok"
+          : role === "endFail"
+            ? "fail"
+            : "");
+      chip.textContent =
+        role === "start"
+          ? I18n.t("起点")
+          : role === "endSuccess"
+            ? I18n.t("成功")
+            : I18n.t("失败");
+      chip.title = node.ctrlPinned
+        ? I18n.t("固定节点，无法删除")
+        : I18n.t("终点：控制流到达此处决定任务状态");
+      head.appendChild(chip);
+    } else {
     const mkAct = (action, label, title) => {
       const b = document.createElement("button");
       b.className =
@@ -5219,7 +6850,43 @@ function nodeElement(node) {
       };
       head.appendChild(stop);
     }
+    }
   }
+  if (node.kind === "judge") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.judgeResult ? " on" : "");
+    chip.textContent =
+      node.judgeResult === "yes"
+        ? I18n.t("是")
+        : node.judgeResult === "no"
+          ? I18n.t("否")
+          : I18n.t("判断");
+    chip.title = I18n.t("用模型判断目标是否达成，是/否走不同控制路径");
+    head.appendChild(chip);
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t("运行判断：由模型裁决是 / 否");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playJudgeNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("停止运行");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  if (!isPinnedCtrl(node)) {
   const del = document.createElement("button");
   del.className = "n-play n-del";
   del.textContent = "✕";
@@ -5229,6 +6896,7 @@ function nodeElement(node) {
     deleteNode(node.id);
   };
   head.appendChild(del);
+  }
   el.appendChild(head);
 
   const body = document.createElement("div");
@@ -5494,15 +7162,25 @@ function nodeElement(node) {
     p.dataset.node = node.id;
     p.dataset.idx = String(i);
     const linkedIn = portLinkedNodes(node, "in", i);
-    p.title = linkedIn.length
-      ? ""
-      : I18n.t("输入端子 ") +
-        (i + 1) +
-        (i >= allWiresTo(node.id).length
-          ? I18n.t("（空闲，连接后自动新增一个）")
-          : "");
+    let inTitle =
+      I18n.t("输入端子 ") +
+      (i + 1) +
+      (i >= allWiresTo(node.id).length && !hasFixedInPorts(node)
+        ? I18n.t("（空闲，连接后自动新增一个）")
+        : "");
+    if (node.kind === "gate")
+      inTitle = I18n.t("闸门输入 ") + (i + 1) + I18n.t("（需全部到达）");
+    else if (node.kind === "mutex")
+      inTitle = I18n.t("互斥输入 ") + (i + 1);
+    p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = -PORT_R - PORT_OFF + "px";
+    if (node.kind === "gate" || node.kind === "mutex") {
+      const badge = document.createElement("span");
+      badge.className = "port-badge";
+      badge.textContent = String(i + 1);
+      p.appendChild(badge);
+    }
     bindPortTip(p, node, "in", i);
     p.addEventListener("mousedown", (ev) => {
       ev.stopPropagation();
@@ -5521,8 +7199,10 @@ function nodeElement(node) {
         S.wf.wires = S.wf.wires.filter(
           (w) => !(w.to === node.id && w.toIndex === idx),
         );
-        for (const w of S.wf.wires) {
-          if (w.to === node.id && w.toIndex > idx) w.toIndex--;
+        if (!hasFixedInPorts(node)) {
+          for (const w of S.wf.wires) {
+            if (w.to === node.id && w.toIndex > idx) w.toIndex--;
+          }
         }
         if (dataCut) clearDownstream(node.id);
         toast(I18n.t("已切断输入端子 ") + rem.length + I18n.t(" 条连线"), "ok");
@@ -5535,32 +7215,52 @@ function nodeElement(node) {
     });
     el.appendChild(p);
   }
-  if (hasOutput(node)) {
+  const oc = outputCount(node);
+  for (let oi = 0; oi < oc; oi++) {
     const p = document.createElement("div");
-    p.className = "port out";
+    p.className =
+      "port out" +
+      (node.kind === "judge" ? (oi === 0 ? " yes" : " no") : "");
     p.dataset.node = node.id;
-    const linkedOut = portLinkedNodes(node, "out", 0);
-    p.title = linkedOut.length
-      ? ""
-      : isControlKind(node)
-        ? I18n.t("输出端子（连接到要控制的节点）")
-        : I18n.t("输出端子（输出本节点内容）");
-    p.style.top = Math.round(node.h / 2) - PORT_R + "px";
+    p.dataset.fromIndex = String(oi);
+    const linkedOut = portLinkedNodes(node, "out", oi);
+    let outTitle = "";
+    if (node.kind === "judge")
+      outTitle = oi === 0 ? I18n.t("是（达成）") : I18n.t("否（未达成）");
+    else if (node.kind === "sequencer")
+      outTitle = I18n.t("序列输出 ") + (oi + 1);
+    else if (node.kind === "splitter")
+      outTitle = I18n.t("分发输出 ") + (oi + 1);
+    else if (isControlKind(node))
+      outTitle = I18n.t("输出端子（连接到要控制的节点）");
+    else outTitle = I18n.t("输出端子（输出本节点内容）");
+    p.title = linkedOut.length ? outTitle : outTitle;
+    p.style.top = outPortY(node, oi, oc) - PORT_R + "px";
     p.style.right = -PORT_R - PORT_OFF + "px";
-    bindPortTip(p, node, "out", 0);
+    if (node.kind === "sequencer" || node.kind === "splitter") {
+      const badge = document.createElement("span");
+      badge.className = "port-badge";
+      badge.textContent = String(oi + 1);
+      p.appendChild(badge);
+    }
+    bindPortTip(p, node, "out", oi);
     p.addEventListener("mousedown", (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
       hidePortTip();
-      startWireDrag(node.id, ev);
+      startWireDrag(node.id, ev, oi);
     });
     p.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      const rem = S.wf.wires.filter((w) => w.from === node.id);
+      const rem = S.wf.wires.filter(
+        (w) => w.from === node.id && Number(w.fromIndex || 0) === oi,
+      );
       if (rem.length) {
         pushHistory();
-        S.wf.wires = S.wf.wires.filter((w) => w.from !== node.id);
+        S.wf.wires = S.wf.wires.filter(
+          (w) => !(w.from === node.id && Number(w.fromIndex || 0) === oi),
+        );
         if (!isControlKind(node)) clearDownstream(node.id);
         toast(I18n.t("已切断输出端子 ") + rem.length + I18n.t(" 条连线"), "ok");
       } else {
@@ -5653,21 +7353,31 @@ function nodeElement(node) {
     S.selWire = null;
     renderCanvas();
     const items = [];
+    items.push(
+      ctxAction(I18n.t("节点指南"), () => openNodeGuide(node), "node_guide", {
+        iconCls: "guide",
+      }),
+    );
     if (canExplodeBatch(node)) {
-      items.push({
-        label: I18n.t("拆分批次"),
-        run: () => explodeBatchNode(node),
-      });
+      items.push(
+        ctxAction(I18n.t("拆分批次"), () => explodeBatchNode(node), "split", {
+          iconCls: "explode",
+        }),
+      );
     }
-    items.push({
-      label: I18n.t("复制"),
-      run: () => duplicateNodes([node]),
-    });
-    items.push({
-      label: I18n.t("删除"),
-      cls: "ctx-danger",
-      run: () => deleteNodes([node.id]),
-    });
+    items.push(
+      ctxAction(I18n.t("复制"), () => duplicateNodes([node]), "menu_copy", {
+        iconCls: "copy",
+      }),
+    );
+    if (!isPinnedCtrl(node)) {
+      items.push(
+        ctxAction(I18n.t("删除"), () => deleteNodes([node.id]), "menu_delete", {
+          iconCls: "danger",
+          cls: "ctx-danger",
+        }),
+      );
+    }
     showCtx(ev.clientX, ev.clientY, [[I18n.t("节点操作"), items]]);
   });
   return el;
@@ -6497,142 +8207,115 @@ function buildBody(node, body) {
       true,
     );
     body.appendChild(list);
-  } else if (node.kind === "anim") {
-    const src = firstSource(node);
-    const hasImg = src
-      ? valueForInput(src, 0) && valueForInput(src, 0).kind === "image"
-      : false;
+  } else if (node.kind === "task") {
     const st = document.createElement("div");
-    st.className = "n-status" + (hasImg ? " done" : "");
-    st.textContent = hasImg ? I18n.t("输入图像就绪") : I18n.t("（等待图像输入…）");
+    const status = node.taskStatus || "pending";
+    st.className =
+      "n-status" +
+      (status === "done"
+        ? " done"
+        : status === "failed"
+          ? " err"
+          : status === "blocked"
+            ? " block"
+            : node.running || status === "running"
+              ? " run"
+              : "");
+    const nChild = taskChildTasksOf(node.id).length;
+    st.textContent =
+      I18n.t(TASK_STATUS_LABEL[status] || "待办") +
+      (nChild ? I18n.t(" · ") + nChild + I18n.t(" 个任务") : "");
     body.appendChild(st);
-    const row1 = document.createElement("div");
-    row1.className = "bentry-main anim-params";
-    const f1 = document.createElement("label");
-    f1.className = "n-field";
-    f1.appendChild(document.createTextNode(I18n.t("切割列数")));
-    const cIn = document.createElement("input");
-    cIn.type = "number";
-    cIn.min = 2;
-    cIn.step = 1;
-    cIn.value = node.animCols || 4;
-    cIn.addEventListener("change", () => {
-      node.animCols = Math.max(2, Math.round(Number(cIn.value) || 4));
-      scheduleSave();
+    const goal = document.createElement("textarea");
+    goal.className = "n-text";
+    goal.spellcheck = false;
+    goal.placeholder = I18n.t("任务目标 / 本任务要解决什么");
+    goal.value = node.goal || "";
+    goal.addEventListener("input", () => {
+      node.goal = goal.value;
     });
-    f1.appendChild(cIn);
-    const f2 = document.createElement("label");
-    f2.className = "n-field";
-    f2.appendChild(document.createTextNode(I18n.t("切割行数")));
-    const rIn = document.createElement("input");
-    rIn.type = "number";
-    rIn.min = 2;
-    rIn.step = 1;
-    rIn.value = node.animRows || 4;
-    rIn.addEventListener("change", () => {
-      node.animRows = Math.max(2, Math.round(Number(rIn.value) || 4));
-      scheduleSave();
-    });
-    f2.appendChild(rIn);
-    row1.appendChild(f1);
-    row1.appendChild(f2);
-    body.appendChild(row1);
-    const f3 = document.createElement("label");
-    f3.className = "n-field";
-    f3.appendChild(document.createTextNode(I18n.t("透明色键（Hex）")));
-    const keyRow = document.createElement("div");
-    keyRow.className = "bentry-main";
-    const kIn = document.createElement("input");
-    kIn.type = "text";
-    kIn.placeholder = "#FF00FF";
-    kIn.value = node.animKey || "#FF00FF";
-    const swatch = document.createElement("div");
-    swatch.className = "anim-key-swatch";
-    swatch.title = I18n.t("色键颜色");
-    const paintSwatch = () => {
-      const c = parseHexColor(kIn.value);
-      swatch.style.background = c
-        ? "rgb(" + c.r + "," + c.g + "," + c.b + ")"
-        : "repeating-conic-gradient(#555 0% 25%, #222 0% 50%) 0 0 / 8px 8px";
-    };
-    kIn.addEventListener("input", () => {
-      node.animKey = kIn.value.trim();
-      paintSwatch();
-    });
-    paintSwatch();
-    keyRow.appendChild(kIn);
-    keyRow.appendChild(swatch);
-    f3.appendChild(keyRow);
-    body.appendChild(f3);
-    if (node.running) {
-      const run = document.createElement("div");
-      run.className = "n-status run";
-      const nA = attemptCount(node);
-      run.textContent =
-        I18n.t("◉ 正在生成帧动画") +
-        (nA > 1 ? " " + (node.attemptsDone || 0) + "/" + nA : "") +
-        "…";
-      body.appendChild(run);
+    body.appendChild(goal);
+    const kids = taskChildTasksOf(node.id);
+    if (kids.length) {
+      const grid = document.createElement("div");
+      grid.className = "task-grid";
+      for (const child of kids) {
+        const cell = document.createElement("button");
+        cell.type = "button";
+        const cst = child.taskStatus || "pending";
+        cell.className = "task-cell st-" + cst;
+        cell.textContent = child.title || I18n.t("任务");
+        cell.title = I18n.t("进入任务：") + (child.title || "");
+        cell.onclick = (ev) => {
+          ev.stopPropagation();
+          enterTask(child);
+        };
+        grid.appendChild(cell);
+      }
+      body.appendChild(grid);
     }
-    const r = selResult(node);
-    if (r && r.output) {
-      const meta = document.createElement("div");
-      meta.className = "n-status done";
-      meta.textContent =
-        "✓ " +
-        (node.animCols || 4) +
-        "×" +
-        (node.animRows || 4) +
-        I18n.t(" 帧动画 · ") +
-        fileName(r.output.path);
-      const br = document.createElement("span");
-      br.className = "copy";
-      br.textContent = I18n.t("浏览");
-      br.style.cssText = "margin-left:8px;cursor:pointer;color:var(--cyan)";
-      br.title = I18n.t("弹窗大窗显示输出 GIF");
-      br.onclick = () => browseOutput(node);
-      meta.appendChild(br);
-      const cl = document.createElement("span");
-      cl.className = "copy";
-      cl.textContent = I18n.t("清空");
-      cl.style.cssText = "margin-left:8px;cursor:pointer;color:var(--cyan)";
-      cl.onclick = () => clearOutput(node);
-      meta.appendChild(cl);
-      body.appendChild(meta);
-      if (attemptCount(node) > 1) {
-        const m = document.createElement("div");
-        m.className = "n-status";
-        m.textContent =
-          I18n.t("尝试 ") + (attemptIdx(node) + 1) + "/" + attemptCount(node);
-        m.style.color = "var(--muted)";
-        body.appendChild(m);
-        body.appendChild(attemptTabsEl(node));
-      }
-      const prev = document.createElement("div");
-      prev.className = "sv-prev checker";
-      const img = document.createElement("img");
-      img.id = "animimg-" + node.id;
-      img.className = "sv-thumb";
-      img.style.cssText =
-        "width:100%;height:auto;max-height:220px;object-fit:contain";
-      if (r.output && r.output.path) {
-        img.dataset.path = r.output.path;
-        bindImagePreview(img, r.output.path, node.title || I18n.t("GIF 图像"));
-        bindImgSaveAs(img);
-      }
-      prev.appendChild(img);
-      body.appendChild(prev);
-    } else if (r && r.error) {
+    const ops = document.createElement("div");
+    ops.className = "bentry-ops";
+    const add = document.createElement("button");
+    add.className = "mini";
+    add.textContent = I18n.t("＋ 任务");
+    add.title = I18n.t("在内部新增一个子任务（含起点与终点）");
+    add.onclick = (ev) => {
+      ev.stopPropagation();
+      addInnerTask(node);
+    };
+    const dec = document.createElement("button");
+    dec.className = "mini";
+    dec.textContent = I18n.t("助手拆解");
+    dec.title = I18n.t("让全局助手根据目标自动拆成内部任务图");
+    dec.onclick = () => askAssistDecomposeTask(node);
+    ops.appendChild(add);
+    ops.appendChild(dec);
+    body.appendChild(ops);
+    if (node.error) {
       const err = document.createElement("div");
       err.className = "n-status err";
-      err.textContent = "✕ " + r.error;
+      err.textContent = "✕ " + node.error;
       body.appendChild(err);
-    } else {
-      const hint = document.createElement("div");
-      hint.className = "n-empty";
-      hint.textContent =
-        I18n.t("点击 ▶ 将输入图像按网格均匀切割为 GIF 帧动画（依次行、从左到右）");
-      body.appendChild(hint);
+    } else if (node.output && node.output.kind === "text" && node.ranAt) {
+      const meta = document.createElement("div");
+      meta.className = "n-status done";
+      meta.textContent = "✓ " + I18n.t("已处理 ") + fmtTime(node.ranAt);
+      body.appendChild(meta);
+    }
+  } else if (node.kind === "judge") {
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.judgeResult === "yes"
+        ? " done"
+        : node.judgeResult === "no"
+          ? " err"
+          : node.running
+            ? " run"
+            : "");
+    st.textContent = node.running
+      ? I18n.t("判断中…")
+      : node.judgeResult === "yes"
+        ? I18n.t("裁决：是（达成）")
+        : node.judgeResult === "no"
+          ? I18n.t("裁决：否（未达成）")
+          : I18n.t("等待裁决 · 右上 是 / 下 否");
+    body.appendChild(st);
+    const ta = document.createElement("textarea");
+    ta.className = "n-text";
+    ta.spellcheck = false;
+    ta.placeholder = I18n.t("判断标准（可选，默认用所属任务的目标）");
+    ta.value = node.prompt || "";
+    ta.addEventListener("input", () => {
+      node.prompt = ta.value;
+    });
+    body.appendChild(ta);
+    if (node.error) {
+      const err = document.createElement("div");
+      err.className = "n-status err";
+      err.textContent = "✕ " + node.error;
+      body.appendChild(err);
     }
   } else if (node.kind === "chat") {
     /* 文本对话节点：dsh 风格透明消息流（角色行 + 思考折叠 + 工具 chips） */
@@ -6789,9 +8472,7 @@ function buildBody(node, body) {
       ? I18n.t("相对工作目录或绝对路径（待生成的文件）…")
       : I18n.t("监视路径（绝对路径，或先设工作目录后用相对路径）…");
     inp.value = node.waitPath || "";
-    inp.title = I18n.t(
-      "监视该文件：未生成时阻塞后续节点；就绪后放行。本节点无输入、不输出内容，仅用输出端连到下游以防提前运行。",
-    );
+    inp.title = I18n.t("待监视的文件路径");
     inp.addEventListener("change", () => {
       node.waitPath = preferRelativeSavePath(inp.value.trim());
       inp.value = node.waitPath;
@@ -6874,13 +8555,435 @@ function buildBody(node, body) {
     } else st.textContent = I18n.t("尚未检测到文件");
     body.appendChild(st);
 
-    const hint = document.createElement("div");
-    hint.className = "n-empty";
-    hint.textContent = I18n.t(
-      "本节点无输入端子：仅监视文件，用输出端连到下游以防提前运行；不输出内容，下游自行读约定路径。",
+  } else if (node.kind === "timer") {
+    normalizeTimerNode(node);
+    const modeRow = document.createElement("div");
+    modeRow.className = "wait-int-row";
+    const modeLab = document.createElement("label");
+    modeLab.className = "wait-int-lab";
+    modeLab.textContent = I18n.t("模式");
+    const modeSel = document.createElement("select");
+    for (const [v, lab] of [
+      ["once", I18n.t("一次（计划时间）")],
+      ["interval", I18n.t("间隔重复")],
+      ["cron", I18n.t("Cron 表达式")],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = lab;
+      if (node.timerMode === v) o.selected = true;
+      modeSel.appendChild(o);
+    }
+    modeSel.onchange = () => {
+      pushHistory();
+      node.timerMode = modeSel.value;
+      node.timerNextAt = computeTimerNextAt(node, Date.now());
+      refreshTimerStatus(node);
+      scheduleSave();
+      renderCanvas();
+    };
+    modeLab.appendChild(modeSel);
+    modeRow.appendChild(modeLab);
+    body.appendChild(modeRow);
+
+    if (node.timerMode === "once") {
+      const row = document.createElement("div");
+      row.className = "sv-path";
+      const inp = document.createElement("input");
+      inp.type = "datetime-local";
+      inp.value = String(node.timerAt || "").slice(0, 16);
+      inp.title = I18n.t("系统本地时间，到点触发一次后自动解除武装");
+      inp.onchange = () => {
+        node.timerAt = inp.value || "";
+        node.timerNextAt = computeTimerNextAt(node, Date.now());
+        refreshTimerStatus(node);
+        scheduleSave();
+        renderCanvas();
+      };
+      row.appendChild(inp);
+      body.appendChild(row);
+    } else if (node.timerMode === "interval") {
+      const lab = document.createElement("div");
+      lab.className = "ap-label";
+      lab.style.cssText = "margin:6px 0 4px;font-size:11px;color:var(--muted)";
+      lab.textContent = I18n.t("每隔（天 / 时 / 分）");
+      body.appendChild(lab);
+      appendDurationFields(body, node.timerEverySec, (sec) => {
+        pushHistory();
+        node.timerEverySec = sec;
+        node.timerNextAt = computeTimerNextAt(node, Date.now());
+        refreshTimerStatus(node);
+        scheduleSave();
+        renderCanvas();
+      });
+      const hint = document.createElement("div");
+      hint.className = "n-status";
+      hint.style.marginTop = "4px";
+      hint.textContent =
+        I18n.t("当前间隔：") + formatDurationLabel(node.timerEverySec);
+      body.appendChild(hint);
+    } else {
+      const row = document.createElement("div");
+      row.className = "sv-path cron-row";
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.placeholder = "0 * * * *";
+      inp.value = node.timerCron || "";
+      inp.title = I18n.t("五段 Cron：分 时 日 月 周（本地时间；周 0/7=周日）");
+      inp.onchange = () => {
+        node.timerCron = inp.value.trim() || "0 * * * *";
+        inp.value = node.timerCron;
+        node.timerNextAt = computeTimerNextAt(node, Date.now());
+        refreshTimerStatus(node);
+        scheduleSave();
+        renderCanvas();
+      };
+      row.appendChild(inp);
+      const smart = document.createElement("button");
+      smart.type = "button";
+      smart.className = "mini primary";
+      smart.textContent = I18n.t("智能填写");
+      smart.title = I18n.t("用自然语言描述计划，由 AI 生成 Cron 表达式");
+      smart.onclick = (ev) => {
+        ev.stopPropagation();
+        smartFillTimerCron(node);
+      };
+      row.appendChild(smart);
+      body.appendChild(row);
+    }
+
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running || node.timerArmed
+        ? " run"
+        : node.error
+          ? " err"
+          : node.timerLastAt
+            ? " done"
+            : "");
+    st.textContent = node.error || node.timerStatus || I18n.t("未武装");
+    body.appendChild(st);
+
+    const ops = document.createElement("div");
+    ops.className = "bentry-ops";
+    const fireNow = document.createElement("button");
+    fireNow.className = "mini";
+    fireNow.textContent = I18n.t("立即触发");
+    fireNow.title = I18n.t("立刻启用输出端连接的目标（不改变武装状态的下次计划）");
+    fireNow.onclick = (ev) => {
+      ev.stopPropagation();
+      fireTimerNode(node, S.wf, { quiet: false });
+    };
+    ops.appendChild(fireNow);
+    const nT = timerOutTargets(node).length;
+    const meta = document.createElement("span");
+    meta.className = "n-empty";
+    meta.textContent = I18n.t("目标 ") + nT;
+    ops.appendChild(meta);
+    body.appendChild(ops);
+
+  } else if (node.kind === "delayer") {
+    normalizeDelayerNode(node);
+    const lab = document.createElement("div");
+    lab.className = "ap-label";
+    lab.style.cssText = "margin:0 0 4px;font-size:11px;color:var(--muted)";
+    lab.textContent = I18n.t("延时（天 / 时 / 分）");
+    body.appendChild(lab);
+    appendDurationFields(body, node.delaySec, (sec) => {
+      pushHistory();
+      node.delaySec = sec;
+      scheduleSave();
+      renderCanvas();
+    });
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.delayStatus ||
+      I18n.t("等待控制脉冲 · 延时 ") + formatDurationLabel(node.delaySec);
+    body.appendChild(st);
+  } else if (node.kind === "sequencer") {
+    normalizeSequencerNode(node);
+    const row = document.createElement("div");
+    row.className = "wait-int-row";
+    const lab = document.createElement("label");
+    lab.className = "wait-int-lab";
+    lab.textContent = I18n.t("输出路数");
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "2";
+    inp.max = "8";
+    inp.step = "1";
+    inp.value = String(node.seqOutputs);
+    inp.onchange = () => {
+      pushHistory();
+      node.seqOutputs = Math.max(
+        2,
+        Math.min(8, Math.round(Number(inp.value) || 3)),
+      );
+      inp.value = String(node.seqOutputs);
+      scheduleSave();
+      renderCanvas();
+    };
+    lab.appendChild(inp);
+    row.appendChild(lab);
+    body.appendChild(row);
+    const gapLab = document.createElement("div");
+    gapLab.className = "ap-label";
+    gapLab.style.cssText = "margin:8px 0 4px;font-size:11px;color:var(--muted)";
+    gapLab.textContent = I18n.t("步间间隔（天 / 时 / 分，可全 0）");
+    body.appendChild(gapLab);
+    appendDurationFields(
+      body,
+      node.seqGapSec || 0,
+      (sec) => {
+        pushHistory();
+        node.seqGapSec = Math.max(0, Math.min(DUR_MAX_SEC, sec));
+        scheduleSave();
+        renderCanvas();
+      },
+      { allowZero: true },
     );
-    body.appendChild(hint);
+    const gapHint = document.createElement("div");
+    gapHint.className = "n-status";
+    gapHint.style.marginTop = "4px";
+    gapHint.textContent = node.seqGapSec
+      ? I18n.t("步间间隔：") + formatDurationLabel(node.seqGapSec)
+      : I18n.t("步间间隔：无（立即接续）");
+    body.appendChild(gapHint);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.seqStatus ||
+      I18n.t("按序点燃 ") + node.seqOutputs + I18n.t(" 路输出");
+    body.appendChild(st);
+  } else if (node.kind === "gate") {
+    normalizeGateNode(node);
+    const row = document.createElement("div");
+    row.className = "wait-int-row";
+    const lab = document.createElement("label");
+    lab.className = "wait-int-lab";
+    lab.textContent = I18n.t("输入路数");
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "2";
+    inp.max = "8";
+    inp.step = "1";
+    inp.value = String(node.gateInputs);
+    inp.onchange = () => {
+      pushHistory();
+      node.gateInputs = Math.max(
+        2,
+        Math.min(8, Math.round(Number(inp.value) || 2)),
+      );
+      inp.value = String(node.gateInputs);
+      scheduleSave();
+      renderCanvas();
+    };
+    lab.appendChild(inp);
+    row.appendChild(lab);
+    body.appendChild(row);
+    const ops = document.createElement("div");
+    ops.className = "bentry-ops";
+    const reset = document.createElement("button");
+    reset.className = "mini";
+    reset.textContent = I18n.t("清除到达");
+    reset.title = I18n.t("清除各输入到达标记，重新等待");
+    reset.onclick = (ev) => {
+      ev.stopPropagation();
+      pushHistory();
+      node.gateArrived = {};
+      node.gateStatus = I18n.t("已清除到达标记");
+      scheduleSave();
+      renderCanvas();
+    };
+    ops.appendChild(reset);
+    body.appendChild(ops);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.gateStatus ||
+      gateProgressLabel(node);
+    body.appendChild(st);
+  } else if (node.kind === "splitter") {
+    normalizeSplitterNode(node);
+    const row = document.createElement("div");
+    row.className = "wait-int-row";
+    const lab = document.createElement("label");
+    lab.className = "wait-int-lab";
+    lab.textContent = I18n.t("输出路数");
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "2";
+    inp.max = "8";
+    inp.step = "1";
+    inp.value = String(node.splitOutputs);
+    inp.onchange = () => {
+      pushHistory();
+      node.splitOutputs = Math.max(
+        2,
+        Math.min(8, Math.round(Number(inp.value) || 3)),
+      );
+      inp.value = String(node.splitOutputs);
+      scheduleSave();
+      renderCanvas();
+    };
+    lab.appendChild(inp);
+    row.appendChild(lab);
+    body.appendChild(row);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.splitStatus ||
+      I18n.t("并行点燃 ") + node.splitOutputs + I18n.t(" 路输出");
+    body.appendChild(st);
+  } else if (node.kind === "counter") {
+    normalizeCounterNode(node);
+    const row = document.createElement("div");
+    row.className = "wait-int-row";
+    const lab = document.createElement("label");
+    lab.className = "wait-int-lab";
+    lab.textContent = I18n.t("每 N 次放行");
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "2";
+    inp.max = "99";
+    inp.step = "1";
+    inp.value = String(node.counterEvery);
+    inp.onchange = () => {
+      pushHistory();
+      node.counterEvery = Math.max(
+        2,
+        Math.min(99, Math.round(Number(inp.value) || 2)),
+      );
+      inp.value = String(node.counterEvery);
+      scheduleSave();
+      renderCanvas();
+    };
+    lab.appendChild(inp);
+    row.appendChild(lab);
+    body.appendChild(row);
+    const ops = document.createElement("div");
+    ops.className = "bentry-ops";
+    const reset = document.createElement("button");
+    reset.className = "mini";
+    reset.textContent = I18n.t("清零计数");
+    reset.onclick = (ev) => {
+      ev.stopPropagation();
+      pushHistory();
+      node.counterCount = 0;
+      node.counterStatus = I18n.t("计数已清零");
+      scheduleSave();
+      renderCanvas();
+    };
+    ops.appendChild(reset);
+    body.appendChild(ops);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.counterStatus ||
+      I18n.t("当前 ") +
+        node.counterCount +
+        "/" +
+        node.counterEvery;
+    body.appendChild(st);
+  } else if (node.kind === "mutex") {
+    normalizeMutexNode(node);
+    const row = document.createElement("div");
+    row.className = "wait-int-row";
+    const lab = document.createElement("label");
+    lab.className = "wait-int-lab";
+    lab.textContent = I18n.t("输入路数");
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "2";
+    inp.max = "8";
+    inp.step = "1";
+    inp.value = String(node.mutexInputs);
+    inp.onchange = () => {
+      pushHistory();
+      node.mutexInputs = Math.max(
+        2,
+        Math.min(8, Math.round(Number(inp.value) || 2)),
+      );
+      inp.value = String(node.mutexInputs);
+      scheduleSave();
+      renderCanvas();
+    };
+    lab.appendChild(inp);
+    row.appendChild(lab);
+    body.appendChild(row);
+    const modeRow = document.createElement("div");
+    modeRow.className = "wait-int-row";
+    const modeLab = document.createElement("label");
+    modeLab.className = "wait-int-lab";
+    modeLab.textContent = I18n.t("选择模式");
+    const modeSel = document.createElement("select");
+    for (const [v, labT] of [
+      ["first", I18n.t("先到优先")],
+      ["priority", I18n.t("端口优先（小号优先）")],
+      ["random", I18n.t("随机一路")],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = labT;
+      modeSel.appendChild(o);
+    }
+    modeSel.value = node.mutexMode;
+    modeSel.onchange = () => {
+      pushHistory();
+      node.mutexMode = modeSel.value;
+      scheduleSave();
+      renderCanvas();
+    };
+    modeLab.appendChild(modeSel);
+    modeRow.appendChild(modeLab);
+    body.appendChild(modeRow);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.mutexStatus ||
+      I18n.t("多入选一 · ") + mutexModeLabel(node.mutexMode);
+    body.appendChild(st);
   } else if (node.kind === "control") {
+    const role = ctrlRoleOf(node);
+    if (role === "start" || role === "endSuccess" || role === "endFail") {
+      const st = document.createElement("div");
+      st.className =
+        "n-status" +
+        (role === "endSuccess" ? " done" : role === "endFail" ? " err" : "");
+      st.textContent =
+        role === "start"
+          ? I18n.t("任务 ▶ 时从此点燃，控制沿连线向后传递")
+          : role === "endSuccess"
+            ? I18n.t("控制流到达此处 → 任务成功")
+            : I18n.t("控制流到达此处 → 任务失败");
+      body.appendChild(st);
+      const hint = document.createElement("div");
+      hint.className = "n-empty";
+      hint.textContent = node.ctrlPinned
+        ? I18n.t("固定节点，无法删除")
+        : I18n.t("额外终点，可删除");
+      body.appendChild(hint);
+    } else {
     const targets = controlTargets(node);
     const st = document.createElement("div");
     const act = node.ctrlAction === "clear" ? "clear" : "run";
@@ -6895,16 +8998,6 @@ function buildBody(node, body) {
         (fillOn ? " · " + I18n.t("补缺") : "")
       : I18n.t("未连接任何节点");
     body.appendChild(st);
-    const hint = document.createElement("div");
-    hint.className = "n-empty";
-    hint.textContent = fillOn
-      ? I18n.t(
-          "补缺模式：点击 ▶ 只跑尚无输出的已连接节点，已有结果的跳过",
-        )
-      : I18n.t(
-          "从本节点连出，或把其他节点连入：点击 ▶ 对全部已连接节点执行所选操作",
-        );
-    body.appendChild(hint);
     if (targets.length) {
       const list = document.createElement("div");
       list.className = "ctrl-targets";
@@ -6922,6 +9015,7 @@ function buildBody(node, body) {
         list.appendChild(row);
       }
       body.appendChild(list);
+    }
     }
   } else if (node.kind === "save_text" || node.kind === "save_image") {
     const pRow = document.createElement("div");
@@ -7235,21 +9329,6 @@ async function resolveSavePreviewPaths(node) {
 async function fillPreviews() {
   for (const n of S.wf.nodes) {
     const r = selResult(n);
-    if (n.kind === "anim" && r && r.output) {
-      const img = document.querySelector("#animimg-" + n.id);
-      if (img) {
-        img.src = fileUrlWithBust(
-          r.output.path,
-          (r.ranAt || n.ranAt || 0) + ":" + r.output.path,
-        );
-        img.dataset.path = r.output.path;
-        bindImagePreview(
-          img,
-          r.output.path,
-          n.title || I18n.t("输出图像"),
-        );
-      }
-    }
     if (n.kind === "proc_image") {
       if (r && r.batchOutputs && r.batchOutputs.length) {
         r.batchOutputs.forEach((x, idx) => {
@@ -7915,7 +9994,8 @@ function isAutoProcKind(n) {
     (n.kind === "proc_text" ||
       n.kind === "proc_image" ||
       n.kind === "agent_task" ||
-      n.kind === "wait_file")
+      n.kind === "wait_file" ||
+      n.kind === "task")
   );
 }
 
@@ -7966,6 +10046,8 @@ function nodeHasOutputContent(node) {
     );
   if (node.kind === "control") return false;
   if (node.kind === "wait_file") return !!node.waitReady;
+  if (node.kind === "task")
+    return node.taskStatus === "done" && !!(node.output && node.output.text);
   if (attemptCount(node) > 1) {
     const outs = node.attemptOutputs || [];
     return outs.some(
@@ -8152,6 +10234,33 @@ async function playNodeBody(node, quiet) {
   }
   if (node.kind === "wait_file") {
     return playWaitFileNode(node, quiet);
+  }
+  if (node.kind === "timer") {
+    return playTimerNode(node, quiet);
+  }
+  if (node.kind === "delayer") {
+    return playDelayerNode(node, quiet);
+  }
+  if (node.kind === "sequencer") {
+    return playSequencerNode(node, quiet);
+  }
+  if (node.kind === "gate") {
+    return playGateNode(node, quiet);
+  }
+  if (node.kind === "splitter") {
+    return playSplitterNode(node, quiet);
+  }
+  if (node.kind === "counter") {
+    return playCounterNode(node, quiet);
+  }
+  if (node.kind === "mutex") {
+    return playMutexNode(node, quiet);
+  }
+  if (node.kind === "judge") {
+    return playJudgeNode(node, quiet);
+  }
+  if (node.kind === "task") {
+    return playTaskNode(node, quiet);
   }
   if (node.kind === "agent_task" && !String(node.task || "").trim()) {
     toast(I18n.t("先填写任务描述"), "warn");
@@ -8635,11 +10744,21 @@ function controlTargets(node) {
 function canControlRun(n) {
   return (
     !!n &&
+    !isExecStart(n) &&
+    !isExecEnd(n) &&
     (n.kind === "proc_text" ||
       n.kind === "proc_image" ||
       n.kind === "agent_task" ||
       n.kind === "wait_file" ||
-      n.kind === "anim" ||
+      n.kind === "timer" ||
+      n.kind === "delayer" ||
+      n.kind === "sequencer" ||
+      n.kind === "gate" ||
+      n.kind === "splitter" ||
+      n.kind === "counter" ||
+      n.kind === "mutex" ||
+      n.kind === "task" ||
+      n.kind === "judge" ||
       n.kind === "save_text" ||
       n.kind === "save_image" ||
       n.kind === "control")
@@ -8655,7 +10774,7 @@ function invalidateControlRunTargets(nodes) {
       n.kind === "proc_image" ||
       n.kind === "agent_task" ||
       n.kind === "wait_file" ||
-      n.kind === "anim"
+      n.kind === "task"
     ) {
       n.output = null;
       n.batchOutputs = null;
@@ -8668,6 +10787,7 @@ function invalidateControlRunTargets(nodes) {
         n.waitStatus = "";
         n.waitReady = false;
       }
+      if (n.kind === "task") n.taskStatus = "pending";
     }
     if (n.kind === "save_text" || n.kind === "save_image") {
       n.savedPaths = [];
@@ -8867,7 +10987,7 @@ async function runControlledNode(n, seen) {
   if (!n || seen.has(n.id)) return;
   if (n.kind === "control") return playControlNode(n, seen);
   seen.add(n.id);
-  if (n.kind === "anim") return playAnimNode(n);
+  if (n.kind === "task") return playTaskNode(n, false);
   if (n.kind === "save_text" || n.kind === "save_image")
     return saveNodeAction(n);
   if (
@@ -9200,16 +11320,25 @@ function wouldCycle(fromId, toId) {
   return false;
 }
 
-function connectError(fromId, toId, toIndex) {
+function connectError(fromId, toId, toIndex, fromIndex) {
   const from = nodeById(fromId),
     to = nodeById(toId);
   if (!from || !to) return I18n.t("节点不存在");
   if (!hasOutput(from)) return I18n.t("该节点没有输出端子");
-  if (to.kind === "chat" || to.kind === "wait_file" || to.ro)
+  const fi = Number(fromIndex || 0);
+  if (fi < 0 || fi >= outputCount(from)) return I18n.t("该节点没有输出端子");
+  if (to.kind === "chat" || to.kind === "wait_file" || to.kind === "timer" || to.ro)
     return I18n.t("该节点不接受输入");
   if (inputCount(to) === 0) return I18n.t("该节点不接受输入");
   if (fromId === toId || wouldCycle(fromId, toId)) return I18n.t("不能连接成回路");
-  if (S.wf.wires.some((w) => w.from === fromId && w.to === toId))
+  if (
+    S.wf.wires.some(
+      (w) =>
+        w.from === fromId &&
+        w.to === toId &&
+        Number(w.fromIndex || 0) === fi,
+    )
+  )
     return I18n.t("这两节点已连接");
   const fromCtrl = isControlKind(from);
   if (!fromCtrl && to.kind === "save_image") {
@@ -9226,9 +11355,17 @@ function connectError(fromId, toId, toIndex) {
 }
 
 function addWire(fromId, toId, toIndex, opts) {
+  opts = opts || {};
   const cur = allWiresTo(toId).length;
   const idx = toIndex == null ? cur : toIndex;
-  S.wf.wires.push({ id: uid("w"), from: fromId, to: toId, toIndex: idx });
+  const fromIndex = Number(opts.fromIndex || 0);
+  S.wf.wires.push({
+    id: uid("w"),
+    from: fromId,
+    to: toId,
+    toIndex: idx,
+    fromIndex,
+  });
   if (!isControlKind(nodeById(fromId))) clearDownstream(toId);
   /* 文本处理节点接到图像：自动切到视觉服务商/模型 */
   const to = nodeById(toId);
@@ -9253,14 +11390,14 @@ function addWire(fromId, toId, toIndex, opts) {
   }
 }
 
-function connect(fromId, toId, toIndex) {
-  const err = connectError(fromId, toId, toIndex);
+function connect(fromId, toId, toIndex, fromIndex) {
+  const err = connectError(fromId, toId, toIndex, fromIndex);
   if (err) {
     toast(err, "warn");
     return;
   }
   pushHistory();
-  addWire(fromId, toId, toIndex, { notify: true, save: false });
+  addWire(fromId, toId, toIndex, { notify: true, save: false, fromIndex: fromIndex || 0 });
   renderCanvas();
   scheduleSave(true);
   renderStatus();
@@ -9292,7 +11429,22 @@ function canvasSnapshot() {
       w: NODE_DEFAULTS[k].w,
       h: NODE_DEFAULTS[k].h,
     })),
-    nodes: (wf.nodes || []).map((n) => ({
+    taskFocus: currentTaskFocus() || undefined,
+    taskTree: (wf.nodes || [])
+      .filter((n) => n.kind === "task")
+      .map((n) => ({
+        id: n.id,
+        title: n.title,
+        parentTaskId: n.parentTaskId || "",
+        goal: clipStr(n.goal, 160),
+        status: n.taskStatus || "pending",
+        steps: (n.steps || []).map((s) => (s && s.title) || ""),
+        childCount: (wf.nodes || []).filter((x) => x.parentTaskId === n.id)
+          .length,
+      })),
+    nodes: (wf.nodes || [])
+      .filter((n) => (n.parentTaskId || "") === currentTaskFocus())
+      .map((n) => ({
       id: n.id,
       kind: n.kind,
       title: n.title,
@@ -9310,11 +11462,33 @@ function canvasSnapshot() {
         n.kind === "wait_file"
           ? Math.max(1, Math.min(60, Math.round(Number(n.waitIntervalSec) || 2)))
           : undefined,
+      timerMode: n.kind === "timer" ? n.timerMode || undefined : undefined,
+      timerAt: n.kind === "timer" ? n.timerAt || undefined : undefined,
+      timerEverySec:
+        n.kind === "timer"
+          ? Math.max(1, Math.round(Number(n.timerEverySec) || 3600))
+          : undefined,
+      timerCron: n.kind === "timer" ? n.timerCron || undefined : undefined,
+      timerArmed: n.kind === "timer" ? !!n.timerArmed : undefined,
+      timerNextAt: n.kind === "timer" ? n.timerNextAt || undefined : undefined,
+      delaySec: n.kind === "delayer" ? n.delaySec || undefined : undefined,
+      seqOutputs: n.kind === "sequencer" ? n.seqOutputs || undefined : undefined,
+      seqGapSec: n.kind === "sequencer" ? n.seqGapSec || undefined : undefined,
+      gateInputs: n.kind === "gate" ? n.gateInputs || undefined : undefined,
+      splitOutputs:
+        n.kind === "splitter" ? n.splitOutputs || undefined : undefined,
+      counterEvery:
+        n.kind === "counter" ? n.counterEvery || undefined : undefined,
+      counterCount:
+        n.kind === "counter" ? n.counterCount || undefined : undefined,
+      mutexInputs: n.kind === "mutex" ? n.mutexInputs || undefined : undefined,
+      mutexMode: n.kind === "mutex" ? n.mutexMode || undefined : undefined,
       agent: n.kind === "proc_text" ? !!n.agent : undefined,
       providerId:
         n.kind === "proc_text" ||
         n.kind === "proc_image" ||
-        n.kind === "chat"
+        n.kind === "chat" ||
+        n.kind === "judge"
           ? n.providerId || undefined
           : undefined,
       provider:
@@ -9325,7 +11499,8 @@ function canvasSnapshot() {
         n.kind === "proc_text" ||
         n.kind === "proc_image" ||
         n.kind === "chat" ||
-        n.kind === "agent_task"
+        n.kind === "agent_task" ||
+        n.kind === "judge"
           ? n.model || undefined
           : undefined,
       size:
@@ -9367,6 +11542,16 @@ function canvasSnapshot() {
           : undefined,
       ctrlAction: n.kind === "control" ? n.ctrlAction || "run" : undefined,
       ctrlFillOnly: n.kind === "control" ? !!n.ctrlFillOnly : undefined,
+      ctrlRole: n.kind === "control" ? n.ctrlRole || undefined : undefined,
+      ctrlPinned: n.kind === "control" && n.ctrlPinned ? true : undefined,
+      judgeResult: n.kind === "judge" ? n.judgeResult || undefined : undefined,
+      parentTaskId: n.parentTaskId || undefined,
+      goal: n.kind === "task" ? clipStr(n.goal, 240) : undefined,
+      steps:
+        n.kind === "task"
+          ? (n.steps || []).map((s) => (s && s.title) || "")
+          : undefined,
+      taskStatus: n.kind === "task" ? n.taskStatus || "pending" : undefined,
     })),
     marks: (wf.marks || []).map((m) => ({
       id: m.id,
@@ -9591,6 +11776,19 @@ async function applyAppOp(params) {
   const action = String(params.action || "").trim();
   const warnings = [];
   if (!action) throw new Error(I18n.t("缺少 action"));
+  if (action === "delete_workflow") assertAgentTool("app_delete");
+  else if (
+    action === "status" ||
+    action === "list_workflows" ||
+    action === "rename_workflow" ||
+    action === "select_nodes" ||
+    action === "undo" ||
+    action === "redo"
+  ) {
+    assertAgentTool("app_ops");
+    if (action === "status" || action === "list_workflows")
+      assertAgentTool("canvas_read");
+  }
   const scopeBlocked = S.assistRunActive && assistScopeIsCurrent()
     ? I18n.t(
         "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。",
@@ -9777,6 +11975,417 @@ function setPermissionPreset(v) {
   toast(I18n.t("权限预设已切换：") + permissionPresetLabel(S.config.dsh.permissionPreset), "ok");
 }
 
+/* Agent 工具许可：按类别开关（与权限预设正交——后者管沙箱/越权审批，这里管「能不能调用」）。
+   缺省键视为允许，以便日后加类别时旧配置向前兼容。默认预设封装当前产品能力（全开）。 */
+function agentToolCatalog() {
+  return [
+    {
+      id: "canvas",
+      label: I18n.t("画布（MTNode）"),
+      items: [
+        {
+          key: "canvas_read",
+          label: I18n.t("读取画布"),
+          hint: "mtnode_canvas_get",
+        },
+        {
+          key: "canvas_nodes",
+          label: I18n.t("节点与连线"),
+          hint: I18n.t("创建 / 修改 / 删除普通节点，连接与断开"),
+        },
+        {
+          key: "canvas_control",
+          label: I18n.t("控制类节点"),
+          hint: I18n.t("执行、清空、需求等待、判断、定时、延时、序列、成功/失败终点"),
+        },
+        {
+          key: "canvas_draw",
+          label: I18n.t("绘图"),
+          hint: I18n.t("创建 / 修改 / 删除绘制标记"),
+        },
+        {
+          key: "canvas_layout",
+          label: I18n.t("排版与成组"),
+          hint: I18n.t("自动排版、创建组"),
+        },
+      ],
+    },
+    {
+      id: "app",
+      label: I18n.t("应用"),
+      items: [
+        {
+          key: "app_ops",
+          label: I18n.t("应用操作"),
+          hint: I18n.t("状态、列表、重命名、选中、撤销重做"),
+        },
+        {
+          key: "app_delete",
+          label: I18n.t("删除工作流"),
+          hint: "mtnode_app:delete_workflow",
+        },
+      ],
+    },
+    {
+      id: "core",
+      label: I18n.t("基础能力（引擎）"),
+      items: [
+        {
+          key: "fs_read",
+          label: I18n.t("读文件"),
+          hint: I18n.t("浏览与读取工作区文件"),
+        },
+        {
+          key: "fs_write",
+          label: I18n.t("写文件"),
+          hint: I18n.t("创建、修改、删除工作区文件"),
+        },
+        {
+          key: "shell",
+          label: I18n.t("终端命令"),
+          hint: I18n.t("在工作区执行命令"),
+        },
+        {
+          key: "web",
+          label: I18n.t("联网"),
+          hint: I18n.t("搜索与抓取网页"),
+        },
+        {
+          key: "subagent",
+          label: I18n.t("子代理任务"),
+          hint: I18n.t("派生子任务"),
+        },
+        {
+          key: "ask_user",
+          label: I18n.t("向用户提问"),
+          hint: I18n.t("ask 交互"),
+        },
+      ],
+    },
+    {
+      id: "vision",
+      label: I18n.t("识图"),
+      items: [
+        {
+          key: "vision",
+          label: I18n.t("识图子代理"),
+          hint: "mtnode_vision",
+        },
+      ],
+    },
+  ];
+}
+
+function defaultToolAllow() {
+  const allow = {};
+  for (const cat of agentToolCatalog()) {
+    for (const it of cat.items) allow[it.key] = true;
+  }
+  return allow;
+}
+
+function agentToolItemLabel(key) {
+  for (const cat of agentToolCatalog()) {
+    const hit = cat.items.find((it) => it.key === key);
+    if (hit) return hit.label;
+  }
+  return key;
+}
+
+function makeBuiltinDefaultToolPreset() {
+  return {
+    id: "default",
+    name: I18n.t("默认（当前能力）"),
+    builtin: true,
+    allow: defaultToolAllow(),
+  };
+}
+
+function saveAgentToolConfig() {
+  if (window.api && window.api.configSave)
+    window.api.configSave(S.config).catch(() => {});
+  paintApprovalsBtn();
+}
+
+function ensureAgentToolPresets() {
+  if (!S.config) return;
+  if (!S.config.dsh) S.config.dsh = {};
+  const d = S.config.dsh;
+  if (!Array.isArray(d.agentToolPresets) || !d.agentToolPresets.length) {
+    d.agentToolPresets = [makeBuiltinDefaultToolPreset()];
+  } else {
+    let def = d.agentToolPresets.find((p) => p && p.id === "default");
+    if (!def) {
+      d.agentToolPresets.unshift(makeBuiltinDefaultToolPreset());
+    } else {
+      def.builtin = true;
+      def.name = I18n.t("默认（当前能力）");
+      def.allow = Object.assign(defaultToolAllow(), def.allow || {});
+    }
+    for (const p of d.agentToolPresets) {
+      if (!p || typeof p !== "object") continue;
+      if (!p.id) p.id = "user_" + Date.now().toString(36);
+      if (!p.name) p.name = I18n.t("自定义预设");
+      p.allow = Object.assign(defaultToolAllow(), p.allow || {});
+    }
+  }
+  const ids = d.agentToolPresets.map((p) => p && p.id);
+  if (!d.agentToolPresetId || ids.indexOf(d.agentToolPresetId) < 0)
+    d.agentToolPresetId = "default";
+}
+
+function agentToolActivePreset() {
+  ensureAgentToolPresets();
+  const d = S.config.dsh;
+  return (
+    d.agentToolPresets.find((p) => p && p.id === d.agentToolPresetId) ||
+    d.agentToolPresets[0]
+  );
+}
+
+function agentToolAllowed(key) {
+  const p = agentToolActivePreset();
+  if (!p || !p.allow || p.allow[key] === undefined) return true;
+  return !!p.allow[key];
+}
+
+function agentToolDeniedError(key, detail) {
+  return new Error(
+    I18n.t("当前工具预设不允许：") +
+      agentToolItemLabel(key) +
+      (detail ? "（" + detail + "）" : "") +
+      I18n.t("。请在右上角「审批」中调整 Agent 工具许可。"),
+  );
+}
+
+function assertAgentTool(key, detail) {
+  if (!agentToolAllowed(key)) throw agentToolDeniedError(key, detail);
+}
+
+function normalizeCanvasCreateKind(kind) {
+  if (kind === "image" || kind === "img") return "input_image";
+  if (kind === "text") return "input_text";
+  return kind;
+}
+
+function canvasKindToolKey(kind) {
+  return isControlKind({ kind: kind }) ? "canvas_control" : "canvas_nodes";
+}
+
+function collectCanvasEditToolKeys(params) {
+  params = params || {};
+  const keys = new Set();
+  const creates = Array.isArray(params.create) ? params.create : [];
+  const updates = Array.isArray(params.update) ? params.update : [];
+  const connects = Array.isArray(params.connect) ? params.connect : [];
+  const disconnects = Array.isArray(params.disconnect) ? params.disconnect : [];
+  const removes = Array.isArray(params.remove) ? params.remove : [];
+  const createMarks = Array.isArray(params.createMarks)
+    ? params.createMarks
+    : Array.isArray(params.marks)
+      ? params.marks
+      : [];
+  const updateMarks = Array.isArray(params.updateMarks) ? params.updateMarks : [];
+  const removeMarksList = Array.isArray(params.removeMarks)
+    ? params.removeMarks
+    : [];
+  const doLayout =
+    params.layout === true || (params.layout !== false && creates.length > 0);
+  const aliasKind = new Map();
+  for (const spec of creates) {
+    if (!spec) continue;
+    const kind = normalizeCanvasCreateKind(spec.kind);
+    if (!NODE_DEFAULTS[kind]) continue;
+    const alias = String(spec.alias || "").trim();
+    if (alias) aliasKind.set(alias, kind);
+    keys.add(canvasKindToolKey(kind));
+  }
+  const peekKind = (token) => {
+    const s = String(token || "").trim();
+    if (!s) return "";
+    if (aliasKind.has(s)) return aliasKind.get(s);
+    const byId = typeof nodeById === "function" ? nodeById(s) : null;
+    if (byId) return byId.kind;
+    const hits = ((S.wf && S.wf.nodes) || []).filter((n) => n.title === s);
+    return hits.length === 1 ? hits[0].kind : "";
+  };
+  const peekNode = (token) => {
+    const s = String(token || "").trim();
+    if (!s) return null;
+    const byId = typeof nodeById === "function" ? nodeById(s) : null;
+    if (byId) return byId;
+    const hits = ((S.wf && S.wf.nodes) || []).filter((n) => n.title === s);
+    return hits.length === 1 ? hits[0] : null;
+  };
+  for (const spec of updates) {
+    const token = (spec && (spec.id || spec.alias || spec.title)) || "";
+    const kind = peekKind(token);
+    keys.add(kind ? canvasKindToolKey(kind) : "canvas_nodes");
+  }
+  if (connects.length || disconnects.length) keys.add("canvas_nodes");
+  for (const token of removes) {
+    const raw =
+      token && typeof token === "object"
+        ? token.id || token.alias || token.title
+        : token;
+    const kind = peekKind(raw);
+    keys.add(kind ? canvasKindToolKey(kind) : "canvas_nodes");
+    const n = peekNode(raw);
+    if (n && n.kind === "task" && typeof taskDescendantIds === "function") {
+      for (const id of taskDescendantIds(n.id)) {
+        const d = nodeById(id);
+        if (d) keys.add(canvasKindToolKey(d.kind));
+      }
+    }
+  }
+  if (createMarks.length || updateMarks.length || removeMarksList.length)
+    keys.add("canvas_draw");
+  if (doLayout || params.group) keys.add("canvas_layout");
+  if (params.setWorkflowName) keys.add("app_ops");
+  return keys;
+}
+
+function assertCanvasEditTools(params) {
+  for (const key of collectCanvasEditToolKeys(params)) assertAgentTool(key);
+}
+
+function agentToolPolicySystemNote() {
+  try {
+    ensureAgentToolPresets();
+  } catch (_) {
+    return "";
+  }
+  const p = agentToolActivePreset();
+  const allow = (p && p.allow) || defaultToolAllow();
+  const denied = [];
+  for (const cat of agentToolCatalog()) {
+    for (const it of cat.items) {
+      if (allow[it.key] === false) denied.push(it.label + " (" + it.key + ")");
+    }
+  }
+  const name = (p && p.name) || I18n.t("默认（当前能力）");
+  let s =
+    I18n.t("【Agent 工具许可】当前预设「") +
+    name +
+    I18n.t("」。");
+  if (!denied.length) {
+    s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
+    return s;
+  }
+  s += I18n.t("禁止：") + denied.join(I18n.t("、")) + "。";
+  s += I18n.t(
+    "禁止项对应的工具不可调用；画布 / 应用 / 识图类调用会被系统直接拒绝。",
+  );
+  if (allow.canvas_layout === false)
+    s += I18n.t("若仍要创建节点，edit 必须传 layout:false，且禁止 group。");
+  const coreOff = ["fs_read", "fs_write", "shell", "web", "subagent", "ask_user"].filter(
+    (k) => allow[k] === false,
+  );
+  if (coreOff.length)
+    s += I18n.t(
+      "基础能力的禁止项请遵守，不要调用读/写文件、终端、联网、子代理或向用户提问中被关掉的能力。",
+    );
+  return s;
+}
+
+function setAgentToolPresetId(id) {
+  ensureAgentToolPresets();
+  const hit = S.config.dsh.agentToolPresets.find((p) => p && p.id === id);
+  if (!hit) return;
+  S.config.dsh.agentToolPresetId = hit.id;
+  saveAgentToolConfig();
+  toast(I18n.t("工具预设已切换：") + hit.name, "ok");
+}
+
+function setAgentToolAllow(key, on) {
+  const p = agentToolActivePreset();
+  if (!p.allow) p.allow = defaultToolAllow();
+  p.allow[key] = !!on;
+  saveAgentToolConfig();
+}
+
+function addAgentToolPreset() {
+  ensureAgentToolPresets();
+  const cur = agentToolActivePreset();
+  const suggested =
+    I18n.t("自定义") + " " + S.config.dsh.agentToolPresets.length;
+  promptDialog(I18n.t("新预设名称"), suggested, {
+    title: I18n.t("新建工具预设"),
+  }).then((raw) => {
+    if (raw == null) return;
+    const name = String(raw).trim() || I18n.t("自定义预设");
+    const id = "user_" + Date.now().toString(36);
+    S.config.dsh.agentToolPresets.push({
+      id,
+      name,
+      builtin: false,
+      allow: Object.assign(defaultToolAllow(), cur.allow || {}),
+    });
+    S.config.dsh.agentToolPresetId = id;
+    saveAgentToolConfig();
+    toast(I18n.t("已新建工具预设：") + name, "ok");
+    openApprovalsPanel();
+  });
+}
+
+function renameAgentToolPreset() {
+  const p = agentToolActivePreset();
+  if (!p || p.builtin || p.id === "default") {
+    toast(I18n.t("内置默认预设不能重命名"), "warn");
+    return;
+  }
+  promptDialog(I18n.t("重命名预设"), p.name || "", {
+    title: I18n.t("重命名"),
+  }).then((raw) => {
+    if (raw == null) return;
+    const name = String(raw).trim();
+    if (!name) return;
+    p.name = name;
+    saveAgentToolConfig();
+    toast(I18n.t("预设已重命名：") + name, "ok");
+    openApprovalsPanel();
+  });
+}
+
+function deleteAgentToolPreset() {
+  const p = agentToolActivePreset();
+  if (!p || p.builtin || p.id === "default") {
+    toast(I18n.t("内置默认预设不能删除"), "warn");
+    return;
+  }
+  confirmDialog(I18n.t("删除工具预设「") + p.name + I18n.t("」？"), {
+    title: I18n.t("删除"),
+    danger: true,
+    okText: I18n.t("删除"),
+  }).then((ok) => {
+    if (!ok) return;
+    S.config.dsh.agentToolPresets = S.config.dsh.agentToolPresets.filter(
+      (x) => x && x.id !== p.id,
+    );
+    S.config.dsh.agentToolPresetId = "default";
+    saveAgentToolConfig();
+    toast(I18n.t("已删除工具预设"), "ok");
+    openApprovalsPanel();
+  });
+}
+
+function agentToolPresetStatusText() {
+  try {
+    const p = agentToolActivePreset();
+    const allow = (p && p.allow) || {};
+    let nOff = 0;
+    for (const cat of agentToolCatalog()) {
+      for (const it of cat.items) if (allow[it.key] === false) nOff++;
+    }
+    const name = (p && p.name) || I18n.t("默认（当前能力）");
+    return nOff
+      ? I18n.t("工具：") + name + I18n.t(" · 已关闭 ") + nOff + I18n.t(" 个类别")
+      : I18n.t("工具：") + name;
+  } catch (_) {
+    return I18n.t("工具：") + I18n.t("默认（当前能力）");
+  }
+}
+
 function closeApprovalsPanel() {
   const pan = $("#approvalsPanel");
   if (pan) pan.classList.remove("on");
@@ -9793,6 +12402,8 @@ function paintApprovalsBtn() {
     I18n.t("审批与权限") +
     " · " +
     permissionPresetLabel(perm) +
+    " · " +
+    agentToolPresetStatusText() +
     " · " +
     visionInspectStatusText();
   btn.setAttribute("aria-label", btn.title);
@@ -9817,6 +12428,7 @@ function openApprovalsPanel() {
     );
   }
   if (!S.config.dsh) S.config.dsh = {};
+  ensureAgentToolPresets();
   pan.innerHTML = "";
   const h = document.createElement("h4");
   h.textContent = I18n.t("审批与权限");
@@ -9842,6 +12454,98 @@ function openApprovalsPanel() {
   };
   sec1.appendChild(sel);
   pan.appendChild(sec1);
+
+  const secTools = document.createElement("div");
+  secTools.className = "ap-sec";
+  const labTools = document.createElement("label");
+  labTools.className = "ap-label";
+  labTools.textContent = I18n.t(
+    "Agent 工具许可（按类别；默认预设 = 当前产品能力。下一轮任务起写入系统提示，画布/应用/识图为硬拦截）",
+  );
+  secTools.appendChild(labTools);
+  const presetRow = document.createElement("div");
+  presetRow.className = "ap-preset-row";
+  const toolSel = document.createElement("select");
+  toolSel.id = "apToolPresetSel";
+  const activePreset = agentToolActivePreset();
+  for (const p of S.config.dsh.agentToolPresets) {
+    if (!p) continue;
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = p.builtin || p.id === "default" ? p.name : p.name;
+    toolSel.appendChild(o);
+  }
+  toolSel.value = activePreset.id;
+  toolSel.onchange = () => {
+    setAgentToolPresetId(toolSel.value);
+    openApprovalsPanel();
+  };
+  presetRow.appendChild(toolSel);
+  const mkToolBtn = (label, fn, primary) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = primary ? "mini primary" : "mini";
+    b.textContent = label;
+    b.onclick = () => {
+      fn();
+    };
+    presetRow.appendChild(b);
+    return b;
+  };
+  mkToolBtn(I18n.t("＋ 新建"), addAgentToolPreset, true);
+  const renameBtn = mkToolBtn(I18n.t("重命名"), renameAgentToolPreset, false);
+  const delBtn = mkToolBtn(I18n.t("删除"), deleteAgentToolPreset, false);
+  const locked = !!(activePreset.builtin || activePreset.id === "default");
+  renameBtn.disabled = locked;
+  delBtn.disabled = locked;
+  secTools.appendChild(presetRow);
+  const catsHost = document.createElement("div");
+  catsHost.className = "ap-cats";
+  for (const cat of agentToolCatalog()) {
+    const det = document.createElement("details");
+    det.className = "ap-cat";
+    det.open = cat.id === "canvas" || cat.id === "app";
+    const sum = document.createElement("summary");
+    sum.textContent = cat.label;
+    det.appendChild(sum);
+    for (const it of cat.items) {
+      const wrap = document.createElement("label");
+      wrap.className = "ap-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = agentToolAllowed(it.key);
+      cb.onchange = () => {
+        setAgentToolAllow(it.key, cb.checked);
+        const stEl = $("#apToolPresetStatus");
+        if (stEl) stEl.textContent = agentToolPresetStatusText();
+        paintApprovalsBtn();
+      };
+      wrap.appendChild(cb);
+      const txt = document.createElement("span");
+      txt.appendChild(document.createTextNode(it.label));
+      if (it.hint) {
+        const small = document.createElement("small");
+        small.textContent = it.hint;
+        txt.appendChild(small);
+      }
+      wrap.appendChild(txt);
+      det.appendChild(wrap);
+    }
+    catsHost.appendChild(det);
+  }
+  secTools.appendChild(catsHost);
+  const toolSt = document.createElement("div");
+  toolSt.className = "ap-status";
+  toolSt.id = "apToolPresetStatus";
+  toolSt.textContent = agentToolPresetStatusText();
+  secTools.appendChild(toolSt);
+  const toolHint = document.createElement("div");
+  toolHint.className = "ap-hint";
+  toolHint.textContent = I18n.t(
+    "与上方「权限预设」独立：那边管沙箱与越权是否询问，这边管 Agent 允许调用哪些能力。可勾选修改当前预设，或「＋ 新建」另存一份。画布/应用/识图会直接拒绝未授权调用；读文件/终端/联网等基础能力写入系统提示约束。",
+  );
+  secTools.appendChild(toolHint);
+  pan.appendChild(secTools);
 
   const sec2 = document.createElement("div");
   sec2.className = "ap-sec";
@@ -9918,9 +12622,11 @@ function openApprovalsPanel() {
 }
 
 function paintApprovalsPanelBody(pan) {
-  /* 权限下拉已即时保存；仅刷新识图状态文案 */
+  /* 权限下拉已即时保存；刷新识图与工具预设状态文案 */
   const el = pan && pan.querySelector("#apVisionStatus");
   if (el) el.textContent = visionInspectStatusText();
+  const st = pan && pan.querySelector("#apToolPresetStatus");
+  if (st) st.textContent = agentToolPresetStatusText();
   paintApprovalsBtn();
 }
 
@@ -10084,6 +12790,16 @@ async function applyVisionInspect(params) {
   const question = String(params.question || "").trim();
   if (!imagePath) return { ok: false, error: I18n.t("缺少 imagePath") };
   if (!question) return { ok: false, error: I18n.t("缺少 question") };
+  try {
+    assertAgentTool("vision");
+  } catch (e) {
+    return {
+      ok: false,
+      error: (e && e.message) || String(e),
+      denied: true,
+      status: 403,
+    };
+  }
   if (!isAbsPath(imagePath)) {
     return { ok: false, error: I18n.t("imagePath 必须是本机绝对路径") };
   }
@@ -10287,9 +13003,15 @@ function confirmAssistAppOp(params) {
 
 async function applyCanvasOp(op, params) {
   if (op === "app") return applyAppOp(params || {});
-  if (op === "vision") return await applyVisionInspect(params || {});
+  if (op === "vision") {
+    assertAgentTool("vision");
+    return await applyVisionInspect(params || {});
+  }
   if (!S.wf) throw new Error(I18n.t("当前没有打开的工作流"));
-  if (op === "get") return Object.assign({ ok: true }, await canvasSnapshotFull());
+  if (op === "get") {
+    assertAgentTool("canvas_read");
+    return Object.assign({ ok: true }, await canvasSnapshotFull());
+  }
   if (op === "edit") return await applyCanvasEdit(params || {});
   throw new Error(I18n.t("未知画布操作：") + op);
 }
@@ -10406,18 +13128,29 @@ function layoutFlow(nodes, wires, origin, obstacles) {
 
 function layoutNodePriority(n) {
   if (!n) return 9;
+  if (isExecStart(n)) return -1;
+  if (isExecEnd(n)) return 8;
   if (n.kind === "control") return 0;
-  if (n.kind === "input_text" || n.kind === "input_image") return 1;
-  if (n.kind === "split") return 2;
-  if (n.kind === "merge" || n.kind === "wait_file") return 3;
+  if (n.kind === "task") return 1;
+  if (n.kind === "input_text" || n.kind === "input_image") return 2;
+  if (n.kind === "split") return 3;
+  if (n.kind === "merge" || n.kind === "wait_file" || n.kind === "timer") return 4;
+  if (n.kind === "delayer" || n.kind === "sequencer") return 4.2;
+  if (
+    n.kind === "gate" ||
+    n.kind === "splitter" ||
+    n.kind === "counter" ||
+    n.kind === "mutex"
+  )
+    return 4.3;
+  if (n.kind === "judge") return 4.5;
   if (
     n.kind === "proc_text" ||
     n.kind === "proc_image" ||
     n.kind === "agent_task" ||
     n.kind === "chat"
   )
-    return 4;
-  if (n.kind === "anim") return 5;
+    return 5;
   if (n.kind === "save_text" || n.kind === "save_image") return 6;
   return 5;
 }
@@ -10504,7 +13237,6 @@ function nodeHasVisibleImage(node) {
   }
   if (
     node.kind === "proc_image" ||
-    node.kind === "anim" ||
     node.kind === "save_image"
   ) {
     if (node.output && node.output.path) return true;
@@ -10525,11 +13257,26 @@ function sizeNodeForTidy(node) {
     isBatch(node) && Array.isArray(node.entries) ? node.entries.length : 0;
 
   if (kind === "control") {
+    if (isExecStart(node) || isExecEnd(node)) {
+      node.w = 180;
+      node.h = 96;
+      return;
+    }
     node.w = d.w;
     node.h = d.h;
     return;
   }
-  if (kind === "input_image" || kind === "proc_image" || kind === "anim") {
+  if (kind === "task") {
+    node.w = snap(Math.max(d.w, 280));
+    node.h = snap(Math.max(d.h, 220));
+    return;
+  }
+  if (kind === "judge") {
+    node.w = snap(Math.max(d.w, 240));
+    node.h = snap(Math.max(d.h, 160));
+    return;
+  }
+  if (kind === "input_image" || kind === "proc_image") {
     if (hasImg) {
       node.w = snap(batchN > 1 ? 320 : 300);
       node.h = snap(batchN > 1 ? 280 : 250);
@@ -10558,7 +13305,7 @@ function sizeNodeForTidy(node) {
     node.h = snap(Math.min(280, Math.max(d.h, 40 + lines * 16)));
     return;
   }
-  if (kind === "save_text" || kind === "split" || kind === "merge" || kind === "wait_file") {
+  if (kind === "save_text" || kind === "split" || kind === "merge" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
     node.w = d.w;
     node.h = d.h;
     return;
@@ -10835,7 +13582,7 @@ function tidyLayoutWorkflow(opts) {
 }
 
 /* 顶栏一键排版：交由全局助手根据节点坐标/尺寸自行校准（mtnode_canvas_edit） */
-function oneClickAutoLayout(opts) {
+async function oneClickAutoLayout(opts) {
   opts = opts || {};
   if (!S.wf || !(S.wf.nodes || []).length) {
     toast(I18n.t("画布上没有节点"), "warn");
@@ -10843,11 +13590,12 @@ function oneClickAutoLayout(opts) {
   }
   if (
     !opts.skipConfirm &&
-    !confirm(
+    !(await confirmDialog(
       I18n.t(
         "确定进行一键排版？\n\n将由全局助手基于 AI 分析并调整画布节点位置，可能需要等待一段时间，请耐心等候。操作可撤销。",
       ),
-    )
+      { title: I18n.t("一键排版"), okText: I18n.t("开始排版") },
+    ))
   )
     return;
   if (S.assistRunning) {
@@ -10867,7 +13615,7 @@ function oneClickAutoLayout(opts) {
 function sizeNodeForContent(node) {
   const d = NODE_DEFAULTS[node.kind];
   if (!d) return;
-  const body = String(node.text || node.prompt || node.task || "");
+  const body = String(node.text || node.prompt || node.task || node.goal || "");
   const extra = Math.min(160, Math.floor(Math.max(0, body.length - 48) / 72) * 18);
   node.h = Math.max(d.h, d.h + extra);
   if (!(node.w >= d.w)) node.w = d.w;
@@ -10923,6 +13671,30 @@ function applyNodePatch(node, patch, warnings) {
   }
   if (patch.task != null && node.kind === "agent_task")
     node.task = String(patch.task);
+  if (node.kind === "task") {
+    if (patch.goal != null) node.goal = String(patch.goal);
+    if (patch.steps != null) {
+      const arr = Array.isArray(patch.steps) ? patch.steps : [];
+      node.steps = arr.map((s) => {
+        if (typeof s === "string")
+          return { id: uid("ts"), title: s, done: false };
+        return {
+          id: (s && s.id) || uid("ts"),
+          title: String((s && s.title) || ""),
+          done: !!(s && s.done),
+        };
+      });
+    }
+  }
+  if (patch.parentTaskId != null) {
+    const raw = String(patch.parentTaskId || "").trim();
+    if (!raw) node.parentTaskId = "";
+    else {
+      const p = nodeById(raw);
+      if (p && p.kind === "task" && p.id !== node.id)
+        node.parentTaskId = p.id;
+    }
+  }
   if (
     patch.savePath != null &&
     (node.kind === "save_text" || node.kind === "save_image")
@@ -10934,6 +13706,82 @@ function applyNodePatch(node, patch, warnings) {
     const n = Math.round(Number(patch.waitIntervalSec));
     if (isFinite(n))
       node.waitIntervalSec = Math.max(1, Math.min(60, n || 2));
+  }
+  if (node.kind === "timer") {
+    if (
+      patch.timerMode === "once" ||
+      patch.timerMode === "interval" ||
+      patch.timerMode === "cron"
+    )
+      node.timerMode = patch.timerMode;
+    if (patch.timerAt != null) node.timerAt = String(patch.timerAt);
+    if (patch.timerEverySec != null) {
+      const n = Math.round(Number(patch.timerEverySec));
+      if (isFinite(n)) node.timerEverySec = clampDurationSec(n || 3600);
+    }
+    if (patch.timerCron != null) node.timerCron = String(patch.timerCron);
+    if (patch.timerArmed != null) {
+      if (patch.timerArmed) armTimerNode(node, true);
+      else disarmTimerNode(node, true);
+    }
+    normalizeTimerNode(node);
+  }
+  if (node.kind === "delayer") {
+    if (patch.delaySec != null) {
+      const n = Math.round(Number(patch.delaySec));
+      if (isFinite(n)) node.delaySec = clampDurationSec(n || 60);
+    }
+    normalizeDelayerNode(node);
+  }
+  if (node.kind === "sequencer") {
+    if (patch.seqOutputs != null) {
+      const n = Math.round(Number(patch.seqOutputs));
+      if (isFinite(n)) node.seqOutputs = Math.max(2, Math.min(8, n || 3));
+    }
+    if (patch.seqGapSec != null) {
+      const n = Math.round(Number(patch.seqGapSec));
+      if (isFinite(n))
+        node.seqGapSec = Math.max(0, Math.min(DUR_MAX_SEC, n || 0));
+    }
+    normalizeSequencerNode(node);
+  }
+  if (node.kind === "gate") {
+    if (patch.gateInputs != null) {
+      const n = Math.round(Number(patch.gateInputs));
+      if (isFinite(n)) node.gateInputs = Math.max(2, Math.min(8, n || 2));
+    }
+    normalizeGateNode(node);
+  }
+  if (node.kind === "splitter") {
+    if (patch.splitOutputs != null) {
+      const n = Math.round(Number(patch.splitOutputs));
+      if (isFinite(n)) node.splitOutputs = Math.max(2, Math.min(8, n || 3));
+    }
+    normalizeSplitterNode(node);
+  }
+  if (node.kind === "counter") {
+    if (patch.counterEvery != null) {
+      const n = Math.round(Number(patch.counterEvery));
+      if (isFinite(n)) node.counterEvery = Math.max(2, Math.min(99, n || 2));
+    }
+    if (patch.counterCount != null) {
+      const n = Math.round(Number(patch.counterCount));
+      if (isFinite(n)) node.counterCount = Math.max(0, n || 0);
+    }
+    normalizeCounterNode(node);
+  }
+  if (node.kind === "mutex") {
+    if (patch.mutexInputs != null) {
+      const n = Math.round(Number(patch.mutexInputs));
+      if (isFinite(n)) node.mutexInputs = Math.max(2, Math.min(8, n || 2));
+    }
+    if (
+      patch.mutexMode === "first" ||
+      patch.mutexMode === "priority" ||
+      patch.mutexMode === "random"
+    )
+      node.mutexMode = patch.mutexMode;
+    normalizeMutexNode(node);
   }
   if (typeof patch.agent === "boolean" && node.kind === "proc_text")
     node.agent = patch.agent;
@@ -10951,6 +13799,18 @@ function applyNodePatch(node, patch, warnings) {
     node.batchMode = patch.batchMode;
   if (patch.ctrlAction === "clear" || patch.ctrlAction === "run")
     node.ctrlAction = patch.ctrlAction;
+  if (node.kind === "control") {
+    if (
+      patch.ctrlRole === "start" ||
+      patch.ctrlRole === "endSuccess" ||
+      patch.ctrlRole === "endFail" ||
+      patch.ctrlRole === ""
+    )
+      node.ctrlRole = patch.ctrlRole || "";
+    if (patch.ctrlPinned != null) node.ctrlPinned = !!patch.ctrlPinned;
+  }
+  if (patch.prompt != null && node.kind === "judge")
+    node.prompt = String(patch.prompt);
   if (patch.ctrlFillOnly != null) node.ctrlFillOnly = !!patch.ctrlFillOnly;
   if (patch.size != null && node.kind === "proc_image") {
     const s = String(patch.size).trim();
@@ -11287,6 +14147,8 @@ async function applyCanvasEdit(params) {
     return Object.assign({ ok: true, message: I18n.t("没有改动"), warnings }, canvasSnapshot());
   }
 
+  assertCanvasEditTools(params);
+
   pushHistory();
   if (!Array.isArray(S.wf.groups)) S.wf.groups = [];
   if (!Array.isArray(S.wf.marks)) S.wf.marks = [];
@@ -11348,6 +14210,21 @@ async function applyCanvasEdit(params) {
     }
   }
 
+  for (const spec of creates.slice(0, 40)) {
+    const alias = String((spec && spec.alias) || "").trim();
+    const node = aliasMap.get(alias);
+    if (!node || !spec || spec.parentTaskId == null) continue;
+    const raw = String(spec.parentTaskId).trim();
+    if (!raw) {
+      node.parentTaskId = "";
+      continue;
+    }
+    const p = resolveCanvasRef(raw, aliasMap, warnings);
+    if (p && p.kind === "task" && p.id !== node.id) node.parentTaskId = p.id;
+    else if (raw && warnings)
+      warnings.push(I18n.t("无效的父任务：") + raw);
+  }
+
   for (const spec of updates.slice(0, 80)) {
     const token = (spec && (spec.id || spec.alias || spec.title)) || "";
     const node = resolveCanvasRef(token, aliasMap, warnings);
@@ -11396,6 +14273,10 @@ async function applyCanvasEdit(params) {
     if (node && spec && spec.refs) ensurePromptRefs(node, spec.refs, aliasMap);
   }
 
+  for (const node of created) {
+    if (node && node.kind === "task") ensureTaskScaffold(node);
+  }
+
   for (const pair of disconnects) {
     const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
@@ -11410,12 +14291,12 @@ async function applyCanvasEdit(params) {
     const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
     if (!a || !b) continue;
-    const err = connectError(a.id, b.id, null);
+    const err = connectError(a.id, b.id, null, pair.fromIndex || 0);
     if (err) {
       warnings.push(a.title + " → " + b.title + "：" + err);
       continue;
     }
-    addWire(a.id, b.id, null);
+    addWire(a.id, b.id, null, { fromIndex: pair.fromIndex || 0 });
     connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title });
   }
 
@@ -11427,6 +14308,24 @@ async function applyCanvasEdit(params) {
       continue;
     }
     removed.push(node.id);
+    if (node.kind === "task") {
+      for (const id of taskDescendantIds(node.id)) removed.push(id);
+    }
+  }
+  if (removed.length) {
+    const expanded = new Set(removed);
+    const finalIds = [];
+    for (const id of expanded) {
+      const n = nodeById(id);
+      if (!n) continue;
+      if (isPinnedCtrl(n) && !(n.parentTaskId && expanded.has(n.parentTaskId))) {
+        warnings.push(I18n.t("起点 / 终点为固定节点，无法删除") + "：" + n.title);
+        continue;
+      }
+      finalIds.push(id);
+    }
+    removed.length = 0;
+    removed.push(...finalIds);
   }
   if (removed.length) {
     const set = new Set(removed);
@@ -11860,10 +14759,11 @@ function startNodeDrag(ev, node) {
     moved: false,
   };
 }
-function startWireDrag(fromId, ev) {
+function startWireDrag(fromId, ev, fromIndex) {
   S.drag = {
     mode: "wire",
     fromId,
+    fromIndex: fromIndex || 0,
     sx: ev.clientX,
     sy: ev.clientY,
     mx: ev.clientX,
@@ -12046,11 +14946,15 @@ function groupElement(g) {
         [
           {
             label: I18n.t("✕ 删除组（连同内部节点与绘制）"),
+            iconKey: "menu_delete",
+            iconCls: "danger",
             cls: "ctx-danger",
             run: () => deleteGroup(g.id),
           },
           {
             label: I18n.t("解散组（保留节点与绘制）"),
+            iconKey: "menu_ungroup",
+            iconCls: "group",
             run: () => disbandGroup(g.id),
           },
         ],
@@ -12464,8 +15368,38 @@ function deleteGroup(gid) {
   );
 }
 /* 批量删除节点：同时清理相关连线与组 */
-function deleteNodes(ids, quiet) {
+async function deleteNodes(ids, quiet) {
   if (!ids || !ids.length) return;
+  let expanded = new Set(ids);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const n of S.wf.nodes || []) {
+      if (n.parentTaskId && expanded.has(n.parentTaskId) && !expanded.has(n.id)) {
+        expanded.add(n.id);
+        grew = true;
+      }
+    }
+  }
+  const blocked = [];
+  const finalIds = [];
+  for (const id of expanded) {
+    const n = nodeById(id);
+    if (!n) continue;
+    if (isPinnedCtrl(n) && !(n.parentTaskId && expanded.has(n.parentTaskId))) {
+      blocked.push(n);
+      continue;
+    }
+    finalIds.push(id);
+  }
+  if (blocked.length && !finalIds.length) {
+    if (!quiet) toast(I18n.t("起点 / 终点为固定节点，无法删除"), "warn");
+    return false;
+  }
+  if (blocked.length && !quiet)
+    toast(I18n.t("已跳过固定的起点 / 终点"), "warn");
+  ids = finalIds;
+  if (!ids.length) return false;
   /* 智能任务节点删除联动:其关联的智能会话一并删除(先提示确认) */
   const delSet = new Set(ids);
   const linkedSessions = [];
@@ -12479,11 +15413,12 @@ function deleteNodes(ids, quiet) {
     if (!quiet) {
       const names = I18n.listJoin(linkedSessions.map((s) => s.title || I18n.t("新会话")));
       if (
-        !confirm(
+        !(await confirmDialog(
           I18n.t("删除节点将一并删除其关联的智能会话：\n") +
             names +
             I18n.t("\n\n会话记录不可恢复，确定删除？"),
-        )
+          { title: I18n.t("确认删除"), danger: true, okText: I18n.t("删除") },
+        ))
       )
         return false;
     }
@@ -12500,6 +15435,18 @@ function deleteNodes(ids, quiet) {
   }
   if (!quiet) pushHistory();
   const set = new Set(ids);
+  if (S.taskFocus && set.has(S.taskFocus)) {
+    const cur = nodeById(S.taskFocus);
+    const up = cur && cur.parentTaskId && !set.has(cur.parentTaskId)
+      ? cur.parentTaskId
+      : "";
+    setTaskFocus(up, { render: false });
+  }
+  for (const n of S.wf.nodes) {
+    if (!n.parentTaskId || !set.has(n.parentTaskId) || set.has(n.id)) continue;
+    const p = nodeById(n.parentTaskId);
+    n.parentTaskId = (p && p.parentTaskId) || "";
+  }
   S.wf.nodes = S.wf.nodes.filter((n) => !set.has(n.id));
   S.wf.wires = S.wf.wires.filter(
     (w) => !set.has(w.from) && !set.has(w.to),
@@ -12527,6 +15474,7 @@ function duplicateNodes(nodes) {
   pushHistory();
   const cps = [];
   nodes.forEach((node, i) => {
+    if (isPinnedCtrl(node)) return;
     const cp = JSON.parse(JSON.stringify(node));
     cp.id = uid("n");
     cp.x = snap(cp.x + grid() * 4);
@@ -12547,7 +15495,14 @@ function duplicateNodes(nodes) {
     }
     cps.push(cp);
   });
+  if (!cps.length) {
+    toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
+    return;
+  }
   S.wf.nodes.push(...cps);
+  for (const cp of cps) {
+    if (cp.kind === "task") ensureTaskScaffold(cp);
+  }
   S.selSet = new Set(cps.map((c) => c.id));
   S.sel = cps[0].id;
   S.selGroup = null;
@@ -12716,9 +15671,9 @@ const SIDE_CATS = [
   ["保存节点", ["save_text", "save_image"]],
   ["工具节点", ["split", "merge"]],
   ["智能节点", ["agent_task"]],
-  ["动画节点", ["anim"]],
+  ["任务节点", ["task"]],
   ["对话节点", ["chat"]],
-  ["控制节点", ["control", "wait_file"]],
+  ["控制节点", ["control", "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex", "judge"]],
 ];
 const KIND_TAGS = {
   input_text: "文本",
@@ -12730,10 +15685,18 @@ const KIND_TAGS = {
   split: "拆分",
   merge: "合并",
   wait_file: "等待",
+  timer: "定时",
+  delayer: "延时",
+  sequencer: "序列",
+  gate: "闸门",
+  splitter: "分发",
+  counter: "计数",
+  mutex: "互斥",
   agent_task: "智能",
-  anim: "动画",
+  task: "任务",
   chat: "对话",
   control: "控制",
+  judge: "判断",
 };
 function toggleSidebar() {
   S.sidebarOpen = !S.sidebarOpen;
@@ -12763,7 +15726,11 @@ function renderSidebar() {
   }
   let any = false;
   for (const [cat, kinds] of SIDE_CATS) {
-    const items = S.wf.nodes.filter((n) => kinds.includes(n.kind));
+    const items = S.wf.nodes.filter(
+      (n) =>
+        kinds.includes(n.kind) &&
+        (f ? true : nodeInCurrentScope(n)),
+    );
     if (!items.length) continue;
     const shown = f
       ? items.filter((n) => (n.title || "").toLowerCase().includes(f))
@@ -12810,7 +15777,17 @@ function renderSidebar() {
   if (!any) {
     const e = document.createElement("div");
     e.className = "side-empty";
-    e.textContent = I18n.t("没有匹配「") + (filterEl ? filterEl.value : "") + I18n.t("」的节点");
+    if (currentTaskFocus() && !f) {
+      e.textContent =
+        I18n.t("当前任务内部暂无节点") +
+        " · " +
+        I18n.t("可从右键菜单添加，或返回上层");
+    } else {
+      e.textContent =
+        I18n.t("没有匹配「") +
+        (filterEl ? filterEl.value : "") +
+        I18n.t("」的节点");
+    }
     tree.appendChild(e);
   }
 }
@@ -12818,6 +15795,8 @@ function renderSidebar() {
 function focusNode(id) {
   const n = nodeById(id);
   if (!n) return;
+  const want = nodeParentTaskId(n);
+  if (want !== currentTaskFocus()) setTaskFocus(want, { render: false });
   const vw = $("#canvas").clientWidth,
     vh = $("#canvas").clientHeight;
   S.cam.x = vw / 2 - (n.x + n.w / 2) * S.cam.z;
@@ -13179,7 +16158,7 @@ function bindCanvas() {
       const port = el && el.closest ? el.closest(".port.in") : null;
       S.drag = null;
       updateWires();
-      if (port) connect(d.fromId, port.dataset.node, Number(port.dataset.idx));
+      if (port) connect(d.fromId, port.dataset.node, Number(port.dataset.idx), d.fromIndex || 0);
     } else if (d.mode === "box") {
       const pt = toStage(ev.clientX, ev.clientY);
       const r = document.getElementById("boxSel");
@@ -13272,113 +16251,156 @@ function bindCanvas() {
         [
           I18n.t("输入节点（仅输出）"),
           [
-            {
-              label: I18n.t("＋ 文本节点"),
-              run: () => addNode("input_text", pt.x, pt.y),
-            },
-            {
-              label: I18n.t("＋ 图像节点"),
-              run: () => addNode("input_image", pt.x, pt.y),
-            },
+            ctxKindItem("input_text", I18n.t("文本节点"), () =>
+              addNode("input_text", pt.x, pt.y),
+            ),
+            ctxKindItem("input_image", I18n.t("图像节点"), () =>
+              addNode("input_image", pt.x, pt.y),
+            ),
           ],
         ],
         [
           I18n.t("处理节点（提示词 + Play）"),
           [
-            {
-              label: I18n.t("▶ 文本处理（LLM）"),
-              run: () => addNode("proc_text", pt.x, pt.y),
-            },
-            {
-              label: I18n.t("▶ 图像生成（文生图）"),
-              run: () => addNode("proc_image", pt.x, pt.y),
-            },
+            ctxKindItem("proc_text", I18n.t("文本处理（LLM）"), () =>
+              addNode("proc_text", pt.x, pt.y),
+            ),
+            ctxKindItem("proc_image", I18n.t("图像生成（文生图）"), () =>
+              addNode("proc_image", pt.x, pt.y),
+            ),
           ],
         ],
         [
           I18n.t("保存节点（接收最终输出）"),
           [
-            {
-              label: I18n.t("⤓ 保存文本（YAML）"),
-              run: () => addNode("save_text", pt.x, pt.y),
-            },
-            {
-              label: I18n.t("⤓ 保存图像"),
-              run: () => addNode("save_image", pt.x, pt.y),
-            },
+            ctxKindItem("save_text", I18n.t("保存文本（YAML）"), () =>
+              addNode("save_text", pt.x, pt.y),
+            ),
+            ctxKindItem("save_image", I18n.t("保存图像"), () =>
+              addNode("save_image", pt.x, pt.y),
+            ),
           ],
         ],
         [
           I18n.t("工具节点（批次拆分 / 合并）"),
           [
-            {
-              label: I18n.t("⧉ 拆分（批次 → 单项只读节点）"),
-              run: () => addNode("split", pt.x, pt.y),
-            },
-            {
-              label: I18n.t("⧉ 合并（多节点 → 批次）"),
-              run: () => addNode("merge", pt.x, pt.y),
-            },
+            ctxKindItem("split", I18n.t("拆分（批次 → 单项只读节点）"), () =>
+              addNode("split", pt.x, pt.y),
+            ),
+            ctxKindItem("merge", I18n.t("合并（多节点 → 批次）"), () =>
+              addNode("merge", pt.x, pt.y),
+            ),
           ],
         ],
         [
           I18n.t("智能节点（读文件 / 联网 / 执行命令）"),
           [
-            {
-              label: I18n.t("🐋 智能任务（读文件 / 联网 / 执行命令）"),
-              run: () => addNode("agent_task", pt.x, pt.y),
-            },
+            ctxKindItem(
+              "agent_task",
+              I18n.t("智能任务（读文件 / 联网 / 执行命令）"),
+              () => addNode("agent_task", pt.x, pt.y),
+            ),
           ],
         ],
         [
-          I18n.t("动画节点"),
+          I18n.t("任务节点（规划 / 控制流执行）"),
           [
-            {
-              label: I18n.t("⧗ 动画（图像 → GIF 帧动画）"),
-              run: () => addNode("anim", pt.x, pt.y),
-            },
+            ctxKindItem("task", I18n.t("任务（规划 · 可进入分段解决）"), () =>
+              addNode("task", pt.x, pt.y),
+            ),
           ],
         ],
         [
           I18n.t("对话节点"),
           [
-            {
-              label: I18n.t("💬 文本对话（Chat）"),
-              run: () => addNode("chat", pt.x, pt.y),
-            },
-          ],
-        ],
-        [
-          I18n.t("控制节点（清空 / 执行 / 需求等待）"),
-          [
-            {
-              label: I18n.t("⏻ 控制（批量清空 / 执行）"),
-              run: () => addNode("control", pt.x, pt.y),
-            },
-            {
-              label: I18n.t("⏳ 需求等待（监视文件 · 无输入 · 仅阻塞）"),
-              run: () => addNode("wait_file", pt.x, pt.y),
-            },
+            ctxKindItem("chat", I18n.t("文本对话（Chat）"), () =>
+              addNode("chat", pt.x, pt.y),
+            ),
           ],
         ],
         [
           "",
           [
             {
-              label: I18n.t("绘制"),
+              label: I18n.t("控制节点"),
+              iconKey: "control",
+              iconCls: "ctrl",
               submenu: [
-                {
-                  label: I18n.t("Ｔ 文本"),
-                  run: () => addMark("text", pt.x, pt.y),
-                },
-                {
-                  label: I18n.t("▢ 框体"),
-                  run: () => addMark("box", pt.x, pt.y),
-                },
-                {
-                  label: I18n.t("➔ 箭头"),
-                  run: () => addMark("arrow", pt.x, pt.y),
-                },
+                ctxKindItem("control", I18n.t("执行 / 清空"), () =>
+                  addNode("control", pt.x, pt.y),
+                ),
+                ctxKindItem("wait_file", I18n.t("需求等待（监视文件）"), () =>
+                  addNode("wait_file", pt.x, pt.y),
+                ),
+                ctxKindItem("timer", I18n.t("定时触发器（计划 / Cron）"), () =>
+                  addNode("timer", pt.x, pt.y),
+                ),
+                ctxKindItem("delayer", I18n.t("延时器（等待后继续）"), () =>
+                  addNode("delayer", pt.x, pt.y),
+                ),
+                ctxKindItem("sequencer", I18n.t("序列器（按序多路）"), () =>
+                  addNode("sequencer", pt.x, pt.y),
+                ),
+                ctxKindItem("gate", I18n.t("闸门（全部到达才放行）"), () =>
+                  addNode("gate", pt.x, pt.y),
+                ),
+                ctxKindItem("splitter", I18n.t("分发（并行多路）"), () =>
+                  addNode("splitter", pt.x, pt.y),
+                ),
+                ctxKindItem("counter", I18n.t("计数（每 N 次放行）"), () =>
+                  addNode("counter", pt.x, pt.y),
+                ),
+                ctxKindItem("mutex", I18n.t("互斥（多入选一）"), () =>
+                  addNode("mutex", pt.x, pt.y),
+                ),
+                ctxKindItem("judge", I18n.t("判断（是 / 否）"), () =>
+                  addNode("judge", pt.x, pt.y),
+                ),
+                ctxKindItem(
+                  "control",
+                  I18n.t("成功终点"),
+                  () =>
+                    addNode("control", pt.x, pt.y, {
+                      ctrlRole: "endSuccess",
+                      title: I18n.t("成功终点"),
+                    }),
+                  { ctrlRole: "endSuccess", iconCls: "ctrl-ok" },
+                ),
+                ctxKindItem(
+                  "control",
+                  I18n.t("失败终点"),
+                  () =>
+                    addNode("control", pt.x, pt.y, {
+                      ctrlRole: "endFail",
+                      title: I18n.t("失败终点"),
+                    }),
+                  { ctrlRole: "endFail", iconCls: "ctrl-fail" },
+                ),
+              ],
+            },
+            {
+              label: I18n.t("绘制"),
+              iconKey: "draw",
+              iconCls: "draw",
+              submenu: [
+                ctxAction(
+                  I18n.t("Ｔ 文本"),
+                  () => addMark("text", pt.x, pt.y),
+                  "mark_text",
+                  { iconCls: "draw" },
+                ),
+                ctxAction(
+                  I18n.t("▢ 框体"),
+                  () => addMark("box", pt.x, pt.y),
+                  "mark_box",
+                  { iconCls: "draw" },
+                ),
+                ctxAction(
+                  I18n.t("➔ 箭头"),
+                  () => addMark("arrow", pt.x, pt.y),
+                  "mark_arrow",
+                  { iconCls: "draw" },
+                ),
               ],
             },
           ],
@@ -13454,6 +16476,14 @@ function bindCanvas() {
       tag === "textarea" ||
       tag === "select" ||
       !!ev.target.isContentEditable;
+    const docsHost = document.getElementById("appDocsDlg");
+    if (docsHost && docsHost.classList.contains("on")) {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        appDocsOnEscape();
+      }
+      return;
+    }
     const mod = ev.ctrlKey || ev.metaKey;
     /* 节点 / 绘制文字等输入中：只保留引用菜单，不触发任何画布快捷键 */
     if (inField) {
@@ -13511,46 +16541,53 @@ function bindCanvas() {
               : [];
         const nodeIds = S.selSet && S.selSet.size ? [...S.selSet] : [];
         if (markIds.length && nodeIds.length) {
-          const delSet = new Set(nodeIds);
-          const linkedSessions = [];
-          for (const n of S.wf.nodes) {
-            if (
-              delSet.has(n.id) &&
-              n.kind === "agent_task" &&
-              n.agentSessionId
-            ) {
-              const sess = agentSessions().find((s) => s.id === n.agentSessionId);
-              if (sess && !linkedSessions.includes(sess)) linkedSessions.push(sess);
+          (async () => {
+            const delSet = new Set(nodeIds);
+            const linkedSessions = [];
+            for (const n of S.wf.nodes) {
+              if (
+                delSet.has(n.id) &&
+                n.kind === "agent_task" &&
+                n.agentSessionId
+              ) {
+                const sess = agentSessions().find((s) => s.id === n.agentSessionId);
+                if (sess && !linkedSessions.includes(sess)) linkedSessions.push(sess);
+              }
             }
-          }
-          if (linkedSessions.length) {
-            const names = I18n.listJoin(
-              linkedSessions.map((s) => s.title || I18n.t("新会话")),
-            );
-            if (
-              !confirm(
-                I18n.t("删除节点将一并删除其关联的智能会话：\n") +
-                  names +
-                  I18n.t("\n\n会话记录不可恢复，确定删除？"),
+            if (linkedSessions.length) {
+              const names = I18n.listJoin(
+                linkedSessions.map((s) => s.title || I18n.t("新会话")),
+              );
+              if (
+                !(await confirmDialog(
+                  I18n.t("删除节点将一并删除其关联的智能会话：\n") +
+                    names +
+                    I18n.t("\n\n会话记录不可恢复，确定删除？"),
+                  {
+                    title: I18n.t("确认删除"),
+                    danger: true,
+                    okText: I18n.t("删除"),
+                  },
+                ))
               )
-            )
-              return;
-          }
-          pushHistory();
-          deleteMarks(markIds, true);
-          deleteNodes(nodeIds, true);
-          renderCanvas();
-          scheduleSave(true);
-          renderStatus();
-          toast(
-            I18n.t("已删除 ") +
-              nodeIds.length +
-              I18n.t(" 个节点") +
-              " · " +
-              markIds.length +
-              I18n.t(" 项绘制"),
-            "ok",
-          );
+                return;
+            }
+            pushHistory();
+            deleteMarks(markIds, true);
+            await deleteNodes(nodeIds, true);
+            renderCanvas();
+            scheduleSave(true);
+            renderStatus();
+            toast(
+              I18n.t("已删除 ") +
+                nodeIds.length +
+                I18n.t(" 个节点") +
+                " · " +
+                markIds.length +
+                I18n.t(" 项绘制"),
+              "ok",
+            );
+          })();
         } else if (markIds.length) {
           deleteMarks(markIds);
         } else if (nodeIds.length) {
@@ -13610,6 +16647,12 @@ function appendCtxItem(parent, it) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "ctx-fly-btn" + (it.cls ? " " + it.cls : "");
+    if (it.iconKey) {
+      const ic = document.createElement("span");
+      ic.className = "ctx-kind-icon kind-" + (it.iconCls || "ctrl");
+      ic.innerHTML = KIND_ICON_SVG[it.iconKey] || KIND_ICON_SVG.control;
+      b.appendChild(ic);
+    }
     const lab = document.createElement("span");
     lab.textContent = it.label;
     const caret = document.createElement("span");
@@ -13635,13 +16678,47 @@ function appendCtxItem(parent, it) {
   }
   const b = document.createElement("button");
   b.type = "button";
-  b.textContent = it.label;
   if (it.cls) b.className = it.cls;
+  if (it.iconKey || it.iconCls) {
+    b.classList.add("ctx-kind");
+    const ic = document.createElement("span");
+    ic.className = "ctx-kind-icon kind-" + (it.iconCls || "proc");
+    ic.innerHTML = KIND_ICON_SVG[it.iconKey] || "";
+    const lab = document.createElement("span");
+    lab.className = "ctx-kind-lab";
+    lab.textContent = it.label;
+    b.appendChild(ic);
+    b.appendChild(lab);
+  } else {
+    b.textContent = it.label;
+  }
   b.onclick = () => {
     hideCtx();
     if (typeof it.run === "function") it.run();
   };
   parent.appendChild(b);
+}
+
+function ctxKindItem(kind, label, run, extra) {
+  extra = extra || {};
+  const dummy = { kind: kind, ctrlRole: extra.ctrlRole || "" };
+  return {
+    label,
+    iconKey: extra.iconKey || nodeKindIconKey(dummy),
+    iconCls: extra.iconCls || nodeKindIconCls(dummy),
+    run,
+  };
+}
+
+function ctxAction(label, run, iconKey, extra) {
+  extra = extra || {};
+  return {
+    label,
+    run,
+    iconKey: iconKey || "",
+    iconCls: extra.iconCls || iconKey || "muted",
+    cls: extra.cls,
+  };
 }
 
 function showCtx(x, y, groups) {
@@ -13686,13 +16763,19 @@ function bindImgSaveAs(img) {
         I18n.t("图像操作"),
         [
           p
-            ? { label: I18n.t("另存为…"), run: () => saveImageAs(p) }
-            : { label: I18n.t("（图像尚未生成）"), run: () => {} },
+            ? ctxAction(I18n.t("另存为…"), () => saveImageAs(p), "menu_saveas", {
+                iconCls: "sv",
+              })
+            : ctxAction(I18n.t("（图像尚未生成）"), () => {}, "menu_preview", {
+                iconCls: "muted",
+              }),
           p
-            ? {
-                label: I18n.t("预览图像"),
-                run: () => openImageLightbox(p, img.alt || ""),
-              }
+            ? ctxAction(
+                I18n.t("预览图像"),
+                () => openImageLightbox(p, img.alt || ""),
+                "menu_preview",
+                { iconCls: "in" },
+              )
             : null,
         ].filter(Boolean),
       ],
@@ -13850,6 +16933,7 @@ function makeNode(kind, x, y) {
     node[k] = JSON.parse(JSON.stringify(v));
   }
   assignDefaultProvider(node);
+  node.parentTaskId = currentTaskFocus();
   return node;
 }
 
@@ -13866,22 +16950,33 @@ function uniqueNodeTitle(desired, exceptId) {
   return base + " " + i;
 }
 
-function addNode(kind, x, y) {
+function addNode(kind, x, y, extra) {
   const d = NODE_DEFAULTS[kind];
   if (!d) return;
   const node = makeNode(kind, x, y);
-  const base = I18n.t(d.title + "节点");
-  const same = S.wf.nodes.filter((n) => n.title === base).length;
-  node.title = same ? base + " " + (same + 1) : base;
+  if (extra && typeof extra === "object") {
+    for (const [k, v] of Object.entries(extra)) {
+      if (k === "title") continue;
+      node[k] = v;
+    }
+  }
+  const want = extra && extra.title ? extra.title : I18n.t(d.title + "节点");
+  if (extra && extra.title) node.title = uniqueNodeTitle(want);
+  else {
+    const same = S.wf.nodes.filter((n) => n.title === want).length;
+    node.title = same ? want + " " + (same + 1) : want;
+  }
   ensureDefaultSavePath(node);
   pushHistory();
   S.wf.nodes.push(node);
+  if (kind === "task") ensureTaskScaffold(node);
   S.sel = node.id;
   S.selWire = null;
   renderCanvas();
   scheduleSave(true);
   renderStatus();
   toast(I18n.t("已添加节点：") + node.title, "ok");
+  return node;
 }
 
 function toggleBatch(node) {
@@ -13915,10 +17010,40 @@ function toggleBatch(node) {
 
 /* 停止运行：立即中止模型请求并回到未处理状态 */
 async function stopNode(node) {
+  if (node.kind === "timer") {
+    if (node.timerArmed || node.running) disarmTimerNode(node, false);
+    return;
+  }
+  if (node.kind === "delayer" || node.kind === "sequencer" || node.kind === "splitter") {
+    if (!node.running) return;
+    node._aborted = true;
+    toast(
+      node.kind === "delayer"
+        ? I18n.t("已请求取消延时…")
+        : node.kind === "splitter"
+          ? I18n.t("已请求取消分发…")
+          : I18n.t("已请求取消序列…"),
+      "warn",
+    );
+    renderCanvas();
+    return;
+  }
   if (!node.running) return;
   if (node.kind === "wait_file") {
     node._aborted = true;
     toast(I18n.t("已请求停止等待…"), "warn");
+    renderCanvas();
+    return;
+  }
+  if (node.kind === "task") {
+    abortTaskTree(node);
+    toast(I18n.t("已请求停止任务…"), "warn");
+    renderCanvas();
+    return;
+  }
+  if (node.kind === "judge") {
+    node._aborted = true;
+    toast(I18n.t("已请求停止判断…"), "warn");
     renderCanvas();
     return;
   }
@@ -14071,6 +17196,16 @@ async function chatSendAgent(node, text) {
             el.textContent = node._pendingAnswer;
             el.scrollIntoView({ block: "nearest" });
           }
+        } else if (type === "error" && data && data.message) {
+          if (node._aborted || isCancelishError(data.message)) return;
+          const errLine = "\n⚠ " + data.message;
+          node._pendingAnswer = (node._pendingAnswer || "") + errLine;
+          pushThinking(node.id, 0, errLine + "\n");
+          const el = document.getElementById("chat-stream-" + node.id);
+          if (el) {
+            el.textContent = node._pendingAnswer;
+            el.scrollIntoView({ block: "nearest" });
+          }
         }
       },
       onDone: (d) => {
@@ -14081,7 +17216,9 @@ async function chatSendAgent(node, text) {
     });
     const msg = {
       role: "assistant",
-      content: final || node._pendingAnswer || I18n.t("（无输出）"),
+      content: node._aborted
+        ? stripStreamErrors(node._pendingAnswer) || I18n.t("（已终止）")
+        : final || node._pendingAnswer || I18n.t("（无输出）"),
     };
     const rsn = thinkingTextOf(node) || "";
     if (String(rsn).trim()) msg.reasoning = rsn;
@@ -14090,11 +17227,19 @@ async function chatSendAgent(node, text) {
     delete node._lastTools;
     node.messages.push(msg);
   } catch (e) {
-    node.messages.push({
-      role: "assistant",
-      content: I18n.t("（错误：") + (e.message || String(e)) + "）",
-    });
-    toast(I18n.t("智能助手失败：") + (e.message || String(e)), "err");
+    if (node._aborted || isCancelishError((e && e.message) || e)) {
+      const body = stripStreamErrors(node._pendingAnswer);
+      node.messages.push({
+        role: "assistant",
+        content: body || I18n.t("（已终止）"),
+      });
+    } else {
+      node.messages.push({
+        role: "assistant",
+        content: I18n.t("（错误：") + (e.message || String(e)) + "）",
+      });
+      toast(I18n.t("智能助手失败：") + (e.message || String(e)), "err");
+    }
   } finally {
     node.running = false;
     if (S.thinking && S.thinking[node.id]) S.thinking[node.id] = [];
@@ -14934,132 +18079,1569 @@ async function playWaitFileNode(node, quiet) {
   await runP;
 }
 
-/* 动画节点：把输入图像按 行×列 均匀切割（依次行、从左到右）为 GIF 帧动画，支持透明色键。
-   支持多次尝试：N>1 时并行生成 N 个 GIF，输出下方出现 1..N 方块 Tab。 */
-async function playAnimNode(node) {
-  if (node.running) return;
-  const src = firstSource(node);
-  const v = src ? valueForInput(src, 0) : null;
-  if (!v || v.kind !== "image") {
-    node.error = I18n.t("需要图像输入（图像节点或图像生成节点）");
-    renderCanvas();
-    return;
-  }
-  node.running = true;
-  node.error = null;
-  node.attemptsDone = 0;
-  renderCanvas();
-  try {
-    const cols = Math.max(2, Math.round(node.animCols || 4));
-    const rows = Math.max(2, Math.round(node.animRows || 4));
-    const makeOne = async () => {
-      const img = new Image();
-      img.src = window.api.toFileUrl(v.path);
-      await new Promise((res, rej) => {
-        img.onload = res;
-        img.onerror = () => rej(new Error(I18n.t("无法读取输入图像")));
-      });
-      const tw = Math.max(1, Math.floor(img.naturalWidth / cols));
-      const th = Math.max(1, Math.floor(img.naturalHeight / rows));
-      const canvas = document.createElement("canvas");
-      canvas.width = tw;
-      canvas.height = th;
-      const ctx = canvas.getContext("2d");
-      const key = parseHexColor(node.animKey);
-      const frames = [];
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          ctx.clearRect(0, 0, tw, th);
-          ctx.drawImage(img, c * tw, r * th, tw, th, 0, 0, tw, th);
-          const data = ctx.getImageData(0, 0, tw, th);
-          if (key) {
-            const d = data.data;
-            for (let p = 0; p < d.length; p += 4) {
-              if (
-                Math.abs(d[p] - key.r) <= 8 &&
-                Math.abs(d[p + 1] - key.g) <= 8 &&
-                Math.abs(d[p + 2] - key.b) <= 8
-              )
-                d[p + 3] = 0;
-            }
-          }
-          frames.push({ data: data.data.buffer, w: tw, h: th });
-        }
-      }
-      const res = await window.api.gifMake(
-        S.wf.id,
-        node.id.slice(-8) +
-          "_anim_" +
-          Date.now() +
-          "_" +
-          Math.floor(Math.random() * 1e4),
-        frames,
-        160,
-      );
-      if (!res.ok) throw new Error(res.error || I18n.t("GIF 编码失败"));
-      return {
-        output: { kind: "image", path: res.path },
-        ranAt: Date.now(),
-        frames: res.frames,
-      };
-    };
-    const nA = attemptCount(node);
-    if (nA > 1) {
-      const results = await Promise.all(
-        Array.from({ length: nA }, (_, t) =>
-          makeOne()
-            .then((r) => {
-              node.attemptsDone = t + 1;
-              return r;
-            })
-            .catch((e) => ({
-              output: null,
-              error: e.message || String(e),
-              ranAt: 0,
-              frames: 0,
-            })),
-        ),
-      );
-      node.attemptOutputs = results.map((r) => ({
-        output: r.output,
-        batchOutputs: null,
-        error: r.error || null,
-        ranAt: r.ranAt,
-      }));
-      node.attemptIdx = Math.min(node.attemptIdx || 0, nA - 1);
-      node.ranAt = Date.now();
-      const okc = results.filter((r) => r.output).length;
-      toast(
-        I18n.t("多次尝试完成：") + okc + "/" + nA + I18n.t(" 次成功"),
-        okc === nA ? "ok" : "warn",
-      );
+/* ============ 定时触发器（系统时间 / 间隔 / cron） ============ */
+
+let _timerSchedulerId = null;
+const _timerFiring = new Set();
+
+function cronFieldMatch(field, value, min, max) {
+  const f = String(field || "").trim();
+  if (!f) return false;
+  if (f === "*") return true;
+  const vals = new Set();
+  for (const part of f.split(",")) {
+    const m = String(part)
+      .trim()
+      .match(/^(\*|\d+(?:-\d+)?)(?:\/(\d+))?$/);
+    if (!m) return false;
+    const step = m[2] ? Math.max(1, Number(m[2])) : 1;
+    let a;
+    let b;
+    if (m[1] === "*") {
+      a = min;
+      b = max;
+    } else if (m[1].indexOf("-") >= 0) {
+      const bits = m[1].split("-").map(Number);
+      a = bits[0];
+      b = bits[1];
     } else {
-      const r = await makeOne();
-      node.output = r.output;
-      node.ranAt = r.ranAt;
-      toast(
-        I18n.t("帧动画生成完成（") +
-          r.frames +
-          I18n.t(" 帧 · ") +
-          cols +
-          "×" +
-          rows +
-          I18n.t(" 切割）"),
-        "ok",
-      );
+      a = b = Number(m[1]);
     }
-  } catch (e) {
-    node.error = e.message || String(e);
-    toast(I18n.t("帧动画生成失败：") + node.error, "err");
+    if (!isFinite(a) || !isFinite(b) || a > b) return false;
+    for (let i = a; i <= b; i += step) {
+      if (i >= min && i <= max) vals.add(i);
+    }
+  }
+  return vals.has(value);
+}
+
+function cronDowMatch(field, dow) {
+  const f = String(field || "").trim();
+  if (f === "*") return true;
+  const vals = new Set();
+  for (const part of f.split(",")) {
+    const m = String(part)
+      .trim()
+      .match(/^(\*|\d+(?:-\d+)?)(?:\/(\d+))?$/);
+    if (!m) return false;
+    const step = m[2] ? Math.max(1, Number(m[2])) : 1;
+    let a;
+    let b;
+    if (m[1] === "*") {
+      a = 0;
+      b = 7;
+    } else if (m[1].indexOf("-") >= 0) {
+      const bits = m[1].split("-").map(Number);
+      a = bits[0];
+      b = bits[1];
+    } else {
+      a = b = Number(m[1]);
+    }
+    if (!isFinite(a) || !isFinite(b)) return false;
+    for (let i = a; i <= b; i += step) {
+      const v = i === 7 ? 0 : i;
+      if (v >= 0 && v <= 6) vals.add(v);
+    }
+  }
+  return vals.has(dow);
+}
+
+function cronMatchesDate(expr, d) {
+  const parts = String(expr || "").trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  const [fMin, fHour, fDom, fMon, fDow] = parts;
+  if (!cronFieldMatch(fMin, d.getMinutes(), 0, 59)) return false;
+  if (!cronFieldMatch(fHour, d.getHours(), 0, 23)) return false;
+  if (!cronFieldMatch(fMon, d.getMonth() + 1, 1, 12)) return false;
+  const domAny = fDom === "*";
+  const dowAny = fDow === "*";
+  const domOk = cronFieldMatch(fDom, d.getDate(), 1, 31);
+  const dowOk = cronDowMatch(fDow, d.getDay());
+  if (!domAny && !dowAny) return domOk || dowOk;
+  return domOk && dowOk;
+}
+
+function nextCronFireMs(expr, afterMs) {
+  const parts = String(expr || "").trim().split(/\s+/);
+  if (parts.length !== 5) return 0;
+  let t = Math.floor(Number(afterMs) / 60000) * 60000 + 60000;
+  const end = t + 366 * 86400000;
+  while (t < end) {
+    if (cronMatchesDate(expr, new Date(t))) return t;
+    t += 60000;
+  }
+  return 0;
+}
+
+function parseTimerAtMs(s) {
+  const raw = String(s || "").trim();
+  if (!raw) return 0;
+  const norm = raw.indexOf("T") >= 0 ? raw : raw.replace(" ", "T");
+  const d = new Date(norm);
+  const ms = d.getTime();
+  return isFinite(ms) ? ms : 0;
+}
+
+function formatTimerWhen(ms) {
+  if (!ms || !isFinite(ms)) return "—";
+  const d = new Date(ms);
+  const p = (n) => (n < 10 ? "0" + n : String(n));
+  return (
+    d.getFullYear() +
+    "-" +
+    p(d.getMonth() + 1) +
+    "-" +
+    p(d.getDate()) +
+    " " +
+    p(d.getHours()) +
+    ":" +
+    p(d.getMinutes()) +
+    ":" +
+    p(d.getSeconds())
+  );
+}
+
+/* 时长：天(0–7) / 时(0–23) / 分(0–59)；合计最少 1 分钟、最多 7 天 */
+const DUR_MAX_SEC = 86400 * 7;
+const DUR_MIN_SEC = 60;
+
+function clampDurationSec(sec) {
+  const n = Math.round(Number(sec) || 0);
+  if (!isFinite(n) || n < DUR_MIN_SEC) return DUR_MIN_SEC;
+  if (n > DUR_MAX_SEC) return DUR_MAX_SEC;
+  return n;
+}
+
+function durationPartsFromSec(sec) {
+  let s = clampDurationSec(sec);
+  const days = Math.floor(s / 86400);
+  s %= 86400;
+  const hours = Math.floor(s / 3600);
+  s %= 3600;
+  const minutes = Math.floor(s / 60);
+  return { days, hours, minutes };
+}
+
+function durationSecFromParts(days, hours, minutes) {
+  const d = Math.max(0, Math.min(7, Math.round(Number(days) || 0)));
+  const h = Math.max(0, Math.min(23, Math.round(Number(hours) || 0)));
+  const m = Math.max(0, Math.min(59, Math.round(Number(minutes) || 0)));
+  return clampDurationSec(d * 86400 + h * 3600 + m * 60);
+}
+
+function formatDurationLabel(sec) {
+  const p = durationPartsFromSec(sec);
+  const bits = [];
+  if (p.days) bits.push(p.days + I18n.t(" 天"));
+  if (p.hours) bits.push(p.hours + I18n.t(" 时"));
+  if (p.minutes || !bits.length) bits.push(p.minutes + I18n.t(" 分"));
+  return bits.join(" ");
+}
+
+function appendDurationFields(parent, sec, onChange, opts) {
+  opts = opts || {};
+  const allowZero = !!opts.allowZero;
+  const row = document.createElement("div");
+  row.className = "dur-row";
+  const parts =
+    allowZero && !(Number(sec) > 0)
+      ? { days: 0, hours: 0, minutes: 0 }
+      : durationPartsFromSec(sec);
+  const fields = [
+    ["days", I18n.t("天"), 0, 7, parts.days],
+    ["hours", I18n.t("时"), 0, 23, parts.hours],
+    ["minutes", I18n.t("分"), 0, 59, parts.minutes],
+  ];
+  const inputs = {};
+  const emit = () => {
+    const d = Math.max(0, Math.min(7, Math.round(Number(inputs.days.value) || 0)));
+    const h = Math.max(0, Math.min(23, Math.round(Number(inputs.hours.value) || 0)));
+    const m = Math.max(0, Math.min(59, Math.round(Number(inputs.minutes.value) || 0)));
+    let next = d * 86400 + h * 3600 + m * 60;
+    if (!allowZero) next = clampDurationSec(next);
+    else if (next > DUR_MAX_SEC) next = DUR_MAX_SEC;
+    const sync =
+      allowZero && next === 0
+        ? { days: 0, hours: 0, minutes: 0 }
+        : durationPartsFromSec(next || DUR_MIN_SEC);
+    if (allowZero && next === 0) {
+      inputs.days.value = "0";
+      inputs.hours.value = "0";
+      inputs.minutes.value = "0";
+    } else {
+      inputs.days.value = String(sync.days);
+      inputs.hours.value = String(sync.hours);
+      inputs.minutes.value = String(sync.minutes);
+    }
+    onChange(next);
+  };
+  for (const [key, lab, min, max, val] of fields) {
+    const wrap = document.createElement("label");
+    wrap.className = "dur-field";
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = String(min);
+    inp.max = String(max);
+    inp.step = "1";
+    inp.value = String(val);
+    inp.title = lab + "（" + min + "–" + max + "）";
+    inp.onchange = emit;
+    inputs[key] = inp;
+    wrap.appendChild(inp);
+    wrap.appendChild(document.createTextNode(lab));
+    row.appendChild(wrap);
+  }
+  parent.appendChild(row);
+  return row;
+}
+
+function normalizeTimerNode(node) {
+  if (!node || node.kind !== "timer") return;
+  const mode = String(node.timerMode || "interval");
+  node.timerMode =
+    mode === "once" || mode === "cron" || mode === "interval" ? mode : "interval";
+  if (typeof node.timerAt !== "string") node.timerAt = "";
+  /* 旧配置可能是秒级；UI 改为天/时/分后至少 1 分钟 */
+  let every = Math.round(Number(node.timerEverySec) || 3600);
+  if (every > 0 && every < DUR_MIN_SEC) every = DUR_MIN_SEC;
+  node.timerEverySec = clampDurationSec(every || 3600);
+  if (typeof node.timerCron !== "string" || !String(node.timerCron).trim())
+    node.timerCron = "0 * * * *";
+  node.timerArmed = !!node.timerArmed;
+  node.timerLastAt = Number(node.timerLastAt) || 0;
+  node.timerNextAt = Number(node.timerNextAt) || 0;
+  node.timerFireCount = Math.max(0, Math.round(Number(node.timerFireCount) || 0));
+  if (typeof node.timerStatus !== "string") node.timerStatus = "";
+}
+
+function normalizeDelayerNode(node) {
+  if (!node || node.kind !== "delayer") return;
+  node.delaySec = clampDurationSec(node.delaySec || 60);
+  if (typeof node.delayStatus !== "string") node.delayStatus = "";
+}
+
+function normalizeSequencerNode(node) {
+  if (!node || node.kind !== "sequencer") return;
+  node.seqOutputs = Math.max(
+    2,
+    Math.min(8, Math.round(Number(node.seqOutputs) || 3)),
+  );
+  node.seqGapSec = Math.max(
+    0,
+    Math.min(DUR_MAX_SEC, Math.round(Number(node.seqGapSec) || 0)),
+  );
+  if (typeof node.seqStatus !== "string") node.seqStatus = "";
+}
+
+function normalizeGateNode(node) {
+  if (!node || node.kind !== "gate") return;
+  node.gateInputs = Math.max(
+    2,
+    Math.min(8, Math.round(Number(node.gateInputs) || 2)),
+  );
+  if (!node.gateArrived || typeof node.gateArrived !== "object")
+    node.gateArrived = {};
+  if (typeof node.gateStatus !== "string") node.gateStatus = "";
+}
+
+function normalizeSplitterNode(node) {
+  if (!node || node.kind !== "splitter") return;
+  node.splitOutputs = Math.max(
+    2,
+    Math.min(8, Math.round(Number(node.splitOutputs) || 3)),
+  );
+  if (typeof node.splitStatus !== "string") node.splitStatus = "";
+}
+
+function normalizeCounterNode(node) {
+  if (!node || node.kind !== "counter") return;
+  node.counterEvery = Math.max(
+    2,
+    Math.min(99, Math.round(Number(node.counterEvery) || 2)),
+  );
+  node.counterCount = Math.max(0, Math.round(Number(node.counterCount) || 0));
+  if (typeof node.counterStatus !== "string") node.counterStatus = "";
+}
+
+function normalizeMutexNode(node) {
+  if (!node || node.kind !== "mutex") return;
+  node.mutexInputs = Math.max(
+    2,
+    Math.min(8, Math.round(Number(node.mutexInputs) || 2)),
+  );
+  if (
+    node.mutexMode !== "first" &&
+    node.mutexMode !== "priority" &&
+    node.mutexMode !== "random"
+  )
+    node.mutexMode = "first";
+  if (typeof node.mutexStatus !== "string") node.mutexStatus = "";
+}
+
+function gateProgressLabel(node) {
+  normalizeGateNode(node);
+  const n = node.gateInputs;
+  const needed = [];
+  for (let i = 0; i < n; i++) needed.push(String(i));
+  const got = needed.filter((k) => node.gateArrived && node.gateArrived[k])
+    .length;
+  const wired = new Set(allWiresTo(node.id).map((w) => String(w.toIndex)));
+  const unwired = needed.filter((k) => !wired.has(k)).length;
+  let s =
+    I18n.t("已到 ") + got + "/" + n + I18n.t(" · 全部到达后放行");
+  if (unwired)
+    s +=
+      I18n.t(" · 尚有 ") +
+      unwired +
+      I18n.t(" 路未接线");
+  return s;
+}
+
+function mutexModeLabel(mode) {
+  if (mode === "priority") return I18n.t("端口优先（小号优先）");
+  if (mode === "random") return I18n.t("随机一路");
+  return I18n.t("先到优先");
+}
+
+function validateTimerConfig(node) {
+  normalizeTimerNode(node);
+  if (node.timerMode === "once") {
+    if (!parseTimerAtMs(node.timerAt))
+      return I18n.t("请填写计划时间（系统本地时间）");
+  } else if (node.timerMode === "cron") {
+    const parts = String(node.timerCron || "").trim().split(/\s+/);
+    if (parts.length !== 5) return I18n.t("Cron 需为 5 段：分 时 日 月 周");
+    if (!nextCronFireMs(node.timerCron, Date.now()))
+      return I18n.t("无法解析 Cron 表达式");
+  } else if (node.timerEverySec < DUR_MIN_SEC) {
+    return I18n.t("间隔无效（至少 1 分钟）");
+  }
+  return "";
+}
+
+function computeTimerNextAt(node, afterMs) {
+  normalizeTimerNode(node);
+  const from = Number(afterMs) || Date.now();
+  if (node.timerMode === "once") {
+    const at = parseTimerAtMs(node.timerAt);
+    if (!at) return 0;
+    return at;
+  }
+  if (node.timerMode === "cron") return nextCronFireMs(node.timerCron, from);
+  const every = node.timerEverySec * 1000;
+  if (node.timerLastAt > 0) {
+    let n = node.timerLastAt + every;
+    while (n <= from) n += every;
+    return n;
+  }
+  return from + every;
+}
+
+function timerOutTargets(node, wf) {
+  wf = wf || S.wf;
+  if (!node || !wf) return [];
+  const out = [];
+  const seen = new Set();
+  for (const w of wf.wires || []) {
+    if (w.from !== node.id) continue;
+    const n = (wf.nodes || []).find((x) => x.id === w.to);
+    if (!n || seen.has(n.id) || !canControlRun(n)) continue;
+    seen.add(n.id);
+    out.push(n);
+  }
+  return out;
+}
+
+function allKnownWorkflows() {
+  const map = new Map();
+  if (S.wf && S.wf.id) map.set(S.wf.id, S.wf);
+  for (const id of Object.keys(S.wfBag || {})) {
+    const w = S.wfBag[id];
+    if (w && w.id) map.set(w.id, w);
+  }
+  return [...map.values()];
+}
+
+async function withWorkflowContext(wf, fn) {
+  const prev = S.wf;
+  try {
+    if (wf) S.wf = wf;
+    return await fn();
   } finally {
-    node.running = false;
+    S.wf = prev;
+  }
+}
+
+async function runTimerTargets(node, quiet) {
+  const targets = timerOutTargets(node);
+  if (!targets.length) {
+    if (!quiet) toast(I18n.t("未连接任何目标节点"), "warn");
+    return 0;
+  }
+  const running = targets.filter((n) => n.running && n.kind !== "control");
+  if (running.length) {
+    if (!quiet)
+      toast(
+        I18n.t("请先终止当前运行") +
+          "：" +
+          I18n.listJoin(running.map((n) => n.title)),
+        "warn",
+      );
+    return 0;
+  }
+  invalidateControlRunTargets(targets);
+  const seen = new Set([node.id]);
+  const ctrl = { id: node.id, _aborted: !!node._aborted, running: true };
+  await runControlRunnableQueue(ctrl, targets, seen);
+  return targets.length;
+}
+
+function refreshTimerStatus(node) {
+  normalizeTimerNode(node);
+  if (node.timerArmed) {
+    node.timerStatus =
+      I18n.t("已武装 · 下次 ") + formatTimerWhen(node.timerNextAt);
+  } else if (node.timerLastAt) {
+    node.timerStatus =
+      I18n.t("上次 ") +
+      formatTimerWhen(node.timerLastAt) +
+      " · " +
+      node.timerFireCount +
+      I18n.t(" 次");
+  } else {
+    node.timerStatus = I18n.t("未武装");
+  }
+}
+
+function disarmTimerNode(node, quiet) {
+  if (!node || node.kind !== "timer") return;
+  node.timerArmed = false;
+  node.running = false;
+  node._aborted = true;
+  refreshTimerStatus(node);
+  if (!quiet) toast(I18n.t("已停止定时触发器：") + (node.title || ""), "warn");
+  renderCanvas();
+  renderStatus();
+  scheduleSave(true);
+}
+
+function armTimerNode(node, quiet) {
+  if (!node || node.kind !== "timer") return false;
+  const err = validateTimerConfig(node);
+  if (err) {
+    node.error = err;
+    if (!quiet) toast(err, "warn");
+    renderCanvas();
+    return false;
+  }
+  node._aborted = false;
+  node.error = null;
+  node.timerArmed = true;
+  node.running = true;
+  let next = computeTimerNextAt(node, Date.now());
+  if (node.timerMode === "once") {
+    const at = parseTimerAtMs(node.timerAt);
+    if (at && at <= Date.now()) next = Date.now();
+  }
+  node.timerNextAt = next || 0;
+  refreshTimerStatus(node);
+  ensureTimerScheduler();
+  if (!quiet)
+    toast(
+      I18n.t("定时触发器已武装：") +
+        (node.title || "") +
+        " · " +
+        formatTimerWhen(node.timerNextAt),
+      "ok",
+    );
+  renderCanvas();
+  renderStatus();
+  scheduleSave(true);
+  if (node.timerMode === "once" && next && next <= Date.now() + 200) {
+    fireTimerNode(node, S.wf, { quiet: !!quiet });
+  }
+  return true;
+}
+
+async function fireTimerNode(node, wf, opts) {
+  opts = opts || {};
+  if (!node || node.kind !== "timer") return;
+  if (_timerFiring.has(node.id)) return;
+  _timerFiring.add(node.id);
+  try {
+    await withWorkflowContext(wf || S.wf, async () => {
+      normalizeTimerNode(node);
+      node.timerLastAt = Date.now();
+      node.timerFireCount += 1;
+      node.ranAt = node.timerLastAt;
+      node.error = null;
+      if (node.timerMode === "once") {
+        node.timerArmed = false;
+        node.running = false;
+        node.timerNextAt = 0;
+      } else if (node.timerArmed) {
+        node.timerNextAt = computeTimerNextAt(node, node.timerLastAt);
+        node.running = true;
+      } else {
+        node.timerNextAt = computeTimerNextAt(node, node.timerLastAt);
+        node.running = false;
+      }
+      refreshTimerStatus(node);
+      const n = await runTimerTargets(node, !!opts.quiet);
+      if (!opts.quiet)
+        toast(
+          I18n.t("定时触发：") +
+            (node.title || "") +
+            (n ? I18n.t(" · 已启用 ") + n + I18n.t(" 个目标") : ""),
+          "ok",
+        );
+    });
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+  } finally {
+    _timerFiring.delete(node.id);
     renderCanvas();
     renderStatus();
     scheduleSave(true);
   }
 }
 
-/* 文件参考：把文本文件内容导入文本节点（超过 500KB 提示拒绝） */
+async function tickAllTimers() {
+  const now = Date.now();
+  for (const wf of allKnownWorkflows()) {
+    for (const node of wf.nodes || []) {
+      if (!node || node.kind !== "timer" || !node.timerArmed) continue;
+      normalizeTimerNode(node);
+      if (!node.timerNextAt) {
+        node.timerNextAt = computeTimerNextAt(node, now);
+        refreshTimerStatus(node);
+        continue;
+      }
+      if (now + 50 < node.timerNextAt) continue;
+      await fireTimerNode(node, wf, { quiet: true });
+    }
+  }
+}
+
+function ensureTimerScheduler() {
+  if (_timerSchedulerId != null) return;
+  _timerSchedulerId = setInterval(() => {
+    tickAllTimers().catch(() => {});
+  }, 1000);
+}
+
+async function waitForTimerPulse(node, task) {
+  normalizeTimerNode(node);
+  const err = validateTimerConfig(node);
+  if (err) {
+    node.error = err;
+    return "blocked";
+  }
+  let next = computeTimerNextAt(node, Date.now());
+  if (node.timerMode === "once") {
+    const at = parseTimerAtMs(node.timerAt);
+    if (at && at <= Date.now()) next = Date.now();
+  }
+  if (!next) {
+    node.error = I18n.t("无法计算下次触发时间");
+    return "blocked";
+  }
+  node.timerNextAt = next;
+  node.error = null;
+  const wasArmed = !!node.timerArmed;
+  node.running = true;
+  node.timerStatus = I18n.t("控制流等待触发 · ") + formatTimerWhen(next);
+  renderCanvas();
+  while (
+    !(task && task._aborted) &&
+    !node._aborted &&
+    Date.now() + 20 < node.timerNextAt
+  ) {
+    await new Promise((r) =>
+      setTimeout(r, Math.min(1000, Math.max(50, node.timerNextAt - Date.now()))),
+    );
+  }
+  if ((task && task._aborted) || node._aborted) {
+    node.running = wasArmed;
+    refreshTimerStatus(node);
+    return "abort";
+  }
+  node.timerLastAt = Date.now();
+  node.timerFireCount += 1;
+  node.ranAt = node.timerLastAt;
+  if (node.timerMode === "once") {
+    node.timerArmed = false;
+    node.running = false;
+    node.timerNextAt = 0;
+  } else {
+    node.timerNextAt = computeTimerNextAt(node, node.timerLastAt);
+    node.running = wasArmed;
+  }
+  refreshTimerStatus(node);
+  return "ok";
+}
+
+async function playTimerNode(node, quiet) {
+  if (!node || node.kind !== "timer") return;
+  if (node.timerArmed && node.running) {
+    disarmTimerNode(node, quiet);
+    return;
+  }
+  armTimerNode(node, quiet);
+}
+
+function extractCronExpression(text) {
+  const s = String(text || "").trim();
+  const m = s.match(
+    /(?:^|\n)\s*((?:[\d*,/\-]+|\*)(?:\s+(?:[\d*,/\-]+|\*)){4})\s*(?:$|\n)/,
+  );
+  if (m) return m[1].trim();
+  const line = s.split(/\n/).map((x) => x.trim()).find((x) => {
+    const p = x.split(/\s+/);
+    return p.length === 5 && p.every((t) => /^[\d*,/\-]+$/.test(t));
+  });
+  return line || "";
+}
+
+async function smartFillTimerCron(node) {
+  if (!node || node.kind !== "timer") return;
+  const need = await promptDialog(
+    I18n.t(
+      "描述你的定时计划（例如：每个工作日上午 9 点；每小时的第 0 分；每周日 22:30）",
+    ),
+    "",
+    { title: I18n.t("智能填写 Cron"), placeholder: I18n.t("用自然语言描述…") },
+  );
+  if (need == null) return;
+  const text = String(need).trim();
+  if (!text) {
+    toast(I18n.t("请填写计划需求"), "warn");
+    return;
+  }
+  const prov = pickTextProviderForJudge(node);
+  if (!prov) {
+    toast(I18n.t("未配置带 API Key 的文本服务商"), "warn");
+    return;
+  }
+  toast(I18n.t("正在生成 Cron…"), "ok");
+  try {
+    const rr = await window.api.apiCall({
+      provider: prov,
+      kind: "text",
+      model: node.model || (prov.models || [])[0] || "",
+      prompt:
+        I18n.t(
+          "你是 Cron 表达式生成器。根据用户的自然语言定时需求，只输出一行标准五段 Cron（分 时 日 月 周），使用本地时间；周日用 0 或 7。不要解释、不要代码块、不要其它文字。\n\n用户需求：\n",
+        ) + text,
+      texts: [],
+      images: [],
+      temperature: 0.1,
+      effort: "low",
+    });
+    if (!rr || !rr.ok) {
+      toast((rr && rr.error) || I18n.t("生成失败"), "err");
+      return;
+    }
+    const cron = extractCronExpression(rr.text);
+    if (!cron || !nextCronFireMs(cron, Date.now())) {
+      toast(
+        I18n.t("无法解析模型返回的 Cron：") +
+          String(rr.text || "").slice(0, 120),
+        "err",
+      );
+      return;
+    }
+    pushHistory();
+    node.timerMode = "cron";
+    node.timerCron = cron;
+    node.timerNextAt = computeTimerNextAt(node, Date.now());
+    node.error = null;
+    refreshTimerStatus(node);
+    scheduleSave(true);
+    renderCanvas();
+    toast(I18n.t("已填写 Cron：") + cron, "ok");
+  } catch (e) {
+    toast(I18n.t("生成失败：") + ((e && e.message) || String(e)), "err");
+  }
+}
+
+async function sleepMs(ms, shouldAbort) {
+  const total = Math.max(0, Number(ms) || 0);
+  if (total <= 0) return false;
+  const end = Date.now() + total;
+  while (Date.now() < end) {
+    if (shouldAbort && shouldAbort()) return true;
+    await new Promise((r) =>
+      setTimeout(r, Math.min(250, Math.max(20, end - Date.now()))),
+    );
+  }
+  return !!(shouldAbort && shouldAbort());
+}
+
+async function waitForDelayerPulse(node, task) {
+  normalizeDelayerNode(node);
+  const ms = node.delaySec * 1000;
+  node.error = null;
+  node.running = true;
+  node.delayStatus =
+    I18n.t("延时中… ") + formatDurationLabel(node.delaySec);
+  renderCanvas();
+  const aborted = await sleepMs(ms, () =>
+    !!(task && task._aborted) || !!node._aborted,
+  );
+  node.running = false;
+  if (aborted) {
+    node.delayStatus = I18n.t("已取消");
+    return "abort";
+  }
+  node.ranAt = Date.now();
+  node.delayStatus =
+    I18n.t("已延时 ") + formatDurationLabel(node.delaySec);
+  return "ok";
+}
+
+async function playDelayerNode(node, quiet) {
+  if (!node || node.kind !== "delayer") return;
+  if (node.running) {
+    node._aborted = true;
+    return;
+  }
+  node._aborted = false;
+  const r = await waitForDelayerPulse(node, null);
+  if (r === "abort") {
+    if (!quiet) toast(I18n.t("延时已取消"), "warn");
+    renderCanvas();
+    return;
+  }
+  const n = await runTimerTargets(node, !!quiet);
+  if (!quiet)
+    toast(
+      I18n.t("延时结束：") +
+        (node.title || "") +
+        (n ? I18n.t(" · 已启用 ") + n + I18n.t(" 个目标") : ""),
+      "ok",
+    );
+  renderCanvas();
+  scheduleSave(true);
+}
+
+async function pulseSequencer(node, task, seen) {
+  normalizeSequencerNode(node);
+  const nOut = outputCount(node);
+  const gapMs = Math.max(0, Number(node.seqGapSec) || 0) * 1000;
+  node.running = true;
+  node.error = null;
+  const results = [];
+  for (let i = 0; i < nOut; i++) {
+    if ((task && task._aborted) || node._aborted) {
+      node.running = false;
+      node.seqStatus = I18n.t("已取消");
+      return "abort";
+    }
+    node.seqStatus = I18n.t("序列 ") + (i + 1) + "/" + nOut;
+    renderCanvas();
+    if (i > 0 && gapMs > 0) {
+      const aborted = await sleepMs(gapMs, () =>
+        !!(task && task._aborted) || !!node._aborted,
+      );
+      if (aborted) {
+        node.running = false;
+        node.seqStatus = I18n.t("已取消");
+        return "abort";
+      }
+    }
+    /* 每路独立 seen 副本，避免前一路节点挡住后一路汇合路径 */
+    const branchSeen = new Set(seen);
+    results.push(
+      mergePulseResults(await pulseExecOutgoing(node, i, task, branchSeen)),
+    );
+  }
+  node.running = false;
+  node.ranAt = Date.now();
+  node.seqStatus = I18n.t("序列完成");
+  return mergePulseResults(results);
+}
+
+async function playSequencerNode(node, quiet) {
+  if (!node || node.kind !== "sequencer") return;
+  if (node.running) {
+    node._aborted = true;
+    return;
+  }
+  normalizeSequencerNode(node);
+  node._aborted = false;
+  node.running = true;
+  node.error = null;
+  const nOut = outputCount(node);
+  const gapMs = Math.max(0, Number(node.seqGapSec) || 0) * 1000;
+  try {
+    for (let i = 0; i < nOut; i++) {
+      if (node._aborted) break;
+      node.seqStatus = I18n.t("序列 ") + (i + 1) + "/" + nOut;
+      renderCanvas();
+      if (i > 0 && gapMs > 0) {
+        const aborted = await sleepMs(gapMs, () => !!node._aborted);
+        if (aborted) break;
+      }
+      const targets = [];
+      const seen = new Set();
+      for (const w of (S.wf && S.wf.wires) || []) {
+        if (w.from !== node.id || Number(w.fromIndex || 0) !== i) continue;
+        const t = nodeById(w.to);
+        if (!t || seen.has(t.id) || !canControlRun(t)) continue;
+        seen.add(t.id);
+        targets.push(t);
+      }
+      if (targets.length) {
+        invalidateControlRunTargets(targets);
+        const ctrl = { id: node.id, _aborted: !!node._aborted, running: true };
+        await runControlRunnableQueue(ctrl, targets, new Set([node.id]));
+      }
+    }
+    node.ranAt = Date.now();
+    node.seqStatus = node._aborted ? I18n.t("已取消") : I18n.t("序列完成");
+    if (!quiet)
+      toast(
+        (node._aborted ? I18n.t("序列已取消：") : I18n.t("序列完成：")) +
+          (node.title || ""),
+        node._aborted ? "warn" : "ok",
+      );
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+    if (!quiet) toast(I18n.t("序列失败：") + node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    scheduleSave(true);
+  }
+}
+
+function gateConnectedKeys(node) {
+  normalizeGateNode(node);
+  const keys = [];
+  for (let i = 0; i < node.gateInputs; i++) keys.push(String(i));
+  return keys;
+}
+
+async function pulseGate(node, task, seen, toIndex) {
+  normalizeGateNode(node);
+  const needed = gateConnectedKeys(node);
+  const key =
+    toIndex == null || !isFinite(Number(toIndex))
+      ? null
+      : String(Number(toIndex));
+  if (key == null || !needed.includes(key)) {
+    node.gateStatus = I18n.t("脉冲未落在配置输入口内");
+    return "open";
+  }
+  if (!node.gateArrived || typeof node.gateArrived !== "object")
+    node.gateArrived = {};
+  node.gateArrived[key] = true;
+  const got = needed.filter((k) => node.gateArrived[k]).length;
+  const wired = new Set(allWiresTo(node.id).map((w) => String(w.toIndex)));
+  const unwired = needed.filter((k) => !wired.has(k)).length;
+  node.gateStatus =
+    I18n.t("已到 ") +
+    got +
+    "/" +
+    needed.length +
+    (unwired
+      ? I18n.t(" · 尚有 ") + unwired + I18n.t(" 路未接线")
+      : "");
+  node.error = null;
+  renderCanvas();
+  if (!needed.every((k) => node.gateArrived[k])) return "open";
+  if (node._gateFiring) return "open";
+  node._gateFiring = true;
+  node.gateArrived = {};
+  node.running = true;
+  node.gateStatus = I18n.t("闸门已放行");
+  try {
+    const fireSeen = new Set(seen);
+    fireSeen.add(node.id);
+    const r = mergePulseResults(
+      await pulseExecOutgoing(node, 0, task, fireSeen),
+    );
+    node.ranAt = Date.now();
+    return r;
+  } finally {
+    node.running = false;
+    node._gateFiring = false;
+    renderCanvas();
+  }
+}
+
+async function playGateNode(node, quiet) {
+  if (!node || node.kind !== "gate") return;
+  normalizeGateNode(node);
+  node.gateArrived = {};
+  node.error = null;
+  node.running = true;
+  node.gateStatus = I18n.t("强制放行");
+  renderCanvas();
+  try {
+    const n = await runTimerTargets(node, !!quiet);
+    node.ranAt = Date.now();
+    node.gateStatus = I18n.t("闸门已放行");
+    if (!quiet)
+      toast(
+        I18n.t("闸门放行：") +
+          (node.title || "") +
+          (n ? I18n.t(" · 已启用 ") + n + I18n.t(" 个目标") : ""),
+        "ok",
+      );
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+    if (!quiet) toast(I18n.t("闸门失败：") + node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    scheduleSave(true);
+  }
+}
+
+async function pulseSplitter(node, task, seen) {
+  normalizeSplitterNode(node);
+  const nOut = outputCount(node);
+  node.running = true;
+  node.error = null;
+  node.splitStatus = I18n.t("并行分发 ") + nOut;
+  renderCanvas();
+  try {
+    const jobs = [];
+    for (let i = 0; i < nOut; i++) {
+      const branchSeen = new Set(seen);
+      branchSeen.add(node.id);
+      jobs.push(pulseExecOutgoing(node, i, task, branchSeen));
+    }
+    const parts = await Promise.all(jobs);
+    const flat = [];
+    for (const p of parts) {
+      if (Array.isArray(p)) flat.push(...p);
+      else flat.push(p);
+    }
+    node.ranAt = Date.now();
+    node.splitStatus = I18n.t("分发完成");
+    return mergePulseResults(flat);
+  } finally {
+    node.running = false;
+    renderCanvas();
+  }
+}
+
+async function playSplitterNode(node, quiet) {
+  if (!node || node.kind !== "splitter") return;
+  if (node.running) {
+    node._aborted = true;
+    return;
+  }
+  normalizeSplitterNode(node);
+  node._aborted = false;
+  node.running = true;
+  node.error = null;
+  const nOut = outputCount(node);
+  try {
+    node.splitStatus = I18n.t("并行分发 ") + nOut;
+    renderCanvas();
+    const jobs = [];
+    for (let i = 0; i < nOut; i++) {
+      const targets = [];
+      const seen = new Set();
+      for (const w of (S.wf && S.wf.wires) || []) {
+        if (w.from !== node.id || Number(w.fromIndex || 0) !== i) continue;
+        const t = nodeById(w.to);
+        if (!t || seen.has(t.id) || !canControlRun(t)) continue;
+        seen.add(t.id);
+        targets.push(t);
+      }
+      if (targets.length) {
+        invalidateControlRunTargets(targets);
+        const ctrl = { id: node.id, _aborted: !!node._aborted, running: true };
+        jobs.push(runControlRunnableQueue(ctrl, targets, new Set([node.id])));
+      }
+    }
+    await Promise.all(jobs);
+    node.ranAt = Date.now();
+    node.splitStatus = node._aborted ? I18n.t("已取消") : I18n.t("分发完成");
+    if (!quiet)
+      toast(
+        (node._aborted ? I18n.t("分发已取消：") : I18n.t("分发完成：")) +
+          (node.title || ""),
+        node._aborted ? "warn" : "ok",
+      );
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+    if (!quiet) toast(I18n.t("分发失败：") + node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    scheduleSave(true);
+  }
+}
+
+async function pulseCounter(node, task, seen) {
+  normalizeCounterNode(node);
+  node.counterCount = (Number(node.counterCount) || 0) + 1;
+  const every = node.counterEvery;
+  node.error = null;
+  node.counterStatus = I18n.t("当前 ") + node.counterCount + "/" + every;
+  renderCanvas();
+  if (node.counterCount < every) return "open";
+  node.counterCount = 0;
+  node.running = true;
+  node.counterStatus = I18n.t("计数放行");
+  try {
+    const fireSeen = new Set(seen);
+    fireSeen.add(node.id);
+    const r = mergePulseResults(
+      await pulseExecOutgoing(node, 0, task, fireSeen),
+    );
+    node.ranAt = Date.now();
+    return r;
+  } finally {
+    node.running = false;
+    renderCanvas();
+  }
+}
+
+async function playCounterNode(node, quiet) {
+  if (!node || node.kind !== "counter") return;
+  normalizeCounterNode(node);
+  node.counterCount = (Number(node.counterCount) || 0) + 1;
+  const every = node.counterEvery;
+  node.error = null;
+  node.counterStatus = I18n.t("当前 ") + node.counterCount + "/" + every;
+  renderCanvas();
+  if (node.counterCount < every) {
+    if (!quiet)
+      toast(
+        I18n.t("计数 ") + node.counterCount + "/" + every + " · " + (node.title || ""),
+        "ok",
+      );
+    scheduleSave(true);
+    return;
+  }
+  node.counterCount = 0;
+  node.running = true;
+  node.counterStatus = I18n.t("计数放行");
+  try {
+    const n = await runTimerTargets(node, !!quiet);
+    node.ranAt = Date.now();
+    if (!quiet)
+      toast(
+        I18n.t("计数放行：") +
+          (node.title || "") +
+          (n ? I18n.t(" · 已启用 ") + n + I18n.t(" 个目标") : ""),
+        "ok",
+      );
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+    if (!quiet) toast(I18n.t("计数失败：") + node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    scheduleSave(true);
+  }
+}
+
+function mutexPickPort(node, preferredIndex) {
+  normalizeMutexNode(node);
+  const wires = allWiresTo(node.id);
+  if (!wires.length) return null;
+  const ports = [...new Set(wires.map((w) => Number(w.toIndex) || 0))].sort(
+    (a, b) => a - b,
+  );
+  if (node.mutexMode === "first") {
+    if (preferredIndex != null && ports.includes(Number(preferredIndex)))
+      return Number(preferredIndex);
+    return ports[0];
+  }
+  if (node.mutexMode === "random")
+    return ports[Math.floor(Math.random() * ports.length)];
+  /* priority: 小号优先；若有 preferred 且存在则用它，否则取最小 */
+  if (preferredIndex != null && ports.includes(Number(preferredIndex))) {
+    /* 端口优先：仍允许先到触发，但 ▶ 试跑取最小口 */
+    return Number(preferredIndex);
+  }
+  return ports[0];
+}
+
+async function pulseMutex(node, task, seen, toIndex) {
+  normalizeMutexNode(node);
+  const wires = allWiresTo(node.id);
+  if (!wires.length) {
+    node.mutexStatus = I18n.t("未连接输入");
+    return "open";
+  }
+  const win =
+    toIndex != null && isFinite(Number(toIndex))
+      ? Number(toIndex)
+      : Number(wires[0].toIndex) || 0;
+  node.mutexStatus =
+    I18n.t("选中输入 ") +
+    (win + 1) +
+    " · " +
+    mutexModeLabel(node.mutexMode);
+  node.running = true;
+  node.error = null;
+  try {
+    const fireSeen = new Set(seen);
+    fireSeen.add(node.id);
+    const r = mergePulseResults(
+      await pulseExecOutgoing(node, 0, task, fireSeen),
+    );
+    node.ranAt = Date.now();
+    return r;
+  } finally {
+    node.running = false;
+    renderCanvas();
+  }
+}
+
+async function playMutexNode(node, quiet) {
+  if (!node || node.kind !== "mutex") return;
+  normalizeMutexNode(node);
+  const win = mutexPickPort(node, null);
+  if (win == null) {
+    if (!quiet) toast(I18n.t("请先连接互斥输入"), "warn");
+    return;
+  }
+  node.mutexStatus =
+    I18n.t("选中输入 ") + (win + 1) + " · " + mutexModeLabel(node.mutexMode);
+  node.running = true;
+  node.error = null;
+  renderCanvas();
+  try {
+    const n = await runTimerTargets(node, !!quiet);
+    node.ranAt = Date.now();
+    if (!quiet)
+      toast(
+        I18n.t("互斥放行：") +
+          (node.title || "") +
+          I18n.t(" · 输入 ") +
+          (win + 1) +
+          (n ? I18n.t(" · 已启用 ") + n + I18n.t(" 个目标") : ""),
+        "ok",
+      );
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+    if (!quiet) toast(I18n.t("互斥失败：") + node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    scheduleSave(true);
+  }
+}
+
+function addInnerTask(parent) {
+  if (!parent || parent.kind !== "task") return;
+  pushHistory();
+  ensureTaskScaffold(parent);
+  const n = taskChildTasksOf(parent.id).length;
+  const start = taskStartOf(parent.id);
+  const endOk =
+    (S.wf.nodes || []).find(
+      (x) => x.parentTaskId === parent.id && ctrlRoleOf(x) === "endSuccess",
+    ) || null;
+  const child = makeNode(
+    "task",
+    start ? start.x + (start.w || 180) + 72 : 240,
+    start ? start.y : 280 + n * 36,
+  );
+  child.parentTaskId = parent.id;
+  child.title = uniqueNodeTitle(I18n.t("任务"));
+  child.goal = "";
+  child.taskStatus = "pending";
+  S.wf.nodes.push(child);
+  ensureTaskScaffold(child);
+  /* 默认串进控制流：起点 → 子任务 → 成功终点 */
+  if (start) {
+    const err = connectError(start.id, child.id, null, 0);
+    if (!err) addWire(start.id, child.id, null, { fromIndex: 0 });
+  }
+  if (endOk) {
+    const err = connectError(child.id, endOk.id, null, 0);
+    if (!err) addWire(child.id, endOk.id, null, { fromIndex: 0 });
+  }
+  scheduleSave(true);
+  renderCanvas();
+  toast(I18n.t("已添加子任务：") + child.title, "ok");
+}
+
+function pickTextProviderForJudge(node) {
+  const list = (S.config && S.config.providers) || [];
+  if (node && node.providerId) {
+    const hit = list.find(
+      (p) => p.id === node.providerId && p.type === "text_openai",
+    );
+    if (hit && String(hit.apiKey || "").trim()) return hit;
+  }
+  return list.find(
+    (p) => p.type === "text_openai" && String(p.apiKey || "").trim(),
+  ) || null;
+}
+
+function parseJudgeYesNo(text) {
+  const s = String(text || "")
+    .trim()
+    .toUpperCase();
+  if (/^(YES|Y|TRUE|是|达成|成功)\b/.test(s) || s === "YES" || s === "是")
+    return true;
+  if (/^(NO|N|FALSE|否|未达成|失败)\b/.test(s) || s === "NO" || s === "否")
+    return false;
+  if (/\bYES\b/.test(s) && !/\bNO\b/.test(s)) return true;
+  if (/\bNO\b/.test(s)) return false;
+  if (s.indexOf("是") >= 0 && s.indexOf("否") < 0) return true;
+  if (s.indexOf("否") >= 0) return false;
+  return null;
+}
+
+async function playJudgeNode(node, quiet) {
+  if (!node || node.kind !== "judge") return null;
+  if (node.running) {
+    const p = S.runPromises.get(node.id);
+    if (p) await p;
+    return node.judgeResult === "yes"
+      ? true
+      : node.judgeResult === "no"
+        ? false
+        : null;
+  }
+  node.running = true;
+  node.error = null;
+  node.judgeResult = "";
+  renderCanvas();
+  const runP = (async () => {
+    try {
+      const parent = nodeById(node.parentTaskId);
+      const goal =
+        String((node.prompt || "").trim() || (parent && parent.goal) || "").trim();
+      if (!goal) {
+        node.error = I18n.t("请先填写任务目标或判断标准");
+        return null;
+      }
+      const bits = [];
+      for (const w of wiresTo(node.id)) {
+        const src = nodeById(w.from);
+        if (!src) continue;
+        const v = valueForInput(src, 0);
+        if (v && v.kind === "text" && v.text)
+          bits.push("### " + (src.title || "") + "\n" + String(v.text).slice(0, 4000));
+      }
+      const prov = pickTextProviderForJudge(node);
+      if (!prov) {
+        node.error = I18n.t("未配置带 API Key 的文本服务商");
+        return "blocked";
+      }
+      const prompt =
+        I18n.t(
+          "你是任务裁决器。根据「目标」和「已有结果」判断目标是否已经达成。只输出一行：YES 或 NO，不要解释。",
+        ) +
+        "\n\n【目标】\n" +
+        goal +
+        (bits.length ? "\n\n【已有结果】\n" + bits.join("\n\n") : "");
+      const rr = await window.api.apiCall({
+        provider: prov,
+        kind: "text",
+        model: node.model || (prov.models || [])[0] || "",
+        prompt,
+        texts: [],
+        images: [],
+        temperature: 0.1,
+        effort: "low",
+      });
+      if (node._aborted) return "abort";
+      if (!rr || !rr.ok) {
+        node.error = (rr && rr.error) || I18n.t("判断调用失败");
+        return "blocked";
+      }
+      const yn = parseJudgeYesNo(rr.text);
+      if (yn == null) {
+        node.error = I18n.t("无法从模型回复中解析是/否");
+        node.output = { kind: "text", text: String(rr.text || "") };
+        return "blocked";
+      }
+      node.judgeResult = yn ? "yes" : "no";
+      node.output = { kind: "text", text: yn ? "YES" : "NO" };
+      node.ranAt = Date.now();
+      if (!quiet)
+        toast(
+          I18n.t("判断：") + (yn ? I18n.t("是") : I18n.t("否")),
+          yn ? "ok" : "warn",
+        );
+      return yn;
+    } catch (e) {
+      node.error = e.message || String(e);
+      return "blocked";
+    } finally {
+      node.running = false;
+      renderCanvas();
+      scheduleSave(true);
+    }
+  })();
+  S.runPromises.set(node.id, runP);
+  try {
+    return await runP;
+  } finally {
+    if (S.runPromises.get(node.id) === runP) S.runPromises.delete(node.id);
+  }
+}
+
+function execOutWires(node, fromIndex) {
+  const fi = Number(fromIndex || 0);
+  return ((S.wf && S.wf.wires) || []).filter(
+    (w) => w.from === node.id && Number(w.fromIndex || 0) === fi,
+  );
+}
+
+async function pulseExecFrom(node, task, seen, toIndex) {
+  if (!node || !task) return "open";
+  if (task._aborted) return "abort";
+
+  /* 闸门 / 计数 / 互斥可多次进入，不走通用 seen 拦截 */
+  if (node.kind === "gate") {
+    return pulseGate(node, task, seen, toIndex);
+  }
+  if (node.kind === "counter") {
+    return pulseCounter(node, task, seen);
+  }
+  if (node.kind === "mutex") {
+    return pulseMutex(node, task, seen, toIndex);
+  }
+  if (node.kind === "splitter") {
+    if (seen.has(node.id)) return "open";
+    seen.add(node.id);
+    return pulseSplitter(node, task, seen);
+  }
+
+  if (seen.has(node.id)) return "open";
+  seen.add(node.id);
+  const role = ctrlRoleOf(node);
+  if (role === "endSuccess") return "success";
+  if (role === "endFail") return "fail";
+
+  if (node.kind === "judge") {
+    const yn = await playJudgeNode(node, true);
+    if (task._aborted) return "abort";
+    if (yn === "abort") return "abort";
+    if (yn === "blocked" || yn == null) return "blocked";
+    return mergePulseResults(
+      await pulseExecOutgoing(node, yn ? 0 : 1, task, seen),
+    );
+  }
+
+  if (node.kind === "timer") {
+    const r = await waitForTimerPulse(node, task);
+    if (task._aborted || r === "abort") return "abort";
+    if (r === "blocked") return "blocked";
+    return mergePulseResults(await pulseExecOutgoing(node, 0, task, seen));
+  }
+
+  if (node.kind === "delayer") {
+    const r = await waitForDelayerPulse(node, task);
+    if (task._aborted || r === "abort") return "abort";
+    return mergePulseResults(await pulseExecOutgoing(node, 0, task, seen));
+  }
+
+  if (node.kind === "sequencer") {
+    return pulseSequencer(node, task, seen);
+  }
+
+  if (role !== "start") {
+    try {
+      if (node.kind === "task") await playTaskNode(node, true);
+      else if (node.kind === "wait_file") await playWaitFileNode(node, true);
+      else if (node.kind === "save_text" || node.kind === "save_image")
+        await saveNodeAction(node);
+      else if (
+        node.kind === "proc_text" ||
+        node.kind === "proc_image" ||
+        node.kind === "agent_task"
+      )
+        await playNode(node, true);
+    } catch (e) {
+      node.error = e.message || String(e);
+    }
+    if (task._aborted) return "abort";
+    if (node.kind === "wait_file" && node.running) return "blocked";
+    if (node.kind === "task" && node.taskStatus === "blocked") return "blocked";
+    if (
+      node.kind === "agent_task" &&
+      node.running &&
+      String(node.error || "").indexOf("等待") >= 0
+    )
+      return "blocked";
+  }
+  return mergePulseResults(await pulseExecOutgoing(node, 0, task, seen));
+}
+
+async function pulseExecOutgoing(node, fromIndex, task, seen) {
+  const wires = execOutWires(node, fromIndex);
+  if (!wires.length) return ["open"];
+  const out = [];
+  for (const w of wires) {
+    if (task._aborted) {
+      out.push("abort");
+      break;
+    }
+    const next = nodeById(w.to);
+    if (!next) continue;
+    if (nodeParentTaskId(next) !== task.id && next.id !== task.id) continue;
+    out.push(
+      await pulseExecFrom(next, task, seen, Number(w.toIndex || 0)),
+    );
+  }
+  return out.length ? out : ["open"];
+}
+
+function mergePulseResults(list) {
+  /* 多路控制流优先级：失败 < 需干涉 < 成功（任一路到达成功即成功，忽略途中失败节点） */
+  const arr = Array.isArray(list) ? list : [list];
+  if (arr.includes("abort")) return "abort";
+  if (arr.includes("success")) return "success";
+  if (arr.includes("blocked")) return "blocked";
+  if (arr.includes("fail")) return "fail";
+  return "open";
+}
+
+function abortTaskTree(node) {
+  if (!node) return;
+  node._aborted = true;
+  for (const t of taskChildTasksOf(node.id)) abortTaskTree(t);
+  for (const n of taskChildrenOf(node.id)) {
+    if (n.running) n._aborted = true;
+  }
+}
+
+function askAssistDecomposeTask(node) {
+  if (!node || node.kind !== "task") return;
+  const sup = dshSupported();
+  if (!sup.ok) {
+    toast(sup.reason, "warn");
+    return;
+  }
+  S.sel = node.id;
+  if (S.selSet) {
+    S.selSet.clear();
+    S.selSet.add(node.id);
+  }
+  S.selWire = null;
+  setAssistOpen(true);
+  const goal = String(node.goal || "").trim();
+  const lines = [
+    "请把当前画布上的任务节点「" +
+      (node.title || I18n.t("任务")) +
+      "」（id=" +
+      node.id +
+      "）拆成可执行的内部任务图。",
+    goal
+      ? "任务目标：" + goal
+      : "请根据标题理解目标；必要时先更新该节点的 goal。",
+    "",
+    "要求：",
+    "1. 先 mtnode_canvas_get，看清 taskTree 与当前层（每个任务内部已有固定起点/成功终点/失败终点，不要删除它们）。",
+    "2. 用一次 mtnode_canvas_edit：在该任务内部（parentTaskId）创建若干 kind:\"task\" 子任务和必要的 kind:\"judge\" 判断节点。",
+    "3. 从该任务的起点 control（ctrlRole=start）连线，经子任务/处理/判断，接到成功终点（ctrlRole=endSuccess）或失败终点（ctrlRole=endFail）。判断节点有两个输出：fromIndex 0=是，1=否。",
+    "4. 不要在顶层铺大量 proc/save/chat。禁止移动相机。完成后用一句话说明控制流怎么走。",
+  ];
+  assistSend(lines.join("\n"));
+}
+
+async function playTaskNode(node, quiet) {
+  if (!node || node.kind !== "task") return;
+  if (node.running) {
+    const p = S.runPromises.get(node.id);
+    if (p) await p;
+    return;
+  }
+  let pendingIds = null;
+  if (!quiet) {
+    pendingIds = collectPendingRunIds(node, true);
+    addPendingRun(pendingIds);
+    const ranUp = [];
+    try {
+      await ensureProcessedAll(procSourcesOf(node), ranUp);
+    } catch (e) {
+      if (pendingIds) clearPendingRun(pendingIds);
+      throw e;
+    }
+  }
+  if (S.pendingRun) S.pendingRun.delete(node.id);
+  ensureTaskScaffold(node);
+  node.running = true;
+  node.error = null;
+  node._aborted = false;
+  node.taskStatus = "running";
+  renderCanvas();
+  renderStatus();
+  const runP = (async () => {
+    try {
+      const start = taskStartOf(node.id);
+      if (!start) {
+        node.taskStatus = "failed";
+        node.error = I18n.t("缺少起点");
+        return;
+      }
+      const outcome = await pulseExecFrom(start, node, new Set());
+      if (node._aborted || outcome === "abort") {
+        node.error = I18n.t("已手动停止");
+        node.taskStatus = "pending";
+        return;
+      }
+      if (outcome === "blocked") {
+        node.taskStatus = "blocked";
+        node.error = node.error || I18n.t("需要干涉后才能继续");
+        if (!quiet) toast(I18n.t("任务需要干涉：") + (node.title || ""), "warn");
+        return;
+      }
+      if (outcome === "fail") {
+        node.taskStatus = "failed";
+        node.ranAt = Date.now();
+        node.output = {
+          kind: "text",
+          text: taskSummaryText(node, [I18n.t("到达失败终点")]),
+        };
+        if (!quiet)
+          toast(I18n.t("任务失败：") + (node.title || I18n.t("任务")), "err");
+        return;
+      }
+      if (outcome === "success") {
+        node.taskStatus = "done";
+        node.ranAt = Date.now();
+        node.output = {
+          kind: "text",
+          text: taskSummaryText(node, [I18n.t("到达成功终点")]),
+        };
+        if (!quiet)
+          toast(I18n.t("任务完成：") + (node.title || I18n.t("任务")), "ok");
+        return;
+      }
+      node.taskStatus = "failed";
+      node.error = I18n.t("控制流未到达终点");
+      if (!quiet) toast(I18n.t("控制流未到达终点"), "err");
+    } catch (e) {
+      node.error = node._aborted
+        ? I18n.t("已手动停止")
+        : e.message || String(e);
+      node.taskStatus = "failed";
+      if (!quiet && !node._aborted)
+        toast(I18n.t("任务执行失败：") + node.error, "err");
+    } finally {
+      node.running = false;
+      if (pendingIds) clearPendingRun(pendingIds);
+      renderCanvas();
+      renderStatus();
+      scheduleSave(true);
+    }
+  })();
+  S.runPromises.set(node.id, runP);
+  try {
+    await runP;
+  } finally {
+    if (S.runPromises.get(node.id) === runP) S.runPromises.delete(node.id);
+  }
+}
+
 async function importFileToText(node, pathOverride) {
   let p = pathOverride;
   if (!p) {
@@ -15429,19 +20011,37 @@ function migrateWf(wf) {
     if (n.kind === "proc_image") {
       normalizeBgRm(n);
     }
+    if (typeof n.parentTaskId !== "string") n.parentTaskId = "";
     if (n.kind === "anim") {
-      if (!n.animCols || n.animCols < 2) n.animCols = 4;
-      if (!n.animRows || n.animRows < 2) n.animRows = 4;
-      if (n.animKey == null) n.animKey = "#FF00FF";
-      n.running = false;
+      const gifPath =
+        (n.output && n.output.path) ||
+        (selResult(n) && selResult(n).output && selResult(n).output.path) ||
+        "";
+      n.kind = "input_image";
+      n.imageAsset = gifPath || "";
+      n.sourceName = n.sourceName || "";
+      n.batch = false;
+      if (!Array.isArray(n.entries)) n.entries = [];
+      n.w = NODE_DEFAULTS.input_image.w;
+      n.h = NODE_DEFAULTS.input_image.h;
+      n.title = n.title || I18n.t("图像节点");
+      delete n.animCols;
+      delete n.animRows;
+      delete n.animKey;
+      delete n.output;
+      delete n.batchOutputs;
     }
-    if (
-      n.kind === "proc_text" ||
-      n.kind === "proc_image" ||
-      n.kind === "anim"
-    ) {
+    if (n.kind === "proc_text" || n.kind === "proc_image") {
       if (n.attempts == null) n.attempts = 1;
       if (n.attemptIdx == null) n.attemptIdx = 0;
+    }
+    if (n.kind === "task") {
+      normalizeTaskSteps(n);
+      n.running = false;
+      n.output = n.output || null;
+      if (n.taskStatus === "running") n.taskStatus = "pending";
+      if (n.taskStatus !== "done" && n.taskStatus !== "failed" && n.taskStatus !== "blocked")
+        n.taskStatus = n.taskStatus || "pending";
     }
     if (n.kind === "save_text" || n.kind === "save_image") {
       if (!Array.isArray(n.savedPaths))
@@ -15486,7 +20086,15 @@ function migrateWf(wf) {
     if (n.kind === "control") {
       if (n.ctrlAction !== "clear") n.ctrlAction = "run";
       n.ctrlFillOnly = !!n.ctrlFillOnly;
+      n.ctrlRole = n.ctrlRole || "";
+      n.ctrlPinned = !!n.ctrlPinned;
       n.running = false;
+    }
+    if (n.kind === "judge") {
+      if (typeof n.prompt !== "string") n.prompt = "";
+      n.judgeResult = n.judgeResult || "";
+      n.running = false;
+      n.output = n.output || null;
     }
     if (n.kind === "wait_file") {
       if (typeof n.waitPath !== "string") n.waitPath = "";
@@ -15504,14 +20112,77 @@ function migrateWf(wf) {
       n.output = null;
       n.running = false;
     }
+    if (n.kind === "timer") {
+      normalizeTimerNode(n);
+      n.output = null;
+      n.running = !!n.timerArmed;
+      if (n.timerArmed) {
+        n.timerNextAt = computeTimerNextAt(n, Date.now()) || n.timerNextAt;
+        refreshTimerStatus(n);
+      }
+    }
+    if (n.kind === "delayer") {
+      normalizeDelayerNode(n);
+      n.output = null;
+      n.running = false;
+    }
+    if (n.kind === "sequencer") {
+      normalizeSequencerNode(n);
+      n.output = null;
+      n.running = false;
+    }
+    if (n.kind === "gate") {
+      normalizeGateNode(n);
+      n.output = null;
+      n.running = false;
+    }
+    if (n.kind === "splitter") {
+      normalizeSplitterNode(n);
+      n.output = null;
+      n.running = false;
+    }
+    if (n.kind === "counter") {
+      normalizeCounterNode(n);
+      n.output = null;
+      n.running = false;
+    }
+    if (n.kind === "mutex") {
+      normalizeMutexNode(n);
+      n.output = null;
+      n.running = false;
+    }
   }
-  /* 需求等待无输入端子：去掉指向它的旧连线（仅保留其输出控制线） */
   {
-    const waitIds = new Set(
-      wf.nodes.filter((n) => n.kind === "wait_file").map((n) => n.id),
+    const ids = new Set(wf.nodes.map((n) => n.id));
+    for (const n of wf.nodes) {
+      if (n.parentTaskId && !ids.has(n.parentTaskId)) n.parentTaskId = "";
+    }
+    for (const n of wf.nodes) {
+      if (n.kind === "task") ensureTaskScaffold(n, wf);
+    }
+    for (const w of wf.wires || []) {
+      if (w.fromIndex == null || !isFinite(Number(w.fromIndex))) w.fromIndex = 0;
+    }
+    for (const m of wf.marks || []) {
+      if (typeof m.parentTaskId !== "string") m.parentTaskId = "";
+      if (m.parentTaskId && !ids.has(m.parentTaskId)) m.parentTaskId = "";
+    }
+  }
+  /* 需求等待 / 起点无输入端子：去掉指向它们的旧连线；终点无输出端子 */
+  {
+    const noIn = new Set(
+      wf.nodes
+        .filter(
+          (n) =>
+            n.kind === "wait_file" || n.kind === "timer" || isExecStart(n),
+        )
+        .map((n) => n.id),
     );
-    if (waitIds.size)
-      wf.wires = wf.wires.filter((w) => !waitIds.has(w.to));
+    const noOut = new Set(wf.nodes.filter(isExecEnd).map((n) => n.id));
+    if (noIn.size || noOut.size)
+      wf.wires = wf.wires.filter(
+        (w) => !noIn.has(w.to) && !noOut.has(w.from),
+      );
   }
   /* 清理组：移除指向不存在节点的引用，空组删除 */
   for (const g of wf.groups) {
@@ -15547,6 +20218,7 @@ async function ensureWorkflow() {
   }
   S.wf.id = id;
   migrateWf(S.wf);
+  resetTaskFocus();
   rememberWf(S.wf);
   S.config.activeWorkflowId = id;
   await sanitizeWfEnvironment({ quiet: false });
@@ -15591,6 +20263,7 @@ async function loadWorkflow(id) {
   }
   S.wf = wf;
   rememberWf(wf);
+  resetTaskFocus();
   S.config.activeWorkflowId = id;
   await sanitizeWfEnvironment({ quiet: false });
   await window.api.configSave(S.config);
@@ -17237,7 +21910,7 @@ async function openTemplateStore() {
   }
 
   async function downloadTpl(item) {
-    if (!window.confirm(I18n.t("导入将打开为新画布，当前画布会保留。确定下载？"))) return;
+    if (!(await confirmDialog(I18n.t("导入将打开为新画布，当前画布会保留。确定下载？"), { title: I18n.t("下载模板") }))) return;
     let pack;
     try {
       pack = await tplFetchFileCached(item);
@@ -17866,9 +22539,10 @@ async function openTemplateStore() {
           if (
             TPL_ST.editId &&
             replacingFile &&
-            !window.confirm(
+            !(await confirmDialog(
               I18n.t("确认覆盖工坊中的模板画布？本地预览/下载缓存将同步更新。"),
-            )
+              { title: I18n.t("覆盖模板"), danger: true, okText: I18n.t("覆盖") },
+            ))
           ) {
             return;
           }
@@ -18208,7 +22882,7 @@ async function refreshPetPluginCard(root) {
       });
     }
     addBtn(I18n.t("卸载"), "danger", async () => {
-      if (!confirm(I18n.t("卸载桌宠？将删除已下载的运行时文件。"))) return;
+      if (!(await confirmDialog(I18n.t("卸载桌宠？将删除已下载的运行时文件。"), { title: I18n.t("卸载桌宠"), danger: true, okText: I18n.t("卸载") }))) return;
       await window.api.petUninstall();
       toast(I18n.t("桌宠已卸载"), "ok");
       refreshPetPluginCard(root);
@@ -18466,11 +23140,12 @@ function openSettings() {
 
     changeBtn.onclick = async () => {
       if (
-        !confirm(
+        !(await confirmDialog(
           I18n.t(
             "更改配置数据目录后需要重启应用才能生效。是否继续选择新目录？",
           ),
-        )
+          { title: I18n.t("更改数据目录") },
+        ))
       )
         return;
       const picked = await window.api.fileOpenDialog({
@@ -18479,10 +23154,11 @@ function openSettings() {
       });
       const next = picked && picked.path;
       if (!next) return;
-      const migrate = confirm(
+      const migrate = await confirmDialog(
         I18n.t("是否将现有配置（API Key、工作流等）复制到新目录？") +
           "\n\n" +
           I18n.t("若新目录已有 config.json，则不会覆盖。"),
+        { title: I18n.t("迁移配置"), okText: I18n.t("复制"), cancelText: I18n.t("不复制") },
       );
       try {
         const r = await window.api.dataSetRoot({ path: next, migrate });
@@ -18499,9 +23175,10 @@ function openSettings() {
           return;
         }
         if (
-          !confirm(
+          !(await confirmDialog(
             I18n.t("配置数据目录已更新。需要立即重启应用才能生效，是否现在重启？"),
-          )
+            { title: I18n.t("重启应用"), okText: I18n.t("立即重启") },
+          ))
         ) {
           toast(I18n.t("已保存新路径，请手动重启应用后生效"), "ok");
           await refreshRoot();
@@ -18515,11 +23192,12 @@ function openSettings() {
 
     resetBtn.onclick = async () => {
       if (
-        !confirm(
+        !(await confirmDialog(
           I18n.t(
             "恢复默认配置数据目录后需要重启应用才能生效。是否继续？",
           ),
-        )
+          { title: I18n.t("恢复默认目录"), danger: true },
+        ))
       )
         return;
       try {
@@ -18533,9 +23211,10 @@ function openSettings() {
           return;
         }
         if (
-          !confirm(
+          !(await confirmDialog(
             I18n.t("已恢复默认目录。需要立即重启应用才能生效，是否现在重启？"),
-          )
+            { title: I18n.t("重启应用"), okText: I18n.t("立即重启") },
+          ))
         ) {
           toast(I18n.t("已恢复默认路径，请手动重启应用后生效"), "ok");
           await refreshRoot();
@@ -18709,7 +23388,7 @@ function openSettings() {
     plRow.className = "dsh-btn-row";
     const plInp = document.createElement("input");
     plInp.type = "text";
-    plInp.placeholder = I18n.t("npm 包名，例如 @scope/pkg");
+    plInp.placeholder = I18n.t("npm 包名或 GitHub 地址，例如 @scope/pkg");
     plInp.style.flex = "1";
     const plAdd = document.createElement("button");
     plAdd.className = "mini primary";
@@ -18732,89 +23411,112 @@ function openSettings() {
     const plSearch = document.createElement("input");
     plSearch.type = "text";
     plSearch.className = "dsh-plugin-search";
-    plSearch.placeholder = I18n.t("筛选 DSH 插件（按包名 / 行 id）…");
+    plSearch.placeholder = I18n.t("筛选 DSH 插件（按包名 / 行 id / 描述）…");
     plFold.appendChild(plSearch);
+    const plBrowse = document.createElement("div");
+    plBrowse.className = "dsh-plugin-browse";
     const plGrid = document.createElement("div");
     plGrid.className = "dsh-plugin-grid";
-    plFold.appendChild(plGrid);
+    const plInfo = document.createElement("div");
+    plInfo.className = "dsh-plugin-info";
+    plBrowse.appendChild(plGrid);
+    plBrowse.appendChild(plInfo);
+    plFold.appendChild(plBrowse);
     sec.appendChild(plFold);
 
     const shortName = (pkg) => {
       const seg = String(pkg).split("/").pop();
       return seg.startsWith("dsh-") ? seg.slice(4) : seg;
     };
+    const pluginKey = (p) => String(p.id || "") + "\n" + String(p.name || "");
+    const pluginLabel = (p) =>
+      shortName(p.id && !String(p.id).startsWith("user-plugin") ? p.id : p.name);
     let allPlugins = [];
-    const renderPluginCards = () => {
-      plGrid.innerHTML = "";
-      const q = plSearch.value.trim().toLowerCase();
-      const list = allPlugins.filter(
-        (p) =>
-          !q ||
-          p.name.toLowerCase().includes(q) ||
-          String(p.id || "").toLowerCase().includes(q),
-      );
-      if (!list.length) {
+    let selectedPluginKey = "";
+    const renderPluginInfo = (p) => {
+      plInfo.innerHTML = "";
+      if (!p) {
         const em = document.createElement("div");
         em.className = "dsh-plugin-empty";
-        em.textContent = q ? I18n.t("无匹配 DSH 插件") : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
-        plGrid.appendChild(em);
+        em.textContent = I18n.t("选择左侧插件查看说明");
+        plInfo.appendChild(em);
         return;
       }
-      for (const p of list) {
-        const card = document.createElement("details");
-        card.className = "dsh-plugin-card" + (p.disabled ? " off" : "");
-        const sum = document.createElement("summary");
-        const dot = document.createElement("span");
-        dot.className = "dsh-plugin-dot" + (p.disabled ? "" : " on");
-        dot.title = p.disabled ? I18n.t("未挂载") : I18n.t("已挂载");
-        const nm = document.createElement("span");
-        nm.className = "dsh-plugin-name";
-        nm.textContent = shortName(p.name);
-        nm.title = p.name;
-        const tag = document.createElement("span");
-        tag.className =
-          "dsh-plugin-tag " +
-          (p.kind === "runtime" ? "builtin" : p.disabled ? "off" : "on");
-        tag.textContent =
-          p.kind === "runtime" ? I18n.t("内置") : p.disabled ? I18n.t("已停用") : I18n.t("已启用");
-        sum.appendChild(dot);
-        sum.appendChild(nm);
-        sum.appendChild(tag);
-        card.appendChild(sum);
+      const head = document.createElement("div");
+      head.className = "dsh-plugin-info-head";
+      const title = document.createElement("div");
+      title.className = "dsh-plugin-info-title";
+      title.textContent = p.title || pluginLabel(p);
+      head.appendChild(title);
+      const tags = document.createElement("div");
+      tags.className = "dsh-plugin-info-tags";
+      const tag = document.createElement("span");
+      tag.className =
+        "dsh-plugin-tag " +
+        (p.core ? "builtin" : p.disabled ? "off" : "on");
+      tag.textContent = p.core
+        ? I18n.t("核心")
+        : p.disabled
+          ? I18n.t("未挂载")
+          : I18n.t("已挂载");
+      tags.appendChild(tag);
+      if (p.version) {
+        const ver = document.createElement("span");
+        ver.className = "dsh-plugin-info-ver";
+        ver.textContent = "v" + p.version;
+        tags.appendChild(ver);
+      }
+      head.appendChild(tags);
+      plInfo.appendChild(head);
+      const full = document.createElement("div");
+      full.className = "dsh-plugin-full";
+      full.textContent = p.name;
+      plInfo.appendChild(full);
+      const addField = (label, text) => {
+        if (!text) return;
+        const lab = document.createElement("div");
+        lab.className = "dsh-plugin-info-label";
+        lab.textContent = label;
         const body = document.createElement("div");
-        body.className = "dsh-plugin-card-body";
-        const full = document.createElement("div");
-        full.className = "dsh-plugin-full";
-        full.textContent = p.name;
-        body.appendChild(full);
-        if (p.detail) {
-          const pre = document.createElement("pre");
-          pre.className = "dsh-plugin-detail";
-          pre.textContent = p.detail;
-          body.appendChild(pre);
-        }
-        if (p.kind === "user") {
-          const btns = document.createElement("div");
-          btns.className = "dsh-plugin-btns";
-          const tg = document.createElement("button");
-          tg.className = "mini";
-          tg.textContent = p.disabled ? I18n.t("启用") : I18n.t("停用");
-          tg.onclick = async () => {
-            try {
-              const rr = await window.api.dshPluginSetEnabled(p.name, !!p.disabled);
-              if (rr && rr.ok === false) throw new Error(rr.error);
-              toast((p.disabled ? I18n.t("已启用 ") : I18n.t("已停用 ")) + p.name, "ok");
-            } catch (e) {
-              toast(I18n.t("操作失败：") + (e.message || String(e)), "err");
-            }
-            refreshPlugins();
-            refreshStatus();
-          };
+        body.className = "dsh-plugin-info-text";
+        body.textContent = text;
+        plInfo.appendChild(lab);
+        plInfo.appendChild(body);
+      };
+      addField(I18n.t("描述"), p.description);
+      addField(I18n.t("用途"), p.purpose);
+      if (!p.description && !p.purpose) {
+        const em = document.createElement("div");
+        em.className = "dsh-plugin-empty";
+        em.textContent = I18n.t("暂无描述");
+        plInfo.appendChild(em);
+      }
+      if (p.toggleable) {
+        const btns = document.createElement("div");
+        btns.className = "dsh-plugin-btns";
+        const tg = document.createElement("button");
+        tg.className = "mini";
+        tg.textContent = p.disabled ? I18n.t("挂载") : I18n.t("取消挂载");
+        tg.onclick = async (ev) => {
+          ev.stopPropagation();
+          try {
+            const rr = await window.api.dshPluginSetEnabled(p.name, !!p.disabled, p.id);
+            if (rr && rr.ok === false) throw new Error(rr.error);
+            toast((p.disabled ? I18n.t("已挂载 ") : I18n.t("已取消挂载 ")) + p.name, "ok");
+          } catch (e) {
+            toast(I18n.t("操作失败：") + (e.message || String(e)), "err");
+          }
+          refreshPlugins();
+          refreshStatus();
+        };
+        btns.appendChild(tg);
+        if (p.removable) {
           const rm = document.createElement("button");
           rm.className = "mini";
           rm.textContent = I18n.t("移除");
-          rm.onclick = async () => {
-            if (!confirm(I18n.t("移除 DSH 插件 ") + p.name + I18n.t("？引擎将自动重启。"))) return;
+          rm.onclick = async (ev) => {
+            ev.stopPropagation();
+            if (!(await confirmDialog(I18n.t("移除 DSH 插件 ") + p.name + I18n.t("？引擎将自动重启。"), { title: I18n.t("移除插件"), danger: true, okText: I18n.t("移除") }))) return;
             try {
               const rr = await window.api.dshPluginRemove(p.name);
               if (rr && rr.ok === false) throw new Error(rr.error);
@@ -18825,13 +23527,84 @@ function openSettings() {
             refreshPlugins();
             refreshStatus();
           };
-          btns.appendChild(tg);
           btns.appendChild(rm);
-          body.appendChild(btns);
         }
-        card.appendChild(body);
+        plInfo.appendChild(btns);
+      }
+      if (p.detail) {
+        const det = document.createElement("details");
+        det.className = "dsh-plugin-yaml";
+        const sum = document.createElement("summary");
+        sum.textContent = I18n.t("配置片段");
+        det.appendChild(sum);
+        const pre = document.createElement("pre");
+        pre.className = "dsh-plugin-detail";
+        pre.textContent = p.detail;
+        det.appendChild(pre);
+        plInfo.appendChild(det);
+      }
+    };
+    const renderPluginCards = () => {
+      plGrid.innerHTML = "";
+      const q = plSearch.value.trim().toLowerCase();
+      const hay = (p) =>
+        [p.name, p.id, p.title, p.description, p.purpose]
+          .filter(Boolean)
+          .join("\n")
+          .toLowerCase();
+      const list = allPlugins.filter((p) => !q || hay(p).includes(q));
+      if (!list.length) {
+        const em = document.createElement("div");
+        em.className = "dsh-plugin-empty";
+        em.textContent = q ? I18n.t("无匹配 DSH 插件") : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
+        plGrid.appendChild(em);
+        renderPluginInfo(null);
+        return;
+      }
+      const selected = list.find((p) => pluginKey(p) === selectedPluginKey) || list[0];
+      selectedPluginKey = pluginKey(selected);
+      for (const p of list) {
+        const on = pluginKey(p) === selectedPluginKey;
+        const card = document.createElement("div");
+        card.className = "dsh-plugin-card" + (p.disabled ? " off" : "") + (on ? " sel" : "");
+        card.setAttribute("role", "button");
+        card.tabIndex = 0;
+        const row = document.createElement("div");
+        row.className = "dsh-plugin-card-row";
+        const dot = document.createElement("span");
+        dot.className = "dsh-plugin-dot" + (p.disabled ? "" : " on");
+        dot.title = p.disabled ? I18n.t("未挂载") : I18n.t("已挂载");
+        const nm = document.createElement("span");
+        nm.className = "dsh-plugin-name";
+        nm.textContent = pluginLabel(p);
+        nm.title = p.name;
+        const tag = document.createElement("span");
+        tag.className =
+          "dsh-plugin-tag " +
+          (p.core ? "builtin" : p.disabled ? "off" : "on");
+        tag.textContent = p.core
+          ? I18n.t("核心")
+          : p.disabled
+            ? I18n.t("未挂载")
+            : I18n.t("已挂载");
+        row.appendChild(dot);
+        row.appendChild(nm);
+        row.appendChild(tag);
+        card.appendChild(row);
+        const pick = () => {
+          selectedPluginKey = pluginKey(p);
+          renderPluginCards();
+        };
+        card.onclick = pick;
+        card.onkeydown = (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            pick();
+          }
+        };
         plGrid.appendChild(card);
       }
+      renderPluginInfo(selected);
     };
     plSearch.addEventListener("input", renderPluginCards);
     const refreshPlugins = async (attempt) => {
@@ -18849,7 +23622,7 @@ function openSettings() {
         }
         allPlugins = [];
         renderPluginCards();
-        plGrid.insertAdjacentHTML(
+        plBrowse.insertAdjacentHTML(
           "beforebegin",
           I18n.t('<div class="dsh-plugin-empty">DSH 插件列表不可用（') +
             ((r && r.error) || I18n.t("引擎未连接")) +
@@ -18917,7 +23690,7 @@ function openSettings() {
           rm.className = "mini";
           rm.textContent = I18n.t("移除");
           rm.onclick = async () => {
-            if (!confirm(I18n.t("移除技能 ") + s.name + I18n.t("？"))) return;
+            if (!(await confirmDialog(I18n.t("移除技能 ") + s.name + I18n.t("？"), { title: I18n.t("移除技能"), danger: true, okText: I18n.t("移除") }))) return;
             try {
               const rr = await window.api.skillRemove(s.name);
               if (rr && rr.ok === false) throw new Error(rr.error);
@@ -19069,7 +23842,7 @@ function openSettings() {
         rm.className = "mini";
         rm.textContent = I18n.t("移除");
         rm.onclick = async () => {
-          if (!confirm(I18n.t("移除 MCP 服务器 ") + s.serverName + I18n.t("？引擎将自动重启。"))) return;
+          if (!(await confirmDialog(I18n.t("移除 MCP 服务器 ") + s.serverName + I18n.t("？引擎将自动重启。"), { title: I18n.t("移除 MCP"), danger: true, okText: I18n.t("移除") }))) return;
           try {
             const rr = await window.api.dshMcpRemove(s.serverName);
             if (rr && rr.ok === false) throw new Error(rr.error);
@@ -19119,7 +23892,7 @@ function openSettings() {
       try {
         const rr = await window.api.dshPluginAdd(pkg);
         if (rr && rr.ok === false) throw new Error(rr.error);
-        toast(I18n.t("DSH 插件已安装：") + pkg, "ok");
+        toast((rr && rr.message) || (I18n.t("DSH 插件已安装：") + pkg), "ok");
       } catch (e) {
         toast(I18n.t("安装失败：") + (e.message || String(e)), "err");
       }
@@ -19711,7 +24484,7 @@ async function openStoreDialog() {
         x.title = I18n.t("移除该源");
         x.onclick = async (ev) => {
           ev.stopPropagation();
-          if (!confirm(I18n.t("移除在线源「{name}」？", { name: r.label }))) return;
+          if (!(await confirmDialog(I18n.t("移除在线源「{name}」？", { name: r.label }), { title: I18n.t("移除"), danger: true, okText: I18n.t("移除") }))) return;
           S.config.onlineRepos = (S.config.onlineRepos || []).filter(
             (u) => u.id !== r.id,
           );
@@ -19787,13 +24560,13 @@ async function openStoreDialog() {
           try {
             let rr;
             if (kind === "plugins") {
-              if (!confirm(I18n.t("卸载插件 ") + it.id + I18n.t("？引擎将自动重启。"))) return;
+              if (!(await confirmDialog(I18n.t("卸载插件 ") + it.id + I18n.t("？引擎将自动重启。"), { title: I18n.t("卸载插件"), danger: true, okText: I18n.t("卸载") }))) return;
               rr = await window.api.dshPluginRemove(it.id);
             } else if (kind === "skills") {
-              if (!confirm(I18n.t("移除技能 ") + it.id + I18n.t("？"))) return;
+              if (!(await confirmDialog(I18n.t("移除技能 ") + it.id + I18n.t("？"), { title: I18n.t("移除技能"), danger: true, okText: I18n.t("移除") }))) return;
               rr = await window.api.skillRemove(it.id);
             } else {
-              if (!confirm(I18n.t("移除 MCP 服务器 ") + it.id + I18n.t("？引擎将自动重启。"))) return;
+              if (!(await confirmDialog(I18n.t("移除 MCP 服务器 ") + it.id + I18n.t("？引擎将自动重启。"), { title: I18n.t("移除 MCP"), danger: true, okText: I18n.t("移除") }))) return;
               rr = await window.api.dshMcpRemove(it.id);
             }
             if (rr && rr.ok === false) throw new Error(rr.error);
@@ -20284,14 +25057,7 @@ function provCard(prov, i, list) {
 /* ============ 帮助 ============ */
 
 function openHelp() {
-  openOverlay(I18n.t("工作流说明"));
-  $("#ovBody").innerHTML = I18n.t("help.html");
-  const foot = $("#ovFoot");
-  const ok = document.createElement("button");
-  ok.className = "mini primary";
-  ok.textContent = I18n.t("关闭");
-  ok.onclick = closeOverlay;
-  foot.appendChild(ok);
+  openAppDocs();
 }
 
 /* 作者弹窗：居中小窗口，显示 @ms2308 与 B 站主页超链接 */
@@ -20441,15 +25207,31 @@ async function assistAppSnapshot() {
       preset: (S.config && S.config.dsh && S.config.dsh.preset) || "",
       permissionPreset:
         (S.config && S.config.dsh && S.config.dsh.permissionPreset) || "",
+      agentToolPresetId:
+        (S.config && S.config.dsh && S.config.dsh.agentToolPresetId) ||
+        "default",
+      agentTools: agentToolPresetStatusText(),
     },
     agentSessionCount: agentSessions().length,
     tools: {
-      safe: ["mtnode_canvas_get", safeApp],
+      safe: [
+        agentToolAllowed("canvas_read") ? "mtnode_canvas_get" : null,
+        agentToolAllowed("app_ops") ? safeApp : null,
+      ].filter(Boolean),
       confirm: [
-        "mtnode_canvas_edit",
-        "mtnode_app:delete_workflow",
-        "mtnode_vision（首次许可）",
-      ],
+        agentToolAllowed("canvas_nodes") ||
+        agentToolAllowed("canvas_control") ||
+        agentToolAllowed("canvas_draw") ||
+        agentToolAllowed("canvas_layout")
+          ? "mtnode_canvas_edit"
+          : null,
+        agentToolAllowed("app_delete") ? "mtnode_app:delete_workflow" : null,
+        agentToolAllowed("vision") ? "mtnode_vision（首次许可）" : null,
+      ].filter(Boolean),
+      denied: agentToolCatalog()
+        .flatMap((c) => c.items)
+        .filter((it) => !agentToolAllowed(it.key))
+        .map((it) => it.key),
     },
   };
 }
@@ -20720,12 +25502,6 @@ function updateAssistScopeChrome() {
       ? I18n.t("仅当前画布 · 危险操作需确认")
       : I18n.t("可见全局状态 · 危险操作需确认");
   }
-  const hint = document.querySelector("#assistPane .assist-hint");
-  if (hint) {
-    hint.textContent = scopeCurrent
-      ? I18n.t("仅操作当前画布，不会切换画布或移动视角；改节点图或删除本画布会弹窗确认")
-      : I18n.t("可查看全部画布列表，但不会切换画布或移动你的视角；改节点图或删除工作流会弹窗确认");
-  }
 }
 
 function renderAssistPanel() {
@@ -20932,23 +25708,48 @@ async function assistSend(text) {
           if (el) el.textContent = S.assistPending;
           const list = $("#assistList");
           if (list) list.scrollTop = list.scrollHeight;
+        } else if (type === "error" && data && data.message) {
+          if (S.assistStopRequested || isCancelishError(data.message)) return;
+          const errLine = "\n⚠ " + data.message;
+          S.assistPending = (S.assistPending || "") + errLine;
+          pushThinking("assist", 0, errLine + "\n");
+          const el = document.getElementById("assist-stream");
+          if (el) el.textContent = S.assistPending;
+          const list = $("#assistList");
+          if (list) list.scrollTop = list.scrollHeight;
         }
       },
     });
-    const body =
-      (typeof final === "string" ? final : final && final.text) ||
-      S.assistPending ||
-      I18n.t("（已完成，无文本输出）");
-    const msg = { role: "assistant", content: body };
-    const rsn =
-      (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "";
-    if (String(rsn).trim()) msg.reasoning = rsn;
-    if (Array.isArray(S.assistLiveTools) && S.assistLiveTools.length)
-      msg.tools = S.assistLiveTools.slice();
-    S.assistMessages.push(msg);
+    if (S.assistStopRequested) {
+      const stopped = stripStreamErrors(S.assistPending);
+      S.assistMessages.push({
+        role: "assistant",
+        content: stopped || I18n.t("（已终止）"),
+      });
+    } else {
+      const body =
+        (typeof final === "string" ? final : final && final.text) ||
+        S.assistPending ||
+        I18n.t("（已完成，无文本输出）");
+      const msg = { role: "assistant", content: stripStreamErrors(body) || body };
+      const rsn =
+        (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "";
+      if (String(rsn).trim()) msg.reasoning = rsn;
+      if (Array.isArray(S.assistLiveTools) && S.assistLiveTools.length)
+        msg.tools = S.assistLiveTools.slice();
+      S.assistMessages.push(msg);
+    }
   } catch (e) {
     const msg = (e && e.message) || String(e);
-    if (!/中止|取消|cancel|abort/i.test(msg)) {
+    const cancelled =
+      S.assistStopRequested || isCancelishError(msg);
+    if (cancelled) {
+      const body = stripStreamErrors(S.assistPending);
+      S.assistMessages.push({
+        role: "assistant",
+        content: body || I18n.t("（已终止）"),
+      });
+    } else {
       S.assistMessages.push({
         role: "assistant",
         content: I18n.t("助手失败：") + msg,
@@ -20956,6 +25757,7 @@ async function assistSend(text) {
       toast(I18n.t("全局助手失败：") + msg, "err");
     }
   } finally {
+    S.assistStopRequested = false;
     S.assistRunning = false;
     S.assistRunActive = false;
     S.assistPending = "";
@@ -20969,10 +25771,10 @@ async function assistSend(text) {
 
 function assistStop() {
   if (!S.assistRunning) return;
+  S.assistStopRequested = true;
   S.assistRunActive = false;
   dshCancelActive();
   updateRunQueuePanel();
-  toast(I18n.t("已请求终止,正在重启该工作目录的引擎…"), "warn");
 }
 
 /* ============ 智能会话画布(全屏 agent 会话,等于常驻的智能任务) ============ */
@@ -21084,9 +25886,10 @@ async function deleteAgentSession(id) {
   const s = list.find((x) => x.id === id);
   if (!s) return;
   if (
-    !confirm(
+    !(await confirmDialog(
       I18n.t("删除会话「") + (s.title || I18n.t("新会话")) + I18n.t("」？\n\n该操作不可撤销，会话记录将全部丢失。关联的智能任务节点会保留（断开会话关联）。"),
-    )
+      { title: I18n.t("删除会话"), danger: true, okText: I18n.t("删除") },
+    ))
   )
     return;
   list.splice(list.indexOf(s), 1);
@@ -21733,6 +26536,15 @@ async function agentSessionSend(text) {
           if (el) el.textContent = st._pending;
           const list = $("#agentList");
           if (list) list.scrollTop = list.scrollHeight;
+        } else if (type === "error" && data && data.message) {
+          if (st._cancelled || isCancelishError(data.message)) return;
+          const errLine = "\n⚠ " + data.message;
+          st._pending = (st._pending || "") + errLine;
+          pushThinking("agentSession", 0, errLine + "\n");
+          const el = document.getElementById("agent-stream");
+          if (el) el.textContent = st._pending;
+          const list = $("#agentList");
+          if (list) list.scrollTop = list.scrollHeight;
         }
       },
       onDone: (d) => {
@@ -21741,7 +26553,11 @@ async function agentSessionSend(text) {
       },
     });
     if (st._cancelled) {
-      st.messages.push({ role: "assistant", content: I18n.t("（已终止）") });
+      const body = stripStreamErrors(st._pending);
+      st.messages.push({
+        role: "assistant",
+        content: body || I18n.t("（已终止）"),
+      });
     } else {
       const msg = {
         role: "assistant",
@@ -21755,14 +26571,19 @@ async function agentSessionSend(text) {
       st.messages.push(msg);
     }
   } catch (e) {
-    if (st._cancelled) {
-      st.messages.push({ role: "assistant", content: I18n.t("（已终止）") });
+    const errMsg = (e && e.message) || String(e);
+    if (st._cancelled || isCancelishError(errMsg)) {
+      const body = stripStreamErrors(st._pending);
+      st.messages.push({
+        role: "assistant",
+        content: body || I18n.t("（已终止）"),
+      });
     } else {
       st.messages.push({
         role: "assistant",
-        content: I18n.t("（错误：") + (e.message || String(e)) + "）",
+        content: I18n.t("（错误：") + errMsg + "）",
       });
-      toast(I18n.t("智能会话失败：") + (e.message || String(e)), "err");
+      toast(I18n.t("智能会话失败：") + errMsg, "err");
     }
   } finally {
     st.running = false;
@@ -21981,6 +26802,8 @@ function applyLocale(locale, persist) {
   I18n.applyDom(document);
   paintLangBtn();
   paintApprovalsBtn();
+  if ($("#approvalsPanel") && $("#approvalsPanel").classList.contains("on"))
+    openApprovalsPanel();
   applyLogoSub();
   const boxBtn = $("#btnBox");
   if (boxBtn) {
@@ -22003,6 +26826,7 @@ function applyLocale(locale, persist) {
   renderSidebar();
   if (reopenSettings) openSettings();
   if (reopenTpl) openTemplateStore();
+  refreshAppDocsIfOpen();
 }
 
 async function init() {
@@ -22043,6 +26867,7 @@ async function init() {
     },
     S.config.dsh || {},
   );
+  ensureAgentToolPresets();
   applyTheme((S.config.dsh && S.config.dsh.theme) || "industrial");
   /* 已访问画布(工作流 Tab 条),持久化于配置 */
   if (!Array.isArray(S.config.visitedWorkflows)) S.config.visitedWorkflows = [];
@@ -22120,6 +26945,12 @@ async function init() {
   $("#btnDelWf").onclick = deleteWorkflowDialog;
   $("#btnSettings").onclick = openSettings;
   if ($("#btnPlugins")) $("#btnPlugins").onclick = openAppPluginsDialog;
+  if ($("#btnDocs"))
+    $("#btnDocs").onclick = () => {
+      const host = document.getElementById("appDocsDlg");
+      if (host && host.classList.contains("on")) closeAppDocs();
+      else openAppDocs();
+    };
   $("#authorLink").onclick = openAuthorPopup;
   $("#btnToolWf").onclick = () => setView("workflow");
   $("#btnToolAgent").onclick = () => setView("agent");
@@ -22262,7 +27093,6 @@ async function init() {
         st._cancelled = true;
         S.agentSessionRunActive = false;
         dshCancelActive();
-        toast(I18n.t("已请求终止,正在重启该工作目录的引擎…"), "warn");
         return;
       }
       const t = inp.value;
@@ -22317,13 +27147,14 @@ async function init() {
     const scopeSel = $("#assistScopeSel");
     if (scopeSel && !scopeSel._bound) {
       scopeSel._bound = true;
-      scopeSel.onchange = () => {
+      scopeSel.onchange = async () => {
         const next = scopeSel.value === "global" ? "global" : "current";
         if (next === "global" && S.assistScope !== "global") {
-          const ok = window.confirm(
+          const ok = await confirmDialog(
             I18n.t(
               "该操作允许助手参考其他画布内容，当画布较多时可能导致速度较慢。确定切换为「全局」？",
             ),
+            { title: I18n.t("工作范围") },
           );
           if (!ok) {
             fillAssistScopeControl();
@@ -22390,6 +27221,7 @@ async function init() {
     renderAssistPanel();
   }
   if (S.config.view === "agent") setView("agent");
+  ensureTimerScheduler();
 }
 
 init();

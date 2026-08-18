@@ -20,12 +20,12 @@ export const inject = ['tools']
 
 const KINDS = [
   'input_text', 'input_image', 'proc_text', 'proc_image',
-  'save_text', 'save_image', 'split', 'merge', 'wait_file', 'agent_task', 'anim', 'chat',
-  'control',
+  'save_text', 'save_image', 'split', 'merge', 'wait_file', 'timer', 'agent_task', 'task', 'chat',
+  'control', 'judge',
 ]
 
 const GET_DESC =
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every node (id, kind, title, position, prompt/text/task/savePath/waitPath/waitIntervalSec, providerId/provider/model, size for proc_image, ctrlAction for control), marks (canvas drawings: text/box/arrow), wires, groups, camera (read-only snapshot — do not try to pan/zoom), UI view, imageSizes, markColors, and workflows. When the run is locked to the current canvas (agent_task / agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title only resolves if that node is wired in. To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task scope (id, kind, title, position, prompt/text/task/goal/steps/parentTaskId/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, taskTree (all task nodes even if nested), marks, wires, groups, camera (read-only snapshot — do not try to pan/zoom), UI view, imageSizes, markColors, and workflows. When the run is locked to the current canvas (agent_task / agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title only resolves if that node is wired in. To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
 
 const APP_DESC = `Control the MTNode desktop app beyond node graph edits. Workflow management only — NEVER change the user's viewpoint.
 
@@ -46,7 +46,13 @@ For creating/editing/wiring/removing NODES or canvas drawings (marks) on the cur
 
 const EDIT_DESC = `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
 
-Typical pattern for a user-editable pipeline:
+Typical pattern for a COMPLEX requirement (planning first):
+1. Optionally mtnode_canvas_get first (see taskTree + current-scope nodes).
+2. One mtnode_canvas_edit that creates kind "task" nodes as the PLAN. Each task auto-has a pinned start + success end + fail end (do not delete). Put implementation INSIDE via parentTaskId.
+3. Wire control flow: start → work/sub-tasks/judge → endSuccess or endFail. kind "judge" has TWO outputs: fromIndex 0 = YES (goal met), fromIndex 1 = NO. ▶ on a task fires start and walks the control graph; status is success/fail by which end is reached.
+4. For a SMALL single-pass pipeline (few nodes), you may still create input/proc/save/control directly without a task wrapper.
+
+Typical pattern for a small user-editable pipeline:
 1. Optionally mtnode_canvas_get first.
 2. One mtnode_canvas_edit that creates:
    - input / proc nodes for the real work (and save_* only after ordinary non-agent proc nodes — never after agent_task / agent:true)
@@ -54,6 +60,7 @@ Typical pattern for a user-editable pipeline:
    - createMarks: large box zones (+ label) separating areas such as 编辑区 / 说明 / 处理区 / 输出区; optional text marks for short workflow instructions
    then connect left-to-right, layout true (marks with around:[aliases] wrap nodes AFTER layout).
 Prefer agent_task when a step must READ existing files and merge; prefer proc_text for single-pass generation or per-item batch; save_* writes outputs for re-runs of ordinary (non-agent) proc nodes.
+CRITICAL — for anything more than a handful of nodes, START with task nodes (kind "task") as the plan. Implementation goes INSIDE (parentTaskId) and MUST be wired from the pinned start to a success/fail end. Use kind "judge" to branch YES/NO. Do not flatten a complex job into a messy mixed graph.
 CRITICAL — do NOT create save_text / save_image after agent_task or proc_text with agent:true: those smart nodes can write files themselves; a save_* node would dump chat/task transcript junk to disk. Use save_* only after ordinary proc_text / proc_image (agent off).
 CRITICAL — avoid wiring agent_task / proc_text(agent:true) as DATA inputs into other nodes: their outputs carry irrelevant session/transcript noise and often omit the key facts. Prefer file handoff: the smart node WRITES a document (md/yaml/json/…), then use wait_file (监视路径 / waitPath) as a CONTROL node wired OUT to downstream so they block until that file exists; wait_file has NO input ports and outputs NOTHING — later nodes READ the agreed path themselves. Do not wire anything into wait_file.
 wait_file: control-kind blocker with output only; polls waitPath (relative to workspace or absolute) every waitIntervalSec seconds (default 2) until the file exists, then unblocks downstream. No inputs, no data/path output; do not @引用 wait_file.
@@ -193,9 +200,23 @@ const NODE_SPEC = {
     prompt: {
       type: 'string',
       description:
-        'proc_text / proc_image prompt. Include @Title for wired inputs. For proc_image: describe ONE image only — never ask for multiple images in one prompt (each run returns a single image).',
+        'proc_text / proc_image prompt (include @Title for wired inputs; proc_image: ONE image only). Also judge criteria (optional; defaults to parent task goal).',
     },
     task: { type: 'string', description: 'agent_task task text. Include @Title for wired inputs.' },
+    goal: {
+      type: 'string',
+      description: 'task node: what this step should accomplish.',
+    },
+    steps: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'task node: ordered sub-step titles. Can later be expanded into inner child tasks.',
+    },
+    parentTaskId: {
+      type: 'string',
+      description:
+        'Put this node INSIDE a task (id, alias from this call, or unique title). Empty = current canvas scope. Create the parent task first in the same call.',
+    },
     savePath: { type: 'string', description: 'save_text / save_image destination. Prefer relative path under the canvas working directory (e.g. items.yaml) so changing the workspace moves all saves; absolute paths still allowed.' },
     waitPath: {
       type: 'string',
@@ -205,6 +226,27 @@ const NODE_SPEC = {
     waitIntervalSec: {
       type: 'number',
       description: 'wait_file: poll interval in seconds (1–60, default 2).',
+    },
+    timerMode: {
+      type: 'string',
+      enum: ['once', 'interval', 'cron'],
+      description: 'timer: once at timerAt, interval every timerEverySec, or cron.',
+    },
+    timerAt: {
+      type: 'string',
+      description: 'timer once: local datetime "YYYY-MM-DDTHH:mm".',
+    },
+    timerEverySec: {
+      type: 'number',
+      description: 'timer interval seconds (1–604800, default 3600).',
+    },
+    timerCron: {
+      type: 'string',
+      description: 'timer cron: 5 fields "min hour dom mon dow" local time.',
+    },
+    timerArmed: {
+      type: 'boolean',
+      description: 'timer: start armed so the schedule fires and runs outgoing targets.',
     },
     imagePath: {
       type: 'string',
@@ -248,7 +290,13 @@ const NODE_SPEC = {
     ctrlAction: {
       type: 'string',
       enum: ['run', 'clear'],
-      description: 'control node: run or clear all connected nodes.',
+      description: 'control node: run or clear all connected nodes (not used on start/end).',
+    },
+    ctrlRole: {
+      type: 'string',
+      enum: ['start', 'endSuccess', 'endFail'],
+      description:
+        'control node role. Tasks auto-create pinned start / endSuccess / endFail; do not delete pinned ones. Extra ends may be created with these roles.',
     },
     refs: {
       type: 'array',
@@ -271,9 +319,40 @@ const UPDATE_SPEC = {
     text: { type: 'string' },
     prompt: { type: 'string' },
     task: { type: 'string' },
+    goal: { type: 'string', description: 'task node goal.' },
+    steps: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'task node: replace step titles.',
+    },
+    parentTaskId: {
+      type: 'string',
+      description: 'Move node into a task (id/alias/title) or empty for top-level.',
+    },
     savePath: { type: 'string' },
     waitPath: { type: 'string', description: 'wait_file: path to watch.' },
     waitIntervalSec: { type: 'number', description: 'wait_file: poll seconds 1–60.' },
+    timerMode: {
+      type: 'string',
+      enum: ['once', 'interval', 'cron'],
+      description: 'timer: once at timerAt, interval every timerEverySec, or cron expression.',
+    },
+    timerAt: {
+      type: 'string',
+      description: 'timer once: local datetime "YYYY-MM-DDTHH:mm".',
+    },
+    timerEverySec: {
+      type: 'number',
+      description: 'timer interval: seconds between fires (1–604800).',
+    },
+    timerCron: {
+      type: 'string',
+      description: 'timer cron: 5 fields "min hour dom mon dow" in local time.',
+    },
+    timerArmed: {
+      type: 'boolean',
+      description: 'timer: arm/disarm the schedule; when armed each fire runs outgoing targets.',
+    },
     imagePath: {
       type: 'string',
       description: 'input_image: replace/set single image from absolute path.',
@@ -307,6 +386,10 @@ const UPDATE_SPEC = {
         'proc_image: set output size to a value from imageSizes (mtnode_canvas_get).',
     },
     refs: { type: 'array', items: { type: 'string' } },
+    ctrlRole: {
+      type: 'string',
+      enum: ['start', 'endSuccess', 'endFail'],
+    },
     x: { type: 'number' },
     y: { type: 'number' },
     w: { type: 'number' },
@@ -327,6 +410,10 @@ const PAIR_SPEC = {
       type: 'string',
       required: true,
       description: 'Target node: id, create-alias, or unique title.',
+    },
+    fromIndex: {
+      type: 'number',
+      description: 'Source output port. judge: 0 = YES, 1 = NO. Default 0.',
     },
   },
 }

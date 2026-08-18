@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 160" width="580" height="160">
+  <rect width="580" height="160" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="24" y="48" width="110" height="48" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="79" y="76" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">1 配置 Key</text>
+  <line x1="134" y1="72" x2="168" y2="72" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="168" y="48" width="120" height="48" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="228" y="76" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">2 添加节点</text>
+  <line x1="288" y1="72" x2="322" y2="72" stroke="#ff8f2e" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="322" y="48" width="110" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="377" y="76" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">3 连线</text>
+  <line x1="432" y1="72" x2="466" y2="72" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="466" y="48" width="90" height="48" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="511" y="76" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">4 ▶ 运行</text>
+  <text x="290" y="148" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">第一次使用：设置 → 编排 → 运行</text>
+</svg>

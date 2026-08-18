@@ -412,3 +412,21 @@
     thinking: enabled
 
 # ── user plugins (managed from MTNode settings) ──
+# Bundled optional suite (https://github.com/yjh051108/dsh-routing-suite):
+# mount / unmount from Settings → DSH plugins. Core runtime rows above cannot
+# be unmounted. router-standard is on; router-spec stays off (mutex).
+
+# ESM cannot import a directory; point at the package main file.
+- id: dsh-super-injector
+  name: './plugins/dsh-super-injector/lib/index.js'
+  config: {}
+
+# Router presets: standard is host-safe (keeps MTNode persona + canvas tools).
+# Spec conflicts with standard — leave it unmounted unless you want spec mode.
+- id: dsh-router-standard
+  name: './plugins/router-standard/router-bootstrap.mjs'
+
+- id: dsh-router-spec
+  name: './plugins/router-spec/router-bootstrap.mjs'
+  disabled: true
+

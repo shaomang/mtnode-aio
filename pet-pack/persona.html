@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>角色设定</title>
+<style>
+:root {
+  --bg: #0d1016;
+  --panel: #161b25;
+  --bd: #2a3544;
+  --tx: #e8eef7;
+  --tx2: #9aa8bc;
+  --orange: #ff8f2e;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  margin: 0; padding: 16px;
+  background: var(--panel); color: var(--tx);
+}
+label { display: block; font-size: 12px; color: var(--tx2); margin: 10px 0 4px; }
+input, textarea {
+  width: 100%;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--tx);
+  border-radius: 6px;
+  padding: 8px;
+}
+textarea { height: 140px; resize: vertical; line-height: 1.45; }
+.row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+button {
+  border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer;
+}
+.ok { background: var(--orange); color: #111; font-weight: 600; }
+.cancel { background: var(--bd); color: var(--tx); }
+.hint { font-size: 11px; color: #7a8799; margin-top: 8px; }
+.mode {
+  display: flex; gap: 8px; margin-top: 8px;
+  -webkit-user-select: none;
+}
+.mode button {
+  flex: 1;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--tx2);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.mode button.on {
+  border-color: var(--orange);
+  color: #fff;
+  background: rgba(255,143,46,0.2);
+}
+#customWrap[hidden] { display: none !important; }
+.locked {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--bd);
+  border-radius: 6px;
+  color: var(--tx2);
+  font-size: 12px;
+  background: rgba(0,0,0,0.2);
+}
+</style>
+</head>
+<body>
+  <label>角色名</label>
+  <input id="n" maxlength="32" value="">
+  <label>人设</label>
+  <div class="mode">
+    <button type="button" id="modeDefault">默认</button>
+    <button type="button" id="modeCustom">自定义</button>
+  </div>
+  <div id="defaultHint" class="locked">来自外星的猫</div>
+  <div id="customWrap" hidden>
+    <label>自定义人设提示词</label>
+    <textarea id="p" maxlength="4000" placeholder="在此填写自定义人设，将覆盖默认人设…"></textarea>
+  </div>
+  <div class="hint">保存后下次对话立即生效。</div>
+  <div class="row">
+    <button type="button" class="cancel" id="c">取消</button>
+    <button type="button" class="ok" id="s">保存</button>
+  </div>
+  <script>
+  (function () {
+    const api = window.petApi;
+    if (!api) {
+      document.body.textContent = "ipc 未接通";
+      return;
+    }
+    let mode = "default";
+    const modeDefault = document.getElementById("modeDefault");
+    const modeCustom = document.getElementById("modeCustom");
+    const customWrap = document.getElementById("customWrap");
+    const defaultHint = document.getElementById("defaultHint");
+    const promptEl = document.getElementById("p");
+
+    function setMode(m) {
+      mode = m === "custom" ? "custom" : "default";
+      modeDefault.classList.toggle("on", mode === "default");
+      modeCustom.classList.toggle("on", mode === "custom");
+      customWrap.hidden = mode !== "custom";
+      defaultHint.hidden = mode === "custom";
+    }
+
+    modeDefault.onclick = function () { setMode("default"); };
+    modeCustom.onclick = function () { setMode("custom"); };
+
+    api.getConfig().then(function (r) {
+      const c = (r && r.config) || {};
+      document.getElementById("n").value = c.personaName || "BongoChat";
+      promptEl.value = c.personaPromptCustom || "";
+      setMode(c.personaMode === "custom" ? "custom" : "default");
+    });
+
+    document.getElementById("c").onclick = function () {
+      api.closePersonaEditor();
+    };
+    document.getElementById("s").onclick = async function () {
+      const name = document.getElementById("n").value.trim() || "BongoChat";
+      await api.setConfig({
+        personaName: name,
+        personaMode: mode,
+        personaPromptCustom: mode === "custom" ? promptEl.value : "",
+      });
+      api.closePersonaEditor();
+    };
+  })();
+  </script>
+</body>
+</html>
