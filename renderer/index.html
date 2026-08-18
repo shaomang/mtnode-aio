@@ -58,14 +58,14 @@
 <div class="layout" id="layout">
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-search">
-      <input id="sideFilter" type="text" data-i18n-placeholder="筛选节点标题…" placeholder="筛选节点标题…">
+      <input id="sideFilter" type="text" data-i18n-placeholder="筛选节点或绘图…" placeholder="筛选节点或绘图…">
     </div>
     <div class="sidebar-tree" id="sideTree"></div>
   </aside>
   <section class="pane">
     <div class="wf-wrap" id="wfWrap">
       <div class="fn-toolbar">
-        <button id="btnSidebar" class="corner mini btn-sq" data-i18n-title="节点列表边栏（树状图）" title="节点列表边栏（树状图）">☰</button>
+        <button id="btnSidebar" class="corner mini btn-sq" data-i18n-title="节点与绘图列表边栏" title="节点与绘图列表边栏">☰</button>
         <div id="taskCrumb" class="task-crumb" hidden></div>
         <div id="wfTabs" class="wf-tabs"></div>
         <div id="wfWsBox" class="wf-ws-box"></div>
@@ -183,6 +183,11 @@
 </div>
 
 <footer class="statusbar">
+  <button type="button" id="btnCanvasShot" class="sb-cam" data-i18n-title="生成当前画布的高清总览图" title="生成当前画布的高清总览图" aria-label="生成当前画布的高清总览图">
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path fill="currentColor" d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 14.2A4.2 4.2 0 1 1 12 8.8a4.2 4.2 0 0 1 0 8.4zm0-1.7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM4.8 7.3h1.7V6H4.8z"/>
+    </svg>
+  </button>
   <span id="statWf">未加载工作流</span>
   <span id="statCounts">— 节点 · — 连线</span>
   <span id="statProviders">服务商 0</span>
@@ -210,6 +215,7 @@
 
 <script src="vendor/marked.min.js"></script>
 <script src="i18n.js"></script>
+<script src="dsh-plugin-copy.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

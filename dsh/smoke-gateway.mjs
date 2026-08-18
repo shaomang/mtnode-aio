@@ -55,20 +55,15 @@ if (!pluginNames.includes('./canvas-plugin.mjs')) {
   process.exit(1)
 }
 console.log('[2] canvas plugin present')
-if (!pluginNames.includes('./plugins/dsh-super-injector/lib/index.js')) {
-  console.log('[fail] bundled injector missing from pluginList')
+if (pluginNames.includes('./plugins/dsh-super-injector/lib/index.js')) {
+  console.log('[fail] injector should not be shipped')
   process.exit(1)
 }
-const injector = ((pl.result && pl.result.plugins) || []).find((p) => p.name === './plugins/dsh-super-injector/lib/index.js')
-if (!injector || injector.core || !injector.toggleable) {
-  console.log('[fail] injector should be non-core and toggleable', injector)
+if (pluginNames.some((n) => String(n).includes('router-spec'))) {
+  console.log('[fail] router-spec should not be shipped')
   process.exit(1)
 }
-if (!injector.description) {
-  console.log('[fail] injector missing description', injector)
-  process.exit(1)
-}
-console.log('[2] injector bundled (toggleable)')
+console.log('[2] unused bundled plugins absent')
 const canvas = ((pl.result && pl.result.plugins) || []).find((p) => p.name === './canvas-plugin.mjs')
 if (!canvas || !canvas.description) {
   console.log('[fail] canvas plugin missing description', canvas)

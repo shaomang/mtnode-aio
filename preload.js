@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('api', {
   docsLoad: (id, locale) => ipcRenderer.invoke('docs:load', { id, locale }),
   docsBundle: (locale) => ipcRenderer.invoke('docs:bundle', { locale }),
   fileWriteText: (p, c) => ipcRenderer.invoke('file:writeText', { path: p, content: c }),
+  fileWriteBytes: (p, data) => ipcRenderer.invoke('file:writeBytes', { path: p, data }),
+  captureRect: (rect) => ipcRenderer.invoke('view:captureRect', rect),
   fileCopyAssetTo: (a, d) => ipcRenderer.invoke('file:copyAssetTo', { assetPath: a, destPath: d }),
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),

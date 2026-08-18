@@ -172,13 +172,13 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 
 ## 插件扩展(需求 3)
 
-- 插件 = npm 包名 / GitHub 地址 / 本地路径 + cordis.yml 追加行。设置面板提供列表/
-  添加/移除;非核心插件(用户安装、bundled 套装、可选 shipped 行)可 **挂载 / 取消挂载**,
+- 插件 = npm 包名 / GitHub 地址 / 本地路径 + cordis.yml 追加行。设置面板提供安装入口；
+  已装清单在近全屏对话框中管理（左 grid / 右描述与用途，英文描述会补中文，缺用途会补全）。
+  非核心插件(用户安装、bundled 套装、可选 shipped 行)可 **挂载 / 取消挂载**,
   核心运行时行只读。gateway 用捆绑 pnpm 在 `dsh/gateway/` 安装,成功后重启运行时。
-- 已内置 [dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite):
-  注入器(`./plugins/dsh-super-injector/lib/index.js`)默认挂载;router-standard 默认挂载
-  (assemble 永不抛错,保留 MTNode persona 与 `mtnode_*` 工具);router-spec
-  默认卸载(与 standard 互斥)。
+- 已内置 [dsh-router-standard](https://github.com/yjh051108/dsh-router-standard)
+  (`./plugins/router-standard/router-bootstrap.mjs`):默认挂载,assemble 永不抛错,
+  保留 MTNode persona 与 `mtnode_*` 工具。注入器与 router-spec 不随应用分发。
   见 `dsh/gateway/plugins/README.md`。
 - 高级用户可直接编辑 cordis.yml(只读展示 + 复制路径)。
 - 插件声明自己不保证 rc 版本兼容;安装失败回滚 package.json 与 cordis.yml。

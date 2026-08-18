@@ -497,12 +497,14 @@ function markParentTaskId(m) {
 function nodeInCurrentScope(n) {
   return !!n && nodeParentTaskId(n) === currentTaskFocus();
 }
+function markInCurrentScope(m) {
+  return !!m && markParentTaskId(m) === currentTaskFocus();
+}
 function visibleWfNodes() {
   return ((S.wf && S.wf.nodes) || []).filter(nodeInCurrentScope);
 }
 function visibleMarks() {
-  const f = currentTaskFocus();
-  return marksOf().filter((m) => markParentTaskId(m) === f);
+  return marksOf().filter(markInCurrentScope);
 }
 function taskChildrenOf(id) {
   if (!id || !S.wf) return [];
@@ -3745,29 +3747,15 @@ function setCanvasPanning(on) {
   }
 }
 
-/* 一键居中：重新定位到全部节点中心，缩放以涵盖所有节点 */
+/* 一键居中：重新定位到当前画布可见内容中心 */
 function fitCanvas() {
-  const nodes = S.wf.nodes || [];
-  const marks = marksOf();
-  if (!nodes.length && !marks.length) return;
+  const bounds = canvasWorldBounds();
+  if (!bounds) return;
   const pad = 60;
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-  for (const n of nodes) {
-    minX = Math.min(minX, n.x);
-    minY = Math.min(minY, n.y);
-    maxX = Math.max(maxX, n.x + n.w);
-    maxY = Math.max(maxY, n.y + n.h);
-  }
-  for (const m of marks) {
-    const b = markBounds(m);
-    minX = Math.min(minX, b.x);
-    minY = Math.min(minY, b.y);
-    maxX = Math.max(maxX, b.x + b.w);
-    maxY = Math.max(maxY, b.y + b.h);
-  }
+  const minX = bounds.minX;
+  const minY = bounds.minY;
+  const maxX = bounds.maxX;
+  const maxY = bounds.maxY;
   const vw = $("#canvas").clientWidth;
   const vh = $("#canvas").clientHeight;
   const z = Math.min(
@@ -3781,6 +3769,253 @@ function fitCanvas() {
   applyTransform();
   updateWires();
   renderStatus();
+}
+
+function canvasWorldBounds() {
+  const nodes = visibleWfNodes();
+  const marks = visibleMarks();
+  const groups = (S.wf && S.wf.groups) || [];
+  if (!nodes.length && !marks.length) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const include = (x, y, w, h) => {
+    x = Number(x);
+    y = Number(y);
+    w = Number(w);
+    h = Number(h);
+    if (![x, y, w, h].every(Number.isFinite) || w < 0 || h < 0) return;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  };
+  for (const n of nodes) include(n.x, n.y, n.w, n.h);
+  for (const m of marks) {
+    const b = markBounds(m);
+    if (!b) continue;
+    include(b.x, b.y, b.w, b.h);
+  }
+  for (const g of groups) {
+    if (!groupVisibleInScope(g)) continue;
+    const b = groupBounds(g);
+    if (!b) continue;
+    include(b.x - GROUP_PAD, b.y - GROUP_PAD, b.w + GROUP_PAD * 2, b.h + GROUP_PAD * 2);
+  }
+  if (!isFinite(minX) || !isFinite(minY)) return null;
+  return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+}
+
+function waitCanvasPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => setTimeout(resolve, 24));
+    });
+  });
+}
+
+function flushCamTransform() {
+  if (S._camRaf) {
+    cancelAnimationFrame(S._camRaf);
+    S._camRaf = 0;
+  }
+  S._camDirty = false;
+  applyTransform();
+}
+
+function loadDataUrlImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(I18n.t("生成总览图失败：") + "image"));
+    img.src = dataUrl;
+  });
+}
+
+function safeOverviewName() {
+  const raw = String((S.wf && S.wf.name) || "canvas");
+  const cleaned = raw.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "canvas";
+  return cleaned.slice(0, 60) + "-overview.png";
+}
+
+async function captureCanvasTile(cssX, cssY, cssW, cssH) {
+  const r = await window.api.captureRect({
+    x: cssX,
+    y: cssY,
+    width: cssW,
+    height: cssH,
+  });
+  if (!r || r.ok === false || !r.dataUrl) {
+    throw new Error((r && r.error) || I18n.t("未知错误"));
+  }
+  return loadDataUrlImage(r.dataUrl);
+}
+
+async function exportCanvasOverviewPng() {
+  if (S.view === "agent") {
+    toast(I18n.t("请先切换到工作流画布"), "warn");
+    return;
+  }
+  if (!S.wf) {
+    toast(I18n.t("当前没有打开的工作流"), "err");
+    return;
+  }
+  const bounds = canvasWorldBounds();
+  if (!bounds) {
+    toast(I18n.t("当前没有可导出的画布内容"), "warn");
+    return;
+  }
+  const ok = await confirmDialog(
+    I18n.t("将导出当前画布全部节点、连线与标注的高清总览图。生成时画面会短暂移动，完成后恢复你的视角。是否继续？"),
+    { title: I18n.t("生成高清总览图") },
+  );
+  if (!ok) return;
+
+  const btn = $("#btnCanvasShot");
+  if (btn) btn.disabled = true;
+  const canvasEl = $("#canvas");
+  const rq = $("#runQueue");
+  const rqWasHidden = !rq || rq.hidden;
+  const savedCam = { x: S.cam.x, y: S.cam.y, z: S.cam.z };
+  const stEl = $("#saveState");
+  let veil = null;
+  S._capturingCanvas = true;
+  try {
+    if (rq) rq.hidden = true;
+    if (canvasEl) canvasEl.classList.add("is-snapshot");
+    const tip = $("#portTip");
+    if (tip) tip.hidden = true;
+    const ctxMenu = $("#ctx");
+    if (ctxMenu) ctxMenu.style.display = "none";
+    veil = document.createElement("div");
+    veil.style.cssText =
+      "position:fixed;inset:0;z-index:5000;background:transparent;cursor:wait";
+    document.body.appendChild(veil);
+
+    const pad = 72;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const MAX_PX = 16384;
+    let scale = Math.min(CAM_Z_MAX, 1.7);
+    const worldW = Math.max(1, bounds.w + pad * 2);
+    const worldH = Math.max(1, bounds.h + pad * 2);
+    if (worldW * scale * dpr > MAX_PX) scale = MAX_PX / (worldW * dpr);
+    if (worldH * scale * dpr > MAX_PX) scale = MAX_PX / (worldH * dpr);
+    scale = Math.max(CAM_Z_MIN, scale);
+
+    const outW = Math.max(1, Math.ceil(worldW * scale));
+    const outH = Math.max(1, Math.ceil(worldH * scale));
+    const view = canvasEl.getBoundingClientRect();
+    const vw = Math.max(64, Math.floor(view.width));
+    const vh = Math.max(64, Math.floor(view.height));
+    const tilesX = Math.ceil(outW / vw);
+    const tilesY = Math.ceil(outH / vh);
+    const total = tilesX * tilesY;
+    const originX = -(bounds.minX - pad) * scale;
+    const originY = -(bounds.minY - pad) * scale;
+
+    flushCamTransform();
+    S.cam.z = scale;
+    S.cam.x = originX;
+    S.cam.y = originY;
+    applyTransform();
+    await waitCanvasPaint();
+
+    const firstTw = Math.min(vw, outW);
+    const firstTh = Math.min(vh, outH);
+    const firstImg = await captureCanvasTile(view.left, view.top, firstTw, firstTh);
+    const tileDprX = firstImg.width / firstTw;
+    const tileDprY = firstImg.height / firstTh;
+    const pixW = Math.round(outW * tileDprX);
+    const pixH = Math.round(outH * tileDprY);
+    const out = document.createElement("canvas");
+    out.width = pixW;
+    out.height = pixH;
+    const g = out.getContext("2d");
+    if (!g) throw new Error(I18n.t("未知错误"));
+    g.fillStyle = "#0a0e13";
+    g.fillRect(0, 0, pixW, pixH);
+    g.drawImage(firstImg, 0, 0);
+
+    let done = 1;
+    if (stEl) {
+      stEl.textContent = I18n.t("正在生成高清总览图 {cur}/{total}…", {
+        cur: done,
+        total: total,
+      });
+      stEl.className = "warn";
+    }
+
+    for (let ty = 0; ty < outH; ty += vh) {
+      for (let tx = 0; tx < outW; tx += vw) {
+        if (tx === 0 && ty === 0) continue;
+        const tw = Math.min(vw, outW - tx);
+        const th = Math.min(vh, outH - ty);
+        S.cam.z = scale;
+        S.cam.x = originX - tx;
+        S.cam.y = originY - ty;
+        applyTransform();
+        await waitCanvasPaint();
+        const img = await captureCanvasTile(view.left, view.top, tw, th);
+        g.drawImage(
+          img,
+          Math.round(tx * tileDprX),
+          Math.round(ty * tileDprY),
+        );
+        done += 1;
+        if (stEl) {
+          stEl.textContent = I18n.t("正在生成高清总览图 {cur}/{total}…", {
+            cur: done,
+            total: total,
+          });
+        }
+      }
+    }
+
+    const blob = await new Promise((resolve, reject) => {
+      out.toBlob((b) => (b ? resolve(b) : reject(new Error("png"))), "image/png");
+    });
+
+    S.cam.x = savedCam.x;
+    S.cam.y = savedCam.y;
+    S.cam.z = savedCam.z;
+    applyTransform();
+    if (canvasEl) canvasEl.classList.remove("is-snapshot");
+    if (rq && !rqWasHidden) rq.hidden = false;
+    if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
+    veil = null;
+    S._capturingCanvas = false;
+
+    const dest = await window.api.fileSaveDialog({
+      title: I18n.t("生成高清总览图"),
+      defaultName: safeOverviewName(),
+      filters: [{ name: I18n.t("PNG 图像"), extensions: ["png"] }],
+    });
+    if (!dest || !dest.path) {
+      toast(I18n.t("已取消"), "warn");
+      return;
+    }
+    const buf = await blob.arrayBuffer();
+    const wr = await window.api.fileWriteBytes(dest.path, new Uint8Array(buf));
+    if (wr && wr.ok === false) throw new Error(wr.error || I18n.t("保存失败"));
+    toast(I18n.t("已保存总览图：") + dest.path, "ok");
+    try {
+      await window.api.shellShowItem(dest.path);
+    } catch (_) {}
+  } catch (e) {
+    toast(I18n.t("生成总览图失败：") + ((e && e.message) || String(e)), "err");
+  } finally {
+    S.cam.x = savedCam.x;
+    S.cam.y = savedCam.y;
+    S.cam.z = savedCam.z;
+    applyTransform();
+    if (canvasEl) canvasEl.classList.remove("is-snapshot");
+    if (rq && !rqWasHidden) rq.hidden = false;
+    if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
+    S._capturingCanvas = false;
+    if (btn) btn.disabled = false;
+    renderStatus();
+  }
 }
 
 function fitNodes(nodes) {
@@ -5119,12 +5354,13 @@ function markById(id) {
   return marksOf().find((m) => m.id === id) || null;
 }
 function markBounds(m) {
-  if (!m) return { x: 0, y: 0, w: 0, h: 0 };
+  if (!m) return null;
   if (m.kind === "arrow") {
-    const x1 = m.x,
-      y1 = m.y,
-      x2 = m.x2 != null ? m.x2 : m.x + (m.dx || 0),
-      y2 = m.y2 != null ? m.y2 : m.y + (m.dy || 0);
+    const x1 = Number(m.x);
+    const y1 = Number(m.y);
+    const x2 = m.x2 != null ? Number(m.x2) : x1 + Number(m.dx || 0);
+    const y2 = m.y2 != null ? Number(m.y2) : y1 + Number(m.dy || 0);
+    if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
     return {
       x: Math.min(x1, x2),
       y: Math.min(y1, y2),
@@ -5132,7 +5368,12 @@ function markBounds(m) {
       h: Math.max(24, Math.abs(y2 - y1)),
     };
   }
-  return { x: m.x, y: m.y, w: m.w || 40, h: m.h || 40 };
+  const x = Number(m.x);
+  const y = Number(m.y);
+  const w = Number(m.w || 40);
+  const h = Number(m.h || 40);
+  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+  return { x, y, w, h };
 }
 function addMark(kind, x, y) {
   const d = MARK_DEFAULTS[kind];
@@ -5636,7 +5877,12 @@ function markElement(m) {
   el.className = "wf-mark mk-" + m.kind + sel;
   el.dataset.mid = m.id;
   if (m.kind === "arrow") {
-    const b = markBounds(m);
+    const b = markBounds(m) || {
+      x: Number(m.x) || 0,
+      y: Number(m.y) || 0,
+      w: 24,
+      h: 24,
+    };
     el.style.left = b.x + "px";
     el.style.top = b.y + "px";
     el.style.width = b.w + "px";
@@ -5891,6 +6137,7 @@ function renderCanvas() {
     let extY = Math.max(1400, ...visNodes.map((n) => n.y + n.h), 0);
     for (const m of markList) {
       const b = markBounds(m);
+      if (!b) continue;
       extX = Math.max(extX, b.x + b.w);
       extY = Math.max(extY, b.y + b.h);
     }
@@ -13321,6 +13568,7 @@ function nodeCenter(n) {
 
 function nodesInsideMarkBounds(m, nodes, slop) {
   const b = markBounds(m);
+  if (!b) return [];
   const pad = slop == null ? 12 : slop;
   const out = [];
   for (const n of nodes || []) {
@@ -13373,6 +13621,7 @@ function captureMarkBindings(nodes) {
       let bestDy = Infinity;
       for (const b of boxes) {
         const bb = markBounds(b);
+        if (!bb) continue;
         const cx = bb.x + bb.w / 2;
         if (Math.abs(cx - mc.x) > bb.w / 2 + 40) continue;
         const dy = bb.y - (m.y + (m.h || 0));
@@ -13572,6 +13821,8 @@ function tidyLayoutWorkflow(opts) {
       }
     }
   }
+
+  fitAllGroupBoxes();
 
   if (S.view !== "workflow") setView("workflow");
   renderCanvas();
@@ -14530,6 +14781,7 @@ async function applyCanvasEdit(params) {
         markIds,
       };
       S.wf.groups.push(grouped);
+      fitGroupBoxesToMembers(grouped);
     }
   }
 
@@ -14808,10 +15060,12 @@ function syncMarkDomPos(m) {
   if (!el) return;
   if (m.kind === "arrow") {
     const b = markBounds(m);
-    el.style.left = b.x + "px";
-    el.style.top = b.y + "px";
-    el.style.width = b.w + "px";
-    el.style.height = b.h + "px";
+    if (b) {
+      el.style.left = b.x + "px";
+      el.style.top = b.y + "px";
+      el.style.width = b.w + "px";
+      el.style.height = b.h + "px";
+    }
   } else {
     el.style.left = m.x + "px";
     el.style.top = m.y + "px";
@@ -14819,7 +15073,7 @@ function syncMarkDomPos(m) {
     if (m.h) el.style.height = m.h + "px";
   }
 }
-/* 组边框矩形：由成员节点 + 绘制实时计算 */
+/* 组边框矩形：仅计入当前画布可见成员，避免其它任务层坐标把外框撑得过大 */
 function groupBounds(g) {
   ensureGroupArrays(g);
   let minX = Infinity,
@@ -14827,29 +15081,137 @@ function groupBounds(g) {
     maxX = -Infinity,
     maxY = -Infinity;
   let any = false;
+  const include = (x, y, w, h) => {
+    x = Number(x);
+    y = Number(y);
+    w = Number(w);
+    h = Number(h);
+    if (![x, y, w, h].every(Number.isFinite) || w < 0 || h < 0) return;
+    any = true;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  };
   for (const id of g.nodeIds) {
     const n = nodeById(id);
-    if (!n) continue;
-    any = true;
-    minX = Math.min(minX, n.x);
-    minY = Math.min(minY, n.y);
-    maxX = Math.max(maxX, n.x + n.w);
-    maxY = Math.max(maxY, n.y + n.h);
+    if (!n || !nodeInCurrentScope(n)) continue;
+    include(n.x, n.y, n.w, n.h);
   }
   for (const id of g.markIds) {
     const m = markById(id);
-    if (!m) continue;
+    if (!m || !markInCurrentScope(m)) continue;
     const b = markBounds(m);
-    any = true;
-    minX = Math.min(minX, b.x);
-    minY = Math.min(minY, b.y);
-    maxX = Math.max(maxX, b.x + b.w);
-    maxY = Math.max(maxY, b.y + b.h);
+    if (!b) continue;
+    include(b.x, b.y, b.w, b.h);
   }
   if (!any) return null;
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 const GROUP_PAD = 16;
+const GROUP_BOX_FIT_PAD = 36;
+/* 框体若远大于组内节点/文字/箭头，收紧到内容占位，避免虚线外框和总览图出现大片空白 */
+function fitGroupBoxesToMembers(g, wf) {
+  if (!g) return false;
+  ensureGroupArrays(g);
+  wf = wf || S.wf;
+  if (!wf) return false;
+  const nodeOf = (id) => (wf.nodes || []).find((n) => n.id === id) || null;
+  const markOf = (id) => (wf.marks || []).find((m) => m.id === id) || null;
+  const boxes = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let any = false;
+  const include = (x, y, w, h) => {
+    x = Number(x);
+    y = Number(y);
+    w = Number(w);
+    h = Number(h);
+    if (![x, y, w, h].every(Number.isFinite) || w < 0 || h < 0) return;
+    any = true;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  };
+  const counts = new Map();
+  for (const id of g.nodeIds) {
+    const n = nodeOf(id);
+    if (!n) continue;
+    const s = nodeParentTaskId(n);
+    counts.set(s, (counts.get(s) || 0) + 1);
+  }
+  for (const id of g.markIds) {
+    const m = markOf(id);
+    if (!m) continue;
+    const s = markParentTaskId(m);
+    counts.set(s, (counts.get(s) || 0) + 1);
+  }
+  let scopeId = "";
+  let bestN = -1;
+  for (const [k, v] of counts) {
+    if (v > bestN) {
+      bestN = v;
+      scopeId = k;
+    }
+  }
+  if (bestN < 0) return false;
+  for (const id of g.nodeIds) {
+    const n = nodeOf(id);
+    if (!n || nodeParentTaskId(n) !== scopeId) continue;
+    include(n.x, n.y, n.w, n.h);
+  }
+  for (const id of g.markIds) {
+    const m = markOf(id);
+    if (!m || markParentTaskId(m) !== scopeId) continue;
+    if (m.kind === "box") {
+      boxes.push(m);
+      continue;
+    }
+    const b = markBounds(m);
+    if (b) include(b.x, b.y, b.w, b.h);
+  }
+  if (!any || !boxes.length) return false;
+  const nx = snap(minX - GROUP_BOX_FIT_PAD);
+  const ny = snap(minY - GROUP_BOX_FIT_PAD);
+  const nw = snap(Math.max(40, maxX - minX + GROUP_BOX_FIT_PAD * 2));
+  const nh = snap(Math.max(40, maxY - minY + GROUP_BOX_FIT_PAD * 2));
+  const contentArea = Math.max(1, nw * nh);
+  let changed = false;
+  for (const m of boxes) {
+    const bw = Number(m.w) || 0;
+    const bh = Number(m.h) || 0;
+    const bx = Number(m.x);
+    const by = Number(m.y);
+    const area = Math.max(1, bw * bh);
+    const disjoint =
+      !Number.isFinite(bx) ||
+      !Number.isFinite(by) ||
+      bx + bw < minX - 48 ||
+      by + bh < minY - 48 ||
+      bx > maxX + 48 ||
+      by > maxY + 48;
+    const oversized = bw > nw * 1.35 || bh > nh * 1.35 || area > contentArea * 1.8;
+    if (!disjoint && !oversized) continue;
+    m.x = nx;
+    m.y = ny;
+    m.w = nw;
+    m.h = nh;
+    changed = true;
+  }
+  return changed;
+}
+function fitAllGroupBoxes(wf) {
+  wf = wf || S.wf;
+  if (!wf) return false;
+  let changed = false;
+  for (const g of wf.groups || []) {
+    if (fitGroupBoxesToMembers(g, wf)) changed = true;
+  }
+  return changed;
+}
 /* 同步所有组框的 DOM 位置（节点拖拽 / 缩放后调用） */
 function updateGroupFrames() {
   for (const g of S.wf.groups || []) {
@@ -15176,6 +15538,7 @@ function addMembersToGroup(gid, nodes, marks) {
   pushHistory();
   g.nodeIds.push(...addedN);
   g.markIds.push(...addedM);
+  fitGroupBoxesToMembers(g);
   renderCanvas();
   scheduleSave(true);
   renderStatus();
@@ -15312,6 +15675,7 @@ function promptGroupTitle(nodeIds, markIds) {
       markIds: markIds.slice(),
     });
     S.selGroup = S.wf.groups[S.wf.groups.length - 1].id;
+    fitGroupBoxesToMembers(S.wf.groups[S.wf.groups.length - 1]);
     S.sel = null;
     S.selWire = null;
     S.selSet.clear();
@@ -15717,25 +16081,20 @@ function renderSidebar() {
   const filterEl = $("#sideFilter");
   const f = filterEl ? filterEl.value.trim().toLowerCase() : "";
   tree.innerHTML = "";
-  if (!S.wf || !S.wf.nodes.length) {
+  const visMarks = visibleMarks();
+  const hasAny =
+    S.wf &&
+    ((S.wf.nodes && S.wf.nodes.length) || (S.wf.marks && S.wf.marks.length));
+  if (!S.wf || !hasAny) {
     const e = document.createElement("div");
     e.className = "side-empty";
-    e.textContent = I18n.t("暂无节点");
+    e.textContent = I18n.t("暂无节点或绘图");
     tree.appendChild(e);
     return;
   }
   let any = false;
-  for (const [cat, kinds] of SIDE_CATS) {
-    const items = S.wf.nodes.filter(
-      (n) =>
-        kinds.includes(n.kind) &&
-        (f ? true : nodeInCurrentScope(n)),
-    );
-    if (!items.length) continue;
-    const shown = f
-      ? items.filter((n) => (n.title || "").toLowerCase().includes(f))
-      : items;
-    if (!shown.length) continue;
+  const appendCat = (cat, totalCount, shown, makeRow) => {
+    if (!shown.length) return;
     any = true;
     const catEl = document.createElement("div");
     catEl.className = "side-cat";
@@ -15746,7 +16105,7 @@ function renderSidebar() {
       (collapsed ? "▸ " : "▾ ") +
       I18n.t(cat) +
       "（" +
-      items.length +
+      totalCount +
       "）" +
       (f ? " · " + shown.length : "");
     head.title = collapsed ? I18n.t("展开分类") : I18n.t("折叠分类");
@@ -15756,37 +16115,78 @@ function renderSidebar() {
     };
     catEl.appendChild(head);
     if (!collapsed) {
-      for (const n of shown) {
-        const it = document.createElement("div");
-        it.className = "side-item" + (isSel(n.id) ? " sel" : "");
-        it.title = I18n.t("画布居中定位到：") + (n.title || "");
-        const tag = document.createElement("span");
-        tag.className = "side-tag";
-        tag.textContent = I18n.t(KIND_TAGS[n.kind] || n.kind);
-        const t = document.createElement("span");
-        t.className = "t";
-        t.textContent = n.title || I18n.t("（未命名）");
-        it.appendChild(tag);
-        it.appendChild(t);
-        it.onclick = () => focusNode(n.id);
-        catEl.appendChild(it);
-      }
+      for (const item of shown) catEl.appendChild(makeRow(item));
     }
     tree.appendChild(catEl);
+  };
+  for (const [cat, kinds] of SIDE_CATS) {
+    const items = S.wf.nodes.filter(
+      (n) =>
+        kinds.includes(n.kind) &&
+        (f ? true : nodeInCurrentScope(n)),
+    );
+    if (!items.length) continue;
+    const shown = f
+      ? items.filter((n) => (n.title || "").toLowerCase().includes(f))
+      : items;
+    appendCat(cat, items.length, shown, (n) => {
+      const it = document.createElement("div");
+      it.className = "side-item" + (isSel(n.id) ? " sel" : "");
+      it.title = I18n.t("画布居中定位到：") + (n.title || "");
+      const tag = document.createElement("span");
+      tag.className = "side-tag";
+      tag.textContent = I18n.t(KIND_TAGS[n.kind] || n.kind);
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = n.title || I18n.t("（未命名）");
+      it.appendChild(tag);
+      it.appendChild(t);
+      it.onclick = () => focusNode(n.id);
+      return it;
+    });
   }
+  const markPool = f ? marksOf() : visMarks;
+  const markShown = markPool.filter((m) => {
+    if (!f && !markInCurrentScope(m)) return false;
+    if (!f) return true;
+    const title = markSidebarTitle(m).toLowerCase();
+    const kind = markKindLabel(m.kind).toLowerCase();
+    return (
+      title.includes(f) ||
+      kind.includes(f) ||
+      String(m.id || "").toLowerCase().includes(f)
+    );
+  });
+  appendCat("绘图", markPool.length, markShown, (m) => {
+    const selected =
+      S.selMark === m.id || (S.selMarkSet && S.selMarkSet.has(m.id));
+    const it = document.createElement("div");
+    it.className = "side-item" + (selected ? " sel" : "");
+    const label = markSidebarTitle(m);
+    it.title = I18n.t("画布居中定位到：") + label;
+    const tag = document.createElement("span");
+    tag.className = "side-tag";
+    tag.textContent = markKindLabel(m.kind);
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = label;
+    it.appendChild(tag);
+    it.appendChild(t);
+    it.onclick = () => focusMark(m.id);
+    return it;
+  });
   if (!any) {
     const e = document.createElement("div");
     e.className = "side-empty";
     if (currentTaskFocus() && !f) {
       e.textContent =
-        I18n.t("当前任务内部暂无节点") +
+        I18n.t("当前任务内部暂无节点或绘图") +
         " · " +
         I18n.t("可从右键菜单添加，或返回上层");
     } else {
-      e.textContent =
-        I18n.t("没有匹配「") +
-        (filterEl ? filterEl.value : "") +
-        I18n.t("」的节点");
+      e.textContent = I18n.t("没有匹配「{q}」的节点或绘图", {
+        q: filterEl ? filterEl.value : "",
+      });
     }
     tree.appendChild(e);
   }
@@ -15805,6 +16205,41 @@ function focusNode(id) {
   S.sel = id;
   S.selGroup = null;
   S.selWire = null;
+  S.selMark = null;
+  if (S.selMarkSet) S.selMarkSet.clear();
+  renderCanvas();
+  renderStatus();
+}
+
+function markSidebarTitle(m) {
+  if (!m) return I18n.t("（未命名）");
+  if (m.kind === "text") {
+    const t = String(m.text || "").replace(/\s+/g, " ").trim();
+    return t || I18n.t("说明文字");
+  }
+  if (m.kind === "box") return I18n.t("框体");
+  if (m.kind === "arrow") return I18n.t("箭头");
+  return markKindLabel(m.kind);
+}
+
+function focusMark(id) {
+  const m = markById(id);
+  if (!m) return;
+  const want = markParentTaskId(m);
+  if (want !== currentTaskFocus()) setTaskFocus(want, { render: false });
+  const b = markBounds(m) || { x: Number(m.x) || 0, y: Number(m.y) || 0, w: 40, h: 40 };
+  const vw = $("#canvas").clientWidth,
+    vh = $("#canvas").clientHeight;
+  S.cam.x = vw / 2 - (b.x + b.w / 2) * S.cam.z;
+  S.cam.y = vh / 2 - (b.y + b.h / 2) * S.cam.z;
+  const mset = ensureSelMarkSet();
+  mset.clear();
+  mset.add(id);
+  S.selMark = id;
+  S.sel = null;
+  if (S.selSet) S.selSet.clear();
+  S.selGroup = null;
+  S.selWire = null;
   renderCanvas();
   renderStatus();
 }
@@ -15816,6 +16251,11 @@ function bindCanvas() {
   canvas.addEventListener(
     "mousedown",
     (ev) => {
+      if (S._capturingCanvas) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
       if (ev.button === 1) {
         /* 中键：无论指针在节点 / 组 / 空白处都平移画布，且不改变当前选中 */
         ev.preventDefault();
@@ -15871,6 +16311,10 @@ function bindCanvas() {
   canvas.addEventListener(
     "wheel",
     (ev) => {
+      if (S._capturingCanvas) {
+        ev.preventDefault();
+        return;
+      }
       if (ev.target.closest(".wf-node")) return; // 节点内滚轮仅作用于节点内部滚动，不缩放画布
       ev.preventDefault();
       /* 以鼠标位置为中心缩放：缩放前后鼠标下的舞台坐标保持不变 */
@@ -16174,7 +16618,7 @@ function bindCanvas() {
         );
         const markSel = marksOf().filter((m) => {
           const b = markBounds(m);
-          return b.x <= x1 && b.x + b.w >= x0 && b.y <= y1 && b.y + b.h >= y0;
+          return b && b.x <= x1 && b.x + b.w >= x0 && b.y <= y1 && b.y + b.h >= y0;
         });
         S.selSet = new Set(sel.map((n) => n.id));
         S.sel = sel.length ? sel[sel.length - 1].id : null;
@@ -16665,9 +17109,29 @@ function appendCtxItem(parent, it) {
     for (const child of it.submenu) appendCtxItem(sub, child);
     const placeSub = () => {
       sub.classList.remove("open-left");
+      sub.style.top = "";
+      sub.style.bottom = "";
+      sub.style.maxHeight = "";
+      const prev = sub.style.display;
+      sub.style.display = "block";
+      const pad = 8;
       const fr = fly.getBoundingClientRect();
-      const sw = 140;
-      if (fr.right + sw > window.innerWidth - 8) sub.classList.add("open-left");
+      const sr0 = sub.getBoundingClientRect();
+      const sw = sr0.width || 200;
+      if (fr.right + 2 + sw > window.innerWidth - pad && fr.left - 2 - sw >= pad)
+        sub.classList.add("open-left");
+      const sh = sub.getBoundingClientRect().height || sr0.height;
+      const maxH = Math.max(80, window.innerHeight - pad * 2);
+      /* 二级菜单向上展开：底部与一级选项底边对齐；上方空间不够时贴顶并限制高度 */
+      if (sh > maxH || fr.bottom - sh < pad) {
+        sub.style.bottom = "auto";
+        sub.style.top = pad - fr.top + "px";
+        sub.style.maxHeight = maxH + "px";
+      } else {
+        sub.style.top = "auto";
+        sub.style.bottom = "0px";
+      }
+      sub.style.display = prev;
     };
     fly.addEventListener("mouseenter", placeSub);
     b.addEventListener("focus", placeSub);
@@ -20197,6 +20661,7 @@ function migrateWf(wf) {
   wf.groups = wf.groups.filter(
     (g) => (g.nodeIds && g.nodeIds.length) || (g.markIds && g.markIds.length),
   );
+  fitAllGroupBoxes(wf);
   return wf;
 }
 
@@ -22984,6 +23449,375 @@ function openAppPluginsDialog() {
   foot.appendChild(closeBtn);
 }
 
+/* ============ DSH 插件管理（近全屏独立对话框，避免撑爆设置栏） ============ */
+
+const DSH_PLUGINS_UI = {
+  list: [],
+  selectedKey: "",
+  query: "",
+  hintEl: null,
+  open: false,
+};
+
+function dshPluginHasCjk(s) {
+  return /[\u4e00-\u9fff]/.test(String(s || ""));
+}
+
+function dshPluginKey(p) {
+  return String((p && p.id) || "") + "\n" + String((p && p.name) || "");
+}
+
+function dshPluginShortName(pkg) {
+  const seg = String(pkg || "").split("/").pop();
+  return seg.startsWith("dsh-") ? seg.slice(4) : seg;
+}
+
+function dshPluginLabel(p) {
+  if (!p) return "";
+  return dshPluginShortName(
+    p.id && !String(p.id).startsWith("user-plugin") ? p.id : p.name,
+  );
+}
+
+function dshPluginCopyFor(p) {
+  const map =
+    typeof window.DSH_PLUGIN_COPY === "object" && window.DSH_PLUGIN_COPY
+      ? window.DSH_PLUGIN_COPY
+      : {};
+  return (p && (map[p.id] || map[p.name])) || null;
+}
+
+function enrichDshPluginCopy(p) {
+  if (!p) return p;
+  const zh = !(I18n && I18n.getLocale && I18n.getLocale() === "en");
+  const copy = dshPluginCopyFor(p);
+  let title = p.title || dshPluginLabel(p);
+  let description = String(p.description || "").trim();
+  let purpose = String(p.purpose || "").trim();
+  if (zh && copy) {
+    if (copy.title && !dshPluginHasCjk(title)) title = copy.title;
+    if (copy.description && (!description || !dshPluginHasCjk(description))) {
+      description = copy.description;
+    }
+    if (copy.purpose && (!purpose || !dshPluginHasCjk(purpose))) {
+      purpose = copy.purpose;
+    }
+  }
+  if (!purpose) {
+    const first = description.split(/[。.!?\n]/)[0].trim();
+    if (!zh) {
+      const base = first || ("Extends the agent runtime (" + (p.id || p.name || "") + ")");
+      purpose = /[.!?]$/.test(base) ? base : base + ".";
+    } else if (!first) {
+      purpose = I18n.t("用于扩展 Agent 运行时能力（{id}）。", {
+        id: p.id || p.name || "",
+      });
+    } else if (/^用于/.test(first)) {
+      purpose = /[。！？]$/.test(first) ? first : first + "。";
+    } else {
+      purpose = "用于" + first + (/[。！？]$/.test(first) ? "" : "。");
+    }
+  }
+  return Object.assign({}, p, { title, description, purpose });
+}
+
+function ensureDshPluginsDlg() {
+  let host = document.getElementById("dshPluginsDlg");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "dshPluginsDlg";
+  host.className = "mt-dialog dsh-plugins-dlg";
+  host.tabIndex = -1;
+  host.innerHTML =
+    '<div class="mt-dialog-box dsh-plugins-box" role="dialog" aria-modal="true">' +
+    '<div class="dsh-plugins-head">' +
+    '<b id="dshPluginsTitle"></b>' +
+    '<input id="dshPluginsSearch" class="dsh-plugin-search" type="text">' +
+    '<button type="button" class="mini node-guide-x" id="dshPluginsClose">✕</button>' +
+    "</div>" +
+    '<div class="dsh-plugins-main">' +
+    '<div class="dsh-plugins-grid" id="dshPluginsGrid"></div>' +
+    '<div class="dsh-plugins-info" id="dshPluginsInfo"></div>' +
+    "</div></div>";
+  document.body.appendChild(host);
+  host.querySelector("#dshPluginsClose").onclick = () => closeDshPluginsDialog();
+  host.addEventListener("click", (ev) => {
+    if (ev.target === host) closeDshPluginsDialog();
+  });
+  host.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    const mt = document.getElementById("mtDialog");
+    if (mt && mt.classList.contains("on")) return;
+    ev.preventDefault();
+    closeDshPluginsDialog();
+  });
+  host.querySelector("#dshPluginsSearch").addEventListener("input", () => {
+    DSH_PLUGINS_UI.query = host.querySelector("#dshPluginsSearch").value || "";
+    renderDshPluginsDialog();
+  });
+  return host;
+}
+
+function closeDshPluginsDialog() {
+  const host = document.getElementById("dshPluginsDlg");
+  if (host) host.classList.remove("on");
+  DSH_PLUGINS_UI.open = false;
+}
+
+function paintDshPluginsChrome() {
+  const host = ensureDshPluginsDlg();
+  const title = host.querySelector("#dshPluginsTitle");
+  const search = host.querySelector("#dshPluginsSearch");
+  const closeBtn = host.querySelector("#dshPluginsClose");
+  if (title) title.textContent = I18n.t("管理 DSH 插件");
+  if (search)
+    search.placeholder = I18n.t("筛选 DSH 插件（按包名 / 行 id / 描述）…");
+  if (closeBtn) closeBtn.title = I18n.t("关闭");
+}
+
+function renderDshPluginInfo(p) {
+  const info = document.getElementById("dshPluginsInfo");
+  if (!info) return;
+  info.innerHTML = "";
+  if (!p) {
+    const em = document.createElement("div");
+    em.className = "dsh-plugin-empty";
+    em.textContent = I18n.t("选择左侧插件查看说明");
+    info.appendChild(em);
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "dsh-plugin-info-head";
+  const title = document.createElement("div");
+  title.className = "dsh-plugin-info-title";
+  title.textContent = p.title || dshPluginLabel(p);
+  head.appendChild(title);
+  const tags = document.createElement("div");
+  tags.className = "dsh-plugin-info-tags";
+  const tag = document.createElement("span");
+  tag.className =
+    "dsh-plugin-tag " + (p.core ? "builtin" : p.disabled ? "off" : "on");
+  tag.textContent = p.core
+    ? I18n.t("核心")
+    : p.disabled
+      ? I18n.t("未挂载")
+      : I18n.t("已挂载");
+  tags.appendChild(tag);
+  if (p.version) {
+    const ver = document.createElement("span");
+    ver.className = "dsh-plugin-info-ver";
+    ver.textContent = "v" + p.version;
+    tags.appendChild(ver);
+  }
+  head.appendChild(tags);
+  info.appendChild(head);
+  const full = document.createElement("div");
+  full.className = "dsh-plugin-full";
+  full.textContent = p.name;
+  info.appendChild(full);
+  const addField = (label, text) => {
+    if (!text) return;
+    const lab = document.createElement("div");
+    lab.className = "dsh-plugin-info-label";
+    lab.textContent = label;
+    const body = document.createElement("div");
+    body.className = "dsh-plugin-info-text";
+    body.textContent = text;
+    info.appendChild(lab);
+    info.appendChild(body);
+  };
+  addField(I18n.t("描述"), p.description);
+  addField(I18n.t("用途"), p.purpose);
+  if (!p.description && !p.purpose) {
+    const em = document.createElement("div");
+    em.className = "dsh-plugin-empty";
+    em.textContent = I18n.t("暂无描述");
+    info.appendChild(em);
+  }
+  if (p.toggleable) {
+    const btns = document.createElement("div");
+    btns.className = "dsh-plugin-btns";
+    const tg = document.createElement("button");
+    tg.className = "mini";
+    tg.textContent = p.disabled ? I18n.t("挂载") : I18n.t("取消挂载");
+    tg.onclick = async (ev) => {
+      ev.stopPropagation();
+      try {
+        const rr = await window.api.dshPluginSetEnabled(p.name, !!p.disabled, p.id);
+        if (rr && rr.ok === false) throw new Error(rr.error);
+        toast((p.disabled ? I18n.t("已挂载 ") : I18n.t("已取消挂载 ")) + p.name, "ok");
+      } catch (e) {
+        toast(I18n.t("操作失败：") + (e.message || String(e)), "err");
+      }
+      await refreshDshPluginInventory();
+    };
+    btns.appendChild(tg);
+    if (p.removable) {
+      const rm = document.createElement("button");
+      rm.className = "mini";
+      rm.textContent = I18n.t("移除");
+      rm.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (
+          !(await confirmDialog(
+            I18n.t("移除 DSH 插件 ") + p.name + I18n.t("？引擎将自动重启。"),
+            { title: I18n.t("移除插件"), danger: true, okText: I18n.t("移除") },
+          ))
+        )
+          return;
+        try {
+          const rr = await window.api.dshPluginRemove(p.name);
+          if (rr && rr.ok === false) throw new Error(rr.error);
+          toast(I18n.t("已移除 ") + p.name, "ok");
+        } catch (e) {
+          toast(I18n.t("移除失败：") + (e.message || String(e)), "err");
+        }
+        await refreshDshPluginInventory();
+      };
+      btns.appendChild(rm);
+    }
+    info.appendChild(btns);
+  }
+  if (p.detail) {
+    const det = document.createElement("details");
+    det.className = "dsh-plugin-yaml";
+    const sum = document.createElement("summary");
+    sum.textContent = I18n.t("配置片段");
+    det.appendChild(sum);
+    const pre = document.createElement("pre");
+    pre.className = "dsh-plugin-detail";
+    pre.textContent = p.detail;
+    det.appendChild(pre);
+    info.appendChild(det);
+  }
+}
+
+function renderDshPluginsDialog() {
+  const grid = document.getElementById("dshPluginsGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  const q = String(DSH_PLUGINS_UI.query || "").trim().toLowerCase();
+  const hay = (p) =>
+    [p.name, p.id, p.title, p.description, p.purpose]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+  const list = DSH_PLUGINS_UI.list.filter((p) => !q || hay(p).includes(q));
+  if (!list.length) {
+    const em = document.createElement("div");
+    em.className = "dsh-plugin-empty";
+    em.textContent = q
+      ? I18n.t("无匹配 DSH 插件")
+      : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
+    grid.appendChild(em);
+    renderDshPluginInfo(null);
+    return;
+  }
+  const selected =
+    list.find((p) => dshPluginKey(p) === DSH_PLUGINS_UI.selectedKey) || list[0];
+  DSH_PLUGINS_UI.selectedKey = dshPluginKey(selected);
+  for (const p of list) {
+    const on = dshPluginKey(p) === DSH_PLUGINS_UI.selectedKey;
+    const card = document.createElement("div");
+    card.className =
+      "dsh-plugin-card" + (p.disabled ? " off" : "") + (on ? " sel" : "");
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    const row = document.createElement("div");
+    row.className = "dsh-plugin-card-row";
+    const dot = document.createElement("span");
+    dot.className = "dsh-plugin-dot" + (p.disabled ? "" : " on");
+    dot.title = p.disabled ? I18n.t("未挂载") : I18n.t("已挂载");
+    const nm = document.createElement("span");
+    nm.className = "dsh-plugin-name";
+    nm.textContent = p.title || dshPluginLabel(p);
+    nm.title = p.name;
+    const tag = document.createElement("span");
+    tag.className =
+      "dsh-plugin-tag " + (p.core ? "builtin" : p.disabled ? "off" : "on");
+    tag.textContent = p.core
+      ? I18n.t("核心")
+      : p.disabled
+        ? I18n.t("未挂载")
+        : I18n.t("已挂载");
+    row.appendChild(dot);
+    row.appendChild(nm);
+    row.appendChild(tag);
+    card.appendChild(row);
+    const pick = () => {
+      DSH_PLUGINS_UI.selectedKey = dshPluginKey(p);
+      renderDshPluginsDialog();
+    };
+    card.onclick = pick;
+    card.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        pick();
+      }
+    };
+    grid.appendChild(card);
+  }
+  renderDshPluginInfo(selected);
+}
+
+async function refreshDshPluginInventory(attempt) {
+  attempt = attempt || 0;
+  let r = null;
+  try {
+    r = await window.api.dshPluginList();
+  } catch (e) {
+    r = { ok: false, error: e.message || String(e) };
+  }
+  const hint = DSH_PLUGINS_UI.hintEl;
+  if (!r || r.ok === false || !Array.isArray(r.plugins)) {
+    if (attempt < 2) {
+      setTimeout(() => refreshDshPluginInventory(attempt + 1), 1500);
+      return r;
+    }
+    DSH_PLUGINS_UI.list = [];
+    if (hint) {
+      hint.textContent =
+        I18n.t("DSH 插件列表不可用（") +
+        ((r && r.error) || I18n.t("引擎未连接")) +
+        I18n.t("）· 重新打开设置重试");
+    }
+    if (DSH_PLUGINS_UI.open) renderDshPluginsDialog();
+    return r;
+  }
+  DSH_PLUGINS_UI.list = r.plugins.map(enrichDshPluginCopy);
+  const n = DSH_PLUGINS_UI.list.length;
+  const m = DSH_PLUGINS_UI.list.filter((p) => !p.disabled).length;
+  if (hint) {
+    hint.textContent = n
+      ? I18n.t("已安装 {n} 个插件（已挂载 {m}）", { n: n, m: m })
+      : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
+  }
+  if (DSH_PLUGINS_UI.open) renderDshPluginsDialog();
+  return r;
+}
+
+async function openDshPluginsDialog() {
+  const host = ensureDshPluginsDlg();
+  paintDshPluginsChrome();
+  const search = host.querySelector("#dshPluginsSearch");
+  if (search) search.value = DSH_PLUGINS_UI.query || "";
+  DSH_PLUGINS_UI.open = true;
+  host.classList.add("on");
+  try {
+    host.focus();
+  } catch (_) {}
+  if (!DSH_PLUGINS_UI.list.length) {
+    const grid = document.getElementById("dshPluginsGrid");
+    if (grid) {
+      grid.innerHTML =
+        '<div class="dsh-plugin-empty">' + I18n.t("（读取中…）") + "</div>";
+    }
+    await refreshDshPluginInventory();
+  } else {
+    renderDshPluginsDialog();
+  }
+}
+
 /* ============ 设置（APIs/Config） ============ */
 
 function openSettings() {
@@ -23397,242 +24231,29 @@ function openSettings() {
     storeBtn.className = "mini";
     storeBtn.textContent = I18n.t("🌐 在线浏览");
     storeBtn.title = I18n.t("在线浏览:线上目录(插件 / 技能 / MCP),可安装与卸载");
-    storeBtn.onclick = openStoreDialog;
+    storeBtn.onclick = () => {
+      closeDshPluginsDialog();
+      openStoreDialog();
+    };
     plRow.appendChild(plInp);
     plRow.appendChild(plAdd);
     plRow.appendChild(storeBtn);
     plTitle.appendChild(plRow);
     sec.appendChild(plTitle);
-    const plFold = document.createElement("details");
-    plFold.className = "dsh-plugin-fold";
-    const plFoldSum = document.createElement("summary");
-    plFoldSum.textContent = I18n.t("已安装 DSH 插件（点击展开查看 / 管理）");
-    plFold.appendChild(plFoldSum);
-    const plSearch = document.createElement("input");
-    plSearch.type = "text";
-    plSearch.className = "dsh-plugin-search";
-    plSearch.placeholder = I18n.t("筛选 DSH 插件（按包名 / 行 id / 描述）…");
-    plFold.appendChild(plSearch);
-    const plBrowse = document.createElement("div");
-    plBrowse.className = "dsh-plugin-browse";
-    const plGrid = document.createElement("div");
-    plGrid.className = "dsh-plugin-grid";
-    const plInfo = document.createElement("div");
-    plInfo.className = "dsh-plugin-info";
-    plBrowse.appendChild(plGrid);
-    plBrowse.appendChild(plInfo);
-    plFold.appendChild(plBrowse);
-    sec.appendChild(plFold);
-
-    const shortName = (pkg) => {
-      const seg = String(pkg).split("/").pop();
-      return seg.startsWith("dsh-") ? seg.slice(4) : seg;
-    };
-    const pluginKey = (p) => String(p.id || "") + "\n" + String(p.name || "");
-    const pluginLabel = (p) =>
-      shortName(p.id && !String(p.id).startsWith("user-plugin") ? p.id : p.name);
-    let allPlugins = [];
-    let selectedPluginKey = "";
-    const renderPluginInfo = (p) => {
-      plInfo.innerHTML = "";
-      if (!p) {
-        const em = document.createElement("div");
-        em.className = "dsh-plugin-empty";
-        em.textContent = I18n.t("选择左侧插件查看说明");
-        plInfo.appendChild(em);
-        return;
-      }
-      const head = document.createElement("div");
-      head.className = "dsh-plugin-info-head";
-      const title = document.createElement("div");
-      title.className = "dsh-plugin-info-title";
-      title.textContent = p.title || pluginLabel(p);
-      head.appendChild(title);
-      const tags = document.createElement("div");
-      tags.className = "dsh-plugin-info-tags";
-      const tag = document.createElement("span");
-      tag.className =
-        "dsh-plugin-tag " +
-        (p.core ? "builtin" : p.disabled ? "off" : "on");
-      tag.textContent = p.core
-        ? I18n.t("核心")
-        : p.disabled
-          ? I18n.t("未挂载")
-          : I18n.t("已挂载");
-      tags.appendChild(tag);
-      if (p.version) {
-        const ver = document.createElement("span");
-        ver.className = "dsh-plugin-info-ver";
-        ver.textContent = "v" + p.version;
-        tags.appendChild(ver);
-      }
-      head.appendChild(tags);
-      plInfo.appendChild(head);
-      const full = document.createElement("div");
-      full.className = "dsh-plugin-full";
-      full.textContent = p.name;
-      plInfo.appendChild(full);
-      const addField = (label, text) => {
-        if (!text) return;
-        const lab = document.createElement("div");
-        lab.className = "dsh-plugin-info-label";
-        lab.textContent = label;
-        const body = document.createElement("div");
-        body.className = "dsh-plugin-info-text";
-        body.textContent = text;
-        plInfo.appendChild(lab);
-        plInfo.appendChild(body);
-      };
-      addField(I18n.t("描述"), p.description);
-      addField(I18n.t("用途"), p.purpose);
-      if (!p.description && !p.purpose) {
-        const em = document.createElement("div");
-        em.className = "dsh-plugin-empty";
-        em.textContent = I18n.t("暂无描述");
-        plInfo.appendChild(em);
-      }
-      if (p.toggleable) {
-        const btns = document.createElement("div");
-        btns.className = "dsh-plugin-btns";
-        const tg = document.createElement("button");
-        tg.className = "mini";
-        tg.textContent = p.disabled ? I18n.t("挂载") : I18n.t("取消挂载");
-        tg.onclick = async (ev) => {
-          ev.stopPropagation();
-          try {
-            const rr = await window.api.dshPluginSetEnabled(p.name, !!p.disabled, p.id);
-            if (rr && rr.ok === false) throw new Error(rr.error);
-            toast((p.disabled ? I18n.t("已挂载 ") : I18n.t("已取消挂载 ")) + p.name, "ok");
-          } catch (e) {
-            toast(I18n.t("操作失败：") + (e.message || String(e)), "err");
-          }
-          refreshPlugins();
-          refreshStatus();
-        };
-        btns.appendChild(tg);
-        if (p.removable) {
-          const rm = document.createElement("button");
-          rm.className = "mini";
-          rm.textContent = I18n.t("移除");
-          rm.onclick = async (ev) => {
-            ev.stopPropagation();
-            if (!(await confirmDialog(I18n.t("移除 DSH 插件 ") + p.name + I18n.t("？引擎将自动重启。"), { title: I18n.t("移除插件"), danger: true, okText: I18n.t("移除") }))) return;
-            try {
-              const rr = await window.api.dshPluginRemove(p.name);
-              if (rr && rr.ok === false) throw new Error(rr.error);
-              toast(I18n.t("已移除 ") + p.name, "ok");
-            } catch (e) {
-              toast(I18n.t("移除失败：") + (e.message || String(e)), "err");
-            }
-            refreshPlugins();
-            refreshStatus();
-          };
-          btns.appendChild(rm);
-        }
-        plInfo.appendChild(btns);
-      }
-      if (p.detail) {
-        const det = document.createElement("details");
-        det.className = "dsh-plugin-yaml";
-        const sum = document.createElement("summary");
-        sum.textContent = I18n.t("配置片段");
-        det.appendChild(sum);
-        const pre = document.createElement("pre");
-        pre.className = "dsh-plugin-detail";
-        pre.textContent = p.detail;
-        det.appendChild(pre);
-        plInfo.appendChild(det);
-      }
-    };
-    const renderPluginCards = () => {
-      plGrid.innerHTML = "";
-      const q = plSearch.value.trim().toLowerCase();
-      const hay = (p) =>
-        [p.name, p.id, p.title, p.description, p.purpose]
-          .filter(Boolean)
-          .join("\n")
-          .toLowerCase();
-      const list = allPlugins.filter((p) => !q || hay(p).includes(q));
-      if (!list.length) {
-        const em = document.createElement("div");
-        em.className = "dsh-plugin-empty";
-        em.textContent = q ? I18n.t("无匹配 DSH 插件") : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
-        plGrid.appendChild(em);
-        renderPluginInfo(null);
-        return;
-      }
-      const selected = list.find((p) => pluginKey(p) === selectedPluginKey) || list[0];
-      selectedPluginKey = pluginKey(selected);
-      for (const p of list) {
-        const on = pluginKey(p) === selectedPluginKey;
-        const card = document.createElement("div");
-        card.className = "dsh-plugin-card" + (p.disabled ? " off" : "") + (on ? " sel" : "");
-        card.setAttribute("role", "button");
-        card.tabIndex = 0;
-        const row = document.createElement("div");
-        row.className = "dsh-plugin-card-row";
-        const dot = document.createElement("span");
-        dot.className = "dsh-plugin-dot" + (p.disabled ? "" : " on");
-        dot.title = p.disabled ? I18n.t("未挂载") : I18n.t("已挂载");
-        const nm = document.createElement("span");
-        nm.className = "dsh-plugin-name";
-        nm.textContent = pluginLabel(p);
-        nm.title = p.name;
-        const tag = document.createElement("span");
-        tag.className =
-          "dsh-plugin-tag " +
-          (p.core ? "builtin" : p.disabled ? "off" : "on");
-        tag.textContent = p.core
-          ? I18n.t("核心")
-          : p.disabled
-            ? I18n.t("未挂载")
-            : I18n.t("已挂载");
-        row.appendChild(dot);
-        row.appendChild(nm);
-        row.appendChild(tag);
-        card.appendChild(row);
-        const pick = () => {
-          selectedPluginKey = pluginKey(p);
-          renderPluginCards();
-        };
-        card.onclick = pick;
-        card.onkeydown = (ev) => {
-          if (ev.key === "Enter" || ev.key === " ") {
-            ev.preventDefault();
-            pick();
-          }
-        };
-        plGrid.appendChild(card);
-      }
-      renderPluginInfo(selected);
-    };
-    plSearch.addEventListener("input", renderPluginCards);
-    const refreshPlugins = async (attempt) => {
-      attempt = attempt || 0;
-      let r = null;
-      try {
-        r = await window.api.dshPluginList();
-      } catch (e) {
-        r = { ok: false, error: e.message || String(e) };
-      }
-      if (!r || r.ok === false || !Array.isArray(r.plugins)) {
-        if (attempt < 2) {
-          setTimeout(() => refreshPlugins(attempt + 1), 1500);
-          return;
-        }
-        allPlugins = [];
-        renderPluginCards();
-        plBrowse.insertAdjacentHTML(
-          "beforebegin",
-          I18n.t('<div class="dsh-plugin-empty">DSH 插件列表不可用（') +
-            ((r && r.error) || I18n.t("引擎未连接")) +
-            I18n.t("）· 重新打开设置重试</div>"),
-        );
-        return;
-      }
-      allPlugins = r.plugins;
-      renderPluginCards();
-    };
+    const plHintRow = document.createElement("div");
+    plHintRow.className = "dsh-plugin-manage-row";
+    const plHint = document.createElement("div");
+    plHint.className = "dsh-plugin-empty";
+    plHint.textContent = I18n.t("（读取中…）");
+    const plManage = document.createElement("button");
+    plManage.className = "mini primary";
+    plManage.textContent = I18n.t("管理已装插件…");
+    plManage.onclick = () => openDshPluginsDialog();
+    plHintRow.appendChild(plHint);
+    plHintRow.appendChild(plManage);
+    sec.appendChild(plHintRow);
+    DSH_PLUGINS_UI.hintEl = plHint;
+    const refreshPlugins = () => refreshDshPluginInventory();
 
     /* ── 技能 Skills(文件系统技能,$DSH_HOME/skills,安装后智能节点可直接调用) ── */
     const skTitleRow = document.createElement("div");
@@ -23888,7 +24509,7 @@ function openSettings() {
       const pkg = plInp.value.trim();
       if (!pkg) return;
       plInp.value = "";
-      plGrid.innerHTML = I18n.t('<div class="dsh-plugin-empty">安装中（需要联网，可能需要几分钟）…</div>');
+      plHint.textContent = I18n.t("安装中（需要联网，可能需要几分钟）…");
       try {
         const rr = await window.api.dshPluginAdd(pkg);
         if (rr && rr.ok === false) throw new Error(rr.error);
@@ -26960,6 +27581,8 @@ async function init() {
   $("#btnUndo").onclick = undo;
   $("#btnRedo").onclick = redo;
   $("#btnFit").onclick = fitCanvas;
+  const btnCanvasShot = $("#btnCanvasShot");
+  if (btnCanvasShot) btnCanvasShot.onclick = () => exportCanvasOverviewPng();
   $("#btnBox").onclick = () => {
     S.boxMode = !S.boxMode;
     const b = $("#btnBox");

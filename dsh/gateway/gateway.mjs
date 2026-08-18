@@ -797,13 +797,11 @@ function readRows() {
    平台条件行(disabled: !!js)即使列入此处也不允许手动切换。 */
 const OPTIONAL_RUNTIME_IDS = new Set([
   'llm-pi-ai',
-  'skill-badge',
   'web', 'web-search-deepseek', 'tool-web',
   'subagent', 'subagent-spawn-in-process', 'subagent-fork-in-process',
   'tool-subagent-control', 'tool-subagent-list-agents',
   'tool-subagent', 'tool-subagent-fork', 'tool-subagent-report',
-  'workflow-worker-thread', 'tool-workflow',
-  'tool-ralph', 'tool-todo', 'tool-goal',
+  'tool-todo', 'tool-goal',
   'token-meter', 'compaction-basic', 'command-compact', 'tool-result-pruner',
   'plan-mode', 'commands', 'command-feedback', 'command-goal',
   'goal', 'goal-round-driver',
@@ -1148,7 +1146,7 @@ async function handlePluginAdd(pkg) {
       ok: true,
       restarted: false,
       plugins: listPlugins(),
-      message: 'dsh-routing-suite 已内置：请在插件列表中挂载/取消挂载注入器与路由预设',
+      message: 'dsh-routing-suite 仅内置 router-standard；注入器与 router-spec 已从本应用移除。请在插件列表中挂载/取消挂载路由预设',
     }
   }
   if (spec.kind === 'bundled') {

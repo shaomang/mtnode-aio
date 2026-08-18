@@ -528,6 +528,41 @@ ipcMain.handle("file:writeText", (e, { path: p, content }) => {
   fs.writeFileSync(p, content, "utf8");
   return { ok: true };
 });
+ipcMain.handle("file:writeBytes", (e, { path: p, data }) => {
+  const dest = String(p || "");
+  if (!dest) return { ok: false, error: I18n.t("未选择") };
+  mk(path.dirname(dest));
+  let buf;
+  if (Buffer.isBuffer(data)) buf = data;
+  else if (data instanceof ArrayBuffer) buf = Buffer.from(data);
+  else if (ArrayBuffer.isView(data)) {
+    buf = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  } else if (data && Array.isArray(data.data)) {
+    buf = Buffer.from(data.data);
+  } else {
+    buf = Buffer.from(data || []);
+  }
+  fs.writeFileSync(dest, buf);
+  return { ok: true };
+});
+ipcMain.handle("view:captureRect", async (e, rect) => {
+  const w = win();
+  if (!w || w.isDestroyed()) return { ok: false, error: I18n.t("未知错误") };
+  const x = Math.round(Number(rect && rect.x) || 0);
+  const y = Math.round(Number(rect && rect.y) || 0);
+  const width = Math.max(1, Math.round(Number(rect && rect.width) || 0));
+  const height = Math.max(1, Math.round(Number(rect && rect.height) || 0));
+  try {
+    const image = await w.webContents.capturePage({ x, y, width, height });
+    const size = image.getSize();
+    if (!size || !size.width || !size.height) {
+      return { ok: false, error: I18n.t("生成总览图失败：") + "empty" };
+    }
+    return { ok: true, dataUrl: image.toDataURL() };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
 ipcMain.handle("file:copyAssetTo", (e, { assetPath, destPath }) => {
   mk(path.dirname(destPath));
   fs.copyFileSync(assetPath, destPath);

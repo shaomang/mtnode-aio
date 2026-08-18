@@ -193,10 +193,6 @@
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
 
-- id: skill-badge
-  name: '@deepseek-ai/dsh-skill-badge'
-  disabled: true
-
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
 
@@ -266,14 +262,6 @@
 - id: tool-subagent-report
   name: '@deepseek-ai/dsh-tool-subagent-report'
 
-- id: workflow-worker-thread
-  name: '@deepseek-ai/dsh-workflow-worker-thread'
-  config:
-    provider: spawn
-
-- id: tool-workflow
-  name: '@deepseek-ai/dsh-tool-workflow'
-
 - id: timeout-policy
   name: '@deepseek-ai/dsh-tool-call-timeout-policy'
 
@@ -302,12 +290,6 @@
 
 - id: tool-goal
   name: '@deepseek-ai/dsh-tool-goal'
-
-- id: tool-ralph
-  name: '@deepseek-ai/dsh-tool-ralph'
-  config:
-    subagentProvider: spawn
-    maxRounds: 64
 
 - id: tool-str-replace-editor
   name: '@deepseek-ai/dsh-tool-str-replace-editor'
@@ -412,21 +394,10 @@
     thinking: enabled
 
 # ── user plugins (managed from MTNode settings) ──
-# Bundled optional suite (https://github.com/yjh051108/dsh-routing-suite):
-# mount / unmount from Settings → DSH plugins. Core runtime rows above cannot
-# be unmounted. router-standard is on; router-spec stays off (mutex).
+# Bundled optional router (from dsh-routing-suite). Core runtime rows above
+# cannot be unmounted. router-standard is host-safe (keeps MTNode persona +
+# canvas tools). Injector and router-spec are not shipped.
 
-# ESM cannot import a directory; point at the package main file.
-- id: dsh-super-injector
-  name: './plugins/dsh-super-injector/lib/index.js'
-  config: {}
-
-# Router presets: standard is host-safe (keeps MTNode persona + canvas tools).
-# Spec conflicts with standard — leave it unmounted unless you want spec mode.
 - id: dsh-router-standard
   name: './plugins/router-standard/router-bootstrap.mjs'
-
-- id: dsh-router-spec
-  name: './plugins/router-spec/router-bootstrap.mjs'
-  disabled: true
 

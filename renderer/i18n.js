@@ -817,6 +817,14 @@
     "配置片段": "Config snippet",
     "未挂载": "Unmounted",
     "已挂载": "Mounted",
+    "管理已装插件…": "Manage installed plugins…",
+    "管理 DSH 插件": "Manage DSH plugins",
+    "已安装 {n} 个插件（已挂载 {m}）": "Installed {n} plugins ({m} mounted)",
+    "用于扩展 Agent 运行时能力（{id}）。":
+      "Extends the agent runtime ({id}).",
+    "安装中（需要联网，可能需要几分钟）…":
+      "Installing (needs network; may take a few minutes)…",
+    "DSH 插件列表不可用（": "DSH plugin list unavailable (",
     "无匹配 DSH 插件": "No matching DSH plugins",
     "暂无 DSH 插件（在上方输入 npm 包名安装）":
       "No DSH plugins yet (enter an npm package name above to install)",
@@ -875,6 +883,11 @@
     "← 返回": "← Back",
     "进入任务：": "Enter task: ",
     "当前任务内部暂无节点": "No nodes inside this task yet",
+    "当前任务内部暂无节点或绘图": "No nodes or drawings inside this task yet",
+    "暂无节点或绘图": "No nodes or drawings yet",
+    "没有匹配「{q}」的节点或绘图": "No nodes or drawings matching \"{q}\"",
+    "筛选节点或绘图…": "Filter nodes or drawings…",
+    "节点与绘图列表边栏": "Node and drawing list sidebar",
     "可从右键菜单添加，或返回上层": "Add via right-click, or go back up",
     "任务状态": "Task status",
     "待办": "Pending",
@@ -1008,7 +1021,16 @@
     "筛选目录…": "Filter topics…",
     "问手册…（Enter 发送，Shift+Enter 换行）":
       "Ask the manual… (Enter send, Shift+Enter newline)",
-    "找不到该文档": "Document not found",
+    "生成当前画布的高清总览图": "Export a high-resolution overview of this canvas",
+    "生成高清总览图": "High-res canvas overview",
+    "将导出当前画布全部节点、连线与标注的高清总览图。生成时画面会短暂移动，完成后恢复你的视角。是否继续？":
+      "Export a high-resolution overview of every node, wire, and mark on this canvas. The view will pan briefly and then restore. Continue?",
+    "正在生成高清总览图…": "Generating high-res overview…",
+    "正在生成高清总览图 {cur}/{total}…": "Generating high-res overview {cur}/{total}…",
+    "已保存总览图：": "Overview saved: ",
+    "生成总览图失败：": "Failed to generate overview: ",
+    "当前没有可导出的画布内容": "Nothing on the canvas to export",
+    "请先切换到工作流画布": "Switch to the workflow canvas first",
     "可以问「闸门为什么不放行」「如何配置 API Key」等。回答只依据左侧手册。":
       "Try “Why won’t the gate open?” or “How do I set an API Key?”. Answers use the left-hand manual only.",
   });

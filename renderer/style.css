@@ -458,6 +458,18 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
   font-size:11px; letter-spacing:1px; color:var(--muted); font-family:var(--mono);
   flex-wrap:wrap;
 }
+.sb-cam{
+  flex:none; width:22px; height:22px; padding:0; margin-right:-6px;
+  display:inline-flex; align-items:center; justify-content:center;
+  background:transparent; border:1px solid transparent; border-radius:3px;
+  color:var(--muted); cursor:pointer;
+}
+.sb-cam:hover{color:var(--cyan2); border-color:var(--bd2); background:rgba(56,214,255,.08)}
+.sb-cam:disabled{opacity:.45; cursor:wait}
+.fn-canvas.is-snapshot .n-out-resize,
+.fn-canvas.is-snapshot .wg-resize,
+.fn-canvas.is-snapshot .wg-del,
+.fn-canvas.is-snapshot .box-sel{visibility:hidden !important}
 .statusbar .spacer{flex:1}
 .statusbar .ok{color:var(--green)}
 .statusbar .warn{color:var(--orange)}
@@ -1139,10 +1151,11 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 }
 .fn-ctx .ctx-fly-btn .ctx-caret{color:var(--muted); font-size:10px; flex:none; margin-left:auto}
 .fn-ctx .ctx-sub{
-  display:none; position:absolute; left:calc(100% + 2px); top:-3px; z-index:2;
+  display:none; position:absolute; left:calc(100% + 2px); top:auto; bottom:0; z-index:2;
   min-width:200px; padding:3px;
   background:var(--panel2); border:1px solid var(--bd2); border-radius:4px;
   box-shadow:0 6px 18px rgba(0,0,0,.5);
+  overflow-y:auto; overscroll-behavior:contain;
 }
 .fn-ctx .ctx-sub.open-left{left:auto; right:calc(100% + 2px)}
 .fn-ctx .ctx-fly:hover > .ctx-sub,
@@ -1854,11 +1867,47 @@ button.mini.btn-sq.tpl-ico{
 .dsh-plugin-builtin summary:hover{color:var(--cyan2)}
 .dsh-plugin-builtin>div{padding:6px 8px; font-size:10px; line-height:1.7; word-break:break-all; opacity:.85}
 
-/* ── 插件清单(左列表 + 右侧描述/用途) ── */
+.dsh-plugin-manage-row{
+  display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+}
+.dsh-plugin-manage-row .dsh-plugin-empty{flex:1; min-width:0}
+
+/* ── 近全屏 DSH 插件对话框 ── */
+.dsh-plugins-dlg{z-index:2350; padding:10px}
+.dsh-plugins-dlg .mt-dialog-box.dsh-plugins-box{
+  width:min(96vw,1400px); height:min(94vh,920px); max-height:94vh;
+  display:flex; flex-direction:column; min-height:0;
+}
+.dsh-plugins-head{
+  display:flex; align-items:center; gap:10px;
+  padding:8px 12px; border-bottom:2px solid var(--bd); flex:none;
+}
+.dsh-plugins-head b{color:var(--orange2); font-weight:800; letter-spacing:1px; font-size:13px; flex:none}
+.dsh-plugins-head .dsh-plugin-search{flex:1; min-width:160px; margin:0}
+.dsh-plugins-main{
+  flex:1; min-height:0; display:grid;
+  grid-template-columns:minmax(280px, 46%) minmax(0, 1fr);
+}
+.dsh-plugins-grid{
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 1fr));
+  gap:6px; overflow:auto; padding:10px; align-content:start; min-height:0;
+}
+.dsh-plugins-grid .dsh-plugin-name{font-family:inherit; font-size:11px}
+.dsh-plugins-info{
+  min-width:0; min-height:0; overflow:auto;
+  border-left:2px solid var(--bd); padding:14px 16px;
+  display:flex; flex-direction:column; gap:8px;
+  background:rgba(0,0,0,.18);
+}
+@media (max-width:720px){
+  .dsh-plugins-main{grid-template-columns:1fr; grid-template-rows:minmax(180px, 38%) minmax(0, 1fr)}
+  .dsh-plugins-info{border-left:none; border-top:2px solid var(--bd)}
+}
+
+/* ── 插件清单卡片 / 右侧说明 ── */
 .dsh-plugin-search{
   width:100%; background:var(--code); color:var(--ink); border:1px solid var(--bd2);
   border-radius:3px; padding:5px 8px; font-size:11.5px; outline:none; box-sizing:border-box;
-  margin-bottom:6px;
 }
 .dsh-plugin-search:focus{border-color:var(--cyan)}
 .dsh-plugin-browse{
