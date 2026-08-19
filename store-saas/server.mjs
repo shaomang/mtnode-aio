@@ -81,7 +81,7 @@ function uid(prefix) {
 }
 
 function hashPass(password, salt) {
-  return crypto.scryptSync(String(password), salt, 32).toString("hex");
+  return crypto.scryptSync(String(password), salt, 32, { N: 131072, r: 8, p: 2 }).toString("hex");
 }
 
 function hashToken(token) {
