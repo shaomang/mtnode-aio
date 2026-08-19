@@ -52,4 +52,9 @@ me = call("GET", "/api/me", token=token)
 print("stats downloadsReceived=%s likesReceived=%s" % (me["user"]["downloadsReceived"], me["user"]["likesReceived"]))
 call("PATCH", "/api/templates/" + tid, {"title": "smoke template 2", "tags": ["smoke"]}, token=token)
 call("DELETE", "/api/templates/" + tid, token=token)
+fm = call("POST", "/api/forum/messages", {"room": "general", "text": "smoke hello"}, token=token)["item"]
+assert fm.get("text") == "smoke hello"
+lst = call("GET", "/api/forum/messages?room=general", token=token)
+assert any(x.get("id") == fm["id"] for x in lst.get("items") or [])
+call("POST", "/api/forum/messages", {"room": "nope", "text": "x"}, token=token, expect=False)
 print("SMOKE_OK")

@@ -77,6 +77,15 @@ const api = {
     ipcRenderer.on("pet:chatError", handler);
     return () => ipcRenderer.removeListener("pet:chatError", handler);
   },
+  onSessionsUpdated: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch (_) {}
+    };
+    ipcRenderer.on("pet:sessionsUpdated", handler);
+    return () => ipcRenderer.removeListener("pet:sessionsUpdated", handler);
+  },
 };
 
 try {

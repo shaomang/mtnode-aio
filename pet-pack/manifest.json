@@ -1,9 +1,9 @@
-﻿{
+{
   "id": "mtnode-desktop-pet",
   "name": "BongoChat",
-  "version": "0.3.7",
+  "version": "1.0.1",
   "minAppVersion": "1.1.18",
   "description": "可以聊天的BongoCat！",
-  "zipUrl": "pet-runtime-0.3.7.zip",
+  "zipUrl": "pet-runtime-1.0.1.zip",
   "sha256": ""
 }

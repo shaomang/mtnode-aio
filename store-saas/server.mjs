@@ -1,7 +1,7 @@
 "use strict";
 /**
  * MTNode 模板商店 — 零依赖 Node 18 HTTP 服务。
- * 数据：JSON 库 + files/ previews/
+ * 数据：JSON 库 + files/ previews/ forum-images/
  * 环境：PORT（默认 8787）、HOST（默认 127.0.0.1）、DATA_DIR
  */
 import http from "node:http";
@@ -14,7 +14,14 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
 const FILE_DIR = path.join(DATA_DIR, "files");
 const PREV_DIR = path.join(DATA_DIR, "previews");
+const FORUM_IMG_DIR = path.join(DATA_DIR, "forum-images");
 const DB_PATH = path.join(DATA_DIR, "db.json");
+const FORUM_TTL_MS = 3 * 24 * 3600 * 1000;
+const FORUM_ROOMS = new Set(["general", "bug", "improve"]);
+const MAX_FORUM_TEXT = 2000;
+const MAX_FORUM_IMAGE = 3 * 1024 * 1024;
+const FORUM_RATE_MAX = 12;
+const FORUM_RATE_WIN_MS = 60 * 1000;
 const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || "127.0.0.1";
 const MAX_BODY = 40 * 1024 * 1024;
@@ -34,9 +41,10 @@ function mkdirp(p) {
 }
 mkdirp(FILE_DIR);
 mkdirp(PREV_DIR);
+mkdirp(FORUM_IMG_DIR);
 
 function emptyDb() {
-  return { users: [], sessions: [], templates: [], likes: [] };
+  return { users: [], sessions: [], templates: [], likes: [], forumMessages: [] };
 }
 
 function loadDb() {
@@ -47,6 +55,7 @@ function loadDb() {
     if (!Array.isArray(d.sessions)) d.sessions = [];
     if (!Array.isArray(d.templates)) d.templates = [];
     if (!Array.isArray(d.likes)) d.likes = [];
+    if (!Array.isArray(d.forumMessages)) d.forumMessages = [];
     return d;
   } catch {
     return emptyDb();
@@ -292,6 +301,102 @@ function requireFields(obj, keys) {
       throw err;
     }
   }
+}
+
+function decodeForumImage(b64) {
+  if (b64 == null || b64 === "") return null;
+  let s = String(b64).trim();
+  const m = /^data:image\/(png|jpe?g|webp);base64,/i.exec(s);
+  if (m) s = s.slice(m[0].length);
+  const buf = Buffer.from(s.replace(/\s+/g, ""), "base64");
+  if (!buf.length) return null;
+  if (buf.length > MAX_FORUM_IMAGE) throw new Error("image too large");
+  const png = buf[0] === 0x89 && buf[1] === 0x50;
+  const jpg = buf[0] === 0xff && buf[1] === 0xd8;
+  const webp = buf[0] === 0x52 && buf[8] === 0x57;
+  if (!png && !jpg && !webp) throw new Error("image must be png/jpeg/webp");
+  return { buf, ext: png ? "png" : webp ? "webp" : "jpg" };
+}
+
+function forumImagePath(id) {
+  const sid = String(id || "").replace(/[^\w.-]/g, "");
+  if (!sid) return null;
+  for (const ext of ["jpg", "jpeg", "png", "webp"]) {
+    const p = path.join(FORUM_IMG_DIR, sid + "." + ext);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function writeForumImage(id, img) {
+  const dest = path.join(FORUM_IMG_DIR, id + "." + img.ext);
+  for (const ext of ["jpg", "jpeg", "png", "webp"]) {
+    const p = path.join(FORUM_IMG_DIR, id + "." + ext);
+    if (p !== dest) try { fs.unlinkSync(p); } catch {}
+  }
+  fs.writeFileSync(dest, img.buf);
+}
+
+function unlinkForumImage(id) {
+  if (!id) return;
+  for (const ext of ["jpg", "jpeg", "png", "webp"]) {
+    try { fs.unlinkSync(path.join(FORUM_IMG_DIR, id + "." + ext)); } catch {}
+  }
+}
+
+function pruneForum() {
+  const cut = now() - FORUM_TTL_MS;
+  const src = Array.isArray(db.forumMessages) ? db.forumMessages : [];
+  const keep = [];
+  let dropped = 0;
+  for (const m of src) {
+    if (m && m.createdAt >= cut) keep.push(m);
+    else {
+      dropped += 1;
+      if (m && m.imageId) unlinkForumImage(m.imageId);
+    }
+  }
+  if (dropped) {
+    db.forumMessages = keep;
+    saveDb();
+  } else {
+    db.forumMessages = src;
+  }
+}
+
+function publicForumMsg(m) {
+  const u = db.users.find((x) => x.id === m.userId);
+  return {
+    id: m.id,
+    room: m.room,
+    text: m.text || "",
+    imageId: m.imageId || "",
+    createdAt: m.createdAt,
+    user: {
+      id: m.userId,
+      username: (u && u.username) || "",
+      nickname: (u && u.nickname) || "",
+    },
+  };
+}
+
+const forumPostTimes = new Map();
+function forumRateOk(userId) {
+  const t = now();
+  const arr = (forumPostTimes.get(userId) || []).filter((x) => t - x < FORUM_RATE_WIN_MS);
+  if (arr.length >= FORUM_RATE_MAX) {
+    forumPostTimes.set(userId, arr);
+    return false;
+  }
+  arr.push(t);
+  forumPostTimes.set(userId, arr);
+  return true;
+}
+
+function imageMimeFromPath(p) {
+  if (p.endsWith(".png")) return "image/png";
+  if (p.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
 }
 
 async function handle(req, res) {
@@ -616,6 +721,75 @@ async function handle(req, res) {
     }
     await saveDb();
     return send(res, 200, { ok: true, item: publicTemplate(t, user) });
+  }
+
+  if (method === "GET" && p === "/api/forum/messages") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    pruneForum();
+    const room = String(url.searchParams.get("room") || "general");
+    if (!FORUM_ROOMS.has(room)) {
+      return send(res, 400, { ok: false, error: "未知讨论区" });
+    }
+    const cut = now() - FORUM_TTL_MS;
+    const since = Number(url.searchParams.get("since") || 0) || 0;
+    const items = (db.forumMessages || [])
+      .filter((m) => m.room === room && m.createdAt >= cut && m.createdAt > since)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map(publicForumMsg);
+    return send(res, 200, { ok: true, room, items, since: cut });
+  }
+
+  if (method === "POST" && p === "/api/forum/messages") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    if (!forumRateOk(user.id)) {
+      return send(res, 429, { ok: false, error: "发送过于频繁，请稍后再试" });
+    }
+    pruneForum();
+    const b = await jsonBody();
+    const room = String(b.room || "").trim();
+    if (!FORUM_ROOMS.has(room)) {
+      return send(res, 400, { ok: false, error: "未知讨论区" });
+    }
+    const text = String(b.text || "").trim();
+    if (text.length > MAX_FORUM_TEXT) {
+      return send(res, 400, { ok: false, error: "消息不能超过 2000 字" });
+    }
+    let imageId = "";
+    if (b.imageBase64) {
+      let img;
+      try {
+        img = decodeForumImage(b.imageBase64);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: "图片无效：" + e.message });
+      }
+      if (img) {
+        imageId = uid("img_");
+        writeForumImage(imageId, img);
+      }
+    }
+    if (!text && !imageId) {
+      return send(res, 400, { ok: false, error: "请填写文字或选择图片" });
+    }
+    const msg = {
+      id: uid("fm_"),
+      room,
+      userId: user.id,
+      text,
+      imageId,
+      createdAt: now(),
+    };
+    db.forumMessages.push(msg);
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicForumMsg(msg) });
+  }
+
+  const forumImgR = /^\/api\/forum\/images\/([^/]+)$/.exec(p);
+  if (forumImgR && method === "GET") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    const fp = forumImagePath(forumImgR[1]);
+    if (!fp) return send(res, 404, { ok: false, error: "图片不存在" });
+    const buf = fs.readFileSync(fp);
+    return sendBin(res, 200, buf, imageMimeFromPath(fp));
   }
 
   send(res, 404, { ok: false, error: "not found" });

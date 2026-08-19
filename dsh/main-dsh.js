@@ -13,6 +13,13 @@ const { app } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
+const BUILTIN_SKILL_NAMES = new Set(['generate-workflow', 'generate-task'])
+
+function builtinSkillsRoot() {
+  /* 仓库 / asar 内: dsh/main-dsh.js → ../skills */
+  return path.join(__dirname, '..', 'skills')
+}
+
 /* 统一 Node:gateway 与 dsh 运行时都用 Electron 自带 Node 启动
    (process.execPath + ELECTRON_RUN_AS_NODE=1),用户无需安装 Node,
    版本与应用完全一致(Electron 39 = Node 22.22.1,满足 dsh ^22.19)。 */
@@ -213,25 +220,106 @@ function createDshAdapter(opts) {
     },
 
     /* ── skills:文件系统技能,$DSH_HOME/skills/<name>/SKILL.md ──
-       运行时 skill-filesystem 提供者自动发现 user-dsh 根,无需重启引擎。 */
+       运行时 skill-filesystem 提供者自动发现 user-dsh 根,无需重启引擎。
+       内置技能从应用包 skills/ 同步到 dshHome（升级后覆盖）。 */
+    syncBuiltinSkills() {
+      try {
+        const srcRoot = builtinSkillsRoot()
+        if (!fs.existsSync(srcRoot)) return
+        const destRoot = path.join(dshHome, 'skills')
+        fs.mkdirSync(destRoot, { recursive: true })
+        for (const name of BUILTIN_SKILL_NAMES) {
+          const src = path.join(srcRoot, name, 'SKILL.md')
+          if (!fs.existsSync(src)) continue
+          const destDir = path.join(destRoot, name)
+          fs.mkdirSync(destDir, { recursive: true })
+          fs.copyFileSync(src, path.join(destDir, 'SKILL.md'))
+          fs.writeFileSync(path.join(destDir, '.builtin'), '1\n', 'utf8')
+        }
+      } catch (err) {
+        try { log('syncBuiltinSkills: ' + ((err && err.message) || err)) } catch {}
+      }
+    },
+
+    _parseSkillMeta(text) {
+      const meta = { title: '', description: '' }
+      const raw = String(text || '')
+      const fm = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/)
+      const body = fm ? fm[2] || '' : raw
+      if (fm) {
+        for (const line of fm[1].split('\n')) {
+          const km = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/)
+          if (!km) continue
+          const k = km[1]
+          const v = String(km[2] || '').replace(/^['"]|['"]$/g, '').trim()
+          if (k === 'title') meta.title = v
+          if (k === 'description') meta.description = v
+        }
+      }
+      if (!meta.title) {
+        const h1 = body.match(/^#\s+(.+)$/m)
+        if (h1) meta.title = String(h1[1] || '').trim()
+      }
+      if (!meta.description) {
+        const dm = raw.match(/^description:\s*(.+)$/m)
+        if (dm) meta.description = String(dm[1] || '').trim()
+      }
+      return meta
+    },
+
     skillList() {
       try {
+        this.syncBuiltinSkills()
         const root = path.join(dshHome, 'skills')
         if (!fs.existsSync(root)) return { skills: [] }
         const out = []
         for (const e of fs.readdirSync(root, { withFileTypes: true })) {
           if (!e.isDirectory()) continue
           const skillMd = path.join(root, e.name, 'SKILL.md')
+          let title = ''
           let description = ''
           if (fs.existsSync(skillMd)) {
-            const text = fs.readFileSync(skillMd, 'utf8')
-            const m = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/) ||
-              text.match(/^description:\s*(.+)$/m)
-            if (m) description = (m[1] || '').split('\n').map((l) => l.trim()).filter((l) => l.startsWith('description:')).map((l) => l.replace(/^description:\s*['"]?/, '').replace(/['"]$/, '')).join('; ') || (m[2] || '').trim()
+            const meta = this._parseSkillMeta(fs.readFileSync(skillMd, 'utf8'))
+            title = meta.title || ''
+            description = meta.description || ''
           }
-          out.push({ name: e.name, description: String(description).slice(0, 200) })
+          const builtin =
+            BUILTIN_SKILL_NAMES.has(e.name) ||
+            fs.existsSync(path.join(root, e.name, '.builtin'))
+          out.push({
+            name: e.name,
+            title: String(title).slice(0, 80),
+            description: String(description).slice(0, 200),
+            builtin: !!builtin,
+          })
         }
+        out.sort((a, b) => {
+          if (a.builtin !== b.builtin) return a.builtin ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
         return { skills: out }
+      } catch (err) {
+        return { ok: false, error: err.message || String(err) }
+      }
+    },
+
+    skillGet(name) {
+      try {
+        this.syncBuiltinSkills()
+        const nm = String(name || '').trim().toLowerCase()
+        if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nm)) {
+          return { ok: false, error: '技能不存在' }
+        }
+        const root = path.resolve(path.join(dshHome, 'skills'))
+        const dir = path.resolve(root, nm)
+        const sep = root.endsWith(path.sep) ? root : root + path.sep
+        if (dir !== root && !dir.startsWith(sep)) return { ok: false, error: '技能不存在' }
+        const skillMd = path.join(dir, 'SKILL.md')
+        if (!fs.existsSync(skillMd)) return { ok: false, error: '技能不存在' }
+        const body = fs.readFileSync(skillMd, 'utf8')
+        const builtin =
+          BUILTIN_SKILL_NAMES.has(nm) || fs.existsSync(path.join(dir, '.builtin'))
+        return { ok: true, name: nm, body, builtin: !!builtin }
       } catch (err) {
         return { ok: false, error: err.message || String(err) }
       }
@@ -242,6 +330,9 @@ function createDshAdapter(opts) {
         const nm = String(name || '').trim().toLowerCase()
         if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nm)) {
           return { ok: false, error: '技能名需为 kebab-case(小写字母/数字/短横线)' }
+        }
+        if (BUILTIN_SKILL_NAMES.has(nm)) {
+          return { ok: false, error: '内置技能名不可占用' }
         }
         const dir = path.join(dshHome, 'skills', nm)
         if (fs.existsSync(dir)) return { ok: false, error: '同名技能已存在' }
@@ -265,6 +356,12 @@ function createDshAdapter(opts) {
         const nm = String(name || '').trim()
         const dir = path.join(dshHome, 'skills', nm)
         if (!nm || !fs.existsSync(dir)) return { ok: false, error: '技能不存在' }
+        if (
+          BUILTIN_SKILL_NAMES.has(nm) ||
+          fs.existsSync(path.join(dir, '.builtin'))
+        ) {
+          return { ok: false, error: '内置技能不可卸载' }
+        }
         fs.rmSync(dir, { recursive: true, force: true })
         return { ok: true, skills: this.skillList().skills }
       } catch (err) {

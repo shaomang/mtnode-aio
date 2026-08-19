@@ -14,6 +14,7 @@ const {
   clipboard,
   Menu,
   nativeImage,
+  screen,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -36,6 +37,7 @@ const {
   startBackgroundCheck,
 } = require("./updater.js");
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
+const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require("./plugins/main-app-plugins.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -2117,9 +2119,165 @@ ipcMain.handle("dsh:providerCatalog", () => dsh().providerCatalog());
 
 ipcMain.handle("skill:list", () => dsh().skillList());
 
+ipcMain.handle("skill:get", (event, name) => dsh().skillGet(name));
+
 ipcMain.handle("skill:add", (event, skill) => dsh().skillAdd(skill));
 
 ipcMain.handle("skill:remove", (event, name) => dsh().skillRemove(name));
+
+/* ---------------- MTNode 讨论区（UI 为可下载窗口插件，宿主 IPC 仍在此） ---------------- */
+const FORUM_IMG_MAX = 1080;
+const FORUM_IMG_BYTES = 3 * 1024 * 1024;
+
+function forumDir() {
+  return mk(join(DATA(), "forum"));
+}
+function forumLocalPath() {
+  return join(forumDir(), "messages.json");
+}
+function forumCachePath(id) {
+  const sid = String(id || "").replace(/[^\w.-]/g, "_");
+  return join(mk(join(forumDir(), "img")), sid + ".jpg");
+}
+function compressForumJpeg(raw) {
+  if (!raw || !raw.length) return { ok: false, error: I18n.t("无法读取该文件路径") };
+  if (raw.length > 20 * 1024 * 1024) return { ok: false, error: I18n.t("图片过大") };
+  let img;
+  try {
+    img = nativeImage.createFromBuffer(raw);
+  } catch {
+    return { ok: false, error: I18n.t("无法读取该文件路径") };
+  }
+  if (!img || img.isEmpty()) return { ok: false, error: I18n.t("无法读取该文件路径") };
+  const sz = img.getSize();
+  const maxSide = Math.max(sz.width || 0, sz.height || 0);
+  if (maxSide > FORUM_IMG_MAX) {
+    const scale = FORUM_IMG_MAX / maxSide;
+    img = img.resize({
+      width: Math.max(1, Math.round((sz.width || 1) * scale)),
+      height: Math.max(1, Math.round((sz.height || 1) * scale)),
+    });
+  }
+  let jpg = img.toJPEG(82);
+  if (jpg.length > FORUM_IMG_BYTES) jpg = img.toJPEG(70);
+  if (jpg.length > FORUM_IMG_BYTES) jpg = img.toJPEG(55);
+  if (jpg.length > FORUM_IMG_BYTES) return { ok: false, error: I18n.t("图片过大") };
+  const out = nativeImage.createFromBuffer(jpg);
+  const osz = out && !out.isEmpty() ? out.getSize() : sz;
+  return {
+    ok: true,
+    base64: jpg.toString("base64"),
+    mime: "image/jpeg",
+    bytes: jpg.length,
+    width: osz.width,
+    height: osz.height,
+  };
+}
+ipcMain.handle("forum:open", () => openWindowPlugin("forum"));
+ipcMain.handle("forum:close", (e) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (w && !w.isDestroyed()) {
+    try { w.close(); } catch {}
+  }
+  return { ok: true };
+});
+ipcMain.handle("forum:getAuth", () => {
+  const cfg = readJson(join(DATA(), "config.json"), {}) || {};
+  return {
+    ok: true,
+    auth: cfg.storeAuth || null,
+    locale: cfg.locale === "en" ? "en" : "zh",
+  };
+});
+ipcMain.handle("forum:setAuth", (e, auth) => {
+  const fp = join(DATA(), "config.json");
+  const cfg = readJson(fp, {}) || {};
+  cfg.storeAuth = auth || null;
+  writeJson(fp, cfg);
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send("forum:authChanged", cfg.storeAuth);
+  }
+  return { ok: true };
+});
+ipcMain.handle("forum:localLoad", () => {
+  try {
+    const data = readJson(forumLocalPath(), { rooms: { general: [], bug: [], improve: [] } });
+    return { ok: true, data: data || { rooms: { general: [], bug: [], improve: [] } } };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("forum:localSave", (e, data) => {
+  try {
+    const rooms = (data && data.rooms) || {};
+    const clean = { rooms: { general: [], bug: [], improve: [] } };
+    for (const key of ["general", "bug", "improve"]) {
+      const arr = Array.isArray(rooms[key]) ? rooms[key] : [];
+      clean.rooms[key] = arr.slice(-3000).map((m) => ({
+        id: String((m && m.id) || ""),
+        room: key,
+        text: String((m && m.text) || "").slice(0, 2000),
+        imageId: String((m && m.imageId) || ""),
+        createdAt: Number((m && m.createdAt) || 0) || 0,
+        user: m && m.user
+          ? {
+              id: String(m.user.id || ""),
+              username: String(m.user.username || "").slice(0, 32),
+              nickname: String(m.user.nickname || "").slice(0, 32),
+            }
+          : { id: "", username: "", nickname: "" },
+      })).filter((m) => m.id);
+    }
+    writeJson(forumLocalPath(), clean);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("forum:cacheImage", (e, opts) => {
+  try {
+    const id = String((opts && opts.id) || "");
+    const b64 = String((opts && opts.base64) || "");
+    if (!id || !b64) return { ok: false };
+    fs.writeFileSync(forumCachePath(id), Buffer.from(b64, "base64"));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("forum:readCachedImage", (e, id) => {
+  try {
+    const fp = forumCachePath(id);
+    if (!fs.existsSync(fp)) return { ok: false };
+    const buf = fs.readFileSync(fp);
+    return { ok: true, dataUrl: "data:image/jpeg;base64," + buf.toString("base64") };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("forum:compressImage", (e, opts) => {
+  try {
+    const raw = Buffer.from(String((opts && opts.base64) || ""), "base64");
+    return compressForumJpeg(raw);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle("forum:pickImage", async (e) => {
+  try {
+    const parent = BrowserWindow.fromWebContents(e.sender) || win();
+    const r = await dialog.showOpenDialog(parent, {
+      title: I18n.t("选择图像"),
+      properties: ["openFile"],
+      filters: [{ name: I18n.t("图像"), extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, error: "cancelled" };
+    const raw = fs.readFileSync(r.filePaths[0]);
+    return compressForumJpeg(raw);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
 
 /* ---------------- 窗口 ---------------- */
 
@@ -2148,12 +2306,19 @@ app.whenReady().then(() => {
   mainWin.loadFile(join(__dirname, "renderer", "index.html"));
   mainWin.on("closed", () => {
     mainWin = null;
+    try { shutdownAppPlugins(); } catch {}
   });
   registerUpdateIpc(() => mainWin);
   registerPetIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
     appRoot: __dirname,
+  });
+  registerAppPluginsIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getAppVersion: () => app.getVersion(),
   });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
@@ -2167,6 +2332,7 @@ app.on("window-all-closed", () => {
 /* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程 */
 app.on("before-quit", () => {
   try { shutdownPet(); } catch {}
+  try { shutdownAppPlugins(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }

@@ -671,7 +671,7 @@ Wire a control node to targets (or wire targets in), switch **Run / Clear**, the
 
 ## 智能会话
 
-顶栏切换到「智能会话」：多会话、按工作目录分组、归档、分支、斜杠命令（\`/new\` \`/compact\` \`/plan\` \`/help\` 等）。能力与智能任务一致。
+顶栏切换到「智能会话」：多会话、按工作目录分组、归档、分支、斜杠命令（输入 \`/\` 呼出技能与 \`/new\` \`/compact\` \`/plan\` \`/help\` 等）。能力与智能任务一致。
 
 ## 让助手搭工作流
 
@@ -689,7 +689,7 @@ Right-click → Agent node. The prompt is the task. Supports \`@\`, multi-input,
 
 ## Agent session
 
-Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (\`/new\` \`/compact\` \`/plan\` \`/help\`). Same capabilities as an agent task.
+Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type \`/\` for skills and \`/new\` \`/compact\` \`/plan\` \`/help\`). Same capabilities as an agent task.
 
 ## Let the assistant build a workflow
 
@@ -885,7 +885,11 @@ The model may also **ask the user** mid-task (choices or free text) before conti
 
 ## 应用插件（右上角「插件」）
 
-可选组件**不打进安装包**，按需下载。当前包括 **桌宠（Live2D / BongoChat）**：透明置顶、键鼠联动、可卸载。
+插件**列表从云端目录更新**（`http://mt-agent.com/mtnode/plugins/catalog.json`），可不升级主程序看到新插件。离线时使用上次缓存或内置列表。
+
+- **讨论区**：按需下载的聊天窗口，登录创意工坊同一账户后聊天；可运行、卸载、更新。
+- **桌宠 BongoChat**：按需下载的透明置顶窗口，可运行、卸载。
+- **窗口插件**：目录里新增的 zip 包可直接下载安装并运行，无需发新版安装包。若插件类型当前版本不认识，会提示先升级应用。
 
 ## DSH 插件 / 技能 / MCP
 
@@ -901,7 +905,11 @@ The model may also **ask the user** mid-task (choices or free text) before conti
 
 ## App plugins (top-right **Plugins**)
 
-Optional components are **not in the installer**. **Desktop pet (Live2D / BongoChat)** is a transparent always-on-top window with key/mouse sync; it can be uninstalled.
+The **plugin list is fetched from the cloud catalog** (`http://mt-agent.com/mtnode/plugins/catalog.json`), so new plugins can appear without an app upgrade. Offline, the last cache or the built-in list is used.
+
+- **Forum**: optional download; sign in with the Creative Workshop account to chat; run, uninstall, or update.
+- **Desktop pet (BongoChat)**: optional download; transparent always-on-top window; run or uninstall.
+- **Window plugins**: new zip packages in the catalog can be downloaded and run without a new installer. Unknown plugin kinds prompt you to upgrade the app.
 
 ## DSH plugins / Skills / MCP
 
@@ -979,7 +987,7 @@ Workflow JSON lives under \`save/\` in the app data directory (Windows: often \`
   update: {
     zh: `# 版本更新
 
-发现新版本时，右上角出现高光 **更新**。点击后确认，再**差分下载**（只拉变更块），装完自动重启。
+发现新版本时，右上角出现高光 **更新**。点击后确认，再**差分下载**（只拉变更块），然后**静默安装**并自动重启（不弹出安装向导）。
 
 语言按钮仍在最右侧；出现更新按钮时，「审批 / 插件 / 文档」会向左让位。
 
@@ -987,7 +995,7 @@ Workflow JSON lives under \`save/\` in the app data directory (Windows: often \`
 `,
     en: `# Updates
 
-When a new version exists, top-right **Update** highlights. Confirm, then a **delta download** (blockmap) runs and the app restarts.
+When a new version exists, top-right **Update** highlights. Confirm, then a **delta download** (blockmap) runs, followed by a **silent install** and restart (no installer wizard).
 
 The language button stays at the far right; Approvals / Plugins / Docs shift left when Update is shown.
 

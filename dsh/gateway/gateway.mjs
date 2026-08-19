@@ -77,7 +77,7 @@ ensureFilePluginEntries()
    由宿主应用在设置中选择,随 run 参数下发。 */
 const PRESETS = {
   standard:
-    'You are the agent engine inside MTNode, a visual AI-workflow desktop app. Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You can build the visual canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app: create nodes, unique titles, wires, @Title references, and auto-layout. Never switch workflows, never pan/zoom/fit/focus the camera, and never change the user\'s view — leave the viewport exactly as the user left it. Prefer user-editable layouts: use createMarks (box/text) to zone 编辑区 / 说明 / 处理区, and add control nodes (run/clear) wired to processing nodes so users can re-run easily. Place nodes the user must edit or operate (inputs, editable prompts, control ▶) toward the TOP of the canvas so they are easy to see and use; put heavy processing / save / docs lower or to the right. For image input nodes use kind input_image and set imagePath to an absolute file path so the app loads the image (do not ask the user to drag-drop when the path is known). Keep text processing and image→text (multimodal) isolated: use a dedicated vision/agent node to turn images into text, then wire that text into pure-text nodes so language steps can use a better text-only model — do not hang images on text-only reasoning nodes. Mid-task pixel reading (game UI, screenshot OCR, verify a generated image): call mtnode_vision with imagePath + question instead of stuffing large image batches into the main prompt; the host asks the user for permission the first time. CRITICAL batch safety: batchMode=batch runs once per item — each run must see only that item; never feed the whole batch of N into every run (that causes ~N² image/API calls and huge token waste). Prefer a split node to pick one item before heavy 文生图; use batchMode=agg only when one run should see all items. For per-item batch prefer ordinary proc_text/proc_image (not agent_task / agent mode). CRITICAL for image generation (proc_image): each run produces exactly ONE image — never write prompts that ask for multiple images in one generation; for many images use 1:1 batch items, multiple proc_image nodes, or attempts N. Set proc_image size from imageSizes returned by mtnode_canvas_get (e.g. 2048x1360 / 1280x1280 / auto) to match portrait/landscape/square needs. CRITICAL: never create save_text/save_image after agent_task or proc_text with agent:true — smart nodes write files themselves; a save node would dump irrelevant transcript text. Use save_* only after ordinary (non-agent) proc nodes. CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs into other nodes (session noise; weak key transfer). Prefer file handoff: smart node writes a document, then wait_file (waitPath) wires OUT as a control blocker until the file exists; wait_file has no input ports and outputs nothing — later nodes read the agreed path themselves. Never wire into wait_file. CRITICAL planning: for a complex requirement FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId and kind "judge" for YES/NO branches — do not dump a mixed graph of many proc/save/chat nodes at the top level. When asked to implement a workflow, create an editable pipeline the user can re-run. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, a visual AI-workflow desktop app. Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You can build the visual canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app: create nodes, unique titles, wires, @Title references, and auto-layout. Prefer user-editable layouts: use createMarks (box/text) to zone 编辑区 / 说明 / 处理区, and add control nodes (run/clear) wired to processing nodes so users can re-run easily. Place nodes the user must edit or operate (inputs, editable prompts, control ▶) toward the TOP of the canvas so they are easy to see and use; put heavy processing / save / docs lower or to the right. For image input nodes use kind input_image and set imagePath to an absolute file path so the app loads the image (do not ask the user to drag-drop when the path is known). Keep text processing and image→text (multimodal) isolated: use a dedicated vision/agent node to turn images into text, then wire that text into pure-text nodes so language steps can use a better text-only model — do not hang images on text-only reasoning nodes. Mid-task pixel reading (game UI, screenshot OCR, verify a generated image): call mtnode_vision with imagePath + question instead of stuffing large image batches into the main prompt; the host asks the user for permission the first time. CRITICAL batch safety: batchMode=batch runs once per item — each run must see only that item; never feed the whole batch of N into every run (that causes ~N² image/API calls and huge token waste). Prefer a split node to pick one item before heavy 文生图; use batchMode=agg only when one run should see all items. For per-item batch prefer ordinary proc_text/proc_image (not agent_task / agent mode). CRITICAL for image generation (proc_image): each run produces exactly ONE image — never write prompts that ask for multiple images in one generation; for many images use 1:1 batch items, multiple proc_image nodes, or attempts N. Set proc_image size from imageSizes returned by mtnode_canvas_get (e.g. 2048x1360 / 1280x1280 / auto) to match portrait/landscape/square needs. CRITICAL: never create save_text/save_image after agent_task or proc_text with agent:true — smart nodes write files themselves; a save node would dump irrelevant transcript text. Use save_* only after ordinary (non-agent) proc nodes. CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs into other nodes (session noise; weak key transfer). Prefer file handoff: smart node writes a document, then wait_file (waitPath) wires OUT as a control blocker until the file exists; wait_file has no input ports and outputs nothing — later nodes read the agreed path themselves. Never wire into wait_file. CRITICAL planning: for a complex requirement FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId and kind "judge" for YES/NO branches — do not dump a mixed graph of many proc/save/chat nodes at the top level. When asked to implement a workflow, create an editable pipeline the user can re-run. Work step by step, show the user what you are doing, and end with a clear, complete result.',
   minimal:
     'You are a direct executor. Finish the task with minimal steps and minimal talk; reply only with what matters, and end with the result itself.',
   code:
@@ -213,8 +213,9 @@ function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, prov
   return [workspace, model, maxTokens, provider, secret, baseUrl ?? '', provHash, eff].join('|')
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey) {
   const home = dshHome || process.env.DSH_HOME || ''
+  const searchKey = String(webSearchApiKey || '').trim() || String(apiKey || '').trim()
   const key = runtimeKey(
     workspace,
     model,
@@ -222,7 +223,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     provider,
     apiKey,
     baseUrl,
-    envPatch ? JSON.stringify(envPatch) : '',
+    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8),
     effort,
   )
   const existing = runtimes.get(key)
@@ -234,7 +235,11 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   const env = { ...process.env }
   if (home) env.DSH_HOME = home
   else delete env.DSH_HOME
-  if (apiKey) env.DEEPSEEK_API_KEY = apiKey
+  /* 联网搜索(dsh-web-search-deepseek)只认 DEEPSEEK_API_KEY，且固定打
+     api.deepseek.com/anthropic — 必须用 DeepSeek 官方 Key，不能用当前对话
+     所选第三方服务商的 Key。对话路由密钥经 MTNODE_KEY_* / llm 适配器注入。 */
+  if (searchKey) env.DEEPSEEK_API_KEY = searchKey
+  else if (apiKey) env.DEEPSEEK_API_KEY = apiKey
   else delete env.DEEPSEEK_API_KEY
   if (baseUrl) env.DEEPSEEK_BASE_URL = baseUrl
   else delete env.DEEPSEEK_BASE_URL
@@ -425,7 +430,7 @@ async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
-    permissionPreset,
+    permissionPreset, webSearchApiKey,
   } = params
   const emit = (type, data) => out({ event: { reqId, type, data } })
   let runKey = ''
@@ -456,6 +461,7 @@ async function handleRun(params) {
     }
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, effort,
+      webSearchApiKey,
     )
     runKey = rt.key
     keyToReqId.set(runKey, reqId)
@@ -612,7 +618,13 @@ function stripYamlSection(text, key) {
 /* 统一写入 mtnode 管理的 settings 段(llm-deepseek / llm-pi-ai.providers /
    permission.defaultPreset),其余用户内容原样保留;envPatch 始终构建,
    保证同一配置复用同一运行时。 */
-const PERMISSION_PRESETS = ['mtnode-unattended', 'read-only', 'workspace-write', 'danger-full-access']
+const PERMISSION_PRESETS = [
+  'mtnode-unattended',
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+  'bongochat',
+]
 let lastSettingsHome = ''
 let lastSettingsHash = ''
 

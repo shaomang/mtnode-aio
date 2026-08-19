@@ -58,6 +58,9 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 - `DSH_HOME` 指向 mtnode 自有目录(`<DATA>/dsh-home`),与开发机 `~/.dsh` 隔离。
 - 凭据注入:`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` 由 gateway 从主进程传入
   (mtnode 配置的服务商 apiKey),每次启动运行时注入 env,不写盘。
+  联网搜索(`dsh-web-search-deepseek`)固定请求 `api.deepseek.com/anthropic`,
+  使用独立的 `webSearchApiKey`(优先 DeepSeek 官方服务商 Key),避免对话选了
+  第三方路由时把错误 Key 注入搜索。
 - 权限预设(dsh permission-presets)每次运行可切换:gateway 双写
   settings.yaml 的 `permission.defaultPreset`(热重载,覆盖池化运行时的后续会话)
   **与** cordis.yml 同名行(rc.6 运行时 settings 注入回调晚于首个会话创建,
@@ -78,7 +81,7 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | method | params | 语义 |
 |---|---|---|
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
-| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, systemPrompt?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle |
+| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索(DeepSeek Anthropic)，与对话路由密钥分离 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `interact` | `{kind:'question'\|'approval'\|'canvas', id, answers?\|outcome?\|result?}` | 回答提问 / 审批 / 画布工具结果,按交互 id 路由回对应运行时 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
@@ -191,12 +194,12 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 |---|---|
 | `mtnode_canvas_get` | 读取当前工作流:节点(id/kind/标题/坐标/提示词摘要)、连线、组、相机、视图、全部工作流列表 |
 | `mtnode_canvas_edit` | 批量创建/改标题与字段/连线/@引用补全/成组/删除;默认分层从左到右排版且不与已有节点重叠 |
-| `mtnode_app` | 应用级操作:居中/聚焦节点、切换视图、切换/新建/重命名/删除工作流、选中节点、撤销重做。删除工作流与图编辑在全局助手侧需用户确认 |
+| `mtnode_app` | 应用级操作:工作流状态/列表、重命名/删除工作流、选中节点、撤销重做。删除工作流与图编辑在全局助手侧需用户确认 |
 | `mtnode_vision` | 识图子代理:对本地绝对路径图片调用视觉模型作答;首次需用户许可(允许一次/始终允许/拒绝) |
 
 渲染层 `applyCanvasOp` 是唯一写画布的地方:校验节点类型与回路、拒绝删除正在运行的节点、一次编辑一条撤销记录。典型任务(「实现物品配置工作流」)由模型一次 `edit` 创建「需求 → 生成 → 写入配置表」管道,用户可继续改提示词并点 ▶ 运行。
 
-右上角「审批」另有 **Agent 工具许可预设**(与 `permissionPreset` 正交):按类别开关画布读/节点/控制/绘图/排版、应用操作、引擎基础能力、识图。内置 `default` 预设为当前产品能力全开;用户可克隆自定义。`applyCanvasOp` / `applyAppOp` / `applyVisionInspect` 对画布/应用/识图做硬拦截;读文件/终端/联网等经 `dshRunTask` 注入系统提示约束。
+右上角「审批」另有 **Agent 工具许可预设**(与 `permissionPreset` 正交):按类别设为批准 / 询问 / 拒绝（默认全批准）。内置 `default` 预设为当前产品能力全开;用户可克隆自定义。`applyCanvasOp` / `applyAppOp` / `applyVisionInspect` 对画布/应用/识图做硬拦截（拒绝）或调用前确认（询问）;读文件/终端/联网等经 `dshRunTask` 注入系统提示约束。
 
 ## 指引(需求 4)
 

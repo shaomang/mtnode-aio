@@ -161,7 +161,9 @@ const CORE_ALIASES = {
   str_replace_editor: ['str_replace_editor', 'edit', 'Edit'],
 }
 
-/** Host-app tools that first-turn filtering must never drop. */
+/** Host-app tools that first-turn filtering must never drop.
+ *  MTNode is a content/workflow host: canvas, vision, and web search are
+ *  product capabilities — not "coding extras" to defer until after a tool call. */
 export function isHostTool(name) {
   return typeof name === 'string' && (
     name.startsWith('mtnode_')
@@ -169,6 +171,9 @@ export function isHostTool(name) {
     || name.startsWith('dev_router_')
     || name === 'dev_mode_subagent'
     || name === 'run_code'
+    || name === 'web_search'
+    || name === 'web_fetch'
+    || name.startsWith('skill')
   )
 }
 

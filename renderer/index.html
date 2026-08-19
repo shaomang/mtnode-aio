@@ -32,11 +32,12 @@
     <button id="btnRenameWf" class="corner" data-i18n="更改名称" data-i18n-title="更改当前画布名称">更改名称</button>
     <button id="btnExport" class="corner" data-i18n="导出" data-i18n-title="导出画布：把当前工作流（含图像等资产）打包为 .mtnodes 文件，可迁移到其他电脑">导出</button>
     <button id="btnStore" class="corner" data-i18n="创意工坊" data-i18n-title="创意工坊：浏览 / 下载公开模板，登录后可上传与管理自己的模板">创意工坊</button>
+    <button id="btnForum" class="corner" data-i18n="讨论区" data-i18n-title="MTNode 讨论区：与创意工坊同一账户，登录后聊天并同步近 3 天消息">讨论区</button>
     <button id="btnImport" class="corner" data-i18n="导入" data-i18n-title="导入画布：从 .mtnodes 文件恢复完整工作流">导入</button>
     <button id="btnDelWf" class="corner" data-i18n="删除" data-i18n-title="删除当前工作流">删除</button>
   </div>
   <button type="button" id="btnDocs" class="corner mini btn-docs" data-i18n="文档" data-i18n-title="使用手册：界面说明与常见问题" title="使用手册：界面说明与常见问题">文档</button>
-  <button type="button" id="btnPlugins" class="corner mini btn-plugins" data-i18n="插件" data-i18n-title="插件：可选组件（桌宠等），按需下载安装" title="插件：可选组件（桌宠等），按需下载安装">插件</button>
+  <button type="button" id="btnPlugins" class="corner mini btn-plugins" data-i18n="插件" data-i18n-title="插件：云端目录更新，讨论区与桌宠等按需下载" title="插件：云端目录更新，讨论区与桌宠等按需下载">插件</button>
   <button type="button" id="btnApprovals" class="corner mini btn-approvals" data-i18n="审批" data-i18n-title="审批与权限：权限预设 / 工具许可 / 识图许可，可随时调整" title="审批与权限：权限预设 / 工具许可 / 识图许可，可随时调整">审批</button>
   <button type="button" id="btnUpdate" class="corner mini btn-update" hidden aria-hidden="true" data-i18n-title="发现新版本，点击下载并安装" title="发现新版本，点击下载并安装">
     <svg class="btn-update-ico" viewBox="0 0 16 16" aria-hidden="true">
@@ -118,7 +119,7 @@
       </div>
       <div class="agent-body">
         <div class="agent-list" id="agentList"></div>
-        <div class="agent-cmd-hint" id="agentCmdHint" data-i18n="命令:/new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help">命令:/new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help</div>
+        <div class="agent-cmd-hint" id="agentCmdHint" data-i18n="命令:输入 / 呼出技能与命令 · /new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help">命令:输入 / 呼出技能与命令 · /new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help</div>
         <div class="agent-input-row">
           <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="描述任务…（Enter 发送，Shift+Enter 换行）" placeholder="描述任务…（Enter 发送，Shift+Enter 换行）"></textarea>
           <button id="agentSend" class="mini primary">执行</button>
@@ -176,7 +177,7 @@
     </div>
     <div class="assist-list" id="assistList"></div>
     <div class="assist-input-row">
-      <textarea id="assistInput" class="chat-input" rows="2" data-i18n-placeholder="问助手…（Enter 发送，Shift+Enter 换行）" placeholder="问助手…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <textarea id="assistInput" class="chat-input" rows="2" data-i18n-placeholder="问助手…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）" placeholder="问助手…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）"></textarea>
       <button id="assistSend" class="mini primary" data-i18n="发送">发送</button>
     </div>
   </aside>

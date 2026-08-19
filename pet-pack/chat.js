@@ -44,6 +44,34 @@
     return t;
   }
 
+  function isTableSepLine(line) {
+    const t = String(line || "").trim();
+    if (!t.includes("|") || !/-/.test(t)) return false;
+    const cells = t.replace(/^\|/, "").replace(/\|$/, "").split("|");
+    if (!cells.length) return false;
+    return cells.every((c) => /^\s*:?-{1,}:?\s*$/.test(c) && /-/.test(c));
+  }
+
+  function isTableRowLine(line) {
+    const t = String(line || "").trim();
+    return t.includes("|") && !isTableSepLine(t);
+  }
+
+  function splitTableCells(line) {
+    let t = String(line || "").trim();
+    if (t.startsWith("|")) t = t.slice(1);
+    if (t.endsWith("|")) t = t.slice(0, -1);
+    return t.split("|").map((c) => c.trim());
+  }
+
+  function looksLikeTableStart(lines, idx) {
+    return (
+      idx + 1 < lines.length &&
+      isTableRowLine(lines[idx]) &&
+      isTableSepLine(lines[idx + 1])
+    );
+  }
+
   function renderMarkdownLite(src) {
     const raw = String(src == null ? "" : src).replace(/\r\n/g, "\n");
     const fences = [];
@@ -71,6 +99,28 @@
       if (/^\s*---+\s*$/.test(line) || /^\s*\*\*\*+\s*$/.test(line)) {
         out.push("<hr>");
         i += 1;
+        continue;
+      }
+      if (looksLikeTableStart(lines, i)) {
+        const header = splitTableCells(lines[i]);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && isTableRowLine(lines[i])) {
+          rows.push(splitTableCells(lines[i]));
+          i += 1;
+        }
+        let html = "<table><thead><tr>";
+        for (const cell of header) html += "<th>" + inlineMd(cell) + "</th>";
+        html += "</tr></thead><tbody>";
+        for (const row of rows) {
+          html += "<tr>";
+          for (let c = 0; c < header.length; c++) {
+            html += "<td>" + inlineMd(row[c] != null ? row[c] : "") + "</td>";
+          }
+          html += "</tr>";
+        }
+        html += "</tbody></table>";
+        out.push(html);
         continue;
       }
       const h = /^(#{1,4})\s+(.+)$/.exec(line);
@@ -120,7 +170,8 @@
         !/^\s*\d+\.\s+/.test(lines[i]) &&
         !/^>\s?/.test(lines[i]) &&
         !/^\s*---+\s*$/.test(lines[i]) &&
-        !/^%%FENCE\d+%%$/.test(lines[i].trim())
+        !/^%%FENCE\d+%%$/.test(lines[i].trim()) &&
+        !looksLikeTableStart(lines, i)
       ) {
         buf.push(lines[i]);
         i += 1;
@@ -140,8 +191,7 @@
             ? window.marked
             : null);
       if (typeof parse === "function") {
-        const escAll = esc(text);
-        let html = parse(escAll, { gfm: true, breaks: true });
+        let html = parse(String(text == null ? "" : text), { gfm: true, breaks: true });
         html = String(html).replace(/<a href="([^"]*)"/g, (m, u) => {
           if (/^(https?:|mailto:)/i.test(u) || u.charAt(0) === "#") return m;
           return '<a href="#" title="已阻止不安全链接"';
@@ -236,13 +286,30 @@
     );
   }
 
+  function applyRunUi(state) {
+    const busyNow = !!(state && state.busy);
+    setBusy(busyNow);
+    if (!busyNow) {
+      setStatus("");
+      return;
+    }
+    setStatus((state && state.status) || "努力思考中…");
+    const streamText = state && state.streamingText;
+    if (streamText) {
+      if (!streamEl) streamEl = addMsg("assistant", "");
+      const bubble = streamEl.querySelector(".bubble");
+      setBubbleContent(bubble, "assistant", streamText);
+      list.scrollTop = list.scrollHeight;
+    }
+  }
+
   async function switchSlot(i) {
-    if (!api || busy) return;
-    if (!api.switchSession) return;
+    if (!api || !api.switchSession) return;
     const r = await api.switchSession(i);
     if (!r || !r.ok) return;
     renderSlots(r.sessions);
     paintMessages(r.messages);
+    applyRunUi(r);
   }
 
   function fillModels(provId, selectedModel) {
@@ -299,6 +366,7 @@
     const hist = await api.chatHistory();
     renderSlots((hist && hist.sessions) || []);
     paintMessages((hist && hist.messages) || []);
+    applyRunUi(hist);
     if (api.onChatStatus) {
       api.onChatStatus((d) => setStatus(d && d.text));
     }
@@ -332,6 +400,11 @@
         setStatus("");
         addMsg("sys", "错误：" + ((d && d.error) || "未知"));
         setBusy(false);
+      });
+    }
+    if (api.onSessionsUpdated) {
+      api.onSessionsUpdated((d) => {
+        if (d && d.sessions) renderSlots(d.sessions);
       });
     }
   }

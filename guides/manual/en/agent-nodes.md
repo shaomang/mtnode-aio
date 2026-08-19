@@ -8,7 +8,7 @@ Right-click → Agent node. The prompt is the task. Supports `@`, multi-input, b
 
 ## Agent session
 
-Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (`/new` `/compact` `/plan` `/help`). Same capabilities as an agent task.
+Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type `/` for skills and `/new` `/compact` `/plan` `/help`). Same capabilities as an agent task.
 
 ## Let the assistant build a workflow
 

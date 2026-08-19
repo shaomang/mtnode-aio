@@ -1,8 +1,7 @@
 // MTNode canvas tools (runs INSIDE the dsh runtime process).
 //
 // Registers mtnode_canvas_get / mtnode_canvas_edit / mtnode_app so the agent can
-// create, title, connect, @-reference, and auto-layout nodes. The agent must
-// NOT switch canvases or pan/zoom/fit the user's camera. Mutations travel
+// create, title, connect, @-reference, and auto-layout nodes. Mutations travel
 // over the same localhost TCP bridge as bridge-plugin.mjs (port from
 // MTNODE_BRIDGE_PORT). This file may import @deepseek-ai/dsh-tools (defineTool);
 // dsh API churn stays inside dsh/.
@@ -25,24 +24,20 @@ const KINDS = [
 ]
 
 const GET_DESC =
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task scope (id, kind, title, position, prompt/text/task/goal/steps/parentTaskId/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, taskTree (all task nodes even if nested), marks, wires, groups, camera (read-only snapshot — do not try to pan/zoom), UI view, imageSizes, markColors, and workflows. When the run is locked to the current canvas (agent_task / agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title only resolves if that node is wired in. To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task scope (id, kind, title, position, prompt/text/task/goal/steps/parentTaskId/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, taskTree (all task nodes even if nested), marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. When the run is locked to the current canvas (agent_task / agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title only resolves if that node is wired in. To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
 
-const APP_DESC = `Control the MTNode desktop app beyond node graph edits. Workflow management only — NEVER change the user's viewpoint.
+const APP_DESC = `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation).
 
-FORBIDDEN (will error; do not call):
-- switch_workflow / create_workflow: do not switch or steal the canvas the user is looking at
-- fit_canvas / focus_node / set_view: do not pan, zoom, center the camera, or switch the main UI pane
-
-SAFE (no user confirmation — do these freely):
+Available actions:
 - status / list_workflows: inspect app + workflow catalog. When locked to the current canvas (agent_task nodes, agent session, assistant "current" scope), the catalog contains ONLY that canvas — other workflows are omitted.
 - rename_workflow: rename the current (or specified) workflow — other canvases are rejected when locked
-- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — does NOT pan/zoom.
+- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only.
 - undo / redo: undo or redo the last canvas edit
 
-NEEDS USER CONFIRMATION (UI will prompt; may be rejected):
+Needs user confirmation (UI will prompt; may be rejected):
 - delete_workflow: permanently delete a workflow and its local assets (other canvases rejected when locked)
 
-For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session). Canvas edits do not move the camera.`
+For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
 const EDIT_DESC = `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
 
@@ -68,7 +63,7 @@ wait_file: control-kind blocker with output only; polls waitPath (relative to wo
 Layout & drawings (recommended whenever you build a non-trivial workflow):
 - CRITICAL UX: nodes the user must edit or operate (input_text / input_image, editable prompts, control run/clear buttons, split pickers) go toward the TOP of the canvas (smaller y). Put heavy processing / save / docs lower or further right so the first thing users see is what they can change and ▶ run.
 - Prefer a top band for 编辑区 + control nodes; processing and output zones below or to the right.
-- To RETIDY an existing canvas: mtnode_canvas_get first, inspect each node's and mark's x/y/w/h, then ONE mtnode_canvas_edit with layout:false and update/updateMarks setting explicit coordinates/sizes. Do NOT call any app layout action. Keep spacing comfortable and neat; re-wrap or move marks with their nodes.
+- To RETIDY an existing canvas: mtnode_canvas_get first, inspect each node's and mark's x/y/w/h, then ONE mtnode_canvas_edit with layout:false and update/updateMarks setting explicit coordinates/sizes. Keep spacing comfortable and neat; re-wrap or move marks with their nodes.
 - Use createMarks with kind "box" and around:["alias1","alias2"] (plus label:"编辑区") so zone frames hug the nodes after auto-layout. pad defaults to 36.
 - Add kind "text" marks for titles / how-to notes the user can edit later (not wired; pure decoration).
 - Separate regions: editable inputs, documentation, processing, outputs — different box colors from markColors help.
@@ -108,7 +103,6 @@ Rules:
 - One edit call should create the whole subgraph. layout defaults true when create is non-empty.
 - Marks are created AFTER layout when around is used; absolute x/y also allowed (set layout false if you place everything yourself).
 - Never remove or overlap the node that is currently running this task.
-- NEVER pan, zoom, fit, or focus the camera, and NEVER switch workflows or the main UI view. Leave the user's viewport exactly as they left it; they will look around themselves.
 - After building, tell the user they can edit inputs / marks and use control ▶ to re-run.`
 
 const MARK_SPEC = {
@@ -528,7 +522,7 @@ export function apply(ctx) {
           'undo',
           'redo',
         ],
-        description: 'App-level action to perform. Do not use this to pan, zoom, switch canvases, or change the user view.',
+        description: 'App-level action to perform.',
       },
       node: {
         type: 'string',

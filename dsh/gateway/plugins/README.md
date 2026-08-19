@@ -11,9 +11,9 @@ It is not required for the engine to boot.
 | `router-standard/` | [dsh-router-standard](https://github.com/yjh051108/dsh-router-standard) `preset/router-standard` | 0.2.0 | mounted (MTNode-safe: no throw, keep host persona) |
 
 The router skips the hard throw when `pwsh`/`bash` are missing, keeps
-`mtnode_*` tools on the first turn, keeps `deployment:persona` (canvas
-guidance), and does not blank `contexts`. Assemble failures are swallowed so
-the JSON-RPC child cannot be killed by a routing hook.
+`mtnode_*` / `web_search` / `web_fetch` / skill tools on the first turn, keeps
+`deployment:persona` (canvas guidance), and does not blank `contexts`. Assemble
+failures are swallowed so the JSON-RPC child cannot be killed by a routing hook.
 
 The web-oriented injector and the mutex `router-spec` preset are **not**
 shipped: MTNode runs stdio JSON-RPC (no `webServer` / `/super-injector/api`),

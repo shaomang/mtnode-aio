@@ -1389,9 +1389,10 @@ function dshRunTask(input, opts) {
   const d = (S.config && S.config.dsh) || {};
   const piProvs = mtnodePiProviders();
   const provider = opts.provider || "deepseek-official";
-  /* 非官方路由:密钥来自对应 mtnode 服务商(经网关 env 注入) */
-  let apiKey = sup.provider.apiKey;
-  let baseUrl = sup.provider.baseUrl;
+  /* 对话路由密钥；联网搜索固定走 DeepSeek Anthropic 端点，需单独注入官方 Key */
+  const dsProv = dshProvider();
+  let apiKey = (dsProv && dsProv.apiKey) || "";
+  let baseUrl = (dsProv && dsProv.baseUrl) || "";
   if (provider !== "deepseek-official") {
     const mp = piProvs.find((x) => "mtnode_" + x.route === provider);
     if (mp) {
@@ -1403,6 +1404,9 @@ function dshRunTask(input, opts) {
       baseUrl = "";
     }
   }
+  const webSearchApiKey =
+    String((dsProv && dsProv.apiKey) || "").trim() ||
+    (provider === "deepseek-official" ? String(apiKey || "").trim() : "");
   return Promise.resolve()
     .then(async () => {
       let ws = String(opts.workspace || dshWorkspaceOf(opts.node) || "").trim();
@@ -1424,6 +1428,7 @@ function dshRunTask(input, opts) {
     maxTokens: Number(d.maxTokens) || 49152,
     apiKey,
     baseUrl,
+    webSearchApiKey,
     systemPrompt: [opts.systemPrompt || "", agentToolPolicySystemNote()]
       .filter(Boolean)
       .join("\n\n"),
@@ -2014,6 +2019,7 @@ const S = {
   saving: false,
   lastSaved: null,
   refMenu: null,
+  slashMenu: null,
   uiOpenNode: null,
   uiBgRmNode: null,
   undoStack: [],
@@ -2391,6 +2397,55 @@ function nodeKindLabel(node) {
   };
   return I18n.t(map[node.kind] || "节点");
 }
+
+/* 菜单/节点 hover：短标题留在画面上，括号里的说明用于解释节点作用 */
+function splitCtxParenLabel(s) {
+  const t = String(s || "").trim();
+  const m = t.match(/^(.*?)(?:\s*[（(]([^）)]+)[）)])\s*$/);
+  if (!m) return { label: t, hint: "" };
+  const label = String(m[1] || "").trim();
+  const hint = String(m[2] || "").trim();
+  if (!label || !hint) return { label: t, hint: "" };
+  return { label, hint };
+}
+
+function nodeKindPurposeKey(node) {
+  if (!node) return "";
+  if (node.kind === "proc_text" && node.agent) {
+    return "智能任务（读文件 / 联网 / 执行命令）";
+  }
+  if (node.kind === "control") return "";
+  const map = {
+    input_text: "输入节点（仅输出）",
+    input_image: "输入节点（仅输出）",
+    proc_text: "文本处理（LLM）",
+    proc_image: "图像生成（文生图）",
+    save_text: "保存文本（YAML）",
+    save_image: "保存节点（接收最终输出）",
+    split: "拆分（批次 → 单项只读节点）",
+    merge: "合并（多节点 → 批次）",
+    agent_task: "智能任务（读文件 / 联网 / 执行命令）",
+    task: "任务（规划 · 可进入分段解决）",
+    chat: "文本对话（Chat）",
+    wait_file: "需求等待（监视文件）",
+    timer: "定时触发器（计划 / Cron）",
+    delayer: "延时器（等待后继续）",
+    sequencer: "序列器（按序多路）",
+    gate: "闸门（全部到达才放行）",
+    splitter: "分发（并行多路）",
+    counter: "计数（每 N 次放行）",
+    mutex: "互斥（多入选一）",
+    judge: "判断（是 / 否）",
+  };
+  return map[node.kind] || "";
+}
+
+function nodeKindPurpose(node) {
+  const key = nodeKindPurposeKey(node);
+  if (!key) return "";
+  return splitCtxParenLabel(I18n.t(key)).hint;
+}
+
 function collectRunQueue() {
   const running = [];
   const waiting = [];
@@ -2640,6 +2695,7 @@ function closeOverlay() {
   }
   const body = $("#ovBody");
   if (body) body.classList.remove("tpl-store-body");
+  document.querySelectorAll("#overlay > .plugin-pop").forEach((el) => el.remove());
   $("#overlay").style.display = "none";
 }
 
@@ -5209,7 +5265,10 @@ function caretXY(ta) {
 function closeRefMenu() {
   if (S.refMenu) {
     const m = $("#refMenu");
-    if (m) m.style.display = "none";
+    if (m) {
+      m.classList.remove("slash-menu");
+      m.style.display = "none";
+    }
     S.refMenu = null;
   }
 }
@@ -5217,7 +5276,9 @@ function closeRefMenu() {
 function showRefMenu(ta, node, items) {
   items = items || refCandidates(node);
   if (!items.length) return;
+  closeSlashMenu();
   const menu = $("#refMenu");
+  menu.classList.remove("slash-menu");
   menu.innerHTML = "";
   const head = document.createElement("div");
   head.className = "ref-head";
@@ -5326,6 +5387,248 @@ function refKey(ta, ev, node) {
     ev.preventDefault();
     if (items[rm.sel]) items[rm.sel].click();
   }
+}
+
+/* 智能会话 / 助手：输入 / 或中文输入法顿号 、 呼出技能与少量斜杠命令
+   （new/rename/export/permissions/help 已融入 UI，不在菜单中展示） */
+const AGENT_SLASH_CMDS = [
+  { name: "compact", title: "压缩上文", hint: "压缩对话上下文" },
+  { name: "plan", title: "规划模式", hint: "下一轮先制定计划再执行" },
+];
+let _skillListCache = { at: 0, skills: [] };
+let _slashTickGen = 0;
+
+async function loadSkillsCached(force) {
+  if (!force && Date.now() - _skillListCache.at < 5000) return _skillListCache.skills;
+  try {
+    const r = await window.api.skillList();
+    _skillListCache = { at: Date.now(), skills: (r && r.skills) || [] };
+  } catch {
+    _skillListCache = { at: Date.now(), skills: [] };
+  }
+  return _skillListCache.skills;
+}
+
+async function resolveSkillByName(name) {
+  const nm = String(name || "").trim();
+  if (!nm || !window.api || !window.api.skillGet) return null;
+  try {
+    const r = await window.api.skillGet(nm);
+    if (r && r.ok && r.body) return { name: r.name || nm, body: r.body };
+  } catch {}
+  return null;
+}
+
+function skillTaskPrompt(sw) {
+  const extra = sw.arg
+    ? sw.arg + "\n\n"
+    : I18n.t("未另写说明，请按技能默认流程执行。") + "\n\n";
+  return (
+    I18n.t("请使用技能") +
+    "「" +
+    (sw.title || sw.name) +
+    "」。\n" +
+    extra +
+    I18n.t("—— 技能说明书（必须遵循）——") +
+    "\n" +
+    sw.body
+  );
+}
+
+/* 行首 / 或中文输入法把 / 打成的 、 均可呼出；query 可含中文以按标题筛选 */
+function slashToken(ta) {
+  if (!ta) return null;
+  const v = String(ta.value || "");
+  const caret = ta.selectionStart || 0;
+  const before = v.slice(0, caret);
+  const m = before.match(/(^|\n)([\/\u3001])([^\s]*)$/);
+  if (!m) return null;
+  return {
+    start: caret - (m[3] || "").length - 1,
+    query: String(m[3] || "").toLowerCase(),
+    trigger: m[2],
+  };
+}
+
+function slashItemMatch(it, q) {
+  if (!q) return true;
+  const hay = [it.name, it.title, it.hint, it.description]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.indexOf(q) >= 0;
+}
+
+function closeSlashMenu() {
+  if (!S.slashMenu) return;
+  const m = $("#refMenu");
+  if (m) {
+    m.classList.remove("slash-menu");
+    if (!S.refMenu) m.style.display = "none";
+  }
+  S.slashMenu = null;
+}
+
+function paintSlashSel() {
+  if (!S.slashMenu) return;
+  const menu = $("#refMenu");
+  menu
+    .querySelectorAll(".ref-item")
+    .forEach((b, i) => b.classList.toggle("on", i === S.slashMenu.sel));
+}
+
+function selectSlashItem(item) {
+  const sm = S.slashMenu;
+  if (!sm || !sm.ta || !item) return;
+  const ta = sm.ta;
+  const tok = slashToken(ta);
+  if (!tok) {
+    closeSlashMenu();
+    return;
+  }
+  const v = ta.value;
+  const caret = ta.selectionStart || 0;
+  const prefix = v.slice(0, tok.start);
+  const suffix = v.slice(caret);
+  const insert = "/" + item.name + " ";
+  ta.value = prefix + insert + suffix;
+  const np = prefix.length + insert.length;
+  ta.setSelectionRange(np, np);
+  ta.focus();
+  closeSlashMenu();
+}
+
+function showSlashMenu(ta, items, scope) {
+  const menu = $("#refMenu");
+  if (!menu) return;
+  closeRefMenu();
+  menu.classList.add("slash-menu");
+  menu.innerHTML = "";
+  const list = document.createElement("div");
+  list.className = "ref-list";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "ref-item slash-item";
+    empty.style.cursor = "default";
+    empty.textContent = I18n.t("暂无匹配的命令或技能");
+    list.appendChild(empty);
+  } else {
+    items.forEach((it, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ref-item slash-item";
+      const title = document.createElement("span");
+      title.className = "slash-title";
+      title.textContent = it.title || it.name;
+      const cmd = document.createElement("span");
+      cmd.className = "slash-cmd";
+      cmd.textContent = "/" + it.name;
+      b.appendChild(title);
+      b.appendChild(cmd);
+      const hintText = I18n.t(it.hint || "") || it.hint || "";
+      if (hintText && hintText !== title.textContent) {
+        const hint = document.createElement("span");
+        hint.className = "slash-hint";
+        hint.textContent = hintText;
+        b.appendChild(hint);
+      }
+      b.onmousedown = (ev) => ev.preventDefault();
+      b.onclick = () => selectSlashItem(it);
+      b.dataset.idx = String(i);
+      list.appendChild(b);
+    });
+  }
+  menu.appendChild(list);
+  const pos = caretXY(ta);
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  menu.style.display = "block";
+  const mw = menu.offsetWidth || 260;
+  const mh = menu.offsetHeight || 40;
+  const pad = 8;
+  let left = Math.max(pad, Math.min(pos.x, window.innerWidth - mw - pad));
+  let top = pos.y - mh - 4;
+  if (top < pad) top = pad;
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
+  S.slashMenu = { ta, items, sel: 0, focusable: list, scope: scope || "agent" };
+  paintSlashSel();
+}
+
+async function slashTick(ta, scope) {
+  const gen = ++_slashTickGen;
+  const tok = slashToken(ta);
+  if (!tok) {
+    closeSlashMenu();
+    return;
+  }
+  const skills = await loadSkillsCached(false);
+  if (gen !== _slashTickGen) return;
+  const q = tok.query;
+  const sk = (skills || [])
+    .map((s) => ({
+      name: s.name,
+      title: s.title || s.name,
+      hint: s.description || "",
+      description: s.description || "",
+      kind: "skill",
+      builtin: !!s.builtin,
+    }))
+    .filter((s) => slashItemMatch(s, q))
+    .sort((a, b) => {
+      if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
+      return String(a.title || a.name).localeCompare(
+        String(b.title || b.name),
+        "zh",
+      );
+    });
+  const cmds =
+    scope === "assist"
+      ? []
+      : AGENT_SLASH_CMDS.filter((c) =>
+          slashItemMatch(
+            { name: c.name, title: c.title, hint: c.hint },
+            q,
+          ),
+        ).map((c) => ({
+          name: c.name,
+          title: c.title || c.name,
+          hint: c.hint,
+          kind: "cmd",
+          builtin: false,
+        }));
+  /* 内置/植入技能优先，命令靠后 */
+  showSlashMenu(ta, sk.concat(cmds), scope);
+}
+
+function slashKey(ta, ev) {
+  if (!S.slashMenu) return false;
+  const sm = S.slashMenu;
+  if (ev.key === "ArrowDown") {
+    ev.preventDefault();
+    if (sm.items && sm.items.length)
+      sm.sel = (sm.sel + 1) % sm.items.length;
+    paintSlashSel();
+    return true;
+  }
+  if (ev.key === "ArrowUp") {
+    ev.preventDefault();
+    if (sm.items && sm.items.length)
+      sm.sel = (sm.sel - 1 + sm.items.length) % sm.items.length;
+    paintSlashSel();
+    return true;
+  }
+  if (ev.key === "Enter" || ev.key === "Tab") {
+    ev.preventDefault();
+    if (sm.items && sm.items[sm.sel]) selectSlashItem(sm.items[sm.sel]);
+    return true;
+  }
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    closeSlashMenu();
+    return true;
+  }
+  return false;
 }
 
 /* ============ 画布绘制标注（纯展示：文本 / 框体 / 箭头） ============ */
@@ -6424,8 +6727,11 @@ function nodeElement(node) {
   const handle = document.createElement("button");
   handle.className = "n-drag-handle";
   fillNodeKindIcon(handle, node);
-  handle.title =
-    I18n.t(nodeKindLabel(node)) + " · " + I18n.t("拖拽移动节点（按住手柄拖动）");
+  handle.removeAttribute("title");
+  bindNodeTitleTooltip(handle, () => {
+    const purpose = nodeKindPurpose(node);
+    return purpose || I18n.t("拖拽移动节点（按住手柄拖动）");
+  });
   handle.addEventListener("mousedown", (ev) => {
     ev.stopPropagation();
     ev.preventDefault();
@@ -6436,7 +6742,13 @@ function nodeElement(node) {
   title.className = "n-title";
   const fullTitle = node.title || I18n.t("（未命名）");
   title.textContent = fullTitle;
-  bindNodeTitleTooltip(title, fullTitle);
+  title.removeAttribute("title");
+  bindNodeTitleTooltip(title, () => {
+    const purpose = nodeKindPurpose(node);
+    const truncated = title.scrollWidth > title.clientWidth + 1;
+    if (purpose) return truncated ? fullTitle + "\n" + purpose : purpose;
+    return truncated ? fullTitle : "";
+  });
   if (!node.ro) {
     title.onclick = (ev) => {
       ev.stopPropagation();
@@ -9859,8 +10171,7 @@ async function runDshOnce(node, spec, attemptT, images) {
     images,
     systemPrompt:
       "你绑定在当前画布工作流上。只能用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 操作本画布；" +
-      "禁止 switch_workflow / create_workflow；list_workflows 与 canvas_get 不会返回其他画布。" +
-      "回答简洁，中文优先。",
+      "list_workflows 与 canvas_get 不会返回其他画布。回答简洁，中文优先。",
     onEvent: (type, data) => onDshNodeEvent(node, attemptT, type, data),
     onDone: (d) => recordDshMetrics(node, d.metrics),
   });
@@ -11883,7 +12194,7 @@ function applyAssistScopeToSnapshot(snap, opts) {
       ]
     : [];
   snap.scopeNote = I18n.t(
-    "工作范围=当前画布：不得读取、切换或操作其他画布内容。",
+    "工作范围=当前画布：不得读取或操作其他画布内容。",
   );
   return snap;
 }
@@ -12023,7 +12334,7 @@ async function applyAppOp(params) {
   const action = String(params.action || "").trim();
   const warnings = [];
   if (!action) throw new Error(I18n.t("缺少 action"));
-  if (action === "delete_workflow") assertAgentTool("app_delete");
+  if (action === "delete_workflow") await ensureAgentTool("app_delete");
   else if (
     action === "status" ||
     action === "list_workflows" ||
@@ -12032,20 +12343,17 @@ async function applyAppOp(params) {
     action === "undo" ||
     action === "redo"
   ) {
-    assertAgentTool("app_ops");
+    await ensureAgentTool("app_ops");
     if (action === "status" || action === "list_workflows")
-      assertAgentTool("canvas_read");
+      await ensureAgentTool("canvas_read");
   }
   const scopeBlocked = S.assistRunActive && assistScopeIsCurrent()
     ? I18n.t(
         "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。",
       )
     : I18n.t(
-        "智能任务仅能访问当前画布，无法读取、切换或新建其他画布。",
+        "智能任务仅能访问当前画布，无法读取或操作其他画布。",
       );
-  const viewBlocked = I18n.t(
-    "智能助手不能切换画布或改变你的视角（平移 / 缩放 / 居中 / 切视图）。请自行切换工作流，或使用顶栏「居中」。",
-  );
 
   if (
     action === "fit_canvas" ||
@@ -12054,7 +12362,7 @@ async function applyAppOp(params) {
     action === "switch_workflow" ||
     action === "create_workflow"
   ) {
-    throw new Error(viewBlocked);
+    throw new Error(I18n.t("未知应用操作：") + action);
   }
 
   if (action === "status" || action === "list_workflows") {
@@ -12326,9 +12634,24 @@ function agentToolCatalog() {
 function defaultToolAllow() {
   const allow = {};
   for (const cat of agentToolCatalog()) {
-    for (const it of cat.items) allow[it.key] = true;
+    for (const it of cat.items) allow[it.key] = "allow";
   }
   return allow;
+}
+
+function normalizeToolMode(v) {
+  if (v === false || v === "deny" || v === "reject" || v === 0) return "deny";
+  if (v === "ask" || v === "询问") return "ask";
+  return "allow";
+}
+
+function normalizeToolAllowMap(raw) {
+  const base = defaultToolAllow();
+  const src = raw && typeof raw === "object" ? raw : {};
+  for (const k of Object.keys(base)) {
+    if (src[k] !== undefined) base[k] = normalizeToolMode(src[k]);
+  }
+  return base;
 }
 
 function agentToolItemLabel(key) {
@@ -12367,13 +12690,13 @@ function ensureAgentToolPresets() {
     } else {
       def.builtin = true;
       def.name = I18n.t("默认（当前能力）");
-      def.allow = Object.assign(defaultToolAllow(), def.allow || {});
+      def.allow = normalizeToolAllowMap(def.allow);
     }
     for (const p of d.agentToolPresets) {
       if (!p || typeof p !== "object") continue;
       if (!p.id) p.id = "user_" + Date.now().toString(36);
       if (!p.name) p.name = I18n.t("自定义预设");
-      p.allow = Object.assign(defaultToolAllow(), p.allow || {});
+      p.allow = normalizeToolAllowMap(p.allow);
     }
   }
   const ids = d.agentToolPresets.map((p) => p && p.id);
@@ -12390,10 +12713,14 @@ function agentToolActivePreset() {
   );
 }
 
-function agentToolAllowed(key) {
+function agentToolMode(key) {
   const p = agentToolActivePreset();
-  if (!p || !p.allow || p.allow[key] === undefined) return true;
-  return !!p.allow[key];
+  if (!p || !p.allow || p.allow[key] === undefined) return "allow";
+  return normalizeToolMode(p.allow[key]);
+}
+
+function agentToolAllowed(key) {
+  return agentToolMode(key) !== "deny";
 }
 
 function agentToolDeniedError(key, detail) {
@@ -12407,6 +12734,23 @@ function agentToolDeniedError(key, detail) {
 
 function assertAgentTool(key, detail) {
   if (!agentToolAllowed(key)) throw agentToolDeniedError(key, detail);
+}
+
+async function ensureAgentTool(key, detail) {
+  const mode = agentToolMode(key);
+  if (mode === "deny") throw agentToolDeniedError(key, detail);
+  if (mode !== "ask") return;
+  const ok = await confirmDialog(
+    I18n.t("Agent 请求使用工具：") +
+      agentToolItemLabel(key) +
+      (detail ? "\n" + detail : ""),
+    {
+      title: I18n.t("工具许可询问"),
+      okText: I18n.t("批准"),
+      cancelText: I18n.t("拒绝"),
+    },
+  );
+  if (!ok) throw agentToolDeniedError(key, detail || I18n.t("用户拒绝"));
 }
 
 function normalizeCanvasCreateKind(kind) {
@@ -12496,6 +12840,10 @@ function assertCanvasEditTools(params) {
   for (const key of collectCanvasEditToolKeys(params)) assertAgentTool(key);
 }
 
+async function ensureCanvasEditTools(params) {
+  for (const key of collectCanvasEditToolKeys(params)) await ensureAgentTool(key);
+}
+
 function agentToolPolicySystemNote() {
   try {
     ensureAgentToolPresets();
@@ -12505,9 +12853,12 @@ function agentToolPolicySystemNote() {
   const p = agentToolActivePreset();
   const allow = (p && p.allow) || defaultToolAllow();
   const denied = [];
+  const asking = [];
   for (const cat of agentToolCatalog()) {
     for (const it of cat.items) {
-      if (allow[it.key] === false) denied.push(it.label + " (" + it.key + ")");
+      const mode = normalizeToolMode(allow[it.key]);
+      if (mode === "deny") denied.push(it.label + " (" + it.key + ")");
+      else if (mode === "ask") asking.push(it.label + " (" + it.key + ")");
     }
   }
   const name = (p && p.name) || I18n.t("默认（当前能力）");
@@ -12515,18 +12866,22 @@ function agentToolPolicySystemNote() {
     I18n.t("【Agent 工具许可】当前预设「") +
     name +
     I18n.t("」。");
-  if (!denied.length) {
+  if (!denied.length && !asking.length) {
     s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
     return s;
   }
-  s += I18n.t("禁止：") + denied.join(I18n.t("、")) + "。";
-  s += I18n.t(
-    "禁止项对应的工具不可调用；画布 / 应用 / 识图类调用会被系统直接拒绝。",
-  );
-  if (allow.canvas_layout === false)
+  if (denied.length)
+    s += I18n.t("拒绝：") + denied.join(I18n.t("、")) + "。";
+  if (asking.length)
+    s += I18n.t("询问：") + asking.join(I18n.t("、")) + I18n.t("（调用前会请用户确认）。");
+  if (denied.length)
+    s += I18n.t(
+      "拒绝项对应的工具不可调用；画布 / 应用 / 识图类调用会被系统直接拒绝。",
+    );
+  if (normalizeToolMode(allow.canvas_layout) === "deny")
     s += I18n.t("若仍要创建节点，edit 必须传 layout:false，且禁止 group。");
   const coreOff = ["fs_read", "fs_write", "shell", "web", "subagent", "ask_user"].filter(
-    (k) => allow[k] === false,
+    (k) => normalizeToolMode(allow[k]) === "deny",
   );
   if (coreOff.length)
     s += I18n.t(
@@ -12544,11 +12899,15 @@ function setAgentToolPresetId(id) {
   toast(I18n.t("工具预设已切换：") + hit.name, "ok");
 }
 
-function setAgentToolAllow(key, on) {
+function setAgentToolMode(key, mode) {
   const p = agentToolActivePreset();
   if (!p.allow) p.allow = defaultToolAllow();
-  p.allow[key] = !!on;
+  p.allow[key] = normalizeToolMode(mode);
   saveAgentToolConfig();
+}
+
+function setAgentToolAllow(key, on) {
+  setAgentToolMode(key, on ? "allow" : "deny");
 }
 
 function addAgentToolPreset() {
@@ -12566,7 +12925,7 @@ function addAgentToolPreset() {
       id,
       name,
       builtin: false,
-      allow: Object.assign(defaultToolAllow(), cur.allow || {}),
+      allow: normalizeToolAllowMap(cur.allow || {}),
     });
     S.config.dsh.agentToolPresetId = id;
     saveAgentToolConfig();
@@ -12620,13 +12979,21 @@ function agentToolPresetStatusText() {
   try {
     const p = agentToolActivePreset();
     const allow = (p && p.allow) || {};
-    let nOff = 0;
+    let nAsk = 0;
+    let nDeny = 0;
     for (const cat of agentToolCatalog()) {
-      for (const it of cat.items) if (allow[it.key] === false) nOff++;
+      for (const it of cat.items) {
+        const mode = normalizeToolMode(allow[it.key]);
+        if (mode === "ask") nAsk++;
+        else if (mode === "deny") nDeny++;
+      }
     }
     const name = (p && p.name) || I18n.t("默认（当前能力）");
-    return nOff
-      ? I18n.t("工具：") + name + I18n.t(" · 已关闭 ") + nOff + I18n.t(" 个类别")
+    const bits = [];
+    if (nAsk) bits.push(I18n.t("询问 ") + nAsk);
+    if (nDeny) bits.push(I18n.t("拒绝 ") + nDeny);
+    return bits.length
+      ? I18n.t("工具：") + name + " · " + bits.join(I18n.t("、"))
       : I18n.t("工具：") + name;
   } catch (_) {
     return I18n.t("工具：") + I18n.t("默认（当前能力）");
@@ -12707,7 +13074,7 @@ function openApprovalsPanel() {
   const labTools = document.createElement("label");
   labTools.className = "ap-label";
   labTools.textContent = I18n.t(
-    "Agent 工具许可（按类别；默认预设 = 当前产品能力。下一轮任务起写入系统提示，画布/应用/识图为硬拦截）",
+    "Agent 工具许可（按类别：批准 / 询问 / 拒绝；默认全批准。下一轮任务起写入系统提示）",
   );
   secTools.appendChild(labTools);
   const presetRow = document.createElement("div");
@@ -12756,27 +13123,52 @@ function openApprovalsPanel() {
     sum.textContent = cat.label;
     det.appendChild(sum);
     for (const it of cat.items) {
-      const wrap = document.createElement("label");
-      wrap.className = "ap-check";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = agentToolAllowed(it.key);
-      cb.onchange = () => {
-        setAgentToolAllow(it.key, cb.checked);
-        const stEl = $("#apToolPresetStatus");
-        if (stEl) stEl.textContent = agentToolPresetStatusText();
-        paintApprovalsBtn();
-      };
-      wrap.appendChild(cb);
-      const txt = document.createElement("span");
-      txt.appendChild(document.createTextNode(it.label));
+      const row = document.createElement("div");
+      row.className = "ap-tool-row";
+      const meta = document.createElement("div");
+      meta.className = "ap-tool-meta";
+      const lab = document.createElement("div");
+      lab.className = "ap-tool-lab";
+      lab.textContent = it.label;
+      meta.appendChild(lab);
       if (it.hint) {
         const small = document.createElement("small");
         small.textContent = it.hint;
-        txt.appendChild(small);
+        meta.appendChild(small);
       }
-      wrap.appendChild(txt);
-      det.appendChild(wrap);
+      row.appendChild(meta);
+      const toggles = document.createElement("div");
+      toggles.className = "ap-mode-toggles";
+      toggles.setAttribute("role", "group");
+      toggles.setAttribute("aria-label", it.label);
+      const cur = agentToolMode(it.key);
+      const modes = [
+        ["allow", I18n.t("批准")],
+        ["ask", I18n.t("询问")],
+        ["deny", I18n.t("拒绝")],
+      ];
+      for (const [mode, label] of modes) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className =
+          "ap-mode-btn ap-mode-" + mode + (cur === mode ? " on" : "");
+        b.textContent = label;
+        b.onclick = () => {
+          setAgentToolMode(it.key, mode);
+          toggles.querySelectorAll(".ap-mode-btn").forEach((x) => {
+            x.classList.toggle(
+              "on",
+              x.classList.contains("ap-mode-" + mode),
+            );
+          });
+          const stEl = $("#apToolPresetStatus");
+          if (stEl) stEl.textContent = agentToolPresetStatusText();
+          paintApprovalsBtn();
+        };
+        toggles.appendChild(b);
+      }
+      row.appendChild(toggles);
+      det.appendChild(row);
     }
     catsHost.appendChild(det);
   }
@@ -12789,7 +13181,7 @@ function openApprovalsPanel() {
   const toolHint = document.createElement("div");
   toolHint.className = "ap-hint";
   toolHint.textContent = I18n.t(
-    "与上方「权限预设」独立：那边管沙箱与越权是否询问，这边管 Agent 允许调用哪些能力。可勾选修改当前预设，或「＋ 新建」另存一份。画布/应用/识图会直接拒绝未授权调用；读文件/终端/联网等基础能力写入系统提示约束。",
+    "与上方「权限预设」独立：那边管沙箱与越权是否询问，这边管 Agent 允许调用哪些能力。批准=直接可用，询问=调用前确认，拒绝=硬拦截。可切换当前预设，或「＋ 新建」另存一份。",
   );
   secTools.appendChild(toolHint);
   pan.appendChild(secTools);
@@ -12840,25 +13232,48 @@ function openApprovalsPanel() {
   lab3.textContent = I18n.t("助手改画布（全局助手 / 智能会话）");
   sec3.appendChild(lab3);
   const row3 = document.createElement("div");
-  row3.className = "dsh-btn-row";
-  const autoCbWrap = document.createElement("label");
-  autoCbWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer";
-  const autoCb = document.createElement("input");
-  autoCb.type = "checkbox";
-  autoCb.checked = !!S.config.dsh.assistAutoApprove;
-  autoCb.onchange = () => {
-    S.config.dsh.assistAutoApprove = !!autoCb.checked;
-    window.api.configSave(S.config).catch(() => {});
-    toast(
-      autoCb.checked
-        ? I18n.t("已开启：助手改画布不再弹确认")
-        : I18n.t("已关闭：助手改画布需确认"),
-      "ok",
-    );
-  };
-  autoCbWrap.appendChild(autoCb);
-  autoCbWrap.appendChild(document.createTextNode(I18n.t("自动批准画布修改（不弹确认）")));
-  row3.appendChild(autoCbWrap);
+  row3.className = "ap-tool-row";
+  const meta3 = document.createElement("div");
+  meta3.className = "ap-tool-meta";
+  const labAssist = document.createElement("div");
+  labAssist.className = "ap-tool-lab";
+  labAssist.textContent = I18n.t("画布修改确认");
+  meta3.appendChild(labAssist);
+  const small3 = document.createElement("small");
+  small3.textContent = I18n.t("批准=不弹窗；询问=每次确认");
+  meta3.appendChild(small3);
+  row3.appendChild(meta3);
+  const toggles3 = document.createElement("div");
+  toggles3.className = "ap-mode-toggles";
+  const assistAuto = !!S.config.dsh.assistAutoApprove;
+  const assistModes = [
+    ["allow", I18n.t("批准"), true],
+    ["ask", I18n.t("询问"), false],
+  ];
+  for (const [mode, label, autoVal] of assistModes) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      "ap-mode-btn ap-mode-" +
+      mode +
+      ((assistAuto && autoVal) || (!assistAuto && !autoVal) ? " on" : "");
+    b.textContent = label;
+    b.onclick = () => {
+      S.config.dsh.assistAutoApprove = !!autoVal;
+      window.api.configSave(S.config).catch(() => {});
+      toggles3.querySelectorAll(".ap-mode-btn").forEach((x) => {
+        x.classList.toggle("on", x.classList.contains("ap-mode-" + mode));
+      });
+      toast(
+        autoVal
+          ? I18n.t("已开启：助手改画布不再弹确认")
+          : I18n.t("已关闭：助手改画布需确认"),
+        "ok",
+      );
+    };
+    toggles3.appendChild(b);
+  }
+  row3.appendChild(toggles3);
   sec3.appendChild(row3);
   pan.appendChild(sec3);
 
@@ -13038,7 +13453,7 @@ async function applyVisionInspect(params) {
   if (!imagePath) return { ok: false, error: I18n.t("缺少 imagePath") };
   if (!question) return { ok: false, error: I18n.t("缺少 question") };
   try {
-    assertAgentTool("vision");
+    await ensureAgentTool("vision");
   } catch (e) {
     return {
       ok: false,
@@ -13251,12 +13666,11 @@ function confirmAssistAppOp(params) {
 async function applyCanvasOp(op, params) {
   if (op === "app") return applyAppOp(params || {});
   if (op === "vision") {
-    assertAgentTool("vision");
     return await applyVisionInspect(params || {});
   }
   if (!S.wf) throw new Error(I18n.t("当前没有打开的工作流"));
   if (op === "get") {
-    assertAgentTool("canvas_read");
+    await ensureAgentTool("canvas_read");
     return Object.assign({ ok: true }, await canvasSnapshotFull());
   }
   if (op === "edit") return await applyCanvasEdit(params || {});
@@ -13855,7 +14269,7 @@ async function oneClickAutoLayout(opts) {
     return;
   }
   const msg = I18n.t(
-    "请整理当前画布排版：先 mtnode_canvas_get 查看每个节点与绘制的 x/y/w/h，再根据现状自行判断，用一次 mtnode_canvas_edit（layout:false）通过 update / updateMarks 校准位置与尺寸。要求美观整洁、间距舒适、图像节点便于观察、面向用户可编辑/操作的节点靠上；框体/文字/箭头等绘制要跟着节点一起调整。不要增删节点、不要改连线，不要调用任何 layout action，也不要 fit_canvas / focus_node / 移动相机。完成后用一句话确认。",
+    "请整理当前画布排版：先 mtnode_canvas_get 查看每个节点与绘制的 x/y/w/h，再根据现状自行判断，用一次 mtnode_canvas_edit（layout:false）通过 update / updateMarks 校准位置与尺寸。要求美观整洁、间距舒适、图像节点便于观察、面向用户可编辑/操作的节点靠上；框体/文字/箭头等绘制要跟着节点一起调整。不要增删节点、不要改连线，不要调用任何 layout action。完成后用一句话确认。",
   );
   setAssistOpen(true);
   const aInp = $("#assistInput");
@@ -14398,7 +14812,7 @@ async function applyCanvasEdit(params) {
     return Object.assign({ ok: true, message: I18n.t("没有改动"), warnings }, canvasSnapshot());
   }
 
-  assertCanvasEditTools(params);
+  await ensureCanvasEditTools(params);
 
   pushHistory();
   if (!Array.isArray(S.wf.groups)) S.wf.groups = [];
@@ -14905,9 +15319,12 @@ function showNodeTitleTip(anchor, text) {
   tip.style.top = top + "px";
 }
 
-function bindNodeTitleTooltip(el, fullTitle) {
+function bindNodeTitleTooltip(el, textOrFn) {
   if (!el) return;
-  el.addEventListener("mouseenter", () => showNodeTitleTip(el, fullTitle));
+  el.addEventListener("mouseenter", () => {
+    const text = typeof textOrFn === "function" ? textOrFn() : textOrFn;
+    showNodeTitleTip(el, text);
+  });
   el.addEventListener("mouseleave", hideNodeTitleTip);
   el.addEventListener("mousedown", hideNodeTitleTip);
 }
@@ -16828,19 +17245,19 @@ function bindCanvas() {
               iconCls: "draw",
               submenu: [
                 ctxAction(
-                  I18n.t("Ｔ 文本"),
+                  I18n.t("文本"),
                   () => addMark("text", pt.x, pt.y),
                   "mark_text",
                   { iconCls: "draw" },
                 ),
                 ctxAction(
-                  I18n.t("▢ 框体"),
+                  I18n.t("框体"),
                   () => addMark("box", pt.x, pt.y),
                   "mark_box",
                   { iconCls: "draw" },
                 ),
                 ctxAction(
-                  I18n.t("➔ 箭头"),
+                  I18n.t("箭头"),
                   () => addMark("arrow", pt.x, pt.y),
                   "mark_arrow",
                   { iconCls: "draw" },
@@ -17058,6 +17475,10 @@ function bindCanvas() {
         const m = $("#refMenu");
         if (!m.contains(ev.target)) closeRefMenu();
       }
+      if (S.slashMenu) {
+        const m = $("#refMenu");
+        if (!m.contains(ev.target)) closeSlashMenu();
+      }
       if (S.uiOpenNode) {
         const el = document.querySelector(
           '.wf-node[data-nid="' + S.uiOpenNode + '"]',
@@ -17083,6 +17504,11 @@ function bindCanvas() {
 
 /* ============ 右键菜单 ============ */
 
+function applyCtxParenHover(el, raw) {
+  if (el) el.removeAttribute("title");
+  return splitCtxParenLabel(raw).label;
+}
+
 function appendCtxItem(parent, it) {
   if (!it) return;
   if (Array.isArray(it.submenu) && it.submenu.length) {
@@ -17092,13 +17518,16 @@ function appendCtxItem(parent, it) {
     b.type = "button";
     b.className = "ctx-fly-btn" + (it.cls ? " " + it.cls : "");
     if (it.iconKey) {
-      const ic = document.createElement("span");
-      ic.className = "ctx-kind-icon kind-" + (it.iconCls || "ctrl");
-      ic.innerHTML = KIND_ICON_SVG[it.iconKey] || KIND_ICON_SVG.control;
-      b.appendChild(ic);
+      const svg = KIND_ICON_SVG[it.iconKey];
+      if (svg) {
+        const ic = document.createElement("span");
+        ic.className = "ctx-kind-icon kind-" + (it.iconCls || "ctrl");
+        ic.innerHTML = svg;
+        b.appendChild(ic);
+      }
     }
     const lab = document.createElement("span");
-    lab.textContent = it.label;
+    lab.textContent = applyCtxParenHover(b, it.label);
     const caret = document.createElement("span");
     caret.className = "ctx-caret";
     caret.textContent = "›";
@@ -17143,18 +17572,19 @@ function appendCtxItem(parent, it) {
   const b = document.createElement("button");
   b.type = "button";
   if (it.cls) b.className = it.cls;
-  if (it.iconKey || it.iconCls) {
+  const kindSvg = it.iconKey && KIND_ICON_SVG[it.iconKey];
+  if (kindSvg) {
     b.classList.add("ctx-kind");
     const ic = document.createElement("span");
     ic.className = "ctx-kind-icon kind-" + (it.iconCls || "proc");
-    ic.innerHTML = KIND_ICON_SVG[it.iconKey] || "";
+    ic.innerHTML = kindSvg;
     const lab = document.createElement("span");
     lab.className = "ctx-kind-lab";
-    lab.textContent = it.label;
+    lab.textContent = applyCtxParenHover(b, it.label);
     b.appendChild(ic);
     b.appendChild(lab);
   } else {
-    b.textContent = it.label;
+    b.textContent = applyCtxParenHover(b, it.label);
   }
   b.onclick = () => {
     hideCtx();
@@ -17176,16 +17606,18 @@ function ctxKindItem(kind, label, run, extra) {
 
 function ctxAction(label, run, iconKey, extra) {
   extra = extra || {};
+  const key = iconKey || extra.iconKey || "";
   return {
     label,
     run,
-    iconKey: iconKey || "",
-    iconCls: extra.iconCls || iconKey || "muted",
+    iconKey: key,
+    iconCls: extra.iconCls || key,
     cls: extra.cls,
   };
 }
 
 function showCtx(x, y, groups) {
+  hideNodeTitleTip();
   const ctx = $("#ctx");
   ctx.innerHTML = "";
   for (const entry of groups || []) {
@@ -17196,7 +17628,7 @@ function showCtx(x, y, groups) {
     if (gtitle) {
       const g = document.createElement("div");
       g.className = "ctx-group";
-      g.textContent = gtitle;
+      g.textContent = applyCtxParenHover(g, gtitle);
       ctx.appendChild(g);
     } else if (ctx.childNodes.length) {
       const sep = document.createElement("div");
@@ -17213,6 +17645,7 @@ function showCtx(x, y, groups) {
   ctx.style.top = Math.min(y, vh - Math.max(rect.height, 40) - 8) + "px";
 }
 function hideCtx() {
+  hideNodeTitleTip();
   $("#ctx").style.display = "none";
 }
 
@@ -17647,7 +18080,7 @@ async function chatSendAgent(node, text) {
       systemPrompt:
         (node.systemPrompt || "") +
         (node.systemPrompt ? "\n" : "") +
-        "你绑定在当前画布。禁止 switch_workflow / create_workflow；list_workflows / canvas_get 不会返回其他画布。",
+        "你绑定在当前画布。list_workflows / canvas_get 不会返回其他画布。",
       onEvent: (type, data) => {
         if (type === "reasoning" && data.text) {
           pushThinking(node.id, 0, data.text);
@@ -19992,23 +20425,17 @@ function askAssistDecomposeTask(node) {
   S.selWire = null;
   setAssistOpen(true);
   const goal = String(node.goal || "").trim();
-  const lines = [
-    "请把当前画布上的任务节点「" +
+  const arg = [
+    "请拆解任务节点「" +
       (node.title || I18n.t("任务")) +
       "」（id=" +
       node.id +
-      "）拆成可执行的内部任务图。",
+      "）。",
     goal
       ? "任务目标：" + goal
       : "请根据标题理解目标；必要时先更新该节点的 goal。",
-    "",
-    "要求：",
-    "1. 先 mtnode_canvas_get，看清 taskTree 与当前层（每个任务内部已有固定起点/成功终点/失败终点，不要删除它们）。",
-    "2. 用一次 mtnode_canvas_edit：在该任务内部（parentTaskId）创建若干 kind:\"task\" 子任务和必要的 kind:\"judge\" 判断节点。",
-    "3. 从该任务的起点 control（ctrlRole=start）连线，经子任务/处理/判断，接到成功终点（ctrlRole=endSuccess）或失败终点（ctrlRole=endFail）。判断节点有两个输出：fromIndex 0=是，1=否。",
-    "4. 不要在顶层铺大量 proc/save/chat。禁止移动相机。完成后用一句话说明控制流怎么走。",
-  ];
-  assistSend(lines.join("\n"));
+  ].join("\n");
+  assistSend("/generate-task " + arg);
 }
 
 async function playTaskNode(node, quiet) {
@@ -21137,11 +21564,45 @@ function newWorkflowDialog() {
   inp.value = I18n.t("工作流 ") + new Date().toLocaleDateString().replace(/\//g, "-");
   lab.appendChild(inp);
   body.appendChild(lab);
+
+  const wsLab = document.createElement("label");
+  wsLab.className = "n-field";
+  wsLab.style.marginTop = "10px";
+  wsLab.appendChild(document.createTextNode(I18n.t("工作目录（必填）")));
+  const wsRow = document.createElement("div");
+  wsRow.style.cssText = "display:flex;gap:6px;align-items:center";
+  const wsInp = document.createElement("input");
+  wsInp.type = "text";
+  wsInp.placeholder = I18n.t("请选择已存在的文件夹…");
+  wsInp.style.flex = "1";
+  wsRow.appendChild(wsInp);
+  wsRow.appendChild(workspaceBrowseButton(wsInp));
+  wsLab.appendChild(wsRow);
+  const wsHint = document.createElement("div");
+  wsHint.className = "settings-hint";
+  wsHint.style.marginTop = "6px";
+  wsHint.textContent = I18n.t(
+    "新建画布必须指定工作目录。智能节点与相对保存路径都相对该目录，缺少目录会导致读写失败。",
+  );
+  wsLab.appendChild(wsHint);
+  body.appendChild(wsLab);
+
   const foot = $("#ovFoot");
   const ok = document.createElement("button");
   ok.className = "mini primary";
   ok.textContent = I18n.t("创建");
   ok.onclick = async () => {
+    const ws = String(wsInp.value || "").trim();
+    if (!ws) {
+      toast(I18n.t("请选择工作目录"), "err");
+      wsInp.focus();
+      return;
+    }
+    if (!(await window.api.fileIsDir(ws))) {
+      toast(I18n.t("工作目录不存在或不是有效文件夹"), "err");
+      wsInp.focus();
+      return;
+    }
     const id = "wf_" + Date.now().toString(36);
     clearHistory();
     S.wf = {
@@ -21149,6 +21610,9 @@ function newWorkflowDialog() {
       name: inp.value.trim() || I18n.t("未命名工作流"),
       nodes: [],
       wires: [],
+      groups: [],
+      marks: [],
+      workspace: ws,
     };
     await window.api.wfSave(id, S.wf);
     S.config.activeWorkflowId = id;
@@ -23146,10 +23610,98 @@ async function openTemplateStore() {
 
 /* ============ 顶栏「插件」：可选组件（桌宠等） ============ */
 let _petProgressOff = null;
-function petStatusLabel(st) {
-  if (!st || !st.installed) return { text: I18n.t("未安装"), cls: "warn" };
-  if (st.running) return { text: I18n.t("运行中") + (st.version ? " · v" + st.version : ""), cls: "ok" };
-  return { text: I18n.t("已安装") + (st.version ? " · v" + st.version : ""), cls: "ok" };
+const PLUGIN_ACT_SVG = {
+  play:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2l8 4.8-8 4.8z" fill="currentColor"/></svg>',
+  stop:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="currentColor"/></svg>',
+  download:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4v7.2M5.4 7.4L8 10.2 10.6 7.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.4 12.8h9.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
+  update:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v8.2M8 9.7l-2.6-2.6M8 9.7l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 11.5v1.2c0 .7.6 1.3 1.3 1.3h8.4c.7 0 1.3-.6 1.3-1.3v-1.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
+  trash: KIND_ICON_SVG.menu_delete,
+};
+function pluginIconUrl(item) {
+  const raw = String((item && item.icon) || (item && item.id ? item.id + ".png" : "")).replace(/\\/g, "/");
+  const name = raw.split("/").pop() || "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(png|jpe?g|webp)$/i.test(name)) return "";
+  return "plugin-icons/" + name;
+}
+function pluginVerLabel(st, root) {
+  const v =
+    (st && (st.installedVersion || st.version)) ||
+    (root && root.dataset && root.dataset.catalogVer) ||
+    "";
+  const s = String(v).replace(/^v/i, "").trim();
+  return s ? "v" + s : "";
+}
+function setPluginVer(root, st) {
+  const el = root && root.querySelector("[data-plugin-ver]");
+  if (el) el.textContent = pluginVerLabel(st, root);
+}
+function mkPluginActBtn(kind, title, onClick, opts) {
+  const b = document.createElement("button");
+  b.type = "button";
+  let cls = "mini btn-sq tpl-ico plugin-act";
+  if (opts && opts.primary) cls += " primary";
+  if (opts && opts.danger) cls += " danger";
+  if (opts && opts.on) cls += " on";
+  b.className = cls;
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  b.innerHTML = PLUGIN_ACT_SVG[kind] || "";
+  b.disabled = !!(opts && opts.disabled);
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    if (onClick) onClick();
+  };
+  return b;
+}
+function closePluginPop(wrap, pop) {
+  if (!wrap) return;
+  wrap.querySelectorAll(".plugin-tile.sel").forEach((el) => el.classList.remove("sel"));
+  wrap.classList.remove("has-pop");
+  if (pop) {
+    pop.classList.remove("on", "flip");
+    pop.innerHTML = "";
+  }
+}
+function positionPluginPop(wrap, pop, card) {
+  if (!pop || !card || !pop.classList.contains("on")) return;
+  const r = card.getBoundingClientRect();
+  const popW = pop.offsetWidth || 240;
+  const popH = pop.offsetHeight || 80;
+  const gap = 10;
+  let left = r.left - popW - gap;
+  let flip = false;
+  if (left < 8) {
+    left = r.right + gap;
+    flip = true;
+  }
+  let top = r.top;
+  const maxTop = Math.max(8, window.innerHeight - popH - 8);
+  if (top > maxTop) top = maxTop;
+  if (top < 8) top = 8;
+  pop.classList.toggle("flip", flip);
+  pop.style.left = left + "px";
+  pop.style.top = top + "px";
+}
+function openPluginPop(wrap, pop, card, item) {
+  const already = card.classList.contains("sel");
+  closePluginPop(wrap, pop);
+  if (already) return;
+  card.classList.add("sel");
+  wrap.classList.add("has-pop");
+  const title = document.createElement("div");
+  title.className = "plugin-pop-title";
+  title.textContent = pluginLoc(item, "title") || item.id;
+  const desc = document.createElement("div");
+  desc.className = "plugin-pop-desc";
+  desc.textContent = pluginLoc(item, "subtitle") || I18n.t("暂无描述");
+  pop.appendChild(title);
+  pop.appendChild(desc);
+  pop.classList.add("on");
+  requestAnimationFrame(() => positionPluginPop(wrap, pop, card));
 }
 function ensurePetExtras(root) {
   let extras = root.querySelector("[data-pet-extras]");
@@ -23289,26 +23841,17 @@ async function paintPetExtras(root, st) {
 async function refreshPetPluginCard(root) {
   if (!root || !window.api || !window.api.petStatus) return;
   const st = await window.api.petStatus();
-  const statusEl = root.querySelector("[data-pet-status]");
   const actions = root.querySelector("[data-pet-actions]");
   const prog = root.querySelector("[data-pet-progress]");
-  const progTxt = root.querySelector("[data-pet-progress-txt]");
-  if (!statusEl || !actions) return;
-  const lab = petStatusLabel(st);
-  statusEl.textContent = lab.text;
-  statusEl.className = "plugin-card-status " + lab.cls;
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, st);
   actions.innerHTML = "";
-  const addBtn = (label, cls, onClick, disabled) => {
-    const b = document.createElement("button");
-    b.className = "mini" + (cls ? " " + cls : "");
-    b.textContent = label;
-    b.disabled = !!disabled;
-    b.onclick = onClick;
-    actions.appendChild(b);
-    return b;
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
   };
   if (!st.installed) {
-    addBtn(I18n.t("下载安装"), "primary", async () => {
+    addBtn("download", I18n.t("下载安装"), async () => {
       if (prog) prog.style.display = "block";
       if (progTxt) {
         progTxt.style.display = "block";
@@ -23330,56 +23873,227 @@ async function refreshPetPluginCard(root) {
         toast(I18n.t("桌宠安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
       }
       refreshPetPluginCard(root);
-    }, !!st.installing);
+    }, { primary: true, disabled: !!st.installing });
   } else {
     if (st.running) {
-      addBtn(I18n.t("停止"), "", async () => {
+      addBtn("stop", I18n.t("停止"), async () => {
         await window.api.petStop();
         refreshPetPluginCard(root);
       });
     } else {
-      addBtn(I18n.t("运行"), "primary", async () => {
+      addBtn("play", I18n.t("运行"), async () => {
         const r = await window.api.petStart();
         if (!r || !r.ok) {
           toast(I18n.t("启动桌宠失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
         }
         refreshPetPluginCard(root);
+      }, { primary: true });
+    }
+    if (st.updateAvailable) {
+      addBtn("update", I18n.t("更新"), async () => {
+        if (prog) prog.style.display = "block";
+        if (progTxt) {
+          progTxt.style.display = "block";
+          progTxt.textContent = I18n.t("准备下载…");
+        }
+        const wasRunning = !!st.running;
+        if (wasRunning) await window.api.petStop();
+        const r = await window.api.petInstall();
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        if (r && r.ok) {
+          toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
+          if (wasRunning) await window.api.petStart();
+        } else {
+          toast(I18n.t("桌宠安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+        }
+        refreshPetPluginCard(root);
       });
     }
-    addBtn(I18n.t("卸载"), "danger", async () => {
+    addBtn("trash", I18n.t("卸载"), async () => {
       if (!(await confirmDialog(I18n.t("卸载桌宠？将删除已下载的运行时文件。"), { title: I18n.t("卸载桌宠"), danger: true, okText: I18n.t("卸载") }))) return;
       await window.api.petUninstall();
       toast(I18n.t("桌宠已卸载"), "ok");
       refreshPetPluginCard(root);
-    });
-    addBtn(I18n.t("更新运行时"), "", async () => {
-      if (prog) prog.style.display = "block";
-      if (progTxt) {
-        progTxt.style.display = "block";
-        progTxt.textContent = I18n.t("准备下载…");
-      }
-      const wasRunning = !!st.running;
-      if (wasRunning) await window.api.petStop();
-      const r = await window.api.petInstall();
-      if (prog) prog.style.display = "none";
-      if (progTxt) progTxt.style.display = "none";
-      if (r && r.ok) {
-        toast(I18n.t("桌宠已安装") + (r.version ? " v" + r.version : ""), "ok");
-        if (wasRunning) await window.api.petStart();
-      } else {
-        toast(I18n.t("桌宠安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      }
-      refreshPetPluginCard(root);
-    });
+    }, { danger: true });
   }
-  /* 桌宠设置改走托盘菜单，插件面板仅保留安装/运行/停止/卸载 */
   const extras = root.querySelector("[data-pet-extras]");
   if (extras) {
     extras.style.display = "none";
     extras.innerHTML = "";
   }
 }
-function openAppPluginsDialog() {
+function pluginLoc(p, key) {
+  const v = p && p[key];
+  if (v && typeof v === "object") {
+    const loc = I18n.getLocale && I18n.getLocale() === "en" ? "en" : "zh";
+    return v[loc] || v.zh || v.en || "";
+  }
+  return String(v || "");
+}
+function pluginCatalogHint(cat) {
+  const src = cat && cat.source;
+  if (src === "remote") return I18n.t("插件列表来自云端，可不升级主程序获取新插件。");
+  if (src === "cache") {
+    return (
+      I18n.t("云端目录暂不可用，已显示上次缓存。") +
+      (cat.remoteError ? " (" + cat.remoteError + ")" : "")
+    );
+  }
+  return (
+    I18n.t("云端目录暂不可用，已显示内置列表。") +
+    (cat && cat.remoteError ? " (" + cat.remoteError + ")" : "")
+  );
+}
+function pluginErrText(err) {
+  const s = String(err || "");
+  if (s === "need_app_update") return I18n.t("请先升级主程序");
+  if (s === "sha256_mismatch") return I18n.t("安装包校验失败");
+  if (s === "not_window_plugin") return I18n.t("此插件需升级主程序后才能安装");
+  if (s === "bad_zip_url") return I18n.t("下载地址无效");
+  if (s === "pack_missing_entry") return I18n.t("安装包缺少入口页");
+  if (s === "not_installed") return I18n.t("尚未安装");
+  if (s === "not_ready") return I18n.t("尚未安装");
+  if (s === "too_large") return I18n.t("安装包过大");
+  if (s === "timeout") return I18n.t("下载超时");
+  if (s === "busy") return I18n.t("正在安装…");
+  return s || I18n.t("未知错误");
+}
+function bindPluginProgress(host, pluginId, isPet) {
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  const apply = (data) => {
+    if (!data) return;
+    if (isPet && data.id && data.id !== "bongochat") return;
+    if (!isPet && data.id && data.id !== pluginId) return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.percent) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    const phase = data.phase || "";
+    let msg = pct + "%";
+    if (phase === "manifest") msg = I18n.t("读取清单…");
+    else if (phase === "download") msg = I18n.t("下载中…") + " " + pct + "%";
+    else if (phase === "extract" || phase === "copy") msg = I18n.t("解压安装中…");
+    else if (phase === "done") msg = I18n.t("完成");
+    else if (phase === "error") msg = I18n.t("失败：") + pluginErrText(data.error);
+    if (progTxt) progTxt.textContent = msg;
+    if (phase === "done" || phase === "error") {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+      }, 800);
+    }
+  };
+  if (isPet && window.api && window.api.onPetProgress) {
+    const off = window.api.onPetProgress(apply);
+    return off;
+  }
+  if (!isPet && window.api && window.api.onAppPluginsProgress) {
+    return window.api.onAppPluginsProgress(apply);
+  }
+  return null;
+}
+async function refreshWindowPluginCard(host, item) {
+  const actions = host.querySelector("[data-plugin-actions]");
+  if (!actions) return;
+  const st = item || {};
+  setPluginVer(host, st);
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  if (!st.compatible) {
+    addBtn("download", I18n.t("请先升级主程序"), null, { disabled: true });
+    return;
+  }
+  if (st.kind === "unknown") {
+    addBtn("download", I18n.t("请更新应用以使用此插件"), null, { disabled: true });
+    return;
+  }
+  if (!st.installed) {
+    addBtn("download", I18n.t("下载安装"), async () => {
+      const r = await window.api.appPluginsInstall(st.id);
+      if (r && r.ok) toast(I18n.t("插件已安装") + (r.version ? " v" + r.version : ""), "ok");
+      else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
+      const cat = await window.api.appPluginsCatalog();
+      const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
+      refreshWindowPluginCard(host, next || st);
+    }, { primary: true });
+    return;
+  }
+  addBtn("play", I18n.t("运行"), async () => {
+    const r = await window.api.appPluginsOpen(st.id);
+    if (!r || !r.ok) toast(I18n.t("打开失败：") + pluginErrText(r && r.error), "err");
+  }, { primary: true });
+  if (st.updateAvailable) {
+    addBtn("update", I18n.t("更新"), async () => {
+      const r = await window.api.appPluginsInstall(st.id);
+      if (r && r.ok) toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
+      else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
+      const cat = await window.api.appPluginsCatalog();
+      const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
+      refreshWindowPluginCard(host, next || st);
+    });
+  }
+  addBtn("trash", I18n.t("卸载"), async () => {
+    if (
+      !(await confirmDialog(I18n.t("卸载该插件？将删除已下载的运行时文件。"), {
+        title: I18n.t("卸载插件"),
+        danger: true,
+        okText: I18n.t("卸载"),
+      }))
+    )
+      return;
+    await window.api.appPluginsUninstall(st.id);
+    toast(I18n.t("插件已卸载"), "ok");
+    const cat = await window.api.appPluginsCatalog();
+    const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
+    if (!next) {
+      const wrap = host.closest(".plugin-grid-wrap");
+      const pop = wrap && wrap.querySelector(".plugin-pop");
+      if (wrap) closePluginPop(wrap, pop);
+      host.remove();
+    }
+    else refreshWindowPluginCard(host, next);
+  }, { danger: true });
+}
+function mkPluginCardShell(item) {
+  const card = document.createElement("div");
+  card.className = "plugin-tile";
+  card.setAttribute("data-plugin-id", item.id);
+  card.setAttribute("role", "button");
+  card.tabIndex = 0;
+  if (item.version) card.dataset.catalogVer = String(item.version);
+  const iconUrl = pluginIconUrl(item);
+  const ver = pluginVerLabel(item, card);
+  card.innerHTML =
+    '<div class="plugin-tile-cover">' +
+    (iconUrl
+      ? '<img alt="" width="128" height="128">'
+      : '<div class="plugin-tile-ph"></div>') +
+    "</div>" +
+    '<div class="plugin-tile-title"></div>' +
+    '<div class="plugin-tile-ver" data-plugin-ver></div>' +
+    '<div class="plugin-tile-actions" data-plugin-actions data-pet-actions></div>' +
+    '<div class="plugin-progress" data-plugin-progress data-pet-progress style="display:none"><i></i></div>' +
+    '<div class="plugin-progress-txt" data-plugin-progress-txt data-pet-progress-txt style="display:none"></div>';
+  card.querySelector(".plugin-tile-title").textContent = pluginLoc(item, "title") || item.id;
+  card.querySelector("[data-plugin-ver]").textContent = ver;
+  const img = card.querySelector(".plugin-tile-cover img");
+  if (img) {
+    img.alt = pluginLoc(item, "title") || item.id;
+    img.src = iconUrl;
+    img.onerror = () => {
+      const ph = document.createElement("div");
+      ph.className = "plugin-tile-ph";
+      img.replaceWith(ph);
+    };
+  }
+  return card;
+}
+async function openAppPluginsDialog() {
   openOverlay(I18n.t("插件"));
   overlayPersistent = true;
   const body = $("#ovBody");
@@ -23390,51 +24104,13 @@ function openAppPluginsDialog() {
   const intro = document.createElement("div");
   intro.className = "settings-hint";
   intro.style.marginBottom = "12px";
-  intro.textContent = I18n.t("可选组件按需下载，不随主程序安装包分发。");
+  intro.textContent = I18n.t("正在拉取云端插件目录…");
   body.appendChild(intro);
-
-  const card = document.createElement("div");
-  card.className = "plugin-card";
-  card.innerHTML =
-    '<div class="plugin-card-head">' +
-    '<div><div class="plugin-card-title"></div><div class="plugin-card-sub"></div></div>' +
-    '<div class="plugin-card-status warn" data-pet-status>—</div>' +
-    "</div>" +
-    '<div class="plugin-card-actions" data-pet-actions></div>' +
-    '<div class="plugin-progress" data-pet-progress style="display:none"><i></i></div>' +
-    '<div class="plugin-progress-txt" data-pet-progress-txt style="display:none"></div>';
-  card.querySelector(".plugin-card-title").textContent = I18n.t("BongoChat");
-  card.querySelector(".plugin-card-sub").textContent = I18n.t(
-    "可以聊天的BongoCat！",
-  );
-  body.appendChild(card);
 
   if (_petProgressOff) {
     try { _petProgressOff(); } catch {}
     _petProgressOff = null;
   }
-  if (window.api && window.api.onPetProgress) {
-    _petProgressOff = window.api.onPetProgress((data) => {
-      const prog = card.querySelector("[data-pet-progress]");
-      const progTxt = card.querySelector("[data-pet-progress-txt]");
-      const bar = prog && prog.querySelector("i");
-      if (!data) return;
-      if (prog) prog.style.display = "block";
-      if (progTxt) progTxt.style.display = "block";
-      const pct = Math.max(0, Math.min(100, Number(data.percent) || 0));
-      if (bar) bar.style.width = pct + "%";
-      const phase = data.phase || "";
-      let msg = pct + "%";
-      if (phase === "manifest") msg = I18n.t("读取清单…");
-      else if (phase === "download") msg = I18n.t("下载中…") + " " + pct + "%";
-      else if (phase === "extract" || phase === "copy") msg = I18n.t("解压安装中…");
-      else if (phase === "done") msg = I18n.t("完成");
-      else if (phase === "error") msg = I18n.t("失败：") + (data.error || "");
-      if (progTxt) progTxt.textContent = msg;
-    });
-  }
-
-  refreshPetPluginCard(card);
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "mini";
@@ -23446,7 +24122,115 @@ function openAppPluginsDialog() {
     }
     closeOverlay();
   };
+  const refreshBtn = document.createElement("button");
+  refreshBtn.className = "mini";
+  refreshBtn.textContent = I18n.t("刷新目录");
+  refreshBtn.onclick = () => openAppPluginsDialog();
   foot.appendChild(closeBtn);
+  foot.appendChild(refreshBtn);
+
+  let cat = { ok: true, source: "fallback", plugins: [] };
+  try {
+    if (window.api && window.api.appPluginsCatalog)
+      cat = (await window.api.appPluginsCatalog()) || cat;
+  } catch (e) {
+    cat.remoteError = (e && e.message) || String(e);
+  }
+  intro.textContent = pluginCatalogHint(cat);
+  const list = Array.isArray(cat.plugins) && cat.plugins.length
+    ? cat.plugins
+    : [
+        {
+          id: "forum",
+          kind: "window",
+          icon: "forum.png",
+          version: "1.0.0",
+          title: { zh: I18n.t("MTNode 讨论区"), en: "MTNode Forum" },
+          subtitle: {
+            zh: I18n.t("小型聊天窗口，与创意工坊共用账户。综合区 / Bug 提交 / 功能改进；本地保存记录并同步近 3 天消息。"),
+            en: "A small chat window sharing the Creative Workshop account.",
+          },
+          zipUrl: "forum-1.0.0.zip",
+          entry: "chat.html",
+          compatible: true,
+          installed: false,
+        },
+        {
+          id: "bongochat",
+          kind: "pet",
+          handler: "pet",
+          icon: "bongochat.png",
+          version: "0.3.7",
+          title: { zh: "BongoChat", en: "BongoChat" },
+          subtitle: { zh: I18n.t("可以聊天的BongoCat！"), en: "A BongoCat you can chat with!" },
+          compatible: true,
+        },
+      ];
+
+  const wrap = document.createElement("div");
+  wrap.className = "plugin-grid-wrap";
+  const pop = document.createElement("div");
+  pop.className = "plugin-pop";
+  pop.setAttribute("role", "dialog");
+  const grid = document.createElement("div");
+  grid.className = "plugin-grid";
+  wrap.appendChild(grid);
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap || e.target === grid) closePluginPop(wrap, pop);
+  });
+  const overlayEl = $("#overlay");
+  overlayEl.querySelectorAll(":scope > .plugin-pop").forEach((el) => el.remove());
+  overlayEl.appendChild(pop);
+  pop.addEventListener("click", (e) => e.stopPropagation());
+  intro.addEventListener("click", () => closePluginPop(wrap, pop));
+  body.appendChild(wrap);
+  const onReposition = () => {
+    const sel = wrap.querySelector(".plugin-tile.sel");
+    if (sel) positionPluginPop(wrap, pop, sel);
+  };
+  body.addEventListener("scroll", onReposition);
+  window.addEventListener("resize", onReposition);
+
+  const offs = [];
+  offs.push(() => {
+    body.removeEventListener("scroll", onReposition);
+    window.removeEventListener("resize", onReposition);
+    if (pop && pop.parentNode) pop.remove();
+  });
+  for (const item of list) {
+    const card = mkPluginCardShell(item);
+    const openPop = () => openPluginPop(wrap, pop, card, item);
+    card.addEventListener("click", (ev) => {
+      if (ev.target.closest(".plugin-tile-actions")) return;
+      openPop();
+    });
+    card.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      openPop();
+    });
+    grid.appendChild(card);
+    if (item.kind === "pet" || item.handler === "pet") {
+      const off = bindPluginProgress(card, item.id, true);
+      if (off) offs.push(off);
+      refreshPetPluginCard(card);
+    } else {
+      const off = bindPluginProgress(card, item.id, false);
+      if (off) offs.push(off);
+      refreshWindowPluginCard(card, item);
+    }
+  }
+  _petProgressOff = () => {
+    offs.forEach((fn) => {
+      try { fn(); } catch {}
+    });
+  };
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "settings-hint";
+    empty.textContent = I18n.t("暂无插件");
+    body.appendChild(empty);
+  }
 }
 
 /* ============ DSH 插件管理（近全屏独立对话框，避免撑爆设置栏） ============ */
@@ -24301,29 +25085,44 @@ function openSettings() {
           const row = document.createElement("div");
           row.className = "dsh-plugin-row";
           const nm = document.createElement("span");
-          nm.textContent = s.name;
+          nm.textContent = (s.title ? s.title + "  " : "") + s.name;
           nm.title = s.description || s.name;
+          if (s.builtin) {
+            const tag = document.createElement("span");
+            tag.className = "dsh-plugin-tag builtin";
+            tag.textContent = I18n.t("内置");
+            tag.style.marginLeft = "6px";
+            nm.appendChild(tag);
+          }
           const desc = document.createElement("span");
           desc.className = "dsh-skill-desc";
           desc.textContent = s.description || "";
           desc.title = s.description || "";
-          const rm = document.createElement("button");
-          rm.className = "mini";
-          rm.textContent = I18n.t("移除");
-          rm.onclick = async () => {
-            if (!(await confirmDialog(I18n.t("移除技能 ") + s.name + I18n.t("？"), { title: I18n.t("移除技能"), danger: true, okText: I18n.t("移除") }))) return;
-            try {
-              const rr = await window.api.skillRemove(s.name);
-              if (rr && rr.ok === false) throw new Error(rr.error);
-              toast(I18n.t("已移除技能 ") + s.name, "ok");
-            } catch (e) {
-              toast(I18n.t("移除失败：") + (e.message || String(e)), "err");
-            }
-            refreshSkills();
-          };
           row.appendChild(nm);
           row.appendChild(desc);
-          row.appendChild(rm);
+          if (s.builtin) {
+            const locked = document.createElement("span");
+            locked.className = "dsh-skill-locked";
+            locked.textContent = I18n.t("不可卸载");
+            locked.title = I18n.t("内置技能不可卸载");
+            row.appendChild(locked);
+          } else {
+            const rm = document.createElement("button");
+            rm.className = "mini";
+            rm.textContent = I18n.t("移除");
+            rm.onclick = async () => {
+              if (!(await confirmDialog(I18n.t("移除技能 ") + s.name + I18n.t("？"), { title: I18n.t("移除技能"), danger: true, okText: I18n.t("移除") }))) return;
+              try {
+                const rr = await window.api.skillRemove(s.name);
+                if (rr && rr.ok === false) throw new Error(rr.error);
+                toast(I18n.t("已移除技能 ") + s.name, "ok");
+              } catch (e) {
+                toast(I18n.t("移除失败：") + (e.message || String(e)), "err");
+              }
+              refreshSkills();
+            };
+            row.appendChild(rm);
+          }
           skList.appendChild(row);
         }
       } catch (e) {
@@ -26136,10 +26935,10 @@ function renderAssistPanel() {
     empty.className = "assist-empty";
         empty.textContent = scopeCurrent
       ? I18n.t(
-          "当前工作范围是本画布。我能查看并修改当前工作流节点与配置，但不会切换画布或移动视角。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
+          "当前工作范围是本画布。我能查看并修改当前工作流节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
         )
       : I18n.t(
-          "我能看到当前工作流、节点与配置，也可参考其他画布列表，但不会切换画布或平移/缩放你的视角。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除工作流前会请你确认。",
+          "我能看到当前工作流、节点与配置，也可参考其他画布列表。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除工作流前会请你确认。",
         );
     list.appendChild(empty);
   }
@@ -26216,8 +27015,28 @@ function clearAssistChat() {
 
 async function assistSend(text) {
   if (S.assistRunning) return;
-  const t = String(text || "").trim();
+  let t = String(text || "").trim();
   if (!t) return;
+  if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
+  let skillWrap = null;
+  const slash = t.match(/^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
+  if (slash) {
+    const skill = await resolveSkillByName(slash[1]);
+    if (skill) {
+      let title = skill.name;
+      try {
+        const list = await loadSkillsCached(false);
+        const hit = (list || []).find((s) => s.name === skill.name);
+        if (hit && hit.title) title = hit.title;
+      } catch {}
+      skillWrap = {
+        name: skill.name,
+        title,
+        body: skill.body,
+        arg: String(slash[2] || "").trim(),
+      };
+    }
+  }
   const sup = dshSupported();
   if (!sup.ok) {
     toast(sup.reason, "warn");
@@ -26249,16 +27068,16 @@ async function assistSend(text) {
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
-      "」。禁止读取、切换、新建或操作其他画布；list_workflows / canvas_get 也只会看到本画布。\n" +
+      "」。list_workflows / canvas_get 只会看到本画布。\n" +
       "工具：\n" +
-      "- mtnode_canvas_get：读取当前画布（相机/视图仅作只读快照，不要据此去改视角）\n" +
-      "- mtnode_app：rename_workflow（仅本画布）/ select_nodes（仅高亮选中，不平移）/ undo / redo / status / list_workflows（仅本画布）。禁止 switch_workflow / create_workflow / fit_canvas / focus_node / set_view；delete_workflow 仅可删本画布且需确认。\n"
-    : "工作范围：全局。可参考全部工作流列表，但禁止切换或新建画布，也禁止平移、缩放、居中或切换主视图。\n" +
+      "- mtnode_canvas_get：读取当前画布\n" +
+      "- mtnode_app：rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）；delete_workflow 仅可删本画布且需确认。\n"
+    : "工作范围：全局。可参考全部工作流列表。\n" +
       "工具：\n" +
-      "- mtnode_canvas_get：读取当前画布 + 全部工作流列表（相机/视图只读）\n" +
-      "- mtnode_app：rename_workflow / select_nodes（不平移）/ undo / redo / status / list_workflows。禁止 switch_workflow / create_workflow / fit_canvas / focus_node / set_view。危险操作 delete_workflow 会弹窗确认。\n";
+      "- mtnode_canvas_get：读取当前画布 + 全部工作流列表\n" +
+      "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows；delete_workflow 会弹窗确认。\n";
   const systemPrompt =
-    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内工作流、节点画布、服务商与智能配置摘要。禁止切换用户正在看的画布，禁止 pan/zoom/居中/切视图，用户视角必须保持不动。\n" +
+    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内工作流、节点画布、服务商与智能配置摘要。\n" +
     scopeBlock +
     "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。\n" +
     "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
@@ -26274,13 +27093,14 @@ async function assistSend(text) {
     "  · 文生图尺寸：create/update 传 size，须为 mtnode_canvas_get 返回的 imageSizes 之一（如 2048x1360 / 1280x1280 / auto）；按横竖构图选择，省略则默认 defaultImageSize。\n" +
     "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run/clear，ctrlFillOnly=true 时仅补跑无输出节点）连到处理/保存节点，方便用户一键重跑、补缺或清空。\n" +
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
-    "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action，禁止 fit_canvas / focus_node / 移动相机；勿增删节点、勿改连线；然后简短确认。\n" +
+    "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
     (scopeCurrent
-      ? "原则：仅操作当前画布；不要切换画布或移动视角；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n"
-      : "原则：可参考其他画布列表，但不要切换画布或移动视角；改节点图或删除工作流再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n") +
+      ? "原则：仅操作当前画布；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n"
+      : "原则：可参考其他画布列表；改节点图或删除工作流再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n") +
     "当前应用状态 JSON：\n" +
     stateJson;
-  let input = hist ? hist + "\n\n用户(最新)：" + t : t;
+  const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
+  let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   try {
     const final = await dshRunTask(input, {
       workspace:
@@ -26588,7 +27408,19 @@ function ensureProviderCatalog() {
 /* 工具结果 → 可读文本(terminal 块给 mono 原文,其余取 text) */
 function toolResultText(t) {
   const blocks = Array.isArray(t.result) ? t.result : [];
-  if (t.error) return I18n.t("错误:") + (t.error.name || "") + " " + (t.error.code || "");
+  if (t.error) {
+    const e = t.error;
+    const bits = [];
+    if (e.name) bits.push(String(e.name));
+    if (e.code) bits.push(String(e.code));
+    const head = bits.length ? bits.join(" ") : I18n.t("未知错误");
+    const msg = e.message || e.detail || (e.cause && e.cause.message) || "";
+    return (
+      I18n.t("错误:") +
+      head +
+      (msg ? "\n" + String(msg) : "")
+    );
+  }
   const parts = [];
   for (const b of blocks) {
     if (!b || typeof b.text !== "string") continue;
@@ -26763,8 +27595,8 @@ function renderAgentSession() {
   const inp = $("#agentInput");
   if (inp)
     inp.placeholder = chatEnterSend
-      ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；/ 开头输入命令）")
-      : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；/ 开头输入命令）");
+      ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能与命令）")
+      : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；输入 / 呼出技能与命令）");
   const presetSel = $("#agentPresetSel");
   if (presetSel) presetSel.value = st.preset || "standard";
   const provSel = $("#agentProvSel");
@@ -27005,10 +27837,13 @@ async function agentCompact() {
 async function agentSessionSend(text) {
   const st = agentSessionState();
   if (sessionIsRunning(st)) return;
-  const t = String(text || "").trim();
+  let t = String(text || "").trim();
   if (!t) return;
+  /* 中文输入法行首顿号视为斜杠命令前缀 */
+  if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
+  let skillWrap = null;
   /* 斜杠命令(参考 dsh commands 注册表:UI 侧直接处理,不发给模型)
-     /new /compact /plan /rename /export /permissions /help */
+     菜单仅展示 compact/plan 与技能；其余命令仍可手敲 */
   if (t.startsWith("/")) {
     const sp = t.split(/\s+/);
     const cmd = sp[0];
@@ -27067,13 +27902,26 @@ async function agentSessionSend(text) {
       );
     } else if (cmd === "/help") {
       toast(
-        I18n.t("命令:/new 新会话 · /compact 压缩上文 · /plan 规划模式 · /rename 标题 · /export 导出会话 · /permissions 查看权限预设"),
+        I18n.t("输入 / 或 、 呼出技能；会话内还可 /compact 压缩上文、/plan 规划模式。"),
         "ok",
       );
     } else {
-      toast(I18n.t("未知命令:") + cmd + I18n.t("。输入 /help 查看可用命令"), "warn");
+      const skillName = cmd.replace(/^\//, "");
+      const skill = await resolveSkillByName(skillName);
+      if (skill) {
+        let title = skillName;
+        try {
+          const list = await loadSkillsCached(false);
+          const hit = (list || []).find((s) => s.name === skill.name);
+          if (hit && hit.title) title = hit.title;
+        } catch {}
+        skillWrap = { name: skill.name, title, body: skill.body, arg };
+      } else {
+        toast(I18n.t("未知命令:") + cmd + I18n.t("。输入 / 或 、 呼出技能列表"), "warn");
+        return;
+      }
     }
-    return;
+    if (!skillWrap) return;
   }
   const sup = dshSupported();
   if (!sup.ok) {
@@ -27100,14 +27948,14 @@ async function agentSessionSend(text) {
     .slice(-20)
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
-  let input = hist ? hist + "\n\n用户(最新)：" + t : t;
+  const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
+  let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   if (st.planNext)
     input =
       "【要求】先制定并展示分步计划,再开始执行。\n\n" + input;
   const systemPrompt =
     "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布工作流（节点、连线、排版等）。\n" +
-    "你仅能访问当前画布：禁止 switch_workflow / create_workflow；list_workflows / canvas_get 不会返回其他画布内容。\n" +
-    "禁止平移/缩放/居中相机或切换主视图：用户的视角必须保持不动。\n" +
+    "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
     "mtnode_canvas_edit 与危险操作 delete_workflow 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝，本次任务会立即停止，不要再继续改画布。\n" +
     "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
   try {
@@ -27398,7 +28246,7 @@ function bindUpdateUi() {
         const bar = $(".topbar");
         if (bar) bar.classList.add("has-update");
       } else if (channel === "update:downloaded") {
-        toast(I18n.t("更新已下载，即将安装并重启…"), "ok");
+        toast(I18n.t("更新已下载，即将静默安装并重启…"), "ok");
         paintUpdateBtn({
           available: true,
           version: (data && data.version) || (_updateInfo && _updateInfo.version),
@@ -27452,6 +28300,11 @@ function applyLocale(locale, persist) {
 
 async function init() {
   S.config = await window.api.configLoad();
+  if (window.api && window.api.onForumAuthChanged) {
+    window.api.onForumAuthChanged((auth) => {
+      if (S.config) S.config.storeAuth = auth || null;
+    });
+  }
   if (S.config.locale !== "en" && S.config.locale !== "zh") S.config.locale = "zh";
   I18n.setLocale(S.config.locale);
   document.documentElement.lang = S.config.locale === "en" ? "en" : "zh-CN";
@@ -27562,6 +28415,18 @@ async function init() {
   $("#btnRenameWf").onclick = renameWorkflowDialog;
   $("#btnExport").onclick = exportWorkflowDialog;
   if ($("#btnStore")) $("#btnStore").onclick = openTemplateStore;
+  if ($("#btnForum") && window.api && window.api.forumOpen) {
+    $("#btnForum").onclick = async () => {
+      const r = await window.api.forumOpen();
+      if (r && r.ok) return;
+      if (r && r.error === "not_installed") {
+        toast(I18n.t("请先下载安装讨论区"), "warn");
+        openAppPluginsDialog();
+        return;
+      }
+      toast(I18n.t("打开失败：") + pluginErrText(r && r.error), "err");
+    };
+  }
   $("#btnImport").onclick = importWorkflowDialog;
   $("#btnDelWf").onclick = deleteWorkflowDialog;
   $("#btnSettings").onclick = openSettings;
@@ -27724,7 +28589,10 @@ async function init() {
       agentSessionSend(t);
     };
     if (inp) {
+      inp.addEventListener("input", () => slashTick(inp, "agent"));
+      inp.addEventListener("compositionend", () => slashTick(inp, "agent"));
       inp.addEventListener("keydown", (ev) => {
+        if (slashKey(inp, ev)) return;
         const sendOnEnter =
           !S.config.dsh || S.config.dsh.chatEnter !== "newline";
         if (sendOnEnter) {
@@ -27825,7 +28693,10 @@ async function init() {
       assistSend(t);
     };
     if (aInp) {
+      aInp.addEventListener("input", () => slashTick(aInp, "assist"));
+      aInp.addEventListener("compositionend", () => slashTick(aInp, "assist"));
       aInp.addEventListener("keydown", (ev) => {
+        if (slashKey(aInp, ev)) return;
         const sendOnEnter =
           !S.config.dsh || S.config.dsh.chatEnter !== "newline";
         if (sendOnEnter) {

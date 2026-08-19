@@ -324,14 +324,68 @@ function localPackDir() {
   return null;
 }
 
-function fetchBuffer(url, onProgress) {
+function verParts(s) {
+  return String(s || "0")
+    .split(/[^\d]+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((n) => parseInt(n, 10) || 0);
+}
+function verCmp(a, b) {
+  const pa = verParts(a);
+  const pb = verParts(b);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
+}
+function verGt(a, b) {
+  return verCmp(a, b) > 0;
+}
+
+let remoteManCache = { at: 0, man: null };
+let remoteManPending = null;
+
+async function latestPetVersion() {
+  if (remoteManPending) return remoteManPending;
+  remoteManPending = (async () => {
+    try {
+      const manUrl = PET_FEED.replace(/\/$/, "") + "/manifest.json";
+      const manBuf = await fetchBuffer(manUrl, null, 8000);
+      const man = JSON.parse(manBuf.toString("utf8"));
+      if (man && typeof man === "object") {
+        remoteManCache = { at: Date.now(), man };
+        return String(man.version || "");
+      }
+    } catch {}
+    return String((remoteManCache.man && remoteManCache.man.version) || "");
+  })();
+  try {
+    return await remoteManPending;
+  } finally {
+    remoteManPending = null;
+  }
+}
+
+async function statusForUi() {
+  const st = status();
+  const latest = st.installed ? await latestPetVersion() : "";
+  st.latestVersion = latest;
+  st.updateAvailable = !!(st.installed && latest && verGt(latest, st.version));
+  return st;
+}
+
+function fetchBuffer(url, onProgress, timeoutMs) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith("https") ? https : http;
     const req = lib.get(
       url,
       {
         headers: { "User-Agent": "MTNodeAIO/1.1-pet" },
-        timeout: 120000,
+        timeout: timeoutMs || 120000,
       },
       (res) => {
         if (
@@ -340,7 +394,7 @@ function fetchBuffer(url, onProgress) {
           res.headers.location
         ) {
           res.resume();
-          fetchBuffer(res.headers.location, onProgress).then(resolve, reject);
+          fetchBuffer(res.headers.location, onProgress, timeoutMs).then(resolve, reject);
           return;
         }
         if (res.statusCode !== 200) {
@@ -473,6 +527,7 @@ async function installFromRemote() {
   copyDirRecursive(srcDir, runtimeDir());
   rmDirRecursive(tmpZipDir);
   finalizeInstall(man.version || "0.0.0", zipUrl);
+  remoteManCache = { at: Date.now(), man };
   sendProgress({ phase: "done", percent: 100, version: man.version });
   return { ok: true, version: man.version || "0.0.0", source: "remote" };
 }
@@ -1033,7 +1088,7 @@ function registerPetIpc(opts) {
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
 
-  ipcMain.handle("pet:status", () => status());
+  ipcMain.handle("pet:status", () => statusForUi());
   ipcMain.handle("pet:install", async () => installPet());
   ipcMain.handle("pet:uninstall", async () => {
     if (installing) return { ok: false, error: "busy" };

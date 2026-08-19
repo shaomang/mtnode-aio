@@ -422,15 +422,22 @@ function switchChatSession(index) {
   const slots = readSessionSlots();
   chatHistory = (slots[i] || []).slice();
   saveConfig({ chatSessionIndex: i });
+  const runState = sessionRunState(i);
   return {
     ok: true,
     index: i,
     messages: chatHistory.slice(),
     sessions: sessionSummaries(),
+    busy: runState.busy,
+    status: runState.status,
+    streamingText: runState.streamingText,
   };
 }
 
 function clearCurrentSession() {
+  if (findRunBySession(chatSessionIndex)) {
+    return { ok: false, error: "busy", sessions: sessionSummaries() };
+  }
   chatHistory = [];
   persistSessions();
   return { ok: true, sessions: sessionSummaries() };
@@ -845,18 +852,85 @@ function petWorkspaceDir() {
 }
 
 let petDshAdapter = null;
-/** @type {Map<string, {acc:string, status:string}>} */
+/** @type {Map<string, {acc:string, status:string, sessionIndex:number}>} */
 const petDshRuns = new Map();
-let petChatBusyReqId = null;
+
+function findRunBySession(sessionIndex) {
+  const idx = Number(sessionIndex);
+  for (const [reqId, run] of petDshRuns) {
+    if (run && run.sessionIndex === idx) return { reqId, run };
+  }
+  return null;
+}
+
+function sessionRunState(sessionIndex) {
+  const hit = findRunBySession(sessionIndex);
+  if (!hit) return { busy: false, status: "", streamingText: "" };
+  return {
+    busy: true,
+    status: String(hit.run.status || ""),
+    streamingText: String(hit.run.acc || ""),
+  };
+}
+
+function appendAssistantToSession(sessionIndex, content) {
+  const text = String(content || "");
+  if (!text) return;
+  const idx = Math.max(0, Math.min(CHAT_SLOT_COUNT - 1, Number(sessionIndex) || 0));
+  if (idx === chatSessionIndex) {
+    chatHistory.push({ role: "assistant", content: text });
+    persistSessions();
+    return;
+  }
+  const slots = readSessionSlots();
+  slots[chatSessionIndex] = chatHistory.slice();
+  const msgs = Array.isArray(slots[idx]) ? slots[idx].slice() : [];
+  msgs.push({ role: "assistant", content: text });
+  slots[idx] = msgs.slice(-40);
+  writeJson(sessionsPath(), {
+    slots,
+    active: chatSessionIndex,
+    at: Date.now(),
+  });
+}
+
+function isActiveRun(reqId) {
+  const run = petDshRuns.get(reqId);
+  return !!(run && run.sessionIndex === chatSessionIndex);
+}
 
 function isWebToolName(name) {
   const n = String(name || "").toLowerCase();
   if (!n) return false;
-  if (/(^|[_-])(web|search)([_-]|$)/.test(n) || n.includes("web_search") || n.includes("web-search"))
+  if (
+    n === "web_search" ||
+    n === "web_fetch" ||
+    n === "web-search" ||
+    n === "web-fetch" ||
+    n.includes("web_search") ||
+    n.includes("web-search") ||
+    n.includes("web_fetch") ||
+    n.includes("web-fetch")
+  ) {
     return true;
-  if (n.includes("web") && !/(fs|file|bash|pwsh|shell|canvas|mtnode|write|read|edit|skill|job)/.test(n))
+  }
+  if (/(^|[_-])(web|search)([_-]|$)/.test(n)) return true;
+  if (n.includes("web") && !/(fs|file|bash|pwsh|shell|canvas|mtnode|write|read|edit|skill|job)/.test(n)) {
     return true;
+  }
   return false;
+}
+
+function resolveDeepseekWebSearchKey() {
+  const appCfg = readJson(appConfigPath(), {}) || {};
+  const providers = Array.isArray(appCfg.providers) ? appCfg.providers : [];
+  for (const p of providers) {
+    if (!p || p.type !== "text_openai") continue;
+    if (!String(p.apiKey || "").trim()) continue;
+    if (!isDeepseekHost(p.baseUrl)) continue;
+    return String(p.apiKey).trim();
+  }
+  return "";
 }
 
 function isForbiddenPetTool(name) {
@@ -885,6 +959,7 @@ function onPetDshEvent(ev) {
   if (!run) return;
   const type = ev.type;
   const data = ev.data || {};
+  const active = isActiveRun(ev.reqId);
 
   if (type === "approval") {
     const toolName = data.toolName || data.name || "";
@@ -898,7 +973,7 @@ function onPetDshEvent(ev) {
     } catch {}
     if (!allow) return;
     run.status = "求助中…";
-    sendToChat("pet:chatStatus", { text: run.status });
+    if (active) sendToChat("pet:chatStatus", { text: run.status });
     return;
   }
   if (type === "question") {
@@ -914,44 +989,46 @@ function onPetDshEvent(ev) {
   if (type === "reasoning") {
     /* 不展示思维链正文，仅状态 */
     run.status = "努力思考中…";
-    sendToChat("pet:chatStatus", { text: run.status });
+    if (active) sendToChat("pet:chatStatus", { text: run.status });
     return;
   }
   if (type === "tool") {
     run.status = "求助中…";
-    sendToChat("pet:chatStatus", { text: run.status });
+    if (active) sendToChat("pet:chatStatus", { text: run.status });
     return;
   }
   if (type === "text" && data.text) {
     run.acc += String(data.text);
     run.status = "";
-    sendToChat("pet:chatStatus", { text: "" });
-    sendToChat("pet:chatDelta", { text: run.acc });
+    if (active) {
+      sendToChat("pet:chatStatus", { text: "" });
+      sendToChat("pet:chatDelta", { text: run.acc });
+    }
     return;
   }
   if (type === "error") {
     const msg = String((data && data.message) || "未知错误");
-    sendToChat("pet:chatError", { error: msg });
+    if (active) sendToChat("pet:chatError", { error: msg });
     petDshRuns.delete(ev.reqId);
-    if (petChatBusyReqId === ev.reqId) petChatBusyReqId = null;
+    sendToChat("pet:sessionsUpdated", { sessions: sessionSummaries() });
     return;
   }
   if (type === "done") {
     const final =
       (data && data.finalResponse && String(data.finalResponse)) || run.acc || "";
-    if (final && !run.acc) {
-      sendToChat("pet:chatDelta", { reset: true, text: final });
-    } else if (final) {
-      sendToChat("pet:chatDelta", { text: final });
-    }
-    if (final) {
-      chatHistory.push({ role: "assistant", content: final });
-      persistSessions();
-    }
-    sendToChat("pet:chatStatus", { text: "" });
-    sendToChat("pet:chatDone", { text: final });
+    if (final) appendAssistantToSession(run.sessionIndex, final);
     petDshRuns.delete(ev.reqId);
-    if (petChatBusyReqId === ev.reqId) petChatBusyReqId = null;
+    if (active) {
+      if (final && !run.acc) {
+        sendToChat("pet:chatDelta", { reset: true, text: final });
+      } else if (final) {
+        sendToChat("pet:chatDelta", { text: final });
+      }
+      sendToChat("pet:chatStatus", { text: "" });
+      sendToChat("pet:chatDone", { text: final });
+    } else {
+      sendToChat("pet:sessionsUpdated", { sessions: sessionSummaries() });
+    }
   }
 }
 
@@ -1004,7 +1081,7 @@ let personaEditorWin = null;
 async function handleChatSend(text) {
   const t = String(text || "").trim();
   if (!t) return { ok: false, error: "empty" };
-  if (petChatBusyReqId) return { ok: false, error: "busy" };
+  if (findRunBySession(chatSessionIndex)) return { ok: false, error: "busy" };
   const cfg = loadConfig();
   const resolved = resolveChatProvider(cfg);
   if (!resolved || !String(resolved.provider.apiKey || "").trim()) {
@@ -1042,10 +1119,18 @@ async function handleChatSend(text) {
       baseUrl = mp.baseUrl;
     }
   }
+  /* 联网搜索固定走 DeepSeek 官方 Key（与主程序智能会话一致） */
+  const webSearchApiKey =
+    resolveDeepseekWebSearchKey() ||
+    (providerRoute === "deepseek-official" ? String(apiKey || "").trim() : "");
 
   const reqId = "pet_" + Date.now().toString(36) + "_" + crypto.randomBytes(3).toString("hex");
-  petChatBusyReqId = reqId;
-  petDshRuns.set(reqId, { acc: "", status: "努力思考中…" });
+  const sessionIndex = chatSessionIndex;
+  petDshRuns.set(reqId, {
+    acc: "",
+    status: "努力思考中…",
+    sessionIndex,
+  });
   sendToChat("pet:chatStatus", { text: "努力思考中…" });
   sendToChat("pet:chatDelta", { reset: true, text: "" });
 
@@ -1060,6 +1145,7 @@ async function handleChatSend(text) {
       maxTokens: 8192,
       apiKey,
       baseUrl,
+      webSearchApiKey,
       systemPrompt,
       preset: "standard",
       effort: "high",
@@ -1071,7 +1157,6 @@ async function handleChatSend(text) {
   } catch (err) {
     const m = String((err && err.message) || err);
     petDshRuns.delete(reqId);
-    petChatBusyReqId = null;
     sendToChat("pet:chatError", { error: m });
     return { ok: false, error: m };
   }
@@ -1156,6 +1241,11 @@ function resolveChatHtml() {
     try {
       fs.copyFileSync(join(srcDir, "chat.html"), join(dest, "chat.html"));
       fs.copyFileSync(join(srcDir, "chat.js"), join(dest, "chat.js"));
+      const markedSrc = join(srcDir, "vendor", "marked.min.js");
+      if (fs.existsSync(markedSrc)) {
+        mk(join(dest, "vendor"));
+        fs.copyFileSync(markedSrc, join(dest, "vendor", "marked.min.js"));
+      }
     } catch {}
   }
   if (fs.existsSync(bundled) && fs.existsSync(bundledJs)) return bundled;
@@ -1438,17 +1528,22 @@ function registerIpc() {
   ipcMain.handle("pet:chatClear", () => clearCurrentSession());
   ipcMain.handle("pet:chatHistory", () => {
     hydrateChatFromDisk();
+    const runState = sessionRunState(chatSessionIndex);
     return {
       ok: true,
       messages: chatHistory.slice(),
       sessions: sessionSummaries(),
       index: chatSessionIndex,
+      busy: runState.busy,
+      status: runState.status,
+      streamingText: runState.streamingText,
     };
   });
   ipcMain.handle("pet:listSessions", () => ({
     ok: true,
     sessions: sessionSummaries(),
     index: chatSessionIndex,
+    ...sessionRunState(chatSessionIndex),
   }));
   ipcMain.handle("pet:switchSession", (_e, index) => switchChatSession(index));
   ipcMain.handle("pet:listProviders", () => {

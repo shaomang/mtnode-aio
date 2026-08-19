@@ -92,6 +92,25 @@ contextBridge.exposeInMainWorld('api', {
   storeCachePut: (opts) => ipcRenderer.invoke('store:cachePut', opts),
   storeCacheDelete: (id) => ipcRenderer.invoke('store:cacheDelete', id),
   storeCacheHas: (id) => ipcRenderer.invoke('store:cacheHas', id),
+  forumOpen: () => ipcRenderer.invoke('forum:open'),
+  appPluginsCatalog: () => ipcRenderer.invoke('appPlugins:catalog'),
+  appPluginsInstall: (id) => ipcRenderer.invoke('appPlugins:install', id),
+  appPluginsUninstall: (id) => ipcRenderer.invoke('appPlugins:uninstall', id),
+  appPluginsOpen: (id) => ipcRenderer.invoke('appPlugins:open', id),
+  onAppPluginsProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('appPlugins:progress', handler);
+    return () => ipcRenderer.removeListener('appPlugins:progress', handler);
+  },
+  onForumAuthChanged: (cb) => {
+    const handler = (_e, auth) => {
+      try { cb(auth); } catch (_) {}
+    };
+    ipcRenderer.on('forum:authChanged', handler);
+    return () => ipcRenderer.removeListener('forum:authChanged', handler);
+  },
   gifMake: (wfId, name, frames, delay) => ipcRenderer.invoke('gif:make', { wfId, name, frames, delay }),
 
   petStatus: () => ipcRenderer.invoke('pet:status'),
@@ -159,6 +178,7 @@ contextBridge.exposeInMainWorld('api', {
   dshInteract: (params) => ipcRenderer.invoke('dsh:interact', params),
   dshProviderCatalog: () => ipcRenderer.invoke('dsh:providerCatalog'),
   skillList: () => ipcRenderer.invoke('skill:list'),
+  skillGet: (name) => ipcRenderer.invoke('skill:get', name),
   skillAdd: (skill) => ipcRenderer.invoke('skill:add', skill),
   skillRemove: (name) => ipcRenderer.invoke('skill:remove', name),
 });

@@ -333,8 +333,7 @@
       or image descriptions. You can also build the visual canvas the user is
       looking at: use mtnode_canvas_get / mtnode_canvas_edit / mtnode_app to
       create nodes, set unique titles, wire them, put @Title in prompts, and
-      auto-layout so nothing overlaps. Never switch workflows, never pan/zoom
-      or fit/focus the camera, and never change the user's view. Keep text
+      auto-layout so nothing overlaps. Keep text
       processing and image→text (multimodal)
       isolated: a dedicated vision/agent node turns images into text; downstream
       pure-text nodes consume that text (not raw images) so language steps can

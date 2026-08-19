@@ -28,6 +28,12 @@ my-skin/
 ## 发布
 
 ```bash
+# 仅打包（不改版本）
 node scripts/stage-pet.mjs
+
+# 正式发布：末位版本 +1 后打包并上传 OSS
 # 或双击 E:\dev\tools\release-pet.cmd
+node scripts/stage-pet.mjs --bump
 ```
+
+版本事实来源：`pet-pack/manifest.json`。`release-pet` 每次发布都会 `--bump`（并同步 `plugins/catalog.default.json` 里的 bongochat 版本），否则客户端无法检测到更新。

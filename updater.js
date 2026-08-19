@@ -3,6 +3,7 @@
  * 内置版本更新（electron-updater + NSIS blockmap 差分下载）。
  * 仅打包安装版生效；开发态 / 未安装的解压目录不提示。
  * 更新源：http://mt-agent.com/mtnode/updates/
+ * 安装：quitAndInstall(true, true) → NSIS /S 静默覆盖，装完强制拉起新版本。
  */
 const { app, ipcMain, dialog } = require("electron");
 
@@ -120,15 +121,13 @@ function setupAutoUpdater() {
       version: (info && info.version) || (latestInfo && latestInfo.version) || "",
     });
     send("update:status", statusPayload());
-    /* 下载完成后自动安装并重启（用户已在开始前确认） */
+    /* 下载完成后静默安装并重启（用户已在开始前确认） */
     if (autoInstallAfterDownload) {
       autoInstallAfterDownload = false;
       setTimeout(() => {
-        try {
-          autoUpdater.quitAndInstall(false, true);
-        } catch (e) {
-          lastError = String((e && e.message) || e);
-          send("update:error", { error: lastError });
+        const r = quitAndInstall();
+        if (!r.ok) {
+          send("update:error", { error: r.error || lastError });
         }
       }, 600);
     }
@@ -195,8 +194,8 @@ function quitAndInstall() {
     return { ok: false, error: "update not downloaded" };
   }
   try {
-    /* isSilent=false, isForceRunAfter=true */
-    autoUpdater.quitAndInstall(false, true);
+    /* isSilent=true → NSIS /S，不弹出安装向导；isForceRunAfter=true → 装完拉起 */
+    autoUpdater.quitAndInstall(true, true);
     return { ok: true };
   } catch (e) {
     lastError = String((e && e.message) || e);
@@ -244,7 +243,7 @@ function registerUpdateIpc(getWin) {
       title: I18nSafe("发现新版本"),
       message: I18nSafe("发现新版本 v") + ver + I18nSafe("，是否下载并安装？"),
       detail: I18nSafe(
-        "将自动差分下载更新包（仅变更部分），下载完成后自动安装并重启。当前版本：v",
+        "将自动差分下载更新包（仅变更部分），下载完成后静默安装并重启（不弹出安装向导）。当前版本：v",
       ) + app.getVersion(),
     });
     if (choice.response !== 0) return { ok: true, cancelled: true };
