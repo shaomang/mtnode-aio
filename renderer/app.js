@@ -26282,6 +26282,11 @@ async function refreshWindowPluginCard(host, item) {
     addBtn("download", I18n.t("请更新应用以使用此插件"), null, { disabled: true });
     return;
   }
+  if (!st.installed) {
+    addBtn("download", I18n.t("下载安装"), async () => {
+      const r = await window.api.appPluginsInstall(st.id);
+      if (r && r.ok) toast(I18n.t("插件已安装") + (r.version ? " v" + r.version : ""), "ok");
+      else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
       const cat = await window.api.appPluginsCatalog();
       const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
       if (next) host._pluginItem = next;
