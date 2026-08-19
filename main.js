@@ -38,6 +38,8 @@ const {
 } = require("./updater.js");
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require("./plugins/main-app-plugins.js");
+const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
+const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -66,6 +68,10 @@ function dsh() {
         if (mainWin && !mainWin.isDestroyed()) {
           mainWin.webContents.send("dsh:event", ev);
         }
+        try {
+          const { onMusic3DshEvent } = require("./music3/main-music3.js");
+          if (typeof onMusic3DshEvent === "function") onMusic3DshEvent(ev);
+        } catch {}
       },
     });
   }
@@ -2202,7 +2208,18 @@ ipcMain.handle("forum:setAuth", (e, auth) => {
 ipcMain.handle("forum:localLoad", () => {
   try {
     const data = readJson(forumLocalPath(), { rooms: { general: [], bug: [], improve: [] } });
-    return { ok: true, data: data || { rooms: { general: [], bug: [], improve: [] } } };
+    const rooms = (data && data.rooms) || {};
+    const lastRead = (data && data.lastRead) || {};
+    const out = {
+      rooms: { general: [], bug: [], improve: [] },
+      lastRead: { general: 0, bug: 0, improve: 0 },
+    };
+    for (const key of ["general", "bug", "improve"]) {
+      const arr = Array.isArray(rooms[key]) ? rooms[key] : [];
+      out.rooms[key] = arr.slice(-500);
+      out.lastRead[key] = Number(lastRead[key] || 0) || 0;
+    }
+    return { ok: true, data: out };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -2210,10 +2227,14 @@ ipcMain.handle("forum:localLoad", () => {
 ipcMain.handle("forum:localSave", (e, data) => {
   try {
     const rooms = (data && data.rooms) || {};
-    const clean = { rooms: { general: [], bug: [], improve: [] } };
+    const lastRead = (data && data.lastRead) || {};
+    const clean = {
+      rooms: { general: [], bug: [], improve: [] },
+      lastRead: { general: 0, bug: 0, improve: 0 },
+    };
     for (const key of ["general", "bug", "improve"]) {
       const arr = Array.isArray(rooms[key]) ? rooms[key] : [];
-      clean.rooms[key] = arr.slice(-3000).map((m) => ({
+      clean.rooms[key] = arr.slice(-500).map((m) => ({
         id: String((m && m.id) || ""),
         room: key,
         text: String((m && m.text) || "").slice(0, 2000),
@@ -2227,6 +2248,7 @@ ipcMain.handle("forum:localSave", (e, data) => {
             }
           : { id: "", username: "", nickname: "" },
       })).filter((m) => m.id);
+      clean.lastRead[key] = Number(lastRead[key] || 0) || 0;
     }
     writeJson(forumLocalPath(), clean);
     return { ok: true };
@@ -2320,6 +2342,19 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getAppVersion: () => app.getVersion(),
   });
+  /* Music3 / H3 后端不随 MTNode 退出；此处只注册 IPC / 控制台窗 */
+  registerMusic3Ipc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+  });
+  registerH3Ipc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+  });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });
@@ -2329,10 +2364,13 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-/* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程 */
+  /* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程。
+   Music3 / H3 后端故意不杀（单例、独立于 MTNode 生命周期）。 */
 app.on("before-quit", () => {
   try { shutdownPet(); } catch {}
   try { shutdownAppPlugins(); } catch {}
+  try { shutdownMusic3UiOnly(); } catch {}
+  try { shutdownH3UiOnly(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }

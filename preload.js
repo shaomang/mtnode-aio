@@ -94,6 +94,7 @@ contextBridge.exposeInMainWorld('api', {
   storeCacheHas: (id) => ipcRenderer.invoke('store:cacheHas', id),
   forumOpen: () => ipcRenderer.invoke('forum:open'),
   appPluginsCatalog: () => ipcRenderer.invoke('appPlugins:catalog'),
+  appPluginsIcon: (name) => ipcRenderer.invoke('appPlugins:icon', name),
   appPluginsInstall: (id) => ipcRenderer.invoke('appPlugins:install', id),
   appPluginsUninstall: (id) => ipcRenderer.invoke('appPlugins:uninstall', id),
   appPluginsOpen: (id) => ipcRenderer.invoke('appPlugins:open', id),
@@ -132,6 +133,47 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('pet:progress', handler);
   },
 
+  music3Status: () => ipcRenderer.invoke('music3:getStatus'),
+  music3Open: () => ipcRenderer.invoke('music3:open'),
+  music3Install: (opts) => ipcRenderer.invoke('music3:install', opts || {}),
+  music3CancelInstall: () => ipcRenderer.invoke('music3:cancelInstall'),
+  music3Start: () => ipcRenderer.invoke('music3:start'),
+  music3Stop: () => ipcRenderer.invoke('music3:stop'),
+  music3UninstallPreview: () => ipcRenderer.invoke('music3:uninstallPreview'),
+  music3Uninstall: (opts) => ipcRenderer.invoke('music3:uninstall', opts || {}),
+  music3PickInstallDir: () => ipcRenderer.invoke('music3:pickInstallDir'),
+  music3Generate: (params) => ipcRenderer.invoke('music3:generate', params || {}),
+  music3CancelGenerate: (nodeId) => ipcRenderer.invoke('music3:cancelGenerate', nodeId),
+  music3GetLock: () => ipcRenderer.invoke('music3:getLock'),
+  music3RemovePluginMeta: () => ipcRenderer.invoke('music3:removePluginMeta'),
+  onMusic3Progress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('music3:progress', handler);
+    return () => ipcRenderer.removeListener('music3:progress', handler);
+  },
+
+  h3Status: () => ipcRenderer.invoke('h3:getStatus'),
+  h3Open: () => ipcRenderer.invoke('h3:open'),
+  h3Install: (opts) => ipcRenderer.invoke('h3:install', opts || {}),
+  h3CancelInstall: () => ipcRenderer.invoke('h3:cancelInstall'),
+  h3Start: () => ipcRenderer.invoke('h3:start'),
+  h3Stop: () => ipcRenderer.invoke('h3:stop'),
+  h3UninstallPreview: () => ipcRenderer.invoke('h3:uninstallPreview'),
+  h3Uninstall: (opts) => ipcRenderer.invoke('h3:uninstall', opts || {}),
+  h3PickInstallDir: () => ipcRenderer.invoke('h3:pickInstallDir'),
+  h3Generate: (params) => ipcRenderer.invoke('h3:generate', params || {}),
+  h3CancelGenerate: (nodeId) => ipcRenderer.invoke('h3:cancelGenerate', nodeId),
+  h3GetLock: () => ipcRenderer.invoke('h3:getLock'),
+  h3RemovePluginMeta: () => ipcRenderer.invoke('h3:removePluginMeta'),
+  onH3Progress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('h3:progress', handler);
+    return () => ipcRenderer.removeListener('h3:progress', handler);
+  },
 
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),

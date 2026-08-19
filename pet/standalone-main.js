@@ -451,6 +451,34 @@ function scaledSize(cfg) {
   };
 }
 
+/** 把桌宠窗钉死在设计像素上，避免 Windows 透明窗拖动时尺寸漂移放大 */
+function lockPetPixelSize(width, height) {
+  if (!petWin || petWin.isDestroyed()) return;
+  const w = Math.max(1, Math.round(Number(width) || 1));
+  const h = Math.max(1, Math.round(Number(height) || 1));
+  try {
+    petWin.setMinimumSize(w, h);
+    petWin.setMaximumSize(w, h);
+  } catch {}
+}
+
+function setPetBoundsLocked(x, y, width, height) {
+  if (!petWin || petWin.isDestroyed()) return;
+  const w = Math.max(1, Math.round(Number(width) || 1));
+  const h = Math.max(1, Math.round(Number(height) || 1));
+  const nx = Math.round(Number(x));
+  const ny = Math.round(Number(y));
+  lockPetPixelSize(w, h);
+  try {
+    petWin.setBounds({ x: nx, y: ny, width: w, height: h }, false);
+  } catch {
+    try {
+      petWin.setSize(w, h);
+      petWin.setPosition(nx, ny);
+    } catch {}
+  }
+}
+
 /** 将窗体限制在工作区内，避免贴边被任务栏/屏幕裁切 */
 function clampBoundsToWorkArea(b, wa) {
   const area = wa || screen.getPrimaryDisplay().workArea;
@@ -527,15 +555,16 @@ function pushPetState(cfg) {
 
 function applyWindowChrome(cfg, opts) {
   if (!petWin || petWin.isDestroyed()) return;
-  if (dragOffset) return; /* 拖拽中跳过，避免 setBounds 与 setPosition 冲突导致尺寸漂移 */
+  if (dragOffset) return; /* 拖拽中跳过，避免与拖拽锁尺寸打架 */
   const c = cfg || loadConfig();
   const onlyPos = opts && opts.onlyPos;
   if (!onlyPos) {
     const sz = scaledSize(c);
     const b = petWin.getBounds();
+    lockPetPixelSize(sz.width, sz.height);
     /* 仅在尺寸真正变化时 setBounds，避免触发无意义 resize / Live2D 重算 */
     if (Math.abs(b.width - sz.width) > 1 || Math.abs(b.height - sz.height) > 1) {
-      petWin.setBounds({ x: b.x, y: b.y, width: sz.width, height: sz.height });
+      setPetBoundsLocked(b.x, b.y, sz.width, sz.height);
     }
     petWin.setOpacity(Math.max(0.4, c.opacity / 100));
     petWin.setAlwaysOnTop(!!c.alwaysOnTop, "screen-saver");
@@ -1491,6 +1520,7 @@ function createPetWindow() {
     transparent: true,
     backgroundColor: "#00000000",
     hasShadow: false,
+    thickFrame: false,
     alwaysOnTop: !!cfg.alwaysOnTop,
     skipTaskbar: true,
     resizable: false,
@@ -1508,6 +1538,10 @@ function createPetWindow() {
     },
   });
   petWin.setMenu(null);
+  lockPetPixelSize(pos.width, pos.height);
+  try {
+    petWin.setSize(pos.width, pos.height);
+  } catch {}
   if (cfg.alwaysOnTop) petWin.setAlwaysOnTop(true, "screen-saver");
   petWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   petWin.setOpacity(Math.max(0.4, cfg.opacity / 100));
@@ -1634,36 +1668,30 @@ function registerIpc() {
     if (!petWin || petWin.isDestroyed()) return { ok: false };
     const b = petWin.getBounds();
     const sz = scaledSize(loadConfig());
-    /* 拖拽开始时锁定设计尺寸，避免 Windows 透明窗在 setPosition 时漂移放大 */
+    /* 拖拽全程使用设计尺寸，禁止读回 getBounds 宽高（Windows 会逐帧漂大） */
     dragOffset = {
       x: Number(screenX) - b.x,
       y: Number(screenY) - b.y,
       width: sz.width,
       height: sz.height,
     };
-    if (Math.abs(b.width - sz.width) > 1 || Math.abs(b.height - sz.height) > 1) {
-      petWin.setBounds({ x: b.x, y: b.y, width: sz.width, height: sz.height });
-    }
+    setPetBoundsLocked(b.x, b.y, sz.width, sz.height);
     return { ok: true };
   });
   ipcMain.handle("pet:dragMove", (_e, screenX, screenY) => {
     if (!petWin || petWin.isDestroyed() || !dragOffset) return { ok: false };
-    /* 仅移动位置，避免 Windows 透明窗反复 setBounds 导致尺寸逐渐增大 */
-    petWin.setPosition(
-      Math.round(Number(screenX) - dragOffset.x),
-      Math.round(Number(screenY) - dragOffset.y),
+    setPetBoundsLocked(
+      Number(screenX) - dragOffset.x,
+      Number(screenY) - dragOffset.y,
+      dragOffset.width,
+      dragOffset.height,
     );
     return { ok: true };
   });
   ipcMain.handle("pet:dragEnd", () => {
     if (petWin && !petWin.isDestroyed() && dragOffset) {
       const b = petWin.getBounds();
-      const w = dragOffset.width;
-      const h = dragOffset.height;
-      /* 结束时校正尺寸；位置用当前值，避免再触发一次位移放大 */
-      if (Math.abs(b.width - w) > 1 || Math.abs(b.height - h) > 1) {
-        petWin.setBounds({ x: b.x, y: b.y, width: w, height: h });
-      }
+      setPetBoundsLocked(b.x, b.y, dragOffset.width, dragOffset.height);
     }
     dragOffset = null;
     persistPos();

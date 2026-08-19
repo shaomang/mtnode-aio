@@ -778,6 +778,8 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 .wf-node.in{border-color:#38d6ff66}
 .wf-node.proc{border-color:#ff8f2e66; background:linear-gradient(180deg,#221a12,#171310)}
 .wf-node.proc-img{border-color:#ff5ea866; background:linear-gradient(180deg,#221218,#171014)}
+.wf-node.music{border-color:#6aa6ff66; background:linear-gradient(180deg,#121820,#10141c)}
+.wf-node.video{border-color:#5ec8a866; background:linear-gradient(180deg,#101816,#0e1412)}
 .wf-node.agent{border-color:#4d8cff66; background:linear-gradient(180deg,#121a28,#0e1420)}
 .wf-node.sv{border-color:#5fd68a55; background:linear-gradient(180deg,#14201a,#101713)}
 .wf-node.task{border-color:#3ecfcf66; background:linear-gradient(180deg,#122022,#0e1618)}
@@ -881,6 +883,8 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 .wf-node.ctrl.sel{border-color:#ffe08a}
 .wf-node.wait.sel{border-color:#7ee0c8}
 .wf-node.proc-img.sel{border-color:#ff8ab8; box-shadow:0 0 10px rgba(255,94,168,.45)}
+.wf-node.music.sel{border-color:#8bbcff; box-shadow:0 0 10px rgba(106,166,255,.4)}
+.wf-node.video.sel{border-color:#7ee0bc; box-shadow:0 0 10px rgba(94,200,168,.4)}
 .wf-node.agent.sel{border-color:#8eb6ff; box-shadow:0 0 10px rgba(77,140,255,.5)}
 .wf-node.task.sel{border-color:#7ee8e0; box-shadow:0 0 10px rgba(62,207,207,.45)}
 .task .n-title{color:#7ee8e0}
@@ -895,6 +899,8 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 .mutex .n-title{color:#d0a0c8}
 .judge .n-title{color:#ddc2ff}
 .proc-img .n-title{color:#ff8ab8}
+.music .n-title{color:#8bbcff}
+.video .n-title{color:#7ee0bc}
 .agent .n-title{color:#8eb6ff}
 .wait-int-row{display:flex; align-items:center; gap:8px; margin-top:6px}
 .wait-int-lab{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); flex:1}
@@ -1317,7 +1323,8 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
   display:block; width:100%; text-align:left; background:none; border:none; color:var(--ink);
   font-size:11.5px; padding:5px 8px; border-radius:3px; cursor:pointer; line-height:1.25;
 }
-.fn-ctx button:hover,.fn-ctx .ctx-fly:hover > .ctx-fly-btn{background:var(--bd); color:var(--orange2)}
+.fn-ctx button:hover,.fn-ctx .ctx-fly:hover > .ctx-fly-btn,
+.fn-ctx .ctx-fly.open > .ctx-fly-btn{background:var(--bd); color:var(--orange2)}
 .fn-ctx button.ctx-danger:hover{background:#4a1f1c; color:#ff8f8a}
 .fn-ctx .ctx-group{font-size:9px; letter-spacing:1.5px; color:var(--muted); padding:4px 8px 1px}
 .fn-ctx .ctx-fly{position:relative}
@@ -1326,14 +1333,15 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 }
 .fn-ctx .ctx-fly-btn .ctx-caret{color:var(--muted); font-size:10px; flex:none; margin-left:auto}
 .fn-ctx .ctx-sub{
-  display:none; position:absolute; left:calc(100% + 2px); top:auto; bottom:0; z-index:2;
+  display:none; position:absolute; left:calc(100% - 1px); top:auto; bottom:0; z-index:2;
   min-width:200px; padding:3px;
   background:var(--panel2); border:1px solid var(--bd2); border-radius:4px;
   box-shadow:0 6px 18px rgba(0,0,0,.5);
   overflow-y:auto; overscroll-behavior:contain;
 }
-.fn-ctx .ctx-sub.open-left{left:auto; right:calc(100% + 2px)}
-.fn-ctx .ctx-fly:hover > .ctx-sub,
+.fn-ctx .ctx-sub.open-left{left:auto; right:calc(100% - 1px)}
+/* 用 .open 控制显示；mouseleave 后短留存，避免移向二级菜单时穿过缝隙立刻收起 */
+.fn-ctx .ctx-fly.open > .ctx-sub,
 .fn-ctx .ctx-fly:focus-within > .ctx-sub{display:block}
 .fn-ctx .ctx-sep{
   height:1px; background:var(--bd); margin:3px 6px;
@@ -1725,6 +1733,10 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 .wf-node.proc .n-drag-handle:hover{color:#fff; border-color:var(--orange); background:rgba(255,143,46,.18)}
 .wf-node.proc-img .n-drag-handle{color:#ffb4d0; border-color:rgba(255,120,170,.4)}
 .wf-node.proc-img .n-drag-handle:hover{color:#fff; border-color:#ff8fb8; background:rgba(255,120,170,.16)}
+.wf-node.music .n-drag-handle{color:#6aa6ff; border-color:rgba(106,166,255,.4)}
+.wf-node.music .n-drag-handle:hover{color:#fff; border-color:#8bbcff; background:rgba(106,166,255,.16)}
+.wf-node.video .n-drag-handle{color:#5ec8a8; border-color:rgba(94,200,168,.4)}
+.wf-node.video .n-drag-handle:hover{color:#fff; border-color:#7ee0bc; background:rgba(94,200,168,.16)}
 .wf-node.agent .n-drag-handle{color:var(--cyan2); border-color:rgba(56,214,255,.4)}
 .wf-node.agent .n-drag-handle:hover{color:#fff; border-color:var(--cyan); background:rgba(56,214,255,.16)}
 .wf-node.in .n-drag-handle{color:#9ad0ff}

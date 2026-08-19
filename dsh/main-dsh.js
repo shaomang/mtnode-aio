@@ -13,7 +13,7 @@ const { app } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
-const BUILTIN_SKILL_NAMES = new Set(['generate-workflow', 'generate-task'])
+const BUILTIN_SKILL_NAMES = new Set(['generate-workflow', 'generate-task', 'minimax-music3-install', 'minimax-h3-install'])
 
 function builtinSkillsRoot() {
   /* 仓库 / asar 内: dsh/main-dsh.js → ../skills */

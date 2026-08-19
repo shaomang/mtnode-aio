@@ -2214,6 +2214,42 @@
       "Type / for skills and commands · /new session · /compact · /plan · /rename · /export · /permissions · /help",
     "问助手…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）":
       "Ask the assistant… (Enter to send, Shift+Enter for a new line; / for skills)",
+    "打开控制台": "Open console",
+    "启用服务": "Start service",
+    "关闭服务": "Stop service",
+    "移除入口": "Remove entry",
+    "仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。":
+      "Only removes the plugin entry and console cache. Your install directory (project and models) is kept.",
+    "移除插件入口": "Remove plugin entry",
+    "已移除入口；安装目录项目已保留": "Entry removed; install directory kept",
+    "音乐生成": "Music generation",
+    "音乐生成（MiniMax Music 3）": "Music generation (MiniMax Music 3)",
+    "音乐生成（MiniMax Music 3 · 提示词+歌词）":
+      "Music generation (MiniMax Music 3 · prompt + lyrics)",
+    "提示词（Structured Caption）": "Prompt (Structured Caption)",
+    "歌词（含 [Verse]/[Chorus] 等标签）": "Lyrics (with [Verse]/[Chorus] tags)",
+    "请连接提示词输入（端子 P）": "Connect a prompt input (port P)",
+    "请连接歌词输入（端子 L）；纯器乐可用 [instrumental]":
+      "Connect lyrics input (port L); use [instrumental] for no vocals",
+    "请先在「插件 · Minimax Music 3」中启用后端服务":
+      "Start the backend in Plugins · Minimax Music 3 first",
+    "已有音乐生成任务进行中，已中断本节点（禁止并行）":
+      "Another music job is running; this node was aborted (no parallel runs)",
+    "已有音乐生成任务进行中（禁止并行）：":
+      "Another music job is running (no parallel runs): ",
+    "时长（秒，≤300）": "Duration (sec, ≤300)",
+    "输出目录": "Output folder",
+    "文件名（可选）": "Filename (optional)",
+    "随机种子": "Randomize seed",
+    "auto CPU offload（24G 推荐）": "auto CPU offload (recommended on 24G)",
+    "P=提示词 · L=歌词 · 点击「设置」改时长/种子/输出路径":
+      "P=prompt · L=lyrics · Settings for duration/seed/output",
+    "需启用 Minimax Music 3 后端 · 全局单例互斥":
+      "Requires Minimax Music 3 backend · global singleton lock",
+    "音乐已生成：": "Music saved: ",
+    "已取消音乐生成": "Music generation cancelled",
+    "音乐生成节点需要文本来源（提示词 / 歌词）":
+      "Music node needs text sources (prompt / lyrics)",
   });
 
   var locale = "zh";

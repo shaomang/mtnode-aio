@@ -61,6 +61,8 @@ const KIND_CLS = {
   counter: "counter",
   mutex: "mutex",
   global: "global",
+  music_gen: "music",
+  video_gen: "video",
 };
 
 /* 节点标题栏拖动手柄图标（SVG，stroke=currentColor） */
@@ -139,6 +141,12 @@ const KIND_ICON_SVG = {
   /* 全局 · 广播参考 */
   global:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.3" fill="none" stroke="currentColor" stroke-width="1.3"/><ellipse cx="8" cy="8" rx="2.4" ry="5.3" fill="none" stroke="currentColor" stroke-width="1.15"/><path d="M2.8 8h10.4M3.6 5.2h8.8M3.6 10.8h8.8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
+  /* 音乐生成 */
+  music_gen:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11.2a1.8 1.8 0 1 1-1.6-1.78V4.4l7.2-1.4v6.9a1.8 1.8 0 1 1-1.6-1.78V5.1L6.2 6v5.2z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
+  /* 视频生成 */
+  video_gen:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/></svg>',
   /* 绘制 · 笔 + 画板 */
   draw:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="8.6" height="7.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.4 12.6l5.2-5.2 1.15 1.15-5.2 5.2H7.4v-1.15z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 8.5l1.15 1.15" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.2h5.2M4 7.2h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
@@ -478,6 +486,47 @@ const NODE_DEFAULTS = {
     mutexInputs: 2,
     mutexMode: "first",
     mutexStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  music_gen: {
+    w: 340,
+    h: 260,
+    title: "音乐生成",
+    audioDuration: 60,
+    seed: 0,
+    outputPath: "output",
+    filename: "",
+    offload: true,
+    musicStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  video_gen: {
+    w: 380,
+    h: 300,
+    title: "视频生成",
+    videoMode: "r2v",
+    duration: 5,
+    ratio: "16:9",
+    seed: 0,
+    steps: 20,
+    sampler: "res_multistep",
+    scheduler: "simple",
+    denoise: 1,
+    shiftVideo: 12,
+    shiftAudio: 3,
+    teaEnabled: true,
+    teaThresh: 0.15,
+    sageMode: "auto",
+    refImageSize: "match",
+    outputPath: "output",
+    filename: "",
+    videoStatus: "",
     output: null,
     error: null,
     ranAt: 0,
@@ -871,6 +920,30 @@ function dshProvider() {
     } catch {}
   }
   return null;
+}
+
+/* 智能路由 → 配置里的文本服务商（校验 API Key / 展示名称） */
+function providerForAgentRoute(route) {
+  const r = String(route || "deepseek-official").trim() || "deepseek-official";
+  if (r === "deepseek-official") return dshProvider();
+  if (r.startsWith("mtnode_")) {
+    const id = r.slice("mtnode_".length);
+    return (
+      ((S.config && S.config.providers) || []).find(
+        (p) => p.id === id && p.type === "text_openai",
+      ) || null
+    );
+  }
+  return null;
+}
+
+/* 默认智能路由：优先已填 Key 的 DeepSeek；否则第一个可用的全局文本服务商 */
+function defaultAgentProviderRoute() {
+  const dp = dshProvider();
+  if (dp && String(dp.apiKey || "").trim()) return "deepseek-official";
+  const mt = mtnodePiProviders();
+  if (mt.length) return "mtnode_" + mt[0].route;
+  return "deepseek-official";
 }
 
 /* 智能能力永久启用(1.1.0 起不再提供关闭开关) */
@@ -2297,7 +2370,7 @@ function isControlKind(n) {
   );
 }
 function hasFixedInPorts(n) {
-  return !!(n && (n.kind === "gate" || n.kind === "mutex"));
+  return !!(n && (n.kind === "gate" || n.kind === "mutex" || n.kind === "music_gen" || n.kind === "video_gen"));
 }
 function wireFromIsControl(w) {
   return isControlKind(nodeById(w && w.from));
@@ -2325,7 +2398,9 @@ function isTextSource(n) {
     n.kind === "task" ||
     n.kind === "merge" ||
     n.kind === "split" ||
-    n.kind === "chat"
+    n.kind === "chat" ||
+    n.kind === "music_gen" ||
+    n.kind === "video_gen"
   );
 }
 function isImageSource(n) {
@@ -2420,7 +2495,69 @@ function inputCount(node) {
     return Math.max(2, Math.min(8, Math.round(Number(node.gateInputs) || 2)));
   if (node.kind === "mutex")
     return Math.max(2, Math.min(8, Math.round(Number(node.mutexInputs) || 2)));
+  if (node.kind === "music_gen") return 2;
+  if (node.kind === "video_gen") return videoGenInputCount(node);
   return Math.max(1, allWiresTo(node.id).length + 1);
+}
+
+/** MiniMax H3 端子：提示词 + 渐进参考图/视频/音频（路径文本） */
+function videoGenMode(node) {
+  return node && node.videoMode === "fl2va" ? "fl2va" : "r2v";
+}
+function videoGenMaxImages(node) {
+  return videoGenMode(node) === "fl2va" ? 2 : 9;
+}
+function videoGenMaxVideos(node) {
+  return videoGenMode(node) === "r2v" ? 3 : 0;
+}
+function videoGenMaxAudios(node) {
+  return videoGenMode(node) === "r2v" ? 3 : 0;
+}
+function videoGenSlotOccupied(node, index) {
+  return (S.wf.wires || []).some(
+    (w) => w.to === node.id && Number(w.toIndex) === index && !wireFromIsControl(w),
+  );
+}
+function videoGenProgressiveCount(occupiedPrefix, max) {
+  if (max <= 0) return 0;
+  let n = 1;
+  for (let i = 0; i < max - 1; i++) {
+    if (occupiedPrefix(i)) n = i + 2;
+    else break;
+  }
+  return Math.min(max, n);
+}
+function videoGenInputCount(node) {
+  const maxImg = videoGenMaxImages(node);
+  const maxVid = videoGenMaxVideos(node);
+  const maxAud = videoGenMaxAudios(node);
+  const imgN =
+    videoGenMode(node) === "fl2va"
+      ? maxImg
+      : videoGenProgressiveCount((i) => videoGenSlotOccupied(node, 1 + i), maxImg);
+  const vidBase = 1 + maxImg;
+  const vidN = videoGenProgressiveCount((i) => videoGenSlotOccupied(node, vidBase + i), maxVid);
+  const audBase = 1 + maxImg + maxVid;
+  const audN = videoGenProgressiveCount((i) => videoGenSlotOccupied(node, audBase + i), maxAud);
+  return 1 + imgN + vidN + audN;
+}
+function videoGenSlotMeta(node, index) {
+  const maxImg = videoGenMaxImages(node);
+  const maxVid = videoGenMaxVideos(node);
+  if (index === 0) return { kind: "text", key: "prompt", label: "P" };
+  if (index >= 1 && index <= maxImg) {
+    const i = index - 1;
+    if (videoGenMode(node) === "fl2va") {
+      return { kind: "image", key: i === 0 ? "first" : "last", label: i === 0 ? "F" : "L" };
+    }
+    return { kind: "image", key: "ref" + i, label: "I" + (i + 1) };
+  }
+  if (index > maxImg && index <= maxImg + maxVid) {
+    const i = index - 1 - maxImg;
+    return { kind: "video", key: "vid" + i, label: "V" + (i + 1) };
+  }
+  const i = index - 1 - maxImg - maxVid;
+  return { kind: "audio", key: "aud" + i, label: "A" + (i + 1) };
 }
 function minWFor(n) {
   return n.kind === "input_image" ? 180 : 240;
@@ -2490,6 +2627,8 @@ function nodeKindLabel(node) {
     input_text: "文本",
     input_image: "图像",
     global: "全局",
+    music_gen: "音乐生成",
+    video_gen: "视频生成",
   };
   return I18n.t(map[node.kind] || "节点");
 }
@@ -2516,6 +2655,8 @@ function nodeKindPurposeKey(node) {
     input_image: "输入节点（仅输出）",
     proc_text: "文本处理（LLM）",
     proc_image: "图像生成（文生图）",
+    music_gen: "音乐生成（MiniMax Music 3 · 提示词+歌词）",
+    video_gen: "视频生成（MiniMax H3 · 文本/图像/音频/视频）",
     save_text: "保存文本（YAML）",
     save_image: "保存节点（接收最终输出）",
     split: "拆分（批次 → 单项只读节点）",
@@ -4906,6 +5047,12 @@ function valueForInput(src, idx) {
         ? { kind: "text", text: x.output.text }
         : null;
     }
+    return r && r.output && r.output.kind === "text"
+      ? { kind: "text", text: r.output.text }
+      : null;
+  }
+  if (src.kind === "music_gen") {
+    const r = selResult(src);
     return r && r.output && r.output.kind === "text"
       ? { kind: "text", text: r.output.text }
       : null;
@@ -7476,6 +7623,86 @@ function nodeElement(node) {
     };
     head.appendChild(b);
   }
+  if (node.kind === "music_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("音乐");
+    chip.title = I18n.t("MiniMax Music 3 · 端子 P=提示词 · L=歌词");
+    head.appendChild(chip);
+    const setBtn = document.createElement("button");
+    setBtn.className =
+      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
+    setBtn.textContent = I18n.t("设置");
+    setBtn.title = I18n.t("时长 / 种子 / 输出路径");
+    setBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
+      renderCanvas();
+    };
+    head.appendChild(setBtn);
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t("调用 Minimax Music 3 后端生成");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消生成请求");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  if (node.kind === "video_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("视频");
+    chip.title = I18n.t("MiniMax H3 · 需先启用插件服务");
+    head.appendChild(chip);
+    const setBtn = document.createElement("button");
+    setBtn.className =
+      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
+    setBtn.textContent = I18n.t("设置");
+    setBtn.title = I18n.t("模式 / 时长 / 尺寸 / 种子 / 输出路径");
+    setBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
+      renderCanvas();
+    };
+    head.appendChild(setBtn);
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t("调用 Minimax H3 后端生成");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消生成请求");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
   if (node.kind === "chat") {
     head.append(...apiPreviewButtons(node));
     head.appendChild(effortButtonEl(node));
@@ -7645,13 +7872,179 @@ function nodeElement(node) {
     node.kind === "proc_text" ||
     node.kind === "proc_image" ||
     node.kind === "chat" ||
-    node.kind === "agent_task"
+    node.kind === "agent_task" ||
+    node.kind === "music_gen" ||
+    node.kind === "video_gen"
   ) {
     const panel = document.createElement("div");
     panel.className = "n-api-panel";
     if (S.uiOpenNode !== node.id) panel.style.display = "none";
     const isAgentKind = node.kind === "agent_task";
-    if (isAgentKind) {
+    if (node.kind === "music_gen") {
+      const addField = (label, el) => {
+        const f = document.createElement("label");
+        f.className = "n-field";
+        f.appendChild(document.createTextNode(label));
+        f.appendChild(el);
+        panel.appendChild(f);
+      };
+      const dur = document.createElement("input");
+      dur.type = "number";
+      dur.min = "10";
+      dur.max = "300";
+      dur.step = "1";
+      dur.value = String(node.audioDuration || 60);
+      dur.addEventListener("change", () => {
+        node.audioDuration = Math.max(10, Math.min(300, Number(dur.value) || 60));
+        scheduleSave();
+      });
+      addField(I18n.t("时长（秒，≤300）"), dur);
+      const seed = document.createElement("input");
+      seed.type = "number";
+      seed.step = "1";
+      seed.value = String(node.seed != null ? node.seed : 0);
+      seed.addEventListener("change", () => {
+        node.seed = Math.floor(Number(seed.value) || 0);
+        scheduleSave();
+      });
+      addField(I18n.t("种子"), seed);
+      const rnd = document.createElement("button");
+      rnd.className = "mini";
+      rnd.textContent = I18n.t("随机种子");
+      rnd.onclick = (ev) => {
+        ev.preventDefault();
+        node.seed = Math.floor(Math.random() * 2147483647);
+        seed.value = String(node.seed);
+        scheduleSave();
+      };
+      panel.appendChild(rnd);
+      const outp = document.createElement("input");
+      outp.type = "text";
+      outp.value = String(node.outputPath || "output");
+      outp.placeholder = I18n.t("相对或绝对路径");
+      outp.addEventListener("change", () => {
+        node.outputPath = outp.value.trim() || "output";
+        scheduleSave();
+      });
+      addField(I18n.t("输出目录"), outp);
+      const fn = document.createElement("input");
+      fn.type = "text";
+      fn.value = String(node.filename || "");
+      fn.placeholder = "song.wav";
+      fn.addEventListener("change", () => {
+        node.filename = fn.value.trim();
+        scheduleSave();
+      });
+      addField(I18n.t("文件名（可选）"), fn);
+      const off = document.createElement("input");
+      off.type = "checkbox";
+      off.checked = node.offload !== false;
+      off.addEventListener("change", () => {
+        node.offload = !!off.checked;
+        scheduleSave();
+      });
+      const offLab = document.createElement("label");
+      offLab.className = "n-field";
+      offLab.appendChild(off);
+      offLab.appendChild(document.createTextNode(" " + I18n.t("auto CPU offload（24G 推荐）")));
+      panel.appendChild(offLab);
+    } else if (node.kind === "video_gen") {
+      const addField = (label, el) => {
+        const f = document.createElement("label");
+        f.className = "n-field";
+        f.appendChild(document.createTextNode(label));
+        f.appendChild(el);
+        panel.appendChild(f);
+      };
+      const mode = document.createElement("select");
+      [
+        ["r2v", "R2V 多参考"],
+        ["fl2va", "FL2VA 首末帧"],
+      ].forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = I18n.t(t);
+        if ((node.videoMode || "r2v") === v) o.selected = true;
+        mode.appendChild(o);
+      });
+      mode.addEventListener("change", () => {
+        node.videoMode = mode.value;
+        scheduleSave();
+        renderCanvas();
+      });
+      addField(I18n.t("模式"), mode);
+      const dur = document.createElement("input");
+      dur.type = "number";
+      dur.min = "4";
+      dur.max = "15";
+      dur.step = "0.5";
+      dur.value = String(node.duration != null ? node.duration : 5);
+      dur.addEventListener("change", () => {
+        node.duration = Math.max(4, Math.min(15, Number(dur.value) || 5));
+        scheduleSave();
+      });
+      addField(I18n.t("时长（秒，4–15）"), dur);
+      const ratio = document.createElement("select");
+      ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].forEach((v) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = v;
+        if ((node.ratio || "16:9") === v) o.selected = true;
+        ratio.appendChild(o);
+      });
+      ratio.addEventListener("change", () => {
+        node.ratio = ratio.value;
+        scheduleSave();
+      });
+      addField(I18n.t("尺寸比例"), ratio);
+      const seed = document.createElement("input");
+      seed.type = "number";
+      seed.step = "1";
+      seed.value = String(node.seed != null ? node.seed : 0);
+      seed.addEventListener("change", () => {
+        node.seed = Math.floor(Number(seed.value) || 0);
+        scheduleSave();
+      });
+      addField(I18n.t("种子"), seed);
+      const rnd = document.createElement("button");
+      rnd.className = "mini";
+      rnd.textContent = I18n.t("随机种子");
+      rnd.onclick = (ev) => {
+        ev.preventDefault();
+        node.seed = Math.floor(Math.random() * 2147483647);
+        seed.value = String(node.seed);
+        scheduleSave();
+      };
+      panel.appendChild(rnd);
+      const steps = document.createElement("input");
+      steps.type = "number";
+      steps.min = "1";
+      steps.max = "60";
+      steps.value = String(node.steps || 20);
+      steps.addEventListener("change", () => {
+        node.steps = Math.max(1, Math.min(60, Number(steps.value) || 20));
+        scheduleSave();
+      });
+      addField(I18n.t("采样步数"), steps);
+      const outp = document.createElement("input");
+      outp.type = "text";
+      outp.value = String(node.outputPath || "output");
+      outp.placeholder = I18n.t("相对或绝对路径");
+      outp.addEventListener("change", () => {
+        node.outputPath = outp.value.trim() || "output";
+        scheduleSave();
+      });
+      addField(I18n.t("输出目录"), outp);
+      const fn = document.createElement("input");
+      fn.type = "text";
+      fn.value = String(node.filename || "");
+      fn.placeholder = "clip.mp4";
+      fn.addEventListener("change", () => {
+        node.filename = fn.value.trim();
+        scheduleSave();
+      });
+      addField(I18n.t("文件名（可选）"), fn);
+    } else if (isAgentKind) {
       /* 智能任务参数面板与「智能会话」完全一致:预设 / 供应商 / 模型 / 思考强度 */
       const catalog = S.providerCatalog || {
         deepseek: [
@@ -7672,7 +8065,7 @@ function nodeElement(node) {
         const mp = mtnode.find((x) => "mtnode_" + x.route === prov);
         return ((mp && mp.models) || []).map((id) => ({ id, name: "" }));
       };
-      let curProv = node.provider || "deepseek-official";
+      let curProv = String(node.provider || "").trim() || defaultAgentProviderRoute();
       const f0 = document.createElement("label");
       f0.className = "n-field";
       f0.appendChild(document.createTextNode(I18n.t("预设（与智能会话一致）")));
@@ -7715,8 +8108,10 @@ function nodeElement(node) {
       }
       /* 仅显示已添加的供应商(DeepSeek 官方 + MTNode 服务商) */
       if (![...provSel.options].some((o) => o.value === curProv)) {
-        node.provider = "deepseek-official";
-        curProv = "deepseek-official";
+        curProv = defaultAgentProviderRoute();
+      }
+      if (node.provider !== curProv) {
+        node.provider = curProv;
         scheduleSave();
       }
       provSel.value = curProv;
@@ -7907,13 +8302,35 @@ function nodeElement(node) {
       inTitle = I18n.t("闸门输入 ") + (i + 1) + I18n.t("（需全部到达）");
     else if (node.kind === "mutex")
       inTitle = I18n.t("互斥输入 ") + (i + 1);
+    else if (node.kind === "music_gen")
+      inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : I18n.t("歌词（含 [Verse]/[Chorus] 等标签）");
+    else if (node.kind === "video_gen") {
+      const meta = videoGenSlotMeta(node, i);
+      if (meta.kind === "text") inTitle = I18n.t("提示词");
+      else if (meta.kind === "image") {
+        inTitle =
+          meta.key === "first"
+            ? I18n.t("首帧图像")
+            : meta.key === "last"
+              ? I18n.t("末帧图像")
+              : I18n.t("参考图像 ") + meta.label;
+      } else if (meta.kind === "video") inTitle = I18n.t("参考视频路径 ") + meta.label;
+      else inTitle = I18n.t("参考音频路径 ") + meta.label;
+    }
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = -PORT_R - PORT_OFF + "px";
-    if (node.kind === "gate" || node.kind === "mutex") {
+    if (node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "video_gen") {
       const badge = document.createElement("span");
       badge.className = "port-badge";
-      badge.textContent = String(i + 1);
+      badge.textContent =
+        node.kind === "music_gen"
+          ? i === 0
+            ? "P"
+            : "L"
+          : node.kind === "video_gen"
+            ? videoGenSlotMeta(node, i).label
+            : String(i + 1);
       p.appendChild(badge);
     }
     bindPortTip(p, node, "in", i);
@@ -9755,6 +10172,84 @@ function buildBody(node, body) {
       node.mutexStatus ||
       I18n.t("多入选一 · ") + mutexModeLabel(node.mutexMode);
     body.appendChild(st);
+  } else if (node.kind === "music_gen") {
+    const hint = document.createElement("div");
+    hint.className = "n-empty";
+    hint.textContent = I18n.t("P=提示词 · L=歌词 · 点击「设置」改时长/种子/输出路径");
+    body.appendChild(hint);
+    const meta = document.createElement("div");
+    meta.className = "n-empty";
+    meta.textContent =
+      I18n.t("时长 ") +
+      (node.audioDuration || 60) +
+      "s · seed " +
+      (node.seed != null ? node.seed : "—") +
+      " · " +
+      (node.outputPath || "output");
+    body.appendChild(meta);
+    if (node.output && node.output.kind === "text" && node.output.text) {
+      const out = document.createElement("div");
+      out.className = "n-text";
+      out.style.maxHeight = "72px";
+      out.style.overflow = "auto";
+      out.textContent = node.output.text;
+      out.title = node.output.text;
+      out.onclick = () => {
+        if (window.api && window.api.shellShowItem) window.api.shellShowItem(node.output.text);
+      };
+      body.appendChild(out);
+    }
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.musicStatus ||
+      I18n.t("需启用 Minimax Music 3 后端 · 全局单例互斥");
+    body.appendChild(st);
+  } else if (node.kind === "video_gen") {
+    const hint = document.createElement("div");
+    hint.className = "n-empty";
+    hint.textContent =
+      videoGenMode(node) === "fl2va"
+        ? I18n.t("P=提示词 · F/L=首末帧 · 需先启用 H3 服务")
+        : I18n.t("P=提示词 · I/V/A=参考图/视频路径/音频路径（渐进展开）");
+    body.appendChild(hint);
+    const meta = document.createElement("div");
+    meta.className = "n-empty";
+    meta.textContent =
+      (node.videoMode || "r2v").toUpperCase() +
+      " · " +
+      (node.duration != null ? node.duration : 5) +
+      "s · " +
+      (node.ratio || "16:9") +
+      " · seed " +
+      (node.seed != null ? node.seed : "—") +
+      " · " +
+      (node.outputPath || "output");
+    body.appendChild(meta);
+    if (node.output && node.output.kind === "text" && node.output.text) {
+      const out = document.createElement("div");
+      out.className = "n-text";
+      out.style.maxHeight = "72px";
+      out.style.overflow = "auto";
+      out.textContent = node.output.text;
+      out.title = node.output.text;
+      out.onclick = () => {
+        if (window.api && window.api.shellShowItem) window.api.shellShowItem(node.output.text);
+      };
+      body.appendChild(out);
+    }
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.videoStatus ||
+      I18n.t("需启用 Minimax H3 后端 · 全局单例互斥");
+    body.appendChild(st);
   } else if (node.kind === "control") {
     const role = ctrlRoleOf(node);
     if (role === "start" || role === "endSuccess" || role === "endFail") {
@@ -10423,7 +10918,10 @@ async function runDshOnce(node, spec, attemptT, images) {
   const text = await dshRunTask(input, {
     node,
     model: spec.vm || node.model || undefined,
-    provider: spec.vmProvider || node.provider || undefined,
+    provider:
+      spec.vmProvider ||
+      String(node.provider || "").trim() ||
+      defaultAgentProviderRoute(),
     effort: node.effort != null && node.effort !== "" ? node.effort : undefined,
     preset: node.preset || undefined,
     images,
@@ -11209,11 +11707,346 @@ async function playNode(node, quiet, opts) {
   }
 }
 
+function musicGenSlotText(node, slot) {
+  const w = wiresTo(node.id).find((x) => Number(x.toIndex) === Number(slot));
+  if (!w) return "";
+  const src = nodeById(w.from);
+  const v = valueForInput(src, 0);
+  if (v && v.kind === "text") return String(v.text || "");
+  const d = displayValueOf(src);
+  if (d && d.text != null) return String(d.text);
+  return "";
+}
+
+function resolveMusicOutputDir(node) {
+  const raw = String(node.outputPath || "output").trim() || "output";
+  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("/")) {
+    return raw;
+  }
+  const ws = (S.wf && S.wf.workspace) || "";
+  if (ws) {
+    return ws.replace(/[\\/]+$/, "") + "\\" + raw.replace(/^[\\/]+/, "");
+  }
+  return raw;
+}
+
+async function playMusicGenNode(node, quiet) {
+  if (!window.api || !window.api.music3Generate) {
+    toast(I18n.t("音乐生成插件未就绪"), "err");
+    return;
+  }
+  if (node.running) return;
+
+  /* 全局互斥：若其他节点已占用锁，本节点中断并提示 */
+  try {
+    const lk = await window.api.music3GetLock();
+    const lock = lk && lk.lock;
+    if (lock && lock.nodeId && lock.nodeId !== node.id) {
+      const other = nodeById(lock.nodeId);
+      const name = (other && other.title) || lock.nodeId;
+      node.error = I18n.t("已有音乐生成任务进行中（禁止并行）：") + name;
+      node.musicStatus = node.error;
+      if (!quiet) toast(node.error, "warn");
+      renderCanvas();
+      return;
+    }
+  } catch {}
+
+  const prompt = musicGenSlotText(node, 0).trim();
+  const lyrics = musicGenSlotText(node, 1).trim();
+  if (!prompt) {
+    toast(I18n.t("请连接提示词输入（端子 P）"), "warn");
+    return;
+  }
+  if (!lyrics) {
+    toast(I18n.t("请连接歌词输入（端子 L）；纯器乐可用 [instrumental]"), "warn");
+    return;
+  }
+
+  let st = null;
+  try {
+    st = await window.api.music3Status();
+  } catch {}
+  if (!st || !st.running) {
+    node.error = I18n.t("请先在「插件 · Minimax Music 3」中启用后端服务");
+    if (!quiet) toast(node.error, "warn");
+    renderCanvas();
+    return;
+  }
+
+  node.running = true;
+  node.error = null;
+  node.musicStatus = I18n.t("生成中…");
+  renderCanvas();
+
+  const duration = Math.max(10, Math.min(300, Number(node.audioDuration) || 60));
+  const seed = Number(node.seed);
+  const outputDir = resolveMusicOutputDir(node);
+  const filename = String(node.filename || "").trim();
+
+  try {
+    const r = await window.api.music3Generate({
+      nodeId: node.id,
+      workflowId: (S.wf && S.wf.id) || "",
+      prompt,
+      lyrics,
+      audioDuration: duration,
+      seed: isFinite(seed) ? seed : 0,
+      outputDir,
+      filename,
+      offload: node.offload !== false,
+    });
+    if (!r || !r.ok) {
+      const err = (r && (r.message || r.error)) || I18n.t("生成失败");
+      if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
+        node.error = I18n.t("已有音乐生成任务进行中，已中断本节点（禁止并行）");
+      } else {
+        node.error = String(err);
+      }
+      node.musicStatus = node.error;
+      if (!quiet) toast(node.error, "err");
+      return;
+    }
+    node.output = { kind: "text", text: String(r.path || "") };
+    node.ranAt = Date.now();
+    node.musicStatus = r.message || I18n.t("已保存：") + r.path;
+    if (!quiet) toast(I18n.t("音乐已生成：") + r.path, "ok");
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+    node.musicStatus = node.error;
+    if (!quiet) toast(node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    scheduleSave();
+  }
+}
+
+async function restoreMusicGenLocks() {
+  if (!window.api || !window.api.music3GetLock) return;
+  try {
+    const lk = await window.api.music3GetLock();
+    const lock = lk && lk.lock;
+    if (!lock || !lock.nodeId) return;
+    const n = nodeById(lock.nodeId);
+    if (!n || n.kind !== "music_gen") return;
+    n.running = true;
+    n.musicStatus = I18n.t("后端任务进行中（已从锁恢复）…");
+    renderCanvas();
+    const poll = setInterval(async () => {
+      try {
+        const cur = await window.api.music3GetLock();
+        if (!cur || !cur.lock || cur.lock.nodeId !== n.id) {
+          clearInterval(poll);
+          n.running = false;
+          n.musicStatus = I18n.t("任务已结束");
+          renderCanvas();
+        }
+      } catch {
+        clearInterval(poll);
+      }
+    }, 3000);
+  } catch {}
+}
+
+function videoGenSlotValue(node, slot) {
+  const w = wiresTo(node.id).find((x) => Number(x.toIndex) === Number(slot));
+  if (!w) return null;
+  const src = nodeById(w.from);
+  if (!src) return null;
+  const meta = videoGenSlotMeta(node, slot);
+  if (meta.kind === "image") {
+    const v = valueForInput(src, 0);
+    if (v && v.kind === "image" && v.path) return { kind: "image", path: v.path };
+    if (src.imageAsset) return { kind: "image", path: src.imageAsset };
+    const d = displayValueOf(src);
+    if (d && d.image) return { kind: "image", path: d.image };
+    return null;
+  }
+  const v = valueForInput(src, 0);
+  if (v && v.kind === "text") return { kind: "text", text: String(v.text || "") };
+  if (v && v.kind === "image" && v.path) return { kind: "path", text: String(v.path) };
+  const d = displayValueOf(src);
+  if (d && d.text != null) return { kind: "text", text: String(d.text) };
+  if (d && d.image) return { kind: "path", text: String(d.image) };
+  return null;
+}
+
+function resolveVideoOutputDir(node) {
+  const raw = String(node.outputPath || "output").trim() || "output";
+  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("/")) {
+    return raw;
+  }
+  const ws = (S.wf && S.wf.workspace) || "";
+  if (ws) {
+    return ws.replace(/[\\/]+$/, "") + "\\" + raw.replace(/^[\\/]+/, "");
+  }
+  return raw;
+}
+
+async function playVideoGenNode(node, quiet) {
+  if (!window.api || !window.api.h3Generate) {
+    toast(I18n.t("视频生成插件未就绪"), "err");
+    return;
+  }
+  if (node.running) return;
+
+  try {
+    const lk = await window.api.h3GetLock();
+    const lock = lk && lk.lock;
+    if (lock && lock.nodeId && lock.nodeId !== node.id) {
+      const other = nodeById(lock.nodeId);
+      const name = (other && other.title) || lock.nodeId;
+      node.error = I18n.t("已有视频生成任务进行中（禁止并行）：") + name;
+      node.videoStatus = node.error;
+      if (!quiet) toast(node.error, "warn");
+      renderCanvas();
+      return;
+    }
+  } catch {}
+
+  const promptVal = videoGenSlotValue(node, 0);
+  const prompt = (promptVal && promptVal.text ? promptVal.text : "").trim();
+  if (!prompt) {
+    toast(I18n.t("请连接提示词输入（端子 P）"), "warn");
+    return;
+  }
+
+  let st = null;
+  try {
+    st = await window.api.h3Status();
+  } catch {}
+  if (!st || !st.running) {
+    node.error = I18n.t("请先在「插件 · Minimax H3」中启用后端服务");
+    if (!quiet) toast(node.error, "warn");
+    renderCanvas();
+    return;
+  }
+
+  node.running = true;
+  node.error = null;
+  node.videoStatus = I18n.t("生成中…");
+  renderCanvas();
+
+  const mode = videoGenMode(node);
+  const maxImg = videoGenMaxImages(node);
+  const maxVid = videoGenMaxVideos(node);
+  const maxAud = videoGenMaxAudios(node);
+  const firstImage = mode === "fl2va" ? ((videoGenSlotValue(node, 1) || {}).path || "") : "";
+  const lastImage = mode === "fl2va" ? ((videoGenSlotValue(node, 2) || {}).path || "") : "";
+  const refImages = [];
+  const refVideos = [];
+  const refAudios = [];
+  if (mode === "r2v") {
+    for (let i = 0; i < maxImg; i++) {
+      const v = videoGenSlotValue(node, 1 + i);
+      if (v && v.path) refImages.push(v.path);
+      else if (v && v.text && /\.(png|jpe?g|webp|bmp|gif)$/i.test(v.text.trim()))
+        refImages.push(v.text.trim());
+    }
+    for (let i = 0; i < maxVid; i++) {
+      const v = videoGenSlotValue(node, 1 + maxImg + i);
+      const p = String((v && (v.path || v.text)) || "").trim();
+      if (p) refVideos.push(p);
+    }
+    for (let i = 0; i < maxAud; i++) {
+      const v = videoGenSlotValue(node, 1 + maxImg + maxVid + i);
+      const p = String((v && (v.path || v.text)) || "").trim();
+      if (p) refAudios.push(p);
+    }
+  }
+
+  try {
+    const r = await window.api.h3Generate({
+      nodeId: node.id,
+      workflowId: (S.wf && S.wf.id) || "",
+      mode,
+      prompt,
+      firstImage,
+      lastImage,
+      refImages,
+      refVideos,
+      refAudios,
+      duration: Number(node.duration) || 5,
+      ratio: node.ratio || "16:9",
+      seed: Number(node.seed) || 0,
+      steps: Number(node.steps) || 20,
+      sampler: node.sampler || "res_multistep",
+      scheduler: node.scheduler || "simple",
+      denoise: node.denoise != null ? Number(node.denoise) : 1,
+      shiftVideo: node.shiftVideo != null ? Number(node.shiftVideo) : 12,
+      shiftAudio: node.shiftAudio != null ? Number(node.shiftAudio) : 3,
+      teaEnabled: node.teaEnabled !== false,
+      teaThresh: node.teaThresh != null ? Number(node.teaThresh) : 0.15,
+      sageMode: node.sageMode || "auto",
+      refImageSize: node.refImageSize || "match",
+      outputDir: resolveVideoOutputDir(node),
+      filename: String(node.filename || "").trim(),
+    });
+    if (!r || !r.ok) {
+      const err = (r && (r.message || r.error)) || I18n.t("生成失败");
+      if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
+        node.error = I18n.t("已有视频生成任务进行中，已中断本节点（禁止并行）");
+      } else {
+        node.error = String(err);
+      }
+      node.videoStatus = node.error;
+      if (!quiet) toast(node.error, "err");
+      return;
+    }
+    node.output = { kind: "text", text: String(r.path || "") };
+    node.ranAt = Date.now();
+    node.videoStatus = r.message || I18n.t("已保存：") + r.path;
+    if (!quiet) toast(I18n.t("视频已生成：") + r.path, "ok");
+  } catch (e) {
+    node.error = (e && e.message) || String(e);
+    node.videoStatus = node.error;
+    if (!quiet) toast(node.error, "err");
+  } finally {
+    node.running = false;
+    renderCanvas();
+    scheduleSave();
+  }
+}
+
+async function restoreVideoGenLocks() {
+  if (!window.api || !window.api.h3GetLock) return;
+  try {
+    const lk = await window.api.h3GetLock();
+    const lock = lk && lk.lock;
+    if (!lock || !lock.nodeId) return;
+    const n = nodeById(lock.nodeId);
+    if (!n || n.kind !== "video_gen") return;
+    n.running = true;
+    n.videoStatus = I18n.t("后端任务进行中（已从锁恢复）…");
+    renderCanvas();
+    const poll = setInterval(async () => {
+      try {
+        const cur = await window.api.h3GetLock();
+        if (!cur || !cur.lock || cur.lock.nodeId !== n.id) {
+          clearInterval(poll);
+          n.running = false;
+          n.videoStatus = I18n.t("任务已结束");
+          renderCanvas();
+        }
+      } catch {
+        clearInterval(poll);
+      }
+    }, 3000);
+  } catch {}
+}
+
 async function playNodeBody(node, quiet, opts) {
   if (node.running) {
     const p = S.runPromises.get(node.id);
     if (p) await p;
     return;
+  }
+  if (node.kind === "music_gen") {
+    return playMusicGenNode(node, quiet);
+  }
+  if (node.kind === "video_gen") {
+    return playVideoGenNode(node, quiet);
   }
   if (node.kind === "wait_file") {
     return playWaitFileNode(node, quiet);
@@ -11300,7 +12133,7 @@ async function playNodeBody(node, quiet, opts) {
   }
   let prov = S.config.providers.find((p) => p.id === node.providerId);
   if (isDshTask(node)) {
-    /* 智能模式走 dsh 路由（DeepSeek 服务商），节点服务商选择只影响原模式 */
+    /* 智能模式按节点所选路由校验（DeepSeek 官方或全局其它文本服务商） */
     const sup = dshSupported();
     if (!sup.ok) {
       clearPendingEarly();
@@ -11308,7 +12141,12 @@ async function playNodeBody(node, quiet, opts) {
       renderCanvas();
       return;
     }
-    prov = sup.provider;
+    let route = String(node.provider || "").trim();
+    if (!route) {
+      route = defaultAgentProviderRoute();
+      node.provider = route;
+    }
+    prov = providerForAgentRoute(route);
   }
   if (!prov) {
     clearPendingEarly();
@@ -12509,9 +13347,34 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (wiresTo(toId).length) return I18n.t("拆分节点仅接受 1 个输入");
   } else if (!fromCtrl && to.kind === "save_text") {
     if (!isTextSource(from)) return I18n.t("文本保存节点需要文本来源");
+  } else if (!fromCtrl && to.kind === "music_gen") {
+    if (!isTextSource(from)) return I18n.t("音乐生成节点需要文本来源（提示词 / 歌词）");
+    const slot = toIndex == null ? null : Number(toIndex);
+    if (slot != null && (slot < 0 || slot > 1)) return I18n.t("无效的输入端子");
+    if (
+      slot != null &&
+      S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w))
+    )
+      return I18n.t("该输入端子已被占用");
+  } else if (!fromCtrl && to.kind === "video_gen") {
+    const slot = toIndex == null ? null : Number(toIndex);
+    if (slot == null || slot < 0 || slot >= videoGenInputCount(to)) return I18n.t("无效的输入端子");
+    if (S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)))
+      return I18n.t("该输入端子已被占用");
+    const meta = videoGenSlotMeta(to, slot);
+    if (meta.kind === "text") {
+      if (!isTextSource(from)) return I18n.t("提示词端子需要文本来源");
+    } else if (meta.kind === "image") {
+      if (!isImageSource(from)) return I18n.t("图像端子需要图像来源");
+    } else {
+      /* video/audio: accept text path or image source carrying a file path */
+      if (!isTextSource(from) && !isImageSource(from))
+        return I18n.t("音视频端子需要文本路径或媒体文件路径");
+    }
   }
   const cur = allWiresTo(toId).length;
-  if (toIndex != null && toIndex < cur) return I18n.t("该输入端子已被占用");
+  if (to.kind !== "music_gen" && to.kind !== "video_gen" && toIndex != null && toIndex < cur)
+    return I18n.t("该输入端子已被占用");
   return null;
 }
 
@@ -17100,7 +17963,7 @@ function syncGroupBtns() {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image"]],
+  ["处理节点", ["proc_text", "proc_image", "music_gen", "video_gen"]],
   ["保存节点", ["save_text", "save_image"]],
   ["工具节点", ["split", "merge"]],
   ["智能节点", ["agent_task"]],
@@ -17113,6 +17976,8 @@ const KIND_TAGS = {
   input_image: "图像",
   proc_text: "LLM",
   proc_image: "文生图",
+  music_gen: "音乐",
+  video_gen: "视频",
   save_text: "存文",
   save_image: "存图",
   split: "拆分",
@@ -18213,6 +19078,12 @@ function bindCanvas() {
             ctxKindItem("proc_image", I18n.t("图像生成（文生图）"), () =>
               addNode("proc_image", pt.x, pt.y),
             ),
+            ctxKindItem("music_gen", I18n.t("音乐生成（MiniMax Music 3）"), () =>
+              addNode("music_gen", pt.x, pt.y),
+            ),
+            ctxKindItem("video_gen", I18n.t("视频生成（MiniMax H3）"), () =>
+              addNode("video_gen", pt.x, pt.y),
+            ),
           ],
         ],
         [
@@ -18636,13 +19507,42 @@ function appendCtxItem(parent, it) {
     const sub = document.createElement("div");
     sub.className = "ctx-sub";
     for (const child of it.submenu) appendCtxItem(sub, child);
+    const CTX_SUB_LINGER_MS = 320;
+    const clearFlyHide = () => {
+      if (fly._ctxHideTimer) {
+        clearTimeout(fly._ctxHideTimer);
+        fly._ctxHideTimer = null;
+      }
+    };
+    const openFly = () => {
+      clearFlyHide();
+      const root = fly.closest(".fn-ctx") || parent;
+      root.querySelectorAll(".ctx-fly.open").forEach((el) => {
+        if (el !== fly) {
+          if (el._ctxHideTimer) {
+            clearTimeout(el._ctxHideTimer);
+            el._ctxHideTimer = null;
+          }
+          el.classList.remove("open");
+        }
+      });
+      placeSub();
+      fly.classList.add("open");
+    };
+    const scheduleCloseFly = () => {
+      clearFlyHide();
+      fly._ctxHideTimer = setTimeout(() => {
+        fly.classList.remove("open");
+        fly._ctxHideTimer = null;
+      }, CTX_SUB_LINGER_MS);
+    };
     const placeSub = () => {
       sub.classList.remove("open-left");
       sub.style.top = "";
       sub.style.bottom = "";
       sub.style.maxHeight = "";
-      const prev = sub.style.display;
-      sub.style.display = "block";
+      const wasOpen = fly.classList.contains("open");
+      fly.classList.add("open");
       const pad = 8;
       const fr = fly.getBoundingClientRect();
       const sr0 = sub.getBoundingClientRect();
@@ -18660,10 +19560,17 @@ function appendCtxItem(parent, it) {
         sub.style.top = "auto";
         sub.style.bottom = "0px";
       }
-      sub.style.display = prev;
+      if (!wasOpen) fly.classList.remove("open");
     };
-    fly.addEventListener("mouseenter", placeSub);
-    b.addEventListener("focus", placeSub);
+    fly.addEventListener("mouseenter", openFly);
+    fly.addEventListener("mouseleave", scheduleCloseFly);
+    b.addEventListener("focus", openFly);
+    b.addEventListener("blur", () => {
+      /* 焦点仍在本 fly（如进了二级按钮）则不关 */
+      requestAnimationFrame(() => {
+        if (!fly.contains(document.activeElement)) scheduleCloseFly();
+      });
+    });
     fly.appendChild(b);
     fly.appendChild(sub);
     parent.appendChild(fly);
@@ -18746,7 +19653,17 @@ function showCtx(x, y, groups) {
 }
 function hideCtx() {
   hideNodeTitleTip();
-  $("#ctx").style.display = "none";
+  const ctx = $("#ctx");
+  if (ctx) {
+    ctx.querySelectorAll(".ctx-fly").forEach((fly) => {
+      if (fly._ctxHideTimer) {
+        clearTimeout(fly._ctxHideTimer);
+        fly._ctxHideTimer = null;
+      }
+      fly.classList.remove("open");
+    });
+    ctx.style.display = "none";
+  }
 }
 
 /* 输出面板图像右键菜单：另存为 */
@@ -18930,6 +19847,12 @@ function makeNode(kind, x, y) {
     node[k] = JSON.parse(JSON.stringify(v));
   }
   assignDefaultProvider(node);
+  if (node.kind === "music_gen") {
+    node.seed = Math.floor(Math.random() * 2147483647);
+  }
+  if (node.kind === "video_gen") {
+    node.seed = Math.floor(Math.random() * 2147483647);
+  }
   node.parentTaskId = currentTaskFocus();
   return node;
 }
@@ -19041,6 +19964,26 @@ async function stopNode(node) {
   if (node.kind === "judge") {
     node._aborted = true;
     toast(I18n.t("已请求停止判断…"), "warn");
+    renderCanvas();
+    return;
+  }
+  if (node.kind === "music_gen") {
+    if (window.api && window.api.music3CancelGenerate) {
+      window.api.music3CancelGenerate(node.id);
+    }
+    node.running = false;
+    node.musicStatus = I18n.t("已取消");
+    toast(I18n.t("已取消音乐生成"), "warn");
+    renderCanvas();
+    return;
+  }
+  if (node.kind === "video_gen") {
+    if (window.api && window.api.h3CancelGenerate) {
+      window.api.h3CancelGenerate(node.id);
+    }
+    node.running = false;
+    node.videoStatus = I18n.t("已取消");
+    toast(I18n.t("已取消视频生成"), "warn");
     renderCanvas();
     return;
   }
@@ -22270,6 +23213,8 @@ async function loadWorkflow(id) {
   await window.api.configSave(S.config);
   renderAll();
   trackWorkflow(id, S.wf.name);
+  try { restoreMusicGenLocks(); } catch {}
+  try { restoreVideoGenLocks(); } catch {}
   toast(I18n.t("已打开画布：") + (S.wf.name || id), "ok");
 }
 
@@ -24734,11 +25679,53 @@ const PLUGIN_ACT_SVG = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v8.2M8 9.7l-2.6-2.6M8 9.7l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 11.5v1.2c0 .7.6 1.3 1.3 1.3h8.4c.7 0 1.3-.6 1.3-1.3v-1.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
   trash: KIND_ICON_SVG.menu_delete,
 };
-function pluginIconUrl(item) {
+function pluginIconName(item) {
   const raw = String((item && item.icon) || (item && item.id ? item.id + ".png" : "")).replace(/\\/g, "/");
   const name = raw.split("/").pop() || "";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.(png|jpe?g|webp)$/i.test(name)) return "";
-  return "plugin-icons/" + name;
+  return name;
+}
+function pluginIconUrl(item) {
+  if (item && typeof item.iconDataUrl === "string" && item.iconDataUrl.indexOf("data:image/") === 0)
+    return item.iconDataUrl;
+  const name = pluginIconName(item);
+  if (!name) return "";
+  try {
+    return new URL("plugin-icons/" + name, document.baseURI).href;
+  } catch {
+    return "plugin-icons/" + name;
+  }
+}
+function replacePluginCover(img) {
+  if (!img || !img.parentNode) return;
+  const ph = document.createElement("div");
+  ph.className = "plugin-tile-ph";
+  img.replaceWith(ph);
+}
+function bindPluginCover(img, item) {
+  if (!img) return;
+  const url = pluginIconUrl(item);
+  const name = pluginIconName(item);
+  if (!url) {
+    replacePluginCover(img);
+    return;
+  }
+  let triedIpc = false;
+  img.onerror = () => {
+    if (!triedIpc && name && window.api && window.api.appPluginsIcon) {
+      triedIpc = true;
+      window.api
+        .appPluginsIcon(name)
+        .then((r) => {
+          if (r && r.dataUrl) img.src = r.dataUrl;
+          else replacePluginCover(img);
+        })
+        .catch(() => replacePluginCover(img));
+      return;
+    }
+    replacePluginCover(img);
+  };
+  img.src = url;
 }
 function pluginVerLabel(st, root) {
   const v =
@@ -25036,6 +26023,160 @@ async function refreshPetPluginCard(root) {
     extras.innerHTML = "";
   }
 }
+async function refreshMusic3PluginCard(root) {
+  if (!root || !window.api || !window.api.music3Status) return;
+  const st = await window.api.music3Status();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: true });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  addBtn("play", I18n.t("打开控制台"), async () => {
+    const r = await window.api.music3Open();
+    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+  }, { primary: true });
+  if (st.running) {
+    addBtn("stop", I18n.t("关闭服务"), async () => {
+      await window.api.music3Stop();
+      refreshMusic3PluginCard(root);
+    });
+  } else if (st.installDir && (st.installed || (st.project && st.project.scaffold))) {
+    addBtn("play", I18n.t("启用服务"), async () => {
+      const r = await window.api.music3Start();
+      if (!r || !r.ok) toast(I18n.t("启动失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      refreshMusic3PluginCard(root);
+    });
+  }
+  addBtn("trash", I18n.t("移除入口"), async () => {
+    if (
+      !(await confirmDialog(
+        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
+        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
+      ))
+    )
+      return;
+    if (window.api.music3RemovePluginMeta) await window.api.music3RemovePluginMeta();
+    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
+    refreshMusic3PluginCard(root);
+  }, { danger: true });
+  if (prog && st.installing) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = I18n.t("安装中…");
+    }
+  }
+}
+function bindMusic3Progress(host) {
+  if (!window.api || !window.api.onMusic3Progress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onMusic3Progress((data) => {
+    if (!data || (data.id && data.id !== "minimax-music3")) return;
+    if (data.phase !== "install" && data.phase !== "dsh") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshMusic3PluginCard(host);
+      }, 600);
+    }
+  });
+}
+async function refreshH3PluginCard(root) {
+  if (!root || !window.api || !window.api.h3Status) return;
+  const st = await window.api.h3Status();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: true });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  addBtn("play", I18n.t("打开控制台"), async () => {
+    const r = await window.api.h3Open();
+    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+  }, { primary: true });
+  if (st.running) {
+    addBtn("stop", I18n.t("关闭服务"), async () => {
+      await window.api.h3Stop();
+      refreshH3PluginCard(root);
+    });
+  } else if (st.installDir && (st.installed || (st.project && st.project.scaffold))) {
+    addBtn("play", I18n.t("启用服务"), async () => {
+      const r = await window.api.h3Start();
+      if (!r || !r.ok) toast(I18n.t("启动失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      refreshH3PluginCard(root);
+    });
+  }
+  addBtn("trash", I18n.t("移除入口"), async () => {
+    if (
+      !(await confirmDialog(
+        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
+        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
+      ))
+    )
+      return;
+    if (window.api.h3RemovePluginMeta) await window.api.h3RemovePluginMeta();
+    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
+    refreshH3PluginCard(root);
+  }, { danger: true });
+  if (prog && st.installing) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = I18n.t("安装中…");
+    }
+  }
+}
+function bindH3Progress(host) {
+  if (!window.api || !window.api.onH3Progress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onH3Progress((data) => {
+    if (!data || (data.id && data.id !== "minimax-h3")) return;
+    if (data.phase !== "install" && data.phase !== "dsh") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshH3PluginCard(host);
+      }, 600);
+    }
+  });
+}
 function pluginLoc(p, key) {
   const v = p && p[key];
   if (v && typeof v === "object") {
@@ -25197,12 +26338,7 @@ function mkPluginCardShell(item) {
   const img = card.querySelector(".plugin-tile-cover img");
   if (img) {
     img.alt = pluginLoc(item, "title") || item.id;
-    img.src = iconUrl;
-    img.onerror = () => {
-      const ph = document.createElement("div");
-      ph.className = "plugin-tile-ph";
-      img.replaceWith(ph);
-    };
+    bindPluginCover(img, item);
   }
   return card;
 }
@@ -25327,6 +26463,14 @@ async function openAppPluginsDialog() {
       const off = bindPluginProgress(card, item.id, true);
       if (off) offs.push(off);
       refreshPetPluginCard(card);
+    } else if (item.kind === "music3" || item.handler === "music3") {
+      const off = bindMusic3Progress(card);
+      if (off) offs.push(off);
+      refreshMusic3PluginCard(card);
+    } else if (item.kind === "h3" || item.handler === "h3") {
+      const off = bindH3Progress(card);
+      if (off) offs.push(off);
+      refreshH3PluginCard(card);
     } else {
       const off = bindPluginProgress(card, item.id, false);
       if (off) offs.push(off);
@@ -28084,23 +29228,51 @@ function fillAssistModelControls() {
   const provSel = $("#assistProvSel");
   const modelSel = $("#assistModelSel");
   if (!provSel || !modelSel) return;
-  const catalog = S.providerCatalog || {
-    deepseek: [
-      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-      { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
-    ],
-    piai: [],
-  };
-  const mtnode = mtnodePiProviders();
-  const dp = dshProvider();
-  let curProv = S.assistProvider || "deepseek-official";
-  provSel.innerHTML = "";
   const addOpt = (sel, value, label) => {
     const o = document.createElement("option");
     o.value = value;
     o.textContent = label;
     sel.appendChild(o);
   };
+  /* 每次从当前配置读取，避免首次绑定时的空目录快照 */
+  const modelsFor = (prov) => {
+    const catalog = S.providerCatalog || {
+      deepseek: [
+        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
+        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+      ],
+      piai: [],
+    };
+    if (prov === "deepseek-official") {
+      const dpNow = dshProvider();
+      if (dpNow && Array.isArray(dpNow.models) && dpNow.models.length)
+        return dpNow.models.map((m) => ({ id: String(m), name: "" }));
+      return (catalog.deepseek || []).map((m) => ({ id: m.id, name: m.name }));
+    }
+    const mp = mtnodePiProviders().find((x) => "mtnode_" + x.route === prov);
+    return ((mp && mp.models) || []).map((id) => ({ id, name: "" }));
+  };
+  const fillModels = (prov) => {
+    const items = modelsFor(prov);
+    let cur = S.assistModel || "";
+    if (!cur || !items.some((x) => x.id === cur))
+      cur = (items[0] && items[0].id) || "";
+    modelSel.innerHTML = "";
+    if (!items.length) {
+      addOpt(modelSel, "", I18n.t("（无可用模型）"));
+      modelSel.value = "";
+      S.assistModel = "";
+      return;
+    }
+    const vis = new Set(visionModelsForProvider(prov).map((m) => m.id));
+    for (const m of items) addOpt(modelSel, m.id, modelLabel(m, vis));
+    modelSel.value = cur;
+    S.assistModel = cur;
+  };
+  const mtnode = mtnodePiProviders();
+  const dp = dshProvider();
+  let curProv = S.assistProvider || "deepseek-official";
+  provSel.innerHTML = "";
   addOpt(provSel, "deepseek-official", (dp && dp.name) || I18n.t("DeepSeek 官方"));
   for (const p of mtnode) addOpt(provSel, "mtnode_" + p.route, p.name);
   if (![...provSel.options].some((o) => o.value === curProv)) {
@@ -28108,42 +29280,17 @@ function fillAssistModelControls() {
     curProv = "deepseek-official";
   }
   provSel.value = curProv;
-  const modelsFor = (prov) => {
-    if (prov === "deepseek-official") {
-      if (dp && Array.isArray(dp.models) && dp.models.length)
-        return dp.models.map((m) => ({ id: String(m), name: "" }));
-      return (catalog.deepseek || []).map((m) => ({ id: m.id, name: m.name }));
-    }
-    const mp = mtnode.find((x) => "mtnode_" + x.route === prov);
-    return ((mp && mp.models) || []).map((id) => ({ id, name: "" }));
-  };
-  const fillModels = (prov) => {
-    const items = modelsFor(prov);
-    const cur =
-      S.assistModel || (items[0] && items[0].id) || "deepseek-v4-flash";
-    modelSel.innerHTML = "";
-    const list = items.slice();
-    if (cur && !list.some((x) => x.id === cur)) list.unshift({ id: cur, name: "" });
-    const vis = new Set(visionModelsForProvider(prov).map((m) => m.id));
-    for (const m of list) addOpt(modelSel, m.id, modelLabel(m, vis));
-    modelSel.value = cur;
-    S.assistModel = cur;
-  };
   fillModels(curProv);
-  if (!provSel._assistBound) {
-    provSel._assistBound = true;
-    provSel.onchange = () => {
-      S.assistProvider = provSel.value;
-      const first = modelsFor(provSel.value)[0];
-      S.assistModel = first ? first.id : "";
-      persistAssistUi();
-      fillModels(provSel.value);
-    };
-    modelSel.onchange = () => {
-      S.assistModel = modelSel.value;
-      persistAssistUi();
-    };
-  }
+  provSel.onchange = () => {
+    S.assistProvider = provSel.value;
+    S.assistModel = "";
+    fillModels(provSel.value);
+    persistAssistUi();
+  };
+  modelSel.onchange = () => {
+    S.assistModel = modelSel.value;
+    persistAssistUi();
+  };
 }
 
 function fillAssistScopeControl() {

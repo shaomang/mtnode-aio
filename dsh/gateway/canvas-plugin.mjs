@@ -18,7 +18,7 @@ export const name = 'mtnode-canvas'
 export const inject = ['tools']
 
 const KINDS = [
-  'input_text', 'input_image', 'proc_text', 'proc_image',
+  'input_text', 'input_image', 'proc_text', 'proc_image', 'music_gen',
   'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer', 'agent_task', 'task', 'chat',
   'control', 'judge',
 ]
