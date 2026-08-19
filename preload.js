@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
       'update:available',
       'update:progress',
       'update:downloaded',
+      'update:readyToRestart',
       'update:error',
       'update:status',
     ];
@@ -98,12 +99,21 @@ contextBridge.exposeInMainWorld('api', {
   appPluginsInstall: (id) => ipcRenderer.invoke('appPlugins:install', id),
   appPluginsUninstall: (id) => ipcRenderer.invoke('appPlugins:uninstall', id),
   appPluginsOpen: (id) => ipcRenderer.invoke('appPlugins:open', id),
+  appPluginsClose: (id) => ipcRenderer.invoke('appPlugins:closeById', id),
+  appPluginsIsOpen: (id) => ipcRenderer.invoke('appPlugins:isOpen', id),
   onAppPluginsProgress: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
     };
     ipcRenderer.on('appPlugins:progress', handler);
     return () => ipcRenderer.removeListener('appPlugins:progress', handler);
+  },
+  onAppPluginsWindowChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('appPlugins:windowChanged', handler);
+    return () => ipcRenderer.removeListener('appPlugins:windowChanged', handler);
   },
   onForumAuthChanged: (cb) => {
     const handler = (_e, auth) => {
@@ -135,6 +145,7 @@ contextBridge.exposeInMainWorld('api', {
 
   music3Status: () => ipcRenderer.invoke('music3:getStatus'),
   music3Open: () => ipcRenderer.invoke('music3:open'),
+  music3Close: () => ipcRenderer.invoke('music3:close'),
   music3Install: (opts) => ipcRenderer.invoke('music3:install', opts || {}),
   music3CancelInstall: () => ipcRenderer.invoke('music3:cancelInstall'),
   music3Start: () => ipcRenderer.invoke('music3:start'),
@@ -153,9 +164,17 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('music3:progress', handler);
     return () => ipcRenderer.removeListener('music3:progress', handler);
   },
+  onMusic3ConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('music3:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('music3:consoleChanged', handler);
+  },
 
   h3Status: () => ipcRenderer.invoke('h3:getStatus'),
   h3Open: () => ipcRenderer.invoke('h3:open'),
+  h3Close: () => ipcRenderer.invoke('h3:close'),
   h3Install: (opts) => ipcRenderer.invoke('h3:install', opts || {}),
   h3CancelInstall: () => ipcRenderer.invoke('h3:cancelInstall'),
   h3Start: () => ipcRenderer.invoke('h3:start'),
@@ -173,6 +192,13 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('h3:progress', handler);
     return () => ipcRenderer.removeListener('h3:progress', handler);
+  },
+  onH3ConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('h3:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('h3:consoleChanged', handler);
   },
 
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),

@@ -1229,20 +1229,50 @@
     "审批": "Approvals",
     "更新": "Update",
     "下载中": "Downloading",
+    "重启更新": "Restart",
+    "安装更新": "Install update",
     "发现新版本": "Update available",
     "发现新版本 v": "Update available: v",
     "，是否下载并安装？": " — download and install?",
+    "，是否下载更新？": " — download the update?",
     "，点击下载并安装": " — click to download & install",
+    "，点击下载更新": " — click to download",
     "开始下载并更新": "Download & update",
+    "开始下载": "Download",
+    "立即重启": "Restart now",
+    "稍后重启": "Later",
+    "立即安装并重启": "Install & restart",
+    "稍后": "Later",
+    "更新已就绪": "Update ready",
+    "更新包已下载完毕（v": "Update package downloaded (v",
+    "）": ")",
     "将自动差分下载更新包（仅变更部分），下载完成后静默安装并重启（不弹出安装向导）。当前版本：v":
       "Will differentially download only changed blocks, then silently install and restart (no installer wizard). Current: v",
+    "将差分下载更新包（仅变更部分），下载期间可继续使用。下载完成后请重启以完成静默安装。当前版本：v":
+      "Will differentially download only changed blocks. You can keep working while it downloads. Restart afterward to finish the silent install. Current: v",
+    "将差分下载更新包（仅变更部分），下载期间可继续使用。下载完成后会后台静默安装，安装完毕后自动重新打开应用。当前版本：v":
+      "Will differentially download only changed blocks. You can keep working while it downloads. After download, it installs silently in the background and the app reopens automatically. Current: v",
+    "安装需要替换正在运行的程序文件，请重启以完成静默安装。选择「稍后重启」后，下次退出应用时也会自动安装。当前版本：v":
+      "Installing needs to replace running program files. Restart to finish the silent install. If you choose Later, it will also install the next time you quit. Current: v",
+    "安装会在后台静默进行（不弹出安装向导），安装完毕后会自动重新打开应用。选择「稍后」则下次退出应用时再安装。当前版本：v":
+      "Installation runs silently in the background (no installer wizard). When it finishes, the app reopens automatically. Choose Later to install the next time you quit. Current: v",
     "正在下载更新…": "Downloading update…",
     "开始下载更新（差分包）…": "Downloading update (differential)…",
     "更新已下载，即将静默安装并重启…": "Update downloaded — silently installing and restarting…",
+    "更新已下载完毕，请重启以完成安装": "Update downloaded — restart to finish installing",
+    "更新已下载完毕：将后台静默安装，完成后自动重新打开应用":
+      "Update downloaded — silent background install, then the app reopens automatically",
+    "更新已就绪，点击重启以完成安装": "Update ready — click to restart and finish installing",
+    "更新已就绪：点击后将后台静默安装，完成后自动重新打开":
+      "Update ready — click to install silently in the background; the app will reopen automatically",
+    "已选择稍后重启；退出应用时将自动完成安装":
+      "Will install when you quit the app",
+    "已选择稍后；退出应用时将后台静默安装并自动重新打开":
+      "Will silently install and reopen when you quit the app",
     "更新失败：": "Update failed: ",
     "发现新版本，点击下载并安装": "New version available — click to download & install",
+    "发现新版本，点击下载更新": "New version available — click to download",
     "立即重启安装": "Restart & install now",
-    "安装更新": "Install update",
     "更新已下载完成，将重启并安装 v": "Update downloaded — will restart and install v",
     "安装过程使用差分块更新，仅下载变更部分。请保存当前工作后继续。":
       "Uses differential blocks (only changes). Save your work before continuing.",

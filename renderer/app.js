@@ -26035,10 +26035,18 @@ async function refreshMusic3PluginCard(root) {
   const addBtn = (kind, title, onClick, opts) => {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
   };
-  addBtn("play", I18n.t("打开控制台"), async () => {
-    const r = await window.api.music3Open();
-    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-  }, { primary: true });
+  if (st.consoleOpen) {
+    addBtn("stop", I18n.t("停止"), async () => {
+      if (window.api.music3Close) await window.api.music3Close();
+      refreshMusic3PluginCard(root);
+    });
+  } else {
+    addBtn("play", I18n.t("运行"), async () => {
+      const r = await window.api.music3Open();
+      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      refreshMusic3PluginCard(root);
+    }, { primary: true });
+  }
   if (st.running) {
     addBtn("stop", I18n.t("关闭服务"), async () => {
       await window.api.music3Stop();
@@ -26112,10 +26120,18 @@ async function refreshH3PluginCard(root) {
   const addBtn = (kind, title, onClick, opts) => {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
   };
-  addBtn("play", I18n.t("打开控制台"), async () => {
-    const r = await window.api.h3Open();
-    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-  }, { primary: true });
+  if (st.consoleOpen) {
+    addBtn("stop", I18n.t("停止"), async () => {
+      if (window.api.h3Close) await window.api.h3Close();
+      refreshH3PluginCard(root);
+    });
+  } else {
+    addBtn("play", I18n.t("运行"), async () => {
+      const r = await window.api.h3Open();
+      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      refreshH3PluginCard(root);
+    }, { primary: true });
+  }
   if (st.running) {
     addBtn("stop", I18n.t("关闭服务"), async () => {
       await window.api.h3Stop();
@@ -26266,21 +26282,32 @@ async function refreshWindowPluginCard(host, item) {
     addBtn("download", I18n.t("请更新应用以使用此插件"), null, { disabled: true });
     return;
   }
-  if (!st.installed) {
-    addBtn("download", I18n.t("下载安装"), async () => {
-      const r = await window.api.appPluginsInstall(st.id);
-      if (r && r.ok) toast(I18n.t("插件已安装") + (r.version ? " v" + r.version : ""), "ok");
-      else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
       const cat = await window.api.appPluginsCatalog();
       const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
+      if (next) host._pluginItem = next;
       refreshWindowPluginCard(host, next || st);
     }, { primary: true });
     return;
   }
-  addBtn("play", I18n.t("运行"), async () => {
-    const r = await window.api.appPluginsOpen(st.id);
-    if (!r || !r.ok) toast(I18n.t("打开失败：") + pluginErrText(r && r.error), "err");
-  }, { primary: true });
+  let winOpen = false;
+  if (window.api.appPluginsIsOpen) {
+    try {
+      const ir = await window.api.appPluginsIsOpen(st.id);
+      winOpen = !!(ir && ir.open);
+    } catch {}
+  }
+  if (winOpen) {
+    addBtn("stop", I18n.t("停止"), async () => {
+      if (window.api.appPluginsClose) await window.api.appPluginsClose(st.id);
+      refreshWindowPluginCard(host, host._pluginItem || st);
+    });
+  } else {
+    addBtn("play", I18n.t("运行"), async () => {
+      const r = await window.api.appPluginsOpen(st.id);
+      if (!r || !r.ok) toast(I18n.t("打开失败：") + pluginErrText(r && r.error), "err");
+      refreshWindowPluginCard(host, host._pluginItem || st);
+    }, { primary: true });
+  }
   if (st.updateAvailable) {
     addBtn("update", I18n.t("更新"), async () => {
       const r = await window.api.appPluginsInstall(st.id);
@@ -26288,6 +26315,7 @@ async function refreshWindowPluginCard(host, item) {
       else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
       const cat = await window.api.appPluginsCatalog();
       const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
+      if (next) host._pluginItem = next;
       refreshWindowPluginCard(host, next || st);
     });
   }
@@ -26309,8 +26337,10 @@ async function refreshWindowPluginCard(host, item) {
       const pop = wrap && wrap.querySelector(".plugin-pop");
       if (wrap) closePluginPop(wrap, pop);
       host.remove();
+    } else {
+      host._pluginItem = next;
+      refreshWindowPluginCard(host, next);
     }
-    else refreshWindowPluginCard(host, next);
   }, { danger: true });
 }
 function mkPluginCardShell(item) {
@@ -26448,6 +26478,7 @@ async function openAppPluginsDialog() {
   });
   for (const item of list) {
     const card = mkPluginCardShell(item);
+    card._pluginItem = item;
     const openPop = () => openPluginPop(wrap, pop, card, item);
     card.addEventListener("click", (ev) => {
       if (ev.target.closest(".plugin-tile-actions")) return;
@@ -26466,14 +26497,28 @@ async function openAppPluginsDialog() {
     } else if (item.kind === "music3" || item.handler === "music3") {
       const off = bindMusic3Progress(card);
       if (off) offs.push(off);
+      if (window.api && window.api.onMusic3ConsoleChanged) {
+        offs.push(window.api.onMusic3ConsoleChanged(() => refreshMusic3PluginCard(card)));
+      }
       refreshMusic3PluginCard(card);
     } else if (item.kind === "h3" || item.handler === "h3") {
       const off = bindH3Progress(card);
       if (off) offs.push(off);
+      if (window.api && window.api.onH3ConsoleChanged) {
+        offs.push(window.api.onH3ConsoleChanged(() => refreshH3PluginCard(card)));
+      }
       refreshH3PluginCard(card);
     } else {
       const off = bindPluginProgress(card, item.id, false);
       if (off) offs.push(off);
+      if (window.api && window.api.onAppPluginsWindowChanged) {
+        offs.push(
+          window.api.onAppPluginsWindowChanged((data) => {
+            if (!data || data.id !== item.id) return;
+            refreshWindowPluginCard(card, card._pluginItem || item);
+          }),
+        );
+      }
       refreshWindowPluginCard(card, item);
     }
   }
@@ -30544,27 +30589,36 @@ function paintUpdateBtn(st) {
   const btn = $("#btnUpdate");
   const bar = $(".topbar");
   if (!btn) return;
-  const avail = !!(st && st.available && st.version);
+  const avail = !!(st && (st.available || st.readyToRestart) && (st.version || st.readyToRestart));
+  const ready = !!(st && st.readyToRestart);
   const busy = !!(st && st.downloading);
   const txt = btn.querySelector(".btn-update-txt");
-  if (avail) {
+  if (avail || ready) {
     btn.hidden = false;
     btn.setAttribute("aria-hidden", "false");
     btn.classList.add("show");
     if (bar) bar.classList.add("has-update");
     const ver = st.version || (_updateInfo && _updateInfo.version) || "";
-    btn.title = busy
-      ? I18n.t("正在下载更新…")
-      : I18n.t("发现新版本 v") + ver + I18n.t("，点击下载并安装");
-    if (txt)
-      txt.textContent = busy
-        ? I18n.t("下载中")
-        : I18n.t("更新");
-    btn.classList.toggle("busy", busy);
+    if (ready && !busy) {
+      btn.title = I18n.t("更新已就绪：点击后将后台静默安装，完成后自动重新打开");
+      if (txt) txt.textContent = I18n.t("安装更新");
+      btn.classList.remove("busy");
+      btn.classList.add("ready");
+    } else {
+      btn.title = busy
+        ? I18n.t("正在下载更新…")
+        : I18n.t("发现新版本 v") + ver + I18n.t("，点击下载更新");
+      if (txt)
+        txt.textContent = busy
+          ? I18n.t("下载中")
+          : I18n.t("更新");
+      btn.classList.toggle("busy", busy);
+      btn.classList.remove("ready");
+    }
   } else {
     btn.hidden = true;
     btn.setAttribute("aria-hidden", "true");
-    btn.classList.remove("show", "busy");
+    btn.classList.remove("show", "busy", "ready");
     if (bar) bar.classList.remove("has-update");
   }
 }
@@ -30591,9 +30645,17 @@ function bindUpdateUi() {
       }
       if (r && r.downloading) {
         btn.classList.add("busy");
+        btn.classList.remove("ready");
         const txt = btn.querySelector(".btn-update-txt");
         if (txt) txt.textContent = I18n.t("下载中");
         toast(I18n.t("开始下载更新（差分包）…"), "ok");
+      } else if (r && r.readyToRestart) {
+        paintUpdateBtn({
+          available: true,
+          readyToRestart: true,
+          version: (_updateInfo && _updateInfo.version) || "",
+          downloading: false,
+        });
       }
     } catch (e) {
       toast(I18n.t("更新失败：") + ((e && e.message) || String(e)), "err");
@@ -30607,6 +30669,7 @@ function bindUpdateUi() {
           available: true,
           version: data && data.version,
           downloading: false,
+          readyToRestart: false,
         });
       } else if (channel === "update:progress") {
         const pct =
@@ -30614,13 +30677,23 @@ function bindUpdateUi() {
         const txt = btn.querySelector(".btn-update-txt");
         if (txt) txt.textContent = pct > 0 ? pct + "%" : I18n.t("下载中");
         btn.classList.add("busy", "show");
+        btn.classList.remove("ready");
         btn.hidden = false;
         const bar = $(".topbar");
         if (bar) bar.classList.add("has-update");
       } else if (channel === "update:downloaded") {
-        toast(I18n.t("更新已下载，即将静默安装并重启…"), "ok");
+        toast(I18n.t("更新已下载完毕：将后台静默安装，完成后自动重新打开应用"), "ok");
         paintUpdateBtn({
           available: true,
+          readyToRestart: true,
+          version: (data && data.version) || (_updateInfo && _updateInfo.version),
+          downloading: false,
+        });
+      } else if (channel === "update:readyToRestart") {
+        toast(I18n.t("已选择稍后；退出应用时将后台静默安装并自动重新打开"), "ok");
+        paintUpdateBtn({
+          available: true,
+          readyToRestart: true,
           version: (data && data.version) || (_updateInfo && _updateInfo.version),
           downloading: false,
         });

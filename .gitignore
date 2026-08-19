@@ -1,9 +1,6 @@
 # ===== 依赖 / 构建产物 =====
 node_modules/
 dist/
-dist-temp/
-dist-temp-*/
-dist-temp*.trash-*/
 dist_check/
 
 # ===== 编译与打包脚本 / 资源（不入库，避免误上传）=====
