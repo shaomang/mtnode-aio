@@ -4,6 +4,8 @@
 | --- | --- |
 | Undo | `Ctrl+Z` |
 | Redo | `Ctrl+Y` or `Ctrl+Shift+Z` |
+| Find nodes (title / content) | `Ctrl+F` (floating bar on canvas; current canvas only) |
+| Replace / Replace all | `Ctrl+G` |
 | Duplicate selected nodes / marks | `Ctrl+C` (system copy if text is selected) |
 | Delete selection | `Delete` / `Backspace` |
 | Group / ungroup | `G` |

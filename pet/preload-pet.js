@@ -14,6 +14,7 @@ const api = {
   openChat: () => ipcRenderer.invoke("pet:openChat"),
   toggleChat: () => ipcRenderer.invoke("pet:toggleChat"),
   chatSend: (text) => ipcRenderer.invoke("pet:chatSend", text),
+  chatStop: () => ipcRenderer.invoke("pet:chatStop"),
   chatClear: () => ipcRenderer.invoke("pet:chatClear"),
   chatHistory: () => ipcRenderer.invoke("pet:chatHistory"),
   listSessions: () => ipcRenderer.invoke("pet:listSessions"),

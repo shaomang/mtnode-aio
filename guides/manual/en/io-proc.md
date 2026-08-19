@@ -13,7 +13,7 @@
 - **Image generation**: text-to-image; reference images use edit APIs. Vision needs “Vision” enabled (DeepSeek Official has no vision).
 - **Anim**: slice an image on a grid into a GIF; chroma key optional.
 
-**▶ run · ◈ preview · API** for provider / model / temperature / size. **Attempts** (1–10) run in parallel; square tabs pick which result downstream sees.
+**▶ run · ◈ preview · API** for provider / model / temperature / size. **Attempts** (1–10) run in parallel; square tabs pick which result downstream sees. When a process node finishes, downstream runs automatically; if they already have output, choose overwrite or stop.
 
 Output **Browse / Copy / Clear** opens a large viewer or resets.
 

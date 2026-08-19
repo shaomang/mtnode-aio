@@ -847,8 +847,12 @@ function dshRouteForProvider(p) {
   return "mtnode_" + String(p.id || "p");
 }
 
-function petWorkspaceDir() {
-  return mk(join(petRoot(), "workspace"));
+function petWorkspaceDir(sessionIndex) {
+  const i = Math.max(
+    0,
+    Math.min(CHAT_SLOT_COUNT - 1, Number(sessionIndex != null ? sessionIndex : chatSessionIndex) || 0),
+  );
+  return mk(join(petRoot(), "workspace-chat", "s" + i));
 }
 
 let petDshAdapter = null;
@@ -897,6 +901,37 @@ function appendAssistantToSession(sessionIndex, content) {
 function isActiveRun(reqId) {
   const run = petDshRuns.get(reqId);
   return !!(run && run.sessionIndex === chatSessionIndex);
+}
+
+function finalizeAbortedRun(reqId) {
+  const run = petDshRuns.get(reqId);
+  if (!run) return;
+  petDshRuns.delete(reqId);
+  const final = String(run.acc || "");
+  if (final && !run.savedOnAbort) {
+    appendAssistantToSession(run.sessionIndex, final);
+    run.savedOnAbort = true;
+  }
+  if (run.sessionIndex === chatSessionIndex) {
+    sendToChat("pet:chatStatus", { text: "" });
+    sendToChat("pet:chatDone", { text: final, stopped: true });
+  } else {
+    sendToChat("pet:sessionsUpdated", { sessions: sessionSummaries() });
+  }
+}
+
+async function handleChatStop() {
+  const hit = findRunBySession(chatSessionIndex);
+  if (!hit) return { ok: true, stopped: false };
+  hit.run.aborted = true;
+  const ws = hit.run.workspace || petWorkspaceDir(hit.run.sessionIndex);
+  try {
+    const dsh = ensurePetDsh();
+    await dsh.ensureStarted();
+    await dsh.cancel({ workspace: ws });
+  } catch {}
+  if (petDshRuns.has(hit.reqId)) finalizeAbortedRun(hit.reqId);
+  return { ok: true, stopped: true };
 }
 
 function isWebToolName(name) {
@@ -1007,6 +1042,10 @@ function onPetDshEvent(ev) {
     return;
   }
   if (type === "error") {
+    if (run.aborted) {
+      finalizeAbortedRun(ev.reqId);
+      return;
+    }
     const msg = String((data && data.message) || "未知错误");
     if (active) sendToChat("pet:chatError", { error: msg });
     petDshRuns.delete(ev.reqId);
@@ -1014,6 +1053,10 @@ function onPetDshEvent(ev) {
     return;
   }
   if (type === "done") {
+    if (run.aborted) {
+      finalizeAbortedRun(ev.reqId);
+      return;
+    }
     const final =
       (data && data.finalResponse && String(data.finalResponse)) || run.acc || "";
     if (final) appendAssistantToSession(run.sessionIndex, final);
@@ -1100,13 +1143,13 @@ async function handleChatSend(text) {
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
   const input = hist ? hist + "\n\n用户(最新)：" + t : t;
-  const systemPrompt =
-    "你的名字是「" +
-    cfg.personaName +
-    "」。\n" +
-    (effectivePersonaPrompt(cfg)) +
-    "\n\n【工具规则】你可以联网搜索（web）获取信息；禁止读写本地文件、禁止执行终端/命令、禁止修改画布或其它应用数据。" +
-    "需要查资料时用搜索工具；不要调用文件系统类工具。";
+  /* 身份写入 dsh 真正的 system-prompt,而不是用户消息里的「系统设定」 */
+  const hostPersona = [
+    "你是「" + cfg.personaName + "」，独立的桌面聊天伙伴。",
+    "你不是 MTNode 工作流助手，也不在画布里工作；不要自称 MTNode 助手。",
+    effectivePersonaPrompt(cfg),
+    "【能力】你可以联网搜索获取信息。不要读写本地文件、不要执行终端或命令、不要操作画布或其它应用数据。需要查资料时使用搜索工具。",
+  ].join("\n");
 
   const piProvs = mtnodePiProvidersFromApp();
   const providerRoute = dshRouteForProvider(resolved.provider);
@@ -1126,10 +1169,12 @@ async function handleChatSend(text) {
 
   const reqId = "pet_" + Date.now().toString(36) + "_" + crypto.randomBytes(3).toString("hex");
   const sessionIndex = chatSessionIndex;
+  const workspace = petWorkspaceDir(sessionIndex);
   petDshRuns.set(reqId, {
     acc: "",
     status: "努力思考中…",
     sessionIndex,
+    workspace,
   });
   sendToChat("pet:chatStatus", { text: "努力思考中…" });
   sendToChat("pet:chatDelta", { reset: true, text: "" });
@@ -1139,15 +1184,15 @@ async function handleChatSend(text) {
     await dsh.ensureStarted();
     await dsh.run({
       reqId,
-      workspace: petWorkspaceDir(),
+      workspace,
       input,
       model: resolved.model,
       maxTokens: 8192,
       apiKey,
       baseUrl,
       webSearchApiKey,
-      systemPrompt,
-      preset: "standard",
+      hostPersona,
+      preset: "bongochat",
       effort: "high",
       provider: providerRoute,
       mtnodeProviders: piProvs,
@@ -1180,19 +1225,34 @@ function toggleChatWindow(forceOpen) {
 
 function resolvePetPreload() {
   const candidates = [
-    join(__dirname, "preload-pet.js"),
     join(petRoot(), "preload-pet.js"),
+    join(__dirname, "preload-pet.js"),
   ];
+  if (typeof process.resourcesPath === "string" && process.resourcesPath) {
+    candidates.unshift(join(process.resourcesPath, "pet-pack", "preload-pet.js"));
+  }
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
   }
   return join(__dirname, "preload-pet.js");
 }
 
-/** 把主进程自带的 preload 同步到数据目录，避免旧副本缺 openChat */
+/** 把最新 preload 同步到数据目录（优先 pet-pack，避免 asar 旧副本覆盖） */
 function syncPetPreload() {
-  const src = join(__dirname, "preload-pet.js");
-  if (!fs.existsSync(src)) return;
+  const candidates = [];
+  if (typeof process.resourcesPath === "string" && process.resourcesPath) {
+    candidates.push(join(process.resourcesPath, "pet-pack", "preload-pet.js"));
+  }
+  candidates.push(join(__dirname, "..", "pet-pack", "preload-pet.js"));
+  candidates.push(join(__dirname, "preload-pet.js"));
+  let src = "";
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      src = p;
+      break;
+    }
+  }
+  if (!src) return;
   try {
     fs.copyFileSync(src, join(petRoot(), "preload-pet.js"));
   } catch {}
@@ -1248,8 +1308,13 @@ function resolveChatHtml() {
       }
     } catch {}
   }
+  /* 始终从 runtime 加载，避免 asar 内旧 chat-ui 挡住 pet-pack/runtime 更新 */
+  const runtimeHtml = join(dest, "chat.html");
+  if (fs.existsSync(runtimeHtml) && fs.existsSync(join(dest, "chat.js"))) {
+    return runtimeHtml;
+  }
   if (fs.existsSync(bundled) && fs.existsSync(bundledJs)) return bundled;
-  return join(dest, "chat.html");
+  return runtimeHtml;
 }
 
 function createChatWindow() {
@@ -1525,6 +1590,7 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle("pet:chatSend", async (_e, text) => handleChatSend(text));
+  ipcMain.handle("pet:chatStop", () => handleChatStop());
   ipcMain.handle("pet:chatClear", () => clearCurrentSession());
   ipcMain.handle("pet:chatHistory", () => {
     hydrateChatFromDisk();

@@ -13,7 +13,9 @@ The **plugin list is fetched from the cloud catalog** (`http://mt-agent.com/mtno
 Manage under Settings · Agent (or Browse online):
 
 - **DSH plugins**: extend the agent; install restarts the engine.
-- **Skills**: Markdown instructions auto-discovered by agent nodes.
+- **Skills**: Markdown instructions. Type `/` in agent session / agent task / agent text / agent chat to pick one; the skill body is attached at run time.
 - **MCP servers**: tools appear on agent nodes after connect (stdio or remote URL).
+
+Official extension catalog: `http://mt-agent.com/mtnode/ext/catalog.json` (Browse online includes the **MTNode official** tab; you can also **+ Add source**). Local repo is `ext-repo/`; sync with `npm run ext:sync`.
 
 Search, install, enable, or remove from Settings cards.

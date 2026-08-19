@@ -60,6 +60,7 @@ const KIND_CLS = {
   splitter: "splitter",
   counter: "counter",
   mutex: "mutex",
+  global: "global",
 };
 
 /* 节点标题栏拖动手柄图标（SVG，stroke=currentColor） */
@@ -135,6 +136,9 @@ const KIND_ICON_SVG = {
   /* 合并 */
   merge:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 8H8.3M8.3 8L5 4.8M8.3 8L5 11.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12.8" cy="8" r="1.2" fill="currentColor"/><circle cx="3.7" cy="4.5" r="1.2" fill="currentColor"/><circle cx="3.7" cy="11.5" r="1.2" fill="currentColor"/></svg>',
+  /* 全局 · 广播参考 */
+  global:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.3" fill="none" stroke="currentColor" stroke-width="1.3"/><ellipse cx="8" cy="8" rx="2.4" ry="5.3" fill="none" stroke="currentColor" stroke-width="1.15"/><path d="M2.8 8h10.4M3.6 5.2h8.8M3.6 10.8h8.8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
   /* 绘制 · 笔 + 画板 */
   draw:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="8.6" height="7.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.4 12.6l5.2-5.2 1.15 1.15-5.2 5.2H7.4v-1.15z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 8.5l1.15 1.15" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.2h5.2M4 7.2h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
@@ -254,6 +258,7 @@ const NODE_DEFAULTS = {
     batchMode: "batch",
     agent: false,
     agentWorkspace: "",
+    globalRefs: false,
     output: null,
     batchOutputs: null,
     error: null,
@@ -273,6 +278,7 @@ const NODE_DEFAULTS = {
     bgRmKey: "#FF00FF",
     bgRmTol: 32,
     bgRmSoft: 24,
+    globalRefs: false,
     output: null,
     batchOutputs: null,
     error: null,
@@ -303,6 +309,7 @@ const NODE_DEFAULTS = {
   },
   split: { w: 260, h: 190, title: "拆分" },
   merge: { w: 230, h: 150, title: "合并" },
+  global: { w: 260, h: 160, title: "全局" },
   task: {
     w: 320,
     h: 280,
@@ -345,6 +352,7 @@ const NODE_DEFAULTS = {
     provider: "",
     agentSessionId: "",
     chatMode: false,
+    globalRefs: false,
     output: null,
     error: null,
     ranAt: 0,
@@ -367,6 +375,7 @@ const NODE_DEFAULTS = {
     prompt: "",
     providerId: "",
     model: "",
+    globalRefs: false,
     output: null,
     error: null,
     ranAt: 0,
@@ -528,6 +537,7 @@ function isPinnedCtrl(n) {
 }
 function outputCount(n) {
   if (!n) return 0;
+  if (n.kind === "global") return 0;
   if (n.kind === "save_text" || n.kind === "save_image") return 0;
   if (isExecEnd(n)) return 0;
   if (n.kind === "judge") return 2;
@@ -997,17 +1007,22 @@ function providerHostBlocksVision(p) {
   } catch {}
   return false;
 }
-/* 节点已连接的图像输入节点 */
+/* 节点已连接的图像输入节点（含全局节点广播） */
 function imageInputsOf(node, idx) {
   const out = [];
-  for (const w of wiresTo(node.id)) {
-    const src = nodeById(w.from);
-    if (!src) continue;
-    if (src.kind === "input_image" || src.kind === "proc_image")
-      out.push({
-        id: src.id,
-        title: itemTitleOf(src, idx == null ? 0 : idx) || src.title || I18n.t("图像"),
-      });
+  const seen = new Set();
+  const pushImg = (src) => {
+    if (!src || seen.has(src.id)) return;
+    if (src.kind !== "input_image" && src.kind !== "proc_image") return;
+    seen.add(src.id);
+    out.push({
+      id: src.id,
+      title: itemTitleOf(src, idx == null ? 0 : idx) || src.title || I18n.t("图像"),
+    });
+  };
+  for (const w of wiresTo(node.id)) pushImg(nodeById(w.from));
+  if (usesGlobalRefs(node)) {
+    for (const src of globalRefSources(node.id)) pushImg(src);
   }
   return out;
 }
@@ -1421,6 +1436,7 @@ function dshRunTask(input, opts) {
       return ws || S.dshWorkspaceFallback || "";
     })
     .then((workspace) => {
+  const nodeLock = isCanvasScopedAgentNode(opts.node);
   const runParams = {
     workspace,
     input: String(input || ""),
@@ -1429,10 +1445,17 @@ function dshRunTask(input, opts) {
     apiKey,
     baseUrl,
     webSearchApiKey,
-    systemPrompt: [opts.systemPrompt || "", agentToolPolicySystemNote()]
+    systemPrompt: [
+      opts.systemPrompt || "",
+      agentToolPolicySystemNote({ nodeLock }),
+      nodeLock ? agentNodeCapabilityNote() : "",
+    ]
       .filter(Boolean)
       .join("\n\n"),
-    preset: opts.preset || d.preset || "standard",
+    preset: (() => {
+      const p = opts.preset || d.preset || "standard";
+      return nodeLock && p === "standard" ? "node" : p;
+    })(),
     effort: dshEffortOf(opts.effort, !!(opts.node && opts.node.kind === "proc_text")),
     provider,
     mtnodeProviders: piProvs,
@@ -1452,10 +1475,10 @@ function dshRunTask(input, opts) {
   };
   const t0 = Date.now();
   ixReset();
-  /* 绑定本次运行的画布：后续 canvas 事件写入该 wf，切画布也不会串到别的工作流 */
+  /* 绑定本次运行的画布：后续 canvas 事件写入该 wf，切画布也不会串到别的画布 */
   const boundWf = S.wf;
   beginCanvasRun(boundWf);
-  const scopeLock = isCanvasScopedAgentNode(opts.node);
+  const scopeLock = nodeLock;
   if (scopeLock) S._canvasNodeAgentDepth = (S._canvasNodeAgentDepth || 0) + 1;
   if (opts.node && boundWf) {
     S.nodeWfId = S.nodeWfId || {};
@@ -2037,7 +2060,7 @@ const S = {
   /* 智能运行画布编辑绑定栈（canvas 事件写入对应 wf，而非当前展示的 S.wf） */
   canvasRunWf: null,
   canvasRunStack: [],
-  /* 节点所属工作流 id（运行期间），便于后台完成后写回正确画布 */
+  /* 节点所属画布 id（运行期间），便于后台完成后写回正确画布 */
   nodeWfId: {},
   /* 后台对非当前画布做 canvas 编辑时为 false，禁止 renderCanvas 闪到别的画布 */
   _canvasEditVisible: true,
@@ -2063,6 +2086,8 @@ const S = {
   assistModel: "",
   assistEffort: "high",
   assistWorkspace: "",
+  /* 全局助手本次运行冻结的工作目录（切画布也不改） */
+  assistRunWorkspace: null,
   /* current = 仅当前画布；global = 可参考/切换其他画布 */
   assistScope: "current",
   assistW: 320, /* 右侧助手栏宽度：最小 320，最大半屏 */
@@ -2071,6 +2096,15 @@ const S = {
   /* 任务节点「进入」：只显示 parentTaskId === taskFocus 的节点 */
   taskFocus: "",
   taskStack: [],
+  /* 画布查找 / 替换（Ctrl+F / Ctrl+G，仅当前工作流） */
+  findBar: {
+    open: false,
+    replaceMode: false,
+    query: "",
+    replace: "",
+    matches: [],
+    idx: -1,
+  },
 };
 
 /* ============ 撤销 / 重做 ============ */
@@ -2311,6 +2345,67 @@ function isImageWireFrom(n) {
   );
 }
 
+function canUseGlobalRefs(node) {
+  return !!(
+    node &&
+    (node.kind === "proc_text" ||
+      node.kind === "proc_image" ||
+      node.kind === "agent_task" ||
+      node.kind === "judge")
+  );
+}
+
+function usesGlobalRefs(node) {
+  return canUseGlobalRefs(node) && !!node.globalRefs;
+}
+
+function toggleNodeGlobalRefs(node) {
+  if (!canUseGlobalRefs(node)) return false;
+  if (node.running) {
+    toast(I18n.t("请先终止当前运行"), "warn");
+    return false;
+  }
+  pushHistory();
+  node.globalRefs = !node.globalRefs;
+  clearDownstream(node.id);
+  scheduleSave(true);
+  renderCanvas();
+  toast(
+    node.globalRefs
+      ? I18n.t("已引用全局节点")
+      : I18n.t("已关闭全局节点引用"),
+    "ok",
+  );
+  return true;
+}
+
+function isRefableSource(n) {
+  return !!(n && (isTextSource(n) || isImageSource(n)));
+}
+
+function globalRefSources(exceptId) {
+  const out = [];
+  const seen = new Set();
+  for (const g of (S.wf && S.wf.nodes) || []) {
+    if (!g || g.kind !== "global") continue;
+    for (const w of wiresTo(g.id)) {
+      const n = nodeById(w.from);
+      if (!n || seen.has(n.id) || n.id === exceptId) continue;
+      if (!isRefableSource(n)) continue;
+      seen.add(n.id);
+      out.push(n);
+    }
+  }
+  return out;
+}
+
+function globalChipKindCls(n) {
+  if (!n) return "proc";
+  if (n.kind === "split") return "split";
+  if (n.kind === "merge") return "merge";
+  return nodeKindCls(n);
+}
+
 function inputCount(node) {
   /* chat / 只读 / 需求等待 / 定时 / 起点：无输入端子 */
   if (
@@ -2394,6 +2489,7 @@ function nodeKindLabel(node) {
     judge: "判断",
     input_text: "文本",
     input_image: "图像",
+    global: "全局",
   };
   return I18n.t(map[node.kind] || "节点");
 }
@@ -2436,6 +2532,7 @@ function nodeKindPurposeKey(node) {
     counter: "计数（每 N 次放行）",
     mutex: "互斥（多入选一）",
     judge: "判断（是 / 否）",
+    global: "全局节点（仅连入 · 点左上角彩虹图标引用）",
   };
   return map[node.kind] || "";
 }
@@ -2680,6 +2777,14 @@ function openOverlay(title) {
   overlayPersistent = false;
   overlayKind = "";
   S.thinkOpen = null; // 打开新弹窗时结束上一弹窗的思考流式更新
+  const box = $("#overlay .overlay-box");
+  if (box) {
+    box.classList.remove("wide");
+    box.classList.remove("tpl-store");
+    box.classList.remove("g-ref-wide");
+  }
+  const ovBody = $("#ovBody");
+  if (ovBody) ovBody.classList.remove("tpl-store-body", "g-ref-ov");
   $("#ovTitle").textContent = title;
   $("#ovBody").innerHTML = "";
   $("#ovFoot").innerHTML = "";
@@ -2692,9 +2797,10 @@ function closeOverlay() {
   if (box) {
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
+    box.classList.remove("g-ref-wide");
   }
   const body = $("#ovBody");
-  if (body) body.classList.remove("tpl-store-body");
+  if (body) body.classList.remove("tpl-store-body", "g-ref-ov");
   document.querySelectorAll("#overlay > .plugin-pop").forEach((el) => el.remove());
   $("#overlay").style.display = "none";
 }
@@ -3910,11 +4016,11 @@ async function captureCanvasTile(cssX, cssY, cssW, cssH) {
 
 async function exportCanvasOverviewPng() {
   if (S.view === "agent") {
-    toast(I18n.t("请先切换到工作流画布"), "warn");
+    toast(I18n.t("请先切换到画布"), "warn");
     return;
   }
   if (!S.wf) {
-    toast(I18n.t("当前没有打开的工作流"), "err");
+    toast(I18n.t("当前没有打开的画布"), "err");
     return;
   }
   const bounds = canvasWorldBounds();
@@ -4290,6 +4396,46 @@ function batchTitles(node) {
 function clearDownstream(startId) {
   const seen = new Set([startId]);
   const q = [startId];
+  const invalidate = (n) => {
+    if (n.kind === "proc_text" || n.kind === "proc_image" || n.kind === "agent_task") {
+      n.output = null;
+      n.batchOutputs = null;
+      n.error = null;
+      n.ranAt = 0;
+      n.attemptOutputs = null;
+      n.attemptsDone = 0;
+    }
+    if (n.kind === "wait_file") {
+      n.output = null;
+      n.error = null;
+      n.ranAt = 0;
+      n.waitStatus = "";
+      n.waitReady = false;
+    }
+    if (n.kind === "task") {
+      n.output = null;
+      n.error = null;
+      n.ranAt = 0;
+      n.taskStatus = "pending";
+    }
+    if (S.thinking && S.thinking[n.id]) S.thinking[n.id] = [];
+    if (n.kind === "save_text" || n.kind === "save_image") {
+      /* 上游失效：清除「已保存」状态，避免预览继续显示旧文件 */
+      n.savedPaths = [];
+      n.savedPath = "";
+      n.savedAt = 0;
+    }
+  };
+  const fanoutGlobal = (g) => {
+    if (!g || g.kind !== "global") return;
+    for (const n of (S.wf && S.wf.nodes) || []) {
+      if (!usesGlobalRefs(n) || seen.has(n.id) || isControlKind(n)) continue;
+      seen.add(n.id);
+      q.push(n.id);
+      invalidate(n);
+    }
+  };
+  fanoutGlobal(nodeById(startId));
   while (q.length) {
     const id = q.shift();
     if (isControlKind(nodeById(id))) continue;
@@ -4299,34 +4445,8 @@ function clearDownstream(startId) {
       if (!n || seen.has(n.id) || isControlKind(n)) continue;
       seen.add(n.id);
       q.push(n.id);
-      if (n.kind === "proc_text" || n.kind === "proc_image" || n.kind === "agent_task") {
-        n.output = null;
-        n.batchOutputs = null;
-        n.error = null;
-        n.ranAt = 0;
-        n.attemptOutputs = null;
-        n.attemptsDone = 0;
-      }
-      if (n.kind === "wait_file") {
-        n.output = null;
-        n.error = null;
-        n.ranAt = 0;
-        n.waitStatus = "";
-        n.waitReady = false;
-      }
-      if (n.kind === "task") {
-        n.output = null;
-        n.error = null;
-        n.ranAt = 0;
-        n.taskStatus = "pending";
-      }
-      if (S.thinking && S.thinking[n.id]) S.thinking[n.id] = [];
-      if (n.kind === "save_text" || n.kind === "save_image") {
-        /* 上游失效：清除「已保存」状态，避免预览继续显示旧文件 */
-        n.savedPaths = [];
-        n.savedPath = "";
-        n.savedAt = 0;
-      }
+      invalidate(n);
+      fanoutGlobal(n);
     }
   }
 }
@@ -4693,26 +4813,17 @@ async function explodeBatchNode(root) {
 /* ============ @ 引用 ============ */
 
 function refCandidates(node) {
-  /* 仅允许引用「已连接」的节点（直接输入端） */
+  /* 已连接输入 + 全局节点广播的来源（处理节点可 @ 引用） */
   const out = [];
   const seen = new Set();
-  for (const w of wiresTo(node.id)) {
-    const n = nodeById(w.from);
-    if (!n || seen.has(n.id)) continue;
-    if (
-      n.kind === "input_text" ||
-      n.kind === "input_image" ||
-      n.kind === "proc_text" ||
-      n.kind === "proc_image" ||
-      n.kind === "agent_task" ||
-      n.kind === "task" ||
-      n.kind === "merge" ||
-      n.kind === "split" ||
-      n.kind === "chat"
-    ) {
-      seen.add(n.id);
-      out.push(n);
-    }
+  const push = (n) => {
+    if (!n || seen.has(n.id) || !isRefableSource(n)) return;
+    seen.add(n.id);
+    out.push(n);
+  };
+  for (const w of wiresTo(node.id)) push(nodeById(w.from));
+  if (usesGlobalRefs(node)) {
+    for (const n of globalRefSources(node.id)) push(n);
   }
   return out;
 }
@@ -5167,6 +5278,9 @@ function resolveRefs(prompt, node, idx, opts) {
       )
         addText(src);
     }
+    if (usesGlobalRefs(node)) {
+      for (const src of globalRefSources(node.id)) addText(src);
+    }
   }
   const out = String(prompt || "").replace(
     /@([^\s@，。；、！？：,!?;:]+)/g,
@@ -5285,7 +5399,9 @@ function showRefMenu(ta, node, items) {
   head.textContent =
     node && node.batchMode === "agg"
       ? I18n.t("引用聚合条目（@条目标题）")
-      : I18n.t("引用输入节点（@标题）");
+      : usesGlobalRefs(node) && globalRefSources(node.id).length
+        ? I18n.t("引用已连接或全局节点（@标题）")
+        : I18n.t("引用输入节点（@标题）");
   menu.appendChild(head);
   const list = document.createElement("div");
   list.className = "ref-list";
@@ -5341,7 +5457,7 @@ function selectRef(node, i) {
   rm.ta.value = prefix + token + suffix;
   const np = prefix.length + token.length;
   rm.ta.setSelectionRange(np, np);
-  rm.node.prompt = rm.ta.value;
+  setProcPrompt(rm.node, rm.ta.value);
   rm.ta.focus();
   closeRefMenu();
 }
@@ -5417,6 +5533,49 @@ async function resolveSkillByName(name) {
     if (r && r.ok && r.body) return { name: r.name || nm, body: r.body };
   } catch {}
   return null;
+}
+
+function isCanvasBuildSkillName(name) {
+  const n = String(name || "").toLowerCase();
+  return n === "generate-workflow" || n === "generate-task";
+}
+
+/* 行首 /技能名 [说明]：命中已安装技能则返回包装对象，否则 null */
+async function resolveSkillSlash(text, opts) {
+  let t = String(text || "").trim();
+  if (!t) return null;
+  if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
+  const m = t.match(/^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
+  if (!m) return null;
+  if (opts && opts.denyCanvasSkills && isCanvasBuildSkillName(m[1])) return null;
+  const skill = await resolveSkillByName(m[1]);
+  if (!skill) return null;
+  let title = skill.name;
+  try {
+    const list = await loadSkillsCached(false);
+    const hit = (list || []).find((s) => s.name === skill.name);
+    if (hit && hit.title) title = hit.title;
+  } catch {}
+  return {
+    name: skill.name,
+    title,
+    body: skill.body,
+    arg: String(m[2] || "").trim(),
+    raw: t,
+  };
+}
+
+function applySkillWrapToAssembled(assembled, rawUser, wrapped) {
+  const src = String(assembled || "");
+  const raw = String(rawUser || "").trim();
+  if (raw) {
+    const i = src.indexOf(raw);
+    if (i >= 0) return src.slice(0, i) + wrapped + src.slice(i + raw.length);
+  }
+  const marker = "\n\n【内容】\n";
+  const i = src.lastIndexOf(marker);
+  if (i >= 0) return src.slice(0, i + marker.length) + wrapped;
+  return wrapped;
 }
 
 function skillTaskPrompt(sw) {
@@ -5495,10 +5654,11 @@ function selectSlashItem(item) {
   const np = prefix.length + insert.length;
   ta.setSelectionRange(np, np);
   ta.focus();
+  if (typeof sm.onChange === "function") sm.onChange(ta.value);
   closeSlashMenu();
 }
 
-function showSlashMenu(ta, items, scope) {
+function showSlashMenu(ta, items, scope, onChange) {
   const menu = $("#refMenu");
   if (!menu) return;
   closeRefMenu();
@@ -5551,11 +5711,18 @@ function showSlashMenu(ta, items, scope) {
   if (top < pad) top = pad;
   menu.style.left = left + "px";
   menu.style.top = top + "px";
-  S.slashMenu = { ta, items, sel: 0, focusable: list, scope: scope || "agent" };
+  S.slashMenu = {
+    ta,
+    items,
+    sel: 0,
+    focusable: list,
+    scope: scope || "agent",
+    onChange: typeof onChange === "function" ? onChange : null,
+  };
   paintSlashSel();
 }
 
-async function slashTick(ta, scope) {
+async function slashTick(ta, scope, onChange) {
   const gen = ++_slashTickGen;
   const tok = slashToken(ta);
   if (!tok) {
@@ -5566,6 +5733,7 @@ async function slashTick(ta, scope) {
   if (gen !== _slashTickGen) return;
   const q = tok.query;
   const sk = (skills || [])
+    .filter((s) => scope !== "node" || !isCanvasBuildSkillName(s && s.name))
     .map((s) => ({
       name: s.name,
       title: s.title || s.name,
@@ -5583,7 +5751,7 @@ async function slashTick(ta, scope) {
       );
     });
   const cmds =
-    scope === "assist"
+    scope === "assist" || scope === "node"
       ? []
       : AGENT_SLASH_CMDS.filter((c) =>
           slashItemMatch(
@@ -5598,7 +5766,7 @@ async function slashTick(ta, scope) {
           builtin: false,
         }));
   /* 内置/植入技能优先，命令靠后 */
-  showSlashMenu(ta, sk.concat(cmds), scope);
+  showSlashMenu(ta, sk.concat(cmds), scope, onChange);
 }
 
 function slashKey(ta, ev) {
@@ -6725,17 +6893,25 @@ function nodeElement(node) {
   const head = document.createElement("div");
   head.className = "n-head";
   const handle = document.createElement("button");
-  handle.className = "n-drag-handle";
+  handle.type = "button";
+  handle.className =
+    "n-drag-handle" + (usesGlobalRefs(node) ? " global-on" : "");
   fillNodeKindIcon(handle, node);
   handle.removeAttribute("title");
   bindNodeTitleTooltip(handle, () => {
     const purpose = nodeKindPurpose(node);
+    if (canUseGlobalRefs(node)) {
+      const g = usesGlobalRefs(node)
+        ? I18n.t("已引用全局节点（彩虹）· 点击关闭 · 拖动移动")
+        : I18n.t("点击引用全局节点 · 拖动移动");
+      return purpose ? g + "\n" + purpose : g;
+    }
     return purpose || I18n.t("拖拽移动节点（按住手柄拖动）");
   });
   handle.addEventListener("mousedown", (ev) => {
     ev.stopPropagation();
     ev.preventDefault();
-    startNodeDrag(ev, node);
+    startNodeDrag(ev, node, { fromHandle: true });
   });
   head.appendChild(handle);
   const title = document.createElement("div");
@@ -7882,7 +8058,9 @@ function nodeElement(node) {
       ev.target.closest(".dsh-trace") ||
       ev.target.closest(".dsh-metrics-line") ||
       ev.target.closest("details") ||
-      ev.target.closest("summary")
+      ev.target.closest("summary") ||
+      ev.target.closest(".g-chips") ||
+      ev.target.closest(".g-chip")
     )
       return;
     startNodeDrag(ev, node);
@@ -8354,7 +8532,9 @@ function buildBody(node, body) {
     if (node.kind !== "agent_task") {
       f3.appendChild(
         document.createTextNode(
-          I18n.t("提示词 Prompt（@ 引用输入节点 · 输入内容自动附加）"),
+          node.agent
+            ? I18n.t("任务（输入 / 呼出技能 · @ 引用输入节点）")
+            : I18n.t("提示词 Prompt（@ 引用输入节点 · 输入内容自动附加）"),
         ),
       );
     }
@@ -8364,29 +8544,48 @@ function buildBody(node, body) {
     ta.placeholder =
       node.kind === "agent_task"
         ? node.chatMode
-          ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行）")
-          : I18n.t("描述任务…（每次 ▶ 为新对话，输入保留；点 💬 开会话模式）")
-        : node.kind === "proc_text"
-          ? I18n.t("例如：将输入内容总结为三句话… 输入 @ 引用已连接节点")
-          : I18n.t("例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图");
+          ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）")
+          : I18n.t(
+              "描述任务…（每次 ▶ 为新对话，输入保留；点 💬 开会话模式；输入 / 呼出技能）",
+            )
+        : node.kind === "proc_text" && node.agent
+          ? I18n.t("描述任务…（输入 / 呼出技能，@ 引用已连接节点）")
+          : node.kind === "proc_text"
+            ? I18n.t("例如：将输入内容总结为三句话… 输入 @ 引用已连接节点")
+            : I18n.t("例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图");
     ta.value = procPromptOf(node);
+    const persistPrompt = (v) => setProcPrompt(node, v);
     ta.addEventListener("input", () => {
-      setProcPrompt(node, ta.value);
+      persistPrompt(ta.value);
       refTick(ta, node);
+      if (isDshTask(node)) slashTick(ta, "node", persistPrompt);
+    });
+    ta.addEventListener("compositionend", () => {
+      if (isDshTask(node)) slashTick(ta, "node", persistPrompt);
     });
     ta.addEventListener("keydown", (ev) => {
+      if (isDshTask(node) && slashKey(ta, ev)) return;
       refKey(ta, ev, node);
       if (node.kind === "agent_task" && ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
-        if (S.refMenu) return; /* @ 引用菜单打开时 Enter 只选引用 */
+        if (S.refMenu || S.slashMenu) return; /* 菜单打开时 Enter 只选条目 */
         playNode(node);
       }
     });
     ta.addEventListener("click", () => {
       if (S.refMenu) refTick(ta, node);
+      if (isDshTask(node) && S.slashMenu) slashTick(ta, "node", persistPrompt);
     });
-    ta.addEventListener("scroll", closeRefMenu);
-    ta.addEventListener("blur", () => setTimeout(closeRefMenu, 150));
+    ta.addEventListener("scroll", () => {
+      closeRefMenu();
+      closeSlashMenu();
+    });
+    ta.addEventListener("blur", () =>
+      setTimeout(() => {
+        closeRefMenu();
+        closeSlashMenu();
+      }, 150),
+    );
     f3.appendChild(ta);
     left.appendChild(f3);
     /* 智能任务节点：上下分割 — 上会话（与智能会话同款）· 下输入框 */
@@ -8418,7 +8617,7 @@ function buildBody(node, body) {
       if (wfWs) {
         ws.readOnly = true;
         ws.value = wfWs;
-        ws.title = I18n.t("工作流已设置统一工作目录,本节点只读继承");
+        ws.title = I18n.t("画布已设置统一工作目录,本节点只读继承");
         ws.placeholder = "";
       } else {
         ws.placeholder = I18n.t("工作目录（可留空 = 应用数据目录）…");
@@ -8766,6 +8965,34 @@ function buildBody(node, body) {
       true,
     );
     body.appendChild(list);
+  } else if (node.kind === "global") {
+    const wrap = document.createElement("div");
+    wrap.className = "g-chips";
+    wrap.title = I18n.t("点击空白处查看全部连入内容");
+    for (const src of globalRefSources()) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "g-chip kind-" + globalChipKindCls(src);
+      chip.textContent = src.title || nodeKindLabel(src);
+      chip.title =
+        I18n.t("画布居中定位到：") +
+        (src.title || nodeKindLabel(src)) +
+        " · " +
+        nodeKindLabel(src);
+      chip.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        focusNode(src.id);
+      });
+      wrap.appendChild(chip);
+    }
+    wrap.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    wrap.addEventListener("click", (ev) => {
+      if (ev.target.closest(".g-chip")) return;
+      ev.stopPropagation();
+      openGlobalRefsDialog(node);
+    });
+    body.appendChild(wrap);
   } else if (node.kind === "task") {
     const st = document.createElement("div");
     const status = node.taskStatus || "pending";
@@ -8939,7 +9166,7 @@ function buildBody(node, body) {
       if (wfWs) {
         ws.readOnly = true;
         ws.value = wfWs;
-        ws.title = I18n.t("工作流已设置统一工作目录,本节点只读继承");
+        ws.title = I18n.t("画布已设置统一工作目录,本节点只读继承");
         ws.placeholder = "";
       } else {
         ws.value = node.agentWorkspace || "";
@@ -8976,8 +9203,8 @@ function buildBody(node, body) {
       !S.config.dsh || S.config.dsh.chatEnter !== "newline";
     ta.placeholder = node.agent
       ? chatEnterSend
-        ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行）")
-        : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送）")
+        ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）")
+        : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；输入 / 呼出技能）")
       : chatEnterSend
         ? I18n.t("输入消息…（Enter 发送，Shift+Enter 换行）")
         : I18n.t("输入消息…（Enter 换行，Ctrl+Enter 发送）");
@@ -8989,9 +9216,15 @@ function buildBody(node, body) {
       const t = ta.value;
       if (!t.trim()) return;
       ta.value = "";
+      closeSlashMenu();
       chatSend(node, t);
     };
+    if (node.agent) {
+      ta.addEventListener("input", () => slashTick(ta, "node"));
+      ta.addEventListener("compositionend", () => slashTick(ta, "node"));
+    }
     ta.addEventListener("keydown", (ev) => {
+      if (node.agent && slashKey(ta, ev)) return;
       if (chatEnterSend) {
         if (ev.key === "Enter" && !ev.shiftKey) {
           ev.preventDefault();
@@ -9996,6 +10229,24 @@ function buildSpec(node, prov, idx) {
     }
   }
   const refs = resolveRefs(procPromptForRun(node), node, idx);
+  if (usesGlobalRefs(node)) {
+    const wired = new Set(wiresTo(node.id).map((w) => w.from));
+    for (const src of globalRefSources(node.id)) {
+      if (wired.has(src.id)) continue;
+      const v = valueForInput(src, idx);
+      if (v && v.kind === "image") {
+        images.push(v.path);
+        imageSources.push({
+          title: itemTitleOf(src, idx) || I18n.t("图像"),
+          text:
+            I18n.t("（图像输入）") +
+            "\n" +
+            I18n.t("标题：") +
+            (itemTitleOf(src, idx) || I18n.t("图像")),
+        });
+      }
+    }
+  }
   /* 图生图：连线图已可能被 @ 引用进 refImages，再 concat 会翻倍；文生图背景仍可带标题说明 */
   const sources =
     node.kind === "proc_image"
@@ -10137,9 +10388,16 @@ function ensureProcTextVision(node, opts) {
 async function runDshOnce(node, spec, attemptT, images) {
   node._pendingAnswer = "";
   /* 智能任务：会话模式多轮；普通模式仅本次消息（历史已在 playNode 清空） */
-  const sent =
-    (S.agentTaskSent && S.agentTaskSent[node.id]) ||
-    String(node.task || "").trim();
+  const sent = procPromptForRun(node);
+  const skillWrap = await resolveSkillSlash(sent, { denyCanvasSkills: true });
+  const skillLatest = skillWrap ? skillTaskPrompt(skillWrap) : "";
+  if (skillWrap && spec) {
+    spec.prompt = applySkillWrapToAssembled(
+      spec.prompt,
+      skillWrap.raw,
+      skillLatest,
+    );
+  }
   if (node.kind === "agent_task") {
     if (!Array.isArray(node.messages)) node.messages = [];
     const cur = String(sent || "").trim();
@@ -10157,7 +10415,7 @@ async function runDshOnce(node, spec, attemptT, images) {
         .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
         .join("\n\n")
     : "";
-  const latest = String(sent || "").trim() || spec.prompt;
+  const latest = skillLatest || String(sent || "").trim() || spec.prompt;
   const input =
     useHist && hist
       ? hist + "\n\n用户(最新)：" + latest
@@ -10169,9 +10427,7 @@ async function runDshOnce(node, spec, attemptT, images) {
     effort: node.effort != null && node.effort !== "" ? node.effort : undefined,
     preset: node.preset || undefined,
     images,
-    systemPrompt:
-      "你绑定在当前画布工作流上。只能用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 操作本画布；" +
-      "list_workflows 与 canvas_get 不会返回其他画布。回答简洁，中文优先。",
+    systemPrompt: "回答简洁，中文优先。用工作区文件交付结果，不要改画布。",
     onEvent: (type, data) => onDshNodeEvent(node, attemptT, type, data),
     onDone: (d) => recordDshMetrics(node, d.metrics),
   });
@@ -10258,13 +10514,18 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
    允许通过 @条目标题 引用任意一个条目 */
 function aggCandidates(node) {
   const out = [];
-  for (const w of wiresTo(node.id)) {
-    const src = nodeById(w.from);
-    if (!src) continue;
+  const seen = new Set();
+  const addSrc = (src) => {
+    if (!src || seen.has(src.id)) return;
+    seen.add(src.id);
     for (const it of allTextItems(src))
       out.push({ title: it.title || src.title, kind: "text", text: it.text });
     for (const it of allImageItems(src))
       out.push({ title: it.title || src.title, kind: "image", path: it.path });
+  };
+  for (const w of wiresTo(node.id)) addSrc(nodeById(w.from));
+  if (usesGlobalRefs(node)) {
+    for (const src of globalRefSources(node.id)) addSrc(src);
   }
   return out;
 }
@@ -10314,6 +10575,24 @@ function buildSpecAgg(node, prov) {
       });
     }
   }
+  if (usesGlobalRefs(node)) {
+    const wired = new Set(wiresTo(node.id).map((w) => w.from));
+    for (const src of globalRefSources(node.id)) {
+      if (wired.has(src.id)) continue;
+      for (const it of allTextItems(src)) textBlocks.push(it);
+      for (const it of allImageItems(src)) {
+        images.push(it.path);
+        textBlocks.push({
+          title: it.title || src.title || I18n.t("图像"),
+          text:
+            I18n.t("（图像输入）") +
+            "\n" +
+            I18n.t("标题：") +
+            (it.title || src.title || I18n.t("图像")),
+        });
+      }
+    }
+  }
   const refs = resolveRefsAgg(procPromptForRun(node), node);
   /* 聚合图生图：去掉「（图像输入）」标题块，避免与「第 N 张参考图」重复说明 */
   const promptBlocks =
@@ -10361,17 +10640,15 @@ async function runOnceAgg(node, prov, attemptT) {
   if (isDshTask(node)) {
     /* 图像输入:与 runOnce 一致；智能节点不弹窗切换主模型 */
     const imgNodes = [];
-    for (const w of wiresTo(node.id)) {
-      const src = nodeById(w.from);
+    for (const n of imageInputsOf(node)) {
+      const src = nodeById(n.id);
       if (!src) continue;
-      if (src.kind === "input_image" || src.kind === "proc_image") {
-        for (const it of allImageItems(src))
-          imgNodes.push({
-            id: src.id,
-            title: it.title || src.title || I18n.t("图像"),
-            path: it.path,
-          });
-      }
+      for (const it of allImageItems(src))
+        imgNodes.push({
+          id: src.id,
+          title: it.title || src.title || I18n.t("图像"),
+          path: it.path,
+        });
     }
     let taskVis = null;
     if (imgNodes.length) {
@@ -10663,11 +10940,14 @@ function procSourcesOf(node) {
   const out = [];
   const seen = new Set();
   if (!node) return out;
-  for (const w of wiresTo(node.id)) {
-    const src = nodeById(w.from);
-    if (!src || seen.has(src.id) || !isAutoProcKind(src)) continue;
+  const add = (src) => {
+    if (!src || seen.has(src.id) || !isAutoProcKind(src)) return;
     seen.add(src.id);
     out.push(src);
+  };
+  for (const w of wiresTo(node.id)) add(nodeById(w.from));
+  if (usesGlobalRefs(node)) {
+    for (const src of globalRefSources(node.id)) add(src);
   }
   /* 需求等待以控制线连入时：仍作为阻塞依赖，先等文件就绪再跑本节点 */
   for (const w of allWiresTo(node.id)) {
@@ -10764,7 +11044,145 @@ async function runAttempt(node, prov, t) {
   return res;
 }
 
-async function playNode(node, quiet) {
+function isProcessPlayKind(n) {
+  return (
+    !!n &&
+    (n.kind === "proc_text" ||
+      n.kind === "proc_image" ||
+      n.kind === "agent_task")
+  );
+}
+
+function isCascadeRunKind(n) {
+  return (
+    isProcessPlayKind(n) ||
+    !!(
+      n &&
+      (n.kind === "save_text" || n.kind === "save_image" || n.kind === "task")
+    )
+  );
+}
+
+function isCascadeWalkKind(n) {
+  return !!(
+    n &&
+    (n.kind === "split" ||
+      n.kind === "merge" ||
+      n.kind === "input_text" ||
+      n.kind === "input_image")
+  );
+}
+
+/* 数据连线可达的下游：处理 / 智能任务 / 保存 / 任务；拆分·合并·输入只穿过不执行 */
+function collectDownstreamCascade(start) {
+  const run = [];
+  const seen = new Set();
+  if (!start || !S.wf) return run;
+  const q = [start.id];
+  seen.add(start.id);
+  const fanoutGlobal = (g) => {
+    if (!g || g.kind !== "global") return;
+    for (const n of S.wf.nodes || []) {
+      if (!usesGlobalRefs(n) || seen.has(n.id) || n.id === start.id) continue;
+      seen.add(n.id);
+      if (isCascadeRunKind(n)) run.push(n);
+      if (isCascadeRunKind(n) || isCascadeWalkKind(n)) q.push(n.id);
+    }
+  };
+  fanoutGlobal(start);
+  while (q.length) {
+    const fromId = q.shift();
+    for (const w of S.wf.wires || []) {
+      if (w.from !== fromId) continue;
+      if (wireFromIsControl(w)) continue;
+      const n = nodeById(w.to);
+      if (!n || seen.has(n.id)) continue;
+      seen.add(n.id);
+      if (isCascadeRunKind(n)) run.push(n);
+      if (isCascadeRunKind(n) || isCascadeWalkKind(n) || n.kind === "global")
+        q.push(n.id);
+      fanoutGlobal(n);
+    }
+  }
+  return run;
+}
+
+function nodePlaySucceeded(node) {
+  if (!node || node._aborted) return false;
+  if (attemptCount(node) > 1) {
+    const outs = node.attemptOutputs || [];
+    return outs.some(
+      (o) =>
+        o &&
+        !o.error &&
+        (o.output || (o.batchOutputs && o.batchOutputs.length)),
+    );
+  }
+  if (node.error) return false;
+  return nodeHasOutputContent(node);
+}
+
+async function decideCascadeAfterPlay(node, quiet, opts) {
+  if (quiet || (opts && opts.noCascade) || !isProcessPlayKind(node))
+    return { nodes: null, skipSaveIds: null };
+  const down = collectDownstreamCascade(node);
+  if (!down.length) return { nodes: null, skipSaveIds: null };
+  const skipSaveIds = new Set(down.map((n) => n.id));
+  const occupied = down.filter(nodeHasOutputContent);
+  if (!occupied.length) return { nodes: down, skipSaveIds };
+  const titles = occupied.map((n) => n.title || n.kind);
+  const more = titles.length > 8 ? "…" : "";
+  const ok = await confirmDialog(
+    I18n.t(
+      "下游节点已有输出。继续执行将覆盖这些内容，也可以到此为止、不继续执行下游。",
+    ) +
+      "\n" +
+      I18n.listJoin(titles.slice(0, 8)) +
+      more,
+    {
+      title: I18n.t("下游已有内容"),
+      okText: I18n.t("执行并覆盖"),
+      cancelText: I18n.t("不继续执行"),
+    },
+  );
+  return { nodes: ok ? down : [], skipSaveIds };
+}
+
+async function runCascadeNode(n, seen) {
+  if (!n || seen.has(n.id)) return;
+  seen.add(n.id);
+  if (n.kind === "task") return playTaskNode(n, true);
+  if (n.kind === "save_text" || n.kind === "save_image")
+    return saveNodeAction(n);
+  if (isProcessPlayKind(n))
+    return playNode(n, true, { noCascade: true, ensureUpstream: true });
+}
+
+async function runDownstreamCascade(nodes) {
+  const list = (nodes || []).filter((n) => n && nodeById(n.id) && !n.running);
+  if (!list.length) return;
+  invalidateControlRunTargets(list);
+  const pending = new Set(list.map((n) => n.id));
+  addPendingRun(pending);
+  const seen = new Set();
+  const prevSkip = S._cascadeSkipSaveIds;
+  S._cascadeSkipSaveIds = pending;
+  try {
+    await runControlRunnableQueue(null, list, seen, (n) =>
+      runCascadeNode(n, seen),
+    );
+    const names = list.map((n) => n.title).filter(Boolean);
+    if (names.length)
+      toast(I18n.t("已自动执行下游节点：") + I18n.listJoin(names), "ok");
+  } finally {
+    S._cascadeSkipSaveIds = prevSkip;
+    clearPendingRun(pending);
+    renderCanvas();
+    renderStatus();
+  }
+}
+
+async function playNode(node, quiet, opts) {
   if (!S.playLocks) S.playLocks = new Map();
   const hit = S.playLocks.get(node.id);
   if (hit) {
@@ -10777,14 +11195,21 @@ async function playNode(node, quiet) {
   });
   S.playLocks.set(node.id, lock);
   try {
-    await playNodeBody(node, quiet);
+    const cascadeAfter = await playNodeBody(node, quiet, opts || {});
+    if (cascadeAfter && cascadeAfter.length && nodePlaySucceeded(node)) {
+      try {
+        await runDownstreamCascade(cascadeAfter);
+      } catch (e) {
+        toast(I18n.t("下游执行失败：") + (e.message || String(e)), "err");
+      }
+    }
   } finally {
     if (S.playLocks.get(node.id) === lock) S.playLocks.delete(node.id);
     unlock();
   }
 }
 
-async function playNodeBody(node, quiet) {
+async function playNodeBody(node, quiet, opts) {
   if (node.running) {
     const p = S.runPromises.get(node.id);
     if (p) await p;
@@ -10824,23 +11249,36 @@ async function playNodeBody(node, quiet) {
     toast(I18n.t("先填写任务描述"), "warn");
     return;
   }
+  opts = opts || {};
+  const cascadePlan = await decideCascadeAfterPlay(node, quiet, opts);
+  /* quiet：不弹 toast / 不加 pending；ensureUpstream：仍补跑未处理的上游（控制节点调度用） */
+  const ensureUpstream = !quiet || !!opts.ensureUpstream;
   let pendingIds = null;
   if (!quiet) {
     pendingIds = collectPendingRunIds(node, true);
+    if (cascadePlan.nodes && cascadePlan.nodes.length) {
+      for (const n of cascadePlan.nodes) pendingIds.add(n.id);
+    }
     addPendingRun(pendingIds);
+  }
+  if (ensureUpstream) {
     const ran = [];
     try {
       await ensureProcessedAll(procSourcesOf(node), ran);
     } catch (e) {
-      clearPendingRun(pendingIds);
+      if (pendingIds) clearPendingRun(pendingIds);
       throw e;
     }
-    if (ran.length) toast(I18n.t("已自动执行上游节点：") + I18n.listJoin(ran), "ok");
-    const un =
-      node.batchMode === "agg" && batchTitles(node)
-        ? resolveRefsAgg(procPromptOf(node), node).unresolved
-        : resolveRefs(procPromptOf(node), node, 0).unresolved;
-    if (un.length) toast(I18n.t("未解析的 @引用：") + I18n.listJoin(un), "warn");
+    if (ran.length && !quiet)
+      toast(I18n.t("已自动执行上游节点：") + I18n.listJoin(ran), "ok");
+    if (!quiet) {
+      const un =
+        node.batchMode === "agg" && batchTitles(node)
+          ? resolveRefsAgg(procPromptOf(node), node).unresolved
+          : resolveRefs(procPromptOf(node), node, 0).unresolved;
+      if (un.length)
+        toast(I18n.t("未解析的 @引用：") + I18n.listJoin(un), "warn");
+    }
   }
   const clearPendingEarly = () => {
     if (pendingIds) clearPendingRun(pendingIds);
@@ -10987,7 +11425,22 @@ async function playNodeBody(node, quiet) {
     } finally {
       node.running = false;
       clearAgentTaskSent(node);
-      if (S.pendingRun) S.pendingRun.delete(node.id);
+      /* 清掉本次挂上的 pending；若即将级联下游，则保留下游 id 给 runDownstreamCascade */
+      if (pendingIds) {
+        const keep = new Set();
+        if (
+          cascadePlan.nodes &&
+          cascadePlan.nodes.length &&
+          nodePlaySucceeded(node)
+        ) {
+          for (const n of cascadePlan.nodes) keep.add(n.id);
+        }
+        clearPendingRun([...pendingIds].filter((id) => !keep.has(id)));
+      } else if (S.pendingRun) {
+        S.pendingRun.delete(node.id);
+        renderCanvas();
+        updateRunQueuePanel();
+      }
       if (node.kind === "agent_task" && node.agentSessionId) {
         const sess = agentSessions().find((s) => s.id === node.agentSessionId);
         if (sess) {
@@ -11000,7 +11453,7 @@ async function playNodeBody(node, quiet) {
       refreshNodeUi(node);
       if (S.wf && owner && S.wf.id === owner.id) {
         scheduleSave(true);
-        autoSaveSaves(true);
+        autoSaveSaves(true, cascadePlan.skipSaveIds);
       }
       if (S.nodeWfId) delete S.nodeWfId[node.id];
     }
@@ -11011,6 +11464,7 @@ async function playNodeBody(node, quiet) {
   } finally {
     S.runPromises.delete(node.id);
   }
+  return cascadePlan.nodes;
 }
 
 /* ============ 保存节点（单条 / 批量 / 聚合） ============ */
@@ -11253,10 +11707,12 @@ async function saveNodeAction(node) {
     clearPendingRun(pendingIds);
   }
 }
-async function autoSaveSaves(forceWired) {
+async function autoSaveSaves(forceWired, skipIds) {
   let changed = false;
+  const skip = skipIds || S._cascadeSkipSaveIds;
   for (const n of S.wf.nodes) {
     if (n.kind !== "save_text" && n.kind !== "save_image") continue;
+    if (skip && skip.has(n.id)) continue;
     if (!n.savePath) continue;
     const wired = wiresTo(n.id).some((w) => {
       const src = nodeById(w.from);
@@ -11436,12 +11892,13 @@ function controlRunOrder(nodes) {
  * 控制节点执行调度：依赖满足即启动，不设整层屏障。
  * 例如 wait_file 与无关并行分支同属「第 0 层」时，等待文件不会挡住另一支已就绪节点。
  */
-async function runControlRunnableQueue(controlNode, runnable, seen) {
+async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
+  const exec = runOne || ((n) => runControlledNode(n, seen));
   const { list, indeg, adj, byId } = controlRunDepGraph(runnable);
   if (!list.length) return;
   if (list.length === 1) {
     try {
-      await runControlledNode(list[0], seen);
+      await exec(list[0]);
     } catch {
       /* 单目标失败不抛出 */
     }
@@ -11463,7 +11920,7 @@ async function runControlRunnableQueue(controlNode, runnable, seen) {
     Promise.resolve()
       .then(() => {
         if (controlNode && controlNode._aborted) return;
-        return runControlledNode(n, seen);
+        return exec(n);
       })
       .catch(() => {
         /* 单个目标失败不阻断其余节点 */
@@ -11554,8 +12011,8 @@ async function runControlledNode(n, seen) {
     n.kind === "agent_task" ||
     n.kind === "wait_file"
   )
-    /* 范围内上游已按层跑完；quiet=false 只补跑控制范围外未处理的上游 */
-    return playNode(n, false);
+    /* quiet：避免把控制范围内整条链标成「等待」且不级联；ensureUpstream：仍补跑范围外未处理上游 */
+    return playNode(n, true, { noCascade: true, ensureUpstream: true });
 }
 
 async function playControlNode(node, seen) {
@@ -11641,6 +12098,8 @@ async function playControlNode(node, seen) {
   } finally {
     node.running = false;
     node._aborted = false;
+    /* 控制调度结束：扫掉目标上残留的等待态，避免整图卡在「等待」 */
+    clearPendingRun(runnable.map((n) => n && n.id).filter(Boolean));
     renderCanvas();
     renderStatus();
     scheduleSave(true);
@@ -11741,6 +12200,147 @@ function outputTextOf(node) {
   if (r.output && r.output.kind === "text") return r.output.text;
   return "";
 }
+function globalSourcePlainText(src) {
+  if (!src) return "";
+  const head = src.title || nodeKindLabel(src);
+  const texts = allTextItems(src);
+  if (!texts.length) return "";
+  return texts
+    .map((it) => {
+      const t = it.title && it.title !== src.title ? it.title : head;
+      return "──── " + t + " ────\n" + (it.text || "");
+    })
+    .join("\n\n");
+}
+
+function fillGlobalRefDetail(el, src) {
+  el.innerHTML = "";
+  if (!src) {
+    const e = document.createElement("div");
+    e.className = "n-empty";
+    e.textContent = I18n.t("点击芯片查看内容");
+    el.appendChild(e);
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "g-ref-detail-head";
+  const t = document.createElement("div");
+  t.className = "browse-title";
+  t.textContent = (src.title || nodeKindLabel(src)) + " · " + nodeKindLabel(src);
+  head.appendChild(t);
+  const loc = document.createElement("button");
+  loc.type = "button";
+  loc.className = "mini";
+  loc.textContent = I18n.t("定位");
+  loc.title = I18n.t("画布居中定位到：") + (src.title || nodeKindLabel(src));
+  loc.onclick = () => {
+    closeOverlay();
+    focusNode(src.id);
+  };
+  head.appendChild(loc);
+  el.appendChild(head);
+  const texts = allTextItems(src);
+  const images = allImageItems(src);
+  if (!texts.length && !images.length) {
+    const empty = document.createElement("div");
+    empty.className = "n-empty";
+    empty.textContent = I18n.t("（空）");
+    el.appendChild(empty);
+    return;
+  }
+  for (const it of texts) {
+    if (it.title && it.title !== src.title) {
+      const st = document.createElement("div");
+      st.className = "browse-title";
+      st.textContent = it.title;
+      el.appendChild(st);
+    }
+    const md = document.createElement("div");
+    md.className = "md";
+    md.innerHTML = renderMarkdown(it.text || "");
+    el.appendChild(md);
+  }
+  for (const it of images) {
+    if (!it.path) continue;
+    const img = document.createElement("img");
+    img.className = "browse-img";
+    img.src = window.api.toFileUrl(it.path);
+    bindImagePreview(img, it.path, it.title || src.title || I18n.t("图像"));
+    bindImgSaveAs(img);
+    el.appendChild(img);
+  }
+}
+
+function openGlobalRefsDialog(fromNode) {
+  const srcs = globalRefSources();
+  openOverlay(
+    I18n.t("全局参考 · ") +
+      ((fromNode && fromNode.title) || I18n.t("全局")),
+  );
+  const box = $("#overlay .overlay-box");
+  if (box) {
+    box.classList.add("wide");
+    box.classList.add("g-ref-wide");
+  }
+  const bodyEl = $("#ovBody");
+  bodyEl.classList.add("g-ref-ov");
+  const shell = document.createElement("div");
+  shell.className = "g-ref-dlg";
+  const side = document.createElement("div");
+  side.className = "g-ref-side";
+  const detail = document.createElement("div");
+  detail.className = "g-ref-detail";
+  let selected = null;
+  const paintSel = (src) => {
+    selected = src;
+    side.querySelectorAll(".g-chip").forEach((b) => {
+      b.classList.toggle("sel", !!(src && b.dataset.nid === src.id));
+    });
+    fillGlobalRefDetail(detail, src);
+  };
+  if (!srcs.length) {
+    const e = document.createElement("div");
+    e.className = "n-empty";
+    e.textContent = I18n.t("（无连入）");
+    side.appendChild(e);
+    fillGlobalRefDetail(detail, null);
+  } else {
+    for (const src of srcs) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "g-chip kind-" + globalChipKindCls(src);
+      chip.dataset.nid = src.id;
+      chip.textContent = src.title || nodeKindLabel(src);
+      chip.title = src.title || nodeKindLabel(src);
+      chip.onclick = () => paintSel(src);
+      side.appendChild(chip);
+    }
+    paintSel(srcs[0]);
+  }
+  shell.appendChild(side);
+  shell.appendChild(detail);
+  bodyEl.appendChild(shell);
+  const foot = $("#ovFoot");
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "mini primary";
+  copyBtn.textContent = I18n.t("复制文本");
+  copyBtn.title = I18n.t("复制当前连入文本");
+  copyBtn.onclick = () => {
+    const txt = globalSourcePlainText(selected);
+    if (!txt) {
+      toast(I18n.t("无可复制的文本（输出为图像）"), "warn");
+      return;
+    }
+    navigator.clipboard.writeText(txt).then(() => toast(I18n.t("已复制"), "ok"));
+  };
+  const close = document.createElement("button");
+  close.className = "mini";
+  close.textContent = I18n.t("关闭");
+  close.onclick = closeOverlay;
+  foot.appendChild(copyBtn);
+  foot.appendChild(close);
+}
+
 /* 弹窗大窗显示节点输出（文本 / 图像 / 批量 / 错误） */
 function browseOutput(node) {
   const r = selResult(node);
@@ -11854,7 +12454,8 @@ function refreshNodeEl(id) {
 }
 function refreshDerived() {
   for (const n of S.wf.nodes) {
-    if (n.kind === "split" || n.kind === "merge") refreshNodeEl(n.id);
+    if (n.kind === "split" || n.kind === "merge" || n.kind === "global")
+      refreshNodeEl(n.id);
   }
 }
 
@@ -11888,6 +12489,9 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   if (to.kind === "chat" || to.kind === "wait_file" || to.kind === "timer" || to.ro)
     return I18n.t("该节点不接受输入");
   if (inputCount(to) === 0) return I18n.t("该节点不接受输入");
+  const fromCtrl = isControlKind(from);
+  if (to.kind === "global" && (fromCtrl || !isRefableSource(from)))
+    return I18n.t("全局节点仅接受文本或图像来源");
   if (fromId === toId || wouldCycle(fromId, toId)) return I18n.t("不能连接成回路");
   if (
     S.wf.wires.some(
@@ -11898,7 +12502,6 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     )
   )
     return I18n.t("这两节点已连接");
-  const fromCtrl = isControlKind(from);
   if (!fromCtrl && to.kind === "save_image") {
     if (wiresTo(toId).length) return I18n.t("图像保存节点仅接受 1 个输入");
     if (!isImageSource(from)) return I18n.t("图像保存节点需要图像来源");
@@ -12042,6 +12645,7 @@ function canvasSnapshot() {
       mutexInputs: n.kind === "mutex" ? n.mutexInputs || undefined : undefined,
       mutexMode: n.kind === "mutex" ? n.mutexMode || undefined : undefined,
       agent: n.kind === "proc_text" ? !!n.agent : undefined,
+      globalRefs: canUseGlobalRefs(n) ? !!n.globalRefs : undefined,
       providerId:
         n.kind === "proc_text" ||
         n.kind === "proc_image" ||
@@ -12160,6 +12764,26 @@ function isCanvasScopedAgentNode(n) {
   );
 }
 
+function isCanvasNodeAgentRun() {
+  return (S._canvasNodeAgentDepth || 0) > 0;
+}
+
+function canvasDeniedForAgentNodeError() {
+  return I18n.t(
+    "智能节点不能读取或编辑画布、修改节点图或创建任务。请使用读写文件、联网、命令、技能与识图完成任务。",
+  );
+}
+
+/* 智能节点人设：保留文件/命令/联网，禁止画布与工作流工具 */
+function agentNodeCapabilityNote() {
+  return (
+    "【智能节点】你是画布上的执行节点，不是工作流搭建助手。" +
+    "允许：读写与编辑工作区文件、执行命令、联网搜索与抓取网页、使用已安装技能与 MCP 工具、调用 mtnode_vision 识图、向用户提问或派生子任务（均须遵守当前审批/权限预设）。用写文件交付结果。" +
+    "禁止：调用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app；禁止创建、修改、删除节点/连线/绘制/成组；禁止创建任务图；禁止重命名或删除画布；禁止选中节点或撤销/重做。" +
+    "上述画布与应用调用会被系统直接拒绝。忽略默认人设里关于搭建画布、修改节点图、创建任务的说明。回答简洁，中文优先。"
+  );
+}
+
 /* 禁止跨画布：智能任务/会话始终锁定；全局助手仅在「当前画布」范围时锁定 */
 function restrictOtherCanvases() {
   if ((S._canvasNodeAgentDepth || 0) > 0) return true;
@@ -12245,8 +12869,8 @@ async function resolveWorkflowRef(token) {
   const byName = (list || []).filter((w) => w.name === s);
   if (byName.length === 1) return byName[0];
   if (byName.length > 1)
-    throw new Error(I18n.t("工作流名称不唯一，请改用 id：") + s);
-  throw new Error(I18n.t("找不到工作流：") + s);
+    throw new Error(I18n.t("画布名称不唯一，请改用 id：") + s);
+  throw new Error(I18n.t("找不到画布：") + s);
 }
 
 async function createWorkflowNamed(name) {
@@ -12254,7 +12878,7 @@ async function createWorkflowNamed(name) {
   clearHistory();
   S.wf = {
     id,
-    name: String(name || "").trim() || I18n.t("未命名工作流"),
+    name: String(name || "").trim() || I18n.t("未命名画布"),
     nodes: [],
     wires: [],
     groups: [],
@@ -12267,19 +12891,19 @@ async function createWorkflowNamed(name) {
   renderAll();
   trackWorkflow(id, S.wf.name);
   await refreshWfSelect();
-  toast(I18n.t("已创建新工作流"), "ok");
+  toast(I18n.t("已创建新画布"), "ok");
   return { id, name: S.wf.name };
 }
 
 async function renameWorkflowByRef(workflow, name) {
   const nm = String(name || "").trim();
-  if (!nm) throw new Error(I18n.t("请填写工作流名称"));
+  if (!nm) throw new Error(I18n.t("请填写画布名称"));
   let id = S.wf && S.wf.id;
   if (workflow) {
     const w = await resolveWorkflowRef(workflow);
     id = w.id;
   }
-  if (!id) throw new Error(I18n.t("当前没有打开的工作流"));
+  if (!id) throw new Error(I18n.t("当前没有打开的画布"));
   if (S.wf && S.wf.id === id) {
     S.wf.name = nm;
     scheduleSave(true);
@@ -12305,7 +12929,7 @@ async function deleteWorkflowByRef(workflow) {
     : S.wf
       ? { id: S.wf.id, name: S.wf.name }
       : null;
-  if (!w || !w.id) throw new Error(I18n.t("当前没有打开的工作流"));
+  if (!w || !w.id) throw new Error(I18n.t("当前没有打开的画布"));
   await window.api.wfDelete(w.id);
   const list = S.config.visitedWorkflows || [];
   const i = list.findIndex((t) => t.id === w.id);
@@ -12314,14 +12938,14 @@ async function deleteWorkflowByRef(workflow) {
   const id = "default";
   clearHistory();
   if (S.wf && S.wf.id === w.id) {
-    S.wf = { id, name: I18n.t("默认工作流"), nodes: [], wires: [], groups: [], marks: [] };
+    S.wf = { id, name: I18n.t("默认画布"), nodes: [], wires: [], groups: [], marks: [] };
     await window.api.wfSave(id, S.wf);
     S.config.activeWorkflowId = id;
     rememberWf(S.wf);
     trackWorkflow(id, S.wf.name);
-    toast(I18n.t("工作流已删除，已重建默认工作流"), "ok");
+    toast(I18n.t("画布已删除，已重建默认画布"), "ok");
   } else {
-    toast(I18n.t("已删除工作流：") + (w.name || w.id), "ok");
+    toast(I18n.t("已删除画布：") + (w.name || w.id), "ok");
   }
   await window.api.configSave(S.config);
   renderAll();
@@ -12407,7 +13031,7 @@ async function applyAppOp(params) {
   }
 
   if (action === "select_nodes") {
-    if (!S.wf) throw new Error(I18n.t("当前没有打开的工作流"));
+    if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
     const tokens = [];
     if (Array.isArray(params.nodes)) tokens.push(...params.nodes);
     if (params.node) tokens.push(params.node);
@@ -12576,7 +13200,7 @@ function agentToolCatalog() {
         },
         {
           key: "app_delete",
-          label: I18n.t("删除工作流"),
+          label: I18n.t("删除画布"),
           hint: "mtnode_app:delete_workflow",
         },
       ],
@@ -12844,12 +13468,13 @@ async function ensureCanvasEditTools(params) {
   for (const key of collectCanvasEditToolKeys(params)) await ensureAgentTool(key);
 }
 
-function agentToolPolicySystemNote() {
+function agentToolPolicySystemNote(opts) {
   try {
     ensureAgentToolPresets();
   } catch (_) {
     return "";
   }
+  const nodeLock = !!(opts && opts.nodeLock);
   const p = agentToolActivePreset();
   const allow = (p && p.allow) || defaultToolAllow();
   const denied = [];
@@ -12866,8 +13491,14 @@ function agentToolPolicySystemNote() {
     I18n.t("【Agent 工具许可】当前预设「") +
     name +
     I18n.t("」。");
+  if (nodeLock) {
+    s += I18n.t(
+      "本次运行为智能节点：即使审批预设允许，也不可使用读取画布、节点与连线、控制类节点、绘图、排版与成组、应用操作、删除画布。",
+    );
+  }
   if (!denied.length && !asking.length) {
-    s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
+    if (!nodeLock)
+      s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
     return s;
   }
   if (denied.length)
@@ -13572,10 +14203,10 @@ function summarizeAppOp(params) {
   if (params.action === "delete_workflow") {
     return {
       summary:
-        I18n.t("删除工作流") +
+        I18n.t("删除画布") +
         " · " +
         String(params.workflow || params.id || params.name || (S.wf && S.wf.name) || ""),
-      detail: I18n.t("将删除该工作流及其全部本地数据文件（含节点图像资产）。此操作不可恢复。"),
+      detail: I18n.t("将删除该画布及其全部本地数据文件（含节点图像资产）。此操作不可恢复。"),
       raw: JSON.stringify(params, null, 2).slice(0, 2000),
     };
   }
@@ -13664,11 +14295,17 @@ function confirmAssistAppOp(params) {
 }
 
 async function applyCanvasOp(op, params) {
+  if (
+    isCanvasNodeAgentRun() &&
+    (op === "get" || op === "edit" || op === "app")
+  ) {
+    throw new Error(canvasDeniedForAgentNodeError());
+  }
   if (op === "app") return applyAppOp(params || {});
   if (op === "vision") {
     return await applyVisionInspect(params || {});
   }
-  if (!S.wf) throw new Error(I18n.t("当前没有打开的工作流"));
+  if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
   if (op === "get") {
     await ensureAgentTool("canvas_read");
     return Object.assign({ ok: true }, await canvasSnapshotFull());
@@ -13685,6 +14322,15 @@ function handleCanvasEvent(data) {
       .dshInteract({ kind: "canvas", id, result, error: error || undefined })
       .catch(() => {});
   };
+  const opEarly = data.op || "get";
+  if (
+    isCanvasNodeAgentRun() &&
+    (opEarly === "get" || opEarly === "edit" || opEarly === "app")
+  ) {
+    const err = canvasDeniedForAgentNodeError();
+    finish({ ok: false, error: err }, err);
+    return;
+  }
   const run = async () => {
     try {
       let result;
@@ -13795,7 +14441,7 @@ function layoutNodePriority(n) {
   if (n.kind === "task") return 1;
   if (n.kind === "input_text" || n.kind === "input_image") return 2;
   if (n.kind === "split") return 3;
-  if (n.kind === "merge" || n.kind === "wait_file" || n.kind === "timer") return 4;
+  if (n.kind === "merge" || n.kind === "global" || n.kind === "wait_file" || n.kind === "timer") return 4;
   if (n.kind === "delayer" || n.kind === "sequencer") return 4.2;
   if (
     n.kind === "gate" ||
@@ -13966,7 +14612,7 @@ function sizeNodeForTidy(node) {
     node.h = snap(Math.min(280, Math.max(d.h, 40 + lines * 16)));
     return;
   }
-  if (kind === "save_text" || kind === "split" || kind === "merge" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
+  if (kind === "save_text" || kind === "split" || kind === "merge" || kind === "global" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
     node.w = d.w;
     node.h = d.h;
     return;
@@ -14170,8 +14816,8 @@ function rebindMarksAfterLayout(bindings) {
 function tidyLayoutWorkflow(opts) {
   opts = opts || {};
   if (!S.wf) {
-    if (opts.notify !== false) toast(I18n.t("当前没有打开的工作流"), "warn");
-    return { ok: false, error: I18n.t("当前没有打开的工作流") };
+    if (opts.notify !== false) toast(I18n.t("当前没有打开的画布"), "warn");
+    return { ok: false, error: I18n.t("当前没有打开的画布") };
   }
   const nodes = (S.wf.nodes || []).slice();
   if (!nodes.length) {
@@ -14448,6 +15094,8 @@ function applyNodePatch(node, patch, warnings) {
       node.mutexMode = patch.mutexMode;
     normalizeMutexNode(node);
   }
+  if (typeof patch.globalRefs === "boolean" && canUseGlobalRefs(node))
+    node.globalRefs = patch.globalRefs;
   if (typeof patch.agent === "boolean" && node.kind === "proc_text")
     node.agent = patch.agent;
   if (
@@ -14668,7 +15316,7 @@ async function importImagePathsForNode(node, paths, warnings) {
     return 0;
   }
   if (!S.wf || !S.wf.id) {
-    warnings.push(I18n.t("当前没有打开的工作流"));
+    warnings.push(I18n.t("当前没有打开的画布"));
     return 0;
   }
   let ok = 0;
@@ -15240,6 +15888,7 @@ async function applyCanvasEdit(params) {
         model: n.model || undefined,
         ctrlAction: n.kind === "control" ? n.ctrlAction || "run" : undefined,
         ctrlFillOnly: n.kind === "control" ? !!n.ctrlFillOnly : undefined,
+        globalRefs: canUseGlobalRefs(n) ? !!n.globalRefs : undefined,
       })),
       updated,
       createdMarks,
@@ -15378,7 +16027,7 @@ function startTitleEdit(node, titleEl) {
 
 /* ============ 拖拽交互（平移 / 节点 / 缩放 / 连线） ============ */
 
-function startNodeDrag(ev, node) {
+function startNodeDrag(ev, node, opts) {
   if (S.drag) return;
   S.selWire = null;
   const multi = ev.ctrlKey || ev.metaKey || ev.shiftKey;
@@ -15426,6 +16075,8 @@ function startNodeDrag(ev, node) {
     sx: ev.clientX,
     sy: ev.clientY,
     moved: false,
+    fromHandle: !!(opts && opts.fromHandle),
+    handleNid: node.id,
   };
 }
 function startWireDrag(fromId, ev, fromIndex) {
@@ -16448,6 +17099,7 @@ function syncGroupBtns() {
 
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image"]],
+  ["全局节点", ["global"]],
   ["处理节点", ["proc_text", "proc_image"]],
   ["保存节点", ["save_text", "save_image"]],
   ["工具节点", ["split", "merge"]],
@@ -16465,6 +17117,7 @@ const KIND_TAGS = {
   save_image: "存图",
   split: "拆分",
   merge: "合并",
+  global: "全局",
   wait_file: "等待",
   timer: "定时",
   delayer: "延时",
@@ -16628,6 +17281,410 @@ function focusNode(id) {
   renderStatus();
 }
 
+/* ── 画布查找 / 替换（标题 + 可编辑内容，仅当前画布） ── */
+
+function escapeRegExp(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function replaceAllInString(hay, find, repl) {
+  if (!find) return String(hay == null ? "" : hay);
+  return String(hay == null ? "" : hay).replace(
+    new RegExp(escapeRegExp(find), "gi"),
+    () => String(repl == null ? "" : repl),
+  );
+}
+
+function stringContainsQuery(hay, q) {
+  if (!q) return false;
+  return String(hay == null ? "" : hay)
+    .toLowerCase()
+    .includes(String(q).toLowerCase());
+}
+
+function nodeOutputSearchText(n) {
+  const o = n && n.output;
+  if (o == null) return "";
+  if (typeof o === "string") return o;
+  if (typeof o.text === "string") return o.text;
+  if (o.kind === "text" && typeof o.text === "string") return o.text;
+  return "";
+}
+
+/* 可搜索 / 可替换的字段（标题 + 内容） */
+function nodeFindFields(n) {
+  if (!n) return [];
+  const fields = [{ key: "title", get: () => n.title || "", set: (v) => (n.title = v) }];
+  if (n.kind === "input_text" || n.text != null)
+    fields.push({ key: "text", get: () => n.text || "", set: (v) => (n.text = v) });
+  if (
+    n.kind === "proc_text" ||
+    n.kind === "proc_image" ||
+    n.kind === "judge" ||
+    n.prompt != null
+  )
+    fields.push({
+      key: "prompt",
+      get: () => n.prompt || "",
+      set: (v) => (n.prompt = v),
+    });
+  if (n.kind === "agent_task" || n.task != null)
+    fields.push({ key: "task", get: () => n.task || "", set: (v) => (n.task = v) });
+  if (n.kind === "chat" || n.systemPrompt != null)
+    fields.push({
+      key: "systemPrompt",
+      get: () => n.systemPrompt || "",
+      set: (v) => (n.systemPrompt = v),
+    });
+  if (n.kind === "task" || n.goal != null)
+    fields.push({ key: "goal", get: () => n.goal || "", set: (v) => (n.goal = v) });
+  if (n.kind === "save_text" || n.kind === "save_image" || n.savePath != null)
+    fields.push({
+      key: "savePath",
+      get: () => n.savePath || "",
+      set: (v) => (n.savePath = v),
+    });
+  if (n.kind === "wait_file" || n.waitPath != null)
+    fields.push({
+      key: "waitPath",
+      get: () => n.waitPath || "",
+      set: (v) => (n.waitPath = v),
+    });
+  if (Array.isArray(n.steps)) {
+    n.steps.forEach((step, i) => {
+      if (!step || typeof step !== "object") return;
+      fields.push({
+        key: "steps." + i + ".title",
+        get: () => step.title || "",
+        set: (v) => {
+          step.title = v;
+        },
+      });
+    });
+  }
+  if (Array.isArray(n.messages)) {
+    n.messages.forEach((msg, i) => {
+      if (!msg || typeof msg !== "object") return;
+      fields.push({
+        key: "messages." + i + ".content",
+        get: () => msg.content || "",
+        set: (v) => {
+          msg.content = v;
+        },
+      });
+    });
+  }
+  const out = nodeOutputSearchText(n);
+  if (out) {
+    fields.push({
+      key: "output",
+      get: () => nodeOutputSearchText(n),
+      set: (v) => {
+        if (n.output && typeof n.output === "object") n.output.text = v;
+        else n.output = { kind: "text", text: v };
+      },
+    });
+  }
+  return fields;
+}
+
+function nodeMatchesFindQuery(n, q) {
+  if (!n || !q) return false;
+  return nodeFindFields(n).some((f) => stringContainsQuery(f.get(), q));
+}
+
+function uniqueTitleExcept(wf, desired, exceptId) {
+  const base = String(desired || I18n.t("节点")).trim() || I18n.t("节点");
+  const taken = new Set(
+    ((wf && wf.nodes) || [])
+      .filter((n) => n && n.id !== exceptId)
+      .map((n) => n.title),
+  );
+  if (!taken.has(base)) return base;
+  let i = 2;
+  while (taken.has(base + " " + i)) i++;
+  return base + " " + i;
+}
+
+function replaceInNodeFields(n, find, repl) {
+  if (!n || !find) return false;
+  let changed = false;
+  for (const f of nodeFindFields(n)) {
+    const before = f.get();
+    const after = replaceAllInString(before, find, repl);
+    if (after === before) continue;
+    if (f.key === "title")
+      f.set(uniqueTitleExcept(S.wf, after, n.id));
+    else f.set(after);
+    changed = true;
+  }
+  return changed;
+}
+
+function collectCanvasFindMatches(q) {
+  const query = String(q || "").trim();
+  if (!query || !S.wf || !Array.isArray(S.wf.nodes)) return [];
+  return S.wf.nodes.filter((n) => nodeMatchesFindQuery(n, query)).map((n) => n.id);
+}
+
+function isCanvasFindBarTarget(el) {
+  const bar = document.getElementById("canvasFindBar");
+  return !!(bar && el && bar.contains(el));
+}
+
+function ensureCanvasFindBar() {
+  const canvas = $("#canvas");
+  if (!canvas) return null;
+  let bar = document.getElementById("canvasFindBar");
+  if (bar) return bar;
+  bar = document.createElement("div");
+  bar.id = "canvasFindBar";
+  bar.className = "canvas-find-bar";
+  bar.hidden = true;
+  bar.innerHTML =
+    '<input id="canvasFindQ" type="text" class="canvas-find-q" autocomplete="off" spellcheck="false" />' +
+    '<span id="canvasFindCount" class="canvas-find-count">0/0</span>' +
+    '<button type="button" id="canvasFindPrev" class="mini btn-sq" title="">↑</button>' +
+    '<button type="button" id="canvasFindNext" class="mini btn-sq" title="">↓</button>' +
+    '<div id="canvasFindReplRow" class="canvas-find-repl-row" hidden>' +
+    '<input id="canvasFindRepl" type="text" class="canvas-find-repl" autocomplete="off" spellcheck="false" />' +
+    '<button type="button" id="canvasFindReplace" class="mini"></button>' +
+    '<button type="button" id="canvasFindReplaceAll" class="mini"></button>' +
+    "</div>" +
+    '<button type="button" id="canvasFindClose" class="mini btn-sq">✕</button>';
+  canvas.appendChild(bar);
+
+  const q = bar.querySelector("#canvasFindQ");
+  const repl = bar.querySelector("#canvasFindRepl");
+  const paintLabels = () => {
+    q.placeholder = I18n.t("查找节点（标题 / 内容）…");
+    repl.placeholder = I18n.t("替换为…");
+    bar.querySelector("#canvasFindPrev").title = I18n.t("上一个（Shift+Enter）");
+    bar.querySelector("#canvasFindNext").title = I18n.t("下一个（Enter）");
+    bar.querySelector("#canvasFindReplace").textContent = I18n.t("替换");
+    bar.querySelector("#canvasFindReplaceAll").textContent = I18n.t("全部替换");
+    bar.querySelector("#canvasFindClose").title = I18n.t("关闭（Esc）");
+  };
+  paintLabels();
+  bar._paintLabels = paintLabels;
+
+  const syncQuery = () => {
+    S.findBar.query = q.value;
+    canvasFindRefresh({ keepIdx: true, focus: false });
+  };
+  q.addEventListener("input", syncQuery);
+  repl.addEventListener("input", () => {
+    S.findBar.replace = repl.value;
+  });
+  q.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.shiftKey) canvasFindPrev();
+      else canvasFindNext();
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeCanvasFindBar();
+    }
+  });
+  repl.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      canvasFindReplaceOne();
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeCanvasFindBar();
+    }
+  });
+  bar.querySelector("#canvasFindPrev").onclick = () => canvasFindPrev();
+  bar.querySelector("#canvasFindNext").onclick = () => canvasFindNext();
+  bar.querySelector("#canvasFindReplace").onclick = () => canvasFindReplaceOne();
+  bar.querySelector("#canvasFindReplaceAll").onclick = () => canvasFindReplaceAll();
+  bar.querySelector("#canvasFindClose").onclick = () => closeCanvasFindBar();
+  bar.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  return bar;
+}
+
+function paintCanvasFindCount() {
+  const el = document.getElementById("canvasFindCount");
+  if (!el || !S.findBar) return;
+  const n = (S.findBar.matches || []).length;
+  const i = S.findBar.idx;
+  el.textContent = n ? i + 1 + "/" + n : "0/0";
+}
+
+function canvasFindRefresh(opts) {
+  opts = opts || {};
+  if (!S.findBar) return;
+  const prevId =
+    S.findBar.idx >= 0 && S.findBar.matches
+      ? S.findBar.matches[S.findBar.idx]
+      : null;
+  const q = String(
+    opts.query != null ? opts.query : S.findBar.query || "",
+  ).trim();
+  S.findBar.query = q;
+  S.findBar.matches = collectCanvasFindMatches(q);
+  if (!q) {
+    S.findBar.idx = -1;
+  } else if (opts.keepIdx && prevId) {
+    const j = S.findBar.matches.indexOf(prevId);
+    S.findBar.idx = j >= 0 ? j : S.findBar.matches.length ? 0 : -1;
+  } else if (S.findBar.matches.length) {
+    S.findBar.idx = 0;
+  } else {
+    S.findBar.idx = -1;
+  }
+  paintCanvasFindCount();
+  if (opts.focus !== false && S.findBar.idx >= 0)
+    focusNode(S.findBar.matches[S.findBar.idx]);
+}
+
+function openCanvasFindBar(opts) {
+  opts = opts || {};
+  if (S.view && S.view !== "workflow") setView("workflow");
+  const bar = ensureCanvasFindBar();
+  if (!bar || !S.findBar) return;
+  if (typeof bar._paintLabels === "function") bar._paintLabels();
+  S.findBar.open = true;
+  S.findBar.replaceMode = !!opts.replace;
+  bar.hidden = false;
+  const row = bar.querySelector("#canvasFindReplRow");
+  if (row) row.hidden = !S.findBar.replaceMode;
+  const q = bar.querySelector("#canvasFindQ");
+  const repl = bar.querySelector("#canvasFindRepl");
+  if (q) {
+    q.value = S.findBar.query || "";
+    q.focus();
+    q.select();
+  }
+  if (repl) repl.value = S.findBar.replace || "";
+  canvasFindRefresh({
+    keepIdx: true,
+    focus: !!(S.findBar.query && S.findBar.query.trim()),
+  });
+}
+
+function closeCanvasFindBar() {
+  if (!S.findBar) return false;
+  if (!S.findBar.open) return false;
+  S.findBar.open = false;
+  const bar = document.getElementById("canvasFindBar");
+  if (bar) bar.hidden = true;
+  return true;
+}
+
+function canvasFindGoto(delta) {
+  if (!S.findBar) return;
+  const qEl = document.getElementById("canvasFindQ");
+  if (qEl) S.findBar.query = qEl.value;
+  canvasFindRefresh({ keepIdx: true, focus: false });
+  const list = S.findBar.matches || [];
+  if (!list.length) {
+    paintCanvasFindCount();
+    toast(I18n.t("未找到匹配的节点"), "warn");
+    return;
+  }
+  let i = S.findBar.idx;
+  if (i < 0) i = delta > 0 ? 0 : list.length - 1;
+  else if (S.sel !== list[i]) {
+    /* 已有匹配但尚未选中：先落到当前项，不跳下一项 */
+    paintCanvasFindCount();
+    focusNode(list[i]);
+    return;
+  } else {
+    i = (i + delta + list.length) % list.length;
+  }
+  S.findBar.idx = i;
+  paintCanvasFindCount();
+  focusNode(list[i]);
+}
+
+function canvasFindNext() {
+  canvasFindGoto(1);
+}
+function canvasFindPrev() {
+  canvasFindGoto(-1);
+}
+
+function canvasFindReplaceOne() {
+  if (!S.findBar || !S.wf) return;
+  const qEl = document.getElementById("canvasFindQ");
+  const rEl = document.getElementById("canvasFindRepl");
+  const find = String((qEl && qEl.value) || S.findBar.query || "").trim();
+  const repl = rEl ? rEl.value : S.findBar.replace || "";
+  S.findBar.query = find;
+  S.findBar.replace = repl;
+  if (!find) {
+    toast(I18n.t("请输入要查找的文本"), "warn");
+    return;
+  }
+  canvasFindRefresh({ keepIdx: true, focus: false });
+  if (!S.findBar.matches.length || S.findBar.idx < 0) {
+    toast(I18n.t("未找到匹配的节点"), "warn");
+    return;
+  }
+  const id = S.findBar.matches[S.findBar.idx];
+  const n = nodeById(id);
+  if (!n || !nodeMatchesFindQuery(n, find)) {
+    canvasFindNext();
+    return;
+  }
+  pushHistory();
+  replaceInNodeFields(n, find, repl);
+  scheduleSave();
+  canvasFindRefresh({ keepIdx: false, focus: false });
+  const j = S.findBar.matches.indexOf(id);
+  if (j >= 0) {
+    S.findBar.idx = j;
+    focusNode(id);
+  } else if (S.findBar.matches.length) {
+    S.findBar.idx = Math.min(S.findBar.idx, S.findBar.matches.length - 1);
+    if (S.findBar.idx < 0) S.findBar.idx = 0;
+    focusNode(S.findBar.matches[S.findBar.idx]);
+  } else {
+    S.findBar.idx = -1;
+    renderCanvas();
+    renderStatus();
+  }
+  paintCanvasFindCount();
+}
+
+function canvasFindReplaceAll() {
+  if (!S.findBar || !S.wf) return;
+  const qEl = document.getElementById("canvasFindQ");
+  const rEl = document.getElementById("canvasFindRepl");
+  const find = String((qEl && qEl.value) || S.findBar.query || "").trim();
+  const repl = rEl ? rEl.value : S.findBar.replace || "";
+  S.findBar.query = find;
+  S.findBar.replace = repl;
+  if (!find) {
+    toast(I18n.t("请输入要查找的文本"), "warn");
+    return;
+  }
+  const ids = collectCanvasFindMatches(find);
+  if (!ids.length) {
+    toast(I18n.t("未找到匹配的节点"), "warn");
+    return;
+  }
+  pushHistory();
+  let count = 0;
+  for (const id of ids) {
+    const n = nodeById(id);
+    if (n && replaceInNodeFields(n, find, repl)) count++;
+  }
+  scheduleSave();
+  S.findBar.matches = [];
+  S.findBar.idx = -1;
+  paintCanvasFindCount();
+  renderCanvas();
+  renderStatus();
+  toast(I18n.t("已替换 ") + count + I18n.t(" 个节点"), "ok");
+}
+
 function markSidebarTitle(m) {
   if (!m) return I18n.t("（未命名）");
   if (m.kind === "text") {
@@ -16772,6 +17829,7 @@ function bindCanvas() {
       /* 平移只改相机 transform；连线随 #stage 一起移动，禁止每帧 updateWires */
       applyTransformSoon();
     } else if (d.mode === "node") {
+      if (d.fromHandle && !d.moved) return;
       const z = S.cam.z > 0 ? S.cam.z : 1;
       const dx = (ev.clientX - d.sx) / z,
         dy = (ev.clientY - d.sy) / z;
@@ -17050,13 +18108,29 @@ function bindCanvas() {
       }
       renderCanvas();
     } else if (d.mode === "node") {
+      const fromHandle = !!d.fromHandle;
+      const handleNid = d.handleNid;
+      const wasMoved = !!d.moved;
       S.drag = null;
-      if (d.moved && S.preDragSnap) {
+      if (wasMoved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
+        S.preDragSnap = null;
+      } else {
         S.preDragSnap = null;
       }
       updateGroupFrames();
-      scheduleSave();
+      const skipToggle =
+        ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button !== 0;
+      if (
+        fromHandle &&
+        !wasMoved &&
+        !skipToggle &&
+        toggleNodeGlobalRefs(nodeById(handleNid))
+      ) {
+        /* 点击手柄已切换全局引用并重绘 */
+      } else {
+        scheduleSave();
+      }
     } else if (d.mode === "group" || d.mode === "groupresize") {
       S.drag = null;
       if (d.moved && S.preDragSnap) {
@@ -17117,6 +18191,16 @@ function bindCanvas() {
             ),
             ctxKindItem("input_image", I18n.t("图像节点"), () =>
               addNode("input_image", pt.x, pt.y),
+            ),
+          ],
+        ],
+        [
+          I18n.t("全局节点（仅连入 · 点左上角彩虹图标引用）"),
+          [
+            ctxKindItem(
+              "global",
+              I18n.t("全局节点（仅连入 · 点左上角彩虹图标引用）"),
+              () => addNode("global", pt.x, pt.y),
             ),
           ],
         ],
@@ -17346,13 +18430,29 @@ function bindCanvas() {
       return;
     }
     const mod = ev.ctrlKey || ev.metaKey;
+    const key = (ev.key || "").toLowerCase();
+    /* Ctrl+F / Ctrl+G：当前画布查找 / 替换（输入框内也拦截，避免落到浏览器查找） */
+    if (mod && (key === "f" || key === "g") && !ev.altKey) {
+      if (S.view === "workflow" || S.view === "agent") {
+        if (S.view === "agent") setView("workflow");
+        ev.preventDefault();
+        openCanvasFindBar({ replace: key === "g" });
+        return;
+      }
+    }
+    if (ev.key === "Escape" && closeCanvasFindBar()) {
+      ev.preventDefault();
+      return;
+    }
+    /* 查找栏内：不触发画布 Delete / G 等快捷键 */
+    if (isCanvasFindBarTarget(ev.target)) return;
     /* 节点 / 绘制文字等输入中：只保留引用菜单，不触发任何画布快捷键 */
     if (inField) {
       if (tag === "textarea" && S.refMenu) refKey(ev.target, ev);
       return;
     }
     /* Ctrl+C：有文字选区时交给浏览器复制；否则复制选中的节点或绘制 */
-    if (mod && ev.key.toLowerCase() === "c") {
+    if (mod && key === "c") {
       const sel = window.getSelection && window.getSelection();
       if (sel && !sel.isCollapsed && String(sel).length) return;
       const assistPane = document.getElementById("assistPane");
@@ -17368,18 +18468,18 @@ function bindCanvas() {
         toast(I18n.t("请先选中节点或绘制"), "warn");
       return;
     }
-    if (mod && ev.key.toLowerCase() === "z") {
+    if (mod && key === "z") {
       ev.preventDefault();
       if (ev.shiftKey) redo();
       else undo();
       return;
     }
-    if (mod && ev.key.toLowerCase() === "y") {
+    if (mod && key === "y") {
       ev.preventDefault();
       redo();
       return;
     }
-    if (ev.key.toLowerCase() === "g" && !mod) {
+    if (key === "g" && !mod) {
       ev.preventDefault();
       toggleGroupAction();
       return;
@@ -18071,7 +19171,9 @@ async function chatSendAgent(node, text) {
     .slice(-20)
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
-  const input = hist ? hist + "\n\n用户(最新)：" + text.trim() : text.trim();
+  const skillWrap = await resolveSkillSlash(text, { denyCanvasSkills: true });
+  const latest = skillWrap ? skillTaskPrompt(skillWrap) : text.trim();
+  const input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
 
   try {
     const final = await dshRunTask(input, {
@@ -18080,7 +19182,7 @@ async function chatSendAgent(node, text) {
       systemPrompt:
         (node.systemPrompt || "") +
         (node.systemPrompt ? "\n" : "") +
-        "你绑定在当前画布。list_workflows / canvas_get 不会返回其他画布。",
+        "回答简洁，中文优先。用工作区文件交付结果，不要改画布。",
       onEvent: (type, data) => {
         if (type === "reasoning" && data.text) {
           pushThinking(node.id, 0, data.text);
@@ -20218,13 +21320,16 @@ async function playJudgeNode(node, quiet) {
         return null;
       }
       const bits = [];
-      for (const w of wiresTo(node.id)) {
-        const src = nodeById(w.from);
-        if (!src) continue;
+      const seen = new Set();
+      const addBit = (src) => {
+        if (!src || seen.has(src.id)) return;
+        seen.add(src.id);
         const v = valueForInput(src, 0);
         if (v && v.kind === "text" && v.text)
           bits.push("### " + (src.title || "") + "\n" + String(v.text).slice(0, 4000));
-      }
+      };
+      for (const w of wiresTo(node.id)) addBit(nodeById(w.from));
+      for (const src of globalRefSources(node.id)) addBit(src);
       const prov = pickTextProviderForJudge(node);
       if (!prov) {
         node.error = I18n.t("未配置带 API Key 的文本服务商");
@@ -20739,7 +21844,7 @@ function persistWf(wf) {
   try {
     data = JSON.parse(JSON.stringify(wf));
   } catch (e) {
-    const msg = I18n.t("工作流包含无法序列化的数据：") + (e.message || e);
+    const msg = I18n.t("画布包含无法序列化的数据：") + (e.message || e);
     toast(I18n.t("保存失败：") + msg, "err");
     return;
   }
@@ -20794,7 +21899,7 @@ function persist() {
     data = JSON.parse(JSON.stringify(S.wf)); // 去除 Promise/函数等不可克隆字段，防御 IPC 序列化失败
   } catch (e) {
     S.saving = false;
-    const msg = I18n.t("工作流包含无法序列化的数据：") + (e.message || e);
+    const msg = I18n.t("画布包含无法序列化的数据：") + (e.message || e);
     $("#saveState").textContent = I18n.t("保存失败：") + msg;
     $("#saveState").className = "err";
     toast(I18n.t("保存失败：") + msg, "err");
@@ -20987,6 +22092,9 @@ function migrateWf(wf) {
       n.running = false;
       n.output = n.output || null;
     }
+    if (canUseGlobalRefs(n)) {
+      n.globalRefs = !!n.globalRefs;
+    }
     if (n.kind === "wait_file") {
       if (typeof n.waitPath !== "string") n.waitPath = "";
       n.waitIntervalSec = Math.max(
@@ -21102,7 +22210,7 @@ async function ensureWorkflow() {
   if (!list.some((w) => w.id === id)) id = list.length ? list[0].id : null;
   if (!id) {
     id = "default";
-    S.wf = { id, name: I18n.t("默认工作流"), nodes: [], wires: [], groups: [], marks: [] };
+    S.wf = { id, name: I18n.t("默认画布"), nodes: [], wires: [], groups: [], marks: [] };
     await window.api.wfSave(id, S.wf);
   } else {
     const r = await window.api.wfLoad(id);
@@ -21156,12 +22264,13 @@ async function loadWorkflow(id) {
   S.wf = wf;
   rememberWf(wf);
   resetTaskFocus();
+  if (S.findBar && S.findBar.open) canvasFindRefresh({ keepIdx: false, focus: false });
   S.config.activeWorkflowId = id;
   await sanitizeWfEnvironment({ quiet: false });
   await window.api.configSave(S.config);
   renderAll();
   trackWorkflow(id, S.wf.name);
-  toast(I18n.t("已打开工作流：") + (S.wf.name || id), "ok");
+  toast(I18n.t("已打开画布：") + (S.wf.name || id), "ok");
 }
 
 /* ── 画布 Tab 条(Edge 风格):下拉选中或新建画布时加入标签页 ── */
@@ -21182,7 +22291,7 @@ function renderWfTabs() {
   for (const w of list) {
     const tab = document.createElement("div");
     tab.className = "wf-tab" + (w.id === cur ? " active" : "");
-    tab.title = I18n.t("切换到工作流：") + w.name;
+    tab.title = I18n.t("切换到画布：") + w.name;
     const nm = document.createElement("span");
     nm.className = "wf-tab-name";
     nm.textContent = w.name || w.id;
@@ -21190,7 +22299,7 @@ function renderWfTabs() {
     const x = document.createElement("button");
     x.className = "wf-tab-close";
     x.textContent = "×";
-    x.title = I18n.t("关闭标签（仅从标签条移除，不删除工作流）");
+    x.title = I18n.t("关闭标签（仅从标签条移除，不删除画布）");
     x.onclick = async (ev) => {
       ev.stopPropagation();
       const i = list.findIndex((t) => t.id === w.id);
@@ -21219,7 +22328,7 @@ async function refreshWfSelect() {
     sel.appendChild(o);
   }
   sel.value = S.wf ? S.wf.id : "";
-  sel.title = I18n.t("打开工作流（共 ") + list.length + I18n.t(" 个，切换即加载并加入标签）");
+  sel.title = I18n.t("打开画布（共 ") + list.length + I18n.t(" 个，切换即加载并加入标签）");
   renderWfTabs();
 }
 
@@ -21251,12 +22360,14 @@ function renderWfWorkspace() {
         ),
         v,
       );
+      syncAssistWorkspaceChrome();
       return;
     }
     S.wf.workspace = v;
     scheduleSave(true);
     renderCanvas();
     renderWfWorkspace();
+    syncAssistWorkspaceChrome();
   });
   const br = workspaceBrowseButton(inp, (p) => {
     if (!S.wf) return;
@@ -21264,6 +22375,7 @@ function renderWfWorkspace() {
     scheduleSave(true);
     renderCanvas();
     renderWfWorkspace();
+    syncAssistWorkspaceChrome();
   });
   const openBtn = workspaceOpenButton(() => inp.value || wfWorkspace());
   const cl = document.createElement("button");
@@ -21276,6 +22388,7 @@ function renderWfWorkspace() {
     scheduleSave(true);
     renderCanvas();
     renderWfWorkspace();
+    syncAssistWorkspaceChrome();
   };
   box.appendChild(lab);
   box.appendChild(inp);
@@ -21554,14 +22667,14 @@ function syncAgentTaskFromSession(sessionId) {
 }
 
 function newWorkflowDialog() {
-  openOverlay(I18n.t("新建工作流"));
+  openOverlay(I18n.t("新建画布"));
   const body = $("#ovBody");
   const lab = document.createElement("label");
   lab.className = "n-field";
-  lab.appendChild(document.createTextNode(I18n.t("工作流名称")));
+  lab.appendChild(document.createTextNode(I18n.t("画布名称")));
   const inp = document.createElement("input");
   inp.type = "text";
-  inp.value = I18n.t("工作流 ") + new Date().toLocaleDateString().replace(/\//g, "-");
+  inp.value = I18n.t("画布 ") + new Date().toLocaleDateString().replace(/\//g, "-");
   lab.appendChild(inp);
   body.appendChild(lab);
 
@@ -21607,7 +22720,7 @@ function newWorkflowDialog() {
     clearHistory();
     S.wf = {
       id,
-      name: inp.value.trim() || I18n.t("未命名工作流"),
+      name: inp.value.trim() || I18n.t("未命名画布"),
       nodes: [],
       wires: [],
       groups: [],
@@ -21620,7 +22733,7 @@ function newWorkflowDialog() {
     closeOverlay();
     renderAll();
     trackWorkflow(id, S.wf.name);
-    toast(I18n.t("已创建新工作流"), "ok");
+    toast(I18n.t("已创建新画布"), "ok");
   };
   const cancel = document.createElement("button");
   cancel.className = "mini";
@@ -21633,12 +22746,12 @@ function newWorkflowDialog() {
 
 function deleteWorkflowDialog() {
   const wf = S.wf;
-  openOverlay(I18n.t("删除工作流"));
+  openOverlay(I18n.t("删除画布"));
   const body = $("#ovBody");
   const w = document.createElement("div");
   w.className = "settings-hint";
   w.innerHTML =
-    I18n.t("将删除工作流 <b>") +
+    I18n.t("将删除画布 <b>") +
     esc(wf.name) +
     I18n.t("</b> 及其全部本地数据文件（含节点图像资产）。此操作不可恢复。");
   body.appendChild(w);
@@ -21654,13 +22767,13 @@ function deleteWorkflowDialog() {
     if (i >= 0) list.splice(i, 1);
     const id = "default";
     clearHistory();
-    S.wf = { id, name: I18n.t("默认工作流"), nodes: [], wires: [], groups: [], marks: [] };
+    S.wf = { id, name: I18n.t("默认画布"), nodes: [], wires: [], groups: [], marks: [] };
     await window.api.wfSave(id, S.wf);
     S.config.activeWorkflowId = id;
     await window.api.configSave(S.config);
     renderAll();
     trackWorkflow(id, S.wf.name);
-    toast(I18n.t("工作流已删除，已重建默认工作流"), "ok");
+    toast(I18n.t("画布已删除，已重建默认画布"), "ok");
   };
   const cancel = document.createElement("button");
   cancel.className = "mini";
@@ -21769,7 +22882,7 @@ async function stripStoreMtNodesBase64(base64) {
 async function doExportFile() {
   const data = cloneWfForExport();
   if (!data) {
-    toast(I18n.t("导出失败：工作流包含无法序列化的数据"), "err");
+    toast(I18n.t("导出失败：画布包含无法序列化的数据"), "err");
     return;
   }
   const r = await window.api.mtnodesExport(data);
@@ -22253,7 +23366,7 @@ async function doExportBase64() {
   foot.innerHTML = "";
   const data = cloneWfForExport();
   if (!data) {
-    body.appendChild(hintEl(I18n.t("导出失败：工作流包含无法序列化的数据")));
+    body.appendChild(hintEl(I18n.t("导出失败：画布包含无法序列化的数据")));
     foot.appendChild(mkMiniBtn(I18n.t("返回"), exportWorkflowDialog));
     return;
   }
@@ -23394,7 +24507,7 @@ async function openTemplateStore() {
       mkMiniBtn(I18n.t("使用当前画布"), async () => {
         const data = cloneWfForExport();
         if (!data) {
-          toast(I18n.t("导出失败：工作流包含无法序列化的数据"), "err");
+          toast(I18n.t("导出失败：画布包含无法序列化的数据"), "err");
           return;
         }
         stripWorkspacesForStoreUpload(data);
@@ -24680,7 +25793,7 @@ function openSettings() {
     const hint = document.createElement("div");
     hint.className = "n-field";
     hint.textContent = I18n.t(
-      "存放 config.json（API Key 等）、工作流存档与本地资产。更改后需重启应用生效。",
+      "存放 config.json（API Key 等）、画布存档与本地资产。更改后需重启应用生效。",
     );
     sec.appendChild(hint);
 
@@ -24773,7 +25886,7 @@ function openSettings() {
       const next = picked && picked.path;
       if (!next) return;
       const migrate = await confirmDialog(
-        I18n.t("是否将现有配置（API Key、工作流等）复制到新目录？") +
+        I18n.t("是否将现有配置（API Key、画布等）复制到新目录？") +
           "\n\n" +
           I18n.t("若新目录已有 config.json，则不会覆盖。"),
         { title: I18n.t("迁移配置"), okText: I18n.t("复制"), cancelText: I18n.t("不复制") },
@@ -25406,7 +26519,7 @@ function openSettings() {
   const storageBtn = document.createElement("button");
   storageBtn.className = "mini";
   storageBtn.textContent = I18n.t("打开存档位置");
-  storageBtn.title = I18n.t("打开工作流保存的文件夹");
+  storageBtn.title = I18n.t("打开画布保存的文件夹");
   storageBtn.onclick = async () => {
     const r = await window.api.storageOpen();
     if (!r || !r.ok)
@@ -25745,8 +26858,16 @@ async function netText(url) {
   return r.text;
 }
 
+const MTNODE_EXT_CATALOG = "http://mt-agent.com/mtnode/ext/catalog.json";
+
 /* 内置 repo(默认标签,不可移除;用户源可移除) */
 const DEFAULT_REPOS = [
+  {
+    id: "mtnode-official",
+    label: "MTNode 官方",
+    kind: "catalog",
+    url: MTNODE_EXT_CATALOG,
+  },
   {
     id: "npmmirror-dsh",
     label: "插件",
@@ -25775,15 +26896,22 @@ function storeRepos() {
   return DEFAULT_REPOS.concat(user);
 }
 function storeKindLabel(kind) {
-  return kind === "plugins" ? I18n.t("插件") : kind === "skills" ? I18n.t("技能") : I18n.t("MCP 服务器");
+  if (kind === "plugins") return I18n.t("插件");
+  if (kind === "skills") return I18n.t("技能");
+  if (kind === "mcp") return I18n.t("MCP 服务器");
+  if (kind === "catalog") return I18n.t("目录");
+  return "";
 }
 function storeRepoHint(repo) {
+  const url = String(repo.url || "");
   const src =
-    String(repo.url || "").includes("registry.npmmirror.com")
-      ? I18n.t("npm 镜像 registry.npmmirror.com")
-      : String(repo.url || "").includes("jsdelivr")
-        ? "jsDelivr CDN"
-        : I18n.t("自定义源");
+    url.includes("/mtnode/ext/") || repo.kind === "catalog"
+      ? I18n.t("MTNode 官方源")
+      : url.includes("registry.npmmirror.com")
+        ? I18n.t("npm 镜像 registry.npmmirror.com")
+        : url.includes("jsdelivr")
+          ? "jsDelivr CDN"
+          : I18n.t("自定义源");
   return I18n.t("来源:") + src;
 }
 function storeCdnUrl(dataUrl) {
@@ -25792,18 +26920,67 @@ function storeCdnUrl(dataUrl) {
     "cdn.jsdelivr.net/gh/",
   );
 }
+function storeResolveUrl(baseUrl, rel) {
+  const r = String(rel || "").trim();
+  if (!r) return "";
+  if (/^https?:\/\//i.test(r) || /^github:/i.test(r)) return r;
+  const base = String(baseUrl || "").replace(/\/catalog\.json$/i, "").replace(/\/$/, "");
+  return base + "/" + r.replace(/^\.\//, "").replace(/^\/+/, "");
+}
+function isMtnodeExtCatalog(j) {
+  return !!(
+    j &&
+    (j.format === "mtnode-ext-v1" ||
+      ((Array.isArray(j.plugins) || Array.isArray(j.skills) || Array.isArray(j.mcp)) &&
+        !Array.isArray(j.objects) &&
+        !Array.isArray(j.files)))
+  );
+}
+function storeItemsFromExtCatalog(j, repo) {
+  const kinds =
+    repo.kind === "catalog" || !repo.kind
+      ? ["plugins", "skills", "mcp"]
+      : [repo.kind];
+  const out = [];
+  for (const kind of kinds) {
+    const arr = Array.isArray(j[kind]) ? j[kind] : [];
+    for (const raw of arr) {
+      if (!raw || !raw.id) continue;
+      const pathRel =
+        raw.path ||
+        (kind === "skills" ? "skills/" + raw.id + "/SKILL.md" : "");
+      out.push({
+        id: raw.id,
+        name: raw.name || raw.id,
+        desc: raw.description || "",
+        version: raw.version || "",
+        kind,
+        install: storeResolveUrl(repo.url, raw.install || raw.tgz || ""),
+        skillUrl: storeResolveUrl(repo.url, pathRel),
+        transport: raw.transport || "stdio",
+        command: raw.command || "npx.cmd",
+        args: raw.args || "",
+        mcpUrl: raw.url || "",
+      });
+    }
+  }
+  return out;
+}
 async function storeFetchItems(repo) {
+  const j = await netJson(repo.url);
+  if (isMtnodeExtCatalog(j) || repo.format === "mtnode-ext") {
+    return storeItemsFromExtCatalog(j, repo);
+  }
   if (repo.kind === "plugins") {
-    const j = await netJson(repo.url);
     return (j.objects || []).map((o) => ({
       id: o.package.name,
       name: o.package.name,
       desc: o.package.description || "",
       version: o.package.version,
+      kind: "plugins",
     }));
   }
   /* skills / mcp:jsDelivr data 目录树 → 取子目录列表 */
-  const j = await netJson(repo.url);
   const files = Array.isArray(j.files) ? j.files : [];
   let dirs = files;
   if (repo.path) {
@@ -25820,6 +26997,7 @@ async function storeFetchItems(repo) {
           ? I18n.t("技能（安装时从 CDN 拉取 SKILL.md）")
           : I18n.t("MCP 服务器（stdio，经 npx 运行）"),
       version: "",
+      kind: repo.kind,
     }));
 }
 
@@ -25838,7 +27016,7 @@ async function openStoreDialog() {
   const addSrcBtn = document.createElement("button");
   addSrcBtn.className = "mini";
   addSrcBtn.textContent = I18n.t("＋ 添加源");
-  addSrcBtn.title = I18n.t("添加自定义在线源(插件搜索接口 / jsDelivr repo),以标签切换");
+  addSrcBtn.title = I18n.t("添加自定义在线源（MTNode catalog.json / npm search / jsDelivr），以标签切换");
   addSrcBtn.onclick = openAddStoreSource;
   manageRow.appendChild(addSrcBtn);
   body.appendChild(manageRow);
@@ -25861,7 +27039,7 @@ async function openStoreDialog() {
   foot.appendChild(closeBtn);
 
   const repos = storeRepos();
-  let active = (repos[0] && repos[0].id) || "npmmirror-dsh";
+  let active = (repos[0] && repos[0].id) || "mtnode-official";
   let activeRepo = () => storeRepos().find((r) => r.id === active) || storeRepos()[0];
   let items = [];
   const installed = { plugins: [], skills: [], mcp: [] };
@@ -25884,7 +27062,9 @@ async function openStoreDialog() {
     for (const r of storeRepos()) {
       const b = document.createElement("button");
       b.className = "mini" + (active === r.id ? " on" : "");
-      b.textContent = I18n.t(r.label) + (r.kind ? " · " + storeKindLabel(r.kind) : "");
+      b.textContent =
+        I18n.t(r.label) +
+        (r.kind && r.kind !== "catalog" ? " · " + storeKindLabel(r.kind) : "");
       b.title = r.url;
       b.onclick = async () => {
         if (active === r.id) return;
@@ -25935,7 +27115,6 @@ async function openStoreDialog() {
   };
   const render = () => {
     const repo = activeRepo();
-    const kind = repo ? repo.kind : "plugins";
     const q = search.value.trim().toLowerCase();
     grid.innerHTML = "";
     const list = items.filter(
@@ -25949,6 +27128,7 @@ async function openStoreDialog() {
       return;
     }
     for (const it of list) {
+      const itemKind = it.kind || (repo && repo.kind) || "plugins";
       const card = document.createElement("div");
       card.className = "store-card";
       const nm = document.createElement("div");
@@ -25963,41 +27143,51 @@ async function openStoreDialog() {
       meta.textContent = it.version ? "v" + it.version : it.id;
       const btns = document.createElement("div");
       btns.className = "store-btns";
+      if (repo && repo.kind === "catalog") {
+        const kindTag = document.createElement("span");
+        kindTag.className = "store-kind";
+        kindTag.textContent = storeKindLabel(itemKind);
+        btns.appendChild(kindTag);
+      }
+      const skillRec = installed.skills.find((s) => s.name === it.id);
       const isInstalled = (() => {
-        if (kind === "plugins") return installed.plugins.some((p) => p.name === it.id);
-        if (kind === "skills") return installed.skills.some((s) => s.name === it.id);
+        if (itemKind === "plugins") return installed.plugins.some((p) => p.name === it.id);
+        if (itemKind === "skills") return !!skillRec;
         return installed.mcp.some((s) => s.serverName === it.id);
       })();
+      const canUninstall = itemKind !== "skills" || !(skillRec && skillRec.builtin);
       if (isInstalled) {
         const tag = document.createElement("span");
         tag.className = "store-installed";
         tag.textContent = I18n.t("已安装");
         btns.appendChild(tag);
-        const rm = document.createElement("button");
-        rm.className = "mini danger";
-        rm.textContent = I18n.t("卸载");
-        rm.onclick = async () => {
-          try {
-            let rr;
-            if (kind === "plugins") {
-              if (!(await confirmDialog(I18n.t("卸载插件 ") + it.id + I18n.t("？引擎将自动重启。"), { title: I18n.t("卸载插件"), danger: true, okText: I18n.t("卸载") }))) return;
-              rr = await window.api.dshPluginRemove(it.id);
-            } else if (kind === "skills") {
-              if (!(await confirmDialog(I18n.t("移除技能 ") + it.id + I18n.t("？"), { title: I18n.t("移除技能"), danger: true, okText: I18n.t("移除") }))) return;
-              rr = await window.api.skillRemove(it.id);
-            } else {
-              if (!(await confirmDialog(I18n.t("移除 MCP 服务器 ") + it.id + I18n.t("？引擎将自动重启。"), { title: I18n.t("移除 MCP"), danger: true, okText: I18n.t("移除") }))) return;
-              rr = await window.api.dshMcpRemove(it.id);
+        if (canUninstall) {
+          const rm = document.createElement("button");
+          rm.className = "mini danger";
+          rm.textContent = I18n.t("卸载");
+          rm.onclick = async () => {
+            try {
+              let rr;
+              if (itemKind === "plugins") {
+                if (!(await confirmDialog(I18n.t("卸载插件 ") + it.id + I18n.t("？引擎将自动重启。"), { title: I18n.t("卸载插件"), danger: true, okText: I18n.t("卸载") }))) return;
+                rr = await window.api.dshPluginRemove(it.id);
+              } else if (itemKind === "skills") {
+                if (!(await confirmDialog(I18n.t("移除技能 ") + it.id + I18n.t("？"), { title: I18n.t("移除技能"), danger: true, okText: I18n.t("移除") }))) return;
+                rr = await window.api.skillRemove(it.id);
+              } else {
+                if (!(await confirmDialog(I18n.t("移除 MCP 服务器 ") + it.id + I18n.t("？引擎将自动重启。"), { title: I18n.t("移除 MCP"), danger: true, okText: I18n.t("移除") }))) return;
+                rr = await window.api.dshMcpRemove(it.id);
+              }
+              if (rr && rr.ok === false) throw new Error(rr.error);
+              toast(I18n.t("已卸载 ") + it.id, "ok");
+            } catch (e) {
+              toast(I18n.t("卸载失败：") + (e.message || String(e)), "err");
             }
-            if (rr && rr.ok === false) throw new Error(rr.error);
-            toast(I18n.t("已卸载 ") + it.id, "ok");
-          } catch (e) {
-            toast(I18n.t("卸载失败：") + (e.message || String(e)), "err");
-          }
-          await refreshInstalled();
-          render();
-        };
-        btns.appendChild(rm);
+            await refreshInstalled();
+            render();
+          };
+          btns.appendChild(rm);
+        }
       } else {
         const inBtn = document.createElement("button");
         inBtn.className = "mini primary";
@@ -26005,13 +27195,24 @@ async function openStoreDialog() {
         inBtn.onclick = async () => {
           try {
             let rr;
-            if (kind === "plugins") {
-              rr = await window.api.dshPluginAdd(it.id);
-            } else if (kind === "skills") {
-              const cdn = storeCdnUrl(repo.url);
-              if (!cdn) throw new Error(I18n.t("该源不是 jsDelivr repo，无法安装技能"));
-              const md = await netText(cdn + "/" + it.id + "/SKILL.md");
-              let desc = it.id;
+            if (itemKind === "plugins") {
+              rr = await window.api.dshPluginAdd(it.install || it.id);
+            } else if (itemKind === "skills") {
+              let mdUrl = it.skillUrl;
+              if (!mdUrl) {
+                const cdn = storeCdnUrl(repo.url);
+                if (!cdn || !String(cdn).includes("jsdelivr")) {
+                  throw new Error(I18n.t("该源无法安装技能（需要 jsDelivr 或 MTNode catalog）"));
+                }
+                mdUrl =
+                  cdn +
+                  (repo.path ? "/" + repo.path : "") +
+                  "/" +
+                  it.id +
+                  "/SKILL.md";
+              }
+              const md = await netText(mdUrl);
+              let desc = it.desc || it.id;
               const m = md.match(/^---\s*\n([\s\S]*?)\n---/);
               if (m) {
                 const dm = m[1].match(/^description:\s*(.+)$/m);
@@ -26021,10 +27222,10 @@ async function openStoreDialog() {
             } else {
               rr = await window.api.dshMcpAdd({
                 serverName: it.id,
-                transport: "stdio",
-                command: "npx.cmd",
-                args: "-y @modelcontextprotocol/server-" + it.id,
-                url: "",
+                transport: it.transport || "stdio",
+                command: it.command || "npx.cmd",
+                args: it.args || "-y @modelcontextprotocol/server-" + it.id,
+                url: it.mcpUrl || "",
               });
             }
             if (rr && rr.ok === false) throw new Error(rr.error);
@@ -26051,7 +27252,7 @@ async function openStoreDialog() {
   render();
 }
 
-/* 添加自定义在线源:插件 = npm search 接口;技能/MCP = jsDelivr repo */
+/* 添加自定义在线源:MTNode catalog.json / npm search / jsDelivr repo */
 function openAddStoreSource() {
   openOverlay(I18n.t("添加在线源"));
   overlayPersistent = true;
@@ -26069,9 +27270,10 @@ function openAddStoreSource() {
   f2.appendChild(document.createTextNode(I18n.t("类型")));
   const kindSel = document.createElement("select");
   for (const [v, l] of [
-    ["plugins", I18n.t("插件（npm search 接口）")],
-    ["skills", I18n.t("技能（jsDelivr repo）")],
-    ["mcp", I18n.t("MCP 服务器（jsDelivr repo）")],
+    ["catalog", I18n.t("MTNode 目录（插件+技能+MCP）")],
+    ["plugins", I18n.t("插件（npm search 或 MTNode catalog）")],
+    ["skills", I18n.t("技能（jsDelivr 或 MTNode catalog）")],
+    ["mcp", I18n.t("MCP（jsDelivr 或 MTNode catalog）")],
   ]) {
     const o = document.createElement("option");
     o.value = v;
@@ -26085,8 +27287,12 @@ function openAddStoreSource() {
   f3.appendChild(document.createTextNode("URL"));
   const urlInp = document.createElement("input");
   urlInp.type = "text";
-  urlInp.placeholder =
-    I18n.t("插件:https://registry.npmmirror.com/-/v1/search?text=xxx\n技能/MCP:https://data.jsdelivr.com/v1/package/gh/用户/仓库@main");
+  urlInp.placeholder = I18n.t("MTNode 目录：http://mt-agent.com/mtnode/ext/catalog.json");
+  kindSel.addEventListener("change", () => {
+    if (kindSel.value === "catalog" && !urlInp.value.trim()) {
+      urlInp.value = MTNODE_EXT_CATALOG;
+    }
+  });
   f3.appendChild(urlInp);
   body.appendChild(f3);
   const f4 = document.createElement("label");
@@ -26100,7 +27306,7 @@ function openAddStoreSource() {
   const hint = document.createElement("div");
   hint.className = "settings-hint";
   hint.textContent =
-    I18n.t("插件源返回 npm search 格式；技能源每个子目录含 SKILL.md；MCP 源子目录作为服务器(经 npx @modelcontextprotocol/server-<名> 安装)。");
+    I18n.t("MTNode 目录填 catalog.json 即可（官方源已预置）。也可填 npm search 或 jsDelivr repo；技能子目录含 SKILL.md。");
   body.appendChild(hint);
   const foot = $("#ovFoot");
   const cancel = document.createElement("button");
@@ -26128,6 +27334,7 @@ function openAddStoreSource() {
       kind: kindSel.value,
       url,
       path: pathInp.value.trim() || "",
+      format: /\/catalog\.json$/i.test(url) || kindSel.value === "catalog" ? "mtnode-ext" : "",
     });
     await window.api.configSave(S.config);
     openStoreDialog();
@@ -26538,7 +27745,7 @@ function renderTop() {
 function renderStatus() {
   if (!S.wf) return;
   const bcount = S.wf.nodes.filter((n) => isBatchInput(n)).length;
-  $("#statWf").textContent = I18n.t("工作流：") + S.wf.name;
+  $("#statWf").textContent = I18n.t("画布：") + S.wf.name;
   $("#statCounts").textContent =
     S.wf.nodes.length +
     I18n.t(" 节点 · ") +
@@ -26671,7 +27878,7 @@ function summarizeCanvasEdit(params) {
   if (nRemove) bits.push(I18n.t("删除 ") + nRemove + I18n.t(" 个节点"));
   if (params.group) bits.push(I18n.t("创建组"));
   if (params.setWorkflowName)
-    bits.push(I18n.t("重命名工作流 → ") + String(params.setWorkflowName));
+    bits.push(I18n.t("重命名画布 → ") + String(params.setWorkflowName));
   if (params.layout === true || (params.layout !== false && nCreate > 0))
     bits.push(I18n.t("自动排版"));
   if (!bits.length) bits.push(I18n.t("修改画布"));
@@ -26697,6 +27904,50 @@ function summarizeCanvasEdit(params) {
         : "",
     raw: JSON.stringify(params, null, 2).slice(0, 4000),
   };
+}
+
+function assistRunLocked() {
+  return !!(S.assistRunning || S.assistRunActive);
+}
+
+function assistWorkspaceLocked() {
+  return assistRunLocked() || assistScopeIsCurrent();
+}
+
+function assistResolveWorkspace() {
+  if (assistScopeIsCurrent()) return String(wfWorkspace() || "").trim();
+  return String(S.assistWorkspace || wfWorkspace() || "").trim();
+}
+
+function assistDisplayWorkspace() {
+  if (assistRunLocked() && S.assistRunWorkspace != null)
+    return String(S.assistRunWorkspace || "");
+  return assistResolveWorkspace();
+}
+
+function syncAssistWorkspaceChrome() {
+  const ws = $("#assistWsInput");
+  const br = $("#assistWsBrowse");
+  const locked = assistWorkspaceLocked();
+  const runLock = assistRunLocked();
+  const shown = assistDisplayWorkspace();
+  if (ws) {
+    if (document.activeElement !== ws || locked) ws.value = shown;
+    ws.readOnly = locked;
+    ws.placeholder = assistScopeIsCurrent()
+      ? I18n.t("跟随当前画布工作目录")
+      : I18n.t("留空 = 当前画布 / 应用默认目录…");
+    if (runLock)
+      ws.title = I18n.t("运行中已锁定工作目录，切换画布也不会更改");
+    else if (assistScopeIsCurrent())
+      ws.title = I18n.t("跟随当前画布工作目录（只读）");
+    else
+      ws.title = I18n.t("助手可读写此目录下的文件；留空使用应用默认数据目录");
+  }
+  if (br) {
+    br.disabled = locked;
+    br.hidden = locked;
+  }
 }
 
 function persistAssistUi() {
@@ -26899,7 +28150,7 @@ function fillAssistScopeControl() {
   const sel = $("#assistScopeSel");
   if (!sel) return;
   const curName =
-    (S.wf && String(S.wf.name || "").trim()) || I18n.t("未命名工作流");
+    (S.wf && String(S.wf.name || "").trim()) || I18n.t("未命名画布");
   const v = S.assistScope === "global" ? "global" : "current";
   sel.innerHTML = "";
   const optCur = document.createElement("option");
@@ -26935,10 +28186,10 @@ function renderAssistPanel() {
     empty.className = "assist-empty";
         empty.textContent = scopeCurrent
       ? I18n.t(
-          "当前工作范围是本画布。我能查看并修改当前工作流节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
+          "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
         )
       : I18n.t(
-          "我能看到当前工作流、节点与配置，也可参考其他画布列表。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除工作流前会请你确认。",
+          "我能看到当前画布、节点与配置，也可参考其他画布列表。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除画布前会请你确认。",
         );
     list.appendChild(empty);
   }
@@ -26990,8 +28241,7 @@ function renderAssistPanel() {
     effortSel.value = S.assistEffort === "max" ? "max" : "high";
     if (S.assistEffort !== effortSel.value) S.assistEffort = effortSel.value;
   }
-  const ws = $("#assistWsInput");
-  if (ws && document.activeElement !== ws) ws.value = S.assistWorkspace || "";
+  syncAssistWorkspaceChrome();
   fillAssistScopeControl();
   updateAssistScopeChrome();
   fillAssistModelControls();
@@ -27018,25 +28268,7 @@ async function assistSend(text) {
   let t = String(text || "").trim();
   if (!t) return;
   if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
-  let skillWrap = null;
-  const slash = t.match(/^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
-  if (slash) {
-    const skill = await resolveSkillByName(slash[1]);
-    if (skill) {
-      let title = skill.name;
-      try {
-        const list = await loadSkillsCached(false);
-        const hit = (list || []).find((s) => s.name === skill.name);
-        if (hit && hit.title) title = hit.title;
-      } catch {}
-      skillWrap = {
-        name: skill.name,
-        title,
-        body: skill.body,
-        arg: String(slash[2] || "").trim(),
-      };
-    }
-  }
+  const skillWrap = await resolveSkillSlash(t);
   const sup = dshSupported();
   if (!sup.ok) {
     toast(sup.reason, "warn");
@@ -27050,6 +28282,8 @@ async function assistSend(text) {
   S.assistPending = "";
   S.assistLiveTools = [];
   S.assistRunActive = true;
+  S.assistRunWorkspace =
+    assistResolveWorkspace() || S.dshWorkspaceFallback || "";
   if (!S.thinking) S.thinking = {};
   S.thinking.assist = [""];
   persistAssistUi();
@@ -27064,7 +28298,7 @@ async function assistSend(text) {
     .join("\n\n");
   const scopeCurrent = assistScopeIsCurrent();
   const wfName =
-    (S.wf && S.wf.name) || I18n.t("未命名工作流");
+    (S.wf && S.wf.name) || I18n.t("未命名画布");
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
@@ -27072,17 +28306,17 @@ async function assistSend(text) {
       "工具：\n" +
       "- mtnode_canvas_get：读取当前画布\n" +
       "- mtnode_app：rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）；delete_workflow 仅可删本画布且需确认。\n"
-    : "工作范围：全局。可参考全部工作流列表。\n" +
+    : "工作范围：全局。可参考全部画布列表。\n" +
       "工具：\n" +
-      "- mtnode_canvas_get：读取当前画布 + 全部工作流列表\n" +
+      "- mtnode_canvas_get：读取当前画布 + 全部画布列表\n" +
       "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows；delete_workflow 会弹窗确认。\n";
   const systemPrompt =
-    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内工作流、节点画布、服务商与智能配置摘要。\n" +
+    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n" +
     scopeBlock +
     "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。\n" +
     "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
     "  · 可改节点模型：update/create 传 model；文本/图像/对话节点用 providerId（服务商 id 或唯一名称），智能任务用 provider（deepseek-official 或 mtnode_<id>/名称）。\n" +
-    "  · 图像参考节点 kind 必须是 input_image；用 imagePath（本机绝对路径）写入图片，应用会复制进工作流资产，不要让用户再拖拽。\n" +
+    "  · 图像参考节点 kind 必须是 input_image；用 imagePath（本机绝对路径）写入图片，应用会复制进画布资产，不要让用户再拖拽。\n" +
     "  · 多图用 batch:true + imagePaths。工具返回的 created[]/updated[]/hasImage/warnings 才是事实依据；未出现在结果里就不要声称已添加。\n" +
     "  · 文字处理与图生文（多模态识图）尽量隔离：图像 → 专用识图/智能任务节点产出文字，再连到纯文本处理节点；不要把图像直接挂到只需文字推理的节点上，以便文字步骤选用更合适的非视觉模型。\n" +
     "  · 批次处理时：批量并行（batchMode=batch）尽量不用智能节点（agent_task / 文本智能模式），改用普通 proc_text / proc_image；聚合模式（batchMode=agg）允许使用智能节点。\n" +
@@ -27095,19 +28329,15 @@ async function assistSend(text) {
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
     "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
     (scopeCurrent
-      ? "原则：仅操作当前画布；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n"
-      : "原则：可参考其他画布列表；改节点图或删除工作流再走确认。回答简洁，中文优先。不要编造不存在的节点或工作流。\n") +
+      ? "原则：仅操作当前画布；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n"
+      : "原则：可参考其他画布列表；改节点图或删除画布再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n") +
     "当前应用状态 JSON：\n" +
     stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   try {
     const final = await dshRunTask(input, {
-      workspace:
-        S.assistWorkspace ||
-        (S.wf && S.wf.workspace) ||
-        S.dshWorkspaceFallback ||
-        "",
+      workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
       preset: S.assistPreset || "standard",
       provider: S.assistProvider || "deepseek-official",
       model: S.assistModel || undefined,
@@ -27201,6 +28431,7 @@ async function assistSend(text) {
     S.assistStopRequested = false;
     S.assistRunning = false;
     S.assistRunActive = false;
+    S.assistRunWorkspace = null;
     S.assistPending = "";
     S.assistLiveTools = [];
     if (S.thinking) S.thinking.assist = [""];
@@ -27363,6 +28594,7 @@ function setView(view) {
   S.config.view = view;
   window.api.configSave(S.config).catch(() => {});
   if (view === "agent") {
+    closeCanvasFindBar();
     renderAgentSession();
     const inp = $("#agentInput");
     if (inp) inp.focus();
@@ -27546,7 +28778,7 @@ function renderAgentSession() {
     const hint = document.createElement("div");
     hint.className = "agent-empty";
     hint.innerHTML =
-      I18n.t("这是<b>智能会话</b>画布:与智能任务节点能力一致,模型可读文件 / 联网 / 执行命令；也可修改当前画布工作流（会弹窗确认，拒绝即停止）。直接描述你要完成的任务即可。");
+      I18n.t("这是<b>智能会话</b>画布:可读文件 / 联网 / 执行命令，也可修改当前画布（会弹窗确认，拒绝即停止）。画布上的智能节点不能改图。直接描述你要完成的任务即可。");
     list.appendChild(hint);
   }
   for (const m of st.messages) list.appendChild(dshMsgBlock(m));
@@ -27906,16 +29138,9 @@ async function agentSessionSend(text) {
         "ok",
       );
     } else {
-      const skillName = cmd.replace(/^\//, "");
-      const skill = await resolveSkillByName(skillName);
-      if (skill) {
-        let title = skillName;
-        try {
-          const list = await loadSkillsCached(false);
-          const hit = (list || []).find((s) => s.name === skill.name);
-          if (hit && hit.title) title = hit.title;
-        } catch {}
-        skillWrap = { name: skill.name, title, body: skill.body, arg };
+      const skillWrapHit = await resolveSkillSlash(t);
+      if (skillWrapHit) {
+        skillWrap = skillWrapHit;
       } else {
         toast(I18n.t("未知命令:") + cmd + I18n.t("。输入 / 或 、 呼出技能列表"), "warn");
         return;
@@ -27954,7 +29179,7 @@ async function agentSessionSend(text) {
     input =
       "【要求】先制定并展示分步计划,再开始执行。\n\n" + input;
   const systemPrompt =
-    "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布工作流（节点、连线、排版等）。\n" +
+    "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
     "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
     "mtnode_canvas_edit 与危险操作 delete_workflow 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝，本次任务会立即停止，不要再继续改画布。\n" +
     "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
@@ -28271,15 +29496,20 @@ function applyLocale(locale, persist) {
   I18n.applyDom(document);
   paintLangBtn();
   paintApprovalsBtn();
+  document.querySelectorAll(".topbar .btn-ico").forEach((el) => {
+    const tip = el.getAttribute("data-tip");
+    const cap = el.querySelector(".btn-ico-txt");
+    if (cap && cap.textContent) el.setAttribute("aria-label", cap.textContent);
+    else if (tip) el.setAttribute("aria-label", tip);
+  });
+  document.querySelectorAll(".topbar .btn-stack").forEach((el) => {
+    if (el.title) el.setAttribute("aria-label", el.title);
+  });
   if ($("#approvalsPanel") && $("#approvalsPanel").classList.contains("on"))
     openApprovalsPanel();
   applyLogoSub();
-  const boxBtn = $("#btnBox");
-  if (boxBtn) {
-    boxBtn.title = S.boxMode
-      ? I18n.t("框选模式已开启：左键拖拽即可框选（再点关闭）")
-      : I18n.t("框选模式：开启后左键拖拽框选节点与绘制（也可随时按住 Ctrl+左键 框选）");
-  }
+  const findBar = document.getElementById("canvasFindBar");
+  if (findBar && typeof findBar._paintLabels === "function") findBar._paintLabels();
   const overlayOpen = $("#overlay") && $("#overlay").style.display === "flex";
   const reopenSettings = overlayKind === "settings" && overlayOpen;
   const reopenTpl = overlayKind === "tplstore" && overlayOpen;
@@ -28312,6 +29542,15 @@ async function init() {
   I18n.applyDom(document);
   paintLangBtn();
   paintApprovalsBtn();
+  document.querySelectorAll(".topbar .btn-ico").forEach((el) => {
+    const tip = el.getAttribute("data-tip");
+    const cap = el.querySelector(".btn-ico-txt");
+    if (cap && cap.textContent) el.setAttribute("aria-label", cap.textContent);
+    else if (tip) el.setAttribute("aria-label", tip);
+  });
+  document.querySelectorAll(".topbar .btn-stack").forEach((el) => {
+    if (el.title) el.setAttribute("aria-label", el.title);
+  });
   const langBtn = $("#btnLang");
   if (langBtn) {
     langBtn.onclick = () =>
@@ -28343,7 +29582,7 @@ async function init() {
   );
   ensureAgentToolPresets();
   applyTheme((S.config.dsh && S.config.dsh.theme) || "industrial");
-  /* 已访问画布(工作流 Tab 条),持久化于配置 */
+  /* 已访问画布(画布 Tab 条),持久化于配置 */
   if (!Array.isArray(S.config.visitedWorkflows)) S.config.visitedWorkflows = [];
   if (!Array.isArray(S.config.onlineRepos)) S.config.onlineRepos = [];
   if (!S.config.storeAuth || typeof S.config.storeAuth !== "object") S.config.storeAuth = null;
@@ -28448,30 +29687,11 @@ async function init() {
   $("#btnFit").onclick = fitCanvas;
   const btnCanvasShot = $("#btnCanvasShot");
   if (btnCanvasShot) btnCanvasShot.onclick = () => exportCanvasOverviewPng();
-  $("#btnBox").onclick = () => {
-    S.boxMode = !S.boxMode;
-    const b = $("#btnBox");
-    b.classList.toggle("on", S.boxMode);
-    b.title = S.boxMode
-      ? I18n.t("框选模式已开启：左键拖拽即可框选（再点关闭）")
-      : I18n.t("框选模式：开启后左键拖拽框选节点与绘制（也可随时按住 Ctrl+左键 框选）");
-    toast(
-      S.boxMode
-        ? I18n.t("框选模式已开启：左键拖拽框选节点与绘制")
-        : I18n.t("框选模式已关闭"),
-      "ok",
-    );
-    renderStatus();
-  };
   $("#btnGroup").onclick = toggleGroupAction;
   const btnAutoLayout = $("#btnAutoLayout");
   if (btnAutoLayout) btnAutoLayout.onclick = () => oneClickAutoLayout();
   $("#btnSidebar").onclick = toggleSidebar;
   $("#sideFilter").addEventListener("input", renderSidebar);
-  $("#btnDup").onclick = () => {
-    if (!duplicateSelection())
-      toast(I18n.t("请先选中节点或绘制"), "warn");
-  };
   $("#wfName").addEventListener("input", (ev) => {
     if (!S.wf) return;
     S.wf.name = ev.target.value;
@@ -28656,12 +29876,17 @@ async function init() {
         persistAssistUi();
         updateAssistScopeChrome();
         fillAssistScopeControl();
+        syncAssistWorkspaceChrome();
         renderAssistPanel();
       };
     }
     const wsInput = $("#assistWsInput");
     if (wsInput)
       wsInput.addEventListener("change", () => {
+        if (assistWorkspaceLocked()) {
+          syncAssistWorkspaceChrome();
+          return;
+        }
         S.assistWorkspace = wsInput.value.trim();
         persistAssistUi();
       });
@@ -28669,7 +29894,9 @@ async function init() {
     if (wsBr) fillWorkspaceBrowseIcon(wsBr);
     if (wsBr && wsInput)
       wsBr.onclick = () => {
+        if (assistWorkspaceLocked()) return;
         pickFolder(wsInput, (p) => {
+          if (assistWorkspaceLocked()) return;
           S.assistWorkspace = p;
           persistAssistUi();
         });
@@ -28678,7 +29905,11 @@ async function init() {
     if (wsOpen && wsInput)
       wsOpen.onclick = () => {
         openWorkspaceFolder(
-          wsInput.value || S.assistWorkspace || wfWorkspace() || "",
+          assistDisplayWorkspace() ||
+            wsInput.value ||
+            S.assistWorkspace ||
+            wfWorkspace() ||
+            "",
         );
       };
     const aInp = $("#assistInput");

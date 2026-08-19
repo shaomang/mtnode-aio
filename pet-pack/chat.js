@@ -246,8 +246,11 @@
 
   function setBusy(v) {
     busy = !!v;
-    btnSend.disabled = busy;
     input.disabled = busy;
+    btnSend.disabled = false;
+    btnSend.textContent = busy ? "终止" : "发送";
+    btnSend.classList.toggle("stop", busy);
+    btnSend.title = busy ? "终止当前对话" : "发送";
   }
 
   function renderSlots(listSessions) {
@@ -383,7 +386,18 @@
       });
     }
     if (api.onChatDone) {
-      api.onChatDone(async () => {
+      api.onChatDone(async (d) => {
+        const stopped = !!(d && d.stopped);
+        if (stopped && streamEl) {
+          const bubble = streamEl.querySelector(".bubble");
+          const t = bubble ? String(bubble.textContent || "").trim() : "";
+          if (!t) {
+            if (streamEl.parentNode) streamEl.parentNode.removeChild(streamEl);
+            addMsg("sys", "已终止");
+          }
+        } else if (stopped && !streamEl) {
+          addMsg("sys", "已终止");
+        }
         streamEl = null;
         setStatus("");
         setBusy(false);
@@ -409,6 +423,17 @@
     }
   }
 
+  async function stop() {
+    if (!api || !busy) return;
+    if (!api.chatStop) return;
+    btnSend.disabled = true;
+    try {
+      await api.chatStop();
+    } catch (_) {
+      setBusy(false);
+    }
+  }
+
   async function send() {
     if (!api || busy) return;
     const t = (input.value || "").trim();
@@ -431,11 +456,14 @@
     }
   }
 
-  btnSend.onclick = send;
+  btnSend.onclick = () => {
+    if (busy) stop();
+    else send();
+  };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      if (!busy) send();
     }
   });
   btnClose.onclick = () => api && api.toggleChat && api.toggleChat();

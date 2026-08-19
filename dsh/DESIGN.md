@@ -81,7 +81,7 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | method | params | 语义 |
 |---|---|---|
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
-| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索(DeepSeek Anthropic)，与对话路由密钥分离 |
+| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索(DeepSeek Anthropic)，与对话路由密钥分离。`hostPersona` 覆盖 dsh `system-prompt` 部署人设(桌宠等非 MTNode 宿主用),不再塞进用户消息 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `interact` | `{kind:'question'\|'approval'\|'canvas', id, answers?\|outcome?\|result?}` | 回答提问 / 审批 / 画布工具结果,按交互 id 路由回对应运行时 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
@@ -197,7 +197,7 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 | `mtnode_app` | 应用级操作:工作流状态/列表、重命名/删除工作流、选中节点、撤销重做。删除工作流与图编辑在全局助手侧需用户确认 |
 | `mtnode_vision` | 识图子代理:对本地绝对路径图片调用视觉模型作答;首次需用户许可(允许一次/始终允许/拒绝) |
 
-渲染层 `applyCanvasOp` 是唯一写画布的地方:校验节点类型与回路、拒绝删除正在运行的节点、一次编辑一条撤销记录。典型任务(「实现物品配置工作流」)由模型一次 `edit` 创建「需求 → 生成 → 写入配置表」管道,用户可继续改提示词并点 ▶ 运行。
+渲染层 `applyCanvasOp` 是唯一写画布的地方:校验节点类型与回路、拒绝删除正在运行的节点、一次编辑一条撤销记录。画布**智能节点**运行时硬拒绝 `get` / `edit` / `app`（不改图、不改工作流、不创建任务），仍可用文件读写、命令、联网与 `mtnode_vision`；智能会话与全局助手仍走上述画布工具。典型任务(「实现物品配置工作流」)由会话或助手一次 `edit` 创建「需求 → 生成 → 写入配置表」管道,用户可继续改提示词并点 ▶ 运行。
 
 右上角「审批」另有 **Agent 工具许可预设**(与 `permissionPreset` 正交):按类别设为批准 / 询问 / 拒绝（默认全批准）。内置 `default` 预设为当前产品能力全开;用户可克隆自定义。`applyCanvasOp` / `applyAppOp` / `applyVisionInspect` 对画布/应用/识图做硬拦截（拒绝）或调用前确认（询问）;读文件/终端/联网等经 `dshRunTask` 注入系统提示约束。
 

@@ -337,14 +337,18 @@ function createDshAdapter(opts) {
         const dir = path.join(dshHome, 'skills', nm)
         if (fs.existsSync(dir)) return { ok: false, error: '同名技能已存在' }
         fs.mkdirSync(dir, { recursive: true })
-        const front = [
-          '---',
-          'name: ' + nm,
-          'description: ' + String(description || '').replace(/\n/g, ' '),
-          '---',
-          '',
-        ].join('\n')
-        fs.writeFileSync(path.join(dir, 'SKILL.md'), front + String(body || ''), 'utf8')
+        let text = String(body || '')
+        if (!/^---\s*\n/.test(text)) {
+          text = [
+            '---',
+            'name: ' + nm,
+            'description: ' + String(description || '').replace(/\n/g, ' '),
+            '---',
+            '',
+            text,
+          ].join('\n')
+        }
+        fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8')
         return { ok: true, skills: this.skillList().skills }
       } catch (err) {
         return { ok: false, error: err.message || String(err) }

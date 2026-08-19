@@ -47,6 +47,24 @@ if "location ^~ /mtnode/store-api/" not in text:
     insert += STORE
 if "location ^~ /mtnode/plugins/" not in text:
     insert += PLUGINS
+if "location ^~ /mtnode/ext/" not in text:
+    insert += """
+    # === MTNode 扩展目录（插件 / 技能 / MCP） ===
+    location ^~ /mtnode/ext/ {
+        alias /var/www/mtnode/ext/;
+        autoindex off;
+        add_header Access-Control-Allow-Origin *;
+        add_header Cache-Control "public, max-age=60";
+        types {
+            application/json json;
+            application/gzip tgz;
+            text/markdown md;
+            text/plain txt;
+        }
+        default_type application/octet-stream;
+    }
+
+"""
 
 if not insert:
     print("nginx store-api + plugins locations already present")

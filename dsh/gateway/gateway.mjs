@@ -84,6 +84,11 @@ const PRESETS = {
     'You are a software engineer. Inspect files before editing, write or modify code and run commands to finish the task, and report what you changed and how to verify it.',
   cordis:
     'You are a Cordis plugin developer for DeepSeek Harness. Follow Cordis conventions (Service classes, ctx.effect/ctx.on registrations, typed events) when writing plugins or composition files.',
+  /* 画布智能节点:办事但不改图。由宿主在 node 运行时把 standard 换成此档,不出现在 UI 预设列表。 */
+  node:
+    'You are the agent engine inside MTNode, running as a canvas AGENT NODE (agent_task / proc_text with agent / chat with agent). Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You MUST NOT edit the canvas, modify workflows, or create tasks/nodes/wires/marks. Do not call mtnode_canvas_get, mtnode_canvas_edit, or mtnode_app — the host rejects them. Deliver results by writing files. Mid-task pixel reading (screenshots, OCR, verify an image): call mtnode_vision with imagePath + question. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+  /* 桌宠对话:不走 MTNode 画布/文件助手人设,身份由 hostPersona 覆盖 system-prompt */
+  bongochat: '',
 }
 
 /** @type {Map<string, {harness: Promise<DeepSeekHarness>, order: number}>} */
@@ -213,9 +218,10 @@ function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, prov
   return [workspace, model, maxTokens, provider, secret, baseUrl ?? '', provHash, eff].join('|')
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona) {
   const home = dshHome || process.env.DSH_HOME || ''
   const searchKey = String(webSearchApiKey || '').trim() || String(apiKey || '').trim()
+  const personaHash = crypto.createHash('sha1').update(String(hostPersona || '')).digest('hex').slice(0, 12)
   const key = runtimeKey(
     workspace,
     model,
@@ -223,7 +229,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     provider,
     apiKey,
     baseUrl,
-    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8),
+    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash,
     effort,
   )
   const existing = runtimes.get(key)
@@ -430,7 +436,7 @@ async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
-    permissionPreset, webSearchApiKey,
+    permissionPreset, webSearchApiKey, hostPersona,
   } = params
   const emit = (type, data) => out({ event: { reqId, type, data } })
   let runKey = ''
@@ -440,17 +446,20 @@ async function handleRun(params) {
       emit('done', { finalResponse: '' })
       return
     }
-    const settings = applySettings(dshHome, effort, mtnodeProviders, permissionPreset)
+    const hostPersonaText = String(hostPersona || '').trim()
+    const settings = applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersonaText)
     const cordisChanged = applyCordisPreset(permissionPreset)
     /* 设置文档热重载窗口:变更后稍候,确保首请求读到新档位 */
     if (settings.changed || cordisChanged) await new Promise((r) => setTimeout(r, 450))
     /* 目录同源服务商(如 opencode-go)映射回目录路由名,与 settings 注册一致 */
     const route = routeOfProvider(provider, Array.isArray(mtnodeProviders) ? mtnodeProviders : [])
-    const presetText = PRESETS[preset] || PRESETS.standard
+    /* 空串预设(如 bongochat)必须保留,不能 || 回退成 MTNode standard */
+    const presetText = Object.prototype.hasOwnProperty.call(PRESETS, preset) ? PRESETS[preset] : PRESETS.standard
     const sys = [presetText, systemPrompt]
       .filter((s) => s && String(s).trim())
       .join('\n\n')
-    const prompt = sys
+    /* 宿主人设已写入真正的 system-prompt,不再塞进用户消息以免被当成越权改角色 */
+    const prompt = sys && !hostPersonaText
       ? `【系统设定】\n${sys}\n\n【内容】\n${input}`
       : input
     /* 携带图像:把图像写入附件对象库,任务消息 = 文本块 + image 内容块 */
@@ -461,7 +470,7 @@ async function handleRun(params) {
     }
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, effort,
-      webSearchApiKey,
+      webSearchApiKey, hostPersonaText,
     )
     runKey = rt.key
     keyToReqId.set(runKey, reqId)
@@ -615,8 +624,8 @@ function stripYamlSection(text, key) {
   return out.join('\n')
 }
 
-/* 统一写入 mtnode 管理的 settings 段(llm-deepseek / llm-pi-ai.providers /
-   permission.defaultPreset),其余用户内容原样保留;envPatch 始终构建,
+/* 统一写入宿主管理的 settings 段(llm-deepseek / llm-pi-ai.providers /
+   permission.defaultPreset / 可选 system-prompt 宿主人设),其余用户内容原样保留;envPatch 始终构建,
    保证同一配置复用同一运行时。 */
 const PERMISSION_PRESETS = [
   'mtnode-unattended',
@@ -676,7 +685,16 @@ function routeOfProvider(provider, list) {
   return raw
 }
 
-function applySettings(dshHome, effort, mtnodeProviders, permissionPreset) {
+function yamlHostPersonaSection(text) {
+  const safe = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\t/g, '  ')
+    .replace(/\{\{/g, '{ {')
+  const body = safe.split('\n').map((line) => '    ' + line).join('\n')
+  return 'system-prompt:\n  includeHarnessIdentity: false\n  persona: |-\n' + body
+}
+
+function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersona) {
   const home = dshHome || process.env.DSH_HOME || ''
   const list = Array.isArray(mtnodeProviders) ? mtnodeProviders : []
   const envPatch = {}
@@ -692,7 +710,8 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset) {
     : EFFORTS.includes(raw) ? raw : 'high'
   /* 权限预设:dsh permission-presets 的 defaultPreset,热重载后对新会话生效 */
   const perm = PERMISSION_PRESETS.includes(permissionPreset) ? permissionPreset : 'mtnode-unattended'
-  const hash = eff + '|' + perm + '|' + JSON.stringify(list)
+  const persona = String(hostPersona || '').trim()
+  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona
   if (hash === lastSettingsHash && home === lastSettingsHome) return { envPatch, changed: false }
   try {
     const provLines = []
@@ -717,9 +736,11 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset) {
     rest = stripYamlSection(rest, 'llm-deepseek')
     rest = stripYamlSection(rest, 'llm-pi-ai')
     rest = stripYamlSection(rest, 'permission')
+    rest = stripYamlSection(rest, 'system-prompt')
     const parts = ['llm-deepseek:\n  reasoningEffort: ' + eff]
     if (list.length) parts.push('llm-pi-ai:\n  providers:\n' + provLines.join('\n'))
     parts.push('permission:\n  defaultPreset: ' + perm)
+    if (persona) parts.push(yamlHostPersonaSection(persona))
     const txt = parts.join('\n') + (rest.trim() ? '\n' + rest.trim() : '') + '\n'
     writeFileSync(settingsPath, txt, 'utf8')
     lastSettingsHome = home

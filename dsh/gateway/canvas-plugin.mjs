@@ -19,14 +19,18 @@ export const inject = ['tools']
 
 const KINDS = [
   'input_text', 'input_image', 'proc_text', 'proc_image',
-  'save_text', 'save_image', 'split', 'merge', 'wait_file', 'timer', 'agent_task', 'task', 'chat',
+  'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer', 'agent_task', 'task', 'chat',
   'control', 'judge',
 ]
 
-const GET_DESC =
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task scope (id, kind, title, position, prompt/text/task/goal/steps/parentTaskId/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, taskTree (all task nodes even if nested), marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. When the run is locked to the current canvas (agent_task / agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title only resolves if that node is wired in. To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
+const NODE_LOCK =
+  'CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text/chat with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\n'
 
-const APP_DESC = `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation).
+const GET_DESC =
+  NODE_LOCK +
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task scope (id, kind, title, position, prompt/text/task/goal/steps/parentTaskId/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, taskTree (all task nodes even if nested), marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title resolves if that node is wired into the consumer OR into a kind "global" node (global has no output; sources wired into it are auto-attached to all proc_text / proc_image / agent_task / judge). To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
+
+const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation).
 
 Available actions:
 - status / list_workflows: inspect app + workflow catalog. When locked to the current canvas (agent_task nodes, agent session, assistant "current" scope), the catalog contains ONLY that canvas — other workflows are omitted.
@@ -39,7 +43,7 @@ Needs user confirmation (UI will prompt; may be rejected):
 
 For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
-const EDIT_DESC = `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
+const EDIT_DESC = NODE_LOCK + `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
 
 Typical pattern for a COMPLEX requirement (planning first):
 1. Optionally mtnode_canvas_get first (see taskTree + current-scope nodes).
@@ -59,6 +63,7 @@ CRITICAL — for anything more than a handful of nodes, START with task nodes (k
 CRITICAL — do NOT create save_text / save_image after agent_task or proc_text with agent:true: those smart nodes can write files themselves; a save_* node would dump chat/task transcript junk to disk. Use save_* only after ordinary proc_text / proc_image (agent off).
 CRITICAL — avoid wiring agent_task / proc_text(agent:true) as DATA inputs into other nodes: their outputs carry irrelevant session/transcript noise and often omit the key facts. Prefer file handoff: the smart node WRITES a document (md/yaml/json/…), then use wait_file (监视路径 / waitPath) as a CONTROL node wired OUT to downstream so they block until that file exists; wait_file has NO input ports and outputs NOTHING — later nodes READ the agreed path themselves. Do not wire anything into wait_file.
 wait_file: control-kind blocker with output only; polls waitPath (relative to workspace or absolute) every waitIntervalSec seconds (default 2) until the file exists, then unblocks downstream. No inputs, no data/path output; do not @引用 wait_file.
+kind "global": input-only rainbow node (no output ports). Wire text/image sources into it; every proc_text / proc_image / agent_task / judge then auto-receives those sources as background and can @Title them without extra wires. Do not wire control nodes into global.
 
 Layout & drawings (recommended whenever you build a non-trivial workflow):
 - CRITICAL UX: nodes the user must edit or operate (input_text / input_image, editable prompts, control run/clear buttons, split pickers) go toward the TOP of the canvas (smaller y). Put heavy processing / save / docs lower or further right so the first thing users see is what they can change and ▶ run.
@@ -99,7 +104,7 @@ Change node model / provider:
 - Call mtnode_canvas_get first when unsure. Do not change model on a running node.
 
 Rules:
-- Titles must be unique; @引用 needs wire + @Title in prompt/task.
+- Titles must be unique; @引用 needs the source wired into the consumer OR into a kind "global" node, plus @Title in prompt/task.
 - One edit call should create the whole subgraph. layout defaults true when create is non-empty.
 - Marks are created AFTER layout when around is used; absolute x/y also allowed (set layout false if you place everything yourself).
 - Never remove or overlap the node that is currently running this task.
@@ -194,9 +199,9 @@ const NODE_SPEC = {
     prompt: {
       type: 'string',
       description:
-        'proc_text / proc_image prompt (include @Title for wired inputs; proc_image: ONE image only). Also judge criteria (optional; defaults to parent task goal).',
+        'proc_text / proc_image prompt (include @Title for wired or global-broadcast inputs; proc_image: ONE image only). Also judge criteria (optional; defaults to parent task goal).',
     },
-    task: { type: 'string', description: 'agent_task task text. Include @Title for wired inputs.' },
+    task: { type: 'string', description: 'agent_task task text. Include @Title for wired or global-broadcast inputs.' },
     goal: {
       type: 'string',
       description: 'task node: what this step should accomplish.',

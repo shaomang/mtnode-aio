@@ -1,7 +1,7 @@
 {
   "name": "mtnode-ai-orchestrator",
   "productName": "MTNode AI编排器",
-  "version": "1.1.21",
+  "version": "1.1.22",
   "description": "MTNode AI编排器（MTNode AI Orchestrator）— AI 工作流编排",
   "main": "main.js",
   "scripts": {
@@ -11,7 +11,9 @@
     "compile": "electron-builder --win --dir --config build.json --publish never",
     "release:stage": "node scripts/stage-updates.mjs",
     "release:pet": "node scripts/stage-pet.mjs --bump",
-    "release:plugins": "node scripts/stage-plugins.mjs"
+    "release:plugins": "node scripts/stage-plugins.mjs",
+    "ext:build": "node ext-repo/build.mjs",
+    "ext:sync": "node ext-repo/build.mjs && python ext-repo/upload.py"
   },
   "author": "New Earth Habitat",
   "license": "MIT",

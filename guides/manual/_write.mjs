@@ -393,6 +393,8 @@ The status bar shows workflow name, node/wire counts, providers, grid, zoom, and
 | --- | --- |
 | 撤销 | \`Ctrl+Z\` |
 | 重做 | \`Ctrl+Y\` 或 \`Ctrl+Shift+Z\` |
+| 查找节点（标题 / 内容） | \`Ctrl+F\`（画布顶端悬浮框，仅当前画布） |
+| 替换 / 全部替换 | \`Ctrl+G\` |
 | 复制选中节点 / 绘制 | \`Ctrl+C\`（有文字选区时交给系统复制） |
 | 删除选中 | \`Delete\` / \`Backspace\` |
 | 组成组 / 解散组 | \`G\` |
@@ -409,6 +411,8 @@ The status bar shows workflow name, node/wire counts, providers, grid, zoom, and
 | --- | --- |
 | Undo | \`Ctrl+Z\` |
 | Redo | \`Ctrl+Y\` or \`Ctrl+Shift+Z\` |
+| Find nodes (title / content) | \`Ctrl+F\` (floating bar on canvas; current canvas only) |
+| Replace / Replace all | \`Ctrl+G\` |
 | Duplicate selected nodes / marks | \`Ctrl+C\` (system copy if text is selected) |
 | Delete selection | \`Delete\` / \`Backspace\` |
 | Group / ungroup | \`G\` |
@@ -434,16 +438,17 @@ Chat / agent-session send keys are in Settings: **Enter to send** or **Enter new
 - 从**输出端子**（右）拖到**输入端子**（左）。不能成环。
 - 输入端子默认 1 个，连上后常会自动再空出一个。
 - **控制连线是金色的**，只传脉冲（定时、闸门、执行/清空），不当作数据输入。
+- **全局节点**只连入、不连出。处理 / 智能任务 / 判断节点**点击左上角类型图标**开启引用（图标变彩虹）；拖动图标只移动节点，不会误开。
 
 ## 继承与自动运行
 
 输入节点一旦被连上，内容变为**只读并继承上游**；断开即可再编辑。YAML 文本会自动变成批量条目。
 
-点 ▶ 时，若上游尚未处理，会**自动递归执行**直到就绪。
+点 ▶ 时，若上游尚未处理，会**自动递归执行**直到就绪。处理节点完成后会**自动执行下游**；若下游已有输出，会询问是覆盖还是不继续。
 
 ## @ 引用
 
-在提示词中输入 \`@\`，只列出**已连接**节点。运行时输入进入「背景信息」，提示词进入「内容」。图像引用作为参考图。
+在提示词中输入 \`@\`，只列出**已连接**节点（若左上角彩虹图标已开，还包括全局节点连入的来源）。运行时输入进入「背景信息」，提示词进入「内容」。图像引用作为参考图。
 `,
     en: `# Nodes and wires
 
@@ -458,16 +463,17 @@ Right-click empty canvas: input, process, save, chat, agent, task, control-flow,
 - Drag **output** (right) to **input** (left). Loops are rejected.
 - Nodes start with one input; a new idle port often appears after you connect.
 - **Control wires are gold**—pulses only (timer, gate, run/clear), not data.
+- **Global node** takes inputs only. Process / agent-task / judge nodes **click the top-left type icon** to subscribe (icon turns rainbow). Dragging the icon moves the node and does not toggle.
 
 ## Inheritance and auto-run
 
 A wired input node becomes **read-only and inherits upstream**. Disconnect to edit. YAML text becomes batch entries.
 
-▶ recursively runs unprocessed upstream nodes first.
+▶ recursively runs unprocessed upstream nodes first. After a process node finishes, **downstream runs automatically**; if those nodes already have output, choose overwrite or stop.
 
 ## @ references
 
-Type \`@\` in a prompt to list **connected** nodes only. Inputs go to “background”, the prompt to “content”. Image refs are reference images.
+Type \`@\` in a prompt to list **connected** nodes (and global-node sources if the top-left rainbow icon is on). Inputs go to “background”, the prompt to “content”. Image refs are reference images.
 `,
   },
   batch: {
@@ -598,7 +604,7 @@ Browse / search public templates and download. Upload requires an account; you c
 - **图像生成**：文生图；带参考图走图生图。需要视觉时请勾选服务商「支持视觉」（DeepSeek 官方不识图）。
 - **动画**：把图像按网格切成 GIF 帧，可设透明色键。
 
-**▶ 运行 · ◈ 预览完整请求 · API** 选服务商 / 模型 / 温度 / 尺寸。**多次尝试**（1–10）并行抽卡，输出面板用方块 Tab 切换，下游引用当前选中的那次。
+**▶ 运行 · ◈ 预览完整请求 · API** 选服务商 / 模型 / 温度 / 尺寸。**多次尝试**（1–10）并行抽卡，输出面板用方块 Tab 切换，下游引用当前选中的那次。处理完成后自动跑下游；下游已有内容时询问覆盖或不继续。
 
 输出头上的「浏览 / 复制 / 清空」可大窗查看或重置。
 
@@ -621,7 +627,7 @@ Browse / search public templates and download. Upload requires an account; you c
 - **Image generation**: text-to-image; reference images use edit APIs. Vision needs “Vision” enabled (DeepSeek Official has no vision).
 - **Anim**: slice an image on a grid into a GIF; chroma key optional.
 
-**▶ run · ◈ preview · API** for provider / model / temperature / size. **Attempts** (1–10) run in parallel; square tabs pick which result downstream sees.
+**▶ run · ◈ preview · API** for provider / model / temperature / size. **Attempts** (1–10) run in parallel; square tabs pick which result downstream sees. When a process node finishes, downstream runs automatically; if they already have output, choose overwrite or stop.
 
 Output **Browse / Copy / Clear** opens a large viewer or resets.
 
@@ -665,17 +671,31 @@ Wire a control node to targets (or wire targets in), switch **Run / Clear**, the
 
 ## 智能任务节点
 
-右键 → 智能节点。提示词就是任务描述，支持 \`@\`、多输入、批量 / 聚合、模型选择、输出浏览。工作目录用文件夹窗口选择。不做「多次尝试」（多步执行，不是并行抽卡）。
+右键 → 智能节点。提示词就是任务描述，支持 \`@\`、输入 \`/\` 呼出技能、多输入、批量 / 聚合、模型选择、输出浏览。工作目录用文件夹窗口选择。不做「多次尝试」（多步执行，不是并行抽卡）。开启智能模式的文本处理 / 对话节点能力相同。
 
 可一键**扩展为智能会话**（节点与会话内容同步）。删除节点时会提示一并删除关联会话。
 
+### 智能节点允许做的事
+
+在工作区完成任务，不改画布。具体包括（仍受顶栏「审批」与权限预设约束）：
+
+- 按任务描述多步推理并给出结果
+- **读 / 写 / 编辑**工作区文件
+- 在工作区执行命令
+- 联网搜索与抓取网页
+- 使用已安装技能与已连接的 MCP 工具
+- 识图（\`mtnode_vision\`）
+- 使用连入的 \`@\` 引用、批量 / 聚合、所选模型
+
+智能节点**不能**：读取或编辑画布、修改工作流、创建任务图或节点/连线、重命名或删除工作流。需要搭图时用智能会话或全局助手。
+
 ## 智能会话
 
-顶栏切换到「智能会话」：多会话、按工作目录分组、归档、分支、斜杠命令（输入 \`/\` 呼出技能与 \`/new\` \`/compact\` \`/plan\` \`/help\` 等）。能力与智能任务一致。
+顶栏切换到「智能会话」：多会话、按工作目录分组、归档、分支、斜杠命令（输入 \`/\` 呼出技能与 \`/new\` \`/compact\` \`/plan\` \`/help\` 等）。除读写文件、联网、命令外，还可以查看并修改当前画布。
 
 ## 让助手搭工作流
 
-在智能任务或会话里说「实现 xxx 的工作流」，模型会在当前画布**创建节点、改标题、连线、写 @引用**并自动排版。你再改提示词与保存路径后点 ▶。
+在**智能会话**或全局助手里说「实现 xxx 的工作流」，模型会在当前画布**创建节点、改标题、连线、写 @引用**并自动排版。你再改提示词与保存路径后点 ▶。画布上的智能节点不会改图。
 
 全局助手（画布右侧 ✦）也能看状态、搭图，但改画布会先确认。**文档答疑助手不会改画布。**
 `,
@@ -683,17 +703,31 @@ Wire a control node to targets (or wire targets in), switch **Run / Clear**, the
 
 ## Agent task node
 
-Right-click → Agent node. The prompt is the task. Supports \`@\`, multi-input, batch / aggregate, model picker, browse. Pick the workspace with a folder dialog. No “attempts” (multi-step, not parallel sampling).
+Right-click → Agent node. The prompt is the task. Supports \`@\`, type \`/\` for skills, multi-input, batch / aggregate, model picker, browse. Pick the workspace with a folder dialog. No “attempts” (multi-step, not parallel sampling). Text / chat nodes with Agent on have the same capabilities.
 
 **Expand to agent session** keeps node and session in sync. Deleting the node can delete the linked session (you are asked).
 
+### What an agent node may do
+
+Finish work in the workspace; it does **not** edit the canvas. Allowed (still gated by Approvals / the permission preset):
+
+- Multi-step reasoning to complete the prompt
+- **Read / write / edit** workspace files
+- Run commands in the workspace
+- Web search and fetch
+- Installed skills and connected MCP tools
+- Vision (\`mtnode_vision\`)
+- Wired \`@\` refs, batch / aggregate, the selected model
+
+An agent node **cannot** read or edit the canvas, change workflows, or create task graphs / nodes / wires. Use Agent session or the global assistant to build a graph.
+
 ## Agent session
 
-Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type \`/\` for skills and \`/new\` \`/compact\` \`/plan\` \`/help\`). Same capabilities as an agent task.
+Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type \`/\` for skills and \`/new\` \`/compact\` \`/plan\` \`/help\`). Besides files / network / commands, it can inspect and edit the current canvas.
 
 ## Let the assistant build a workflow
 
-Say “build a workflow for xxx”. The model **creates nodes, titles, wires, @refs** and lays them out. Then you edit prompts/paths and ▶.
+In **Agent session** or the global assistant, say “build a workflow for xxx”. The model **creates nodes, titles, wires, @refs** and lays them out. Then you edit prompts/paths and ▶. Canvas agent nodes will not change the graph.
 
 The global assistant (✦) can inspect and edit the graph with confirmation. **The docs Q&A assistant never edits the canvas.**
 `,
@@ -885,7 +919,7 @@ The model may also **ask the user** mid-task (choices or free text) before conti
 
 ## 应用插件（右上角「插件」）
 
-插件**列表从云端目录更新**（`http://mt-agent.com/mtnode/plugins/catalog.json`），可不升级主程序看到新插件。离线时使用上次缓存或内置列表。
+插件**列表从云端目录更新**（\`http://mt-agent.com/mtnode/plugins/catalog.json\`），可不升级主程序看到新插件。离线时使用上次缓存或内置列表。
 
 - **讨论区**：按需下载的聊天窗口，登录创意工坊同一账户后聊天；可运行、卸载、更新。
 - **桌宠 BongoChat**：按需下载的透明置顶窗口，可运行、卸载。
@@ -896,8 +930,10 @@ The model may also **ask the user** mid-task (choices or free text) before conti
 在「设置 · 智能能力」或在线浏览里管理：
 
 - **DSH 插件**：扩展 agent 能力，安装后引擎会重启。
-- **技能 Skills**：Markdown 说明书，智能节点自动发现。
+- **技能 Skills**：Markdown 说明书。智能会话 / 智能任务 / 智能文本 / 智能对话输入 \`/\` 即可选择；运行时会带上该技能全文。
 - **MCP 服务器**：连接后智能节点获得该服务器的工具（stdio 或远程 URL）。
+
+官方扩展目录：\`http://mt-agent.com/mtnode/ext/catalog.json\`（在线浏览预置「MTNode 官方」标签；也可「＋ 添加源」自行添加）。本地仓库在 \`ext-repo/\`，用 \`npm run ext:sync\` 同步到云端。
 
 详细卡片可在设置里搜索、安装、启停、移除。
 `,
@@ -905,7 +941,7 @@ The model may also **ask the user** mid-task (choices or free text) before conti
 
 ## App plugins (top-right **Plugins**)
 
-The **plugin list is fetched from the cloud catalog** (`http://mt-agent.com/mtnode/plugins/catalog.json`), so new plugins can appear without an app upgrade. Offline, the last cache or the built-in list is used.
+The **plugin list is fetched from the cloud catalog** (\`http://mt-agent.com/mtnode/plugins/catalog.json\`), so new plugins can appear without an app upgrade. Offline, the last cache or the built-in list is used.
 
 - **Forum**: optional download; sign in with the Creative Workshop account to chat; run, uninstall, or update.
 - **Desktop pet (BongoChat)**: optional download; transparent always-on-top window; run or uninstall.
@@ -916,8 +952,10 @@ The **plugin list is fetched from the cloud catalog** (`http://mt-agent.com/mtno
 Manage under Settings · Agent (or Browse online):
 
 - **DSH plugins**: extend the agent; install restarts the engine.
-- **Skills**: Markdown instructions auto-discovered by agent nodes.
+- **Skills**: Markdown instructions. Type \`/\` in agent session / agent task / agent text / agent chat to pick one; the skill body is attached at run time.
 - **MCP servers**: tools appear on agent nodes after connect (stdio or remote URL).
+
+Official extension catalog: \`http://mt-agent.com/mtnode/ext/catalog.json\` (Browse online includes the **MTNode official** tab; you can also **+ Add source**). Local repo is \`ext-repo/\`; sync with \`npm run ext:sync\`.
 
 Search, install, enable, or remove from Settings cards.
 `,
