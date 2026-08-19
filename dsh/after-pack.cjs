@@ -11,6 +11,9 @@
 
 const fs = require('fs')
 const path = require('path')
+const {
+  ensureAppUpdateYml,
+} = require('../scripts/ensure-app-update-yml.cjs')
 
 /* 打包排除:未挂载能力留下的死重依赖。pi-ai 及其依赖(openai/@mistralai/
    @opentelemetry/@earendil-works)已随 llm-pi-ai 行恢复,不可排除;node-pty 是
@@ -19,6 +22,12 @@ const path = require('path')
 const EXCLUDE_NODE_MODULES = []
 
 exports.default = async function afterPack(context) {
+  const appRoot = path.join(__dirname, '..')
+  /* --dir 目标不是 nsis 时，electron-builder 不会写 app-update.yml；
+     必须在 afterPack 补写，否则安装后 electron-updater 会 ENOENT。 */
+  const updateYml = ensureAppUpdateYml(context.appOutDir, appRoot)
+  console.log(`[after-pack] wrote ${updateYml}`)
+
   const src = path.join(__dirname, 'gateway')
   const dst = path.join(context.appOutDir, 'resources', 'dsh', 'gateway')
   fs.rmSync(dst, { recursive: true, force: true })
