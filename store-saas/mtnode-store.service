@@ -1,5 +1,5 @@
 [Unit]
-Description=MTNode template store
+Description=MTNode creative workshop (templates + skills)
 After=network.target
 
 [Service]

@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "updatedAt": "2026-08-19T19:29:55.674Z",
+  "plugins": [
+    {
+      "id": "forum",
+      "kind": "window",
+      "order": 10,
+      "version": "1.0.2",
+      "icon": "forum.png",
+      "title": {
+        "zh": "MTNode 讨论区",
+        "en": "MTNode Forum"
+      },
+      "subtitle": {
+        "zh": "小型聊天窗口，与创意工坊共用账户。综合区 / Bug 提交 / 功能改进；本地保存记录并同步近 3 天消息。",
+        "en": "A small chat window sharing the Creative Workshop account. General / Bugs / Ideas; history is kept locally and the last 3 days are synced."
+      },
+      "zipUrl": "forum-1.0.2.zip",
+      "entry": "chat.html",
+      "window": {
+        "width": 380,
+        "height": 520,
+        "frame": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
+      },
+      "sha256": "b4e252316ab54aabe807b5f06aa59cbf46d15bf7c526a2e4bd22da3171b4b9d7",
+      "bytes": 9297
+    },
+    {
+      "id": "bongochat",
+      "kind": "pet",
+      "handler": "pet",
+      "order": 20,
+      "version": "1.0.8",
+      "icon": "bongochat.png",
+      "title": {
+        "zh": "BongoChat",
+        "en": "BongoChat"
+      },
+      "subtitle": {
+        "zh": "可以聊天的BongoCat！",
+        "en": "A BongoCat you can chat with!"
+      }
+    },
+    {
+      "id": "minimax-music3",
+      "kind": "music3",
+      "handler": "music3",
+      "order": 30,
+      "version": "1.0.2",
+      "minAppVersion": "1.1.20",
+      "icon": "minimax-music3.png",
+      "title": {
+        "zh": "Minimax Music 3",
+        "en": "Minimax Music 3"
+      },
+      "subtitle": {
+        "zh": "【插件测试中】本地 Music 3（24G）：安装/启停后端、GPU 监视；画布「音乐生成」节点。安装过程复杂，可能会失败。移除插件不删已装项目。建议预留 ≥65GB 磁盘。",
+        "en": "[Testing] Local Music 3 (24G): install/start backend, GPU monitor, canvas music node. Install is complex and may fail. Removing the plugin keeps your install. Reserve ≥65GB disk."
+      }
+    },
+    {
+      "id": "minimax-h3",
+      "kind": "h3",
+      "handler": "h3",
+      "order": 40,
+      "version": "1.0.2",
+      "minAppVersion": "1.1.20",
+      "icon": "minimax-h3.png",
+      "title": {
+        "zh": "Minimax H3",
+        "en": "Minimax H3"
+      },
+      "subtitle": {
+        "zh": "【插件测试中】本地 H3 视频（24G）：安装/启停 ComfyUI、GPU 监视；画布「视频生成」节点。安装过程复杂，可能会失败。移除插件不删已装项目。建议预留 ≥70GB 磁盘。",
+        "en": "[Testing] Local H3 video (24G): install/start ComfyUI, GPU monitor, canvas video node. Install is complex and may fail. Removing the plugin keeps your install. Reserve ≥70GB disk."
+      }
+    }
+  ]
+}

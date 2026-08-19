@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('api', {
   netFetch: (url) => ipcRenderer.invoke('net:fetch', url),
   storeRequest: (opts) => ipcRenderer.invoke('store:request', opts),
   storePickMtNodes: () => ipcRenderer.invoke('store:pickMtNodes'),
+  storePickSkillMd: () => ipcRenderer.invoke('store:pickSkillMd'),
   storePickPreview: () => ipcRenderer.invoke('store:pickPreview'),
   storeCacheGet: (id) => ipcRenderer.invoke('store:cacheGet', id),
   storeCachePut: (opts) => ipcRenderer.invoke('store:cachePut', opts),
@@ -171,6 +172,13 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('music3:consoleChanged', handler);
     return () => ipcRenderer.removeListener('music3:consoleChanged', handler);
   },
+  onMusic3Gpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('music3:gpu', handler);
+    return () => ipcRenderer.removeListener('music3:gpu', handler);
+  },
 
   h3Status: () => ipcRenderer.invoke('h3:getStatus'),
   h3Open: () => ipcRenderer.invoke('h3:open'),
@@ -199,6 +207,13 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('h3:consoleChanged', handler);
     return () => ipcRenderer.removeListener('h3:consoleChanged', handler);
+  },
+  onH3Gpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('h3:gpu', handler);
+    return () => ipcRenderer.removeListener('h3:gpu', handler);
   },
 
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),

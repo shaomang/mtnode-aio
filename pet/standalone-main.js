@@ -112,6 +112,8 @@ function defaultConfig() {
     /* default = 内置隐藏人设；custom = 使用 personaPromptCustom */
     personaMode: "default",
     personaPromptCustom: "",
+    /* 人设变更后递增，强制 dsh 换新 workspace，避免旧会话钉死旧人设 */
+    personaEpoch: 0,
     chatProviderId: "",
     chatModel: "",
     chatSessionIndex: 0,
@@ -161,6 +163,7 @@ function normalizeConfig(raw) {
   c.personaPromptCustom = String(c.personaPromptCustom || "").slice(0, 4000);
   /* 不再把内置默认人设写入磁盘字段 */
   delete c.personaPrompt;
+  c.personaEpoch = Math.max(0, Math.floor(Number(c.personaEpoch) || 0));
 
   c.chatProviderId = String(c.chatProviderId || "");
   c.chatModel = String(c.chatModel || "");
@@ -169,6 +172,15 @@ function normalizeConfig(raw) {
     Math.min(9, Number(c.chatSessionIndex) || 0),
   );
   return c;
+}
+
+function personaFingerprint(cfg) {
+  const c = cfg || {};
+  return [
+    String(c.personaName || ""),
+    String(c.personaMode || "default"),
+    String(c.personaPromptCustom || ""),
+  ].join("\0");
 }
 
 function effectivePersonaPrompt(cfg) {
@@ -394,11 +406,59 @@ function hydrateChatFromDisk() {
   return slots;
 }
 
+function readSessionMeta() {
+  const j = readJson(sessionsPath(), null) || {};
+  const clearGen = Array.from({ length: CHAT_SLOT_COUNT }, (_, i) =>
+    Math.max(0, Math.floor(Number((j.clearGen && j.clearGen[i]) || 0))),
+  );
+  return { clearGen };
+}
+
+function writeSessionMeta(partial) {
+  const j = readJson(sessionsPath(), null) || {};
+  const slots = readSessionSlots();
+  slots[chatSessionIndex] = chatHistory.slice();
+  const clearGen = Array.from({ length: CHAT_SLOT_COUNT }, (_, i) =>
+    Math.max(
+      0,
+      Math.floor(
+        Number(
+          (partial && partial.clearGen && partial.clearGen[i] != null
+            ? partial.clearGen[i]
+            : j.clearGen && j.clearGen[i]) || 0,
+        ),
+      ),
+    ),
+  );
+  writeJson(sessionsPath(), {
+    slots,
+    clearGen,
+    active: chatSessionIndex,
+    at: Date.now(),
+  });
+  return { clearGen };
+}
+
+function slotClearGen(sessionIndex) {
+  const i = Math.max(0, Math.min(CHAT_SLOT_COUNT - 1, Number(sessionIndex) || 0));
+  return readSessionMeta().clearGen[i] || 0;
+}
+
+function bumpSlotClearGen(sessionIndex) {
+  const i = Math.max(0, Math.min(CHAT_SLOT_COUNT - 1, Number(sessionIndex) || 0));
+  const meta = readSessionMeta();
+  meta.clearGen[i] = (meta.clearGen[i] || 0) + 1;
+  writeSessionMeta({ clearGen: meta.clearGen });
+  return meta.clearGen[i];
+}
+
 function persistSessions() {
   const slots = readSessionSlots();
   slots[chatSessionIndex] = chatHistory.slice();
+  const meta = readSessionMeta();
   writeJson(sessionsPath(), {
     slots,
+    clearGen: meta.clearGen,
     active: chatSessionIndex,
     at: Date.now(),
   });
@@ -438,8 +498,14 @@ function clearCurrentSession() {
   if (findRunBySession(chatSessionIndex)) {
     return { ok: false, error: "busy", sessions: sessionSummaries() };
   }
+  const oldWs = petWorkspaceDir(chatSessionIndex);
   chatHistory = [];
+  bumpSlotClearGen(chatSessionIndex);
   persistSessions();
+  try {
+    const dsh = ensurePetDsh();
+    void dsh.ensureStarted().then(() => dsh.cancel({ workspace: oldWs })).catch(() => {});
+  } catch {}
   return { ok: true, sessions: sessionSummaries() };
 }
 
@@ -876,12 +942,47 @@ function dshRouteForProvider(p) {
   return "mtnode_" + String(p.id || "p");
 }
 
-function petWorkspaceDir(sessionIndex) {
+function petWorkspaceDir(sessionIndex, epoch, clearGen) {
   const i = Math.max(
     0,
     Math.min(CHAT_SLOT_COUNT - 1, Number(sessionIndex != null ? sessionIndex : chatSessionIndex) || 0),
   );
-  return mk(join(petRoot(), "workspace-chat", "s" + i));
+  const ep =
+    epoch != null
+      ? Math.max(0, Math.floor(Number(epoch) || 0))
+      : Math.max(0, Math.floor(Number(loadConfig().personaEpoch) || 0));
+  const cg =
+    clearGen != null
+      ? Math.max(0, Math.floor(Number(clearGen) || 0))
+      : slotClearGen(i);
+  /* 每槽位独立目录：e{人设代}/s{槽位}/c{清空代数}，互不共用会话 */
+  /* v6：人设经 MTNODE_HOST_PERSONA 注入后的干净槽位（settings.yaml 不覆盖 system-prompt） */
+  return mk(join(petRoot(), "workspace-chat-v6", "e" + ep, "s" + i, "c" + cg));
+}
+
+async function resetPetDshAfterPersonaChange(prevEpoch) {
+  const oldEp = Math.max(0, Math.floor(Number(prevEpoch) || 0));
+  const reqIds = Array.from(petDshRuns.keys());
+  for (const reqId of reqIds) {
+    const run = petDshRuns.get(reqId);
+    if (run) run.aborted = true;
+  }
+  try {
+    const dsh = ensurePetDsh();
+    await dsh.ensureStarted();
+    for (let i = 0; i < CHAT_SLOT_COUNT; i++) {
+      try {
+        await dsh.cancel({ workspace: petWorkspaceDir(i, oldEp) });
+      } catch {}
+      try {
+        await dsh.cancel({ workspace: petWorkspaceDir(i) });
+      } catch {}
+    }
+  } catch {}
+  for (const reqId of reqIds) {
+    if (petDshRuns.has(reqId)) finalizeAbortedRun(reqId);
+  }
+  sendToChat("pet:config", { config: configForRenderer() });
 }
 
 let petDshAdapter = null;
@@ -922,6 +1023,7 @@ function appendAssistantToSession(sessionIndex, content) {
   slots[idx] = msgs.slice(-40);
   writeJson(sessionsPath(), {
     slots,
+    clearGen: readSessionMeta().clearGen,
     active: chatSessionIndex,
     at: Date.now(),
   });
@@ -997,9 +1099,23 @@ function resolveDeepseekWebSearchKey() {
   return "";
 }
 
+function isAskToolName(name) {
+  const n = String(name || "").toLowerCase();
+  if (!n) return false;
+  return (
+    n === "ask_user_question" ||
+    n === "ask_user" ||
+    n.includes("ask_user") ||
+    n.includes("ask-user") ||
+    n.includes("user_question") ||
+    n.includes("user-question")
+  );
+}
+
 function isForbiddenPetTool(name) {
   const n = String(name || "").toLowerCase();
   if (!n) return true;
+  if (isAskToolName(n)) return true;
   if (isWebToolName(n)) return false;
   /* 其它一律拒绝：文件/终端/画布/技能/任务等 */
   return true;
@@ -1041,11 +1157,11 @@ function onPetDshEvent(ev) {
     return;
   }
   if (type === "question") {
+    /* BongoChat 禁止 ask_user_question：中止而非空应答 */
     try {
       ensurePetDsh().interact({
-        kind: "question",
+        kind: "abort",
         id: data.id,
-        answers: {},
       });
     } catch {}
     return;
@@ -1057,6 +1173,11 @@ function onPetDshEvent(ev) {
     return;
   }
   if (type === "tool") {
+    const toolName = data.toolName || data.name || "";
+    if (isForbiddenPetTool(toolName)) {
+      /* 被拒工具不展示「求助中」，避免误导为真的在联网 */
+      return;
+    }
     run.status = "求助中…";
     if (active) sendToChat("pet:chatStatus", { text: run.status });
     return;
@@ -1166,18 +1287,12 @@ async function handleChatSend(text) {
   if (chatHistory.length > 24) chatHistory = chatHistory.slice(-24);
   persistSessions();
 
-  const hist = chatHistory
-    .slice(0, -1)
-    .slice(-16)
-    .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
-    .join("\n\n");
-  const input = hist ? hist + "\n\n用户(最新)：" + t : t;
-  /* 身份写入 dsh 真正的 system-prompt,而不是用户消息里的「系统设定」 */
+  /* 只发最新一句：每个槽位有独立 dsh workspace，会话历史由该槽位引擎侧维护 */
+  const input = t;
+  /* 独立对话应用：系统提示只引用人设，不附带 MTNode 工作流说明 */
   const hostPersona = [
-    "你是「" + cfg.personaName + "」，独立的桌面聊天伙伴。",
-    "你不是 MTNode 工作流助手，也不在画布里工作；不要自称 MTNode 助手。",
+    "你的名字是「" + cfg.personaName + "」。",
     effectivePersonaPrompt(cfg),
-    "【能力】你可以联网搜索获取信息。不要读写本地文件、不要执行终端或命令、不要操作画布或其它应用数据。需要查资料时使用搜索工具。",
   ].join("\n");
 
   const piProvs = mtnodePiProvidersFromApp();
@@ -1199,6 +1314,8 @@ async function handleChatSend(text) {
   const reqId = "pet_" + Date.now().toString(36) + "_" + crypto.randomBytes(3).toString("hex");
   const sessionIndex = chatSessionIndex;
   const workspace = petWorkspaceDir(sessionIndex);
+  /* 本槽位 UI 上的第一条消息：先取消旧 runtime，保证干净会话 */
+  const isFirstTurn = chatHistory.length === 1;
   petDshRuns.set(reqId, {
     acc: "",
     status: "努力思考中…",
@@ -1211,6 +1328,11 @@ async function handleChatSend(text) {
   try {
     const dsh = ensurePetDsh();
     await dsh.ensureStarted();
+    if (isFirstTurn) {
+      try {
+        await dsh.cancel({ workspace });
+      } catch {}
+    }
     await dsh.run({
       reqId,
       workspace,
@@ -1595,14 +1717,26 @@ function registerIpc() {
     hook: hookStarted,
   }));
   ipcMain.handle("pet:getConfig", () => ({ ok: true, config: configForRenderer() }));
-  ipcMain.handle("pet:setConfig", (_e, partial) => {
+  ipcMain.handle("pet:setConfig", async (_e, partial) => {
     const patch = partial || {};
     /* 渲染层不得写入内置默认人设正文 */
     if ("personaPrompt" in patch) delete patch.personaPrompt;
+    const prev = loadConfig();
+    const prevFp = personaFingerprint(prev);
     const next = saveConfig(patch);
+    const personaChanged = personaFingerprint(next) !== prevFp;
+    if (personaChanged) {
+      const bumped = saveConfig({
+        personaEpoch: Math.max(0, Math.floor(Number(prev.personaEpoch) || 0)) + 1,
+      });
+      await resetPetDshAfterPersonaChange(prev.personaEpoch);
+      applyWindowChrome(bumped);
+      if (petTray) petTray.setContextMenu(buildPetMenu());
+      return { ok: true, config: configForRenderer(), personaChanged: true };
+    }
     applyWindowChrome(next);
     if (petTray) petTray.setContextMenu(buildPetMenu());
-    return { ok: true, config: configForRenderer() };
+    return { ok: true, config: configForRenderer(), personaChanged: false };
   });
   ipcMain.handle("pet:getState", () => ({
     ok: true,

@@ -1,0 +1,34 @@
+# Local ComfyUI / weights / outputs
+models/
+output/*
+!output/.gitkeep
+ComfyUI/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.gguf
+*.mp3
+*.wav
+*.flac
+*.ogg
+
+# Local path overrides
+comfy.root
+.env
+.env.*
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

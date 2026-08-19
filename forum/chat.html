@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>MTNode 讨论区</title>
+<style>
+:root {
+  --bg: #0d1016;
+  --bg2: #12161f;
+  --panel: #161b25;
+  --panel2: #1b2230;
+  --bd: #2a3544;
+  --tx: #e8eef7;
+  --tx2: #9aa8bc;
+  --orange: #ff8f2e;
+  --orange2: #ffb066;
+  --green: #3ecf8e;
+  --green2: #95ec69;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%;
+  overflow: hidden; background: transparent;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  user-select: none;
+  color: var(--tx);
+}
+.panel {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid rgba(255, 143, 46, 0.4);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+  -webkit-app-region: drag;
+  overflow: hidden;
+}
+.head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--bd);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+}
+.head .title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--orange2);
+  letter-spacing: 0.02em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.head .who {
+  font-size: 11px;
+  color: var(--tx2);
+  margin-left: 8px;
+  font-weight: 400;
+}
+.head .btns { -webkit-app-region: no-drag; display: flex; gap: 5px; flex: none; }
+.head button {
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  width: 28px; height: 24px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0;
+}
+.head button:hover {
+  border-color: var(--orange);
+  color: #fff;
+  background: rgba(255,143,46,0.18);
+}
+.tabs {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  -webkit-app-region: no-drag;
+}
+.tab {
+  flex: 1;
+  position: relative;
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  border-radius: 6px;
+  padding: 6px 4px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+.tab .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tab .badge {
+  flex: none;
+  display: inline-block;
+  min-width: 1.15em;
+  padding: 0 5px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  background: var(--orange);
+  color: #1a1208;
+  text-align: center;
+}
+.tab.active {
+  border-color: var(--orange);
+  color: #fff;
+  background: rgba(255,143,46,0.22);
+}
+.tab:hover { filter: brightness(1.08); }
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  -webkit-app-region: no-drag;
+  font-size: 13px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg);
+}
+.msg { max-width: 86%; display: flex; flex-direction: column; }
+.msg.mine { margin-left: auto; align-items: flex-end; }
+.msg.other { margin-right: auto; align-items: flex-start; }
+.msg .meta {
+  font-size: 11px;
+  color: var(--tx2);
+  margin: 0 2px 3px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg .bubble {
+  display: inline-block;
+  padding: 8px 10px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  max-width: 100%;
+}
+.msg.mine .bubble {
+  background: var(--green2);
+  color: var(--bg);
+  border-top-right-radius: 2px;
+}
+.msg.other .bubble {
+  background: #ffffff;
+  color: #1a1a1a;
+  border-top-left-radius: 2px;
+}
+.msg .bubble img {
+  max-width: 220px;
+  max-height: 180px;
+  border-radius: 6px;
+  display: block;
+  cursor: zoom-in;
+  margin-top: 4px;
+}
+.msg .bubble img:first-child { margin-top: 0; }
+.msg.sys {
+  max-width: 100%;
+  align-self: center;
+  font-size: 12px;
+  color: var(--tx2);
+  text-align: center;
+}
+.auth {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 10px;
+  -webkit-app-region: no-drag;
+  background: var(--bg);
+}
+.auth.open { display: block; }
+.auth h3 { margin: 0 0 8px; font-size: 14px; color: var(--orange2); }
+.auth p { margin: 0 0 12px; font-size: 12px; color: var(--tx2); line-height: 1.55; }
+.auth .modes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.auth .modes button, .auth .go {
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.auth .modes button { flex: 1; min-width: 0; }
+.auth .modes button.on {
+  border-color: var(--orange);
+  color: #fff;
+  background: rgba(255,143,46,0.22);
+}
+.auth input {
+  width: 100%;
+  border: 1px solid var(--bd);
+  background: var(--panel);
+  color: var(--tx);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  outline: none;
+}
+.auth input:focus { border-color: var(--orange); }
+.auth .go {
+  width: 100%;
+  background: linear-gradient(180deg, #ffc878, var(--orange));
+  color: var(--bg);
+  font-weight: 700;
+  border: 0;
+  height: 34px;
+}
+.auth .err { color: #ff8a8a; font-size: 12px; min-height: 16px; margin: 0 0 8px; }
+.foot {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--bd);
+  background: var(--panel);
+  -webkit-app-region: no-drag;
+}
+.foot.hidden { display: none; }
+.foot input[type="text"] {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--tx);
+  border-radius: 6px;
+  padding: 8px 10px;
+  outline: none;
+}
+.foot input[type="text"]:focus { border-color: var(--orange); }
+.foot button {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 12px;
+  height: 34px;
+  background: linear-gradient(180deg, #ffc878, var(--orange));
+  color: var(--bg);
+  font-weight: 700;
+  cursor: pointer;
+}
+.foot button.ghost {
+  background: var(--bg2);
+  color: var(--tx2);
+  border: 1px solid var(--bd);
+  padding: 0 10px;
+  font-weight: 600;
+}
+.foot button:disabled { opacity: 0.5; cursor: default; }
+.pending {
+  display: none;
+  flex: none;
+  padding: 0 10px 8px;
+  -webkit-app-region: no-drag;
+  align-items: center;
+  gap: 8px;
+}
+.pending.show { display: flex; }
+.pending img {
+  height: 42px; width: auto; max-width: 72px;
+  border-radius: 4px; border: 1px solid var(--bd);
+}
+.pending span { font-size: 11px; color: var(--tx2); flex: 1; }
+.pending button {
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 8px;
+}
+.zoom {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  background: rgba(0,0,0,0.72);
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+  cursor: zoom-out;
+}
+.zoom.open { display: flex; }
+.zoom img { max-width: 92%; max-height: 92%; border-radius: 8px; }
+.findbar {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--panel2);
+  -webkit-app-region: no-drag;
+}
+.findbar.open { display: flex; }
+.findbar input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--tx);
+  border-radius: 6px;
+  padding: 6px 8px;
+  outline: none;
+  font-size: 12px;
+}
+.findbar input:focus { border-color: var(--orange); }
+.findbar .count {
+  flex: none;
+  font-size: 11px;
+  color: var(--tx2);
+  min-width: 3.2em;
+  text-align: right;
+}
+.findbar button {
+  flex: none;
+  border: 1px solid var(--bd);
+  background: var(--bg2);
+  color: var(--tx2);
+  width: 26px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+}
+.findbar button:hover {
+  border-color: var(--orange);
+  color: #fff;
+  background: rgba(255,143,46,0.18);
+}
+.msg .bubble mark {
+  background: rgba(255, 193, 7, 0.72);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.msg .bubble mark.cur {
+  background: #ff8f2e;
+  color: #1a1a1a;
+}
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div class="head">
+      <span class="title">MTNode 讨论区<span class="who" id="who"></span></span>
+      <div class="btns">
+        <button type="button" id="btnOut" title="退出登录" hidden>退</button>
+        <button type="button" id="btnClose" title="关闭">×</button>
+      </div>
+    </div>
+    <div class="tabs" id="tabs"></div>
+    <div class="findbar" id="findbar">
+      <input id="findInput" type="text" maxlength="200" placeholder="查找…">
+      <span class="count" id="findCount"></span>
+      <button type="button" id="findPrev" title="上一处">↑</button>
+      <button type="button" id="findNext" title="下一处">↓</button>
+      <button type="button" id="findClose" title="关闭">×</button>
+    </div>
+    <div class="auth" id="auth">
+      <h3 id="authTitle">登录后即可发言</h3>
+      <p id="authHint">与创意工坊共用同一账户。登录后可在综合区、Bug 提交区、功能改进区聊天，并同步近 3 天消息。</p>
+      <div class="modes">
+        <button type="button" class="on" id="modeLogin">登录</button>
+        <button type="button" id="modeReg">注册</button>
+        <button type="button" id="modePass">修改密码</button>
+      </div>
+      <div class="err" id="authErr"></div>
+      <input id="authUser" type="text" maxlength="24" placeholder="用户名（3-24 位字母、数字或下划线）">
+      <input id="authPass" type="password" maxlength="72" placeholder="密码（6-72 位）">
+      <input id="authPassNew" type="password" maxlength="72" placeholder="新密码（6-72 位）" hidden>
+      <input id="authPassNew2" type="password" maxlength="72" placeholder="再次输入新密码" hidden>
+      <input id="authNick" type="text" maxlength="32" placeholder="昵称（1-32 位）" hidden>
+      <button type="button" class="go" id="authGo">登录</button>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="pending" id="pending">
+      <img id="pendingImg" alt="">
+      <span id="pendingTxt">待发送图片（已压缩至 1080p）</span>
+      <button type="button" id="pendingClear">去掉</button>
+    </div>
+    <div class="foot" id="foot">
+      <button type="button" class="ghost" id="btnImg" title="发送图片">图</button>
+      <input id="input" type="text" maxlength="2000" placeholder="说点什么…">
+      <button type="button" id="btnSend">发送</button>
+    </div>
+    <div class="zoom" id="zoom"><img id="zoomImg" alt=""></div>
+  </div>
+  <script src="chat.js"></script>
+</body>
+</html>

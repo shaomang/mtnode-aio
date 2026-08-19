@@ -78,15 +78,20 @@ const diagrams = {
     arrow(280, 76, 330, 76, "#ff5ea8"),
     box(330, 50, 100, 52, "图像", GRN, "#101610"),
   ].join("\n")),
+  "save": diagram("save", [
+    box(20, 50, 90, 52, "任意输出", CYAN, FILL_D),
+    arrow(110, 76, 180, 76, CYAN),
+    box(180, 50, 140, 52, "保存 · 自判", GRN, "#101610"),
+  ].join("\n")),
   "save_text": diagram("save_text", [
     box(30, 50, 110, 52, "文本来源", CYAN, FILL_D),
     arrow(140, 76, 210, 76, CYAN),
-    box(210, 50, 120, 52, "存文 · yaml", GRN, "#101610"),
+    box(210, 50, 120, 52, "保存 · yaml", GRN, "#101610"),
   ].join("\n")),
   "save_image": diagram("save_image", [
     box(30, 50, 110, 52, "图像来源", CYAN, FILL_D),
     arrow(140, 76, 210, 76, CYAN),
-    box(210, 50, 120, 52, "存图 · png", GRN, "#101610"),
+    box(210, 50, 120, 52, "保存 · png", GRN, "#101610"),
   ].join("\n")),
   "split": diagram("split", [
     box(30, 64, 100, 48, "批量源", CYAN, FILL_D),
@@ -268,21 +273,30 @@ const guides = {
 - **输入**：文本或图像
 - **输出**：图像`,
   },
-  save_text: {
-    title: "保存文本",
-    body: `把上游文本写到 \`.yaml\` 文件。路径相对工作目录或绝对路径。可开自动保存。
+  save: {
+    title: "保存",
+    body: `按输入内容自判落盘类型（旧版「保存文本 / 保存图像」打开后会升级为本节点）：
+
+- **文本** → \`.yaml\`
+- **图像** → \`.png\`
+- **音频**（音乐生成）→ \`.wav\`
+- **视频**（视频生成）→ \`.mp4\`
+
+路径相对工作目录或绝对路径。可开自动保存。不同媒体用不同预览（文本 / 缩略图 / 音频播放器 / 视频播放器）。
+
+放置**音乐生成**或**视频生成**时，会在其右侧自动绑定一个保存节点：相对位置固定、连线不可删除。生成节点会把文件名写入该保存节点。
 
 ## 端子
-- **输入**：文本
+- **输入**：文本 / 图像 / 音频 / 视频（按来源自判）
 - **输出**：无（落盘）`,
   },
+  save_text: {
+    title: "保存文本（已合并）",
+    body: `已并入统一「保存」节点。打开旧画布时 \`save_text\` 会升级为 \`save\`，仍按 YAML 保存文本。详见「保存」。`,
+  },
   save_image: {
-    title: "保存图像",
-    body: `把上游图像写到文件（默认 png）。仅接受一路图像输入。
-
-## 端子
-- **输入**：图像（1 路）
-- **输出**：无`,
+    title: "保存图像（已合并）",
+    body: `已并入统一「保存」节点。打开旧画布时 \`save_image\` 会升级为 \`save\`，图像固定 \`.png\`。详见「保存」。`,
   },
   split: {
     title: "拆分",
@@ -490,16 +504,20 @@ const en = {
 ## Ports
 - **In**: text or image
 - **Out**: image` },
-  save_text: { title: "Save text", body: `Write upstream text to a \`.yaml\` file.
+  save: { title: "Save", body: `One save node infers type from its input (legacy save_text / save_image upgrade on load):
+
+- **text** → \`.yaml\`
+- **image** → \`.png\`
+- **audio** (music gen) → \`.wav\`
+- **video** (video gen) → \`.mp4\`
+
+Placing music or video gen also creates a bound save node on the right (fixed offset, pinned wire). The gen node writes its filename into that save node.
 
 ## Ports
-- **In**: text
+- **In**: text / image / audio / video
 - **Out**: none` },
-  save_image: { title: "Save image", body: `Write the upstream image to disk (png). One image input only.
-
-## Ports
-- **In**: image (1)
-- **Out**: none` },
+  save_text: { title: "Save text (merged)", body: `Merged into the unified Save node. Old \`save_text\` workflows still load.` },
+  save_image: { title: "Save image (merged)", body: `Merged into the unified Save node. Images always use \`.png\`.` },
   split: { title: "Split", body: `Explode a batch into parallel item chains.
 
 ## Ports

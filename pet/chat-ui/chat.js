@@ -421,6 +421,12 @@
         if (d && d.sessions) renderSlots(d.sessions);
       });
     }
+    if (api.onConfig) {
+      api.onConfig((d) => {
+        const c = (d && d.config) || {};
+        title.textContent = c.personaName || "BongoChat";
+      });
+    }
   }
 
   async function stop() {

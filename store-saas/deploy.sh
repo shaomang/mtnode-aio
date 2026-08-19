@@ -1,11 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 SRC=/tmp/mtnode-store-upload
-mkdir -p /opt/mtnode-store/data/files /opt/mtnode-store/data/previews /opt/mtnode-store/data/forum-images
+mkdir -p /opt/mtnode-store/data/files /opt/mtnode-store/data/skills /opt/mtnode-store/data/previews /opt/mtnode-store/data/forum-images
 mkdir -p /var/www/mtnode/plugins
 install -m 644 "$SRC/server.mjs" /opt/mtnode-store/server.mjs
 install -m 644 "$SRC/package.json" /opt/mtnode-store/package.json
 install -m 644 "$SRC/mtnode-store.service" /etc/systemd/system/mtnode-store.service
+if [ -f "$SRC/seed-skills.mjs" ]; then
+  install -m 644 "$SRC/seed-skills.mjs" /opt/mtnode-store/seed-skills.mjs
+fi
 if [ -f "$SRC/catalog.json" ]; then
   install -m 644 "$SRC/catalog.json" /var/www/mtnode/plugins/catalog.json
 fi

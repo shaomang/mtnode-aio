@@ -5,6 +5,7 @@
     "input_image",
     "proc_text",
     "proc_image",
+    "save",
     "save_text",
     "save_image",
     "split",

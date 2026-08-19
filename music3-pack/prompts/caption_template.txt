@@ -1,0 +1,5 @@
+Global Metadata: <genre / subgenre>. <BPM>, <key>, <scale>. <emotional arc across the song>. <listening scenario>. <production profile: mix texture, processing, overall polish>.
+
+Vocal Details: <vocal gender / register>, <timbre>, <performance style>, <phrasing>. <harmony / backing vocals>. <vocal effects: reverb, delay, doubles, saturation>.
+
+Arrangement: <primary instruments>, <secondary instruments>, <groove / bass / percussion>, <textures / spatial FX>. Intro: <...>. Verses: <...>. Chorus: <...>. Bridge / Instrumental: <...>. Outro: <...>.

@@ -1,0 +1,39 @@
+{
+  "format": "mtnode-ext-v1",
+  "name": "MTNode Official",
+  "updatedAt": "2026-08-19T16:46:33.132Z",
+  "plugins": [],
+  "skills": [
+    {
+      "id": "generate-task",
+      "name": "生成任务",
+      "description": "把复杂目标拆成任务节点内部图：子任务 + 判断 + 从固定起点走到成功/失败终点。",
+      "path": "skills/generate-task/SKILL.md"
+    },
+    {
+      "id": "generate-workflow",
+      "name": "生成工作流",
+      "description": "在当前画布生成可编辑、可一键重跑的数据流工作流（输入 → 处理 → 保存），带分区框与控制节点。",
+      "path": "skills/generate-workflow/SKILL.md"
+    },
+    {
+      "id": "minimax-music-lyrics",
+      "name": "MiniMax Music 歌词",
+      "description": "按 MiniMax Music / Music 3 官方规范写可演唱歌词：结构标签、可唱行长、副歌钩子、中英歌词，且不把舞台指示写进会唱出来的正文。",
+      "path": "skills/minimax-music-lyrics/SKILL.md"
+    },
+    {
+      "id": "minimax-music-prompt",
+      "name": "MiniMax Music 提示词",
+      "description": "按 MiniMax Music / Music 3 官方规范写风格提示词与 Structured Caption（Global Metadata、Vocal Details、Arrangement），控制曲风、人声、乐器、结构与制作，且不把歌词写进 prompt。",
+      "path": "skills/minimax-music-prompt/SKILL.md"
+    },
+    {
+      "id": "novel-to-video-preproduction",
+      "name": "长篇小说视频素材与分镜拆解",
+      "description": "使用多Agent协作，从长篇小说中完整提取人物、组织、场景、道具、事件、任务和剧情，生成剧情大纲、视频素材清单与可拍摄分镜，并通过覆盖率审计防止遗漏。",
+      "path": "skills/novel-to-video-preproduction/SKILL.md"
+    }
+  ],
+  "mcp": []
+}

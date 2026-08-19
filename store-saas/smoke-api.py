@@ -52,6 +52,50 @@ me = call("GET", "/api/me", token=token)
 print("stats downloadsReceived=%s likesReceived=%s" % (me["user"]["downloadsReceived"], me["user"]["likesReceived"]))
 call("PATCH", "/api/templates/" + tid, {"title": "smoke template 2", "tags": ["smoke"]}, token=token)
 call("DELETE", "/api/templates/" + tid, token=token)
+
+skill_md = """---
+name: smoke-skill
+title: smoke skill
+description: api smoke skill
+version: 1.0.0
+---
+
+# smoke
+""".encode()
+skill_b64 = base64.b64encode(skill_md).decode()
+sk = call("POST", "/api/skills", {
+    "title": "smoke skill",
+    "description": "api smoke",
+    "tags": ["smoke"],
+    "version": "1.0.0",
+    "fileBase64": skill_b64,
+}, token=token)["item"]
+sid = sk["id"]
+call("GET", "/api/skills/" + sid)
+call("POST", "/api/skills/" + sid + "/like", {}, token=token)
+call("GET", "/api/skills/" + sid + "/file")
+call("GET", "/api/skills")
+call("GET", "/api/me/skills", token=token)
+call("GET", "/api/tags?kind=skills")
+call("PATCH", "/api/skills/" + sid, {"title": "smoke skill 2", "version": "1.0.1"}, token=token)
+call("DELETE", "/api/skills/" + sid, token=token)
+
+chg = call("POST", "/api/change-password", {
+    "username": "smokebot",
+    "oldPassword": "smoke-pass",
+    "newPassword": "smoke-pass2",
+})
+token2 = chg["token"]
+call("GET", "/api/me", token=token2)
+bad = call("POST", "/api/login", {"username": "smokebot", "password": "smoke-pass"}, expect=False)
+assert not bad.get("ok")
+chg2 = call("POST", "/api/change-password", {
+    "username": "smokebot",
+    "oldPassword": "smoke-pass2",
+    "newPassword": "smoke-pass",
+})
+token = chg2["token"]
+
 fm = call("POST", "/api/forum/messages", {"room": "general", "text": "smoke hello"}, token=token)["item"]
 assert fm.get("text") == "smoke hello"
 lst = call("GET", "/api/forum/messages?room=general", token=token)

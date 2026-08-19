@@ -929,7 +929,7 @@ The model may also **ask the user** mid-task (choices or free text) before conti
 
 在「设置 · 智能能力」或在线浏览里管理：
 
-- **DSH 插件**：扩展 agent 能力，安装后引擎会重启。
+- **DSH 插件**：扩展 agent 能力，安装到配置目录（升级后保留）；安装后引擎会重启。
 - **技能 Skills**：Markdown 说明书。智能会话 / 智能任务 / 智能文本 / 智能对话输入 \`/\` 即可选择；运行时会带上该技能全文。
 - **MCP 服务器**：连接后智能节点获得该服务器的工具（stdio 或远程 URL）。
 
@@ -951,7 +951,7 @@ The **plugin list is fetched from the cloud catalog** (\`http://mt-agent.com/mtn
 
 Manage under Settings · Agent (or Browse online):
 
-- **DSH plugins**: extend the agent; install restarts the engine.
+- **DSH plugins**: extend the agent; installed under the config data directory (survive app updates); install restarts the engine.
 - **Skills**: Markdown instructions. Type \`/\` in agent session / agent task / agent text / agent chat to pick one; the skill body is attached at run time.
 - **MCP servers**: tools appear on agent nodes after connect (stdio or remote URL).
 

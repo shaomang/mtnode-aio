@@ -16,7 +16,9 @@
     "release:plugins": "node scripts/stage-plugins.mjs",
     "release:discussion": "node scripts/stage-plugins.mjs --bump",
     "ext:build": "node ext-repo/build.mjs",
-    "ext:sync": "node ext-repo/build.mjs && python ext-repo/upload.py"
+    "ext:sync": "node ext-repo/build.mjs && python ext-repo/upload.py",
+    "store:deploy": "python store-saas/upload.py",
+    "store:seed-skills": "node store-saas/seed-skills.mjs"
   },
   "author": "New Earth Habitat",
   "license": "MIT",

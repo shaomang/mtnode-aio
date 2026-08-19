@@ -1,0 +1,6 @@
+# Helper deps for MiniMax H3 install scripts (download / smoke).
+# ComfyUI itself installs its own requirements inside ComfyUI/venv.
+
+modelscope>=1.14.0
+huggingface_hub>=0.26.0
+requests>=2.31.0

@@ -1,0 +1,12 @@
+# MiniMax Music 3 local app (24G)
+# Install torch+cuda separately if needed, then:
+#   pip install -r requirements.txt
+
+git+https://github.com/huggingface/diffusers@dafe3733fcfdbf3c48915fe77be3aef65b5d6a2d
+transformers>=4.51.0
+accelerate>=1.0.0
+huggingface_hub>=0.26.0
+soundfile>=0.12.1
+gradio>=5.0.0
+numpy>=1.24.0
+scipy>=1.11.0

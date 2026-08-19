@@ -45,6 +45,7 @@ const KIND_CLS = {
   input_image: "in",
   proc_text: "proc",
   proc_image: "proc-img",
+  save: "sv",
   save_text: "sv",
   save_image: "sv",
   task: "task",
@@ -79,10 +80,11 @@ const KIND_ICON_SVG = {
   /* 处理 · 图像生成：画框 + 闪光笔触 */
   proc_image:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="9.2" height="7.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.4 9.4l2.4-2.5 1.6 1.5 1.3-1.2 1.5 2.2" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.2 10.2c.7-.15 1.35-.55 1.85-1.15.35.7.4 1.5.15 2.25-.55-.1-1.15 0-1.65.35-.15-.55-.2-1.05-.35-1.45z" fill="currentColor"/><path d="M13.6 6.2l.35.85.9.2-.75.55.2.9-.7-.55-.7.55.2-.9-.75-.55.9-.2z" fill="currentColor"/></svg>',
-  /* 保存 · 文本 */
+  /* 保存 · 按输入自判文本/图像/音频/视频 */
+  save:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   save_text:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.5 4.2h1.8M5.5 6h2.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-  /* 保存 · 图像 */
   save_image:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="10.2" y="3" width="3.2" height="2.6" rx=".4" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
   /* 任务 · 规划步骤 */
@@ -293,6 +295,19 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  save: {
+    w: 320,
+    h: 240,
+    title: "保存",
+    savePath: "",
+    auto: true,
+    batchMode: "batch",
+    savedPath: "",
+    savedPaths: [],
+    savedAt: 0,
+    boundFromId: "",
+  },
+  /* 旧工作流别名：hydrate 会迁成 save */
   save_text: {
     w: 320,
     h: 220,
@@ -303,6 +318,7 @@ const NODE_DEFAULTS = {
     savedPath: "",
     savedPaths: [],
     savedAt: 0,
+    boundFromId: "",
   },
   save_image: {
     w: 290,
@@ -314,6 +330,7 @@ const NODE_DEFAULTS = {
     savedPath: "",
     savedPaths: [],
     savedAt: 0,
+    boundFromId: "",
   },
   split: { w: 260, h: 190, title: "拆分" },
   merge: { w: 230, h: 150, title: "合并" },
@@ -492,13 +509,14 @@ const NODE_DEFAULTS = {
     running: false,
   },
   music_gen: {
-    w: 340,
-    h: 260,
+    w: 360,
+    h: 300,
     title: "音乐生成",
     audioDuration: 60,
     seed: 0,
     outputPath: "output",
     filename: "",
+    boundSaveId: "",
     offload: true,
     musicStatus: "",
     output: null,
@@ -507,8 +525,8 @@ const NODE_DEFAULTS = {
     running: false,
   },
   video_gen: {
-    w: 380,
-    h: 300,
+    w: 400,
+    h: 340,
     title: "视频生成",
     videoMode: "r2v",
     duration: 5,
@@ -526,6 +544,7 @@ const NODE_DEFAULTS = {
     refImageSize: "match",
     outputPath: "output",
     filename: "",
+    boundSaveId: "",
     videoStatus: "",
     output: null,
     error: null,
@@ -584,10 +603,250 @@ function isExecEnd(n) {
 function isPinnedCtrl(n) {
   return !!(n && n.kind === "control" && n.ctrlPinned);
 }
+function isSaveKind(kind) {
+  return kind === "save" || kind === "save_text" || kind === "save_image";
+}
+function isSaveNode(n) {
+  return !!(n && isSaveKind(n.kind));
+}
+function isPinnedWire(w) {
+  return !!(w && w.pinned);
+}
+const BOUND_SAVE_GAP = 48;
+const SAVE_EXT = { text: ".yaml", image: ".png", audio: ".wav", video: ".mp4" };
+function saveExtForMedia(media) {
+  return SAVE_EXT[media] || SAVE_EXT.text;
+}
+function forcePathExt(p, ext) {
+  const s = String(p || "").trim();
+  let e = String(ext || "").trim() || ".yaml";
+  if (!e.startsWith(".")) e = "." + e;
+  if (!s) return e;
+  const cur = extOf(s);
+  if (cur) return s.slice(0, -cur.length) + e;
+  return s + e;
+}
+function stemOfFilename(name) {
+  return String(name || "")
+    .trim()
+    .replace(/\.(ya?ml|png|jpe?g|webp|gif|wav|flac|mp3|mp4|webm|mov)$/i, "");
+}
+function dirOfPath(p) {
+  const s = String(p || "");
+  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return i >= 0 ? s.slice(0, i) : "";
+}
+function inferMediaFromSource(from) {
+  if (!from) return "text";
+  if (from.kind === "music_gen") return "audio";
+  if (from.kind === "video_gen") return "video";
+  if (from.kind === "input_image" || from.kind === "proc_image") return "image";
+  if (from.kind === "split" || from.kind === "merge") {
+    const v = valueForInput(from, 0);
+    if (v && v.kind === "image") return "image";
+    if (v && v.kind === "audio") return "audio";
+    if (v && v.kind === "video") return "video";
+  }
+  const v = valueForInput(from, 0);
+  if (v && v.kind === "image") return "image";
+  if (v && v.kind === "audio") return "audio";
+  if (v && v.kind === "video") return "video";
+  if (v && (v.kind === "text" || v.text)) {
+    const t = String((v.path || v.text) || "").trim();
+    if (/\.(mp4|webm|mov)$/i.test(t)) return "video";
+    if (/\.(wav|flac|mp3)$/i.test(t)) return "audio";
+    if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(t)) return "image";
+  }
+  return "text";
+}
+function saveDataSources(node) {
+  if (!node || !S.wf) return [];
+  const out = [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src || isControlKind(src)) continue;
+    out.push(src);
+  }
+  return out;
+}
+function saveMediaKind(node) {
+  if (!node) return "text";
+  if (node.boundFromId) {
+    const g = nodeById(node.boundFromId);
+    if (g && g.kind === "music_gen") return "audio";
+    if (g && g.kind === "video_gen") return "video";
+  }
+  const srcs = saveDataSources(node);
+  if (!srcs.length) {
+    if (!srcs.length && node.legacySaveMedia) return node.legacySaveMedia;
+    if (node.kind === "save_image") return "image";
+    if (node.kind === "save_text") return "text";
+    const p = String(node.savePath || node.savedPath || "");
+    if (/\.png$/i.test(p)) return "image";
+    if (/\.(wav|flac|mp3)$/i.test(p)) return "audio";
+    if (/\.mp4$/i.test(p)) return "video";
+    return "text";
+  }
+  for (const src of srcs) {
+    const m = inferMediaFromSource(src);
+    if (m !== "text") return m;
+  }
+  return "text";
+}
+function boundSaveOf(gen) {
+  if (!gen || !gen.boundSaveId) return null;
+  const n = nodeById(gen.boundSaveId);
+  return isSaveNode(n) ? n : null;
+}
+function mediaGenOfBoundSave(sv) {
+  if (!sv || !sv.boundFromId) return null;
+  const n = nodeById(sv.boundFromId);
+  return isMediaGenNode(n) ? n : null;
+}
+function applySavePathExt(node) {
+  if (!isSaveNode(node)) return;
+  const ext = saveExtForMedia(saveMediaKind(node));
+  const raw = String(node.savePath || "").trim();
+  if (!raw) return;
+  node.savePath = preferRelativeSavePath(forcePathExt(raw, ext));
+}
+function syncBoundSaveFilename(gen) {
+  const sv = boundSaveOf(gen);
+  if (!sv || !isMediaGenNode(gen)) return;
+  const media = gen.kind === "music_gen" ? "audio" : "video";
+  const ext = saveExtForMedia(media);
+  const stem =
+    stemOfFilename(gen.filename) ||
+    stemOfFilename(fileName(sv.savePath)) ||
+    safeFile(gen.title || (media === "audio" ? "music" : "video"));
+  const dir = dirOfPath(sv.savePath);
+  const next = dir ? dir.replace(/[\\/]+$/, "") + "/" + stem + ext : stem + ext;
+  sv.savePath = preferRelativeSavePath(forcePathExt(next, ext));
+}
+function syncGenFilenameFromSave(sv) {
+  const gen = mediaGenOfBoundSave(sv);
+  if (!gen) return;
+  const name = fileName(sv.savePath || "");
+  if (name) gen.filename = name;
+}
+function placeBoundSave(gen, sv) {
+  if (!gen || !sv) return;
+  sv.x = snap(gen.x + (gen.w || 0) + BOUND_SAVE_GAP);
+  sv.y = snap(gen.y);
+  sv.parentTaskId = gen.parentTaskId || "";
+}
+function ensureBoundSaveForMedia(gen, wf) {
+  wf = wf || S.wf;
+  if (!gen || !isMediaGenNode(gen) || !wf) return null;
+  if (!Array.isArray(wf.nodes)) wf.nodes = [];
+  if (!Array.isArray(wf.wires)) wf.wires = [];
+  let sv =
+    (gen.boundSaveId && wf.nodes.find((n) => n.id === gen.boundSaveId)) ||
+    wf.nodes.find((n) => isSaveNode(n) && n.boundFromId === gen.id) ||
+    null;
+  if (!sv) {
+    const w0 = (wf.wires || []).find((w) => {
+      if (w.from !== gen.id) return false;
+      const t = wf.nodes.find((n) => n.id === w.to);
+      return t && isSaveNode(t) && !isControlKind(wf.nodes.find((n) => n.id === w.from) || {});
+    });
+    if (w0) sv = wf.nodes.find((n) => n.id === w0.to) || null;
+  }
+  if (!sv) {
+    sv = makeNode("save", gen.x + (gen.w || 0) + BOUND_SAVE_GAP, gen.y);
+    sv.parentTaskId = gen.parentTaskId || "";
+    sv.boundFromId = gen.id;
+    sv.auto = true;
+    const media = gen.kind === "music_gen" ? "audio" : "video";
+    const ext = saveExtForMedia(media);
+    const stem =
+      stemOfFilename(gen.filename) ||
+      safeFile(gen.title || (media === "audio" ? "music" : "video"));
+    sv.savePath = stem + ext;
+    sv.title = uniqueTitleInWf(wf, I18n.t("保存节点"));
+    wf.nodes.push(sv);
+  }
+  gen.boundSaveId = sv.id;
+  sv.boundFromId = gen.id;
+  placeBoundSave(gen, sv);
+  applySavePathExt(sv);
+  syncGenFilenameFromSave(sv);
+  const wire = wf.wires.find(
+    (w) => w.from === gen.id && w.to === sv.id && !wireFromIsControl(w),
+  );
+  if (!wire) {
+    wf.wires.push({
+      id: uid("w"),
+      from: gen.id,
+      to: sv.id,
+      toIndex: 0,
+      fromIndex: 0,
+      pinned: true,
+    });
+  } else {
+    wire.pinned = true;
+  }
+  return sv;
+}
+function expandBoundPairIds(ids) {
+  const set = new Set(ids || []);
+  for (const id of [...set]) {
+    const n = nodeById(id);
+    if (!n) continue;
+    if (isMediaGenNode(n) && n.boundSaveId) set.add(n.boundSaveId);
+    if (isSaveNode(n) && n.boundFromId) set.add(n.boundFromId);
+  }
+  return [...set];
+}
+function snapBoundSaves(ids) {
+  const seen = new Set();
+  for (const id of ids || []) {
+    const n = nodeById(id);
+    const gen = isMediaGenNode(n)
+      ? n
+      : isSaveNode(n)
+        ? mediaGenOfBoundSave(n)
+        : null;
+    if (!gen || seen.has(gen.id)) continue;
+    seen.add(gen.id);
+    const sv = boundSaveOf(gen);
+    if (!sv) continue;
+    placeBoundSave(gen, sv);
+    const el = document.querySelector('.wf-node[data-nid="' + sv.id + '"]');
+    if (el) {
+      el.style.left = sv.x + "px";
+      el.style.top = sv.y + "px";
+    }
+  }
+}
+function resolveMediaGenExport(node) {
+  const media = node && node.kind === "video_gen" ? "video" : "audio";
+  const ext = saveExtForMedia(media);
+  const sv = boundSaveOf(node);
+  if (sv && String(sv.savePath || "").trim()) {
+    const r = resolveSavePath(sv.savePath);
+    if (r.ok) {
+      const p = forcePathExt(r.path, ext);
+      const dir = dirOfPath(p);
+      return { outputDir: dir || ".", filename: fileName(p) };
+    }
+  }
+  const rawDir =
+    node.kind === "video_gen"
+      ? typeof resolveVideoOutputDir === "function"
+        ? resolveVideoOutputDir(node)
+        : String(node.outputPath || "output")
+      : typeof resolveMusicOutputDir === "function"
+        ? resolveMusicOutputDir(node)
+        : String(node.outputPath || "output");
+  let name = String(node.filename || "").trim();
+  if (name) name = fileName(forcePathExt(name, ext));
+  return { outputDir: rawDir, filename: name };
+}
 function outputCount(n) {
   if (!n) return 0;
   if (n.kind === "global") return 0;
-  if (n.kind === "save_text" || n.kind === "save_image") return 0;
+  if (isSaveNode(n)) return 0;
   if (isExecEnd(n)) return 0;
   if (n.kind === "judge") return 2;
   if (n.kind === "sequencer")
@@ -1357,10 +1616,13 @@ function preferRelativeSavePath(p) {
   return String(rel).replace(/\\/g, "/");
 }
 function ensureDefaultSavePath(node) {
-  if (!node || (node.kind !== "save_text" && node.kind !== "save_image")) return;
-  if (String(node.savePath || "").trim()) return;
-  if (!String(wfWorkspace() || "").trim()) return;
-  const ext = node.kind === "save_text" ? ".yaml" : ".png";
+  if (!isSaveNode(node)) return;
+  if (String(node.savePath || "").trim()) {
+    applySavePathExt(node);
+    return;
+  }
+  if (!String(wfWorkspace() || "").trim() && !mediaGenOfBoundSave(node)) return;
+  const ext = saveExtForMedia(saveMediaKind(node));
   node.savePath = safeFile(node.title || "output") + ext;
 }
 function savePathResolveError(code) {
@@ -2419,6 +2681,12 @@ function isImageWireFrom(n) {
       n.kind === "proc_image")
   );
 }
+function isAudioWireFrom(n) {
+  return !!(n && n.kind === "music_gen");
+}
+function isVideoWireFrom(n) {
+  return !!(n && n.kind === "video_gen");
+}
 
 function canUseGlobalRefs(node) {
   return !!(
@@ -2610,8 +2878,9 @@ function nodeKindLabel(node) {
     proc_text: "文本处理",
     proc_image: "图像生成",
     agent_task: "智能任务",
-    save_text: "存文",
-    save_image: "存图",
+    save: "保存",
+    save_text: "保存",
+    save_image: "保存",
     task: "任务",
     chat: "对话",
     wait_file: "等待",
@@ -2657,8 +2926,9 @@ function nodeKindPurposeKey(node) {
     proc_image: "图像生成（文生图）",
     music_gen: "音乐生成（MiniMax Music 3 · 提示词+歌词）",
     video_gen: "视频生成（MiniMax H3 · 文本/图像/音频/视频）",
-    save_text: "保存文本（YAML）",
-    save_image: "保存节点（接收最终输出）",
+    save: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
+    save_text: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
+    save_image: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     split: "拆分（批次 → 单项只读节点）",
     merge: "合并（多节点 → 批次）",
     agent_task: "智能任务（读文件 / 联网 / 执行命令）",
@@ -3105,6 +3375,7 @@ function promptDialog(message, defaultValue, opts) {
 
 function nodeGuideId(node) {
   if (!node) return "";
+  if (isSaveNode(node)) return "save";
   if (node.kind === "control") {
     if (node.ctrlRole === "start") return "ctrl-start";
     if (node.ctrlRole === "endSuccess") return "ctrl-end-ok";
@@ -4560,7 +4831,7 @@ function clearDownstream(startId) {
       n.taskStatus = "pending";
     }
     if (S.thinking && S.thinking[n.id]) S.thinking[n.id] = [];
-    if (n.kind === "save_text" || n.kind === "save_image") {
+    if (isSaveNode(n)) {
       /* 上游失效：清除「已保存」状态，避免预览继续显示旧文件 */
       n.savedPaths = [];
       n.savedPath = "";
@@ -4600,8 +4871,7 @@ function isAggFanInNode(n) {
     n.kind !== "proc_text" &&
     n.kind !== "proc_image" &&
     n.kind !== "agent_task" &&
-    n.kind !== "save_text" &&
-    n.kind !== "save_image"
+    !isSaveNode(n)
   )
     return false;
   return n.batchMode === "agg";
@@ -4688,7 +4958,7 @@ function clearNodeRunState(cp) {
   cp.attemptsDone = 0;
   cp.running = false;
   cp.agentSessionId = "";
-  if (cp.kind === "save_text" || cp.kind === "save_image") {
+  if (isSaveNode(cp)) {
     cp.savedPaths = [];
     cp.savedPath = "";
     cp.savedAt = 0;
@@ -4768,11 +5038,11 @@ function cloneDownstreamForExplode(src, entryTitle, x, y) {
   }
   /* 批量保存曾用 {路径}_{条目标题}；拆成单链后把该后缀写进 savePath，与拆解前落盘名一致 */
   if (
-    (cp.kind === "save_text" || cp.kind === "save_image") &&
+    (isSaveNode(cp)) &&
     suffix &&
     String(src.savePath || "").trim()
   ) {
-    const fb = cp.kind === "save_text" ? ".yaml" : ".png";
+    const fb = saveExtForMedia(saveMediaKind(cp));
     cp.savePath = batchOutPath(String(src.savePath).trim(), suffix, fb);
   }
   return cp;
@@ -5053,9 +5323,21 @@ function valueForInput(src, idx) {
   }
   if (src.kind === "music_gen") {
     const r = selResult(src);
-    return r && r.output && r.output.kind === "text"
-      ? { kind: "text", text: r.output.text }
-      : null;
+    const p =
+      (r && r.output && (r.output.path || r.output.text)) ||
+      (src.output && (src.output.path || src.output.text)) ||
+      "";
+    if (!p) return null;
+    return { kind: "audio", path: String(p), text: String(p) };
+  }
+  if (src.kind === "video_gen") {
+    const r = selResult(src);
+    const p =
+      (r && r.output && (r.output.path || r.output.text)) ||
+      (src.output && (src.output.path || src.output.text)) ||
+      "";
+    if (!p) return null;
+    return { kind: "video", path: String(p), text: String(p) };
   }
   if (src.kind === "proc_image") {
     const r = selResult(src);
@@ -6854,6 +7136,10 @@ function updateWires(touchIds) {
                 iconCls: "danger",
                 cls: "ctx-danger",
                 run: () => {
+                  if (isPinnedWire(w)) {
+                    toast(I18n.t("该连线已固定，无法删除"), "warn");
+                    return;
+                  }
                   pushHistory();
                   removeWire(w.id);
                   S.selWire = null;
@@ -6873,6 +7159,9 @@ function updateWires(touchIds) {
     if (S.selWire === w.id) wcls += " sel";
     if (isControlKind(from) || isControlKind(to)) wcls += " ctrl";
     else if (isImageWireFrom(from)) wcls += " img";
+    else if (isAudioWireFrom(from)) wcls += " aud";
+    else if (isVideoWireFrom(from)) wcls += " vid";
+    if (isPinnedWire(w)) wcls += " pinned";
     p.setAttribute("class", wcls);
   }
   let t = svg.querySelector("#wireTemp");
@@ -7387,7 +7676,7 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
-  if (node.kind === "save_text" || node.kind === "save_image") {
+  if (isSaveNode(node)) {
     if (isBatch(node)) {
       const agg = node.batchMode === "agg";
       const chip = document.createElement("span");
@@ -7418,7 +7707,7 @@ function nodeElement(node) {
     b.textContent = pending ? "…" : "▶";
     b.title = pending
       ? I18n.t("排队等待中…")
-      : I18n.t("保存输出到本地（YAML / 图像）");
+      : I18n.t("保存输出到本地");
     b.onclick = (ev) => {
       ev.stopPropagation();
       saveNodeAction(node);
@@ -7629,6 +7918,7 @@ function nodeElement(node) {
     chip.textContent = I18n.t("音乐");
     chip.title = I18n.t("MiniMax Music 3 · 端子 P=提示词 · L=歌词");
     head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
     const setBtn = document.createElement("button");
     setBtn.className =
       "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
@@ -7669,6 +7959,7 @@ function nodeElement(node) {
     chip.textContent = I18n.t("视频");
     chip.title = I18n.t("MiniMax H3 · 需先启用插件服务");
     head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
     const setBtn = document.createElement("button");
     setBtn.className =
       "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
@@ -7918,24 +8209,31 @@ function nodeElement(node) {
         scheduleSave();
       };
       panel.appendChild(rnd);
-      const outp = document.createElement("input");
-      outp.type = "text";
-      outp.value = String(node.outputPath || "output");
-      outp.placeholder = I18n.t("相对或绝对路径");
-      outp.addEventListener("change", () => {
-        node.outputPath = outp.value.trim() || "output";
-        scheduleSave();
-      });
-      addField(I18n.t("输出目录"), outp);
-      const fn = document.createElement("input");
-      fn.type = "text";
-      fn.value = String(node.filename || "");
-      fn.placeholder = "song.wav";
-      fn.addEventListener("change", () => {
-        node.filename = fn.value.trim();
-        scheduleSave();
-      });
-      addField(I18n.t("文件名（可选）"), fn);
+      if (!boundSaveOf(node)) {
+        const outp = document.createElement("input");
+        outp.type = "text";
+        outp.value = String(node.outputPath || "output");
+        outp.placeholder = I18n.t("相对或绝对路径");
+        outp.addEventListener("change", () => {
+          node.outputPath = outp.value.trim() || "output";
+          scheduleSave();
+        });
+        addField(I18n.t("输出目录"), outp);
+        const fn = document.createElement("input");
+        fn.type = "text";
+        fn.value = String(node.filename || "");
+        fn.placeholder = "song.wav";
+        fn.addEventListener("change", () => {
+          node.filename = fn.value.trim();
+          scheduleSave();
+        });
+        addField(I18n.t("文件名（可选）"), fn);
+      } else {
+        const hint = document.createElement("div");
+        hint.className = "sv-note";
+        hint.textContent = I18n.t("文件名与路径由右侧绑定保存节点指定（.wav）");
+        panel.appendChild(hint);
+      }
       const off = document.createElement("input");
       off.type = "checkbox";
       off.checked = node.offload !== false;
@@ -8026,24 +8324,31 @@ function nodeElement(node) {
         scheduleSave();
       });
       addField(I18n.t("采样步数"), steps);
-      const outp = document.createElement("input");
-      outp.type = "text";
-      outp.value = String(node.outputPath || "output");
-      outp.placeholder = I18n.t("相对或绝对路径");
-      outp.addEventListener("change", () => {
-        node.outputPath = outp.value.trim() || "output";
-        scheduleSave();
-      });
-      addField(I18n.t("输出目录"), outp);
-      const fn = document.createElement("input");
-      fn.type = "text";
-      fn.value = String(node.filename || "");
-      fn.placeholder = "clip.mp4";
-      fn.addEventListener("change", () => {
-        node.filename = fn.value.trim();
-        scheduleSave();
-      });
-      addField(I18n.t("文件名（可选）"), fn);
+      if (!boundSaveOf(node)) {
+        const outp = document.createElement("input");
+        outp.type = "text";
+        outp.value = String(node.outputPath || "output");
+        outp.placeholder = I18n.t("相对或绝对路径");
+        outp.addEventListener("change", () => {
+          node.outputPath = outp.value.trim() || "output";
+          scheduleSave();
+        });
+        addField(I18n.t("输出目录"), outp);
+        const fn = document.createElement("input");
+        fn.type = "text";
+        fn.value = String(node.filename || "");
+        fn.placeholder = "clip.mp4";
+        fn.addEventListener("change", () => {
+          node.filename = fn.value.trim();
+          scheduleSave();
+        });
+        addField(I18n.t("文件名（可选）"), fn);
+      } else {
+        const hint = document.createElement("div");
+        hint.className = "sv-note";
+        hint.textContent = I18n.t("文件名与路径由右侧绑定保存节点指定（.mp4）");
+        panel.appendChild(hint);
+      }
     } else if (isAgentKind) {
       /* 智能任务参数面板与「智能会话」完全一致:预设 / 供应商 / 模型 / 思考强度 */
       const catalog = S.providerCatalog || {
@@ -10173,24 +10478,21 @@ function buildBody(node, body) {
       I18n.t("多入选一 · ") + mutexModeLabel(node.mutexMode);
     body.appendChild(st);
   } else if (node.kind === "music_gen") {
-    const hint = document.createElement("div");
-    hint.className = "n-empty";
-    hint.textContent = I18n.t("P=提示词 · L=歌词 · 点击「设置」改时长/种子/输出路径");
-    body.appendChild(hint);
     const meta = document.createElement("div");
     meta.className = "n-empty";
     meta.textContent =
-      I18n.t("时长 ") +
+      I18n.t("P·L · ") +
       (node.audioDuration || 60) +
       "s · seed " +
       (node.seed != null ? node.seed : "—") +
       " · " +
       (node.outputPath || "output");
     body.appendChild(meta);
+    appendMediaBackendPanel(body, node);
     if (node.output && node.output.kind === "text" && node.output.text) {
       const out = document.createElement("div");
       out.className = "n-text";
-      out.style.maxHeight = "72px";
+      out.style.maxHeight = "56px";
       out.style.overflow = "auto";
       out.textContent = node.output.text;
       out.title = node.output.text;
@@ -10199,23 +10501,13 @@ function buildBody(node, body) {
       };
       body.appendChild(out);
     }
-    const st = document.createElement("div");
-    st.className =
-      "n-status" +
-      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
-    st.textContent =
-      node.error ||
-      node.musicStatus ||
-      I18n.t("需启用 Minimax Music 3 后端 · 全局单例互斥");
-    body.appendChild(st);
+    if (node.error) {
+      const st = document.createElement("div");
+      st.className = "n-status err";
+      st.textContent = node.error;
+      body.appendChild(st);
+    }
   } else if (node.kind === "video_gen") {
-    const hint = document.createElement("div");
-    hint.className = "n-empty";
-    hint.textContent =
-      videoGenMode(node) === "fl2va"
-        ? I18n.t("P=提示词 · F/L=首末帧 · 需先启用 H3 服务")
-        : I18n.t("P=提示词 · I/V/A=参考图/视频路径/音频路径（渐进展开）");
-    body.appendChild(hint);
     const meta = document.createElement("div");
     meta.className = "n-empty";
     meta.textContent =
@@ -10229,10 +10521,11 @@ function buildBody(node, body) {
       " · " +
       (node.outputPath || "output");
     body.appendChild(meta);
+    appendMediaBackendPanel(body, node);
     if (node.output && node.output.kind === "text" && node.output.text) {
       const out = document.createElement("div");
       out.className = "n-text";
-      out.style.maxHeight = "72px";
+      out.style.maxHeight = "56px";
       out.style.overflow = "auto";
       out.textContent = node.output.text;
       out.title = node.output.text;
@@ -10241,15 +10534,12 @@ function buildBody(node, body) {
       };
       body.appendChild(out);
     }
-    const st = document.createElement("div");
-    st.className =
-      "n-status" +
-      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
-    st.textContent =
-      node.error ||
-      node.videoStatus ||
-      I18n.t("需启用 Minimax H3 后端 · 全局单例互斥");
-    body.appendChild(st);
+    if (node.error) {
+      const st = document.createElement("div");
+      st.className = "n-status err";
+      st.textContent = node.error;
+      body.appendChild(st);
+    }
   } else if (node.kind === "control") {
     const role = ctrlRoleOf(node);
     if (role === "start" || role === "endSuccess" || role === "endFail") {
@@ -10304,34 +10594,39 @@ function buildBody(node, body) {
       body.appendChild(list);
     }
     }
-  } else if (node.kind === "save_text" || node.kind === "save_image") {
+  } else if (isSaveNode(node)) {
+    const media = saveMediaKind(node);
+    const ext = saveExtForMedia(media);
     const pRow = document.createElement("div");
     pRow.className = "sv-path";
     const inp = document.createElement("input");
     inp.type = "text";
     const hasWs = !!String(wfWorkspace() || "").trim();
+    const extHint =
+      media === "text"
+        ? "*.yaml"
+        : media === "image"
+          ? "*.png"
+          : media === "audio"
+            ? "*.wav"
+            : "*.mp4";
     inp.placeholder = isBatch(node)
       ? node.batchMode === "agg"
-        ? node.kind === "save_text"
-          ? I18n.t("聚合：全部条目合并保存为 {路径}.yaml")
-          : I18n.t("聚合：保存为 {路径}.png")
-        : node.kind === "save_text"
-          ? I18n.t("批量：保存为 {路径}_{输入节点标题}.yaml")
-          : I18n.t("批量：保存为 {路径}_{输入节点标题}.png")
+        ? I18n.t("聚合：全部条目合并保存为 {路径}") + ext
+        : I18n.t("批量：保存为 {路径}_{输入节点标题}") + ext
       : hasWs
-        ? node.kind === "save_text"
-          ? I18n.t("相对工作目录或绝对路径（*.yaml）…")
-          : I18n.t("相对工作目录或绝对路径（*.png / *.jpg）…")
-        : node.kind === "save_text"
-          ? I18n.t("保存路径（*.yaml）…")
-          : I18n.t("保存路径（*.png / *.jpg）…");
+        ? I18n.t("相对工作目录或绝对路径（") + extHint + I18n.t("）…")
+        : I18n.t("保存路径（") + extHint + I18n.t("）…");
     inp.value = node.savePath || "";
     inp.title = hasWs
-      ? I18n.t("有工作目录时可用相对路径（如 output.yaml）；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。")
-      : I18n.t("输出文件路径（批量模式下自动生成 {文件名}_{输入节点标题} 系列文件）");
+      ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
+      : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .yaml）");
     inp.addEventListener("change", () => {
-      node.savePath = preferRelativeSavePath(inp.value.trim());
+      node.savePath = preferRelativeSavePath(
+        forcePathExt(inp.value.trim(), saveExtForMedia(saveMediaKind(node))),
+      );
       inp.value = node.savePath;
+      syncGenFilenameFromSave(node);
       scheduleSave();
       renderCanvas();
     });
@@ -10343,9 +10638,7 @@ function buildBody(node, body) {
     br.textContent = I18n.t("浏览");
     br.onclick = async () => {
       const ws = String(wfWorkspace() || "").trim();
-      let defaultName =
-        (node.title || "output") +
-        (node.kind === "save_text" ? ".yaml" : ".png");
+      let defaultName = (node.title || "output") + ext;
       const cur = String(node.savePath || "").trim();
       if (cur) {
         const r0 = resolveSavePath(cur);
@@ -10353,23 +10646,44 @@ function buildBody(node, body) {
       } else if (ws) {
         defaultName = joinPath(ws, defaultName);
       }
-      const r = await window.api.fileSaveDialog({
-        title:
-          node.kind === "save_text" ? I18n.t("选择 YAML 保存位置") : I18n.t("选择图像保存位置"),
-        defaultName,
-        filters:
-          node.kind === "save_text"
+      const filters =
+        media === "text"
+          ? [
+              { name: "YAML", extensions: ["yaml", "yml"] },
+              { name: I18n.t("全部文件"), extensions: ["*"] },
+            ]
+          : media === "image"
             ? [
-                { name: "YAML", extensions: ["yaml", "yml"] },
+                { name: I18n.t("图像"), extensions: ["png"] },
                 { name: I18n.t("全部文件"), extensions: ["*"] },
               ]
-            : [
-                { name: I18n.t("图像"), extensions: ["png", "jpg", "jpeg", "webp"] },
-                { name: I18n.t("全部文件"), extensions: ["*"] },
-              ],
+            : media === "audio"
+              ? [
+                  { name: I18n.t("音频"), extensions: ["wav"] },
+                  { name: I18n.t("全部文件"), extensions: ["*"] },
+                ]
+              : [
+                  { name: I18n.t("视频"), extensions: ["mp4"] },
+                  { name: I18n.t("全部文件"), extensions: ["*"] },
+                ];
+      const title =
+        media === "text"
+          ? I18n.t("选择 YAML 保存位置")
+          : media === "image"
+            ? I18n.t("选择图像保存位置")
+            : media === "audio"
+              ? I18n.t("选择音频保存位置")
+              : I18n.t("选择视频保存位置");
+      const r = await window.api.fileSaveDialog({
+        title,
+        defaultName,
+        filters,
       });
       if (r.path) {
-        node.savePath = preferRelativeSavePath(r.path);
+        node.savePath = preferRelativeSavePath(
+          forcePathExt(r.path, saveExtForMedia(saveMediaKind(node))),
+        );
+        syncGenFilenameFromSave(node);
         scheduleSave();
         renderCanvas();
       }
@@ -10409,10 +10723,7 @@ function buildBody(node, body) {
     {
       const auto = document.createElement("label");
       auto.className = "sv-auto";
-      auto.title =
-        node.kind === "save_text"
-          ? I18n.t("输入变化时自动保存（批量 = 每条目一个文件，YAML 项 = 输入节点标题）")
-          : I18n.t("上游输出更新时自动保存到指定路径");
+      auto.title = I18n.t("上游输出更新时自动保存到指定路径");
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = node.auto !== false;
@@ -10427,11 +10738,39 @@ function buildBody(node, body) {
 
     const prev = document.createElement("div");
     prev.className = "sv-prev";
-    if (node.kind === "save_text") {
+    if (media === "text") {
       const pre = document.createElement("pre");
       pre.id = "svpre-" + node.id;
       pre.textContent = I18n.t("尚未保存");
       prev.appendChild(pre);
+    } else if (media === "audio") {
+      const aud = document.createElement("audio");
+      aud.id = "svaud-" + node.id;
+      aud.controls = true;
+      aud.preload = "metadata";
+      if (node.savedPath) aud.dataset.path = node.savedPath;
+      prev.appendChild(aud);
+      if (!node.savedPath) {
+        const e = document.createElement("div");
+        e.className = "sv-empty";
+        e.id = "svempty-" + node.id;
+        e.textContent = I18n.t("尚未保存（指定路径后点击 ▶，预览显示音频）");
+        prev.appendChild(e);
+      }
+    } else if (media === "video") {
+      const vid = document.createElement("video");
+      vid.id = "svvid-" + node.id;
+      vid.controls = true;
+      vid.preload = "metadata";
+      if (node.savedPath) vid.dataset.path = node.savedPath;
+      prev.appendChild(vid);
+      if (!node.savedPath) {
+        const e = document.createElement("div");
+        e.className = "sv-empty";
+        e.id = "svempty-" + node.id;
+        e.textContent = I18n.t("尚未保存（指定路径后点击 ▶，预览显示视频）");
+        prev.appendChild(e);
+      }
     } else {
       if (isBatch(node) && node.savedPaths && node.savedPaths.length) {
         const thumbs = document.createElement("div");
@@ -10645,7 +10984,7 @@ async function fillPreviews() {
         }
       }
     }
-    if (n.kind === "save_text") {
+    if (isSaveNode(n) && saveMediaKind(n) === "text") {
       const pre = document.querySelector("#svpre-" + n.id);
       if (pre) {
         const paths = await resolveSavePreviewPaths(n);
@@ -10667,7 +11006,7 @@ async function fillPreviews() {
         }
       }
     }
-    if (n.kind === "save_image") {
+    if (isSaveNode(n) && saveMediaKind(n) === "image") {
       const paths = await resolveSavePreviewPaths(n);
       const bust = n.savedAt || 0;
       const thumbs = document.querySelector("#svthumbs-" + n.id);
@@ -10697,6 +11036,26 @@ async function fillPreviews() {
             img.style.display = "none";
             if (empty) empty.style.display = "";
           }
+        }
+      }
+    }
+    if (isSaveNode(n) && (saveMediaKind(n) === "audio" || saveMediaKind(n) === "video")) {
+      const media = saveMediaKind(n);
+      const paths = await resolveSavePreviewPaths(n);
+      const bust = n.savedAt || 0;
+      const el = document.querySelector(
+        (media === "audio" ? "#svaud-" : "#svvid-") + n.id,
+      );
+      const empty = document.querySelector("#svempty-" + n.id);
+      if (el) {
+        if (paths.length) {
+          el.src = fileUrlWithBust(paths[0], bust);
+          el.dataset.path = paths[0];
+          if (empty) empty.style.display = "none";
+        } else {
+          el.removeAttribute("src");
+          el.removeAttribute("data-path");
+          if (empty) empty.style.display = "";
         }
       }
     }
@@ -11327,6 +11686,8 @@ function isAutoProcKind(n) {
     (n.kind === "proc_text" ||
       n.kind === "proc_image" ||
       n.kind === "agent_task" ||
+      n.kind === "music_gen" ||
+      n.kind === "video_gen" ||
       n.kind === "wait_file" ||
       n.kind === "task")
   );
@@ -11372,7 +11733,7 @@ function nodeAlreadyProcessed(node) {
 /* 控制「补缺」：是否已有可用输出内容（不含仅有 error；保存节点看已保存路径） */
 function nodeHasOutputContent(node) {
   if (!node) return false;
-  if (node.kind === "save_text" || node.kind === "save_image")
+  if (isSaveNode(node))
     return !!(
       node.savedPath ||
       (Array.isArray(node.savedPaths) && node.savedPaths.length)
@@ -11434,6 +11795,15 @@ function clearPendingRun(ids) {
   }
 }
 
+/* 当前控制/级联批次内的节点 id：由队列启动，ensure 不得再抢跑（否则易死锁 + 残留等待） */
+function isScheduledRunNode(n) {
+  return !!(n && S._scheduledRunIds && S._scheduledRunIds.has(n.id));
+}
+
+function procSourcesOutsideSchedule(node) {
+  return procSourcesOf(node).filter((s) => !isScheduledRunNode(s));
+}
+
 function procSourcesOf(node) {
   const out = [];
   const seen = new Set();
@@ -11473,8 +11843,15 @@ async function ensureProcessed(node, ran) {
   ran = ran || [];
   if (!node) return ran;
   if (!isAutoProcKind(node)) return ran;
-  await ensureProcessedAll(procSourcesOf(node), ran);
+  /* 本批调度中的节点只等队列启动，禁止在此 playNode，避免互相 await playLocks 锁死 */
+  if (isScheduledRunNode(node)) return ran;
+  /* 已有产物则立刻返回，切勿 await 仍被 playNode 握着的锁。
+     典型死锁：处理节点完成后级联保存，playNode 持锁等 cascade，save 又 ensure 上游去等这把锁。 */
+  if (node.kind !== "wait_file" && nodeAlreadyProcessed(node)) return ran;
+  await ensureProcessedAll(procSourcesOutsideSchedule(node), ran);
+  if (node.kind !== "wait_file" && nodeAlreadyProcessed(node)) return ran;
   if (S.playLocks && S.playLocks.has(node.id)) {
+    if (node.kind !== "wait_file" && nodeAlreadyProcessed(node)) return ran;
     await S.playLocks.get(node.id);
     return ran;
   }
@@ -11506,7 +11883,7 @@ async function ensureProcessed(node, ran) {
     }
   }
   ran.push(node.title);
-  await playNode(node, true);
+  await playNode(node, true, { noCascade: true });
   return ran;
 }
 
@@ -11554,10 +11931,8 @@ function isProcessPlayKind(n) {
 function isCascadeRunKind(n) {
   return (
     isProcessPlayKind(n) ||
-    !!(
-      n &&
-      (n.kind === "save_text" || n.kind === "save_image" || n.kind === "task")
-    )
+    isMediaGenNode(n) ||
+    !!(n && (isSaveNode(n) || n.kind === "task"))
   );
 }
 
@@ -11650,9 +12025,10 @@ async function runCascadeNode(n, seen) {
   if (!n || seen.has(n.id)) return;
   seen.add(n.id);
   if (n.kind === "task") return playTaskNode(n, true);
-  if (n.kind === "save_text" || n.kind === "save_image")
+  if (isSaveNode(n))
     return saveNodeAction(n);
-  if (isProcessPlayKind(n))
+  if (isMediaGenNode(n) || isProcessPlayKind(n))
+    /* 同批节点由队列按依赖启动；ensureUpstream 只补跑批次外上游 */
     return playNode(n, true, { noCascade: true, ensureUpstream: true });
 }
 
@@ -11672,8 +12048,11 @@ async function runDownstreamCascade(nodes) {
     const names = list.map((n) => n.title).filter(Boolean);
     if (names.length)
       toast(I18n.t("已自动执行下游节点：") + I18n.listJoin(names), "ok");
+  } catch (e) {
+    toast(I18n.t("下游执行失败：") + ((e && e.message) || String(e)), "err");
   } finally {
     S._cascadeSkipSaveIds = prevSkip;
+    /* 无论成败，本批次等待态必须清掉，禁止整图锁在「等待中」 */
     clearPendingRun(pending);
     renderCanvas();
     renderStatus();
@@ -11705,6 +12084,388 @@ async function playNode(node, quiet, opts) {
     if (S.playLocks.get(node.id) === lock) S.playLocks.delete(node.id);
     unlock();
   }
+}
+
+/* ── 音乐/视频节点：后端连接探测 + 状态可视化 ── */
+const MEDIA_BACKEND_PROBE_MS = 5000;
+const mediaBackendProbeTimers = new Map();
+const mediaBackendRunWatchers = new Map();
+let mediaBackendListenersBound = false;
+
+function isMediaGenNode(node) {
+  return !!(node && (node.kind === "music_gen" || node.kind === "video_gen"));
+}
+
+function ensureBackendUiState(node) {
+  if (!node.backendUi || typeof node.backendUi !== "object") {
+    node.backendUi = {
+      ok: null,
+      probing: false,
+      lastAt: 0,
+      info: null,
+      genPct: 0,
+      genMsg: "",
+    };
+  }
+  return node.backendUi;
+}
+
+function looksLikeBackendConnError(err) {
+  const s = String(err || "");
+  const low = s.toLowerCase();
+  return (
+    /请先在|未启用|启用后端|后端服务|连接失败|无法连接|econnrefused|enotfound|fetch failed|network|unreachable|timed?\s*out|socket hang up|comfy.*(down|fail)|gradio.*(down|fail)/i.test(
+      s,
+    ) || /econnrefused|enotfound|fetch failed|network|unreachable|timed?\s*out|socket hang up/.test(low)
+  );
+}
+
+function stopMediaBackendProbe(nodeId) {
+  const t = mediaBackendProbeTimers.get(nodeId);
+  if (t) {
+    clearInterval(t);
+    mediaBackendProbeTimers.delete(nodeId);
+  }
+}
+
+function stopMediaBackendRunWatcher(nodeId) {
+  const t = mediaBackendRunWatchers.get(nodeId);
+  if (t) {
+    clearInterval(t);
+    mediaBackendRunWatchers.delete(nodeId);
+  }
+}
+
+function startMediaBackendProbeLoop(nodeId) {
+  if (mediaBackendProbeTimers.has(nodeId)) return;
+  const timer = setInterval(() => {
+    const n = nodeById(nodeId);
+    if (!n || !isMediaGenNode(n)) {
+      stopMediaBackendProbe(nodeId);
+      return;
+    }
+    const ui = ensureBackendUiState(n);
+    if (ui.ok === true) {
+      stopMediaBackendProbe(nodeId);
+      return;
+    }
+    probeMediaBackend(n, { quiet: true });
+  }, MEDIA_BACKEND_PROBE_MS);
+  mediaBackendProbeTimers.set(nodeId, timer);
+}
+
+function startMediaBackendRunWatcher(node) {
+  if (!node || !isMediaGenNode(node)) return;
+  stopMediaBackendRunWatcher(node.id);
+  const timer = setInterval(() => {
+    const n = nodeById(node.id);
+    if (!n || !n.running) {
+      stopMediaBackendRunWatcher(node.id);
+      return;
+    }
+    probeMediaBackend(n, { quiet: true, soft: true });
+  }, 2000);
+  mediaBackendRunWatchers.set(node.id, timer);
+}
+
+function markMediaBackendDown(node, st) {
+  if (!isMediaGenNode(node)) return;
+  const ui = ensureBackendUiState(node);
+  ui.ok = false;
+  if (st) ui.info = summarizeMediaBackendStatus(node, st);
+  ui.lastAt = Date.now();
+  startMediaBackendProbeLoop(node.id);
+}
+
+function summarizeMediaBackendStatus(node, st) {
+  if (!st) return null;
+  const apiUp = node.kind === "music_gen" ? !!st.gradioUp : !!st.comfyUp;
+  return {
+    version: st.version || "",
+    port: st.port || 0,
+    running: !!st.running,
+    apiUp,
+    installed: !!st.installed,
+    installing: !!st.installing,
+    wantRunning: !!st.wantRunning,
+    installDir: st.installDir || "",
+    lock: st.lock || null,
+    gpu: st.gpu || null,
+    cpuVae: !!st.cpuVae,
+  };
+}
+
+function refreshMediaNodeUi(node) {
+  if (!node || !S.wf) return;
+  try {
+    refreshNodeEl(node.id);
+  } catch {
+    renderCanvas();
+  }
+}
+
+async function probeMediaBackend(node, opts) {
+  opts = opts || {};
+  if (!isMediaGenNode(node) || !window.api) return;
+  const ui = ensureBackendUiState(node);
+  if (ui.probing && !opts.force) return;
+  ui.probing = true;
+  if (!opts.quiet) refreshMediaNodeUi(node);
+  let st = null;
+  try {
+    st =
+      node.kind === "music_gen"
+        ? window.api.music3Status
+          ? await window.api.music3Status()
+          : null
+        : window.api.h3Status
+          ? await window.api.h3Status()
+          : null;
+  } catch {
+    st = null;
+  }
+  ui.probing = false;
+  ui.lastAt = Date.now();
+  ui.info = summarizeMediaBackendStatus(node, st);
+  const ok = !!(st && st.running);
+  if (opts.soft) {
+    if (!ok) {
+      ui.ok = false;
+      startMediaBackendProbeLoop(node.id);
+    } else if (ui.ok !== true) {
+      ui.ok = true;
+      stopMediaBackendProbe(node.id);
+    }
+  } else {
+    ui.ok = ok;
+    if (ok) stopMediaBackendProbe(node.id);
+    else startMediaBackendProbeLoop(node.id);
+  }
+  if (opts.manual) {
+    toast(
+      ok
+        ? I18n.t("后端连接正常")
+        : I18n.t("后端未就绪，请先在插件中启用服务"),
+      ok ? "ok" : "err",
+    );
+  }
+  refreshMediaNodeUi(node);
+}
+
+function ensureMediaBackendProbesForWorkflow(opts) {
+  opts = opts || {};
+  if (!S.wf || !S.wf.nodes) return;
+  const live = new Set();
+  for (const n of S.wf.nodes) {
+    if (!isMediaGenNode(n)) continue;
+    live.add(n.id);
+    const ui = ensureBackendUiState(n);
+    if (opts.reset) {
+      ui.ok = null;
+      ui.probing = false;
+      ui.genPct = n.running ? ui.genPct : 0;
+      if (!n.running) ui.genMsg = "";
+    }
+    if (ui.ok === true) continue;
+    probeMediaBackend(n, { quiet: true });
+  }
+  for (const id of [...mediaBackendProbeTimers.keys()]) {
+    if (!live.has(id)) stopMediaBackendProbe(id);
+  }
+  for (const id of [...mediaBackendRunWatchers.keys()]) {
+    if (!live.has(id)) stopMediaBackendRunWatcher(id);
+  }
+}
+
+function bindMediaBackendListeners() {
+  if (mediaBackendListenersBound || !window.api) return;
+  mediaBackendListenersBound = true;
+  if (window.api.onMusic3Progress) {
+    window.api.onMusic3Progress((data) => {
+      if (!data || data.phase !== "generate" || !data.nodeId) return;
+      const n = nodeById(data.nodeId);
+      if (!n || n.kind !== "music_gen") return;
+      const ui = ensureBackendUiState(n);
+      if (data.pct != null) ui.genPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+      if (data.message) {
+        ui.genMsg = String(data.message);
+        n.musicStatus = ui.genMsg;
+      }
+      if (data.error && looksLikeBackendConnError(data.message)) {
+        markMediaBackendDown(n);
+      }
+      refreshMediaNodeUi(n);
+    });
+  }
+  if (window.api.onH3Progress) {
+    window.api.onH3Progress((data) => {
+      if (!data || data.phase !== "generate" || !data.nodeId) return;
+      const n = nodeById(data.nodeId);
+      if (!n || n.kind !== "video_gen") return;
+      const ui = ensureBackendUiState(n);
+      if (data.pct != null) ui.genPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+      if (data.message) {
+        ui.genMsg = String(data.message);
+        n.videoStatus = ui.genMsg;
+      }
+      if (data.error && looksLikeBackendConnError(data.message)) {
+        markMediaBackendDown(n);
+      }
+      refreshMediaNodeUi(n);
+    });
+  }
+  if (window.api.onMusic3Gpu) {
+    window.api.onMusic3Gpu((gpu) => {
+      if (!gpu || !S.wf) return;
+      for (const n of S.wf.nodes || []) {
+        if (n.kind !== "music_gen") continue;
+        const ui = ensureBackendUiState(n);
+        if (ui.ok !== true && !n.running) continue;
+        ui.info = ui.info || {};
+        ui.info.gpu = gpu;
+        if (n.running || S.sel === n.id) refreshMediaNodeUi(n);
+      }
+    });
+  }
+  if (window.api.onH3Gpu) {
+    window.api.onH3Gpu((gpu) => {
+      if (!gpu || !S.wf) return;
+      for (const n of S.wf.nodes || []) {
+        if (n.kind !== "video_gen") continue;
+        const ui = ensureBackendUiState(n);
+        if (ui.ok !== true && !n.running) continue;
+        ui.info = ui.info || {};
+        ui.info.gpu = gpu;
+        if (n.running || S.sel === n.id) refreshMediaNodeUi(n);
+      }
+    });
+  }
+}
+
+function appendBackendProbeBtn(head, node) {
+  const ui = ensureBackendUiState(node);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className =
+    "n-play n-backend-probe" +
+    (ui.probing ? " wait" : ui.ok === true ? " ok" : ui.ok === false ? " bad" : " wait");
+  b.textContent = "◎";
+  b.title =
+    ui.ok === true
+      ? I18n.t("后端已连接 · 点击重新检测")
+      : ui.ok === false
+        ? I18n.t("后端未连接 · 点击重试")
+        : I18n.t("检测与后端的连接");
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    probeMediaBackend(node, { manual: true, force: true });
+  };
+  head.appendChild(b);
+}
+
+function appendMediaBackendPanel(body, node) {
+  const ui = ensureBackendUiState(node);
+  const info = ui.info || {};
+  const gpu = info.gpu || null;
+  const panel = document.createElement("div");
+  panel.className = "n-backend-panel";
+
+  const row = document.createElement("div");
+  row.className = "n-backend-pills";
+  const pill = (label, state) => {
+    const s = document.createElement("span");
+    s.className = "n-backend-pill " + (state || "");
+    s.textContent = label;
+    return s;
+  };
+  row.appendChild(
+    pill(
+      ui.ok === true ? I18n.t("已连接") : ui.ok === false ? I18n.t("未连接") : I18n.t("检测中"),
+      ui.ok === true ? "ok" : ui.ok === false ? "bad" : "wait",
+    ),
+  );
+  if (info.port)
+    row.appendChild(pill(":" + info.port, info.running ? "ok" : "muted"));
+  if (info.apiUp != null)
+    row.appendChild(
+      pill(
+        node.kind === "music_gen" ? "Gradio" : "Comfy",
+        info.apiUp ? "ok" : "bad",
+      ),
+    );
+  if (info.version) row.appendChild(pill("v" + info.version, "muted"));
+  if (info.installing) row.appendChild(pill(I18n.t("安装中"), "wait"));
+  else if (info.installed === false) row.appendChild(pill(I18n.t("未安装"), "bad"));
+  panel.appendChild(row);
+
+  const addBar = (label, pct, detail) => {
+    const wrap = document.createElement("div");
+    wrap.className = "n-backend-bar";
+    const lab = document.createElement("div");
+    lab.className = "n-backend-bar-lab";
+    const left = document.createElement("span");
+    left.textContent = label;
+    const right = document.createElement("span");
+    right.textContent = detail || Math.round(pct || 0) + "%";
+    lab.appendChild(left);
+    lab.appendChild(right);
+    const track = document.createElement("div");
+    track.className = "n-backend-bar-track";
+    const fill = document.createElement("i");
+    fill.style.width = Math.max(0, Math.min(100, Number(pct) || 0)) + "%";
+    track.appendChild(fill);
+    wrap.appendChild(lab);
+    wrap.appendChild(track);
+    panel.appendChild(wrap);
+  };
+
+  if (gpu) {
+    addBar(
+      I18n.t("显存"),
+      gpu.memPct,
+      (gpu.memUsed != null && gpu.memTotal != null
+        ? gpu.memUsed + "/" + gpu.memTotal + " MiB · "
+        : "") +
+        (gpu.memPct != null ? gpu.memPct + "%" : "") +
+        (gpu.name ? " · " + gpu.name : ""),
+    );
+    addBar(I18n.t("GPU"), gpu.util, (gpu.util != null ? gpu.util : 0) + "%");
+  } else if (ui.ok === true) {
+    const hint = document.createElement("div");
+    hint.className = "n-backend-hint";
+    hint.textContent = I18n.t("暂无 GPU 读数");
+    panel.appendChild(hint);
+  }
+
+  const showGen = node.running || (ui.genPct > 0 && ui.genPct < 100) || !!ui.genMsg;
+  if (showGen) {
+    addBar(
+      I18n.t("生成"),
+      node.running ? ui.genPct || 8 : ui.genPct,
+      (ui.genMsg || (node.running ? I18n.t("生成中…") : "")) +
+        (ui.genPct ? " " + Math.round(ui.genPct) + "%" : ""),
+    );
+  }
+
+  if (info.lock && info.lock.nodeId) {
+    const lockEl = document.createElement("div");
+    lockEl.className = "n-backend-hint";
+    const holder = nodeById(info.lock.nodeId);
+    lockEl.textContent =
+      I18n.t("任务锁 · ") +
+      ((holder && holder.title) || info.lock.nodeId) +
+      (info.lock.nodeId === node.id ? I18n.t("（本节点）") : "");
+    panel.appendChild(lockEl);
+  }
+
+  if (node.kind === "video_gen" && info.cpuVae) {
+    const hint = document.createElement("div");
+    hint.className = "n-backend-hint";
+    hint.textContent = I18n.t("CPU VAE 已启用");
+    panel.appendChild(hint);
+  }
+
+  body.appendChild(panel);
 }
 
 function musicGenSlotText(node, slot) {
@@ -11769,20 +12530,29 @@ async function playMusicGenNode(node, quiet) {
   } catch {}
   if (!st || !st.running) {
     node.error = I18n.t("请先在「插件 · Minimax Music 3」中启用后端服务");
+    markMediaBackendDown(node, st);
     if (!quiet) toast(node.error, "warn");
     renderCanvas();
     return;
+  }
+  {
+    const ui = ensureBackendUiState(node);
+    ui.ok = true;
+    ui.info = summarizeMediaBackendStatus(node, st);
+    ui.genPct = 5;
+    ui.genMsg = I18n.t("生成中…");
+    stopMediaBackendProbe(node.id);
   }
 
   node.running = true;
   node.error = null;
   node.musicStatus = I18n.t("生成中…");
+  startMediaBackendRunWatcher(node);
   renderCanvas();
 
   const duration = Math.max(10, Math.min(300, Number(node.audioDuration) || 60));
   const seed = Number(node.seed);
-  const outputDir = resolveMusicOutputDir(node);
-  const filename = String(node.filename || "").trim();
+  const exp = resolveMediaGenExport(node);
 
   try {
     const r = await window.api.music3Generate({
@@ -11792,8 +12562,8 @@ async function playMusicGenNode(node, quiet) {
       lyrics,
       audioDuration: duration,
       seed: isFinite(seed) ? seed : 0,
-      outputDir,
-      filename,
+      outputDir: exp.outputDir,
+      filename: exp.filename,
       offload: node.offload !== false,
     });
     if (!r || !r.ok) {
@@ -11804,19 +12574,35 @@ async function playMusicGenNode(node, quiet) {
         node.error = String(err);
       }
       node.musicStatus = node.error;
+      if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
       if (!quiet) toast(node.error, "err");
       return;
     }
-    node.output = { kind: "text", text: String(r.path || "") };
+    node.output = { kind: "audio", path: String(r.path || ""), text: String(r.path || "") };
     node.ranAt = Date.now();
     node.musicStatus = r.message || I18n.t("已保存：") + r.path;
+    {
+      const sv = boundSaveOf(node);
+      if (sv && r.path) {
+        sv.savedPath = r.path;
+        sv.savedPaths = [r.path];
+        sv.savedAt = Date.now();
+      }
+    }
+    {
+      const ui = ensureBackendUiState(node);
+      ui.genPct = 100;
+      ui.genMsg = I18n.t("完成");
+    }
     if (!quiet) toast(I18n.t("音乐已生成：") + r.path, "ok");
   } catch (e) {
     node.error = (e && e.message) || String(e);
     node.musicStatus = node.error;
+    if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
     if (!quiet) toast(node.error, "err");
   } finally {
     node.running = false;
+    stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
   }
@@ -11918,14 +12704,24 @@ async function playVideoGenNode(node, quiet) {
   } catch {}
   if (!st || !st.running) {
     node.error = I18n.t("请先在「插件 · Minimax H3」中启用后端服务");
+    markMediaBackendDown(node, st);
     if (!quiet) toast(node.error, "warn");
     renderCanvas();
     return;
+  }
+  {
+    const ui = ensureBackendUiState(node);
+    ui.ok = true;
+    ui.info = summarizeMediaBackendStatus(node, st);
+    ui.genPct = 5;
+    ui.genMsg = I18n.t("生成中…");
+    stopMediaBackendProbe(node.id);
   }
 
   node.running = true;
   node.error = null;
   node.videoStatus = I18n.t("生成中…");
+  startMediaBackendRunWatcher(node);
   renderCanvas();
 
   const mode = videoGenMode(node);
@@ -11980,8 +12776,8 @@ async function playVideoGenNode(node, quiet) {
       teaThresh: node.teaThresh != null ? Number(node.teaThresh) : 0.15,
       sageMode: node.sageMode || "auto",
       refImageSize: node.refImageSize || "match",
-      outputDir: resolveVideoOutputDir(node),
-      filename: String(node.filename || "").trim(),
+      outputDir: resolveMediaGenExport(node).outputDir,
+      filename: resolveMediaGenExport(node).filename,
     });
     if (!r || !r.ok) {
       const err = (r && (r.message || r.error)) || I18n.t("生成失败");
@@ -11991,19 +12787,35 @@ async function playVideoGenNode(node, quiet) {
         node.error = String(err);
       }
       node.videoStatus = node.error;
+      if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
       if (!quiet) toast(node.error, "err");
       return;
     }
-    node.output = { kind: "text", text: String(r.path || "") };
+    node.output = { kind: "video", path: String(r.path || ""), text: String(r.path || "") };
     node.ranAt = Date.now();
     node.videoStatus = r.message || I18n.t("已保存：") + r.path;
+    {
+      const sv = boundSaveOf(node);
+      if (sv && r.path) {
+        sv.savedPath = r.path;
+        sv.savedPaths = [r.path];
+        sv.savedAt = Date.now();
+      }
+    }
+    {
+      const ui = ensureBackendUiState(node);
+      ui.genPct = 100;
+      ui.genMsg = I18n.t("完成");
+    }
     if (!quiet) toast(I18n.t("视频已生成：") + r.path, "ok");
   } catch (e) {
     node.error = (e && e.message) || String(e);
     node.videoStatus = node.error;
+    if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
     if (!quiet) toast(node.error, "err");
   } finally {
     node.running = false;
+    stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
   }
@@ -12084,20 +12896,18 @@ async function playNodeBody(node, quiet, opts) {
   }
   opts = opts || {};
   const cascadePlan = await decideCascadeAfterPlay(node, quiet, opts);
-  /* quiet：不弹 toast / 不加 pending；ensureUpstream：仍补跑未处理的上游（控制节点调度用） */
+  /* quiet：不弹 toast / 不加 pending；ensureUpstream：仍补跑未处理的上游（控制/级联调度用） */
   const ensureUpstream = !quiet || !!opts.ensureUpstream;
   let pendingIds = null;
   if (!quiet) {
+    /* 只挂自身与上游；下游等待由 runDownstreamCascade 负责，避免父节点结束后残留锁死 */
     pendingIds = collectPendingRunIds(node, true);
-    if (cascadePlan.nodes && cascadePlan.nodes.length) {
-      for (const n of cascadePlan.nodes) pendingIds.add(n.id);
-    }
     addPendingRun(pendingIds);
   }
   if (ensureUpstream) {
     const ran = [];
     try {
-      await ensureProcessedAll(procSourcesOf(node), ran);
+      await ensureProcessedAll(procSourcesOutsideSchedule(node), ran);
     } catch (e) {
       if (pendingIds) clearPendingRun(pendingIds);
       throw e;
@@ -12263,18 +13073,9 @@ async function playNodeBody(node, quiet, opts) {
     } finally {
       node.running = false;
       clearAgentTaskSent(node);
-      /* 清掉本次挂上的 pending；若即将级联下游，则保留下游 id 给 runDownstreamCascade */
-      if (pendingIds) {
-        const keep = new Set();
-        if (
-          cascadePlan.nodes &&
-          cascadePlan.nodes.length &&
-          nodePlaySucceeded(node)
-        ) {
-          for (const n of cascadePlan.nodes) keep.add(n.id);
-        }
-        clearPendingRun([...pendingIds].filter((id) => !keep.has(id)));
-      } else if (S.pendingRun) {
+      /* 本节点挂上的 pending 一律清掉；下游覆盖批次另有自己的 pending 生命周期 */
+      if (pendingIds) clearPendingRun(pendingIds);
+      else if (S.pendingRun) {
         S.pendingRun.delete(node.id);
         renderCanvas();
         updateRunQueuePanel();
@@ -12444,7 +13245,7 @@ async function saveImageAgg(node, quiet) {
     if (!quiet) toast(I18n.t("图像保存节点需要一个图像输入"), "warn");
     return false;
   }
-  const dest = ensurePathHasExt(dest0, extOf(paths[0]) || ".png");
+  const dest = forcePathExt(dest0, ".png");
   const r = await window.api.fileCopyAssetTo(paths[0], dest);
   if (!r.ok) {
     if (!quiet) toast(I18n.t("保存失败"), "err");
@@ -12468,7 +13269,7 @@ async function saveImageOnce(node, quiet) {
       const ins = inputValuesFor(node, idx);
       const v = ins[0] && ins[0].value;
       if (!v || v.kind !== "image") continue;
-      const p = batchOutPath(destBase0, titles[idx], extOf(v.path) || ".png");
+      const p = batchOutPath(destBase0, titles[idx], ".png");
       const r = await window.api.fileCopyAssetTo(v.path, p);
       if (!r.ok) {
         if (!quiet) toast(I18n.t("保存失败：") + p, "err");
@@ -12495,10 +13296,7 @@ async function saveImageOnce(node, quiet) {
     if (!quiet) toast(I18n.t("图像保存节点需要一个图像输入"), "warn");
     return false;
   }
-  const destBase = ensurePathHasExt(
-    destBase0,
-    extOf(ins[0].value.path) || ".png",
-  );
+  const destBase = forcePathExt(destBase0, ".png");
   const r = await window.api.fileCopyAssetTo(ins[0].value.path, destBase);
   if (!r.ok) {
     if (!quiet) toast(I18n.t("保存失败"), "err");
@@ -12509,6 +13307,49 @@ async function saveImageOnce(node, quiet) {
   node.savedAt = Date.now();
   if (!quiet) toast(I18n.t("已保存图像 → ") + destBase, "ok");
   return true;
+}
+
+async function saveMediaFileOnce(node, quiet, media) {
+  const destBase0 = absSaveDest(node, quiet);
+  if (!destBase0) return false;
+  const ext = saveExtForMedia(media);
+  const ins = inputValuesFor(node, 0);
+  const v = ins[0] && ins[0].value;
+  const srcPath =
+    (v && (v.path || ((v.kind === "text" || v.text) && v.text))) || "";
+  if (!srcPath) {
+    if (!quiet)
+      toast(
+        media === "audio"
+          ? I18n.t("保存节点需要一个音频输入")
+          : I18n.t("保存节点需要一个视频输入"),
+        "warn",
+      );
+    return false;
+  }
+  const destBase = forcePathExt(destBase0, ext);
+  const r = await window.api.fileCopyAssetTo(srcPath, destBase);
+  if (!r.ok) {
+    if (!quiet) toast(I18n.t("保存失败"), "err");
+    return false;
+  }
+  node.savedPath = destBase;
+  node.savedPaths = [destBase];
+  node.savedAt = Date.now();
+  if (!quiet)
+    toast(
+      (media === "audio" ? I18n.t("已保存音频 → ") : I18n.t("已保存视频 → ")) +
+        destBase,
+      "ok",
+    );
+  return true;
+}
+
+async function saveNodeOnce(node, quiet) {
+  const media = saveMediaKind(node);
+  if (media === "text") return saveTextOnce(node, quiet);
+  if (media === "image") return saveImageOnce(node, quiet);
+  return saveMediaFileOnce(node, quiet, media);
 }
 
 async function saveNodeAction(node) {
@@ -12524,18 +13365,25 @@ async function saveNodeAction(node) {
   const pendingIds = new Set([node.id]);
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
-    if (src && (src.kind === "proc_text" || src.kind === "proc_image" || src.kind === "agent_task")) {
-      for (const id of collectPendingRunIds(src, true)) pendingIds.add(id);
-    }
+    if (
+      !src ||
+      (src.kind !== "proc_text" &&
+        src.kind !== "proc_image" &&
+        src.kind !== "agent_task" &&
+        src.kind !== "music_gen" &&
+        src.kind !== "video_gen")
+    )
+      continue;
+    /* 上游已跑完：不要再标成等待，否则处理→保存级联时刚完成的生成节点会被送进等待队列 */
+    if (!src.running && nodeAlreadyProcessed(src)) continue;
+    for (const id of collectPendingRunIds(src, true)) pendingIds.add(id);
   }
   addPendingRun(pendingIds);
   const ran = [];
   try {
-    await ensureProcessedAll(procSourcesOf(node), ran);
+    await ensureProcessedAll(procSourcesOutsideSchedule(node), ran);
     if (ran.length) toast(I18n.t("已自动执行上游节点：") + I18n.listJoin(ran), "ok");
-    let ok = false;
-    if (node.kind === "save_text") ok = await saveTextOnce(node, false);
-    else if (node.kind === "save_image") ok = await saveImageOnce(node, false);
+    const ok = await saveNodeOnce(node, false);
     if (ok) {
       renderCanvas();
       renderStatus();
@@ -12549,7 +13397,7 @@ async function autoSaveSaves(forceWired, skipIds) {
   let changed = false;
   const skip = skipIds || S._cascadeSkipSaveIds;
   for (const n of S.wf.nodes) {
-    if (n.kind !== "save_text" && n.kind !== "save_image") continue;
+    if (!isSaveNode(n)) continue;
     if (skip && skip.has(n.id)) continue;
     if (!n.savePath) continue;
     const wired = wiresTo(n.id).some((w) => {
@@ -12564,9 +13412,7 @@ async function autoSaveSaves(forceWired, skipIds) {
       if (n.auto === false || !wired) continue;
     }
     try {
-      if (n.kind === "save_text" && (await saveTextOnce(n, true)))
-        changed = true;
-      else if (n.kind === "save_image" && (await saveImageOnce(n, true)))
+      if (await saveNodeOnce(n, true))
         changed = true;
     } catch {
       /* 忽略自动保存错误 */
@@ -12611,8 +13457,9 @@ function canControlRun(n) {
       n.kind === "mutex" ||
       n.kind === "task" ||
       n.kind === "judge" ||
-      n.kind === "save_text" ||
-      n.kind === "save_image" ||
+      isSaveNode(n) ||
+      n.kind === "music_gen" ||
+      n.kind === "video_gen" ||
       n.kind === "control")
   );
 }
@@ -12641,7 +13488,7 @@ function invalidateControlRunTargets(nodes) {
       }
       if (n.kind === "task") n.taskStatus = "pending";
     }
-    if (n.kind === "save_text" || n.kind === "save_image") {
+    if (isSaveNode(n)) {
       n.savedPaths = [];
       n.savedPath = "";
       n.savedAt = 0;
@@ -12734,70 +13581,80 @@ async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
   const exec = runOne || ((n) => runControlledNode(n, seen));
   const { list, indeg, adj, byId } = controlRunDepGraph(runnable);
   if (!list.length) return;
-  if (list.length === 1) {
+  const scheduledIds = new Set(list.map((n) => n.id));
+  const prevScheduled = S._scheduledRunIds;
+  S._scheduledRunIds = scheduledIds;
+  const runExec = async (n) => {
     try {
-      await exec(list[0]);
+      await exec(n);
     } catch {
-      /* 单目标失败不抛出 */
+      /* 单个目标失败不阻断其余节点 */
     }
-    return;
-  }
-  const indegLeft = { ...indeg };
-  const launched = new Set();
-  let inFlight = 0;
-  let settle = () => {};
-  const done = new Promise((r) => {
-    settle = r;
-  });
-
-  const launch = (n) => {
-    if (!n || launched.has(n.id)) return;
-    if (controlNode && controlNode._aborted) return;
-    launched.add(n.id);
-    inFlight++;
-    Promise.resolve()
-      .then(() => {
-        if (controlNode && controlNode._aborted) return;
-        return exec(n);
-      })
-      .catch(() => {
-        /* 单个目标失败不阻断其余节点 */
-      })
-      .finally(() => {
-        for (const toId of adj[n.id] || []) {
-          indegLeft[toId]--;
-          if (indegLeft[toId] === 0) launch(byId[toId]);
-        }
-        inFlight--;
-        if (inFlight > 0) return;
-        if (controlNode && controlNode._aborted) {
-          settle();
-          return;
-        }
-        /* 环路残留：串行解开，与旧版分层回退一致 */
-        const left = list.find((x) => !launched.has(x.id));
-        if (left) {
-          indegLeft[left.id] = 0;
-          launch(left);
-          return;
-        }
-        settle();
-      });
   };
-
-  for (const n of list) {
-    if (indegLeft[n.id] === 0) launch(n);
-  }
-  if (inFlight === 0) {
-    const left = list.find((x) => !launched.has(x.id));
-    if (left) {
-      indegLeft[left.id] = 0;
-      launch(left);
-    } else {
+  try {
+    if (list.length === 1) {
+      await runExec(list[0]);
       return;
     }
+    const indegLeft = { ...indeg };
+    const launched = new Set();
+    let inFlight = 0;
+    let settle = () => {};
+    const done = new Promise((r) => {
+      settle = r;
+    });
+
+    const launch = (n) => {
+      if (!n || launched.has(n.id)) return;
+      if (controlNode && controlNode._aborted) return;
+      launched.add(n.id);
+      inFlight++;
+      Promise.resolve()
+        .then(() => {
+          if (controlNode && controlNode._aborted) return;
+          return exec(n);
+        })
+        .catch(() => {
+          /* 单个目标失败不阻断其余节点 */
+        })
+        .finally(() => {
+          for (const toId of adj[n.id] || []) {
+            indegLeft[toId]--;
+            if (indegLeft[toId] === 0) launch(byId[toId]);
+          }
+          inFlight--;
+          if (inFlight > 0) return;
+          if (controlNode && controlNode._aborted) {
+            settle();
+            return;
+          }
+          /* 环路残留：串行解开，与旧版分层回退一致 */
+          const left = list.find((x) => !launched.has(x.id));
+          if (left) {
+            indegLeft[left.id] = 0;
+            launch(left);
+            return;
+          }
+          settle();
+        });
+    };
+
+    for (const n of list) {
+      if (indegLeft[n.id] === 0) launch(n);
+    }
+    if (inFlight === 0) {
+      const left = list.find((x) => !launched.has(x.id));
+      if (left) {
+        indegLeft[left.id] = 0;
+        launch(left);
+      } else {
+        return;
+      }
+    }
+    await done;
+  } finally {
+    S._scheduledRunIds = prevScheduled;
   }
-  await done;
 }
 
 function applyClearOutput(node) {
@@ -12814,7 +13671,7 @@ function applyClearOutput(node) {
     node._hBase = null;
   }
   resetNodeSession(node);
-  if (node.kind === "save_text" || node.kind === "save_image") {
+  if (isSaveNode(node)) {
     node.savedPaths = [];
     node.savedPath = "";
     node.savedAt = 0;
@@ -12841,12 +13698,14 @@ async function runControlledNode(n, seen) {
   if (n.kind === "control") return playControlNode(n, seen);
   seen.add(n.id);
   if (n.kind === "task") return playTaskNode(n, false);
-  if (n.kind === "save_text" || n.kind === "save_image")
+  if (isSaveNode(n))
     return saveNodeAction(n);
   if (
     n.kind === "proc_text" ||
     n.kind === "proc_image" ||
     n.kind === "agent_task" ||
+    n.kind === "music_gen" ||
+    n.kind === "video_gen" ||
     n.kind === "wait_file"
   )
     /* quiet：避免把控制范围内整条链标成「等待」且不级联；ensureUpstream：仍补跑范围外未处理上游 */
@@ -12936,7 +13795,7 @@ async function playControlNode(node, seen) {
   } finally {
     node.running = false;
     node._aborted = false;
-    /* 控制调度结束：扫掉目标上残留的等待态，避免整图卡在「等待」 */
+    /* 控制调度结束：扫掉本批目标上的等待态 */
     clearPendingRun(runnable.map((n) => n && n.id).filter(Boolean));
     renderCanvas();
     renderStatus();
@@ -13340,13 +14199,29 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     )
   )
     return I18n.t("这两节点已连接");
-  if (!fromCtrl && to.kind === "save_image") {
-    if (wiresTo(toId).length) return I18n.t("图像保存节点仅接受 1 个输入");
-    if (!isImageSource(from)) return I18n.t("图像保存节点需要图像来源");
+  if (!fromCtrl && isSaveNode(to)) {
+    const incoming = saveDataSources(to);
+    if (to.boundFromId) {
+      if (from.id !== to.boundFromId)
+        return I18n.t("绑定保存节点不能改接其他来源");
+      if (incoming.some((s) => s.id === from.id))
+        return I18n.t("这两节点已连接");
+    } else {
+      const media = inferMediaFromSource(from);
+      if (incoming.length) {
+        const em = saveMediaKind(to);
+        if (em === "image" || em === "audio" || em === "video") {
+          if (incoming.length)
+            return I18n.t("图像 / 音频 / 视频保存仅接受 1 个输入");
+        } else if (media !== "text") {
+          return I18n.t("该保存节点当前按文本保存，不能混接媒体");
+        }
+      }
+      if (media === "image" && !isImageSource(from) && from.kind !== "split" && from.kind !== "merge")
+        return I18n.t("图像保存需要图像来源");
+    }
   } else if (!fromCtrl && to.kind === "split") {
     if (wiresTo(toId).length) return I18n.t("拆分节点仅接受 1 个输入");
-  } else if (!fromCtrl && to.kind === "save_text") {
-    if (!isTextSource(from)) return I18n.t("文本保存节点需要文本来源");
   } else if (!fromCtrl && to.kind === "music_gen") {
     if (!isTextSource(from)) return I18n.t("音乐生成节点需要文本来源（提示词 / 歌词）");
     const slot = toIndex == null ? null : Number(toIndex);
@@ -13389,6 +14264,7 @@ function addWire(fromId, toId, toIndex, opts) {
     to: toId,
     toIndex: idx,
     fromIndex,
+    pinned: !!opts.pinned,
   });
   if (!isControlKind(nodeById(fromId))) clearDownstream(toId);
   /* 文本处理节点接到图像：自动切到视觉服务商/模型 */
@@ -13406,11 +14282,12 @@ function addWire(fromId, toId, toIndex, opts) {
   /* 输出节点连到保存节点：自动开启保存，上游更新时落盘，无需再点 ▶ */
   if (
     to &&
-    (to.kind === "save_text" || to.kind === "save_image") &&
+    (isSaveNode(to)) &&
     from &&
     !isControlKind(from)
   ) {
     to.auto = true;
+    applySavePathExt(to);
   }
 }
 
@@ -13823,6 +14700,13 @@ async function applyAppOp(params) {
   if (!action) throw new Error(I18n.t("缺少 action"));
   if (action === "delete_workflow") await ensureAgentTool("app_delete");
   else if (
+    action === "list_dsh_plugins" ||
+    action === "install_dsh_plugin" ||
+    action === "remove_dsh_plugin" ||
+    action === "set_dsh_plugin"
+  ) {
+    await ensureAgentTool("app_dsh_plugins");
+  } else if (
     action === "status" ||
     action === "list_workflows" ||
     action === "rename_workflow" ||
@@ -13854,6 +14738,81 @@ async function applyAppOp(params) {
 
   if (action === "status" || action === "list_workflows") {
     return Object.assign({ ok: true, action }, await canvasSnapshotFull());
+  }
+
+  if (action === "list_dsh_plugins") {
+    if (!window.api || !window.api.dshPluginList)
+      throw new Error(I18n.t("DSH 插件接口不可用"));
+    const r = await window.api.dshPluginList();
+    const plugins = ((r && r.plugins) || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      title: p.title || p.name,
+      kind: p.kind,
+      core: !!p.core,
+      source: p.source === "config" ? "config" : "app",
+      disabled: !!p.disabled,
+      toggleable: !!p.toggleable,
+      removable: !!p.removable,
+      version: p.version || "",
+      description: (p.description || "").slice(0, 240),
+    }));
+    return { ok: true, action, plugins, count: plugins.length };
+  }
+
+  if (action === "install_dsh_plugin") {
+    if (!window.api || !window.api.dshPluginAdd)
+      throw new Error(I18n.t("DSH 插件接口不可用"));
+    const pkg = String(params.pkg || params.plugin || params.name || "").trim();
+    if (!pkg) throw new Error(I18n.t("缺少插件名 pkg"));
+    const rr = await window.api.dshPluginAdd(pkg);
+    if (rr && rr.ok === false)
+      throw new Error((rr && rr.error) || I18n.t("安装失败"));
+    return {
+      ok: true,
+      action,
+      pkg,
+      restarted: !!(rr && rr.restarted),
+      message: (rr && rr.message) || I18n.t("DSH 插件已安装：") + pkg,
+      plugins: (rr && rr.plugins) || [],
+    };
+  }
+
+  if (action === "remove_dsh_plugin") {
+    if (!window.api || !window.api.dshPluginRemove)
+      throw new Error(I18n.t("DSH 插件接口不可用"));
+    const pkg = String(params.pkg || params.plugin || params.name || "").trim();
+    if (!pkg) throw new Error(I18n.t("缺少插件名 pkg"));
+    const rr = await window.api.dshPluginRemove(pkg);
+    if (rr && rr.ok === false)
+      throw new Error((rr && rr.error) || I18n.t("移除失败"));
+    return {
+      ok: true,
+      action,
+      pkg,
+      restarted: !!(rr && rr.restarted),
+      plugins: (rr && rr.plugins) || [],
+    };
+  }
+
+  if (action === "set_dsh_plugin") {
+    if (!window.api || !window.api.dshPluginSetEnabled)
+      throw new Error(I18n.t("DSH 插件接口不可用"));
+    const pkg = String(params.pkg || params.plugin || params.name || "").trim();
+    if (!pkg) throw new Error(I18n.t("缺少插件名 pkg"));
+    const enabled = params.enabled !== false && params.enabled !== "false";
+    const id = params.id ? String(params.id) : undefined;
+    const rr = await window.api.dshPluginSetEnabled(pkg, enabled, id);
+    if (rr && rr.ok === false)
+      throw new Error((rr && rr.error) || I18n.t("操作失败"));
+    return {
+      ok: true,
+      action,
+      pkg,
+      enabled,
+      restarted: !!(rr && rr.restarted),
+      plugins: (rr && rr.plugins) || [],
+    };
   }
 
   if (action === "rename_workflow") {
@@ -13929,6 +14888,15 @@ function canvasOpNeedsConfirm(op, params) {
   if (S.config && S.config.dsh && S.config.dsh.assistAutoApprove) return false;
   if (op === "edit") return true;
   if (op === "app" && params && params.action === "delete_workflow") return true;
+  if (
+    op === "app" &&
+    params &&
+    (params.action === "install_dsh_plugin" ||
+      params.action === "remove_dsh_plugin" ||
+      params.action === "set_dsh_plugin")
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -14065,6 +15033,11 @@ function agentToolCatalog() {
           key: "app_delete",
           label: I18n.t("删除画布"),
           hint: "mtnode_app:delete_workflow",
+        },
+        {
+          key: "app_dsh_plugins",
+          label: I18n.t("DSH 插件"),
+          hint: I18n.t("列出 / 安装 / 移除 / 挂载 DSH 插件"),
         },
       ],
     },
@@ -14243,6 +15216,7 @@ async function ensureAgentTool(key, detail) {
 function normalizeCanvasCreateKind(kind) {
   if (kind === "image" || kind === "img") return "input_image";
   if (kind === "text") return "input_text";
+  if (kind === "save_text" || kind === "save_image") return "save";
   return kind;
 }
 
@@ -15073,6 +16047,33 @@ function summarizeAppOp(params) {
       raw: JSON.stringify(params, null, 2).slice(0, 2000),
     };
   }
+  if (params.action === "install_dsh_plugin") {
+    const pkg = String(params.pkg || params.plugin || params.name || "").trim();
+    return {
+      summary: I18n.t("安装 DSH 插件") + (pkg ? " · " + pkg : ""),
+      detail: I18n.t("将下载并安装到配置目录（应用升级后保留），安装后智能引擎会重启。"),
+      raw: JSON.stringify(params, null, 2).slice(0, 2000),
+    };
+  }
+  if (params.action === "remove_dsh_plugin") {
+    const pkg = String(params.pkg || params.plugin || params.name || "").trim();
+    return {
+      summary: I18n.t("移除 DSH 插件") + (pkg ? " · " + pkg : ""),
+      detail: I18n.t("将从配置目录卸载该插件，引擎会重启。"),
+      raw: JSON.stringify(params, null, 2).slice(0, 2000),
+    };
+  }
+  if (params.action === "set_dsh_plugin") {
+    const pkg = String(params.pkg || params.plugin || params.name || "").trim();
+    const on = params.enabled !== false && params.enabled !== "false";
+    return {
+      summary:
+        (on ? I18n.t("挂载 DSH 插件") : I18n.t("取消挂载 DSH 插件")) +
+        (pkg ? " · " + pkg : ""),
+      detail: I18n.t("更改插件挂载状态后引擎会重启。"),
+      raw: JSON.stringify(params, null, 2).slice(0, 2000),
+    };
+  }
   return {
     summary: I18n.t("应用操作：") + (params.action || ""),
     detail: "",
@@ -15321,7 +16322,7 @@ function layoutNodePriority(n) {
     n.kind === "chat"
   )
     return 5;
-  if (n.kind === "save_text" || n.kind === "save_image") return 6;
+  if (isSaveNode(n)) return 6;
   return 5;
 }
 
@@ -15375,6 +16376,11 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
     }
     x += colW + gapX;
   }
+  for (const n of nodes) {
+    if (!isMediaGenNode(n)) continue;
+    const sv = boundSaveOf(n);
+    if (sv && ids.has(sv.id)) placeBoundSave(n, sv);
+  }
   const sh = shiftToClear(nodes, obstacles || []);
   if (sh.x || sh.y) {
     for (const n of nodes) {
@@ -15407,7 +16413,7 @@ function nodeHasVisibleImage(node) {
   }
   if (
     node.kind === "proc_image" ||
-    node.kind === "save_image"
+    (isSaveNode(node) && saveMediaKind(node) === "image")
   ) {
     if (node.output && node.output.path) return true;
     if ((node.batchOutputs || []).some((x) => x && x.output && x.output.path))
@@ -15456,7 +16462,7 @@ function sizeNodeForTidy(node) {
     }
     return;
   }
-  if (kind === "save_image") {
+  if (isSaveKind(kind) && saveMediaKind(node) === "image") {
     node.w = snap(hasImg ? 280 : d.w);
     node.h = snap(hasImg ? 230 : d.h);
     return;
@@ -15475,7 +16481,7 @@ function sizeNodeForTidy(node) {
     node.h = snap(Math.min(280, Math.max(d.h, 40 + lines * 16)));
     return;
   }
-  if (kind === "save_text" || kind === "split" || kind === "merge" || kind === "global" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
+  if (isSaveKind(kind) || kind === "split" || kind === "merge" || kind === "global" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
     node.w = d.w;
     node.h = d.h;
     return;
@@ -15871,9 +16877,10 @@ function applyNodePatch(node, patch, warnings) {
   }
   if (
     patch.savePath != null &&
-    (node.kind === "save_text" || node.kind === "save_image")
+    (isSaveNode(node))
   )
     node.savePath = preferRelativeSavePath(String(patch.savePath));
+    applySavePathExt(node);
   if (patch.waitPath != null && node.kind === "wait_file")
     node.waitPath = preferRelativeSavePath(String(patch.waitPath));
   if (patch.waitIntervalSec != null && node.kind === "wait_file") {
@@ -15963,7 +16970,7 @@ function applyNodePatch(node, patch, warnings) {
     node.agent = patch.agent;
   if (
     typeof patch.auto === "boolean" &&
-    (node.kind === "save_text" || node.kind === "save_image")
+    (isSaveNode(node))
   )
     node.auto = patch.auto;
   if (
@@ -16347,6 +17354,7 @@ async function applyCanvasEdit(params) {
     let kind = spec && spec.kind;
     if (kind === "image" || kind === "img") kind = "input_image";
     if (kind === "text") kind = "input_text";
+    if (kind === "save_text" || kind === "save_image") kind = "save";
     if (!NODE_DEFAULTS[kind]) {
       warnings.push(I18n.t("未知节点类型：") + (spec && spec.kind));
       continue;
@@ -16384,6 +17392,10 @@ async function applyCanvasEdit(params) {
     if (!hasXY) {
       placeY = node.y + node.h + 48;
     }
+  }
+
+  for (const node of created) {
+    if (isMediaGenNode(node)) ensureBoundSaveForMedia(node);
   }
 
   for (const spec of creates.slice(0, 40)) {
@@ -16776,6 +17788,11 @@ async function applyCanvasEdit(params) {
 function removeWire(id) {
   const i = S.wf.wires.findIndex((w) => w.id === id);
   if (i < 0) return;
+  const w0 = S.wf.wires[i];
+  if (isPinnedWire(w0)) {
+    toast(I18n.t("该连线已固定，无法删除"), "warn");
+    return;
+  }
   pushHistory();
   const [w] = S.wf.wires.splice(i, 1);
   for (const x of S.wf.wires) {
@@ -16916,7 +17933,8 @@ function startNodeDrag(ev, node, opts) {
   }
   S.preDragSnap = snapshotState();
   const orig = {};
-  for (const id of S.selSet) {
+  const dragIds = expandBoundPairIds([...S.selSet]);
+  for (const id of dragIds) {
     const n = nodeById(id);
     if (n) orig[id] = { x: n.x, y: n.y };
   }
@@ -16931,7 +17949,7 @@ function startNodeDrag(ev, node, opts) {
   }
   S.drag = {
     mode: "node",
-    ids: [...S.selSet],
+    ids: dragIds,
     orig,
     markIds,
     origMarks,
@@ -17674,6 +18692,10 @@ async function deleteNodes(ids, quiet) {
         expanded.add(n.id);
         grew = true;
       }
+      if (isMediaGenNode(n) && expanded.has(n.id) && n.boundSaveId && !expanded.has(n.boundSaveId)) {
+        expanded.add(n.boundSaveId);
+        grew = true;
+      }
     }
   }
   const blocked = [];
@@ -17685,14 +18707,18 @@ async function deleteNodes(ids, quiet) {
       blocked.push(n);
       continue;
     }
+    if (isSaveNode(n) && n.boundFromId && !expanded.has(n.boundFromId)) {
+      blocked.push(n);
+      continue;
+    }
     finalIds.push(id);
   }
   if (blocked.length && !finalIds.length) {
-    if (!quiet) toast(I18n.t("起点 / 终点为固定节点，无法删除"), "warn");
+    if (!quiet) toast(I18n.t("固定节点无法删除（起点 / 终点 / 绑定保存）"), "warn");
     return false;
   }
   if (blocked.length && !quiet)
-    toast(I18n.t("已跳过固定的起点 / 终点"), "warn");
+    toast(I18n.t("已跳过固定节点（起点 / 终点 / 绑定保存）"), "warn");
   ids = finalIds;
   if (!ids.length) return false;
   /* 智能任务节点删除联动:其关联的智能会话一并删除(先提示确认) */
@@ -17746,6 +18772,10 @@ async function deleteNodes(ids, quiet) {
   S.wf.wires = S.wf.wires.filter(
     (w) => !set.has(w.from) && !set.has(w.to),
   );
+  for (const id of ids) {
+    stopMediaBackendProbe(id);
+    stopMediaBackendRunWatcher(id);
+  }
   for (const g of S.wf.groups || []) {
     ensureGroupArrays(g);
     g.nodeIds = g.nodeIds.filter((id) => !set.has(id));
@@ -17766,12 +18796,35 @@ async function deleteNodes(ids, quiet) {
 /* 批量复制选中节点（各自错开一格网格） */
 function duplicateNodes(nodes) {
   if (!nodes || !nodes.length) return;
+  const srcs = [];
+  const seen = new Set();
+  for (const node of nodes) {
+    if (!node || seen.has(node.id)) continue;
+    seen.add(node.id);
+    srcs.push(node);
+    if (isMediaGenNode(node) && node.boundSaveId) {
+      const sv = nodeById(node.boundSaveId);
+      if (sv && !seen.has(sv.id)) {
+        seen.add(sv.id);
+        srcs.push(sv);
+      }
+    }
+    if (isSaveNode(node) && node.boundFromId) {
+      const g = nodeById(node.boundFromId);
+      if (g && !seen.has(g.id)) {
+        seen.add(g.id);
+        srcs.push(g);
+      }
+    }
+  }
   pushHistory();
   const cps = [];
-  nodes.forEach((node, i) => {
+  const idMap = new Map();
+  srcs.forEach((node, i) => {
     if (isPinnedCtrl(node)) return;
     const cp = JSON.parse(JSON.stringify(node));
     cp.id = uid("n");
+    idMap.set(node.id, cp.id);
     cp.x = snap(cp.x + grid() * 4);
     cp.y = snap(cp.y + grid() * 4 + i * grid());
     cp.title = node.title + " 副本";
@@ -17782,14 +18835,29 @@ function duplicateNodes(nodes) {
     cp.attemptOutputs = null;
     cp.attemptIdx = 0;
     cp.attemptsDone = 0;
+    if (isMediaGenNode(cp)) {
+      cp.running = false;
+      cp.backendUi = {
+        ok: null,
+        probing: false,
+        lastAt: 0,
+        info: null,
+        genPct: 0,
+        genMsg: "",
+      };
+    }
     /* 副本不带会话关联:每个智能任务节点对应唯一会话 */
     cp.agentSessionId = "";
-    if (cp.kind === "save_text" || cp.kind === "save_image") {
+    if (isSaveNode(cp)) {
       cp.savedPaths = [];
       cp.savedPath = "";
     }
     cps.push(cp);
   });
+  for (const cp of cps) {
+    if (cp.boundSaveId) cp.boundSaveId = idMap.get(cp.boundSaveId) || "";
+    if (cp.boundFromId) cp.boundFromId = idMap.get(cp.boundFromId) || "";
+  }
   if (!cps.length) {
     toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
     return;
@@ -17797,6 +18865,10 @@ function duplicateNodes(nodes) {
   S.wf.nodes.push(...cps);
   for (const cp of cps) {
     if (cp.kind === "task") ensureTaskScaffold(cp);
+    if (isMediaGenNode(cp)) {
+      ensureBoundSaveForMedia(cp);
+      probeMediaBackend(cp, { quiet: true });
+    }
   }
   S.selSet = new Set(cps.map((c) => c.id));
   S.sel = cps[0].id;
@@ -17865,7 +18937,7 @@ function duplicateSelection() {
       cp.attemptIdx = 0;
       cp.attemptsDone = 0;
       cp.agentSessionId = "";
-      if (cp.kind === "save_text" || cp.kind === "save_image") {
+      if (isSaveNode(cp)) {
         cp.savedPaths = [];
         cp.savedPath = "";
       }
@@ -17964,7 +19036,7 @@ const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image"]],
   ["全局节点", ["global"]],
   ["处理节点", ["proc_text", "proc_image", "music_gen", "video_gen"]],
-  ["保存节点", ["save_text", "save_image"]],
+  ["保存节点", ["save"]],
   ["工具节点", ["split", "merge"]],
   ["智能节点", ["agent_task"]],
   ["任务节点", ["task"]],
@@ -17978,8 +19050,9 @@ const KIND_TAGS = {
   proc_image: "文生图",
   music_gen: "音乐",
   video_gen: "视频",
-  save_text: "存文",
-  save_image: "存图",
+  save: "保存",
+  save_text: "保存",
+  save_image: "保存",
   split: "拆分",
   merge: "合并",
   global: "全局",
@@ -18203,7 +19276,7 @@ function nodeFindFields(n) {
     });
   if (n.kind === "task" || n.goal != null)
     fields.push({ key: "goal", get: () => n.goal || "", set: (v) => (n.goal = v) });
-  if (n.kind === "save_text" || n.kind === "save_image" || n.savePath != null)
+  if (isSaveNode(n) || n.savePath != null)
     fields.push({
       key: "savePath",
       get: () => n.savePath || "",
@@ -18727,6 +19800,7 @@ function bindCanvas() {
         }
       }
       updateGroupFrames();
+      snapBoundSaves(d.ids);
       updateWires(d.idSet || (d.idSet = new Set(d.ids)));
     } else if (d.mode === "box") {
       const pt = toStage(ev.clientX, ev.clientY);
@@ -18769,6 +19843,7 @@ function bindCanvas() {
         syncMarkDomPos(m);
       }
       updateGroupFrames();
+      snapBoundSaves(Object.keys(d.orig || {}));
       updateWires(d.idSet || (d.idSet = new Set(Object.keys(d.orig || {}))));
     } else if (d.mode === "groupresize") {
       const g = groupById(d.gid);
@@ -19089,11 +20164,8 @@ function bindCanvas() {
         [
           I18n.t("保存节点（接收最终输出）"),
           [
-            ctxKindItem("save_text", I18n.t("保存文本（YAML）"), () =>
-              addNode("save_text", pt.x, pt.y),
-            ),
-            ctxKindItem("save_image", I18n.t("保存图像"), () =>
-              addNode("save_image", pt.x, pt.y),
+            ctxKindItem("save", I18n.t("保存（按输入自判）"), () =>
+              addNode("save", pt.x, pt.y),
             ),
           ],
         ],
@@ -19839,6 +20911,7 @@ function assignDefaultProvider(node) {
 }
 
 function makeNode(kind, x, y) {
+  if (kind === "save_text" || kind === "save_image") kind = "save";
   const d = NODE_DEFAULTS[kind];
   if (!d) return null;
   const node = { id: uid("n"), kind, x: snap(x), y: snap(y), w: d.w, h: d.h };
@@ -19871,6 +20944,7 @@ function uniqueNodeTitle(desired, exceptId) {
 }
 
 function addNode(kind, x, y, extra) {
+  if (kind === "save_text" || kind === "save_image") kind = "save";
   const d = NODE_DEFAULTS[kind];
   if (!d) return;
   const node = makeNode(kind, x, y);
@@ -19890,12 +20964,17 @@ function addNode(kind, x, y, extra) {
   pushHistory();
   S.wf.nodes.push(node);
   if (kind === "task") ensureTaskScaffold(node);
+  if (isMediaGenNode(node)) ensureBoundSaveForMedia(node);
   S.sel = node.id;
   S.selWire = null;
   renderCanvas();
   scheduleSave(true);
   renderStatus();
   toast(I18n.t("已添加节点：") + node.title, "ok");
+  if (isMediaGenNode(node)) {
+    ensureBackendUiState(node).ok = null;
+    probeMediaBackend(node, { quiet: true });
+  }
   return node;
 }
 
@@ -22396,7 +23475,7 @@ async function pulseExecFrom(node, task, seen, toIndex) {
     try {
       if (node.kind === "task") await playTaskNode(node, true);
       else if (node.kind === "wait_file") await playWaitFileNode(node, true);
-      else if (node.kind === "save_text" || node.kind === "save_image")
+      else if (isSaveNode(node))
         await saveNodeAction(node);
       else if (
         node.kind === "proc_text" ||
@@ -22917,6 +23996,13 @@ function migrateWf(wf) {
   for (const n of wf.nodes) {
     n.title = n.title || I18n.t("未命名节点");
     delete n.runPromise; // 清理旧版本误存的运行期 Promise
+    if (n.kind === "save_text") {
+      if (!n.legacySaveMedia) n.legacySaveMedia = "text";
+      n.kind = "save";
+    } else if (n.kind === "save_image") {
+      if (!n.legacySaveMedia) n.legacySaveMedia = "image";
+      n.kind = "save";
+    }
     if (n.kind === "input_text" || n.kind === "input_image") {
       if (n.batch == null) n.batch = false;
       if (!Array.isArray(n.entries)) n.entries = [];
@@ -22937,8 +24023,7 @@ function migrateWf(wf) {
     if (
       n.kind === "proc_text" ||
       n.kind === "proc_image" ||
-      n.kind === "save_text" ||
-      n.kind === "save_image"
+      isSaveNode(n)
     ) {
       if (n.batchMode !== "agg") n.batchMode = "batch";
     }
@@ -22982,7 +24067,7 @@ function migrateWf(wf) {
       if (n.taskStatus !== "done" && n.taskStatus !== "failed" && n.taskStatus !== "blocked")
         n.taskStatus = n.taskStatus || "pending";
     }
-    if (n.kind === "save_text" || n.kind === "save_image") {
+    if (isSaveNode(n)) {
       if (!Array.isArray(n.savedPaths))
         n.savedPaths = n.savedPath ? [n.savedPath] : [];
       n.savedPaths = n.savedPaths.filter(Boolean);
@@ -23102,6 +24187,10 @@ function migrateWf(wf) {
     for (const n of wf.nodes) {
       if (n.kind === "task") ensureTaskScaffold(n, wf);
     }
+    for (const n of wf.nodes) {
+      if (n.kind === "music_gen" || n.kind === "video_gen")
+        ensureBoundSaveForMedia(n, wf);
+    }
     for (const w of wf.wires || []) {
       if (w.fromIndex == null || !isFinite(Number(w.fromIndex))) w.fromIndex = 0;
     }
@@ -23215,6 +24304,7 @@ async function loadWorkflow(id) {
   trackWorkflow(id, S.wf.name);
   try { restoreMusicGenLocks(); } catch {}
   try { restoreVideoGenLocks(); } catch {}
+  try { ensureMediaBackendProbesForWorkflow({ reset: true }); } catch {}
   toast(I18n.t("已打开画布：") + (S.wf.name || id), "ok");
 }
 
@@ -24414,6 +25504,7 @@ function importWorkflowDialog() {
 /* ============ 模板商店 ============ */
 const TPL_PREV_CACHE = new Map();
 const TPL_ST = {
+  kind: "templates", /* templates | skills */
   tab: "browse",
   view: "grid", /* grid | list，默认网格 */
   q: "",
@@ -24424,13 +25515,25 @@ const TPL_ST = {
   title: "",
   description: "",
   tags: [],
+  version: "1.0.0",
+  official: false,
+  skillName: "",
+  skillText: "",
   fileBase64: "",
   fileHint: "",
   previewBase64: "",
   previewThumbBase64: "",
   previewHint: "",
   authMode: "login",
+  _localSkills: null,
 };
+
+function tplIsSkill() {
+  return TPL_ST.kind === "skills";
+}
+function tplApiBase() {
+  return tplIsSkill() ? "/api/skills" : "/api/templates";
+}
 
 function tplAuth() {
   return (S.config && S.config.storeAuth) || null;
@@ -24441,10 +25544,16 @@ function setTplAuth(a) {
   window.api.configSave(S.config).catch(() => {});
 }
 const TPL_MAX_BYTES = 10 * 1024 * 1024;
+const SKILL_MAX_BYTES = 1 * 1024 * 1024;
 function tplTooLarge(bytes) {
-  if (bytes == null || !(bytes > TPL_MAX_BYTES)) return false;
+  const max = tplIsSkill() ? SKILL_MAX_BYTES : TPL_MAX_BYTES;
+  if (bytes == null || !(bytes > max)) return false;
   toast(
-    I18n.t("模板不能超过 10MB（当前 ") + fmtBytes(bytes) + "）",
+    (tplIsSkill()
+      ? I18n.t("技能不能超过 1MB（当前 ")
+      : I18n.t("模板不能超过 10MB（当前 ")) +
+      fmtBytes(bytes) +
+      "）",
     "err",
   );
   return true;
@@ -24475,12 +25584,12 @@ async function tplApi(method, path, json) {
 }
 async function tplPreviewSrc(id, size) {
   const sz = size === "full" ? "full" : "thumb";
-  const key = id + ":" + sz;
+  const key = (tplIsSkill() ? "s:" : "t:") + id + ":" + sz;
   if (TPL_PREV_CACHE.has(key)) return TPL_PREV_CACHE.get(key);
   const q = sz === "full" ? "?size=full" : "?size=thumb";
   const r = await tplApi(
     "GET",
-    "/api/templates/" + encodeURIComponent(id) + "/preview" + q,
+    tplApiBase() + "/" + encodeURIComponent(id) + "/preview" + q,
   );
   if (!r || !r.ok || !r.base64) return "";
   const url = "data:" + (r.contentType || "image/jpeg") + ";base64," + r.base64;
@@ -24492,12 +25601,75 @@ function tplResetDraft() {
   TPL_ST.title = "";
   TPL_ST.description = "";
   TPL_ST.tags = [];
+  TPL_ST.version = "1.0.0";
+  TPL_ST.official = false;
+  TPL_ST.skillName = "";
+  TPL_ST.skillText = "";
   TPL_ST.fileBase64 = "";
   TPL_ST.fileHint = "";
   TPL_ST.previewBase64 = "";
   TPL_ST.previewThumbBase64 = "";
   TPL_ST.previewHint = "";
   TPL_ST._clearPreview = false;
+}
+
+function parseSkillFrontmatterClient(text) {
+  const meta = { name: "", title: "", description: "", version: "" };
+  const raw = String(text || "");
+  const fm = raw.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (fm) {
+    for (const line of fm[1].split("\n")) {
+      const km = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
+      if (!km) continue;
+      const k = km[1];
+      const v = String(km[2] || "").replace(/^['"]|['"]$/g, "").trim();
+      if (k === "name" || k === "title" || k === "description" || k === "version")
+        meta[k] = v;
+    }
+  }
+  if (!meta.title) {
+    const h1 = raw.match(/^#\s+(.+)$/m);
+    if (h1) meta.title = String(h1[1] || "").trim();
+  }
+  if (meta.name) meta.name = meta.name.trim().toLowerCase().replace(/_/g, "-");
+  return meta;
+}
+
+function skillTextToBase64(text) {
+  return btoa(unescape(encodeURIComponent(String(text || ""))));
+}
+
+function bumpSkillVersion(v) {
+  const m = String(v || "").trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return "1.0.1";
+  return m[1] + "." + m[2] + "." + (Number(m[3]) + 1);
+}
+
+function applySkillDraftFromText(text, opts) {
+  const o = opts || {};
+  const meta = parseSkillFrontmatterClient(text);
+  TPL_ST.skillText = String(text || "");
+  TPL_ST.fileBase64 = skillTextToBase64(TPL_ST.skillText);
+  if (meta.name) TPL_ST.skillName = meta.name;
+  if (o.fillMeta !== false) {
+    if (meta.title) TPL_ST.title = meta.title;
+    if (meta.description) TPL_ST.description = meta.description;
+    if (meta.version) TPL_ST.version = meta.version;
+  }
+}
+
+async function refreshLocalSkillsForStore() {
+  try {
+    const r = await window.api.skillList();
+    TPL_ST._localSkills = (r && r.skills) || [];
+  } catch {
+    TPL_ST._localSkills = [];
+  }
+  return TPL_ST._localSkills || [];
+}
+function findLocalSkill(skillName) {
+  const nm = String(skillName || "").toLowerCase();
+  return (TPL_ST._localSkills || []).find((s) => s.name === nm) || null;
 }
 
 /* 商店二级浮层：大图 / 只读画布预览（盖在模板商店之上） */
@@ -24702,6 +25874,28 @@ async function openTemplateStore() {
   body.classList.add("tpl-store-body");
   foot.innerHTML = "";
 
+  const kindRow = document.createElement("div");
+  kindRow.className = "tpl-top tpl-kind-row";
+  const kindTpl = mkMiniBtn(I18n.t("模板"), () => {
+    if (TPL_ST.kind === "templates") return;
+    TPL_ST.kind = "templates";
+    TPL_ST.page = 1;
+    TPL_ST.tag = "";
+    tplResetDraft();
+    paint();
+  });
+  const kindSkill = mkMiniBtn("Skill", () => {
+    if (TPL_ST.kind === "skills") return;
+    TPL_ST.kind = "skills";
+    TPL_ST.page = 1;
+    TPL_ST.tag = "";
+    tplResetDraft();
+    paint();
+  });
+  kindRow.appendChild(kindTpl);
+  kindRow.appendChild(kindSkill);
+  body.appendChild(kindRow);
+
   const top = document.createElement("div");
   top.className = "tpl-top";
   const tabBrowse = mkMiniBtn(I18n.t("浏览"), () => {
@@ -24734,6 +25928,8 @@ async function openTemplateStore() {
   foot.appendChild(mkMiniBtn(I18n.t("关闭"), closeOverlay, true));
 
   function markTabs() {
+    kindTpl.classList.toggle("on", !tplIsSkill());
+    kindSkill.classList.toggle("on", tplIsSkill());
     tabBrowse.classList.toggle("on", TPL_ST.tab === "browse");
     tabUpload.classList.toggle("on", TPL_ST.tab === "upload");
     tabMine.classList.toggle("on", TPL_ST.tab === "mine");
@@ -24800,6 +25996,11 @@ async function openTemplateStore() {
     const wrap = document.createElement("div");
     wrap.className = "tpl-auth";
     wrap.appendChild(hintEl(I18n.t("上传需要登录")));
+    const mode = TPL_ST.authMode === "register"
+      ? "register"
+      : TPL_ST.authMode === "passwd"
+        ? "passwd"
+        : "login";
     const modeRow = document.createElement("div");
     modeRow.className = "dsh-btn-row";
     const loginMode = mkMiniBtn(I18n.t("登录"), () => {
@@ -24810,52 +26011,102 @@ async function openTemplateStore() {
       TPL_ST.authMode = "register";
       paint();
     });
-    loginMode.classList.toggle("on", TPL_ST.authMode !== "register");
-    regMode.classList.toggle("on", TPL_ST.authMode === "register");
+    const passMode = mkMiniBtn(I18n.t("修改密码"), () => {
+      TPL_ST.authMode = "passwd";
+      paint();
+    });
+    loginMode.classList.toggle("on", mode === "login");
+    regMode.classList.toggle("on", mode === "register");
+    passMode.classList.toggle("on", mode === "passwd");
     modeRow.appendChild(loginMode);
     modeRow.appendChild(regMode);
+    modeRow.appendChild(passMode);
     wrap.appendChild(modeRow);
     const user = document.createElement("input");
     user.type = "text";
     user.placeholder = I18n.t("用户名（3-24 位字母、数字或下划线）");
+    wrap.appendChild(user);
     const pass = document.createElement("input");
     pass.type = "password";
-    pass.placeholder = I18n.t("密码（6-72 位）");
-    wrap.appendChild(user);
+    pass.placeholder = mode === "passwd"
+      ? I18n.t("旧密码")
+      : I18n.t("密码（6-72 位）");
     wrap.appendChild(pass);
     let nick = null;
-    if (TPL_ST.authMode === "register") {
+    let passNew = null;
+    let passNew2 = null;
+    if (mode === "register") {
       nick = document.createElement("input");
       nick.type = "text";
       nick.placeholder = I18n.t("昵称（1-32 位）");
       wrap.appendChild(nick);
+    } else if (mode === "passwd") {
+      passNew = document.createElement("input");
+      passNew.type = "password";
+      passNew.placeholder = I18n.t("新密码（6-72 位）");
+      passNew2 = document.createElement("input");
+      passNew2.type = "password";
+      passNew2.placeholder = I18n.t("再次输入新密码");
+      wrap.appendChild(passNew);
+      wrap.appendChild(passNew2);
     }
+    const applyAuth = (r, okMsg) => {
+      if (!r || !r.ok || !r.data || !r.data.token) {
+        toast(tplErr(r), "err");
+        return false;
+      }
+      const u = r.data.user || {};
+      setTplAuth({
+        token: r.data.token,
+        userId: u.id,
+        username: u.username,
+        nickname: u.nickname,
+        likesReceived: u.likesReceived || 0,
+        downloadsReceived: u.downloadsReceived || 0,
+        isAdmin: !!u.isAdmin,
+      });
+      toast(okMsg, "ok");
+      return true;
+    };
     wrap.appendChild(
       mkMiniBtn(
-        TPL_ST.authMode === "register" ? I18n.t("注册") : I18n.t("登录"),
+        mode === "register"
+          ? I18n.t("注册")
+          : mode === "passwd"
+            ? I18n.t("修改密码")
+            : I18n.t("登录"),
         async () => {
-          const path = TPL_ST.authMode === "register" ? "/api/register" : "/api/login";
-          const payload = { username: user.value.trim(), password: pass.value };
-          if (nick) payload.nickname = nick.value.trim();
-          const r = await tplApi("POST", path, payload);
-          if (!r || !r.ok || !r.data || !r.data.token) {
-            toast(tplErr(r), "err");
-            return;
+          if (mode === "passwd") {
+            const oldPassword = pass.value;
+            const newPassword = passNew.value;
+            if (newPassword !== passNew2.value) {
+              toast(I18n.t("两次输入的新密码不一致"), "err");
+              return;
+            }
+            if (oldPassword === newPassword) {
+              toast(I18n.t("新密码不能与旧密码相同"), "err");
+              return;
+            }
+            const r = await tplApi("POST", "/api/change-password", {
+              username: user.value.trim(),
+              oldPassword,
+              newPassword,
+            });
+            if (!applyAuth(r, I18n.t("密码已修改"))) return;
+          } else {
+            const path = mode === "register" ? "/api/register" : "/api/login";
+            const payload = { username: user.value.trim(), password: pass.value };
+            if (nick) payload.nickname = nick.value.trim();
+            const r = await tplApi("POST", path, payload);
+            if (
+              !applyAuth(
+                r,
+                mode === "register" ? I18n.t("注册成功") : I18n.t("登录成功"),
+              )
+            )
+              return;
           }
-          const u = r.data.user || {};
-          setTplAuth({
-            token: r.data.token,
-            userId: u.id,
-            username: u.username,
-            nickname: u.nickname,
-            likesReceived: u.likesReceived || 0,
-            downloadsReceived: u.downloadsReceived || 0,
-            isAdmin: !!u.isAdmin,
-          });
-          toast(
-            TPL_ST.authMode === "register" ? I18n.t("注册成功") : I18n.t("登录成功"),
-            "ok",
-          );
+          TPL_ST.authMode = "login";
           if (after) after();
           else paint();
         },
@@ -24897,6 +26148,72 @@ async function openTemplateStore() {
   }
 
   async function downloadTpl(item) {
+    if (tplIsSkill()) {
+      const skillName = item.skillName || "";
+      if (!skillName) {
+        toast(I18n.t("技能名无效"), "err");
+        return;
+      }
+      const local = findLocalSkill(skillName);
+      const updating = !!(local && !local.builtin);
+      if (
+        !(await confirmDialog(
+          updating
+            ? I18n.t("将用工坊版本覆盖本机技能「{name}」。确定更新？", {
+                name: skillName,
+              })
+            : I18n.t("下载技能到本机后，智能节点可通过 / 使用。确定下载？"),
+          {
+            title: updating ? I18n.t("更新技能") : I18n.t("下载技能"),
+          },
+        ))
+      )
+        return;
+      const r = await tplApi(
+        "GET",
+        "/api/skills/" + encodeURIComponent(item.id) + "/file",
+      );
+      if (!r || !r.ok || !r.data || !(r.data.text || r.data.base64)) {
+        toast(I18n.t("下载失败：") + tplErr(r), "err");
+        return;
+      }
+      let text = r.data.text || "";
+      if (!text && r.data.base64) {
+        try {
+          text = decodeURIComponent(escape(atob(r.data.base64)));
+        } catch {
+          toast(I18n.t("技能内容解码失败"), "err");
+          return;
+        }
+      }
+      const rr = await window.api.skillAdd({
+        name: skillName,
+        description: item.description || "",
+        body: text,
+        overwrite: updating,
+        storeMeta: {
+          storeId: item.id,
+          version: item.version || r.data.version || "1.0.0",
+          updatedAt: item.updatedAt || Date.now(),
+          official: !!item.official,
+          title: item.title || "",
+        },
+      });
+      if (!rr || rr.ok === false) {
+        toast(I18n.t("安装失败：") + ((rr && rr.error) || I18n.t("未知错误")), "err");
+        return;
+      }
+      await refreshLocalSkillsForStore();
+      _skillListCache = { at: 0, skills: [] };
+      toast(
+        updating
+          ? I18n.t("已更新技能 ") + skillName
+          : I18n.t("已下载技能 ") + skillName,
+        "ok",
+      );
+      paint();
+      return;
+    }
     if (!(await confirmDialog(I18n.t("导入将打开为新画布，当前画布会保留。确定下载？"), { title: I18n.t("下载模板") }))) return;
     let pack;
     try {
@@ -24919,6 +26236,59 @@ async function openTemplateStore() {
   }
 
   async function previewTplNodes(item) {
+    if (tplIsSkill()) {
+      const body = openTplSubOverlay(
+        I18n.t("技能预览") +
+          " · " +
+          (item.title || item.skillName || I18n.t("（未命名）")) +
+          (item.version ? " · v" + item.version : "") +
+          (item.bytes ? " · " + fmtBytes(item.bytes) : ""),
+      );
+      const ph = document.createElement("div");
+      ph.className = "tpl-lightbox-ph";
+      ph.textContent = I18n.t("加载技能中…");
+      body.appendChild(ph);
+      const r = await tplApi(
+        "GET",
+        "/api/skills/" + encodeURIComponent(item.id) + "/file",
+      );
+      if (!r || !r.ok || !r.data) {
+        ph.textContent = I18n.t("加载失败：") + tplErr(r);
+        return;
+      }
+      const text = r.data.text || "";
+      body.innerHTML = "";
+      const note = document.createElement("div");
+      note.className = "tpl-prev-note";
+      const local = findLocalSkill(item.skillName);
+      note.textContent =
+        (item.official ? I18n.t("官方 Skill") + " · " : "") +
+        (local
+          ? I18n.t("本机已安装") +
+            (local.version ? " v" + local.version : "") +
+            (local.version && item.version && local.version !== item.version
+              ? " · " + I18n.t("工坊有新版本，需手动更新")
+              : "")
+          : I18n.t("只读预览 · 下载后才会写入本机"));
+      body.appendChild(note);
+      const pre = document.createElement("pre");
+      pre.className = "tpl-skill-md";
+      pre.textContent = text.slice(0, 120000);
+      body.appendChild(pre);
+      const foot = document.createElement("div");
+      foot.className = "dsh-btn-row";
+      foot.style.marginTop = "8px";
+      foot.appendChild(
+        mkMiniBtn(
+          local && !local.builtin ? I18n.t("更新到本机") : I18n.t("下载到本机"),
+          () => downloadTpl(item),
+          true,
+        ),
+      );
+      foot.appendChild(mkMiniBtn(I18n.t("关闭"), closeTplSubOverlay));
+      body.appendChild(foot);
+      return;
+    }
     const body = openTplSubOverlay(
       I18n.t("节点预览") +
         " · " +
@@ -24978,7 +26348,11 @@ async function openTemplateStore() {
       paint();
       return;
     }
-    const r = await tplApi("POST", "/api/templates/" + encodeURIComponent(item.id) + "/like", {});
+    const r = await tplApi(
+      "POST",
+      tplApiBase() + "/" + encodeURIComponent(item.id) + "/like",
+      {},
+    );
     if (!r || !r.ok) {
       toast(tplErr(r), "err");
       return;
@@ -25001,8 +26375,11 @@ async function openTemplateStore() {
     const title = document.createElement("div");
     title.className = "tpl-title";
     const titleTxt = item.title || I18n.t("（未命名）");
-    title.textContent = titleTxt;
-    title.title = titleTxt;
+    title.textContent =
+      (item.official ? "★ " : "") +
+      titleTxt +
+      (item.version ? " · v" + item.version : "");
+    title.title = titleTxt + (item.skillName ? " (" + item.skillName + ")" : "");
     body.appendChild(title);
 
     if (item.description) {
@@ -25018,6 +26395,8 @@ async function openTemplateStore() {
     const owner =
       (item.owner && (item.owner.nickname || item.owner.username)) || "";
     const bits = [];
+    if (item.official) bits.push(I18n.t("官方"));
+    if (item.skillName) bits.push(item.skillName);
     if (owner) bits.push(owner);
     if (item.bytes) bits.push(fmtBytes(item.bytes));
     bits.push("↓" + (item.downloads || 0));
@@ -25059,11 +26438,39 @@ async function openTemplateStore() {
     const row = document.createElement("div");
     row.className = "tpl-card-actions";
     row.appendChild(
-      mkIconBtn("◈", I18n.t("节点预览"), () => previewTplNodes(item)),
+      mkIconBtn(
+        tplIsSkill() ? "☰" : "◈",
+        tplIsSkill() ? I18n.t("技能预览") : I18n.t("节点预览"),
+        () => previewTplNodes(item),
+      ),
     );
-    row.appendChild(
-      mkIconBtn("⬇", I18n.t("下载"), () => downloadTpl(item), { primary: true }),
-    );
+    if (tplIsSkill()) {
+      const local = findLocalSkill(item.skillName);
+      const installed = !!(local && !local.builtin);
+      const newer =
+        installed &&
+        item.version &&
+        local.version &&
+        String(local.version) !== String(item.version);
+      if (installed) {
+        row.appendChild(
+          mkIconBtn(
+            "↻",
+            newer ? I18n.t("更新") : I18n.t("已安装（可再更新）"),
+            () => downloadTpl(item),
+            { primary: !!newer, on: !newer },
+          ),
+        );
+      } else {
+        row.appendChild(
+          mkIconBtn("⬇", I18n.t("下载"), () => downloadTpl(item), { primary: true }),
+        );
+      }
+    } else {
+      row.appendChild(
+        mkIconBtn("⬇", I18n.t("下载"), () => downloadTpl(item), { primary: true }),
+      );
+    }
     row.appendChild(
       mkIconBtn(
         item.liked ? "♥" : "♡",
@@ -25072,7 +26479,6 @@ async function openTemplateStore() {
         { on: !!item.liked },
       ),
     );
-    /* 编辑/删除仅在「我的」页显示，浏览页即使是作者也不出现 */
     if (mine) {
       row.appendChild(
         mkIconBtn("✎", I18n.t("编辑"), () => {
@@ -25081,12 +26487,35 @@ async function openTemplateStore() {
           TPL_ST.title = item.title || "";
           TPL_ST.description = item.description || "";
           TPL_ST.tags = (item.tags || []).slice();
+          TPL_ST.version = item.version || "1.0.0";
+          TPL_ST.official = !!item.official;
+          TPL_ST.skillName = item.skillName || "";
+          TPL_ST.skillText = "";
           TPL_ST.fileBase64 = "";
           TPL_ST.fileHint = "";
           TPL_ST.previewBase64 = "";
           TPL_ST.previewThumbBase64 = "";
           TPL_ST.previewHint = "";
           TPL_ST._clearPreview = false;
+          if (tplIsSkill()) {
+            TPL_ST.fileHint = I18n.t("正在加载工坊正文…");
+            tplApi(
+              "GET",
+              "/api/skills/" + encodeURIComponent(item.id) + "/file",
+            ).then((r) => {
+              if (!r || !r.ok || !r.data) {
+                TPL_ST.fileHint = I18n.t("加载失败：") + tplErr(r);
+                return;
+              }
+              applySkillDraftFromText(r.data.text || "", { fillMeta: false });
+              TPL_ST.fileHint =
+                I18n.t("已加载工坊正文") +
+                (item.version ? " · v" + item.version : "") +
+                " · " +
+                fmtBytes(r.data.bytes || 0);
+              if (TPL_ST.tab === "upload" && tplIsSkill()) paint();
+            });
+          }
           paint();
         }),
       );
@@ -25101,14 +26530,17 @@ async function openTemplateStore() {
           }
           const r = await tplApi(
             "DELETE",
-            "/api/templates/" + encodeURIComponent(item.id),
+            tplApiBase() + "/" + encodeURIComponent(item.id),
           );
           if (!r || !r.ok) {
             toast(tplErr(r), "err");
             return;
           }
-          await tplInvalidateTplCache(item.id);
-          toast(I18n.t("已删除模板"), "ok");
+          if (!tplIsSkill()) await tplInvalidateTplCache(item.id);
+          toast(
+            tplIsSkill() ? I18n.t("已删除技能") : I18n.t("已删除模板"),
+            "ok",
+          );
           await refreshMe();
           paint();
         });
@@ -25167,7 +26599,7 @@ async function openTemplateStore() {
     );
     const lab = document.createElement("span");
     lab.textContent = I18n.t("第 ") + TPL_ST.page + " / " + pages + I18n.t(" 页");
-    lab.title = I18n.t("共 ") + total + I18n.t(" 个模板");
+    lab.title = I18n.t("共 ") + total + (tplIsSkill() ? I18n.t(" 个技能") : I18n.t(" 个模板"));
     pg.appendChild(lab);
     pg.appendChild(
       mkIconBtn("›", I18n.t("下一页"), () => {
@@ -25182,6 +26614,7 @@ async function openTemplateStore() {
 
   async function paintBrowse() {
     pane.className = "tpl-pane";
+    if (tplIsSkill()) await refreshLocalSkillsForStore();
     pane.appendChild(hintEl(I18n.t("工坊加载中…")));
     const pageSize = tplBrowsePageSize();
     const qs =
@@ -25195,7 +26628,7 @@ async function openTemplateStore() {
       TPL_ST.page +
       "&pageSize=" +
       pageSize;
-    const r = await tplApi("GET", "/api/templates" + qs);
+    const r = await tplApi("GET", tplApiBase() + qs);
     pane.innerHTML = "";
     if (!r || !r.ok || !r.data) {
       pane.appendChild(hintEl(I18n.t("创意工坊不可用：") + tplErr(r)));
@@ -25235,7 +26668,9 @@ async function openTemplateStore() {
     bar.className = "tpl-toolbar";
     const q = document.createElement("input");
     q.type = "text";
-    q.placeholder = I18n.t("搜索模板或标签…");
+    q.placeholder = tplIsSkill()
+      ? I18n.t("搜索技能、标签或 skillName…")
+      : I18n.t("搜索模板或标签…");
     q.value = TPL_ST.q;
     const go = () => {
       TPL_ST.q = q.value.trim();
@@ -25246,11 +26681,13 @@ async function openTemplateStore() {
       if (ev.key === "Enter") go();
     });
     const sel = document.createElement("select");
-    [
+    const sortOpts = [
       ["new", I18n.t("最新")],
       ["downloads", I18n.t("下载量")],
       ["likes", I18n.t("点赞量")],
-    ].forEach(([v, lab]) => {
+    ];
+    if (tplIsSkill()) sortOpts.push(["official", I18n.t("官方优先")]);
+    sortOpts.forEach(([v, lab]) => {
       const o = document.createElement("option");
       o.value = v;
       o.textContent = lab;
@@ -25273,7 +26710,8 @@ async function openTemplateStore() {
     const head = document.createElement("div");
     head.className = "tpl-grid-head";
     const headLab = document.createElement("span");
-    headLab.textContent = I18n.t("共 ") + total + I18n.t(" 个模板");
+    headLab.textContent =
+      I18n.t("共 ") + total + (tplIsSkill() ? I18n.t(" 个技能") : I18n.t(" 个模板"));
     head.appendChild(headLab);
     appendTplViewToggle(head);
     pane.appendChild(head);
@@ -25281,8 +26719,12 @@ async function openTemplateStore() {
       pane.appendChild(
         hintEl(
           TPL_ST.q || TPL_ST.tag
-            ? I18n.t("没有匹配的模板")
-            : I18n.t("暂无模板"),
+            ? tplIsSkill()
+              ? I18n.t("没有匹配的技能")
+              : I18n.t("没有匹配的模板")
+            : tplIsSkill()
+              ? I18n.t("暂无技能")
+              : I18n.t("暂无模板"),
         ),
       );
       return;
@@ -25312,7 +26754,7 @@ async function openTemplateStore() {
     const title = document.createElement("input");
     title.type = "text";
     title.maxLength = 80;
-    title.placeholder = I18n.t("模板标题…");
+    title.placeholder = tplIsSkill() ? I18n.t("技能标题…") : I18n.t("模板标题…");
     title.value = TPL_ST.title;
     title.oninput = () => {
       TPL_ST.title = title.value;
@@ -25320,12 +26762,49 @@ async function openTemplateStore() {
     titleLab.appendChild(title);
     form.appendChild(titleLab);
 
+    if (tplIsSkill()) {
+      const verLab = document.createElement("label");
+      verLab.textContent = I18n.t("版本");
+      const ver = document.createElement("input");
+      ver.type = "text";
+      ver.maxLength = 32;
+      ver.placeholder = "1.0.0";
+      ver.dataset.tplSkillVer = "1";
+      ver.value = TPL_ST.version || "1.0.0";
+      ver.oninput = () => {
+        TPL_ST.version = ver.value;
+      };
+      verLab.appendChild(ver);
+      form.appendChild(verLab);
+      if (TPL_ST.skillName) {
+        form.appendChild(
+          hintEl(I18n.t("技能名（不可改）：") + TPL_ST.skillName),
+        );
+      }
+      const auth = tplAuth();
+      if (auth && auth.isAdmin) {
+        const offRow = document.createElement("label");
+        offRow.className = "tpl-check";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!TPL_ST.official;
+        cb.onchange = () => {
+          TPL_ST.official = !!cb.checked;
+        };
+        offRow.appendChild(cb);
+        offRow.appendChild(document.createTextNode(" " + I18n.t("标记为官方 Skill（ms2308）")));
+        form.appendChild(offRow);
+      }
+    }
+
     const descLab = document.createElement("label");
     descLab.textContent = I18n.t("功能描述");
     const desc = document.createElement("textarea");
     desc.rows = 4;
     desc.maxLength = 2000;
-    desc.placeholder = I18n.t("介绍这个模板能做什么…");
+    desc.placeholder = tplIsSkill()
+      ? I18n.t("介绍这个技能能做什么…")
+      : I18n.t("介绍这个模板能做什么…");
     desc.value = TPL_ST.description;
     desc.oninput = () => {
       TPL_ST.description = desc.value;
@@ -25374,7 +26853,7 @@ async function openTemplateStore() {
     exist.className = "tpl-tags";
     tagLab.appendChild(exist);
     form.appendChild(tagLab);
-    tplApi("GET", "/api/tags").then((tr) => {
+    tplApi("GET", "/api/tags?kind=" + (tplIsSkill() ? "skills" : "templates")).then((tr) => {
       if (!tr || !tr.ok || !tr.data) return;
       exist.innerHTML = "";
       (tr.data.tags || []).forEach((tg) => {
@@ -25439,6 +26918,162 @@ async function openTemplateStore() {
     form.appendChild(prevLab);
 
     const fileLab = document.createElement("label");
+    if (tplIsSkill()) {
+      fileLab.textContent = "SKILL.md（" + I18n.t("最大 1MB") + "）";
+      fileLab.appendChild(
+        hintEl(
+          TPL_ST.editId
+            ? I18n.t("可直接改下方正文并保存到工坊（需新版本）；也可从本机技能载入。本机副本不会自动跟着变。")
+            : I18n.t("选择文件、粘贴，或载入本机技能；需含 frontmatter name（kebab-case）"),
+        ),
+      );
+      const fileHint = hintEl(TPL_ST.fileHint || "");
+      const fileRow = document.createElement("div");
+      fileRow.className = "dsh-btn-row";
+      const syncBodyUi = () => {
+        bodyTa.value = TPL_ST.skillText || "";
+        fileHint.textContent = TPL_ST.fileHint || "";
+        if (title && TPL_ST.title) title.value = TPL_ST.title;
+        if (desc && TPL_ST.description != null) desc.value = TPL_ST.description;
+        if (TPL_ST.version) {
+          const verInp = form.querySelector('input[data-tpl-skill-ver="1"]');
+          if (verInp) verInp.value = TPL_ST.version;
+        }
+      };
+      fileRow.appendChild(
+        mkMiniBtn(I18n.t("选择 SKILL.md"), async () => {
+          const r = await window.api.storePickSkillMd();
+          if (!r || !r.ok) {
+            if (r && r.error !== I18n.t("已取消")) toast(tplErr(r), "err");
+            return;
+          }
+          if (tplTooLarge(r.bytes)) return;
+          applySkillDraftFromText(r.text || "");
+          TPL_ST.fileHint =
+            I18n.t("已选择文件：") + (r.name || "") + " · " + fmtBytes(r.bytes);
+          syncBodyUi();
+        }),
+      );
+      fileRow.appendChild(
+        mkMiniBtn(I18n.t("使用本机技能"), async () => {
+          await refreshLocalSkillsForStore();
+          const list = (TPL_ST._localSkills || []).filter((s) => !s.builtin);
+          if (!list.length) {
+            toast(I18n.t("本机暂无可载入的技能"), "warn");
+            return;
+          }
+          const body = openTplSubOverlay(I18n.t("选择本机技能"));
+          const note = document.createElement("div");
+          note.className = "tpl-prev-note";
+          note.textContent = I18n.t("载入后可编辑并发布到工坊（仅上传者可更新已有条目）");
+          body.appendChild(note);
+          list.forEach((s) => {
+            const row = document.createElement("div");
+            row.className = "dsh-btn-row";
+            row.style.marginBottom = "6px";
+            const lab = document.createElement("span");
+            lab.style.flex = "1";
+            lab.textContent =
+              (s.title || s.name) +
+              " · " +
+              s.name +
+              (s.version ? " · v" + s.version : "");
+            row.appendChild(lab);
+            row.appendChild(
+              mkMiniBtn(
+                I18n.t("载入"),
+                async () => {
+                  if (
+                    TPL_ST.editId &&
+                    TPL_ST.skillName &&
+                    s.name !== TPL_ST.skillName
+                  ) {
+                    toast(
+                      I18n.t("本机技能名与工坊条目不一致，不能覆盖该条目"),
+                      "err",
+                    );
+                    return;
+                  }
+                  const g = await window.api.skillGet(s.name);
+                  if (!g || !g.ok || !g.body) {
+                    toast(I18n.t("加载失败：") + ((g && g.error) || ""), "err");
+                    return;
+                  }
+                  applySkillDraftFromText(g.body);
+                  if (TPL_ST.editId) {
+                    TPL_ST.version = bumpSkillVersion(TPL_ST.version || "1.0.0");
+                  }
+                  TPL_ST.fileHint =
+                    I18n.t("已载入本机技能") +
+                    " · " +
+                    s.name +
+                    " · " +
+                    fmtBytes(new TextEncoder().encode(TPL_ST.skillText).length);
+                  closeTplSubOverlay();
+                  syncBodyUi();
+                  paint();
+                },
+                true,
+              ),
+            );
+            body.appendChild(row);
+          });
+          body.appendChild(mkMiniBtn(I18n.t("关闭"), closeTplSubOverlay));
+        }),
+      );
+      fileRow.appendChild(
+        mkMiniBtn(I18n.t("粘贴 Markdown"), () => {
+          const ta = document.createElement("textarea");
+          ta.className = "b64-area";
+          ta.placeholder = I18n.t("粘贴完整 SKILL.md…");
+          const apply = mkMiniBtn(
+            I18n.t("确定"),
+            () => {
+              const s = ta.value;
+              if (!String(s || "").trim()) {
+                toast(I18n.t("内容为空"), "err");
+                return;
+              }
+              const bytes = new TextEncoder().encode(s).length;
+              if (tplTooLarge(bytes)) return;
+              applySkillDraftFromText(s);
+              TPL_ST.fileHint =
+                I18n.t("已粘贴 Markdown") + " · " + fmtBytes(bytes);
+              ta.remove();
+              apply.remove();
+              syncBodyUi();
+            },
+            true,
+          );
+          fileLab.appendChild(ta);
+          fileLab.appendChild(apply);
+        }),
+      );
+      fileLab.appendChild(fileRow);
+      fileLab.appendChild(fileHint);
+      const bodyLab = document.createElement("div");
+      bodyLab.style.marginTop = "8px";
+      bodyLab.textContent = I18n.t("技能正文（可在此直接修改）");
+      const bodyTa = document.createElement("textarea");
+      bodyTa.className = "tpl-skill-editor";
+      bodyTa.rows = 14;
+      bodyTa.placeholder = I18n.t("SKILL.md 全文…");
+      bodyTa.value = TPL_ST.skillText || "";
+      bodyTa.oninput = () => {
+        TPL_ST.skillText = bodyTa.value;
+        TPL_ST.fileBase64 = skillTextToBase64(TPL_ST.skillText);
+        const meta = parseSkillFrontmatterClient(TPL_ST.skillText);
+        if (meta.name && !TPL_ST.editId) TPL_ST.skillName = meta.name;
+        TPL_ST.fileHint =
+          I18n.t("已编辑正文") +
+          " · " +
+          fmtBytes(new TextEncoder().encode(TPL_ST.skillText).length);
+        fileHint.textContent = TPL_ST.fileHint;
+      };
+      fileLab.appendChild(bodyLab);
+      fileLab.appendChild(bodyTa);
+      form.appendChild(fileLab);
+    } else {
     fileLab.textContent = ".mtnodes（" + I18n.t("最大 10MB") + "）";
     const fileHint = hintEl(
       TPL_ST.fileHint ||
@@ -25508,27 +27143,70 @@ async function openTemplateStore() {
     fileLab.appendChild(fileRow);
     fileLab.appendChild(fileHint);
     form.appendChild(fileLab);
+    }
 
     form.appendChild(
       mkMiniBtn(
-        TPL_ST.editId ? I18n.t("保存修改") : I18n.t("发布模板"),
+        TPL_ST.editId
+          ? I18n.t("保存修改")
+          : tplIsSkill()
+            ? I18n.t("发布技能")
+            : I18n.t("发布模板"),
         async () => {
           const titleV = (TPL_ST.title || "").trim();
           if (!titleV) {
             toast(I18n.t("请填写标题"), "err");
             return;
           }
-          if (!TPL_ST.editId && !TPL_ST.fileBase64) {
-            toast(I18n.t("请先选择或粘贴模板文件"), "err");
+          if (
+            !TPL_ST.editId &&
+            !(tplIsSkill() ? TPL_ST.skillText || TPL_ST.fileBase64 : TPL_ST.fileBase64)
+          ) {
+            toast(
+              tplIsSkill()
+                ? I18n.t("请先选择、粘贴或编写 SKILL.md")
+                : I18n.t("请先选择或粘贴模板文件"),
+              "err",
+            );
             return;
           }
+          if (tplIsSkill() && TPL_ST.skillText) {
+            TPL_ST.fileBase64 = skillTextToBase64(TPL_ST.skillText);
+          }
           const replacingFile = !!TPL_ST.fileBase64;
+          if (tplIsSkill() && replacingFile && !(TPL_ST.version || "").trim()) {
+            toast(I18n.t("请填写版本号"), "err");
+            return;
+          }
+          if (
+            tplIsSkill() &&
+            TPL_ST.editId &&
+            replacingFile &&
+            TPL_ST.skillName
+          ) {
+            const meta = parseSkillFrontmatterClient(TPL_ST.skillText || "");
+            if (meta.name && meta.name !== TPL_ST.skillName) {
+              toast(
+                I18n.t("不可更改 skill name（当前为 ") +
+                  TPL_ST.skillName +
+                  "）",
+                "err",
+              );
+              return;
+            }
+          }
           if (
             TPL_ST.editId &&
             replacingFile &&
             !(await confirmDialog(
-              I18n.t("确认覆盖工坊中的模板画布？本地预览/下载缓存将同步更新。"),
-              { title: I18n.t("覆盖模板"), danger: true, okText: I18n.t("覆盖") },
+              tplIsSkill()
+                ? I18n.t("确认覆盖工坊中的技能正文？修改立即生效；本机已下载副本需手动更新。")
+                : I18n.t("确认覆盖工坊中的模板画布？本地预览/下载缓存将同步更新。"),
+              {
+                title: tplIsSkill() ? I18n.t("覆盖技能") : I18n.t("覆盖模板"),
+                danger: true,
+                okText: I18n.t("覆盖"),
+              },
             ))
           ) {
             return;
@@ -25538,19 +27216,28 @@ async function openTemplateStore() {
             description: TPL_ST.description || "",
             tags: TPL_ST.tags.slice(),
           };
+          if (tplIsSkill()) {
+            payload.version = (TPL_ST.version || "1.0.0").trim();
+            const auth = tplAuth();
+            if (auth && auth.isAdmin) payload.official = !!TPL_ST.official;
+          }
           if (TPL_ST.fileBase64) {
-            try {
-              const stripped = await stripStoreMtNodesBase64(TPL_ST.fileBase64);
-              TPL_ST.fileBase64 = stripped.base64;
-              payload.fileBase64 = stripped.base64;
-              const approx = stripped.bytes || 0;
-              if (tplTooLarge(approx)) return;
-            } catch (e) {
-              toast(
-                I18n.t("导出失败：") + ((e && e.message) || String(e)),
-                "err",
-              );
-              return;
+            if (tplIsSkill()) {
+              payload.fileBase64 = TPL_ST.fileBase64;
+            } else {
+              try {
+                const stripped = await stripStoreMtNodesBase64(TPL_ST.fileBase64);
+                TPL_ST.fileBase64 = stripped.base64;
+                payload.fileBase64 = stripped.base64;
+                const approx = stripped.bytes || 0;
+                if (tplTooLarge(approx)) return;
+              } catch (e) {
+                toast(
+                  I18n.t("导出失败：") + ((e && e.message) || String(e)),
+                  "err",
+                );
+                return;
+              }
             }
           }
           if (TPL_ST._clearPreview) payload.previewBase64 = "";
@@ -25560,14 +27247,46 @@ async function openTemplateStore() {
               payload.previewThumbBase64 = TPL_ST.previewThumbBase64;
           }
           const editId = TPL_ST.editId;
+          const skillNameSnap = TPL_ST.skillName;
+          const skillTextSnap = TPL_ST.skillText;
+          const versionSnap = payload.version;
           const r = editId
-            ? await tplApi("PATCH", "/api/templates/" + encodeURIComponent(editId), payload)
-            : await tplApi("POST", "/api/templates", payload);
+            ? await tplApi("PATCH", tplApiBase() + "/" + encodeURIComponent(editId), payload)
+            : await tplApi("POST", tplApiBase(), payload);
           if (!r || !r.ok) {
             toast(tplErr(r), "err");
             return;
           }
-          if (editId && replacingFile) {
+          if (
+            tplIsSkill() &&
+            skillNameSnap &&
+            skillTextSnap &&
+            (replacingFile || !editId)
+          ) {
+            const local = findLocalSkill(skillNameSnap);
+            if (local && !local.builtin) {
+              try {
+                await window.api.skillAdd({
+                  name: skillNameSnap,
+                  description: TPL_ST.description || "",
+                  body: skillTextSnap,
+                  overwrite: true,
+                  storeMeta: {
+                    storeId: (r.data && r.data.item && r.data.item.id) || editId,
+                    version: versionSnap || "1.0.0",
+                    updatedAt:
+                      (r.data && r.data.item && r.data.item.updatedAt) ||
+                      Date.now(),
+                    official: !!(r.data && r.data.item && r.data.item.official),
+                    title: titleV,
+                  },
+                });
+                await refreshLocalSkillsForStore();
+                _skillListCache = { at: 0, skills: [] };
+              } catch (_) {}
+            }
+          }
+          if (!tplIsSkill() && editId && replacingFile) {
             const item = (r.data && r.data.item) || {};
             await tplInvalidateTplCache(editId);
             if (payload.fileBase64) {
@@ -25579,8 +27298,8 @@ async function openTemplateStore() {
               });
             }
           } else if (editId && (TPL_ST._clearPreview || payload.previewBase64)) {
-            TPL_PREV_CACHE.delete(editId + ":thumb");
-            TPL_PREV_CACHE.delete(editId + ":full");
+            TPL_PREV_CACHE.delete((tplIsSkill() ? "s:" : "t:") + editId + ":thumb");
+            TPL_PREV_CACHE.delete((tplIsSkill() ? "s:" : "t:") + editId + ":full");
           }
           toast(editId ? I18n.t("已保存修改") : I18n.t("上传成功"), "ok");
           tplResetDraft();
@@ -25600,8 +27319,9 @@ async function openTemplateStore() {
       paintAuthForm(pane);
       return;
     }
+    if (tplIsSkill()) await refreshLocalSkillsForStore();
     pane.appendChild(hintEl(I18n.t("工坊加载中…")));
-    const r = await tplApi("GET", "/api/me/templates");
+    const r = await tplApi("GET", tplIsSkill() ? "/api/me/skills" : "/api/me/templates");
     pane.innerHTML = "";
     if (!r || !r.ok || !r.data) {
       pane.appendChild(hintEl(I18n.t("加载失败：") + tplErr(r)));
@@ -25641,12 +27361,14 @@ async function openTemplateStore() {
       " · " +
       I18n.t("共 ") +
       total +
-      I18n.t(" 个模板");
+      (tplIsSkill() ? I18n.t(" 个技能") : I18n.t(" 个模板"));
     head.appendChild(headLab);
     appendTplViewToggle(head);
     pane.appendChild(head);
     if (!total) {
-      pane.appendChild(hintEl(I18n.t("暂无模板")));
+      pane.appendChild(
+        hintEl(tplIsSkill() ? I18n.t("暂无技能") : I18n.t("暂无模板")),
+      );
       return;
     }
     appendTplItems(pane, items, true);
@@ -25663,6 +27385,7 @@ async function openTemplateStore() {
   }
 
   await refreshMe();
+  if (tplIsSkill()) await refreshLocalSkillsForStore();
   await paint();
 }
 
@@ -26035,6 +27758,7 @@ async function refreshMusic3PluginCard(root) {
   const addBtn = (kind, title, onClick, opts) => {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
   };
+  /* 列表仅保留控制台 运行/停止 互斥开关；后端启停在控制台窗口内操作，避免 play+stop 并存 */
   if (st.consoleOpen) {
     addBtn("stop", I18n.t("停止"), async () => {
       if (window.api.music3Close) await window.api.music3Close();
@@ -26046,18 +27770,6 @@ async function refreshMusic3PluginCard(root) {
       if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
       refreshMusic3PluginCard(root);
     }, { primary: true });
-  }
-  if (st.running) {
-    addBtn("stop", I18n.t("关闭服务"), async () => {
-      await window.api.music3Stop();
-      refreshMusic3PluginCard(root);
-    });
-  } else if (st.installDir && (st.installed || (st.project && st.project.scaffold))) {
-    addBtn("play", I18n.t("启用服务"), async () => {
-      const r = await window.api.music3Start();
-      if (!r || !r.ok) toast(I18n.t("启动失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      refreshMusic3PluginCard(root);
-    });
   }
   addBtn("trash", I18n.t("移除入口"), async () => {
     if (
@@ -26120,6 +27832,7 @@ async function refreshH3PluginCard(root) {
   const addBtn = (kind, title, onClick, opts) => {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
   };
+  /* 列表仅保留控制台 运行/停止 互斥开关；后端启停在控制台窗口内操作，避免 play+stop 并存 */
   if (st.consoleOpen) {
     addBtn("stop", I18n.t("停止"), async () => {
       if (window.api.h3Close) await window.api.h3Close();
@@ -26131,18 +27844,6 @@ async function refreshH3PluginCard(root) {
       if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
       refreshH3PluginCard(root);
     }, { primary: true });
-  }
-  if (st.running) {
-    addBtn("stop", I18n.t("关闭服务"), async () => {
-      await window.api.h3Stop();
-      refreshH3PluginCard(root);
-    });
-  } else if (st.installDir && (st.installed || (st.project && st.project.scaffold))) {
-    addBtn("play", I18n.t("启用服务"), async () => {
-      const r = await window.api.h3Start();
-      if (!r || !r.ok) toast(I18n.t("启动失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      refreshH3PluginCard(root);
-    });
   }
   addBtn("trash", I18n.t("移除入口"), async () => {
     if (
@@ -26694,6 +28395,11 @@ function renderDshPluginInfo(p) {
       ? I18n.t("未挂载")
       : I18n.t("已挂载");
   tags.appendChild(tag);
+  const src = document.createElement("span");
+  src.className = "dsh-plugin-tag " + (p.source === "config" ? "on" : "builtin");
+  src.textContent =
+    p.source === "config" ? I18n.t("配置目录") : I18n.t("应用内置");
+  tags.appendChild(src);
   if (p.version) {
     const ver = document.createElement("span");
     ver.className = "dsh-plugin-info-ver";
@@ -26834,6 +28540,12 @@ function renderDshPluginsDialog() {
     row.appendChild(dot);
     row.appendChild(nm);
     row.appendChild(tag);
+    if (p.source === "config") {
+      const loc = document.createElement("span");
+      loc.className = "dsh-plugin-tag on";
+      loc.textContent = I18n.t("配置目录");
+      row.appendChild(loc);
+    }
     card.appendChild(row);
     const pick = () => {
       DSH_PLUGINS_UI.selectedKey = dshPluginKey(p);
@@ -27307,7 +29019,7 @@ function openSettings() {
     plTitle.className = "settings-sec-title settings-sec-title-row";
     plTitle.style.marginTop = "8px";
     const plTitleSpan = document.createElement("span");
-    plTitleSpan.textContent = I18n.t("DSH 插件（扩展 agent 能力；安装后自动重启引擎）");
+    plTitleSpan.textContent = I18n.t("DSH 插件（扩展 agent 能力；安装到配置目录，升级后保留；安装后自动重启引擎）");
     plTitle.appendChild(plTitleSpan);
     const plRow = document.createElement("div");
     plRow.className = "dsh-btn-row";
@@ -27414,6 +29126,26 @@ function openSettings() {
             locked.title = I18n.t("内置技能不可卸载");
             row.appendChild(locked);
           } else {
+            const edit = document.createElement("button");
+            edit.className = "mini";
+            edit.textContent = I18n.t("编辑");
+            edit.onclick = async () => {
+              try {
+                const g = await window.api.skillGet(s.name);
+                if (!g || !g.ok) throw new Error((g && g.error) || I18n.t("未知错误"));
+                skName.value = s.name;
+                skName.disabled = true;
+                skDesc.value = s.description || "";
+                skBody.value = g.body || "";
+                skBody.rows = 12;
+                skAdd.textContent = I18n.t("保存本机修改");
+                skAdd.dataset.editing = s.name;
+                toast(I18n.t("已载入本机技能，修改后点「保存本机修改」"), "ok");
+              } catch (e) {
+                toast(I18n.t("加载失败：") + (e.message || String(e)), "err");
+              }
+            };
+            row.appendChild(edit);
             const rm = document.createElement("button");
             rm.className = "mini";
             rm.textContent = I18n.t("移除");
@@ -27438,16 +29170,27 @@ function openSettings() {
     };
     skAdd.onclick = async () => {
       try {
+        const editing = skAdd.dataset.editing || "";
         const rr = await window.api.skillAdd({
-          name: skName.value.trim(),
+          name: (editing || skName.value).trim(),
           description: skDesc.value.trim(),
           body: skBody.value,
+          overwrite: !!editing,
         });
         if (rr && rr.ok === false) throw new Error(rr.error);
         skName.value = "";
+        skName.disabled = false;
         skDesc.value = "";
         skBody.value = "";
-        toast(I18n.t("技能已创建，智能节点可立即使用"), "ok");
+        skBody.rows = 3;
+        skAdd.textContent = I18n.t("＋ 创建技能");
+        delete skAdd.dataset.editing;
+        toast(
+          editing
+            ? I18n.t("本机技能已保存（未自动同步工坊）")
+            : I18n.t("技能已创建，智能节点可立即使用"),
+          "ok",
+        );
       } catch (e) {
         toast(I18n.t("创建失败：") + (e.message || String(e)), "err");
       }
@@ -28994,7 +30737,14 @@ async function assistAppSnapshot() {
   }
   applyAssistScopeToSnapshot(full, { restrict: scopeCurrent });
   const safeApp =
-    "mtnode_app:status|list_workflows|rename_workflow|select_nodes|undo|redo";
+    "mtnode_app:status|list_workflows|rename_workflow|select_nodes|undo|redo" +
+    (agentToolAllowed("app_dsh_plugins") ? "|list_dsh_plugins" : "");
+  const confirmApp = [
+    agentToolAllowed("app_delete") ? "mtnode_app:delete_workflow" : null,
+    agentToolAllowed("app_dsh_plugins")
+      ? "mtnode_app:install_dsh_plugin|remove_dsh_plugin|set_dsh_plugin"
+      : null,
+  ].filter(Boolean);
   return {
     view: S.view,
     locale: I18n.getLocale(),
@@ -29046,7 +30796,7 @@ async function assistAppSnapshot() {
         agentToolAllowed("canvas_layout")
           ? "mtnode_canvas_edit"
           : null,
-        agentToolAllowed("app_delete") ? "mtnode_app:delete_workflow" : null,
+        ...confirmApp,
         agentToolAllowed("vision") ? "mtnode_vision（首次许可）" : null,
       ].filter(Boolean),
       denied: agentToolCatalog()
@@ -29502,11 +31252,11 @@ async function assistSend(text) {
       "」。list_workflows / canvas_get 只会看到本画布。\n" +
       "工具：\n" +
       "- mtnode_canvas_get：读取当前画布\n" +
-      "- mtnode_app：rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）；delete_workflow 仅可删本画布且需确认。\n"
+      "- mtnode_app：rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）；delete_workflow 仅可删本画布且需确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n"
     : "工作范围：全局。可参考全部画布列表。\n" +
       "工具：\n" +
       "- mtnode_canvas_get：读取当前画布 + 全部画布列表\n" +
-      "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows；delete_workflow 会弹窗确认。\n";
+      "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows；delete_workflow 会弹窗确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n";
   const systemPrompt =
     "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n" +
     scopeBlock +
@@ -29517,7 +31267,7 @@ async function assistSend(text) {
     "  · 多图用 batch:true + imagePaths。工具返回的 created[]/updated[]/hasImage/warnings 才是事实依据；未出现在结果里就不要声称已添加。\n" +
     "  · 文字处理与图生文（多模态识图）尽量隔离：图像 → 专用识图/智能任务节点产出文字，再连到纯文本处理节点；不要把图像直接挂到只需文字推理的节点上，以便文字步骤选用更合适的非视觉模型。\n" +
     "  · 批次处理时：批量并行（batchMode=batch）尽量不用智能节点（agent_task / 文本智能模式），改用普通 proc_text / proc_image；聚合模式（batchMode=agg）允许使用智能节点。\n" +
-    "  · 【重要】不要给 agent_task 或已开启智能的 proc_text 后面再接 save_text/save_image：智能节点本身会写文件，保存节点只会把无关的任务/对话文本落盘。save_* 只接在普通（非智能）proc_text / proc_image 之后。\n" +
+    "  · 【重要】不要给 agent_task 或已开启智能的 proc_text 后面再接保存节点：智能节点本身会写文件，保存节点只会把无关的任务/对话文本落盘。保存节点只接在普通（非智能）proc_text / proc_image 之后。旧版 save_text / save_image 会自动升级为统一保存节点。\n" +
     "  · 【重要·文件交接】尽量不要把智能节点（agent_task / 智能 proc_text）作为数据输入接到其他节点：会话输出噪声大且未必含关键信息。优先让智能节点写出文档/文件，再用 wait_file（waitPath）以控制线连到后续节点阻塞执行；wait_file 无输入端子、不输出任何内容，仅监视文件防止下游提前运行，下游自行按约定路径读文件。\n" +
     "  · 【极重要·防 N² 爆 token】batchMode=batch 时每次运行只应对「当前这一条」。严禁把整批 N 张图/N 条再全部塞进每一次运行的参考图或提示词（否则 ≈N×N 次调用，巨量浪费）。需要只处理其中一项时，先接「拆分」节点选出单项再连文生图；要一次看全部才用 batchMode=agg。两条批量源不要交叉接到同一文生图。\n" +
     "  · 文生图（proc_image）每次运行只生成 1 张图，API 不支持一次出多张。prompt 里严禁写「生成多张/几张图」之类要求；需要多图时用：批量 1 条出 1 张、多个文生图节点、或 attempts×N。\n" +
@@ -29526,8 +31276,8 @@ async function assistSend(text) {
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
     "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
     (scopeCurrent
-      ? "原则：仅操作当前画布；改节点图或删除本画布再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n"
-      : "原则：可参考其他画布列表；改节点图或删除画布再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n") +
+      ? "原则：仅操作当前画布；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n"
+      : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n") +
     "当前应用状态 JSON：\n" +
     stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
@@ -30378,7 +32128,8 @@ async function agentSessionSend(text) {
   const systemPrompt =
     "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
     "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
-    "mtnode_canvas_edit 与危险操作 delete_workflow 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝，本次任务会立即停止，不要再继续改画布。\n" +
+    "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝，本次任务会立即停止，不要再继续改画布。\n" +
+    "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
     "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
   try {
     const final = await dshRunTask(input, {
@@ -30949,7 +32700,9 @@ async function init() {
   window.addEventListener("contextmenu", hideCtx);
 
   bindCanvas();
+  bindMediaBackendListeners();
   renderAll();
+  try { ensureMediaBackendProbesForWorkflow({ reset: true }); } catch {}
   /* 智能会话控件绑定 */
   {
     const wsInput = $("#agentWsInput");

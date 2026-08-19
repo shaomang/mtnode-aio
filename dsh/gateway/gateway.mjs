@@ -12,7 +12,10 @@ import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import { getBuiltinProviders, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { createRequire } from 'node:module'
 import { createInterface } from 'node:readline'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
+import {
+  mkdirSync, readFileSync, writeFileSync, existsSync, statSync,
+  readdirSync, lstatSync, symlinkSync, unlinkSync, cpSync,
+} from 'node:fs'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import path from 'node:path'
@@ -24,6 +27,272 @@ const CORDIS_PATH = path.resolve(import.meta.dirname, 'cordis.yml')
 const GATEWAY_DIR = import.meta.dirname
 const GATEWAY_VERSION = '0.1.0'
 const MAX_RUNTIMES = 3
+const USER_PLUGIN_MARKER = '# ── user plugins (managed from MTNode settings) ──'
+
+/* 两处来源同时挂载：
+   - 内置：应用包 gateway/cordis.yml（运行时可选行 + ./plugins 套装）
+   - 用户：配置目录 $DSH_HOME/plugins + cordis-user.yml
+   挂载开关持久化在 cordis-mount.json（内置）与 cordis-user.yml（用户/MCP）。
+   启动时以应用包为底合并用户段，避免升级丢掉内置行或用户包。 */
+function dshHomeDir() {
+  return String(process.env.DSH_HOME || '').trim()
+}
+
+function userPluginsRoot() {
+  const home = dshHomeDir()
+  return home ? path.join(home, 'plugins') : ''
+}
+
+function userCordisPath() {
+  const home = dshHomeDir()
+  return home ? path.join(home, 'cordis-user.yml') : ''
+}
+
+function mountStatePath() {
+  const home = dshHomeDir()
+  return home ? path.join(home, 'cordis-mount.json') : ''
+}
+
+function pkgRootName(name) {
+  const n = String(name || '').trim()
+  if (!n || /^\.\.?[/\\]/.test(n) || /^[A-Za-z]:[\\/]/.test(n) || n.startsWith('/')) return ''
+  return n.startsWith('@') ? n.split('/').slice(0, 2).join('/') : n.split('/')[0]
+}
+
+function ensureUserPluginsPkg() {
+  const root = userPluginsRoot()
+  if (!root) return ''
+  mkdirSync(root, { recursive: true })
+  const pj = path.join(root, 'package.json')
+  if (!existsSync(pj)) {
+    writeFileSync(pj, JSON.stringify({
+      name: 'mtnode-dsh-user-plugins',
+      private: true,
+      version: '1.0.0',
+      dependencies: {},
+    }, null, 2) + '\n', 'utf8')
+  }
+  return root
+}
+
+function pluginNameFromBlock(block) {
+  const m = String(block || '').match(/^\s*name:\s*'([^']+)'/m)
+  return m ? m[1] : ''
+}
+
+function isUserOwnedBlock(block) {
+  const name = pluginNameFromBlock(block)
+  if (!name) return false
+  if (isBundledPluginName(name)) return false
+  return true
+}
+
+function rowsToYaml(rows) {
+  return (rows || []).map((r) => {
+    const c = (r.comments || []).map((x) => '# ' + x).join('\n')
+    return (c ? c + '\n' : '') + r.block
+  }).filter(Boolean).join('\n\n')
+}
+
+function persistUserOwnedRows() {
+  const dest = userCordisPath()
+  if (!dest) return
+  try {
+    const { userPart } = readRows()
+    mkdirSync(path.dirname(dest), { recursive: true })
+    const owned = parsePluginRows(userPart).filter((r) => isUserOwnedBlock(r.block))
+    const body = rowsToYaml(owned)
+    writeFileSync(dest, (body ? body + '\n' : ''), 'utf8')
+  } catch { /* best-effort */ }
+}
+
+function persistBuiltinMounts() {
+  const dest = mountStatePath()
+  if (!dest) return
+  try {
+    const disabled = []
+    for (const p of listPlugins()) {
+      if (!p.toggleable || !p.disabled) continue
+      if (p.kind === 'runtime' || isBundledPluginName(p.name)) disabled.push(p.id)
+    }
+    mkdirSync(path.dirname(dest), { recursive: true })
+    writeFileSync(dest, JSON.stringify({ disabled }, null, 2) + '\n', 'utf8')
+  } catch { /* best-effort */ }
+}
+
+function persistUserSection() {
+  persistUserOwnedRows()
+  persistBuiltinMounts()
+}
+
+function readPersistedUserRows() {
+  const dest = userCordisPath()
+  if (!dest || !existsSync(dest)) return []
+  try {
+    return parsePluginRows(USER_PLUGIN_MARKER + '\n' + readFileSync(dest, 'utf8'))
+      .filter((r) => isUserOwnedBlock(r.block))
+  } catch {
+    return []
+  }
+}
+
+function readMountDisabledIds() {
+  const dest = mountStatePath()
+  if (!dest || !existsSync(dest)) return []
+  try {
+    const j = JSON.parse(readFileSync(dest, 'utf8'))
+    return Array.isArray(j.disabled) ? j.disabled.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+function setBlockDisabled(block, enabled) {
+  if (/^\s*disabled:\s*!!js\b/m.test(block)) return block
+  if (enabled) return block.replace(/^\s*disabled:\s*true\s*\n/m, '')
+  if (/^\s*disabled:\s*true\s*$/m.test(block)) return block
+  return block.replace(/^(  name: '[^']+'\n)/m, "$1  disabled: true\n")
+}
+
+function applyBuiltinMounts(disabledIds) {
+  const want = new Set((disabledIds || []).map(String))
+  if (!want.size && !disabledIds) return
+  rewritePluginBlocks((block) => {
+    const idm = block.match(/^- id:\s*(\S+)/)
+    const namem = block.match(/^\s*name:\s*'([^']+)'/m)
+    if (!idm) return block
+    const id = idm[1]
+    const name = namem ? namem[1] : ''
+    const builtin = OPTIONAL_RUNTIME_IDS.has(id) || isBundledPluginName(name)
+    if (!builtin) return block
+    return setBlockDisabled(block, !want.has(id))
+  }, { persist: false })
+}
+
+function migratePkgFromGateway(pkgName) {
+  const root = ensureUserPluginsPkg()
+  const key = pkgRootName(pkgName)
+  if (!root || !key) return
+  const dest = path.join(root, 'node_modules', key)
+  const src = path.join(GATEWAY_DIR, 'node_modules', key)
+  if (existsSync(dest) || !existsSync(src)) return
+  try {
+    mkdirSync(path.dirname(dest), { recursive: true })
+    cpSync(src, dest, { recursive: true })
+    const pj = path.join(root, 'package.json')
+    const json = JSON.parse(readFileSync(pj, 'utf8'))
+    if (!json.dependencies) json.dependencies = {}
+    if (!json.dependencies[key]) {
+      let ver = '*'
+      try {
+        ver = String(JSON.parse(readFileSync(path.join(dest, 'package.json'), 'utf8')).version || '*')
+      } catch { /* keep * */ }
+      json.dependencies[key] = ver.startsWith('^') || ver.startsWith('~') ? ver : ver
+      writeFileSync(pj, JSON.stringify(json, null, 2) + '\n', 'utf8')
+    }
+  } catch { /* best-effort migrate */ }
+}
+
+function linkOneUserPkg(src, dst) {
+  try {
+    if (existsSync(dst)) {
+      const st = lstatSync(dst)
+      if (st.isSymbolicLink()) return
+      /* 网关自带真实包：不覆盖 */
+      return
+    }
+    mkdirSync(path.dirname(dst), { recursive: true })
+    try {
+      const type = process.platform === 'win32' ? 'junction' : 'dir'
+      symlinkSync(src, dst, type)
+      return
+    } catch {
+      /* 跨盘 junction 会失败：退化为复制，升级后下次启动再从 DSH_HOME 补回 */
+      cpSync(src, dst, { recursive: true })
+    }
+  } catch { /* skip link/copy failures */ }
+}
+
+function linkUserPackagesIntoGateway() {
+  const root = userPluginsRoot()
+  if (!root) return
+  const srcNm = path.join(root, 'node_modules')
+  const dstNm = path.join(GATEWAY_DIR, 'node_modules')
+  if (!existsSync(srcNm)) return
+  mkdirSync(dstNm, { recursive: true })
+  for (const ent of readdirSync(srcNm, { withFileTypes: true })) {
+    if (ent.name === '.bin' || ent.name.startsWith('.')) continue
+    const src = path.join(srcNm, ent.name)
+    if (ent.name.startsWith('@')) {
+      let kids = []
+      try { kids = readdirSync(src) } catch { continue }
+      for (const pkg of kids) {
+        if (pkg.startsWith('.')) continue
+        linkOneUserPkg(path.join(src, pkg), path.join(dstNm, ent.name, pkg))
+      }
+    } else if (ent.isDirectory() || ent.isSymbolicLink()) {
+      linkOneUserPkg(src, path.join(dstNm, ent.name))
+    }
+  }
+}
+
+function syncUserPluginsFromHome() {
+  const dest = userCordisPath()
+  if (!dest || !existsSync(CORDIS_PATH)) return
+  const { shipped, userPart, marker } = readRows()
+  const appRows = parsePluginRows(userPart)
+  const bundledRows = appRows.filter((r) => !isUserOwnedBlock(r.block))
+  const currentOwned = appRows.filter((r) => isUserOwnedBlock(r.block))
+
+  if (!existsSync(dest)) {
+    mkdirSync(path.dirname(dest), { recursive: true })
+    const body = rowsToYaml(currentOwned)
+    writeFileSync(dest, (body ? body + '\n' : ''), 'utf8')
+    for (const row of currentOwned) migratePkgFromGateway(pluginNameFromBlock(row.block))
+  }
+
+  const persistedOwned = readPersistedUserRows()
+  /* 旧版 cordis-user.yml 可能混入了内置 ./plugins 行：只保留用户包/MCP */
+  const ownedMap = new Map()
+  for (const r of currentOwned) {
+    const k = pluginNameFromBlock(r.block) || r.id
+    if (k) ownedMap.set(k, r)
+  }
+  for (const r of persistedOwned) {
+    const k = pluginNameFromBlock(r.block) || r.id
+    if (k) ownedMap.set(k, r)
+  }
+  const mergedOwned = Array.from(ownedMap.values())
+  const ownedYaml = rowsToYaml(mergedOwned)
+  if (ownedYaml !== rowsToYaml(persistedOwned)) {
+    writeFileSync(dest, (ownedYaml ? ownedYaml + '\n' : ''), 'utf8')
+  }
+  const bundledYaml = rowsToYaml(bundledRows)
+  const next = shipped
+    + marker
+    + (bundledYaml ? '\n' + bundledYaml + '\n' : '\n')
+    + (ownedYaml ? '\n' + ownedYaml + '\n' : '')
+  if (next !== readFileSync(CORDIS_PATH, 'utf8')) {
+    writeFileSync(CORDIS_PATH, next.endsWith('\n') ? next : next + '\n', 'utf8')
+  }
+
+  let disabledIds = readMountDisabledIds()
+  if (!disabledIds.length && !existsSync(mountStatePath())) {
+    disabledIds = listPlugins()
+      .filter((p) => p.toggleable && p.disabled && (p.kind === 'runtime' || isBundledPluginName(p.name)))
+      .map((p) => p.id)
+    const mp = mountStatePath()
+    if (mp && disabledIds.length) {
+      mkdirSync(path.dirname(mp), { recursive: true })
+      writeFileSync(mp, JSON.stringify({ disabled: disabledIds }, null, 2) + '\n', 'utf8')
+    }
+  }
+  if (disabledIds.length) applyBuiltinMounts(disabledIds)
+
+  for (const row of mergedOwned) migratePkgFromGateway(pluginNameFromBlock(row.block))
+  ensureUserPluginsPkg()
+  linkUserPackagesIntoGateway()
+}
 
 /* Node ESM cannot import a directory. Local plugin rows must name a file
    (package.json "main" / index.js). Rewrite in place so an old
@@ -71,7 +340,7 @@ function ensureFilePluginEntries() {
   if (next !== text) writeFileSync(CORDIS_PATH, next, 'utf8')
 }
 
-ensureFilePluginEntries()
+/* 用户插件同步在 readRows / parsePluginRows 定义之后执行（见下方 initUserPlugins）。 */
 
 /* Agent 预设(迁移自 dsh 的 agent-presets 概念):作为每次运行的角色前缀,
    由宿主应用在设置中选择,随 run 参数下发。 */
@@ -250,6 +519,15 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   if (baseUrl) env.DEEPSEEK_BASE_URL = baseUrl
   else delete env.DEEPSEEK_BASE_URL
   delete env.DSH_PERMISSION_MODE
+  /* BongoChat：人设经环境变量注入运行时插件（dsh-system-prompt 不读 settings.yaml） */
+  const personaText = hostPersona && String(hostPersona).trim()
+  if (personaText) {
+    env.MTNODE_CHAT_ISOLATE = '1'
+    env.MTNODE_HOST_PERSONA = personaText
+  } else {
+    delete env.MTNODE_CHAT_ISOLATE
+    delete env.MTNODE_HOST_PERSONA
+  }
   if (envPatch) Object.assign(env, envPatch)
 
   /* 交互桥:每个运行时独占一个 localhost 端口。bridge + canvas 插件各连一条
@@ -287,6 +565,8 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   })
   env.MTNODE_BRIDGE_PORT = String(bridgePort)
   bridgeServers.set(key, bridgeState)
+
+  try { linkUserPackagesIntoGateway() } catch { /* best-effort */ }
 
   const entry = { order: ++runtimeOrder }
   entry.harness = (async () => {
@@ -691,7 +971,13 @@ function yamlHostPersonaSection(text) {
     .replace(/\t/g, '  ')
     .replace(/\{\{/g, '{ {')
   const body = safe.split('\n').map((line) => '    ' + line).join('\n')
-  return 'system-prompt:\n  includeHarnessIdentity: false\n  persona: |-\n' + body
+  return (
+    'system-prompt:\n' +
+    '  includeHarnessIdentity: false\n' +
+    '  includeRuntimeContext: false\n' +
+    '  persona: |-\n' +
+    body
+  )
 }
 
 function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersona) {
@@ -819,7 +1105,7 @@ function readRows() {
   // cordis.yml is a plain row list; the user-plugin section lives after the
   // marker comment. Rows before the marker belong to the shipped composition.
   const text = readFileSync(CORDIS_PATH, 'utf8')
-  const marker = '# ── user plugins (managed from MTNode settings) ──'
+  const marker = USER_PLUGIN_MARKER
   const idx = text.indexOf(marker)
   const shipped = idx === -1 ? text : text.slice(0, idx)
   const userPart = idx === -1 ? '\n' : text.slice(idx)
@@ -887,12 +1173,16 @@ function lookupPkgDir(name) {
     }
     return { dir: path.resolve(dir) === gatewayRoot ? '' : dir, pkg: null }
   }
-  const pkgRoot = n.startsWith('@')
-    ? n.split('/').slice(0, 2).join('/')
-    : n.split('/')[0]
-  const pkgPath = path.join(GATEWAY_DIR, 'node_modules', pkgRoot, 'package.json')
-  if (existsSync(pkgPath)) {
-    return { dir: path.dirname(pkgPath), pkg: readJsonSafe(pkgPath) }
+  const pkgRoot = pkgRootName(n)
+  if (!pkgRoot) return { dir: '', pkg: null }
+  const userRoot = userPluginsRoot()
+  const candidates = []
+  if (userRoot) candidates.push(path.join(userRoot, 'node_modules', pkgRoot, 'package.json'))
+  candidates.push(path.join(GATEWAY_DIR, 'node_modules', pkgRoot, 'package.json'))
+  for (const pkgPath of candidates) {
+    if (existsSync(pkgPath)) {
+      return { dir: path.dirname(pkgPath), pkg: readJsonSafe(pkgPath) }
+    }
   }
   return { dir: '', pkg: null }
 }
@@ -979,6 +1269,19 @@ function parsePluginRows(text) {
   return rows
 }
 
+/* 网关启动：从配置目录恢复用户插件段，并挂上 user node_modules */
+function initUserPlugins() {
+  try {
+    syncUserPluginsFromHome()
+    ensureFilePluginEntries()
+  } catch (err) {
+    try {
+      process.stderr.write('initUserPlugins: ' + String((err && err.message) || err) + '\n')
+    } catch { /* ignore */ }
+  }
+}
+initUserPlugins()
+
 function describePlugin(block, kind, extra = {}) {
   const namem = block.match(/^\s*name:\s*'([^']+)'/m)
   if (!namem) return null
@@ -998,6 +1301,7 @@ function describePlugin(block, kind, extra = {}) {
     disabled,
     toggleable: !core && !dynamic,
     removable: kind === 'user' && !isBundledPluginName(namem[1]),
+    source: kind === 'runtime' || isBundledPluginName(namem[1]) ? 'app' : 'config',
     detail: block.trim().slice(0, 600),
     title: meta.title || id,
     description,
@@ -1025,7 +1329,7 @@ function findPlugin(pkg, id) {
   return listPlugins().find((p) => (id && p.id === id) || (!id && p.name === pkg))
 }
 
-function rewritePluginBlocks(mutator) {
+function rewritePluginBlocks(mutator, opts) {
   const text = readFileSync(CORDIS_PATH, 'utf8')
   const first = text.search(/^- id: /m)
   if (first < 0) throw new Error('cordis.yml 无插件行')
@@ -1033,6 +1337,7 @@ function rewritePluginBlocks(mutator) {
   const blocks = text.slice(first).split(/^(?=- id: )/m)
   const next = blocks.map(mutator).join('')
   writeFileSync(CORDIS_PATH, head + next, 'utf8')
+  if (!opts || opts.persist !== false) persistUserSection()
 }
 
 /* 通用行启停:在匹配行块增删 disabled: true(不碰 disabled: !!js 平台条件) */
@@ -1056,6 +1361,7 @@ function toggleUserRow(matchText, enabled) {
     }
   }
   writeFileSync(CORDIS_PATH, shipped + out.join('\n'), 'utf8')
+  persistUserSection()
 }
 
 function setPluginEnabled(pkg, enabled, id) {
@@ -1087,6 +1393,7 @@ function addPluginRow(pkg) {
   const rest = userPart.startsWith(marker) ? userPart.slice(marker.length) : userPart
   const row = `\n- id: user-plugin-${Date.now().toString(36)}\n  name: '${pkg}'\n`
   writeFileSync(CORDIS_PATH, shipped + marker + rest + row, 'utf8')
+  persistUserSection()
 }
 
 function removePluginRow(pkg) {
@@ -1097,6 +1404,7 @@ function removePluginRow(pkg) {
     .filter((block) => !block.includes(`name: '${pkg}'`))
     .map((block, i) => (i === 0 ? block : '- id: ' + block))
   writeFileSync(CORDIS_PATH, shipped + marker + kept.join(''), 'utf8')
+  persistUserSection()
 }
 
 function normalizePluginSpec(raw) {
@@ -1140,7 +1448,8 @@ function newDepName(before, after) {
   return ''
 }
 
-function runPackageManager(args) {
+function runPackageManager(args, cwd) {
+  const workDir = cwd || ensureUserPluginsPkg() || GATEWAY_DIR
   return new Promise((resolve, reject) => {
     const tries = ['pnpm', 'npm']
     const attempt = (i) => {
@@ -1150,7 +1459,7 @@ function runPackageManager(args) {
       }
       const cmd = tries[i]
       const child = spawn(cmd, args, {
-        cwd: GATEWAY_DIR,
+        cwd: workDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       })
@@ -1187,16 +1496,18 @@ async function handlePluginAdd(pkg) {
     await closeAllRuntimes()
     return { ok: true, restarted: true, plugins: listPlugins() }
   }
+  const installRoot = ensureUserPluginsPkg() || GATEWAY_DIR
   let pkgJsonBefore = {}
   try {
-    pkgJsonBefore = JSON.parse(readFileSync(path.join(GATEWAY_DIR, 'package.json'), 'utf8'))
+    pkgJsonBefore = JSON.parse(readFileSync(path.join(installRoot, 'package.json'), 'utf8'))
   } catch {}
-  await runPackageManager(['add', spec.install, '--save-exact'])
+  await runPackageManager(['add', spec.install, '--save-exact'], installRoot)
   let name = spec.name
   try {
-    const pkgJsonAfter = JSON.parse(readFileSync(path.join(GATEWAY_DIR, 'package.json'), 'utf8'))
+    const pkgJsonAfter = JSON.parse(readFileSync(path.join(installRoot, 'package.json'), 'utf8'))
     name = newDepName(pkgJsonBefore, pkgJsonAfter) || spec.name
   } catch {}
+  linkUserPackagesIntoGateway()
   addPluginRow(name)
   await closeAllRuntimes()
   return { ok: true, restarted: true, plugins: listPlugins() }
@@ -1211,7 +1522,16 @@ async function handlePluginRemove(pkg) {
     return { ok: false, error: '内置套装插件只能取消挂载，不能移除' }
   }
   if (!isBundledPluginName(pkg) && !/^[A-Za-z]:[\\/]/.test(pkg) && !pkg.startsWith('/')) {
-    try { await runPackageManager(['remove', pkg]) } catch { /* 本地/套装行可能不在 package.json */ }
+    const installRoot = ensureUserPluginsPkg() || GATEWAY_DIR
+    try { await runPackageManager(['remove', pkg], installRoot) } catch { /* 本地/套装行可能不在 package.json */ }
+    /* 清理 gateway 下残留的用户包 junction（若仍指向已删目录） */
+    const key = pkgRootName(pkg)
+    if (key) {
+      const link = path.join(GATEWAY_DIR, 'node_modules', key)
+      try {
+        if (existsSync(link) && lstatSync(link).isSymbolicLink()) unlinkSync(link)
+      } catch { /* ignore */ }
+    }
   }
   removePluginRow(pkg)
   await closeAllRuntimes()
@@ -1275,7 +1595,9 @@ function mcpAdd(cfg) {
     lines.push(`    url: ${yamlStr(url)}`)
   }
   const { shipped, userPart, marker } = readRows()
-  writeFileSync(CORDIS_PATH, shipped + marker + userPart + lines.join('\n') + '\n', 'utf8')
+  const rest = userPart.startsWith(marker) ? userPart.slice(marker.length) : userPart
+  writeFileSync(CORDIS_PATH, shipped + marker + rest + lines.join('\n') + '\n', 'utf8')
+  persistUserSection()
 }
 
 function mcpRemove(serverName) {
@@ -1288,6 +1610,7 @@ function mcpRemove(serverName) {
     })
     .map((block, i) => (i === 0 ? block : '- id: ' + block))
   writeFileSync(CORDIS_PATH, shipped + marker + kept.join(''), 'utf8')
+  persistUserSection()
 }
 
 function mcpSetEnabled(serverName, enabled) {
@@ -1398,7 +1721,10 @@ rl.on('line', (line) => {
             break
           }
           bridgePending.delete(p.id)
-          if (p.kind === 'question') {
+          if (p.kind === 'abort') {
+            /* 宿主拒绝提问等交互:桥接侧 reject,工具调用失败而非空应答 */
+            try { pending.socket.write(JSON.stringify({ t: 'abort', id: p.id }) + '\n') } catch {}
+          } else if (p.kind === 'question') {
             if (!Array.isArray(p.answers)) {
               reply(undefined, '缺少 answers')
               break

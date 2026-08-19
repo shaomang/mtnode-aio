@@ -1,0 +1,23 @@
+{
+  "id": "minimax-h3",
+  "version": "1.0.2",
+  "minAppVersion": "1.1.20",
+  "title": {
+    "zh": "Minimax H3",
+    "en": "Minimax H3"
+  },
+  "subtitle": {
+    "zh": "【插件测试中】本地 H3 视频（24G）：安装、启停 ComfyUI 后端与 GPU 监视。安装过程复杂，可能会失败。",
+    "en": "[Testing] Local H3 video (24G): install, start/stop ComfyUI backend, and GPU monitor. Install is complex and may fail."
+  },
+  "diskHintGb": 70,
+  "backendPort": 8188,
+  "models": {
+    "diffusionFl2va": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    "diffusionRef2va": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "textEncoder": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    "vaeVideo": "minimax_h3_video_vae_fp16.safetensors",
+    "vaeAudio": "minimax_h3_audio_vae_fp32.safetensors"
+  },
+  "zipUrl": "h3-runtime-1.0.2.zip"
+}

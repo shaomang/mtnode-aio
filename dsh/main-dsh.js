@@ -13,7 +13,7 @@ const { app } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
-const BUILTIN_SKILL_NAMES = new Set(['generate-workflow', 'generate-task', 'minimax-music3-install', 'minimax-h3-install'])
+const BUILTIN_SKILL_NAMES = new Set(['minimax-music3-install', 'minimax-h3-install'])
 
 function builtinSkillsRoot() {
   /* 仓库 / asar 内: dsh/main-dsh.js → ../skills */
@@ -221,20 +221,33 @@ function createDshAdapter(opts) {
 
     /* ── skills:文件系统技能,$DSH_HOME/skills/<name>/SKILL.md ──
        运行时 skill-filesystem 提供者自动发现 user-dsh 根,无需重启引擎。
-       内置技能从应用包 skills/ 同步到 dshHome（升级后覆盖）。 */
+       内置技能（插件安装用）从应用包 skills/ 同步到 dshHome（升级后覆盖）。
+       创意工坊 / 扩展目录下载的技能不在此列，本地留存直至用户主动更新。 */
     syncBuiltinSkills() {
       try {
         const srcRoot = builtinSkillsRoot()
-        if (!fs.existsSync(srcRoot)) return
         const destRoot = path.join(dshHome, 'skills')
         fs.mkdirSync(destRoot, { recursive: true })
-        for (const name of BUILTIN_SKILL_NAMES) {
-          const src = path.join(srcRoot, name, 'SKILL.md')
-          if (!fs.existsSync(src)) continue
-          const destDir = path.join(destRoot, name)
-          fs.mkdirSync(destDir, { recursive: true })
-          fs.copyFileSync(src, path.join(destDir, 'SKILL.md'))
-          fs.writeFileSync(path.join(destDir, '.builtin'), '1\n', 'utf8')
+        if (fs.existsSync(srcRoot)) {
+          for (const name of BUILTIN_SKILL_NAMES) {
+            const src = path.join(srcRoot, name, 'SKILL.md')
+            if (!fs.existsSync(src)) continue
+            const destDir = path.join(destRoot, name)
+            fs.mkdirSync(destDir, { recursive: true })
+            fs.copyFileSync(src, path.join(destDir, 'SKILL.md'))
+            fs.writeFileSync(path.join(destDir, '.builtin'), '1\n', 'utf8')
+          }
+        }
+        /* 已从内置名单移除的技能：去掉 .builtin，允许卸载/被工坊更新 */
+        if (fs.existsSync(destRoot)) {
+          for (const e of fs.readdirSync(destRoot, { withFileTypes: true })) {
+            if (!e.isDirectory()) continue
+            const mark = path.join(destRoot, e.name, '.builtin')
+            if (!fs.existsSync(mark)) continue
+            if (!BUILTIN_SKILL_NAMES.has(e.name)) {
+              try { fs.unlinkSync(mark) } catch {}
+            }
+          }
         }
       } catch (err) {
         try { log('syncBuiltinSkills: ' + ((err && err.message) || err)) } catch {}
@@ -242,7 +255,7 @@ function createDshAdapter(opts) {
     },
 
     _parseSkillMeta(text) {
-      const meta = { title: '', description: '' }
+      const meta = { title: '', description: '', version: '', name: '' }
       const raw = String(text || '')
       const fm = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/)
       const body = fm ? fm[2] || '' : raw
@@ -254,6 +267,8 @@ function createDshAdapter(opts) {
           const v = String(km[2] || '').replace(/^['"]|['"]$/g, '').trim()
           if (k === 'title') meta.title = v
           if (k === 'description') meta.description = v
+          if (k === 'version') meta.version = v
+          if (k === 'name') meta.name = v
         }
       }
       if (!meta.title) {
@@ -267,6 +282,25 @@ function createDshAdapter(opts) {
       return meta
     },
 
+    _readStoreMeta(dir) {
+      try {
+        const p = path.join(dir, '.store-meta.json')
+        if (!fs.existsSync(p)) return null
+        return JSON.parse(fs.readFileSync(p, 'utf8'))
+      } catch {
+        return null
+      }
+    },
+
+    _writeStoreMeta(dir, meta) {
+      if (!meta) return
+      fs.writeFileSync(
+        path.join(dir, '.store-meta.json'),
+        JSON.stringify(meta, null, 2) + '\n',
+        'utf8',
+      )
+    },
+
     skillList() {
       try {
         this.syncBuiltinSkills()
@@ -278,19 +312,26 @@ function createDshAdapter(opts) {
           const skillMd = path.join(root, e.name, 'SKILL.md')
           let title = ''
           let description = ''
+          let version = ''
           if (fs.existsSync(skillMd)) {
             const meta = this._parseSkillMeta(fs.readFileSync(skillMd, 'utf8'))
             title = meta.title || ''
             description = meta.description || ''
+            version = meta.version || ''
           }
           const builtin =
             BUILTIN_SKILL_NAMES.has(e.name) ||
             fs.existsSync(path.join(root, e.name, '.builtin'))
+          const store = this._readStoreMeta(path.join(root, e.name)) || {}
           out.push({
             name: e.name,
             title: String(title).slice(0, 80),
             description: String(description).slice(0, 200),
+            version: String(store.version || version || '').slice(0, 32),
             builtin: !!builtin,
+            storeId: store.storeId || '',
+            storeUpdatedAt: store.updatedAt || 0,
+            storeOfficial: !!store.official,
           })
         }
         out.sort((a, b) => {
@@ -319,13 +360,22 @@ function createDshAdapter(opts) {
         const body = fs.readFileSync(skillMd, 'utf8')
         const builtin =
           BUILTIN_SKILL_NAMES.has(nm) || fs.existsSync(path.join(dir, '.builtin'))
-        return { ok: true, name: nm, body, builtin: !!builtin }
+        const store = this._readStoreMeta(dir) || {}
+        return {
+          ok: true,
+          name: nm,
+          body,
+          builtin: !!builtin,
+          storeId: store.storeId || '',
+          version: store.version || this._parseSkillMeta(body).version || '',
+          storeUpdatedAt: store.updatedAt || 0,
+        }
       } catch (err) {
         return { ok: false, error: err.message || String(err) }
       }
     },
 
-    skillAdd({ name, description, body }) {
+    skillAdd({ name, description, body, overwrite, storeMeta }) {
       try {
         const nm = String(name || '').trim().toLowerCase()
         if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nm)) {
@@ -335,7 +385,11 @@ function createDshAdapter(opts) {
           return { ok: false, error: '内置技能名不可占用' }
         }
         const dir = path.join(dshHome, 'skills', nm)
-        if (fs.existsSync(dir)) return { ok: false, error: '同名技能已存在' }
+        const exists = fs.existsSync(dir)
+        if (exists && !overwrite) return { ok: false, error: '同名技能已存在' }
+        if (exists && fs.existsSync(path.join(dir, '.builtin'))) {
+          return { ok: false, error: '内置技能不可覆盖' }
+        }
         fs.mkdirSync(dir, { recursive: true })
         let text = String(body || '')
         if (!/^---\s*\n/.test(text)) {
@@ -349,6 +403,15 @@ function createDshAdapter(opts) {
           ].join('\n')
         }
         fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8')
+        if (storeMeta && typeof storeMeta === 'object') {
+          this._writeStoreMeta(dir, {
+            storeId: String(storeMeta.storeId || ''),
+            version: String(storeMeta.version || ''),
+            updatedAt: Number(storeMeta.updatedAt) || Date.now(),
+            official: !!storeMeta.official,
+            title: String(storeMeta.title || ''),
+          })
+        }
         return { ok: true, skills: this.skillList().skills }
       } catch (err) {
         return { ok: false, error: err.message || String(err) }

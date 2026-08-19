@@ -1064,6 +1064,36 @@ ipcMain.handle("store:pickMtNodes", async () => {
   }
 });
 
+ipcMain.handle("store:pickSkillMd", async () => {
+  try {
+    const r = await dialog.showOpenDialog(win(), {
+      title: I18n.t("选择 SKILL.md"),
+      properties: ["openFile"],
+      filters: [
+        { name: "SKILL.md", extensions: ["md", "markdown", "txt"] },
+        { name: I18n.t("全部文件"), extensions: ["*"] },
+      ],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, error: I18n.t("已取消") };
+    const buf = fs.readFileSync(r.filePaths[0]);
+    if (!buf.length) return { ok: false, error: I18n.t("文件为空") };
+    if (buf.length > 1024 * 1024) {
+      return { ok: false, error: I18n.t("技能文件不能超过 1MB") };
+    }
+    const text = buf.toString("utf8");
+    if (!text.trim()) return { ok: false, error: I18n.t("文件为空") };
+    return {
+      ok: true,
+      base64: buf.toString("base64"),
+      text,
+      bytes: buf.length,
+      name: path.basename(r.filePaths[0]),
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
 ipcMain.handle("store:pickPreview", async () => {
   try {
     const r = await dialog.showOpenDialog(win(), {

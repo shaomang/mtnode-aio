@@ -1,0 +1,16 @@
+{
+  "id": "minimax-music3",
+  "version": "1.0.2",
+  "minAppVersion": "1.1.20",
+  "title": {
+    "zh": "Minimax Music 3",
+    "en": "Minimax Music 3"
+  },
+  "subtitle": {
+    "zh": "【插件测试中】本地 Music 3（24G 显存方案）：安装、启停服务与 GPU 监视。安装过程复杂，可能会失败。",
+    "en": "[Testing] Local Music 3 (24G VRAM): install, start/stop backend, and GPU monitor. Install is complex and may fail."
+  },
+  "diskHintGb": 65,
+  "backendPort": 7860,
+  "zipUrl": "music3-runtime-1.0.2.zip"
+}

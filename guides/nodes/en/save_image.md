@@ -1,9 +1,5 @@
-# Save image
+# Save image (merged)
 
 ![diagram](img/save_image.svg)
 
-Write the upstream image to disk (png). One image input only.
-
-## Ports
-- **In**: image (1)
-- **Out**: none
+Merged into the unified Save node. Images always use `.png`.

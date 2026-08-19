@@ -1,9 +1,5 @@
-# Save text
+# Save text (merged)
 
 ![diagram](img/save_text.svg)
 
-Write upstream text to a `.yaml` file.
-
-## Ports
-- **In**: text
-- **Out**: none
+Merged into the unified Save node. Old `save_text` workflows still load.

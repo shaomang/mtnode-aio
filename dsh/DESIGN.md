@@ -81,7 +81,7 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | method | params | 语义 |
 |---|---|---|
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
-| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索(DeepSeek Anthropic)，与对话路由密钥分离。`hostPersona` 覆盖 dsh `system-prompt` 部署人设(桌宠等非 MTNode 宿主用),不再塞进用户消息 |
+| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `interact` | `{kind:'question'\|'approval'\|'canvas', id, answers?\|outcome?\|result?}` | 回答提问 / 审批 / 画布工具结果,按交互 id 路由回对应运行时 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
@@ -178,7 +178,11 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 - 插件 = npm 包名 / GitHub 地址 / 本地路径 + cordis.yml 追加行。设置面板提供安装入口；
   已装清单在近全屏对话框中管理（左 grid / 右描述与用途，英文描述会补中文，缺用途会补全）。
   非核心插件(用户安装、bundled 套装、可选 shipped 行)可 **挂载 / 取消挂载**,
-  核心运行时行只读。gateway 用捆绑 pnpm 在 `dsh/gateway/` 安装,成功后重启运行时。
+  核心运行时行只读。内置插件留在应用包（升级后仍可挂载，开关写入
+  `$DSH_HOME/cordis-mount.json`）；用户插件安装到 `$DSH_HOME/plugins`，清单在
+  `cordis-user.yml`。启动时以应用包组合为底合并配置目录用户段。全局助手可通过
+  `mtnode_app` 的 `list_dsh_plugins` / `install_dsh_plugin` / `remove_dsh_plugin` /
+  `set_dsh_plugin` 管理（安装/移除/挂载需确认）。
 - 已内置 [dsh-router-standard](https://github.com/yjh051108/dsh-router-standard)
   (`./plugins/router-standard/router-bootstrap.mjs`):默认挂载,assemble 永不抛错,
   保留 MTNode persona 与 `mtnode_*` 工具。注入器与 router-spec 不随应用分发。
@@ -194,7 +198,7 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 |---|---|
 | `mtnode_canvas_get` | 读取当前工作流:节点(id/kind/标题/坐标/提示词摘要)、连线、组、相机、视图、全部工作流列表 |
 | `mtnode_canvas_edit` | 批量创建/改标题与字段/连线/@引用补全/成组/删除;默认分层从左到右排版且不与已有节点重叠 |
-| `mtnode_app` | 应用级操作:工作流状态/列表、重命名/删除工作流、选中节点、撤销重做。删除工作流与图编辑在全局助手侧需用户确认 |
+| `mtnode_app` | 应用级操作:工作流状态/列表、重命名/删除工作流、选中节点、撤销重做、DSH 插件列出/安装/移除/挂载。删除画布与装卸插件在全局助手侧需用户确认 |
 | `mtnode_vision` | 识图子代理:对本地绝对路径图片调用视觉模型作答;首次需用户许可(允许一次/始终允许/拒绝) |
 
 渲染层 `applyCanvasOp` 是唯一写画布的地方:校验节点类型与回路、拒绝删除正在运行的节点、一次编辑一条撤销记录。画布**智能节点**运行时硬拒绝 `get` / `edit` / `app`（不改图、不改工作流、不创建任务），仍可用文件读写、命令、联网与 `mtnode_vision`；智能会话与全局助手仍走上述画布工具。典型任务(「实现物品配置工作流」)由会话或助手一次 `edit` 创建「需求 → 生成 → 写入配置表」管道,用户可继续改提示词并点 ▶ 运行。

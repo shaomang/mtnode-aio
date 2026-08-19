@@ -2,8 +2,9 @@
   "name": "mtnode-template-store",
   "private": true,
   "type": "module",
-  "description": "MTNode 模板商店 SaaS：注册登录、上传/下载 .mtnodes、标签、点赞与统计",
+  "description": "MTNode 创意工坊 SaaS：模板 + Skill 上传/下载、标签、点赞与官方标记",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "seed:skills": "node seed-skills.mjs"
   }
 }
