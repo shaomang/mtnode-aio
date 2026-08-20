@@ -31,7 +31,7 @@
 |------|------|
 | `prompt` | Structured Caption（Global Metadata / Vocal Details / Arrangement） |
 | `lyrics` | 带 `[Verse]` / `[Chorus]` 等标签的歌词 |
-| `audio_duration` | 目标时长秒（≤300） |
+| `audio_duration` | 目标时长秒（≤150） |
 | `seed` | 随机种子 |
 | `output_dir` | **音频保存目录**（默认 `E:\mt-music\output`） |
 | `filename` | 可选文件名；空则自动命名 |

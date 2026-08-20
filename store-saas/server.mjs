@@ -18,7 +18,7 @@ const SKILL_DIR = path.join(DATA_DIR, "skills");
 const PREV_DIR = path.join(DATA_DIR, "previews");
 const FORUM_IMG_DIR = path.join(DATA_DIR, "forum-images");
 const DB_PATH = path.join(DATA_DIR, "db.json");
-const FORUM_TTL_MS = 3 * 24 * 3600 * 1000;
+const FORUM_TTL_MS = 30 * 24 * 3600 * 1000;
 const FORUM_ROOMS = new Set(["general", "bug", "improve"]);
 const MAX_FORUM_TEXT = 2000;
 const MAX_FORUM_IMAGE = 3 * 1024 * 1024;
@@ -483,6 +483,32 @@ function pruneForum() {
   } else {
     db.forumMessages = src;
   }
+}
+
+function forumDayKey(ts, tzOffsetMin) {
+  const localMs = Number(ts || 0) - Number(tzOffsetMin || 0) * 60 * 1000;
+  const d = new Date(localMs);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return y + "-" + m + "-" + day;
+}
+
+function forumDaysBefore(room, before, tzOffsetMin, cut) {
+  const map = new Map();
+  const beforeTs = Number(before) || 0;
+  const cutTs = Number(cut) || 0;
+  for (const m of db.forumMessages || []) {
+    if (!m || m.room !== room) continue;
+    if (m.createdAt < cutTs || m.createdAt >= beforeTs) continue;
+    const day = forumDayKey(m.createdAt, tzOffsetMin);
+    const cur = map.get(day) || { day, count: 0, from: m.createdAt, to: m.createdAt };
+    cur.count += 1;
+    if (m.createdAt < cur.from) cur.from = m.createdAt;
+    if (m.createdAt > cur.to) cur.to = m.createdAt;
+    map.set(day, cur);
+  }
+  return [...map.values()].sort((a, b) => String(a.day).localeCompare(String(b.day)));
 }
 
 function publicForumMsg(m) {
@@ -1181,11 +1207,43 @@ async function handle(req, res) {
     }
     const cut = now() - FORUM_TTL_MS;
     const since = Number(url.searchParams.get("since") || 0) || 0;
+    const fromRaw = Number(url.searchParams.get("from") || 0) || 0;
+    const toRaw = Number(url.searchParams.get("to") || 0) || 0;
+    const from = Math.max(cut, fromRaw || cut);
+    const to = toRaw > 0 ? toRaw : now() + 1000;
+    const includeDays = String(url.searchParams.get("includeDays") || "") === "1";
+    const tzOffset = Number(url.searchParams.get("tzOffset") || 0) || 0;
     const items = (db.forumMessages || [])
-      .filter((m) => m.room === room && m.createdAt >= cut && m.createdAt > since)
+      .filter(
+        (m) =>
+          m.room === room &&
+          m.createdAt >= cut &&
+          m.createdAt >= from &&
+          m.createdAt <= to &&
+          m.createdAt > since,
+      )
       .sort((a, b) => a.createdAt - b.createdAt)
       .map(publicForumMsg);
-    return send(res, 200, { ok: true, room, items, since: cut });
+    const payload = { ok: true, room, items, from, to, since: cut, ttlMs: FORUM_TTL_MS };
+    if (includeDays) {
+      payload.days = forumDaysBefore(room, from, tzOffset, cut);
+    }
+    return send(res, 200, payload);
+  }
+
+  if (method === "GET" && p === "/api/forum/days") {
+    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    pruneForum();
+    const room = String(url.searchParams.get("room") || "general");
+    if (!FORUM_ROOMS.has(room)) {
+      return send(res, 400, { ok: false, error: "未知讨论区" });
+    }
+    const cut = now() - FORUM_TTL_MS;
+    const beforeRaw = Number(url.searchParams.get("before") || 0) || 0;
+    const before = beforeRaw > 0 ? beforeRaw : now();
+    const tzOffset = Number(url.searchParams.get("tzOffset") || 0) || 0;
+    const days = forumDaysBefore(room, before, tzOffset, cut);
+    return send(res, 200, { ok: true, room, before, days, ttlMs: FORUM_TTL_MS });
   }
 
   if (method === "POST" && p === "/api/forum/messages") {

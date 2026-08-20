@@ -188,6 +188,34 @@ html, body {
   color: var(--tx2);
   text-align: center;
 }
+.msg.day-chip {
+  max-width: 100%;
+  align-self: center;
+  border: 1px solid var(--bd);
+  background: var(--panel2);
+  color: var(--tx2);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.msg.day-chip:hover:not(:disabled) {
+  border-color: var(--orange);
+  color: var(--orange2);
+  background: rgba(255,143,46,0.12);
+}
+.msg.day-chip:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+.msg.day-chip.expanded {
+  border-style: dashed;
+  color: var(--tx2);
+}
+.msg.day-chip.loading {
+  opacity: 0.7;
+}
 .auth {
   display: none;
   flex: 1;
@@ -390,7 +418,7 @@ html, body {
     </div>
     <div class="auth" id="auth">
       <h3 id="authTitle">登录后即可发言</h3>
-      <p id="authHint">与创意工坊共用同一账户。登录后可在综合区、Bug 提交区、功能改进区聊天，并同步近 3 天消息。</p>
+      <p id="authHint">与创意工坊共用同一账户。登录后默认同步「昨天 5:00」至今；更早日期点选加载（服务器保留约 30 天）。</p>
       <div class="modes">
         <button type="button" class="on" id="modeLogin">登录</button>
         <button type="button" id="modeReg">注册</button>

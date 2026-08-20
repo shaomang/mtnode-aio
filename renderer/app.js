@@ -64,6 +64,8 @@ const KIND_CLS = {
   global: "global",
   music_gen: "music",
   video_gen: "video",
+  super: "super",
+  super_io: "super-io",
 };
 
 /* 节点标题栏拖动手柄图标（SVG，stroke=currentColor） */
@@ -90,6 +92,11 @@ const KIND_ICON_SVG = {
   /* 任务 · 规划步骤 */
   task:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 6.1l1.5 1.5 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 10.6h6.8M4.6 12.4h4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  /* 超级节点 */
+  super:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.15" opacity=".85"/><path d="M5.6 8h4.8M8 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  super_io:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 8h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
   /* 对话 */
   chat:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.5h7.2a1.4 1.4 0 0 1 1.4 1.4v3.4a1.4 1.4 0 0 1-1.4 1.4H7.2L4.6 12V9.7H3.2A1.4 1.4 0 0 1 1.8 8.3V4.9a1.4 1.4 0 0 1 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8.8 4.8h4a1.2 1.2 0 0 1 1.2 1.2v2.6a1.2 1.2 0 0 1-1.2 1.2h-.8V12l-2-1.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>',
@@ -173,6 +180,9 @@ const KIND_ICON_SVG = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3.4" width="10" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
   mark_arrow:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 8h9.2M9.2 4.8L13.2 8 9.2 11.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  /* 文件夹 */
+  folder:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.3h3.4l1.1 1.15h6.7c.44 0 .8.36.8.8v5.55c0 .44-.36.8-.8.8H2.4a.8.8 0 0 1-.8-.8V5.1c0-.44.36-.8.8-.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
 };
 
 function nodeKindIconKey(node) {
@@ -334,7 +344,7 @@ const NODE_DEFAULTS = {
   },
   split: { w: 260, h: 190, title: "拆分" },
   merge: { w: 230, h: 150, title: "合并" },
-  global: { w: 260, h: 160, title: "全局" },
+  global: { w: 260, h: 160, title: "全局", tagFilter: [], tags: [] },
   task: {
     w: 320,
     h: 280,
@@ -347,6 +357,30 @@ const NODE_DEFAULTS = {
     error: null,
     ranAt: 0,
     running: false,
+  },
+  super: {
+    w: 280,
+    h: 200,
+    title: "超级节点",
+    note: "",
+    expandW: 720,
+    expandH: 480,
+    superOpen: false,
+    subFolder: "",
+    innerPanX: 0,
+    innerPanY: 0,
+    parentTaskId: "",
+    parentSuperId: "",
+  },
+  super_io: {
+    w: 132,
+    h: 72,
+    title: "端口",
+    superIo: "in",
+    superIoIndex: 0,
+    parentTaskId: "",
+    parentSuperId: "",
+    pinned: true,
   },
   chat: {
     w: 340,
@@ -514,7 +548,8 @@ const NODE_DEFAULTS = {
     title: "音乐生成",
     audioDuration: 60,
     seed: 0,
-    outputPath: "output",
+    rerollSeed: true,
+    outputPath: "",
     filename: "",
     boundSaveId: "",
     offload: true,
@@ -532,6 +567,7 @@ const NODE_DEFAULTS = {
     duration: 5,
     ratio: "16:9",
     seed: 0,
+    rerollSeed: true,
     steps: 20,
     sampler: "res_multistep",
     scheduler: "simple",
@@ -542,7 +578,7 @@ const NODE_DEFAULTS = {
     teaThresh: 0.15,
     sageMode: "auto",
     refImageSize: "match",
-    outputPath: "output",
+    outputPath: "",
     filename: "",
     boundSaveId: "",
     videoStatus: "",
@@ -565,20 +601,57 @@ const TASK_STATUS_LABEL = {
 function currentTaskFocus() {
   return S.taskFocus || "";
 }
+function currentSuperFocus() {
+  return S.superFocus || "";
+}
 function nodeParentTaskId(n) {
   return (n && n.parentTaskId) || "";
+}
+function nodeParentSuperId(n) {
+  return (n && n.parentSuperId) || "";
 }
 function markParentTaskId(m) {
   return (m && m.parentTaskId) || "";
 }
+function markParentSuperId(m) {
+  return (m && m.parentSuperId) || "";
+}
 function nodeInCurrentScope(n) {
-  return !!n && nodeParentTaskId(n) === currentTaskFocus();
+  if (!n) return false;
+  const sf = currentSuperFocus();
+  if (sf) return nodeParentSuperId(n) === sf;
+  const sid = nodeParentSuperId(n);
+  if (sid) {
+    const host = nodeById(sid);
+    return !!(
+      host &&
+      host.kind === "super" &&
+      host.superOpen &&
+      nodeParentTaskId(host) === currentTaskFocus()
+    );
+  }
+  return nodeParentTaskId(n) === currentTaskFocus();
 }
 function markInCurrentScope(m) {
-  return !!m && markParentTaskId(m) === currentTaskFocus();
+  if (!m) return false;
+  const sf = currentSuperFocus();
+  if (sf) return markParentSuperId(m) === sf;
+  const sid = markParentSuperId(m);
+  if (sid) {
+    const host = nodeById(sid);
+    return !!(
+      host &&
+      host.kind === "super" &&
+      host.superOpen &&
+      nodeParentTaskId(host) === currentTaskFocus()
+    );
+  }
+  return markParentTaskId(m) === currentTaskFocus();
 }
 function visibleWfNodes() {
-  return ((S.wf && S.wf.nodes) || []).filter(nodeInCurrentScope);
+  return ((S.wf && S.wf.nodes) || []).filter(
+    (n) => !isSuperIoNode(n) && nodeInCurrentScope(n),
+  );
 }
 function visibleMarks() {
   return marksOf().filter(markInCurrentScope);
@@ -586,6 +659,645 @@ function visibleMarks() {
 function taskChildrenOf(id) {
   if (!id || !S.wf) return [];
   return (S.wf.nodes || []).filter((n) => n.parentTaskId === id);
+}
+function superChildrenOf(id) {
+  if (!id || !S.wf) return [];
+  return (S.wf.nodes || []).filter((n) => n.parentSuperId === id);
+}
+function isSuperNode(n) {
+  return !!(n && n.kind === "super");
+}
+function isSuperIoNode(n) {
+  return !!(n && n.kind === "super_io");
+}
+function superDisplaySize(n) {
+  if (!n || n.kind !== "super")
+    return { w: (n && n.w) || 240, h: (n && n.h) || 160 };
+  if (n.superOpen && !currentSuperFocus()) {
+    return {
+      w: Math.max(320, Number(n.expandW) || 720),
+      h: Math.max(220, Number(n.expandH) || 480),
+    };
+  }
+  return { w: n.w || 280, h: n.h || 200 };
+}
+function superInnerOrigin(s) {
+  if (!(s && s.superOpen && !currentSuperFocus())) return { ox: 10, oy: 40 };
+  const el = document.querySelector('.wf-node[data-nid="' + s.id + '"]');
+  const stage = el && el.querySelector(".super-stage");
+  if (el && stage) {
+    const nr = el.getBoundingClientRect();
+    const sr = stage.getBoundingClientRect();
+    const z = S.cam.z > 0 ? S.cam.z : 1;
+    if (nr.width > 0 && sr.width > 0) {
+      return {
+        ox: (sr.left - nr.left) / z,
+        oy: (sr.top - nr.top) / z,
+      };
+    }
+  }
+  /* head 28 + border ≈ 29；展开时 body 无上边距，舞台贴齐标题下沿 */
+  return { ox: 0, oy: 29 };
+}
+function superInnerPan(s) {
+  return {
+    x: Number(s && s.innerPanX) || 0,
+    y: Number(s && s.innerPanY) || 0,
+  };
+}
+function nodeByIdIn(id, wf) {
+  return ((wf && wf.nodes) || []).find((n) => n.id === id) || null;
+}
+function stripSuperIoNodes(wf) {
+  wf = wf || S.wf;
+  if (!wf || !Array.isArray(wf.nodes)) return wf;
+  const proxies = wf.nodes.filter((n) => isSuperIoNode(n));
+  if (!proxies.length) return wf;
+  for (const proxy of proxies) {
+    const hostId = proxy.parentSuperId;
+    if (!hostId) continue;
+    const idx = Number(proxy.superIoIndex) || 0;
+    for (const w of wf.wires || []) {
+      if (w.to === proxy.id) {
+        w.to = hostId;
+        w.toIndex = idx;
+      }
+      if (w.from === proxy.id) {
+        w.from = hostId;
+        w.fromIndex = idx;
+      }
+    }
+  }
+  wf.nodes = wf.nodes.filter((n) => !isSuperIoNode(n));
+  return wf;
+}
+function superExternalInWires(superNode, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return [];
+  return (wf.wires || [])
+    .filter((x) => {
+      if (x.to !== superNode.id || wireFromIsControl(x)) return false;
+      const from = nodeByIdIn(x.from, wf);
+      if (!from || isSuperIoNode(from)) return false;
+      return nodeParentSuperId(from) !== superNode.id;
+    })
+    .sort((a, b) => a.toIndex - b.toIndex);
+}
+function superInternalOutFeeds(superNode, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return [];
+  return (wf.wires || [])
+    .filter((x) => {
+      if (x.to !== superNode.id || wireFromIsControl(x)) return false;
+      const from = nodeByIdIn(x.from, wf);
+      return from && nodeParentSuperId(from) === superNode.id;
+    })
+    .sort((a, b) => a.toIndex - b.toIndex);
+}
+function superExternalOutWires(superNode, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return [];
+  return (wf.wires || [])
+    .filter((x) => {
+      if (x.from !== superNode.id || wireFromIsControl(x)) return false;
+      const to = nodeByIdIn(x.to, wf);
+      return to && nodeParentSuperId(to) !== superNode.id;
+    })
+    .sort((a, b) => (a.fromIndex || 0) - (b.fromIndex || 0));
+}
+/** 超级节点 → 内部子节点（内侧输入桥接） */
+function superInternalBridgeWires(superNode, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return [];
+  return (wf.wires || [])
+    .filter((x) => {
+      if (x.from !== superNode.id || wireFromIsControl(x)) return false;
+      const to = nodeByIdIn(x.to, wf);
+      return to && nodeParentSuperId(to) === superNode.id;
+    })
+    .sort((a, b) => (a.fromIndex || 0) - (b.fromIndex || 0));
+}
+/** 收起：仅已占用槽位数；展开：至少 1 个并可多一个空闲槽 */
+function superDynamicPortCount(maxIdx, open) {
+  if (maxIdx < 0) return open ? 1 : 0;
+  return open ? maxIdx + 2 : maxIdx + 1;
+}
+function superWireInnerLink(wire) {
+  if (!wire) return null;
+  const from = nodeById(wire.from);
+  const to = nodeById(wire.to);
+  if (!from || !to) return null;
+  if (from.kind === "super" && nodeParentSuperId(to) === from.id)
+    return { super: from, child: to, dir: "out" };
+  if (to.kind === "super" && nodeParentSuperId(from) === to.id)
+    return { super: to, child: from, dir: "in" };
+  return null;
+}
+/** Expanded shell on the main canvas (not full-canvas superFocus mode). */
+function superIsOpenShell(n) {
+  return !!(n && n.kind === "super" && n.superOpen && !currentSuperFocus());
+}
+/** If this wire should be drawn inside an open super stage, return that host. */
+function wireOpenSuperHost(w, from, to) {
+  from = from || (w && nodeById(w.from));
+  to = to || (w && nodeById(w.to));
+  if (!w || !from || !to) return null;
+  const link = superWireInnerLink(w);
+  if (link && superIsOpenShell(link.super)) return link.super;
+  const sid = nodeParentSuperId(from);
+  if (sid && sid === nodeParentSuperId(to)) {
+    const host = nodeById(sid);
+    if (superIsOpenShell(host)) return host;
+  }
+  return null;
+}
+function ensureSuperWiresSvg(stage) {
+  if (!stage) return null;
+  let svg = stage.querySelector(":scope > svg.super-wires");
+  if (!svg) {
+    svg = document.createElementNS(svgNS, "svg");
+    svg.classList.add("super-wires");
+    svg.setAttribute("aria-hidden", "true");
+    const vp = stage.querySelector(":scope > .super-stage-viewport");
+    if (vp) stage.insertBefore(svg, vp);
+    else stage.insertBefore(svg, stage.firstChild);
+  }
+  const hostEl = stage.closest(".wf-node");
+  const host = hostEl && nodeById(hostEl.dataset.nid);
+  const fallbackW = host ? Math.max(80, superDisplaySize(host).w - 20) : 80;
+  const fallbackH = host ? Math.max(120, superDisplaySize(host).h - 56) : 120;
+  const w = Math.max(1, stage.clientWidth || fallbackW);
+  const h = Math.max(1, stage.clientHeight || fallbackH);
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+  return svg;
+}
+function superStageLocalOut(n, fromIndex, host, pan) {
+  const sz = nodeDrawSize(n);
+  const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
+  return {
+    x: (pan.x || 0) + n.x + sz.w + PORT_OFF,
+    y: (pan.y || 0) + n.y + outPortY(hNode, fromIndex || 0),
+  };
+}
+function superStageLocalIn(n, toIndex, host, pan) {
+  const sz = nodeDrawSize(n);
+  const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
+  return {
+    x: (pan.x || 0) + n.x - PORT_OFF,
+    y: (pan.y || 0) + n.y + inPortY(hNode, toIndex, inputCount(n)),
+  };
+}
+function superStageHeight(host) {
+  const el =
+    host && document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+  const stage = el && el.querySelector(".super-stage");
+  if (stage && stage.clientHeight > 0) return stage.clientHeight;
+  const sz = superDisplaySize(host);
+  /* head≈29 + 底边 resize 垫高≈14 */
+  return Math.max(120, sz.h - 43);
+}
+function superBridgeLocalY(host, i) {
+  return superInnerPortY(
+    superStageHeight(host),
+    i || 0,
+    inputCount(host),
+  );
+}
+function superSinkLocalY(host, i) {
+  return superInnerPortY(
+    superStageHeight(host),
+    i || 0,
+    outputCount(host),
+  );
+}
+function superStageBridgePos(host, fromIndex, stageW) {
+  return {
+    x: 2 + PORT_R,
+    y: superBridgeLocalY(host, fromIndex || 0),
+  };
+}
+function superStageSinkPos(host, toIndex, stageW) {
+  return {
+    x: Math.max(PORT_R, (stageW || 0) - 2 - PORT_R),
+    y: superSinkLocalY(host, toIndex || 0),
+  };
+}
+function applyWirePathClass(p, w, from) {
+  let wcls = "fn-edge";
+  if (S.selWire === w.id) wcls += " sel";
+  if (isControlKind(from) || isControlKind(nodeById(w.to))) wcls += " ctrl";
+  else if (isImageWireFrom(from)) wcls += " img";
+  else if (isAudioWireFrom(from)) wcls += " aud";
+  else if (isVideoWireFrom(from)) wcls += " vid";
+  if (isPinnedWire(w)) wcls += " pinned";
+  p.setAttribute("class", wcls);
+}
+function bindWirePathInteractions(p, w) {
+  if (p.dataset.bound === "1") return;
+  p.dataset.bound = "1";
+  p.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    clearSelection();
+    S.selWire = w.id;
+    renderCanvas();
+  });
+  p.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    clearSelection();
+    S.selWire = w.id;
+    renderCanvas();
+    showCtx(ev.clientX, ev.clientY, [
+      [
+        I18n.t("连线操作"),
+        [
+          {
+            label: I18n.t("✕ 删除连线"),
+            iconKey: "menu_cut",
+            iconCls: "danger",
+            cls: "ctx-danger",
+            run: () => {
+              if (isPinnedWire(w)) {
+                toast(I18n.t("该连线已固定，无法删除"), "warn");
+                return;
+              }
+              pushHistory();
+              removeWire(w.id);
+              S.selWire = null;
+              renderCanvas();
+              scheduleSave(true);
+              renderStatus();
+            },
+          },
+        ],
+      ],
+    ]);
+  });
+}
+function updateSuperInnerWires(host, touchIds) {
+  if (!superIsOpenShell(host)) return;
+  const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+  const stage = el && el.querySelector(".super-stage");
+  if (!stage) return;
+  const svg = ensureSuperWiresSvg(stage);
+  if (!svg) return;
+  const filter =
+    touchIds && typeof touchIds.has === "function" && touchIds.size
+      ? touchIds
+      : null;
+  const pan = superInnerPan(host);
+  const fallbackW = Math.max(80, superDisplaySize(host).w - 20);
+  const stageW = Math.max(80, stage.clientWidth || fallbackW);
+  const present = new Set();
+  for (const w of S.wf.wires || []) {
+    const from = nodeById(w.from);
+    const to = nodeById(w.to);
+    if (!from || !to) continue;
+    if (wireOpenSuperHost(w, from, to) !== host) continue;
+    const id = "swire-" + w.id;
+    present.add(id);
+    if (
+      filter &&
+      !filter.has(w.from) &&
+      !filter.has(w.to) &&
+      !filter.has(host.id)
+    )
+      continue;
+    const link = superWireInnerLink(w);
+    let a;
+    let b;
+    if (link && link.dir === "out") {
+      a = superStageBridgePos(host, w.fromIndex || 0, stageW);
+      b = superStageLocalIn(to, w.toIndex, host, pan);
+    } else if (link && link.dir === "in") {
+      a = superStageLocalOut(from, w.fromIndex || 0, host, pan);
+      b = superStageSinkPos(host, w.toIndex || 0, stageW);
+    } else {
+      a = superStageLocalOut(from, w.fromIndex || 0, host, pan);
+      b = superStageLocalIn(to, w.toIndex, host, pan);
+    }
+    let p = svg.querySelector("#" + CSS.escape(id));
+    if (!p) {
+      p = document.createElementNS(svgNS, "path");
+      p.id = id;
+      bindWirePathInteractions(p, w);
+      svg.appendChild(p);
+    }
+    p.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
+    applyWirePathClass(p, w, from);
+  }
+  for (const p of [...svg.querySelectorAll(":scope > path.fn-edge")]) {
+    if (p.id === "swireTemp") continue;
+    if (!present.has(p.id)) p.remove();
+  }
+  let t = svg.querySelector("#swireTemp");
+  if (!t) {
+    t = document.createElementNS(svgNS, "path");
+    t.id = "swireTemp";
+    t.setAttribute("class", "fn-edge temp");
+    svg.appendChild(t);
+  }
+  const d = S.drag;
+  if (d && d.mode === "wire") {
+    const from = nodeById(d.fromId);
+    let show = false;
+    let a = null;
+    if (d.superInnerBridge && from && from.id === host.id) {
+      a = superStageBridgePos(host, d.fromIndex || 0, stageW);
+      show = true;
+    } else if (from && nodeParentSuperId(from) === host.id) {
+      a = superStageLocalOut(from, d.fromIndex || 0, host, pan);
+      show = true;
+    }
+    if (show && a) {
+      const world = toStage(d.mx, d.my);
+      const o = superInnerOrigin(host);
+      const b = {
+        x: world.x - host.x - o.ox,
+        y: world.y - host.y - o.oy,
+      };
+      t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
+      let tcls = "fn-edge temp";
+      if (isControlKind(from)) tcls += " ctrl";
+      else if (from && isImageWireFrom(from)) tcls += " img";
+      t.setAttribute("class", tcls);
+      t.style.display = "";
+      return;
+    }
+  }
+  if (!filter) t.style.display = "none";
+}
+function refreshAllSuperInnerWires(touchIds) {
+  for (const n of (S.wf && S.wf.nodes) || []) {
+    if (!superIsOpenShell(n)) continue;
+    if (
+      touchIds &&
+      typeof touchIds.has === "function" &&
+      touchIds.size &&
+      !touchIds.has(n.id) &&
+      !superChildrenOf(n.id).some((c) => touchIds.has(c.id))
+    )
+      continue;
+    updateSuperInnerWires(n, touchIds);
+  }
+}
+
+function findSuperAtWorld(x, y, exceptIds, requireOpen) {
+  const skip = exceptIds || new Set();
+  let best = null;
+  let bestArea = Infinity;
+  for (const n of (S.wf && S.wf.nodes) || []) {
+    if (!n || n.kind !== "super") continue;
+    if (skip.has(n.id)) continue;
+    if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
+    if (currentSuperFocus()) continue;
+    if (requireOpen && !n.superOpen) continue;
+    const sz =
+      n.superOpen && !currentSuperFocus()
+        ? superDisplaySize(n)
+        : { w: n.w || 280, h: n.h || 200 };
+    const o = superInnerOrigin(n);
+    const x0 = n.x + (n.superOpen ? o.ox : 8);
+    const y0 = n.y + (n.superOpen ? o.oy : 36);
+    const x1 = n.x + sz.w - 8;
+    const y1 = n.y + sz.h - 10;
+    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
+      const area = sz.w * sz.h;
+      if (area < bestArea) {
+        best = n;
+        bestArea = area;
+      }
+    }
+  }
+  return best;
+}
+let _superHoverExpandBackup = null;
+function restoreSuperHoverExpand() {
+  if (!_superHoverExpandBackup) return;
+  const n = nodeById(_superHoverExpandBackup.id);
+  if (n && !_superHoverExpandBackup.wasOpen) n.superOpen = false;
+  _superHoverExpandBackup = null;
+}
+function updateSuperHoverExpand(ev, dragIds) {
+  if (currentSuperFocus()) return;
+  const d = S.drag;
+  if (!d || d.mode !== "node" || !d.moved) {
+    clearSuperDropHot();
+    return;
+  }
+  const pt = toStage(ev.clientX, ev.clientY);
+  const skip = new Set(dragIds || d.ids || []);
+  let host =
+    findOpenSuperAtWorld(pt.x, pt.y, skip) ||
+    findSuperAtWorld(pt.x, pt.y, skip, false);
+  if (host && !host.superOpen) {
+    if (
+      !_superHoverExpandBackup ||
+      _superHoverExpandBackup.id !== host.id
+    ) {
+      restoreSuperHoverExpand();
+      _superHoverExpandBackup = { id: host.id, wasOpen: false };
+      host.superOpen = true;
+      renderCanvas();
+      const z = S.cam.z > 0 ? S.cam.z : 1;
+      const dx = (ev.clientX - d.sx) / z;
+      const dy = (ev.clientY - d.sy) / z;
+      for (const id of d.ids || []) {
+        const n = nodeById(id);
+        const o = d.orig && d.orig[id];
+        if (!n || !o) continue;
+        n.x = snap(o.x + dx);
+        n.y = snap(o.y + dy);
+        const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+        if (el) {
+          el.style.left = n.x + "px";
+          el.style.top = n.y + "px";
+        }
+      }
+    }
+    host = nodeById(host.id);
+  }
+  clearSuperDropHot();
+  if (!host) return;
+  const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+  if (el) el.classList.add("super-drop-hot");
+  const stage = el && el.querySelector(".super-stage");
+  if (stage) stage.classList.add("super-drop-hot");
+}
+function clearSuperDropHot(keepExpanded) {
+  document
+    .querySelectorAll(".super-stage.super-drop-hot, .wf-node.super.super-drop-hot")
+    .forEach((el) => el.classList.remove("super-drop-hot"));
+  if (keepExpanded === true) {
+    _superHoverExpandBackup = null;
+  } else if (keepExpanded === false) {
+    restoreSuperHoverExpand();
+  }
+}
+function toggleSuperOpen(node, open) {
+  if (!node || node.kind !== "super") return;
+  pushHistory();
+  if (open === undefined) node.superOpen = !node.superOpen;
+  else node.superOpen = !!open;
+  scheduleSave(true);
+  renderCanvas();
+}
+function nodeIsNestedInOpenSuper(n) {
+  if (!n || currentSuperFocus()) return false;
+  const sid = nodeParentSuperId(n);
+  if (!sid) return false;
+  const host = nodeById(sid);
+  return !!(host && host.kind === "super" && host.superOpen);
+}
+function nodeWorldPos(n) {
+  if (!n) return { x: 0, y: 0 };
+  if (!nodeIsNestedInOpenSuper(n)) return { x: n.x, y: n.y };
+  const host = nodeById(n.parentSuperId);
+  if (!host) return { x: n.x, y: n.y };
+  const o = superInnerOrigin(host);
+  const pan = superInnerPan(host);
+  return {
+    x: host.x + o.ox + pan.x + n.x,
+    y: host.y + o.oy + pan.y + n.y,
+  };
+}
+function nodeDrawSize(n) {
+  if (!n) return { w: 240, h: 160 };
+  if (n.kind === "super") return superDisplaySize(n);
+  return { w: n.w || 240, h: n.h || 160 };
+}
+function normalizeSuperSubFolder(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+}
+function superRelPrefixFor(node) {
+  const parts = [];
+  let sid = node && node.parentSuperId;
+  const seen = new Set();
+  while (sid && !seen.has(sid)) {
+    seen.add(sid);
+    const host = nodeById(sid);
+    if (!host) break;
+    const sf = normalizeSuperSubFolder(host.subFolder);
+    if (sf) parts.unshift(sf);
+    sid = host.parentSuperId;
+  }
+  return parts.join("/");
+}
+function findOpenSuperAtWorld(x, y, exceptIds) {
+  const skip = exceptIds || new Set();
+  let best = null;
+  let bestArea = Infinity;
+  for (const n of (S.wf && S.wf.nodes) || []) {
+    if (!n || n.kind !== "super" || !n.superOpen) continue;
+    if (skip.has(n.id)) continue;
+    if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
+    if (currentSuperFocus()) continue;
+    const sz = superDisplaySize(n);
+    const o = superInnerOrigin(n);
+    const x0 = n.x + o.ox;
+    const y0 = n.y + o.oy;
+    const x1 = n.x + sz.w - 8;
+    const y1 = n.y + sz.h - 10;
+    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
+      const area = sz.w * sz.h;
+      if (area < bestArea) {
+        best = n;
+        bestArea = area;
+      }
+    }
+  }
+  return best;
+}
+function promptSuperSubFolder(node) {
+  if (!node || node.kind !== "super") return;
+  openOverlay(I18n.t("超级节点子文件夹"));
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.textContent = I18n.t(
+    "设置后，此超级节点内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。",
+  );
+  body.appendChild(hint);
+  const lab = document.createElement("label");
+  lab.className = "n-field";
+  lab.appendChild(document.createTextNode(I18n.t("子文件夹（相对工作目录）")));
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.placeholder = "assets/batch-a";
+  inp.value = String(node.subFolder || "");
+  lab.appendChild(inp);
+  body.appendChild(lab);
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = I18n.t("确定");
+  ok.onclick = () => {
+    pushHistory();
+    node.subFolder = normalizeSuperSubFolder(inp.value);
+    closeOverlay();
+    scheduleSave(true);
+    renderCanvas();
+    toast(
+      node.subFolder
+        ? I18n.t("子文件夹已设为：") + node.subFolder
+        : I18n.t("已清除子文件夹"),
+      "ok",
+    );
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  setTimeout(() => inp.focus(), 0);
+}
+function finalizeNodeDragNest(ids) {
+  if (currentSuperFocus()) return false;
+  const skipHosts = new Set();
+  for (const id of ids || []) {
+    const n = nodeById(id);
+    if (n && n.kind === "super") skipHosts.add(id);
+  }
+  const list = [];
+  for (const id of ids || []) {
+    const n = nodeById(id);
+    if (!n || isSuperIoNode(n) || n.kind === "super") continue;
+    list.push(n);
+  }
+  if (!list.length) return false;
+  let changed = false;
+  for (const n of list) {
+    const wp = nodeWorldPos(n);
+    const sz = nodeDrawSize(n);
+    const cx = wp.x + sz.w / 2;
+    const cy = wp.y + sz.h / 2;
+    const host = findOpenSuperAtWorld(cx, cy, skipHosts);
+    const cur = nodeParentSuperId(n);
+    if (host && host.id === cur) continue;
+    if (host) {
+      const o = superInnerOrigin(host);
+      const pan = superInnerPan(host);
+      n.parentSuperId = host.id;
+      n.parentTaskId = host.parentTaskId || "";
+      n.x = snap(wp.x - host.x - o.ox - pan.x);
+      n.y = snap(wp.y - host.y - o.oy - pan.y);
+      changed = true;
+    } else if (cur) {
+      const host0 = nodeById(cur);
+      n.parentSuperId = "";
+      n.parentTaskId = host0 ? host0.parentTaskId || "" : currentTaskFocus();
+      n.x = snap(wp.x);
+      n.y = snap(wp.y);
+      changed = true;
+    }
+  }
+  return changed;
 }
 function taskChildTasksOf(id) {
   return taskChildrenOf(id).filter((n) => n.kind === "task");
@@ -710,145 +1422,204 @@ function applySavePathExt(node) {
   if (!raw) return;
   node.savePath = preferRelativeSavePath(forcePathExt(raw, ext));
 }
-function syncBoundSaveFilename(gen) {
-  const sv = boundSaveOf(gen);
-  if (!sv || !isMediaGenNode(gen)) return;
-  const media = gen.kind === "music_gen" ? "audio" : "video";
-  const ext = saveExtForMedia(media);
-  const stem =
-    stemOfFilename(gen.filename) ||
-    stemOfFilename(fileName(sv.savePath)) ||
-    safeFile(gen.title || (media === "audio" ? "music" : "video"));
-  const dir = dirOfPath(sv.savePath);
-  const next = dir ? dir.replace(/[\\/]+$/, "") + "/" + stem + ext : stem + ext;
-  sv.savePath = preferRelativeSavePath(forcePathExt(next, ext));
+/** Combine node.outputPath (+ optional filename) into one file path string. */
+function mediaGenOutputRaw(node) {
+  if (!node) return "";
+  const raw = String(node.outputPath || "").trim();
+  const fn = String(node.filename || "").trim();
+  if (!raw && !fn) return "";
+  if (!raw) return fileName(fn);
+  const base = fileName(raw);
+  const hasFileExt = /\.(wav|flac|mp3|mp4|webm|mov)$/i.test(base);
+  if (fn && !hasFileExt) {
+    return raw.replace(/[\\/]+$/, "") + "/" + fileName(fn);
+  }
+  return raw;
 }
-function syncGenFilenameFromSave(sv) {
-  const gen = mediaGenOfBoundSave(sv);
-  if (!gen) return;
-  const name = fileName(sv.savePath || "");
-  if (name) gen.filename = name;
+function mediaGenExt(node) {
+  return saveExtForMedia(node && node.kind === "video_gen" ? "video" : "audio");
 }
-function placeBoundSave(gen, sv) {
-  if (!gen || !sv) return;
-  sv.x = snap(gen.x + (gen.w || 0) + BOUND_SAVE_GAP);
-  sv.y = snap(gen.y);
-  sv.parentTaskId = gen.parentTaskId || "";
+/**
+ * Resolve music/video export to { ok, outputDir, filename, path }.
+ * Path must be set on the node (no bound save). Relative paths need workspace.
+ */
+function resolveMediaGenExport(node) {
+  const ext = mediaGenExt(node);
+  const combined = mediaGenOutputRaw(node);
+  if (!combined) return { ok: false, code: "empty", outputDir: "", filename: "" };
+  /* Legacy default "output" without a real filename → treat as unset */
+  if (/^output$/i.test(combined.replace(/\\/g, "/").replace(/^\.\//, ""))) {
+    return { ok: false, code: "empty", outputDir: "", filename: "" };
+  }
+  const forced = forcePathExt(combined, ext);
+  const r = resolveSavePath(forced);
+  if (!r.ok) return { ok: false, code: r.code || "empty", outputDir: "", filename: "" };
+  const pth = forcePathExt(r.path, ext);
+  const dir = dirOfPath(pth);
+  return {
+    ok: true,
+    outputDir: dir || ".",
+    filename: fileName(pth),
+    path: pth,
+  };
 }
-function ensureBoundSaveForMedia(gen, wf) {
+function requireMediaGenExport(node, quiet) {
+  const exp = resolveMediaGenExport(node);
+  if (exp && exp.ok) return exp;
+  const msg = savePathResolveError(exp && exp.code);
+  if (!quiet) toast(msg, "warn");
+  if (node) {
+    if (node.kind === "music_gen") node.musicStatus = msg;
+    if (node.kind === "video_gen") node.videoStatus = msg;
+  }
+  return null;
+}
+async function pathExistsAbs(p) {
+  const abs = String(p || "").trim();
+  if (!abs) return false;
+  try {
+    return !!(window.api && window.api.fileExists && (await window.api.fileExists(abs)));
+  } catch {
+    return false;
+  }
+}
+/** If preferred file exists, allocate stem_1 / stem_2 … to avoid overwrite. */
+async function allocateUniqueMediaExport(exp) {
+  if (!exp || !exp.ok) return exp;
+  const dir = String(exp.outputDir || "").trim() || ".";
+  let name = String(exp.filename || "").trim();
+  if (!name) name = "out" + (exp.path && /\.mp4$/i.test(exp.path) ? ".mp4" : ".wav");
+  const ext = extOf(name) || (/\.mp4$/i.test(name) ? ".mp4" : ".wav");
+  const stem = stemOfFilename(name) || "out";
+  let candidate = joinPath(dir, name);
+  if (!(await pathExistsAbs(candidate))) {
+    return Object.assign({}, exp, { path: candidate, filename: name });
+  }
+  for (let i = 1; i < 10000; i++) {
+    const fn = stem + "_" + i + ext;
+    candidate = joinPath(dir, fn);
+    if (!(await pathExistsAbs(candidate))) {
+      return Object.assign({}, exp, {
+        path: candidate,
+        filename: fn,
+        renamed: true,
+        baseFilename: name,
+      });
+    }
+  }
+  return Object.assign({}, exp, { ok: false, code: "empty" });
+}
+/** Last output if present on disk, else configured path if file exists. */
+async function resolveMediaGenDisplayPath(node) {
+  if (!node) return "";
+  const out = (node.output && (node.output.path || node.output.text)) || "";
+  if (out && (await pathExistsAbs(out))) return out;
+  const exp = resolveMediaGenExport(node);
+  if (exp && exp.ok && exp.path && (await pathExistsAbs(exp.path))) return exp.path;
+  return "";
+}
+/** Remove legacy media↔save pairs; migrate savePath → outputPath, then delete the save node. */
+function detachBoundMediaSaves(wf) {
   wf = wf || S.wf;
-  if (!gen || !isMediaGenNode(gen) || !wf) return null;
-  if (!Array.isArray(wf.nodes)) wf.nodes = [];
-  if (!Array.isArray(wf.wires)) wf.wires = [];
-  let sv =
-    (gen.boundSaveId && wf.nodes.find((n) => n.id === gen.boundSaveId)) ||
-    wf.nodes.find((n) => isSaveNode(n) && n.boundFromId === gen.id) ||
-    null;
-  if (!sv) {
-    const w0 = (wf.wires || []).find((w) => {
-      if (w.from !== gen.id) return false;
-      const t = wf.nodes.find((n) => n.id === w.to);
-      return t && isSaveNode(t) && !isControlKind(wf.nodes.find((n) => n.id === w.from) || {});
-    });
-    if (w0) sv = wf.nodes.find((n) => n.id === w0.to) || null;
+  if (!wf || !Array.isArray(wf.nodes)) return;
+  const removeIds = new Set();
+  for (const gen of wf.nodes) {
+    if (!isMediaGenNode(gen)) continue;
+    let sv =
+      (gen.boundSaveId && wf.nodes.find((n) => n.id === gen.boundSaveId)) ||
+      wf.nodes.find((n) => isSaveNode(n) && n.boundFromId === gen.id) ||
+      null;
+    if (!sv) {
+      const pinned = (wf.wires || []).find((w) => {
+        if (w.from !== gen.id || !w.pinned) return false;
+        const t = wf.nodes.find((n) => n.id === w.to);
+        return t && isSaveNode(t);
+      });
+      if (pinned) sv = wf.nodes.find((n) => n.id === pinned.to) || null;
+    }
+    if (sv) {
+      const sp = String(sv.savePath || "").trim();
+      const cur = mediaGenOutputRaw(gen);
+      if (sp && (!cur || /^output$/i.test(cur))) {
+        gen.outputPath = preferRelativeSavePath(
+          forcePathExt(sp, mediaGenExt(gen)),
+        );
+        gen.filename = "";
+      }
+      removeIds.add(sv.id);
+    }
+    gen.boundSaveId = "";
   }
-  if (!sv) {
-    sv = makeNode("save", gen.x + (gen.w || 0) + BOUND_SAVE_GAP, gen.y);
-    sv.parentTaskId = gen.parentTaskId || "";
-    sv.boundFromId = gen.id;
-    sv.auto = true;
-    const media = gen.kind === "music_gen" ? "audio" : "video";
-    const ext = saveExtForMedia(media);
-    const stem =
-      stemOfFilename(gen.filename) ||
-      safeFile(gen.title || (media === "audio" ? "music" : "video"));
-    sv.savePath = stem + ext;
-    sv.title = uniqueTitleInWf(wf, I18n.t("保存节点"));
-    wf.nodes.push(sv);
+  for (const n of wf.nodes) {
+    if (!isSaveNode(n) || !n.boundFromId) continue;
+    const g = wf.nodes.find((x) => x.id === n.boundFromId);
+    if (g && isMediaGenNode(g)) {
+      const sp = String(n.savePath || "").trim();
+      const cur = mediaGenOutputRaw(g);
+      if (sp && (!cur || /^output$/i.test(cur))) {
+        g.outputPath = preferRelativeSavePath(
+          forcePathExt(sp, mediaGenExt(g)),
+        );
+        g.filename = "";
+      }
+      g.boundSaveId = "";
+      removeIds.add(n.id);
+    }
+    n.boundFromId = "";
   }
-  gen.boundSaveId = sv.id;
-  sv.boundFromId = gen.id;
-  placeBoundSave(gen, sv);
-  applySavePathExt(sv);
-  syncGenFilenameFromSave(sv);
-  const wire = wf.wires.find(
-    (w) => w.from === gen.id && w.to === sv.id && !wireFromIsControl(w),
+  if (!removeIds.size) return;
+  wf.wires = (wf.wires || []).filter(
+    (w) => !removeIds.has(w.from) && !removeIds.has(w.to),
   );
-  if (!wire) {
-    wf.wires.push({
-      id: uid("w"),
-      from: gen.id,
-      to: sv.id,
-      toIndex: 0,
-      fromIndex: 0,
-      pinned: true,
-    });
-  } else {
-    wire.pinned = true;
+  wf.nodes = wf.nodes.filter((n) => !removeIds.has(n.id));
+  for (const g of wf.groups || []) {
+    if (!g || !Array.isArray(g.nodeIds)) continue;
+    g.nodeIds = g.nodeIds.filter((id) => !removeIds.has(id));
   }
-  return sv;
+  if (typeof S !== "undefined" && S) {
+    if (S.selSet) for (const id of removeIds) S.selSet.delete(id);
+    if (S.sel && removeIds.has(S.sel)) S.sel = null;
+  }
 }
 function expandBoundPairIds(ids) {
-  const set = new Set(ids || []);
-  for (const id of [...set]) {
-    const n = nodeById(id);
-    if (!n) continue;
-    if (isMediaGenNode(n) && n.boundSaveId) set.add(n.boundSaveId);
-    if (isSaveNode(n) && n.boundFromId) set.add(n.boundFromId);
-  }
-  return [...set];
+  /* Bound media-save pairing removed; keep identity for callers. */
+  return [...(ids || [])];
 }
-function snapBoundSaves(ids) {
-  const seen = new Set();
-  for (const id of ids || []) {
-    const n = nodeById(id);
-    const gen = isMediaGenNode(n)
-      ? n
-      : isSaveNode(n)
-        ? mediaGenOfBoundSave(n)
-        : null;
-    if (!gen || seen.has(gen.id)) continue;
-    seen.add(gen.id);
-    const sv = boundSaveOf(gen);
-    if (!sv) continue;
-    placeBoundSave(gen, sv);
-    const el = document.querySelector('.wf-node[data-nid="' + sv.id + '"]');
-    if (el) {
-      el.style.left = sv.x + "px";
-      el.style.top = sv.y + "px";
-    }
-  }
+function snapBoundSaves() {
+  /* no-op: media gens no longer drag a paired save node */
 }
-function resolveMediaGenExport(node) {
-  const media = node && node.kind === "video_gen" ? "video" : "audio";
-  const ext = saveExtForMedia(media);
-  const sv = boundSaveOf(node);
-  if (sv && String(sv.savePath || "").trim()) {
-    const r = resolveSavePath(sv.savePath);
-    if (r.ok) {
-      const p = forcePathExt(r.path, ext);
-      const dir = dirOfPath(p);
-      return { outputDir: dir || ".", filename: fileName(p) };
-    }
-  }
-  const rawDir =
-    node.kind === "video_gen"
-      ? typeof resolveVideoOutputDir === "function"
-        ? resolveVideoOutputDir(node)
-        : String(node.outputPath || "output")
-      : typeof resolveMusicOutputDir === "function"
-        ? resolveMusicOutputDir(node)
-        : String(node.outputPath || "output");
-  let name = String(node.filename || "").trim();
-  if (name) name = fileName(forcePathExt(name, ext));
-  return { outputDir: rawDir, filename: name };
+function syncGenFilenameFromSave() {
+  /* no-op: media gens no longer mirror a bound save path */
+}
+function placeBoundSave() {
+  /* no-op */
+}
+function syncBoundSaveFilename() {
+  /* no-op */
+}
+function ensureBoundSaveForMedia() {
+  /* no-op: media gens use in-node outputPath */
+  return null;
 }
 function outputCount(n) {
   if (!n) return 0;
   if (n.kind === "global") return 0;
   if (isSaveNode(n)) return 0;
   if (isExecEnd(n)) return 0;
-  if (n.kind === "judge") return 2;
+  if (n.kind === "super") {
+    const open = superIsOpenShell(n);
+    const ext = superExternalOutWires(n);
+    const intF = superInternalOutFeeds(n);
+    const maxFrom = ext.reduce(
+      (m, w) => Math.max(m, Number(w.fromIndex) || 0),
+      -1,
+    );
+    const maxTo = intF.reduce((m, w) => Math.max(m, Number(w.toIndex) || 0), -1);
+    /* 收起时外部输出仅在内部有汇入时出现；展开时保留可连接的内侧槽 */
+    const maxIdx = open ? Math.max(maxFrom, maxTo) : maxTo;
+    return superDynamicPortCount(maxIdx, open);
+  }
+  if (n.kind === "judge" || n.kind === "task") return 2;
   if (n.kind === "sequencer")
     return Math.max(2, Math.min(8, Math.round(Number(n.seqOutputs) || 3)));
   if (n.kind === "splitter")
@@ -950,6 +1721,7 @@ function taskAncestorChain(taskId) {
 function resetTaskFocus() {
   S.taskFocus = "";
   S.taskStack = [];
+  resetSuperFocus();
   renderTaskCrumb();
 }
 function setTaskFocus(taskId, opts) {
@@ -1028,11 +1800,148 @@ function leaveTask() {
   const prev = stack[stack.length - 1] || "";
   setTaskFocus(prev);
 }
+
+function resetSuperFocus() {
+  S.superFocus = "";
+  S.superStack = [];
+  renderTaskCrumb();
+}
+function setSuperFocus(superId, opts) {
+  opts = opts || {};
+  const id = superId || "";
+  if (id) {
+    const n = nodeById(id);
+    if (!n || n.kind !== "super") return;
+    S.superFocus = id;
+    const stack = [];
+    let cur = n;
+    while (cur && cur.kind === "super") {
+      stack.unshift(cur.id);
+      cur = nodeById(cur.parentSuperId);
+    }
+    S.superStack = stack;
+  } else {
+    S.superFocus = "";
+    S.superStack = [];
+  }
+  S.sel = null;
+  if (S.selSet) S.selSet.clear();
+  S.selWire = null;
+  S.selGroup = null;
+  renderTaskCrumb();
+  if (opts.render !== false) {
+    renderCanvas();
+    renderStatus();
+  }
+}
+function enterSuper(node, opts) {
+  opts = opts || {};
+  if (!node || node.kind !== "super") return;
+  node.superOpen = false;
+  setSuperFocus(node.id, { render: false });
+  const kids = superChildrenOf(node.id).filter((c) => !isSuperIoNode(c));
+  if (kids.length) {
+    tidyLayoutScope(kids, {
+      history: false,
+      fit: true,
+      render: false,
+      save: false,
+      origin: { x: snap(120), y: snap(48) },
+    });
+  }
+  renderCanvas();
+  renderStatus();
+  if (opts.toast !== false)
+    toast(I18n.t("已展开超级节点：") + (node.title || I18n.t("超级节点")), "ok");
+}
+function leaveSuper() {
+  const stack = S.superStack || [];
+  if (!stack.length) {
+    resetSuperFocus();
+    renderCanvas();
+    renderStatus();
+    return;
+  }
+  stack.pop();
+  const prev = stack[stack.length - 1] || "";
+  setSuperFocus(prev);
+}
+function ensureSuperIoPorts(_superNode, _wf) {
+  /* no-op: super_io proxy nodes removed; edge ports only */
+}
+function externalValueIntoSuper(superNode, index) {
+  if (!superNode) return null;
+  const w = superExternalInWires(superNode).find(
+    (x) => Number(x.toIndex) === Number(index),
+  );
+  if (!w) return null;
+  return valueForInput(nodeById(w.from), Number(w.fromIndex || 0));
+}
+function valueForSuperOutput(superNode, index) {
+  if (!superNode) return null;
+  const w = superInternalOutFeeds(superNode).find(
+    (x) => Number(x.toIndex) === Number(index),
+  );
+  if (!w) return null;
+  return valueForInput(
+    nodeById(w.from),
+    Number(w.fromIndex || 0),
+    nodeById(w.to),
+  );
+}
+function moveNodesIntoSuper(superNode, nodes) {
+  if (!superNode || superNode.kind !== "super") return 0;
+  const list = (nodes || []).filter(
+    (n) => n && n.id !== superNode.id && !isSuperIoNode(n) && n.kind !== "super",
+  );
+  if (!list.length) return 0;
+  pushHistory();
+  const open = !!(superNode.superOpen && !currentSuperFocus());
+  const o = superInnerOrigin(superNode);
+  let minX = Infinity,
+    minY = Infinity;
+  for (const n of list) {
+    const wp = nodeWorldPos(n);
+    minX = Math.min(minX, wp.x);
+    minY = Math.min(minY, wp.y);
+  }
+  for (const n of list) {
+    const wp = nodeWorldPos(n);
+    n.parentSuperId = superNode.id;
+    n.parentTaskId = superNode.parentTaskId || "";
+    if (open) {
+      const pan = superInnerPan(superNode);
+      n.x = snap(Math.max(8, wp.x - superNode.x - o.ox - pan.x));
+      n.y = snap(Math.max(8, wp.y - superNode.y - o.oy - pan.y));
+    } else {
+      n.x = snap(Math.max(160, wp.x - minX + 160));
+      n.y = snap(Math.max(48, wp.y - minY + 48));
+    }
+  }
+  scheduleSave(true);
+  return list.length;
+}
+function moveNodesOutOfSuper(nodes) {
+  const list = (nodes || []).filter((n) => n && nodeParentSuperId(n) && !isSuperIoNode(n));
+  if (!list.length) return 0;
+  pushHistory();
+  for (const n of list) {
+    const host = nodeById(n.parentSuperId);
+    const wp = nodeWorldPos(n);
+    n.parentSuperId = "";
+    n.parentTaskId = host ? host.parentTaskId || "" : currentTaskFocus();
+    n.x = snap(wp.x);
+    n.y = snap(wp.y);
+  }
+  scheduleSave(true);
+  return list.length;
+}
 function renderTaskCrumb() {
   const el = $("#taskCrumb");
   if (!el) return;
   const focus = currentTaskFocus();
-  if (!focus) {
+  const sf = currentSuperFocus();
+  if (!focus && !sf) {
     el.hidden = true;
     el.innerHTML = "";
     return;
@@ -1046,28 +1955,56 @@ function renderTaskCrumb() {
   root.title = I18n.t("返回顶层画布");
   root.onclick = (ev) => {
     ev.stopPropagation();
+    resetSuperFocus();
     setTaskFocus("");
   };
   el.appendChild(root);
-  const chain = taskAncestorChain(focus);
-  chain.forEach((n, i) => {
-    const sep = document.createElement("span");
-    sep.className = "task-crumb-sep";
-    sep.textContent = "/";
-    el.appendChild(sep);
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className =
-      "task-crumb-item" + (i === chain.length - 1 ? " on" : "");
-    b.textContent = n.title || I18n.t("任务");
-    b.title = I18n.t("进入任务：") + (n.title || "");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      if (i === chain.length - 1) return;
-      enterTask(n, { toast: false });
-    };
-    el.appendChild(b);
-  });
+  if (focus) {
+    const chain = taskAncestorChain(focus);
+    chain.forEach((n, i) => {
+      const sep = document.createElement("span");
+      sep.className = "task-crumb-sep";
+      sep.textContent = "/";
+      el.appendChild(sep);
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className =
+        "task-crumb-item" + (!sf && i === chain.length - 1 ? " on" : "");
+      b.textContent = n.title || I18n.t("任务");
+      b.title = I18n.t("进入任务：") + (n.title || "");
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        resetSuperFocus();
+        enterTask(n, { toast: false });
+      };
+      el.appendChild(b);
+    });
+  }
+  if (sf) {
+    const chain = [];
+    let cur = nodeById(sf);
+    while (cur && cur.kind === "super") {
+      chain.unshift(cur);
+      cur = nodeById(cur.parentSuperId);
+    }
+    chain.forEach((n, i) => {
+      const sep = document.createElement("span");
+      sep.className = "task-crumb-sep";
+      sep.textContent = "/";
+      el.appendChild(sep);
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className =
+        "task-crumb-item" + (i === chain.length - 1 ? " on" : "");
+      b.textContent = n.title || I18n.t("超级节点");
+      b.title = I18n.t("展开超级节点：") + (n.title || "");
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        enterSuper(n, { toast: false });
+      };
+      el.appendChild(b);
+    });
+  }
   const back = document.createElement("button");
   back.type = "button";
   back.className = "task-crumb-back mini";
@@ -1075,7 +2012,8 @@ function renderTaskCrumb() {
   back.title = I18n.t("返回上一层");
   back.onclick = (ev) => {
     ev.stopPropagation();
-    leaveTask();
+    if (currentSuperFocus()) leaveSuper();
+    else leaveTask();
   };
   el.appendChild(back);
 }
@@ -1623,7 +2561,9 @@ function ensureDefaultSavePath(node) {
   }
   if (!String(wfWorkspace() || "").trim() && !mediaGenOfBoundSave(node)) return;
   const ext = saveExtForMedia(saveMediaKind(node));
-  node.savePath = safeFile(node.title || "output") + ext;
+  const base = safeFile(node.title || "output") + ext;
+  const prefix = superRelPrefixFor(node);
+  node.savePath = prefix ? prefix + "/" + base : base;
 }
 function savePathResolveError(code) {
   if (code === "no_ws")
@@ -2431,6 +3371,9 @@ const S = {
   /* 任务节点「进入」：只显示 parentTaskId === taskFocus 的节点 */
   taskFocus: "",
   taskStack: [],
+  /* 超级节点内部：只显示 parentSuperId === superFocus 的节点 */
+  superFocus: "",
+  superStack: [],
   /* 画布查找 / 替换（Ctrl+F / Ctrl+G，仅当前工作流） */
   findBar: {
     open: false,
@@ -2616,7 +3559,7 @@ function nodeById(id) {
   return S.wf ? S.wf.nodes.find((n) => n.id === id) : null;
 }
 function isControlKind(n) {
-  /* 控制 / 起点终点 / 需求等待 / 定时 / 延时 / 序列 / 闸门 / 分发 / 计数 / 互斥 / 判断：指挥线 */
+  /* 控制 / 起点终点 / 需求等待 / 定时 / 延时 / 序列 / 闸门 / 分发 / 计数 / 互斥 / 判断 / 任务：指挥线 */
   return !!(
     n &&
     (n.kind === "control" ||
@@ -2628,11 +3571,20 @@ function isControlKind(n) {
       n.kind === "splitter" ||
       n.kind === "counter" ||
       n.kind === "mutex" ||
-      n.kind === "judge")
+      n.kind === "judge" ||
+      n.kind === "task")
   );
 }
 function hasFixedInPorts(n) {
-  return !!(n && (n.kind === "gate" || n.kind === "mutex" || n.kind === "music_gen" || n.kind === "video_gen"));
+  return !!(
+    n &&
+    (n.kind === "gate" ||
+      n.kind === "mutex" ||
+      n.kind === "music_gen" ||
+      n.kind === "video_gen" ||
+      n.kind === "task" ||
+      n.kind === "super")
+  );
 }
 function wireFromIsControl(w) {
   return isControlKind(nodeById(w && w.from));
@@ -2657,12 +3609,12 @@ function isTextSource(n) {
     n.kind === "input_text" ||
     n.kind === "proc_text" ||
     n.kind === "agent_task" ||
-    n.kind === "task" ||
     n.kind === "merge" ||
     n.kind === "split" ||
     n.kind === "chat" ||
     n.kind === "music_gen" ||
-    n.kind === "video_gen"
+    n.kind === "video_gen" ||
+    n.kind === "super"
   );
 }
 function isImageSource(n) {
@@ -2742,6 +3694,123 @@ function globalRefSources(exceptId) {
   return out;
 }
 
+function wfTagCatalog() {
+  if (!S.wf) return [];
+  if (!Array.isArray(S.wf.tagCatalog)) S.wf.tagCatalog = [];
+  return S.wf.tagCatalog;
+}
+
+function normalizeTagName(name) {
+  return String(name == null ? "" : name).trim().replace(/\s+/g, " ");
+}
+
+function ensureTagInCatalog(name) {
+  const t = normalizeTagName(name);
+  if (!t) return "";
+  const cat = wfTagCatalog();
+  if (!cat.includes(t)) cat.push(t);
+  return t;
+}
+
+function normalizeNodeTags(node) {
+  if (!node) return [];
+  if (!Array.isArray(node.tags)) node.tags = [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of node.tags) {
+    const t = normalizeTagName(raw);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  node.tags = out;
+  return out;
+}
+
+function normalizeGlobalTagFilter(node) {
+  if (!node || node.kind !== "global") return [];
+  if (!Array.isArray(node.tagFilter)) node.tagFilter = [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of node.tagFilter) {
+    const t = normalizeTagName(raw);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  node.tagFilter = out;
+  return out;
+}
+
+function nodeHasTag(node, tag) {
+  const t = normalizeTagName(tag);
+  return !!(t && normalizeNodeTags(node).includes(t));
+}
+
+function addTagToNode(node, tag) {
+  const t = normalizeTagName(tag);
+  if (!node || !t) return false;
+  const list = normalizeNodeTags(node);
+  if (list.includes(t)) return false;
+  list.push(t);
+  node.tags = list;
+  return true;
+}
+
+function removeTagFromNode(node, tag) {
+  const t = normalizeTagName(tag);
+  if (!node || !t) return false;
+  const list = normalizeNodeTags(node);
+  const next = list.filter((x) => x !== t);
+  if (next.length === list.length) return false;
+  node.tags = next;
+  return true;
+}
+
+function deleteTagEverywhere(tag) {
+  const t = normalizeTagName(tag);
+  if (!t || !S.wf) return;
+  S.wf.tagCatalog = wfTagCatalog().filter((x) => x !== t);
+  for (const n of S.wf.nodes || []) {
+    removeTagFromNode(n, t);
+    if (n.kind === "global") {
+      n.tagFilter = normalizeGlobalTagFilter(n).filter((x) => x !== t);
+    }
+  }
+}
+
+function globalWiredSources(gNode) {
+  const out = [];
+  const seen = new Set();
+  if (!gNode) return out;
+  for (const w of wiresTo(gNode.id)) {
+    const n = nodeById(w.from);
+    if (!n || seen.has(n.id) || !isRefableSource(n)) continue;
+    seen.add(n.id);
+    out.push(n);
+  }
+  return out;
+}
+
+function globalDisplaySources(gNode) {
+  const all = globalWiredSources(gNode);
+  const filters = normalizeGlobalTagFilter(gNode);
+  if (!filters.length) return all;
+  return all.filter((n) => filters.some((t) => nodeHasTag(n, t)));
+}
+
+function stampTagsOntoGlobalWired(gNode, tags) {
+  const list = (tags || []).map(normalizeTagName).filter(Boolean);
+  if (!gNode || !list.length) return 0;
+  let n = 0;
+  for (const src of globalWiredSources(gNode)) {
+    for (const t of list) {
+      if (addTagToNode(src, t)) n++;
+    }
+  }
+  return n;
+}
+
 function globalChipKindCls(n) {
   if (!n) return "proc";
   if (n.kind === "split") return "split";
@@ -2759,6 +3828,20 @@ function inputCount(node) {
     isExecStart(node)
   )
     return 0;
+  if (node.kind === "super") {
+    const open = superIsOpenShell(node);
+    const ext = superExternalInWires(node);
+    const bridges = superInternalBridgeWires(node);
+    const maxExt = ext.reduce((m, w) => Math.max(m, Number(w.toIndex) || 0), -1);
+    const maxBr = bridges.reduce(
+      (m, w) => Math.max(m, Number(w.fromIndex) || 0),
+      -1,
+    );
+    /* 收起时外部输入仅在内部已桥接时出现；展开时保留可连接的内侧槽 */
+    const maxIdx = open ? Math.max(maxExt, maxBr) : maxBr;
+    return superDynamicPortCount(maxIdx, open);
+  }
+  if (node.kind === "task") return 1;
   if (node.kind === "gate")
     return Math.max(2, Math.min(8, Math.round(Number(node.gateInputs) || 2)));
   if (node.kind === "mutex")
@@ -2898,6 +3981,8 @@ function nodeKindLabel(node) {
     global: "全局",
     music_gen: "音乐生成",
     video_gen: "视频生成",
+    super: "超级节点",
+    super_io: "端口",
   };
   return I18n.t(map[node.kind] || "节点");
 }
@@ -2933,6 +4018,7 @@ function nodeKindPurposeKey(node) {
     merge: "合并（多节点 → 批次）",
     agent_task: "智能任务（读文件 / 联网 / 执行命令）",
     task: "任务（规划 · 可进入分段解决）",
+    super: "超级节点（收纳 · 展开子画布）",
     chat: "文本对话（Chat）",
     wait_file: "需求等待（监视文件）",
     timer: "定时触发器（计划 / Cron）",
@@ -3611,7 +4697,9 @@ function ensureAppDocsDlg() {
     }
     if (/^https?:/i.test(href)) {
       ev.preventDefault();
-      if (window.api && window.api.openExternal) window.api.openExternal(href);
+      if (window.api && window.api.openInAppDialog)
+        window.api.openInAppDialog({ kind: "url", target: href });
+      else if (window.api && window.api.openExternal) window.api.openExternal(href);
     }
   });
   const ta = host.querySelector("#appDocsAskInput");
@@ -3759,7 +4847,7 @@ function renderDocsAskList() {
       md.innerHTML = renderMarkdown(msg.content || "");
       bubble.appendChild(md);
     } else {
-      bubble.textContent = msg.content || "";
+      bubble.innerHTML = plainTextToLinkHtml(msg.content || "");
     }
     row.appendChild(bubble);
     list.appendChild(row);
@@ -4134,32 +5222,71 @@ function makeImageBatchEntry(path, sourceName, title) {
 
 /* ============ 端子 / 连线几何（居中分布） ============ */
 
+function nodePortHeight(node) {
+  if (node && node.kind === "super") return superDisplaySize(node).h;
+  return (node && node.h) || 160;
+}
 function inPortY(node, i, ic) {
+  const h = nodePortHeight(node);
   const span = Math.max(0, ic - 1) * PORT_STEP;
-  return Math.max(34, Math.round(node.h / 2 - span / 2 + i * PORT_STEP));
+  return Math.max(34, Math.round(h / 2 - span / 2 + i * PORT_STEP));
 }
 function outPortY(node, i, oc) {
+  const h = nodePortHeight(node);
   const n = oc == null ? outputCount(node) : oc;
-  if (n <= 1) return Math.round(node.h / 2);
+  if (n <= 1) return Math.max(34, Math.round(h / 2));
   const span = Math.max(0, n - 1) * PORT_STEP;
-  return Math.max(34, Math.round(node.h / 2 - span / 2 + i * PORT_STEP));
+  return Math.max(34, Math.round(h / 2 - span / 2 + i * PORT_STEP));
 }
-function outPos(n, i) {
+function superInnerPortY(stageH, i, count) {
+  const h = Math.max(120, stageH || 200);
+  const n = count == null ? 1 : count;
+  if (n <= 1) return Math.round(h / 2);
+  const span = Math.max(0, n - 1) * PORT_STEP;
+  return Math.max(24, Math.round(h / 2 - span / 2 + i * PORT_STEP));
+}
+function outPos(n, i, peer, wire) {
+  const link = wire ? superWireInnerLink(wire) : null;
+  if (link && link.super.id === n.id && link.dir === "out") {
+    const p = nodeWorldPos(n);
+    const o = superInnerOrigin(n);
+    return {
+      x: p.x + o.ox + 2 + PORT_R,
+      y: p.y + o.oy + superBridgeLocalY(n, Number(wire.fromIndex || 0)),
+    };
+  }
+  const p = nodeWorldPos(n);
+  const sz = nodeDrawSize(n);
+  const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
   return {
-    x: n.x + n.w + PORT_OFF,
-    y: n.y + outPortY(n, i || 0),
+    x: p.x + sz.w + PORT_OFF,
+    y: p.y + outPortY(hNode, i || 0),
   };
 }
-function inPos(n, i) {
-  return { x: n.x - PORT_OFF, y: n.y + inPortY(n, i, inputCount(n)) };
+function inPos(n, i, peer, wire) {
+  const link = wire ? superWireInnerLink(wire) : null;
+  if (link && link.super.id === n.id && link.dir === "in") {
+    const p = nodeWorldPos(n);
+    const o = superInnerOrigin(n);
+    const sz = superDisplaySize(n);
+    const stageW = Math.max(80, sz.w - o.ox);
+    return {
+      x: p.x + o.ox + stageW - 2 - PORT_R,
+      y: p.y + o.oy + superSinkLocalY(n, Number(wire.toIndex || 0)),
+    };
+  }
+  const p = nodeWorldPos(n);
+  const sz = nodeDrawSize(n);
+  const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
+  return { x: p.x - PORT_OFF, y: p.y + inPortY(hNode, i, inputCount(n)) };
 }
 function wirePathAB(ax, ay, bx, by) {
   const dx = Math.max(26, Math.abs(bx - ax) * 0.45);
   return `M ${ax} ${ay} C ${ax + dx} ${ay}, ${bx - dx} ${by}, ${bx} ${by}`;
 }
-function wirePath(from, to, idx, fromIndex) {
-  const a = outPos(from, fromIndex || 0),
-    b = inPos(to, idx);
+function wirePath(from, to, idx, fromIndex, wire) {
+  const a = outPos(from, fromIndex || 0, to, wire),
+    b = inPos(to, idx, from, wire);
   return wirePathAB(a.x, a.y, b.x, b.y);
 }
 
@@ -5251,8 +6378,14 @@ function chatTranscript(node) {
   );
 }
 
-function valueForInput(src, idx) {
+function valueForInput(src, idx, consumer) {
   if (!src || isControlKind(src)) return null;
+  if (src.kind === "super") {
+    const cons = consumer || null;
+    if (cons && nodeParentSuperId(cons) === src.id)
+      return externalValueIntoSuper(src, idx);
+    return valueForSuperOutput(src, idx);
+  }
   if (src.kind === "chat") {
     const t = chatTranscript(src);
     return t ? { kind: "text", text: t } : null;
@@ -5666,9 +6799,13 @@ function displayValueOf(src) {
 function inputValuesFor(node, idx) {
   return wiresTo(node.id).map((w) => {
     const src = nodeById(w.from);
+    const fromIdx =
+      src && src.kind === "super"
+        ? Number(w.fromIndex || 0)
+        : idx;
     return {
-      title: src ? itemTitleOf(src, idx) : I18n.t("输入"),
-      value: valueForInput(src, idx),
+      title: src ? itemTitleOf(src, fromIdx) : I18n.t("输入"),
+      value: valueForInput(src, fromIdx, node),
     };
   });
 }
@@ -7053,9 +8190,29 @@ function renderCanvas() {
       stage.appendChild(groupElement(g));
     }
     for (const m of markList) stage.appendChild(markElement(m));
-    for (const n of visNodes) stage.appendChild(nodeElement(n));
+    const nested = [];
+    for (const n of visNodes) {
+      if (nodeIsNestedInOpenSuper(n)) nested.push(n);
+      else stage.appendChild(nodeElement(n));
+    }
+    for (const n of nested) {
+      const hostEl = stage.querySelector(
+        '.wf-node[data-nid="' +
+          n.parentSuperId +
+          '"] .super-stage-viewport',
+      );
+      const child = nodeElement(n);
+      if (hostEl) hostEl.appendChild(child);
+      else stage.appendChild(child);
+    }
     applyTransform();
     updateGroupFrames();
+    /* 展开超级节点：DOM 就绪后再按实测原点校正内侧端子 */
+    for (const n of visNodes) {
+      if (!superIsOpenShell(n)) continue;
+      const nel = stage.querySelector('.wf-node[data-nid="' + n.id + '"]');
+      if (nel) refreshPorts(nel, n);
+    }
     updateWires();
     fillPreviews();
     fillImageMetas();
@@ -7109,60 +8266,22 @@ function updateWires(touchIds) {
       to = nodeById(w.to);
     if (!from || !to) continue;
     if (!nodeInCurrentScope(from) || !nodeInCurrentScope(to)) continue;
+    /* Inner wires of an open super shell are drawn on the stage SVG. */
+    if (wireOpenSuperHost(w, from, to)) {
+      const stale = document.getElementById("wire-" + w.id);
+      if (stale) stale.remove();
+      continue;
+    }
     const id = "wire-" + w.id;
     let p = document.getElementById(id);
     if (!p) {
       p = document.createElementNS(svgNS, "path");
       p.id = id;
-      p.addEventListener("mousedown", (ev) => {
-        ev.stopPropagation();
-        clearSelection();
-        S.selWire = w.id;
-        renderCanvas();
-      });
-      p.addEventListener("contextmenu", (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        clearSelection();
-        S.selWire = w.id;
-        renderCanvas();
-        showCtx(ev.clientX, ev.clientY, [
-          [
-            I18n.t("连线操作"),
-            [
-              {
-                label: I18n.t("✕ 删除连线"),
-                iconKey: "menu_cut",
-                iconCls: "danger",
-                cls: "ctx-danger",
-                run: () => {
-                  if (isPinnedWire(w)) {
-                    toast(I18n.t("该连线已固定，无法删除"), "warn");
-                    return;
-                  }
-                  pushHistory();
-                  removeWire(w.id);
-                  S.selWire = null;
-                  renderCanvas();
-                  scheduleSave(true);
-                  renderStatus();
-                },
-              },
-            ],
-          ],
-        ]);
-      });
+      bindWirePathInteractions(p, w);
       svg.appendChild(p);
     }
-    p.setAttribute("d", wirePath(from, to, w.toIndex, w.fromIndex || 0));
-    let wcls = "fn-edge";
-    if (S.selWire === w.id) wcls += " sel";
-    if (isControlKind(from) || isControlKind(to)) wcls += " ctrl";
-    else if (isImageWireFrom(from)) wcls += " img";
-    else if (isAudioWireFrom(from)) wcls += " aud";
-    else if (isVideoWireFrom(from)) wcls += " vid";
-    if (isPinnedWire(w)) wcls += " pinned";
-    p.setAttribute("class", wcls);
+    p.setAttribute("d", wirePath(from, to, w.toIndex, w.fromIndex || 0, w));
+    applyWirePathClass(p, w, from);
   }
   let t = svg.querySelector("#wireTemp");
   if (!t) {
@@ -7173,9 +8292,14 @@ function updateWires(touchIds) {
   }
   if (S.drag && S.drag.mode === "wire") {
     const from = nodeById(S.drag.fromId);
-    if (from) {
-      const a = outPos(from, S.drag.fromIndex || 0),
-        b = toStage(S.drag.mx, S.drag.my);
+    const innerTemp =
+      !!(S.drag.superInnerBridge && from && from.kind === "super") ||
+      !!(from && nodeIsNestedInOpenSuper(from));
+    if (innerTemp) {
+      t.style.display = "none";
+    } else if (from) {
+      const a = outPos(from, S.drag.fromIndex || 0, null, null);
+      const b = toStage(S.drag.mx, S.drag.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
       if (isControlKind(from)) tcls += " ctrl";
@@ -7186,15 +8310,30 @@ function updateWires(touchIds) {
   } else if (!filter) {
     t.style.display = "none";
   }
+  refreshAllSuperInnerWires(touchIds);
 }
 
 function refreshPorts(el, node) {
   const ic = inputCount(node);
-  el.querySelectorAll(".port.in").forEach((p, i) => {
-    p.style.top = inPortY(node, i, ic) - PORT_R + "px";
+  const oc = outputCount(node);
+  const openShell = superIsOpenShell(node);
+  if (!openShell) {
+    el.querySelectorAll(":scope > .port.in").forEach((p, i) => {
+      p.style.top = inPortY(node, i, ic) - PORT_R + "px";
+    });
+    el.querySelectorAll(":scope > .port.out").forEach((p, i) => {
+      p.style.top = outPortY(node, i, oc) - PORT_R + "px";
+    });
+    return;
+  }
+  const stage = el.querySelector(".super-stage");
+  if (!stage) return;
+  stage.querySelectorAll(":scope > .super-inner-sink").forEach((p, i) => {
+    p.style.top = superSinkLocalY(node, i) - PORT_R + "px";
   });
-  const op = el.querySelector(".port.out");
-  if (op) op.style.top = Math.round(node.h / 2) - PORT_R + "px";
+  stage.querySelectorAll(":scope > .super-inner-bridge").forEach((p, i) => {
+    p.style.top = superBridgeLocalY(node, i) - PORT_R + "px";
+  });
 }
 
 function statusOf(node) {
@@ -7323,8 +8462,12 @@ function nodeElement(node) {
   el.dataset.nid = node.id;
   el.style.left = node.x + "px";
   el.style.top = node.y + "px";
-  el.style.width = node.w + "px";
-  el.style.height = node.h + "px";
+  const _nsz =
+    node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
+  el.style.width = _nsz.w + "px";
+  el.style.height = _nsz.h + "px";
+  if (node.kind === "super" && node.superOpen && !currentSuperFocus())
+    el.classList.add("super-open");
 
   const head = document.createElement("div");
   head.className = "n-head";
@@ -7350,6 +8493,28 @@ function nodeElement(node) {
     startNodeDrag(ev, node, { fromHandle: true });
   });
   head.appendChild(handle);
+  if (node.kind === "super") {
+    const tog = document.createElement("button");
+    tog.type = "button";
+    tog.className =
+      "n-super-toggle" + (node.superOpen && !currentSuperFocus() ? " on" : "");
+    tog.textContent =
+      node.superOpen && !currentSuperFocus()
+        ? I18n.t("收起")
+        : I18n.t("展开");
+    tog.title =
+      node.superOpen && !currentSuperFocus()
+        ? I18n.t("收起内部画布")
+        : I18n.t("展开内部画布");
+    tog.onclick = (ev) => {
+      ev.stopPropagation();
+      toggleSuperOpen(
+        node,
+        !(node.superOpen && !currentSuperFocus()),
+      );
+    };
+    head.appendChild(tog);
+  }
   const title = document.createElement("div");
   title.className = "n-title";
   const fullTitle = node.title || I18n.t("（未命名）");
@@ -7676,6 +8841,30 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
+  if (node.kind === "super") {
+    const nChild = superChildrenOf(node.id).filter(
+      (c) => !isSuperIoNode(c) && c.kind !== "super",
+    ).length;
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (nChild ? " on" : "");
+    chip.textContent = String(nChild);
+    chip.title = I18n.t("拖入节点以收纳；拖出以移出");
+    head.appendChild(chip);
+    const folder = document.createElement("button");
+    folder.type = "button";
+    folder.className = "n-super-folder" + (node.subFolder ? " on" : "");
+    folder.innerHTML = KIND_ICON_SVG.folder;
+    folder.title = I18n.t("设置子文件夹（内部节点默认相对路径）");
+    folder.setAttribute(
+      "aria-label",
+      I18n.t("设置子文件夹（内部节点默认相对路径）"),
+    );
+    folder.onclick = (ev) => {
+      ev.stopPropagation();
+      promptSuperSubFolder(node);
+    };
+    head.appendChild(folder);
+  }
   if (isSaveNode(node)) {
     if (isBatch(node)) {
       const agg = node.batchMode === "agg";
@@ -7916,14 +9105,15 @@ function nodeElement(node) {
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
     chip.textContent = I18n.t("音乐");
-    chip.title = I18n.t("MiniMax Music 3 · 端子 P=提示词 · L=歌词");
+    chip.title = I18n.t("MiniMax Music 3 · 端子 P=提示词 · L=歌词 · 执行时自动启停后端");
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
     const setBtn = document.createElement("button");
     setBtn.className =
       "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
     setBtn.textContent = I18n.t("设置");
-    setBtn.title = I18n.t("时长 / 种子 / 输出路径");
+    setBtn.title = I18n.t("offload 等高级选项");
     setBtn.onclick = (ev) => {
       ev.stopPropagation();
       S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
@@ -7957,14 +9147,15 @@ function nodeElement(node) {
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
     chip.textContent = I18n.t("视频");
-    chip.title = I18n.t("MiniMax H3 · 需先启用插件服务");
+    chip.title = I18n.t("MiniMax H3 · 执行时自动启停后端");
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
     const setBtn = document.createElement("button");
     setBtn.className =
       "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
     setBtn.textContent = I18n.t("设置");
-    setBtn.title = I18n.t("模式 / 时长 / 尺寸 / 种子 / 输出路径");
+    setBtn.title = I18n.t("模式 / 尺寸 / 采样步数");
     setBtn.onclick = (ev) => {
       ev.stopPropagation();
       S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
@@ -8140,6 +9331,21 @@ function nodeElement(node) {
     }
   }
   if (!isPinnedCtrl(node)) {
+  if (node.kind === "global") {
+    const tagBtn = document.createElement("button");
+    tagBtn.type = "button";
+    const filterOn = normalizeGlobalTagFilter(node).length > 0;
+    tagBtn.className = "n-play n-tag-btn" + (filterOn ? " on" : "");
+    tagBtn.textContent = "Tag";
+    tagBtn.title = filterOn
+      ? I18n.t("Tag 筛选已开 · 点击管理标签")
+      : I18n.t("管理 Tag：勾选筛选连入显示，并为连入节点打标");
+    tagBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      openGlobalTagDialog(node);
+    };
+    head.appendChild(tagBtn);
+  }
   const del = document.createElement("button");
   del.className = "n-play n-del";
   del.textContent = "✕";
@@ -8155,8 +9361,13 @@ function nodeElement(node) {
   const body = document.createElement("div");
   body.className = "n-body";
   buildBody(node, body);
-  /* buildBody 可能因 OUTPUT 加宽 node.w，同步到 DOM */
-  el.style.width = node.w + "px";
+  /* buildBody 可能因 OUTPUT 加宽 node.w，同步到 DOM（超级节点展开态用 expandW/H） */
+  {
+    const sz =
+      node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
+    el.style.width = sz.w + "px";
+    el.style.height = sz.h + "px";
+  }
   el.appendChild(body);
 
   if (
@@ -8172,68 +9383,6 @@ function nodeElement(node) {
     if (S.uiOpenNode !== node.id) panel.style.display = "none";
     const isAgentKind = node.kind === "agent_task";
     if (node.kind === "music_gen") {
-      const addField = (label, el) => {
-        const f = document.createElement("label");
-        f.className = "n-field";
-        f.appendChild(document.createTextNode(label));
-        f.appendChild(el);
-        panel.appendChild(f);
-      };
-      const dur = document.createElement("input");
-      dur.type = "number";
-      dur.min = "10";
-      dur.max = "300";
-      dur.step = "1";
-      dur.value = String(node.audioDuration || 60);
-      dur.addEventListener("change", () => {
-        node.audioDuration = Math.max(10, Math.min(300, Number(dur.value) || 60));
-        scheduleSave();
-      });
-      addField(I18n.t("时长（秒，≤300）"), dur);
-      const seed = document.createElement("input");
-      seed.type = "number";
-      seed.step = "1";
-      seed.value = String(node.seed != null ? node.seed : 0);
-      seed.addEventListener("change", () => {
-        node.seed = Math.floor(Number(seed.value) || 0);
-        scheduleSave();
-      });
-      addField(I18n.t("种子"), seed);
-      const rnd = document.createElement("button");
-      rnd.className = "mini";
-      rnd.textContent = I18n.t("随机种子");
-      rnd.onclick = (ev) => {
-        ev.preventDefault();
-        node.seed = Math.floor(Math.random() * 2147483647);
-        seed.value = String(node.seed);
-        scheduleSave();
-      };
-      panel.appendChild(rnd);
-      if (!boundSaveOf(node)) {
-        const outp = document.createElement("input");
-        outp.type = "text";
-        outp.value = String(node.outputPath || "output");
-        outp.placeholder = I18n.t("相对或绝对路径");
-        outp.addEventListener("change", () => {
-          node.outputPath = outp.value.trim() || "output";
-          scheduleSave();
-        });
-        addField(I18n.t("输出目录"), outp);
-        const fn = document.createElement("input");
-        fn.type = "text";
-        fn.value = String(node.filename || "");
-        fn.placeholder = "song.wav";
-        fn.addEventListener("change", () => {
-          node.filename = fn.value.trim();
-          scheduleSave();
-        });
-        addField(I18n.t("文件名（可选）"), fn);
-      } else {
-        const hint = document.createElement("div");
-        hint.className = "sv-note";
-        hint.textContent = I18n.t("文件名与路径由右侧绑定保存节点指定（.wav）");
-        panel.appendChild(hint);
-      }
       const off = document.createElement("input");
       off.type = "checkbox";
       off.checked = node.offload !== false;
@@ -8271,17 +9420,6 @@ function nodeElement(node) {
         renderCanvas();
       });
       addField(I18n.t("模式"), mode);
-      const dur = document.createElement("input");
-      dur.type = "number";
-      dur.min = "4";
-      dur.max = "15";
-      dur.step = "0.5";
-      dur.value = String(node.duration != null ? node.duration : 5);
-      dur.addEventListener("change", () => {
-        node.duration = Math.max(4, Math.min(15, Number(dur.value) || 5));
-        scheduleSave();
-      });
-      addField(I18n.t("时长（秒，4–15）"), dur);
       const ratio = document.createElement("select");
       ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].forEach((v) => {
         const o = document.createElement("option");
@@ -8293,27 +9431,15 @@ function nodeElement(node) {
       ratio.addEventListener("change", () => {
         node.ratio = ratio.value;
         scheduleSave();
+        const meta = document.querySelector("#mgmeta-" + node.id);
+        if (meta) {
+          meta.textContent =
+            (node.videoMode || "r2v").toUpperCase() +
+            " · " +
+            (node.ratio || "16:9");
+        }
       });
       addField(I18n.t("尺寸比例"), ratio);
-      const seed = document.createElement("input");
-      seed.type = "number";
-      seed.step = "1";
-      seed.value = String(node.seed != null ? node.seed : 0);
-      seed.addEventListener("change", () => {
-        node.seed = Math.floor(Number(seed.value) || 0);
-        scheduleSave();
-      });
-      addField(I18n.t("种子"), seed);
-      const rnd = document.createElement("button");
-      rnd.className = "mini";
-      rnd.textContent = I18n.t("随机种子");
-      rnd.onclick = (ev) => {
-        ev.preventDefault();
-        node.seed = Math.floor(Math.random() * 2147483647);
-        seed.value = String(node.seed);
-        scheduleSave();
-      };
-      panel.appendChild(rnd);
       const steps = document.createElement("input");
       steps.type = "number";
       steps.min = "1";
@@ -8324,31 +9450,6 @@ function nodeElement(node) {
         scheduleSave();
       });
       addField(I18n.t("采样步数"), steps);
-      if (!boundSaveOf(node)) {
-        const outp = document.createElement("input");
-        outp.type = "text";
-        outp.value = String(node.outputPath || "output");
-        outp.placeholder = I18n.t("相对或绝对路径");
-        outp.addEventListener("change", () => {
-          node.outputPath = outp.value.trim() || "output";
-          scheduleSave();
-        });
-        addField(I18n.t("输出目录"), outp);
-        const fn = document.createElement("input");
-        fn.type = "text";
-        fn.value = String(node.filename || "");
-        fn.placeholder = "clip.mp4";
-        fn.addEventListener("change", () => {
-          node.filename = fn.value.trim();
-          scheduleSave();
-        });
-        addField(I18n.t("文件名（可选）"), fn);
-      } else {
-        const hint = document.createElement("div");
-        hint.className = "sv-note";
-        hint.textContent = I18n.t("文件名与路径由右侧绑定保存节点指定（.mp4）");
-        panel.appendChild(hint);
-      }
     } else if (isAgentKind) {
       /* 智能任务参数面板与「智能会话」完全一致:预设 / 供应商 / 模型 / 思考强度 */
       const catalog = S.providerCatalog || {
@@ -8590,6 +9691,8 @@ function nodeElement(node) {
     el.appendChild(panel);
   }
 
+  /* 展开超级节点：不创建外侧端子，只保留舞台内侧桥接/汇流端子 */
+  if (!superIsOpenShell(node)) {
   const ic = inputCount(node);
   for (let i = 0; i < ic; i++) {
     const p = document.createElement("div");
@@ -8607,6 +9710,8 @@ function nodeElement(node) {
       inTitle = I18n.t("闸门输入 ") + (i + 1) + I18n.t("（需全部到达）");
     else if (node.kind === "mutex")
       inTitle = I18n.t("互斥输入 ") + (i + 1);
+    else if (node.kind === "task")
+      inTitle = I18n.t("控制输入（激活内部起点）");
     else if (node.kind === "music_gen")
       inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : I18n.t("歌词（含 [Verse]/[Chorus] 等标签）");
     else if (node.kind === "video_gen") {
@@ -8625,17 +9730,26 @@ function nodeElement(node) {
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = -PORT_R - PORT_OFF + "px";
-    if (node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "video_gen") {
+    if (node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "task") {
       const badge = document.createElement("span");
       badge.className = "port-badge";
-      badge.textContent =
-        node.kind === "music_gen"
-          ? i === 0
-            ? "P"
-            : "L"
-          : node.kind === "video_gen"
-            ? videoGenSlotMeta(node, i).label
-            : String(i + 1);
+      if (node.kind === "music_gen") {
+        badge.classList.add("zh-label");
+        badge.textContent = i === 0 ? I18n.t("提示词") : I18n.t("歌词");
+      } else if (node.kind === "video_gen") {
+        const meta = videoGenSlotMeta(node, i);
+        if (meta.kind === "text") {
+          badge.classList.add("zh-label");
+          badge.textContent = I18n.t("提示词");
+        } else {
+          badge.textContent = meta.label;
+        }
+      } else if (node.kind === "task") {
+        badge.classList.add("zh-label");
+        badge.textContent = I18n.t("控制");
+      } else {
+        badge.textContent = String(i + 1);
+      }
       p.appendChild(badge);
     }
     bindPortTip(p, node, "in", i);
@@ -8677,13 +9791,22 @@ function nodeElement(node) {
     const p = document.createElement("div");
     p.className =
       "port out" +
-      (node.kind === "judge" ? (oi === 0 ? " yes" : " no") : "");
+      (node.kind === "judge" || node.kind === "task"
+        ? oi === 0
+          ? " yes"
+          : " no"
+        : "");
     p.dataset.node = node.id;
     p.dataset.fromIndex = String(oi);
     const linkedOut = portLinkedNodes(node, "out", oi);
     let outTitle = "";
     if (node.kind === "judge")
       outTitle = oi === 0 ? I18n.t("是（达成）") : I18n.t("否（未达成）");
+    else if (node.kind === "task")
+      outTitle =
+        oi === 0
+          ? I18n.t("成功（到达成功终点）")
+          : I18n.t("失败（到达失败终点）");
     else if (node.kind === "sequencer")
       outTitle = I18n.t("序列输出 ") + (oi + 1);
     else if (node.kind === "splitter")
@@ -8694,10 +9817,15 @@ function nodeElement(node) {
     p.title = linkedOut.length ? outTitle : outTitle;
     p.style.top = outPortY(node, oi, oc) - PORT_R + "px";
     p.style.right = -PORT_R - PORT_OFF + "px";
-    if (node.kind === "sequencer" || node.kind === "splitter") {
+    if (node.kind === "sequencer" || node.kind === "splitter" || node.kind === "task") {
       const badge = document.createElement("span");
-      badge.className = "port-badge";
-      badge.textContent = String(oi + 1);
+      badge.className = "port-badge" + (node.kind === "task" ? " zh-label" : "");
+      badge.textContent =
+        node.kind === "task"
+          ? oi === 0
+            ? I18n.t("成功")
+            : I18n.t("失败")
+          : String(oi + 1);
       p.appendChild(badge);
     }
     bindPortTip(p, node, "out", oi);
@@ -8729,6 +9857,7 @@ function nodeElement(node) {
     });
     el.appendChild(p);
   }
+  } /* !superIsOpenShell — 收起时才有外侧端子 */
 
   const rz = document.createElement("div");
   rz.className = "n-resize";
@@ -8741,14 +9870,23 @@ function nodeElement(node) {
     S.selWire = null;
     S.selGroup = null;
     S.preDragSnap = snapshotState();
-    renderCanvas();
+    const openSuper =
+      node.kind === "super" && node.superOpen && !currentSuperFocus();
+    const sz = node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
+    const hostEl = ev.target.closest(".wf-node");
+    if (hostEl) {
+      hostEl.classList.add("sel");
+      document.querySelectorAll(".wf-node.sel").forEach((x) => {
+        if (x !== hostEl) x.classList.remove("sel");
+      });
+    }
     S.drag = {
       mode: "resize",
       id: node.id,
       sx: ev.clientX,
       sy: ev.clientY,
-      ow: node.w,
-      oh: node.h,
+      ow: openSuper ? sz.w : node.w,
+      oh: openSuper ? sz.h : node.h,
     };
   });
   el.appendChild(rz);
@@ -8767,6 +9905,10 @@ function nodeElement(node) {
       ev.target.closest(".bentry-title") ||
       ev.target.closest(".bentry-text") ||
       ev.target.closest(".n-title") ||
+      (node.kind === "super" &&
+        ev.target.closest(".super-stage") &&
+        el.contains(ev.target.closest(".super-stage"))) ||
+      ev.target.closest(".n-super-folder") ||
       ev.target.closest(".chat-input") ||
       ev.target.closest(".chat-input-row") ||
       ev.target.closest(".chat-list") ||
@@ -8785,6 +9927,7 @@ function nodeElement(node) {
       ev.target.closest(".g-chip")
     )
       return;
+    ev.stopPropagation();
     startNodeDrag(ev, node);
   });
   el.addEventListener("contextmenu", (ev) => {
@@ -8835,6 +9978,42 @@ function nodeElement(node) {
           iconCls: "danger",
           cls: "ctx-danger",
         }),
+      );
+    }
+    if (node.kind === "super") {
+      items.unshift(
+        ctxAction(
+          node.superOpen ? I18n.t("收起") : I18n.t("展开"),
+          () => toggleSuperOpen(node),
+          "expand",
+        ),
+        ctxAction(I18n.t("设置子文件夹…"), () => promptSuperSubFolder(node), "folder"),
+        ctxAction(I18n.t("将选中节点移入此超级节点"), () => {
+          const sel = [...(S.selSet || [])]
+            .map((id) => nodeById(id))
+            .filter((n) => n && n.id !== node.id && !isSuperIoNode(n));
+          if (!sel.length) {
+            toast(I18n.t("请先选中要收纳的节点"), "warn");
+            return;
+          }
+          pushHistory();
+          moveNodesIntoSuper(node, sel);
+          renderCanvas();
+          scheduleSave(true);
+        }, "pack"),
+        ctxAction(I18n.t("移出超级节点"), () => {
+          const sel = [...(S.selSet || [])]
+            .map((id) => nodeById(id))
+            .filter((n) => n && nodeParentSuperId(n) === node.id);
+          if (!sel.length) {
+            toast(I18n.t("请先选中内部节点"), "warn");
+            return;
+          }
+          pushHistory();
+          moveNodesOutOfSuper(sel);
+          renderCanvas();
+          scheduleSave(true);
+        }, "unpack"),
       );
     }
     showCtx(ev.clientX, ev.clientY, [[I18n.t("节点操作"), items]]);
@@ -9688,25 +10867,47 @@ function buildBody(node, body) {
     );
     body.appendChild(list);
   } else if (node.kind === "global") {
+    const filters = normalizeGlobalTagFilter(node);
+    if (filters.length) {
+      const filterRow = document.createElement("div");
+      filterRow.className = "g-tag-active";
+      for (const t of filters) {
+        const pill = document.createElement("span");
+        pill.className = "g-tag-pill";
+        pill.textContent = t;
+        filterRow.appendChild(pill);
+      }
+      body.appendChild(filterRow);
+    }
     const wrap = document.createElement("div");
     wrap.className = "g-chips";
     wrap.title = I18n.t("点击空白处查看全部连入内容");
-    for (const src of globalRefSources()) {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "g-chip kind-" + globalChipKindCls(src);
-      chip.textContent = src.title || nodeKindLabel(src);
-      chip.title =
-        I18n.t("画布居中定位到：") +
-        (src.title || nodeKindLabel(src)) +
-        " · " +
-        nodeKindLabel(src);
-      chip.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        focusNode(src.id);
-      });
-      wrap.appendChild(chip);
+    const srcs = globalDisplaySources(node);
+    if (!srcs.length) {
+      const empty = document.createElement("div");
+      empty.className = "n-empty";
+      empty.textContent = filters.length
+        ? I18n.t("无匹配该 Tag 的连入节点")
+        : I18n.t("（无连入）");
+      wrap.appendChild(empty);
+    } else {
+      for (const src of srcs) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "g-chip kind-" + globalChipKindCls(src);
+        chip.textContent = src.title || nodeKindLabel(src);
+        chip.title =
+          I18n.t("画布居中定位到：") +
+          (src.title || nodeKindLabel(src)) +
+          " · " +
+          nodeKindLabel(src);
+        chip.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          focusNode(src.id);
+        });
+        wrap.appendChild(chip);
+      }
     }
     wrap.addEventListener("mousedown", (ev) => ev.stopPropagation());
     wrap.addEventListener("click", (ev) => {
@@ -9791,6 +10992,113 @@ function buildBody(node, body) {
       meta.textContent = "✓ " + I18n.t("已处理 ") + fmtTime(node.ranAt);
       body.appendChild(meta);
     }
+  } else if (node.kind === "super") {
+    const open = !!(node.superOpen && !currentSuperFocus());
+    if (!open) {
+      const note = document.createElement("textarea");
+      note.className = "n-text super-note";
+      note.spellcheck = false;
+      note.placeholder = I18n.t("描述此超级节点收纳的内容与用途…");
+      note.value = node.note || "";
+      note.addEventListener("input", () => {
+        node.note = note.value;
+      });
+      body.appendChild(note);
+      if (node.subFolder) {
+        const hint = document.createElement("div");
+        hint.className = "super-folder-hint";
+        hint.textContent = I18n.t("子文件夹：") + node.subFolder;
+        body.appendChild(hint);
+      }
+      const tip = document.createElement("div");
+      tip.className = "n-empty";
+      tip.textContent = I18n.t("左上角展开 · 拖入节点收纳");
+      body.appendChild(tip);
+    } else {
+      const stage = document.createElement("div");
+      stage.className = "super-stage";
+      const g = grid();
+      const pan = superInnerPan(node);
+      stage.style.setProperty("--super-grid-size", g + "px");
+      stage.style.setProperty(
+        "--super-grid-x",
+        gridMod(pan.x, g) + "px",
+      );
+      stage.style.setProperty(
+        "--super-grid-y",
+        gridMod(pan.y, g) + "px",
+      );
+      stage.title = I18n.t("左键拖空白处平移内部 · 滚轮缩放画布");
+      if (node.subFolder) {
+        const hint = document.createElement("div");
+        hint.className = "super-folder-hint";
+        hint.textContent = I18n.t("子文件夹：") + node.subFolder;
+        stage.appendChild(hint);
+      }
+      const viewport = document.createElement("div");
+      viewport.className = "super-stage-viewport";
+      viewport.style.transform =
+        "translate(" + pan.x + "px," + pan.y + "px)";
+      const kids = superChildrenOf(node.id).filter((c) => !isSuperIoNode(c));
+      if (!kids.length) {
+        const empty = document.createElement("div");
+        empty.className = "super-stage-empty";
+        empty.textContent = I18n.t("将节点拖入此处");
+        viewport.appendChild(empty);
+      }
+      stage.appendChild(viewport);
+      const ic = inputCount(node);
+      for (let pi = 0; pi < ic; pi++) {
+        const p = document.createElement("div");
+        p.className = "port out super-port super-inner-bridge";
+        p.dataset.node = node.id;
+        p.dataset.fromIndex = String(pi);
+        p.title =
+          I18n.t("内侧输入端子 ") +
+          (pi + 1) +
+          I18n.t("（对应外侧输入 · 拖到内部节点）");
+        p.style.top = superBridgeLocalY(node, pi) - PORT_R + "px";
+        p.addEventListener("mousedown", (ev) => {
+          ev.stopPropagation();
+          ev.preventDefault();
+          startWireDrag(node.id, ev, pi, { superInnerBridge: true });
+        });
+        stage.appendChild(p);
+      }
+      const oc = outputCount(node);
+      for (let poi = 0; poi < oc; poi++) {
+        const p = document.createElement("div");
+        p.className = "port in super-port super-inner-sink";
+        p.dataset.node = node.id;
+        p.dataset.idx = String(poi);
+        p.title =
+          I18n.t("内侧输出端子 ") +
+          (poi + 1) +
+          I18n.t("（对应外侧输出 · 从内部节点拖入）");
+        p.style.top = superSinkLocalY(node, poi) - PORT_R + "px";
+        stage.appendChild(p);
+      }
+      stage.addEventListener("mousedown", (ev) => {
+        /* 仅拦截内部子节点 / 端子；勿用 closest(.wf-node)（会命中宿主自身） */
+        if (ev.target.closest(".port")) return;
+        const hitNode = ev.target.closest(".wf-node");
+        if (hitNode && hitNode.dataset.nid !== node.id) return;
+        if (ev.button !== 0 && ev.button !== 1) return;
+        ev.stopPropagation();
+        ev.preventDefault();
+        S.preDragSnap = snapshotState();
+        S.drag = {
+          mode: "superpan",
+          id: node.id,
+          sx: ev.clientX,
+          sy: ev.clientY,
+          ox: Number(node.innerPanX) || 0,
+          oy: Number(node.innerPanY) || 0,
+          moved: false,
+        };
+      });
+      body.appendChild(stage);
+    }
   } else if (node.kind === "judge") {
     const st = document.createElement("div");
     st.className =
@@ -9836,7 +11144,7 @@ function buildBody(node, body) {
       hint.textContent = I18n.t("开始对话吧…");
       list.appendChild(hint);
     }
-    for (const m of msgs) list.appendChild(dshMsgBlock(m));
+    for (let i = 0; i < msgs.length; i++) list.appendChild(dshMsgBlock(msgs[i], node.id, i));
     if (node.running) {
       const row = document.createElement("div");
       row.className = "dsh-msg dsh-ai";
@@ -9861,6 +11169,7 @@ function buildBody(node, body) {
       list.appendChild(row);
     }
     body.appendChild(list);
+    scheduleHistoryCollapse(list);
 
     /* 智能助手开关（dsh agent 模式）：关闭 = 原 API 模式（降级路径） */
     const agRow = document.createElement("div");
@@ -10478,29 +11787,37 @@ function buildBody(node, body) {
       I18n.t("多入选一 · ") + mutexModeLabel(node.mutexMode);
     body.appendChild(st);
   } else if (node.kind === "music_gen") {
-    const meta = document.createElement("div");
-    meta.className = "n-empty";
-    meta.textContent =
-      I18n.t("P·L · ") +
-      (node.audioDuration || 60) +
-      "s · seed " +
-      (node.seed != null ? node.seed : "—") +
-      " · " +
-      (node.outputPath || "output");
-    body.appendChild(meta);
+    appendMediaGenParamControls(body, node);
+    appendMediaGenPathControls(body, node, "audio");
     appendMediaBackendPanel(body, node);
-    if (node.output && node.output.kind === "text" && node.output.text) {
-      const out = document.createElement("div");
-      out.className = "n-text";
-      out.style.maxHeight = "56px";
-      out.style.overflow = "auto";
-      out.textContent = node.output.text;
-      out.title = node.output.text;
-      out.onclick = () => {
-        if (window.api && window.api.shellShowItem) window.api.shellShowItem(node.output.text);
-      };
-      body.appendChild(out);
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const aud = document.createElement("audio");
+    aud.id = "mgaud-" + node.id;
+    aud.controls = true;
+    aud.preload = "metadata";
+    prev.appendChild(aud);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "mgempty-" + node.id;
+    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "mgname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint =
+        (node.output && (node.output.path || node.output.text)) ||
+        mediaGenOutputRaw(node) ||
+        "";
+      if (hint) nameEl.textContent = fileName(hint);
     }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
     if (node.error) {
       const st = document.createElement("div");
       st.className = "n-status err";
@@ -10510,30 +11827,43 @@ function buildBody(node, body) {
   } else if (node.kind === "video_gen") {
     const meta = document.createElement("div");
     meta.className = "n-empty";
+    meta.id = "mgmeta-" + node.id;
     meta.textContent =
       (node.videoMode || "r2v").toUpperCase() +
       " · " +
-      (node.duration != null ? node.duration : 5) +
-      "s · " +
-      (node.ratio || "16:9") +
-      " · seed " +
-      (node.seed != null ? node.seed : "—") +
-      " · " +
-      (node.outputPath || "output");
+      (node.ratio || "16:9");
     body.appendChild(meta);
+    appendMediaGenParamControls(body, node);
+    appendMediaGenPathControls(body, node, "video");
     appendMediaBackendPanel(body, node);
-    if (node.output && node.output.kind === "text" && node.output.text) {
-      const out = document.createElement("div");
-      out.className = "n-text";
-      out.style.maxHeight = "56px";
-      out.style.overflow = "auto";
-      out.textContent = node.output.text;
-      out.title = node.output.text;
-      out.onclick = () => {
-        if (window.api && window.api.shellShowItem) window.api.shellShowItem(node.output.text);
-      };
-      body.appendChild(out);
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const vid = document.createElement("video");
+    vid.id = "mgvid-" + node.id;
+    vid.controls = true;
+    vid.preload = "metadata";
+    prev.appendChild(vid);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "mgempty-" + node.id;
+    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "mgname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint =
+        (node.output && (node.output.path || node.output.text)) ||
+        mediaGenOutputRaw(node) ||
+        "";
+      if (hint) nameEl.textContent = fileName(hint);
     }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
     if (node.error) {
       const st = document.createElement("div");
       st.className = "n-status err";
@@ -11056,6 +12386,48 @@ async function fillPreviews() {
           el.removeAttribute("src");
           el.removeAttribute("data-path");
           if (empty) empty.style.display = "";
+        }
+      }
+    }
+    if (isMediaGenNode(n)) {
+      const path = await resolveMediaGenDisplayPath(n);
+      const isVid = n.kind === "video_gen";
+      const el = document.querySelector((isVid ? "#mgvid-" : "#mgaud-") + n.id);
+      const empty = document.querySelector("#mgempty-" + n.id);
+      const nameEl = document.querySelector("#mgname-" + n.id);
+      const pathInp = document.querySelector("#mgpath-" + n.id);
+      const bust = n.ranAt || 0;
+      if (pathInp && document.activeElement !== pathInp) {
+        const configured = mediaGenOutputRaw(n) || String(n.outputPath || "");
+        if (pathInp.value !== configured) pathInp.value = configured;
+      }
+      if (el) {
+        if (path) {
+          el.src = fileUrlWithBust(path, bust + ":" + path);
+          el.dataset.path = path;
+          if (empty) empty.style.display = "none";
+          if (nameEl) {
+            nameEl.textContent = fileName(path);
+            nameEl.onclick = () => {
+              if (window.api && window.api.shellShowItem) window.api.shellShowItem(path);
+            };
+          }
+        } else {
+          el.removeAttribute("src");
+          el.removeAttribute("data-path");
+          if (empty) empty.style.display = "";
+          if (nameEl) {
+            const configured = mediaGenOutputRaw(n) || "";
+            nameEl.textContent = configured ? fileName(configured) : "";
+            nameEl.onclick = configured
+              ? () => {
+                  if (window.api && window.api.shellShowItem) {
+                    const exp = resolveMediaGenExport(n);
+                    if (exp && exp.ok && exp.path) window.api.shellShowItem(exp.path);
+                  }
+                }
+              : null;
+          }
         }
       }
     }
@@ -12195,8 +13567,60 @@ function summarizeMediaBackendStatus(node, st) {
   };
 }
 
-function refreshMediaNodeUi(node) {
+function refreshMediaNodeUi(node, opts) {
+  opts = opts || {};
   if (!node || !S.wf) return;
+  if (opts.soft) {
+    try {
+      const root = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+      if (!root) {
+        refreshNodeEl(node.id);
+        return;
+      }
+      const old = root.querySelector(".n-backend-panel");
+      if (!old) {
+        refreshNodeEl(node.id);
+        return;
+      }
+      const wrap = document.createElement("div");
+      appendMediaBackendPanel(wrap, node);
+      const neu = wrap.firstChild;
+      if (neu) old.replaceWith(neu);
+      const ui = ensureBackendUiState(node);
+      const probe = root.querySelector(".n-backend-probe");
+      if (probe) {
+        probe.className =
+          "n-play n-backend-probe" +
+          (ui.probing ? " wait" : ui.ok === true ? " ok" : ui.ok === false ? " bad" : " wait");
+      }
+      const pathInp = root.querySelector("#mgpath-" + node.id);
+      if (pathInp && document.activeElement !== pathInp) {
+        const configured = mediaGenOutputRaw(node) || String(node.outputPath || "");
+        if (pathInp.value !== configured) pathInp.value = configured;
+      }
+      const seedInp = root.querySelector("#mgseed-" + node.id);
+      if (seedInp && document.activeElement !== seedInp) {
+        const sv = String(node.seed != null ? node.seed : 0);
+        if (seedInp.value !== sv) seedInp.value = sv;
+      }
+      const errEl = root.querySelector(".n-status.err");
+      if (node.error) {
+        if (errEl) errEl.textContent = node.error;
+        else {
+          const body = root.querySelector(".n-body") || root;
+          const st = document.createElement("div");
+          st.className = "n-status err";
+          st.textContent = node.error;
+          body.appendChild(st);
+        }
+      } else if (errEl) {
+        errEl.remove();
+      }
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
   try {
     refreshNodeEl(node.id);
   } catch {
@@ -12210,7 +13634,7 @@ async function probeMediaBackend(node, opts) {
   const ui = ensureBackendUiState(node);
   if (ui.probing && !opts.force) return;
   ui.probing = true;
-  if (!opts.quiet) refreshMediaNodeUi(node);
+  if (!opts.quiet) refreshMediaNodeUi(node, { soft: true });
   let st = null;
   try {
     st =
@@ -12244,12 +13668,12 @@ async function probeMediaBackend(node, opts) {
   if (opts.manual) {
     toast(
       ok
-        ? I18n.t("后端连接正常")
-        : I18n.t("后端未就绪，请先在插件中启用服务"),
-      ok ? "ok" : "err",
+        ? I18n.t("后端当前在线（任务执行时会自动启停）")
+        : I18n.t("后端当前未运行（执行节点时会自动启动）"),
+      ok ? "ok" : "warn",
     );
   }
-  refreshMediaNodeUi(node);
+  refreshMediaNodeUi(node, { soft: true });
 }
 
 function ensureMediaBackendProbesForWorkflow(opts) {
@@ -12286,6 +13710,16 @@ function bindMediaBackendListeners() {
       const n = nodeById(data.nodeId);
       if (!n || n.kind !== "music_gen") return;
       const ui = ensureBackendUiState(n);
+      if (data.cancelled || n._aborted || String(data.message || "") === "已取消") {
+        n.running = false;
+        n.error = null;
+        n.musicStatus = I18n.t("已取消");
+        ui.genMsg = I18n.t("已取消");
+        ui.genPct = 0;
+        stopMediaBackendRunWatcher(n.id);
+        refreshMediaNodeUi(n, { soft: true });
+        return;
+      }
       if (data.pct != null) ui.genPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
       if (data.message) {
         ui.genMsg = String(data.message);
@@ -12294,7 +13728,7 @@ function bindMediaBackendListeners() {
       if (data.error && looksLikeBackendConnError(data.message)) {
         markMediaBackendDown(n);
       }
-      refreshMediaNodeUi(n);
+      refreshMediaNodeUi(n, { soft: true });
     });
   }
   if (window.api.onH3Progress) {
@@ -12303,6 +13737,16 @@ function bindMediaBackendListeners() {
       const n = nodeById(data.nodeId);
       if (!n || n.kind !== "video_gen") return;
       const ui = ensureBackendUiState(n);
+      if (data.cancelled || n._aborted || String(data.message || "") === "已取消") {
+        n.running = false;
+        n.error = null;
+        n.videoStatus = I18n.t("已取消");
+        ui.genMsg = I18n.t("已取消");
+        ui.genPct = 0;
+        stopMediaBackendRunWatcher(n.id);
+        refreshMediaNodeUi(n, { soft: true });
+        return;
+      }
       if (data.pct != null) ui.genPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
       if (data.message) {
         ui.genMsg = String(data.message);
@@ -12311,7 +13755,7 @@ function bindMediaBackendListeners() {
       if (data.error && looksLikeBackendConnError(data.message)) {
         markMediaBackendDown(n);
       }
-      refreshMediaNodeUi(n);
+      refreshMediaNodeUi(n, { soft: true });
     });
   }
   if (window.api.onMusic3Gpu) {
@@ -12323,7 +13767,7 @@ function bindMediaBackendListeners() {
         if (ui.ok !== true && !n.running) continue;
         ui.info = ui.info || {};
         ui.info.gpu = gpu;
-        if (n.running || S.sel === n.id) refreshMediaNodeUi(n);
+        if (n.running || S.sel === n.id) refreshMediaNodeUi(n, { soft: true });
       }
     });
   }
@@ -12336,7 +13780,7 @@ function bindMediaBackendListeners() {
         if (ui.ok !== true && !n.running) continue;
         ui.info = ui.info || {};
         ui.info.gpu = gpu;
-        if (n.running || S.sel === n.id) refreshMediaNodeUi(n);
+        if (n.running || S.sel === n.id) refreshMediaNodeUi(n, { soft: true });
       }
     });
   }
@@ -12363,12 +13807,48 @@ function appendBackendProbeBtn(head, node) {
   head.appendChild(b);
 }
 
+
+function appendMediaConsoleBtn(head, node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-media-console";
+  b.textContent = "▤";
+  b.title =
+    node.kind === "video_gen"
+      ? I18n.t("打开 H3 控制台日志")
+      : I18n.t("打开 Music 3 控制台日志");
+  b.onclick = async (ev) => {
+    ev.stopPropagation();
+    if (!window.api) return;
+    try {
+      const r =
+        node.kind === "video_gen"
+          ? window.api.h3Open
+            ? await window.api.h3Open()
+            : null
+          : window.api.music3Open
+            ? await window.api.music3Open()
+            : null;
+      if (!r || !r.ok) {
+        toast(
+          I18n.t("打开控制台失败：") + ((r && r.error) || I18n.t("未知错误")),
+          "err",
+        );
+      }
+    } catch (e) {
+      toast(I18n.t("打开控制台失败：") + ((e && e.message) || String(e)), "err");
+    }
+  };
+  head.appendChild(b);
+}
+
 function appendMediaBackendPanel(body, node) {
   const ui = ensureBackendUiState(node);
   const info = ui.info || {};
   const gpu = info.gpu || null;
   const panel = document.createElement("div");
   panel.className = "n-backend-panel";
+  panel.dataset.nid = node.id;
 
   const row = document.createElement("div");
   row.className = "n-backend-pills";
@@ -12398,7 +13878,7 @@ function appendMediaBackendPanel(body, node) {
   else if (info.installed === false) row.appendChild(pill(I18n.t("未安装"), "bad"));
   panel.appendChild(row);
 
-  const addBar = (label, pct, detail) => {
+  const addBar = (label, pct, detail, parent) => {
     const wrap = document.createElement("div");
     wrap.className = "n-backend-bar";
     const lab = document.createElement("div");
@@ -12416,20 +13896,31 @@ function appendMediaBackendPanel(body, node) {
     track.appendChild(fill);
     wrap.appendChild(lab);
     wrap.appendChild(track);
-    panel.appendChild(wrap);
+    (parent || panel).appendChild(wrap);
+    return wrap;
   };
 
   if (gpu) {
+    const bars = document.createElement("div");
+    bars.className = "n-backend-bars-row";
     addBar(
       I18n.t("显存"),
       gpu.memPct,
-      (gpu.memUsed != null && gpu.memTotal != null
-        ? gpu.memUsed + "/" + gpu.memTotal + " MiB · "
-        : "") +
-        (gpu.memPct != null ? gpu.memPct + "%" : "") +
-        (gpu.name ? " · " + gpu.name : ""),
+      gpu.memUsed != null && gpu.memTotal != null
+        ? gpu.memUsed + "/" + gpu.memTotal + " MiB" +
+          (gpu.memPct != null ? " · " + gpu.memPct + "%" : "")
+        : gpu.memPct != null
+          ? gpu.memPct + "%"
+          : "",
+      bars,
     );
-    addBar(I18n.t("GPU"), gpu.util, (gpu.util != null ? gpu.util : 0) + "%");
+    addBar(
+      I18n.t("GPU"),
+      gpu.util,
+      (gpu.util != null ? gpu.util : 0) + "%",
+      bars,
+    );
+    panel.appendChild(bars);
   } else if (ui.ok === true) {
     const hint = document.createElement("div");
     hint.className = "n-backend-hint";
@@ -12479,6 +13970,193 @@ function musicGenSlotText(node, slot) {
   return "";
 }
 
+
+function appendMediaGenParamControls(body, node) {
+  const isMusic = node.kind === "music_gen";
+  const row = document.createElement("div");
+  row.className = "mg-params";
+
+  const durWrap = document.createElement("label");
+  durWrap.className = "mg-param";
+  const durLab = document.createElement("span");
+  durLab.textContent = I18n.t("时长");
+  const dur = document.createElement("input");
+  dur.type = "number";
+  dur.id = "mgdur-" + node.id;
+  if (isMusic) {
+    dur.min = "10";
+    dur.max = "150";
+    dur.step = "1";
+    dur.value = String(node.audioDuration || 60);
+    dur.title = I18n.t("时长（秒，≤150）");
+    dur.addEventListener("change", () => {
+      node.audioDuration = Math.max(10, Math.min(150, Number(dur.value) || 60));
+      dur.value = String(node.audioDuration);
+      scheduleSave();
+    });
+  } else {
+    dur.min = "4";
+    dur.max = "15";
+    dur.step = "0.5";
+    dur.value = String(node.duration != null ? node.duration : 5);
+    dur.title = I18n.t("时长（秒，4–15）");
+    dur.addEventListener("change", () => {
+      node.duration = Math.max(4, Math.min(15, Number(dur.value) || 5));
+      dur.value = String(node.duration);
+      scheduleSave();
+    });
+  }
+  dur.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  dur.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+  const durUnit = document.createElement("span");
+  durUnit.className = "mg-param-unit";
+  durUnit.textContent = "s";
+  durWrap.appendChild(durLab);
+  durWrap.appendChild(dur);
+  durWrap.appendChild(durUnit);
+
+  const seedWrap = document.createElement("label");
+  seedWrap.className = "mg-param mg-param-seed";
+  const seedLab = document.createElement("span");
+  seedLab.textContent = I18n.t("种子");
+  const seed = document.createElement("input");
+  seed.type = "number";
+  seed.id = "mgseed-" + node.id;
+  seed.step = "1";
+  seed.value = String(node.seed != null ? node.seed : 0);
+  seed.title = I18n.t("种子");
+  seed.addEventListener("change", () => {
+    node.seed = Math.floor(Number(seed.value) || 0);
+    seed.value = String(node.seed);
+    scheduleSave();
+  });
+  seed.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  seed.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+  seedWrap.appendChild(seedLab);
+  seedWrap.appendChild(seed);
+
+  const tog = document.createElement("button");
+  tog.type = "button";
+  tog.className =
+    "n-play n-ctrl-toggle mg-reroll" + (node.rerollSeed !== false ? " on" : "");
+  tog.textContent = I18n.t("摇数");
+  tog.title = I18n.t("每次执行是否重新摇数（默认开启）");
+  tog.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    node.rerollSeed = !(node.rerollSeed !== false);
+    tog.className =
+      "n-play n-ctrl-toggle mg-reroll" + (node.rerollSeed !== false ? " on" : "");
+    scheduleSave();
+  };
+
+  row.appendChild(durWrap);
+  row.appendChild(seedWrap);
+  row.appendChild(tog);
+  body.appendChild(row);
+}
+
+function applyMediaGenConfiguredPath(node, raw, media) {
+  if (!node) return "";
+  const ext = saveExtForMedia(media === "video" ? "video" : "audio");
+  const v = String(raw || "").trim();
+  node.outputPath = v ? preferRelativeSavePath(forcePathExt(v, ext)) : "";
+  node.filename = "";
+  return node.outputPath;
+}
+
+/** Keep node.outputPath in sync with the actual export file (unique rename / saved path). */
+function syncMediaGenPathFromExport(node, expOrPath) {
+  if (!node) return;
+  let abs = "";
+  if (typeof expOrPath === "string") {
+    abs = String(expOrPath || "").trim();
+  } else if (expOrPath && expOrPath.ok) {
+    abs = joinPath(expOrPath.outputDir, expOrPath.filename);
+  }
+  if (!abs) return;
+  applyMediaGenConfiguredPath(
+    node,
+    abs,
+    node.kind === "video_gen" ? "video" : "audio",
+  );
+}
+
+function appendMediaGenPathControls(panel, node, media) {
+  const ext = saveExtForMedia(media === "video" ? "video" : "audio");
+  const extHint = media === "video" ? "*.mp4" : "*.wav";
+  const hasWs = !!String(wfWorkspace() || "").trim();
+  const row = document.createElement("div");
+  row.className = "sv-path mg-path";
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.id = "mgpath-" + node.id;
+  inp.value = mediaGenOutputRaw(node) || String(node.outputPath || "");
+  inp.placeholder = hasWs
+    ? I18n.t("相对工作目录或绝对路径（") + extHint + I18n.t("）…")
+    : I18n.t("输出路径（必须设置，") + extHint + I18n.t("）…");
+  inp.title = I18n.t("在节点上设置输出文件路径；相对路径需先设置顶栏工作目录");
+  const applyPath = (raw) => {
+    applyMediaGenConfiguredPath(node, raw, media);
+    inp.value = node.outputPath;
+    scheduleSave();
+  };
+  inp.addEventListener("change", () => applyPath(inp.value));
+  inp.addEventListener("input", () => {
+    node.outputPath = inp.value.trim();
+    node.filename = "";
+  });
+  inp.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  inp.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+  const br = document.createElement("button");
+  br.className = "mini";
+  br.textContent = I18n.t("浏览");
+  br.onclick = async (ev) => {
+    ev.stopPropagation();
+    const ws = String(wfWorkspace() || "").trim();
+    let defaultPath =
+      safeFile(node.title || (media === "video" ? "video" : "music")) + ext;
+    const cur = mediaGenOutputRaw(node) || String(node.outputPath || "").trim();
+    if (cur) {
+      const r0 = resolveSavePath(forcePathExt(cur, ext));
+      defaultPath = r0.ok ? r0.path : cur;
+    } else if (ws) {
+      defaultPath = joinPath(ws, defaultPath);
+    }
+    const r = await window.api.fileSaveDialog({
+      title:
+        media === "video"
+          ? I18n.t("选择视频保存位置")
+          : I18n.t("选择音频保存位置"),
+      defaultPath,
+      filters:
+        media === "video"
+          ? [
+              { name: I18n.t("视频"), extensions: ["mp4"] },
+              { name: I18n.t("全部文件"), extensions: ["*"] },
+            ]
+          : [
+              { name: I18n.t("音频"), extensions: ["wav"] },
+              { name: I18n.t("全部文件"), extensions: ["*"] },
+            ],
+    });
+    if (r && r.path) applyPath(r.path);
+  };
+  row.appendChild(inp);
+  row.appendChild(br);
+  const lab = document.createElement("label");
+  lab.className = "n-field mg-path-field";
+  lab.appendChild(document.createTextNode(I18n.t("输出路径")));
+  lab.appendChild(row);
+  panel.appendChild(lab);
+  if (!String(mediaGenOutputRaw(node) || node.outputPath || "").trim()) {
+    const hint = document.createElement("div");
+    hint.className = "sv-note";
+    hint.textContent = I18n.t("未设置输出路径时无法启动生成");
+    panel.appendChild(hint);
+  }
+}
+
 function resolveMusicOutputDir(node) {
   const raw = String(node.outputPath || "output").trim() || "output";
   if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("/")) {
@@ -12524,35 +14202,48 @@ async function playMusicGenNode(node, quiet) {
     return;
   }
 
+  const exp0 = requireMediaGenExport(node, quiet);
+  if (!exp0) {
+    renderCanvas();
+    return;
+  }
+  const exp = await allocateUniqueMediaExport(exp0);
+  if (!exp || !exp.ok) {
+    requireMediaGenExport(node, quiet);
+    renderCanvas();
+    return;
+  }
+  if (exp.renamed) {
+    syncMediaGenPathFromExport(node, exp);
+    if (!quiet) toast(I18n.t("目标文件已存在，改为保存为：") + exp.filename, "ok");
+  }
+
   let st = null;
   try {
     st = await window.api.music3Status();
   } catch {}
-  if (!st || !st.running) {
-    node.error = I18n.t("请先在「插件 · Minimax Music 3」中启用后端服务");
-    markMediaBackendDown(node, st);
-    if (!quiet) toast(node.error, "warn");
-    renderCanvas();
-    return;
-  }
   {
     const ui = ensureBackendUiState(node);
-    ui.ok = true;
+    ui.ok = null;
     ui.info = summarizeMediaBackendStatus(node, st);
-    ui.genPct = 5;
-    ui.genMsg = I18n.t("生成中…");
+    ui.genPct = 2;
+    ui.genMsg = I18n.t("启动后端并生成…");
     stopMediaBackendProbe(node.id);
   }
 
   node.running = true;
   node.error = null;
-  node.musicStatus = I18n.t("生成中…");
+  node._aborted = false;
+  if (node.rerollSeed !== false) {
+    node.seed = Math.floor(Math.random() * 2147483647);
+    scheduleSave();
+  }
+  node.musicStatus = I18n.t("启动后端并生成…");
   startMediaBackendRunWatcher(node);
   renderCanvas();
 
-  const duration = Math.max(10, Math.min(300, Number(node.audioDuration) || 60));
+  const duration = Math.max(10, Math.min(150, Number(node.audioDuration) || 60));
   const seed = Number(node.seed);
-  const exp = resolveMediaGenExport(node);
 
   try {
     const r = await window.api.music3Generate({
@@ -12566,10 +14257,22 @@ async function playMusicGenNode(node, quiet) {
       filename: exp.filename,
       offload: node.offload !== false,
     });
+    if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+      node.error = null;
+      node.musicStatus = I18n.t("已取消");
+      const ui = ensureBackendUiState(node);
+      ui.genMsg = I18n.t("已取消");
+      ui.genPct = 0;
+      return;
+    }
     if (!r || !r.ok) {
       const err = (r && (r.message || r.error)) || I18n.t("生成失败");
       if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
         node.error = I18n.t("已有音乐生成任务进行中，已中断本节点（禁止并行）");
+      } else if (String(err) === "cancelled") {
+        node.error = null;
+        node.musicStatus = I18n.t("已取消");
+        return;
       } else {
         node.error = String(err);
       }
@@ -12580,28 +14283,28 @@ async function playMusicGenNode(node, quiet) {
     }
     node.output = { kind: "audio", path: String(r.path || ""), text: String(r.path || "") };
     node.ranAt = Date.now();
+    if (r.path) syncMediaGenPathFromExport(node, String(r.path));
     node.musicStatus = r.message || I18n.t("已保存：") + r.path;
-    {
-      const sv = boundSaveOf(node);
-      if (sv && r.path) {
-        sv.savedPath = r.path;
-        sv.savedPaths = [r.path];
-        sv.savedAt = Date.now();
-      }
-    }
     {
       const ui = ensureBackendUiState(node);
       ui.genPct = 100;
       ui.genMsg = I18n.t("完成");
+      ui.ok = false;
     }
     if (!quiet) toast(I18n.t("音乐已生成：") + r.path, "ok");
   } catch (e) {
-    node.error = (e && e.message) || String(e);
-    node.musicStatus = node.error;
-    if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
-    if (!quiet) toast(node.error, "err");
+    if (node._aborted) {
+      node.error = null;
+      node.musicStatus = I18n.t("已取消");
+    } else {
+      node.error = (e && e.message) || String(e);
+      node.musicStatus = node.error;
+      if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
+      if (!quiet) toast(node.error, "err");
+    }
   } finally {
     node.running = false;
+    node._aborted = false;
     stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
@@ -12698,29 +14401,43 @@ async function playVideoGenNode(node, quiet) {
     return;
   }
 
+  const exp0 = requireMediaGenExport(node, quiet);
+  if (!exp0) {
+    renderCanvas();
+    return;
+  }
+  const exp = await allocateUniqueMediaExport(exp0);
+  if (!exp || !exp.ok) {
+    requireMediaGenExport(node, quiet);
+    renderCanvas();
+    return;
+  }
+  if (exp.renamed) {
+    syncMediaGenPathFromExport(node, exp);
+    if (!quiet) toast(I18n.t("目标文件已存在，改为保存为：") + exp.filename, "ok");
+  }
+
   let st = null;
   try {
     st = await window.api.h3Status();
   } catch {}
-  if (!st || !st.running) {
-    node.error = I18n.t("请先在「插件 · Minimax H3」中启用后端服务");
-    markMediaBackendDown(node, st);
-    if (!quiet) toast(node.error, "warn");
-    renderCanvas();
-    return;
-  }
   {
     const ui = ensureBackendUiState(node);
-    ui.ok = true;
+    ui.ok = null;
     ui.info = summarizeMediaBackendStatus(node, st);
-    ui.genPct = 5;
-    ui.genMsg = I18n.t("生成中…");
+    ui.genPct = 2;
+    ui.genMsg = I18n.t("启动后端并生成…");
     stopMediaBackendProbe(node.id);
   }
 
   node.running = true;
   node.error = null;
-  node.videoStatus = I18n.t("生成中…");
+  node._aborted = false;
+  if (node.rerollSeed !== false) {
+    node.seed = Math.floor(Math.random() * 2147483647);
+    scheduleSave();
+  }
+  node.videoStatus = I18n.t("启动后端并生成…");
   startMediaBackendRunWatcher(node);
   renderCanvas();
 
@@ -12776,13 +14493,25 @@ async function playVideoGenNode(node, quiet) {
       teaThresh: node.teaThresh != null ? Number(node.teaThresh) : 0.15,
       sageMode: node.sageMode || "auto",
       refImageSize: node.refImageSize || "match",
-      outputDir: resolveMediaGenExport(node).outputDir,
-      filename: resolveMediaGenExport(node).filename,
+      outputDir: exp.outputDir,
+      filename: exp.filename,
     });
+    if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+      node.error = null;
+      node.videoStatus = I18n.t("已取消");
+      const ui = ensureBackendUiState(node);
+      ui.genMsg = I18n.t("已取消");
+      ui.genPct = 0;
+      return;
+    }
     if (!r || !r.ok) {
       const err = (r && (r.message || r.error)) || I18n.t("生成失败");
       if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
         node.error = I18n.t("已有视频生成任务进行中，已中断本节点（禁止并行）");
+      } else if (String(err) === "cancelled") {
+        node.error = null;
+        node.videoStatus = I18n.t("已取消");
+        return;
       } else {
         node.error = String(err);
       }
@@ -12793,28 +14522,28 @@ async function playVideoGenNode(node, quiet) {
     }
     node.output = { kind: "video", path: String(r.path || ""), text: String(r.path || "") };
     node.ranAt = Date.now();
+    if (r.path) syncMediaGenPathFromExport(node, String(r.path));
     node.videoStatus = r.message || I18n.t("已保存：") + r.path;
-    {
-      const sv = boundSaveOf(node);
-      if (sv && r.path) {
-        sv.savedPath = r.path;
-        sv.savedPaths = [r.path];
-        sv.savedAt = Date.now();
-      }
-    }
     {
       const ui = ensureBackendUiState(node);
       ui.genPct = 100;
       ui.genMsg = I18n.t("完成");
+      ui.ok = false;
     }
     if (!quiet) toast(I18n.t("视频已生成：") + r.path, "ok");
   } catch (e) {
-    node.error = (e && e.message) || String(e);
-    node.videoStatus = node.error;
-    if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
-    if (!quiet) toast(node.error, "err");
+    if (node._aborted) {
+      node.error = null;
+      node.videoStatus = I18n.t("已取消");
+    } else {
+      node.error = (e && e.message) || String(e);
+      node.videoStatus = node.error;
+      if (looksLikeBackendConnError(node.error)) markMediaBackendDown(node);
+      if (!quiet) toast(node.error, "err");
+    }
   } finally {
     node.running = false;
+    node._aborted = false;
     stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
@@ -13968,8 +15697,120 @@ function fillGlobalRefDetail(el, src) {
   }
 }
 
+function openGlobalTagDialog(gNode) {
+  if (!gNode || gNode.kind !== "global") return;
+  openOverlay(I18n.t("全局 Tag · ") + (gNode.title || I18n.t("全局")));
+  const bodyEl = $("#ovBody");
+  const foot = $("#ovFoot");
+  const hint = document.createElement("div");
+  hint.className = "g-tag-hint";
+  hint.textContent = I18n.t(
+    "勾选 Tag：仅显示带该标的连入节点，并为当前连入节点打上该标。可添加 / 删除 Tag。",
+  );
+  bodyEl.appendChild(hint);
+  const grid = document.createElement("div");
+  grid.className = "g-tag-grid";
+  const paint = () => {
+    grid.innerHTML = "";
+    const cat = wfTagCatalog().slice().sort((a, b) => a.localeCompare(b, "zh"));
+    const active = new Set(normalizeGlobalTagFilter(gNode));
+    if (!cat.length) {
+      const empty = document.createElement("div");
+      empty.className = "n-empty";
+      empty.textContent = I18n.t("暂无 Tag · 点击下方添加");
+      grid.appendChild(empty);
+      return;
+    }
+    for (const tag of cat) {
+      const cell = document.createElement("label");
+      cell.className = "g-tag-cell" + (active.has(tag) ? " on" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = active.has(tag);
+      cb.addEventListener("change", () => {
+        pushHistory();
+        const list = normalizeGlobalTagFilter(gNode);
+        if (cb.checked) {
+          if (!list.includes(tag)) list.push(tag);
+          gNode.tagFilter = list;
+          stampTagsOntoGlobalWired(gNode, [tag]);
+        } else {
+          gNode.tagFilter = list.filter((x) => x !== tag);
+        }
+        cell.classList.toggle("on", cb.checked);
+        scheduleSave(true);
+        refreshNodeEl(gNode.id);
+        if (S.sidebarOpen) renderSidebar();
+      });
+      const name = document.createElement("span");
+      name.className = "g-tag-name";
+      name.textContent = tag;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "g-tag-del";
+      del.textContent = "✕";
+      del.title = I18n.t("删除此 Tag（所有节点上的该标一并移除）");
+      del.onclick = async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const ok = await confirmDialog(
+          I18n.t("删除 Tag「{tag}」？已打在节点上的该标也会移除。", { tag }),
+          { title: I18n.t("删除 Tag"), danger: true, okText: I18n.t("删除") },
+        );
+        if (!ok) return;
+        pushHistory();
+        deleteTagEverywhere(tag);
+        scheduleSave(true);
+        paint();
+        refreshNodeEl(gNode.id);
+        if (S.sidebarOpen) renderSidebar();
+        renderCanvas();
+      };
+      cell.appendChild(cb);
+      cell.appendChild(name);
+      cell.appendChild(del);
+      grid.appendChild(cell);
+    }
+  };
+  paint();
+  bodyEl.appendChild(grid);
+  const addBtn = document.createElement("button");
+  addBtn.className = "mini primary";
+  addBtn.textContent = I18n.t("＋ 添加 Tag");
+  addBtn.onclick = async () => {
+    const name = await promptDialog(I18n.t("新 Tag 名称"), "", {
+      title: I18n.t("添加 Tag"),
+      okText: I18n.t("添加"),
+    });
+    if (name == null) return;
+    const t = normalizeTagName(name);
+    if (!t) {
+      toast(I18n.t("Tag 名称不能为空"), "warn");
+      return;
+    }
+    pushHistory();
+    ensureTagInCatalog(t);
+    scheduleSave(true);
+    paint();
+    if (S.sidebarOpen) renderSidebar();
+  };
+  const close = document.createElement("button");
+  close.className = "mini";
+  close.textContent = I18n.t("关闭");
+  close.onclick = () => {
+    closeOverlay();
+    refreshNodeEl(gNode.id);
+    if (S.sidebarOpen) renderSidebar();
+  };
+  foot.appendChild(addBtn);
+  foot.appendChild(close);
+}
+
 function openGlobalRefsDialog(fromNode) {
-  const srcs = globalRefSources();
+  const srcs =
+    fromNode && fromNode.kind === "global"
+      ? globalDisplaySources(fromNode)
+      : globalRefSources();
   openOverlay(
     I18n.t("全局参考 · ") +
       ((fromNode && fromNode.title) || I18n.t("全局")),
@@ -13998,7 +15839,12 @@ function openGlobalRefsDialog(fromNode) {
   if (!srcs.length) {
     const e = document.createElement("div");
     e.className = "n-empty";
-    e.textContent = I18n.t("（无连入）");
+    e.textContent =
+      fromNode &&
+      fromNode.kind === "global" &&
+      normalizeGlobalTagFilter(fromNode).length
+        ? I18n.t("无匹配该 Tag 的连入节点")
+        : I18n.t("（无连入）");
     side.appendChild(e);
     fillGlobalRefDetail(detail, null);
   } else {
@@ -14180,6 +16026,25 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   const from = nodeById(fromId),
     to = nodeById(toId);
   if (!from || !to) return I18n.t("节点不存在");
+  if (from.kind === "super" && nodeParentSuperId(to) === from.id) {
+    const fi = Number(fromIndex || 0);
+    if (fi < 0 || fi >= Math.max(1, inputCount(from)))
+      return I18n.t("无效的输入端子");
+    if (fromId === toId || wouldCycle(fromId, toId)) return I18n.t("不能连接成回路");
+    return null;
+  }
+  if (to.kind === "super" && nodeParentSuperId(from) === to.id) {
+    const ti = toIndex == null ? 0 : Number(toIndex);
+    if (ti < 0 || ti >= Math.max(1, outputCount(to)))
+      return I18n.t("无效的输出端子");
+    if (fromId === toId || wouldCycle(fromId, toId)) return I18n.t("不能连接成回路");
+    return null;
+  }
+  const fromSuper = nodeParentSuperId(from);
+  const toSuper = nodeParentSuperId(to);
+  if (fromSuper !== toSuper) {
+    return I18n.t("超级节点内外不能直接连线，请经内侧端子桥接");
+  }
   if (!hasOutput(from)) return I18n.t("该节点没有输出端子");
   const fi = Number(fromIndex || 0);
   if (fi < 0 || fi >= outputCount(from)) return I18n.t("该节点没有输出端子");
@@ -14199,27 +16064,28 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     )
   )
     return I18n.t("这两节点已连接");
+  if (to.kind === "task") {
+    if (!fromCtrl) return I18n.t("任务节点仅接受控制信号（不接内容连线）");
+    if (S.wf.wires.some((w) => w.to === toId))
+      return I18n.t("任务控制输入端子已被占用");
+  }
+  if (from.kind === "task") {
+    if (fi !== 0 && fi !== 1) return I18n.t("任务节点仅有成功 / 失败控制输出");
+  }
   if (!fromCtrl && isSaveNode(to)) {
     const incoming = saveDataSources(to);
-    if (to.boundFromId) {
-      if (from.id !== to.boundFromId)
-        return I18n.t("绑定保存节点不能改接其他来源");
-      if (incoming.some((s) => s.id === from.id))
-        return I18n.t("这两节点已连接");
-    } else {
-      const media = inferMediaFromSource(from);
-      if (incoming.length) {
-        const em = saveMediaKind(to);
-        if (em === "image" || em === "audio" || em === "video") {
-          if (incoming.length)
-            return I18n.t("图像 / 音频 / 视频保存仅接受 1 个输入");
-        } else if (media !== "text") {
-          return I18n.t("该保存节点当前按文本保存，不能混接媒体");
-        }
+    const media = inferMediaFromSource(from);
+    if (incoming.length) {
+      const em = saveMediaKind(to);
+      if (em === "image" || em === "audio" || em === "video") {
+        if (incoming.length)
+          return I18n.t("图像 / 音频 / 视频保存仅接受 1 个输入");
+      } else if (media !== "text") {
+        return I18n.t("该保存节点当前按文本保存，不能混接媒体");
       }
-      if (media === "image" && !isImageSource(from) && from.kind !== "split" && from.kind !== "merge")
-        return I18n.t("图像保存需要图像来源");
     }
+    if (media === "image" && !isImageSource(from) && from.kind !== "split" && from.kind !== "merge")
+      return I18n.t("图像保存需要图像来源");
   } else if (!fromCtrl && to.kind === "split") {
     if (wiresTo(toId).length) return I18n.t("拆分节点仅接受 1 个输入");
   } else if (!fromCtrl && to.kind === "music_gen") {
@@ -14288,6 +16154,10 @@ function addWire(fromId, toId, toIndex, opts) {
   ) {
     to.auto = true;
     applySavePathExt(to);
+  }
+  if (to && to.kind === "global" && from && !isControlKind(from)) {
+    const filters = normalizeGlobalTagFilter(to);
+    if (filters.length) stampTagsOntoGlobalWired(to, filters);
   }
 }
 
@@ -15018,6 +16888,11 @@ function agentToolCatalog() {
           label: I18n.t("排版与成组"),
           hint: I18n.t("自动排版、创建组"),
         },
+        {
+          key: "canvas_super",
+          label: I18n.t("超级节点"),
+          hint: I18n.t("创建超级节点、将节点收纳进子画布（建议审批）"),
+        },
       ],
     },
     {
@@ -15096,6 +16971,7 @@ function defaultToolAllow() {
   for (const cat of agentToolCatalog()) {
     for (const it of cat.items) allow[it.key] = "allow";
   }
+  allow.canvas_super = "ask";
   return allow;
 }
 
@@ -15221,6 +17097,7 @@ function normalizeCanvasCreateKind(kind) {
 }
 
 function canvasKindToolKey(kind) {
+  if (kind === "super" || kind === "super_io") return "canvas_super";
   return isControlKind({ kind: kind }) ? "canvas_control" : "canvas_nodes";
 }
 
@@ -15293,6 +17170,18 @@ function collectCanvasEditToolKeys(params) {
   if (createMarks.length || updateMarks.length || removeMarksList.length)
     keys.add("canvas_draw");
   if (doLayout || params.group) keys.add("canvas_layout");
+  for (const spec of creates) {
+    if (spec && normalizeCanvasCreateKind(spec.kind) === "super")
+      keys.add("canvas_super");
+  }
+  for (const spec of updates) {
+    if (!spec) continue;
+    if (spec.parentSuperId != null || spec.packIntoSuper || spec.note != null)
+      keys.add("canvas_super");
+    const token = spec.id || spec.alias || spec.title || "";
+    if (peekKind(token) === "super") keys.add("canvas_super");
+  }
+  if (params.packIntoSuper || params.superId) keys.add("canvas_super");
   if (params.setWorkflowName) keys.add("app_ops");
   return keys;
 }
@@ -16376,11 +18265,6 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
     }
     x += colW + gapX;
   }
-  for (const n of nodes) {
-    if (!isMediaGenNode(n)) continue;
-    const sv = boundSaveOf(n);
-    if (sv && ids.has(sv.id)) placeBoundSave(n, sv);
-  }
   const sh = shiftToClear(nodes, obstacles || []);
   if (sh.x || sh.y) {
     for (const n of nodes) {
@@ -17395,7 +19279,7 @@ async function applyCanvasEdit(params) {
   }
 
   for (const node of created) {
-    if (isMediaGenNode(node)) ensureBoundSaveForMedia(node);
+    /* media gens: path is set in-node; no bound save */
   }
 
   for (const spec of creates.slice(0, 40)) {
@@ -17795,8 +19679,12 @@ function removeWire(id) {
   }
   pushHistory();
   const [w] = S.wf.wires.splice(i, 1);
-  for (const x of S.wf.wires) {
-    if (x.to === w.to && x.toIndex > w.toIndex) x.toIndex--;
+  const toNode = nodeById(w.to);
+  /* 固定端子（音乐 P/L、视频多路、闸门等）禁止压缩 toIndex，否则会错位 */
+  if (!hasFixedInPorts(toNode)) {
+    for (const x of S.wf.wires) {
+      if (x.to === w.to && x.toIndex > w.toIndex) x.toIndex--;
+    }
   }
   if (!wireFromIsControl(w)) clearDownstream(w.to);
 }
@@ -17933,7 +19821,21 @@ function startNodeDrag(ev, node, opts) {
   }
   S.preDragSnap = snapshotState();
   const orig = {};
-  const dragIds = expandBoundPairIds([...S.selSet]);
+  let dragIds = expandBoundPairIds([...S.selSet]);
+  const openSupers = new Set(
+    dragIds.filter((id) => {
+      const s = nodeById(id);
+      return s && s.kind === "super" && s.superOpen;
+    }),
+  );
+  if (openSupers.size) {
+    dragIds = dragIds.filter((id) => {
+      const n = nodeById(id);
+      if (!n) return false;
+      const ps = nodeParentSuperId(n);
+      return !ps || !openSupers.has(ps);
+    });
+  }
   for (const id of dragIds) {
     const n = nodeById(id);
     if (n) orig[id] = { x: n.x, y: n.y };
@@ -17960,7 +19862,8 @@ function startNodeDrag(ev, node, opts) {
     handleNid: node.id,
   };
 }
-function startWireDrag(fromId, ev, fromIndex) {
+function startWireDrag(fromId, ev, fromIndex, opts) {
+  opts = opts || {};
   S.drag = {
     mode: "wire",
     fromId,
@@ -17969,6 +19872,7 @@ function startWireDrag(fromId, ev, fromIndex) {
     sy: ev.clientY,
     mx: ev.clientX,
     my: ev.clientY,
+    superInnerBridge: !!opts.superInnerBridge,
   };
   updateWires();
 }
@@ -17979,6 +19883,7 @@ function cancelDrag() {
   if (box) box.remove();
   S.drag = null;
   S.preDragSnap = null;
+  clearSuperDropHot(false);
   setCanvasPanning(false);
   const c = $("#canvas");
   if (c) c.classList.remove("midpan");
@@ -18045,7 +19950,9 @@ function groupBounds(g) {
   for (const id of g.nodeIds) {
     const n = nodeById(id);
     if (!n || !nodeInCurrentScope(n)) continue;
-    include(n.x, n.y, n.w, n.h);
+    const p = nodeWorldPos(n);
+    const sz = nodeDrawSize(n);
+    include(p.x, p.y, sz.w, sz.h);
   }
   for (const id of g.markIds) {
     const m = markById(id);
@@ -18692,10 +20599,6 @@ async function deleteNodes(ids, quiet) {
         expanded.add(n.id);
         grew = true;
       }
-      if (isMediaGenNode(n) && expanded.has(n.id) && n.boundSaveId && !expanded.has(n.boundSaveId)) {
-        expanded.add(n.boundSaveId);
-        grew = true;
-      }
     }
   }
   const blocked = [];
@@ -18707,18 +20610,14 @@ async function deleteNodes(ids, quiet) {
       blocked.push(n);
       continue;
     }
-    if (isSaveNode(n) && n.boundFromId && !expanded.has(n.boundFromId)) {
-      blocked.push(n);
-      continue;
-    }
     finalIds.push(id);
   }
   if (blocked.length && !finalIds.length) {
-    if (!quiet) toast(I18n.t("固定节点无法删除（起点 / 终点 / 绑定保存）"), "warn");
+    if (!quiet) toast(I18n.t("固定节点无法删除（起点 / 终点）"), "warn");
     return false;
   }
   if (blocked.length && !quiet)
-    toast(I18n.t("已跳过固定节点（起点 / 终点 / 绑定保存）"), "warn");
+    toast(I18n.t("已跳过固定节点（起点 / 终点）"), "warn");
   ids = finalIds;
   if (!ids.length) return false;
   /* 智能任务节点删除联动:其关联的智能会话一并删除(先提示确认) */
@@ -18802,20 +20701,6 @@ function duplicateNodes(nodes) {
     if (!node || seen.has(node.id)) continue;
     seen.add(node.id);
     srcs.push(node);
-    if (isMediaGenNode(node) && node.boundSaveId) {
-      const sv = nodeById(node.boundSaveId);
-      if (sv && !seen.has(sv.id)) {
-        seen.add(sv.id);
-        srcs.push(sv);
-      }
-    }
-    if (isSaveNode(node) && node.boundFromId) {
-      const g = nodeById(node.boundFromId);
-      if (g && !seen.has(g.id)) {
-        seen.add(g.id);
-        srcs.push(g);
-      }
-    }
   }
   pushHistory();
   const cps = [];
@@ -18855,8 +20740,8 @@ function duplicateNodes(nodes) {
     cps.push(cp);
   });
   for (const cp of cps) {
-    if (cp.boundSaveId) cp.boundSaveId = idMap.get(cp.boundSaveId) || "";
-    if (cp.boundFromId) cp.boundFromId = idMap.get(cp.boundFromId) || "";
+    if (isMediaGenNode(cp)) cp.boundSaveId = "";
+    if (isSaveNode(cp)) cp.boundFromId = "";
   }
   if (!cps.length) {
     toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
@@ -18866,7 +20751,6 @@ function duplicateNodes(nodes) {
   for (const cp of cps) {
     if (cp.kind === "task") ensureTaskScaffold(cp);
     if (isMediaGenNode(cp)) {
-      ensureBoundSaveForMedia(cp);
       probeMediaBackend(cp, { quiet: true });
     }
   }
@@ -19149,9 +21033,53 @@ function renderSidebar() {
       t.textContent = n.title || I18n.t("（未命名）");
       it.appendChild(tag);
       it.appendChild(t);
+      const nodeTags = normalizeNodeTags(n);
+      if (nodeTags.length) {
+        const tip = document.createElement("span");
+        tip.className = "side-tag-list";
+        tip.textContent = nodeTags.slice(0, 3).join(" · ");
+        if (nodeTags.length > 3) tip.textContent += "…";
+        tip.title = nodeTags.join(" · ");
+        it.appendChild(tip);
+      }
       it.onclick = () => focusNode(n.id);
       return it;
     });
+  }
+  {
+    const catalog = wfTagCatalog().slice().sort((a, b) => a.localeCompare(b, "zh"));
+    for (const tagName of catalog) {
+      const items = S.wf.nodes.filter(
+        (n) =>
+          n.kind !== "global" &&
+          nodeHasTag(n, tagName) &&
+          (f ? true : nodeInCurrentScope(n)),
+      );
+      if (!items.length && !f) continue;
+      const shown = f
+        ? items.filter(
+            (n) =>
+              (n.title || "").toLowerCase().includes(f) ||
+              tagName.toLowerCase().includes(f),
+          )
+        : items;
+      if (!shown.length) continue;
+      appendCat("Tag · " + tagName, items.length, shown, (n) => {
+        const it = document.createElement("div");
+        it.className = "side-item" + (isSel(n.id) ? " sel" : "");
+        it.title = I18n.t("画布居中定位到：") + (n.title || "");
+        const tag = document.createElement("span");
+        tag.className = "side-tag side-tag-user";
+        tag.textContent = tagName;
+        const t = document.createElement("span");
+        t.className = "t";
+        t.textContent = n.title || I18n.t("（未命名）");
+        it.appendChild(tag);
+        it.appendChild(t);
+        it.onclick = () => focusNode(n.id);
+        return it;
+      });
+    }
   }
   const markPool = f ? marksOf() : visMarks;
   const markShown = markPool.filter((m) => {
@@ -19727,7 +21655,12 @@ function bindCanvas() {
         ev.preventDefault();
         return;
       }
-      if (ev.target.closest(".wf-node")) return; // 节点内滚轮仅作用于节点内部滚动，不缩放画布
+      /* 节点内滚轮默认不缩放；展开超级节点内部舞台例外（与画布一致缩放镜头） */
+      if (
+        ev.target.closest(".wf-node") &&
+        !ev.target.closest(".super-stage")
+      )
+        return;
       ev.preventDefault();
       /* 以鼠标位置为中心缩放：缩放前后鼠标下的舞台坐标保持不变 */
       const rect = canvas.getBoundingClientRect();
@@ -19801,7 +21734,16 @@ function bindCanvas() {
       }
       updateGroupFrames();
       snapBoundSaves(d.ids);
-      updateWires(d.idSet || (d.idSet = new Set(d.ids)));
+      updateSuperHoverExpand(ev, d.ids);
+      {
+        const touch = d.idSet || (d.idSet = new Set(d.ids));
+        for (const id of d.ids) {
+          const n = nodeById(id);
+          if (!n || n.kind !== "super" || !n.superOpen) continue;
+          for (const c of superChildrenOf(n.id)) touch.add(c.id);
+        }
+        updateWires(touch);
+      }
     } else if (d.mode === "box") {
       const pt = toStage(ev.clientX, ev.clientY);
       const r = document.getElementById("boxSel");
@@ -19855,6 +21797,38 @@ function bindCanvas() {
       scaleGroup(g, c.sx, c.sy, d.ax, d.ay, d.orig, d.origMarks);
       updateGroupFrames();
       updateWires(d.idSet || (d.idSet = new Set(Object.keys(d.orig || {}))));
+    } else if (d.mode === "superpan") {
+      const n = nodeById(d.id);
+      if (!n || n.kind !== "super") return;
+      const z = S.cam.z > 0 ? S.cam.z : 1;
+      const pdx = (ev.clientX - d.sx) / z;
+      const pdy = (ev.clientY - d.sy) / z;
+      n.innerPanX = d.ox + pdx;
+      n.innerPanY = d.oy + pdy;
+      const el = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
+      const stage = el && el.querySelector(".super-stage");
+      const vp = stage && stage.querySelector(".super-stage-viewport");
+      if (vp) {
+        vp.style.transform =
+          "translate(" + n.innerPanX + "px," + n.innerPanY + "px)";
+      }
+      if (stage) {
+        const gg = grid();
+        stage.style.setProperty(
+          "--super-grid-x",
+          gridMod(n.innerPanX || 0, gg) + "px",
+        );
+        stage.style.setProperty(
+          "--super-grid-y",
+          gridMod(n.innerPanY || 0, gg) + "px",
+        );
+      }
+      updateWires(
+        d.idSet ||
+          (d.idSet = new Set(
+            [n.id].concat(superChildrenOf(n.id).map((c) => c.id)),
+          )),
+      );
     } else if (d.mode === "resize") {
       const n = nodeById(d.id);
       if (!n) return;
@@ -19865,12 +21839,19 @@ function bindCanvas() {
         !!(r && (r.output || r.batchOutputs || r.error));
       const minW = hasOut ? Math.max(minWFor(n), procMinNodeW(n.outW)) : minWFor(n);
       const z = S.cam.z > 0 ? S.cam.z : 1;
-      n.w = snapDim(d.ow + dx / z, minW);
-      n.h = snapDim(d.oh + dy / z, minHFor(n));
+      const openSuper = n.kind === "super" && n.superOpen && !currentSuperFocus();
+      if (openSuper) {
+        n.expandW = snapDim(d.ow + dx / z, 320);
+        n.expandH = snapDim(d.oh + dy / z, 220);
+      } else {
+        n.w = snapDim(d.ow + dx / z, minW);
+        n.h = snapDim(d.oh + dy / z, minHFor(n));
+      }
       const el = document.querySelector('.wf-node[data-nid="' + n.id + '"]');
       if (el) {
-        el.style.width = n.w + "px";
-        el.style.height = n.h + "px";
+        const sz = n.kind === "super" ? superDisplaySize(n) : { w: n.w, h: n.h };
+        el.style.width = sz.w + "px";
+        el.style.height = sz.h + "px";
         refreshPorts(el, n);
       }
       updateGroupFrames();
@@ -20015,9 +21996,32 @@ function bindCanvas() {
     if (d.mode === "wire") {
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       const port = el && el.closest ? el.closest(".port.in") : null;
+      const fromId = d.fromId;
+      const fromIndex = d.fromIndex || 0;
+      const fromBridge = !!d.superInnerBridge;
       S.drag = null;
       updateWires();
-      if (port) connect(d.fromId, port.dataset.node, Number(port.dataset.idx), d.fromIndex || 0);
+      if (port) {
+        const toId = port.dataset.node;
+        const toNode = nodeById(toId);
+        const fromNode = nodeById(fromId);
+        if (fromBridge) {
+          if (!toNode || nodeParentSuperId(toNode) !== fromId) {
+            toast(I18n.t("内侧输入端子只能连接到超级节点内部的节点"), "warn");
+          } else {
+            connect(fromId, toId, Number(port.dataset.idx), fromIndex);
+          }
+        } else if (
+          port.classList.contains("super-inner-sink") &&
+          (!toNode ||
+            toNode.kind !== "super" ||
+            nodeParentSuperId(fromNode) !== toId)
+        ) {
+          toast(I18n.t("内侧输出端子只能接收超级节点内部的连线"), "warn");
+        } else {
+          connect(fromId, toId, Number(port.dataset.idx), fromIndex);
+        }
+      }
     } else if (d.mode === "box") {
       const pt = toStage(ev.clientX, ev.clientY);
       const r = document.getElementById("boxSel");
@@ -20028,9 +22032,12 @@ function bindCanvas() {
           y0 = Math.min(d.y0, pt.y),
           x1 = Math.max(d.x0, pt.x),
           y1 = Math.max(d.y0, pt.y);
-        const sel = S.wf.nodes.filter(
-          (n) => n.x <= x1 && n.x + n.w >= x0 && n.y <= y1 && n.y + n.h >= y0,
-        );
+        const sel = S.wf.nodes.filter((n) => {
+          if (!nodeInCurrentScope(n)) return false;
+          const p = nodeWorldPos(n);
+          const sz = nodeDrawSize(n);
+          return p.x <= x1 && p.x + sz.w >= x0 && p.y <= y1 && p.y + sz.h >= y0;
+        });
         const markSel = marksOf().filter((m) => {
           const b = markBounds(m);
           return b && b.x <= x1 && b.x + b.w >= x0 && b.y <= y1 && b.y + b.h >= y0;
@@ -20051,6 +22058,7 @@ function bindCanvas() {
       const fromHandle = !!d.fromHandle;
       const handleNid = d.handleNid;
       const wasMoved = !!d.moved;
+      const dragIds = d.ids || [];
       S.drag = null;
       if (wasMoved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
@@ -20058,6 +22066,9 @@ function bindCanvas() {
       } else {
         S.preDragSnap = null;
       }
+      let nested = false;
+      if (wasMoved) nested = finalizeNodeDragNest(dragIds);
+      clearSuperDropHot(!!nested);
       updateGroupFrames();
       const skipToggle =
         ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button !== 0;
@@ -20068,6 +22079,9 @@ function bindCanvas() {
         toggleNodeGlobalRefs(nodeById(handleNid))
       ) {
         /* 点击手柄已切换全局引用并重绘 */
+      } else if (nested) {
+        renderCanvas();
+        scheduleSave(true);
       } else {
         scheduleSave();
       }
@@ -20080,6 +22094,15 @@ function bindCanvas() {
       updateGroupFrames();
       scheduleSave();
       renderStatus();
+    } else if (d.mode === "superpan") {
+      S.drag = null;
+      if (d.moved && S.preDragSnap) {
+        pushHistory(S.preDragSnap);
+        S.preDragSnap = null;
+      } else {
+        S.preDragSnap = null;
+      }
+      scheduleSave();
     } else if (d.mode === "mark" || d.mode === "markresize" || d.mode === "markarrow") {
       S.drag = null;
       if (d.moved && S.preDragSnap) {
@@ -20093,15 +22116,23 @@ function bindCanvas() {
       d.mode === "entryresize" ||
       d.mode === "vresize"
     ) {
+      const resizedId = d.id;
+      const wasExpand =
+        d.mode === "resize" &&
+        (() => {
+          const n = nodeById(d.id);
+          return !!(n && n.kind === "super" && n.superOpen);
+        })();
       S.drag = null;
       if (d.moved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
         S.preDragSnap = null;
       }
       scheduleSave();
+      if (wasExpand) renderCanvas();
       /* 输入/会话框高度变化后，让节点高度跟随左侧内容 */
       if (d.mode === "vresize") {
-        const n = nodeById(d.id);
+        const n = nodeById(resizedId);
         if (n) autoFitOutputHeight(n);
       }
     } else if (d.mode === "pan") {
@@ -20195,6 +22226,11 @@ function bindCanvas() {
           [
             ctxKindItem("task", I18n.t("任务（规划 · 可进入分段解决）"), () =>
               addNode("task", pt.x, pt.y),
+            ),
+            ctxKindItem(
+              "super",
+              I18n.t("超级节点（收纳 · 展开子画布）"),
+              () => addNode("super", pt.x, pt.y),
             ),
           ],
         ],
@@ -20927,6 +22963,24 @@ function makeNode(kind, x, y) {
     node.seed = Math.floor(Math.random() * 2147483647);
   }
   node.parentTaskId = currentTaskFocus();
+  const sf = currentSuperFocus();
+  if (sf) {
+    node.parentSuperId = sf;
+    const host = nodeById(sf);
+    node.parentTaskId = host ? host.parentTaskId || "" : "";
+  } else {
+    const host = findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false);
+    if (host) {
+      const o = superInnerOrigin(host);
+      const pan = superInnerPan(host);
+      node.parentSuperId = host.id;
+      node.parentTaskId = host.parentTaskId || "";
+      node.x = snap(Math.max(8, x - host.x - o.ox - pan.x));
+      node.y = snap(Math.max(8, y - host.y - o.oy - pan.y));
+    } else {
+      node.parentSuperId = "";
+    }
+  }
   return node;
 }
 
@@ -20964,7 +23018,6 @@ function addNode(kind, x, y, extra) {
   pushHistory();
   S.wf.nodes.push(node);
   if (kind === "task") ensureTaskScaffold(node);
-  if (isMediaGenNode(node)) ensureBoundSaveForMedia(node);
   S.sel = node.id;
   S.selWire = null;
   renderCanvas();
@@ -21271,13 +23324,187 @@ async function chatSendAgent(node, text) {
   }
 }
 
-/* Markdown 渲染（先转义 HTML 防注入，再解析；链接仅允许 http/https/mailto） */
-function renderMarkdown(text) {
-  const esc = String(text == null ? "" : text)
+/* Markdown 渲染（先转义 HTML 防注入，再解析；链接仅允许 http/https/mailto）
+   额外把裸 URL / 本地路径做成可点击打开 */
+function escapeHtml(text) {
+  return String(text == null ? "" : text)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function htmlUnescape(text) {
+  return String(text == null ? "" : text)
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function stripLinkTrailPunct(s) {
+  return String(s || "").replace(
+    /[.,;:!?。，；：！？、)\]}>」』》〉】）》」]+$/g,
+    "",
+  );
+}
+
+/* 在已转义的纯文本片段中识别 URL / 本地路径，包成可点击链接 */
+function linkifyEscapedText(text) {
+  const src = String(text || "");
+  if (!src) return src;
+  const re =
+    /https?:\/\/[^\s<&]+|file:\/\/\/?[^\s<&]+|(?:[A-Za-z]:(?:\\|\/)|\\\\[^\\\s<&]+)[^\s<&|?*]+/g;
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(src))) {
+    let raw = m[0];
+    const cleaned = stripLinkTrailPunct(raw);
+    const trail = cleaned.length < raw.length ? raw.slice(cleaned.length) : "";
+    raw = cleaned;
+    if (!raw) continue;
+    const isUrl = /^https?:\/\//i.test(raw);
+    const isFileUrl = /^file:/i.test(raw);
+    if (!isUrl && !isFileUrl && raw.length < 4) continue;
+    out += src.slice(last, m.index);
+    const kind = isUrl ? "url" : isFileUrl ? "file" : "path";
+    out +=
+      '<a class="mt-link" href="' +
+      raw +
+      '" data-mt-open="' +
+      kind +
+      '" title="' +
+      I18n.t("点击打开") +
+      '">' +
+      raw +
+      "</a>" +
+      trail;
+    last = m.index + m[0].length;
+  }
+  out += src.slice(last);
+  return out;
+}
+
+/* 对 HTML 中标签外的文本做链接化（跳过已有 <a>） */
+function linkifyHtml(html) {
+  return String(html || "").replace(
+    /(<a\b[^>]*>[\s\S]*?<\/a>)|([^<]+)|(<[^>]+>)/gi,
+    (m, anchor, text, tag) => {
+      if (anchor) return anchor;
+      if (tag) return tag;
+      return linkifyEscapedText(text);
+    },
+  );
+}
+
+function plainTextToLinkHtml(text) {
+  return linkifyEscapedText(escapeHtml(text));
+}
+
+function fileUrlToPath(u) {
+  let s = htmlUnescape(u).replace(/^file:\/\//i, "");
+  if (/^\/[A-Za-z]:/.test(s)) s = s.slice(1);
+  try {
+    s = decodeURIComponent(s);
+  } catch (_) {}
+  return s;
+}
+
+async function openContentRef(href, kind) {
+  const raw = htmlUnescape(String(href || "").trim());
+  if (!raw) return;
+  if (kind === "url" || /^https?:\/\//i.test(raw)) {
+    if (!/^https?:\/\//i.test(raw)) {
+      toast(I18n.t("已阻止不安全链接"), "warn");
+      return;
+    }
+    try {
+      if (window.api && window.api.openInAppDialog) {
+        const r = await window.api.openInAppDialog({ kind: "url", target: raw });
+        if (r && r.ok === false)
+          toast(I18n.t("无法打开链接：") + (r.error || ""), "warn");
+      } else if (window.api && window.api.openExternal) {
+        await window.api.openExternal(raw);
+      }
+    } catch (e) {
+      toast(I18n.t("无法打开链接：") + ((e && e.message) || e), "warn");
+    }
+    return;
+  }
+  if (kind === "mailto" || /^mailto:/i.test(raw)) {
+    try {
+      if (window.api && window.api.openExternal) await window.api.openExternal(raw);
+    } catch (e) {
+      toast(I18n.t("无法打开链接：") + ((e && e.message) || e), "warn");
+    }
+    return;
+  }
+  let path = raw;
+  if (kind === "file" || /^file:/i.test(raw)) path = fileUrlToPath(raw);
+  path = String(path || "").trim();
+  if (!path) return;
+  try {
+    if (window.api && window.api.openInAppDialog) {
+      const r = await window.api.openInAppDialog({ kind: "path", target: path });
+      if (r && r.ok === false)
+        toast(I18n.t("无法打开路径：") + (r.error || ""), "warn");
+      return;
+    }
+    if (!window.api || !window.api.shellOpenPath) {
+      toast(I18n.t("无法打开路径"), "warn");
+      return;
+    }
+    const r = await window.api.shellOpenPath(path);
+    if (r && r.ok === false)
+      toast(I18n.t("无法打开路径：") + (r.error || ""), "warn");
+  } catch (e) {
+    toast(I18n.t("无法打开路径：") + ((e && e.message) || e), "warn");
+  }
+}
+
+function bindOpenableContentClicks() {
+  if (document.documentElement._mtLinkBound) return;
+  document.documentElement._mtLinkBound = true;
+  document.addEventListener(
+    "click",
+    (ev) => {
+      const a = ev.target && ev.target.closest && ev.target.closest("a");
+      if (!a) return;
+      const inContent =
+        a.classList.contains("mt-link") ||
+        a.closest(".md") ||
+        a.closest(".dsh-msg-body") ||
+        a.closest(".dsh-tool-body") ||
+        a.closest(".dsh-think") ||
+        a.closest(".chat-bubble") ||
+        a.closest(".app-docs-ask-msg");
+      if (!inContent) return;
+      const href = String(a.getAttribute("href") || "");
+      if (!href || href.charAt(0) === "#") return;
+      const kind = a.getAttribute("data-mt-open") || "";
+      if (
+        !kind &&
+        !/^https?:\/\//i.test(href) &&
+        !/^file:/i.test(href) &&
+        !/^mailto:/i.test(href)
+      )
+        return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (/^mailto:/i.test(href)) {
+        if (window.api && window.api.openExternal) window.api.openExternal(href);
+        return;
+      }
+      openContentRef(href, kind);
+    },
+    true,
+  );
+}
+
+function renderMarkdown(text) {
+  const esc = escapeHtml(text);
   let html = "";
   try {
     html = window.marked
@@ -21290,7 +23517,7 @@ function renderMarkdown(text) {
     if (/^(https?:|mailto:)/i.test(u) || u.charAt(0) === "#") return m;
     return I18n.t('<a href="#" title="已阻止不安全链接"');
   });
-  return html;
+  return linkifyHtml(html);
 }
 
 /* 解析 Hex 颜色（#RRGGBB / RRGGBB） */
@@ -21686,7 +23913,7 @@ function agentConvListEl(node) {
     ) {
       m.tools = node.dshTools.map((t) => Object.assign({}, t));
     }
-    conv.appendChild(dshMsgBlock(m, node.id));
+    conv.appendChild(dshMsgBlock(m, node.id, i));
   }
   if (node.running) {
     const row = document.createElement("div");
@@ -21716,6 +23943,7 @@ function agentConvListEl(node) {
     row.appendChild(body);
     conv.appendChild(row);
   }
+  scheduleHistoryCollapse(conv);
   return conv;
 }
 function scrollAgentConv(node) {
@@ -23473,8 +25701,17 @@ async function pulseExecFrom(node, task, seen, toIndex) {
 
   if (role !== "start") {
     try {
-      if (node.kind === "task") await playTaskNode(node, true);
-      else if (node.kind === "wait_file") await playWaitFileNode(node, true);
+      if (node.kind === "task") {
+        await playTaskNode(node, true, { emitOut: false });
+        if (task._aborted) return "abort";
+        if (node.taskStatus === "blocked") return "blocked";
+        const fi = taskControlOutIndex(node);
+        if (fi < 0) {
+          if (node.taskStatus === "pending") return "abort";
+          return "fail";
+        }
+        return mergePulseResults(await pulseExecOutgoing(node, fi, task, seen));
+      } else if (node.kind === "wait_file") await playWaitFileNode(node, true);
       else if (isSaveNode(node))
         await saveNodeAction(node);
       else if (
@@ -23488,7 +25725,6 @@ async function pulseExecFrom(node, task, seen, toIndex) {
     }
     if (task._aborted) return "abort";
     if (node.kind === "wait_file" && node.running) return "blocked";
-    if (node.kind === "task" && node.taskStatus === "blocked") return "blocked";
     if (
       node.kind === "agent_task" &&
       node.running &&
@@ -23565,7 +25801,9 @@ function askAssistDecomposeTask(node) {
   assistSend("/generate-task " + arg);
 }
 
-async function playTaskNode(node, quiet) {
+async function playTaskNode(node, quiet, opts) {
+  opts = opts || {};
+  const emitOut = opts.emitOut !== false;
   if (!node || node.kind !== "task") return;
   if (node.running) {
     const p = S.runPromises.get(node.id);
@@ -23657,6 +25895,34 @@ async function playTaskNode(node, quiet) {
     await runP;
   } finally {
     if (S.runPromises.get(node.id) === runP) S.runPromises.delete(node.id);
+  }
+  if (emitOut) await fireTaskControlOutputs(node);
+}
+
+function taskControlOutIndex(node) {
+  if (!node) return -1;
+  if (node.taskStatus === "done") return 0;
+  if (node.taskStatus === "failed") return 1;
+  return -1;
+}
+
+async function fireTaskControlOutputs(node, seen) {
+  if (!node || node.kind !== "task") return;
+  const fi = taskControlOutIndex(node);
+  if (fi < 0) return;
+  seen = seen || new Set();
+  seen.add(node.id);
+  const wires = execOutWires(node, fi);
+  for (const w of wires) {
+    const next = nodeById(w.to);
+    if (!next || seen.has(next.id)) continue;
+    if (nodeParentTaskId(next) === node.id) continue;
+    if (!canControlRun(next)) continue;
+    try {
+      await runControlledNode(next, seen);
+    } catch (e) {
+      if (next) next.error = (e && e.message) || String(e);
+    }
   }
 }
 
@@ -23970,7 +26236,19 @@ function migrateWf(wf) {
   wf.wires = wf.wires || [];
   wf.groups = Array.isArray(wf.groups) ? wf.groups : [];
   wf.marks = Array.isArray(wf.marks) ? wf.marks : [];
+  stripSuperIoNodes(wf);
   if (typeof wf.workspace !== "string") wf.workspace = "";
+  {
+    const seen = new Set();
+    const cat = [];
+    for (const raw of Array.isArray(wf.tagCatalog) ? wf.tagCatalog : []) {
+      const t = String(raw == null ? "" : raw).trim().replace(/\s+/g, " ");
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      cat.push(t);
+    }
+    wf.tagCatalog = cat;
+  }
   for (const m of wf.marks) {
     if (!m.id) m.id = uid("mk");
     if (m.kind !== "text" && m.kind !== "box" && m.kind !== "arrow")
@@ -23996,6 +26274,32 @@ function migrateWf(wf) {
   for (const n of wf.nodes) {
     n.title = n.title || I18n.t("未命名节点");
     delete n.runPromise; // 清理旧版本误存的运行期 Promise
+    {
+      const seen = new Set();
+      const tags = [];
+      for (const raw of Array.isArray(n.tags) ? n.tags : []) {
+        const t = String(raw == null ? "" : raw).trim().replace(/\s+/g, " ");
+        if (!t || seen.has(t)) continue;
+        seen.add(t);
+        tags.push(t);
+        if (!wf.tagCatalog.includes(t)) wf.tagCatalog.push(t);
+      }
+      n.tags = tags;
+    }
+    if (n.kind === "global") {
+      const seen = new Set();
+      const filters = [];
+      for (const raw of Array.isArray(n.tagFilter) ? n.tagFilter : []) {
+        const t = String(raw == null ? "" : raw).trim().replace(/\s+/g, " ");
+        if (!t || seen.has(t)) continue;
+        seen.add(t);
+        filters.push(t);
+        if (!wf.tagCatalog.includes(t)) wf.tagCatalog.push(t);
+      }
+      n.tagFilter = filters;
+    } else if (n.tagFilter != null) {
+      delete n.tagFilter;
+    }
     if (n.kind === "save_text") {
       if (!n.legacySaveMedia) n.legacySaveMedia = "text";
       n.kind = "save";
@@ -24066,6 +26370,16 @@ function migrateWf(wf) {
       if (n.taskStatus === "running") n.taskStatus = "pending";
       if (n.taskStatus !== "done" && n.taskStatus !== "failed" && n.taskStatus !== "blocked")
         n.taskStatus = n.taskStatus || "pending";
+    }
+    if (n.kind === "super") {
+      if (typeof n.note !== "string") n.note = "";
+      if (!n.expandW) n.expandW = 720;
+      if (!n.expandH) n.expandH = 480;
+      if (typeof n.subFolder !== "string") n.subFolder = "";
+      if (typeof n.parentSuperId !== "string") n.parentSuperId = "";
+      if (n.superOpen == null) n.superOpen = false;
+      if (!Number.isFinite(Number(n.innerPanX))) n.innerPanX = 0;
+      if (!Number.isFinite(Number(n.innerPanY))) n.innerPanY = 0;
     }
     if (isSaveNode(n)) {
       if (!Array.isArray(n.savedPaths))
@@ -24178,6 +26492,39 @@ function migrateWf(wf) {
       n.output = null;
       n.running = false;
     }
+    if (n.kind === "music_gen") {
+      const d = Math.round(Number(n.audioDuration) || 60);
+      n.audioDuration = Math.max(10, Math.min(150, isFinite(d) ? d : 60));
+    }
+  }
+  /* 移除音乐/视频配对保存节点，并把旧保存路径迁入节点 outputPath */
+  detachBoundMediaSaves(wf);
+  for (const n of wf.nodes) {
+    if (!isMediaGenNode(n)) continue;
+    if (/^output$/i.test(String(n.outputPath || "").trim()) && !String(n.filename || "").trim())
+      n.outputPath = "";
+    n.boundSaveId = "";
+  }
+  /* 修复音乐节点固定端子 toIndex 被压缩错位（P=0 / L=1） */
+  {
+    const byId = new Map(wf.nodes.map((n) => [n.id, n]));
+    const isCtrl = (id) => isControlKind(byId.get(id));
+    for (const n of wf.nodes) {
+      if (n.kind !== "music_gen") continue;
+      const dataWs = (wf.wires || []).filter(
+        (w) => w.to === n.id && !isCtrl(w.from),
+      );
+      if (dataWs.length < 1) continue;
+      const idxs = dataWs.map((w) => Number(w.toIndex));
+      const uniq = new Set(idxs.filter((i) => i === 0 || i === 1));
+      if (uniq.size === dataWs.length && dataWs.length <= 2) continue;
+      dataWs
+        .slice()
+        .sort((a, b) => Number(a.toIndex) - Number(b.toIndex) || String(a.id).localeCompare(String(b.id)))
+        .forEach((w, i) => {
+          w.toIndex = Math.min(i, 1);
+        });
+    }
   }
   {
     const ids = new Set(wf.nodes.map((n) => n.id));
@@ -24187,12 +26534,23 @@ function migrateWf(wf) {
     for (const n of wf.nodes) {
       if (n.kind === "task") ensureTaskScaffold(n, wf);
     }
-    for (const n of wf.nodes) {
-      if (n.kind === "music_gen" || n.kind === "video_gen")
-        ensureBoundSaveForMedia(n, wf);
-    }
     for (const w of wf.wires || []) {
       if (w.fromIndex == null || !isFinite(Number(w.fromIndex))) w.fromIndex = 0;
+    }
+    /* 任务节点仅控制信号：去掉内容入线；输出 fromIndex 钳制为成功(0)/失败(1) */
+    {
+      const byId = new Map(wf.nodes.map((n) => [n.id, n]));
+      wf.wires = (wf.wires || []).filter((w) => {
+        const to = byId.get(w.to);
+        const from = byId.get(w.from);
+        if (!to || !from) return false;
+        if (to.kind === "task" && !isControlKind(from)) return false;
+        if (from.kind === "task") {
+          const fi = Number(w.fromIndex || 0);
+          w.fromIndex = fi === 1 ? 1 : 0;
+        }
+        return true;
+      });
     }
     for (const m of wf.marks || []) {
       if (typeof m.parentTaskId !== "string") m.parentTaskId = "";
@@ -24616,6 +26974,9 @@ function assistantMsgFromNode(node, text) {
   if (String(rsn).trim()) msg.reasoning = rsn;
   const tools = (S.nodeTools && S.nodeTools[node.id]) || [];
   if (tools.length) msg.tools = tools.map((t) => Object.assign({}, t));
+  const r = node ? selResult(node) : null;
+  const at = Number((r && r.ranAt) || (node && node.ranAt) || Date.now()) || 0;
+  if (at > 0) msg.at = at;
   return msg;
 }
 async function expandAgentTaskToSession(node) {
@@ -24661,7 +27022,7 @@ function syncAgentTaskToSession(node, input, output) {
     (m) => m.role === "user" && m.content === String(input || "").trim(),
   );
   if (!hasUser && String(input || "").trim())
-    sess.messages.push({ role: "user", content: String(input).trim() });
+    sess.messages.push({ role: "user", content: String(input).trim(), at: Date.now() });
   const hasAi = sess.messages.some(
     (m) => m.role === "assistant" && m.content === output,
   );
@@ -28880,6 +31241,118 @@ function openSettings() {
     body.appendChild(sec);
   }
 
+  /* ── 错误与崩溃日志（自动保存，可导出提交给开发者）── */
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("错误与崩溃日志");
+    sec.appendChild(secTitle);
+
+    const hint = document.createElement("div");
+    hint.className = "n-field";
+    hint.textContent = I18n.t(
+      "应用内部错误与崩溃会自动写入本地诊断日志（不含 API Key）。导出后可发给开发者协助排查。",
+    );
+    sec.appendChild(hint);
+
+    const statusEl = document.createElement("div");
+    statusEl.className = "n-field";
+    statusEl.style.fontSize = "12px";
+    statusEl.style.opacity = "0.9";
+    statusEl.textContent = I18n.t("正在读取日志状态…");
+    sec.appendChild(statusEl);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "n-field";
+    btnRow.style.flexDirection = "row";
+    btnRow.style.gap = "8px";
+    btnRow.style.flexWrap = "wrap";
+
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "mini";
+    exportBtn.textContent = I18n.t("导出诊断日志…");
+    exportBtn.title = I18n.t("打包环境信息与近期错误日志为 .txt，便于提交");
+
+    const openLogsBtn = document.createElement("button");
+    openLogsBtn.className = "mini";
+    openLogsBtn.textContent = I18n.t("打开日志文件夹");
+    openLogsBtn.title = I18n.t("在资源管理器中打开自动保存的日志目录");
+
+    const refreshStatus = async () => {
+      try {
+        const st = await window.api.crashStatus();
+        if (!st || !st.ok) {
+          statusEl.textContent =
+            I18n.t("无法读取：") + ((st && st.error) || I18n.t("未知错误"));
+          return;
+        }
+        const bits = [];
+        bits.push(I18n.t("日志目录：") + (st.logsDir || ""));
+        if (st.errorBytes)
+          bits.push(
+            I18n.t("error.log：") +
+              Math.max(1, Math.round(st.errorBytes / 1024)) +
+              " KB" +
+              (st.errorMtime ? " · " + st.errorMtime : ""),
+          );
+        else bits.push(I18n.t("尚无 error.log"));
+        if (st.latestReport)
+          bits.push(
+            I18n.t("最近崩溃报告：") +
+              st.latestReport.name +
+              (st.latestReport.mtime ? " · " + st.latestReport.mtime : ""),
+          );
+        else bits.push(I18n.t("尚无崩溃报告"));
+        if (st.reportCount)
+          bits.push(I18n.t("已保存报告数：") + st.reportCount);
+        statusEl.textContent = bits.join("\n");
+        statusEl.style.whiteSpace = "pre-wrap";
+      } catch (e) {
+        statusEl.textContent =
+          I18n.t("无法读取：") + (e.message || String(e));
+      }
+    };
+    refreshStatus();
+
+    exportBtn.onclick = async () => {
+      exportBtn.disabled = true;
+      try {
+        const r = await window.api.crashExport();
+        if (r && r.canceled) return;
+        if (!r || !r.ok) {
+          toast(
+            I18n.t("导出失败：") + ((r && r.error) || I18n.t("未知错误")),
+            "err",
+          );
+          return;
+        }
+        toast(I18n.t("诊断日志已导出，请将该文件发送给开发者"), "ok");
+        await refreshStatus();
+      } catch (e) {
+        toast(I18n.t("导出失败：") + (e.message || String(e)), "err");
+      } finally {
+        exportBtn.disabled = false;
+      }
+    };
+
+    openLogsBtn.onclick = async () => {
+      const r = await window.api.crashOpenLogs();
+      if (!r || !r.ok)
+        toast(
+          I18n.t("无法打开目录：") +
+            ((r && r.error) || I18n.t("未知错误")),
+          "err",
+        );
+    };
+
+    btnRow.appendChild(exportBtn);
+    btnRow.appendChild(openLogsBtn);
+    sec.appendChild(btnRow);
+    body.appendChild(sec);
+  }
+
   /* ── 智能能力（dsh）区块 ── */
   const dshEls = {};
   {
@@ -30911,6 +33384,8 @@ function persistAssistUi() {
       role: m.role,
       content: String(m.content || "").slice(0, 8000),
     };
+    const at = Number(m.at || m.createdAt || m.ts) || 0;
+    if (at > 0) o.at = at;
     if (m.reasoning) o.reasoning = String(m.reasoning).slice(0, 12000);
     if (Array.isArray(m.tools) && m.tools.length) {
       o.tools = m.tools.slice(0, 40).map((t) => ({
@@ -31140,7 +33615,8 @@ function renderAssistPanel() {
         );
     list.appendChild(empty);
   }
-  for (const m of msgs) list.appendChild(dshMsgBlock(m, "assist"));
+  for (let i = 0; i < msgs.length; i++)
+    list.appendChild(dshMsgBlock(msgs[i], "assist", i));
   if (S.assistRunning) {
     const row = document.createElement("div");
     row.className = "dsh-msg dsh-ai";
@@ -31170,6 +33646,7 @@ function renderAssistPanel() {
     row.appendChild(body);
     list.appendChild(row);
   }
+  scheduleHistoryCollapse(list);
   const sendBtn = $("#assistSend");
   if (sendBtn) {
     if (S.assistRunning) {
@@ -31222,7 +33699,7 @@ async function assistSend(text) {
     return;
   }
   if (!Array.isArray(S.assistMessages)) S.assistMessages = [];
-  S.assistMessages.push({ role: "user", content: t });
+  S.assistMessages.push({ role: "user", content: t, at: Date.now() });
   if (S.assistMessages.length > 80)
     S.assistMessages.splice(0, S.assistMessages.length - 80);
   S.assistRunning = true;
@@ -31268,6 +33745,7 @@ async function assistSend(text) {
     "  · 文字处理与图生文（多模态识图）尽量隔离：图像 → 专用识图/智能任务节点产出文字，再连到纯文本处理节点；不要把图像直接挂到只需文字推理的节点上，以便文字步骤选用更合适的非视觉模型。\n" +
     "  · 批次处理时：批量并行（batchMode=batch）尽量不用智能节点（agent_task / 文本智能模式），改用普通 proc_text / proc_image；聚合模式（batchMode=agg）允许使用智能节点。\n" +
     "  · 【重要】不要给 agent_task 或已开启智能的 proc_text 后面再接保存节点：智能节点本身会写文件，保存节点只会把无关的任务/对话文本落盘。保存节点只接在普通（非智能）proc_text / proc_image 之后。旧版 save_text / save_image 会自动升级为统一保存节点。\n" +
+    "  · 【重要】不要给 music_gen / video_gen 后面再接保存节点：它们在节点内填写 outputPath 直接写出音视频，无配对保存节点。\n" +
     "  · 【重要·文件交接】尽量不要把智能节点（agent_task / 智能 proc_text）作为数据输入接到其他节点：会话输出噪声大且未必含关键信息。优先让智能节点写出文档/文件，再用 wait_file（waitPath）以控制线连到后续节点阻塞执行；wait_file 无输入端子、不输出任何内容，仅监视文件防止下游提前运行，下游自行按约定路径读文件。\n" +
     "  · 【极重要·防 N² 爆 token】batchMode=batch 时每次运行只应对「当前这一条」。严禁把整批 N 张图/N 条再全部塞进每一次运行的参考图或提示词（否则 ≈N×N 次调用，巨量浪费）。需要只处理其中一项时，先接「拆分」节点选出单项再连文生图；要一次看全部才用 batchMode=agg。两条批量源不要交叉接到同一文生图。\n" +
     "  · 文生图（proc_image）每次运行只生成 1 张图，API 不支持一次出多张。prompt 里严禁写「生成多张/几张图」之类要求；需要多图时用：批量 1 条出 1 张、多个文生图节点、或 attempts×N。\n" +
@@ -31343,13 +33821,18 @@ async function assistSend(text) {
       S.assistMessages.push({
         role: "assistant",
         content: stopped || I18n.t("（已终止）"),
+        at: Date.now(),
       });
     } else {
       const body =
         (typeof final === "string" ? final : final && final.text) ||
         S.assistPending ||
         I18n.t("（已完成，无文本输出）");
-      const msg = { role: "assistant", content: stripStreamErrors(body) || body };
+      const msg = {
+        role: "assistant",
+        content: stripStreamErrors(body) || body,
+        at: Date.now(),
+      };
       const rsn =
         (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "";
       if (String(rsn).trim()) msg.reasoning = rsn;
@@ -31366,11 +33849,13 @@ async function assistSend(text) {
       S.assistMessages.push({
         role: "assistant",
         content: body || I18n.t("（已终止）"),
+        at: Date.now(),
       });
     } else {
       S.assistMessages.push({
         role: "assistant",
         content: I18n.t("助手失败：") + msg,
+        at: Date.now(),
       });
       toast(I18n.t("全局助手失败：") + msg, "err");
     }
@@ -31630,7 +34115,7 @@ function dshToolDetailsEl(t, live, nodeId) {
     al.className = "dsh-tool-sec";
     al.textContent = I18n.t("参数");
     const pre = document.createElement("pre");
-    pre.textContent = t.args;
+    pre.innerHTML = plainTextToLinkHtml(t.args);
     inner.appendChild(al);
     inner.appendChild(pre);
   }
@@ -31640,7 +34125,7 @@ function dshToolDetailsEl(t, live, nodeId) {
     rl.className = "dsh-tool-sec";
     rl.textContent = t.error ? I18n.t("结果（出错）") : live ? I18n.t("结果（进行中）") : I18n.t("结果");
     const pre = document.createElement("pre");
-    pre.textContent = rt || I18n.t("（无输出）");
+    pre.innerHTML = plainTextToLinkHtml(rt || I18n.t("（无输出）"));
     inner.appendChild(rl);
     inner.appendChild(pre);
   } else if (live) {
@@ -31669,15 +34154,272 @@ function dshToolDetailsEl(t, live, nodeId) {
   return det;
 }
 
-function dshMsgBlock(m, nodeId) {
+function histMsgKey(scope, idx, m) {
+  return (
+    String(scope || "") +
+    ":" +
+    idx +
+    ":" +
+    (m && m.role ? m.role : "") +
+    ":" +
+    String((m && m.content) || "").slice(0, 64)
+  );
+}
+
+function histBodyExceedsTwoLines(body) {
+  if (!body) return false;
+  const cs = getComputedStyle(body);
+  let lh = parseFloat(cs.lineHeight);
+  if (!Number.isFinite(lh) || lh <= 0) {
+    const fs = parseFloat(cs.fontSize);
+    lh = (Number.isFinite(fs) && fs > 0 ? fs : 12.5) * 1.75;
+  }
+  const pad =
+    (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  return body.scrollHeight > lh * 2 + pad + 1;
+}
+
+function histCollectRows(list) {
+  const rows = [];
+  if (!list) return rows;
+  for (const el of list.children) {
+    if (!el.classList || !el.classList.contains("dsh-msg")) continue;
+    rows.push(el);
+  }
+  return rows;
+}
+
+function histAssignRounds(rows) {
+  const marks = [];
+  let round = 0;
+  let openUserRound = 0;
+  for (const el of rows) {
+    const isUser = el.classList.contains("dsh-user");
+    let r;
+    if (isUser) {
+      round += 1;
+      openUserRound = round;
+      r = round;
+    } else if (openUserRound) {
+      r = openUserRound;
+      openUserRound = 0;
+    } else {
+      round += 1;
+      r = round;
+    }
+    marks.push({ el, role: isUser ? "user" : "ai", round: r });
+  }
+  return marks;
+}
+
+function ensureHistRail(list) {
+  if (!list || !list.parentNode) return null;
+  let wrap = list.parentNode;
+  if (!wrap.classList || !wrap.classList.contains("hist-scroll-wrap")) {
+    wrap = document.createElement("div");
+    wrap.className = "hist-scroll-wrap";
+    if (
+      list.classList.contains("agent-list") ||
+      list.classList.contains("assist-list") ||
+      list.classList.contains("chat-list") ||
+      list.classList.contains("agent-conv")
+    ) {
+      wrap.classList.add("is-flex-fill");
+    }
+    list.parentNode.insertBefore(wrap, list);
+    wrap.appendChild(list);
+  }
+  let rail = null;
+  for (const c of wrap.children) {
+    if (c.classList && c.classList.contains("hist-rail")) {
+      rail = c;
+      break;
+    }
+  }
+  if (!rail) {
+    rail = document.createElement("div");
+    rail.className = "hist-rail";
+    wrap.appendChild(rail);
+  }
+  if (!list._histRailBound) {
+    list._histRailBound = true;
+    const refresh = () => updateHistRail(list);
+    list.addEventListener("scroll", refresh, { passive: true });
+    if (typeof ResizeObserver === "function") {
+      try {
+        const ro = new ResizeObserver(refresh);
+        ro.observe(list);
+        ro.observe(rail);
+        list._histRailRo = ro;
+      } catch (_) {}
+    }
+  }
+  return rail;
+}
+
+function updateHistRail(list) {
+  const rail = ensureHistRail(list);
+  if (!rail) return;
+  const rows = histCollectRows(list);
+  const marks = histAssignRounds(rows);
+  const contentH = Math.max(list.scrollHeight, 1);
+  const railH = Math.max(rail.clientHeight, 1);
+  rail.innerHTML = "";
+  if (!marks.length) return;
+  for (const m of marks) {
+    const mid = m.el.offsetTop + m.el.offsetHeight / 2;
+    const y = (mid / contentH) * railH;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "hist-rail-mark hist-rail-" + m.role;
+    btn.style.top = Math.max(6, Math.min(railH - 6, y)) + "px";
+    const who = m.role === "user" ? I18n.t("你") : "AI";
+    btn.title = who + " · #" + m.round;
+    const bar = document.createElement("span");
+    bar.className = "hist-rail-bar";
+    const num = document.createElement("span");
+    num.className = "hist-rail-n";
+    num.textContent = String(m.round);
+    btn.appendChild(bar);
+    btn.appendChild(num);
+    btn.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      try {
+        m.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } catch (_) {
+        list.scrollTop = Math.max(0, m.el.offsetTop - 8);
+      }
+    });
+    rail.appendChild(btn);
+  }
+}
+
+function applyHistoryCollapse(list) {
+  if (!list) return;
+  const rows = histCollectRows(list);
+  S.histExpanded = S.histExpanded || {};
+  rows.forEach((el, i) => {
+    const body = el.querySelector(".dsh-msg-body");
+    el.classList.remove("hist-collapsed");
+    if (body) body.style.maxHeight = "";
+    const isLast = i === rows.length - 1;
+    const key = el.dataset.histKey || "";
+    if (isLast) {
+      el.classList.remove("hist-expanded");
+      el.removeAttribute("title");
+      return;
+    }
+    if (key && S.histExpanded[key]) {
+      el.classList.add("hist-expanded");
+      el.title = I18n.t("点击收起");
+      return;
+    }
+    if (!body || !histBodyExceedsTwoLines(body)) {
+      el.classList.remove("hist-expanded");
+      el.removeAttribute("title");
+      return;
+    }
+    const cs = getComputedStyle(body);
+    let lh = parseFloat(cs.lineHeight);
+    if (!Number.isFinite(lh) || lh <= 0) {
+      const fs = parseFloat(cs.fontSize);
+      lh = (Number.isFinite(fs) && fs > 0 ? fs : 12.5) * 1.75;
+    }
+    const pad =
+      (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    el.classList.add("hist-collapsed");
+    el.classList.remove("hist-expanded");
+    body.style.maxHeight = lh * 2 + pad + "px";
+    el.title = I18n.t("点击展开");
+  });
+  updateHistRail(list);
+}
+
+function scheduleHistoryCollapse(list) {
+  if (!list) return;
+  const run = () => {
+    if (list.isConnected) applyHistoryCollapse(list);
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      if (list.isConnected) run();
+      else requestAnimationFrame(run);
+    });
+  } else {
+    setTimeout(run, 0);
+  }
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("click", (ev) => {
+    const row = ev.target && ev.target.closest
+      ? ev.target.closest(".dsh-msg.hist-collapsed, .dsh-msg.hist-expanded")
+      : null;
+    if (!row) return;
+    if (
+      ev.target.closest(
+        "a, button, summary, input, textarea, select, .dsh-think, .dsh-tools, .hist-rail",
+      )
+    )
+      return;
+    const key = row.dataset.histKey || "";
+    const body = row.querySelector(".dsh-msg-body");
+    S.histExpanded = S.histExpanded || {};
+    if (row.classList.contains("hist-collapsed")) {
+      row.classList.remove("hist-collapsed");
+      row.classList.add("hist-expanded");
+      if (body) body.style.maxHeight = "";
+      if (key) S.histExpanded[key] = true;
+      row.title = I18n.t("点击收起");
+      updateHistRail(row.parentNode);
+    } else {
+      if (key) delete S.histExpanded[key];
+      const list = row.parentNode;
+      applyHistoryCollapse(list);
+    }
+  });
+}
+
+function formatMsgTime(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const d = new Date(n);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (x) => String(x).padStart(2, "0");
+  const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+  const now = new Date();
+  if (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  ) {
+    return hm;
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.getMonth() + 1 + "/" + d.getDate() + " " + hm;
+  }
+  return d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
+}
+
+function dshMsgBlock(m, nodeId, idx) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
+  if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
   const head = document.createElement("div");
   head.className = "dsh-msg-head";
   const role = document.createElement("span");
   role.className = "dsh-role";
   role.textContent = m.role === "user" ? I18n.t("你") : "AI";
   head.appendChild(role);
+  const timeTxt = formatMsgTime(m.at || m.createdAt || m.ts);
+  if (timeTxt) {
+    const timeEl = document.createElement("span");
+    timeEl.className = "dsh-msg-time";
+    timeEl.textContent = timeTxt;
+    head.appendChild(timeEl);
+  }
   if (m.role === "assistant" && m.reasoning && String(m.reasoning).trim()) {
     const det = document.createElement("details");
     det.className = "dsh-think";
@@ -31694,11 +34436,49 @@ function dshMsgBlock(m, nodeId) {
     sum.textContent = I18n.t("思考过程 · ") + String(m.reasoning).length + I18n.t(" 字");
     sum.title = I18n.t("点击展开 / 收起模型思考过程");
     const pre = document.createElement("pre");
-    pre.textContent = m.reasoning;
+    pre.innerHTML = plainTextToLinkHtml(m.reasoning);
     det.appendChild(sum);
     det.appendChild(pre);
     head.appendChild(det);
   }
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "dsh-msg-copy";
+  copyBtn.textContent = I18n.t("复制");
+  copyBtn.title = I18n.t("复制本条到剪贴板");
+  copyBtn.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  copyBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const txt = String(m.content == null ? "" : m.content);
+    const done = () => {
+      copyBtn.classList.add("ok");
+      copyBtn.textContent = I18n.t("已复制");
+      toast(I18n.t("已复制"), "ok");
+      setTimeout(() => {
+        copyBtn.classList.remove("ok");
+        copyBtn.textContent = I18n.t("复制");
+      }, 1200);
+    };
+    const fail = () => toast(I18n.t("复制失败"), "err");
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(done).catch(fail);
+      } else if (window.api && window.api.clipboardWriteText) {
+        Promise.resolve(window.api.clipboardWriteText(txt))
+          .then((r) => {
+            if (r && r.ok === false) fail();
+            else done();
+          })
+          .catch(fail);
+      } else {
+        fail();
+      }
+    } catch (_) {
+      fail();
+    }
+  });
+  head.appendChild(copyBtn);
   row.appendChild(head);
   if (m.role === "assistant" && Array.isArray(m.tools) && m.tools.length) {
     const chips = document.createElement("div");
@@ -31708,7 +34488,7 @@ function dshMsgBlock(m, nodeId) {
   }
   const body = document.createElement("div");
   body.className = "dsh-msg-body";
-  if (m.role === "user") body.textContent = m.content;
+  if (m.role === "user") body.innerHTML = plainTextToLinkHtml(m.content);
   else body.innerHTML = '<div class="md">' + renderMarkdown(m.content) + "</div>";
   row.appendChild(body);
   return row;
@@ -31728,7 +34508,8 @@ function renderAgentSession() {
       I18n.t("这是<b>智能会话</b>画布:可读文件 / 联网 / 执行命令，也可修改当前画布（会弹窗确认，拒绝即停止）。画布上的智能节点不能改图。直接描述你要完成的任务即可。");
     list.appendChild(hint);
   }
-  for (const m of st.messages) list.appendChild(dshMsgBlock(m));
+  for (let i = 0; i < st.messages.length; i++)
+    list.appendChild(dshMsgBlock(st.messages[i], st.id || "agent", i));
   if (running) {
     const row = document.createElement("div");
     row.className = "dsh-msg dsh-ai";
@@ -31767,6 +34548,7 @@ function renderAgentSession() {
     row.appendChild(body);
     list.appendChild(row);
   }
+  scheduleHistoryCollapse(list);
   list.scrollTop = list.scrollHeight;
   const ws = $("#agentWsInput");
   if (ws && document.activeElement !== ws) ws.value = st.workspace || "";
@@ -32100,7 +34882,7 @@ async function agentSessionSend(text) {
     toast(sup.reason, "warn");
     return;
   }
-  st.messages.push({ role: "user", content: t });
+  st.messages.push({ role: "user", content: t, at: Date.now() });
   if (st.messages.filter((m) => m.role === "user").length === 1) {
     st.title = t.slice(0, 24) + (t.length > 24 ? "…" : "");
   }
@@ -32199,11 +34981,13 @@ async function agentSessionSend(text) {
       st.messages.push({
         role: "assistant",
         content: body || I18n.t("（已终止）"),
+        at: Date.now(),
       });
     } else {
       const msg = {
         role: "assistant",
         content: final || st._pending || I18n.t("（无输出）"),
+        at: Date.now(),
       };
       const rsn =
         (S.thinking && S.thinking.agentSession && S.thinking.agentSession[0]) || "";
@@ -32219,11 +35003,13 @@ async function agentSessionSend(text) {
       st.messages.push({
         role: "assistant",
         content: body || I18n.t("（已终止）"),
+        at: Date.now(),
       });
     } else {
       st.messages.push({
         role: "assistant",
         content: I18n.t("（错误：") + errMsg + "）",
+        at: Date.now(),
       });
       toast(I18n.t("智能会话失败：") + errMsg, "err");
     }
@@ -32241,7 +35027,7 @@ async function agentSessionSend(text) {
 
 /* ============ 启动 ============ */
 
-/* 渲染层错误自诊断：未捕获错误显示为 toast + 状态栏，便于定位 */
+/* 渲染层错误自诊断：toast + 写入主进程诊断日志，便于导出提交 */
 window.addEventListener("error", (ev) => {
   const msg =
     (ev.message || "") +
@@ -32252,6 +35038,18 @@ window.addEventListener("error", (ev) => {
     toast(I18n.t("渲染错误：") + msg.slice(0, 200), "err");
   } catch {}
   console.error("renderer uncaught:", ev.error || msg);
+  try {
+    if (window.api && window.api.crashLogRenderer) {
+      window.api.crashLogRenderer({
+        kind: "renderer-error",
+        message: ev.message || String(ev.error || msg),
+        stack: ev.error && ev.error.stack ? ev.error.stack : "",
+        source: ev.filename
+          ? String(ev.filename) + ":" + ev.lineno + ":" + ev.colno
+          : "",
+      });
+    }
+  } catch {}
 });
 window.addEventListener("unhandledrejection", (ev) => {
   const r = ev.reason;
@@ -32260,6 +35058,15 @@ window.addEventListener("unhandledrejection", (ev) => {
     toast(I18n.t("未处理异常：") + msg.slice(0, 200), "err");
   } catch {}
   console.error("renderer unhandledRejection:", r);
+  try {
+    if (window.api && window.api.crashLogRenderer) {
+      window.api.crashLogRenderer({
+        kind: "renderer-unhandledRejection",
+        message: msg,
+        stack: r && r.stack ? r.stack : "",
+      });
+    }
+  } catch {}
 });
 
 /* 保证默认服务商存在（DeepSeek 文本 / GPT Image 2 图像），并置于列表首位 */
@@ -32812,6 +35619,7 @@ async function init() {
     setAssistOpen(S.assistOpen, false);
     applyAssistWidth(S.assistW, false);
     bindAssistResize();
+    bindOpenableContentClicks();
     setAssistLive2d(false, false); /* Live2D 入口已隐藏，占位默认关闭 */
     const aBtn = $("#btnAssist");
     if (aBtn) aBtn.onclick = toggleAssist;

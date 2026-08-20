@@ -100,8 +100,17 @@ html, body {
   border-color: var(--orange);
 }
 .slot:hover { filter: brightness(1.12); }
+.list-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--bg);
+}
 .list {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: 10px 12px;
@@ -113,9 +122,84 @@ html, body {
   gap: 10px;
   background: var(--bg);
 }
-.msg { max-width: 82%; display: flex; }
-.msg.user { margin-left: auto; justify-content: flex-end; }
-.msg.assistant { margin-right: auto; }
+.hist-rail {
+  flex: none;
+  width: 18px;
+  position: relative;
+  border-left: 1px solid var(--bd);
+  background: rgba(0,0,0,.22);
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+.hist-rail-mark {
+  position: absolute;
+  left: 0; right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 0; margin: 0; border: 0;
+  background: transparent;
+  cursor: pointer;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+.hist-rail-bar {
+  display: block;
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: #56d0ff;
+}
+.hist-rail-mark.hist-rail-user .hist-rail-bar { background: #95ec69; }
+.hist-rail-mark.hist-rail-ai .hist-rail-bar { background: #56d0ff; }
+.hist-rail-n {
+  font-size: 8px;
+  color: var(--tx2);
+  font-family: Consolas, "Courier New", monospace;
+  transform: scale(.92);
+}
+.hist-rail-mark:hover .hist-rail-bar { filter: brightness(1.25); height: 3px; }
+.hist-rail-mark:hover .hist-rail-n { color: var(--tx); }
+.msg { max-width: 82%; display: flex; flex-direction: column; position: relative; }
+.msg.user { margin-left: auto; align-items: flex-end; }
+.msg.assistant { margin-right: auto; align-items: flex-start; }
+.msg-copy {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  z-index: 2;
+  border: 1px solid var(--bd);
+  background: var(--panel2);
+  color: var(--tx2);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.35;
+  opacity: 0.72;
+}
+.msg.user .msg-copy { right: 0; left: auto; }
+.msg.assistant .msg-copy { right: 0; }
+.msg .meta {
+  font-size: 10px;
+  color: var(--tx2);
+  margin: 0 2px 3px;
+  opacity: 0.85;
+}
+.msg.user .meta { text-align: right; }
+.msg.assistant .meta { text-align: left; }
+.msg-copy:hover {
+  opacity: 1;
+  border-color: var(--orange);
+  color: #fff;
+  background: rgba(255,143,46,0.22);
+}
+.msg-copy.ok {
+  opacity: 1;
+  border-color: var(--green);
+  color: var(--green);
+}
 .msg .bubble {
   display: inline-block;
   padding: 8px 10px;
@@ -189,6 +273,32 @@ html, body {
 .msg.assistant .bubble.md th { background: #f3f3f3; }
 .msg.assistant .bubble.md hr { border: none; border-top: 1px dashed #ccc; margin: 8px 0; }
 .msg.assistant .bubble.md img { max-width: 100%; }
+.msg.hist-collapsed { cursor: pointer; }
+.msg.hist-collapsed .bubble {
+  overflow: hidden;
+  position: relative;
+}
+.msg.hist-collapsed .bubble::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: 0;
+  height: 1px;
+  background: rgba(148, 158, 172, .55);
+  pointer-events: none;
+  animation: histCutBlink 1.15s ease-in-out infinite;
+}
+.msg.hist-collapsed:hover .bubble::after {
+  background: rgba(90, 100, 115, .9);
+  box-shadow: 0 0 5px rgba(120, 130, 145, .45);
+  animation: none;
+  opacity: 1;
+}
+@keyframes histCutBlink {
+  0%, 100% { opacity: .28; }
+  50% { opacity: 1; }
+}
 .msg.sys, .msg.status {
   max-width: 100%;
   align-self: center;
@@ -284,7 +394,10 @@ html, body {
         <button type="button" class="ok" id="provOk">保存</button>
       </div>
     </div>
-    <div class="list" id="list"></div>
+    <div class="list-wrap">
+      <div class="list" id="list"></div>
+      <div class="hist-rail" id="histRail"></div>
+    </div>
     <div class="foot">
       <input id="input" type="text" placeholder="和我说点什么…" maxlength="2000">
       <button type="button" id="btnSend">发送</button>

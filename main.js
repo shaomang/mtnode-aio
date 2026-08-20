@@ -21,6 +21,7 @@ const fs = require("fs");
 const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
+const { pathToFileURL } = require("url");
 /* gifenc 延迟加载：模块缺失时仅影响 GIF 生成，不会导致启动崩溃 */
 let _gifenc = null;
 function gifenc() {
@@ -134,32 +135,24 @@ function win() {
   return mainWin;
 }
 
-/* 错误自诊断：未捕获异常写入日志 + 弹窗显示，避免静默崩溃 */
+const crashReport = require("./crash-report");
+crashReport.init({
+  getDataDir: DATA,
+  getVersion: () => {
+    try {
+      return appVersion();
+    } catch {
+      return app.getVersion();
+    }
+  },
+  t: (s) => I18n.t(s),
+});
+/* 尽早挂上，避免启动阶段异常漏记 */
+crashReport.installProcessHandlers();
+
 function errLog(p) {
-  try {
-    fs.appendFileSync(
-      join(DATA(), "error.log"),
-      "[" + new Date().toISOString() + "] " + p + "\n",
-    );
-  } catch {}
+  crashReport.errLog(p);
 }
-process.on("uncaughtException", (err) => {
-  errLog("main uncaught: " + (err && err.stack ? err.stack : err));
-  if (mainWin && !mainWin.isDestroyed()) {
-    dialog.showErrorBox(
-      I18n.t("MTNode AI编排器 发生错误"),
-      String(err && err.message ? err.message : err) +
-        I18n.t("\n\n详细信息已写入：") +
-        join(DATA(), "error.log"),
-    );
-  }
-});
-process.on("unhandledRejection", (reason) => {
-  errLog(
-    "main unhandledRejection: " +
-      (reason && reason.stack ? reason.stack : reason),
-  );
-});
 
 /* ---------------- 磁盘工具 ---------------- */
 
@@ -210,6 +203,12 @@ function appVersion() {
   }
 }
 ipcMain.handle("app:version", () => ({ ok: true, version: appVersion() }));
+ipcMain.handle("crash:status", () => crashReport.status());
+ipcMain.handle("crash:export", async () => crashReport.exportDiagnosticBundle({}));
+ipcMain.handle("crash:openLogs", () => crashReport.openLogsFolder());
+ipcMain.handle("crash:logRenderer", (e, payload) =>
+  crashReport.logRendererError(payload || {}),
+);
 function loadMarkdownPack(root, id, locale) {
   const safe = String(id || "").replace(/[^a-z0-9_-]/gi, "");
   if (!safe) return { ok: false, error: "bad id" };
@@ -648,8 +647,139 @@ ipcMain.handle("shell:openPath", async (e, p) => {
   }
 });
 ipcMain.handle("shell:openExternal", (e, url) => {
-  if (typeof url === "string" && /^https?:\/\//.test(url))
+  if (typeof url === "string" && /^(https?:\/\/|mailto:)/i.test(url))
     shell.openExternal(url);
+});
+
+/* 应用内嵌套对话框打开链接/文件（modal + parent），关闭后回到主窗，避免主窗被导航走 */
+let contentViewWin = null;
+const CONTENT_VIEW_EXTERNAL_EXT = new Set([
+  ".exe",
+  ".msi",
+  ".bat",
+  ".cmd",
+  ".ps1",
+  ".lnk",
+  ".com",
+  ".app",
+  ".dmg",
+]);
+
+function closeContentViewWin() {
+  if (contentViewWin && !contentViewWin.isDestroyed()) {
+    try {
+      contentViewWin.close();
+    } catch {}
+  }
+  contentViewWin = null;
+}
+
+function openContentViewDialog(opts) {
+  const parent = opts && opts.parent;
+  const targetUrl = String((opts && opts.url) || "").trim();
+  if (!parent || parent.isDestroyed())
+    return { ok: false, error: "no parent window" };
+  if (!targetUrl) return { ok: false, error: "empty url" };
+
+  closeContentViewWin();
+
+  let width = 960;
+  let height = 720;
+  try {
+    const wa = screen.getPrimaryDisplay().workAreaSize;
+    width = Math.min(1100, Math.max(640, Math.round(wa.width * 0.82)));
+    height = Math.min(820, Math.max(480, Math.round(wa.height * 0.82)));
+  } catch {}
+
+  contentViewWin = new BrowserWindow({
+    width,
+    height,
+    parent,
+    modal: true,
+    show: false,
+    title: String((opts && opts.title) || I18n.t("预览") || "预览"),
+    autoHideMenuBar: true,
+    backgroundColor: "#0d1016",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  contentViewWin.setMenu(null);
+  contentViewWin.webContents.setWindowOpenHandler(({ url }) => {
+    const u = String(url || "");
+    if (/^https?:\/\//i.test(u) && contentViewWin && !contentViewWin.isDestroyed()) {
+      contentViewWin.loadURL(u).catch(() => {});
+    }
+    return { action: "deny" };
+  });
+  contentViewWin.on("closed", () => {
+    contentViewWin = null;
+  });
+  contentViewWin.once("ready-to-show", () => {
+    if (contentViewWin && !contentViewWin.isDestroyed()) contentViewWin.show();
+  });
+  contentViewWin.loadURL(targetUrl).catch(() => {});
+  return { ok: true, dialog: true };
+}
+
+ipcMain.handle("shell:openInAppDialog", async (e, opts) => {
+  opts = opts || {};
+  const parent = BrowserWindow.fromWebContents(e.sender) || mainWin;
+  const kind = String(opts.kind || "").trim();
+  let target = String(opts.target || "").trim();
+  if (!target) return { ok: false, error: "empty" };
+
+  if (kind === "url" || /^https?:\/\//i.test(target)) {
+    if (!/^https?:\/\//i.test(target))
+      return { ok: false, error: "unsupported url" };
+    return openContentViewDialog({
+      parent,
+      url: target,
+      title: target,
+    });
+  }
+
+  if (kind === "mailto" || /^mailto:/i.test(target)) {
+    if (/^mailto:/i.test(target)) shell.openExternal(target);
+    return { ok: true, external: true };
+  }
+
+  if (/^file:/i.test(target)) {
+    try {
+      let s = target.replace(/^file:\/\//i, "");
+      if (/^\/[A-Za-z]:/.test(s)) s = s.slice(1);
+      target = decodeURIComponent(s);
+    } catch {
+      return { ok: false, error: "bad file url" };
+    }
+  }
+
+  let st;
+  try {
+    st = fs.statSync(target);
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || "not found" };
+  }
+
+  if (st.isDirectory()) {
+    const err = await shell.openPath(target);
+    return err ? { ok: false, error: err } : { ok: true, external: true };
+  }
+
+  const ext = path.extname(target).toLowerCase();
+  if (CONTENT_VIEW_EXTERNAL_EXT.has(ext)) {
+    const err = await shell.openPath(target);
+    return err ? { ok: false, error: err } : { ok: true, external: true };
+  }
+
+  return openContentViewDialog({
+    parent,
+    url: pathToFileURL(path.resolve(target)).href,
+    title: path.basename(target),
+  });
 });
 ipcMain.handle("clipboard:readText", () => clipboard.readText());
 
@@ -2338,6 +2468,7 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   migrateLegacyWorkflows();
   applyMainLocale(localeFromDisk());
+  crashReport.installAppHandlers();
   /* dsh 网关随应用启动(幂等,失败不阻塞应用;引擎自愈见 main-dsh.js) */
   dsh().ensureStarted().catch(() => {});
   mainWin = new BrowserWindow({
@@ -2356,7 +2487,33 @@ app.whenReady().then(() => {
     },
   });
   mainWin.loadFile(join(__dirname, "renderer", "index.html"));
+  /* 禁止主窗被链接导航走；改为嵌套 modal 对话框打开 */
+  mainWin.webContents.on("will-navigate", (ev, url) => {
+    const cur = mainWin.webContents.getURL();
+    if (url && url !== cur) {
+      ev.preventDefault();
+      if (/^https?:\/\//i.test(url) || /^file:/i.test(url)) {
+        openContentViewDialog({
+          parent: mainWin,
+          url,
+          title: url,
+        });
+      }
+    }
+  });
+  mainWin.webContents.setWindowOpenHandler(({ url }) => {
+    const u = String(url || "");
+    if (/^https?:\/\//i.test(u) || /^file:/i.test(u)) {
+      openContentViewDialog({ parent: mainWin, url: u, title: u });
+    } else if (/^mailto:/i.test(u)) {
+      try {
+        shell.openExternal(u);
+      } catch {}
+    }
+    return { action: "deny" };
+  });
   mainWin.on("closed", () => {
+    closeContentViewWin();
     mainWin = null;
     try { shutdownAppPlugins(); } catch {}
   });

@@ -22,7 +22,8 @@ const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const PLUGIN_ID = "minimax-h3";
 const DEFAULT_PORT = 8188;
 const DISK_HINT_GB = 70;
-const JOB_LOCK_STALE_MS = 6 * 60 * 60 * 1000;
+const JOB_LOCK_STALE_MS = 45 * 60 * 1000;
+const GENERATE_MAX_MS = 60 * 60 * 1000;
 
 const MODELS = {
   fl2va: "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
@@ -51,7 +52,7 @@ let installCancel = false;
 let gpuTimer = null;
 /** @type {import('child_process').ChildProcess|null} */
 let backendProc = null;
-/** @type {{ nodeId: string, abort?: boolean, promptId?: string }|null} */
+/** @type {{ nodeId: string, abort?: boolean, promptId?: string, req?: import('http').ClientRequest|null }|null} */
 let activeGenerate = null;
 
 /** dsh.run 鉴权：复用 MTNode 设置里的模型 API Key（非环境变量 / 非强制 deepseek-official）。 */
@@ -321,8 +322,101 @@ function refreshStaleLock() {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+function sleepAbortable(ms) {
+  const step = 200;
+  return new Promise((resolve, reject) => {
+    let left = Math.max(0, Number(ms) || 0);
+    const tick = () => {
+      if (activeGenerate && activeGenerate.abort) {
+        reject(new Error("cancelled"));
+        return;
+      }
+      if (left <= 0) {
+        resolve();
+        return;
+      }
+      const wait = Math.min(step, left);
+      left -= wait;
+      setTimeout(tick, wait);
+    };
+    tick();
+  });
+}
 
-function httpJson(method, url, body, timeoutMs) {
+/** ComfyUI WS 真实进度（采样步 / 当前节点）；不可用则返回 null。 */
+function openComfyProgressWs(port, clientId, nodeId) {
+  const WS = typeof WebSocket !== "undefined" ? WebSocket : null;
+  if (!WS) {
+    appendConsole("[progress] WebSocket unavailable — history poll only");
+    return null;
+  }
+  let ws = null;
+  let lastPct = 15;
+  try {
+    ws = new WS(`ws://127.0.0.1:${Number(port)}/ws?clientId=${encodeURIComponent(clientId)}`);
+  } catch (e) {
+    appendConsole("[progress] ws open failed: " + String((e && e.message) || e));
+    return null;
+  }
+  ws.onmessage = (ev) => {
+    let msg = null;
+    try {
+      msg = JSON.parse(String(ev.data || ""));
+    } catch {
+      return;
+    }
+    if (!msg || !msg.type) return;
+    if (msg.type === "progress" && msg.data) {
+      const v = Number(msg.data.value) || 0;
+      const max = Math.max(1, Number(msg.data.max) || 1);
+      lastPct = Math.min(92, 15 + Math.floor((v / max) * 75));
+      emitProgress({
+        phase: "generate",
+        nodeId,
+        message: "采样 " + v + "/" + max,
+        pct: lastPct,
+        progress: { value: v, max },
+      });
+    } else if (msg.type === "executing") {
+      const n = msg.data && msg.data.node;
+      emitProgress({
+        phase: "generate",
+        nodeId,
+        message: n ? "执行节点 " + n : "排队中…",
+        pct: lastPct,
+      });
+    }
+  };
+  ws.onerror = () => {};
+  return {
+    close() {
+      try {
+        ws.close();
+      } catch {}
+    },
+  };
+}
+
+function attachAbortableReq(req) {
+  if (!activeGenerate) return;
+  activeGenerate.req = req;
+  const clear = () => {
+    if (activeGenerate && activeGenerate.req === req) activeGenerate.req = null;
+  };
+  req.on("close", clear);
+  req.on("error", clear);
+}
+
+function destroyActiveGenerateReq() {
+  if (!activeGenerate || !activeGenerate.req) return;
+  try {
+    activeGenerate.req.destroy(new Error("cancelled"));
+  } catch {}
+  activeGenerate.req = null;
+}
+
+function httpJson(method, url, body, timeoutMs, opts) {
+  opts = opts || {};
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const data = body != null ? JSON.stringify(body) : null;
@@ -339,17 +433,38 @@ function httpJson(method, url, body, timeoutMs) {
       },
       (res) => {
         let buf = "";
-        res.on("data", (c) => (buf += c));
-        res.on("end", () => {
-          try {
-            resolve({ status: res.statusCode, json: JSON.parse(buf), raw: buf });
-          } catch {
-            resolve({ status: res.statusCode, json: null, raw: buf });
+        let settled = false;
+        const finish = (fn) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+        res.on("data", (c) => {
+          buf += c;
+          if (opts.track !== false && activeGenerate && activeGenerate.abort) {
+            try {
+              req.destroy();
+            } catch {}
+            finish(() => reject(new Error("cancelled")));
           }
+        });
+        res.on("end", () => {
+          finish(() => {
+            try {
+              resolve({ status: res.statusCode, json: JSON.parse(buf), raw: buf });
+            } catch {
+              resolve({ status: res.statusCode, json: null, raw: buf });
+            }
+          });
         });
       },
     );
-    req.on("error", reject);
+    if (opts.track !== false) attachAbortableReq(req);
+    req.on("error", (e) => {
+      if (opts.track !== false && activeGenerate && activeGenerate.abort)
+        reject(new Error("cancelled"));
+      else reject(e);
+    });
     req.on("timeout", () => {
       req.destroy();
       reject(new Error("timeout"));
@@ -357,6 +472,30 @@ function httpJson(method, url, body, timeoutMs) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+async function interruptComfy(port, promptId) {
+  const p = Number(port) || DEFAULT_PORT;
+  const base = `http://127.0.0.1:${p}`;
+  appendConsole("[cancel] comfy interrupt" + (promptId ? " prompt=" + promptId : ""));
+  try {
+    await httpJson("POST", `${base}/interrupt`, {}, 8000, { track: false });
+  } catch {}
+  const pid = String(promptId || "").trim();
+  if (pid) {
+    try {
+      await httpJson(
+        "POST",
+        `${base}/queue`,
+        { delete: [pid] },
+        8000,
+        { track: false },
+      );
+    } catch {}
+  }
+  try {
+    await httpJson("POST", `${base}/queue`, { clear: true }, 8000, { track: false });
+  } catch {}
 }
 
 async function probeComfy(port) {
@@ -794,6 +933,30 @@ async function stopBackend() {
   return { ok: true };
 }
 
+/** 任务用：确保 ComfyUI 可用 */
+async function ensureBackendReadyForJob() {
+  const started = await startBackend();
+  if (!started || !started.ok) {
+    return { ok: false, error: (started && started.error) || "backend_start_failed" };
+  }
+  const port = Number(started.port) || Number(loadConfig().port) || DEFAULT_PORT;
+  if (await probeComfy(port)) return { ok: true, port, reused: !!started.reused };
+  const deadline = Date.now() + 300000;
+  appendConsole("[job] waiting for comfy on :" + port);
+  while (Date.now() < deadline) {
+    if (await probeComfy(port)) {
+      appendConsole("[job] comfy ready :" + port);
+      return { ok: true, port };
+    }
+    await sleep(2000);
+    const meta = loadPidMeta();
+    if (meta && meta.pid && !isAlivePid(meta.pid) && !meta.external) {
+      return { ok: false, error: "backend_exited" };
+    }
+  }
+  return { ok: false, error: "backend_start_timeout" };
+}
+
 async function startBackend() {
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
@@ -817,7 +980,27 @@ async function startBackend() {
   const meta = loadPidMeta();
   if (meta && isAlivePid(meta.pid)) {
     saveConfig({ wantRunning: true });
-    return { ok: true, reused: true, port, pid: meta.pid };
+    const waitUntil = Date.now() + 300000;
+    appendConsole("backend pid alive, waiting for comfy :" + port);
+    while (Date.now() < waitUntil) {
+      if (await probeComfy(port)) {
+        appendConsole("comfy ready (reused pid) :" + port);
+        return { ok: true, reused: true, port, pid: meta.pid };
+      }
+      await sleep(2000);
+      if (!isAlivePid(meta.pid)) {
+        appendConsole("backend pid died while waiting for comfy");
+        clearPidMeta();
+        break;
+      }
+    }
+    if (await probeComfy(port)) {
+      return { ok: true, reused: true, port, pid: meta.pid };
+    }
+    appendConsole("comfy not up with live pid — killing stale process and respawning");
+    await killPidTree(meta.pid);
+    clearPidMeta();
+    backendProc = null;
   }
 
   const comfy = comfyDir(installDir);
@@ -855,7 +1038,7 @@ async function startBackend() {
       return { ok: false, error: "backend_exited" };
     }
   }
-  return { ok: true, pid: child.pid, port, starting: true };
+  return { ok: false, error: "backend_start_timeout", pid: child.pid, port, starting: true };
 }
 
 function uninstallPreview() {
@@ -1174,10 +1357,35 @@ async function copyOutputToDir(comfy, filename, subfolder, exportDir, preferredN
   mk(exportDir);
   const src = join(comfy, "output", subfolder || "", filename);
   if (!fs.existsSync(src)) throw new Error("output_missing: " + src);
-  const destName = preferredName || path.basename(filename);
-  const dest = join(exportDir, destName);
-  fs.copyFileSync(src, dest);
-  return dest;
+  let destName = preferredName || path.basename(filename);
+  if (!/\.(mp4|webm|mov)$/i.test(destName)) {
+    const srcExt = path.extname(filename) || ".mp4";
+    destName += srcExt;
+  }
+  const uniq = uniqueFileInDir(exportDir, destName, path.extname(destName) || ".mp4");
+  fs.copyFileSync(src, uniq.path);
+  if (uniq.renamed) {
+    appendConsole("[job] target existed → saved as " + uniq.filename);
+  }
+  return uniq.path;
+}
+
+function uniqueFileInDir(dir, preferredName, defaultExt) {
+  mk(dir);
+  let name = String(preferredName || "").trim() || "out" + (defaultExt || "");
+  const extMatch = name.match(/(\.[a-z0-9]+)$/i);
+  const ext = (extMatch && extMatch[1]) || defaultExt || "";
+  const stem = ext ? name.slice(0, -ext.length) : name;
+  const baseStem = stem || "out";
+  if (!extMatch && ext) name = baseStem + ext;
+  let dest = join(dir, name);
+  if (!fs.existsSync(dest)) return { path: dest, filename: name, renamed: false };
+  for (let i = 1; i < 10000; i++) {
+    const fn = baseStem + "_" + i + ext;
+    dest = join(dir, fn);
+    if (!fs.existsSync(dest)) return { path: dest, filename: fn, renamed: true };
+  }
+  throw new Error("unique_filename_exhausted");
 }
 
 async function generateVideo(params) {
@@ -1185,32 +1393,47 @@ async function generateVideo(params) {
   const nodeId = String(params.nodeId || "");
   if (!nodeId) return { ok: false, error: "missing_node_id" };
 
-  const lock = refreshStaleLock();
-  if (lock && lock.nodeId && lock.nodeId !== nodeId) {
+  const existingLock = refreshStaleLock();
+  if (existingLock && existingLock.nodeId && existingLock.nodeId !== nodeId) {
+    const msg = "已有视频生成任务进行中，请等待完成后再试（禁止并行）";
+    appendConsole("[job] busy_other_node: " + (existingLock.nodeId || ""));
     return {
       ok: false,
       error: "busy_other_node",
-      lock,
-      message: "已有视频生成任务进行中，请等待完成后再试（禁止并行）",
+      lock: existingLock,
+      message: msg,
     };
   }
 
-  const cfg = loadConfig();
-  const port = Number(cfg.port) || DEFAULT_PORT;
-  if (!(await probeComfy(port))) {
-    return { ok: false, error: "backend_not_running" };
-  }
-
-  writeLock({
-    nodeId,
-    workflowId: params.workflowId || "",
-    startedAt: Date.now(),
-    status: "running",
-  });
-  activeGenerate = { nodeId, abort: false };
-  emitProgress({ phase: "generate", nodeId, message: "准备工作流…", pct: 5 });
-
   try {
+    appendConsole("[job] start → generate → verify → stop");
+    emitProgress({
+      phase: "generate",
+      nodeId,
+      message: "正在启动后端…",
+      pct: 2,
+    });
+    const ready = await ensureBackendReadyForJob();
+    if (!ready.ok) {
+      const err = ready.error || "backend_start_failed";
+      appendConsole("[job] backend start failed: " + err);
+      emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
+      return { ok: false, error: err, message: "启动后端失败：" + err };
+    }
+
+    const cfg = loadConfig();
+    const port = Number(ready.port) || Number(cfg.port) || DEFAULT_PORT;
+    const jobStartedAt = Date.now();
+
+    writeLock({
+      nodeId,
+      workflowId: params.workflowId || "",
+      startedAt: jobStartedAt,
+      status: "running",
+    });
+    activeGenerate = { nodeId, abort: false, promptId: "", req: null };
+    emitProgress({ phase: "generate", nodeId, message: "准备工作流…", pct: 5 });
+
     const installDir = cfg.installDir;
     const comfy = comfyDir(installDir);
     const sig = projectSignals(installDir);
@@ -1275,59 +1498,99 @@ async function generateVideo(params) {
     emitProgress({ phase: "generate", nodeId, message: "提交 ComfyUI…", pct: 12 });
     appendConsole("comfy prompt submit mode=" + mode);
 
-    const posted = await httpJson("POST", `http://127.0.0.1:${port}/prompt`, {
-      prompt: promptGraph,
-      client_id: clientId,
-    }, 60000);
+    const posted = await httpJson(
+      "POST",
+      `http://127.0.0.1:${port}/prompt`,
+      {
+        prompt: promptGraph,
+        client_id: clientId,
+      },
+      60000,
+    );
     if (!posted.json || posted.json.error) {
-      throw new Error((posted.json && posted.json.error && posted.json.error.message) || "prompt_failed");
+      throw new Error(
+        (posted.json && posted.json.error && posted.json.error.message) || "prompt_failed",
+      );
     }
     const promptId = posted.json.prompt_id;
     activeGenerate.promptId = promptId;
     appendConsole("prompt_id=" + promptId);
 
-    const deadline = Date.now() + 60 * 60 * 1000;
+    const wsWatch = openComfyProgressWs(port, clientId, nodeId);
+
+    const deadline = Date.now() + GENERATE_MAX_MS;
     let videoMeta = null;
-    while (Date.now() < deadline) {
-      if (activeGenerate && activeGenerate.abort) {
-        try {
-          await httpJson("POST", `http://127.0.0.1:${port}/interrupt`, {}, 10000);
-        } catch {}
-        throw new Error("cancelled");
-      }
-      const hist = await httpJson("GET", `http://127.0.0.1:${port}/history/${encodeURIComponent(promptId)}`, null, 20000);
-      const item = hist.json && hist.json[promptId];
-      if (item) {
-        const st = item.status || {};
-        if (st.status_str === "error" || (st.messages || []).some((m) => m && m[0] === "execution_error")) {
-          throw new Error("comfy_execution_error");
+    try {
+      while (Date.now() < deadline) {
+        if (activeGenerate && activeGenerate.abort) {
+          try {
+            await interruptComfy(port, promptId);
+          } catch {}
+          throw new Error("cancelled");
         }
-        if (st.completed || item.outputs) {
-          const outputs = item.outputs || {};
-          for (const o of Object.values(outputs)) {
-            const vids = (o && o.videos) || [];
-            if (vids.length) {
-              videoMeta = vids[0];
-              break;
+        let hist;
+        try {
+          hist = await httpJson(
+            "GET",
+            `http://127.0.0.1:${port}/history/${encodeURIComponent(promptId)}`,
+            null,
+            20000,
+          );
+        } catch (e) {
+          const msg = String((e && e.message) || e);
+          if (msg === "cancelled" || (activeGenerate && activeGenerate.abort))
+            throw new Error("cancelled");
+          throw e;
+        }
+        const item = hist.json && hist.json[promptId];
+        if (item) {
+          const st = item.status || {};
+          if (
+            st.status_str === "error" ||
+            (st.messages || []).some((m) => m && m[0] === "execution_error")
+          ) {
+            throw new Error("comfy_execution_error");
+          }
+          if (st.completed || item.outputs) {
+            const outputs = item.outputs || {};
+            for (const o of Object.values(outputs)) {
+              const vids = (o && o.videos) || [];
+              if (vids.length) {
+                videoMeta = vids[0];
+                break;
+              }
+              const imgs = (o && o.images) || [];
+              const mp4 = imgs.find((x) => x && /\.mp4$/i.test(x.filename || ""));
+              if (mp4) {
+                videoMeta = mp4;
+                break;
+              }
             }
-            const imgs = (o && o.images) || [];
-            const mp4 = imgs.find((x) => x && /\.mp4$/i.test(x.filename || ""));
-            if (mp4) {
-              videoMeta = mp4;
+            if (videoMeta) break;
+            if (st.completed) throw new Error("no_video_output");
+          }
+          /* history 中的真实 progress（若有） */
+          const msgs = st.messages || [];
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i];
+            if (m && m[0] === "progress" && m[1]) {
+              const v = Number(m[1].value) || 0;
+              const max = Math.max(1, Number(m[1].max) || 1);
+              const pct = Math.min(92, 15 + Math.floor((v / max) * 75));
+              emitProgress({
+                phase: "generate",
+                nodeId,
+                message: "采样 " + v + "/" + max,
+                pct,
+              });
               break;
             }
           }
-          if (videoMeta) break;
-          if (st.completed) throw new Error("no_video_output");
         }
+        await sleepAbortable(2500);
       }
-      emitProgress({
-        phase: "generate",
-        nodeId,
-        message: "生成中…",
-        pct: Math.min(90, 15 + Math.floor(((Date.now() - (lock && lock.startedAt)) / 600000) * 70)),
-      });
-      await sleep(2500);
+    } finally {
+      if (wsWatch) wsWatch.close();
     }
     if (!videoMeta) throw new Error("generate_timeout");
 
@@ -1335,29 +1598,97 @@ async function generateVideo(params) {
     const exportDir = String(params.outputDir || "").trim();
     if (exportDir) {
       const preferred = String(params.filename || "").trim() || videoMeta.filename;
-      outPath = await copyOutputToDir(comfy, videoMeta.filename, videoMeta.subfolder || "", exportDir, preferred);
+      outPath = await copyOutputToDir(
+        comfy,
+        videoMeta.filename,
+        videoMeta.subfolder || "",
+        exportDir,
+        preferred,
+      );
     }
+
+    if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
+    if (!outPath || !fs.existsSync(outPath)) {
+      throw new Error("output_file_missing: " + (outPath || ""));
+    }
+    let sz = 0;
+    try {
+      sz = fs.statSync(outPath).size || 0;
+    } catch {}
+    if (sz < 64) throw new Error("output_file_empty_or_too_small: " + outPath);
 
     clearLock();
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: "完成", pct: 100, done: true });
-    return { ok: true, path: outPath, message: "Saved: " + outPath };
+    appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
+    return { ok: true, path: outPath, message: "Saved: " + outPath, bytes: sz };
   } catch (e) {
+    const err = String((e && e.message) || e);
+    appendConsole("[job] error: " + err);
     clearLock();
     activeGenerate = null;
-    const err = String((e && e.message) || e);
-    emitProgress({ phase: "generate", nodeId, message: err, error: true });
-    return { ok: false, error: err };
+    emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
+    return { ok: false, error: err, message: err };
+  } finally {
+    appendConsole("[job] stopping backend after job");
+    try {
+      await stopBackend();
+    } catch (e) {
+      appendConsole("[job] stop warn: " + String((e && e.message) || e));
+    }
   }
 }
 
+async function forceKillBackend(reason) {
+  const why = String(reason || "release_gpu");
+  appendConsole("[force-kill] " + why + " — 结束后端进程以释放显存");
+  if (activeGenerate) activeGenerate.abort = true;
+  destroyActiveGenerateReq();
+  clearLock();
+  activeGenerate = null;
+  try {
+    await stopBackend();
+  } catch (e) {
+    appendConsole("[force-kill] stop warn: " + String((e && e.message) || e));
+  }
+  emitProgress({
+    phase: "generate",
+    nodeId: "",
+    message: "已强制结束后端以释放显存（下次执行节点会重新启动）",
+    error: true,
+    forceKilled: true,
+  });
+  return { ok: true, killed: true, reason: why };
+}
+
 function cancelGenerate(nodeId) {
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  let promptId = "";
+  let nid = String(nodeId || "");
   if (activeGenerate && (!nodeId || activeGenerate.nodeId === nodeId)) {
     activeGenerate.abort = true;
+    promptId = activeGenerate.promptId || "";
+    nid = nid || activeGenerate.nodeId || "";
+    interruptComfy(port, promptId).catch(() => {});
+    destroyActiveGenerateReq();
+  } else {
+    interruptComfy(port, "").catch(() => {});
   }
   const lock = loadLock();
   if (lock && (!nodeId || lock.nodeId === nodeId)) clearLock();
-  return { ok: true };
+  setTimeout(() => {
+    forceKillBackend("user_cancel").catch(() => {});
+  }, 400);
+  emitProgress({
+    phase: "generate",
+    nodeId: nid,
+    message: "已取消（正在结束后端）",
+    error: true,
+    cancelled: true,
+  });
+  appendConsole("[cancel] generate cancelled node=" + (nid || "?") + " → stop backend");
+  return { ok: true, forceKillScheduled: true };
 }
 
 function openConsoleWindow() {
@@ -1516,6 +1847,7 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:uninstall", async (e, opts) => uninstallProject(opts || {}));
   ipcMain.handle("h3:generate", async (e, params) => generateVideo(params || {}));
   ipcMain.handle("h3:cancelGenerate", async (e, nodeId) => cancelGenerate(nodeId));
+  ipcMain.handle("h3:forceKillBackend", async () => forceKillBackend("manual"));
   ipcMain.handle("h3:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("h3:consoleTail", async (e, n) => consoleTail(n));
   ipcMain.handle("h3:open", async () => openConsoleWindow());

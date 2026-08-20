@@ -10,6 +10,7 @@ const api = {
   cancelInstall: () => ipcRenderer.invoke("music3:cancelInstall"),
   start: () => ipcRenderer.invoke("music3:start"),
   stop: () => ipcRenderer.invoke("music3:stop"),
+  forceKillBackend: () => ipcRenderer.invoke("music3:forceKillBackend"),
   uninstallPreview: () => ipcRenderer.invoke("music3:uninstallPreview"),
   uninstall: (opts) => ipcRenderer.invoke("music3:uninstall", opts || {}),
   consoleTail: (n) => ipcRenderer.invoke("music3:consoleTail", n),

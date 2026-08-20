@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument("--prompt-file", default=None, help="Path to caption text file")
     parser.add_argument("--lyrics", default=None, help="Lyrics with section tags")
     parser.add_argument("--lyrics-file", default=None, help="Path to lyrics text file")
-    parser.add_argument("--audio-duration", type=float, default=60.0, help="Target duration seconds (max 300)")
+    parser.add_argument("--audio-duration", type=float, default=60.0, help="Target duration seconds (max 150)")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
         "--output-dir",

@@ -20,6 +20,7 @@
   let statusEl = null;
   let providers = [];
   let sessions = [];
+  const expandedKeys = new Set();
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -204,6 +205,11 @@
 
   function setBubbleContent(bubble, role, text) {
     if (!bubble) return;
+    const raw = String(text == null ? "" : text);
+    const host = bubble.parentNode;
+    if (host && host.classList && host.classList.contains("msg")) {
+      host.dataset.copyText = raw;
+    }
     if (role === "assistant") {
       bubble.classList.add("md");
       bubble.innerHTML = renderMarkdown(text);
@@ -213,12 +219,46 @@
     }
   }
 
-  function addMsg(role, text) {
+  function addMsg(role, text, at) {
     const div = document.createElement("div");
     div.className = "msg " + role;
     if (role === "sys" || role === "status") {
       div.textContent = text;
     } else {
+      const raw = String(text == null ? "" : text);
+      div.dataset.copyText = raw;
+      const timeTxt = formatMsgTime(at);
+      if (timeTxt) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = timeTxt;
+        div.appendChild(meta);
+      }
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "msg-copy";
+      copyBtn.textContent = "复制";
+      copyBtn.title = "复制本条到剪贴板";
+      copyBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+      copyBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const txt = div.dataset.copyText || "";
+        const done = () => {
+          copyBtn.classList.add("ok");
+          copyBtn.textContent = "已复制";
+          setTimeout(() => {
+            copyBtn.classList.remove("ok");
+            copyBtn.textContent = "复制";
+          }, 1200);
+        };
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(txt).then(done).catch(() => {});
+          }
+        } catch (_) {}
+      });
+      div.appendChild(copyBtn);
       const b = document.createElement("div");
       b.className = "bubble";
       setBubbleContent(b, role, text);
@@ -226,7 +266,177 @@
     }
     list.appendChild(div);
     list.scrollTop = list.scrollHeight;
+    scheduleHistCollapse();
     return div;
+  }
+
+  function formatMsgTime(ts) {
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    const d = new Date(n);
+    if (Number.isNaN(d.getTime())) return "";
+    const pad = (x) => String(x).padStart(2, "0");
+    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    const now = new Date();
+    if (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    ) {
+      return hm;
+    }
+    if (d.getFullYear() === now.getFullYear()) {
+      return d.getMonth() + 1 + "/" + d.getDate() + " " + hm;
+    }
+    return d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
+  }
+
+  function ensureMsgTime(el, at) {
+    if (!el || el.querySelector(".meta")) return;
+    const timeTxt = formatMsgTime(at == null ? Date.now() : at);
+    if (!timeTxt) return;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = timeTxt;
+    const bubble = el.querySelector(".bubble");
+    if (bubble) el.insertBefore(meta, bubble);
+    else el.appendChild(meta);
+  }
+
+  function histMsgKey(el, idx) {
+    const role = el.classList.contains("user")
+      ? "user"
+      : el.classList.contains("assistant")
+        ? "assistant"
+        : "other";
+    const bubble = el.querySelector(".bubble");
+    const t = bubble ? String(bubble.textContent || "").slice(0, 64) : "";
+    return idx + ":" + role + ":" + t;
+  }
+
+  function exceedsTwoLines(el) {
+    if (!el) return false;
+    const cs = getComputedStyle(el);
+    let lh = parseFloat(cs.lineHeight);
+    if (!Number.isFinite(lh) || lh <= 0) {
+      const fs = parseFloat(cs.fontSize);
+      lh = (Number.isFinite(fs) && fs > 0 ? fs : 13) * 1.45;
+    }
+    const pad =
+      (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    return el.scrollHeight > lh * 2 + pad + 1;
+  }
+
+  function applyHistCollapse() {
+    if (!list) return;
+    const msgs = [];
+    for (const el of list.children) {
+      if (!el.classList) continue;
+      if (el.classList.contains("sys") || el.classList.contains("status"))
+        continue;
+      if (!el.classList.contains("user") && !el.classList.contains("assistant"))
+        continue;
+      msgs.push(el);
+    }
+    msgs.forEach((el, i) => {
+      const bubble = el.querySelector(".bubble");
+      el.classList.remove("hist-collapsed");
+      if (bubble) bubble.style.maxHeight = "";
+      const key = histMsgKey(el, i);
+      el.dataset.histKey = key;
+      const isLast = i === msgs.length - 1;
+      if (isLast) {
+        el.classList.remove("hist-expanded");
+        el.removeAttribute("title");
+        return;
+      }
+      if (expandedKeys.has(key)) {
+        el.classList.add("hist-expanded");
+        el.title = "点击收起";
+        return;
+      }
+      if (!bubble || !exceedsTwoLines(bubble)) {
+        el.classList.remove("hist-expanded");
+        el.removeAttribute("title");
+        return;
+      }
+      const cs = getComputedStyle(bubble);
+      let lh = parseFloat(cs.lineHeight);
+      if (!Number.isFinite(lh) || lh <= 0) {
+        const fs = parseFloat(cs.fontSize);
+        lh = (Number.isFinite(fs) && fs > 0 ? fs : 13) * 1.45;
+      }
+      const pad =
+        (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      el.classList.add("hist-collapsed");
+      el.classList.remove("hist-expanded");
+      bubble.style.maxHeight = lh * 2 + pad + "px";
+      el.title = "点击展开";
+    });
+    updateHistRail(msgs);
+  }
+
+  function assignRounds(msgs) {
+    const marks = [];
+    let round = 0;
+    let openUserRound = 0;
+    for (const el of msgs) {
+      const isUser = el.classList.contains("user");
+      let r;
+      if (isUser) {
+        round += 1;
+        openUserRound = round;
+        r = round;
+      } else if (openUserRound) {
+        r = openUserRound;
+        openUserRound = 0;
+      } else {
+        round += 1;
+        r = round;
+      }
+      marks.push({ el, role: isUser ? "user" : "ai", round: r });
+    }
+    return marks;
+  }
+
+  function updateHistRail(msgs) {
+    const rail = document.getElementById("histRail");
+    if (!rail || !list) return;
+    const rows = Array.isArray(msgs) ? msgs : [];
+    const marks = assignRounds(rows);
+    const contentH = Math.max(list.scrollHeight, 1);
+    const railH = Math.max(rail.clientHeight, 1);
+    rail.innerHTML = "";
+    for (const m of marks) {
+      const mid = m.el.offsetTop + m.el.offsetHeight / 2;
+      const y = (mid / contentH) * railH;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "hist-rail-mark hist-rail-" + m.role;
+      btn.style.top = Math.max(6, Math.min(railH - 6, y)) + "px";
+      btn.title = (m.role === "user" ? "我" : "AI") + " · #" + m.round;
+      const bar = document.createElement("span");
+      bar.className = "hist-rail-bar";
+      const num = document.createElement("span");
+      num.className = "hist-rail-n";
+      num.textContent = String(m.round);
+      btn.appendChild(bar);
+      btn.appendChild(num);
+      btn.onclick = () => {
+        try {
+          m.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        } catch (_) {
+          list.scrollTop = Math.max(0, m.el.offsetTop - 8);
+        }
+      };
+      rail.appendChild(btn);
+    }
+  }
+
+  function scheduleHistCollapse() {
+    const run = () => applyHistCollapse();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 0);
   }
 
   function setStatus(text) {
@@ -285,8 +495,13 @@
       return;
     }
     arr.forEach((m) =>
-      addMsg(m.role === "user" ? "user" : "assistant", m.content || ""),
+      addMsg(
+        m.role === "user" ? "user" : "assistant",
+        m.content || "",
+        m.at || m.createdAt || m.ts,
+      ),
     );
+    scheduleHistCollapse();
   }
 
   function applyRunUi(state) {
@@ -310,6 +525,7 @@
     if (!api || !api.switchSession) return;
     const r = await api.switchSession(i);
     if (!r || !r.ok) return;
+    expandedKeys.clear();
     renderSlots(r.sessions);
     paintMessages(r.messages);
     applyRunUi(r);
@@ -394,9 +610,13 @@
           if (!t) {
             if (streamEl.parentNode) streamEl.parentNode.removeChild(streamEl);
             addMsg("sys", "已终止");
+          } else {
+            ensureMsgTime(streamEl, Date.now());
           }
         } else if (stopped && !streamEl) {
           addMsg("sys", "已终止");
+        } else if (streamEl) {
+          ensureMsgTime(streamEl, Date.now());
         }
         streamEl = null;
         setStatus("");
@@ -445,7 +665,7 @@
     const t = (input.value || "").trim();
     if (!t) return;
     input.value = "";
-    addMsg("user", t);
+    addMsg("user", t, Date.now());
     setBusy(true);
     streamEl = null;
     setStatus("努力思考中…");
@@ -476,6 +696,7 @@
   btnClear.onclick = async () => {
     if (!api || busy) return;
     await api.chatClear();
+    expandedKeys.clear();
     paintMessages([]);
     if (api.listSessions) {
       const s = await api.listSessions();
@@ -500,13 +721,45 @@
 
   list.addEventListener("click", (e) => {
     const a = e.target && e.target.closest ? e.target.closest("a") : null;
-    if (!a) return;
-    const href = a.getAttribute("href") || "";
-    if (/^(https?:|mailto:)/i.test(href)) {
-      e.preventDefault();
-      window.open(href, "_blank");
+    if (a) {
+      const href = a.getAttribute("href") || "";
+      if (/^(https?:|mailto:)/i.test(href)) {
+        e.preventDefault();
+        window.open(href, "_blank");
+      }
+      return;
+    }
+    if (e.target && e.target.closest && e.target.closest(".msg-copy")) return;
+    const row =
+      e.target && e.target.closest ? e.target.closest(".msg") : null;
+    if (
+      !row ||
+      (!row.classList.contains("hist-collapsed") &&
+        !row.classList.contains("hist-expanded"))
+    )
+      return;
+    const key = row.dataset.histKey || "";
+    if (row.classList.contains("hist-collapsed")) {
+      row.classList.remove("hist-collapsed");
+      row.classList.add("hist-expanded");
+      const bubble = row.querySelector(".bubble");
+      if (bubble) bubble.style.maxHeight = "";
+      if (key) expandedKeys.add(key);
+      row.title = "点击收起";
+      scheduleHistCollapse();
+    } else {
+      if (key) expandedKeys.delete(key);
+      applyHistCollapse();
     }
   });
+  if (typeof ResizeObserver === "function") {
+    try {
+      const rail = document.getElementById("histRail");
+      const ro = new ResizeObserver(() => scheduleHistCollapse());
+      if (list) ro.observe(list);
+      if (rail) ro.observe(rail);
+    } catch (_) {}
+  }
   document.addEventListener("contextmenu", (e) => e.preventDefault(), true);
   boot();
 })();

@@ -385,10 +385,15 @@ function readSessionSlots() {
       const arr = Array.isArray(j.slots[i]) ? j.slots[i] : [];
       slots[i] = arr
         .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-        .map((m) => ({
-          role: m.role,
-          content: String(m.content || "").slice(0, 8000),
-        }))
+        .map((m) => {
+          const o = {
+            role: m.role,
+            content: String(m.content || "").slice(0, 8000),
+          };
+          const at = Number(m.at || m.createdAt || m.ts) || 0;
+          if (at > 0) o.at = at;
+          return o;
+        })
         .slice(-40);
     }
   }
@@ -1012,14 +1017,14 @@ function appendAssistantToSession(sessionIndex, content) {
   if (!text) return;
   const idx = Math.max(0, Math.min(CHAT_SLOT_COUNT - 1, Number(sessionIndex) || 0));
   if (idx === chatSessionIndex) {
-    chatHistory.push({ role: "assistant", content: text });
+    chatHistory.push({ role: "assistant", content: text, at: Date.now() });
     persistSessions();
     return;
   }
   const slots = readSessionSlots();
   slots[chatSessionIndex] = chatHistory.slice();
   const msgs = Array.isArray(slots[idx]) ? slots[idx].slice() : [];
-  msgs.push({ role: "assistant", content: text });
+  msgs.push({ role: "assistant", content: text, at: Date.now() });
   slots[idx] = msgs.slice(-40);
   writeJson(sessionsPath(), {
     slots,
@@ -1283,7 +1288,7 @@ async function handleChatSend(text) {
       error: "未配置可用的文本服务商 API Key。请在 MTNode 设置里填写后重试。",
     };
   }
-  chatHistory.push({ role: "user", content: t });
+  chatHistory.push({ role: "user", content: t, at: Date.now() });
   if (chatHistory.length > 24) chatHistory = chatHistory.slice(-24);
   persistSessions();
 

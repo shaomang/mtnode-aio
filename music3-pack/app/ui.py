@@ -96,6 +96,46 @@ def get_generator(model_path: str, offload: bool) -> Music3Generator:
     return _generator
 
 
+def _clip(s: str, n: int = 160) -> str:
+    t = " ".join(str(s or "").split())
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def _log_generate_inputs(
+    prompt: str,
+    lyrics: str,
+    audio_duration: float,
+    seed: int,
+    output_dir: str,
+    filename: str,
+) -> None:
+    """Print + sidecar file so MTNode console / install dir can verify API inputs."""
+    p = str(prompt or "")
+    l = str(lyrics or "")
+    line = (
+        f"[run_generate] prompt={len(p)}c lyrics={len(l)}c "
+        f"dur={audio_duration} seed={seed} file={filename or '-'}"
+    )
+    print(line, flush=True)
+    print(f"[run_generate] prompt_head={_clip(p)}", flush=True)
+    print(f"[run_generate] lyrics_head={_clip(l)}", flush=True)
+    try:
+        out = Path(output_dir or DEFAULT_OUTPUT_DIR).expanduser()
+        out.mkdir(parents=True, exist_ok=True)
+        side = out / "_last_generate_inputs.txt"
+        side.write_text(
+            line
+            + "\n\n=== prompt ===\n"
+            + p
+            + "\n\n=== lyrics ===\n"
+            + l
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"[run_generate] warn: cannot write sidecar: {exc}", flush=True)
+
+
 def run_generate(
     prompt: str,
     lyrics: str,
@@ -108,6 +148,9 @@ def run_generate(
     progress: gr.Progress = gr.Progress(track_tqdm=True),
 ) -> tuple[str | None, str]:
     try:
+        _log_generate_inputs(
+            prompt, lyrics, audio_duration, seed, output_dir, filename or ""
+        )
         progress(0, desc="Loading / preparing GPU…")
         gen = get_generator(model_path, offload)
         progress(0.05, desc="Generating (may take several minutes)…")
@@ -117,7 +160,7 @@ def run_generate(
             audio_duration=float(audio_duration),
             seed=int(seed),
             output_dir=output_dir or str(DEFAULT_OUTPUT_DIR),
-            filename=filename.strip() or None,
+            filename=(filename or "").strip() or None,
         )
         progress(1.0, desc="Done")
         saved = str(result["path"])
@@ -125,7 +168,8 @@ def run_generate(
             f"Saved: {saved}\n"
             f"Duration: {result['duration_sec']:.2f}s @ {result['sampling_rate']} Hz\n"
             f"Seed: {result['seed']}\n"
-            f"Model: {result['model_path']}"
+            f"Model: {result['model_path']}\n"
+            f"Prompt: {len(str(prompt or ''))}c · Lyrics: {len(str(lyrics or ''))}c"
         )
         # Preview path for Gradio; real path remains in status text for API clients.
         return _gradio_preview_path(saved), msg
@@ -141,13 +185,25 @@ def build_ui() -> gr.Blocks:
             "`prompt` = Structured Caption；`lyrics` = 带 `[Verse]`/`[Chorus]` 等标签的歌词。\n"
             "音频写入下方 **Output folder**（默认仓库 `output/`）。\n"
             "连续生成已串行化：每首歌结束后会把模型卸回 CPU 并清空显存，避免第二首卡死。\n"
-            "生成中请勿刷新/关闭页面；完成后文件仍会写入 `output_dir`。"
+            "生成中请勿刷新/关闭页面；完成后文件仍会写入 `output_dir`。\n"
+            "画布 API 调用不会回填下方文本框；请看 status / 控制台的 `[run_generate]` 行确认入参。"
         )
         with gr.Row():
-            prompt = gr.Textbox(label="prompt (caption)", lines=14, value=EXAMPLE_PROMPT)
-            lyrics = gr.Textbox(label="lyrics", lines=14, value=EXAMPLE_LYRICS)
+            # Empty defaults: avoid Gradio API silently falling back to demo examples.
+            prompt = gr.Textbox(
+                label="prompt (caption)",
+                lines=14,
+                value="",
+                placeholder="Structured Caption…（网页手动生成时填写；画布 API 会传入）",
+            )
+            lyrics = gr.Textbox(
+                label="lyrics",
+                lines=14,
+                value="",
+                placeholder="[Verse] / [Chorus] … 或 [instrumental]",
+            )
         with gr.Row():
-            audio_duration = gr.Slider(10, 300, value=60, step=1, label="audio_duration (sec)")
+            audio_duration = gr.Slider(10, 150, value=60, step=1, label="audio_duration (sec)")
             seed = gr.Number(value=7, precision=0, label="seed")
         with gr.Row():
             output_dir = gr.Textbox(label="output_dir", value=str(DEFAULT_OUTPUT_DIR))
@@ -162,6 +218,11 @@ def build_ui() -> gr.Blocks:
         btn = gr.Button("Generate", variant="primary")
         audio_out = gr.Audio(label="preview", type="filepath")
         log = gr.Textbox(label="status", lines=6)
+        gr.Examples(
+            examples=[[EXAMPLE_PROMPT, EXAMPLE_LYRICS]],
+            inputs=[prompt, lyrics],
+            label="Load demo caption + lyrics",
+        )
         btn.click(
             fn=run_generate,
             inputs=[prompt, lyrics, audio_duration, seed, output_dir, filename, model_path, offload],

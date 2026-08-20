@@ -50,7 +50,43 @@
     rooms: { general: [], bug: [], improve: [] },
     lastRead: { general: 0, bug: 0, improve: 0 },
   };
+  const dayLists = { general: [], bug: [], improve: [] };
+  const expandedDays = { general: Object.create(null), bug: Object.create(null), improve: Object.create(null) };
+  const dayLoading = Object.create(null);
   const imgUrl = Object.create(null);
+
+  function hotFromTs() {
+    const d = new Date();
+    d.setHours(5, 0, 0, 0);
+    d.setDate(d.getDate() - 1);
+    return d.getTime();
+  }
+  function dayKeyOf(ts) {
+    const d = new Date(Number(ts) || 0);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + day;
+  }
+  function formatDayLabel(dayKey) {
+    const parts = String(dayKey || "").split("-").map(Number);
+    if (parts.length < 3 || !parts[0]) return dayKey;
+    const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+    if (locale === "en") {
+      return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    }
+    return parts[0] + "年" + parts[1] + "月" + parts[2] + "日";
+  }
+  function dayRangeLocal(dayKey) {
+    const parts = String(dayKey || "").split("-").map(Number);
+    const from = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0).getTime();
+    const end = new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999).getTime();
+    return { from, to: Math.min(end, hotFromTs() - 1) };
+  }
+  function keepHotOnly(items) {
+    const hot = hotFromTs();
+    return (items || []).filter((m) => (Number(m && m.createdAt) || 0) >= hot);
+  }
 
   function t(zh, en) {
     return locale === "en" ? en : zh;
@@ -69,6 +105,26 @@
     if (nick && user && nick !== user) return nick + " · " + user;
     return nick || user || t("匿名", "Anonymous");
   }
+  function formatMsgTime(ts) {
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    const d = new Date(n);
+    if (Number.isNaN(d.getTime())) return "";
+    const pad = (x) => String(x).padStart(2, "0");
+    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    const now = new Date();
+    if (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    ) {
+      return hm;
+    }
+    if (d.getFullYear() === now.getFullYear()) {
+      return d.getMonth() + 1 + "/" + d.getDate() + " " + hm;
+    }
+    return d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
+  }
   function myId() {
     return auth && (auth.userId || (auth.user && auth.user.id)) || "";
   }
@@ -77,10 +133,12 @@
   }
 
   function roomLatestAt(roomId) {
+    const hot = hotFromTs();
     const items = store.rooms[roomId] || [];
     let max = 0;
     for (const m of items) {
       const at = Number((m && m.createdAt) || 0) || 0;
+      if (at < hot) continue;
       if (at > max) max = at;
     }
     return max;
@@ -89,11 +147,12 @@
   function unreadCount(roomId) {
     if (roomId === room) return 0;
     const since = Number((store.lastRead && store.lastRead[roomId]) || 0) || 0;
+    const hot = hotFromTs();
     const mine = myId();
     let n = 0;
     for (const m of store.rooms[roomId] || []) {
       const at = Number((m && m.createdAt) || 0) || 0;
-      if (at <= since) continue;
+      if (at < hot || at <= since) continue;
       if (mine && m.user && m.user.id === mine) continue;
       n += 1;
     }
@@ -166,8 +225,8 @@
 
   function applyLocale() {
     document.getElementById("authHint").textContent = t(
-      "与创意工坊共用同一账户。登录后可在综合区、Bug 提交区、功能改进区聊天，并同步近 3 天消息。",
-      "Same account as Creative Workshop. After sign-in you can chat in General / Bugs / Ideas. Messages from the last 3 days are synced.",
+      "与创意工坊共用同一账户。登录后默认同步「昨天 5:00」至今；更早日期点选加载（服务器保留约 30 天）。",
+      "Same account as Creative Workshop. Syncs since yesterday 5:00 by default; tap a date for older days (kept ~30 days).",
     );
     document.getElementById("pendingTxt").textContent = t(
       "待发送图片（已压缩至 1080p）",
@@ -204,15 +263,31 @@
       const old = map.get(m.id) || {};
       map.set(m.id, Object.assign({}, old, m));
     });
-    const next = [...map.values()].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-    store.rooms[roomId] = next.length > MSG_CAP ? next.slice(next.length - MSG_CAP) : next;
+    const hot = hotFromTs();
+    const expanded = expandedDays[roomId] || Object.create(null);
+    let next = [...map.values()]
+      .filter((m) => {
+        const at = Number((m && m.createdAt) || 0) || 0;
+        if (at >= hot) return true;
+        return !!expanded[dayKeyOf(at)];
+      })
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    if (next.length > MSG_CAP) next = next.slice(next.length - MSG_CAP);
+    store.rooms[roomId] = next;
   }
 
   let saveTimer = null;
   function scheduleSave() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      api.localSave(store).catch(() => {});
+      const slim = {
+        rooms: { general: [], bug: [], improve: [] },
+        lastRead: store.lastRead,
+      };
+      ROOMS.forEach((r) => {
+        slim.rooms[r.id] = keepHotOnly(store.rooms[r.id] || []).slice(-MSG_CAP);
+      });
+      api.localSave(slim).catch(() => {});
     }, 250);
   }
 
@@ -355,71 +430,252 @@
     paintFindCount();
   }
 
+  function appendMsgEl(m, mine) {
+    const el = document.createElement("div");
+    const isMine = !!(mine && m.user && m.user.id === mine);
+    el.className = "msg " + (isMine ? "mine" : "other");
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const name = displayName(m.user);
+    const timeTxt = formatMsgTime(m.createdAt || m.at || m.ts);
+    meta.textContent = timeTxt ? name + " · " + timeTxt : name;
+    el.appendChild(meta);
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    if (m.text) {
+      const tx = document.createElement("div");
+      tx.setAttribute("data-find-text", m.text);
+      tx.textContent = m.text;
+      bubble.appendChild(tx);
+    }
+    if (m.imageId) {
+      const im = document.createElement("img");
+      im.alt = "";
+      im.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (im.src) {
+          zoomImg.src = im.src;
+          zoom.classList.add("open");
+        }
+      });
+      im.addEventListener("load", () => {
+        if (stickBottom) scrollToLatest();
+      });
+      bubble.appendChild(im);
+      ensureImage(m.imageId).then((url) => {
+        if (url) im.src = url;
+      });
+    }
+    el.appendChild(bubble);
+    list.appendChild(el);
+  }
+
+  function addDayChip(dayInfo) {
+    const day = dayInfo.day;
+    const count = Number(dayInfo.count) || 0;
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "msg day-chip";
+    const loading = !!dayLoading[room + ":" + day];
+    const expanded = !!(expandedDays[room] && expandedDays[room][day]);
+    if (expanded) {
+      el.classList.add("expanded");
+      el.textContent = formatDayLabel(day) + (count ? " · " + count : "");
+      el.disabled = true;
+    } else if (loading) {
+      el.classList.add("loading");
+      el.textContent = formatDayLabel(day) + " · " + t("加载中…", "Loading…");
+      el.disabled = true;
+    } else {
+      el.textContent =
+        formatDayLabel(day) +
+        (count ? " · " + count + t(" 条", " msgs") : "") +
+        " · " +
+        t("点击加载", "Tap to load");
+      el.onclick = () => expandDay(day);
+    }
+    list.appendChild(el);
+  }
+
   function render(opts) {
     const forceBottom = !opts || opts.forceBottom !== false;
     if (forceBottom) stickBottom = true;
     else stickBottom = nearBottom();
     list.innerHTML = "";
+    const hot = hotFromTs();
     const items = store.rooms[room] || [];
-    if (!items.length) {
+    const days = dayLists[room] || [];
+    const mine = myId();
+
+    days.forEach((d) => {
+      if (!d || !d.day) return;
+      addDayChip(d);
+      if (expandedDays[room] && expandedDays[room][d.day]) {
+        const range = dayRangeLocal(d.day);
+        items
+          .filter((m) => {
+            const at = Number((m && m.createdAt) || 0) || 0;
+            return at >= range.from && at <= range.to;
+          })
+          .forEach((m) => appendMsgEl(m, mine));
+      }
+    });
+
+    const hotItems = items.filter((m) => (Number(m && m.createdAt) || 0) >= hot);
+    if (!days.length && !hotItems.length) {
       addSys(t("还没有消息，来说第一句吧。", "No messages yet. Start the conversation."));
       if (stickBottom) scrollToLatest();
       return;
     }
-    const mine = myId();
-    items.forEach((m) => {
-      const el = document.createElement("div");
-      const isMine = !!(mine && m.user && m.user.id === mine);
-      el.className = "msg " + (isMine ? "mine" : "other");
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      meta.textContent = displayName(m.user);
-      el.appendChild(meta);
-      const bubble = document.createElement("div");
-      bubble.className = "bubble";
-      if (m.text) {
-        const tx = document.createElement("div");
-        tx.setAttribute("data-find-text", m.text);
-        tx.textContent = m.text;
-        bubble.appendChild(tx);
-      }
-      if (m.imageId) {
-        const im = document.createElement("img");
-        im.alt = "";
-        im.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          if (im.src) {
-            zoomImg.src = im.src;
-            zoom.classList.add("open");
-          }
-        });
-        im.addEventListener("load", () => {
-          if (stickBottom) scrollToLatest();
-        });
-        bubble.appendChild(im);
-        ensureImage(m.imageId).then((url) => {
-          if (url) im.src = url;
-        });
-      }
-      el.appendChild(bubble);
-      list.appendChild(el);
-    });
+    if (days.length && hotItems.length) {
+      const sep = document.createElement("div");
+      sep.className = "msg sys";
+      sep.textContent = t("—— 昨天 5:00 至今 ——", "—— Since yesterday 5:00 ——");
+      list.appendChild(sep);
+    }
+    hotItems.forEach((m) => appendMsgEl(m, mine));
     applyFind(true);
     if (stickBottom) scrollToLatest();
   }
 
-  async function syncRoom(id) {
+  function applyDayList(id, days) {
+    dayLists[id] = (days || []).filter((d) => d && d.day && (Number(d.count) || 0) > 0);
+  }
+
+  function dayListFromItems(items, beforeTs) {
+    const map = new Map();
+    const before = Number(beforeTs) || 0;
+    for (const m of items || []) {
+      const at = Number((m && m.createdAt) || 0) || 0;
+      if (!at || at >= before) continue;
+      const day = dayKeyOf(at);
+      const cur = map.get(day) || { day, count: 0, from: at, to: at };
+      cur.count += 1;
+      if (at < cur.from) cur.from = at;
+      if (at > cur.to) cur.to = at;
+      map.set(day, cur);
+    }
+    return [...map.values()].sort((a, b) => String(a.day).localeCompare(String(b.day)));
+  }
+
+  async function syncDays(id) {
     if (!token()) return;
+    const before = hotFromTs();
     const r = await api.storeRequest({
       method: "GET",
-      path: "/api/forum/messages?room=" + encodeURIComponent(id),
+      path:
+        "/api/forum/days?room=" +
+        encodeURIComponent(id) +
+        "&before=" +
+        encodeURIComponent(String(before)) +
+        "&tzOffset=" +
+        encodeURIComponent(String(new Date().getTimezoneOffset())),
       token: token(),
     });
     if (r && r.status === 401) {
       await signedOut();
       return;
     }
-    if (!r || !r.ok || !r.data || !Array.isArray(r.data.items)) return;
+    if (r && r.ok && r.data && Array.isArray(r.data.days)) {
+      applyDayList(id, r.data.days);
+      return;
+    }
+    /* 兼容旧服务端：拉一次热窗口之前的消息，只用于生成日期条，不入库正文 */
+    const archiveFrom = before - 30 * 24 * 3600 * 1000;
+    const r2 = await api.storeRequest({
+      method: "GET",
+      path:
+        "/api/forum/messages?room=" +
+        encodeURIComponent(id) +
+        "&from=" +
+        encodeURIComponent(String(archiveFrom)) +
+        "&to=" +
+        encodeURIComponent(String(before - 1)),
+      token: token(),
+    });
+    if (r2 && r2.status === 401) {
+      await signedOut();
+      return;
+    }
+    if (r2 && r2.ok && r2.data && Array.isArray(r2.data.items)) {
+      applyDayList(id, dayListFromItems(r2.data.items, before));
+    }
+  }
+
+  async function expandDay(dayKey) {
+    if (!token() || !dayKey) return;
+    const key = room + ":" + dayKey;
+    if (dayLoading[key] || (expandedDays[room] && expandedDays[room][dayKey])) return;
+    dayLoading[key] = true;
+    render({ forceBottom: false });
+    const range = dayRangeLocal(dayKey);
+    if (!(range.to >= range.from)) {
+      dayLoading[key] = false;
+      expandedDays[room][dayKey] = true;
+      render({ forceBottom: false });
+      return;
+    }
+    const r = await api.storeRequest({
+      method: "GET",
+      path:
+        "/api/forum/messages?room=" +
+        encodeURIComponent(room) +
+        "&from=" +
+        encodeURIComponent(String(range.from)) +
+        "&to=" +
+        encodeURIComponent(String(range.to)),
+      token: token(),
+    });
+    dayLoading[key] = false;
+    if (r && r.status === 401) {
+      await signedOut();
+      return;
+    }
+    if (r && r.ok && r.data && Array.isArray(r.data.items)) {
+      expandedDays[room][dayKey] = true;
+      mergeItems(room, r.data.items);
+      scheduleSave();
+      if (!r.data.items.length) {
+        /* 旧服务端可能忽略 from/to：用本地已有或再提示 */
+      }
+    } else {
+      addSys(apiErr(r) || t("加载失败", "Failed to load"));
+    }
+    render({ forceBottom: false });
+  }
+
+  async function syncRoom(id) {
+    if (!token()) return;
+    const from = hotFromTs();
+    const since = roomLatestAt(id);
+    const r = await api.storeRequest({
+      method: "GET",
+      path:
+        "/api/forum/messages?room=" +
+        encodeURIComponent(id) +
+        "&from=" +
+        encodeURIComponent(String(from)) +
+        "&includeDays=1" +
+        "&tzOffset=" +
+        encodeURIComponent(String(new Date().getTimezoneOffset())) +
+        (since ? "&since=" + encodeURIComponent(String(since)) : ""),
+      token: token(),
+    });
+    if (r && r.status === 401) {
+      await signedOut();
+      return;
+    }
+    if (!r || !r.ok || !r.data || !Array.isArray(r.data.items)) {
+      await syncDays(id);
+      if (id === room) render({ forceBottom: false });
+      paintTabs();
+      return;
+    }
+    /* 旧服务端可能仍返回热窗口外消息：先据此生成日期条 */
+    const derived = dayListFromItems(r.data.items, from);
+    if (derived.length) applyDayList(id, derived);
+    if (Array.isArray(r.data.days)) applyDayList(id, r.data.days);
+    else if (!(dayLists[id] && dayLists[id].length)) await syncDays(id);
     mergeItems(id, r.data.items);
     scheduleSave();
     if (id === room) {
@@ -580,7 +836,7 @@
     if (local && local.ok && local.data && local.data.rooms) {
       ROOMS.forEach((r) => {
         if (Array.isArray(local.data.rooms[r.id])) {
-          const arr = local.data.rooms[r.id];
+          const arr = keepHotOnly(local.data.rooms[r.id]);
           store.rooms[r.id] = arr.length > MSG_CAP ? arr.slice(arr.length - MSG_CAP) : arr;
         }
       });

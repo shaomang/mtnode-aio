@@ -8,6 +8,10 @@ contextBridge.exposeInMainWorld('api', {
   getPathForFile: (f) => webUtils.getPathForFile(f),
 
   appVersion: () => ipcRenderer.invoke('app:version'),
+  crashStatus: () => ipcRenderer.invoke('crash:status'),
+  crashExport: () => ipcRenderer.invoke('crash:export'),
+  crashOpenLogs: () => ipcRenderer.invoke('crash:openLogs'),
+  crashLogRenderer: (payload) => ipcRenderer.invoke('crash:logRenderer', payload || {}),
 
   updateStatus: () => ipcRenderer.invoke('update:status'),
   updateCheck: (opts) => ipcRenderer.invoke('update:check', opts || {}),
@@ -71,6 +75,7 @@ contextBridge.exposeInMainWorld('api', {
   pathRelative: (from, to) => path.relative(String(from || ''), String(to || '')),
   shellShowItem: (p) => ipcRenderer.invoke('shell:showItem', p),
   shellOpenPath: (p) => ipcRenderer.invoke('shell:openPath', p),
+  openInAppDialog: (opts) => ipcRenderer.invoke('shell:openInAppDialog', opts || {}),
   mtnodesExport: (wf) => ipcRenderer.invoke('mtnodes:export', wf),
   mtnodesImport: () => ipcRenderer.invoke('mtnodes:import'),
   mtnodesExportBase64: (wf) => ipcRenderer.invoke('mtnodes:exportBase64', wf),
@@ -156,6 +161,7 @@ contextBridge.exposeInMainWorld('api', {
   music3PickInstallDir: () => ipcRenderer.invoke('music3:pickInstallDir'),
   music3Generate: (params) => ipcRenderer.invoke('music3:generate', params || {}),
   music3CancelGenerate: (nodeId) => ipcRenderer.invoke('music3:cancelGenerate', nodeId),
+  music3ForceKillBackend: () => ipcRenderer.invoke('music3:forceKillBackend'),
   music3GetLock: () => ipcRenderer.invoke('music3:getLock'),
   music3RemovePluginMeta: () => ipcRenderer.invoke('music3:removePluginMeta'),
   onMusic3Progress: (cb) => {
@@ -192,6 +198,7 @@ contextBridge.exposeInMainWorld('api', {
   h3PickInstallDir: () => ipcRenderer.invoke('h3:pickInstallDir'),
   h3Generate: (params) => ipcRenderer.invoke('h3:generate', params || {}),
   h3CancelGenerate: (nodeId) => ipcRenderer.invoke('h3:cancelGenerate', nodeId),
+  h3ForceKillBackend: () => ipcRenderer.invoke('h3:forceKillBackend'),
   h3GetLock: () => ipcRenderer.invoke('h3:getLock'),
   h3RemovePluginMeta: () => ipcRenderer.invoke('h3:removePluginMeta'),
   onH3Progress: (cb) => {

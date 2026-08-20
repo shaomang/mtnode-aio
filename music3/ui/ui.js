@@ -101,15 +101,27 @@
   };
 
   $("btnStart").onclick = async () => {
-    logLine("正在启用服务…");
+    logLine("手动启动后端（调试）…");
     const r = await api.start();
-    logLine(r && r.ok ? "服务已启用" + (r.port ? " :" + r.port : "") : "启动失败: " + ((r && r.error) || ""));
+    logLine(r && r.ok ? "服务已启动" + (r.port ? " :" + r.port : "") : "启动失败: " + ((r && r.error) || ""));
     refresh();
   };
 
   $("btnStop").onclick = async () => {
     const r = await api.stop();
-    logLine(r && r.ok ? "服务已关闭" : "关闭失败");
+    logLine(r && r.ok ? "服务已停止" : "关闭失败");
+    refresh();
+  };
+
+  $("btnForceKill").onclick = async () => {
+    if (!api.forceKillBackend) return;
+    const ok = confirm(
+      "强制结束后端并释放显存？\n适用于 GPU 跑满却永远不结束的情况。\n之后需重新点「启用服务」。",
+    );
+    if (!ok) return;
+    logLine("强制释放显存…");
+    const r = await api.forceKillBackend();
+    logLine(r && r.ok ? "已结束后端，显存应已释放；请重新启用服务" : "失败: " + ((r && r.error) || ""));
     refresh();
   };
 
@@ -175,5 +187,19 @@
     consoleEl.scrollTop = consoleEl.scrollHeight;
     await refresh();
     setInterval(refresh, 4000);
+    /* Gradio stdout is appended to the log file; poll so the UI stays live. */
+    let lastLen = (tail && tail.text && tail.text.length) || 0;
+    setInterval(async () => {
+      try {
+        const t = await api.consoleTail(96 * 1024);
+        if (!t || !t.text) return;
+        if (t.text.length === lastLen) return;
+        lastLen = t.text.length;
+        const atBottom =
+          consoleEl.scrollHeight - consoleEl.scrollTop - consoleEl.clientHeight < 48;
+        consoleEl.textContent = t.text;
+        if (atBottom) consoleEl.scrollTop = consoleEl.scrollHeight;
+      } catch {}
+    }, 1500);
   })();
 })();

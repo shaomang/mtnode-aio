@@ -22,7 +22,11 @@ const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const PLUGIN_ID = "minimax-music3";
 const DEFAULT_PORT = 7860;
 const DISK_HINT_GB = 65;
-const JOB_LOCK_STALE_MS = 6 * 60 * 60 * 1000;
+/** 任务锁过期：须短于「永久卡死」体感；超时/取消会强制杀后端 */
+const JOB_LOCK_STALE_MS = 45 * 60 * 1000;
+/** 单次生成默认最长等待（会被时长再拉高） */
+const GENERATE_BASE_MS = 15 * 60 * 1000;
+const GENERATE_MAX_MS = 45 * 60 * 1000;
 
 let getDataDir = null;
 let getMainWin = null;
@@ -33,9 +37,10 @@ let installing = false;
 let installCancel = false;
 let gpuTimer = null;
 let consoleWatchTimer = null;
+let consoleWatchPos = 0;
 /** @type {import('child_process').ChildProcess|null} */
 let backendProc = null;
-/** @type {{ nodeId: string, abort?: boolean }|null} */
+/** @type {{ nodeId: string, abort?: boolean, eventId?: string, req?: import('http').ClientRequest|null }|null} */
 let activeGenerate = null;
 /** @type {((ev: any) => void)|null} */
 let dshEventHook = null;
@@ -146,10 +151,17 @@ function appendConsole(line) {
     const p = consoleLogPath();
     mk(path.dirname(p));
     fs.appendFileSync(p, String(line).replace(/\r?\n$/, "") + "\n", "utf8");
+    try {
+      /* Keep file-watch cursor past our own writes to avoid duplicate UI lines */
+      consoleWatchPos = fs.statSync(p).size;
+    } catch {}
     const st = fs.statSync(p);
     if (st.size > 2 * 1024 * 1024) {
       const raw = fs.readFileSync(p, "utf8");
       fs.writeFileSync(p, raw.slice(-1024 * 1024), "utf8");
+      try {
+        consoleWatchPos = fs.statSync(p).size;
+      } catch {}
     }
   } catch {}
   broadcast("music3:console", { line: String(line) });
@@ -264,6 +276,83 @@ function ensureUiRuntime() {
   copyDirRecursive(srcUi, destUi, []);
 }
 
+/** Copy pack app/*.py into installDir so Gradio picks up prompt/lyrics logging fixes. */
+function syncPackAppToInstall(installDir) {
+  const root = String(installDir || "").trim();
+  if (!root || !fs.existsSync(root)) return { ok: false, error: "no_install_dir" };
+  const srcApp = join(packRoot(), "app");
+  const destApp = join(root, "app");
+  if (!fs.existsSync(srcApp)) return { ok: false, error: "no_pack_app" };
+  try {
+    mk(destApp);
+    for (const name of fs.readdirSync(srcApp)) {
+      if (!name.endsWith(".py")) continue;
+      const s = join(srcApp, name);
+      if (!fs.statSync(s).isFile()) continue;
+      fs.copyFileSync(s, join(destApp, name));
+    }
+    /* Drop stale bytecode so Python reloads fresh sources after restart */
+    const pyc = join(destApp, "__pycache__");
+    try {
+      if (fs.existsSync(pyc)) fs.rmSync(pyc, { recursive: true, force: true });
+    } catch {}
+    appendConsole("[sync] pack app/*.py → " + destApp);
+    return { ok: true, destApp };
+  } catch (e) {
+    appendConsole("[sync] failed: " + String((e && e.message) || e));
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+function stopConsoleLogWatch() {
+  if (consoleWatchTimer) {
+    clearInterval(consoleWatchTimer);
+    consoleWatchTimer = null;
+  }
+}
+function startConsoleLogWatch() {
+  stopConsoleLogWatch();
+  try {
+    const p = consoleLogPath();
+    if (fs.existsSync(p)) consoleWatchPos = fs.statSync(p).size;
+    else consoleWatchPos = 0;
+  } catch {
+    consoleWatchPos = 0;
+  }
+  consoleWatchTimer = setInterval(() => {
+    try {
+      const p = consoleLogPath();
+      if (!fs.existsSync(p)) return;
+      const st = fs.statSync(p);
+      if (st.size < consoleWatchPos) consoleWatchPos = 0;
+      if (st.size <= consoleWatchPos) return;
+      const fd = fs.openSync(p, "r");
+      const n = st.size - consoleWatchPos;
+      const buf = Buffer.alloc(n);
+      fs.readSync(fd, buf, 0, n, consoleWatchPos);
+      fs.closeSync(fd);
+      consoleWatchPos = st.size;
+      const chunk = buf.toString("utf8");
+      const lines = chunk.split(/\r?\n/).filter((l) => l.length);
+      for (const line of lines) {
+        /* Gradio already wrote to the file; only broadcast to UI (avoid double-append). */
+        if (/RuntimeWarning|UserWarning|FutureWarning|Enable tracemalloc/i.test(line))
+          continue;
+        if (/was never awaited/i.test(line)) continue;
+        broadcast("music3:console", { line });
+      }
+    } catch {}
+  }, 800);
+}
+
+function clipConsoleText(s, n) {
+  const t = String(s || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (t.length <= n) return t;
+  return t.slice(0, n - 1) + "…";
+}
+
 function loadLock() {
   return readJson(lockPath(), null);
 }
@@ -286,28 +375,242 @@ function refreshStaleLock() {
   return lock;
 }
 
-function httpGetJson(url, timeoutMs) {
+function attachAbortableReq(req) {
+  if (!activeGenerate) return;
+  activeGenerate.req = req;
+  const clear = () => {
+    if (activeGenerate && activeGenerate.req === req) activeGenerate.req = null;
+  };
+  req.on("close", clear);
+  req.on("error", clear);
+}
+
+function destroyActiveGenerateReq() {
+  if (!activeGenerate || !activeGenerate.req) return;
+  try {
+    activeGenerate.req.destroy(new Error("cancelled"));
+  } catch {}
+  activeGenerate.req = null;
+}
+
+function httpGetJson(url, timeoutMs, opts) {
+  opts = opts || {};
   return new Promise((resolve, reject) => {
     const req = http.get(url, { timeout: timeoutMs || 5000 }, (res) => {
       let buf = "";
-      res.on("data", (c) => (buf += c));
-      res.on("end", () => {
-        try {
-          resolve({ status: res.statusCode, json: JSON.parse(buf), raw: buf });
-        } catch {
-          resolve({ status: res.statusCode, json: null, raw: buf });
+      let settled = false;
+      const finish = (fn) => {
+        if (settled) return;
+        settled = true;
+        if (abortPoll) {
+          clearInterval(abortPoll);
+          abortPoll = null;
+        }
+        fn();
+      };
+      res.on("data", (c) => {
+        buf += c;
+        if (opts.track !== false && activeGenerate && activeGenerate.abort) {
+          try {
+            req.destroy();
+          } catch {}
+          finish(() => reject(new Error("cancelled")));
         }
       });
+      res.on("end", () => {
+        finish(() => {
+          try {
+            resolve({ status: res.statusCode, json: JSON.parse(buf), raw: buf });
+          } catch {
+            resolve({ status: res.statusCode, json: null, raw: buf });
+          }
+        });
+      });
     });
-    req.on("error", reject);
+    let abortPoll = null;
+    if (opts.track !== false) {
+      attachAbortableReq(req);
+      abortPoll = setInterval(() => {
+        if (!(activeGenerate && activeGenerate.abort)) return;
+        try {
+          req.destroy(new Error("cancelled"));
+        } catch {}
+      }, 200);
+    }
+    req.on("error", (e) => {
+      if (abortPoll) {
+        clearInterval(abortPoll);
+        abortPoll = null;
+      }
+      if (opts.track !== false && activeGenerate && activeGenerate.abort)
+        reject(new Error("cancelled"));
+      else reject(e);
+    });
     req.on("timeout", () => {
+      if (abortPoll) {
+        clearInterval(abortPoll);
+        abortPoll = null;
+      }
       req.destroy();
       reject(new Error("timeout"));
     });
   });
 }
 
-function httpPostJson(url, body, timeoutMs) {
+function parseGradioSseProgress(chunk) {
+  const out = { pct: null, desc: "" };
+  if (!chunk) return out;
+  /* Gradio 4/5: event: progress — 仅真实进度，不做时间估算 */
+  const re = /event:\s*([^\r\n]+)\r?\ndata:\s*([^\r\n]+)/gi;
+  let m;
+  while ((m = re.exec(chunk))) {
+    const ev = String(m[1] || "").trim().toLowerCase();
+    const raw = String(m[2] || "").trim();
+    if (ev !== "progress") continue;
+    let j = null;
+    try {
+      j = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    let best = null;
+    const list = Array.isArray(j.progress_data) ? j.progress_data : [];
+    for (const it of list) {
+      if (!it) continue;
+      const desc = String(it.desc || it.unit || "").trim();
+      if (desc) out.desc = desc;
+      if (it.length > 0 && it.index != null) {
+        best = Math.max(0, Math.min(1, Number(it.index) / Number(it.length)));
+      } else if (it.progress != null && isFinite(Number(it.progress))) {
+        best = Math.max(0, Math.min(1, Number(it.progress)));
+      }
+    }
+    if (j.progress != null && isFinite(Number(j.progress))) {
+      best = Math.max(0, Math.min(1, Number(j.progress)));
+    }
+    if (best != null) out.pct = Math.round(best * 1000) / 10;
+  }
+  return out;
+}
+
+/**
+ * Gradio call SSE：连接会一直开到任务结束。
+ * 按绝对截止时间等待；若 SSE 带 progress 事件则转发真实进度（无时间估算、无自动杀）。
+ */
+function httpGetGradioSse(url, absoluteDeadline, opts) {
+  opts = opts || {};
+  const nodeId = String(
+    (opts.nodeId || (activeGenerate && activeGenerate.nodeId) || ""),
+  );
+  return new Promise((resolve, reject) => {
+    const remaining = Math.max(15000, absoluteDeadline - Date.now());
+    let buf = "";
+    let settled = false;
+    let abortPoll = null;
+    let wallTimer = null;
+    let lastEmitPct = 8;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      if (abortPoll) {
+        clearInterval(abortPoll);
+        abortPoll = null;
+      }
+      if (wallTimer) {
+        clearTimeout(wallTimer);
+        wallTimer = null;
+      }
+      fn();
+    };
+    const noteProgress = (chunk) => {
+      const parsed = parseGradioSseProgress(chunk);
+      if (parsed.pct == null) return;
+      lastEmitPct = Math.max(8, Math.min(95, Math.round(parsed.pct * 0.9 + 8)));
+      emitProgress({
+        phase: "generate",
+        nodeId,
+        message: parsed.desc || "生成中…",
+        pct: lastEmitPct,
+      });
+    };
+    const tryParse = () => {
+      if (/event:\s*error/i.test(buf)) {
+        const em = buf.match(/data:\s*(\{[\s\S]*?\})/);
+        finish(() => reject(new Error(em ? em[1] : "gradio_error")));
+        try {
+          req.destroy();
+        } catch {}
+        return true;
+      }
+      const dm = buf.match(/event:\s*complete\s*\ndata:\s*(\[[\s\S]*?\])/);
+      if (dm) {
+        try {
+          req.destroy();
+        } catch {}
+        finish(() => {
+          try {
+            resolve({ status: 200, raw: buf, dataArr: JSON.parse(dm[1]) });
+          } catch (e) {
+            reject(e);
+          }
+        });
+        return true;
+      }
+      return false;
+    };
+
+    const req = http.get(url, { timeout: remaining }, (res) => {
+      res.on("data", (c) => {
+        const chunk = c.toString();
+        buf += chunk;
+        noteProgress(chunk);
+        if (opts.track !== false && activeGenerate && activeGenerate.abort) {
+          try {
+            req.destroy();
+          } catch {}
+          finish(() => reject(new Error("cancelled")));
+          return;
+        }
+        tryParse();
+      });
+      res.on("end", () => {
+        if (settled) return;
+        if (tryParse()) return;
+        finish(() => resolve({ status: res.statusCode, raw: buf, dataArr: null }));
+      });
+    });
+    if (opts.track !== false) {
+      attachAbortableReq(req);
+      abortPoll = setInterval(() => {
+        if (!(activeGenerate && activeGenerate.abort)) return;
+        try {
+          req.destroy(new Error("cancelled"));
+        } catch {}
+      }, 200);
+    }
+    wallTimer = setTimeout(() => {
+      try {
+        req.destroy();
+      } catch {}
+      finish(() => reject(new Error("timeout")));
+    }, remaining + 2000);
+    req.on("error", (e) => {
+      if (settled) return;
+      if (opts.track !== false && activeGenerate && activeGenerate.abort)
+        finish(() => reject(new Error("cancelled")));
+      else finish(() => reject(e));
+    });
+    req.on("timeout", () => {
+      try {
+        req.destroy();
+      } catch {}
+      finish(() => reject(new Error("timeout")));
+    });
+  });
+}
+
+function httpPostJson(url, body, timeoutMs, opts) {
+  opts = opts || {};
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const data = JSON.stringify(body);
@@ -327,6 +630,10 @@ function httpPostJson(url, body, timeoutMs) {
         let buf = "";
         res.on("data", (c) => (buf += c));
         res.on("end", () => {
+          if (abortPoll) {
+            clearInterval(abortPoll);
+            abortPoll = null;
+          }
           try {
             resolve({ status: res.statusCode, json: JSON.parse(buf), raw: buf });
           } catch {
@@ -335,14 +642,67 @@ function httpPostJson(url, body, timeoutMs) {
         });
       },
     );
-    req.on("error", reject);
+    let abortPoll = null;
+    if (opts.track !== false) {
+      attachAbortableReq(req);
+      abortPoll = setInterval(() => {
+        if (!(activeGenerate && activeGenerate.abort)) return;
+        try {
+          req.destroy(new Error("cancelled"));
+        } catch {}
+      }, 200);
+    }
+    req.on("error", (e) => {
+      if (abortPoll) {
+        clearInterval(abortPoll);
+        abortPoll = null;
+      }
+      if (opts.track !== false && activeGenerate && activeGenerate.abort)
+        reject(new Error("cancelled"));
+      else reject(e);
+    });
     req.on("timeout", () => {
+      if (abortPoll) {
+        clearInterval(abortPoll);
+        abortPoll = null;
+      }
       req.destroy();
       reject(new Error("timeout"));
     });
     req.write(data);
     req.end();
   });
+}
+
+async function tryCancelGradio(eventId, port) {
+  const id = String(eventId || "").trim();
+  const p = Number(port) || DEFAULT_PORT;
+  const base = `http://127.0.0.1:${p}`;
+  const bodies = id
+    ? [
+        { event_id: id },
+        { event_id: id, session_hash: "mtnode" },
+        { event_id: id, session_hash: "mtnode", fn_index: 0 },
+      ]
+    : [{ session_hash: "mtnode" }];
+  const paths = [
+    "/gradio_api/queue/cancel",
+    "/queue/cancel",
+    "/gradio_api/cancel",
+    "/gradio_api/reset",
+    "/cancel",
+    "/reset",
+  ];
+  appendConsole(
+    id ? "[cancel] gradio event_id=" + id : "[cancel] gradio (no event_id yet)",
+  );
+  for (const pathName of paths) {
+    for (const body of bodies) {
+      try {
+        await httpPostJson(base + pathName, body, 4000, { track: false });
+      } catch {}
+    }
+  }
 }
 
 async function probeGradio(port) {
@@ -819,6 +1179,30 @@ async function stopBackend() {
   return { ok: true };
 }
 
+/** 任务用：确保 Gradio 可用（已在跑则复用；否则启动并等到可探测） */
+async function ensureBackendReadyForJob() {
+  const started = await startBackend();
+  if (!started || !started.ok) {
+    return { ok: false, error: (started && started.error) || "backend_start_failed" };
+  }
+  const port = Number(started.port) || Number(loadConfig().port) || DEFAULT_PORT;
+  if (await probeGradio(port)) return { ok: true, port, reused: !!started.reused };
+  const deadline = Date.now() + 300000;
+  appendConsole("[job] waiting for gradio on :" + port);
+  while (Date.now() < deadline) {
+    if (await probeGradio(port)) {
+      appendConsole("[job] gradio ready :" + port);
+      return { ok: true, port };
+    }
+    await sleep(1500);
+    const meta = loadPidMeta();
+    if (meta && meta.pid && !isAlivePid(meta.pid) && !meta.external) {
+      return { ok: false, error: "backend_exited" };
+    }
+  }
+  return { ok: false, error: "backend_start_timeout" };
+}
+
 async function startBackend() {
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
@@ -830,26 +1214,57 @@ async function startBackend() {
 
   const port = Number(cfg.port) || DEFAULT_PORT;
   if (await probeGradio(port)) {
+    syncPackAppToInstall(installDir);
+    appendConsole(
+      "gradio already up on :" +
+        port +
+        " — 若刚更新了 app 代码，请先「关闭服务」再「启用」以加载新 ui.py",
+    );
+    startConsoleLogWatch();
     const meta = loadPidMeta();
     if (!meta || !isAlivePid(meta.pid)) {
       savePidMeta({ pid: 0, port, external: true, startedAt: Date.now() });
     }
     saveConfig({ wantRunning: true });
-    appendConsole("gradio already up on :" + port);
     return { ok: true, reused: true, port };
   }
 
   const meta = loadPidMeta();
   if (meta && isAlivePid(meta.pid)) {
+    syncPackAppToInstall(installDir);
+    startConsoleLogWatch();
     saveConfig({ wantRunning: true });
-    return { ok: true, reused: true, port, pid: meta.pid };
+    const waitUntil = Date.now() + 180000;
+    appendConsole("backend pid alive, waiting for gradio :" + port);
+    while (Date.now() < waitUntil) {
+      if (await probeGradio(port)) {
+        appendConsole("gradio ready (reused pid) :" + port);
+        return { ok: true, reused: true, port, pid: meta.pid };
+      }
+      await sleep(1500);
+      if (!isAlivePid(meta.pid)) {
+        appendConsole("backend pid died while waiting for gradio");
+        clearPidMeta();
+        break;
+      }
+    }
+    if (await probeGradio(port)) {
+      return { ok: true, reused: true, port, pid: meta.pid };
+    }
+    appendConsole("gradio not up with live pid — killing stale process and respawning");
+    await killPidTree(meta.pid);
+    clearPidMeta();
+    backendProc = null;
   }
 
   const py = join(installDir, ".venv", "Scripts", "python.exe");
   if (!fs.existsSync(py)) return { ok: false, error: "no_venv" };
 
+  syncPackAppToInstall(installDir);
+
   mk(path.dirname(consoleLogPath()));
   appendConsole("starting gradio…");
+  startConsoleLogWatch();
   const outFd = fs.openSync(consoleLogPath(), "a");
   const child = spawn(py, ["-m", "app.ui"], {
     cwd: installDir,
@@ -859,6 +1274,7 @@ async function startBackend() {
     env: Object.assign({}, process.env, {
       HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
       HF_HUB_DISABLE_XET: "1",
+      PYTHONUNBUFFERED: "1",
     }),
   });
   fs.closeSync(outFd);
@@ -868,8 +1284,8 @@ async function startBackend() {
   saveConfig({ wantRunning: true });
   appendConsole("backend spawned pid=" + child.pid);
 
-  // Wait until Gradio responds (model load may take long — wait up to 3 min for port)
-  const deadline = Date.now() + 180000;
+  // Wait until Gradio responds (model load may take long — wait up to 5 min)
+  const deadline = Date.now() + 300000;
   while (Date.now() < deadline) {
     if (await probeGradio(port)) {
       appendConsole("gradio ready :" + port);
@@ -881,7 +1297,7 @@ async function startBackend() {
       return { ok: false, error: "backend_exited" };
     }
   }
-  return { ok: true, pid: child.pid, port, starting: true };
+  return { ok: false, error: "backend_start_timeout", pid: child.pid, port, starting: true };
 }
 
 function uninstallPreview() {
@@ -987,6 +1403,40 @@ function extractSavedPathFromMessage(msg) {
   return m ? String(m[1] || "").trim() : "";
 }
 
+function audioFileSize(p) {
+  try {
+    if (!p || !fs.existsSync(p)) return 0;
+    const st = fs.statSync(p);
+    return st.isFile() ? Number(st.size) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Prefer a real WAV/FLAC on disk (≥ header size). Never return empty/truncated placeholders. */
+function pickMusicOutputPath(candidates, fallback) {
+  const list = [];
+  for (const c of candidates || []) {
+    const p = String(c || "").trim();
+    if (!p) continue;
+    /* Gradio sometimes returns /file=... URLs — skip non-path values */
+    if (/^https?:/i.test(p) || p.startsWith("/file=")) continue;
+    list.push(p);
+  }
+  if (fallback) list.push(String(fallback));
+  let best = "";
+  let bestSize = 0;
+  for (const p of list) {
+    const sz = audioFileSize(p);
+    /* RIFF/WAV header is 44 bytes; reject empty or tiny stubs */
+    if (sz >= 1024 && sz > bestSize) {
+      best = p;
+      bestSize = sz;
+    }
+  }
+  return best;
+}
+
 function isGradioAppError(err) {
   const s = String(err || "");
   return (
@@ -995,42 +1445,92 @@ function isGradioAppError(err) {
   );
 }
 
+function uniqueFileInDir(dir, preferredName, defaultExt) {
+  mk(dir);
+  let name = String(preferredName || "").trim() || "out" + (defaultExt || "");
+  const extMatch = name.match(/(\.[a-z0-9]+)$/i);
+  const ext = (extMatch && extMatch[1]) || defaultExt || "";
+  const stem = ext ? name.slice(0, -ext.length) : name;
+  const baseStem = stem || "out";
+  if (!extMatch && ext) name = baseStem + ext;
+  let dest = join(dir, name);
+  if (!fs.existsSync(dest)) return { path: dest, filename: name, renamed: false };
+  for (let i = 1; i < 10000; i++) {
+    const fn = baseStem + "_" + i + ext;
+    dest = join(dir, fn);
+    if (!fs.existsSync(dest)) return { path: dest, filename: fn, renamed: true };
+  }
+  throw new Error("unique_filename_exhausted");
+}
+
 function finalizeMusicOutputFile(srcPath, userDir, preferredName) {
   const src = String(srcPath || "").trim();
-  if (!src || !fs.existsSync(src)) return src;
+  if (!src || audioFileSize(src) < 1024) {
+    throw new Error("audio_output_missing_or_corrupt:" + (src || "(empty)"));
+  }
   const destDir = String(userDir || "").trim();
   if (!destDir) return src;
-  mk(destDir);
   let name = String(preferredName || "").trim() || path.basename(src);
   if (!/\.(wav|flac)$/i.test(name)) name += ".wav";
-  const dest = join(destDir, name);
-  if (path.resolve(src) === path.resolve(dest)) return dest;
-  fs.copyFileSync(src, dest);
-  return dest;
+  const uniq = uniqueFileInDir(destDir, name, ".wav");
+  if (path.resolve(src) === path.resolve(uniq.path)) return uniq.path;
+  fs.copyFileSync(src, uniq.path);
+  if (audioFileSize(uniq.path) < 1024) {
+    throw new Error("audio_copy_corrupt:" + uniq.path);
+  }
+  if (uniq.renamed) {
+    appendConsole("[job] target existed → saved as " + uniq.filename);
+  }
+  return uniq.path;
+}
+
+async function forceKillBackend(reason) {
+  const why = String(reason || "release_gpu");
+  appendConsole("[force-kill] " + why + " — 结束后端进程以释放显存");
+  if (activeGenerate) activeGenerate.abort = true;
+  destroyActiveGenerateReq();
+  clearLock();
+  activeGenerate = null;
+  try {
+    await stopBackend();
+  } catch (e) {
+    appendConsole("[force-kill] stop warn: " + String((e && e.message) || e));
+  }
+  emitProgress({
+    phase: "generate",
+    nodeId: "",
+    message: "已强制结束后端以释放显存（下次执行节点会重新启动）",
+    error: true,
+    forceKilled: true,
+  });
+  return { ok: true, killed: true, reason: why };
+}
+
+function generateDeadlineMs(audioDurationSec) {
+  const dur = Math.max(10, Math.min(150, Number(audioDurationSec) || 60));
+  return Math.min(GENERATE_MAX_MS, Math.max(GENERATE_BASE_MS, Math.round(dur * 25 * 1000)));
 }
 
 async function callGradioGenerate(params) {
   const cfg = loadConfig();
   const port = Number(cfg.port) || DEFAULT_PORT;
-  const base = `http://127.0.0.1:${port}`;
-  if (!(await probeGradio(port))) {
-    throw new Error("backend_not_running");
-  }
+  if (!(await probeGradio(port))) throw new Error("backend_not_running");
 
+  const base = `http://127.0.0.1:${port}`;
   const installDir = cfg.installDir;
   const modelPath = join(installDir, "models", "MiniMax-Music3");
-  /* Stage under installDir/output (Gradio cwd) so Audio filepath caching works
-     even when the canvas asks for an arbitrary workspace path. */
-  const userOutputDir = String(params.outputDir || join(installDir, "output"));
+  const userOutputDir = String(params.outputDir || "").trim();
   const stagingDir = join(installDir, "output");
   mk(stagingDir);
   let stagingName = String(params.filename || "").trim();
   if (!stagingName) stagingName = "mtnode_" + Date.now() + ".wav";
   else if (!/\.(wav|flac)$/i.test(stagingName)) stagingName += ".wav";
 
+  const promptStr = String(params.prompt || "");
+  const lyricsStr = String(params.lyrics || "");
   const data = [
-    String(params.prompt || ""),
-    String(params.lyrics || ""),
+    promptStr,
+    lyricsStr,
     Number(params.audioDuration) || 60,
     Number(params.seed) || 0,
     stagingDir,
@@ -1039,13 +1539,21 @@ async function callGradioGenerate(params) {
     params.offload !== false,
   ];
 
-  // Only the Blocks api_name — do not fall through to predict/generate (causes ECONNRESET noise).
+  const deadlineAt = Date.now() + generateDeadlineMs(data[2]);
+  const nodeId = String(params.nodeId || (activeGenerate && activeGenerate.nodeId) || "");
   const names = ["run_generate"];
   let lastErr = null;
   for (const name of names) {
     try {
       const callUrl = `${base}/gradio_api/call/${name}`;
-      appendConsole(`gradio call ${name}`);
+      appendConsole(
+        `gradio call ${name} prompt=${promptStr.length}c lyrics=${lyricsStr.length}c dur=${data[2]} seed=${data[3]} file=${stagingName}`,
+      );
+      appendConsole(
+        "deadline≈" + Math.round((deadlineAt - Date.now()) / 60000) + "min (SSE 长连接，不再 120s 掐断)",
+      );
+      appendConsole("prompt_head=" + clipConsoleText(promptStr, 180));
+      appendConsole("lyrics_head=" + clipConsoleText(lyricsStr, 180));
       const posted = await httpPostJson(callUrl, { data }, 60000);
       const eventId =
         (posted.json && (posted.json.event_id || posted.json.eventId)) ||
@@ -1054,53 +1562,45 @@ async function callGradioGenerate(params) {
         lastErr = "no_event_id:" + name;
         continue;
       }
+      if (activeGenerate) activeGenerate.eventId = eventId;
       const streamUrl = `${base}/gradio_api/call/${name}/${eventId}`;
-      const deadline = Date.now() + 600000;
-      while (Date.now() < deadline) {
-        if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
-        const r = await httpGetJson(streamUrl, 120000);
-        const raw = r.raw || "";
+      if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
+
+      let r;
+      try {
+        r = await httpGetGradioSse(streamUrl, deadlineAt, { nodeId });
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        if (msg === "cancelled" || (activeGenerate && activeGenerate.abort))
+          throw new Error("cancelled");
+        if (msg === "timeout") throw new Error("gradio_timeout");
+        throw e;
+      }
+
+      const arr = r.dataArr;
+      const raw = r.raw || "";
+      if (!arr) {
         if (raw.includes("error") && raw.includes("event:")) {
           const em = raw.match(/data:\s*(\{[\s\S]*?\})/);
           throw new Error(em ? em[1] : "gradio_error");
         }
-        const dm = raw.match(/event:\s*complete\s*\ndata:\s*(\[[\s\S]*?\])/);
-        if (dm) {
-          const arr = JSON.parse(dm[1]);
-          const msg = String(arr[1] || "");
-          if (/^Error:/i.test(msg)) throw new Error(msg);
-          const fromMsg = extractSavedPathFromMessage(msg);
-          const fromOut = coerceGradioFilePath(arr[0]);
-          const staged =
-            (fromMsg && fs.existsSync(fromMsg) ? fromMsg : "") ||
-            (fromOut && fs.existsSync(fromOut) ? fromOut : "") ||
-            join(stagingDir, stagingName);
-          const finalPath = finalizeMusicOutputFile(staged, userOutputDir, stagingName);
-          return { path: finalPath, message: msg.replace(staged, finalPath) };
-        }
-        if (r.json && Array.isArray(r.json)) {
-          const msg = String(r.json[1] || "");
-          if (/^Error:/i.test(msg)) throw new Error(msg);
-          const fromMsg = extractSavedPathFromMessage(msg);
-          const staged = fromMsg || coerceGradioFilePath(r.json[0]) || join(stagingDir, stagingName);
-          const finalPath = finalizeMusicOutputFile(staged, userOutputDir, stagingName);
-          return { path: finalPath, message: msg };
-        }
-        if (r.json && r.json.data) {
-          const msg = String(r.json.data[1] || "");
-          if (/^Error:/i.test(msg)) throw new Error(msg);
-          const fromMsg = extractSavedPathFromMessage(msg);
-          const staged =
-            fromMsg || coerceGradioFilePath(r.json.data[0]) || join(stagingDir, stagingName);
-          const finalPath = finalizeMusicOutputFile(staged, userOutputDir, stagingName);
-          return { path: finalPath, message: msg };
-        }
-        await sleep(2000);
+        throw new Error("gradio_incomplete");
       }
-      throw new Error("gradio_timeout");
+      const msg = String(arr[1] || "");
+      if (/^Error:/i.test(msg)) throw new Error(msg);
+      const fromMsg = extractSavedPathFromMessage(msg);
+      const fromOut = coerceGradioFilePath(arr[0]);
+      const staged = pickMusicOutputPath(
+        [fromMsg, fromOut, join(stagingDir, stagingName)],
+        "",
+      );
+      if (!staged) throw new Error("audio_output_missing_or_corrupt");
+      const finalPath = finalizeMusicOutputFile(staged, userOutputDir, stagingName);
+      return { path: finalPath, message: msg.replace(staged, finalPath) };
     } catch (e) {
       lastErr = String((e && e.message) || e);
-      if (lastErr === "cancelled" || lastErr === "backend_not_running") throw e;
+      if (lastErr === "cancelled" || lastErr === "backend_not_running" || lastErr === "gradio_timeout")
+        throw e;
       appendConsole("gradio try failed: " + lastErr);
       if (isGradioAppError(lastErr)) break;
     }
@@ -1115,49 +1615,117 @@ async function generateMusic(params) {
 
   const lock = refreshStaleLock();
   if (lock && lock.nodeId && lock.nodeId !== nodeId) {
+    const msg = "已有音乐生成任务进行中，请等待完成后再试（禁止并行）";
+    appendConsole("[job] busy_other_node: " + (lock.nodeId || ""));
     return {
       ok: false,
       error: "busy_other_node",
       lock,
-      message: "已有音乐生成任务进行中，请等待完成后再试（禁止并行）",
+      message: msg,
     };
   }
 
-  writeLock({
-    nodeId,
-    workflowId: params.workflowId || "",
-    startedAt: Date.now(),
-    status: "running",
-  });
-  activeGenerate = { nodeId, abort: false };
-  emitProgress({ phase: "generate", nodeId, message: "生成中…", pct: 5 });
-
+  let resultPayload = null;
   try {
+    appendConsole("[job] start → generate → verify → stop");
+    emitProgress({
+      phase: "generate",
+      nodeId,
+      message: "正在启动后端…",
+      pct: 2,
+    });
+    const ready = await ensureBackendReadyForJob();
+    if (!ready.ok) {
+      const err = ready.error || "backend_start_failed";
+      appendConsole("[job] backend start failed: " + err);
+      emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
+      resultPayload = { ok: false, error: err, message: "启动后端失败：" + err };
+      return resultPayload;
+    }
+
+    writeLock({
+      nodeId,
+      workflowId: params.workflowId || "",
+      startedAt: Date.now(),
+      status: "running",
+    });
+    activeGenerate = { nodeId, abort: false, eventId: "", req: null };
+    emitProgress({ phase: "generate", nodeId, message: "生成中…", pct: 8 });
+
     const result = await callGradioGenerate(params);
+    if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
     const msg = String(result.message || "");
     if (/^Error:/i.test(msg) || !result.path) {
       throw new Error(msg || "generate_failed");
     }
+    const outPath = String(result.path);
+    if (!fs.existsSync(outPath)) {
+      throw new Error("output_file_missing: " + outPath);
+    }
+    let sz = 0;
+    try {
+      sz = fs.statSync(outPath).size || 0;
+    } catch {}
+    if (sz < 64) {
+      throw new Error("output_file_empty_or_too_small: " + outPath);
+    }
+
     clearLock();
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: "完成", pct: 100, done: true });
-    return { ok: true, path: result.path, message: msg };
+    appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
+    resultPayload = { ok: true, path: outPath, message: msg, bytes: sz };
+    return resultPayload;
   } catch (e) {
+    const err = String((e && e.message) || e);
+    appendConsole("[job] error: " + err);
     clearLock();
     activeGenerate = null;
-    const err = String((e && e.message) || e);
-    emitProgress({ phase: "generate", nodeId, message: err, error: true });
-    return { ok: false, error: err };
+    emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
+    resultPayload = {
+      ok: false,
+      error: err,
+      message: err,
+    };
+    return resultPayload;
+  } finally {
+    appendConsole("[job] stopping backend after job");
+    try {
+      await stopBackend();
+    } catch (e) {
+      appendConsole("[job] stop warn: " + String((e && e.message) || e));
+    }
   }
 }
 
 function cancelGenerate(nodeId) {
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  let eventId = "";
+  let nid = String(nodeId || "");
   if (activeGenerate && (!nodeId || activeGenerate.nodeId === nodeId)) {
     activeGenerate.abort = true;
+    eventId = activeGenerate.eventId || "";
+    nid = nid || activeGenerate.nodeId || "";
+    tryCancelGradio(eventId, port).catch(() => {});
+    destroyActiveGenerateReq();
+  } else {
+    tryCancelGradio("", port).catch(() => {});
   }
   const lock = loadLock();
   if (lock && (!nodeId || lock.nodeId === nodeId)) clearLock();
-  return { ok: true };
+  setTimeout(() => {
+    forceKillBackend("user_cancel").catch(() => {});
+  }, 400);
+  emitProgress({
+    phase: "generate",
+    nodeId: nid,
+    message: "已取消（正在结束后端）",
+    error: true,
+    cancelled: true,
+  });
+  appendConsole("[cancel] generate cancelled node=" + (nid || "?") + " → stop backend");
+  return { ok: true, forceKillScheduled: true };
 }
 
 function openConsoleWindow() {
@@ -1278,6 +1846,7 @@ function registerMusic3Ipc(opts) {
   ensureUiRuntime();
   refreshStaleLock();
   startGpuPolling();
+  startConsoleLogWatch();
 
   // Re-attach to existing backend on startup
   (async () => {
@@ -1319,6 +1888,7 @@ function registerMusic3Ipc(opts) {
   ipcMain.handle("music3:uninstall", async (e, opts) => uninstallProject(opts || {}));
   ipcMain.handle("music3:generate", async (e, params) => generateMusic(params || {}));
   ipcMain.handle("music3:cancelGenerate", async (e, nodeId) => cancelGenerate(nodeId));
+  ipcMain.handle("music3:forceKillBackend", async () => forceKillBackend("manual"));
   ipcMain.handle("music3:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("music3:consoleTail", async (e, n) => consoleTail(n));
   ipcMain.handle("music3:open", async () => openConsoleWindow());

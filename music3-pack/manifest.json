@@ -1,6 +1,6 @@
 {
   "id": "minimax-music3",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "minAppVersion": "1.1.20",
   "title": {
     "zh": "Minimax Music 3",
@@ -12,5 +12,5 @@
   },
   "diskHintGb": 65,
   "backendPort": 7860,
-  "zipUrl": "music3-runtime-1.0.2.zip"
+  "zipUrl": "music3-runtime-1.0.3.zip"
 }

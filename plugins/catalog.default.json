@@ -1,22 +1,22 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-19T19:29:55.674Z",
+  "updatedAt": "2026-08-20T20:45:32.595Z",
   "plugins": [
     {
       "id": "forum",
       "kind": "window",
       "order": 10,
-      "version": "1.0.2",
+      "version": "1.0.5",
       "icon": "forum.png",
       "title": {
         "zh": "MTNode 讨论区",
         "en": "MTNode Forum"
       },
       "subtitle": {
-        "zh": "小型聊天窗口，与创意工坊共用账户。综合区 / Bug 提交 / 功能改进；本地保存记录并同步近 3 天消息。",
-        "en": "A small chat window sharing the Creative Workshop account. General / Bugs / Ideas; history is kept locally and the last 3 days are synced."
+        "zh": "小型聊天窗口，与创意工坊共用账户。综合区 / Bug 提交 / 功能改进；默认同步昨天 5:00 至今，更早按日期点选加载。",
+        "en": "A small chat window sharing the Creative Workshop account. General / Bugs / Ideas; syncs since yesterday 5:00, older days load on tap."
       },
-      "zipUrl": "forum-1.0.2.zip",
+      "zipUrl": "forum-1.0.5.zip",
       "entry": "chat.html",
       "window": {
         "width": 380,
@@ -26,15 +26,15 @@
         "alwaysOnTop": true,
         "skipTaskbar": true
       },
-      "sha256": "b4e252316ab54aabe807b5f06aa59cbf46d15bf7c526a2e4bd22da3171b4b9d7",
-      "bytes": 9297
+      "sha256": "69119c2ee5a20ad4cbfaa28e17f107963d3bf34267d5cebd290789a6e33fb6b1",
+      "bytes": 11747
     },
     {
       "id": "bongochat",
       "kind": "pet",
       "handler": "pet",
       "order": 20,
-      "version": "1.0.8",
+      "version": "1.0.9",
       "icon": "bongochat.png",
       "title": {
         "zh": "BongoChat",
@@ -50,7 +50,7 @@
       "kind": "music3",
       "handler": "music3",
       "order": 30,
-      "version": "1.0.2",
+      "version": "1.0.3",
       "minAppVersion": "1.1.20",
       "icon": "minimax-music3.png",
       "title": {
@@ -67,7 +67,7 @@
       "kind": "h3",
       "handler": "h3",
       "order": 40,
-      "version": "1.0.2",
+      "version": "1.0.3",
       "minAppVersion": "1.1.20",
       "icon": "minimax-h3.png",
       "title": {

@@ -683,6 +683,9 @@
     "尝试次数（1-10，默认 1）": "Attempts (1-10, default 1)",
     "弹出文件夹窗口选择统一工作目录": "Open a folder dialog to choose a shared working directory",
     "点击展开 / 收起模型思考过程": "Click to expand / collapse model thinking",
+    "点击展开": "Click to expand",
+    "点击收起": "Click to collapse",
+    "复制本条到剪贴板": "Copy this message to clipboard",
     "复制 API Key 到剪贴板": "Copy API Key to clipboard",
     "工具节点（批次拆分 / 合并）": "Tool Node (batch split / merge)",
     "画布已删除，已重建默认画布": "Canvas deleted; default canvas recreated",
@@ -744,6 +747,26 @@
     "服务商（自动读取全局 API 配置）": "Provider (reads global API config automatically)",
     "横向缩放（仅改变横向布局，纵向不变）": "Scale horizontally (layout width only; height unchanged)",
     "请先指定保存路径（可用「浏览」选择）": "Set a save path first (use \"Browse\" to choose)",
+    "请先在节点设置中指定输出路径（可用「浏览」选择）":
+      "Set an output path in node settings first (use \"Browse\" to choose)",
+    "输出路径（必填）": "Output path (required)",
+    "未设置输出路径时无法启动生成": "Generation cannot start until an output path is set",
+    "未设置路径": "path not set",
+    "文件不存在（生成后将显示于此）": "File not found (will appear here after generate)",
+    "目标文件已存在，改为保存为：": "File exists — saving as: ",
+    "已取消音乐生成": "Music generation cancelled",
+    "已取消视频生成": "Video generation cancelled",
+    "输出路径（必填）": "Output path (required)",
+    "未设置输出路径时无法启动生成": "Generation cannot start until an output path is set",
+    "请先在节点设置中指定输出路径（可用「浏览」选择）":
+      "Set an output path in node settings first (use \"Browse\" to choose)",
+    "输出路径（必须设置，": "Output path (required, ",
+    "生成前必须设置输出文件路径；相对路径需先设置顶栏工作目录":
+      "Output file path is required before generate; relative paths need the workspace bar set",
+    "固定节点无法删除（起点 / 终点）": "Pinned nodes cannot be deleted (start / end)",
+    "已跳过固定节点（起点 / 终点）": "Skipped pinned nodes (start / end)",
+    "固定节点无法删除（起点 / 终点 / 绑定保存）": "Pinned nodes cannot be deleted (start / end / bound save)",
+    "已跳过固定节点（起点 / 终点 / 绑定保存）": "Skipped pinned nodes (start / end / bound save)",
     "已安装插件（点击展开查看 / 管理）": "Installed plugins (click to expand / manage)",
     "已请求中断(引擎正在重启该工作目录)": "Interrupt requested (engine is restarting this working directory)",
     "直接删除该会话(提示确认,不可撤销)": "Delete this session (asks for confirmation; cannot be undone)",
@@ -843,6 +866,12 @@
     "智能能力可读写此目录下的文件；留空使用应用默认数据目录": "Agent capability can read/write files in this directory; leave empty to use the app default data directory",
     "MCP 服务器（连接后智能节点自动获得该服务器的工具）": "MCP servers (agent nodes get this server's tools after connecting)",
     "<a href=\"#\" title=\"已阻止不安全链接\"": "<a href=\"#\" title=\"Blocked unsafe link\"",
+    "已阻止不安全链接": "Blocked unsafe link",
+    "点击打开": "Click to open",
+    "预览": "Preview",
+    "无法打开链接：": "Cannot open link: ",
+    "无法打开路径": "Cannot open path",
+    "无法打开路径：": "Cannot open path: ",
     "点击切换查看对应尝试结果，下游节点引用当前选中的尝试内容": "Click to view that attempt's result; downstream nodes use the currently selected attempt",
     "该服务商未填写 API Key（设置 · API/配置）": "This provider has no API Key (Settings · API/Config)",
     "例如：将输入内容总结为三句话… 输入 @ 引用已连接节点": "e.g. Summarize the input in three sentences… type @ to reference connected nodes",
@@ -966,6 +995,23 @@
     "点击引用全局节点 · 拖动移动":
       "Click to reference global nodes · drag to move",
     "全局参考": "Global reference",
+    "全局 Tag · ": "Global tags · ",
+    "Tag 筛选已开 · 点击管理标签": "Tag filter on · click to manage tags",
+    "管理 Tag：勾选筛选连入显示，并为连入节点打标":
+      "Manage tags: check to filter wired-in chips and stamp tags onto them",
+    "勾选 Tag：仅显示带该标的连入节点，并为当前连入节点打上该标。可添加 / 删除 Tag。":
+      "Check a tag to show only matching wired-in nodes and stamp it onto them. Add or delete tags here.",
+    "暂无 Tag · 点击下方添加": "No tags yet · add one below",
+    "删除此 Tag（所有节点上的该标一并移除）":
+      "Delete this tag (also removes it from all nodes)",
+    "删除 Tag「{tag}」？已打在节点上的该标也会移除。":
+      "Delete tag \"{tag}\"? It will also be removed from stamped nodes.",
+    "删除 Tag": "Delete tag",
+    "＋ 添加 Tag": "+ Add tag",
+    "添加 Tag": "Add tag",
+    "新 Tag 名称": "New tag name",
+    "Tag 名称不能为空": "Tag name cannot be empty",
+    "无匹配该 Tag 的连入节点": "No wired-in nodes match the selected tags",
     "智能任务节点": "Agent Task Node",
     "MTNode AI编排器": "MTNode AI Orchestrator",
     "语言": "Language",
@@ -1899,6 +1945,29 @@
     "打开目录": "Open folder",
     "在资源管理器中打开当前配置数据目录":
       "Open the current config data folder in the file manager",
+    "错误与崩溃日志": "Error & crash logs",
+    "应用内部错误与崩溃会自动写入本地诊断日志（不含 API Key）。导出后可发给开发者协助排查。":
+      "Internal errors and crashes are saved to local diagnostic logs (API keys excluded). Export and send them to the developer for troubleshooting.",
+    "正在读取日志状态…": "Reading log status…",
+    "导出诊断日志…": "Export diagnostic log…",
+    "打包环境信息与近期错误日志为 .txt，便于提交":
+      "Bundle environment info and recent error logs into a .txt file for submission",
+    "打开日志文件夹": "Open logs folder",
+    "在资源管理器中打开自动保存的日志目录":
+      "Open the auto-saved logs folder in the file manager",
+    "日志目录：": "Logs folder: ",
+    "error.log：": "error.log: ",
+    "尚无 error.log": "No error.log yet",
+    "最近崩溃报告：": "Latest crash report: ",
+    "尚无崩溃报告": "No crash reports yet",
+    "已保存报告数：": "Saved reports: ",
+    "诊断日志已导出，请将该文件发送给开发者":
+      "Diagnostic log exported — please send this file to the developer",
+    "诊断日志已自动保存：": "Diagnostic log auto-saved:\n",
+    "应用内部出现错误。可将诊断日志提交给开发者以便排查。":
+      "An internal error occurred. You can submit the diagnostic log to the developer.",
+    "渲染进程异常退出：": "Renderer process exited abnormally: ",
+    "导出诊断日志": "Export diagnostic log",
     "当前由环境变量 MTNODE_DATA_DIR 指定数据目录，无法在设置中更改":
       "Data directory is set by MTNODE_DATA_DIR; cannot change it in Settings",
     "正在重启应用…": "Restarting app…",
@@ -2115,6 +2184,57 @@
     "任务": "Task",
     "任务节点（规划 / 控制流执行）": "Task Node (plan / run control flow)",
     "任务（规划 · 可进入分段解决）": "Task (plan · enter to solve in parts)",
+    "超级节点": "Super node",
+    "超级节点（收纳 · 展开子画布）": "Super node (pack · expand sub-canvas)",
+    "说明：此超级节点收纳的内容与用途…":
+      "Describe what this super node packs and why…",
+    "内部 ": "Inside ",
+    " 个节点": " nodes",
+    "展开": "Expand",
+    "收起": "Collapse",
+    "进入内部画布": "Enter inner canvas",
+    "展开后可将节点移入；或进入内部画布编辑":
+      "After expand, move nodes in — or enter the inner canvas to edit",
+    "将节点拖入此处": "Drag nodes here",
+    "拖入节点以收纳；拖出以移出":
+      "Drag nodes in to pack; drag out to unpack",
+    "超级节点子文件夹": "Super node subfolder",
+    "设置后，此超级节点内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。":
+      "After setting, default relative paths for inner nodes go under workspace/subfolder. Existing paths are not rewritten.",
+    "子文件夹（相对工作目录）": "Subfolder (relative to workspace)",
+    "子文件夹已设为：": "Subfolder set to: ",
+    "已清除子文件夹": "Subfolder cleared",
+    "子文件夹：": "Subfolder: ",
+    "设置子文件夹（内部节点默认相对路径）":
+      "Set subfolder (default relative paths for inner nodes)",
+    "设置子文件夹…": "Set subfolder…",
+    "收起内部画布": "Collapse inner canvas",
+    "展开内部画布": "Expand inner canvas",
+    "左上角展开 · 拖入节点收纳": "Expand at top-left · drag nodes in to pack",
+    "中键或空白处拖动以平移内部画布":
+      "Middle-drag or drag empty area to pan the inner canvas",
+    "（拖到内部节点）": " (drag to inner nodes)",
+    "（从内部节点拖入）": " (drag from inner nodes)",
+    "已展开超级节点：": "Expanded super node: ",
+    "展开超级节点：": "Expand super node: ",
+    "展开 / 进入内部画布": "Expand / enter inner canvas",
+    "将选中节点移入此超级节点": "Move selection into this super node",
+    "移出超级节点": "Move out of super node",
+    "已移入 ": "Moved in ",
+    "已移出 ": "Moved out ",
+    " 节点": " nodes",
+    "空": "Empty",
+    "内部收纳的节点数量（不含端口）": "Inner node count (ports excluded)",
+    "输入端": "Input",
+    "输出端": "Output",
+    "输入": "In",
+    "输出": "Out",
+    "把内部节点连到此端口 → 外部输出":
+      "Wire inner nodes here → external output",
+    "外部输入经此端口 → 内部节点":
+      "External input passes here → inner nodes",
+    "创建超级节点、将节点收纳进子画布（建议审批）":
+      "Create super nodes / pack nodes into a sub-canvas (approve recommended)",
     "☑ 任务（规划步骤 · 可进入分段解决）": "☑ Task (plan steps · enter to solve in parts)",
     "任务目标 / 本步要解决什么": "Goal / what this step should solve",
     "暂无步骤 · 先拆解再执行或进入内部实现": "No steps yet · split first, then run or enter to implement",
@@ -2200,6 +2320,19 @@
     "控制流未到达终点": "Control flow did not reach an end",
     "按序执行：从起点沿控制流跑到成功/失败终点":
       "Run in order: fire start and follow control flow to a success/fail end",
+    "控制流执行：输入激活起点 · 成功/失败输出控制信号":
+      "Control-flow run: input activates start · success/fail emit control signals",
+    "控制输入（激活内部起点）": "Control in (activate inner start)",
+    "成功（到达成功终点）": "Success (reached success end)",
+    "失败（到达失败终点）": "Fail (reached fail end)",
+    "成功": "OK",
+    "失败": "Fail",
+    "控制": "Ctrl",
+    "任务节点仅接受控制信号（不接内容连线）":
+      "Task nodes only accept control signals (no content wires)",
+    "任务控制输入端子已被占用": "Task control input is already occupied",
+    "任务节点仅有成功 / 失败控制输出":
+      "Task nodes only have success / fail control outputs",
     "让全局助手根据目标自动拆成内部任务图":
       "Ask the global assistant to split the goal into an inner task graph",
     " 个任务": " tasks",
@@ -2373,25 +2506,45 @@
     "请连接提示词输入（端子 P）": "Connect a prompt input (port P)",
     "请连接歌词输入（端子 L）；纯器乐可用 [instrumental]":
       "Connect lyrics input (port L); use [instrumental] for no vocals",
+    "P/L 可能接反：P 像歌词而 L 像提示词，请检查端子":
+      "P/L may be swapped: P looks like lyrics and L like a caption — check ports",
     "请先在「插件 · Minimax Music 3」中启用后端服务":
       "Start the backend in Plugins · Minimax Music 3 first",
     "已有音乐生成任务进行中，已中断本节点（禁止并行）":
       "Another music job is running; this node was aborted (no parallel runs)",
     "已有音乐生成任务进行中（禁止并行）：":
       "Another music job is running (no parallel runs): ",
-    "时长（秒，≤300）": "Duration (sec, ≤300)",
+    "时长（秒，≤150）": "Duration (sec, ≤150)",
+    "时长（秒，4–15）": "Duration (sec, 4–15)",
+    "时长": "Duration",
+    "种子": "Seed",
+    "摇数": "Reroll",
+    "每次执行是否重新摇数（默认开启）":
+      "Reroll seed on every run (on by default)",
     "输出目录": "Output folder",
     "文件名（可选）": "Filename (optional)",
     "随机种子": "Randomize seed",
     "auto CPU offload（24G 推荐）": "auto CPU offload (recommended on 24G)",
+    "提示词 · 歌词 · 节点内改时长/种子/输出路径":
+      "Prompt · Lyrics · edit duration/seed/output on the node",
     "P=提示词 · L=歌词 · 点击「设置」改时长/种子/输出路径":
-      "P=prompt · L=lyrics · Settings for duration/seed/output",
+      "Prompt · Lyrics · edit duration/seed/output on the node",
+    "MiniMax Music 3 · 端子：提示词 / 歌词 · 执行时自动启停后端":
+      "MiniMax Music 3 · ports: prompt / lyrics · backend auto start/stop",
+    "MiniMax Music 3 · 端子 P=提示词 · L=歌词 · 执行时自动启停后端":
+      "MiniMax Music 3 · ports: prompt / lyrics · backend auto start/stop",
     "需启用 Minimax Music 3 后端 · 全局单例互斥":
       "Requires Minimax Music 3 backend · global singleton lock",
     "音乐已生成：": "Music saved: ",
     "已取消音乐生成": "Music generation cancelled",
-    "音乐生成节点需要文本来源（提示词 / 歌词）":
-      "Music node needs text sources (prompt / lyrics)",
+    "已取消视频生成": "Video generation cancelled",
+    "若仍要创建节点，edit 必须传 layout:false，且禁止 group。":
+      "If you still create nodes, edit must pass layout:false and must not use group.",
+    "禁止创建或收纳超级节点（canvas_super）。":
+      "Creating or packing super nodes is forbidden (canvas_super).",
+    "创建/收纳超级节点需用户审批（canvas_super）。":
+      "Creating or packing super nodes requires user approval (canvas_super).",
+    "无效的超级节点：": "Invalid super node: ",
   });
 
   var locale = "zh";

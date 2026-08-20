@@ -93,7 +93,7 @@
 <body>
   <div class="wrap">
     <div class="notice">
-      <b>插件测试中</b> · 安装由 <b>Agent 主导</b>（脚手架仅参考）。步骤多、耗时长，<b>可能会失败</b>。需已在 MTNode 设置中填写文本模型 API Key。
+      <b>插件测试中</b> · 画布节点执行时会<strong>自动启动后端 → 生成 → 确认文件 → 关闭后端</strong>，无需手动启停。卡死时可点「强制释放显存」。安装复杂，可能会失败。
     </div>
     <div>
       <h1>Minimax H3 <span class="badge test">插件测试中</span> <span class="badge off" id="svcBadge">服务关闭</span></h1>
@@ -109,8 +109,9 @@
       <div class="meta" id="diskHint"></div>
       <div class="row">
         <button class="primary" id="btnInstall">安装</button>
-        <button id="btnStart">启用服务</button>
-        <button id="btnStop">关闭服务</button>
+        <button id="btnStart" title="调试用；正常请从画布节点执行">手动启动</button>
+        <button id="btnStop" title="调试用">手动停止</button>
+        <button class="danger" id="btnForceKill" title="卡死时用：杀后端释放显存">强制释放显存</button>
         <button class="danger" id="btnUninstall">卸载</button>
       </div>
       <div class="meta" id="installStep">—</div>

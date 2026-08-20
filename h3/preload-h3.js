@@ -10,6 +10,7 @@ const api = {
   cancelInstall: () => ipcRenderer.invoke("h3:cancelInstall"),
   start: () => ipcRenderer.invoke("h3:start"),
   stop: () => ipcRenderer.invoke("h3:stop"),
+  forceKillBackend: () => ipcRenderer.invoke("h3:forceKillBackend"),
   uninstallPreview: () => ipcRenderer.invoke("h3:uninstallPreview"),
   uninstall: (opts) => ipcRenderer.invoke("h3:uninstall", opts || {}),
   consoleTail: (n) => ipcRenderer.invoke("h3:consoleTail", n),

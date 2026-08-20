@@ -161,8 +161,8 @@ class Music3Generator:
             raise ValueError("prompt (music description / caption) is required")
         if not lyrics:
             raise ValueError("lyrics are required (use [instrumental] for no vocals)")
-        if audio_duration <= 0 or audio_duration > 300:
-            raise ValueError("audio_duration must be in (0, 300] seconds")
+        if audio_duration <= 0 or audio_duration > 150:
+            raise ValueError("audio_duration must be in (0, 150] seconds")
 
         with _GENERATE_LOCK:
             self.load()
