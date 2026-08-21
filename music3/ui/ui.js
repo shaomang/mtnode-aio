@@ -45,6 +45,7 @@
     svcBadge.className = "badge " + (running ? "on" : "off");
 
     $("btnInstall").disabled = !st.installDir || !!st.installing;
+    if ($("btnSelfRepair")) $("btnSelfRepair").disabled = !st.installDir || !!st.installing;
     $("btnStart").disabled = !st.installDir || running;
     $("btnStop").disabled = !running;
     $("btnUninstall").disabled = !st.installDir || !!st.installing;
@@ -97,6 +98,27 @@
     } else {
       await runInstall({});
     }
+    refresh();
+  };
+
+  $("btnSelfRepair").onclick = async () => {
+    if (!api.selfRepair) {
+      logLine("当前版本不支持自我修复");
+      return;
+    }
+    const ok = confirm(
+      "自我修复将读取最近的 console 日志，由 Agent 对症修复安装环境（不会启动服务）。\n继续？",
+    );
+    if (!ok) return;
+    logLine("自我修复：读取 console 并交 Agent…");
+    const r = await api.selfRepair({});
+    if (r && r.ok) logLine("自我修复完成");
+    else
+      logLine(
+        "自我修复失败: " +
+          ((r && (r.message || r.error)) || "未知错误") +
+          (r && r.consoleBytes != null ? " · log≈" + r.consoleBytes + "B" : ""),
+      );
     refresh();
   };
 

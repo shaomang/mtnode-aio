@@ -549,6 +549,28 @@ button:disabled{opacity:.45; cursor:not-allowed}
 }
 .sidebar-search input:focus{border-color:var(--orange)}
 .sidebar-tree{flex:1; overflow:auto; padding:6px 8px}
+.side-section{margin-bottom:4px}
+.side-section-sep{
+  height:1px; margin:10px 2px 6px;
+  background:linear-gradient(90deg, transparent, var(--bd2), transparent);
+}
+.side-section-head{
+  color:var(--cyan2); letter-spacing:1.5px; font-weight:600;
+}
+.side-section-super .side-section-head{color:#9bb0c8}
+.side-super-item{
+  padding-left:calc(8px + var(--depth, 0) * 12px) !important;
+  gap:4px;
+}
+.side-super-item.on-path{color:var(--cyan2); opacity:.92}
+.side-super-twisty{
+  flex:none; width:16px; height:18px; padding:0; margin:0;
+  border:none; background:transparent; color:var(--muted);
+  font-size:10px; line-height:18px; text-align:center; cursor:pointer;
+}
+.side-super-twisty:hover{color:var(--cyan2)}
+.side-super-twisty.leaf{cursor:default; opacity:.35}
+.side-super-twisty:disabled{opacity:.35; cursor:default}
 .side-cat{margin-bottom:2px}
 .side-cat-head{
   display:flex; align-items:center; gap:6px; font-size:11px; letter-spacing:2px;
@@ -2473,6 +2495,20 @@ button.mini.btn-sq.tpl-ico{
 .tpl-ico.danger{border-color:var(--red); color:var(--red)}
 .tpl-form{display:flex; flex-direction:column; gap:8px; overflow:auto; flex:1; min-height:0}
 .tpl-form label{display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted)}
+.tpl-skill-drop{
+  display:flex; flex-direction:column; gap:4px; align-items:center; justify-content:center;
+  margin:6px 0 8px; padding:18px 12px; text-align:center;
+  border:1px dashed var(--bd2); border-radius:6px;
+  background:color-mix(in srgb, var(--code) 80%, transparent);
+  color:var(--muted); font-size:12px; line-height:1.35; cursor:copy;
+  transition:border-color .15s ease, background .15s ease, color .15s ease;
+}
+.tpl-skill-drop b{color:var(--ink); font-size:13px; font-weight:600}
+.tpl-skill-drop span{opacity:.9; max-width:36em}
+.tpl-skill-drop.hot{
+  border-color:var(--cyan); color:var(--cyan2);
+  background:color-mix(in srgb, var(--cyan) 12%, var(--code));
+}
 .tpl-chip-row{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
 .tpl-page{
   display:flex; gap:8px; align-items:center; justify-content:center;

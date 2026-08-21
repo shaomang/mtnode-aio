@@ -1,9 +1,21 @@
 {
   "format": "mtnode-ext-v1",
   "name": "MTNode Official",
-  "updatedAt": "2026-08-19T16:46:33.132Z",
+  "updatedAt": "2026-08-21T09:28:02.000Z",
   "plugins": [],
   "skills": [
+    {
+      "id": "compose-novel-from-canvas",
+      "name": "画布合成小说",
+      "description": "分析当前画布中的幕、类目 YAML、世界书与其它节点元素，按拆解产物反向撰写连贯小说正文。是「小说剧情拆解」的逆流程。在用户要求根据画布写小说、回写正文、合成剧情、扩写成章时使用。",
+      "path": "skills/compose-novel-from-canvas/SKILL.md"
+    },
+    {
+      "id": "decompose-novel-plot",
+      "name": "小说剧情拆解",
+      "description": "将小说文字剧情按深度档位拆成人物、情节、结构、主题、环境/背景、语言风格、伏笔、事实；按第x幕建超级节点与 YAML 保存链；维护世界书（规则/人物/场景/势力/账本/写法）并持续补充。在用户要求拆解小说/剧情、分幕、建档、世界书或生成剧情分析画布时使用。",
+      "path": "skills/decompose-novel-plot/SKILL.md"
+    },
     {
       "id": "generate-task",
       "name": "生成任务",
@@ -30,7 +42,7 @@
     },
     {
       "id": "novel-to-video-preproduction",
-      "name": "长篇小说视频素材与分镜拆解",
+      "name": "小说视频素材与分镜拆解",
       "description": "使用多Agent协作，从长篇小说中完整提取人物、组织、场景、道具、事件、任务和剧情，生成剧情大纲、视频素材清单与可拍摄分镜，并通过覆盖率审计防止遗漏。",
       "path": "skills/novel-to-video-preproduction/SKILL.md"
     }

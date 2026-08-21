@@ -995,15 +995,21 @@ async function agentInstallByAgent(opts) {
   } catch {}
 
   const prompt =
-    `请使用 skill「minimax-music3-install」${mode === "recover" ? "完成或修复安装（保底修复；用户已确认）" : "端到端完成安装（主安装路径）"}。\n` +
+    `请使用 skill「minimax-music3-install」${
+      opts.selfRepair
+        ? "根据 CONSOLE_LOG 自我修复安装（对症修复；模型已齐则勿重下）"
+        : mode === "recover"
+          ? "完成或修复安装（保底修复；用户已确认）"
+          : "端到端完成安装（主安装路径）"
+    }。\n` +
     `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
     `SCAFFOLD_REF=${pack}\n` +
     `重要：内置脚手架/脚本仅作参考实现。请以 skill 目标为准自行准备 INSTALL_DIR（可按需从 SCAFFOLD_REF 复制或改写 app/scripts/requirements，也可等价实现）。不要假设插件已替你复制好脚手架。\n` +
-    (failReason ? `先前失败原因：${failReason}\n` : "") +
+    (failReason ? `先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
     `要求：\n` +
     `1) 自行探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）\n` +
     `2) 建立可运行的 venv 与依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1）\n` +
-    `3) 下载/就绪 models\\MiniMax-Music3（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1 -Target app）\n` +
+    `3) 下载/就绪 models\\MiniMax-Music3（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1 -Target app；自我修复且模型已齐则跳过）\n` +
     `4) 冒烟验证 torch.cuda 与模型目录\n` +
     `不要启动 Gradio。不要删除用户 output/。\n` +
     `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path>。\n` +
@@ -1144,6 +1150,57 @@ async function agentInstallByAgent(opts) {
 /** IPC 兼容：失败后的 Agent 再试 */
 async function agentRecoverInstall(opts) {
   return agentInstallByAgent(Object.assign({}, opts || {}, { mode: "recover" }));
+}
+
+/** 自我修复：读取 console 日志交 Agent（minimax-music3-install）对症修复 */
+async function selfRepairFromConsole(opts) {
+  opts = opts || {};
+  const cfg = loadConfig();
+  const safe = isSafeInstallDir(cfg.installDir);
+  if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
+
+  const tail = consoleTail(Number(opts.maxBytes) || 96 * 1024);
+  const logText = String((tail && tail.text) || "").trim();
+  if (!logText) {
+    return {
+      ok: false,
+      error: "empty_console",
+      message: "console 日志为空，请先运行一次生成或安装以产生日志",
+    };
+  }
+
+  appendConsole("[self-repair] begin · console bytes≈" + logText.length);
+  try {
+    await stopBackend();
+  } catch (e) {
+    appendConsole("[self-repair] stop warn: " + String((e && e.message) || e));
+  }
+
+  const known = [];
+  if (/ModuleNotFoundError|ImportError|No module named/i.test(logText)) {
+    known.push("命中依赖缺失：优先用 venv pip 补齐 requirements，勿重下整包模型。");
+  }
+  if (/CUDA|cuda|out of memory|OOM/i.test(logText)) {
+    known.push("命中 CUDA/显存相关错误：检查 torch.cuda、offload 与驱动；勿删 output。");
+  }
+  if (/backend_exited|backend start failed|gradio/i.test(logText)) {
+    known.push("后端启动失败：结合 Traceback 修 venv/依赖。");
+  }
+
+  const snippet = logText.length > 24000 ? logText.slice(-24000) : logText;
+  const hint =
+    (known.length ? known.join("\n") + "\n" : "") +
+    "以下为插件 CONSOLE_LOG（最近片段）：\n```\n" +
+    snippet +
+    "\n```\n";
+
+  const r = await agentInstallByAgent({
+    mode: "recover",
+    error: hint,
+    selfRepair: true,
+  });
+  appendConsole("[self-repair] done ok=" + !!(r && r.ok) + " err=" + ((r && r.error) || ""));
+  return Object.assign({}, r || {}, { selfRepair: true, consoleBytes: logText.length });
 }
 
 function killPidTree(pid) {
@@ -1878,6 +1935,7 @@ function registerMusic3Ipc(opts) {
   });
   ipcMain.handle("music3:install", async (e, opts) => installProject(opts || {}));
   ipcMain.handle("music3:agentRecoverInstall", async (e, opts) => agentRecoverInstall(opts || {}));
+  ipcMain.handle("music3:selfRepair", async (e, opts) => selfRepairFromConsole(opts || {}));
   ipcMain.handle("music3:cancelInstall", async () => {
     installCancel = true;
     return { ok: true };

@@ -771,18 +771,24 @@ async function agentInstallByAgent(opts) {
   } catch {}
 
   const prompt =
-    `请使用 skill「minimax-h3-install」${mode === "recover" ? "完成或修复安装（保底修复；用户已确认）" : "端到端完成安装（主安装路径）"}。\n` +
+    `请使用 skill「minimax-h3-install」${
+      opts.selfRepair
+        ? "根据 CONSOLE_LOG 自我修复安装（对症修复；优先已知故障，勿盲目重装模型）"
+        : mode === "recover"
+          ? "完成或修复安装（保底修复；用户已确认）"
+          : "端到端完成安装（主安装路径）"
+    }。\n` +
     `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
     `SCAFFOLD_REF=${pack}\n` +
     `重要：内置脚手架/脚本仅作参考实现。请以 skill 目标为准自行准备 INSTALL_DIR（可按需从 SCAFFOLD_REF 复制或改写 app/scripts/requirements，也可等价实现）。不要假设插件已替你复制好脚手架。\n` +
-    (failReason ? `先前失败原因：${failReason}\n` : "") +
+    (failReason ? `先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
     `要求：\n` +
     `1) 自行探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）\n` +
-    `2) 建立 ComfyUI venv 与依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1）\n` +
-    `3) 下载/就绪模型权重（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1）\n` +
-    `4) 冒烟验证 ComfyUI venv + 模型文件\n` +
+    `2) 建立【隔离】ComfyUI venv（禁止 --system-site-packages）并在 venv 内安装 CUDA torch + 依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1 / repair_torch_kitchen.ps1）\n` +
+    `3) 下载/就绪模型权重（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1；自我修复且模型已齐则跳过）\n` +
+    `4) 冒烟：venv python 下 torch.cuda + import comfy_kitchen；确认 torch.__file__ 在 ComfyUI\\venv 内\n` +
     `不要启动 ComfyUI。不要删除用户 output/。\n` +
-    `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path>。\n` +
+    `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path> torch_file=<path>。\n` +
     `失败则 ${resultMarker} 写 ok=false 与 reason=...`;
 
   try {
@@ -901,6 +907,75 @@ async function agentRecoverInstall(opts) {
   return agentInstallByAgent(Object.assign({}, opts || {}, { mode: "recover" }));
 }
 
+/**
+ * 自我修复：读取最近 console 日志，交给 Agent（minimax-h3-install）对症修复。
+ * 常见：comfy_kitchen + conda 旧 torch（list[int] infer_schema）→ 重建隔离 venv。
+ */
+async function selfRepairFromConsole(opts) {
+  opts = opts || {};
+  const cfg = loadConfig();
+  const safe = isSafeInstallDir(cfg.installDir);
+  if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
+
+  const tail = consoleTail(Number(opts.maxBytes) || 96 * 1024);
+  const logText = String((tail && tail.text) || "").trim();
+  if (!logText) {
+    return { ok: false, error: "empty_console", message: "console 日志为空，请先运行一次生成或安装以产生日志" };
+  }
+
+  appendConsole("[self-repair] begin · console bytes≈" + logText.length);
+  try {
+    await stopBackend();
+  } catch (e) {
+    appendConsole("[self-repair] stop warn: " + String((e && e.message) || e));
+  }
+
+  const known = [];
+  if (/list\[int\]|infer_schema|comfy_kitchen|unsupported type list\[int\]/i.test(logText)) {
+    known.push(
+      "命中已知故障：comfy_kitchen 与旧 torch（常因 venv --system-site-packages 继承 conda torch）。优先运行 scripts/repair_torch_kitchen.ps1 或按 skill「已知故障」重建隔离 venv 并在 venv 内安装 CUDA torch。",
+    );
+  }
+  if (/backend_exited|backend start failed|backend_start_timeout/i.test(logText)) {
+    known.push("后端进程启动后立刻退出；请结合 Traceback 修复依赖，勿忽略 import 错误。");
+  }
+
+  const snippet = logText.length > 24000 ? logText.slice(-24000) : logText;
+  const hint =
+    (known.length ? known.join("\n") + "\n" : "") +
+    "以下为插件 CONSOLE_LOG（最近片段，可能含 ANSI 颜色码）：\n```\n" +
+    snippet +
+    "\n```\n";
+
+  const r = await agentInstallByAgent({
+    mode: "recover",
+    error: hint,
+    selfRepair: true,
+  });
+  appendConsole("[self-repair] done ok=" + !!(r && r.ok) + " err=" + ((r && r.error) || ""));
+  return Object.assign({}, r || {}, { selfRepair: true, consoleBytes: logText.length });
+}
+
+function lastConsoleErrorSnippet(maxChars) {
+  const n = Math.max(800, Number(maxChars) || 2400);
+  try {
+    const t = consoleTail(64 * 1024);
+    const raw = String((t && t.text) || "");
+    if (!raw.trim()) return "";
+    const lines = raw.split(/\r?\n/);
+    const errIdx = [...lines.keys()].reverse().find((i) =>
+      /Traceback|Error:|ValueError|ModuleNotFoundError|ImportError|CUDA|backend_exited/i.test(
+        lines[i],
+      ),
+    );
+    if (errIdx == null) return raw.slice(-Math.min(n, raw.length));
+    const slice = lines.slice(Math.max(0, errIdx - 8), Math.min(lines.length, errIdx + 40)).join("\n");
+    return slice.length > n ? slice.slice(-n) : slice;
+  } catch {
+    return "";
+  }
+}
+
 function killPidTree(pid) {
   return new Promise((resolve) => {
     if (!pid) return resolve();
@@ -937,7 +1012,11 @@ async function stopBackend() {
 async function ensureBackendReadyForJob() {
   const started = await startBackend();
   if (!started || !started.ok) {
-    return { ok: false, error: (started && started.error) || "backend_start_failed" };
+    return {
+      ok: false,
+      error: (started && started.error) || "backend_start_failed",
+      message: (started && started.message) || "",
+    };
   }
   const port = Number(started.port) || Number(loadConfig().port) || DEFAULT_PORT;
   if (await probeComfy(port)) return { ok: true, port, reused: !!started.reused };
@@ -951,10 +1030,24 @@ async function ensureBackendReadyForJob() {
     await sleep(2000);
     const meta = loadPidMeta();
     if (meta && meta.pid && !isAlivePid(meta.pid) && !meta.external) {
-      return { ok: false, error: "backend_exited" };
+      const snip = lastConsoleErrorSnippet(1800);
+      return {
+        ok: false,
+        error: "backend_exited",
+        message:
+          "ComfyUI 进程退出" +
+          (snip ? "：\n" + snip.replace(/\x1b\[[0-9;]*m/g, "") : ""),
+      };
     }
   }
-  return { ok: false, error: "backend_start_timeout" };
+  const snip = lastConsoleErrorSnippet(1200);
+  return {
+    ok: false,
+    error: "backend_start_timeout",
+    message:
+      "等待 ComfyUI 就绪超时" +
+      (snip ? "；最近日志：\n" + snip.replace(/\x1b\[[0-9;]*m/g, "") : ""),
+  };
 }
 
 async function startBackend() {
@@ -1035,10 +1128,28 @@ async function startBackend() {
     await sleep(2000);
     if (!isAlivePid(child.pid)) {
       clearPidMeta();
-      return { ok: false, error: "backend_exited" };
+      const snip = lastConsoleErrorSnippet(1800);
+      appendConsole("[start] backend exited early");
+      return {
+        ok: false,
+        error: "backend_exited",
+        message:
+          "ComfyUI 进程启动后退出" +
+          (snip ? "：\n" + snip.replace(/\x1b\[[0-9;]*m/g, "") : ""),
+      };
     }
   }
-  return { ok: false, error: "backend_start_timeout", pid: child.pid, port, starting: true };
+  const snip = lastConsoleErrorSnippet(1200);
+  return {
+    ok: false,
+    error: "backend_start_timeout",
+    pid: child.pid,
+    port,
+    starting: true,
+    message:
+      "等待 ComfyUI 就绪超时" +
+      (snip ? "；最近日志：\n" + snip.replace(/\x1b\[[0-9;]*m/g, "") : ""),
+  };
 }
 
 function uninstallPreview() {
@@ -1416,9 +1527,23 @@ async function generateVideo(params) {
     const ready = await ensureBackendReadyForJob();
     if (!ready.ok) {
       const err = ready.error || "backend_start_failed";
+      const detail = String(ready.message || "").trim();
       appendConsole("[job] backend start failed: " + err);
-      emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
-      return { ok: false, error: err, message: "启动后端失败：" + err };
+      if (detail) appendConsole(detail.slice(0, 2000));
+      emitProgress({
+        phase: "generate",
+        nodeId,
+        message: detail ? detail.slice(0, 400) : err,
+        error: true,
+        pct: 0,
+      });
+      return {
+        ok: false,
+        error: err,
+        message: detail
+          ? "启动后端失败：" + err + "\n" + detail.slice(0, 1200)
+          : "启动后端失败：" + err,
+      };
     }
 
     const cfg = loadConfig();
@@ -1837,6 +1962,7 @@ function registerH3Ipc(opts) {
   });
   ipcMain.handle("h3:install", async (e, opts) => installProject(opts || {}));
   ipcMain.handle("h3:agentRecoverInstall", async (e, opts) => agentRecoverInstall(opts || {}));
+  ipcMain.handle("h3:selfRepair", async (e, opts) => selfRepairFromConsole(opts || {}));
   ipcMain.handle("h3:cancelInstall", async () => {
     installCancel = true;
     return { ok: true };

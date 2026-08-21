@@ -1,18 +1,19 @@
 ---
 name: minimax-music3-install
 title: MiniMax Music 3 本地安装
-description: 在用户指定目录安装 MiniMax Music 3（24G）后端：探测 CUDA Python、创建 venv、安装依赖、下载模型并冒烟验证。
+description: 在用户指定目录安装 MiniMax Music 3（24G）后端：探测 CUDA Python、创建 venv、安装依赖、下载模型并冒烟验证。含 console 自我修复指引。
 ---
 
 # MiniMax Music 3 本地安装
 
-当用户或 MTNode 插件要求在某目录安装 **MiniMax Music 3（24G Diffusers + Gradio）** 时使用本 skill。
+当用户或 MTNode 插件要求在某目录安装 / **自我修复** **MiniMax Music 3（24G Diffusers + Gradio）** 时使用本 skill。
 
 插件调用时：
 
 - **当前工作区就是 `INSTALL_DIR`**，可直接读写并执行命令
 - **`SCAFFOLD_REF`（或 `.scaffold-ref`）仅作参考**：内置脚手架/脚本是示例实现，不是已完成的安装。请按下方目标自行准备目录；可按需从参考路径复制或改写，也可等价实现
 - 不要假设插件已替你复制好脚手架
+- 若任务附带 **CONSOLE_LOG**（插件 console 最近日志），优先根据日志定位并修复，不要盲目重装全部模型
 
 ## 目标
 
@@ -46,13 +47,24 @@ description: 在用户指定目录安装 MiniMax Music 3（24G）后端：探测
    ```powershell
    .\scripts\download_models.ps1 -Target app
    ```
-   默认 `HF_ENDPOINT=https://hf-mirror.com`。下载时间长，保持运行直到权重就绪。
+   默认 `HF_ENDPOINT=https://hf-mirror.com`。下载时间长，保持运行直到权重就绪。  
+   **自我修复且模型已齐全时跳过本步。**
 
 5. **冒烟**  
    ```powershell
    .\.venv\Scripts\python.exe -c "import torch; from diffusers import ModularPipeline; print(torch.cuda.is_available())"
    ```
    并确认 `models\MiniMax-Music3` 非空。
+
+## 自我修复模式（CONSOLE_LOG 已提供）
+
+1. 阅读 CONSOLE_LOG，归类：
+   - `ModuleNotFoundError` / `ImportError` → venv 内补依赖
+   - `backend_exited` / Gradio 启动 Traceback → 按栈修代码或依赖
+   - CUDA / OOM → 检查 torch.cuda 与 offload；勿删 output
+   - 缺模型 → 只跑 download_models
+2. 修完冒烟；写 `.install-ok` 与 `.music3-agent-result`
+3. **不要启动 Gradio**
 
 ## 约束
 

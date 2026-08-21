@@ -7,6 +7,7 @@ const api = {
   setInstallDir: (dir) => ipcRenderer.invoke("music3:setInstallDir", dir),
   install: (opts) => ipcRenderer.invoke("music3:install", opts || {}),
   agentRecoverInstall: (opts) => ipcRenderer.invoke("music3:agentRecoverInstall", opts || {}),
+  selfRepair: (opts) => ipcRenderer.invoke("music3:selfRepair", opts || {}),
   cancelInstall: () => ipcRenderer.invoke("music3:cancelInstall"),
   start: () => ipcRenderer.invoke("music3:start"),
   stop: () => ipcRenderer.invoke("music3:stop"),

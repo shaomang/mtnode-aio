@@ -351,7 +351,11 @@ ipcMain.handle("config:load", () =>
         type: "text_openai",
         baseUrl: "https://api.deepseek.com",
         apiKey: "",
-        models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        models: [
+          "deepseek-v4-flash",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash-vision-exp",
+        ],
         vision: false,
       },
       {
@@ -1206,30 +1210,72 @@ ipcMain.handle("store:pickMtNodes", async () => {
   }
 });
 
+function isSkillMdBasename(name) {
+  return /^skill\.md$/i.test(String(name || "").trim());
+}
+
 ipcMain.handle("store:pickSkillMd", async () => {
   try {
     const r = await dialog.showOpenDialog(win(), {
-      title: I18n.t("选择 SKILL.md"),
-      properties: ["openFile"],
+      title: I18n.t("选择 SKILL.md 与附加文件"),
+      properties: ["openFile", "multiSelections"],
       filters: [
-        { name: "SKILL.md", extensions: ["md", "markdown", "txt"] },
+        {
+          name: "Skill",
+          extensions: ["md", "markdown", "txt", "json", "yaml", "yml", "csv"],
+        },
         { name: I18n.t("全部文件"), extensions: ["*"] },
       ],
     });
-    if (r.canceled || !r.filePaths[0]) return { ok: false, error: I18n.t("已取消") };
-    const buf = fs.readFileSync(r.filePaths[0]);
-    if (!buf.length) return { ok: false, error: I18n.t("文件为空") };
-    if (buf.length > 200 * 1024) {
-      return { ok: false, error: I18n.t("每个文件不能超过 200KB") };
+    if (r.canceled || !r.filePaths.length) return { ok: false, error: I18n.t("已取消") };
+    let skill = null;
+    const files = [];
+    for (const fp of r.filePaths) {
+      const name = path.basename(fp);
+      const buf = fs.readFileSync(fp);
+      if (!buf.length) {
+        return { ok: false, error: I18n.t("文件为空") + "：" + name };
+      }
+      if (buf.length > 200 * 1024) {
+        return { ok: false, error: I18n.t("每个文件不能超过 200KB") + "：" + name };
+      }
+      if (isSkillMdBasename(name)) {
+        if (skill) {
+          return { ok: false, error: I18n.t("只能包含一个 SKILL.md") };
+        }
+        const text = buf.toString("utf8");
+        if (!text.trim()) return { ok: false, error: I18n.t("文件为空") };
+        skill = {
+          base64: buf.toString("base64"),
+          text,
+          bytes: buf.length,
+          name,
+        };
+        continue;
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+        return { ok: false, error: I18n.t("文件名不合法：") + name };
+      }
+      files.push({
+        path: name,
+        base64: buf.toString("base64"),
+        bytes: buf.length,
+        name,
+      });
     }
-    const text = buf.toString("utf8");
-    if (!text.trim()) return { ok: false, error: I18n.t("文件为空") };
+    if (!skill) {
+      return { ok: false, error: I18n.t("请包含 SKILL.md") };
+    }
+    if (files.length > 32) {
+      return { ok: false, error: I18n.t("附加文件不能超过 32 个") };
+    }
     return {
       ok: true,
-      base64: buf.toString("base64"),
-      text,
-      bytes: buf.length,
-      name: path.basename(r.filePaths[0]),
+      base64: skill.base64,
+      text: skill.text,
+      bytes: skill.bytes,
+      name: skill.name,
+      files,
     };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };

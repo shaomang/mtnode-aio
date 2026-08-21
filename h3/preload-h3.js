@@ -7,6 +7,7 @@ const api = {
   setInstallDir: (dir) => ipcRenderer.invoke("h3:setInstallDir", dir),
   install: (opts) => ipcRenderer.invoke("h3:install", opts || {}),
   agentRecoverInstall: (opts) => ipcRenderer.invoke("h3:agentRecoverInstall", opts || {}),
+  selfRepair: (opts) => ipcRenderer.invoke("h3:selfRepair", opts || {}),
   cancelInstall: () => ipcRenderer.invoke("h3:cancelInstall"),
   start: () => ipcRenderer.invoke("h3:start"),
   stop: () => ipcRenderer.invoke("h3:stop"),

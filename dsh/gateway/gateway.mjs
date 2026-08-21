@@ -1647,8 +1647,9 @@ rl.on('line', (line) => {
         case 'providerCatalog':
           reply({
             deepseek: [
-              { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com' },
-              { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com' },
+              { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text'] },
+              { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text'] },
+              { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek-V4-Flash-Vision-Exp', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text', 'image'] },
             ],
             piai: piAiCatalog(),
           })

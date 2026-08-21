@@ -2656,7 +2656,8 @@ function visionModelsForProvider(providerId) {
   return out;
 }
 
-/* DeepSeek 官方 chat 接口不支持图；勿作为识图首选（除非没有其他候选） */
+/* DeepSeek 官方纯文本模型不支持图；目录中带 image 的多模态模型除外。
+   无图主机上的「手填 vision」兜底仍应降到次选。 */
 function providerHostBlocksVision(p) {
   if (!p || !p.baseUrl) return false;
   try {
@@ -3749,6 +3750,7 @@ const S = {
   boxMode: false, /* 框选模式开关 */
   sidebarOpen: false,
   sideCollapsed: {}, /* 边栏分类折叠状态 */
+  sideSuperCollapsed: {}, /* 超级节点树折叠状态 */
   /* 右侧全局助手 */
   assistOpen: false,
   assistLive2d: false,
@@ -10290,8 +10292,13 @@ function nodeElement(node) {
       /* 智能任务参数面板与「智能会话」完全一致:预设 / 供应商 / 模型 / 思考强度 */
       const catalog = S.providerCatalog || {
         deepseek: [
-          { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-          { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+          { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+          { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
+          {
+            id: "deepseek-v4-flash-vision-exp",
+            name: "DeepSeek-V4-Flash-Vision-Exp",
+            input: ["text", "image"],
+          },
         ],
         piai: [],
       };
@@ -13458,13 +13465,14 @@ function assetName(node, itemTitle, attemptT, tag) {
 }
 
 const VISION_HINT =
-  "未添加多模态模型（请在设置中为该文本服务商勾选「支持视觉」，并选择支持识图的多模态模型）";
+  "未添加多模态模型（请在设置中添加支持识图的模型，例如 DeepSeek-V4-Flash-Vision-Exp，或为该文本服务商勾选「支持视觉」）";
 
-/* 文本节点接入图像时的多模态校验：所选服务商不支持视觉则拒绝运行 */
+/* 文本节点接入图像时的多模态校验：当前服务商无视觉模型且未勾选视觉则拒绝 */
 function ensureVision(prov, images) {
-  if (images && images.length && !prov.vision) {
-    throw new Error(I18n.t(VISION_HINT));
-  }
+  if (!images || !images.length || !prov) return;
+  if (prov.vision) return;
+  if (visionModelsForProvider("mtnode_" + prov.id).length) return;
+  throw new Error(I18n.t(VISION_HINT));
 }
 
 /* 已配置且勾选「支持视觉」的文本服务商（原模式 API 路径） */
@@ -13477,14 +13485,38 @@ function textVisionProviders() {
   );
 }
 
-/* 文本处理节点（原模式）接到图像输入时：自动切到支持视觉的服务商/模型。
-   当前服务商已支持视觉 → 不动；没有可用视觉服务商 → 提示并返回 ok:false。 */
+/* 文本处理节点（原模式）接到图像输入时：优先同服务商目录视觉模型，再切到勾选视觉的服务商。
+   当前已可用 → 不动；没有可用视觉模型 → 提示并返回 ok:false。 */
 function ensureProcTextVision(node, opts) {
   opts = opts || {};
   if (!node || node.kind !== "proc_text" || node.agent) return { ok: true };
   if (!imageInputsOf(node).length) return { ok: true };
   const cur = (S.config.providers || []).find((p) => p.id === node.providerId);
-  if (cur && cur.vision) return { ok: true, provider: cur, model: node.model };
+  if (cur) {
+    const localVis = visionModelsForProvider("mtnode_" + cur.id);
+    if (localVis.some((m) => m.id === String(node.model || ""))) {
+      return { ok: true, provider: cur, model: node.model };
+    }
+    if (localVis.length) {
+      const pick = localVis[0];
+      const switched = node.model !== pick.id;
+      if (switched) {
+        node.model = pick.id;
+        if (opts.notify !== false) {
+          toast(
+            I18n.t("已自动切换至视觉模型：") +
+              (cur.name || cur.id) +
+              " / " +
+              (pick.name || pick.id),
+            "ok",
+          );
+        }
+        if (opts.save !== false) scheduleSave(true);
+      }
+      return { ok: true, switched, provider: cur, model: pick.id };
+    }
+    if (cur.vision) return { ok: true, provider: cur, model: node.model };
+  }
   const cands = textVisionProviders();
   if (!cands.length) {
     if (opts.notify !== false) toast(I18n.t(VISION_HINT), "warn");
@@ -18883,13 +18915,14 @@ function resolveVisionInspectRoutes(preferredModel) {
   for (const p of S.config.providers || []) {
     if (p.type !== "text_openai") continue;
     if (!String(p.apiKey || "").trim() || !String(p.baseUrl || "").trim()) continue;
-    const soft = providerHostBlocksVision(p);
+    const softHost = providerHostBlocksVision(p);
     const route = "mtnode_" + p.id;
     const vis = visionModelsForProvider(route);
     if (vis.length) {
-      for (const m of vis) push(p, m.id, m.name || m.id, soft);
+      /* 目录已声明 image 的模型可直连，不因 deepseek 主机名降级 */
+      for (const m of vis) push(p, m.id, m.name || m.id, false);
     } else if (p.vision && Array.isArray(p.models) && p.models.length) {
-      for (const id of p.models) push(p, String(id), String(id), true);
+      for (const id of p.models) push(p, String(id), String(id), softHost || true);
     }
   }
   let cands = preferred.concat(fallback);
@@ -20207,8 +20240,13 @@ function resolveAgentProviderRoute(token, warnings) {
 function agentModelsForRoute(route) {
   const catalog = S.providerCatalog || {
     deepseek: [
-      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-      { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+      { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
+      {
+        id: "deepseek-v4-flash-vision-exp",
+        name: "DeepSeek-V4-Flash-Vision-Exp",
+        input: ["text", "image"],
+      },
     ],
     piai: [],
   };
@@ -22304,7 +22342,153 @@ const KIND_TAGS = {
   chat: "对话",
   control: "控制",
   judge: "判断",
+  super: "超节点",
 };
+function sidebarSupersInTask() {
+  const task = currentTaskFocus();
+  return ((S.wf && S.wf.nodes) || []).filter(
+    (n) => n && n.kind === "super" && nodeParentTaskId(n) === task,
+  );
+}
+function sidebarSuperChildren(supers, parentId) {
+  const pid = parentId || "";
+  return supers
+    .filter((n) => (nodeParentSuperId(n) || "") === pid)
+    .sort((a, b) =>
+      String(a.title || "").localeCompare(String(b.title || ""), "zh"),
+    );
+}
+function sidebarSuperRoots(supers) {
+  const ids = new Set(supers.map((n) => n.id));
+  return supers
+    .filter((n) => {
+      const p = nodeParentSuperId(n);
+      return !p || !ids.has(p);
+    })
+    .sort((a, b) =>
+      String(a.title || "").localeCompare(String(b.title || ""), "zh"),
+    );
+}
+/** 边栏：进入超级节点画布并适配内部节点 */
+function focusSuperFromSidebar(id) {
+  const n = nodeById(id);
+  if (!n || n.kind !== "super") return;
+  const wantTask = nodeParentTaskId(n);
+  if (wantTask !== currentTaskFocus()) {
+    setTaskFocus(wantTask, { render: false });
+  }
+  enterSuper(n, { toast: true });
+  if (S.sidebarOpen) renderSidebar();
+}
+function renderSuperSidebarTree(tree, filter) {
+  if (!tree) return false;
+  const supers = sidebarSupersInTask();
+  if (!supers.length && !filter) return false;
+  const f = String(filter || "").trim().toLowerCase();
+  const matchIds = new Set();
+  if (f) {
+    for (const n of supers) {
+      const title = String(n.title || "").toLowerCase();
+      const sub = String(n.subFolder || "").toLowerCase();
+      if (title.includes(f) || sub.includes(f)) matchIds.add(n.id);
+    }
+    if (!matchIds.size) return false;
+    /* 保留祖先链，树形不断档 */
+    for (const id of [...matchIds]) {
+      let sid = nodeParentSuperId(nodeById(id));
+      const seen = new Set();
+      while (sid && !seen.has(sid)) {
+        seen.add(sid);
+        matchIds.add(sid);
+        sid = nodeParentSuperId(nodeById(sid));
+      }
+    }
+  }
+  const visible = f ? supers.filter((n) => matchIds.has(n.id)) : supers;
+  if (!visible.length) return false;
+
+  const sec = document.createElement("div");
+  sec.className = "side-section side-section-super";
+  const sep = document.createElement("div");
+  sep.className = "side-section-sep";
+  sep.setAttribute("role", "separator");
+  sec.appendChild(sep);
+
+  const head = document.createElement("div");
+  head.className = "side-cat-head side-section-head";
+  const collapsed = !!S.sideCollapsed["__super_tree__"];
+  head.textContent =
+    (collapsed ? "▸ " : "▾ ") +
+    I18n.t("超级节点") +
+    "（" +
+    visible.length +
+    "）";
+  head.title = collapsed
+    ? I18n.t("展开超级节点树")
+    : I18n.t("折叠超级节点树");
+  head.onclick = () => {
+    S.sideCollapsed["__super_tree__"] = !collapsed;
+    renderSidebar();
+  };
+  sec.appendChild(head);
+
+  if (!collapsed) {
+    const focusId = currentSuperFocus();
+    const stack = new Set(S.superStack || []);
+    const appendRow = (n, depth) => {
+      const kids = sidebarSuperChildren(visible, n.id);
+      const row = document.createElement("div");
+      row.className =
+        "side-item side-super-item" +
+        (focusId === n.id ? " sel" : "") +
+        (stack.has(n.id) && focusId !== n.id ? " on-path" : "");
+      row.style.setProperty("--depth", String(depth));
+      row.title =
+        I18n.t("进入超级节点画布并定位：") + (n.title || I18n.t("超级节点"));
+      const twisty = document.createElement("button");
+      twisty.type = "button";
+      twisty.className = "side-super-twisty";
+      const nodeCollapsed = !!S.sideSuperCollapsed[n.id];
+      if (kids.length) {
+        twisty.textContent = nodeCollapsed ? "▸" : "▾";
+        twisty.title = nodeCollapsed ? I18n.t("展开") : I18n.t("折叠");
+        twisty.onclick = (ev) => {
+          ev.stopPropagation();
+          S.sideSuperCollapsed[n.id] = !nodeCollapsed;
+          renderSidebar();
+        };
+      } else {
+        twisty.textContent = "·";
+        twisty.disabled = true;
+        twisty.classList.add("leaf");
+      }
+      const tag = document.createElement("span");
+      tag.className = "side-tag";
+      tag.textContent = I18n.t("超节点");
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = n.title || I18n.t("（未命名）");
+      const nChild = superChildrenOf(n.id).filter((c) => !isSuperIoNode(c))
+        .length;
+      const tip = document.createElement("span");
+      tip.className = "side-tag-list";
+      tip.textContent = String(nChild);
+      tip.title = I18n.t("内部节点数：") + nChild;
+      row.appendChild(twisty);
+      row.appendChild(tag);
+      row.appendChild(t);
+      row.appendChild(tip);
+      row.onclick = () => focusSuperFromSidebar(n.id);
+      sec.appendChild(row);
+      if (kids.length && !nodeCollapsed) {
+        for (const c of kids) appendRow(c, depth + 1);
+      }
+    };
+    for (const root of sidebarSuperRoots(visible)) appendRow(root, 0);
+  }
+  tree.appendChild(sec);
+  return true;
+}
 function toggleSidebar() {
   S.sidebarOpen = !S.sidebarOpen;
   const layout = $("#layout");
@@ -22335,6 +22519,24 @@ function renderSidebar() {
     tree.appendChild(e);
     return;
   }
+
+  const canvasSec = document.createElement("div");
+  canvasSec.className = "side-section side-section-canvas";
+  const canvasHead = document.createElement("div");
+  canvasHead.className = "side-cat-head side-section-head";
+  const canvasCollapsed = !!S.sideCollapsed["__canvas_list__"];
+  canvasHead.textContent =
+    (canvasCollapsed ? "▸ " : "▾ ") + I18n.t("当前画布");
+  canvasHead.title = canvasCollapsed
+    ? I18n.t("展开当前画布列表")
+    : I18n.t("折叠当前画布列表");
+  canvasHead.onclick = () => {
+    S.sideCollapsed["__canvas_list__"] = !canvasCollapsed;
+    renderSidebar();
+  };
+  canvasSec.appendChild(canvasHead);
+  tree.appendChild(canvasSec);
+
   let any = false;
   const appendCat = (cat, totalCount, shown, makeRow) => {
     if (!shown.length) return;
@@ -22360,8 +22562,9 @@ function renderSidebar() {
     if (!collapsed) {
       for (const item of shown) catEl.appendChild(makeRow(item));
     }
-    tree.appendChild(catEl);
+    canvasSec.appendChild(catEl);
   };
+  if (!canvasCollapsed) {
   for (const [cat, kinds] of SIDE_CATS) {
     const items = S.wf.nodes.filter(
       (n) =>
@@ -22463,18 +22666,41 @@ function renderSidebar() {
     return it;
   });
   if (!any) {
+    const maybeSuperHit =
+      !!f &&
+      sidebarSupersInTask().some((n) => {
+        const title = String(n.title || "").toLowerCase();
+        const sub = String(n.subFolder || "").toLowerCase();
+        return title.includes(f) || sub.includes(f);
+      });
+    if (!maybeSuperHit) {
+      const e = document.createElement("div");
+      e.className = "side-empty";
+      if (currentTaskFocus() && !f) {
+        e.textContent =
+          I18n.t("当前任务内部暂无节点或绘图") +
+          " · " +
+          I18n.t("可从右键菜单添加，或返回上层");
+      } else if (currentSuperFocus() && !f) {
+        e.textContent =
+          I18n.t("当前超级节点内部暂无节点或绘图") +
+          " · " +
+          I18n.t("可从右键菜单添加，或返回上层");
+      } else {
+        e.textContent = I18n.t("没有匹配「{q}」的节点或绘图", {
+          q: filterEl ? filterEl.value : "",
+        });
+      }
+      canvasSec.appendChild(e);
+    }
+  }
+  } /* !canvasCollapsed */
+
+  const hasSuperTree = renderSuperSidebarTree(tree, f);
+  if (!any && !hasSuperTree && canvasCollapsed) {
     const e = document.createElement("div");
     e.className = "side-empty";
-    if (currentTaskFocus() && !f) {
-      e.textContent =
-        I18n.t("当前任务内部暂无节点或绘图") +
-        " · " +
-        I18n.t("可从右键菜单添加，或返回上层");
-    } else {
-      e.textContent = I18n.t("没有匹配「{q}」的节点或绘图", {
-        q: filterEl ? filterEl.value : "",
-      });
-    }
+    e.textContent = I18n.t("暂无节点或绘图");
     tree.appendChild(e);
   }
 }
@@ -29853,6 +30079,199 @@ function applySkillDraftFromText(text, opts) {
     if (meta.description) TPL_ST.description = meta.description;
     if (meta.version) TPL_ST.version = meta.version;
   }
+  return meta;
+}
+
+function isSkillMdFileName(name) {
+  const n = String(name || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop();
+  return /^skill\.md$/i.test(String(n || "").trim());
+}
+
+function skillExtraFileNameOk(name) {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(name || ""));
+}
+
+function arrayBufferToBase64(ab) {
+  const bytes = new Uint8Array(ab);
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+function mergeSkillExtras(list, opts) {
+  const o = opts || {};
+  const next = o.replace ? [] : (TPL_ST.skillExtras || []).slice();
+  for (const f of list || []) {
+    const pathName = String((f && (f.path || f.name)) || "").trim();
+    if (!pathName || isSkillMdFileName(pathName)) continue;
+    if (!skillExtraFileNameOk(pathName)) {
+      toast(I18n.t("文件名不合法：") + pathName, "err");
+      return null;
+    }
+    const bytes = Number(f.bytes) || 0;
+    if (tplTooLarge(bytes)) return null;
+    const entry = {
+      path: pathName,
+      name: pathName,
+      base64: f.base64,
+      bytes,
+    };
+    const i = next.findIndex(
+      (x) => String(x.path).toLowerCase() === pathName.toLowerCase(),
+    );
+    if (i >= 0) next[i] = entry;
+    else {
+      if (next.length >= 32) {
+        toast(I18n.t("附加文件不能超过 32 个"), "warn");
+        break;
+      }
+      next.push(entry);
+    }
+  }
+  TPL_ST.skillExtras = next;
+  TPL_ST._extrasTouched = true;
+  return next;
+}
+
+/** 应用 SKILL.md + 附件包：自动填写标题/描述/版本/技能名 */
+function applySkillUploadBundle(skill, extras, opts) {
+  const o = opts || {};
+  const text = String((skill && (skill.text || skill.body)) || "");
+  if (!text.trim()) {
+    toast(I18n.t("请包含 SKILL.md"), "err");
+    return false;
+  }
+  const bytes =
+    Number(skill && skill.bytes) ||
+    new TextEncoder().encode(text).length;
+  if (tplTooLarge(bytes)) return false;
+  const meta = parseSkillFrontmatterClient(text);
+  if (
+    TPL_ST.editId &&
+    TPL_ST.skillName &&
+    meta.name &&
+    meta.name !== TPL_ST.skillName
+  ) {
+    toast(I18n.t("本机技能名与工坊条目不一致，不能覆盖该条目"), "err");
+    return false;
+  }
+  applySkillDraftFromText(text, { fillMeta: o.fillMeta !== false });
+  const merged = mergeSkillExtras(extras || [], {
+    replace: o.replaceExtras !== false,
+  });
+  if (!merged) return false;
+  const skillLabel =
+    (skill && (skill.name || skill.path)) || "SKILL.md";
+  TPL_ST.fileHint =
+    I18n.t("已载入技能包") +
+    " · " +
+    skillLabel +
+    " · " +
+    fmtBytes(bytes) +
+    (merged.length
+      ? " · +" + merged.length + I18n.t(" 个附件") + " · " + merged.map((f) => f.path).join(", ")
+      : "");
+  return true;
+}
+
+function readDirEntries(reader) {
+  return new Promise((resolve, reject) => {
+    const all = [];
+    const pump = () => {
+      reader.readEntries(
+        (batch) => {
+          if (!batch || !batch.length) {
+            resolve(all);
+            return;
+          }
+          all.push.apply(all, batch);
+          pump();
+        },
+        reject,
+      );
+    };
+    pump();
+  });
+}
+
+function entryToFile(entry) {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+/** 从拖放收集文件（支持多文件，或单个技能文件夹一层） */
+async function collectSkillDropFiles(dataTransfer) {
+  const out = [];
+  const items = dataTransfer && dataTransfer.items;
+  if (items && items.length) {
+    const roots = [];
+    for (let i = 0; i < items.length; i++) {
+      const ent =
+        items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
+      if (ent) roots.push(ent);
+    }
+    if (roots.length) {
+      for (const ent of roots) {
+        if (ent.isFile) {
+          out.push(await entryToFile(ent));
+        } else if (ent.isDirectory) {
+          const kids = await readDirEntries(ent.createReader());
+          for (const k of kids) {
+            if (k.isFile) out.push(await entryToFile(k));
+          }
+        }
+      }
+      return out;
+    }
+  }
+  return Array.from((dataTransfer && dataTransfer.files) || []);
+}
+
+async function browserFileToSkillEntry(file) {
+  const ab = await file.arrayBuffer();
+  const name = String(file.name || "file");
+  const bytes = ab.byteLength;
+  const base64 = arrayBufferToBase64(ab);
+  const entry = { name, path: name, bytes, base64, text: "" };
+  if (isSkillMdFileName(name)) {
+    entry.text = new TextDecoder("utf-8").decode(ab);
+  }
+  return entry;
+}
+
+async function ingestSkillDropFiles(dataTransfer) {
+  const files = await collectSkillDropFiles(dataTransfer);
+  if (!files.length) {
+    toast(I18n.t("未检测到可上传的文件"), "warn");
+    return false;
+  }
+  const entries = [];
+  for (const f of files) {
+    entries.push(await browserFileToSkillEntry(f));
+  }
+  const skill = entries.find((e) => isSkillMdFileName(e.name));
+  const extras = entries.filter((e) => !isSkillMdFileName(e.name));
+  if (!skill) {
+    if (!extras.length) {
+      toast(I18n.t("请包含 SKILL.md"), "err");
+      return false;
+    }
+    const merged = mergeSkillExtras(extras, { replace: false });
+    if (!merged) return false;
+    TPL_ST.fileHint =
+      (TPL_ST.fileHint ? TPL_ST.fileHint + " · " : "") +
+      I18n.t("已选 ") +
+      merged.length +
+      I18n.t(" 个附件");
+    toast(I18n.t("已添加附件（未含 SKILL.md，表单字段未改）"), "ok");
+    return true;
+  }
+  return applySkillUploadBundle(skill, extras, { replaceExtras: true });
 }
 
 async function refreshLocalSkillsForStore() {
@@ -31143,10 +31562,29 @@ async function openTemplateStore() {
         hintEl(
           TPL_ST.editId
             ? I18n.t("可直接改下方正文并保存到工坊（需新版本）；也可从本机技能载入。本机副本不会自动跟着变。")
-            : I18n.t("选择文件、粘贴，或载入本机技能；需含 frontmatter name（kebab-case）"),
+            : I18n.t("拖入或选择 SKILL.md 与附件（可多选/整夹）；自动填写标题与描述；需含 frontmatter name（kebab-case）"),
         ),
       );
       const fileHint = hintEl(TPL_ST.fileHint || "");
+      const extrasHint = hintEl(
+        (TPL_ST.skillExtras || []).length
+          ? I18n.t("已选 ") +
+              TPL_ST.skillExtras.length +
+              I18n.t(" 个附件") +
+              " · " +
+              TPL_ST.skillExtras.map((f) => f.path).join(", ")
+          : I18n.t("未选择附件"),
+      );
+      const syncExtrasHint = () => {
+        extrasHint.textContent =
+          (TPL_ST.skillExtras || []).length
+            ? I18n.t("已选 ") +
+              TPL_ST.skillExtras.length +
+              I18n.t(" 个附件") +
+              " · " +
+              TPL_ST.skillExtras.map((f) => f.path).join(", ")
+            : I18n.t("未选择附件");
+      };
       const fileRow = document.createElement("div");
       fileRow.className = "dsh-btn-row";
       const syncBodyUi = () => {
@@ -31158,19 +31596,65 @@ async function openTemplateStore() {
           const verInp = form.querySelector('input[data-tpl-skill-ver="1"]');
           if (verInp) verInp.value = TPL_ST.version;
         }
+        syncExtrasHint();
       };
+      const dropZone = document.createElement("div");
+      dropZone.className = "tpl-skill-drop";
+      dropZone.tabIndex = 0;
+      dropZone.innerHTML =
+        "<b>" +
+        I18n.t("拖入 SKILL.md 与附加文件") +
+        "</b><span>" +
+        I18n.t("支持多选文件，或拖入整个技能文件夹；将自动填写标题、描述、版本") +
+        "</span>";
+      const onDropFiles = async (dt) => {
+        dropZone.classList.remove("hot");
+        const ok = await ingestSkillDropFiles(dt);
+        if (!ok) return;
+        syncBodyUi();
+        paint();
+      };
+      dropZone.addEventListener("dragenter", (ev) => {
+        ev.preventDefault();
+        dropZone.classList.add("hot");
+      });
+      dropZone.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "copy";
+        dropZone.classList.add("hot");
+      });
+      dropZone.addEventListener("dragleave", (ev) => {
+        if (!dropZone.contains(ev.relatedTarget)) dropZone.classList.remove("hot");
+      });
+      dropZone.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        onDropFiles(ev.dataTransfer);
+      });
+      fileLab.appendChild(dropZone);
       fileRow.appendChild(
-        mkMiniBtn(I18n.t("选择 SKILL.md"), async () => {
+        mkMiniBtn(I18n.t("选择 SKILL.md / 附件…"), async () => {
           const r = await window.api.storePickSkillMd();
           if (!r || !r.ok) {
             if (r && r.error !== I18n.t("已取消")) toast(tplErr(r), "err");
             return;
           }
-          if (tplTooLarge(r.bytes)) return;
-          applySkillDraftFromText(r.text || "");
-          TPL_ST.fileHint =
-            I18n.t("已选择文件：") + (r.name || "") + " · " + fmtBytes(r.bytes);
+          if (
+            !applySkillUploadBundle(
+              {
+                text: r.text || "",
+                bytes: r.bytes,
+                name: r.name,
+                base64: r.base64,
+              },
+              r.files || [],
+              { replaceExtras: true },
+            )
+          ) {
+            return;
+          }
           syncBodyUi();
+          paint();
         }),
       );
       fileRow.appendChild(
@@ -31285,15 +31769,6 @@ async function openTemplateStore() {
       extrasLab.style.marginTop = "10px";
       extrasLab.textContent =
         I18n.t("附加文件（可选，如 schemas.md；每个 ≤200KB）");
-      const extrasHint = hintEl(
-        (TPL_ST.skillExtras || []).length
-          ? I18n.t("已选 ") +
-              TPL_ST.skillExtras.length +
-              I18n.t(" 个附件") +
-              " · " +
-              TPL_ST.skillExtras.map((f) => f.path).join(", ")
-          : I18n.t("未选择附件"),
-      );
       const extrasRow = document.createElement("div");
       extrasRow.className = "dsh-btn-row";
       extrasRow.appendChild(
@@ -31303,36 +31778,16 @@ async function openTemplateStore() {
             if (r && r.error !== I18n.t("已取消")) toast(tplErr(r), "err");
             return;
           }
-          const next = (TPL_ST.skillExtras || []).slice();
-          for (const f of r.files || []) {
-            if (tplTooLarge(f.bytes)) return;
-            const i = next.findIndex(
-              (x) => String(x.path).toLowerCase() === String(f.path).toLowerCase(),
-            );
-            if (i >= 0) next[i] = f;
-            else {
-              if (next.length >= 32) {
-                toast(I18n.t("附加文件不能超过 32 个"), "warn");
-                break;
-              }
-              next.push(f);
-            }
-          }
-          TPL_ST.skillExtras = next;
-          TPL_ST._extrasTouched = true;
-          extrasHint.textContent =
-            I18n.t("已选 ") +
-            next.length +
-            I18n.t(" 个附件") +
-            " · " +
-            next.map((f) => f.path).join(", ");
+          const next = mergeSkillExtras(r.files || [], { replace: false });
+          if (!next) return;
+          syncExtrasHint();
         }),
       );
       extrasRow.appendChild(
         mkMiniBtn(I18n.t("清除附件"), () => {
           TPL_ST.skillExtras = [];
           TPL_ST._extrasTouched = true;
-          extrasHint.textContent = I18n.t("未选择附件");
+          syncExtrasHint();
         }),
       );
       fileLab.appendChild(extrasLab);
@@ -35464,8 +35919,13 @@ function fillAssistModelControls() {
   const modelsFor = (prov) => {
     const catalog = S.providerCatalog || {
       deepseek: [
-        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
+        {
+          id: "deepseek-v4-flash-vision-exp",
+          name: "DeepSeek-V4-Flash-Vision-Exp",
+          input: ["text", "image"],
+        },
       ],
       piai: [],
     };
@@ -36034,8 +36494,21 @@ function ensureProviderCatalog() {
             r && r.deepseek
               ? r.deepseek
               : [
-                  { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-                  { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+                  {
+                    id: "deepseek-v4-flash",
+                    name: "DeepSeek-V4-Flash",
+                    input: ["text"],
+                  },
+                  {
+                    id: "deepseek-v4-pro",
+                    name: "DeepSeek-V4-Pro",
+                    input: ["text"],
+                  },
+                  {
+                    id: "deepseek-v4-flash-vision-exp",
+                    name: "DeepSeek-V4-Flash-Vision-Exp",
+                    input: ["text", "image"],
+                  },
                 ],
           piai: (r && r.piai) || [],
         };
@@ -36044,8 +36517,21 @@ function ensureProviderCatalog() {
       .catch(() => {
         S.providerCatalog = {
           deepseek: [
-            { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-            { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+            {
+              id: "deepseek-v4-flash",
+              name: "DeepSeek-V4-Flash",
+              input: ["text"],
+            },
+            {
+              id: "deepseek-v4-pro",
+              name: "DeepSeek-V4-Pro",
+              input: ["text"],
+            },
+            {
+              id: "deepseek-v4-flash-vision-exp",
+              name: "DeepSeek-V4-Flash-Vision-Exp",
+              input: ["text", "image"],
+            },
           ],
           piai: [],
         };
@@ -36555,8 +37041,13 @@ function renderAgentSession(opts) {
   if (provSel && modelSel) {
     const catalog = S.providerCatalog || {
       deepseek: [
-        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
+        {
+          id: "deepseek-v4-flash-vision-exp",
+          name: "DeepSeek-V4-Flash-Vision-Exp",
+          input: ["text", "image"],
+        },
       ],
       piai: [],
     };
@@ -37060,6 +37551,12 @@ window.addEventListener("unhandledrejection", (ev) => {
 });
 
 /* 保证默认服务商存在（DeepSeek 文本 / GPT Image 2 图像），并置于列表首位 */
+const DEEPSEEK_DEFAULT_MODELS = [
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash-vision-exp",
+];
+
 function ensureDefaultProviders() {
   let provs = S.config.providers || [];
   provs = provs.filter(
@@ -37076,13 +37573,18 @@ function ensureDefaultProviders() {
       type: "text_openai",
       baseUrl: "https://api.deepseek.com",
       apiKey: "",
-      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      models: DEEPSEEK_DEFAULT_MODELS.slice(),
       vision: false,
     });
   } else {
     const d = provs.find((p) => p.id === "deepseek");
-    if (!(d.models || []).some((m) => String(m).includes("deepseek-v4")))
-      d.models = ["deepseek-v4-flash", "deepseek-v4-pro"];
+    if (!(d.models || []).some((m) => String(m).includes("deepseek-v4"))) {
+      d.models = DEEPSEEK_DEFAULT_MODELS.slice();
+    } else if (
+      !(d.models || []).includes("deepseek-v4-flash-vision-exp")
+    ) {
+      d.models = d.models.concat(["deepseek-v4-flash-vision-exp"]);
+    }
   }
   if (!provs.some((p) => p.id === "gpt_image_2")) {
     provs.push({
