@@ -267,7 +267,7 @@ const NODE_DEFAULTS = {
     entries: [],
   },
   proc_text: {
-    w: 330,
+    w: 380,
     h: 200,
     title: "文本处理",
     prompt: "",
@@ -286,7 +286,7 @@ const NODE_DEFAULTS = {
     running: false,
   },
   proc_image: {
-    w: 330,
+    w: 360,
     h: 200,
     title: "图像生成",
     prompt: "",
@@ -620,15 +620,17 @@ function nodeInCurrentScope(n) {
   if (!n) return false;
   const sf = currentSuperFocus();
   if (sf) return nodeParentSuperId(n) === sf;
-  const sid = nodeParentSuperId(n);
+  let sid = nodeParentSuperId(n);
   if (sid) {
-    const host = nodeById(sid);
-    return !!(
-      host &&
-      host.kind === "super" &&
-      host.superOpen &&
-      nodeParentTaskId(host) === currentTaskFocus()
-    );
+    const seen = new Set();
+    while (sid && !seen.has(sid)) {
+      seen.add(sid);
+      const host = nodeById(sid);
+      if (!host || host.kind !== "super" || !host.superOpen) return false;
+      if (nodeParentTaskId(host) !== currentTaskFocus()) return false;
+      sid = nodeParentSuperId(host);
+    }
+    return true;
   }
   return nodeParentTaskId(n) === currentTaskFocus();
 }
@@ -636,15 +638,17 @@ function markInCurrentScope(m) {
   if (!m) return false;
   const sf = currentSuperFocus();
   if (sf) return markParentSuperId(m) === sf;
-  const sid = markParentSuperId(m);
+  let sid = markParentSuperId(m);
   if (sid) {
-    const host = nodeById(sid);
-    return !!(
-      host &&
-      host.kind === "super" &&
-      host.superOpen &&
-      nodeParentTaskId(host) === currentTaskFocus()
-    );
+    const seen = new Set();
+    while (sid && !seen.has(sid)) {
+      seen.add(sid);
+      const host = nodeById(sid);
+      if (!host || host.kind !== "super" || !host.superOpen) return false;
+      if (nodeParentTaskId(host) !== currentTaskFocus()) return false;
+      sid = nodeParentSuperId(host);
+    }
+    return true;
   }
   return markParentTaskId(m) === currentTaskFocus();
 }
@@ -673,7 +677,7 @@ function isSuperIoNode(n) {
 function superDisplaySize(n) {
   if (!n || n.kind !== "super")
     return { w: (n && n.w) || 240, h: (n && n.h) || 160 };
-  if (n.superOpen && !currentSuperFocus()) {
+  if (superIsOpenShell(n)) {
     return {
       w: Math.max(320, Number(n.expandW) || 720),
       h: Math.max(220, Number(n.expandH) || 480),
@@ -682,7 +686,7 @@ function superDisplaySize(n) {
   return { w: n.w || 280, h: n.h || 200 };
 }
 function superInnerOrigin(s) {
-  if (!(s && s.superOpen && !currentSuperFocus())) return { ox: 10, oy: 40 };
+  if (!superIsOpenShell(s)) return { ox: 10, oy: 40 };
   const el = document.querySelector('.wf-node[data-nid="' + s.id + '"]');
   const stage = el && el.querySelector(".super-stage");
   if (el && stage) {
@@ -793,9 +797,14 @@ function superWireInnerLink(wire) {
     return { super: to, child: from, dir: "in" };
   return null;
 }
-/** Expanded shell on the main canvas (not full-canvas superFocus mode). */
+/** Expanded shell on the main canvas (宿主全屏进入态自身不算壳层；其它超级节点仍可展开). */
 function superIsOpenShell(n) {
-  return !!(n && n.kind === "super" && n.superOpen && !currentSuperFocus());
+  return !!(
+    n &&
+    n.kind === "super" &&
+    n.superOpen &&
+    n.id !== currentSuperFocus()
+  );
 }
 /** If this wire should be drawn inside an open super stage, return that host. */
 function wireOpenSuperHost(w, from, to) {
@@ -1044,6 +1053,135 @@ function refreshAllSuperInnerWires(touchIds) {
   }
 }
 
+function bindSuperInnerBridgePort(p, host, pi) {
+  p.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startWireDrag(host.id, ev, pi, { superInnerBridge: true });
+  });
+  p.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const ahead = (S.wf.wires || []).filter((w) => {
+      if (w.from !== host.id || Number(w.fromIndex || 0) !== pi) return false;
+      const to = nodeById(w.to);
+      return to && nodeParentSuperId(to) === host.id;
+    }).length;
+    if (!ahead) {
+      toast(I18n.t("该内侧输入端子没有连线"), "warn");
+      return;
+    }
+    pushHistory();
+    const rem = removeSuperInnerPortWires(host, "bridge", pi);
+    clearDownstream(host.id);
+    toast(I18n.t("已移除内侧输入端子连线 ") + rem + I18n.t(" 条"), "ok");
+    renderCanvas();
+    scheduleSave(true);
+    renderStatus();
+  });
+}
+function bindSuperInnerSinkPort(p, host, poi) {
+  p.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const ahead = (S.wf.wires || []).filter((w) => {
+      if (w.to !== host.id || Number(w.toIndex) !== poi) return false;
+      const from = nodeById(w.from);
+      return from && nodeParentSuperId(from) === host.id;
+    }).length;
+    if (!ahead) {
+      toast(I18n.t("该内侧输出端子没有连线"), "warn");
+      return;
+    }
+    pushHistory();
+    const rem = removeSuperInnerPortWires(host, "sink", poi);
+    clearDownstream(host.id);
+    toast(I18n.t("已移除内侧输出端子连线 ") + rem + I18n.t(" 条"), "ok");
+    renderCanvas();
+    scheduleSave(true);
+    renderStatus();
+  });
+}
+/** 展开壳层：在 viewport 内直接挂载子节点与标注（避免两阶段查找失败） */
+function fillSuperShellViewport(viewport, hostId) {
+  if (!viewport || !hostId) return;
+  const kids = superChildrenOf(hostId).filter((c) => !isSuperIoNode(c));
+  for (const c of kids) {
+    mountNodeEl(viewport, c);
+  }
+  for (const m of marksOf()) {
+    if (markParentSuperId(m) !== hostId) continue;
+    viewport.appendChild(markElement(m));
+  }
+}
+function clearSuperFocusPorts() {
+  const layer = document.getElementById("superFocusPortLayer");
+  if (layer) layer.remove();
+  const stage = $("#stage");
+  if (stage) {
+    stage
+      .querySelectorAll(":scope > .super-focus-port")
+      .forEach((el) => el.remove());
+  }
+}
+/** 全屏进入态：端子钉在画布可视区左右边缘（不随舞台平移） */
+function mountSuperFocusPorts(host) {
+  clearSuperFocusPorts();
+  if (!host || host.kind !== "super" || currentSuperFocus() !== host.id) return;
+  const canvas = $("#canvas");
+  if (!canvas) return;
+  const layer = document.createElement("div");
+  layer.id = "superFocusPortLayer";
+  layer.className = "super-focus-port-layer";
+  const h = Math.max(120, canvas.clientHeight || 400);
+  const ic = inputCount(host);
+  for (let pi = 0; pi < ic; pi++) {
+    const p = document.createElement("div");
+    p.className = "port out super-port super-inner-bridge super-focus-port";
+    p.dataset.node = host.id;
+    p.dataset.fromIndex = String(pi);
+    p.title =
+      I18n.t("内侧输入端子 ") +
+      (pi + 1) +
+      I18n.t("（对应外侧输入 · 拖到内部节点 · 右键移除）");
+    p.style.top = superInnerPortY(h, pi, ic) - PORT_R + "px";
+    bindSuperInnerBridgePort(p, host, pi);
+    layer.appendChild(p);
+  }
+  const oc = outputCount(host);
+  for (let poi = 0; poi < oc; poi++) {
+    const p = document.createElement("div");
+    p.className = "port in super-port super-inner-sink super-focus-port";
+    p.dataset.node = host.id;
+    p.dataset.idx = String(poi);
+    p.title =
+      I18n.t("内侧输出端子 ") +
+      (poi + 1) +
+      I18n.t("（对应外侧输出 · 从内部节点拖入 · 右键移除）");
+    p.style.top = superInnerPortY(h, poi, oc) - PORT_R + "px";
+    bindSuperInnerSinkPort(p, host, poi);
+    layer.appendChild(p);
+  }
+  canvas.appendChild(layer);
+}
+function refreshSuperFocusPortLayout() {
+  const host = nodeById(currentSuperFocus());
+  const layer = document.getElementById("superFocusPortLayer");
+  if (!host || host.kind !== "super" || !layer) return;
+  const canvas = $("#canvas");
+  const h = Math.max(120, (canvas && canvas.clientHeight) || 400);
+  const ic = inputCount(host);
+  const oc = outputCount(host);
+  layer.querySelectorAll(".super-inner-bridge").forEach((p) => {
+    const pi = Number(p.dataset.fromIndex || 0);
+    p.style.top = superInnerPortY(h, pi, ic) - PORT_R + "px";
+  });
+  layer.querySelectorAll(".super-inner-sink").forEach((p) => {
+    const poi = Number(p.dataset.idx || 0);
+    p.style.top = superInnerPortY(h, poi, oc) - PORT_R + "px";
+  });
+}
+
 function findSuperAtWorld(x, y, exceptIds, requireOpen) {
   const skip = exceptIds || new Set();
   let best = null;
@@ -1054,15 +1192,18 @@ function findSuperAtWorld(x, y, exceptIds, requireOpen) {
     if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
     if (currentSuperFocus()) continue;
     if (requireOpen && !n.superOpen) continue;
+    /* 嵌套超级节点仅在祖先链均展开时可见可投 */
+    if (nodeParentSuperId(n) && !nodeInCurrentScope(n)) continue;
+    const wp = nodeWorldPos(n);
     const sz =
-      n.superOpen && !currentSuperFocus()
+      superIsOpenShell(n)
         ? superDisplaySize(n)
         : { w: n.w || 280, h: n.h || 200 };
     const o = superInnerOrigin(n);
-    const x0 = n.x + (n.superOpen ? o.ox : 8);
-    const y0 = n.y + (n.superOpen ? o.oy : 36);
-    const x1 = n.x + sz.w - 8;
-    const y1 = n.y + sz.h - 10;
+    const x0 = wp.x + (superIsOpenShell(n) ? o.ox : 8);
+    const y0 = wp.y + (superIsOpenShell(n) ? o.oy : 36);
+    const x1 = wp.x + sz.w - 8;
+    const y1 = wp.y + sz.h - 10;
     if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
       const area = sz.w * sz.h;
       if (area < bestArea) {
@@ -1104,18 +1245,7 @@ function updateSuperHoverExpand(ev, dragIds) {
       const z = S.cam.z > 0 ? S.cam.z : 1;
       const dx = (ev.clientX - d.sx) / z;
       const dy = (ev.clientY - d.sy) / z;
-      for (const id of d.ids || []) {
-        const n = nodeById(id);
-        const o = d.orig && d.orig[id];
-        if (!n || !o) continue;
-        n.x = snap(o.x + dx);
-        n.y = snap(o.y + dy);
-        const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
-        if (el) {
-          el.style.left = n.x + "px";
-          el.style.top = n.y + "px";
-        }
-      }
+      applyNodeDragVisual(d, dx, dy);
     }
     host = nodeById(host.id);
   }
@@ -1138,29 +1268,106 @@ function clearSuperDropHot(keepExpanded) {
 }
 function toggleSuperOpen(node, open) {
   if (!node || node.kind !== "super") return;
+  /* 若正处在该节点的全屏进入态，先退出再展开壳层 */
+  if (currentSuperFocus() === node.id) {
+    resetSuperFocus();
+  }
+  const visuallyOpen = superIsOpenShell(node);
+  const next = open === undefined ? !visuallyOpen : !!open;
   pushHistory();
-  if (open === undefined) node.superOpen = !node.superOpen;
-  else node.superOpen = !!open;
+  node.superOpen = next;
+  if (next) {
+    node.expandW = Math.max(320, Number(node.expandW) || 720);
+    node.expandH = Math.max(220, Number(node.expandH) || 480);
+    alignSuperContentTopLeft(node);
+  }
   scheduleSave(true);
   renderCanvas();
 }
+/** 将超级节点内部平移到内容包围盒左上对齐（少量边距） */
+function alignSuperContentTopLeft(superNode) {
+  if (!superNode || superNode.kind !== "super") return;
+  const PAD = 16;
+  let minX = Infinity;
+  let minY = Infinity;
+  let any = false;
+  for (const n of superChildrenOf(superNode.id)) {
+    if (isSuperIoNode(n)) continue;
+    any = true;
+    minX = Math.min(minX, Number(n.x) || 0);
+    minY = Math.min(minY, Number(n.y) || 0);
+  }
+  for (const m of marksOf()) {
+    if (markParentSuperId(m) !== superNode.id) continue;
+    const b = markBounds(m);
+    if (!b) continue;
+    any = true;
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+  }
+  if (!any) {
+    superNode.innerPanX = 0;
+    superNode.innerPanY = 0;
+    return;
+  }
+  superNode.innerPanX = PAD - minX;
+  superNode.innerPanY = PAD - minY;
+}
 function nodeIsNestedInOpenSuper(n) {
-  if (!n || currentSuperFocus()) return false;
+  if (!n) return false;
   const sid = nodeParentSuperId(n);
   if (!sid) return false;
+  /* 全屏进入的宿主用主画布展示子节点，不走壳层内嵌 */
+  if (sid === currentSuperFocus()) return false;
   const host = nodeById(sid);
   return !!(host && host.kind === "super" && host.superOpen);
 }
-function nodeWorldPos(n) {
+/** 祖先超级节点 id 是否包含 ancestorId（含自身） */
+function isSuperAncestorOf(ancestorId, nodeId) {
+  if (!ancestorId || !nodeId) return false;
+  let sid = nodeId;
+  const seen = new Set();
+  while (sid && !seen.has(sid)) {
+    if (sid === ancestorId) return true;
+    seen.add(sid);
+    const n = nodeById(sid);
+    sid = n ? nodeParentSuperId(n) : "";
+  }
+  return false;
+}
+function canMoveNodeIntoSuper(host, n) {
+  if (!host || host.kind !== "super" || !n) return false;
+  if (host.id === n.id || isSuperIoNode(n)) return false;
+  /* 不可把节点收进自己的子孙超级节点（会成环） */
+  if (n.kind === "super" && isSuperAncestorOf(n.id, host.id)) return false;
+  return true;
+}
+function superNestDepth(n) {
+  let d = 0;
+  let sid = nodeParentSuperId(n);
+  const seen = new Set();
+  while (sid && !seen.has(sid)) {
+    seen.add(sid);
+    d++;
+    const h = nodeById(sid);
+    sid = h ? nodeParentSuperId(h) : "";
+  }
+  return d;
+}
+function nodeWorldPos(n, _seen) {
   if (!n) return { x: 0, y: 0 };
   if (!nodeIsNestedInOpenSuper(n)) return { x: n.x, y: n.y };
+  const seen = _seen || new Set();
+  if (seen.has(n.id)) return { x: n.x, y: n.y };
+  seen.add(n.id);
   const host = nodeById(n.parentSuperId);
   if (!host) return { x: n.x, y: n.y };
   const o = superInnerOrigin(host);
   const pan = superInnerPan(host);
+  const hw = nodeWorldPos(host, seen);
   return {
-    x: host.x + o.ox + pan.x + n.x,
-    y: host.y + o.oy + pan.y + n.y,
+    x: hw.x + o.ox + pan.x + n.x,
+    y: hw.y + o.oy + pan.y + n.y,
   };
 }
 function nodeDrawSize(n) {
@@ -1197,12 +1404,14 @@ function findOpenSuperAtWorld(x, y, exceptIds) {
     if (skip.has(n.id)) continue;
     if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
     if (currentSuperFocus()) continue;
+    if (nodeParentSuperId(n) && !nodeInCurrentScope(n)) continue;
+    const wp = nodeWorldPos(n);
     const sz = superDisplaySize(n);
     const o = superInnerOrigin(n);
-    const x0 = n.x + o.ox;
-    const y0 = n.y + o.oy;
-    const x1 = n.x + sz.w - 8;
-    const y1 = n.y + sz.h - 10;
+    const x0 = wp.x + o.ox;
+    const y0 = wp.y + o.oy;
+    const x1 = wp.x + sz.w - 8;
+    const y1 = wp.y + sz.h - 10;
     if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
       const area = sz.w * sz.h;
       if (area < bestArea) {
@@ -1257,7 +1466,21 @@ function promptSuperSubFolder(node) {
   foot.appendChild(ok);
   setTimeout(() => inp.focus(), 0);
 }
-function finalizeNodeDragNest(ids) {
+function wireKeepsSuperBoundary(w) {
+  const from = nodeById(w && w.from);
+  const to = nodeById(w && w.to);
+  if (!from || !to) return false;
+  if (from.kind === "super" && nodeParentSuperId(to) === from.id) return true;
+  if (to.kind === "super" && nodeParentSuperId(from) === to.id) return true;
+  return nodeParentSuperId(from) === nodeParentSuperId(to);
+}
+function pruneInvalidSuperBoundaryWires() {
+  if (!S.wf || !Array.isArray(S.wf.wires)) return 0;
+  const before = S.wf.wires.length;
+  S.wf.wires = S.wf.wires.filter((w) => wireKeepsSuperBoundary(w));
+  return before - S.wf.wires.length;
+}
+function finalizeNodeDragNest(ids, curWorld) {
   if (currentSuperFocus()) return false;
   const skipHosts = new Set();
   for (const id of ids || []) {
@@ -1267,36 +1490,51 @@ function finalizeNodeDragNest(ids) {
   const list = [];
   for (const id of ids || []) {
     const n = nodeById(id);
-    if (!n || isSuperIoNode(n) || n.kind === "super") continue;
+    if (!n || isSuperIoNode(n)) continue;
     list.push(n);
   }
   if (!list.length) return false;
   let changed = false;
   for (const n of list) {
-    const wp = nodeWorldPos(n);
     const sz = nodeDrawSize(n);
-    const cx = wp.x + sz.w / 2;
-    const cy = wp.y + sz.h / 2;
-    const host = findOpenSuperAtWorld(cx, cy, skipHosts);
+    let wx;
+    let wy;
+    if (curWorld && curWorld[n.id]) {
+      wx = curWorld[n.id].x;
+      wy = curWorld[n.id].y;
+    } else {
+      const wp = nodeWorldPos(n);
+      wx = wp.x;
+      wy = wp.y;
+    }
+    const cx = wx + sz.w / 2;
+    const cy = wy + sz.h / 2;
+    let host = findOpenSuperAtWorld(cx, cy, skipHosts);
+    if (host && !canMoveNodeIntoSuper(host, n)) host = null;
     const cur = nodeParentSuperId(n);
-    if (host && host.id === cur) continue;
     if (host) {
       const o = superInnerOrigin(host);
       const pan = superInnerPan(host);
-      n.parentSuperId = host.id;
-      n.parentTaskId = host.parentTaskId || "";
-      n.x = snap(wp.x - host.x - o.ox - pan.x);
-      n.y = snap(wp.y - host.y - o.oy - pan.y);
-      changed = true;
+      const hwp = nodeWorldPos(host);
+      const nx = snap(wx - hwp.x - o.ox - pan.x);
+      const ny = snap(wy - hwp.y - o.oy - pan.y);
+      if (host.id !== cur || n.x !== nx || n.y !== ny) {
+        n.parentSuperId = host.id;
+        n.parentTaskId = host.parentTaskId || "";
+        n.x = nx;
+        n.y = ny;
+        changed = true;
+      }
     } else if (cur) {
       const host0 = nodeById(cur);
       n.parentSuperId = "";
       n.parentTaskId = host0 ? host0.parentTaskId || "" : currentTaskFocus();
-      n.x = snap(wp.x);
-      n.y = snap(wp.y);
+      n.x = snap(wx);
+      n.y = snap(wy);
       changed = true;
     }
   }
+  if (changed) pruneInvalidSuperBoundaryWires();
   return changed;
 }
 function taskChildTasksOf(id) {
@@ -1837,22 +2075,16 @@ function setSuperFocus(superId, opts) {
 function enterSuper(node, opts) {
   opts = opts || {};
   if (!node || node.kind !== "super") return;
+  /* 进入完整画布时收起壳层展开态，避免与 focus 模式叠套 */
   node.superOpen = false;
   setSuperFocus(node.id, { render: false });
   const kids = superChildrenOf(node.id).filter((c) => !isSuperIoNode(c));
-  if (kids.length) {
-    tidyLayoutScope(kids, {
-      history: false,
-      fit: true,
-      render: false,
-      save: false,
-      origin: { x: snap(120), y: snap(48) },
-    });
-  }
   renderCanvas();
   renderStatus();
+  if (kids.length) fitNodes(kids);
+  else fitCanvas();
   if (opts.toast !== false)
-    toast(I18n.t("已展开超级节点：") + (node.title || I18n.t("超级节点")), "ok");
+    toast(I18n.t("已进入超级节点：") + (node.title || I18n.t("超级节点")), "ok");
 }
 function leaveSuper() {
   const stack = S.superStack || [];
@@ -1869,34 +2101,78 @@ function leaveSuper() {
 function ensureSuperIoPorts(_superNode, _wf) {
   /* no-op: super_io proxy nodes removed; edge ports only */
 }
-function externalValueIntoSuper(superNode, index) {
+function externalValueIntoSuper(superNode, index, seen) {
   if (!superNode) return null;
   const w = superExternalInWires(superNode).find(
     (x) => Number(x.toIndex) === Number(index),
   );
   if (!w) return null;
-  return valueForInput(nodeById(w.from), Number(w.fromIndex || 0));
+  /* consumer 用本超级节点：嵌套时上游若也是超级节点，才能走其外侧输入通道 */
+  return valueForInput(
+    nodeById(w.from),
+    Number(w.fromIndex || 0),
+    superNode,
+    seen,
+  );
 }
-function valueForSuperOutput(superNode, index) {
+function valueForSuperOutput(superNode, index, seen) {
   if (!superNode) return null;
   const w = superInternalOutFeeds(superNode).find(
     (x) => Number(x.toIndex) === Number(index),
   );
   if (!w) return null;
+  /* consumer 用汇入子节点，避免把超级节点自身当成 consumer 误走输出通道 */
   return valueForInput(
     nodeById(w.from),
     Number(w.fromIndex || 0),
-    nodeById(w.to),
+    nodeById(w.from),
+    seen,
   );
+}
+/** 沿连线取值：源为超级节点时用 fromIndex，并以 consumer 区分内外通道 */
+function valueFromWire(w, consumer, batchIdx, seen) {
+  if (!w) return null;
+  const src = nodeById(w.from);
+  if (!src) return null;
+  const idx =
+    src.kind === "super"
+      ? Number(w.fromIndex || 0)
+      : batchIdx == null
+        ? 0
+        : batchIdx;
+  return valueForInput(src, idx, consumer || null, seen);
+}
+function superPortIdxFromWire(src, w) {
+  if (!src || src.kind !== "super" || !w) return undefined;
+  return Number(w.fromIndex || 0);
+}
+/** 移除超级节点某一内侧端子上的连线（桥接 / 汇流） */
+function removeSuperInnerPortWires(superNode, dir, index) {
+  if (!superNode || !S.wf) return 0;
+  const idx = Number(index || 0);
+  const before = (S.wf.wires || []).length;
+  if (dir === "bridge") {
+    S.wf.wires = (S.wf.wires || []).filter((w) => {
+      if (w.from !== superNode.id || Number(w.fromIndex || 0) !== idx)
+        return true;
+      const to = nodeById(w.to);
+      return !(to && nodeParentSuperId(to) === superNode.id);
+    });
+  } else if (dir === "sink") {
+    S.wf.wires = (S.wf.wires || []).filter((w) => {
+      if (w.to !== superNode.id || Number(w.toIndex) !== idx) return true;
+      const from = nodeById(w.from);
+      return !(from && nodeParentSuperId(from) === superNode.id);
+    });
+  }
+  return before - (S.wf.wires || []).length;
 }
 function moveNodesIntoSuper(superNode, nodes) {
   if (!superNode || superNode.kind !== "super") return 0;
-  const list = (nodes || []).filter(
-    (n) => n && n.id !== superNode.id && !isSuperIoNode(n) && n.kind !== "super",
-  );
+  const list = (nodes || []).filter((n) => canMoveNodeIntoSuper(superNode, n));
   if (!list.length) return 0;
   pushHistory();
-  const open = !!(superNode.superOpen && !currentSuperFocus());
+  const open = superIsOpenShell(superNode);
   const o = superInnerOrigin(superNode);
   let minX = Infinity,
     minY = Infinity;
@@ -1911,13 +2187,15 @@ function moveNodesIntoSuper(superNode, nodes) {
     n.parentTaskId = superNode.parentTaskId || "";
     if (open) {
       const pan = superInnerPan(superNode);
-      n.x = snap(Math.max(8, wp.x - superNode.x - o.ox - pan.x));
-      n.y = snap(Math.max(8, wp.y - superNode.y - o.oy - pan.y));
+      const hwp = nodeWorldPos(superNode);
+      n.x = snap(Math.max(8, wp.x - hwp.x - o.ox - pan.x));
+      n.y = snap(Math.max(8, wp.y - hwp.y - o.oy - pan.y));
     } else {
       n.x = snap(Math.max(160, wp.x - minX + 160));
       n.y = snap(Math.max(48, wp.y - minY + 48));
     }
   }
+  pruneInvalidSuperBoundaryWires();
   scheduleSave(true);
   return list.length;
 }
@@ -1933,8 +2211,118 @@ function moveNodesOutOfSuper(nodes) {
     n.x = snap(wp.x);
     n.y = snap(wp.y);
   }
+  pruneInvalidSuperBoundaryWires();
   scheduleSave(true);
   return list.length;
+}
+/** 框选合并：新建展开超级节点，外框覆盖选区（类似组框），并把选中节点收纳进去 */
+function wrapSelectionAsSuper() {
+  const raw = selNodes().filter((n) => n && !isSuperIoNode(n));
+  if (!raw.length) {
+    toast(I18n.t("请先框选 / 选中要合并的节点"), "warn");
+    return null;
+  }
+  const parents = new Set(raw.map((n) => nodeParentSuperId(n) || ""));
+  if (parents.size > 1) {
+    toast(I18n.t("请选择同一层级内的节点（不能跨超级节点边界）"), "warn");
+    return null;
+  }
+  const commonParent = [...parents][0] || "";
+  const selIds = new Set(raw.map((n) => n.id));
+  /* 若同时选中了某超级节点及其内部子节点，只收纳顶层选中项 */
+  const list = raw.filter((n) => {
+    let sid = nodeParentSuperId(n);
+    const seen = new Set();
+    while (sid && !seen.has(sid)) {
+      if (selIds.has(sid)) return false;
+      seen.add(sid);
+      const h = nodeById(sid);
+      sid = h ? nodeParentSuperId(h) : "";
+    }
+    return true;
+  });
+  if (!list.length) {
+    toast(I18n.t("请先框选 / 选中要合并的节点"), "warn");
+    return null;
+  }
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const n of list) {
+    const wp = nodeWorldPos(n);
+    const sz = nodeDrawSize(n);
+    minX = Math.min(minX, wp.x);
+    minY = Math.min(minY, wp.y);
+    maxX = Math.max(maxX, wp.x + sz.w);
+    maxY = Math.max(maxY, wp.y + sz.h);
+  }
+  if (!Number.isFinite(minX)) {
+    toast(I18n.t("请先框选 / 选中要合并的节点"), "warn");
+    return null;
+  }
+  const PAD = GROUP_PAD;
+  const HEAD = 29;
+  const worldX = snap(minX - PAD);
+  const worldY = snap(minY - HEAD - PAD);
+  const expandW = Math.max(320, Math.ceil(maxX - minX + PAD * 2));
+  const expandH = Math.max(220, Math.ceil(maxY - minY + HEAD + PAD * 2));
+
+  pushHistory();
+  const d = NODE_DEFAULTS.super;
+  const host = {
+    id: uid("n"),
+    kind: "super",
+    x: worldX,
+    y: worldY,
+    w: d.w,
+    h: d.h,
+  };
+  for (const [k, v] of Object.entries(d)) {
+    if (k === "w" || k === "h") continue;
+    host[k] = JSON.parse(JSON.stringify(v));
+  }
+  host.title = uniqueNodeTitle(I18n.t("超节点"));
+  host.superOpen = true;
+  host.expandW = expandW;
+  host.expandH = expandH;
+  host.innerPanX = 0;
+  host.innerPanY = 0;
+  host.note = "";
+  host.parentTaskId = currentTaskFocus();
+  host.parentSuperId = commonParent;
+  if (commonParent) {
+    const p = nodeById(commonParent);
+    host.parentTaskId = p ? p.parentTaskId || "" : currentTaskFocus();
+    const o = superInnerOrigin(p);
+    const pan = superInnerPan(p);
+    const pwp = nodeWorldPos(p);
+    host.x = snap(worldX - pwp.x - o.ox - pan.x);
+    host.y = snap(worldY - pwp.y - o.oy - pan.y);
+  }
+  S.wf.nodes.push(host);
+
+  const ox = 0;
+  const oy = HEAD;
+  for (const n of list) {
+    const wp = nodeWorldPos(n);
+    n.parentSuperId = host.id;
+    n.parentTaskId = host.parentTaskId || "";
+    n.x = snap(wp.x - worldX - ox);
+    n.y = snap(wp.y - worldY - oy);
+  }
+  pruneInvalidSuperBoundaryWires();
+  S.sel = host.id;
+  S.selSet = new Set([host.id]);
+  S.selWire = null;
+  S.selGroup = null;
+  if (S.selMarkSet) S.selMarkSet.clear();
+  S.selMark = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  toast(I18n.t("已合并为超节点：") + host.title, "ok");
+  return host;
 }
 function renderTaskCrumb() {
   const el = $("#taskCrumb");
@@ -1997,7 +2385,7 @@ function renderTaskCrumb() {
       b.className =
         "task-crumb-item" + (i === chain.length - 1 ? " on" : "");
       b.textContent = n.title || I18n.t("超级节点");
-      b.title = I18n.t("展开超级节点：") + (n.title || "");
+      b.title = I18n.t("进入超级节点：") + (n.title || "");
       b.onclick = (ev) => {
         ev.stopPropagation();
         enterSuper(n, { toast: false });
@@ -2307,15 +2695,29 @@ function collectTaskImagePaths(node, spec, idx) {
   };
   const i = idx == null ? 0 : idx;
   const perItem = !!(node && isBatch(node) && node.batchMode !== "agg");
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src) continue;
+    if (src.kind === "super") {
+      const portIdx = Number(w.fromIndex || 0);
+      if (perItem) {
+        const v = valueForInput(src, portIdx, node);
+        if (v && v.kind === "image" && v.path) push(v.path);
+      } else {
+        for (const it of allImageItems(src, node, portIdx)) push(it.path);
+      }
+      continue;
+    }
+  }
   for (const n of imageInputsOf(node, i)) {
     const src = nodeById(n.id);
     if (!src) continue;
     if (perItem) {
-      const v = valueForInput(src, i);
+      const v = valueForInput(src, i, node);
       if (v && v.kind === "image" && v.path) push(v.path);
       continue;
     }
-    for (const it of allImageItems(src)) push(it.path);
+    for (const it of allImageItems(src, node)) push(it.path);
   }
   for (const p of (spec && spec.images) || []) push(p);
   return out;
@@ -2716,7 +3118,7 @@ function dshRunTask(input, opts) {
     workspace,
     input: String(input || ""),
     model: opts.model || d.model || "deepseek-v4-flash",
-    maxTokens: Number(d.maxTokens) || 49152,
+    maxTokens: Number(d.maxTokens) || 98304,
     apiKey,
     baseUrl,
     webSearchApiKey,
@@ -2960,7 +3362,7 @@ function onDshNodeEvent(node, attemptT, type, data) {
   if (thinkEl) thinkEl.textContent = thinkingTextOf(node) || "";
   if (streamEl) streamEl.textContent = node._pendingAnswer || "";
   const list = $("#agentList");
-  if (list) list.scrollTop = list.scrollHeight;
+  scrollElToBottomIfStuck(list);
 }
 
 /* ── 任务完成音效:优先自定义音频文件,否则内置短促双音 ── */
@@ -3910,11 +4312,137 @@ function videoGenSlotMeta(node, index) {
   const i = index - 1 - maxImg - maxVid;
   return { kind: "audio", key: "aud" + i, label: "A" + (i + 1) };
 }
+/* 节点最小宽/高：保证标题栏按钮与体内控件不溢出到节点外（只抬不缩） */
 function minWFor(n) {
-  return n.kind === "input_image" ? 180 : 240;
+  const k = n && n.kind;
+  switch (k) {
+    case "super_io":
+      return 96;
+    case "input_image":
+      return 180;
+    case "input_text":
+      return 220;
+    case "proc_text":
+    case "proc_image":
+      return 360;
+    case "agent_task":
+      return 380;
+    case "chat":
+      return 300;
+    case "music_gen":
+      return 320;
+    case "video_gen":
+      return 340;
+    case "task":
+      return 280;
+    case "global":
+      return 260;
+    case "save":
+    case "save_text":
+    case "save_image":
+      return 280;
+    case "judge":
+      return 260;
+    case "wait_file":
+      return 280;
+    case "super":
+      return 240;
+    default:
+      return 240;
+  }
 }
 function minHFor(n) {
-  return 96;
+  const k = n && n.kind;
+  switch (k) {
+    case "super_io":
+      return 56;
+    case "music_gen":
+      return 220;
+    case "video_gen":
+      return 260;
+    case "agent_task":
+    case "chat":
+      return 240;
+    case "task":
+      return 180;
+    case "proc_text":
+    case "proc_image":
+      return 140;
+    case "save":
+    case "save_text":
+    case "save_image":
+      return 160;
+    case "input_image":
+      return 120;
+    case "input_text":
+      return 110;
+    case "global":
+      return 120;
+    case "wait_file":
+      return 140;
+    case "judge":
+      return 120;
+    default:
+      return 96;
+  }
+}
+function clampNodeToMinSize(n) {
+  if (!n) return;
+  if (n.kind === "super" && superIsOpenShell(n)) {
+    n.expandW = snapDim(Math.max(Number(n.expandW) || 0, 320), 320);
+    n.expandH = snapDim(Math.max(Number(n.expandH) || 0, 220), 220);
+    return;
+  }
+  const mw = minWFor(n);
+  const mh = minHFor(n);
+  n.w = snapDim(Math.max(Number(n.w) || 0, mw), mw);
+  n.h = snapDim(Math.max(Number(n.h) || 0, mh), mh);
+}
+/** 挂载后按标题栏 / 体内行实测抬宽（只抬不缩），避免菜单钮或参数条溢出 */
+function fitNodeChrome(el, n) {
+  if (!el || !n || isPinnedCtrl(n)) return false;
+  if (n.kind === "super" && superIsOpenShell(n)) return false;
+  const head = el.querySelector(":scope > .n-head");
+  let need = minWFor(n);
+  if (head) {
+    const TITLE_FLOOR = 40;
+    const PAD = 16;
+    const GAP = 6;
+    let w = PAD;
+    const kids = head.children;
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i];
+      if (c.classList.contains("n-title")) w += TITLE_FLOOR;
+      else w += Math.ceil(c.getBoundingClientRect().width);
+      if (i) w += GAP;
+    }
+    need = Math.max(need, w + 4);
+  }
+  const body = el.querySelector(":scope > .n-body");
+  if (body) {
+    const row = body.querySelector(".mg-params");
+    if (row) need = Math.max(need, Math.ceil(row.scrollWidth) + 20);
+  }
+  const mh = minHFor(n);
+  let changed = false;
+  if ((n.w || 0) < need) {
+    n.w = snapDim(need, minWFor(n));
+    el.style.width = n.w + "px";
+    changed = true;
+  }
+  n._chromeMinW = need;
+  if ((n.h || 0) < mh) {
+    n.h = snapDim(mh, mh);
+    el.style.height = n.h + "px";
+    changed = true;
+  }
+  return changed;
+}
+function mountNodeEl(parent, n) {
+  const el = nodeElement(n);
+  parent.appendChild(el);
+  if (fitNodeChrome(el, n)) refreshPorts(el, n);
+  return el;
 }
 
 /* ============ 多次尝试（attempts） ============ */
@@ -5245,9 +5773,31 @@ function superInnerPortY(stageH, i, count) {
   const span = Math.max(0, n - 1) * PORT_STEP;
   return Math.max(24, Math.round(h / 2 - span / 2 + i * PORT_STEP));
 }
+/** 全屏进入态：内侧端子钉在 #canvas 可视区左右边缘（屏幕坐标→舞台坐标） */
+function superFocusBridgePos(host, fromIndex) {
+  const canvas = $("#canvas");
+  if (!canvas) return { x: 16, y: 120 };
+  const r = canvas.getBoundingClientRect();
+  const y =
+    r.top +
+    superInnerPortY(r.height, fromIndex || 0, inputCount(host));
+  return toStage(r.left + 10 + PORT_R, y);
+}
+function superFocusSinkPos(host, toIndex) {
+  const canvas = $("#canvas");
+  if (!canvas) return { x: 800, y: 120 };
+  const r = canvas.getBoundingClientRect();
+  const y =
+    r.top +
+    superInnerPortY(r.height, toIndex || 0, outputCount(host));
+  return toStage(r.right - 10 - PORT_R, y);
+}
 function outPos(n, i, peer, wire) {
   const link = wire ? superWireInnerLink(wire) : null;
   if (link && link.super.id === n.id && link.dir === "out") {
+    if (currentSuperFocus() === n.id) {
+      return superFocusBridgePos(n, Number(wire.fromIndex || 0));
+    }
     const p = nodeWorldPos(n);
     const o = superInnerOrigin(n);
     return {
@@ -5266,6 +5816,9 @@ function outPos(n, i, peer, wire) {
 function inPos(n, i, peer, wire) {
   const link = wire ? superWireInnerLink(wire) : null;
   if (link && link.super.id === n.id && link.dir === "in") {
+    if (currentSuperFocus() === n.id) {
+      return superFocusSinkPos(n, Number(wire.toIndex || 0));
+    }
     const p = nodeWorldPos(n);
     const o = superInnerOrigin(n);
     const sz = superDisplaySize(n);
@@ -5301,6 +5854,20 @@ function portLinkedNodes(node, dir, idx) {
     seen.add(n.id);
     out.push(n);
   };
+  if (node.kind === "super") {
+    const i = Number(idx || 0);
+    if (dir === "in") {
+      /* 外侧输入 / 内侧汇流：按调用方区分——外侧端子只列外部来源 */
+      for (const w of superExternalInWires(node)) {
+        if (Number(w.toIndex) === i) add(nodeById(w.from));
+      }
+    } else {
+      for (const w of superExternalOutWires(node)) {
+        if (Number(w.fromIndex || 0) === i) add(nodeById(w.to));
+      }
+    }
+    return out;
+  }
   if (dir === "in") {
     for (const w of S.wf.wires || []) {
       if (w.to === node.id && Number(w.toIndex) === Number(idx))
@@ -5431,6 +5998,11 @@ function applyTransformSoon() {
     if (!S._camDirty) return;
     S._camDirty = false;
     applyTransform();
+    /* 全屏进入态内侧端子钉在屏幕边缘，平移/缩放后需重算主 SVG 连线端点 */
+    if (currentSuperFocus()) {
+      refreshSuperFocusPortLayout();
+      updateWires();
+    }
     if (S._zoomStatusPending) {
       S._zoomStatusPending = false;
       renderStatus();
@@ -5774,13 +6346,14 @@ function mergeItems(node) {
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
     if (!src) continue;
-    for (const it of allTextItems(src))
+    const portIdx = superPortIdxFromWire(src, w);
+    for (const it of allTextItems(src, node, portIdx))
       out.push({
         kind: "text",
         title: it.title,
         value: { kind: "text", text: it.text },
       });
-    for (const it of allImageItems(src))
+    for (const it of allImageItems(src, node, portIdx))
       out.push({
         kind: "image",
         title: it.title,
@@ -5793,11 +6366,13 @@ function mergeItems(node) {
 /* 拆分节点：批次中选中项的实时副本（单输入单输出；输入不存在该项 → 空） */
 function splitItems(node) {
   const out = [];
-  const src = firstSource(node);
+  const w = wiresTo(node.id)[0] || null;
+  const src = w ? nodeById(w.from) : null;
   if (!src) return out;
-  for (const it of allTextItems(src))
+  const portIdx = superPortIdxFromWire(src, w);
+  for (const it of allTextItems(src, node, portIdx))
     out.push({ title: it.title, value: { kind: "text", text: it.text } });
-  for (const it of allImageItems(src))
+  for (const it of allImageItems(src, node, portIdx))
     out.push({ title: it.title, value: { kind: "image", path: it.path } });
   return out;
 }
@@ -5811,6 +6386,17 @@ function isBatchInput(n) {
   if (n.ro) return false;
   if (inputInherited(n)) {
     const src = firstSource(n);
+    if (!src) return false;
+    /* 继承自超级节点：只看其外侧输入是否批量，避免经内侧汇入再 isBatch(super) 死循环 */
+    if (src.kind === "super") {
+      const link = inboundWire(n);
+      const slot = Number((link && link.fromIndex) || 0);
+      const ext = superExternalInWires(src).find(
+        (x) => Number(x.toIndex) === slot,
+      );
+      const up = ext ? nodeById(ext.from) : null;
+      return !!(up && isBatch(up));
+    }
     if (n.kind === "input_text") {
       const v = inheritedValue(n, 0);
       if (
@@ -5821,7 +6407,7 @@ function isBatchInput(n) {
       )
         return true; // 继承文本符合 YAML → 批量（可被 yamlOff 关闭）
     }
-    return src ? isBatch(src) : false;
+    return isBatch(src);
   }
   return !!n.batch;
 }
@@ -5831,6 +6417,17 @@ function batchMemo(id, seen) {
   seen[id] = true;
   const n = nodeById(id);
   if (!n) return false;
+  if (n.kind === "super") {
+    /* 仅沿外侧输入传播；内侧汇入可能继承本超级节点，会与 isBatchInput 互相递归 */
+    for (const w of superExternalInWires(n)) {
+      const src = nodeById(w.from);
+      if (!src || isControlKind(src)) continue;
+      if (isBatchInput(src)) return true;
+      if (src.kind === "merge" && wiresTo(src.id).length) return true;
+      if (batchMemo(src.id, seen)) return true;
+    }
+    return false;
+  }
   for (const w of S.wf.wires) {
     if (w.to !== id) continue;
     const src = nodeById(w.from);
@@ -5845,6 +6442,10 @@ function batchMemo(id, seen) {
       src.batchMode === "agg"
     )
       continue; // 聚合模式输出为单个 → 下游不再批量
+    if (src.kind === "super") {
+      if (batchMemo(src.id, seen)) return true;
+      continue;
+    }
     if (batchMemo(src.id, seen)) return true;
   }
   return false;
@@ -5854,6 +6455,7 @@ function isBatch(node) {
   if (node.kind === "input_text" || node.kind === "input_image")
     return isBatchInput(node);
   if (node.kind === "merge") return wiresTo(node.id).length > 0;
+  if (node.kind === "super") return batchMemo(node.id, {});
   return batchMemo(node.id, {});
 }
 
@@ -6339,7 +6941,7 @@ async function explodeBatchNode(root) {
   if (
     await confirmDialog(
       I18n.t(
-        "批次拆分已完成。是否进行 AI 重新排版？\n\n将由全局助手分析并调整节点位置，可能需要等待一段时间。",
+        "批次拆分已完成。是否进行重新排版？\n\n将按连线关系整理节点位置。",
       ),
       { title: I18n.t("一键排版"), okText: I18n.t("开始排版") },
     )
@@ -6378,13 +6980,23 @@ function chatTranscript(node) {
   );
 }
 
-function valueForInput(src, idx, consumer) {
+function valueForInput(src, idx, consumer, seen) {
   if (!src || isControlKind(src)) return null;
   if (src.kind === "super") {
     const cons = consumer || null;
+    const key =
+      "super:" +
+      src.id +
+      ":" +
+      Number(idx || 0) +
+      ":" +
+      (cons && nodeParentSuperId(cons) === src.id ? "in" : "out");
+    if (seen && seen.has(key)) return null;
+    const next = new Set(seen || []);
+    next.add(key);
     if (cons && nodeParentSuperId(cons) === src.id)
-      return externalValueIntoSuper(src, idx);
-    return valueForSuperOutput(src, idx);
+      return externalValueIntoSuper(src, idx, next);
+    return valueForSuperOutput(src, idx, next);
   }
   if (src.kind === "chat") {
     const t = chatTranscript(src);
@@ -6408,7 +7020,14 @@ function valueForInput(src, idx, consumer) {
   }
   if (src.kind === "input_text") {
     if (inputInherited(src)) {
-      const up = valueForInput(firstSource(src), idx);
+      /* 把当前节点作为 consumer 传入，超级节点才能走「外侧输入」而非「内侧输出」 */
+      const w = inboundWire(src);
+      const up = valueForInput(
+        w ? nodeById(w.from) : null,
+        wireSourceIndex(w, idx),
+        src,
+        seen,
+      );
       if (up && up.kind === "text" && !src.yamlOff) {
         const es = parseSimpleYaml(up.text);
         if (es.length) {
@@ -6427,7 +7046,15 @@ function valueForInput(src, idx, consumer) {
     return { kind: "text", text: src.text || "" };
   }
   if (src.kind === "input_image") {
-    if (inputInherited(src)) return valueForInput(firstSource(src), idx);
+    if (inputInherited(src)) {
+      const w = inboundWire(src);
+      return valueForInput(
+        w ? nodeById(w.from) : null,
+        wireSourceIndex(w, idx),
+        src,
+        seen,
+      );
+    }
     if (src.batch) {
       const es = (src.entries || []).filter((e) => e.path);
       const e = es[idx] || es[es.length - 1];
@@ -6494,14 +7121,47 @@ function valueForInput(src, idx, consumer) {
 }
 
 /* 输入节点的继承值（取第一个输入） */
+function inboundWire(n) {
+  return wiresTo(n.id)[0] || null;
+}
+function wireSourceIndex(w, fallbackIdx) {
+  const src = w && nodeById(w.from);
+  if (src && src.kind === "super") return Number(w.fromIndex || 0);
+  return fallbackIdx == null ? 0 : fallbackIdx;
+}
 function inheritedValue(n, idx) {
   if (!inputInherited(n)) return null;
-  return valueForInput(firstSource(n), idx);
+  const w = inboundWire(n);
+  if (!w) return null;
+  return valueForInput(nodeById(w.from), wireSourceIndex(w, idx), n);
 }
 
 /* 聚合模式：取某个源的全部条目（批量源 → 每个条目；普通源 → 单个） */
-function allTextItems(src) {
+function allTextItems(src, consumer, portIdx) {
   if (!src) return [];
+  if (src.kind === "super") {
+    let slot = 0;
+    if (portIdx != null && portIdx !== "") slot = Number(portIdx) || 0;
+    else if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) =>
+          (x.from === src.id && x.to === consumer.id) ||
+          (x.to === src.id && x.from === consumer.id),
+      );
+      if (link && link.from === src.id) slot = Number(link.fromIndex || 0);
+      else if (link && link.to === src.id) slot = Number(link.toIndex || 0);
+    }
+    if (consumer && nodeParentSuperId(consumer) === src.id) {
+      const ext = superExternalInWires(src).find(
+        (x) => Number(x.toIndex) === slot,
+      );
+      return ext ? allTextItems(nodeById(ext.from), src) : [];
+    }
+    const feed = superInternalOutFeeds(src).find(
+      (x) => Number(x.toIndex) === slot,
+    );
+    return feed ? allTextItems(nodeById(feed.from), src) : [];
+  }
   if (src.kind === "chat") {
     const t = chatTranscript(src);
     return t ? [{ title: src.title, text: t }] : [];
@@ -6518,7 +7178,8 @@ function allTextItems(src) {
       .map((i) => ({ title: i.title, text: i.value.text }));
   if (src.kind === "input_text") {
     if (inputInherited(src)) {
-      const inner = allTextItems(firstSource(src));
+      const w = inboundWire(src);
+      const inner = allTextItems(w ? nodeById(w.from) : null, src);
       if (inner.length > 1) return inner; // 继承批量 → 全部条目
       if (inner.length === 1 && !src.yamlOff) {
         const es = parseSimpleYaml(inner[0].text); // 继承文本符合 YAML → 解析为条目
@@ -6561,8 +7222,31 @@ function allTextItems(src) {
   }
   return [];
 }
-function allImageItems(src) {
+function allImageItems(src, consumer, portIdx) {
   if (!src) return [];
+  if (src.kind === "super") {
+    let slot = 0;
+    if (portIdx != null && portIdx !== "") slot = Number(portIdx) || 0;
+    else if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) =>
+          (x.from === src.id && x.to === consumer.id) ||
+          (x.to === src.id && x.from === consumer.id),
+      );
+      if (link && link.from === src.id) slot = Number(link.fromIndex || 0);
+      else if (link && link.to === src.id) slot = Number(link.toIndex || 0);
+    }
+    if (consumer && nodeParentSuperId(consumer) === src.id) {
+      const ext = superExternalInWires(src).find(
+        (x) => Number(x.toIndex) === slot,
+      );
+      return ext ? allImageItems(nodeById(ext.from), src) : [];
+    }
+    const feed = superInternalOutFeeds(src).find(
+      (x) => Number(x.toIndex) === slot,
+    );
+    return feed ? allImageItems(nodeById(feed.from), src) : [];
+  }
   if (src.kind === "split") {
     const it = splitSelected(src);
     return it && it.value.kind === "image"
@@ -6575,7 +7259,8 @@ function allImageItems(src) {
       .map((i) => ({ title: i.title, path: i.value.path }));
   if (src.kind === "input_image") {
     if (inputInherited(src)) {
-      const inner = allImageItems(firstSource(src));
+      const w = inboundWire(src);
+      const inner = allImageItems(w ? nodeById(w.from) : null, src);
       if (inner.length > 1) return inner;
       if (inner.length === 1)
         return [
@@ -6636,10 +7321,33 @@ function dedupeBlockTitles(blocks) {
 }
 
 /* 某源在第 idx 个条目上的标题：批量源的条目 field / 图像文件名，非批量 = 节点标题 */
-function itemTitleOf(src, idx) {
+function itemTitleOf(src, idx, consumer) {
   if (!src) return I18n.t("输入");
   const fallback = src.title || I18n.t("输入");
   const at = Math.min(idx || 0, 999999);
+  if (src.kind === "super") {
+    if (consumer && nodeParentSuperId(consumer) === src.id) {
+      const ext = superExternalInWires(src).find(
+        (x) => Number(x.toIndex) === at,
+      );
+      if (ext)
+        return (
+          itemTitleOf(nodeById(ext.from), Number(ext.fromIndex || 0)) || fallback
+        );
+    } else {
+      const feed = superInternalOutFeeds(src).find(
+        (x) => Number(x.toIndex) === at,
+      );
+      if (feed)
+        return (
+          itemTitleOf(
+            nodeById(feed.from),
+            Number(feed.fromIndex || 0),
+          ) || fallback
+        );
+    }
+    return fallback;
+  }
   if (src.kind === "split") {
     const it = splitSelected(src);
     return it ? it.title : fallback;
@@ -6662,7 +7370,14 @@ function itemTitleOf(src, idx) {
           return e.title || fallback;
         }
       }
-      return itemTitleOf(firstSource(src), idx) || fallback;
+      const w = inboundWire(src);
+      return (
+        itemTitleOf(
+          w ? nodeById(w.from) : null,
+          wireSourceIndex(w, idx),
+          src,
+        ) || fallback
+      );
     }
     if (src.batch && (src.entries || []).length) {
       const e = src.entries[Math.min(at, src.entries.length - 1)];
@@ -6671,8 +7386,16 @@ function itemTitleOf(src, idx) {
     return fallback;
   }
   if (src.kind === "input_image") {
-    if (inputInherited(src))
-      return itemTitleOf(firstSource(src), idx) || fallback;
+    if (inputInherited(src)) {
+      const w = inboundWire(src);
+      return (
+        itemTitleOf(
+          w ? nodeById(w.from) : null,
+          wireSourceIndex(w, idx),
+          src,
+        ) || fallback
+      );
+    }
     if (src.batch && (src.entries || []).length) {
       /* 与 valueForInput 一致：只计有 path 的条目 */
       const es = (src.entries || []).filter((e) => e.path);
@@ -6703,8 +7426,25 @@ function itemTitleOf(src, idx) {
 }
 
 /* 用于只读展示的节点值描述：{text} | {image} | {items:[{title,content}]} | {images:[{title,path}]} */
-function displayValueOf(src) {
+function displayValueOf(src, consumer) {
   if (!src) return null;
+  if (src.kind === "super") {
+    let idx = 0;
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) =>
+          (x.from === src.id && x.to === consumer.id) ||
+          (x.to === src.id && x.from === consumer.id),
+      );
+      if (link && link.from === src.id) idx = Number(link.fromIndex || 0);
+      else if (link && link.to === src.id) idx = Number(link.toIndex || 0);
+    }
+    const v = valueForInput(src, idx, consumer || null);
+    if (!v) return null;
+    if (v.kind === "text") return { text: v.text };
+    if (v.kind === "image") return { image: v.path, title: src.title };
+    return null;
+  }
   if (src.kind === "chat") {
     const t = chatTranscript(src);
     return t ? { text: t } : null;
@@ -6736,7 +7476,7 @@ function displayValueOf(src) {
     return null;
   }
   if (src.kind === "input_text") {
-    if (inputInherited(src)) return displayValueOf(firstSource(src));
+    if (inputInherited(src)) return displayValueOf(firstSource(src), src);
     if (src.batch && (src.entries || []).length)
       return {
         items: src.entries.map((e) => ({ title: e.title, content: e.content })),
@@ -6744,7 +7484,7 @@ function displayValueOf(src) {
     return { text: src.text || "" };
   }
   if (src.kind === "input_image") {
-    if (inputInherited(src)) return displayValueOf(firstSource(src));
+    if (inputInherited(src)) return displayValueOf(firstSource(src), src);
     if (src.batch && (src.entries || []).length)
       return {
         images: (src.entries || [])
@@ -6804,7 +7544,7 @@ function inputValuesFor(node, idx) {
         ? Number(w.fromIndex || 0)
         : idx;
     return {
-      title: src ? itemTitleOf(src, fromIdx) : I18n.t("输入"),
+      title: src ? itemTitleOf(src, fromIdx, node) : I18n.t("输入"),
       value: valueForInput(src, fromIdx, node),
     };
   });
@@ -6825,12 +7565,17 @@ function resolveRefs(prompt, node, idx, opts) {
   const unresolved = new Set();
   const textSources = [];
   const seen = new Set();
-  const addText = (c) => {
-    if (seen.has(c.id)) return;
+  const addText = (c, fromIdx) => {
+    if (!c || seen.has(c.id)) return;
     seen.add(c.id);
-    const v = valueForInput(c, idx);
+    const useIdx = fromIdx != null ? fromIdx : idx;
+    const v = valueForInput(c, useIdx, node);
     if (v && v.kind === "text" && v.text != null)
-      textSources.push({ id: c.id, title: itemTitleOf(c, idx), text: v.text });
+      textSources.push({
+        id: c.id,
+        title: itemTitleOf(c, useIdx, node),
+        text: v.text,
+      });
   };
   const cands = refCandidates(node);
   if (!opts || !opts.skipConnected) {
@@ -6840,9 +7585,13 @@ function resolveRefs(prompt, node, idx, opts) {
         src &&
         (src.kind === "input_text" ||
           src.kind === "proc_text" ||
-          src.kind === "agent_task")
+          src.kind === "agent_task" ||
+          src.kind === "super" ||
+          src.kind === "chat" ||
+          src.kind === "merge" ||
+          src.kind === "split")
       )
-        addText(src);
+        addText(src, superPortIdxFromWire(src, w));
     }
     if (usesGlobalRefs(node)) {
       for (const src of globalRefSources(node.id)) addText(src);
@@ -6856,9 +7605,9 @@ function resolveRefs(prompt, node, idx, opts) {
         unresolved.add(tok);
         return m;
       }
-      const v = valueForInput(c, idx);
+      const v = valueForInput(c, idx, node);
       if (v && v.kind === "text") {
-        addText(c);
+        addText(c, idx);
         return c.title;
       }
       if (v && v.kind === "image") {
@@ -7416,13 +8165,35 @@ function addMark(kind, x, y) {
   const d = MARK_DEFAULTS[kind];
   if (!d) return null;
   pushHistory();
+  let mx = snap(x),
+    my = snap(y);
+  let parentSuperId = "";
+  let parentTaskId = currentTaskFocus();
+  const sf = currentSuperFocus();
+  if (sf) {
+    parentSuperId = sf;
+    const host = nodeById(sf);
+    parentTaskId = host ? host.parentTaskId || "" : "";
+  } else {
+    const host =
+      findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false);
+    if (host) {
+      const o = superInnerOrigin(host);
+      const pan = superInnerPan(host);
+      parentSuperId = host.id;
+      parentTaskId = host.parentTaskId || "";
+      mx = snap(Math.max(8, x - host.x - o.ox - pan.x));
+      my = snap(Math.max(8, y - host.y - o.oy - pan.y));
+    }
+  }
   const m = {
     id: uid("mk"),
     kind,
-    x: snap(x),
-    y: snap(y),
+    x: mx,
+    y: my,
     color: d.color,
-    parentTaskId: currentTaskFocus(),
+    parentTaskId,
+    parentSuperId,
   };
   if (kind === "text") {
     m.w = d.w;
@@ -7434,8 +8205,8 @@ function addMark(kind, x, y) {
     m.h = d.h;
     m.stroke = d.stroke;
   } else if (kind === "arrow") {
-    m.x2 = snap(x + d.dx);
-    m.y2 = snap(y + d.dy);
+    m.x2 = snap(mx + d.dx);
+    m.y2 = snap(my + d.dy);
     m.stroke = d.stroke;
   }
   marksOf().push(m);
@@ -8170,9 +8941,26 @@ function renderCanvas() {
     svg.innerHTML = "";
     const markList = visibleMarks();
     const visNodes = visibleWfNodes();
-    let extX = Math.max(2000, ...visNodes.map((n) => n.x + n.w), 0);
-    let extY = Math.max(1400, ...visNodes.map((n) => n.y + n.h), 0);
+    const extentNodes = visNodes.filter((n) => !nodeIsNestedInOpenSuper(n));
+    let extX = Math.max(
+      2000,
+      ...extentNodes.map((n) => {
+        const sz = nodeDrawSize(n);
+        return n.x + sz.w;
+      }),
+      0,
+    );
+    let extY = Math.max(
+      1400,
+      ...extentNodes.map((n) => {
+        const sz = nodeDrawSize(n);
+        return n.y + sz.h;
+      }),
+      0,
+    );
     for (const m of markList) {
+      if (markParentSuperId(m) && nodeIsNestedInOpenSuper({ parentSuperId: markParentSuperId(m) }))
+        continue;
       const b = markBounds(m);
       if (!b) continue;
       extX = Math.max(extX, b.x + b.w);
@@ -8189,31 +8977,50 @@ function renderCanvas() {
       if (!groupVisibleInScope(g)) continue;
       stage.appendChild(groupElement(g));
     }
-    for (const m of markList) stage.appendChild(markElement(m));
-    const nested = [];
+    for (const m of markList) {
+      /* 壳层内标注由 fillSuperShellViewport 挂载 */
+      if (
+        markParentSuperId(m) &&
+        nodeIsNestedInOpenSuper({ parentSuperId: markParentSuperId(m) })
+      )
+        continue;
+      stage.appendChild(markElement(m));
+    }
+    const tops = [];
+    const openSupers = [];
     for (const n of visNodes) {
-      if (nodeIsNestedInOpenSuper(n)) nested.push(n);
-      else stage.appendChild(nodeElement(n));
+      /* 壳层内子节点由 fillSuperShellViewport 挂载，避免二次查找失败 */
+      if (nodeIsNestedInOpenSuper(n)) continue;
+      if (superIsOpenShell(n)) openSupers.push(n);
+      else tops.push(n);
     }
-    for (const n of nested) {
-      const hostEl = stage.querySelector(
-        '.wf-node[data-nid="' +
-          n.parentSuperId +
-          '"] .super-stage-viewport',
-      );
-      const child = nodeElement(n);
-      if (hostEl) hostEl.appendChild(child);
-      else stage.appendChild(child);
-    }
+    for (const n of tops) mountNodeEl(stage, n);
+    for (const n of openSupers) mountNodeEl(stage, n);
     applyTransform();
     updateGroupFrames();
     /* 展开超级节点：DOM 就绪后再按实测原点校正内侧端子 */
-    for (const n of visNodes) {
-      if (!superIsOpenShell(n)) continue;
+    for (const n of openSupers) {
       const nel = stage.querySelector('.wf-node[data-nid="' + n.id + '"]');
       if (nel) refreshPorts(nel, n);
     }
+    const sfHost = nodeById(currentSuperFocus());
+    if (sfHost && sfHost.kind === "super") mountSuperFocusPorts(sfHost);
+    else clearSuperFocusPorts();
     updateWires();
+    /* 下一帧再校正一次端子 Y（舞台高度此时才稳定） */
+    if (openSupers.length || (sfHost && sfHost.kind === "super")) {
+      requestAnimationFrame(() => {
+        for (const n of openSupers) {
+          if (!superIsOpenShell(n)) continue;
+          const nel = document.querySelector(
+            '.wf-node[data-nid="' + n.id + '"]',
+          );
+          if (nel) refreshPorts(nel, n);
+        }
+        refreshSuperFocusPortLayout();
+        updateWires();
+      });
+    }
     fillPreviews();
     fillImageMetas();
     /* 对话节点：每次渲染后自动滚动到最底部（而非回到顶端） */
@@ -8265,7 +9072,13 @@ function updateWires(touchIds) {
     const from = nodeById(w.from),
       to = nodeById(w.to);
     if (!from || !to) continue;
-    if (!nodeInCurrentScope(from) || !nodeInCurrentScope(to)) continue;
+    const sf = currentSuperFocus();
+    const focusInner =
+      !!(sf &&
+        ((from.id === sf && nodeInCurrentScope(to)) ||
+          (to.id === sf && nodeInCurrentScope(from))));
+    if (!focusInner && (!nodeInCurrentScope(from) || !nodeInCurrentScope(to)))
+      continue;
     /* Inner wires of an open super shell are drawn on the stage SVG. */
     if (wireOpenSuperHost(w, from, to)) {
       const stale = document.getElementById("wire-" + w.id);
@@ -8292,13 +9105,17 @@ function updateWires(touchIds) {
   }
   if (S.drag && S.drag.mode === "wire") {
     const from = nodeById(S.drag.fromId);
-    const innerTemp =
-      !!(S.drag.superInnerBridge && from && from.kind === "super") ||
+    const focusBridge =
+      !!(S.drag.superInnerBridge && from && currentSuperFocus() === from.id);
+    const shellInnerTemp =
+      !!(S.drag.superInnerBridge && from && superIsOpenShell(from)) ||
       !!(from && nodeIsNestedInOpenSuper(from));
-    if (innerTemp) {
+    if (shellInnerTemp) {
       t.style.display = "none";
     } else if (from) {
-      const a = outPos(from, S.drag.fromIndex || 0, null, null);
+      const a = focusBridge
+        ? superFocusBridgePos(from, S.drag.fromIndex || 0)
+        : outPos(from, S.drag.fromIndex || 0, null, null);
       const b = toStage(S.drag.mx, S.drag.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
@@ -8311,6 +9128,7 @@ function updateWires(touchIds) {
     t.style.display = "none";
   }
   refreshAllSuperInnerWires(touchIds);
+  refreshSuperFocusPortLayout();
 }
 
 function refreshPorts(el, node) {
@@ -8442,6 +9260,7 @@ function effortButtonEl(node) {
 }
 
 function nodeElement(node) {
+  clampNodeToMinSize(node);
   const el = document.createElement("div");
   /* 智能任务 / 文本智能模式：蓝色外观，与橙色文本处理区分 */
   const kindCls =
@@ -8466,7 +9285,7 @@ function nodeElement(node) {
     node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
   el.style.width = _nsz.w + "px";
   el.style.height = _nsz.h + "px";
-  if (node.kind === "super" && node.superOpen && !currentSuperFocus())
+  if (superIsOpenShell(node))
     el.classList.add("super-open");
 
   const head = document.createElement("div");
@@ -8493,28 +9312,6 @@ function nodeElement(node) {
     startNodeDrag(ev, node, { fromHandle: true });
   });
   head.appendChild(handle);
-  if (node.kind === "super") {
-    const tog = document.createElement("button");
-    tog.type = "button";
-    tog.className =
-      "n-super-toggle" + (node.superOpen && !currentSuperFocus() ? " on" : "");
-    tog.textContent =
-      node.superOpen && !currentSuperFocus()
-        ? I18n.t("收起")
-        : I18n.t("展开");
-    tog.title =
-      node.superOpen && !currentSuperFocus()
-        ? I18n.t("收起内部画布")
-        : I18n.t("展开内部画布");
-    tog.onclick = (ev) => {
-      ev.stopPropagation();
-      toggleSuperOpen(
-        node,
-        !(node.superOpen && !currentSuperFocus()),
-      );
-    };
-    head.appendChild(tog);
-  }
   const title = document.createElement("div");
   title.className = "n-title";
   const fullTitle = node.title || I18n.t("（未命名）");
@@ -8560,7 +9357,7 @@ function nodeElement(node) {
       head.appendChild(chip);
       /* 符合 YAML：闪烁「YAML」按钮，点击可关闭解析（仅显示原始内容） */
       if (node.kind === "input_text") {
-        const disp = displayValueOf(firstSource(node));
+        const disp = displayValueOf(firstSource(node), node);
         const es =
           disp && disp.text != null ? parseSimpleYaml(disp.text) : [];
         if (es.length) {
@@ -8843,16 +9640,27 @@ function nodeElement(node) {
   }
   if (node.kind === "super") {
     const nChild = superChildrenOf(node.id).filter(
-      (c) => !isSuperIoNode(c) && c.kind !== "super",
+      (c) => !isSuperIoNode(c),
     ).length;
     const chip = document.createElement("span");
     chip.className = "n-chip" + (nChild ? " on" : "");
     chip.textContent = String(nChild);
     chip.title = I18n.t("拖入节点以收纳；拖出以移出");
     head.appendChild(chip);
+    const sf = String(node.subFolder || "").trim();
+    if (sf) {
+      const path = document.createElement("span");
+      path.className = "n-super-subfolder";
+      path.textContent = sf;
+      path.title = I18n.t("子文件夹：") + sf;
+      head.appendChild(path);
+    }
     const folder = document.createElement("button");
     folder.type = "button";
-    folder.className = "n-super-folder" + (node.subFolder ? " on" : "");
+    folder.className =
+      "n-super-folder" +
+      (sf ? " on" : "") +
+      (sf ? "" : " lead");
     folder.innerHTML = KIND_ICON_SVG.folder;
     folder.title = I18n.t("设置子文件夹（内部节点默认相对路径）");
     folder.setAttribute(
@@ -8864,6 +9672,34 @@ function nodeElement(node) {
       promptSuperSubFolder(node);
     };
     head.appendChild(folder);
+    const enter = document.createElement("button");
+    enter.className = "n-play";
+    enter.textContent = "↪";
+    enter.title = I18n.t("进入超级节点：在完整画布中编辑内部节点");
+    enter.onclick = (ev) => {
+      ev.stopPropagation();
+      enterSuper(node);
+    };
+    head.appendChild(enter);
+    const openShell = superIsOpenShell(node);
+    const tog = document.createElement("button");
+    tog.type = "button";
+    tog.className = "n-super-expand" + (openShell ? " on" : "");
+    tog.innerHTML = openShell
+      ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.2H3.2v2M10.8 3.2h2v2M3.2 10.8v2h2M12.8 10.8v2h-2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.2 6.2h3.6v3.6H6.2z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>'
+      : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 5.2V3.2h2M10.8 3.2h2v2M3.2 10.8v2h2M12.8 10.8v2h-2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.2 6.2h3.6v3.6H6.2z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
+    tog.title = openShell
+      ? I18n.t("收起内部画布")
+      : I18n.t("展开内部画布");
+    tog.setAttribute(
+      "aria-label",
+      openShell ? I18n.t("收起") : I18n.t("展开"),
+    );
+    tog.onclick = (ev) => {
+      ev.stopPropagation();
+      toggleSuperOpen(node, !openShell);
+    };
+    head.appendChild(tog);
   }
   if (isSaveNode(node)) {
     if (isBatch(node)) {
@@ -9694,16 +10530,20 @@ function nodeElement(node) {
   /* 展开超级节点：不创建外侧端子，只保留舞台内侧桥接/汇流端子 */
   if (!superIsOpenShell(node)) {
   const ic = inputCount(node);
+  const wiredIn =
+    node.kind === "super"
+      ? superExternalInWires(node).length
+      : allWiresTo(node.id).length;
   for (let i = 0; i < ic; i++) {
     const p = document.createElement("div");
-    p.className = "port in" + (i >= allWiresTo(node.id).length ? " spare" : "");
+    p.className = "port in" + (i >= wiredIn ? " spare" : "");
     p.dataset.node = node.id;
     p.dataset.idx = String(i);
     const linkedIn = portLinkedNodes(node, "in", i);
     let inTitle =
       I18n.t("输入端子 ") +
       (i + 1) +
-      (i >= allWiresTo(node.id).length && !hasFixedInPorts(node)
+      (i >= wiredIn && !hasFixedInPorts(node)
         ? I18n.t("（空闲，连接后自动新增一个）")
         : "");
     if (node.kind === "gate")
@@ -9870,8 +10710,7 @@ function nodeElement(node) {
     S.selWire = null;
     S.selGroup = null;
     S.preDragSnap = snapshotState();
-    const openSuper =
-      node.kind === "super" && node.superOpen && !currentSuperFocus();
+    const openSuper = superIsOpenShell(node);
     const sz = node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
     const hostEl = ev.target.closest(".wf-node");
     if (hostEl) {
@@ -9941,6 +10780,13 @@ function nodeElement(node) {
       ev.target.closest(".chat-list")
     )
       return;
+    /* 嵌在展开超级节点内：右键不弹出节点菜单（仅端子可移除连线） */
+    if (nodeIsNestedInOpenSuper(node)) {
+      if (ev.target.closest(".port")) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
     ev.preventDefault();
     ev.stopPropagation();
     S.sel = node.id;
@@ -9982,8 +10828,9 @@ function nodeElement(node) {
     }
     if (node.kind === "super") {
       items.unshift(
+        ctxAction(I18n.t("进入"), () => enterSuper(node), "expand"),
         ctxAction(
-          node.superOpen ? I18n.t("收起") : I18n.t("展开"),
+          superIsOpenShell(node) ? I18n.t("收起") : I18n.t("展开"),
           () => toggleSuperOpen(node),
           "expand",
         ),
@@ -9991,7 +10838,7 @@ function nodeElement(node) {
         ctxAction(I18n.t("将选中节点移入此超级节点"), () => {
           const sel = [...(S.selSet || [])]
             .map((id) => nodeById(id))
-            .filter((n) => n && n.id !== node.id && !isSuperIoNode(n));
+            .filter((n) => canMoveNodeIntoSuper(node, n));
           if (!sel.length) {
             toast(I18n.t("请先选中要收纳的节点"), "warn");
             return;
@@ -10201,7 +11048,7 @@ function buildBody(node, body) {
       body.appendChild(ta);
     } else if (inputInherited(node)) {
       /* 只读：继承输入内容；符合 YAML → 批量条目展示（yamlOff 时仅显示原始内容） */
-      const disp = displayValueOf(firstSource(node));
+      const disp = displayValueOf(firstSource(node), node);
       if (disp && disp.items && disp.items.length) {
         const list = document.createElement("div");
         list.className = "n-bentries";
@@ -10315,7 +11162,7 @@ function buildBody(node, body) {
       }
     } else if (inputInherited(node)) {
       /* 只读：继承输入内容 */
-      const disp = displayValueOf(firstSource(node));
+      const disp = displayValueOf(firstSource(node), node);
       if (disp && disp.images && disp.images.length) {
         const list = document.createElement("div");
         list.className = "n-bentries";
@@ -10993,7 +11840,7 @@ function buildBody(node, body) {
       body.appendChild(meta);
     }
   } else if (node.kind === "super") {
-    const open = !!(node.superOpen && !currentSuperFocus());
+    const open = superIsOpenShell(node);
     if (!open) {
       const note = document.createElement("textarea");
       note.className = "n-text super-note";
@@ -11004,16 +11851,6 @@ function buildBody(node, body) {
         node.note = note.value;
       });
       body.appendChild(note);
-      if (node.subFolder) {
-        const hint = document.createElement("div");
-        hint.className = "super-folder-hint";
-        hint.textContent = I18n.t("子文件夹：") + node.subFolder;
-        body.appendChild(hint);
-      }
-      const tip = document.createElement("div");
-      tip.className = "n-empty";
-      tip.textContent = I18n.t("左上角展开 · 拖入节点收纳");
-      body.appendChild(tip);
     } else {
       const stage = document.createElement("div");
       stage.className = "super-stage";
@@ -11028,19 +11865,15 @@ function buildBody(node, body) {
         "--super-grid-y",
         gridMod(pan.y, g) + "px",
       );
-      stage.title = I18n.t("左键拖空白处平移内部 · 滚轮缩放画布");
-      if (node.subFolder) {
-        const hint = document.createElement("div");
-        hint.className = "super-folder-hint";
-        hint.textContent = I18n.t("子文件夹：") + node.subFolder;
-        stage.appendChild(hint);
-      }
+      stage.title = I18n.t(
+        "左键拖空白处平移 · 右键添加节点 · 滚轮缩放画布 · 端子右键移除连线",
+      );
       const viewport = document.createElement("div");
       viewport.className = "super-stage-viewport";
       viewport.style.transform =
         "translate(" + pan.x + "px," + pan.y + "px)";
-      const kids = superChildrenOf(node.id).filter((c) => !isSuperIoNode(c));
-      if (!kids.length) {
+      fillSuperShellViewport(viewport, node.id);
+      if (!viewport.querySelector(".wf-node") && !viewport.querySelector(".wf-mark")) {
         const empty = document.createElement("div");
         empty.className = "super-stage-empty";
         empty.textContent = I18n.t("将节点拖入此处");
@@ -11056,13 +11889,11 @@ function buildBody(node, body) {
         p.title =
           I18n.t("内侧输入端子 ") +
           (pi + 1) +
-          I18n.t("（对应外侧输入 · 拖到内部节点）");
+          I18n.t("（对应外侧输入 · 拖到内部节点 · 右键移除）");
+        p.style.left = "2px";
+        p.style.right = "auto";
         p.style.top = superBridgeLocalY(node, pi) - PORT_R + "px";
-        p.addEventListener("mousedown", (ev) => {
-          ev.stopPropagation();
-          ev.preventDefault();
-          startWireDrag(node.id, ev, pi, { superInnerBridge: true });
-        });
+        bindSuperInnerBridgePort(p, node, pi);
         stage.appendChild(p);
       }
       const oc = outputCount(node);
@@ -11074,10 +11905,25 @@ function buildBody(node, body) {
         p.title =
           I18n.t("内侧输出端子 ") +
           (poi + 1) +
-          I18n.t("（对应外侧输出 · 从内部节点拖入）");
+          I18n.t("（对应外侧输出 · 从内部节点拖入 · 右键移除）");
+        p.style.right = "2px";
+        p.style.left = "auto";
         p.style.top = superSinkLocalY(node, poi) - PORT_R + "px";
+        bindSuperInnerSinkPort(p, node, poi);
         stage.appendChild(p);
       }
+      stage.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        /* 端子右键由端子自己处理（移除连线）；空白处与外部一样创建节点 */
+        if (ev.target.closest(".port")) return;
+        if (ev.target.closest(".super-stage-viewport .wf-node")) return;
+        showCanvasCreateMenu(
+          ev.clientX,
+          ev.clientY,
+          toStage(ev.clientX, ev.clientY),
+        );
+      });
       stage.addEventListener("mousedown", (ev) => {
         /* 仅拦截内部子节点 / 端子；勿用 closest(.wf-node)（会命中宿主自身） */
         if (ev.target.closest(".port")) return;
@@ -11137,6 +11983,14 @@ function buildBody(node, body) {
     /* 文本对话节点：dsh 风格透明消息流（角色行 + 思考折叠 + 工具 chips） */
     const list = document.createElement("div");
     list.className = "chat-list";
+    list.addEventListener(
+      "scroll",
+      () => {
+        node._chatNearBottom = isScrollNearBottom(list);
+        node._chatScrollTop = list.scrollTop;
+      },
+      { passive: true },
+    );
     const msgs = node.messages || [];
     if (!msgs.length && !node.running) {
       const hint = document.createElement("div");
@@ -12047,6 +12901,35 @@ function buildBody(node, body) {
         if (show) window.api.shellShowItem(show);
       };
       pRow.appendChild(op);
+      if (media === "text") {
+        const openBtn = document.createElement("button");
+        openBtn.className = "mini";
+        openBtn.textContent = I18n.t("打开");
+        openBtn.title = I18n.t("用 YAML 阅读器打开");
+        openBtn.onclick = async (ev) => {
+          ev.stopPropagation();
+          const last =
+            (node.savedPaths &&
+              node.savedPaths[node.savedPaths.length - 1]) ||
+            node.savedPath ||
+            "";
+          let target = "";
+          if (last) {
+            target = isAbsPath(last)
+              ? last
+              : resolveSavePath(last || node.savePath).path || last;
+          } else {
+            const paths = await resolveSavePreviewPaths(node);
+            target = paths[0] || resolveSavePath(node.savePath).path || "";
+          }
+          if (!target) {
+            toast(I18n.t("文件不存在或无法预览"), "warn");
+            return;
+          }
+          openYamlViewer(target);
+        };
+        pRow.appendChild(openBtn);
+      }
     }
     body.appendChild(pRow);
 
@@ -12072,6 +12955,23 @@ function buildBody(node, body) {
       const pre = document.createElement("pre");
       pre.id = "svpre-" + node.id;
       pre.textContent = I18n.t("尚未保存");
+      pre.className = "yaml-openable";
+      pre.title = I18n.t("点击用 YAML 阅读器打开");
+      pre.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const paths = await resolveSavePreviewPaths(node);
+        const target =
+          paths[0] ||
+          (node.savedPath
+            ? resolveOpenableFilePath(node.savedPath)
+            : "") ||
+          resolveOpenableFilePath(node.savePath);
+        if (!target) {
+          toast(I18n.t("文件不存在或无法预览"), "warn");
+          return;
+        }
+        openYamlViewer(target);
+      });
       prev.appendChild(pre);
     } else if (media === "audio") {
       const aud = document.createElement("audio");
@@ -12744,15 +13644,18 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
 function aggCandidates(node) {
   const out = [];
   const seen = new Set();
-  const addSrc = (src) => {
+  const addSrc = (src, portIdx) => {
     if (!src || seen.has(src.id)) return;
     seen.add(src.id);
-    for (const it of allTextItems(src))
+    for (const it of allTextItems(src, node, portIdx))
       out.push({ title: it.title || src.title, kind: "text", text: it.text });
-    for (const it of allImageItems(src))
+    for (const it of allImageItems(src, node, portIdx))
       out.push({ title: it.title || src.title, kind: "image", path: it.path });
   };
-  for (const w of wiresTo(node.id)) addSrc(nodeById(w.from));
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    addSrc(src, superPortIdxFromWire(src, w));
+  }
   if (usesGlobalRefs(node)) {
     for (const src of globalRefSources(node.id)) addSrc(src);
   }
@@ -12791,8 +13694,9 @@ function buildSpecAgg(node, prov) {
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
     if (!src) continue;
-    for (const it of allTextItems(src)) textBlocks.push(it);
-    for (const it of allImageItems(src)) {
+    const portIdx = superPortIdxFromWire(src, w);
+    for (const it of allTextItems(src, node, portIdx)) textBlocks.push(it);
+    for (const it of allImageItems(src, node, portIdx)) {
       images.push(it.path);
       textBlocks.push({
         title: it.title || src.title || I18n.t("图像"),
@@ -13963,9 +14867,9 @@ function musicGenSlotText(node, slot) {
   const w = wiresTo(node.id).find((x) => Number(x.toIndex) === Number(slot));
   if (!w) return "";
   const src = nodeById(w.from);
-  const v = valueForInput(src, 0);
+  const v = valueFromWire(w, node, 0);
   if (v && v.kind === "text") return String(v.text || "");
-  const d = displayValueOf(src);
+  const d = displayValueOf(src, node);
   if (d && d.text != null) return String(d.text);
   return "";
 }
@@ -14344,18 +15248,17 @@ function videoGenSlotValue(node, slot) {
   const src = nodeById(w.from);
   if (!src) return null;
   const meta = videoGenSlotMeta(node, slot);
+  const v = valueFromWire(w, node, 0);
   if (meta.kind === "image") {
-    const v = valueForInput(src, 0);
     if (v && v.kind === "image" && v.path) return { kind: "image", path: v.path };
     if (src.imageAsset) return { kind: "image", path: src.imageAsset };
-    const d = displayValueOf(src);
+    const d = displayValueOf(src, node);
     if (d && d.image) return { kind: "image", path: d.image };
     return null;
   }
-  const v = valueForInput(src, 0);
   if (v && v.kind === "text") return { kind: "text", text: String(v.text || "") };
   if (v && v.kind === "image" && v.path) return { kind: "path", text: String(v.path) };
-  const d = displayValueOf(src);
+  const d = displayValueOf(src, node);
   if (d && d.text != null) return { kind: "text", text: String(d.text) };
   if (d && d.image) return { kind: "path", text: String(d.image) };
   return null;
@@ -14734,9 +15637,10 @@ async function playNodeBody(node, quiet, opts) {
     const sess = agentSessions().find((s) => s.id === node.agentSessionId);
     if (sess) sess.running = true;
   }
+  if (node.kind === "agent_task") node._convNearBottom = true;
   renderCanvas();
   renderStatus();
-  if (S.view === "agent") renderAgentSession();
+  if (S.view === "agent") renderAgentSession({ forceStick: true });
   const runP = (async () => {
     try {
       const nA = attemptCount(node);
@@ -14853,7 +15757,8 @@ async function saveTextAgg(node, quiet) {
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
     if (!src || isControlKind(src)) continue;
-    const items = allTextItems(src);
+    const portIdx = superPortIdxFromWire(src, w);
+    const items = allTextItems(src, node, portIdx);
     if (items.length) {
       for (const it of items)
         entries.push({
@@ -14861,7 +15766,7 @@ async function saveTextAgg(node, quiet) {
           text: it.text,
         });
     } else {
-      const v = valueForInput(src, 0);
+      const v = valueFromWire(w, node, 0);
       if (v && v.kind === "text")
         entries.push({ key: "", text: v.text });
     }
@@ -14894,10 +15799,12 @@ async function saveTextOnce(node, quiet) {
       for (const w of wiresTo(node.id)) {
         const src = nodeById(w.from);
         if (!src || isControlKind(src)) continue;
-        const v = valueForInput(src, idx);
+        const fromIdx =
+          src.kind === "super" ? Number(w.fromIndex || 0) : idx;
+        const v = valueForInput(src, fromIdx, node);
         if (v && v.kind === "text")
           entries.push({
-            key: yamlSaveKey(itemTitleOf(src, idx), src.title),
+            key: yamlSaveKey(itemTitleOf(src, fromIdx, node), src.title),
             text: v.text,
           });
       }
@@ -14933,13 +15840,14 @@ async function saveTextOnce(node, quiet) {
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
     if (!src || isControlKind(src)) continue;
-    const v = valueForInput(src, 0);
+    const fromIdx = src.kind === "super" ? Number(w.fromIndex || 0) : 0;
+    const v = valueForInput(src, fromIdx, node);
     if (!v || v.kind !== "text") {
       missing = true;
       continue;
     }
     entries.push({
-      key: yamlSaveKey(itemTitleOf(src, 0), src.title),
+      key: yamlSaveKey(itemTitleOf(src, fromIdx, node), src.title),
       text: v.text,
     });
   }
@@ -14968,7 +15876,8 @@ async function saveImageAgg(node, quiet) {
   const paths = [];
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
-    for (const it of allImageItems(src)) paths.push(it.path);
+    for (const it of allImageItems(src, node, superPortIdxFromWire(src, w)))
+      paths.push(it.path);
   }
   if (!paths.length) {
     if (!quiet) toast(I18n.t("图像保存节点需要一个图像输入"), "warn");
@@ -15992,6 +16901,7 @@ function refreshNodeEl(id) {
   if (!old || !n) return;
   const el = nodeElement(n);
   old.replaceWith(el);
+  if (fitNodeChrome(el, n)) refreshPorts(el, n);
   updateWires();
   fillPreviews();
 }
@@ -16004,20 +16914,107 @@ function refreshDerived() {
 
 /* ============ 连线 ============ */
 
-function wouldCycle(fromId, toId) {
+/*
+ * 超级节点「外框端子」与「内框端子」等价，只作内外衔接隧道：
+ *   外侧输入 i  ≡ 内侧桥接输出 i（外部 → 内部）
+ *   内侧汇流输入 j ≡ 外侧输出 j（内部 → 外部）
+ * 回路检测必须按穿透后的逻辑边，不能把超级节点宿主当成普通图顶点，
+ * 否则「外→超→内」与「内→超→外」会被误判成回路。
+ */
+function logicalDataEdgesFromWire(w, wf) {
+  wf = wf || S.wf;
+  const edges = [];
+  const add = (a, b) => {
+    if (a && b && a !== b) edges.push([a, b]);
+  };
+  if (!w) return edges;
+  const from = nodeByIdIn(w.from, wf);
+  const to = nodeByIdIn(w.to, wf);
+  if (!from || !to) return edges;
+  if (wireFromIsControl(w)) {
+    add(w.from, w.to);
+    return edges;
+  }
+  const fi = Number(w.fromIndex || 0);
+  const ti = Number(w.toIndex || 0);
+  /* 超 → 内部：内侧输入桥接 */
+  if (from.kind === "super" && nodeParentSuperId(to) === from.id) {
+    for (const x of superExternalInWires(from, wf)) {
+      if (Number(x.toIndex) === fi) add(x.from, w.to);
+    }
+    return edges;
+  }
+  /* 内部 → 超：内侧输出汇流 */
+  if (to.kind === "super" && nodeParentSuperId(from) === to.id) {
+    for (const x of superExternalOutWires(to, wf)) {
+      if (Number(x.fromIndex || 0) === ti) add(w.from, x.to);
+    }
+    return edges;
+  }
+  /* 外部 → 超：外侧输入 */
+  if (to.kind === "super" && nodeParentSuperId(from) !== to.id) {
+    for (const x of superInternalBridgeWires(to, wf)) {
+      if (Number(x.fromIndex || 0) === ti) add(w.from, x.to);
+    }
+    return edges;
+  }
+  /* 超 → 外部：外侧输出 */
+  if (from.kind === "super" && nodeParentSuperId(to) !== from.id) {
+    for (const x of superInternalOutFeeds(from, wf)) {
+      if (Number(x.toIndex) === fi) add(x.from, w.to);
+    }
+    return edges;
+  }
+  add(w.from, w.to);
+  return edges;
+}
+
+function buildLogicalWireAdj(wires, extraEdges) {
   const adj = {};
-  for (const w of S.wf.wires) (adj[w.from] = adj[w.from] || []).push(w.to);
-  const q = [toId],
-    seen = new Set(q);
+  const add = (a, b) => {
+    if (!a || !b || a === b) return;
+    const list = adj[a] || (adj[a] = []);
+    if (list.indexOf(b) < 0) list.push(b);
+  };
+  for (const w of wires || []) {
+    for (const e of logicalDataEdgesFromWire(w)) add(e[0], e[1]);
+  }
+  for (const e of extraEdges || []) add(e[0], e[1]);
+  return adj;
+}
+
+function reachableInAdj(adj, start, goal) {
+  if (!start || !goal) return false;
+  if (start === goal) return true;
+  const q = [start];
+  const seen = new Set(q);
   while (q.length) {
     const n = q.pop();
-    if (n === fromId) return true;
     for (const m of adj[n] || []) {
+      if (m === goal) return true;
       if (!seen.has(m)) {
         seen.add(m);
         q.push(m);
       }
     }
+  }
+  return false;
+}
+
+function wouldCycle(fromId, toId, toIndex, fromIndex) {
+  if (!fromId || !toId) return false;
+  if (fromId === toId) return true;
+  const proposed = logicalDataEdgesFromWire({
+    from: fromId,
+    to: toId,
+    fromIndex: fromIndex || 0,
+    toIndex: toIndex == null ? 0 : toIndex,
+  });
+  /* 超级节点仅单侧挂线时，尚无穿透逻辑边，不构成回路 */
+  if (!proposed.length) return false;
+  const adj = buildLogicalWireAdj((S.wf && S.wf.wires) || []);
+  for (const e of proposed) {
+    if (reachableInAdj(adj, e[1], e[0])) return true;
   }
   return false;
 }
@@ -16030,14 +17027,16 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     const fi = Number(fromIndex || 0);
     if (fi < 0 || fi >= Math.max(1, inputCount(from)))
       return I18n.t("无效的输入端子");
-    if (fromId === toId || wouldCycle(fromId, toId)) return I18n.t("不能连接成回路");
+    if (fromId === toId || wouldCycle(fromId, toId, toIndex, fromIndex))
+      return I18n.t("不能连接成回路");
     return null;
   }
   if (to.kind === "super" && nodeParentSuperId(from) === to.id) {
     const ti = toIndex == null ? 0 : Number(toIndex);
     if (ti < 0 || ti >= Math.max(1, outputCount(to)))
       return I18n.t("无效的输出端子");
-    if (fromId === toId || wouldCycle(fromId, toId)) return I18n.t("不能连接成回路");
+    if (fromId === toId || wouldCycle(fromId, toId, toIndex, fromIndex))
+      return I18n.t("不能连接成回路");
     return null;
   }
   const fromSuper = nodeParentSuperId(from);
@@ -16054,7 +17053,8 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   const fromCtrl = isControlKind(from);
   if (to.kind === "global" && (fromCtrl || !isRefableSource(from)))
     return I18n.t("全局节点仅接受文本或图像来源");
-  if (fromId === toId || wouldCycle(fromId, toId)) return I18n.t("不能连接成回路");
+  if (fromId === toId || wouldCycle(fromId, toId, toIndex, fromIndex))
+    return I18n.t("不能连接成回路");
   if (
     S.wf.wires.some(
       (w) =>
@@ -16112,6 +17112,19 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       if (!isTextSource(from) && !isImageSource(from))
         return I18n.t("音视频端子需要文本路径或媒体文件路径");
     }
+  }
+  /* 超级节点：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入 */
+  if (to.kind === "super") {
+    const ti = toIndex == null ? 0 : Number(toIndex);
+    if (ti < 0 || ti >= Math.max(1, inputCount(to)))
+      return I18n.t("无效的输入端子");
+    if (
+      superExternalInWires(to).some(
+        (w) => Number(w.toIndex) === ti && !wireFromIsControl(w),
+      )
+    )
+      return I18n.t("该输入端子已被占用");
+    return null;
   }
   const cur = allWiresTo(toId).length;
   if (to.kind !== "music_gen" && to.kind !== "video_gen" && toIndex != null && toIndex < cur)
@@ -16179,8 +17192,32 @@ function clipStr(s, n) {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
+/* 助手/canvas_get 读节点正文上限：输入节点需接近全文；提示词等仍控体积 */
+const SNAP_INPUT_TEXT_MAX = 200000;
+const SNAP_PROMPT_MAX = 12000;
+const SNAP_GOAL_MAX = 4000;
+/* 助手/会话工具回传时收紧单节点正文，避免拆解类 skill 大量 YAML 撑爆上下文 */
+const SNAP_AGENT_INPUT_TEXT_MAX = 8000;
+
+function snapTextField(raw, max) {
+  const s = String(raw == null ? "" : raw);
+  if (!s) return { text: "", textLen: 0, textTruncated: false };
+  if (s.length <= max) return { text: s, textLen: s.length, textTruncated: false };
+  return {
+    text: s.slice(0, max) + "…",
+    textLen: s.length,
+    textTruncated: true,
+  };
+}
+
 function canvasSnapshot() {
   const wf = S.wf || { id: "", name: "", nodes: [], wires: [], groups: [], marks: [] };
+  const agentish =
+    !!(S.assistRunActive || S.agentSessionRunActive || isCanvasNodeAgentRun());
+  const inputTextMax = agentish ? SNAP_AGENT_INPUT_TEXT_MAX : SNAP_INPUT_TEXT_MAX;
+  const scopeNodes = (wf.nodes || []).filter(
+    (n) => !isSuperIoNode(n) && nodeInCurrentScope(n),
+  );
   return {
     workflow: {
       id: wf.id,
@@ -16201,6 +17238,7 @@ function canvasSnapshot() {
       h: NODE_DEFAULTS[k].h,
     })),
     taskFocus: currentTaskFocus() || undefined,
+    superFocus: currentSuperFocus() || undefined,
     taskTree: (wf.nodes || [])
       .filter((n) => n.kind === "task")
       .map((n) => ({
@@ -16213,9 +17251,30 @@ function canvasSnapshot() {
         childCount: (wf.nodes || []).filter((x) => x.parentTaskId === n.id)
           .length,
       })),
-    nodes: (wf.nodes || [])
-      .filter((n) => (n.parentTaskId || "") === currentTaskFocus())
+    superTree: (wf.nodes || [])
+      .filter((n) => n.kind === "super")
       .map((n) => ({
+        id: n.id,
+        title: n.title,
+        parentSuperId: n.parentSuperId || "",
+        parentTaskId: n.parentTaskId || "",
+        subFolder: n.subFolder || "",
+        superOpen: !!n.superOpen,
+        childCount: (wf.nodes || []).filter(
+          (x) => nodeParentSuperId(x) === n.id && !isSuperIoNode(x),
+        ).length,
+        note: clipStr(n.note, 120),
+      })),
+    nodes: scopeNodes.map((n) => {
+      const inputSnap =
+        n.kind === "input_text" ? snapTextField(n.text, inputTextMax) : null;
+      const promptSnap =
+        n.prompt != null ? snapTextField(n.prompt, SNAP_PROMPT_MAX) : null;
+      const taskSnap =
+        n.task != null ? snapTextField(n.task, SNAP_PROMPT_MAX) : null;
+      const goalSnap =
+        n.kind === "task" ? snapTextField(n.goal, SNAP_GOAL_MAX) : null;
+      return {
       id: n.id,
       kind: n.kind,
       title: n.title,
@@ -16224,9 +17283,16 @@ function canvasSnapshot() {
       w: n.w,
       h: n.h,
       running: !!n.running,
-      text: n.kind === "input_text" ? clipStr(n.text, 240) : undefined,
-      prompt: n.prompt != null ? clipStr(n.prompt, 240) : undefined,
-      task: n.task != null ? clipStr(n.task, 240) : undefined,
+      text: inputSnap ? inputSnap.text : undefined,
+      textLen: inputSnap ? inputSnap.textLen : undefined,
+      textTruncated: inputSnap && inputSnap.textTruncated ? true : undefined,
+      prompt: promptSnap ? promptSnap.text : undefined,
+      promptLen: promptSnap ? promptSnap.textLen : undefined,
+      promptTruncated:
+        promptSnap && promptSnap.textTruncated ? true : undefined,
+      task: taskSnap ? taskSnap.text : undefined,
+      taskLen: taskSnap ? taskSnap.textLen : undefined,
+      taskTruncated: taskSnap && taskSnap.textTruncated ? true : undefined,
       savePath: n.savePath || undefined,
       waitPath: n.kind === "wait_file" ? n.waitPath || undefined : undefined,
       waitIntervalSec:
@@ -16318,14 +17384,25 @@ function canvasSnapshot() {
       ctrlPinned: n.kind === "control" && n.ctrlPinned ? true : undefined,
       judgeResult: n.kind === "judge" ? n.judgeResult || undefined : undefined,
       parentTaskId: n.parentTaskId || undefined,
-      goal: n.kind === "task" ? clipStr(n.goal, 240) : undefined,
+      parentSuperId: n.parentSuperId || undefined,
+      note: n.kind === "super" ? n.note || undefined : undefined,
+      expandW: n.kind === "super" ? n.expandW || undefined : undefined,
+      expandH: n.kind === "super" ? n.expandH || undefined : undefined,
+      subFolder: n.kind === "super" ? n.subFolder || undefined : undefined,
+      superOpen: n.kind === "super" ? !!n.superOpen : undefined,
+      goal: goalSnap ? goalSnap.text : undefined,
+      goalLen: goalSnap ? goalSnap.textLen : undefined,
+      goalTruncated: goalSnap && goalSnap.textTruncated ? true : undefined,
       steps:
         n.kind === "task"
           ? (n.steps || []).map((s) => (s && s.title) || "")
           : undefined,
       taskStatus: n.kind === "task" ? n.taskStatus || "pending" : undefined,
-    })),
-    marks: (wf.marks || []).map((m) => ({
+    };
+    }),
+    marks: (wf.marks || [])
+      .filter((m) => markInCurrentScope(m))
+      .map((m) => ({
       id: m.id,
       kind: m.kind,
       x: m.x,
@@ -16338,9 +17415,16 @@ function canvasSnapshot() {
       stroke: m.kind === "box" || m.kind === "arrow" ? m.stroke : undefined,
       x2: m.kind === "arrow" ? m.x2 : undefined,
       y2: m.kind === "arrow" ? m.y2 : undefined,
+      parentSuperId: m.parentSuperId || undefined,
     })),
     markColors: MARK_COLORS.slice(),
-    wires: (wf.wires || []).map((w) => {
+    wires: (wf.wires || [])
+      .filter((w) => {
+        const a = nodeById(w.from);
+        const b = nodeById(w.to);
+        return a && b && nodeInCurrentScope(a) && nodeInCurrentScope(b);
+      })
+      .map((w) => {
       const a = nodeById(w.from);
       const b = nodeById(w.to);
       return {
@@ -16891,7 +17975,7 @@ function agentToolCatalog() {
         {
           key: "canvas_super",
           label: I18n.t("超级节点"),
-          hint: I18n.t("创建超级节点、将节点收纳进子画布（建议审批）"),
+          hint: I18n.t("创建超级节点、将节点收纳进子画布（改画布确认门已覆盖）"),
         },
       ],
     },
@@ -16971,8 +18055,17 @@ function defaultToolAllow() {
   for (const cat of agentToolCatalog()) {
     for (const it of cat.items) allow[it.key] = "allow";
   }
-  allow.canvas_super = "ask";
+  /* 超级节点改动由「助手改画布」统一确认门覆盖，不再默认二次询问 */
   return allow;
+}
+
+/* 助手改画布已批准 / 用户刚确认过本次 edit 时，跳过 canvas_* 的工具许可「询问」
+   （避免 assistAutoApprove 仍被 canvas_super=ask 二次拦截，导致跑到排版/成组阶段突然失败）。 */
+function canvasToolAskBypassed(key) {
+  if (!String(key || "").startsWith("canvas_")) return false;
+  if (S.config && S.config.dsh && S.config.dsh.assistAutoApprove) return true;
+  if (S._canvasEditUserApproved) return true;
+  return false;
 }
 
 function normalizeToolMode(v) {
@@ -17027,6 +18120,9 @@ function ensureAgentToolPresets() {
       def.builtin = true;
       def.name = I18n.t("默认（当前能力）");
       def.allow = normalizeToolAllowMap(def.allow);
+      /* 旧版默认 canvas_super=ask 会与「助手改画布」叠成二次确认；内置默认统一为允许 */
+      if (def.allow && def.allow.canvas_super === "ask")
+        def.allow.canvas_super = "allow";
     }
     for (const p of d.agentToolPresets) {
       if (!p || typeof p !== "object") continue;
@@ -17076,6 +18172,7 @@ async function ensureAgentTool(key, detail) {
   const mode = agentToolMode(key);
   if (mode === "deny") throw agentToolDeniedError(key, detail);
   if (mode !== "ask") return;
+  if (canvasToolAskBypassed(key)) return;
   const ok = await confirmDialog(
     I18n.t("Agent 请求使用工具：") +
       agentToolItemLabel(key) +
@@ -17171,7 +18268,10 @@ function collectCanvasEditToolKeys(params) {
     keys.add("canvas_draw");
   if (doLayout || params.group) keys.add("canvas_layout");
   for (const spec of creates) {
-    if (spec && normalizeCanvasCreateKind(spec.kind) === "super")
+    if (!spec) continue;
+    if (normalizeCanvasCreateKind(spec.kind) === "super")
+      keys.add("canvas_super");
+    if (spec.parentSuperId != null || spec.packIntoSuper != null || spec.note != null)
       keys.add("canvas_super");
   }
   for (const spec of updates) {
@@ -17217,6 +18317,8 @@ function agentToolPolicySystemNote(opts) {
     I18n.t("【Agent 工具许可】当前预设「") +
     name +
     I18n.t("」。");
+  const assistAuto =
+    !!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove);
   if (nodeLock) {
     s += I18n.t(
       "本次运行为智能节点：即使审批预设允许，也不可使用读取画布、节点与连线、控制类节点、绘图、排版与成组、应用操作、删除画布。",
@@ -17225,12 +18327,28 @@ function agentToolPolicySystemNote(opts) {
   if (!denied.length && !asking.length) {
     if (!nodeLock)
       s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
+    if (assistAuto)
+      s += I18n.t(
+        "助手改画布已批准：mtnode_canvas_edit / 超级节点等画布修改直接生效，无需再等确认。",
+      );
     return s;
   }
   if (denied.length)
     s += I18n.t("拒绝：") + denied.join(I18n.t("、")) + "。";
-  if (asking.length)
-    s += I18n.t("询问：") + asking.join(I18n.t("、")) + I18n.t("（调用前会请用户确认）。");
+  const askingShown = asking.filter((lab) => {
+    if (!assistAuto) return true;
+    /* 批准改画布时 canvas_* 询问已被宿主跳过，勿写入提示造成「需审批却被拒」的误判 */
+    return !/\(canvas_/.test(lab);
+  });
+  if (askingShown.length)
+    s +=
+      I18n.t("询问：") +
+      askingShown.join(I18n.t("、")) +
+      I18n.t("（调用前会请用户确认）。");
+  if (assistAuto)
+    s += I18n.t(
+      "助手改画布已批准：mtnode_canvas_edit / 超级节点等画布修改直接生效，无需再等确认。",
+    );
   if (denied.length)
     s += I18n.t(
       "拒绝项对应的工具不可调用；画布 / 应用 / 识图类调用会被系统直接拒绝。",
@@ -17597,7 +18715,9 @@ function openApprovalsPanel() {
   labAssist.textContent = I18n.t("画布修改确认");
   meta3.appendChild(labAssist);
   const small3 = document.createElement("small");
-  small3.textContent = I18n.t("批准=不弹窗；询问=每次确认");
+  small3.textContent = I18n.t(
+    "批准=不弹窗（含超级节点）；询问=每次确认一次（不再二次问超级节点）",
+  );
   meta3.appendChild(small3);
   row3.appendChild(meta3);
   const toggles3 = document.createElement("div");
@@ -18117,9 +19237,18 @@ function handleCanvasEvent(data) {
             I18n.t("用户拒绝了此次操作"),
           );
           if (canvasConfirmFromAgentSession()) abortAgentSessionOnCanvasDeny();
+          else if (S.assistRunActive)
+            toast(
+              I18n.t("已拒绝画布修改；助手将继续并说明已完成与未完成部分"),
+              "warn",
+            );
           return;
         }
-        run();
+        /* 本次 edit 已统一确认：内部 canvas_super 等勿再弹第二次询问 */
+        S._canvasEditUserApproved = true;
+        Promise.resolve(run()).finally(() => {
+          S._canvasEditUserApproved = false;
+        });
       })
       .catch(() => {
         finish(
@@ -18127,6 +19256,11 @@ function handleCanvasEvent(data) {
           I18n.t("用户拒绝了此次操作"),
         );
         if (canvasConfirmFromAgentSession()) abortAgentSessionOnCanvasDeny();
+        else if (S.assistRunActive)
+          toast(
+            I18n.t("已拒绝画布修改；助手将继续并说明已完成与未完成部分"),
+            "warn",
+          );
       });
     return;
   }
@@ -18565,6 +19699,7 @@ function rebindMarksAfterLayout(bindings) {
  * - 列内：面向用户可编辑/操作的节点靠上
  * - 图像节点尺寸便于观察
  * - 绘制框体/文字/箭头按排版前绑定的节点重新包住或定位
+ * - opts.includeSuperInner：同时排版各超级节点内部（各自独立局部坐标）
  */
 function tidyLayoutWorkflow(opts) {
   opts = opts || {};
@@ -18572,67 +19707,92 @@ function tidyLayoutWorkflow(opts) {
     if (opts.notify !== false) toast(I18n.t("当前没有打开的画布"), "warn");
     return { ok: false, error: I18n.t("当前没有打开的画布") };
   }
-  const nodes = (S.wf.nodes || []).slice();
-  if (!nodes.length) {
+  const focus = currentTaskFocus();
+  const topNodes = (S.wf.nodes || []).filter(
+    (n) =>
+      !isSuperIoNode(n) &&
+      !nodeParentSuperId(n) &&
+      nodeParentTaskId(n) === focus,
+  );
+  if (!topNodes.length && !opts.includeSuperInner) {
     if (opts.notify !== false) toast(I18n.t("画布上没有节点"), "warn");
     return { ok: false, error: I18n.t("画布上没有节点") };
   }
   if (opts.history !== false && !S._skipCanvasHistory) pushHistory();
 
-  const beforePos = {};
-  for (const n of nodes) beforePos[n.id] = { x: n.x, y: n.y };
-  const markBindings = captureMarkBindings(nodes);
-  for (const n of nodes) sizeNodeForTidy(n);
+  let markBindings = [];
+  if (topNodes.length) {
+    const beforePos = {};
+    for (const n of topNodes) beforePos[n.id] = { x: n.x, y: n.y };
+    markBindings = captureMarkBindings(topNodes);
+    for (const n of topNodes) sizeNodeForTidy(n);
 
-  layoutFlowEx(nodes, S.wf.wires || [], { x: snap(64), y: snap(64) }, [], {
-    gapX: 96,
-    gapY: 56,
-    prioritizeEditable: true,
-  });
+    const topIds = new Set(topNodes.map((n) => n.id));
+    const topWires = (S.wf.wires || []).filter(
+      (w) => topIds.has(w.from) && topIds.has(w.to),
+    );
+    layoutFlowEx(topNodes, topWires, { x: snap(64), y: snap(64) }, [], {
+      gapX: 96,
+      gapY: 56,
+      prioritizeEditable: true,
+    });
 
-  /* 整体贴到画布左上，留出边距 */
-  const neu = nodesBBox(nodes);
-  if (neu) {
-    const dx0 = snap(64 - neu.minX);
-    const dy0 = snap(64 - neu.minY);
-    if (dx0 || dy0) {
-      for (const n of nodes) {
-        n.x = snap(n.x + dx0);
-        n.y = snap(n.y + dy0);
-      }
-    }
-  }
-
-  rebindMarksAfterLayout(markBindings);
-
-  /* 未关联到节点的绘制：按节点平均位移平移，避免落在旧坐标 */
-  const boundIds = new Set(
-    (markBindings || []).filter((b) => (b.nodeIds && b.nodeIds.length) || b.fromId || b.toId).map((b) => b.id),
-  );
-  let sumDx = 0,
-    sumDy = 0,
-    nMove = 0;
-  for (const n of nodes) {
-    const p = beforePos[n.id];
-    if (!p) continue;
-    sumDx += n.x - p.x;
-    sumDy += n.y - p.y;
-    nMove++;
-  }
-  if (nMove) {
-    const dx = sumDx / nMove;
-    const dy = sumDy / nMove;
-    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-      for (const m of marksOf()) {
-        if (boundIds.has(m.id)) continue;
-        m.x = (Number(m.x) || 0) + dx;
-        m.y = (Number(m.y) || 0) + dy;
-        if (m.kind === "arrow") {
-          m.x2 = (Number(m.x2) || 0) + dx;
-          m.y2 = (Number(m.y2) || 0) + dy;
+    /* 整体贴到画布左上，留出边距 */
+    const neu = nodesBBox(topNodes);
+    if (neu) {
+      const dx0 = snap(64 - neu.minX);
+      const dy0 = snap(64 - neu.minY);
+      if (dx0 || dy0) {
+        for (const n of topNodes) {
+          n.x = snap(n.x + dx0);
+          n.y = snap(n.y + dy0);
         }
       }
     }
+
+    rebindMarksAfterLayout(markBindings);
+
+    /* 未关联到节点的顶层绘制：按节点平均位移平移 */
+    const boundIds = new Set(
+      (markBindings || [])
+        .filter((b) => (b.nodeIds && b.nodeIds.length) || b.fromId || b.toId)
+        .map((b) => b.id),
+    );
+    let sumDx = 0,
+      sumDy = 0,
+      nMove = 0;
+    for (const n of topNodes) {
+      const p = beforePos[n.id];
+      if (!p) continue;
+      sumDx += n.x - p.x;
+      sumDy += n.y - p.y;
+      nMove++;
+    }
+    if (nMove) {
+      const dx = sumDx / nMove;
+      const dy = sumDy / nMove;
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+        for (const m of marksOf()) {
+          if (markParentSuperId(m)) continue;
+          if (boundIds.has(m.id)) continue;
+          m.x = (Number(m.x) || 0) + dx;
+          m.y = (Number(m.y) || 0) + dy;
+          if (m.kind === "arrow") {
+            m.x2 = (Number(m.x2) || 0) + dx;
+            m.y2 = (Number(m.y2) || 0) + dy;
+          }
+        }
+      }
+    }
+  }
+
+  let innerCount = 0;
+  if (opts.includeSuperInner) {
+    innerCount = tidyAllSuperInners({
+      history: false,
+      render: false,
+      save: false,
+    }).nodes;
   }
 
   fitAllGroupBoxes();
@@ -18641,39 +19801,115 @@ function tidyLayoutWorkflow(opts) {
   renderCanvas();
   fitCanvas();
   scheduleSave(true);
-  if (opts.notify !== false) toast(I18n.t("已整理排版"), "ok");
-  return { ok: true, nodes: nodes.length, marks: markBindings.length };
+  if (opts.notify !== false) {
+    toast(
+      innerCount
+        ? I18n.t("已整理排版（含超级节点内部）")
+        : I18n.t("已整理排版"),
+      "ok",
+    );
+  }
+  return {
+    ok: true,
+    nodes: topNodes.length,
+    innerNodes: innerCount,
+    marks: markBindings.length,
+  };
 }
 
-/* 顶栏一键排版：交由全局助手根据节点坐标/尺寸自行校准（mtnode_canvas_edit） */
+/** 对每个超级节点内部子图独立排版，并重置内部平移到左上 */
+function tidyAllSuperInners(opts) {
+  opts = opts || {};
+  if (!S.wf) return { ok: false, nodes: 0 };
+  if (opts.history && !S._skipCanvasHistory) pushHistory();
+  const focus = currentTaskFocus();
+  const supers = (S.wf.nodes || []).filter(
+    (n) => n.kind === "super" && nodeParentTaskId(n) === focus,
+  );
+  let total = 0;
+  for (const s of supers) {
+    const kids = superChildrenOf(s.id).filter((c) => !isSuperIoNode(c));
+    if (!kids.length) {
+      s.innerPanX = 0;
+      s.innerPanY = 0;
+      continue;
+    }
+    const markBindings = captureMarkBindings(kids);
+    for (const n of kids) sizeNodeForTidy(n);
+    const ids = new Set(kids.map((n) => n.id));
+    const wires = (S.wf.wires || []).filter(
+      (w) => ids.has(w.from) && ids.has(w.to),
+    );
+    layoutFlowEx(kids, wires, { x: snap(16), y: snap(16) }, [], {
+      gapX: 72,
+      gapY: 48,
+      prioritizeEditable: true,
+    });
+    const bb = nodesBBox(kids);
+    if (bb) {
+      const dx = snap(16 - bb.minX);
+      const dy = snap(16 - bb.minY);
+      if (dx || dy) {
+        for (const n of kids) {
+          n.x = snap(n.x + dx);
+          n.y = snap(n.y + dy);
+        }
+      }
+    }
+    rebindMarksAfterLayout(markBindings);
+    s.innerPanX = 0;
+    s.innerPanY = 0;
+    total += kids.length;
+  }
+  if (opts.render !== false) renderCanvas();
+  if (opts.save !== false) scheduleSave(true);
+  return { ok: true, nodes: total };
+}
+
+/* 顶栏一键排版：本地整洁排版（可选同时整理超级节点内部） */
 async function oneClickAutoLayout(opts) {
   opts = opts || {};
   if (!S.wf || !(S.wf.nodes || []).length) {
     toast(I18n.t("画布上没有节点"), "warn");
     return;
   }
-  if (
-    !opts.skipConfirm &&
-    !(await confirmDialog(
-      I18n.t(
-        "确定进行一键排版？\n\n将由全局助手基于 AI 分析并调整画布节点位置，可能需要等待一段时间，请耐心等候。操作可撤销。",
-      ),
-      { title: I18n.t("一键排版"), okText: I18n.t("开始排版") },
-    ))
-  )
-    return;
-  if (S.assistRunning) {
-    toast(I18n.t("全局助手正在运行，请稍候或先终止"), "warn");
-    setAssistOpen(true);
-    return;
-  }
-  const msg = I18n.t(
-    "请整理当前画布排版：先 mtnode_canvas_get 查看每个节点与绘制的 x/y/w/h，再根据现状自行判断，用一次 mtnode_canvas_edit（layout:false）通过 update / updateMarks 校准位置与尺寸。要求美观整洁、间距舒适、图像节点便于观察、面向用户可编辑/操作的节点靠上；框体/文字/箭头等绘制要跟着节点一起调整。不要增删节点、不要改连线，不要调用任何 layout action。完成后用一句话确认。",
+  const focus = currentTaskFocus();
+  const hasInner = (S.wf.nodes || []).some(
+    (n) =>
+      n.kind === "super" &&
+      nodeParentTaskId(n) === focus &&
+      superChildrenOf(n.id).some((c) => !isSuperIoNode(c)),
   );
-  setAssistOpen(true);
-  const aInp = $("#assistInput");
-  if (aInp) aInp.value = "";
-  assistSend(msg);
+  let includeInner =
+    opts.includeSuperInner == null ? false : !!opts.includeSuperInner;
+  if (!opts.skipConfirm) {
+    if (
+      !(await confirmDialog(
+        I18n.t(
+          "确定进行一键排版？\n\n将按连线关系整理节点位置（可撤销）。",
+        ),
+        { title: I18n.t("一键排版"), okText: I18n.t("开始排版") },
+      ))
+    )
+      return;
+    if (hasInner && opts.includeSuperInner == null) {
+      includeInner = await confirmDialog(
+        I18n.t(
+          "是否同时排版超级节点内部？\n\n「同时排版内部」会整理各超级节点内的子节点；「仅排版画布」只调整顶层节点。",
+        ),
+        {
+          title: I18n.t("一键排版"),
+          okText: I18n.t("同时排版内部"),
+          cancelText: I18n.t("仅排版画布"),
+        },
+      );
+    }
+  }
+  tidyLayoutWorkflow({
+    includeSuperInner: includeInner,
+    history: true,
+    notify: true,
+  });
 }
 
 function sizeNodeForContent(node) {
@@ -18758,6 +19994,32 @@ function applyNodePatch(node, patch, warnings) {
       if (p && p.kind === "task" && p.id !== node.id)
         node.parentTaskId = p.id;
     }
+  }
+  /* parentSuperId / packIntoSuper：create 批次内 alias 在 applyCanvasEdit 后置循环解析；
+     此处仅处理已是真实 id 的更新，或清空拆出 */
+  if (patch.parentSuperId != null || patch.packIntoSuper != null) {
+    const raw = String(
+      patch.parentSuperId != null ? patch.parentSuperId : patch.packIntoSuper || "",
+    ).trim();
+    if (!raw) {
+      node.parentSuperId = "";
+    } else {
+      const p = nodeById(raw);
+      if (p && p.kind === "super" && canMoveNodeIntoSuper(p, node)) {
+        node.parentSuperId = p.id;
+        node.parentTaskId = p.parentTaskId || "";
+      }
+    }
+  }
+  if (node.kind === "super") {
+    if (patch.note != null) node.note = String(patch.note);
+    if (typeof patch.expandW === "number" && isFinite(patch.expandW))
+      node.expandW = Math.max(320, Math.round(patch.expandW));
+    if (typeof patch.expandH === "number" && isFinite(patch.expandH))
+      node.expandH = Math.max(220, Math.round(patch.expandH));
+    if (patch.subFolder != null)
+      node.subFolder = normalizeSuperSubFolder(String(patch.subFolder));
+    if (typeof patch.superOpen === "boolean") node.superOpen = patch.superOpen;
   }
   if (
     patch.savePath != null &&
@@ -19297,6 +20559,32 @@ async function applyCanvasEdit(params) {
       warnings.push(I18n.t("无效的父任务：") + raw);
   }
 
+  /* 收纳进超级节点：与 parentTaskId 一样，须在整批 create 入 aliasMap 后再解析 alias/title */
+  const applyParentSuper = (node, raw, warningsArr) => {
+    if (!node) return;
+    const token = String(raw == null ? "" : raw).trim();
+    if (!token) {
+      node.parentSuperId = "";
+      return;
+    }
+    const p = resolveCanvasRef(token, aliasMap, warningsArr);
+    if (p && p.kind === "super" && canMoveNodeIntoSuper(p, node)) {
+      node.parentSuperId = p.id;
+      node.parentTaskId = p.parentTaskId || node.parentTaskId || "";
+    } else if (token && warningsArr) {
+      warningsArr.push(I18n.t("无效的超级节点：") + token);
+    }
+  };
+  for (const spec of creates.slice(0, 40)) {
+    const alias = String((spec && spec.alias) || "").trim();
+    const node = aliasMap.get(alias);
+    if (!node || !spec) continue;
+    if (spec.parentSuperId == null && spec.packIntoSuper == null) continue;
+    const raw =
+      spec.parentSuperId != null ? spec.parentSuperId : spec.packIntoSuper;
+    applyParentSuper(node, raw, warnings);
+  }
+
   for (const spec of updates.slice(0, 80)) {
     const token = (spec && (spec.id || spec.alias || spec.title)) || "";
     const node = resolveCanvasRef(token, aliasMap, warnings);
@@ -19337,6 +20625,18 @@ async function applyCanvasEdit(params) {
             : DEFAULT_IMAGE_SIZE
           : undefined,
     });
+  }
+
+  /* update 里的 parentSuperId 可能是 alias/title：在 patch 后再用 aliasMap 解析一次 */
+  for (const spec of updates.slice(0, 80)) {
+    if (!spec || (spec.parentSuperId == null && spec.packIntoSuper == null))
+      continue;
+    const token = (spec.id || spec.alias || spec.title) || "";
+    const node = resolveCanvasRef(token, aliasMap, warnings);
+    if (!node) continue;
+    const raw =
+      spec.parentSuperId != null ? spec.parentSuperId : spec.packIntoSuper;
+    applyParentSuper(node, raw, warnings);
   }
 
   for (const spec of creates.slice(0, 40)) {
@@ -19821,6 +21121,7 @@ function startNodeDrag(ev, node, opts) {
   }
   S.preDragSnap = snapshotState();
   const orig = {};
+  const origWorld = {};
   let dragIds = expandBoundPairIds([...S.selSet]);
   const openSupers = new Set(
     dragIds.filter((id) => {
@@ -19838,7 +21139,11 @@ function startNodeDrag(ev, node, opts) {
   }
   for (const id of dragIds) {
     const n = nodeById(id);
-    if (n) orig[id] = { x: n.x, y: n.y };
+    if (n) {
+      orig[id] = { x: n.x, y: n.y };
+      const wp = nodeWorldPos(n);
+      origWorld[id] = { x: wp.x, y: wp.y };
+    }
   }
   const origMarks = {};
   const markIds = [];
@@ -19853,6 +21158,12 @@ function startNodeDrag(ev, node, opts) {
     mode: "node",
     ids: dragIds,
     orig,
+    origWorld,
+    curWorld: {},
+    hadNested: dragIds.some((id) => {
+      const n = nodeById(id);
+      return !!(n && nodeParentSuperId(n));
+    }),
     markIds,
     origMarks,
     sx: ev.clientX,
@@ -19875,6 +21186,35 @@ function startWireDrag(fromId, ev, fromIndex, opts) {
     superInnerBridge: !!opts.superInnerBridge,
   };
   updateWires();
+}
+/** 拖拽中按世界坐标刷新节点 DOM；内部节点提升到主舞台以免被 overflow 裁切 */
+function applyNodeDragVisual(d, dx, dy) {
+  if (!d || d.mode !== "node") return;
+  const stage = $("#stage");
+  if (!d.curWorld) d.curWorld = {};
+  for (const id of d.ids || []) {
+    const n = nodeById(id);
+    const ow = d.origWorld && d.origWorld[id];
+    const o = d.orig && d.orig[id];
+    if (!n || !ow) continue;
+    const wx = snap(ow.x + dx);
+    const wy = snap(ow.y + dy);
+    d.curWorld[id] = { x: wx, y: wy };
+    const nested = !!nodeParentSuperId(n);
+    if (!nested && o) {
+      n.x = snap(o.x + dx);
+      n.y = snap(o.y + dy);
+    }
+    let el = document.querySelector('.wf-node[data-nid="' + id + '"]');
+    if (!el) continue;
+    if (nested && stage && el.parentElement !== stage) {
+      stage.appendChild(el);
+      el.classList.add("super-drag-lift");
+      el.style.zIndex = "55";
+    }
+    el.style.left = (nested ? wx : n.x) + "px";
+    el.style.top = (nested ? wy : n.y) + "px";
+  }
 }
 /* 清理悬空的拖拽状态：窗口移动/失焦等会吞掉 mouseup，导致 S.drag / boxSel 残留，
    后续随机的 mousemove/mouseup 会误处理陈旧状态（偶发 remove 类报错） */
@@ -20198,7 +21538,8 @@ function clampGroupScale(g, sx, sy, orig, origMarks) {
     const n = nodeById(id);
     if (!n) continue;
     const o = orig && orig[id];
-    minSx = Math.max(minSx, minWFor(n) / (o ? o.w : n.w));
+    const mw = Math.max(minWFor(n), Number(n._chromeMinW) || 0);
+    minSx = Math.max(minSx, mw / (o ? o.w : n.w));
     minSy = Math.max(minSy, minHFor(n) / (o ? o.h : n.h));
   }
   for (const id of g.markIds) {
@@ -20876,42 +22217,52 @@ function duplicateSelection() {
 }
 function syncGroupBtns() {
   const bg = $("#btnGroup");
-  if (!bg) return;
-  const ns = selNodes();
-  const ms = selectedMarks();
-  let inGroup = false;
-  for (const n of ns) {
-    if (
-      (S.wf.groups || []).some((g) => {
-        ensureGroupArrays(g);
-        return g.nodeIds.includes(n.id);
-      })
-    ) {
-      inGroup = true;
-      break;
-    }
-  }
-  if (!inGroup) {
-    for (const m of ms) {
+  if (bg) {
+    const ns = selNodes();
+    const ms = selectedMarks();
+    let inGroup = false;
+    for (const n of ns) {
       if (
         (S.wf.groups || []).some((g) => {
           ensureGroupArrays(g);
-          return g.markIds.includes(m.id);
+          return g.nodeIds.includes(n.id);
         })
       ) {
         inGroup = true;
         break;
       }
     }
+    if (!inGroup) {
+      for (const m of ms) {
+        if (
+          (S.wf.groups || []).some((g) => {
+            ensureGroupArrays(g);
+            return g.markIds.includes(m.id);
+          })
+        ) {
+          inGroup = true;
+          break;
+        }
+      }
+    }
+    bg.classList.toggle("on", !!(S.selGroup || inGroup));
+    bg.title = S.selGroup
+      ? ns.length || ms.length
+        ? I18n.t("将选中的节点/绘制加入当前组")
+        : I18n.t("解散当前组（保留内部节点与绘制）")
+      : I18n.t(
+          "组：把选中的节点或绘制组成一个组（快捷键 G）；选中组后再次点击可加入或解散",
+        );
   }
-  bg.classList.toggle("on", !!(S.selGroup || inGroup));
-  bg.title = S.selGroup
-    ? ns.length || ms.length
-      ? I18n.t("将选中的节点/绘制加入当前组")
-      : I18n.t("解散当前组（保留内部节点与绘制）")
-    : I18n.t(
-        "组：把选中的节点或绘制组成一个组（快捷键 G）；选中组后再次点击可加入或解散",
-      );
+  const bs = $("#btnWrapSuper");
+  if (bs) {
+    const canWrap = selNodes().some((n) => n && !isSuperIoNode(n));
+    bs.classList.toggle("on", canWrap);
+    bs.disabled = !canWrap;
+    bs.title = I18n.t(
+      "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）",
+    );
+  }
 }
 
 /* ============ 左侧边栏（节点树状图 + 筛选） ============ */
@@ -21584,6 +22935,187 @@ function focusMark(id) {
   renderStatus();
 }
 
+function canvasCreateMenuGroups(pt) {
+  return [
+    [
+      I18n.t("输入节点（仅输出）"),
+      [
+        ctxKindItem("input_text", I18n.t("文本节点"), () =>
+          addNode("input_text", pt.x, pt.y),
+        ),
+        ctxKindItem("input_image", I18n.t("图像节点"), () =>
+          addNode("input_image", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("全局节点（仅连入 · 点左上角彩虹图标引用）"),
+      [
+        ctxKindItem(
+          "global",
+          I18n.t("全局节点（仅连入 · 点左上角彩虹图标引用）"),
+          () => addNode("global", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("处理节点（提示词 + Play）"),
+      [
+        ctxKindItem("proc_text", I18n.t("文本处理（LLM）"), () =>
+          addNode("proc_text", pt.x, pt.y),
+        ),
+        ctxKindItem("proc_image", I18n.t("图像生成（文生图）"), () =>
+          addNode("proc_image", pt.x, pt.y),
+        ),
+        ctxKindItem("music_gen", I18n.t("音乐生成（MiniMax Music 3）"), () =>
+          addNode("music_gen", pt.x, pt.y),
+        ),
+        ctxKindItem("video_gen", I18n.t("视频生成（MiniMax H3）"), () =>
+          addNode("video_gen", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("保存节点（接收最终输出）"),
+      [
+        ctxKindItem("save", I18n.t("保存（按输入自判）"), () =>
+          addNode("save", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("工具节点（批次拆分 / 合并）"),
+      [
+        ctxKindItem("split", I18n.t("拆分（批次 → 单项只读节点）"), () =>
+          addNode("split", pt.x, pt.y),
+        ),
+        ctxKindItem("merge", I18n.t("合并（多节点 → 批次）"), () =>
+          addNode("merge", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("智能节点（读文件 / 联网 / 执行命令）"),
+      [
+        ctxKindItem(
+          "agent_task",
+          I18n.t("智能任务（读文件 / 联网 / 执行命令）"),
+          () => addNode("agent_task", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("任务节点（规划 / 控制流执行）"),
+      [
+        ctxKindItem("task", I18n.t("任务（规划 · 可进入分段解决）"), () =>
+          addNode("task", pt.x, pt.y),
+        ),
+        ctxKindItem("super", I18n.t("超级节点（收纳 · 展开子画布）"), () =>
+          addNode("super", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("对话节点"),
+      [
+        ctxKindItem("chat", I18n.t("文本对话（Chat）"), () =>
+          addNode("chat", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      "",
+      [
+        {
+          label: I18n.t("控制节点"),
+          iconKey: "control",
+          iconCls: "ctrl",
+          submenu: [
+            ctxKindItem("control", I18n.t("执行 / 清空"), () =>
+              addNode("control", pt.x, pt.y),
+            ),
+            ctxKindItem("wait_file", I18n.t("需求等待（监视文件）"), () =>
+              addNode("wait_file", pt.x, pt.y),
+            ),
+            ctxKindItem("timer", I18n.t("定时触发器（计划 / Cron）"), () =>
+              addNode("timer", pt.x, pt.y),
+            ),
+            ctxKindItem("delayer", I18n.t("延时器（等待后继续）"), () =>
+              addNode("delayer", pt.x, pt.y),
+            ),
+            ctxKindItem("sequencer", I18n.t("序列器（按序多路）"), () =>
+              addNode("sequencer", pt.x, pt.y),
+            ),
+            ctxKindItem("gate", I18n.t("闸门（全部到达才放行）"), () =>
+              addNode("gate", pt.x, pt.y),
+            ),
+            ctxKindItem("splitter", I18n.t("分发（并行多路）"), () =>
+              addNode("splitter", pt.x, pt.y),
+            ),
+            ctxKindItem("counter", I18n.t("计数（每 N 次放行）"), () =>
+              addNode("counter", pt.x, pt.y),
+            ),
+            ctxKindItem("mutex", I18n.t("互斥（多入选一）"), () =>
+              addNode("mutex", pt.x, pt.y),
+            ),
+            ctxKindItem("judge", I18n.t("判断（是 / 否）"), () =>
+              addNode("judge", pt.x, pt.y),
+            ),
+            ctxKindItem(
+              "control",
+              I18n.t("成功终点"),
+              () =>
+                addNode("control", pt.x, pt.y, {
+                  ctrlRole: "endSuccess",
+                  title: I18n.t("成功终点"),
+                }),
+              { ctrlRole: "endSuccess", iconCls: "ctrl-ok" },
+            ),
+            ctxKindItem(
+              "control",
+              I18n.t("失败终点"),
+              () =>
+                addNode("control", pt.x, pt.y, {
+                  ctrlRole: "endFail",
+                  title: I18n.t("失败终点"),
+                }),
+              { ctrlRole: "endFail", iconCls: "ctrl-fail" },
+            ),
+          ],
+        },
+        {
+          label: I18n.t("绘制"),
+          iconKey: "draw",
+          iconCls: "draw",
+          submenu: [
+            ctxAction(
+              I18n.t("文本"),
+              () => addMark("text", pt.x, pt.y),
+              "mark_text",
+              { iconCls: "draw" },
+            ),
+            ctxAction(
+              I18n.t("框体"),
+              () => addMark("box", pt.x, pt.y),
+              "mark_box",
+              { iconCls: "draw" },
+            ),
+            ctxAction(
+              I18n.t("箭头"),
+              () => addMark("arrow", pt.x, pt.y),
+              "mark_arrow",
+              { iconCls: "draw" },
+            ),
+          ],
+        },
+      ],
+    ],
+  ];
+}
+function showCanvasCreateMenu(clientX, clientY, worldPt) {
+  showCtx(clientX, clientY, canvasCreateMenuGroups(worldPt));
+}
+
 function bindCanvas() {
   const canvas = $("#canvas");
   /* 捕获阶段监听：即使鼠标在节点 / 组内部（其冒泡阶段可能 stopPropagation 或拦截事件），
@@ -21704,19 +23236,7 @@ function bindCanvas() {
       const z = S.cam.z > 0 ? S.cam.z : 1;
       const dx = (ev.clientX - d.sx) / z,
         dy = (ev.clientY - d.sy) / z;
-      for (const id of d.ids) {
-        const n = nodeById(id);
-        if (!n) continue;
-        const o = d.orig[id];
-        if (!o) continue;
-        n.x = snap(o.x + dx);
-        n.y = snap(o.y + dy);
-        const el = document.querySelector('.wf-node[data-nid="' + id + '"]');
-        if (el) {
-          el.style.left = n.x + "px";
-          el.style.top = n.y + "px";
-        }
-      }
+      applyNodeDragVisual(d, dx, dy);
       /* 框选混合选区：一并移动已选绘制 */
       if (d.origMarks) {
         for (const id of Object.keys(d.origMarks)) {
@@ -21837,9 +23357,10 @@ function bindCanvas() {
       const hasOut =
         !!(n.running && isDshTask(n)) ||
         !!(r && (r.output || r.batchOutputs || r.error));
-      const minW = hasOut ? Math.max(minWFor(n), procMinNodeW(n.outW)) : minWFor(n);
+      const chromeMin = Math.max(minWFor(n), Number(n._chromeMinW) || 0);
+      const minW = hasOut ? Math.max(chromeMin, procMinNodeW(n.outW)) : chromeMin;
       const z = S.cam.z > 0 ? S.cam.z : 1;
-      const openSuper = n.kind === "super" && n.superOpen && !currentSuperFocus();
+      const openSuper = superIsOpenShell(n);
       if (openSuper) {
         n.expandW = snapDim(d.ow + dx / z, 320);
         n.expandH = snapDim(d.oh + dy / z, 220);
@@ -22059,6 +23580,8 @@ function bindCanvas() {
       const handleNid = d.handleNid;
       const wasMoved = !!d.moved;
       const dragIds = d.ids || [];
+      const curWorld = d.curWorld || null;
+      const hadNested = !!d.hadNested;
       S.drag = null;
       if (wasMoved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
@@ -22067,7 +23590,10 @@ function bindCanvas() {
         S.preDragSnap = null;
       }
       let nested = false;
-      if (wasMoved) nested = finalizeNodeDragNest(dragIds);
+      if (wasMoved) {
+        nested = finalizeNodeDragNest(dragIds, curWorld);
+        if (hadNested) nested = true;
+      }
       clearSuperDropHot(!!nested);
       updateGroupFrames();
       const skipToggle =
@@ -22152,184 +23678,7 @@ function bindCanvas() {
     ev.preventDefault();
     ev.stopPropagation();
     if (ev.target === canvas || ev.target.id === "stage") {
-      const pt = toStage(ev.clientX, ev.clientY);
-      showCtx(ev.clientX, ev.clientY, [
-        [
-          I18n.t("输入节点（仅输出）"),
-          [
-            ctxKindItem("input_text", I18n.t("文本节点"), () =>
-              addNode("input_text", pt.x, pt.y),
-            ),
-            ctxKindItem("input_image", I18n.t("图像节点"), () =>
-              addNode("input_image", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          I18n.t("全局节点（仅连入 · 点左上角彩虹图标引用）"),
-          [
-            ctxKindItem(
-              "global",
-              I18n.t("全局节点（仅连入 · 点左上角彩虹图标引用）"),
-              () => addNode("global", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          I18n.t("处理节点（提示词 + Play）"),
-          [
-            ctxKindItem("proc_text", I18n.t("文本处理（LLM）"), () =>
-              addNode("proc_text", pt.x, pt.y),
-            ),
-            ctxKindItem("proc_image", I18n.t("图像生成（文生图）"), () =>
-              addNode("proc_image", pt.x, pt.y),
-            ),
-            ctxKindItem("music_gen", I18n.t("音乐生成（MiniMax Music 3）"), () =>
-              addNode("music_gen", pt.x, pt.y),
-            ),
-            ctxKindItem("video_gen", I18n.t("视频生成（MiniMax H3）"), () =>
-              addNode("video_gen", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          I18n.t("保存节点（接收最终输出）"),
-          [
-            ctxKindItem("save", I18n.t("保存（按输入自判）"), () =>
-              addNode("save", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          I18n.t("工具节点（批次拆分 / 合并）"),
-          [
-            ctxKindItem("split", I18n.t("拆分（批次 → 单项只读节点）"), () =>
-              addNode("split", pt.x, pt.y),
-            ),
-            ctxKindItem("merge", I18n.t("合并（多节点 → 批次）"), () =>
-              addNode("merge", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          I18n.t("智能节点（读文件 / 联网 / 执行命令）"),
-          [
-            ctxKindItem(
-              "agent_task",
-              I18n.t("智能任务（读文件 / 联网 / 执行命令）"),
-              () => addNode("agent_task", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          I18n.t("任务节点（规划 / 控制流执行）"),
-          [
-            ctxKindItem("task", I18n.t("任务（规划 · 可进入分段解决）"), () =>
-              addNode("task", pt.x, pt.y),
-            ),
-            ctxKindItem(
-              "super",
-              I18n.t("超级节点（收纳 · 展开子画布）"),
-              () => addNode("super", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          I18n.t("对话节点"),
-          [
-            ctxKindItem("chat", I18n.t("文本对话（Chat）"), () =>
-              addNode("chat", pt.x, pt.y),
-            ),
-          ],
-        ],
-        [
-          "",
-          [
-            {
-              label: I18n.t("控制节点"),
-              iconKey: "control",
-              iconCls: "ctrl",
-              submenu: [
-                ctxKindItem("control", I18n.t("执行 / 清空"), () =>
-                  addNode("control", pt.x, pt.y),
-                ),
-                ctxKindItem("wait_file", I18n.t("需求等待（监视文件）"), () =>
-                  addNode("wait_file", pt.x, pt.y),
-                ),
-                ctxKindItem("timer", I18n.t("定时触发器（计划 / Cron）"), () =>
-                  addNode("timer", pt.x, pt.y),
-                ),
-                ctxKindItem("delayer", I18n.t("延时器（等待后继续）"), () =>
-                  addNode("delayer", pt.x, pt.y),
-                ),
-                ctxKindItem("sequencer", I18n.t("序列器（按序多路）"), () =>
-                  addNode("sequencer", pt.x, pt.y),
-                ),
-                ctxKindItem("gate", I18n.t("闸门（全部到达才放行）"), () =>
-                  addNode("gate", pt.x, pt.y),
-                ),
-                ctxKindItem("splitter", I18n.t("分发（并行多路）"), () =>
-                  addNode("splitter", pt.x, pt.y),
-                ),
-                ctxKindItem("counter", I18n.t("计数（每 N 次放行）"), () =>
-                  addNode("counter", pt.x, pt.y),
-                ),
-                ctxKindItem("mutex", I18n.t("互斥（多入选一）"), () =>
-                  addNode("mutex", pt.x, pt.y),
-                ),
-                ctxKindItem("judge", I18n.t("判断（是 / 否）"), () =>
-                  addNode("judge", pt.x, pt.y),
-                ),
-                ctxKindItem(
-                  "control",
-                  I18n.t("成功终点"),
-                  () =>
-                    addNode("control", pt.x, pt.y, {
-                      ctrlRole: "endSuccess",
-                      title: I18n.t("成功终点"),
-                    }),
-                  { ctrlRole: "endSuccess", iconCls: "ctrl-ok" },
-                ),
-                ctxKindItem(
-                  "control",
-                  I18n.t("失败终点"),
-                  () =>
-                    addNode("control", pt.x, pt.y, {
-                      ctrlRole: "endFail",
-                      title: I18n.t("失败终点"),
-                    }),
-                  { ctrlRole: "endFail", iconCls: "ctrl-fail" },
-                ),
-              ],
-            },
-            {
-              label: I18n.t("绘制"),
-              iconKey: "draw",
-              iconCls: "draw",
-              submenu: [
-                ctxAction(
-                  I18n.t("文本"),
-                  () => addMark("text", pt.x, pt.y),
-                  "mark_text",
-                  { iconCls: "draw" },
-                ),
-                ctxAction(
-                  I18n.t("框体"),
-                  () => addMark("box", pt.x, pt.y),
-                  "mark_box",
-                  { iconCls: "draw" },
-                ),
-                ctxAction(
-                  I18n.t("箭头"),
-                  () => addMark("arrow", pt.x, pt.y),
-                  "mark_arrow",
-                  { iconCls: "draw" },
-                ),
-              ],
-            },
-          ],
-        ],
-      ]);
+      showCanvasCreateMenu(ev.clientX, ev.clientY, toStage(ev.clientX, ev.clientY));
     }
   });
 
@@ -23008,7 +24357,15 @@ function addNode(kind, x, y, extra) {
       node[k] = v;
     }
   }
-  const want = extra && extra.title ? extra.title : I18n.t(d.title + "节点");
+  const want =
+    extra && extra.title
+      ? extra.title
+      : (() => {
+          const raw = I18n.t(d.title);
+          /* 「超级节点」等标题已含「节点」，勿再拼成「超级节点节点」 */
+          if (/节点\s*$/.test(raw) || /node\s*$/i.test(raw)) return raw;
+          return raw + I18n.t("节点");
+        })();
   if (extra && extra.title) node.title = uniqueNodeTitle(want);
   else {
     const same = S.wf.nodes.filter((n) => n.title === want).length;
@@ -23167,6 +24524,7 @@ async function chatSend(node, text) {
   if (!S.thinking) S.thinking = {};
   S.thinking[node.id] = [""]; // 重置思考缓冲
   renderCanvas();
+  scrollChatToBottom(node, true);
   const spec = {
     provider: prov,
     kind: "text",
@@ -23193,7 +24551,11 @@ async function chatSend(node, text) {
         const el = document.getElementById("chat-stream-" + node.id);
         if (el) {
           el.textContent = node._pendingAnswer;
-          el.scrollIntoView({ block: "nearest" });
+          const list = document.querySelector(
+            '.wf-node[data-nid="' + node.id + '"] .chat-list',
+          );
+          if (isScrollNearBottom(list))
+            el.scrollIntoView({ block: "nearest" });
         }
       },
     );
@@ -23239,6 +24601,7 @@ async function chatSendAgent(node, text) {
   if (!S.thinking) S.thinking = {};
   S.thinking[node.id] = [""];
   renderCanvas();
+  scrollChatToBottom(node, true);
 
   /* 历史串行化（最多 20 条）作为上下文交给助手 */
   const hist = node.messages
@@ -23268,7 +24631,11 @@ async function chatSendAgent(node, text) {
           const el = document.getElementById("chat-stream-" + node.id);
           if (el) {
             el.textContent = node._pendingAnswer;
-            el.scrollIntoView({ block: "nearest" });
+            const list = document.querySelector(
+              '.wf-node[data-nid="' + node.id + '"] .chat-list',
+            );
+            if (isScrollNearBottom(list))
+              el.scrollIntoView({ block: "nearest" });
           }
         } else if (type === "error" && data && data.message) {
           if (node._aborted || isCancelishError(data.message)) return;
@@ -23278,7 +24645,11 @@ async function chatSendAgent(node, text) {
           const el = document.getElementById("chat-stream-" + node.id);
           if (el) {
             el.textContent = node._pendingAnswer;
-            el.scrollIntoView({ block: "nearest" });
+            const list = document.querySelector(
+              '.wf-node[data-nid="' + node.id + '"] .chat-list',
+            );
+            if (isScrollNearBottom(list))
+              el.scrollIntoView({ block: "nearest" });
           }
         }
       },
@@ -23412,6 +24783,412 @@ function fileUrlToPath(u) {
   return s;
 }
 
+function isYamlFilePath(p) {
+  return /\.ya?ml$/i.test(String(p || "").trim());
+}
+
+function resolveOpenableFilePath(p) {
+  const raw = String(p || "").trim();
+  if (!raw) return "";
+  if (isAbsPath(raw)) return raw;
+  try {
+    const r = resolveSavePath(raw);
+    if (r && r.ok && r.path) return r.path;
+  } catch (_) {}
+  return raw;
+}
+
+function highlightYamlValue(val) {
+  const v = String(val);
+  if (!v) return "";
+  if (/^#/.test(v.trim())) return '<span class="yaml-c">' + escapeHtml(v) + "</span>";
+  if (/^(true|false|null|~)$/i.test(v.trim()))
+    return '<span class="yaml-b">' + escapeHtml(v) + "</span>";
+  if (/^[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/.test(v.trim()))
+    return '<span class="yaml-n">' + escapeHtml(v) + "</span>";
+  if (
+    (v.trim().startsWith('"') && v.trim().endsWith('"')) ||
+    (v.trim().startsWith("'") && v.trim().endsWith("'"))
+  )
+    return '<span class="yaml-s">' + escapeHtml(v) + "</span>";
+  if (/^[&*]/.test(v.trim()))
+    return '<span class="yaml-a">' + escapeHtml(v) + "</span>";
+  return '<span class="yaml-s">' + escapeHtml(v) + "</span>";
+}
+
+function highlightYamlLine(rawLine) {
+  const line = String(rawLine ?? "");
+  const trimmed = line.trim();
+  if (!trimmed)
+    return escapeHtml(line);
+  if (trimmed.startsWith("#"))
+    return '<span class="yaml-c">' + escapeHtml(line) + "</span>";
+
+  const leadMatch = line.match(/^(\s*)(.*)$/);
+  const lead = leadMatch ? leadMatch[1] : "";
+  const rest = leadMatch ? leadMatch[2] : line;
+
+  if (rest.startsWith("- ")) {
+    const afterDash = rest.slice(2);
+    const km = afterDash.match(/^([^:#]+?)(\s*:)(\s*)(.*)$/);
+    if (km) {
+      return (
+        escapeHtml(lead) +
+        '<span class="yaml-p">- </span>' +
+        '<span class="yaml-k">' +
+        escapeHtml(km[1]) +
+        "</span>" +
+        '<span class="yaml-p">' +
+        escapeHtml(km[2]) +
+        "</span>" +
+        escapeHtml(km[3]) +
+        highlightYamlValue(km[4])
+      );
+    }
+    return (
+      escapeHtml(lead) +
+      '<span class="yaml-p">- </span>' +
+      highlightYamlValue(afterDash)
+    );
+  }
+
+  const km = rest.match(/^([^:#]+?)(\s*:)(\s*)(.*)$/);
+  if (km) {
+    return (
+      escapeHtml(lead) +
+      '<span class="yaml-k">' +
+      escapeHtml(km[1]) +
+      "</span>" +
+      '<span class="yaml-p">' +
+      escapeHtml(km[2]) +
+      "</span>" +
+      escapeHtml(km[3]) +
+      highlightYamlValue(km[4])
+    );
+  }
+  return escapeHtml(lead) + highlightYamlValue(rest);
+}
+
+function buildYamlOutline(text) {
+  const items = [];
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\t/g, "  ");
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = line.length - line.replace(/^\s+/, "").length;
+    const depth = Math.min(2, Math.floor(indent / 2));
+    let label = "";
+    if (trimmed.startsWith("- ")) {
+      const after = trimmed.slice(2);
+      const m = after.match(/^([^:#]+?)\s*:/);
+      label = m ? "- " + m[1].trim() : trimmed.slice(0, 48);
+    } else {
+      const m = trimmed.match(/^([^:#]+?)\s*:/);
+      if (!m) continue;
+      label = m[1].trim();
+    }
+    if (!label) continue;
+    if (depth === 0 || items.length < 80) {
+      items.push({ line: i + 1, label, depth });
+    }
+    if (items.length >= 120) break;
+  }
+  return items;
+}
+
+let _yamlViewerState = {
+  path: "",
+  wrap: false,
+  outline: true,
+  w: 0,
+  h: 0,
+};
+
+function closeYamlViewer() {
+  const host = document.getElementById("yamlViewerDlg");
+  if (host) host.classList.remove("on");
+}
+
+function ensureYamlViewer() {
+  let host = document.getElementById("yamlViewerDlg");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "yamlViewerDlg";
+  host.className = "yaml-viewer-dlg";
+  host.innerHTML =
+    '<div class="yaml-viewer-box" id="yamlViewerBox" role="dialog" aria-modal="true">' +
+    '<div class="yaml-viewer-head">' +
+    "<b>" +
+    I18n.t("YAML 阅读器") +
+    "</b>" +
+    '<span class="yaml-viewer-title" id="yamlViewerTitle"></span>' +
+    '<div class="yaml-viewer-actions">' +
+    '<button type="button" class="mini" id="yamlViewerOutlineBtn"></button>' +
+    '<button type="button" class="mini" id="yamlViewerWrapBtn"></button>' +
+    '<button type="button" class="mini" id="yamlViewerReloadBtn"></button>' +
+    '<button type="button" class="mini" id="yamlViewerCopyBtn"></button>' +
+    '<button type="button" class="mini" id="yamlViewerRevealBtn"></button>' +
+    '<button type="button" class="mini" id="yamlViewerCloseBtn">✕</button>' +
+    "</div></div>" +
+    '<div class="yaml-viewer-path" id="yamlViewerPath"></div>' +
+    '<div class="yaml-viewer-main">' +
+    '<div class="yaml-viewer-outline" id="yamlViewerOutline">' +
+    '<div class="yaml-viewer-outline-h">' +
+    I18n.t("大纲") +
+    "</div>" +
+    '<div class="yaml-viewer-outline-list" id="yamlViewerOutlineList"></div>' +
+    "</div>" +
+    '<div class="yaml-viewer-body" id="yamlViewerBody"></div>' +
+    "</div>" +
+    '<div class="yaml-viewer-foot">' +
+    '<span class="yaml-viewer-meta" id="yamlViewerMeta"></span>' +
+    '<button type="button" class="mini primary" id="yamlViewerClose2">' +
+    I18n.t("关闭") +
+    "</button></div>" +
+    '<div class="yaml-viewer-resize" id="yamlViewerResize" title="' +
+    I18n.t("拖拽调整大小") +
+    '"></div>' +
+    "</div>";
+  document.body.appendChild(host);
+
+  const close = () => closeYamlViewer();
+  host.querySelector("#yamlViewerCloseBtn").onclick = close;
+  host.querySelector("#yamlViewerClose2").onclick = close;
+  host.addEventListener("click", (ev) => {
+    if (ev.target === host) close();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && host.classList.contains("on")) {
+      closeYamlViewer();
+    }
+  });
+
+  host.querySelector("#yamlViewerOutlineBtn").onclick = () => {
+    _yamlViewerState.outline = !_yamlViewerState.outline;
+    applyYamlViewerChrome();
+  };
+  host.querySelector("#yamlViewerWrapBtn").onclick = () => {
+    _yamlViewerState.wrap = !_yamlViewerState.wrap;
+    applyYamlViewerChrome();
+  };
+  host.querySelector("#yamlViewerReloadBtn").onclick = () => {
+    if (_yamlViewerState.path) openYamlViewer(_yamlViewerState.path, { force: true });
+  };
+  host.querySelector("#yamlViewerCopyBtn").onclick = async () => {
+    const pre = host.querySelector("#yamlViewerCode");
+    const text = pre && pre.dataset.raw != null ? pre.dataset.raw : "";
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText)
+        await navigator.clipboard.writeText(text);
+      else if (window.api && window.api.clipboardWriteText)
+        await window.api.clipboardWriteText(text);
+      toast(I18n.t("已复制"), "ok");
+    } catch (e) {
+      toast(I18n.t("复制失败") + ": " + ((e && e.message) || e), "warn");
+    }
+  };
+  host.querySelector("#yamlViewerRevealBtn").onclick = () => {
+    const p = _yamlViewerState.path;
+    if (p && window.api && window.api.shellShowItem) window.api.shellShowItem(p);
+  };
+
+  const box = host.querySelector("#yamlViewerBox");
+  const rz = host.querySelector("#yamlViewerResize");
+  rz.addEventListener("mousedown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const startX = ev.clientX;
+    const startY = ev.clientY;
+    const rect = box.getBoundingClientRect();
+    const startW = rect.width;
+    const startH = rect.height;
+    const onMove = (e) => {
+      const nw = Math.max(560, Math.min(window.innerWidth - 24, startW + (e.clientX - startX)));
+      const nh = Math.max(420, Math.min(window.innerHeight - 24, startH + (e.clientY - startY)));
+      box.style.width = nw + "px";
+      box.style.height = nh + "px";
+      _yamlViewerState.w = nw;
+      _yamlViewerState.h = nh;
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+
+  return host;
+}
+
+function applyYamlViewerChrome() {
+  const host = document.getElementById("yamlViewerDlg");
+  if (!host) return;
+  const outline = host.querySelector("#yamlViewerOutline");
+  const code = host.querySelector("#yamlViewerCode");
+  const ob = host.querySelector("#yamlViewerOutlineBtn");
+  const wb = host.querySelector("#yamlViewerWrapBtn");
+  if (outline) outline.style.display = _yamlViewerState.outline ? "" : "none";
+  if (code) code.classList.toggle("wrap", !!_yamlViewerState.wrap);
+  if (ob) {
+    ob.textContent = I18n.t("大纲");
+    ob.classList.toggle("on", !!_yamlViewerState.outline);
+    ob.title = _yamlViewerState.outline
+      ? I18n.t("隐藏大纲")
+      : I18n.t("显示大纲");
+  }
+  if (wb) {
+    wb.textContent = I18n.t("换行");
+    wb.classList.toggle("on", !!_yamlViewerState.wrap);
+    wb.title = _yamlViewerState.wrap
+      ? I18n.t("取消自动换行")
+      : I18n.t("自动换行");
+  }
+  const rb = host.querySelector("#yamlViewerReloadBtn");
+  if (rb) {
+    rb.textContent = I18n.t("刷新");
+    rb.title = I18n.t("重新加载文件");
+  }
+  const cb = host.querySelector("#yamlViewerCopyBtn");
+  if (cb) {
+    cb.textContent = I18n.t("复制");
+    cb.title = I18n.t("复制全文");
+  }
+  const rv = host.querySelector("#yamlViewerRevealBtn");
+  if (rv) {
+    rv.textContent = I18n.t("位置");
+    rv.title = I18n.t("在文件夹中显示");
+  }
+}
+
+function renderYamlViewerContent(text) {
+  const host = ensureYamlViewer();
+  const body = host.querySelector("#yamlViewerBody");
+  const list = host.querySelector("#yamlViewerOutlineList");
+  const meta = host.querySelector("#yamlViewerMeta");
+  body.innerHTML = "";
+  list.innerHTML = "";
+
+  const raw = String(text ?? "");
+  const lines = raw.replace(/\r\n?/g, "\n").split("\n");
+  const pre = document.createElement("pre");
+  pre.className = "yaml-viewer-code" + (_yamlViewerState.wrap ? " wrap" : "");
+  pre.id = "yamlViewerCode";
+  pre.dataset.raw = raw;
+
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < lines.length; i++) {
+    const row = document.createElement("div");
+    row.className = "yaml-line";
+    row.id = "yaml-line-" + (i + 1);
+    const ln = document.createElement("span");
+    ln.className = "yaml-ln";
+    ln.textContent = String(i + 1);
+    const lt = document.createElement("span");
+    lt.className = "yaml-lt";
+    lt.innerHTML = highlightYamlLine(lines[i]);
+    row.appendChild(ln);
+    row.appendChild(lt);
+    frag.appendChild(row);
+  }
+  pre.appendChild(frag);
+  body.appendChild(pre);
+
+  const outline = buildYamlOutline(raw);
+  outline.forEach((it) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "yaml-outline-item depth-" + it.depth;
+    b.textContent = it.label;
+    b.title = I18n.t("行号") + " " + it.line;
+    b.onclick = () => {
+      const el = document.getElementById("yaml-line-" + it.line);
+      if (!el) return;
+      body.querySelectorAll(".yaml-line.hl").forEach((n) => n.classList.remove("hl"));
+      el.classList.add("hl");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    };
+    list.appendChild(b);
+  });
+  if (!outline.length) {
+    const empty = document.createElement("div");
+    empty.className = "yaml-viewer-empty";
+    empty.style.padding = "12px";
+    empty.style.fontSize = "12px";
+    empty.textContent = I18n.t("无大纲条目");
+    list.appendChild(empty);
+  }
+
+  const bytes = new Blob([raw]).size;
+  meta.textContent =
+    lines.length +
+    I18n.t(" 行") +
+    " · " +
+    bytes +
+    " B" +
+    (outline.length ? " · " + outline.length + I18n.t(" 个键") : "");
+  applyYamlViewerChrome();
+}
+
+async function openYamlViewer(filePath, opts) {
+  opts = opts || {};
+  const resolved = resolveOpenableFilePath(filePath);
+  if (!resolved) {
+    toast(I18n.t("无法打开路径"), "warn");
+    return;
+  }
+  if (!window.api || !window.api.fileReadText) {
+    toast(I18n.t("无法打开路径"), "warn");
+    return;
+  }
+  const host = ensureYamlViewer();
+  const box = host.querySelector("#yamlViewerBox");
+  if (_yamlViewerState.w > 0 && _yamlViewerState.h > 0) {
+    box.style.width = _yamlViewerState.w + "px";
+    box.style.height = _yamlViewerState.h + "px";
+  }
+  _yamlViewerState.path = resolved;
+  host.querySelector("#yamlViewerTitle").textContent = fileName(resolved) || "YAML";
+  host.querySelector("#yamlViewerPath").textContent = resolved;
+  host.querySelector("#yamlViewerPath").title = resolved;
+
+  const body = host.querySelector("#yamlViewerBody");
+  body.innerHTML =
+    '<div class="yaml-viewer-empty">' + I18n.t("加载中…") + "</div>";
+  host.classList.add("on");
+  applyYamlViewerChrome();
+
+  try {
+    const rr = await window.api.fileReadText(resolved);
+    if (!rr || !rr.exists) {
+      body.innerHTML =
+        '<div class="yaml-viewer-empty">' +
+        I18n.t("文件不存在或无法预览") +
+        "</div>";
+      host.querySelector("#yamlViewerMeta").textContent = "";
+      return;
+    }
+    renderYamlViewerContent(rr.content || "");
+  } catch (e) {
+    body.innerHTML =
+      '<div class="yaml-viewer-empty">' +
+      escapeHtml(I18n.t("无法打开路径：") + ((e && e.message) || e)) +
+      "</div>";
+  }
+}
+
+function bindYamlViewerIpc() {
+  if (document.documentElement._mtYamlViewerBound) return;
+  document.documentElement._mtYamlViewerBound = true;
+  if (window.api && typeof window.api.onYamlViewerOpen === "function") {
+    window.api.onYamlViewerOpen((data) => {
+      const p = data && data.path;
+      if (p) openYamlViewer(p);
+    });
+  }
+}
+
 async function openContentRef(href, kind) {
   const raw = htmlUnescape(String(href || "").trim());
   if (!raw) return;
@@ -23445,6 +25222,10 @@ async function openContentRef(href, kind) {
   if (kind === "file" || /^file:/i.test(raw)) path = fileUrlToPath(raw);
   path = String(path || "").trim();
   if (!path) return;
+  if (isYamlFilePath(path)) {
+    await openYamlViewer(path);
+    return;
+  }
   try {
     if (window.api && window.api.openInAppDialog) {
       const r = await window.api.openInAppDialog({ kind: "path", target: path });
@@ -23882,18 +25663,60 @@ function thinkingTextOf(node) {
   if (!node || !S.thinking || !S.thinking[node.id]) return "";
   return S.thinking[node.id][attemptIdx(node)] || "";
 }
-/* 对话节点：聊天列表滚动到底部（新消息 / 思考流式时保持最新） */
-function scrollChatToBottom(node) {
+/* 对话 / 会话列表：仅在已贴底（或强制）时自动滚到底，避免运行中上翻历史被拽回 */
+const CONV_SCROLL_SLACK = 56;
+function isScrollNearBottom(el, slack) {
+  if (!el) return true;
+  const s = slack == null ? CONV_SCROLL_SLACK : slack;
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - s;
+}
+function scrollElToBottomIfStuck(el, force) {
+  if (!el) return;
+  if (force || isScrollNearBottom(el)) el.scrollTop = el.scrollHeight;
+}
+function captureConvStick(el, force) {
+  if (!el) return { stick: true, top: 0 };
+  return {
+    stick: !!(force || isScrollNearBottom(el)),
+    top: el.scrollTop,
+  };
+}
+function restoreConvStick(el, cap) {
+  if (!el || !cap) return;
+  if (cap.stick) el.scrollTop = el.scrollHeight;
+  else el.scrollTop = cap.top;
+}
+
+/* 对话节点：聊天列表滚动到底部（新消息 / 思考流式时保持最新；上翻时不强制） */
+function scrollChatToBottom(node, force) {
   const list = document.querySelector(
     '.wf-node[data-nid="' + node.id + '"] .chat-list',
   );
-  if (list) list.scrollTop = list.scrollHeight;
+  if (!list) return;
+  if (force) {
+    node._chatNearBottom = true;
+    list.scrollTop = list.scrollHeight;
+    return;
+  }
+  if (node._chatNearBottom === false) {
+    if (node._chatScrollTop != null) list.scrollTop = node._chatScrollTop;
+    return;
+  }
+  scrollElToBottomIfStuck(list);
 }
 /* 智能任务节点：会话列表（与智能会话同款：用户输入 + agent 输出 / 思考 / 工具） */
 function agentConvListEl(node) {
   const conv = document.createElement("div");
   conv.className = "agent-conv";
   conv.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  conv.addEventListener(
+    "scroll",
+    () => {
+      node._convNearBottom = isScrollNearBottom(conv);
+      node._convScrollTop = conv.scrollTop;
+    },
+    { passive: true },
+  );
   const msgs = Array.isArray(node.messages) ? node.messages : [];
   if (!msgs.length && !node.running) {
     const h = document.createElement("div");
@@ -23946,11 +25769,21 @@ function agentConvListEl(node) {
   scheduleHistoryCollapse(conv);
   return conv;
 }
-function scrollAgentConv(node) {
+function scrollAgentConv(node, force) {
   const list = document.querySelector(
     '.wf-node[data-nid="' + node.id + '"] .agent-conv',
   );
-  if (list) list.scrollTop = list.scrollHeight;
+  if (!list) return;
+  if (force) {
+    node._convNearBottom = true;
+    list.scrollTop = list.scrollHeight;
+    return;
+  }
+  if (node._convNearBottom === false) {
+    if (node._convScrollTop != null) list.scrollTop = node._convScrollTop;
+    return;
+  }
+  scrollElToBottomIfStuck(list);
 }
 /* 顶部中间竖向拖拽把手：调整框体上下高度（高度存于 node[key]，随工作流持久化） */
 function vResizeHandleEl(node, key, minH, maxH) {
@@ -25571,15 +27404,15 @@ async function playJudgeNode(node, quiet) {
       }
       const bits = [];
       const seen = new Set();
-      const addBit = (src) => {
+      const addBit = (src, w) => {
         if (!src || seen.has(src.id)) return;
         seen.add(src.id);
-        const v = valueForInput(src, 0);
+        const v = w ? valueFromWire(w, node, 0) : valueForInput(src, 0, node);
         if (v && v.kind === "text" && v.text)
           bits.push("### " + (src.title || "") + "\n" + String(v.text).slice(0, 4000));
       };
-      for (const w of wiresTo(node.id)) addBit(nodeById(w.from));
-      for (const src of globalRefSources(node.id)) addBit(src);
+      for (const w of wiresTo(node.id)) addBit(nodeById(w.from), w);
+      for (const src of globalRefSources(node.id)) addBit(src, null);
       const prov = pickTextProviderForJudge(node);
       if (!prov) {
         node.error = I18n.t("未配置带 API Key 的文本服务商");
@@ -27880,6 +29713,7 @@ const TPL_ST = {
   official: false,
   skillName: "",
   skillText: "",
+  skillExtras: [],
   fileBase64: "",
   fileHint: "",
   previewBase64: "",
@@ -27905,13 +29739,13 @@ function setTplAuth(a) {
   window.api.configSave(S.config).catch(() => {});
 }
 const TPL_MAX_BYTES = 10 * 1024 * 1024;
-const SKILL_MAX_BYTES = 1 * 1024 * 1024;
+const SKILL_MAX_BYTES = 200 * 1024;
 function tplTooLarge(bytes) {
   const max = tplIsSkill() ? SKILL_MAX_BYTES : TPL_MAX_BYTES;
   if (bytes == null || !(bytes > max)) return false;
   toast(
     (tplIsSkill()
-      ? I18n.t("技能不能超过 1MB（当前 ")
+      ? I18n.t("每个文件不能超过 200KB（当前 ")
       : I18n.t("模板不能超过 10MB（当前 ")) +
       fmtBytes(bytes) +
       "）",
@@ -27966,12 +29800,14 @@ function tplResetDraft() {
   TPL_ST.official = false;
   TPL_ST.skillName = "";
   TPL_ST.skillText = "";
+  TPL_ST.skillExtras = [];
   TPL_ST.fileBase64 = "";
   TPL_ST.fileHint = "";
   TPL_ST.previewBase64 = "";
   TPL_ST.previewThumbBase64 = "";
   TPL_ST.previewHint = "";
   TPL_ST._clearPreview = false;
+  TPL_ST._extrasTouched = false;
 }
 
 function parseSkillFrontmatterClient(text) {
@@ -28547,11 +30383,19 @@ async function openTemplateStore() {
           return;
         }
       }
+      const extras = Array.isArray(r.data.extras)
+        ? r.data.extras.map((f) => ({
+            path: f.path,
+            base64: f.base64,
+            bytes: f.bytes || 0,
+          }))
+        : [];
       const rr = await window.api.skillAdd({
         name: skillName,
         description: item.description || "",
         body: text,
         overwrite: updating,
+        files: extras,
         storeMeta: {
           storeId: item.id,
           version: item.version || r.data.version || "1.0.0",
@@ -28760,6 +30604,9 @@ async function openTemplateStore() {
     if (item.skillName) bits.push(item.skillName);
     if (owner) bits.push(owner);
     if (item.bytes) bits.push(fmtBytes(item.bytes));
+    if (item.files && item.files.length > 1) {
+      bits.push("+" + (item.files.length - 1) + I18n.t(" 个附件"));
+    }
     bits.push("↓" + (item.downloads || 0));
     bits.push("♥" + (item.likes || 0));
     meta.textContent = bits.join(" · ");
@@ -28852,6 +30699,7 @@ async function openTemplateStore() {
           TPL_ST.official = !!item.official;
           TPL_ST.skillName = item.skillName || "";
           TPL_ST.skillText = "";
+          TPL_ST.skillExtras = [];
           TPL_ST.fileBase64 = "";
           TPL_ST.fileHint = "";
           TPL_ST.previewBase64 = "";
@@ -28869,9 +30717,19 @@ async function openTemplateStore() {
                 return;
               }
               applySkillDraftFromText(r.data.text || "", { fillMeta: false });
+              TPL_ST.skillExtras = Array.isArray(r.data.extras)
+                ? r.data.extras.map((f) => ({
+                    path: f.path,
+                    base64: f.base64,
+                    bytes: f.bytes || 0,
+                  }))
+                : [];
               TPL_ST.fileHint =
                 I18n.t("已加载工坊正文") +
                 (item.version ? " · v" + item.version : "") +
+                (TPL_ST.skillExtras.length
+                  ? " · +" + TPL_ST.skillExtras.length + I18n.t(" 个附件")
+                  : "") +
                 " · " +
                 fmtBytes(r.data.bytes || 0);
               if (TPL_ST.tab === "upload" && tplIsSkill()) paint();
@@ -29280,7 +31138,7 @@ async function openTemplateStore() {
 
     const fileLab = document.createElement("label");
     if (tplIsSkill()) {
-      fileLab.textContent = "SKILL.md（" + I18n.t("最大 1MB") + "）";
+      fileLab.textContent = "SKILL.md（" + I18n.t("每个文件 ≤200KB") + "）";
       fileLab.appendChild(
         hintEl(
           TPL_ST.editId
@@ -29361,6 +31219,13 @@ async function openTemplateStore() {
                     return;
                   }
                   applySkillDraftFromText(g.body);
+                  TPL_ST.skillExtras = Array.isArray(g.files)
+                    ? g.files.map((f) => ({
+                        path: f.path,
+                        base64: f.base64,
+                        bytes: f.bytes || 0,
+                      }))
+                    : [];
                   if (TPL_ST.editId) {
                     TPL_ST.version = bumpSkillVersion(TPL_ST.version || "1.0.0");
                   }
@@ -29368,6 +31233,9 @@ async function openTemplateStore() {
                     I18n.t("已载入本机技能") +
                     " · " +
                     s.name +
+                    (TPL_ST.skillExtras.length
+                      ? " · +" + TPL_ST.skillExtras.length + I18n.t(" 个附件")
+                      : "") +
                     " · " +
                     fmtBytes(new TextEncoder().encode(TPL_ST.skillText).length);
                   closeTplSubOverlay();
@@ -29412,6 +31280,65 @@ async function openTemplateStore() {
       );
       fileLab.appendChild(fileRow);
       fileLab.appendChild(fileHint);
+
+      const extrasLab = document.createElement("div");
+      extrasLab.style.marginTop = "10px";
+      extrasLab.textContent =
+        I18n.t("附加文件（可选，如 schemas.md；每个 ≤200KB）");
+      const extrasHint = hintEl(
+        (TPL_ST.skillExtras || []).length
+          ? I18n.t("已选 ") +
+              TPL_ST.skillExtras.length +
+              I18n.t(" 个附件") +
+              " · " +
+              TPL_ST.skillExtras.map((f) => f.path).join(", ")
+          : I18n.t("未选择附件"),
+      );
+      const extrasRow = document.createElement("div");
+      extrasRow.className = "dsh-btn-row";
+      extrasRow.appendChild(
+        mkMiniBtn(I18n.t("添加附件…"), async () => {
+          const r = await window.api.storePickSkillFiles();
+          if (!r || !r.ok) {
+            if (r && r.error !== I18n.t("已取消")) toast(tplErr(r), "err");
+            return;
+          }
+          const next = (TPL_ST.skillExtras || []).slice();
+          for (const f of r.files || []) {
+            if (tplTooLarge(f.bytes)) return;
+            const i = next.findIndex(
+              (x) => String(x.path).toLowerCase() === String(f.path).toLowerCase(),
+            );
+            if (i >= 0) next[i] = f;
+            else {
+              if (next.length >= 32) {
+                toast(I18n.t("附加文件不能超过 32 个"), "warn");
+                break;
+              }
+              next.push(f);
+            }
+          }
+          TPL_ST.skillExtras = next;
+          TPL_ST._extrasTouched = true;
+          extrasHint.textContent =
+            I18n.t("已选 ") +
+            next.length +
+            I18n.t(" 个附件") +
+            " · " +
+            next.map((f) => f.path).join(", ");
+        }),
+      );
+      extrasRow.appendChild(
+        mkMiniBtn(I18n.t("清除附件"), () => {
+          TPL_ST.skillExtras = [];
+          TPL_ST._extrasTouched = true;
+          extrasHint.textContent = I18n.t("未选择附件");
+        }),
+      );
+      fileLab.appendChild(extrasLab);
+      fileLab.appendChild(extrasRow);
+      fileLab.appendChild(extrasHint);
+
       const bodyLab = document.createElement("div");
       bodyLab.style.marginTop = "8px";
       bodyLab.textContent = I18n.t("技能正文（可在此直接修改）");
@@ -29581,6 +31508,12 @@ async function openTemplateStore() {
             payload.version = (TPL_ST.version || "1.0.0").trim();
             const auth = tplAuth();
             if (auth && auth.isAdmin) payload.official = !!TPL_ST.official;
+            if (!TPL_ST.editId || replacingFile || TPL_ST._extrasTouched) {
+              payload.files = (TPL_ST.skillExtras || []).map((f) => ({
+                path: f.path,
+                base64: f.base64,
+              }));
+            }
           }
           if (TPL_ST.fileBase64) {
             if (tplIsSkill()) {
@@ -29610,6 +31543,7 @@ async function openTemplateStore() {
           const editId = TPL_ST.editId;
           const skillNameSnap = TPL_ST.skillName;
           const skillTextSnap = TPL_ST.skillText;
+          const skillExtrasSnap = (TPL_ST.skillExtras || []).slice();
           const versionSnap = payload.version;
           const r = editId
             ? await tplApi("PATCH", tplApiBase() + "/" + encodeURIComponent(editId), payload)
@@ -29622,7 +31556,7 @@ async function openTemplateStore() {
             tplIsSkill() &&
             skillNameSnap &&
             skillTextSnap &&
-            (replacingFile || !editId)
+            (replacingFile || !editId || payload.files)
           ) {
             const local = findLocalSkill(skillNameSnap);
             if (local && !local.builtin) {
@@ -29632,6 +31566,7 @@ async function openTemplateStore() {
                   description: TPL_ST.description || "",
                   body: skillTextSnap,
                   overwrite: true,
+                  files: skillExtrasSnap,
                   storeMeta: {
                     storeId: (r.data && r.data.item && r.data.item.id) || editId,
                     version: versionSnap || "1.0.0",
@@ -33251,32 +35186,48 @@ async function assistAppSnapshot() {
       preset: (S.config && S.config.dsh && S.config.dsh.preset) || "",
       permissionPreset:
         (S.config && S.config.dsh && S.config.dsh.permissionPreset) || "",
+      assistAutoApprove: !!(
+        S.config &&
+        S.config.dsh &&
+        S.config.dsh.assistAutoApprove
+      ),
       agentToolPresetId:
         (S.config && S.config.dsh && S.config.dsh.agentToolPresetId) ||
         "default",
       agentTools: agentToolPresetStatusText(),
     },
     agentSessionCount: agentSessions().length,
-    tools: {
-      safe: [
-        agentToolAllowed("canvas_read") ? "mtnode_canvas_get" : null,
-        agentToolAllowed("app_ops") ? safeApp : null,
-      ].filter(Boolean),
-      confirm: [
+    tools: (() => {
+      const assistAuto = !!(
+        S.config &&
+        S.config.dsh &&
+        S.config.dsh.assistAutoApprove
+      );
+      const canEdit =
         agentToolAllowed("canvas_nodes") ||
         agentToolAllowed("canvas_control") ||
         agentToolAllowed("canvas_draw") ||
-        agentToolAllowed("canvas_layout")
-          ? "mtnode_canvas_edit"
-          : null,
-        ...confirmApp,
-        agentToolAllowed("vision") ? "mtnode_vision（首次许可）" : null,
-      ].filter(Boolean),
-      denied: agentToolCatalog()
-        .flatMap((c) => c.items)
-        .filter((it) => !agentToolAllowed(it.key))
-        .map((it) => it.key),
-    },
+        agentToolAllowed("canvas_layout") ||
+        agentToolAllowed("canvas_super");
+      return {
+        safe: [
+          agentToolAllowed("canvas_read") ? "mtnode_canvas_get" : null,
+          agentToolAllowed("app_ops") ? safeApp : null,
+          assistAuto && canEdit
+            ? "mtnode_canvas_edit（助手改画布已批准，直接生效）"
+            : null,
+        ].filter(Boolean),
+        confirm: [
+          !assistAuto && canEdit ? "mtnode_canvas_edit" : null,
+          ...confirmApp,
+          agentToolAllowed("vision") ? "mtnode_vision（首次许可）" : null,
+        ].filter(Boolean),
+        denied: agentToolCatalog()
+          .flatMap((c) => c.items)
+          .filter((it) => !agentToolAllowed(it.key))
+          .map((it) => it.key),
+      };
+    })(),
   };
 }
 
@@ -33597,9 +35548,10 @@ function updateAssistScopeChrome() {
   }
 }
 
-function renderAssistPanel() {
+function renderAssistPanel(opts) {
   const list = $("#assistList");
   if (!list) return;
+  const stickCap = captureConvStick(list, opts && opts.forceStick);
   list.innerHTML = "";
   const msgs = S.assistMessages || [];
   const scopeCurrent = assistScopeIsCurrent();
@@ -33669,7 +35621,10 @@ function renderAssistPanel() {
   fillAssistScopeControl();
   updateAssistScopeChrome();
   fillAssistModelControls();
-  list.scrollTop = list.scrollHeight;
+  restoreConvStick(list, stickCap);
+  if (stickCap.stick && typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => restoreConvStick(list, stickCap));
+  }
 }
 
 function clearAssistChat() {
@@ -33683,7 +35638,7 @@ function clearAssistChat() {
   S.assistRunActive = false;
   if (S.thinking) delete S.thinking.assist;
   persistAssistUi();
-  renderAssistPanel();
+  renderAssistPanel({ forceStick: true });
   toast(I18n.t("助手会话已清空"), "ok");
 }
 
@@ -33711,7 +35666,7 @@ async function assistSend(text) {
   if (!S.thinking) S.thinking = {};
   S.thinking.assist = [""];
   persistAssistUi();
-  renderAssistPanel();
+  renderAssistPanel({ forceStick: true });
   updateRunQueuePanel();
 
   const stateJson = JSON.stringify(await assistAppSnapshot(), null, 2).slice(0, 14000);
@@ -33723,6 +35678,14 @@ async function assistSend(text) {
   const scopeCurrent = assistScopeIsCurrent();
   const wfName =
     (S.wf && S.wf.name) || I18n.t("未命名画布");
+  const assistAuto = !!(
+    S.config &&
+    S.config.dsh &&
+    S.config.dsh.assistAutoApprove
+  );
+  const canvasEditRule = assistAuto
+    ? "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；当前「助手改画布」为批准，调用会直接生效。\n"
+    : "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。若用户拒绝：用文字说明已完成的文件/步骤与未完成项，不要静默结束。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
@@ -33737,7 +35700,7 @@ async function assistSend(text) {
   const systemPrompt =
     "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n" +
     scopeBlock +
-    "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。\n" +
+    canvasEditRule +
     "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
     "  · 可改节点模型：update/create 传 model；文本/图像/对话节点用 providerId（服务商 id 或唯一名称），智能任务用 provider（deepseek-official 或 mtnode_<id>/名称）。\n" +
     "  · 图像参考节点 kind 必须是 input_image；用 imagePath（本机绝对路径）写入图片，应用会复制进画布资产，不要让用户再拖拽。\n" +
@@ -33760,6 +35723,9 @@ async function assistSend(text) {
     stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
+  const assistMaxTok =
+    Number((S.config && S.config.dsh && S.config.dsh.maxTokens) || 0) || 98304;
+  let assistHitMaxTokens = false;
   try {
     const final = await dshRunTask(input, {
       workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
@@ -33768,6 +35734,17 @@ async function assistSend(text) {
       model: S.assistModel || undefined,
       effort: S.assistEffort || "high",
       systemPrompt,
+      onDone: (d) => {
+        const m = d && d.metrics;
+        if (m) {
+          recordDshMetrics(null, m);
+          const cap = Number(m.maxTokens) || assistMaxTok;
+          const used =
+            (Number(m.outputTokens) || 0) + (Number(m.reasoningTokens) || 0);
+          if (cap > 0 && used >= Math.floor(cap * 0.95))
+            assistHitMaxTokens = true;
+        }
+      },
       onEvent: (type, data) => {
         if (type === "reasoning" && data && data.text) {
           pushThinking("assist", 0, data.text);
@@ -33802,8 +35779,7 @@ async function assistSend(text) {
           S.assistPending = (S.assistPending || "") + data.text;
           const el = document.getElementById("assist-stream");
           if (el) el.textContent = S.assistPending;
-          const list = $("#assistList");
-          if (list) list.scrollTop = list.scrollHeight;
+          scrollElToBottomIfStuck($("#assistList"));
         } else if (type === "error" && data && data.message) {
           if (S.assistStopRequested || isCancelishError(data.message)) return;
           const errLine = "\n⚠ " + data.message;
@@ -33811,8 +35787,7 @@ async function assistSend(text) {
           pushThinking("assist", 0, errLine + "\n");
           const el = document.getElementById("assist-stream");
           if (el) el.textContent = S.assistPending;
-          const list = $("#assistList");
-          if (list) list.scrollTop = list.scrollHeight;
+          scrollElToBottomIfStuck($("#assistList"));
         }
       },
     });
@@ -33824,13 +35799,24 @@ async function assistSend(text) {
         at: Date.now(),
       });
     } else {
-      const body =
+      let body =
         (typeof final === "string" ? final : final && final.text) ||
         S.assistPending ||
         I18n.t("（已完成，无文本输出）");
+      body = stripStreamErrors(body) || body;
+      if (assistHitMaxTokens) {
+        const note = I18n.t(
+          "\n\n⚠ 本次输出已接近单次 maxTokens 上限，可能因此提前结束。可回复「继续」接着做，或在设置里提高智能能力的 maxTokens。",
+        );
+        if (!String(body).includes("maxTokens")) body = String(body || "") + note;
+        toast(
+          I18n.t("全局助手可能因输出 token 上限提前结束，可回复「继续」"),
+          "warn",
+        );
+      }
       const msg = {
         role: "assistant",
-        content: stripStreamErrors(body) || body,
+        content: body,
         at: Date.now(),
       };
       const rsn =
@@ -34494,10 +36480,11 @@ function dshMsgBlock(m, nodeId, idx) {
   return row;
 }
 
-function renderAgentSession() {
+function renderAgentSession(opts) {
   const st = agentSessionState();
   const list = $("#agentList");
   if (!list) return;
+  const stickCap = captureConvStick(list, opts && opts.forceStick);
   const live = liveNodeForSession(st);
   const running = !!(st.running || live);
   list.innerHTML = "";
@@ -34549,7 +36536,10 @@ function renderAgentSession() {
     list.appendChild(row);
   }
   scheduleHistoryCollapse(list);
-  list.scrollTop = list.scrollHeight;
+  restoreConvStick(list, stickCap);
+  if (stickCap.stick && typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => restoreConvStick(list, stickCap));
+  }
   const ws = $("#agentWsInput");
   if (ws && document.activeElement !== ws) ws.value = st.workspace || "";
   const chatEnterSend = !S.config.dsh || S.config.dsh.chatEnter !== "newline";
@@ -34896,7 +36886,7 @@ async function agentSessionSend(text) {
   if (!S.thinking) S.thinking = {};
   S.thinking.agentSession = [""];
   await persistAgentSession();
-  renderAgentSession();
+  renderAgentSession({ forceStick: true });
   const hist = st.messages
     .slice(0, -1)
     .slice(-20)
@@ -34910,7 +36900,9 @@ async function agentSessionSend(text) {
   const systemPrompt =
     "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
     "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
-    "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝，本次任务会立即停止，不要再继续改画布。\n" +
+    (!!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove)
+      ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
+      : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
     "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
     "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
   try {
@@ -34958,8 +36950,7 @@ async function agentSessionSend(text) {
           st._pending = (st._pending || "") + data.text;
           const el = document.getElementById("agent-stream");
           if (el) el.textContent = st._pending;
-          const list = $("#agentList");
-          if (list) list.scrollTop = list.scrollHeight;
+          scrollElToBottomIfStuck($("#agentList"));
         } else if (type === "error" && data && data.message) {
           if (st._cancelled || isCancelishError(data.message)) return;
           const errLine = "\n⚠ " + data.message;
@@ -34967,8 +36958,7 @@ async function agentSessionSend(text) {
           pushThinking("agentSession", 0, errLine + "\n");
           const el = document.getElementById("agent-stream");
           if (el) el.textContent = st._pending;
-          const list = $("#agentList");
-          if (list) list.scrollTop = list.scrollHeight;
+          scrollElToBottomIfStuck($("#agentList"));
         }
       },
       onDone: (d) => {
@@ -35351,7 +37341,7 @@ async function init() {
       enabled: true,
       nodePath: "",
       model: "deepseek-v4-flash",
-      maxTokens: 49152,
+      maxTokens: 98304,
       defaultWorkspace: "",
       preset: "standard",
       chatEnter: "send",
@@ -35363,6 +37353,8 @@ async function init() {
     },
     S.config.dsh || {},
   );
+  /* 旧默认 49152 易在长任务中途触顶，表现为「突然中断」；升级到新默认 */
+  if (Number(S.config.dsh.maxTokens) === 49152) S.config.dsh.maxTokens = 98304;
   ensureAgentToolPresets();
   applyTheme((S.config.dsh && S.config.dsh.theme) || "industrial");
   /* 已访问画布(画布 Tab 条),持久化于配置 */
@@ -35471,6 +37463,8 @@ async function init() {
   const btnCanvasShot = $("#btnCanvasShot");
   if (btnCanvasShot) btnCanvasShot.onclick = () => exportCanvasOverviewPng();
   $("#btnGroup").onclick = toggleGroupAction;
+  const btnWrapSuper = $("#btnWrapSuper");
+  if (btnWrapSuper) btnWrapSuper.onclick = () => wrapSelectionAsSuper();
   const btnAutoLayout = $("#btnAutoLayout");
   if (btnAutoLayout) btnAutoLayout.onclick = () => oneClickAutoLayout();
   $("#btnSidebar").onclick = toggleSidebar;
@@ -35620,6 +37614,7 @@ async function init() {
     applyAssistWidth(S.assistW, false);
     bindAssistResize();
     bindOpenableContentClicks();
+    bindYamlViewerIpc();
     setAssistLive2d(false, false); /* Live2D 入口已隐藏，占位默认关闭 */
     const aBtn = $("#btnAssist");
     if (aBtn) aBtn.onclick = toggleAssist;

@@ -28,7 +28,9 @@ const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || "127.0.0.1";
 const MAX_BODY = 40 * 1024 * 1024;
 const MAX_TEMPLATE = 10 * 1024 * 1024;
-const MAX_SKILL = 1 * 1024 * 1024;
+const MAX_SKILL = 200 * 1024;
+const MAX_SKILL_FILE = 200 * 1024;
+const MAX_SKILL_EXTRA_FILES = 32;
 const MAX_PREVIEW = 500 * 1024;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
 const MAGIC = Buffer.from("MTNODES", "ascii");
@@ -159,6 +161,7 @@ function publicSkill(s, viewer) {
     downloads: s.downloads || 0,
     likes: s.likes || 0,
     bytes: s.bytes || 0,
+    files: Array.isArray(s.files) ? s.files : [],
     hasPreview: !!s.hasPreview,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
@@ -348,13 +351,176 @@ function normalizeVersion(v, fallback) {
   return s;
 }
 
-function skillFilePath(id) {
+function skillLegacyMdPath(id) {
   return path.join(SKILL_DIR, id + ".md");
+}
+
+function skillBundleDir(id) {
+  return path.join(SKILL_DIR, id);
+}
+
+function skillMdPath(id) {
+  const dirMd = path.join(skillBundleDir(id), "SKILL.md");
+  if (fs.existsSync(dirMd)) return dirMd;
+  const legacy = skillLegacyMdPath(id);
+  if (fs.existsSync(legacy)) return legacy;
+  return dirMd;
+}
+
+function normalizeSkillRelPath(raw) {
+  let p = String(raw || "").trim().replace(/\\/g, "/");
+  if (!p) throw new Error("空文件路径");
+  if (p.startsWith("/") || /^[A-Za-z]:/.test(p)) throw new Error("禁止绝对路径：" + p);
+  p = p.replace(/^\.\//, "");
+  const parts = p.split("/").filter(Boolean);
+  if (!parts.length || parts.length > 4) throw new Error("路径过深或不合法：" + p);
+  for (const part of parts) {
+    if (part === "." || part === "..") throw new Error("非法路径：" + p);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(part)) {
+      throw new Error("文件名不合法：" + p);
+    }
+  }
+  const out = parts.join("/");
+  if (out.toLowerCase() === "skill.md") {
+    throw new Error("附加文件不要使用 SKILL.md（正文请用 fileBase64）");
+  }
+  return out;
+}
+
+function decodeSkillExtraFiles(input) {
+  if (input == null) return null;
+  if (!Array.isArray(input)) throw new Error("files 须为数组");
+  if (input.length > MAX_SKILL_EXTRA_FILES) {
+    throw new Error("附加文件不能超过 " + MAX_SKILL_EXTRA_FILES + " 个");
+  }
+  const out = [];
+  const seen = new Set();
+  for (const item of input) {
+    const rel = normalizeSkillRelPath(item && (item.path || item.name));
+    const key = rel.toLowerCase();
+    if (seen.has(key)) throw new Error("重复文件：" + rel);
+    seen.add(key);
+    let buf;
+    try {
+      buf = decodeUtf8Base64(item.base64 != null ? item.base64 : item.fileBase64);
+    } catch (e) {
+      // allow binary extras (schemas may be utf8; images rare) — fall back raw base64
+      try {
+        const s = String((item && item.base64) || "").trim().replace(/\s+/g, "");
+        buf = Buffer.from(s, "base64");
+        if (!buf.length) throw new Error("empty");
+      } catch (e2) {
+        throw new Error("文件 " + rel + " 无效：" + (e.message || e));
+      }
+    }
+    if (buf.length > MAX_SKILL_FILE) {
+      throw new Error("文件 " + rel + " 超过 200KB");
+    }
+    out.push({ path: rel, buf });
+  }
+  return out;
+}
+
+function ensureSkillBundle(id) {
+  const dir = skillBundleDir(id);
+  mkdirp(dir);
+  const legacy = skillLegacyMdPath(id);
+  const dest = path.join(dir, "SKILL.md");
+  if (fs.existsSync(legacy) && !fs.existsSync(dest)) {
+    fs.renameSync(legacy, dest);
+  }
+  return dir;
+}
+
+function writeSkillBundle(id, mdBuf, extras) {
+  const dir = ensureSkillBundle(id);
+  fs.writeFileSync(path.join(dir, "SKILL.md"), mdBuf);
+  // replace extras: remove previous non-md files when extras provided
+  if (extras) {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (ent.name === "SKILL.md") continue;
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        fs.rmSync(p, { recursive: true, force: true });
+      } else {
+        try {
+          fs.unlinkSync(p);
+        } catch {}
+      }
+    }
+    for (const f of extras) {
+      const dest = path.join(dir, f.path);
+      mkdirp(path.dirname(dest));
+      fs.writeFileSync(dest, f.buf);
+    }
+  }
+  return listSkillBundleFiles(id);
+}
+
+function listSkillBundleFiles(id) {
+  const dir = skillBundleDir(id);
+  const legacy = skillLegacyMdPath(id);
+  const files = [];
+  let total = 0;
+  if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+    const walk = (base, prefix) => {
+      for (const ent of fs.readdirSync(base, { withFileTypes: true })) {
+        if (ent.name.startsWith(".")) continue;
+        const rel = prefix ? prefix + "/" + ent.name : ent.name;
+        const full = path.join(base, ent.name);
+        if (ent.isDirectory()) walk(full, rel);
+        else {
+          const st = fs.statSync(full);
+          files.push({ path: rel.replace(/\\/g, "/"), bytes: st.size });
+          total += st.size;
+        }
+      }
+    };
+    walk(dir, "");
+  } else if (fs.existsSync(legacy)) {
+    const st = fs.statSync(legacy);
+    files.push({ path: "SKILL.md", bytes: st.size });
+    total = st.size;
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { files, bytes: total };
+}
+
+function readSkillBundle(id) {
+  const mdPath = skillMdPath(id);
+  if (!fs.existsSync(mdPath)) return null;
+  const mdBuf = fs.readFileSync(mdPath);
+  const extras = [];
+  const dir = skillBundleDir(id);
+  if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+    const walk = (base, prefix) => {
+      for (const ent of fs.readdirSync(base, { withFileTypes: true })) {
+        if (ent.name.startsWith(".")) continue;
+        const rel = prefix ? prefix + "/" + ent.name : ent.name;
+        const full = path.join(base, ent.name);
+        if (ent.isDirectory()) walk(full, rel);
+        else if (rel.replace(/\\/g, "/") !== "SKILL.md") {
+          const buf = fs.readFileSync(full);
+          extras.push({
+            path: rel.replace(/\\/g, "/"),
+            bytes: buf.length,
+            base64: buf.toString("base64"),
+          });
+        }
+      }
+    };
+    walk(dir, "");
+  }
+  extras.sort((a, b) => a.path.localeCompare(b.path));
+  return { mdBuf, extras };
 }
 
 function clearSkillFile(id) {
   try {
-    fs.unlinkSync(skillFilePath(id));
+    fs.unlinkSync(skillLegacyMdPath(id));
+  } catch {}
+  try {
+    fs.rmSync(skillBundleDir(id), { recursive: true, force: true });
   } catch {}
 }
 
@@ -954,15 +1120,17 @@ async function handle(req, res) {
   if (skillFileR && method === "GET") {
     const t = db.skills.find((x) => x.id === skillFileR[1]);
     if (!t) return send(res, 404, { ok: false, error: "技能不存在" });
-    const fp = skillFilePath(t.id);
-    if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
+    const pack = readSkillBundle(t.id);
+    if (!pack) return send(res, 404, { ok: false, error: "文件缺失" });
     t.downloads = (t.downloads || 0) + 1;
     const owner = db.users.find((u) => u.id === t.userId);
     if (owner) owner.downloadsReceived = (owner.downloadsReceived || 0) + 1;
+    const listed = listSkillBundleFiles(t.id);
+    t.files = listed.files;
+    t.bytes = listed.bytes;
     await saveDb();
-    const buf = fs.readFileSync(fp);
     if (url.searchParams.get("format") === "raw") {
-      return sendBin(res, 200, buf, "text/markdown; charset=utf-8");
+      return sendBin(res, 200, pack.mdBuf, "text/markdown; charset=utf-8");
     }
     return send(res, 200, {
       ok: true,
@@ -971,9 +1139,11 @@ async function handle(req, res) {
       title: t.title,
       version: t.version || "1.0.0",
       official: !!t.official,
-      bytes: buf.length,
-      text: buf.toString("utf8"),
-      base64: buf.toString("base64"),
+      bytes: listed.bytes,
+      files: listed.files,
+      text: pack.mdBuf.toString("utf8"),
+      base64: pack.mdBuf.toString("base64"),
+      extras: pack.extras,
     });
   }
 
@@ -1005,8 +1175,8 @@ async function handle(req, res) {
     } catch (e) {
       return send(res, 400, { ok: false, error: "不是有效的 SKILL.md：" + e.message });
     }
-    if (buf.length > MAX_SKILL) {
-      return send(res, 413, { ok: false, error: "技能文件不能超过 1MB" });
+    if (buf.length > MAX_SKILL_FILE) {
+      return send(res, 413, { ok: false, error: "每个文件不能超过 200KB" });
     }
     let parsed;
     try {
@@ -1014,6 +1184,13 @@ async function handle(req, res) {
     } catch (e) {
       return send(res, 400, { ok: false, error: e.message || String(e) });
     }
+    let extras;
+    try {
+      extras = decodeSkillExtraFiles(b.files != null ? b.files : b.extras);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: e.message || String(e) });
+    }
+    if (extras == null) extras = [];
     const title = String(b.title != null ? b.title : parsed.title).trim().slice(0, 80);
     if (!title) return send(res, 400, { ok: false, error: "标题不能为空" });
     const description = String(
@@ -1051,7 +1228,7 @@ async function handle(req, res) {
       return send(res, 400, { ok: false, error: "缩略图无效：" + e.message });
     }
     const id = uid("s_");
-    fs.writeFileSync(skillFilePath(id), buf);
+    const listed = writeSkillBundle(id, buf, extras);
     if (prev) writePreview(id, prev, thumb);
     const t = {
       id,
@@ -1064,7 +1241,8 @@ async function handle(req, res) {
       tags,
       downloads: 0,
       likes: 0,
-      bytes: buf.length,
+      bytes: listed.bytes,
+      files: listed.files,
       hasPreview: !!prev,
       createdAt: now(),
       updatedAt: now(),
@@ -1100,6 +1278,14 @@ async function handle(req, res) {
       }
       t.official = !!b.official;
     }
+    let extras = undefined;
+    if (b.files != null || b.extras != null) {
+      try {
+        extras = decodeSkillExtraFiles(b.files != null ? b.files : b.extras);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: e.message || String(e) });
+      }
+    }
     if (b.fileBase64) {
       let buf;
       try {
@@ -1107,8 +1293,8 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 400, { ok: false, error: "不是有效的 SKILL.md：" + e.message });
       }
-      if (buf.length > MAX_SKILL) {
-        return send(res, 413, { ok: false, error: "技能文件不能超过 1MB" });
+      if (buf.length > MAX_SKILL_FILE) {
+        return send(res, 413, { ok: false, error: "每个文件不能超过 200KB" });
       }
       let parsed;
       try {
@@ -1122,8 +1308,15 @@ async function handle(req, res) {
           error: "不可更改 skill name（当前为 " + t.skillName + "）",
         });
       }
-      fs.writeFileSync(skillFilePath(t.id), buf);
-      t.bytes = buf.length;
+      const listed = writeSkillBundle(
+        t.id,
+        buf,
+        extras != null ? extras : undefined,
+      );
+      // if extras omitted, still refresh list after md write
+      const listed2 = extras != null ? listed : listSkillBundleFiles(t.id);
+      t.bytes = listed2.bytes;
+      t.files = listed2.files;
       if (b.version == null && parsed.version) {
         try {
           t.version = normalizeVersion(parsed.version, t.version || "1.0.0");
@@ -1132,6 +1325,15 @@ async function handle(req, res) {
         }
       } else if (b.version == null) {
         return send(res, 400, { ok: false, error: "更新技能正文时请填写新版本号" });
+      }
+    } else if (extras != null) {
+      const pack = readSkillBundle(t.id);
+      if (!pack) return send(res, 404, { ok: false, error: "文件缺失" });
+      const listed = writeSkillBundle(t.id, pack.mdBuf, extras);
+      t.bytes = listed.bytes;
+      t.files = listed.files;
+      if (b.version == null) {
+        return send(res, 400, { ok: false, error: "更新技能附件时请填写新版本号" });
       }
     }
     if (b.previewBase64 === "") {

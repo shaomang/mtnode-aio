@@ -817,11 +817,16 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 .wf-node.super.super-open{
   display:flex;
   flex-direction:column;
+  z-index:50;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,.12),
     inset 0 -2px 8px rgba(0,0,0,.4),
     0 10px 22px rgba(0,0,0,.45),
     0 0 0 1px rgba(155,176,200,.25);
+}
+.wf-node.super-drag-lift{
+  z-index:55 !important;
+  pointer-events:none;
 }
 .wf-node.super.super-open > .n-body{
   flex:1;
@@ -849,6 +854,49 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 }
 .n-super-toggle:hover{border-color:var(--cyan); color:var(--cyan2)}
 .n-super-toggle.on{border-color:rgba(56,214,255,.55); color:var(--cyan2)}
+.n-super-expand{
+  flex:none;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:24px;
+  min-width:24px;
+  height:22px;
+  padding:0;
+  border-radius:3px;
+  border:1px solid var(--bd2);
+  background:rgba(255,255,255,.04);
+  color:var(--ink);
+  cursor:pointer;
+}
+.n-super-expand svg{width:14px;height:14px;display:block}
+.n-super-expand:hover{border-color:var(--cyan); color:var(--cyan2)}
+.n-super-expand.on{border-color:rgba(56,214,255,.55); color:var(--cyan2); background:rgba(56,214,255,.08)}
+.super-focus-port-layer{
+  position:absolute;
+  inset:0;
+  z-index:70;
+  pointer-events:none;
+  overflow:hidden;
+}
+.super-focus-port-layer .super-focus-port{
+  position:absolute;
+  pointer-events:auto;
+  z-index:71;
+  right:auto !important;
+}
+.super-focus-port-layer .port.out.super-inner-bridge{
+  left:8px !important;
+  right:auto !important;
+  border-color:var(--cyan);
+  box-shadow:0 0 0 2px rgba(56,214,255,.25);
+}
+.super-focus-port-layer .port.in.super-inner-sink{
+  right:8px !important;
+  left:auto !important;
+  border-color:var(--green);
+  box-shadow:0 0 0 2px rgba(95,214,138,.25);
+}
 .wf-node.super.sel{
   border-color:#c5d4e6;
   box-shadow:
@@ -866,7 +914,6 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  margin-left:auto;
   width:24px;
   min-width:24px;
   height:22px;
@@ -877,9 +924,24 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
   color:var(--muted);
   cursor:pointer;
 }
+.n-super-folder.lead{margin-left:auto}
 .n-super-folder svg{width:13px; height:13px; display:block; flex:none}
 .n-super-folder:hover{border-color:var(--cyan); color:var(--cyan2)}
 .n-super-folder.on{border-color:rgba(95,214,138,.55); color:#8dffb5}
+.n-super-subfolder{
+  flex:none;
+  margin-left:auto;
+  max-width:min(42%, 160px);
+  padding:0 6px;
+  font-size:10.5px;
+  line-height:22px;
+  color:var(--muted);
+  font-family:var(--mono);
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  opacity:.9;
+}
 .super-note{min-height:56px; flex:1}
 .super-ops{
   flex:none; display:flex; flex-direction:column; gap:6px; margin-top:auto;
@@ -952,6 +1014,9 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
 .super-stage-viewport > .wf-node{
   position:absolute;
   z-index:2;
+  pointer-events:auto;
+}
+.super-stage-viewport > .wf-mark{
   pointer-events:auto;
 }
 .super-stage.super-drop-hot{
@@ -1317,8 +1382,10 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
   image-rendering:pixelated;
 }
 .n-head{
-  flex:none; height:28px; display:flex; align-items:center; gap:6px; padding:0 8px;
+  flex:none; height:28px; display:flex; flex-wrap:nowrap; align-items:center; gap:6px;
+  padding:0 8px; min-width:0;
   border-bottom:1px dashed var(--bd); cursor:move; background:rgba(0,0,0,.25);
+  overflow:hidden;
 }
 .n-title{
   flex:1; font-size:12px; font-weight:700; letter-spacing:1px; overflow:hidden;
@@ -3064,3 +3131,113 @@ button.mini.btn-sq.tpl-ico{
 
 /* 画布导出/导入：Base64 文本框 */
 .b64-area{width:100%; min-height:140px; resize:vertical; box-sizing:border-box; font-family:var(--mono,monospace); font-size:11px; line-height:1.5; color:var(--ink); background:var(--bg2,transparent); border:1px solid var(--bd); border-radius:8px; padding:8px; word-break:break-all; white-space:pre-wrap}
+
+/* ===== YAML 阅读器（大窗、可调大小） ===== */
+.yaml-viewer-dlg{
+  position:fixed; inset:0; z-index:2450; display:none;
+  align-items:center; justify-content:center; padding:16px;
+  background:rgba(5,8,12,.72);
+}
+.yaml-viewer-dlg.on{display:flex; animation:toastIn .14s ease-out}
+.yaml-viewer-box{
+  position:relative; width:min(92vw,1100px); height:min(88vh,820px);
+  min-width:560px; min-height:420px; max-width:98vw; max-height:96vh;
+  display:flex; flex-direction:column; min-height:0;
+  background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:2px solid var(--bd2); border-top:3px solid var(--orange);
+  box-shadow:0 16px 48px rgba(0,0,0,.6);
+}
+.yaml-viewer-head{
+  display:flex; align-items:center; gap:10px; padding:8px 12px;
+  border-bottom:2px solid var(--bd); flex:none; cursor:default;
+}
+.yaml-viewer-head b{
+  color:var(--orange2); font-weight:800; letter-spacing:1px; font-size:13px;
+  flex:none;
+}
+.yaml-viewer-title{
+  flex:1; min-width:0; font-size:12.5px; color:var(--ink);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.yaml-viewer-actions{display:flex; align-items:center; gap:6px; flex:none}
+.yaml-viewer-actions .mini.on{
+  border-color:var(--cyan); color:var(--cyan2); background:rgba(56,214,255,.1);
+}
+.yaml-viewer-path{
+  flex:none; padding:4px 12px 6px; border-bottom:1px solid var(--bd);
+  font-size:11px; font-family:var(--mono); color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.yaml-viewer-main{
+  flex:1; min-height:0; display:flex; position:relative;
+}
+.yaml-viewer-outline{
+  width:220px; flex:none; display:flex; flex-direction:column; min-height:0;
+  border-right:2px solid var(--bd); background:rgba(0,0,0,.18);
+}
+.yaml-viewer-outline-h{
+  flex:none; padding:8px 10px 4px; font-size:10.5px; letter-spacing:1px;
+  color:var(--muted); font-weight:800;
+}
+.yaml-viewer-outline-list{
+  flex:1; min-height:0; overflow:auto; padding:4px 6px 12px;
+}
+.yaml-outline-item{
+  display:block; width:100%; text-align:left; background:transparent;
+  border:1px solid transparent; color:var(--ink); padding:4px 8px;
+  font-size:12px; border-radius:3px; cursor:pointer;
+  font-family:var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.yaml-outline-item:hover{border-color:var(--bd2); color:var(--orange2)}
+.yaml-outline-item.depth-1{padding-left:16px; color:var(--muted)}
+.yaml-outline-item.depth-2{padding-left:24px; color:var(--muted); font-size:11.5px}
+.yaml-viewer-body{
+  flex:1; min-width:0; min-height:0; overflow:auto;
+  background:var(--code); position:relative;
+}
+.yaml-viewer-code{
+  margin:0; padding:12px 0 20px; font-family:var(--mono); font-size:12.5px;
+  line-height:1.65; color:var(--ink); tab-size:2; white-space:pre;
+}
+.yaml-viewer-code.wrap{white-space:pre-wrap; word-break:break-word}
+.yaml-line{
+  display:flex; align-items:flex-start; min-height:1.65em;
+  padding:0 14px 0 0;
+}
+.yaml-line:hover{background:rgba(255,143,46,.06)}
+.yaml-line.hl{background:rgba(56,214,255,.12)}
+.yaml-ln{
+  flex:none; width:48px; text-align:right; padding-right:12px;
+  color:var(--muted); opacity:.7; user-select:none; font-size:11.5px;
+}
+.yaml-lt{flex:1; min-width:0}
+.yaml-k{color:var(--cyan2)}
+.yaml-p{color:var(--muted)}
+.yaml-s{color:var(--orange2)}
+.yaml-n{color:#9ad0ff}
+.yaml-b{color:var(--green)}
+.yaml-c{color:#6b7a90; font-style:italic}
+.yaml-a{color:#c9a0ff}
+.yaml-viewer-empty{
+  margin:auto; padding:32px; color:var(--muted); font-size:13px; text-align:center;
+}
+.yaml-viewer-foot{
+  flex:none; display:flex; align-items:center; gap:8px;
+  padding:8px 12px; border-top:2px solid var(--bd);
+}
+.yaml-viewer-meta{flex:1; min-width:0; font-size:11px; color:var(--muted)}
+.yaml-viewer-resize{
+  position:absolute; right:0; bottom:0; width:18px; height:18px;
+  cursor:nwse-resize; z-index:5;
+  background:linear-gradient(135deg,transparent 45%,var(--orange2) 50%,var(--orange2) 60%,transparent 65%);
+  border-left:1px solid transparent; border-top:1px solid transparent;
+}
+.yaml-viewer-resize:hover{
+  background:linear-gradient(135deg,transparent 45%,var(--cyan2) 50%,var(--cyan2) 60%,transparent 65%);
+}
+.sv-prev pre.yaml-openable{
+  cursor:pointer;
+}
+.sv-prev pre.yaml-openable:hover{
+  outline:1px solid rgba(56,214,255,.35);
+}

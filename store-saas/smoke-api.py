@@ -63,17 +63,21 @@ version: 1.0.0
 # smoke
 """.encode()
 skill_b64 = base64.b64encode(skill_md).decode()
+schema_b64 = base64.b64encode(b"# schema\nfoo: bar\n").decode()
 sk = call("POST", "/api/skills", {
     "title": "smoke skill",
     "description": "api smoke",
     "tags": ["smoke"],
     "version": "1.0.0",
     "fileBase64": skill_b64,
+    "files": [{"path": "schemas.md", "base64": schema_b64}],
 }, token=token)["item"]
 sid = sk["id"]
+assert any(f.get("path") == "schemas.md" for f in (sk.get("files") or []))
 call("GET", "/api/skills/" + sid)
 call("POST", "/api/skills/" + sid + "/like", {}, token=token)
-call("GET", "/api/skills/" + sid + "/file")
+pack = call("GET", "/api/skills/" + sid + "/file")
+assert any(f.get("path") == "schemas.md" for f in (pack.get("extras") or []))
 call("GET", "/api/skills")
 call("GET", "/api/me/skills", token=token)
 call("GET", "/api/tags?kind=skills")

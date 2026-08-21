@@ -76,6 +76,15 @@ contextBridge.exposeInMainWorld('api', {
   shellShowItem: (p) => ipcRenderer.invoke('shell:showItem', p),
   shellOpenPath: (p) => ipcRenderer.invoke('shell:openPath', p),
   openInAppDialog: (opts) => ipcRenderer.invoke('shell:openInAppDialog', opts || {}),
+  onYamlViewerOpen: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch (_) {}
+    };
+    ipcRenderer.on('yaml-viewer:open', handler);
+    return () => ipcRenderer.removeListener('yaml-viewer:open', handler);
+  },
   mtnodesExport: (wf) => ipcRenderer.invoke('mtnodes:export', wf),
   mtnodesImport: () => ipcRenderer.invoke('mtnodes:import'),
   mtnodesExportBase64: (wf) => ipcRenderer.invoke('mtnodes:exportBase64', wf),
@@ -94,6 +103,7 @@ contextBridge.exposeInMainWorld('api', {
   storeRequest: (opts) => ipcRenderer.invoke('store:request', opts),
   storePickMtNodes: () => ipcRenderer.invoke('store:pickMtNodes'),
   storePickSkillMd: () => ipcRenderer.invoke('store:pickSkillMd'),
+  storePickSkillFiles: () => ipcRenderer.invoke('store:pickSkillFiles'),
   storePickPreview: () => ipcRenderer.invoke('store:pickPreview'),
   storeCacheGet: (id) => ipcRenderer.invoke('store:cacheGet', id),
   storeCachePut: (opts) => ipcRenderer.invoke('store:cachePut', opts),

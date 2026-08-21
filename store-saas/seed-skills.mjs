@@ -110,6 +110,12 @@ async function main() {
     const title = meta.title || id;
     const description = meta.description || "";
     const fileBase64 = Buffer.from(text, "utf8").toString("base64");
+    const files = [];
+    for (const ent of fs.readdirSync(path.join(SKILLS, id), { withFileTypes: true })) {
+      if (!ent.isFile() || ent.name === "SKILL.md" || ent.name.startsWith(".")) continue;
+      const buf = fs.readFileSync(path.join(SKILLS, id, ent.name));
+      files.push({ path: ent.name, base64: buf.toString("base64") });
+    }
     const tags = ["official", id.split("-")[0]].filter(Boolean);
     const existing = byName.get(skillName);
     if (existing) {
@@ -124,6 +130,7 @@ async function main() {
           version,
           official: true,
           fileBase64,
+          files,
         },
         token,
       );
@@ -140,6 +147,7 @@ async function main() {
           version,
           official: true,
           fileBase64,
+          files,
         },
         token,
       );

@@ -49,7 +49,7 @@ function dshConfig() {
     enabled: d.enabled !== false,
     nodePath: typeof d.nodePath === "string" ? d.nodePath : "",
     model: typeof d.model === "string" && d.model ? d.model : "deepseek-v4-flash",
-    maxTokens: Number(d.maxTokens) || 49152,
+    maxTokens: Number(d.maxTokens) || 98304,
     defaultWorkspace: typeof d.defaultWorkspace === "string" ? d.defaultWorkspace : "",
     workspaceFallback: join(DATA(), "dsh-workspace"),
   };
@@ -775,6 +775,18 @@ ipcMain.handle("shell:openInAppDialog", async (e, opts) => {
     return err ? { ok: false, error: err } : { ok: true, external: true };
   }
 
+  /* YAML：交给渲染进程内嵌阅读器（MTNode 主题大窗），不走 file:// 裸开 */
+  if (ext === ".yaml" || ext === ".yml") {
+    try {
+      if (parent && !parent.isDestroyed()) {
+        parent.webContents.send("yaml-viewer:open", {
+          path: path.resolve(target),
+        });
+        return { ok: true, yamlViewer: true };
+      }
+    } catch {}
+  }
+
   return openContentViewDialog({
     parent,
     url: pathToFileURL(path.resolve(target)).href,
@@ -1207,8 +1219,8 @@ ipcMain.handle("store:pickSkillMd", async () => {
     if (r.canceled || !r.filePaths[0]) return { ok: false, error: I18n.t("已取消") };
     const buf = fs.readFileSync(r.filePaths[0]);
     if (!buf.length) return { ok: false, error: I18n.t("文件为空") };
-    if (buf.length > 1024 * 1024) {
-      return { ok: false, error: I18n.t("技能文件不能超过 1MB") };
+    if (buf.length > 200 * 1024) {
+      return { ok: false, error: I18n.t("每个文件不能超过 200KB") };
     }
     const text = buf.toString("utf8");
     if (!text.trim()) return { ok: false, error: I18n.t("文件为空") };
@@ -1219,6 +1231,43 @@ ipcMain.handle("store:pickSkillMd", async () => {
       bytes: buf.length,
       name: path.basename(r.filePaths[0]),
     };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:pickSkillFiles", async () => {
+  try {
+    const r = await dialog.showOpenDialog(win(), {
+      title: I18n.t("选择技能附加文件"),
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: I18n.t("技能附件"), extensions: ["md", "markdown", "txt", "json", "yaml", "yml", "csv"] },
+        { name: I18n.t("全部文件"), extensions: ["*"] },
+      ],
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, error: I18n.t("已取消") };
+    const files = [];
+    for (const fp of r.filePaths) {
+      const buf = fs.readFileSync(fp);
+      const name = path.basename(fp);
+      if (name.toLowerCase() === "skill.md") {
+        return { ok: false, error: I18n.t("附加文件不要使用 SKILL.md") };
+      }
+      if (buf.length > 200 * 1024) {
+        return { ok: false, error: I18n.t("每个文件不能超过 200KB") + "：" + name };
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+        return { ok: false, error: I18n.t("文件名不合法：") + name };
+      }
+      files.push({
+        path: name,
+        base64: buf.toString("base64"),
+        bytes: buf.length,
+        name,
+      });
+    }
+    return { ok: true, files };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }

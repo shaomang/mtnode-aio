@@ -26,7 +26,8 @@ const RUNTIME_BIN = require.resolve('@deepseek-ai/dsh-sdk-jsonrpc-demo/bin')
 const CORDIS_PATH = path.resolve(import.meta.dirname, 'cordis.yml')
 const GATEWAY_DIR = import.meta.dirname
 const GATEWAY_VERSION = '0.1.0'
-const MAX_RUNTIMES = 3
+/* 池化上限：仅回收空闲 runtime。有在途 run 的永不踢掉，可短暂超过此数。 */
+const MAX_RUNTIMES = 6
 const USER_PLUGIN_MARKER = '# ── user plugins (managed from MTNode settings) ──'
 
 /* 两处来源同时挂载：
@@ -593,12 +594,15 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     let oldestKey = null
     let oldestOrder = Infinity
     for (const [k, v] of runtimes) {
+      if (k === key) continue
+      /* 有在途 req 的 runtime 不可回收，否则会中断全局助手/画布桥 */
+      if (keyToReqId.has(k)) continue
       if (v.order < oldestOrder) {
         oldestOrder = v.order
         oldestKey = k
       }
     }
-    if (oldestKey === key) break
+    if (!oldestKey) break
     const evicted = runtimes.get(oldestKey)
     runtimes.delete(oldestKey)
     closeBridge(oldestKey)

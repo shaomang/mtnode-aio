@@ -361,6 +361,27 @@ function createDshAdapter(opts) {
         const builtin =
           BUILTIN_SKILL_NAMES.has(nm) || fs.existsSync(path.join(dir, '.builtin'))
         const store = this._readStoreMeta(dir) || {}
+        const files = []
+        try {
+          const walk = (base, prefix) => {
+            for (const ent of fs.readdirSync(base, { withFileTypes: true })) {
+              if (ent.name.startsWith('.')) continue
+              const rel = prefix ? prefix + '/' + ent.name : ent.name
+              const full = path.join(base, ent.name)
+              if (ent.isDirectory()) walk(full, rel)
+              else if (rel.replace(/\\/g, '/') !== 'SKILL.md') {
+                const buf = fs.readFileSync(full)
+                files.push({
+                  path: rel.replace(/\\/g, '/'),
+                  bytes: buf.length,
+                  base64: buf.toString('base64'),
+                })
+              }
+            }
+          }
+          walk(dir, '')
+        } catch {}
+        files.sort((a, b) => a.path.localeCompare(b.path))
         return {
           ok: true,
           name: nm,
@@ -369,13 +390,14 @@ function createDshAdapter(opts) {
           storeId: store.storeId || '',
           version: store.version || this._parseSkillMeta(body).version || '',
           storeUpdatedAt: store.updatedAt || 0,
+          files,
         }
       } catch (err) {
         return { ok: false, error: err.message || String(err) }
       }
     },
 
-    skillAdd({ name, description, body, overwrite, storeMeta }) {
+    skillAdd({ name, description, body, overwrite, storeMeta, files }) {
       try {
         const nm = String(name || '').trim().toLowerCase()
         if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nm)) {
@@ -402,7 +424,34 @@ function createDshAdapter(opts) {
             text,
           ].join('\n')
         }
+        if (Buffer.byteLength(text, 'utf8') > 200 * 1024) {
+          return { ok: false, error: '每个文件不能超过 200KB' }
+        }
         fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8')
+        if (Array.isArray(files)) {
+          for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (ent.name === 'SKILL.md' || ent.name === '.builtin' || ent.name === '.store-meta.json') continue
+            const p = path.join(dir, ent.name)
+            if (ent.isDirectory()) fs.rmSync(p, { recursive: true, force: true })
+            else try { fs.unlinkSync(p) } catch {}
+          }
+          for (const f of files) {
+            const rel = String((f && (f.path || f.name)) || '').replace(/\\/g, '/').replace(/^\.\//, '')
+            if (!rel || rel === 'SKILL.md' || rel.includes('..')) continue
+            const parts = rel.split('/').filter(Boolean)
+            if (!parts.every((x) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(x))) continue
+            let buf
+            if (f.body != null) buf = Buffer.from(String(f.body), 'utf8')
+            else if (f.base64) buf = Buffer.from(String(f.base64).replace(/\s+/g, ''), 'base64')
+            else continue
+            if (buf.length > 200 * 1024) {
+              return { ok: false, error: '文件 ' + rel + ' 超过 200KB' }
+            }
+            const dest = path.join(dir, ...parts)
+            fs.mkdirSync(path.dirname(dest), { recursive: true })
+            fs.writeFileSync(dest, buf)
+          }
+        }
         if (storeMeta && typeof storeMeta === 'object') {
           this._writeStoreMeta(dir, {
             storeId: String(storeMeta.storeId || ''),
