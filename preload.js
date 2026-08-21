@@ -160,6 +160,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   music3Status: () => ipcRenderer.invoke('music3:getStatus'),
+  music3UpdateRuntime: () => ipcRenderer.invoke('music3:updateRuntime'),
   music3Open: () => ipcRenderer.invoke('music3:open'),
   music3Close: () => ipcRenderer.invoke('music3:close'),
   music3Install: (opts) => ipcRenderer.invoke('music3:install', opts || {}),
@@ -197,6 +198,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   h3Status: () => ipcRenderer.invoke('h3:getStatus'),
+  h3UpdateRuntime: () => ipcRenderer.invoke('h3:updateRuntime'),
   h3Open: () => ipcRenderer.invoke('h3:open'),
   h3Close: () => ipcRenderer.invoke('h3:close'),
   h3Install: (opts) => ipcRenderer.invoke('h3:install', opts || {}),

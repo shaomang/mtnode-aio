@@ -56,15 +56,14 @@ description: 在用户指定目录安装 MiniMax Music 3（24G）后端：探测
    ```
    并确认 `models\MiniMax-Music3` 非空。
 
-## 自我修复模式（CONSOLE_LOG 已提供）
+## 自我修复模式（CONSOLE_LOG 已由插件提交给 dsh）
 
-1. 阅读 CONSOLE_LOG，归类：
-   - `ModuleNotFoundError` / `ImportError` → venv 内补依赖
-   - `backend_exited` / Gradio 启动 Traceback → 按栈修代码或依赖
-   - CUDA / OOM → 检查 torch.cuda 与 offload；勿删 output
-   - 缺模型 → 只跑 download_models
-2. 修完冒烟；写 `.install-ok` 与 `.music3-agent-result`
-3. **不要启动 Gradio**
+插件「自我修复」把 console 交给 **dsh Agent** 自行分析并修复（不做本地固定规则短路）：
+
+1. 以「最近失败焦点」为准判断根因；更早日志仅参考。
+2. 自行修复依赖 / 环境；模型已齐则勿重下。
+3. 冒烟后写 `.install-ok` 与 `.music3-agent-result`；回复 `repair_ok=1`。
+4. **不要启动 Gradio**；勿删 `output/`。
 
 ## 约束
 

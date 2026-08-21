@@ -577,6 +577,13 @@ const NODE_DEFAULTS = {
     teaEnabled: true,
     teaThresh: 0.15,
     sageMode: "auto",
+    /* 24G 工作流优化：默认开，节点设置可关 */
+    optTeaCache: true,
+    optEasyCache: true,
+    optSageAttn: true,
+    optLowVramAttn: true,
+    optChunkFfn: true,
+    optVramBarrier: true,
     refImageSize: "match",
     outputPath: "",
     filename: "",
@@ -9417,7 +9424,7 @@ function nodeElement(node) {
     const fr = document.createElement("button");
     fr.className = "n-play n-file-ref";
     fr.textContent = "📄";
-    fr.title = I18n.t("文件参考：导入文本文件内容到本节点（超过 500KB 会提示拒绝）");
+    fr.title = I18n.t("文件参考：导入文本文件内容到本节点");
     fr.onclick = (ev) => {
       ev.stopPropagation();
       importFileToText(node);
@@ -10288,6 +10295,35 @@ function nodeElement(node) {
         scheduleSave();
       });
       addField(I18n.t("采样步数"), steps);
+      const addOpt = (key, label, title) => {
+        const lab = document.createElement("label");
+        lab.className = "n-field";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = node[key] !== false;
+        cb.title = title || "";
+        cb.addEventListener("change", () => {
+          node[key] = !!cb.checked;
+          if (key === "optTeaCache") node.teaEnabled = !!cb.checked;
+          if (key === "optSageAttn") node.sageMode = cb.checked ? "auto" : "disabled";
+          scheduleSave();
+        });
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(" " + label));
+        if (title) lab.title = title;
+        panel.appendChild(lab);
+      };
+      const optHint = document.createElement("div");
+      optHint.className = "n-field-hint";
+      optHint.style.cssText = "opacity:0.75;font-size:11px;margin:4px 0 2px;";
+      optHint.textContent = I18n.t("24G 优化（默认开，可关）");
+      panel.appendChild(optHint);
+      addOpt("optTeaCache", I18n.t("TeaCache"), I18n.t("H3 步缓存加速"));
+      addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
+      addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需安装 sageattention；缺包自动跳过"));
+      addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
+      addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
+      addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
     } else if (isAgentKind) {
       /* 智能任务参数面板与「智能会话」完全一致:预设 / 供应商 / 模型 / 思考强度 */
       const catalog = S.providerCatalog || {
@@ -15424,9 +15460,20 @@ async function playVideoGenNode(node, quiet) {
       denoise: node.denoise != null ? Number(node.denoise) : 1,
       shiftVideo: node.shiftVideo != null ? Number(node.shiftVideo) : 12,
       shiftAudio: node.shiftAudio != null ? Number(node.shiftAudio) : 3,
-      teaEnabled: node.teaEnabled !== false,
+      teaEnabled: node.optTeaCache !== false && node.teaEnabled !== false,
       teaThresh: node.teaThresh != null ? Number(node.teaThresh) : 0.15,
-      sageMode: node.sageMode || "auto",
+      optTeaCache: node.optTeaCache !== false,
+      optEasyCache: node.optEasyCache !== false,
+      optSageAttn: node.optSageAttn !== false,
+      optLowVramAttn: node.optLowVramAttn !== false,
+      optChunkFfn: node.optChunkFfn !== false,
+      optVramBarrier: node.optVramBarrier !== false,
+      sageMode:
+        node.optSageAttn === false
+          ? "disabled"
+          : !node.sageMode || node.sageMode === "disabled"
+            ? "auto"
+            : node.sageMode,
       refImageSize: node.refImageSize || "match",
       outputDir: exp.outputDir,
       filename: exp.filename,
@@ -17224,29 +17271,14 @@ function clipStr(s, n) {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
-/* 助手/canvas_get 读节点正文上限：输入节点需接近全文；提示词等仍控体积 */
-const SNAP_INPUT_TEXT_MAX = 200000;
-const SNAP_PROMPT_MAX = 12000;
-const SNAP_GOAL_MAX = 4000;
-/* 助手/会话工具回传时收紧单节点正文，避免拆解类 skill 大量 YAML 撑爆上下文 */
-const SNAP_AGENT_INPUT_TEXT_MAX = 8000;
-
-function snapTextField(raw, max) {
+/* canvas_get / 助手快照：节点正文一律全文，不做字数或 token 截断 */
+function snapTextField(raw) {
   const s = String(raw == null ? "" : raw);
-  if (!s) return { text: "", textLen: 0, textTruncated: false };
-  if (s.length <= max) return { text: s, textLen: s.length, textTruncated: false };
-  return {
-    text: s.slice(0, max) + "…",
-    textLen: s.length,
-    textTruncated: true,
-  };
+  return { text: s, textLen: s.length };
 }
 
 function canvasSnapshot() {
   const wf = S.wf || { id: "", name: "", nodes: [], wires: [], groups: [], marks: [] };
-  const agentish =
-    !!(S.assistRunActive || S.agentSessionRunActive || isCanvasNodeAgentRun());
-  const inputTextMax = agentish ? SNAP_AGENT_INPUT_TEXT_MAX : SNAP_INPUT_TEXT_MAX;
   const scopeNodes = (wf.nodes || []).filter(
     (n) => !isSuperIoNode(n) && nodeInCurrentScope(n),
   );
@@ -17299,13 +17331,13 @@ function canvasSnapshot() {
       })),
     nodes: scopeNodes.map((n) => {
       const inputSnap =
-        n.kind === "input_text" ? snapTextField(n.text, inputTextMax) : null;
+        n.kind === "input_text" ? snapTextField(n.text) : null;
       const promptSnap =
-        n.prompt != null ? snapTextField(n.prompt, SNAP_PROMPT_MAX) : null;
+        n.prompt != null ? snapTextField(n.prompt) : null;
       const taskSnap =
-        n.task != null ? snapTextField(n.task, SNAP_PROMPT_MAX) : null;
+        n.task != null ? snapTextField(n.task) : null;
       const goalSnap =
-        n.kind === "task" ? snapTextField(n.goal, SNAP_GOAL_MAX) : null;
+        n.kind === "task" ? snapTextField(n.goal) : null;
       return {
       id: n.id,
       kind: n.kind,
@@ -17317,14 +17349,10 @@ function canvasSnapshot() {
       running: !!n.running,
       text: inputSnap ? inputSnap.text : undefined,
       textLen: inputSnap ? inputSnap.textLen : undefined,
-      textTruncated: inputSnap && inputSnap.textTruncated ? true : undefined,
       prompt: promptSnap ? promptSnap.text : undefined,
       promptLen: promptSnap ? promptSnap.textLen : undefined,
-      promptTruncated:
-        promptSnap && promptSnap.textTruncated ? true : undefined,
       task: taskSnap ? taskSnap.text : undefined,
       taskLen: taskSnap ? taskSnap.textLen : undefined,
-      taskTruncated: taskSnap && taskSnap.textTruncated ? true : undefined,
       savePath: n.savePath || undefined,
       waitPath: n.kind === "wait_file" ? n.waitPath || undefined : undefined,
       waitIntervalSec:
@@ -17424,7 +17452,6 @@ function canvasSnapshot() {
       superOpen: n.kind === "super" ? !!n.superOpen : undefined,
       goal: goalSnap ? goalSnap.text : undefined,
       goalLen: goalSnap ? goalSnap.textLen : undefined,
-      goalTruncated: goalSnap && goalSnap.textTruncated ? true : undefined,
       steps:
         n.kind === "task"
           ? (n.steps || []).map((s) => (s && s.title) || "")
@@ -27635,7 +27662,7 @@ async function playJudgeNode(node, quiet) {
         seen.add(src.id);
         const v = w ? valueFromWire(w, node, 0) : valueForInput(src, 0, node);
         if (v && v.kind === "text" && v.text)
-          bits.push("### " + (src.title || "") + "\n" + String(v.text).slice(0, 4000));
+          bits.push("### " + (src.title || "") + "\n" + String(v.text));
       };
       for (const w of wiresTo(node.id)) addBit(nodeById(w.from), w);
       for (const src of globalRefSources(node.id)) addBit(src, null);
@@ -28023,13 +28050,6 @@ async function importFileToText(node, pathOverride) {
     return;
   }
   const bytes = new Blob([rd.content]).size;
-  if (bytes > 500 * 1024) {
-    toast(
-      I18n.t("文件过大（超过 500KB，实际 ") + Math.round(bytes / 1024) + I18n.t("KB），未导入"),
-      "warn",
-    );
-    return;
-  }
   pushHistory();
   node.text = rd.content;
   clearDownstream(node.id);
@@ -32522,6 +32542,32 @@ async function refreshMusic3PluginCard(root) {
       refreshMusic3PluginCard(root);
     }, { primary: true });
   }
+  if (st.updateAvailable && window.api.music3UpdateRuntime) {
+    addBtn(
+      "update",
+      I18n.t("更新") + (st.latestVersion || st.feedVersion ? " → v" + (st.feedVersion || st.latestVersion) : ""),
+      async () => {
+        if (prog) prog.style.display = "block";
+        if (progTxt) {
+          progTxt.style.display = "block";
+          progTxt.textContent = I18n.t("准备下载…");
+        }
+        const wasOpen = !!st.consoleOpen;
+        if (wasOpen && window.api.music3Close) await window.api.music3Close();
+        const r = await window.api.music3UpdateRuntime();
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        if (r && r.ok) {
+          toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
+          if (wasOpen && window.api.music3Open) await window.api.music3Open();
+        } else {
+          toast(I18n.t("安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+        }
+        refreshMusic3PluginCard(root);
+      },
+      { disabled: !!st.updating || !!st.installing },
+    );
+  }
   addBtn("trash", I18n.t("移除入口"), async () => {
     if (
       !(await confirmDialog(
@@ -32534,11 +32580,11 @@ async function refreshMusic3PluginCard(root) {
     toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
     refreshMusic3PluginCard(root);
   }, { danger: true });
-  if (prog && st.installing) {
+  if (prog && (st.installing || st.updating)) {
     prog.style.display = "block";
     if (progTxt) {
       progTxt.style.display = "block";
-      progTxt.textContent = I18n.t("安装中…");
+      progTxt.textContent = st.updating ? I18n.t("更新中…") : I18n.t("安装中…");
     }
   }
 }
@@ -32548,7 +32594,7 @@ function bindMusic3Progress(host) {
   const progTxt = host.querySelector("[data-plugin-progress-txt]");
   return window.api.onMusic3Progress((data) => {
     if (!data || (data.id && data.id !== "minimax-music3")) return;
-    if (data.phase !== "install" && data.phase !== "dsh") return;
+    if (data.phase !== "install" && data.phase !== "dsh" && data.phase !== "update") return;
     if (prog) prog.style.display = "block";
     if (progTxt) progTxt.style.display = "block";
     const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
@@ -32596,6 +32642,32 @@ async function refreshH3PluginCard(root) {
       refreshH3PluginCard(root);
     }, { primary: true });
   }
+  if (st.updateAvailable && window.api.h3UpdateRuntime) {
+    addBtn(
+      "update",
+      I18n.t("更新") + (st.latestVersion || st.feedVersion ? " → v" + (st.feedVersion || st.latestVersion) : ""),
+      async () => {
+        if (prog) prog.style.display = "block";
+        if (progTxt) {
+          progTxt.style.display = "block";
+          progTxt.textContent = I18n.t("准备下载…");
+        }
+        const wasOpen = !!st.consoleOpen;
+        if (wasOpen && window.api.h3Close) await window.api.h3Close();
+        const r = await window.api.h3UpdateRuntime();
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        if (r && r.ok) {
+          toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
+          if (wasOpen && window.api.h3Open) await window.api.h3Open();
+        } else {
+          toast(I18n.t("安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+        }
+        refreshH3PluginCard(root);
+      },
+      { disabled: !!st.updating || !!st.installing },
+    );
+  }
   addBtn("trash", I18n.t("移除入口"), async () => {
     if (
       !(await confirmDialog(
@@ -32608,11 +32680,11 @@ async function refreshH3PluginCard(root) {
     toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
     refreshH3PluginCard(root);
   }, { danger: true });
-  if (prog && st.installing) {
+  if (prog && (st.installing || st.updating)) {
     prog.style.display = "block";
     if (progTxt) {
       progTxt.style.display = "block";
-      progTxt.textContent = I18n.t("安装中…");
+      progTxt.textContent = st.updating ? I18n.t("更新中…") : I18n.t("安装中…");
     }
   }
 }
@@ -32622,7 +32694,7 @@ function bindH3Progress(host) {
   const progTxt = host.querySelector("[data-plugin-progress-txt]");
   return window.api.onH3Progress((data) => {
     if (!data || (data.id && data.id !== "minimax-h3")) return;
-    if (data.phase !== "install" && data.phase !== "dsh") return;
+    if (data.phase !== "install" && data.phase !== "dsh" && data.phase !== "update") return;
     if (prog) prog.style.display = "block";
     if (progTxt) progTxt.style.display = "block";
     const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
@@ -36129,7 +36201,7 @@ async function assistSend(text) {
   renderAssistPanel({ forceStick: true });
   updateRunQueuePanel();
 
-  const stateJson = JSON.stringify(await assistAppSnapshot(), null, 2).slice(0, 14000);
+  const stateJson = JSON.stringify(await assistAppSnapshot(), null, 2);
   const hist = S.assistMessages
     .slice(0, -1)
     .slice(-16)

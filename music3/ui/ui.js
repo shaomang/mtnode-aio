@@ -107,12 +107,12 @@
       return;
     }
     const ok = confirm(
-      "自我修复将读取最近的 console 日志，由 Agent 对症修复安装环境（不会启动服务）。\n继续？",
+      "自我修复会把最近的 console 日志交给 Agent（dsh）分析判断并动手修复。\n每人环境不同，由 Agent 根据日志自行决策。不会启动服务。\n继续？",
     );
     if (!ok) return;
-    logLine("自我修复：读取 console 并交 Agent…");
+    logLine("自我修复：提交 console → dsh…");
     const r = await api.selfRepair({});
-    if (r && r.ok) logLine("自我修复完成");
+    if (r && r.ok) logLine("自我修复完成" + (r.message ? " — " + r.message : ""));
     else
       logLine(
         "自我修复失败: " +

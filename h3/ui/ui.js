@@ -51,7 +51,36 @@
     $("btnUninstall").disabled = !st.installDir || !!st.installing;
 
     if (st.gpu) applyGpu(st.gpu);
+    syncLaunchOptsUi(st);
     return st;
+  }
+
+  function syncLaunchOptsUi(st) {
+    const map = [
+      ["optCpuVae", st.cpuVae !== false],
+      ["optPinned", st.optDisablePinnedMemory !== false],
+      ["optFp16", st.optFp16Intermediates !== false],
+      ["optExpand", st.optExpandableSegments !== false],
+    ];
+    for (const [id, on] of map) {
+      const el = $(id);
+      if (el && !el._bound) {
+        el._bound = true;
+        el.addEventListener("change", async () => {
+          if (!api.setLaunchOpts) return;
+          const r = await api.setLaunchOpts({
+            cpuVae: !!$("optCpuVae").checked,
+            optDisablePinnedMemory: !!$("optPinned").checked,
+            optFp16Intermediates: !!$("optFp16").checked,
+            optExpandableSegments: !!$("optExpand").checked,
+          });
+          const note = $("launchOptsNote");
+          if (note) note.textContent = (r && r.note) || "已保存";
+          logLine("启动优化已保存（下次启动生效）");
+        });
+      }
+      if (el) el.checked = !!on;
+    }
   }
 
   function applyGpu(gpu) {
@@ -119,13 +148,14 @@
       return;
     }
     const ok = confirm(
-      "自我修复将读取最近的 console 日志，由 Agent 对症修复安装环境（不会启动服务）。\n若日志指向 comfy_kitchen/旧 torch，会优先重建隔离 venv。\n继续？",
+      "自我修复会把最近的 console 日志交给 Agent（dsh）分析判断并动手修复。\n每人环境不同，由 Agent 根据日志自行决策。不会启动服务。\n继续？",
     );
     if (!ok) return;
-    logLine("自我修复：读取 console 并交 Agent…");
+    logLine("自我修复：提交 console → dsh…");
     const r = await api.selfRepair({});
-    if (r && r.ok) logLine("自我修复完成");
-    else
+    if (r && r.ok) {
+      logLine("自我修复完成" + (r.message ? " — " + r.message : ""));
+    } else
       logLine(
         "自我修复失败: " +
           ((r && (r.message || r.error)) || "未知错误") +

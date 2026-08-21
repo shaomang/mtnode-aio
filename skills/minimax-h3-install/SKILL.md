@@ -1,7 +1,7 @@
 ---
 name: minimax-h3-install
 title: MiniMax H3 本地安装
-description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探测 CUDA Python、创建隔离 venv、安装依赖、下载模型并冒烟验证。含 console 自我修复指引。
+description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：隔离 venv、依赖、模型、冒烟；含自我修复与 24G 显存最佳实践。
 ---
 
 # MiniMax H3 本地安装
@@ -11,115 +11,100 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 插件调用时：
 
 - **当前工作区就是 `INSTALL_DIR`**，可直接读写并执行命令
-- **`SCAFFOLD_REF`（或 `.scaffold-ref`）仅作参考**：内置脚手架/脚本是示例实现，不是已完成的安装。请按下方目标自行准备目录；可按需从参考路径复制或改写，也可等价实现
+- **`SCAFFOLD_REF`（或 `.scaffold-ref`）仅作参考**：内置脚手架/脚本是示例实现，不是已完成的安装
 - 不要假设插件已替你复制好脚手架
-- 若任务附带 **CONSOLE_LOG**（插件 console 最近日志），优先根据日志定位并修复，不要盲目重装全部模型
+- 若任务附带 **CONSOLE_LOG**，以「最近失败焦点」为准自行分析修复（每人环境不同）
 
 ## 目标
 
-在 `INSTALL_DIR`（由任务给出）完成可运行的后端，使：
+在 `INSTALL_DIR` 完成可运行后端：
 
-- `INSTALL_DIR\ComfyUI\venv\Scripts\python.exe` 存在且 **venv 内** `torch.cuda.is_available()` 为真
-- `import comfy_kitchen` 在 **同一 venv python** 下成功（不得再引用 conda 旧 torch）
-- `INSTALL_DIR\ComfyUI\main.py` 存在
-- 权重就绪（约 42–65GB；整机建议预留 ≥70GB）：
+- `ComfyUI\venv\Scripts\python.exe` 存在且 **venv 内** `torch.cuda.is_available()` 为真
+- `import comfy_kitchen` 成功（torch 必须在 `ComfyUI\venv`，禁止 `--system-site-packages`）
+- `ComfyUI\main.py` 存在
+- 权重就绪（约 42–65GB；建议预留 ≥70GB）：
   - `models\diffusion_models\minimax_h3_fl2va_pruned_int8_convrot.safetensors`
   - `models\diffusion_models\minimax_h3_ref2va_pruned_int8_convrot.safetensors`（R2V）
   - `models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`
   - `models\vae\minimax_h3_video_vae_fp16.safetensors` + `minimax_h3_audio_vae_fp32.safetensors`
-- 可用 `ComfyUI\venv\Scripts\python.exe main.py --listen 127.0.0.1 --port 8188` 启动（**不要**在本 skill 中启动）
+- custom_nodes：`ComfyUI-MiniMaxH3-TeaCache`、`ComfyUI-KJNodes`（含 Sage / VRAM_Debug / MiniMax LowVRAM / ChunkFFN）
+- **不要在本 skill 中启动 ComfyUI**
 
-## 已知故障：comfy_kitchen + 旧 torch（高频）
+## 24G 显存最佳实践（RTX 4090 级）
 
-### 症状（console）
+官方/社区在 24GB 上稳定跑通依赖：**量化权重 + 注意力加速 + 步间缓存 + 采样后卸模型再 VAE**。整机建议 **≥32GB 系统内存**（权重会 offload 到 RAM）。
+
+### 启动参数（插件默认开启，可关）
 
 ```
-ValueError: infer_schema(func): Parameter kernel_size has unsupported type list[int]
-...
-File "...\comfy_kitchen\backends\eager\na.py"
-File "...\miniconda3\envs\seg\lib\site-packages\torch\..."
-backend_exited / backend start failed
+python main.py --listen 127.0.0.1 --port 8188
+  --cpu-vae
+  --disable-pinned-memory
+  --fp16-intermediates
+  --reserve-vram 4
 ```
 
-### 根因
+环境变量：`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`  
+**不要**与 `--lowvram` 同开（与 `--disable-pinned-memory` 冲突）。
 
-旧版 `setup_env.ps1` 用 `python -m venv --system-site-packages`，ComfyUI 装了新版 `comfy_kitchen`（注解用 `list[int]`），但运行时仍加载 **conda 环境里的旧 torch**（只认 `typing.List[int]`），启动即崩。
+### 工作流节点（MTNode 默认启用，节点设置可关）
 
-### 修复（优先执行，勿重下模型）
+| 优化 | 作用 | 节点 |
+|------|------|------|
+| TeaCache | H3 专用步缓存，加速采样 | `MiniMaxH3TeaCache` |
+| EasyCache | 原生步跳过缓存（约 1.4–2× 采样段） | `EasyCache`（reuse≈0.2, start≈0.15, end≈0.95） |
+| Sage Attention | 注意力加速（有包用 `auto`；无包则跳过） | `PathchSageAttentionKJ` |
+| Low VRAM Attention | 按 head 分块降峰值显存 | `MiniMaxLowVRAMAttention` |
+| Chunk FeedForward | FFN 分块降峰值 | `MiniMaxChunkFeedForward` |
+| VRAM Barrier | 采样后 `unload_all_models` + empty_cache，避免双 VAE 解码 OOM | `VRAM_Debug` |
 
-1. **不要**再用 `--system-site-packages`。
-2. 运行（可参考 `SCAFFOLD_REF\scripts\repair_torch_kitchen.ps1`）：
-   ```powershell
-   cd INSTALL_DIR
-   .\scripts\repair_torch_kitchen.ps1
-   ```
-   或手动：
-   - 若 `ComfyUI\venv\pyvenv.cfg` 含 `include-system-site-packages = true`：删掉整个 `ComfyUI\venv`，用探测到的 CUDA Python **无** `--system-site-packages` 重建
-   - 在 venv 内安装 CUDA torch：  
-     `.\ComfyUI\venv\Scripts\python.exe -m pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124`
-   - 再 `pip install -r ComfyUI\requirements.txt`
-3. 冒烟：
-   ```powershell
-   .\ComfyUI\venv\Scripts\python.exe -c "import torch; assert torch.cuda.is_available(); import comfy_kitchen; print(torch.__version__)"
-   ```
-4. 确认 `python -c "import torch; print(torch.__file__)"` 路径落在 `ComfyUI\venv\...`，**不是** `miniconda3\envs\...`。
+推荐模型链：`UNET → TeaCache → EasyCache → SigmaShift → LowVRAMAttn → ChunkFFN → Sage → Guider`  
+采样输出经 `VRAM_Debug` 后再 `VAEDecode` / `VAEDecodeAudio`。
 
-## 步骤（按序 · 全新安装）
+### 分辨率提示（24G）
 
-1. **准备工程文件**  
-   若缺 `app\pipeline.py` / `scripts\*.ps1` / `requirements.txt`：从 `SCAFFOLD_REF` 复制或按参考自行生成。保留用户已有的 `ComfyUI` / `models` / `output`。
+- 冒烟：约 864×480、5s、20 steps  
+- 生产常用：约 0.6–0.8MP（如 1056×608）；原生 ~1MP 更吃显存/时间  
+- 时长越长 token 越多，注意力更易 OOM——优先开 LowVRAM / ChunkFFN / VRAM Barrier
 
-2. **探测 CUDA Python（自行判断）**  
-   - 优先环境变量 `MT_H3_CUDA_PYTHON` / `MT_MUSIC_CUDA_PYTHON`
-   - 再查常见 conda：`ProgramData` / 用户目录下的 `miniconda3`、`anaconda3` 的 `envs\seg|torch|pytorch|cuda|base\python.exe`
-   - 再查 PATH 中的 `python`
-   - 用 `python -c "import torch; print(torch.cuda.is_available())"` 验证；选第一个 CUDA 可用的  
-     （此解释器**仅作 venv 基座**；最终推理必须用 venv 内 torch）
-   - 将路径写入 `INSTALL_DIR\.cuda-python`（单行绝对路径）
+### 可选依赖
 
-3. **环境**（可参考 `SCAFFOLD_REF\scripts\setup_env.ps1`）  
-   ```powershell
-   cd INSTALL_DIR
-   .\scripts\setup_env.ps1 -CudaPython "<探测到的路径>"
-   ```
-   - **必须**创建隔离 venv（**禁止** `--system-site-packages`）
-   - 在 venv 内安装 CUDA torch，再装 ComfyUI / helper requirements
-   - 若已有错误的 system-site-packages venv：先跑 `repair_torch_kitchen.ps1` 或删 venv 重建
+- Windows：`triton-windows` + 匹配 torch/CUDA 的 `sageattention` wheel（装不上则禁用 Sage，其它优化仍有效）
 
-4. **下载权重**（可参考 `SCAFFOLD_REF\scripts\download_models.ps1`）  
-   ```powershell
-   .\scripts\download_models.ps1
-   ```
-   优先 ModelScope `Comfy-Org/MiniMax-H3`。下载时间长，保持运行直到权重就绪。  
-   **自我修复且模型已齐全时跳过本步。**
+## 已知故障摘要
 
-5. **冒烟**  
-   ```powershell
-   .\ComfyUI\venv\Scripts\python.exe -c "import torch; assert torch.cuda.is_available(); import comfy_kitchen; print('ok')"
-   .\ComfyUI\venv\Scripts\python.exe -m app
-   ```
-   或确认上述模型文件非空。
+### sageattention 缺失
 
-## 自我修复模式（CONSOLE_LOG 已提供）
+日志：`No module named 'sageattention'`。装匹配 wheel，或关闭 Sage（保留其它优化）。
 
-1. 阅读 CONSOLE_LOG，归类：
-   - `list[int]` / `comfy_kitchen` / `infer_schema` / torch 路径在 conda → 按「已知故障」修 venv/torch
-   - `not_installed` / 缺 `main.py` / 缺 venv → 走安装步骤 1–3
-   - 缺模型文件 → 只跑 download_models
-   - 其它 ImportError / CUDA OOM → 对症修依赖或提示用户，勿删 output
-2. 修完后用 venv python 冒烟；写 `.install-ok` 与 `.h3-agent-result`
-3. **不要启动 ComfyUI**（由插件启停）
+### comfy_kitchen + `list[int]` infer_schema
+
+隔离 venv + venv 内 CUDA torch；跑 `scripts\repair_torch_kitchen.ps1` 与 `patch_comfy_kitchen_typing.py`。禁止 `--system-site-packages`。
+
+### 采样完成但 VAE 卡住 / OOM
+
+在 sampler 与 VAE 之间加 `VRAM_Debug`（`unload_all_models=true`）。确认启动带 `--disable-pinned-memory`。
+
+## 步骤（全新安装）
+
+1. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `requirements.txt`（保留已有 ComfyUI/models/output）
+2. 探测 CUDA Python → 写 `.cuda-python`（仅作 venv 基座）
+3. `.\scripts\setup_env.ps1`：隔离 venv、装 CUDA torch、ComfyUI 依赖、TeaCache + KJNodes
+4. `.\scripts\download_models.ps1`（优先 ModelScope `Comfy-Org/MiniMax-H3`）
+5. 冒烟：`import torch; import comfy_kitchen`；确认模型文件非空
+
+## 自我修复模式（dsh）
+
+把 CONSOLE 交给 Agent：**自行根据最近失败焦点分析并修复**；已知故障仅在证据匹配时参考。模型已齐勿重下。勿启动 ComfyUI；勿删 output。
 
 ## 约束
 
-- 不要启动 ComfyUI（启停由插件负责）。
-- 不要删除用户已有的 `ComfyUI\output\` 或 `output\`。
-- 磁盘不足（自由空间远小于 70GB）时先警告用户再继续。
-- 若用户目录已是完整 `mt-video` 式布局（已有 ComfyUI + 模型），仅补齐缺失部分，勿整体重装。
-- **禁止**新建带 `--system-site-packages` 的 ComfyUI venv。
+- 不启动 ComfyUI；不删 `ComfyUI\output\` / `output\`
+- 磁盘远小于 70GB 时先警告
+- 已有完整布局只补缺失，勿整体重装
+- **禁止** `--system-site-packages` 的 ComfyUI venv
 
 ## 成功标准
 
-- 创建空文件 `.install-ok`
-- 写入 `.h3-agent-result`（`ok=true`）；失败写 `ok=false` + `reason=`
-- 回复：`install_ok=1`、`cuda_python=`、`venv_ok=`、`comfy_ok=`、`models_ok=`、`cuda_available=`、`torch_file=`（应包含 `ComfyUI\venv`）
+- `.install-ok`；`.h3-agent-result` 写 `ok=true`（失败 `ok=false` + `reason=`）
+- 回复：`install_ok=1`、`cuda_python=`、`venv_ok=`、`comfy_ok=`、`models_ok=`、`cuda_available=`、`torch_file=`（含 `ComfyUI\venv`）

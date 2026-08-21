@@ -17,6 +17,7 @@ const api = {
   consoleTail: (n) => ipcRenderer.invoke("h3:consoleTail", n),
   freeDisk: () => ipcRenderer.invoke("h3:freeDisk"),
   setCpuVae: (v) => ipcRenderer.invoke("h3:setCpuVae", v),
+  setLaunchOpts: (opts) => ipcRenderer.invoke("h3:setLaunchOpts", opts || {}),
   onProgress: (cb) => {
     const handler = (_e, data) => cb && cb(data);
     ipcRenderer.on("h3:progress", handler);

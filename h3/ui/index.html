@@ -128,6 +128,15 @@
       <div class="bar util" id="gpuUtilBar"><i></i></div>
     </div>
 
+    <div class="card" id="launchOptsCard">
+      <div class="meta">24G 启动优化（默认开 · 下次启动后端生效）</div>
+      <label class="meta"><input type="checkbox" id="optCpuVae" checked /> CPU VAE（减轻解码峰值）</label>
+      <label class="meta"><input type="checkbox" id="optPinned" checked /> --disable-pinned-memory（允许 CPU offload）</label>
+      <label class="meta"><input type="checkbox" id="optFp16" checked /> --fp16-intermediates</label>
+      <label class="meta"><input type="checkbox" id="optExpand" checked /> expandable_segments（防碎片 OOM）</label>
+      <div class="meta" id="launchOptsNote"></div>
+    </div>
+
     <div class="card" style="flex:1; min-height:0">
       <div class="row">
         <div class="meta">后端 Console</div>

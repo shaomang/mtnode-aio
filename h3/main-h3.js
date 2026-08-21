@@ -18,8 +18,15 @@ const http = require("http");
 const { spawn, execFile } = require("child_process");
 const crypto = require("crypto");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
+const {
+  verGt,
+  verMax,
+  fetchRemoteManifest,
+  downloadRuntimeTo,
+} = require("../plugins/runtime-feed.js");
 
 const PLUGIN_ID = "minimax-h3";
+const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
 const DEFAULT_PORT = 8188;
 const DISK_HINT_GB = 70;
 const JOB_LOCK_STALE_MS = 45 * 60 * 1000;
@@ -98,12 +105,32 @@ function lockPath() {
 function consoleLogPath() {
   return join(h3Root(), "console.log");
 }
-function packRoot() {
+function bundledPackRoot() {
   if (app.isPackaged) {
     const fromRes = join(process.resourcesPath, "h3-pack");
     if (fs.existsSync(fromRes)) return fromRes;
   }
   return join(appRoot || path.join(__dirname, ".."), "h3-pack");
+}
+function runtimePackRoot() {
+  return join(h3Root(), "runtime");
+}
+function packVersionAt(dir) {
+  try {
+    const man = readJson(join(dir, "manifest.json"), null);
+    return String((man && man.version) || "") || "";
+  } catch {
+    return "";
+  }
+}
+function packRoot() {
+  const bundled = bundledPackRoot();
+  const runtime = runtimePackRoot();
+  const rtVer = fs.existsSync(join(runtime, "manifest.json")) ? packVersionAt(runtime) : "";
+  const bdVer = fs.existsSync(join(bundled, "manifest.json")) ? packVersionAt(bundled) : "";
+  if (rtVer && bdVer && verGt(bdVer, rtVer)) return bundled;
+  if (rtVer) return runtime;
+  return bundled;
 }
 function uiEntry() {
   const packed = join(h3Root(), "ui", "index.html");
@@ -131,7 +158,12 @@ function defaultConfig() {
     port: DEFAULT_PORT,
     cudaPython: "",
     wantRunning: false,
-    cpuVae: false,
+    /* 24G 启动优化：默认开，可在插件控制台关闭 */
+    cpuVae: true,
+    optDisablePinnedMemory: true,
+    optFp16Intermediates: true,
+    optExpandableSegments: true,
+    optReserveVramGb: 4,
   };
 }
 function loadConfig() {
@@ -148,6 +180,135 @@ function readManifest() {
     return readJson(join(packRoot(), "manifest.json"), {}) || {};
   } catch {
     return {};
+  }
+}
+
+function syncScaffoldToInstall(installDir) {
+  const root = String(installDir || "").trim();
+  if (!root || !fs.existsSync(root)) return { ok: false, error: "no_install_dir" };
+  const pack = packRoot();
+  try {
+    const srcApp = join(pack, "app");
+    if (fs.existsSync(srcApp)) {
+      const destApp = join(root, "app");
+      mk(destApp);
+      for (const name of fs.readdirSync(srcApp)) {
+        if (!name.endsWith(".py")) continue;
+        const s = join(srcApp, name);
+        if (!fs.statSync(s).isFile()) continue;
+        fs.copyFileSync(s, join(destApp, name));
+      }
+      try {
+        const pyc = join(destApp, "__pycache__");
+        if (fs.existsSync(pyc)) fs.rmSync(pyc, { recursive: true, force: true });
+      } catch {}
+    }
+    const scriptsSrc = join(pack, "scripts");
+    if (fs.existsSync(scriptsSrc)) {
+      const dest = join(root, "scripts");
+      mk(dest);
+      for (const name of fs.readdirSync(scriptsSrc)) {
+        const s = join(scriptsSrc, name);
+        if (!fs.statSync(s).isFile()) continue;
+        fs.copyFileSync(s, join(dest, name));
+      }
+    }
+    for (const name of ["requirements.txt", "start_backend.cmd", "README.md"]) {
+      const s = join(pack, name);
+      if (fs.existsSync(s) && fs.statSync(s).isFile()) fs.copyFileSync(s, join(root, name));
+    }
+    appendConsole("[sync] scaffold → " + root);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+let remoteManCache = { at: 0, man: null };
+let remoteManPending = null;
+let runtimeUpdating = false;
+
+function catalogCachedPluginVersion() {
+  try {
+    const p = join(getDataDir(), "app-plugins", "catalog.json");
+    const doc = readJson(p, null);
+    const list = (doc && doc.plugins) || [];
+    const hit = list.find(
+      (x) => x && (x.id === PLUGIN_ID || x.handler === "h3" || x.kind === "h3"),
+    );
+    return String((hit && hit.version) || "") || "";
+  } catch {
+    return "";
+  }
+}
+
+async function latestRemoteVersion() {
+  if (remoteManPending) return remoteManPending;
+  remoteManPending = (async () => {
+    try {
+      const man = await fetchRemoteManifest(H3_FEED, 8000);
+      if (man && typeof man === "object") {
+        remoteManCache = { at: Date.now(), man };
+        return String(man.version || "");
+      }
+    } catch {}
+    return String((remoteManCache.man && remoteManCache.man.version) || "");
+  })();
+  try {
+    return await remoteManPending;
+  } finally {
+    remoteManPending = null;
+  }
+}
+
+async function updatePluginRuntime() {
+  if (runtimeUpdating) return { ok: false, error: "busy" };
+  runtimeUpdating = true;
+  try {
+    const dest = runtimePackRoot();
+    const r = await downloadRuntimeTo({
+      feedBase: H3_FEED,
+      destDir: dest,
+      onProgress: (ev) => {
+        emitProgress({
+          phase: "update",
+          step: ev.phase || "update",
+          stepLabel:
+            ev.phase === "download"
+              ? "下载脚手架"
+              : ev.phase === "extract"
+                ? "解压安装"
+                : ev.phase === "manifest"
+                  ? "读取清单"
+                  : "更新插件",
+          message: ev.version ? "v" + ev.version : "",
+          pct: Number(ev.pct) || 0,
+        });
+      },
+    });
+    const cfg = loadConfig();
+    if (cfg.installDir) syncScaffoldToInstall(cfg.installDir);
+    try {
+      syncH3InstallSkill();
+    } catch {}
+    const man = readManifest();
+    writeJson(installedMetaPath(), {
+      ok: true,
+      version: (r && r.version) || (man && man.version) || "0.0.0",
+      installDir: cfg.installDir || "",
+      updatedAt: new Date().toISOString(),
+      source: (r && r.source) || H3_FEED,
+    });
+    appendConsole("[update] runtime v" + ((r && r.version) || "") + " → " + dest);
+    emitProgress({ phase: "update", step: "done", stepLabel: "完成", pct: 100 });
+    return { ok: true, version: (r && r.version) || "" };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    appendConsole("[update] failed: " + msg);
+    emitProgress({ phase: "update", step: "error", message: msg, pct: 0, error: true });
+    return { ok: false, error: msg };
+  } finally {
+    runtimeUpdating = false;
   }
 }
 
@@ -582,10 +743,20 @@ async function statusForUi() {
   } catch {
     gpu = null;
   }
+  const version = (man && man.version) || (installedMeta && installedMeta.version) || "1.0.0";
+  const feedVer = await latestRemoteVersion();
+  const catVer = catalogCachedPluginVersion();
+  const latestVersion = verMax(feedVer, catVer) || feedVer || catVer || "";
+  const updateAvailable = !!(feedVer && verGt(feedVer, version));
   return {
     ok: true,
     id: PLUGIN_ID,
-    version: (man && man.version) || (installedMeta && installedMeta.version) || "1.0.0",
+    version,
+    latestVersion,
+    feedVersion: feedVer || "",
+    catalogVersion: catVer || "",
+    updateAvailable,
+    updating: runtimeUpdating,
     diskHintGb: DISK_HINT_GB,
     installDir: cfg.installDir || "",
     project: sig,
@@ -598,7 +769,11 @@ async function statusForUi() {
     lock,
     gpu,
     wantRunning: !!cfg.wantRunning,
-    cpuVae: !!cfg.cpuVae,
+    cpuVae: cfg.cpuVae !== false,
+    optDisablePinnedMemory: cfg.optDisablePinnedMemory !== false,
+    optFp16Intermediates: cfg.optFp16Intermediates !== false,
+    optExpandableSegments: cfg.optExpandableSegments !== false,
+    optReserveVramGb: Number(cfg.optReserveVramGb) > 0 ? Number(cfg.optReserveVramGb) : 4,
     consolePath: consoleLogPath(),
   };
 }
@@ -770,26 +945,31 @@ async function agentInstallByAgent(opts) {
     if (fs.existsSync(resultMarker)) fs.unlinkSync(resultMarker);
   } catch {}
 
-  const prompt =
-    `请使用 skill「minimax-h3-install」${
-      opts.selfRepair
-        ? "根据 CONSOLE_LOG 自我修复安装（对症修复；优先已知故障，勿盲目重装模型）"
-        : mode === "recover"
-          ? "完成或修复安装（保底修复；用户已确认）"
-          : "端到端完成安装（主安装路径）"
-    }。\n` +
-    `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
-    `SCAFFOLD_REF=${pack}\n` +
-    `重要：内置脚手架/脚本仅作参考实现。请以 skill 目标为准自行准备 INSTALL_DIR（可按需从 SCAFFOLD_REF 复制或改写 app/scripts/requirements，也可等价实现）。不要假设插件已替你复制好脚手架。\n` +
-    (failReason ? `先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
-    `要求：\n` +
-    `1) 自行探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）\n` +
-    `2) 建立【隔离】ComfyUI venv（禁止 --system-site-packages）并在 venv 内安装 CUDA torch + 依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1 / repair_torch_kitchen.ps1）\n` +
-    `3) 下载/就绪模型权重（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1；自我修复且模型已齐则跳过）\n` +
-    `4) 冒烟：venv python 下 torch.cuda + import comfy_kitchen；确认 torch.__file__ 在 ComfyUI\\venv 内\n` +
-    `不要启动 ComfyUI。不要删除用户 output/。\n` +
-    `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path> torch_file=<path>。\n` +
-    `失败则 ${resultMarker} 写 ok=false 与 reason=...`;
+  const prompt = opts.selfRepair
+    ? `请使用 skill「minimax-h3-install」的【自我修复】模式。\n` +
+      `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
+      `SCAFFOLD_REF=${pack}（仅参考）\n` +
+      `任务：阅读下方 CONSOLE 日志，由你自行分析判断根因并完成修复。每人环境不同，不要套用不匹配的固定剧本。\n` +
+      `skill 中「已知故障」仅当日志证据确实匹配时参考。\n` +
+      `优先修依赖/脚本/配置；模型已齐则勿重下。不要启动 ComfyUI。不要删除 output/。\n` +
+      (failReason ? `\n${failReason}\n` : "") +
+      `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true，可附 reason=已修复…），回复 repair_ok=1 与简要根因。\n` +
+      `失败则 ${resultMarker} 写 ok=false 与 reason=...`
+    : `请使用 skill「minimax-h3-install」${
+        mode === "recover" ? "完成或修复安装（保底修复；用户已确认）" : "端到端完成安装（主安装路径）"
+      }。\n` +
+      `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
+      `SCAFFOLD_REF=${pack}\n` +
+      `重要：内置脚手架/脚本仅作参考实现。请以 skill 目标为准自行准备 INSTALL_DIR（可按需从 SCAFFOLD_REF 复制或改写 app/scripts/requirements，也可等价实现）。不要假设插件已替你复制好脚手架。\n` +
+      (failReason ? `先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
+      `要求：\n` +
+      `1) 自行探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）\n` +
+      `2) 建立【隔离】ComfyUI venv（禁止 --system-site-packages）并在 venv 内安装 CUDA torch + 依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1 / repair_torch_kitchen.ps1）\n` +
+      `3) 下载/就绪模型权重（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1；修复且模型已齐则跳过）\n` +
+      `4) 冒烟：venv python 下 torch.cuda + import comfy_kitchen；确认 torch.__file__ 在 ComfyUI\\venv 内\n` +
+      `不要启动 ComfyUI。不要删除用户 output/。\n` +
+      `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path> torch_file=<path>。\n` +
+      `失败则 ${resultMarker} 写 ok=false 与 reason=...`;
 
   try {
     appendConsole("[agent-install] workspace=" + workspace + " permission=danger-full-access");
@@ -908,8 +1088,55 @@ async function agentRecoverInstall(opts) {
 }
 
 /**
- * 自我修复：读取最近 console 日志，交给 Agent（minimax-h3-install）对症修复。
- * 常见：comfy_kitchen + conda 旧 torch（list[int] infer_schema）→ 重建隔离 venv。
+ * 从 console 提取「最近失败焦点」+ 尾部上下文，供 dsh 自行分析（不做本地定论）。
+ */
+function extractConsoleForAgent(logText) {
+  const raw = String(logText || "");
+  const lines = raw.split(/\r?\n/);
+  const markers = [];
+  for (let i = 0; i < lines.length; i++) {
+    const L = lines[i];
+    if (
+      /!!! Exception during processing !!!/i.test(L) ||
+      /ModuleNotFoundError:/i.test(L) ||
+      /ImportError:/i.test(L) ||
+      /ValueError:/i.test(L) ||
+      /\[job\] error:/i.test(L) ||
+      /\[job\] backend start failed/i.test(L) ||
+      /backend_exited/i.test(L) ||
+      /^Traceback \(most recent call last\):/i.test(L)
+    ) {
+      markers.push(i);
+    }
+  }
+  const start = markers.length ? markers[markers.length - 1] : Math.max(0, lines.length - 80);
+  const focus = lines.slice(Math.max(0, start - 5), Math.min(lines.length, start + 50)).join("\n");
+  const recentTail = lines.slice(-120).join("\n");
+  return { focus, recentTail, markerLine: start };
+}
+
+function comfyVenvPython(installDir) {
+  const py = join(String(installDir || ""), "ComfyUI", "venv", "Scripts", "python.exe");
+  return fs.existsSync(py) ? py : "";
+}
+
+function runVenvPy(py, code) {
+  return new Promise((resolve) => {
+    const child = spawn(py, ["-c", code], { windowsHide: true });
+    let out = "";
+    child.stdout.on("data", (d) => {
+      out += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      out += d.toString();
+    });
+    child.on("close", (c) => resolve({ code: c || 0, out }));
+    child.on("error", (e) => resolve({ code: 1, out: String((e && e.message) || e) }));
+  });
+}
+
+/**
+ * 自我修复：把 console 日志交给 dsh Agent 自行分析并修复（每人环境不同，不做本地定论短路）。
  */
 async function selfRepairFromConsole(opts) {
   opts = opts || {};
@@ -920,31 +1147,35 @@ async function selfRepairFromConsole(opts) {
   const tail = consoleTail(Number(opts.maxBytes) || 96 * 1024);
   const logText = String((tail && tail.text) || "").trim();
   if (!logText) {
-    return { ok: false, error: "empty_console", message: "console 日志为空，请先运行一次生成或安装以产生日志" };
+    return {
+      ok: false,
+      error: "empty_console",
+      message: "console 日志为空，请先运行一次生成或安装以产生日志",
+    };
   }
 
-  appendConsole("[self-repair] begin · console bytes≈" + logText.length);
+  appendConsole("[self-repair] begin · console bytes≈" + logText.length + " → dsh");
   try {
     await stopBackend();
   } catch (e) {
     appendConsole("[self-repair] stop warn: " + String((e && e.message) || e));
   }
 
-  const known = [];
-  if (/list\[int\]|infer_schema|comfy_kitchen|unsupported type list\[int\]/i.test(logText)) {
-    known.push(
-      "命中已知故障：comfy_kitchen 与旧 torch（常因 venv --system-site-packages 继承 conda torch）。优先运行 scripts/repair_torch_kitchen.ps1 或按 skill「已知故障」重建隔离 venv 并在 venv 内安装 CUDA torch。",
-    );
-  }
-  if (/backend_exited|backend start failed|backend_start_timeout/i.test(logText)) {
-    known.push("后端进程启动后立刻退出；请结合 Traceback 修复依赖，勿忽略 import 错误。");
-  }
+  const extracted = extractConsoleForAgent(logText);
+  appendConsole("[self-repair] focus @line=" + extracted.markerLine);
+  appendConsole("[self-repair] focus preview:\n" + String(extracted.focus || "").slice(0, 800));
 
-  const snippet = logText.length > 24000 ? logText.slice(-24000) : logText;
   const hint =
-    (known.length ? known.join("\n") + "\n" : "") +
-    "以下为插件 CONSOLE_LOG（最近片段，可能含 ANSI 颜色码）：\n```\n" +
-    snippet +
+    "【自我修复任务 · 由你（dsh）分析日志并修复】\n" +
+    "每人环境与报错可能不同：请根据日志自行判断根因并动手修复，不要套用不匹配的旧故障剧本。\n" +
+    "以「最近失败焦点」为准；更早的 Traceback 可能已过时，仅作参考。\n" +
+    "skill「minimax-h3-install」中的已知故障章节仅当日志证据匹配时才可参考。\n" +
+    "不要盲目重装已就绪的模型；不要启动 ComfyUI；不要删除 output/。\n\n" +
+    "=== 最近失败焦点 ===\n```\n" +
+    String(extracted.focus || "").slice(0, 10000) +
+    "\n```\n\n" +
+    "=== console 最近尾部（更多上下文） ===\n```\n" +
+    String(extracted.recentTail || "").slice(0, 12000) +
     "\n```\n";
 
   const r = await agentInstallByAgent({
@@ -952,8 +1183,12 @@ async function selfRepairFromConsole(opts) {
     error: hint,
     selfRepair: true,
   });
-  appendConsole("[self-repair] done ok=" + !!(r && r.ok) + " err=" + ((r && r.error) || ""));
-  return Object.assign({}, r || {}, { selfRepair: true, consoleBytes: logText.length });
+  appendConsole("[self-repair] dsh done ok=" + !!(r && r.ok) + " err=" + ((r && r.error) || ""));
+  return Object.assign({}, r || {}, {
+    selfRepair: true,
+    via: "dsh",
+    consoleBytes: logText.length,
+  });
 }
 
 function lastConsoleErrorSnippet(maxChars) {
@@ -1104,13 +1339,33 @@ async function startBackend() {
   appendConsole("starting ComfyUI…");
   const outFd = fs.openSync(consoleLogPath(), "a");
   const args = ["main.py", "--listen", "127.0.0.1", "--port", String(port)];
-  if (cfg.cpuVae) args.push("--cpu-vae");
+  if (cfg.cpuVae !== false) args.push("--cpu-vae");
+  if (cfg.optDisablePinnedMemory !== false) args.push("--disable-pinned-memory");
+  if (cfg.optFp16Intermediates !== false) args.push("--fp16-intermediates");
+  const reserveGb = Number(cfg.optReserveVramGb);
+  if (Number.isFinite(reserveGb) && reserveGb > 0) {
+    args.push("--reserve-vram", String(reserveGb));
+  }
+  const env = Object.assign({}, process.env);
+  if (cfg.optExpandableSegments !== false) {
+    const prev = String(env.PYTORCH_CUDA_ALLOC_CONF || "").trim();
+    if (!/expandable_segments/i.test(prev)) {
+      env.PYTORCH_CUDA_ALLOC_CONF = prev
+        ? prev + ",expandable_segments:True"
+        : "expandable_segments:True";
+    }
+  }
+  appendConsole(
+    "[launch] flags=" +
+      args.slice(1).join(" ") +
+      (env.PYTORCH_CUDA_ALLOC_CONF ? " PYTORCH_CUDA_ALLOC_CONF=" + env.PYTORCH_CUDA_ALLOC_CONF : "")
+  );
   const child = spawn(py, args, {
     cwd: comfy,
     detached: true,
     windowsHide: true,
     stdio: ["ignore", outFd, outFd],
-    env: Object.assign({}, process.env),
+    env,
   });
   fs.closeSync(outFd);
   child.unref();
@@ -1341,7 +1596,8 @@ function buildH3Workflow(params, uploaded) {
     nodes[h3Node] = w("MiniMaxH3ImageToVideo", h3Inputs);
   }
 
-  if (params.teaEnabled !== false) {
+  /* 24G 优化链（均可关，默认开）：Tea → Easy → Shift → LowVRAM → ChunkFFN → Sage */
+  if (params.optTeaCache !== false && params.teaEnabled !== false) {
     const teaNode = String(id++);
     nodes[teaNode] = w("MiniMaxH3TeaCache", {
       model: link(modelOut, 0),
@@ -1353,6 +1609,18 @@ function buildH3Workflow(params, uploaded) {
     modelOut = teaNode;
   }
 
+  if (params.optEasyCache !== false) {
+    const easyNode = String(id++);
+    nodes[easyNode] = w("EasyCache", {
+      model: link(modelOut, 0),
+      reuse_threshold: Number(params.easyReuse) || 0.2,
+      start_percent: Number(params.easyStart) || 0.15,
+      end_percent: Number(params.easyEnd) || 0.95,
+      verbose: !!params.easyVerbose,
+    });
+    modelOut = easyNode;
+  }
+
   const shiftNode = String(id++);
   nodes[shiftNode] = w("MiniMaxH3SigmaShift", {
     model: link(modelOut, 0),
@@ -1361,12 +1629,38 @@ function buildH3Workflow(params, uploaded) {
   });
   modelOut = shiftNode;
 
-  const sageNode = String(id++);
-  nodes[sageNode] = w("PathchSageAttentionKJ", {
-    model: link(modelOut, 0),
-    sage_attention: params.sageMode || "auto",
-    allow_compile: !!params.sageCompile,
-  });
+  if (params.optLowVramAttn !== false) {
+    const lowNode = String(id++);
+    nodes[lowNode] = w("MiniMaxLowVRAMAttention", {
+      model: link(modelOut, 0),
+      head_chunks: Math.max(1, Number(params.lowVramHeadChunks) || 4),
+    });
+    modelOut = lowNode;
+  }
+
+  if (params.optChunkFfn !== false) {
+    const chunkNode = String(id++);
+    nodes[chunkNode] = w("MiniMaxChunkFeedForward", {
+      model: link(modelOut, 0),
+      chunks: Math.max(1, Number(params.chunkFfnChunks) || 2),
+      seq_threshold: Math.max(256, Number(params.chunkFfnSeqThreshold) || 4096),
+    });
+    modelOut = chunkNode;
+  }
+
+  const sageMode = String(params.sageMode || "disabled").trim() || "disabled";
+  const useSage =
+    params.optSageAttn !== false && !/^(disabled|off|none|false|0)$/i.test(sageMode);
+  let modelForGuider = modelOut;
+  if (useSage) {
+    const sageNode = String(id++);
+    nodes[sageNode] = w("PathchSageAttentionKJ", {
+      model: link(modelOut, 0),
+      sage_attention: sageMode === "disabled" ? "auto" : sageMode,
+      allow_compile: !!params.sageCompile,
+    });
+    modelForGuider = sageNode;
+  }
 
   const noiseNode = String(id++);
   const schedNode = String(id++);
@@ -1386,7 +1680,7 @@ function buildH3Workflow(params, uploaded) {
     denoise: Number(params.denoise) || 1,
   });
   nodes[samplerNode] = w("KSamplerSelect", { sampler_name: params.sampler || "res_multistep" });
-  nodes[guiderNode] = w("BasicGuider", { model: link(sageNode, 0), conditioning: link(h3Node, 0) });
+  nodes[guiderNode] = w("BasicGuider", { model: link(modelForGuider, 0), conditioning: link(h3Node, 0) });
   nodes[customNode] = w("SamplerCustomAdvanced", {
     noise: link(noiseNode, 0),
     guider: link(guiderNode, 0),
@@ -1394,8 +1688,27 @@ function buildH3Workflow(params, uploaded) {
     sigmas: link(schedNode, 0),
     latent_image: link(h3Node, 1),
   });
-  nodes[decodeNode] = w("VAEDecode", { samples: link(customNode, 0), vae: link(vaeVideoNode, 0) });
-  nodes[decodeAudioNode] = w("VAEDecodeAudio", { samples: link(customNode, 0), vae: link(vaeAudioNode, 0) });
+
+  let latentForDecode = customNode;
+  if (params.optVramBarrier !== false) {
+    const vramNode = String(id++);
+    nodes[vramNode] = w("VRAM_Debug", {
+      empty_cache: true,
+      gc_collect: true,
+      unload_all_models: true,
+      any_input: link(customNode, 0),
+    });
+    latentForDecode = vramNode;
+  }
+
+  nodes[decodeNode] = w("VAEDecode", {
+    samples: link(latentForDecode, 0),
+    vae: link(vaeVideoNode, 0),
+  });
+  nodes[decodeAudioNode] = w("VAEDecodeAudio", {
+    samples: link(latentForDecode, 0),
+    vae: link(vaeAudioNode, 0),
+  });
   nodes[createVideoNode] = w("CreateVideo", {
     images: link(decodeNode, 0),
     audio: link(decodeAudioNode, 0),
@@ -1499,6 +1812,29 @@ function uniqueFileInDir(dir, preferredName, defaultExt) {
   throw new Error("unique_filename_exhausted");
 }
 
+function isSageDisabledMode(mode) {
+  return /^(disabled|off|none|false|0)?$/i.test(String(mode == null ? "disabled" : mode).trim());
+}
+
+/** 缺 sageattention 时强制 disabled，避免 PathchSageAttentionKJ 必炸 */
+async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
+  if (optSageAttn === false) return "disabled";
+  const mode =
+    String(requested == null || requested === "" ? "auto" : requested).trim() || "auto";
+  if (isSageDisabledMode(mode)) return "disabled";
+  const py = comfyVenvPython(installDir);
+  if (!py) {
+    appendConsole("[generate] no venv → sageMode=disabled");
+    return "disabled";
+  }
+  const check = await runVenvPy(py, "import sageattention");
+  if (check.code !== 0) {
+    appendConsole("[generate] sageattention missing → sageMode=disabled (was " + mode + ")");
+    return "disabled";
+  }
+  return mode === "disabled" ? "auto" : mode;
+}
+
 async function generateVideo(params) {
   params = params || {};
   const nodeId = String(params.nodeId || "");
@@ -1590,6 +1926,9 @@ async function generateVideo(params) {
 
     if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
 
+    const optSageAttn = params.optSageAttn !== false;
+    const sageMode = await resolveSageModeForGenerate(params.sageMode, installDir, optSageAttn);
+
     const wfParams = {
       mode,
       prompt: String(params.prompt || ""),
@@ -1603,11 +1942,24 @@ async function generateVideo(params) {
       denoise: params.denoise != null ? Number(params.denoise) : 1,
       shiftVideo: params.shiftVideo != null ? Number(params.shiftVideo) : 12,
       shiftAudio: params.shiftAudio != null ? Number(params.shiftAudio) : 3,
+      optTeaCache: params.optTeaCache !== false && params.teaEnabled !== false,
       teaEnabled: params.teaEnabled !== false,
       teaThresh: params.teaThresh != null ? Number(params.teaThresh) : 0.15,
       teaStart: params.teaStart != null ? Number(params.teaStart) : 2,
       teaEnd: params.teaEnd != null ? Number(params.teaEnd) : -2,
-      sageMode: params.sageMode || "auto",
+      optEasyCache: params.optEasyCache !== false,
+      easyReuse: params.easyReuse != null ? Number(params.easyReuse) : 0.2,
+      easyStart: params.easyStart != null ? Number(params.easyStart) : 0.15,
+      easyEnd: params.easyEnd != null ? Number(params.easyEnd) : 0.95,
+      optLowVramAttn: params.optLowVramAttn !== false,
+      lowVramHeadChunks: params.lowVramHeadChunks != null ? Number(params.lowVramHeadChunks) : 4,
+      optChunkFfn: params.optChunkFfn !== false,
+      chunkFfnChunks: params.chunkFfnChunks != null ? Number(params.chunkFfnChunks) : 2,
+      chunkFfnSeqThreshold:
+        params.chunkFfnSeqThreshold != null ? Number(params.chunkFfnSeqThreshold) : 4096,
+      optVramBarrier: params.optVramBarrier !== false,
+      optSageAttn,
+      sageMode,
       sageCompile: !!params.sageCompile,
       fps: Number(params.fps) || 24,
       bitDepth: Number(params.bitDepth) || 8,
@@ -1942,6 +2294,7 @@ function registerH3Ipc(opts) {
   })();
 
   ipcMain.handle("h3:getStatus", async () => statusForUi());
+  ipcMain.handle("h3:updateRuntime", async () => updatePluginRuntime());
   ipcMain.handle("h3:pickInstallDir", async () => pickInstallDir());
   ipcMain.handle("h3:setInstallDir", async (e, dir) => {
     const safe = isSafeInstallDir(dir);
@@ -1982,6 +2335,35 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:setCpuVae", async (e, v) => {
     saveConfig({ cpuVae: !!v });
     return { ok: true, cpuVae: !!v };
+  });
+  ipcMain.handle("h3:setLaunchOpts", async (e, opts) => {
+    opts = opts || {};
+    const patch = {};
+    if (opts.cpuVae != null) patch.cpuVae = !!opts.cpuVae;
+    if (opts.optDisablePinnedMemory != null) {
+      patch.optDisablePinnedMemory = !!opts.optDisablePinnedMemory;
+    }
+    if (opts.optFp16Intermediates != null) {
+      patch.optFp16Intermediates = !!opts.optFp16Intermediates;
+    }
+    if (opts.optExpandableSegments != null) {
+      patch.optExpandableSegments = !!opts.optExpandableSegments;
+    }
+    if (opts.optReserveVramGb != null) {
+      const n = Number(opts.optReserveVramGb);
+      if (Number.isFinite(n) && n >= 0) patch.optReserveVramGb = n;
+    }
+    saveConfig(patch);
+    const cfg = loadConfig();
+    return {
+      ok: true,
+      cpuVae: cfg.cpuVae !== false,
+      optDisablePinnedMemory: cfg.optDisablePinnedMemory !== false,
+      optFp16Intermediates: cfg.optFp16Intermediates !== false,
+      optExpandableSegments: cfg.optExpandableSegments !== false,
+      optReserveVramGb: Number(cfg.optReserveVramGb) > 0 ? Number(cfg.optReserveVramGb) : 4,
+      note: "下次启动后端时生效",
+    };
   });
   ipcMain.handle("h3:freeDisk", async () => {
     const cfg = loadConfig();

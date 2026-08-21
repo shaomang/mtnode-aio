@@ -829,7 +829,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('md output panel=' + (!!mdOut && mdOut.querySelector('h1') !== null && mdOut.querySelector('strong') !== null));
       clearOutput(lc);
 
-      // —— 文本节点 文件参考（小文件导入 / 超 500KB 拒绝） ——
+      // —— 文本节点 文件参考（小文件 / 大文件均可导入，无字数上限） ——
       addNode('input_text', 100, 2600);
       const fr = S.wf.nodes[S.wf.nodes.length - 1];
       const smallPath = ${JSON.stringify(path.join(process.env.TEMP || '.', 'mtnode_ref_small.txt'))};
@@ -841,7 +841,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('file ref small=' + (fr.text === '参考文件内容-测试'));
       fr.text = '';
       await importFileToText(fr, bigPath);
-      log('file ref >500KB rejected=' + (fr.text === ''));
+      log('file ref large ok=' + (fr.text === bigContent));
       renderCanvas();
       const frBtn = document.querySelector('.wf-node[data-nid="' + fr.id + '"] .n-head .n-file-ref');
       log('file ref btn=' + (frBtn && frBtn.title.indexOf('文件参考') >= 0));

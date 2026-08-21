@@ -938,7 +938,7 @@
     "</b> 及其全部本地数据文件（含节点图像资产）。此操作不可恢复。": "</b> and all of its local data files (including node image assets). This cannot be undone.",
     "模型正在思考，内容流式显示中…（模型支持思考时自动出现此弹窗入口）": "The model is thinking; content is streaming… (this popup entry appears automatically when the model supports thinking)",
     "输入下一条指令…（Enter 发送，Shift+Enter 换行）": "Enter the next instruction… (Enter send, Shift+Enter newline)",
-    "文件参考：导入文本文件内容到本节点（超过 500KB 会提示拒绝）": "File reference: import a text file into this node (files over 500KB are rejected)",
+    "文件参考：导入文本文件内容到本节点": "File reference: import a text file into this node",
     "），Base64 会明显膨胀，建议改用「导出为文件」以保证完整可靠。": "), Base64 will expand significantly; use \"Export as file\" instead for a complete, reliable copy.",
     "运行：把输入图像按网格（行×列）切割成 GIF 帧动画，支持透明色键": "Run: slice the input image on a grid (rows×cols) into a GIF frame animation; chroma key supported",
     "主页 · 下载 http://mt-agent.com/mtnode": "Home · Download http://mt-agent.com/mtnode",

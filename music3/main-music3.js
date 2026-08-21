@@ -18,8 +18,16 @@ const http = require("http");
 const { spawn, execFile } = require("child_process");
 const { pathToFileURL } = require("url");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
+const {
+  verGt,
+  verMax,
+  fetchRemoteManifest,
+  downloadRuntimeTo,
+} = require("../plugins/runtime-feed.js");
 
 const PLUGIN_ID = "minimax-music3";
+const MUSIC3_FEED =
+  process.env.MTNODE_MUSIC3_URL || "http://mt-agent.com/mtnode/music3";
 const DEFAULT_PORT = 7860;
 const DISK_HINT_GB = 65;
 /** 任务锁过期：须短于「永久卡死」体感；超时/取消会强制杀后端 */
@@ -94,12 +102,33 @@ function lockPath() {
 function consoleLogPath() {
   return join(music3Root(), "console.log");
 }
-function packRoot() {
+function bundledPackRoot() {
   if (app.isPackaged) {
     const fromRes = join(process.resourcesPath, "music3-pack");
     if (fs.existsSync(fromRes)) return fromRes;
   }
   return join(appRoot || path.join(__dirname, ".."), "music3-pack");
+}
+function runtimePackRoot() {
+  return join(music3Root(), "runtime");
+}
+function packVersionAt(dir) {
+  try {
+    const man = readJson(join(dir, "manifest.json"), null);
+    return String((man && man.version) || "") || "";
+  } catch {
+    return "";
+  }
+}
+/** Prefer downloaded runtime when newer; else bundled pack (app upgrade supersedes stale download). */
+function packRoot() {
+  const bundled = bundledPackRoot();
+  const runtime = runtimePackRoot();
+  const rtVer = fs.existsSync(join(runtime, "manifest.json")) ? packVersionAt(runtime) : "";
+  const bdVer = fs.existsSync(join(bundled, "manifest.json")) ? packVersionAt(bundled) : "";
+  if (rtVer && bdVer && verGt(bdVer, rtVer)) return bundled;
+  if (rtVer) return runtime;
+  return bundled;
 }
 function uiEntry() {
   const packed = join(music3Root(), "ui", "index.html");
@@ -301,6 +330,121 @@ function syncPackAppToInstall(installDir) {
   } catch (e) {
     appendConsole("[sync] failed: " + String((e && e.message) || e));
     return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/** After plugin runtime update: refresh scaffold (app/scripts/requirements) without touching models/.venv/output. */
+function syncScaffoldToInstall(installDir) {
+  const root = String(installDir || "").trim();
+  if (!root || !fs.existsSync(root)) return { ok: false, error: "no_install_dir" };
+  const pack = packRoot();
+  try {
+    syncPackAppToInstall(root);
+    const scriptsSrc = join(pack, "scripts");
+    if (fs.existsSync(scriptsSrc)) {
+      const dest = join(root, "scripts");
+      mk(dest);
+      for (const name of fs.readdirSync(scriptsSrc)) {
+        const s = join(scriptsSrc, name);
+        if (!fs.statSync(s).isFile()) continue;
+        fs.copyFileSync(s, join(dest, name));
+      }
+    }
+    for (const name of ["requirements.txt", "start_backend.cmd", "README.md"]) {
+      const s = join(pack, name);
+      if (fs.existsSync(s) && fs.statSync(s).isFile()) {
+        fs.copyFileSync(s, join(root, name));
+      }
+    }
+    appendConsole("[sync] scaffold → " + root);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+let remoteManCache = { at: 0, man: null };
+let remoteManPending = null;
+let runtimeUpdating = false;
+
+function catalogCachedPluginVersion() {
+  try {
+    const p = join(getDataDir(), "app-plugins", "catalog.json");
+    const doc = readJson(p, null);
+    const list = (doc && doc.plugins) || [];
+    const hit = list.find(
+      (x) => x && (x.id === PLUGIN_ID || x.handler === "music3" || x.kind === "music3"),
+    );
+    return String((hit && hit.version) || "") || "";
+  } catch {
+    return "";
+  }
+}
+
+async function latestRemoteVersion() {
+  if (remoteManPending) return remoteManPending;
+  remoteManPending = (async () => {
+    try {
+      const man = await fetchRemoteManifest(MUSIC3_FEED, 8000);
+      if (man && typeof man === "object") {
+        remoteManCache = { at: Date.now(), man };
+        return String(man.version || "");
+      }
+    } catch {}
+    return String((remoteManCache.man && remoteManCache.man.version) || "");
+  })();
+  try {
+    return await remoteManPending;
+  } finally {
+    remoteManPending = null;
+  }
+}
+
+async function updatePluginRuntime() {
+  if (runtimeUpdating) return { ok: false, error: "busy" };
+  runtimeUpdating = true;
+  try {
+    const dest = runtimePackRoot();
+    const r = await downloadRuntimeTo({
+      feedBase: MUSIC3_FEED,
+      destDir: dest,
+      onProgress: (ev) => {
+        emitProgress({
+          phase: "update",
+          step: ev.phase || "update",
+          stepLabel:
+            ev.phase === "download"
+              ? "下载脚手架"
+              : ev.phase === "extract"
+                ? "解压安装"
+                : ev.phase === "manifest"
+                  ? "读取清单"
+                  : "更新插件",
+          message: ev.version ? "v" + ev.version : "",
+          pct: Number(ev.pct) || 0,
+        });
+      },
+    });
+    const cfg = loadConfig();
+    if (cfg.installDir) syncScaffoldToInstall(cfg.installDir);
+    const man = readManifest();
+    writeJson(installedMetaPath(), {
+      ok: true,
+      version: (r && r.version) || (man && man.version) || "0.0.0",
+      installDir: cfg.installDir || "",
+      updatedAt: new Date().toISOString(),
+      source: (r && r.source) || MUSIC3_FEED,
+    });
+    appendConsole("[update] runtime v" + ((r && r.version) || "") + " → " + dest);
+    emitProgress({ phase: "update", step: "done", stepLabel: "完成", pct: 100 });
+    return { ok: true, version: (r && r.version) || "" };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    appendConsole("[update] failed: " + msg);
+    emitProgress({ phase: "update", step: "error", message: msg, pct: 0, error: true });
+    return { ok: false, error: msg };
+  } finally {
+    runtimeUpdating = false;
   }
 }
 
@@ -753,10 +897,21 @@ async function statusForUi() {
   } catch {
     gpu = null;
   }
+  const version = (man && man.version) || (installedMeta && installedMeta.version) || "1.0.0";
+  const feedVer = await latestRemoteVersion();
+  const catVer = catalogCachedPluginVersion();
+  const latestVersion = verMax(feedVer, catVer) || feedVer || catVer || "";
+  /* 仅当云端脚手架 feed 高于本地包时可升级（catalog 版本作展示参考） */
+  const updateAvailable = !!(feedVer && verGt(feedVer, version));
   return {
     ok: true,
     id: PLUGIN_ID,
-    version: (man && man.version) || (installedMeta && installedMeta.version) || "1.0.0",
+    version,
+    latestVersion,
+    feedVersion: feedVer || "",
+    catalogVersion: catVer || "",
+    updateAvailable,
+    updating: runtimeUpdating,
     diskHintGb: DISK_HINT_GB,
     installDir: cfg.installDir || "",
     project: sig,
@@ -994,26 +1149,30 @@ async function agentInstallByAgent(opts) {
     if (fs.existsSync(resultMarker)) fs.unlinkSync(resultMarker);
   } catch {}
 
-  const prompt =
-    `请使用 skill「minimax-music3-install」${
-      opts.selfRepair
-        ? "根据 CONSOLE_LOG 自我修复安装（对症修复；模型已齐则勿重下）"
-        : mode === "recover"
-          ? "完成或修复安装（保底修复；用户已确认）"
-          : "端到端完成安装（主安装路径）"
-    }。\n` +
-    `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
-    `SCAFFOLD_REF=${pack}\n` +
-    `重要：内置脚手架/脚本仅作参考实现。请以 skill 目标为准自行准备 INSTALL_DIR（可按需从 SCAFFOLD_REF 复制或改写 app/scripts/requirements，也可等价实现）。不要假设插件已替你复制好脚手架。\n` +
-    (failReason ? `先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
-    `要求：\n` +
-    `1) 自行探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）\n` +
-    `2) 建立可运行的 venv 与依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1）\n` +
-    `3) 下载/就绪 models\\MiniMax-Music3（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1 -Target app；自我修复且模型已齐则跳过）\n` +
-    `4) 冒烟验证 torch.cuda 与模型目录\n` +
-    `不要启动 Gradio。不要删除用户 output/。\n` +
-    `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path>。\n` +
-    `失败则 ${resultMarker} 写 ok=false 与 reason=...`;
+  const prompt = opts.selfRepair
+    ? `请使用 skill「minimax-music3-install」的【自我修复】模式。\n` +
+      `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
+      `SCAFFOLD_REF=${pack}（仅参考）\n` +
+      `任务：阅读下方 CONSOLE 日志，由你自行分析判断根因并完成修复。每人环境不同，不要套用不匹配的固定剧本。\n` +
+      `优先修依赖/脚本/配置；模型已齐则勿重下。不要启动 Gradio。不要删除 output/。\n` +
+      (failReason ? `\n${failReason}\n` : "") +
+      `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 repair_ok=1 与简要根因。\n` +
+      `失败则 ${resultMarker} 写 ok=false 与 reason=...`
+    : `请使用 skill「minimax-music3-install」${
+        mode === "recover" ? "完成或修复安装（保底修复；用户已确认）" : "端到端完成安装（主安装路径）"
+      }。\n` +
+      `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
+      `SCAFFOLD_REF=${pack}\n` +
+      `重要：内置脚手架/脚本仅作参考实现。请以 skill 目标为准自行准备 INSTALL_DIR（可按需从 SCAFFOLD_REF 复制或改写 app/scripts/requirements，也可等价实现）。不要假设插件已替你复制好脚手架。\n` +
+      (failReason ? `先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
+      `要求：\n` +
+      `1) 自行探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）\n` +
+      `2) 建立可运行的 venv 与依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1）\n` +
+      `3) 下载/就绪 models\\MiniMax-Music3（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1 -Target app；修复且模型已齐则跳过）\n` +
+      `4) 冒烟验证 torch.cuda 与模型目录\n` +
+      `不要启动 Gradio。不要删除用户 output/。\n` +
+      `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path>。\n` +
+      `失败则 ${resultMarker} 写 ok=false 与 reason=...`;
 
   dshEventHook = (ev) => {
     if (!ev || ev.reqId !== reqId) return;
@@ -1152,7 +1311,7 @@ async function agentRecoverInstall(opts) {
   return agentInstallByAgent(Object.assign({}, opts || {}, { mode: "recover" }));
 }
 
-/** 自我修复：读取 console 日志交 Agent（minimax-music3-install）对症修复 */
+/** 自我修复：把 console 日志交给 dsh Agent 自行分析并修复 */
 async function selfRepairFromConsole(opts) {
   opts = opts || {};
   const cfg = loadConfig();
@@ -1169,29 +1328,41 @@ async function selfRepairFromConsole(opts) {
     };
   }
 
-  appendConsole("[self-repair] begin · console bytes≈" + logText.length);
+  appendConsole("[self-repair] begin · console bytes≈" + logText.length + " → dsh");
   try {
     await stopBackend();
   } catch (e) {
     appendConsole("[self-repair] stop warn: " + String((e && e.message) || e));
   }
 
-  const known = [];
-  if (/ModuleNotFoundError|ImportError|No module named/i.test(logText)) {
-    known.push("命中依赖缺失：优先用 venv pip 补齐 requirements，勿重下整包模型。");
+  const lines = logText.split(/\r?\n/);
+  const markers = [];
+  for (let i = 0; i < lines.length; i++) {
+    const L = lines[i];
+    if (
+      /ModuleNotFoundError:|ImportError:|Traceback \(most recent call last\):|\[job\] error:|backend_exited|Error:/i.test(
+        L,
+      )
+    ) {
+      markers.push(i);
+    }
   }
-  if (/CUDA|cuda|out of memory|OOM/i.test(logText)) {
-    known.push("命中 CUDA/显存相关错误：检查 torch.cuda、offload 与驱动；勿删 output。");
-  }
-  if (/backend_exited|backend start failed|gradio/i.test(logText)) {
-    known.push("后端启动失败：结合 Traceback 修 venv/依赖。");
-  }
+  const start = markers.length ? markers[markers.length - 1] : Math.max(0, lines.length - 80);
+  const focus = lines.slice(Math.max(0, start - 5), Math.min(lines.length, start + 50)).join("\n");
+  const recentTail = lines.slice(-120).join("\n");
+  appendConsole("[self-repair] focus @line=" + start);
 
-  const snippet = logText.length > 24000 ? logText.slice(-24000) : logText;
   const hint =
-    (known.length ? known.join("\n") + "\n" : "") +
-    "以下为插件 CONSOLE_LOG（最近片段）：\n```\n" +
-    snippet +
+    "【自我修复任务 · 由你（dsh）分析日志并修复】\n" +
+    "每人环境与报错可能不同：请根据日志自行判断根因并动手修复，不要套用不匹配的固定剧本。\n" +
+    "以「最近失败焦点」为准；更早的 Traceback 可能已过时，仅作参考。\n" +
+    "skill「minimax-music3-install」已知故障仅当日志证据匹配时参考。\n" +
+    "不要盲目重装已就绪模型；不要启动 Gradio；不要删除 output/。\n\n" +
+    "=== 最近失败焦点 ===\n```\n" +
+    focus.slice(0, 10000) +
+    "\n```\n\n" +
+    "=== console 最近尾部 ===\n```\n" +
+    recentTail.slice(0, 12000) +
     "\n```\n";
 
   const r = await agentInstallByAgent({
@@ -1199,8 +1370,8 @@ async function selfRepairFromConsole(opts) {
     error: hint,
     selfRepair: true,
   });
-  appendConsole("[self-repair] done ok=" + !!(r && r.ok) + " err=" + ((r && r.error) || ""));
-  return Object.assign({}, r || {}, { selfRepair: true, consoleBytes: logText.length });
+  appendConsole("[self-repair] dsh done ok=" + !!(r && r.ok) + " err=" + ((r && r.error) || ""));
+  return Object.assign({}, r || {}, { selfRepair: true, via: "dsh", consoleBytes: logText.length });
 }
 
 function killPidTree(pid) {
@@ -1915,6 +2086,7 @@ function registerMusic3Ipc(opts) {
   })();
 
   ipcMain.handle("music3:getStatus", async () => statusForUi());
+  ipcMain.handle("music3:updateRuntime", async () => updatePluginRuntime());
   ipcMain.handle("music3:pickInstallDir", async () => pickInstallDir());
   ipcMain.handle("music3:setInstallDir", async (e, dir) => {
     const safe = isSafeInstallDir(dir);

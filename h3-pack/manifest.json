@@ -1,6 +1,6 @@
 {
   "id": "minimax-h3",
-  "version": "1.0.3",
+  "version": "1.0.6",
   "minAppVersion": "1.1.20",
   "title": {
     "zh": "Minimax H3",
@@ -19,5 +19,5 @@
     "vaeVideo": "minimax_h3_video_vae_fp16.safetensors",
     "vaeAudio": "minimax_h3_audio_vae_fp32.safetensors"
   },
-  "zipUrl": "h3-runtime-1.0.3.zip"
+  "zipUrl": "h3-runtime-1.0.6.zip"
 }

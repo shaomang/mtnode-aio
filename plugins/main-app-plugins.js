@@ -347,6 +347,7 @@ function attachInstalled(plugins) {
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
     } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3") {
+      /* 版本/可更新状态由 music3/h3 主进程 status 异步判定（云端脚手架 feed）；此处仅占位 */
       out.push(Object.assign({}, p, {
         installed: true,
         installedVersion: p.version || "",
