@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "node .cursor/hooks/mark-rebuild-needed.js"
+      }
+    ],
+    "stop": [
+      {
+        "command": "node .cursor/hooks/stop-rebuild-followup.js",
+        "loop_limit": 1
+      }
+    ]
+  }
+}
