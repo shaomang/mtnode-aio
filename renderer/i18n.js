@@ -754,6 +754,8 @@
     "服务商（自动读取全局 API 配置）": "Provider (reads global API config automatically)",
     "横向缩放（仅改变横向布局，纵向不变）": "Scale horizontally (layout width only; height unchanged)",
     "请先指定保存路径（可用「浏览」选择）": "Set a save path first (use \"Browse\" to choose)",
+    "智能助手仍在处理画布，保存将在结束后自动执行":
+      "The agent is still editing the canvas; saves will run automatically when it finishes",
     "请先在节点设置中指定输出路径（可用「浏览」选择）":
       "Set an output path in node settings first (use \"Browse\" to choose)",
     "输出路径（必填）": "Output path (required)",
@@ -2269,6 +2271,8 @@
     "超级节点子文件夹": "Super node subfolder",
     "设置后，此超级节点内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。":
       "After setting, default relative paths for inner nodes go under workspace/subfolder. Existing paths are not rewritten.",
+    "设置后，此超级节点内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。":
+      "Once set, relative paths inside this super resolve under workspace / subfolder; existing relative paths get that prefix automatically.",
     "子文件夹（相对工作目录）": "Subfolder (relative to workspace)",
     "子文件夹已设为：": "Subfolder set to: ",
     "已清除子文件夹": "Subfolder cleared",

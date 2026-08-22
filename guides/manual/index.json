@@ -67,6 +67,13 @@
           }
         },
         {
+          "id": "super-nodes",
+          "title": {
+            "zh": "超级节点",
+            "en": "Super nodes"
+          }
+        },
+        {
           "id": "workflows",
           "title": {
             "zh": "工作流与创意工坊",

@@ -1028,12 +1028,8 @@ function updateSuperInnerWires(host, touchIds) {
       show = true;
     }
     if (show && a) {
-      const world = toStage(d.mx, d.my);
-      const o = superInnerOrigin(host);
-      const b = {
-        x: world.x - host.x - o.ox,
-        y: world.y - host.y - o.oy,
-      };
+      /* 末端用超级舞台本地坐标，与内侧连线 SVG 同一套空间 */
+      const b = clientToLocal(stage, d.mx, d.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
       if (isControlKind(from)) tcls += " ctrl";
@@ -1402,6 +1398,43 @@ function superRelPrefixFor(node) {
   }
   return parts.join("/");
 }
+/** 相对路径挂到祖先超级节点 subFolder 下；绝对路径或已含前缀则不改 */
+function applySuperRelToPath(node, p) {
+  const raw = String(p || "").trim();
+  if (!raw) return "";
+  if (isAbsPath(raw)) return raw;
+  const norm = raw.replace(/\\/g, "/").replace(/^\.\//, "");
+  const prefix = superRelPrefixFor(node);
+  if (!prefix) return norm;
+  if (norm === prefix || norm.startsWith(prefix + "/")) return norm;
+  return prefix + "/" + norm.replace(/^\/+/, "");
+}
+/** 节点落入超级节点后：把相对保存/输出/监视路径改写到 subFolder 下 */
+function rewriteNodePathsForSuperContext(node) {
+  if (!node || !superRelPrefixFor(node)) return;
+  if (isSaveNode(node) && String(node.savePath || "").trim()) {
+    node.savePath = applySuperRelToPath(
+      node,
+      preferRelativeSavePath(node.savePath),
+    );
+    applySavePathExt(node);
+  }
+  if (
+    (node.kind === "music_gen" || node.kind === "video_gen") &&
+    String(node.outputPath || "").trim()
+  ) {
+    node.outputPath = applySuperRelToPath(
+      node,
+      preferRelativeSavePath(node.outputPath),
+    );
+  }
+  if (node.kind === "wait_file" && String(node.waitPath || "").trim()) {
+    node.waitPath = applySuperRelToPath(
+      node,
+      preferRelativeSavePath(node.waitPath),
+    );
+  }
+}
 function findOpenSuperAtWorld(x, y, exceptIds) {
   const skip = exceptIds || new Set();
   let best = null;
@@ -1431,12 +1464,12 @@ function findOpenSuperAtWorld(x, y, exceptIds) {
 }
 function promptSuperSubFolder(node) {
   if (!node || node.kind !== "super") return;
-  openOverlay(I18n.t("超级节点子文件夹"));
+  openOverlay(I18n.t("超级节点子文件夹"), { persistent: true });
   const body = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
   hint.textContent = I18n.t(
-    "设置后，此超级节点内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。",
+    "设置后，此超级节点内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。",
   );
   body.appendChild(hint);
   const lab = document.createElement("label");
@@ -1455,6 +1488,11 @@ function promptSuperSubFolder(node) {
   ok.onclick = () => {
     pushHistory();
     node.subFolder = normalizeSuperSubFolder(inp.value);
+    for (const c of (S.wf.nodes || [])) {
+      if (!c || c.id === node.id) continue;
+      if (!isSuperAncestorOf(node.id, c.id)) continue;
+      rewriteNodePathsForSuperContext(c);
+    }
     closeOverlay();
     scheduleSave(true);
     renderCanvas();
@@ -1665,7 +1703,10 @@ function applySavePathExt(node) {
   const ext = saveExtForMedia(saveMediaKind(node));
   const raw = String(node.savePath || "").trim();
   if (!raw) return;
-  node.savePath = preferRelativeSavePath(forcePathExt(raw, ext));
+  node.savePath = applySuperRelToPath(
+    node,
+    preferRelativeSavePath(forcePathExt(raw, ext)),
+  );
 }
 /** Combine node.outputPath (+ optional filename) into one file path string. */
 function mediaGenOutputRaw(node) {
@@ -1697,7 +1738,7 @@ function resolveMediaGenExport(node) {
     return { ok: false, code: "empty", outputDir: "", filename: "" };
   }
   const forced = forcePathExt(combined, ext);
-  const r = resolveSavePath(forced);
+  const r = resolveSavePath(forced, node);
   if (!r.ok) return { ok: false, code: r.code || "empty", outputDir: "", filename: "" };
   const pth = forcePathExt(r.path, ext);
   const dir = dirOfPath(pth);
@@ -2201,6 +2242,7 @@ function moveNodesIntoSuper(superNode, nodes) {
       n.x = snap(Math.max(160, wp.x - minX + 160));
       n.y = snap(Math.max(48, wp.y - minY + 48));
     }
+    rewriteNodePathsForSuperContext(n);
   }
   pruneInvalidSuperBoundaryWires();
   scheduleSave(true);
@@ -2317,6 +2359,7 @@ function wrapSelectionAsSuper() {
     n.parentTaskId = host.parentTaskId || "";
     n.x = snap(wp.x - worldX - ox);
     n.y = snap(wp.y - worldY - oy);
+    rewriteNodePathsForSuperContext(n);
   }
   pruneInvalidSuperBoundaryWires();
   S.sel = host.id;
@@ -2944,13 +2987,16 @@ function relPath(from, to) {
   if (window.api && window.api.pathRelative) return window.api.pathRelative(from, to);
   return String(to || "");
 }
-function resolveSavePath(p) {
+function resolveSavePath(p, node) {
   const raw = String(p || "").trim();
   if (!raw) return { ok: false, code: "empty" };
   if (isAbsPath(raw)) return { ok: true, path: raw };
+  const rel = node
+    ? applySuperRelToPath(node, raw)
+    : raw.replace(/\\/g, "/");
   const base = String(wfWorkspace() || "").trim();
-  if (!base) return { ok: false, code: "no_ws", path: raw };
-  return { ok: true, path: joinPath(base, raw) };
+  if (!base) return { ok: false, code: "no_ws", path: rel };
+  return { ok: true, path: joinPath(base, rel) };
 }
 /* 若绝对路径落在工作目录内，存成相对路径（正斜杠），便于换工作目录时统一切换 */
 function preferRelativeSavePath(p) {
@@ -2972,8 +3018,7 @@ function ensureDefaultSavePath(node) {
   if (!String(wfWorkspace() || "").trim() && !mediaGenOfBoundSave(node)) return;
   const ext = saveExtForMedia(saveMediaKind(node));
   const base = safeFile(node.title || "output") + ext;
-  const prefix = superRelPrefixFor(node);
-  node.savePath = prefix ? prefix + "/" + base : base;
+  node.savePath = applySuperRelToPath(node, base);
 }
 function savePathResolveError(code) {
   if (code === "no_ws")
@@ -4807,9 +4852,13 @@ function stopAllRuns() {
 
 let overlayPersistent = false;
 let overlayKind = "";
-function openOverlay(title) {
-  overlayPersistent = false;
+/* 仅当 mousedown 落在蒙层本身时才允许 click 关闭，避免在弹窗内拖选文字松手到蒙层误关 */
+let _overlayBgPointerDown = false;
+function openOverlay(title, opts) {
+  opts = opts || {};
+  overlayPersistent = !!opts.persistent;
   overlayKind = "";
+  _overlayBgPointerDown = false;
   S.thinkOpen = null; // 打开新弹窗时结束上一弹窗的思考流式更新
   const box = $("#overlay .overlay-box");
   if (box) {
@@ -4824,8 +4873,20 @@ function openOverlay(title) {
   $("#ovFoot").innerHTML = "";
   $("#overlay").style.display = "flex";
 }
+/* 带可编辑输入控件的弹窗视为需显式关闭（与 overlayPersistent 等效） */
+function overlayHasEditableFields() {
+  const root = document.getElementById("overlay");
+  if (!root || root.style.display !== "flex") return false;
+  return !!root.querySelector(
+    'textarea, select, input[type="text"], input[type="number"], input[type="password"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], input[type="file"], input:not([type]), [contenteditable="true"]',
+  );
+}
+function overlayShouldStayOpen() {
+  return overlayPersistent || overlayHasEditableFields();
+}
 function closeOverlay() {
   S.thinkOpen = null;
+  _overlayBgPointerDown = false;
   closeTplSubOverlay();
   const box = $("#overlay .overlay-box");
   if (box) {
@@ -5978,15 +6039,25 @@ function bindPortTip(portEl, node, dir, idx) {
   portEl.addEventListener("mouseleave", () => scheduleHidePortTip());
 }
 
+/** 将客户区坐标映射到某元素的本地坐标（已计入祖先 transform / 缩放） */
+function clientToLocal(el, cx, cy) {
+  if (!el) return { x: 0, y: 0 };
+  const r = el.getBoundingClientRect();
+  const w = el.clientWidth || parseFloat(el.style.width) || 0;
+  const h = el.clientHeight || parseFloat(el.style.height) || 0;
+  const sx = w > 0 ? r.width / w : S.cam && S.cam.z > 0 ? S.cam.z : 1;
+  const sy = h > 0 ? r.height / h : S.cam && S.cam.z > 0 ? S.cam.z : 1;
+  return {
+    x: (cx - r.left) / (sx > 0 && isFinite(sx) ? sx : 1),
+    y: (cy - r.top) / (sy > 0 && isFinite(sy) ? sy : 1),
+  };
+}
 function toStage(cx, cy) {
-  const r = $("#canvas").getBoundingClientRect();
-  /* 用 stage 实际渲染比例（getBoundingClientRect / 布局宽）反推坐标，
-     避免浏览器对 zoom 归一化导致的微小偏差（连线末端严格跟随鼠标） */
   const st = $("#stage");
-  const baseW = parseFloat(st.style.width) || 1;
-  const effZ = st.getBoundingClientRect().width / baseW;
-  const z = effZ > 0 && isFinite(effZ) ? effZ : S.cam.z;
-  return { x: (cx - r.left - S.cam.x) / z, y: (cy - r.top - S.cam.y) / z };
+  if (!st) return { x: 0, y: 0 };
+  /* 直接用 #stage 屏幕矩形反推：含 canvas 边框/内边距与 translate+scale，
+     避免旧公式 (canvasRect + cam) / 实测 zoom 与 S.cam 不一致导致拖线末端偏离鼠标 */
+  return clientToLocal(st, cx, cy);
 }
 function applyTransform() {
   const st = $("#stage");
@@ -12194,7 +12265,10 @@ function buildBody(node, body) {
     inp.value = node.waitPath || "";
     inp.title = I18n.t("待监视的文件路径");
     inp.addEventListener("change", () => {
-      node.waitPath = preferRelativeSavePath(inp.value.trim());
+      node.waitPath = applySuperRelToPath(
+        node,
+        preferRelativeSavePath(inp.value.trim()),
+      );
       inp.value = node.waitPath;
       scheduleSave();
     });
@@ -12211,7 +12285,10 @@ function buildBody(node, body) {
         filters: [{ name: I18n.t("全部文件"), extensions: ["*"] }],
       });
       if (r && r.path) {
-        node.waitPath = preferRelativeSavePath(r.path);
+        node.waitPath = applySuperRelToPath(
+          node,
+          preferRelativeSavePath(r.path),
+        );
         scheduleSave();
         renderCanvas();
       }
@@ -12224,7 +12301,7 @@ function buildBody(node, body) {
       op.textContent = I18n.t("位置");
       op.title = I18n.t("在文件夹中显示监视路径（若文件尚不存在可能无法定位）");
       op.onclick = () => {
-        const show = resolveSavePath(node.waitPath).path || "";
+        const show = resolveSavePath(node.waitPath, node).path || "";
         if (show) window.api.shellShowItem(show);
       };
       pRow.appendChild(op);
@@ -12268,7 +12345,7 @@ function buildBody(node, body) {
         I18n.t("等待文件生成…");
     else if (node.error) st.textContent = node.error;
     else if (ready) {
-      const show = resolveSavePath(node.waitPath).path || node.waitPath || "";
+      const show = resolveSavePath(node.waitPath, node).path || node.waitPath || "";
       st.textContent =
         I18n.t("文件已就绪（已放行）") +
         (show ? " · " + fileName(show) : "");
@@ -12849,8 +12926,11 @@ function buildBody(node, body) {
       ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
       : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .yaml）");
     inp.addEventListener("change", () => {
-      node.savePath = preferRelativeSavePath(
-        forcePathExt(inp.value.trim(), saveExtForMedia(saveMediaKind(node))),
+      node.savePath = applySuperRelToPath(
+        node,
+        preferRelativeSavePath(
+          forcePathExt(inp.value.trim(), saveExtForMedia(saveMediaKind(node))),
+        ),
       );
       inp.value = node.savePath;
       syncGenFilenameFromSave(node);
@@ -12868,10 +12948,10 @@ function buildBody(node, body) {
       let defaultName = (node.title || "output") + ext;
       const cur = String(node.savePath || "").trim();
       if (cur) {
-        const r0 = resolveSavePath(cur);
+        const r0 = resolveSavePath(cur, node);
         defaultName = r0.ok ? r0.path : cur;
       } else if (ws) {
-        defaultName = joinPath(ws, defaultName);
+        defaultName = joinPath(ws, applySuperRelToPath(node, defaultName));
       }
       const filters =
         media === "text"
@@ -12936,10 +13016,10 @@ function buildBody(node, body) {
         if (last) {
           show = isAbsPath(last)
             ? last
-            : resolveSavePath(last || node.savePath).path || last;
+            : resolveSavePath(last || node.savePath, node).path || last;
         } else {
           const paths = await resolveSavePreviewPaths(node);
-          show = paths[0] || resolveSavePath(node.savePath).path || "";
+          show = paths[0] || resolveSavePath(node.savePath, node).path || "";
         }
         if (show) window.api.shellShowItem(show);
       };
@@ -12960,10 +13040,10 @@ function buildBody(node, body) {
           if (last) {
             target = isAbsPath(last)
               ? last
-              : resolveSavePath(last || node.savePath).path || last;
+              : resolveSavePath(last || node.savePath, node).path || last;
           } else {
             const paths = await resolveSavePreviewPaths(node);
-            target = paths[0] || resolveSavePath(node.savePath).path || "";
+            target = paths[0] || resolveSavePath(node.savePath, node).path || "";
           }
           if (!target) {
             toast(I18n.t("文件不存在或无法预览"), "warn");
@@ -13207,11 +13287,11 @@ async function resolveSavePreviewPaths(node) {
     const raw = String(p || "").trim();
     if (!raw) return "";
     if (isAbsPath(raw)) return raw;
-    const r = resolveSavePath(raw);
+    const r = resolveSavePath(raw, node);
     return r.ok ? r.path : "";
   };
   if (fromSaved.length) return fromSaved.map(absOf).filter(Boolean);
-  const r = resolveSavePath(node.savePath);
+  const r = resolveSavePath(node.savePath, node);
   if (!r.ok) return [];
   try {
     const exists =
@@ -14039,7 +14119,7 @@ function isAutoProcKind(n) {
 
 async function waitFilePathReady(node) {
   if (!node || node.kind !== "wait_file") return false;
-  const r = resolveSavePath(node.waitPath);
+  const r = resolveSavePath(node.waitPath, node);
   if (!r.ok) return false;
   try {
     if (window.api && window.api.fileExists)
@@ -15032,7 +15112,9 @@ function applyMediaGenConfiguredPath(node, raw, media) {
   if (!node) return "";
   const ext = saveExtForMedia(media === "video" ? "video" : "audio");
   const v = String(raw || "").trim();
-  node.outputPath = v ? preferRelativeSavePath(forcePathExt(v, ext)) : "";
+  node.outputPath = v
+    ? applySuperRelToPath(node, preferRelativeSavePath(forcePathExt(v, ext)))
+    : "";
   node.filename = "";
   return node.outputPath;
 }
@@ -15090,10 +15172,10 @@ function appendMediaGenPathControls(panel, node, media) {
       safeFile(node.title || (media === "video" ? "video" : "music")) + ext;
     const cur = mediaGenOutputRaw(node) || String(node.outputPath || "").trim();
     if (cur) {
-      const r0 = resolveSavePath(forcePathExt(cur, ext));
+      const r0 = resolveSavePath(forcePathExt(cur, ext), node);
       defaultPath = r0.ok ? r0.path : cur;
     } else if (ws) {
-      defaultPath = joinPath(ws, defaultPath);
+      defaultPath = joinPath(ws, applySuperRelToPath(node, defaultPath));
     }
     const r = await window.api.fileSaveDialog({
       title:
@@ -15131,13 +15213,9 @@ function appendMediaGenPathControls(panel, node, media) {
 
 function resolveMusicOutputDir(node) {
   const raw = String(node.outputPath || "output").trim() || "output";
-  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("/")) {
-    return raw;
-  }
-  const ws = (S.wf && S.wf.workspace) || "";
-  if (ws) {
-    return ws.replace(/[\\/]+$/, "") + "\\" + raw.replace(/^[\\/]+/, "");
-  }
+  const r = resolveSavePath(raw, node);
+  if (r.ok) return r.path;
+  if (isAbsPath(raw)) return raw;
   return raw;
 }
 
@@ -15822,7 +15900,7 @@ async function playNodeBody(node, quiet, opts) {
 
 /* 解析节点配置的保存路径为绝对路径；失败时 toast 并返回 null */
 function absSaveDest(node, quiet) {
-  const r = resolveSavePath(node && node.savePath);
+  const r = resolveSavePath(node && node.savePath, node);
   if (r.ok) return r.path;
   if (!quiet) toast(savePathResolveError(r.code), "warn");
   return null;
@@ -16062,7 +16140,37 @@ async function saveMediaFileOnce(node, quiet, media) {
   return true;
 }
 
+/* 全局助手 / 智能会话改画布期间：禁止保存节点落盘，避免半成品与移入超节点后路径重复写 */
+function beginSaveNodeHold() {
+  S._saveNodeHold = (S._saveNodeHold || 0) + 1;
+}
+function endSaveNodeHold() {
+  S._saveNodeHold = Math.max(0, (S._saveNodeHold || 0) - 1);
+  if (!S._saveNodeHold) flushDeferredSaveNodes();
+}
+function agentBlocksSaveNodes() {
+  return (
+    (S._saveNodeHold || 0) > 0 ||
+    !!S.assistRunActive ||
+    !!S.agentSessionRunActive
+  );
+}
+function flushDeferredSaveNodes() {
+  if (!S._deferAutoSaveAfterAgent) return;
+  S._deferAutoSaveAfterAgent = false;
+  try {
+    /* forceWired：助手刚搭完图，连着的保存节点应落盘一次（路径已含超节点子文件夹） */
+    autoSaveSaves(true);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 async function saveNodeOnce(node, quiet) {
+  if (agentBlocksSaveNodes()) {
+    S._deferAutoSaveAfterAgent = true;
+    return false;
+  }
   const media = saveMediaKind(node);
   if (media === "text") return saveTextOnce(node, quiet);
   if (media === "image") return saveImageOnce(node, quiet);
@@ -16070,11 +16178,19 @@ async function saveNodeOnce(node, quiet) {
 }
 
 async function saveNodeAction(node) {
+  if (agentBlocksSaveNodes()) {
+    S._deferAutoSaveAfterAgent = true;
+    toast(
+      I18n.t("智能助手仍在处理画布，保存将在结束后自动执行"),
+      "warn",
+    );
+    return;
+  }
   if (!String(node.savePath || "").trim()) {
     toast(I18n.t("请先指定保存路径（可用「浏览」选择）"), "warn");
     return;
   }
-  const pathCheck = resolveSavePath(node.savePath);
+  const pathCheck = resolveSavePath(node.savePath, node);
   if (!pathCheck.ok) {
     toast(savePathResolveError(pathCheck.code), "warn");
     return;
@@ -16111,6 +16227,11 @@ async function saveNodeAction(node) {
   }
 }
 async function autoSaveSaves(forceWired, skipIds) {
+  if (agentBlocksSaveNodes()) {
+    S._deferAutoSaveAfterAgent = true;
+    return;
+  }
+  if (!S.wf || !Array.isArray(S.wf.nodes)) return;
   let changed = false;
   const skip = skipIds || S._cascadeSkipSaveIds;
   for (const n of S.wf.nodes) {
@@ -16687,7 +16808,9 @@ function fillGlobalRefDetail(el, src) {
 
 function openGlobalTagDialog(gNode) {
   if (!gNode || gNode.kind !== "global") return;
-  openOverlay(I18n.t("全局 Tag · ") + (gNode.title || I18n.t("全局")));
+  openOverlay(I18n.t("全局 Tag · ") + (gNode.title || I18n.t("全局")), {
+    persistent: true,
+  });
   const bodyEl = $("#ovBody");
   const foot = $("#ovFoot");
   const hint = document.createElement("div");
@@ -20068,6 +20191,7 @@ function applyNodePatch(node, patch, warnings) {
       if (p && p.kind === "super" && canMoveNodeIntoSuper(p, node)) {
         node.parentSuperId = p.id;
         node.parentTaskId = p.parentTaskId || "";
+        rewriteNodePathsForSuperContext(node);
       }
     }
   }
@@ -20077,18 +20201,25 @@ function applyNodePatch(node, patch, warnings) {
       node.expandW = Math.max(320, Math.round(patch.expandW));
     if (typeof patch.expandH === "number" && isFinite(patch.expandH))
       node.expandH = Math.max(220, Math.round(patch.expandH));
-    if (patch.subFolder != null)
+    if (patch.subFolder != null) {
       node.subFolder = normalizeSuperSubFolder(String(patch.subFolder));
+      for (const c of (S.wf.nodes || [])) {
+        if (!c || c.id === node.id) continue;
+        if (!isSuperAncestorOf(node.id, c.id)) continue;
+        rewriteNodePathsForSuperContext(c);
+      }
+    }
     if (typeof patch.superOpen === "boolean") node.superOpen = patch.superOpen;
   }
-  if (
-    patch.savePath != null &&
-    (isSaveNode(node))
-  )
+  if (patch.savePath != null && isSaveNode(node)) {
     node.savePath = preferRelativeSavePath(String(patch.savePath));
     applySavePathExt(node);
+  }
   if (patch.waitPath != null && node.kind === "wait_file")
-    node.waitPath = preferRelativeSavePath(String(patch.waitPath));
+    node.waitPath = applySuperRelToPath(
+      node,
+      preferRelativeSavePath(String(patch.waitPath)),
+    );
   if (patch.waitIntervalSec != null && node.kind === "wait_file") {
     const n = Math.round(Number(patch.waitIntervalSec));
     if (isFinite(n))
@@ -20636,6 +20767,7 @@ async function applyCanvasEdit(params) {
     if (p && p.kind === "super" && canMoveNodeIntoSuper(p, node)) {
       node.parentSuperId = p.id;
       node.parentTaskId = p.parentTaskId || node.parentTaskId || "";
+      rewriteNodePathsForSuperContext(node);
     } else if (token && warningsArr) {
       warningsArr.push(I18n.t("无效的超级节点：") + token);
     }
@@ -21904,7 +22036,7 @@ function toggleGroupAction() {
 function promptGroupTitle(nodeIds, markIds) {
   nodeIds = nodeIds || [];
   markIds = markIds || [];
-  openOverlay(I18n.t("创建组"));
+  openOverlay(I18n.t("创建组"), { persistent: true });
   const body = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
@@ -21993,7 +22125,7 @@ function deleteGroup(gid) {
     "ok",
   );
 }
-/* 批量删除节点：同时清理相关连线与组 */
+/* 批量删除节点：同时清理相关连线与组；超级节点递归移除全部后代与内部绘制 */
 async function deleteNodes(ids, quiet) {
   if (!ids || !ids.length) return;
   let expanded = new Set(ids);
@@ -22001,7 +22133,13 @@ async function deleteNodes(ids, quiet) {
   while (grew) {
     grew = false;
     for (const n of S.wf.nodes || []) {
-      if (n.parentTaskId && expanded.has(n.parentTaskId) && !expanded.has(n.id)) {
+      if (expanded.has(n.id)) continue;
+      if (n.parentTaskId && expanded.has(n.parentTaskId)) {
+        expanded.add(n.id);
+        grew = true;
+        continue;
+      }
+      if (n.parentSuperId && expanded.has(n.parentSuperId)) {
         expanded.add(n.id);
         grew = true;
       }
@@ -22068,11 +22206,30 @@ async function deleteNodes(ids, quiet) {
       : "";
     setTaskFocus(up, { render: false });
   }
+  if (S.superFocus && set.has(S.superFocus)) {
+    let pid = "";
+    const cur = nodeById(S.superFocus);
+    pid = (cur && cur.parentSuperId) || "";
+    while (pid && set.has(pid)) {
+      const p = nodeById(pid);
+      pid = (p && p.parentSuperId) || "";
+    }
+    if (pid && nodeById(pid)) setSuperFocus(pid, { render: false });
+    else resetSuperFocus();
+  }
   for (const n of S.wf.nodes) {
     if (!n.parentTaskId || !set.has(n.parentTaskId) || set.has(n.id)) continue;
     const p = nodeById(n.parentTaskId);
     n.parentTaskId = (p && p.parentTaskId) || "";
   }
+  /* 内部绘制随超级节点一并移除 */
+  const markDel = (S.wf.marks || [])
+    .filter((m) => {
+      const sid = markParentSuperId(m);
+      return sid && set.has(sid);
+    })
+    .map((m) => m.id);
+  if (markDel.length) deleteMarks(markDel, true);
   S.wf.nodes = S.wf.nodes.filter((n) => !set.has(n.id));
   S.wf.wires = S.wf.wires.filter(
     (w) => !set.has(w.from) && !set.has(w.to),
@@ -22092,6 +22249,7 @@ async function deleteNodes(ids, quiet) {
   S.selGroup = null;
   if (!quiet) {
     renderCanvas();
+    if (S.sidebarOpen) renderSidebar();
     scheduleSave(true);
     renderStatus();
     toast(I18n.t("已删除 ") + ids.length + I18n.t(" 个节点"), "ok");
@@ -22407,6 +22565,36 @@ function focusSuperFromSidebar(id) {
   enterSuper(n, { toast: true });
   if (S.sidebarOpen) renderSidebar();
 }
+/** 左侧列表右键：删除（超级节点会递归删内部） */
+function bindSidebarNodeCtx(el, node) {
+  if (!el || !node) return;
+  el.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const items = [];
+    if (node.kind === "super") {
+      items.push(
+        ctxAction(I18n.t("进入"), () => enterSuper(node), "expand"),
+        ctxAction(I18n.t("定位"), () => focusSuperFromSidebar(node.id), "expand"),
+      );
+    } else {
+      items.push(
+        ctxAction(I18n.t("定位"), () => focusNode(node.id), "expand"),
+      );
+    }
+    if (!isPinnedCtrl(node)) {
+      items.push(
+        ctxAction(
+          I18n.t("删除"),
+          () => deleteNodes([node.id]),
+          "menu_delete",
+          { iconCls: "danger", cls: "ctx-danger" },
+        ),
+      );
+    }
+    showCtx(ev.clientX, ev.clientY, [[I18n.t("节点操作"), items]]);
+  });
+}
 function renderSuperSidebarTree(tree, filter) {
   if (!tree) return false;
   const supers = sidebarSupersInTask();
@@ -22506,6 +22694,7 @@ function renderSuperSidebarTree(tree, filter) {
       row.appendChild(t);
       row.appendChild(tip);
       row.onclick = () => focusSuperFromSidebar(n.id);
+      bindSidebarNodeCtx(row, n);
       sec.appendChild(row);
       if (kids.length && !nodeCollapsed) {
         for (const c of kids) appendRow(c, depth + 1);
@@ -22624,6 +22813,7 @@ function renderSidebar() {
         it.appendChild(tip);
       }
       it.onclick = () => focusNode(n.id);
+      bindSidebarNodeCtx(it, n);
       return it;
     });
   }
@@ -22658,6 +22848,7 @@ function renderSidebar() {
         it.appendChild(tag);
         it.appendChild(t);
         it.onclick = () => focusNode(n.id);
+        bindSidebarNodeCtx(it, n);
         return it;
       });
     }
@@ -26237,7 +26428,7 @@ function setAttempt(node, i) {
 
 /* 多次尝试按钮：弹出次数输入（整数 1-10，默认 1） */
 function promptAttempts(node) {
-  openOverlay(I18n.t("多次尝试 · ") + node.title);
+  openOverlay(I18n.t("多次尝试 · ") + node.title, { persistent: true });
   const body = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
@@ -26324,7 +26515,7 @@ async function playWaitFileNode(node, quiet) {
       updateRunQueuePanel();
     }
   };
-  const pathCheck = resolveSavePath(node.waitPath);
+  const pathCheck = resolveSavePath(node.waitPath, node);
   if (!pathCheck.ok) {
     clearPendingEarly();
     node.error = savePathResolveError(pathCheck.code);
@@ -28872,8 +29063,8 @@ function renderWfWorkspace() {
 function renameWorkflowDialog() {
   const wf = S.wf;
   if (!wf) return;
-  openOverlay(I18n.t("更改画布名称"));
-  overlayPersistent = true; /* 点击外框不关闭，仅「取消 / 保存」关闭 */
+  openOverlay(I18n.t("更改画布名称"), { persistent: true });
+  /* 点击外框不关闭，仅「取消 / 保存」关闭 */
   const body = $("#ovBody");
   const lab = document.createElement("label");
   lab.className = "n-field";
@@ -29142,7 +29333,7 @@ function syncAgentTaskFromSession(sessionId) {
 }
 
 function newWorkflowDialog() {
-  openOverlay(I18n.t("新建画布"));
+  openOverlay(I18n.t("新建画布"), { persistent: true });
   const body = $("#ovBody");
   const lab = document.createElement("label");
   lab.className = "n-field";
@@ -29887,7 +30078,7 @@ function exportWorkflowDialog() {
     toast(I18n.t("当前没有已加载的画布"), "err");
     return;
   }
-  openOverlay(I18n.t("导出画布"));
+  openOverlay(I18n.t("导出画布"), { persistent: true });
   const body = $("#ovBody");
   const foot = $("#ovFoot");
   body.appendChild(
@@ -29929,7 +30120,7 @@ function doImportBase64() {
 
 /* 导入方式选择 */
 function importWorkflowDialog() {
-  openOverlay(I18n.t("导入画布"));
+  openOverlay(I18n.t("导入画布"), { persistent: true });
   const body = $("#ovBody");
   const foot = $("#ovFoot");
   body.appendChild(hintEl(I18n.t("选择导入方式：从 .mtnodes 文件，或粘贴 Base64 内容。")));
@@ -36193,6 +36384,7 @@ async function assistSend(text) {
   S.assistPending = "";
   S.assistLiveTools = [];
   S.assistRunActive = true;
+  beginSaveNodeHold();
   S.assistRunWorkspace =
     assistResolveWorkspace() || S.dshWorkspaceFallback || "";
   if (!S.thinking) S.thinking = {};
@@ -36388,6 +36580,7 @@ async function assistSend(text) {
     persistAssistUi();
     renderAssistPanel();
     updateRunQueuePanel();
+    endSaveNodeHold();
   }
 }
 
@@ -37446,6 +37639,7 @@ async function agentSessionSend(text) {
   st._liveTools = [];
   st.metrics = null;
   S.agentSessionRunActive = true;
+  beginSaveNodeHold();
   if (!S.thinking) S.thinking = {};
   S.thinking.agentSession = [""];
   await persistAgentSession();
@@ -37575,6 +37769,7 @@ async function agentSessionSend(text) {
     await persistAgentSession();
     renderAgentSession();
     syncAgentTaskFromSession(st.id);
+    endSaveNodeHold();
   }
 }
 
@@ -38049,8 +38244,16 @@ async function init() {
     renderStatus();
     renderWfTabs();
   });
+  $("#overlay").addEventListener("mousedown", (ev) => {
+    _overlayBgPointerDown = ev.target && ev.target.id === "overlay";
+  });
   $("#overlay").addEventListener("click", (ev) => {
-    if (ev.target.id === "overlay" && !overlayPersistent) closeOverlay();
+    if (!ev.target || ev.target.id !== "overlay") return;
+    /* 必须在蒙层上按下再抬起：弹窗内拖选 / 拖动修改松手到蒙层外不会关 */
+    if (!_overlayBgPointerDown) return;
+    _overlayBgPointerDown = false;
+    if (overlayShouldStayOpen()) return;
+    closeOverlay();
   });
   /* 打字时不保存：仅当焦点移出输入控件后才落盘（避免保存触发重渲染导致失焦） */
   document.addEventListener("focusout", (ev) => {

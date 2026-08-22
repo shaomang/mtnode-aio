@@ -12,7 +12,7 @@ The **plugin list is fetched from the cloud catalog** (`http://mt-agent.com/mtno
 
 Manage under Settings · Agent (or Browse online):
 
-- **DSH plugins**: extend the agent. Built-in plugins stay in the app package; user plugins install under the config data directory (`dsh-home/plugins`). Both can be mounted (mount state survives updates). Install restarts the engine. The global assistant can install/remove/mount via `mtnode_app` (with confirmation).
+- **DSH plugins**: extend the agent; installed under the config data directory (survive app updates); install restarts the engine.
 - **Skills**: Markdown instructions. Type `/` in agent session / agent task / agent text / agent chat to pick one; the skill body is attached at run time.
 - **MCP servers**: tools appear on agent nodes after connect (stdio or remote URL).
 

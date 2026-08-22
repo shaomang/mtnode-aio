@@ -521,10 +521,10 @@ mockServer.listen(0, '127.0.0.1', () => {
       // —— zoom 坐标映射诊断（连线末端是否在鼠标上） ——
       S.cam = { x: 200, y: 150, z: 1.7 };
       applyTransform();
-      const cr2 = $('#canvas').getBoundingClientRect();
+      const sr2 = $('#stage').getBoundingClientRect();
       const sx0 = 500, sy0 = 400;
-      const cx0 = cr2.left + S.cam.x + sx0 * S.cam.z;
-      const cy0 = cr2.top + S.cam.y + sy0 * S.cam.z;
+      const cx0 = sr2.left + sx0 * S.cam.z;
+      const cy0 = sr2.top + sy0 * S.cam.z;
       const back0 = toStage(cx0, cy0);
       log('zoom mapping roundtrip=' + (Math.abs(back0.x - sx0) < 1 && Math.abs(back0.y - sy0) < 1) + ' back=' + back0.x.toFixed(1) + ',' + back0.y.toFixed(1) + ' expect ' + sx0 + ',' + sy0);
 
@@ -1141,8 +1141,8 @@ mockServer.listen(0, '127.0.0.1', () => {
               applyTransform();
               const path = document.querySelector('#wire-' + w.id);
               const pt = path.getPointAtLength(path.getTotalLength() / 2);
-              const cr = $('#canvas').getBoundingClientRect();
-              return { x: cr.left + S.cam.x + pt.x * S.cam.z, y: cr.top + S.cam.y + pt.y * S.cam.z, count: S.wf.wires.length };
+              const cr = $('#stage').getBoundingClientRect();
+              return { x: cr.left + pt.x * S.cam.z, y: cr.top + pt.y * S.cam.z, count: S.wf.wires.length };
             })()`);
             win.webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(wireInfo.x), y: Math.round(wireInfo.y), button: 'right', clickCount: 1 });
             win.webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(wireInfo.x), y: Math.round(wireInfo.y), button: 'right', clickCount: 1 });

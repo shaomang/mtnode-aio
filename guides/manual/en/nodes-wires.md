@@ -4,7 +4,9 @@
 
 ## Adding nodes
 
-Right-click empty canvas: input, process, save, chat, agent, task, control-flow, drawing. Control nodes have a **gold outer ring**.
+Right-click empty canvas: input, process, save, chat, agent, task, **super**, control-flow, drawing. Control nodes have a **gold outer ring**.
+
+For large graphs, pack clusters with [Super nodes](#super-nodes), or select nodes and use toolbar **Wrap super**.
 
 ## Ports and wires
 

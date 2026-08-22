@@ -11,4 +11,4 @@ Toolbar **New / switch / rename / delete**. Default id is `default` (recreated i
 
 ## Creative Workshop
 
-Browse / search public **templates** and **skills**. Upload requires an account. Skills use versioned `SKILL.md`; official skills are marked by account `ms2308`. Locally downloaded skills do not auto-update when the workshop changes.
+Browse / search public templates and download. Upload requires an account; you can manage title, preview, description, and tags.

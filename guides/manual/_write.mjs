@@ -225,6 +225,7 @@ const catalog = {
         { id: "nodes-wires", title: { zh: "节点、端子与连线", en: "Nodes and wires" } },
         { id: "batch", title: { zh: "批量、拆分与合并", en: "Batch, split, merge" } },
         { id: "marks-groups", title: { zh: "绘制、框选与组", en: "Marks, box, groups" } },
+        { id: "super-nodes", title: { zh: "超级节点", en: "Super nodes" } },
         { id: "workflows", title: { zh: "工作流与创意工坊", en: "Workflows & workshop" } },
       ],
     },
@@ -277,44 +278,8 @@ fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(catalog, null, 2)
 
 const pages = {
   overview: {
-    zh: `# 欢迎使用 MTNode AI编排器
-
-MTNode 把复杂的 AI 工作收束到**一张可视化画布**：文本 / 图像输入、大模型处理、图像生成、批量生产、任务规划、对话、智能办事，都以节点自由编排。
-
-- **永久免费开源**（MIT），无订阅。工作流可导出为 \`.mtnodes\` 包分享。
-- 下载与主页：[http://mt-agent.com/mtnode](http://mt-agent.com/mtnode)
-
-## 这本手册怎么用
-
-左侧是**一级分类 / 二级页面**。点一条即可在右侧阅读 Markdown 说明。部分页面带示意图。
-
-| 入口 | 用途 |
-| --- | --- |
-| 右上角 **文档** | 本手册（覆盖整个应用） |
-| 文档右上角 **答疑** | 只根据本手册回答，不会改画布 |
-| 节点右键 **节点指南** | 单个节点的详细图示说明 |
-
-建议先读 [第一次使用](#first-run) 与 [界面导览](#ui-tour)。
-`,
-    en: `# Welcome to MTNode AI Orchestrator
-
-MTNode puts complex AI work on **one visual canvas**: text/image input, LLM processing, image generation, batch production, task graphs, chat, and agent tasks—wired as nodes.
-
-- **Free and open source** (MIT), no subscription. Workflows export as \`.mtnodes\` packs.
-- Home / downloads: [http://mt-agent.com/mtnode](http://mt-agent.com/mtnode)
-
-## How to use this manual
-
-The left sidebar is **section / page**. Click a page to read Markdown on the right. Some pages include diagrams.
-
-| Entry | Purpose |
-| --- | --- |
-| Top-right **Docs** | This app-wide manual |
-| Docs **Ask** | Answers from this manual only; never edits the canvas |
-| Node right-click **Node guide** | Per-node illustrated help |
-
-Start with [First run](#first-run) and [Interface tour](#ui-tour).
-`,
+    zh: fs.readFileSync(path.join(root, "overview.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "overview.md"), "utf8"),
   },
   "first-run": {
     zh: `# 第一次使用
@@ -349,42 +314,8 @@ Start with [First run](#first-run) and [Interface tour](#ui-tour).
 `,
   },
   "ui-tour": {
-    zh: `# 界面导览
-
-![界面分区](img/ui-tour.svg)
-
-## 顶栏
-
-- **工作流编排 / 智能会话**：两种主视图。工作流是节点画布；智能会话是常驻的智能任务聊天。
-- **撤销 / 重做 / 复制 / 居中 / 框选 / 组 / 自动排版**
-- **设置 · API/配置**：服务商、智能能力、主题、网格。
-- **新建 / 工作流列表 / 改名 / 导出 / 创意工坊 / 导入 / 删除**
-- 右上角：**文档**（本手册）、**插件**、**审批**、语言切换；有新版本时出现高光 **更新**。
-
-## 画布区
-
-工具条左侧 **☰** 打开节点树（可按标题筛选，点击条目会居中到该节点）。右侧 **✦** 打开全局 AI 助手（可看画布状态；改图会确认）。
-
-底部状态栏显示工作流名、节点/连线数量、服务商数、网格、缩放与保存状态。点 \`@ms2308\` 可打开作者主页。
-`,
-    en: `# Interface tour
-
-![Layout](img/ui-tour.svg)
-
-## Top bar
-
-- **Workflow / Agent session**: two main views. Workflow is the node canvas; Agent session is a persistent agent chat.
-- **Undo / Redo / Duplicate / Fit / Box / Group / Auto layout**
-- **Settings · API/Config**: providers, agent engine, theme, grid.
-- **New / workflow list / Rename / Export / Workshop / Import / Delete**
-- Top-right: **Docs** (this manual), **Plugins**, **Approvals**, language; **Update** highlights when a new version exists.
-
-## Canvas
-
-**☰** opens the node tree (filter by title; click to center). **✦** opens the global AI assistant (sees canvas state; graph edits ask for confirm).
-
-The status bar shows workflow name, node/wire counts, providers, grid, zoom, and save state. Click \`@ms2308\` for the author page.
-`,
+    zh: fs.readFileSync(path.join(root, "ui-tour.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "ui-tour.md"), "utf8"),
   },
   shortcuts: {
     zh: `# 快捷键
@@ -425,56 +356,8 @@ Chat / agent-session send keys are in Settings: **Enter to send** or **Enter new
 `,
   },
   "nodes-wires": {
-    zh: `# 节点、端子与连线
-
-![数据管道](img/nodes-wires.svg)
-
-## 添加节点
-
-画布空白处右键：输入、处理、保存、对话、智能、任务、控制流、绘制等分类。控制类节点带**金色外圈**。
-
-## 端子与连线
-
-- 从**输出端子**（右）拖到**输入端子**（左）。不能成环。
-- 输入端子默认 1 个，连上后常会自动再空出一个。
-- **控制连线是金色的**，只传脉冲（定时、闸门、执行/清空），不当作数据输入。
-- **全局节点**只连入、不连出。处理 / 智能任务 / 判断节点**点击左上角类型图标**开启引用（图标变彩虹）；拖动图标只移动节点，不会误开。
-
-## 继承与自动运行
-
-输入节点一旦被连上，内容变为**只读并继承上游**；断开即可再编辑。YAML 文本会自动变成批量条目。
-
-点 ▶ 时，若上游尚未处理，会**自动递归执行**直到就绪。处理节点完成后会**自动执行下游**；若下游已有输出，会询问是覆盖还是不继续。
-
-## @ 引用
-
-在提示词中输入 \`@\`，只列出**已连接**节点（若左上角彩虹图标已开，还包括全局节点连入的来源）。运行时输入进入「背景信息」，提示词进入「内容」。图像引用作为参考图。
-`,
-    en: `# Nodes and wires
-
-![Pipeline](img/nodes-wires.svg)
-
-## Adding nodes
-
-Right-click empty canvas: input, process, save, chat, agent, task, control-flow, drawing. Control nodes have a **gold outer ring**.
-
-## Ports and wires
-
-- Drag **output** (right) to **input** (left). Loops are rejected.
-- Nodes start with one input; a new idle port often appears after you connect.
-- **Control wires are gold**—pulses only (timer, gate, run/clear), not data.
-- **Global node** takes inputs only. Process / agent-task / judge nodes **click the top-left type icon** to subscribe (icon turns rainbow). Dragging the icon moves the node and does not toggle.
-
-## Inheritance and auto-run
-
-A wired input node becomes **read-only and inherits upstream**. Disconnect to edit. YAML text becomes batch entries.
-
-▶ recursively runs unprocessed upstream nodes first. After a process node finishes, **downstream runs automatically**; if those nodes already have output, choose overwrite or stop.
-
-## @ references
-
-Type \`@\` in a prompt to list **connected** nodes (and global-node sources if the top-left rainbow icon is on). Inputs go to “background”, the prompt to “content”. Image refs are reference images.
-`,
+    zh: fs.readFileSync(path.join(root, "nodes-wires.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "nodes-wires.md"), "utf8"),
   },
   batch: {
     zh: `# 批量、拆分与合并
@@ -537,24 +420,40 @@ Save nodes on a batch chain name files \`{filename}_{input title}\`. See [Input 
 
 选中多个节点后按 \`G\` 或点「◫ 组」，输入标题。虚线圆角框可整体拖动；边缘把手横竖分别缩放。再按 \`G\` 或点组按钮解散（节点保留）。
 
-「自动排版」按连线方向把节点铺开，减少重叠。
+## 超节点（收纳）
+
+框选后点顶栏 **「超节点」**，或右键空白添加超级节点，把相关节点收成子图。可展开壳层编辑、↪ 进入完整内部画布，并用边端子隧穿数据。详见 [超级节点](#super-nodes)。
+
+## 排版
+
+「自动排版」按连线方向把节点铺开，减少重叠。若画布含超级节点，会询问是否**同时排版内部**。
 `,
-    en: `# Marks, box-select, groups
+    en: `# Marks, box select, groups
 
-## Drawing marks
+## Marks
 
-Right-click empty canvas for arrows, boxes, notes. They are annotations only. Recolor / resize; \`Ctrl+C\` duplicates marks.
+Right-click empty canvas for arrows, boxes, notes. They are annotations only. Change color / stroke / size; \`Ctrl+C\` copies marks.
 
-## Box-select
+## Box select
 
-\`Ctrl+drag\` on empty canvas, or enable **▭ Box** then drag. Nodes (and marks) inside are selected for move / delete / duplicate.
+\`Ctrl+left-drag\` empty space, or enable toolbar **▭ Box** then drag. Nodes (and marks) inside are selected for move / delete / copy.
 
 ## Groups
 
-Select nodes, press \`G\` or **◫ Group**, enter a title. Dashed frame moves as a whole; handles scale X/Y independently. \`G\` again ungroups (nodes remain).
+Select nodes, press \`G\` or **◫ Group**, enter a title. Dashed frame moves together; edge handles scale axes independently. Press \`G\` again to dissolve (nodes remain).
 
-**Auto layout** spreads nodes along wires to reduce overlap.
+## Wrap super
+
+After selecting nodes, toolbar **Wrap super** (or right-click → Super) packs them into a subgraph. Expand the shell, **↪ Enter** for a full inner canvas, and tunnel data via edge ports. See [Super nodes](#super-nodes).
+
+## Layout
+
+**Auto layout** spreads nodes by wires. If the canvas has supers, you can choose to tidy **inside supers** as well.
 `,
+  },
+  "super-nodes": {
+    zh: fs.readFileSync(path.join(root, "super-nodes.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "super-nodes.md"), "utf8"),
   },
   workflows: {
     zh: `# 工作流与创意工坊
@@ -637,34 +536,8 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 `,
   },
   "task-chat": {
-    zh: `# 任务与对话
-
-## 任务节点
-
-内部是一张控制流图：固定**起点**、若干步骤 / 子任务 / 判断，以及**成功 / 失败终点**。父任务上用格子展示子任务。点 ▶ 点燃起点。细节见 [任务控制流](#task-flow)。
-
-## 对话节点
-
-微信风格气泡（助手左、用户右）。系统提示词、服务商、思考强度可配。对话随工作流保存；输出端子给出整段记录。可勾选「智能助手」去读文件 / 联网 / 跑命令。
-
-## 控制 · 执行 / 清空
-
-把控制节点连到若干目标（或把目标连进来），头部切换「执行 / 清空」，▶ 对全部已连接节点同时执行。金色线不是数据。
-`,
-    en: `# Tasks and chat
-
-## Task node
-
-An inner control graph: pinned **start**, steps / sub-tasks / judges, and **success / fail ends**. The parent shows sub-tasks as a grid. ▶ fires start. See [Task graph](#task-flow).
-
-## Chat node
-
-WeChat-style bubbles (assistant left, user right). System prompt, provider, thinking effort. History saves with the workflow; the output port emits the transcript. Enable **Agent** to read files / search / run commands.
-
-## Control · Run / Clear
-
-Wire a control node to targets (or wire targets in), switch **Run / Clear**, then ▶ applies it to all connected nodes. Gold wires are not data.
-`,
+    zh: fs.readFileSync(path.join(root, "task-chat.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "task-chat.md"), "utf8"),
   },
   "agent-nodes": {
     zh: `# 智能任务与智能会话
@@ -993,34 +866,8 @@ Temperature, thinking effort (low / mid / high), and image size override default
 `,
   },
   workspace: {
-    zh: `# 工作目录与存档
-
-## 工作目录
-
-顶栏可为当前画布指定文件夹。智能节点与保存节点的**相对路径**都相对该目录；改目录即统一换落盘位置。留空则各节点单独设置，或使用应用默认数据目录。
-
-路径无效时会自动清空并提示，以免助手写到错误位置。
-
-## 存档位置
-
-工作流 JSON 在本机数据目录的 \`save/\`（Windows 多为 \`%APPDATA%\\pipeline-console\\...\`）。设置里「打开存档位置」可直接打开。
-
-**不会默认上传任何工作流。** 只有你主动跑节点时，提示词与输入才发往你配置的服务商；工坊上传是你明确选择的模板。
-`,
-    en: `# Workspace & archives
-
-## Working directory
-
-The toolbar can set a folder for this canvas. Agent nodes and **relative save paths** use it; change it to redirect writes. Leave empty for per-node paths or the app default data directory.
-
-Invalid paths are cleared with a warning so the assistant does not write to the wrong place.
-
-## Archive folder
-
-Workflow JSON lives under \`save/\` in the app data directory (Windows: often \`%APPDATA%\\pipeline-console\\...\`). Settings → **Open archive folder**.
-
-**Workflows are not uploaded by default.** Prompts go to your provider only when you run a node. Workshop upload is an explicit template you choose.
-`,
+    zh: fs.readFileSync(path.join(root, "workspace.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "workspace.md"), "utf8"),
   },
   update: {
     zh: `# 版本更新
@@ -1041,58 +888,8 @@ If the download fails, retry after checking the network. The version also appear
 `,
   },
   faq: {
-    zh: `# 常见问题
-
-**▶ 没反应 / 一直失败？**  
-先看节点上的错误条。最常见：没填 API Key、没连输入、图像任务用了不支持视觉的服务商。用 ◈ 预览即将发送的请求。
-
-**连线拖不出来？**  
-要从端子圆形上按下再拖，不要从节点标题开始。输入端子已被占用时需先断开或改用新端子。
-
-**批量只跑了第一条？**  
-处理节点可能处于「聚合」。点头部切换为「批量」。
-
-**定时器一点 ▶ 下游立刻跑了？**  
-定时器的 ▶ 是**打开闹钟**。到点才会脉冲。立刻跑请用普通处理节点或「执行」控制节点。
-
-**闸门永远不放行？**  
-AND 闸门按**配置的输入路数**等待，没接线的端口也算。减少输入路数，或把线都接上。
-
-**智能任务乱改文件？**  
-检查工作目录；把审批调到「逐项审批」或关掉不需要的工具许可。
-
-**文档答疑说不知道？**  
-它只读本手册。单节点细节请用右键「节点指南」，或换个问法指向左侧目录里的章节。
-
-**中英文？**  
-右上角地球按钮切换。手册与节点指南都有对应语言（缺英译时回退中文）。
-`,
-    en: `# Common questions
-
-**▶ does nothing / always fails?**  
-Read the error on the node. Usual causes: missing API Key, no input wired, image job on a non-vision provider. Use ◈ to preview the request.
-
-**Cannot drag a wire?**  
-Press on the port circle, not the title. If an input is taken, disconnect it or use a new port.
-
-**Batch only ran the first item?**  
-The process node may be in **Aggregate**. Switch the header to **Batch**.
-
-**Timer ▶ runs downstream immediately?**  
-Timer ▶ **arms the alarm**. Pulses fire at the interval. To run now, use a process node or the Run control node.
-
-**Gate never opens?**  
-AND waits for **configured** input count; unwired ports still block. Lower the count or wire every port.
-
-**Agent task wrote the wrong files?**  
-Check the workspace; switch Approvals to “approve each” or disable extra tools.
-
-**Docs assistant says it does not know?**  
-It only reads this manual. Use node **Node guide** for one kind, or ask using a sidebar section name.
-
-**Chinese / English?**  
-Globe button, top-right. Manual and node guides follow the UI language (Chinese fallback if English is missing).
-`,
+    zh: fs.readFileSync(path.join(root, "faq.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "faq.md"), "utf8"),
   },
 };
 
