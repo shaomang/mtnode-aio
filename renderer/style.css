@@ -686,10 +686,12 @@ button.mini.btn-sq.ws-browse svg{width:14px; height:14px; display:block; flex:no
   --grid-size: 24px;
   --grid-x: 0px;
   --grid-y: 0px;
+  --grid-dot-r: 1px;
+  --grid-dot-end: 1.5px;
   position:relative; flex:1; overflow:hidden; min-height:360px;
   user-select:none; -webkit-user-select:none;
   background:
-    radial-gradient(circle at 1px 1px, rgba(122,138,146,.16) 1px, transparent 1.5px)
+    radial-gradient(circle at 1px 1px, rgba(122,138,146,.16) var(--grid-dot-r), transparent var(--grid-dot-end))
       var(--grid-x) var(--grid-y) / var(--grid-size) var(--grid-size),
     linear-gradient(180deg,#0c1116,#0a0e13);
   border:1px solid var(--bd); border-radius:4px; cursor:grab;
@@ -3027,11 +3029,12 @@ button.mini.btn-sq.tpl-ico{
 }
 .hist-rail-mark{
   position:absolute; left:0; right:0;
-  display:flex; flex-direction:column; align-items:center; gap:1px;
-  padding:0; margin:0; border:0; background:transparent;
-  cursor:pointer; pointer-events:auto; line-height:1;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;
+  min-height:14px; padding:3px 0; margin:0; border:0; background:transparent;
+  cursor:pointer; pointer-events:auto; line-height:1; z-index:1;
   transform:translateY(-50%);
 }
+.hist-rail-mark:hover{z-index:2}
 .hist-rail-bar{
   display:block; width:10px; height:2px; border-radius:1px;
   background:var(--cyan2);
@@ -3042,7 +3045,7 @@ button.mini.btn-sq.tpl-ico{
   font-size:8px; font-family:var(--mono); color:var(--muted);
   letter-spacing:0; transform:scale(.92);
 }
-.hist-rail-mark:hover .hist-rail-bar{filter:brightness(1.25); height:3px}
+.hist-rail-mark:hover .hist-rail-bar{filter:brightness(1.25)}
 .hist-rail-mark:hover .hist-rail-n{color:var(--ink)}
 .dsh-stream{color:var(--muted); min-height:8px}
 .dsh-stream:empty{display:none}

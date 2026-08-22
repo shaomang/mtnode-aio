@@ -19,6 +19,8 @@ const PORT_OFF = 7; /* 端子圆心到节点边缘的距离（端子完全在节
 /* 画布缩放范围：下限放宽便于大工作流总览 */
 const CAM_Z_MIN = 0.08;
 const CAM_Z_MAX = 2.5;
+/* 平移时允许视野超出内容边界的最大空白（px） */
+const CAM_PAN_PAD = 640;
 
 /* 输出节点（proc_text / proc_image）几何约束：
    输出面板可大幅放大（旧上限 440px 移除），输入框（左侧）保持最小宽度不被挤压；
@@ -3990,16 +3992,20 @@ function snapDim(v, minV) {
 function gridMod(a, n) {
   return ((a % n) + n) % n;
 }
-/* 背景点阵间距 = snap；位移跟随相机，使世界坐标整数格点与屏幕上的点重合 */
+/* 背景点阵间距 = snap×zoom；点径随 zoom 缩小，拉远时网格点不会显得过大 */
 function syncCanvasGrid() {
   const canvas = $("#canvas");
   if (!canvas || !S.cam) return;
   const g = grid();
   const z = S.cam.z > 0 && isFinite(S.cam.z) ? S.cam.z : 1;
   const gs = g * z;
+  const dotR = Math.max(0.3, Math.min(1, z));
+  const dotEnd = dotR * 1.5;
   canvas.style.setProperty("--grid-size", gs + "px");
   canvas.style.setProperty("--grid-x", gridMod(S.cam.x, gs) + "px");
   canvas.style.setProperty("--grid-y", gridMod(S.cam.y, gs) + "px");
+  canvas.style.setProperty("--grid-dot-r", dotR + "px");
+  canvas.style.setProperty("--grid-dot-end", dotEnd + "px");
 }
 function fmtTime(d) {
   const x = new Date(d);
@@ -6062,6 +6068,7 @@ function toStage(cx, cy) {
 function applyTransform() {
   const st = $("#stage");
   if (!st) return;
+  clampCam();
   st.style.transform = `translate(${S.cam.x}px, ${S.cam.y}px) scale(${S.cam.z})`;
   syncCanvasGrid();
 }
@@ -6144,7 +6151,11 @@ function canvasWorldBounds() {
     maxX = Math.max(maxX, x + w);
     maxY = Math.max(maxY, y + h);
   };
-  for (const n of nodes) include(n.x, n.y, n.w, n.h);
+  for (const n of nodes) {
+    const p = nodeWorldPos(n);
+    const sz = nodeDrawSize(n);
+    include(p.x, p.y, sz.w, sz.h);
+  }
   for (const m of marks) {
     const b = markBounds(m);
     if (!b) continue;
@@ -6158,6 +6169,31 @@ function canvasWorldBounds() {
   }
   if (!isFinite(minX) || !isFinite(minY)) return null;
   return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+}
+
+/** 限制相机平移：视野不得离当前可见内容过远，避免在空白区迷失 */
+function clampCam() {
+  const bounds = canvasWorldBounds();
+  if (!bounds || !S.cam) return;
+  const canvas = $("#canvas");
+  if (!canvas) return;
+  const vw = canvas.clientWidth || 800;
+  const vh = canvas.clientHeight || 600;
+  const z = S.cam.z > 0 && isFinite(S.cam.z) ? S.cam.z : 1;
+  const pad = CAM_PAN_PAD;
+  const { minX, minY, maxX, maxY } = bounds;
+  const minCamX = vw - pad - maxX * z;
+  const maxCamX = pad - minX * z;
+  const minCamY = vh - pad - maxY * z;
+  const maxCamY = pad - minY * z;
+  S.cam.x =
+    minCamX <= maxCamX
+      ? Math.max(minCamX, Math.min(maxCamX, S.cam.x))
+      : (minCamX + maxCamX) / 2;
+  S.cam.y =
+    minCamY <= maxCamY
+      ? Math.max(minCamY, Math.min(maxCamY, S.cam.y))
+      : (minCamY + maxCamY) / 2;
 }
 
 function waitCanvasPaint() {
@@ -21359,7 +21395,7 @@ function startNodeDrag(ev, node, opts) {
     curWorld: {},
     hadNested: dragIds.some((id) => {
       const n = nodeById(id);
-      return !!(n && nodeParentSuperId(n));
+      return !!(n && nodeIsNestedInOpenSuper(n));
     }),
     markIds,
     origMarks,
@@ -21397,20 +21433,20 @@ function applyNodeDragVisual(d, dx, dy) {
     const wx = snap(ow.x + dx);
     const wy = snap(ow.y + dy);
     d.curWorld[id] = { x: wx, y: wy };
-    const nested = !!nodeParentSuperId(n);
-    if (!nested && o) {
+    const nestedShell = nodeIsNestedInOpenSuper(n);
+    if (!nestedShell && o) {
       n.x = snap(o.x + dx);
       n.y = snap(o.y + dy);
     }
     let el = document.querySelector('.wf-node[data-nid="' + id + '"]');
     if (!el) continue;
-    if (nested && stage && el.parentElement !== stage) {
+    if (nestedShell && stage && el.parentElement !== stage) {
       stage.appendChild(el);
       el.classList.add("super-drag-lift");
       el.style.zIndex = "55";
     }
-    el.style.left = (nested ? wx : n.x) + "px";
-    el.style.top = (nested ? wy : n.y) + "px";
+    el.style.left = (nestedShell ? wx : n.x) + "px";
+    el.style.top = (nestedShell ? wy : n.y) + "px";
   }
 }
 /* 清理悬空的拖拽状态：窗口移动/失焦等会吞掉 mouseup，导致 S.drag / boxSel 残留，
@@ -22930,8 +22966,10 @@ function focusNode(id) {
   if (want !== currentTaskFocus()) setTaskFocus(want, { render: false });
   const vw = $("#canvas").clientWidth,
     vh = $("#canvas").clientHeight;
-  S.cam.x = vw / 2 - (n.x + n.w / 2) * S.cam.z;
-  S.cam.y = vh / 2 - (n.y + n.h / 2) * S.cam.z;
+  const p = nodeWorldPos(n);
+  const sz = nodeDrawSize(n);
+  S.cam.x = vw / 2 - (p.x + sz.w / 2) * S.cam.z;
+  S.cam.y = vh / 2 - (p.y + sz.h / 2) * S.cam.z;
   S.selSet = new Set([id]);
   S.sel = id;
   S.selGroup = null;
@@ -36949,6 +36987,65 @@ function histAssignRounds(rows) {
   return marks;
 }
 
+function scrollToHistMark(list, el) {
+  if (!list || !el) return;
+  /* 不用 smooth：滚动动效会带动轨道标记位移，导致 click release 丢失 */
+  list.scrollTop = Math.max(0, el.offsetTop - 8);
+}
+
+function histRailPositionLocked(list) {
+  return !!(list && list._histRailPointer);
+}
+
+function histRailSignature(marks) {
+  return marks
+    .map(
+      (m) =>
+        (m.el.dataset.histKey || m.el.dataset.histIdx || "") +
+        ":" +
+        m.round +
+        ":" +
+        m.role,
+    )
+    .join("|");
+}
+
+function positionHistRailMarks(list, rail, marks) {
+  if (!rail || !marks || !marks.length || histRailPositionLocked(list)) return;
+  const contentH = Math.max(list.scrollHeight, 1);
+  const railH = Math.max(rail.clientHeight, 1);
+  const btns = rail.querySelectorAll(".hist-rail-mark");
+  marks.forEach((m, i) => {
+    const btn = btns[i];
+    if (!btn) return;
+    const mid = m.el.offsetTop + m.el.offsetHeight / 2;
+    const y = (mid / contentH) * railH;
+    btn.style.top = Math.max(8, Math.min(railH - 8, y)) + "px";
+  });
+}
+
+function rebuildHistRail(list, rail, marks) {
+  rail.innerHTML = "";
+  for (let i = 0; i < marks.length; i++) {
+    const m = marks[i];
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "hist-rail-mark hist-rail-" + m.role;
+    btn.dataset.histRow = String(i);
+    const who = m.role === "user" ? I18n.t("你") : "AI";
+    btn.title = who + " · #" + m.round;
+    const bar = document.createElement("span");
+    bar.className = "hist-rail-bar";
+    const num = document.createElement("span");
+    num.className = "hist-rail-n";
+    num.textContent = String(m.round);
+    btn.appendChild(bar);
+    btn.appendChild(num);
+    rail.appendChild(btn);
+  }
+  positionHistRailMarks(list, rail, marks);
+}
+
 function ensureHistRail(list) {
   if (!list || !list.parentNode) return null;
   let wrap = list.parentNode;
@@ -36978,13 +37075,63 @@ function ensureHistRail(list) {
     rail.className = "hist-rail";
     wrap.appendChild(rail);
   }
+  if (!rail._histClickBound) {
+    rail._histClickBound = true;
+    const clearHistRailPointer = () => {
+      if (!list._histRailPointer) return;
+      list._histRailPointer = false;
+      const r = list.parentNode;
+      const railEl =
+        r &&
+        [...r.children].find(
+          (c) => c.classList && c.classList.contains("hist-rail"),
+        );
+      if (railEl && list._histRailMarks && list._histRailMarks.length) {
+        positionHistRailMarks(list, railEl, list._histRailMarks);
+      }
+    };
+    rail.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    rail.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      const btn =
+        ev.target && ev.target.closest
+          ? ev.target.closest(".hist-rail-mark")
+          : null;
+      if (!btn || !list._histRailMarks) return;
+      const i = Number(btn.dataset.histRow);
+      const m = list._histRailMarks[i];
+      if (!m || !m.el) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      list._histRailPointer = true;
+      scrollToHistMark(list, m.el);
+    });
+    rail.addEventListener("pointerup", clearHistRailPointer);
+    rail.addEventListener("pointercancel", clearHistRailPointer);
+    rail.addEventListener("lostpointercapture", clearHistRailPointer);
+  }
   if (!list._histRailBound) {
     list._histRailBound = true;
-    const refresh = () => updateHistRail(list);
-    list.addEventListener("scroll", refresh, { passive: true });
+    const onScroll = () => {
+      if (list._histRailScrollRaf) return;
+      list._histRailScrollRaf = requestAnimationFrame(() => {
+        list._histRailScrollRaf = 0;
+        if (!list.isConnected) return;
+        const r = list.parentNode;
+        const railEl =
+          r &&
+          [...r.children].find(
+            (c) => c.classList && c.classList.contains("hist-rail"),
+          );
+        if (railEl && list._histRailMarks && list._histRailMarks.length) {
+          positionHistRailMarks(list, railEl, list._histRailMarks);
+        }
+      });
+    };
+    list.addEventListener("scroll", onScroll, { passive: true });
     if (typeof ResizeObserver === "function") {
       try {
-        const ro = new ResizeObserver(refresh);
+        const ro = new ResizeObserver(() => updateHistRail(list));
         ro.observe(list);
         ro.observe(rail);
         list._histRailRo = ro;
@@ -36997,39 +37144,19 @@ function ensureHistRail(list) {
 function updateHistRail(list) {
   const rail = ensureHistRail(list);
   if (!rail) return;
-  const rows = histCollectRows(list);
-  const marks = histAssignRounds(rows);
-  const contentH = Math.max(list.scrollHeight, 1);
-  const railH = Math.max(rail.clientHeight, 1);
-  rail.innerHTML = "";
-  if (!marks.length) return;
-  for (const m of marks) {
-    const mid = m.el.offsetTop + m.el.offsetHeight / 2;
-    const y = (mid / contentH) * railH;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "hist-rail-mark hist-rail-" + m.role;
-    btn.style.top = Math.max(6, Math.min(railH - 6, y)) + "px";
-    const who = m.role === "user" ? I18n.t("你") : "AI";
-    btn.title = who + " · #" + m.round;
-    const bar = document.createElement("span");
-    bar.className = "hist-rail-bar";
-    const num = document.createElement("span");
-    num.className = "hist-rail-n";
-    num.textContent = String(m.round);
-    btn.appendChild(bar);
-    btn.appendChild(num);
-    btn.addEventListener("mousedown", (ev) => ev.stopPropagation());
-    btn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      try {
-        m.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      } catch (_) {
-        list.scrollTop = Math.max(0, m.el.offsetTop - 8);
-      }
-    });
-    rail.appendChild(btn);
+  const marks = histAssignRounds(histCollectRows(list));
+  list._histRailMarks = marks;
+  if (!marks.length) {
+    rail.innerHTML = "";
+    list._histRailSig = "";
+    return;
+  }
+  const sig = histRailSignature(marks);
+  if (list._histRailSig !== sig) {
+    list._histRailSig = sig;
+    rebuildHistRail(list, rail, marks);
+  } else {
+    positionHistRailMarks(list, rail, marks);
   }
 }
 
