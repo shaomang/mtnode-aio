@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 /* MTNode AI编排器 · 节点编辑器 */
 const $ = (s) => document.querySelector(s);
 const svgNS = "http://www.w3.org/2000/svg";
@@ -548,6 +548,7 @@ const NODE_DEFAULTS = {
     w: 360,
     h: 300,
     title: "音乐生成",
+    attempts: 1,
     audioDuration: 60,
     seed: 0,
     rerollSeed: true,
@@ -565,6 +566,7 @@ const NODE_DEFAULTS = {
     w: 400,
     h: 340,
     title: "视频生成",
+    attempts: 1,
     videoMode: "r2v",
     duration: 5,
     ratio: "16:9",
@@ -578,7 +580,21 @@ const NODE_DEFAULTS = {
     shiftAudio: 3,
     teaEnabled: true,
     teaThresh: 0.15,
+    teaStart: 2,
+    teaEnd: -2,
+    easyReuse: 0.2,
+    easyStart: 0.15,
+    easyEnd: 0.95,
+    lowVramHeadChunks: 4,
+    chunkFfnChunks: 2,
+    chunkFfnSeqThreshold: 4096,
     sageMode: "auto",
+    sageCompile: false,
+    fps: 24,
+    bitDepth: 8,
+    videoFormat: "auto",
+    videoCodec: "auto",
+    filenamePrefix: "video/MiniMax_H3",
     /* 24G 工作流优化：默认开，节点设置可关 */
     optTeaCache: true,
     optEasyCache: true,
@@ -744,51 +760,131 @@ function stripSuperIoNodes(wf) {
   wf.nodes = wf.nodes.filter((n) => !isSuperIoNode(n));
   return wf;
 }
-function superExternalInWires(superNode, wf) {
+/** 外侧输入（含控制线），用于占位 / 控制隧穿 */
+function superExternalInWiresAll(superNode, wf) {
   wf = wf || S.wf;
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
-      if (x.to !== superNode.id || wireFromIsControl(x)) return false;
+      if (x.to !== superNode.id) return false;
       const from = nodeByIdIn(x.from, wf);
       if (!from || isSuperIoNode(from)) return false;
       return nodeParentSuperId(from) !== superNode.id;
     })
     .sort((a, b) => a.toIndex - b.toIndex);
 }
-function superInternalOutFeeds(superNode, wf) {
+/** 外侧输入数据线（直接控制源排除；勿用 wireFromIsControl，避免与超节点隧穿互相递归） */
+function superExternalInWires(superNode, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return [];
+  return superExternalInWiresAll(superNode, wf).filter((x) => {
+    const from = nodeByIdIn(x.from, wf);
+    return !!(from && !isControlKind(from));
+  });
+}
+function superInternalOutFeedsAll(superNode, wf) {
   wf = wf || S.wf;
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
-      if (x.to !== superNode.id || wireFromIsControl(x)) return false;
+      if (x.to !== superNode.id) return false;
       const from = nodeByIdIn(x.from, wf);
       return from && nodeParentSuperId(from) === superNode.id;
     })
     .sort((a, b) => a.toIndex - b.toIndex);
 }
-function superExternalOutWires(superNode, wf) {
+function superInternalOutFeeds(superNode, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return [];
+  return superInternalOutFeedsAll(superNode, wf).filter((x) => {
+    const from = nodeByIdIn(x.from, wf);
+    return !!(from && !isControlKind(from));
+  });
+}
+function superExternalOutWiresAll(superNode, wf) {
   wf = wf || S.wf;
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
-      if (x.from !== superNode.id || wireFromIsControl(x)) return false;
+      if (x.from !== superNode.id) return false;
       const to = nodeByIdIn(x.to, wf);
       return to && nodeParentSuperId(to) !== superNode.id;
     })
     .sort((a, b) => (a.fromIndex || 0) - (b.fromIndex || 0));
 }
-/** 超级节点 → 内部子节点（内侧输入桥接） */
-function superInternalBridgeWires(superNode, wf) {
+/** 外侧输出：与旧逻辑一致（宿主本身不是 control kind，全部外线参与数据拓扑） */
+function superExternalOutWires(superNode, wf) {
+  return superExternalOutWiresAll(superNode, wf);
+}
+function superInternalBridgeWiresAll(superNode, wf) {
   wf = wf || S.wf;
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
-      if (x.from !== superNode.id || wireFromIsControl(x)) return false;
+      if (x.from !== superNode.id) return false;
       const to = nodeByIdIn(x.to, wf);
       return to && nodeParentSuperId(to) === superNode.id;
     })
     .sort((a, b) => (a.fromIndex || 0) - (b.fromIndex || 0));
+}
+/** 内侧桥接数据线：外侧同号端子纯控制时排除 */
+function superInternalBridgeWires(superNode, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return [];
+  return superInternalBridgeWiresAll(superNode, wf).filter(
+    (x) => !superInPortIsControl(superNode, x.fromIndex, wf),
+  );
+}
+/** 来源是否为控制（含上游超级节点的控制输出） */
+function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
+  wf = wf || S.wf;
+  if (!node) return false;
+  if (isControlKind(node)) return true;
+  if (node.kind === "super")
+    return superOutPortIsControl(node, portIndex, wf, seen);
+  return false;
+}
+/**
+ * 外侧输入端子是否为「纯控制」。
+ * 同端子若仍有数据线，优先保持数据（兼容旧档双线；新连接已互斥占用）。
+ */
+function superInPortIsControl(superNode, portIndex, wf) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return false;
+  const ti = Number(portIndex || 0);
+  let hasCtrl = false;
+  let hasData = false;
+  for (const x of superExternalInWiresAll(superNode, wf)) {
+    if (Number(x.toIndex) !== ti) continue;
+    const from = nodeByIdIn(x.from, wf);
+    if (!from) continue;
+    if (nodeEmitsControlOnPort(from, x.fromIndex, wf)) hasCtrl = true;
+    else hasData = true;
+  }
+  return hasCtrl && !hasData;
+}
+/**
+ * 外侧输出端子是否为「纯控制」。
+ * 同号汇流若同时有数据源，优先保持数据通道。
+ */
+function superOutPortIsControl(superNode, portIndex, wf, seen) {
+  wf = wf || S.wf;
+  if (!superNode || !wf) return false;
+  const fi = Number(portIndex || 0);
+  seen = seen || new Set();
+  const key = superNode.id + ":" + fi;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  let hasCtrl = false;
+  let hasData = false;
+  for (const x of superInternalOutFeedsAll(superNode, wf)) {
+    if (Number(x.toIndex) !== fi) continue;
+    const from = nodeByIdIn(x.from, wf);
+    if (!from) continue;
+    if (nodeEmitsControlOnPort(from, x.fromIndex, wf, seen)) hasCtrl = true;
+    else hasData = true;
+  }
+  return hasCtrl && !hasData;
 }
 /** 收起：仅已占用槽位数；展开：至少 1 个并可多一个空闲槽 */
 function superDynamicPortCount(maxIdx, open) {
@@ -905,7 +1001,7 @@ function superStageSinkPos(host, toIndex, stageW) {
 function applyWirePathClass(p, w, from) {
   let wcls = "fn-edge";
   if (S.selWire === w.id) wcls += " sel";
-  if (isControlKind(from) || isControlKind(nodeById(w.to))) wcls += " ctrl";
+  if (wireFromIsControl(w) || isControlKind(nodeById(w.to))) wcls += " ctrl";
   else if (isImageWireFrom(from)) wcls += " img";
   else if (isAudioWireFrom(from)) wcls += " aud";
   else if (isVideoWireFrom(from)) wcls += " vid";
@@ -1034,7 +1130,14 @@ function updateSuperInnerWires(host, touchIds) {
       const b = clientToLocal(stage, d.mx, d.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
-      if (isControlKind(from)) tcls += " ctrl";
+      if (
+        isControlKind(from) ||
+        (from &&
+          from.kind === "super" &&
+          d.superInnerBridge &&
+          superInPortIsControl(from, d.fromIndex || 0))
+      )
+        tcls += " ctrl";
       else if (from && isImageWireFrom(from)) tcls += " img";
       t.setAttribute("class", tcls);
       t.style.display = "";
@@ -1059,6 +1162,7 @@ function refreshAllSuperInnerWires(touchIds) {
 }
 
 function bindSuperInnerBridgePort(p, host, pi) {
+  bindPortTip(p, host, "out", pi, "inner-bridge");
   p.addEventListener("mousedown", (ev) => {
     ev.stopPropagation();
     ev.preventDefault();
@@ -1086,6 +1190,7 @@ function bindSuperInnerBridgePort(p, host, pi) {
   });
 }
 function bindSuperInnerSinkPort(p, host, poi) {
+  bindPortTip(p, host, "in", poi, "inner-sink");
   p.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1142,7 +1247,8 @@ function mountSuperFocusPorts(host) {
   const ic = inputCount(host);
   for (let pi = 0; pi < ic; pi++) {
     const p = document.createElement("div");
-    p.className = "port out super-port super-inner-bridge super-focus-port";
+    p.className = "port out super-port super-inner-bridge super-focus-port" +
+      (superInPortIsControl(host, pi) ? " ctrl" : "");
     p.dataset.node = host.id;
     p.dataset.fromIndex = String(pi);
     p.title =
@@ -1156,7 +1262,9 @@ function mountSuperFocusPorts(host) {
   const oc = outputCount(host);
   for (let poi = 0; poi < oc; poi++) {
     const p = document.createElement("div");
-    p.className = "port in super-port super-inner-sink super-focus-port";
+    p.className =
+      "port in super-port super-inner-sink super-focus-port" +
+      (superOutPortIsControl(host, poi) ? " ctrl" : "");
     p.dataset.node = host.id;
     p.dataset.idx = String(poi);
     p.title =
@@ -1797,6 +1905,57 @@ async function allocateUniqueMediaExport(exp) {
   }
   return Object.assign({}, exp, { ok: false, code: "empty" });
 }
+function mediaGenRollSuffix(rollIndex) {
+  return "_" + String(rollIndex).padStart(2, "0");
+}
+/** Multi-roll export: stem_01.ext … stem_10.ext (single roll keeps configured name). */
+function resolveMediaGenRollExport(node, rollIndex, totalRolls) {
+  const exp = resolveMediaGenExport(node);
+  if (!exp || !exp.ok) return exp;
+  if (totalRolls <= 1) return exp;
+  const ext = extOf(exp.filename) || mediaGenExt(node);
+  const stem = stemOfFilename(exp.filename) || "out";
+  const fn = stem + mediaGenRollSuffix(rollIndex) + ext;
+  return Object.assign({}, exp, {
+    filename: fn,
+    path: joinPath(exp.outputDir, fn),
+  });
+}
+async function prepareMediaGenRollExport(node, rollIndex, totalRolls) {
+  let exp = resolveMediaGenRollExport(node, rollIndex, totalRolls);
+  if (!exp || !exp.ok) return null;
+  if (totalRolls <= 1 && rollIndex === 1) {
+    exp = await allocateUniqueMediaExport(exp);
+    if (!exp || !exp.ok) return null;
+  }
+  return exp;
+}
+function formatGenElapsed(ms) {
+  const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const bits = [];
+  if (h) bits.push(h + I18n.t(" 时"));
+  if (m) bits.push(m + I18n.t(" 分"));
+  if (s || !bits.length) bits.push(s + I18n.t(" 秒"));
+  return bits.join("");
+}
+function mediaGenDoneMsg(elapsedMs) {
+  return I18n.t("完成") + " · " + formatGenElapsed(elapsedMs);
+}
+function mediaGenRollProgressTag(node) {
+  const nRolls = attemptCount(node);
+  if (nRolls <= 1 || !node.running) return "";
+  const cur = Math.min(nRolls, Math.max(1, (node.genRollDone || 0) + 1));
+  return cur + "/" + nRolls + " · ";
+}
+async function resolveMediaGenActionPath(node) {
+  const display = await resolveMediaGenDisplayPath(node);
+  if (display) return display;
+  const exp = resolveMediaGenExport(node);
+  return (exp && exp.ok && exp.path) || "";
+}
 /** Last output if present on disk, else configured path if file exists. */
 async function resolveMediaGenDisplayPath(node) {
   if (!node) return "";
@@ -1896,8 +2055,8 @@ function outputCount(n) {
   if (isExecEnd(n)) return 0;
   if (n.kind === "super") {
     const open = superIsOpenShell(n);
-    const ext = superExternalOutWires(n);
-    const intF = superInternalOutFeeds(n);
+    const ext = superExternalOutWiresAll(n);
+    const intF = superInternalOutFeedsAll(n);
     const maxFrom = ext.reduce(
       (m, w) => Math.max(m, Number(w.fromIndex) || 0),
       -1,
@@ -2574,13 +2733,124 @@ function providerForAgentRoute(route) {
   return null;
 }
 
-/* 默认智能路由：优先已填 Key 的 DeepSeek；否则第一个可用的全局文本服务商 */
+/* 默认智能路由：优先其它文本服务商；无可用时再回退 DeepSeek 官方 */
 function defaultAgentProviderRoute() {
-  const dp = dshProvider();
-  if (dp && String(dp.apiKey || "").trim()) return "deepseek-official";
   const mt = mtnodePiProviders();
   if (mt.length) return "mtnode_" + mt[0].route;
+  const dp = dshProvider();
+  if (dp && String(dp.apiKey || "").trim()) return "deepseek-official";
   return "deepseek-official";
+}
+
+/** 与全局助手一致：优先 assistProvider，再 API 模式 providerId，最后默认路由 */
+function preferredAgentProviderRoute() {
+  const routes = agentRouteOptions();
+  const assist = String(
+    S.assistProvider || (S.config && S.config.assistProvider) || "",
+  ).trim();
+  if (assist && routes.has(assist)) return assist;
+  const firstText = (S.config.providers || []).find(
+    (p) => p && p.type === "text_openai",
+  );
+  const fromApi = agentRouteFromProviderId(firstText && firstText.id);
+  if (fromApi && routes.has(fromApi)) return fromApi;
+  return defaultAgentProviderRoute();
+}
+
+function preferredAgentModelForRoute(route) {
+  const assistModel = String(
+    S.assistModel || (S.config && S.config.assistModel) || "",
+  ).trim();
+  if (assistModel && agentModelFitsRoute(route, assistModel)) return assistModel;
+  const models = agentModelsForRoute(route);
+  return models[0] || "";
+}
+
+/** 原 API 模式 providerId → 智能路由（DeepSeek 配置走官方路由，其余走 mtnode_） */
+function agentRouteFromProviderId(providerId) {
+  const id = String(providerId || "").trim();
+  if (!id) return "";
+  const p = (S.config.providers || []).find(
+    (x) => x.id === id && x.type === "text_openai",
+  );
+  if (!p || !String(p.apiKey || "").trim()) return "";
+  let host = "";
+  try {
+    host = new URL(p.baseUrl || "").hostname.toLowerCase();
+  } catch {}
+  if (host.includes("deepseek")) return "deepseek-official";
+  if (!String(p.baseUrl || "").trim() || !(p.models || []).length) return "";
+  return "mtnode_" + (p.id || "");
+}
+
+function agentRouteOptions() {
+  const routes = new Set(["deepseek-official"]);
+  for (const p of mtnodePiProviders()) routes.add("mtnode_" + p.route);
+  return routes;
+}
+
+function agentModelFitsRoute(route, model) {
+  const m = String(model || "").trim();
+  if (!m) return false;
+  const models = agentModelsForRoute(route);
+  if (!models.length) return true;
+  if (models.includes(m)) return true;
+  return models.some(
+    (x) =>
+      x.toLowerCase() === m.toLowerCase() ||
+      x.endsWith("/" + m) ||
+      x.endsWith(m),
+  );
+}
+
+/**
+ * 智能节点：仅补全空路由；DeepSeek 路由与模型明显不匹配时改路由（非改模型）。
+ * 不强行把已选本地/其它模型换成 DeepSeek。
+ */
+function syncAgentProviderRoute(node, opts) {
+  opts = opts || {};
+  if (!node || !isDshTask(node)) return null;
+  const routes = agentRouteOptions();
+  const fromApi = agentRouteFromProviderId(node.providerId);
+  const prevRoute = String(node.provider || "").trim();
+  const prevModel = String(node.model || "").trim();
+  let route = prevRoute;
+
+  if (!route || !routes.has(route)) {
+    if (fromApi && routes.has(fromApi)) route = fromApi;
+    else route = preferredAgentProviderRoute();
+  }
+
+  if (
+    route === "deepseek-official" &&
+    prevModel &&
+    !agentModelFitsRoute("deepseek-official", prevModel) &&
+    fromApi &&
+    fromApi !== "deepseek-official" &&
+    routes.has(fromApi)
+  ) {
+    route = fromApi;
+  }
+
+  let dirty = false;
+  if (route && node.provider !== route) {
+    node.provider = route;
+    node.vision = null;
+    dirty = true;
+  }
+  if (!prevModel) {
+    const pick =
+      preferredAgentModelForRoute(node.provider || route) ||
+      (agentModelsForRoute(node.provider || route)[0] || "");
+    if (pick && node.model !== pick) {
+      node.model = pick;
+      node.vision = null;
+      dirty = true;
+    }
+  }
+
+  if (dirty && opts.save) scheduleSave(true);
+  return { route: node.provider, model: node.model };
 }
 
 /* 智能能力永久启用(1.1.0 起不再提供关闭开关) */
@@ -3128,6 +3398,17 @@ function mtnodePiProviders() {
   return out;
 }
 
+/** 0 或未设正数 = 不限制单次输出 maxTokens */
+function effectiveDshMaxTokens(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+function dshRunMaxTokens() {
+  return effectiveDshMaxTokens(
+    (S.config && S.config.dsh && S.config.dsh.maxTokens) || 0,
+  );
+}
+
 /* 运行一次 agent 任务；返回最终文本。onEvent(type, data) 观察流式事件。 */
 function dshRunTask(input, opts) {
   opts = opts || {};
@@ -3136,6 +3417,10 @@ function dshRunTask(input, opts) {
   const d = (S.config && S.config.dsh) || {};
   const piProvs = mtnodePiProviders();
   const provider = opts.provider || "deepseek-official";
+  const routeModels = agentModelsForRoute(provider);
+  if (routeModels.length && !String(opts.model || "").trim()) {
+    opts.model = routeModels[0];
+  }
   /* 对话路由密钥；联网搜索固定走 DeepSeek Anthropic 端点，需单独注入官方 Key */
   const dsProv = dshProvider();
   let apiKey = (dsProv && dsProv.apiKey) || "";
@@ -3173,7 +3458,10 @@ function dshRunTask(input, opts) {
     workspace,
     input: String(input || ""),
     model: opts.model || d.model || "deepseek-v4-flash",
-    maxTokens: Number(d.maxTokens) || 98304,
+    maxTokens: (() => {
+      const t = effectiveDshMaxTokens(d.maxTokens);
+      return t > 0 ? t : undefined;
+    })(),
     apiKey,
     baseUrl,
     webSearchApiKey,
@@ -4048,8 +4336,23 @@ function hasFixedInPorts(n) {
       n.kind === "super")
   );
 }
-function wireFromIsControl(w) {
-  return isControlKind(nodeById(w && w.from));
+function wireFromIsControl(w, wf) {
+  wf = wf || S.wf;
+  if (!w) return false;
+  const from = nodeByIdIn(w.from, wf);
+  if (!from) return false;
+  if (isControlKind(from)) return true;
+  const to = nodeByIdIn(w.to, wf);
+  if (!to) return false;
+  /* 内侧桥接：外侧同号输入若为控制，则内线亦为控制（原数据线随之变控制线） */
+  if (from.kind === "super" && nodeParentSuperId(to) === from.id) {
+    return superInPortIsControl(from, w.fromIndex, wf);
+  }
+  /* 外侧输出：内侧同号汇流来自控制时，外线亦为控制 */
+  if (from.kind === "super" && nodeParentSuperId(to) !== from.id) {
+    return superOutPortIsControl(from, w.fromIndex, wf);
+  }
+  return false;
 }
 /* 数据输入（不含控制节点连入的指挥线） */
 function wiresTo(id) {
@@ -4292,8 +4595,8 @@ function inputCount(node) {
     return 0;
   if (node.kind === "super") {
     const open = superIsOpenShell(node);
-    const ext = superExternalInWires(node);
-    const bridges = superInternalBridgeWires(node);
+    const ext = superExternalInWiresAll(node);
+    const bridges = superInternalBridgeWiresAll(node);
     const maxExt = ext.reduce((m, w) => Math.max(m, Number(w.toIndex) || 0), -1);
     const maxBr = bridges.reduce(
       (m, w) => Math.max(m, Number(w.fromIndex) || 0),
@@ -5921,7 +6224,7 @@ function wirePath(from, to, idx, fromIndex, wire) {
 
 /* 端子悬浮：立刻列出已连接节点名，可移入点击以镜头定位 */
 let _portTipHideTimer = null;
-function portLinkedNodes(node, dir, idx) {
+function portLinkedNodes(node, dir, idx, portKind) {
   if (!node || !S.wf) return [];
   const seen = new Set();
   const out = [];
@@ -5932,13 +6235,20 @@ function portLinkedNodes(node, dir, idx) {
   };
   if (node.kind === "super") {
     const i = Number(idx || 0);
-    if (dir === "in") {
-      /* 外侧输入 / 内侧汇流：按调用方区分——外侧端子只列外部来源 */
-      for (const w of superExternalInWires(node)) {
+    if (portKind === "inner-bridge") {
+      for (const w of superInternalBridgeWiresAll(node)) {
+        if (Number(w.fromIndex || 0) === i) add(nodeById(w.to));
+      }
+    } else if (portKind === "inner-sink") {
+      for (const w of superInternalOutFeedsAll(node)) {
+        if (Number(w.toIndex) === i) add(nodeById(w.from));
+      }
+    } else if (dir === "in") {
+      for (const w of superExternalInWiresAll(node)) {
         if (Number(w.toIndex) === i) add(nodeById(w.from));
       }
     } else {
-      for (const w of superExternalOutWires(node)) {
+      for (const w of superExternalOutWiresAll(node)) {
         if (Number(w.fromIndex || 0) === i) add(nodeById(w.to));
       }
     }
@@ -5972,12 +6282,12 @@ function scheduleHidePortTip() {
   if (_portTipHideTimer) clearTimeout(_portTipHideTimer);
   _portTipHideTimer = setTimeout(hidePortTip, 280);
 }
-function showPortTip(portEl, node, dir, idx) {
+function showPortTip(portEl, node, dir, idx, portKind) {
   if (_portTipHideTimer) {
     clearTimeout(_portTipHideTimer);
     _portTipHideTimer = null;
   }
-  const peers = portLinkedNodes(node, dir, idx);
+  const peers = portLinkedNodes(node, dir, idx, portKind);
   const tip = $("#portTip");
   if (!tip || !portEl || !peers.length) {
     hidePortTip();
@@ -6037,10 +6347,10 @@ function showPortTip(portEl, node, dir, idx) {
   tip.style.top = top + "px";
   tip.style.visibility = "visible";
 }
-function bindPortTip(portEl, node, dir, idx) {
+function bindPortTip(portEl, node, dir, idx, portKind) {
   portEl.addEventListener("mouseenter", () => {
     if (S.drag && S.drag.mode === "wire") return;
-    showPortTip(portEl, node, dir, idx);
+    showPortTip(portEl, node, dir, idx, portKind);
   });
   portEl.addEventListener("mouseleave", () => scheduleHidePortTip());
 }
@@ -7068,6 +7378,85 @@ async function explodeBatchNode(root) {
 
 /* ============ @ 引用 ============ */
 
+/** 单条数据输入线可 @ 的来源：直连 + 经超级节点隧穿的上游（可嵌套） */
+function refSourcesForWire(w, consumer) {
+  const out = [];
+  const seen = new Set();
+  const pushRefSource = (n, cons, portHint) => {
+    if (!n || seen.has(n.id) || !isRefableSource(n)) return;
+    seen.add(n.id);
+    out.push(n);
+    if (n.kind !== "super") return;
+    const port = portHint == null ? null : Number(portHint);
+    if (cons && nodeParentSuperId(cons) === n.id) {
+      for (const ext of superExternalInWires(n)) {
+        if (port != null && Number(ext.toIndex) !== port) continue;
+        pushRefSource(nodeById(ext.from), cons, ext.fromIndex);
+      }
+    } else {
+      for (const feed of superInternalOutFeeds(n)) {
+        if (port != null && Number(feed.toIndex) !== port) continue;
+        pushRefSource(nodeById(feed.from), cons, feed.fromIndex);
+      }
+    }
+  };
+  const src = nodeById(w.from);
+  if (!src) return out;
+  pushRefSource(src, consumer || null, w.fromIndex);
+  return out;
+}
+
+/** 自动附加背景时优先叶子源，避免超级节点与隧穿上游重复同一段文字 */
+function refLeafSourcesForWire(w, consumer) {
+  const all = refSourcesForWire(w, consumer);
+  const leaves = all.filter((n) => n && n.kind !== "super");
+  return leaves.length ? leaves : all;
+}
+
+function isRefTextSourceKind(src) {
+  return !!(
+    src &&
+    (src.kind === "input_text" ||
+      src.kind === "proc_text" ||
+      src.kind === "agent_task" ||
+      src.kind === "chat" ||
+      src.kind === "merge" ||
+      src.kind === "split")
+  );
+}
+
+/** @ 引用 / 取值时用的端口条目索引（含超级节点隧穿） */
+function refInputIdxFor(node, src, batchIdx) {
+  if (!src) return batchIdx == null ? 0 : batchIdx;
+  for (const w of wiresTo(node.id)) {
+    const from = nodeById(w.from);
+    if (!from) continue;
+    if (from.id === src.id) {
+      return from.kind === "super"
+        ? Number(w.fromIndex || 0)
+        : batchIdx == null
+          ? 0
+          : batchIdx;
+    }
+    if (from.kind === "super") {
+      const port = Number(w.fromIndex || 0);
+      if (nodeParentSuperId(node) === from.id) {
+        const ext = superExternalInWires(from).find(
+          (x) =>
+            Number(x.toIndex) === port && nodeById(x.from)?.id === src.id,
+        );
+        if (ext) return Number(ext.fromIndex || 0);
+      }
+      const feed = superInternalOutFeeds(from).find(
+        (x) =>
+          Number(x.toIndex) === port && nodeById(x.from)?.id === src.id,
+      );
+      if (feed) return Number(feed.fromIndex || 0);
+    }
+  }
+  return batchIdx == null ? 0 : batchIdx;
+}
+
 function refCandidates(node) {
   /* 已连接输入 + 全局节点广播的来源（处理节点可 @ 引用） */
   const out = [];
@@ -7077,7 +7466,9 @@ function refCandidates(node) {
     seen.add(n.id);
     out.push(n);
   };
-  for (const w of wiresTo(node.id)) push(nodeById(w.from));
+  for (const w of wiresTo(node.id)) {
+    for (const n of refSourcesForWire(w, node)) push(n);
+  }
   if (usesGlobalRefs(node)) {
     for (const n of globalRefSources(node.id)) push(n);
   }
@@ -7676,6 +8067,158 @@ function findCandidateByTitle(cands, tok) {
   return cands.find((c) => c.title && c.title.startsWith(tok)) || null;
 }
 
+function tagByAtToken(tok) {
+  const t = normalizeTagName(tok);
+  return t && wfTagCatalog().includes(t) ? t : "";
+}
+
+function nodesForTagRef(tag, exceptId) {
+  const t = normalizeTagName(tag);
+  if (!t) return [];
+  return ((S.wf && S.wf.nodes) || []).filter(
+    (n) =>
+      n &&
+      n.id !== exceptId &&
+      n.kind !== "global" &&
+      isRefableSource(n) &&
+      nodeHasTag(n, t),
+  );
+}
+
+function refTagCandidates(node) {
+  const out = [];
+  for (const t of wfTagCatalog()) {
+    if (nodesForTagRef(t, node && node.id).length) out.push(t);
+  }
+  return out.sort((a, b) => a.localeCompare(b, "zh"));
+}
+
+function refMenuEntries(node) {
+  const isAgg =
+    node &&
+    (node.kind === "proc_text" ||
+      node.kind === "proc_image" ||
+      node.kind === "agent_task") &&
+    node.batchMode === "agg" &&
+    batchTitles(node);
+  if (isAgg) return aggCandidates(node).map((n) => ({ kind: "node", node: n }));
+  const entries = [];
+  for (const n of refCandidates(node)) entries.push({ kind: "node", node: n });
+  for (const t of refTagCandidates(node)) entries.push({ kind: "tag", tag: t });
+  return entries;
+}
+
+function collectTagRefContent(tag, node, idx, ctx) {
+  const nodes = nodesForTagRef(tag, node && node.id);
+  if (!nodes.length) return false;
+  ctx.seenTagNodes = ctx.seenTagNodes || new Set();
+  for (const src of nodes) {
+    if (ctx.seenTagNodes.has(src.id)) continue;
+    ctx.seenTagNodes.add(src.id);
+    for (const it of allTextItems(src, node)) {
+      ctx.textSources.push({
+        id: src.id + "@tag:" + tag,
+        title: "Tag·" + tag + " / " + (it.title || src.title),
+        text: it.text,
+      });
+    }
+    for (const it of allImageItems(src, node)) {
+      const path = it.path;
+      if (!path) continue;
+      if (ctx.refImages.indexOf(path) < 0) ctx.refImages.push(path);
+    }
+  }
+  return true;
+}
+
+function collectTagRefBlocksAgg(tag, node, tagBlocks, refImages, seenNodes) {
+  const nodes = nodesForTagRef(tag, node && node.id);
+  if (!nodes.length) return false;
+  for (const src of nodes) {
+    if (seenNodes.has(src.id)) continue;
+    seenNodes.add(src.id);
+    for (const it of allTextItems(src, node)) {
+      tagBlocks.push({
+        title: "Tag·" + tag + " / " + (it.title || src.title),
+        text: it.text,
+      });
+    }
+    for (const it of allImageItems(src, node)) {
+      const path = it.path;
+      if (!path) continue;
+      if (refImages.indexOf(path) < 0) refImages.push(path);
+      tagBlocks.push({
+        title: it.title || src.title || I18n.t("图像"),
+        text:
+          I18n.t("（图像输入）") +
+          "\n" +
+          I18n.t("标题：") +
+          (it.title || src.title || I18n.t("图像")),
+      });
+    }
+  }
+  return true;
+}
+
+function escapePromptHl(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function promptRefBackdropHtml(text, node) {
+  const cands = refCandidates(node);
+  const tags = new Set(refTagCandidates(node));
+  return escapePromptHl(text).replace(
+    /@([^\s@，。；、！？：,!?;:]+)/g,
+    (m, tok) => {
+      if (findCandidateByTitle(cands, tok))
+        return '<span class="at-ref-node">' + m + "</span>";
+      const tag = tagByAtToken(tok);
+      if (tag && tags.has(tag))
+        return '<span class="at-ref-tag">' + m + "</span>";
+      return m;
+    },
+  );
+}
+
+function syncPromptRefBackdrop(ta, node) {
+  if (!ta) return;
+  const wrap = ta.closest(".n-prompt-wrap");
+  const hl = wrap && wrap.querySelector(".n-prompt-hl");
+  if (!hl) return;
+  const raw = String(ta.value || "");
+  hl.innerHTML = promptRefBackdropHtml(raw, node) + (raw.endsWith("\n") ? "\n" : "");
+  hl.scrollTop = ta.scrollTop;
+  hl.scrollLeft = ta.scrollLeft;
+}
+
+function mountPromptTextarea(f3, ta, node, persistPrompt) {
+  const wrap = document.createElement("div");
+  wrap.className = "n-prompt-wrap";
+  const hl = document.createElement("div");
+  hl.className = "n-prompt-hl";
+  hl.setAttribute("aria-hidden", "true");
+  wrap.appendChild(hl);
+  wrap.appendChild(ta);
+  ta.classList.add("n-text-layered");
+  const syncHl = () => syncPromptRefBackdrop(ta, node);
+  ta.addEventListener("input", () => {
+    persistPrompt(ta.value);
+    refTick(ta, node);
+    syncHl();
+    if (isDshTask(node)) slashTick(ta, "node", persistPrompt);
+  });
+  ta.addEventListener("scroll", () => {
+    closeRefMenu();
+    closeSlashMenu();
+    syncHl();
+  });
+  f3.appendChild(wrap);
+  syncHl();
+}
+
 function resolveRefs(prompt, node, idx, opts) {
   const refImages = [];
   const unresolved = new Set();
@@ -7695,22 +8238,19 @@ function resolveRefs(prompt, node, idx, opts) {
   };
   const cands = refCandidates(node);
   if (!opts || !opts.skipConnected) {
+    const wiredLeaves = new Set();
     for (const w of wiresTo(node.id)) {
-      const src = nodeById(w.from);
-      if (
-        src &&
-        (src.kind === "input_text" ||
-          src.kind === "proc_text" ||
-          src.kind === "agent_task" ||
-          src.kind === "super" ||
-          src.kind === "chat" ||
-          src.kind === "merge" ||
-          src.kind === "split")
-      )
-        addText(src, superPortIdxFromWire(src, w));
+      for (const src of refLeafSourcesForWire(w, node)) {
+        wiredLeaves.add(src.id);
+        if (isRefTextSourceKind(src))
+          addText(src, refInputIdxFor(node, src, idx));
+      }
     }
     if (usesGlobalRefs(node)) {
-      for (const src of globalRefSources(node.id)) addText(src);
+      for (const src of globalRefSources(node.id)) {
+        if (wiredLeaves.has(src.id)) continue;
+        addText(src);
+      }
     }
   }
   const out = String(prompt || "").replace(
@@ -7718,12 +8258,33 @@ function resolveRefs(prompt, node, idx, opts) {
     (m, tok) => {
       const c = findCandidateByTitle(cands, tok);
       if (!c) {
+        const tag = tagByAtToken(tok);
+        if (
+          tag &&
+          collectTagRefContent(tag, node, idx, {
+            refImages,
+            textSources,
+            seenTagNodes: seen,
+          })
+        )
+          return "Tag:" + tag;
         unresolved.add(tok);
         return m;
       }
-      const v = valueForInput(c, idx, node);
+      const useIdx = refInputIdxFor(node, c, idx);
+      const v = valueForInput(c, useIdx, node);
       if (v && v.kind === "text") {
-        addText(c, idx);
+        if (c.kind === "super") {
+          for (const w of wiresTo(node.id)) {
+            if (nodeById(w.from)?.id !== c.id) continue;
+            for (const leaf of refLeafSourcesForWire(w, node)) {
+              if (isRefTextSourceKind(leaf))
+                addText(leaf, refInputIdxFor(node, leaf, idx));
+            }
+          }
+        } else {
+          addText(c, useIdx);
+        }
         return c.title;
       }
       if (v && v.kind === "image") {
@@ -7819,40 +8380,52 @@ function closeRefMenu() {
 }
 
 function showRefMenu(ta, node, items) {
-  items = items || refCandidates(node);
-  if (!items.length) return;
+  const entries = items
+    ? items.map((n) => ({ kind: "node", node: n }))
+    : refMenuEntries(node);
+  if (!entries.length) return;
   closeSlashMenu();
   const menu = $("#refMenu");
   menu.classList.remove("slash-menu");
   menu.innerHTML = "";
   const head = document.createElement("div");
   head.className = "ref-head";
+  const hasTags = entries.some((e) => e.kind === "tag");
   head.textContent =
     node && node.batchMode === "agg"
       ? I18n.t("引用聚合条目（@条目标题）")
       : usesGlobalRefs(node) && globalRefSources(node.id).length
-        ? I18n.t("引用已连接或全局节点（@标题）")
-        : I18n.t("引用输入节点（@标题）");
+        ? hasTags
+          ? I18n.t("引用已连接/全局节点（@标题）或 Tag（@标签 · 紫色）")
+          : I18n.t("引用已连接或全局节点（@标题）")
+        : hasTags
+          ? I18n.t("引用输入节点（@标题）或 Tag（@标签 · 紫色）")
+          : I18n.t("引用输入节点（@标题）");
   menu.appendChild(head);
   const list = document.createElement("div");
   list.className = "ref-list";
-  items.forEach((n, i) => {
+  entries.forEach((e, i) => {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "ref-item";
-    const imgKind =
-      n.kind === "image" || n.kind === "input_image" || n.kind === "proc_image";
-    const tag = imgKind ? "I" : "T";
-    const cls = imgKind ? "img" : "text";
     const tagEl = document.createElement("span");
-    tagEl.className = "ref-tag " + cls;
-    tagEl.textContent = tag;
     const nm = document.createElement("span");
-    nm.textContent = n.title;
+    if (e.kind === "tag") {
+      tagEl.className = "ref-tag user-tag";
+      tagEl.textContent = "#";
+      nm.textContent = e.tag;
+    } else {
+      const n = e.node;
+      const imgKind =
+        n.kind === "image" || n.kind === "input_image" || n.kind === "proc_image";
+      tagEl.className = "ref-tag " + (imgKind ? "img" : "text");
+      tagEl.textContent = imgKind ? "I" : "T";
+      nm.textContent = n.title;
+    }
     b.appendChild(tagEl);
     b.appendChild(nm);
     b.onmousedown = (ev) => ev.preventDefault();
-    b.onclick = () => selectRef(n, i);
+    b.onclick = () => selectRefEntry(e, i);
     b.dataset.idx = String(i);
     list.appendChild(b);
   });
@@ -7863,7 +8436,7 @@ function showRefMenu(ta, node, items) {
     Math.max(8, Math.min(pos.x, window.innerWidth - mw - 8)) + "px";
   menu.style.top = pos.y + 4 + "px";
   menu.style.display = "block";
-  S.refMenu = { ta, node, items, sel: 0, focusable: list };
+  S.refMenu = { ta, node, entries, sel: 0, focusable: list };
   paintRefSel();
 }
 
@@ -7875,7 +8448,7 @@ function paintRefSel() {
     .forEach((b, i) => b.classList.toggle("on", i === S.refMenu.sel));
 }
 
-function selectRef(node, i) {
+function selectRefEntry(entry, i) {
   const rm = S.refMenu;
   if (!rm) return;
   const v = rm.ta.value;
@@ -7884,13 +8457,21 @@ function selectRef(node, i) {
   const at = before.lastIndexOf("@");
   const prefix = at >= 0 ? v.slice(0, at) : before;
   const suffix = v.slice(caret);
-  const token = "@" + node.title;
+  const token =
+    entry && entry.kind === "tag"
+      ? "@" + entry.tag
+      : "@" + (entry && entry.node ? entry.node.title : "");
   rm.ta.value = prefix + token + suffix;
   const np = prefix.length + token.length;
   rm.ta.setSelectionRange(np, np);
   setProcPrompt(rm.node, rm.ta.value);
+  syncPromptRefBackdrop(rm.ta, rm.node);
   rm.ta.focus();
   closeRefMenu();
+}
+
+function selectRef(node, i) {
+  selectRefEntry({ kind: "node", node }, i);
 }
 
 function refTick(ta, node) {
@@ -7969,6 +8550,11 @@ async function resolveSkillByName(name) {
 function isCanvasBuildSkillName(name) {
   const n = String(name || "").toLowerCase();
   return n === "generate-workflow" || n === "generate-task";
+}
+
+function isInstallOnlySkillName(name) {
+  const n = String(name || "").toLowerCase();
+  return n.endsWith("-install");
 }
 
 /* 行首 /技能名 [说明]：命中已安装技能则返回包装对象，否则 null */
@@ -8164,6 +8750,7 @@ async function slashTick(ta, scope, onChange) {
   if (gen !== _slashTickGen) return;
   const q = tok.query;
   const sk = (skills || [])
+    .filter((s) => !isInstallOnlySkillName(s && s.name))
     .filter((s) => scope !== "node" || !isCanvasBuildSkillName(s && s.name))
     .map((s) => ({
       name: s.name,
@@ -8437,6 +9024,35 @@ function makeMarkFromSpec(spec, warnings) {
     m.stroke = Number.isFinite(st)
       ? Math.max(1, Math.min(8, Math.round(st)))
       : d.stroke;
+  }
+  /* 与 makeNode / addMark 一致：全屏进入超级节点时标注应落在内侧 */
+  m.parentSuperId = "";
+  const sf = currentSuperFocus();
+  if (sf) {
+    m.parentSuperId = sf;
+    const host = nodeById(sf);
+    m.parentTaskId = host ? host.parentTaskId || "" : m.parentTaskId || "";
+  } else {
+    const wx = Number(spec.x) || 0;
+    const wy = Number(spec.y) || 0;
+    const host =
+      findOpenSuperAtWorld(wx, wy) || findSuperAtWorld(wx, wy, new Set(), false);
+    if (host) {
+      const o = superInnerOrigin(host);
+      const pan = superInnerPan(host);
+      m.parentSuperId = host.id;
+      m.parentTaskId = host.parentTaskId || "";
+      const lx = snap(Math.max(8, wx - host.x - o.ox - pan.x));
+      const ly = snap(Math.max(8, wy - host.y - o.oy - pan.y));
+      const dx = lx - m.x;
+      const dy = ly - m.y;
+      m.x = lx;
+      m.y = ly;
+      if (m.kind === "arrow") {
+        if (m.x2 != null) m.x2 = snap(Number(m.x2) + dx);
+        if (m.y2 != null) m.y2 = snap(Number(m.y2) + dy);
+      }
+    }
   }
   return m;
 }
@@ -9235,7 +9851,14 @@ function updateWires(touchIds) {
       const b = toStage(S.drag.mx, S.drag.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
-      if (isControlKind(from)) tcls += " ctrl";
+      if (
+        isControlKind(from) ||
+        (focusBridge &&
+          from &&
+          from.kind === "super" &&
+          superInPortIsControl(from, S.drag.fromIndex || 0))
+      )
+        tcls += " ctrl";
       else if (isImageWireFrom(from)) tcls += " img";
       t.setAttribute("class", tcls);
       t.style.display = "";
@@ -9589,6 +10212,7 @@ function nodeElement(node) {
       ag.onclick = (ev) => {
         ev.stopPropagation();
         node.agent = !node.agent;
+        if (node.agent) syncAgentProviderRoute(node);
         clearDownstream(node.id);
         scheduleSave(true);
         renderCanvas();
@@ -10332,6 +10956,7 @@ function nodeElement(node) {
   ) {
     const panel = document.createElement("div");
     panel.className = "n-api-panel";
+    panel.addEventListener("wheel", (ev) => ev.stopPropagation(), { passive: true });
     if (S.uiOpenNode !== node.id) panel.style.display = "none";
     const isAgentKind = node.kind === "agent_task";
     if (node.kind === "music_gen") {
@@ -10431,6 +11056,190 @@ function nodeElement(node) {
       addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
       addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
       addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
+      const addSel = (label, items, cur, cb) => {
+        const el = document.createElement("select");
+        items.forEach((item) => {
+          const v = Array.isArray(item) ? item[0] : item;
+          const t = Array.isArray(item) ? item[1] : item;
+          const o = document.createElement("option");
+          o.value = v;
+          o.textContent = I18n.t(t != null ? t : v);
+          if (cur === v) o.selected = true;
+          el.appendChild(o);
+        });
+        el.addEventListener("change", () => { cb(el.value); scheduleSave(); });
+        addField(label, el);
+      };
+      const addNum = (label, cur, min, max, step, cb) => {
+        const el = document.createElement("input");
+        el.type = "number";
+        if (min != null) el.min = min;
+        if (max != null) el.max = max;
+        if (step != null) el.step = step;
+        el.value = String(cur);
+        el.addEventListener("change", () => cb(Number(el.value)));
+        addField(label, el);
+      };
+      const h3 = document.createElement("div");
+      h3.className = "n-field-hint";
+      h3.style.cssText = "opacity:0.75;font-size:11px;margin:6px 0 2px;";
+      h3.textContent = I18n.t("采样 / 质量 / 输出");
+      panel.appendChild(h3);
+      addSel(
+        I18n.t("采样器"),
+        ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "dpmpp_sde"],
+        node.sampler || "res_multistep",
+        (v) => { node.sampler = v; },
+      );
+      addSel(
+        I18n.t("调度器"),
+        ["simple", "normal", "karras", "exp"],
+        node.scheduler || "simple",
+        (v) => { node.scheduler = v; },
+      );
+      addNum(
+        I18n.t("去噪 denoise"),
+        node.denoise != null ? node.denoise : 1,
+        0,
+        1,
+        "0.01",
+        (v) => { node.denoise = Math.max(0, Math.min(1, isFinite(v) ? v : 1)); },
+      );
+      addNum(
+        I18n.t("视频位移 shift"),
+        node.shiftVideo != null ? node.shiftVideo : 12,
+        0.01,
+        100,
+        "0.1",
+        (v) => { node.shiftVideo = isFinite(v) ? v : 12; },
+      );
+      addNum(
+        I18n.t("音频位移 shift"),
+        node.shiftAudio != null ? node.shiftAudio : 3,
+        0.01,
+        100,
+        "0.1",
+        (v) => { node.shiftAudio = isFinite(v) ? v : 3; },
+      );
+      addSel(
+        I18n.t("参考图尺寸"),
+        [["match", "match（缩放匹配分辨率）"], ["max", "max（2048 短边 · 还原度更高更慢）"]],
+        (node.refImageSize || "match"),
+        (v) => { node.refImageSize = v; },
+      );
+      addNum(
+        I18n.t("TeaCache 阈值"),
+        node.teaThresh != null ? node.teaThresh : 0.15,
+        0,
+        1,
+        "0.01",
+        (v) => { node.teaThresh = isFinite(v) ? v : 0.15; },
+      );
+      addNum(
+        I18n.t("帧率 fps"),
+        node.fps != null ? node.fps : 24,
+        1,
+        60,
+        "1",
+        (v) => { node.fps = Math.max(1, Math.min(60, isFinite(v) ? v : 24)); },
+      );
+      addSel(
+        I18n.t("位深"),
+        [["8", "8bit"], ["16", "16bit"]],
+        String(node.bitDepth != null ? node.bitDepth : 8),
+        (v) => { node.bitDepth = Number(v); },
+      );
+      addSel(
+        I18n.t("封装格式"),
+        [["auto", "auto"], ["mp4", "mp4"], ["webm", "webm"]],
+        (node.videoFormat || "auto"),
+        (v) => { node.videoFormat = v; },
+      );
+      addSel(
+        I18n.t("编解码"),
+        [["auto", "auto"], ["h264", "h264"], ["vp9", "vp9"]],
+        (node.videoCodec || "auto"),
+        (v) => { node.videoCodec = v; },
+      );
+      const adv = document.createElement("details");
+      adv.className = "n-field";
+      const advSum = document.createElement("summary");
+      advSum.textContent = I18n.t("高级参数");
+      adv.appendChild(advSum);
+      const advBox = document.createElement("div");
+      advBox.className = "n-api-adv-grid";
+      const advSpan = document.createElement("div");
+      advSpan.className = "n-api-span-full";
+      advSpan.style.cssText = "font-size:10.5px;color:var(--muted);margin:2px 0;";
+      advSpan.textContent = I18n.t("TeaCache 起/止步 & EasyCache 缓存区间");
+      advBox.appendChild(advSpan);
+      const advNum = (label, cur, cb) => {
+        const el = document.createElement("input");
+        el.type = "number";
+        el.value = String(cur);
+        el.addEventListener("change", () => cb(Number(el.value)));
+        const lab = document.createElement("label");
+        lab.className = "n-field";
+        lab.appendChild(document.createTextNode(label));
+        lab.appendChild(el);
+        advBox.appendChild(lab);
+      };
+      advNum(
+        I18n.t("teaStart"),
+        node.teaStart != null ? node.teaStart : 2,
+        (v) => { node.teaStart = isFinite(v) ? v : 2; },
+      );
+      advNum(
+        I18n.t("teaEnd"),
+        node.teaEnd != null ? node.teaEnd : -2,
+        (v) => { node.teaEnd = isFinite(v) ? v : -2; },
+      );
+      advNum(
+        I18n.t("easyReuse"),
+        node.easyReuse != null ? node.easyReuse : 0.2,
+        (v) => { node.easyReuse = isFinite(v) ? v : 0.2; },
+      );
+      advNum(
+        I18n.t("easyStart%"),
+        node.easyStart != null ? node.easyStart : 0.15,
+        (v) => { node.easyStart = isFinite(v) ? v : 0.15; },
+      );
+      advNum(
+        I18n.t("easyEnd%"),
+        node.easyEnd != null ? node.easyEnd : 0.95,
+        (v) => { node.easyEnd = isFinite(v) ? v : 0.95; },
+      );
+      advNum(
+        I18n.t("LowVRAM head_chunks"),
+        node.lowVramHeadChunks != null ? node.lowVramHeadChunks : 4,
+        (v) => { node.lowVramHeadChunks = Math.max(1, isFinite(v) ? v : 4); },
+      );
+      advNum(
+        I18n.t("ChunkFFN chunks"),
+        node.chunkFfnChunks != null ? node.chunkFfnChunks : 2,
+        (v) => { node.chunkFfnChunks = Math.max(1, isFinite(v) ? v : 2); },
+      );
+      advNum(
+        I18n.t("ChunkFFN seq_threshold"),
+        node.chunkFfnSeqThreshold != null ? node.chunkFfnSeqThreshold : 4096,
+        (v) => { node.chunkFfnSeqThreshold = Math.max(256, isFinite(v) ? v : 4096); },
+      );
+      const sageCompileLab = document.createElement("label");
+      sageCompileLab.className = "n-field";
+      const sageCompile = document.createElement("input");
+      sageCompile.type = "checkbox";
+      sageCompile.checked = !!node.sageCompile;
+      sageCompile.addEventListener("change", () => {
+        node.sageCompile = !!sageCompile.checked;
+        scheduleSave();
+      });
+      sageCompileLab.appendChild(sageCompile);
+      sageCompileLab.appendChild(
+        document.createTextNode(" " + I18n.t("Sage 编译（需 Sage 且更慢更占显存）")),
+      );
+      advBox.appendChild(sageCompileLab);
+      adv.appendChild(advBox);
+      panel.appendChild(adv);
     } else if (isAgentKind) {
       /* 智能任务参数面板与「智能会话」完全一致:预设 / 供应商 / 模型 / 思考强度 */
       const catalog = S.providerCatalog || {
@@ -10457,7 +11266,10 @@ function nodeElement(node) {
         const mp = mtnode.find((x) => "mtnode_" + x.route === prov);
         return ((mp && mp.models) || []).map((id) => ({ id, name: "" }));
       };
-      let curProv = String(node.provider || "").trim() || defaultAgentProviderRoute();
+      let curProv =
+        String(node.provider || "").trim() ||
+        agentRouteFromProviderId(node.providerId) ||
+        preferredAgentProviderRoute();
       const f0 = document.createElement("label");
       f0.className = "n-field";
       f0.appendChild(document.createTextNode(I18n.t("预设（与智能会话一致）")));
@@ -10500,11 +11312,9 @@ function nodeElement(node) {
       }
       /* 仅显示已添加的供应商(DeepSeek 官方 + MTNode 服务商) */
       if (![...provSel.options].some((o) => o.value === curProv)) {
-        curProv = defaultAgentProviderRoute();
-      }
-      if (node.provider !== curProv) {
-        node.provider = curProv;
-        scheduleSave();
+        curProv =
+          agentRouteFromProviderId(node.providerId) ||
+          preferredAgentProviderRoute();
       }
       provSel.value = curProv;
       provSel.addEventListener("change", () => {
@@ -10682,11 +11492,17 @@ function nodeElement(node) {
   const ic = inputCount(node);
   const wiredIn =
     node.kind === "super"
-      ? superExternalInWires(node).length
+      ? superExternalInWiresAll(node).length
       : allWiresTo(node.id).length;
   for (let i = 0; i < ic; i++) {
     const p = document.createElement("div");
-    p.className = "port in" + (i >= wiredIn ? " spare" : "");
+    const spare = i >= wiredIn;
+    const ctrlIn =
+      node.kind === "super"
+        ? superInPortIsControl(node, i)
+        : isControlKind(node);
+    p.className =
+      "port in" + (spare ? " spare" : "") + (ctrlIn ? " ctrl" : "");
     p.dataset.node = node.id;
     p.dataset.idx = String(i);
     const linkedIn = portLinkedNodes(node, "in", i);
@@ -10779,13 +11595,15 @@ function nodeElement(node) {
   const oc = outputCount(node);
   for (let oi = 0; oi < oc; oi++) {
     const p = document.createElement("div");
-    p.className =
-      "port out" +
-      (node.kind === "judge" || node.kind === "task"
-        ? oi === 0
-          ? " yes"
-          : " no"
-        : "");
+    let outCls = "port out";
+    if (node.kind === "judge" || node.kind === "task")
+      outCls += oi === 0 ? " yes" : " no";
+    else if (
+      isControlKind(node) ||
+      (node.kind === "super" && superOutPortIsControl(node, oi))
+    )
+      outCls += " ctrl";
+    p.className = outCls;
     p.dataset.node = node.id;
     p.dataset.fromIndex = String(oi);
     const linkedOut = portLinkedNodes(node, "out", oi);
@@ -11453,11 +12271,6 @@ function buildBody(node, body) {
             : I18n.t("例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图");
     ta.value = procPromptOf(node);
     const persistPrompt = (v) => setProcPrompt(node, v);
-    ta.addEventListener("input", () => {
-      persistPrompt(ta.value);
-      refTick(ta, node);
-      if (isDshTask(node)) slashTick(ta, "node", persistPrompt);
-    });
     ta.addEventListener("compositionend", () => {
       if (isDshTask(node)) slashTick(ta, "node", persistPrompt);
     });
@@ -11474,17 +12287,13 @@ function buildBody(node, body) {
       if (S.refMenu) refTick(ta, node);
       if (isDshTask(node) && S.slashMenu) slashTick(ta, "node", persistPrompt);
     });
-    ta.addEventListener("scroll", () => {
-      closeRefMenu();
-      closeSlashMenu();
-    });
     ta.addEventListener("blur", () =>
       setTimeout(() => {
         closeRefMenu();
         closeSlashMenu();
       }, 150),
     );
-    f3.appendChild(ta);
+    mountPromptTextarea(f3, ta, node, persistPrompt);
     left.appendChild(f3);
     /* 智能任务节点：上下分割 — 上会话（与智能会话同款）· 下输入框 */
     if (node.kind === "agent_task") {
@@ -12033,7 +12842,9 @@ function buildBody(node, body) {
       const ic = inputCount(node);
       for (let pi = 0; pi < ic; pi++) {
         const p = document.createElement("div");
-        p.className = "port out super-port super-inner-bridge";
+        p.className =
+          "port out super-port super-inner-bridge" +
+          (superInPortIsControl(node, pi) ? " ctrl" : "");
         p.dataset.node = node.id;
         p.dataset.fromIndex = String(pi);
         p.title =
@@ -12049,7 +12860,9 @@ function buildBody(node, body) {
       const oc = outputCount(node);
       for (let poi = 0; poi < oc; poi++) {
         const p = document.createElement("div");
-        p.className = "port in super-port super-inner-sink";
+        p.className =
+          "port in super-port super-inner-sink" +
+          (superOutPortIsControl(node, poi) ? " ctrl" : "");
         p.dataset.node = node.id;
         p.dataset.idx = String(poi);
         p.title =
@@ -13848,12 +14661,20 @@ function aggCandidates(node) {
 function resolveRefsAgg(prompt, node) {
   const refImages = [];
   const unresolved = new Set();
+  const tagBlocks = [];
+  const seenTagNodes = new Set();
   const cands = aggCandidates(node);
   const out = String(prompt || "").replace(
     /@([^\s@，。；、！？：,!?;:]+)/g,
     (m, tok) => {
       const c = findCandidateByTitle(cands, tok);
       if (!c) {
+        const tag = tagByAtToken(tok);
+        if (
+          tag &&
+          collectTagRefBlocksAgg(tag, node, tagBlocks, refImages, seenTagNodes)
+        )
+          return "Tag:" + tag;
         unresolved.add(tok);
         return m;
       }
@@ -13868,7 +14689,7 @@ function resolveRefsAgg(prompt, node) {
       return I18n.t("第{n}张参考图", { n: n + 1 });
     },
   );
-  return { prompt: out, refImages, unresolved: [...unresolved] };
+  return { prompt: out, refImages, unresolved: [...unresolved], tagBlocks };
 }
 
 /* 聚合模式：所有条目的内容合并为一次请求（每条目作为独立输入块） */
@@ -13919,7 +14740,9 @@ function buildSpecAgg(node, prov) {
           return !t.startsWith(I18n.t("（图像输入）"));
         })
       : textBlocks;
-  const useBlocks = dedupeBlockTitles(promptBlocks);
+  const useBlocks = dedupeBlockTitles(
+    promptBlocks.concat(refs.tagBlocks || []),
+  );
   const prompt = useBlocks.length
     ? "【背景信息】\n" +
       useBlocks.map((b) => "### " + b.title + "\n" + b.text).join("\n\n") +
@@ -14810,7 +15633,7 @@ function bindMediaBackendListeners() {
       }
       if (data.pct != null) ui.genPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
       if (data.message) {
-        ui.genMsg = String(data.message);
+        ui.genMsg = mediaGenRollProgressTag(n) + String(data.message);
         n.musicStatus = ui.genMsg;
       }
       if (data.error && looksLikeBackendConnError(data.message)) {
@@ -14837,7 +15660,7 @@ function bindMediaBackendListeners() {
       }
       if (data.pct != null) ui.genPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
       if (data.message) {
-        ui.genMsg = String(data.message);
+        ui.genMsg = mediaGenRollProgressTag(n) + String(data.message);
         n.videoStatus = ui.genMsg;
       }
       if (data.error && looksLikeBackendConnError(data.message)) {
@@ -14966,7 +15789,7 @@ function appendMediaBackendPanel(body, node) {
   else if (info.installed === false) row.appendChild(pill(I18n.t("未安装"), "bad"));
   panel.appendChild(row);
 
-  const addBar = (label, pct, detail, parent) => {
+  const addBar = (label, pct, detail, parent, hint) => {
     const wrap = document.createElement("div");
     wrap.className = "n-backend-bar";
     const lab = document.createElement("div");
@@ -14974,7 +15797,10 @@ function appendMediaBackendPanel(body, node) {
     const left = document.createElement("span");
     left.textContent = label;
     const right = document.createElement("span");
-    right.textContent = detail || Math.round(pct || 0) + "%";
+    right.textContent =
+      detail != null && detail !== ""
+        ? detail
+        : Math.round(pct || 0) + "%";
     lab.appendChild(left);
     lab.appendChild(right);
     const track = document.createElement("div");
@@ -14984,6 +15810,12 @@ function appendMediaBackendPanel(body, node) {
     track.appendChild(fill);
     wrap.appendChild(lab);
     wrap.appendChild(track);
+    if (hint) {
+      const hintEl = document.createElement("div");
+      hintEl.className = "n-backend-hint";
+      hintEl.textContent = hint;
+      wrap.appendChild(hintEl);
+    }
     (parent || panel).appendChild(wrap);
     return wrap;
   };
@@ -15018,11 +15850,15 @@ function appendMediaBackendPanel(body, node) {
 
   const showGen = node.running || (ui.genPct > 0 && ui.genPct < 100) || !!ui.genMsg;
   if (showGen) {
+    const genPct = node.running ? ui.genPct || 8 : ui.genPct;
+    const genHint =
+      ui.genMsg || (node.running ? I18n.t("生成中…") : "") || "";
     addBar(
       I18n.t("生成"),
-      node.running ? ui.genPct || 8 : ui.genPct,
-      (ui.genMsg || (node.running ? I18n.t("生成中…") : "")) +
-        (ui.genPct ? " " + Math.round(ui.genPct) + "%" : ""),
+      genPct,
+      ui.genPct ? Math.round(ui.genPct) + "%" : node.running ? "…" : "",
+      panel,
+      genHint,
     );
   }
 
@@ -15059,8 +15895,56 @@ function musicGenSlotText(node, slot) {
 }
 
 
+function syncMediaGenSeedFromDom(node) {
+  if (!node || !node.id) return;
+  const seedInp = document.querySelector("#mgseed-" + node.id);
+  if (!seedInp) return;
+  const v = Math.floor(Number(seedInp.value));
+  if (isFinite(v)) node.seed = v;
+}
+/** 摇数开启时每次生成（含抽卡）种子 +1；关闭则沿用当前种子。返回本次使用的种子。 */
+function nextMediaGenSeed(node) {
+  syncMediaGenSeedFromDom(node);
+  let s = Math.floor(Number(node.seed));
+  if (!isFinite(s)) s = 0;
+  if (node.rerollSeed !== false) {
+    s += 1;
+    if (s > 2147483647) s = 0;
+    node.seed = s;
+    scheduleSave();
+    const seedInp = document.querySelector("#mgseed-" + node.id);
+    if (seedInp && document.activeElement !== seedInp) seedInp.value = String(s);
+  }
+  return s;
+}
 function appendMediaGenParamControls(body, node) {
   const isMusic = node.kind === "music_gen";
+  const rollRow = document.createElement("div");
+  rollRow.className = "mg-params";
+  const rollWrap = document.createElement("label");
+  rollWrap.className = "mg-param";
+  const rollLab = document.createElement("span");
+  rollLab.textContent = I18n.t("抽卡次数");
+  const rollInp = document.createElement("input");
+  rollInp.type = "number";
+  rollInp.id = "mgrolls-" + node.id;
+  rollInp.min = "1";
+  rollInp.max = "10";
+  rollInp.step = "1";
+  rollInp.value = String(attemptCount(node));
+  rollInp.title = I18n.t("连续生成次数（1–10）；多次时输出命名为 _01、_02 …");
+  rollInp.addEventListener("change", () => {
+    node.attempts = attemptCount({ attempts: rollInp.value });
+    rollInp.value = String(node.attempts);
+    scheduleSave();
+  });
+  rollInp.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  rollInp.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+  rollWrap.appendChild(rollLab);
+  rollWrap.appendChild(rollInp);
+  rollRow.appendChild(rollWrap);
+  body.appendChild(rollRow);
+
   const row = document.createElement("div");
   row.className = "mg-params";
 
@@ -15118,6 +16002,10 @@ function appendMediaGenParamControls(body, node) {
     seed.value = String(node.seed);
     scheduleSave();
   });
+  seed.addEventListener("input", () => {
+    const v = Math.floor(Number(seed.value));
+    if (isFinite(v)) node.seed = v;
+  });
   seed.addEventListener("mousedown", (ev) => ev.stopPropagation());
   seed.addEventListener("pointerdown", (ev) => ev.stopPropagation());
   seedWrap.appendChild(seedLab);
@@ -15128,7 +16016,7 @@ function appendMediaGenParamControls(body, node) {
   tog.className =
     "n-play n-ctrl-toggle mg-reroll" + (node.rerollSeed !== false ? " on" : "");
   tog.textContent = I18n.t("摇数");
-  tog.title = I18n.t("每次执行是否重新摇数（默认开启）");
+  tog.title = I18n.t("每次执行种子 +1（默认开启）");
   tog.onclick = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -15234,6 +16122,36 @@ function appendMediaGenPathControls(panel, node, media) {
   };
   row.appendChild(inp);
   row.appendChild(br);
+  const hasTarget =
+    !!String(mediaGenOutputRaw(node) || node.outputPath || "").trim() ||
+    !!(node.output && (node.output.path || node.output.text));
+  if (hasTarget) {
+    const op = document.createElement("button");
+    op.className = "mini";
+    op.textContent = I18n.t("位置");
+    op.title = I18n.t("在文件夹中显示已生成文件");
+    op.onclick = async (ev) => {
+      ev.stopPropagation();
+      const show = await resolveMediaGenActionPath(node);
+      if (show && window.api && window.api.shellShowItem) window.api.shellShowItem(show);
+      else toast(I18n.t("文件不存在或无法预览"), "warn");
+    };
+    row.appendChild(op);
+    const openBtn = document.createElement("button");
+    openBtn.className = "mini";
+    openBtn.textContent = I18n.t("打开");
+    openBtn.title = I18n.t("用系统默认应用打开");
+    openBtn.onclick = async (ev) => {
+      ev.stopPropagation();
+      const target = await resolveMediaGenActionPath(node);
+      if (!target) {
+        toast(I18n.t("文件不存在或无法预览"), "warn");
+        return;
+      }
+      await openContentRef(target, "file");
+    };
+    row.appendChild(openBtn);
+  }
   const lab = document.createElement("label");
   lab.className = "n-field mg-path-field";
   lab.appendChild(document.createTextNode(I18n.t("输出路径")));
@@ -15293,16 +16211,7 @@ async function playMusicGenNode(node, quiet) {
     renderCanvas();
     return;
   }
-  const exp = await allocateUniqueMediaExport(exp0);
-  if (!exp || !exp.ok) {
-    requireMediaGenExport(node, quiet);
-    renderCanvas();
-    return;
-  }
-  if (exp.renamed) {
-    syncMediaGenPathFromExport(node, exp);
-    if (!quiet) toast(I18n.t("目标文件已存在，改为保存为：") + exp.filename, "ok");
-  }
+  const nRolls = attemptCount(node);
 
   let st = null;
   try {
@@ -15320,30 +16229,88 @@ async function playMusicGenNode(node, quiet) {
   node.running = true;
   node.error = null;
   node._aborted = false;
-  if (node.rerollSeed !== false) {
-    node.seed = Math.floor(Math.random() * 2147483647);
-    scheduleSave();
-  }
+  node.genRollDone = 0;
+  node.genPaths = [];
   node.musicStatus = I18n.t("启动后端并生成…");
   startMediaBackendRunWatcher(node);
   renderCanvas();
 
   const duration = Math.max(10, Math.min(150, Number(node.audioDuration) || 60));
-  const seed = Number(node.seed);
+  const t0 = Date.now();
+  let okCount = 0;
+  let lastPath = "";
 
   try {
-    const r = await window.api.music3Generate({
-      nodeId: node.id,
-      workflowId: (S.wf && S.wf.id) || "",
-      prompt,
-      lyrics,
-      audioDuration: duration,
-      seed: isFinite(seed) ? seed : 0,
-      outputDir: exp.outputDir,
-      filename: exp.filename,
-      offload: node.offload !== false,
-    });
-    if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+    for (let roll = 1; roll <= nRolls; roll++) {
+      if (node._aborted) break;
+      const exp = await prepareMediaGenRollExport(node, roll, nRolls);
+      if (!exp || !exp.ok) {
+        requireMediaGenExport(node, quiet);
+        node.error = savePathResolveError(exp && exp.code);
+        node.musicStatus = node.error;
+        if (!quiet) toast(node.error, "warn");
+        return;
+      }
+      if (roll === 1 && nRolls === 1 && exp.renamed) {
+        syncMediaGenPathFromExport(node, exp);
+        if (!quiet) toast(I18n.t("目标文件已存在，改为保存为：") + exp.filename, "ok");
+      }
+      const seed = nextMediaGenSeed(node);
+      {
+        const ui = ensureBackendUiState(node);
+        ui.genPct = Math.max(2, ui.genPct || 2);
+        ui.genMsg =
+          mediaGenRollProgressTag(node) +
+          (nRolls > 1 ? I18n.t("生成中…") : I18n.t("启动后端并生成…"));
+        node.musicStatus = ui.genMsg;
+      }
+      node.genRollDone = roll - 1;
+      refreshMediaNodeUi(node, { soft: true });
+
+      const r = await window.api.music3Generate({
+        nodeId: node.id,
+        workflowId: (S.wf && S.wf.id) || "",
+        prompt,
+        lyrics,
+        audioDuration: duration,
+        seed,
+        outputDir: exp.outputDir,
+        filename: exp.filename,
+        offload: node.offload !== false,
+      });
+      if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+        node.error = null;
+        node.musicStatus = I18n.t("已取消");
+        const ui = ensureBackendUiState(node);
+        ui.genMsg = I18n.t("已取消");
+        ui.genPct = 0;
+        return;
+      }
+      if (!r || !r.ok) {
+        const err = (r && (r.message || r.error)) || I18n.t("生成失败");
+        if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
+          node.error = I18n.t("已有音乐生成任务进行中，已中断本节点（禁止并行）");
+        } else if (String(err) === "cancelled") {
+          node.error = null;
+          node.musicStatus = I18n.t("已取消");
+          return;
+        } else {
+          node.error = String(err);
+        }
+        node.musicStatus = node.error;
+        if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
+        if (!quiet) toast(node.error, "err");
+        return;
+      }
+      okCount++;
+      lastPath = String(r.path || "");
+      if (lastPath) node.genPaths.push(lastPath);
+      node.output = { kind: "audio", path: lastPath, text: lastPath };
+      node.ranAt = Date.now();
+      if (lastPath && nRolls === 1) syncMediaGenPathFromExport(node, lastPath);
+      node.genRollDone = roll;
+    }
+    if (node._aborted) {
       node.error = null;
       node.musicStatus = I18n.t("已取消");
       const ui = ensureBackendUiState(node);
@@ -15351,33 +16318,23 @@ async function playMusicGenNode(node, quiet) {
       ui.genPct = 0;
       return;
     }
-    if (!r || !r.ok) {
-      const err = (r && (r.message || r.error)) || I18n.t("生成失败");
-      if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
-        node.error = I18n.t("已有音乐生成任务进行中，已中断本节点（禁止并行）");
-      } else if (String(err) === "cancelled") {
-        node.error = null;
-        node.musicStatus = I18n.t("已取消");
-        return;
-      } else {
-        node.error = String(err);
-      }
-      node.musicStatus = node.error;
-      if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
-      if (!quiet) toast(node.error, "err");
-      return;
-    }
-    node.output = { kind: "audio", path: String(r.path || ""), text: String(r.path || "") };
-    node.ranAt = Date.now();
-    if (r.path) syncMediaGenPathFromExport(node, String(r.path));
-    node.musicStatus = r.message || I18n.t("已保存：") + r.path;
+    if (!okCount) return;
+    const doneMsg = mediaGenDoneMsg(Date.now() - t0);
+    node.musicStatus = doneMsg;
     {
       const ui = ensureBackendUiState(node);
       ui.genPct = 100;
-      ui.genMsg = I18n.t("完成");
+      ui.genMsg = doneMsg;
       ui.ok = false;
     }
-    if (!quiet) toast(I18n.t("音乐已生成：") + r.path, "ok");
+    if (!quiet) {
+      toast(
+        nRolls > 1
+          ? I18n.t("音乐已生成：") + okCount + "/" + nRolls + I18n.t(" 次")
+          : I18n.t("音乐已生成：") + lastPath,
+        "ok",
+      );
+    }
   } catch (e) {
     if (node._aborted) {
       node.error = null;
@@ -15491,16 +16448,7 @@ async function playVideoGenNode(node, quiet) {
     renderCanvas();
     return;
   }
-  const exp = await allocateUniqueMediaExport(exp0);
-  if (!exp || !exp.ok) {
-    requireMediaGenExport(node, quiet);
-    renderCanvas();
-    return;
-  }
-  if (exp.renamed) {
-    syncMediaGenPathFromExport(node, exp);
-    if (!quiet) toast(I18n.t("目标文件已存在，改为保存为：") + exp.filename, "ok");
-  }
+  const nRolls = attemptCount(node);
 
   let st = null;
   try {
@@ -15518,10 +16466,8 @@ async function playVideoGenNode(node, quiet) {
   node.running = true;
   node.error = null;
   node._aborted = false;
-  if (node.rerollSeed !== false) {
-    node.seed = Math.floor(Math.random() * 2147483647);
-    scheduleSave();
-  }
+  node.genRollDone = 0;
+  node.genPaths = [];
   node.videoStatus = I18n.t("启动后端并生成…");
   startMediaBackendRunWatcher(node);
   renderCanvas();
@@ -15554,45 +16500,122 @@ async function playVideoGenNode(node, quiet) {
     }
   }
 
+  const t0 = Date.now();
+  let okCount = 0;
+  let lastPath = "";
+
   try {
-    const r = await window.api.h3Generate({
-      nodeId: node.id,
-      workflowId: (S.wf && S.wf.id) || "",
-      mode,
-      prompt,
-      firstImage,
-      lastImage,
-      refImages,
-      refVideos,
-      refAudios,
-      duration: Number(node.duration) || 5,
-      ratio: node.ratio || "16:9",
-      seed: Number(node.seed) || 0,
-      steps: Number(node.steps) || 20,
-      sampler: node.sampler || "res_multistep",
-      scheduler: node.scheduler || "simple",
-      denoise: node.denoise != null ? Number(node.denoise) : 1,
-      shiftVideo: node.shiftVideo != null ? Number(node.shiftVideo) : 12,
-      shiftAudio: node.shiftAudio != null ? Number(node.shiftAudio) : 3,
-      teaEnabled: node.optTeaCache !== false && node.teaEnabled !== false,
-      teaThresh: node.teaThresh != null ? Number(node.teaThresh) : 0.15,
-      optTeaCache: node.optTeaCache !== false,
-      optEasyCache: node.optEasyCache !== false,
-      optSageAttn: node.optSageAttn !== false,
-      optLowVramAttn: node.optLowVramAttn !== false,
-      optChunkFfn: node.optChunkFfn !== false,
-      optVramBarrier: node.optVramBarrier !== false,
-      sageMode:
-        node.optSageAttn === false
-          ? "disabled"
-          : !node.sageMode || node.sageMode === "disabled"
-            ? "auto"
-            : node.sageMode,
-      refImageSize: node.refImageSize || "match",
-      outputDir: exp.outputDir,
-      filename: exp.filename,
-    });
-    if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+    for (let roll = 1; roll <= nRolls; roll++) {
+      if (node._aborted) break;
+      const exp = await prepareMediaGenRollExport(node, roll, nRolls);
+      if (!exp || !exp.ok) {
+        requireMediaGenExport(node, quiet);
+        node.error = savePathResolveError(exp && exp.code);
+        node.videoStatus = node.error;
+        if (!quiet) toast(node.error, "warn");
+        return;
+      }
+      if (roll === 1 && nRolls === 1 && exp.renamed) {
+        syncMediaGenPathFromExport(node, exp);
+        if (!quiet) toast(I18n.t("目标文件已存在，改为保存为：") + exp.filename, "ok");
+      }
+      const seed = nextMediaGenSeed(node);
+      {
+        const ui = ensureBackendUiState(node);
+        ui.genPct = Math.max(2, ui.genPct || 2);
+        ui.genMsg =
+          mediaGenRollProgressTag(node) +
+          (nRolls > 1 ? I18n.t("生成中…") : I18n.t("启动后端并生成…"));
+        node.videoStatus = ui.genMsg;
+      }
+      node.genRollDone = roll - 1;
+      refreshMediaNodeUi(node, { soft: true });
+
+      const r = await window.api.h3Generate({
+        nodeId: node.id,
+        workflowId: (S.wf && S.wf.id) || "",
+        mode,
+        prompt,
+        firstImage,
+        lastImage,
+        refImages,
+        refVideos,
+        refAudios,
+        duration: Number(node.duration) || 5,
+        ratio: node.ratio || "16:9",
+        seed,
+        steps: Number(node.steps) || 20,
+        sampler: node.sampler || "res_multistep",
+        scheduler: node.scheduler || "simple",
+        denoise: node.denoise != null ? Number(node.denoise) : 1,
+        shiftVideo: node.shiftVideo != null ? Number(node.shiftVideo) : 12,
+        shiftAudio: node.shiftAudio != null ? Number(node.shiftAudio) : 3,
+        teaEnabled: node.optTeaCache !== false && node.teaEnabled !== false,
+        teaThresh: node.teaThresh != null ? Number(node.teaThresh) : 0.15,
+        teaStart: node.teaStart != null ? Number(node.teaStart) : 2,
+        teaEnd: node.teaEnd != null ? Number(node.teaEnd) : -2,
+        optTeaCache: node.optTeaCache !== false,
+        optEasyCache: node.optEasyCache !== false,
+        easyReuse: node.easyReuse != null ? Number(node.easyReuse) : 0.2,
+        easyStart: node.easyStart != null ? Number(node.easyStart) : 0.15,
+        easyEnd: node.easyEnd != null ? Number(node.easyEnd) : 0.95,
+        optSageAttn: node.optSageAttn !== false,
+        optLowVramAttn: node.optLowVramAttn !== false,
+        lowVramHeadChunks: node.lowVramHeadChunks != null ? Number(node.lowVramHeadChunks) : 4,
+        optChunkFfn: node.optChunkFfn !== false,
+        chunkFfnChunks: node.chunkFfnChunks != null ? Number(node.chunkFfnChunks) : 2,
+        chunkFfnSeqThreshold:
+          node.chunkFfnSeqThreshold != null ? Number(node.chunkFfnSeqThreshold) : 4096,
+        optVramBarrier: node.optVramBarrier !== false,
+        sageMode:
+          node.optSageAttn === false
+            ? "disabled"
+            : !node.sageMode || node.sageMode === "disabled"
+              ? "auto"
+              : node.sageMode,
+        sageCompile: !!node.sageCompile,
+        refImageSize: node.refImageSize || "match",
+        fps: Number(node.fps) || 24,
+        bitDepth: Number(node.bitDepth) || 8,
+        videoFormat: node.videoFormat || "auto",
+        videoCodec: node.videoCodec || "auto",
+        filenamePrefix: node.filenamePrefix || "video/MiniMax_H3",
+        outputDir: exp.outputDir,
+        filename: exp.filename,
+      });
+      if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+        node.error = null;
+        node.videoStatus = I18n.t("已取消");
+        const ui = ensureBackendUiState(node);
+        ui.genMsg = I18n.t("已取消");
+        ui.genPct = 0;
+        return;
+      }
+      if (!r || !r.ok) {
+        const err = (r && (r.message || r.error)) || I18n.t("生成失败");
+        if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
+          node.error = I18n.t("已有视频生成任务进行中，已中断本节点（禁止并行）");
+        } else if (String(err) === "cancelled") {
+          node.error = null;
+          node.videoStatus = I18n.t("已取消");
+          return;
+        } else {
+          node.error = String(err);
+        }
+        node.videoStatus = node.error;
+        if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
+        if (!quiet) toast(node.error, "err");
+        return;
+      }
+      okCount++;
+      lastPath = String(r.path || "");
+      if (lastPath) node.genPaths.push(lastPath);
+      node.output = { kind: "video", path: lastPath, text: lastPath };
+      node.ranAt = Date.now();
+      if (lastPath && nRolls === 1) syncMediaGenPathFromExport(node, lastPath);
+      node.genRollDone = roll;
+    }
+    if (node._aborted) {
       node.error = null;
       node.videoStatus = I18n.t("已取消");
       const ui = ensureBackendUiState(node);
@@ -15600,33 +16623,23 @@ async function playVideoGenNode(node, quiet) {
       ui.genPct = 0;
       return;
     }
-    if (!r || !r.ok) {
-      const err = (r && (r.message || r.error)) || I18n.t("生成失败");
-      if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
-        node.error = I18n.t("已有视频生成任务进行中，已中断本节点（禁止并行）");
-      } else if (String(err) === "cancelled") {
-        node.error = null;
-        node.videoStatus = I18n.t("已取消");
-        return;
-      } else {
-        node.error = String(err);
-      }
-      node.videoStatus = node.error;
-      if (looksLikeBackendConnError(err)) markMediaBackendDown(node);
-      if (!quiet) toast(node.error, "err");
-      return;
-    }
-    node.output = { kind: "video", path: String(r.path || ""), text: String(r.path || "") };
-    node.ranAt = Date.now();
-    if (r.path) syncMediaGenPathFromExport(node, String(r.path));
-    node.videoStatus = r.message || I18n.t("已保存：") + r.path;
+    if (!okCount) return;
+    const doneMsg = mediaGenDoneMsg(Date.now() - t0);
+    node.videoStatus = doneMsg;
     {
       const ui = ensureBackendUiState(node);
       ui.genPct = 100;
-      ui.genMsg = I18n.t("完成");
+      ui.genMsg = doneMsg;
       ui.ok = false;
     }
-    if (!quiet) toast(I18n.t("视频已生成：") + r.path, "ok");
+    if (!quiet) {
+      toast(
+        nRolls > 1
+          ? I18n.t("视频已生成：") + okCount + "/" + nRolls + I18n.t(" 次")
+          : I18n.t("视频已生成：") + lastPath,
+        "ok",
+      );
+    }
   } catch (e) {
     if (node._aborted) {
       node.error = null;
@@ -15776,6 +16789,7 @@ async function playNodeBody(node, quiet, opts) {
       renderCanvas();
       return;
     }
+    syncAgentProviderRoute(node, { save: true });
     let route = String(node.provider || "").trim();
     if (!route) {
       route = defaultAgentProviderRoute();
@@ -16296,7 +17310,7 @@ async function autoSaveSaves(forceWired, skipIds) {
   if (changed) renderCanvas();
 }
 
-/* 控制节点两端的已连接节点（指挥线双向：连出或连入都算） */
+/* 控制节点两端的已连接节点（指挥线双向：连出或连入都算；经超级节点端子隧穿） */
 function controlTargets(node) {
   const out = [];
   const seen = new Set();
@@ -16306,9 +17320,59 @@ function controlTargets(node) {
     seen.add(n.id);
     out.push(n);
   };
+  const addExpand = (n, via) => {
+    if (!n) return;
+    if (n.kind !== "super") {
+      add(n);
+      return;
+    }
+    /* via: { dir:'in'|'out', index } — 进入超节点的方向与端子号 */
+    const idx = Number((via && via.index) || 0);
+    if (via && via.dir === "in") {
+      for (const bw of superInternalBridgeWiresAll(n)) {
+        if (Number(bw.fromIndex || 0) !== idx) continue;
+        addExpand(nodeById(bw.to), null);
+      }
+      return;
+    }
+    if (via && via.dir === "out") {
+      for (const ow of superExternalOutWiresAll(n)) {
+        if (Number(ow.fromIndex || 0) !== idx) continue;
+        addExpand(nodeById(ow.to), null);
+      }
+      return;
+    }
+    add(n);
+  };
   for (const w of S.wf.wires) {
-    if (w.from === node.id) add(nodeById(w.to));
-    if (w.to === node.id) add(nodeById(w.from));
+    if (w.from === node.id) {
+      const to = nodeById(w.to);
+      if (to && to.kind === "super" && nodeParentSuperId(node) !== to.id) {
+        addExpand(to, { dir: "in", index: w.toIndex });
+      } else if (to && to.kind === "super" && nodeParentSuperId(node) === to.id) {
+        addExpand(to, { dir: "out", index: w.toIndex });
+      } else add(to);
+    }
+    if (w.to === node.id) {
+      const from = nodeById(w.from);
+      if (from && from.kind === "super" && nodeParentSuperId(node) !== from.id) {
+        /* 超 → 本控制：外侧输出来自内侧汇流 */
+        for (const feed of superInternalOutFeedsAll(from)) {
+          if (Number(feed.toIndex) !== Number(w.fromIndex || 0)) continue;
+          addExpand(nodeById(feed.from), null);
+        }
+      } else if (
+        from &&
+        from.kind === "super" &&
+        nodeParentSuperId(node) === from.id
+      ) {
+        /* 内侧桥接 → 本控制：外侧输入源也算关联（少见） */
+        for (const ext of superExternalInWiresAll(from)) {
+          if (Number(ext.toIndex) !== Number(w.fromIndex || 0)) continue;
+          add(nodeById(ext.from));
+        }
+      } else add(from);
+    }
   }
   return out;
 }
@@ -17169,7 +18233,8 @@ function logicalDataEdgesFromWire(w, wf) {
   const from = nodeByIdIn(w.from, wf);
   const to = nodeByIdIn(w.to, wf);
   if (!from || !to) return edges;
-  if (wireFromIsControl(w)) {
+  /* 控制线不进入数据拓扑（脉冲隧穿由 pulseExecOutgoing 单独处理） */
+  if (wireFromIsControl(w, wf)) {
     add(w.from, w.to);
     return edges;
   }
@@ -17351,16 +18416,12 @@ function connectError(fromId, toId, toIndex, fromIndex) {
         return I18n.t("音视频端子需要文本路径或媒体文件路径");
     }
   }
-  /* 超级节点：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入 */
+  /* 超级节点：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入（含控制线） */
   if (to.kind === "super") {
     const ti = toIndex == null ? 0 : Number(toIndex);
     if (ti < 0 || ti >= Math.max(1, inputCount(to)))
       return I18n.t("无效的输入端子");
-    if (
-      superExternalInWires(to).some(
-        (w) => Number(w.toIndex) === ti && !wireFromIsControl(w),
-      )
-    )
+    if (superExternalInWiresAll(to).some((w) => Number(w.toIndex) === ti))
       return I18n.t("该输入端子已被占用");
     return null;
   }
@@ -17488,6 +18549,7 @@ function canvasSnapshot() {
         ).length,
         note: clipStr(n.note, 120),
       })),
+    tagCatalog: wfTagCatalog().slice(),
     nodes: scopeNodes.map((n) => {
       const inputSnap =
         n.kind === "input_text" ? snapTextField(n.text) : null;
@@ -17541,6 +18603,10 @@ function canvasSnapshot() {
       mutexMode: n.kind === "mutex" ? n.mutexMode || undefined : undefined,
       agent: n.kind === "proc_text" ? !!n.agent : undefined,
       globalRefs: canUseGlobalRefs(n) ? !!n.globalRefs : undefined,
+      tags:
+        n.kind !== "global" && normalizeNodeTags(n).length
+          ? normalizeNodeTags(n).slice()
+          : undefined,
       providerId:
         n.kind === "proc_text" ||
         n.kind === "proc_image" ||
@@ -19534,11 +20600,6 @@ function shiftToClear(placed, obstacles) {
   return { x: 0, y: 1400 };
 }
 
-/* 分层从左到右排版:列 = 最长上游路径,列内按原顺序纵向堆叠,再整体避开障碍 */
-function layoutFlow(nodes, wires, origin, obstacles) {
-  layoutFlowEx(nodes, wires, origin, obstacles, { gapX: 80, gapY: 48 });
-}
-
 function layoutNodePriority(n) {
   if (!n) return 9;
   if (isExecStart(n)) return -1;
@@ -19568,19 +20629,63 @@ function layoutNodePriority(n) {
   return 5;
 }
 
-function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
-  if (!nodes.length) return;
-  opts = opts || {};
-  const gapX = opts.gapX != null ? opts.gapX : 80;
-  const gapY = opts.gapY != null ? opts.gapY : 48;
-  const prioritize = !!opts.prioritizeEditable;
+/* 分层从左到右排版：连通分量 + barycenter 减交叉 + 父子垂直对齐 */
+function layoutNodeSize(n) {
+  const sz = nodeDrawSize(n);
+  return { w: Math.max(40, sz.w || 240), h: Math.max(40, sz.h || 160) };
+}
+
+function findLayoutComponents(nodes, wires) {
+  const ids = new Set((nodes || []).map((n) => n.id));
+  const parent = {};
+  const find = (id) => {
+    while (parent[id] !== id) {
+      parent[id] = parent[parent[id]];
+      id = parent[id];
+    }
+    return id;
+  };
+  const unite = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+  for (const n of nodes || []) parent[n.id] = n.id;
+  for (const w of wires || []) {
+    if (ids.has(w.from) && ids.has(w.to)) unite(w.from, w.to);
+  }
+  const groups = new Map();
+  for (const n of nodes || []) {
+    const r = find(n.id);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(n);
+  }
+  return [...groups.values()].map((ns) => {
+    const set = new Set(ns.map((n) => n.id));
+    return {
+      nodes: ns,
+      wires: (wires || []).filter((w) => set.has(w.from) && set.has(w.to)),
+    };
+  });
+}
+
+function buildLayoutGraph(nodes, wires) {
   const ids = new Set(nodes.map((n) => n.id));
-  const incoming = {};
-  for (const n of nodes) incoming[n.id] = [];
+  const inEdges = {};
+  const outEdges = {};
+  for (const n of nodes) {
+    inEdges[n.id] = [];
+    outEdges[n.id] = [];
+  }
   for (const w of wires) {
     if (!ids.has(w.from) || !ids.has(w.to)) continue;
-    incoming[w.to].push(w.from);
+    outEdges[w.from].push(w.to);
+    inEdges[w.to].push(w.from);
   }
+  return { inEdges, outEdges };
+}
+
+function assignLayoutLayers(nodes, inEdges, outEdges) {
   const layer = {};
   const visiting = new Set();
   const depthOf = (id) => {
@@ -19588,36 +20693,193 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
     if (visiting.has(id)) return 0;
     visiting.add(id);
     let d = 0;
-    for (const p of incoming[id] || []) d = Math.max(d, depthOf(p) + 1);
+    for (const p of inEdges[id] || []) d = Math.max(d, depthOf(p) + 1);
     visiting.delete(id);
     layer[id] = d;
     return d;
   };
   for (const n of nodes) depthOf(n.id);
+  const maxL = Math.max(0, ...Object.values(layer));
   const cols = [];
-  for (const n of nodes) {
-    const L = layer[n.id] || 0;
-    (cols[L] = cols[L] || []).push(n);
+  for (let i = 0; i <= maxL; i++) cols[i] = [];
+  for (const n of nodes) cols[layer[n.id] || 0].push(n);
+  for (const col of cols) {
+    if (!col || !col.length) continue;
+    col.sort((a, b) => layoutNodePriority(a) - layoutNodePriority(b));
   }
-  if (prioritize) {
-    for (const col of cols) {
-      if (!col) continue;
-      col.sort((a, b) => layoutNodePriority(a) - layoutNodePriority(b));
+  return cols;
+}
+
+function sortLayerByKey(col, keyOf) {
+  return col
+    .map((n, i) => ({ n, i, k: keyOf(n, i) }))
+    .sort((a, b) => {
+      if (a.k !== b.k) return a.k - b.k;
+      return a.i - b.i;
+    })
+    .map((x) => x.n);
+}
+
+function orderLayersByBarycenter(cols, inEdges, outEdges) {
+  const layerOf = new Map();
+  cols.forEach((col, i) => {
+    if (!col) return;
+    for (const n of col) layerOf.set(n.id, i);
+  });
+  const idxIn = (col, id) => col.findIndex((n) => n.id === id);
+  const bary = (n, neighborLayer, useOut) => {
+    const edges = useOut ? outEdges[n.id] : inEdges[n.id];
+    let sum = 0;
+    let c = 0;
+    for (const nid of edges || []) {
+      const L = layerOf.get(nid);
+      if (L == null || L !== neighborLayer) continue;
+      const col = cols[neighborLayer];
+      const ix = idxIn(col, nid);
+      if (ix >= 0) {
+        sum += ix;
+        c++;
+      }
+    }
+    return c ? sum / c : null;
+  };
+  for (let pass = 0; pass < 6; pass++) {
+    for (let i = 1; i < cols.length; i++) {
+      const col = cols[i];
+      if (!col || !col.length) continue;
+      cols[i] = sortLayerByKey(col, (n, ord) => {
+        const b = bary(n, i - 1, false);
+        return b != null ? b : ord + layoutNodePriority(n) * 0.01;
+      });
+    }
+    for (let i = cols.length - 2; i >= 0; i--) {
+      const col = cols[i];
+      if (!col || !col.length) continue;
+      cols[i] = sortLayerByKey(col, (n, ord) => {
+        const b = bary(n, i + 1, true);
+        return b != null ? b : ord + layoutNodePriority(n) * 0.01;
+      });
     }
   }
+}
+
+function resolveLayerOverlaps(col, gapY) {
+  if (!col || col.length < 2) return;
+  const sorted = col.slice().sort((a, b) => a.y - b.y);
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const cur = sorted[i];
+    const psz = layoutNodeSize(prev);
+    const minY = prev.y + psz.h + gapY;
+    if (cur.y < minY) cur.y = snap(minY);
+  }
+}
+
+function alignLayerToParents(col, inEdges, nodeMap, gapY, originY) {
+  if (!col || !col.length) return;
+  const desired = col.map((n) => {
+    const ps = (inEdges[n.id] || [])
+      .map((id) => nodeMap.get(id))
+      .filter(Boolean);
+    if (!ps.length) return null;
+    return (
+      ps.reduce((s, p) => s + p.y + layoutNodeSize(p).h / 2, 0) / ps.length
+    );
+  });
+  const order = col
+    .map((n, i) => ({ n, i, d: desired[i], p: layoutNodePriority(n) }))
+    .sort((a, b) => {
+      if (a.d != null && b.d != null) return a.d - b.d;
+      if (a.d != null) return -1;
+      if (b.d != null) return 1;
+      return a.p - b.p;
+    });
+  let y = originY;
+  for (const it of order) {
+    const n = it.n;
+    const sz = layoutNodeSize(n);
+    let ny = it.d != null ? it.d - sz.h / 2 : y;
+    ny = Math.max(ny, y);
+    n.y = snap(ny);
+    y = n.y + sz.h + gapY;
+  }
+  resolveLayerOverlaps(col, gapY);
+}
+
+function layoutFlowComponent(nodes, wires, origin, opts) {
+  if (!nodes.length) return { w: 0, h: 0 };
+  opts = opts || {};
+  const gapX = opts.gapX != null ? opts.gapX : 80;
+  const gapY = opts.gapY != null ? opts.gapY : 48;
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const { inEdges, outEdges } = buildLayoutGraph(nodes, wires);
+  const cols = assignLayoutLayers(nodes, inEdges, outEdges);
+  orderLayersByBarycenter(cols, inEdges, outEdges);
+
+  const colWidths = cols.map((col) =>
+    Math.max(40, ...(col || []).map((n) => layoutNodeSize(n).w)),
+  );
   let x = origin.x;
   for (let i = 0; i < cols.length; i++) {
     const col = cols[i] || [];
-    let y = origin.y;
-    let colW = 0;
-    for (const n of col) {
-      n.x = snap(x);
-      n.y = snap(y);
-      colW = Math.max(colW, n.w);
-      y += n.h + gapY;
+    if (!col.length) continue;
+    for (const n of col) n.x = snap(x);
+    alignLayerToParents(col, inEdges, nodeMap, gapY, origin.y);
+    for (let pass = 0; pass < 2; pass++) {
+      alignLayerToParents(col, inEdges, nodeMap, gapY, origin.y);
     }
-    x += colW + gapX;
+    x += colWidths[i] + gapX;
   }
+
+  const bb = nodesBBox(nodes);
+  if (!bb) return { w: 0, h: 0 };
+  return { w: bb.maxX - bb.minX, h: bb.maxY - bb.minY, minX: bb.minX, minY: bb.minY };
+}
+
+function layoutFlow(nodes, wires, origin, obstacles) {
+  layoutFlowEx(nodes, wires, origin, obstacles, { gapX: 80, gapY: 48 });
+}
+
+function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
+  if (!nodes.length) return;
+  opts = opts || {};
+  const gapX = opts.gapX != null ? opts.gapX : 80;
+  const gapY = opts.gapY != null ? opts.gapY : 48;
+  const compGapX = opts.compGapX != null ? opts.compGapX : 128;
+  const compGapY = opts.compGapY != null ? opts.compGapY : 120;
+  const maxRowW = opts.maxRowW != null ? opts.maxRowW : 4400;
+  const components = findLayoutComponents(nodes, wires);
+  components.sort((a, b) => b.nodes.length - a.nodes.length);
+
+  let cursorX = origin.x;
+  let cursorY = origin.y;
+  let rowMaxH = 0;
+  const compOpts = Object.assign({}, opts, { gapX, gapY });
+
+  for (const comp of components) {
+    const relOrigin = { x: 0, y: 0 };
+    layoutFlowComponent(comp.nodes, comp.wires, relOrigin, compOpts);
+    const compBb = nodesBBox(comp.nodes);
+    if (!compBb) continue;
+    const w = compBb.maxX - compBb.minX;
+    const h = compBb.maxY - compBb.minY;
+
+    if (cursorX > origin.x && cursorX + w > origin.x + maxRowW) {
+      cursorX = origin.x;
+      cursorY += rowMaxH + compGapY;
+      rowMaxH = 0;
+    }
+
+    const dx = cursorX - compBb.minX;
+    const dy = cursorY - compBb.minY;
+    for (const n of comp.nodes) {
+      n.x = snap(n.x + dx);
+      n.y = snap(n.y + dy);
+    }
+    cursorX += w + compGapX;
+    rowMaxH = Math.max(rowMaxH, h);
+  }
+
   const sh = shiftToClear(nodes, obstacles || []);
   if (sh.x || sh.y) {
     for (const n of nodes) {
@@ -20085,7 +21347,7 @@ function tidyAllSuperInners(opts) {
   return { ok: true, nodes: total };
 }
 
-/* 顶栏一键排版：本地整洁排版（可选同时整理超级节点内部） */
+/* 顶栏一键排版：整洁排版（可选同时整理超级节点内部） */
 async function oneClickAutoLayout(opts) {
   opts = opts || {};
   if (!S.wf || !(S.wf.nodes || []).length) {
@@ -20339,8 +21601,21 @@ function applyNodePatch(node, patch, warnings) {
   }
   if (typeof patch.globalRefs === "boolean" && canUseGlobalRefs(node))
     node.globalRefs = patch.globalRefs;
-  if (typeof patch.agent === "boolean" && node.kind === "proc_text")
+  if (patch.tags != null && node.kind !== "global") {
+    const list = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(patch.tags) ? patch.tags : []) {
+      const t = ensureTagInCatalog(normalizeTagName(raw));
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      list.push(t);
+    }
+    node.tags = list;
+  }
+  if (typeof patch.agent === "boolean" && node.kind === "proc_text") {
     node.agent = patch.agent;
+    if (node.agent) syncAgentProviderRoute(node);
+  }
   if (
     typeof patch.auto === "boolean" &&
     (isSaveNode(node))
@@ -20631,7 +21906,13 @@ function ensurePromptRefs(node, refs, aliasMap) {
       (S.wf.nodes || []).find((n) => n.title === key);
     const title = target ? target.title : key;
     const token = "@" + title;
-    if (body.indexOf(token) < 0) body = body ? body + "\n" + token : token;
+    if (target) {
+      if (body.indexOf(token) < 0) body = body ? body + "\n" + token : token;
+    } else if (tagByAtToken(key)) {
+      const tagTok = "@" + normalizeTagName(key);
+      if (body.indexOf(tagTok) < 0)
+        body = body ? body + "\n" + tagTok : tagTok;
+    }
   }
   node[field] = body;
 }
@@ -21000,6 +22281,21 @@ async function applyCanvasEdit(params) {
     });
   };
 
+  const applyMarkParentSuper = (m, raw, warningsArr) => {
+    if (!m) return;
+    const token = String(raw == null ? "" : raw).trim();
+    if (!token) {
+      m.parentSuperId = "";
+      return;
+    }
+    const p = resolveCanvasRef(token, aliasMap, warningsArr);
+    if (p && p.kind === "super") {
+      m.parentSuperId = p.id;
+      m.parentTaskId = p.parentTaskId || m.parentTaskId || "";
+    } else if (token && warningsArr) {
+      warningsArr.push(I18n.t("无效的超级节点：") + token);
+    }
+  };
   for (const raw of createMarks.slice(0, 40)) {
     const alias = String((raw && raw.alias) || "").trim();
     let spec = applyAroundToSpec(raw || {});
@@ -21007,6 +22303,11 @@ async function applyCanvasEdit(params) {
       spec = Object.assign({ kind: "box" }, spec);
     const m = makeMarkFromSpec(spec, warnings);
     if (!m) continue;
+    if (raw && (raw.parentSuperId != null || raw.packIntoSuper != null)) {
+      const rawSuper =
+        raw.parentSuperId != null ? raw.parentSuperId : raw.packIntoSuper;
+      applyMarkParentSuper(m, rawSuper, warnings);
+    }
     marksOf().push(m);
     if (alias) {
       if (markAliasMap.has(alias))
@@ -24787,12 +26088,7 @@ function makeNode(kind, x, y) {
     node[k] = JSON.parse(JSON.stringify(v));
   }
   assignDefaultProvider(node);
-  if (node.kind === "music_gen") {
-    node.seed = Math.floor(Math.random() * 2147483647);
-  }
-  if (node.kind === "video_gen") {
-    node.seed = Math.floor(Math.random() * 2147483647);
-  }
+  if (node.kind === "agent_task") syncAgentProviderRoute(node);
   node.parentTaskId = currentTaskFocus();
   const sf = currentSuperFocus();
   if (sf) {
@@ -28061,6 +29357,39 @@ async function pulseExecOutgoing(node, fromIndex, task, seen) {
     }
     const next = nodeById(w.to);
     if (!next) continue;
+    /* 控制脉冲经超级节点端子隧穿到另一侧 */
+    if (next.kind === "super" && nodeParentSuperId(node) !== next.id) {
+      const ti = Number(w.toIndex || 0);
+      let any = false;
+      for (const bw of superInternalBridgeWiresAll(next)) {
+        if (Number(bw.fromIndex || 0) !== ti) continue;
+        const child = nodeById(bw.to);
+        if (!child) continue;
+        if (nodeParentTaskId(child) !== task.id && child.id !== task.id) continue;
+        any = true;
+        out.push(
+          await pulseExecFrom(child, task, seen, Number(bw.toIndex || 0)),
+        );
+      }
+      if (!any) out.push("open");
+      continue;
+    }
+    if (next.kind === "super" && nodeParentSuperId(node) === next.id) {
+      const ti = Number(w.toIndex || 0);
+      let any = false;
+      for (const ow of superExternalOutWiresAll(next)) {
+        if (Number(ow.fromIndex || 0) !== ti) continue;
+        const dest = nodeById(ow.to);
+        if (!dest) continue;
+        if (nodeParentTaskId(dest) !== task.id && dest.id !== task.id) continue;
+        any = true;
+        out.push(
+          await pulseExecFrom(dest, task, seen, Number(ow.toIndex || 0)),
+        );
+      }
+      if (!any) out.push("open");
+      continue;
+    }
     if (nodeParentTaskId(next) !== task.id && next.id !== task.id) continue;
     out.push(
       await pulseExecFrom(next, task, seen, Number(w.toIndex || 0)),
@@ -28670,6 +29999,9 @@ function migrateWf(wf) {
     if (n.kind === "proc_text" || n.kind === "proc_image") {
       if (n.attempts == null) n.attempts = 1;
       if (n.attemptIdx == null) n.attemptIdx = 0;
+    }
+    if (n.kind === "music_gen" || n.kind === "video_gen") {
+      if (n.attempts == null) n.attempts = 1;
     }
     if (n.kind === "task") {
       normalizeTaskSteps(n);
@@ -32946,6 +34278,79 @@ function bindH3Progress(host) {
     }
   });
 }
+async function refreshLlamaPluginCard(root) {
+  if (!root || !window.api || !window.api.llamaStatus) return;
+  const st = await window.api.llamaStatus();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: true });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  if (st.consoleOpen) {
+    addBtn("stop", I18n.t("停止"), async () => {
+      if (window.api.llamaClose) await window.api.llamaClose();
+      refreshLlamaPluginCard(root);
+    });
+  } else {
+    addBtn("play", I18n.t("运行"), async () => {
+      const r = await window.api.llamaOpen();
+      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      refreshLlamaPluginCard(root);
+    }, { primary: true });
+  }
+  addBtn("trash", I18n.t("移除入口"), async () => {
+    if (
+      !(await confirmDialog(
+        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
+        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
+      ))
+    )
+      return;
+    if (window.api.llamaRemovePluginMeta) await window.api.llamaRemovePluginMeta();
+    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
+    refreshLlamaPluginCard(root);
+  }, { danger: true });
+  if (prog && st.installing) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = I18n.t("安装中…");
+    }
+  }
+}
+function bindLlamaProgress(host) {
+  if (!window.api || !window.api.onLlamaProgress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onLlamaProgress((data) => {
+    if (!data || (data.id && data.id !== "llama-local")) return;
+    if (data.phase !== "install" && data.phase !== "dsh") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshLlamaPluginCard(host);
+      }, 600);
+    }
+  });
+}
 function pluginLoc(p, key) {
   const v = p && p[key];
   if (v && typeof v === "object") {
@@ -33202,6 +34607,20 @@ async function openAppPluginsDialog() {
           subtitle: { zh: I18n.t("可以聊天的BongoCat！"), en: "A BongoCat you can chat with!" },
           compatible: true,
         },
+        {
+          id: "llama-local",
+          kind: "llama",
+          handler: "llama",
+          icon: "llama-local.png",
+          version: "1.0.0",
+          title: { zh: "llama.cpp 本地模型", en: "llama.cpp Local Models" },
+          subtitle: {
+            zh: I18n.t("基于 llama.cpp 的本地 GGUF 模型管理：指定目录安装、国内镜像、多模型显存管理、OpenAI 兼容 API。"),
+            en: "llama.cpp local GGUF model manager with CN mirrors and VRAM management.",
+          },
+          compatible: true,
+          installed: true,
+        },
       ];
 
   const wrap = document.createElement("div");
@@ -33266,6 +34685,13 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onH3ConsoleChanged(() => refreshH3PluginCard(card)));
       }
       refreshH3PluginCard(card);
+    } else if (item.kind === "llama" || item.handler === "llama") {
+      const off = bindLlamaProgress(card);
+      if (off) offs.push(off);
+      if (window.api && window.api.onLlamaConsoleChanged) {
+        offs.push(window.api.onLlamaConsoleChanged(() => refreshLlamaPluginCard(card)));
+      }
+      refreshLlamaPluginCard(card);
     } else {
       const off = bindPluginProgress(card, item.id, false);
       if (off) offs.push(off);
@@ -33675,7 +35101,37 @@ async function openDshPluginsDialog() {
 
 /* ============ 设置（APIs/Config） ============ */
 
+function mergePluginManagedProviders(targetCfg, sourceCfg) {
+  if (!targetCfg || !sourceCfg) return;
+  const incoming = Array.isArray(sourceCfg.providers) ? sourceCfg.providers : [];
+  const managed = incoming.filter(
+    (p) => p && (p.source === "llama-plugin" || p.id === "llama-local"),
+  );
+  if (!managed.length) return;
+  const base = (Array.isArray(targetCfg.providers) ? targetCfg.providers : []).filter(
+    (p) => p && p.source !== "llama-plugin" && p.id !== "llama-local",
+  );
+  targetCfg.providers = base.concat(managed);
+}
+
+async function reloadConfigProvidersFromDisk() {
+  if (!window.api || !window.api.configLoad || !S.config) return;
+  try {
+    const fresh = await window.api.configLoad();
+    if (fresh && Array.isArray(fresh.providers)) {
+      S.config.providers = fresh.providers;
+      ensureDefaultProviders();
+    }
+  } catch {}
+}
+
 function openSettings() {
+  reloadConfigProvidersFromDisk().then(() => {
+    openSettingsBody();
+  });
+}
+
+function openSettingsBody() {
   openOverlay(I18n.t("设置 · APIs/Config"));
   overlayPersistent = true; // 设置栏：点击外部不关闭，仅通过「取消 / 保存」关闭
   overlayKind = "settings";
@@ -34258,13 +35714,14 @@ function openSettings() {
         if (r && r.ok === false) throw new Error(r.error);
         const skills = (r && r.skills) || [];
         skList.innerHTML = "";
-        if (!skills.length) {
+        const visible = skills.filter((s) => !isInstallOnlySkillName(s.name));
+        if (!visible.length) {
           const em = document.createElement("div");
           em.className = "dsh-plugin-empty";
           em.textContent = I18n.t("暂无技能（在上方表单创建）");
           skList.appendChild(em);
         }
-        for (const s of skills) {
+        for (const s of visible) {
           const row = document.createElement("div");
           row.className = "dsh-plugin-row";
           const nm = document.createElement("span");
@@ -36263,8 +37720,7 @@ function fillAssistModelControls() {
   addOpt(provSel, "deepseek-official", (dp && dp.name) || I18n.t("DeepSeek 官方"));
   for (const p of mtnode) addOpt(provSel, "mtnode_" + p.route, p.name);
   if (![...provSel.options].some((o) => o.value === curProv)) {
-    S.assistProvider = "deepseek-official";
-    curProv = "deepseek-official";
+    curProv = preferredAgentProviderRoute();
   }
   provSel.value = curProv;
   fillModels(curProv);
@@ -36475,6 +37931,7 @@ async function assistSend(text) {
     "  · 【极重要·防 N² 爆 token】batchMode=batch 时每次运行只应对「当前这一条」。严禁把整批 N 张图/N 条再全部塞进每一次运行的参考图或提示词（否则 ≈N×N 次调用，巨量浪费）。需要只处理其中一项时，先接「拆分」节点选出单项再连文生图；要一次看全部才用 batchMode=agg。两条批量源不要交叉接到同一文生图。\n" +
     "  · 文生图（proc_image）每次运行只生成 1 张图，API 不支持一次出多张。prompt 里严禁写「生成多张/几张图」之类要求；需要多图时用：批量 1 条出 1 张、多个文生图节点、或 attempts×N。\n" +
     "  · 文生图尺寸：create/update 传 size，须为 mtnode_canvas_get 返回的 imageSizes 之一（如 2048x1360 / 1280x1280 / auto）；按横竖构图选择，省略则默认 defaultImageSize。\n" +
+    "  · @引用：连线节点用 @标题；引用全局节点广播时须同时 (1) 在处理节点上设 globalRefs:true，(2) 在 prompt/task 内写 @源标题（缺一不可）。@Tag标签 引用该标签下全部节点内容（给节点设 tags，见 tagCatalog），UI 中 Tag 为紫色、节点为青色。\n" +
     "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run/clear，ctrlFillOnly=true 时仅补跑无输出节点）连到处理/保存节点，方便用户一键重跑、补缺或清空。\n" +
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
     "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
@@ -36485,8 +37942,7 @@ async function assistSend(text) {
     stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
-  const assistMaxTok =
-    Number((S.config && S.config.dsh && S.config.dsh.maxTokens) || 0) || 98304;
+  const assistMaxTok = dshRunMaxTokens();
   let assistHitMaxTokens = false;
   try {
     const final = await dshRunTask(input, {
@@ -36503,7 +37959,7 @@ async function assistSend(text) {
           const cap = Number(m.maxTokens) || assistMaxTok;
           const used =
             (Number(m.outputTokens) || 0) + (Number(m.reasoningTokens) || 0);
-          if (cap > 0 && used >= Math.floor(cap * 0.95))
+          if (assistMaxTok > 0 && cap > 0 && used >= Math.floor(cap * 0.95))
             assistHitMaxTokens = true;
         }
       },
@@ -37461,8 +38917,8 @@ function renderAgentSession(opts) {
     /* 仅显示已添加的供应商(DeepSeek 官方 + MTNode 服务商);
        目录服务商经「添加服务商」加入后才会出现 */
     if (![...provSel.options].some((o) => o.value === curProv)) {
-      st.provider = "deepseek-official";
-      curProv = "deepseek-official";
+      curProv = preferredAgentProviderRoute();
+      st.provider = curProv;
       persistAgentSession();
     }
     provSel.value = curProv;
@@ -38204,6 +39660,19 @@ async function init() {
       if (S.config) S.config.storeAuth = auth || null;
     });
   }
+  if (window.api && window.api.onLlamaProviderSynced) {
+    window.api.onLlamaProviderSynced(async () => {
+      if (!S.config) return;
+      const settingsOpen =
+        overlayKind === "settings" && $("#overlay") && $("#overlay").style.display === "flex";
+      try {
+        const fresh = await window.api.configLoad();
+        if (!fresh || !Array.isArray(fresh.providers)) return;
+        if (settingsOpen) mergePluginManagedProviders(S.config, fresh);
+        else S.config.providers = fresh.providers;
+      } catch {}
+    });
+  }
   if (S.config.locale !== "en" && S.config.locale !== "zh") S.config.locale = "zh";
   I18n.setLocale(S.config.locale);
   document.documentElement.lang = S.config.locale === "en" ? "en" : "zh-CN";
@@ -38237,7 +39706,7 @@ async function init() {
       enabled: true,
       nodePath: "",
       model: "deepseek-v4-flash",
-      maxTokens: 98304,
+      maxTokens: 0,
       defaultWorkspace: "",
       preset: "standard",
       chatEnter: "send",
@@ -38249,8 +39718,9 @@ async function init() {
     },
     S.config.dsh || {},
   );
-  /* 旧默认 49152 易在长任务中途触顶，表现为「突然中断」；升级到新默认 */
-  if (Number(S.config.dsh.maxTokens) === 49152) S.config.dsh.maxTokens = 98304;
+  /* 旧默认有上限；现默认 0 = 不限制单次输出 */
+  const legacyMt = Number(S.config.dsh.maxTokens);
+  if (legacyMt === 49152 || legacyMt === 98304) S.config.dsh.maxTokens = 0;
   ensureAgentToolPresets();
   applyTheme((S.config.dsh && S.config.dsh.theme) || "industrial");
   /* 已访问画布(画布 Tab 条),持久化于配置 */

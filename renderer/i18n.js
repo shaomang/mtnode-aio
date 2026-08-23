@@ -1133,6 +1133,7 @@
     "输出端子（连接到要控制的节点）": "Output port (connect to nodes to control)",
     "已清空 ": "Cleared ",
     "已自动切换至视觉模型：": "Auto-switched to vision model: ",
+    "智能节点已匹配服务商与模型：": "Agent node matched provider and model: ",
     "运行中的节点未改模型：": "Running nodes were not re-modeled: ",
     "找不到服务商：": "Provider not found: ",
     "服务商名称不唯一，请改用 id：": "Provider name is not unique, use id instead: ",
@@ -1485,6 +1486,23 @@
     "已整理排版（含超级节点内部）": "Layout tidied (including super insides)",
     "已整理排版": "Layout tidied",
     "开始排版": "Start layout",
+    "请选择排版方式：": "Choose a layout mode:",
+    "简单排版": "Simple layout",
+    "按连线关系快速整理节点位置（可撤销）":
+      "Arrange nodes by wire flow (undoable)",
+    "AI排版": "AI layout",
+    "由全局助手分析并调整节点与绘制（可撤销，可能需等待）":
+      "Global assistant analyzes and adjusts nodes and marks (undoable; may take a while)",
+    "确定进行简单排版？\n\n将按连线关系整理节点位置（可撤销）。":
+      "Run simple layout?\n\nNodes will be arranged by wire flow (undoable).",
+    "确定进行 AI 排版？\n\n将由全局助手读取画布并调整节点与绘制位置，可能需要等待一段时间。每次画布改动可撤销。":
+      "Run AI layout?\n\nThe global assistant will read the canvas and adjust node/mark positions; this may take a while. Each canvas edit is undoable.",
+    "开始 AI 排版": "Start AI layout",
+    "批次拆分已完成。是否进行重新排版？\n\n可选择简单排版或 AI 排版。":
+      "Batch split done. Re-layout?\n\nChoose simple or AI layout.",
+    "选择排版方式": "Choose layout",
+    "一键排版：简单排版（按连线整理）或 AI 排版（全局助手分析调整，可撤销）":
+      "Layout: simple (by wires) or AI (global assistant, undoable)",
     "下载模板": "Download template",
     "覆盖模板": "Overwrite template",
     "覆盖": "Overwrite",
@@ -1527,6 +1545,12 @@
     " 天": "d",
     " 时": "h",
     " 分": "m",
+    " 秒": "s",
+    "抽卡次数": "Roll count",
+    "连续生成次数（1–10）；多次时输出命名为 _01、_02 …":
+      "Sequential generations (1–10); multiple runs save as _01, _02 …",
+    "在文件夹中显示已生成文件": "Show generated file in folder",
+    "用系统默认应用打开": "Open with default app",
     "天": "d",
     "时": "h",
     "分": "m",
@@ -2606,8 +2630,8 @@
     "时长": "Duration",
     "种子": "Seed",
     "摇数": "Reroll",
-    "每次执行是否重新摇数（默认开启）":
-      "Reroll seed on every run (on by default)",
+    "每次执行种子 +1（默认开启）":
+      "Increment seed by +1 on every run (on by default)",
     "输出目录": "Output folder",
     "文件名（可选）": "Filename (optional)",
     "随机种子": "Randomize seed",

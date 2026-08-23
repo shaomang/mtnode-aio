@@ -1078,15 +1078,22 @@ function syncMusic3InstallSkill() {
   try {
     if (getDsh) {
       const dsh = getDsh();
-      if (dsh && typeof dsh.syncBuiltinSkills === "function") dsh.syncBuiltinSkills();
+      if (dsh && typeof dsh.syncInstallSkills === "function") dsh.syncInstallSkills();
     }
   } catch {}
   try {
-    const skillSrc = join(appRoot || path.join(__dirname, ".."), "skills", "minimax-music3-install", "SKILL.md");
+    const skillSrc = join(
+      appRoot || path.join(__dirname, ".."),
+      "music3",
+      "skills",
+      "minimax-music3-install",
+      "SKILL.md",
+    );
     const dshHome = join(getDataDir(), "dsh-home", "skills", "minimax-music3-install");
     if (fs.existsSync(skillSrc)) {
       mk(dshHome);
       fs.copyFileSync(skillSrc, join(dshHome, "SKILL.md"));
+      fs.writeFileSync(join(dshHome, ".install-only"), "1\n");
     }
   } catch {}
 }
@@ -1499,11 +1506,21 @@ async function startBackend() {
     detached: true,
     windowsHide: true,
     stdio: ["ignore", outFd, outFd],
-    env: Object.assign({}, process.env, {
-      HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
-      HF_HUB_DISABLE_XET: "1",
-      PYTHONUNBUFFERED: "1",
-    }),
+    env: (() => {
+      const env = Object.assign({}, process.env, {
+        HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
+        HF_HUB_DISABLE_XET: "1",
+        PYTHONUNBUFFERED: "1",
+        MUSIC3_MEMORY_RESERVE_MARGIN: process.env.MUSIC3_MEMORY_RESERVE_MARGIN || "6GB",
+      });
+      const prev = String(env.PYTORCH_CUDA_ALLOC_CONF || "").trim();
+      if (!/expandable_segments/i.test(prev)) {
+        env.PYTORCH_CUDA_ALLOC_CONF = prev
+          ? prev + ",expandable_segments:True"
+          : "expandable_segments:True";
+      }
+      return env;
+    })(),
   });
   fs.closeSync(outFd);
   child.unref();

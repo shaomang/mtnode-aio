@@ -30,6 +30,8 @@ There are no inner “input/output” proxy nodes—only **edge ports**:
 
 Right-click a port to remove its inner wires.
 
+**Control flow**: if an outer port is fed by a control node (gold wire), the matching inner bridge becomes a control wire too (even if it was data before). Task pulses and Run/Clear batch control tunnel through the port instead of stopping on the super shell.
+
 ## Subfolder and relative paths
 
 Set a **subfolder** on the header (relative to the toolbar workspace). Then:

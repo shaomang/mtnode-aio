@@ -874,15 +874,22 @@ function syncH3InstallSkill() {
   try {
     if (getDsh) {
       const dsh = getDsh();
-      if (dsh && typeof dsh.syncBuiltinSkills === "function") dsh.syncBuiltinSkills();
+      if (dsh && typeof dsh.syncInstallSkills === "function") dsh.syncInstallSkills();
     }
   } catch {}
   try {
-    const skillSrc = join(appRoot || path.join(__dirname, ".."), "skills", "minimax-h3-install", "SKILL.md");
+    const skillSrc = join(
+      appRoot || path.join(__dirname, ".."),
+      "h3",
+      "skills",
+      "minimax-h3-install",
+      "SKILL.md",
+    );
     const dshHome = join(getDataDir(), "dsh-home", "skills", "minimax-h3-install");
     if (fs.existsSync(skillSrc)) {
       mk(dshHome);
       fs.copyFileSync(skillSrc, join(dshHome, "SKILL.md"));
+      fs.writeFileSync(join(dshHome, ".install-only"), "1\n");
     }
   } catch {}
 }

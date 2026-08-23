@@ -235,6 +235,37 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('h3:gpu', handler);
   },
 
+  llamaStatus: () => ipcRenderer.invoke('llama:getStatus'),
+  llamaOpen: () => ipcRenderer.invoke('llama:open'),
+  llamaClose: () => ipcRenderer.invoke('llama:close'),
+  llamaInstall: (opts) => ipcRenderer.invoke('llama:install', opts || {}),
+  llamaCancelInstall: () => ipcRenderer.invoke('llama:cancelInstall'),
+  llamaStart: () => ipcRenderer.invoke('llama:start'),
+  llamaStop: () => ipcRenderer.invoke('llama:stop'),
+  llamaPickInstallDir: () => ipcRenderer.invoke('llama:pickInstallDir'),
+  llamaRemovePluginMeta: () => ipcRenderer.invoke('llama:removePluginMeta'),
+  onLlamaProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('llama:progress', handler);
+    return () => ipcRenderer.removeListener('llama:progress', handler);
+  },
+  onLlamaConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('llama:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('llama:consoleChanged', handler);
+  },
+  onLlamaProviderSynced: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('llama:providerSynced', handler);
+    return () => ipcRenderer.removeListener('llama:providerSynced', handler);
+  },
+
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),
   apiPreview: (spec) => ipcRenderer.invoke('api:preview', spec),

@@ -135,7 +135,10 @@ function resolveDshRunAuth(dataDir) {
     webSearchApiKey,
     mtnodeProviders: piProvs,
     model,
-    maxTokens: Number(dshCfg.maxTokens) || 98304,
+    maxTokens: (() => {
+      const n = Number(dshCfg.maxTokens);
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+    })(),
     permissionPreset: dshCfg.permissionPreset || "mtnode-unattended",
   };
 }

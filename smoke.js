@@ -1091,6 +1091,31 @@ mockServer.listen(0, '127.0.0.1', () => {
       tp.allow.canvas_read = prevRead;
       log('agent tool deny draw=' + drawDenied + ' get=' + getDenied);
 
+      const superN = addNode('super', 200, 200);
+      if (superN) {
+        setSuperFocus(superN.id, { render: false });
+        const mkBefore = (S.wf.marks || []).length;
+        const rSuperMk = await applyCanvasOp('edit', {
+          createMarks: [{ alias: 'innerBox', kind: 'box', x: 48, y: 48, w: 120, h: 80 }],
+          layout: false,
+        });
+        const mkId =
+          rSuperMk &&
+          rSuperMk.createdMarks &&
+          rSuperMk.createdMarks[0] &&
+          rSuperMk.createdMarks[0].id;
+        const innerMk = mkId ? (S.wf.marks || []).find((m) => m.id === mkId) : null;
+        log(
+          'super mark scope=' +
+            !!(rSuperMk && rSuperMk.ok) +
+            ' +mk=' +
+            ((S.wf.marks || []).length - mkBefore) +
+            ' parent=' +
+            !!(innerMk && innerMk.parentSuperId === superN.id),
+        );
+        resetSuperFocus();
+      }
+
       window.__chatId = ch.id;
       window.__procId = la.id;
       return 'DONE';

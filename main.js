@@ -4,6 +4,11 @@ if (process.argv.includes("--mtnode-pet")) {
   require("./pet/standalone-main.js");
   return;
 }
+/* llama.cpp 托盘独立进程：不随 MTNode 退出 */
+if (process.argv.includes("--mtnode-llama-tray")) {
+  require("./llama/tray-main.js");
+  return;
+}
 
 const {
   app,
@@ -41,6 +46,8 @@ const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require("./plugins/main-app-plugins.js");
 const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
 const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
+const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
+const { patchProviders } = require("./config-providers.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -49,7 +56,10 @@ function dshConfig() {
     enabled: d.enabled !== false,
     nodePath: typeof d.nodePath === "string" ? d.nodePath : "",
     model: typeof d.model === "string" && d.model ? d.model : "deepseek-v4-flash",
-    maxTokens: Number(d.maxTokens) || 98304,
+    maxTokens: (() => {
+      const n = Number(d.maxTokens);
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+    })(),
     defaultWorkspace: typeof d.defaultWorkspace === "string" ? d.defaultWorkspace : "",
     workspaceFallback: join(DATA(), "dsh-workspace"),
   };
@@ -72,6 +82,10 @@ function dsh() {
         try {
           const { onMusic3DshEvent } = require("./music3/main-music3.js");
           if (typeof onMusic3DshEvent === "function") onMusic3DshEvent(ev);
+        } catch {}
+        try {
+          const { onLlamaDshEvent } = require("./llama/main-llama.js");
+          if (typeof onLlamaDshEvent === "function") onLlamaDshEvent(ev);
         } catch {}
       },
     });
@@ -168,6 +182,27 @@ function writeJson(p, v) {
   const tmp = p + ".tmp" + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(v, null, 2), "utf8");
   fs.renameSync(tmp, p);
+}
+
+function backupConfigFile(configPath) {
+  try {
+    if (!fs.existsSync(configPath)) return;
+    const bakDir = join(path.dirname(configPath), "config-backups");
+    mk(bakDir);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dest = join(bakDir, "config-" + stamp + ".json");
+    fs.copyFileSync(configPath, dest);
+    const files = fs
+      .readdirSync(bakDir)
+      .filter((f) => f.startsWith("config-") && f.endsWith(".json"))
+      .map((f) => ({ f, t: fs.statSync(join(bakDir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    for (const old of files.slice(30)) {
+      try {
+        fs.unlinkSync(join(bakDir, old.f));
+      } catch {}
+    }
+  } catch {}
 }
 const wfIdOk = (id) => /^[A-Za-z0-9_-]{4,120}$/.test(String(id || ""));
 const wfPath = (id) => join(DATA(), "save", String(id) + ".json");
@@ -370,10 +405,29 @@ ipcMain.handle("config:load", () =>
   }),
 );
 ipcMain.handle("config:save", (e, cfg) => {
-  writeJson(join(DATA(), "config.json"), cfg);
-  if (cfg && (cfg.locale === "en" || cfg.locale === "zh")) applyMainLocale(cfg.locale);
+  const fp = join(DATA(), "config.json");
+  backupConfigFile(fp);
+  const existing = readJson(fp, {}) || {};
+  const incoming = cfg || {};
+  const next = Object.assign({}, existing, incoming);
+  if (Array.isArray(incoming.providers)) {
+    const managed = (existing.providers || []).filter(
+      (p) => p && (p.source === "llama-plugin" || p.id === "llama-local"),
+    );
+    const saved = incoming.providers.slice();
+    const savedIds = new Set(saved.map((p) => String(p.id || "")));
+    for (const p of managed) {
+      if (!savedIds.has(String(p.id || ""))) saved.push(p);
+    }
+    next.providers = saved;
+  }
+  writeJson(fp, next);
+  if (next && (next.locale === "en" || next.locale === "zh")) applyMainLocale(next.locale);
   return { ok: true };
 });
+ipcMain.handle("config:patchProviders", (e, opts) =>
+  patchProviders(join(DATA(), "config.json"), opts || {}),
+);
 
 ipcMain.handle("workflow:list", () => {
   const d = mk(join(DATA(), "save"));
@@ -2637,6 +2691,12 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
+  registerLlamaIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+  });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });
@@ -2653,6 +2713,7 @@ app.on("before-quit", () => {
   try { shutdownAppPlugins(); } catch {}
   try { shutdownMusic3UiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}
+  try { shutdownLlamaUiOnly(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }

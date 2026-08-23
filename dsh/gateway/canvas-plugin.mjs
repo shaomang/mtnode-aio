@@ -28,7 +28,7 @@ const NODE_LOCK =
 
 const GET_DESC =
   NODE_LOCK +
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, superFocus, taskTree, superTree (all super nodes), marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) are ALWAYS full text — never truncated; *Len fields report character counts only. When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. Node titles are how @references work — @Title resolves if that node is wired into the consumer OR into a kind "global" node (global has no output; sources wired into it are auto-attached to all proc_text / proc_image / agent_task / judge). To change a node model, update with model (+ providerId or provider). To set image size, use size from imageSizes.'
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) are ALWAYS full text — never truncated; *Len fields report character counts only. When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
@@ -69,7 +69,8 @@ CRITICAL — do NOT create save after agent_task or proc_text with agent:true: t
 CRITICAL — do NOT create save after music_gen / video_gen: they write audio/video via the node's own outputPath (required). No paired/bound save node.
 CRITICAL — avoid wiring agent_task / proc_text(agent:true) as DATA inputs into other nodes: their outputs carry irrelevant session/transcript noise and often omit the key facts. Prefer file handoff: the smart node WRITES a document (md/yaml/json/…), then use wait_file (监视路径 / waitPath) as a CONTROL node wired OUT to downstream so they block until that file exists; wait_file has NO input ports and outputs NOTHING — later nodes READ the agreed path themselves. Do not wire anything into wait_file.
 wait_file: control-kind blocker with output only; polls waitPath (relative to workspace or absolute) every waitIntervalSec seconds (default 2) until the file exists, then unblocks downstream. No inputs, no data/path output; do not @引用 wait_file.
-kind "global": input-only rainbow node (no output ports). Wire text/image sources into it; every proc_text / proc_image / agent_task / judge then auto-receives those sources as background and can @Title them without extra wires. Do not wire control nodes into global.
+kind "global": input-only rainbow node (no output ports). Wire text/image sources into it. To let a proc_text / proc_image / agent_task / judge @引用 those global-broadcast sources you MUST: (1) set globalRefs:true on that consumer (update/create), AND (2) write @SourceTitle inside prompt/task. globalRefs alone or @ alone is NOT enough. Do not wire control nodes into global.
+Tag @ references: assign tags:[...] on source nodes (tagCatalog in canvas_get). In prompt/task write @TagName to inject ALL text/image content from every tagged node (no wire needed). UI shows Tag refs in purple vs node refs in cyan.
 
 Layout & drawings (recommended whenever you build a non-trivial workflow):
 - CRITICAL UX: nodes the user must edit or operate (input_text / input_image, editable prompts, control run/clear buttons, split pickers) go toward the TOP of the canvas (smaller y). Put heavy processing / save / docs lower or further right so the first thing users see is what they can change and ▶ run.
@@ -110,7 +111,7 @@ Change node model / provider:
 - Call mtnode_canvas_get first when unsure. Do not change model on a running node.
 
 Rules:
-- Titles must be unique; @引用 needs the source wired into the consumer OR into a kind "global" node, plus @Title in prompt/task.
+- Titles must be unique. @Title: source wired into consumer OR into kind "global" (with consumer globalRefs:true + @Title in prompt/task). @TagName: all nodes with that tag (tags field); injects full content.
 - One edit call should create the whole subgraph. layout defaults true when create is non-empty.
 - Marks are created AFTER layout when around is used; absolute x/y also allowed (set layout false if you place everything yourself).
 - Never remove or overlap the node that is currently running this task.
@@ -200,14 +201,24 @@ const NODE_SPEC = {
       enum: KINDS,
       description: 'Node type. Use input_image for image reference nodes.',
     },
-    title: { type: 'string', description: 'Unique display title. Used by @引用.' },
+    title: { type: 'string', description: 'Unique display title. Used by @Title node references.' },
+    tags: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'User tags on this node (for @TagName references in other nodes; see tagCatalog in canvas_get).',
+    },
     text: { type: 'string', description: 'input_text body.' },
     prompt: {
       type: 'string',
       description:
-        'proc_text / proc_image prompt (include @Title for wired or global-broadcast inputs; proc_image: ONE image only). Also judge criteria (optional; defaults to parent task goal).',
+        'proc_text / proc_image prompt. Use @Title for wired or global-broadcast inputs (global needs globalRefs:true on this node). Use @TagName for all nodes with that tag. proc_image: ONE image only. Also judge criteria.',
     },
-    task: { type: 'string', description: 'agent_task task text. Include @Title for wired or global-broadcast inputs.' },
+    task: {
+      type: 'string',
+      description:
+        'agent_task task text. Use @Title (wired/global+globalRefs) or @TagName in task body.',
+    },
     goal: {
       type: 'string',
       description: 'task node: what this step should accomplish.',
@@ -291,6 +302,11 @@ const NODE_SPEC = {
         'input_image: multiple absolute image paths (enables batch entries). Each path is copied into workflow assets.',
     },
     agent: { type: 'boolean', description: 'proc_text: turn on 智能 mode (agent run).' },
+    globalRefs: {
+      type: 'boolean',
+      description:
+        'proc_text / proc_image / agent_task / judge: enable referencing sources wired into kind "global" nodes. REQUIRED together with @Title in prompt/task for global broadcast to work.',
+    },
     auto: { type: 'boolean', description: 'save_*: auto-save when upstream runs.' },
     batch: { type: 'boolean', description: 'input_*: batch entries mode.' },
     batchMode: {
@@ -332,7 +348,8 @@ const NODE_SPEC = {
     refs: {
       type: 'array',
       items: { type: 'string' },
-      description: 'Titles to insert as @Title in prompt/task if missing.',
+      description:
+        'Node titles or tag names to insert as @Title / @Tag in prompt/task if missing.',
     },
     x: { type: 'number', description: 'Optional canvas x; omit to let layout place it.' },
     y: { type: 'number', description: 'Optional canvas y; omit to let layout place it.' },
@@ -407,6 +424,16 @@ const UPDATE_SPEC = {
       description: 'input_image: append/replace batch images from absolute paths.',
     },
     agent: { type: 'boolean' },
+    globalRefs: {
+      type: 'boolean',
+      description:
+        'proc_text / proc_image / agent_task / judge: toggle global node @ references (must also @Title in prompt/task).',
+    },
+    tags: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Replace user tags on this node (for @Tag references).',
+    },
     auto: { type: 'boolean' },
     batch: { type: 'boolean' },
     batchMode: { type: 'string', enum: ['batch', 'agg'] },

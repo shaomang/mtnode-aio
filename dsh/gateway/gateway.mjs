@@ -490,12 +490,16 @@ function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, prov
 
 async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona) {
   const home = dshHome || process.env.DSH_HOME || ''
+  const effMaxTokens =
+    Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
+      ? Math.round(Number(maxTokens))
+      : undefined
   const searchKey = String(webSearchApiKey || '').trim() || String(apiKey || '').trim()
   const personaHash = crypto.createHash('sha1').update(String(hostPersona || '')).digest('hex').slice(0, 12)
   const key = runtimeKey(
     workspace,
     model,
-    maxTokens,
+    effMaxTokens ?? 0,
     provider,
     apiKey,
     baseUrl,
@@ -580,7 +584,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
       },
       provider,
       model,
-      maxTokens,
+      maxTokens: effMaxTokens,
     })
     await warmStartHarness(harness)
     return harness

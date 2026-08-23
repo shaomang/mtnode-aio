@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import os
 import re
 import threading
 from datetime import datetime
@@ -12,13 +13,55 @@ from typing import Any
 import soundfile as sf
 import torch
 
+try:
+    from accelerate.utils.modeling import convert_file_size_to_int
+    from diffusers.modular_pipelines.components_manager import AutoOffloadStrategy
+except ImportError:  # pragma: no cover — older diffusers
+    convert_file_size_to_int = None  # type: ignore[misc, assignment]
+    AutoOffloadStrategy = None  # type: ignore[misc, assignment]
+
 
 DEFAULT_MODEL_ID = "MiniMaxAI/MiniMax-Music3"
 DEFAULT_LOCAL_MODEL = Path(__file__).resolve().parent.parent / "models" / "MiniMax-Music3"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 
+# LM + RVQ must stay on the same device during autoregressive sampling (diffusers encoders.py).
+_AR_OFFLOAD_PAIR = frozenset({"language_model", "rvq_depth_decoder"})
+
 # One generation at a time: concurrent CUDA + auto-offload deadlocks / OOMs on 24G.
 _GENERATE_LOCK = threading.Lock()
+
+
+def _memory_reserve_margin() -> str:
+    return str(os.environ.get("MUSIC3_MEMORY_RESERVE_MARGIN", "6GB")).strip() or "6GB"
+
+
+def _pipeline_components_manager(pipe: Any) -> Any:
+    return getattr(pipe, "_components_manager", None) or getattr(pipe, "components_manager", None)
+
+
+class Music3AutoregressiveOffloadStrategy:
+    """Offload strategy aligned with diffusers MiniMaxMusic3SemanticGenerationStep.
+
+    When placing language_model or rvq_depth_decoder on GPU, offload every other
+  component first so both AR models can colocate (default AutoOffloadStrategy may
+    leave LM on GPU and RVQ on CPU → RuntimeError).
+    """
+
+    def __init__(self, memory_reserve_margin: str = "6GB") -> None:
+        self.memory_reserve_margin = memory_reserve_margin
+        self._fallback = (
+            AutoOffloadStrategy(memory_reserve_margin=memory_reserve_margin)
+            if AutoOffloadStrategy is not None
+            else None
+        )
+
+    def __call__(self, hooks, model_id, model, execution_device):
+        if model_id in _AR_OFFLOAD_PAIR:
+            return [h for h in hooks if h.model_id not in _AR_OFFLOAD_PAIR]
+        if self._fallback is not None:
+            return self._fallback(hooks, model_id, model, execution_device)
+        return list(hooks)
 
 
 def resolve_model_path(model_path: str | Path | None = None) -> str:
@@ -82,10 +125,13 @@ class Music3Generator:
 
         if self.offload:
             manager = ComponentsManager()
-            # Keep a larger free margin so consecutive runs can reload LM/DiT without stalling.
+            margin = _memory_reserve_margin()
+            strategy = Music3AutoregressiveOffloadStrategy(memory_reserve_margin=margin)
+            # Larger margin + AR-pair strategy: LM + RVQ must fit together on 24G.
             manager.enable_auto_cpu_offload(
                 device=self.device,
-                memory_reserve_margin="4GB",
+                memory_reserve_margin=margin,
+                offload_strategy=strategy,
             )
             pipe = ModularPipeline.from_pretrained(
                 self.model_path,
@@ -118,7 +164,7 @@ class Music3Generator:
         if pipe is None:
             return
 
-        cm = getattr(pipe, "components_manager", None)
+        cm = _pipeline_components_manager(pipe)
         hooks = getattr(cm, "model_hooks", None) if cm is not None else None
         if hooks:
             for hook in hooks:
@@ -145,6 +191,39 @@ class Music3Generator:
                 pass
             torch.cuda.empty_cache()
 
+    def prepare_for_autoregressive(self) -> None:
+        """Reclaim GPU and pre-place LM + RVQ via the same hooks the AR step uses."""
+        if not self.offload or self.pipe is None:
+            return
+        self.release_vram()
+        pipe = self.pipe
+        lm = pipe.components.get("language_model")
+        rvq = pipe.components.get("rvq_depth_decoder")
+        if lm is None or rvq is None:
+            return
+        hooked = [
+            m
+            for m in (lm, rvq)
+            if getattr(m, "_hf_hook", None) is not None
+            and hasattr(m._hf_hook, "pre_forward")
+        ]
+        for model in hooked:
+            try:
+                model._hf_hook.pre_forward(model)
+            except Exception:
+                pass
+        if torch.cuda.is_available() and convert_file_size_to_int is not None:
+            try:
+                free_b, total_b = torch.cuda.mem_get_info()
+                margin = convert_file_size_to_int(_memory_reserve_margin())
+                print(
+                    f"[music3] VRAM free {free_b / 1024**3:.2f}GB / "
+                    f"{total_b / 1024**3:.2f}GB (margin {margin / 1024**3:.1f}GB)",
+                    flush=True,
+                )
+            except Exception:
+                pass
+
     def generate(
         self,
         prompt: str,
@@ -170,6 +249,7 @@ class Music3Generator:
 
             # Free leftover residency from the previous song before allocating again.
             self.release_vram()
+            self.prepare_for_autoregressive()
 
             try:
                 # CPU generator avoids pinning CUDA RNG state across offload cycles.

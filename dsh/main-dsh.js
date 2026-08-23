@@ -13,12 +13,16 @@ const { app } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
-const BUILTIN_SKILL_NAMES = new Set(['minimax-music3-install', 'minimax-h3-install'])
-
-function builtinSkillsRoot() {
-  /* 仓库 / asar 内: dsh/main-dsh.js → ../skills */
-  return path.join(__dirname, '..', 'skills')
+/** 插件安装专用 skill：同步到 dsh-home 供 Agent 调用，但不进入用户技能列表/工坊 */
+const INSTALL_SKILL_SOURCES = {
+  'minimax-music3-install': path.join(
+    __dirname, '..', 'music3', 'skills', 'minimax-music3-install', 'SKILL.md',
+  ),
+  'minimax-h3-install': path.join(
+    __dirname, '..', 'h3', 'skills', 'minimax-h3-install', 'SKILL.md',
+  ),
 }
+const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))
 
 /* 统一 Node:gateway 与 dsh 运行时都用 Electron 自带 Node 启动
    (process.execPath + ELECTRON_RUN_AS_NODE=1),用户无需安装 Node,
@@ -221,36 +225,26 @@ function createDshAdapter(opts) {
 
     /* ── skills:文件系统技能,$DSH_HOME/skills/<name>/SKILL.md ──
        运行时 skill-filesystem 提供者自动发现 user-dsh 根,无需重启引擎。
-       内置技能（插件安装用）从应用包 skills/ 同步到 dshHome（升级后覆盖）。
+       插件安装用 skill 从 music3/h3 包内同步到 dshHome（升级后覆盖），不进用户技能仓库 UI。
        创意工坊 / 扩展目录下载的技能不在此列，本地留存直至用户主动更新。 */
-    syncBuiltinSkills() {
+    syncInstallSkills() {
       try {
-        const srcRoot = builtinSkillsRoot()
         const destRoot = path.join(dshHome, 'skills')
         fs.mkdirSync(destRoot, { recursive: true })
-        if (fs.existsSync(srcRoot)) {
-          for (const name of BUILTIN_SKILL_NAMES) {
-            const src = path.join(srcRoot, name, 'SKILL.md')
-            if (!fs.existsSync(src)) continue
-            const destDir = path.join(destRoot, name)
-            fs.mkdirSync(destDir, { recursive: true })
-            fs.copyFileSync(src, path.join(destDir, 'SKILL.md'))
-            fs.writeFileSync(path.join(destDir, '.builtin'), '1\n', 'utf8')
-          }
-        }
-        /* 已从内置名单移除的技能：去掉 .builtin，允许卸载/被工坊更新 */
-        if (fs.existsSync(destRoot)) {
-          for (const e of fs.readdirSync(destRoot, { withFileTypes: true })) {
-            if (!e.isDirectory()) continue
-            const mark = path.join(destRoot, e.name, '.builtin')
-            if (!fs.existsSync(mark)) continue
-            if (!BUILTIN_SKILL_NAMES.has(e.name)) {
-              try { fs.unlinkSync(mark) } catch {}
-            }
-          }
+        for (const name of INSTALL_SKILL_NAMES) {
+          const src = INSTALL_SKILL_SOURCES[name]
+          if (!src || !fs.existsSync(src)) continue
+          const destDir = path.join(destRoot, name)
+          fs.mkdirSync(destDir, { recursive: true })
+          fs.copyFileSync(src, path.join(destDir, 'SKILL.md'))
+          fs.writeFileSync(path.join(destDir, '.install-only'), '1\n', 'utf8')
+          try {
+            const builtinMark = path.join(destDir, '.builtin')
+            if (fs.existsSync(builtinMark)) fs.unlinkSync(builtinMark)
+          } catch {}
         }
       } catch (err) {
-        try { log('syncBuiltinSkills: ' + ((err && err.message) || err)) } catch {}
+        try { log('syncInstallSkills: ' + ((err && err.message) || err)) } catch {}
       }
     },
 
@@ -303,12 +297,15 @@ function createDshAdapter(opts) {
 
     skillList() {
       try {
-        this.syncBuiltinSkills()
+        this.syncInstallSkills()
         const root = path.join(dshHome, 'skills')
         if (!fs.existsSync(root)) return { skills: [] }
         const out = []
         for (const e of fs.readdirSync(root, { withFileTypes: true })) {
           if (!e.isDirectory()) continue
+          if (INSTALL_SKILL_NAMES.has(e.name)) continue
+          if (e.name.endsWith('-install')) continue
+          if (fs.existsSync(path.join(root, e.name, '.install-only'))) continue
           const skillMd = path.join(root, e.name, 'SKILL.md')
           let title = ''
           let description = ''
@@ -319,9 +316,7 @@ function createDshAdapter(opts) {
             description = meta.description || ''
             version = meta.version || ''
           }
-          const builtin =
-            BUILTIN_SKILL_NAMES.has(e.name) ||
-            fs.existsSync(path.join(root, e.name, '.builtin'))
+          const builtin = fs.existsSync(path.join(root, e.name, '.builtin'))
           const store = this._readStoreMeta(path.join(root, e.name)) || {}
           out.push({
             name: e.name,
@@ -346,7 +341,7 @@ function createDshAdapter(opts) {
 
     skillGet(name) {
       try {
-        this.syncBuiltinSkills()
+        this.syncInstallSkills()
         const nm = String(name || '').trim().toLowerCase()
         if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nm)) {
           return { ok: false, error: '技能不存在' }
@@ -358,8 +353,11 @@ function createDshAdapter(opts) {
         const skillMd = path.join(dir, 'SKILL.md')
         if (!fs.existsSync(skillMd)) return { ok: false, error: '技能不存在' }
         const body = fs.readFileSync(skillMd, 'utf8')
+        const installOnly =
+          INSTALL_SKILL_NAMES.has(nm) ||
+          fs.existsSync(path.join(dir, '.install-only'))
         const builtin =
-          BUILTIN_SKILL_NAMES.has(nm) || fs.existsSync(path.join(dir, '.builtin'))
+          !installOnly && fs.existsSync(path.join(dir, '.builtin'))
         const store = this._readStoreMeta(dir) || {}
         const files = []
         try {
@@ -387,6 +385,7 @@ function createDshAdapter(opts) {
           name: nm,
           body,
           builtin: !!builtin,
+          installOnly: !!installOnly,
           storeId: store.storeId || '',
           version: store.version || this._parseSkillMeta(body).version || '',
           storeUpdatedAt: store.updatedAt || 0,
@@ -403,14 +402,17 @@ function createDshAdapter(opts) {
         if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nm)) {
           return { ok: false, error: '技能名需为 kebab-case(小写字母/数字/短横线)' }
         }
-        if (BUILTIN_SKILL_NAMES.has(nm)) {
-          return { ok: false, error: '内置技能名不可占用' }
+        if (INSTALL_SKILL_NAMES.has(nm) || nm.endsWith('-install')) {
+          return { ok: false, error: '插件安装技能名不可占用' }
         }
         const dir = path.join(dshHome, 'skills', nm)
         const exists = fs.existsSync(dir)
         if (exists && !overwrite) return { ok: false, error: '同名技能已存在' }
         if (exists && fs.existsSync(path.join(dir, '.builtin'))) {
           return { ok: false, error: '内置技能不可覆盖' }
+        }
+        if (exists && fs.existsSync(path.join(dir, '.install-only'))) {
+          return { ok: false, error: '插件安装技能不可覆盖' }
         }
         fs.mkdirSync(dir, { recursive: true })
         let text = String(body || '')
@@ -430,7 +432,12 @@ function createDshAdapter(opts) {
         fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8')
         if (Array.isArray(files)) {
           for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-            if (ent.name === 'SKILL.md' || ent.name === '.builtin' || ent.name === '.store-meta.json') continue
+            if (
+              ent.name === 'SKILL.md' ||
+              ent.name === '.builtin' ||
+              ent.name === '.install-only' ||
+              ent.name === '.store-meta.json'
+            ) continue
             const p = path.join(dir, ent.name)
             if (ent.isDirectory()) fs.rmSync(p, { recursive: true, force: true })
             else try { fs.unlinkSync(p) } catch {}
@@ -473,9 +480,12 @@ function createDshAdapter(opts) {
         const dir = path.join(dshHome, 'skills', nm)
         if (!nm || !fs.existsSync(dir)) return { ok: false, error: '技能不存在' }
         if (
-          BUILTIN_SKILL_NAMES.has(nm) ||
-          fs.existsSync(path.join(dir, '.builtin'))
+          INSTALL_SKILL_NAMES.has(nm) ||
+          fs.existsSync(path.join(dir, '.install-only'))
         ) {
+          return { ok: false, error: '插件安装技能不可卸载' }
+        }
+        if (fs.existsSync(path.join(dir, '.builtin'))) {
           return { ok: false, error: '内置技能不可卸载' }
         }
         fs.rmSync(dir, { recursive: true, force: true })

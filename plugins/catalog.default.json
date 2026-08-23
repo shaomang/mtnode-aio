@@ -78,6 +78,23 @@
         "zh": "【插件测试中】本地 H3 视频（24G）：安装/启停 ComfyUI、GPU 监视；画布「视频生成」节点。安装过程复杂，可能会失败。移除插件不删已装项目。建议预留 ≥70GB 磁盘。",
         "en": "[Testing] Local H3 video (24G): install/start ComfyUI, GPU monitor, canvas video node. Install is complex and may fail. Removing the plugin keeps your install. Reserve ≥70GB disk."
       }
+    },
+    {
+      "id": "llama-local",
+      "kind": "llama",
+      "handler": "llama",
+      "order": 50,
+      "version": "2.0.0",
+      "minAppVersion": "1.1.20",
+      "icon": "llama-local.png",
+      "title": {
+        "zh": "llama.cpp 本地模型",
+        "en": "llama.cpp Local Models"
+      },
+      "subtitle": {
+        "zh": "基于 llama.cpp 的本地 GGUF 模型管理：指定目录安装、国内镜像、多模型显存管理、OpenAI 兼容 API。服务不随 MTNode 退出，托盘可手动关闭。",
+        "en": "llama.cpp local GGUF model manager: custom install dir, CN mirrors, multi-model VRAM management, OpenAI-compatible API. Service survives MTNode exit; close via tray."
+      }
     }
   ]
 }
