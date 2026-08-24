@@ -24,12 +24,18 @@ const {
   fetchRemoteManifest,
   downloadRuntimeTo,
 } = require("../plugins/runtime-feed.js");
+const {
+  refreshStaleLock,
+  tryAcquireLock,
+  clearLock,
+  releaseLock,
+  busyMessage,
+} = require("../media-gen-global-lock.js");
 
 const PLUGIN_ID = "minimax-h3";
 const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
 const DEFAULT_PORT = 8188;
 const DISK_HINT_GB = 70;
-const JOB_LOCK_STALE_MS = 45 * 60 * 1000;
 const GENERATE_MAX_MS = 60 * 60 * 1000;
 
 const MODELS = {
@@ -98,9 +104,6 @@ function installedMetaPath() {
 }
 function pidPath() {
   return join(h3Root(), "backend-pid.json");
-}
-function lockPath() {
-  return join(h3Root(), "job-lock.json");
 }
 function consoleLogPath() {
   return join(h3Root(), "console.log");
@@ -456,28 +459,6 @@ function ensureUiRuntime() {
   const destUi = join(h3Root(), "ui");
   if (!fs.existsSync(srcUi)) return;
   copyDirRecursive(srcUi, destUi, []);
-}
-
-function loadLock() {
-  return readJson(lockPath(), null);
-}
-function clearLock() {
-  try {
-    if (fs.existsSync(lockPath())) fs.unlinkSync(lockPath());
-  } catch {}
-}
-function writeLock(lock) {
-  writeJson(lockPath(), lock);
-}
-function refreshStaleLock() {
-  const lock = loadLock();
-  if (!lock) return null;
-  const age = Date.now() - Number(lock.startedAt || 0);
-  if (age > JOB_LOCK_STALE_MS) {
-    clearLock();
-    return null;
-  }
-  return lock;
 }
 
 function sleep(ms) {
@@ -1847,14 +1828,20 @@ async function generateVideo(params) {
   const nodeId = String(params.nodeId || "");
   if (!nodeId) return { ok: false, error: "missing_node_id" };
 
-  const existingLock = refreshStaleLock();
-  if (existingLock && existingLock.nodeId && existingLock.nodeId !== nodeId) {
-    const msg = "已有视频生成任务进行中，请等待完成后再试（禁止并行）";
-    appendConsole("[job] busy_other_node: " + (existingLock.nodeId || ""));
+  const acq = tryAcquireLock({
+    nodeId,
+    workflowId: params.workflowId || "",
+    kind: "video_gen",
+  });
+  if (!acq.ok) {
+    if (acq.error === "missing_node_id") return { ok: false, error: "missing_node_id" };
+    const lock = acq.lock;
+    const msg = busyMessage(lock);
+    appendConsole("[job] busy_other_node: " + (lock && lock.nodeId ? lock.nodeId : ""));
     return {
       ok: false,
       error: "busy_other_node",
-      lock: existingLock,
+      lock,
       message: msg,
     };
   }
@@ -1871,6 +1858,7 @@ async function generateVideo(params) {
     if (!ready.ok) {
       const err = ready.error || "backend_start_failed";
       const detail = String(ready.message || "").trim();
+      clearLock();
       appendConsole("[job] backend start failed: " + err);
       if (detail) appendConsole(detail.slice(0, 2000));
       emitProgress({
@@ -1891,14 +1879,7 @@ async function generateVideo(params) {
 
     const cfg = loadConfig();
     const port = Number(ready.port) || Number(cfg.port) || DEFAULT_PORT;
-    const jobStartedAt = Date.now();
 
-    writeLock({
-      nodeId,
-      workflowId: params.workflowId || "",
-      startedAt: jobStartedAt,
-      status: "running",
-    });
     activeGenerate = { nodeId, abort: false, promptId: "", req: null };
     emitProgress({ phase: "generate", nodeId, message: "准备工作流…", pct: 5 });
 
@@ -2159,8 +2140,7 @@ function cancelGenerate(nodeId) {
   } else {
     interruptComfy(port, "").catch(() => {});
   }
-  const lock = loadLock();
-  if (lock && (!nodeId || lock.nodeId === nodeId)) clearLock();
+  releaseLock(nodeId);
   setTimeout(() => {
     forceKillBackend("user_cancel").catch(() => {});
   }, 400);

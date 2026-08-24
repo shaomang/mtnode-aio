@@ -1,0 +1,51 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>llama.cpp Console</title>
+  <style>
+    :root {
+      --bg: #0f1218;
+      --border: #2a3140;
+      --text: #c5d0e6;
+      --muted: #9aa3b5;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg); color: var(--text);
+      font: 11px/1.4 ui-monospace, Consolas, monospace;
+    }
+    .wrap {
+      display: flex; flex-direction: column; height: 100%;
+      padding: 8px; gap: 6px;
+    }
+    .head {
+      display: flex; align-items: center; gap: 8px;
+      font: 12px/1.4 system-ui, "Segoe UI", sans-serif;
+      color: var(--muted); flex-shrink: 0;
+    }
+    .head button {
+      margin-left: auto;
+      border: 1px solid var(--border); background: #222836; color: var(--text);
+      border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 11px;
+    }
+    #console {
+      flex: 1; overflow: auto; white-space: pre-wrap;
+      background: #0c0f14; border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <span>Console</span>
+      <button id="btnClear">清空视图</button>
+    </div>
+    <div id="console"></div>
+  </div>
+  <script src="console-panel.js"></script>
+</body>
+</html>

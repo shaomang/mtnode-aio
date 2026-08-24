@@ -46,6 +46,7 @@ const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require("./plugins/main-app-plugins.js");
 const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
 const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
+const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lock.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { patchProviders } = require("./config-providers.js");
 let dshAdapter = null;
@@ -238,6 +239,7 @@ function appVersion() {
   }
 }
 ipcMain.handle("app:version", () => ({ ok: true, version: appVersion() }));
+ipcMain.handle("mediaGen:getLock", () => ({ ok: true, lock: refreshMediaGenLock() }));
 ipcMain.handle("crash:status", () => crashReport.status());
 ipcMain.handle("crash:export", async () => crashReport.exportDiagnosticBundle({}));
 ipcMain.handle("crash:openLogs", () => crashReport.openLogsFolder());
@@ -468,10 +470,11 @@ ipcMain.handle("workflow:delete", (e, id) => {
 
 /* ---------------- IPC：资产 / 文件 ---------------- */
 
-/* 画布资产图像上限：长/宽任一超过 1080px（1080p）时等比缩小后落盘，
-   避免存档过大并加快后续图像处理。API 发送另有更严的 720 上限。 */
-const ASSET_IMAGE_MAX_DIM = 1080;
-const IMAGE_MAX_DIM = 720;
+/* 参考图输入落盘 / 导入上限：长宽任一超过 1080px 时等比缩小（仅 asset:copy、画布包导入等参考用途）。
+   生成输出走 asset:writeBase64，保持 API 返回的原尺寸。 */
+const REF_IMAGE_MAX_DIM = 1080;
+/* 发往 API 的参考图（vision / 图生图 edits）同样上限 1080p */
+const API_REF_IMAGE_MAX_DIM = 1080;
 
 /* 等比缩小图像缓冲；无法解码或已达标时原样返回。
    重编码：jpg/jpeg → JPEG(85)，其余超限时 → PNG。 */
@@ -522,7 +525,7 @@ ipcMain.handle("asset:copy", (e, { srcPath, wfId, name }) => {
   }
   const srcExt = path.extname(src).toLowerCase().replace(/^\./, "") || "png";
   const raw = fs.readFileSync(src);
-  const { buf, ext } = shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
+  const { buf, ext } = shrinkImageBuffer(raw, srcExt, REF_IMAGE_MAX_DIM);
   const dest = join(
     assetDir(wfId),
     String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, ext),
@@ -533,12 +536,11 @@ ipcMain.handle("asset:copy", (e, { srcPath, wfId, name }) => {
 ipcMain.handle("asset:writeBase64", (e, { wfId, name, base64, ext }) => {
   const srcExt = String(ext || "png").toLowerCase().replace(/^\./, "");
   const raw = Buffer.from(String(base64), "base64");
-  const shrunk = shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
   const dest = join(
     assetDir(wfId),
-    String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, shrunk.ext),
+    String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, srcExt),
   );
-  fs.writeFileSync(dest, shrunk.buf);
+  fs.writeFileSync(dest, raw);
   return { ok: true, path: dest };
 });
 ipcMain.handle("asset:readDataUrl", (e, p) => {
@@ -979,7 +981,7 @@ function materializeImport(manifest, files) {
     }
     used.add(dest.toLowerCase());
     const srcExt = path.extname(dest).toLowerCase().replace(/^\./, "") || "png";
-    const shrunk = shrinkImageBuffer(files[i].data, srcExt, ASSET_IMAGE_MAX_DIM);
+    const shrunk = shrinkImageBuffer(files[i].data, srcExt, REF_IMAGE_MAX_DIM);
     let outDest = dest;
     const wantExt = assetOutExt(srcExt, shrunk.ext);
     if (path.extname(dest).toLowerCase() !== wantExt) {
@@ -1815,11 +1817,11 @@ function normB64(v) {
   return v;
 }
 
-/* 读取图像并缩放到不超过 720（等比）后再发 API。无法解码或已达标时原样返回。 */
+/* 读取参考图并缩放到不超过 API_REF_IMAGE_MAX_DIM（等比）后再发 API。无法解码或已达标时原样返回。 */
 function shrinkImageForApi(p) {
   const raw = fs.readFileSync(p);
   const ext = String(path.extname(p)).slice(1).toLowerCase() || "png";
-  return shrinkImageBuffer(raw, ext, IMAGE_MAX_DIM);
+  return shrinkImageBuffer(raw, ext, API_REF_IMAGE_MAX_DIM);
 }
 
 /* 文本模型思考强度 → Chat Completions 字段。

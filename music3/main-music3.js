@@ -24,14 +24,19 @@ const {
   fetchRemoteManifest,
   downloadRuntimeTo,
 } = require("../plugins/runtime-feed.js");
+const {
+  refreshStaleLock,
+  tryAcquireLock,
+  clearLock,
+  releaseLock,
+  busyMessage,
+} = require("../media-gen-global-lock.js");
 
 const PLUGIN_ID = "minimax-music3";
 const MUSIC3_FEED =
   process.env.MTNODE_MUSIC3_URL || "http://mt-agent.com/mtnode/music3";
 const DEFAULT_PORT = 7860;
 const DISK_HINT_GB = 65;
-/** 任务锁过期：须短于「永久卡死」体感；超时/取消会强制杀后端 */
-const JOB_LOCK_STALE_MS = 45 * 60 * 1000;
 /** 单次生成默认最长等待（会被时长再拉高） */
 const GENERATE_BASE_MS = 15 * 60 * 1000;
 const GENERATE_MAX_MS = 45 * 60 * 1000;
@@ -95,9 +100,6 @@ function installedMetaPath() {
 }
 function pidPath() {
   return join(music3Root(), "backend-pid.json");
-}
-function lockPath() {
-  return join(music3Root(), "job-lock.json");
 }
 function consoleLogPath() {
   return join(music3Root(), "console.log");
@@ -495,28 +497,6 @@ function clipConsoleText(s, n) {
     .trim();
   if (t.length <= n) return t;
   return t.slice(0, n - 1) + "…";
-}
-
-function loadLock() {
-  return readJson(lockPath(), null);
-}
-function clearLock() {
-  try {
-    if (fs.existsSync(lockPath())) fs.unlinkSync(lockPath());
-  } catch {}
-}
-function writeLock(lock) {
-  writeJson(lockPath(), lock);
-}
-function refreshStaleLock() {
-  const lock = loadLock();
-  if (!lock) return null;
-  const age = Date.now() - Number(lock.startedAt || 0);
-  if (age > JOB_LOCK_STALE_MS) {
-    clearLock();
-    return null;
-  }
-  return lock;
 }
 
 function attachAbortableReq(req) {
@@ -1858,10 +1838,16 @@ async function generateMusic(params) {
   const nodeId = String(params.nodeId || "");
   if (!nodeId) return { ok: false, error: "missing_node_id" };
 
-  const lock = refreshStaleLock();
-  if (lock && lock.nodeId && lock.nodeId !== nodeId) {
-    const msg = "已有音乐生成任务进行中，请等待完成后再试（禁止并行）";
-    appendConsole("[job] busy_other_node: " + (lock.nodeId || ""));
+  const acq = tryAcquireLock({
+    nodeId,
+    workflowId: params.workflowId || "",
+    kind: "music_gen",
+  });
+  if (!acq.ok) {
+    if (acq.error === "missing_node_id") return { ok: false, error: "missing_node_id" };
+    const lock = acq.lock;
+    const msg = busyMessage(lock);
+    appendConsole("[job] busy_other_node: " + (lock && lock.nodeId ? lock.nodeId : ""));
     return {
       ok: false,
       error: "busy_other_node",
@@ -1882,18 +1868,13 @@ async function generateMusic(params) {
     const ready = await ensureBackendReadyForJob();
     if (!ready.ok) {
       const err = ready.error || "backend_start_failed";
+      clearLock();
       appendConsole("[job] backend start failed: " + err);
       emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
       resultPayload = { ok: false, error: err, message: "启动后端失败：" + err };
       return resultPayload;
     }
 
-    writeLock({
-      nodeId,
-      workflowId: params.workflowId || "",
-      startedAt: Date.now(),
-      status: "running",
-    });
     activeGenerate = { nodeId, abort: false, eventId: "", req: null };
     emitProgress({ phase: "generate", nodeId, message: "生成中…", pct: 8 });
 
@@ -1957,8 +1938,7 @@ function cancelGenerate(nodeId) {
   } else {
     tryCancelGradio("", port).catch(() => {});
   }
-  const lock = loadLock();
-  if (lock && (!nodeId || lock.nodeId === nodeId)) clearLock();
+  releaseLock(nodeId);
   setTimeout(() => {
     forceKillBackend("user_cancel").catch(() => {});
   }, 400);

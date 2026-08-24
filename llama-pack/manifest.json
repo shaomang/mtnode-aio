@@ -1,0 +1,17 @@
+{
+  "id": "llama-local",
+  "version": "2.0.0",
+  "minAppVersion": "1.1.26",
+  "title": {
+    "zh": "llama.cpp 本地模型",
+    "en": "llama.cpp Local Models"
+  },
+  "subtitle": {
+    "zh": "基于 llama.cpp 的本地 GGUF 模型管理：下载、部署、OpenAI 兼容 API。",
+    "en": "llama.cpp GGUF model manager: download, deploy, OpenAI-compatible API."
+  },
+  "diskHintGb": 15,
+  "apiPort": 8765,
+  "llamaPortBase": 8100,
+  "llamaRelease": "b10566"
+}

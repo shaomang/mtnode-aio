@@ -2625,6 +2625,10 @@
       "Another music job is running; this node was aborted (no parallel runs)",
     "已有音乐生成任务进行中（禁止并行）：":
       "Another music job is running (no parallel runs): ",
+    "已有音视频生成任务进行中（全局仅 1 个，禁止并行）：":
+      "Another audio/video job is running (global limit: 1): ",
+    "已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）":
+      "Another audio/video job is running; this node was aborted (global limit: 1)",
     "时长（秒，≤150）": "Duration (sec, ≤150)",
     "时长（秒，4–15）": "Duration (sec, 4–15)",
     "时长": "Duration",

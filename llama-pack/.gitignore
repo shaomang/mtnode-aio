@@ -1,0 +1,11 @@
+.venv/
+models/
+bin/
+__pycache__/
+*.pyc
+.api-key
+.registry.json
+.deployed.json
+.want-deployed.json
+.console.log
+.install-ok

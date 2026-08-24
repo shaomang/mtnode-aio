@@ -624,20 +624,37 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('task enter layout=' + (S.taskFocus === tkLay.id && moved));
       setTaskFocus('');
 
-      // —— 画布资产图像：超过 1080p 自动降采样 ——
+      // —— 画布资产：输出原尺寸保留；参考图导入（assetCopy）>1080p 才降采样 ——
       const cvBig = document.createElement('canvas');
       cvBig.width = 1920; cvBig.height = 1200;
       const cBig = cvBig.getContext('2d');
       cBig.fillStyle = '#336699'; cBig.fillRect(0, 0, 1920, 1200);
       const bigB64 = cvBig.toDataURL('image/png').split(',')[1];
-      const bigAsset = await window.api.assetWriteBase64(S.wf.id, 'cap_1080', bigB64, 'png');
+      const bigAsset = await window.api.assetWriteBase64(S.wf.id, 'out_full', bigB64, 'png');
       const bigSz = await new Promise((resolve) => {
         const im = new Image();
         im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
         im.onerror = () => resolve({ w: 0, h: 0 });
         im.src = window.api.toFileUrl(bigAsset.path);
       });
-      log('asset cap1080=' + (bigSz.w <= 1080 && bigSz.h <= 1080 && bigSz.w > 0) + ' size=' + bigSz.w + 'x' + bigSz.h + ' expect<=1080');
+      log('asset output full=' + (bigSz.w === 1920 && bigSz.h === 1200) + ' size=' + bigSz.w + 'x' + bigSz.h);
+      const refTmp = (S.wf.workspace || '') ? window.api.pathJoin(S.wf.workspace, '_smoke_ref_big.png') : '';
+      if (refTmp) {
+        const bin = atob(bigB64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        await window.api.fileWriteBytes(refTmp, bytes);
+        const refAsset = await window.api.assetCopy(refTmp, S.wf.id, 'ref_cap');
+        const refSz = await new Promise((resolve) => {
+          const im = new Image();
+          im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+          im.onerror = () => resolve({ w: 0, h: 0 });
+          im.src = window.api.toFileUrl(refAsset.path);
+        });
+        log('asset ref cap1080=' + (refSz.w <= 1080 && refSz.h <= 1080 && refSz.w > 0) + ' size=' + refSz.w + 'x' + refSz.h);
+      } else {
+        log('asset ref cap1080=skip no workspace');
+      }
       const cvOk = document.createElement('canvas');
       cvOk.width = 800; cvOk.height = 600;
       cvOk.getContext('2d').fillRect(0, 0, 800, 600);

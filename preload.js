@@ -174,6 +174,7 @@ contextBridge.exposeInMainWorld('api', {
   music3CancelGenerate: (nodeId) => ipcRenderer.invoke('music3:cancelGenerate', nodeId),
   music3ForceKillBackend: () => ipcRenderer.invoke('music3:forceKillBackend'),
   music3GetLock: () => ipcRenderer.invoke('music3:getLock'),
+  mediaGenGetLock: () => ipcRenderer.invoke('mediaGen:getLock'),
   music3RemovePluginMeta: () => ipcRenderer.invoke('music3:removePluginMeta'),
   onMusic3Progress: (cb) => {
     const handler = (_e, data) => {

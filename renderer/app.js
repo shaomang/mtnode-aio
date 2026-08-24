@@ -1944,6 +1944,25 @@ function formatGenElapsed(ms) {
 function mediaGenDoneMsg(elapsedMs) {
   return I18n.t("完成") + " · " + formatGenElapsed(elapsedMs);
 }
+async function fetchMediaGenLock() {
+  if (!window.api) return null;
+  const fn =
+    window.api.mediaGenGetLock ||
+    window.api.music3GetLock ||
+    window.api.h3GetLock;
+  if (!fn) return null;
+  try {
+    const r = await fn();
+    return r && r.lock ? r.lock : null;
+  } catch {
+    return null;
+  }
+}
+function mediaGenLockBusyMsg(lock) {
+  const other = lock && lock.nodeId ? nodeById(lock.nodeId) : null;
+  const name = (other && other.title) || (lock && lock.nodeId) || "?";
+  return I18n.t("已有音视频生成任务进行中（全局仅 1 个，禁止并行）：") + name;
+}
 function mediaGenRollProgressTag(node) {
   const nRolls = attemptCount(node);
   if (nRolls <= 1 || !node.running) return "";
@@ -16180,14 +16199,11 @@ async function playMusicGenNode(node, quiet) {
   }
   if (node.running) return;
 
-  /* 全局互斥：若其他节点已占用锁，本节点中断并提示 */
+  /* 全局互斥：音视频生成全局仅允许 1 个 */
   try {
-    const lk = await window.api.music3GetLock();
-    const lock = lk && lk.lock;
+    const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
-      const other = nodeById(lock.nodeId);
-      const name = (other && other.title) || lock.nodeId;
-      node.error = I18n.t("已有音乐生成任务进行中（禁止并行）：") + name;
+      node.error = mediaGenLockBusyMsg(lock);
       node.musicStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -16289,7 +16305,7 @@ async function playMusicGenNode(node, quiet) {
       if (!r || !r.ok) {
         const err = (r && (r.message || r.error)) || I18n.t("生成失败");
         if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
-          node.error = I18n.t("已有音乐生成任务进行中，已中断本节点（禁止并行）");
+          node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
         } else if (String(err) === "cancelled") {
           node.error = null;
           node.musicStatus = I18n.t("已取消");
@@ -16354,24 +16370,33 @@ async function playMusicGenNode(node, quiet) {
   }
 }
 
-async function restoreMusicGenLocks() {
-  if (!window.api || !window.api.music3GetLock) return;
+async function restoreMediaGenLocks() {
+  const fn =
+    window.api &&
+    (window.api.mediaGenGetLock ||
+      window.api.music3GetLock ||
+      window.api.h3GetLock);
+  if (!fn) return;
   try {
-    const lk = await window.api.music3GetLock();
+    const lk = await fn();
     const lock = lk && lk.lock;
     if (!lock || !lock.nodeId) return;
     const n = nodeById(lock.nodeId);
-    if (!n || n.kind !== "music_gen") return;
+    if (!n || (n.kind !== "music_gen" && n.kind !== "video_gen")) return;
     n.running = true;
-    n.musicStatus = I18n.t("后端任务进行中（已从锁恢复）…");
+    const msg = I18n.t("后端任务进行中（已从锁恢复）…");
+    if (n.kind === "music_gen") n.musicStatus = msg;
+    else n.videoStatus = msg;
     renderCanvas();
     const poll = setInterval(async () => {
       try {
-        const cur = await window.api.music3GetLock();
+        const cur = await fn();
         if (!cur || !cur.lock || cur.lock.nodeId !== n.id) {
           clearInterval(poll);
           n.running = false;
-          n.musicStatus = I18n.t("任务已结束");
+          const done = I18n.t("任务已结束");
+          if (n.kind === "music_gen") n.musicStatus = done;
+          else n.videoStatus = done;
           renderCanvas();
         }
       } catch {
@@ -16423,12 +16448,9 @@ async function playVideoGenNode(node, quiet) {
   if (node.running) return;
 
   try {
-    const lk = await window.api.h3GetLock();
-    const lock = lk && lk.lock;
+    const lock = await fetchMediaGenLock();
     if (lock && lock.nodeId && lock.nodeId !== node.id) {
-      const other = nodeById(lock.nodeId);
-      const name = (other && other.title) || lock.nodeId;
-      node.error = I18n.t("已有视频生成任务进行中（禁止并行）：") + name;
+      node.error = mediaGenLockBusyMsg(lock);
       node.videoStatus = node.error;
       if (!quiet) toast(node.error, "warn");
       renderCanvas();
@@ -16594,7 +16616,7 @@ async function playVideoGenNode(node, quiet) {
       if (!r || !r.ok) {
         const err = (r && (r.message || r.error)) || I18n.t("生成失败");
         if (err === "busy_other_node" || (r && r.error === "busy_other_node")) {
-          node.error = I18n.t("已有视频生成任务进行中，已中断本节点（禁止并行）");
+          node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
         } else if (String(err) === "cancelled") {
           node.error = null;
           node.videoStatus = I18n.t("已取消");
@@ -16660,30 +16682,7 @@ async function playVideoGenNode(node, quiet) {
 }
 
 async function restoreVideoGenLocks() {
-  if (!window.api || !window.api.h3GetLock) return;
-  try {
-    const lk = await window.api.h3GetLock();
-    const lock = lk && lk.lock;
-    if (!lock || !lock.nodeId) return;
-    const n = nodeById(lock.nodeId);
-    if (!n || n.kind !== "video_gen") return;
-    n.running = true;
-    n.videoStatus = I18n.t("后端任务进行中（已从锁恢复）…");
-    renderCanvas();
-    const poll = setInterval(async () => {
-      try {
-        const cur = await window.api.h3GetLock();
-        if (!cur || !cur.lock || cur.lock.nodeId !== n.id) {
-          clearInterval(poll);
-          n.running = false;
-          n.videoStatus = I18n.t("任务已结束");
-          renderCanvas();
-        }
-      } catch {
-        clearInterval(poll);
-      }
-    }, 3000);
-  } catch {}
+  return restoreMediaGenLocks();
 }
 
 async function playNodeBody(node, quiet, opts) {
@@ -30300,8 +30299,7 @@ async function loadWorkflow(id) {
   await window.api.configSave(S.config);
   renderAll();
   trackWorkflow(id, S.wf.name);
-  try { restoreMusicGenLocks(); } catch {}
-  try { restoreVideoGenLocks(); } catch {}
+  try { restoreMediaGenLocks(); } catch {}
   try { ensureMediaBackendProbesForWorkflow({ reset: true }); } catch {}
   toast(I18n.t("已打开画布：") + (S.wf.name || id), "ok");
 }
