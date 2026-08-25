@@ -61,6 +61,12 @@
   name: './canvas-plugin.mjs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
+# MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实
+# （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
+- id: mtnode-db
+  name: './db-plugin.mjs'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+
 - id: agent
   name: '@deepseek-ai/dsh-agent'
 
@@ -149,6 +155,11 @@
       danger-full-access:
         sandbox: danger-full-access
         approval: never
+      # 智能节点「超级权限 · 询问外部」：沙箱全开，越权/敏感工具走宿主审批；
+      # 宿主对工作区内与已授权路径自动放行，外部路径弹窗询问。
+      mtnode-super-ask:
+        sandbox: danger-full-access
+        approval: ask
       bongochat:
         # 桌宠对话：每项工具都走审批，宿主自动放行 web/搜索、拒绝文件/终端/画布
         sandbox: read-only
@@ -401,6 +412,12 @@
       left-to-right pipeline they can re-run, rather than only doing the work
       yourself. Work step by step, show the user what you are doing, and end
       with a clear, complete result.
+      DATABASE grounding: when the host says you are wired to a 数据库副本
+      (database replica), every fact must come from the mtnode_db tool
+      (list/query/get), every number/date calculation must use mtnode_db calc,
+      every key assertion must cite [记录id · 标题], and anything the database
+      does not contain must be answered as "数据库中没有该信息" — never guess,
+      never answer from memory.
 
 - id: agent-loop
   name: '@deepseek-ai/dsh-agent-loop'
@@ -420,10 +437,6 @@
     thinking: enabled
 
 # ── user plugins (managed from MTNode settings) ──
-# Bundled optional router (from dsh-routing-suite). Core runtime rows above
-# cannot be unmounted. router-standard is host-safe (keeps MTNode persona +
-# canvas tools). Injector and router-spec are not shipped.
-
 - id: dsh-router-standard
   name: './plugins/router-standard/router-bootstrap.mjs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
@@ -431,4 +444,3 @@
 # BongoChat：用人设环境变量覆盖 system prompt，并裁剪工具为联网搜索
 - id: bongochat-prompt
   name: './plugins/bongochat-prompt.mjs'
-

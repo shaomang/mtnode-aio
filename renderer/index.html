@@ -5,6 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'">
 <title>MTNode AI编排器</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="zen.css">
 </head>
 <body>
 
@@ -109,6 +110,11 @@
       <svg class="btn-settings-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 2.6h3.2l.4 1.5 1.4.8 1.5-.3 1.6 2.8-1.1 1.1v1.6l1.1 1.1-1.6 2.8-1.5-.3-1.4.8-.4 1.5H6.4l-.4-1.5-1.4-.8-1.5.3L1.5 10.2l1.1-1.1V7.5L1.5 6.4l1.6-2.8 1.5.3 1.4-.8.4-1.5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
       <span class="btn-ico-txt" data-i18n="设置">设置</span>
     </button>
+    <span class="sep"></span>
+    <button type="button" id="btnZen" class="corner mini btn-ico btn-zen" style="display:none" data-i18n-title="提问式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流" data-tip="提问式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流" aria-label="提问式">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.2h3.6v1.7H4.9v1.9H3.2V3.2zM12.8 3.2H9.2v1.7h1.9v1.9h1.7V3.2zM3.2 12.8h3.6v-1.7H4.9V9.2H3.2v3.6zM12.8 12.8H9.2v-1.7h1.9V9.2h1.7v3.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.1" fill="currentColor" opacity=".9"/></svg>
+      <span class="btn-ico-txt" data-i18n="提问式">提问式</span>
+    </button>
   </div>
 </header>
 
@@ -134,51 +140,45 @@
         </div>
       </div>
     </div>
-    <div class="agent-pane" id="agentPane" style="display:none">
-      <div class="agent-head">
-        <button id="agentSidebarBtn" class="corner mini btn-sq" data-i18n-title="会话列表边栏（按工作目录归类）" title="会话列表边栏（按工作目录归类）">☰</button>
-        <div class="agent-title-block">
-          <span class="agent-title" data-i18n="智能会话">智能会话</span>
-          <span class="agent-sub">DeepSeek Harness</span>
+<div class="agent-pane" id="agentPane" style="display:none">
+      <aside class="agent-side">
+        <div class="agent-side-head">
+          <span class="agent-side-logo" id="agentLogo" data-i18n-title="新建会话" title="新建会话">DeepSeek Harness</span>
+          <button id="agentNew" class="agent-side-new" data-i18n-title="新建会话(沿用当前工作目录)" title="新建会话(沿用当前工作目录)">＋ <span data-i18n="新会话">新会话</span></button>
         </div>
-        <div class="agent-ctrl">
-          <label class="agent-ctrl-item"><span data-i18n="预设">预设</span>
-            <select id="agentPresetSel">
-              <option value="standard" data-i18n="通用助手">通用助手</option>
-              <option value="minimal" data-i18n="精简执行">精简执行</option>
-              <option value="code" data-i18n="代码专家">代码专家</option>
-              <option value="cordis" data-i18n="Cordis 插件开发">Cordis 插件开发</option>
-            </select>
-          </label>
-          <label class="agent-ctrl-item"><span data-i18n="供应商">供应商</span>
-            <select id="agentProvSel"></select>
-          </label>
-          <label class="agent-ctrl-item"><span data-i18n="模型">模型</span>
-            <select id="agentModelSel"></select>
-          </label>
-          <label class="agent-ctrl-item"><span data-i18n="思考强度">思考强度</span>
-            <select id="agentEffortSel">
-              <option value="high" data-i18n="标准">标准</option>
-              <option value="max" data-i18n="最强">最强</option>
-            </select>
-          </label>
-          <span class="agent-ctrl-item agent-ctx" id="agentCtx" data-i18n-title="上下文用量(最近一次运行的输入 token)" title="上下文用量(最近一次运行的输入 token)"></span>
-          <button id="agentNew" class="mini" data-i18n="＋ 新会话" data-i18n-title="新建会话(沿用当前工作目录)">＋ 新会话</button>
+        <div class="agent-side-search">
+          <input id="agentSideFilter" type="text" data-i18n-placeholder="搜索会话…" placeholder="搜索会话…">
+        </div>
+        <div class="agent-side-list" id="agentSideList"></div>
+        <div class="agent-side-foot">
+          <span class="agent-side-region">DeepSeek Harness · <span data-i18n="预览版">预览版</span></span>
           <button id="btnAssistAgent" class="mini btn-sq" data-i18n-title="全局 AI 助手（右侧栏）" title="全局 AI 助手（右侧栏）">✦</button>
         </div>
-        <div class="agent-ws-line">
-          <span class="agent-ws-label" data-i18n="工作目录">工作目录</span>
-          <input id="agentWsInput" type="text" data-i18n-placeholder="留空 = 应用默认数据目录…" placeholder="留空 = 应用默认数据目录…">
-          <button id="agentWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
-          <button id="agentWsBrowse" class="mini btn-sq ws-browse" type="button" data-i18n-title="设置项目目的地文件夹" title="设置项目目的地文件夹" aria-label="设置项目目的地文件夹"></button>
-        </div>
-      </div>
-      <div class="agent-body">
-        <div class="agent-list" id="agentList"></div>
-        <div class="agent-cmd-hint" id="agentCmdHint" data-i18n="命令:输入 / 呼出技能与命令 · /new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help">命令:输入 / 呼出技能与命令 · /new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help</div>
-        <div class="agent-input-row">
-          <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="描述任务…（Enter 发送，Shift+Enter 换行）" placeholder="描述任务…（Enter 发送，Shift+Enter 换行）"></textarea>
-          <button id="agentSend" class="mini primary">执行</button>
+      </aside>
+      <div class="agent-main">
+        <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
+        <div class="agent-body">
+          <div class="agent-list" id="agentList"></div>
+          <div class="agent-composer">
+            <div class="agent-composer-chips">
+              <button type="button" class="agent-chip" id="agentWsTrigger" data-i18n-title="选择工作区" title="选择工作区">
+                <span class="agent-chip-icon">🗂</span><span class="agent-tool-val" id="agentWsTriggerVal" data-i18n="选择工作区">选择工作区</span>
+              </button>
+              <button type="button" class="agent-chip" id="agentModelTrigger" data-i18n-title="预设 / 模型 / 思考强度" title="预设 / 模型 / 思考强度">
+                <span class="agent-chip-icon">⚙</span><span class="agent-tool-val" id="agentModelTriggerVal">标准模式</span>
+              </button>
+              <button type="button" class="agent-chip" id="agentCmdTrigger" data-i18n-title="技能" title="技能"><span data-i18n="技能">技能</span></button>
+              <button type="button" class="agent-chip" id="agentPlanToggle" data-i18n-title="规划模式" title="规划模式"><span data-i18n="规划">规划</span></button>
+            </div>
+            <div class="agent-composer-card">
+              <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
+              <div class="agent-composer-actions">
+                <button type="button" class="agent-send" id="agentSend" data-i18n-title="发送" title="发送">↑</button>
+              </div>
+            </div>
+            <div class="agent-menu" id="agentModelMenu" hidden></div>
+            <div class="agent-menu" id="agentCmdMenu" hidden></div>
+          </div>
         </div>
       </div>
     </div>
@@ -269,10 +269,12 @@
 <div id="portTip" class="port-tip" hidden></div>
 <div id="runQueue" class="run-queue" hidden aria-live="polite"></div>
 <div id="toastBox"></div>
+<div id="zenRoot" hidden aria-label="禅模式"></div>
 
 <script src="vendor/marked.min.js"></script>
 <script src="i18n.js"></script>
 <script src="dsh-plugin-copy.js"></script>
 <script src="app.js"></script>
+<script src="zen.js"></script>
 </body>
 </html>

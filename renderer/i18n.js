@@ -820,7 +820,7 @@
     "输入 API Key（隐藏显示，仅存本机）": "Enter API Key (hidden; stored on this machine only)",
     "选择服务商后自动载入其模型列表与接口地址。": "Selecting a provider loads its model list and endpoint automatically.",
     "智能节点（读文件 / 联网 / 执行命令）": "Agent Node (read files / network / run commands)",
-    "」· 点击切换（低 / 中 / 高）": "\" · Click to cycle (Low / Medium / High)",
+    "」· 点击切换（无 / 低 / 中 / 高）": "\" · Click to cycle (Off / Low / Medium / High)",
     "本次智能运行的统计（与 dsh 客户端一致）": "Stats for this agent run (same as the dsh client)",
     "复制该会话为新会话(参考 dsh fork)": "Duplicate this session as a new one (like dsh fork)",
     "技能内容（Markdown，模型按此执行）…": "Skill content (Markdown; the model follows this)…",
@@ -2660,6 +2660,237 @@
     "创建/收纳超级节点需用户审批（canvas_super）。":
       "Creating or packing super nodes requires user approval (canvas_super).",
     "无效的超级节点：": "Invalid super node: ",
+    "超级": "Super",
+    "超级权限 · 外部路径策略": "Super permission · outside-path policy",
+    "已开启超级权限：Agent 可访问本机任意位置（用于辅助编程等高级任务）。首次请选择访问工作区以外路径时的策略：":
+      "Super permission is on: the agent may access any path on this machine (for advanced coding tasks). Choose how to handle paths outside the workspace:",
+    "「是否允许访问」：每次触及未授权的外部路径时弹窗确认（可拒绝 / 允许一次 / 始终允许该路径及子路径）。「直接访问」：不再询问。":
+      "“Ask”: prompt each time an unauthorized outside path is touched (Deny / Once / Always for that path and children). “Direct”: no prompts.",
+    "是否允许访问": "Ask before access",
+    "直接访问": "Direct access",
+    "已切换为画布权限（工作区沙箱）": "Switched to canvas permission (workspace sandbox)",
+    "已开启超级权限（外部路径将询问）": "Super permission on (will ask for outside paths)",
+    "已开启超级权限（外部路径直接访问）": "Super permission on (direct outside access)",
+    "超级权限：可访问全主机": "Super permission: full host access",
+    " · 外部路径询问": " · ask for outside paths",
+    " · 外部路径直接访问": " · direct outside access",
+    "（点击切回画布权限）": " (click to return to canvas permission)",
+    "画布权限：工作区沙箱（点击开启超级权限）":
+      "Canvas permission: workspace sandbox (click to enable super permission)",
+    "允许访问外部路径？": "Allow outside path?",
+    "超级权限节点请求访问工作区以外的路径。请选择是否允许该路径及其子路径。":
+      "This super-permission node wants a path outside the workspace. Allow this path and its children?",
+    "路径：": "Path: ",
+    "工具：": "Tool: ",
+    "说明：": "Detail: ",
+    "「始终允许」写入本节点；「允许一次」仅本次运行有效；「拒绝」则阻止本次调用。":
+      "“Always” is saved on this node; “Once” lasts for this run; “Deny” blocks this call.",
+    "未能解析具体路径，请根据工具与说明判断是否放行。":
+      "Could not parse a concrete path; decide from the tool name and details.",
+    /* ===== 禅模式（Zen Mode）===== */
+    "禅模式": "Zen",
+    "禅模式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流":
+      "Zen Mode: fullscreen immersive Q&A canvas to clarify ideas and generate an executable workflow",
+    /* ===== 测试版本（Beta）===== */
+    "提问式": "Question Mode",
+    "提问式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流":
+      "Question Mode: fullscreen immersive Q&A canvas to clarify ideas and generate an executable workflow",
+    "测试版本（Beta）": "Beta (test version)",
+    "启用测试版本（显示仍在调试的功能：提问式、数据库节点）":
+      "Enable the test version (shows in-development features: Question Mode and Database node)",
+    "默认关闭。开启后顶栏显示「提问式」入口，并在添加节点菜单中提供「数据库」节点。":
+      "Off by default. When enabled, the top bar shows the \"Question Mode\" entry and the add-node menu offers a \"Database\" node.",
+    "返回": "Back",
+    "探索": "Explore",
+    "已保存": "Saved",
+    "存档": "Archives",
+    "新建": "New",
+    "计划": "Plan",
+    "备份": "Backup",
+    "构建画布": "Build canvas",
+    "选择或新建存档": "Pick or create an archive",
+    "Esc 返回主界面": "Esc to leave",
+    "新存档名称…": "Archive name…",
+    "取消": "Cancel",
+    "版本备份": "Versions",
+    "立即备份": "Backup now",
+    "关闭": "Close",
+    "输入": "Input",
+    "补充想法、约束或直接回答…": "Add thoughts, constraints, or answer…",
+    "提交": "Submit",
+    "选择": "Select",
+    "画布": "Canvas",
+    "保存中…": "Saving…",
+    "未保存": "Unsaved",
+    "正在思考…": "Thinking…",
+    "点击开始": "Tap to start",
+    "思考中": "Thinking",
+    "待播放": "Ready",
+    "就绪": "Ready",
+    "中心": "Hub",
+    "播放": "Play",
+    "可选 · 点击选择": "Optional · click to select",
+    "点击选择": "Click to select",
+    "已处理": "Done",
+    "分支提问": "Branch question",
+    "候选": "Option",
+    "点击继续": "Click to continue",
+    "回滚": "Rollback",
+    "保存失败：": "Save failed: ",
+    "已创建版本备份": "Version backup created",
+    "备份失败：": "Backup failed: ",
+    "还没有存档，输入名称开始": "No archives yet — type a name to start",
+    "节点": "Node",
+    "删除存档": "Delete archive",
+    "删除存档「{name}」？备份也将一并删除。":
+      "Delete archive “{name}”? Its backups will be deleted too.",
+    "打开存档失败": "Failed to open archive",
+    "新存档名称": "New archive name",
+    "新建禅模式存档": "New Zen archive",
+    "创建": "Create",
+    "先输入存档名称": "Type an archive name first",
+    "已创建存档：": "Archive created: ",
+    "创建失败：": "Create failed: ",
+    "暂无备份（每 10 分钟自动备份）": "No backups yet (auto backup every 10 min)",
+    "恢复": "Restore",
+    "恢复到该备份？当前内容会被覆盖。":
+      "Restore this version? The current content will be overwritten.",
+    "恢复备份": "Restore backup",
+    "已恢复备份": "Backup restored",
+    "恢复失败": "Restore failed",
+    "请继续": "Please continue",
+    "模型未按契约返回，请重试": "The model broke the contract — please retry",
+    "（提问失败：": " (question failed: ",
+    "先选择一项，或输入文字回答": "Select an option or type an answer first",
+    "输入一个问题或想法，开一条新的探索分支":
+      "Type a question or idea to open a new exploration branch",
+    "回滚该节点？其全部下游分支将移除，并重新对它提问。":
+      "Roll back this node? Its whole downstream subtree will be removed and it will be re-questioned.",
+    "回滚分支": "Rollback branch",
+    "计划尚未生成：继续问答，或直接点击「构建画布」触发计划编译":
+      "No plan yet: keep answering, or click “Build canvas” to compile one",
+    "可编辑 · 与图谱双向同步": "Editable · synced with the graph",
+    "尚无计划": "No plan yet",
+    "尚无计划：继续问答澄清，或点击「重新编译计划」":
+      "No plan yet: keep clarifying, or click “Recompile plan”",
+    "确认计划后点击「构建画布」": "Confirm the plan, then click “Build canvas”",
+    "返回主画布查看任务进度": "Return to the main canvas for task progress",
+    "任务执行中… ": "Tasks running… ",
+    "任务进度": "Progress",
+    "计划已生成，可编辑或直接构建画布": "Plan generated — edit it or build the canvas",
+    "计划已生成": "Plan generated",
+    "已按图谱生成计划草稿，可手动编辑": "Draft plan compiled from the graph — edit freely",
+    "基于当前图谱重新生成计划？手动编辑的段落可能被替换。":
+      "Regenerate the plan from the graph? Manually edited sections may be replaced.",
+    "重新编译计划": "Recompile plan",
+    "重新编译": "Recompile",
+    "已同步 {n} 处标题到图谱": "Synced {n} titles to the graph",
+    "先生成计划再构建画布": "Generate a plan before building the canvas",
+    "已构建过画布，重新生成将新建一个同名画布。继续？":
+      "A canvas was already built; regenerating creates a new one with the same name. Continue?",
+    "重新生成": "Regenerate",
+    "将按计划生成可执行画布，写入所选项目文件夹，并允许 AI 写入画布节点（本次免逐项确认）。":
+      "An executable canvas will be generated from the plan, written to the chosen project folder, and the AI may write canvas nodes without per-step confirmations this time.",
+    "允许写入": "Allow writing",
+    "项目文件夹已失效，请重新选择": "The project folder is invalid — pick it again",
+    "选择项目文件夹": "Choose project folder",
+    "正在生成画布…（可稍等片刻）": "Generating canvas… (this may take a moment)",
+    "画布已生成：": "Canvas built: ",
+    "画布生成失败：": "Canvas build failed: ",
+    "点击节点上的「回滚」可撤销该分支":
+      "Use “Rollback” on the node to undo this branch",
+    "当前提问": "Current question",
+    "模型选择：本次提问使用的模型": "Model: used for the next question",
+    "输入你的答案…": "Type your answer…",
+    "删除当前存档": "Delete current archive",
+    "删除当前禅模式存档「{name}」？其版本备份也将一并删除。":
+      "Delete the Zen archive “{name}”? Its version backups will be deleted too.",
+    "已删除禅模式存档": "Zen archive deleted",
+    "单选题已多选": "Multiple answers on a single-choice question",
+    "此题为单选题，但已选择多个答案。如何处理？":
+      "This is a single-choice question, but you selected multiple answers. How should we proceed?",
+    "合并为1个历史节点": "Merge into one history node",
+    "新画布": "new canvas",
+    "已创建分支画布：": "Forked canvas created: ",
+    "非法存档 id": "Invalid archive id",
+    "存档不存在": "Archive not found",
+    "非法技能 id": "Invalid skill id",
+    "技能不存在": "Skill not found",
+    "非法备份文件": "Invalid backup file",
+    "备份不存在": "Backup not found",
+    /* ===== 数据库超级节点（事实收纳 → 副本 → mtnode_db） ===== */
+    "数据库": "Database",
+    "数据库副本": "Database replica",
+    "数据库（事实收纳 · 编译副本供智能节点查询）":
+      "Database (fact storage · compile replica for agent queries)",
+    "数据库已编译：": "Database compiled: ",
+    " 条记录": " records",
+    "数据库未编译：点头部 ⚙ 生成副本节点":
+      "Not compiled yet: click ⚙ in the header to build the replica",
+    "编译数据库：索引子文件夹文件与内部信息节点，并生成/刷新数据库副本节点":
+      "Compile database: index subfolder files and inner info nodes, then create/refresh the replica node",
+    "已编译 ": "Compiled ",
+    " 条 · ": " items · ",
+    "未编译 · 点头部 ⚙ 生成数据库副本": "Not compiled · click ⚙ to build the replica",
+    "源数据库已删除：副本失效，可删除本节点":
+      "Source database deleted: this replica is stale, you can delete it",
+    "数据库尚未编译：请展开数据库节点，点头部 ⚙ 编译":
+      "Not compiled yet: expand the database node and click ⚙",
+    "还有 {n} 条（经 mtnode_db 工具查询）":
+      "{n} more (query via the mtnode_db tool)",
+    "数据库编译失败：": "Database compile failed: ",
+    "当前任务未接入数据库副本：请先在数据库节点上「编译」，再把数据库副本节点连到本节点的输入端":
+      "This task is not wired to a database replica: compile the database node first, then connect its replica node to this node's input",
+    "数据库中没有该记录：": "No such record in the database: ",
+    "calc 仅支持数字与 + - * / % 括号，表达式非法":
+      "calc accepts numbers and + - * / % ( ) only; invalid expression",
+    "query 需要 q 参数": "query requires the q parameter",
+    "数据库中没有匹配该查询的记录": "No records in the database match this query",
+    "本任务已接入数据库：": "This task is wired to the database(s): ",
+    "1. 一切事实（名称 / 数字 / 价格 / 条款 / 路径）必须通过 mtnode_db 工具查询，回答只陈述工具返回的内容。":
+      "1. Every fact (names/numbers/prices/terms/paths) must come from the mtnode_db tool; state only what the tool returns.",
+    "2. 每个关键断言都要注明引用来源：[记录id · 标题]。":
+      "2. Cite every key assertion as [record-id · title].",
+    "3. mtnode_db 查不到的事实，必须明确回答「数据库中没有该信息」，禁止猜测、禁止用自身记忆补全。":
+      '3. For facts mtnode_db cannot find, answer exactly "the database has no such information" — never guess or fill in from memory.',
+    "4. 数字与日期计算必须用 mtnode_db 的 calc 动作，禁止心算。":
+      "4. All numeric/date math must use mtnode_db calc — never mental arithmetic.",
+    "5. 数据库未记载但任务需要的推断，必须明确标注「此为推断，数据库未记载」。":
+      '5. Inferences not covered by the database must be labelled "inference — not in the database".',
+    /* ===== 数据库节点（SQLite/FTS5 · 增量 · 调试控制台） ===== */
+    "切换数据库形态：内嵌查询 / calc / 检查更新等调试工具":
+      "Switch to database console: query / calc / dirty-check debugging tools",
+    "当前：数据库形态（查询 / 调试控制台）· 点击切回超级节点形态":
+      "Database console mode (query / debug) · click to return to super-node form",
+    "编译数据库（仅手动触发 · 增量）：索引子文件夹文件与内部信息节点，并生成/刷新数据库副本节点":
+      "Compile database (manual only · incremental): index subfolder files and inner info nodes, then create/refresh the replica node",
+    "未设置工作目录或子文件夹：文件记录无法入库（仅内部信息节点可编译）":
+      "No workspace or subfolder set: file records cannot be indexed (only inner info nodes can compile)",
+    "SQLite 编译失败": "SQLite compile failed",
+    "增量编译完成：+{a} 新增 · ~{u} 更新 · −{r} 移除 · 共 {t} 条":
+      "Incremental compile done: +{a} added · ~{u} updated · −{r} removed · {t} total",
+    "查询（支持 title: / file: / kind: 过滤）…":
+      "Query (supports title: / file: / kind: filters)…",
+    "查询": "Query",
+    "输入查询内容": "Type a query first",
+    "未设置工作目录/子文件夹，无法查询": "No workspace/subfolder set — cannot query",
+    "查询失败": "Query failed",
+    "无匹配记录": "No matching records",
+    "calc：数字 + - * / % ( )": "calc: numbers + - * / % ( )",
+    "表达式非法": "Invalid expression",
+    "检查更新": "Check changes",
+    "编译（增量）": "Compile (incremental)",
+    "打开子文件夹": "Open subfolder",
+    "未设置工作目录/子文件夹": "No workspace/subfolder set",
+    "待入库：+{a} 新增 · ~{c} 变更 · −{r} 移除（点击「编译（增量）」生效）":
+      "Pending: +{a} added · ~{c} changed · −{r} removed (run “Compile (incremental)” to apply)",
+    "上次增量 +{a}/~{u}/−{r}": "Last increment +{a}/~{u}/−{r}",
+    "先设置工作目录与数据库子文件夹，再拖入文件":
+      "Set the workspace and database subfolder first, then drop files",
+    "已放入 {n} 个文件到数据库子文件夹 · 点击 ⚙ 编译（增量）入库":
+      "Copied {n} file(s) into the database subfolder · click ⚙ to compile (incremental)",
+    "数据库子文件夹不存在：": "Database subfolder does not exist: ",
+    "calc 失败": "calc failed",
   });
 
   var locale = "zh";

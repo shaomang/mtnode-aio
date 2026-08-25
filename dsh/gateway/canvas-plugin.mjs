@@ -28,7 +28,7 @@ const NODE_LOCK =
 
 const GET_DESC =
   NODE_LOCK +
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) are ALWAYS full text — never truncated; *Len fields report character counts only. When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dbNodeId/dbName/compiledAt for db_replica), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) are ALWAYS full text — never truncated; *Len fields report character counts only. When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
@@ -65,6 +65,7 @@ Typical pattern for a small user-editable pipeline:
 Prefer agent_task when a step must READ existing files and merge; prefer proc_text for single-pass generation or per-item batch; save_* writes outputs for re-runs of ordinary (non-agent) proc nodes.
 CRITICAL — for anything more than a handful of nodes, START with task nodes (kind "task") as the plan. Implementation goes INSIDE (parentTaskId) and MUST be wired from the pinned start to a success/fail end. Use kind "judge" to branch YES/NO. Do not flatten a complex job into a messy mixed graph.
 CRITICAL — to keep the canvas tidy, pack related clusters into kind "super" (update parentSuperId on children, or create super then set parentSuperId). Super nodes expose edge I/O ports (no inner input/output port nodes). Inside, wire from the super node's input ports into children, and from children back to the super node's output ports. Optionally set subFolder so new relative save paths default under that folder. Creating or packing super nodes requires canvas_super (often user approval). Prefer supers for large reusable subgraphs; use tasks for control-flow plans.
+DATABASE super nodes: create a kind "super" with db:true (subFolder holds fact files; put facts as inner input_text nodes). The user compiles it (⚙) which produces a db_replica child-top node; when a smart node (agent_task / proc_text agent) is wired to that replica it can query the facts with the mtnode_db tool (list/query/get/calc) — facts then MUST come from that tool, never from model memory.
 CRITICAL — do NOT create save after agent_task or proc_text with agent:true: those smart nodes can write files themselves; a save node would dump chat/task transcript junk to disk. Use save only after ordinary proc_text / proc_image (agent off). Old aliases save_text / save_image still work and become a unified save node.
 CRITICAL — do NOT create save after music_gen / video_gen: they write audio/video via the node's own outputPath (required). No paired/bound save node.
 CRITICAL — avoid wiring agent_task / proc_text(agent:true) as DATA inputs into other nodes: their outputs carry irrelevant session/transcript noise and often omit the key facts. Prefer file handoff: the smart node WRITES a document (md/yaml/json/…), then use wait_file (监视路径 / waitPath) as a CONTROL node wired OUT to downstream so they block until that file exists; wait_file has NO input ports and outputs NOTHING — later nodes READ the agreed path themselves. Do not wire anything into wait_file.
@@ -259,6 +260,17 @@ const NODE_SPEC = {
       type: 'boolean',
       description: 'super node: whether the expanded in-place sub-canvas is open.',
     },
+    db: {
+      type: 'boolean',
+      description:
+        'super node: mark as a DATABASE super node (fact storage = subFolder files + inner info nodes). Compile produces a db_replica node; smart nodes wired to the replica can query facts with mtnode_db. Needs canvas_super.',
+    },
+    dbMode: {
+      type: 'string',
+      enum: ['super', 'db'],
+      description:
+        'db super node display mode: super = super-node canvas form; db = database console form (query/calc/dirty-check debugging tools).',
+    },
     savePath: { type: 'string', description: 'save node destination. Prefer relative path under the canvas working directory (e.g. items.yaml). Extension is forced by input type: .yaml / .png / .wav / .mp4. Aliases save_text / save_image still accepted.' },
     waitPath: {
       type: 'string',
@@ -390,6 +402,17 @@ const UPDATE_SPEC = {
         'super: relative subfolder under workspace for default inner-node paths.',
     },
     superOpen: { type: 'boolean', description: 'super: expand in-place sub-canvas.' },
+    db: {
+      type: 'boolean',
+      description:
+        'super: mark/unmark as DATABASE super node (facts storage → db_replica + mtnode_db queries). Needs canvas_super.',
+    },
+    dbMode: {
+      type: 'string',
+      enum: ['super', 'db'],
+      description:
+        'db super node display mode: super = super-node canvas form; db = database console form.',
+    },
     savePath: { type: 'string' },
     waitPath: { type: 'string', description: 'wait_file: path to watch.' },
     waitIntervalSec: { type: 'number', description: 'wait_file: poll seconds 1–60.' },

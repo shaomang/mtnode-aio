@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /* MTNode AI编排器 · 节点编辑器 */
 const $ = (s) => document.querySelector(s);
 const svgNS = "http://www.w3.org/2000/svg";
@@ -68,6 +68,7 @@ const KIND_CLS = {
   video_gen: "video",
   super: "super",
   super_io: "super-io",
+  db_replica: "db",
 };
 
 /* 节点标题栏拖动手柄图标（SVG，stroke=currentColor） */
@@ -99,6 +100,12 @@ const KIND_ICON_SVG = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.15" opacity=".85"/><path d="M5.6 8h4.8M8 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
   super_io:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 8h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  /* 数据库副本 */
+  db_replica:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.4" rx="5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 3.4v9.2c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7V3.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 8c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+  /* 数据库（金色通用图标：库体 + 三层盘面） */
+  db:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.4" rx="5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 3.4v9.2c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7V3.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 8c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3 12.6c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/></svg>',
   /* 对话 */
   chat:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.5h7.2a1.4 1.4 0 0 1 1.4 1.4v3.4a1.4 1.4 0 0 1-1.4 1.4H7.2L4.6 12V9.7H3.2A1.4 1.4 0 0 1 1.8 8.3V4.9a1.4 1.4 0 0 1 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8.8 4.8h4a1.2 1.2 0 0 1 1.2 1.2v2.6a1.2 1.2 0 0 1-1.2 1.2h-.8V12l-2-1.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>',
@@ -210,7 +217,14 @@ function nodeKindIconCls(node) {
 
 function fillNodeKindIcon(el, node) {
   if (!el) return;
-  const key = nodeKindIconKey(node);
+  let key = nodeKindIconKey(node);
+  /* 数据库超级节点 / 副本：数据库图标（金色） */
+  if (node.kind === "db_replica" || (node.kind === "super" && node.db)) {
+    key = "db";
+    el.classList.add("db-ico");
+  } else {
+    el.classList.remove("db-ico");
+  }
   const svg = KIND_ICON_SVG[key] || KIND_ICON_SVG.proc_text;
   el.innerHTML = svg;
   el.dataset.kindIcon = key;
@@ -281,6 +295,9 @@ const NODE_DEFAULTS = {
     agent: false,
     agentWorkspace: "",
     globalRefs: false,
+    agentPerm: "canvas",
+    agentPermOutside: "",
+    agentPermAlwaysPaths: [],
     output: null,
     batchOutputs: null,
     error: null,
@@ -373,6 +390,10 @@ const NODE_DEFAULTS = {
     innerPanY: 0,
     parentTaskId: "",
     parentSuperId: "",
+    /* 数据库超级节点：收纳事实（信息节点 + 子文件夹文件），编译生成副本 */
+    db: false,
+    /* db 节点展示形态：super=超节点形态；db=数据库形态（内嵌查询/调试控制台） */
+    dbMode: "super",
   },
   super_io: {
     w: 132,
@@ -383,6 +404,17 @@ const NODE_DEFAULTS = {
     parentTaskId: "",
     parentSuperId: "",
     pinned: true,
+  },
+  db_replica: {
+    w: 300,
+    h: 240,
+    title: "数据库副本",
+    dbNodeId: "",
+    dbName: "",
+    compiledAt: 0,
+    count: 0,
+    parentTaskId: "",
+    parentSuperId: "",
   },
   chat: {
     w: 340,
@@ -414,6 +446,11 @@ const NODE_DEFAULTS = {
     agentSessionId: "",
     chatMode: false,
     globalRefs: false,
+    /* canvas=工作区沙箱（跟随全局权限预设）；super=全主机超级权限 */
+    agentPerm: "canvas",
+    /* 首次切到超级权限时选定：ask=外部路径询问；direct=直接访问 */
+    agentPermOutside: "",
+    agentPermAlwaysPaths: [],
     output: null,
     error: null,
     ranAt: 0,
@@ -3361,7 +3398,7 @@ function recordDshMetrics(node, m) {
 }
 
 /* 思考强度映射:
-   - DeepSeek Chat Completions 仅支持 reasoning_effort: low/high/max（无「关思考」档）
+   - 文本节点（非智能）：off/低/中/高 → 依 API 参考 dsh（off ⇒ thinking 关闭）；medium → 标准
    - 文本智能模式：低/中/高 → dsh 标准/最强（高→最强）
    - 智能任务 / 会话：标准(high) / 最强(max)
    - 旧档 none/off/无 → high（兼容已存工作流） */
@@ -3428,6 +3465,631 @@ function dshRunMaxTokens() {
   );
 }
 
+let _mtnodeSkillIndexCache = { at: 0, text: "" };
+
+async function mtnodeInternalSkillIndexBlock() {
+  if (!window.api || !window.api.mtnodeAgentSkillIndex) return "";
+  if (Date.now() - _mtnodeSkillIndexCache.at < 60000 && _mtnodeSkillIndexCache.text) {
+    return _mtnodeSkillIndexCache.text;
+  }
+  try {
+    const r = await window.api.mtnodeAgentSkillIndex();
+    const text = (r && r.ok && (r.compact || r.indexMd)) || "";
+    _mtnodeSkillIndexCache = { at: Date.now(), text: String(text) };
+    return _mtnodeSkillIndexCache.text;
+  } catch {
+    return "";
+  }
+}
+
+/* ============ 数据库超级节点（事实收纳 → 编译副本 → 工具查询） ============ */
+
+/* 确定性哈希（FNV-1a 32bit）：文件内容指纹，供索引去重与变更比对 */
+function dbHash(s) {
+  let h = 0x811c9dc5;
+  const str = String(s == null ? "" : s);
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+/* 可作文本索引的扩展名（二进制/音视频一律不读） */
+const DB_TEXT_EXT = new Set([
+  "txt", "md", "markdown", "yaml", "yml", "json", "csv", "tsv", "log",
+  "xml", "html", "htm", "css", "js", "ts", "py", "mjs", "cjs", "jsonc",
+  "toml", "ini", "sql", "sh", "bat", "ps1",
+]);
+function dbTextishFile(name) {
+  const s = String(name || "");
+  const i = s.lastIndexOf(".");
+  if (i <= 0 || i === s.length - 1) return false;
+  return DB_TEXT_EXT.has(s.slice(i + 1).toLowerCase());
+}
+
+/* 收集数据库节点的候选记录（内部信息节点 + 子文件夹文本文件）：
+   返回带内容哈希的完整记录数组。编译与「检查更新」共用。 */
+async function collectDbRecords(node) {
+  const records = [];
+  /* 1. 内部信息节点（文本内容 / 目标 / 说明） */
+  const kids = superChildrenOf(node.id).filter((c) => !isSuperIoNode(c));
+  for (const c of kids) {
+    if (c.kind === "input_text") {
+      const content = String(
+        (c.batch && Array.isArray(c.entries) && c.entries.length
+          ? c.entries.map((e) => (e && e.content) || "").join("\n")
+          : c.text) || "",
+      ).trim();
+      if (content) {
+        records.push({
+          id: "rec_" + c.id,
+          source: "node:" + c.id,
+          kind: "fact",
+          title: c.title || "",
+          content,
+          file: "",
+          size: content.length,
+          mtime: 0,
+          hash: dbHash(content),
+        });
+      }
+    } else {
+      const desc = [c.title, c.goal, c.note, c.prompt]
+        .filter((x) => typeof x === "string" && x.trim())
+        .join(" ")
+        .trim();
+      if (desc) {
+        records.push({
+          id: "rec_" + c.id,
+          source: "node:" + c.id,
+          kind: "meta",
+          title: c.title || "",
+          content: desc,
+          file: "",
+          size: desc.length,
+          mtime: 0,
+          hash: dbHash(desc),
+        });
+      }
+    }
+  }
+  /* 2. 子文件夹文本文件 */
+  const dir = dbNodeDir(node);
+  if (dir) {
+    const lr = await window.api.fileListDir(dir).catch(() => null);
+    if (lr && lr.ok && Array.isArray(lr.list)) {
+      for (const f of lr.list) {
+        if (!f || !dbTextishFile(f.name)) continue;
+        if (f.size > 512 * 1024) continue;
+        const full = window.api.pathJoin(dir, f.rel);
+        const rr = await window.api.fileReadText(full).catch(() => null);
+        const content = rr && rr.ok && rr.exists ? String(rr.content || "") : "";
+        records.push({
+          id: "rec_f_" + dbHash(f.rel),
+          source: "file:" + f.rel,
+          kind: "file",
+          title: f.name,
+          content,
+          file: f.rel,
+          size: Number(f.size) || 0,
+          mtime: Number(f.mtime) || 0,
+          hash: dbHash(content || f.rel),
+        });
+      }
+    }
+  }
+  /* 3. 去重：同 hash + 同 title 只留一条（信息节点优先于文件） */
+  const seen = new Set();
+  return records.filter((r) => {
+    const k = (r.hash || "") + "|" + (r.title || "");
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+function dbNodeDir(node) {
+  const ws = String(S.wf.workspace || "").trim();
+  const sf = String(node && node.subFolder || "").trim();
+  if (!ws || !sf) return "";
+  return window.api.pathJoin(ws, sf);
+}
+/* 手动编译（唯一入口）：内容哈希增量 diff 由主进程 SQLite 完成；
+   节点只保存轻量清单（无全文），大库不膨胀画布档案 */
+async function compileDbSuper(node) {
+  if (!node || node.kind !== "super" || !node.db) return;
+  if (node._dbCompiling) return;
+  node._dbCompiling = true;
+  renderCanvas();
+  try {
+    const dir = dbNodeDir(node);
+    const records = await collectDbRecords(node);
+    if (!dir) {
+      toast(
+        I18n.t("未设置工作目录或子文件夹：文件记录无法入库（仅内部信息节点可编译）"),
+        "warn",
+      );
+    }
+    let changes = { added: 0, updated: 0, removed: 0, total: records.length };
+    if (dir) {
+      const r = await window.api.dbCompile(dir, records).catch(() => null);
+      if (!r || !r.ok) throw new Error((r && r.error) || I18n.t("SQLite 编译失败"));
+      changes = r;
+    }
+    /* 清单（无全文）：供副本展示与「检查更新」比对 */
+    node.dbIndex = {
+      compiledAt: Date.now(),
+      folder: String(node.subFolder || "").trim(),
+      count: changes.total,
+      added: changes.added,
+      updated: changes.updated,
+      removed: changes.removed,
+      records: records.map((r) => ({
+        id: r.id,
+        source: r.source,
+        kind: r.kind,
+        title: r.title,
+        file: r.file,
+        size: r.size,
+        mtime: r.mtime,
+        hash: r.hash,
+      })),
+    };
+    /* 生成 / 刷新副本节点（供其他节点连线引用） */
+    const existing = (S.wf.nodes || []).find(
+      (n) => n.kind === "db_replica" && n.dbNodeId === node.id,
+    );
+    if (existing) {
+      existing.dbName = node.title;
+      existing.compiledAt = node.dbIndex.compiledAt;
+      existing.count = changes.total;
+    } else {
+      const rep = makeNode("db_replica", node.x + node.w + 60, node.y);
+      rep.dbNodeId = node.id;
+      rep.dbName = node.title;
+      rep.compiledAt = node.dbIndex.compiledAt;
+      rep.count = changes.total;
+      rep.parentTaskId = node.parentTaskId || "";
+      rep.parentSuperId = "";
+      rep.title = uniqueNodeTitle(I18n.t("数据库副本") + " · " + (node.title || ""));
+      S.wf.nodes.push(rep);
+    }
+    pushHistory();
+    scheduleSave(true);
+    renderCanvas();
+    toast(
+      I18n.t("增量编译完成：+{a} 新增 · ~{u} 更新 · −{r} 移除 · 共 {t} 条", {
+        a: changes.added,
+        u: changes.updated,
+        r: changes.removed,
+        t: changes.total,
+      }),
+      "ok",
+    );
+  } catch (e) {
+    toast(
+      I18n.t("数据库编译失败：") + ((e && e.message) || String(e)),
+      "err",
+    );
+  } finally {
+    node._dbCompiling = false;
+    renderCanvas();
+  }
+}
+/* 数据库形态：内嵌查询 / 调试控制台（调试工具集） */
+function renderDbConsoleBody(node, body) {
+  const idx = node.dbIndex;
+  const st =
+    node._dbConsole ||
+    (node._dbConsole = { q: "", results: null, calc: null, dirty: null });
+  /* 状态行 */
+  const meta = document.createElement("div");
+  meta.className = "n-db-console-meta";
+  meta.innerHTML =
+    "<b>" +
+    escapeHtml(node.title || "") +
+    "</b> · " +
+    (idx
+      ? idx.count + I18n.t(" 条") + " · " + fmtTime(idx.compiledAt)
+      : I18n.t("未编译")) +
+    (idx && (idx.added || idx.updated || idx.removed)
+      ? " · " +
+        I18n.t("上次增量 +{a}/~{u}/−{r}", {
+          a: idx.added,
+          u: idx.updated,
+          r: idx.removed,
+        })
+      : "") +
+    (idx && idx.folder
+      ? ' · <span class="n-db-console-folder">' + escapeHtml(idx.folder) + "</span>"
+      : "");
+  body.appendChild(meta);
+  /* 查询行（FTS5 BM25 + 结构化过滤） */
+  const qrow = document.createElement("div");
+  qrow.className = "n-db-console-row";
+  const qin = document.createElement("input");
+  qin.type = "text";
+  qin.className = "n-db-console-input";
+  qin.placeholder = I18n.t("查询（支持 title: / file: / kind: 过滤）…");
+  qin.value = st.q || "";
+  const qbtn = document.createElement("button");
+  qbtn.type = "button";
+  qbtn.className = "mini";
+  qbtn.textContent = I18n.t("查询");
+  const runQuery = async () => {
+    const q = qin.value.trim();
+    if (!q) {
+      toast(I18n.t("输入查询内容"), "warn");
+      return;
+    }
+    st.q = q;
+    const dir = dbNodeDir(node);
+    if (!dir) {
+      st.results = { error: I18n.t("未设置工作目录/子文件夹，无法查询") };
+      renderCanvas();
+      return;
+    }
+    const r = await window.api.dbQuery(dir, q, 6).catch(() => null);
+    st.results =
+      r && r.ok ? r : { error: (r && r.error) || I18n.t("查询失败") };
+    renderCanvas();
+  };
+  qbtn.onclick = runQuery;
+  qin.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") runQuery();
+  });
+  qrow.append(qin, qbtn);
+  body.appendChild(qrow);
+  /* 结果区（全部带溯源） */
+  const res = document.createElement("div");
+  res.className = "n-db-console-results";
+  if (st.results && st.results.error) {
+    res.innerHTML =
+      '<div class="n-db-orphan">' + escapeHtml(st.results.error) + "</div>";
+  } else if (st.results) {
+    if (!st.results.found) {
+      res.innerHTML =
+        '<div class="n-db-orphan">' +
+        escapeHtml(st.results.none || I18n.t("无匹配记录")) +
+        "</div>";
+    } else {
+      for (const h of st.results.results || []) {
+        const row = document.createElement("div");
+        row.className = "n-db-console-hit";
+        row.innerHTML =
+          '<div class="n-db-console-hit-head"><span class="n-db-rid">' +
+          escapeHtml(h.id) +
+          '</span><span class="n-db-rtitle">' +
+          escapeHtml(h.title || "") +
+          '</span><span class="n-db-rkind">' +
+          escapeHtml(h.kind || "") +
+          "</span></div>" +
+          '<div class="n-db-console-snip">' +
+          escapeHtml(h.snippet || "") +
+          "</div>" +
+          '<div class="n-db-console-src">' +
+          escapeHtml(h.source || "") +
+          "</div>";
+        res.appendChild(row);
+      }
+    }
+  }
+  body.appendChild(res);
+  /* calc 行（数字计算交给代码） */
+  const crow = document.createElement("div");
+  crow.className = "n-db-console-row";
+  const cin = document.createElement("input");
+  cin.type = "text";
+  cin.className = "n-db-console-input";
+  cin.placeholder = I18n.t("calc：数字 + - * / % ( )");
+  const cbtn = document.createElement("button");
+  cbtn.type = "button";
+  cbtn.className = "mini";
+  cbtn.textContent = "calc";
+  const calcout = document.createElement("span");
+  calcout.className = "n-db-console-calc";
+  if (st.calc) calcout.textContent = "= " + st.calc;
+  const runCalc = async () => {
+    const r = await window.api.dbCalc(cin.value).catch(() => null);
+    st.calc =
+      r && r.ok ? String(r.value) : (r && r.error) || I18n.t("表达式非法");
+    renderCanvas();
+  };
+  cbtn.onclick = runCalc;
+  cin.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") runCalc();
+  });
+  crow.append(cin, cbtn, calcout);
+  body.appendChild(crow);
+  /* 操作行 */
+  const orow = document.createElement("div");
+  orow.className = "n-db-console-ops";
+  const dirtyBtn = document.createElement("button");
+  dirtyBtn.type = "button";
+  dirtyBtn.className = "mini";
+  dirtyBtn.textContent = I18n.t("检查更新");
+  dirtyBtn.onclick = async () => {
+    dirtyBtn.textContent = "…";
+    const d = await dbDirtyCheck(node);
+    st.dirty = d;
+    renderCanvas();
+  };
+  const compileBtn = document.createElement("button");
+  compileBtn.type = "button";
+  compileBtn.className = "mini";
+  compileBtn.textContent = node._dbCompiling ? "…" : I18n.t("编译（增量）");
+  compileBtn.onclick = () => compileDbSuper(node);
+  const openBtn = document.createElement("button");
+  openBtn.type = "button";
+  openBtn.className = "mini";
+  openBtn.textContent = I18n.t("打开子文件夹");
+  openBtn.onclick = async () => {
+    const dir = dbNodeDir(node);
+    if (!dir) {
+      toast(I18n.t("未设置工作目录/子文件夹"), "warn");
+      return;
+    }
+    await window.api.shellOpenPath(dir).catch(() => {});
+  };
+  orow.append(dirtyBtn, compileBtn, openBtn);
+  body.appendChild(orow);
+  /* 检查更新结果 */
+  if (st.dirty) {
+    const d = st.dirty;
+    const dr = document.createElement("div");
+    dr.className = "n-db-console-dirty";
+    dr.textContent = d.error
+      ? d.error
+      : I18n.t(
+          "待入库：+{a} 新增 · ~{c} 变更 · −{r} 移除（点击「编译（增量）」生效）",
+          { a: d.added, c: d.changed, r: d.removed },
+        );
+    body.appendChild(dr);
+  }
+}
+/* 检查更新（不编译、不读文件内容）：清单 vs 磁盘文件(size+mtime) vs 内部节点哈希 */
+async function dbDirtyCheck(node) {
+  if (!node || !node.db) return { added: 0, removed: 0, changed: 0, error: "" };
+  try {
+    const manifest = (node.dbIndex && node.dbIndex.records) || [];
+    const added = [],
+      removed = [],
+      changed = [];
+    /* 内部节点：重算候选哈希（便宜） */
+    const cur = await collectDbRecords(node);
+    const curBySource = new Map(cur.map((r) => [r.source, r]));
+    const manBySource = new Map(manifest.map((r) => [r.source, r]));
+    for (const [src, r] of curBySource) {
+      if (!src.startsWith("node:")) continue;
+      const m = manBySource.get(src);
+      if (!m) added.push(src);
+      else if (m.hash !== r.hash) changed.push(src);
+    }
+    for (const [src] of manBySource) {
+      if (!src.startsWith("node:")) continue;
+      if (!curBySource.has(src)) removed.push(src);
+    }
+    /* 文件：目录列举 vs 清单 size+mtime */
+    const dir = dbNodeDir(node);
+    if (dir) {
+      const lr = await window.api.fileListDir(dir).catch(() => null);
+      const disk = new Map();
+      if (lr && lr.ok && Array.isArray(lr.list)) {
+        for (const f of lr.list) {
+          if (!f || !dbTextishFile(f.name)) continue;
+          disk.set("file:" + f.rel, { size: f.size, mtime: f.mtime });
+        }
+      }
+      for (const [src, st] of disk) {
+        const m = manBySource.get(src);
+        if (!m) added.push(src);
+        else if (Number(m.size || 0) !== Number(st.size || 0) || Number(m.mtime || 0) !== Number(st.mtime || 0))
+          changed.push(src);
+      }
+      for (const [src, m] of manBySource) {
+        if (!src.startsWith("file:")) continue;
+        if (!disk.has(src)) removed.push(src);
+      }
+    }
+    return { added: added.length, removed: removed.length, changed: changed.length, error: "" };
+  } catch (e) {
+    return { added: 0, removed: 0, changed: 0, error: (e && e.message) || String(e) };
+  }
+}
+
+/* ---------- 接线检测：智能节点上游（输入连线，递归）是否接入了数据库副本 ---------- */
+function dbReplicaSourcesInWf(node, wf) {
+  const nodes = (wf && wf.nodes) || [];
+  const wires = (wf && wf.wires) || [];
+  const byId = (id) => nodes.find((n) => n.id === id);
+  const out = [];
+  const seen = new Set();
+  const walk = (n) => {
+    if (!n || seen.has(n.id)) return;
+    seen.add(n.id);
+    for (const w of wires) {
+      if (w.to !== n.id) continue;
+      const src = byId(w.from);
+      if (!src) continue;
+      if (src.kind === "db_replica") {
+        if (!out.some((r) => r.id === src.id)) out.push(src);
+      } else {
+        walk(src);
+      }
+    }
+  };
+  walk(node);
+  return out;
+}
+function dbNodesForInWf(node, wf) {
+  const out = [];
+  const nodes = (wf && wf.nodes) || [];
+  const byId = (id) => nodes.find((n) => n.id === id);
+  for (const r of dbReplicaSourcesInWf(node, wf)) {
+    const db = byId(r.dbNodeId);
+    if (
+      db &&
+      db.kind === "super" &&
+      db.db &&
+      db.dbIndex &&
+      Array.isArray(db.dbIndex.records) &&
+      !out.some((x) => x.id === db.id)
+    )
+      out.push(db);
+  }
+  return out;
+}
+
+/* ---------- 宿主侧 mtnode_db 事件处理（工具调用 → SQLite/FTS5 查询 → 应答） ---------- */
+function dbNodeDirInWf(db, wf) {
+  const ws = String((wf && wf.workspace) || "").trim();
+  const sf = String((db && db.subFolder) || "").trim();
+  if (!ws || !sf) return "";
+  return window.api.pathJoin(ws, sf);
+}
+async function dbLogToStore(db, wf, node, action, q, hits) {
+  const dir = dbNodeDirInWf(db, wf);
+  if (!dir) return;
+  try {
+    await window.api.dbLog(dir, {
+      node: (node && node.title) || "",
+      action,
+      q: String(q || "").slice(0, 200),
+      hits: Number(hits) || 0,
+    });
+  } catch (_) {}
+}
+async function handleDbToolEvent(data, node, wf) {
+  const id = data && data.id;
+  const reply = (result) =>
+    window.api.dshInteract({ kind: "db", id, result }).catch(() => {});
+  if (!id) return;
+  try {
+    /* 工具参数经网关放在 data.params（帧顶层只有 action） */
+    const p = (data && data.params) || {};
+    const dbs = dbNodesForInWf(node, wf);
+    if (!dbs.length) {
+      reply({
+        ok: false,
+        error: I18n.t(
+          "当前任务未接入数据库副本：请先在数据库节点上「编译」，再把数据库副本节点连到本节点的输入端",
+        ),
+      });
+      return;
+    }
+    const action = String(
+      (data && data.action) || p.action || "list",
+    );
+    if (action === "calc") {
+      const r = await window.api.dbCalc(p.expr).catch(() => null);
+      reply(r || { ok: false, error: I18n.t("calc 失败") });
+      return;
+    }
+    if (action === "list") {
+      const per = [];
+      let total = 0;
+      for (const d of dbs) {
+        const dir = dbNodeDirInWf(d, wf);
+        if (!dir) {
+          per.push({
+            database: d.title || "",
+            folder: (d.dbIndex && d.dbIndex.folder) || "",
+            compiledAt: (d.dbIndex && d.dbIndex.compiledAt) || 0,
+            count: 0,
+            titles: [],
+          });
+          continue;
+        }
+        const r = await window.api.dbList(dir).catch(() => null);
+        const list = r && r.ok && Array.isArray(r.records) ? r.records : [];
+        total += r && r.ok ? Number(r.count) || list.length : 0;
+        per.push({
+          database: d.title || "",
+          folder: (d.dbIndex && d.dbIndex.folder) || "",
+          compiledAt: (d.dbIndex && d.dbIndex.compiledAt) || 0,
+          count: list.length,
+          titles: list.slice(0, 200).map(
+            (x) =>
+              x.id + " | " + (x.title || "") + " | " + (x.kind || "") + (x.file ? " | " + x.file : ""),
+          ),
+        });
+      }
+      reply({ ok: true, databases: per, total });
+      return;
+    }
+    if (action === "get") {
+      const rid = String((data && data.id) || p.id || "");
+      for (const d of dbs) {
+        const dir = dbNodeDirInWf(d, wf);
+        if (!dir) continue;
+        const r = await window.api.dbGet(dir, rid).catch(() => null);
+        if (r && r.ok) {
+          dbLogToStore(d, wf, node, "get", rid, 1);
+          reply({ ok: true, database: d.title || "", record: r.record });
+          return;
+        }
+      }
+      reply({ ok: false, error: I18n.t("数据库中没有该记录：") + rid });
+      return;
+    }
+    /* query（FTS5 BM25 排序 + 结构化过滤，结果带溯源） */
+    const q = String((data && data.q) || p.q || "").trim();
+    if (!q) {
+      reply({ ok: false, error: I18n.t("query 需要 q 参数") });
+      return;
+    }
+    const all = [];
+    for (const d of dbs) {
+      const dir = dbNodeDirInWf(d, wf);
+      if (!dir) continue;
+      const r = await window.api.dbQuery(dir, q, 6).catch(() => null);
+      if (r && r.ok && Array.isArray(r.results)) {
+        for (const h of r.results) all.push({ database: d.title || "", ...h });
+      }
+    }
+    const top = all.slice(0, 6);
+    for (const d of dbs) {
+      const dir = dbNodeDirInWf(d, wf);
+      if (dir) dbLogToStore(d, wf, node, "query", q, top.length);
+    }
+    reply({
+      ok: true,
+      query: q,
+      found: top.length,
+      results: top,
+      ...(top.length === 0
+        ? { none: I18n.t("数据库中没有匹配该查询的记录") }
+        : {}),
+    });
+  } catch (e) {
+    reply({ ok: false, error: (e && e.message) || String(e) });
+  }
+}
+/* ---------- 提示词接地：接入数据库的智能节点注入事实纪律 ---------- */
+function agentDbGroundingNote(node, wf) {
+  if (!node) return "";
+  const dbs = dbNodesForInWf(node, wf);
+  if (!dbs.length) return "";
+  const names = I18n.listJoin(
+    dbs.map((d) => "「" + (d.title || "") + "」(" + (d.dbIndex.records || []).length + I18n.t(" 条") + ")"),
+  );
+  return [
+    "【数据库接入 · 事实强制约束】",
+    I18n.t("本任务已接入数据库：") + names + "。",
+    I18n.t(
+      "1. 一切事实（名称 / 数字 / 价格 / 条款 / 路径）必须通过 mtnode_db 工具查询，回答只陈述工具返回的内容。",
+    ),
+    I18n.t("2. 每个关键断言都要注明引用来源：[记录id · 标题]。"),
+    I18n.t(
+      "3. mtnode_db 查不到的事实，必须明确回答「数据库中没有该信息」，禁止猜测、禁止用自身记忆补全。",
+    ),
+    I18n.t("4. 数字与日期计算必须用 mtnode_db 的 calc 动作，禁止心算。"),
+    I18n.t(
+      "5. 数据库未记载但任务需要的推断，必须明确标注「此为推断，数据库未记载」。",
+    ),
+  ].join("\n");
+}
+
 /* 运行一次 agent 任务；返回最终文本。onEvent(type, data) 观察流式事件。 */
 function dshRunTask(input, opts) {
   opts = opts || {};
@@ -3471,7 +4133,8 @@ function dshRunTask(input, opts) {
       }
       return ws || S.dshWorkspaceFallback || "";
     })
-    .then((workspace) => {
+    .then(async (workspace) => {
+  const indexBlock = await mtnodeInternalSkillIndexBlock();
   const nodeLock = isCanvasScopedAgentNode(opts.node);
   const runParams = {
     workspace,
@@ -3486,6 +4149,8 @@ function dshRunTask(input, opts) {
     webSearchApiKey,
     systemPrompt: [
       opts.systemPrompt || "",
+      indexBlock,
+      agentDbGroundingNote(opts.node, S.wf),
       agentToolPolicySystemNote({ nodeLock }),
       nodeLock ? agentNodeCapabilityNote() : "",
     ]
@@ -3498,7 +4163,7 @@ function dshRunTask(input, opts) {
     effort: dshEffortOf(opts.effort, !!(opts.node && opts.node.kind === "proc_text")),
     provider,
     mtnodeProviders: piProvs,
-    permissionPreset: d.permissionPreset || "mtnode-unattended",
+    permissionPreset: resolveNodePermissionPreset(opts.node, d),
     /* 图像输入(绝对路径,网关写入附件库后随消息发给视觉模型) */
     images:
       Array.isArray(opts.images) && opts.images.length
@@ -3514,6 +4179,9 @@ function dshRunTask(input, opts) {
   };
   const t0 = Date.now();
   ixReset();
+  if (opts.node && isAgentSuperPerm(opts.node) && opts.node.agentPermOutside === "ask") {
+    if (S._agentPermSessionPaths) delete S._agentPermSessionPaths[opts.node.id];
+  }
   /* 绑定本次运行的画布：后续 canvas 事件写入该 wf，切画布也不会串到别的画布 */
   const boundWf = S.wf;
   beginCanvasRun(boundWf);
@@ -3556,9 +4224,30 @@ function dshRunTask(input, opts) {
             handleCanvasEvent(msg.data || {});
             return;
           }
+          if (msg.type === "db") {
+            handleDbToolEvent(msg.data || {}, opts.node, boundWf);
+            return;
+          }
           if (settled) return;
           if (msg.type === "error" && msg.data && msg.data.message) seenError = msg.data.message;
-          if (msg.type === "question" || msg.type === "approval") {
+          if (msg.type === "approval") {
+            const node = opts.node;
+            if (
+              node &&
+              isAgentSuperPerm(node) &&
+              node.agentPermOutside === "ask"
+            ) {
+              handleSuperAskApproval(node, msg.data || {}, workspace).then(
+                (handled) => {
+                  if (!handled) ixPush("approval", msg.data || {});
+                },
+              );
+              return;
+            }
+            ixPush("approval", msg.data || {});
+            return;
+          }
+          if (msg.type === "question") {
             ixPush(msg.type, msg.data || {});
           }
           if (msg.type === "text" && msg.data && msg.data.text)
@@ -3752,6 +4441,36 @@ function builtinDoneChime() {
     o.stop(t0 + off + 0.18);
   });
 }
+/* 提问/审批提示音:内置短促双音(440→660),或用自定义文件 */
+function builtinIxBeep() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  S._audioCtx = S._audioCtx || new AC();
+  const ac = S._audioCtx;
+  if (ac.state === "suspended") ac.resume().catch(() => {});
+  const t0 = ac.currentTime;
+  [
+    [440, 0],
+    [660, 0.14],
+  ].forEach(([f, off]) => {
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = "sine";
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + off);
+    g.gain.exponentialRampToValueAtTime(0.12, t0 + off + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + off + 0.12);
+    o.connect(g);
+    g.connect(ac.destination);
+    o.start(t0 + off);
+    o.stop(t0 + off + 0.14);
+  });
+}
+function playIxSound() {
+  const d = (S.config && S.config.dsh) || {};
+  if (d.askSound === false) return;
+  if (!playDoneSoundFile(d.askSoundFile || "")) builtinIxBeep();
+}
 function playDoneSoundFile(file) {
   if (!file) return false;
   try {
@@ -3782,6 +4501,7 @@ function ixReset() {
 function ixPush(kind, data) {
   if (!S.activeIx) S.activeIx = { items: [] };
   S.activeIx.items.push({ kind, data });
+  playIxSound();
   renderIxPanel();
 }
 function ixDrop(id) {
@@ -3933,22 +4653,25 @@ function renderIxPanel() {
   }
 }
 
-/* ── 主题色(10 款;industrial = 首发默认) ── */
+/* ── 主题(仅 2 款;dsh = 默认,industrial = 旧 MTNode) ── */
 const THEMES = {
-  industrial: { name: "Industrial（默认）", cyan: "#38d6ff", cyan2: "#7ce8ff", orange: "#ff8f2e", orange2: "#ffb066", green: "#5fd68a", red: "#ff5f56" },
-  emerald: { name: "翡翠 Emerald", cyan: "#34e0a1", cyan2: "#7df0c4", orange: "#ffb02e", orange2: "#ffcf66", green: "#34e0a1", red: "#ff6b6b" },
-  violet: { name: "紫晶 Amethyst", cyan: "#a78bfa", cyan2: "#c4b5fd", orange: "#fb923c", orange2: "#fdba74", green: "#4ade80", red: "#f87171" },
-  rose: { name: "玫瑰 Rose", cyan: "#fb7185", cyan2: "#fda4af", orange: "#fbbf24", orange2: "#fcd34d", green: "#34d399", red: "#f43f5e" },
-  sky: { name: "天青 Sky", cyan: "#60a5fa", cyan2: "#93c5fd", orange: "#f59e0b", orange2: "#fbbf24", green: "#4ade80", red: "#f87171" },
-  amber: { name: "琥珀 Amber", cyan: "#fbbf24", cyan2: "#fde68a", orange: "#f97316", orange2: "#fb923c", green: "#84cc16", red: "#ef4444" },
-  lime: { name: "青柠 Lime", cyan: "#a3e635", cyan2: "#bef264", orange: "#fb923c", orange2: "#fdba74", green: "#a3e635", red: "#f87171" },
-  sakura: { name: "樱花 Sakura", cyan: "#f9a8d4", cyan2: "#fbcfe8", orange: "#fb923c", orange2: "#fdba74", green: "#6ee7b7", red: "#f87171" },
-  moonlight: { name: "月光 Moonlight", cyan: "#cbd5e1", cyan2: "#e2e8f0", orange: "#f59e0b", orange2: "#fcd34d", green: "#a3e635", red: "#f87171" },
-  crimson: { name: "深红 Crimson", cyan: "#f87171", cyan2: "#fca5a5", orange: "#fbbf24", orange2: "#fde68a", green: "#4ade80", red: "#ef4444" },
+  dsh: {
+    name: "DSH（默认）",
+    cyan: "#5686fe", cyan2: "#7ca2fe", orange: "#ff8f2e", orange2: "#ffb066",
+    green: "#5fd68a", red: "#ff5f56",
+  },
+  industrial: {
+    name: "Industrial（旧）",
+    cyan: "#38d6ff", cyan2: "#7ce8ff", orange: "#ff8f2e", orange2: "#ffb066",
+    green: "#5fd68a", red: "#ff5f56",
+  },
 };
 function applyTheme(name) {
-  const t = THEMES[name] || THEMES.industrial;
-  document.documentElement.dataset.theme = name || "industrial";
+  const t = THEMES[name] || THEMES.dsh;
+  const theme = THEMES[name] ? name : "dsh";
+  S.config.theme = theme;
+  document.documentElement.dataset.theme = theme;
+  document.body.classList.toggle("theme-industrial", theme === "industrial");
   let el = $("#themeStyle");
   if (!el) {
     el = document.createElement("style");
@@ -3959,11 +4682,350 @@ function applyTheme(name) {
     ":root{--cyan:" + t.cyan + ";--cyan2:" + t.cyan2 +
     ";--orange:" + t.orange + ";--orange2:" + t.orange2 +
     ";--green:" + t.green + ";--red:" + t.red + "}";
+  window.api.configSave(S.config).catch(() => {});
+  if (S.view === "agent") renderAgentSession();
 }
 
 /* dsh 任务节点判定：智能任务节点，或开启智能模式的文本处理节点 */
 function isDshTask(n) {
   return !!(n && (n.kind === "agent_task" || (n.kind === "proc_text" && n.agent)));
+}
+
+function isAgentSuperPerm(n) {
+  return !!(isDshTask(n) && n.agentPerm === "super");
+}
+
+function normalizeAgentPermOutside(v) {
+  return v === "ask" || v === "direct" ? v : "";
+}
+
+/** 本节点本次运行应使用的 dsh permissionPreset */
+function resolveNodePermissionPreset(node, d) {
+  d = d || {};
+  if (isAgentSuperPerm(node)) {
+    return node.agentPermOutside === "ask"
+      ? "mtnode-super-ask"
+      : "danger-full-access";
+  }
+  return d.permissionPreset || "mtnode-unattended";
+}
+
+function normFsPath(p) {
+  let s = String(p || "").trim().replace(/\//g, "\\");
+  if (!s) return "";
+  if (/^[a-zA-Z]:\\/.test(s)) s = s.charAt(0).toUpperCase() + s.slice(1);
+  return s.replace(/\\+$/, "");
+}
+
+function pathUnderRoot(target, root) {
+  const t = normFsPath(target).toLowerCase();
+  const r = normFsPath(root).toLowerCase();
+  if (!t || !r) return false;
+  return t === r || t.startsWith(r + "\\");
+}
+
+function extractPathsFromText(text) {
+  const s = String(text || "");
+  const out = [];
+  const re =
+    /(?:[a-zA-Z]:\\|\\\\[^\\\s"'<>|]+)[^\s"'<>|]*/g;
+  let m;
+  while ((m = re.exec(s))) {
+    let p = m[0].replace(/[),.;]+$/, "");
+    if (p.length >= 3) out.push(normFsPath(p));
+  }
+  return out;
+}
+
+function extractPathsFromToolArgs(args) {
+  const out = [];
+  if (args == null) return out;
+  let obj = args;
+  if (typeof args === "string") {
+    const s = args.trim();
+    try {
+      if (s.startsWith("{") || s.startsWith("[")) obj = JSON.parse(s);
+      else {
+        out.push(...extractPathsFromText(s));
+        return out;
+      }
+    } catch {
+      out.push(...extractPathsFromText(s));
+      return out;
+    }
+  }
+  const walk = (v, key) => {
+    if (v == null) return;
+    if (typeof v === "string") {
+      const k = String(key || "").toLowerCase();
+      if (
+        /path|file|dir|cwd|folder|workspace|target|src|dest|destination/.test(k) ||
+        /^[a-zA-Z]:\\/.test(v) ||
+        v.startsWith("\\\\")
+      ) {
+        out.push(...extractPathsFromText(v));
+        if (/^[a-zA-Z]:\\|^\\\\/.test(v.trim())) out.push(normFsPath(v.trim()));
+      }
+      return;
+    }
+    if (Array.isArray(v)) {
+      v.forEach((x, i) => walk(x, key || i));
+      return;
+    }
+    if (typeof v === "object") {
+      for (const [k, val] of Object.entries(v)) walk(val, k);
+    }
+  };
+  walk(obj, "");
+  return [...new Set(out.filter(Boolean))];
+}
+
+function agentPermSessionPaths(nodeId) {
+  if (!S._agentPermSessionPaths) S._agentPermSessionPaths = {};
+  if (!S._agentPermSessionPaths[nodeId]) S._agentPermSessionPaths[nodeId] = [];
+  return S._agentPermSessionPaths[nodeId];
+}
+
+function pathAllowedByList(path, list) {
+  const p = normFsPath(path);
+  if (!p) return false;
+  for (const root of list || []) {
+    if (pathUnderRoot(p, root)) return true;
+  }
+  return false;
+}
+
+function pickOutsidePathRoot(paths, workspace) {
+  const ws = normFsPath(workspace);
+  for (const p of paths || []) {
+    if (ws && pathUnderRoot(p, ws)) continue;
+    return p;
+  }
+  return "";
+}
+
+function confirmAgentOutsideMode() {
+  return new Promise((resolve) => {
+    openOverlay(I18n.t("超级权限 · 外部路径策略"));
+    overlayPersistent = true;
+    const body = $("#ovBody");
+    const foot = $("#ovFoot");
+    body.innerHTML = "";
+    const p = document.createElement("p");
+    p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
+    p.textContent = I18n.t(
+      "已开启超级权限：Agent 可访问本机任意位置（用于辅助编程等高级任务）。首次请选择访问工作区以外路径时的策略：",
+    );
+    body.appendChild(p);
+    const note = document.createElement("div");
+    note.style.cssText = "color:var(--muted); font-size:12px; line-height:1.6";
+    note.textContent = I18n.t(
+      "「是否允许访问」：每次触及未授权的外部路径时弹窗确认（可拒绝 / 允许一次 / 始终允许该路径及子路径）。「直接访问」：不再询问。",
+    );
+    body.appendChild(note);
+    foot.innerHTML = "";
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      closeOverlay();
+      resolve(v);
+    };
+    const cancel = document.createElement("button");
+    cancel.className = "mini";
+    cancel.textContent = I18n.t("取消");
+    cancel.onclick = () => finish(null);
+    const ask = document.createElement("button");
+    ask.className = "mini primary";
+    ask.textContent = I18n.t("是否允许访问");
+    ask.onclick = () => finish("ask");
+    const direct = document.createElement("button");
+    direct.className = "mini";
+    direct.textContent = I18n.t("直接访问");
+    direct.onclick = () => finish("direct");
+    foot.appendChild(cancel);
+    foot.appendChild(direct);
+    foot.appendChild(ask);
+  });
+}
+
+function confirmAgentOutsidePath(params) {
+  params = params || {};
+  return new Promise((resolve) => {
+    openOverlay(I18n.t("允许访问外部路径？"));
+    overlayPersistent = true;
+    const body = $("#ovBody");
+    const foot = $("#ovFoot");
+    body.innerHTML = "";
+    const p = document.createElement("p");
+    p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
+    p.textContent = I18n.t(
+      "超级权限节点请求访问工作区以外的路径。请选择是否允许该路径及其子路径。",
+    );
+    body.appendChild(p);
+    const detail = document.createElement("div");
+    detail.style.cssText =
+      "color:var(--muted); font-size:12px; margin-bottom:8px; white-space:pre-wrap; word-break:break-all";
+    const path = String(params.path || "").trim();
+    const tool = String(params.toolName || "").trim();
+    const reason = String(params.reason || "").trim();
+    detail.textContent =
+      (path ? I18n.t("路径：") + path + "\n" : "") +
+      (tool ? I18n.t("工具：") + tool + "\n" : "") +
+      (reason && reason !== path ? I18n.t("说明：") + reason.slice(0, 600) : "");
+    body.appendChild(detail);
+    const note = document.createElement("div");
+    note.style.cssText = "margin-top:6px; color:var(--orange2); font-size:11.5px";
+    note.textContent = I18n.t(
+      "「始终允许」写入本节点；「允许一次」仅本次运行有效；「拒绝」则阻止本次调用。",
+    );
+    body.appendChild(note);
+    foot.innerHTML = "";
+    let done = false;
+    const finish = (outcome) => {
+      if (done) return;
+      done = true;
+      closeOverlay();
+      resolve(outcome);
+    };
+    const deny = document.createElement("button");
+    deny.className = "mini danger";
+    deny.textContent = I18n.t("拒绝");
+    deny.onclick = () => finish("deny");
+    const once = document.createElement("button");
+    once.className = "mini";
+    once.textContent = I18n.t("允许一次");
+    once.onclick = () => finish("once");
+    const always = document.createElement("button");
+    always.className = "mini primary";
+    always.textContent = I18n.t("始终允许");
+    always.onclick = () => finish("always");
+    foot.appendChild(deny);
+    foot.appendChild(once);
+    foot.appendChild(always);
+  });
+}
+
+async function toggleAgentNodePerm(node) {
+  if (!isDshTask(node)) return;
+  if (node.agentPerm === "super") {
+    pushHistory();
+    node.agentPerm = "canvas";
+    scheduleSave();
+    renderCanvas();
+    toast(I18n.t("已切换为画布权限（工作区沙箱）"), "ok");
+    return;
+  }
+  let outside = normalizeAgentPermOutside(node.agentPermOutside);
+  if (!outside) {
+    const pick = await confirmAgentOutsideMode();
+    if (!pick) return;
+    outside = pick;
+  }
+  pushHistory();
+  node.agentPerm = "super";
+  node.agentPermOutside = outside;
+  if (!Array.isArray(node.agentPermAlwaysPaths)) node.agentPermAlwaysPaths = [];
+  scheduleSave();
+  renderCanvas();
+  toast(
+    outside === "ask"
+      ? I18n.t("已开启超级权限（外部路径将询问）")
+      : I18n.t("已开启超级权限（外部路径直接访问）"),
+    "ok",
+  );
+}
+
+function agentPermButtonEl(node) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  const superOn = isAgentSuperPerm(node);
+  btn.className = "n-agent-perm" + (superOn ? " on" : "");
+  btn.textContent = superOn ? I18n.t("超级") : I18n.t("画布");
+  const outside = normalizeAgentPermOutside(node.agentPermOutside);
+  btn.title = superOn
+    ? I18n.t("超级权限：可访问全主机") +
+      (outside === "ask"
+        ? I18n.t(" · 外部路径询问")
+        : I18n.t(" · 外部路径直接访问")) +
+      I18n.t("（点击切回画布权限）")
+    : I18n.t("画布权限：工作区沙箱（点击开启超级权限）");
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    toggleAgentNodePerm(node);
+  };
+  return btn;
+}
+
+async function handleSuperAskApproval(node, data, workspace) {
+  if (!isAgentSuperPerm(node) || node.agentPermOutside !== "ask") return false;
+  const id = data && data.id;
+  if (!id) return false;
+  const toolName = String((data && (data.toolName || data.name)) || "");
+  const reason = String((data && data.reason) || "");
+  const callId = data && data.callId;
+  let paths = extractPathsFromText(reason);
+  if (callId && S.nodeTools && S.nodeTools[node.id]) {
+    const hit = S.nodeTools[node.id].find((t) => t.callId === callId);
+    if (hit) paths = paths.concat(extractPathsFromToolArgs(hit.args));
+  }
+  paths = [...new Set(paths.map(normFsPath).filter(Boolean))];
+  const ws = normFsPath(workspace);
+  const outside = paths.filter((p) => !(ws && pathUnderRoot(p, ws)));
+  const answer = (outcome) =>
+    window.api
+      .dshInteract({ kind: "approval", id, outcome })
+      .catch(() => {});
+
+  if (!outside.length) {
+    /* 能判定为工作区内，或完全抽不出路径：工作区内 / 非路径工具自动放行。
+       若工具名像文件/终端且无路径可读，仍弹窗以免静默越权。 */
+    const risky =
+      !paths.length &&
+      /bash|pwsh|shell|fs|file|write|edit|read|glob|grep|str_replace|powershell/i.test(
+        toolName,
+      );
+    if (!risky) {
+      await answer("allowed-once");
+      return true;
+    }
+    const outcome = await confirmAgentOutsidePath({
+      path: "",
+      toolName,
+      reason: reason || I18n.t("未能解析具体路径，请根据工具与说明判断是否放行。"),
+    });
+    if (outcome === "deny") await answer("rejected");
+    else await answer("allowed-once");
+    return true;
+  }
+  const always = node.agentPermAlwaysPaths || [];
+  const session = agentPermSessionPaths(node.id);
+  if (outside.every((p) => pathAllowedByList(p, always) || pathAllowedByList(p, session))) {
+    await answer("allowed-once");
+    return true;
+  }
+  const root = pickOutsidePathRoot(outside, ws) || outside[0];
+  const outcome = await confirmAgentOutsidePath({
+    path: root,
+    toolName,
+    reason,
+  });
+  if (outcome === "always") {
+    if (!Array.isArray(node.agentPermAlwaysPaths)) node.agentPermAlwaysPaths = [];
+    const n = normFsPath(root);
+    if (n && !node.agentPermAlwaysPaths.some((x) => normFsPath(x) === n)) {
+      node.agentPermAlwaysPaths.push(n);
+      scheduleSave();
+    }
+    await answer("allowed-once");
+  } else if (outcome === "once") {
+    const n = normFsPath(root);
+    if (n && !pathAllowedByList(n, session)) session.push(n);
+    await answer("allowed-once");
+  } else {
+    await answer("rejected");
+  }
+  return true;
 }
 
 /* 任务文本(智能任务节点用 task 字段,文本处理用 prompt 字段) */
@@ -4609,6 +5671,7 @@ function inputCount(node) {
     node.kind === "chat" ||
     node.kind === "wait_file" ||
     node.kind === "timer" ||
+    node.kind === "db_replica" ||
     isExecStart(node)
   )
     return 0;
@@ -9981,13 +11044,14 @@ function apiPreviewButtons(node) {
   return [apiBtn, pv];
 }
 
-/* 思考强度按钮（proc_text / chat 文本模型共用）：低 / 中 / 高，点击切换，默认低
-   （API 无「关思考」档；旧 none/off 归一为 low） */
-const EFFORT_LEVELS = ["low", "medium", "high"];
-const EFFORT_LABELS = { low: "低", medium: "中", high: "高" };
+/* 思考强度按钮（proc_text / chat 文本模型共用）：无 / 低 / 中 / 高，点击切换，默认低
+   「无」= 关闭思考（参考 dsh：thinking.type=disabled，不发送 reasoning_effort）；旧 none/minimal 归一为 low */
+const EFFORT_LEVELS = ["off", "low", "medium", "high"];
+const EFFORT_LABELS = { off: "无", low: "低", medium: "中", high: "高" };
 function normalizeTextEffort(v) {
   const raw = String(v == null ? "" : v).trim().toLowerCase();
-  if (raw === "none" || raw === "off" || raw === "无") return "low";
+  if (raw === "无") return "off";
+  if (raw === "none" || raw === "minimal") return "low";
   return EFFORT_LEVELS.includes(raw) ? raw : "low";
 }
 function effortButtonEl(node) {
@@ -10001,7 +11065,7 @@ function effortButtonEl(node) {
     effortBtn.title =
       I18n.t("思考强度：当前「") +
       I18n.t(EFFORT_LABELS[cur]) +
-      I18n.t("」· 点击切换（低 / 中 / 高）");
+      I18n.t("」· 点击切换（无 / 低 / 中 / 高）");
   };
   paintEffort();
   effortBtn.onclick = (ev) => {
@@ -10031,6 +11095,7 @@ function nodeElement(node) {
         : KIND_CLS[node.kind] || "proc";
   el.className = "wf-node " + kindCls + (isSel(node.id) ? " sel" : "");
   if (isControlKind(node)) el.classList.add("is-ctrl");
+  if (isAgentSuperPerm(node)) el.classList.add("agent-super");
   if (node.kind === "task") {
     const st = node.taskStatus || "pending";
     el.classList.add("st-" + st);
@@ -10459,6 +11524,48 @@ function nodeElement(node) {
       toggleSuperOpen(node, !openShell);
     };
     head.appendChild(tog);
+    /* 数据库超级节点：形态切换 + 编译按钮 + 记录数徽标 */
+    if (node.db) {
+      const idx = node.dbIndex;
+      const recs = idx && Array.isArray(idx.records) ? idx.records.length : 0;
+      const modeBtn = document.createElement("button");
+      modeBtn.type = "button";
+      modeBtn.className = "n-play n-db-mode" + (node.dbMode === "db" ? " on" : "");
+      modeBtn.textContent = node.dbMode === "db" ? "▦" : "▤";
+      modeBtn.title =
+        node.dbMode === "db"
+          ? I18n.t("当前：数据库形态（查询 / 调试控制台）· 点击切回超级节点形态")
+          : I18n.t("切换数据库形态：内嵌查询 / calc / 检查更新等调试工具");
+      modeBtn.setAttribute("aria-label", modeBtn.title);
+      modeBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        node.dbMode = node.dbMode === "db" ? "super" : "db";
+        pushHistory();
+        scheduleSave();
+        renderCanvas();
+      };
+      head.appendChild(modeBtn);
+      const dbChip = document.createElement("span");
+      dbChip.className = "n-chip n-chip-db" + (idx ? " on" : "");
+      dbChip.textContent = idx ? String(recs) : "DB";
+      dbChip.title = idx
+        ? I18n.t("数据库已编译：") + recs + I18n.t(" 条记录 · ") + fmtTime(idx.compiledAt)
+        : I18n.t("数据库未编译：点头部 ⚙ 生成副本节点");
+      head.appendChild(dbChip);
+      const dbBtn = document.createElement("button");
+      dbBtn.type = "button";
+      dbBtn.className = "n-play n-db-compile" + (node._dbCompiling ? " running" : "");
+      dbBtn.textContent = node._dbCompiling ? "…" : "⚙";
+      dbBtn.title = I18n.t(
+        "编译数据库（仅手动触发 · 增量）：索引子文件夹文件与内部信息节点，并生成/刷新数据库副本节点",
+      );
+      dbBtn.setAttribute("aria-label", dbBtn.title);
+      dbBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        compileDbSuper(node);
+      };
+      head.appendChild(dbBtn);
+    }
   }
   if (isSaveNode(node)) {
     if (isBatch(node)) {
@@ -11294,10 +12401,10 @@ function nodeElement(node) {
       f0.appendChild(document.createTextNode(I18n.t("预设（与智能会话一致）")));
       const ps = document.createElement("select");
       for (const [v, l] of [
-        ["standard", I18n.t("通用助手")],
-        ["minimal", I18n.t("精简执行")],
-        ["code", I18n.t("代码专家")],
-        ["cordis", I18n.t("Cordis 插件开发")],
+        ["standard", I18n.t("标准模式")],
+        ["minimal", I18n.t("极简模式")],
+        ["code", I18n.t("PTC 模式")],
+        ["cordis", I18n.t("创造模式")],
       ]) {
         const o = document.createElement("option");
         o.value = v;
@@ -11685,6 +12792,10 @@ function nodeElement(node) {
     el.appendChild(p);
   }
   } /* !superIsOpenShell — 收起时才有外侧端子 */
+
+  if (isDshTask(node)) {
+    el.appendChild(agentPermButtonEl(node));
+  }
 
   const rz = document.createElement("div");
   rz.className = "n-resize";
@@ -12817,7 +13928,64 @@ function buildBody(node, body) {
       meta.textContent = "✓ " + I18n.t("已处理 ") + fmtTime(node.ranAt);
       body.appendChild(meta);
     }
+  } else if (node.kind === "db_replica") {
+    const db = nodeById(node.dbNodeId);
+    const idx = db && db.dbIndex;
+    const box = document.createElement("div");
+    box.className = "n-db-replica";
+    if (!db) {
+      box.innerHTML =
+        '<div class="n-db-orphan">⚠ ' +
+        escapeHtml(I18n.t("源数据库已删除：副本失效，可删除本节点")) +
+        "</div>";
+    } else if (!idx) {
+      box.innerHTML =
+        '<div class="n-db-orphan">' +
+        escapeHtml(I18n.t("数据库尚未编译：请展开数据库节点，点头部 ⚙ 编译")) +
+        "</div>";
+    } else {
+      const recs = Array.isArray(idx.records) ? idx.records : [];
+      const head = document.createElement("div");
+      head.className = "n-db-meta";
+      head.textContent =
+        escapeHtml(db.title || "") +
+        " · " +
+        recs.length +
+        I18n.t(" 条") +
+        " · " +
+        fmtTime(idx.compiledAt);
+      box.appendChild(head);
+      for (const r of recs.slice(0, 8)) {
+        const row = document.createElement("div");
+        row.className = "n-db-row";
+        row.title = escapeHtml(r.title || "") + (r.file ? "\n" + escapeHtml(r.file) : "");
+        row.innerHTML =
+          '<span class="n-db-rid">' +
+          escapeHtml(r.id) +
+          '</span><span class="n-db-rtitle">' +
+          escapeHtml(r.title || "") +
+          '</span><span class="n-db-rkind">' +
+          escapeHtml(r.kind || "") +
+          "</span>";
+        box.appendChild(row);
+      }
+      if (recs.length > 8) {
+        const more = document.createElement("div");
+        more.className = "n-db-more";
+        more.textContent =
+          "…" +
+          I18n.t("还有 {n} 条（经 mtnode_db 工具查询）", {
+            n: recs.length - 8,
+          });
+        box.appendChild(more);
+      }
+    }
+    body.appendChild(box);
   } else if (node.kind === "super") {
+    if (node.db && node.dbMode === "db") {
+      /* 数据库形态：查询 / 调试控制台 */
+      renderDbConsoleBody(node, body);
+    } else {
     const open = superIsOpenShell(node);
     if (!open) {
       const note = document.createElement("textarea");
@@ -12829,6 +13997,20 @@ function buildBody(node, body) {
         node.note = note.value;
       });
       body.appendChild(note);
+      /* 数据库超级节点：编译状态摘要 */
+      if (node.db) {
+        const info = document.createElement("div");
+        info.className = "n-db-info";
+        const idx = node.dbIndex;
+        info.textContent = idx
+          ? I18n.t("已编译 ") +
+            (idx.records || []).length +
+            I18n.t(" 条 · ") +
+            fmtTime(idx.compiledAt) +
+            (idx.folder ? " · " + idx.folder : "")
+          : I18n.t("未编译 · 点头部 ⚙ 生成数据库副本");
+        body.appendChild(info);
+      }
     } else {
       const stage = document.createElement("div");
       stage.className = "super-stage";
@@ -12926,6 +14108,7 @@ function buildBody(node, body) {
         };
       });
       body.appendChild(stage);
+    }
     }
   } else if (node.kind === "judge") {
     const st = document.createElement("div");
@@ -14379,7 +15562,7 @@ function buildSpec(node, prov, idx) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：始终下发 low/medium/high（旧 none/off → low） */
+    /* 思考强度：文本节点下发 off/低/中/高（off ⇒ thinking 关闭），旧 none → low */
     effort:
       node.kind === "proc_text" ? normalizeTextEffort(node.effort) : undefined,
     size:
@@ -14423,7 +15606,7 @@ function buildChatSpec(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：始终下发 low/medium/high（旧 none/off → low） */
+    /* 思考强度：文本节点下发 off/低/中/高（off ⇒ thinking 关闭），旧 none → low */
     effort: normalizeTextEffort(node.effort),
     prompt: "",
     texts: [],
@@ -14778,7 +15961,7 @@ function buildSpecAgg(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：始终下发 low/medium/high（旧 none/off → low） */
+    /* 思考强度：文本节点下发 off/低/中/高（off ⇒ thinking 关闭），旧 none → low */
     effort:
       node.kind === "proc_text" ? normalizeTextEffort(node.effort) : undefined,
     size:
@@ -18543,6 +19726,8 @@ function canvasSnapshot() {
         parentTaskId: n.parentTaskId || "",
         subFolder: n.subFolder || "",
         superOpen: !!n.superOpen,
+        db: !!n.db,
+        dbCount: n.dbIndex && n.dbIndex.records ? n.dbIndex.records.length : 0,
         childCount: (wf.nodes || []).filter(
           (x) => nodeParentSuperId(x) === n.id && !isSuperIoNode(x),
         ).length,
@@ -18674,6 +19859,16 @@ function canvasSnapshot() {
       expandH: n.kind === "super" ? n.expandH || undefined : undefined,
       subFolder: n.kind === "super" ? n.subFolder || undefined : undefined,
       superOpen: n.kind === "super" ? !!n.superOpen : undefined,
+      db: n.kind === "super" ? !!n.db : undefined,
+      dbMode:
+        n.kind === "super" && n.db ? n.dbMode || "super" : undefined,
+      dbCount:
+        n.kind === "super" && n.dbIndex && n.dbIndex.records
+          ? n.dbIndex.records.length
+          : undefined,
+      dbNodeId: n.kind === "db_replica" ? n.dbNodeId || undefined : undefined,
+      dbName: n.kind === "db_replica" ? n.dbName || undefined : undefined,
+      compiledAt: n.kind === "db_replica" ? n.compiledAt || undefined : undefined,
       goal: goalSnap ? goalSnap.text : undefined,
       goalLen: goalSnap ? goalSnap.textLen : undefined,
       steps:
@@ -21507,6 +22702,12 @@ function applyNodePatch(node, patch, warnings) {
       }
     }
     if (typeof patch.superOpen === "boolean") node.superOpen = patch.superOpen;
+    if (typeof patch.db === "boolean") {
+      node.db = patch.db;
+      if (node.db && !String(node.subFolder || "").trim()) node.subFolder = "db";
+    }
+    if (patch.dbMode === "super" || patch.dbMode === "db")
+      node.dbMode = patch.dbMode;
   }
   if (patch.savePath != null && isSaveNode(node)) {
     node.savePath = preferRelativeSavePath(String(patch.savePath));
@@ -23500,6 +24701,18 @@ async function deleteNodes(ids, quiet) {
     toast(I18n.t("已跳过固定节点（起点 / 终点）"), "warn");
   ids = finalIds;
   if (!ids.length) return false;
+  /* 数据库节点删除联动：其副本节点一并删除 */
+  for (const n of S.wf.nodes) {
+    if (
+      n &&
+      n.kind === "db_replica" &&
+      n.dbNodeId &&
+      ids.includes(n.dbNodeId) &&
+      !ids.includes(n.id)
+    ) {
+      ids.push(n.id);
+    }
+  }
   /* 智能任务节点删除联动:其关联的智能会话一并删除(先提示确认) */
   const delSet = new Set(ids);
   const linkedSessions = [];
@@ -23864,6 +25077,7 @@ const KIND_TAGS = {
   control: "控制",
   judge: "判断",
   super: "超节点",
+  db_replica: "数据库",
 };
 function sidebarSupersInTask() {
   const task = currentTaskFocus();
@@ -24795,6 +26009,21 @@ function canvasCreateMenuGroups(pt) {
         ctxKindItem("super", I18n.t("超级节点（收纳 · 展开子画布）"), () =>
           addNode("super", pt.x, pt.y),
         ),
+        ...(S.config.beta
+          ? [
+              ctxKindItem(
+                "super",
+                I18n.t("数据库（事实收纳 · 编译副本供智能节点查询）"),
+                () =>
+                  addNode("super", pt.x, pt.y, {
+                    db: true,
+                    subFolder: "db",
+                    title: I18n.t("数据库"),
+                  }),
+                { iconKey: "db", iconCls: "db" },
+              ),
+            ]
+          : []),
       ],
     ],
     [
@@ -25470,6 +26699,43 @@ function bindCanvas() {
     const files = [...(ev.dataTransfer.files || [])];
     if (!files.length) return;
     const pt = toStage(ev.clientX, ev.clientY);
+    /* 数据库超级节点：拖入文件 → 复制到子文件夹（入库待编译） */
+    const dbTarget = S.wf.nodes.find(
+      (n) => {
+        if (n.kind !== "super" || !n.db) return false;
+        const ds = superDisplaySize(n);
+        return (
+          pt.x >= n.x &&
+          pt.x <= n.x + (ds.w || n.w) &&
+          pt.y >= n.y &&
+          pt.y <= n.y + (ds.h || n.h)
+        );
+      },
+    );
+    if (dbTarget) {
+      const dir = dbNodeDir(dbTarget);
+      if (!dir) {
+        toast(I18n.t("先设置工作目录与数据库子文件夹，再拖入文件"), "warn");
+        return;
+      }
+      let copied = 0;
+      for (const f of files) {
+        const p = window.api.getPathForFile(f);
+        if (!p) continue;
+        const dest = window.api.pathJoin(dir, f.name || "file");
+        const r = await window.api.fileCopyAssetTo(p, dest).catch(() => null);
+        if (r && r.ok !== false) copied++;
+      }
+      if (copied) {
+        toast(
+          I18n.t("已放入 {n} 个文件到数据库子文件夹 · 点击 ⚙ 编译（增量）入库", {
+            n: copied,
+          }),
+          "ok",
+        );
+      }
+      return;
+    }
     const target = S.wf.nodes.find(
       (n) =>
         n.kind === "input_image" &&
@@ -35123,6 +36389,13 @@ async function reloadConfigProvidersFromDisk() {
   } catch {}
 }
 
+/* 测试版本（Beta）UI：把仍在调试的功能按开关显隐。
+   当前：顶栏「提问式」入口（仅 Beta 开启时显示）。 */
+function applyBetaUI() {
+  const zen = $("#btnZen");
+  if (zen) zen.style.display = S.config.beta ? "" : "none";
+}
+
 function openSettings() {
   reloadConfigProvidersFromDisk().then(() => {
     openSettingsBody();
@@ -35174,7 +36447,7 @@ function openSettingsBody() {
   body.appendChild(enterRow);
   enterSelEl = enterSel;
 
-  /* 主题色(10 款,默认 Industrial;即时预览,保存后持久化) */
+  /* 主题(2 款,默认 DSH;即时预览,保存后持久化) */
   const themeRow = document.createElement("label");
   themeRow.className = "n-field";
   themeRow.style.flexDirection = "row";
@@ -35187,11 +36460,40 @@ function openSettingsBody() {
     o.textContent = I18n.t(t.name);
     themeSel.appendChild(o);
   }
-  themeSel.value = (S.config.dsh && S.config.dsh.theme) || "industrial";
+  themeSel.value = (S.config && S.config.theme) || "dsh";
   themeSel.addEventListener("change", () => applyTheme(themeSel.value));
   themeRow.appendChild(themeSel);
   body.appendChild(themeRow);
   const themeSelEl = themeSel;
+
+  /* ── 测试版本（Beta）── */
+  const betaSec = document.createElement("div");
+  betaSec.className = "settings-sec";
+  const betaTitle = document.createElement("div");
+  betaTitle.className = "settings-sec-title";
+  betaTitle.textContent = I18n.t("测试版本（Beta）");
+  betaSec.appendChild(betaTitle);
+  const betaRow = document.createElement("label");
+  betaRow.className = "n-field";
+  betaRow.style.flexDirection = "row";
+  betaRow.style.alignItems = "center";
+  const betaCb = document.createElement("input");
+  betaCb.type = "checkbox";
+  betaCb.checked = !!S.config.beta;
+  betaRow.appendChild(betaCb);
+  betaRow.appendChild(
+    document.createTextNode(I18n.t("启用测试版本（显示仍在调试的功能：提问式、数据库节点）")),
+  );
+  betaSec.appendChild(betaRow);
+  const betaHint = document.createElement("div");
+  betaHint.className = "n-field";
+  betaHint.style.fontSize = "12px";
+  betaHint.style.opacity = "0.9";
+  betaHint.textContent = I18n.t(
+    "默认关闭。开启后顶栏显示「提问式」入口，并在添加节点菜单中提供「数据库」节点。",
+  );
+  betaSec.appendChild(betaHint);
+  body.appendChild(betaSec);
 
   /* ── 配置数据目录（API Key / 工作流等；更改后需重启）── */
   {
@@ -35546,10 +36848,10 @@ function openSettingsBody() {
     );
     const presetSel = document.createElement("select");
     const PRESET_OPTIONS = [
-      ["standard", I18n.t("通用助手（默认）")],
-      ["minimal", I18n.t("精简执行（直奔结果，少解释）")],
-      ["code", I18n.t("代码专家（写代码 / 改文件 / 跑命令）")],
-      ["cordis", I18n.t("Cordis 插件开发助手")],
+      ["standard", I18n.t("标准模式（默认）")],
+      ["minimal", I18n.t("极简模式（直奔结果，少解释）")],
+      ["code", I18n.t("PTC 模式（写代码 / 改文件 / 跑命令）")],
+      ["cordis", I18n.t("创造模式（自定义 Preset）")],
     ];
     for (const [v, l] of PRESET_OPTIONS) {
       const o = document.createElement("option");
@@ -35631,6 +36933,53 @@ function openSettingsBody() {
     sndFileRow.appendChild(sndClear);
     sec.appendChild(sndFileRow);
     dshEls.doneSoundFile = sndFile;
+
+    /* 提问/审批提示音:模型请求等待回应时短促提示;可替换音频文件并试听 */
+    const askRow = document.createElement("label");
+    askRow.className = "n-field";
+    askRow.style.flexDirection = "row";
+    askRow.style.alignItems = "center";
+    const askCb = document.createElement("input");
+    askCb.type = "checkbox";
+    askCb.checked = S.config.dsh.askSound !== false;
+    askRow.appendChild(askCb);
+    askRow.appendChild(document.createTextNode(I18n.t("提问/审批提示音（模型等待你回应时弹出并提示）")));
+    sec.appendChild(askRow);
+    dshEls.askSound = askCb;
+    const askFileRow = document.createElement("div");
+    askFileRow.className = "dsh-btn-row";
+    const askFile = document.createElement("input");
+    askFile.type = "text";
+    askFile.placeholder = I18n.t("自定义提示音文件（mp3 / wav / ogg，留空 = 内置短促提示音）");
+    askFile.value = S.config.dsh.askSoundFile || "";
+    askFile.style.flex = "1";
+    askFile.readOnly = true;
+    const askPick = document.createElement("button");
+    askPick.className = "mini";
+    askPick.textContent = I18n.t("替换…");
+    askPick.onclick = async () => {
+      const r = await window.api.fileOpenDialog({
+        title: I18n.t("选择提示音"),
+        filters: [{ name: I18n.t("音频"), extensions: ["mp3", "wav", "ogg", "m4a"] }],
+      });
+      if (r && r.path) askFile.value = r.path;
+    };
+    const askPlay = document.createElement("button");
+    askPlay.className = "mini";
+    askPlay.textContent = I18n.t("试听");
+    askPlay.onclick = () => {
+      if (!playDoneSoundFile(askFile.value.trim() || (S.config.dsh && S.config.dsh.askSoundFile) || "")) builtinIxBeep();
+    };
+    const askClear = document.createElement("button");
+    askClear.className = "mini";
+    askClear.textContent = I18n.t("清除");
+    askClear.onclick = () => { askFile.value = ""; };
+    askFileRow.appendChild(askFile);
+    askFileRow.appendChild(askPick);
+    askFileRow.appendChild(askPlay);
+    askFileRow.appendChild(askClear);
+    sec.appendChild(askFileRow);
+    dshEls.askSoundFile = askFile;
 
     /* ── 插件:安装按钮与商店入口在标题行最右,已装列表默认收纳 ── */
     const plTitle = document.createElement("div");
@@ -36002,6 +37351,8 @@ function openSettingsBody() {
     permissionPreset: dshEls.permissionPreset.value,
     doneSound: dshEls.doneSound.checked,
     doneSoundFile: dshEls.doneSoundFile ? dshEls.doneSoundFile.value.trim() : (S.config.dsh && S.config.dsh.doneSoundFile) || "",
+    askSound: dshEls.askSound ? dshEls.askSound.checked : (S.config.dsh && S.config.dsh.askSound) !== false,
+    askSoundFile: dshEls.askSoundFile ? dshEls.askSoundFile.value.trim() : (S.config.dsh && S.config.dsh.askSoundFile) || "",
     theme: themeSelEl ? themeSelEl.value : (S.config.dsh && S.config.dsh.theme) || "industrial",
   });
 
@@ -36037,6 +37388,7 @@ function openSettingsBody() {
   save.onclick = async () => {
     const snap = Math.max(4, Math.min(64, Number(snapInp.value) || 24));
     S.config.snap = snap;
+    S.config.beta = !!betaCb.checked;
     for (const p of S.config.providers) {
       p.name = String(p.name || "").trim();
       p.baseUrl = String(p.baseUrl || "").trim();
@@ -36060,6 +37412,7 @@ function openSettingsBody() {
         chatEnter: "send",
         permissionPreset: "mtnode-unattended",
         doneSound: true,
+        askSound: true,
         theme: "industrial",
       },
       S.config.dsh || {},
@@ -36070,6 +37423,7 @@ function openSettingsBody() {
     renderCanvas();
     renderStatus();
     paintApprovalsBtn();
+    applyBetaUI();
     toast(I18n.t("设置已保存（") + S.config.providers.length + I18n.t(" 个服务商）"), "ok");
   };
   const storageBtn = document.createElement("button");
@@ -38213,6 +39567,188 @@ async function deleteAgentSession(id) {
   renderAgentSession();
   toast(I18n.t("会话已删除：") + (s.title || I18n.t("新会话")), "ok");
 }
+
+/* ===================== dsh web composer（模型 / 命令 / 工作区 下拉） ===================== */
+function closeAgentMenus() {
+  ["agentModelMenu", "agentCmdMenu"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = true;
+  });
+}
+function openAgentMenu(id) {
+  closeAgentMenus();
+  const el = document.getElementById(id);
+  if (el) el.hidden = false;
+}
+function agentModelName(st) {
+  const dp = dshProvider();
+  const models = dp && dp.models ? dp.models : [];
+  const prov = st.provider || "deepseek-official";
+  if (prov === "deepseek-official") {
+    return st.model || (models[0] ? models[0] : "deepseek-v4-flash");
+  }
+  const mp = mtnodePiProviders().find((x) => "mtnode_" + x.route === prov);
+  const ms = (mp && mp.models) || [];
+  return st.model || (ms[0] || "…");
+}
+function agentPresetLabel(id) {
+  const m = { standard: I18n.t("标准模式"), code: I18n.t("PTC 模式"), minimal: I18n.t("极简模式"), cordis: I18n.t("创造模式") };
+  return m[id] || I18n.t("标准模式");
+}
+function renderAgentComposer() {
+  const st = agentSessionState();
+  const mv = document.getElementById("agentModelTriggerVal");
+  if (mv) mv.textContent = agentPresetLabel(st.preset) + " · " + agentModelName(st);
+  const wv = document.getElementById("agentWsTriggerVal");
+  if (wv) wv.textContent = st.workspace ? wsGroupOf(st.workspace) : I18n.t("选择工作区");
+  const pt = document.getElementById("agentPlanToggle");
+  if (pt) pt.classList.toggle("on", !!st.planNext);
+}
+function buildAgentModelMenu() {
+  const menu = document.getElementById("agentModelMenu");
+  if (!menu) return;
+  const st = agentSessionState();
+  const pane = menu.dataset.pane || "root";
+  menu.innerHTML = "";
+  const back = () => {
+    menu.dataset.pane = "root";
+    buildAgentModelMenu();
+  };
+  if (pane === "root") {
+    const pc = document.createElement("button");
+    pc.className = "agent-menu-cell";
+    pc.innerHTML =
+      '<span class="agent-menu-cell-label">' + I18n.t("预设") + '</span>' +
+      '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
+    pc.querySelector(".agent-menu-cell-value").textContent = agentPresetLabel(st.preset);
+    pc.onclick = () => { menu.dataset.pane = "preset"; buildAgentModelMenu(); };
+    menu.appendChild(pc);
+    const mc = document.createElement("button");
+    mc.className = "agent-menu-cell";
+    mc.innerHTML =
+      '<span class="agent-menu-cell-label">' + I18n.t("模型") + '</span>' +
+      '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
+    mc.querySelector(".agent-menu-cell-value").textContent = agentModelName(st);
+    mc.onclick = () => { menu.dataset.pane = "model"; buildAgentModelMenu(); };
+    menu.appendChild(mc);
+    const ec = document.createElement("button");
+    ec.className = "agent-menu-cell";
+    ec.innerHTML =
+      '<span class="agent-menu-cell-label">' + I18n.t("思考强度") + '</span>' +
+      '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
+    ec.querySelector(".agent-menu-cell-value").textContent = st.effort === "max" ? I18n.t("最强") : I18n.t("标准");
+    ec.onclick = () => { menu.dataset.pane = "effort"; buildAgentModelMenu(); };
+    menu.appendChild(ec);
+    return;
+  }
+  const bk = document.createElement("button");
+  bk.className = "agent-menu-back";
+  const backLabel = pane === "model" ? I18n.t("模型") : pane === "preset" ? I18n.t("预设") : I18n.t("思考强度");
+  bk.textContent = "← " + backLabel;
+  bk.onclick = back;
+  menu.appendChild(bk);
+  if (pane === "preset") {
+    for (const [id, label] of [["standard", I18n.t("标准模式")], ["code", I18n.t("PTC 模式")], ["minimal", I18n.t("极简模式")], ["cordis", I18n.t("创造模式")]]) {
+      const opt = document.createElement("button");
+      opt.className = "agent-menu-option" + (st.preset === id ? " selected" : "");
+      opt.innerHTML =
+        '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+        '<span class="agent-menu-check">' + (st.preset === id ? "✓" : "") + "</span>";
+      opt.querySelector(".agent-menu-option-name").textContent = label;
+      opt.onclick = () => { st.preset = id; persistAgentSession(); closeAgentMenus(); renderAgentSession(); renderAgentSessionSidebar(); };
+      menu.appendChild(opt);
+    }
+    return;
+  }
+  if (pane === "model") {
+    const groups = [];
+    const dp = dshProvider();
+    groups.push({ id: "deepseek-official", name: (dp && dp.name) || I18n.t("DeepSeek 官方"), models: (dp && dp.models) || [] });
+    for (const p of mtnodePiProviders()) {
+      const models = (p && p.models) || [];
+      if (models.length) groups.push({ id: "mtnode_" + p.route, name: p.name, models });
+    }
+    let any = 0;
+    for (const g of groups) {
+      if (!g.models.length) continue;
+      const gh = document.createElement("div");
+      gh.className = "agent-menu-group-title";
+      gh.textContent = g.name;
+      menu.appendChild(gh);
+      for (const m of g.models) {
+        any++;
+        const opt = document.createElement("button");
+        opt.className = "agent-menu-option" + (st.provider === g.id && st.model === m ? " selected" : "");
+        opt.innerHTML =
+          '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+          '<span class="agent-menu-check"></span>';
+        opt.querySelector(".agent-menu-option-name").textContent = m;
+        opt.onclick = () => {
+          st.provider = g.id;
+          st.model = m;
+          persistAgentSession();
+          closeAgentMenus();
+          renderAgentSession();
+          renderAgentSessionSidebar();
+        };
+        menu.appendChild(opt);
+      }
+    }
+    if (!any) {
+      const e = document.createElement("div");
+      e.className = "agent-menu-empty";
+      e.textContent = I18n.t("暂无模型");
+      menu.appendChild(e);
+    }
+  } else {
+    for (const [v, l] of [["high", I18n.t("标准")], ["max", I18n.t("最强")]]) {
+      const opt = document.createElement("button");
+      opt.className = "agent-menu-option" + (st.effort === v ? " selected" : "");
+      opt.innerHTML =
+        '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+        '<span class="agent-menu-check">' + (st.effort === v ? "✓" : "") + "</span>";
+      opt.querySelector(".agent-menu-option-name").textContent = l;
+      opt.onclick = () => { st.effort = v; persistAgentSession(); closeAgentMenus(); renderAgentSession(); };
+      menu.appendChild(opt);
+    }
+  }
+}
+async function buildAgentCmdMenu() {
+  const menu = document.getElementById("agentCmdMenu");
+  if (!menu) return;
+  menu.innerHTML = "";
+  let skills = [];
+  try {
+    if (window.api && window.api.skillList) {
+      const r = await window.api.skillList();
+      skills = (r && r.skills) || [];
+    }
+  } catch {}
+  const usable = skills.filter((s) => s && s.name && !isInstallOnlySkillName(s.name));
+  for (const s of usable) {
+    const opt = document.createElement("button");
+    opt.className = "agent-menu-option";
+    opt.innerHTML =
+      '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>';
+    opt.querySelector(".agent-menu-option-name").textContent = s.title || s.name;
+    opt.title = s.description || s.name;
+    opt.onclick = () => {
+      const inp = document.getElementById("agentInput");
+      if (inp) {
+        inp.value = "/" + s.name + " ";
+        inp.focus();
+      }
+      closeAgentMenus();
+    };
+    menu.appendChild(opt);
+  }
+  if (!usable.length) {
+    const e = document.createElement("div");
+    e.className = "agent-menu-empty";
+    e.textContent = I18n.t("暂无技能");
+    menu.appendChild(e);
+  }
+}
 function setView(view) {
   S.view = view;
   const wf = $("#btnToolWf");
@@ -38239,6 +39775,7 @@ function setView(view) {
   renderSidebar();
   renderStatus();
 }
+
 /* 供应商目录(pi-ai 目录 + DeepSeek 官方),懒加载一次 */
 let _catalogPromise = null;
 function ensureProviderCatalog() {
@@ -38820,11 +40357,11 @@ function renderAgentSession(opts) {
   const live = liveNodeForSession(st);
   const running = !!(st.running || live);
   list.innerHTML = "";
+  if (list) list.style.display = "";
   if (!st.messages.length && !running) {
     const hint = document.createElement("div");
     hint.className = "agent-empty";
-    hint.innerHTML =
-      I18n.t("这是<b>智能会话</b>画布:可读文件 / 联网 / 执行命令，也可修改当前画布（会弹窗确认，拒绝即停止）。画布上的智能节点不能改图。直接描述你要完成的任务即可。");
+    hint.textContent = I18n.t("选择一个工作区开始，直接描述你要完成的任务。");
     list.appendChild(hint);
   }
   for (let i = 0; i < st.messages.length; i++)
@@ -38973,27 +40510,39 @@ function renderAgentSession(opts) {
       ctx.textContent = "";
     }
   }
-  /* 执行按钮:运行中变为红色「终止」 */
+  /* 发送按钮:空闲「发送」，运行中变为红色「终止」(mtnode 按钮风格) */
   const sendBtn = $("#agentSend");
   if (sendBtn) {
-    sendBtn.textContent = running ? I18n.t("■ 终止") : I18n.t("执行");
+    sendBtn.textContent = running ? "■" : "↑";
     sendBtn.classList.toggle("danger", !!running);
-    sendBtn.classList.toggle("primary", !running);
     sendBtn.title = running
       ? I18n.t("终止当前任务(重启该工作目录的引擎)")
-      : I18n.t("执行(Enter 发送,Shift+Enter 换行)");
+      : I18n.t("发送(Enter 发送,Shift+Enter 换行)");
   }
+  renderAgentComposer();
   renderAgentSessionSidebar();
 }
 
 /* ── 会话侧边栏:按项目目录（工作路径最内层文件夹）归类,支持归档(参考 dsh) ── */
 function renderAgentSessionSidebar() {
-  const tree = $("#sideTree");
-  if (!tree) return;
-  const f = $("#sideFilter") ? $("#sideFilter").value.trim().toLowerCase() : "";
   const active = activeAgentId();
   const list = agentSessions();
   const activeSt = list.find((s) => s.id === active);
+  const targets = [];
+  const t1 = $("#sideTree");
+  const t2 = $("#agentSideList");
+  if (t1)
+    targets.push({
+      el: t1,
+      filter: $("#sideFilter") ? $("#sideFilter").value.trim().toLowerCase() : "",
+    });
+  if (t2)
+    targets.push({
+      el: t2,
+      filter: $("#agentSideFilter") ? $("#agentSideFilter").value.trim().toLowerCase() : "",
+    });
+  if (!targets.length) return;
+
   const groups = new Map();
   const archived = [];
   for (const s of list) {
@@ -39005,7 +40554,7 @@ function renderAgentSessionSidebar() {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
   }
-  tree.innerHTML = "";
+
   const mkRow = (s, isArchived) => {
     const row = document.createElement("div");
     row.className =
@@ -39055,33 +40604,39 @@ function renderAgentSessionSidebar() {
     };
     return row;
   };
-  if (!list.length) {
-    const e = document.createElement("div");
-    e.className = "side-empty";
-    e.textContent = I18n.t("暂无会话");
-    tree.appendChild(e);
-    return;
-  }
-  for (const [key, items] of groups) {
-    const gh = document.createElement("div");
-    gh.className = "side-group";
-    gh.textContent = "📁 " + key + " · " + items.length;
-    gh.title = I18n.t("项目目录: ") + key;
-    tree.appendChild(gh);
-    for (const s of items) {
-      const s2 = Object.assign({}, s);
-      if (f && !(s2.title || "").toLowerCase().includes(f) && !key.toLowerCase().includes(f)) continue;
-      tree.appendChild(mkRow(s2, false));
+
+  for (const target of targets) {
+    const tree = target.el;
+    const f = target.filter;
+    tree.innerHTML = "";
+    if (!list.length) {
+      const e = document.createElement("div");
+      e.className = "side-empty";
+      e.textContent = I18n.t("暂无会话");
+      tree.appendChild(e);
+      continue;
     }
-  }
-  if (archived.length) {
-    const det = document.createElement("details");
-    det.className = "side-archived";
-    const sum = document.createElement("summary");
-    sum.textContent = I18n.t("已归档 · ") + archived.length;
-    det.appendChild(sum);
-    for (const s of archived) det.appendChild(mkRow(s, true));
-    tree.appendChild(det);
+    for (const [key, items] of groups) {
+      const gh = document.createElement("div");
+      gh.className = "side-group";
+      gh.textContent = "📁 " + key + " · " + items.length;
+      gh.title = I18n.t("项目目录: ") + key;
+      tree.appendChild(gh);
+      for (const s of items) {
+        const s2 = Object.assign({}, s);
+        if (f && !(s2.title || "").toLowerCase().includes(f) && !key.toLowerCase().includes(f)) continue;
+        tree.appendChild(mkRow(s2, false));
+      }
+    }
+    if (archived.length) {
+      const det = document.createElement("details");
+      det.className = "side-archived";
+      const sum = document.createElement("summary");
+      sum.textContent = I18n.t("已归档 · ") + archived.length;
+      det.appendChild(sum);
+      for (const s of archived) det.appendChild(mkRow(s, true));
+      tree.appendChild(det);
+    }
   }
   /* 活动会话的工作目录显示同步 */
   if (activeSt) {
@@ -39678,6 +41233,8 @@ async function init() {
   I18n.applyDom(document);
   paintLangBtn();
   paintApprovalsBtn();
+  if (typeof S.config.beta !== "boolean") S.config.beta = false;
+  applyBetaUI();
   document.querySelectorAll(".topbar .btn-ico").forEach((el) => {
     const tip = el.getAttribute("data-tip");
     const cap = el.querySelector(".btn-ico-txt");
@@ -39720,7 +41277,6 @@ async function init() {
   const legacyMt = Number(S.config.dsh.maxTokens);
   if (legacyMt === 49152 || legacyMt === 98304) S.config.dsh.maxTokens = 0;
   ensureAgentToolPresets();
-  applyTheme((S.config.dsh && S.config.dsh.theme) || "industrial");
   /* 已访问画布(画布 Tab 条),持久化于配置 */
   if (!Array.isArray(S.config.visitedWorkflows)) S.config.visitedWorkflows = [];
   if (!Array.isArray(S.config.onlineRepos)) S.config.onlineRepos = [];
@@ -39808,6 +41364,7 @@ async function init() {
   $("#btnImport").onclick = importWorkflowDialog;
   $("#btnDelWf").onclick = deleteWorkflowDialog;
   $("#btnSettings").onclick = openSettings;
+  if ($("#btnZen") && window.ZenMode) $("#btnZen").onclick = () => window.ZenMode.toggle();
   if ($("#btnPlugins")) $("#btnPlugins").onclick = openAppPluginsDialog;
   if ($("#btnDocs"))
     $("#btnDocs").onclick = () => {
@@ -39903,6 +41460,48 @@ async function init() {
             "",
         );
       };
+    const sideFilter = $("#agentSideFilter");
+    if (sideFilter)
+      sideFilter.addEventListener("input", () => renderAgentSessionSidebar());
+    const mt = $("#agentModelTrigger");
+    if (mt)
+      mt.onclick = () => {
+        const el = $("#agentModelMenu");
+        if (!el) return;
+        if (el.hidden) { el.dataset.pane = "root"; buildAgentModelMenu(); openAgentMenu("agentModelMenu"); }
+        else closeAgentMenus();
+      };
+    const ct = $("#agentCmdTrigger");
+    if (ct)
+      ct.onclick = async () => {
+        const el = $("#agentCmdMenu");
+        if (!el) return;
+        if (el.hidden) { await buildAgentCmdMenu(); openAgentMenu("agentCmdMenu"); }
+        else closeAgentMenus();
+      };
+    const wt = $("#agentWsTrigger");
+    if (wt)
+      wt.onclick = () => {
+        const wsInput = $("#agentWsInput");
+        if (wsInput) pickFolder(wsInput, (p) => {
+          agentSessionState().workspace = p;
+          persistAgentSession();
+          renderAgentSession();
+          renderAgentSessionSidebar();
+        });
+      };
+    const pt = $("#agentPlanToggle");
+    if (pt)
+      pt.onclick = () => {
+        const st = agentSessionState();
+        st.planNext = !st.planNext;
+        persistAgentSession();
+        renderAgentSession();
+        toast(st.planNext ? I18n.t("已开启:下一轮先制定计划再执行") : I18n.t("已关闭:下一轮直接执行"), "ok");
+      };
+    document.addEventListener("mousedown", (ev) => {
+      if (!ev.target.closest(".agent-composer")) closeAgentMenus();
+    });
     const presetSel = $("#agentPresetSel");
     if (presetSel)
       presetSel.onchange = () => {
@@ -39939,6 +41538,8 @@ async function init() {
         renderAgentSession();
         toast(I18n.t("已新建会话"), "ok");
       };
+    const logoEl = $("#agentLogo");
+    if (logoEl) logoEl.onclick = newBtn ? newBtn.onclick : null;
     const inp = $("#agentInput");
     const doSend = () => {
       const st = agentSessionState();
@@ -40099,6 +41700,7 @@ async function init() {
     renderAssistPanel();
   }
   if (S.config.view === "agent") setView("agent");
+  applyTheme((S.config && S.config.theme) || "dsh");
   ensureTimerScheduler();
 }
 

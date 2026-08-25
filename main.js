@@ -74,6 +74,7 @@ function dsh() {
   if (!dshAdapter) {
     dshAdapter = createDshAdapter({
       dataDir: DATA(),
+      appRoot: __dirname,
       errLog,
       log: dshLog,
       onEvent: (ev) => {
@@ -468,6 +469,246 @@ ipcMain.handle("workflow:delete", (e, id) => {
   return { ok: true };
 });
 
+/* ---------------- IPC：Zen 沉浸式存档 ---------------- */
+
+const zenIdOk = (id) => /^[A-Za-z0-9_-]{4,120}$/.test(String(id || ""));
+const zenPath = (id) => join(DATA(), "zen", String(id) + ".json");
+const zenBackupDir = (id) => join(DATA(), "zen-backups", String(id));
+
+ipcMain.handle("zen:list", () => {
+  const d = mk(join(DATA(), "zen"));
+  let files = [];
+  try {
+    files = fs.readdirSync(d);
+  } catch {}
+  return files
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => {
+      const j = readJson(join(d, f), {});
+      const id = j.id || f.slice(0, -5);
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(join(d, f)).mtimeMs;
+      } catch {}
+      return {
+        id,
+        name: j.name || id,
+        mtime,
+        nodes: (j.nodes || []).length,
+        phase: j.phase || "explore",
+        workflowId: j.workflowId || "",
+        projectFolder: j.projectFolder || "",
+      };
+    })
+    .sort((a, b) => b.mtime - a.mtime);
+});
+
+ipcMain.handle("zen:load", (e, id) => {
+  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
+  const j = readJson(zenPath(id));
+  return j ? { ok: true, data: j } : { ok: false, error: I18n.t("存档不存在") };
+});
+
+ipcMain.handle("zen:create", (e, { name }) => {
+  const id = "zen_" + Date.now().toString(36);
+  const now = Date.now();
+  const doc = {
+    id,
+    name: String(name || "").trim() || "Zen",
+    createdAt: now,
+    updatedAt: now,
+    projectFolder: "",
+    workflowId: "",
+    cam: { x: 0, y: 0, z: 1 },
+    nodes: [],
+    edges: [],
+    chat: [],
+    planMarkdown: "",
+    phase: "explore",
+    activeNodeIds: [],
+  };
+  writeJson(zenPath(id), doc);
+  return { ok: true, id, data: doc };
+});
+
+ipcMain.handle("zen:save", (e, { id, data }) => {
+  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
+  const j = data || {};
+  j.id = id;
+  j.updatedAt = Date.now();
+  writeJson(zenPath(id), j);
+  return { ok: true, mtime: Date.now() };
+});
+
+ipcMain.handle("zen:delete", (e, id) => {
+  if (!zenIdOk(id)) return { ok: false };
+  try {
+    fs.rmSync(zenPath(id));
+  } catch {}
+  try {
+    fs.rmSync(zenBackupDir(id), { recursive: true, force: true });
+  } catch {}
+  return { ok: true };
+});
+
+ipcMain.handle("zen:backup", (e, id) => {
+  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
+  try {
+    const src = zenPath(id);
+    if (!fs.existsSync(src)) return { ok: false, error: I18n.t("存档不存在") };
+    const bakDir = mk(zenBackupDir(id));
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.copyFileSync(src, join(bakDir, "zen-" + stamp + ".json"));
+    /* FIFO：最多保留 3 份 */
+    const files = fs
+      .readdirSync(bakDir)
+      .filter((f) => f.startsWith("zen-") && f.endsWith(".json"))
+      .map((f) => ({ f, t: fs.statSync(join(bakDir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    for (const old of files.slice(3)) {
+      try {
+        fs.unlinkSync(join(bakDir, old.f));
+      } catch {}
+    }
+    return { ok: true, mtime: Date.now() };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("zen:listBackups", (e, id) => {
+  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
+  try {
+    const bakDir = zenBackupDir(id);
+    if (!fs.existsSync(bakDir)) return { ok: true, list: [] };
+    return {
+      ok: true,
+      list: fs
+        .readdirSync(bakDir)
+        .filter((f) => f.endsWith(".json"))
+        .map((f) => {
+          let t = 0;
+          try {
+            t = fs.statSync(join(bakDir, f)).mtimeMs;
+          } catch {}
+          return { file: f, mtime: t };
+        })
+        .sort((a, b) => b.mtime - a.mtime),
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("zen:restoreBackup", (e, { id, file }) => {
+  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
+  const fname = String(file || "").replace(/[^A-Za-z0-9_.-]/g, "");
+  if (!fname.endsWith(".json"))
+    return { ok: false, error: I18n.t("非法备份文件") };
+  const j = readJson(join(zenBackupDir(id), fname));
+  if (!j) return { ok: false, error: I18n.t("备份不存在") };
+  j.updatedAt = Date.now();
+  writeJson(zenPath(id), j);
+  return { ok: true, data: j };
+});
+
+/* Zen 内置 skill 全文（渲染层按需注入系统提示；打包后在 asar 内读取） */
+ipcMain.handle("zen:skillText", (e, id) => {
+  const safe = String(id || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "");
+  if (!safe) return { ok: false, error: I18n.t("非法技能 id") };
+  const p = join(__dirname, "mtnode-agent-skills", "zen", safe, "SKILL.md");
+  try {
+    if (!fs.existsSync(p)) return { ok: false, error: I18n.t("技能不存在") };
+    return { ok: true, text: fs.readFileSync(p, "utf8") };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+/* ---------------- IPC：数据库超级节点（SQLite/FTS5 事实库） ---------------- */
+const dbStore = require("./db-store");
+
+function dbStoreOpenFor(dir) {
+  const s = String(dir || "");
+  if (!s || !fs.existsSync(s) || !fs.statSync(s).isDirectory())
+    throw new Error(I18n.t("数据库子文件夹不存在：") + s);
+  return dbStore.openDb(dbStore.dbFilePath(s));
+}
+ipcMain.handle("db:compile", (e, { dir, records }) => {
+  let db = null;
+  try {
+    db = dbStoreOpenFor(dir);
+    const changes = dbStore.compileRecords(db, records || []);
+    return { ok: true, ...changes };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  } finally {
+    if (db) db.close();
+  }
+});
+ipcMain.handle("db:list", (e, { dir }) => {
+  let db = null;
+  try {
+    db = dbStoreOpenFor(dir);
+    return { ok: true, count: dbStore.dbCount(db), records: dbStore.dbList(db) };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  } finally {
+    if (db) db.close();
+  }
+});
+ipcMain.handle("db:query", (e, { dir, q, limit }) => {
+  let db = null;
+  try {
+    db = dbStoreOpenFor(dir);
+    const hits = dbStore.dbQuery(db, q, limit);
+    return {
+      ok: true,
+      query: String(q || ""),
+      found: hits.length,
+      results: hits,
+      ...(hits.length === 0
+        ? { none: I18n.t("数据库中没有匹配该查询的记录") }
+        : {}),
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  } finally {
+    if (db) db.close();
+  }
+});
+ipcMain.handle("db:get", (e, { dir, id }) => {
+  let db = null;
+  try {
+    db = dbStoreOpenFor(dir);
+    const r = dbStore.dbGet(db, id);
+    return r ? { ok: true, record: r } : { ok: false, error: I18n.t("数据库中没有该记录：") + String(id || "") };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  } finally {
+    if (db) db.close();
+  }
+});
+ipcMain.handle("db:calc", (e, { expr }) => {
+  const v = dbStore.dbCalcExpr(expr);
+  return v === null
+    ? { ok: false, error: I18n.t("calc 仅支持数字与 + - * / % 括号，表达式非法") }
+    : { ok: true, expr: String(expr || ""), value: v };
+});
+ipcMain.handle("db:log", (e, { dir, entry }) => {
+  let db = null;
+  try {
+    db = dbStoreOpenFor(dir);
+    return { ok: true, log: dbStore.dbLogAppend(db, entry || {}) };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  } finally {
+    if (db) db.close();
+  }
+});
+
 /* ---------------- IPC：资产 / 文件 ---------------- */
 
 /* 参考图输入落盘 / 导入上限：长宽任一超过 1080px 时等比缩小（仅 asset:copy、画布包导入等参考用途）。
@@ -649,6 +890,46 @@ ipcMain.handle("file:isDir", (e, p) => {
     return fs.existsSync(s) && fs.statSync(s).isDirectory();
   } catch {
     return false;
+  }
+});
+/* 目录列举（数据库节点编译索引）：递归返回文件 {name, rel, isDir, size, mtime}，跳过隐藏与重型目录 */
+ipcMain.handle("file:listDir", (e, p) => {
+  try {
+    const s = String(p || "");
+    if (!s) return { ok: true, list: [] };
+    const out = [];
+    const walk = (dir, base) => {
+      let ents;
+      try {
+        ents = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of ents) {
+        if (ent.name.startsWith(".")) continue;
+        const full = join(dir, ent.name);
+        const rel = base ? base + "/" + ent.name : ent.name;
+        if (ent.isDirectory()) {
+          if (ent.name === "node_modules" || ent.name === ".git") continue;
+          if (out.length > 4000) return;
+          walk(full, rel);
+        } else {
+          let size = 0,
+            mtime = 0;
+          try {
+            const st = fs.statSync(full);
+            size = st.size;
+            mtime = st.mtimeMs;
+          } catch {}
+          out.push({ name: ent.name, rel, isDir: false, size, mtime });
+          if (out.length > 4000) return;
+        }
+      }
+    };
+    if (fs.existsSync(s) && fs.statSync(s).isDirectory()) walk(s, "");
+    return { ok: true, list: out };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
   }
 });
 ipcMain.handle(
@@ -1824,18 +2105,25 @@ function shrinkImageForApi(p) {
   return shrinkImageBuffer(raw, ext, API_REF_IMAGE_MAX_DIM);
 }
 
-/* 文本模型思考强度 → Chat Completions 字段。
-   DeepSeek V4：thinking 默认开启；reasoning_effort 仅 low/high/max（无「关思考」档）。
-   旧 UI 的 none/off 按 low 处理。 */
+/* 文本模型思考强度 → Chat Completions 字段（映射方式参考 dsh-llm-deepseek）：
+   - off / 无 → thinking.type = disabled，且不发送 reasoning_effort（关闭思考）
+   - low / high / max → thinking.type = enabled + reasoning_effort
+   - medium / xhigh → high；legacy none / minimal → low（旧数据兼容） */
 function applyTextThinkingEffort(body, effort) {
   const raw = String(effort == null ? "" : effort)
     .trim()
     .toLowerCase();
   if (!raw) return;
-  body.thinking = { type: "enabled" };
   let e = raw;
-  if (e === "none" || e === "off" || e === "无" || e === "minimal") e = "low";
   if (e === "medium" || e === "xhigh") e = "high";
+  if (e === "none" || e === "minimal") e = "low";
+  if (e === "无") e = "off";
+  if (e === "off") {
+    body.thinking = { type: "disabled" };
+    delete body.reasoning_effort;
+    return;
+  }
+  body.thinking = { type: "enabled" };
   if (e === "low" || e === "high" || e === "max") body.reasoning_effort = e;
   else body.reasoning_effort = "high";
 }
@@ -2437,6 +2725,8 @@ ipcMain.handle("dsh:providerCatalog", () => dsh().providerCatalog());
 ipcMain.handle("skill:list", () => dsh().skillList());
 
 ipcMain.handle("skill:get", (event, name) => dsh().skillGet(name));
+ipcMain.handle("mtnodeAgentSkill:index", () => dsh().mtnodeAgentSkillIndex());
+ipcMain.handle("mtnodeAgentSkill:get", (event, name) => dsh().mtnodeAgentSkillGet(name));
 
 ipcMain.handle("skill:add", (event, skill) => dsh().skillAdd(skill));
 
@@ -2634,6 +2924,7 @@ app.whenReady().then(() => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      webviewTag: true,
       preload: join(__dirname, "preload.js"),
     },
   });

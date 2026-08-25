@@ -356,7 +356,7 @@ const PRESETS = {
     'You are a Cordis plugin developer for DeepSeek Harness. Follow Cordis conventions (Service classes, ctx.effect/ctx.on registrations, typed events) when writing plugins or composition files.',
   /* 画布智能节点:办事但不改图。由宿主在 node 运行时把 standard 换成此档,不出现在 UI 预设列表。 */
   node:
-    'You are the agent engine inside MTNode, running as a canvas AGENT NODE (agent_task / proc_text with agent / chat with agent). Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You MUST NOT edit the canvas, modify workflows, or create tasks/nodes/wires/marks. Do not call mtnode_canvas_get, mtnode_canvas_edit, or mtnode_app — the host rejects them. Deliver results by writing files. Mid-task pixel reading (screenshots, OCR, verify an image): call mtnode_vision with imagePath + question. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, running as a canvas AGENT NODE (agent_task / proc_text with agent / chat with agent). Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You MUST NOT edit the canvas, modify workflows, or create tasks/nodes/wires/marks. Do not call mtnode_canvas_get, mtnode_canvas_edit, or mtnode_app — the host rejects them. Deliver results by writing files. Mid-task pixel reading (screenshots, OCR, verify an image): call mtnode_vision with imagePath + question. DATABASE grounding: when wired to a database replica, facts must come from the mtnode_db tool (list/query/get/calc), every assertion must cite [记录id · 标题], unknown facts are answered as "数据库中没有该信息", and all numeric math goes through mtnode_db calc. Work step by step, show the user what you are doing, and end with a clear, complete result.',
   /* 桌宠对话:不走 MTNode 画布/文件助手人设,身份由 hostPersona 覆盖 system-prompt */
   bongochat: '',
 }
@@ -622,7 +622,7 @@ function onBridgeFrame(key, m, socket) {
     bridgePending.delete(m.id)
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db') return
   const reqId = keyToReqId.get(key)
   if (!reqId) {
     try { socket.write(JSON.stringify({ t: 'abort', id: m.id }) + '\n') } catch {}
@@ -637,6 +637,7 @@ function onBridgeFrame(key, m, socket) {
     if (m.reason !== undefined) data.reason = m.reason
   } else {
     data.op = typeof m.op === 'string' ? m.op : ''
+    if (typeof m.action === 'string') data.action = m.action
     data.params = m.params && typeof m.params === 'object' ? m.params : {}
   }
   out({ event: { reqId, type: m.t, data } })
@@ -920,6 +921,7 @@ const PERMISSION_PRESETS = [
   'read-only',
   'workspace-write',
   'danger-full-access',
+  'mtnode-super-ask',
   'bongochat',
 ]
 let lastSettingsHome = ''
@@ -1751,6 +1753,17 @@ rl.on('line', (line) => {
             try {
               pending.socket.write(JSON.stringify({
                 t: 'canvas-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'db') {
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'db-result',
                 id: p.id,
                 ok: !err,
                 result: p.result == null ? null : p.result,

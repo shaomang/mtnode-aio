@@ -1,7 +1,7 @@
 {
   "name": "mtnode-ai-orchestrator",
   "productName": "MTNode AI编排器",
-  "version": "1.1.27",
+  "version": "1.1.28",
   "description": "MTNode AI编排器（MTNode AI Orchestrator）— AI 工作流编排",
   "main": "main.js",
   "scripts": {
@@ -19,7 +19,8 @@
     "ext:sync": "node ext-repo/build.mjs && python ext-repo/upload.py",
     "store:deploy": "python store-saas/upload.py",
     "store:seed-skills": "node store-saas/seed-skills.mjs",
-    "store:release-skills": "node tools/release-skills.mjs"
+    "store:release-skills": "node tools/release-skills.mjs",
+    "build:agent-skills-index": "node tools/build-mtnode-agent-skill-index.js"
   },
   "author": "New Earth Habitat",
   "license": "MIT",
@@ -29,6 +30,7 @@
     "electron-packager": "^17.1.2"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "electron-updater": "^6.8.9",
     "gifenc": "^1.0.3",
     "marked": "^18.0.9",

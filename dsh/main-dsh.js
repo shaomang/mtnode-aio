@@ -12,6 +12,11 @@ const { createInterface } = require('readline')
 const { app } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const {
+  syncMtnodeAgentSkills,
+  mtnodeAgentSkillIndex,
+  getMtnodeAgentSkill,
+} = require('../mtnode-agent-skills-lib.js')
 
 /** 插件安装专用 skill：同步到 dsh-home 供 Agent 调用，但不进入用户技能列表/工坊 */
 const INSTALL_SKILL_SOURCES = {
@@ -40,6 +45,7 @@ const GATEWAY_PATH = app.isPackaged
 
 function createDshAdapter(opts) {
   const { dataDir, errLog, log } = opts
+  const appRoot = opts.appRoot || path.join(__dirname, '..')
   const dshHome = path.join(dataDir, 'dsh-home')
 
   let child = null
@@ -248,6 +254,32 @@ function createDshAdapter(opts) {
       }
     },
 
+    syncMtnodeAgentSkills() {
+      try {
+        return syncMtnodeAgentSkills(dshHome, appRoot)
+      } catch (err) {
+        return { ok: false, error: (err && err.message) || String(err) }
+      }
+    },
+
+    mtnodeAgentSkillIndex() {
+      try {
+        this.syncMtnodeAgentSkills()
+        return mtnodeAgentSkillIndex(dshHome, appRoot)
+      } catch (err) {
+        return { ok: false, error: (err && err.message) || String(err) }
+      }
+    },
+
+    mtnodeAgentSkillGet(name) {
+      try {
+        this.syncMtnodeAgentSkills()
+        return getMtnodeAgentSkill(dshHome, name)
+      } catch (err) {
+        return { ok: false, error: (err && err.message) || String(err) }
+      }
+    },
+
     _parseSkillMeta(text) {
       const meta = { title: '', description: '', version: '', name: '' }
       const raw = String(text || '')
@@ -298,6 +330,7 @@ function createDshAdapter(opts) {
     skillList() {
       try {
         this.syncInstallSkills()
+        this.syncMtnodeAgentSkills()
         const root = path.join(dshHome, 'skills')
         if (!fs.existsSync(root)) return { skills: [] }
         const out = []
@@ -306,6 +339,7 @@ function createDshAdapter(opts) {
           if (INSTALL_SKILL_NAMES.has(e.name)) continue
           if (e.name.endsWith('-install')) continue
           if (fs.existsSync(path.join(root, e.name, '.install-only'))) continue
+          if (fs.existsSync(path.join(root, e.name, '.mtnode-internal'))) continue
           const skillMd = path.join(root, e.name, 'SKILL.md')
           let title = ''
           let description = ''
@@ -484,6 +518,9 @@ function createDshAdapter(opts) {
           fs.existsSync(path.join(dir, '.install-only'))
         ) {
           return { ok: false, error: '插件安装技能不可卸载' }
+        }
+        if (fs.existsSync(path.join(dir, '.mtnode-internal'))) {
+          return { ok: false, error: 'MTNode 内置技能不可卸载' }
         }
         if (fs.existsSync(path.join(dir, '.builtin'))) {
           return { ok: false, error: '内置技能不可卸载' }
