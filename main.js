@@ -652,7 +652,13 @@ ipcMain.handle("db:list", (e, { dir }) => {
   let db = null;
   try {
     db = dbStoreOpenFor(dir);
-    return { ok: true, count: dbStore.dbCount(db), records: dbStore.dbList(db) };
+    const r = dbStore.dbList(db);
+    return {
+      ok: true,
+      count: dbStore.dbCount(db),
+      records: r.rows,
+      sql: r.sql,
+    };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   } finally {
@@ -663,13 +669,14 @@ ipcMain.handle("db:query", (e, { dir, q, limit }) => {
   let db = null;
   try {
     db = dbStoreOpenFor(dir);
-    const hits = dbStore.dbQuery(db, q, limit);
+    const h = dbStore.dbQuery(db, q, limit);
     return {
       ok: true,
       query: String(q || ""),
-      found: hits.length,
-      results: hits,
-      ...(hits.length === 0
+      found: h.rows.length,
+      results: h.rows,
+      sql: h.sql,
+      ...(h.rows.length === 0
         ? { none: I18n.t("数据库中没有匹配该查询的记录") }
         : {}),
     };
@@ -684,7 +691,33 @@ ipcMain.handle("db:get", (e, { dir, id }) => {
   try {
     db = dbStoreOpenFor(dir);
     const r = dbStore.dbGet(db, id);
-    return r ? { ok: true, record: r } : { ok: false, error: I18n.t("数据库中没有该记录：") + String(id || "") };
+    return r.record
+      ? { ok: true, record: r.record, sql: r.sql }
+      : { ok: false, error: I18n.t("数据库中没有该记录：") + String(id || "") };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  } finally {
+    if (db) db.close();
+  }
+});
+ipcMain.handle("db:write", (e, { dir, records }) => {
+  let db = null;
+  try {
+    db = dbStoreOpenFor(dir);
+    const r = dbStore.dbWrite(db, records || []);
+    return { ok: true, ...r };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  } finally {
+    if (db) db.close();
+  }
+});
+ipcMain.handle("db:delete", (e, { dir, ids }) => {
+  let db = null;
+  try {
+    db = dbStoreOpenFor(dir);
+    const r = dbStore.dbDelete(db, ids || []);
+    return { ok: true, ...r };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   } finally {
@@ -706,6 +739,203 @@ ipcMain.handle("db:log", (e, { dir, entry }) => {
     return { ok: false, error: (err && err.message) || String(err) };
   } finally {
     if (db) db.close();
+  }
+});
+
+/* ---------------- 网络节点：节点级独立端口 + 通道(16bit) 分流 ---------------- */
+/* 接收节点在各自端口上监听（同端口同协议的多个接收节点共享监听 socket，按通道号分流）；
+   发送节点向 host:port 发起（默认本机，可填远程 IP）。监听端口与发送目标端口相互独立，
+   默认 接收 40999 / 发送 41000。TCP/UDP 各自独立、异步互不干涉。 */
+const NET_DEFAULT_PORT = 40999;
+
+const netListeners = new Map(); // key "tcp:40999" -> {proto,port,ref,tcp,udp,err}
+
+function netBroadcast(obj) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w && !w.isDestroyed()) {
+      try {
+        w.webContents.send("net:message", obj);
+      } catch {}
+    }
+  }
+}
+
+/* 帧结构：2字节通道(BE) + 4字节负载长度(BE) + UTF-8 负载 */
+function netEncodeFrame(channel, payload) {
+  const body = Buffer.from(String(payload == null ? "" : payload), "utf8");
+  const buf = Buffer.alloc(6 + body.length);
+  buf.writeUInt16BE((Number(channel) || 0) & 0xffff, 0);
+  buf.writeUInt32BE(body.length, 2);
+  body.copy(buf, 6);
+  return buf;
+}
+
+function netOpen(L) {
+  try {
+    if (L.proto === "tcp" && !L.tcp) {
+      const net = require("net");
+      L.tcp = net.createServer((sock) => {
+        let acc = Buffer.alloc(0);
+        sock.on("data", (d) => {
+          acc = Buffer.concat([acc, d]);
+          let idx = 0;
+          while (idx + 6 <= acc.length) {
+            const ch = acc.readUInt16BE(idx);
+            const len = acc.readUInt32BE(idx + 2);
+            const total = 6 + len;
+            if (idx + total > acc.length) break;
+            const body = acc.slice(idx + 6, idx + total).toString("utf8");
+            idx += total;
+            netBroadcast({ channel: ch, proto: "tcp", data: body, at: Date.now() });
+          }
+          acc = acc.slice(idx);
+        });
+      });
+      L.tcp.on("error", (e) => (L.err = (e && e.message) || String(e)));
+      L.tcp.listen(L.port, "0.0.0.0");
+    } else if (L.proto === "udp" && !L.udp) {
+      const dgram = require("dgram");
+      L.udp = dgram.createSocket({ type: "udp4", reuseAddr: true });
+      L.udp.on("message", (msg) => {
+        if (msg.length < 6) return;
+        const ch = msg.readUInt16BE(0);
+        const len = msg.readUInt32BE(2);
+        const body = msg.slice(6, Math.min(6 + len, msg.length)).toString("utf8");
+        netBroadcast({ channel: ch, proto: "udp", data: body, at: Date.now() });
+      });
+      L.udp.on("error", (e) => (L.err = (e && e.message) || String(e)));
+      L.udp.bind(L.port, "0.0.0.0");
+    }
+  } catch (e) {
+    L.err = (e && e.message) || String(e);
+  }
+}
+
+function netClose(L) {
+  try {
+    if (L.tcp) {
+      L.tcp.close();
+      L.tcp = null;
+    }
+    if (L.udp) {
+      L.udp.close();
+      L.udp = null;
+    }
+  } catch {}
+}
+
+let netUdpSender = null;
+ipcMain.handle("net:listen", (e, { port, channel, proto }) => {
+  const p = Math.max(1, Math.min(65535, Number(port) || NET_DEFAULT_PORT));
+  const key = (proto === "udp" ? "udp" : "tcp") + ":" + p;
+  let L = netListeners.get(key);
+  if (!L) {
+    L = { proto: proto === "udp" ? "udp" : "tcp", port: p, ref: 0, tcp: null, udp: null, err: null };
+    netListeners.set(key, L);
+  }
+  L.ref++;
+  netOpen(L);
+  return { ok: true, listenErr: L.err, port: p };
+});
+ipcMain.handle("net:unlisten", (e, { port, channel, proto }) => {
+  const p = Math.max(1, Math.min(65535, Number(port) || NET_DEFAULT_PORT));
+  const key = (proto === "udp" ? "udp" : "tcp") + ":" + p;
+  const L = netListeners.get(key);
+  if (!L) return { ok: true };
+  L.ref = Math.max(0, L.ref - 1);
+  if (L.ref <= 0) {
+    netClose(L);
+    netListeners.delete(key);
+  }
+  return { ok: true };
+});
+ipcMain.handle("net:send", (e, { host, port, channel, proto, data }) => {
+  const h = String(host || "127.0.0.1");
+  const p = Math.max(1, Math.min(65535, Number(port) || NET_DEFAULT_PORT));
+  const ch = (Number(channel) || 0) & 0xffff;
+  const frame = netEncodeFrame(ch, data);
+  try {
+    if (proto === "udp") {
+      const dgram = require("dgram");
+      if (!netUdpSender) netUdpSender = dgram.createSocket("udp4");
+      netUdpSender.send(frame, 0, frame.length, p, h, (err) => {
+        if (err) return;
+      });
+      return { ok: true };
+    }
+    const net = require("net");
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (r) => {
+        if (!done) {
+          done = true;
+          resolve(r);
+        }
+      };
+      const sock = net.createConnection({ host: h, port: p }, () => {
+        try {
+          sock.write(frame);
+        } catch (err) {
+          finish({ ok: false, error: (err && err.message) || String(err) });
+        }
+      });
+      sock.setTimeout(4000, () => {
+        sock.destroy();
+        finish({ ok: false, error: I18n.t("发送超时") });
+      });
+      sock.on("error", (err) => finish({ ok: false, error: (err && err.message) || String(err) }));
+      sock.on("close", () => finish({ ok: true }));
+      sock.on("data", () => {}); /* 忽略响应，保持单向 */
+    });
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+/* 打开 netdebug 调试工具（独立 Electron 工具，位于 ../netdebug），
+   按网络节点参数（协议/目标/端口/通道）预填，实现画布 ↔ netdebug 打通。 */
+ipcMain.handle("net:open-debug", (e, o = {}) => {
+  try {
+    const { spawn } = require("child_process");
+    const cands = [
+      process.env.NETDEBUG_DIR,
+      path.join(__dirname, "..", "netdebug"),
+      "E:\\dev\\tools\\netdebug",
+    ].filter(Boolean);
+    let dir = null;
+    for (const c of cands) {
+      try {
+        if (c && fs.existsSync(path.join(c, "src", "main.js"))) {
+          dir = c;
+          break;
+        }
+      } catch (_) {}
+    }
+    if (!dir)
+      return { ok: false, error: "未找到 netdebug 工具目录（可设环境变量 NETDEBUG_DIR）" };
+    const args = [path.join(dir, "start.js")];
+    const push = (k, v) => {
+      if (v !== undefined && v !== null && v !== "") args.push("--" + k, String(v));
+    };
+    push("proto", o.proto);
+    push("host", o.host);
+    push("port", o.port);
+    push("target-host", o.targetHost);
+    push("target-port", o.targetPort);
+    push("channel", o.channel);
+    push("role", o.role);
+    push("framed", o.framed === false ? "0" : "1");
+    const child = spawn("node", args, {
+      cwd: dir,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: { ...process.env },
+    });
+    child.unref();
+    return { ok: true, dir, args };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
   }
 });
 
@@ -890,6 +1120,15 @@ ipcMain.handle("file:isDir", (e, p) => {
     return fs.existsSync(s) && fs.statSync(s).isDirectory();
   } catch {
     return false;
+  }
+});
+/* 单文件信息（数据库「文件节点」导入后取 size/mtime） */
+ipcMain.handle("file:stat", (e, p) => {
+  try {
+    const st = fs.statSync(String(p || ""));
+    return { ok: true, size: st.size, mtime: Math.floor(st.mtimeMs) };
+  } catch {
+    return { ok: false, error: I18n.t("路径不存在") };
   }
 });
 /* 目录列举（数据库节点编译索引）：递归返回文件 {name, rel, isDir, size, mtime}，跳过隐藏与重型目录 */

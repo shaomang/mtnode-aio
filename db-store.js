@@ -12,7 +12,12 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const Database = require("better-sqlite3");
+
+function dbHashOf(s) {
+  return crypto.createHash("sha1").update(String(s == null ? "" : s)).digest("hex");
+}
 
 const DB_FILE = ".mtnode-db.sqlite";
 const QUERY_LIMIT = 6;
@@ -96,8 +101,8 @@ function compileRecords(db, records) {
     });
   }
   const existing = new Map();
-  for (const row of db.prepare("SELECT id, hash FROM records").all())
-    existing.set(row.id, String(row.hash || ""));
+  for (const row of db.prepare("SELECT id, hash, source FROM records").all())
+    existing.set(row.id, { hash: String(row.hash || ""), source: String(row.source || "") });
   const added = [];
   const updated = [];
   const removed = [];
@@ -117,15 +122,19 @@ function compileRecords(db, records) {
         ins.run(r);
         insFts.run(id, dbTokenize(r.title + " " + r.content).join(" "));
         added.push(id);
-      } else if (prev !== r.hash) {
+      } else if (prev.hash !== r.hash) {
         upd.run(r);
         delFts.run(id);
         insFts.run(id, dbTokenize(r.title + " " + r.content).join(" "));
         updated.push(id);
       }
     }
-    for (const id of existing.keys()) {
-      if (!incoming.has(id)) {
+    /* 只移除由「节点/文件」编译来源的记录；agent 直接写入的记录（其它 source）保留，
+       否则用户重新编译会误删 agent 增删改查留下的数据。 */
+    for (const [id, row] of existing) {
+      if (incoming.has(id)) continue;
+      const src = String(row.source || "");
+      if (src.startsWith("node:") || src.startsWith("file:")) {
         del.run(id);
         delFts.run(id);
         removed.push(id);
@@ -171,9 +180,10 @@ function dbQuery(db, rawQ, limit) {
   }
   const lim = Number(limit) > 0 ? Math.min(50, Math.round(Number(limit))) : QUERY_LIMIT;
   let rows = [];
+  let sql = "";
   if (tokens.length) {
     const ftsQ = tokensToFtsQuery(tokens);
-    const sql =
+    sql =
       "SELECT r.*, bm25(records_fts) AS rank FROM records r " +
       "JOIN records_fts f ON f.id = r.id WHERE records_fts MATCH ?" +
       (where.length ? " AND " + where.join(" AND ") : "") +
@@ -181,20 +191,26 @@ function dbQuery(db, rawQ, limit) {
     rows = db.prepare(sql).all(ftsQ, ...args, lim);
     rows.sort((a, b) => (a.rank || 0) - (b.rank || 0));
   } else if (where.length) {
-    rows = db
-      .prepare("SELECT * FROM records WHERE " + where.join(" AND ") + " LIMIT ?")
-      .all(...args, lim);
+    sql = "SELECT * FROM records WHERE " + where.join(" AND ") + " LIMIT ?";
+    rows = db.prepare(sql).all(...args, lim);
+  } else {
+    sql = "SELECT * FROM records LIMIT ?";
+    rows = db.prepare(sql).all(lim);
   }
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    source: r.source,
-    kind: r.kind,
-    file: r.file,
-    size: r.size,
-    mtime: r.mtime,
-    snippet: dbSnippet(r.content, tokens),
-  }));
+  return {
+    sql,
+    rows: rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      source: r.source,
+      kind: r.kind,
+      file: r.file,
+      size: r.size,
+      mtime: r.mtime,
+      content: r.content || "",
+      snippet: dbSnippet(r.content, tokens),
+    })),
+  };
 }
 
 function dbSnippet(content, tokens) {
@@ -213,17 +229,83 @@ function dbSnippet(content, tokens) {
 }
 
 function dbList(db) {
-  return db
-    .prepare(
-      "SELECT id,title,kind,source,file,size,mtime FROM records ORDER BY kind, title",
-    )
-    .all();
+  const sql =
+    "SELECT id,title,kind,source,file,size,mtime FROM records ORDER BY kind, title";
+  return { sql, rows: db.prepare(sql).all() };
 }
 function dbGet(db, id) {
-  return db.prepare("SELECT * FROM records WHERE id=?").get(String(id || ""));
+  const sql = "SELECT * FROM records WHERE id=?";
+  return { sql, record: db.prepare(sql).get(String(id || "")) };
 }
 function dbCount(db) {
   return db.prepare("SELECT COUNT(*) AS n FROM records").get().n || 0;
+}
+
+/* ---------------- 写入（智能节点经 mtnode_db write / delete 写入） ---------------- */
+function dbTokenFor(t) {
+  return dbTokenize(String(t == null ? "" : t)).join(" ");
+}
+function dbWrite(db, records) {
+  const incoming = [];
+  for (const r of Array.isArray(records) ? records : []) {
+    if (!r) continue;
+    const id = String(r.id || "").trim() || "rec-" + Date.now().toString(36) + "-" + crypto.randomBytes(3).toString("hex");
+    const title = String(r.title || "");
+    const content = String(r.content || "");
+    const source = String(r.source || "");
+    const kind = String(r.kind || "fact");
+    const file = String(r.file || "");
+    const hash = dbHashOf(title + "\u0000" + content + "\u0000" + source + "\u0000" + kind + "\u0000" + file);
+    incoming.push({
+      id,
+      title,
+      content,
+      source,
+      kind,
+      file,
+      size: Buffer.byteLength(content, "utf8"),
+      mtime: Number(r.mtime) || Date.now(),
+      hash,
+    });
+  }
+  const ins = db.prepare(
+    "INSERT INTO records(id,source,kind,title,content,file,size,mtime,hash) VALUES(@id,@source,@kind,@title,@content,@file,@size,@mtime,@hash)",
+  );
+  const upd = db.prepare(
+    "UPDATE records SET source=@source,kind=@kind,title=@title,content=@content,file=@file,size=@size,mtime=@mtime,hash=@hash WHERE id=@id",
+  );
+  const delFts = db.prepare("DELETE FROM records_fts WHERE id=?");
+  const insFts = db.prepare("INSERT INTO records_fts(id,tokens) VALUES(?,?)");
+  const tx = db.transaction(() => {
+    for (const r of incoming) {
+      const prev = db.prepare("SELECT hash FROM records WHERE id=?").get(r.id);
+      if (!prev) {
+        ins.run(r);
+        insFts.run(r.id, dbTokenFor(r.title + " " + r.content));
+      } else if (prev.hash !== r.hash) {
+        upd.run(r);
+        delFts.run(r.id);
+        insFts.run(r.id, dbTokenFor(r.title + " " + r.content));
+      }
+    }
+  });
+  tx();
+  return { written: incoming.length };
+}
+function dbDelete(db, ids) {
+  const list = (Array.isArray(ids) ? ids : [ids])
+    .map((x) => String(x == null ? "" : x).trim())
+    .filter(Boolean);
+  const del = db.prepare("DELETE FROM records WHERE id=?");
+  const delFts = db.prepare("DELETE FROM records_fts WHERE id=?");
+  const tx = db.transaction(() => {
+    for (const id of list) {
+      del.run(id);
+      delFts.run(id);
+    }
+  });
+  tx();
+  return { deleted: list.length };
 }
 
 /* ---------------- 查询日志（审计） ---------------- */
@@ -307,8 +389,11 @@ module.exports = {
   dbList,
   dbGet,
   dbCount,
+  dbWrite,
+  dbDelete,
   dbLogAppend,
   dbCalcExpr,
   dbTokenize,
   dbSnippet,
+  dbHashOf,
 };

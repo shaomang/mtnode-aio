@@ -77,13 +77,29 @@ contextBridge.exposeInMainWorld('api', {
   fileCopyAssetTo: (a, d) => ipcRenderer.invoke('file:copyAssetTo', { assetPath: a, destPath: d }),
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),
+  fileStat: (p) => ipcRenderer.invoke('file:stat', p),
   fileListDir: (p) => ipcRenderer.invoke('file:listDir', p),
   dbCompile: (dir, records) => ipcRenderer.invoke('db:compile', { dir, records }),
   dbList: (dir) => ipcRenderer.invoke('db:list', { dir }),
   dbQuery: (dir, q, limit) => ipcRenderer.invoke('db:query', { dir, q, limit }),
   dbGet: (dir, id) => ipcRenderer.invoke('db:get', { dir, id }),
+  dbWrite: (dir, records) => ipcRenderer.invoke('db:write', { dir, records }),
+  dbDelete: (dir, ids) => ipcRenderer.invoke('db:delete', { dir, ids }),
   dbCalc: (expr) => ipcRenderer.invoke('db:calc', { expr }),
   dbLog: (dir, entry) => ipcRenderer.invoke('db:log', { dir, entry }),
+  netListen: (o) => ipcRenderer.invoke('net:listen', o),
+  netUnlisten: (o) => ipcRenderer.invoke('net:unlisten', o),
+  netSend: (o) => ipcRenderer.invoke('net:send', o),
+  netOpenDebug: (o) => ipcRenderer.invoke('net:open-debug', o),
+  onNetMessage: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch (_) {}
+    };
+    ipcRenderer.on('net:message', handler);
+    return () => ipcRenderer.removeListener('net:message', handler);
+  },
   fileSaveDialog: (o) => ipcRenderer.invoke('file:saveDialog', o),
   saveTextFile: (o) => ipcRenderer.invoke('file:saveText', o),
   fileOpenDialog: (o) => ipcRenderer.invoke('file:openDialog', o),

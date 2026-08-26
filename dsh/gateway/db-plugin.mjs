@@ -24,19 +24,24 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'mtnode-db'
 export const inject = ['tools']
 
-const DB_DESC = `Grounded fact lookup for the database wired into the CURRENT task. Use it whenever the task needs facts — names, numbers, prices, paths, terms, statuses — instead of answering from memory. Facts NEVER come from your parameters: only this tool's returned records are truth.
+const DB_DESC = `Grounded fact lookup for the database wired into the CURRENT task — OR any database referenced by writing !@数据库标题 in your prompt/task. Use it whenever the task needs facts — names, numbers, prices, paths, terms, statuses — instead of answering from memory. Facts NEVER come from your parameters: only this tool's returned records are truth.
 
-Available actions:
+Available actions (full CRUD over the referenced database(s)):
 - list: schema + all record titles (id | title | kind | file). Use first to see what the database knows.
-- query: search records by keywords / question; supports field filters title:xxx file:xxx kind:fact|file|meta. Returns top matches with id, title, source, snippet, score.
-- get: full record content by id (from list/query results).
+- get: full record by id (from list/query results). Returns provenance, sql, and data (the record).
+- query: search records by keywords / question; supports field filters title:xxx file:xxx kind:fact|file|meta. Returns a structured object with provenance (record ids/titles/sources), sql (the actual access statement used), and data (the matched records as a JSON array; each record also carries its database + sql).
+- write: insert or update records (增 / 改). Pass records: [ {id?, title, content, kind?, source?, file?} ]. If id is omitted it is auto-generated (inserts a NEW record); if id matches an existing record it overwrites that record (update). Returns per-database written counts.
+- delete: remove records by id (删). Pass ids: [ ... ] (record ids from provenance). Returns per-database deleted counts.
 - calc: evaluate arithmetic with numbers and + - * / % ( ) only. ALL number/date math must go through calc — never compute in your head.
 
+When the run references more than one database (via !@ or wired replicas), pass database: "<title or folder>" to scope an action to a single database; otherwise the action applies to every referenced database.
+
 Discipline (enforced by the host):
-- Every key assertion in your answer MUST cite [记录id · 标题] from a query result.
+- Every key assertion in your answer MUST cite [记录id · 标题] from the provenance of a query/get result.
 - If query/get finds nothing, say exactly "数据库中没有该信息" — do not guess, do not fill in from memory.
 - If the host rejects the call (未接入数据库), the database is unavailable: say so, and do NOT answer from memory.
-- Facts not in the database may only appear explicitly labelled as 推断, with "数据库未记载".`
+- Facts not in the database may only appear explicitly labelled as 推断, with "数据库未记载".
+- Prefer query before write: confirm a record id does not already exist before writing a duplicate.`
 
 export function apply(ctx) {
   const port = Number(process.env.MTNODE_BRIDGE_PORT || 0)
@@ -121,7 +126,7 @@ export function apply(ctx) {
       action: {
         type: 'string',
         required: true,
-        enum: ['list', 'query', 'get', 'calc'],
+        enum: ['list', 'query', 'get', 'calc', 'write', 'delete'],
         description: 'Which database action to run.',
       },
       q: {
@@ -136,6 +141,28 @@ export function apply(ctx) {
       expr: {
         type: 'string',
         description: 'calc: arithmetic expression, numbers and + - * / % ( ) only.',
+      },
+      record: {
+        type: 'object',
+        additionalProperties: true,
+        description:
+          'write: a single record to upsert (id, title, content, kind, source, file). Omit id to insert a new record (id auto-generated). Use records for an array.',
+      },
+      records: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+        description:
+          'write: array of records to upsert. Each takes title, content, optional kind/source/file; include an existing id to update that record, or omit id to insert a new one (id auto-generated).',
+      },
+      ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'delete: array of record ids to remove.',
+      },
+      database: {
+        type: 'string',
+        description:
+          'Optional database title or folder to scope this action to (else it applies to all referenced databases).',
       },
     },
     timeoutMs: 20000,

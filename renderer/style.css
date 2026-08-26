@@ -746,22 +746,23 @@ background:
 .fn-canvas.is-panning .fn-edge{pointer-events:none !important}
 .fn-stage{position:absolute; top:0; left:0; transform-origin:0 0}
 .fn-svg{position:absolute; top:0; left:0; pointer-events:none; overflow:visible}
-.fn-edge{fill:none; stroke:#39465c; stroke-width:1.8; opacity:.9; pointer-events:stroke; cursor:pointer}
-.fn-edge:hover{stroke:var(--cyan2)}
-.fn-edge.sel{stroke:var(--orange); stroke-width:2.6}
-.fn-edge.temp{stroke:var(--cyan); stroke-width:1.8; stroke-dasharray:6 4}
+.fn-edge{fill:none; stroke:#39465c; stroke-width:1.3; opacity:.85; pointer-events:stroke; cursor:pointer; stroke-linecap:round; stroke-linejoin:round}
+.fn-edge:hover{stroke:var(--cyan2); opacity:1}
+.fn-edge.sel{stroke:var(--orange); stroke-width:2; opacity:1; filter:drop-shadow(0 0 3px rgba(255,143,46,.8))}
+.fn-edge.linked{stroke-width:1.9; opacity:1; filter:brightness(1.5) saturate(1.3)}
+.fn-edge.temp{stroke:var(--cyan); stroke-width:1.3; stroke-dasharray:6 4}
 .fn-edge.ctrl{stroke:#f0c14d}
 .fn-edge.ctrl:hover{stroke:#ffe08a}
-.fn-edge.ctrl.sel{stroke:#ffe08a; stroke-width:2.6}
+.fn-edge.ctrl.sel{stroke:#ffe08a; stroke-width:2; opacity:1}
 .fn-edge.img{stroke:#5fd68a}
 .fn-edge.img:hover{stroke:#8dffb5}
-.fn-edge.img.sel{stroke:#8dffb5; stroke-width:2.6}
+.fn-edge.img.sel{stroke:#8dffb5; stroke-width:2; opacity:1}
 .fn-edge.aud{stroke:#7ec8ff}
 .fn-edge.aud:hover{stroke:#b3e0ff}
-.fn-edge.aud.sel{stroke:#b3e0ff; stroke-width:2.6}
+.fn-edge.aud.sel{stroke:#b3e0ff; stroke-width:2; opacity:1}
 .fn-edge.vid{stroke:#c9a0ff}
 .fn-edge.vid:hover{stroke:#e0c6ff}
-.fn-edge.vid.sel{stroke:#e0c6ff; stroke-width:2.6}
+.fn-edge.vid.sel{stroke:#e0c6ff; stroke-width:2; opacity:1}
 .fn-edge.pinned{stroke-dasharray:none}
 .fn-edge.temp.img{stroke:#5fd68a}
 
@@ -825,16 +826,37 @@ background:
 /* ===== 节点 ===== */
 .wf-node{
   position:absolute; display:flex; flex-direction:column; border-radius:5px;
-  border:1.5px solid var(--bd2); background:linear-gradient(180deg,#1a2229,#131a20);
+  border:1px solid var(--bd2); background:linear-gradient(180deg,#1a2229,#131a20);
   user-select:none; overflow:visible; z-index:2;
-  box-shadow:0 2px 10px rgba(0,0,0,.35);
+  /* 浮空+厚度：阴影整体偏向右下；近距硬边实影（blur 0）给出“实体悬浮”的实在感，
+     层叠的第二层硬影制造卡片厚度，远距软影补环境光；顶部内高光让面板有体积 */
+  --nfloat:
+    2px 3px 0 rgba(0,0,0,.5),
+    5px 8px 0 rgba(0,0,0,.3),
+    9px 14px 24px rgba(0,0,0,.34);
+  box-shadow: var(--nfloat), inset 0 1px 0 rgba(255,255,255,.07);
+  transition: box-shadow .15s ease, border-color .15s ease, transform .12s ease-out;
+}
+/* 拖拽中：上浮更高、阴影更深；transform 由 JS 按移动速度做仿射倾斜（卡片拖拽惯性感） */
+.wf-node.node-dragging{
+  z-index:40 !important;
+  cursor:grabbing;
+  will-change:transform;
+  --nfloat:
+    3px 5px 0 rgba(0,0,0,.58),
+    8px 12px 0 rgba(0,0,0,.38),
+    14px 20px 32px rgba(0,0,0,.45);
+  box-shadow: var(--nfloat), inset 0 1px 0 rgba(255,255,255,.1);
+  transition: transform .06s linear, box-shadow .12s ease;
 }
 .wf-node.in{border-color:#38d6ff66}
 .wf-node.proc{border-color:#ff8f2e66; background:linear-gradient(180deg,#221a12,#171310)}
 .wf-node.proc-img{border-color:#ff5ea866; background:linear-gradient(180deg,#221218,#171014)}
 .wf-node.music{border-color:#6aa6ff66; background:linear-gradient(180deg,#121820,#10141c)}
 .wf-node.video{border-color:#5ec8a866; background:linear-gradient(180deg,#101816,#0e1412)}
+.wf-node.net{border-color:#c08bff66; background:linear-gradient(180deg,#1c1626,#151020)}
 .wf-node.agent{border-color:#4d8cff66; background:linear-gradient(180deg,#121a28,#0e1420)}
+.wf-node.db-tbl{border-color:#56d6b866; background:linear-gradient(180deg,#141f1c,#0f1513)}
 .wf-node.sv{border-color:#5fd68a55; background:linear-gradient(180deg,#14201a,#101713)}
 .wf-node.task{border-color:#3ecfcf66; background:linear-gradient(180deg,#122022,#0e1618)}
 .wf-node.super{
@@ -843,9 +865,9 @@ background:
     linear-gradient(145deg, rgba(255,255,255,.06) 0%, transparent 42%),
     linear-gradient(180deg,#1a1e26,#12151c 55%, #0e1218);
   box-shadow:
+    var(--nfloat),
     inset 0 1px 0 rgba(255,255,255,.1),
     inset 0 -2px 6px rgba(0,0,0,.35),
-    0 6px 14px rgba(0,0,0,.35),
     0 1px 0 rgba(255,255,255,.04);
 }
 .wf-node.super.super-open{
@@ -853,9 +875,10 @@ background:
   flex-direction:column;
   z-index:50;
   box-shadow:
+    2px 3px 0 rgba(0,0,0,.42),
+    8px 13px 24px rgba(0,0,0,.42),
     inset 0 1px 0 rgba(255,255,255,.12),
     inset 0 -2px 8px rgba(0,0,0,.4),
-    0 10px 22px rgba(0,0,0,.45),
     0 0 0 1px rgba(155,176,200,.25);
 }
 .wf-node.super-drag-lift{
@@ -922,21 +945,29 @@ background:
 .super-focus-port-layer .port.out.super-inner-bridge{
   left:8px !important;
   right:auto !important;
-  border-color:var(--cyan);
-  box-shadow:0 0 0 2px rgba(56,214,255,.25);
+  --rim:var(--cyan);
+  box-shadow:
+    0 0 0 2px rgba(56,214,255,.25),
+    inset 0 1px 1px rgba(255,255,255,.22),
+    inset 0 -1px 2px rgba(0,0,0,.75),
+    0 1px 2px rgba(0,0,0,.55);
 }
 .super-focus-port-layer .port.in.super-inner-sink{
   right:8px !important;
   left:auto !important;
-  border-color:var(--green);
-  box-shadow:0 0 0 2px rgba(95,214,138,.25);
+  --rim:var(--green);
+  box-shadow:
+    0 0 0 2px rgba(95,214,138,.25),
+    inset 0 1px 1px rgba(255,255,255,.22),
+    inset 0 -1px 2px rgba(0,0,0,.75),
+    0 1px 2px rgba(0,0,0,.55);
 }
 .wf-node.super.sel{
   border-color:#c5d4e6;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,.14),
     0 0 0 2px rgba(197,212,230,.35),
-    0 8px 18px rgba(0,0,0,.4);
+    0 14px 30px rgba(0,0,0,.45);
 }
 .wf-node.super-io{
   border-color:#8aa4c066;
@@ -1114,9 +1145,9 @@ background:
 .wf-node.super.super-drop-hot{
   border-color:#5fd6ff;
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.12),
+    var(--nfloat),
     0 0 0 2px rgba(56,214,255,.45),
-    0 10px 22px rgba(0,0,0,.45);
+    inset 0 1px 0 rgba(255,255,255,.12);
 }
 .super-stage .super-port{
   position:absolute;
@@ -1126,16 +1157,16 @@ background:
 .wf-node.super.super-open > .port{
   display:none !important;
 }
-/* 提高优先级，避免被全局 .port.in{left:-13px} / .port.out{right:-13px} 盖掉 */
+/* 提高优先级，避免被全局 .port.in{left:2px} / .port.out{right:2px} 盖掉 */
 .super-stage .port.out.super-inner-bridge{
   left:2px !important;
   right:auto !important;
-  border-color:var(--cyan);
+  --rim:#2f88ad;
 }
 .super-stage .port.in.super-inner-sink{
   right:2px !important;
   left:auto !important;
-  border-color:var(--green);
+  --rim:#2f9e6e;
 }
 .super-stage .super-folder-hint{
   position:absolute;
@@ -1173,16 +1204,16 @@ background:
   font-size:10.5px; color:var(--muted); font-family:var(--mono);
   padding:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
-.wf-node.task.st-done{border-color:#5fd68a; box-shadow:0 0 10px rgba(95,214,138,.35)}
-.wf-node.task.st-running,.wf-node.task.st-run{border-color:#ff8f2e; box-shadow:0 0 10px rgba(255,143,46,.4)}
-.wf-node.task.st-failed{border-color:#ff6b6b; box-shadow:0 0 10px rgba(255,107,107,.4)}
+.wf-node.task.st-done{border-color:#5fd68a; box-shadow:var(--nfloat), 0 0 10px rgba(95,214,138,.35)}
+.wf-node.task.st-running,.wf-node.task.st-run{border-color:#ff8f2e; box-shadow:var(--nfloat), 0 0 10px rgba(255,143,46,.4)}
+.wf-node.task.st-failed{border-color:#ff6b6b; box-shadow:var(--nfloat), 0 0 10px rgba(255,107,107,.4)}
 .wf-node.task.st-blocked,.wf-node.task.st-block{
   border-color:#ffe08a;
   animation:task-block-blink 1s ease-in-out infinite;
 }
 @keyframes task-block-blink{
-  0%,100%{box-shadow:0 0 4px rgba(255,224,138,.25); border-color:#c9a84a}
-  50%{box-shadow:0 0 14px rgba(255,224,138,.85); border-color:#ffe08a}
+  0%,100%{box-shadow:var(--nfloat), 0 0 4px rgba(255,224,138,.25); border-color:#c9a84a}
+  50%{box-shadow:var(--nfloat), 0 0 14px rgba(255,224,138,.85); border-color:#ffe08a}
 }
 .wf-node.ctrl{border-color:#f0c14d66; background:linear-gradient(180deg,#221e12,#17150f)}
 .wf-node.ctrl-start{border-color:#f0c14d}
@@ -1216,15 +1247,15 @@ background:
 .wf-node.mutex .n-drag-handle{color:#d0a0c8; border-color:rgba(208,160,200,.4)}
 /* 控制类节点统一金色外圈（内部底色/标题色不变） */
 .wf-node.is-ctrl{
-  box-shadow:0 0 0 2px rgba(240,193,77,.92);
+  box-shadow:var(--nfloat), 0 0 0 2px rgba(240,193,77,.92);
 }
 .wf-node.is-ctrl.sel{
-  box-shadow:0 0 0 2px #ffe08a, 0 0 12px rgba(240,193,77,.5);
+  box-shadow:var(--nfloat), 0 0 0 2px #ffe08a, 0 0 12px rgba(240,193,77,.5);
 }
-.wf-node.ctrl-ok.is-ctrl{box-shadow:0 0 0 2px rgba(240,193,77,.92), 0 0 8px rgba(95,214,138,.25)}
-.wf-node.ctrl-fail.is-ctrl{box-shadow:0 0 0 2px rgba(240,193,77,.92), 0 0 8px rgba(255,107,107,.25)}
-.wf-node.ctrl-ok.is-ctrl.sel{box-shadow:0 0 0 2px #ffe08a, 0 0 12px rgba(95,214,138,.45)}
-.wf-node.ctrl-fail.is-ctrl.sel{box-shadow:0 0 0 2px #ffe08a, 0 0 12px rgba(255,107,107,.45)}
+.wf-node.ctrl-ok.is-ctrl{box-shadow:var(--nfloat), 0 0 0 2px rgba(240,193,77,.92), 0 0 8px rgba(95,214,138,.25)}
+.wf-node.ctrl-fail.is-ctrl{box-shadow:var(--nfloat), 0 0 0 2px rgba(240,193,77,.92), 0 0 8px rgba(255,107,107,.25)}
+.wf-node.ctrl-ok.is-ctrl.sel{box-shadow:var(--nfloat), 0 0 0 2px #ffe08a, 0 0 12px rgba(95,214,138,.45)}
+.wf-node.ctrl-fail.is-ctrl.sel{box-shadow:var(--nfloat), 0 0 0 2px #ffe08a, 0 0 12px rgba(255,107,107,.45)}
 .dur-row{
   display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:2px;
 }
@@ -1268,18 +1299,32 @@ background:
 .wf-node.global .n-drag-handle{color:#e8c0ff; border-color:rgba(138,107,255,.45)}
 .wf-node.global .n-drag-handle:hover{color:#fff; border-color:#c9a0ff; background:rgba(138,107,255,.18)}
 .global .n-title{color:#e8d0ff}
-.wf-node.sel{border-color:#7ce8ff; box-shadow:0 0 10px rgba(56,214,255,.5)}
+.wf-node.sel{
+  border-color:#7ce8ff;
+  box-shadow:
+    0 0 0 1px rgba(56,214,255,.75),
+    0 0 12px rgba(56,214,255,.5),
+    2px 3px 0 rgba(0,0,0,.5),
+    6px 10px 0 rgba(0,0,0,.32),
+    10px 16px 26px rgba(0,0,0,.32);
+}
+/* 选中高亮边缘：outline 描边环（彩虹边框的全局/智能超限节点除外）。
+   ::before 让位给左右内缘的端子槽（wf-node::before / wf-node::after）。 */
+.wf-node:not(.global):not(.agent-super).sel{
+  outline:1.5px solid rgba(124,232,255,.85);
+  outline-offset:2px;
+}
 .wf-node.global.sel{
   border-color:transparent;
-  box-shadow:0 0 14px rgba(138,107,255,.55), 0 0 8px rgba(255,193,74,.4);
+  box-shadow:0 0 14px rgba(138,107,255,.55), 0 0 8px rgba(255,193,74,.4), 8px 12px 24px rgba(0,0,0,.45);
 }
-.wf-node.is-ctrl.sel{border-color:inherit; box-shadow:0 0 0 2px #ffe08a, 0 0 12px rgba(240,193,77,.5)}
+.wf-node.is-ctrl.sel{border-color:inherit; box-shadow:0 0 0 2px #ffe08a, 0 0 12px rgba(240,193,77,.5), 8px 12px 24px rgba(0,0,0,.45)}
 .wf-node.ctrl.sel{border-color:#ffe08a}
 .wf-node.wait.sel{border-color:#7ee0c8}
-.wf-node.proc-img.sel{border-color:#ff8ab8; box-shadow:0 0 10px rgba(255,94,168,.45)}
-.wf-node.music.sel{border-color:#8bbcff; box-shadow:0 0 10px rgba(106,166,255,.4)}
-.wf-node.video.sel{border-color:#7ee0bc; box-shadow:0 0 10px rgba(94,200,168,.4)}
-.wf-node.agent.sel{border-color:#8eb6ff; box-shadow:0 0 10px rgba(77,140,255,.5)}
+.wf-node.proc-img.sel{border-color:#ff8ab8; box-shadow:0 0 10px rgba(255,94,168,.45), 8px 12px 24px rgba(0,0,0,.45)}
+.wf-node.music.sel{border-color:#8bbcff; box-shadow:0 0 10px rgba(106,166,255,.4), 8px 12px 24px rgba(0,0,0,.45)}
+.wf-node.video.sel{border-color:#7ee0bc; box-shadow:0 0 10px rgba(94,200,168,.4), 8px 12px 24px rgba(0,0,0,.45)}
+.wf-node.agent.sel{border-color:#8eb6ff; box-shadow:0 0 10px rgba(77,140,255,.5), 8px 12px 24px rgba(0,0,0,.45)}
 /* 智能节点超级权限：彩虹流动边缘（同全局节点） */
 .wf-node.agent-super{
   border:2px solid transparent;
@@ -1292,7 +1337,7 @@ background:
 }
 .wf-node.agent-super.sel{
   border-color:transparent;
-  box-shadow:0 0 14px rgba(138,107,255,.55), 0 0 8px rgba(255,193,74,.35);
+  box-shadow:0 0 14px rgba(138,107,255,.55), 0 0 8px rgba(255,193,74,.35), 8px 12px 24px rgba(0,0,0,.45);
 }
 .n-agent-perm{
   position:absolute; right:16px; bottom:3px; z-index:40;
@@ -1312,7 +1357,7 @@ background:
   background-clip:padding-box, border-box;
   animation:wf-global-spin 5s linear infinite;
 }
-.wf-node.task.sel{border-color:#7ee8e0; box-shadow:0 0 10px rgba(62,207,207,.45)}
+.wf-node.task.sel{border-color:#7ee8e0; box-shadow:0 0 10px rgba(62,207,207,.45), 8px 12px 24px rgba(0,0,0,.45)}
 .task .n-title{color:#7ee8e0}
 .ctrl .n-title{color:#f0c14d}
 .wait .n-title{color:#7ee0c8}
@@ -1357,8 +1402,8 @@ background:
 .task-cell.st-running,.task-cell.st-run{border-color:#ff8f2e; color:#ffc48a}
 .task-cell.st-failed{border-color:#ff6b6b; color:#ffb0b0}
 .task-cell.st-blocked,.task-cell.st-block{border-color:#ffe08a; color:#ffe08a; animation:task-block-blink 1s ease-in-out infinite}
-.port.out.yes{background:#5fd68a; border-color:#8dffb5}
-.port.out.no{background:#ff6b6b; border-color:#ff9a9a}
+.port.out.yes{--rim:#3ec07a}
+.port.out.no{--rim:#e05555}
 .n-chip.ok{border-color:#5fd68a; color:#8dffb5}
 .n-chip.fail{border-color:#ff6b6b; color:#ffb0b0}
 .n-status.block{color:#ffe08a}
@@ -1767,21 +1812,93 @@ background:
 .sv-auto{display:flex; align-items:center; gap:5px; font-size:11px; color:var(--muted); flex:none}
 .sv-auto input{accent-color:var(--green)}
 
-/* ===== 端子 ===== */
-.port{
-  position:absolute; width:13px; height:13px; border-radius:50%;
-  border:2px solid var(--bd2); background:var(--code); cursor:crosshair; z-index:3;
+/* ===== 端子槽：节点板左右内缘从上至下的内凹轨道（端子镶嵌其中，不再悬挂在节点外） ===== */
+.wf-node::before,
+.wf-node::after{
+  content:""; position:absolute; top:0; bottom:0; width:18px; z-index:-1; pointer-events:none;
 }
-/* 隐形命中区：扩大端子可点击范围，避免亚像素边缘被节点框抢走命中 */
-.port::after{content:""; position:absolute; inset:-9px; border-radius:50%}
-.port:hover{border-color:var(--orange); background:var(--orange); box-shadow:0 0 6px rgba(255,143,46,.6)}
-.port.spare{border-style:dashed; opacity:.5}
-.port.spare:hover{opacity:1}
-.port.in{left:-13px; border-color:var(--cyan)}
-.port.out{right:-13px; border-color:var(--green)}
-.port.ctrl{border-color:#f0c14d; background:rgba(240,193,77,.22)}
-.port.ctrl.hover{border-color:#ffe08a; background:#f0c14d; transform:scale(1.25)}
-.port.hover{border-color:var(--orange); background:var(--orange); transform:scale(1.25)}
+.wf-node::before{
+  left:0; border-radius:5px 0 0 5px;
+  background:linear-gradient(90deg, rgba(0,0,0,.34) 0%, rgba(0,0,0,.1) 60%, rgba(0,0,0,0) 100%);
+  box-shadow: inset -1px 0 0 rgba(0,0,0,.4), inset 1px 0 0 rgba(255,255,255,.04);
+}
+.wf-node::after{
+  right:0; border-radius:0 5px 5px 0;
+  background:linear-gradient(270deg, rgba(0,0,0,.34) 0%, rgba(0,0,0,.1) 60%, rgba(0,0,0,0) 100%);
+  box-shadow: inset 1px 0 0 rgba(0,0,0,.4), inset -1px 0 0 rgba(255,255,255,.04);
+}
+/* 展开的超级节点：板内是子画布，槽位移到子画布（.super-stage）左右内缘 */
+.wf-node.super.super-open::before,
+.wf-node.super.super-open::after{display:none}
+.super-stage::before,
+.super-stage::after{
+  content:""; position:absolute; top:0; bottom:0; width:18px; z-index:0; pointer-events:none;
+}
+.super-stage::before{
+  left:0;
+  background:linear-gradient(90deg, rgba(0,0,0,.38), rgba(0,0,0,.1) 65%, transparent);
+  box-shadow: inset -1px 0 0 rgba(0,0,0,.45);
+}
+.super-stage::after{
+  right:0;
+  background:linear-gradient(270deg, rgba(0,0,0,.38), rgba(0,0,0,.1) 65%, transparent);
+  box-shadow: inset 1px 0 0 rgba(0,0,0,.45);
+}
+
+/* ===== 端子（DAW 效果器插件式接线口：金属外圈 + 内凹插孔，镶嵌在端子槽内） ===== */
+.port{
+  position:absolute; width:13px; height:13px; border-radius:50%; cursor:crosshair; z-index:3;
+  --rim:#3d4a5e;
+  background:radial-gradient(circle at 50% 40%,
+    #05070b 0%, #05070b 30%,
+    var(--rim) 34%, #9fb0c8 41%, var(--rim) 47%,
+    #151b25 61%, #090c11 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.22),
+    inset 0 -1px 2px rgba(0,0,0,.75),
+    0 1px 2px rgba(0,0,0,.55);
+  transition: box-shadow .1s ease, transform .1s ease, filter .1s ease;
+}
+/* 插孔内芯：暗色凹陷，表示“可插入”（z-index 盖过插口底座） */
+.port::before{
+  content:""; position:absolute; inset:3px; border-radius:50%; z-index:1;
+  background:radial-gradient(circle at 38% 32%, #2b3442 0%, #03050a 82%);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.9);
+  transition: background .12s ease, box-shadow .12s ease;
+}
+/* 插口底座：端子镶嵌在节点板内的沉孔插口座（兼作命中区），贴住节点边缘 */
+.port::after{
+  content:""; position:absolute; top:50%; transform:translateY(-50%);
+  width:15px; height:24px;
+  background:linear-gradient(180deg, rgba(8,12,18,.6), rgba(0,0,0,.85));
+  box-shadow:
+    inset 0 2px 3px rgba(0,0,0,.85),
+    inset 0 -1px 1px rgba(255,255,255,.05);
+}
+/* 底座贴边：输入端子贴左缘、输出端子贴右缘（沉孔朝向节点边缘） */
+.port.in::after{left:-2px; right:auto; border-radius:4px 8px 8px 4px}
+.port.out::after{right:-2px; left:auto; border-radius:8px 4px 4px 8px}
+/* 超级节点内侧端子：桥端子贴子画布左缘、汇端子贴右缘（覆盖 .port.out/.in 的默认贴边） */
+.port.out.super-inner-bridge::after{left:-2px; right:auto; border-radius:4px 8px 8px 4px}
+.port.in.super-inner-sink::after{right:-2px; left:auto; border-radius:8px 4px 4px 8px}
+.port:hover{
+  transform:scale(1.18);
+  filter:brightness(1.18);
+  box-shadow:
+    0 0 8px rgba(255,143,46,.55),
+    inset 0 1px 1px rgba(255,255,255,.3),
+    inset 0 -1px 2px rgba(0,0,0,.75);
+}
+.port:hover::before{background:radial-gradient(circle at 38% 32%, #ffd9a8 0%, #ff8f2e 78%); box-shadow:0 0 6px rgba(255,143,46,.9), inset 0 1px 2px rgba(0,0,0,.35)}
+.port.spare{opacity:.45; filter:saturate(.55)}
+.port.spare:hover{opacity:1; filter:none}
+.port.in{left:2px; --rim:#2f88ad}
+.port.out{right:2px; --rim:#2f9e6e}
+.port.ctrl{--rim:#c8922f}
+.port.ctrl.hover{transform:scale(1.25); filter:brightness(1.2); box-shadow:0 0 10px rgba(240,193,77,.95)}
+.port.ctrl.hover::before{background:radial-gradient(circle at 38% 32%, #fff3d0 0%, #f0c14d 80%); box-shadow:0 0 6px rgba(240,193,77,.9)}
+.port.hover{transform:scale(1.25); filter:brightness(1.25); box-shadow:0 0 10px rgba(255,143,46,.95)}
+.port.hover::before{background:radial-gradient(circle at 38% 32%, #ffd9a8 0%, #ff8f2e 80%); box-shadow:0 0 6px rgba(255,143,46,.9)}
 
 /* 端子连接提示（可移入点击定位） */
 .port-tip{
@@ -2782,7 +2899,7 @@ button.mini.btn-sq.tpl-ico{
 .tpl-wf-prev{width:100%; height:100%; min-height:360px; position:relative; overflow:hidden}
 .tpl-wf-stage{position:absolute; left:0; top:0; transform-origin:0 0}
 .tpl-wf-svg{position:absolute; left:0; top:0; pointer-events:none; overflow:visible}
-.tpl-wf-wire{fill:none; stroke:var(--cyan); stroke-width:2; opacity:.7}
+.tpl-wf-wire{fill:none; stroke:var(--cyan); stroke-width:1.4; opacity:.7}
 .tpl-wf-node{
   position:absolute; box-sizing:border-box; border:2px solid var(--bd2);
   border-radius:4px; background:var(--panel); padding:6px 8px; overflow:hidden;
@@ -3022,8 +3139,12 @@ button.mini.btn-sq.tpl-ico{
 }
 .side-sess:hover{background:rgba(255,255,255,.05)}
 .side-sess.active{background:rgba(86,134,254,.16); color:#ebedf2}
-.side-sess.running .side-sess-name::after{content:" ●"; color:rgb(86,134,254); animation:blink 1.2s infinite}
+.side-sess-status{flex:none; display:none; align-items:center; gap:4px; font-size:10px; color:rgb(86,134,254); white-space:nowrap}
+.side-sess.running .side-sess-status{display:inline-flex}
+.side-sess-spinner{width:10px; height:10px; flex:none; border-radius:50%; border:2px solid rgba(86,134,254,.22); border-top-color:rgb(86,134,254); animation:side-sess-spin .8s linear infinite}
+@keyframes side-sess-spin{to{transform:rotate(360deg)}}
 .side-sess-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.side-sess-name-input{font-weight:400; letter-spacing:0; font-size:12px; border-radius:6px}
 .side-sess-btns{flex:none; display:none; gap:3px}
 .side-sess:hover .side-sess-btns{display:flex}
 .side-sess-btn{
@@ -3234,6 +3355,15 @@ button.mini.btn-sq.tpl-ico{
   font-family:var(--mono); white-space:pre-wrap; word-break:break-all; line-height:1.7;
 }
 .dsh-think-live:empty{display:none}
+/* 运行中会话思考区:折叠的 details,summary 常驻、正文 pre 自身限高滚动(点击才展开) */
+#agent-think{max-height:none; overflow:visible}
+#agent-think summary{cursor:pointer; user-select:none; color:var(--orange2); font-family:var(--mono); letter-spacing:.5px}
+#agent-think summary:hover{color:var(--orange)}
+#agent-think pre{
+  margin:4px 0 0; max-height:220px; overflow:auto; background:rgba(0,0,0,.28);
+  border:1px dashed var(--bd2); border-radius:3px; padding:8px; font-size:10.5px;
+  color:var(--muted); font-family:var(--mono); white-space:pre-wrap; word-break:break-all; line-height:1.7;
+}
 .dsh-tools{display:flex; flex-wrap:wrap; gap:4px}
 .dsh-tool-chip{
   font-size:9.5px; color:var(--cyan2); border:1px solid var(--cyan); border-radius:3px;
@@ -3596,6 +3726,15 @@ button.mini.btn-sq.tpl-ico{
 }
 .n-db-console-meta b{color:#f0c14d; font-size:11px}
 .n-db-console-folder{font-family:var(--mono); color:var(--cyan2)}
+.n-db-console-hint{
+  flex:none; font-size:10.5px; line-height:1.6; color:var(--muted);
+  border:1px solid rgba(86,214,184,.25); border-radius:3px;
+  background:rgba(86,214,184,.05); padding:5px 8px; word-break:break-word;
+}
+.n-db-console-hint code{
+  font-family:var(--mono); color:#7fe0c8; font-size:10.5px;
+  background:rgba(0,0,0,.22); padding:1px 4px; border-radius:2px;
+}
 .n-db-console-row{
   flex:none; display:flex; gap:6px; align-items:center; padding:4px 0;
 }
@@ -3629,3 +3768,58 @@ button.mini.btn-sq.tpl-ico{
   border:1px dashed rgba(255,143,46,.4); border-radius:3px;
   padding:3px 8px; background:rgba(255,143,46,.05); word-break:break-word;
 }
+
+/* == 数据库 · 文件节点 / 表节点（建表）== */
+.wf-node.db-tbl.sel{border-color:#7ff0d6; box-shadow:0 0 10px rgba(86,214,184,.5), 8px 12px 24px rgba(0,0,0,.45)}
+.wf-node.db-tbl .n-drag-handle{color:#7fe0c8; border-color:rgba(86,214,184,.4)}
+.wf-node.db-tbl .n-drag-handle:hover{color:#fff; border-color:#7ff0d6; background:rgba(86,214,184,.15)}
+.db-file-list .n-empty{color:var(--muted)}
+.db-file-row{
+  display:flex; align-items:center; gap:6px; padding:3px 5px; border-radius:6px;
+  background:rgba(255,255,255,.03); margin-bottom:4px;
+}
+.db-file-row:hover{background:rgba(255,255,255,.06)}
+.db-file-ico{flex:none}
+.db-file-name{
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:12px; color:var(--ink);
+}
+.db-file-size{flex:none; font-size:11px; color:var(--muted)}
+.db-file-type{flex:none; font-size:11px; color:var(--cyan2); text-transform:uppercase}
+.db-build-btn{
+  display:block; width:calc(100% - 16px); margin:12px 8px; padding:18px 0; border-radius:9px;
+  border:1px dashed rgba(127,224,200,.5); background:rgba(20,31,28,.6); color:#7fe0c8;
+  font-size:15px; font-weight:600; cursor:pointer; text-align:center;
+}
+.db-build-btn:hover{border-style:solid; background:rgba(86,214,184,.12)}
+.db-build-btn:disabled{opacity:.5; cursor:default}
+.db-tbl-sum{padding:4px 0}
+.db-tbl-cap{font-size:12px; color:var(--cyan2); margin-bottom:6px}
+.db-tbl-table{width:100%; border-collapse:collapse; font-size:11px}
+.db-tbl-table th,.db-tbl-table td{
+  border:1px solid rgba(255,255,255,.08); padding:3px 5px; text-align:left;
+  white-space:nowrap; max-width:120px; overflow:hidden; text-overflow:ellipsis;
+}
+.db-tbl-table th{background:rgba(86,214,184,.12); color:#9fe7d4}
+.db-tbl-ops{margin-top:6px; display:flex; gap:6px; flex-wrap:wrap}
+.db-tbl-error{margin-top:6px; color:#ff8a8a; font-size:12px}
+.db-form-body .db-form-hint{margin-bottom:10px; color:var(--muted); font-size:12px}
+.db-form-cols{display:flex; flex-direction:column; gap:6px; max-height:60vh; overflow:auto}
+.db-form-col-row{display:flex; gap:6px; align-items:center}
+.db-form-col-row input{flex:1}
+.db-form-col-row select{width:88px}
+/* 网络节点（net_recv / net_send） */
+.wf-node.net.sel{border-color:#d3a8ff; box-shadow:0 0 10px rgba(192,139,255,.5), 8px 12px 24px rgba(0,0,0,.45)}
+.wf-node.net .n-title{color:#c9a2ff}
+.wf-node.net .n-drag-handle{color:#c9a2ff; border-color:rgba(192,139,255,.4)}
+.wf-node.net .n-drag-handle:hover{color:#fff; border-color:#d3a8ff; background:rgba(192,139,255,.16)}
+.net-row{display:flex; align-items:center; gap:6px; margin:4px 0}
+.net-lbl{font-size:11px; color:var(--muted); min-width:34px; white-space:nowrap}
+.net-num{width:74px; flex:0 0 auto}
+.net-sel{flex:0 0 auto}
+.net-txt{flex:1; min-width:0}
+.net-ops{margin-top:6px; display:flex; gap:6px; flex-wrap:wrap}
+.net-last{margin-top:6px; padding:4px 6px; border-radius:5px; background:rgba(192,139,255,.1);
+  color:var(--ink); font-size:11px; max-height:60px; overflow:auto; white-space:pre-wrap;
+  word-break:break-all; cursor:pointer}
+.net-last:hover{background:rgba(192,139,255,.18)}

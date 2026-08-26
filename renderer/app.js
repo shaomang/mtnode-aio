@@ -15,7 +15,7 @@ const I18n =
 const HEAD = 28;
 const PORT_STEP = 26;
 const PORT_R = 6;
-const PORT_OFF = 7; /* 端子圆心到节点边缘的距离（端子完全在节点框外，避免亚像素命中被节点抢走） */
+const PORT_OFF = 8; /* 端子圆心到节点边缘的距离（端子镶嵌在节点板内：圆心在板内 8px、端子边缘内缩 2px，不再悬挂在节点外） */
 /* 画布缩放范围：下限放宽便于大工作流总览 */
 const CAM_Z_MIN = 0.08;
 const CAM_Z_MAX = 2.5;
@@ -45,6 +45,8 @@ function procMinNodeW(outW) {
 const KIND_CLS = {
   input_text: "in",
   input_image: "in",
+  input_file: "in",
+  db_table: "db-tbl",
   proc_text: "proc",
   proc_image: "proc-img",
   save: "sv",
@@ -66,6 +68,8 @@ const KIND_CLS = {
   global: "global",
   music_gen: "music",
   video_gen: "video",
+  net_recv: "net",
+  net_send: "net",
   super: "super",
   super_io: "super-io",
   db_replica: "db",
@@ -79,6 +83,12 @@ const KIND_ICON_SVG = {
   /* 输入 · 图像：相框风景 */
   input_image:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="7" r="1.1" fill="currentColor"/><path d="M3.5 11.2l3.2-3.2 2.1 2.1 1.6-1.6 2.1 2.7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  /* 输入 · 文件：文档 + 折角 + 字符行 */
+  input_file:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h6.2l2.9 2.9v8a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.4 2.8v2.7H12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.4 8.2h5.2M5.4 10.3h5.2M5.4 12.4h3.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 处理 · 表（建表）：表格框 + 表头行 */
+  db_table:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.8" width="11.2" height="10.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2.4 5.6h11.2M6.6 5.6v7.6M10.8 5.6v7.6" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.2 4.2h1.6M8.4 4.2h1.6" fill="currentColor" stroke-linecap="round"/></svg>',
   /* 处理 · 文本 LLM：文档 + 火花（生成） */
   proc_text:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h5.2L12 5.6V13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.1 2.9V5.5H11.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.8 8.2h4.4M5.8 10.4h3.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M11.6 9.1l.55 1.35 1.4.35-1.15.9.35 1.4-1.15-.85-1.15.85.35-1.4-1.15-.9 1.4-.35z" fill="currentColor"/></svg>',
@@ -165,6 +175,12 @@ const KIND_ICON_SVG = {
   /* 视频生成 */
   video_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/></svg>',
+  /* 网络 · 接收：圆节点 + 上方接收箭头 + 下横线 */
+  net_recv:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 5.7V2.4M8 2.4L5.9 4.5M8 2.4L10.1 4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 11.6h9.6M5.2 13.4h5.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 网络 · 发送：圆节点 + 下方发送箭头 + 上横线 */
+  net_send:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 10.3v3.3M8 13.6L5.9 11.5M8 13.6L10.1 11.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 2.6h9.6M5.2 4.4h5.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
   /* 绘制 · 笔 + 画板 */
   draw:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="8.6" height="7.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.4 12.6l5.2-5.2 1.15 1.15-5.2 5.2H7.4v-1.15z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 8.5l1.15 1.15" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.2h5.2M4 7.2h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
@@ -281,6 +297,26 @@ const NODE_DEFAULTS = {
     sourceName: "",
     batch: false,
     entries: [],
+  },
+  /* 数据库 · 文件节点：批量导入任意文件（复制进数据库子文件夹），供「表」读取 */
+  input_file: {
+    w: 280,
+    h: 180,
+    title: "文件",
+    files: [],
+  },
+  /* 数据库 · 表节点：从「文件节点」读取，agent 抽元数据→用户确认表单→按表单建表 */
+  db_table: {
+    w: 360,
+    h: 240,
+    title: "表",
+    tableDef: null,
+    rows: [],
+    schemaFile: "",
+    dataFile: "",
+    builtAt: 0,
+    building: false,
+    error: "",
   },
   proc_text: {
     w: 380,
@@ -649,6 +685,38 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  net_recv: {
+    w: 320,
+    h: 190,
+    title: "接收",
+    netChannel: 0,
+    netProto: "tcp",
+    netHost: "127.0.0.1",
+    netPort: 40999 /* 监听端口（默认 40999；0 = 用全局设置端口） */,
+    netListening: false,
+    netAutoListen: true /* 监听模式：启动/切画布时自动进入监听状态 */,
+    netStatus: "",
+    netCount: 0,
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  net_send: {
+    w: 340,
+    h: 205,
+    title: "发送",
+    netChannel: 0,
+    netProto: "tcp",
+    netHost: "127.0.0.1",
+    netPort: 41000 /* 目标端口（默认 41000，与监听端口分离；0 = 用全局设置端口） */,
+    netStatus: "",
+    netCount: 0,
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
 };
 
 const TASK_STATUS_LABEL = {
@@ -665,6 +733,13 @@ function currentTaskFocus() {
 }
 function currentSuperFocus() {
   return S.superFocus || "";
+}
+/* 当前聚焦的超级节点是否为「数据库」超级节点（其内部右键菜单只给「文件节点 / 表」） */
+function currentDbSuper() {
+  const sf = currentSuperFocus();
+  if (!sf) return null;
+  const n = nodeById(sf);
+  return n && n.kind === "super" && n.db ? n : null;
 }
 function nodeParentTaskId(n) {
   return (n && n.parentTaskId) || "";
@@ -877,6 +952,8 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   wf = wf || S.wf;
   if (!node) return false;
   if (isControlKind(node)) return true;
+  /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
+  if (node.kind === "net_recv") return Number(portIndex || 0) >= 1;
   if (node.kind === "super")
     return superOutPortIsControl(node, portIndex, wf, seen);
   return false;
@@ -988,7 +1065,7 @@ function superStageLocalOut(n, fromIndex, host, pan) {
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
   return {
-    x: (pan.x || 0) + n.x + sz.w + PORT_OFF,
+    x: (pan.x || 0) + n.x + sz.w - PORT_OFF,
     y: (pan.y || 0) + n.y + outPortY(hNode, fromIndex || 0),
   };
 }
@@ -996,7 +1073,7 @@ function superStageLocalIn(n, toIndex, host, pan) {
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
   return {
-    x: (pan.x || 0) + n.x - PORT_OFF,
+    x: (pan.x || 0) + n.x + PORT_OFF,
     y: (pan.y || 0) + n.y + inPortY(hNode, toIndex, inputCount(n)),
   };
 }
@@ -1038,12 +1115,20 @@ function superStageSinkPos(host, toIndex, stageW) {
 function applyWirePathClass(p, w, from) {
   let wcls = "fn-edge";
   if (S.selWire === w.id) wcls += " sel";
+  else if (linkedToSelectedNode(w)) wcls += " linked";
   if (wireFromIsControl(w) || isControlKind(nodeById(w.to))) wcls += " ctrl";
   else if (isImageWireFrom(from)) wcls += " img";
   else if (isAudioWireFrom(from)) wcls += " aud";
   else if (isVideoWireFrom(from)) wcls += " vid";
   if (isPinnedWire(w)) wcls += " pinned";
   p.setAttribute("class", wcls);
+}
+/* 选中节点时，与其相连的连线高亮（.fn-edge.linked） */
+function linkedToSelectedNode(w) {
+  if (!w) return false;
+  const set =
+    S.selSet && S.selSet.size ? S.selSet : S.sel ? new Set([S.sel]) : null;
+  return !!set && (set.has(w.from) || set.has(w.to));
 }
 function bindWirePathInteractions(p, w) {
   if (p.dataset.bound === "1") return;
@@ -2123,6 +2208,8 @@ function outputCount(n) {
     return superDynamicPortCount(maxIdx, open);
   }
   if (n.kind === "judge" || n.kind === "task") return 2;
+  if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
+  if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
   if (n.kind === "sequencer")
     return Math.max(2, Math.min(8, Math.round(Number(n.seqOutputs) || 3)));
   if (n.kind === "splitter")
@@ -3411,12 +3498,20 @@ function dshEffortOf(v, fromProcText) {
   return "high";
 }
 
-/* 中断当前智能运行:关闭该工作目录的运行时,在途 run 以错误收束 */
-function dshCancelActive() {
-  if (!S.activeRunCancel) return Promise.resolve()
-  const p = S.activeRunCancel
-  S.activeRunCancel = null
-  return window.api.dshCancel(p).catch(() => {})
+/* 中断智能运行:按 runKey 关闭对应工作目录的运行时,在途 run 以错误收束。
+   runKey 缺省 = 中断全部在途 dsh 运行(一键终止语义);并行会话/节点各持自己的 runKey。 */
+function dshCancelActive(runKey) {
+  const map = (S && S._runCancels) || {};
+  const keys = runKey ? [String(runKey)] : Object.keys(map);
+  const list = [];
+  for (const k of keys) {
+    const h = map[k];
+    if (!h) continue;
+    delete map[k];
+    list.push(h);
+  }
+  if (!list.length) return Promise.resolve();
+  return Promise.all(list.map((p) => window.api.dshCancel(p).catch(() => {})));
 }
 
 function isCancelishError(msg) {
@@ -3704,6 +3799,26 @@ function renderDbConsoleBody(node, body) {
       ? ' · <span class="n-db-console-folder">' + escapeHtml(idx.folder) + "</span>"
       : "");
   body.appendChild(meta);
+  /* 引用提示：!@ 引用方式 + 只读说明（所有处理节点通用，可经 agent 完全增删改查） */
+  const hint = document.createElement("div");
+  hint.className = "n-db-console-hint";
+  const safeHintTitle = escapeHtml(node.title || "");
+  hint.innerHTML =
+    "📌 " +
+    I18n.t("在任意处理节点的 prompt/task 中写 !@数据库标题 即可引用本数据库（无需连线）。") +
+    "<br>" +
+    I18n.t(
+      "智能 / agent 节点：得到「【数据库：标题】」指针，并可用 mtnode_db 工具对本库完整增删改查——",
+    ) +
+    I18n.t("查：") + "list / get / query（返回 provenance 溯源 + sql 实际访问语句 + data 结构化数据）；" +
+    I18n.t("增 / 改：") + "write（records，缺 id 自动生成）；" +
+    I18n.t("删：") + "delete（ids）。" +
+    "<br>" +
+    I18n.t(
+      "纯文本（非智能）节点：仅得到「【数据库：标题】」指针占位，不注入本库内容，也不调用工具。",
+    ) +
+    "<br><code>!@" + safeHintTitle + "</code>";
+  body.appendChild(hint);
   /* 查询行（FTS5 BM25 + 结构化过滤） */
   const qrow = document.createElement("div");
   qrow.className = "n-db-console-row";
@@ -3897,6 +4012,529 @@ async function dbDirtyCheck(node) {
   }
 }
 
+/* ==========================================================================
+   数据库 · 文件节点(input_file) / 表节点(db_table)：批量导入文件并「建表」
+   - 文件节点：批量导入任意文件，复制进数据库子文件夹
+   - 表节点：读取连入的文件节点 → agent 抽元数据得到表单 → 用户确认 → 按表单建表
+   - 非文本文件 → 「文件名」「内容说明」索引；图像 → 询问是否识图，结果填内容说明
+   ========================================================================== */
+const DB_IMG_EXT = new Set([
+  "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "avif", "tif", "tiff",
+]);
+function dbFileType(name) {
+  const s = String(name || "");
+  const i = s.lastIndexOf(".");
+  if (i <= 0 || i === s.length - 1) return "binary";
+  const ext = s.slice(i + 1).toLowerCase();
+  if (DB_TEXT_EXT.has(ext)) return "text";
+  if (DB_IMG_EXT.has(ext)) return "image";
+  return "binary";
+}
+function dbHumanSize(b) {
+  const n = Number(b) || 0;
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
+}
+/* 向上找所属「数据库」超级节点（支持嵌套，取最近一层 db:true） */
+function dbSuperOfTable(node) {
+  let cur = node;
+  const seen = new Set();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    if (cur.kind === "super" && cur.db) return cur;
+    cur = cur.parentSuperId ? nodeById(cur.parentSuperId) : null;
+  }
+  return null;
+}
+function dbSuperDir(node) {
+  return dbNodeDir(dbSuperOfTable(node));
+}
+function dbTableStem(node) {
+  const safe = String(node.title || "表").replace(/[^\w\u4e00-\u9fff-]+/g, "_");
+  return "表_" + safe;
+}
+async function dbPathExists(p) {
+  return !!(await window.api.fileExists(p).catch(() => false));
+}
+async function dbUniqueDest(dir, name) {
+  let base = name, ext = "";
+  const i = name.lastIndexOf(".");
+  if (i > 0) { base = name.slice(0, i); ext = name.slice(i); }
+  let p = window.api.pathJoin(dir, name);
+  let n = 1;
+  while (await dbPathExists(p)) {
+    p = window.api.pathJoin(dir, base + "-" + n + ext);
+    n++;
+  }
+  return p;
+}
+/* 文件节点内单个文件的展示行 + 移除 */
+function dbFileRowEl(node, f) {
+  const row = document.createElement("div");
+  row.className = "db-file-row";
+  const ico = document.createElement("span");
+  ico.className = "db-file-ico";
+  ico.textContent = f.type === "image" ? "🖼" : f.type === "text" ? "📄" : "📦";
+  const nm = document.createElement("span");
+  nm.className = "db-file-name";
+  nm.textContent = f.name || "";
+  nm.title = f.path || "";
+  const sz = document.createElement("span");
+  sz.className = "db-file-size";
+  sz.textContent = dbHumanSize(f.size);
+  const tp = document.createElement("span");
+  tp.className = "db-file-type";
+  tp.textContent = f.type;
+  const del = document.createElement("button");
+  del.className = "mini";
+  del.textContent = "✕";
+  del.addEventListener("click", () => {
+    const i = (node.files || []).indexOf(f);
+    if (i >= 0) node.files.splice(i, 1);
+    clearDownstream(node.id);
+    scheduleSave();
+    renderCanvas();
+  });
+  row.append(ico, nm, sz, tp, del);
+  return row;
+}
+/* 文件节点：批量导入任意文件 → 复制进数据库子文件夹 */
+async function dbImportFiles(node) {
+  const dir = dbSuperDir(node);
+  if (!dir) {
+    toast(I18n.t("未设置工作目录/子文件夹，无法导入文件"), "warn");
+    return;
+  }
+  const r = await window.api.fileOpenDialog({
+    title: I18n.t("导入任意文件（可多选）"),
+    filters: [],
+    multi: true,
+  });
+  if (!r.paths || !r.paths.length) return;
+  const files = node.files || (node.files = []);
+  let added = 0;
+  for (const p of r.paths) {
+    const name = String(p).split(/[\\/]/).pop() || "file";
+    const dest = await dbUniqueDest(dir, name);
+    await window.api.fileCopyAssetTo(p, dest).catch(() => {});
+    const st = await window.api.fileStat(dest).catch(() => null);
+    const nf = name;
+    files.push({
+      id: uid("f"),
+      name: String(dest).split(/[\\/]/).pop() || nf,
+      path: dest,
+      rel: window.api.pathRelative(dir, dest) || nf,
+      size: (st && st.size) || 0,
+      mtime: (st && st.mtime) || 0,
+      type: dbFileType(dest),
+    });
+    added++;
+  }
+  clearDownstream(node.id);
+  scheduleSave();
+  renderCanvas();
+  toast(I18n.t("已导入 ") + added + I18n.t(" 个文件"), "ok");
+}
+/* 收集连入的「文件节点」中的文件（向上游递归，含全局广播的 input_file） */
+function dbTableConnectedFiles(node) {
+  const files = [];
+  const seen = new Set();
+  const walk = (n) => {
+    if (!n || seen.has(n.id)) return;
+    seen.add(n.id);
+    if (n.kind === "input_file") {
+      for (const f of (n.files || [])) files.push(Object.assign({}, f, { srcNode: n.id }));
+    }
+    for (const w of (S.wf.wires || [])) {
+      if (w.to !== n.id) continue;
+      walk(nodeById(w.from));
+    }
+  };
+  walk(node);
+  return files;
+}
+/* 找一个可用的视觉模型（用于图像识图） */
+function dbFirstVisionModel() {
+  for (const p of mtnodePiProviders()) {
+    const vms = visionModelsForProvider("mtnode_" + p.route);
+    if (vms.length) return { provider: "mtnode_" + p.route, model: vms[0].id };
+  }
+  const dp = dshProvider();
+  const dvm = dp ? visionModelsForProvider("deepseek-official") : [];
+  if (dvm.length) return { provider: "deepseek-official", model: dvm[0].id };
+  return null;
+}
+/* 图像识图：返回内容说明（失败则回退为占位） */
+async function dbRecognizeImage(node, absPath) {
+  const vis = dbFirstVisionModel();
+  const opts = { node, effort: "low", preset: "standard" };
+  if (vis) { opts.provider = vis.provider; opts.model = vis.model; }
+  try {
+    const text = await dshRunTask(
+      "请阅读图片并给出内容说明（70 字以内，只输出说明正文，不要前缀或解释）。",
+      Object.assign({}, opts, { images: [absPath] }),
+    );
+    const t = String(text || "").trim().slice(0, 240);
+    return t || "(未识别)";
+  } catch (_) {
+    return "(未识别)";
+  }
+}
+function dbParseColumnsJson(text) {
+  const s = String(text || "");
+  const m = s.match(/\[[\s\S]*\]/);
+  if (!m) return [];
+  try {
+    const arr = JSON.parse(m[0]);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((c) => ({
+        name: String((c && c.name) || "").trim(),
+        type: String((c && c.type) || "text").trim() || "text",
+        desc: String((c && c.desc) || "").trim(),
+      }))
+      .filter((c) => c.name);
+  } catch (_) {
+    return [];
+  }
+}
+function dbParseRowJson(text) {
+  const s = String(text || "");
+  const m = s.match(/\{[\s\S]*\}/);
+  if (!m) return {};
+  try {
+    const o = JSON.parse(m[0]);
+    return o && typeof o === "object" ? o : {};
+  } catch (_) {
+    return {};
+  }
+}
+/* agent 提议「表」的统一列结构（来自文本文件内容样本） */
+async function dbProposeColumns(node, samples) {
+  const defCols = [
+    { name: "文件名", type: "text", desc: "文件名称" },
+    { name: "内容说明", type: "text", desc: "文件内容概要说明" },
+  ];
+  if (!samples.length) return defCols.slice();
+  const brief = samples
+    .slice(0, 6)
+    .map((s) => "### " + s.name + "\n" + String(s.content || "").slice(0, 3000))
+    .join("\n\n");
+  const prompt =
+    "下面是若干文本文件的内容样本。请为它们提炼一个统一的「表」列结构（字段名、类型、说明），用来把这些文件内容整理成行。只输出一个 JSON 数组，元素形如 {\"name\":\"字段名\",\"type\":\"字段类型\",\"desc\":\"字段说明\"}。列不要超过 8 个，不要输出任何其他文字。\n\n" +
+    brief;
+  let text = "";
+  try {
+    text = await dshRunTask(prompt, { node, effort: "high", preset: "standard" });
+  } catch (_) {
+    text = "";
+  }
+  const cols = dbParseColumnsJson(text);
+  if (!cols.some((c) => /文件名|filename/i.test(c.name))) cols.unshift(defCols[0]);
+  if (!cols.some((c) => /内容说明|description/i.test(c.name))) cols.push(defCols[1]);
+  return cols.length ? cols : defCols.slice();
+}
+/* 解析 JSON 数组 [{file, ...}] → { 文件名: {列: 值} } */
+function dbParseRowsJson(text) {
+  const s = String(text || "");
+  const m = s.match(/\[[\s\S]*\]/);
+  if (!m) return {};
+  let arr = null;
+  try {
+    arr = JSON.parse(m[0]);
+  } catch (_) {
+    return {};
+  }
+  if (!Array.isArray(arr)) return {};
+  const out = {};
+  for (const r of arr) {
+    const fn = String((r && (r.file || r._file)) || "").trim();
+    if (!fn) continue;
+    const obj = {};
+    for (const k of Object.keys(r || {})) {
+      if (k === "file" || k === "_file") continue;
+      obj[k] = r[k];
+    }
+    out[fn] = obj;
+  }
+  return out;
+}
+/* 按字符数把文本文件内容分批：软界 5 万 / 硬界 8 万；截断只在换行处，无换行则以整个文件为单位 */
+function dbBuildTextBatches(entries) {
+  const SOFT = 50000;
+  const HARD = 80000;
+  const batches = [];
+  let cur = [];
+  let curLen = 0;
+  const flush = () => {
+    if (cur.length) {
+      batches.push(cur);
+      cur = [];
+      curLen = 0;
+    }
+  };
+  /* 尝试把 content 放进 budget 内：放得下则整文；放不下则切到最后一个换行；无换行则返回 null（文件为单位） */
+  const fit = (content, budget) => {
+    if (content.length <= budget) return { content, truncated: false };
+    const at = content.lastIndexOf("\n", budget);
+    if (at >= 0) return { content: content.slice(0, at + 1), truncated: true };
+    return null;
+  };
+  for (const e of entries) {
+    const content = e.content || "";
+    let put = fit(content, HARD - curLen);
+    if (!put && cur.length) {
+      flush();
+      put = fit(content, HARD);
+    }
+    if (!put) {
+      /* 批内放不下且无法按换行截断（截断区无换行）→ 以整个文件为单位独占一批 */
+      flush();
+      put = { content, truncated: true };
+    }
+    cur.push({ name: e.name, content: put.content, truncated: put.truncated });
+    curLen += put.content.length;
+    if (curLen >= SOFT) flush();
+  }
+  flush();
+  return batches;
+}
+/* 用「子代理」按批次批量抽取每行的列值（每批次一次模型调用，自带正确 prompt） */
+async function dbExtractRowsBatch(node, columns, batch) {
+  const colDescs = columns
+    .map((c) => c.name + (c.desc ? "（" + c.desc + "）" : ""))
+    .join("，");
+  const prompt =
+    "你是数据抽取子代理。下面给出若干文本文件的名称与内容（可能因篇幅截断）。请为【每个文件】分别抽取一行，按给定「表」的字段取该文件对应字段的值。" +
+    "只输出一个 JSON 数组，每个元素形如 {\"file\":\"文件名\",\"字段名\":\"字段值\"}。键为字段名，值为该文件对应字段的取值；没有的字段可省略，不要臆造。" +
+    "元素里的 file 必须与输入中的文件名完全一致。只输出数组，不要任何其他文字。\n\n字段：" +
+    colDescs +
+    "\n\n" +
+    batch
+      .map(
+        (b) =>
+          "### 文件：" +
+          b.name +
+          (b.truncated ? "（内容因篇幅截断）" : "") +
+          "\n" +
+          b.content,
+      )
+      .join("\n\n");
+  let text = "";
+  try {
+    text = await dshRunTask(prompt, { node, effort: "high", preset: "standard" });
+  } catch (_) {
+    text = "";
+  }
+  return dbParseRowsJson(text);
+}
+/* 用户确认表单（列定义）：可增删改；返回列数组，取消返回 null */
+function dbAskUserForm(node, columns) {
+  return new Promise((resolve) => {
+    openOverlay(I18n.t("确认表单（建表元数据）"), { persistent: true });
+    const body = $("#ovBody");
+    body.classList.add("db-form-body");
+    const hint = document.createElement("div");
+    hint.className = "db-form-hint";
+    hint.textContent = I18n.t(
+      "请核对并修正下方字段（列）定义；确认后，所有连入的文件将按此表单建表。",
+    );
+    body.appendChild(hint);
+    const wrap = document.createElement("div");
+    wrap.className = "db-form-cols";
+    const renderCols = () => {
+      wrap.innerHTML = "";
+      columns.forEach((c, idx) => {
+        const row = document.createElement("div");
+        row.className = "db-form-col-row";
+        const nameInp = document.createElement("input");
+        nameInp.type = "text";
+        nameInp.value = c.name;
+        nameInp.addEventListener("change", () => { c.name = nameInp.value.trim(); });
+        const typeSel = document.createElement("select");
+        ["text", "number", "date", "bool"].forEach((t) => {
+          const o = document.createElement("option");
+          o.value = t;
+          o.textContent = t;
+          if (c.type === t) o.selected = true;
+          typeSel.appendChild(o);
+        });
+        typeSel.addEventListener("change", () => { c.type = typeSel.value; });
+        const descInp = document.createElement("input");
+        descInp.type = "text";
+        descInp.value = c.desc || "";
+        descInp.addEventListener("change", () => { c.desc = descInp.value.trim(); });
+        const del = document.createElement("button");
+        del.className = "mini";
+        del.textContent = "✕";
+        del.addEventListener("click", () => { columns.splice(idx, 1); renderCols(); });
+        row.append(nameInp, typeSel, descInp, del);
+        wrap.appendChild(row);
+      });
+    };
+    renderCols();
+    body.appendChild(wrap);
+    const addBtn = document.createElement("button");
+    addBtn.className = "mini";
+    addBtn.textContent = "＋ 添加列";
+    addBtn.addEventListener("click", () => {
+      columns.push({ name: "新列", type: "text", desc: "" });
+      renderCols();
+    });
+    body.appendChild(addBtn);
+    const foot = $("#ovFoot");
+    const cancel = document.createElement("button");
+    cancel.className = "mini";
+    cancel.textContent = I18n.t("取消");
+    cancel.addEventListener("click", () => { closeOverlay(); resolve(null); });
+    const ok = document.createElement("button");
+    ok.className = "primary";
+    ok.textContent = I18n.t("确认并建表");
+    ok.addEventListener("click", () => {
+      const cols = columns.filter((c) => c.name.trim());
+      closeOverlay();
+      resolve(cols);
+    });
+    foot.append(cancel, ok);
+  });
+}
+function dbCsvCell(s) {
+  return '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
+}
+async function dbSaveTable(node, columns, rows) {
+  const dir = dbSuperDir(node);
+  if (!dir) return;
+  const stem = dbTableStem(node);
+  const schemaPath = window.api.pathJoin(dir, stem + ".schema.yml");
+  const dataPath = window.api.pathJoin(dir, stem + ".table.csv");
+  const schemaLines = ["# 表结构（由「表」节点建表生成）", "columns:"];
+  for (const c of columns)
+    schemaLines.push(
+      "  - name: " + JSON.stringify(c.name) + "\n    type: " + c.type + "\n    desc: " + JSON.stringify(c.desc || ""),
+    );
+  schemaLines.push("rows: " + rows.length);
+  await window.api.fileWriteText(schemaPath, schemaLines.join("\n")).catch(() => {});
+  const colNames = columns.map((c) => c.name);
+  const csvRows = [colNames.join(",")];
+  for (const r of rows)
+    csvRows.push(colNames.map((cn) => dbCsvCell(r[cn])).join(","));
+  await window.api.fileWriteText(dataPath, csvRows.join("\n")).catch(() => {});
+  node.schemaFile = schemaPath;
+  node.dataFile = dataPath;
+  node.builtAt = Date.now();
+}
+/* 建表主流程 */
+async function runDbTableBuild(node) {
+  if (!node || node.building) return;
+  const files = dbTableConnectedFiles(node).filter((f) => f && f.path);
+  if (!files.length) {
+    toast(
+      I18n.t("请先把「文件节点」连接到本「表」节点，并在文件节点里导入文件"),
+      "warn",
+    );
+    return;
+  }
+  node.building = true;
+  node.error = "";
+  renderCanvas();
+  try {
+    const samples = [];
+    const images = [];
+    for (const f of files) {
+      if (f.type === "text") {
+        const rr = await window.api.fileReadText(f.path).catch(() => null);
+        const content = rr && rr.ok && rr.exists ? String(rr.content || "") : "";
+        if (content) samples.push({ name: f.name, content });
+      } else if (f.type === "image") {
+        images.push(f);
+      }
+    }
+    /* 图像：询问是否识图，结果填入内容说明 */
+    const descMap = {};
+    for (const img of images) {
+      let want = false;
+      try {
+        want = confirm(
+          I18n.t("图像「{n}」需要内容说明，是否进行识图处理？", { n: img.name }),
+        );
+      } catch (_) {}
+      descMap[img.path] = want ? await dbRecognizeImage(node, img.path) : "(未识别)";
+    }
+    const columns = await dbProposeColumns(node, samples, images, descMap);
+    const form = await dbAskUserForm(node, columns);
+    if (!form || !form.length) {
+      node.building = false;
+      renderCanvas();
+      toast(I18n.t("已取消建表"), "warn");
+      return;
+    }
+    /* 按表单建表：每个文件 = 一行 */
+    const rows = [];
+    const nameCol = form.find((c) => /文件名|filename/i.test(c.name));
+    const descCol = form.find((c) => /内容说明|description/i.test(c.name));
+    /* 文本文件：先读全量内容，再按字符数分批（软 5 万 / 硬 8 万），用「子代理」逐批抽列值 */
+    const textFileMap = new Map(); // f.path -> {file, name, content}
+    for (const f of files) {
+      if (f.type !== "text") continue;
+      const rr = await window.api.fileReadText(f.path).catch(() => null);
+      const content = rr && rr.ok && rr.exists ? String(rr.content || "") : "";
+      textFileMap.set(f.path, { file: f, name: f.name, content });
+    }
+    const rowMap = {}; // 文件名 -> {列: 值}
+    const batches = dbBuildTextBatches([...textFileMap.values()]);
+    for (const batch of batches) {
+      const got = await dbExtractRowsBatch(node, form, batch);
+      for (const b of batch) {
+        if (!got[b.name] || !Object.keys(got[b.name]).length) continue;
+        rowMap[b.name] = got[b.name];
+      }
+    }
+    for (const f of files) {
+      const row = {};
+      if (f.type === "text") {
+        const meta = textFileMap.get(f.path);
+        const content = meta ? meta.content : "";
+        const vals = rowMap[f.name] || {};
+        for (const c of form) {
+          const v = vals[c.name];
+          if (v != null && String(v) !== "") row[c.name] = String(v);
+          else if (c === nameCol) row[c.name] = f.name;
+          else if (c === descCol) row[c.name] = String(content || "").slice(0, 300);
+          else row[c.name] = "";
+        }
+      } else {
+        for (const c of form) {
+          if (c === nameCol) row[c.name] = f.name;
+          else if (c === descCol)
+            row[c.name] = descMap[f.path] || (f.type === "image" ? "(未识别)" : "");
+          else row[c.name] = "";
+        }
+      }
+      row._file = f.name;
+      rows.push(row);
+    }
+    await dbSaveTable(node, form, rows);
+    node.tableDef = form;
+    node.rows = rows;
+    node.builtAt = Date.now();
+    node.building = false;
+    pushHistory();
+    scheduleSave(true);
+    renderCanvas();
+    toast(
+      I18n.t("建表完成：{c} 列 · {r} 行", { c: form.length, r: rows.length }),
+      "ok",
+    );
+  } catch (e) {
+    node.building = false;
+    node.error = (e && e.message) || String(e);
+    renderCanvas();
+    toast(I18n.t("建表失败：") + node.error, "err");
+  }
+}
+
 /* ---------- 接线检测：智能节点上游（输入连线，递归）是否接入了数据库副本 ---------- */
 function dbReplicaSourcesInWf(node, wf) {
   const nodes = (wf && wf.nodes) || [];
@@ -3940,6 +4578,68 @@ function dbNodesForInWf(node, wf) {
   return out;
 }
 
+/* 所有已编译的数据库超级节点（供 !@ 引用解析） */
+function compiledDbSupers(wf) {
+  return ((wf && wf.nodes) || []).filter(
+    (n) =>
+      n &&
+      n.kind === "super" &&
+      n.db &&
+      n.dbIndex &&
+      Array.isArray(n.dbIndex.records),
+  );
+}
+/* 扫描节点本次运行的 prompt/task，找出 !@标题 引用的数据库节点 */
+function dbNodesReferencedByBang(node, wf) {
+  const p = String(procPromptForRun(node) || "");
+  if (!p.includes("!@")) return [];
+  const supers = compiledDbSupers(wf);
+  if (!supers.length) return [];
+  const out = [];
+  const seen = new Set();
+  const re = /!@([^\s!@，。；、！？：,:!?;:]+)/g;
+  let m;
+  while ((m = re.exec(p))) {
+    const tok = m[1].trim();
+    if (!tok || seen.has(tok)) continue;
+    seen.add(tok);
+    const db =
+      supers.find((s) => s.title === tok) ||
+      supers.find((s) => (s.title || "").startsWith(tok));
+    if (db && !out.some((x) => x.id === db.id)) out.push(db);
+  }
+  return out;
+}
+/* 本节点可访问的数据库 = 连线接入的副本库 + !@ 引用的库 */
+function dbNodesForRun(node, wf) {
+  const out = dbNodesForInWf(node, wf);
+  for (const d of dbNodesReferencedByBang(node, wf)) {
+    if (!out.some((x) => x.id === d.id)) out.push(d);
+  }
+  return out;
+}
+
+/* 把 prompt 里的 !@标题 数据库引用替换为可读指针（避免被 @ 正则吃掉），并顺手收集引用库 */
+function resolveDbBangRefs(prompt, node) {
+  const p = String(prompt || "");
+  if (!p.includes("!@")) return { prompt: p, dbs: [] };
+  const supers = compiledDbSupers(S.wf);
+  const dbs = [];
+  const out = p.replace(/!@([^\s!@，。；、！？：,:!?;:]+)/g, (m, tok) => {
+    const t = tok.trim();
+    if (!t) return m;
+    const db =
+      supers.find((s) => s.title === t) ||
+      supers.find((s) => (s.title || "").startsWith(t));
+    if (db) {
+      if (!dbs.some((x) => x.id === db.id)) dbs.push(db);
+      return I18n.t("【数据库：{t}】", { t: db.title });
+    }
+    return I18n.t("【数据库：{t}】", { t });
+  });
+  return { prompt: out, dbs };
+}
+
 /* ---------- 宿主侧 mtnode_db 事件处理（工具调用 → SQLite/FTS5 查询 → 应答） ---------- */
 function dbNodeDirInWf(db, wf) {
   const ws = String((wf && wf.workspace) || "").trim();
@@ -3967,13 +4667,33 @@ async function handleDbToolEvent(data, node, wf) {
   try {
     /* 工具参数经网关放在 data.params（帧顶层只有 action） */
     const p = (data && data.params) || {};
-    const dbs = dbNodesForInWf(node, wf);
+    const dbs = dbNodesForRun(node, wf);
     if (!dbs.length) {
       reply({
         ok: false,
         error: I18n.t(
-          "当前任务未接入数据库副本：请先在数据库节点上「编译」，再把数据库副本节点连到本节点的输入端",
+          "当前任务未接入数据库：请先在数据库节点上「编译」，再将该数据库副本节点连到输入端，或在 prompt 中用 !@数据库标题 引用",
         ),
+      });
+      return;
+    }
+    /* 可选：用 database 参数把操作限定到某一具体库（否则作用于全部引用库） */
+    const target = String((data && data.database) || p.database || "").trim();
+    const scope = target
+      ? dbs.filter(
+          (d) =>
+            (d.title || "") === target ||
+            (d.title || "").startsWith(target) ||
+            (d.dbIndex && d.dbIndex.folder === target),
+        )
+      : dbs;
+    if (target && !scope.length) {
+      reply({
+        ok: false,
+        error: I18n.t("未找到名为「{t}」的数据库。可用的：{list}", {
+          t: target,
+          list: dbs.map((d) => d.title || "").join("、"),
+        }),
       });
       return;
     }
@@ -3985,10 +4705,52 @@ async function handleDbToolEvent(data, node, wf) {
       reply(r || { ok: false, error: I18n.t("calc 失败") });
       return;
     }
+    if (action === "write") {
+      const rec = (p && (p.records || p.record)) || [];
+      /* 给 agent 写入的记录打上溯源 source（非 node:/file: 来源则标记为 agent:），便于持久化与追溯 */
+      const records = (Array.isArray(rec) ? rec : [rec])
+        .filter(Boolean)
+        .map((r0) => {
+          const r = { ...r0 };
+          const s = String(r.source || "");
+          if (!s.startsWith("node:") && !s.startsWith("file:") && !s.startsWith("agent:"))
+            r.source = "agent:" + ((node && node.title) || "");
+          return r;
+        });
+      const per = [];
+      for (const d of scope) {
+        const dir = dbNodeDirInWf(d, wf);
+        if (!dir) continue;
+        const r = await window.api.dbWrite(dir, records).catch(() => null);
+        per.push({
+          database: d.title || "",
+          ok: !!(r && r.ok),
+          ...(r && r.ok ? { written: r.written } : { error: r && r.error }),
+        });
+      }
+      reply({ ok: true, action: "write", databases: per });
+      return;
+    }
+    if (action === "delete") {
+      const ids = (p && (p.ids || (p.id ? [p.id] : []))) || [];
+      const per = [];
+      for (const d of scope) {
+        const dir = dbNodeDirInWf(d, wf);
+        if (!dir) continue;
+        const r = await window.api.dbDelete(dir, ids).catch(() => null);
+        per.push({
+          database: d.title || "",
+          ok: !!(r && r.ok),
+          ...(r && r.ok ? { deleted: r.deleted } : { error: r && r.error }),
+        });
+      }
+      reply({ ok: true, action: "delete", databases: per });
+      return;
+    }
     if (action === "list") {
       const per = [];
       let total = 0;
-      for (const d of dbs) {
+      for (const d of scope) {
         const dir = dbNodeDirInWf(d, wf);
         if (!dir) {
           per.push({
@@ -3996,6 +4758,9 @@ async function handleDbToolEvent(data, node, wf) {
             folder: (d.dbIndex && d.dbIndex.folder) || "",
             compiledAt: (d.dbIndex && d.dbIndex.compiledAt) || 0,
             count: 0,
+            sql: "",
+            provenance: [],
+            data: [],
             titles: [],
           });
           continue;
@@ -4008,55 +4773,91 @@ async function handleDbToolEvent(data, node, wf) {
           folder: (d.dbIndex && d.dbIndex.folder) || "",
           compiledAt: (d.dbIndex && d.dbIndex.compiledAt) || 0,
           count: list.length,
+          sql: (r && r.sql) || "",
+          provenance: list.map((x) => ({
+            id: x.id,
+            title: x.title || "",
+            kind: x.kind || "",
+            source: x.source || "",
+            file: x.file || "",
+          })),
+          data: list,
           titles: list.slice(0, 200).map(
             (x) =>
               x.id + " | " + (x.title || "") + " | " + (x.kind || "") + (x.file ? " | " + x.file : ""),
           ),
         });
       }
-      reply({ ok: true, databases: per, total });
+      reply({ ok: true, action: "list", databases: per, total });
       return;
     }
     if (action === "get") {
       const rid = String((data && data.id) || p.id || "");
-      for (const d of dbs) {
+      for (const d of scope) {
         const dir = dbNodeDirInWf(d, wf);
         if (!dir) continue;
         const r = await window.api.dbGet(dir, rid).catch(() => null);
         if (r && r.ok) {
           dbLogToStore(d, wf, node, "get", rid, 1);
-          reply({ ok: true, database: d.title || "", record: r.record });
+          reply({
+            ok: true,
+            action: "get",
+            database: d.title || "",
+            provenance: [
+              { id: r.record.id, title: r.record.title, source: r.record.source },
+            ],
+            sql: r.sql || "",
+            data: r.record,
+          });
           return;
         }
       }
       reply({ ok: false, error: I18n.t("数据库中没有该记录：") + rid });
       return;
     }
-    /* query（FTS5 BM25 排序 + 结构化过滤，结果带溯源） */
+    /* query（FTS5 BM25 排序 + 结构化过滤，读结果带溯源 + SQL + 结构化 JSON） */
     const q = String((data && data.q) || p.q || "").trim();
     if (!q) {
       reply({ ok: false, error: I18n.t("query 需要 q 参数") });
       return;
     }
     const all = [];
-    for (const d of dbs) {
+    const sqlPer = [];
+    for (const d of scope) {
       const dir = dbNodeDirInWf(d, wf);
       if (!dir) continue;
       const r = await window.api.dbQuery(dir, q, 6).catch(() => null);
       if (r && r.ok && Array.isArray(r.results)) {
-        for (const h of r.results) all.push({ database: d.title || "", ...h });
+        if (r.results.length) {
+          for (const h of r.results) all.push({ database: d.title || "", ...h });
+          sqlPer.push({ database: d.title || "", sql: r.sql || "" });
+        }
       }
     }
     const top = all.slice(0, 6);
-    for (const d of dbs) {
+    /* 按数据库映射本次实际访问语句，便于把 sql 附到每条记录上 */
+    const sqlMap = new Map(sqlPer.map((x) => [x.database, x.sql || ""]));
+    for (const d of scope) {
       const dir = dbNodeDirInWf(d, wf);
       if (dir) dbLogToStore(d, wf, node, "query", q, top.length);
     }
     reply({
       ok: true,
+      action: "query",
       query: q,
       found: top.length,
-      results: top,
+      provenance: top.map((h) => ({
+        id: h.id,
+        title: h.title,
+        source: h.source,
+        kind: h.kind,
+        file: h.file,
+        database: h.database,
+      })),
+      /* 访问数据库的语句（SQL / FTS5 查询），按数据库一份 */
+      sql: sqlPer,
+      /* 结构化输出（JSON 行），每条额外带 sql（该条所在库的访问语句 + 溯源 database） */
+      data: top.map((h) => ({ ...h, sql: sqlMap.get(h.database) || "" })),
       ...(top.length === 0
         ? { none: I18n.t("数据库中没有匹配该查询的记录") }
         : {}),
@@ -4068,7 +4869,7 @@ async function handleDbToolEvent(data, node, wf) {
 /* ---------- 提示词接地：接入数据库的智能节点注入事实纪律 ---------- */
 function agentDbGroundingNote(node, wf) {
   if (!node) return "";
-  const dbs = dbNodesForInWf(node, wf);
+  const dbs = dbNodesForRun(node, wf);
   if (!dbs.length) return "";
   const names = I18n.listJoin(
     dbs.map((d) => "「" + (d.title || "") + "」(" + (d.dbIndex.records || []).length + I18n.t(" 条") + ")"),
@@ -4086,6 +4887,15 @@ function agentDbGroundingNote(node, wf) {
     I18n.t("4. 数字与日期计算必须用 mtnode_db 的 calc 动作，禁止心算。"),
     I18n.t(
       "5. 数据库未记载但任务需要的推断，必须明确标注「此为推断，数据库未记载」。",
+    ),
+    I18n.t(
+      "6. mtnode_db 读取（查）：list / get / query 返回结构化数据——provenance 为溯源（记录 id/标题/来源），sql 为实际访问数据库的语句，data 为输出的记录（JSON 数组）。",
+    ),
+    I18n.t(
+      "7. 增 / 改：用 mtnode_db 的 write，records 为记录数组，每条含 title、content（可带 id / kind / source / file）；未带 id 会自动生成新 id（=新增一条），带了已存在的 id 则覆盖该条（=修改）。写入的记录会以 source=agent: 标记并持久保存，不会被后续编译清除。写前请先 query 确认，避免重复。",
+    ),
+    I18n.t(
+      "8. 删：用 mtnode_db 的 delete，ids 为要删除的记录 id 数组（取自 provenance 的 id）。",
     ),
   ].join("\n");
 }
@@ -4170,7 +4980,10 @@ function dshRunTask(input, opts) {
         ? opts.images.slice()
         : undefined,
   };
-  S.activeRunCancel = {
+  /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist) */
+  const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
+  S._runCancels = S._runCancels || {};
+  S._runCancels[runKey] = {
     workspace: runParams.workspace,
     model: runParams.model,
     maxTokens: runParams.maxTokens,
@@ -4178,7 +4991,9 @@ function dshRunTask(input, opts) {
     baseUrl: runParams.baseUrl,
   };
   const t0 = Date.now();
-  ixReset();
+  /* 交互面板:仅首个 run 清空,后续 run 保留其他会话/节点在途的提问与审批 */
+  if (!(S._runCount || 0)) ixReset();
+  S._runCount = (S._runCount || 0) + 1;
   if (opts.node && isAgentSuperPerm(opts.node) && opts.node.agentPermOutside === "ask") {
     if (S._agentPermSessionPaths) delete S._agentPermSessionPaths[opts.node.id];
   }
@@ -4205,8 +5020,9 @@ function dshRunTask(input, opts) {
     const finish = (ok, val) => {
       if (settled) return;
       settled = true;
-      S.activeRunCancel = null;
-      ixDropRun();
+      if (S._runCancels) delete S._runCancels[runKey];
+      S._runCount = Math.max(0, (S._runCount || 1) - 1);
+      if (!S._runCount) ixDropRun();
       endCanvasRun(boundWf);
       if (scopeLock)
         S._canvasNodeAgentDepth = Math.max(
@@ -4334,6 +5150,10 @@ function liveNodeForSession(st) {
 function sessionIsRunning(st) {
   return !!(st && (st.running || liveNodeForSession(st)));
 }
+/* 是否存在任一智能会话在运行(并行会话互不干扰,仅用于画布确认/保存锁定/运行指示) */
+function anyAgentSessionRunning() {
+  return agentSessions().some((s) => sessionIsRunning(s));
+}
 
 function refreshLiveDshOutTools(node) {
   if (!node) return;
@@ -4410,7 +5230,7 @@ function onDshNodeEvent(node, attemptT, type, data) {
     renderAgentSession();
     return;
   }
-  if (thinkEl) thinkEl.textContent = thinkingTextOf(node) || "";
+  if (thinkEl) updateAgentThinkEl(st, node);
   if (streamEl) streamEl.textContent = node._pendingAnswer || "";
   const list = $("#agentList");
   scrollElToBottomIfStuck(list);
@@ -5182,7 +6002,6 @@ const S = {
   assistPending: "",
   assistLiveTools: [],
   assistRunActive: false, /* 全局助手运行中：画布 edit 需用户确认 */
-  agentSessionRunActive: false, /* 智能会话运行中：改本画布工作流需确认；拒绝则停止 */
   assistPreset: "standard",
   assistProvider: "deepseek-official",
   assistModel: "",
@@ -5414,7 +6233,8 @@ function hasFixedInPorts(n) {
       n.kind === "music_gen" ||
       n.kind === "video_gen" ||
       n.kind === "task" ||
-      n.kind === "super")
+      n.kind === "super" ||
+      n.kind === "net_send")
   );
 }
 function wireFromIsControl(w, wf) {
@@ -5423,6 +6243,8 @@ function wireFromIsControl(w, wf) {
   const from = nodeByIdIn(w.from, wf);
   if (!from) return false;
   if (isControlKind(from)) return true;
+  /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
+  if (from.kind === "net_recv" && Number(w.fromIndex || 0) >= 1) return true;
   const to = nodeByIdIn(w.to, wf);
   if (!to) return false;
   /* 内侧桥接：外侧同号输入若为控制，则内线亦为控制（原数据线随之变控制线） */
@@ -5695,6 +6517,8 @@ function inputCount(node) {
     return Math.max(2, Math.min(8, Math.round(Number(node.mutexInputs) || 2)));
   if (node.kind === "music_gen") return 2;
   if (node.kind === "video_gen") return videoGenInputCount(node);
+  if (node.kind === "net_recv") return 0; /* 接收是异步源，无数据输入 */
+  if (node.kind === "net_send") return 2; /* 端口0=信息输入(数据) · 端口1=控制输入 */
   return Math.max(1, allWiresTo(node.id).length + 1);
 }
 
@@ -5778,6 +6602,10 @@ function minWFor(n) {
       return 320;
     case "video_gen":
       return 340;
+    case "net_recv":
+      return 300;
+    case "net_send":
+      return 320;
     case "task":
       return 280;
     case "global":
@@ -5805,6 +6633,10 @@ function minHFor(n) {
       return 220;
     case "video_gen":
       return 260;
+    case "net_recv":
+      return 130;
+    case "net_send":
+      return 140;
     case "agent_task":
     case "chat":
       return 240;
@@ -5951,9 +6783,13 @@ function nodeKindLabel(node) {
     judge: "判断",
     input_text: "文本",
     input_image: "图像",
+    input_file: "文件",
+    db_table: "表",
     global: "全局",
     music_gen: "音乐生成",
     video_gen: "视频生成",
+    net_recv: "接收",
+    net_send: "发送",
     super: "超级节点",
     super_io: "端口",
   };
@@ -5980,10 +6816,14 @@ function nodeKindPurposeKey(node) {
   const map = {
     input_text: "输入节点（仅输出）",
     input_image: "输入节点（仅输出）",
+    input_file: "文件节点（批量导入任意文件）",
+    db_table: "表（读取文件 · agent 建表）",
     proc_text: "文本处理（LLM）",
     proc_image: "图像生成（文生图）",
     music_gen: "音乐生成（MiniMax Music 3 · 提示词+歌词）",
     video_gen: "视频生成（MiniMax H3 · 文本/图像/音频/视频）",
+    net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
+    net_send: "网络 · 发送（把通道文本推送到远端）",
     save: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_text: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_image: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
@@ -6217,15 +7057,14 @@ function stopAllRuns() {
       S.assistRunActive = false;
     }
   }
-  /* 智能会话（非节点绑定）若在跑，一并终止 */
-  const sess = agentSessions().find((s) => s.running);
-  if (sess) {
+  /* 智能会话（非节点绑定）若在跑，一并终止(支持并行:全部运行中的会话都取消) */
+  const sessList = agentSessions().filter((s) => s.running);
+  for (const sess of sessList) {
     sess._cancelled = true;
     sess.running = false;
-    S.agentSessionRunActive = false;
-    if (!needDsh && !assistOn) dshCancelActive();
     nStop++;
   }
+  if (sessList.length && !needDsh && !assistOn) dshCancelActive();
   renderCanvas();
   renderStatus();
   updateRunQueuePanel();
@@ -7270,7 +8109,7 @@ function outPos(n, i, peer, wire) {
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
   return {
-    x: p.x + sz.w + PORT_OFF,
+    x: p.x + sz.w - PORT_OFF,
     y: p.y + outPortY(hNode, i || 0),
   };
 }
@@ -7292,11 +8131,16 @@ function inPos(n, i, peer, wire) {
   const p = nodeWorldPos(n);
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
-  return { x: p.x - PORT_OFF, y: p.y + inPortY(hNode, i, inputCount(n)) };
+  return { x: p.x + PORT_OFF, y: p.y + inPortY(hNode, i, inputCount(n)) };
 }
 function wirePathAB(ax, ay, bx, by) {
-  const dx = Math.max(26, Math.abs(bx - ax) * 0.45);
-  return `M ${ax} ${ay} C ${ax + dx} ${ay}, ${bx - dx} ${by}, ${bx} ${by}`;
+  /* 真实电线感：以两端点中点为控制点向下自然下垂（重力弧度），
+     不再使用 S 形三次贝塞尔，更接近实际线缆的松弛形态 */
+  const len = Math.hypot(bx - ax, by - ay) || 1;
+  const sag = Math.min(44, Math.max(9, len * 0.12));
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2 + sag * 2.2;
+  return `M ${ax} ${ay} Q ${mx} ${my} ${bx} ${by}`;
 }
 function wirePath(from, to, idx, fromIndex, wire) {
   const a = outPos(from, fromIndex || 0, to, wire),
@@ -8809,6 +9653,10 @@ function allTextItems(src, consumer, portIdx) {
         : taskSummaryText(src);
     return t ? [{ title: src.title, text: t }] : [];
   }
+  if (src.kind === "net_recv") {
+    const o = src.output;
+    return o && o.kind === "text" ? [{ title: src.title, text: o.text }] : [];
+  }
   return [];
 }
 function allImageItems(src, consumer, portIdx) {
@@ -9122,6 +9970,12 @@ function displayValueOf(src, consumer) {
       return { image: r.output.path };
     return null;
   }
+  if (src.kind === "net_recv") {
+    const o = src.output;
+    if (o && o.kind === "text") return { text: o.text };
+    if (typeof o === "string") return { text: o };
+    return null;
+  }
   return null;
 }
 
@@ -9306,6 +10160,9 @@ function resolveRefs(prompt, node, idx, opts) {
   const unresolved = new Set();
   const textSources = [];
   const seen = new Set();
+  /* !@数据库标题 引用：先替换为可读指针（并收集引用库供 dbNodesForRun/接地用） */
+  const bang = resolveDbBangRefs(prompt, node);
+  prompt = bang.prompt;
   const addText = (c, fromIdx) => {
     if (!c || seen.has(c.id)) return;
     seen.add(c.id);
@@ -12626,7 +13483,7 @@ function nodeElement(node) {
     const ctrlIn =
       node.kind === "super"
         ? superInPortIsControl(node, i)
-        : isControlKind(node);
+        : isControlKind(node) || (node.kind === "net_send" && i >= 1);
     p.className =
       "port in" + (spare ? " spare" : "") + (ctrlIn ? " ctrl" : "");
     p.dataset.node = node.id;
@@ -12646,6 +13503,8 @@ function nodeElement(node) {
       inTitle = I18n.t("控制输入（激活内部起点）");
     else if (node.kind === "music_gen")
       inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : I18n.t("歌词（含 [Verse]/[Chorus] 等标签）");
+    else if (node.kind === "net_send")
+      inTitle = i === 0 ? I18n.t("信息输入（要发送的文本）") : I18n.t("控制输入（触发发送）");
     else if (node.kind === "video_gen") {
       const meta = videoGenSlotMeta(node, i);
       if (meta.kind === "text") inTitle = I18n.t("提示词");
@@ -12661,7 +13520,7 @@ function nodeElement(node) {
     }
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
-    p.style.left = -PORT_R - PORT_OFF + "px";
+    p.style.left = (PORT_OFF - PORT_R) + "px";
     if (node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "task") {
       const badge = document.createElement("span");
       badge.className = "port-badge";
@@ -12726,6 +13585,7 @@ function nodeElement(node) {
       outCls += oi === 0 ? " yes" : " no";
     else if (
       isControlKind(node) ||
+      nodeEmitsControlOnPort(node, oi) ||
       (node.kind === "super" && superOutPortIsControl(node, oi))
     )
       outCls += " ctrl";
@@ -12745,12 +13605,14 @@ function nodeElement(node) {
       outTitle = I18n.t("序列输出 ") + (oi + 1);
     else if (node.kind === "splitter")
       outTitle = I18n.t("分发输出 ") + (oi + 1);
+    else if (node.kind === "net_recv")
+      outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
     else if (isControlKind(node))
       outTitle = I18n.t("输出端子（连接到要控制的节点）");
     else outTitle = I18n.t("输出端子（输出本节点内容）");
     p.title = linkedOut.length ? outTitle : outTitle;
     p.style.top = outPortY(node, oi, oc) - PORT_R + "px";
-    p.style.right = -PORT_R - PORT_OFF + "px";
+    p.style.right = (PORT_OFF - PORT_R) + "px";
     if (node.kind === "sequencer" || node.kind === "splitter" || node.kind === "task") {
       const badge = document.createElement("span");
       badge.className = "port-badge" + (node.kind === "task" ? " zh-label" : "");
@@ -13363,6 +14225,103 @@ function buildBody(node, body) {
       ops.appendChild(b1);
       ops.appendChild(b2);
       body.appendChild(ops);
+    }
+  } else if (node.kind === "input_file") {
+    const list = document.createElement("div");
+    list.className = "n-bentries db-file-list";
+    for (const f of node.files || []) list.appendChild(dbFileRowEl(node, f));
+    if (!(node.files || []).length) {
+      const hint = document.createElement("div");
+      hint.className = "n-empty";
+      hint.textContent = I18n.t("暂无文件 · 点击「＋ 添加文件」或把文件拖到本节点（支持任意类型）");
+      list.appendChild(hint);
+    }
+    body.appendChild(list);
+    const ops = document.createElement("div");
+    ops.className = "bentry-ops";
+    const add = document.createElement("button");
+    add.className = "mini";
+    add.textContent = I18n.t("＋ 添加文件");
+    add.title = I18n.t("批量导入任意文件（复制进数据库子文件夹）");
+    add.onclick = () => dbImportFiles(node);
+    const clr = document.createElement("button");
+    clr.className = "mini";
+    clr.textContent = I18n.t("清空");
+    clr.onclick = () => {
+      node.files = [];
+      clearDownstream(node.id);
+      scheduleSave();
+      renderCanvas();
+    };
+    ops.append(add, clr);
+    body.appendChild(ops);
+  } else if (node.kind === "db_table") {
+    if (!node.tableDef || !node.tableDef.length) {
+      const big = document.createElement("button");
+      big.type = "button";
+      big.className = "db-build-btn";
+      big.textContent = node.building ? I18n.t("正在建表…") : I18n.t("📋 建表");
+      big.title = I18n.t(
+        "读取文件节点内容，agent 抽取元数据生成表单，供你确认后按表单建表",
+      );
+      big.disabled = !!node.building;
+      if (!node.building) big.onclick = () => runDbTableBuild(node);
+      body.appendChild(big);
+    } else {
+      const sum = document.createElement("div");
+      sum.className = "db-tbl-sum";
+      const cap = document.createElement("div");
+      cap.className = "db-tbl-cap";
+      cap.textContent = I18n.t("已建表 · {c} 列 · {r} 行 · {t}", {
+        c: node.tableDef.length,
+        r: (node.rows || []).length,
+        t: node.builtAt ? fmtTime(node.builtAt) : "",
+      });
+      sum.appendChild(cap);
+      const tbl = document.createElement("table");
+      tbl.className = "db-tbl-table";
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const c of node.tableDef) {
+        const th = document.createElement("th");
+        th.textContent = c.name;
+        htr.appendChild(th);
+      }
+      thead.appendChild(htr);
+      tbl.appendChild(thead);
+      const tb = document.createElement("tbody");
+      for (const r of (node.rows || []).slice(0, 20)) {
+        const tr = document.createElement("tr");
+        for (const c of node.tableDef) {
+          const td = document.createElement("td");
+          td.textContent = String(r[c.name] != null ? r[c.name] : "");
+          tr.appendChild(td);
+        }
+        tb.appendChild(tr);
+      }
+      tbl.appendChild(tb);
+      sum.appendChild(tbl);
+      body.appendChild(sum);
+      const ops = document.createElement("div");
+      ops.className = "db-tbl-ops";
+      const re = document.createElement("button");
+      re.className = "mini";
+      re.textContent = I18n.t("重新建表");
+      re.onclick = () => runDbTableBuild(node);
+      const exp = document.createElement("button");
+      exp.className = "mini";
+      exp.textContent = I18n.t("打开数据文件");
+      exp.onclick = async () => {
+        if (node.dataFile) await window.api.shellOpenPath(node.dataFile).catch(() => {});
+      };
+      ops.append(re, exp);
+      body.appendChild(ops);
+    }
+    if (node.error) {
+      const err = document.createElement("div");
+      err.className = "db-tbl-error";
+      err.textContent = node.error;
+      body.appendChild(err);
     }
   } else if (
     node.kind === "proc_text" ||
@@ -14895,6 +15854,10 @@ function buildBody(node, body) {
       st.textContent = node.error;
       body.appendChild(st);
     }
+  } else if (node.kind === "net_recv") {
+    buildNetRecvBody(body, node);
+  } else if (node.kind === "net_send") {
+    buildNetSendBody(body, node);
   } else if (node.kind === "control") {
     const role = ctrlRoleOf(node);
     if (role === "start" || role === "endSuccess" || role === "endFail") {
@@ -15866,6 +16829,9 @@ function resolveRefsAgg(prompt, node) {
   const tagBlocks = [];
   const seenTagNodes = new Set();
   const cands = aggCandidates(node);
+  /* !@数据库标题 引用：先替换为可读指针 */
+  const bang = resolveDbBangRefs(prompt, node);
+  prompt = bang.prompt;
   const out = String(prompt || "").replace(
     /@([^\s@，。；、！？：,!?;:]+)/g,
     (m, tok) => {
@@ -16417,7 +17383,7 @@ function isCascadeRunKind(n) {
   return (
     isProcessPlayKind(n) ||
     isMediaGenNode(n) ||
-    !!(n && (isSaveNode(n) || n.kind === "task"))
+    !!(n && (isSaveNode(n) || n.kind === "task" || n.kind === "net_send" || n.kind === "net_recv"))
   );
 }
 
@@ -16515,6 +17481,8 @@ async function runCascadeNode(n, seen) {
   if (isMediaGenNode(n) || isProcessPlayKind(n))
     /* 同批节点由队列按依赖启动；ensureUpstream 只补跑批次外上游 */
     return playNode(n, true, { noCascade: true, ensureUpstream: true });
+  if (n.kind === "net_send" || n.kind === "net_recv")
+    return playNode(n, true, { noCascade: true, ensureUpstream: true });
 }
 
 async function runDownstreamCascade(nodes) {
@@ -16579,6 +17547,470 @@ let mediaBackendListenersBound = false;
 
 function isMediaGenNode(node) {
   return !!(node && (node.kind === "music_gen" || node.kind === "video_gen"));
+}
+
+/* ── 网络节点（net_recv / net_send）：节点级独立端口（监听/发送可不同）+ 通道(16bit) 分流，异步互不干涉 ── */
+const NET_DEFAULT_PORT = 40999; /* 全局设置回退默认 */
+const NET_LISTEN_PORT = 40999; /* 接收节点默认监听端口 */
+const NET_SEND_PORT = 41000; /* 发送节点默认目标端口（与监听不同，便于同机双向调试） */
+const netRecvSubs = new Map(); /* nodeId -> {port, channel, proto} 当前在监听的接收节点 */
+
+function isNetNode(node) {
+  return !!(node && (node.kind === "net_recv" || node.kind === "net_send"));
+}
+/* 有效端口：节点未单独指定(0)则用全局设置端口；仍未设置则按节点类型取默认（监听 40999 / 发送 41000） */
+function netPortOf(node) {
+  const raw = Number(node && node.netPort);
+  if (raw) return Math.max(1, Math.min(65535, Math.round(raw)));
+  const g = Number(S.config && S.config.netPort);
+  if (g) return Math.max(1, Math.min(65535, Math.round(g)));
+  return node && node.kind === "net_send" ? NET_SEND_PORT : NET_LISTEN_PORT;
+}
+function netProtoOf(node) {
+  return node && node.netProto === "udp" ? "udp" : "tcp";
+}
+/* 新建网络节点时自动分配下一个空闲通道：从 0 起，每开启一个递增（16bit） */
+function nextNetChannel() {
+  const used = new Set((S.wf && S.wf.nodes || [])
+    .filter((n) => isNetNode(n))
+    .map((n) => Number(n.netChannel) || 0));
+  if (!used.has(0)) return 0;
+  let c = 1;
+  while (used.has(c) && c <= 65535) c++;
+  return c <= 65535 ? c : 0;
+}
+function netUnsubRecv(node) {
+  const sub = netRecvSubs.get(node.id);
+  if (sub) {
+    netRecvSubs.delete(node.id);
+    if (window.api && window.api.netUnlisten)
+      window.api
+        .netUnlisten({ port: sub.port, channel: sub.channel, proto: sub.proto })
+        .catch(() => {});
+  }
+}
+/* 发送节点读取「信息输入(端口0)」的文本（含图像路径字符串等） */
+function netPayloadFrom(node) {
+  const src = firstSource(node);
+  if (!src) return { ok: false, error: I18n.t("未连接信息输入") };
+  const disp = displayValueOf(src, node) || {};
+  if (disp.text != null) return { ok: true, data: String(disp.text) };
+  if (disp.items && disp.items.length)
+    return {
+      ok: true,
+      data: disp.items.map((i) => i.content ?? i.text ?? i.title ?? "").join("\n"),
+    };
+  if (disp.image) return { ok: true, data: String(disp.image) };
+  const o = src.output;
+  if (o != null)
+    return { ok: true, data: typeof o === "string" ? o : JSON.stringify(o) };
+  return { ok: false, error: I18n.t("信息输入为空") };
+}
+
+async function playNetRecvNode(node, quiet) {
+  if (node.running) return;
+  node.running = true;
+  node.error = null;
+  const port = netPortOf(node);
+  const channel = (Number(node.netChannel) || 0) & 0xffff;
+  const proto = netProtoOf(node);
+  netUnsubRecv(node);
+  try {
+    const r = await window.api.netListen({ port, channel, proto });
+    if (r && r.listenErr) {
+      node.netListening = false;
+      node.error = I18n.t("监听失败：") + r.listenErr;
+      node.netStatus = "";
+    } else {
+      netRecvSubs.set(node.id, { port, channel, proto });
+      node.netListening = true;
+      node.netStatus =
+        I18n.t("监听中 · 端口 ") +
+        port +
+        " · 通道 " +
+        channel +
+        " · " +
+        proto.toUpperCase();
+    }
+    node.ranAt = Date.now();
+  } catch (e) {
+    node.netListening = false;
+    node.netStatus = "";
+    node.error = (e && e.message) || String(e);
+  } finally {
+    node.running = false;
+    renderCanvas();
+    renderStatus();
+  }
+}
+
+async function playNetSendNode(node, quiet) {
+  if (node.running) return;
+  node.running = true;
+  node.error = null;
+  const port = netPortOf(node);
+  const channel = (Number(node.netChannel) || 0) & 0xffff;
+  const proto = netProtoOf(node);
+  const payload = netPayloadFrom(node);
+  try {
+    if (!payload.ok) {
+      node.netStatus = "";
+      node.error = payload.error;
+      node.netCount = (node.netCount || 0);
+      return;
+    }
+    const r = await window.api.netSend({
+      host: String(node.netHost || "127.0.0.1"),
+      port,
+      channel,
+      proto,
+      data: payload.data,
+    });
+    if (r && r.ok) {
+      node.netCount = (node.netCount || 0) + 1;
+      node.netStatus =
+        I18n.t("已发送 ") + node.netCount + " 条 · " + proto.toUpperCase() + " " +
+        String(node.netHost || "127.0.0.1") + ":" + port;
+    } else {
+      node.error = (r && r.error) || I18n.t("发送失败");
+      node.netStatus = "";
+    }
+    node.ranAt = Date.now();
+  } catch (e) {
+    node.netStatus = "";
+    node.error = (e && e.message) || String(e);
+  } finally {
+    node.running = false;
+    renderCanvas();
+    renderStatus();
+  }
+}
+
+/* 收到网络消息：路由到匹配的接收节点并向下游级联（异步推送，不进入普通运行队列） */
+async function pumpNetRecvMessage(m) {
+  const ch = Number(m && m.channel);
+  if (!Number.isFinite(ch)) return;
+  const proto = m && m.proto;
+  const data = m ? m.data : "";
+  const at = m ? m.at : Date.now();
+  const hits = (S.wf && S.wf.nodes || []).filter(
+    (n) =>
+      n.kind === "net_recv" &&
+      (Number(n.netChannel) || 0) === ch &&
+      netRecvSubs.get(n.id) &&
+      netProtoOf(n) === proto,
+  );
+  if (!hits.length) return;
+  for (const node of hits) {
+    node.output = { kind: "text", text: String(data) };
+    node.netCount = (node.netCount || 0) + 1;
+    node.netLast = String(data);
+    const short = String(data).length > 26 ? String(data).slice(0, 26) + "…" : String(data);
+    node.netStatus = I18n.t("已收到 ") + node.netCount + " 条 · " + short;
+    node.ranAt = at;
+    renderCanvas();
+    renderStatus();
+  }
+  /* 数据线可达的下游处理/保存节点：静默级联 */
+  for (const node of hits) {
+    const down = collectDownstreamCascade(node);
+    if (down.length) await runDownstreamCascade(down);
+  }
+  /* 控制端子（端口1）：收到消息时触发下游控制目标 */
+  for (const node of hits) await fireNetRecvControl(node);
+}
+
+/* 从某节点的指定输出端子触发下游可控制运行节点（控制线语义；seen 防环） */
+async function fireControlOutgoing(node, outIdx, seen) {
+  if (!node) return;
+  const s2 = new Set(seen || []);
+  s2.add(node.id);
+  const wires = execOutWires(node, outIdx);
+  if (!wires.length) return;
+  for (const w of wires) {
+    const next = nodeById(w.to);
+    if (!next || s2.has(next.id)) continue;
+    if (!canControlRun(next)) continue;
+    try {
+      await runControlledNode(next, s2);
+    } catch (e) {
+      if (next) next.error = (e && e.message) || String(e);
+    }
+  }
+}
+
+/* 触发「接收」节点的控制输出端子（端口1），驱动下游可控制运行节点 */
+async function fireNetRecvControl(node) {
+  return fireControlOutgoing(node, 1, new Set([node.id]));
+}
+
+let netMessageBound = false;
+function bindNetMessageListener() {
+  if (netMessageBound || !window.api || !window.api.onNetMessage) return;
+  netMessageBound = true;
+  window.api.onNetMessage((m) => {
+    pumpNetRecvMessage(m || {}).catch(() => {});
+  });
+}
+
+/* 「监听模式」：接收节点默认在 MTNode 启动/切换到本画布时自动进入监听状态（节点体可取消勾选） */
+function netAutoListenEnabled(node) {
+  return !!(node && node.kind === "net_recv" && node.netAutoListen !== false);
+}
+/* 逐节点自动开始监听（已在监听的跳过；单个失败不阻断其它节点） */
+async function autoListenNetRecvNodes(quiet) {
+  if (!S.wf || !window.api || !window.api.netListen) return;
+  const nodes = (S.wf.nodes || []).filter((n) => netAutoListenEnabled(n));
+  for (const n of nodes) {
+    if (n.running) continue;
+    if (netRecvSubs.get(n.id)) continue;
+    try {
+      await playNetRecvNode(n, !!quiet);
+    } catch {}
+  }
+}
+
+/* 端口输入行：节点级端口（留空=0 用全局设置端口；占位符显示解析后的实际端口） */
+function netPortField(body, node, label, onchange) {
+  const row = document.createElement("div");
+  row.className = "net-row";
+  const lbl = document.createElement("span");
+  lbl.className = "net-lbl";
+  lbl.textContent = label;
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.min = "0";
+  inp.max = "65535";
+  inp.step = "1";
+  inp.className = "net-num";
+  const cur = Number(node && node.netPort) || 0;
+  inp.value = cur ? String(cur) : "";
+  inp.placeholder = String(netPortOf(node));
+  inp.title = I18n.t("节点端口；留空(0)=用全局设置端口（当前 ") + netPortOf(node) + "）";
+  inp.addEventListener("input", () => {
+    const n = Math.max(0, Math.min(65535, Math.round(Number(inp.value) || 0)));
+    node.netPort = n;
+    inp.value = n ? String(n) : "";
+    inp.placeholder = String(netPortOf(node));
+    scheduleSave();
+    if (onchange) onchange();
+  });
+  row.appendChild(lbl);
+  row.appendChild(inp);
+  body.appendChild(row);
+}
+
+/* 节点体：通道号(16bit) + 协议(TCP/UDP) 选择器 */
+function netChanProtoField(body, node, onchange) {
+  const row = document.createElement("div");
+  row.className = "net-row";
+  const chLbl = document.createElement("span");
+  chLbl.className = "net-lbl";
+  chLbl.textContent = I18n.t("通道");
+  const ch = document.createElement("input");
+  ch.type = "number";
+  ch.min = "0";
+  ch.max = "65535";
+  ch.step = "1";
+  ch.className = "net-num";
+  ch.value = String((Number(node.netChannel) || 0) & 0xffff);
+  ch.title = I18n.t("通道号（16bit 整数，0–65535）");
+  ch.addEventListener("input", () => {
+    const v = Math.max(0, Math.min(65535, Math.round(Number(ch.value) || 0)));
+    ch.value = String(v);
+    node.netChannel = v;
+    scheduleSave();
+    if (onchange) onchange();
+  });
+  row.appendChild(chLbl);
+  row.appendChild(ch);
+  const pLbl = document.createElement("span");
+  pLbl.className = "net-lbl";
+  pLbl.textContent = I18n.t("协议");
+  const sel = document.createElement("select");
+  sel.className = "net-sel";
+  for (const [v, t] of [["tcp", "TCP"], ["udp", "UDP"]]) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = t;
+    sel.appendChild(o);
+  }
+  sel.value = node.netProto === "udp" ? "udp" : "tcp";
+  sel.addEventListener("change", () => {
+    node.netProto = sel.value === "udp" ? "udp" : "tcp";
+    scheduleSave();
+    if (onchange) onchange();
+  });
+  row.appendChild(pLbl);
+  row.appendChild(sel);
+  body.appendChild(row);
+}
+
+function buildNetRecvBody(body, node) {
+  const st = document.createElement("div");
+  st.className =
+    "n-status" +
+    (node.error ? " err" : node.netListening ? " done" : node.netStatus ? " done" : "");
+  st.textContent =
+    node.netStatus ||
+    (node.error ? String(node.error) : I18n.t("未监听 · 点击「开始监听」"));
+  body.appendChild(st);
+  netPortField(body, node, I18n.t("监听端口"), () => {
+    if (node.netListening || netRecvSubs.get(node.id)) {
+      node.netListening = false;
+      playNetRecvNode(node, true);
+    }
+  });
+  netChanProtoField(body, node, () => {
+    if (node.netListening || netRecvSubs.get(node.id)) {
+      node.netListening = false;
+      playNetRecvNode(node, true);
+    }
+  });
+  const autoRow = document.createElement("div");
+  autoRow.className = "net-row";
+  const autoCb = document.createElement("input");
+  autoCb.type = "checkbox";
+  autoCb.checked = node.netAutoListen !== false;
+  autoCb.title = I18n.t("勾选后，打开 MTNode 或切换到本画布时自动进入监听状态");
+  const autoLbl = document.createElement("span");
+  autoLbl.className = "net-lbl";
+  autoLbl.textContent = I18n.t("启动时自动监听");
+  autoLbl.title = autoCb.title;
+  autoCb.addEventListener("change", () => {
+    node.netAutoListen = autoCb.checked;
+    scheduleSave();
+  });
+  autoRow.appendChild(autoCb);
+  autoRow.appendChild(autoLbl);
+  body.appendChild(autoRow);
+  if (node.netLast) {
+    const prev = document.createElement("div");
+    prev.className = "net-last";
+    prev.textContent = String(node.netLast).slice(0, 200);
+    prev.title = String(node.netLast);
+    body.appendChild(prev);
+  }
+  const ops = document.createElement("div");
+  ops.className = "net-ops";
+  const btn = document.createElement("button");
+  btn.className = "mini" + (node.netListening ? "" : " primary");
+  btn.textContent = node.netListening ? I18n.t("■ 停止监听") : I18n.t("▶ 开始监听");
+  btn.onclick = () => {
+    if (node.netListening || netRecvSubs.get(node.id)) {
+      netUnsubRecv(node);
+      node.netListening = false;
+      node.netStatus = I18n.t("已停止监听");
+      renderCanvas();
+      renderStatus();
+    } else {
+      playNetRecvNode(node);
+    }
+  };
+  ops.appendChild(btn);
+  const clr = document.createElement("button");
+  clr.className = "mini";
+  clr.textContent = I18n.t("清空");
+  clr.onclick = () => {
+    pushHistory();
+    node.netCount = 0;
+    node.netLast = "";
+    node.output = null;
+    scheduleSave();
+    renderCanvas();
+  };
+  ops.appendChild(clr);
+  const dbg = document.createElement("button");
+  dbg.className = "mini";
+  dbg.textContent = "netdebug";
+  dbg.title = I18n.t("用 netdebug 调试本通道（预填协议/端口/通道，以客户端发送测试帧）");
+  dbg.onclick = () => {
+    const p = window.api && window.api.netOpenDebug
+      ? window.api.netOpenDebug({
+          proto: netProtoOf(node),
+          host: "127.0.0.1",
+          port: netPortOf(node),
+          channel: (Number(node.netChannel) || 0) & 0xffff,
+          role: "client",
+        })
+      : Promise.resolve({ ok: false, error: "preload 无 netOpenDebug" });
+    p.then((res) => {
+      if (res && !res.ok) {
+        node.netStatus = "netdebug: " + (res.error || I18n.t("启动失败"));
+        renderCanvas();
+      }
+    }).catch(() => {});
+  };
+  ops.appendChild(dbg);
+  body.appendChild(ops);
+}
+
+function buildNetSendBody(body, node) {
+  const st = document.createElement("div");
+  st.className = "n-status" + (node.error ? " err" : node.netStatus ? " done" : "");
+  st.textContent = node.netStatus || node.error || I18n.t("等待触发 · 连接信息输入后发送");
+  body.appendChild(st);
+  const hostRow = document.createElement("div");
+  hostRow.className = "net-row";
+  const hostLbl = document.createElement("span");
+  hostLbl.className = "net-lbl";
+  hostLbl.textContent = I18n.t("目标");
+  const host = document.createElement("input");
+  host.className = "net-txt";
+  host.spellcheck = false;
+  host.value = String(node.netHost || "127.0.0.1");
+  host.placeholder = "127.0.0.1";
+  host.title = I18n.t("对端地址：本机默认 127.0.0.1，可填远程 IP");
+  host.addEventListener("input", () => {
+    node.netHost = host.value.trim() || "127.0.0.1";
+    scheduleSave();
+  });
+  hostRow.appendChild(hostLbl);
+  hostRow.appendChild(host);
+  body.appendChild(hostRow);
+  netPortField(body, node, I18n.t("目标端口"), null);
+  netChanProtoField(body, node, null);
+  const ops = document.createElement("div");
+  ops.className = "net-ops";
+  const btn = document.createElement("button");
+  btn.className = "mini primary";
+  btn.textContent = I18n.t("▶ 发送");
+  btn.onclick = () => playNetSendNode(node);
+  ops.appendChild(btn);
+  const clr = document.createElement("button");
+  clr.className = "mini";
+  clr.textContent = I18n.t("清空计数");
+  clr.onclick = () => {
+    pushHistory();
+    node.netCount = 0;
+    node.netStatus = "";
+    scheduleSave();
+    renderCanvas();
+  };
+  ops.appendChild(clr);
+  const dbg = document.createElement("button");
+  dbg.className = "mini";
+  dbg.textContent = "netdebug";
+  dbg.title = I18n.t("用 netdebug 监听本节点目标端口，抓取出站帧（预填协议/端口/通道）");
+  dbg.onclick = () => {
+    const p = window.api && window.api.netOpenDebug
+      ? window.api.netOpenDebug({
+          proto: netProtoOf(node),
+          host: "0.0.0.0",
+          port: netPortOf(node),
+          channel: (Number(node.netChannel) || 0) & 0xffff,
+          role: "server",
+        })
+      : Promise.resolve({ ok: false, error: "preload 无 netOpenDebug" });
+    p.then((res) => {
+      if (res && !res.ok) {
+        node.netStatus = "netdebug: " + (res.error || I18n.t("启动失败"));
+        renderCanvas();
+      }
+    }).catch(() => {});
+  };
+  ops.appendChild(dbg);
+  body.appendChild(ops);
 }
 
 function ensureBackendUiState(node) {
@@ -17883,6 +19315,12 @@ async function playNodeBody(node, quiet, opts) {
   if (node.kind === "wait_file") {
     return playWaitFileNode(node, quiet);
   }
+  if (node.kind === "net_recv") {
+    return playNetRecvNode(node, quiet);
+  }
+  if (node.kind === "net_send") {
+    return playNetSendNode(node, quiet);
+  }
   if (node.kind === "timer") {
     return playTimerNode(node, quiet);
   }
@@ -18384,7 +19822,7 @@ function agentBlocksSaveNodes() {
   return (
     (S._saveNodeHold || 0) > 0 ||
     !!S.assistRunActive ||
-    !!S.agentSessionRunActive
+    anyAgentSessionRunning()
   );
 }
 function flushDeferredSaveNodes() {
@@ -18580,7 +20018,9 @@ function canControlRun(n) {
       isSaveNode(n) ||
       n.kind === "music_gen" ||
       n.kind === "video_gen" ||
-      n.kind === "control")
+      n.kind === "control" ||
+      n.kind === "net_send" ||
+      n.kind === "net_recv")
   );
 }
 
@@ -18820,13 +20260,29 @@ async function runControlledNode(n, seen) {
   if (n.kind === "task") return playTaskNode(n, false);
   if (isSaveNode(n))
     return saveNodeAction(n);
+  /* 控制类节点：由各自 play 语义执行（计数累加 / 闸门放行 / 互斥选口 / 延时 / 序列 / 分发 / 定时 / 判断） */
+  if (n.kind === "timer") return playTimerNode(n, true);
+  if (n.kind === "delayer") return playDelayerNode(n, true);
+  if (n.kind === "sequencer") return playSequencerNode(n, true);
+  if (n.kind === "gate") return playGateNode(n, true);
+  if (n.kind === "splitter") return playSplitterNode(n, true);
+  if (n.kind === "counter") return playCounterNode(n, true);
+  if (n.kind === "mutex") return playMutexNode(n, true);
+  if (n.kind === "judge") {
+    const yn = await playJudgeNode(n, true);
+    if (yn === true || yn === false)
+      await fireControlOutgoing(n, yn ? 0 : 1, seen);
+    return;
+  }
   if (
     n.kind === "proc_text" ||
     n.kind === "proc_image" ||
     n.kind === "agent_task" ||
     n.kind === "music_gen" ||
     n.kind === "video_gen" ||
-    n.kind === "wait_file"
+    n.kind === "wait_file" ||
+    n.kind === "net_send" ||
+    n.kind === "net_recv"
   )
     /* quiet：避免把控制范围内整条链标成「等待」且不级联；ensureUpstream：仍补跑范围外未处理上游 */
     return playNode(n, true, { noCascade: true, ensureUpstream: true });
@@ -19869,6 +21325,13 @@ function canvasSnapshot() {
       dbNodeId: n.kind === "db_replica" ? n.dbNodeId || undefined : undefined,
       dbName: n.kind === "db_replica" ? n.dbName || undefined : undefined,
       compiledAt: n.kind === "db_replica" ? n.compiledAt || undefined : undefined,
+      fileCount: n.kind === "input_file" ? (n.files || []).length : undefined,
+      dbFiles: n.kind === "input_file" ? (n.files || undefined) : undefined,
+      tableDef: n.kind === "db_table" ? n.tableDef || undefined : undefined,
+      rows: n.kind === "db_table" ? n.rows || undefined : undefined,
+      schemaFile: n.kind === "db_table" ? n.schemaFile || undefined : undefined,
+      dataFile: n.kind === "db_table" ? n.dataFile || undefined : undefined,
+      builtAt: n.kind === "db_table" ? n.builtAt || undefined : undefined,
       goal: goalSnap ? goalSnap.text : undefined,
       goalLen: goalSnap ? goalSnap.textLen : undefined,
       steps:
@@ -19959,7 +21422,7 @@ function agentNodeCapabilityNote() {
 /* 禁止跨画布：智能任务/会话始终锁定；全局助手仅在「当前画布」范围时锁定 */
 function restrictOtherCanvases() {
   if ((S._canvasNodeAgentDepth || 0) > 0) return true;
-  if (S.agentSessionRunActive) return true;
+  if (anyAgentSessionRunning()) return true;
   if (S.assistRunActive && assistScopeIsCurrent()) return true;
   return false;
 }
@@ -20316,7 +21779,7 @@ async function applyAppOp(params) {
 }
 
 function canvasOpNeedsConfirm(op, params) {
-  if (!S.assistRunActive && !S.agentSessionRunActive) return false;
+  if (!S.assistRunActive && !anyAgentSessionRunning()) return false;
   if (S.config && S.config.dsh && S.config.dsh.assistAutoApprove) return false;
   if (op === "edit") return true;
   if (op === "app" && params && params.action === "delete_workflow") return true;
@@ -20333,18 +21796,21 @@ function canvasOpNeedsConfirm(op, params) {
 }
 
 function canvasConfirmFromAgentSession() {
-  return !!S.agentSessionRunActive && !S.assistRunActive;
+  return anyAgentSessionRunning() && !S.assistRunActive;
 }
 
 /* 用户拒绝智能会话的画布修改：立即中止该次 agent，不再继续工具调用 */
 function abortAgentSessionOnCanvasDeny() {
-  if (!S.agentSessionRunActive) return;
+  if (!anyAgentSessionRunning()) return;
+  let sid = "";
   try {
     const st = agentSessionState();
-    if (st) st._cancelled = true;
+    if (st) {
+      st._cancelled = true;
+      sid = st.id;
+    }
   } catch (_) {}
-  S.agentSessionRunActive = false;
-  dshCancelActive();
+  if (sid) dshCancelActive("agent:" + sid);
   toast(I18n.t("已拒绝画布修改，智能会话已停止"), "warn");
   if (S.view === "agent") {
     try {
@@ -23941,6 +25407,17 @@ function applyNodeDragVisual(d, dx, dy) {
     }
     let el = document.querySelector('.wf-node[data-nid="' + id + '"]');
     if (!el) continue;
+    /* 拖拽中的“惯性倾斜”：按移动速度做仿射变换（轻微旋转+放大），
+       方向跟随鼠标移动方向，形成卡片被拖拽的惯性感（替代原先的规则摇晃动画） */
+    if (!el.classList.contains("node-dragging"))
+      el.classList.add("node-dragging");
+    const zz = S.cam.z > 0 ? S.cam.z : 1;
+    const vx = d._pdx == null ? 0 : (dx - d._pdx) * zz;
+    d._pdx = dx;
+    d._pdy = dy;
+    const rot = Math.max(-7, Math.min(7, vx * 0.22));
+    el.style.transform =
+      "rotate(" + rot.toFixed(2) + "deg) scale(1.03)";
     if (nestedShell && stage && el.parentElement !== stage) {
       stage.appendChild(el);
       el.classList.add("super-drag-lift");
@@ -23956,6 +25433,12 @@ function cancelDrag() {
   const box = document.getElementById("boxSel");
   if (box) box.remove();
   S.drag = null;
+  document
+    .querySelectorAll(".wf-node.node-dragging")
+    .forEach((el) => {
+      el.classList.remove("node-dragging");
+      el.style.transform = "";
+    });
   S.preDragSnap = null;
   clearSuperDropHot(false);
   setCanvasPanning(false);
@@ -24713,6 +26196,11 @@ async function deleteNodes(ids, quiet) {
       ids.push(n.id);
     }
   }
+  /* 网络接收节点删除：停止监听并释放端口引用 */
+  for (const id of ids) {
+    const n = nodeById(id);
+    if (n && n.kind === "net_recv") netUnsubRecv(n);
+  }
   /* 智能任务节点删除联动:其关联的智能会话一并删除(先提示确认) */
   const delSet = new Set(ids);
   const linkedSessions = [];
@@ -25053,10 +26541,14 @@ const SIDE_CATS = [
 const KIND_TAGS = {
   input_text: "文本",
   input_image: "图像",
+  input_file: "文件",
+  db_table: "表",
   proc_text: "LLM",
   proc_image: "文生图",
   music_gen: "音乐",
   video_gen: "视频",
+  net_recv: "接收",
+  net_send: "发送",
   save: "保存",
   save_text: "保存",
   save_image: "保存",
@@ -25931,7 +27423,34 @@ function focusMark(id) {
   renderStatus();
 }
 
+/* 数据库超级节点处于「展开」态时，其内部空白处右键也可用数据库专属节点菜单 */
+function dbCreateMenuOpenAt(pt) {
+  if (!pt || currentSuperFocus()) return false;
+  const host = findOpenSuperAtWorld(pt.x, pt.y, new Set());
+  return !!(host && host.kind === "super" && host.db);
+}
 function canvasCreateMenuGroups(pt) {
+  /* 数据库超级节点内部：右键菜单只提供「文件节点」和「表」（钻入或展开均生效） */
+  if (currentDbSuper() || dbCreateMenuOpenAt(pt)) {
+    return [
+      [
+        I18n.t("输入节点（仅输出）"),
+        [
+          ctxKindItem("input_file", I18n.t("文件节点（批量导入任意文件）"), () =>
+            addNode("input_file", pt.x, pt.y),
+          ),
+        ],
+      ],
+      [
+        I18n.t("处理节点（提示词 + Play）"),
+        [
+          ctxKindItem("db_table", I18n.t("表（读取文件 · agent 建表）"), () =>
+            addNode("db_table", pt.x, pt.y),
+          ),
+        ],
+      ],
+    ];
+  }
   return [
     [
       I18n.t("输入节点（仅输出）"),
@@ -25976,6 +27495,23 @@ function canvasCreateMenuGroups(pt) {
       [
         ctxKindItem("save", I18n.t("保存（按输入自判）"), () =>
           addNode("save", pt.x, pt.y),
+        ),
+      ],
+    ],
+    [
+      I18n.t("网络节点（TCP / UDP · 通道分流 · 跨画布）"),
+      [
+        ctxKindItem("net_recv", I18n.t("接收（监听通道 · 异步转发文本）"), () =>
+          addNode("net_recv", pt.x, pt.y, {
+            netChannel: nextNetChannel(),
+            netProto: "tcp",
+          }),
+        ),
+        ctxKindItem("net_send", I18n.t("发送（推送到通道）"), () =>
+          addNode("net_send", pt.x, pt.y, {
+            netChannel: nextNetChannel(),
+            netProto: "tcp",
+          }),
         ),
       ],
     ],
@@ -26594,6 +28130,13 @@ function bindCanvas() {
       const curWorld = d.curWorld || null;
       const hadNested = !!d.hadNested;
       S.drag = null;
+      /* 拖拽结束：移除拖拽 class 并复位仿射变换（利用基础 transition 惯性回落） */
+      document
+        .querySelectorAll(".wf-node.node-dragging")
+        .forEach((el) => {
+          el.classList.remove("node-dragging");
+          el.style.transform = "";
+        });
       if (wasMoved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
         S.preDragSnap = null;
@@ -26744,6 +28287,48 @@ function bindCanvas() {
         pt.y >= n.y &&
         pt.y <= n.y + n.h,
     );
+    /* 数据库「文件节点」：拖入任意文件 → 复制进数据库子文件夹 */
+    const fileTarget = S.wf.nodes.find(
+      (n) =>
+        n.kind === "input_file" &&
+        pt.x >= n.x &&
+        pt.x <= n.x + n.w &&
+        pt.y >= n.y &&
+        pt.y <= n.y + n.h,
+    );
+    if (fileTarget) {
+      const dir = dbSuperDir(fileTarget);
+      if (!dir) {
+        toast(I18n.t("未设置数据库子文件夹，无法导入文件"), "warn");
+        return;
+      }
+      let added = 0;
+      for (const f of files) {
+        const p = window.api.getPathForFile(f);
+        if (!p) continue;
+        const name = String(f.name || "file");
+        const dest = await dbUniqueDest(dir, name);
+        await window.api.fileCopyAssetTo(p, dest).catch(() => {});
+        const st = await window.api.fileStat(dest).catch(() => null);
+        (fileTarget.files = fileTarget.files || []).push({
+          id: uid("f"),
+          name: String(dest).split(/[\\/]/).pop() || name,
+          path: dest,
+          rel: window.api.pathRelative(dir, dest) || name,
+          size: (st && st.size) || 0,
+          mtime: (st && st.mtime) || 0,
+          type: dbFileType(dest),
+        });
+        added++;
+      }
+      if (added) {
+        clearDownstream(fileTarget.id);
+        scheduleSave();
+        renderCanvas();
+        toast(I18n.t("已导入 ") + added + I18n.t(" 个文件"), "ok");
+      }
+      return;
+    }
     if (!target) {
       toast(I18n.t("请将图像文件拖到「图像输入节点」上"), "warn");
       return;
@@ -27521,7 +29106,7 @@ async function stopNode(node) {
   }
   if (isDshTask(node) || (node.kind === "chat" && node.agent)) {
     /* dsh 线协议无逐轮取消:关闭该工作目录的运行时来真正中断在途请求 */
-    dshCancelActive();
+    dshCancelActive(node.id);
     node._aborted = true;
     node.running = false;
     node.error = I18n.t("已请求中断(引擎正在重启该工作目录)");
@@ -28706,6 +30291,37 @@ function thinkingTextOf(node) {
   if (!node || !S.thinking || !S.thinking[node.id]) return "";
   return S.thinking[node.id][attemptIdx(node)] || "";
 }
+/* 运行中会话:思考内容默认折叠,仅展开时刷新正文,避免每个 reasoning 块都重写大文本(降低运行期负载) */
+function agentThinkText(st, live) {
+  if (live) return thinkingTextOf(live) || "";
+  return (
+    (S.thinking &&
+      S.thinking["agent:" + ((st && st.id) || "")] &&
+      S.thinking["agent:" + ((st && st.id) || "")][0]) || ""
+  );
+}
+let _thinkSumRAF = 0;
+function updateAgentThinkEl(st, live) {
+  if (_thinkSumRAF) return;
+  _thinkSumRAF = requestAnimationFrame(() => {
+    _thinkSumRAF = 0;
+    const det = document.getElementById("agent-think");
+    if (!det) return;
+    const txt = agentThinkText(st, live);
+    const sum = det.querySelector("summary");
+    if (sum)
+      sum.textContent =
+        I18n.t("思考过程 · ") + txt.length + I18n.t(" 字") + I18n.t(" · 点击查看");
+    /* 仅展开时写正文;关闭状态只更新字数摘要 */
+    if (det.open) {
+      const pre = document.getElementById("agent-think-body");
+      if (pre) {
+        pre.textContent = txt;
+        pre.scrollTop = pre.scrollHeight;
+      }
+    }
+  });
+}
 /* 对话 / 会话列表：仅在已贴底（或强制）时自动滚到底，避免运行中上翻历史被拽回 */
 const CONV_SCROLL_SLACK = 56;
 function isScrollNearBottom(el, slack) {
@@ -28887,7 +30503,7 @@ function refreshThinkingUI(nid) {
     const st = agentSessionState();
     if (st && st.id === node.agentSessionId) {
       const el = document.getElementById("agent-think");
-      if (el) el.textContent = thinkingTextOf(node) || "";
+      if (el) updateAgentThinkEl(st, node);
     }
   }
   if (S.thinkOpen === nid) {
@@ -31564,6 +33180,8 @@ async function loadWorkflow(id) {
   await sanitizeWfEnvironment({ quiet: false });
   await window.api.configSave(S.config);
   renderAll();
+  /* 切换到该画布：其中的接收节点（监听模式）自动进入监听状态 */
+  autoListenNetRecvNodes(true).catch(() => {});
   trackWorkflow(id, S.wf.name);
   try { restoreMediaGenLocks(); } catch {}
   try { ensureMediaBackendProbesForWorkflow({ reset: true }); } catch {}
@@ -31785,11 +33403,24 @@ function openMetricsDistribution(metrics) {
   foot.appendChild(ok);
 }
 
-/* 会话分支(参考 dsh fork):复制当前会话为新会话 */
+/* 会话分支(参考 dsh fork):复制当前会话为新会话(fork) */
 async function forkAgentSession(id) {
   const list = agentSessions();
   const src = list.find((s) => s.id === id);
   if (!src) return;
+  /* 防串线:运行中的会话不允许分支(避免复制到一半的运行状态) */
+  if (sessionIsRunning(src)) {
+    toast(I18n.t("运行中的会话不能分支，请等待完成或先终止"), "warn");
+    return;
+  }
+  /* 深拷贝消息(含工具日志):fork 与原会话不共享任何数组,互不串线 */
+  const cloneMsgs = (msgs) =>
+    (msgs || []).map((m) => {
+      const o = Object.assign({}, m);
+      if (Array.isArray(m.tools))
+        o.tools = m.tools.map((t) => Object.assign({}, t));
+      return o;
+    });
   const copy = {
     id: uid("as"),
     title: (src.title || I18n.t("新会话")) + I18n.t(" · 分支"),
@@ -31798,11 +33429,19 @@ async function forkAgentSession(id) {
     provider: src.provider || "deepseek-official",
     model: src.model || "",
     effort: src.effort || "high",
-    messages: (src.messages || []).map((m) => Object.assign({}, m)),
+    messages: cloneMsgs(src.messages),
+    planNext: !!src.planNext,
+    forkedFrom: src.id,
     archived: false,
     updatedAt: Date.now(),
   };
-  list.unshift(copy);
+  /* 插入到同「项目文件夹」分组的顶部,而不是全局最前:
+     避免分支后该会话所属文件夹在侧边栏的排序被整体挪动 */
+  const gKey = wsGroupOf(src.workspace);
+  let gIdx = list.findIndex((x) => !x.archived && wsGroupOf(x.workspace) === gKey);
+  if (gIdx < 0) gIdx = list.findIndex((x) => !x.archived);
+  if (gIdx < 0) gIdx = 0;
+  list.splice(gIdx, 0, copy);
   S.agentActiveId = copy.id;
   await persistAgentSession();
   renderAgentSessionSidebar();
@@ -36495,6 +38134,42 @@ function openSettingsBody() {
   betaSec.appendChild(betaHint);
   body.appendChild(betaSec);
 
+  /* ── 网络（Network）：所有网络节点共用的固定端口 ── */
+  let netPortInp = null;
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("网络（Network）");
+    sec.appendChild(secTitle);
+    const row = document.createElement("label");
+    row.className = "n-field";
+    row.style.flexDirection = "row";
+    row.style.alignItems = "center";
+    row.appendChild(document.createTextNode(I18n.t("网络端口（全局默认）：")));
+    netPortInp = document.createElement("input");
+    netPortInp.type = "number";
+    netPortInp.min = "1";
+    netPortInp.max = "65535";
+    netPortInp.step = "1";
+    netPortInp.style.width = "110px";
+    netPortInp.value = String(
+      Math.max(1, Math.min(65535, Number(S.config && S.config.netPort) || NET_DEFAULT_PORT)),
+    );
+    row.appendChild(netPortInp);
+    sec.appendChild(row);
+    const hint = document.createElement("div");
+    hint.className = "n-field";
+    hint.style.fontSize = "12px";
+    hint.style.opacity = "0.9";
+    hint.textContent = I18n.t(
+      "网络节点各有独立端口：接收节点默认监听 40999，发送节点默认目标 41000，均可在节点体上单独修改；此处仅作为节点留空(0)时的回退默认。通道号(16bit)在端口内做逻辑分流。",
+    );
+    sec.appendChild(hint);
+    body.appendChild(sec);
+  }
+
   /* ── 配置数据目录（API Key / 工作流等；更改后需重启）── */
   {
     const sec = document.createElement("div");
@@ -37389,6 +39064,7 @@ function openSettingsBody() {
     const snap = Math.max(4, Math.min(64, Number(snapInp.value) || 24));
     S.config.snap = snap;
     S.config.beta = !!betaCb.checked;
+    if (netPortInp) S.config.netPort = Math.max(1, Math.min(65535, Number(netPortInp.value) || NET_DEFAULT_PORT));
     for (const p of S.config.providers) {
       p.name = String(p.name || "").trim();
       p.baseUrl = String(p.baseUrl || "").trim();
@@ -39298,6 +40974,7 @@ async function assistSend(text) {
   let assistHitMaxTokens = false;
   try {
     const final = await dshRunTask(input, {
+      runKey: "assist",
       workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
       preset: S.assistPreset || "standard",
       provider: S.assistProvider || "deepseek-official",
@@ -39434,7 +41111,7 @@ function assistStop() {
   if (!S.assistRunning) return;
   S.assistStopRequested = true;
   S.assistRunActive = false;
-  dshCancelActive();
+  dshCancelActive("assist");
   updateRunQueuePanel();
 }
 
@@ -39472,6 +41149,7 @@ function agentSessionState() {
     S.agentActiveId = st.id;
   }
   if (st.provider == null) st.provider = "deepseek-official";
+  if (st._draft == null) st._draft = st.draft || "";
   return st;
 }
 function wsGroupOf(ws) {
@@ -39495,6 +41173,7 @@ async function persistAgentSession() {
     provider: s.provider || "deepseek-official",
     model: s.model || "",
     effort: s.effort || "high",
+    draft: s._draft || "",
     messages: (s.messages || []).slice(-100),
     archived: !!s.archived,
     updatedAt: s.updatedAt || 0,
@@ -39760,8 +41439,11 @@ function setView(view) {
   const layout = $("#layout");
   if (wrap) wrap.style.display = view === "workflow" ? "" : "none";
   if (pane) pane.style.display = view === "agent" ? "" : "none";
-  /* 侧边栏在两个视图都可用:编排=节点树,智能会话=会话列表 */
-  if (layout) layout.classList.toggle("sidebar-open", !!S.sidebarOpen);
+  /* 侧边栏在画布视图可用:编排=节点树。
+     智能会话视图(agent)自带左侧会话列表(.agent-side),必须强制收起画布的侧边栏,
+     避免左边栏重复出现。画布视图仍按 S.sidebarOpen 记忆用户偏好,回到画布自动恢复。 */
+  if (layout)
+    layout.classList.toggle("sidebar-open", !!S.sidebarOpen && view === "workflow");
   S.config.view = view;
   window.api.configSave(S.config).catch(() => {});
   if (view === "agent") {
@@ -40376,14 +42058,27 @@ function renderAgentSession(opts) {
     role.textContent = I18n.t("AI · 运行中");
     head.appendChild(role);
     row.appendChild(head);
-    const think = document.createElement("div");
+    const think = document.createElement("details");
     think.className = "dsh-think-live";
     think.id = "agent-think";
-    think.textContent = live
-      ? thinkingTextOf(live) || ""
-      : (S.thinking && S.thinking.agentSession && S.thinking.agentSession[0]) ||
-        "";
+    think.open = !!S._agentThinkOpen;
+    const thinkSum = document.createElement("summary");
+    thinkSum.textContent = I18n.t("思考过程 · ") + "0" + I18n.t(" 字") + I18n.t(" · 点击查看");
+    thinkSum.title = I18n.t("点击展开 / 收起模型思考过程");
+    const thinkPre = document.createElement("pre");
+    thinkPre.id = "agent-think-body";
+    think.appendChild(thinkSum);
+    think.appendChild(thinkPre);
+    think.addEventListener("toggle", () => {
+      S._agentThinkOpen = !!think.open;
+      if (think.open) {
+        const txt = agentThinkText(st, live);
+        thinkPre.textContent = txt;
+        thinkPre.scrollTop = thinkPre.scrollHeight;
+      }
+    });
     row.appendChild(think);
+    updateAgentThinkEl(st, live);
     const tools = document.createElement("div");
     tools.className = "dsh-tools";
     tools.id = "agent-tools";
@@ -40413,10 +42108,21 @@ function renderAgentSession(opts) {
   if (ws && document.activeElement !== ws) ws.value = st.workspace || "";
   const chatEnterSend = !S.config.dsh || S.config.dsh.chatEnter !== "newline";
   const inp = $("#agentInput");
-  if (inp)
+  if (inp) {
+    /* 消息栏草稿按会话隔离:切换会话时保存上一个会话的输入,载入当前会话的草稿 */
+    const prevId = S._agentRenderedSessionId;
+    if (prevId && prevId !== st.id) {
+      const prev = agentSessions().find((x) => x.id === prevId);
+      if (prev) prev._draft = inp.value;
+    }
+    if (prevId !== st.id) {
+      inp.value = st._draft || "";
+      S._agentRenderedSessionId = st.id;
+    }
     inp.placeholder = chatEnterSend
       ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能与命令）")
       : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；输入 / 呼出技能与命令）");
+  }
   const presetSel = $("#agentPresetSel");
   if (presetSel) presetSel.value = st.preset || "standard";
   const provSel = $("#agentProvSel");
@@ -40524,6 +42230,56 @@ function renderAgentSession(opts) {
 }
 
 /* ── 会话侧边栏:按项目目录（工作路径最内层文件夹）归类,支持归档(参考 dsh) ── */
+/* 会话改名:双击名称或点「改名」按钮,行内编辑(Enter 确认 · Esc 取消) */
+function startSessionTitleEdit(s, nameEl) {
+  if (!nameEl || !s) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "n-title-input side-sess-name-input";
+  input.value = s.title || "";
+  input.spellcheck = false;
+  input.title = I18n.t("回车确认 · Esc 取消");
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = (save) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (save && v && v !== s.title) {
+      s.title = v;
+      s.updatedAt = Date.now();
+      /* 标题映射:会话名称 → 关联 agent_task 节点标题(双向,后写优先) */
+      const wfs = [S.wf, ...Object.values(S.wfBag || {})];
+      let touched = false;
+      for (const wf of wfs) {
+        if (!wf || !Array.isArray(wf.nodes)) continue;
+        for (const n of wf.nodes) {
+          if (n.kind === "agent_task" && n.agentSessionId === s.id) {
+            n.title = v;
+            touched = true;
+          }
+        }
+      }
+      if (touched) scheduleSave();
+      persistAgentSession().catch(() => {});
+    }
+    renderAgentSessionSidebar();
+  };
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      commit(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", () => commit(true));
+  input.addEventListener("mousedown", (ev) => ev.stopPropagation());
+}
 function renderAgentSessionSidebar() {
   const active = activeAgentId();
   const list = agentSessions();
@@ -40565,8 +42321,23 @@ function renderAgentSessionSidebar() {
     nm.className = "side-sess-name";
     nm.textContent = s.title || I18n.t("新会话");
     nm.title = s.title + I18n.t("\n工作目录: ") + (s.workspace || I18n.t("（默认）"));
+    /* 运行状态指示:转圈动效 + 「运行中」(仅运行中的会话显示) */
+    const stt = document.createElement("span");
+    stt.className = "side-sess-status";
+    const sp = document.createElement("span");
+    sp.className = "side-sess-spinner";
+    stt.appendChild(sp);
+    stt.appendChild(document.createTextNode(I18n.t("运行中")));
     const btns = document.createElement("div");
     btns.className = "side-sess-btns";
+    const rn = document.createElement("button");
+    rn.className = "side-sess-btn";
+    rn.textContent = I18n.t("改名");
+    rn.title = I18n.t("重命名该会话(便于管理)");
+    rn.onclick = (ev) => {
+      ev.stopPropagation();
+      startSessionTitleEdit(s, nm);
+    };
     const fk = document.createElement("button");
     fk.className = "side-sess-btn";
     fk.textContent = I18n.t("分支");
@@ -40591,9 +42362,12 @@ function renderAgentSessionSidebar() {
       ev.stopPropagation();
       await deleteAgentSession(s.id);
     };
+    btns.appendChild(rn);
     btns.appendChild(fk);
     btns.appendChild(ar);
     btns.appendChild(dl);
+    row.dataset.sid = s.id;
+    row.appendChild(stt);
     row.appendChild(nm);
     row.appendChild(btns);
     row.onclick = async () => {
@@ -40623,9 +42397,9 @@ function renderAgentSessionSidebar() {
       gh.title = I18n.t("项目目录: ") + key;
       tree.appendChild(gh);
       for (const s of items) {
-        const s2 = Object.assign({}, s);
-        if (f && !(s2.title || "").toLowerCase().includes(f) && !key.toLowerCase().includes(f)) continue;
-        tree.appendChild(mkRow(s2, false));
+        /* 传原对象(非拷贝):行内改名会写回 s.title,拷贝会丢失修改导致改名无效 */
+        if (f && !(s.title || "").toLowerCase().includes(f) && !key.toLowerCase().includes(f)) continue;
+        tree.appendChild(mkRow(s, false));
       }
     }
     if (archived.length) {
@@ -40656,6 +42430,7 @@ async function agentCompact() {
     const summary = await dshRunTask(
       "【压缩任务】把以下对话压缩为一段简明摘要,保留任务目标、关键结论与未完成事项:\n\n" + hist.slice(-40000),
       {
+        runKey: "agent:" + st.id,
         workspace:
           st.workspace ||
           S.dshWorkspaceFallback ||
@@ -40774,12 +42549,12 @@ async function agentSessionSend(text) {
   st._pending = "";
   st._liveTools = [];
   st.metrics = null;
-  S.agentSessionRunActive = true;
   beginSaveNodeHold();
   if (!S.thinking) S.thinking = {};
-  S.thinking.agentSession = [""];
+  S.thinking["agent:" + st.id] = [""];
   await persistAgentSession();
-  renderAgentSession({ forceStick: true });
+  if (S.agentActiveId === st.id) renderAgentSession({ forceStick: true });
+  else renderAgentSessionSidebar();
   const hist = st.messages
     .slice(0, -1)
     .slice(-20)
@@ -40800,6 +42575,7 @@ async function agentSessionSend(text) {
     "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
   try {
     const final = await dshRunTask(input, {
+      runKey: "agent:" + st.id,
       workspace:
         st.workspace ||
         S.dshWorkspaceFallback ||
@@ -40810,14 +42586,14 @@ async function agentSessionSend(text) {
       effort: st.effort || "high",
       systemPrompt,
       onEvent: (type, data) => {
+        /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
+           重绘/滚动打扰用户正在看的其他会话 */
+        const mine = S.agentActiveId === st.id;
         if (type === "reasoning" && data.text) {
-          pushThinking("agentSession", 0, data.text);
-          const el = document.getElementById("agent-think");
-          if (el)
-            el.textContent =
-              (S.thinking && S.thinking.agentSession && S.thinking.agentSession[0]) || "";
+          pushThinking("agent:" + st.id, 0, data.text);
+          if (mine) updateAgentThinkEl(st, null);
         } else if (type === "tool" && data.name) {
-          pushThinking("agentSession", 0, "🔧 " + data.name + "\n");
+          pushThinking("agent:" + st.id, 0, "🔧 " + data.name + "\n");
           st._liveTools = st._liveTools || [];
           if (!st._liveTools.some((x) => x.callId === data.callId))
             st._liveTools.push({
@@ -40830,28 +42606,33 @@ async function agentSessionSend(text) {
               error: null,
               at: Date.now(),
             });
-          renderAgentSession();
+          if (mine) renderAgentSession();
         } else if (type === "tool-result" && data.callId) {
           st._liveTools = st._liveTools || [];
           const t = st._liveTools.find((x) => x.callId === data.callId);
           if (t) {
             t.result = Array.isArray(data.content) ? data.content : [];
             t.error = data.error || null;
-            renderAgentSession();
+            if (mine) renderAgentSession();
           }
         } else if (type === "text" && data.text) {
           st._pending = (st._pending || "") + data.text;
-          const el = document.getElementById("agent-stream");
-          if (el) el.textContent = st._pending;
-          scrollElToBottomIfStuck($("#agentList"));
+          if (mine) {
+            const el = document.getElementById("agent-stream");
+            if (el) el.textContent = st._pending;
+            scrollElToBottomIfStuck($("#agentList"));
+          }
         } else if (type === "error" && data && data.message) {
           if (st._cancelled || isCancelishError(data.message)) return;
           const errLine = "\n⚠ " + data.message;
           st._pending = (st._pending || "") + errLine;
-          pushThinking("agentSession", 0, errLine + "\n");
-          const el = document.getElementById("agent-stream");
-          if (el) el.textContent = st._pending;
-          scrollElToBottomIfStuck($("#agentList"));
+          pushThinking("agent:" + st.id, 0, errLine + "\n");
+          if (mine) {
+            updateAgentThinkEl(st, null);
+            const el = document.getElementById("agent-stream");
+            if (el) el.textContent = st._pending;
+            scrollElToBottomIfStuck($("#agentList"));
+          }
         }
       },
       onDone: (d) => {
@@ -40873,7 +42654,9 @@ async function agentSessionSend(text) {
         at: Date.now(),
       };
       const rsn =
-        (S.thinking && S.thinking.agentSession && S.thinking.agentSession[0]) || "";
+        (S.thinking &&
+          S.thinking["agent:" + st.id] &&
+          S.thinking["agent:" + st.id][0]) || "";
       if (String(rsn).trim()) msg.reasoning = rsn;
       if (Array.isArray(st._liveTools) && st._liveTools.length)
         msg.tools = st._liveTools.slice();
@@ -40900,10 +42683,11 @@ async function agentSessionSend(text) {
     st.running = false;
     st._cancelled = false;
     st._liveTools = [];
-    S.agentSessionRunActive = false;
-    if (S.thinking) S.thinking.agentSession = [""];
+    if (S.thinking) delete S.thinking["agent:" + st.id];
     await persistAgentSession();
-    renderAgentSession();
+    /* 只在当前查看本会话时重绘会话区;否则仅刷新侧边栏运行状态,不打扰其他会话视图 */
+    if (S.agentActiveId === st.id) renderAgentSession();
+    else renderAgentSessionSidebar();
     syncAgentTaskFromSession(st.id);
     endSaveNodeHold();
   }
@@ -41302,7 +43086,7 @@ async function init() {
   }
   S.agentSessions = S.config.agentSessions.map((s) =>
     Object.assign(
-      { title: I18n.t("新会话"), preset: "standard", model: "", effort: "high", archived: false, updatedAt: 0 },
+      { title: I18n.t("新会话"), preset: "standard", model: "", effort: "high", draft: "", archived: false, updatedAt: 0 },
       s,
     ),
   );
@@ -41431,7 +43215,10 @@ async function init() {
 
   bindCanvas();
   bindMediaBackendListeners();
+  bindNetMessageListener();
   renderAll();
+  /* MTNode 启动：让当前画布处于监听模式的接收节点自动进入监听状态 */
+  autoListenNetRecvNodes(true).catch(() => {});
   try { ensureMediaBackendProbesForWorkflow({ reset: true }); } catch {}
   /* 智能会话控件绑定 */
   {
@@ -41463,6 +43250,22 @@ async function init() {
     const sideFilter = $("#agentSideFilter");
     if (sideFilter)
       sideFilter.addEventListener("input", () => renderAgentSessionSidebar());
+    /* 会话改名:双击侧边栏会话名称 → 行内编辑(事件委托,渲染重建后仍有效) */
+    for (const sel of ["#sideTree", "#agentSideList"]) {
+      const sc = $(sel);
+      if (!sc) continue;
+      sc.addEventListener("dblclick", (ev) => {
+        if (!ev.target || !ev.target.closest) return;
+        if (ev.target.closest(".side-sess-btns") || ev.target.closest(".side-sess-status")) return;
+        const nameEl = ev.target.closest(".side-sess-name");
+        if (!nameEl) return;
+        const rowEl = nameEl.closest(".side-sess");
+        const sid = rowEl && rowEl.dataset.sid;
+        if (!sid) return;
+        const s = agentSessions().find((x) => x.id === sid);
+        if (s) startSessionTitleEdit(s, nameEl);
+      });
+    }
     const mt = $("#agentModelTrigger");
     if (mt)
       mt.onclick = () => {
@@ -41545,19 +43348,19 @@ async function init() {
       const st = agentSessionState();
       const live = liveNodeForSession(st);
       if (st.running || live) {
-        /* 运行中:执行按钮已变为「终止」,点击即终止任务 */
+        /* 运行中:执行按钮已变为「终止」,点击即终止本会话任务(不影响其他并行会话) */
         if (live) {
           stopNode(live);
           return;
         }
         st._cancelled = true;
-        S.agentSessionRunActive = false;
-        dshCancelActive();
+        dshCancelActive("agent:" + st.id);
         return;
       }
       const t = inp.value;
       if (!t.trim()) return;
       inp.value = "";
+      st._draft = "";
       agentSessionSend(t);
     };
     if (inp) {

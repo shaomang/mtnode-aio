@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /**
  * llama.cpp 本地模型管理插件主进程：
  * - 安装目录 / 脚手架复制 / pip 安装（国内镜像）
@@ -641,7 +641,7 @@ async function startBackend() {
   const child = spawn(py, ["-m", "app", String(port)], {
     cwd: installDir,
     detached: true,
-    windowsHide: false,
+    windowsHide: true,
     stdio: "ignore",
     env: Object.assign({}, process.env, {
       HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
