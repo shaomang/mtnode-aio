@@ -56,6 +56,12 @@
     "恢复": "Restore",
     "回答": "Reply",
     "会话": "Session",
+    "会话 · ": "Session · ",
+    "本轮 ": "this round ",
+    "输出 ": "Output ",
+    "推理 ": "Reasoning ",
+    "工具 ": "tools ",
+    "当前会话本轮 token 消耗（运行会话后显示）": "Current session round token usage (shown after a run)",
     "居中": "Fit",
     "技能": "Skills",
     "节点": "Node",
@@ -452,6 +458,10 @@
     "已创建新画布": "New canvas created",
     "已打开画布：": "Opened canvas: ",
     "已分支新会话：": "Forked new session: ",
+    "载入更早的 ": "Load earlier ",
+    " 轮对话（共 ": " rounds (of ",
+    " 轮）": " rounds)",
+    "在列表最前端载入更早的对话": "Load earlier messages at the top of the list",
     "已复制到剪贴板": "Copied to clipboard",
     "已复制思考内容": "Thinking content copied",
     "已恢复单次尝试": "Restored single attempt",
@@ -940,7 +950,6 @@
     "组：把选中的节点组成一个组（快捷键 G）；选中组后再次点击解散": "Group: group selected nodes (shortcut G); click again when a group is selected to ungroup",
     "从剪贴板读取 YAML（field=标题，内容=内容）并写入条目": "Read YAML from clipboard (field=title, content=content) and write as entries",
     "文本 · OpenAI 兼容（chat/completions）": "Text · OpenAI-compatible (chat/completions)",
-    "Node 运行环境随应用自带（与主程序同一版本），无需单独安装。": "The Node runtime is bundled with the app (same version as the main program); no separate install needed.",
     "</b> 及其全部本地数据文件（含节点图像资产）。此操作不可恢复。": "</b> and all of its local data files (including node image assets). This cannot be undone.",
     "模型正在思考，内容流式显示中…（模型支持思考时自动出现此弹窗入口）": "The model is thinking; content is streaming… (this popup entry appears automatically when the model supports thinking)",
     "输入下一条指令…（Enter 发送，Shift+Enter 换行）": "Enter the next instruction… (Enter send, Shift+Enter newline)",
@@ -2561,8 +2570,8 @@
       "Plugins: downloadable forum, desktop pet, and other add-ons",
     "插件：云端目录更新，讨论区等内置组件与可下载插件":
       "Plugins: cloud catalog; download the forum, desktop pet, and other add-ons",
-    "插件：云端目录更新，讨论区与桌宠等按需下载":
-      "Plugins: cloud catalog; download the forum, desktop pet, and other add-ons",
+    "插件：云端目录更新，桌宠等按需下载":
+      "Plugins: cloud catalog; download the desktop pet and other add-ons on demand",
     "图片过大": "Image is too large",
     "正在拉取云端插件目录…": "Fetching the cloud plugin catalog…",
     "插件列表来自云端，可不升级主程序获取新插件。":
@@ -2895,6 +2904,14 @@
       "Copied {n} file(s) into the database subfolder · click ⚙ to compile (incremental)",
     "数据库子文件夹不存在：": "Database subfolder does not exist: ",
     "calc 失败": "calc failed",
+    "分支会话「": "Fork session ",
+    "」？\n\n将复制该会话的全部消息与设置到新会话，原会话保持不变。": "? This copies all messages and settings to a new session; the original session stays unchanged.",
+    "分支会话": "Fork Session",
+    "分支": "Fork",
+    "归档会话「": "Archive session ",
+    "」？\n\n会话将收起到底部「已归档」区，可随时恢复。": "? The session will be collapsed into the Archived section at the bottom; you can restore it anytime.",
+    "归档会话": "Archive Session",
+    "归档": "Archive",
   });
 
   var locale = "zh";

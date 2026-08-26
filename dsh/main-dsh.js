@@ -26,6 +26,9 @@ const INSTALL_SKILL_SOURCES = {
   'minimax-h3-install': path.join(
     __dirname, '..', 'h3', 'skills', 'minimax-h3-install', 'SKILL.md',
   ),
+  'tts-local-install': path.join(
+    __dirname, '..', 'skills', 'tts-local-install', 'SKILL.md',
+  ),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))
 

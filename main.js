@@ -9,6 +9,11 @@ if (process.argv.includes("--mtnode-llama-tray")) {
   require("./llama/tray-main.js");
   return;
 }
+/* GPT-SoVITS TTS 托盘独立进程：不随 MTNode 退出 */
+if (process.argv.includes("--mtnode-tts-tray")) {
+  require("./tts/tray-main.js");
+  return;
+}
 
 const {
   app,
@@ -48,6 +53,7 @@ const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music
 const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
 const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lock.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
+const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
 const { patchProviders } = require("./config-providers.js");
 let dshAdapter = null;
 function dshConfig() {
@@ -88,6 +94,10 @@ function dsh() {
         try {
           const { onLlamaDshEvent } = require("./llama/main-llama.js");
           if (typeof onLlamaDshEvent === "function") onLlamaDshEvent(ev);
+        } catch {}
+        try {
+          const { onTtsDshEvent } = require("./tts/main-tts.js");
+          if (typeof onTtsDshEvent === "function") onTtsDshEvent(ev);
         } catch {}
       },
     });
@@ -3229,6 +3239,12 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
+  registerTtsIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+  });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });
@@ -3246,6 +3262,7 @@ app.on("before-quit", () => {
   try { shutdownMusic3UiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}
+  try { shutdownTtsUiOnly(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }

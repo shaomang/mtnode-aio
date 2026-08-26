@@ -38,8 +38,11 @@ description: 在用户指定目录安装 llama.cpp 本地模型后端：创建 v
 
 ## 国内镜像（必须）
 
-- pip：`https://pypi.tuna.tsinghua.edu.cn/simple` 或阿里云 `https://mirrors.aliyun.com/pypi/simple/`
-- HuggingFace：`HF_ENDPOINT=https://hf-mirror.com`，建议 `HF_HUB_DISABLE_XET=1`
+> **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像，GitHub Releases 可能无法直连。
+
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）
+- HuggingFace：**无法直连**，一律 `HF_ENDPOINT=https://hf-mirror.com`（建议 `HF_HUB_DISABLE_XET=1`）
+- GitHub Releases（llama.cpp 二进制 zip）：直连失败自动回退 `ghproxy.com` 前缀镜像
 - 安装示例：
   ```powershell
   .venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn

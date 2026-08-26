@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+models/
+engine/
+voices/*/ref.wav
+voices/*/ref.txt
+voices/*/ref.lang
+bin/
+logs/
+.console.log
+.api-key
+.install-ok
+.registry.json
+.deployed.json
+.want-deployed.json

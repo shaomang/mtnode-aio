@@ -13,9 +13,14 @@ const I18n =
   };
 
 const HEAD = 28;
-const PORT_STEP = 26;
-const PORT_R = 6;
-const PORT_OFF = 8; /* 端子圆心到节点边缘的距离（端子镶嵌在节点板内：圆心在板内 8px、端子边缘内缩 2px，不再悬挂在节点外） */
+const PORT_R = 4;
+/* 相邻端子间距 = 直径 + 间隙；间隙与端子半径一致（12 = 8 + 4） */
+const PORT_STEP = PORT_R * 3;
+const PORT_OFF = 7; /* 端子圆心到节点左右边缘的距离：端子内嵌在节点板内的左右接线排上（圆心距边缘 7px，全部在节点外框之内） */
+/* 节点边框宽度（.wf-node border:1px）。.port 绝对定位相对的是 padding box（内缩边框），
+   而连线端点公式以节点 border-box 原点为基准，二者相差 1 个边框宽度；
+   所有"端子孔圆心"公式统一加回 NODE_BORDER，保证连线终点精确落在插孔中心。 */
+const NODE_BORDER = 1;
 /* 画布缩放范围：下限放宽便于大工作流总览 */
 const CAM_Z_MIN = 0.08;
 const CAM_Z_MAX = 2.5;
@@ -1065,16 +1070,16 @@ function superStageLocalOut(n, fromIndex, host, pan) {
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
   return {
-    x: (pan.x || 0) + n.x + sz.w - PORT_OFF,
-    y: (pan.y || 0) + n.y + outPortY(hNode, fromIndex || 0),
+    x: (pan.x || 0) + n.x + sz.w - PORT_OFF - NODE_BORDER,
+    y: (pan.y || 0) + n.y + outPortY(hNode, fromIndex || 0) + NODE_BORDER,
   };
 }
 function superStageLocalIn(n, toIndex, host, pan) {
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
   return {
-    x: (pan.x || 0) + n.x + PORT_OFF,
-    y: (pan.y || 0) + n.y + inPortY(hNode, toIndex, inputCount(n)),
+    x: (pan.x || 0) + n.x + PORT_OFF + NODE_BORDER,
+    y: (pan.y || 0) + n.y + inPortY(hNode, toIndex, inputCount(n)) + NODE_BORDER,
   };
 }
 function superStageHeight(host) {
@@ -1112,6 +1117,37 @@ function superStageSinkPos(host, toIndex, stageW) {
     y: superSinkLocalY(host, toIndex || 0),
   };
 }
+/* 连线双层描边：每条连线由两条 path 组成——
+   下层 .fn-edge-ring（宽描边、暗色外圈）与上层 .fn-edge（原色线芯），同路径、外圈先插入。 */
+function ensureWireRing(svg, coreEl, ringId) {
+  let r = document.getElementById(ringId);
+  if (!r) {
+    r = document.createElementNS(svgNS, "path");
+    r.id = ringId;
+    r.setAttribute("class", "fn-edge-ring");
+    if (coreEl) svg.insertBefore(r, coreEl);
+    else svg.appendChild(r);
+  }
+  return r;
+}
+/* 外圈跟随线芯：同步路径、状态类（sel/linked/类型/temp）与显隐 */
+function syncRingFromCore(core) {
+  if (!core) return;
+  const r = document.getElementById(core.id + "-r");
+  if (!r) return;
+  const cls = core.getAttribute("class") || "";
+  let rcls = "fn-edge-ring";
+  if (cls.includes(" sel")) rcls += " sel";
+  if (cls.includes(" linked")) rcls += " linked";
+  if (cls.includes(" ctrl")) rcls += " ctrl";
+  else if (cls.includes(" img")) rcls += " img";
+  else if (cls.includes(" aud")) rcls += " aud";
+  else if (cls.includes(" vid")) rcls += " vid";
+  if (cls.includes(" temp")) rcls += " temp";
+  r.setAttribute("class", rcls);
+  r.setAttribute("d", core.getAttribute("d") || "");
+  r.style.display = core.style.display || "";
+}
 function applyWirePathClass(p, w, from) {
   let wcls = "fn-edge";
   if (S.selWire === w.id) wcls += " sel";
@@ -1122,6 +1158,8 @@ function applyWirePathClass(p, w, from) {
   else if (isVideoWireFrom(from)) wcls += " vid";
   if (isPinnedWire(w)) wcls += " pinned";
   p.setAttribute("class", wcls);
+  /* 外圈跟随线芯状态（sel/linked/类型/temp） */
+  syncRingFromCore(p);
 }
 /* 选中节点时，与其相连的连线高亮（.fn-edge.linked） */
 function linkedToSelectedNode(w) {
@@ -1194,6 +1232,7 @@ function updateSuperInnerWires(host, touchIds) {
     if (wireOpenSuperHost(w, from, to) !== host) continue;
     const id = "swire-" + w.id;
     present.add(id);
+    present.add(id + "-r");
     if (
       filter &&
       !filter.has(w.from) &&
@@ -1216,20 +1255,24 @@ function updateSuperInnerWires(host, touchIds) {
     }
     let p = svg.querySelector("#" + CSS.escape(id));
     if (!p) {
+      ensureWireRing(svg, null, id + "-r");
       p = document.createElementNS(svgNS, "path");
       p.id = id;
       bindWirePathInteractions(p, w);
       svg.appendChild(p);
+    } else {
+      ensureWireRing(svg, p, id + "-r");
     }
     p.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
     applyWirePathClass(p, w, from);
   }
   for (const p of [...svg.querySelectorAll(":scope > path.fn-edge")]) {
-    if (p.id === "swireTemp") continue;
+    if (p.id === "swireTemp" || p.id === "swireTemp-r") continue;
     if (!present.has(p.id)) p.remove();
   }
   let t = svg.querySelector("#swireTemp");
   if (!t) {
+    ensureWireRing(svg, null, "swireTemp-r");
     t = document.createElementNS(svgNS, "path");
     t.id = "swireTemp";
     t.setAttribute("class", "fn-edge temp");
@@ -1244,7 +1287,10 @@ function updateSuperInnerWires(host, touchIds) {
       a = superStageBridgePos(host, d.fromIndex || 0, stageW);
       show = true;
     } else if (from && nodeParentSuperId(from) === host.id) {
-      a = superStageLocalOut(from, d.fromIndex || 0, host, pan);
+      /* 反向拖线（内部节点输入端 → 输出端/桥端子）：起点用子画布局部输入端点 */
+      a = d.fromInput
+        ? superStageLocalIn(from, d.fromIndex || 0, host, pan)
+        : superStageLocalOut(from, d.fromIndex || 0, host, pan);
       show = true;
     }
     if (show && a) {
@@ -1263,10 +1309,14 @@ function updateSuperInnerWires(host, touchIds) {
       else if (from && isImageWireFrom(from)) tcls += " img";
       t.setAttribute("class", tcls);
       t.style.display = "";
+      syncRingFromCore(t);
       return;
     }
   }
-  if (!filter) t.style.display = "none";
+  if (!filter) {
+    t.style.display = "none";
+    syncRingFromCore(t);
+  }
 }
 function refreshAllSuperInnerWires(touchIds) {
   for (const n of (S.wf && S.wf.nodes) || []) {
@@ -3473,6 +3523,97 @@ function fmtDshMetrics(m) {
   if (m.subagents) parts.push(I18n.t("子代理 ") + m.subagents);
   if (m.jobs) parts.push(I18n.t("后台任务 ") + m.jobs);
   return parts.join(" | ");
+}
+
+/* footer:当前会话本轮 token 消耗统计。
+   运行中按网关 usage 事件实时累积;完成后以 d.metrics 为准。 */
+function currentSessionOrNull() {
+  const list = agentSessions();
+  const id = activeAgentId();
+  return list.find((s) => s.id === id) || list[0] || null;
+}
+function fmtSessionFooterStat(m, running) {
+  if (!m) return "";
+  const parts = [];
+  parts.push(
+    I18n.t("输入 ") +
+      fmtTok(m.inputTokens) +
+      " · " +
+      I18n.t("输出 ") +
+      fmtTok(m.outputTokens) +
+      " · " +
+      I18n.t("推理 ") +
+      fmtTok(m.reasoningTokens) +
+      " tok",
+  );
+  if (!running) {
+    if ((m.llmMs || 0) > 0) parts.push("LLM " + fmtDur(m.llmMs));
+    if (m.tools && m.tools.length)
+      parts.push(I18n.t("工具 ") + m.tools.length + I18n.t(" 次"));
+  }
+  return parts.join(" · ");
+}
+function sessionFooterTitle(st, m, running) {
+  const rows = [];
+  if (m) {
+    rows.push((m.turns || 0) + I18n.t(" 轮 · ") + (m.steps || 0) + I18n.t(" 步"));
+    if ((m.llmMs || 0) > 0)
+      rows.push(
+        "LLM " + fmtDur(m.llmMs) + I18n.t(" · 工具调用 ") + fmtDur(m.toolMs),
+      );
+    if ((m.firstTokenAvgMs || 0) > 0)
+      rows.push(
+        I18n.t("首 token 平均 ") + (m.firstTokenAvgMs / 1000).toFixed(1) + "s",
+      );
+    rows.push(I18n.t("缓存命中 ") + Math.round(m.cacheHitPct || 0) + "%");
+    rows.push(
+      I18n.t("输入 ") +
+        fmtTok(m.inputTokens) +
+        " · " +
+        I18n.t("输出 ") +
+        fmtTok(m.outputTokens) +
+        " · " +
+        I18n.t("推理 ") +
+        fmtTok(m.reasoningTokens) +
+        " tok",
+    );
+    if ((m.contextWindow || 0) > 0)
+      rows.push(
+        I18n.t("上下文 ") +
+          fmtTok((m.inputTokens || 0) + (m.outputTokens || 0)) +
+          " / " +
+          fmtTok(m.contextWindow) +
+          " tok",
+      );
+    if (m.subagents) rows.push(I18n.t("子代理 ") + m.subagents);
+    if (m.jobs) rows.push(I18n.t("后台任务 ") + m.jobs);
+  }
+  if (running) rows.push(I18n.t("运行中"));
+  return rows.join("\n");
+}
+function renderSessionFooterStat() {
+  const el = $("#statSession");
+  if (!el) return;
+  const st = currentSessionOrNull();
+  if (!st) {
+    el.textContent = "";
+    el.title = I18n.t("当前会话本轮 token 消耗（运行会话后显示）");
+    return;
+  }
+  const running = !!(st.running || liveNodeForSession(st));
+  const m = st.metrics || st._usageLive || null;
+  if (!running && !m) {
+    el.textContent = "";
+    el.title = I18n.t("当前会话本轮 token 消耗（运行会话后显示）");
+    return;
+  }
+  const prefix =
+    I18n.t("会话 · ") + (running ? I18n.t("运行中") + " · " : I18n.t("本轮 "));
+  const txt = m
+    ? prefix + fmtSessionFooterStat(m, running)
+    : prefix + I18n.t("输入 ") + "0 tok";
+  el.textContent = txt;
+  el.title = sessionFooterTitle(st, m, running);
 }
 function recordDshMetrics(node, m) {
   if (!m) return;
@@ -8054,24 +8195,40 @@ function nodePortHeight(node) {
   if (node && node.kind === "super") return superDisplaySize(node).h;
   return (node && node.h) || 160;
 }
+/* 端子 Y：在“从上至下”的接线排内分布（与插排占满高度一致）。
+   opts: top 内容起点、bottom 底部留白、bandA/bandB 带上下界比例、min 最小 Y。
+   端子从靠近顶端开始、逐次向下排列；端子过多放不下时退回整段可用区内居中，避免溢出节点。 */
+function portBandY(totalH, i, count, opts) {
+  const o = opts || {};
+  const h = Math.max(1, totalH || 1);
+  const inner = Math.max(1, h - (o.top || 0) - (o.bottom || 0));
+  const bandTop = (o.top || 0) + inner * (o.bandA == null ? 0.18 : o.bandA);
+  const bandBot = (o.top || 0) + inner * (o.bandB == null ? 0.82 : o.bandB);
+  const span = Math.max(0, (count || 1) - 1) * PORT_STEP;
+  let start;
+  if (span <= bandBot - bandTop) {
+    /* 插槽从靠近顶端开始，逐次向下（不再居中分布） */
+    start = Math.round(bandTop);
+  } else {
+    start = (o.top || 0) + Math.round((inner - span) / 2);
+    if (start < (o.top || 0)) start = o.top || 0;
+  }
+  return Math.max(o.min || 0, start + i * PORT_STEP);
+}
 function inPortY(node, i, ic) {
-  const h = nodePortHeight(node);
-  const span = Math.max(0, ic - 1) * PORT_STEP;
-  return Math.max(34, Math.round(h / 2 - span / 2 + i * PORT_STEP));
+  return portBandY(nodePortHeight(node), i, ic, {
+    top: 45, bottom: 5, min: 45, bandA: 0, bandB: 1,
+  });
 }
 function outPortY(node, i, oc) {
-  const h = nodePortHeight(node);
   const n = oc == null ? outputCount(node) : oc;
-  if (n <= 1) return Math.max(34, Math.round(h / 2));
-  const span = Math.max(0, n - 1) * PORT_STEP;
-  return Math.max(34, Math.round(h / 2 - span / 2 + i * PORT_STEP));
+  return portBandY(nodePortHeight(node), i, n, {
+    top: 45, bottom: 5, min: 45, bandA: 0, bandB: 1,
+  });
 }
 function superInnerPortY(stageH, i, count) {
   const h = Math.max(120, stageH || 200);
-  const n = count == null ? 1 : count;
-  if (n <= 1) return Math.round(h / 2);
-  const span = Math.max(0, n - 1) * PORT_STEP;
-  return Math.max(24, Math.round(h / 2 - span / 2 + i * PORT_STEP));
+  return portBandY(h, i, count, { top: 0, bottom: 0, min: 24, bandA: 0, bandB: 1 });
 }
 /** 全屏进入态：内侧端子钉在 #canvas 可视区左右边缘（屏幕坐标→舞台坐标） */
 function superFocusBridgePos(host, fromIndex) {
@@ -8109,8 +8266,8 @@ function outPos(n, i, peer, wire) {
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
   return {
-    x: p.x + sz.w - PORT_OFF,
-    y: p.y + outPortY(hNode, i || 0),
+    x: p.x + sz.w - PORT_OFF - NODE_BORDER,
+    y: p.y + outPortY(hNode, i || 0) + NODE_BORDER,
   };
 }
 function inPos(n, i, peer, wire) {
@@ -8131,15 +8288,20 @@ function inPos(n, i, peer, wire) {
   const p = nodeWorldPos(n);
   const sz = nodeDrawSize(n);
   const hNode = Object.assign({}, n, { h: sz.h, w: sz.w });
-  return { x: p.x + PORT_OFF, y: p.y + inPortY(hNode, i, inputCount(n)) };
+  return {
+    x: p.x + PORT_OFF + NODE_BORDER,
+    y: p.y + inPortY(hNode, i, inputCount(n)) + NODE_BORDER,
+  };
 }
 function wirePathAB(ax, ay, bx, by) {
   /* 真实电线感：以两端点中点为控制点向下自然下垂（重力弧度），
-     不再使用 S 形三次贝塞尔，更接近实际线缆的松弛形态 */
+     不再使用 S 形三次贝塞尔，更接近实际线缆的松弛形态；
+     下垂幅度随线长增大（min 14 / max 52），配合连线的投影阴影
+     让电线看起来是悬空垂挂在画布上方 */
   const len = Math.hypot(bx - ax, by - ay) || 1;
-  const sag = Math.min(44, Math.max(9, len * 0.12));
+  const sag = Math.min(52, Math.max(14, len * 0.15));
   const mx = (ax + bx) / 2;
-  const my = (ay + by) / 2 + sag * 2.2;
+  const my = (ay + by) / 2 + sag * 2.5;
   return `M ${ax} ${ay} Q ${mx} ${my} ${bx} ${by}`;
 }
 function wirePath(from, to, idx, fromIndex, wire) {
@@ -11754,21 +11916,27 @@ function updateWires(touchIds) {
     if (wireOpenSuperHost(w, from, to)) {
       const stale = document.getElementById("wire-" + w.id);
       if (stale) stale.remove();
+      const staleRing = document.getElementById("wire-" + w.id + "-r");
+      if (staleRing) staleRing.remove();
       continue;
     }
     const id = "wire-" + w.id;
     let p = document.getElementById(id);
     if (!p) {
+      ensureWireRing(svg, null, id + "-r");
       p = document.createElementNS(svgNS, "path");
       p.id = id;
       bindWirePathInteractions(p, w);
       svg.appendChild(p);
+    } else {
+      ensureWireRing(svg, p, id + "-r");
     }
     p.setAttribute("d", wirePath(from, to, w.toIndex, w.fromIndex || 0, w));
     applyWirePathClass(p, w, from);
   }
   let t = svg.querySelector("#wireTemp");
   if (!t) {
+    ensureWireRing(svg, null, "wireTemp-r");
     t = document.createElementNS(svgNS, "path");
     t.id = "wireTemp";
     t.setAttribute("class", "fn-edge temp");
@@ -11783,27 +11951,34 @@ function updateWires(touchIds) {
       !!(from && nodeIsNestedInOpenSuper(from));
     if (shellInnerTemp) {
       t.style.display = "none";
+      syncRingFromCore(t);
     } else if (from) {
       const a = focusBridge
         ? superFocusBridgePos(from, S.drag.fromIndex || 0)
-        : outPos(from, S.drag.fromIndex || 0, null, null);
+        : S.drag.fromInput
+          ? inPos(from, S.drag.fromIndex || 0, null, null)
+          : outPos(from, S.drag.fromIndex || 0, null, null);
       const b = toStage(S.drag.mx, S.drag.my);
       t.setAttribute("d", wirePathAB(a.x, a.y, b.x, b.y));
       let tcls = "fn-edge temp";
+      /* 反向拖线（输入端→输出端）：最终线型取决于落点输出节点，拖动中不预判类别 */
       if (
-        isControlKind(from) ||
-        (focusBridge &&
-          from &&
-          from.kind === "super" &&
-          superInPortIsControl(from, S.drag.fromIndex || 0))
+        !S.drag.fromInput &&
+        (isControlKind(from) ||
+          (focusBridge &&
+            from &&
+            from.kind === "super" &&
+            superInPortIsControl(from, S.drag.fromIndex || 0)))
       )
         tcls += " ctrl";
-      else if (isImageWireFrom(from)) tcls += " img";
+      else if (!S.drag.fromInput && isImageWireFrom(from)) tcls += " img";
       t.setAttribute("class", tcls);
       t.style.display = "";
+      syncRingFromCore(t);
     }
   } else if (!filter) {
     t.style.display = "none";
+    syncRingFromCore(t);
   }
   refreshAllSuperInnerWires(touchIds);
   refreshSuperFocusPortLayout();
@@ -11813,6 +11988,13 @@ function refreshPorts(el, node) {
   const ic = inputCount(node);
   const oc = outputCount(node);
   const openShell = superIsOpenShell(node);
+  /* 节点尺寸变化（resize 等）时同步 --nw/--nh：接线排背景锚定 */
+  if (el && node) {
+    const sz =
+      node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
+    if (sz.w > 0) el.style.setProperty("--nw", sz.w + "px");
+    if (sz.h > 0) el.style.setProperty("--nh", sz.h + "px");
+  }
   if (!openShell) {
     el.querySelectorAll(":scope > .port.in").forEach((p, i) => {
       p.style.top = inPortY(node, i, ic) - PORT_R + "px";
@@ -11965,6 +12147,19 @@ function nodeElement(node) {
     node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
   el.style.width = _nsz.w + "px";
   el.style.height = _nsz.h + "px";
+  /* 板内接线排锚定：--nw/--nh 记录节点整板尺寸（px）供背景无缝连续；
+     接线排 CSS 已固定为从上至下占满（菜单条下方 28px 起到底部），无需 JS 注入带位置 */
+  el.style.setProperty("--nw", _nsz.w + "px");
+  el.style.setProperty("--nh", _nsz.h + "px");
+  /* 插排顶部小标签：左侧输入排写“输入”、右侧输出排写“输出”（小字；展开超节点时隐藏，由子画布端子排标签接管） */
+  const labIn = document.createElement("i");
+  labIn.className = "n-port-label n-pl-in";
+  labIn.textContent = I18n.t("输入");
+  const labOut = document.createElement("i");
+  labOut.className = "n-port-label n-pl-out";
+  labOut.textContent = I18n.t("输出");
+  el.appendChild(labIn);
+  el.appendChild(labOut);
   if (superIsOpenShell(node))
     el.classList.add("super-open");
 
@@ -13547,6 +13742,9 @@ function nodeElement(node) {
     p.addEventListener("mousedown", (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
+      hidePortTip();
+      /* 允许从输入端反向拖线到输出端：线仍存为 输出端 → 本输入端 */
+      startWireDrag(node.id, ev, i, { fromInput: true });
     });
     p.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
@@ -15035,6 +15233,15 @@ function buildBody(node, body) {
         bindSuperInnerSinkPort(p, node, poi);
         stage.appendChild(p);
       }
+      /* 子画布端子排顶部小标签（输入/输出） */
+      const labIn = document.createElement("i");
+      labIn.className = "n-port-label n-pl-in";
+      labIn.textContent = I18n.t("输入");
+      const labOut = document.createElement("i");
+      labOut.className = "n-port-label n-pl-out";
+      labOut.textContent = I18n.t("输出");
+      stage.appendChild(labIn);
+      stage.appendChild(labOut);
       stage.addEventListener("contextmenu", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
@@ -21332,6 +21539,22 @@ function canvasSnapshot() {
       schemaFile: n.kind === "db_table" ? n.schemaFile || undefined : undefined,
       dataFile: n.kind === "db_table" ? n.dataFile || undefined : undefined,
       builtAt: n.kind === "db_table" ? n.builtAt || undefined : undefined,
+      netChannel: isNetNode(n) ? (Number(n.netChannel) || 0) & 0xffff : undefined,
+      netProto: isNetNode(n) ? (n.netProto === "udp" ? "udp" : "tcp") : undefined,
+      netHost: isNetNode(n) ? String(n.netHost || "127.0.0.1") : undefined,
+      netPort: isNetNode(n) ? Number(n.netPort) || 0 : undefined,
+      netListening: n.kind === "net_recv" ? !!n.netListening : undefined,
+      netAutoListen: n.kind === "net_recv" ? n.netAutoListen !== false : undefined,
+      netCount: isNetNode(n) ? n.netCount || 0 : undefined,
+      delaySec: n.kind === "delayer" ? n.delaySec || 0 : undefined,
+      seqOutputs: n.kind === "sequencer" ? n.seqOutputs || 3 : undefined,
+      seqGapSec: n.kind === "sequencer" ? n.seqGapSec || 0 : undefined,
+      gateInputs: n.kind === "gate" ? n.gateInputs || 2 : undefined,
+      splitOutputs: n.kind === "splitter" ? n.splitOutputs || 3 : undefined,
+      counterEvery: n.kind === "counter" ? n.counterEvery || 2 : undefined,
+      counterCount: n.kind === "counter" ? n.counterCount || 0 : undefined,
+      mutexInputs: n.kind === "mutex" ? n.mutexInputs || 2 : undefined,
+      mutexMode: n.kind === "mutex" ? n.mutexMode || "first" : undefined,
       goal: goalSnap ? goalSnap.text : undefined,
       goalLen: goalSnap ? goalSnap.textLen : undefined,
       steps:
@@ -24265,6 +24488,29 @@ function applyNodePatch(node, patch, warnings) {
       node.mutexMode = patch.mutexMode;
     normalizeMutexNode(node);
   }
+  if (node.kind === "net_recv" || node.kind === "net_send") {
+    if (patch.netChannel != null) {
+      const c = Math.round(Number(patch.netChannel));
+      if (isFinite(c))
+        node.netChannel = Math.max(0, Math.min(65535, c || 0));
+    }
+    if (patch.netProto === "tcp" || patch.netProto === "udp")
+      node.netProto = patch.netProto;
+    if (patch.netHost != null) {
+      const h = String(patch.netHost).trim();
+      node.netHost = h || "127.0.0.1";
+    }
+    if (patch.netPort != null) {
+      const p = Math.round(Number(patch.netPort));
+      if (isFinite(p)) node.netPort = Math.max(0, Math.min(65535, p));
+    }
+    if (node.kind === "net_recv" && typeof patch.netAutoListen === "boolean")
+      node.netAutoListen = patch.netAutoListen;
+  }
+  if (node.kind === "db_replica") {
+    if (patch.dbNodeId != null) node.dbNodeId = String(patch.dbNodeId).trim();
+    if (patch.dbName != null) node.dbName = String(patch.dbName).trim();
+  }
   if (typeof patch.globalRefs === "boolean" && canUseGlobalRefs(node))
     node.globalRefs = patch.globalRefs;
   if (patch.tags != null && node.kind !== "global") {
@@ -25372,6 +25618,36 @@ function startNodeDrag(ev, node, opts) {
     fromHandle: !!(opts && opts.fromHandle),
     handleNid: node.id,
   };
+  /* 拖拽节点期间提升连线 SVG 层级：连线不被拖起的节点遮挡 */
+  setNodeDragLift(true);
+}
+/* 拖拽节点期间提升 / 拖拽结束后恢复连线 SVG 层级（节点拖起 z40、超节点提升 z55，均压在连线之上） */
+function setNodeDragLift(on) {
+  const c = $("#canvas");
+  if (c) c.classList.toggle("node-drag-active", !!on);
+}
+/* 连线落点放大命中：在端子中心 1.5×半径（至少 6px 屏幕）内都算命中，
+   elementFromPoint 命中不到时按最近端子兜底，解决端子小、难以精准连中的问题 */
+const PORT_HIT_FACTOR = 1.5;
+function portHitAt(x, y, sel) {
+  let best = null;
+  let bestD = Infinity;
+  const z = S.cam.z > 0 ? S.cam.z : 1;
+  const tol = Math.max(6, PORT_R * PORT_HIT_FACTOR * z);
+  for (const p of document.querySelectorAll(sel)) {
+    const r = p.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const dx = x - cx;
+    const dy = y - cy;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d <= tol && d < bestD) {
+      best = p;
+      bestD = d;
+    }
+  }
+  return best;
 }
 function startWireDrag(fromId, ev, fromIndex, opts) {
   opts = opts || {};
@@ -25384,6 +25660,8 @@ function startWireDrag(fromId, ev, fromIndex, opts) {
     mx: ev.clientX,
     my: ev.clientY,
     superInnerBridge: !!opts.superInnerBridge,
+    /* 反向拖线：从输入端开始拖向输出端（fromId 是输入侧节点，fromIndex 是其输入序号） */
+    fromInput: !!opts.fromInput,
   };
   updateWires();
 }
@@ -25433,6 +25711,7 @@ function cancelDrag() {
   const box = document.getElementById("boxSel");
   if (box) box.remove();
   S.drag = null;
+  setNodeDragLift(false);
   document
     .querySelectorAll(".wf-node.node-dragging")
     .forEach((el) => {
@@ -28046,11 +28325,15 @@ function bindCanvas() {
     } else if (d.mode === "wire") {
       d.mx = ev.clientX;
       d.my = ev.clientY;
+      /* 反向拖线（输入端→输出端）时悬停目标为 .port.out，否则为 .port.in */
+      const selCls = d.fromInput ? ".port.out" : ".port.in";
       document
-        .querySelectorAll(".port.in.hover")
+        .querySelectorAll(selCls + ".hover")
         .forEach((p) => p.classList.remove("hover"));
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
-      const port = el && el.closest ? el.closest(".port.in") : null;
+      let port = el && el.closest ? el.closest(selCls) : null;
+      /* 命中不到时按 1.5×端子半径近邻兜底，悬停高亮更宽容 */
+      if (!port) port = portHitAt(ev.clientX, ev.clientY, selCls);
       if (port) port.classList.add("hover");
       updateWires();
     }
@@ -28059,35 +28342,67 @@ function bindCanvas() {
     const d = S.drag;
     if (!d) return;
     document
-      .querySelectorAll(".port.in.hover")
+      .querySelectorAll(".port.in.hover, .port.out.hover")
       .forEach((p) => p.classList.remove("hover"));
     if (d.mode === "wire") {
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
-      const port = el && el.closest ? el.closest(".port.in") : null;
       const fromId = d.fromId;
       const fromIndex = d.fromIndex || 0;
       const fromBridge = !!d.superInnerBridge;
+      const fromInput = !!d.fromInput;
       S.drag = null;
       updateWires();
-      if (port) {
-        const toId = port.dataset.node;
-        const toNode = nodeById(toId);
-        const fromNode = nodeById(fromId);
-        if (fromBridge) {
-          if (!toNode || nodeParentSuperId(toNode) !== fromId) {
-            toast(I18n.t("内侧输入端子只能连接到超级节点内部的节点"), "warn");
+      if (fromInput) {
+        /* 反向拖线：起点是某节点的输入端子，终点落在输出端子上 → 存为 输出端 → 输入端 */
+        let port = el && el.closest ? el.closest(".port.out") : null;
+        if (!port) port = portHitAt(ev.clientX, ev.clientY, ".port.out");
+        if (port) {
+          const outId = port.dataset.node;
+          const outIdx = Number(port.dataset.fromIndex || 0);
+          const inNode = nodeById(fromId);
+          const outNode = nodeById(outId);
+          if (port.classList.contains("super-inner-bridge")) {
+            /* 落在超级节点内侧输入端子（桥）：等价于 桥 → 内部节点输入 */
+            if (
+              !inNode ||
+              !outNode ||
+              outNode.kind !== "super" ||
+              nodeParentSuperId(inNode) !== outId
+            ) {
+              toast(
+                I18n.t("内侧输入端子只能连接到超级节点内部的节点"),
+                "warn",
+              );
+            } else {
+              connect(outId, fromId, fromIndex, outIdx);
+            }
+          } else {
+            connect(outId, fromId, fromIndex, outIdx);
+          }
+        }
+      } else {
+        let port = el && el.closest ? el.closest(".port.in") : null;
+        if (!port) port = portHitAt(ev.clientX, ev.clientY, ".port.in");
+        if (port) {
+          const toId = port.dataset.node;
+          const toNode = nodeById(toId);
+          const fromNode = nodeById(fromId);
+          if (fromBridge) {
+            if (!toNode || nodeParentSuperId(toNode) !== fromId) {
+              toast(I18n.t("内侧输入端子只能连接到超级节点内部的节点"), "warn");
+            } else {
+              connect(fromId, toId, Number(port.dataset.idx), fromIndex);
+            }
+          } else if (
+            port.classList.contains("super-inner-sink") &&
+            (!toNode ||
+              toNode.kind !== "super" ||
+              nodeParentSuperId(fromNode) !== toId)
+          ) {
+            toast(I18n.t("内侧输出端子只能接收超级节点内部的连线"), "warn");
           } else {
             connect(fromId, toId, Number(port.dataset.idx), fromIndex);
           }
-        } else if (
-          port.classList.contains("super-inner-sink") &&
-          (!toNode ||
-            toNode.kind !== "super" ||
-            nodeParentSuperId(fromNode) !== toId)
-        ) {
-          toast(I18n.t("内侧输出端子只能接收超级节点内部的连线"), "warn");
-        } else {
-          connect(fromId, toId, Number(port.dataset.idx), fromIndex);
         }
       }
     } else if (d.mode === "box") {
@@ -28137,6 +28452,7 @@ function bindCanvas() {
           el.classList.remove("node-dragging");
           el.style.transform = "";
         });
+      setNodeDragLift(false);
       if (wasMoved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
         S.preDragSnap = null;
@@ -33413,6 +33729,14 @@ async function forkAgentSession(id) {
     toast(I18n.t("运行中的会话不能分支，请等待完成或先终止"), "warn");
     return;
   }
+  /* 防误操作:分支前确认(分支是复制操作,不破坏原会话) */
+  if (
+    !(await confirmDialog(
+      I18n.t("分支会话「") + (src.title || I18n.t("新会话")) + I18n.t("」？\n\n将复制该会话的全部消息与设置到新会话，原会话保持不变。"),
+      { title: I18n.t("分支会话"), okText: I18n.t("分支") },
+    ))
+  )
+    return;
   /* 深拷贝消息(含工具日志):fork 与原会话不共享任何数组,互不串线 */
   const cloneMsgs = (msgs) =>
     (msgs || []).map((m) => {
@@ -37254,6 +37578,79 @@ function bindLlamaProgress(host) {
     }
   });
 }
+async function refreshTtsPluginCard(root) {
+  if (!root || !window.api || !window.api.ttsStatus) return;
+  const st = await window.api.ttsStatus();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: true });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  if (st.consoleOpen) {
+    addBtn("stop", I18n.t("停止"), async () => {
+      if (window.api.ttsClose) await window.api.ttsClose();
+      refreshTtsPluginCard(root);
+    });
+  } else {
+    addBtn("play", I18n.t("运行"), async () => {
+      const r = await window.api.ttsOpen();
+      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      refreshTtsPluginCard(root);
+    }, { primary: true });
+  }
+  addBtn("trash", I18n.t("移除入口"), async () => {
+    if (
+      !(await confirmDialog(
+        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
+        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
+      ))
+    )
+      return;
+    if (window.api.ttsRemovePluginMeta) await window.api.ttsRemovePluginMeta();
+    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
+    refreshTtsPluginCard(root);
+  }, { danger: true });
+  if (prog && st.installing) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = I18n.t("安装中…");
+    }
+  }
+}
+function bindTtsProgress(host) {
+  if (!window.api || !window.api.onTtsProgress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onTtsProgress((data) => {
+    if (!data || (data.id && data.id !== "tts-local")) return;
+    if (data.phase !== "install" && data.phase !== "dsh") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshTtsPluginCard(host);
+      }, 600);
+    }
+  });
+}
 function pluginLoc(p, key) {
   const v = p && p[key];
   if (v && typeof v === "object") {
@@ -37482,49 +37879,50 @@ async function openAppPluginsDialog() {
     cat.remoteError = (e && e.message) || String(e);
   }
   intro.textContent = pluginCatalogHint(cat);
-  const list = Array.isArray(cat.plugins) && cat.plugins.length
-    ? cat.plugins
-    : [
-        {
-          id: "forum",
-          kind: "window",
-          icon: "forum.png",
-          version: "1.0.0",
-          title: { zh: I18n.t("MTNode 讨论区"), en: "MTNode Forum" },
-          subtitle: {
-            zh: I18n.t("小型聊天窗口，与创意工坊共用账户。综合区 / Bug 提交 / 功能改进；本地保存记录并同步近 3 天消息。"),
-            en: "A small chat window sharing the Creative Workshop account.",
+  const list = (
+    Array.isArray(cat.plugins) && cat.plugins.length
+      ? cat.plugins
+      : [
+          {
+            id: "bongochat",
+            kind: "pet",
+            handler: "pet",
+            icon: "bongochat.png",
+            version: "0.3.7",
+            title: { zh: "BongoChat", en: "BongoChat" },
+            subtitle: { zh: I18n.t("可以聊天的BongoCat！"), en: "A BongoCat you can chat with!" },
+            compatible: true,
           },
-          zipUrl: "forum-1.0.0.zip",
-          entry: "chat.html",
-          compatible: true,
-          installed: false,
-        },
-        {
-          id: "bongochat",
-          kind: "pet",
-          handler: "pet",
-          icon: "bongochat.png",
-          version: "0.3.7",
-          title: { zh: "BongoChat", en: "BongoChat" },
-          subtitle: { zh: I18n.t("可以聊天的BongoCat！"), en: "A BongoCat you can chat with!" },
-          compatible: true,
-        },
-        {
-          id: "llama-local",
-          kind: "llama",
-          handler: "llama",
-          icon: "llama-local.png",
-          version: "1.0.0",
-          title: { zh: "llama.cpp 本地模型", en: "llama.cpp Local Models" },
-          subtitle: {
-            zh: I18n.t("基于 llama.cpp 的本地 GGUF 模型管理：指定目录安装、国内镜像、多模型显存管理、OpenAI 兼容 API。"),
-            en: "llama.cpp local GGUF model manager with CN mirrors and VRAM management.",
+          {
+            id: "llama-local",
+            kind: "llama",
+            handler: "llama",
+            icon: "llama-local.png",
+            version: "1.0.0",
+            title: { zh: "llama.cpp 本地模型", en: "llama.cpp Local Models" },
+            subtitle: {
+              zh: I18n.t("基于 llama.cpp 的本地 GGUF 模型管理：指定目录安装、国内镜像、多模型显存管理、OpenAI 兼容 API。"),
+              en: "llama.cpp local GGUF model manager with CN mirrors and VRAM management.",
+            },
+                        compatible: true,
+            installed: true,
           },
-          compatible: true,
-          installed: true,
-        },
-      ];
+          {
+            id: "tts-local",
+            kind: "tts",
+            handler: "tts",
+            icon: "tts-local.png",
+            version: "1.0.0",
+            title: { zh: "GPT-SoVITS 本地 TTS", en: "GPT-SoVITS Local TTS" },
+            subtitle: {
+              zh: I18n.t("基于 GPT-SoVITS 的本地文本转语音：指定目录安装、参考音频音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。"),
+              en: "GPT-SoVITS local TTS: custom install dir, reference-audio voice manager, OpenAI-compatible TTS API.",
+            },
+            compatible: true,
+            installed: true,
+          },
+        ]
+  ).filter((p) => p && p.id !== "forum");
 
   const wrap = document.createElement("div");
   wrap.className = "plugin-grid-wrap";
@@ -37595,6 +37993,13 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onLlamaConsoleChanged(() => refreshLlamaPluginCard(card)));
       }
       refreshLlamaPluginCard(card);
+    } else if (item.kind === "tts" || item.handler === "tts") {
+      const off = bindTtsProgress(card);
+      if (off) offs.push(off);
+      if (window.api && window.api.onTtsConsoleChanged) {
+        offs.push(window.api.onTtsConsoleChanged(() => refreshTtsPluginCard(card)));
+      }
+      refreshTtsPluginCard(card);
     } else {
       const off = bindPluginProgress(card, item.id, false);
       if (off) offs.push(off);
@@ -38017,12 +38422,15 @@ function mergePluginManagedProviders(targetCfg, sourceCfg) {
   targetCfg.providers = base.concat(managed);
 }
 
+/* 打开设置时仅合并插件托管服务商（llama 本地等），绝不整表覆盖：
+   整表覆盖会把「添加服务商」弹窗刚 push 的内存项与用户在本页的
+   增/删/排序全部丢弃 —— 手动添加服务商保存后不在列表中的根因。 */
 async function reloadConfigProvidersFromDisk() {
   if (!window.api || !window.api.configLoad || !S.config) return;
   try {
     const fresh = await window.api.configLoad();
     if (fresh && Array.isArray(fresh.providers)) {
-      S.config.providers = fresh.providers;
+      mergePluginManagedProviders(S.config, fresh);
       ensureDefaultProviders();
     }
   } catch {}
@@ -38484,15 +38892,6 @@ function openSettingsBody() {
     secTitle.className = "settings-sec-title";
     secTitle.textContent = I18n.t("智能能力（DeepSeek Harness / dsh）");
     sec.appendChild(secTitle);
-
-    const nodeRow = document.createElement("div");
-    nodeRow.className = "n-field";
-    nodeRow.appendChild(
-      document.createTextNode(
-        I18n.t("Node 运行环境随应用自带（与主程序同一版本），无需单独安装。"),
-      ),
-    );
-    sec.appendChild(nodeRow);
 
     const modelRow = document.createElement("label");
     modelRow.className = "n-field";
@@ -40360,6 +40759,7 @@ function renderStatus() {
       ? txt
       : I18n.t("尚无智能运行统计（运行智能任务后在此显示）");
   }
+  renderSessionFooterStat();
   updateRunQueuePanel();
 }
 function renderAll() {
@@ -41206,6 +41606,15 @@ async function archiveAgentSession(id, archived) {
   const list = agentSessions();
   const s = list.find((x) => x.id === id);
   if (!s) return;
+  /* 防误操作:归档前确认(恢复不确认,可随时进行) */
+  if (
+    archived &&
+    !(await confirmDialog(
+      I18n.t("归档会话「") + (s.title || I18n.t("新会话")) + I18n.t("」？\n\n会话将收起到底部「已归档」区，可随时恢复。"),
+      { title: I18n.t("归档会话"), okText: I18n.t("归档") },
+    ))
+  )
+    return;
   s.archived = archived;
   if (archived && S.agentActiveId === id) {
     const next = list.find((x) => !x.archived && x.id !== id);
@@ -41447,6 +41856,8 @@ function setView(view) {
   S.config.view = view;
   window.api.configSave(S.config).catch(() => {});
   if (view === "agent") {
+    /* 打开会话时自动隐藏右侧全局助手栏（不持久化：回到画布仍按用户偏好） */
+    setAssistOpen(false, false);
     closeCanvasFindBar();
     renderAgentSession();
     const inp = $("#agentInput");
@@ -41849,8 +42260,9 @@ function applyHistoryCollapse(list) {
       return;
     }
     if (key && S.histExpanded[key]) {
+      /* 已展开的消息保持展开:折叠为单向(点击只展开),不再提示点击收起 */
       el.classList.add("hist-expanded");
-      el.title = I18n.t("点击收起");
+      el.removeAttribute("title");
       return;
     }
     if (!body || !histBodyExceedsTwoLines(body)) {
@@ -41891,8 +42303,10 @@ function scheduleHistoryCollapse(list) {
 
 if (typeof document !== "undefined") {
   document.addEventListener("click", (ev) => {
+    /* 折叠只发生在折叠态的行上(.hist-collapsed):点击后单向展开,
+       已展开的行不再响应点击,避免再次点击收起打断复制/选中等操作 */
     const row = ev.target && ev.target.closest
-      ? ev.target.closest(".dsh-msg.hist-collapsed, .dsh-msg.hist-expanded")
+      ? ev.target.closest(".dsh-msg.hist-collapsed")
       : null;
     if (!row) return;
     if (
@@ -41904,18 +42318,12 @@ if (typeof document !== "undefined") {
     const key = row.dataset.histKey || "";
     const body = row.querySelector(".dsh-msg-body");
     S.histExpanded = S.histExpanded || {};
-    if (row.classList.contains("hist-collapsed")) {
-      row.classList.remove("hist-collapsed");
-      row.classList.add("hist-expanded");
-      if (body) body.style.maxHeight = "";
-      if (key) S.histExpanded[key] = true;
-      row.title = I18n.t("点击收起");
-      updateHistRail(row.parentNode);
-    } else {
-      if (key) delete S.histExpanded[key];
-      const list = row.parentNode;
-      applyHistoryCollapse(list);
-    }
+    row.classList.remove("hist-collapsed");
+    row.classList.add("hist-expanded");
+    if (body) body.style.maxHeight = "";
+    if (key) S.histExpanded[key] = true;
+    row.removeAttribute("title");
+    updateHistRail(row.parentNode);
   });
 }
 
@@ -42031,6 +42439,21 @@ function dshMsgBlock(m, nodeId, idx) {
   return row;
 }
 
+/* ── 会话消息显示轮数:默认最多 10 轮(一轮=一条用户消息),更早的可从最前端逐步载入 ── */
+const AGENT_MAX_VISIBLE_ROUNDS = 10;
+const AGENT_LOAD_MORE_ROUNDS = 10;
+function agentRoundSlice(st) {
+  const msgs = Array.isArray(st.messages) ? st.messages : [];
+  const userIdx = [];
+  for (let i = 0; i < msgs.length; i++)
+    if (msgs[i] && msgs[i].role === "user") userIdx.push(i);
+  const totalRounds = userIdx.length;
+  let vis = Number(st._visRounds);
+  if (!Number.isFinite(vis) || vis < 1) vis = AGENT_MAX_VISIBLE_ROUNDS;
+  let start = 0;
+  if (totalRounds > vis) start = userIdx[totalRounds - vis];
+  return { msgs, start, totalRounds, vis: Math.min(vis, Math.max(totalRounds, 1)) };
+}
 function renderAgentSession(opts) {
   const st = agentSessionState();
   const list = $("#agentList");
@@ -42046,8 +42469,30 @@ function renderAgentSession(opts) {
     hint.textContent = I18n.t("选择一个工作区开始，直接描述你要完成的任务。");
     list.appendChild(hint);
   }
-  for (let i = 0; i < st.messages.length; i++)
-    list.appendChild(dshMsgBlock(st.messages[i], st.id || "agent", i));
+  /* 最多显示最近 10 轮(一轮=一条用户消息),更早的在列表最前端提供「载入」按钮 */
+  const slice = agentRoundSlice(st);
+  if (slice.start > 0) {
+    const loadRow = document.createElement("div");
+    loadRow.className = "agent-load-earlier";
+    const btn = document.createElement("button");
+    const older = Math.min(AGENT_LOAD_MORE_ROUNDS, slice.totalRounds - slice.vis);
+    btn.textContent =
+      I18n.t("载入更早的 ") + older + I18n.t(" 轮对话（共 ") + slice.totalRounds + I18n.t(" 轮）");
+    btn.title = I18n.t("在列表最前端载入更早的对话");
+    btn.addEventListener("click", () => {
+      const l = $("#agentList");
+      const prevScroll = l ? l.scrollTop : 0;
+      const prevH = l ? l.scrollHeight : 0;
+      st._visRounds = slice.vis + AGENT_LOAD_MORE_ROUNDS;
+      renderAgentSession();
+      const l2 = $("#agentList");
+      if (l2 && prevH > 0) l2.scrollTop = prevScroll + (l2.scrollHeight - prevH);
+    });
+    loadRow.appendChild(btn);
+    list.appendChild(loadRow);
+  }
+  for (let i = slice.start; i < slice.msgs.length; i++)
+    list.appendChild(dshMsgBlock(slice.msgs[i], st.id || "agent", i));
   if (running) {
     const row = document.createElement("div");
     row.className = "dsh-msg dsh-ai";
@@ -42227,6 +42672,7 @@ function renderAgentSession(opts) {
   }
   renderAgentComposer();
   renderAgentSessionSidebar();
+  renderSessionFooterStat();
 }
 
 /* ── 会话侧边栏:按项目目录（工作路径最内层文件夹）归类,支持归档(参考 dsh) ── */
@@ -42545,10 +42991,13 @@ async function agentSessionSend(text) {
   }
   st.updatedAt = Date.now();
   if (st.messages.length > 100) st.messages.splice(0, st.messages.length - 100);
+  /* 新的一轮开始:显示窗口回到默认最近 10 轮,更早的可从最前端重新载入 */
+  st._visRounds = undefined;
   st.running = true;
   st._pending = "";
   st._liveTools = [];
   st.metrics = null;
+  st._usageLive = null;
   beginSaveNodeHold();
   if (!S.thinking) S.thinking = {};
   S.thinking["agent:" + st.id] = [""];
@@ -42615,6 +43064,19 @@ async function agentSessionSend(text) {
             t.error = data.error || null;
             if (mine) renderAgentSession();
           }
+        } else if (type === "usage" && data) {
+          /* 运行中实时 token 消耗（与网关 stats 相同的累加口径），完成后以 metrics 为准 */
+          const u = (st._usageLive = st._usageLive || {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            reasoningTokens: 0,
+          });
+          u.inputTokens += Number(data.inputTokens) || 0;
+          u.outputTokens += Number(data.outputTokens) || 0;
+          u.cacheReadTokens += Number(data.cacheReadTokens) || 0;
+          u.reasoningTokens += Number(data.reasoningTokens) || 0;
+          if (mine) renderSessionFooterStat();
         } else if (type === "text" && data.text) {
           st._pending = (st._pending || "") + data.text;
           if (mine) {
@@ -42638,6 +43100,7 @@ async function agentSessionSend(text) {
       onDone: (d) => {
         recordDshMetrics(null, d.metrics);
         st.metrics = d.metrics || null;
+        st._usageLive = null;
       },
     });
     if (st._cancelled) {

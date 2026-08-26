@@ -86,6 +86,14 @@ mt-music/
 
 [MiniMax-Music3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE)。
 
+## 国内镜像（必须）
+
+> **中国大陆网络下必须使用镜像**：HuggingFace 无法直连，Python 库须走清华/中科院镜像。
+
+- **Python 库**：清华 `https://pypi.tuna.tsinghua.edu.cn/simple`（或中科院 USTC `https://mirrors.ustc.edu.cn/pypi/simple/`），`setup_env.ps1` 默认已用清华
+- **模型权重**：Comfy 权重优先 **ModelScope(魔搭)** `Comfy-Org/MiniMax-Music-3`（国内直连），失败回退 `hf-mirror.com`；App(Diffusers) 权重走 `HF_ENDPOINT=https://hf-mirror.com`（`HF_HUB_DISABLE_XET=1`）
+- **diffusers 依赖**（GitHub）：直连失败自动用 `git+https://ghproxy.com/https://github.com/...` 前缀重试
+
 ## 参考
 
 - [MiniMaxAI/MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3)

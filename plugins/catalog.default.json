@@ -95,6 +95,23 @@
         "zh": "基于 llama.cpp 的本地 GGUF 模型管理：指定目录安装、国内镜像、多模型显存管理、OpenAI 兼容 API。服务不随 MTNode 退出，托盘可手动关闭。",
         "en": "llama.cpp local GGUF model manager: custom install dir, CN mirrors, multi-model VRAM management, OpenAI-compatible API. Service survives MTNode exit; close via tray."
       }
+    },
+    {
+      "id": "tts-local",
+      "kind": "tts",
+      "handler": "tts",
+      "order": 60,
+      "version": "1.0.0",
+      "minAppVersion": "1.1.26",
+      "icon": "tts-local.png",
+      "title": {
+        "zh": "GPT-SoVITS 本地 TTS",
+        "en": "GPT-SoVITS Local TTS"
+      },
+      "subtitle": {
+        "zh": "基于 GPT-SoVITS 的本地文本转语音：指定目录安装、参考音频音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。服务不随 MTNode 退出，托盘可手动关闭。",
+        "en": "GPT-SoVITS local TTS: custom install dir, reference-audio voice manager, OpenAI-compatible TTS API with API key auth. Service survives MTNode exit; close via tray."
+      }
     }
   ]
 }

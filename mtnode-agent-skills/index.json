@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-08-24T16:15:28.371Z",
+  "updatedAt": "2026-08-25T00:00:00.000Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -8,14 +8,6 @@
       "id": "mtnode",
       "title": "MTNode 产品与画布",
       "skills": [
-        {
-          "id": "agent-rebuild",
-          "name": "mtnode-agent-rebuild",
-          "title": "MTNode 改代码后重建",
-          "description": "修改 pipeline-console 中影响运行时的源码后，必须用 scripts/agent-rebuild.cmd 结束进程、编译并重启 MTNodeAIO。Use when editing main/preload/renderer/dsh/pet/music3/h3/plugins/*-pack or build.json and the user or task needs a verified runtime build.",
-          "path": "mtnode/agent-rebuild/SKILL.md",
-          "version": ""
-        },
         {
           "id": "canvas-batch-safety",
           "name": "mtnode-canvas-batch-safety",

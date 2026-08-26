@@ -18,9 +18,11 @@ export const name = 'mtnode-canvas'
 export const inject = ['tools']
 
 const KINDS = [
-  'input_text', 'input_image', 'proc_text', 'proc_image', 'music_gen', 'video_gen',
-  'save', 'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer', 'agent_task', 'task', 'super', 'chat',
-  'control', 'judge',
+  'input_text', 'input_image', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'video_gen',
+  'save', 'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer',
+  'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
+  'agent_task', 'task', 'super', 'db_replica', 'chat',
+  'control', 'judge', 'net_recv', 'net_send',
 ]
 
 const NODE_LOCK =
@@ -29,6 +31,9 @@ const NODE_LOCK =
 const GET_DESC =
   NODE_LOCK +
   'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dbNodeId/dbName/compiledAt for db_replica), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) are ALWAYS full text — never truncated; *Len fields report character counts only. When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
+
+const KIND_GUIDE =
+  'Available create.kind values: input_text / input_image / input_file (输入节点) · db_table (数据库建表) · proc_text / proc_image (文本/图像处理) · agent_task / chat (智能节点) · save / save_text / save_image (保存) · split / merge (批次拆分/合并) · global (全局广播) · control / judge / task (控制/判断/任务) · wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex (等待/定时/延时/序列/闸门/分发/计数/互斥) · super / db_replica (超级节点 / 数据库副本) · music_gen / video_gen (音乐/视频生成) · net_recv / net_send (网络接收 / 网络发送). net_recv listens on a port/channel and forwards incoming text to downstream; net_send pushes its data-input text to a target host:port — both support tcp/udp, channel multiplexing and per-node host/port. Database nodes: input_file imports local files, db_table builds a table from them (agent extracts metadata, user confirms form), a kind "super" with db:true holds facts and compiles into a db_replica that smart nodes query with mtnode_db; you may also create a db_replica directly and set dbNodeId/dbName to point at an existing database super node. '
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
@@ -48,6 +53,8 @@ Needs user confirmation (UI will prompt; may be rejected):
 For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
 const EDIT_DESC = NODE_LOCK + `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
+
+${KIND_GUIDE}
 
 Typical pattern for a COMPLEX requirement (planning first):
 1. Optionally mtnode_canvas_get first (see taskTree + current-scope nodes).
@@ -363,6 +370,30 @@ const NODE_SPEC = {
       description:
         'Node titles or tag names to insert as @Title / @Tag in prompt/task if missing.',
     },
+    /* 控制类 · 延时/序列/闸门/分发/计数/互斥 */
+    delaySec: { type: 'number', description: 'delayer: delay in seconds before continuing (1–604800, default 60).' },
+    seqOutputs: { type: 'number', description: 'sequencer: number of sequential outputs (2–8, default 3).' },
+    seqGapSec: { type: 'number', description: 'sequencer: gap in seconds between outputs (default 0).' },
+    gateInputs: { type: 'number', description: 'gate: number of AND inputs (2–8, default 2).' },
+    splitOutputs: { type: 'number', description: 'splitter: number of parallel outputs (2–8, default 3).' },
+    counterEvery: { type: 'number', description: 'counter: pass through every N triggers (2–99, default 2).' },
+    counterCount: { type: 'number', description: 'counter: current count value.' },
+    mutexInputs: { type: 'number', description: 'mutex: number of inputs (2–8, default 2).' },
+    mutexMode: { type: 'string', enum: ['first', 'priority', 'random'], description: 'mutex: which input wins (default first).' },
+    /* 网络节点（net_recv 接收 / net_send 发送） */
+    netChannel: { type: 'number', description: 'net_recv/net_send: channel id 0–65535 to multiplex on one port (default auto-assigned next free channel).' },
+    netProto: { type: 'string', enum: ['tcp', 'udp'], description: 'net_recv/net_send: transport protocol (default tcp).' },
+    netHost: { type: 'string', description: 'net_recv/net_send: target/interface host (default 127.0.0.1).' },
+    netPort: { type: 'number', description: 'net_recv/net_send: port 1–65535, or 0 to use the global setting (recv listens 40999 / send targets 41000 by default).' },
+    netAutoListen: { type: 'boolean', description: 'net_recv only: auto enter listening state when the workflow starts (default true).' },
+    /* 数据库 · 副本关联 */
+    dbNodeId: { type: 'string', description: 'db_replica: id of the source DATABASE super node this replica mirrors.' },
+    dbName: { type: 'string', description: 'db_replica: display name of the source database.' },
+    /* 对话系统提示 */
+    systemPrompt: { type: 'string', description: 'chat: system prompt for the conversation.' },
+    /* 控制节点细节 */
+    ctrlPinned: { type: 'boolean', description: 'control: pinned (fixed) end role cannot be deleted.' },
+    ctrlFillOnly: { type: 'boolean', description: 'control run: only fill data into targets, do not trigger runs.' },
     x: { type: 'number', description: 'Optional canvas x; omit to let layout place it.' },
     y: { type: 'number', description: 'Optional canvas y; omit to let layout place it.' },
   },
@@ -480,6 +511,25 @@ const UPDATE_SPEC = {
         'proc_image: set output size to a value from imageSizes (mtnode_canvas_get).',
     },
     refs: { type: 'array', items: { type: 'string' } },
+    delaySec: { type: 'number', description: 'delayer: delay seconds.' },
+    seqOutputs: { type: 'number', description: 'sequencer: output count 2–8.' },
+    seqGapSec: { type: 'number', description: 'sequencer: gap seconds.' },
+    gateInputs: { type: 'number', description: 'gate: input count 2–8.' },
+    splitOutputs: { type: 'number', description: 'splitter: output count 2–8.' },
+    counterEvery: { type: 'number', description: 'counter: every N triggers.' },
+    counterCount: { type: 'number', description: 'counter: current count.' },
+    mutexInputs: { type: 'number', description: 'mutex: input count 2–8.' },
+    mutexMode: { type: 'string', enum: ['first', 'priority', 'random'], description: 'mutex: win mode.' },
+    netChannel: { type: 'number', description: 'net_recv/net_send: channel 0–65535.' },
+    netProto: { type: 'string', enum: ['tcp', 'udp'], description: 'net_recv/net_send: protocol.' },
+    netHost: { type: 'string', description: 'net_recv/net_send: host.' },
+    netPort: { type: 'number', description: 'net_recv/net_send: port 1–65535 or 0 for global default.' },
+    netAutoListen: { type: 'boolean', description: 'net_recv: auto listen on start.' },
+    dbNodeId: { type: 'string', description: 'db_replica: source DATABASE super node id.' },
+    dbName: { type: 'string', description: 'db_replica: source database name.' },
+    systemPrompt: { type: 'string', description: 'chat: system prompt.' },
+    ctrlPinned: { type: 'boolean', description: 'control: pinned end role.' },
+    ctrlFillOnly: { type: 'boolean', description: 'control run: fill only, no run.' },
     ctrlRole: {
       type: 'string',
       enum: ['start', 'endSuccess', 'endFail'],

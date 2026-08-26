@@ -1,0 +1,16 @@
+{
+  "id": "tts-local",
+  "version": "1.0.0",
+  "minAppVersion": "1.1.26",
+  "title": {
+    "zh": "GPT-SoVITS 本地 TTS",
+    "en": "GPT-SoVITS Local TTS"
+  },
+  "subtitle": {
+    "zh": "基于 GPT-SoVITS 的本地文本转语音：音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。",
+    "en": "GPT-SoVITS local TTS: voice manager, OpenAI-compatible TTS API with API key auth."
+  },
+  "diskHintGb": 12,
+  "apiPort": 8770,
+  "sovitsPort": 9880
+}

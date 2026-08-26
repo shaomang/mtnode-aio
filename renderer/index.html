@@ -93,7 +93,7 @@
       <span class="btn-ico-txt" data-i18n="删除">删除</span>
     </button>
     <span class="sep"></span>
-    <button id="btnPlugins" class="corner mini btn-ico btn-plugins" data-i18n-title="插件：云端目录更新，讨论区与桌宠等按需下载" data-tip="插件：云端目录更新，讨论区与桌宠等按需下载" aria-label="插件">
+    <button id="btnPlugins" class="corner mini btn-ico btn-plugins" data-i18n-title="插件：云端目录更新，桌宠等按需下载" data-tip="插件：云端目录更新，桌宠等按需下载" aria-label="插件">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.6v2.2H4.4A1.4 1.4 0 0 0 3 6.2v1.6h2.2v2.4H3v1.6A1.4 1.4 0 0 0 4.4 13.2h1.8v2.2h2.4v-2.2h1.6A1.4 1.4 0 0 0 11.6 11.8V10.2H9.4V7.8h2.2V6.2A1.4 1.4 0 0 0 10.2 4.8H8.6V2.6H6.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
       <span class="btn-ico-txt" data-i18n="插件">插件</span>
     </button>
@@ -136,7 +136,8 @@
       </div>
       <div id="canvas" class="fn-canvas">
         <div id="stage" class="fn-stage">
-          <svg id="wfSvg" class="fn-svg"></svg>
+          <svg id="wfSvg" class="fn-svg">
+          </svg>
         </div>
       </div>
     </div>
@@ -150,10 +151,6 @@
           <input id="agentSideFilter" type="text" data-i18n-placeholder="搜索会话…" placeholder="搜索会话…">
         </div>
         <div class="agent-side-list" id="agentSideList"></div>
-        <div class="agent-side-foot">
-          <span class="agent-side-region">DeepSeek Harness · <span data-i18n="预览版">预览版</span></span>
-          <button id="btnAssistAgent" class="mini btn-sq" data-i18n-title="全局 AI 助手（右侧栏）" title="全局 AI 助手（右侧栏）">✦</button>
-        </div>
       </aside>
       <div class="agent-main">
         <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
@@ -250,6 +247,7 @@
   <span id="statProviders">服务商 0</span>
   <span id="statGrid">网格 24px</span>
   <span id="statDsh" class="dsh-stat" data-i18n-title="最近一次智能运行的统计" title="最近一次智能运行的统计"></span>
+  <span id="statSession" class="dsh-stat" data-i18n-title="当前会话本轮 token 消耗（运行会话后显示）" title="当前会话本轮 token 消耗（运行会话后显示）"></span>
   <span class="spacer"></span>
   <span id="statZoom">100%</span>
   <span id="saveState">就绪</span>

@@ -23,6 +23,20 @@ description: 在用户指定目录安装 MiniMax Music 3（24G）后端：探测
 - `INSTALL_DIR\models\MiniMax-Music3` 权重就绪（约 53GB；整机建议预留 ≥65GB）
 - 可用 `python -m app.ui` 启动 Gradio（`127.0.0.1:7860`）——**不要在本 skill 中启动**
 
+## 国内镜像（必须）
+
+> **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像。
+
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）；可用 `MT_MUSIC_PIP_INDEX` 覆盖
+- 模型权重（HuggingFace 无法直连）：
+  - Comfy 权重：**优先 ModelScope(魔搭)** `Comfy-Org/MiniMax-Music-3`（国内直连），失败回退 hf-mirror
+  - App(Diffusers) 权重：`HF_ENDPOINT=https://hf-mirror.com`（`HF_HUB_DISABLE_XET=1`）；如需 ModelScope，设 `MUSIC3_MODELSCOPE_REPO` 指向你的魔搭仓库
+- diffusers 依赖来自 GitHub（`git+https://github.com/huggingface/diffusers@...`）：pip 直连失败时改用 `git+https://ghproxy.com/https://github.com/huggingface/diffusers@...` 前缀重试
+- 安装示例：
+  ```powershell
+  .\.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+  ```
+
 ## 已知故障：LM + RVQ depth decoder 显存不足（auto offload）
 
 ### 症状

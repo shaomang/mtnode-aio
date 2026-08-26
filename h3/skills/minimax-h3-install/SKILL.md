@@ -16,6 +16,20 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 - 若任务附带 **CONSOLE_LOG**，以「最近失败焦点」为准自行分析修复（每人环境不同）
 - **先做硬件探测，再决定装什么/怎么装**（不同 GPU/驱动/显存差异很大，见下）
 
+## 国内镜像（必须）
+
+> **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像。
+
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）；可用 `MT_H3_PIP_INDEX` 覆盖；pip 一律加 `--isolated`（避开坏掉的 `pypi.ngc.nvidia.com` extra-index）
+- torch cu130：优先官方 `https://download.pytorch.org/whl/cu130`，失败回退阿里云 `https://mirrors.aliyun.com/pytorch-wheels/cu130`（`MT_H3_TORCH_INDEX` 可覆盖）
+- 模型权重（HuggingFace 无法直连）：**优先 ModelScope(魔搭)** `Comfy-Org/MiniMax-H3`（国内直连），失败才回退 hf-mirror（`HF_ENDPOINT=https://hf-mirror.com`，`HF_HUB_DISABLE_XET=1`）
+- GitHub（ComfyUI / KJNodes / TeaCache 克隆）：直连失败用 `ghproxy.com` 前缀镜像
+- 安装示例：
+  ```powershell
+  .\scripts\setup_env.ps1   # 内部 pip 默认走清华镜像
+  .\scripts\download_models.ps1  # 权重默认走 ModelScope
+  ```
+
 ## 硬件探测（第一步，必做）
 
 用 `nvidia-smi` 探测，**不要假设是 RTX 4090**：

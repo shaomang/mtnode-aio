@@ -8,8 +8,6 @@
 
 ## MTNode 产品与画布
 
-- **mtnode-agent-rebuild** — MTNode 改代码后重建：修改 pipeline-console 中影响运行时的源码后，必须用 scripts/agent-rebuild.cmd 结束进程、编译并重启 MTNodeAIO。Use when editing main/preload/renderer/dsh/pet/music3/h3/plugins/*-pack or build.json and the user or task needs a verified runtime build.
-  - 文件：`mtnode/agent-rebuild/SKILL.md`
 - **mtnode-canvas-batch-safety** — 画布批量与文生图防 N²：MTNode 画布 batchMode=batch 时每次运行只能处理单条输入，禁止把整批 N 条重复塞进每次运行；文生图 proc_image 每次只出 1 张。Use when designing batch workflows, proc_image, split nodes, or user reports duplicate API calls / token explosion.
   - 文件：`mtnode/canvas-batch-safety/SKILL.md`
 - **mtnode-canvas-layout-ux** — 画布排版与可操作区：MTNode 画布节点排版：可编辑/控制节点靠上（小 y），处理与保存靠下或右侧；createMarks 分区、control 一键重跑；禁止 agent 调用 layout action。Use when auto-layout, createMarks, control nodes, or improving canvas UX for the user.

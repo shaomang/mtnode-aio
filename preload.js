@@ -300,6 +300,30 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('llama:providerSynced', handler);
   },
 
+  ttsStatus: () => ipcRenderer.invoke('tts:getStatus'),
+  ttsOpen: () => ipcRenderer.invoke('tts:open'),
+  ttsClose: () => ipcRenderer.invoke('tts:close'),
+  ttsInstall: (opts) => ipcRenderer.invoke('tts:install', opts || {}),
+  ttsCancelInstall: () => ipcRenderer.invoke('tts:cancelInstall'),
+  ttsStart: () => ipcRenderer.invoke('tts:start'),
+  ttsStop: () => ipcRenderer.invoke('tts:stop'),
+  ttsPickInstallDir: () => ipcRenderer.invoke('tts:pickInstallDir'),
+  ttsRemovePluginMeta: () => ipcRenderer.invoke('tts:removePluginMeta'),
+  ttsApiFetch: (opts) => ipcRenderer.invoke('tts:apiFetch', opts || {}),
+  onTtsProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('tts:progress', handler);
+    return () => ipcRenderer.removeListener('tts:progress', handler);
+  },
+  onTtsConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('tts:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('tts:consoleChanged', handler);
+  },
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),
   apiPreview: (spec) => ipcRenderer.invoke('api:preview', spec),
