@@ -38,6 +38,25 @@ body.theme-industrial {
   --code: #0c0f15;
 }
 
+/* 亮色主题（Light）——以白色为背景，文字深色清晰可读 */
+body.theme-light {
+  --bg: #e6e9ee;
+  --bg2: #dbe0e7;
+  --panel: #f1f3f6;
+  --panel2: #e4e8ee;
+  --bd: #c6cdd6;
+  --bd2: #aab3bf;
+  --ink: #1e222b;
+  --muted: #5a6472;
+  --orange: #d9660a;
+  --orange2: #b54f04;
+  --cyan: #2068b8;
+  --cyan2: #15508f;
+  --green: #1a8a4a;
+  --red: #cf2a1e;
+  --code: #f6f8fa;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -11864,4 +11883,573 @@ button.mini.btn-sq.tpl-ico {
 
 .net-last:hover {
   background: rgba(192, 139, 255, .18)
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Light（亮色）主题覆盖层
+   把默认暗色 / 霓虹硬编码配色改为白色底上的柔和浅色系，
+   保证文字与背景高对比、可读；覆盖范围扩展至画布节点板、
+   节点标题条、选中高亮、浮层与各类型节点的硬编码渐变。
+   ══════════════════════════════════════════════════════════════ */
+body.theme-light {
+  /* 节点板通用：白色卡片 + 柔和投影（替换暗色渐变与厚重黑投影） */
+  --nfloat:
+    0 2px 6px rgba(30, 40, 60, .10),
+    0 8px 22px -8px rgba(30, 40, 60, .16),
+    0 -1px 0 inset rgba(0, 0, 0, .02);
+}
+
+/* ── 节点标题条：去掉暗色半透明底与黑色虚线，改为浅色分隔条 ── */
+body.theme-light .n-head {
+  background: rgba(0, 0, 0, .03);
+  border-bottom: 1px dashed var(--bd2);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .5);
+}
+
+/* ── 节点板通用基础 ── */
+body.theme-light .wf-node {
+  --nfloat:
+    0 2px 6px rgba(30, 40, 60, .10),
+    0 8px 22px -8px rgba(30, 40, 60, .16),
+    0 -1px 0 inset rgba(0, 0, 0, .02);
+  background: linear-gradient(180deg, #f7f8fa, #eef1f5);
+  border-color: var(--bd2);
+  box-shadow:
+    var(--nfloat),
+    inset 0 1px 0 rgba(255, 255, 255, .8);
+}
+
+body.theme-light .wf-node.super {
+  border-color: #b6c2d4;
+  background:
+    linear-gradient(160deg, rgba(120, 140, 180, .08) 0%, transparent 42%),
+    linear-gradient(180deg, #f2f4f8, #e9edf3);
+}
+
+/* ── 各类型节点：浅色渐变 + 柔和同类色描边（保留类型语义，去掉霓虹） ── */
+body.theme-light .wf-node.in {
+  border-color: #8fb6e6;
+  background: linear-gradient(180deg, #eef4fd, #f7fbfe);
+}
+
+body.theme-light .wf-node.proc {
+  border-color: #e8b884;
+  background: linear-gradient(180deg, #fdf2e4, #fef9f0);
+}
+
+body.theme-light .wf-node.proc-img {
+  border-color: #ec9bc0;
+  background: linear-gradient(180deg, #fceef4, #fef8fa);
+}
+
+body.theme-light .wf-node.music {
+  border-color: #9db6ec;
+  background: linear-gradient(180deg, #eff3fc, #f8fafe);
+}
+
+body.theme-light .wf-node.video {
+  border-color: #8ecdb6;
+  background: linear-gradient(180deg, #eef7f2, #f7fcf9);
+}
+
+body.theme-light .wf-node.net {
+  border-color: #bda2ea;
+  background: linear-gradient(180deg, #f4effc, #faf8fe);
+}
+
+body.theme-light .wf-node.agent {
+  border-color: #9db0ec;
+  background: linear-gradient(180deg, #eef1fd, #f8fafe);
+}
+
+body.theme-light .wf-node.db-tbl,
+body.theme-light .wf-node.db {
+  border-color: #8bc9ab;
+  background: linear-gradient(180deg, #ecf7f0, #f6fbf8);
+}
+
+body.theme-light .wf-node.sv {
+  border-color: #93cfa5;
+  background: linear-gradient(180deg, #ecf7ee, #f6fbf7);
+}
+
+body.theme-light .wf-node.task {
+  border-color: #8ccbc7;
+  background: linear-gradient(180deg, #ecf6f5, #f7fbfb);
+}
+
+body.theme-light .wf-node.ctrl {
+  border-color: #e3c184;
+  background: linear-gradient(180deg, #fbf3e2, #fdf9ef);
+}
+
+body.theme-light .wf-node.ctrl-start {
+  border-color: #dcae52;
+}
+
+body.theme-light .wf-node.ctrl-ok {
+  border-color: #8cc9a0;
+  background: linear-gradient(180deg, #eaf6ec, #f5fbf6);
+}
+
+body.theme-light .wf-node.ctrl-fail {
+  border-color: #e6a19a;
+  background: linear-gradient(180deg, #fbeeec, #fdf6f5);
+}
+
+body.theme-light .wf-node.judge {
+  border-color: #c3a6ec;
+  background: linear-gradient(180deg, #f4effc, #faf8fe);
+}
+
+body.theme-light .wf-node.wait {
+  border-color: #8bc9b4;
+  background: linear-gradient(180deg, #ecf7f2, #f6fbf9);
+}
+
+body.theme-light .wf-node.timer {
+  border-color: #97b1ec;
+  background: linear-gradient(180deg, #eff3fc, #f8fafe);
+}
+
+body.theme-light .wf-node.delayer {
+  border-color: #96c9b4;
+  background: linear-gradient(180deg, #edf7f3, #f7fbf9);
+}
+
+body.theme-light .wf-node.sequencer {
+  border-color: #c3a6ec;
+  background: linear-gradient(180deg, #f4effc, #faf8fe);
+}
+
+body.theme-light .wf-node.gate {
+  border-color: #e3c088;
+  background: linear-gradient(180deg, #fbf3e4, #fdf9f0);
+}
+
+body.theme-light .wf-node.splitter {
+  border-color: #93bae4;
+  background: linear-gradient(180deg, #eef4fb, #f8fbfe);
+}
+
+body.theme-light .wf-node.counter {
+  border-color: #e8b092;
+  background: linear-gradient(180deg, #fcf1ea, #fef9f6);
+}
+
+body.theme-light .wf-node.mutex {
+  border-color: #d6a8cb;
+  background: linear-gradient(180deg, #f9eff7, #fdf8fc);
+}
+
+/* 控制类金色外圈：降为柔和描边 */
+body.theme-light .wf-node.is-ctrl {
+  box-shadow: var(--nfloat), 0 0 0 1.5px rgba(216, 168, 74, .65);
+}
+
+body.theme-light .wf-node.ctrl-ok.is-ctrl {
+  box-shadow: var(--nfloat), 0 0 0 1.5px rgba(216, 168, 74, .65), 0 0 6px rgba(120, 200, 150, .35);
+}
+
+body.theme-light .wf-node.ctrl-fail.is-ctrl {
+  box-shadow: var(--nfloat), 0 0 0 1.5px rgba(216, 168, 74, .65), 0 0 6px rgba(220, 130, 120, .35);
+}
+
+/* 全局 / 智能超限：保留彩虹环，但内底改浅，避免刺眼 */
+body.theme-light .wf-node.global {
+  background:
+    linear-gradient(180deg, #f4f5f8, #eceff3) padding-box,
+    conic-gradient(from var(--g-ang), #ff7d8d, #ffcf6a, #7ce6a0, #7ec7f0, #b3a4f5, #ff7d8d) border-box;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+/* ── 选中高亮：去掉高亮霓虹光晕，改为清晰的浅色描边环 ── */
+body.theme-light .wf-node.sel {
+  border-color: #5b9fd8;
+  box-shadow:
+    0 0 0 1.5px rgba(91, 159, 216, .55),
+    0 0 6px rgba(91, 159, 216, .25),
+    var(--nfloat);
+}
+
+body.theme-light .wf-node:not(.global):not(.agent-super).sel {
+  outline: 1.5px solid rgba(91, 159, 216, .75);
+  outline-offset: 2px;
+}
+
+body.theme-light .wf-node.agent-super {
+  background:
+    linear-gradient(180deg, #eef1fd, #f6f9fe) padding-box,
+    conic-gradient(from var(--g-ang), #ff7d8d, #ffcf6a, #7ce6a0, #7ec7f0, #b3a4f5, #ff7d8d) border-box;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+body.theme-light .wf-node.ctrl.sel { border-color: #dcae52; }
+body.theme-light .wf-node.wait.sel { border-color: #7ec7ae; }
+body.theme-light .wf-node.proc-img.sel { border-color: #ec88b4; }
+body.theme-light .wf-node.music.sel { border-color: #8aa8f0; }
+body.theme-light .wf-node.video.sel { border-color: #7cc7ac; }
+body.theme-light .wf-node.agent.sel { border-color: #8aa8f0; }
+body.theme-light .wf-node.task.st-done { border-color: #7cc99a; }
+body.theme-light .wf-node.task.st-running,
+body.theme-light .wf-node.task.st-run { border-color: #e8a860; }
+body.theme-light .wf-node.task.st-failed { border-color: #e0899a; }
+body.theme-light .wf-node.judge.sel { border-color: #c3a6ec; }
+body.theme-light .wf-node.ctrl-ok.sel { border-color: #8cc9a0; }
+body.theme-light .wf-node.ctrl-fail.sel { border-color: #e6a19a; }
+body.theme-light .wf-node.timer.sel { border-color: #97b1ec; }
+body.theme-light .wf-node.delayer.sel { border-color: #96c9b4; }
+body.theme-light .wf-node.sequencer.sel { border-color: #c3a6ec; }
+body.theme-light .wf-node.gate.sel { border-color: #e3c088; }
+body.theme-light .wf-node.splitter.sel { border-color: #93bae4; }
+body.theme-light .wf-node.counter.sel { border-color: #e8b092; }
+body.theme-light .wf-node.mutex.sel { border-color: #d6a8cb; }
+
+/* ── 拖拽把手上过浅的浅色图标文字：加深以保证浅底可读 ── */
+body.theme-light .n-drag-handle {
+  background: rgba(0, 0, 0, .05);
+  color: #4a4e58;
+  border-color: var(--bd2);
+}
+
+body.theme-light .n-drag-handle:hover {
+  background: rgba(31, 123, 212, .12);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+body.theme-light .wf-node.timer .n-drag-handle,
+body.theme-light .wf-node.delayer .n-drag-handle,
+body.theme-light .wf-node.sequencer .n-drag-handle,
+body.theme-light .wf-node.gate .n-drag-handle,
+body.theme-light .wf-node.splitter .n-drag-handle,
+body.theme-light .wf-node.counter .n-drag-handle,
+body.theme-light .wf-node.mutex .n-drag-handle,
+body.theme-light .wf-node.global .n-drag-handle {
+  color: #6b6f7a;
+  border-color: var(--bd2);
+}
+
+body.theme-light .wf-node.proc-img .n-drag-handle,
+body.theme-light .wf-node.agent .n-drag-handle,
+body.theme-light .wf-node.video .n-drag-handle,
+body.theme-light .wf-node.music .n-drag-handle {
+  color: #565b66;
+  border-color: var(--bd2);
+}
+
+/* ── 展开超级节点内的小画布端子排：内凹黑线降为浅灰凹线 ── */
+body.theme-light .super-stage::before {
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, .12), inset -2px 0 0 rgba(0, 0, 0, .06), inset -3px 0 0 rgba(255, 255, 255, .6)
+}
+body.theme-light .super-stage::after {
+  box-shadow: inset 1px 0 0 rgba(0, 0, 0, .12), inset 2px 0 0 rgba(0, 0, 0, .06), inset 3px 0 0 rgba(255, 255, 255, .6)
+}
+
+/* ── 网络 / 调试等深色浮层：改浅 ── */
+body.theme-light .n-api-panel {
+  background: var(--panel);
+  border-color: var(--bd2);
+}
+
+/* 画布顶端查找条、菜单等灰黑底改为浅灰，保证文字可读 */
+body.theme-light .canvas-find-bar input,
+body.theme-light .canvas-find-bar {
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--bd2);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Light 主题：会话 / 智能聊天 覆盖层
+   agent 视图大量使用硬编码暗色，必须逐一改为浅色保证可读。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 会话页骨架：侧栏与主区改浅色 ── */
+body.theme-light .agent-pane,
+body.theme-light .agent-main {
+  background: var(--bg);
+}
+
+body.theme-light .agent-side {
+  background: var(--panel);
+  border-right: 1px solid var(--bd);
+}
+
+body.theme-light .agent-side-logo {
+  color: var(--ink);
+}
+body.theme-light .agent-side-logo:hover {
+  color: var(--cyan);
+}
+
+body.theme-light .agent-side-new {
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+}
+body.theme-light .agent-side-new:hover {
+  background: rgba(0, 0, 0, .04);
+  border-color: var(--bd2);
+}
+
+body.theme-light .agent-side-search input {
+  background: var(--bg2);
+  color: var(--ink);
+  border: 1px solid var(--bd);
+}
+body.theme-light .agent-side-search input:focus {
+  border-color: var(--cyan);
+}
+body.theme-light .agent-side-search input::placeholder {
+  color: var(--muted);
+}
+
+body.theme-light .agent-side-foot {
+  border-top: 1px solid var(--bd);
+}
+body.theme-light .agent-side-region {
+  color: var(--muted);
+}
+
+body.theme-light .agent-head {
+  border-bottom: 1px solid var(--bd);
+}
+
+/* ── 会话侧边栏条目 ── */
+body.theme-light .side-group {
+  color: var(--muted);
+}
+body.theme-light .side-sess {
+  color: var(--ink);
+}
+body.theme-light .side-sess:hover {
+  background: rgba(0, 0, 0, .05);
+}
+body.theme-light .side-sess.active {
+  background: rgba(32, 104, 184, .14);
+  color: var(--ink);
+}
+body.theme-light .side-sess-btn {
+  background: var(--bg2);
+  border: 1px solid var(--bd2);
+  color: var(--muted);
+}
+body.theme-light .side-sess-btn:hover {
+  border-color: var(--cyan);
+  color: var(--ink);
+}
+body.theme-light .side-archived {
+  border-top: 1px solid var(--bd);
+}
+body.theme-light .side-archived summary {
+  color: var(--muted);
+}
+
+/* ── 会话「载入更早」按钮 ── */
+body.theme-light .agent-load-earlier button {
+  background: var(--bg2);
+  color: var(--muted);
+  border: 1px solid var(--bd2);
+}
+body.theme-light .agent-load-earlier button:hover {
+  color: var(--ink);
+  border-color: var(--cyan);
+  background: var(--bd);
+}
+
+/* ── 会话空状态 / 工作目录 ── */
+body.theme-light .agent-empty {
+  color: var(--muted);
+}
+body.theme-light .agent-ws-label {
+  color: var(--muted);
+}
+body.theme-light .agent-ws-line input {
+  background: var(--bg2);
+  color: var(--ink);
+  border: 1px solid var(--bd);
+}
+body.theme-light .agent-ws-line input:focus {
+  border-color: var(--cyan);
+}
+
+/* ── 消息文本：AI 消息用深色正文，用户气泡用浅蓝灰底深字 ── */
+body.theme-light .agent-list .dsh-msg-body {
+  color: var(--ink);
+}
+body.theme-light .agent-list .dsh-user .dsh-msg-body {
+  background: rgb(226, 233, 244);
+  color: var(--ink);
+}
+body.theme-light .agent-list .dsh-user .dsh-msg-body .md {
+  color: var(--ink);
+}
+body.theme-light .agent-list .dsh-msg-body .md a,
+body.theme-light .agent-list .dsh-user .mt-link {
+  color: var(--cyan);
+}
+body.theme-light .agent-list .dsh-think {
+  color: var(--muted);
+}
+body.theme-light .agent-list .dsh-think summary {
+  color: var(--orange2);
+}
+body.theme-light .agent-list .dsh-think summary:hover {
+  color: var(--orange);
+}
+body.theme-light .agent-list .dsh-think pre {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  color: var(--muted);
+}
+body.theme-light .agent-list .dsh-stream {
+  color: var(--muted);
+}
+body.theme-light .agent-list .dsh-think-live {
+  color: var(--muted);
+}
+
+/* ── 消息内 Markdown 代码块：深底改浅 ── */
+body.theme-light .md code {
+  background: rgba(0, 0, 0, .06);
+  color: var(--cyan2);
+}
+body.theme-light .md pre {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+}
+body.theme-light .md pre code {
+  color: var(--ink);
+}
+body.theme-light .md a:hover,
+body.theme-light .mt-link:hover {
+  color: var(--cyan2);
+}
+body.theme-light .md blockquote {
+  background: rgba(217, 102, 10, .05);
+}
+
+/* ── 工具调用块 / 思考块 ── */
+body.theme-light .dsh-tool summary:hover,
+body.theme-light .dsh-tool[open] summary {
+  background: rgba(32, 104, 184, .12);
+}
+body.theme-light .dsh-tool-body pre {
+  background: var(--bg2);
+}
+body.theme-light .dsh-tool-body pre.term {
+  color: #1a8a4a;
+}
+body.theme-light .dsh-think pre,
+body.theme-light .dsh-think-live,
+body.theme-light #agent-think pre {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  color: var(--muted);
+}
+body.theme-light .dsh-msg-copy {
+  background: rgba(0, 0, 0, .05);
+  color: var(--muted);
+}
+body.theme-light .dsh-msg-copy:hover {
+  background: rgba(32, 104, 184, .10);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+/* ── 智能任务节点内的会话区 ── */
+body.theme-light .agent-conv {
+  background: var(--bg);
+  border-color: var(--bd2);
+}
+body.theme-light .agent-conv .dsh-msg-body {
+  color: var(--ink);
+}
+
+/* ── 输入框与发送按钮 ── */
+body.theme-light .agent-composer-card {
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+}
+body.theme-light .agent-composer-card:focus-within {
+  border-color: var(--cyan);
+}
+body.theme-light .agent-composer-card .chat-input {
+  color: var(--ink);
+}
+body.theme-light .agent-composer-card .chat-input::placeholder {
+  color: var(--muted);
+}
+body.theme-light .agent-send:hover {
+  background: linear-gradient(180deg, var(--bd) 0%, var(--bd2) 100%);
+  color: var(--ink);
+}
+body.theme-light .agent-send.danger {
+  background: var(--red);
+  color: #fff;
+}
+
+/* ── 指令/参数菜单 ── */
+body.theme-light .agent-menu {
+  background: var(--panel);
+  border-color: var(--bd);
+  color: var(--ink);
+}
+body.theme-light .agent-menu-cell,
+body.theme-light .agent-menu-back,
+body.theme-light .agent-menu-option {
+  color: var(--ink);
+}
+body.theme-light .agent-menu-cell:hover,
+body.theme-light .agent-menu-back:hover,
+body.theme-light .agent-menu-option:hover {
+  background: rgba(0, 0, 0, .06);
+}
+body.theme-light .agent-menu-cell-value,
+body.theme-light .agent-menu-cell-chevron,
+body.theme-light .agent-menu-option-desc,
+body.theme-light .agent-menu-option-copy {
+  color: var(--muted);
+}
+body.theme-light .agent-menu-group-title {
+  background: var(--panel);
+  color: var(--muted);
+}
+body.theme-light .agent-menu-check {
+  color: var(--ink);
+}
+body.theme-light .agent-menu-empty {
+  color: var(--muted);
+}
+
+/* ── 指令 chips ── */
+body.theme-light .agent-chip {
+  border: 1px solid var(--bd2);
+  color: var(--ink);
+}
+body.theme-light .agent-chip:hover {
+  background: rgba(0, 0, 0, .05);
+}
+body.theme-light .agent-chip.on {
+  color: var(--cyan);
+}
+body.theme-light .agent-chip-icon,
+body.theme-light .agent-tool-caret {
+  color: var(--muted);
+}
+
+/* ── 右侧全局助手面板：去暗色底，改浅 ── */
+body.theme-light .assist-head {
+  background: rgba(0, 0, 0, .04);
+}
+body.theme-light .assist-ctrl {
+  background: rgba(0, 0, 0, .03);
+}
+body.theme-light .assist-input-row {
+  background: rgba(0, 0, 0, .03);
+}
+body.theme-light .assist-resize::after {
+  background: rgba(0, 0, 0, .25);
 }

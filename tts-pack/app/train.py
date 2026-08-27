@@ -19,7 +19,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import wave
+import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -374,22 +376,173 @@ def _cuda_available() -> bool:
 _PYLIBS = ROOT / ".pylibs"
 
 
+def _has_nvidia_gpu() -> bool:
+    """CUDA-capable GPU probe (nvidia-smi) — decides CPU vs CUDA torch."""
+    for cand in ("nvidia-smi", r"C:\Windows\System32\nvidia-smi.exe"):
+        p = shutil.which(cand) or (cand if os.path.exists(cand) else None)
+        if not p:
+            continue
+        try:
+            r = subprocess.run([p], capture_output=True, timeout=10)
+            return r.returncode == 0
+        except Exception:
+            return False
+    return False
+
+
+def _clean_pylibs_torch() -> None:
+    """Remove a corrupted / CPU-only torch install from .pylibs before reinstalling."""
+    for name in ("torch", "torchaudio", "torchgen", "functorch", "torchvision", "torch_einops_utils"):
+        shutil.rmtree(_PYLIBS / name, ignore_errors=True)
+    for di in (
+        list(_PYLIBS.glob("torch-*.dist-info"))
+        + list(_PYLIBS.glob("torchaudio-*.dist-info"))
+        + list(_PYLIBS.glob("torchvision-*.dist-info"))
+        + list(_PYLIBS.glob("torch_einops_utils-*.dist-info"))
+    ):
+        shutil.rmtree(di, ignore_errors=True)
+
+
+def _semantic_stack_error() -> str | None:
+    """Verify the exact import chain 3-get-semantic needs (module.models ->
+    f5_tts.model.DiT -> x_transformers). Returns an error description when
+    broken, None when importable.
+
+    x_transformers>=2.28 hard-requires torch-einops-utils, einx and loguru.
+    _clean_pylibs_torch() deletes the torch_einops_utils PACKAGE dir when
+    repairing a CPU-only torch, but the torch-only reinstall never brings its
+    dependencies back — leaving dist-info without the package body, which makes
+    `from x_transformers.x_transformers import ...` die with ModuleNotFoundError
+    exactly where the semantic phase failed."""
+    gpt_root = str(ENGINE_DIR / "GPT_SoVITS")
+    old_path = list(sys.path)
+    # Mirror the subprocess PYTHONPATH order (gpt_root BEFORE engine root so
+    # 'module' / 'text' / 'tools' resolve inside GPT_SoVITS/, not engine/).
+    for p in (gpt_root, str(ENGINE_DIR)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        try:
+            import x_transformers.x_transformers  # noqa: F401
+        except Exception as e:  # noqa: BLE001
+            return f"x_transformers import failed: {e}"
+        try:
+            from GPT_SoVITS.f5_tts.model.backbones.dit import DiT  # noqa: F401
+        except Exception as e:  # noqa: BLE001
+            return f"f5_tts/model import failed: {e}"
+        return None
+    finally:
+        sys.path[:] = old_path
+
+
+def _ensure_nltk_data() -> None:
+    """Best-effort download of the NLTK averaged_perceptron_tagger_eng data.
+
+    1-get-text.py routes lines whose language is detected as English through
+    text/english.py, which calls nltk.pos_tag -> the averaged_perceptron_tagger
+    data. The engine never ships it, so English lines (e.g. ASR fragments like
+    "no CGI") fail with LookupError and those clips are silently dropped from
+    the s1 dataset. Download into ROOT/nltk_data (owned by the backend process)
+    and let subprocesses find it via the NLTK_DATA env var. Non-fatal: if every
+    mirror fails we just log a warning and training continues without those
+    clips."""
+    data_dir = ROOT / "nltk_data"
+    tag_dir = data_dir / "taggers" / "averaged_perceptron_tagger_eng"
+    try:
+        if tag_dir.is_dir() and any(tag_dir.iterdir()):
+            return
+        data_dir.mkdir(parents=True, exist_ok=True)
+        # migrate the misplaced layout from an earlier bug (zip extracted to
+        # data_dir root instead of taggers/ — NLTK then reports "resource not
+        # found" because it searches nltk_data/taggers/...)
+        misplaced = data_dir / "averaged_perceptron_tagger_eng"
+        if misplaced.is_dir() and any(misplaced.iterdir()):
+            (data_dir / "taggers").mkdir(parents=True, exist_ok=True)
+            shutil.move(str(misplaced), str(tag_dir))
+            log("NLTK tagger data migrated to taggers/")
+            return
+    except Exception:  # noqa: BLE001
+        return
+
+    zname = "averaged_perceptron_tagger_eng.zip"
+    urls = [
+        "https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/taggers/" + zname,
+        "https://ghfast.top/https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/taggers/" + zname,
+        "https://gh-proxy.com/https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/taggers/" + zname,
+    ]
+    tmp_zip = data_dir / zname
+    for url in urls:
+        try:
+            log("downloading NLTK tagger data (english g2p)…")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=45) as r, open(tmp_zip, "wb") as f:
+                shutil.copyfileobj(r, f)
+            # the zip's top-level folder is "averaged_perceptron_tagger_eng",
+            # so extract under taggers/ to match NLTK's expected layout
+            (data_dir / "taggers").mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(tmp_zip) as zf:
+                zf.extractall(data_dir / "taggers")
+            try:
+                tmp_zip.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+            if tag_dir.is_dir() and any(tag_dir.iterdir()):
+                log("NLTK tagger data ready: " + str(tag_dir))
+                return
+        except Exception as e:  # noqa: BLE001
+            log(f"warn: NLTK tagger download failed ({url}): {e}")
+            try:
+                tmp_zip.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+    log("warn: NLTK tagger data unavailable — 英文片段将跳过（不影响训练）")
+
+
 def _ensure_train_deps() -> None:
-    """Make sure the training stack (torch CUDA, transformers, librosa, ...) is
-    importable. The backend process can write the install dir, so we pip install
-    --target ROOT/.pylibs (same trick as the python-multipart self-heal) and
-    prepend it to sys.path. Runs only when torch is missing."""
+    """Make sure the training stack (torch CUDA, pandas, matplotlib,
+    transformers, librosa, ...) is importable. The backend process can write
+    the install dir, so we pip install --target ROOT/.pylibs (same trick as
+    the python-multipart self-heal) and prepend it to sys.path. Runs only
+    when something is missing; a CPU-only torch on a CUDA machine counts as
+    missing and is repaired with the cu126 build."""
+    _PYLIBS.mkdir(parents=True, exist_ok=True)
+    if str(_PYLIBS) not in sys.path:
+        sys.path.insert(0, str(_PYLIBS))
+    _ensure_nltk_data()
+    gpu = _has_nvidia_gpu()
+
+    torch_ok = False
     try:
         import torch  # noqa: F401
 
-        return
+        torch_ok = (not gpu) or bool(torch.cuda.is_available())
     except Exception:
-        pass
-    _PYLIBS.mkdir(parents=True, exist_ok=True)
-    sys.path.insert(0, str(_PYLIBS))
+        torch_ok = False
+    core_ok = False
+    try:
+        import pandas  # noqa: F401
+        import matplotlib  # noqa: F401
+        import transformers  # noqa: F401
+        import librosa  # noqa: F401
+
+        core_ok = True
+    except Exception:
+        core_ok = False
+    extra_ok = False
+    try:
+        import onnxruntime  # noqa: F401  # g2pw 拼音推理（engine requirements 误过滤）
+        import faster_whisper  # noqa: F401  # 长音频切分后的逐段 ASR 转写
+
+        extra_ok = True
+    except Exception:
+        extra_ok = False
+    sem_err = _semantic_stack_error()
+    if torch_ok and core_ok and sem_err is None and extra_ok:
+        log("train deps ready: torch " + torch.__version__ + " cuda=" + str(torch.cuda.is_available()))
+        return
+
     idx = "https://pypi.tuna.tsinghua.edu.cn/simple"
     host = "pypi.tuna.tsinghua.edu.cn"
-    log("training deps missing — installing into .pylibs (torch CUDA ~2.5GB, may take minutes)")
 
     def _pip(args: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -397,28 +550,105 @@ def _ensure_train_deps() -> None:
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
 
-    r = _pip(["torch==2.6.0", "torchaudio==2.6.0", "--index-url", "https://mirrors.aliyun.com/pytorch-wheels/cu126"])
-    if r.returncode != 0:
-        r = _pip(
-            ["torch==2.6.0+cu126", "torchaudio==2.6.0",
-             "--index-url", "https://download.pytorch.org/whl/cu126"]
-        )
-    if r.returncode != 0:
-        raise RuntimeError("torch (CUDA) install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
-    req = ENGINE_DIR / "requirements.txt"
-    if req.is_file():
-        filtered = [
-            ln for ln in req.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-            and not ln.lstrip().startswith(
-                ("--no-binary", "gradio", "funasr", "onnxruntime", "modelscope", "fastapi[standard]")
-            )
-        ]
-        reqf = ENGINE_DIR / "requirements-train.txt"
-        reqf.write_text("\n".join(filtered) + "\n", encoding="utf-8")
-        r = _pip(["-r", str(reqf), "-i", idx, "--trusted-host", host])
+    if not torch_ok:
+        if gpu:
+            log("torch missing or CPU-only on a CUDA machine — installing CUDA build into .pylibs (torch 2.6.0+cu126 ~2.5GB, may take minutes)")
+            # Pin the exact +cu126 local version so pip can never satisfy the
+            # requirement with the CPU wheel (a bare "torch==2.6.0" on a cu126
+            # index silently installed CPU torch, leaving .cuda_available() False).
+            # Install straight from download.pytorch.org: the aliyun cu126 mirror
+            # is unreliable for the multi-GB wheels (serves CPU for the bare pin
+            # and hangs mid-transfer), which left training stuck.
+            _clean_pylibs_torch()
+            r = _pip([
+                "torch==2.6.0+cu126", "torchaudio==2.6.0+cu126",
+                "--index-url", "https://download.pytorch.org/whl/cu126",
+                "--timeout", "120",
+            ])
+        else:
+            log("torch missing — installing CPU build into .pylibs")
+            r = _pip(["torch==2.6.0", "torchaudio==2.6.0", "-i", idx, "--trusted-host", host])
         if r.returncode != 0:
-            raise RuntimeError("engine train deps install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+            raise RuntimeError("torch install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+        try:
+            import torch  # noqa: F401
+
+            torch_ok = (not gpu) or bool(torch.cuda.is_available())
+        except Exception:
+            torch_ok = False
+        if not torch_ok:
+            raise RuntimeError("torch still not CUDA-ready after install — see project logs")
+
+    if not core_ok:
+        req = ENGINE_DIR / "requirements.txt"
+        if req.is_file():
+            filtered = [
+                ln for ln in req.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+                and not ln.lstrip().startswith(
+                    ("--no-binary", "gradio", "funasr", "onnxruntime", "modelscope", "fastapi[standard]")
+                )
+            ]
+            reqf = ENGINE_DIR / "requirements-train.txt"
+            reqf.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+            r = _pip(["-r", str(reqf), "-i", idx, "--trusted-host", host])
+            if r.returncode != 0:
+                raise RuntimeError("engine train deps install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+        # pandas + matplotlib are imported at module top level by the engine
+        # (module/AR datasets, tools.my_utils) but are NOT in requirements.txt.
+        # The "numpy<2.0" constraint keeps pip from upgrading the pinned
+        # numpy 1.26.x already in .pylibs (engine requires numpy<2.0 and
+        # librosa 0.10.2 breaks on numpy 2).
+        try:
+            import pandas  # noqa: F401
+        except Exception:
+            r = _pip(["pandas", "numpy<2.0", "-i", idx, "--trusted-host", host])
+            if r.returncode != 0:
+                raise RuntimeError("pandas install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+        try:
+            import matplotlib  # noqa: F401
+        except Exception:
+            r = _pip(["matplotlib", "numpy<2.0", "-i", idx, "--trusted-host", host])
+            if r.returncode != 0:
+                raise RuntimeError("matplotlib install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+
+    # f5_tts / x_transformers semantic stack (3-get-semantic -> module.models ->
+    # f5_tts.model.DiT). A previous CPU->cu126 torch repair deleted the
+    # torch_einops_utils package dir while keeping its dist-info, so the
+    # x_transformers import died mid-training. Repair with --no-deps: letting
+    # pip re-resolve would pull the CPU torch wheels from the tsinghua index
+    # over the cu126 build in .pylibs (the exact trap that caused the CPU torch).
+    if sem_err is not None:
+        log(f"semantic stack broken: {sem_err} — repairing x_transformers deps into .pylibs")
+        r = _pip(["--no-deps", "torch-einops-utils", "einx", "loguru", "x_transformers", "-i", idx, "--trusted-host", host])
+        if r.returncode != 0:
+            raise RuntimeError("x_transformers deps repair failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+        sem_err = _semantic_stack_error()
+        if sem_err is not None:
+            raise RuntimeError(f"semantic stack still broken after repair: {sem_err}")
+        log("semantic stack repaired (x_transformers ready)")
+
+    # g2pw 拼音推理需要 onnxruntime（engine requirements 把它与 onnxruntime-gpu
+    # 一起过滤掉了，导致 1-get-text 音素化全挂）；CPU wheel 足够，numpy<2.0
+    # 约束防止 pip 把 .pylibs 里钉死的 numpy 1.26.x 升级到 2.x。
+    try:
+        import onnxruntime  # noqa: F401
+    except Exception:
+        log("onnxruntime missing (g2pw 拼音推理需要) — installing into .pylibs")
+        r = _pip(["onnxruntime", "numpy<2.0", "-i", idx, "--trusted-host", host])
+        if r.returncode != 0:
+            raise RuntimeError("onnxruntime install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+
+    # 长音频自动切分后需要逐段转写（无匹配的逐句文字时）——faster-whisper
+    # （ctranslate2/av/huggingface_hub 已随引擎依赖就位，只补包本体）。
+    try:
+        import faster_whisper  # noqa: F401
+    except Exception:
+        log("faster-whisper missing (长音频 ASR 转写需要) — installing into .pylibs")
+        r = _pip(["faster-whisper", "numpy<2.0", "-i", idx, "--trusted-host", host])
+        if r.returncode != 0:
+            raise RuntimeError("faster-whisper install failed:\n" + (r.stdout or "")[-600:] + (r.stderr or "")[-600:])
+
     try:
         import torch  # noqa: F401
     except Exception as e:  # noqa: BLE001
@@ -485,6 +715,230 @@ def _cfg_dir() -> Path:
     return p
 
 
+def _patch_engine_ckpt_save() -> None:
+    """Make checkpoint saving robust on Windows BEFORE s1/s2 start.
+
+    The stock GPT-SoVITS process_ckpt.my_save writes the tmp .pth into CWD and
+    then shutil.move()s it into GPT_weights_v2 — that dir is never created by
+    the headless pipeline, so every s1 epoch save dies with PermissionError /
+    FileNotFoundError and the tmp file is abandoned in the engine root
+    (observed: a 155MB '<float>.pth' orphan). It also has no retry, so a
+    momentarily locked destination (Windows Defender scanning a fresh multi-hundred
+    MB file) kills the run. Patch it in place (idempotent) and create the weight
+    dirs up front. Runs inside the backend process, which owns the install dir."""
+    # s2 (SoVITS) saves checkpoints via GPT_SoVITS/utils.py my_save — the same
+    # fragile pattern (tmp file in CWD + shutil.move into a RELATIVE dir
+    # data/<exp>/<spk>/logs_s2_<ver> that the headless pipeline never creates).
+    # The very first s2 save dies with FileNotFoundError (observed:
+    # 'data/aoi/aoi/logs_s2_v1/G_233333333333.pth'). Patch it identically:
+    # mkdir + same-volume tmp + retry + direct fallback.
+    utils_py = ENGINE_DIR / "GPT_SoVITS" / "utils.py"
+    if not utils_py.is_file():
+        log("warn: GPT_SoVITS/utils.py not found — skip utils my_save patch")
+    else:
+        try:
+            usrc = utils_py.read_text(encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            log(f"warn: cannot read utils.py: {e}")
+            usrc = ""
+        if usrc and "MTNode GPT-TTS" not in usrc:
+            new_utils_save = '''def my_save(fea, path):  ##### patched by MTNode GPT-TTS: robust Windows save (mkdir + same-volume tmp + retry)
+    import time
+    dir = os.path.dirname(path)
+    name = os.path.basename(path)
+    if not dir:
+        dir = "."
+    try:
+        os.makedirs(dir, exist_ok=True)
+    except Exception:
+        pass
+    if os.path.exists(path):
+        try:
+            os.chmod(path, 0o666)
+        except Exception:
+            pass
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+    tmp_path = os.path.join(dir, "%s.pth" % (ttime()))
+    torch.save(fea, tmp_path)
+    last_err = None
+    for i in range(10):
+        try:
+            os.replace(tmp_path, path)
+            return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            time.sleep(0.3 * (i + 1))
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+    torch.save(fea, path)
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+'''
+            try:
+                start = usrc.index("def my_save(")
+                end = usrc.index("def save_checkpoint(")
+                usrc = usrc[:start] + new_utils_save + "\n" + usrc[end:]
+                if "MTNode GPT-TTS" not in usrc:
+                    raise RuntimeError("marker missing after utils patch")
+            except Exception as e:  # noqa: BLE001
+                log(f"warn: utils.py patch failed: {e}")
+                usrc = ""
+        if usrc:
+            tmp = utils_py.with_suffix(".py.tmp")
+            try:
+                tmp.write_text(usrc, encoding="utf-8")
+                for i in range(6):
+                    try:
+                        os.replace(str(tmp), str(utils_py))
+                        break
+                    except OSError:
+                        time.sleep(0.3 * (i + 1))
+                log("GPT_SoVITS/utils.py patched (robust my_save)")
+            except Exception as e:  # noqa: BLE001
+                log(f"warn: cannot write utils.py: {e}")
+
+    gpt_weights = ENGINE_DIR / "GPT_weights_v2"
+    sovits_weights = ENGINE_DIR / "SoVITS_weights_v2"
+    logs_dir = ENGINE_DIR / "logs"
+    for d in (gpt_weights, sovits_weights, logs_dir):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            log(f"weight dir ready: {d.name}")
+        except Exception as e:  # noqa: BLE001
+            log(f"warn: cannot mkdir {d}: {e}")
+
+    # clean abandoned "<float>.pth" temp files left by the stock my_save
+    try:
+        tmp_re = re.compile(r"^\d+\.\d+\.pth$")
+        for p in ENGINE_DIR.glob("*.pth"):
+            if tmp_re.match(p.name):
+                try:
+                    p.unlink()
+                    log(f"removed leftover ckpt tmp: {p.name}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    ckpt_py = ENGINE_DIR / "GPT_SoVITS" / "process_ckpt.py"
+    if not ckpt_py.is_file():
+        log("warn: process_ckpt.py not found — skip ckpt-save patch")
+        return
+    try:
+        src = ckpt_py.read_text(encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        log(f"warn: cannot read process_ckpt.py: {e}")
+        return
+    if "MTNode GPT-TTS" in src:
+        log("process_ckpt.py already patched")
+        return
+
+    new_save = '''def my_save(fea, path):  ##### patched by MTNode GPT-TTS: robust Windows save (mkdir + retry + direct fallback)
+    import time
+    dir = os.path.dirname(path)
+    name = os.path.basename(path)
+    if not dir:
+        dir = "."
+    try:
+        os.makedirs(dir, exist_ok=True)
+    except Exception:
+        pass
+    # drop a stale/read-only destination so the atomic replace can win
+    if os.path.exists(path):
+        try:
+            os.chmod(path, 0o666)
+        except Exception:
+            pass
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+    # write the temp file next to the destination (same volume -> atomic replace)
+    tmp_path = os.path.join(dir, "%s.pth" % (ttime()))
+    torch.save(fea, tmp_path)
+    last_err = None
+    for i in range(10):
+        try:
+            os.replace(tmp_path, path)  # fails only if dst is momentarily locked (AV scan etc.)
+            return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            time.sleep(0.3 * (i + 1))
+    # final fallback: direct overwrite
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+    torch.save(fea, path)
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+'''
+    new_save2 = '''def my_save2(fea, path, model_version):  ##### patched by MTNode GPT-TTS: mkdir + retry
+    import time
+    dir = os.path.dirname(path)
+    if dir:
+        try:
+            os.makedirs(dir, exist_ok=True)
+        except Exception:
+            pass
+    bio = BytesIO()
+    torch.save(fea, bio)
+    bio.seek(0)
+    data = bio.getvalue()
+    byte = model_version2byte[model_version]
+    data = byte + data[2:]
+    last_err = None
+    for i in range(10):
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            time.sleep(0.3 * (i + 1))
+    raise last_err
+'''
+    try:
+        start = src.index("def my_save(")
+        end = src.index("from io import BytesIO")
+        src = src[:start] + new_save + "\n" + src[end:]
+        start2 = src.index("def my_save2(")
+        end2 = src.index("def savee(")
+        src = src[:start2] + new_save2 + "\n" + src[end2:]
+        if "MTNode GPT-TTS" not in src:
+            raise RuntimeError("marker missing after patch")
+    except Exception as e:  # noqa: BLE001
+        log(f"warn: process_ckpt.py patch failed: {e}")
+        return
+    tmp = ckpt_py.with_suffix(".py.tmp")
+    try:
+        tmp.write_text(src, encoding="utf-8")
+        for i in range(6):
+            try:
+                os.replace(str(tmp), str(ckpt_py))
+                break
+            except OSError:
+                time.sleep(0.3 * (i + 1))
+        log("process_ckpt.py patched (robust my_save / my_save2)")
+    except Exception as e:  # noqa: BLE001
+        log(f"warn: cannot write process_ckpt.py: {e}")
+
+
+
+
 def _run_step(
     slug: str,
     args: list[str],
@@ -511,10 +965,21 @@ def _run_step(
         step_env = os.environ.copy()
         if env:
             step_env.update(env)
-        # GPT-SoVITS repo root must be importable (feature_extractor / tools / text / module / utils)
+        # torch>=2.6 默认 torch.load(weights_only=True)：引擎自产 ckpt 里含
+        # pathlib.WindowsPath 等非白名单对象（Lightning hparams 里的 Path），
+        # s1/s2 断点续训（resume）与部分预训练加载会抛 pickle.UnpicklingError。
+        # 引擎是本地可信代码，强制未显式指定 weights_only 的加载回退旧默认
+        # (False)；显式传 True 的调用不受影响。
+        step_env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+        # English g2p 的 NLTK 词性标注数据（自愈下载到 ROOT/nltk_data）。
+        step_env["NLTK_DATA"] = str(ROOT / "nltk_data")
+        # GPT-SoVITS repo root must be importable (feature_extractor / tools / text / module / utils).
+        # ROOT/shims provides a gradio stub (engine imports gradio at top level
+        # in tools.my_utils but training never uses the WebUI); it MUST come
+        # before .pylibs so a real gradio can never shadow it.
         gpt_root = str(ENGINE_DIR / "GPT_SoVITS")
         step_env["PYTHONPATH"] = os.pathsep.join(
-            [str(_PYLIBS), gpt_root, str(ENGINE_DIR), step_env.get("PYTHONPATH", "")]
+            [str(ROOT / "shims"), str(_PYLIBS), gpt_root, str(ENGINE_DIR), step_env.get("PYTHONPATH", "")]
         ).strip(os.pathsep)
         proc = subprocess.Popen(
             run_args,
@@ -705,32 +1170,54 @@ def _run_train(slug: str) -> None:
     speaker = slug
     ds_dir = ENGINE_DIR / "data" / exp_name / speaker
     try:
+        # 0a) engine ckpt save robustness: weight dirs (GPT_weights_v2 /
+        #     SoVITS_weights_v2 / logs) are never created by the headless
+        #     pipeline, so the stock my_save -> shutil.move dies with
+        #     PermissionError at the first checkpoint save. Patch + mkdir here.
+        _update(m, "prep", "准备环境", 3, "检查权重保存目录…")
+        _patch_engine_ckpt_save()
         # 0) prep dataset dir
         _update(m, "prep", "准备数据集", 3, "创建数据集目录…")
-        for sub in ("wav32k", "hubert", "semantic"):
+        # 注意：官方脚本产出的是 3-bert / 4-cnhubert / 5-wav32k / 6-name2semantic.tsv，
+        # 早期这里误删了不存在的 wav32k/hubert/semantic，导致旧毒数据（如 0001 的
+        # 187s 整段音频特征）跨运行残留。这里必须按真实目录清理，保证每次数据全新。
+        for sub in ("3-bert", "4-cnhubert", "5-wav32k"):
             shutil.rmtree(ds_dir / sub, ignore_errors=True)
+        for fn in ("2-name2text.txt", "2-name2text-0.txt", "6-name2semantic.tsv", "6-name2semantic-0.tsv"):
+            try:
+                (ds_dir / fn).unlink(missing_ok=True)
+            except Exception:
+                pass
         ds_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1) copy/convert audio -> NNNN.wav (per-file progress 5→9)
+        # 1) convert uploads -> 16k mono raw wav (per-file progress 5→7)
         _update(m, "audio", "整理音频", 5, "扫描音频文件…")
         audio_files = sorted((d / "audio").iterdir()) if (d / "audio").is_dir() else []
         n_audio = len(audio_files)
         if not n_audio:
             raise RuntimeError("no_audio_files")
-        wav_list: list[Path] = []
+        raw_dir = d / "seg_raw"
+        shutil.rmtree(raw_dir, ignore_errors=True)
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raws: list[Path] = []
         for i, src in enumerate(audio_files, 1):
-            dst = ds_dir / f"{i:04d}.wav"
+            raw = raw_dir / f"raw_{i:03d}.wav"
             _update(
-                m, "audio", f"整理音频 {i}/{n_audio}", 5 + (i / n_audio) * 4,
+                m, "audio", f"转换音频 {i}/{n_audio}", 5 + (i / n_audio) * 2,
                 f"转换 {i}/{n_audio}: {src.name}…",
             )
-            if src.suffix.lower() != ".wav":
-                _convert_to_wav16k(src, dst)
-            else:
-                shutil.copy2(src, dst)
-            wav_list.append(dst)
+            _convert_to_wav16k(src, raw)
+            raws.append(raw)
 
-        # 2) transcript list
+        # 1b) segment long audio into short clips — GPT-SoVITS 需要 3–15 秒短段
+        #     (max_sec=54s)，单条长音频会被 s1 数据集整个过滤掉（空数据集→除零）。
+        _update(m, "audio", "切分音频", 7, "按静音切分长音频…")
+        wav_list = _segment_audio_files(raws, ds_dir, log_path, m, slug)
+        if not wav_list:
+            raise RuntimeError("segmentation produced no clips")
+        _append_log(log_path, f"{len(wav_list)} clips ready for training")
+
+        # 2) transcript list — 逐句文字能对齐切分后的音频时直接使用，否则 ASR 转写
         _update(m, "list", "文字标注", 9, "写入文字标注列表…")
         list_path = ds_dir / f"{speaker}.list"
         use_asr = True
@@ -739,20 +1226,25 @@ def _run_train(slug: str) -> None:
             if len(lines) >= len(wav_list):
                 _write_list_file(list_path, wav_list, lines, exp_name, speaker)
                 use_asr = False
-                _append_log(log_path, f"using provided transcript ({len(lines)} lines)")
-            elif len(lines) == 1 and len(wav_list) == 1:
-                _write_list_file(list_path, wav_list, lines, exp_name, speaker)
-                use_asr = False
-                _append_log(log_path, "using provided single transcript")
+                _append_log(log_path, f"using provided transcript ({len(lines)} lines, {len(wav_list)} clips)")
             else:
-                _append_log(log_path, f"transcript lines({len(lines)}) < audio({len(wav_list)}) — falling back to ASR")
-
-        # 3) prep steps — official scripts read everything from env vars
+                _append_log(
+                    log_path,
+                    f"transcript lines({len(lines)}) < clips({len(wav_list)}) — 使用 ASR 转写逐段文字",
+                )
         if use_asr:
-            raise RuntimeError(
-                "项目缺少文字标注：GPT-SoVITS 训练需要与音频对应的逐句文字"
-                "（当前版本未内置 ASR，请在项目中上传 .txt 转写文本后重试）"
-            )
+            _update(m, "list", "语音识别转写 (ASR)", 9, "准备 ASR…")
+            texts = _asr_transcribe(wav_list, log_path, m, slug)
+            if not any(t.strip() for t in texts):
+                raise RuntimeError("ASR 未识别出任何语音内容（音频可能无人声或过短）")
+            _write_list_file(list_path, wav_list, texts, exp_name, speaker)
+            _append_log(log_path, f"ASR transcript written ({len(texts)} lines)")
+
+        # 2b) 自愈旧版毒数据：0001 曾把整段 187s 音频当成分段特征（wav32k/hubert/
+        #     semantic），且 2-get-hubert / 3-get-semantic 对已存在的产物会跳过，
+        #     导致毒数据跨运行残留。检测到时长失配时清理对应产物并强制重训 s2。
+        _repair_dataset(ds_dir, log_path)
+
         gpt_root = ENGINE_DIR / "GPT_SoVITS"
         prep_env = {
             "inp_text": str(list_path),
@@ -763,23 +1255,26 @@ def _run_train(slug: str) -> None:
             "opt_dir": str(ds_dir),
             "is_half": "True" if _cuda_available() else "False",
             "version": "v2",
+            # 国内网络兜底：g2pw 首次使用会从 ModelScope 下载模型（可直连），
+            # 若某处仍走 HF 则一律经 hf-mirror。
+            "HF_ENDPOINT": "https://hf-mirror.com",
         }
         # 3a) text -> phoneme + bert features (1-get-text.py)
-        _update(m, "text", "文字转音素 (BERT)", 10, "启动 1-get-text.py…")
+        _update(m, "text", "文字转音素 (BERT)", 12, "启动 1-get-text.py…")
         script = _find_script("1-get-text.py", "prepare_datasets/1-get-text.py")
         if script is None:
             raise RuntimeError("1-get-text.py not found in engine")
         txt_env = dict(prep_env)
         txt_env["bert_pretrained_dir"] = str(gpt_root / "pretrained_models" / "chinese-roberta-wwm-ext-large")
-        _run_step(slug, [sys.executable, str(script)], ENGINE_DIR, "text", "文字转音素 (BERT)", 10, 25, log_path, env=txt_env)
+        _run_step(slug, [sys.executable, str(script)], ENGINE_DIR, "text", "文字转音素 (BERT)", 12, 27, log_path, env=txt_env)
         # 3b) hubert features + 32k wav (2-get-hubert-wav32k.py)
-        _update(m, "hubert", "提取 HuBERT 特征", 25, "启动 2-get-hubert-wav32k.py…")
+        _update(m, "hubert", "提取 HuBERT 特征", 27, "启动 2-get-hubert-wav32k.py…")
         hubert = _find_script("2-get-hubert-wav32k.py", "prepare_datasets/2-get-hubert-wav32k.py")
         if hubert is None:
             raise RuntimeError("2-get-hubert-wav32k.py not found")
         hu_env = dict(prep_env)
         hu_env["cnhubert_base_dir"] = str(gpt_root / "pretrained_models" / "chinese-hubert-base")
-        _run_step(slug, [sys.executable, str(hubert)], ENGINE_DIR, "hubert", "HuBERT 特征", 25, 45, log_path, env=hu_env)
+        _run_step(slug, [sys.executable, str(hubert)], ENGINE_DIR, "hubert", "HuBERT 特征", 27, 45, log_path, env=hu_env)
         # 3c) semantic tokens (3-get-semantic.py; needs the s2 config first)
         _update(m, "semantic", "语义 token", 45, "启动 3-get-semantic.py…")
         sem = _find_script("3-get-semantic.py", "prepare_datasets/3-get-semantic.py")
@@ -801,6 +1296,16 @@ def _run_train(slug: str) -> None:
                     dst.unlink()
                 shutil.move(str(src), str(dst))
                 _append_log(log_path, f"renamed {src_name} -> {dst_name}")
+        # 3e) s1 的 Text2SemanticDataset 用 pd.read_csv(delimiter="\t") 读
+        #     6-name2semantic.tsv（默认把首行当表头）——只有 1 个样本时整行被当表头
+        #     -> 0 行数据 -> s1 除零崩溃。显式补一个表头行，让每个样本都保留。
+        tsv = ds_dir / "6-name2semantic.tsv"
+        if tsv.is_file():
+            raw = tsv.read_text(encoding="utf-8")
+            first = raw.split("\n", 1)[0] if raw else ""
+            if first and "\t" in first and first.split("\t", 1)[0].strip() not in ("name", "item_name"):
+                tsv.write_text("name\tsemantic\n" + raw, encoding="utf-8")
+                _append_log(log_path, "prepended header to 6-name2semantic.tsv")
 
         # 4) s1 GPT training
         s1_cfg = _build_s1_config(slug, exp_name, speaker, ds_dir)
@@ -936,6 +1441,199 @@ def _write_list_file(list_path: Path, wav_list: list[Path], lines: list[str], ex
     list_path.write_text("\n".join(parts) + "\n", encoding="utf-8")
 
 
+def _segment_audio_files(
+    raws: list[Path], out_dir: Path, log_path: Path, m: dict[str, Any], slug: str
+) -> list[Path]:
+    """Split long audio into short clips (GPT-SoVITS needs 3–15s samples).
+
+    Uses librosa silence detection (top_db RMS) on 16k mono wavs; merges gaps
+    <0.5s, drops regions <1.5s, re-splits regions >15s at internal silences,
+    and falls back to fixed 10s chunks when no silence is found (music-like
+    input). Returns the clip paths written into out_dir as NNNN.wav.
+    """
+    import librosa
+    import numpy as np  # noqa: F401
+    import soundfile as sf
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    clips: list[Path] = []
+    clip_idx = 1
+    n_raw = len(raws)
+    for ri, raw in enumerate(raws, 1):
+        try:
+            y, sr = librosa.load(str(raw), sr=16000, mono=True)
+        except Exception as e:  # noqa: BLE001
+            _append_log(log_path, f"load failed {raw.name}: {e}")
+            continue
+        dur = len(y) / sr
+        segs: list[tuple[int, int]] = []
+        if dur <= 20.0:
+            segs = [(0, len(y))]
+        else:
+            try:
+                parts = librosa.effects.split(y, top_db=30, frame_length=512, hop_length=256)
+                merged: list[list[int]] = []
+                gap = int(0.5 * sr)
+                for a, b in parts:
+                    if not merged or a - merged[-1][1] > gap:
+                        merged.append([a, b])
+                    else:
+                        merged[-1][1] = b
+                for a, b in merged:
+                    if b - a < int(1.5 * sr):
+                        continue
+                    if b - a <= int(15 * sr):
+                        segs.append((a, b))
+                    else:
+                        # re-split long region at its internal silences, pack to <=15s
+                        sub = librosa.effects.split(y[a:b], top_db=40, frame_length=512, hop_length=256)
+                        cur: list[int] | None = None
+                        for sa, sb in sub:
+                            if cur is None:
+                                cur = [sa, sb]
+                            elif sb - cur[0] <= int(15 * sr):
+                                cur[1] = sb
+                            else:
+                                segs.append((a + cur[0], a + cur[1]))
+                                cur = [sa, sb]
+                        if cur:
+                            segs.append((a + cur[0], a + cur[1]))
+            except Exception as e:  # noqa: BLE001
+                _append_log(log_path, f"silence split failed ({e}) — falling back to 10s chunks")
+                segs = []
+            if not segs:
+                step = int(10 * sr)
+                for s in range(0, len(y), step):
+                    e = min(len(y), s + step)
+                    if e - s >= int(3 * sr):
+                        segs.append((s, e))
+        for a, b in segs:
+            if b - a < int(1.0 * sr):
+                continue
+            dst = out_dir / f"{clip_idx:04d}.wav"
+            try:
+                sf.write(str(dst), y[a:b], sr, subtype="PCM_16")
+            except Exception as e:  # noqa: BLE001
+                _append_log(log_path, f"write {dst.name} failed: {e}")
+                continue
+            clips.append(dst)
+            clip_idx += 1
+        _update(m, "audio", f"切分音频 {ri}/{n_raw}", 7 + (ri / n_raw) * 2, f"切分 {ri}/{n_raw}: {raw.name} → {len(segs)} 段")
+        _append_log(log_path, f"segmented {raw.name}: {dur:.1f}s -> {len(segs)} clips (total {len(clips)})")
+    return clips
+
+
+def _asr_transcribe(clips: list[Path], log_path: Path, m: dict[str, Any], slug: str) -> list[str]:
+    """Transcribe each clip with faster-whisper (hf-mirror for the model
+    download). Returns one text line per clip, aligned by index."""
+    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+    try:
+        from faster_whisper import WhisperModel
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"faster-whisper 不可用: {e}") from e
+    cuda = _cuda_available()
+    model = None
+    last_err: Exception | None = None
+    for size in ("small", "base"):
+        try:
+            _update(m, "list", "语音识别转写 (ASR)", 9, f"加载 faster-whisper {size} 模型…")
+            _append_log(log_path, f"[asr] loading faster-whisper-{size} (device={'cuda' if cuda else 'cpu'})")
+            model = WhisperModel(size, device="cuda" if cuda else "cpu", compute_type="float16" if cuda else "int8")
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            _append_log(log_path, f"[asr] model {size} load failed: {e}")
+    if model is None:
+        raise RuntimeError(f"ASR 模型加载失败: {last_err}")
+    texts: list[str] = []
+    n = len(clips)
+    for i, clip in enumerate(clips, 1):
+        if _running.get(slug, {}).get("cancel"):
+            raise _TrainCancelled()
+        try:
+            segs, _info = model.transcribe(
+                str(clip), language=None, beam_size=5 if cuda else 1, vad_filter=False
+            )
+            txt = "".join(s.text for s in segs).strip()
+        except Exception as e:  # noqa: BLE001
+            _append_log(log_path, f"[asr] {clip.name} failed: {e}")
+            txt = ""
+        texts.append(txt)
+        _update(m, "list", f"语音识别转写 {i}/{n}", 9 + (i / n) * 2.5, f"ASR {i}/{n}: {txt[:50] or '(空)'}")
+        _append_log(log_path, f"[asr] {clip.name}: {txt}")
+    return texts
+
+
+def _find_s1_pretrained() -> Path | None:
+    """s1 (GPT) 微调必须从预训练底模初始化，否则模型从随机权重开始训练，
+    小数据集下根本学不出来（推理时立刻输出 EOS → 音频只有零点几秒）。
+    官方流程由 WebUI 注入 pretrained_s1；插件此前漏了这一步。"""
+    cands = [
+        ENGINE_DIR / "GPT_SoVITS" / "pretrained_models" / "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
+        ENGINE_DIR / "GPT_SoVITS" / "pretrained_models" / "s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt",
+        ENGINE_DIR / "GPT_SoVITS" / "pretrained_models" / "GPT_weights_v2.ckpt",
+        ENGINE_DIR / "GPT_SoVITS" / "pretrained_models" / "GPT_weights_v1.ckpt",
+    ]
+    for p in cands:
+        if p.is_file():
+            return p
+    return None
+
+
+def _repair_dataset(ds_dir: Path, log_path: Path | None = None) -> bool:
+    """自愈早期 bug 留下的毒数据（决定性案例）：
+    data/<exp>/<spk>/5-wav32k/0001.wav 曾是整段 raw 音频（186.78s）而不是
+    14.16s 分段；其 4-cnhubert/0001.wav.pt 与 6-name2semantic.tsv 的 0001 行
+    也随之全错（4669 个语义 token vs 正常 ~354），直接毒化 s1/s2 训练。
+    由于 2-get-hubert / 3-get-semantic 对已存在产物直接跳过，必须显式清理。
+
+    这里在每次训练前对比每个分段与其 5-wav32k 副本的时长，失配即删除旧产物
+    （随后固定清理逻辑会整目录重建）；若发现毒数据，同时删除 logs_s2_v1 让
+    SoVITS 从预训练重训。返回是否修复过。"""
+    import wave as _wave
+
+    repaired = False
+    try:
+        if not ds_dir.is_dir():
+            return False
+        wav32dir = ds_dir / "5-wav32k"
+        hubert_dir = ds_dir / "4-cnhubert"
+        for src in sorted(ds_dir.glob("*.wav")):
+            dst = wav32dir / src.name
+            if not dst.is_file():
+                continue
+            try:
+                with _wave.open(str(src), "rb") as w:
+                    d1 = w.getnframes() / max(1, w.getframerate())
+                with _wave.open(str(dst), "rb") as w:
+                    d2 = w.getnframes() / max(1, w.getframerate())
+            except Exception:  # noqa: BLE001
+                continue
+            if d2 > d1 * 1.5:
+                _append_log(log_path, f"repair: {src.name} wav32k stale ({d1:.1f}s -> {d2:.1f}s), will regenerate")
+                for p in (dst, hubert_dir / f"{src.name}.pt"):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                repaired = True
+        if repaired:
+            # 语义文件来自 5-wav32k/4-cnhubert，毒数据下必须整表重算；
+            # s2 的 logs_s2_v1 是在毒数据上训出来的，一并清掉强制从预训练重训。
+            for fn in ("6-name2semantic.tsv", "6-name2semantic-0.tsv"):
+                try:
+                    (ds_dir / fn).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            s2resume = ds_dir / "logs_s2_v1"
+            if s2resume.is_dir():
+                shutil.rmtree(s2resume, ignore_errors=True)
+                _append_log(log_path, "repair: removed logs_s2_v1 (retrain SoVITS from pretrained)")
+    except Exception as e:  # noqa: BLE001
+        _append_log(log_path, f"repair: dataset self-heal failed: {e}")
+    return repaired
+
+
 def _build_s1_config(slug: str, exp: str, speaker: str, ds_dir: Path) -> Path:
     rel = f"data/{exp}/{speaker}"
     tpl = _load_config_template("configs/s1longer.yaml")
@@ -958,7 +1656,7 @@ def _build_s1_config(slug: str, exp: str, speaker: str, ds_dir: Path) -> Path:
     train["exp_name"] = exp
     cfg.setdefault(
         "optimizer",
-        {"lr": 0.01, "lr_init": 0.00001, "lr_end": 0.0001, "warmup_steps": 2000, "decay_steps": 40000},
+        {"lr": 0.01, "lr_init": 0.00001, "lr_end": 0.0001, "warmup_steps": 50, "decay_steps": 4000},
     )
     cfg.setdefault("data", {"max_eval_sample": 8, "max_sec": 54, "num_workers": 2, "pad_val": 1024})
     cfg.setdefault(
@@ -977,6 +1675,11 @@ def _build_s1_config(slug: str, exp: str, speaker: str, ds_dir: Path) -> Path:
         },
     )
     cfg.setdefault("inference", {"top_k": 5})
+    # 关键：s1 必须从预训练底模初始化（官方 WebUI 会注入 pretrained_s1，插件此前
+    # 漏了 → 模型从随机权重训练，小数据集根本学不出来 → 推理立刻 EOS/零点几秒音频）。
+    pretrained = _find_s1_pretrained()
+    if pretrained:
+        cfg["pretrained_s1"] = str(pretrained)
     cfg["output_dir"] = f"{rel}/logs_s1"
     cfg["train_semantic_path"] = f"{rel}/6-name2semantic.tsv"
     cfg["train_phoneme_path"] = f"{rel}/2-name2text.txt"
@@ -1066,7 +1769,25 @@ def _build_s2_config(slug: str, exp: str, speaker: str, ds_dir: Path, for_semant
     if not for_semantic:
         # 3-get-semantic.py calls SynthesizerTrn(..., version=version, **hps.model),
         # so its config must NOT carry a version key.
-        model["version"] = "v2"
+        # Version MUST match the pretrained s2G weights' symbol table: s2G488k.pth is
+        # v1 (322 symbols -> text_embedding (322,192)); hardcoding "v2" (732 symbols)
+        # made load_state_dict fail with "size mismatch for enc_p.text_embedding".
+        # Mirror 3-get-semantic.py's size-based rule so any pretrained file self-aligns.
+        _sz = 0
+        try:
+            _sz = Path(train.get("pretrained_s2G", "") or "").stat().st_size
+        except Exception:
+            _sz = 0
+        if _sz < 82978 * 1024:
+            model["version"] = "v1"
+        elif _sz < 100 * 1024 * 1024:
+            model["version"] = "v2"
+        elif _sz < 103520 * 1024:
+            model["version"] = "v1"
+        elif _sz < 700 * 1024 * 1024:
+            model["version"] = "v2"
+        else:
+            model["version"] = "v3"
     cfg["save_weight_dir"] = str(ENGINE_DIR / "SoVITS_weights_v2")
     cfg["name"] = slug
     cfg.setdefault("s2_ckpt_dir", "logs/s2/big2k1")
@@ -1097,13 +1818,62 @@ def _find_newest_weight(root: Path, exts: tuple[str, ...], slug: str = "") -> Pa
     return best
 
 
+def _wav_dur_sec(p: Path) -> float:
+    """Duration of a wav in seconds (stdlib only)."""
+    try:
+        import wave
+
+        with wave.open(str(p), "rb") as w:
+            return w.getnframes() / max(w.getframerate(), 1)
+    except Exception:
+        return 0.0
+
+
+def _find_segment_transcript(slug: str, wav_name: str) -> str | None:
+    """Per-clip transcript lookup for voice registration.
+
+    Official GPT-SoVITS synthesis conditions the voice on prompt_text, which must
+    be the verbatim transcript of the reference audio. The per-clip transcripts
+    live in the training list data/<slug>/<slug>/<slug>.list (wav|spk|lang|text)
+    — NOT in the user's raw transcript.txt (a full-page scene description that
+    never matches a single 3–10s clip). Falls back to 2-name2text.txt (tab
+    separated, last column)."""
+    list_path = ENGINE_DIR / "data" / slug / slug / f"{slug}.list"
+    try:
+        if list_path.is_file():
+            for line in list_path.read_text(encoding="utf-8").splitlines():
+                parts = line.split("|")
+                if len(parts) >= 4 and Path(parts[0]).name == wav_name:
+                    return parts[3].strip()
+    except Exception:  # noqa: BLE001
+        pass
+    txt_path = ENGINE_DIR / "data" / slug / slug / "2-name2text.txt"
+    try:
+        if txt_path.is_file():
+            for line in txt_path.read_text(encoding="utf-8").splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 4 and Path(parts[0]).name == wav_name:
+                    return parts[3].strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _register_trained_voice(slug: str, wav_list: list[Path], gpt: Path, sovits: Path, m: dict[str, Any]) -> None:
-    ref = wav_list[0]
+    # api_v2 rejects ref audio outside 3~10s ("参考音频在3~10秒范围外"), and the
+    # first segment is often the longest/first chunk (observed 14.16s) — pick
+    # the first segment whose duration is inside [3,10]s; fall back to [0].
+    ref = next((p for p in wav_list if 3.0 <= _wav_dur_sec(p) <= 10.0), None) or wav_list[0]
     vdir = VOICES_DIR / slug
     vdir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ref, vdir / "ref.wav")
-    lines = _read_transcript_lines(PROJECTS_DIR / slug / "text" / "transcript.txt")
-    prompt = lines[0] if lines else ""
+    # prompt_text 必须与参考音频内容一致（官方 GPT-SoVITS 语义）：优先取该
+    # 片段的逐段 ASR 转写；原始 transcript.txt 是整页画面描述，与单个
+    # 3~10s 参考音频不匹配，会严重劣化音色，仅作最后兜底。
+    prompt = _find_segment_transcript(slug, ref.name)
+    if not prompt:
+        lines = _read_transcript_lines(PROJECTS_DIR / slug / "text" / "transcript.txt")
+        prompt = lines[0] if lines else ""
     (vdir / "ref.txt").write_text(prompt, encoding="utf-8")
     lang = "auto"
     if re.search(r"[\u4e00-\u9fff]", prompt or ""):

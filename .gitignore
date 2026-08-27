@@ -23,3 +23,5 @@ dsh/gateway/node_modules/
 dsh/gateway/pnpm-lock.yaml
 dsh/smoke-home*/
 dsh/smoke-ws*/
+
+.commandcode/

@@ -1269,13 +1269,30 @@ function backendJson(path, method, body) {
           timeout: 600000,
         },
         (res) => {
-          let buf = "";
-          res.on("data", (c) => (buf += c));
+          let chunks = [];
+          res.on("data", (c) => chunks.push(c));
           res.on("end", () => {
+            const status = res.statusCode;
+            const ok = status >= 200 && status < 300;
+            const bodyBuf = Buffer.concat(chunks);
+            const text = bodyBuf.toString("utf8");
+            let json = null;
             try {
-              resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: JSON.parse(buf) });
+              json = JSON.parse(text);
             } catch {
-              resolve({ ok: false, status: res.statusCode, raw: buf });
+              json = null;
+            }
+            if (json !== null) {
+              resolve({ ok, status, json });
+            } else if (ok) {
+              // Binary payload (e.g. WAV audio from /api/tts): JSON.parse
+              // fails, but the request SUCCEEDED — return the bytes as base64
+              // so the UI can atob() them into an audio blob. Previously the
+              // bridge reported ok:false for every audio reply, which is why
+              // the console showed 合成失败: ?
+              resolve({ ok: true, status, raw: bodyBuf.toString("base64") });
+            } else {
+              resolve({ ok: false, status, raw: text, error: text || "http_" + status });
             }
           });
         },
@@ -1513,13 +1530,30 @@ function registerTtsIpc(opts) {
           timeout: 600000,
         },
         (res) => {
-          let buf = "";
-          res.on("data", (c) => (buf += c));
+          let chunks = [];
+          res.on("data", (c) => chunks.push(c));
           res.on("end", () => {
+            const status = res.statusCode;
+            const ok = status >= 200 && status < 300;
+            const bodyBuf = Buffer.concat(chunks);
+            const text = bodyBuf.toString("utf8");
+            let json = null;
             try {
-              resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: JSON.parse(buf) });
+              json = JSON.parse(text);
             } catch {
-              resolve({ ok: false, status: res.statusCode, raw: buf });
+              json = null;
+            }
+            if (json !== null) {
+              resolve({ ok, status, json });
+            } else if (ok) {
+              // Binary payload (e.g. WAV audio from /api/tts): JSON.parse
+              // fails, but the request SUCCEEDED — return the bytes as base64
+              // so the UI can atob() them into an audio blob. Previously the
+              // bridge reported ok:false for every audio reply, which is why
+              // the console showed 合成失败: ?
+              resolve({ ok: true, status, raw: bodyBuf.toString("base64") });
+            } else {
+              resolve({ ok: false, status, raw: text, error: text || "http_" + status });
             }
           });
         },

@@ -186,10 +186,16 @@ def _is_alive(pid: int | None) -> bool:
 
 
 def _http_ok(url: str, timeout: float = 3.0) -> bool:
+    """True when the HTTP server answers at all. This engine's api_v2 has NO
+    root '/' route (GET / -> 404), so a 2xx-only check would report the engine
+    as never-ready; any HTTP response means uvicorn is up and TTS initialized."""
+    import urllib.error
+
     try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return 200 <= int(resp.status) < 300
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as resp:
+            return True
+    except urllib.error.HTTPError:
+        return True
     except Exception:
         return False
 
@@ -227,8 +233,8 @@ def start_engine(port: int | None = None) -> dict[str, Any]:
             return {"ok": True, "reused": True, "port": port}
         if not engine_ready():
             return {"ok": False, "error": "engine_not_ready"}
-        gpt = _default_gpt_weights()
-        sovits = _default_sovits_weights()
+        _patch_engine_langdetect()
+        _ensure_nltk_data()
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = LOG_DIR / f"sovits-{port}.log"
         flags = 0
@@ -237,22 +243,39 @@ def start_engine(port: int | None = None) -> dict[str, Any]:
                 subprocess, "CREATE_NO_WINDOW", 0x08000000
             )
         log_fp = open(log_file, "ab")
+        cfg = _ensure_default_tts_config()
         args = [
             sys.executable,
             "api_v2.py",
+            "-c",
+            str(cfg),
             "-a",
             "127.0.0.1",
             "-p",
             str(port),
-            "-gpt_weights",
-            str(gpt),
-            "-sovits_weights",
-            str(sovits),
         ]
-        log(f"starting api_v2 on :{port} gpt={gpt.name} sovits={sovits.name}")
+        log(f"starting api_v2 on :{port} cfg={cfg.name}")
+        proc_env = os.environ.copy()
+        proc_env["NLTK_DATA"] = str(ROOT / "nltk_data")
+        # api_v2 子进程与训练子进程（train._run_step）一样必须拿到
+        # shims(→gradio stub) → .pylibs(torch/torchaudio/numpy<2 等) → GPT_SoVITS → engine
+        # 的 PYTHONPATH。后端进程只把 .pylibs 注入自己的 sys.path，子进程继承不到；
+        # 缺了它 api_v2 一启动就 ModuleNotFoundError: torchaudio（引擎起不来=合成卡死）。
+        proc_env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+        gpt_root = str(ENGINE_DIR / "GPT_SoVITS")
+        proc_env["PYTHONPATH"] = os.pathsep.join(
+            [
+                str(ROOT / "shims"),
+                str(ROOT / ".pylibs"),
+                gpt_root,
+                str(ENGINE_DIR),
+                proc_env.get("PYTHONPATH", ""),
+            ]
+        ).strip(os.pathsep)
         _engine_proc = subprocess.Popen(
             args,
             cwd=str(ENGINE_DIR),
+            env=proc_env,
             stdout=log_fp,
             stderr=subprocess.STDOUT,
             creationflags=flags,
@@ -322,6 +345,166 @@ def _post_json(url: str, payload: dict[str, Any], timeout: float = 120.0) -> dic
             return {"ok": True, "raw": raw}
 
 
+def _get_json(url: str, params: dict[str, Any], timeout: float = 120.0) -> dict[str, Any]:
+    """GET with query params — this engine's api_v2 weight/refer-audio
+    endpoints are GET (?weights_path= / ?refer_audio_path=), NOT POST bodies."""
+    import urllib.parse
+
+    qs = urllib.parse.urlencode({k: str(v) for k, v in params.items() if v is not None})
+    sep = "&" if "?" in url else "?"
+    req = urllib.request.Request(url + sep + qs)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+        try:
+            return {"ok": True, "json": json.loads(raw.decode("utf-8"))}
+        except Exception:
+            return {"ok": True, "raw": raw}
+
+
+def _ensure_default_tts_config() -> Path:
+    """This engine's api_v2 accepts ONLY -c/-a/-p (no -gpt_weights CLI), and the
+    stock GPT_SoVITS/configs/tts_infer.yaml points at gsv-v2final-pretrained
+    weights that are not bundled — so the engine would crash at startup. Write a
+    plugin-managed default config (the bundled v1 pair s1bert25hz-2kh + s2G488k)
+    into the writable train_cfg dir and point api_v2 at it. Trained voices then
+    hot-swap weights via /set_gpt_weights + /set_sovits_weights."""
+    cfg = ENGINE_DIR / "train_cfg" / "tts_infer_default.yaml"
+    try:
+        if cfg.is_file() and "MTNode GPT-TTS default" in cfg.read_text(encoding="utf-8"):
+            return cfg
+        body = (
+            "# MTNode GPT-TTS default (api_v2 -c)\n"
+            "custom:\n"
+            "  bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large\n"
+            "  cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base\n"
+            "  device: cuda\n"
+            "  is_half: true\n"
+            "  t2s_weights_path: GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt\n"
+            "  version: v1\n"
+            "  vits_weights_path: GPT_SoVITS/pretrained_models/s2G488k.pth\n"
+        )
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(body, encoding="utf-8")
+        log(f"default tts config written: {cfg}")
+    except Exception as e:  # noqa: BLE001
+        log(f"warn: cannot write default tts config: {e}")
+    return cfg
+
+
+def _write_patch(fp: Path, content: str, msg: str) -> None:
+    tmp = fp.with_suffix(".py.tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        for i in range(6):
+            try:
+                os.replace(str(tmp), str(fp))
+                break
+            except OSError:
+                time.sleep(0.3 * (i + 1))
+        log(msg)
+    except Exception as e:  # noqa: BLE001
+        log(f"warn: cannot write {fp.name}: {e}")
+
+
+def _patch_engine_langdetect() -> None:
+    """split_lang forces fast_langdetect.detect(..., model='full') which
+    downloads the ~126MB lid.176.bin into GPT_SoVITS/pretrained_models/
+    fast_langdetect; when that dir is missing, every /tts dies with
+    'fast-langdetect: Cache directory not found'. Patch both call sites to use
+    the bundled lite model (lid.176.ftz ships inside .pylibs) — offline, no
+    cache dir, no download. Idempotent."""
+    fp = ROOT / ".pylibs" / "split_lang" / "detect_lang" / "detector.py"
+    if fp.is_file():
+        try:
+            src = fp.read_text(encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            src = ""
+            log(f"warn: cannot read {fp.name}: {e}")
+        if src and "MTNode GPT-TTS" not in src:
+            src2 = src.replace('model="full"', 'model="lite"')
+            if src2 != src:
+                src2 = src2.replace(
+                    "from ..model import LangSectionType",
+                    "from ..model import LangSectionType  # MTNode GPT-TTS (lite langdetect)",
+                    1,
+                )
+                _write_patch(fp, src2, "split_lang detector.py patched (lite langdetect)")
+
+    fp = ENGINE_DIR / "GPT_SoVITS" / "text" / "LangSegmenter" / "langsegmenter.py"
+    if fp.is_file():
+        try:
+            src = fp.read_text(encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            src = ""
+            log(f"warn: cannot read {fp.name}: {e}")
+        old = (
+            'fast_langdetect.infer._default_detector = fast_langdetect.infer.LangDetector('
+            'fast_langdetect.infer.LangDetectConfig(cache_dir=Path(__file__).parent.parent.parent / '
+            '"pretrained_models" / "fast_langdetect"))'
+        )
+        new = (
+            'fast_langdetect.infer._default_detector = fast_langdetect.infer.LangDetector('
+            'fast_langdetect.infer.LangDetectConfig(cache_dir=Path(__file__).parent.parent.parent / '
+            '"pretrained_models" / "fast_langdetect", model="lite"))  ##### patched by MTNode GPT-TTS'
+        )
+        if src and "MTNode GPT-TTS" not in src and old in src:
+            _write_patch(fp, src.replace(old, new), "langsegmenter.py patched (lite langdetect)")
+
+
+def _ensure_nltk_data() -> None:
+    """Ensure NLTK averaged_perceptron_tagger_eng for English g2p during
+    synthesis (api_v2's English phonemization). Same data train.py downloads;
+    the api_v2 subprocess finds it via NLTK_DATA. Non-fatal."""
+    import shutil as _shutil
+    import zipfile as _zipfile
+
+    data_dir = ROOT / "nltk_data"
+    tag_dir = data_dir / "taggers" / "averaged_perceptron_tagger_eng"
+    try:
+        if tag_dir.is_dir() and any(tag_dir.iterdir()):
+            return
+        data_dir.mkdir(parents=True, exist_ok=True)
+        misplaced = data_dir / "averaged_perceptron_tagger_eng"
+        if misplaced.is_dir() and any(misplaced.iterdir()):
+            (data_dir / "taggers").mkdir(parents=True, exist_ok=True)
+            _shutil.move(str(misplaced), str(tag_dir))
+            log("NLTK tagger data migrated to taggers/")
+            return
+    except Exception as e:  # noqa: BLE001
+        log(f"warn: NLTK data check failed: {e}")
+        return
+    zname = "averaged_perceptron_tagger_eng.zip"
+    urls = [
+        "https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/taggers/" + zname,
+        "https://ghfast.top/https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/taggers/" + zname,
+        "https://gh-proxy.com/https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/taggers/" + zname,
+    ]
+    tmp_zip = data_dir / zname
+    for url in urls:
+        try:
+            log("downloading NLTK tagger data (english g2p)…")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=45) as r, open(tmp_zip, "wb") as f:
+                _shutil.copyfileobj(r, f)
+            (data_dir / "taggers").mkdir(parents=True, exist_ok=True)
+            with _zipfile.ZipFile(tmp_zip) as zf:
+                zf.extractall(data_dir / "taggers")
+            try:
+                tmp_zip.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+            if tag_dir.is_dir() and any(tag_dir.iterdir()):
+                log("NLTK tagger data ready: " + str(tag_dir))
+                return
+        except Exception as e:  # noqa: BLE001
+            log(f"warn: NLTK tagger download failed ({url}): {e}")
+            try:
+                tmp_zip.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+    log("warn: NLTK tagger data unavailable — 英文文本的 g2p 可能失败")
+
+
 def _set_ref_audio(voice: dict[str, Any], port: int) -> dict[str, Any]:
     base = engine_http_base(port)
     for _ in range(40):
@@ -331,13 +514,9 @@ def _set_ref_audio(voice: dict[str, Any], port: int) -> dict[str, Any]:
     if not engine_up(port):
         return {"ok": False, "error": "engine_not_ready"}
     try:
-        r = _post_json(
-            base + "/set_ref_audio",
-            {
-                "ref_audio_path": voice["refAudio"],
-                "prompt_text": voice["promptText"],
-                "prompt_lang": voice["lang"],
-            },
+        r = _get_json(
+            base + "/set_refer_audio",
+            {"refer_audio_path": voice["refAudio"]},
         )
         if r.get("ok"):
             log(f"ref audio set: {voice['id']}")
@@ -369,10 +548,10 @@ def _set_voice_weights(weights: dict[str, Any], port: int) -> dict[str, Any]:
     if not engine_up(port):
         return {"ok": False, "error": "engine_not_ready"}
     try:
-        r1 = _post_json(base + "/set_gpt_weights", {"gpt_weights_path": gpt}, timeout=300.0)
+        r1 = _get_json(base + "/set_gpt_weights", {"weights_path": gpt}, timeout=300.0)
         if not r1.get("ok"):
             return {"ok": False, "error": "set_gpt_weights_failed"}
-        r2 = _post_json(base + "/set_sovits_weights", {"sovits_weights_path": sovits}, timeout=300.0)
+        r2 = _get_json(base + "/set_sovits_weights", {"weights_path": sovits}, timeout=300.0)
         if not r2.get("ok"):
             return {"ok": False, "error": "set_sovits_weights_failed"}
     except Exception as e:
@@ -428,7 +607,7 @@ def synthesize(
         "text_split_method": str(extra.get("text_split_method", "cut5")),
         "batch_size": int(extra.get("batch_size", 1)),
         "speed_factor": float(speed),
-        "stream_mode": False,
+        "streaming_mode": False,
         "media_type": str(media_type or "wav"),
         "seed": int(extra.get("seed", -1)),
     }

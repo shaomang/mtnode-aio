@@ -5614,7 +5614,7 @@ function renderIxPanel() {
   }
 }
 
-/* ── 主题(仅 2 款;dsh = 默认,industrial = 旧 MTNode) ── */
+/* ── 主题(dsh = 默认, industrial = 旧 MTNode, light = 亮色) ── */
 const THEMES = {
   dsh: {
     name: "DSH（默认）",
@@ -5626,6 +5626,11 @@ const THEMES = {
     cyan: "#38d6ff", cyan2: "#7ce8ff", orange: "#ff8f2e", orange2: "#ffb066",
     green: "#5fd68a", red: "#ff5f56",
   },
+  light: {
+    name: "Light（亮色）",
+    cyan: "#2068b8", cyan2: "#15508f", orange: "#d9660a", orange2: "#b54f04",
+    green: "#1a8a4a", red: "#cf2a1e",
+  },
 };
 function applyTheme(name) {
   const t = THEMES[name] || THEMES.dsh;
@@ -5633,6 +5638,7 @@ function applyTheme(name) {
   S.config.theme = theme;
   document.documentElement.dataset.theme = theme;
   document.body.classList.toggle("theme-industrial", theme === "industrial");
+  document.body.classList.toggle("theme-light", theme === "light");
   let el = $("#themeStyle");
   if (!el) {
     el = document.createElement("style");
