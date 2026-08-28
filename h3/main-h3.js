@@ -47,13 +47,17 @@ const MODELS = {
 };
 
 const RATIOS = {
-  "16:9": [1344, 768],
-  "9:16": [768, 1344],
+  "16:9": [1280, 704], /* 24G 安全上限（4090 实测：1344×768 必卡死，1280×704 安全） */
+  "9:16": [704, 1280],
   "1:1": [768, 768],
   "4:3": [1024, 768],
   "3:4": [768, 1024],
-  "21:9": [1344, 576],
+  "21:9": [1280, 544],
 };
+
+/* 24G 显存安全上限（长边像素）；超限自动钳制到安全档，避免卡死 */
+const VRAM_SAFE_MAX_DIM = 1280;
+const VRAM_SAFE_MAX_MP = 0.98; /* ≈1280×768 */
 
 /* 4K 超分补帧后处理：Real-ESRGAN x4 超分 + RIFE 补帧（原生分辨率补帧→再超分，
  * 峰值显存最低，24G 内稳定）。RIFE 模型由 ComfyUI-Frame-Interpolation 提供，
@@ -1881,7 +1885,9 @@ function isSageDisabledMode(mode) {
   return /^(disabled|off|none|false|0)?$/i.test(String(mode == null ? "disabled" : mode).trim());
 }
 
-/** 缺 sageattention 时强制 disabled，避免 PathchSageAttentionKJ 必炸 */
+/** 缺 sageattention 时强制 disabled，避免 PathchSageAttentionKJ 必炸。
+ *  检测结果缓存 10 分钟（import 探测较慢，避免每次生成都跑）。 */
+let _sageCheckCache = { at: 0, ok: false, known: false };
 async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
   if (optSageAttn === false) return "disabled";
   const mode =
@@ -1892,9 +1898,18 @@ async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
     appendConsole("[generate] no venv → sageMode=disabled");
     return "disabled";
   }
+  if (Date.now() - _sageCheckCache.at < 600000 && _sageCheckCache.known) {
+    if (!_sageCheckCache.ok) appendConsole("[generate] sageattention missing → sageMode=disabled");
+    return _sageCheckCache.ok ? mode : "disabled";
+  }
   const check = await runVenvPy(py, "import sageattention");
+  _sageCheckCache = { at: Date.now(), ok: check.code === 0, known: true };
   if (check.code !== 0) {
-    appendConsole("[generate] sageattention missing → sageMode=disabled (was " + mode + ")");
+    appendConsole(
+      "[generate] sageattention missing → sageMode=disabled (was " +
+        mode +
+        ")。安装匹配 torch/CUDA 的 sageattention wheel 可提速约 1.5-2×",
+    );
     return "disabled";
   }
   return mode === "disabled" ? "auto" : mode;
@@ -1964,7 +1979,17 @@ async function generateVideo(params) {
     const comfy = comfyDir(installDir);
     const sig = projectSignals(installDir);
     const ratio = params.ratio || "16:9";
-    const wh = RATIOS[ratio] || RATIOS["16:9"];
+    let wh = RATIOS[ratio] || RATIOS["16:9"];
+    /* 24G 红线保护：长边或面积超限时钳制到安全档（避免 1344×768 类卡死） */
+    const [rw, rh] = wh;
+    const mp = (rw * rh) / 1e6;
+    if (Math.max(rw, rh) > VRAM_SAFE_MAX_DIM || mp > VRAM_SAFE_MAX_MP) {
+      const safe = RATIOS[ratio] && ratio !== "1:1" ? [VRAM_SAFE_MAX_DIM, Math.round((VRAM_SAFE_MAX_DIM * rh) / rw / 2) * 2] : [VRAM_SAFE_MAX_DIM, VRAM_SAFE_MAX_DIM];
+      appendConsole(
+        "[generate] 分辨率 " + rw + "x" + rh + " 超过 24G 安全上限（" + VRAM_SAFE_MAX_DIM + " 长边），钳制为 " + safe[0] + "x" + safe[1]
+      );
+      wh = safe;
+    }
     const duration = Math.max(4, Math.min(15, Number(params.duration) || 5));
     const length = calcLength(duration);
     const mode = params.mode === "fl2va" ? "fl2va" : "r2v";

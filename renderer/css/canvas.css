@@ -610,7 +610,10 @@
   /* overflow:hidden：端子/接线排全部内嵌在节点板内，任何元素不得超出节点外框 */
   /* 浮空+厚度（范例式）：近距接触影 0 2px 4px → 中距软投影 0 7px 13px -3px → 内凹厚度 0 -3px 0 inset；
      三层层叠出“卡片悬空 + 顶部内凹边缘厚度”的效果；顶部 1px 受光内高光保留 */
+  /* 最外层银灰底板：2px 银灰描边 + 底部 5px 银灰厚度块（随节点缩放/动效一起移动） */
   --nfloat:
+    0 0 0 2px #c9cdd5,
+    0 5px 0 2px #b7bcc7,
     0 4px 8px rgba(0, 0, 0, 0.4),
     0 15px 26px -6px rgba(0, 0, 0, 0.3),
     0 -6px 0 inset rgba(0, 0, 0, 0.2);
@@ -624,6 +627,8 @@
   cursor: grabbing;
   will-change: transform;
   --nfloat:
+    0 0 0 2px #c9cdd5,
+    0 5px 0 2px #b7bcc7,
     0 4px 8px rgba(0, 0, 0, 0.45),
     0 14px 22px -4px rgba(0, 0, 0, 0.35),
     0 -3px 0 inset rgba(0, 0, 0, 0.2);

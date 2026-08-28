@@ -2510,6 +2510,9 @@ async function playMusicGenNode(node, quiet) {
     stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
+    /* 生成成功：触发控制输出端子（端口1）驱动下游控制目标 */
+    if (nodeHasOutputContent(node))
+      await fireControlOutgoing(node, 1, new Set([node.id]));
   }
 }
 
@@ -2601,7 +2604,7 @@ async function playVideoGenNode(node, quiet) {
     }
   } catch {}
 
-  const promptVal = videoGenSlotValue(node, 0);
+  const promptVal = videoGenSlotValue(node, 1);
   const prompt = (promptVal && promptVal.text ? promptVal.text : "").trim();
   if (!prompt) {
     toast(I18n.t("请连接提示词输入（端子 P）"), "warn");
@@ -2641,25 +2644,25 @@ async function playVideoGenNode(node, quiet) {
   const maxImg = videoGenMaxImages(node);
   const maxVid = videoGenMaxVideos(node);
   const maxAud = videoGenMaxAudios(node);
-  const firstImage = mode === "fl2va" ? ((videoGenSlotValue(node, 1) || {}).path || "") : "";
-  const lastImage = mode === "fl2va" ? ((videoGenSlotValue(node, 2) || {}).path || "") : "";
+  const firstImage = mode === "fl2va" ? ((videoGenSlotValue(node, 2) || {}).path || "") : "";
+  const lastImage = mode === "fl2va" ? ((videoGenSlotValue(node, 3) || {}).path || "") : "";
   const refImages = [];
   const refVideos = [];
   const refAudios = [];
   if (mode === "r2v") {
     for (let i = 0; i < maxImg; i++) {
-      const v = videoGenSlotValue(node, 1 + i);
+      const v = videoGenSlotValue(node, 2 + i);
       if (v && v.path) refImages.push(v.path);
       else if (v && v.text && /\.(png|jpe?g|webp|bmp|gif)$/i.test(v.text.trim()))
         refImages.push(v.text.trim());
     }
     for (let i = 0; i < maxVid; i++) {
-      const v = videoGenSlotValue(node, 1 + maxImg + i);
+      const v = videoGenSlotValue(node, 2 + maxImg + i);
       const p = String((v && (v.path || v.text)) || "").trim();
       if (p) refVideos.push(p);
     }
     for (let i = 0; i < maxAud; i++) {
-      const v = videoGenSlotValue(node, 1 + maxImg + maxVid + i);
+      const v = videoGenSlotValue(node, 2 + maxImg + maxVid + i);
       const p = String((v && (v.path || v.text)) || "").trim();
       if (p) refAudios.push(p);
     }
@@ -2739,6 +2742,11 @@ async function playVideoGenNode(node, quiet) {
               ? "auto"
               : node.sageMode,
         sageCompile: !!node.sageCompile,
+        postEnabled: node.postEnabled !== false,
+        postInterp: node.postInterp !== false,
+        postInterpMultiplier:
+          node.postInterpMultiplier != null ? Number(node.postInterpMultiplier) : 2,
+        postPerBatch: node.postPerBatch != null ? Number(node.postPerBatch) : 4,
         refImageSize: node.refImageSize || "match",
         fps: Number(node.fps) || 24,
         bitDepth: Number(node.bitDepth) || 8,
@@ -2821,11 +2829,26 @@ async function playVideoGenNode(node, quiet) {
     stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
+    /* 生成成功：触发控制输出端子（端口1）驱动下游控制目标 */
+    if (nodeHasOutputContent(node))
+      await fireControlOutgoing(node, 1, new Set([node.id]));
   }
 }
 
 async function restoreVideoGenLocks() {
   return restoreMediaGenLocks();
+}
+
+/* 全局媒体生成串行链：video_gen / music_gen 共享主进程单一后端，
+   控制节点并行触发 / 多次尝试并发时排队串行执行，避免并发 busy 与后端竞争。 */
+let _mediaGenChain = Promise.resolve();
+function runMediaGenSerial(fn) {
+  const run = _mediaGenChain.then(fn, fn);
+  _mediaGenChain = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
 }
 
 async function playNodeBody(node, quiet, opts) {
@@ -2835,10 +2858,10 @@ async function playNodeBody(node, quiet, opts) {
     return;
   }
   if (node.kind === "music_gen") {
-    return playMusicGenNode(node, quiet);
+    return runMediaGenSerial(() => playMusicGenNode(node, quiet));
   }
   if (node.kind === "video_gen") {
-    return playVideoGenNode(node, quiet);
+    return runMediaGenSerial(() => playVideoGenNode(node, quiet));
   }
   if (node.kind === "wait_file") {
     return playWaitFileNode(node, quiet);
@@ -3684,13 +3707,40 @@ async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
       await runExec(list[0]);
       return;
     }
+    /* 控制范围内最多同时并行 10 个目标；超出部分等有槽位再启动 */
+    const MAX_CONCURRENT = 10;
     const indegLeft = { ...indeg };
     const launched = new Set();
+    const queued = [];
     let inFlight = 0;
     let settle = () => {};
     const done = new Promise((r) => {
       settle = r;
     });
+
+    const pump = () => {
+      while (inFlight < MAX_CONCURRENT && queued.length) {
+        const n = queued.shift();
+        if (!n || launched.has(n.id)) continue;
+        if (controlNode && controlNode._aborted) continue;
+        launch(n);
+      }
+      if (inFlight === 0 && !queued.length) {
+        if (controlNode && controlNode._aborted) {
+          settle();
+          return;
+        }
+        /* 环路残留：串行解开，与旧版分层回退一致 */
+        const left = list.find((x) => !launched.has(x.id));
+        if (left) {
+          indegLeft[left.id] = 0;
+          queued.push(left);
+          pump();
+          return;
+        }
+        settle();
+      }
+    };
 
     const launch = (n) => {
       if (!n || launched.has(n.id)) return;
@@ -3708,33 +3758,23 @@ async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
         .finally(() => {
           for (const toId of adj[n.id] || []) {
             indegLeft[toId]--;
-            if (indegLeft[toId] === 0) launch(byId[toId]);
+            if (indegLeft[toId] === 0) queued.push(byId[toId]);
           }
           inFlight--;
-          if (inFlight > 0) return;
-          if (controlNode && controlNode._aborted) {
-            settle();
-            return;
-          }
-          /* 环路残留：串行解开，与旧版分层回退一致 */
-          const left = list.find((x) => !launched.has(x.id));
-          if (left) {
-            indegLeft[left.id] = 0;
-            launch(left);
-            return;
-          }
-          settle();
+          pump();
         });
     };
 
     for (const n of list) {
-      if (indegLeft[n.id] === 0) launch(n);
+      if (indegLeft[n.id] === 0) queued.push(n);
     }
-    if (inFlight === 0) {
+    pump();
+    if (inFlight === 0 && !queued.length) {
       const left = list.find((x) => !launched.has(x.id));
       if (left) {
         indegLeft[left.id] = 0;
-        launch(left);
+        queued.push(left);
+        pump();
       } else {
         return;
       }
@@ -4561,26 +4601,58 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (!isTextSource(from)) return I18n.t("音乐生成节点需要文本来源（提示词 / 歌词）");
     const slot = toIndex == null ? null : Number(toIndex);
     if (slot != null && (slot < 0 || slot > 1)) return I18n.t("无效的输入端子");
-    if (
-      slot != null &&
-      S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w))
-    )
+    if (slot != null) {
+      if (
+        S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w))
+      )
+        return I18n.t("该输入端子已被占用");
+    } else if (nextFreeMediaDataSlot(to, from) == null) {
       return I18n.t("该输入端子已被占用");
+    }
+  } else if (fromCtrl && to.kind === "music_gen") {
+    /* 控制线：仅允许连到控制输入端子（端口2）；未指定端子时自动落到控制输入 */
+    const ctrlSlot = 2;
+    const slot = toIndex == null ? ctrlSlot : Number(toIndex);
+    if (slot !== ctrlSlot) return I18n.t("音乐生成节点控制输入端子为端口 2");
+    if (
+      S.wf.wires.some(
+        (w) => w.to === toId && Number(w.toIndex) === ctrlSlot && !wireFromIsControl(w),
+      )
+    )
+      return I18n.t("控制输入端子已被数据线占用");
   } else if (!fromCtrl && to.kind === "video_gen") {
     const slot = toIndex == null ? null : Number(toIndex);
-    if (slot == null || slot < 0 || slot >= videoGenInputCount(to)) return I18n.t("无效的输入端子");
-    if (S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)))
+    if (slot != null && (slot < 1 || slot > videoGenInputCount(to))) return I18n.t("无效的输入端子");
+    if (slot == null) {
+      if (nextFreeMediaDataSlot(to, from) == null) return I18n.t("该输入端子已被占用");
+    } else if (S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)))
       return I18n.t("该输入端子已被占用");
-    const meta = videoGenSlotMeta(to, slot);
-    if (meta.kind === "text") {
-      if (!isTextSource(from)) return I18n.t("提示词端子需要文本来源");
-    } else if (meta.kind === "image") {
-      if (!isImageSource(from)) return I18n.t("图像端子需要图像来源");
+    if (slot != null) {
+      const meta = videoGenSlotMeta(to, slot);
+      if (meta.kind === "text") {
+        if (!isTextSource(from)) return I18n.t("提示词端子需要文本来源");
+      } else if (meta.kind === "image") {
+        if (!isImageSource(from)) return I18n.t("图像端子需要图像来源");
+      } else {
+        /* video/audio: accept text path or image source carrying a file path */
+        if (!isTextSource(from) && !isImageSource(from))
+          return I18n.t("音视频端子需要文本路径或媒体文件路径");
+      }
     } else {
-      /* video/audio: accept text path or image source carrying a file path */
+      /* 自动分配：无法预知槽位类型；文本/图像源都可接受（提示词槽优先文本，参考槽优先媒体路径） */
       if (!isTextSource(from) && !isImageSource(from))
-        return I18n.t("音视频端子需要文本路径或媒体文件路径");
+        return I18n.t("视频节点需要文本或图像来源");
     }
+  } else if (fromCtrl && to.kind === "video_gen") {
+    /* 控制线：固定连到控制输入端子（端口0，不随数据槽数变化） */
+    const slot = toIndex == null ? 0 : Number(toIndex);
+    if (slot !== 0) return I18n.t("视频节点控制输入端子为端口 0");
+    if (
+      S.wf.wires.some(
+        (w) => w.to === toId && Number(w.toIndex) === 0 && !wireFromIsControl(w),
+      )
+    )
+      return I18n.t("控制输入端子已被数据线占用");
   }
   /* 超级节点：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入（含控制线） */
   if (to.kind === "super") {
@@ -4597,10 +4669,57 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   return null;
 }
 
+/* 视频 / 音乐节点：找下一个空闲数据槽（跳过控制槽与已占槽）；无则 null。
+   from 存在时按来源类型优先匹配：文本源 → 提示词槽；图像源 → 参考图槽。
+   video_gen：端口0 为控制输入（固定），数据槽从端口1 开始。 */
+function nextFreeMediaDataSlot(node, from) {
+  if (!node || !S.wf) return null;
+  const occupied = (i) =>
+    (S.wf.wires || []).some(
+      (w) => w.to === node.id && Number(w.toIndex) === i && !wireFromIsControl(w),
+    );
+  if (node.kind === "music_gen") {
+    for (let i = 0; i < 2; i++) if (!occupied(i)) return i;
+    return null;
+  }
+  if (node.kind !== "video_gen") return null;
+  const fromImg = !!(from && isImageSource(from));
+  const fromTxt = !!(from && isTextSource(from));
+  /* 图像源：优先参考图槽（提示词槽只接受文本） */
+  if (fromImg) {
+    for (let i = 2; i <= videoGenInputCount(node); i++) {
+      if (occupied(i)) continue;
+      const meta = videoGenSlotMeta(node, i);
+      if (meta.kind === "image") return i;
+    }
+    /* 无空闲参考图槽时回退任意空闲数据槽 */
+    for (let i = 2; i <= videoGenInputCount(node); i++)
+      if (!occupied(i)) return i;
+    return null;
+  }
+  /* 文本源：优先提示词槽（端口1），其次任意空闲数据槽（video/audio 槽也接受文本路径） */
+  if (!occupied(1)) return 1;
+  for (let i = 2; i <= videoGenInputCount(node); i++)
+    if (!occupied(i)) return i;
+  return null;
+}
+
 function addWire(fromId, toId, toIndex, opts) {
   opts = opts || {};
   const cur = allWiresTo(toId).length;
-  const idx = toIndex == null ? cur : toIndex;
+  let idx = toIndex == null ? cur : toIndex;
+  const toN = nodeById(toId);
+  const fromN = nodeById(fromId);
+  if (toIndex == null && toN && (toN.kind === "video_gen" || toN.kind === "music_gen")) {
+    if (fromN && isControlKind(fromN)) {
+      /* 控制线：video_gen 固定落到端口0（控制输入，不随数据槽数变化）；music_gen 落到端口2 */
+      idx = toN.kind === "video_gen" ? 0 : 2;
+    } else {
+      /* 数据线：落到空闲数据槽（跳过控制槽），避免误占控制端子 */
+      const free = nextFreeMediaDataSlot(toN, fromN);
+      if (free != null) idx = free;
+    }
+  }
   const fromIndex = Number(opts.fromIndex || 0);
   S.wf.wires.push({
     id: uid("w"),
@@ -7894,6 +8013,36 @@ function applyNodePatch(node, patch, warnings) {
     node.w = snapDim(patch.w, minWFor(node));
   if (typeof patch.h === "number" && isFinite(patch.h))
     node.h = snapDim(patch.h, minHFor(node));
+  /* video_gen / music_gen：抽卡次数与输出路径 */
+  if (
+    patch.attempts != null &&
+    (node.kind === "video_gen" || node.kind === "music_gen")
+  ) {
+    const n = Math.round(Number(patch.attempts));
+    if (isFinite(n)) node.attempts = Math.max(1, Math.min(10, n || 1));
+  }
+  if (
+    patch.outputPath != null &&
+    (node.kind === "video_gen" || node.kind === "music_gen")
+  ) {
+    const p = String(patch.outputPath).trim();
+    if (p) {
+      applyMediaGenConfiguredPath(
+        node,
+        p,
+        node.kind === "video_gen" ? "video" : "audio",
+      );
+    }
+  }
+  /* video_gen：生成模式与时长 */
+  if (node.kind === "video_gen") {
+    if (patch.videoMode === "r2v" || patch.videoMode === "fl2va")
+      node.videoMode = patch.videoMode;
+    if (patch.duration != null) {
+      const d = Math.round(Number(patch.duration));
+      if (isFinite(d)) node.duration = Math.max(4, Math.min(15, d || 5));
+    }
+  }
   applyNodeModelPatch(node, patch, warnings);
 }
 

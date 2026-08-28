@@ -725,7 +725,8 @@ const NODE_DEFAULTS = {
     h: 340,
     title: "视频生成",
     attempts: 1,
-    videoMode: "r2v",
+    videoMode: "fl2va",
+    videoPortV2: true, /* 端口布局 v2：端口0=控制输入（固定）· 端口1=提示词 · 端口2+=参考（旧档无此标记=旧布局，加载时迁移） */
     duration: 5,
     ratio: "16:9",
     seed: 0,
@@ -1039,6 +1040,9 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   if (isControlKind(node)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (node.kind === "net_recv") return Number(portIndex || 0) >= 1;
+  /* 音乐 / 视频：端口1 为控制输出（生成完成后触发下游控制目标） */
+  if (node.kind === "music_gen" || node.kind === "video_gen")
+    return Number(portIndex || 0) >= 1;
   if (node.kind === "super")
     return superOutPortIsControl(node, portIndex, wf, seen);
   return false;
@@ -1087,7 +1091,8 @@ function superOutPortIsControl(superNode, portIndex, wf, seen) {
 }
 /** 收起：仅已占用槽位数；展开：至少 1 个并可多一个空闲槽 */
 function superDynamicPortCount(maxIdx, open) {
-  if (maxIdx < 0) return open ? 1 : 0;
+  /* 收起态也至少保留 1 个外侧输入/输出端子，便于从外部开始连线 */
+  if (maxIdx < 0) return 1;
   return open ? maxIdx + 2 : maxIdx + 1;
 }
 function superWireInnerLink(wire) {
@@ -2340,6 +2345,8 @@ function outputCount(n) {
   if (n.kind === "judge" || n.kind === "task") return 2;
   if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
   if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
+  /* 音乐 / 视频：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
+  if (n.kind === "music_gen" || n.kind === "video_gen") return 2;
   if (n.kind === "sequencer")
     return Math.max(2, Math.min(8, Math.round(Number(n.seqOutputs) || 3)));
   if (n.kind === "splitter")
@@ -3995,6 +4002,12 @@ function wireFromIsControl(w, wf) {
   if (isControlKind(from)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (from.kind === "net_recv" && Number(w.fromIndex || 0) >= 1) return true;
+  /* 音乐 / 视频：端口1 为控制输出（生成完成后触发下游控制目标） */
+  if (
+    (from.kind === "music_gen" || from.kind === "video_gen") &&
+    Number(w.fromIndex || 0) >= 1
+  )
+    return true;
   const to = nodeByIdIn(w.to, wf);
   if (!to) return false;
   /* 内侧桥接：外侧同号输入若为控制，则内线亦为控制（原数据线随之变控制线） */
@@ -4265,8 +4278,8 @@ function inputCount(node) {
     return Math.max(2, Math.min(8, Math.round(Number(node.gateInputs) || 2)));
   if (node.kind === "mutex")
     return Math.max(2, Math.min(8, Math.round(Number(node.mutexInputs) || 2)));
-  if (node.kind === "music_gen") return 2;
-  if (node.kind === "video_gen") return videoGenInputCount(node);
+  if (node.kind === "music_gen") return 3; /* 端口0=提示词 · 端口1=歌词 · 端口2=控制输入 */
+  if (node.kind === "video_gen") return videoGenInputCount(node) + 1; /* 端口0=控制输入（固定）· 端口1+=数据槽 */
   if (node.kind === "net_recv") return 0; /* 接收是异步源，无数据输入 */
   if (node.kind === "net_send") return 2; /* 端口0=信息输入(数据) · 端口1=控制输入 */
   return Math.max(1, allWiresTo(node.id).length + 1);
@@ -4274,7 +4287,7 @@ function inputCount(node) {
 
 /** MiniMax H3 端子：提示词 + 渐进参考图/视频/音频（路径文本） */
 function videoGenMode(node) {
-  return node && node.videoMode === "fl2va" ? "fl2va" : "r2v";
+  return node && node.videoMode === "r2v" ? "r2v" : "fl2va";
 }
 function videoGenMaxImages(node) {
   return videoGenMode(node) === "fl2va" ? 2 : 9;
@@ -4300,35 +4313,39 @@ function videoGenProgressiveCount(occupiedPrefix, max) {
   return Math.min(max, n);
 }
 function videoGenInputCount(node) {
+  /* 返回数据槽总数（端口1=提示词 … 末尾=最后一个数据槽）；端口0 固定为控制输入 */
   const maxImg = videoGenMaxImages(node);
   const maxVid = videoGenMaxVideos(node);
   const maxAud = videoGenMaxAudios(node);
   const imgN =
     videoGenMode(node) === "fl2va"
       ? maxImg
-      : videoGenProgressiveCount((i) => videoGenSlotOccupied(node, 1 + i), maxImg);
+      : videoGenProgressiveCount((i) => videoGenSlotOccupied(node, 2 + i), maxImg);
   const vidBase = 1 + maxImg;
-  const vidN = videoGenProgressiveCount((i) => videoGenSlotOccupied(node, vidBase + i), maxVid);
+  const vidN = videoGenProgressiveCount((i) => videoGenSlotOccupied(node, vidBase + 1 + i), maxVid);
   const audBase = 1 + maxImg + maxVid;
-  const audN = videoGenProgressiveCount((i) => videoGenSlotOccupied(node, audBase + i), maxAud);
+  const audN = videoGenProgressiveCount((i) => videoGenSlotOccupied(node, audBase + 1 + i), maxAud);
   return 1 + imgN + vidN + audN;
 }
 function videoGenSlotMeta(node, index) {
+  /* 端口0 = 控制输入（固定，不随数据槽数变化）；端口1+ = 数据槽 */
   const maxImg = videoGenMaxImages(node);
   const maxVid = videoGenMaxVideos(node);
-  if (index === 0) return { kind: "text", key: "prompt", label: "P" };
-  if (index >= 1 && index <= maxImg) {
-    const i = index - 1;
+  if (index === 0) return { kind: "ctrl", key: "ctrl", label: "控制" };
+  const i0 = index - 1;
+  if (i0 === 0) return { kind: "text", key: "prompt", label: "P" };
+  if (i0 >= 1 && i0 <= maxImg) {
+    const i = i0 - 1;
     if (videoGenMode(node) === "fl2va") {
       return { kind: "image", key: i === 0 ? "first" : "last", label: i === 0 ? "F" : "L" };
     }
     return { kind: "image", key: "ref" + i, label: "I" + (i + 1) };
   }
-  if (index > maxImg && index <= maxImg + maxVid) {
-    const i = index - 1 - maxImg;
+  if (i0 > maxImg && i0 <= maxImg + maxVid) {
+    const i = i0 - 1 - maxImg;
     return { kind: "video", key: "vid" + i, label: "V" + (i + 1) };
   }
-  const i = index - 1 - maxImg - maxVid;
+  const i = i0 - 1 - maxImg - maxVid;
   return { kind: "audio", key: "aud" + i, label: "A" + (i + 1) };
 }
 /* 节点最小宽/高：保证标题栏按钮与体内控件不溢出到节点外（只抬不缩） */
@@ -16351,6 +16368,32 @@ function migrateWf(wf) {
         });
     }
   }
+  /* 视频节点控制输入端子固定为端口0（不随数据槽数变化）。
+     旧布局（无 videoPortV2 标记）= 端口0=提示词 + 数据槽 + 末尾动态控制槽；
+     新布局 = 端口0=控制 + 端口1=提示词 + 数据槽。
+     旧档迁移：数据线全部 +1（提示词 0→1），控制线迁到端口0，并打标防止重复迁移。 */
+  let videoPortMigrated = false;
+  {
+    const byId = new Map(wf.nodes.map((n) => [n.id, n]));
+    const isCtrl = (id) => isControlKind(byId.get(id));
+    for (const n of wf.nodes) {
+      if (n.kind !== "video_gen") continue;
+      if (n.videoPortV2) continue; /* 已是新布局 */
+      n.videoPortV2 = true;
+      videoPortMigrated = true;
+      const dataWs = (wf.wires || []).filter((w) => w.to === n.id && !isCtrl(w.from));
+      const ctrlWs = (wf.wires || []).filter((w) => w.to === n.id && isCtrl(w.from));
+      /* 数据线整体后移一位（端口0 让给控制） */
+      for (const w of dataWs) {
+        const ti = Number(w.toIndex);
+        w.toIndex = ti + 1;
+      }
+      /* 控制线统一落到端口0 */
+      for (const w of ctrlWs) w.toIndex = 0;
+      /* 删除旧字段 */
+      delete n.videoCtrlPort;
+    }
+  }
   {
     const ids = new Set(wf.nodes.map((n) => n.id));
     for (const n of wf.nodes) {
@@ -16412,7 +16455,7 @@ function migrateWf(wf) {
     (g) => (g.nodeIds && g.nodeIds.length) || (g.markIds && g.markIds.length),
   );
   fitAllGroupBoxes(wf);
-  return wf;
+  return videoPortMigrated; /* true = 发生了视频端口迁移，调用方应立即落盘 */
 }
 
 async function ensureWorkflow() {
@@ -16432,7 +16475,7 @@ async function ensureWorkflow() {
     S.wf = r.ok ? r.data : { id, name: id, nodes: [], wires: [], groups: [], marks: [] };
   }
   S.wf.id = id;
-  migrateWf(S.wf);
+  if (migrateWf(S.wf)) scheduleSave(true); /* 视频端口迁移：立即落盘打标 */
   resetTaskFocus();
   rememberWf(S.wf);
   S.config.activeWorkflowId = id;
@@ -16462,7 +16505,7 @@ async function loadWorkflow(id) {
     }
     wf = r.data;
     wf.id = id;
-    migrateWf(wf);
+    if (migrateWf(wf)) S._pendingVideoPortMigrateSave = true;
     /* 若袋中仍有该画布的运行中节点（极少：id 冲突），合并回写 */
     const live = S.wfBag[id];
     if (live && wfHasRunning(live)) {
@@ -16479,6 +16522,10 @@ async function loadWorkflow(id) {
   S.wf = wf;
   rememberWf(wf);
   resetTaskFocus();
+  if (S._pendingVideoPortMigrateSave) {
+    S._pendingVideoPortMigrateSave = false;
+    scheduleSave(true); /* 视频端口迁移：立即落盘打标 */
+  }
   if (S.findBar && S.findBar.open) canvasFindRefresh({ keepIdx: false, focus: false });
   S.config.activeWorkflowId = id;
   await sanitizeWfEnvironment({ quiet: false });

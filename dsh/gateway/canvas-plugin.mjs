@@ -353,6 +353,23 @@ const NODE_SPEC = {
       description:
         'proc_image only: output size, must be one of imageSizes from mtnode_canvas_get (e.g. "2048x1360", "1280x1280", "auto"). Choose by aspect ratio need; default "2048x1360".',
     },
+    attempts: {
+      type: 'number',
+      description: 'video_gen / music_gen: 抽卡次数（多次尝试，1–10，自动钳制）.',
+    },
+    outputPath: {
+      type: 'string',
+      description: 'video_gen / music_gen: 输出保存路径（视频 .mp4 / 音频 .wav）.',
+    },
+    videoMode: {
+      type: 'string',
+      enum: ['r2v', 'fl2va'],
+      description: 'video_gen: 生成模式，fl2va = 首末帧（默认），r2v = 多参考图.',
+    },
+    duration: {
+      type: 'number',
+      description: 'video_gen: 视频时长（秒，4–15，默认 5，自动钳制）.',
+    },
     ctrlAction: {
       type: 'string',
       enum: ['run', 'clear'],
@@ -538,6 +555,23 @@ const UPDATE_SPEC = {
     y: { type: 'number' },
     w: { type: 'number' },
     h: { type: 'number' },
+    attempts: {
+      type: 'number',
+      description: 'video_gen / music_gen: 抽卡次数（多次尝试，1–10，自动钳制）.',
+    },
+    outputPath: {
+      type: 'string',
+      description: '视频 / 音乐输出路径（video_gen / music_gen 的输出保存位置）.',
+    },
+    videoMode: {
+      type: 'string',
+      enum: ['r2v', 'fl2va'],
+      description: 'video_gen: 生成模式，r2v = 多参考图，fl2va = 首末帧.',
+    },
+    duration: {
+      type: 'number',
+      description: 'video_gen: 视频时长（秒，4–15，自动钳制）.',
+    },
   },
 }
 

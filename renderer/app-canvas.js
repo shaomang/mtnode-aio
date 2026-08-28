@@ -2247,7 +2247,7 @@ function nodeElement(node) {
         const o = document.createElement("option");
         o.value = v;
         o.textContent = I18n.t(t);
-        if ((node.videoMode || "r2v") === v) o.selected = true;
+        if ((node.videoMode || "fl2va") === v) o.selected = true;
         mode.appendChild(o);
       });
       mode.addEventListener("change", () => {
@@ -2270,7 +2270,7 @@ function nodeElement(node) {
         const meta = document.querySelector("#mgmeta-" + node.id);
         if (meta) {
           meta.textContent =
-            (node.videoMode || "r2v").toUpperCase() +
+            (node.videoMode || "fl2va").toUpperCase() +
             " · " +
             (node.ratio || "16:9");
         }
@@ -2309,12 +2309,6 @@ function nodeElement(node) {
       optHint.style.cssText = "opacity:0.75;font-size:11px;margin:4px 0 2px;";
       optHint.textContent = I18n.t("24G 优化（默认开，可关）");
       panel.appendChild(optHint);
-      addOpt("optTeaCache", I18n.t("TeaCache"), I18n.t("H3 步缓存加速"));
-      addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
-      addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需安装 sageattention；缺包自动跳过"));
-      addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
-      addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
-      addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
       const addSel = (label, items, cur, cb) => {
         const el = document.createElement("select");
         items.forEach((item) => {
@@ -2339,6 +2333,33 @@ function nodeElement(node) {
         el.addEventListener("change", () => cb(Number(el.value)));
         addField(label, el);
       };
+      addOpt("optTeaCache", I18n.t("TeaCache"), I18n.t("H3 步缓存加速"));
+      addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
+      addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需安装 sageattention；缺包自动跳过"));
+      addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
+      addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
+      addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
+      const postHint = document.createElement("div");
+      postHint.className = "n-field-hint";
+      postHint.style.cssText = "opacity:0.75;font-size:11px;margin:4px 0 2px;";
+      postHint.textContent = I18n.t("4K 超分补帧（默认开，24G 建议关以提速）");
+      panel.appendChild(postHint);
+      addOpt("postEnabled", I18n.t("4K 超分补帧"), I18n.t("RIFE 补帧 + Real-ESRGAN x4 超分 → 4K（需安装后处理模型）"));
+      addOpt("postInterp", I18n.t("补帧 RIFE"), I18n.t("低分辨率先补帧，再超分；时序更稳更省显存"));
+      addSel(
+        I18n.t("补帧倍数"),
+        [["1", "1x（关）"], ["2", "2x（推荐）"], ["4", "4x"]],
+        String(node.postInterpMultiplier != null ? node.postInterpMultiplier : 2),
+        (v) => { node.postInterpMultiplier = Number(v); },
+      );
+      addNum(
+        I18n.t("超分批量"),
+        node.postPerBatch != null ? node.postPerBatch : 4,
+        1,
+        16,
+        "1",
+        (v) => { node.postPerBatch = Math.max(1, Math.min(16, isFinite(v) ? v : 4)); },
+      );
       const h3 = document.createElement("div");
       h3.className = "n-field-hint";
       h3.style.cssText = "opacity:0.75;font-size:11px;margin:6px 0 2px;";
@@ -2759,7 +2780,10 @@ function nodeElement(node) {
     const ctrlIn =
       node.kind === "super"
         ? superInPortIsControl(node, i)
-        : isControlKind(node) || (node.kind === "net_send" && i >= 1);
+        : isControlKind(node) ||
+          (node.kind === "net_send" && i >= 1) ||
+          (node.kind === "music_gen" && i === 2) ||
+          (node.kind === "video_gen" && i === 0);
     p.className =
       "port in" + (spare ? " spare" : "") + (ctrlIn ? " ctrl" : "");
     p.dataset.node = node.id;
@@ -2778,21 +2802,25 @@ function nodeElement(node) {
     else if (node.kind === "task")
       inTitle = I18n.t("控制输入（激活内部起点）");
     else if (node.kind === "music_gen")
-      inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : I18n.t("歌词（含 [Verse]/[Chorus] 等标签）");
+      inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : i === 1 ? I18n.t("歌词（含 [Verse]/[Chorus] 等标签）") : I18n.t("控制输入（触发生成）");
     else if (node.kind === "net_send")
       inTitle = i === 0 ? I18n.t("信息输入（要发送的文本）") : I18n.t("控制输入（触发发送）");
     else if (node.kind === "video_gen") {
-      const meta = videoGenSlotMeta(node, i);
-      if (meta.kind === "text") inTitle = I18n.t("提示词");
-      else if (meta.kind === "image") {
-        inTitle =
-          meta.key === "first"
-            ? I18n.t("首帧图像")
-            : meta.key === "last"
-              ? I18n.t("末帧图像")
-              : I18n.t("参考图像 ") + meta.label;
-      } else if (meta.kind === "video") inTitle = I18n.t("参考视频路径 ") + meta.label;
-      else inTitle = I18n.t("参考音频路径 ") + meta.label;
+      if (i === 0) {
+        inTitle = I18n.t("控制输入（触发生成）");
+      } else {
+        const meta = videoGenSlotMeta(node, i);
+        if (meta.kind === "text") inTitle = I18n.t("提示词");
+        else if (meta.kind === "image") {
+          inTitle =
+            meta.key === "first"
+              ? I18n.t("首帧图像")
+              : meta.key === "last"
+                ? I18n.t("末帧图像")
+                : I18n.t("参考图像 ") + meta.label;
+        } else if (meta.kind === "video") inTitle = I18n.t("参考视频路径 ") + meta.label;
+        else inTitle = I18n.t("参考音频路径 ") + meta.label;
+      }
     }
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
@@ -2802,14 +2830,19 @@ function nodeElement(node) {
       badge.className = "port-badge";
       if (node.kind === "music_gen") {
         badge.classList.add("zh-label");
-        badge.textContent = i === 0 ? I18n.t("提示词") : I18n.t("歌词");
+        badge.textContent = i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制");
       } else if (node.kind === "video_gen") {
-        const meta = videoGenSlotMeta(node, i);
-        if (meta.kind === "text") {
+        if (i === 0) {
           badge.classList.add("zh-label");
-          badge.textContent = I18n.t("提示词");
+          badge.textContent = I18n.t("控制");
         } else {
-          badge.textContent = meta.label;
+          const meta = videoGenSlotMeta(node, i);
+          if (meta.kind === "text") {
+            badge.classList.add("zh-label");
+            badge.textContent = I18n.t("提示词");
+          } else {
+            badge.textContent = meta.label;
+          }
         }
       } else if (node.kind === "task") {
         badge.classList.add("zh-label");
@@ -2886,21 +2919,37 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
+    else if (node.kind === "music_gen" || node.kind === "video_gen")
+      outTitle = oi === 0 ? I18n.t("输出端子（输出本节点内容）") : I18n.t("控制输出（生成完成后触发下游控制目标）");
     else if (isControlKind(node))
       outTitle = I18n.t("输出端子（连接到要控制的节点）");
     else outTitle = I18n.t("输出端子（输出本节点内容）");
     p.title = linkedOut.length ? outTitle : outTitle;
     p.style.top = outPortY(node, oi, oc) - PORT_R + "px";
     p.style.right = (PORT_OFF - PORT_R) + "px";
-    if (node.kind === "sequencer" || node.kind === "splitter" || node.kind === "task") {
+    if (
+      node.kind === "sequencer" ||
+      node.kind === "splitter" ||
+      node.kind === "task" ||
+      node.kind === "music_gen" ||
+      node.kind === "video_gen"
+    ) {
       const badge = document.createElement("span");
-      badge.className = "port-badge" + (node.kind === "task" ? " zh-label" : "");
+      badge.className =
+        "port-badge" +
+        (node.kind === "task" || node.kind === "music_gen" || node.kind === "video_gen"
+          ? " zh-label"
+          : "");
       badge.textContent =
         node.kind === "task"
           ? oi === 0
             ? I18n.t("成功")
             : I18n.t("失败")
-          : String(oi + 1);
+          : node.kind === "music_gen" || node.kind === "video_gen"
+            ? oi === 0
+              ? I18n.t("内容")
+              : I18n.t("控制")
+            : String(oi + 1);
       p.appendChild(badge);
     }
     bindPortTip(p, node, "out", oi);
@@ -5101,7 +5150,7 @@ function buildBody(node, body) {
     meta.className = "n-empty";
     meta.id = "mgmeta-" + node.id;
     meta.textContent =
-      (node.videoMode || "r2v").toUpperCase() +
+      (node.videoMode || "fl2va").toUpperCase() +
       " · " +
       (node.ratio || "16:9");
     body.appendChild(meta);
