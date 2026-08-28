@@ -18,9 +18,11 @@ const fs = require("fs");
 const http = require("http");
 const { spawn, execFile } = require("child_process");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
+const { mergeManagedProvider } = require("../config-providers.js");
 const uiBridge = require("./ui-bridge.js");
 
 const PLUGIN_ID = "tts-local";
+const TTS_PROVIDER_ID = "tts-local";
 const DEFAULT_PORT = 8770;
 const SOVITS_PORT = 9880;
 const DISK_HINT_GB = 12;
@@ -503,6 +505,80 @@ function readInstallApiKey(installDir) {
   }
 }
 
+/* ---- 语音提供商 → MTNode 配置同步（开启/运行 TTS 时自动把 API/Key/模型录入 config.json，
+      画布「文转语音」节点与 Infinity World 直接从 MTNode 配置读取该提供商）---- */
+function ttsProviderSnapshot() {
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  let apiKey = "";
+  let apiBase = `http://127.0.0.1:${port}/v1`;
+  let voices = [];
+  // 优先从 /api/status 拿实时 apiBase/apiKey/voices；后端未起时退回安装目录 .api-key
+  return fetchApiStatus()
+    .then((st) => {
+      if (st) {
+        if (String(st.apiKey || "").trim()) apiKey = String(st.apiKey).trim();
+        if (String(st.apiBase || "").trim()) apiBase = String(st.apiBase).trim();
+        if (Array.isArray(st.voices)) voices = st.voices.map((v) => String(v && (v.id || v.name) || "")).filter(Boolean);
+      }
+      if (!apiKey) apiKey = readInstallApiKey(cfg.installDir);
+      if (!apiKey && !apiBase) return null;
+      return {
+        id: TTS_PROVIDER_ID,
+        name: "GPT-SoVITS 本地 TTS",
+        type: "tts_openai",
+        baseUrl: apiBase,
+        apiKey,
+        // OpenAI 兼容 TTS：model 固定 gpt-sovits；每个音色（voice）是一个可选的「语音模型」
+        models: ["gpt-sovits", ...voices],
+        source: "tts-plugin",
+      };
+    })
+    .catch(() => {
+      const key = readInstallApiKey(cfg.installDir);
+      if (!key) return null;
+      return {
+        id: TTS_PROVIDER_ID,
+        name: "GPT-SoVITS 本地 TTS",
+        type: "tts_openai",
+        baseUrl: apiBase,
+        apiKey: key,
+        models: ["gpt-sovits"],
+        source: "tts-plugin",
+      };
+    });
+}
+
+async function syncProviderToMtnode() {
+  if (!getDataDir) return { ok: true, skipped: true };
+  const item = await ttsProviderSnapshot();
+  if (!item) return { ok: true, skipped: true, reason: "no_api" };
+  const configFile = join(getDataDir(), "config.json");
+  const result = mergeManagedProvider(configFile, item);
+  if (result.changed) {
+    broadcast("tts:providerSynced", {
+      models: (result.providers.find((p) => p.id === TTS_PROVIDER_ID) || {}).models || [],
+    });
+  }
+  return { ok: true, changed: result.changed };
+}
+
+let providerSyncTimer = null;
+function startProviderSync() {
+  if (providerSyncTimer) return;
+  syncProviderToMtnode().catch(() => {});
+  providerSyncTimer = setInterval(() => {
+    syncProviderToMtnode().catch(() => {});
+  }, 8000);
+  if (providerSyncTimer.unref) providerSyncTimer.unref();
+}
+function stopProviderSync() {
+  if (providerSyncTimer) {
+    clearInterval(providerSyncTimer);
+    providerSyncTimer = null;
+  }
+}
+
 function spawnTrayProcess() {
   if (trayRunning()) return { ok: true, reused: true };
   const cfg = loadConfig();
@@ -549,6 +625,7 @@ async function startBackend() {
     appendConsole("manager already up on :" + port + (livePid ? (" pid=" + livePid) : ""));
     spawnTrayProcess();
     saveConfig({ wantRunning: true });
+    startProviderSync();
     return { ok: true, reused: true, port, pid: livePid || undefined };
   }
 
@@ -559,6 +636,7 @@ async function startBackend() {
       if (await probeApi(port)) {
         spawnTrayProcess();
         saveConfig({ wantRunning: true });
+        startProviderSync();
         return { ok: true, reused: true, port, pid: meta.pid };
       }
       await new Promise((r) => setTimeout(r, 1500));
@@ -600,6 +678,7 @@ async function startBackend() {
     if (await probeApi(port)) {
       appendConsole("manager ready :" + port);
       spawnTrayProcess();
+      startProviderSync();
       return { ok: true, pid: child.pid, port };
     }
     await new Promise((r) => setTimeout(r, 1500));
@@ -658,6 +737,7 @@ async function stopBackend() {
   if (orphan) appendConsole("killed port listener pid=" + orphan);
   clearPidMeta();
   await stopTrayProcess();
+  stopProviderSync();
   saveConfig({ wantRunning: false });
 
   const deadline = Date.now() + 10000;
@@ -1249,6 +1329,36 @@ async function apiKeyOr() {
   return (st && st.apiKey) || "";
 }
 
+// 训练选项：只转发后端认识的字段，其它一律丢掉（面板/画布节点传什么都不会污染 API）。
+// mode: auto | fresh(重新训练) | continue(继续迭代)
+// reuseData: 已整理过的音频/文字/特征是否复用（默认 true）
+// s1Epochs/s2Epochs: 重新训练=总轮数；继续迭代=追加轮数
+function normalizeTrainOpts(opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const raw = String(o.mode || "auto").trim().toLowerCase();
+  const alias = {
+    fresh: "fresh", retrain: "fresh", new: "fresh", restart: "fresh", "重新训练": "fresh", "从头训练": "fresh",
+    continue: "continue", resume: "continue", iterate: "continue", "继续迭代": "continue", "继续训练": "continue",
+    auto: "auto", "": "auto",
+  };
+  const out = { mode: alias[raw] || "auto" };
+  if (o.reuseData === false || o.reusePrep === false || o.reuseData === "false" || o.reusePrep === "false") {
+    out.reuseData = false;
+  } else if (o.reuseData === true || o.reuseData === "true" || o.reusePrep === true) {
+    out.reuseData = true;
+  }
+  const ep = (v) => {
+    if (v == null || String(v).trim() === "") return null;
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n >= 1 && n <= 2000 ? n : null;
+  };
+  const s1 = ep(o.s1Epochs != null ? o.s1Epochs : o.s1epochs);
+  const s2 = ep(o.s2Epochs != null ? o.s2Epochs : o.s2epochs);
+  if (s1) out.s1Epochs = s1;
+  if (s2) out.s2Epochs = s2;
+  return out;
+}
+
 function backendJson(path, method, body) {
   return new Promise((resolve) => {
     const cfg = loadConfig();
@@ -1393,6 +1503,71 @@ function backendAudio(path) {
   });
 }
 
+/* ---- 画布「文转语音」节点：合成音频并写盘（OpenAI 兼容 /v1/audio/speech）---- */
+function generateTtsFile(params) {
+  params = params || {};
+  const text = String(params.text || "").trim();
+  const voice = String(params.voice || "").trim();
+  const speed = Number(params.speed) > 0 ? Number(params.speed) : 1;
+  const outputPath = String(params.outputPath || "").trim();
+  const mediaType = String(params.response_format || "wav").toLowerCase();
+  if (!text) return Promise.resolve({ ok: false, error: "text_required" });
+  if (!outputPath) return Promise.resolve({ ok: false, error: "no_output_path" });
+  return apiKeyOr().then((key) => {
+    if (!key) return { ok: false, error: "no_api_key" };
+    const cfg = loadConfig();
+    const port = Number(cfg.port) || DEFAULT_PORT;
+    const body = JSON.stringify({
+      model: String(params.model || "gpt-sovits"),
+      input: text,
+      voice,
+      response_format: mediaType,
+      speed,
+    });
+    return new Promise((resolve) => {
+      const req = http.request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: "/v1/audio/speech",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + key,
+            "Content-Length": Buffer.byteLength(body),
+          },
+          timeout: 600000,
+        },
+        (res) => {
+          const chunks = [];
+          res.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+          res.on("end", () => {
+            const buf = Buffer.concat(chunks);
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              resolve({ ok: false, status: res.statusCode, error: buf.toString("utf8").slice(0, 500) || "http_" + res.statusCode });
+              return;
+            }
+            if (!buf.length) {
+              resolve({ ok: false, error: "empty_audio" });
+              return;
+            }
+            try {
+              mk(path.dirname(outputPath));
+              fs.writeFileSync(outputPath, buf);
+              resolve({ ok: true, path: outputPath, bytes: buf.length, mime: String(res.headers["content-type"] || "audio/wav") });
+            } catch (e) {
+              resolve({ ok: false, error: "write_failed:" + String((e && e.message) || e) });
+            }
+          });
+        },
+      );
+      req.on("error", (err) => resolve({ ok: false, error: String(err.message || err) }));
+      req.write(body);
+      req.end();
+    });
+  });
+}
+
 function dialogParent() {
   try {
     if (consoleWin && !consoleWin.isDestroyed()) return consoleWin;
@@ -1481,6 +1656,16 @@ function registerTtsIpc(opts) {
   startUiSignalWatch();
   uiBridge.writeOwner(ttsRoot(), "mtnode", process.pid);
 
+  /* 后端已在运行（上次会话遗留/托盘已拉起）时，启动即同步一次提供商到 MTNode */
+  const cfg0 = loadConfig();
+  if (cfg0.wantRunning) {
+    startProviderSync();
+  } else {
+    probeApi(Number(cfg0.port) || DEFAULT_PORT).then((up) => {
+      if (up) startProviderSync();
+    });
+  }
+
   ipcMain.handle("tts:getStatus", async () => statusForUi());
   ipcMain.handle("tts:pickInstallDir", async () => pickInstallDir());
   ipcMain.handle("tts:setInstallDir", async (e, dir) => {
@@ -1506,6 +1691,8 @@ function registerTtsIpc(opts) {
     appendConsole(line);
     return { ok: true };
   });
+  ipcMain.handle("tts:generate", async (e, params) => generateTtsFile(params || {}));
+  ipcMain.handle("tts:providerSync", async () => syncProviderToMtnode());
   ipcMain.handle("tts:removePluginMeta", async () => removePluginMetaOnly());
   ipcMain.handle("tts:consoleTail", async (e, n) => consoleTail(n));
   ipcMain.handle("tts:apiFetch", async (e, { path: apiPath, method, body, apiKey }) => {
@@ -1598,8 +1785,11 @@ function registerTtsIpc(opts) {
     appendConsole("[upload] 手动路径上传 " + files.length + " 个文件");
     return backendMultipart(`/api/projects/${slug}/upload`, files);
   });
-  ipcMain.handle("tts:projectTrain", async (e, name) =>
-    backendJson(`/api/projects/${encodeURIComponent(String(name || ""))}/train`, "POST", {}),
+  ipcMain.handle("tts:projectTrain", async (e, name, opts) =>
+    backendJson(`/api/projects/${encodeURIComponent(String(name || ""))}/train`, "POST", normalizeTrainOpts(opts)),
+  );
+  ipcMain.handle("tts:projectModel", async (e, name) =>
+    backendJson(`/api/projects/${encodeURIComponent(String(name || ""))}/model`, "GET"),
   );
   ipcMain.handle("tts:projectStatus", async (e, name) =>
     backendJson(`/api/projects/${encodeURIComponent(String(name || ""))}/status`, "GET"),

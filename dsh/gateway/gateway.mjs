@@ -170,6 +170,23 @@ function applyBuiltinMounts(disabledIds) {
   }, { persist: false })
 }
 
+/* 出厂默认关闭的可挂载内置行（组合里静态 disabled: true）。
+   升级保底：mountState 早于该默认时，启动后也保持关闭，
+   避免 applyBuiltinMounts 把它们重新挂起。 */
+function shipDisabledIds() {
+  const { shipped, userPart } = readRows()
+  const out = []
+  for (const row of parsePluginRows(shipped)) {
+    const p = describePlugin(row.block, 'runtime', row)
+    if (p && p.toggleable && p.disabled && p.id) out.push(p.id)
+  }
+  for (const row of parsePluginRows(userPart)) {
+    const p = describePlugin(row.block, 'user', row)
+    if (p && p.toggleable && p.disabled && p.id && isBundledPluginName(p.name)) out.push(p.id)
+  }
+  return [...new Set(out)]
+}
+
 function migratePkgFromGateway(pkgName) {
   const root = ensureUserPluginsPkg()
   const key = pkgRootName(pkgName)
@@ -286,6 +303,19 @@ function syncUserPluginsFromHome() {
     if (mp && disabledIds.length) {
       mkdirSync(path.dirname(mp), { recursive: true })
       writeFileSync(mp, JSON.stringify({ disabled: disabledIds }, null, 2) + '\n', 'utf8')
+    }
+  }
+  /* 升级保底：出厂默认关闭的内置行（如 router-standard）在 mountState
+     早于该默认时也保持关闭，避免 applyBuiltinMounts 把它重新挂起。 */
+  const extra = shipDisabledIds().filter((id) => !disabledIds.includes(id))
+  if (extra.length) {
+    disabledIds = disabledIds.concat(extra)
+    const mp = mountStatePath()
+    if (mp) {
+      try {
+        mkdirSync(path.dirname(mp), { recursive: true })
+        writeFileSync(mp, JSON.stringify({ disabled: disabledIds }, null, 2) + '\n', 'utf8')
+      } catch { /* best-effort */ }
     }
   }
   if (disabledIds.length) applyBuiltinMounts(disabledIds)
@@ -1139,6 +1169,12 @@ const OPTIONAL_RUNTIME_IDS = new Set([
   'repeat-tool-reminder', 'tool-jobs',
 ])
 
+/* 内置但允许完整卸载的套装：设置里可「移除」（删除组合行 + 插件目录）。
+   默认随发行版关闭（cordis.yml 静态 disabled: true），需要时用户可挂载或卸载。 */
+const REMOVABLE_BUNDLED_IDS = new Set([
+  'dsh-router-standard',
+])
+
 function isBundledPluginName(name) {
   return /^\.\.?[/\\]/.test(String(name || ''))
 }
@@ -1310,7 +1346,7 @@ function describePlugin(block, kind, extra = {}) {
     core,
     disabled,
     toggleable: !core && !dynamic,
-    removable: kind === 'user' && !isBundledPluginName(namem[1]),
+    removable: kind === 'user' && (!isBundledPluginName(namem[1]) || REMOVABLE_BUNDLED_IDS.has(id)),
     source: kind === 'runtime' || isBundledPluginName(namem[1]) ? 'app' : 'config',
     detail: block.trim().slice(0, 600),
     title: meta.title || id,
@@ -1411,9 +1447,14 @@ function removePluginRow(pkg) {
   const rest = userPart.startsWith(marker) ? userPart.slice(marker.length) : userPart
   const blocks = rest.split(/\n- id: /)
   const kept = blocks
-    .filter((block) => !block.includes(`name: '${pkg}'`))
+    .filter((block, i) => {
+      if (block.includes(`name: '${pkg}'`)) return false
+      if (i === 0) return true // marker 头部，无插件行
+      const firstLine = block.split('\n')[0].trim()
+      return firstLine !== pkg // 兼容按 id 卸载
+    })
     .map((block, i) => (i === 0 ? block : '- id: ' + block))
-  writeFileSync(CORDIS_PATH, shipped + marker + kept.join(''), 'utf8')
+  writeFileSync(CORDIS_PATH, shipped + marker + kept.join('\n'), 'utf8')
   persistUserSection()
 }
 
@@ -1498,7 +1539,7 @@ async function handlePluginAdd(pkg) {
       ok: true,
       restarted: false,
       plugins: listPlugins(),
-      message: 'dsh-routing-suite 仅内置 router-standard；注入器与 router-spec 已从本应用移除。请在插件列表中挂载/取消挂载路由预设',
+      message: 'dsh-routing-suite 仅内置 router-standard；注入器与 router-spec 已从本应用移除。该预设默认不加载，可在插件列表中挂载/取消挂载或完整卸载',
     }
   }
   if (spec.kind === 'bundled') {
@@ -1524,11 +1565,12 @@ async function handlePluginAdd(pkg) {
 }
 
 async function handlePluginRemove(pkg) {
-  const target = findPlugin(pkg)
+  const target = findPlugin(pkg) || findPlugin(undefined, pkg)
+  const removableBundled = !!(target && target.id && REMOVABLE_BUNDLED_IDS.has(target.id))
   if (target && !target.removable) {
     return { ok: false, error: '内置套装插件只能取消挂载，不能移除' }
   }
-  if (target && isBundledPluginName(target.name)) {
+  if (target && isBundledPluginName(target.name) && !removableBundled) {
     return { ok: false, error: '内置套装插件只能取消挂载，不能移除' }
   }
   if (!isBundledPluginName(pkg) && !/^[A-Za-z]:[\\/]/.test(pkg) && !pkg.startsWith('/')) {
@@ -1545,6 +1587,18 @@ async function handlePluginRemove(pkg) {
   }
   removePluginRow(pkg)
   await closeAllRuntimes()
+  if (removableBundled && target) {
+    /* 完整卸载：删除随应用内置的插件目录（尽力而为；被占用/只读时仅移除组合行） */
+    try {
+      const abs = path.resolve(GATEWAY_DIR, target.name)
+      let dir = abs
+      try { if (statSync(abs).isFile()) dir = path.dirname(abs) } catch { /* ignore */ }
+      const pluginsRoot = path.resolve(GATEWAY_DIR, 'plugins')
+      if (dir.startsWith(pluginsRoot + path.sep) && existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    } catch { /* ignore */ }
+  }
   return { ok: true, restarted: true, plugins: listPlugins() }
 }
 

@@ -385,7 +385,7 @@
     "dsh-router-standard": {
       title: "标准路由（实验）",
       description:
-        "任务感知路由（Standard）：一句人格 + shell/编辑器表面，先思考再行动；首轮工具调用之后打开完整 Standard 工具集。MTNode 下会保留画布人格与 mtnode_* 工具。",
+        "任务感知路由（Standard）：一句人格 + shell/编辑器表面，先思考再行动；首轮工具调用之后打开完整 Standard 工具集。MTNode 下会保留画布人格与 mtnode_* 工具。默认不加载，可在设置中挂载；内置但允许完整卸载。",
       purpose: "按任务类型收紧首轮工具面、引导「想清楚再动手」，同时不冲掉本应用的画布能力。",
     },
   };

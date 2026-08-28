@@ -17,6 +17,12 @@ MODELS = {
     "vae_audio": "models/vae/minimax_h3_audio_vae_fp32.safetensors",
 }
 
+# 4K 超分补帧后处理权重（Real-ESRGAN x4 超分 + RIFE 补帧）
+POST_MODELS = {
+    "realesrgan_x4plus": "models/upscale_models/RealESRGAN_x4plus.pth",
+    "rife47": "custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife/rife47.pth",
+}
+
 
 def main() -> int:
     cr = comfy_root()
@@ -32,6 +38,11 @@ def main() -> int:
     for k, rel in MODELS.items():
         p = cr / Path(rel)
         report["models"][k] = p.is_file() and p.stat().st_size > 1_000_000
+
+    report["postModels"] = {}
+    for k, rel in POST_MODELS.items():
+        p = cr / Path(rel)
+        report["postModels"][k] = p.is_file() and p.stat().st_size > 1_000_000
 
     if venv_py.is_file():
         import subprocess

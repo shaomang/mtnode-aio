@@ -17,7 +17,9 @@
     "diffusionRef2va": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
     "textEncoder": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     "vaeVideo": "minimax_h3_video_vae_fp16.safetensors",
-    "vaeAudio": "minimax_h3_audio_vae_fp32.safetensors"
+    "vaeAudio": "minimax_h3_audio_vae_fp32.safetensors",
+    "upscale": "RealESRGAN_x4plus.pth",
+    "rife": "rife47.pth"
   },
   "zipUrl": "h3-runtime-1.0.6.zip"
 }

@@ -1,0 +1,576 @@
+:root {
+  /* 默认主题 = dsh web 配色（ui-theme design-platform.css dark） */
+  --bg: #151517;
+  --bg2: #1b1b1c;
+  --panel: #1b1b1c;
+  --panel2: #232324;
+  --bd: #2a2a2d;
+  --bd2: #3a3a3e;
+  --ink: #ebedf2;
+  --muted: #818590;
+  --orange: #ff8f2e;
+  --orange2: #ffb066;
+  --cyan: #38d6ff;
+  --cyan2: #7ce8ff;
+  --green: #5fd68a;
+  --red: #ff5f56;
+  --code: #1b1b1c;
+  --mono: 'Cascadia Code', 'Consolas', 'JetBrains Mono', monospace;
+  --sans: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* 旧 MTNode 配色保留为可选主题（Industrial） */
+body.theme-industrial {
+  --bg: #0d1016;
+  --bg2: #12161f;
+  --panel: #161b25;
+  --panel2: #1b2230;
+  --bd: #2a3342;
+  --bd2: #39465c;
+  --ink: #d8dee8;
+  --muted: #7f8a9c;
+  --orange: #ff8f2e;
+  --orange2: #ffb066;
+  --cyan: #38d6ff;
+  --cyan2: #7ce8ff;
+  --green: #5fd68a;
+  --red: #ff5f56;
+  --code: #0c0f15;
+}
+
+/* 亮色主题（Light）——以白色为背景，文字深色清晰可读 */
+body.theme-light {
+  --bg: #e6e9ee;
+  --bg2: #dbe0e7;
+  --panel: #f1f3f6;
+  --panel2: #e4e8ee;
+  --bd: #c6cdd6;
+  --bd2: #aab3bf;
+  --ink: #1e222b;
+  --muted: #5a6472;
+  --orange: #d9660a;
+  --orange2: #b54f04;
+  --cyan: #2068b8;
+  --cyan2: #15508f;
+  --green: #1a8a4a;
+  --red: #cf2a1e;
+  --code: #f6f8fa;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0
+}
+
+html,
+body {
+  height: 100%
+}
+
+html {
+  color-scheme: dark
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+::selection {
+  background: rgba(255, 143, 46, .35)
+}
+
+button {
+  font-family: var(--sans)
+}
+
+input,
+select,
+textarea {
+  font-family: var(--sans);
+  color-scheme: dark
+}
+
+/* 全局数字 / 日期输入：避免系统浅色控件 */
+input[type="number"],
+input[type="datetime-local"],
+input[type="date"],
+input[type="time"],
+input[type="text"],
+input[type="password"],
+input:not([type]) {
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+}
+
+input[type="number"]:focus,
+input[type="datetime-local"]:focus,
+input[type="date"]:focus,
+input[type="time"]:focus,
+input[type="text"]:focus,
+input[type="password"]:focus,
+input:not([type]):focus {
+  border-color: var(--orange)
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  opacity: .65;
+  filter: invert(.85);
+}
+
+.wait-int-lab input {
+  width: 56px;
+  flex: none;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.overlay-body input[type="text"],
+.overlay-body input[type="number"],
+.overlay-body input[type="password"],
+.overlay-body input[type="datetime-local"],
+.overlay-body textarea,
+.overlay-body select {
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.overlay-body input:focus,
+.overlay-body textarea:focus,
+.overlay-body select:focus {
+  border-color: var(--orange)
+}
+
+/* 深色确认 / 输入对话框（独立于 #overlay） */
+.mt-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 2400;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(5, 8, 12, .72);
+}
+
+.mt-dialog.on {
+  display: flex;
+  animation: toastIn .14s ease-out
+}
+
+.mt-dialog-box {
+  width: min(420px, 94vw);
+  max-height: min(80vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-top: 3px solid var(--orange);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .55);
+}
+
+.mt-dialog-head {
+  padding: 10px 14px;
+  border-bottom: 2px solid var(--bd);
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.mt-dialog-head b {
+  color: var(--orange2);
+  font-weight: 700
+}
+
+.mt-dialog-body {
+  padding: 14px;
+  overflow: auto
+}
+
+.mt-dialog-msg {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mt-dialog-input {
+  width: 100%;
+  margin-top: 10px;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.mt-dialog-input:focus {
+  border-color: var(--orange)
+}
+
+.mt-dialog-foot {
+  padding: 10px 14px;
+  border-top: 2px solid var(--bd);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.node-guide-dlg .mt-dialog-box.node-guide-box {
+  width: min(720px, 94vw);
+  max-height: min(86vh, 760px);
+}
+
+.node-guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.node-guide-x {
+  flex: none;
+  padding: 2px 8px;
+  letter-spacing: 0
+}
+
+.node-guide-body {
+  flex: 1;
+  min-height: 180px;
+  max-height: min(62vh, 560px);
+}
+
+.node-guide-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0 14px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: #0d1016;
+}
+
+.node-guide-body h1 {
+  font-size: 16px;
+  margin: 0 0 8px;
+  color: var(--orange2)
+}
+
+.node-guide-body h2 {
+  font-size: 13px;
+  margin: 14px 0 6px;
+  color: var(--cyan2)
+}
+
+.node-guide-foot-hint,
+.node-guide-dlg .n-empty {
+  flex: 1;
+  min-width: 0
+}
+
+.fn-ctx .ctx-kind-icon.kind-guide {
+  color: #f0c14d
+}
+
+/* ===== 内置使用手册 ===== */
+.app-docs-dlg {
+  z-index: 2460;
+  padding: 10px
+}
+
+.app-docs-dlg .mt-dialog-box.app-docs-box {
+  width: min(96vw, 1280px);
+  height: min(94vh, 920px);
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-top: 3px solid var(--orange);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .6);
+}
+
+.app-docs-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--bd);
+  flex: none;
+}
+
+.app-docs-head b {
+  color: var(--orange2);
+  font-weight: 800;
+  letter-spacing: 1px;
+  font-size: 13px
+}
+
+.app-docs-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none
+}
+
+.app-docs-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.app-docs-nav {
+  width: 232px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 2px solid var(--bd);
+  background: rgba(0, 0, 0, .18);
+}
+
+.app-docs-filter {
+  margin: 8px 8px 4px;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.app-docs-filter:focus {
+  border-color: var(--orange)
+}
+
+.app-docs-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 6px 12px;
+}
+
+.app-docs-sec {
+  margin: 6px 0 2px
+}
+
+.app-docs-sec-title {
+  font-size: 10.5px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  font-weight: 800;
+  padding: 6px 8px 4px;
+  text-transform: uppercase;
+}
+
+html:not([lang="en"]) .app-docs-sec-title {
+  letter-spacing: 2px;
+  text-transform: none
+}
+
+.app-docs-page-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ink);
+  padding: 5px 8px;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.app-docs-page-btn:hover {
+  border-color: var(--bd2);
+  color: var(--orange2)
+}
+
+.app-docs-page-btn.on {
+  border-color: var(--orange);
+  color: var(--orange2);
+  background: rgba(255, 143, 46, .08);
+}
+
+.app-docs-article {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 28px;
+}
+
+.app-docs-article.md h1 {
+  font-size: 18px;
+  margin: 0 0 10px
+}
+
+.app-docs-article.md img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 10px 0 16px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: #0d1016;
+}
+
+.app-docs-ask {
+  display: none;
+  width: min(360px, 38vw);
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 2px solid var(--bd);
+  background: linear-gradient(180deg, #141820, var(--panel));
+}
+
+.app-docs-dlg.ask-on .app-docs-ask {
+  display: flex
+}
+
+.app-docs-ask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+  flex: none;
+}
+
+.app-docs-ask-head b {
+  color: var(--cyan2);
+  font-size: 12px;
+  letter-spacing: 1px
+}
+
+.app-docs-ask-sub {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.app-docs-ask-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.app-docs-ask-msg {
+  max-width: 100%
+}
+
+.app-docs-ask-msg .chat-bubble {
+  display: inline-block;
+  max-width: 100%;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.app-docs-ask-msg.me {
+  align-self: flex-end
+}
+
+.app-docs-ask-msg.me .chat-bubble {
+  background: #95ec69;
+  color: #0d1016
+}
+
+.app-docs-ask-msg.ai .chat-bubble {
+  background: #1a1f28;
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+}
+
+.app-docs-ask-msg.ai .chat-bubble .md {
+  color: var(--ink)
+}
+
+.app-docs-ask-msg.ai .chat-bubble .md h1,
+.app-docs-ask-msg.ai .chat-bubble .md h2,
+.app-docs-ask-msg.ai .chat-bubble .md h3 {
+  color: var(--orange2)
+}
+
+.app-docs-ask-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 8px 4px
+}
+
+.app-docs-ask-foot {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  padding: 8px 10px;
+  border-top: 1px solid var(--bd);
+}
+
+.app-docs-ask-foot textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 96px;
+  resize: vertical;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.app-docs-ask-foot textarea:focus {
+  border-color: var(--cyan)
+}
+
+.app-docs-ask-foot button {
+  flex: none;
+  height: 32px
+}
+

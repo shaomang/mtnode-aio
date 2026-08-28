@@ -55,6 +55,27 @@ const RATIOS = {
   "21:9": [1344, 576],
 };
 
+/* 4K 超分补帧后处理：Real-ESRGAN x4 超分 + RIFE 补帧（原生分辨率补帧→再超分，
+ * 峰值显存最低，24G 内稳定）。RIFE 模型由 ComfyUI-Frame-Interpolation 提供，
+ * RealESRGAN 走 ComfyUI 原生 UpscaleModelLoader + KJNodes 分块上采样。 */
+const POST_MODELS = {
+  upscale: "RealESRGAN_x4plus.pth",
+  rife: "rife47.pth",
+};
+
+/* 按比例计算 4K 目标分辨率（长边 3840，短边按比例取偶） */
+function post4kDims(width, height) {
+  const w = Math.max(1, Math.round(Number(width) || 1344));
+  const h = Math.max(1, Math.round(Number(height) || 768));
+  const long = Math.max(w, h);
+  const scale = 3840 / long;
+  let tw = Math.round(w * scale);
+  let th = Math.round(h * scale);
+  if (tw % 2) tw += 1;
+  if (th % 2) th += 1;
+  return [tw, th];
+}
+
 let getDataDir = null;
 let getMainWin = null;
 let appRoot = null;
@@ -386,12 +407,24 @@ function projectSignals(dir) {
     modelExists(comfy, ["models", "text_encoders", MODELS.clip]) &&
     modelExists(comfy, ["models", "vae", MODELS.vaeVideo]);
   const hasRef = !!comfy && modelExists(comfy, ["models", "diffusion_models", MODELS.ref2va]);
+  /* 4K 超分补帧后处理就绪：Real-ESRGAN + RIFE 模型都在 */
+  const hasPost =
+    !!comfy &&
+    modelExists(comfy, ["models", "upscale_models", POST_MODELS.upscale]) &&
+    modelExists(comfy, [
+      "custom_nodes",
+      "ComfyUI-Frame-Interpolation",
+      "ckpts",
+      "rife",
+      POST_MODELS.rife,
+    ]);
   return {
     exists: fs.existsSync(root),
     scaffold,
     venv,
     models,
     hasRef2va: hasRef,
+    hasPost,
     ready: scaffold && venv && models,
     comfyDir: comfy || "",
   };
@@ -1697,10 +1730,54 @@ function buildH3Workflow(params, uploaded) {
     samples: link(latentForDecode, 0),
     vae: link(vaeAudioNode, 0),
   });
+  let videoImagesLink = link(decodeNode, 0);
+  let videoFps = Number(params.fps) || 24;
+  /* 4K 超分补帧后处理（默认开）：原生分辨率 RIFE 补帧 → RealESRGAN x4 分块超分
+   * → 缩放到 4K（长边 3840）。补帧在低分辨率做（省显存且时序更稳），超分逐批
+   * 处理控制峰值显存，24G 内可跑；任一环节缺模型/节点时报错可见日志。 */
+  if (params.postEnabled !== false) {
+    if (params.postInterp !== false) {
+      const interpNode = String(id++);
+      const mult = Math.max(1, Math.min(8, Math.round(Number(params.postInterpMultiplier) || 2)));
+      nodes[interpNode] = w("RIFE VFI", {
+        ckpt_name: POST_MODELS.rife,
+        frames: videoImagesLink,
+        clear_cache_after_n_frames: 10,
+        multiplier: mult,
+        fast_mode: false,
+        ensemble: true,
+        scale_factor: 1.0,
+        dtype: "float32",
+        torch_compile: false,
+        batch_size: 1,
+      });
+      videoImagesLink = link(interpNode, 0);
+      videoFps = Math.max(1, Math.round(videoFps * mult));
+    }
+    const upscaleModelNode = String(id++);
+    nodes[upscaleModelNode] = w("UpscaleModelLoader", { model_name: POST_MODELS.upscale });
+    const upscaleNode = String(id++);
+    nodes[upscaleNode] = w("ImageUpscaleWithModelBatched", {
+      upscale_model: link(upscaleModelNode, 0),
+      images: videoImagesLink,
+      per_batch: Math.max(1, Math.round(Number(params.postPerBatch) || 4)),
+    });
+    videoImagesLink = link(upscaleNode, 0);
+    const [tw, th] = post4kDims(params.width, params.height);
+    const scaleNode = String(id++);
+    nodes[scaleNode] = w("ImageScale", {
+      image: videoImagesLink,
+      upscale_method: "lanczos",
+      width: tw,
+      height: th,
+      crop: "disabled",
+    });
+    videoImagesLink = link(scaleNode, 0);
+  }
   nodes[createVideoNode] = w("CreateVideo", {
-    images: link(decodeNode, 0),
+    images: videoImagesLink,
     audio: link(decodeAudioNode, 0),
-    fps: Number(params.fps) || 24,
+    fps: videoFps,
     bit_depth: Number(params.bitDepth) || 8,
   });
   nodes[saveVideoNode] = w("SaveVideo", {
@@ -1956,6 +2033,11 @@ async function generateVideo(params) {
       filenamePrefix: params.filenamePrefix || "video/MiniMax_H3",
       refImageSize: params.refImageSize || "match",
       hasRef2va: sig.hasRef2va,
+      /* 4K 超分补帧后处理 */
+      postEnabled: params.postEnabled !== false,
+      postInterp: params.postInterp !== false,
+      postInterpMultiplier: params.postInterpMultiplier != null ? Number(params.postInterpMultiplier) : 2,
+      postPerBatch: params.postPerBatch != null ? Number(params.postPerBatch) : 4,
     };
 
     const promptGraph = buildH3Workflow(wfParams, uploaded);

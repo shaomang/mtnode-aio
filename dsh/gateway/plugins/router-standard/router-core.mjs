@@ -94,12 +94,16 @@ export function personaFor(mode, modelId) {
   }
 }
 
-/** First-turn core tools (shell added dynamically by the plugin). */
+/** First-turn core tools (shell added dynamically by the plugin).
+ *  glob/grep are ALWAYS included: the deployment system prompt mandates
+ *  "Use the glob tool — not shell find" / "Use the grep tool — not shell
+ *  grep or rg". Hiding them from the first-turn catalog makes the model
+ *  report the tools as missing while still being told to use them. */
 export function coreFor(mode) {
   switch (bandOf(mode)) {
     case 'spec': return ['read', 'edit', 'glob', 'grep'] // read-first
     case 'transition': return ['read', 'edit', 'write', 'glob', 'grep'] // union
-    default: return ['read', 'write', 'edit'] // write-first
+    default: return ['read', 'write', 'edit', 'glob', 'grep'] // write-first + search
   }
 }
 

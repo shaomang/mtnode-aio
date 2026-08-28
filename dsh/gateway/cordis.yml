@@ -437,9 +437,10 @@
     thinking: enabled
 
 # ── user plugins (managed from MTNode settings) ──
+# router-standard（实验性路由预设）：默认不加载；需要时可在设置中挂载，也可完整卸载。
 - id: dsh-router-standard
   name: './plugins/router-standard/router-bootstrap.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: true
 
 # BongoChat：用人设环境变量覆盖 system prompt，并裁剪工具为联网搜索
 - id: bongochat-prompt

@@ -310,6 +310,7 @@ contextBridge.exposeInMainWorld('api', {
   ttsPickInstallDir: () => ipcRenderer.invoke('tts:pickInstallDir'),
   ttsRemovePluginMeta: () => ipcRenderer.invoke('tts:removePluginMeta'),
   ttsApiFetch: (opts) => ipcRenderer.invoke('tts:apiFetch', opts || {}),
+  ttsGenerate: (opts) => ipcRenderer.invoke('tts:generate', opts || {}),
   onTtsProgress: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -323,6 +324,13 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('tts:consoleChanged', handler);
     return () => ipcRenderer.removeListener('tts:consoleChanged', handler);
+  },
+  onTtsProviderSynced: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('tts:providerSynced', handler);
+    return () => ipcRenderer.removeListener('tts:providerSynced', handler);
   },
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),

@@ -166,6 +166,8 @@
               </button>
               <button type="button" class="agent-chip" id="agentCmdTrigger" data-i18n-title="技能" title="技能"><span data-i18n="技能">技能</span></button>
               <button type="button" class="agent-chip" id="agentPlanToggle" data-i18n-title="规划模式" title="规划模式"><span data-i18n="规划">规划</span></button>
+              <button type="button" class="agent-chip" id="agentCompactBtn" data-i18n-title="压缩上下文" title="压缩上下文"><span data-i18n="压缩">压缩</span></button>
+              <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span></button>
             </div>
             <div class="agent-composer-card">
               <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
@@ -175,6 +177,7 @@
             </div>
             <div class="agent-menu" id="agentModelMenu" hidden></div>
             <div class="agent-menu" id="agentCmdMenu" hidden></div>
+            <div class="agent-menu agent-tools-menu" id="agentToolsMenu" hidden></div>
           </div>
         </div>
       </div>
@@ -273,6 +276,15 @@
 <script src="i18n.js"></script>
 <script src="dsh-plugin-copy.js"></script>
 <script src="app.js"></script>
+<script src="app-agent.js"></script>
+<script src="app-db.js"></script>
+<script src="app-canvas.js"></script>
+<script src="app-nodes.js"></script>
+<script src="app-store.js"></script>
+<script src="app-plugins.js"></script>
+<script src="app-settings.js"></script>
+<script src="app-assist.js"></script>
+<script src="app-boot.js"></script>
 <script src="zen.js"></script>
 </body>
 </html>

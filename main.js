@@ -425,7 +425,12 @@ ipcMain.handle("config:save", (e, cfg) => {
   const next = Object.assign({}, existing, incoming);
   if (Array.isArray(incoming.providers)) {
     const managed = (existing.providers || []).filter(
-      (p) => p && (p.source === "llama-plugin" || p.id === "llama-local"),
+      (p) =>
+        p &&
+        (p.source === "llama-plugin" ||
+          p.id === "llama-local" ||
+          p.source === "tts-plugin" ||
+          p.id === "tts-local"),
     );
     const saved = incoming.providers.slice();
     const savedIds = new Set(saved.map((p) => String(p.id || "")));

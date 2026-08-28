@@ -172,12 +172,12 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 1. **硬件探测**（见上）。GPU 非 NVIDIA / 驱动不支持 CUDA 13 → fail 并写 reason。
 2. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `requirements.txt`（保留已有 ComfyUI/models/output）；或用内置脚本。
 3. 探测 CUDA Python → 写 `.cuda-python`（仅作 venv 基座）。
-4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖、TeaCache + KJNodes。
+4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖、TeaCache + KJNodes + **ComfyUI-Frame-Interpolation（4K 补帧）**。
    - 装完**必须**校验 `torch.cuda.is_available()` 为真且日志里 cuda backend 未被禁用；否则按「驱动太旧」处理。
    - pip 用 `--isolated` 避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）。
 5. 按需静默给 `nodes_minimax_h3.py` 加 `**legacy_refs` 折叠（幂等，见上）；如需，补 `polyfill`。
-6. `.\scripts\download_models.ps1`（优先 ModelScope `Comfy-Org/MiniMax-H3`，再 HuggingFace）。
-7. 冒烟：`import torch; assert torch.cuda.is_available(); import comfy_kitchen`；确认模型文件非空（>1MB）。
+6. `.\scripts\download_models.ps1`（优先 ModelScope `Comfy-Org/MiniMax-H3`，再 HuggingFace）；脚本还会拉 **RealESRGAN_x4plus.pth → models/upscale_models/** 与 **rife47.pth → custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife/**（4K 超分补帧后处理权重）。
+7. 冒烟：`import torch; assert torch.cuda.is_available(); import comfy_kitchen`；确认模型文件非空（>1MB）；确认 `custom_nodes\ComfyUI-Frame-Interpolation` 存在且 `ckpts\rife\rife47.pth` 非空。
 
 ## 自我修复模式（dsh）
 

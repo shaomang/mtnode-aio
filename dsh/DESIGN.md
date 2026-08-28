@@ -184,9 +184,10 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
   `mtnode_app` 的 `list_dsh_plugins` / `install_dsh_plugin` / `remove_dsh_plugin` /
   `set_dsh_plugin` 管理（安装/移除/挂载需确认）。
 - 已内置 [dsh-router-standard](https://github.com/yjh051108/dsh-router-standard)
-  (`./plugins/router-standard/router-bootstrap.mjs`):默认挂载,assemble 永不抛错,
-  保留 MTNode persona 与 `mtnode_*` 工具。注入器与 router-spec 不随应用分发。
-  见 `dsh/gateway/plugins/README.md`。
+  (`./plugins/router-standard/router-bootstrap.mjs`):**默认不加载**(组合行静态
+  `disabled: true`),assemble 永不抛错,保留 MTNode persona 与 `mtnode_*` 工具;
+  设置里可挂载/取消挂载,也可完整卸载(移除组合行 + 插件目录)。
+  注入器与 router-spec 不随应用分发。见 `dsh/gateway/plugins/README.md`。
 - 高级用户可直接编辑 cordis.yml(只读展示 + 复制路径)。
 - 插件声明自己不保证 rc 版本兼容;安装失败回滚 package.json 与 cordis.yml。
 

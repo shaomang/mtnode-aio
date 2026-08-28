@@ -36,6 +36,8 @@
     if (proj.scaffold) bits.push("脚手架✓");
     if (proj.venv) bits.push("venv✓");
     if (proj.models) bits.push("模型✓");
+    if (proj.hasPost) bits.push("4K后处理✓");
+    else if (proj.venv) bits.push("4K后处理待装");
     diskHint.textContent =
       `建议预留 ≥${st.diskHintGb || 65}GB。` +
       (bits.length ? " 当前：" + bits.join(" · ") : " 尚未检测到完整安装。");

@@ -315,6 +315,10 @@
     "删除画布": "Delete canvas",
     "删除会话「": "Delete session \"",
     "上文已压缩": "Context compacted",
+    "压缩": "Compact",
+    "压缩上下文": "Compact context",
+    "当前会话没有可压缩的消息": "No messages to compact in this session",
+    "运行中不可压缩：请等待当前会话结束": "Cannot compact while running — wait for the current run to end",
     "上下文窗口": "Context window",
     "审批失败：": "Approval failed: ",
     "输入端子 ": "Input port ",
@@ -589,6 +593,10 @@
     "已解散组（节点保留）": "Ungrouped (nodes kept)",
     "已自动执行上游节点：": "Auto-ran upstream nodes: ",
     "已自动执行下游节点：": "Auto-ran downstream nodes: ",
+    "本节点已完成；失控保护已关闭自动级联，下游 ":
+      "Node finished. Runaway guard is on, so nothing auto-ran next — ",
+    " 个节点需手动 ▶（或用控制节点执行）":
+      " downstream node(s) need a manual ▶ (or use a control node).",
     "下游已有内容": "Downstream already has output",
     "下游节点已有输出。继续执行将覆盖这些内容，也可以到此为止、不继续执行下游。":
       "Some downstream nodes already have output. Continue to overwrite them, or stop here and leave them unchanged.",
@@ -1758,6 +1766,11 @@
     "（调用前会请用户确认）。": " (will ask before use).",
     "批准": "Allow",
     "询问": "Ask",
+    "工具许可 · ": "Tool access · ",
+    "切换工具预设": "Switch tool preset",
+    "全部允许": "Allow all",
+    "将当前预设的所有工具设为「批准」": "Set every tool of the current preset to Allow",
+    "已全部设为允许": "All tools set to Allow",
     "Agent 请求使用工具：": "Agent requests tool: ",
     "工具许可询问": "Tool permission",
     "用户拒绝": "User denied",
