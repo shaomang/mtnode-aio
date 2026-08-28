@@ -2718,11 +2718,6 @@ async function playVideoGenNode(node, quiet) {
         denoise: node.denoise != null ? Number(node.denoise) : 1,
         shiftVideo: node.shiftVideo != null ? Number(node.shiftVideo) : 12,
         shiftAudio: node.shiftAudio != null ? Number(node.shiftAudio) : 3,
-        teaEnabled: node.optTeaCache !== false && node.teaEnabled !== false,
-        teaThresh: node.teaThresh != null ? Number(node.teaThresh) : 0.15,
-        teaStart: node.teaStart != null ? Number(node.teaStart) : 2,
-        teaEnd: node.teaEnd != null ? Number(node.teaEnd) : -2,
-        optTeaCache: node.optTeaCache !== false,
         optEasyCache: node.optEasyCache !== false,
         easyReuse: node.easyReuse != null ? Number(node.easyReuse) : 0.2,
         easyStart: node.easyStart != null ? Number(node.easyStart) : 0.15,
@@ -2748,6 +2743,7 @@ async function playVideoGenNode(node, quiet) {
           node.postInterpMultiplier != null ? Number(node.postInterpMultiplier) : 2,
         postPerBatch: node.postPerBatch != null ? Number(node.postPerBatch) : 4,
         refImageSize: node.refImageSize || "match",
+        outputRes: node.outputRes || "auto",
         fps: Number(node.fps) || 24,
         bitDepth: Number(node.bitDepth) || 8,
         videoFormat: node.videoFormat || "auto",
@@ -4771,6 +4767,127 @@ function connect(fromId, toId, toIndex, fromIndex) {
   renderStatus();
 }
 
+/* ────────────────────────────────────────────────────────────
+   跨超级节点连接（agent 内置工具）
+   让不同层级 / 不同超级节点内的任意两个节点互相连通：
+   从源节点向上逐层「汇入」各自超级节点的外部输出端子，
+   再向目标节点逐层「桥接」各自超级节点的外部输入端子，
+   顶层超级节点之间直接相连，最终 from → to 贯通。
+   ──────────────────────────────────────────────────────────── */
+function superAncestorChainOf(n) {
+  /* 自内向外收集 n 的所有超级节点祖先（含最近的），不含 n 自身 */
+  const chain = [];
+  let cur = n && nodeById(n.parentSuperId);
+  const seen = new Set();
+  while (cur && cur.kind === "super" && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    chain.push(cur);
+    cur = nodeById(cur.parentSuperId);
+  }
+  return chain;
+}
+
+/** 源→目标是否已存在任意端子上的连线（幂等保护，避免重复调用累积冗余线） */
+function wireExistsBetween(fromId, toId) {
+  return (S.wf && S.wf.wires || []).some(
+    (w) => w.from === fromId && w.to === toId,
+  );
+}
+
+/** 把一个内部节点「汇入」它的直属超级节点：node → super（占用 super 的外部输出端子） */
+function superFeedUp(node, superNode, warnings) {
+  if (!node || !superNode || !nodeById(node.id) || !nodeById(superNode.id)) return;
+  if (wireExistsBetween(node.id, superNode.id)) return; /* 已连则跳过 */
+  const err = connectError(node.id, superNode.id, null, 0);
+  if (err) {
+    if (warnings) warnings.push(I18n.t("跨级汇入失败：") + (node.title || node.id) + " → " + (superNode.title || superNode.id) + "：" + err);
+    return;
+  }
+  addWire(node.id, superNode.id, null, { fromIndex: 0 });
+}
+
+/** 把超级节点的外部输入「桥接」到内部子节点：super → node（占用 super 的外部输入端子） */
+function superBridgeDown(superNode, node, warnings) {
+  if (!superNode || !node || !nodeById(superNode.id) || !nodeById(node.id)) return;
+  if (wireExistsBetween(superNode.id, node.id)) return; /* 已连则跳过 */
+  const err = connectError(superNode.id, node.id, null, 0);
+  if (err) {
+    if (warnings) warnings.push(I18n.t("跨级桥接失败：") + (superNode.title || superNode.id) + " → " + (node.title || node.id) + "：" + err);
+    return;
+  }
+  addWire(superNode.id, node.id, null, { fromIndex: 0 });
+}
+
+/** 上层超级节点 → 下层超级节点（顶层连接，或层间贯穿） */
+function superLinkOuter(superFrom, superTo, warnings) {
+  if (!superFrom || !superTo || superFrom.id === superTo.id) return;
+  if (nodeById(superFrom.id) && nodeById(superTo.id)) {
+    if (wireExistsBetween(superFrom.id, superTo.id)) return; /* 已连则跳过 */
+    const err = connectError(superFrom.id, superTo.id, null, 0);
+    if (err) {
+      if (warnings) warnings.push(I18n.t("超级节点连接失败：") + (superFrom.title || superFrom.id) + " → " + (superTo.title || superTo.id) + "：" + err);
+      return;
+    }
+    addWire(superFrom.id, superTo.id, null, { fromIndex: 0 });
+  }
+}
+
+/** 单对跨超级节点连接 from → to；返回实际建立的连线条数 */
+function applySuperConnectOne(fromNode, toNode, warnings) {
+  if (!fromNode || !toNode) return 0;
+  if (fromNode.id === toNode.id) {
+    if (warnings) warnings.push(I18n.t("不能连接同一节点"));
+    return 0;
+  }
+  const fromChain = superAncestorChainOf(fromNode); /* 源侧 super 链（自内向外） */
+  const toChain = superAncestorChainOf(toNode);     /* 目标侧 super 链（自内向外） */
+  let made = 0;
+  /* 1) 源侧逐层上传：from → 最近 super → 再上层 super … */
+  let prev = fromNode;
+  for (const sup of fromChain) {
+    superFeedUp(prev, sup, warnings);
+    made++;
+    prev = sup;
+  }
+  /* 2) 目标侧逐层下发：最外层 super → … → 最近 super → to */
+  const toRev = toChain.slice().reverse();
+  let next = toNode;
+  for (const sup of toRev) {
+    superBridgeDown(sup, next, warnings);
+    made++;
+    next = sup;
+  }
+  /* 3) 顶层相连：源侧最外层 super ↔ 目标侧最外层 super */
+  const topFrom = fromChain.length ? fromChain[fromChain.length - 1] : fromNode;
+  const topTo = toChain.length ? toChain[toChain.length - 1] : toNode;
+  if (topFrom.id !== topTo.id) {
+    superLinkOuter(topFrom, topTo, warnings);
+    made++;
+  }
+  return made;
+}
+
+/** agent 工具入口：superConnect: [{from, to, fromIndex?}] */
+function applySuperConnect(pairs, ctx) {
+  const warnings = ctx && ctx.warnings ? ctx.warnings : [];
+  const connected = ctx && ctx.connected ? ctx.connected : [];
+  const aliasMap = ctx && ctx.aliasMap ? ctx.aliasMap : null;
+  let madeTotal = 0;
+  for (const pair of (pairs || []).slice(0, 20)) {
+    const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
+    const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
+    if (!a || !b) continue;
+    const before = (S.wf && S.wf.wires ? S.wf.wires : []).length;
+    const made = applySuperConnectOne(a, b, warnings);
+    if (made) {
+      connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title, viaSuper: true });
+      madeTotal += made;
+    }
+  }
+  return madeTotal;
+}
+
+
 function clipStr(s, n) {
   s = String(s == null ? "" : s);
   return s.length > n ? s.slice(0, n) + "…" : s;
@@ -4782,11 +4899,90 @@ function snapTextField(raw) {
   return { text: s, textLen: s.length };
 }
 
-function canvasSnapshot() {
+/* canvas_get 颗粒度：
+   detail   = 节点字段档位：minimal（仅 id/kind/title/位置/状态/层级/tags）| standard（+全部配置字段与正文长度，不含正文）| full（全部，默认）
+   ids      = 只返回这些节点（按 id 或唯一标题匹配），wires 随之收窄
+   bodies   = 是否返回正文全文（text/prompt/task/goal）；缺省：full 时为 true，其余为 false
+   bodyLimit= 正文按 N 字符截断（0=不限）；*Len 始终为真实长度
+   sections = 重型块白名单（nodes/marks/wires/groups/taskTree/superTree/tagCatalog/workflows/selection），
+              在 canvasSnapshotFull 末尾过滤；小上下文（workflow/view/cam/imageSizes/kinds/markColors/
+              taskFocus/superFocus/assistScope/scopeNote）恒保留 */
+const NODE_MINIMAL_KEYS = [
+  "id", "kind", "title", "x", "y", "w", "h", "running",
+  "parentTaskId", "parentSuperId", "taskStatus", "tags",
+];
+const NODE_BODY_KEYS = ["text", "prompt", "task", "goal"];
+const SNAPSHOT_HEAVY_SECTIONS = [
+  "nodes", "marks", "wires", "groups", "taskTree", "superTree",
+  "tagCatalog", "workflows", "selection",
+];
+
+function normalizeSnapshotOpts(opts) {
+  opts = opts || {};
+  const detail =
+    opts.detail === "minimal" || opts.detail === "standard"
+      ? opts.detail
+      : "full";
+  const wantBodies =
+    opts.bodies === undefined ? detail === "full" : !!opts.bodies;
+  const bodyLimit = Math.max(0, Math.round(Number(opts.bodyLimit) || 0));
+  const ids =
+    Array.isArray(opts.ids) && opts.ids.length
+      ? opts.ids.map((x) => (x == null ? "" : String(x))).filter(Boolean)
+      : null;
+  return { detail, wantBodies, bodyLimit, onlyIds: ids };
+}
+
+function nodeInFilter(n, o) {
+  if (!o.onlyIds) return true;
+  return o.onlyIds.some((t) => n.id === t || n.title === t);
+}
+
+function pruneNodeSnap(node, o) {
+  if (!node) return node;
+  if (o.detail === "minimal") {
+    const out = {};
+    for (const k of NODE_MINIMAL_KEYS) {
+      if (node[k] !== undefined) out[k] = node[k];
+    }
+    return out;
+  }
+  if (!o.wantBodies) {
+    const out = {};
+    for (const k of Object.keys(node)) {
+      if (!NODE_BODY_KEYS.includes(k)) out[k] = node[k];
+    }
+    return out;
+  }
+  if (o.bodyLimit > 0) {
+    for (const k of NODE_BODY_KEYS) {
+      const v = node[k];
+      if (typeof v === "string" && v.length > o.bodyLimit) {
+        node[k] = v.slice(0, o.bodyLimit);
+      }
+    }
+  }
+  return node;
+}
+
+function applySnapshotSectionFilter(snap, sections) {
+  if (!snap || !Array.isArray(sections) || !sections.length) return snap;
+  const keep = new Set(sections.map((s) => String(s)));
+  for (const k of SNAPSHOT_HEAVY_SECTIONS) {
+    if (!keep.has(k)) delete snap[k];
+  }
+  return snap;
+}
+
+function canvasSnapshot(opts) {
+  const o = normalizeSnapshotOpts(opts);
   const wf = S.wf || { id: "", name: "", nodes: [], wires: [], groups: [], marks: [] };
-  const scopeNodes = (wf.nodes || []).filter(
-    (n) => !isSuperIoNode(n) && nodeInCurrentScope(n),
-  );
+  const scopeNodes = (wf.nodes || [])
+    .filter(
+      (n) => !isSuperIoNode(n) && nodeInCurrentScope(n),
+    )
+    .filter((n) => nodeInFilter(n, o));
+  const selNodeIds = o.onlyIds ? new Set(scopeNodes.map((n) => n.id)) : null;
   return {
     workflow: {
       id: wf.id,
@@ -4846,7 +5042,7 @@ function canvasSnapshot() {
         n.task != null ? snapTextField(n.task) : null;
       const goalSnap =
         n.kind === "task" ? snapTextField(n.goal) : null;
-      return {
+      const node = {
       id: n.id,
       kind: n.kind,
       title: n.title,
@@ -4995,6 +5191,26 @@ function canvasSnapshot() {
       counterCount: n.kind === "counter" ? n.counterCount || 0 : undefined,
       mutexInputs: n.kind === "mutex" ? n.mutexInputs || 2 : undefined,
       mutexMode: n.kind === "mutex" ? n.mutexMode || "first" : undefined,
+      /* video_gen / music_gen 配置（agent 可读可改） */
+      videoMode: n.kind === "video_gen" ? n.videoMode || "fl2va" : undefined,
+      duration:
+        n.kind === "video_gen" ? Number(n.duration) || 5 : undefined,
+      outputRes:
+        n.kind === "video_gen" ? n.outputRes || "auto" : undefined,
+      steps: n.kind === "video_gen" ? Number(n.steps) || 20 : undefined,
+      ratio: n.kind === "video_gen" ? n.ratio || "16:9" : undefined,
+      postEnabled:
+        n.kind === "video_gen" ? n.postEnabled !== false : undefined,
+      postInterp:
+        n.kind === "video_gen" ? n.postInterp !== false : undefined,
+      attempts:
+        n.kind === "video_gen" || n.kind === "music_gen"
+          ? Math.max(1, Math.min(10, Math.round(Number(n.attempts) || 1)))
+          : undefined,
+      outputPath:
+        n.kind === "video_gen" || n.kind === "music_gen"
+          ? mediaGenOutputRaw(n) || n.outputPath || undefined
+          : undefined,
       goal: goalSnap ? goalSnap.text : undefined,
       goalLen: goalSnap ? goalSnap.textLen : undefined,
       steps:
@@ -5002,7 +5218,8 @@ function canvasSnapshot() {
           ? (n.steps || []).map((s) => (s && s.title) || "")
           : undefined,
       taskStatus: n.kind === "task" ? n.taskStatus || "pending" : undefined,
-    };
+      };
+      return pruneNodeSnap(node, o);
     }),
     marks: (wf.marks || [])
       .filter((m) => markInCurrentScope(m))
@@ -5026,7 +5243,9 @@ function canvasSnapshot() {
       .filter((w) => {
         const a = nodeById(w.from);
         const b = nodeById(w.to);
-        return a && b && nodeInCurrentScope(a) && nodeInCurrentScope(b);
+        if (!a || !b || !nodeInCurrentScope(a) || !nodeInCurrentScope(b)) return false;
+        if (selNodeIds && (!selNodeIds.has(a.id) || !selNodeIds.has(b.id))) return false;
+        return true;
       })
       .map((w) => {
       const a = nodeById(w.from);
@@ -5121,8 +5340,8 @@ function applyAssistScopeToSnapshot(snap, opts) {
   return snap;
 }
 
-async function canvasSnapshotFull() {
-  const snap = canvasSnapshot();
+async function canvasSnapshotFull(opts) {
+  const snap = canvasSnapshot(opts || {});
   let workflows = [];
   try {
     workflows = await window.api.wfList();
@@ -5140,7 +5359,9 @@ async function canvasSnapshotFull() {
   }));
   snap.assistOpen = !!S.assistOpen;
   snap.sidebarOpen = !!S.sidebarOpen;
-  return applyAssistScopeToSnapshot(snap);
+  applyAssistScopeToSnapshot(snap);
+  applySnapshotSectionFilter(snap, (opts || {}).sections);
+  return snap;
 }
 
 function resolveAppNode(token, warnings) {
@@ -5812,6 +6033,7 @@ function collectCanvasEditToolKeys(params) {
   const updates = Array.isArray(params.update) ? params.update : [];
   const connects = Array.isArray(params.connect) ? params.connect : [];
   const disconnects = Array.isArray(params.disconnect) ? params.disconnect : [];
+  const superConnects = Array.isArray(params.superConnect) ? params.superConnect : [];
   const removes = Array.isArray(params.remove) ? params.remove : [];
   const createMarks = Array.isArray(params.createMarks)
     ? params.createMarks
@@ -5889,6 +6111,7 @@ function collectCanvasEditToolKeys(params) {
     if (peekKind(token) === "super") keys.add("canvas_super");
   }
   if (params.packIntoSuper || params.superId) keys.add("canvas_super");
+  if (superConnects.length) keys.add("canvas_super");
   if (params.setWorkflowName) keys.add("app_ops");
   return keys;
 }
@@ -6789,7 +7012,7 @@ async function applyCanvasOp(op, params) {
   if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
   if (op === "get") {
     await ensureAgentTool("canvas_read");
-    return Object.assign({ ok: true }, await canvasSnapshotFull());
+    return Object.assign({ ok: true }, await canvasSnapshotFull(params || {}));
   }
   if (op === "edit") return await applyCanvasEdit(params || {});
   throw new Error(I18n.t("未知画布操作：") + op);
@@ -8042,6 +8265,17 @@ function applyNodePatch(node, patch, warnings) {
       const d = Math.round(Number(patch.duration));
       if (isFinite(d)) node.duration = Math.max(4, Math.min(15, d || 5));
     }
+    if (
+      patch.outputRes === "auto" ||
+      patch.outputRes === "480p" ||
+      patch.outputRes === "720p" ||
+      patch.outputRes === "1080p"
+    )
+      node.outputRes = patch.outputRes;
+    if (typeof patch.postEnabled === "boolean")
+      node.postEnabled = patch.postEnabled;
+    if (typeof patch.postInterp === "boolean")
+      node.postInterp = patch.postInterp;
   }
   applyNodeModelPatch(node, patch, warnings);
 }
@@ -8364,6 +8598,7 @@ async function applyCanvasEdit(params) {
     !createMarks.length &&
     !updateMarks.length &&
     !removeMarksList.length &&
+    !(Array.isArray(params.superConnect) && params.superConnect.length) &&
     !params.group &&
     !params.setWorkflowName &&
     !doLayout
@@ -8566,6 +8801,12 @@ async function applyCanvasEdit(params) {
     }
     addWire(a.id, b.id, null, { fromIndex: pair.fromIndex || 0 });
     connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title });
+  }
+
+  /* 跨超级节点连接：任意层级 / 任意超级节点内的两个节点自动贯通 */
+  const superPairs = Array.isArray(params.superConnect) ? params.superConnect : [];
+  if (superPairs.length) {
+    applySuperConnect(superPairs, { aliasMap, warnings, connected });
   }
 
   for (const token of removes) {

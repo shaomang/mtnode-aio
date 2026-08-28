@@ -1309,6 +1309,71 @@ button.mini.btn-sq.ws-browse svg {
   cursor: wait
 }
 
+/* 运行队列条状折叠按钮（截图按钮右侧）：有队列时橙色边框高亮 + 缓慢呼吸灯 */
+.sb-rq {
+  flex: none;
+  height: 22px;
+  min-width: 0;
+  max-width: 180px;
+  margin-right: 8px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 11px;
+  color: var(--muted);
+  font-size: 10.5px;
+  letter-spacing: .5px;
+  font-family: var(--mono);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: border-color .2s ease, color .2s ease, background .2s ease;
+}
+
+.sb-rq[hidden] {
+  display: none !important
+}
+
+.sb-rq .sb-rq-icon {
+  font-size: 9px;
+  line-height: 1;
+  flex: none;
+}
+
+.sb-rq:hover {
+  background: var(--panel2);
+  color: var(--ink);
+  border-color: var(--orange);
+}
+
+/* 队列存在：橙色边框高亮 + 缓慢呼吸灯 */
+.sb-rq.has-queue {
+  border-color: var(--orange);
+  color: var(--orange2);
+  animation: rqBreathe 2.6s ease-in-out infinite;
+}
+
+@keyframes rqBreathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(255, 143, 46, 0);
+    border-color: var(--orange);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(255, 143, 46, .28), 0 0 8px rgba(255, 143, 46, .25);
+    border-color: var(--orange2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-rq.has-queue {
+    animation: none
+  }
+}
+
 .fn-canvas.is-snapshot .n-out-resize,
 .fn-canvas.is-snapshot .wg-resize,
 .fn-canvas.is-snapshot .wg-del,

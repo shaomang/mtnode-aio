@@ -1524,7 +1524,7 @@ function calcLength(seconds) {
   return a + ((5 - (a % 17)) % 17);
 }
 
-function buildH3Workflow(params, uploaded) {
+function buildH3Workflow(params, uploaded, phase) {
   const nodes = {};
   let id = 1;
   const w = (cls, inputs) => ({ class_type: cls, inputs });
@@ -1532,6 +1532,70 @@ function buildH3Workflow(params, uploaded) {
   const mode = params.mode === "r2v" ? "r2v" : "fl2va";
   const useRef = mode === "r2v";
   const dit = useRef && params.hasRef2va !== false ? MODELS.ref2va : MODELS.fl2va;
+
+  /* 独立后处理阶段：加载阶段一产出的原生视频 → RIFE 补帧 → RealESRGAN 超分
+   * → 缩放到 4K。此时生成模型已释放，仅加载补帧/超分模型，显存压力最小。 */
+  if (phase === "post") {
+    if (!params.postVideoPath) throw new Error("post_video_missing");
+    const loadV = String(id++);
+    nodes[loadV] = w("LoadVideo", { file: params.postVideoPath });
+    const getV = String(id++);
+    nodes[getV] = w("GetVideoComponents", { video: link(loadV, 0) });
+    let framesLink = link(getV, 0);
+    let fps = Number(params.fps) || 24;
+    if (params.postInterp !== false) {
+      const interpNode = String(id++);
+      const mult = Math.max(1, Math.min(8, Math.round(Number(params.postInterpMultiplier) || 2)));
+      nodes[interpNode] = w("RIFE VFI", {
+        ckpt_name: POST_MODELS.rife,
+        frames: framesLink,
+        clear_cache_after_n_frames: 10,
+        multiplier: mult,
+        fast_mode: false,
+        ensemble: true,
+        scale_factor: 1.0,
+        dtype: "float32",
+        torch_compile: false,
+        batch_size: 1,
+      });
+      framesLink = link(interpNode, 0);
+      fps = Math.max(1, Math.round(fps * mult));
+    }
+    const upscaleModelNode = String(id++);
+    nodes[upscaleModelNode] = w("UpscaleModelLoader", { model_name: POST_MODELS.upscale });
+    const upscaleNode = String(id++);
+    nodes[upscaleNode] = w("ImageUpscaleWithModelBatched", {
+      upscale_model: link(upscaleModelNode, 0),
+      images: framesLink,
+      per_batch: Math.max(1, Math.round(Number(params.postPerBatch) || 4)),
+    });
+    framesLink = link(upscaleNode, 0);
+    const [tw, th] = post4kDims(params.width, params.height);
+    const scaleNode = String(id++);
+    nodes[scaleNode] = w("ImageScale", {
+      image: framesLink,
+      upscale_method: "lanczos",
+      width: tw,
+      height: th,
+      crop: "disabled",
+    });
+    framesLink = link(scaleNode, 0);
+    const createVideoNode = String(id++);
+    nodes[createVideoNode] = w("CreateVideo", {
+      images: framesLink,
+      audio: link(getV, 1),
+      fps,
+      bit_depth: Number(params.bitDepth) || 8,
+    });
+    const saveVideoNode = String(id++);
+    nodes[saveVideoNode] = w("SaveVideo", {
+      video: link(createVideoNode, 0),
+      filename_prefix: params.filenamePrefix || "video/MiniMax_H3_post",
+      format: params.videoFormat || "auto",
+      codec: params.videoCodec || "auto",
+    });
+    return nodes;
+  }
 
   const imageNodes = [];
   if (mode === "fl2va") {
@@ -1621,19 +1685,8 @@ function buildH3Workflow(params, uploaded) {
     nodes[h3Node] = w("MiniMaxH3ImageToVideo", h3Inputs);
   }
 
-  /* 24G 优化链（均可关，默认开）：Tea → Easy → Shift → LowVRAM → ChunkFFN → Sage */
-  if (params.optTeaCache !== false && params.teaEnabled !== false) {
-    const teaNode = String(id++);
-    nodes[teaNode] = w("MiniMaxH3TeaCache", {
-      model: link(modelOut, 0),
-      rel_l1_thresh: Number(params.teaThresh) || 0.15,
-      start_step: Number(params.teaStart) || 2,
-      end_step: Number(params.teaEnd) || -2,
-      total_steps: Number(params.steps) || 20,
-    });
-    modelOut = teaNode;
-  }
-
+  /* 24G 优化链（均可关，默认开）：Easy → Shift → LowVRAM → ChunkFFN → Sage
+   * TeaCache 已移除（仅保留 EasyCache 步缓存） */
   if (params.optEasyCache !== false) {
     const easyNode = String(id++);
     nodes[easyNode] = w("EasyCache", {
@@ -1736,48 +1789,8 @@ function buildH3Workflow(params, uploaded) {
   });
   let videoImagesLink = link(decodeNode, 0);
   let videoFps = Number(params.fps) || 24;
-  /* 4K 超分补帧后处理（默认开）：原生分辨率 RIFE 补帧 → RealESRGAN x4 分块超分
-   * → 缩放到 4K（长边 3840）。补帧在低分辨率做（省显存且时序更稳），超分逐批
-   * 处理控制峰值显存，24G 内可跑；任一环节缺模型/节点时报错可见日志。 */
-  if (params.postEnabled !== false) {
-    if (params.postInterp !== false) {
-      const interpNode = String(id++);
-      const mult = Math.max(1, Math.min(8, Math.round(Number(params.postInterpMultiplier) || 2)));
-      nodes[interpNode] = w("RIFE VFI", {
-        ckpt_name: POST_MODELS.rife,
-        frames: videoImagesLink,
-        clear_cache_after_n_frames: 10,
-        multiplier: mult,
-        fast_mode: false,
-        ensemble: true,
-        scale_factor: 1.0,
-        dtype: "float32",
-        torch_compile: false,
-        batch_size: 1,
-      });
-      videoImagesLink = link(interpNode, 0);
-      videoFps = Math.max(1, Math.round(videoFps * mult));
-    }
-    const upscaleModelNode = String(id++);
-    nodes[upscaleModelNode] = w("UpscaleModelLoader", { model_name: POST_MODELS.upscale });
-    const upscaleNode = String(id++);
-    nodes[upscaleNode] = w("ImageUpscaleWithModelBatched", {
-      upscale_model: link(upscaleModelNode, 0),
-      images: videoImagesLink,
-      per_batch: Math.max(1, Math.round(Number(params.postPerBatch) || 4)),
-    });
-    videoImagesLink = link(upscaleNode, 0);
-    const [tw, th] = post4kDims(params.width, params.height);
-    const scaleNode = String(id++);
-    nodes[scaleNode] = w("ImageScale", {
-      image: videoImagesLink,
-      upscale_method: "lanczos",
-      width: tw,
-      height: th,
-      crop: "disabled",
-    });
-    videoImagesLink = link(scaleNode, 0);
-  }
+  /* 注：4K 超分补帧已拆为独立后处理阶段（phase=post），生成阶段不再内嵌，
+   * 避免采样模型 + 补帧/超分模型同时占显存。 */
   nodes[createVideoNode] = w("CreateVideo", {
     images: videoImagesLink,
     audio: link(decodeAudioNode, 0),
@@ -1915,6 +1928,118 @@ async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
   return mode === "disabled" ? "auto" : mode;
 }
 
+/** 提交 ComfyUI workflow 并轮询等待完成，返回输出视频 meta（filename/subfolder）。
+ *  stage 用于日志与进度文案（"gen" | "post"）。 */
+async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage) {
+  const label = stage === "post" ? "后处理" : "生成";
+  emitProgress({ phase: "generate", nodeId, message: "提交 " + label + "…", pct: 12 });
+  appendConsole("comfy prompt submit (" + stage + ")");
+  const posted = await httpJson(
+    "POST",
+    `http://127.0.0.1:${port}/prompt`,
+    { prompt: promptGraph, client_id: clientId },
+    60000,
+  );
+  if (!posted.json || posted.json.error) {
+    throw new Error(
+      (posted.json && posted.json.error && posted.json.error.message) || "prompt_failed",
+    );
+  }
+  const promptId = posted.json.prompt_id;
+  activeGenerate.promptId = promptId;
+  appendConsole("prompt_id=" + promptId);
+
+  const wsWatch = openComfyProgressWs(port, clientId, nodeId);
+  const deadline = Date.now() + GENERATE_MAX_MS;
+  let videoMeta = null;
+  try {
+    while (Date.now() < deadline) {
+      if (activeGenerate && activeGenerate.abort) {
+        try {
+          await interruptComfy(port, promptId);
+        } catch {}
+        throw new Error("cancelled");
+      }
+      let hist;
+      try {
+        hist = await httpJson(
+          "GET",
+          `http://127.0.0.1:${port}/history/${encodeURIComponent(promptId)}`,
+          null,
+          20000,
+        );
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        if (msg === "cancelled" || (activeGenerate && activeGenerate.abort))
+          throw new Error("cancelled");
+        throw e;
+      }
+      const item = hist.json && hist.json[promptId];
+      if (item) {
+        const st = item.status || {};
+        if (
+          st.status_str === "error" ||
+          (st.messages || []).some((m) => m && m[0] === "execution_error")
+        ) {
+          throw new Error(stage === "post" ? "post_execution_error" : "comfy_execution_error");
+        }
+        if (st.completed || item.outputs) {
+          const outputs = item.outputs || {};
+          for (const o of Object.values(outputs)) {
+            const vids = (o && o.videos) || [];
+            if (vids.length) {
+              videoMeta = vids[0];
+              break;
+            }
+            const imgs = (o && o.images) || [];
+            const mp4 = imgs.find((x) => x && /\.mp4$/i.test(x.filename || ""));
+            if (mp4) {
+              videoMeta = mp4;
+              break;
+            }
+          }
+          if (videoMeta) break;
+          if (st.completed) throw new Error(stage === "post" ? "no_post_output" : "no_video_output");
+        }
+        /* history 中的真实 progress（若有） */
+        const msgs = st.messages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i];
+          if (m && m[0] === "progress" && m[1]) {
+            const v = Number(m[1].value) || 0;
+            const max = Math.max(1, Number(m[1].max) || 1);
+            const pct = Math.min(92, 15 + Math.floor((v / max) * 75));
+            emitProgress({
+              phase: "generate",
+              nodeId,
+              message: (stage === "post" ? "后处理 " : "采样 ") + v + "/" + max,
+              pct,
+            });
+            break;
+          }
+        }
+      }
+      await sleepAbortable(2500);
+    }
+  } finally {
+    if (wsWatch) wsWatch.close();
+  }
+  if (!videoMeta) throw new Error("generate_timeout");
+  return videoMeta;
+}
+
+/** 释放 ComfyUI 全部模型（阶段间调用，确保前一步的 H3/VAE 完全卸载）。 */
+async function comfyFreeModels(port) {
+  appendConsole("[post] freeing all models (POST /free)…");
+  try {
+    await httpJson("POST", `http://127.0.0.1:${port}/free`, { unload_models: true, free_memory: true }, 30000);
+    appendConsole("[post] models freed");
+  } catch (e) {
+    appendConsole("[post] /free warn: " + String((e && e.message) || e));
+  }
+  await sleep(1500);
+}
+
 async function generateVideo(params) {
   params = params || {};
   const nodeId = String(params.nodeId || "");
@@ -1980,15 +2105,40 @@ async function generateVideo(params) {
     const sig = projectSignals(installDir);
     const ratio = params.ratio || "16:9";
     let wh = RATIOS[ratio] || RATIOS["16:9"];
-    /* 24G 红线保护：长边或面积超限时钳制到安全档（避免 1344×768 类卡死） */
-    const [rw, rh] = wh;
-    const mp = (rw * rh) / 1e6;
-    if (Math.max(rw, rh) > VRAM_SAFE_MAX_DIM || mp > VRAM_SAFE_MAX_MP) {
-      const safe = RATIOS[ratio] && ratio !== "1:1" ? [VRAM_SAFE_MAX_DIM, Math.round((VRAM_SAFE_MAX_DIM * rh) / rw / 2) * 2] : [VRAM_SAFE_MAX_DIM, VRAM_SAFE_MAX_DIM];
+    /* 输出分辨率档位：480p / 720p / 1080p（按比例缩放，短边对齐目标） */
+    const outRes = String(params.outputRes || "auto").trim().toLowerCase();
+    if (outRes !== "auto" && outRes !== "") {
+      const targetShort = outRes === "480p" ? 480 : outRes === "720p" ? 720 : outRes === "1080p" ? 1080 : 0;
+      if (targetShort > 0) {
+        const [bw, bh] = wh;
+        const short = Math.min(bw, bh);
+        const scale = targetShort / short;
+        let tw = Math.round((bw * scale) / 32) * 32;
+        let th = Math.round((bh * scale) / 32) * 32;
+        if (tw % 2) tw += 1;
+        if (th % 2) th += 1;
+        appendConsole(
+          "[generate] outputRes=" + outRes + " → " + tw + "x" + th + "（原 " + bw + "x" + bh + "）",
+        );
+        wh = [tw, th];
+      }
+    }
+    /* 24G 红线保护：长边或面积超限时钳制到安全档（避免 1344×768 类卡死）。
+     * 先限长边，再等比缩到面积 ≤ 安全值，保证任何比例都不超显存。 */
+    let [rw, rh] = wh;
+    const clamp32 = (v) => {
+      let x = Math.round(v / 32) * 32;
+      if (x % 2) x += 1;
+      return x;
+    };
+    if (Math.max(rw, rh) > VRAM_SAFE_MAX_DIM || (rw * rh) / 1e6 > VRAM_SAFE_MAX_MP) {
+      const scale = Math.min(VRAM_SAFE_MAX_DIM / Math.max(rw, rh), Math.sqrt(VRAM_SAFE_MAX_MP * 1e6 / (rw * rh)));
+      rw = clamp32(rw * scale);
+      rh = clamp32(rh * scale);
       appendConsole(
-        "[generate] 分辨率 " + rw + "x" + rh + " 超过 24G 安全上限（" + VRAM_SAFE_MAX_DIM + " 长边），钳制为 " + safe[0] + "x" + safe[1]
+        "[generate] 分辨率超 24G 安全上限，钳制为 " + rw + "x" + rh,
       );
-      wh = safe;
+      wh = [rw, rh];
     }
     const duration = Math.max(4, Math.min(15, Number(params.duration) || 5));
     const length = calcLength(duration);
@@ -2032,11 +2182,6 @@ async function generateVideo(params) {
       denoise: params.denoise != null ? Number(params.denoise) : 1,
       shiftVideo: params.shiftVideo != null ? Number(params.shiftVideo) : 12,
       shiftAudio: params.shiftAudio != null ? Number(params.shiftAudio) : 3,
-      optTeaCache: params.optTeaCache !== false && params.teaEnabled !== false,
-      teaEnabled: params.teaEnabled !== false,
-      teaThresh: params.teaThresh != null ? Number(params.teaThresh) : 0.15,
-      teaStart: params.teaStart != null ? Number(params.teaStart) : 2,
-      teaEnd: params.teaEnd != null ? Number(params.teaEnd) : -2,
       optEasyCache: params.optEasyCache !== false,
       easyReuse: params.easyReuse != null ? Number(params.easyReuse) : 0.2,
       easyStart: params.easyStart != null ? Number(params.easyStart) : 0.15,
@@ -2065,115 +2210,48 @@ async function generateVideo(params) {
       postPerBatch: params.postPerBatch != null ? Number(params.postPerBatch) : 4,
     };
 
-    const promptGraph = buildH3Workflow(wfParams, uploaded);
+    const doPost = params.postEnabled !== false;
     const clientId = crypto.randomUUID();
-    emitProgress({ phase: "generate", nodeId, message: "提交 ComfyUI…", pct: 12 });
-    appendConsole("comfy prompt submit mode=" + mode);
+    /* 阶段一：生成原生分辨率视频（不含补帧/超分，减少显存峰值） */
+    const promptGraph = buildH3Workflow(wfParams, uploaded);
+    const genMeta = await submitAndWaitComfy(port, clientId, promptGraph, nodeId, "gen");
 
-    const posted = await httpJson(
-      "POST",
-      `http://127.0.0.1:${port}/prompt`,
-      {
-        prompt: promptGraph,
-        client_id: clientId,
-      },
-      60000,
-    );
-    if (!posted.json || posted.json.error) {
-      throw new Error(
-        (posted.json && posted.json.error && posted.json.error.message) || "prompt_failed",
+    let finalVideoMeta = genMeta;
+    if (doPost) {
+      /* 阶段间：释放全部模型（H3 DiT / VAE），再进入后处理 */
+      await comfyFreeModels(port);
+      if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
+      const genOut = join(comfy, "output", genMeta.subfolder || "", genMeta.filename);
+      if (!fs.existsSync(genOut)) throw new Error("output_file_missing: " + genOut);
+      appendConsole("[post] stage2 超分补帧 → " + genOut);
+      /* 阶段二：加载原生视频 → RIFE 补帧 → RealESRGAN 超分 → 4K */
+      const postGraph = buildH3Workflow(
+        Object.assign({}, wfParams, { postVideoPath: genOut }),
+        uploaded,
+        "post",
+      );
+      finalVideoMeta = await submitAndWaitComfy(
+        port,
+        crypto.randomUUID(),
+        postGraph,
+        nodeId,
+        "post",
       );
     }
-    const promptId = posted.json.prompt_id;
-    activeGenerate.promptId = promptId;
-    appendConsole("prompt_id=" + promptId);
 
-    const wsWatch = openComfyProgressWs(port, clientId, nodeId);
-
-    const deadline = Date.now() + GENERATE_MAX_MS;
-    let videoMeta = null;
-    try {
-      while (Date.now() < deadline) {
-        if (activeGenerate && activeGenerate.abort) {
-          try {
-            await interruptComfy(port, promptId);
-          } catch {}
-          throw new Error("cancelled");
-        }
-        let hist;
-        try {
-          hist = await httpJson(
-            "GET",
-            `http://127.0.0.1:${port}/history/${encodeURIComponent(promptId)}`,
-            null,
-            20000,
-          );
-        } catch (e) {
-          const msg = String((e && e.message) || e);
-          if (msg === "cancelled" || (activeGenerate && activeGenerate.abort))
-            throw new Error("cancelled");
-          throw e;
-        }
-        const item = hist.json && hist.json[promptId];
-        if (item) {
-          const st = item.status || {};
-          if (
-            st.status_str === "error" ||
-            (st.messages || []).some((m) => m && m[0] === "execution_error")
-          ) {
-            throw new Error("comfy_execution_error");
-          }
-          if (st.completed || item.outputs) {
-            const outputs = item.outputs || {};
-            for (const o of Object.values(outputs)) {
-              const vids = (o && o.videos) || [];
-              if (vids.length) {
-                videoMeta = vids[0];
-                break;
-              }
-              const imgs = (o && o.images) || [];
-              const mp4 = imgs.find((x) => x && /\.mp4$/i.test(x.filename || ""));
-              if (mp4) {
-                videoMeta = mp4;
-                break;
-              }
-            }
-            if (videoMeta) break;
-            if (st.completed) throw new Error("no_video_output");
-          }
-          /* history 中的真实 progress（若有） */
-          const msgs = st.messages || [];
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            const m = msgs[i];
-            if (m && m[0] === "progress" && m[1]) {
-              const v = Number(m[1].value) || 0;
-              const max = Math.max(1, Number(m[1].max) || 1);
-              const pct = Math.min(92, 15 + Math.floor((v / max) * 75));
-              emitProgress({
-                phase: "generate",
-                nodeId,
-                message: "采样 " + v + "/" + max,
-                pct,
-              });
-              break;
-            }
-          }
-        }
-        await sleepAbortable(2500);
-      }
-    } finally {
-      if (wsWatch) wsWatch.close();
-    }
-    if (!videoMeta) throw new Error("generate_timeout");
-
-    let outPath = join(comfy, "output", videoMeta.subfolder || "", videoMeta.filename);
+    let outPath = join(
+      comfy,
+      "output",
+      finalVideoMeta.subfolder || "",
+      finalVideoMeta.filename,
+    );
     const exportDir = String(params.outputDir || "").trim();
     if (exportDir) {
-      const preferred = String(params.filename || "").trim() || videoMeta.filename;
+      const preferred = String(params.filename || "").trim() || finalVideoMeta.filename;
       outPath = await copyOutputToDir(
         comfy,
-        videoMeta.filename,
-        videoMeta.subfolder || "",
+        finalVideoMeta.filename,
+        finalVideoMeta.subfolder || "",
         exportDir,
         preferred,
       );
@@ -2202,11 +2280,16 @@ async function generateVideo(params) {
     emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
     return { ok: false, error: err, message: err };
   } finally {
-    appendConsole("[job] stopping backend after job");
+    /* 服务常驻：不重启后端；生成结束后释放全部模型显存（H3 DiT / VAE），
+     * 避免下次生成重新加载慢 + 显存碎片导致卡死。 */
+    appendConsole("[job] backend kept alive, freeing models…");
     try {
-      await stopBackend();
+      const cfg = loadConfig();
+      const freePort = Number(cfg.port) || DEFAULT_PORT;
+      await comfyFreeModels(freePort);
+      appendConsole("[job] vram released");
     } catch (e) {
-      appendConsole("[job] stop warn: " + String((e && e.message) || e));
+      appendConsole("[job] free warn: " + String((e && e.message) || e));
     }
   }
 }

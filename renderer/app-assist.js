@@ -110,9 +110,14 @@ function summarizeCanvasEdit(params) {
   const nConnect = Array.isArray(params.connect) ? params.connect.length : 0;
   const nDisc = Array.isArray(params.disconnect) ? params.disconnect.length : 0;
   const nRemove = Array.isArray(params.remove) ? params.remove.length : 0;
+  const nSuperConnect = Array.isArray(params.superConnect)
+    ? params.superConnect.length
+    : 0;
   if (nCreate) bits.push(I18n.t("创建 ") + nCreate + I18n.t(" 个节点"));
   if (nUpdate) bits.push(I18n.t("更新 ") + nUpdate + I18n.t(" 个节点"));
   if (nConnect) bits.push(I18n.t("连接 ") + nConnect + I18n.t(" 条线"));
+  if (nSuperConnect)
+    bits.push(I18n.t("跨超级节点连接 ") + nSuperConnect + I18n.t(" 对节点"));
   if (nDisc) bits.push(I18n.t("断开 ") + nDisc + I18n.t(" 条线"));
   if (nRemove) bits.push(I18n.t("删除 ") + nRemove + I18n.t(" 个节点"));
   if (params.group) bits.push(I18n.t("创建组"));
@@ -562,6 +567,8 @@ async function assistSend(text) {
   const canvasEditRule = assistAuto
     ? "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；当前「助手改画布」为批准，调用会直接生效。\n"
     : "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。若用户拒绝：用文字说明已完成的文件/步骤与未完成项，不要静默结束。\n";
+  const superConnectRule =
+    "  · 【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动把源节点向上逐层连到其所在超级节点的外部输出端子、把目标节点所在超级节点的外部输入端子逐层桥接到目标节点、并把顶层超级节点之间相连，无需自己手动建桥接线；可一次传多对。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
@@ -577,6 +584,7 @@ async function assistSend(text) {
     "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n" +
     scopeBlock +
     canvasEditRule +
+    superConnectRule +
     "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
     "  · 可改节点模型：update/create 传 model；文本/图像/对话节点用 providerId（服务商 id 或唯一名称），智能任务用 provider（deepseek-official 或 mtnode_<id>/名称）。\n" +
     "  · 图像参考节点 kind 必须是 input_image；用 imagePath（本机绝对路径）写入图片，应用会复制进画布资产，不要让用户再拖拽。\n" +
@@ -2251,6 +2259,7 @@ async function agentSessionSend(text) {
       ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
       : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
     "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
+    "【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动逐层连通（源→其超级节点输出端子→顶层→目标超级节点输入端子→目标），无需手动建桥接线。\n" +
     "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
   try {
     const final = await dshRunTask(input, {

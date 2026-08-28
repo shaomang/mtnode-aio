@@ -1201,6 +1201,46 @@ function effortButtonEl(node) {
   return effortBtn;
 }
 
+/* ===== 超级节点「文件夹」卡片：标题单行自适应缩字 ===== */
+const SUPER_TITLE_MAX = 20;
+const SUPER_TITLE_MIN = 9;
+/**
+ * 挂载后实测收缩标题字号（只缩不放大到 MAX 以上）：
+ * 一次比例估算 + 少量保守回退，避免逐像素循环造成大图布局抖动。
+ * 同时标记描述是否被截断（截断时 hover tooltip 才出内容）。
+ */
+function fitSuperFolderCard(el) {
+  if (!el) return;
+  const card = el.querySelector(":scope > .n-body > .super-folder");
+  if (!card) return;
+  const t = card.querySelector(".super-folder-title");
+  if (t) {
+    const avail = t.clientWidth;
+    if (avail > 0) {
+      t.style.fontSize = SUPER_TITLE_MAX + "px";
+      const w = t.scrollWidth;
+      if (w > avail) {
+        let s = Math.max(
+          SUPER_TITLE_MIN,
+          Math.floor((SUPER_TITLE_MAX * avail) / w * 10) / 10,
+        );
+        t.style.fontSize = s + "px";
+        for (let i = 0; i < 4 && s > SUPER_TITLE_MIN; i++) {
+          if (t.scrollWidth <= avail) break;
+          s = Math.max(SUPER_TITLE_MIN, Math.round(s * 0.93 * 10) / 10);
+          t.style.fontSize = s + "px";
+        }
+      }
+      t.classList.toggle("shrunk", t.scrollWidth > avail);
+    }
+  }
+  const d = card.querySelector(".super-folder-desc");
+  if (d) {
+    const clipped = d.scrollHeight > d.clientHeight + 1;
+    d.classList.toggle("clipped", clipped);
+  }
+}
+
 function nodeElement(node) {
   clampNodeToMinSize(node);
   const el = document.createElement("div");
@@ -1629,6 +1669,21 @@ function nodeElement(node) {
       promptSuperSubFolder(node);
     };
     head.appendChild(folder);
+    /* 「描述」小按钮：超级节点 body 已封装为文件夹外观，描述改由此处编辑 */
+    const supNoteTxt = String(node.note || "").trim();
+    const noteBtn = document.createElement("button");
+    noteBtn.type = "button";
+    noteBtn.className = "n-super-note-btn" + (supNoteTxt ? " on" : "");
+    noteBtn.textContent = I18n.t("描述");
+    noteBtn.title = supNoteTxt
+      ? I18n.t("当前描述：") + supNoteTxt + "\n" + I18n.t("点击编辑")
+      : I18n.t("填写描述：以小字显示在文件夹标题下方");
+    noteBtn.setAttribute("aria-label", I18n.t("编辑超级节点描述"));
+    noteBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      promptSuperNote(node);
+    };
+    head.appendChild(noteBtn);
     const enter = document.createElement("button");
     enter.className = "n-play";
     enter.textContent = "↪";
@@ -2276,6 +2331,25 @@ function nodeElement(node) {
         }
       });
       addField(I18n.t("尺寸比例"), ratio);
+      const resSel = document.createElement("select");
+      [
+        ["auto", I18n.t("自动（按比例默认）")],
+        ["480p", "480p（0.4MP 抽卡）"],
+        ["720p", "720p（~0.9MP）"],
+        ["1080p", "1080p（~2MP，24G 慎用）"],
+      ].forEach(([v, t]) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = I18n.t(t);
+        if ((node.outputRes || "auto") === v) o.selected = true;
+        resSel.appendChild(o);
+      });
+      resSel.addEventListener("change", () => {
+        node.outputRes = resSel.value;
+        scheduleSave();
+        renderCanvas();
+      });
+      addField(I18n.t("输出分辨率"), resSel);
       const steps = document.createElement("input");
       steps.type = "number";
       steps.min = "1";
@@ -2295,7 +2369,6 @@ function nodeElement(node) {
         cb.title = title || "";
         cb.addEventListener("change", () => {
           node[key] = !!cb.checked;
-          if (key === "optTeaCache") node.teaEnabled = !!cb.checked;
           if (key === "optSageAttn") node.sageMode = cb.checked ? "auto" : "disabled";
           scheduleSave();
         });
@@ -2333,7 +2406,6 @@ function nodeElement(node) {
         el.addEventListener("change", () => cb(Number(el.value)));
         addField(label, el);
       };
-      addOpt("optTeaCache", I18n.t("TeaCache"), I18n.t("H3 步缓存加速"));
       addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
       addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需安装 sageattention；缺包自动跳过"));
       addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
@@ -2408,14 +2480,6 @@ function nodeElement(node) {
         (v) => { node.refImageSize = v; },
       );
       addNum(
-        I18n.t("TeaCache 阈值"),
-        node.teaThresh != null ? node.teaThresh : 0.15,
-        0,
-        1,
-        "0.01",
-        (v) => { node.teaThresh = isFinite(v) ? v : 0.15; },
-      );
-      addNum(
         I18n.t("帧率 fps"),
         node.fps != null ? node.fps : 24,
         1,
@@ -2451,7 +2515,7 @@ function nodeElement(node) {
       const advSpan = document.createElement("div");
       advSpan.className = "n-api-span-full";
       advSpan.style.cssText = "font-size:10.5px;color:var(--muted);margin:2px 0;";
-      advSpan.textContent = I18n.t("TeaCache 起/止步 & EasyCache 缓存区间");
+      advSpan.textContent = I18n.t("EasyCache 缓存区间");
       advBox.appendChild(advSpan);
       const advNum = (label, cur, cb) => {
         const el = document.createElement("input");
@@ -2464,16 +2528,6 @@ function nodeElement(node) {
         lab.appendChild(el);
         advBox.appendChild(lab);
       };
-      advNum(
-        I18n.t("teaStart"),
-        node.teaStart != null ? node.teaStart : 2,
-        (v) => { node.teaStart = isFinite(v) ? v : 2; },
-      );
-      advNum(
-        I18n.t("teaEnd"),
-        node.teaEnd != null ? node.teaEnd : -2,
-        (v) => { node.teaEnd = isFinite(v) ? v : -2; },
-      );
       advNum(
         I18n.t("easyReuse"),
         node.easyReuse != null ? node.easyReuse : 0.2,
@@ -4275,15 +4329,55 @@ function buildBody(node, body) {
     } else {
     const open = superIsOpenShell(node);
     if (!open) {
-      const note = document.createElement("textarea");
-      note.className = "n-text super-note";
-      note.spellcheck = false;
-      note.placeholder = I18n.t("描述此超级节点收纳的内容与用途…");
-      note.value = node.note || "";
-      note.addEventListener("input", () => {
-        node.note = note.value;
-      });
-      body.appendChild(note);
+      /* 封装外观：body 不再就地编辑，而是「文件夹」卡片 —— 大标题（单行自动缩字）+ 小字描述 */
+      const tab = document.createElement("div");
+      tab.className = "super-folder-tab";
+      tab.setAttribute("aria-hidden", "true");
+      body.classList.add("super-folder-body");
+      body.appendChild(tab);
+      const card = document.createElement("div");
+      card.className = "super-folder";
+      const glyph = document.createElement("span");
+      glyph.className = "super-folder-glyph";
+      glyph.innerHTML = KIND_ICON_SVG.folder;
+      card.appendChild(glyph);
+      const ft = document.createElement("div");
+      ft.className = "super-folder-title";
+      const fTitle = node.title || I18n.t("（未命名）");
+      ft.textContent = fTitle;
+      ft.removeAttribute("title");
+      bindNodeTitleTooltip(ft, () =>
+        ft.scrollWidth > ft.clientWidth + 1 ? fTitle : "",
+      );
+      card.appendChild(ft);
+      const fNote = String(node.note || "").trim();
+      if (fNote) {
+        const fd = document.createElement("div");
+        fd.className = "super-folder-desc";
+        fd.textContent = fNote;
+        fd.removeAttribute("title");
+        /* 描述过长（被截断）时 hover 显示完整 tooltip */
+        bindNodeTitleTooltip(fd, () =>
+          fd.scrollHeight > fd.clientHeight + 1 ? fNote : "",
+        );
+        card.appendChild(fd);
+      }
+      const kids = superChildrenOf(node.id).filter((c) => !isSuperIoNode(c));
+      const meta = document.createElement("div");
+      meta.className = "super-folder-meta";
+      meta.textContent =
+        kids.length +
+        I18n.t(" 个节点") +
+        (String(node.subFolder || "").trim()
+          ? " · " + String(node.subFolder).trim()
+          : "");
+      meta.title = I18n.t("收纳的节点数 · 子文件夹");
+      card.appendChild(meta);
+      card.ondblclick = (ev) => {
+        ev.stopPropagation();
+        promptSuperNote(node);
+      };
+      body.appendChild(card);
       /* 数据库超级节点：编译状态摘要 */
       if (node.db) {
         const info = document.createElement("div");

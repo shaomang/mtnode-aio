@@ -175,6 +175,14 @@ def run_generate(
         return _gradio_preview_path(saved), msg
     except Exception as exc:  # noqa: BLE001 — surface to UI
         return None, f"Error: {exc}"
+    finally:
+        # 服务常驻（不再重启）：生成结束后立即复位 offload 并清空显存，
+        # 避免 LM/DiT/vocoder 残留在 GPU 上导致下一次生成卡死/OOM。
+        try:
+            if _generator is not None:
+                _generator.release_vram()
+        except Exception:
+            pass
 
 
 def build_ui() -> gr.Blocks:

@@ -23,7 +23,7 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 - pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）；可用 `MT_H3_PIP_INDEX` 覆盖；pip 一律加 `--isolated`（避开坏掉的 `pypi.ngc.nvidia.com` extra-index）
 - torch cu130：优先官方 `https://download.pytorch.org/whl/cu130`，失败回退阿里云 `https://mirrors.aliyun.com/pytorch-wheels/cu130`（`MT_H3_TORCH_INDEX` 可覆盖）
 - 模型权重（HuggingFace 无法直连）：**优先 ModelScope(魔搭)** `Comfy-Org/MiniMax-H3`（国内直连），失败才回退 hf-mirror（`HF_ENDPOINT=https://hf-mirror.com`，`HF_HUB_DISABLE_XET=1`）
-- GitHub（ComfyUI / KJNodes / TeaCache 克隆）：直连失败用 `ghproxy.com` 前缀镜像
+- GitHub（ComfyUI / KJNodes 克隆）：直连失败用 `ghproxy.com` 前缀镜像
 - 安装示例：
   ```powershell
   .\scripts\setup_env.ps1   # 内部 pip 默认走清华镜像
@@ -85,7 +85,7 @@ torch `cu130` wheel 自带 CUDA 13.0 运行时，但**要求 NVIDIA 驱动足够
   - `models\diffusion_models\minimax_h3_ref2va_pruned_int8_convrot.safetensors`（R2V）
   - `models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`
   - `models\vae\minimax_h3_video_vae_fp16.safetensors` + `minimax_h3_audio_vae_fp32.safetensors`
-- custom_nodes：`ComfyUI-MiniMaxH3-TeaCache`、`ComfyUI-KJNodes`（含 Sage / VRAM_Debug / MiniMax LowVRAM / ChunkFFN）
+- custom_nodes：`ComfyUI-KJNodes`（含 Sage / VRAM_Debug / MiniMax LowVRAM / ChunkFFN）
 - **不要在本 skill 中启动 ComfyUI**
 
 ## 显存最佳实践
@@ -110,14 +110,13 @@ python main.py --listen 127.0.0.1 --port 8188
 
 | 优化 | 作用 | 节点 |
 |------|------|------|
-| TeaCache | H3 专用步缓存，加速采样 | `MiniMaxH3TeaCache` |
 | EasyCache | 原生步跳过缓存（约 1.4–2× 采样段） | `EasyCache`（reuse≈0.2, start≈0.15, end≈0.95） |
 | Sage Attention | 注意力加速（有包用 `auto`；无包则跳过） | `PathchSageAttentionKJ` |
 | Low VRAM Attention | 按 head 分块降峰值显存 | `MiniMaxLowVRAMAttention` |
 | Chunk FeedForward | FFN 分块降峰值 | `MiniMaxChunkFeedForward` |
 | **VRAM Barrier** | 采样后 `unload_all_models` + empty_cache，**避免双 VAE 解码 OOM（必开）** | `VRAM_Debug` |
 
-推荐模型链：`UNET → TeaCache → EasyCache → SigmaShift → LowVRAMAttn → ChunkFFN → Sage → Guider`  
+推荐模型链：`UNET → EasyCache → SigmaShift → LowVRAMAttn → ChunkFFN → Sage → Guider`（TeaCache 已移除）
 采样输出**必须**经 `VRAM_Debug`（`unload_all_models=true`）后再 `VAEDecode` / `VAEDecodeAudio`。**缺失该屏障 → 解码在 24G 上卡死**（DiT 19.9G + VideoVAE 4.9G 超 24G）。
 
 ### 分辨率/时长提示（按显存）
@@ -172,7 +171,7 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 1. **硬件探测**（见上）。GPU 非 NVIDIA / 驱动不支持 CUDA 13 → fail 并写 reason。
 2. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `requirements.txt`（保留已有 ComfyUI/models/output）；或用内置脚本。
 3. 探测 CUDA Python → 写 `.cuda-python`（仅作 venv 基座）。
-4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖、TeaCache + KJNodes + **ComfyUI-Frame-Interpolation（4K 补帧）**。
+4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖、KJNodes + **ComfyUI-Frame-Interpolation（4K 补帧）**。
    - 装完**必须**校验 `torch.cuda.is_available()` 为真且日志里 cuda backend 未被禁用；否则按「驱动太旧」处理。
    - pip 用 `--isolated` 避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）。
 5. 按需静默给 `nodes_minimax_h3.py` 加 `**legacy_refs` 折叠（幂等，见上）；如需，补 `polyfill`。

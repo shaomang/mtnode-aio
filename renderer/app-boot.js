@@ -486,6 +486,13 @@ async function init() {
   $("#btnFit").onclick = fitCanvas;
   const btnCanvasShot = $("#btnCanvasShot");
   if (btnCanvasShot) btnCanvasShot.onclick = () => exportCanvasOverviewPng();
+  const btnRunQueue = $("#btnRunQueue");
+  if (btnRunQueue)
+    btnRunQueue.onclick = () => {
+      /* 条状按钮：点击展开 / 收起运行队列悬浮窗 */
+      S._rqCollapsed = !S._rqCollapsed;
+      updateRunQueuePanel();
+    };
   $("#btnGroup").onclick = toggleGroupAction;
   const btnWrapSuper = $("#btnWrapSuper");
   if (btnWrapSuper) btnWrapSuper.onclick = () => wrapSelectionAsSuper();

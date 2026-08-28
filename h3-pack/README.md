@@ -35,7 +35,7 @@
 - **Python 库**：清华 `https://pypi.tuna.tsinghua.edu.cn/simple`（或中科院 USTC `https://mirrors.ustc.edu.cn/pypi/simple/`），`setup_env.ps1` 默认已用清华
 - **torch cu130**：优先官方 `download.pytorch.org/whl/cu130`，失败自动回退阿里云 `mirrors.aliyun.com/pytorch-wheels/cu130`
 - **模型权重**：优先 **ModelScope(魔搭)** `Comfy-Org/MiniMax-H3`（国内直连），失败回退 `hf-mirror.com`
-- **GitHub**（ComfyUI / KJNodes / TeaCache）：直连失败用 `ghproxy.com` 前缀镜像
+- **GitHub**（ComfyUI / KJNodes）：直连失败用 `ghproxy.com` 前缀镜像
 
 ## 能力
 

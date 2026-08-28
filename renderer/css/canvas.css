@@ -610,12 +610,12 @@
   /* overflow:hidden：端子/接线排全部内嵌在节点板内，任何元素不得超出节点外框 */
   /* 浮空+厚度（范例式）：近距接触影 0 2px 4px → 中距软投影 0 7px 13px -3px → 内凹厚度 0 -3px 0 inset；
      三层层叠出“卡片悬空 + 顶部内凹边缘厚度”的效果；顶部 1px 受光内高光保留 */
-  /* 最外层银灰底板：2px 银灰描边 + 底部 5px 银灰厚度块（随节点缩放/动效一起移动） */
+  /* 最外层底板：1px 黑灰细描边 + 右下黑灰厚度块（随节点缩放/动效一起移动） */
   --nfloat:
-    0 0 0 2px #c9cdd5,
-    0 5px 0 2px #b7bcc7,
-    0 4px 8px rgba(0, 0, 0, 0.4),
-    0 15px 26px -6px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(0, 0, 0, .35),
+    4px 5px 0 1px rgba(0, 0, 0, .45),
+    4px 8px 8px rgba(0, 0, 0, 0.4),
+    5px 15px 26px -6px rgba(0, 0, 0, 0.3),
     0 -6px 0 inset rgba(0, 0, 0, 0.2);
   box-shadow: var(--nfloat), inset 0 3px 0 rgba(255, 255, 255, .07);
   transition: box-shadow .15s ease, border-color .15s ease, transform .12s ease-out;
@@ -627,10 +627,10 @@
   cursor: grabbing;
   will-change: transform;
   --nfloat:
-    0 0 0 2px #c9cdd5,
-    0 5px 0 2px #b7bcc7,
-    0 4px 8px rgba(0, 0, 0, 0.45),
-    0 14px 22px -4px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(0, 0, 0, .35),
+    4px 5px 0 1px rgba(0, 0, 0, .45),
+    4px 8px 8px rgba(0, 0, 0, 0.45),
+    5px 14px 22px -4px rgba(0, 0, 0, 0.35),
     0 -3px 0 inset rgba(0, 0, 0, 0.2);
   box-shadow: var(--nfloat), inset 0 1px 0 rgba(255, 255, 255, .1);
   transition: transform .06s linear, box-shadow .12s ease;
@@ -895,9 +895,164 @@
   opacity: .9;
 }
 
-.super-note {
-  min-height: 56px;
-  flex: 1
+/* 超级节点：body 封装为「文件夹」外观（描述改由头部「描述」按钮编辑）
+   仅折叠态的文件夹 body 加此类，避免影响数据库控制台 / 展开态舞台 */
+.wf-node.super > .n-body.super-folder-body {
+  padding: 22px 20px 16px;
+  gap: 8px;
+}
+
+.super-folder {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 14px 10px;
+  border-radius: 4px 9px 7px 7px;
+  border: 1px solid rgba(155, 176, 200, .34);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .07) 0%, rgba(255, 255, 255, .015) 40%, rgba(0, 0, 0, .18) 100%),
+    linear-gradient(180deg, #252e3a 0%, #1a212b 55%, #141a23 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .12),
+    inset 0 -18px 26px rgba(0, 0, 0, .28),
+    0 2px 6px rgba(0, 0, 0, .4);
+  overflow: hidden;
+}
+
+/* 左上凸出的文件夹标签页：body 级绝对定位元素，
+   不能用 .super-folder::before —— 卡片 overflow:hidden 会把它裁掉 */
+.super-folder-tab {
+  position: absolute;
+  left: 30px;
+  top: 10px;
+  z-index: 2;
+  width: 38%;
+  min-width: 52px;
+  height: 14px;
+  border: 1px solid rgba(155, 176, 200, .34);
+  border-bottom: none;
+  border-radius: 6px 7px 0 0;
+  background: linear-gradient(180deg, #303b4a, #252e3a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14);
+  pointer-events: none;
+}
+
+/* 卡片自身需高于普通流内容，但不遮标签页 */
+.super-folder-body > .super-folder {
+  position: relative;
+  z-index: 1;
+}
+
+/* 文件夹水印（居中偏右，压在文字之下） */
+.super-folder-glyph {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  color: #9bb0c8;
+  opacity: .12;
+  pointer-events: none;
+}
+
+.super-folder-glyph svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 收纳数量 / 子文件夹：卡片右下角小字 */
+.super-folder-meta {
+  position: relative;
+  z-index: 1;
+  margin-top: auto;
+  align-self: flex-end;
+  max-width: 100%;
+  font-size: 10px;
+  line-height: 1.3;
+  font-family: var(--mono);
+  color: var(--muted);
+  opacity: .82;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 大标题：固定单行，超出由 JS（fitSuperFolderCard）自动缩小字号 */
+.super-folder-title {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: .4px;
+  line-height: 1.28;
+  color: var(--ink);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .55);
+  white-space: nowrap;
+  overflow: hidden;
+  /* 缩到最小字号仍放不下时才出现省略号（hover 有完整标题 tooltip） */
+  text-overflow: ellipsis;
+}
+
+.super-folder-title.shrunk {
+  letter-spacing: 0;
+}
+
+/* 描述小字：最多 3 行，截断时 hover 显示 tooltip */
+.super-folder-desc {
+  position: relative;
+  z-index: 1;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-line;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.super-folder-desc.clipped {
+  cursor: help;
+}
+
+/* 头部「描述」小按钮 */
+.n-super-note-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid var(--bd2);
+  background: rgba(255, 255, 255, .04);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 20px;
+  letter-spacing: .3px;
+  cursor: pointer;
+}
+
+.n-super-note-btn:hover {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+.n-super-note-btn.on {
+  border-color: rgba(155, 176, 200, .5);
+  background: rgba(155, 176, 200, .1);
+  color: var(--ink);
+}
+
+/* 展开为内部画布时不需要这些（外壳内是 stage） */
+.wf-node.super.super-open>.n-body>.super-folder {
+  display: none;
 }
 
 /* ===== 数据库超级节点 / 数据库副本 ===== */

@@ -1915,12 +1915,8 @@ async function generateMusic(params) {
     };
     return resultPayload;
   } finally {
-    appendConsole("[job] stopping backend after job");
-    try {
-      await stopBackend();
-    } catch (e) {
-      appendConsole("[job] stop warn: " + String((e && e.message) || e));
-    }
+    /* 服务常驻：不重启后端（生成结束后 Gradio 侧已 release_vram 释放显存） */
+    appendConsole("[job] backend kept alive (vram released by pipeline)");
   }
 }
 

@@ -729,6 +729,7 @@ const NODE_DEFAULTS = {
     videoPortV2: true, /* 端口布局 v2：端口0=控制输入（固定）· 端口1=提示词 · 端口2+=参考（旧档无此标记=旧布局，加载时迁移） */
     duration: 5,
     ratio: "16:9",
+    outputRes: "auto", /* auto | 480p | 720p | 1080p（输出分辨率档位） */
     seed: 0,
     rerollSeed: true,
     steps: 20,
@@ -737,10 +738,6 @@ const NODE_DEFAULTS = {
     denoise: 1,
     shiftVideo: 12,
     shiftAudio: 3,
-    teaEnabled: true,
-    teaThresh: 0.15,
-    teaStart: 2,
-    teaEnd: -2,
     easyReuse: 0.2,
     easyStart: 0.15,
     easyEnd: 0.95,
@@ -754,8 +751,7 @@ const NODE_DEFAULTS = {
     videoFormat: "auto",
     videoCodec: "auto",
     filenamePrefix: "video/MiniMax_H3",
-    /* 24G 工作流优化：默认开，节点设置可关 */
-    optTeaCache: true,
+    /* 24G 工作流优化：默认开，节点设置可关（TeaCache 已移除，仅 EasyCache） */
     optEasyCache: true,
     optSageAttn: true,
     optLowVramAttn: true,
@@ -1877,6 +1873,65 @@ function promptSuperSubFolder(node) {
   foot.appendChild(cancel);
   foot.appendChild(ok);
   setTimeout(() => inp.focus(), 0);
+}
+/** 超级节点描述（文件夹标题下方的小字）：点头部「描述」按钮编辑 */
+function promptSuperNote(node) {
+  if (!node || node.kind !== "super") return;
+  openOverlay(I18n.t("超级节点描述"), { persistent: true });
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.textContent = I18n.t(
+    "描述会以小字显示在超级节点「文件夹」标题下方；文字过多时自动截断，鼠标悬停可查看全文。留空则不显示。",
+  );
+  body.appendChild(hint);
+  const lab = document.createElement("label");
+  lab.className = "n-field";
+  lab.appendChild(document.createTextNode(I18n.t("描述内容")));
+  const ta = document.createElement("textarea");
+  ta.className = "n-text";
+  ta.spellcheck = false;
+  ta.rows = 5;
+  ta.style.width = "100%";
+  ta.style.minHeight = "104px";
+  ta.style.resize = "vertical";
+  ta.style.fontFamily = "var(--font, inherit)";
+  ta.placeholder = I18n.t("描述此超级节点收纳的内容与用途…");
+  ta.value = String(node.note || "");
+  lab.appendChild(ta);
+  body.appendChild(lab);
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = I18n.t("确定");
+  ok.onclick = () => {
+    pushHistory();
+    node.note = ta.value;
+    closeOverlay();
+    scheduleSave(true);
+    renderCanvas();
+    toast(
+      String(node.note || "").trim()
+        ? I18n.t("描述已更新")
+        : I18n.t("已清除描述"),
+      "ok",
+    );
+  };
+  const clear = document.createElement("button");
+  clear.className = "mini";
+  clear.textContent = I18n.t("清空");
+  clear.onclick = () => {
+    ta.value = "";
+    ta.focus();
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(clear);
+  foot.appendChild(ok);
+  setTimeout(() => ta.focus(), 0);
 }
 function wireKeepsSuperBoundary(w) {
   const from = nodeById(w && w.from);
@@ -4426,6 +4481,9 @@ function minHFor(n) {
       return 140;
     case "judge":
       return 120;
+    case "super":
+      /* 文件夹外观：标签页 + 大标题 + 描述小字 + 右下计数所需最小高度 */
+      return 132;
     default:
       return 96;
   }
@@ -4480,6 +4538,8 @@ function fitNodeChrome(el, n) {
     el.style.height = n.h + "px";
     changed = true;
   }
+  /* 超级节点文件夹标题：DOM 尺寸稳定后再按实测宽度缩字 */
+  if (n.kind === "super") fitSuperFolderCard(el);
   return changed;
 }
 function mountNodeEl(parent, n) {
@@ -4659,12 +4719,41 @@ function collectRunQueue() {
 }
 function updateRunQueuePanel() {
   const el = $("#runQueue");
-  if (!el) return;
+  const btn = $("#btnRunQueue");
+  const btnTxt = $("#btnRunQueueTxt");
   const { running, waiting } = collectRunQueue();
   const assistOn = !!S.assistRunning;
-  if (!running.length && !waiting.length && !assistOn) {
+  const hasQueue = !!running.length || !!waiting.length || assistOn;
+  /* 条状折叠按钮：有队列时显示，并高亮呼吸灯；无队列时一并隐藏 */
+  if (btn) {
+    if (!hasQueue) {
+      btn.hidden = true;
+      btn.classList.remove("has-queue");
+    } else {
+      btn.hidden = false;
+      btn.classList.add("has-queue");
+      btn.title =
+        (assistOn ? I18n.t("助手执行中") + " " : "") +
+        (running.length ? running.length + I18n.t(" 处理中") + " " : "") +
+        (waiting.length ? waiting.length + I18n.t(" 等待") : "") +
+        I18n.t("（点击展开 / 收起运行队列）");
+      if (btnTxt) {
+        const parts = [];
+        if (running.length) parts.push(String(running.length));
+        else if (waiting.length) parts.push(String(waiting.length));
+        btnTxt.textContent = parts.join("/") || (assistOn ? "◉" : "");
+      }
+    }
+  }
+  if (!el) return;
+  if (!hasQueue) {
     el.hidden = true;
     el.innerHTML = "";
+    return;
+  }
+  /* 收起态：只显示条状按钮，悬浮窗隐藏 */
+  if (S._rqCollapsed) {
+    el.hidden = true;
     return;
   }
   el.hidden = false;
@@ -4682,6 +4771,17 @@ function updateRunQueuePanel() {
   if (waiting.length) parts.push(waiting.length + I18n.t(" 等待"));
   count.textContent = parts.join(" · ");
   head.appendChild(count);
+  const fold = document.createElement("button");
+  fold.type = "button";
+  fold.className = "rq-fold mini";
+  fold.textContent = "—";
+  fold.title = I18n.t("收起为左下角条状按钮");
+  fold.onclick = (ev) => {
+    ev.stopPropagation();
+    S._rqCollapsed = true;
+    updateRunQueuePanel();
+  };
+  head.appendChild(fold);
   const stopAll = document.createElement("button");
   stopAll.type = "button";
   stopAll.className = "rq-stop-all mini danger";
@@ -10254,6 +10354,23 @@ function focusNode(id) {
   if (!n) return;
   const want = nodeParentTaskId(n);
   if (want !== currentTaskFocus()) setTaskFocus(want, { render: false });
+  /* 节点在超级节点内：确保目标 super 处于可见状态。
+   * - 宿主是展开壳（superOpen）且非当前 focus → 直接定位（nodeWorldPos 会算世界坐标）。
+   * - 宿主收起 / 处于 focus 模式 → 进入宿主 focus 视图（S.superFocus = 直接宿主），
+   *   使 nodeInCurrentScope 命中、nodeWorldPos 返回本地坐标，再定位。 */
+  const hostSuperId = nodeParentSuperId(n);
+  if (hostSuperId) {
+    const host = nodeById(hostSuperId);
+    if (host && host.kind === "super") {
+      const inOpenShell = host.superOpen && hostSuperId !== currentSuperFocus();
+      if (!inOpenShell) {
+        setSuperFocus(hostSuperId, { render: false });
+        /* 进入 focus 视图后，宿主作为根展示其子节点；task 焦点重置 */
+        if (nodeParentTaskId(host) !== currentTaskFocus())
+          setTaskFocus(nodeParentTaskId(host), { render: false });
+      }
+    }
+  }
   const vw = $("#canvas").clientWidth,
     vh = $("#canvas").clientHeight;
   const p = nodeWorldPos(n);
@@ -11205,6 +11322,8 @@ function bindCanvas() {
         el.style.width = sz.w + "px";
         el.style.height = sz.h + "px";
         refreshPorts(el, n);
+        /* 拉宽 / 收窄超级节点：文件夹标题随可用宽度重新缩字 */
+        if (n.kind === "super") fitSuperFolderCard(el);
       }
       updateGroupFrames();
       updateWires(d.idSet || (d.idSet = new Set([d.id])));

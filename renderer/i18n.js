@@ -475,6 +475,12 @@
     "在浏览器中打开": "Open in browser",
     "粘贴 YAML": "Paste YAML",
     "这两节点已连接": "These two nodes are already connected",
+    "不能连接同一节点": "Cannot connect a node to itself",
+    "跨级汇入失败：": "Cross-level feed-in failed: ",
+    "跨级桥接失败：": "Cross-level bridge failed: ",
+    "超级节点连接失败：": "Super-node link failed: ",
+    "跨超级节点连接 ": "Cross-super-node connect ",
+    " 对节点": " node pair(s)",
     "正在压缩上文…": "Compacting context…",
     "只读 · 拆分": "Read-only · Split",
     "智能会话失败：": "Agent session failed: ",
@@ -1951,6 +1957,8 @@
     "全局助手正在运行，请稍候或先终止":
       "Global assistant is running; wait or stop it first",
     "助手执行中": "Assistant running",
+    "收起为左下角条状按钮": "Collapse to bottom-left bar button",
+    "（点击展开 / 收起运行队列）": " (click to expand/collapse run queue)",
     "全局助手": "Global assistant",
     "全局助手执行中": "Global assistant running",
     "点击打开全局助手": "Click to open global assistant",
@@ -2319,6 +2327,19 @@
     "拖入节点以收纳；拖出以移出":
       "Drag nodes in to pack; drag out to unpack",
     "超级节点子文件夹": "Super node subfolder",
+    "超级节点描述": "Super node description",
+    "编辑超级节点描述": "Edit super node description",
+    "描述内容": "Description",
+    "描述此超级节点收纳的内容与用途…": "Describe what this super node packs…",
+    "描述会以小字显示在超级节点「文件夹」标题下方；文字过多时自动截断，鼠标悬停可查看全文。留空则不显示。":
+      "The description shows as small text under the folder title; long text is truncated and revealed on hover. Leave empty to hide.",
+    "填写描述：以小字显示在文件夹标题下方":
+      "Add a description: shown as small text under the folder title",
+    "当前描述：": "Current description: ",
+    "点击编辑": "Click to edit",
+    "描述已更新": "Description updated",
+    "已清除描述": "Description cleared",
+    "收纳的节点数 · 子文件夹": "Packed node count · subfolder",
     "设置后，此超级节点内部节点的默认相对路径会落在「工作目录 / 子文件夹」下。已有路径不会自动改写。":
       "After setting, default relative paths for inner nodes go under workspace/subfolder. Existing paths are not rewritten.",
     "设置后，此超级节点内部节点的相对路径会落在「工作目录 / 子文件夹」下；内部已有相对路径会自动补上该前缀。":

@@ -5,12 +5,12 @@
    节点标题条、选中高亮、浮层与各类型节点的硬编码渐变。
    ══════════════════════════════════════════════════════════════ */
 body.theme-light {
-  /* 节点板通用：白色卡片 + 柔和投影（替换暗色渐变与厚重黑投影）+ 银灰底板 */
+  /* 节点板通用：白色卡片 + 柔和投影（替换暗色渐变与厚重黑投影）+ 黑灰底板（右下） */
   --nfloat:
-    0 0 0 2px #d7dbe2,
-    0 5px 0 2px #c2c8d2,
-    0 2px 6px rgba(30, 40, 60, .10),
-    0 8px 22px -8px rgba(30, 40, 60, .16),
+    0 0 0 1px rgba(0, 0, 0, .22),
+    4px 5px 0 1px rgba(0, 0, 0, .28),
+    4px 6px 8px rgba(30, 40, 60, .10),
+    4px 10px 22px -8px rgba(30, 40, 60, .16),
     0 -1px 0 inset rgba(0, 0, 0, .02);
 }
 
@@ -24,10 +24,10 @@ body.theme-light .n-head {
 /* ── 节点板通用基础 ── */
 body.theme-light .wf-node {
   --nfloat:
-    0 0 0 2px #d7dbe2,
-    0 5px 0 2px #c2c8d2,
-    0 2px 6px rgba(30, 40, 60, .10),
-    0 8px 22px -8px rgba(30, 40, 60, .16),
+    0 0 0 1px rgba(0, 0, 0, .22),
+    4px 5px 0 1px rgba(0, 0, 0, .28),
+    4px 6px 8px rgba(30, 40, 60, .10),
+    4px 10px 22px -8px rgba(30, 40, 60, .16),
     0 -1px 0 inset rgba(0, 0, 0, .02);
   background: linear-gradient(180deg, #f7f8fa, #eef1f5);
   border-color: var(--bd2);
@@ -41,6 +41,44 @@ body.theme-light .wf-node.super {
   background:
     linear-gradient(160deg, rgba(120, 140, 180, .08) 0%, transparent 42%),
     linear-gradient(180deg, #f2f4f8, #e9edf3);
+}
+
+/* 超级节点「文件夹」外观：浅色版 */
+body.theme-light .super-folder {
+  border-color: #b6c2d4;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .75) 0%, rgba(255, 255, 255, .2) 42%, rgba(120, 140, 180, .1) 100%),
+    linear-gradient(180deg, #eef2f8, #dee5ef);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .9),
+    0 2px 5px rgba(30, 45, 70, .12);
+}
+
+body.theme-light .super-folder-tab {
+  border-color: #b6c2d4;
+  background: linear-gradient(180deg, #f6f8fc, #e6ecf4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .95);
+}
+
+body.theme-light .super-folder-glyph {
+  color: #5a6472;
+  opacity: .16;
+}
+
+body.theme-light .super-folder-title {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .8);
+}
+
+body.theme-light .n-super-note-btn {
+  border-color: #b6c2d4;
+  background: rgba(255, 255, 255, .5);
+  color: #5a6472;
+}
+
+body.theme-light .n-super-note-btn.on {
+  border-color: #7d97bd;
+  background: rgba(120, 150, 190, .16);
+  color: #1e222b;
 }
 
 /* ── 各类型节点：浅色渐变 + 柔和同类色描边（保留类型语义，去掉霓虹） ── */

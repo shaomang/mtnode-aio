@@ -575,6 +575,23 @@
   border-color: #ff6b6b !important;
 }
 
+.rq-fold {
+  flex: none;
+  margin-left: 4px;
+  padding: 1px 7px !important;
+  font-size: 10px !important;
+  letter-spacing: .3px;
+  line-height: 1.4;
+  border-color: var(--bd2) !important;
+  color: var(--muted) !important;
+  background: transparent !important;
+}
+
+.rq-fold:hover {
+  border-color: var(--orange) !important;
+  color: var(--orange2) !important;
+}
+
 .rq-body {
   flex: 1;
   min-height: 0;

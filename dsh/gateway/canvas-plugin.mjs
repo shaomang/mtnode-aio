@@ -30,7 +30,17 @@ const NODE_LOCK =
 
 const GET_DESC =
   NODE_LOCK +
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dbNodeId/dbName/compiledAt for db_replica), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) are ALWAYS full text — never truncated; *Len fields report character counts only. When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dbNodeId/dbName/compiledAt for db_replica), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) default to FULL text (with bodyLimit they are truncated); *Len fields report character counts only.\n\n' +
+  'GRANULARITY (use it to save tokens — every node\'s full config is expensive):\n' +
+  '- detail "minimal": per node only id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags. Fastest orientation.\n' +
+  '- detail "standard": minimal + all config fields (provider/model/size/savePath/waitPath/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, NO body text.\n' +
+  '- detail "full" (DEFAULT): everything, including full body text, rows, files, steps.\n' +
+  '- ids: [nodeIdOrTitle…] — return ONLY those nodes (wires restricted to them). Use it to fetch one node\'s full config cheaply (e.g. ids:["标题A"] + detail:"full").\n' +
+  '- bodies: false — drop body text at any detail (lengths stay); true forces inclusion.\n' +
+  '- bodyLimit: N — truncate each body value to N chars (textLen stays true length).\n' +
+  '- sections: ["nodes","marks","wires","groups","taskTree","superTree","tagCatalog","workflows","selection"] — restrict these heavy top-level blocks to the listed ones (default: all). Small context (workflow/view/cam/imageSizes/kinds/markColors/taskFocus/superFocus/assistScope/scopeNote) is always included.\n' +
+  'PREFER detail:"standard" or "minimal", ids and sections for routine structure/config reads; use detail:"full" only when you truly need complete bodies/rows.\n\n' +
+  'When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
 
 const KIND_GUIDE =
   'Available create.kind values: input_text / input_image / input_file (输入节点) · db_table (数据库建表) · proc_text / proc_image (文本/图像处理) · agent_task / chat (智能节点) · save / save_text / save_image (保存) · split / merge (批次拆分/合并) · global (全局广播) · control / judge / task (控制/判断/任务) · wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex (等待/定时/延时/序列/闸门/分发/计数/互斥) · super / db_replica (超级节点 / 数据库副本) · music_gen / video_gen (音乐/视频生成) · net_recv / net_send (网络接收 / 网络发送). net_recv listens on a port/channel and forwards incoming text to downstream; net_send pushes its data-input text to a target host:port — both support tcp/udp, channel multiplexing and per-node host/port. Database nodes: input_file imports local files, db_table builds a table from them (agent extracts metadata, user confirms form), a kind "super" with db:true holds facts and compiles into a db_replica that smart nodes query with mtnode_db; you may also create a db_replica directly and set dbNodeId/dbName to point at an existing database super node. '
@@ -370,6 +380,19 @@ const NODE_SPEC = {
       type: 'number',
       description: 'video_gen: 视频时长（秒，4–15，默认 5，自动钳制）.',
     },
+    outputRes: {
+      type: 'string',
+      enum: ['auto', '480p', '720p', '1080p'],
+      description: 'video_gen: 输出分辨率档位（auto=按比例默认 / 480p 抽卡 / 720p / 1080p，24G 超限自动钳制）.',
+    },
+    postEnabled: {
+      type: 'boolean',
+      description: 'video_gen: 4K 超分补帧后处理开关（默认开，24G 建议关以提速）.',
+    },
+    postInterp: {
+      type: 'boolean',
+      description: 'video_gen: RIFE 补帧开关（后处理内）.',
+    },
     ctrlAction: {
       type: 'string',
       enum: ['run', 'clear'],
@@ -572,6 +595,19 @@ const UPDATE_SPEC = {
       type: 'number',
       description: 'video_gen: 视频时长（秒，4–15，自动钳制）.',
     },
+    outputRes: {
+      type: 'string',
+      enum: ['auto', '480p', '720p', '1080p'],
+      description: 'video_gen: 输出分辨率档位（auto=按比例默认 / 480p 抽卡 / 720p / 1080p，24G 超限自动钳制）.',
+    },
+    postEnabled: {
+      type: 'boolean',
+      description: 'video_gen: 4K 超分补帧后处理开关（默认开，24G 建议关以提速）.',
+    },
+    postInterp: {
+      type: 'boolean',
+      description: 'video_gen: RIFE 补帧开关（后处理内）.',
+    },
   },
 }
 
@@ -679,14 +715,43 @@ export function apply(ctx) {
   ctx.tools.register(defineTool({
     name: 'mtnode_canvas_get',
     description: GET_DESC,
-    parameters: {},
+    parameters: {
+      detail: {
+        type: 'string',
+        enum: ['minimal', 'standard', 'full'],
+        description:
+          'Node field granularity. minimal = id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags only (fastest orientation). standard = minimal + all config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text. full (default) = everything incl. full text bodies (input_text.text, prompt, task, goal), rows, files, steps. Prefer standard/minimal to save tokens.',
+      },
+      ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Return ONLY these nodes (match by node id or unique title). Wires are restricted to the selected nodes. Use with detail:"full" to fetch a single node\'s complete config cheaply.',
+      },
+      bodies: {
+        type: 'boolean',
+        description:
+          'Include full body text (text/prompt/task/goal). Default: true when detail="full", false otherwise. When false, *Len counts are still returned.',
+      },
+      bodyLimit: {
+        type: 'number',
+        description:
+          'Truncate each body value to N characters (0 = no limit, default). *Len fields always report the true length.',
+      },
+      sections: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Restrict heavy top-level blocks to the given list: nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection (default: all). Small context (workflow, view, cam, imageSizes, kinds, markColors, taskFocus/superFocus, assistScope, scopeNote) is always included.',
+      },
+    },
     timeoutMs: 15000,
     output: {
       schema: { type: 'object', additionalProperties: true },
       render: (_args, value) => jsonResult(value),
     },
-    async execute(_args, exec) {
-      return rpc('get', {}, exec)
+    async execute(args, exec) {
+      return rpc('get', args || {}, exec)
     },
   }))
 
