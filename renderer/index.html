@@ -156,6 +156,8 @@
         <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
         <div class="agent-body">
           <div class="agent-list" id="agentList"></div>
+          <div class="agent-queue" id="agentQueue" hidden></div>
+          <div class="agent-todo" id="agentTodo" hidden></div>
           <div class="agent-composer">
             <div class="agent-composer-chips">
               <button type="button" class="agent-chip" id="agentWsTrigger" data-i18n-title="选择工作区" title="选择工作区">
@@ -165,9 +167,10 @@
                 <span class="agent-chip-icon">⚙</span><span class="agent-tool-val" id="agentModelTriggerVal">标准模式</span>
               </button>
               <button type="button" class="agent-chip" id="agentCmdTrigger" data-i18n-title="技能" title="技能"><span data-i18n="技能">技能</span></button>
-              <button type="button" class="agent-chip" id="agentPlanToggle" data-i18n-title="规划模式" title="规划模式"><span data-i18n="规划">规划</span></button>
+              <button type="button" class="agent-chip" id="agentPlanToggle" data-i18n-title="规划模式：本轮只出计划，不做改动" title="规划模式：本轮只出计划，不做改动"><span data-i18n="规划">规划</span></button>
+              <button type="button" class="agent-chip run-plan" id="agentRunPlanBtn" hidden data-i18n-title="关闭规划模式并按上一条计划开始实施" title="关闭规划模式并按上一条计划开始实施"><span data-i18n="▶ 执行计划">▶ 执行计划</span></button>
               <button type="button" class="agent-chip" id="agentCompactBtn" data-i18n-title="压缩上下文" title="压缩上下文"><span data-i18n="压缩">压缩</span></button>
-              <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span></button>
+              <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span><span class="agent-tool-val" id="agentToolsTriggerVal"></span></button>
             </div>
             <div class="agent-composer-card">
               <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
@@ -280,6 +283,7 @@
 <script src="i18n.js"></script>
 <script src="dsh-plugin-copy.js"></script>
 <script src="app.js"></script>
+<script src="app-devnode.js"></script>
 <script src="app-agent.js"></script>
 <script src="app-db.js"></script>
 <script src="app-canvas.js"></script>

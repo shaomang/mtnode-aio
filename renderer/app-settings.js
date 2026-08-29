@@ -551,6 +551,27 @@ function openSettingsBody() {
     sec.appendChild(permRow);
     dshEls.permissionPreset = permSel;
 
+    /* 防失控开关：节点跑完是否自动接力下游（默认关；连跑请用控制节点 ▶） */
+    const cascRow = document.createElement("label");
+    cascRow.className = "n-field";
+    cascRow.style.flexDirection = "row";
+    cascRow.style.alignItems = "center";
+    const cascCb = document.createElement("input");
+    cascCb.type = "checkbox";
+    try {
+      cascCb.checked = localStorage.getItem("mtnode.autoRunDownstream") === "1";
+    } catch {
+      cascCb.checked = false;
+    }
+    cascCb.onchange = () => setAutoRunDownstream(cascCb.checked);
+    cascRow.appendChild(cascCb);
+    cascRow.appendChild(
+      document.createTextNode(
+        I18n.t("节点完成后自动执行下游（默认关：连跑请用控制节点 ▶）"),
+      ),
+    );
+    sec.appendChild(cascRow);
+
     /* 完成音效:长任务(超过 5 分钟)结束时短促提示;可替换音频文件并试听 */
     const sndRow = document.createElement("label");
     sndRow.className = "n-field";

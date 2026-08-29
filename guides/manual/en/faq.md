@@ -30,5 +30,20 @@ Check the workspace; switch Approvals to “approve each” or disable extra too
 **Docs assistant says it does not know?**  
 It only reads this manual. Use node **Node guide** for one kind, or ask using a sidebar section name.
 
+**Does dev-node “Suggest” need the model / network?**  
+Yes. The AI does a **read-only** review (project code + module progress) and returns 4 options; results are cached — “view last suggestion” does not re-run, “another batch” does.
+
+**Agent node cannot answer database questions?**  
+Make sure the database is attached: wire the **Database replica** into the input, or write `!@数据库标题` in the prompt. If attached but nothing matches, the discipline says to answer “数据库中没有该信息” — never guess.
+
+**Do music / video nodes need a save node after them?**  
+No. They have their own output paths (`.wav` / `.mp4`); adding a save node writes irrelevant content.
+
+**Network node receives nothing?**  
+Check three things: protocol (TCP / UDP), channel id, host/port (defaults in Settings · Network). Confirm the receive node is listening.
+
+**How do I run an execute node?**  
+Double-click the node, or click the play button twice; it launches the bound `.exe` / `.bat` or any file via the OS default handler.
+
 **Chinese / English?**  
 Globe button, top-right. Manual and node guides follow the UI language (Chinese fallback if English is missing).

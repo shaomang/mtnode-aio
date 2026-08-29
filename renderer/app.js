@@ -19,6 +19,7 @@ const S = {
   cam: { x: 90, y: 80, z: 1 },
   sel: null,
   selWire: null,
+  pendingRel: null, /* 关系线两步连接：起点节点 id（点击目标节点完成） */
   drag: null,
   saveTimer: null,
   saving: false,
@@ -155,6 +156,7 @@ const KIND_CLS = {
   video_gen: "video",
   net_recv: "net",
   net_send: "net",
+  execute: "exec",
   super: "super",
   super_io: "super-io",
   db_replica: "db",
@@ -201,6 +203,9 @@ const KIND_ICON_SVG = {
   /* 数据库（金色通用图标：库体 + 三层盘面） */
   db:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.4" rx="5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 3.4v9.2c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7V3.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3 8c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3 12.6c0 .94 2.24 1.7 5 1.7s5-.76 5-1.7" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/></svg>',
+  /* 开发节点（功能块）：立方体模块 + 顶面分界线 */
+  dev:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.1l5.5 2.95v5.9L8 13.9l-5.5-2.95v-5.9L8 2.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.5 5.05L8 8l5.5-2.95M8 8v5.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".9"/></svg>',
   /* 对话 */
   chat:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.5h7.2a1.4 1.4 0 0 1 1.4 1.4v3.4a1.4 1.4 0 0 1-1.4 1.4H7.2L4.6 12V9.7H3.2A1.4 1.4 0 0 1 1.8 8.3V4.9a1.4 1.4 0 0 1 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8.8 4.8h4a1.2 1.2 0 0 1 1.2 1.2v2.6a1.2 1.2 0 0 1-1.2 1.2h-.8V12l-2-1.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>',
@@ -266,9 +271,18 @@ const KIND_ICON_SVG = {
   /* 网络 · 发送：圆节点 + 下方发送箭头 + 上横线 */
   net_send:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 10.3v3.3M8 13.6L5.9 11.5M8 13.6L10.1 11.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 2.6h9.6M5.2 4.4h5.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 执行节点：圆角方框 + 播放键（一键启动绑定文件） */
+  execute:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.8" width="11.2" height="10.4" rx="2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.3 5.6l4.4 2.4-4.4 2.4V5.6z" fill="currentColor"/></svg>',
   /* 绘制 · 笔 + 画板 */
   draw:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.8" width="8.6" height="7.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.4 12.6l5.2-5.2 1.15 1.15-5.2 5.2H7.4v-1.15z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.5 8.5l1.15 1.15" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.2h5.2M4 7.2h3.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
+  /* 其他节点 · 收纳盒（盒体 + 省略号） */
+  other:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 5.6h11.2v6.2a1 1 0 0 1-1 1H3.4a1 1 0 0 1-1-1V5.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M4.6 5.6V4.2a1 1 0 0 1 1-1h4.8a1 1 0 0 1 1 1v1.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.2 9.1h.01M8 9.1h.01M10.8 9.1h.01" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+  /* 构建工作流：左列节点 + 汇流线 + 生成星标 */
+  build_wf:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.6" y="2.2" width="4.4" height="3.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="1.6" y="10.4" width="4.4" height="3.4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 3.9h1.9v4.1M6 12.1h1.9V8" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.2 3.2l.95 2.15L15.3 6.3l-2.15.95-.95 2.15-.95-2.15L9.1 6.3l2.15-.95z" fill="currentColor"/><path d="M11 11.2l.55 1.25 1.25.55-1.25.55L11 14.85l-.55-1.3-1.25-.55 1.25-.55z" fill="currentColor" opacity=".75"/></svg>',
   /* 菜单操作 */
   menu_copy:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.2" y="4.2" width="7.2" height="8.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.6 10.6V3.8A1.1 1.1 0 0 1 4.7 2.7h6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
@@ -290,6 +304,12 @@ const KIND_ICON_SVG = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3.4" width="10" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
   mark_arrow:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 8h9.2M9.2 4.8L13.2 8 9.2 11.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  /* 关系线（直线 · 双向箭头 · 仅表示关系） */
+  menu_link:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 11.4V7.2h6.8v-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.4 1.9l1.6 2.3-2.7.5z" fill="currentColor"/><path d="M4.6 14.1l-1.6-2.3 2.7-.5z" fill="currentColor"/></svg>',
+  /* 细化（洋葱层 · 展开一层） */
+  menu_refine:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.6" y="2.6" width="4.6" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M7.2 4.9h3.2v3.2M10.4 8.1v3.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><rect x="8.8" y="8.8" width="2.5" height="2.5" rx=".7" fill="none" stroke="currentColor" stroke-width="1.15"/><rect x="11.6" y="11.6" width="1.9" height="1.9" rx=".6" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
   /* 文件夹 */
   folder:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 4.3h3.4l1.1 1.15h6.7c.44 0 .8.36.8.8v5.55c0 .44-.36.8-.8.8H2.4a.8.8 0 0 1-.8-.8V5.1c0-.44.36-.8.8-.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
@@ -323,8 +343,22 @@ function fillNodeKindIcon(el, node) {
   if (node.kind === "db_replica" || (node.kind === "super" && node.db)) {
     key = "db";
     el.classList.add("db-ico");
+    el.classList.remove("dev-ico");
+  } else if (node.kind === "super" && node.dev) {
+    /* 开发节点（功能块）：立方体图标（青色） */
+    key = "dev";
+    el.classList.add("dev-ico");
+    el.classList.remove("db-ico");
+  } else if (node.kind === "execute") {
+    /* 执行节点：启动器图标（橙红） */
+    key = "execute";
+    el.classList.add("exec-ico");
+    el.classList.remove("db-ico");
+    el.classList.remove("dev-ico");
   } else {
     el.classList.remove("db-ico");
+    el.classList.remove("dev-ico");
+    el.classList.remove("exec-ico");
   }
   const svg = KIND_ICON_SVG[key] || KIND_ICON_SVG.proc_text;
   el.innerHTML = svg;
@@ -799,6 +833,18 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  /* 执行节点：绑定可执行文件（.exe/.bat/.cmd 或任何系统可打开的文件）· 一键启动 */
+  execute: {
+    w: 230,
+    h: 170,
+    title: "执行",
+    execPath: "",
+    execIcon: "auto",
+    execColor: "",
+    execStatus: "",
+    ranAt: 0,
+    running: false,
+  },
 };
 
 const TASK_STATUS_LABEL = {
@@ -960,6 +1006,7 @@ function superExternalInWiresAll(superNode, wf) {
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
+      if (x.rel) return false;
       if (x.to !== superNode.id) return false;
       const from = nodeByIdIn(x.from, wf);
       if (!from || isSuperIoNode(from)) return false;
@@ -981,6 +1028,7 @@ function superInternalOutFeedsAll(superNode, wf) {
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
+      if (x.rel) return false;
       if (x.to !== superNode.id) return false;
       const from = nodeByIdIn(x.from, wf);
       return from && nodeParentSuperId(from) === superNode.id;
@@ -1000,6 +1048,7 @@ function superExternalOutWiresAll(superNode, wf) {
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
+      if (x.rel) return false;
       if (x.from !== superNode.id) return false;
       const to = nodeByIdIn(x.to, wf);
       return to && nodeParentSuperId(to) !== superNode.id;
@@ -1015,6 +1064,7 @@ function superInternalBridgeWiresAll(superNode, wf) {
   if (!superNode || !wf) return [];
   return (wf.wires || [])
     .filter((x) => {
+      if (x.rel) return false;
       if (x.from !== superNode.id) return false;
       const to = nodeByIdIn(x.to, wf);
       return to && nodeParentSuperId(to) === superNode.id;
@@ -1220,7 +1270,8 @@ function syncRingFromCore(core) {
   let rcls = "fn-edge-ring";
   if (cls.includes(" sel")) rcls += " sel";
   if (cls.includes(" linked")) rcls += " linked";
-  if (cls.includes(" ctrl")) rcls += " ctrl";
+  if (cls.includes(" rel")) rcls += " rel";
+  else if (cls.includes(" ctrl")) rcls += " ctrl";
   else if (cls.includes(" img")) rcls += " img";
   else if (cls.includes(" aud")) rcls += " aud";
   else if (cls.includes(" vid")) rcls += " vid";
@@ -1233,7 +1284,8 @@ function applyWirePathClass(p, w, from) {
   let wcls = "fn-edge";
   if (S.selWire === w.id) wcls += " sel";
   else if (linkedToSelectedNode(w)) wcls += " linked";
-  if (wireFromIsControl(w) || isControlKind(nodeById(w.to))) wcls += " ctrl";
+  if (w.rel) wcls += " rel";
+  else if (wireFromIsControl(w) || isControlKind(nodeById(w.to))) wcls += " ctrl";
   else if (isImageWireFrom(from)) wcls += " img";
   else if (isAudioWireFrom(from)) wcls += " aud";
   else if (isVideoWireFrom(from)) wcls += " vid";
@@ -1249,6 +1301,59 @@ function linkedToSelectedNode(w) {
     S.selSet && S.selSet.size ? S.selSet : S.sel ? new Set([S.sel]) : null;
   return !!set && (set.has(w.from) || set.has(w.to));
 }
+function showRelWireMenu(clientX, clientY, w) {
+  if (!w || !w.rel) return;
+  showCtx(clientX, clientY, [
+    [
+      I18n.t("关系线操作"),
+      [
+        {
+          label: I18n.t("✎ 编辑线上文字…"),
+          iconKey: "mark_text",
+          iconCls: "draw",
+          run: () => editRelWireLabel(w),
+        },
+        {
+          label: I18n.t("箭头方向"),
+          iconKey: "mark_arrow",
+          iconCls: "draw",
+          submenu: [
+            {
+              label: I18n.t("←→ 双向"),
+              run: () => setRelArrow(w, "both"),
+            },
+            {
+              label: I18n.t("→ 正向（起点 → 终点）"),
+              run: () => setRelArrow(w, "forward"),
+            },
+            {
+              label: I18n.t("← 反向（终点 → 起点）"),
+              run: () => setRelArrow(w, "backward"),
+            },
+            {
+              label: I18n.t("— 无箭头"),
+              run: () => setRelArrow(w, "none"),
+            },
+          ],
+        },
+        {
+          label: I18n.t("✕ 删除关系线"),
+          iconKey: "menu_cut",
+          iconCls: "danger",
+          cls: "ctx-danger",
+          run: () => {
+            pushHistory();
+            removeWire(w.id);
+            S.selWire = null;
+            renderCanvas();
+            scheduleSave(true);
+            renderStatus();
+          },
+        },
+      ],
+    ],
+  ]);
+}
 function bindWirePathInteractions(p, w) {
   if (p.dataset.bound === "1") return;
   p.dataset.bound = "1";
@@ -1258,12 +1363,24 @@ function bindWirePathInteractions(p, w) {
     S.selWire = w.id;
     renderCanvas();
   });
+  if (w.rel) {
+    /* 关系线：双击编辑线上文字 */
+    p.addEventListener("dblclick", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      editRelWireLabel(relWireById(w.id) || w);
+    });
+  }
   p.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     clearSelection();
     S.selWire = w.id;
     renderCanvas();
+    if (w.rel) {
+      showRelWireMenu(ev.clientX, ev.clientY, relWireById(w.id) || w);
+      return;
+    }
     showCtx(ev.clientX, ev.clientY, [
       [
         I18n.t("连线操作"),
@@ -1307,6 +1424,7 @@ function updateSuperInnerWires(host, touchIds) {
   const stageW = Math.max(80, stage.clientWidth || fallbackW);
   const present = new Set();
   for (const w of S.wf.wires || []) {
+    if (w.rel) continue;
     const from = nodeById(w.from);
     const to = nodeById(w.to);
     if (!from || !to) continue;
@@ -1349,6 +1467,9 @@ function updateSuperInnerWires(host, touchIds) {
   }
   for (const p of [...svg.querySelectorAll(":scope > path.fn-edge")]) {
     if (p.id === "swireTemp" || p.id === "swireTemp-r") continue;
+    /* 关系线（rsw-*）由 renderRelWiresPass 自己管理，别当残留删掉 */
+    if (p.id.indexOf("rsw-") === 0 || / rel$/.test(p.getAttribute("class") || ""))
+      continue;
     if (!present.has(p.id)) p.remove();
   }
   let t = svg.querySelector("#swireTemp");
@@ -1646,6 +1767,8 @@ function toggleSuperOpen(node, open) {
     node.expandW = Math.max(320, Number(node.expandW) || 720);
     node.expandH = Math.max(220, Number(node.expandH) || 480);
     alignSuperContentTopLeft(node);
+    /* 展开后按内容撑开：否则壳层固定 720×480，子节点与关系线会被裁掉 */
+    fitSuperShellToContent(node);
   }
   scheduleSave(true);
   renderCanvas();
@@ -1678,6 +1801,74 @@ function alignSuperContentTopLeft(superNode) {
   }
   superNode.innerPanX = PAD - minX;
   superNode.innerPanY = PAD - minY;
+}
+/** 展开壳层按内部内容（含标注）真实范围撑开，避免子节点与关系线被裁掉。
+   排版 / 细化 / 拖入子节点后调用；只放大不缩小（缩壳交给用户手动 resize）。 */
+function fitSuperShellToContent(superNode, opts) {
+  opts = opts || {};
+  if (!superNode || superNode.kind !== "super") return false;
+  const PAD = 18;
+  const PORT = 26; /* 右侧端子排留位 */
+  const HEAD = 43; /* head ≈29 + 底部 resize 垫高 ≈14 */
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity,
+    any = false;
+  for (const n of superChildrenOf(superNode.id)) {
+    if (isSuperIoNode(n)) continue;
+    const sz = nodeDrawSize(n);
+    any = true;
+    minX = Math.min(minX, Number(n.x) || 0);
+    minY = Math.min(minY, Number(n.y) || 0);
+    maxX = Math.max(maxX, (Number(n.x) || 0) + sz.w);
+    maxY = Math.max(maxY, (Number(n.y) || 0) + sz.h);
+  }
+  for (const m of marksOf()) {
+    if (markParentSuperId(m) !== superNode.id) continue;
+    const b = markBounds(m);
+    if (!b) continue;
+    any = true;
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.w);
+    maxY = Math.max(maxY, b.y + b.h);
+  }
+  if (!any) return false;
+  /* 内部平移后的可见范围 */
+  const panX = Number(superNode.innerPanX) || 0;
+  const panY = Number(superNode.innerPanY) || 0;
+  const needW = Math.ceil(maxX - minX + PAD * 2 + PORT);
+  const needH = Math.ceil(maxY - minY + PAD * 2 + HEAD);
+  const haveW = Math.max(320, Number(superNode.expandW) || 720);
+  const haveH = Math.max(220, Number(superNode.expandH) || 480);
+  const nextW = opts.shrink ? Math.max(320, needW) : Math.max(haveW, needW);
+  const nextH = opts.shrink ? Math.max(220, needH) : Math.max(haveH, needH);
+  let changed = false;
+  if (nextW !== haveW) {
+    superNode.expandW = nextW;
+    changed = true;
+  }
+  if (nextH !== haveH) {
+    superNode.expandH = nextH;
+    changed = true;
+  }
+  if (changed && (minX + panX < 0 || minY + panY < 0)) {
+    alignSuperContentTopLeft(superNode);
+  }
+  return changed;
+}
+/** 所有展开壳层按内容撑开（排版 / 批量创建 / 收纳节点后调用） */
+function fitAllOpenSuperShells(opts) {
+  if (!S.wf) return 0;
+  let n = 0;
+  const list = (S.wf.nodes || []).filter(
+    (x) => x.kind === "super" && superIsOpenShell(x),
+  );
+  /* 由内向外：内层撑开后外层才量得准 */
+  list.sort((a, b) => superNestDepth(b) - superNestDepth(a));
+  for (const s of list) if (fitSuperShellToContent(s, opts)) n++;
+  return n;
 }
 function nodeIsNestedInOpenSuper(n) {
   if (!n) return false;
@@ -2384,6 +2575,7 @@ function outputCount(n) {
   if (n.kind === "global") return 0;
   if (isSaveNode(n)) return 0;
   if (isExecEnd(n)) return 0;
+  if (n.kind === "execute") return 0; /* 执行节点：独立工具 · 无输出 */
   if (n.kind === "super") {
     const open = superIsOpenShell(n);
     const ext = superExternalOutWiresAll(n);
@@ -2969,6 +3161,7 @@ function topoOrderByWires(nodes) {
   const incoming = {};
   for (const n of list) incoming[n.id] = 0;
   for (const w of (S.wf && S.wf.wires) || []) {
+    if (w.rel) continue;
     if (!ids.has(w.from) || !ids.has(w.to)) continue;
     incoming[w.to] = (incoming[w.to] || 0) + 1;
   }
@@ -2983,6 +3176,7 @@ function topoOrderByWires(nodes) {
     seen.add(n.id);
     out.push(n);
     for (const w of S.wf.wires || []) {
+      if (w.rel) continue;
       if (w.from !== n.id || !ids.has(w.to)) continue;
       incoming[w.to] -= 1;
       if (incoming[w.to] <= 0) {
@@ -3924,6 +4118,8 @@ function clearSelection() {
   S.selMark = null;
   if (S.selSet) S.selSet.clear();
   if (S.selMarkSet) S.selMarkSet.clear();
+  /* 取消选中 → 关系线的高亮 / 淡出一起撤掉 */
+  refreshRelWireStates();
 }
 function ensureSelMarkSet() {
   if (!S.selMarkSet) S.selMarkSet = new Set();
@@ -4075,16 +4271,16 @@ function wireFromIsControl(w, wf) {
   }
   return false;
 }
-/* 数据输入（不含控制节点连入的指挥线） */
+/* 数据输入（不含控制节点连入的指挥线；关系线不参与数据流） */
 function wiresTo(id) {
   return S.wf.wires
-    .filter((w) => w.to === id && !wireFromIsControl(w))
+    .filter((w) => w.to === id && !w.rel && !wireFromIsControl(w))
     .sort((a, b) => a.toIndex - b.toIndex);
 }
-/* 全部输入连线（含控制线，用于端子占位） */
+/* 全部输入连线（含控制线，用于端子占位；关系线不占端子） */
 function allWiresTo(id) {
   return S.wf.wires
-    .filter((w) => w.to === id)
+    .filter((w) => w.to === id && !w.rel)
     .sort((a, b) => a.toIndex - b.toIndex);
 }
 function hasOutput(n) {
@@ -4305,13 +4501,14 @@ function globalChipKindCls(n) {
 }
 
 function inputCount(node) {
-  /* chat / 只读 / 需求等待 / 定时 / 起点：无输入端子 */
+  /* chat / 只读 / 需求等待 / 定时 / 起点 / 执行：无输入端子 */
   if (
     node.ro ||
     node.kind === "chat" ||
     node.kind === "wait_file" ||
     node.kind === "timer" ||
     node.kind === "db_replica" ||
+    node.kind === "execute" ||
     isExecStart(node)
   )
     return 0;
@@ -4608,6 +4805,7 @@ function nodeKindLabel(node) {
     mutex: "互斥",
     control: "控制",
     judge: "判断",
+    execute: "执行",
     input_text: "文本",
     input_image: "图像",
     input_file: "文件",
@@ -4651,6 +4849,7 @@ function nodeKindPurposeKey(node) {
     video_gen: "视频生成（MiniMax H3 · 文本/图像/音频/视频）",
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
+    execute: "执行节点（绑定可执行文件 · 一键启动）",
     save: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_text: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_image: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
@@ -4723,7 +4922,13 @@ function updateRunQueuePanel() {
   const btnTxt = $("#btnRunQueueTxt");
   const { running, waiting } = collectRunQueue();
   const assistOn = !!S.assistRunning;
-  const hasQueue = !!running.length || !!waiting.length || assistOn;
+  /* 后端仍占着音/视频生成任务（画布上已清状态，但显存还在跑）：
+     条必须保留，用户才看得见、也还能再点「全部终止」 */
+  let mediaOn = false;
+  try {
+    mediaOn = hasAnyMediaGenActivity();
+  } catch (_) {}
+  const hasQueue = !!running.length || !!waiting.length || assistOn || mediaOn;
   /* 条状折叠按钮：有队列时显示，并高亮呼吸灯；无队列时一并隐藏 */
   if (btn) {
     if (!hasQueue) {
@@ -4735,12 +4940,14 @@ function updateRunQueuePanel() {
       btn.title =
         (assistOn ? I18n.t("助手执行中") + " " : "") +
         (running.length ? running.length + I18n.t(" 处理中") + " " : "") +
-        (waiting.length ? waiting.length + I18n.t(" 等待") : "") +
+        (waiting.length ? waiting.length + I18n.t(" 等待") + " " : "") +
+        (mediaOn ? I18n.t("后端生成中") + " " : "") +
         I18n.t("（点击展开 / 收起运行队列）");
       if (btnTxt) {
         const parts = [];
         if (running.length) parts.push(String(running.length));
         else if (waiting.length) parts.push(String(waiting.length));
+        else if (mediaOn) parts.push("◉");
         btnTxt.textContent = parts.join("/") || (assistOn ? "◉" : "");
       }
     }
@@ -4769,6 +4976,7 @@ function updateRunQueuePanel() {
   if (assistOn) parts.push(I18n.t("助手执行中"));
   if (running.length) parts.push(running.length + I18n.t(" 处理中"));
   if (waiting.length) parts.push(waiting.length + I18n.t(" 等待"));
+  if (mediaOn) parts.push(I18n.t("后端生成中"));
   count.textContent = parts.join(" · ");
   head.appendChild(count);
   const fold = document.createElement("button");
@@ -4850,6 +5058,20 @@ function updateRunQueuePanel() {
         if (nodeById(n.id)) focusNode(n.id);
         else toast(I18n.t("节点不在当前画布"), "warn");
       };
+      /* 逐条终止：队列里有 N 个视频 / 音乐任务时，不想只有一刀切的全部终止 */
+      const stop = document.createElement("span");
+      stop.className = "rq-stop";
+      stop.setAttribute("role", "button");
+      stop.tabIndex = 0;
+      stop.textContent = "■";
+      stop.title = I18n.t("停止运行");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        try {
+          stopNode(n);
+        } catch (_) {}
+      };
+      row.appendChild(stop);
       body.appendChild(row);
     }
   };
@@ -4858,65 +5080,89 @@ function updateRunQueuePanel() {
   el.appendChild(body);
 }
 
-/* 一键终止：运行中节点 + 排队等待 + 全局助手 */
+/* 一键终止：运行中 + 排队中（含隐藏的媒体排队）+ 后端生成任务 + 定时触发 + 全局助手/会话。
+   关键：先递增全局终止代号并给每个「有活干」的节点打停止标记，再取消主进程后端任务，
+   最后关掉所有轮询；否则「结束所有节点任务」只是把 running 置 false，
+   队列与后端会自己把视频 / 音乐任务重新拉起来。 */
 function stopAllRuns() {
   const { running, waiting } = collectRunQueue();
   const assistOn = !!S.assistRunning;
-  if (!running.length && !waiting.length && !assistOn) {
+  const sessRunning = agentSessions().filter((s) => s.running);
+  if (
+    !running.length &&
+    !waiting.length &&
+    !assistOn &&
+    !sessRunning.length &&
+    !hasAnyMediaGenActivity()
+  ) {
     toast(I18n.t("当前没有运行中的任务"), "warn");
     return;
   }
-  let nStop = 0;
-  /* 先清等待，避免终止后立刻被队列继续拉起 */
-  if (waiting.length) {
-    clearPendingRun(waiting.map((n) => n.id));
-  } else if (S.pendingRun && S.pendingRun.size) {
-    clearPendingRun([...S.pendingRun]);
+  /* ① 全局作废代号 */
+  markGlobalStop();
+  /* ② 媒体生成：清排队 + 关轮询 + 取消后端任务（释放大锁），返回在途任务数 */
+  let nMedia = 0;
+  try {
+    nMedia = stopAllMediaGen();
+  } catch (_) {}
+  /* ③ 统一中断 dsh 引擎（智能节点 / 助手 / 会话共用一次） */
+  const needDsh =
+    running.some((n) => isDshTask(n) || (n.kind === "chat" && n.agent)) ||
+    assistOn ||
+    sessRunning.length > 0;
+  if (needDsh) {
+    try {
+      dshCancelActive();
+    } catch (_) {}
   }
-  /* dsh 智能运行统一中断一次引擎；各节点再标 aborted */
-  const needDsh = running.some(
-    (n) => isDshTask(n) || (n.kind === "chat" && n.agent),
-  );
-  if (needDsh || assistOn) dshCancelActive();
-  for (const n of running) {
-    if (!n.running) continue;
-    n._aborted = true;
+  /* ④ 当前画布 + 后台工作流：一次线性扫描，凡是「有活干」的节点全部作废 */
+  const pendingIds = new Set(S.pendingRun || []);
+  const runIds = new Set(S.runPromises ? S.runPromises.keys() : []);
+  const isBusy = (n) =>
+    !!n &&
+    (n.running ||
+      pendingIds.has(n.id) ||
+      runIds.has(n.id) ||
+      (S.playLocks && S.playLocks.has(n.id)));
+  let nStop = 0;
+  /* 逐个工作流就地扫描，不复制大数组（节点再多也只走一遍） */
+  const eachKnown = (fn) => {
+    if (S.wf && S.wf.nodes) for (const n of S.wf.nodes) fn(n);
+    for (const wid of Object.keys(S.wfBag || {})) {
+      const w = S.wfBag[wid];
+      if (w && w.nodes && (!S.wf || w.id !== S.wf.id)) for (const n of w.nodes) fn(n);
+    }
+  };
+  eachKnown((n) => {
+    if (!isBusy(n)) return;
+    if (isMediaGenNode(n)) return; /* 已在 ② 处理（状态文案不同） */
+    bumpNodeStop(n);
     if (n._abKey) {
       try {
         window.api.apiAbort(n._abKey);
       } catch (_) {}
     }
+    if (n.running) nStop++;
     n.running = false;
-    n.error = I18n.t("已手动停止");
+    if (n.kind !== "wait_file") n.error = I18n.t("已手动停止");
     if (n.kind === "agent_task" && n.agentSessionId) {
       const sess = agentSessions().find((s) => s.id === n.agentSessionId);
       if (sess) sess.running = false;
     }
-    nStop++;
-  }
-  /* 后台 bag 里仍标 running 的节点 */
-  if (S.runPromises) {
-    for (const id of [...S.runPromises.keys()]) {
-      let n = nodeById(id);
-      if (!n) {
-        for (const wid of Object.keys(S.wfBag || {})) {
-          const w = S.wfBag[wid];
-          n = ((w && w.nodes) || []).find((x) => x.id === id);
-          if (n) break;
-        }
-      }
-      if (!n || !n.running) continue;
-      n._aborted = true;
-      if (n._abKey) {
-        try {
-          window.api.apiAbort(n._abKey);
-        } catch (_) {}
-      }
-      n.running = false;
-      n.error = I18n.t("已手动停止");
-      nStop++;
+  });
+  /* ⑤ 解除定时触发：否则定时器会按点继续往队列里塞任务 */
+  let nTimer = 0;
+  eachKnown((n) => {
+    if (n.kind === "timer" && (n.timerArmed || n.running)) {
+      try {
+        disarmTimerNode(n, true);
+        nTimer++;
+      } catch (_) {}
     }
-  }
+  });
+  /* ⑥ 清空等待队列显示（含隐藏的媒体排队） */
+  if (S.pendingRun && S.pendingRun.size) clearPendingRun([...S.pendingRun]);
+  S._scheduledRunIds = null;
   if (assistOn) {
     try {
       assistStop();
@@ -4924,14 +5170,11 @@ function stopAllRuns() {
       S.assistRunActive = false;
     }
   }
-  /* 智能会话（非节点绑定）若在跑，一并终止(支持并行:全部运行中的会话都取消) */
-  const sessList = agentSessions().filter((s) => s.running);
-  for (const sess of sessList) {
+  for (const sess of sessRunning) {
     sess._cancelled = true;
     sess.running = false;
     nStop++;
   }
-  if (sessList.length && !needDsh && !assistOn) dshCancelActive();
   renderCanvas();
   renderStatus();
   updateRunQueuePanel();
@@ -4940,6 +5183,8 @@ function stopAllRuns() {
   const bits = [];
   if (nStop) bits.push(nStop + I18n.t(" 个运行"));
   if (waiting.length) bits.push(waiting.length + I18n.t(" 个等待"));
+  if (nMedia) bits.push(nMedia + I18n.t(" 个生成任务"));
+  if (nTimer) bits.push(nTimer + I18n.t(" 个定时"));
   if (assistOn) bits.push(I18n.t("全局助手"));
   toast(
     I18n.t("已全部终止") + (bits.length ? "：" + bits.join(" · ") : ""),
@@ -5151,6 +5396,217 @@ function promptDialog(message, defaultValue, opts) {
     }
     host.classList.add("on");
     host.addEventListener("keydown", onKey);
+  });
+}
+
+/* 信息展示 + 文本输入的通用对话框（开发 / 细化等动作用）。
+ * opts: { title, wide, rows:[[k,v]], note:{label,text}, list:{label,items}, msg, warn,
+ *         textarea:{label,placeholder,value}, hint, requireText,
+ *         actions:[{id,label,primary,danger}] }
+ * resolve({action,text}) ；取消 / Esc → null。requireText 且输入为空时不关闭。 */
+function mtDialogForm(opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const host = ensureMtDialog();
+    const seq = ++_mtDialogSeq;
+    const box = host.querySelector(".mt-dialog-box");
+    if (box) {
+      box.classList.add("mt-form-box");
+      if (opts.wide) box.classList.add("mt-form-wide");
+    }
+    const titleEl = document.getElementById("mtDlgTitle");
+    const bodyEl = document.getElementById("mtDlgBody");
+    const footEl = document.getElementById("mtDlgFoot");
+    if (titleEl) titleEl.textContent = opts.title || I18n.t("确认");
+    let ta = null;
+    let errP = null;
+    let customSelect = null;
+    if (bodyEl) {
+      bodyEl.innerHTML = "";
+      const frag = document.createDocumentFragment();
+      if (Array.isArray(opts.rows) && opts.rows.length) {
+        const wrap = document.createElement("div");
+        wrap.className = "mt-form-rows";
+        for (const r of opts.rows) {
+          const row = document.createElement("div");
+          row.className = "mt-form-row";
+          const k = document.createElement("span");
+          k.className = "mt-form-k";
+          k.textContent = String((r && r[0]) || "");
+          const v = document.createElement("span");
+          v.className = "mt-form-v";
+          v.textContent = String((r && r[1]) || "");
+          row.appendChild(k);
+          row.appendChild(v);
+          wrap.appendChild(row);
+        }
+        frag.appendChild(wrap);
+      }
+      if (opts.note && String(opts.note.text || "").trim()) {
+        const nb = document.createElement("div");
+        nb.className = "mt-form-note";
+        const nl = document.createElement("i");
+        nl.textContent = opts.note.label || I18n.t("概述");
+        const np = document.createElement("p");
+        np.textContent = String(opts.note.text).trim();
+        nb.appendChild(nl);
+        nb.appendChild(np);
+        frag.appendChild(nb);
+      } else if (opts.note) {
+        const nb = document.createElement("div");
+        nb.className = "mt-form-note empty";
+        nb.textContent =
+          (opts.note.label || I18n.t("概述")) + "：" + I18n.t("（暂无概述）");
+        frag.appendChild(nb);
+      }
+      if (opts.list && Array.isArray(opts.list.items) && opts.list.items.length) {
+        const lb = document.createElement("div");
+        lb.className = "mt-form-list";
+        const lt = document.createElement("i");
+        lt.textContent = opts.list.label || "";
+        lb.appendChild(lt);
+        const ul = document.createElement("div");
+        for (const it of opts.list.items.slice(0, 30)) {
+          const li = document.createElement("span");
+          li.className = "mt-form-li";
+          li.textContent = String(it);
+          ul.appendChild(li);
+        }
+        if (opts.list.items.length > 30) {
+          const li = document.createElement("span");
+          li.className = "mt-form-li more";
+          li.textContent = "… +" + (opts.list.items.length - 30);
+          ul.appendChild(li);
+        }
+        lb.appendChild(ul);
+        frag.appendChild(lb);
+      }
+      if (opts.msg) {
+        const p = document.createElement("p");
+        p.className = "mt-dialog-msg";
+        p.textContent = String(opts.msg);
+        frag.appendChild(p);
+      }
+      if (opts.warn) {
+        const p = document.createElement("p");
+        p.className = "mt-form-warn";
+        p.textContent = String(opts.warn);
+        frag.appendChild(p);
+      }
+      if (opts.textarea) {
+        const lab = document.createElement("label");
+        lab.className = "mt-form-lab";
+        lab.textContent = opts.textarea.label || I18n.t("说明");
+        frag.appendChild(lab);
+        ta = document.createElement("textarea");
+        ta.className = "mt-form-input";
+        ta.rows = Number(opts.textarea.rows || 5);
+        ta.placeholder = opts.textarea.placeholder || "";
+        ta.value = String(opts.textarea.value || "");
+        frag.appendChild(ta);
+        errP = document.createElement("p");
+        errP.className = "mt-form-err";
+        errP.textContent = opts.textarea.requiredMsg || I18n.t("请先填写内容");
+        errP.hidden = true;
+        frag.appendChild(errP);
+        ta.addEventListener("input", () => {
+          if (!String(ta.value || "").trim()) return;
+          ta.classList.remove("invalid");
+          if (errP) errP.hidden = true;
+        });
+      }
+      if (opts.hint) {
+        const p = document.createElement("p");
+        p.className = "mt-form-hint";
+        p.textContent = String(opts.hint);
+        frag.appendChild(p);
+      }
+      if (typeof opts.custom === "function") {
+        const c = document.createElement("div");
+        c.className = "mt-form-custom";
+        frag.appendChild(c);
+        opts.custom(c, (value) => {
+          if (customSelect) customSelect(value);
+        });
+      }
+      bodyEl.appendChild(frag);
+    }
+    const acts =
+      Array.isArray(opts.actions) && opts.actions.length
+        ? opts.actions
+        : [
+            { id: "cancel", label: I18n.t("取消") },
+            { id: "ok", label: I18n.t("确定"), primary: true },
+          ];
+    if (footEl) footEl.innerHTML = "";
+    let done = false;
+    const cleanup = () => {
+      host.removeEventListener("keydown", onKey);
+      closeMtDialog();
+      if (box) {
+        box.classList.remove("mt-form-box");
+        box.classList.remove("mt-form-wide");
+      }
+    };
+    const finish = (action, force) => {
+      if (done || seq !== _mtDialogSeq) return;
+      const text = ta ? String(ta.value || "") : "";
+      if (
+        !force &&
+        action &&
+        opts.requireText &&
+        !String(text).trim() &&
+        errP
+      ) {
+        errP.hidden = false;
+        ta.classList.add("invalid");
+        try {
+          ta.focus();
+        } catch (_) {}
+        return;
+      }
+      done = true;
+      cleanup();
+      resolve(action ? { action, text } : null);
+    };
+    customSelect = (value) => {
+      if (done || seq !== _mtDialogSeq) return;
+      done = true;
+      cleanup();
+      resolve({ action: "ok", custom: value });
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        finish(null, true);
+      } else if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        const pri = acts.find((a) => a.primary) || acts[acts.length - 1];
+        finish(pri ? pri.id : "ok");
+      }
+    };
+    let primaryBtn = null;
+    for (const a of acts) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = a.primary ? "mini primary" : a.danger ? "mini danger" : "mini";
+      b.textContent = a.label || a.id;
+      b.onclick = () => {
+        if (a.id === "cancel") finish(null, true);
+        else finish(a.id);
+      };
+      if (a.primary) primaryBtn = b;
+      if (footEl) footEl.appendChild(b);
+    }
+    host.classList.add("on");
+    host.addEventListener("keydown", onKey);
+    setTimeout(() => {
+      try {
+        if (ta) ta.focus();
+        else if (primaryBtn) primaryBtn.focus();
+      } catch (_) {}
+    }, 0);
   });
 }
 
@@ -6036,6 +6492,1046 @@ function wirePath(from, to, idx, fromIndex, wire) {
   return wirePathAB(a.x, a.y, b.x, b.y);
 }
 
+/* ============ 关系线（rel）：UML 风格直线关系线 ============
+   仅表达模块 / 元素之间的关系，不参与数据流与执行；走线就是一条普通直线段。
+   同一层级（主画布 / 展开壳层舞台）内的所有关系线一起规划：
+   · 出射边选择（中心连线穿过哪条边）· 同侧多线扇形分散锚点 · 近似重合的直线彼此滑开
+   → 避免多条线完全重合无法辨认。
+   点选节点：与该节点相关（或以其为宿主）的关系线亮起，其余关系线退到背景。 */
+const REL_ARROWS = ["forward", "backward", "both", "none"];
+function relArrowOf(w) {
+  const a = w && w.relArrow;
+  return REL_ARROWS.indexOf(a) >= 0 ? a : "forward";
+}
+function relWireById(id) {
+  if (!S.wf) return null;
+  for (const w of S.wf.wires || []) if (w.id === id && w.rel) return w;
+  return null;
+}
+/* 直线关系线：端点离边框留白 / 线上文字偏移 / 叠线错开的步长与尝试次数 */
+const REL_END_GAP = 4;
+const REL_LABEL_GAP = 9;
+const REL_SEP_TOL = 11;
+const REL_SEP_STEP = 14;
+const REL_SEP_MAX = 8;
+/* 节点矩形（世界坐标；给宿主时返回展开壳层舞台内的局部坐标） */
+function relWireRect(n, host) {
+  const sz = nodeDrawSize(n);
+  if (host) {
+    if (n.id === host.id) {
+      /* 宿主自身：用整个舞台边界作为锚定矩形 */
+      const stageW = Math.max(80, superDisplaySize(host).w - 8);
+      const stageH = Math.max(60, superStageHeight(host));
+      return { x: 4, y: 4, w: stageW - 8, h: stageH - 8 };
+    }
+    const pan = superInnerPan(host);
+    return { x: pan.x + n.x, y: pan.y + n.y, w: sz.w, h: sz.h };
+  }
+  const p = nodeWorldPos(n);
+  return { x: p.x, y: p.y, w: sz.w, h: sz.h };
+}
+function relRectCenter(r) {
+  return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+}
+/* 该关系线当前是否可见（与节点同层级） */
+function relWireInScope(from, to) {
+  const sf = currentSuperFocus();
+  const focusInner = !!(
+    sf &&
+    ((from.id === sf && nodeInCurrentScope(to)) ||
+      (to.id === sf && nodeInCurrentScope(from)))
+  );
+  if (focusInner) return true;
+  return nodeInCurrentScope(from) && nodeInCurrentScope(to);
+}
+/* 直线锚点用的边：从方块中心朝对端引线，与边框的交点落在哪一条边 */
+function relBorderAnchor(rect, toward) {
+  const c = relRectCenter(rect);
+  const dx = toward.x - c.x,
+    dy = toward.y - c.y;
+  if (!dx && !dy) return { x: c.x, y: rect.y, side: "t" };
+  const hw = Math.max(1, rect.w / 2),
+    hh = Math.max(1, rect.h / 2);
+  const sx = dx ? hw / Math.abs(dx) : Infinity;
+  const sy = dy ? hh / Math.abs(dy) : Infinity;
+  const s = Math.min(sx, sy);
+  return {
+    x: c.x + dx * s,
+    y: c.y + dy * s,
+    side: sx < sy ? (dx > 0 ? "r" : "l") : dy > 0 ? "b" : "t",
+  };
+}
+function relSidePoint(rect, side, along) {
+  switch (side) {
+    case "l":
+      return { x: rect.x, y: along };
+    case "r":
+      return { x: rect.x + rect.w, y: along };
+    case "t":
+      return { x: along, y: rect.y };
+    default:
+      return { x: along, y: rect.y + rect.h };
+  }
+}
+/* 同一节点同一侧多条线：按对端位置排序后沿该边均匀散开（扇形锚点）。
+   返回与 peers 同序的坐标数组（沿该边方向的绝对坐标）。 */
+function relSpreadSide(rect, side, peers) {
+  const horiz = side === "l" || side === "r";
+  const lo = horiz ? rect.y : rect.x;
+  const len = Math.max(24, horiz ? rect.h : rect.w);
+  const inset = Math.min(18, len * 0.14);
+  let from = lo + inset,
+    to = lo + len - inset;
+  const n = peers.length;
+  if (n <= 1) return [(from + to) / 2];
+  /* 该边太短放不下最小间距时，保持中心不变向外撑开 */
+  const need = (n - 1) * 20;
+  if (to - from < need) {
+    const c = (from + to) / 2;
+    from = c - need / 2;
+    to = c + need / 2;
+  }
+  const order = peers
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => a.p - b.p || a.i - b.i);
+  const out = new Array(n);
+  order.forEach((o, k) => {
+    out[o.i] = from + ((to - from) * k) / (n - 1);
+  });
+  return out;
+}
+/* 点到线段的最短距离（判断两条直线是否贴得「看起来像一条」） */
+function relPointSegDist(px, py, x0, y0, x1, y1) {
+  const vx = x1 - x0,
+    vy = y1 - y0;
+  const L = vx * vx + vy * vy;
+  const t = L ? Math.max(0, Math.min(1, ((px - x0) * vx + (py - y0) * vy) / L)) : 0;
+  return Math.hypot(px - (x0 + vx * t), py - (y0 + vy * t));
+}
+/* 两条直线段是否过近（采样点里有 3 个以上落在容差内即算叠线） */
+function relSegsTooClose(s1, s2) {
+  const ax = s1[0],
+    ay = s1[1],
+    bx = s1[2],
+    by = s1[3];
+  const cx = s2[0],
+    cy = s2[1],
+    dx = s2[2],
+    dy = s2[3];
+  let hit = 0;
+  for (let i = 0; i <= 4; i++) {
+    const t = i / 4;
+    if (
+      relPointSegDist(ax + (bx - ax) * t, ay + (by - ay) * t, cx, cy, dx, dy) <
+      REL_SEP_TOL
+    )
+      hit++;
+    if (hit > 4) break;
+    if (
+      relPointSegDist(cx + (dx - cx) * t, cy + (dy - cy) * t, ax, ay, bx, by) <
+      REL_SEP_TOL
+    )
+      hit++;
+    if (hit > 4) break;
+  }
+  return hit >= 3;
+}
+/* 一条直线：两端点 → { d, mid }（mid = 中点沿法线让开一点，放线上文字） */
+function relStraightPath(a, b) {
+  const r1 = (v) => Math.round(v * 10) / 10;
+  let dx = b.x - a.x,
+    dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len,
+    uy = dy / len;
+  const g = Math.min(REL_END_GAP, len / 4);
+  const x0 = a.x + ux * g,
+    y0 = a.y + uy * g;
+  const x1 = b.x - ux * g,
+    y1 = b.y - uy * g;
+  let nx = -uy,
+    ny = ux;
+  if (ny > 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  return {
+    d: "M " + r1(x0) + " " + r1(y0) + " L " + r1(x1) + " " + r1(y1),
+    mid: {
+      x: (x0 + x1) / 2 + nx * REL_LABEL_GAP,
+      y: (y0 + y1) / 2 + ny * REL_LABEL_GAP,
+    },
+  };
+}
+/* 叠在一起的直线：把两端沿各自所在的边同步滑开（仍然贴边，只是换个进出点） */
+function relSeparateStraight(items) {
+  const placed = [];
+  for (const it of items) {
+    let A = it.a,
+      B = it.b;
+    for (let k = 0; k <= REL_SEP_MAX; k++) {
+      const n = k === 0 ? 0 : (k % 2 ? 1 : -1) * Math.ceil(k / 2);
+      const step = n * REL_SEP_STEP;
+      A = relSidePoint(it.ra, it.sides[0], it.alongA + step);
+      B = relSidePoint(it.rb, it.sides[1], it.alongB + step);
+      const seg = [A.x, A.y, B.x, B.y];
+      if (k === REL_SEP_MAX || !placed.some((s) => relSegsTooClose(seg, s))) {
+        placed.push(seg);
+        break;
+      }
+    }
+    it.a = A;
+    it.b = B;
+  }
+}
+/* 规划一个层级（scope）内所有关系线的几何：
+   贴边锚点 → 同侧多线扇形分散 → 近似重合的直线彼此滑开 → 一条直线段 */
+function relPlanScope(items) {
+  const attach = new Map();
+  for (const it of items) {
+    const ca = relRectCenter(it.ra),
+      cb = relRectCenter(it.rb);
+    /* 直线天然出射点：中心连线与边框的交点（单根线就用它，多根线才沿边散开） */
+    const ba = relBorderAnchor(it.ra, cb),
+      bb = relBorderAnchor(it.rb, ca);
+    const sa = ba.side,
+      sb = bb.side;
+    it.sides = [sa, sb];
+    const alongOf = (side, p) => (side === "l" || side === "r" ? p.y : p.x);
+    const push = (key, rec) => {
+      if (!attach.has(key)) attach.set(key, []);
+      attach.get(key).push(rec);
+    };
+    push(it.from.id + "|" + sa, {
+      it,
+      end: "a",
+      rect: it.ra,
+      side: sa,
+      peer: sa === "l" || sa === "r" ? cb.y : cb.x,
+      natural: alongOf(sa, ba),
+    });
+    push(it.to.id + "|" + sb, {
+      it,
+      end: "b",
+      rect: it.rb,
+      side: sb,
+      peer: sb === "l" || sb === "r" ? ca.y : ca.x,
+      natural: alongOf(sb, bb),
+    });
+  }
+  for (const list of attach.values()) {
+    list.sort((x, y) => x.peer - y.peer);
+    /* 只有一根线：直接走中心连线的出射点（最直的直线） */
+    if (list.length === 1) {
+      const rec = list[0];
+      const pt = relSidePoint(rec.rect, rec.side, rec.natural);
+      if (rec.end === "a") {
+        rec.it.alongA = rec.natural;
+        rec.it.a = pt;
+      } else {
+        rec.it.alongB = rec.natural;
+        rec.it.b = pt;
+      }
+      continue;
+    }
+    const vals = relSpreadSide(
+      list[0].rect,
+      list[0].side,
+      list.map((x) => x.peer),
+    );
+    list.forEach((rec, i) => {
+      const along = vals[i];
+      const pt = relSidePoint(rec.rect, rec.side, along);
+      if (rec.end === "a") {
+        rec.it.alongA = along;
+        rec.it.a = pt;
+      } else {
+        rec.it.alongB = along;
+        rec.it.b = pt;
+      }
+    });
+  }
+  relSeparateStraight(items);
+  /* 线上文字：放在中点法线一侧，并与已放文字互相让开 */
+  const txtRects = [];
+  for (const it of items) {
+    const g = relStraightPath(it.a, it.b);
+    it.d = g.d;
+    let mx = g.mid.x,
+      my = g.mid.y;
+    const txt = String(it.w.relLabel || "").trim();
+    if (txt) {
+      const lw = Math.max(28, txt.length * 11),
+        lh = 15;
+      let guard = 0;
+      while (
+        guard++ < 8 &&
+        txtRects.some(
+          (r) =>
+            Math.abs(r.x - mx) < (r.w + lw) / 2 &&
+            Math.abs(r.y - my) < (r.h + lh) / 2,
+        )
+      )
+        my += lh + 3;
+      txtRects.push({ x: mx, y: my, w: lw, h: lh });
+    }
+    it.mid = { x: mx, y: my };
+  }
+}
+function collectRelWireScopes(filter) {
+  const order = [];
+  const byHost = new Map();
+  for (const w of (S.wf && S.wf.wires) || []) {
+    if (!w.rel) continue;
+    const from = nodeById(w.from),
+      to = nodeById(w.to);
+    if (!from || !to) continue;
+    if (!relWireInScope(from, to)) continue;
+    if (filter && !filter.has(w.from) && !filter.has(w.to)) continue;
+    const host = wireOpenSuperHost(w, from, to) || null;
+    const key = host ? host.id : "@main";
+    let sc = byHost.get(key);
+    if (!sc) {
+      sc = { host, items: [] };
+      byHost.set(key, sc);
+      order.push(sc);
+    }
+    sc.items.push({
+      w,
+      from,
+      to,
+      ra: relWireRect(from, host),
+      rb: relWireRect(to, host),
+    });
+  }
+  return order;
+}
+/* 箭头 marker：每个宿主 svg 一套（id 不重复），常态 / 选中 / 关联 / 淡出四色；
+   markerUnits=userSpaceOnUse → 箭头大小不随线宽缩水 */
+function relMarkerBaseId(host) {
+  return host ? "relArrow-" + host.id : "relArrow";
+}
+function ensureRelMarkers(svg, host) {
+  if (!svg) return "";
+  const base = relMarkerBaseId(host);
+  if (svg.querySelector(":scope > defs.rel-defs")) return base;
+  const defs = document.createElementNS(svgNS, "defs");
+  defs.setAttribute("class", "rel-defs");
+  const mkOne = (id, cls) => {
+    const mk = document.createElementNS(svgNS, "marker");
+    mk.id = id;
+    mk.setAttribute("viewBox", "0 0 10 10");
+    mk.setAttribute("refX", "9.2");
+    mk.setAttribute("refY", "5");
+    mk.setAttribute("markerWidth", "12");
+    mk.setAttribute("markerHeight", "12");
+    mk.setAttribute("markerUnits", "userSpaceOnUse");
+    mk.setAttribute("orient", "auto-start-reverse");
+    const tri = document.createElementNS(svgNS, "path");
+    tri.setAttribute("d", "M 0.4 0.5 L 9.6 5 L 0.4 9.5 L 2.4 5 z");
+    tri.setAttribute("class", "rel-arrow-head " + cls);
+    mk.appendChild(tri);
+    defs.appendChild(mk);
+  };
+  mkOne(base, "");
+  mkOne(base + "-hi", "hi");
+  mkOne(base + "-lk", "lk");
+  mkOne(base + "-dim", "dim");
+  svg.insertBefore(defs, svg.firstChild);
+  return base;
+}
+/* 箭头方向 → 两端 marker（state 决定配色：sel 橙 / linked 青 / dim 淡） */
+function relArrowMarkerUrl(base, state) {
+  const suf = state === "sel" ? "-hi" : state === "linked" ? "-lk" : state === "dim" ? "-dim" : "";
+  return "url(#" + base + suf + ")";
+}
+function setRelArrowMarkers(p, w, base, state) {
+  const url = relArrowMarkerUrl(base, state);
+  const a = relArrowOf(w);
+  if (a === "both" || a === "backward") p.setAttribute("marker-start", url);
+  else p.removeAttribute("marker-start");
+  if (a === "both" || a === "forward") p.setAttribute("marker-end", url);
+  else p.removeAttribute("marker-end");
+}
+/* 当前选中的节点集合（单选 / 框选都算） */
+function relSelNodeSet() {
+  if (S.selSet && S.selSet.size) return S.selSet;
+  if (S.sel) return new Set([S.sel]);
+  return null;
+}
+/* 高亮上下文：选中节点 + 「这批关系线里有没有连着选中节点的」
+   （没有就不淡出别的线，否则点一个孤立块会让整张架构图消失） */
+function relHighlightInfo() {
+  const set = relSelNodeSet();
+  if (!set) return { set: null, any: false };
+  let any = false;
+  for (const w of (S.wf && S.wf.wires) || []) {
+    if (!w.rel) continue;
+    if (set.has(w.from) || set.has(w.to)) {
+      any = true;
+      break;
+    }
+  }
+  return { set, any };
+}
+/* 一条关系线本帧的视觉状态：sel（点线本身）/ linked（点它连的节点）/ dim（别的线） */
+function relWireVisualState(w, host, hi) {
+  if (S.selWire === w.id) return "sel";
+  const set = hi && hi.set;
+  if (set && (set.has(w.from) || set.has(w.to) || (host && set.has(host.id))))
+    return "linked";
+  return hi && hi.any ? "dim" : "";
+}
+function relWireDom(w, host) {
+  const pid = (host ? "rsw-" : "rw-") + w.id;
+  return {
+    core: document.getElementById(pid),
+    ring: document.getElementById(pid + "-r"),
+    lab: document.getElementById((host ? "rswl-" : "rwl-") + w.id),
+  };
+}
+/* 只改状态类与箭头配色，不动几何（几何在 drawRelWire 里单独写） */
+function applyRelWireState(p, ring, lab, w, base, host, hi) {
+  const st = relWireVisualState(w, host, hi);
+  const cls = "fn-edge rel" + (st ? " " + st : "");
+  if (p.getAttribute("class") !== cls) p.setAttribute("class", cls);
+  if (ring) {
+    const rcls = "fn-edge-ring rel" + (st ? " " + st : "");
+    if (ring.getAttribute("class") !== rcls) ring.setAttribute("class", rcls);
+  }
+  setRelArrowMarkers(p, w, base, st);
+  if (lab) {
+    const lcls = "wire-rel-label" + (st ? " " + st : "");
+    if (lab.getAttribute("class") !== lcls) lab.setAttribute("class", lcls);
+  }
+  return st;
+}
+/* 选中变化后（没有重排几何的场合）把高亮立刻刷到已有的线上 */
+function refreshRelWireStates() {
+  const hi = relHighlightInfo();
+  document.querySelectorAll("path.fn-edge.rel[data-wid]").forEach((p) => {
+    const w = relWireById(p.dataset.wid);
+    if (!w) return;
+    const host = p.dataset.relhost ? nodeById(p.dataset.relhost) : null;
+    const base = p.dataset.relmk || relMarkerBaseId(host);
+    applyRelWireState(
+      p,
+      document.getElementById(p.id + "-r"),
+      document.getElementById(
+        p.id.replace(/^rsw-/, "rswl-").replace(/^rw-/, "rwl-"),
+      ),
+      w,
+      base,
+      host,
+      hi,
+    );
+  });
+}
+function relScopeSvg(host) {
+  if (!host) return $("#wfSvg");
+  const el = document.querySelector('.wf-node[data-nid="' + host.id + '"]');
+  const stage = el && el.querySelector(".super-stage");
+  return ensureSuperWiresSvg(stage);
+}
+/* 画一条关系线（外圈 + 线芯 + 线上文字） */
+function drawRelWire(svg, it, host, base, hi) {
+  const w = it.w;
+  const pid = (host ? "rsw-" : "rw-") + w.id;
+  const lid = (host ? "rswl-" : "rwl-") + w.id;
+  /* 另一层级的残留 DOM 清掉（线在壳层与主画布之间迁移） */
+  const other = host ? "rw-" : "rsw-";
+  const otherL = host ? "rwl-" : "rswl-";
+  for (const suf of ["", "-r"]) {
+    const st = document.getElementById(other + w.id + suf);
+    if (st) st.remove();
+  }
+  const stL = document.getElementById(otherL + w.id);
+  if (stL) stL.remove();
+  let ring = document.getElementById(pid + "-r");
+  if (!ring) {
+    ring = document.createElementNS(svgNS, "path");
+    ring.id = pid + "-r";
+    ring.setAttribute("class", "fn-edge-ring rel");
+    svg.appendChild(ring);
+  }
+  let p = document.getElementById(pid);
+  if (!p) {
+    p = document.createElementNS(svgNS, "path");
+    p.id = pid;
+    p.dataset.wid = w.id;
+    p.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      clearSelection();
+      S.selWire = w.id;
+      renderCanvas();
+    });
+    p.addEventListener("dblclick", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      editRelWireLabel(relWireById(w.id) || w);
+    });
+    p.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const live = relWireById(w.id);
+      if (!live) return;
+      clearSelection();
+      S.selWire = w.id;
+      renderCanvas();
+      showRelWireMenu(ev.clientX, ev.clientY, live);
+    });
+    svg.appendChild(p);
+  }
+  p.dataset.relmk = base;
+  p.dataset.relhost = host ? host.id : "";
+  applyRelWireState(p, ring, document.getElementById(lid), w, base, host, hi);
+  p.setAttribute("d", it.d);
+  ring.setAttribute("d", it.d);
+  let lab = document.getElementById(lid);
+  if (!lab) {
+    lab = document.createElementNS(svgNS, "text");
+    lab.id = lid;
+    lab.setAttribute("text-anchor", "middle");
+    lab.setAttribute("dominant-baseline", "middle");
+    lab.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      clearSelection();
+      S.selWire = w.id;
+      renderCanvas();
+    });
+    lab.addEventListener("dblclick", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      editRelWireLabel(relWireById(w.id) || w);
+    });
+    svg.appendChild(lab);
+    applyRelWireState(p, ring, lab, w, base, host, hi);
+  }
+  lab.setAttribute("x", it.mid.x);
+  lab.setAttribute("y", it.mid.y);
+  const txt = String(w.relLabel || "").trim();
+  if (lab.textContent !== txt) lab.textContent = txt;
+  lab.style.display = txt ? "" : "none";
+}
+/* 本帧所有关系线（updateWires 末尾调用；晚于壳层内部连线，避免被当残留删掉）。
+   规划时始终看全量关系线（锚点扇形 / 叠线错开是层级整体的性质），
+   filter 只决定哪些线重画几何 —— 拖节点时不会让没动的线锚点乱跳，
+   但没重画的线仍会刷新高亮状态。 */
+function renderRelWiresPass(filter) {
+  const hi = relHighlightInfo();
+  const scopes = collectRelWireScopes(null);
+  for (const sc of scopes) {
+    const svg = relScopeSvg(sc.host);
+    if (!svg) continue;
+    const base = ensureRelMarkers(svg, sc.host);
+    relPlanScope(sc.items);
+    for (const it of sc.items) {
+      if (
+        filter &&
+        !filter.has(it.w.from) &&
+        !filter.has(it.w.to) &&
+        !(sc.host && filter.has(sc.host.id))
+      ) {
+        const dom = relWireDom(it.w, sc.host);
+        if (dom.core)
+          applyRelWireState(dom.core, dom.ring, dom.lab, it.w, base, sc.host, hi);
+        continue;
+      }
+      drawRelWire(svg, it, sc.host, base, hi);
+    }
+  }
+  if (!filter) cleanupStaleRelWires();
+}
+/* 清理已不存在的关系线 DOM（线芯 / 外圈 / 线上文字） */
+function cleanupStaleRelWires() {
+  const alive = new Set();
+  for (const w of (S.wf && S.wf.wires) || []) if (w.rel) alive.add(w.id);
+  document
+    .querySelectorAll('[id^="rw-"], [id^="rwl-"], [id^="rsw-"], [id^="rswl-"]')
+    .forEach((el) => {
+      const id = el.id
+        .replace(/^rswl-|^rwl-|^rsw-|^rw-/, "")
+        .replace(/-r$/, "");
+      if (!alive.has(id)) el.remove();
+    });
+}
+/* 编辑线上文字 */
+async function editRelWireLabel(w) {
+  if (!w || !w.rel) return;
+  const val = await promptDialog(
+    I18n.t("关系线上的文字（如：调用 / 依赖 / 实现 / 包含）"),
+    w.relLabel || "",
+    { title: I18n.t("编辑线上文字") },
+  );
+  if (val == null) return;
+  pushHistory();
+  w.relLabel = String(val).trim();
+  updateWires();
+  scheduleSave(true);
+}
+function setRelArrow(w, mode) {
+  if (!w || !w.rel || REL_ARROWS.indexOf(mode) < 0) return;
+  pushHistory();
+  w.relArrow = mode;
+  updateWires();
+  scheduleSave(true);
+}
+/* ============ 关系线创建（两步点击） ============ */
+function startRelFromNode(node) {
+  if (!node) return;
+  S.pendingRel = node.id;
+  const c = $("#canvas");
+  if (c) c.classList.add("rel-pending");
+  toast(
+    I18n.t("关系线：点击目标节点完成连接 · Esc 取消"),
+    "ok",
+  );
+}
+function cancelPendingRel(silent) {
+  if (!S.pendingRel) return;
+  S.pendingRel = null;
+  const c = $("#canvas");
+  if (c) c.classList.remove("rel-pending");
+  if (!silent) toast(I18n.t("已取消关系线"), "warn");
+}
+async function finishRelAtNode(node) {
+  const fromId = S.pendingRel;
+  S.pendingRel = null;
+  const c = $("#canvas");
+  if (c) c.classList.remove("rel-pending");
+  if (!fromId || !node || node.id === fromId) return;
+  const from = nodeById(fromId);
+  if (!from) return;
+  const err = relConnectError(fromId, node.id);
+  if (err) {
+    toast(err, "warn");
+    return;
+  }
+  pushHistory();
+  addRelWire(fromId, node.id, { relArrow: "both" });
+  renderCanvas();
+  scheduleSave(true);
+  const w = (S.wf.wires || []).find(
+    (x) => x.rel && x.from === fromId && x.to === node.id,
+  );
+  if (w) {
+    const val = await promptDialog(
+      I18n.t("关系线上的文字（可留空，之后双击线可编辑）"),
+      "",
+      { title: I18n.t("线上文字") },
+    );
+    if (val != null && String(val).trim()) {
+      w.relLabel = String(val).trim();
+      scheduleSave(true);
+    }
+  }
+  renderCanvas();
+}
+
+/* ============ 执行节点（绑定可执行文件 · 一键启动） ============ */
+function isExecuteNode(n) {
+  return !!n && n.kind === "execute";
+}
+/* 用户可选图标目录（键名存 execIcon；auto = 默认启动器图标） */
+const EXEC_ICON_CATALOG = [
+  {
+    key: "auto",
+    label: "默认",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.4 5.5l4.5 2.5-4.5 2.5V5.5z" fill="currentColor"/></svg>',
+  },
+  {
+    key: "rocket",
+    label: "火箭",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2c2.2 1.2 3.3 3.1 3.4 5.5L12.2 11 8 9.4 3.8 11l.8-3.5C4.7 5.1 5.8 3.2 8 2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="6.2" r="1.1" fill="none" stroke="currentColor" stroke-width="1.15"/><path d="M5.4 11.2l-2.1 2.1M6.8 12.4l-1.4 1.4M10.6 11.2l2.1 2.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  },
+  {
+    key: "gear",
+    label: "齿轮",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  },
+  {
+    key: "terminal",
+    label: "终端",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 6.4l2.6 2.2-2.6 2.2M8.6 10.8h3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  },
+  {
+    key: "play",
+    label: "播放",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.2l6.5 4.8-6.5 4.8V3.2z" fill="currentColor"/></svg>',
+  },
+  {
+    key: "bolt",
+    label: "闪电",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.8 1.8L3.6 9h3.4l-.8 5.2 5.2-7.2H7.8l1-5.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+  },
+  {
+    key: "wrench",
+    label: "扳手",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.6 3.4a4 4 0 0 0-5.1 4.9L3 12.8a1.4 1.4 0 0 0 2 2l4.5-4.5a4 4 0 0 0 4.9-5.1l-2 2-1.9-.5-.5-1.9 2-2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+  },
+  {
+    key: "folder",
+    label: "文件夹",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 4.2h4l1.2 1.4h6.4v6.6a1 1 0 0 1-1 1H3.2a1 1 0 0 1-1-1V4.2z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
+  },
+  {
+    key: "file",
+    label: "文件",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 2.6h6l2.8 2.8v8a1 1 0 0 1-1 1H4.6a1 1 0 0 1-1-1V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.4 2.8v2.7h2.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+  },
+  {
+    key: "power",
+    label: "电源",
+    svg: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.6 4.4a5 5 0 1 0 6.8 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  },
+];
+/* 用户可选 body 颜色盘（键存 execColor 十六进制；空 = 默认） */
+const EXEC_COLOR_CATALOG = [
+  { key: "", label: "默认" },
+  { key: "#1e5f4f", label: "青绿" },
+  { key: "#24507a", label: "蓝" },
+  { key: "#4a3a78", label: "紫" },
+  { key: "#7a4a1e", label: "橙" },
+  { key: "#6e2f3a", label: "红" },
+  { key: "#6b3354", label: "粉" },
+  { key: "#2e5a2e", label: "绿" },
+  { key: "#5a4a2a", label: "棕" },
+  { key: "#3a4049", label: "灰蓝" },
+];
+function execIconKeyOf(node) {
+  const k = node && node.execIcon;
+  return EXEC_ICON_CATALOG.some((x) => x.key === k) ? k : "auto";
+}
+function execIconSvg(key) {
+  const it = EXEC_ICON_CATALOG.find((x) => x.key === key);
+  return it ? it.svg : EXEC_ICON_CATALOG[0].svg;
+}
+function execColorOf(node) {
+  const c = node && node.execColor;
+  return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c) ? c : "";
+}
+/* 执行绑定文件：shellOpenPath 用系统默认方式启动（.exe/.bat/.cmd 直接运行，其它文件用默认应用打开） */
+async function runExecuteNode(node) {
+  if (!isExecuteNode(node)) return;
+  const p = String(node.execPath || "").trim();
+  if (!p) {
+    toast(I18n.t("尚未绑定可执行文件：请先右键节点「绑定可执行文件」"), "warn");
+    return;
+  }
+  let ex = false;
+  try {
+    ex = !!(await window.api.fileExists(p));
+  } catch (_) {}
+  if (!ex) {
+    node.error = I18n.t("文件不存在：") + p;
+    node.execStatus = node.error;
+    node._armed = false;
+    scheduleSave();
+    renderCanvas();
+    toast(node.error, "warn");
+    return;
+  }
+  node.error = null;
+  node.running = true;
+  node._armed = false;
+  node.execStatus = I18n.t("正在启动…");
+  renderCanvas();
+  let r = null;
+  try {
+    r = await window.api.shellOpenPath(p);
+  } catch (err) {
+    r = { ok: false, error: (err && err.message) || String(err) };
+  }
+  node.running = false;
+  node.ranAt = Date.now();
+  if (r && r.ok) {
+    node.execStatus = I18n.t("已启动：") + fileName(p);
+    toast(I18n.t("已启动：") + fileName(p), "ok");
+  } else {
+    node.error = (r && r.error) || I18n.t("启动失败");
+    node.execStatus = node.error;
+    toast(I18n.t("启动失败：") + node.error, "warn");
+  }
+  scheduleSave();
+  renderCanvas();
+}
+/* 绑定可执行文件（文件对话框，默认过滤 .exe/.bat/.cmd/.lnk 等） */
+async function pickExecForNode(node) {
+  if (!isExecuteNode(node)) return;
+  const r = await window.api.fileOpenDialog({
+    title: I18n.t("选择要绑定的可执行文件（.exe / .bat / .cmd / .lnk 或任意系统可打开的文件）"),
+    filters: [
+      { name: I18n.t("可执行文件"), extensions: ["exe", "bat", "cmd", "lnk", "com", "msi", "ps1", "jar"] },
+      { name: I18n.t("全部文件"), extensions: ["*"] },
+    ],
+  });
+  if (!r || !r.path) return;
+  pushHistory();
+  node.execPath = r.path;
+  node.error = null;
+  node.execStatus = "";
+  scheduleSave();
+  renderCanvas();
+  toast(I18n.t("已绑定：") + r.path, "ok");
+}
+/* 在开发功能块（超级节点）内部新建执行节点：启动器与所属模块放在一起 */
+function addExecNodeInsideSuper(host) {
+  if (!host || host.kind !== "super") return;
+  let n = null;
+  if (superIsOpenShell(host)) {
+    const o = superInnerOrigin(host);
+    const pan = superInnerPan(host);
+    const hwp = nodeWorldPos(host);
+    n = addNode("execute", hwp.x + o.ox + pan.x + 32, hwp.y + o.oy + pan.y + 32);
+  } else {
+    n = addNode("execute", host.x + 32, host.y + 32);
+  }
+  if (!n) return;
+  if (n.parentSuperId !== host.id) {
+    pushHistory();
+    n.parentSuperId = host.id;
+    n.parentTaskId = host.parentTaskId || "";
+    n.x = 32;
+    n.y = 32;
+    renderCanvas();
+    scheduleSave(true);
+  }
+  pickExecForNode(n);
+}
+/* 选择图标（网格对话框 · 立即应用） */
+async function pickExecIconDialog(node) {
+  if (!isExecuteNode(node)) return;
+  const cur = execIconKeyOf(node);
+  const res = await mtDialogForm({
+    title: I18n.t("选择图标 · ") + (node.title || I18n.t("执行节点")),
+    hint: I18n.t("点击图标立即应用到该执行节点（便于快速定位）"),
+    actions: [{ id: "cancel", label: I18n.t("取消") }],
+    custom: (c, select) => {
+      c.className = "exec-icon-grid";
+      for (const it of EXEC_ICON_CATALOG) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "exec-icon-item" + (it.key === cur ? " on" : "");
+        b.title = I18n.t(it.label);
+        b.innerHTML = it.svg;
+        b.onclick = () => select(it.key);
+        c.appendChild(b);
+      }
+    },
+  });
+  if (!res) return;
+  pushHistory();
+  node.execIcon = res.custom;
+  scheduleSave();
+  renderCanvas();
+}
+/* 选择 body 颜色（网格对话框 · 立即应用） */
+async function pickExecColorDialog(node) {
+  if (!isExecuteNode(node)) return;
+  const cur = execColorOf(node);
+  const res = await mtDialogForm({
+    title: I18n.t("选择颜色 · ") + (node.title || I18n.t("执行节点")),
+    hint: I18n.t("点击颜色立即应用到该执行节点的 body（便于快速定位）"),
+    actions: [{ id: "cancel", label: I18n.t("取消") }],
+    custom: (c, select) => {
+      c.className = "exec-color-grid";
+      for (const it of EXEC_COLOR_CATALOG) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "exec-color-item" + (it.key === cur ? " on" : "");
+        b.title = I18n.t(it.label);
+        b.style.background = it.key || "#33383f";
+        b.onclick = () => select(it.key);
+        c.appendChild(b);
+      }
+    },
+  });
+  if (!res) return;
+  pushHistory();
+  node.execColor = res.custom || "";
+  scheduleSave();
+  renderCanvas();
+}
+
+/* ============ 开发节点：元素类型（devKind）与细化 ============ */
+const DEV_KINDS = ["module", "file", "class", "interface", "enum"];
+const DEV_KIND_LABEL = {
+  module: "模块",
+  file: "文件",
+  class: "类",
+  interface: "接口",
+  enum: "枚举",
+};
+function devKindOf(node) {
+  if (!node || node.kind !== "super" || !node.dev) return "";
+  return DEV_KINDS.indexOf(node.devKind) >= 0 ? node.devKind : "module";
+}
+function devStatusOf(node) {
+  const s = node && node.devStatus;
+  return s === "done" || s === "wip" ? s : "pending";
+}
+function devStatusText(s) {
+  return s === "done"
+    ? I18n.t("已完成")
+    : s === "wip"
+      ? I18n.t("进行中")
+      : I18n.t("待开发");
+}
+/* 功能块内的下层元素（排除超级节点端子等内部桥接节点） */
+function devChildrenOf(node) {
+  if (!node || !S.wf) return [];
+  return (S.wf.nodes || []).filter(
+    (x) => nodeParentSuperId(x) === node.id && !isSuperIoNode(x),
+  );
+}
+function devChildLabel(k) {
+  const kk = devKindOf(k) || (k.kind === "super" && k.dev ? "module" : k.kind);
+  return (
+    (k.title || k.id) +
+    "（" +
+    (DEV_KIND_LABEL[kk] ? I18n.t(DEV_KIND_LABEL[kk]) : kk) +
+    "）" +
+    (String(k.note || "").trim() ? "：" + String(k.note).trim() : "")
+  );
+}
+/* 已是最细粒度的元素：无需继续细化 */
+function devRefineBlockedReason(node) {
+  const dk = devKindOf(node) || "module";
+  if (dk === "class" || dk === "interface" || dk === "enum")
+    return I18n.t(
+      "类 / 接口 / 枚举已是架构的最细粒度元素，无需继续细化。",
+    );
+  return "";
+}
+/* 细化任务书：注入细化会话，要求 agent 先判断可否细化、再给梗概并经用户确认 */
+function devRefinePrompt(node, scopeText) {
+  const kind = devKindOf(node) || "module";
+  const lines = [];
+  lines.push(
+    I18n.t("【细化任务】") +
+      " " +
+      (node.title || I18n.t("未命名")) +
+      "（" + I18n.t(DEV_KIND_LABEL[kind] || "模块") + "）",
+  );
+  const scope = String(scopeText || "").trim();
+  if (scope) lines.push(I18n.t("用户指定的细化范围：") + scope);
+  const kids = devChildrenOf(node);
+  lines.push(
+    I18n.t("现有子元素：") +
+      (kids.length ? "" : I18n.t("（无）")),
+  );
+  for (const k of kids.slice(0, 40)) lines.push("  - " + devChildLabel(k));
+  lines.push("");
+  lines.push(I18n.t("请按以下步骤细化："));
+  lines.push(
+    I18n.t(
+      "0. 先判断是否有必要细化：若本元素已无下层结构、或项目根目录内找不到可对应的真实内容，请直接告诉用户「无需 / 无法继续细化」并说明原因，不要创建任何节点。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "1. 基于项目根目录内的真实代码/文件，分析本模块应展开的下层元素；模块细化为文件，文件细化为类 / 接口 / 枚举等类图元素。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "2. 先输出内容梗概清单：每个拟创建子元素的【名称 · 类型（文件/类/接口/枚举）· 一句话作用】，供用户审阅。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "3. 明确询问用户是否按此清单创建；在用户确认之前，禁止修改画布。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "4. 用户确认后，用 mtnode_canvas_edit 创建子开发节点：kind=super、dev=true、devKind=file|class|interface|enum、parentSuperId=本节点、note=一句话概述；元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头）。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "5. 不同元素类型在画布上有不同外框颜色（模块=绿、文件=蓝、类=橙、接口=紫、枚举=粉），请保持类型准确。",
+    ),
+  );
+  return lines.join("\n");
+}
+/* 「细化」：弹对话框确认 → 新会话运行细化任务（无需/无法细化时也在对话框内提示） */
+async function refineDevNode(node) {
+  if (!node || node.kind !== "super" || !node.dev) return;
+  const dk = devKindOf(node) || "module";
+  const blocked = devRefineBlockedReason(node);
+  const p = devPathOf(node);
+  const kids = devChildrenOf(node);
+  let warn = blocked;
+  if (!warn && !p)
+    warn = I18n.t(
+      "尚未设置项目根目录（devPath）：Agent 无法依据项目真实代码判断可展开的下层内容，建议先在顶层功能块上设置。",
+    );
+  const rows = [
+    [I18n.t("元素类型"), I18n.t(DEV_KIND_LABEL[dk] || "模块")],
+    [I18n.t("项目根目录"), p || I18n.t("（未设置）")],
+    [
+      I18n.t("现有子元素"),
+      kids.length ? String(kids.length) + I18n.t(" 个") : I18n.t("（无）"),
+    ],
+  ];
+  const res = await mtDialogForm({
+    title: I18n.t("细化") + " · " + (node.title || I18n.t("开发节点")),
+    wide: true,
+    rows,
+    note: { label: I18n.t("当前概述"), text: node.note },
+    list: kids.length
+      ? { label: I18n.t("现有子元素"), items: kids.map(devChildLabel) }
+      : null,
+    msg: blocked
+      ? I18n.t(
+          "如果确实要在这里继续展开，请先通过节点右键菜单把「元素类型」改为文件 / 模块，再执行细化。",
+        )
+      : I18n.t(
+          "确认后将新建一个细化会话：Agent 依据项目真实代码分析本模块的下层元素，先给出内容梗概清单，经你确认后才在该功能块内补充内容。若分析后认为无需或无法继续细化，它会直接告知你原因。",
+        ),
+    warn,
+    textarea: blocked
+      ? null
+      : {
+          label: I18n.t("细化范围（可选）"),
+          placeholder: I18n.t(
+            "例如：只展开 renderer 目录下的文件；或仅细化某个子模块。留空 = 由 Agent 自行判断。",
+          ),
+          rows: 4,
+        },
+    hint: blocked
+      ? ""
+      : I18n.t(
+          "确认 = 新会话运行（工作区 = 项目根目录 · 标题「细化 · 模块名」）· Esc 取消",
+        ),
+    actions: blocked
+      ? [{ id: "cancel", label: I18n.t("知道了") }]
+      : [
+          { id: "cancel", label: I18n.t("取消") },
+          { id: "none", label: I18n.t("无需细化") },
+          { id: "go", label: I18n.t("确认细化"), primary: true },
+        ],
+  });
+  if (!res) return;
+  if (res.action === "none") {
+    toast(I18n.t("已跳过细化：该功能块保持现状"), "ok");
+    return;
+  }
+  if (res.action !== "go") return;
+  const sess = createDevSessionForNode(node, "refine");
+  if (!sess) return;
+  S.agentActiveId = sess.id;
+  await persistAgentSession();
+  scheduleSave(true);
+  setView("agent");
+  try {
+    await agentSessionSend(devRefinePrompt(node, res.text));
+  } catch (err) {
+    toast(I18n.t("细化会话启动失败：") + ((err && err.message) || String(err)), "err");
+  }
+}
+
 /* 端子悬浮：立刻列出已连接节点名，可移入点击以镜头定位 */
 let _portTipHideTimer = null;
 function portLinkedNodes(node, dir, idx, portKind) {
@@ -6070,11 +7566,13 @@ function portLinkedNodes(node, dir, idx, portKind) {
   }
   if (dir === "in") {
     for (const w of S.wf.wires || []) {
+      if (w.rel) continue;
       if (w.to === node.id && Number(w.toIndex) === Number(idx))
         add(nodeById(w.from));
     }
   } else {
     for (const w of S.wf.wires || []) {
+      if (w.rel) continue;
       if (w.from === node.id && Number(w.fromIndex || 0) === Number(idx || 0))
         add(nodeById(w.to));
     }
@@ -6669,6 +8167,7 @@ function batchMemo(id, seen) {
     return false;
   }
   for (const w of S.wf.wires) {
+    if (w.rel) continue;
     if (w.to !== id) continue;
     const src = nodeById(w.from);
     if (!src || isControlKind(src)) continue;
@@ -6821,6 +8320,7 @@ function clearDownstream(startId) {
     const id = q.shift();
     if (isControlKind(nodeById(id))) continue;
     for (const w of S.wf.wires) {
+      if (w.rel) continue;
       if (w.from !== id) continue;
       const n = nodeById(w.to);
       if (!n || seen.has(n.id) || isControlKind(n)) continue;
@@ -6905,6 +8405,7 @@ function collectDataDownstreamIds(startId) {
   while (q.length) {
     const id = q.shift();
     for (const w of S.wf.wires) {
+      if (w.rel) continue;
       if (w.from !== id) continue;
       const n = nodeById(w.to);
       if (!n || seen.has(n.id) || isControlKind(n)) continue;
@@ -7104,6 +8605,7 @@ async function explodeBatchNode(root) {
   };
 
   for (const w of S.wf.wires.slice()) {
+    if (w.rel) continue; /* 关系线不参与批次拆分级联 */
     const fromId = w.from;
     const toId = w.to;
     if (skipIds.has(fromId) || skipIds.has(toId)) continue;
@@ -7152,7 +8654,10 @@ async function explodeBatchNode(root) {
   /* 断开智能会话关联，避免 quiet 删除时顺带清掉会话记录 */
   for (const id of toDelete) {
     const n = nodeById(id);
-    if (n && n.kind === "agent_task") n.agentSessionId = "";
+    if (n && (n.kind === "agent_task" || (n.kind === "super" && n.dev))) {
+      n.agentSessionId = "";
+      if (Array.isArray(n.devSessionIds)) n.devSessionIds = [];
+    }
   }
   deleteNodes(toDelete, true);
 
@@ -8670,6 +10175,8 @@ function startNodeDrag(ev, node, opts) {
     if (S.selMarkSet) S.selMarkSet.clear();
     renderCanvas();
   }
+  /* 点选节点 → 相关的关系线立刻亮起（含再次点同一个节点、只改选中态不重绘的场合） */
+  refreshRelWireStates();
   S.preDragSnap = snapshotState();
   const orig = {};
   const origWorld = {};
@@ -9585,12 +11092,16 @@ async function deleteNodes(ids, quiet) {
     const n = nodeById(id);
     if (n && n.kind === "net_recv") netUnsubRecv(n);
   }
-  /* 智能任务节点删除联动:其关联的智能会话一并删除(先提示确认) */
+  /* 智能任务 / 开发节点删除联动:其关联的智能会话一并删除(先提示确认) */
   const delSet = new Set(ids);
   const linkedSessions = [];
   for (const n of S.wf.nodes) {
-    if (delSet.has(n.id) && n.kind === "agent_task" && n.agentSessionId) {
-      const sess = agentSessions().find((s) => s.id === n.agentSessionId);
+    if (!delSet.has(n.id)) continue;
+    let sessIds = [];
+    if (n.kind === "agent_task" && n.agentSessionId) sessIds = [n.agentSessionId];
+    else if (n.kind === "super" && n.dev) sessIds = devSessionIdsOf(n);
+    for (const sid of sessIds) {
+      const sess = agentSessions().find((s) => s.id === sid);
       if (sess && !linkedSessions.includes(sess)) linkedSessions.push(sess);
     }
   }
@@ -9933,6 +11444,7 @@ const KIND_TAGS = {
   video_gen: "视频",
   net_recv: "接收",
   net_send: "发送",
+  execute: "执行",
   save: "保存",
   save_text: "保存",
   save_image: "保存",
@@ -10131,16 +11643,31 @@ function renderSuperSidebarTree(tree, filter) {
   tree.appendChild(sec);
   return true;
 }
-function toggleSidebar() {
-  S.sidebarOpen = !S.sidebarOpen;
+/** 画布左侧边栏只在画布视图存在：会话视图（自带会话列表 .agent-side）一律收起。
+ *  用户偏好仍记在 S.sidebarOpen，切回画布自动恢复。 */
+function applySidebarVisibility() {
+  const open = !!S.sidebarOpen && S.view !== "agent";
   const layout = $("#layout");
-  if (layout) layout.classList.toggle("sidebar-open", S.sidebarOpen);
+  if (layout) layout.classList.toggle("sidebar-open", open);
   const btn = $("#btnSidebar");
-  if (btn) btn.classList.toggle("on", S.sidebarOpen);
+  if (btn) btn.classList.toggle("on", open);
+  return open;
+}
+function toggleSidebar() {
+  /* 会话视图不允许展开画布边栏（两套左侧栏互斥，避免运行时串场误弹） */
+  if (S.view === "agent") {
+    applySidebarVisibility();
+    toast(I18n.t("会话视图不使用画布边栏：请在「画布」视图中查看节点列表"), "warn");
+    return;
+  }
+  S.sidebarOpen = !S.sidebarOpen;
+  applySidebarVisibility();
   if (S.sidebarOpen) renderSidebar();
   renderStatus();
 }
 function renderSidebar() {
+  /* 不变式：边栏显隐始终与当前视图一致（会话视图永不显示画布边栏） */
+  applySidebarVisibility();
   if (S.view === "agent") {
     renderAgentSessionSidebar();
     return;
@@ -10854,6 +12381,17 @@ function canvasCreateMenuGroups(pt) {
   }
   return [
     [
+      "",
+      [
+        ctxAction(
+          I18n.t("构建工作流（选择生成技能 · 填写要求）"),
+          () => promptBuildWorkflow(pt),
+          "build_wf",
+          { iconCls: "wf" },
+        ),
+      ],
+    ],
+    [
       I18n.t("输入节点（仅输出）"),
       [
         ctxKindItem("input_text", I18n.t("文本节点"), () =>
@@ -10900,34 +12438,6 @@ function canvasCreateMenuGroups(pt) {
       ],
     ],
     [
-      I18n.t("网络节点（TCP / UDP · 通道分流 · 跨画布）"),
-      [
-        ctxKindItem("net_recv", I18n.t("接收（监听通道 · 异步转发文本）"), () =>
-          addNode("net_recv", pt.x, pt.y, {
-            netChannel: nextNetChannel(),
-            netProto: "tcp",
-          }),
-        ),
-        ctxKindItem("net_send", I18n.t("发送（推送到通道）"), () =>
-          addNode("net_send", pt.x, pt.y, {
-            netChannel: nextNetChannel(),
-            netProto: "tcp",
-          }),
-        ),
-      ],
-    ],
-    [
-      I18n.t("工具节点（批次拆分 / 合并）"),
-      [
-        ctxKindItem("split", I18n.t("拆分（批次 → 单项只读节点）"), () =>
-          addNode("split", pt.x, pt.y),
-        ),
-        ctxKindItem("merge", I18n.t("合并（多节点 → 批次）"), () =>
-          addNode("merge", pt.x, pt.y),
-        ),
-      ],
-    ],
-    [
       I18n.t("智能节点（读文件 / 联网 / 执行命令）"),
       [
         ctxKindItem(
@@ -10946,21 +12456,6 @@ function canvasCreateMenuGroups(pt) {
         ctxKindItem("super", I18n.t("超级节点（收纳 · 展开子画布）"), () =>
           addNode("super", pt.x, pt.y),
         ),
-        ...(S.config.beta
-          ? [
-              ctxKindItem(
-                "super",
-                I18n.t("数据库（事实收纳 · 编译副本供智能节点查询）"),
-                () =>
-                  addNode("super", pt.x, pt.y, {
-                    db: true,
-                    subFolder: "db",
-                    title: I18n.t("数据库"),
-                  }),
-                { iconKey: "db", iconCls: "db" },
-              ),
-            ]
-          : []),
       ],
     ],
     [
@@ -10974,6 +12469,78 @@ function canvasCreateMenuGroups(pt) {
     [
       "",
       [
+        {
+          label: I18n.t("开发节点（项目架构 · 功能块）"),
+          iconKey: "dev",
+          iconCls: "dev",
+          submenu: [
+            ctxKindItem(
+              "super",
+              I18n.t("功能块（模块 · 可细化 · 绑定开发会话）"),
+              () =>
+                addNode("super", pt.x, pt.y, {
+                  dev: true,
+                  devKind: "module",
+                  devStatus: "pending",
+                  title: I18n.t("功能块"),
+                }),
+              { iconKey: "dev", iconCls: "dev" },
+            ),
+            ctxKindItem(
+              "super",
+              I18n.t("文件（细化产物 · 指向源码文件）"),
+              () =>
+                addNode("super", pt.x, pt.y, {
+                  dev: true,
+                  devKind: "file",
+                  devStatus: "pending",
+                  title: I18n.t("文件"),
+                }),
+              { iconKey: "dev", iconCls: "dk-file" },
+            ),
+            ctxKindItem(
+              "super",
+              I18n.t("类（类图元素）"),
+              () =>
+                addNode("super", pt.x, pt.y, {
+                  dev: true,
+                  devKind: "class",
+                  devStatus: "pending",
+                  title: I18n.t("类"),
+                }),
+              { iconKey: "dev", iconCls: "dk-class" },
+            ),
+            ctxKindItem(
+              "super",
+              I18n.t("接口（类图元素）"),
+              () =>
+                addNode("super", pt.x, pt.y, {
+                  dev: true,
+                  devKind: "interface",
+                  devStatus: "pending",
+                  title: I18n.t("接口"),
+                }),
+              { iconKey: "dev", iconCls: "dk-interface" },
+            ),
+            ctxKindItem(
+              "super",
+              I18n.t("枚举（类图元素）"),
+              () =>
+                addNode("super", pt.x, pt.y, {
+                  dev: true,
+                  devKind: "enum",
+                  devStatus: "pending",
+                  title: I18n.t("枚举"),
+                }),
+              { iconKey: "dev", iconCls: "dk-enum" },
+            ),
+            ctxKindItem(
+              "execute",
+              I18n.t("执行（绑定 .exe / .bat / 任意文件 · 双击运行）"),
+              () => addNode("execute", pt.x, pt.y),
+            ),
+          ],
+        },
         {
           label: I18n.t("控制节点"),
           iconKey: "control",
@@ -11032,6 +12599,37 @@ function canvasCreateMenuGroups(pt) {
           ],
         },
         {
+          label: I18n.t("其他节点（网络 · 批次拆分 / 合并）"),
+          iconKey: "other",
+          iconCls: "other",
+          submenu: [
+            ctxKindItem(
+              "net_recv",
+              I18n.t("网络 · 接收（监听通道 · 异步转发文本）"),
+              () =>
+                addNode("net_recv", pt.x, pt.y, {
+                  netChannel: nextNetChannel(),
+                  netProto: "tcp",
+                }),
+            ),
+            ctxKindItem(
+              "net_send",
+              I18n.t("网络 · 发送（推送到通道 · TCP / UDP）"),
+              () =>
+                addNode("net_send", pt.x, pt.y, {
+                  netChannel: nextNetChannel(),
+                  netProto: "tcp",
+                }),
+            ),
+            ctxKindItem("split", I18n.t("拆分（批次 → 单项只读节点）"), () =>
+              addNode("split", pt.x, pt.y),
+            ),
+            ctxKindItem("merge", I18n.t("合并（多节点 → 批次）"), () =>
+              addNode("merge", pt.x, pt.y),
+            ),
+          ],
+        },
+        {
           label: I18n.t("绘制"),
           iconKey: "draw",
           iconCls: "draw",
@@ -11064,6 +12662,277 @@ function showCanvasCreateMenu(clientX, clientY, worldPt) {
   showCtx(clientX, clientY, canvasCreateMenuGroups(worldPt));
 }
 
+/* ============ 右键 · 构建工作流（选工具 = 工作流生成类技能 + 填写要求） ============ */
+
+/* 「工作流生成」大类内部的优先顺序；画布规范类只是约束，不能当生成工具 */
+const WF_BUILD_TYPE_RANK = { 画布搭建: 0, 开发架构: 1, 禅式引导: 2 };
+const WF_BUILD_SKIP_TYPES = { 画布规范: true };
+/* 这些内置技能带 .mtnode-internal 标记（skillList 不展示），需单独探测 */
+const WF_BUILD_INTERNAL_SKILLS = ["mtnode-dev-architect"];
+
+/** 从 SKILL.md 正文取 title / description（front matter，缺省回退首个 # 标题） */
+function parseSkillMarkdownMeta(text) {
+  const raw = String(text || "");
+  const out = { title: "", description: "" };
+  const fm = raw.match(/^---\s*\n([\s\S]*?)\n---/);
+  const src = fm ? fm[1] : raw.slice(0, 6000);
+  const t = src.match(/^title:[ \t]*(.+)$/m);
+  if (t) out.title = String(t[1]).trim().replace(/^['"]|['"]$/g, "");
+  const d = src.match(/^description:[ \t]*(.+)$/m);
+  if (d) out.description = String(d[1]).trim().replace(/^['"]|['"]$/g, "");
+  if (!out.title) {
+    const h = raw.match(/^#\s+(.+)$/m);
+    if (h) out.title = String(h[1]).trim();
+  }
+  out.title = out.title.slice(0, 40);
+  out.description = out.description.replace(/\s+/g, " ").slice(0, 180);
+  return out;
+}
+
+function wfBuildRank(s) {
+  const r = s && WF_BUILD_TYPE_RANK[s.type];
+  return typeof r === "number" ? r : 5;
+}
+
+/**
+ * 构建工作流对话框的候选「工具」列表。
+ * build = 工作流 / 画布生成类技能（默认只展示这些）；all = 全部可用技能。
+ */
+async function collectWorkflowBuildSkills() {
+  const installed = ((await loadSkillsCached(false)) || []).filter(
+    (s) => s && s.name && !isInstallOnlySkillName(s.name),
+  );
+  const all = [];
+  const seen = new Set();
+  for (const s of installed) {
+    const c = skillMenuClassify(s);
+    all.push({
+      name: s.name,
+      title: s.title || s.name,
+      description: s.description || "",
+      cat: c.cat,
+      type: c.type,
+    });
+    seen.add(s.name);
+  }
+  /* 内置（隐藏）的画布构建技能：skillList 拿不到，逐个探测 */
+  for (const nm of WF_BUILD_INTERNAL_SKILLS) {
+    if (seen.has(nm)) continue;
+    const sk = await resolveSkillByName(nm);
+    if (!sk || !sk.body) continue;
+    const meta = parseSkillMarkdownMeta(sk.body);
+    const c = skillMenuClassify({
+      name: nm,
+      title: meta.title,
+      description: meta.description,
+    });
+    all.push({
+      name: nm,
+      title: meta.title || nm,
+      description: meta.description,
+      cat: c.cat,
+      type: c.type,
+      internal: true,
+    });
+    seen.add(nm);
+  }
+  all.sort((a, b) => {
+    const d = wfBuildRank(a) - wfBuildRank(b);
+    if (d) return d;
+    return String(a.title || a.name).localeCompare(
+      String(b.title || b.name),
+      "zh",
+    );
+  });
+  const build = all.filter(
+    (s) => s.cat === "workflow" && !WF_BUILD_SKIP_TYPES[s.type],
+  );
+  return { build, all };
+}
+
+/** 对话框内容：工具单选列表 + 「仅显示生成类」开关 + 要求输入框（写入 ref） */
+function buildWorkflowToolPicker(host, groups, ref, state) {
+  const lab = (text) => {
+    const d = document.createElement("div");
+    d.className = "wfb-lab";
+    d.textContent = text;
+    host.appendChild(d);
+    return d;
+  };
+  lab(I18n.t("工具（工作流生成技能）"));
+  const list = document.createElement("div");
+  list.className = "wfb-list";
+  host.appendChild(list);
+  const footRow = document.createElement("div");
+  footRow.className = "wfb-foot";
+  host.appendChild(footRow);
+  lab(I18n.t("构建要求"));
+  const ta = document.createElement("textarea");
+  ta.className = "mt-form-input wfb-req";
+  ta.rows = 5;
+  ta.placeholder = I18n.t(
+    "例如：读取「素材清单」里的条目，逐条生成商品文案与主图提示词，输出 YAML 并保存；输入节点放上方，再给一个控制节点一键重跑……",
+  );
+  ta.value = String(state.req || "");
+  host.appendChild(ta);
+  const hint = document.createElement("p");
+  hint.className = "mt-form-hint";
+  hint.textContent = I18n.t(
+    "Ctrl+Enter 开始构建 · Esc 取消 · 要求写得越具体（输入来源 / 处理步骤 / 输出格式），生成结果越接近预期",
+  );
+  host.appendChild(hint);
+  ref.ta = ta;
+  ref.focus = () => {
+    setTimeout(() => {
+      try {
+        ta.focus();
+      } catch (_) {}
+    }, 0);
+  };
+  const render = () => {
+    const shown =
+      state.onlyBuild && groups.build.length ? groups.build : groups.all;
+    list.innerHTML = "";
+    footRow.innerHTML = "";
+    if (!shown.some((s) => s.name === state.chosen))
+      state.chosen = shown.length ? shown[0].name : "";
+    for (const s of shown) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "wfb-item" + (s.name === state.chosen ? " on" : "");
+      b.title = "/" + s.name + (s.description ? "\n" + s.description : "");
+      const ck = document.createElement("span");
+      ck.className = "wfb-check";
+      ck.textContent = s.name === state.chosen ? "✓" : "";
+      const copy = document.createElement("span");
+      copy.className = "wfb-copy";
+      const nm = document.createElement("span");
+      nm.className = "wfb-name";
+      nm.textContent = s.title || s.name;
+      const cmd = document.createElement("em");
+      cmd.textContent = "/" + s.name;
+      nm.appendChild(cmd);
+      copy.appendChild(nm);
+      if (s.description) {
+        const ds = document.createElement("span");
+        ds.className = "wfb-desc";
+        ds.textContent = s.description;
+        copy.appendChild(ds);
+      }
+      const tag = document.createElement("span");
+      tag.className = "wfb-tag";
+      tag.textContent = I18n.t(
+        s.type || (s.cat === "workflow" ? "画布搭建" : "通用"),
+      );
+      b.appendChild(ck);
+      b.appendChild(copy);
+      b.appendChild(tag);
+      b.onclick = () => {
+        state.chosen = s.name;
+        render();
+      };
+      list.appendChild(b);
+    }
+    if (!shown.length) {
+      const e = document.createElement("div");
+      e.className = "wfb-empty";
+      e.textContent = I18n.t("暂无可用技能");
+      list.appendChild(e);
+    }
+    if (groups.build.length) {
+      const lb = document.createElement("label");
+      lb.className = "wfb-filter";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!state.onlyBuild;
+      cb.onchange = () => {
+        state.onlyBuild = cb.checked;
+        render();
+      };
+      const sp = document.createElement("span");
+      sp.textContent = I18n.t("仅显示工作流生成类技能");
+      lb.appendChild(cb);
+      lb.appendChild(sp);
+      footRow.appendChild(lb);
+    }
+    const cnt = document.createElement("i");
+    cnt.textContent =
+      I18n.t("共 ") +
+      (state.onlyBuild && groups.build.length
+        ? groups.build.length
+        : groups.all.length) +
+      I18n.t(" 个可选工具");
+    footRow.appendChild(cnt);
+  };
+  render();
+}
+
+/**
+ * 右键 · 构建工作流：选择工作流生成类技能（工具）+ 填写要求
+ * → 交给全局助手在当前画布落地（改画布仍按用户的审批设置生效）。
+ */
+async function promptBuildWorkflow(pt, retryState) {
+  if (!S.wf) return;
+  const sup = dshSupported();
+  if (!sup.ok) {
+    toast(sup.reason, "warn");
+    return;
+  }
+  if (S.assistRunning) {
+    toast(I18n.t("助手正在执行上一轮：请等待完成或先终止，再发起构建"), "warn");
+    return;
+  }
+  const groups = await collectWorkflowBuildSkills();
+  if (!groups.all.length) {
+    toast(
+      I18n.t(
+        "未找到可用的工作流生成技能：请先在 设置 → 技能 安装 generate-workflow / generate-task",
+      ),
+      "warn",
+    );
+    return;
+  }
+  const state = {
+    chosen:
+      (retryState && retryState.chosen) ||
+      (groups.build.length ? groups.build[0].name : groups.all[0].name),
+    req: (retryState && retryState.req) || "",
+    onlyBuild: groups.build.length ? true : false,
+  };
+  const ref = {};
+  const res = await mtDialogForm({
+    title: I18n.t("构建工作流"),
+    wide: true,
+    rows: [
+      [I18n.t("目标画布"), S.wf.name || I18n.t("未命名画布")],
+    ],
+    msg: I18n.t(
+      "选择要使用的工具（工作流生成类技能），并填写要求。确认后会交给右侧「全局助手」在当前画布上搭建。",
+    ),
+    actions: [
+      { id: "cancel", label: I18n.t("取消") },
+      { id: "build", label: I18n.t("开始构建"), primary: true },
+    ],
+    custom: (host) => {
+      buildWorkflowToolPicker(host, groups, ref, state);
+      if (ref.focus) ref.focus();
+    },
+  });
+  if (!res || res.action !== "build") return;
+  const skill = groups.all.find((s) => s.name === state.chosen) || groups.all[0];
+  const req = String((ref.ta && ref.ta.value) || "").trim();
+  if (!req) {
+    toast(I18n.t("请先填写构建要求"), "warn");
+    await promptBuildWorkflow(pt, { chosen: skill.name, req: "" });
+    return;
+  }
+  const parts = [req];
+  setAssistOpen(true);
+  assistSend("/" + skill.name + " " + parts.join("\n"));
+  toast(I18n.t("已发起构建：") + (skill.title || skill.name), "ok");
+}
+
+
 function bindCanvas() {
   const canvas = $("#canvas");
   /* 捕获阶段监听：即使鼠标在节点 / 组内部（其冒泡阶段可能 stopPropagation 或拦截事件），
@@ -11094,6 +12963,8 @@ function bindCanvas() {
         return;
       }
       if (ev.target === canvas || ev.target.id === "stage") {
+        /* 关系线待定点在空白处：取消 */
+        if (S.pendingRel) cancelPendingRel(true);
         /* 阻止原生拖选（否则拖动画布会误选到上方菜单等文字） */
         ev.preventDefault();
         const doBox = S.boxMode || ev.ctrlKey || ev.metaKey;
@@ -11907,12 +13778,13 @@ function bindCanvas() {
             const delSet = new Set(nodeIds);
             const linkedSessions = [];
             for (const n of S.wf.nodes) {
-              if (
-                delSet.has(n.id) &&
-                n.kind === "agent_task" &&
-                n.agentSessionId
-              ) {
-                const sess = agentSessions().find((s) => s.id === n.agentSessionId);
+              if (!delSet.has(n.id)) continue;
+              let sessIds = [];
+              if (n.kind === "agent_task" && n.agentSessionId)
+                sessIds = [n.agentSessionId];
+              else if (n.kind === "super" && n.dev) sessIds = devSessionIdsOf(n);
+              for (const sid of sessIds) {
+                const sess = agentSessions().find((s) => s.id === sid);
                 if (sess && !linkedSessions.includes(sess)) linkedSessions.push(sess);
               }
             }
@@ -11963,6 +13835,11 @@ function bindCanvas() {
       const box = document.getElementById("boxSel");
       if (box) box.remove();
       if (S.drag && S.drag.mode === "box") S.drag = null;
+      if (S.pendingRel) {
+        cancelPendingRel(true);
+        renderCanvas();
+        return;
+      }
       clearSelection();
       closeRefMenu();
       renderCanvas();
@@ -12487,6 +14364,8 @@ function toggleBatch(node) {
 
 /* 停止运行：立即中止模型请求并回到未处理状态 */
 async function stopNode(node) {
+  /* 作废本节点当前批次（在途 + 排队中的）：之后所有下游驱动一律拦掉 */
+  bumpNodeStop(node);
   if (node.kind === "timer") {
     if (node.timerArmed || node.running) disarmTimerNode(node, false);
     return;
@@ -12505,6 +14384,27 @@ async function stopNode(node) {
     renderCanvas();
     return;
   }
+  if (node.kind === "music_gen" || node.kind === "video_gen") {
+    /* 单节点停止也要：关监视器 + 作废排队 + 取消主进程在途任务（释放大锁）。
+       旧实现只把 running 置 false，串行队列 / 后端任务照跑，稍后节点又回到运行队列。 */
+    if (!node.running && !mediaGenWaiters.has(node.id)) return;
+    if (mediaGenWaiters.has(node.id)) {
+      mediaGenWaiters.delete(node.id);
+      clearPendingRun([node.id]);
+    }
+    stopMediaBackendRunWatcher(node.id);
+    stopMediaGenRestoreWatch(node.id);
+    const wasRunning = !!node.running;
+    node.running = false;
+    if (wasRunning) mediaGenCancelRemote(node);
+    if (node.kind === "music_gen") node.musicStatus = I18n.t("已取消");
+    else node.videoStatus = I18n.t("已取消");
+    node.error = null;
+    toast(I18n.t(node.kind === "music_gen" ? "已取消音乐生成" : "已取消视频生成"), "warn");
+    renderCanvas();
+    updateRunQueuePanel();
+    return;
+  }
   if (!node.running) return;
   if (node.kind === "wait_file") {
     node._aborted = true;
@@ -12521,26 +14421,6 @@ async function stopNode(node) {
   if (node.kind === "judge") {
     node._aborted = true;
     toast(I18n.t("已请求停止判断…"), "warn");
-    renderCanvas();
-    return;
-  }
-  if (node.kind === "music_gen") {
-    if (window.api && window.api.music3CancelGenerate) {
-      window.api.music3CancelGenerate(node.id);
-    }
-    node.running = false;
-    node.musicStatus = I18n.t("已取消");
-    toast(I18n.t("已取消音乐生成"), "warn");
-    renderCanvas();
-    return;
-  }
-  if (node.kind === "video_gen") {
-    if (window.api && window.api.h3CancelGenerate) {
-      window.api.h3CancelGenerate(node.id);
-    }
-    node.running = false;
-    node.videoStatus = I18n.t("已取消");
-    toast(I18n.t("已取消视频生成"), "warn");
     renderCanvas();
     return;
   }
@@ -12584,7 +14464,7 @@ async function chatSend(node, text) {
     return;
   }
   if (!Array.isArray(node.messages)) node.messages = [];
-  node.messages.push({ role: "user", content: text.trim() });
+  node.messages.push({ role: "user", content: text.trim(), at: Date.now() });
   node.running = true;
   node._abKey = uid("ab");
   node._aborted = false;
@@ -12631,6 +14511,7 @@ async function chatSend(node, text) {
       const msg = {
         role: "assistant",
         content: r.text || node._pendingAnswer || "",
+        at: Date.now(),
       };
       const rsn = r.reasoning || thinkingTextOf(node) || "";
       if (String(rsn).trim()) msg.reasoning = rsn;
@@ -12641,6 +14522,7 @@ async function chatSend(node, text) {
       node.messages.push({
         role: "assistant",
         content: I18n.t("（错误：") + (e.message || String(e)) + "）",
+        at: Date.now(),
       });
       toast(I18n.t("对话失败：") + (e.message || String(e)), "err");
     }
@@ -12663,7 +14545,7 @@ async function chatSendAgent(node, text) {
     return;
   }
   if (!Array.isArray(node.messages)) node.messages = [];
-  node.messages.push({ role: "user", content: text.trim() });
+  node.messages.push({ role: "user", content: text.trim(), at: Date.now() });
   node.running = true;
   node._pendingAnswer = "";
   if (!S.thinking) S.thinking = {};
@@ -12732,6 +14614,7 @@ async function chatSendAgent(node, text) {
       content: node._aborted
         ? stripStreamErrors(node._pendingAnswer) || I18n.t("（已终止）")
         : final || node._pendingAnswer || I18n.t("（无输出）"),
+      at: Date.now(),
     };
     const rsn = thinkingTextOf(node) || "";
     if (String(rsn).trim()) msg.reasoning = rsn;
@@ -12745,11 +14628,13 @@ async function chatSendAgent(node, text) {
       node.messages.push({
         role: "assistant",
         content: body || I18n.t("（已终止）"),
+        at: Date.now(),
       });
     } else {
       node.messages.push({
         role: "assistant",
         content: I18n.t("（错误：") + (e.message || String(e)) + "）",
+        at: Date.now(),
       });
       toast(I18n.t("智能助手失败：") + (e.message || String(e)), "err");
     }
@@ -14149,6 +16034,7 @@ async function playWaitFileNode(node, quiet) {
     if (p) await p;
     return;
   }
+  beginNodeRun(node);
   let pendingIds = null;
   if (!quiet) {
     pendingIds = collectPendingRunIds(node, true);
@@ -14624,6 +16510,7 @@ function timerOutTargets(node, wf) {
   const out = [];
   const seen = new Set();
   for (const w of wf.wires || []) {
+    if (w.rel) continue;
     if (w.from !== node.id) continue;
     const n = (wf.nodes || []).find((x) => x.id === w.to);
     if (!n || seen.has(n.id) || !canControlRun(n)) continue;
@@ -15155,6 +17042,7 @@ async function pulseGate(node, task, seen, toIndex) {
 async function playGateNode(node, quiet) {
   if (!node || node.kind !== "gate") return;
   normalizeGateNode(node);
+  beginNodeRun(node);
   node.gateArrived = {};
   node.error = null;
   node.running = true;
@@ -15288,6 +17176,7 @@ async function pulseCounter(node, task, seen) {
 async function playCounterNode(node, quiet) {
   if (!node || node.kind !== "counter") return;
   normalizeCounterNode(node);
+  beginNodeRun(node);
   node.counterCount = (Number(node.counterCount) || 0) + 1;
   const every = node.counterEvery;
   node.error = null;
@@ -15382,6 +17271,7 @@ async function pulseMutex(node, task, seen, toIndex) {
 async function playMutexNode(node, quiet) {
   if (!node || node.kind !== "mutex") return;
   normalizeMutexNode(node);
+  beginNodeRun(node);
   const win = mutexPickPort(node, null);
   if (win == null) {
     if (!quiet) toast(I18n.t("请先连接互斥输入"), "warn");
@@ -15489,6 +17379,7 @@ async function playJudgeNode(node, quiet) {
         : null;
   }
   node.running = true;
+  beginNodeRun(node);
   node.error = null;
   node.judgeResult = "";
   renderCanvas();
@@ -15731,10 +17622,12 @@ function mergePulseResults(list) {
 
 function abortTaskTree(node) {
   if (!node) return;
-  node._aborted = true;
+  /* 统一走 bumpNodeStop：整棵子树（含任务内的媒体 / 处理节点）批次作废，
+     在途运行体在下一个检查点退出，排队项也不再起跑 */
+  bumpNodeStop(node);
   for (const t of taskChildTasksOf(node.id)) abortTaskTree(t);
   for (const n of taskChildrenOf(node.id)) {
-    if (n.running) n._aborted = true;
+    if (n.running) bumpNodeStop(n);
   }
 }
 
@@ -16528,6 +18421,7 @@ function migrateWf(wf) {
     {
       const byId = new Map(wf.nodes.map((n) => [n.id, n]));
       wf.wires = (wf.wires || []).filter((w) => {
+        if (w.rel) return true; /* 关系线：仅表达关系，不受数据流规则裁剪 */
         const to = byId.get(w.to);
         const from = byId.get(w.from);
         if (!to || !from) return false;
@@ -16557,7 +18451,7 @@ function migrateWf(wf) {
     const noOut = new Set(wf.nodes.filter(isExecEnd).map((n) => n.id));
     if (noIn.size || noOut.size)
       wf.wires = wf.wires.filter(
-        (w) => !noIn.has(w.to) && !noOut.has(w.from),
+        (w) => w.rel || (!noIn.has(w.to) && !noOut.has(w.from)),
       );
   }
   /* 清理组：移除指向不存在节点的引用，空组删除 */
@@ -16989,6 +18883,247 @@ function ensureAgentSessionForNode(node) {
   }
   return sess;
 }
+/* ============ 开发节点（dev super）：项目功能块 · 绑定开发会话 ============ */
+/* 项目根路径：自身 devPath 优先，否则向上找最近的开发节点祖先 */
+function devPathOf(node) {
+  let cur = node;
+  let guard = 0;
+  while (cur && guard++ < 64) {
+    const p = String(cur.devPath || "").trim();
+    if (p) return p;
+    cur = cur.parentSuperId ? nodeById(cur.parentSuperId) : null;
+  }
+  return "";
+}
+/* 开发任务书：节点概述 + 项目根 + 上层模块（注入会话的契约消息） */
+function devNodeContractText(node) {
+  const lines = [];
+  const dk = devKindOf(node) || "module";
+  lines.push(
+    I18n.t("【开发任务书】") +
+      " " +
+      (node.title || I18n.t("未命名模块")) +
+      "（" +
+      I18n.t(DEV_KIND_LABEL[dk] || "模块") +
+      "）",
+  );
+  const note = String(node.note || "").trim();
+  lines.push(
+    I18n.t("模块概述：") +
+      (note || I18n.t("（暂无概述 · 请先补充该模块在项目中的作用）")),
+  );
+  const p = devPathOf(node);
+  if (p) lines.push(I18n.t("项目根目录：") + p);
+  const parent = node.parentSuperId ? nodeById(node.parentSuperId) : null;
+  if (parent && parent.dev) {
+    lines.push(
+      I18n.t("所属上层模块：") +
+        (parent.title || "") +
+        (String(parent.note || "").trim()
+          ? "（" + String(parent.note).trim() + "）"
+          : ""),
+    );
+  }
+  const kids = devChildrenOf(node);
+  if (kids.length) {
+    lines.push(I18n.t("本模块已有子元素："));
+    for (const k of kids.slice(0, 40)) {
+      lines.push(
+        "  - " +
+          (k.title || k.id) +
+          "（" +
+          I18n.t(DEV_KIND_LABEL[devKindOf(k) || "module"] || "模块") +
+          "）" +
+          (String(k.note || "").trim() ? "：" + String(k.note).trim() : ""),
+      );
+    }
+  }
+  lines.push(
+    I18n.t(
+      "本会话由该功能块的「开发 / 细化」对话框新建，只负责该模块；请以项目根目录内的真实代码为准，不要臆测。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "完成后请更新画布上该开发节点的概述（note）与状态（devStatus），并用一句话向用户汇报改了什么。",
+    ),
+  );
+  return lines.join("\n");
+}
+/* 该功能块名下的会话（细化 / 开发历史 + 最近绑定） */
+function devSessionIdsOf(node) {
+  const out = [];
+  if (!node) return out;
+  const arr = Array.isArray(node.devSessionIds) ? node.devSessionIds : [];
+  for (const id of arr) if (id && out.indexOf(id) < 0) out.push(id);
+  if (node.agentSessionId && out.indexOf(node.agentSessionId) < 0)
+    out.push(node.agentSessionId);
+  return out;
+}
+function devSessionsOf(node) {
+  const ids = devSessionIdsOf(node);
+  return agentSessions()
+    .filter((s) => ids.indexOf(s.id) >= 0)
+    .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+}
+function devSessionTitleOf(node, mode) {
+  return (
+    (mode === "refine" ? I18n.t("细化 · ") : I18n.t("开发 · ")) +
+    (node.title || I18n.t("开发节点"))
+  );
+}
+/* 节点改名 → 其名下的细化 / 开发会话标题跟随（保留各自前缀） */
+function syncDevSessionTitles(node) {
+  if (!node) return;
+  const ids = devSessionIdsOf(node);
+  if (!ids.length) return;
+  let touched = false;
+  for (const s of agentSessions()) {
+    if (ids.indexOf(s.id) < 0) continue;
+    const m = String(s.title || "").match(/^(细化|开发|Refine|Dev)\s*·\s*/i);
+    const want =
+      (m ? m[0] : I18n.t("开发 · ")) + (node.title || I18n.t("开发节点"));
+    if (s.title !== want) {
+      s.title = want;
+      touched = true;
+    }
+  }
+  if (touched) {
+    try {
+      renderAgentSessionSidebar();
+    } catch (_) {}
+  }
+}
+/* 每次「开发 / 细化」都新建会话运行：上下文干净，工作区 = 项目根 */
+function createDevSessionForNode(node, mode) {
+  if (!node || node.kind !== "super" || !node.dev) return null;
+  const list = agentSessions();
+  const sess = {
+    id: uid("as"),
+    title: devSessionTitleOf(node, mode),
+    workspace: devPathOf(node) || dshWorkspaceOf(node),
+    preset: "standard",
+    provider: "deepseek-official",
+    model: "",
+    effort: "high",
+    messages: [],
+    archived: false,
+    updatedAt: Date.now(),
+  };
+  sess.messages.unshift({
+    role: "user",
+    content: devNodeContractText(node),
+    _src: "dev-node",
+    _nid: node.id,
+  });
+  list.unshift(sess);
+  node.agentSessionId = sess.id;
+  if (!Array.isArray(node.devSessionIds)) node.devSessionIds = [];
+  node.devSessionIds.unshift(sess.id);
+  while (node.devSessionIds.length > 24) node.devSessionIds.pop();
+  return sess;
+}
+/* 对话框里展示「最近一次要求」，方便用户接着迭代 */
+function devLastRequestOf(node) {
+  const sess = devSessionsOf(node)[0];
+  if (!sess) return "";
+  const msgs = sess.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.role !== "user" || m._src) continue;
+    const t = String(m.content || "").trim();
+    if (!t) continue;
+    return t.length > 160 ? t.slice(0, 160) + "…" : t;
+  }
+  return "";
+}
+/* 直接回到该节点最近一次的会话（不新建、不弹框） */
+async function openBoundDevSession(node) {
+  const sess = devSessionsOf(node)[0];
+  if (!sess) {
+    toast(I18n.t("该功能块还没有开发会话"), "warn");
+    return;
+  }
+  S.agentActiveId = sess.id;
+  await persistAgentSession();
+  scheduleSave(true);
+  setView("agent");
+}
+/* 「开发」：弹对话框 → 显示模块标题与现状 + 填写本次开发内容 → 确认后新会话运行 */
+async function developDevNode(node) {
+  if (!node || node.kind !== "super" || !node.dev) return;
+  const dk = devKindOf(node) || "module";
+  const st = devStatusOf(node);
+  const p = devPathOf(node);
+  const kids = devChildrenOf(node);
+  const last = devLastRequestOf(node);
+  const rows = [
+    [I18n.t("元素类型"), I18n.t(DEV_KIND_LABEL[dk] || "模块")],
+    [I18n.t("开发状态"), devStatusText(st)],
+    [I18n.t("项目根目录"), p || I18n.t("（未设置）")],
+    [
+      I18n.t("下层元素"),
+      kids.length
+        ? kids
+            .map((k) => {
+              const kk = devKindOf(k) || "module";
+              return (k.title || k.id) + "（" + I18n.t(DEV_KIND_LABEL[kk] || "模块") + "）";
+            })
+            .slice(0, 6)
+            .join("、") + (kids.length > 6 ? " …" : "")
+        : I18n.t("（无 · 可点「细化」展开）"),
+    ],
+  ];
+  if (last) rows.push([I18n.t("最近一次要求"), last]);
+  const res = await mtDialogForm({
+    title: I18n.t("开发") + " · " + (node.title || I18n.t("开发节点")),
+    wide: true,
+    rows,
+    note: { label: I18n.t("模块概述"), text: node.note },
+    msg: I18n.t("请说明本次要开发或迭代的内容；确认后将新建一个绑定该模块的开发会话并在其中运行。"),
+    warn: p
+      ? ""
+      : I18n.t(
+          "尚未设置项目根目录（devPath）：会话工作区将退回默认目录，建议在顶层功能块上先设置项目路径。",
+        ),
+    textarea: {
+      label: I18n.t("本次希望开发 / 迭代的内容"),
+      placeholder: I18n.t(
+        "例如：补该模块的错误处理与日志；按现有风格新增 XX 接口；重构某文件但不改变对外 API…",
+      ),
+      rows: 6,
+      requiredMsg: I18n.t("请填写本次希望开发或迭代的内容"),
+    },
+    hint: I18n.t(
+      "确认 = 新会话运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中）· Ctrl+Enter 提交 · Esc 取消",
+    ),
+    requireText: true,
+    actions: [
+      { id: "cancel", label: I18n.t("取消") },
+      { id: "go", label: I18n.t("开始开发"), primary: true },
+    ],
+  });
+  if (!res || res.action !== "go") return;
+  await startDevSessionWithText(node, String(res.text || "").trim());
+}
+/* 「开发」与「建议 → 开发」共用的收尾：新建绑定会话 → 状态转进行中 → 切到会话视图运行 */
+async function startDevSessionWithText(node, text) {
+  const body = String(text || "").trim();
+  if (!node || node.kind !== "super" || !node.dev || !body) return;
+  const sess = createDevSessionForNode(node, "dev");
+  if (!sess) return;
+  if (node.devStatus !== "done") node.devStatus = "wip";
+  S.agentActiveId = sess.id;
+  await persistAgentSession();
+  scheduleSave(true);
+  renderCanvas();
+  setView("agent");
+  try {
+    await agentSessionSend(body);
+  } catch (err) {
+    toast(I18n.t("开发会话启动失败：") + ((err && err.message) || String(err)), "err");
+  }
+}
 function assistantMsgFromNode(node, text) {
   const msg = { role: "assistant", content: text };
   const rsn = thinkingTextOf(node) || "";
@@ -17036,7 +19171,12 @@ function syncAgentTaskToSession(node, input, output) {
     if (marked) {
       if (marked.content !== taskText) marked.content = taskText;
     } else {
-      sess.messages.unshift({ role: "user", content: taskText, _src: "node-task" });
+      sess.messages.unshift({
+        role: "user",
+        content: taskText,
+        _src: "node-task",
+        at: Date.now(),
+      });
     }
   }
   const hasUser = sess.messages.some(

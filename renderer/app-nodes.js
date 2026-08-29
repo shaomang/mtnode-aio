@@ -219,7 +219,7 @@ async function runDshOnce(node, spec, attemptT, images) {
     const cur = String(sent || "").trim();
     const lm = node.messages[node.messages.length - 1];
     if (cur && !(lm && lm.role === "user" && lm.content === cur)) {
-      node.messages.push({ role: "user", content: cur });
+      node.messages.push({ role: "user", content: cur, at: Date.now() });
     }
   }
   const msgs = node.messages || [];
@@ -945,6 +945,7 @@ function collectDownstreamCascade(start) {
   while (q.length) {
     const fromId = q.shift();
     for (const w of S.wf.wires || []) {
+      if (w.rel) continue;
       if (w.from !== fromId) continue;
       if (wireFromIsControl(w)) continue;
       const n = nodeById(w.to);
@@ -974,8 +975,37 @@ function nodePlaySucceeded(node) {
   return nodeHasOutputContent(node);
 }
 
+/* 节点跑完后是否自动接着跑下游：默认关闭。
+   大图（数百节点）+ 控制节点 / 环路时，自动级联会自我放大（每个节点跑完又触发一遍下游），
+   曾经把应用直接跑崩；要连跑请用「控制节点 ▶」或工具栏「运行」。
+   想恢复旧行为：设置里打开「节点完成后自动执行下游」，或在控制台
+   setAutoRunDownstream(true)。 */
+let AUTO_RUN_DOWNSTREAM_ON_FINISH =
+  (() => {
+    try {
+      return localStorage.getItem("mtnode.autoRunDownstream") === "1";
+    } catch {
+      return false;
+    }
+  })();
+function setAutoRunDownstream(on) {
+  AUTO_RUN_DOWNSTREAM_ON_FINISH = !!on;
+  try {
+    localStorage.setItem("mtnode.autoRunDownstream", AUTO_RUN_DOWNSTREAM_ON_FINISH ? "1" : "0");
+  } catch {}
+  toast(
+    AUTO_RUN_DOWNSTREAM_ON_FINISH
+      ? I18n.t("已开启：节点完成后自动执行下游")
+      : I18n.t("已关闭：节点完成后不再自动执行下游"),
+    "warn",
+  );
+}
+
 async function decideCascadeAfterPlay(node, quiet, opts) {
   if (quiet || (opts && opts.noCascade) || !isProcessPlayKind(node))
+    return { nodes: null, skipSaveIds: null };
+  /* 默认不再自动跑下游：一次 ▶ 只执行本节点，避免失控 */
+  if (!AUTO_RUN_DOWNSTREAM_ON_FINISH || runBatchStopped(node))
     return { nodes: null, skipSaveIds: null };
   const down = collectDownstreamCascade(node);
   if (!down.length) return { nodes: null, skipSaveIds: null };
@@ -1008,9 +1038,9 @@ async function runCascadeNode(n, seen) {
     return saveNodeAction(n);
   if (isMediaGenNode(n) || isProcessPlayKind(n))
     /* 同批节点由队列按依赖启动；ensureUpstream 只补跑批次外上游 */
-    return playNode(n, true, { noCascade: true, ensureUpstream: true });
+    return playNode(n, true, { noCascade: true, ensureUpstream: true, batchDriven: true });
   if (n.kind === "net_send" || n.kind === "net_recv")
-    return playNode(n, true, { noCascade: true, ensureUpstream: true });
+    return playNode(n, true, { noCascade: true, ensureUpstream: true, batchDriven: true });
 }
 
 async function runDownstreamCascade(nodes) {
@@ -1052,6 +1082,11 @@ async function playNode(node, quiet, opts) {
     unlock = r;
   });
   S.playLocks.set(node.id, lock);
+  /* 新批次发车：清掉上一次的停止标记（一次「终止」只作废当时那一批） */
+  beginNodeRun(node);
+  /* 用户直接点 ▶ 属于「重新开始」，解除「全部终止」的短窗口拦截；
+     由控制节点 / 级联批次驱动的（batchDriven）仍然会被拦掉 */
+  if (!(opts && opts.batchDriven)) S._lastStopAllAt = 0;
   try {
     const cascadeAfter = await playNodeBody(node, quiet, opts || {});
     if (cascadeAfter && cascadeAfter.length && nodePlaySucceeded(node)) {
@@ -1138,6 +1173,7 @@ function netPayloadFrom(node) {
 async function playNetRecvNode(node, quiet) {
   if (node.running) return;
   node.running = true;
+  beginNodeRun(node);
   node.error = null;
   const port = netPortOf(node);
   const channel = (Number(node.netChannel) || 0) & 0xffff;
@@ -1175,6 +1211,7 @@ async function playNetRecvNode(node, quiet) {
 async function playNetSendNode(node, quiet) {
   if (node.running) return;
   node.running = true;
+  beginNodeRun(node);
   node.error = null;
   const port = netPortOf(node);
   const channel = (Number(node.netChannel) || 0) & 0xffff;
@@ -1251,6 +1288,9 @@ async function pumpNetRecvMessage(m) {
 /* 从某节点的指定输出端子触发下游可控制运行节点（控制线语义；seen 防环） */
 async function fireControlOutgoing(node, outIdx, seen) {
   if (!node) return;
+  /* 已被「停止 / 全部终止」的节点不再驱动下游控制线
+     （终止后队列自己长出任务，就是这么来的） */
+  if (runBatchStopped(node)) return;
   const s2 = new Set(seen || []);
   s2.add(node.id);
   const wires = execOutWires(node, outIdx);
@@ -1602,9 +1642,20 @@ function startMediaBackendProbeLoop(nodeId) {
 function startMediaBackendRunWatcher(node) {
   if (!node || !isMediaGenNode(node)) return;
   stopMediaBackendRunWatcher(node.id);
+  /* 记录起跑时的停止代号：一旦该节点被停止 / 「全部终止」，监视器立刻自毁，
+     不再探测回写（旧实现会让已终止的节点继续占用运行队列） */
+  const stopTick = Number(node._stopTick) || 0;
+  const startedAt = Date.now();
   const timer = setInterval(() => {
     const n = nodeById(node.id);
-    if (!n || !n.running) {
+    if (
+      !n ||
+      !n.running ||
+      node._aborted ||
+      (Number(node._stopTick) || 0) !== stopTick ||
+      /* 兜底上限：任务本身由 generate IPC 收尾，监视器不无限存活 */
+      Date.now() - startedAt > 3 * 60 * 60 * 1000
+    ) {
       stopMediaBackendRunWatcher(node.id);
       return;
     }
@@ -2341,6 +2392,11 @@ async function playMusicGenNode(node, quiet) {
     return;
   }
   if (node.running) return;
+  /* 「全部终止 / 单独停止」之后不得再起跑（含串行队列里排到点的任务） */
+  if (mediaRunStopped(node)) {
+    mediaGenMarkDropped(node, false);
+    return;
+  }
 
   /* 全局互斥：音视频生成全局仅允许 1 个 */
   try {
@@ -2385,13 +2441,17 @@ async function playMusicGenNode(node, quiet) {
     stopMediaBackendProbe(node.id);
   }
 
+  /* 上面这些 await（取全局锁 / 查后端状态）期间可能已被终止 → 不占锁、不起跑 */
+  if (mediaRunStopped(node)) {
+    mediaGenMarkDropped(node, false);
+    return;
+  }
   node.running = true;
   node.error = null;
-  node._aborted = false;
+  beginNodeRun(node);
   node.genRollDone = 0;
   node.genPaths = [];
-  node.musicStatus = I18n.t("启动后端并生成…");
-  startMediaBackendRunWatcher(node);
+  node.musicStatus = I18n.t("启动后端并生成…");  startMediaBackendRunWatcher(node);
   renderCanvas();
 
   const duration = Math.max(10, Math.min(150, Number(node.audioDuration) || 60));
@@ -2401,7 +2461,7 @@ async function playMusicGenNode(node, quiet) {
 
   try {
     for (let roll = 1; roll <= nRolls; roll++) {
-      if (node._aborted) break;
+      if (mediaRunStopped(node)) break;
       const exp = await prepareMediaGenRollExport(node, roll, nRolls);
       if (!exp || !exp.ok) {
         requireMediaGenExport(node, quiet);
@@ -2505,15 +2565,118 @@ async function playMusicGenNode(node, quiet) {
       if (!quiet) toast(node.error, "err");
     }
   } finally {
+    /* 被用户终止（单独停止 / 全部终止）时不再驱动下游控制线，
+       否则「已全部终止」之后队列里又会长出新的生成任务。 */
+    const wasStopped = mediaRunStopped(node);
     node.running = false;
     node._aborted = false;
     stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
     /* 生成成功：触发控制输出端子（端口1）驱动下游控制目标 */
-    if (nodeHasOutputContent(node))
+    if (!wasStopped && nodeHasOutputContent(node))
       await fireControlOutgoing(node, 1, new Set([node.id]));
   }
+}
+
+/* ── 运行批次作废（「结束所有节点任务」的真·止血） ─────────────────────
+   旧实现只把 node.running 置 false，但：
+     · 媒体节点在一条无法撤销的 Promise 串行链里排队 → 终止后队列照旧起新任务；
+     · 主进程后端任务与全局音视频锁没有被取消 → 锁轮询 / 进度事件把节点重新标成运行中；
+     · 节点跑完的 finally 仍会 fireControlOutgoing 驱动下游 → 队列里又长出任务。
+   现在每次「停止」都给节点递增 _stopTick，运行体起跑时记下发车时的 _runTick：
+   两者不一致 = 这批已经被作废，所有后续动作（起跑、排队、驱动下游）一律拦掉。 */
+let GLOBAL_STOP_SEQ = 0;
+function globalStopSeq() {
+  return GLOBAL_STOP_SEQ;
+}
+function markGlobalStop() {
+  GLOBAL_STOP_SEQ++;
+  try {
+    S._lastStopAllAt = Date.now();
+  } catch (_) {}
+  return GLOBAL_STOP_SEQ;
+}
+/* 起跑 / 排队前记下车时的代号（每个节点真正的起跑点都会调用） */
+function beginNodeRun(node) {
+  if (!node) return;
+  node._runTick = Number(node._stopTick) || 0;
+  node._runSeq = GLOBAL_STOP_SEQ;
+  node._aborted = false;
+}
+/* 停止本节点当前批次：_aborted 让在途运行体在下一个检查点退出，
+   _stopTick 让「还没起跑」的排队项（媒体串行队列）直接作废 */
+function bumpNodeStop(node) {
+  if (!node) return;
+  node._stopTick = (Number(node._stopTick) || 0) + 1;
+  node._aborted = true;
+  node._stopAt = Date.now();
+}
+/* 本批是否已被用户终止：只认 _aborted（每个节点起跑时都会清）
+   —— 不用时间戳差值，避免误伤之后用户主动的新运行 */
+function runBatchStopped(node) {
+  return !!(node && node._aborted);
+}
+/* 媒体节点还额外看排队代号：入队后被单独停止过 → 作废 */
+function mediaRunStopped(node) {
+  if (!node) return false;
+  if (node._aborted) return true;
+  return (Number(node._stopTick) || 0) !== (Number(node._runTick) || 0);
+}
+
+/* 媒体生成排队表：nodeId -> entry（终止时整表清空 = 排队项作废） */
+const mediaGenWaiters = new Map();
+/* 「后端锁恢复」轮询：nodeId -> interval id（终止时必须关掉，否则会把节点重新标成运行中） */
+const mediaGenRestoreTimers = new Map();
+
+function stopMediaGenRestoreWatch(nodeId) {
+  const t = mediaGenRestoreTimers.get(nodeId);
+  if (t) {
+    clearInterval(t);
+    mediaGenRestoreTimers.delete(nodeId);
+  }
+}
+function stopAllMediaGenRestoreWatch() {
+  for (const id of [...mediaGenRestoreTimers.keys()]) stopMediaGenRestoreWatch(id);
+}
+function stopAllMediaBackendRunWatchers() {
+  for (const id of [...mediaBackendRunWatchers.keys()]) stopMediaBackendRunWatcher(id);
+}
+/* 真正取消主进程里的后端任务（同时释放全局音视频锁）；只终止属于本节点的在途任务 */
+function mediaGenCancelRemote(node) {
+  if (!node || !window.api) return;
+  try {
+    if (node.kind === "music_gen" && window.api.music3CancelGenerate)
+      window.api.music3CancelGenerate(node.id);
+    else if (node.kind === "video_gen" && window.api.h3CancelGenerate)
+      window.api.h3CancelGenerate(node.id);
+  } catch (_) {}
+}
+function findMediaGenNodeById(id) {
+  let n = nodeById(id);
+  if (n && isMediaGenNode(n)) return n;
+  for (const wid of Object.keys(S.wfBag || {})) {
+    const w = S.wfBag[wid];
+    const hit = ((w && w.nodes) || []).find((x) => x.id === id && isMediaGenNode(x));
+    if (hit) return hit;
+  }
+  return null;
+}
+/* 排队项被作废 / 在途任务被终止：只写状态，绝不启动后端 */
+function mediaGenMarkDropped(node, wasRunning) {
+  if (!node) return;
+  const msg = wasRunning
+    ? I18n.t("已终止（后端生成任务已取消）")
+    : I18n.t("已终止（排队中的生成任务已取消）");
+  node.running = false;
+  node.error = null;
+  if (node.kind === "music_gen") node.musicStatus = msg;
+  else if (node.kind === "video_gen") node.videoStatus = msg;
+  const ui = ensureBackendUiState(node);
+  ui.genPct = 0;
+  ui.genMsg = msg;
+  stopMediaBackendRunWatcher(node.id);
+  stopMediaGenRestoreWatch(node.id);
 }
 
 async function restoreMediaGenLocks() {
@@ -2529,16 +2692,26 @@ async function restoreMediaGenLocks() {
     if (!lock || !lock.nodeId) return;
     const n = nodeById(lock.nodeId);
     if (!n || (n.kind !== "music_gen" && n.kind !== "video_gen")) return;
+    /* 本批已被终止：不要再把节点标成运行中（否则终止后队列复活） */
+    if (runBatchStopped(n)) return;
     n.running = true;
     const msg = I18n.t("后端任务进行中（已从锁恢复）…");
     if (n.kind === "music_gen") n.musicStatus = msg;
     else n.videoStatus = msg;
     renderCanvas();
+    stopMediaGenRestoreWatch(n.id);
     const poll = setInterval(async () => {
       try {
+        /* 用户已终止 / 全局终止：立刻收摊，不再回写 running 状态 */
+        if (runBatchStopped(n)) {
+          stopMediaGenRestoreWatch(n.id);
+          n.running = false;
+          renderCanvas();
+          return;
+        }
         const cur = await fn();
         if (!cur || !cur.lock || cur.lock.nodeId !== n.id) {
-          clearInterval(poll);
+          stopMediaGenRestoreWatch(n.id);
           n.running = false;
           const done = I18n.t("任务已结束");
           if (n.kind === "music_gen") n.musicStatus = done;
@@ -2546,9 +2719,10 @@ async function restoreMediaGenLocks() {
           renderCanvas();
         }
       } catch {
-        clearInterval(poll);
+        stopMediaGenRestoreWatch(n.id);
       }
     }, 3000);
+    mediaGenRestoreTimers.set(n.id, poll);
   } catch {}
 }
 
@@ -2592,6 +2766,11 @@ async function playVideoGenNode(node, quiet) {
     return;
   }
   if (node.running) return;
+  /* 同音乐节点：被终止过的节点不得再起跑 */
+  if (mediaRunStopped(node)) {
+    mediaGenMarkDropped(node, false);
+    return;
+  }
 
   try {
     const lock = await fetchMediaGenLock();
@@ -2631,9 +2810,14 @@ async function playVideoGenNode(node, quiet) {
     stopMediaBackendProbe(node.id);
   }
 
+  /* 上面这些 await（取全局锁 / 查后端状态）期间可能已被终止 → 不占锁、不起跑 */
+  if (mediaRunStopped(node)) {
+    mediaGenMarkDropped(node, false);
+    return;
+  }
   node.running = true;
   node.error = null;
-  node._aborted = false;
+  beginNodeRun(node);
   node.genRollDone = 0;
   node.genPaths = [];
   node.videoStatus = I18n.t("启动后端并生成…");
@@ -2674,7 +2858,7 @@ async function playVideoGenNode(node, quiet) {
 
   try {
     for (let roll = 1; roll <= nRolls; roll++) {
-      if (node._aborted) break;
+      if (mediaRunStopped(node)) break;
       const exp = await prepareMediaGenRollExport(node, roll, nRolls);
       if (!exp || !exp.ok) {
         requireMediaGenExport(node, quiet);
@@ -2820,13 +3004,16 @@ async function playVideoGenNode(node, quiet) {
       if (!quiet) toast(node.error, "err");
     }
   } finally {
+    /* 被用户终止（单独停止 / 全部终止）时不再驱动下游控制线，
+       否则「已全部终止」之后队列里又会长出新的生成任务。 */
+    const wasStopped = mediaRunStopped(node);
     node.running = false;
     node._aborted = false;
     stopMediaBackendRunWatcher(node.id);
     renderCanvas();
     scheduleSave();
     /* 生成成功：触发控制输出端子（端口1）驱动下游控制目标 */
-    if (nodeHasOutputContent(node))
+    if (!wasStopped && nodeHasOutputContent(node))
       await fireControlOutgoing(node, 1, new Set([node.id]));
   }
 }
@@ -2836,15 +3023,86 @@ async function restoreVideoGenLocks() {
 }
 
 /* 全局媒体生成串行链：video_gen / music_gen 共享主进程单一后端，
-   控制节点并行触发 / 多次尝试并发时排队串行执行，避免并发 busy 与后端竞争。 */
+   控制节点并行触发 / 多次尝试并发时排队串行执行，避免并发 busy 与后端竞争。
+   排队项登记在 mediaGenWaiters：「全部终止」清空该表后，排队项直接作废，
+   绝不再启动后端任务（旧实现是一个无法撤销的 Promise 链，终止后仍会依次开跑）。 */
 let _mediaGenChain = Promise.resolve();
-function runMediaGenSerial(fn) {
-  const run = _mediaGenChain.then(fn, fn);
+function runMediaGenSerial(node, fn) {
+  const entry = {
+    token: {},
+    seq: GLOBAL_STOP_SEQ,
+    tick: Number(node && node._stopTick) || 0,
+  };
+  if (node) {
+    mediaGenWaiters.set(node.id, entry);
+    /* 排队期间也登记到「等待中」：看得见、也能被「全部终止」一次清掉
+       （旧实现完全隐身：终止后队列里才冒出视频任务） */
+    addPendingRun([node.id]);
+  }
+  const run = _mediaGenChain.then(() => {
+    if (node) clearPendingRun([node.id]);
+    const cur = node && mediaGenWaiters.get(node.id);
+    if (cur && cur === entry) mediaGenWaiters.delete(node.id);
+    /* 排队期间发生过终止（表被清空 / 该节点停止代号变化）→ 直接作废，不开后端 */
+    if (
+      !node ||
+      !cur ||
+      cur !== entry ||
+      cur.seq !== GLOBAL_STOP_SEQ ||
+      cur.tick !== (Number(node._stopTick) || 0) ||
+      mediaRunStopped(node)
+    ) {
+      if (node) {
+        mediaGenMarkDropped(node, false);
+        renderCanvas();
+        updateRunQueuePanel();
+      }
+      return null;
+    }
+    return fn();
+  });
   _mediaGenChain = run.then(
     () => {},
     () => {},
   );
   return run;
+}
+/* 是否还有媒体生成活动（在途或排队）：供「全部终止」判断与提示文案。
+   O(1)：在途任务一定有 run watcher，不需要扫全图节点（大图上会白耗 CPU）。 */
+function hasAnyMediaGenActivity() {
+  return !!(mediaGenWaiters.size || mediaBackendRunWatchers.size || mediaGenRestoreTimers.size);
+}
+
+/* 全部终止时调用：清空排队 + 关掉所有媒体相关轮询 + 取消在途后端任务并释放全局锁。
+   只处理「确实有任务（在途或排队）」的节点，不给从没跑过的节点乱写状态。 */
+function stopAllMediaGen() {
+  const ids = new Set([
+    ...mediaGenWaiters.keys(),
+    ...mediaBackendRunWatchers.keys(),
+    ...mediaGenRestoreTimers.keys(),
+  ]);
+  try {
+    for (const wid of [S.wf, ...Object.values(S.wfBag || {})])
+      for (const n of (wid && wid.nodes) || [])
+        if (isMediaGenNode(n) && n.running) ids.add(n.id);
+  } catch (_) {}
+  mediaGenWaiters.clear();
+  stopAllMediaGenRestoreWatch();
+  stopAllMediaBackendRunWatchers();
+  let cancelled = 0;
+  for (const id of ids) {
+    const n = findMediaGenNodeById(id);
+    if (!n) continue;
+    const hadJob = !!n.running;
+    bumpNodeStop(n);
+    n.running = false;
+    mediaGenMarkDropped(n, hadJob);
+    if (hadJob) {
+      mediaGenCancelRemote(n);
+      cancelled++;
+    }
+  }
+  return cancelled;
 }
 
 async function playNodeBody(node, quiet, opts) {
@@ -2853,11 +3111,25 @@ async function playNodeBody(node, quiet, opts) {
     if (p) await p;
     return;
   }
+  /* 刚按过「全部终止」：由控制节点 / 级联批次驱动的再入一律拒绝起跑。
+     （在途 await 可能已经把本批目标叫回来了，但它属于刚被作废的那一批）
+     用户直接点 ▶ 不受影响。 */
+  if (
+    opts &&
+    opts.batchDriven &&
+    S._lastStopAllAt &&
+    Date.now() - Number(S._lastStopAllAt) < 1500
+  ) {
+    bumpNodeStop(node);
+    node.running = false;
+    node.error = I18n.t("已手动停止");
+    return;
+  }
   if (node.kind === "music_gen") {
-    return runMediaGenSerial(() => playMusicGenNode(node, quiet));
+    return runMediaGenSerial(node, () => playMusicGenNode(node, quiet));
   }
   if (node.kind === "video_gen") {
-    return runMediaGenSerial(() => playVideoGenNode(node, quiet));
+    return runMediaGenSerial(node, () => playVideoGenNode(node, quiet));
   }
   if (node.kind === "wait_file") {
     return playWaitFileNode(node, quiet);
@@ -2990,14 +3262,14 @@ async function playNodeBody(node, quiet, opts) {
     if (!Array.isArray(node.messages)) node.messages = [];
     const lm = node.messages[node.messages.length - 1];
     if (sent && !(lm && lm.role === "user" && lm.content === sent)) {
-      node.messages.push({ role: "user", content: sent });
+      node.messages.push({ role: "user", content: sent, at: Date.now() });
     }
     if (node.chatMode) node.task = "";
   }
   node.running = true;
   node.error = null;
   node._abKey = uid("ab");
-  node._aborted = false;
+  beginNodeRun(node);
   node.attemptsDone = 0;
   node._pendingAnswer = "";
   if (!S.thinking) S.thinking = {};
@@ -3092,6 +3364,15 @@ async function playNodeBody(node, quiet, opts) {
         if (sess) {
           sess.running = false;
           sess._pending = "";
+          /* 节点跑完 = 该会话本轮结束：清单定性 + 放行排队消息 */
+          try {
+            agentFinalizeTodos(sess, node._aborted ? "cancelled" : node.error ? "error" : "ok");
+          } catch (_) {}
+          setTimeout(() => {
+            try {
+              agentDrainQueue(sess);
+            } catch (_) {}
+          }, 0);
         }
       }
       const owner = ownerWfOfNode(node);
@@ -3395,6 +3676,7 @@ async function saveNodeOnce(node, quiet) {
 }
 
 async function saveNodeAction(node) {
+  beginNodeRun(node);
   if (agentBlocksSaveNodes()) {
     S._deferAutoSaveAfterAgent = true;
     toast(
@@ -3512,6 +3794,7 @@ function controlTargets(node) {
     add(n);
   };
   for (const w of S.wf.wires) {
+    if (w.rel) continue;
     if (w.from === node.id) {
       const to = nodeById(w.to);
       if (to && to.kind === "super" && nodeParentSuperId(node) !== to.id) {
@@ -3616,6 +3899,7 @@ function controlRunDepGraph(nodes) {
     byId[n.id] = n;
   }
   for (const w of S.wf.wires || []) {
+    if (w.rel) continue;
     if (!set.has(w.from) || !set.has(w.to)) continue;
     const from = nodeById(w.from);
     if (!from) continue;
@@ -3691,6 +3975,11 @@ async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
   const scheduledIds = new Set(list.map((n) => n.id));
   const prevScheduled = S._scheduledRunIds;
   S._scheduledRunIds = scheduledIds;
+  /* 发车时的全局终止代号：期间只要点过「全部终止」，本批剩余目标一律不启动 */
+  const epochAtStart = GLOBAL_STOP_SEQ;
+  const stopped = () =>
+    (controlNode && runBatchStopped(controlNode)) ||
+    GLOBAL_STOP_SEQ !== epochAtStart;
   const runExec = async (n) => {
     try {
       await exec(n);
@@ -3718,11 +4007,12 @@ async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
       while (inFlight < MAX_CONCURRENT && queued.length) {
         const n = queued.shift();
         if (!n || launched.has(n.id)) continue;
-        if (controlNode && controlNode._aborted) continue;
+        if (stopped()) continue;
         launch(n);
       }
       if (inFlight === 0 && !queued.length) {
-        if (controlNode && controlNode._aborted) {
+        if (stopped()) {
+          queued.length = 0;
           settle();
           return;
         }
@@ -3740,12 +4030,12 @@ async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
 
     const launch = (n) => {
       if (!n || launched.has(n.id)) return;
-      if (controlNode && controlNode._aborted) return;
+      if (stopped()) return;
       launched.add(n.id);
       inFlight++;
       Promise.resolve()
         .then(() => {
-          if (controlNode && controlNode._aborted) return;
+          if (stopped()) return;
           return exec(n);
         })
         .catch(() => {
@@ -3849,10 +4139,16 @@ async function runControlledNode(n, seen) {
     n.kind === "net_recv"
   )
     /* quiet：避免把控制范围内整条链标成「等待」且不级联；ensureUpstream：仍补跑范围外未处理上游 */
-    return playNode(n, true, { noCascade: true, ensureUpstream: true });
+    return playNode(n, true, {
+      noCascade: true,
+      ensureUpstream: true,
+      batchDriven: true,
+    });
 }
 
 async function playControlNode(node, seen) {
+  /* 用户直接点控制节点 ▶（没有外层批次）= 重新开始：解除「全部终止」的短窗口拦截 */
+  if (!seen) S._lastStopAllAt = 0;
   seen = seen || new Set();
   if (!node || seen.has(node.id)) return;
   seen.add(node.id);
@@ -3911,13 +4207,13 @@ async function playControlNode(node, seen) {
   /* 全量执行：先作废旧输出；补缺模式：只清理将要跑的节点，保留已有结果 */
   invalidateControlRunTargets(runnable);
   node.running = true;
-  node._aborted = false;
+  beginNodeRun(node);
   renderCanvas();
   renderStatus();
   try {
     /* 就绪即启动：有依赖的等上游，无依赖的立刻并行，不被无关慢节点挡住 */
     await runControlRunnableQueue(node, runnable, seen);
-    if (fillOnly && !node._aborted) {
+    if (fillOnly && !runBatchStopped(node)) {
       const skipped = runnable0.filter(
         (n) => n.kind !== "control" && nodeHasOutputContent(n),
       ).length;
@@ -4432,6 +4728,8 @@ function logicalDataEdgesFromWire(w, wf) {
     if (a && b && a !== b) edges.push([a, b]);
   };
   if (!w) return edges;
+  /* 关系线（UML 风格）不进入数据 / 控制拓扑 */
+  if (w.rel) return edges;
   const from = nodeByIdIn(w.from, wf);
   const to = nodeByIdIn(w.to, wf);
   if (!from || !to) return edges;
@@ -4563,6 +4861,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   if (
     S.wf.wires.some(
       (w) =>
+        !w.rel &&
         w.from === fromId &&
         w.to === toId &&
         Number(w.fromIndex || 0) === fi,
@@ -4571,7 +4870,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     return I18n.t("这两节点已连接");
   if (to.kind === "task") {
     if (!fromCtrl) return I18n.t("任务节点仅接受控制信号（不接内容连线）");
-    if (S.wf.wires.some((w) => w.to === toId))
+    if (S.wf.wires.some((w) => !w.rel && w.to === toId))
       return I18n.t("任务控制输入端子已被占用");
   }
   if (from.kind === "task") {
@@ -4599,7 +4898,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (slot != null && (slot < 0 || slot > 1)) return I18n.t("无效的输入端子");
     if (slot != null) {
       if (
-        S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w))
+        S.wf.wires.some((w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w))
       )
         return I18n.t("该输入端子已被占用");
     } else if (nextFreeMediaDataSlot(to, from) == null) {
@@ -4612,7 +4911,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (slot !== ctrlSlot) return I18n.t("音乐生成节点控制输入端子为端口 2");
     if (
       S.wf.wires.some(
-        (w) => w.to === toId && Number(w.toIndex) === ctrlSlot && !wireFromIsControl(w),
+        (w) => !w.rel && w.to === toId && Number(w.toIndex) === ctrlSlot && !wireFromIsControl(w),
       )
     )
       return I18n.t("控制输入端子已被数据线占用");
@@ -4621,7 +4920,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (slot != null && (slot < 1 || slot > videoGenInputCount(to))) return I18n.t("无效的输入端子");
     if (slot == null) {
       if (nextFreeMediaDataSlot(to, from) == null) return I18n.t("该输入端子已被占用");
-    } else if (S.wf.wires.some((w) => w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)))
+    } else if (S.wf.wires.some((w) => !w.rel && w.to === toId && Number(w.toIndex) === slot && !wireFromIsControl(w)))
       return I18n.t("该输入端子已被占用");
     if (slot != null) {
       const meta = videoGenSlotMeta(to, slot);
@@ -4645,7 +4944,7 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     if (slot !== 0) return I18n.t("视频节点控制输入端子为端口 0");
     if (
       S.wf.wires.some(
-        (w) => w.to === toId && Number(w.toIndex) === 0 && !wireFromIsControl(w),
+        (w) => !w.rel && w.to === toId && Number(w.toIndex) === 0 && !wireFromIsControl(w),
       )
     )
       return I18n.t("控制输入端子已被数据线占用");
@@ -4672,7 +4971,7 @@ function nextFreeMediaDataSlot(node, from) {
   if (!node || !S.wf) return null;
   const occupied = (i) =>
     (S.wf.wires || []).some(
-      (w) => w.to === node.id && Number(w.toIndex) === i && !wireFromIsControl(w),
+      (w) => !w.rel && w.to === node.id && Number(w.toIndex) === i && !wireFromIsControl(w),
     );
   if (node.kind === "music_gen") {
     for (let i = 0; i < 2; i++) if (!occupied(i)) return i;
@@ -4752,6 +5051,47 @@ function addWire(fromId, toId, toIndex, opts) {
     const filters = normalizeGlobalTagFilter(to);
     if (filters.length) stampTagsOntoGlobalWired(to, filters);
   }
+}
+
+/* ============ 关系线（rel）：仅表示模块/元素间关系，不参与数据流 ============ */
+function relConnectError(fromId, toId) {
+  const from = nodeById(fromId),
+    to = nodeById(toId);
+  if (!from || !to) return I18n.t("节点不存在");
+  if (fromId === toId) return I18n.t("不能把关系线连到自身");
+  /* 允许同一层级互连，或父超级节点 ↔ 直属子元素（包含关系） */
+  const fs = nodeParentSuperId(from),
+    ts = nodeParentSuperId(to);
+  if (fs !== ts && fs !== toId && ts !== fromId) {
+    return I18n.t("关系线仅支持同一层级或直属父子的元素之间");
+  }
+  if (
+    (S.wf.wires || []).some(
+      (w) =>
+        w.rel &&
+        ((w.from === fromId && w.to === toId) ||
+          (w.from === toId && w.to === fromId)),
+    )
+  )
+    return I18n.t("这两元素之间已有关系线");
+  return null;
+}
+function addRelWire(fromId, toId, opts) {
+  opts = opts || {};
+  const arrow =
+    ["forward", "backward", "both", "none"].indexOf(opts.relArrow) >= 0
+      ? opts.relArrow
+      : "forward";
+  S.wf.wires.push({
+    id: uid("w"),
+    from: fromId,
+    to: toId,
+    fromIndex: 0,
+    toIndex: 0,
+    rel: true,
+    relArrow: arrow,
+    relLabel: String(opts.relLabel || "").trim(),
+  });
 }
 
 function connect(fromId, toId, toIndex, fromIndex) {
@@ -5027,6 +5367,10 @@ function canvasSnapshot(opts) {
         superOpen: !!n.superOpen,
         db: !!n.db,
         dbCount: n.dbIndex && n.dbIndex.records ? n.dbIndex.records.length : 0,
+        dev: !!n.dev,
+        devPath: n.dev ? String(n.devPath || "") || undefined : undefined,
+        devStatus: n.dev ? n.devStatus || "pending" : undefined,
+        devKind: n.dev ? devKindOf(n) || "module" : undefined,
         childCount: (wf.nodes || []).filter(
           (x) => nodeParentSuperId(x) === n.id && !isSuperIoNode(x),
         ).length,
@@ -5168,6 +5512,19 @@ function canvasSnapshot(opts) {
       dbNodeId: n.kind === "db_replica" ? n.dbNodeId || undefined : undefined,
       dbName: n.kind === "db_replica" ? n.dbName || undefined : undefined,
       compiledAt: n.kind === "db_replica" ? n.compiledAt || undefined : undefined,
+      dev: n.kind === "super" && !n.db ? !!n.dev : undefined,
+      devPath:
+        n.kind === "super" && n.dev ? String(n.devPath || "") || undefined : undefined,
+      devStatus:
+        n.kind === "super" && n.dev ? n.devStatus || "pending" : undefined,
+      devKind:
+        n.kind === "super" && n.dev ? devKindOf(n) || "module" : undefined,
+      execPath:
+        n.kind === "execute" ? String(n.execPath || "") || undefined : undefined,
+      execIcon:
+        n.kind === "execute" ? execIconKeyOf(n) || undefined : undefined,
+      execColor:
+        n.kind === "execute" ? execColorOf(n) || undefined : undefined,
       fileCount: n.kind === "input_file" ? (n.files || []).length : undefined,
       dbFiles: n.kind === "input_file" ? (n.files || undefined) : undefined,
       tableDef: n.kind === "db_table" ? n.tableDef || undefined : undefined,
@@ -5256,6 +5613,9 @@ function canvasSnapshot(opts) {
         to: w.to,
         fromTitle: a ? a.title : "",
         toTitle: b ? b.title : "",
+        rel: w.rel ? true : undefined,
+        relLabel: w.rel ? w.relLabel || "" : undefined,
+        relArrow: w.rel ? relArrowOf(w) : undefined,
       };
     }),
     groups: (wf.groups || []).map((g) => ({
@@ -5299,6 +5659,50 @@ function agentNodeCapabilityNote() {
     "禁止：调用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app；禁止创建、修改、删除节点/连线/绘制/成组；禁止创建任务图；禁止重命名或删除画布；禁止选中节点或撤销/重做。" +
     "上述画布与应用调用会被系统直接拒绝。忽略默认人设里关于搭建画布、修改节点图、创建任务的说明。回答简洁，中文优先。"
   );
+}
+
+/* ============ 规划模式（会话「规划」按钮）：本轮只出计划，禁止任何改动 ============ */
+
+/* 规划模式下宿主直接拒绝的应用级动作（status / list_workflows / list_dsh_plugins 只读放行） */
+const PLAN_DENIED_APP_ACTIONS = new Set([
+  "rename_workflow",
+  "delete_workflow",
+  "select_nodes",
+  "undo",
+  "redo",
+  "install_dsh_plugin",
+  "remove_dsh_plugin",
+  "set_dsh_plugin",
+]);
+
+/* 该画布 / 应用调用是否会改动用户可见状态 */
+function canvasOpMutates(op, params) {
+  if (op === "edit") return true; // mtnode_canvas_edit 全部是写操作
+  if (op === "app")
+    return PLAN_DENIED_APP_ACTIONS.has(String((params || {}).action || ""));
+  return false; // get / vision 只读
+}
+
+/* 规划模式下来自会话的运行（画布节点自身已被整体禁止） */
+function isPlanModeCanvasRun(ctx) {
+  return !!(ctx && ctx.planMode);
+}
+
+function planModeCanvasDeniedError() {
+  return I18n.t(
+    "规划模式：本轮只允许制定计划，任何画布 / 应用修改已被宿主拒绝。请仅输出完整的分步计划并立即结束本轮，等待用户点击「执行计划」。",
+  );
+}
+
+/* 规划模式的系统提示段（每轮全新会话，靠系统提示 + 用户指令双重约束） */
+function planModeSystemNote() {
+  return [
+    "【规划模式生效中】本轮的唯一交付物是一份可照做的计划，不是改动。",
+    "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、git commit/checkout、重启服务、清理目录）；调用 mtnode_canvas_edit 与 mtnode_app 的修改类动作（宿主会直接拒绝并返回错误）；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。",
+    "允许并鼓励只读调研：read、glob、grep、只读命令（node --check、git status、git diff 等）、mtnode_canvas_get（配 detail:\"standard\" 等省 token 参数）、mtnode_db 查询、web_search、加载技能。",
+    "计划格式：以 # 一级标题开头，依次给出 ① 目标与验收标准 ② 现状与关键约束（引用具体文件与行号）③ 分步实施清单（每步写明文件、改动要点、为什么）④ 验证方法 ⑤ 风险与回滚。步骤要具体到无需二次决策。",
+    "写完计划立即结束本轮：不要开始实施，也不要追问「是否可以执行」；用户点击界面上的「执行计划」后才会进入实施。",
+  ].join("\n");
 }
 
 /* 禁止跨画布：智能任务/会话始终锁定；全局助手仅在「当前画布」范围时锁定 */
@@ -5358,7 +5762,7 @@ async function canvasSnapshotFull(opts) {
     title: n.title,
   }));
   snap.assistOpen = !!S.assistOpen;
-  snap.sidebarOpen = !!S.sidebarOpen;
+  snap.sidebarOpen = !!S.sidebarOpen && S.view !== "agent";
   applyAssistScopeToSnapshot(snap);
   applySnapshotSectionFilter(snap, (opts || {}).sections);
   return snap;
@@ -6215,6 +6619,17 @@ function setAgentToolAllow(key, on) {
   setAgentToolMode(key, on ? "allow" : "deny");
 }
 
+/* 把当前预设里的全部工具一次性设为「允许」（只落一次盘） */
+function setAllAgentToolsAllow() {
+  const p = agentToolActivePreset();
+  const allow = p.allow && typeof p.allow === "object" ? p.allow : {};
+  for (const cat of agentToolCatalog())
+    for (const it of cat.items) allow[it.key] = "allow";
+  p.allow = allow;
+  saveAgentToolConfig();
+  toast(I18n.t("已全部设为允许"), "ok");
+}
+
 function addAgentToolPreset() {
   ensureAgentToolPresets();
   const cur = agentToolActivePreset();
@@ -7018,7 +7433,7 @@ async function applyCanvasOp(op, params) {
   throw new Error(I18n.t("未知画布操作：") + op);
 }
 
-function handleCanvasEvent(data) {
+function handleCanvasEvent(data, runCtx) {
   const id = data && data.id;
   if (!id) return;
   const finish = (result, error) => {
@@ -7032,6 +7447,12 @@ function handleCanvasEvent(data) {
     (opEarly === "get" || opEarly === "edit" || opEarly === "app")
   ) {
     const err = canvasDeniedForAgentNodeError();
+    finish({ ok: false, error: err }, err);
+    return;
+  }
+  /* 规划模式：只读放行，任何画布 / 应用改动由宿主硬性拒绝（不弹确认，直接失败） */
+  if (isPlanModeCanvasRun(runCtx) && canvasOpMutates(opEarly, data.params || {})) {
+    const err = planModeCanvasDeniedError();
     finish({ ok: false, error: err }, err);
     return;
   }
@@ -7215,23 +7636,110 @@ function findLayoutComponents(nodes, wires) {
   });
 }
 
-function buildLayoutGraph(nodes, wires) {
+/* ============ 排版用边：关系线（rel）也参与分层 ============
+   数据线：方向固定，原样保留（数据流排版行为不变）。
+   关系线：按箭头定向（backward = 反向）；both / none 视为软约束；
+   若某条有向关系边会让依赖图成环 → 降级为软约束。
+   软约束不参与分层（分层必须无环），但参与「减交叉」重排与垂直对齐。
+   —— 这样纯关系线构成的开发节点架构图也能得到真正的分层布局，
+      而不是退化成一堆互不相连的方块网格。
+   返回 { inEdges, outEdges, allIn, allOut }：hard = 分层用，all = 排序 / 对齐用。 */
+function layoutEdgeSets(nodes, wires) {
   const ids = new Set(nodes.map((n) => n.id));
+  const hard = [];
+  const soft = [];
+  const adj = new Map();
+  const addAdj = (a, b) => {
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a).push(b);
+  };
+  const rels = [];
+  for (const w of wires || []) {
+    if (!ids.has(w.from) || !ids.has(w.to) || w.from === w.to) continue;
+    if (!w.rel) {
+      hard.push({ from: w.from, to: w.to });
+      addAdj(w.from, w.to);
+      continue;
+    }
+    const mode = typeof relArrowOf === "function" ? relArrowOf(w) : "forward";
+    if (mode === "both" || mode === "none") {
+      rels.push({ a: w.from, b: w.to, undirected: true, sort: 1e9 });
+      continue;
+    }
+    const fwd = mode !== "backward";
+    const from = fwd ? w.from : w.to;
+    const to = fwd ? w.to : w.from;
+    const nf = nodeById(from),
+      nt = nodeById(to);
+    rels.push({
+      a: w.from,
+      b: w.to,
+      from,
+      to,
+      /* 稳定排序：按起点位置（上→下、左→右），保证每次排版结果一致 */
+      sort: (nf ? (nf.y || 0) * 4 + (nf.x || 0) : 0) * 1e6 + (nt ? nt.y || 0 : 0),
+    });
+  }
+  const reachable = (from, to) => {
+    if (from === to) return true;
+    const seen = new Set([from]);
+    const q = [from];
+    while (q.length) {
+      const cur = q.shift();
+      for (const nx of adj.get(cur) || []) {
+        if (nx === to) return true;
+        if (seen.has(nx)) continue;
+        seen.add(nx);
+        q.push(nx);
+      }
+    }
+    return false;
+  };
+  rels
+    .sort((x, y) => x.sort - y.sort || String(x.a).localeCompare(String(y.a)))
+    .forEach((e) => {
+      if (e.undirected) {
+        soft.push({ a: e.a, b: e.b });
+        return;
+      }
+      if (reachable(e.to, e.from)) {
+        soft.push({ a: e.a, b: e.b }); /* 成环 → 只作软约束 */
+        return;
+      }
+      hard.push({ from: e.from, to: e.to });
+      addAdj(e.from, e.to);
+    });
   const inEdges = {};
   const outEdges = {};
+  const allIn = {};
+  const allOut = {};
   for (const n of nodes) {
     inEdges[n.id] = [];
     outEdges[n.id] = [];
+    allIn[n.id] = [];
+    allOut[n.id] = [];
   }
-  for (const w of wires) {
-    if (!ids.has(w.from) || !ids.has(w.to)) continue;
-    outEdges[w.from].push(w.to);
-    inEdges[w.to].push(w.from);
+  const addBoth = (m, a, b) => {
+    if (!m[a]) return;
+    m[a].push(b);
+  };
+  for (const e of hard) {
+    addBoth(outEdges, e.from, e.to);
+    addBoth(inEdges, e.to, e.from);
+    addBoth(allOut, e.from, e.to);
+    addBoth(allIn, e.to, e.from);
   }
-  return { inEdges, outEdges };
+  for (const e of soft) {
+    addBoth(allOut, e.a, e.b);
+    addBoth(allIn, e.b, e.a);
+    addBoth(allOut, e.b, e.a);
+    addBoth(allIn, e.a, e.b);
+  }
+  return { inEdges, outEdges, allIn, allOut };
 }
 
 function assignLayoutLayers(nodes, inEdges, outEdges) {
+  /* 依赖图已尽量无环（见 layoutEdgeSets）；仍保留回边保护 */
   const layer = {};
   const visiting = new Set();
   const depthOf = (id) => {
@@ -7272,39 +7780,38 @@ function orderLayersByBarycenter(cols, inEdges, outEdges) {
     if (!col) return;
     for (const n of col) layerOf.set(n.id, i);
   });
-  const idxIn = (col, id) => col.findIndex((n) => n.id === id);
-  const bary = (n, neighborLayer, useOut) => {
-    const edges = useOut ? outEdges[n.id] : inEdges[n.id];
-    let sum = 0;
-    let c = 0;
-    for (const nid of edges || []) {
-      const L = layerOf.get(nid);
-      if (L == null || L !== neighborLayer) continue;
-      const col = cols[neighborLayer];
-      const ix = idxIn(col, nid);
-      if (ix >= 0) {
-        sum += ix;
-        c++;
-      }
-    }
-    return c ? sum / c : null;
+  const nbrs = (id) => {
+    const a = inEdges[id] || [];
+    const b = outEdges[id] || [];
+    return a.length && !b.length ? a : a.concat(b);
   };
-  for (let pass = 0; pass < 6; pass++) {
-    for (let i = 1; i < cols.length; i++) {
+  /* 邻居用「所在层内的序号」加权，跨层越远权重越低：
+     这样长距离关系边（跨 2+ 层）也会拉动排序，而不只是相邻层。 */
+  for (let pass = 0; pass < 8; pass++) {
+    const idx = new Map();
+    cols.forEach((col) => {
+      if (!col) return;
+      col.forEach((n, i) => idx.set(n.id, i));
+    });
+    const order = cols.map((_, i) => i);
+    if (pass % 2) order.reverse();
+    for (const i of order) {
       const col = cols[i];
-      if (!col || !col.length) continue;
-      cols[i] = sortLayerByKey(col, (n, ord) => {
-        const b = bary(n, i - 1, false);
-        return b != null ? b : ord + layoutNodePriority(n) * 0.01;
+      if (!col || col.length < 2) continue;
+      const keys = col.map((n, ord) => {
+        let sum = 0,
+          wsum = 0;
+        for (const nb of nbrs(n.id)) {
+          const L = layerOf.get(nb);
+          if (L == null) continue;
+          const at = idx.has(nb) ? idx.get(nb) : ord;
+          const w = 1 / (1 + Math.abs(L - i));
+          sum += at * w;
+          wsum += w;
+        }
+        return wsum ? sum / wsum : ord + layoutNodePriority(n) * 0.01;
       });
-    }
-    for (let i = cols.length - 2; i >= 0; i--) {
-      const col = cols[i];
-      if (!col || !col.length) continue;
-      cols[i] = sortLayerByKey(col, (n, ord) => {
-        const b = bary(n, i + 1, true);
-        return b != null ? b : ord + layoutNodePriority(n) * 0.01;
-      });
+      cols[i] = sortLayerByKey(col, (_n, k) => keys[k]);
     }
   }
 }
@@ -7321,16 +7828,22 @@ function resolveLayerOverlaps(col, gapY) {
   }
 }
 
-function alignLayerToParents(col, inEdges, nodeMap, gapY, originY) {
+function alignLayerToParents(col, inEdges, nodeMap, gapY, originY, outEdges) {
   if (!col || !col.length) return;
+  /* 期望纵位 = 邻居中心均值（入边权重 2，出边权重 1）：
+     纯关系线构成的架构图里，两侧邻居都要参与靠拢 */
   const desired = col.map((n) => {
-    const ps = (inEdges[n.id] || [])
-      .map((id) => nodeMap.get(id))
-      .filter(Boolean);
-    if (!ps.length) return null;
-    return (
-      ps.reduce((s, p) => s + p.y + layoutNodeSize(p).h / 2, 0) / ps.length
-    );
+    let sum = 0,
+      wsum = 0;
+    const acc = (id, w) => {
+      const p = nodeMap.get(id);
+      if (!p) return;
+      sum += (p.y + layoutNodeSize(p).h / 2) * w;
+      wsum += w;
+    };
+    for (const id of inEdges[n.id] || []) acc(id, 2);
+    if (outEdges) for (const id of outEdges[n.id] || []) acc(id, 1);
+    return wsum ? sum / wsum : null;
   });
   const order = col
     .map((n, i) => ({ n, i, d: desired[i], p: layoutNodePriority(n) }))
@@ -7358,9 +7871,10 @@ function layoutFlowComponent(nodes, wires, origin, opts) {
   const gapX = opts.gapX != null ? opts.gapX : 80;
   const gapY = opts.gapY != null ? opts.gapY : 48;
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  const { inEdges, outEdges } = buildLayoutGraph(nodes, wires);
+  /* hard 边（无环）决定分层；all 边（含软约束）决定减交叉与垂直靠拢 */
+  const { inEdges, outEdges, allIn, allOut } = layoutEdgeSets(nodes, wires);
   const cols = assignLayoutLayers(nodes, inEdges, outEdges);
-  orderLayersByBarycenter(cols, inEdges, outEdges);
+  orderLayersByBarycenter(cols, allIn, allOut);
 
   const colWidths = cols.map((col) =>
     Math.max(40, ...(col || []).map((n) => layoutNodeSize(n).w)),
@@ -7370,9 +7884,9 @@ function layoutFlowComponent(nodes, wires, origin, opts) {
     const col = cols[i] || [];
     if (!col.length) continue;
     for (const n of col) n.x = snap(x);
-    alignLayerToParents(col, inEdges, nodeMap, gapY, origin.y);
+    alignLayerToParents(col, allIn, nodeMap, gapY, origin.y, allOut);
     for (let pass = 0; pass < 2; pass++) {
-      alignLayerToParents(col, inEdges, nodeMap, gapY, origin.y);
+      alignLayerToParents(col, allIn, nodeMap, gapY, origin.y, allOut);
     }
     x += colWidths[i] + gapX;
   }
@@ -7383,16 +7897,48 @@ function layoutFlowComponent(nodes, wires, origin, opts) {
 }
 
 function layoutFlow(nodes, wires, origin, obstacles) {
-  layoutFlowEx(nodes, wires, origin, obstacles, { gapX: 80, gapY: 48 });
+  /* 不写死间距：有 relation 线时 layoutFlowEx 自动放宽走廊 */
+  layoutFlowEx(nodes, wires, origin, obstacles, {});
+}
+
+/* 关系线主导的图（开发节点架构图）需要更宽的间距：直线才少穿方块、少叠在一起 */
+const LAYOUT_REL_GAP_X = 164;
+const LAYOUT_REL_GAP_Y = 72;
+function relWiresIn(wires) {
+  for (const w of wires || []) if (w && w.rel) return true;
+  return false;
 }
 
 function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
   if (!nodes.length) return;
+  /* 关系线也参与排版：按箭头定向，成环的降级为软约束（见 layoutEdgeSets） */
   opts = opts || {};
-  const gapX = opts.gapX != null ? opts.gapX : 80;
-  const gapY = opts.gapY != null ? opts.gapY : 48;
-  const compGapX = opts.compGapX != null ? opts.compGapX : 128;
-  const compGapY = opts.compGapY != null ? opts.compGapY : 120;
+  const hasRel = relWiresIn(wires);
+  /* 有关系线时列/行间距至少留够宽度（调用方给的更小值会被抬到下限） */
+  const gapX =
+    opts.gapX != null
+      ? Math.max(opts.gapX, hasRel ? LAYOUT_REL_GAP_X : 0)
+      : hasRel
+        ? LAYOUT_REL_GAP_X
+        : 80;
+  const gapY =
+    opts.gapY != null
+      ? Math.max(opts.gapY, hasRel ? LAYOUT_REL_GAP_Y : 0)
+      : hasRel
+        ? LAYOUT_REL_GAP_Y
+        : 48;
+  const compGapX =
+    opts.compGapX != null
+      ? Math.max(opts.compGapX, hasRel ? 208 : 0)
+      : hasRel
+        ? 208
+        : 128;
+  const compGapY =
+    opts.compGapY != null
+      ? Math.max(opts.compGapY, hasRel ? 160 : 0)
+      : hasRel
+        ? 160
+        : 120;
   const maxRowW = opts.maxRowW != null ? opts.maxRowW : 4400;
   const components = findLayoutComponents(nodes, wires);
   components.sort((a, b) => b.nodes.length - a.nodes.length);
@@ -7844,6 +8390,87 @@ function tidyLayoutWorkflow(opts) {
   };
 }
 
+/** 单个超级节点内部子图排版（关系线感知 + 壳层按内容撑开）；返回排版的孩子数 */
+function tidyOneSuperInner(s) {
+  const kids = superChildrenOf(s.id).filter((c) => !isSuperIoNode(c));
+  if (!kids.length) {
+    s.innerPanX = 0;
+    s.innerPanY = 0;
+    return 0;
+  }
+  const markBindings = captureMarkBindings(kids);
+  for (const n of kids) sizeNodeForTidy(n);
+  const ids = new Set(kids.map((n) => n.id));
+  const wires = (S.wf.wires || []).filter(
+    (w) => ids.has(w.from) && ids.has(w.to),
+  );
+  /* 开发节点（架构图）内部：关系线主导，需要更宽间距让直线少穿方块、彼此可辨 */
+  const isDev = kids.some((n) => n.dev);
+  layoutFlowEx(kids, wires, { x: snap(16), y: snap(16) }, [], {
+    gapX: isDev ? 196 : 72,
+    gapY: isDev ? 92 : 48,
+    prioritizeEditable: true,
+  });
+  const bb = nodesBBox(kids);
+  if (bb) {
+    const dx = snap(16 - bb.minX);
+    const dy = snap(16 - bb.minY);
+    if (dx || dy) {
+      for (const n of kids) {
+        n.x = snap(n.x + dx);
+        n.y = snap(n.y + dy);
+      }
+    }
+  }
+  rebindMarksAfterLayout(markBindings);
+  s.innerPanX = 0;
+  s.innerPanY = 0;
+  alignSuperContentTopLeft(s);
+  fitSuperShellToContent(s, { shrink: isDev });
+  return kids.length;
+}
+
+/** 展开某壳层及其所有子孙壳层，由内向外排版（开发节点「整理架构」入口） */
+function tidySuperInnerTree(host) {
+  if (!host || host.kind !== "super") return 0;
+  const list = [host];
+  const seen = new Set([host.id]);
+  const walk = (id) => {
+    for (const c of superChildrenOf(id)) {
+      if (!c || c.kind !== "super" || seen.has(c.id)) continue;
+      seen.add(c.id);
+      list.push(c);
+      walk(c.id);
+    }
+  };
+  walk(host.id);
+  list.sort((a, b) => superNestDepth(b) - superNestDepth(a));
+  let n = 0;
+  for (const s of list) n += tidyOneSuperInner(s);
+  return n;
+}
+
+/** 开发节点右键：按关系线分层整理本功能块内部架构图 */
+function tidyDevArchitecture(host) {
+  if (!host || host.kind !== "super") {
+    toast(I18n.t("请先选中一个开发节点"), "warn");
+    return;
+  }
+  const kids = superChildrenOf(host.id).filter((c) => !isSuperIoNode(c));
+  if (!kids.length) {
+    toast(I18n.t("该功能块内部还没有子元素，无需整理"), "warn");
+    return;
+  }
+  pushHistory();
+  const n = tidySuperInnerTree(host);
+  renderCanvas();
+  scheduleSave(true);
+  toast(
+    I18n.t("已按关系线整理内部排版（{n} 个元素）", { n: n }),
+    "ok",
+  );
+}
+
 /** 对每个超级节点内部子图独立排版，并重置内部平移到左上 */
 function tidyAllSuperInners(opts) {
   opts = opts || {};
@@ -7853,41 +8480,10 @@ function tidyAllSuperInners(opts) {
   const supers = (S.wf.nodes || []).filter(
     (n) => n.kind === "super" && nodeParentTaskId(n) === focus,
   );
+  /* 由内向外：深层壳层先撑开，父壳层才量得准 */
+  supers.sort((a, b) => superNestDepth(b) - superNestDepth(a));
   let total = 0;
-  for (const s of supers) {
-    const kids = superChildrenOf(s.id).filter((c) => !isSuperIoNode(c));
-    if (!kids.length) {
-      s.innerPanX = 0;
-      s.innerPanY = 0;
-      continue;
-    }
-    const markBindings = captureMarkBindings(kids);
-    for (const n of kids) sizeNodeForTidy(n);
-    const ids = new Set(kids.map((n) => n.id));
-    const wires = (S.wf.wires || []).filter(
-      (w) => ids.has(w.from) && ids.has(w.to),
-    );
-    layoutFlowEx(kids, wires, { x: snap(16), y: snap(16) }, [], {
-      gapX: 72,
-      gapY: 48,
-      prioritizeEditable: true,
-    });
-    const bb = nodesBBox(kids);
-    if (bb) {
-      const dx = snap(16 - bb.minX);
-      const dy = snap(16 - bb.minY);
-      if (dx || dy) {
-        for (const n of kids) {
-          n.x = snap(n.x + dx);
-          n.y = snap(n.y + dy);
-        }
-      }
-    }
-    rebindMarksAfterLayout(markBindings);
-    s.innerPanX = 0;
-    s.innerPanY = 0;
-    total += kids.length;
-  }
+  for (const s of supers) total += tidyOneSuperInner(s);
   if (opts.render !== false) renderCanvas();
   if (opts.save !== false) scheduleSave(true);
   return { ok: true, nodes: total };
@@ -7913,7 +8509,7 @@ async function oneClickAutoLayout(opts) {
     if (
       !(await confirmDialog(
         I18n.t(
-          "确定进行一键排版？\n\n将按连线关系整理节点位置（可撤销）。",
+          "确定进行一键排版？\n\n将按连线与关系线整理节点位置（可撤销）。",
         ),
         { title: I18n.t("一键排版"), okText: I18n.t("开始排版") },
       ))
@@ -8057,9 +8653,41 @@ function applyNodePatch(node, patch, warnings) {
     if (typeof patch.db === "boolean") {
       node.db = patch.db;
       if (node.db && !String(node.subFolder || "").trim()) node.subFolder = "db";
+      if (node.db) node.dev = false;
     }
     if (patch.dbMode === "super" || patch.dbMode === "db")
       node.dbMode = patch.dbMode;
+    if (typeof patch.dev === "boolean") {
+      node.dev = patch.dev;
+      if (node.dev) node.db = false;
+    }
+    if (patch.devPath != null)
+      node.devPath = String(patch.devPath).trim();
+    if (patch.devStatus != null) {
+      const v = String(patch.devStatus);
+      if (v === "pending" || v === "wip" || v === "done") node.devStatus = v;
+    }
+    if (patch.devKind != null) {
+      const v = String(patch.devKind);
+      if (DEV_KINDS.indexOf(v) >= 0) node.devKind = v;
+      else warnings.push(I18n.t("未知元素类型：") + v);
+    }
+  }
+  if (node.kind === "execute") {
+    if (patch.execPath != null) {
+      const v = String(patch.execPath).trim();
+      node.execPath = v;
+      if (v) node.error = null;
+    }
+    if (patch.execIcon != null) {
+      const v = String(patch.execIcon);
+      node.execIcon = EXEC_ICON_CATALOG.some((x) => x.key === v) ? v : "auto";
+    }
+    if (patch.execColor != null) {
+      const v = String(patch.execColor);
+      node.execColor =
+        typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : "";
+    }
   }
   if (patch.savePath != null && isSaveNode(node)) {
     node.savePath = preferRelativeSavePath(String(patch.savePath));
@@ -8785,7 +9413,13 @@ async function applyCanvasEdit(params) {
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
     if (!a || !b) continue;
     const before = S.wf.wires.length;
-    S.wf.wires = S.wf.wires.filter((w) => !(w.from === a.id && w.to === b.id));
+    S.wf.wires = S.wf.wires.filter(
+      (w) =>
+        !(
+          (w.from === a.id && w.to === b.id) ||
+          (w.rel && w.from === b.id && w.to === a.id)
+        ),
+    );
     if (S.wf.wires.length === before) warnings.push(I18n.t("没有可断开的连线：") + a.title + " → " + b.title);
     else clearDownstream(b.id);
   }
@@ -8794,6 +9428,20 @@ async function applyCanvasEdit(params) {
     const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
     if (!a || !b) continue;
+    if (pair && pair.rel) {
+      /* 关系线：仅表示关系，不走数据流校验 */
+      const err = relConnectError(a.id, b.id);
+      if (err) {
+        warnings.push(a.title + " ↔ " + b.title + "：" + err);
+        continue;
+      }
+      addRelWire(a.id, b.id, {
+        relArrow: pair.relArrow,
+        relLabel: pair.relLabel,
+      });
+      connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title, rel: true });
+      continue;
+    }
     const err = connectError(a.id, b.id, null, pair.fromIndex || 0);
     if (err) {
       warnings.push(a.title + " → " + b.title + "：" + err);
@@ -8858,13 +9506,34 @@ async function applyCanvasEdit(params) {
         : createdLive.length
           ? createdLive
           : (S.wf.nodes || []).filter((n) => !running.has(n.id));
-    const targetSet = new Set(targets.map((n) => n.id));
-    const obstacles = (S.wf.nodes || []).filter((n) => !targetSet.has(n.id));
-    const origin =
-      createdLive.length && targets === createdLive
-        ? layoutOrigin(obstacles)
-        : { x: snap(48), y: snap(48) };
-    layoutFlow(targets, S.wf.wires || [], origin, obstacles);
+    /* 分「所属层级」各自排版：壳层内子节点用的是舞台局部坐标，
+       与顶层画布坐标不是同一个空间，混在一起排会排飞（开发节点架构图就踩过） */
+    const groups = new Map();
+    for (const n of targets) {
+      const tid = nodeParentTaskId(n) || "";
+      const sid = nodeParentSuperId(n) || "";
+      const key = tid + "|" + sid;
+      if (!groups.has(key)) groups.set(key, { tid, sid, list: [] });
+      groups.get(key).list.push(n);
+    }
+    for (const g of groups.values()) {
+      const list = g.list;
+      const set = new Set(list.map((n) => n.id));
+      const obstacles = (S.wf.nodes || []).filter((n) => {
+        if (set.has(n.id) || running.has(n.id) || isSuperIoNode(n)) return false;
+        return g.sid
+          ? nodeParentSuperId(n) === g.sid
+          : !nodeParentSuperId(n) && nodeParentTaskId(n) === g.tid;
+      });
+      const origin = g.sid
+        ? { x: snap(16), y: snap(16) }
+        : createdLive.length && params.layout !== true
+          ? layoutOrigin(obstacles)
+          : { x: snap(48), y: snap(48) };
+      layoutFlow(list, S.wf.wires || [], origin, obstacles);
+    }
+    /* 壳层按新的内容范围撑开，否则子块 / 关系线被 720×480 默认舞台裁掉 */
+    fitAllOpenSuperShells();
   }
 
   /* 绘制标注：在节点排版之后创建，便于 around 包住最终坐标 */
@@ -9136,6 +9805,16 @@ function removeWire(id) {
   }
   pushHistory();
   const [w] = S.wf.wires.splice(i, 1);
+  if (w.rel) {
+    /* 关系线：不占端子、不参与数据流，直接清理 DOM */
+    for (const pre of ["rw-", "rwl-", "rsw-", "rswl-"]) {
+      const el = document.getElementById(pre + w.id);
+      if (el) el.remove();
+      const ring = document.getElementById(pre + w.id + "-r");
+      if (ring) ring.remove();
+    }
+    return;
+  }
   const toNode = nodeById(w.to);
   /* 固定端子（音乐 P/L、视频多路、闸门等）禁止压缩 toIndex，否则会错位 */
   if (!hasFixedInPorts(toNode)) {
@@ -9231,6 +9910,10 @@ function startTitleEdit(node, titleEl) {
           persistAgentSession().catch(() => {});
           renderAgentSessionSidebar();
         }
+      } else if (node.kind === "super" && node.dev) {
+        /* 开发节点改名 → 其名下的开发 / 细化会话标题跟随 */
+        syncDevSessionTitles(node);
+        persistAgentSession().catch(() => {});
       }
       scheduleSave();
     }

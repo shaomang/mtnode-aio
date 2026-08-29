@@ -237,6 +237,12 @@ const catalog = {
         { id: "task-chat", title: { zh: "任务与对话", en: "Tasks and chat" } },
         { id: "agent-nodes", title: { zh: "智能任务与智能会话", en: "Agent task & session" } },
         { id: "node-guide", title: { zh: "节点指南", en: "Node guides" } },
+        { id: "dev-nodes", title: { zh: "开发节点", en: "Dev nodes" } },
+        { id: "database-nodes", title: { zh: "数据库节点", en: "Database nodes" } },
+        {
+          id: "media-net",
+          title: { zh: "音乐、视频、网络与执行节点", en: "Music, video, network & execute" },
+        },
       ],
     },
     {
@@ -892,6 +898,29 @@ If the download fails, retry after checking the network. The version also appear
     en: fs.readFileSync(path.join(root, "en", "faq.md"), "utf8"),
   },
 };
+
+/* 已随发布版同步的手册页以磁盘 md 为准（含新页面 dev-nodes / database-nodes / media-net）：
+   避免再生成时把线上版覆盖回旧内容。其余页面仍以内嵌模板为准。 */
+for (const id of [
+  "overview",
+  "ui-tour",
+  "super-nodes",
+  "nodes-wires",
+  "task-chat",
+  "workspace",
+  "faq",
+  "io-proc",
+  "node-guide",
+  "plugins-skills",
+  "dev-nodes",
+  "database-nodes",
+  "media-net",
+]) {
+  pages[id] = {
+    zh: fs.readFileSync(path.join(root, id + ".md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", id + ".md"), "utf8"),
+  };
+}
 
 for (const [id, pair] of Object.entries(pages)) {
   fs.writeFileSync(path.join(root, id + ".md"), pair.zh.trim() + "\n", "utf8");

@@ -1039,6 +1039,20 @@ button:disabled {
   }
 }
 
+/* ===== 视图左侧栏互斥（画布 ↔ 智能会话） =====
+   画布视图只允许画布边栏（节点 / 绘图 / 超级节点），
+   会话视图只允许会话列表（.agent-side）。
+   这里做 CSS 硬闸：即使有代码误加 sidebar-open / 误显 agentPane 也不会串场。 */
+body.view-agent .layout > .sidebar {
+  display: none !important;
+}
+
+body.view-workflow #agentPane,
+body.view-workflow .agent-pane,
+body.view-workflow .agent-side {
+  display: none !important;
+}
+
 .sidebar-search {
   padding: 8px;
   border-bottom: 1px solid var(--bd);

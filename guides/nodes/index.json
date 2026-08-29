@@ -3,17 +3,24 @@
   "ids": [
     "input_text",
     "input_image",
+    "input_file",
+    "db_table",
+    "db_replica",
     "proc_text",
     "proc_image",
+    "music_gen",
+    "video_gen",
     "save",
     "save_text",
     "save_image",
     "split",
     "merge",
+    "global",
     "task",
     "super",
     "chat",
     "agent_task",
+    "execute",
     "control",
     "ctrl-start",
     "ctrl-end-ok",
@@ -26,6 +33,8 @@
     "gate",
     "splitter",
     "counter",
-    "mutex"
+    "mutex",
+    "net_recv",
+    "net_send"
   ]
 }

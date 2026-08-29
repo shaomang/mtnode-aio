@@ -1385,6 +1385,7 @@ function dshRunTask(input, opts) {
       agentDbGroundingNote(opts.node, S.wf),
       agentToolPolicySystemNote({ nodeLock }),
       nodeLock ? agentNodeCapabilityNote() : "",
+      opts.planMode ? planModeSystemNote() : "",
     ]
       .filter(Boolean)
       .join("\n\n"),
@@ -1459,7 +1460,7 @@ function dshRunTask(input, opts) {
         runParams,
         (msg) => {
           if (msg.type === "canvas") {
-            handleCanvasEvent(msg.data || {});
+            handleCanvasEvent(msg.data || {}, { planMode: !!opts.planMode });
             return;
           }
           if (msg.type === "db") {
@@ -1505,6 +1506,16 @@ function dshRunTask(input, opts) {
                     error: null,
                     at: Date.now(),
                   });
+                /* agent 用 todo_write 建的任务清单：节点内运行也镜像到它绑定的会话面板 */
+                if (
+                  /todo/i.test(String(msg.data.name || "")) &&
+                  opts.node.agentSessionId
+                ) {
+                  const sess = agentSessions().find(
+                    (s) => s.id === opts.node.agentSessionId,
+                  );
+                  if (sess) agentApplyTodoWrite(sess, msg.data.args);
+                }
               } else if (msg.type === "tool-result" && msg.data.callId) {
                 const t = list.find((x) => x.callId === msg.data.callId);
                 if (t) {

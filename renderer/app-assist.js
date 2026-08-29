@@ -27,7 +27,7 @@ async function assistAppSnapshot() {
   return {
     view: S.view,
     locale: I18n.getLocale(),
-    sidebarOpen: !!S.sidebarOpen,
+    sidebarOpen: !!S.sidebarOpen && S.view !== "agent",
     assistOpen: !!S.assistOpen,
     assistScope: scopeCurrent ? "current" : "global",
     cam: full.cam || null,
@@ -569,6 +569,9 @@ async function assistSend(text) {
     : "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。若用户拒绝：用文字说明已完成的文件/步骤与未完成项，不要静默结束。\n";
   const superConnectRule =
     "  · 【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动把源节点向上逐层连到其所在超级节点的外部输出端子、把目标节点所在超级节点的外部输入端子逐层桥接到目标节点、并把顶层超级节点之间相连，无需自己手动建桥接线；可一次传多对。\n";
+  const devNodeRule =
+    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note = 模块概述（必填 ≤200 字，写明该模块在项目中的作用），devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）。开发节点可用 parentSuperId 嵌套（剥洋葱式一次只细化一层）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「建议」「开发」「细化」按钮：三者都先弹对话框——「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素（无需或无法细化时也要明确告知用户）。除「建议」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出内容梗概清单、经用户确认后才创建节点。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。\n" +
+    "  · 【执行节点】kind \"execute\" = 执行节点：绑定可执行文件（execPath = 绝对路径，.exe/.bat/.cmd/.lnk 或任何系统可打开的文件），execIcon / execColor 自定义图标与 body 颜色便于快速定位。该节点独立存在、无数据端口，body 内点两次播放键或双击即用系统默认方式启动绑定文件。画布上要「一键启动某个程序 / 脚本 / 文件」时用这种节点。它与开发节点同属一个创建菜单，属于某个功能块时（如该模块的启动脚本）用 parentSuperId 放进该开发节点内部。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
@@ -585,6 +588,7 @@ async function assistSend(text) {
     scopeBlock +
     canvasEditRule +
     superConnectRule +
+    devNodeRule +
     "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
     "  · 可改节点模型：update/create 传 model；文本/图像/对话节点用 providerId（服务商 id 或唯一名称），智能任务用 provider（deepseek-official 或 mtnode_<id>/名称）。\n" +
     "  · 图像参考节点 kind 必须是 input_image；用 imagePath（本机绝对路径）写入图片，应用会复制进画布资产，不要让用户再拖拽。\n" +
@@ -815,6 +819,19 @@ async function persistAgentSession() {
     messages: (s.messages || []).slice(-100),
     archived: !!s.archived,
     updatedAt: s.updatedAt || 0,
+    /* 会话发送队列 + 任务清单（Todo）：重启后仍在 */
+    outbox: (s.outbox || []).slice(-20).map((x) => ({
+      id: x.id,
+      text: String(x.text || "").slice(0, 4000),
+      at: x.at || 0,
+    })),
+    todos: (s.todos || []).slice(-80).map((x) => ({
+      content: String(x.content || "").slice(0, 400),
+      status: x.status || "pending",
+      at: x.at || 0,
+    })),
+    todoHidden: (s.todoHidden || []).slice(-80).map(String),
+    todosCollapsed: !!s.todosCollapsed,
   }));
   S.config.agentActiveId = activeAgentId();
   try {
@@ -882,7 +899,15 @@ async function deleteAgentSession(id) {
   list.splice(list.indexOf(s), 1);
   if (S.wf) {
     for (const n of S.wf.nodes) {
-      if (n.kind === "agent_task" && n.agentSessionId === id) n.agentSessionId = "";
+      if (
+        (n.kind === "agent_task" || (n.kind === "super" && n.dev)) &&
+        n.agentSessionId === id
+      )
+        n.agentSessionId = "";
+      if (n.kind === "super" && n.dev && Array.isArray(n.devSessionIds)) {
+        const k = n.devSessionIds.indexOf(id);
+        if (k >= 0) n.devSessionIds.splice(k, 1);
+      }
     }
     scheduleSave(true);
     renderCanvas();
@@ -896,7 +921,7 @@ async function deleteAgentSession(id) {
 
 /* ===================== dsh web composer（模型 / 命令 / 工作区 下拉） ===================== */
 function closeAgentMenus() {
-  ["agentModelMenu", "agentCmdMenu"].forEach((id) => {
+  ["agentModelMenu", "agentCmdMenu", "agentToolsMenu"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
   });
@@ -928,7 +953,17 @@ function renderAgentComposer() {
   const wv = document.getElementById("agentWsTriggerVal");
   if (wv) wv.textContent = st.workspace ? wsGroupOf(st.workspace) : I18n.t("选择工作区");
   const pt = document.getElementById("agentPlanToggle");
-  if (pt) pt.classList.toggle("on", !!st.planNext);
+  if (pt) {
+    pt.classList.toggle("on", !!st.planNext);
+    pt.dataset.i18nTitle = st.planNext
+      ? "规划模式：开启中，点击关闭"
+      : "规划模式：本轮只出计划，不做改动";
+    pt.title = I18n.t(pt.dataset.i18nTitle);
+  }
+  /* 计划已产出且未在运行 → 浮现「▶ 执行计划」 */
+  const rp = document.getElementById("agentRunPlanBtn");
+  if (rp) rp.hidden = !(st._planDelivered && !st.running);
+  paintAgentToolsChip();
 }
 function buildAgentModelMenu() {
   const menu = document.getElementById("agentModelMenu");
@@ -1039,42 +1074,307 @@ function buildAgentModelMenu() {
     }
   }
 }
+/* ── 技能 chip：三级分类菜单（大类 → 类型 → 技能）──
+   一级 = 工作流生成 / 提示词生成（+ 其他兜底）；二级 = 按类型（文本生成、音乐生成…）；
+   三级 = 具体技能。全部 DOM 在打开时一次性构建，hover 只做同步 class 切换——
+   立即出现，无任何延时/网络请求。 */
+const SKILL_MENU_CATS = [
+  { id: "workflow", label: "工作流生成" },
+  { id: "prompt", label: "提示词生成" },
+  { id: "misc", label: "其他" },
+];
+/* 已知内置技能的归类 [大类 id, 类型]；未知技能走关键词兜底 */
+const SKILL_MENU_TAX = {
+  "generate-workflow": ["workflow", "画布搭建"],
+  "generate-task": ["workflow", "画布搭建"],
+  "decompose-novel-plot": ["workflow", "画布搭建"],
+  "mtnode-canvas-batch-safety": ["workflow", "画布规范"],
+  "mtnode-canvas-layout-ux": ["workflow", "画布规范"],
+  "mtnode-db-facts": ["workflow", "画布规范"],
+  "mtnode-media-gen-nodes": ["workflow", "画布规范"],
+  "mtnode-dev-architect": ["workflow", "开发架构"],
+  "zen-bootstrap": ["workflow", "禅式引导"],
+  "zen-plan-compile": ["workflow", "禅式引导"],
+  "zen-domain-software": ["workflow", "禅式引导"],
+  "zen-domain-writing": ["workflow", "禅式引导"],
+  "zen-domain-video": ["workflow", "禅式引导"],
+  "zen-domain-game": ["workflow", "禅式引导"],
+  "compose-novel-from-canvas": ["prompt", "小说写作"],
+  "minimax-music-prompt": ["prompt", "音乐生成"],
+  "minimax-music-lyrics": ["prompt", "音乐生成"],
+  "novel-to-video-preproduction": ["prompt", "视频生成"],
+};
+/* 各大类内二级类型的固定顺序（未列出的按出现顺序排在后面） */
+const SKILL_MENU_TYPE_ORDER = {
+  workflow: ["画布搭建", "画布规范", "开发架构", "禅式引导"],
+  prompt: ["小说写作", "文本生成", "音乐生成", "视频生成", "图像生成"],
+  misc: ["通用"],
+};
+function skillMenuClassify(s) {
+  const n = String((s && s.name) || "").toLowerCase();
+  const hit = SKILL_MENU_TAX[n];
+  if (hit) return { cat: hit[0], type: hit[1] };
+  const hay =
+    n + " " + String((s && s.title) || "") + " " + String((s && s.description) || "");
+  let cat = "misc";
+  if (/提示词|prompt|歌词|lyric|caption|文案|写作|撰写/.test(hay)) cat = "prompt";
+  else if (/画布|工作流|节点|任务|拆解|canvas|workflow|task/.test(hay)) cat = "workflow";
+  let type = cat === "prompt" ? "文本生成" : cat === "workflow" ? "画布搭建" : "通用";
+  if (/音乐|歌词|music/.test(hay)) type = "音乐生成";
+  else if (/视频|影视|分镜|镜头|video/.test(hay)) type = "视频生成";
+  else if (/图像|图片|绘图|image|文生图/.test(hay)) type = "图像生成";
+  else if (/小说|正文|章节|文章|写作|文案/.test(hay)) type = "小说写作";
+  else if (/开发|架构|代码|模块/.test(hay)) type = "开发架构";
+  else if (/规范|排版|批量|事实/.test(hay)) type = "画布规范";
+  else if (/引导|追问|澄清|计划/.test(hay)) type = "禅式引导";
+  return { cat, type };
+}
+function skillMenuSortTypes(catId, types) {
+  const order = SKILL_MENU_TYPE_ORDER[catId] || [];
+  types.sort((a, b) => {
+    const ia = order.indexOf(a),
+      ib = order.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    return String(a).localeCompare(String(b), "zh");
+  });
+  return types;
+}
 async function buildAgentCmdMenu() {
   const menu = document.getElementById("agentCmdMenu");
   if (!menu) return;
   menu.innerHTML = "";
   let skills = [];
   try {
-    if (window.api && window.api.skillList) {
-      const r = await window.api.skillList();
-      skills = (r && r.skills) || [];
-    }
+    skills = await loadSkillsCached(false);
   } catch {}
-  const usable = skills.filter((s) => s && s.name && !isInstallOnlySkillName(s.name));
-  for (const s of usable) {
-    const opt = document.createElement("button");
-    opt.className = "agent-menu-option";
-    opt.innerHTML =
-      '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>';
-    opt.querySelector(".agent-menu-option-name").textContent = s.title || s.name;
-    opt.title = s.description || s.name;
-    opt.onclick = () => {
-      const inp = document.getElementById("agentInput");
-      if (inp) {
-        inp.value = "/" + s.name + " ";
-        inp.focus();
-      }
-      closeAgentMenus();
-    };
-    menu.appendChild(opt);
-  }
+  const usable = (skills || []).filter(
+    (s) => s && s.name && !isInstallOnlySkillName(s.name),
+  );
   if (!usable.length) {
+    menu.classList.remove("agent-skill-menu");
     const e = document.createElement("div");
     e.className = "agent-menu-empty";
     e.textContent = I18n.t("暂无技能");
     menu.appendChild(e);
+    return;
   }
+  /* 分组：cat -> type -> skills */
+  const groups = new Map();
+  for (const s of usable) {
+    const { cat, type } = skillMenuClassify(s);
+    if (!groups.has(cat)) groups.set(cat, new Map());
+    const tmap = groups.get(cat);
+    if (!tmap.has(type)) tmap.set(type, []);
+    tmap.get(type).push(s);
+  }
+  const cats = SKILL_MENU_CATS.filter((c) => groups.has(c.id));
+  menu.classList.add("agent-skill-menu");
+  /* 三列容器 */
+  const col1 = document.createElement("div");
+  col1.className = "skill-col skill-col-cat";
+  const col2 = document.createElement("div");
+  col2.className = "skill-col skill-col-type";
+  const col3 = document.createElement("div");
+  col3.className = "skill-col skill-col-item";
+  menu.appendChild(col1);
+  menu.appendChild(col2);
+  menu.appendChild(col3);
+  const pickSkill = (s) => {
+    const inp = document.getElementById("agentInput");
+    if (inp) {
+      inp.value = "/" + s.name + " ";
+      inp.focus();
+    }
+    closeAgentMenus();
+  };
+  const showType = (k) => {
+    col2.querySelectorAll(".skill-type").forEach((b) =>
+      b.classList.toggle("on", b.dataset.key === k),
+    );
+    col3.querySelectorAll(".skill-pane").forEach((p) =>
+      p.classList.toggle("on", p.dataset.key === k),
+    );
+  };
+  const showCat = (catId) => {
+    col1.querySelectorAll(".skill-cat").forEach((b) =>
+      b.classList.toggle("on", b.dataset.cat === catId),
+    );
+    col2.querySelectorAll(".skill-pane").forEach((p) =>
+      p.classList.toggle("on", p.dataset.cat === catId),
+    );
+    /* 自动展开该大类第一个类型，保证列三始终有内容 */
+    const first = col2.querySelector(
+      '.skill-pane[data-cat="' + catId + '"] .skill-type',
+    );
+    if (first) showType(first.dataset.key);
+  };
+  for (const c of cats) {
+    const tmap = groups.get(c.id);
+    const types = skillMenuSortTypes(c.id, [...tmap.keys()]);
+    const count = types.reduce((n, t) => n + tmap.get(t).length, 0);
+    /* 一级：大类 */
+    const catBtn = document.createElement("button");
+    catBtn.type = "button";
+    catBtn.className = "skill-cat";
+    catBtn.dataset.cat = c.id;
+    catBtn.innerHTML =
+      '<span class="skill-row-label"></span><span class="skill-row-count"></span><span class="skill-row-chev">›</span>';
+    catBtn.querySelector(".skill-row-label").textContent = I18n.t(c.label);
+    catBtn.querySelector(".skill-row-count").textContent = String(count);
+    catBtn.onmouseenter = () => showCat(c.id); // hover 立即展开，无延时
+    catBtn.onclick = () => showCat(c.id);
+    col1.appendChild(catBtn);
+    /* 二级：类型 pane（预构建） */
+    const pane2 = document.createElement("div");
+    pane2.className = "skill-pane";
+    pane2.dataset.cat = c.id;
+    col2.appendChild(pane2);
+    for (const t of types) {
+      const key = c.id + "\u0000" + t;
+      const tb = document.createElement("button");
+      tb.type = "button";
+      tb.className = "skill-type";
+      tb.dataset.key = key;
+      tb.innerHTML =
+        '<span class="skill-row-label"></span><span class="skill-row-count"></span><span class="skill-row-chev">›</span>';
+      tb.querySelector(".skill-row-label").textContent = I18n.t(t);
+      tb.querySelector(".skill-row-count").textContent = String(tmap.get(t).length);
+      tb.onmouseenter = () => showType(key);
+      tb.onclick = () => showType(key);
+      pane2.appendChild(tb);
+      /* 三级：技能 pane（预构建） */
+      const pane3 = document.createElement("div");
+      pane3.className = "skill-pane";
+      pane3.dataset.key = key;
+      col3.appendChild(pane3);
+      const list = tmap.get(t)
+        .slice()
+        .sort((a, b) =>
+          String(a.title || a.name).localeCompare(String(b.title || b.name), "zh"),
+        );
+      for (const s of list) {
+        const opt = document.createElement("button");
+        opt.type = "button";
+        opt.className = "skill-item";
+        opt.innerHTML =
+          '<span class="agent-menu-option-copy"><span class="skill-item-name"></span><span class="skill-item-desc"></span></span>';
+        opt.querySelector(".skill-item-name").textContent = s.title || s.name;
+        opt.querySelector(".skill-item-desc").textContent =
+          s.description || "/" + s.name;
+        opt.title = "/" + s.name + (s.description ? "\n" + s.description : "");
+        opt.onclick = () => pickSkill(s);
+        pane3.appendChild(opt);
+      }
+    }
+  }
+  showCat(cats[0].id); // 打开即选中第一个大类
 }
+/* ── 「工具」chip：当前预设 + 逐工具 允许 / 询问 / 禁止 ──
+   与右上角「审批 → Agent 工具」读写同一份配置（agentToolMode / setAgentToolMode），
+   差别只是这里就地快切，不用开大面板。 */
+function buildAgentToolsMenu() {
+  const menu = document.getElementById("agentToolsMenu");
+  if (!menu) return;
+  ensureAgentToolPresets();
+  menu.innerHTML = "";
+  /* 预设行 */
+  const presetRow = document.createElement("div");
+  presetRow.className = "agent-tools-preset";
+  const sel = document.createElement("select");
+  sel.className = "agent-tools-preset-sel";
+  sel.title = I18n.t("工具预设");
+  const presets = (S.config.dsh && S.config.dsh.agentToolPresets) || [];
+  for (const p of presets) {
+    if (!p || !p.id) continue;
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = p.name || p.id;
+    if (p.id === ((S.config.dsh && S.config.dsh.agentToolPresetId) || "default"))
+      o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    setAgentToolPresetId(sel.value);
+    buildAgentToolsMenu();
+    paintAgentToolsChip();
+  };
+  presetRow.appendChild(sel);
+  const allBtn = document.createElement("button");
+  allBtn.type = "button";
+  allBtn.className = "agent-tools-all";
+  allBtn.textContent = I18n.t("全部允许");
+  allBtn.title = I18n.t("把当前预设里的全部工具设为「允许」");
+  allBtn.onclick = () => {
+    setAllAgentToolsAllow();
+    buildAgentToolsMenu();
+    paintAgentToolsChip();
+  };
+  presetRow.appendChild(allBtn);
+  menu.appendChild(presetRow);
+  /* 分组清单 */
+  for (const cat of agentToolCatalog()) {
+    const head = document.createElement("div");
+    head.className = "agent-tools-head";
+    head.textContent = cat.label;
+    menu.appendChild(head);
+    for (const it of cat.items) {
+      const row = document.createElement("div");
+      row.className = "agent-tools-row";
+      const meta = document.createElement("div");
+      meta.className = "agent-tools-meta";
+      const lab = document.createElement("div");
+      lab.className = "agent-tools-lab";
+      lab.textContent = it.label;
+      meta.appendChild(lab);
+      if (it.hint) {
+        const small = document.createElement("small");
+        small.textContent = it.hint;
+        meta.appendChild(small);
+      }
+      row.appendChild(meta);
+      const seg = document.createElement("div");
+      seg.className = "agent-tools-toggles";
+      const cur = agentToolMode(it.key);
+      for (const m of ["allow", "ask", "deny"]) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "agent-tools-mode agent-tools-" + m + (cur === m ? " on" : "");
+        b.textContent =
+          m === "allow" ? I18n.t("允许") : m === "ask" ? I18n.t("询问") : I18n.t("拒绝");
+        b.onclick = () => {
+          if (agentToolMode(it.key) === m) return;
+          setAgentToolMode(it.key, m);
+          buildAgentToolsMenu();
+          paintAgentToolsChip();
+        };
+        seg.appendChild(b);
+      }
+      row.appendChild(seg);
+      menu.appendChild(row);
+    }
+  }
+  const status = document.createElement("div");
+  status.className = "agent-tools-status";
+  status.textContent = agentToolPresetStatusText();
+  menu.appendChild(status);
+}
+/* chip 上的摘要：只写「工具」两字太安静，用户看不出有没有被限制 */
+function paintAgentToolsChip() {
+  const t = document.getElementById("agentToolsTrigger");
+  if (!t) return;
+  let n = 0;
+  try {
+    for (const cat of agentToolCatalog())
+      for (const it of cat.items) if (agentToolMode(it.key) !== "allow") n++;
+  } catch (_) {}
+  t.classList.toggle("on", n > 0);
+  t.title = agentToolPresetStatusText();
+  const val = document.getElementById("agentToolsTriggerVal");
+  if (val) val.textContent = n ? String(n) : "";
+}
+
 function setView(view) {
   S.view = view;
   const wf = $("#btnToolWf");
@@ -1083,14 +1383,15 @@ function setView(view) {
   if (ag) ag.classList.toggle("on", view === "agent");
   const wrap = $("#wfWrap");
   const pane = $("#agentPane");
-  const layout = $("#layout");
   if (wrap) wrap.style.display = view === "workflow" ? "" : "none";
   if (pane) pane.style.display = view === "agent" ? "" : "none";
-  /* 侧边栏在画布视图可用:编排=节点树。
-     智能会话视图(agent)自带左侧会话列表(.agent-side),必须强制收起画布的侧边栏,
-     避免左边栏重复出现。画布视图仍按 S.sidebarOpen 记忆用户偏好,回到画布自动恢复。 */
-  if (layout)
-    layout.classList.toggle("sidebar-open", !!S.sidebarOpen && view === "workflow");
+  /* 视图互斥：画布视图与智能会话视图各有自己的左侧栏，彼此不得出现。
+     - 画布视图：可用 #sidebar（节点/绘图/超级节点列表），会话列表不可展开
+     - 会话视图：自带 .agent-side（会话列表），画布 #sidebar 强制收起
+     统一由 applySidebarVisibility() 收口 + body.view-* 类做 CSS 硬闸。 */
+  document.body.classList.toggle("view-agent", view === "agent");
+  document.body.classList.toggle("view-workflow", view !== "agent");
+  if (typeof applySidebarVisibility === "function") applySidebarVisibility();
   S.config.view = view;
   window.api.configSave(S.config).catch(() => {});
   if (view === "agent") {
@@ -1586,6 +1887,88 @@ function formatMsgTime(ts) {
   return d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
 }
 
+/* 消息末尾时间：精确到秒（非今天自动带日期） */
+function formatMsgTimeSec(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const d = new Date(n);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (x) => String(x).padStart(2, "0");
+  const hms =
+    pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  const now = new Date();
+  if (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  )
+    return hms;
+  if (d.getFullYear() === now.getFullYear())
+    return d.getMonth() + 1 + "/" + d.getDate() + " " + hms;
+  return d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate() + " " + hms;
+}
+
+/* 完整时间戳（悬浮提示用）：2025/6/3 14:03:22 */
+function formatMsgStamp(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const d = new Date(n);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (x) => String(x).padStart(2, "0");
+  return (
+    d.getFullYear() +
+    "/" +
+    (d.getMonth() + 1) +
+    "/" +
+    d.getDate() +
+    " " +
+    pad(d.getHours()) +
+    ":" +
+    pad(d.getMinutes()) +
+    ":" +
+    pad(d.getSeconds())
+  );
+}
+
+/* 相对时长：分 / 小时 / 天 / 周 / 月 / 年 */
+function formatRelTime(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const diff = Date.now() - n;
+  if (diff < 60000) return I18n.t("刚刚");
+  const min = Math.floor(diff / 60000);
+  if (min < 60) return min + I18n.t(" 分钟前");
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return hr + I18n.t(" 小时前");
+  const day = Math.floor(hr / 24);
+  if (day < 7) return day + I18n.t(" 天前");
+  const wk = Math.floor(day / 7);
+  if (wk < 5) return wk + I18n.t(" 周前");
+  const mon = Math.floor(day / 30);
+  if (mon < 12) return mon + I18n.t(" 个月前");
+  return Math.floor(day / 365) + I18n.t(" 年前");
+}
+
+/* 会话最后对话时间：updatedAt 与最后一条消息时间取较新者 */
+function sessionLastAt(s) {
+  if (!s) return 0;
+  let t = Number(s.updatedAt) || 0;
+  const msgs = Array.isArray(s.messages) ? s.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const at = Number(msgs[i] && (msgs[i].at || msgs[i].createdAt || msgs[i].ts)) || 0;
+    if (at) {
+      if (at > t) t = at;
+      break;
+    }
+  }
+  const ob = Array.isArray(s.outbox) ? s.outbox : [];
+  for (let i = ob.length - 1; i >= 0; i--) {
+    const at = Number(ob[i] && ob[i].at) || 0;
+    if (at && at > t) t = at;
+  }
+  return t;
+}
+
 function dshMsgBlock(m, nodeId, idx) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
@@ -1596,13 +1979,6 @@ function dshMsgBlock(m, nodeId, idx) {
   role.className = "dsh-role";
   role.textContent = m.role === "user" ? I18n.t("你") : "AI";
   head.appendChild(role);
-  const timeTxt = formatMsgTime(m.at || m.createdAt || m.ts);
-  if (timeTxt) {
-    const timeEl = document.createElement("span");
-    timeEl.className = "dsh-msg-time";
-    timeEl.textContent = timeTxt;
-    head.appendChild(timeEl);
-  }
   if (m.role === "assistant" && m.reasoning && String(m.reasoning).trim()) {
     const det = document.createElement("details");
     det.className = "dsh-think";
@@ -1674,6 +2050,18 @@ function dshMsgBlock(m, nodeId, idx) {
   if (m.role === "user") body.innerHTML = plainTextToLinkHtml(m.content);
   else body.innerHTML = '<div class="md">' + renderMarkdown(m.content) + "</div>";
   row.appendChild(body);
+  /* 消息末尾：时间（精确到秒） */
+  const endTxt = formatMsgTimeSec(m.at || m.createdAt || m.ts);
+  if (endTxt) {
+    const tail = document.createElement("div");
+    tail.className = "dsh-msg-tail";
+    const tEl = document.createElement("span");
+    tEl.className = "dsh-msg-time";
+    tEl.textContent = endTxt;
+    tEl.title = formatMsgStamp(m.at || m.createdAt || m.ts);
+    tail.appendChild(tEl);
+    row.appendChild(tail);
+  }
   return row;
 }
 
@@ -1899,18 +2287,32 @@ function renderAgentSession(opts) {
       ctx.textContent = "";
     }
   }
-  /* 发送按钮:空闲「发送」，运行中变为红色「终止」(mtnode 按钮风格) */
-  const sendBtn = $("#agentSend");
-  if (sendBtn) {
-    sendBtn.textContent = running ? "■" : "↑";
-    sendBtn.classList.toggle("danger", !!running);
-    sendBtn.title = running
-      ? I18n.t("终止当前任务(重启该工作目录的引擎)")
-      : I18n.t("发送(Enter 发送,Shift+Enter 换行)");
-  }
+  /* 发送按钮:空闲「发送」；运行中且有输入 → 「排队发送 ↑」；运行中且输入为空 → 红色「终止 ■」 */
+  paintAgentSendState();
+  renderAgentQueueBar(st);
+  renderAgentTodoPanel(st);
   renderAgentComposer();
   renderAgentSessionSidebar();
   renderSessionFooterStat();
+}
+
+/* 运行中不取消任务：输入框有字就是「加入队列」，没字才是「终止」 */
+function paintAgentSendState() {
+  const sendBtn = $("#agentSend");
+  if (!sendBtn) return;
+  const inp = $("#agentInput");
+  const st = agentSessionState();
+  const busy = !!sessionIsRunning(st);
+  const hasText = !!(inp && String(inp.value || "").trim());
+  const stopMode = busy && !hasText;
+  sendBtn.textContent = busy ? (hasText ? "↑" : "■") : "↑";
+  sendBtn.classList.toggle("danger", stopMode);
+  sendBtn.classList.toggle("queue-mode", busy && hasText);
+  sendBtn.title = busy
+    ? hasText
+      ? I18n.t("加入发送队列（不打断当前任务）")
+      : I18n.t("终止当前任务(重启该工作目录的引擎)")
+    : I18n.t("发送(Enter 发送,Shift+Enter 换行)");
 }
 
 /* ── 会话侧边栏:按项目目录（工作路径最内层文件夹）归类,支持归档(参考 dsh) ── */
@@ -1934,14 +2336,23 @@ function startSessionTitleEdit(s, nameEl) {
     if (save && v && v !== s.title) {
       s.title = v;
       s.updatedAt = Date.now();
-      /* 标题映射:会话名称 → 关联 agent_task 节点标题(双向,后写优先) */
+      /* 标题映射:会话名称 → 关联 agent_task / 开发节点标题(双向,后写优先) */
       const wfs = [S.wf, ...Object.values(S.wfBag || {})];
       let touched = false;
+      const devTitle = v.replace(/^(开发|细化|Dev|Refine)\s*·\s*/i, "").trim();
       for (const wf of wfs) {
         if (!wf || !Array.isArray(wf.nodes)) continue;
         for (const n of wf.nodes) {
           if (n.kind === "agent_task" && n.agentSessionId === s.id) {
             n.title = v;
+            touched = true;
+          } else if (
+            n.kind === "super" &&
+            n.dev &&
+            n.agentSessionId === s.id &&
+            devTitle
+          ) {
+            n.title = devTitle;
             touched = true;
           }
         }
@@ -1968,14 +2379,12 @@ function renderAgentSessionSidebar() {
   const active = activeAgentId();
   const list = agentSessions();
   const activeSt = list.find((s) => s.id === active);
+  /* 只写会话视图自己的容器 #agentSideList。
+     历史遗留 bug：以前同时写入画布边栏 #sideTree，会话每次运行 / 每个工具事件
+     都会重绘它 → 用户在画布上会「突然」看到左侧栏变成会话列表。
+     规则：画布边栏只放节点/绘图/超级节点；会话列表只在会话视图内。 */
   const targets = [];
-  const t1 = $("#sideTree");
   const t2 = $("#agentSideList");
-  if (t1)
-    targets.push({
-      el: t1,
-      filter: $("#sideFilter") ? $("#sideFilter").value.trim().toLowerCase() : "",
-    });
   if (t2)
     targets.push({
       el: t2,
@@ -2051,8 +2460,18 @@ function renderAgentSessionSidebar() {
     btns.appendChild(ar);
     btns.appendChild(dl);
     row.dataset.sid = s.id;
+    /* 最后对话时间（相对时长：分 / 小时 / 天…），悬浮显示完整时间戳 */
+    const lastAt = sessionLastAt(s);
+    const tm = document.createElement("span");
+    tm.className = "side-sess-time";
+    tm.dataset.ts = String(lastAt || 0);
+    tm.textContent = formatRelTime(lastAt);
+    tm.title = lastAt
+      ? I18n.t("最后对话：") + formatMsgStamp(lastAt)
+      : I18n.t("尚无对话");
     row.appendChild(stt);
     row.appendChild(nm);
+    row.appendChild(tm);
     row.appendChild(btns);
     row.onclick = async () => {
       S.agentActiveId = s.id;
@@ -2101,11 +2520,50 @@ function renderAgentSessionSidebar() {
     const ws = $("#agentWsInput");
     if (ws && document.activeElement !== ws) ws.value = activeSt.workspace || "";
   }
+  startAgentSideTimeTicker();
 }
-/* /compact:调用一次模型把历史压缩为摘要,替换消息列表 */
+/* 相对时长会一直变化：定时只刷新文本节点，不重绘列表（避免滚动位置跳动） */
+let _agentSideTimeTimer = null;
+function tickAgentSideTimes() {
+  const box = $("#agentSideList");
+  if (!box) return;
+  const nodes = box.querySelectorAll(".side-sess-time[data-ts]");
+  for (const el of nodes) {
+    const txt = formatRelTime(Number(el.dataset.ts) || 0);
+    if (el.textContent !== txt) el.textContent = txt;
+  }
+}
+function startAgentSideTimeTicker() {
+  if (_agentSideTimeTimer || typeof setInterval !== "function") return;
+  _agentSideTimeTimer = setInterval(() => {
+    try {
+      tickAgentSideTimes();
+    } catch (_) {}
+  }, 30000);
+}
+/* /compact 与「压缩」按钮共用：空会话 / 运行中 / 压缩进行中均有明确提示，并防重入 */
 async function agentCompact() {
   const st = agentSessionState();
-  if (!st.messages.length || sessionIsRunning(st)) return;
+  if (!st.messages.length) {
+    toast(I18n.t("当前会话没有可压缩的消息"), "warn");
+    return;
+  }
+  if (sessionIsRunning(st)) {
+    toast(I18n.t("运行中不可压缩：请等待当前会话结束"), "warn");
+    return;
+  }
+  if (st._compacting) {
+    toast(I18n.t("正在压缩上文…"), "warn");
+    return;
+  }
+  st._compacting = true;
+  try {
+    await agentCompactRun(st);
+  } finally {
+    st._compacting = false;
+  }
+}
+async function agentCompactRun(st) {
   const hist = st.messages
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
@@ -2136,11 +2594,336 @@ async function agentCompact() {
   await persistAgentSession();
   renderAgentSession();
 }
+/* 规划模式开关（会话「规划」按钮与 /plan 共用），文案口径保持一致 */
+async function setPlanMode(st, on) {
+  st.planNext = !!on;
+  if (!st.planNext) st._planDelivered = false;
+  await persistAgentSession();
+  renderAgentComposer();
+  toast(
+    st.planNext
+      ? I18n.t("规划模式已开启：本轮只制定计划，不做任何改动")
+      : I18n.t("规划模式已关闭：恢复直接执行改动"),
+    "ok",
+  );
+}
+
+/* 「▶ 执行计划」：关闭规划模式并按上一条已给出的计划开始实施 */
+async function agentExecutePlan() {
+  const st = agentSessionState();
+  if (sessionIsRunning(st)) {
+    toast(I18n.t("会话正在运行中"), "warn");
+    return;
+  }
+  if (!st._planDelivered) {
+    toast(I18n.t("当前会话还没有待执行的计划"), "warn");
+    return;
+  }
+  st.planNext = false;
+  st._planDelivered = false;
+  await persistAgentSession();
+  renderAgentComposer();
+  await agentSessionSend(
+    I18n.t(
+      "计划已确认：请严格按上一条计划开始实施，不要重复规划；逐步执行并在结束时报告改动与验证结果。",
+    ),
+  );
+}
+
+/* 规划模式：注入到用户消息最前端的硬约束（与 planModeSystemNote 的双重约束，
+   画布 / 应用改动另有宿主级拦截 handleCanvasEvent → planModeCanvasDeniedError）
+   模型面向的指令文本，与其他注入说明一致保持中文 */
+const PLAN_MODE_USER_DIRECTIVE =
+  "【规划模式 · 本轮只出计划】本轮的唯一交付物是一份可照做的计划，绝不是改动。\n" +
+  "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、git commit/checkout、重启服务、清理目录）；调用 mtnode_canvas_edit 或 mtnode_app 的修改类动作（宿主会直接拒绝并返回错误）；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。\n" +
+  "允许并鼓励只读调研：read、glob、grep、只读命令（node --check、git status、git diff）、mtnode_canvas_get（带 detail:\"standard\"）、mtnode_db 查询、web_search、加载技能。\n" +
+  "输出要求：以 # 一级标题开头，依次给出 ① 目标与验收标准 ② 现状与关键约束（引用具体文件与行号）③ 分步实施清单（每步写明文件、改动要点、为什么）④ 验证方法 ⑤ 风险与回滚；步骤要具体到无需二次决策。\n" +
+  "写完计划立即结束本轮：不要开始实施，也不要追问「是否可以执行」——用户会点击输入区的「执行计划」进入实施。\n\n";
+
+/* ============ 会话发送队列（运行中收到的新消息按序排队） ============ */
+
+/* 入队：保留原文，不打断当前轮 */
+async function agentEnqueueMessage(st, text) {
+  if (!st) return;
+  if (!Array.isArray(st.outbox)) st.outbox = [];
+  const body = String(text || "").trim();
+  if (!body) return;
+  st.outbox.push({ id: uid("ob"), text: body, at: Date.now() });
+  st.updatedAt = Date.now();
+  await persistAgentSession();
+  if (S.agentActiveId === st.id) {
+    renderAgentQueueBar(st);
+    $("#agentInput") && $("#agentInput").focus();
+  } else renderAgentSessionSidebar();
+  toast(I18n.t("已加入发送队列，当前任务继续执行"), "ok");
+}
+
+/* 删除一条 / 清空整个队列 */
+async function agentRemoveQueued(st, id) {
+  if (!st || !Array.isArray(st.outbox)) return;
+  st.outbox = st.outbox.filter((x) => x.id !== id);
+  await persistAgentSession();
+  if (S.agentActiveId === st.id) renderAgentQueueBar(st);
+}
+async function agentClearQueue(st) {
+  if (!st || !Array.isArray(st.outbox) || !st.outbox.length) return;
+  st.outbox = [];
+  await persistAgentSession();
+  if (S.agentActiveId === st.id) renderAgentQueueBar(st);
+}
+
+/* 队首出队发送：本轮彻底结束后调用（会话空闲才发，避免自己挤自己）。
+   队列里可能混着 /new、/plan 这类不启动运行的命令 —— 它们同步处理完就继续放行下一条。
+   _draining 闩锁：收尾处与 await 返回后可能同时想排水，必须串行，否则两条消息并发抢同一会话。 */
+async function agentDrainQueue(st) {
+  try {
+    if (!st || !Array.isArray(st.outbox) || !st.outbox.length) return;
+    if (st._draining || sessionIsRunning(st)) return;
+    st._draining = true;
+    try {
+      while (st.outbox.length && !sessionIsRunning(st)) {
+        const item = st.outbox.shift();
+        await persistAgentSession();
+        if (S.agentActiveId === st.id) renderAgentQueueBar(st);
+        if (!item || !item.text) continue;
+        await agentSessionSend(item.text);
+      }
+    } finally {
+      st._draining = false;
+    }
+  } catch (_) {}
+}
+
+/* 输入区上方的队列条：N 条待发送 + 逐条删除 + 清空 */
+function renderAgentQueueBar(st) {
+  const el = document.getElementById("agentQueue");
+  if (!el) return;
+  const list = (st && Array.isArray(st.outbox) ? st.outbox : []).filter(Boolean);
+  if (!list.length) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "aq-head";
+  const label = document.createElement("span");
+  label.className = "aq-label";
+  label.textContent =
+    I18n.t("发送队列") + " · " + list.length + I18n.t(" 条（当前任务结束后依次发送）");
+  head.appendChild(label);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "aq-clear mini";
+  clear.textContent = I18n.t("清空");
+  clear.onclick = () => agentClearQueue(st);
+  head.appendChild(clear);
+  el.appendChild(head);
+  const rows = document.createElement("div");
+  rows.className = "aq-list";
+  list.forEach((it, i) => {
+    const row = document.createElement("div");
+    row.className = "aq-item";
+    const idx = document.createElement("b");
+    idx.textContent = String(i + 1);
+    const txt = document.createElement("span");
+    txt.className = "aq-text";
+    txt.textContent = it.text;
+    txt.title = it.text;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "aq-del";
+    del.textContent = "✕";
+    del.title = I18n.t("移出队列");
+    del.onclick = () => agentRemoveQueued(st, it.id);
+    row.appendChild(idx);
+    row.appendChild(txt);
+    row.appendChild(del);
+    rows.appendChild(row);
+  });
+  el.appendChild(rows);
+}
+
+/* ============ 会话任务清单（Todo：agent 用 todo_write 建立） ============ */
+
+/* 解析 todo_write 的入参（可能是对象，也可能是 JSON 字符串） */
+function agentTodoArgs(args) {
+  if (!args) return null;
+  if (typeof args === "object") return args;
+  const s = String(args).trim();
+  if (!s || s.charAt(0) !== "{") return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+function agentTodoStatus(s) {
+  const v = String(s || "").toLowerCase();
+  if (v === "completed" || v === "done" || v === "success") return "done";
+  if (v === "in_progress" || v === "active" || v === "doing") return "active";
+  if (v === "failed" || v === "error") return "failed";
+  if (v === "unknown") return "unknown";
+  return "pending";
+}
+/* 收到一次 todo_write → 覆盖会话清单；手动删除过的条目不再复活 */
+function agentTodoText(x) {
+  return String(
+    (x && (x.content || x.title || x.text || x.name || x.label)) || "",
+  ).trim();
+}
+function agentApplyTodoWrite(st, args) {
+  const p = agentTodoArgs(args);
+  const list = p && Array.isArray(p.todos) ? p.todos : null;
+  if (!list) return false;
+  const hidden = new Set((st.todoHidden || []).map(String));
+  st.todos = list
+    .filter((x) => agentTodoText(x))
+    .map((x) => {
+      const content = agentTodoText(x);
+      return { content, status: agentTodoStatus(x.status), at: Date.now() };
+    })
+    .filter((x) => !hidden.has(x.content));
+  st.todosAt = Date.now();
+  persistAgentSession().catch(() => {});
+  if (S.agentActiveId === st.id) renderAgentTodoPanel(st);
+  return true;
+}
+/* 一轮结束给「没跑完」的条目定性：
+   出错 / 被终止 → 正在做的记红叉；其余会话已结束但结果不确定 → 问号。
+   done / failed / unknown 是终态，只有 agent 再次 todo_write 才会改写。 */
+function agentFinalizeTodos(st, outcome) {
+  const list = st && Array.isArray(st.todos) ? st.todos : null;
+  if (!list || !list.length) return;
+  const bad = outcome === "error" || outcome === "cancelled";
+  let changed = false;
+  for (const t of list) {
+    if (t.status !== "active" && t.status !== "pending") continue;
+    if (bad && t.status === "active") t.status = "failed";
+    else t.status = "unknown";
+    changed = true;
+  }
+  if (!changed) return;
+  persistAgentSession().catch(() => {});
+  if (S.agentActiveId === st.id) renderAgentTodoPanel(st);
+}
+async function agentTodoRemove(st, content) {
+  if (!st || !Array.isArray(st.todos)) return;
+  st.todos = st.todos.filter((t) => t.content !== content);
+  st.todoHidden = st.todoHidden || [];
+  if (!st.todoHidden.includes(content)) st.todoHidden.push(content);
+  await persistAgentSession();
+  renderAgentTodoPanel(st);
+}
+async function agentTodoClear(st) {
+  if (!st) return;
+  for (const t of st.todos || []) {
+    st.todoHidden = st.todoHidden || [];
+    if (!st.todoHidden.includes(t.content)) st.todoHidden.push(t.content);
+  }
+  st.todos = [];
+  await persistAgentSession();
+  renderAgentTodoPanel(st);
+}
+const TODO_ICON = { done: "✓", active: "◐", pending: "○", failed: "✕", unknown: "?" };
+const TODO_LABEL = {
+  done: "已完成",
+  active: "进行中",
+  pending: "待办",
+  failed: "失败",
+  unknown: "未确认",
+};
+/* 会话底部的任务清单卡：可折叠、可逐条删除、可清除 */
+function renderAgentTodoPanel(st) {
+  const el = document.getElementById("agentTodo");
+  if (!el) return;
+  const list = (st && Array.isArray(st.todos) ? st.todos : []) || [];
+  if (!list.length) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  const done = list.filter((t) => t.status === "done").length;
+  const failed = list.filter((t) => t.status === "failed").length;
+  el.hidden = false;
+  el.innerHTML = "";
+  el.classList.toggle("collapsed", !!st.todosCollapsed);
+  const head = document.createElement("div");
+  head.className = "at-head";
+  const fold = document.createElement("button");
+  fold.type = "button";
+  fold.className = "at-fold";
+  fold.textContent = st.todosCollapsed ? "▸" : "▾";
+  fold.title = I18n.t("展开 / 收起任务清单");
+  fold.onclick = () => {
+    st.todosCollapsed = !st.todosCollapsed;
+    persistAgentSession().catch(() => {});
+    renderAgentTodoPanel(st);
+  };
+  head.appendChild(fold);
+  const title = document.createElement("b");
+  title.className = "at-title";
+  title.textContent = I18n.t("任务清单");
+  head.appendChild(title);
+  const count = document.createElement("span");
+  count.className = "at-count" + (failed ? " has-fail" : "");
+  count.textContent =
+    done + " / " + list.length + (failed ? " · " + failed + I18n.t(" 失败") : "");
+  count.title = I18n.t("完成 / 总数");
+  head.appendChild(count);
+  const bar = document.createElement("i");
+  bar.className = "at-bar";
+  const fill = document.createElement("u");
+  fill.style.width = list.length ? Math.round((done / list.length) * 100) + "%" : "0%";
+  bar.appendChild(fill);
+  head.appendChild(bar);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "at-clear mini";
+  clear.textContent = I18n.t("清除");
+  clear.title = I18n.t("关闭并清除本清单（手动删除的条目不会再出现）");
+  clear.onclick = () => agentTodoClear(st);
+  head.appendChild(clear);
+  el.appendChild(head);
+  if (st.todosCollapsed) return;
+  const ul = document.createElement("div");
+  ul.className = "at-list";
+  for (const t of list) {
+    const row = document.createElement("div");
+    row.className = "at-item st-" + (t.status || "pending");
+    const ic = document.createElement("span");
+    ic.className = "at-icon";
+    ic.textContent = TODO_ICON[t.status] || TODO_ICON.pending;
+    ic.title = I18n.t(TODO_LABEL[t.status] || TODO_LABEL.pending);
+    const txt = document.createElement("span");
+    txt.className = "at-text";
+    txt.textContent = t.content;
+    txt.title = t.content;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "at-del";
+    del.textContent = "✕";
+    del.title = I18n.t("从清单移除");
+    del.onclick = () => agentTodoRemove(st, t.content);
+    row.appendChild(ic);
+    row.appendChild(txt);
+    row.appendChild(del);
+    ul.appendChild(row);
+  }
+  el.appendChild(ul);
+}
+
 async function agentSessionSend(text) {
   const st = agentSessionState();
-  if (sessionIsRunning(st)) return;
   let t = String(text || "").trim();
   if (!t) return;
+  /* 会话正忙：新消息进「发送队列」，不打断当前任务（旧行为是直接丢弃 / 取消本轮）。
+     队列在当前这一轮结束后按序自动发送；用户可随时删除单条或清空。 */
+  if (sessionIsRunning(st)) {
+    await agentEnqueueMessage(st, t);
+    return;
+  }
   /* 中文输入法行首顿号视为斜杠命令前缀 */
   if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
   let skillWrap = null;
@@ -2158,24 +2941,26 @@ async function agentSessionSend(text) {
     } else if (cmd === "/compact") {
       await agentCompact();
     } else if (cmd === "/plan") {
-      st.planNext = !st.planNext;
-      toast(
-        st.planNext
-          ? I18n.t("已开启:下一轮先制定计划再执行")
-          : I18n.t("已关闭:下一轮直接执行"),
-        "ok",
-      );
+      await setPlanMode(st, !st.planNext);
     } else if (cmd === "/rename") {
       if (!arg) {
         toast(I18n.t("用法:/rename 新标题"), "warn");
         return;
       }
       st.title = arg.slice(0, 40);
-      /* 标题映射:会话名称 → 关联智能任务节点标题 */
+      /* 标题映射:会话名称 → 关联智能任务 / 开发节点标题 */
       if (S.wf) {
+        const devTitle = st.title.replace(/^(开发|Dev)\s*·\s*/i, "").trim();
         for (const n of S.wf.nodes) {
           if (n.kind === "agent_task" && n.agentSessionId === st.id)
             n.title = st.title;
+          else if (
+            n.kind === "super" &&
+            n.dev &&
+            n.agentSessionId === st.id &&
+            devTitle
+          )
+            n.title = devTitle;
         }
         scheduleSave(true);
         renderCanvas();
@@ -2234,8 +3019,13 @@ async function agentSessionSend(text) {
   st.running = true;
   st._pending = "";
   st._liveTools = [];
+  /* 任务清单不在新一轮开始时清空：它代表「agent 建的当前清单」，
+     由下一次 todo_write 覆盖，或用户在面板上手动清除 */
+  if (!Array.isArray(st.todos)) st.todos = [];
   st.metrics = null;
   st._usageLive = null;
+  st._planDelivered = false;
+  st._roundOutcome = "ok";
   beginSaveNodeHold();
   if (!S.thinking) S.thinking = {};
   S.thinking["agent:" + st.id] = [""];
@@ -2249,9 +3039,10 @@ async function agentSessionSend(text) {
     .join("\n\n");
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
-  if (st.planNext)
-    input =
-      "【要求】先制定并展示分步计划,再开始执行。\n\n" + input;
+  /* 规划模式：本轮只出计划，不做任何改动（系统提示 + 用户指令双重约束，
+     画布 / 应用改动另由宿主在 handleCanvasEvent 中硬性拒绝） */
+  const planMode = !!st.planNext;
+  if (planMode) input = PLAN_MODE_USER_DIRECTIVE + input;
   const systemPrompt =
     "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
     "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
@@ -2264,6 +3055,7 @@ async function agentSessionSend(text) {
   try {
     const final = await dshRunTask(input, {
       runKey: "agent:" + st.id,
+      planMode,
       workspace:
         st.workspace ||
         S.dshWorkspaceFallback ||
@@ -2282,6 +3074,9 @@ async function agentSessionSend(text) {
           if (mine) updateAgentThinkEl(st, null);
         } else if (type === "tool" && data.name) {
           pushThinking("agent:" + st.id, 0, "🔧 " + data.name + "\n");
+          /* agent 自己建的任务清单：实时同步到会话底部的 Todo 面板 */
+          if (/todo/i.test(String(data.name || "")))
+            agentApplyTodoWrite(st, data.args);
           st._liveTools = st._liveTools || [];
           if (!st._liveTools.some((x) => x.callId === data.callId))
             st._liveTools.push({
@@ -2343,6 +3138,7 @@ async function agentSessionSend(text) {
       },
     });
     if (st._cancelled) {
+      st._roundOutcome = "cancelled";
       const body = stripStreamErrors(st._pending);
       st.messages.push({
         role: "assistant",
@@ -2363,10 +3159,17 @@ async function agentSessionSend(text) {
       if (Array.isArray(st._liveTools) && st._liveTools.length)
         msg.tools = st._liveTools.slice();
       st.messages.push(msg);
+      /* 规划模式跑完：标记「计划待执行」，输入区浮现「▶ 执行计划」 */
+      if (planMode) {
+        st._planDelivered = true;
+        if (S.agentActiveId === st.id)
+          toast(I18n.t("计划已生成：点击「执行计划」开始实施"), "ok");
+      }
     }
   } catch (e) {
     const errMsg = (e && e.message) || String(e);
     if (st._cancelled || isCancelishError(errMsg)) {
+      st._roundOutcome = "cancelled";
       const body = stripStreamErrors(st._pending);
       st.messages.push({
         role: "assistant",
@@ -2374,6 +3177,7 @@ async function agentSessionSend(text) {
         at: Date.now(),
       });
     } else {
+      st._roundOutcome = "error";
       st.messages.push({
         role: "assistant",
         content: I18n.t("（错误：") + errMsg + "）",
@@ -2385,13 +3189,26 @@ async function agentSessionSend(text) {
     st.running = false;
     st._cancelled = false;
     st._liveTools = [];
+    const outcome = st._roundOutcome || "ok";
+    const hasQueued = Array.isArray(st.outbox) && st.outbox.length > 0;
+    /* 被「全部终止」打断 → 排队消息留在队列里等用户，不再自动接管发送 */
+    const holdQueue = outcome === "cancelled";
+    /* 会话收尾：清单里没跑完的条目按本轮结局定性（红叉 / 问号）。
+       队列里还有下一条要发 → 先不定性，等真正空闲的那轮结束再判 */
+    try {
+      if (!hasQueued || holdQueue) agentFinalizeTodos(st, outcome);
+    } catch (_) {}
     if (S.thinking) delete S.thinking["agent:" + st.id];
+    /* 本轮结束 → 刷新「最后对话时间」，侧边栏相对时长随之更新 */
+    st.updatedAt = Date.now();
     await persistAgentSession();
+    renderAgentSessionSidebar();
     /* 只在当前查看本会话时重绘会话区;否则仅刷新侧边栏运行状态,不打扰其他会话视图 */
     if (S.agentActiveId === st.id) renderAgentSession();
-    else renderAgentSessionSidebar();
     syncAgentTaskFromSession(st.id);
     endSaveNodeHold();
+    /* 本轮真正结束 → 自动发送排队中的下一条消息 */
+    if (!holdQueue) agentDrainQueue(st);
   }
 }
 

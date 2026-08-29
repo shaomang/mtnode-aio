@@ -14,6 +14,8 @@
   - 文件：`mtnode/canvas-layout-ux/SKILL.md`
 - **mtnode-db-facts** — 数据库事实查询纪律：任务接入数据库副本节点（db_replica）时的强制事实纪律：一切事实走 mtnode_db 工具（list/query/get/calc）、断言必须带 [记录id · 标题] 引用、查不到就说「数据库中没有该信息」、数字走 calc、禁止用记忆补全。Use when the task is wired to a database replica or asks about stored facts.
   - 文件：`mtnode/db-facts/SKILL.md`
+- **mtnode-dev-architect** — 开发节点架构师：用「开发节点」（super + dev:true 的项目功能块）搭建/分析软件项目架构画布。模式 A：扫描已有项目文件夹，生成覆盖全项目的开发节点架构图（不确定处询问用户）；模式 B：新项目先搭架构、用户明确「确认」后按画布逐块搭建项目。剥洋葱式一次只细化一层；「建议 / 开发 / 细化」按钮均先弹对话框确认（建议 = AI 只读评估项目代码与进度后给 4 条下一步方案，可多选 + 补充，同一对话框里的「开发」即按所选开工；开发 = 填写本次需求；细化 = 确认是否继续展开），确认后在新建的绑定会话中运行；细化先报内容梗概、经用户确认才建节点，无需或无法细化时明确告知原因；元素层级 模块→文件→类/接口/枚举（不同外框颜色）；元素间关系用关系线（rel，普通直线、可双向箭头、可带文字，点选节点时相关线高亮）。Use when the user wants to analyze a proj
+  - 文件：`mtnode/dev-architect/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/视频生成节点：MTNode music_gen 与 video_gen 节点：MiniMax Music 3 / H3 后端、输出路径、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥。Use when wiring music_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
   - 文件：`mtnode/media-gen-nodes/SKILL.md`
 

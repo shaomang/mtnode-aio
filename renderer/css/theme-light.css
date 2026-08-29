@@ -43,26 +43,15 @@ body.theme-light .wf-node.super {
     linear-gradient(180deg, #f2f4f8, #e9edf3);
 }
 
-/* 超级节点「文件夹」外观：浅色版 */
-body.theme-light .super-folder {
-  border-color: #b6c2d4;
+/* 超级节点 / 开发节点「包体」面板：浅色版（仅渐变 + 阴影） */
+body.theme-light .super-folder-body {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, .75) 0%, rgba(255, 255, 255, .2) 42%, rgba(120, 140, 180, .1) 100%),
     linear-gradient(180deg, #eef2f8, #dee5ef);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, .9),
-    0 2px 5px rgba(30, 45, 70, .12);
-}
-
-body.theme-light .super-folder-tab {
-  border-color: #b6c2d4;
-  background: linear-gradient(180deg, #f6f8fc, #e6ecf4);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .95);
-}
-
-body.theme-light .super-folder-glyph {
-  color: #5a6472;
-  opacity: .16;
+    inset 0 2px 5px rgba(30, 45, 70, .07),
+    inset 0 -14px 22px rgba(120, 140, 180, .14);
 }
 
 body.theme-light .super-folder-title {
@@ -393,12 +382,15 @@ body.theme-light .side-sess.active {
   background: rgba(32, 104, 184, .14);
   color: var(--ink);
 }
+body.theme-light .side-sess-time {
+  color: var(--muted);
+  opacity: .9;
+}
 body.theme-light .side-sess-btn {
   background: var(--bg2);
   border: 1px solid var(--bd2);
   color: var(--muted);
-}
-body.theme-light .side-sess-btn:hover {
+}body.theme-light .side-sess-btn:hover {
   border-color: var(--cyan);
   color: var(--ink);
 }
@@ -531,6 +523,70 @@ body.theme-light .agent-conv .dsh-msg-body {
 }
 
 /* ── 输入框与发送按钮 ── */
+/* ── 会话发送队列 / 任务清单：浅色主题下重涂（暗色版用的是白字 + 半透明白底） ── */
+body.theme-light .aq-head,
+body.theme-light .at-head {
+  border-color: var(--bd2);
+  background: rgba(0, 0, 0, .04);
+}
+body.theme-light .aq-head {
+  border-color: rgba(60, 120, 220, .3);
+  background: rgba(60, 120, 220, .08);
+}
+body.theme-light .aq-label {
+  color: var(--cyan);
+}
+body.theme-light .aq-list,
+body.theme-light .at-list {
+  border-color: var(--bd2);
+  background: rgba(0, 0, 0, .02);
+}
+body.theme-light .aq-text,
+body.theme-light .at-title {
+  color: var(--ink);
+}
+body.theme-light .aq-item b,
+body.theme-light .at-fold {
+  color: var(--muted);
+}
+body.theme-light .at-item.st-done .at-text {
+  color: var(--muted);
+}
+body.theme-light .at-item.st-failed .at-text {
+  color: #b3261e;
+}
+body.theme-light .at-bar {
+  background: rgba(0, 0, 0, .1);
+}
+body.theme-light .aq-del:hover,
+body.theme-light .at-del:hover {
+  background: rgba(0, 0, 0, .07);
+  color: #b3261e;
+}
+body.theme-light .agent-tools-menu,
+body.theme-light .agent-menu {
+  background: #fff;
+  border-color: var(--bd2);
+  color: var(--ink);
+}
+body.theme-light .agent-tools-head,
+body.theme-light .agent-tools-lab {
+  color: var(--ink);
+}
+body.theme-light .agent-tools-head {
+  background: #fff;
+}
+body.theme-light .agent-tools-preset-sel {
+  border-color: var(--bd2);
+  background: #fff;
+  color: var(--ink);
+}
+body.theme-light .agent-tools-mode {
+  color: var(--muted);
+}
+body.theme-light .agent-tools-mode:hover {
+  color: var(--ink);
+}
 body.theme-light .agent-composer-card {
   background: var(--panel);
   border: 1px solid var(--bd2);
@@ -583,6 +639,35 @@ body.theme-light .agent-menu-check {
   color: var(--ink);
 }
 body.theme-light .agent-menu-empty {
+  color: var(--muted);
+}
+/* 技能三级分类菜单（亮色） */
+body.theme-light .skill-col-type,
+body.theme-light .skill-col-item {
+  border-left-color: var(--bd);
+}
+body.theme-light .skill-row-count {
+  background: rgba(0, 0, 0, .07);
+  color: var(--muted);
+}
+body.theme-light .skill-row-chev {
+  color: var(--muted);
+}
+body.theme-light .skill-cat,
+body.theme-light .skill-type,
+body.theme-light .skill-item {
+  color: var(--ink);
+}
+body.theme-light .skill-cat:hover,
+body.theme-light .skill-type:hover,
+body.theme-light .skill-item:hover {
+  background: rgba(0, 0, 0, .06);
+}
+body.theme-light .skill-cat.on,
+body.theme-light .skill-type.on {
+  background: rgba(0, 0, 0, .1);
+}
+body.theme-light .skill-item-desc {
   color: var(--muted);
 }
 body.theme-light .agent-tools-head {
@@ -642,4 +727,15 @@ body.theme-light .assist-input-row {
 }
 body.theme-light .assist-resize::after {
   background: rgba(0, 0, 0, .25);
+}
+
+/* ── 右键 · 构建工作流：工具单选列表（浅色版） ── */
+body.theme-light .wfb-item:hover {
+  background: rgba(0, 0, 0, .04);
+}
+body.theme-light .wfb-item.on {
+  background: rgba(255, 143, 46, .14);
+}
+body.theme-light .wfb-list {
+  background: rgba(255, 255, 255, .6);
 }

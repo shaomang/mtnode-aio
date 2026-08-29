@@ -116,6 +116,27 @@
             "zh": "节点指南",
             "en": "Node guides"
           }
+        },
+        {
+          "id": "dev-nodes",
+          "title": {
+            "zh": "开发节点",
+            "en": "Dev nodes"
+          }
+        },
+        {
+          "id": "database-nodes",
+          "title": {
+            "zh": "数据库节点",
+            "en": "Database nodes"
+          }
+        },
+        {
+          "id": "media-net",
+          "title": {
+            "zh": "音乐、视频、网络与执行节点",
+            "en": "Music, video, network & execute"
+          }
         }
       ]
     },

@@ -576,8 +576,9 @@ async function init() {
     const sideFilter = $("#agentSideFilter");
     if (sideFilter)
       sideFilter.addEventListener("input", () => renderAgentSessionSidebar());
-    /* 会话改名:双击侧边栏会话名称 → 行内编辑(事件委托,渲染重建后仍有效) */
-    for (const sel of ["#sideTree", "#agentSideList"]) {
+    /* 会话改名:双击会话列表内的会话名称 → 行内编辑(事件委托,渲染重建后仍有效)
+       注意:会话列表只存在于会话视图的 #agentSideList,画布边栏 #sideTree 不再承载会话行 */
+    for (const sel of ["#agentSideList"]) {
       const sc = $(sel);
       if (!sc) continue;
       sc.addEventListener("dblclick", (ev) => {
@@ -631,11 +632,10 @@ async function init() {
     if (pt)
       pt.onclick = () => {
         const st = agentSessionState();
-        st.planNext = !st.planNext;
-        persistAgentSession();
-        renderAgentSession();
-        toast(st.planNext ? I18n.t("已开启:下一轮先制定计划再执行") : I18n.t("已关闭:下一轮直接执行"), "ok");
+        setPlanMode(st, !st.planNext);
       };
+    const rpb = $("#agentRunPlanBtn");
+    if (rpb) rpb.onclick = () => agentExecutePlan();
     const cb = $("#agentCompactBtn");
     if (cb) cb.onclick = () => agentCompact();
     document.addEventListener("mousedown", (ev) => {
@@ -683,24 +683,36 @@ async function init() {
     const doSend = () => {
       const st = agentSessionState();
       const live = liveNodeForSession(st);
+      const raw = inp ? String(inp.value || "") : "";
+      const t = raw.trim();
       if (st.running || live) {
-        /* 运行中:执行按钮已变为「终止」,点击即终止本会话任务(不影响其他并行会话) */
-        if (live) {
-          stopNode(live);
+        /* 会话未结束又发消息 → 进「发送队列」，绝不打断前面的任务。
+           只有输入框为空时点 ■ 才是「终止本轮」（节点绑定则终止该节点）。 */
+        if (!t) {
+          if (live) {
+            stopNode(live);
+            return;
+          }
+          st._cancelled = true;
+          dshCancelActive("agent:" + st.id);
           return;
         }
-        st._cancelled = true;
-        dshCancelActive("agent:" + st.id);
+        if (inp) inp.value = "";
+        st._draft = "";
+        agentSessionSend(raw);
+        paintAgentSendState();
         return;
       }
-      const t = inp.value;
-      if (!t.trim()) return;
+      if (!t) return;
       inp.value = "";
       st._draft = "";
-      agentSessionSend(t);
+      agentSessionSend(raw);
     };
     if (inp) {
-      inp.addEventListener("input", () => slashTick(inp, "agent"));
+      inp.addEventListener("input", () => {
+        slashTick(inp, "agent");
+        paintAgentSendState();
+      });
       inp.addEventListener("compositionend", () => slashTick(inp, "agent"));
       inp.addEventListener("keydown", (ev) => {
         if (slashKey(inp, ev)) return;
@@ -838,7 +850,12 @@ async function init() {
     if (aSend) aSend.onclick = doAssistSend;
     renderAssistPanel();
   }
-  if (S.config.view === "agent") setView("agent");
+  /* 视图与左侧栏互斥：先落 body 类，让 CSS 硬闸从首帧起生效 */
+  const bootView = (S.config && S.config.view) || "workflow";
+  document.body.classList.toggle("view-agent", bootView === "agent");
+  document.body.classList.toggle("view-workflow", bootView !== "agent");
+  if (bootView === "agent") setView("agent");
+  else if (typeof applySidebarVisibility === "function") applySidebarVisibility();
   applyTheme((S.config && S.config.theme) || "dsh");
   ensureTimerScheduler();
 }

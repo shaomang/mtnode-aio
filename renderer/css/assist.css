@@ -630,6 +630,19 @@
   color: #f0c14d
 }
 
+/* 开发节点图标：青绿色 */
+.n-drag-handle.dev-ico {
+  color: #6fe3a5
+}
+
+.wf-node.super.dev .n-drag-handle {
+  color: #6fe3a5
+}
+
+.fn-ctx .ctx-kind-icon.kind-dev {
+  color: #6fe3a5
+}
+
 .n-play.n-db-mode {
   color: #f0c14d;
   border-color: rgba(240, 193, 77, .4)

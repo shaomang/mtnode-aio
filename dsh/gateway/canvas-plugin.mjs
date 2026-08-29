@@ -22,7 +22,7 @@ const KINDS = [
   'save', 'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
   'agent_task', 'task', 'super', 'db_replica', 'chat',
-  'control', 'judge', 'net_recv', 'net_send',
+  'control', 'judge', 'net_recv', 'net_send', 'execute',
 ]
 
 const NODE_LOCK =
@@ -30,7 +30,7 @@ const NODE_LOCK =
 
 const GET_DESC =
   NODE_LOCK +
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dbNodeId/dbName/compiledAt for db_replica), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires, groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) default to FULL text (with bodyLimit they are truncated); *Len fields report character counts only.\n\n' +
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dev/devPath/devStatus/devKind for DEV super nodes, dbNodeId/dbName/compiledAt for db_replica, execPath/execIcon/execColor for execute nodes), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires (each: from/to titles, and for UML-style relationship wires rel:true + relLabel + relArrow), groups, camera, UI view, imageSizes, markColors, and workflows. Node body fields (input_text.text, prompt, task, goal) default to FULL text (with bodyLimit they are truncated); *Len fields report character counts only.\n\n' +
   'GRANULARITY (use it to save tokens — every node\'s full config is expensive):\n' +
   '- detail "minimal": per node only id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags. Fastest orientation.\n' +
   '- detail "standard": minimal + all config fields (provider/model/size/savePath/waitPath/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, NO body text.\n' +
@@ -43,7 +43,7 @@ const GET_DESC =
   'When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
 
 const KIND_GUIDE =
-  'Available create.kind values: input_text / input_image / input_file (输入节点) · db_table (数据库建表) · proc_text / proc_image (文本/图像处理) · agent_task / chat (智能节点) · save / save_text / save_image (保存) · split / merge (批次拆分/合并) · global (全局广播) · control / judge / task (控制/判断/任务) · wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex (等待/定时/延时/序列/闸门/分发/计数/互斥) · super / db_replica (超级节点 / 数据库副本) · music_gen / video_gen (音乐/视频生成) · net_recv / net_send (网络接收 / 网络发送). net_recv listens on a port/channel and forwards incoming text to downstream; net_send pushes its data-input text to a target host:port — both support tcp/udp, channel multiplexing and per-node host/port. Database nodes: input_file imports local files, db_table builds a table from them (agent extracts metadata, user confirms form), a kind "super" with db:true holds facts and compiles into a db_replica that smart nodes query with mtnode_db; you may also create a db_replica directly and set dbNodeId/dbName to point at an existing database super node. '
+  'Available create.kind values: input_text / input_image / input_file (输入节点) · db_table (数据库建表) · proc_text / proc_image (文本/图像处理) · agent_task / chat (智能节点) · save / save_text / save_image (保存) · split / merge (批次拆分/合并) · global (全局广播) · control / judge / task (控制/判断/任务) · wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex (等待/定时/延时/序列/闸门/分发/计数/互斥) · super / db_replica (超级节点 / 数据库副本) · music_gen / video_gen (音乐/视频生成) · net_recv / net_send (网络接收 / 网络发送) · execute (执行节点：绑定 .exe/.bat/.cmd 或任何系统可打开的文件，一键启动；execPath 存绝对路径，execIcon / execColor 自定义图标与 body 颜色便于快速定位；节点上点两次播放键或双击即执行). net_recv listens on a port/channel and forwards incoming text to downstream; net_send pushes its data-input text to a target host:port — both support tcp/udp, channel multiplexing and per-node host/port. Database nodes: input_file imports local files, db_table builds a table from them (agent extracts metadata, user confirms form), a kind "super" with db:true holds facts and compiles into a db_replica that smart nodes query with mtnode_db; you may also create a db_replica directly and set dbNodeId/dbName to point at an existing database super node. Dev nodes (开发节点): a kind "super" with dev:true is a project module block — note = module overview (required), devPath = project root, nest for onion-peel refinement; its body 建议 / 开发 / 细化 buttons all confirm via a dialog first: 建议 has the AI READ-only inspect the real project code plus the dev progress of this module and return exactly 4 next-step options the user can multi-select (with a free-text supplement), and the 开发 button in the same dialog then starts the dev session of that module with the chosen plan; 开发 asks what to build this round; 细化 confirms whether to expand children. Every confirmed 开发 / 细化 runs in a NEW session bound to that module. '
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
@@ -83,6 +83,7 @@ Prefer agent_task when a step must READ existing files and merge; prefer proc_te
 CRITICAL — for anything more than a handful of nodes, START with task nodes (kind "task") as the plan. Implementation goes INSIDE (parentTaskId) and MUST be wired from the pinned start to a success/fail end. Use kind "judge" to branch YES/NO. Do not flatten a complex job into a messy mixed graph.
 CRITICAL — to keep the canvas tidy, pack related clusters into kind "super" (update parentSuperId on children, or create super then set parentSuperId). Super nodes expose edge I/O ports (no inner input/output port nodes). Inside, wire from the super node's input ports into children, and from children back to the super node's output ports. Optionally set subFolder so new relative save paths default under that folder. Creating or packing super nodes requires canvas_super (often user approval). Prefer supers for large reusable subgraphs; use tasks for control-flow plans.
 DATABASE super nodes: create a kind "super" with db:true (subFolder holds fact files; put facts as inner input_text nodes). The user compiles it (⚙) which produces a db_replica child-top node; when a smart node (agent_task / proc_text agent) is wired to that replica it can query the facts with the mtnode_db tool (list/query/get/calc) — facts then MUST come from that tool, never from model memory.
+DEV nodes (开发节点 / 功能块 = software project architecture): create a kind "super" with dev:true, note = module overview (REQUIRED, ≤200 chars: role in the project), devPath = project root on the top block, devStatus pending/wip/done. Element hierarchy via devKind: module (功能块) → file (source file) → class / interface / enum (class-diagram elements); each type renders with a distinct frame color (module=green, file=blue, class=orange, interface=purple, enum=pink). Dev nodes nest via parentSuperId — refine onion-peel style, one layer at a time, and ALWAYS propose the outline of planned children and get the user's confirmation BEFORE creating them (细化 flow). Express relations between elements with RELATIONSHIP wires: connect entries with rel:true (+ relLabel text, relArrow forward/backward/both/none) — plain STRAIGHT UML-style lines (never elbow/orthogonal routing) that never carry data; when the user clicks a node its relationship lines light up while the rest fade back. Relation lines ARE part of layout now: auto layout / 「按关系线整理内部排版」 layers blocks along the arrow direction (cycle-closing lines degrade to soft ordering-only constraints) and the engine fans the anchors out along each block edge and slides near-coincident straight lines apart, so DO NOT hand-place dev blocks in a 5-per-row grid — just create them (no x/y) and let layout do its job. Expanded dev shells grow to fit their children automatically. Each dev node body offers 建议 / 开发 / 细化 buttons that all open a confirmation dialog first: 建议 has the AI do a READ-ONLY investigation of the real project code and the dev progress of this module, then return exactly 4 next-step options in the same dialog where the user multi-selects and may add a supplement — the 开发 button in that dialog then runs development with the picked plan (so you do not need to invent this yourself; point the user at 建议 when they ask "what next"). 开发 shows the module's title / overview / status and asks the user what to build or iterate this round; 细化 asks whether this element should be expanded further (the dialog also states when refining is unnecessary or impossible). Every confirmed action runs in a NEW session bound to that module (workspace = project root, titled 开发 · 模块名 / 细化 · 模块名); the node keeps its session history. When refining, first report the outline of planned children and get the user's confirmation BEFORE creating them (a class / interface / enum is already finest-grained — say so instead of creating nodes). When uncertain (include a plugin? tech choice?), ASK the user first.
 CRITICAL — do NOT create save after agent_task or proc_text with agent:true: those smart nodes can write files themselves; a save node would dump chat/task transcript junk to disk. Use save only after ordinary proc_text / proc_image (agent off). Old aliases save_text / save_image still work and become a unified save node.
 CRITICAL — do NOT create save after music_gen / video_gen: they write audio/video via the node's own outputPath (required). No paired/bound save node.
 CRITICAL — avoid wiring agent_task / proc_text(agent:true) as DATA inputs into other nodes: their outputs carry irrelevant session/transcript noise and often omit the key facts. Prefer file handoff: the smart node WRITES a document (md/yaml/json/…), then use wait_file (监视路径 / waitPath) as a CONTROL node wired OUT to downstream so they block until that file exists; wait_file has NO input ports and outputs NOTHING — later nodes READ the agreed path themselves. Do not wire anything into wait_file.
@@ -288,6 +289,42 @@ const NODE_SPEC = {
       description:
         'db super node display mode: super = super-node canvas form; db = database console form (query/calc/dirty-check debugging tools).',
     },
+    dev: {
+      type: 'boolean',
+      description:
+        'super node: mark as a DEV node (开发节点 / 功能块) = one module of a software project architecture. Set note = the module overview (its role in the project, ≤200 chars — REQUIRED, used by agents to locate modules). Dev nodes nest (parentSuperId) for onion-peel refinement; their body shows 建议 / 开发 / 细化 buttons that confirm in a dialog first (建议 = AI read-only review of code + progress returning 4 selectable next-step options, whose dialog also has a 开发 button that starts the chosen plan). Needs canvas_super.',
+    },
+    devPath: {
+      type: 'string',
+      description:
+        'dev super node: absolute path of the project root folder. Set on the top-level dev node; children inherit from their nearest dev ancestor.',
+    },
+    devStatus: {
+      type: 'string',
+      enum: ['pending', 'wip', 'done'],
+      description: 'dev super node: development status (default pending).',
+    },
+    devKind: {
+      type: 'string',
+      enum: ['module', 'file', 'class', 'interface', 'enum'],
+      description:
+        'dev super node: element type in the architecture hierarchy — module (功能块, default) refines into file (source file), file refines into class-diagram elements (class / interface / enum). Each type gets a distinct frame color (module=green, file=blue, class=orange, interface=purple, enum=pink).',
+    },
+    execPath: {
+      type: 'string',
+      description:
+        'execute node (执行节点): absolute path of the bound file — .exe / .bat / .cmd / .lnk or any system-openable file. The node launches it through the OS default handler (play twice or double-click to run). It has no data ports; when it is a launcher for one module, set parentSuperId to that dev node so it lives inside the feature block.',
+    },
+    execIcon: {
+      type: 'string',
+      description:
+        'execute node: icon key for quick identification (auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power).',
+    },
+    execColor: {
+      type: 'string',
+      description:
+        'execute node: body color as hex (e.g. "#1e5f4f"), or empty for the default. Helps to spot the node fast.',
+    },
     savePath: { type: 'string', description: 'save node destination. Prefer relative path under the canvas working directory (e.g. items.yaml). Extension is forced by input type: .yaml / .png / .wav / .mp4. Aliases save_text / save_image still accepted.' },
     waitPath: {
       type: 'string',
@@ -484,6 +521,25 @@ const UPDATE_SPEC = {
       description:
         'db super node display mode: super = super-node canvas form; db = database console form.',
     },
+    dev: {
+      type: 'boolean',
+      description:
+        'super: mark/unmark as DEV node (开发节点 / 功能块). Keep note = module overview (≤200 chars, required). Needs canvas_super.',
+    },
+    devPath: { type: 'string', description: 'dev super node: project root folder (absolute path).' },
+    devStatus: {
+      type: 'string',
+      enum: ['pending', 'wip', 'done'],
+      description: 'dev super node: development status.',
+    },
+    devKind: {
+      type: 'string',
+      enum: ['module', 'file', 'class', 'interface', 'enum'],
+      description: 'dev super node: element type (module → file → class/interface/enum hierarchy).',
+    },
+    execPath: { type: 'string', description: 'execute node: bound file absolute path.' },
+    execIcon: { type: 'string', description: 'execute node: icon key (auto/rocket/gear/terminal/play/bolt/wrench/folder/file/power).' },
+    execColor: { type: 'string', description: 'execute node: body color hex, or empty for default.' },
     savePath: { type: 'string' },
     waitPath: { type: 'string', description: 'wait_file: path to watch.' },
     waitIntervalSec: { type: 'number', description: 'wait_file: poll seconds 1–60.' },
@@ -628,6 +684,20 @@ const PAIR_SPEC = {
     fromIndex: {
       type: 'number',
       description: 'Source output port. judge: 0 = YES, 1 = NO. Default 0.',
+    },
+    rel: {
+      type: 'boolean',
+      description:
+        'RELATIONSHIP wire (UML-style): a plain straight line (no elbow routing), purely expresses a relation between two elements (no data flow, no execution). Clicking a node highlights its relation lines. Use for dev-node architecture diagrams (依赖/调用/实现/包含…). Ignores fromIndex.',
+    },
+    relLabel: {
+      type: 'string',
+      description: 'rel wire: text label drawn on the line (e.g. 调用 / 依赖 / 实现).',
+    },
+    relArrow: {
+      type: 'string',
+      enum: ['forward', 'backward', 'both', 'none'],
+      description: 'rel wire: arrowheads (default forward; both = bidirectional).',
     },
   },
 }
@@ -838,7 +908,8 @@ export function apply(ctx) {
       },
       connect: {
         type: 'array',
-        description: 'Wires from source to target. from/to = id, alias, or unique title.',
+        description:
+          'Wires from source to target. from/to = id, alias, or unique title. Set rel:true for a UML-style RELATIONSHIP wire (straight line, optional relLabel/relArrow; no data flow; clicking a node highlights its relation lines).',
         items: PAIR_SPEC,
       },
       disconnect: {

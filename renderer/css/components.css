@@ -575,6 +575,33 @@
   border-color: #ff6b6b !important;
 }
 
+/* 队列行内「只终止这一项」：藏在行右侧，悬停才显形 */
+.rq-stop {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: -2px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+  opacity: .35;
+  cursor: pointer;
+}
+
+.rq-item:hover .rq-stop {
+  opacity: 1;
+}
+
+.rq-stop:hover {
+  border-color: var(--red);
+  color: #ff8a8a;
+  background: rgba(255, 80, 80, .16);
+}
+
 .rq-fold {
   flex: none;
   margin-left: 4px;

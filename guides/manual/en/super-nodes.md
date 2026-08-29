@@ -54,3 +54,12 @@ Toolbar **Layout** asks whether to tidy **inside supers** as well when relevant.
 2. **Super node** tree: nested list; click **enters** that super and fits its children. The active focus is highlighted.
 
 The filter box matches nodes, drawings, and super titles / subfolders.
+
+## Two special modes
+
+Supers also come in two dedicated modes:
+
+| Mode | Entry | Purpose | See |
+| --- | --- | --- | --- |
+| **Dev node** | Right-click → Dev node (project architecture · feature block) | Software project architecture: module → file → class / interface / enum, bound to a project root; header buttons 建议 / 开发 / 细化; relationship wires express dependencies | [Dev nodes](#dev-nodes) |
+| **Database node** | Enable “Beta” in Settings, then add via right-click | Fact storage: inner “File node / Table” → ⚙ Compile → database replica; agent nodes query with `mtnode_db` | [Database nodes](#database-nodes) |
