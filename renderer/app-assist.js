@@ -570,7 +570,7 @@ async function assistSend(text) {
   const superConnectRule =
     "  · 【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动把源节点向上逐层连到其所在超级节点的外部输出端子、把目标节点所在超级节点的外部输入端子逐层桥接到目标节点、并把顶层超级节点之间相连，无需自己手动建桥接线；可一次传多对。\n";
   const devNodeRule =
-    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note = 模块概述（必填 ≤200 字，写明该模块在项目中的作用），devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）。开发节点可用 parentSuperId 嵌套（剥洋葱式一次只细化一层）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「建议」「开发」「细化」按钮：三者都先弹对话框——「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素（无需或无法细化时也要明确告知用户）。除「建议」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出内容梗概清单、经用户确认后才创建节点。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。\n" +
+    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note = 模块概述（必填 ≤200 字，写明该模块在项目中的作用），devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认；用户在头部颜色小按钮的 HSV 色板里改，Agent 也可用 update 补丁设置，改色前先征询用户）；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。开发节点可用 parentSuperId 嵌套（剥洋葱式一次只细化一层）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「建议」「开发」「细化」按钮：三者都先弹对话框——「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素（无需或无法细化时也要明确告知用户）。除「建议」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出内容梗概清单、经用户确认后才创建节点。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。\n" +
     "  · 【执行节点】kind \"execute\" = 执行节点：绑定可执行文件（execPath = 绝对路径，.exe/.bat/.cmd/.lnk 或任何系统可打开的文件），execIcon / execColor 自定义图标与 body 颜色便于快速定位。该节点独立存在、无数据端口，body 内点两次播放键或双击即用系统默认方式启动绑定文件。画布上要「一键启动某个程序 / 脚本 / 文件」时用这种节点。它与开发节点同属一个创建菜单，属于某个功能块时（如该模块的启动脚本）用 parentSuperId 放进该开发节点内部。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
@@ -2311,7 +2311,7 @@ function paintAgentSendState() {
   sendBtn.title = busy
     ? hasText
       ? I18n.t("加入发送队列（不打断当前任务）")
-      : I18n.t("终止当前任务(重启该工作目录的引擎)")
+      : I18n.t("终止本会话当前运行（只停这一路）")
     : I18n.t("发送(Enter 发送,Shift+Enter 换行)");
 }
 
@@ -3019,6 +3019,8 @@ async function agentSessionSend(text) {
   st.running = true;
   st._pending = "";
   st._liveTools = [];
+  /* 会话开始：开发节点「绑定会话运行中」即时反映到左下角运行队列 */
+  updateRunQueuePanel();
   /* 任务清单不在新一轮开始时清空：它代表「agent 建的当前清单」，
      由下一次 todo_write 覆盖，或用户在面板上手动清除 */
   if (!Array.isArray(st.todos)) st.todos = [];
@@ -3189,6 +3191,8 @@ async function agentSessionSend(text) {
     st.running = false;
     st._cancelled = false;
     st._liveTools = [];
+    /* 会话结束：开发节点从运行队列撤下 */
+    updateRunQueuePanel();
     const outcome = st._roundOutcome || "ok";
     const hasQueued = Array.isArray(st.outbox) && st.outbox.length > 0;
     /* 被「全部终止」打断 → 排队消息留在队列里等用户，不再自动接管发送 */

@@ -1405,8 +1405,13 @@ function dshRunTask(input, opts) {
   };
   /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist) */
   const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
+  /* 网关凭 cancelTag 精确关闭「这一次运行」自己的运行时进程。
+     dsh 线协议没有逐轮取消，过去只能按工作目录整批关 → 停一个会话会把同目录的
+     其它会话（含全局助手）一起打断。 */
+  runParams.cancelTag = runKey;
   S._runCancels = S._runCancels || {};
   S._runCancels[runKey] = {
+    cancelTag: runKey,
     workspace: runParams.workspace,
     model: runParams.model,
     maxTokens: runParams.maxTokens,

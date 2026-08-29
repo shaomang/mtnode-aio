@@ -549,6 +549,12 @@ const NODE_DEFAULTS = {
     db: false,
     /* db 节点展示形态：super=超节点形态；db=数据库形态（内嵌查询/调试控制台） */
     dbMode: "super",
+    /* 开发节点自定义外框颜色（#rrggbb；空 = 按元素类型默认色） */
+    devColor: "",
+    /* 开发节点 Agent 模型（devModel 空 = 未选择，跟随默认；devProvider 为智能
+       路由，由模型自动推断，未选模型时无意义）；子块未选择时继承上层 */
+    devModel: "",
+    devProvider: "",
   },
   super_io: {
     w: 132,
@@ -3975,8 +3981,9 @@ function dshEffortOf(v, fromProcText) {
   return "high";
 }
 
-/* 中断智能运行:按 runKey 关闭对应工作目录的运行时,在途 run 以错误收束。
-   runKey 缺省 = 中断全部在途 dsh 运行(一键终止语义);并行会话/节点各持自己的 runKey。 */
+/* 中断智能运行:dsh 线协议无逐轮取消,只能关掉该次运行自己的运行时进程。
+   runKey = 那次运行登记的 cancelTag(会话 agent:<id> / 节点 node.id / 助手 assist),
+   网关据此精确关闭,不会波及同工作目录里其它并行会话;缺省 = 中断全部在途运行。 */
 function dshCancelActive(runKey) {
   const map = (S && S._runCancels) || {};
   const keys = runKey ? [String(runKey)] : Object.keys(map);
@@ -3985,7 +3992,7 @@ function dshCancelActive(runKey) {
     const h = map[k];
     if (!h) continue;
     delete map[k];
-    list.push(h);
+    list.push({ cancelTag: h.cancelTag || k, workspace: h.workspace });
   }
   if (!list.length) return Promise.resolve();
   return Promise.all(list.map((p) => window.api.dshCancel(p).catch(() => {})));
@@ -4781,11 +4788,14 @@ function toast(msg, kind) {
 function nodeKindCls(node) {
   if (!node) return "proc";
   if (node.kind === "proc_text" && node.agent) return "agent";
+  /* 开发节点（super+dev）：队列行用独立 kind-dev 类（样式 + 标签） */
+  if (node.kind === "super" && node.dev && !node.db) return "dev";
   return KIND_CLS[node.kind] || "proc";
 }
 function nodeKindLabel(node) {
   if (!node) return "";
   if (node.kind === "proc_text" && node.agent) return I18n.t("智能");
+  if (node.kind === "super" && node.dev && !node.db) return I18n.t("开发");
   const map = {
     proc_text: "文本处理",
     proc_image: "图像生成",
@@ -4879,6 +4889,17 @@ function nodeKindPurpose(node) {
   return splitCtxParenLabel(I18n.t(key)).hint;
 }
 
+/* 开发节点在运行队列里的来源说明（自身 / 子节点 / 绑定会话），
+   与画布呼吸灯/徽标的 devNodeRunningState 判定同源 */
+function devRunStateText(node) {
+  const st =
+    typeof devNodeRunningState === "function" ? devNodeRunningState(node) : null;
+  if (st === "self") return I18n.t("自身运行中");
+  if (st === "desc") return I18n.t("子节点运行中");
+  if (st === "sess") return I18n.t("绑定会话运行中");
+  return "";
+}
+
 function collectRunQueue() {
   const running = [];
   const waiting = [];
@@ -4891,6 +4912,13 @@ function collectRunQueue() {
   const nodes = (S.wf && S.wf.nodes) || [];
   for (const n of nodes) {
     if (n.running) push(n, running);
+  }
+  /* 开发节点（super+dev）：自身 / 后代节点 / 绑定会话任一运行 → 进「处理中」
+     （与处理节点同款展示：点击定位、逐条停止；判定与画布呼吸灯/徽标同源） */
+  if (typeof devRunningNodes === "function") {
+    for (const n of devRunningNodes(nodes)) {
+      if (!seen.has(n.id)) push(n, running);
+    }
   }
   /* 后台画布上仍在跑的节点（跨工作流补跑时） */
   if (S.runPromises) {
@@ -5039,7 +5067,10 @@ function updateRunQueuePanel() {
       row.type = "button";
       row.className =
         "rq-item kind-" + nodeKindCls(n) + (st === "run" ? " is-run" : " is-wait");
-      row.title = I18n.t("点击定位到节点");
+      row.title =
+        (n.kind === "super" && n.dev && !n.db
+          ? devRunStateText(n) + " · "
+          : "") + I18n.t("点击定位到节点");
       const icon = document.createElement("span");
       icon.className = "rq-icon";
       icon.setAttribute("aria-hidden", "true");
@@ -6684,9 +6715,11 @@ function relSeparateStraight(items) {
     it.b = B;
   }
 }
-/* 规划一个层级（scope）内所有关系线的几何：
-   贴边锚点 → 同侧多线扇形分散 → 近似重合的直线彼此滑开 → 一条直线段 */
-function relPlanScope(items) {
+/* 一趟锚点规划：贴边出射 → 同一节点同一侧的多条线沿该边扇形散开。
+   refine=false：按「对端方块中心」排序（第一趟）。
+   refine=true ：按「对端上一趟算出的锚点」排序 —— 汇聚到同一侧的几条线按真实来向定序，
+                 两端互相呼应，消掉这一类必然出现的 X 形交叉。 */
+function relPlanAnchors(items, refine) {
   const attach = new Map();
   for (const it of items) {
     const ca = relRectCenter(it.ra),
@@ -6707,7 +6740,12 @@ function relPlanScope(items) {
       end: "a",
       rect: it.ra,
       side: sa,
-      peer: sa === "l" || sa === "r" ? cb.y : cb.x,
+      peer:
+        refine && it.b
+          ? alongOf(sa, it.b)
+          : sa === "l" || sa === "r"
+            ? cb.y
+            : cb.x,
       natural: alongOf(sa, ba),
     });
     push(it.to.id + "|" + sb, {
@@ -6715,7 +6753,12 @@ function relPlanScope(items) {
       end: "b",
       rect: it.rb,
       side: sb,
-      peer: sb === "l" || sb === "r" ? ca.y : ca.x,
+      peer:
+        refine && it.a
+          ? alongOf(sb, it.a)
+          : sb === "l" || sb === "r"
+            ? ca.y
+            : ca.x,
       natural: alongOf(sb, bb),
     });
   }
@@ -6743,13 +6786,102 @@ function relPlanScope(items) {
       const along = vals[i];
       const pt = relSidePoint(rec.rect, rec.side, along);
       if (rec.end === "a") {
+        if (rec.it.alongA !== along) moved++;
         rec.it.alongA = along;
         rec.it.a = pt;
       } else {
+        if (rec.it.alongB !== along) moved++;
         rec.it.alongB = along;
         rec.it.b = pt;
       }
     });
+  }
+  return moved;
+}
+/* 同一节点同一侧的几条线：本端沿边顺序与「对端锚点顺序」相反的配对数。
+   这正是视觉上 X 形交叉的来源（两条线进出同一块方块的顺序颠倒了）。 */
+function relFanInversions(items) {
+  const groups = new Map();
+  const vert = (side) => side === "l" || side === "r";
+  for (const it of items) {
+    if (!it.a || !it.b || !it.sides) continue;
+    const put = (key, along, far) => {
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ along, far });
+    };
+    put(
+      it.from.id + "|" + it.sides[0],
+      it.alongA,
+      vert(it.sides[1]) ? it.b.y : it.b.x,
+    );
+    put(
+      it.to.id + "|" + it.sides[1],
+      it.alongB,
+      vert(it.sides[0]) ? it.a.y : it.a.x,
+    );
+  }
+  let bad = 0;
+  for (const list of groups.values())
+    for (let i = 0; i < list.length; i++)
+      for (let j = i + 1; j < list.length; j++)
+        if ((list[i].along - list[j].along) * (list[i].far - list[j].far) < 0)
+          bad++;
+  return bad;
+}
+/* 两条线段是否 X 形穿越（端点附近相接不算：几根线连到同一块方块 ≠ 互相交叉） */
+function relSegsCross(s1, s2) {
+  const d = (s1[0] - s1[2]) * (s2[1] - s2[3]) - (s1[1] - s1[3]) * (s2[0] - s2[2]);
+  if (!d) return false;
+  const t =
+    ((s1[0] - s2[0]) * (s2[1] - s2[3]) - (s1[1] - s2[1]) * (s2[0] - s2[2])) / d;
+  const u =
+    ((s1[0] - s2[0]) * (s1[1] - s1[3]) - (s1[1] - s2[1]) * (s1[0] - s1[2])) / d;
+  return t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98;
+}
+/* 当前锚点下直线两两 X 交叉的对数（看得见的毛病，排序首要目标） */
+function relGeomScore(items) {
+  const segs = [];
+  for (const it of items) {
+    if (!it.a || !it.b) continue;
+    segs.push([it.a.x, it.a.y, it.b.x, it.b.y]);
+  }
+  let n = 0;
+  for (let i = 0; i < segs.length; i++)
+    for (let j = i + 1; j < segs.length; j++)
+      if (relSegsCross(segs[i], segs[j])) n++;
+  return n;
+}
+function relAnchorSnapshot(items) {
+  return items.map((it) => ({
+    a: it.a,
+    b: it.b,
+    alongA: it.alongA,
+    alongB: it.alongB,
+    sides: it.sides,
+  }));
+}
+/* 锚点收敛的趟数上限与线数上限（打分是 O(E²)，超限就只走第一趟） */
+const REL_REFINE_MAX = 120;
+/* 规划一个层级（scope）内所有关系线的几何：
+   贴边锚点 → 汇聚侧按「对端真实来向」重新散开（只在交叉确实变少时接受，抖动/变差立刻回退）
+   → 近似重合的直线彼此滑开 → 一条直线段 → 文字避让 */
+function relPlanScope(items) {
+  relPlanAnchors(items, false);
+  /* 主：直线互相穿越的对数；次：同侧汇聚顺序颠倒的对数（打平时继续往下收敛） */
+  const scoreOf = (list) => relGeomScore(list) * 1000 + relFanInversions(list);
+  if (items.length > 1 && items.length <= REL_REFINE_MAX) {
+    let snap = relAnchorSnapshot(items);
+    let best = scoreOf(items);
+    for (let pass = 0; pass < 2 && best > 0; pass++) {
+      relPlanAnchors(items, true);
+      const sc = scoreOf(items);
+      if (sc >= best) {
+        items.forEach((it, i) => Object.assign(it, snap[i]));
+        break;
+      }
+      best = sc;
+      snap = relAnchorSnapshot(items);
+    }
   }
   relSeparateStraight(items);
   /* 线上文字：放在中点法线一侧，并与已放文字互相让开 */
@@ -7210,7 +7342,8 @@ function execColorOf(node) {
   const c = node && node.execColor;
   return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c) ? c : "";
 }
-/* 执行绑定文件：shellOpenPath 用系统默认方式启动（.exe/.bat/.cmd 直接运行，其它文件用默认应用打开） */
+/* 执行绑定文件：独立进程启动（win32 走 cmd /c start → 新控制台 + 新进程组，
+   不随 MTNode 主程序退出而关闭）；旧版 preload 无 detached 通道时回退 shellOpenPath */
 async function runExecuteNode(node) {
   if (!isExecuteNode(node)) return;
   const p = String(node.execPath || "").trim();
@@ -7238,7 +7371,9 @@ async function runExecuteNode(node) {
   renderCanvas();
   let r = null;
   try {
-    r = await window.api.shellOpenPath(p);
+    r = await (window.api.shellOpenPathDetached
+      ? window.api.shellOpenPathDetached(p)
+      : window.api.shellOpenPath(p));
   } catch (err) {
     r = { ok: false, error: (err && err.message) || String(err) };
   }
@@ -7445,7 +7580,7 @@ function devRefinePrompt(node, scopeText) {
   );
   lines.push(
     I18n.t(
-      "4. 用户确认后，用 mtnode_canvas_edit 创建子开发节点：kind=super、dev=true、devKind=file|class|interface|enum、parentSuperId=本节点、note=一句话概述；元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头）。",
+      "4. 用户确认后，用 mtnode_canvas_edit 创建子开发节点：kind=super、dev=true、devKind=file|class|interface|enum、parentSuperId=本节点、note=一句话概述；文件节点的标题用相对项目根的路径（如 renderer/app.js，便于「打开」按钮定位源码）；元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头）。",
     ),
   );
   lines.push(
@@ -7469,6 +7604,12 @@ async function refineDevNode(node) {
     );
   const rows = [
     [I18n.t("元素类型"), I18n.t(DEV_KIND_LABEL[dk] || "模块")],
+    [
+      I18n.t("Agent 模型"),
+      typeof devModelDialogText === "function"
+        ? devModelDialogText(node)
+        : I18n.t("自动（跟随默认）"),
+    ],
     [I18n.t("项目根目录"), p || I18n.t("（未设置）")],
     [
       I18n.t("现有子元素"),
@@ -7503,7 +7644,7 @@ async function refineDevNode(node) {
     hint: blocked
       ? ""
       : I18n.t(
-          "确认 = 新会话运行（工作区 = 项目根目录 · 标题「细化 · 模块名」）· Esc 取消",
+          "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· Esc 取消",
         ),
     actions: blocked
       ? [{ id: "cancel", label: I18n.t("知道了") }]
@@ -7524,7 +7665,13 @@ async function refineDevNode(node) {
   S.agentActiveId = sess.id;
   await persistAgentSession();
   scheduleSave(true);
-  setView("agent");
+  renderCanvas();
+  toast(
+    I18n.t("已创建细化会话「") +
+      (sess.title || "") +
+      I18n.t("」并在后台运行（留在画布 · 左下角队列 / 会话列表可看进度）"),
+    "ok",
+  );
   try {
     await agentSessionSend(devRefinePrompt(node, res.text));
   } catch (err) {
@@ -13716,6 +13863,15 @@ function bindCanvas() {
       ev.preventDefault();
       return;
     }
+    /* 开发节点的弹出层（HSV 色板 / Agent 模型清单）：Esc 收起（在 Hex 输入框里也生效） */
+    if (ev.key === "Escape" && (S.uiDevColorNode || S.uiDevModelNode)) {
+      ev.preventDefault();
+      if (S.uiDevModelNode && typeof closeDevModelPicker === "function")
+        closeDevModelPicker();
+      if (S.uiDevColorNode && typeof closeDevColorPicker === "function")
+        closeDevColorPicker();
+      return;
+    }
     /* 查找栏内：不触发画布 Delete / G 等快捷键 */
     if (isCanvasFindBarTarget(ev.target)) return;
     /* 节点 / 绘制文字等输入中：只保留引用菜单，不触发任何画布快捷键 */
@@ -13873,6 +14029,24 @@ function bindCanvas() {
             '.wf-node[data-nid="' + S.uiBgRmNode + '"] .n-bgrm-btn',
           );
           if (!btn || !btn.contains(ev.target)) closeBgRmPop();
+        }
+      }
+      if (S.uiDevModelNode) {
+        const pop = $("#devModelPop");
+        if (pop && pop.classList.contains("on") && !pop.contains(ev.target)) {
+          const btn = document.querySelector(
+            '.wf-node[data-nid="' + S.uiDevModelNode + '"] .n-dev-model',
+          );
+          if (!btn || !btn.contains(ev.target)) closeDevModelPicker();
+        }
+      }
+      if (S.uiDevColorNode) {
+        const pop = $("#devColorPop");
+        if (pop && pop.classList.contains("on") && !pop.contains(ev.target)) {
+          const btn = document.querySelector(
+            '.wf-node[data-nid="' + S.uiDevColorNode + '"] .n-dev-color',
+          );
+          if (!btn || !btn.contains(ev.target)) closeDevColorPicker();
         }
       }
     },
@@ -14370,6 +14544,79 @@ async function stopNode(node) {
     if (node.timerArmed || node.running) disarmTimerNode(node, false);
     return;
   }
+  /* 开发节点（super+dev）：运行态可能来自后代节点 / 绑定会话（自身 running 未必为 true）。
+     逐条停止 = 递归停掉块内运行的后代（含嵌套开发块与其会话）+ 本块绑定的运行会话。 */
+  if (node.kind === "super" && node.dev && !node.db) {
+    const devRun =
+      typeof devNodeRunningState === "function" ? devNodeRunningState(node) : null;
+    if (!devRun) return;
+    let nStop = 0;
+    const stopSubtree = (host) => {
+      const all = (S.wf && S.wf.nodes) || [];
+      for (const c of all) {
+        if (!c || nodeParentSuperId(c) !== host.id) continue;
+        if (typeof isSuperIoNode === "function" && isSuperIoNode(c)) continue;
+        if (c.kind === "super" && c.dev && !c.db) {
+          if (
+            typeof devNodeRunningState === "function" &&
+            devNodeRunningState(c)
+          ) {
+            stopSubtree(c);
+            for (const s of devSessionsOf(c)) {
+              if (sessionIsRunning(s)) {
+                s._cancelled = true;
+                s.running = false;
+                nStop++;
+                try {
+                  dshCancelActive("agent:" + s.id);
+                } catch (_) {}
+              }
+            }
+          }
+        } else if (c.running) {
+          bumpNodeStop(c);
+          if (c._abKey) {
+            try {
+              window.api.apiAbort(c._abKey);
+            } catch (_) {}
+          }
+          c._aborted = true;
+          c.running = false;
+          c.error = I18n.t("已手动停止");
+          nStop++;
+        }
+      }
+    };
+    stopSubtree(node);
+    for (const s of devSessionsOf(node)) {
+      if (sessionIsRunning(s)) {
+        s._cancelled = true;
+        s.running = false;
+        nStop++;
+        try {
+          dshCancelActive("agent:" + s.id);
+        } catch (_) {}
+      }
+    }
+    node._aborted = true;
+    if (node.running) {
+      node.running = false;
+      node.error = I18n.t("已手动停止");
+      nStop++;
+    }
+    toast(
+      nStop > 0
+        ? I18n.t("已停止该功能块的运行任务") + "（" + nStop + "）"
+        : I18n.t("该功能块已无运行任务"),
+      "warn",
+    );
+    renderCanvas();
+    renderStatus();
+    updateRunQueuePanel();
+    if (S.view === "agent") renderAgentSession();
+    scheduleSave(true);
+    return;
+  }
   if (node.kind === "delayer" || node.kind === "sequencer" || node.kind === "splitter") {
     if (!node.running) return;
     node._aborted = true;
@@ -14425,16 +14672,23 @@ async function stopNode(node) {
     return;
   }
   if (isDshTask(node) || (node.kind === "chat" && node.agent)) {
-    /* dsh 线协议无逐轮取消:关闭该工作目录的运行时来真正中断在途请求 */
+    /* dsh 线协议无逐轮取消:关掉「这一次运行」自己的运行时进程
+       （网关按 cancelTag 精确定位，不再按工作目录整批关，不会波及别的会话） */
     dshCancelActive(node.id);
     node._aborted = true;
     node.running = false;
-    node.error = I18n.t("已请求中断(引擎正在重启该工作目录)");
+    node.error = I18n.t("已请求中断本次运行");
     if (node.kind === "agent_task" && node.agentSessionId) {
       const sess = agentSessions().find((s) => s.id === node.agentSessionId);
-      if (sess) sess.running = false;
+      if (sess) {
+        /* 绑定会话可能是从「会话视图」起跑的（runKey = agent:<会话id>），
+           只 cancel node.id 停不掉它 → 两个键都停，并标记成用户主动终止 */
+        sess._cancelled = true;
+        sess.running = false;
+        dshCancelActive("agent:" + sess.id);
+      }
     }
-    toast(I18n.t("已请求中断,正在重启该工作目录的引擎…"), "warn");
+    toast(I18n.t("已请求中断本次运行…"), "warn");
     renderCanvas();
     renderStatus();
     if (S.view === "agent") renderAgentSession();
@@ -18997,14 +19251,18 @@ function syncDevSessionTitles(node) {
 /* 每次「开发 / 细化」都新建会话运行：上下文干净，工作区 = 项目根 */
 function createDevSessionForNode(node, mode) {
   if (!node || node.kind !== "super" || !node.dev) return null;
+  /* 该功能块（或就近上层功能块）选定的 Agent 模型：新建绑定会话直接沿用；
+     都没选则保持原有默认（DeepSeek 官方路由 + 引擎默认模型） */
+  const eff =
+    typeof devAgentModelOf === "function" ? devAgentModelOf(node) : null;
   const list = agentSessions();
   const sess = {
     id: uid("as"),
     title: devSessionTitleOf(node, mode),
     workspace: devPathOf(node) || dshWorkspaceOf(node),
     preset: "standard",
-    provider: "deepseek-official",
-    model: "",
+    provider: (eff && eff.provider) || "deepseek-official",
+    model: (eff && eff.model) || "",
     effort: "high",
     messages: [],
     archived: false,
@@ -19060,6 +19318,12 @@ async function developDevNode(node) {
   const rows = [
     [I18n.t("元素类型"), I18n.t(DEV_KIND_LABEL[dk] || "模块")],
     [I18n.t("开发状态"), devStatusText(st)],
+    [
+      I18n.t("Agent 模型"),
+      typeof devModelDialogText === "function"
+        ? devModelDialogText(node)
+        : I18n.t("自动（跟随默认）"),
+    ],
     [I18n.t("项目根目录"), p || I18n.t("（未设置）")],
     [
       I18n.t("下层元素"),
@@ -19095,7 +19359,7 @@ async function developDevNode(node) {
       requiredMsg: I18n.t("请填写本次希望开发或迭代的内容"),
     },
     hint: I18n.t(
-      "确认 = 新会话运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中）· Ctrl+Enter 提交 · Esc 取消",
+      "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· Ctrl+Enter 提交 · Esc 取消",
     ),
     requireText: true,
     actions: [
@@ -19106,7 +19370,8 @@ async function developDevNode(node) {
   if (!res || res.action !== "go") return;
   await startDevSessionWithText(node, String(res.text || "").trim());
 }
-/* 「开发」与「建议 → 开发」共用的收尾：新建绑定会话 → 状态转进行中 → 切到会话视图运行 */
+/* 「开发」与「建议 → 开发」共用的收尾：新建绑定会话 → 状态转进行中 → 后台运行（留在画布，不跳会话视图）。
+ * 会话运行中在画布上由节点「运行中」徽标（sess 态）+ 左下角运行队列展示，用户可随时去会话列表查看。 */
 async function startDevSessionWithText(node, text) {
   const body = String(text || "").trim();
   if (!node || node.kind !== "super" || !node.dev || !body) return;
@@ -19117,7 +19382,12 @@ async function startDevSessionWithText(node, text) {
   await persistAgentSession();
   scheduleSave(true);
   renderCanvas();
-  setView("agent");
+  toast(
+    I18n.t("已创建开发会话「") +
+      (sess.title || "") +
+      I18n.t("」并在后台运行（留在画布 · 左下角队列 / 会话列表可看进度）"),
+    "ok",
+  );
   try {
     await agentSessionSend(body);
   } catch (err) {

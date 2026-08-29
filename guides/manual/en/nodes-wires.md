@@ -11,6 +11,7 @@ For large graphs, pack clusters with [Super nodes](#super-nodes), or select node
 ## Ports and wires
 
 - Drag **output** (right) to **input** (left). Loops are rejected.
+- **Port text always sits outside the node**: input-side labels (`P` / `L`, gate numbers, `Control`…) to the left, output-side labels (`Content` / `Control`, numbers…) to the right, on the same line as their port — ports are only 12 px apart, so text above a port would hide its neighbours.
 - Nodes start with one input; a new idle port often appears after you connect.
 - **Control wires are gold**—pulses only (timer, gate, run/clear), not data.
 - **Global node** takes inputs only. Process / agent-task / judge nodes **click the top-left type icon** to subscribe (icon turns rainbow). Dragging the icon moves the node and does not toggle.

@@ -1259,10 +1259,26 @@ function nodeElement(node) {
         ? "ctrl " + nodeKindIconCls(node)
         : KIND_CLS[node.kind] || "proc";
   el.className = "wf-node " + kindCls + (isSel(node.id) ? " sel" : "");
-  /* 开发节点：元素类型外框配色 + 关系线起点高亮 */
+  /* 开发节点：元素类型外框配色 + 关系线起点高亮 + 运行中呼吸灯/徽标 */
+  let devRun = null;
   if (node.kind === "super" && node.dev && !node.db) {
     el.classList.add("dev-el", "dev-el-" + (devKindOf(node) || "module"));
+    /* 用户自定义颜色（devColor）：覆盖元素类型默认外框色；--dev-color 外框 / --dev-glow 呼吸灯 */
+    const dc = typeof devColorOf === "function" ? devColorOf(node) : "";
+    if (dc) {
+      el.classList.add("dev-custom-color");
+      el.style.setProperty("--dev-color", dc);
+      const rgb =
+        typeof hexToRgbTriplet === "function" ? hexToRgbTriplet(dc) : null;
+      if (rgb) el.style.setProperty("--dev-glow", rgb);
+      else el.style.removeProperty("--dev-glow");
+    }
     if (S.pendingRel === node.id) el.classList.add("rel-src");
+    devRun =
+      typeof devNodeRunningState === "function"
+        ? devNodeRunningState(node)
+        : null;
+    if (devRun) el.classList.add("dev-running", "dev-running-" + devRun);
   }
   /* 执行节点：自定义 body 颜色（--exec-color）便于快速定位 */
   if (node.kind === "execute") {
@@ -1289,15 +1305,22 @@ function nodeElement(node) {
      接线排 CSS 已固定为从上至下占满（菜单条下方 28px 起到底部），无需 JS 注入带位置 */
   el.style.setProperty("--nw", _nsz.w + "px");
   el.style.setProperty("--nh", _nsz.h + "px");
-  /* 插排顶部小标签：左侧输入排写“输入”、右侧输出排写“输出”（小字；展开超节点时隐藏，由子画布端子排标签接管） */
-  const labIn = document.createElement("i");
-  labIn.className = "n-port-label n-pl-in";
-  labIn.textContent = I18n.t("输入");
-  const labOut = document.createElement("i");
-  labOut.className = "n-port-label n-pl-out";
-  labOut.textContent = I18n.t("输出");
-  el.appendChild(labIn);
-  el.appendChild(labOut);
+  /* 接线排文字（输入 / 输出）：一律放到节点「外侧」——输入贴左缘外、输出贴右缘外，
+     与端子同一水平线；不再占用 16px 插排宽度 → 绝不遮挡上下相邻端子。
+     某一侧没有端子时不创建该侧文字（保存 / 全局 / 发送 / 执行等）。
+     展开的超级节点也用卡片这一份文字（子画布端子排与它同侧同行）。 */
+  if (inputCount(node) > 0) {
+    const labIn = document.createElement("i");
+    labIn.className = "n-port-label n-pl-in";
+    labIn.textContent = I18n.t("输入");
+    el.appendChild(labIn);
+  }
+  if (outputCount(node) > 0) {
+    const labOut = document.createElement("i");
+    labOut.className = "n-port-label n-pl-out";
+    labOut.textContent = I18n.t("输出");
+    el.appendChild(labOut);
+  }
   if (superIsOpenShell(node))
     el.classList.add("super-open");
 
@@ -1771,7 +1794,8 @@ function nodeElement(node) {
       };
       head.appendChild(dbBtn);
     }
-    /* 开发节点（功能块）：元素类型徽章 + 「细化」+ 「建议」+ 「开发」状态按钮 */
+    /* 开发节点（功能块）：菜单栏只保留元素类型徽章；「细化 / 建议 / 开发」等动作
+       按钮统一放在折叠卡下方按钮组与右键菜单，避免菜单栏拥挤 */
     if (node.dev && !node.db) {
       const dk = devKindOf(node) || "module";
       const kindChip = document.createElement("span");
@@ -1779,64 +1803,31 @@ function nodeElement(node) {
       kindChip.textContent = I18n.t(DEV_KIND_LABEL[dk] || "模块");
       kindChip.title = I18n.t("元素类型（右键节点可切换）");
       head.appendChild(kindChip);
-      if (dk === "module" || dk === "file") {
-        const refineBtn = document.createElement("button");
-        refineBtn.type = "button";
-        refineBtn.className = "n-chip n-chip-refine";
-        refineBtn.textContent = I18n.t("细化");
-        refineBtn.title = I18n.t(
-          "细化：弹窗确认后在新会话中展开本模块（Agent 先给梗概 · 经你确认才建节点）；无需或无法细化时也会提示",
-        );
-        refineBtn.setAttribute("aria-label", refineBtn.title);
-        refineBtn.onclick = (ev) => {
-          ev.stopPropagation();
-          refineDevNode(node);
-        };
-        head.appendChild(refineBtn);
+      /* 自定义颜色：小按钮显示当前色（元素类型默认色或用户修改色），点击展开 HSV 色板 */
+      if (typeof devColorButtonEl === "function") {
+        head.appendChild(devColorButtonEl(node));
       }
-      /* 「建议」：让 AI 读真实代码 + 开发进度，给出 4 条下一步方案（多选 + 补充 → 就地开发） */
-      const sgBtn = document.createElement("button");
-      sgBtn.type = "button";
-      const hasCached = !!(node.devSuggest && Array.isArray(node.devSuggest.items) && node.devSuggest.items.length >= 2);
-      sgBtn.className = "n-chip n-chip-suggest" + (hasCached ? " has" : "");
-      sgBtn.textContent = I18n.t("建议");
-      sgBtn.title =
-        I18n.t(
-          "建议：弹窗确认后由 AI 依据项目真实代码与开发进度评估下一步（给出 4 条方案 · 可多选 + 补充 · 选完可就地开发）",
-        ) +
-        (hasCached
-          ? " · " + I18n.t("已有上次建议，可直接查看")
-          : "");
-      sgBtn.setAttribute("aria-label", sgBtn.title);
-      sgBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        suggestDevNode(node);
-      };
-      head.appendChild(sgBtn);
-      const st = devStatusOf(node);
-      const devBtn = document.createElement("button");
-      devBtn.type = "button";
-      devBtn.className = "n-chip n-chip-dev " + st;
-      devBtn.textContent =
-        st === "done"
-          ? I18n.t("✓ 已完成")
-          : st === "wip"
-            ? I18n.t("开发中")
-            : I18n.t("开发");
-      devBtn.title =
-        I18n.t(
-          "点击填写本次开发内容（弹窗确认后在新会话中运行 · 工作区 = 项目根目录）",
-        ) +
-        " · " +
-        I18n.t("状态") +
-        "：" +
-        devStatusText(st);
-      devBtn.setAttribute("aria-label", devBtn.title);
-      devBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        developDevNode(node);
-      };
-      head.appendChild(devBtn);
+      /* Agent 模型：小按钮显示当前生效模型（含就近继承），点击展开模型选择弹层 */
+      if (typeof devModelButtonEl === "function") {
+        head.appendChild(devModelButtonEl(node));
+      }
+      /* 运行徽标：自身 / 后代节点 / 绑定会话任一在跑时显示（配合边框呼吸灯） */
+      if (devRun) {
+        const runChip = document.createElement("span");
+        runChip.className = "n-chip n-chip-run " + devRun;
+        const ring = document.createElement("i");
+        ring.className = "run-ring";
+        runChip.appendChild(ring);
+        runChip.appendChild(document.createTextNode(I18n.t("运行中")));
+        runChip.title =
+          devRun === "self"
+            ? I18n.t("本功能块正在运行（作为超级节点被执行）")
+            : devRun === "desc"
+              ? I18n.t("功能块内有节点正在运行（含子开发节点）")
+              : I18n.t("绑定的开发 / 细化会话正在运行");
+        runChip.setAttribute("aria-label", runChip.title);
+        head.appendChild(runChip);
+      }
     }
   }
   if (isSaveNode(node)) {
@@ -4623,6 +4614,27 @@ function buildBody(node, body) {
         stRow.className = "n-dev-status " + st;
         stRow.textContent = devStatusText(st);
         devBar.appendChild(stRow);
+        /* 生效的 Agent 模型：本块或就近上层所选（未选不占位） */
+        const effModel =
+          typeof devAgentModelOf === "function" ? devAgentModelOf(node) : null;
+        if (effModel) {
+          const mRow = document.createElement("div");
+          mRow.className =
+            "n-dev-model-info" + (effModel.inherited ? " inherited" : "");
+          mRow.textContent =
+            "🧠 " +
+            effModel.model +
+            (effModel.inherited
+              ? I18n.t("（继承自「") +
+                (effModel.source.title || effModel.source.id) +
+                I18n.t("」）")
+              : "");
+          mRow.title =
+            typeof devModelScopeText === "function"
+              ? devModelScopeText(node)
+              : effModel.model;
+          devBar.appendChild(mRow);
+        }
         const btnRow = document.createElement("div");
         btnRow.className = "n-dev-btns";
         const dk = devKindOf(node) || "module";
@@ -4639,6 +4651,21 @@ function buildBody(node, body) {
             refineDevNode(node);
           };
           btnRow.appendChild(rbtn);
+        }
+        /* 文件节点：打开源码文件（标题 = 相对项目根 devPath 的路径，或绝对路径） */
+        if (dk === "file") {
+          const obtn = document.createElement("button");
+          obtn.type = "button";
+          obtn.className = "n-dev-file-open";
+          obtn.textContent = I18n.t("打开");
+          obtn.title = I18n.t(
+            "打开该文件节点对应的源码文件（标题为相对项目根的路径 · 也支持绝对路径）",
+          );
+          obtn.onclick = (ev) => {
+            ev.stopPropagation();
+            openDevFileNode(node);
+          };
+          btnRow.appendChild(obtn);
         }
         const sbtn = document.createElement("button");
         sbtn.type = "button";
@@ -4766,15 +4793,8 @@ function buildBody(node, body) {
         bindSuperInnerSinkPort(p, node, poi);
         stage.appendChild(p);
       }
-      /* 子画布端子排顶部小标签（输入/输出） */
-      const labIn = document.createElement("i");
-      labIn.className = "n-port-label n-pl-in";
-      labIn.textContent = I18n.t("输入");
-      const labOut = document.createElement("i");
-      labOut.className = "n-port-label n-pl-out";
-      labOut.textContent = I18n.t("输出");
-      stage.appendChild(labIn);
-      stage.appendChild(labOut);
+      /* 端子排文字（输入 / 输出）由卡片自己绘制：子画布 overflow:hidden 会把它裁掉，
+         放不到端子排外侧 → 这里不再重复创建。 */
       stage.addEventListener("contextmenu", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
@@ -5922,7 +5942,8 @@ function buildBody(node, body) {
     }
     body.appendChild(prev);
   } else if (node.kind === "execute") {
-    /* 执行节点：自定义图标 + 标题 + 大播放键（两段式：点击预备 → 再点执行；双击直接执行） */
+    /* 执行节点：自定义图标 + 大播放键（两段式：点击预备 → 再点执行；双击直接执行）。
+       标题已显示在节点头部，body 不再重复显示标题。 */
     const tRow = document.createElement("div");
     tRow.className = "exec-title-row";
     const ic = document.createElement("span");
@@ -5930,10 +5951,6 @@ function buildBody(node, body) {
     ic.innerHTML = execIconSvg(execIconKeyOf(node));
     ic.title = I18n.t("右键节点可更换图标");
     tRow.appendChild(ic);
-    const t = document.createElement("span");
-    t.className = "exec-body-title";
-    t.textContent = node.title || I18n.t("执行节点");
-    tRow.appendChild(t);
     body.appendChild(tRow);
 
     const play = document.createElement("button");

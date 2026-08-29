@@ -851,6 +851,9 @@
     "固定节点无法删除（起点 / 终点 / 绑定保存）": "Pinned nodes cannot be deleted (start / end / bound save)",
     "已跳过固定节点（起点 / 终点 / 绑定保存）": "Skipped pinned nodes (start / end / bound save)",
     "已安装插件（点击展开查看 / 管理）": "Installed plugins (click to expand / manage)",
+    "已请求中断本次运行": "Stop requested for this run",
+    "已请求中断本次运行…": "Stop requested for this run…",
+    "终止本会话当前运行（只停这一路）": "Stop this session's run (only this one; other sessions keep going)",
     "已请求中断(引擎正在重启该工作目录)": "Interrupt requested (engine is restarting this working directory)",
     "直接删除该会话(提示确认,不可撤销)": "Delete this session (asks for confirmation; cannot be undone)",
     "终止当前任务(重启该工作目录的引擎)": "Stop current task (restart the engine for this working directory)",
@@ -2978,8 +2981,8 @@
     "细化范围（可选）": "Refinement scope (optional)",
     "例如：只展开 renderer 目录下的文件；或仅细化某个子模块。留空 = 由 Agent 自行判断。":
       "e.g. only expand files under the renderer folder; or refine just one sub-module. Leave empty = the agent decides.",
-    "确认 = 新会话运行（工作区 = 项目根目录 · 标题「细化 · 模块名」）· Esc 取消":
-      "Confirm = runs in a new session (workspace = project root · titled Refine · module name) · Esc cancels",
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· Esc 取消":
+      "Confirm = runs in the background in a new session (workspace = project root · titled Refine · module name · you stay on the canvas) · Esc cancels",
     "用户指定的细化范围：": "User-specified refinement scope: ",
     "0. 先判断是否有必要细化：若本元素已无下层结构、或项目根目录内找不到可对应的真实内容，请直接告诉用户「无需 / 无法继续细化」并说明原因，不要创建任何节点。":
       "0. First decide whether refinement is warranted: if this element has no lower-level structure, or the project root holds nothing matching it, tell the user directly that refining is unnecessary / impossible and explain why — create no nodes.",
@@ -3000,8 +3003,8 @@
       "2. First output an outline list: for each planned child give [name · type (file/class/interface/enum) · one-line role] for the user to review.",
     "3. 明确询问用户是否按此清单创建；在用户确认之前，禁止修改画布。":
       "3. Explicitly ask the user whether to create per this list; do NOT modify the canvas before confirmation.",
-    "4. 用户确认后，用 mtnode_canvas_edit 创建子开发节点：kind=super、dev=true、devKind=file|class|interface|enum、parentSuperId=本节点、note=一句话概述；元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头）。":
-      "4. After confirmation, create child dev nodes with mtnode_canvas_edit: kind=super, dev=true, devKind=file|class|interface|enum, parentSuperId=this node, note=one-line overview; express relations between elements with relationship wires (connect entries with rel:true, optional relLabel text and relArrow arrows).",
+    "4. 用户确认后，用 mtnode_canvas_edit 创建子开发节点：kind=super、dev=true、devKind=file|class|interface|enum、parentSuperId=本节点、note=一句话概述；文件节点的标题用相对项目根的路径（如 renderer/app.js，便于「打开」按钮定位源码）；元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头）。":
+      "4. After confirmation, create child dev nodes with mtnode_canvas_edit: kind=super, dev=true, devKind=file|class|interface|enum, parentSuperId=this node, note=one-line overview; title file nodes with a path relative to the project root (e.g. renderer/app.js, so the Open button can locate the source); express relations between elements with relationship wires (connect entries with rel:true, optional relLabel text and relArrow arrows).",
     "5. 不同元素类型在画布上有不同外框颜色（模块=绿、文件=蓝、类=橙、接口=紫、枚举=粉），请保持类型准确。":
       "5. Element types have distinct frame colors on canvas (module=green, file=blue, class=orange, interface=purple, enum=pink); keep the types accurate.",
     "开发 · ": "Dev · ",
@@ -3040,11 +3043,15 @@
     "例如：补该模块的错误处理与日志；按现有风格新增 XX 接口；重构某文件但不改变对外 API…":
       "e.g. add error handling and logging to this module; add an XX API in the existing style; refactor a file without changing its public API…",
     "请填写本次希望开发或迭代的内容": "Please describe what to develop or iterate this round",
-    "确认 = 新会话运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中）· Ctrl+Enter 提交 · Esc 取消":
-      "Confirm = runs in a new session (workspace = project root · titled Dev · module name · status becomes in progress) · Ctrl+Enter submits · Esc cancels",
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = runs in the background in a new session (workspace = project root · titled Dev · module name · status becomes in progress · you stay on the canvas) · Ctrl+Enter submits · Esc cancels",
     "开始开发": "Start developing",
     "开发会话启动失败：": "Failed to start the dev session: ",
     "细化会话启动失败：": "Failed to start the refinement session: ",
+    "已创建开发会话「": "Dev session created: ",
+    "已创建细化会话「": "Refine session created: ",
+    "」并在后台运行（留在画布 · 左下角队列 / 会话列表可看进度）":
+      " — running in the background (you stay on the canvas · watch progress in the bottom-left queue / session list)",
     "点击填写本次开发内容（弹窗确认后在新会话中运行 · 工作区 = 项目根目录）":
       "Click to describe this round's work (a dialog confirms, then it runs in a new session · workspace = project root)",
     "开发（填写本次开发内容…）": "Develop (describe this round's work…)",
@@ -3090,6 +3097,37 @@
     "建议（上次结果）": "Suggestions (last run)",
     "查看上次建议": "Show last suggestions",
     "确认生成建议": "Confirm · generate suggestions",
+    "节点颜色：点击展开 HSV 色板，手动修改外框与呼吸灯颜色":
+      "Node color: open the HSV picker to change the frame and glow color",
+    "节点颜色": "Node color",
+    "恢复元素类型默认色": "Restore element-type default color",
+    "无效的 Hex 颜色（示例：#6FE3A5）": "Invalid hex color (e.g. #6FE3A5)",
+    /* ===== 开发节点 Agent 模型（本功能块 + 未自行选择的子功能块共用） ===== */
+    "Agent 模型": "Agent model",
+    "Agent 模型：": "Agent model: ",
+    "自动": "Auto",
+    "自动（跟随默认）": "Auto (follow default)",
+    "本轮模型：": "This round's model: ",
+    "（继承自「": " (inherited from ",
+    "」：": ": ",
+    "」）": ")",
+    "」）· 点击为本功能块单独选择":
+      ") · click to give this block its own pick",
+    " · 点击修改（未自行选择的子功能块会继承）":
+      " · click to change (child blocks without their own pick inherit it)",
+    "未选择：本功能块与子功能块的「建议 / 开发 / 细化」跟随默认模型。":
+      "Not set: this block and its child blocks follow the default model for Suggest / Develop / Refine.",
+    "当前继承自「": "Currently inherited from ",
+    "；在此单独选择后，本功能块及其子树改用它。":
+      "; pick one here to switch this block and its whole subtree to it.",
+    "本功能块已选择：": "This block uses: ",
+    "；其下未自行选择的子功能块一并使用它。":
+      "; every child block without its own pick uses it too.",
+    "Agent 模型：自动（跟随默认）· 点击选择；选定后本功能块与未自行选择的子功能块都会用它":
+      "Agent model: auto (follows the default) · click to choose; this block and every child block without its own pick will use it",
+    "跟随默认（不指定）": "Follow default (unset)",
+    "暂无可用模型：请先在 设置 → 模型服务 中添加服务商与模型。":
+      "No models available yet: add a provider and its models in Settings → Model services first.",
     "换一批": "Another batch",
     "再试一次": "Try again",
     "停止生成": "Stop generating",
@@ -3184,6 +3222,25 @@
     "完成后更新画布上该开发节点的概述（note）与状态（devStatus），并用一句话汇报改了什么。":
       "When done, update this dev node's overview (note) and status (devStatus) on the canvas and report in one sentence what changed.",
     "状态": "Status",
+    /* ===== 开发节点：文件节点「打开」 ===== */
+    "打开该文件节点对应的源码文件（标题为相对项目根的路径 · 也支持绝对路径）":
+      "Open the source file this file node maps to (title = path relative to the project root; absolute paths also work)",
+    "无法定位文件：请先在顶层功能块设置项目根目录（devPath），并把文件节点标题改为相对路径（如 renderer/app.js）":
+      "Cannot locate the file: set the project root (devPath) on a top-level block first, and give the file node a relative-path title (e.g. renderer/app.js)",
+    "已打开：": "Opened: ",
+    /* ===== 开发节点：运行中徽标 / 呼吸灯边框 ===== */
+    "本功能块正在运行（作为超级节点被执行）":
+      "This module is running (executed as a super node)",
+    "功能块内有节点正在运行（含子开发节点）":
+      "A node inside this module is running (including nested dev nodes)",
+    "绑定的开发 / 细化会话正在运行":
+      "A bound dev / refine session is running",
+    /* ===== 开发节点：左下角运行队列（处理节点同款展示） ===== */
+    "自身运行中": "This block itself is running",
+    "子节点运行中": "Child nodes are running",
+    "绑定会话运行中": "A bound dev / refine session is running",
+    "已停止该功能块的运行任务": "Stopped this module block's running tasks",
+    "该功能块已无运行任务": "This module block has no running tasks",
     /* ===== 执行节点（绑定可执行文件 · 一键启动） ===== */
     "执行节点（绑定可执行文件 · 一键启动）":
       "Execute node (bind an executable · one-click launch)",

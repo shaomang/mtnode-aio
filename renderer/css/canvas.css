@@ -732,9 +732,13 @@
   border: 1px solid var(--bd2);
   background: linear-gradient(180deg, #1a2229, #131a20);
   user-select: none;
-  overflow: hidden;
+  /* 端子文字一律画到节点外侧（输入在左 / 输出在右），因此需要允许溢出外框。
+     overflow:clip + overflow-clip-margin 仍然裁掉圆角外的内容、.n-body 也有自己的
+     overflow:hidden，只是给「板外文字」留出 44px 通道——除端子标签外，节点内没有任何
+     元素会超出外框（接线排 ::before/::after 内嵌在左右内缘，缩放把手也是内嵌的）。 */
+  overflow: clip;
+  overflow-clip-margin: 44px;
   z-index: 2;
-  /* overflow:hidden：端子/接线排全部内嵌在节点板内，任何元素不得超出节点外框 */
   /* 浮空+厚度（范例式）：近距接触影 0 2px 4px → 中距软投影 0 7px 13px -3px → 内凹厚度 0 -3px 0 inset；
      三层层叠出“卡片悬空 + 顶部内凹边缘厚度”的效果；顶部 1px 受光内高光保留 */
   /* 最外层底板：1px 黑灰细描边 + 右下黑灰厚度块（随节点缩放/动效一起移动） */
@@ -1180,29 +1184,6 @@
 }
 
 /* ===== 开发节点（功能块 · 项目架构） ===== */
-.n-chip.n-chip-dev {
-  color: #6fe3a5;
-  border-color: rgba(111, 227, 165, .4);
-  cursor: pointer;
-}
-
-.n-chip.n-chip-dev:hover {
-  color: #fff;
-  border-color: #6fe3a5;
-  background: rgba(111, 227, 165, .12);
-}
-
-.n-chip.n-chip-dev.wip {
-  color: #ffd97a;
-  border-color: rgba(255, 217, 122, .5);
-}
-
-.n-chip.n-chip-dev.done {
-  color: #9ef0c0;
-  border-color: rgba(158, 240, 192, .55);
-  background: rgba(111, 227, 165, .08);
-}
-
 .n-dev-info {
   flex: none;
   margin-top: 6px;
@@ -1238,6 +1219,18 @@
   color: #9ef0c0;
 }
 
+/* 折叠卡里的生效模型行：本块或就近上层所选（灰字 = 继承自上层） */
+.n-dev-info .n-dev-model-info {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: #8fd8ff;
+  word-break: break-all;
+}
+
+.n-dev-info .n-dev-model-info.inherited {
+  color: var(--muted);
+}
+
 .n-dev-info .n-dev-open {
   align-self: flex-start;
   padding: 2px 10px;
@@ -1255,19 +1248,7 @@
   border-color: #6fe3a5;
 }
 
-/* 细化按钮（头部 chip / body 按钮） */
-.n-chip.n-chip-refine {
-  color: #8fd0ff;
-  border-color: rgba(143, 208, 255, .42);
-  cursor: pointer;
-}
-
-.n-chip.n-chip-refine:hover {
-  color: #fff;
-  border-color: #8fd0ff;
-  background: rgba(143, 208, 255, .12);
-}
-
+/* 细化按钮（折叠卡 body） */
 .n-dev-info .n-dev-btns {
   display: flex;
   gap: 6px;
@@ -1307,31 +1288,7 @@
   background: rgba(255, 255, 255, .06);
 }
 
-/* 建议按钮（AI 评估下一步）：节点头部 chip + 折叠卡按钮 */
-.n-chip.n-chip-suggest {
-  color: #cba6ff;
-  border-color: rgba(203, 166, 255, .45);
-  cursor: pointer;
-}
-
-.n-chip.n-chip-suggest:hover {
-  color: #fff;
-  border-color: #cba6ff;
-  background: rgba(203, 166, 255, .14);
-}
-
-/* 已有上次建议 → 小圆点，提示可直接查看而无需重跑 */
-.n-chip.n-chip-suggest.has::after {
-  content: "";
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  margin-left: 4px;
-  vertical-align: middle;
-  border-radius: 50%;
-  background: #cba6ff;
-}
-
+/* 建议按钮（AI 评估下一步）：折叠卡 body 按钮 */
 .n-dev-info .n-dev-suggest {
   padding: 2px 10px;
   font-size: 10.5px;
@@ -1346,6 +1303,23 @@
   color: #150a26;
   background: #cba6ff;
   border-color: #cba6ff;
+}
+
+/* 文件节点「打开」按钮（打开源码文件） */
+.n-dev-info .n-dev-file-open {
+  padding: 2px 10px;
+  font-size: 10.5px;
+  color: #6db4ff;
+  background: transparent;
+  border: 1px solid rgba(109, 180, 255, .45);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.n-dev-info .n-dev-file-open:hover {
+  color: #06111d;
+  background: #6db4ff;
+  border-color: #6db4ff;
 }
 
 /* 上次建议的一句话摘要 */
@@ -1437,6 +1411,143 @@
   box-shadow: inset 0 -1px 0 rgba(255, 143, 163, .26);
 }
 
+/* 开发节点自定义颜色：JS 给节点加 .dev-custom-color 并注入 --dev-color（外框）/
+   --dev-glow（呼吸灯），覆盖元素类型默认配色 */
+.wf-node.dev-el.dev-custom-color {
+  border-color: color-mix(in srgb, var(--dev-color) 66%, transparent);
+}
+.wf-node.dev-el.dev-custom-color .n-head {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dev-color) 30%, transparent);
+}
+
+/* 菜单栏颜色小按钮：圆点 = 当前色（自定义或元素类型默认色） */
+.n-dev-color {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bd2);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .05);
+  cursor: pointer;
+}
+.n-dev-color:hover {
+  border-color: rgba(255, 255, 255, .4);
+}
+.n-dev-color .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, .45);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .18);
+}
+
+/* 菜单栏 Agent 模型小按钮：🧠 + 当前生效模型（未选 = 自动 · 虚线 = 继承上层） */
+.n-dev-model {
+  flex: none;
+  max-width: 112px;
+  height: 18px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  line-height: 1;
+  color: #8fd8ff;
+  background: rgba(56, 214, 255, .07);
+  border: 1px solid rgba(56, 214, 255, .34);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.n-dev-model:hover {
+  border-color: rgba(56, 214, 255, .7);
+  color: #e6f7ff;
+}
+
+.n-dev-model .ico {
+  flex: none;
+  font-size: 10px;
+}
+
+.n-dev-model .lbl {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.n-dev-model.auto {
+  color: var(--muted);
+  background: rgba(255, 255, 255, .04);
+  border-color: var(--bd2);
+}
+
+.n-dev-model.inherited {
+  border-style: dashed;
+  color: #a8c4da;
+}
+
+/* ---- 开发节点运行中：呼吸灯边框 + 头部运行徽标 ----
+   JS 依据 devNodeRunningState() 给元素加 .dev-running（self / desc / sess 任一），
+   边框颜色与光晕按元素类型取 --dev-glow（RGB 三元组）。 */
+.wf-node.dev-el-module { --dev-glow: 111, 227, 165; }
+.wf-node.dev-el-file { --dev-glow: 109, 180, 255; }
+.wf-node.dev-el-class { --dev-glow: 255, 180, 84; }
+.wf-node.dev-el-interface { --dev-glow: 199, 146, 234; }
+.wf-node.dev-el-enum { --dev-glow: 255, 143, 163; }
+
+.wf-node.dev-el.dev-running {
+  animation: devRunBreathe 1.9s ease-in-out infinite;
+}
+/* 选中时暂停呼吸，保留 .sel 的青色选择高亮 */
+.wf-node.dev-el.dev-running.sel {
+  animation: none;
+  border-color: #7ce8ff;
+}
+@keyframes devRunBreathe {
+  0%, 100% {
+    border-color: rgba(var(--dev-glow, 111, 227, 165), .35);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 111, 227, 165), .3),
+      0 0 5px rgba(var(--dev-glow, 111, 227, 165), .2),
+      var(--nfloat);
+  }
+  50% {
+    border-color: rgba(var(--dev-glow, 111, 227, 165), .9);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 111, 227, 165), .8),
+      0 0 16px rgba(var(--dev-glow, 111, 227, 165), .55),
+      var(--nfloat);
+  }
+}
+
+/* 头部运行徽标：旋转圆环 + 文字 */
+.n-chip.n-chip-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #6fe3a5;
+  border-color: rgba(111, 227, 165, .5);
+  background: rgba(111, 227, 165, .1);
+  cursor: default;
+}
+.n-chip.n-chip-run .run-ring {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(111, 227, 165, .3);
+  border-top-color: #6fe3a5;
+  animation: devRunSpin .8s linear infinite;
+}
+@keyframes devRunSpin {
+  to { transform: rotate(360deg); }
+}
+
 /* 菜单图标着色：元素类型条目 */
 .ctx-kind-icon.kind-dk-file { color: #6db4ff }
 .ctx-kind-icon.kind-dk-class { color: #ffb454 }
@@ -1477,28 +1588,21 @@
 .exec-title-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 2px 4px 4px;
+  padding: 6px 4px 2px;
   flex: none;
 }
 .exec-body-icon {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   color: #ff9e64;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
 }
-.exec-body-icon svg { width: 16px; height: 16px; }
-.exec-body-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.exec-body-icon svg { width: 22px; height: 22px; }
 
 .exec-play {
   flex: 1;
@@ -2130,25 +2234,52 @@
   white-space: nowrap
 }
 
+/* ===== 端子文字（P/L、序号、成功/失败…）：一律放到节点外侧，与端子同一水平线。
+   相邻端子只有 12px 间距，文字放在端子上方/下方必然压住上下其他端子，
+   所以按所在侧出板：输入端子 → 文字在左；输出端子 → 文字在右。 */
 .port-badge {
   position: absolute;
-  left: 50%;
-  top: -10px;
-  transform: translateX(-50%);
-  font-size: 8px;
+  top: 50%;
+  left: auto;
+  right: auto;
+  transform: translateY(-50%);
+  font-size: 8.5px;
   line-height: 1;
   color: var(--cyan2);
   font-family: var(--mono);
   pointer-events: none;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .9), 0 0 4px rgba(0, 0, 0, .7);
+}
+
+.port.in>.port-badge {
+  right: 100%;
+  margin-right: 8px
+}
+
+.port.out>.port-badge {
+  left: 100%;
+  margin-left: 8px
+}
+
+/* 超级节点内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘 → 按所在一侧出字 */
+.port.out.super-inner-bridge>.port-badge {
+  right: 100%;
+  left: auto;
+  margin-right: 8px;
+  margin-left: 0
+}
+
+.port.in.super-inner-sink>.port-badge {
+  left: 100%;
+  right: auto;
+  margin-left: 8px;
+  margin-right: 0
 }
 
 .port-badge.zh-label {
   font-family: inherit;
-  font-size: 8px;
-  letter-spacing: 0;
-  white-space: nowrap;
-  color: var(--cyan2);
-  top: -11px;
+  letter-spacing: 0
 }
 
 @property --g-ang {
@@ -4171,37 +4302,42 @@
   box-shadow: 0 0 6px rgba(255, 143, 46, .9)
 }
 
-/* ===== 插排顶部小标签（输入 / 输出，更小字，强制单行） ===== */
+/* ===== 接线排文字（输入 / 输出）：贴到节点板「外侧」——输入在左缘外、输出在右缘外。
+   放在插排内侧时它会压住最上面的端子（插排只有 16px 宽，端子又从上往下排），
+   出板后与整排端子不再有任何遮挡关系。 */
 .n-port-label {
   position: absolute;
   top: 30px;
-  left: 0;
-  width: 16px;
-  text-align: center;
-  font-size: 6px;
+  left: -5px;
+  right: auto;
+  width: auto;
+  font-size: 8px;
   line-height: 1;
   font-style: normal;
-  color: rgba(255, 255, 255, .5);
-  text-shadow: 0 1px 1px rgba(0, 0, 0, .6);
+  letter-spacing: .3px;
+  text-align: right;
+  color: var(--cyan2);
+  opacity: .78;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .9), 0 0 4px rgba(0, 0, 0, .65);
   pointer-events: none;
   z-index: 2;
   white-space: nowrap;
-  overflow: hidden;
-  /* 必须只占一行，不换行 */
+  /* 只占一行，且整块移到左缘之外 */
+  transform: translateX(-100%);
 }
 
 .n-port-label.n-pl-out {
   left: auto;
-  right: 0
+  right: -5px;
+  text-align: left;
+  color: var(--green);
+  transform: translateX(100%)
 }
 
-/* 展开的超级节点：卡片插排隐藏，由子画布端子排标签接管（贴在子画布左右端子排顶部） */
+/* 展开的超级节点：卡片外侧端子不存在，端子排是子画布的左右缘，
+   内侧第一孔约在板顶下方 54px → 文字与那一行对齐（卡片本身可溢出 44px） */
 .wf-node.super.super-open>.n-port-label {
-  display: none
-}
-
-.super-stage>.n-port-label {
-  top: 4px
+  top: 50px
 }
 
 /* 端子连接提示（可移入点击定位） */

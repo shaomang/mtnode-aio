@@ -9,7 +9,7 @@
  *   [5] 已有缓存：查看上次建议（不重跑模型）·「换一批」重新评估
  *   [6] 键盘：数字键多选 · Ctrl+Enter 开发 · Esc 取消（并中断调研）
  *   [7] 异常：模型报错 / 不按契约返回 / 用户取消 / 误调非开发节点
- *   [8] 接线：脚本引入 · 三处按钮 · 样式 · 工具描述与技能 · 英文词条 */
+ *   [8] 接线：脚本引入 · 两处「建议」按钮 + 文件「打开」 · 样式 · 工具描述与技能 · 英文词条 */
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -194,7 +194,28 @@ function makeSandbox(modelText, runError, holdRun) {
         f.__frag = true;
         return f;
       },
+      /* 弹出层（HSV 色板 / 模型清单）挂在 body 上，按 id 取用 */
+      body: (() => {
+        const b = mkEl("body");
+        b.__body = true;
+        return b;
+      })(),
+      getElementById(id) {
+        if (this.body.id === id) return this.body;
+        return walk(this.body, []).filter((d) => d.id === id)[0] || null;
+      },
+      /* 未整盘重绘画布时，按钮就地刷新会用到 document 级查询 */
+      querySelector: () => null,
+      querySelectorAll: () => [],
     },
+    window: { innerWidth: 1280, innerHeight: 800 },
+    /* [11] 开发节点 Agent 模型：智能路由 / 模型清单 / 服务商名 */
+    agentRouteOptions: () => new Set(["deepseek-official", "mtnode_p1"]),
+    agentModelsForRoute: (r) =>
+      r === "deepseek-official"
+        ? ["deepseek-v4-flash", "deepseek-v4-pro"]
+        : ["gpt-5-mini"],
+    providerForAgentRoute: (r) => (r === "mtnode_p1" ? { name: "Provider 1" } : null),
     I18n: { t: (k) => k },
     S: { wf: { nodes } },
     _mtDialogSeq: 0,
@@ -221,7 +242,27 @@ function makeSandbox(modelText, runError, holdRun) {
       }
       return "";
     },
-    scheduleSave() {},
+    /* [9] 运行状态判定（devNodeRunningState）依赖 */
+    nodeParentSuperId: (n) => n.parentSuperId,
+    isSuperIoNode: (n) => n.kind === "super_io",
+    devSessionIdsOf: (n) => {
+      const out = [];
+      if (n && Array.isArray(n.devSessionIds))
+        for (const id of n.devSessionIds) if (id && out.indexOf(id) < 0) out.push(id);
+      if (n && n.agentSessionId && out.indexOf(n.agentSessionId) < 0)
+        out.push(n.agentSessionId);
+      return out;
+    },
+    agentSessions: () => sb.__sessions,
+    sessionIsRunning: (st) => !!(st && st.running),
+    scheduleSave() {
+      sb.__saves++;
+    },
+    pushHistory() {
+      sb.__hist++;
+    },
+    __saves: 0,
+    __hist: 0,
     renderCanvas() {},
     toast() {},
     clipStr: (s, n) => {
@@ -230,6 +271,7 @@ function makeSandbox(modelText, runError, holdRun) {
     },
     fmtTime: (t) => "T" + Number(t),
     __devCalls: [],
+    __sessions: [],
     startDevSessionWithText: (node, text) => {
       sb.__devCalls.push({ id: node.id, text });
     },
@@ -583,20 +625,46 @@ const MODEL_JSON =
     "index.html 在 app.js 之后、app-canvas.js 之前引入 app-devnode.js",
   );
   const canvas = read("renderer/app-canvas.js");
-  ok(canvas.indexOf('className = "n-chip n-chip-suggest') >= 0, "节点头部有「建议」chip");
+  ok(canvas.indexOf("n-chip n-chip-suggest") < 0, "菜单栏不再有「建议」chip（动作按钮移出节点头部）");
   ok(canvas.indexOf('className = "n-dev-suggest"') >= 0, "折叠卡 body 有「建议」按钮");
   ok(canvas.indexOf('I18n.t("建议（让 AI 评估下一步该实现什么…）")') >= 0, "右键菜单有「建议」项");
-  ok(canvas.split("suggestDevNode(node)").length - 1 === 3, "三处入口都接到 suggestDevNode()");
+  ok(canvas.split("suggestDevNode(node)").length - 1 === 2, "两处入口接到 suggestDevNode()（折叠卡按钮 + 右键菜单）");
+  ok(canvas.indexOf("openDevFileNode(node)") >= 0, "文件节点下方按钮组接入「打开」openDevFileNode()");
   ok(canvas.indexOf("n-dev-sugnote") >= 0, "折叠卡显示上次建议摘要");
   ok(canvas.indexOf("devSuggestOf(node)") >= 0, "摘要读取节点缓存");
   const appjs = read("renderer/app.js");
   ok(appjs.indexOf("async function startDevSessionWithText(node, text)") >= 0, "app.js 抽出共用收尾函数");
   ok(appjs.indexOf("await startDevSessionWithText(node, String(res.text") >= 0, "「开发」按钮走同一条收尾路径");
+  /* 「开发 / 细化」确认后不再直接跳转会话视图：会话后台运行，用户留在画布 */
+  const devFn = appjs.slice(
+    appjs.indexOf("async function startDevSessionWithText(node, text)"),
+    appjs.indexOf("function assistantMsgFromNode"),
+  );
+  ok(
+    devFn.indexOf('setView("agent")') < 0,
+    "startDevSessionWithText 不再 setView(\"agent\")（开发会话后台运行 · 留在画布）",
+  );
+  ok(
+    devFn.indexOf('I18n.t("已创建开发会话') >= 0,
+    "开发会话启动后 toast「已创建开发会话…并在后台运行」",
+  );
+  const refFn = appjs.slice(
+    appjs.indexOf("async function refineDevNode(node)"),
+    appjs.indexOf("/* 端子悬浮"),
+  );
+  ok(
+    refFn.indexOf('setView("agent")') < 0,
+    "refineDevNode 不再 setView(\"agent\")（细化会话后台运行 · 留在画布）",
+  );
+  ok(
+    refFn.indexOf('I18n.t("已创建细化会话') >= 0,
+    "细化会话启动后 toast「已创建细化会话…并在后台运行」",
+  );
   const cssC = read("renderer/css/canvas.css");
   const cssB = read("renderer/css/base.css");
-  ok(cssC.indexOf(".n-chip.n-chip-suggest") >= 0, "canvas.css：chip 样式");
-  ok(cssC.indexOf(".n-chip.n-chip-suggest.has::after") >= 0, "canvas.css：有缓存时的小圆点");
+  ok(cssC.indexOf(".n-chip.n-chip-suggest") < 0, "canvas.css：头部 chip 样式已随菜单栏按钮移除");
   ok(cssC.indexOf(".n-dev-info .n-dev-suggest") >= 0, "canvas.css：body 按钮样式");
+  ok(cssC.indexOf(".n-dev-info .n-dev-file-open") >= 0, "canvas.css：文件节点「打开」按钮样式");
   ok(cssC.indexOf(".n-dev-info .n-dev-sugnote") >= 0, "canvas.css：上次建议摘要样式");
   ok(cssB.indexOf(".mt-sug-opts") >= 0 && cssB.indexOf(".mt-sug-opt.on") >= 0, "base.css：多选清单样式");
   ok(cssB.indexOf(".mt-sug-log") >= 0, "base.css：调研进度样式");
@@ -640,7 +708,353 @@ const MODEL_JSON =
   ok(I18n.t("确认生成建议") !== "确认生成建议", "「确认生成建议」有英文翻译");
   ok(I18n.t("这不是本功能的新词条") === "这不是本功能的新词条", "缺词条时安全回退中文");
 
-  console.log(
+  /* ==================== [9] 运行状态判定（devNodeRunningState） ==================== */
+  console.log("\n[9] 开发节点运行状态判定（自身 / 后代 / 绑定会话）");
+  sb = makeSandbox(MODEL_JSON);
+  const stOf = (nid) =>
+    ex(sb, "devNodeRunningState(nodeById(" + JSON.stringify(nid) + "))");
+  const setRunning = (nid, v) => {
+    const n = ex(sb, "nodeById(" + JSON.stringify(nid) + ")");
+    n.running = !!v;
+  };
+  ok(stOf("plain") === null, "非开发节点 → null");
+  ok(stOf("top") === null && stOf("n1") === null && stOf("orphan") === null, "未运行 → null");
+  setRunning("top", true);
+  ok(stOf("top") === "self", "自身 running → self（优先于后代扫描）");
+  setRunning("top", false);
+  setRunning("n2", true);
+  ok(stOf("n1") === "desc", "直系子节点运行 → desc");
+  ok(stOf("top") === "desc", "孙级后代运行 → 顶层块同样 desc（递归）");
+  setRunning("n2", false);
+  setRunning("sib", true);
+  ok(stOf("n1") === null, "兄弟块内节点运行不影响本块 n1");
+  ok(stOf("top") === "desc", "但祖先块 top 显示 desc（sib 也是它的后代）");
+  setRunning("sib", false);
+  ex(sb, 'S.wf.nodes.push({ id: "io1", kind: "super_io", parentSuperId: "n1", running: true })');
+  ok(stOf("n1") === null, "super_io 桥接端子运行不计入后代");
+  ex(sb, 'S.wf.nodes = S.wf.nodes.filter(function(n){ return n.id !== "io1"; })');
+  ex(sb, 'nodeById("n1").devSessionIds = ["s1"]');
+  sb.__sessions = [{ id: "s1", running: true }];
+  ok(stOf("n1") === "sess", "绑定的开发/细化会话运行 → sess");
+  sb.__sessions = [{ id: "s1", running: false }];
+  ok(stOf("n1") === null, "绑定会话已停 → null（不再误报运行中）");
+
+  /* [9.1] devRunningNodes：左下角运行队列取数（与处理节点同款展示） */
+  console.log("\n[9.1] devRunningNodes 运行队列取数（自身 / 后代 / 绑定会话）");
+  sb = makeSandbox(MODEL_JSON);
+  const rn = (arr) =>
+    ex(
+      sb,
+      "devRunningNodes(" +
+        (arr === undefined ? "" : JSON.stringify(arr)) +
+        ").map(function(n){return n.id;}).join(',')",
+    );
+  ok(rn() === "", "无运行 → devRunningNodes 空列表");
+  setRunning("n2", true);
+  ok(rn() === "top,n1,n2", "子块自身运行 + 祖先块 desc → 全部进列表（含运行中的 dev 文件块自身）");
+  ok(rn(ex(sb, "S.wf.nodes")) === "top,n1,n2", "显式传 wfNodes 同样生效");
+  setRunning("n2", false);
+  setRunning("top", true);
+  ok(rn() === "top", "自身运行（self）→ 只列自身");
+  setRunning("top", false);
+  ex(sb, 'nodeById("n1").devSessionIds = ["s1"]');
+  sb.__sessions = [{ id: "s1", running: true }];
+  ok(rn() === "n1", "绑定会话运行（sess）→ 仅会话所属块进列表");
+  sb.__sessions = [{ id: "s1", running: false }];
+  ok(rn() === "", "会话已停 → 列表清空");
+  ex(sb, 'S.wf.nodes.push({ id: "dbsup", kind: "super", dev: true, db: true, running: true })');
+  ok(rn() === "", "db 超级节点不计入开发运行列表");
+  ex(sb, 'S.wf.nodes = S.wf.nodes.filter(function(n){ return n.id !== "dbsup"; })');
+  ex(sb, 'S.wf.nodes.push({ id: "plain2", kind: "proc_text", running: true })');
+  ok(rn() === "", "普通处理节点运行不计入（由 collectRunQueue 主循环处理）");
+  ex(sb, 'S.wf.nodes = S.wf.nodes.filter(function(n){ return n.id !== "plain2"; })');
+
+  const appRun9 = read("renderer/app.js");
+  ok(appRun9.indexOf("devRunningNodes(nodes)") >= 0, "collectRunQueue 用 devRunningNodes 收录运行中的开发节点");
+  ok(appRun9.indexOf("devRunStateText(n)") >= 0, "队列行 tooltip 显示运行来源（自身 / 子节点 / 会话）");
+  ok(
+    appRun9.indexOf('node.kind === "super" && node.dev && !node.db) return "dev"') >= 0,
+    "nodeKindCls：开发节点 → kind-dev 类（独立行样式）",
+  );
+  ok(
+    appRun9.indexOf('node.kind === "super" && node.dev && !node.db) return I18n.t("开发")') >= 0,
+    "nodeKindLabel：开发节点 → 「开发」标签",
+  );
+  ok(appRun9.indexOf("stopSubtree(node)") >= 0, "stopNode 开发分支：递归停后代 + 绑定会话（逐条停止可用）");
+  const assistRun9 = read("renderer/app-assist.js");
+  ok(
+    (assistRun9.match(/updateRunQueuePanel\(\)/g) || []).length === 5,
+    "app-assist 会话开始 / 结束各刷一次运行队列（共 5 处）",
+  );
+  const cssRun9 = read("renderer/css/components.css");
+  ok(cssRun9.indexOf(".rq-item.kind-dev .rq-title") >= 0, "components.css：开发节点队列行样式（模块绿）");
+  const i18nRun9 = require("../renderer/i18n.js");
+  i18nRun9.setLocale("en");
+  ok(i18nRun9.t("自身运行中") !== "自身运行中", "「自身运行中」有英文词条");
+  ok(i18nRun9.t("子节点运行中") !== "子节点运行中", "「子节点运行中」有英文词条");
+  ok(i18nRun9.t("绑定会话运行中") !== "绑定会话运行中", "「绑定会话运行中」有英文词条");
+  ok(i18nRun9.t("已停止该功能块的运行任务") !== "已停止该功能块的运行任务", "「已停止该功能块的运行任务」有英文词条");
+
+  const canvasRun = read("renderer/app-canvas.js");
+  ok(canvasRun.indexOf('classList.add("dev-running", "dev-running-"') >= 0, "nodeElement 给运行中的开发节点加 dev-running 类");
+  ok(canvasRun.indexOf('className = "n-chip n-chip-run "') >= 0, "节点头部渲染「运行中」徽标 chip");
+  const cssRun = read("renderer/css/canvas.css");
+  ok(cssRun.indexOf("@keyframes devRunBreathe") >= 0, "canvas.css：呼吸灯 keyframes");
+  ok(cssRun.indexOf(".n-chip.n-chip-run") >= 0, "canvas.css：头部运行徽标样式");
+  ok(cssRun.indexOf("--dev-glow") >= 0, "canvas.css：按元素类型取呼吸光晕颜色");
+
+  /* ==================== [10] 开发节点颜色（菜单栏小按钮 + HSV 色板） ==================== */
+  console.log("\n[10] 开发节点颜色：devColor 数据 + HSV 转换 + 菜单栏按钮");
+  sb = makeSandbox(MODEL_JSON);
+  ok(ex(sb, "devColorOf(nodeById('n1'))") === "", "未设 devColor → 空串（用元素类型默认色）");
+  ok(ex(sb, "devColorOf(nodeById('plain'))") === "", "非开发节点 → 空串");
+  ex(sb, "nodeById('n1').devColor = '#00FF88'");
+  ok(ex(sb, "devColorOf(nodeById('n1'))") === "#00ff88", "devColorOf 校验并小写化 hex");
+  ex(sb, "nodeById('n1').devColor = 'red'");
+  ok(ex(sb, "devColorOf(nodeById('n1'))") === "", "非法颜色值 → 空串");
+  ok(ex(sb, "devShownColor(nodeById('top'))") === "#6fe3a5", "module 默认色为绿色");
+  ok(ex(sb, "devShownColor(nodeById('n2'))") === "#6db4ff", "file 默认色为蓝色");
+  ex(sb, "nodeById('n2').devColor = '#FF8800'");
+  ok(ex(sb, "devShownColor(nodeById('n2'))") === "#ff8800", "设了 devColor 优先于元素类型默认色");
+  ok(ex(sb, "hexToRgbTriplet('#6fe3a5')") === "111, 227, 165", "hex → RGB 三元组（呼吸灯 --dev-glow）");
+  ok(ex(sb, "hexToRgbTriplet('bad')") === null, "非法 hex → RGB null");
+  ok(
+    ex(sb, "JSON.stringify(hsvToRgb(0,0,0))") === JSON.stringify({ r: 0, g: 0, b: 0 }),
+    "hsv(0,0,0) → 黑",
+  );
+  ok(
+    ex(sb, "JSON.stringify(hsvToRgb(0,1,1))") === JSON.stringify({ r: 255, g: 0, b: 0 }),
+    "hsv(0,1,1) → 红",
+  );
+  ok(
+    ex(sb, "JSON.stringify(hsvToRgb(120,1,1))") === JSON.stringify({ r: 0, g: 255, b: 0 }),
+    "hsv(120,1,1) → 绿",
+  );
+  const hsvRed = ex(sb, "rgbToHsv(255,0,0)");
+  ok(
+    Math.abs(hsvRed.h) < 0.001 && Math.abs(hsvRed.s - 1) < 0.001 && Math.abs(hsvRed.v - 1) < 0.001,
+    "rgbToHsv(红) → h≈0 s=1 v=1",
+  );
+  ok(ex(sb, "hsvToHex(120,1,0.5)") === "#008000", "hsvToHex(120,1,0.5) → #008000");
+  ok(
+    ex(sb, "JSON.stringify(hexToHsv('#ff0000'))") === JSON.stringify({ h: 0, s: 1, v: 1 }),
+    "hexToHsv('#ff0000') → 红",
+  );
+  const btn = ex(sb, "devColorButtonEl(nodeById('n1'))");
+  ok(btn.className.indexOf("n-dev-color") >= 0, "菜单栏颜色按钮元素存在（n-dev-color）");
+  ok(btn.title.indexOf("HSV") >= 0, "按钮提示含 HSV 色板说明");
+  ok(typeof btn.onclick === "function", "按钮点击接到 toggleDevColorPicker");
+  const canvas10 = read("renderer/app-canvas.js");
+  ok(canvas10.indexOf("devColorButtonEl(node)") >= 0, "节点头部菜单栏接入颜色按钮 devColorButtonEl()");
+  ok(canvas10.indexOf("dev-custom-color") >= 0, "nodeElement 给自定义颜色节点加 dev-custom-color 类");
+  ok(canvas10.indexOf('setProperty("--dev-color", dc)') >= 0, "nodeElement 注入 --dev-color");
+  ok(canvas10.indexOf('className = "exec-body-title"') < 0, "执行节点 body 不再渲染标题元素（只留节点头部标题）");
+  const nodes10 = read("renderer/app-nodes.js");
+  ok(nodes10.indexOf("devColorOf(n)") >= 0, "app-nodes 序列化 devColor");
+  ok(nodes10.indexOf("patch.devColor") >= 0, "app-nodes 支持 devColor 补丁（Agent 可改颜色）");
+  const appjs10 = read("renderer/app.js");
+  ok(appjs10.indexOf("devColor: \"\"") >= 0, "app.js 超级节点默认 devColor 空串");
+  ok(appjs10.indexOf("S.uiDevColorNode") >= 0, "app.js 全局点击关闭 HSV 色板（点外部收起）");
+  const cssC10 = read("renderer/css/canvas.css");
+  ok(cssC10.indexOf(".n-dev-color") >= 0, "canvas.css：菜单栏颜色按钮样式");
+  ok(cssC10.indexOf(".dev-custom-color") >= 0, "canvas.css：自定义外框色样式");
+  ok(cssC10.indexOf(".exec-body-title") < 0, "canvas.css：执行节点 body 标题样式已移除");
+  const cssComp10 = read("renderer/css/components.css");
+  ok(cssComp10.indexOf(".dev-color-pop") >= 0, "components.css：HSV 色板弹出层样式");
+  ok(
+    cssComp10.indexOf(".dev-color-sv") >= 0 && cssComp10.indexOf(".dev-color-hue") >= 0,
+    "components.css：SV 方块 + 色相条 canvas 样式",
+  );
+  ok(read("docs/dev-node-design.md").indexOf("HSV") >= 0, "设计文档写明 HSV 色板功能");
+
+  /* ==================== [11] 开发节点 Agent 模型（本块 + 未自选子块共用） ==================== */
+  console.log("\n[11] Agent 模型：devModel 就近继承 + 选择弹层 + 会话 / 调研接线");
+  sb = makeSandbox(MODEL_JSON);
+  ok(
+    ex(sb, "devAgentRoutes().join(',')") === "deepseek-official,mtnode_p1",
+    "可选智能路由来自 agentRouteOptions（官方 + 已配置服务商）",
+  );
+  ok(ex(sb, "devAgentModelOf(nodeById('n1'))") === null, "谁都没选 → null（跟随默认模型）");
+  ok(ex(sb, "devModelDialogText(nodeById('n1'))") === "自动（跟随默认）", "未选时对话框显示「自动（跟随默认）」");
+  ok(ex(sb, "devModelOwn(nodeById('plain'))") === null, "非开发节点不参与模型继承");
+  ex(sb, "nodeById('top').devModel = 'deepseek-v4-pro'");
+  const eff11 = ex(sb, "devAgentModelOf(nodeById('n2'))");
+  ok(eff11 && eff11.model === "deepseek-v4-pro", "子块未自行选择 → 用上层功能块所选模型");
+  ok(eff11 && eff11.inherited === true, "继承来的模型标 inherited（按钮虚线 / 文案注明）");
+  ok(eff11 && eff11.provider === "deepseek-official", "只存了模型 → 按模型表反查智能路由");
+  ok(eff11 && eff11.source.id === "top", "继承来源指向真正做了选择的那个祖先块");
+  ok(
+    ex(sb, "devModelDialogText(nodeById('n2'))").indexOf("继承自「渲染层」") >= 0,
+    "对话框文案点名继承来源功能块",
+  );
+  ok(ex(sb, "devAgentModelOf(nodeById('top')).inherited") === false, "自身已选 → 不算继承");
+  ex(sb, "nodeById('n2').devModel = 'gpt-5-mini'");
+  const own11 = ex(sb, "devAgentModelOf(nodeById('n2'))");
+  ok(own11.model === "gpt-5-mini" && own11.inherited === false, "子块自己选过 → 以子块为准（就近覆盖）");
+  ok(own11.provider === "mtnode_p1", "子块模型属另一服务商 → 路由随之纠正");
+  ok(ex(sb, "devAgentModelOf(nodeById('n3')).model") === "deepseek-v4-pro", "未自选的兄弟块仍继承上层");
+  ex(sb, "nodeById('n2').devProvider = 'ghost-route'");
+  ok(ex(sb, "devModelOwn(nodeById('n2')).provider") === "mtnode_p1", "已失效的路由被丢弃（按模型反查）");
+  ex(sb, "nodeById('n2').devProvider = 'deepseek-official'");
+  ok(ex(sb, "devModelOwn(nodeById('n2')).provider") === "mtnode_p1", "路由与模型不匹配 → 以模型为准");
+  ok(ex(sb, "devModelFitsRoute('deepseek-official','gpt-5-mini')") === false, "模型与路由不匹配 → false");
+  ok(ex(sb, "devModelFitsRoute('mtnode_p1','gpt-5-mini')") === true, "模型与路由匹配 → true");
+  ok(ex(sb, "devRouteOfModel('nope-xyz')") === "", "查不到归属的模型 → 空路由");
+  ok(
+    ex(sb, "devAgentModelGroups().map(g => g.name).join('|')") === "DeepSeek 官方|Provider 1",
+    "弹层分组标题用服务商名",
+  );
+  ok(
+    ex(sb, "devAgentModelText(nodeById('n2'))") === "Provider 1 · gpt-5-mini",
+    "生效模型展示文本 =「服务商 · 模型」",
+  );
+  /* ---- 菜单栏按钮 ---- */
+  ex(sb, "nodeById('n2').devModel = ''");
+  ex(sb, "nodeById('top').devModel = ''");
+  const autoBtn = ex(sb, "devModelButtonEl(nodeById('n1'))");
+  ok(autoBtn.className === "n-dev-model auto", "全未选择 → 模型按钮为 auto 态");
+  ok(autoBtn.querySelector(".lbl").textContent === "自动", "未选时按钮文字为「自动」");
+  ok(autoBtn.title.indexOf("子功能块") >= 0, "按钮提示写明「子功能块一并使用」");
+  ex(sb, "nodeById('top').devModel = 'deepseek-v4-pro'");
+  const inhBtn = ex(sb, "devModelButtonEl(nodeById('n3'))");
+  ok(inhBtn.className.indexOf("inherited") >= 0, "继承上层 → 按钮标 inherited（虚线）");
+  ok(inhBtn.querySelector(".lbl").textContent === "deepseek-v4-pro", "按钮直接显示当前生效模型");
+  ok(inhBtn.title.indexOf("继承自「渲染层」") >= 0, "按钮提示点名继承来源");
+  ok(typeof inhBtn.onclick === "function", "按钮点击接到模型选择");
+  /* ---- 选择弹层 ---- */
+  const tgt = sb.__nodes.filter((n) => n.id === "n1")[0];
+  tgt.getBoundingClientRect = () => ({ left: 20, top: 20, right: 130, bottom: 38 });
+  sb.__anchor = tgt;
+  ex(sb, "toggleDevModelPicker(nodeById('n1'), __anchor)");
+  const pop = ex(sb, "document.getElementById('devModelPop')");
+  ok(typeof ex(sb, "closeDevModelPicker") === "function", "弹层有显式收起入口（Esc 走它）");
+  ok(!!pop, "点击按钮后创建模型弹层（#devModelPop）");
+  ok(pop.classList.contains("on"), "弹层展开");
+  ok(sb.S.uiDevModelNode === "n1", "记录正在选择的功能块（再点按钮 / 点外部收起）");
+  ok(
+    pop.querySelector(".dev-model-scope").textContent.indexOf("继承自「渲染层」") >= 0,
+    "弹层顶部说明当前生效模型与其来源",
+  );
+  const popList = pop.querySelector(".dev-model-list");
+  ok(popList.querySelectorAll(".dev-model-group").length === 2, "弹层按服务商分成 2 组");
+  const optBtns = popList.querySelectorAll("button");
+  ok(optBtns.length === 3, "弹层列出全部 3 个可选模型");
+  ok(optBtns.filter((b) => b.classList.contains("on")).length === 0, "本块未自选时没有打勾项");
+  optBtns[2].onclick();
+  ok(tgt.devModel === "gpt-5-mini", "点选模型 → 写入节点 devModel");
+  ok(tgt.devProvider === "mtnode_p1", "同时记下智能路由");
+  ok(sb.__hist > 0, "选择动作可撤销（pushHistory）");
+  ok(sb.__saves > 0, "选择后即时存盘（scheduleSave）");
+  ok(!pop.classList.contains("on"), "选定后收起弹层");
+  ok(ex(sb, "devAgentModelOf(nodeById('n2')).model") === "gpt-5-mini", "本块选定后其子块改继承本块");
+  ex(sb, "toggleDevModelPicker(nodeById('n1'), __anchor)");
+  ok(
+    pop
+      .querySelector(".dev-model-list")
+      .querySelectorAll("button")
+      .filter((b) => b.classList.contains("on")).length === 1,
+    "重开弹层时当前模型打勾",
+  );
+  ok(
+    pop.querySelector(".dev-model-scope").textContent.indexOf("本功能块已选择：") >= 0,
+    "已选时弹层说明改为「本功能块已选择」",
+  );
+  pop.querySelectorAll(".dev-model-reset")[0].onclick();
+  ok(tgt.devModel === "" && tgt.devProvider === "", "「跟随默认（不指定）」清除本块选择");
+  ok(ex(sb, "devAgentModelOf(nodeById('n1')).model") === "deepseek-v4-pro", "清除后退回继承上层选择");
+  ex(sb, "nodeById('top').devModel = ''");
+  ok(ex(sb, "devAgentModelOf(nodeById('n3'))") === null, "上层也清空 → 整棵树回到跟随默认");
+  /* ---- 「建议」只读调研真的用所选模型 ---- */
+  sb = makeSandbox(MODEL_JSON, null, true);
+  ex(sb, "nodeById('top').devModel = 'deepseek-v4-pro'; nodeById('top').devProvider = 'deepseek-official'");
+  sb.__formResult = { action: "go" };
+  const p11 = ex(sb, "suggestDevNode(nodeById('n1'))");
+  await drain();
+  const form11 = sb.__forms[sb.__forms.length - 1];
+  ok(
+    form11.rows.some((x) => x[0] === "Agent 模型" && x[1].indexOf("deepseek-v4-pro") >= 0),
+    "「建议」确认框列出 Agent 模型",
+  );
+  ok(sb.__runCalls.length === 1, "确认后开始只读调研");
+  ok(sb.__runCalls[0].opts.model === "deepseek-v4-pro", "「建议」调研用上层功能块所选模型");
+  ok(sb.__runCalls[0].opts.provider === "deepseek-official", "调研带上对应智能路由");
+  ok(
+    sb.__host.querySelector("#mtDlgBody").textContent.indexOf("本轮模型：") >= 0,
+    "进度日志显示本轮实际使用的模型",
+  );
+  sb.__resolveRun(MODEL_JSON);
+  await drain();
+  footBtn(sb.__host, "取消").onclick();
+  await p11;
+  /* ---- 接线：会话 / 序列化 / 网关 / 样式 / 文档 ---- */
+  const appjs11 = read("renderer/app.js");
+  ok(
+    appjs11.indexOf('typeof devAgentModelOf === "function" ? devAgentModelOf(node) : null') >= 0,
+    "createDevSessionForNode 取生效模型",
+  );
+  ok(
+    appjs11.indexOf('provider: (eff && eff.provider) || "deepseek-official"') >= 0,
+    "绑定的开发 / 细化会话用所选路由",
+  );
+  ok(appjs11.indexOf('model: (eff && eff.model) || ""') >= 0, "绑定的开发 / 细化会话用所选模型");
+  ok(
+    (appjs11.match(/I18n\.t\("Agent 模型"\)/g) || []).length >= 2,
+    "「开发」与「细化」对话框都列出 Agent 模型",
+  );
+  ok(appjs11.indexOf('devModel: ""') >= 0, "app.js 超级节点默认 devModel 空串");
+  ok(appjs11.indexOf("S.uiDevModelNode") >= 0, "app.js 全局点击收起模型弹层（点外部）");
+  ok(
+    appjs11.indexOf('if (ev.key === "Escape" && (S.uiDevColorNode || S.uiDevModelNode))') >= 0,
+    "app.js：Esc 同时收起色板与模型弹层",
+  );
+  const canvas11 = read("renderer/app-canvas.js");
+  ok(canvas11.indexOf("devModelButtonEl(node)") >= 0, "节点头部菜单栏接入模型按钮");
+  ok(canvas11.indexOf("n-dev-model-info") >= 0, "折叠卡显示生效模型行");
+  const nodes11 = read("renderer/app-nodes.js");
+  ok(nodes11.indexOf("patch.devModel") >= 0, "app-nodes 支持 devModel 补丁（Agent 可改模型）");
+  ok(nodes11.indexOf("patch.devProvider") >= 0, "app-nodes 支持 devProvider 补丁");
+  ok((nodes11.match(/devModel:/g) || []).length >= 2, "devModel 随工作流保存并进画布快照（canvas_get 可见）");
+  const gw11 = read("dsh/gateway/canvas-plugin.mjs");
+  ok(
+    (gw11.match(/devModel:/g) || []).length >= 2 && gw11.indexOf("devProvider") >= 0,
+    "网关 schema 暴露 devModel / devProvider（Agent 能设）",
+  );
+  ok((gw11.match(/devColor:/g) || []).length >= 2, "网关 schema 暴露 devColor（Agent 能改颜色）");
+  ok(
+    gw11.indexOf("dev/devPath/devStatus/devKind/devColor/devModel/devProvider") >= 0,
+    "canvas_get 工具描述透出这些字段",
+  );
+  const cssC11 = read("renderer/css/canvas.css");
+  ok(cssC11.indexOf(".n-dev-model") >= 0, "canvas.css：头部模型按钮样式");
+  ok(cssC11.indexOf(".n-dev-info .n-dev-model-info") >= 0, "canvas.css：折叠卡生效模型行样式");
+  const cssComp11 = read("renderer/css/components.css");
+  ok(
+    cssComp11.indexOf(".dev-model-pop") >= 0 && cssComp11.indexOf(".dev-model-list") >= 0,
+    "components.css：模型选择弹层样式",
+  );
+  ok(cssComp11.indexOf("*/.dev-color-pop") < 0, "components.css：色板注释与规则不再粘连");
+  const guide11 = read("guides/manual/dev-nodes.md");
+  ok(guide11.indexOf("Agent 模型 devModel") >= 0, "中文手册写明 Agent 模型");
+  ok(guide11.indexOf("devColor") >= 0 && guide11.indexOf("HSV") >= 0, "中文手册写明节点颜色");
+  ok(read("guides/manual/en/dev-nodes.md").indexOf("Agent model devModel") >= 0, "英文手册写明 Agent model");
+  const skill11 = read("mtnode-agent-skills/mtnode/dev-architect/SKILL.md");
+  ok(skill11.indexOf("就近继承") >= 0, "dev-architect 技能说明模型就近继承");
+  ok(skill11.indexOf("devColor") >= 0, "dev-architect 技能说明节点颜色");
+  ok(read("mtnode-agent-skills/index.json").indexOf("devModel") >= 0, "技能索引已重建并含 devModel");
+  const chg11 = read("CHANGELOG-v1.1.md");
+  ok(
+    chg11.indexOf("devModel") >= 0 && chg11.indexOf("就近向上继承") >= 0,
+    "版本更新文档写明 Agent 模型与就近继承",
+  );
+  ok(chg11.indexOf("devColor") >= 0, "版本更新文档写明节点自定义颜色");
+  const i18n11 = require("../renderer/i18n.js");
+  i18n11.setLocale("en");
+  ok(i18n11.t("Agent 模型") !== "Agent 模型", "「Agent 模型」有英文词条");
+  ok(i18n11.t("跟随默认（不指定）") !== "跟随默认（不指定）", "「跟随默认（不指定）」有英文词条");
+  ok(i18n11.t("自动（跟随默认）") !== "自动（跟随默认）", "「自动（跟随默认）」有英文词条");
+  i18n11.setLocale("zh");
+
+    console.log(
     "\n" +
       (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
       "  (smoke-dev-suggest)",

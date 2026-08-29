@@ -12,6 +12,9 @@ const ok = (cond, msg) => {
     console.log("FAIL  " + msg);
   }
 };
+/* dbQuery / dbList 返回 { provenance?, sql, rows } 结构（mtnode_db 工具要靠 sql 追溯），
+   测试只关心行，这里统一取一次 */
+const rowsOf = (r) => (Array.isArray(r) ? r : (r && r.rows) || []);
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-db-test-"));
 const dbFile = store.dbFilePath(tmp);
@@ -35,23 +38,27 @@ ch = store.compileRecords(db, recs2);
 ok(ch.added === 1 && ch.updated === 1 && ch.removed === 1 && ch.total === 3, "增量：+1 新增 / ~1 更新 / −1 移除");
 
 /* 2. 查询：关键词 + 字段过滤 + 排序 + 溯源 */
-let hits = store.dbQuery(db, "客户甲");
+let hits = rowsOf(store.dbQuery(db, "客户甲"));
 ok(hits.length >= 1 && hits[0].id === "r1", "query 命中客户甲（首位）");
 ok(hits[0].snippet.includes("1500"), "snippet 含更新后金额");
 ok(hits[0].source === "node:n1", "结果带溯源 source");
-hits = store.dbQuery(db, "title:价格表");
+hits = rowsOf(store.dbQuery(db, "title:价格表"));
 ok(hits.length === 1 && hits[0].id === "r3", "title: 字段过滤");
-hits = store.dbQuery(db, "kind:file 付款");
+hits = rowsOf(store.dbQuery(db, "kind:file 付款"));
 ok(hits.length === 1 && hits[0].id === "r4", "kind: 过滤 + 关键词");
-hits = store.dbQuery(db, "不存在的词xyzzy");
+hits = rowsOf(store.dbQuery(db, "不存在的词xyzzy"));
 ok(hits.length === 0, "查不到返回空");
+ok(
+  /MATCH/.test(store.dbQuery(db, "客户甲").sql),
+  "查询结果带 sql（mtnode_db 可追溯访问语句）",
+);
 
 /* 3. list / get */
-const list = store.dbList(db);
+const list = rowsOf(store.dbList(db));
 ok(list.length === 3, "dbList 返回全部记录");
-const got = store.dbGet(db, "r4");
+const got = store.dbGet(db, "r4").record;
 ok(got && got.content.includes("付款期限"), "dbGet 取全文");
-ok(store.dbGet(db, "nope") === undefined, "dbGet 不存在的 id");
+ok(store.dbGet(db, "nope").record === undefined, "dbGet 不存在的 id");
 
 /* 4. calc：安全算术 */
 ok(store.dbCalcExpr("2+3*4") === 14, "calc 优先级");
@@ -69,7 +76,7 @@ ok(log[0].q === "q-last", "日志最新在前");
 /* 6. 落盘重开（大库场景：持久化一致） */
 db.close();
 const db2 = store.openDb(dbFile);
-const hits2 = store.dbQuery(db2, "客户");
+const hits2 = rowsOf(store.dbQuery(db2, "客户"));
 ok(hits2.length === 1 && hits2[0].id === "r1", "重开后查询一致（客户乙已移除）");
 db2.close();
 fs.rmSync(tmp, { recursive: true, force: true });

@@ -735,6 +735,11 @@
   color: #ffe08a
 }
 
+/* 开发节点（super+dev）队列行：模块绿，与画布功能块外框配色呼应 */
+.rq-item.kind-dev .rq-title {
+  color: #6fe3a5
+}
+
 .n-title-input {
   flex: 1;
   min-width: 0;
@@ -978,6 +983,225 @@
   justify-content: flex-end;
   gap: 6px;
   padding: 8px 10px 0
+}
+
+/* ===== 开发节点 HSV 色板弹出层 ===== */
+.dev-color-pop {
+  display: none;
+  position: fixed;
+  z-index: 1500;
+  width: 200px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+  padding: 0 0 10px;
+}
+
+.dev-color-pop.on {
+  display: block
+}
+
+.dev-color-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.dev-color-head b {
+  flex: 1;
+  font-size: 12px;
+  color: var(--green);
+  letter-spacing: .5px
+}
+
+.dev-color-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 10px 6px;
+}
+
+.dev-color-sv {
+  width: 180px;
+  height: 180px;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.dev-color-hue {
+  width: 180px;
+  height: 16px;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.dev-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dev-color-swatch {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background: #fff;
+}
+
+.dev-color-hex {
+  flex: 1;
+  min-width: 0;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+  text-transform: uppercase;
+}
+
+.dev-color-hex:focus {
+  border-color: var(--green)
+}
+
+.dev-color-rgb {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.dev-color-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+/* ===== 开发节点 Agent 模型选择弹出层 ===== */
+.dev-model-pop {
+  display: none;
+  position: fixed;
+  z-index: 1500;
+  width: 268px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+  padding: 0 0 8px;
+}
+
+.dev-model-pop.on {
+  display: block
+}
+
+.dev-model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.dev-model-head b {
+  flex: 1;
+  font-size: 12px;
+  color: #7fd4ff;
+  letter-spacing: .5px
+}
+
+.dev-model-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+}
+
+.dev-model-scope {
+  padding: 7px 10px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  border-bottom: 1px dashed var(--bd);
+}
+
+.dev-model-list {
+  max-height: 268px;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+
+.dev-model-group {
+  padding: 7px 4px 3px;
+  font-size: 10px;
+  letter-spacing: .4px;
+  color: #9db4c6;
+  user-select: none;
+}
+
+.dev-model-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: var(--mono);
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.dev-model-opt:hover {
+  background: rgba(56, 214, 255, .08);
+  border-color: rgba(56, 214, 255, .32);
+}
+
+.dev-model-opt .m {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-model-opt .c {
+  flex: none;
+  color: #6fe3a5;
+}
+
+.dev-model-opt.on {
+  background: rgba(111, 227, 165, .1);
+  border-color: rgba(111, 227, 165, .45);
+}
+
+.dev-model-empty {
+  padding: 8px 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.dev-model-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 10px 0;
 }
 
 .n-mode-toggle {

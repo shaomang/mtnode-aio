@@ -28,6 +28,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { launchDetached } = require("./main-exec-launch.js");
 const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
@@ -1237,6 +1238,21 @@ ipcMain.handle("shell:openPath", async (e, p) => {
     const err = await shell.openPath(dir);
     if (err) return { ok: false, error: err };
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 执行节点专用：独立进程启动绑定文件（win32: cmd /c start → 新控制台 + 新进程组，
+   不随 MTNode 主程序退出而关闭；编译脚本的 console 不再被主程序退出带走）。
+   仅执行节点使用；其它 shell:openPath 调用保持不变。 */
+ipcMain.handle("shell:openPathDetached", async (e, p) => {
+  try {
+    const r = launchDetached(p);
+    if (r && r.fallback === "shell-open") {
+      const err = await shell.openPath(String(p || "").trim());
+      return err ? { ok: false, error: err } : { ok: true };
+    }
+    return r;
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }

@@ -108,6 +108,7 @@ contextBridge.exposeInMainWorld('api', {
   pathRelative: (from, to) => path.relative(String(from || ''), String(to || '')),
   shellShowItem: (p) => ipcRenderer.invoke('shell:showItem', p),
   shellOpenPath: (p) => ipcRenderer.invoke('shell:openPath', p),
+  shellOpenPathDetached: (p) => ipcRenderer.invoke('shell:openPathDetached', p),
   openInAppDialog: (opts) => ipcRenderer.invoke('shell:openInAppDialog', opts || {}),
   onYamlViewerOpen: (cb) => {
     const handler = (_e, data) => {

@@ -2224,9 +2224,15 @@ async function generateVideo(params) {
       const genOut = join(comfy, "output", genMeta.subfolder || "", genMeta.filename);
       if (!fs.existsSync(genOut)) throw new Error("output_file_missing: " + genOut);
       appendConsole("[post] stage2 超分补帧 → " + genOut);
+      /* LoadVideo 只在 ComfyUI/input 目录内解析 file：folder_paths.exists_annotated_filepath
+       * 对绝对路径 / 越界路径一律判 False，报 "Invalid video file"。
+       * 所以先把阶段一产物登记进 input 目录，后处理图里用返回的 input 内文件名。 */
+      const postInput = await uploadFileToComfy(port, genOut, "video");
+      appendConsole("[post] loaded as input/" + postInput);
+
       /* 阶段二：加载原生视频 → RIFE 补帧 → RealESRGAN 超分 → 4K */
       const postGraph = buildH3Workflow(
-        Object.assign({}, wfParams, { postVideoPath: genOut }),
+        Object.assign({}, wfParams, { postVideoPath: postInput }),
         uploaded,
         "post",
       );

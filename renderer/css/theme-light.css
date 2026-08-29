@@ -299,6 +299,15 @@ body.theme-light .super-stage::after {
   box-shadow: inset 1px 0 0 rgba(0, 0, 0, .12), inset 2px 0 0 rgba(0, 0, 0, .06), inset 3px 0 0 rgba(255, 255, 255, .6)
 }
 
+/* ── 端子文字（画在节点外侧的 输入/输出 与 P/L、序号）：浅色底改用白描边 ── */
+body.theme-light .n-port-label,
+body.theme-light .port-badge {
+  text-shadow: 0 1px 2px rgba(255, 255, 255, .95), 0 0 4px rgba(255, 255, 255, .8)
+}
+body.theme-light .n-port-label {
+  opacity: .9
+}
+
 /* ── 网络 / 调试等深色浮层：改浅 ── */
 body.theme-light .n-api-panel {
   background: var(--panel);

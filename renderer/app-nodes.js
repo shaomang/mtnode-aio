@@ -5371,6 +5371,10 @@ function canvasSnapshot(opts) {
         devPath: n.dev ? String(n.devPath || "") || undefined : undefined,
         devStatus: n.dev ? n.devStatus || "pending" : undefined,
         devKind: n.dev ? devKindOf(n) || "module" : undefined,
+        devModel: n.dev ? String(n.devModel || "").trim() || undefined : undefined,
+        devProvider: n.dev
+          ? String(n.devProvider || "").trim() || undefined
+          : undefined,
         childCount: (wf.nodes || []).filter(
           (x) => nodeParentSuperId(x) === n.id && !isSuperIoNode(x),
         ).length,
@@ -5519,6 +5523,16 @@ function canvasSnapshot(opts) {
         n.kind === "super" && n.dev ? n.devStatus || "pending" : undefined,
       devKind:
         n.kind === "super" && n.dev ? devKindOf(n) || "module" : undefined,
+      devColor:
+        n.kind === "super" && n.dev ? devColorOf(n) || undefined : undefined,
+      devModel:
+        n.kind === "super" && n.dev
+          ? String(n.devModel || "").trim() || undefined
+          : undefined,
+      devProvider:
+        n.kind === "super" && n.dev
+          ? String(n.devProvider || "").trim() || undefined
+          : undefined,
       execPath:
         n.kind === "execute" ? String(n.execPath || "") || undefined : undefined,
       execIcon:
@@ -8671,6 +8685,28 @@ function applyNodePatch(node, patch, warnings) {
       const v = String(patch.devKind);
       if (DEV_KINDS.indexOf(v) >= 0) node.devKind = v;
       else warnings.push(I18n.t("未知元素类型：") + v);
+    }
+    if (patch.devColor != null) {
+      const v = String(patch.devColor);
+      node.devColor =
+        typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)
+          ? v.toLowerCase()
+          : "";
+    }
+    /* 开发节点 Agent 模型（本块 + 未自行选择的子块共用）；传空串 = 取消选择 */
+    if (patch.devModel != null) {
+      const v = String(patch.devModel).trim();
+      node.devModel = v;
+      if (!v) node.devProvider = "";
+    }
+    if (patch.devProvider != null) {
+      const v = String(patch.devProvider).trim();
+      node.devProvider =
+        typeof devAgentRoutes === "function" &&
+        devAgentRoutes().indexOf(v) >= 0
+          ? v
+          : "";
+      if (!node.devModel) node.devProvider = "";
     }
   }
   if (node.kind === "execute") {

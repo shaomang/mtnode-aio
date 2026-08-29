@@ -401,7 +401,76 @@ const bridgeServers = new Map()
 const socketToKey = new Map()
 /** @type {Map<string, {socket: any, key: string, kind: string}>} */
 const bridgePending = new Map()
+/** 在途占用表:runtime key -> reqId。一台 runtime 同时只允许一个在途 run。 */
 const keyToReqId = new Map()
+/* cancelTag(会话 agent:<id> / 节点 id / assist)-> 该标签在途运行占用的 runtime key 集合。
+   dsh 线协议没有「逐轮取消」,停一次运行只能关掉它自己那台 runtime 进程;
+   若没有这层映射,cancel 只能退化成「按 workspace 全关」——同工作目录的其它会话
+   会被一起打断(就是「停一个会话导致所有会话中断」的根因)。
+   同一标签可能并发跑好几台(如某节点批量并行的视觉描述),所以值是集合。 */
+const tagToKey = new Map()
+/* 早到一步的取消:用户在这轮 run 还没跑到 getRuntime(设置热重载 + 引擎 spawn 要 1~3s)
+   时就按了 ■。记下标签,等它真拿到 runtime 立刻关掉,否则这轮会白跑到底。
+   只对本轮确实还在途的 tag 生效(activeRunTags),免得给下一轮误埋取消。 */
+const cancelWanted = new Map()
+const activeRunTags = new Set()
+const CANCEL_WANTED_TTL_MS = 120000
+
+function wantCancelTag(tag) {
+  cancelWanted.set(tag, Date.now())
+  for (const [t, at] of Array.from(cancelWanted)) {
+    if (Date.now() - at > CANCEL_WANTED_TTL_MS) cancelWanted.delete(t)
+  }
+}
+
+function takeCancelWanted(tag) {
+  if (!tag || !cancelWanted.has(tag)) return false
+  cancelWanted.delete(tag)
+  return true
+}
+
+function tagOf(cancelTag) {
+  return cancelTag == null ? '' : String(cancelTag)
+}
+
+function forgetKey(k) {
+  if (k == null) {
+    tagToKey.clear()
+    return
+  }
+  for (const [t, set] of Array.from(tagToKey)) {
+    set.delete(k)
+    if (!set.size) tagToKey.delete(t)
+  }
+}
+
+/* 登记一次运行对 runtime 的占用(同步完成,中间不 await,避免并发 run 抢同一台) */
+function claimRuntime(key, reqId, cancelTag) {
+  if (reqId) keyToReqId.set(key, reqId)
+  const tag = tagOf(cancelTag)
+  if (tag) {
+    let set = tagToKey.get(tag)
+    if (!set) tagToKey.set(tag, (set = new Set()))
+    set.add(key)
+  }
+  return tag
+}
+
+/* 解除占用:只在自己的登记仍生效时清（同一台可能已被下一轮接手；
+   被 cancel 关掉时 closeBridge/forgetKey 已经清过，这里不重复踩）。 */
+function releaseClaim(key, reqId, tag) {
+  const owns = !!reqId && keyToReqId.get(key) === reqId
+  if (!owns) return false
+  keyToReqId.delete(key)
+  if (tag) {
+    const set = tagToKey.get(tag)
+    if (set) {
+      set.delete(key)
+      if (!set.size) tagToKey.delete(tag)
+    }
+  }
+  return true
+}
 
 function abortBridgePending(key, socket) {
   for (const [id, p] of bridgePending) {
@@ -414,6 +483,7 @@ function abortBridgePending(key, socket) {
 
 function closeBridge(key) {
   const b = bridgeServers.get(key)
+  forgetKey(key)
   if (!b) return
   bridgeServers.delete(key)
   keyToReqId.delete(key)
@@ -518,7 +588,19 @@ function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, prov
   return [workspace, model, maxTokens, provider, secret, baseUrl ?? '', provHash, eff].join('|')
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona) {
+/* 并发隔离:同一配置档(baseKey)的 runtime 若已被某次在途 run 占用,后来者必须另起一台
+   (key##tag)。否则两次运行共用一个进程,取消任一个都会把另一个一起打断。
+   空闲时仍复用同一台,顺序批处理不额外付进程启动开销。 */
+function pickRuntimeKey(baseKey, cancelTag) {
+  if (!keyToReqId.has(baseKey)) return baseKey
+  const tag = tagOf(cancelTag).replace(/[^A-Za-z0-9_.:\-]/g, '_')
+  let k = tag ? baseKey + '##' + tag : baseKey + '##run'
+  let n = 1
+  while (keyToReqId.has(k)) k = (tag ? baseKey + '##' + tag : baseKey + '##run') + '#' + ++n
+  return k
+}
+
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId) {
   const home = dshHome || process.env.DSH_HOME || ''
   const effMaxTokens =
     Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
@@ -526,7 +608,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
       : undefined
   const searchKey = String(webSearchApiKey || '').trim() || String(apiKey || '').trim()
   const personaHash = crypto.createHash('sha1').update(String(hostPersona || '')).digest('hex').slice(0, 12)
-  const key = runtimeKey(
+  const baseKey = runtimeKey(
     workspace,
     model,
     effMaxTokens ?? 0,
@@ -536,9 +618,12 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash,
     effort,
   )
+  const key = pickRuntimeKey(baseKey, cancelTag)
   const existing = runtimes.get(key)
   if (existing) {
     existing.order = ++runtimeOrder
+    /* 复用也要先占住:一旦返回给 handleRun,中间让出事件循环就会被并发 run 抢走 */
+    claimRuntime(key, reqId, cancelTag)
     return { harness: existing.harness, key }
   }
   mkdirSync(workspace, { recursive: true })
@@ -564,6 +649,10 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     delete env.MTNODE_HOST_PERSONA
   }
   if (envPatch) Object.assign(env, envPatch)
+
+  /* 占用登记:放在本函数第一个 await 之前(同步完成),否则并发 run 会挑中同一台
+     runtime —— 那正是「停一个会话把别的会话一起打断」的根因。 */
+  const tag = claimRuntime(key, reqId, cancelTag)
 
   /* 交互桥:每个运行时独占一个 localhost 端口。bridge + canvas 插件各连一条
      socket,按帧上的 id 把回答写回对应连接。 */
@@ -592,11 +681,19 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
         abortBridgePending(key, s)
       })
     })
-    server.on('error', reject)
+    server.on('error', (err) => {
+      /* 端口没起来 = 这台 runtime 不存在:先退订,否则该 key 永久「在途」 */
+      releaseClaim(key, reqId, tag)
+      reject(err)
+    })
     server.listen(0, '127.0.0.1', () => {
       bridgeState.server = server
       resolve(server.address().port)
     })
+  }).catch((err) => {
+    /* 建桥失败 = 本次运行没起起来:释放占用,否则该 key 永远「被占用」,后续 run 全被推去另起进程 */
+    releaseClaim(key, reqId, tag)
+    throw err
   })
   env.MTNODE_BRIDGE_PORT = String(bridgePort)
   bridgeServers.set(key, bridgeState)
@@ -620,6 +717,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     return harness
   })().catch((err) => {
     runtimes.delete(key)
+    releaseClaim(key, reqId, tag)
     throw err
   })
   runtimes.set(key, entry)
@@ -640,6 +738,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     const evicted = runtimes.get(oldestKey)
     runtimes.delete(oldestKey)
     closeBridge(oldestKey)
+    forgetKey(oldestKey)
     void evicted.harness.then((h) => h.close()).catch(() => {})
   }
   return { harness: entry.harness, key }
@@ -755,10 +854,13 @@ async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
-    permissionPreset, webSearchApiKey, hostPersona,
+    permissionPreset, webSearchApiKey, hostPersona, cancelTag,
   } = params
   const emit = (type, data) => out({ event: { reqId, type, data } })
   let runKey = ''
+  /* 本次运行的取消标签:结束时只能清自己那条登记,别踩到同标签的下一轮 */
+  const runTag = tagOf(cancelTag)
+  if (runTag) activeRunTags.add(runTag)
   try {
     if (!input || typeof input !== 'string' || !input.trim()) {
       emit('error', { message: '任务内容为空' })
@@ -789,11 +891,19 @@ async function handleRun(params) {
     }
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, effort,
-      webSearchApiKey, hostPersonaText,
+      webSearchApiKey, hostPersonaText, cancelTag, reqId,
     )
     runKey = rt.key
-    keyToReqId.set(runKey, reqId)
+    /* 引擎还在起机时用户就按了 ■：占到位后立刻自毁，不白烧一轮 token */
+    if (takeCancelWanted(runTag)) {
+      await closeRuntimeByKey(runKey)
+      throw new Error('已请求终止')
+    }
     const harness = await rt.harness
+    if (takeCancelWanted(runTag)) {
+      await closeRuntimeByKey(runKey)
+      throw new Error('已请求终止')
+    }
     emit('status', { state: 'running' })
     /* 运行统计:与 dsh 客户端一致的信息表达(轮/步/时间/token/子代理/后台任务) */
     const stats = {
@@ -895,6 +1005,7 @@ async function handleRun(params) {
       if (dead) {
         runtimes.delete(runKey)
         closeBridge(runKey)
+        forgetKey(runKey)
         try {
           void dead.harness.then((h) => h.close()).catch(() => {})
         } catch {}
@@ -904,10 +1015,27 @@ async function handleRun(params) {
     emit('done', { finalResponse: '' })
   } finally {
     if (runKey) {
-      keyToReqId.delete(runKey)
-      abortBridgePending(runKey)
+      /* 只有自己仍占着这台时才清桥:已被下一轮接手的，不能拆它的交互桥 */
+      if (releaseClaim(runKey, reqId, runTag)) abortBridgePending(runKey)
+    }
+    if (runTag) {
+      activeRunTags.delete(runTag)
+      /* 本轮已结束：残留的待取消标记属于下一轮之前的心智垃圾，清掉避免误杀 */
+      cancelWanted.delete(runTag)
     }
   }
+}
+
+async function closeRuntimeByKey(k) {
+  const v = runtimes.get(k)
+  if (!v) return false
+  runtimes.delete(k)
+  closeBridge(k)
+  forgetKey(k)
+  try {
+    await v.harness.then((h) => h.close())
+  } catch {}
+  return true
 }
 
 async function closeAllRuntimes() {
@@ -917,6 +1045,7 @@ async function closeAllRuntimes() {
     closeBridge(k)
     jobs.push(v.harness.then((h) => h.close()).catch(() => {}))
   }
+  forgetKey(null)
   await Promise.all(jobs)
 }
 
@@ -1124,17 +1253,32 @@ function applyCordisPreset(preset) {
   }
 }
 
-/* 中断:关闭该 workspace 的全部运行时,在途 run 以错误收束(handleRun 发 error+done) */
-async function cancelRuntime(workspace) {
+/* 中断一次运行。
+   - 带 cancelTag（会话 agent:<id> / 节点 id / assist）：只关这一次运行占用的那台运行时；
+     查不到就什么都不关。绝不能按 workspace 扫，否则同工作目录的其它会话会被一起打断
+     （「停一个会话 → 所有会话全断」就是这么来的）。
+   - 只有不带 tag 的兜底调用（旧语义 / 未登记 handle）才按 workspace 关闭。 */
+async function cancelRuntime(workspace, cancelTag) {
+  const tag = cancelTag == null ? '' : String(cancelTag)
+  if (tag) {
+    const set = tagToKey.get(tag)
+    if (!set || !set.size) {
+      tagToKey.delete(tag)
+      /* 还没占上运行时(正在起机)→ 记一笔，等它占到位立刻自毁 */
+      if (activeRunTags.has(tag)) wantCancelTag(tag)
+      return false
+    }
+    tagToKey.delete(tag)
+    let closed = false
+    for (const k of Array.from(set)) {
+      if (await closeRuntimeByKey(k)) closed = true
+    }
+    return closed
+  }
   let closed = false
-  for (const [k, v] of Array.from(runtimes)) {
+  for (const k of Array.from(runtimes.keys())) {
     if (!k.startsWith(String(workspace || '') + '|')) continue
-    runtimes.delete(k)
-    closeBridge(k)
-    try {
-      await v.harness.then((h) => h.close())
-    } catch {}
-    closed = true
+    if (await closeRuntimeByKey(k)) closed = true
   }
   return closed
 }
@@ -1773,7 +1917,7 @@ rl.on('line', (line) => {
         }
         case 'cancel': {
           const p = msg.params ?? {}
-          const closed = await cancelRuntime(p.workspace)
+          const closed = await cancelRuntime(p.workspace, p.cancelTag)
           reply({ ok: true, closed })
           break
         }

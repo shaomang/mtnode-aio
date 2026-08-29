@@ -13,7 +13,7 @@
  *   3) 方案清单：4 条（可多选 · 数字键 1-4 快速勾选）+ AI 评估摘要 + 真实证据
  *      +「补充说明」输入框 + 按钮「取消 / 换一批 / 开发」
  * 「开发」→ startDevSessionWithText()：与「开发」按钮完全同一条路径（新建绑定
- * 会话、状态转 wip、切到会话视图运行），只是任务正文由勾选结果拼出来。
+ * 会话、状态转 wip、后台运行不跳视图），只是任务正文由勾选结果拼出来。
  *
  * 结果缓存在节点上（node.devSuggest：items / summary / basis / at / picked /
  * supplement），随工作流保存；再次点「建议」可直接查看上次结果而不必重跑模型。
@@ -75,6 +75,56 @@ function devSuggestStamp(at) {
   const hr = Math.floor(min / 60);
   if (hr < 24) return hr + I18n.t(" 小时前");
   return fmtTime(t);
+}
+
+/* ---------- 运行状态判定（自身 / 后代节点 / 绑定会话） ---------- */
+/* 开发节点“运行中”的三种来源，返回：
+ *   "self" —— 节点自身正在运行（整块作为超级节点被执行）
+ *   "desc" —— 块内任意后代节点（递归，含子开发节点）正在运行
+ *   "sess" —— 绑定的开发 / 细化会话正在运行
+ *   null   —— 未运行
+ * 画布据此给节点加 .dev-running 类：头部显示运行徽标 + 边框呼吸灯。
+ * wfNodes 可指定后代扫描所在的工作流节点数组（默认当前画布 S.wf.nodes）。 */
+function devNodeRunningState(node, wfNodes) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return null;
+  if (node.running) return "self";
+  const all = Array.isArray(wfNodes)
+    ? wfNodes
+    : (S.wf && S.wf.nodes) || [];
+  const walk = (host, seen) => {
+    for (const c of all) {
+      if (!c || seen.has(c.id)) continue;
+      if (nodeParentSuperId(c) !== host.id) continue;
+      if (typeof isSuperIoNode === "function" && isSuperIoNode(c)) continue;
+      seen.add(c.id);
+      if (c.running) return true;
+      if (c.kind === "super" && walk(c, seen)) return true;
+    }
+    return false;
+  };
+  if (walk(node, new Set())) return "desc";
+  /* 绑定会话（最近一次 + 历史）任一在跑也算运行中 */
+  const sessions =
+    typeof agentSessions === "function" ? agentSessions() : [];
+  for (const id of devSessionIdsOf(node)) {
+    const st = sessions.find((s) => s && s.id === id);
+    if (st && sessionIsRunning(st)) return "sess";
+  }
+  return null;
+}
+
+/* 当前画布中「运行中」的开发节点列表（自身 / 后代 / 绑定会话任一运行，不含 db 超级节点）。
+ * 供左下角运行队列展示（与处理节点同款行）：队列据此把 desc / sess 态的开发块列进「处理中」，
+ * 点击定位、逐条停止（stopNode 的开发分支）与「全部终止」都能复用同一判定。
+ * wfNodes 可指定工作流节点数组（默认当前画布 S.wf.nodes）；返回的是其中的开发节点（引用）。 */
+function devRunningNodes(wfNodes) {
+  const out = [];
+  const all = Array.isArray(wfNodes) ? wfNodes : (S.wf && S.wf.nodes) || [];
+  for (const n of all) {
+    if (!n || n.kind !== "super" || !n.dev || n.db) continue;
+    if (devNodeRunningState(n, all)) out.push(n);
+  }
+  return out;
 }
 
 /* ---------- 进度上下文（喂给 AI 的「当前开发进度」） ---------- */
@@ -786,11 +836,27 @@ function devSuggestDialog(node, opts) {
         stampElapsed();
       }, 1000);
       st.running = true;
+      /* 本功能块（或就近上层功能块）选定的 Agent 模型：只读调研也照用 */
+      const eff = devAgentModelOf(node);
+      if (eff)
+        logLine(
+          I18n.t("本轮模型：") +
+            devAgentRouteName(eff.provider) +
+            " · " +
+            eff.model +
+            (eff.inherited
+              ? I18n.t("（继承自「") +
+                (eff.source.title || eff.source.id) +
+                I18n.t("」）")
+              : ""),
+        );
       dshRunTask(devSuggestPrompt(node, st.focus), {
         workspace: devPathOf(node) || "",
         runKey: devSuggestRunKey(node),
         preset: "standard",
         effort: "high",
+        provider: eff ? eff.provider : undefined,
+        model: eff ? eff.model : undefined,
         systemPrompt: devSuggestSystemPrompt(),
         onEvent: (type, data) => {
           if (!alive()) return;
@@ -1128,6 +1194,7 @@ async function suggestDevNode(node) {
   const rows = [
     [I18n.t("元素类型"), I18n.t(DEV_KIND_LABEL[dk] || "模块")],
     [I18n.t("开发状态"), devStatusText(devStatusOf(node))],
+    [I18n.t("Agent 模型"), devModelDialogText(node)],
     [I18n.t("项目根目录"), p || I18n.t("（未设置）")],
     [
       I18n.t("下层元素"),
@@ -1181,4 +1248,775 @@ async function suggestDevNode(node) {
     return;
   }
   if (res.action === "go") await devSuggestDialog(node, { focus });
+}
+
+/* ---------- 文件节点「打开」：打开对应的源码文件 ---------- */
+/* 路径约定：文件节点标题 = 相对项目根目录（devPath）的路径（如 renderer/app.js），
+   或直接写绝对路径；标题不像路径时退而打开项目根目录 */
+async function openDevFileNode(node) {
+  if (!node || node.kind !== "super" || !node.dev || devKindOf(node) !== "file") return;
+  const title = String(node.title || "").trim();
+  const root = devPathOf(node);
+  let target = "";
+  if (isAbsPath(title)) {
+    target = title;
+  } else if (root && title) {
+    target = joinPath(root, title);
+  } else if (root) {
+    target = root;
+  }
+  if (!target) {
+    toast(
+      I18n.t(
+        "无法定位文件：请先在顶层功能块设置项目根目录（devPath），并把文件节点标题改为相对路径（如 renderer/app.js）",
+      ),
+      "warn",
+    );
+    return;
+  }
+  let ex = false;
+  try {
+    ex = !!(await window.api.fileExists(target));
+  } catch (_) {}
+  if (!ex) {
+    toast(I18n.t("文件不存在：") + target, "warn");
+    return;
+  }
+  let r = null;
+  try {
+    r = await window.api.shellOpenPath(target);
+  } catch (err) {
+    r = { ok: false, error: (err && err.message) || String(err) };
+  }
+  if (r && r.ok) toast(I18n.t("已打开：") + target, "ok");
+  else toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "warn");
+}
+
+/* ============ 开发节点颜色：菜单栏小按钮 + HSV 色板 ============
+ * 需求：开发节点允许更改节点颜色——菜单栏增加一个小按钮（显示当前颜色），
+ * 点击后展开 HSV 色板，用户可手动修改（方块=饱和度×明度拖动 / 色相条 /
+ * 直接输入 Hex）。
+ * 数据存 node.devColor（#rrggbb 小写；空串 = 按元素类型默认色），随工作流保存。
+ * 渲染：nodeElement 依据 devColorOf() 给节点元素加 .dev-custom-color 并注入
+ * --dev-color（外框）/ --dev-glow（运行呼吸灯），覆盖元素类型的默认配色。
+ */
+
+/* 元素类型默认外框色（与 canvas.css 的 .dev-el-* 配色保持一致） */
+const DEV_KIND_COLOR = {
+  module: "#6fe3a5",
+  file: "#6db4ff",
+  class: "#ffb454",
+  interface: "#c792ea",
+  enum: "#ff8fa3",
+};
+
+/* 自定义外框色：合法 #rrggbb 返回小写 hex，否则空串（= 元素类型默认色） */
+function devColorOf(node) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return "";
+  const c = node && node.devColor;
+  return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c)
+    ? c.toLowerCase()
+    : "";
+}
+
+/* 当前应显示的颜色：自定义优先，否则按元素类型默认 */
+function devShownColor(node) {
+  return devColorOf(node) || DEV_KIND_COLOR[devKindOf(node)] || DEV_KIND_COLOR.module;
+}
+
+/* hex → "r, g, b"（CSS --dev-glow 需要 RGB 三元组）；无效返回 null */
+function hexToRgbTriplet(hex) {
+  if (!(typeof hex === "string" && /^#[0-9a-fA-F]{6}$/.test(hex))) return null;
+  const n = parseInt(hex.slice(1), 16);
+  return (
+    ((n >> 16) & 255) + ", " + ((n >> 8) & 255) + ", " + (n & 255)
+  );
+}
+
+/* ---- HSV ↔ RGB / HEX ---- */
+function hsvToRgb(h, s, v) {
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(1, Number(s) || 0));
+  v = Math.max(0, Math.min(1, Number(v) || 0));
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x; }
+  else if (h < 120) { r = x; g = c; }
+  else if (h < 180) { g = c; b = x; }
+  else if (h < 240) { g = x; b = c; }
+  else if (h < 300) { r = x; b = c; }
+  else { r = c; b = x; }
+  return {
+    r: Math.round((r + m) * 255),
+    g: Math.round((g + m) * 255),
+    b: Math.round((b + m) * 255),
+  };
+}
+function rgbToHsv(r, g, b) {
+  r = Math.max(0, Math.min(255, Number(r) || 0)) / 255;
+  g = Math.max(0, Math.min(255, Number(g) || 0)) / 255;
+  b = Math.max(0, Math.min(255, Number(b) || 0)) / 255;
+  const mx = Math.max(r, g, b);
+  const mn = Math.min(r, g, b);
+  const d = mx - mn;
+  let h = 0;
+  if (d !== 0) {
+    if (mx === r) h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: mx === 0 ? 0 : d / mx, v: mx };
+}
+function hsvToHex(h, s, v) {
+  const o = hsvToRgb(h, s, v);
+  return (
+    "#" +
+    ((1 << 24) | (o.r << 16) | (o.g << 8) | o.b).toString(16).slice(1).toLowerCase()
+  );
+}
+function hexToHsv(hex) {
+  if (!(typeof hex === "string" && /^#[0-9a-fA-F]{6}$/.test(hex)))
+    return { h: 0, s: 0, v: 1 };
+  const n = parseInt(hex.slice(1), 16);
+  return rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
+}
+
+/* ---- 菜单栏按钮 ---- */
+/* 颜色小按钮：圆点 = 当前色（自定义或元素类型默认）；点击切换 HSV 色板 */
+function devColorButtonEl(node) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "n-dev-color" + (devColorOf(node) ? " custom" : "");
+  btn.innerHTML = '<span class="dot" aria-hidden="true"></span>';
+  btn.title = I18n.t("节点颜色：点击展开 HSV 色板，手动修改外框与呼吸灯颜色");
+  if (typeof btn.setAttribute === "function") btn.setAttribute("aria-label", btn.title);
+  const dot = btn.querySelector(".dot");
+  if (dot) dot.style.background = devShownColor(node);
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    toggleDevColorPicker(node, btn);
+  };
+  return btn;
+}
+
+/* 颜色变化后刷新按钮圆点（就地更新，不整板重绘，色板不被打断） */
+function devColorButtonRefresh(node) {
+  const btn = document.querySelector(
+    '.wf-node[data-nid="' + node.id + '"] .n-dev-color',
+  );
+  if (!btn) return;
+  const dot = btn.querySelector(".dot");
+  if (dot) dot.style.background = devShownColor(node);
+  btn.classList.toggle("custom", !!devColorOf(node));
+}
+
+/* 把节点当前 devColor 应用到其 DOM 元素（外框色 / 呼吸灯光晕） */
+function applyDevColorToEl(node) {
+  const el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+  if (!el) return;
+  const c = devColorOf(node);
+  el.classList.toggle("dev-custom-color", !!c);
+  if (c) {
+    el.style.setProperty("--dev-color", c);
+    const rgb = hexToRgbTriplet(c);
+    if (rgb) el.style.setProperty("--dev-glow", rgb);
+    else el.style.removeProperty("--dev-glow");
+  } else {
+    el.style.removeProperty("--dev-color");
+    el.style.removeProperty("--dev-glow");
+  }
+}
+
+/* ---- HSV 色板弹出层（id=devColorPop，fixed 定位，跟随按钮） ---- */
+let _devColorHSV = { h: 0, s: 1, v: 1 }; /* 编辑中的 HSV */
+let _devColorNode = null;                /* 正在编辑的节点 */
+
+function devColorPopEl() {
+  let el = document.getElementById("devColorPop");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "devColorPop";
+  el.className = "dev-color-pop";
+  el.innerHTML =
+    '<div class="dev-color-head"><b></b><button type="button" class="mini" data-act="close">✕</button></div>' +
+    '<div class="dev-color-canvas">' +
+    '<canvas class="dev-color-sv" width="180" height="180"></canvas>' +
+    '<canvas class="dev-color-hue" width="180" height="16"></canvas>' +
+    "</div>" +
+    '<div class="dev-color-row">' +
+    '<span class="dev-color-swatch" aria-hidden="true"></span>' +
+    '<input type="text" class="dev-color-hex" spellcheck="false" maxlength="7"/>' +
+    '<span class="dev-color-rgb"></span>' +
+    "</div>" +
+    '<div class="dev-color-actions">' +
+    '<button type="button" class="mini" data-act="reset"></button>' +
+    '<button type="button" class="mini" data-act="done"></button>' +
+    "</div>";
+  document.body.appendChild(el);
+  el.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  el.querySelector('[data-act="close"]').onclick = () => closeDevColorPicker();
+  el.querySelector('[data-act="done"]').onclick = () => closeDevColorPicker();
+  el.querySelector('[data-act="reset"]').onclick = () => {
+    pushHistory();
+    _devColorNode.devColor = "";
+    devColorSyncAll();
+  };
+  /* 方块拖动（饱和度 × 明度） */
+  const svC = el.querySelector(".dev-color-sv");
+  const hueC = el.querySelector(".dev-color-hue");
+  const svPos = (ev) => {
+    const r = svC.getBoundingClientRect();
+    _devColorHSV.s = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+    _devColorHSV.v = Math.max(0, Math.min(1, 1 - (ev.clientY - r.top) / r.height));
+  };
+  const huePos = (ev) => {
+    const r = hueC.getBoundingClientRect();
+    _devColorHSV.h = Math.max(0, Math.min(360, ((ev.clientX - r.left) / r.width) * 360));
+  };
+  const drag = (ev, fn) => {
+    fn(ev);
+    _devColorNode.devColor = hsvToHex(_devColorHSV.h, _devColorHSV.s, _devColorHSV.v);
+    devColorSyncAll();
+    scheduleSave();
+  };
+  svC.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    svC.setPointerCapture(ev.pointerId);
+    drag(ev, svPos);
+  });
+  svC.addEventListener("pointermove", (ev) => {
+    if (svC.hasPointerCapture(ev.pointerId)) drag(ev, svPos);
+  });
+  svC.addEventListener("pointerup", (ev) => {
+    if (svC.hasPointerCapture(ev.pointerId)) svC.releasePointerCapture(ev.pointerId);
+  });
+  hueC.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    hueC.setPointerCapture(ev.pointerId);
+    drag(ev, huePos);
+  });
+  hueC.addEventListener("pointermove", (ev) => {
+    if (hueC.hasPointerCapture(ev.pointerId)) drag(ev, huePos);
+  });
+  hueC.addEventListener("pointerup", (ev) => {
+    if (hueC.hasPointerCapture(ev.pointerId)) hueC.releasePointerCapture(ev.pointerId);
+  });
+  /* 直接输入 Hex */
+  const hexIn = el.querySelector(".dev-color-hex");
+  const commitHex = () => {
+    const v = String(hexIn.value || "").trim();
+    if (!/^#[0-9a-fA-F]{6}$/.test(v)) {
+      toast(I18n.t("无效的 Hex 颜色（示例：#6FE3A5）"), "warn");
+      syncDevColorFields();
+      return;
+    }
+    pushHistory();
+    _devColorHSV = hexToHsv(v);
+    _devColorNode.devColor = v.toLowerCase();
+    devColorSyncAll();
+    scheduleSave();
+  };
+  hexIn.addEventListener("change", commitHex);
+  hexIn.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      commitHex();
+    }
+  });
+  return el;
+}
+
+/* 弹出层控件同步到节点当前值（色板 canvas / 色块 / Hex / RGB 文本） */
+function syncDevColorFields() {
+  const el = document.getElementById("devColorPop");
+  if (!el) return;
+  _devColorHSV = hexToHsv(devColorOf(_devColorNode) || devShownColor(_devColorNode));
+  renderDevColorCanvases(el);
+  const hex = hsvToHex(_devColorHSV.h, _devColorHSV.s, _devColorHSV.v);
+  const sw = el.querySelector(".dev-color-swatch");
+  if (sw) sw.style.background = hex;
+  const hexIn = el.querySelector(".dev-color-hex");
+  if (hexIn) hexIn.value = hex.toUpperCase();
+  const rgbT = el.querySelector(".dev-color-rgb");
+  if (rgbT) {
+    const o = hsvToRgb(_devColorHSV.h, _devColorHSV.s, _devColorHSV.v);
+    rgbT.textContent = "rgb(" + o.r + ", " + o.g + ", " + o.b + ")";
+  }
+}
+
+/* 颜色变化后统一落地：节点 DOM（外框/呼吸灯）+ 按钮圆点 + 弹出层控件 */
+function devColorSyncAll() {
+  devColorButtonRefresh(_devColorNode);
+  applyDevColorToEl(_devColorNode);
+  syncDevColorFields();
+}
+
+/* 重绘两张 canvas（SV 方块 + 色相条）与选中标记 */
+function renderDevColorCanvases(el) {
+  const svC = el.querySelector(".dev-color-sv");
+  const hueC = el.querySelector(".dev-color-hue");
+  if (svC && typeof svC.getContext === "function") {
+    const ctx = svC.getContext("2d");
+    const W = svC.width, H = svC.height;
+    const o = hsvToRgb(_devColorHSV.h, 1, 1);
+    const grad = ctx.createLinearGradient(0, 0, W, 0);
+    grad.addColorStop(0, "#fff");
+    grad.addColorStop(1, "rgb(" + o.r + "," + o.g + "," + o.b + ")");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    const black = ctx.createLinearGradient(0, 0, 0, H);
+    black.addColorStop(0, "rgba(0,0,0,0)");
+    black.addColorStop(1, "rgba(0,0,0,1)");
+    ctx.fillStyle = black;
+    ctx.fillRect(0, 0, W, H);
+    const mx = _devColorHSV.s * W;
+    const my = (1 - _devColorHSV.v) * H;
+    ctx.beginPath();
+    ctx.arc(mx, my, 6, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,.95)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(mx, my, 4, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(0,0,0,.55)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  if (hueC && typeof hueC.getContext === "function") {
+    const ctx = hueC.getContext("2d");
+    const W = hueC.width, H = hueC.height;
+    for (let x = 0; x < W; x++) {
+      const o = hsvToRgb((x / W) * 360, 1, 1);
+      ctx.fillStyle = "rgb(" + o.r + "," + o.g + "," + o.b + ")";
+      ctx.fillRect(x, 0, 1, H);
+    }
+    const hx = (_devColorHSV.h / 360) * W;
+    ctx.beginPath();
+    ctx.moveTo(hx, 0);
+    ctx.lineTo(hx, H);
+    ctx.strokeStyle = "rgba(255,255,255,.95)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+/* 打开色板：fixed 定位到按钮下方（贴边防溢出） */
+function openDevColorPop(node, anchor) {
+  _devColorNode = node;
+  const el = devColorPopEl();
+  el.querySelector(".dev-color-head b").textContent = I18n.t("节点颜色");
+  el.querySelector('[data-act="reset"]').textContent = I18n.t("恢复元素类型默认色");
+  el.querySelector('[data-act="done"]').textContent = I18n.t("完成");
+  el.classList.add("on");
+  const r = anchor.getBoundingClientRect();
+  const pad = 8;
+  const w = 200;
+  let left = r.left;
+  let top = r.bottom + 6;
+  const h = el.offsetHeight || 290;
+  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+  if (left < pad) left = pad;
+  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
+  el.style.left = left + "px";
+  el.style.top = top + "px";
+  syncDevColorFields();
+  devColorButtonRefresh(node);
+}
+
+function closeDevColorPicker() {
+  S.uiDevColorNode = null;
+  _devColorNode = null;
+  const el = document.getElementById("devColorPop");
+  if (el) el.classList.remove("on");
+}
+
+function toggleDevColorPicker(node, anchor) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return;
+  if (S.uiDevColorNode === node.id) {
+    closeDevColorPicker();
+    return;
+  }
+  pushHistory();
+  S.uiDevColorNode = node.id;
+  openDevColorPop(node, anchor);
+}
+/* ============ 开发节点 Agent 模型：菜单栏按钮 + 模型选择弹层 ============
+ * 需求：开发节点上加「Agent 模型」选择按钮——选定后，本功能块以及**未自行选择**的
+ * 子功能块，其所有 Agent 衍生功能（「建议」只读调研、「开发 / 细化」绑定会话）都用
+ * 这个模型；子块自己选过就以子块为准（就近覆盖，不再向上继承）。
+ * 数据：node.devModel（模型 id；空 = 未选择，跟随默认）+ node.devProvider（智能路由
+ * id，可由模型自动推断），随工作流保存、canvas_get 可见、Agent 也能改。
+ * 解析：devAgentModelOf(node) 沿 parentSuperId 就近向上找第一个已选模型。
+ */
+
+/* 当前可用的智能路由（DeepSeek 官方 + 已配置的其它文本服务商） */
+function devAgentRoutes() {
+  const out = ["deepseek-official"];
+  const add = (r) => {
+    const v = String(r || "").trim();
+    if (v && out.indexOf(v) < 0) out.push(v);
+  };
+  try {
+    if (typeof agentRouteOptions === "function") {
+      const s = agentRouteOptions();
+      if (s && typeof s.forEach === "function") {
+        s.forEach((r) => add(r));
+        return out;
+      }
+      if (Array.isArray(s)) {
+        s.forEach((r) => add(r));
+        return out;
+      }
+    }
+    if (typeof mtnodePiProviders === "function") {
+      for (const p of mtnodePiProviders() || []) add("mtnode_" + p.route);
+    }
+  } catch (_) {}
+  return out;
+}
+
+/* 路由的展示名（服务商名） */
+function devAgentRouteName(route) {
+  const r = String(route || "").trim() || "deepseek-official";
+  try {
+    if (r === "deepseek-official") {
+      const dp = typeof dshProvider === "function" ? dshProvider() : null;
+      return (dp && dp.name) || I18n.t("DeepSeek 官方");
+    }
+    if (typeof providerForAgentRoute === "function") {
+      const p = providerForAgentRoute(r);
+      if (p && p.name) return String(p.name);
+    }
+    if (typeof mtnodePiProviders === "function") {
+      const mp = (mtnodePiProviders() || []).find(
+        (x) => "mtnode_" + x.route === r,
+      );
+      if (mp && mp.name) return String(mp.name);
+    }
+  } catch (_) {}
+  return r;
+}
+
+/* 可选模型分组：[{ id: 路由, name: 服务商名, models: [模型 id] }] */
+function devAgentModelGroups() {
+  const out = [];
+  for (const r of devAgentRoutes()) {
+    let models = [];
+    try {
+      if (typeof agentModelsForRoute === "function")
+        models = (agentModelsForRoute(r) || []).map(String);
+    } catch (_) {
+      models = [];
+    }
+    out.push({ id: r, name: devAgentRouteName(r), models });
+  }
+  return out;
+}
+
+/* 模型是否属于该路由（容忍大小写与「厂商/模型」前缀写法；路由未登记模型时不否决） */
+function devModelFitsRoute(route, model) {
+  const m = String(model || "").trim();
+  if (!m) return false;
+  const g = devAgentModelGroups().filter((x) => x.id === String(route || ""))[0];
+  const models = (g && g.models) || [];
+  if (!models.length) return true;
+  const low = m.toLowerCase();
+  return models.some((x) => {
+    const s = String(x);
+    return (
+      s === m ||
+      s.toLowerCase() === low ||
+      s.endsWith("/" + low) ||
+      s.endsWith(low)
+    );
+  });
+}
+
+/* 反查模型所属路由（都没登记 → 空串） */
+function devRouteOfModel(model) {
+  const m = String(model || "").trim();
+  if (!m) return "";
+  const low = m.toLowerCase();
+  for (const g of devAgentModelGroups()) {
+    const hit = (g.models || []).some(
+      (x) => String(x).toLowerCase() === low || String(x) === m,
+    );
+    if (hit) return g.id;
+  }
+  return "";
+}
+
+/* 本节点自己选定的模型：{ provider, model }；未选 → null。
+   服务商缺失 / 与模型不匹配时按模型表纠正路由（模型才是用户真正关心的字段） */
+function devModelOwn(node) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return null;
+  const m = String(node.devModel || "").trim();
+  if (!m) return null;
+  const routes = devAgentRoutes();
+  let r = String(node.devProvider || "").trim();
+  if (r && routes.indexOf(r) < 0) r = "";
+  if (r && devModelFitsRoute(r, m)) return { provider: r, model: m };
+  const found = devRouteOfModel(m);
+  return { provider: found || r || "deepseek-official", model: m };
+}
+
+/* 生效模型：自身已选 → 否则就近向上找祖先功能块；都没选 → null（跟随默认） */
+function devAgentModelOf(node) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return null;
+  let cur = node;
+  let guard = 0;
+  while (cur && guard++ < 64) {
+    const own = devModelOwn(cur);
+    if (own)
+      return {
+        provider: own.provider,
+        model: own.model,
+        source: cur,
+        inherited: cur !== node,
+      };
+    const pid =
+      typeof nodeParentSuperId === "function"
+        ? nodeParentSuperId(cur)
+        : cur.parentSuperId;
+    const parent =
+      pid && typeof nodeById === "function" ? nodeById(pid) : null;
+    cur = parent && parent.dev && !parent.db ? parent : null;
+  }
+  return null;
+}
+
+/* 生效模型的展示文本："服务商 · 模型"；未选择 → 空串 */
+function devAgentModelText(node) {
+  const eff = devAgentModelOf(node);
+  return eff ? devAgentRouteName(eff.provider) + " · " + eff.model : "";
+}
+
+/* 一句话说明当前生效模型与其来源（继承时点名上层功能块） */
+function devModelScopeText(node) {
+  const eff = devAgentModelOf(node);
+  if (!eff)
+    return I18n.t(
+      "未选择：本功能块与子功能块的「建议 / 开发 / 细化」跟随默认模型。",
+    );
+  const t = devAgentRouteName(eff.provider) + " · " + eff.model;
+  if (eff.inherited)
+    return (
+      I18n.t("当前继承自「") +
+      (eff.source.title || eff.source.id) +
+      I18n.t("」：") +
+      t +
+      I18n.t("；在此单独选择后，本功能块及其子树改用它。")
+    );
+  return (
+    I18n.t("本功能块已选择：") +
+    t +
+    I18n.t("；其下未自行选择的子功能块一并使用它。")
+  );
+}
+
+/* 对话框里的一行展示：已选（含继承标注）/ 未选（自动跟随默认） */
+function devModelDialogText(node) {
+  const eff = devAgentModelOf(node);
+  if (!eff) return I18n.t("自动（跟随默认）");
+  return (
+    devAgentRouteName(eff.provider) +
+    " · " +
+    eff.model +
+    (eff.inherited
+      ? I18n.t("（继承自「") +
+        (eff.source.title || eff.source.id) +
+        I18n.t("」）")
+      : "")
+  );
+}
+
+/* ---- 菜单栏按钮：显示当前生效模型，点击展开选择弹层 ---- */
+function devModelButtonTitle(node, eff) {
+  if (!eff)
+    return I18n.t(
+      "Agent 模型：自动（跟随默认）· 点击选择；选定后本功能块与未自行选择的子功能块都会用它",
+    );
+  const t = devAgentRouteName(eff.provider) + " · " + eff.model;
+  if (eff.inherited)
+    return (
+      I18n.t("Agent 模型：") +
+      t +
+      I18n.t("（继承自「") +
+      (eff.source.title || eff.source.id) +
+      I18n.t("」）· 点击为本功能块单独选择")
+    );
+  return (
+    I18n.t("Agent 模型：") +
+    t +
+    I18n.t(" · 点击修改（未自行选择的子功能块会继承）")
+  );
+}
+
+function devModelButtonEl(node) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  const eff = devAgentModelOf(node);
+  btn.className =
+    "n-dev-model" + (eff ? (eff.inherited ? " inherited" : "") : " auto");
+  const ico = devDlgEl("span", "ico", "🧠");
+  const lbl = devDlgEl("span", "lbl", eff ? eff.model : I18n.t("自动"));
+  btn.appendChild(ico);
+  btn.appendChild(lbl);
+  btn.title = devModelButtonTitle(node, eff);
+  if (typeof btn.setAttribute === "function")
+    btn.setAttribute("aria-label", btn.title);
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    toggleDevModelPicker(node, btn);
+  };
+  return btn;
+}
+
+/* 节点模型变了但整张画布还没重绘时，就地更新头部按钮 */
+function devModelButtonRefresh(node) {
+  if (!node) return;
+  const el = document.querySelector(
+    '.wf-node[data-nid="' + node.id + '"] .n-dev-model',
+  );
+  if (!el) return;
+  const eff = devAgentModelOf(node);
+  el.className =
+    "n-dev-model" + (eff ? (eff.inherited ? " inherited" : "") : " auto");
+  const lbl = el.querySelector(".lbl");
+  if (lbl) lbl.textContent = eff ? eff.model : I18n.t("自动");
+  const t = devModelButtonTitle(node, eff);
+  el.title = t;
+  if (typeof el.setAttribute === "function") el.setAttribute("aria-label", t);
+}
+
+/* ---- 模型选择弹层（id=devModelPop，fixed 定位，跟随按钮） ---- */
+let _devModelNode = null; /* 正在选择的节点 */
+
+function devModelPopEl() {
+  let el = document.getElementById("devModelPop");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "devModelPop";
+  el.className = "dev-model-pop";
+  const head = document.createElement("div");
+  head.className = "dev-model-head";
+  head.appendChild(devDlgEl("b", null, I18n.t("Agent 模型")));
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "mini dev-model-close";
+  close.textContent = "✕";
+  close.onclick = () => closeDevModelPicker();
+  head.appendChild(close);
+  const scope = document.createElement("div");
+  scope.className = "dev-model-scope";
+  const list = document.createElement("div");
+  list.className = "dev-model-list";
+  const foot = document.createElement("div");
+  foot.className = "dev-model-actions";
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "mini dev-model-reset";
+  reset.textContent = I18n.t("跟随默认（不指定）");
+  reset.onclick = () => applyDevModelChoice(_devModelNode, "", "");
+  foot.appendChild(reset);
+  el.appendChild(head);
+  el.appendChild(scope);
+  el.appendChild(list);
+  el.appendChild(foot);
+  el.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  document.body.appendChild(el);
+  return el;
+}
+
+/* 重绘弹层：现状说明 + 按服务商分组的模型清单（当前项打勾） */
+function renderDevModelPop() {
+  const el = document.getElementById("devModelPop");
+  if (!el || !_devModelNode) return;
+  const scope = el.querySelector(".dev-model-scope");
+  if (scope) scope.textContent = devModelScopeText(_devModelNode);
+  const list = el.querySelector(".dev-model-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const own = devModelOwn(_devModelNode);
+  const curKey = own ? own.provider + "|" + own.model : "";
+  let any = 0;
+  for (const g of devAgentModelGroups()) {
+    const models = g.models || [];
+    if (!models.length) continue;
+    list.appendChild(devDlgEl("div", "dev-model-group", g.name));
+    for (const m of models) {
+      const on = curKey === g.id + "|" + m;
+      const b = devDlgEl("button", "dev-model-opt" + (on ? " on" : ""), null);
+      b.type = "button";
+      b.appendChild(devDlgEl("span", "m", m));
+      if (on) b.appendChild(devDlgEl("span", "c", "✓"));
+      const route = g.id;
+      b.onclick = () => applyDevModelChoice(_devModelNode, route, m);
+      list.appendChild(b);
+      any++;
+    }
+  }
+  if (!any)
+    list.appendChild(
+      devDlgEl(
+        "div",
+        "dev-model-empty",
+        I18n.t("暂无可用模型：请先在 设置 → 模型服务 中添加服务商与模型。"),
+      ),
+    );
+}
+
+/* 选定（route+model）或清除（model 传空）：写节点 → 存盘 → 收起弹层 → 重绘画布 */
+function applyDevModelChoice(node, route, model) {
+  if (!node || node.kind !== "super" || !node.dev) return;
+  pushHistory();
+  const m = String(model || "").trim();
+  node.devModel = m;
+  node.devProvider = m ? String(route || "").trim() : "";
+  scheduleSave(true);
+  if (S.uiDevModelNode === node.id) closeDevModelPicker();
+  devModelButtonRefresh(node);
+  try {
+    renderCanvas();
+  } catch (_) {}
+}
+
+/* 打开弹层：fixed 定位到按钮下方（贴边防溢出） */
+function openDevModelPop(node, anchor) {
+  _devModelNode = node;
+  const el = devModelPopEl();
+  el.classList.add("on");
+  renderDevModelPop();
+  const r = anchor.getBoundingClientRect();
+  const pad = 8;
+  const w = el.offsetWidth || 240;
+  let left = r.left;
+  let top = r.bottom + 6;
+  const h = el.offsetHeight || 320;
+  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+  if (left < pad) left = pad;
+  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
+  el.style.left = left + "px";
+  el.style.top = top + "px";
+}
+
+function closeDevModelPicker() {
+  S.uiDevModelNode = null;
+  _devModelNode = null;
+  const el = document.getElementById("devModelPop");
+  if (el) el.classList.remove("on");
+}
+
+function toggleDevModelPicker(node, anchor) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return;
+  if (S.uiDevModelNode === node.id) {
+    closeDevModelPicker();
+    return;
+  }
+  S.uiDevModelNode = node.id;
+  openDevModelPop(node, anchor);
 }

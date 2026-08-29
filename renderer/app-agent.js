@@ -742,8 +742,9 @@ function dshEffortOf(v, fromProcText) {
   return "high";
 }
 
-/* 中断智能运行:按 runKey 关闭对应工作目录的运行时,在途 run 以错误收束。
-   runKey 缺省 = 中断全部在途 dsh 运行(一键终止语义);并行会话/节点各持自己的 runKey。 */
+/* 中断智能运行:dsh 线协议无逐轮取消,只能关掉该次运行自己的运行时进程。
+   runKey = 那次运行登记的 cancelTag(会话 agent:<id> / 节点 node.id / 助手 assist),
+   网关据此精确关闭,不会波及同工作目录里其它并行会话;缺省 = 中断全部在途运行。 */
 function dshCancelActive(runKey) {
   const map = (S && S._runCancels) || {};
   const keys = runKey ? [String(runKey)] : Object.keys(map);
@@ -752,7 +753,7 @@ function dshCancelActive(runKey) {
     const h = map[k];
     if (!h) continue;
     delete map[k];
-    list.push(h);
+    list.push({ cancelTag: h.cancelTag || k, workspace: h.workspace });
   }
   if (!list.length) return Promise.resolve();
   return Promise.all(list.map((p) => window.api.dshCancel(p).catch(() => {})));
