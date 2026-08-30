@@ -72,6 +72,14 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
   审批 answerer;`canvas-plugin.mjs` 注册 `mtnode_canvas_get` /
   `mtnode_canvas_edit`(import `defineTool`,dsh 升级只改 `dsh/`)。帧转发到
   gateway,再由本地协议事件送达 renderer;回答经 `interact` 原路返回。
+- 回滚目录:`MTNODE_ROLLBACK_DIR` 由 gateway 在 spawn 时注入**绝对路径**(默认
+  `<DATA>/rollback`,`<DATA>` = 主进程数据目录)。运行时侧回滚插件用它排除自指(账本与
+  对象库自身的写入不进捕获)。未注入 = 回滚能力整体 no-op,其余行为一字不改
+  (降级保底:该插件缺席时产品与接入前完全一致)。
+- 回滚捕获插件:cordis.yml 固定挂载行 `id: mtnode-rollback` /
+  `name: './rollback-plugin.mjs'`,只 import node 内置模块;经同一条桥 TCP **单向**发
+  `begin` / `journal` / `end` 帧(不登记 pending、不等回答、自己不写盘)。字段见
+  「回滚账本与 journal 帧(契约)」。
 
 ## 本地协议(main.js ↔ gateway)
 
@@ -84,17 +92,185 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `interact` | `{kind:'question'\|'approval'\|'canvas', id, answers?\|outcome?\|result?}` | 回答提问 / 审批 / 画布工具结果,按交互 id 路由回对应运行时 |
+| `rollbackDrain` | `{reqId?}` | 回滚收尾拉取:取走 gateway 侧该轮(缺省 = 最近一轮)缓冲的 rollback 帧,返回 `{frames:[…], dropped:n, sealed:true\|false}`,取后即清缓冲。主进程在 `done` / `cancel` / 运行时关闭后各调一次,**账本封口只以本方法的返回值为权威**(事件是推的、drain 是兜底与封口);无缓冲返回 `{frames:[],dropped:0,sealed:true}`。详见「回滚账本与 journal 帧(契约)」 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
 | `pluginList` / `pluginAdd` / `pluginRemove` / `pluginEnable` / `pluginDisable` | `{pkg, id?}` 等 | 读取/安装/移除/挂载/卸载 cordis.yml 插件。`pluginList` 每项含 `title`/`description`/`purpose`/`version`(来自 package.json、preset.yml、行上注释)。核心运行时行只读;非核心(用户插件、套装、可选 shipped 行)可在设置中挂载/卸载;变更后重启运行时 |
 | `mcpList` / `mcpAdd` / `mcpRemove` / `mcpSetEnabled` | `{serverName, …}` | MCP 服务器管理(cordis 用户段,变更后重启运行时) |
 | `shutdown` | — | 关闭全部运行时并退出 gateway |
 
-`run` 的事件:`reasoning`(思考增量)、`text`(正文增量)、`tool`(工具调用
+`run` 的事件:`reasoning`(思考增量 `{text, turn, step, index}`)、`text`(正文增量
+`{text, turn, step, index}`)、`say-end`(一段正文的块收尾 `{turn, step, index}`,供前端切段;
+仅 `assistant/chunk` 的 `block-end` 且块类型为 `text` 时发)、`tool`(工具调用
 `{name, args}`)、`status`(`{state}`)、`question`(模型提问,`{id, sessionId,
 questions}`)、`approval`(越权审批,`{id, sessionId, toolName, callId?, reason?}`)、
 `canvas`(画布/应用读写,`{id, op:'get'|'edit'|'app', params}` —— 渲染层执行后经 `interact`
-`kind:'canvas'` 回传结果)、`session-event`(其余会话事件全量透传)、`usage`、`title`、
+`kind:'canvas'` 回传结果)、`journal`(回滚账本帧,`{phase:'begin'|'pre'|'post'|'end',
+rid, sessionId, kind, …}` —— 主进程是唯一落盘者,转给渲染层时剥掉正文,见「回滚账本与
+journal 帧(契约)`)、`session-event`(其余会话事件全量透传)、`usage`、`title`、
 `error`、`done`(`{finalResponse, metrics}`)。所有事件带 `reqId`,对应一次 `run`。
+
+> `turn` / `step` 取自 `assistant/chunk` 事件的 `params.event.data`(实测记录形如
+> `{type:'assistant/chunk', seq, time, data:{turn, step, chunk:{…}}}`),取不到时回落事件顶层、
+> 再回落 chunk,最后 0;`index` 是该内容块在本步内的序号(在 `chunk.index`,缺省 0)。
+> `tool` 事件的 `turn` / `step` 同源(`event.data`)。这三者与 `say-end` 都只是**增量字段 /
+> 新增事件**:既有事件名与语义一字未改,老渲染层忽略即可,不影响 `finalResponse`、`usage`
+> 与回滚链路。渲染层据此 + `turn/start`、`step/start`(走 `session-event` 透传)按步切段。
+
+## 回滚账本与 journal 帧(契约)
+
+> **唯一真源**:主进程落盘、网关转发、渲染层展示三路都按本节字段实现,不得各写一套。
+> 本节只锁契约(字段、路径、归属、语义、失败行为),不锁实现;要改字段,先改这里。
+
+### 分工(三路各自的地盘)
+
+| 环节 | 归属 | 只做这件事 |
+|---|---|---|
+| 捕获 | 运行时插件 `dsh/gateway/rollback-plugin.mjs`(`id: mtnode-rollback`) | 在工具 pre/post 观察点采样,**只发桥帧**,不写盘、不等回答 |
+| 定序与转发 | `dsh/gateway/gateway.mjs` | 生成 `rid`、按帧 `id` 去重、把帧转成本地协议事件 `journal`,并留存本轮帧待 `rollbackDrain` |
+| 落盘 | `main.js` + `dsh/main-dsh.js` | 写对象库与轮次账本(全仓唯一写入者);渲染层永不直接碰这两个目录 |
+| 展示与还原 | `renderer/`(app-assist / app-canvas / app-plan / app-db) | 只读摘要;还原时按 `rid` 向主进程取 blob,写文件经主进程,画布/计划/数据库走渲染层既有唯一入口 |
+
+### 路径与命名
+
+- 根:`<ROLLBACK>` = `MTNODE_ROLLBACK_DIR`(缺省 `<DATA>/rollback`,`<DATA>` = 主进程数据目录)。
+- 对象库:`<ROLLBACK>/objects/<sha[0:2]>/<sha>` —— `<sha>` 是**内容字节的 sha256 小写十六进制**(裸 hash 作文件名,不带 `sha256:` 前缀);2 字符分片只为控目录宽度。对象**只增不改**;淘汰属主进程配额策略,契约不承诺存在时长。
+- 账本:`<ROLLBACK>/rounds/<sessionId>/<rid>.json` —— 一个 `rid` 一个文件 = 一次 agent 轮次(run)。
+- `sha256(内容)` 即对象 id;账本内引用对象一律写裸 `<sha>` 字符串。
+- `sessionId` / `rid` 进文件名前消毒:仅保留 `[A-Za-z0-9._-]`,其余替换为 `_`;消毒后撞名视为异常,**拒绝写入**(绝不覆盖已有账本)。
+- 账本写入必须原子:先 `<rid>.json.tmp`,封口时 rename 覆盖;崩溃残留的 `.tmp` 与非 `sealed` 账本由下一次 `rollbackDrain` 补齐或标 `partial`。
+
+### 轮次账本(round ledger)schema
+
+```jsonc
+{
+  "v": 1,                            // 契约版本:只加字段,已有字段语义不改
+  "sessionId": "…",                  // dsh 会话 id,与事件 data.sessionId 同源
+  "rid": "r-…",                      // roundId,gateway 生成(见下),一次 run 一个
+  "reqId": "…",                      // 本地协议该次 run 的 reqId(与日志对齐用)
+  "workspace": "E:\\dev\\…",         // 绝对路径,files[].path 的相对基准
+  "startedAt": 1720000000000,        // begin 帧时刻(ms)
+  "endedAt": 1720000006000,          // end 帧时刻(ms);未封口为 0
+  "status": "sealed",                // open(在途) | sealed(完整封口) | partial(有丢帧) | failed
+  "msgLen": 48213,                   // 本轮 journal 帧 JSON 累计字节数(配额与诊断)
+  "dropped": 0,                      // 被丢弃帧数(超限 / 重复 id / 无归属)
+  "files": [{
+    "path": "src/a.js",              // 相对 workspace;工作区外写绝对路径并置 outside:true
+    "objId": "e3b0c4…",              // 回滚要写回的【改前内容】对象 sha;existed=false(本轮新建)时为 ""
+    "beforeHash": "…",               // 改前字节 sha256;改前不存在时 ""
+    "afterHash": "…",                // 本轮最晚 post 的字节 sha256;本轮删除时 ""
+    "existed": true,                 // 本轮开始前该路径是否已存在 → 决定回滚是写回还是删除
+    "size": 2048,                    // 改前字节数
+    "mtimeMs": 1719999000000,        // 改前 mtime,回滚后原样复位
+    "callId": "tc_12",               // 本轮【最早】触及它的工具调用 id
+    "tool": "write",                 // 该次工具名
+    "hits": 2,                       // 本轮被改次数(同 path 合并计数)
+    "outside": false,                // 是否位于 workspace 之外
+    "unsupported": ""                // 非空 = 改前内容不可得,回滚跳过该条并如实报告:
+                                     // "too-large" | "binary" | "denied" | "gone"(对象缺失)
+                                     // | "frame-dropped" | "shell" | "outside"
+  }],
+  "canvas": [{
+    "wfId": "wf_…",                  // 工作流 id
+    "before": "sha…",                // 改前整工作流快照(序列化 JSON)对象 sha;首次 = ""
+    "after": "sha…",                 // 改后整工作流快照对象 sha
+    "touched": {                     // 本轮实际改动的元素,供 UI 高亮与「这一轮改了什么」列表
+      "nodeIds": [], "wireIds": [], "markIds": [], "groupIds": []
+    }
+  }],
+  "plan": {                          // 该轮结束时会话计划态快照(还原时原样放回)
+    "plan": null,                    // st.plan:已确认计划(步骤 + 每项状态 + 进度)
+    "todos": [],                     // st.todos
+    "outbox": [],                    // st.outbox:发送队列残留(含 _planExec / planRunId / sessionId)
+    "_planExec": null                // st._planExec 运行时游标;还原前必须核对 sessionId 归属
+  },
+  "planObj": "",                     // plan 序列化 > 256KB 时整段落对象库,此处存 sha,"plan" 置 null
+  "db": [{
+    "dir": "E:\\…\\<db dir>",        // 数据库目录(db-store 的 SQLite 所在目录)
+    "id": "rec_…",                   // 记录 id
+    "before": null,                  // 改前记录 JSON;本轮新增时 null
+    "after": { "id": "…", "title": "…", "content": "…" }  // 改后记录 JSON;本轮删除时 null
+  }],
+  "untracked": { "shellCalls": 1 },  // 本轮 shell / execute 次数:其文件改动不可捕获,只记数
+  "restoredAt": null                 // 已回滚时刻(ms);非空 = 该账本已消费,二次回滚默认拒绝
+}
+```
+
+### journal 帧 schema(桥 TCP,换行分隔 JSON)
+
+与 `question` / `approval` / `canvas` / `db` 同一条通道(`MTNODE_BRIDGE_PORT`),但
+**单向 fire-and-forget**:gateway 对 `t:'begin'|'journal'|'end'` 不登记 `bridgePending`,
+不回 `answer`/`outcome`/`abort`。
+
+```jsonc
+{ t:'begin',   id, sessionId, roundId?, workspace, reqId?, at }
+{ t:'journal', id, sessionId, roundId?, phase:'pre'|'post',
+  kind:'file'|'canvas'|'db'|'shell',
+  callId, tool,                       // 触发它的工具调用
+  // kind:'file'   → path, existed, hash, size, mtimeMs
+  //                + phase='pre' 才带 content('utf8'|'base64')与 encoding;'post' 只带 hash/size/mtimeMs
+  // kind:'canvas' → wfId, snapshot(pre/post 各一份整工作流快照), touched{nodeIds,wireIds,markIds,groupIds}
+  // kind:'db'     → dir, id, record(pre/post 的记录 JSON;不存在时 null)
+  // kind:'shell'  → cmd(截断 512B), cwd                 → 只汇总进 untracked.shellCalls
+}
+{ t:'end',     id, sessionId, roundId?, at, dropped? }
+```
+
+- `id` = 帧 uuid,**去重键**(同 id 二次到达 gateway 丢弃并 `dropped++`)。
+- `rid` 权威在 gateway:本轮第一个 `begin` 上 stamp gateway 生成的 rid(格式
+  `r-<base36(ms)>-<6 random>`);后续缺 `roundId` 的帧挂到本轮,自带不一致的以 gateway
+  为准并在该帧标 `roundMismatch`。渲染层与主进程一律用事件里的 `rid`,不自造。
+- 没 `begin` 就来 `journal`:gateway 就地补一个 begin(`workspace` 取该 run 的 params),
+  不丢帧。`end` 到达即封口,`rollbackDrain` 为权威收尾点。
+- 单帧 > 2 MB:整帧丢弃(`dropped++`),但 file 类仍落一条 `unsupported:'too-large'`
+  条目(hash / size / mtime 照记)——宁可标记不可静默。
+- 插件侧丢帧(桥断开、无端口)一律静默:不重试、不缓存正文,**绝不拖慢 agent**;
+  缺口由 `dropped>0` → 账本 `status:'partial'` 显式暴露。
+- `done` / `cancel` 之后到达的帧:gateway 只留在本轮缓冲,等 `rollbackDrain` 取走
+  (此时 reqId 已回收,不再直接推事件)。
+- **画布与计划快照由渲染层补齐**:运行时插件看不见画布与会话内存,它只能在相关工具调用上
+  发 `kind:'canvas'` 的关联帧(`wfId` / `callId`,表示"本轮动了这个工作流")。真正的
+  `before` / `after` 整快照与 `plan` 段由渲染层在 `applyCanvasOp` 前后、以及本轮封口时各取
+  一份,经既有 preload 白名单 IPC 交给主进程按同一 `rid` 合并进账本。缺这份上报时账本仍
+  记"动了哪个 `wfId`",但对应 `before` / `after` 留 `""`(= 快照不可得,还原跳过该条并报告)。
+
+### 事件 `journal`(gateway → main.js → renderer)
+
+`{reqId, type:'journal', data:{ phase:'begin'|'pre'|'post'|'end', rid, sessionId, kind, … }}`。
+
+- 主进程边收边写:pre 帧正文即时入对象库(内容寻址天然去重),并维护 `status:'open'`
+  账本;`rollbackDrain` 返回后按帧重放补齐、去重,再改写为 `sealed` / `partial`。
+- 转发给渲染层时**剥掉正文**(`content` / `snapshot` / `record` 全换成 sha + 大小摘要):
+  渲染层只拿"哪一轮、哪些路径、多大、touched 了哪些元素",还原才按 `rid` 回头索取。
+- 落盘失败(磁盘满、路径不可写)只记 `<ROLLBACK>/rollback-error.log` 并降级该轮为
+  `failed`,不得影响该轮 agent 运行。
+
+### 合并、守卫与还原顺序
+
+- 同一 `rid` 内同 `path` 合并为**一条**:`beforeHash` / `objId` / `existed` / `size` /
+  `mtimeMs` / `callId` / `tool` 取本轮**最早**的 pre,`afterHash` 取最晚的 post,`hits` 计数。
+- 只有改前内容入对象库(回滚要写回的就是它);文件改后内容**不入库**(体积翻倍且回滚
+  用不到),`afterHash` 只服务守卫校验。画布相反:`before` 与 `after` 两份快照都入库
+  (相对小,且要支持"还原到改前 / 跳回改后"两种视图)。
+- 还原前置守卫:还原前必须校验当前字节的 sha256 == `afterHash`(说明本轮结束后没人动过它);
+  若 == `beforeHash` 视为幂等 no-op;两者都不等 = 已被第三方改动 → 冲突,该条**默认拒绝**并报告,
+  只有用户显式强制才覆盖。`afterHash:""`(本轮删除)则要求当前文件确实不存在,否则同为冲突。
+- 应用顺序与捕获顺序相反:`files`(逆序)→ `db`(逆序 upsert,`before:null` = 删除该记录)
+  → `canvas`(整快照经 `applyCanvasOp`,一次一条撤销记录)→ `plan`(核对 `sessionId` 后放回)。
+- **安全失败**是本契约的硬底线:账本缺、对象缺、`unsupported` 非空、`outside:true` 的条目,
+  一律跳过并逐条如实报告(写清"这一项回滚不了,需人工处理"),任何情况下不得凭猜测
+  创建 / 删除 / 覆盖工作区里的文件。
+- 一个 `rid` 是一次回滚单位,不承诺跨轮批量回滚;要连续回滚由渲染层按 rid 从新到旧逐个走。
+- 回滚成功后把 `restoredAt` 写回同一账本;非空时再次还原默认拒绝(避免把回滚当撤销反复抖动)。
+
+### 捕获边界(明确不保证)
+
+- **捕获**:agent 文件工具(write / edit / str_replace_editor 类)、`mtnode_canvas_edit`
+  与 `applyCanvasOp` 的画布写、`mtnode_db` 的 write / delete。
+- **不捕获**:`pwsh` / `execute` / 外部程序对文件的改动(只累计 `untracked.shellCalls`,
+  回滚前必须提示"有 N 次命令可能改了文件,账本管不了,请自查");`<ROLLBACK>` / `<DATA>`
+  自身写入(自指,靠 `MTNODE_ROLLBACK_DIR` 排除);`node_modules/`、`dist/` 等
+  AGENTS.md「不要修改」清单内的路径记条目但 `unsupported:'outside'`,不还原。
+- **不承诺 redo / 前向重放**:账本只存改前 blob,redo 需另立契约再改本节。
 
 ## 节点升级与新增(renderer)
 

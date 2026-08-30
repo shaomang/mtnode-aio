@@ -399,6 +399,656 @@ input[type="number"]::-webkit-outer-spin-button {
   word-break: break-word;
 }
 
+/* ── 复杂任务计划确认弹窗：窗口可拉伸 · 每条任务三列 · 清单可滚动浏览 ── */
+
+/* 默认就比一般对话框大得多；用户拖过之后由内联 width/height 接管 */
+.mt-dialog-box.mt-form-box.mt-form-wide.mt-plan-box {
+  position: relative;
+  width: min(1080px, 94vw);
+  height: min(86vh, 820px);
+  max-height: none;
+  resize: none;
+}
+
+.mt-dialog-box.mt-plan-box .mt-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mt-dialog-box.mt-plan-box .mt-dialog-head b {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-plan-max {
+  flex: none;
+  width: 24px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  font-size: 12px;
+}
+
+/* body 变纵向弹性盒：清单吃掉剩余高度，其余内容固定 */
+.mt-dialog-box.mt-plan-box .mt-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 计划多时：框内滚动条浏览（表头吸顶） */
+.mt-plan-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 150px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  scrollbar-gutter: stable;
+}
+
+/* 三列栅格：标题 / 详情 / 执行模型 */
+.mt-plan-cols {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(240px, 1.9fr) minmax(126px, max-content);
+  gap: 8px;
+  align-items: start;
+}
+
+.mt-plan-colhead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: -8px -8px 0;
+  padding: 6px 8px 6px 9px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--bd2);
+  font-size: 10.5px;
+  letter-spacing: .4px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.mt-plan-colhead span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-plan-card {
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+}
+
+.mt-plan-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px dashed var(--bd);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mt-plan-idx {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 弹窗里「沿用上次计划」预填项的标记（已了结的置灰，表示不会再跑） */
+.mt-plan-carry {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 10px;
+  letter-spacing: .2px;
+  color: var(--orange);
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+}
+
+.mt-plan-carry.fin {
+  color: var(--muted);
+}
+
+.mt-plan-para-lab {
+  flex: none;
+  letter-spacing: .3px;
+}
+
+.mt-plan-para {
+  flex: 0 1 210px;
+  min-width: 90px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  outline: none;
+}
+
+.mt-plan-para:focus {
+  border-color: var(--orange);
+}
+
+.mt-plan-head-spacer {
+  flex: 1 1 auto;
+}
+
+.mt-plan-card-head .mini {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mt-plan-card .mt-plan-cols {
+  padding: 8px;
+}
+
+/* 多行输入（不用单行 input）：随内容长高，也可自己下拉 */
+.mt-plan-inp {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  outline: none;
+  overflow-y: auto;
+  resize: vertical;
+}
+
+.mt-plan-inp:focus {
+  border-color: var(--orange);
+}
+
+/* 第三列：只用一个按钮表示模型，点击出下拉菜单 */
+.mt-plan-col-model {
+  min-width: 0;
+}
+
+.mt-plan-model {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-width: 118px;
+  max-width: 220px;
+  padding: 5px 7px;
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-align: left;
+  color: var(--ink);
+  background: var(--code);
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.mt-plan-model.picked {
+  border-style: solid;
+  border-color: rgba(111, 227, 165, .5);
+  background: rgba(111, 227, 165, .08);
+}
+
+.mt-plan-model:hover,
+.mt-plan-model.on {
+  border-color: var(--orange);
+}
+
+.mt-plan-model .lbl {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+.mt-plan-model .chev {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.mt-plan-add {
+  flex: none;
+  margin-top: 8px;
+}
+
+.mt-plan-box .mt-form-hint {
+  flex: none;
+}
+
+/* 右下角拉伸手柄（弹窗居中，故拖 1px 宽/高各 +2px，手柄跟手） */
+.mt-plan-resize {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 18px;
+  height: 18px;
+  z-index: 6;
+  cursor: nwse-resize;
+}
+
+.mt-plan-resize::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid var(--orange);
+  border-bottom: 2px solid var(--orange);
+  border-bottom-right-radius: 2px;
+  opacity: .75;
+}
+
+.mt-plan-resize:hover::after {
+  opacity: 1;
+}
+
+body.plan-resizing,
+body.plan-resizing * {
+  cursor: nwse-resize !important;
+  user-select: none !important;
+}
+
+/* 模型下拉菜单：挂在 body 上，压在对话框之上，可滚动 */
+.mt-plan-model-pop {
+  display: none;
+  position: fixed;
+  z-index: 2600;
+  flex-direction: column;
+  width: 300px;
+  max-height: min(56vh, 420px);
+  padding-bottom: 8px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-top: 3px solid var(--orange);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+}
+
+.mt-plan-model-pop.on {
+  display: flex;
+}
+
+.mt-plan-model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.mt-plan-model-head b {
+  flex: 1;
+  font-size: 12px;
+  letter-spacing: .5px;
+  color: #7fd4ff;
+}
+
+.mt-plan-model-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+}
+
+.mt-plan-model-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px;
+  scrollbar-gutter: stable;
+}
+
+.mt-plan-model-group {
+  padding: 7px 4px 3px;
+  font-size: 10px;
+  letter-spacing: .4px;
+  color: #9db4c6;
+  user-select: none;
+}
+
+.mt-plan-model-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.mt-plan-model-opt:hover {
+  background: rgba(56, 214, 255, .08);
+  border-color: rgba(56, 214, 255, .32);
+}
+
+.mt-plan-model-opt .m {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-plan-model-opt .c {
+  flex: none;
+  color: #6fe3a5;
+}
+
+.mt-plan-model-opt.on {
+  background: rgba(111, 227, 165, .1);
+  border-color: rgba(111, 227, 165, .45);
+}
+
+.mt-plan-model-empty {
+  padding: 8px 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.mt-plan-model-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 10px 0;
+}
+
+/* 窗口不够宽时三列退化为上下排列，不出现横向滚动 */
+@media (max-width: 720px) {
+  .mt-plan-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── 会话内「计划」面板（#agentPlan）：复用任务清单卡的 .at-* 结构，只补差异 ──
+ * 计划是用户确认过的持久清单，所以头部偏蓝、多了序号 / 模型标签 / 可展开详情。 */
+.agent-plan {
+  margin-bottom: 2px;
+}
+
+.agent-plan .at-head {
+  border-color: rgba(86, 134, 254, .22);
+  background: rgba(86, 134, 254, .08);
+}
+
+.agent-plan .at-list {
+  max-height: 244px;
+}
+
+.ap-goal {
+  flex: 0 1 auto;
+  min-width: 40px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ap-n {
+  flex: none;
+  min-width: 15px;
+  font-size: 10.5px;
+  font-style: normal;
+  text-align: center;
+  color: var(--muted);
+}
+
+.ap-tag {
+  flex: none;
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .07);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.ap-caret {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ap-item {
+  cursor: pointer;
+}
+
+/* 标题列吃掉剩余宽度（否则加了序号 / 模型标签后会把卡片撑开） */
+.ap-item .at-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.ap-item:hover {
+  background: rgba(255, 255, 255, .05);
+}
+
+.ap-item.st-skipped .at-icon {
+  color: rgb(130, 137, 146);
+}
+
+.ap-detail {
+  margin: 0 10px 6px 34px;
+  padding: 6px 9px;
+  border-left: 2px solid rgba(86, 134, 254, .5);
+  border-radius: 0 6px 6px 0;
+  background: rgba(255, 255, 255, .04);
+  max-height: 156px;
+  overflow-y: auto;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ap-detail p {
+  margin: 0 0 4px;
+}
+
+.ap-meta {
+  display: block;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.ap-run {
+  flex: none;
+  color: rgb(150, 186, 255);
+}
+
+.ap-running,
+.ap-done {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ap-running {
+  color: rgb(86, 134, 254);
+}
+
+.ap-done {
+  color: rgb(86, 204, 142);
+}
+
+/* ── 计划面板 live 观测：行内实时状态条 + 详情下方的流式转写区 ──
+ * 只在有运行时轨迹（t._live）时出现，配色沿用 .at-* / .ap-* 体系与暗色变量。 */
+.ap-stat {
+  flex: 0 1 auto;
+  min-width: 44px;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  border: 1px solid rgba(86, 134, 254, .3);
+  border-radius: 8px;
+  background: rgba(86, 134, 254, .12);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  color: rgb(150, 186, 255);
+}
+
+/* 失败行：同一条上换成 error 摘要 */
+.ap-stat.ap-stat-err {
+  max-width: 320px;
+  border-color: rgba(240, 110, 110, .34);
+  background: rgba(240, 110, 110, .12);
+  color: rgb(240, 160, 160);
+}
+
+.ap-live {
+  margin: 0 10px 6px 34px;
+  padding: 6px 9px;
+  border-left: 2px solid rgba(56, 214, 255, .45);
+  border-radius: 0 6px 6px 0;
+  background: var(--code);
+  max-height: 172px;
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.ap-live[data-live-state="error"] {
+  border-left-color: var(--red);
+}
+
+.ap-live[data-live-state="cancelled"] {
+  border-left-color: rgb(130, 137, 146);
+}
+
+.ap-live-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 4px;
+}
+
+.ap-live-text {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+}
+
+.ap-live-idle {
+  font-family: var(--sans);
+  font-style: italic;
+  color: var(--muted);
+}
+
+.ap-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ap-tool .ap-tool-n {
+  flex: none;
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ap-tool .ap-tool-s {
+  flex: none;
+  width: 10px;
+  text-align: center;
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.ap-tool .ap-tool-r {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.ap-tool.st-run .ap-tool-s {
+  color: rgb(86, 134, 254);
+}
+
+.ap-tool.st-ok .ap-tool-s {
+  color: rgb(86, 204, 142);
+}
+
+.ap-tool.st-err .ap-tool-s,
+.ap-tool.st-err .ap-tool-r {
+  color: rgb(240, 110, 110);
+}
+
+.ap-tool.ap-tool-more {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
 /* ── 右键 · 构建工作流：工具（工作流生成技能）单选列表 ── */
 .wfb-lab {
   display: block;
@@ -901,6 +1551,32 @@ html:not([lang="en"]) .app-docs-sec-title {
 
 .mt-sug-log-row:first-child {
   color: var(--ink);
+}
+
+/* 「建议」调研已「返回」后台：日志底部的常驻提示行（app-devnode.js） */
+.mt-sug-log-note {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--orange);
+  font-style: italic;
+}
+
+/* 问询回答正文（app-devnode.js devAskShowJob）：等宽保留换行，可滚动 */
+.mt-ask-answer {
+  margin-top: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .mt-sug-opts {

@@ -231,7 +231,21 @@ async function runDshOnce(node, spec, attemptT, images) {
         .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
         .join("\n\n")
     : "";
-  const latest = skillLatest || String(sent || "").trim() || spec.prompt;
+  let latest = skillLatest || String(sent || "").trim() || spec.prompt;
+  /* 复杂任务计划：注入「任务流程」指令（Skill / 计划执行器 / 已判定过跳过） */
+  if (
+    node.kind === "agent_task" &&
+    attemptCount(node) <= 1 &&
+    !skillWrap &&
+    !node._planExec &&
+    !node._planFlowDone &&
+    typeof planFlowDirective === "function"
+  ) {
+    if (String(spec.prompt || "").trim())
+      spec.prompt = planFlowDirective() + "\n" + spec.prompt;
+    latest = planFlowDirective() + "\n" + latest;
+    node._planFlowDone = true;
+  }
   const input =
     useHist && hist
       ? hist + "\n\n用户(最新)：" + latest
@@ -246,11 +260,17 @@ async function runDshOnce(node, spec, attemptT, images) {
     effort: node.effort != null && node.effort !== "" ? node.effort : undefined,
     preset: node.preset || undefined,
     images,
-    systemPrompt: "回答简洁，中文优先。用工作区文件交付结果，不要改画布。",
+    systemPrompt: "回答简洁。用工作区文件交付结果，不要改画布。",
     onEvent: (type, data) => onDshNodeEvent(node, attemptT, type, data),
     onDone: (d) => recordDshMetrics(node, d.metrics),
   });
-  const out = String(text || node._pendingAnswer || "");
+  /* out = 本轮完整正文（下游数据口径不变）；分段只影响界面显示与助手消息存档 */
+  let out = String(text || node._pendingAnswer || "");
+  /* 复杂任务计划：agent 输出计划标记 → 弹窗确认 → 节点模式逐项执行（节点保持运行中） */
+  if (node.kind === "agent_task" && attemptCount(node) <= 1 && typeof planNodeOffer === "function") {
+    const replaced = await planNodeOffer(node, out);
+    if (replaced !== null) out = replaced;
+  }
   if (!out.trim()) {
     const nTools = ((S.nodeTools && S.nodeTools[node.id]) || []).length;
     if (!nTools) throw new Error(I18n.t("智能运行无输出"));
@@ -264,6 +284,7 @@ async function runDshOnce(node, spec, attemptT, images) {
     } else {
       if (msg.reasoning) lm.reasoning = msg.reasoning;
       if (msg.tools) lm.tools = msg.tools;
+      if (msg.segments) lm.segments = msg.segments;
     }
     /* 不在此处清空 task：运行中用户可能已输入下一条 */
   }
@@ -1615,10 +1636,11 @@ function stopMediaBackendProbe(nodeId) {
 
 function stopMediaBackendRunWatcher(nodeId) {
   const t = mediaBackendRunWatchers.get(nodeId);
-  if (t) {
-    clearInterval(t);
-    mediaBackendRunWatchers.delete(nodeId);
-  }
+  if (!t) return;
+  clearInterval(t);
+  mediaBackendRunWatchers.delete(nodeId);
+  /* 在途生成的监视器收摊 = 队列里这一条的状态变了：立刻重绘，不等心跳 */
+  updateRunQueuePanel();
 }
 
 function startMediaBackendProbeLoop(nodeId) {
@@ -1662,6 +1684,8 @@ function startMediaBackendRunWatcher(node) {
     probeMediaBackend(n, { quiet: true, soft: true });
   }, 2000);
   mediaBackendRunWatchers.set(node.id, timer);
+  /* 后端任务进入在途：运行队列补上「在途生成 / 后端生成中」 */
+  updateRunQueuePanel();
 }
 
 function markMediaBackendDown(node, st) {
@@ -2631,10 +2655,11 @@ const mediaGenRestoreTimers = new Map();
 
 function stopMediaGenRestoreWatch(nodeId) {
   const t = mediaGenRestoreTimers.get(nodeId);
-  if (t) {
-    clearInterval(t);
-    mediaGenRestoreTimers.delete(nodeId);
-  }
+  if (!t) return;
+  clearInterval(t);
+  mediaGenRestoreTimers.delete(nodeId);
+  /* 恢复锁轮询结束 = 该生成节点不再占用运行队列：立刻同步 */
+  updateRunQueuePanel();
 }
 function stopAllMediaGenRestoreWatch() {
   for (const id of [...mediaGenRestoreTimers.keys()]) stopMediaGenRestoreWatch(id);
@@ -2707,6 +2732,7 @@ async function restoreMediaGenLocks() {
           stopMediaGenRestoreWatch(n.id);
           n.running = false;
           renderCanvas();
+          updateRunQueuePanel();
           return;
         }
         const cur = await fn();
@@ -2717,12 +2743,15 @@ async function restoreMediaGenLocks() {
           if (n.kind === "music_gen") n.musicStatus = done;
           else n.videoStatus = done;
           renderCanvas();
+          updateRunQueuePanel();
         }
       } catch {
         stopMediaGenRestoreWatch(n.id);
       }
     }, 3000);
     mediaGenRestoreTimers.set(n.id, poll);
+    /* 从后端锁恢复出「在途生成」：这条也要出现在运行队列里 */
+    updateRunQueuePanel();
   } catch {}
 }
 
@@ -3042,7 +3071,12 @@ function runMediaGenSerial(node, fn) {
   const run = _mediaGenChain.then(() => {
     if (node) clearPendingRun([node.id]);
     const cur = node && mediaGenWaiters.get(node.id);
-    if (cur && cur === entry) mediaGenWaiters.delete(node.id);
+    if (cur && cur === entry) {
+      mediaGenWaiters.delete(node.id);
+      /* 出队瞬间：「排队生成」这条已不存在，先同步一次再起跑，
+         否则面板要等到下一次心跳才从等待中挪走 */
+      updateRunQueuePanel();
+    }
     /* 排队期间发生过终止（表被清空 / 该节点停止代号变化）→ 直接作废，不开后端 */
     if (
       !node ||
@@ -3258,6 +3292,7 @@ async function playNodeBody(node, quiet, opts) {
       node.messages = [];
       node._pendingAnswer = "";
       delete node._lastTools;
+      node._planFlowDone = false;
     }
     if (!Array.isArray(node.messages)) node.messages = [];
     const lm = node.messages[node.messages.length - 1];
@@ -5245,7 +5280,7 @@ function snapTextField(raw) {
    bodies   = 是否返回正文全文（text/prompt/task/goal）；缺省：full 时为 true，其余为 false
    bodyLimit= 正文按 N 字符截断（0=不限）；*Len 始终为真实长度
    sections = 重型块白名单（nodes/marks/wires/groups/taskTree/superTree/tagCatalog/workflows/selection），
-              在 canvasSnapshotFull 末尾过滤；小上下文（workflow/view/cam/imageSizes/kinds/markColors/
+              在 canvasSnapshotFull 末尾过滤；小上下文（workflow/view/cam/imageSizes/kinds/markColors/devFuncColors/
               taskFocus/superFocus/assistScope/scopeNote）恒保留 */
 const NODE_MINIMAL_KEYS = [
   "id", "kind", "title", "x", "y", "w", "h", "running",
@@ -5312,6 +5347,24 @@ function applySnapshotSectionFilter(snap, sections) {
     if (!keep.has(k)) delete snap[k];
   }
   return snap;
+}
+
+/* Agent 侧透出「功能色卡」：唯一真源是 app-devnode.js 的 DEV_FUNC_COLORS 常量，
+   这里只搬运 key / zh / en / hex（keywords 属内部推断细节，不塞进快照浪费 token）。
+   mtnode_canvas_get 与助手快照都通过 devFuncColors 字段读到同一张表。 */
+function devFuncColorCatalog() {
+  const src =
+    typeof DEV_FUNC_COLORS !== "undefined" && Array.isArray(DEV_FUNC_COLORS)
+      ? DEV_FUNC_COLORS
+      : [];
+  return src
+    .map((c) => ({
+      key: String((c && c.key) || ""),
+      zh: String((c && c.zh) || ""),
+      en: String((c && c.en) || ""),
+      hex: String((c && c.hex) || "").toLowerCase(),
+    }))
+    .filter((c) => c.key && /^#[0-9a-f]{6}$/.test(c.hex));
 }
 
 function canvasSnapshot(opts) {
@@ -5610,6 +5663,8 @@ function canvasSnapshot(opts) {
       parentSuperId: m.parentSuperId || undefined,
     })),
     markColors: MARK_COLORS.slice(),
+    /* 开发节点功能色卡（Agent 按功能分类上色要用）：常量透出，真源见 app-devnode.js */
+    devFuncColors: devFuncColorCatalog(),
     wires: (wf.wires || [])
       .filter((w) => {
         const a = nodeById(w.from);
@@ -5671,7 +5726,7 @@ function agentNodeCapabilityNote() {
     "【智能节点】你是画布上的执行节点，不是工作流搭建助手。" +
     "允许：读写与编辑工作区文件、执行命令、联网搜索与抓取网页、使用已安装技能与 MCP 工具、调用 mtnode_vision 识图、向用户提问或派生子任务（均须遵守当前审批/权限预设）。用写文件交付结果。" +
     "禁止：调用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app；禁止创建、修改、删除节点/连线/绘制/成组；禁止创建任务图；禁止重命名或删除画布；禁止选中节点或撤销/重做。" +
-    "上述画布与应用调用会被系统直接拒绝。忽略默认人设里关于搭建画布、修改节点图、创建任务的说明。回答简洁，中文优先。"
+    "上述画布与应用调用会被系统直接拒绝。忽略默认人设里关于搭建画布、修改节点图、创建任务的说明。回答简洁（交流语言见文末「语言口味」）。"
   );
 }
 
@@ -7427,7 +7482,7 @@ function confirmAssistAppOp(params) {
   });
 }
 
-async function applyCanvasOp(op, params) {
+async function applyCanvasOp(op, params, runCtx) {
   if (
     isCanvasNodeAgentRun() &&
     (op === "get" || op === "edit" || op === "app")
@@ -7443,7 +7498,7 @@ async function applyCanvasOp(op, params) {
     await ensureAgentTool("canvas_read");
     return Object.assign({ ok: true }, await canvasSnapshotFull(params || {}));
   }
-  if (op === "edit") return await applyCanvasEdit(params || {});
+  if (op === "edit") return await applyCanvasEdit(params || {}, runCtx || null);
   throw new Error(I18n.t("未知画布操作：") + op);
 }
 
@@ -7476,11 +7531,11 @@ function handleCanvasEvent(data, runCtx) {
       const opName = data.op || "get";
       if (opName === "app" || opName === "vision") {
         /* 应用级 / 识图：不绑定运行时画布袋 */
-        result = await applyCanvasOp(opName, data.params || {});
+        result = await applyCanvasOp(opName, data.params || {}, runCtx);
       } else {
         const target = canvasTargetWf();
         result = await runAgainstWf(target, () =>
-          applyCanvasOp(opName, data.params || {}),
+          applyCanvasOp(opName, data.params || {}, runCtx),
         );
       }
       finish(result, result && result.ok === false ? result.error || "" : "");
@@ -7548,7 +7603,9 @@ function layoutOrigin(obstacles) {
   let maxX = -Infinity;
   let minY = Infinity;
   for (const n of obstacles) {
-    maxX = Math.max(maxX, n.x + n.w);
+    /* 用绘制尺寸（展开超级节点 = expandW/H），否则新布局会叠到可见壳层上 */
+    const sz = layoutNodeSize(n);
+    maxX = Math.max(maxX, n.x + sz.w);
     minY = Math.min(minY, n.y);
   }
   return { x: snap(maxX + 96), y: snap(minY) };
@@ -7559,9 +7616,11 @@ function shiftToClear(placed, obstacles) {
   const pad = 28;
   const hit = (dx, dy) => {
     for (const a of placed) {
-      const A = { x: a.x + dx, y: a.y + dy, w: a.w, h: a.h };
+      const sa = layoutNodeSize(a);
+      const A = { x: a.x + dx, y: a.y + dy, w: sa.w, h: sa.h };
       for (const b of obstacles) {
-        if (rectsOverlap(A, b, pad)) return true;
+        const sb = layoutNodeSize(b);
+        if (rectsOverlap(A, { x: b.x, y: b.y, w: sb.w, h: sb.h }, pad)) return true;
       }
     }
     return false;
@@ -7579,6 +7638,66 @@ function shiftToClear(placed, obstacles) {
     }
   }
   return { x: 0, y: 1400 };
+}
+
+/* 排版收尾的兜底防重叠：
+   - 用「绘制尺寸」（layoutNodeSize）判断，展开超级节点按 expandW/H 参与碰撞；
+   - 任何残余重叠（绘制尺寸 ≠ 存储尺寸、跨组件装箱误差、障碍物误判、尺寸漂移等）
+     都按「更省位移的轴、优先向下」推开，网格向上取整保证不欠推；
+   - 多趟松弛直到干净或达到趟数上限（正常排版极少触发，纯兜底）。 */
+const LAYOUT_OVERLAP_PAD = 10;
+const LAYOUT_OVERLAP_MAX_PASS = 12;
+function resolvePlacedOverlaps(nodes, obstacles, opts) {
+  const pad = opts && opts.pad != null ? opts.pad : LAYOUT_OVERLAP_PAD;
+  const placed = (nodes || []).filter(Boolean);
+  const obs = (obstacles || []).filter(Boolean);
+  if (placed.length < 2 && !obs.length) return 0;
+  const g = grid();
+  const rectOf = (n) => {
+    const s = layoutNodeSize(n);
+    return { x: n.x, y: n.y, w: s.w, h: s.h };
+  };
+  const centerY = (n) => n.y + layoutNodeSize(n).h / 2;
+  const centerX = (n) => n.x + layoutNodeSize(n).w / 2;
+  /* 稳定顺序（x → y），保证每次排版结果一致 */
+  const order = placed.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+  let total = 0;
+  for (let pass = 0; pass < LAYOUT_OVERLAP_MAX_PASS; pass++) {
+    let any = false;
+    for (let i = 0; i < order.length; i++) {
+      const a = order[i];
+      const ra = rectOf(a);
+      for (let j = i + 1; j < order.length; j++) {
+        const b = order[j];
+        const rb = rectOf(b);
+        if (!rectsOverlap(ra, rb, pad)) continue;
+        const ox = Math.min(ra.x + ra.w + pad, rb.x + rb.w + pad) - Math.max(ra.x, rb.x);
+        const oy = Math.min(ra.y + ra.h + pad, rb.y + rb.h + pad) - Math.max(ra.y, rb.y);
+        if (oy <= ox) {
+          const low = centerY(a) <= centerY(b) ? b : a;
+          low.y = Math.ceil((low.y + oy) / g) * g;
+        } else {
+          const right = centerX(a) <= centerX(b) ? b : a;
+          right.x = Math.ceil((right.x + ox) / g) * g;
+        }
+        total++;
+        any = true;
+      }
+      /* 障碍物只挡不推 */
+      for (const o of obs) {
+        const ro = rectOf(o);
+        if (!rectsOverlap(ra, ro, pad)) continue;
+        const ox = Math.min(ra.x + ra.w + pad, ro.x + ro.w + pad) - Math.max(ra.x, ro.x);
+        const oy = Math.min(ra.y + ra.h + pad, ro.y + ro.h + pad) - Math.max(ra.y, ro.y);
+        if (oy <= ox) a.y = Math.ceil((a.y + oy) / g) * g;
+        else a.x = Math.ceil((a.x + ox) / g) * g;
+        total++;
+        any = true;
+      }
+    }
+    if (!any) break;
+  }
+  return total;
 }
 
 function layoutNodePriority(n) {
@@ -7993,6 +8112,10 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
       n.y = snap(n.y + sh.y);
     }
   }
+
+  /* 兜底防重叠：任何残余重叠（绘制尺寸 ≠ 存储尺寸、跨组件装箱误差、障碍物误判、
+     尺寸漂移等）都在这里按最小位移推开，保证排版结果互不压住 */
+  resolvePlacedOverlaps(nodes, obstacles || []);
 }
 
 function nodesBBox(nodes) {
@@ -8001,10 +8124,12 @@ function nodesBBox(nodes) {
     maxX = -Infinity,
     maxY = -Infinity;
   for (const n of nodes || []) {
+    /* 用绘制尺寸：展开超级节点按 expandW/H 参与包围盒，组件装箱才不会互相压住 */
+    const sz = layoutNodeSize(n);
     minX = Math.min(minX, n.x);
     minY = Math.min(minY, n.y);
-    maxX = Math.max(maxX, n.x + (n.w || 0));
-    maxY = Math.max(maxY, n.y + (n.h || 0));
+    maxX = Math.max(maxX, n.x + sz.w);
+    maxY = Math.max(maxY, n.y + sz.h);
   }
   if (!isFinite(minX)) return null;
   return { minX, minY, maxX, maxY };
@@ -9213,7 +9338,69 @@ function resolveCanvasRef(token, aliasMap, warnings) {
   return null;
 }
 
-async function applyCanvasEdit(params) {
+/* ── 回滚·画布路：把这一笔编辑【点名】的元素解析成 id ─────────────────────
+ * touched 的主体由 app-rollback.js 的前后快照 diff 得出；这里补的是「diff 看不出来」
+ * 的那一类：本会话点名改过、结果只体现为坐标 / 尺寸变化的元素。少了它，
+ * 「把某个节点挪个位置」会被当成自动排版副作用而漏回退。
+ * 已经 remove 掉的节点此时查不到 —— 没关系，那种元素前后快照一定比得出来。 */
+function rbNamedFromParams(params, aliasMap, markAliasMap) {
+  const named = { nodeIds: [], wireIds: [], markIds: [], groupIds: [] };
+  const CAP = 600;
+  const nodeTok = (tok) => {
+    const s = String(tok == null ? "" : tok).trim();
+    if (!s) return;
+    const byAlias = aliasMap && aliasMap.get(s);
+    const sameTitle = (S.wf.nodes || []).filter((x) => x.title === s);
+    const n = byAlias || nodeById(s) || (sameTitle.length === 1 ? sameTitle[0] : null);
+    if (n && n.id && named.nodeIds.length < CAP && named.nodeIds.indexOf(n.id) < 0)
+      named.nodeIds.push(n.id);
+  };
+  const markTok = (tok) => {
+    const s = String(tok == null ? "" : tok).trim();
+    if (!s) return;
+    const byAlias = markAliasMap && markAliasMap.get(s);
+    const m = byAlias || markById(s) || marksOf().find((x) => x.text === s);
+    if (m && m.id && named.markIds.length < CAP && named.markIds.indexOf(m.id) < 0)
+      named.markIds.push(m.id);
+  };
+  const list = (v) => (Array.isArray(v) ? v : []);
+  for (const spec of list(params.create)) {
+    nodeTok(spec && spec.alias);
+    nodeTok(spec && spec.parentTaskId);
+    nodeTok(spec && spec.parentSuperId);
+    nodeTok(spec && spec.packIntoSuper);
+  }
+  for (const spec of list(params.update)) {
+    nodeTok(spec && (spec.id || spec.alias || spec.title));
+    nodeTok(spec && spec.parentTaskId);
+    nodeTok(spec && spec.parentSuperId);
+    nodeTok(spec && spec.packIntoSuper);
+  }
+  for (const pair of list(params.connect)) {
+    nodeTok(pair && pair.from);
+    nodeTok(pair && pair.to);
+  }
+  for (const pair of list(params.disconnect)) {
+    nodeTok(pair && pair.from);
+    nodeTok(pair && pair.to);
+  }
+  for (const pair of list(params.superConnect)) {
+    nodeTok(pair && pair.from);
+    nodeTok(pair && pair.to);
+  }
+  for (const token of list(params.remove)) nodeTok(token);
+  for (const spec of list(params.createMarks)) markTok(spec && spec.alias);
+  for (const spec of list(params.updateMarks))
+    markTok(spec && (spec.id || spec.alias || spec.title || spec.text));
+  for (const token of list(params.removeMarks)) markTok(token);
+  const g = params.group;
+  if (g && typeof g === "object") {
+    for (const t of list(g.marks)) markTok(t);
+  }
+  return named;
+}
+
+async function applyCanvasEdit(params, ctx) {
   params = params || {};
   const warnings = [];
   const created = [];
@@ -9272,6 +9459,14 @@ async function applyCanvasEdit(params) {
 
   await ensureCanvasEditTools(params);
 
+  /* 回滚·画布路：改动前先取整画布快照（本轮没开账就直接 null，零开销）。
+     与 pushHistory 的撤销栈是两回事：那是给用户手动撤销用的整栈，
+     这里要的是「本轮会话开始前」这一份，且必须按触碰实体逐字段回退。 */
+  const rbEdit =
+    typeof rbCanvasEditOpen === "function"
+      ? rbCanvasEditOpen(ctx && ctx.runKey)
+      : null;
+
   pushHistory();
   if (!Array.isArray(S.wf.groups)) S.wf.groups = [];
   if (!Array.isArray(S.wf.marks)) S.wf.marks = [];
@@ -9321,6 +9516,9 @@ async function applyCanvasEdit(params) {
     const wantTitle = String(spec.title || NODE_DEFAULTS[kind].title || alias);
     node.title = uniqueNodeTitle(wantTitle);
     applyNodePatch(node, spec, warnings);
+    /* 开发节点：创建即按功能色卡上色（spec 显式给了 devColor 则不覆盖；
+       须在 title / note 定稿后调用，归类靠这两项推断） */
+    if (typeof devAutoColorNode === "function") devAutoColorNode(node);
     await importImagePathsForNode(node, imagePathsFromPatch(spec), warnings);
     node.title = uniqueNodeTitle(node.title || wantTitle, node.id);
     ensureDefaultSavePath(node);
@@ -9788,6 +9986,12 @@ async function applyCanvasEdit(params) {
   if (bits.length) toast(I18n.t("智能助手已更新画布：") + bits.join(" · "), "ok");
 
   warnBatchCartesianRisk(warnings);
+
+  /* 回滚·画布路：改动后收口 —— 前后整快照入库 + touched 只认本轮触碰的实体。
+     自动排版顺带挪动的【别人】的节点刻意不进 touched（快照备注里记 layoutMoved /
+     归属不明的记 drift），回滚弹窗据此说明「这部分不逐条回退」。 */
+  if (typeof rbCanvasEditClose === "function")
+    rbCanvasEditClose(rbEdit, rbNamedFromParams(params, aliasMap, markAliasMap));
 
   return Object.assign(
     {

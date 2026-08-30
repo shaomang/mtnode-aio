@@ -56,6 +56,7 @@ const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lo
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
 const { patchProviders } = require("./config-providers.js");
+const { registerRollbackIpc } = require("./rollback-store.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -483,164 +484,6 @@ ipcMain.handle("workflow:delete", (e, id) => {
     fs.rmSync(assetDir(id), { recursive: true, force: true });
   } catch {}
   return { ok: true };
-});
-
-/* ---------------- IPC：Zen 沉浸式存档 ---------------- */
-
-const zenIdOk = (id) => /^[A-Za-z0-9_-]{4,120}$/.test(String(id || ""));
-const zenPath = (id) => join(DATA(), "zen", String(id) + ".json");
-const zenBackupDir = (id) => join(DATA(), "zen-backups", String(id));
-
-ipcMain.handle("zen:list", () => {
-  const d = mk(join(DATA(), "zen"));
-  let files = [];
-  try {
-    files = fs.readdirSync(d);
-  } catch {}
-  return files
-    .filter((f) => f.endsWith(".json"))
-    .map((f) => {
-      const j = readJson(join(d, f), {});
-      const id = j.id || f.slice(0, -5);
-      let mtime = 0;
-      try {
-        mtime = fs.statSync(join(d, f)).mtimeMs;
-      } catch {}
-      return {
-        id,
-        name: j.name || id,
-        mtime,
-        nodes: (j.nodes || []).length,
-        phase: j.phase || "explore",
-        workflowId: j.workflowId || "",
-        projectFolder: j.projectFolder || "",
-      };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
-});
-
-ipcMain.handle("zen:load", (e, id) => {
-  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
-  const j = readJson(zenPath(id));
-  return j ? { ok: true, data: j } : { ok: false, error: I18n.t("存档不存在") };
-});
-
-ipcMain.handle("zen:create", (e, { name }) => {
-  const id = "zen_" + Date.now().toString(36);
-  const now = Date.now();
-  const doc = {
-    id,
-    name: String(name || "").trim() || "Zen",
-    createdAt: now,
-    updatedAt: now,
-    projectFolder: "",
-    workflowId: "",
-    cam: { x: 0, y: 0, z: 1 },
-    nodes: [],
-    edges: [],
-    chat: [],
-    planMarkdown: "",
-    phase: "explore",
-    activeNodeIds: [],
-  };
-  writeJson(zenPath(id), doc);
-  return { ok: true, id, data: doc };
-});
-
-ipcMain.handle("zen:save", (e, { id, data }) => {
-  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
-  const j = data || {};
-  j.id = id;
-  j.updatedAt = Date.now();
-  writeJson(zenPath(id), j);
-  return { ok: true, mtime: Date.now() };
-});
-
-ipcMain.handle("zen:delete", (e, id) => {
-  if (!zenIdOk(id)) return { ok: false };
-  try {
-    fs.rmSync(zenPath(id));
-  } catch {}
-  try {
-    fs.rmSync(zenBackupDir(id), { recursive: true, force: true });
-  } catch {}
-  return { ok: true };
-});
-
-ipcMain.handle("zen:backup", (e, id) => {
-  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
-  try {
-    const src = zenPath(id);
-    if (!fs.existsSync(src)) return { ok: false, error: I18n.t("存档不存在") };
-    const bakDir = mk(zenBackupDir(id));
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    fs.copyFileSync(src, join(bakDir, "zen-" + stamp + ".json"));
-    /* FIFO：最多保留 3 份 */
-    const files = fs
-      .readdirSync(bakDir)
-      .filter((f) => f.startsWith("zen-") && f.endsWith(".json"))
-      .map((f) => ({ f, t: fs.statSync(join(bakDir, f)).mtimeMs }))
-      .sort((a, b) => b.t - a.t);
-    for (const old of files.slice(3)) {
-      try {
-        fs.unlinkSync(join(bakDir, old.f));
-      } catch {}
-    }
-    return { ok: true, mtime: Date.now() };
-  } catch (err) {
-    return { ok: false, error: (err && err.message) || String(err) };
-  }
-});
-
-ipcMain.handle("zen:listBackups", (e, id) => {
-  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
-  try {
-    const bakDir = zenBackupDir(id);
-    if (!fs.existsSync(bakDir)) return { ok: true, list: [] };
-    return {
-      ok: true,
-      list: fs
-        .readdirSync(bakDir)
-        .filter((f) => f.endsWith(".json"))
-        .map((f) => {
-          let t = 0;
-          try {
-            t = fs.statSync(join(bakDir, f)).mtimeMs;
-          } catch {}
-          return { file: f, mtime: t };
-        })
-        .sort((a, b) => b.mtime - a.mtime),
-    };
-  } catch (err) {
-    return { ok: false, error: (err && err.message) || String(err) };
-  }
-});
-
-ipcMain.handle("zen:restoreBackup", (e, { id, file }) => {
-  if (!zenIdOk(id)) return { ok: false, error: I18n.t("非法存档 id") };
-  const fname = String(file || "").replace(/[^A-Za-z0-9_.-]/g, "");
-  if (!fname.endsWith(".json"))
-    return { ok: false, error: I18n.t("非法备份文件") };
-  const j = readJson(join(zenBackupDir(id), fname));
-  if (!j) return { ok: false, error: I18n.t("备份不存在") };
-  j.updatedAt = Date.now();
-  writeJson(zenPath(id), j);
-  return { ok: true, data: j };
-});
-
-/* Zen 内置 skill 全文（渲染层按需注入系统提示；打包后在 asar 内读取） */
-ipcMain.handle("zen:skillText", (e, id) => {
-  const safe = String(id || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "");
-  if (!safe) return { ok: false, error: I18n.t("非法技能 id") };
-  const p = join(__dirname, "mtnode-agent-skills", "zen", safe, "SKILL.md");
-  try {
-    if (!fs.existsSync(p)) return { ok: false, error: I18n.t("技能不存在") };
-    return { ok: true, text: fs.readFileSync(p, "utf8") };
-  } catch (err) {
-    return { ok: false, error: (err && err.message) || String(err) };
-  }
 });
 
 /* ---------------- IPC：数据库超级节点（SQLite/FTS5 事实库） ---------------- */
@@ -1394,6 +1237,18 @@ ipcMain.handle("shell:openInAppDialog", async (e, opts) => {
           path: path.resolve(target),
         });
         return { ok: true, yamlViewer: true };
+      }
+    } catch {}
+  }
+
+  /* Markdown：交给渲染进程内嵌阅读器（查看 / 编辑 / 保存），不走 file:// 裸开 */
+  if (ext === ".md" || ext === ".markdown" || ext === ".mdown") {
+    try {
+      if (parent && !parent.isDestroyed()) {
+        parent.webContents.send("md-viewer:open", {
+          path: path.resolve(target),
+        });
+        return { ok: true, mdViewer: true };
       }
     } catch {}
   }
@@ -2990,6 +2845,14 @@ ipcMain.handle("dsh:cancel", (event, params) => dsh().cancel(params));
 
 ipcMain.handle("dsh:interact", (event, params) => dsh().interact(params));
 
+/* 回滚收尾：向网关取回本轮 done 之后才到达的 journal 帧（渲染层封口前调一次）。
+   老版网关没有这个 method 时按错误返回，渲染层降级为「只靠事件推」。 */
+ipcMain.handle("dsh:rollbackDrain", (event, params) =>
+  dsh()
+    .rollbackDrain(params || {})
+    .catch((e) => ({ ok: false, error: e.message || String(e) }))
+);
+
 ipcMain.handle("dsh:providerCatalog", () => dsh().providerCatalog());
 
 ipcMain.handle("skill:list", () => dsh().skillList());
@@ -3266,6 +3129,8 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
+  /* 回滚存储：内容寻址对象 + 轮次账本 + GC（渲染层无 fs，字节读写只走这里） */
+  registerRollbackIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });

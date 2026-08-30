@@ -5,7 +5,6 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'">
 <title>MTNode AI编排器</title>
 <link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="zen.css">
 </head>
 <body>
 
@@ -69,6 +68,10 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.2" y="2.4" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="2.4" y="9.2" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.2" y="9.2" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
       <span class="btn-ico-txt" data-i18n="排版">排版</span>
     </button>
+    <button id="btnHideWires" class="corner mini btn-ico" data-i18n-title="隐藏线：临时把所有连线压到 95% 透明（几乎不可见），排版后看清布局；再次点击恢复" data-tip="隐藏线：临时把所有连线压到 95% 透明（几乎不可见），排版后看清布局；再次点击恢复" aria-label="隐藏线" aria-pressed="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 12.4c3.6 0 3.2-8.8 6.8-8.8h4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3 2.8l10.2 10.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      <span class="btn-ico-txt" data-i18n="隐藏线">隐藏线</span>
+    </button>
     <input id="wfName" class="fn-search tb-wfname" type="text" data-i18n-placeholder="画布名称…" placeholder="画布名称…" style="display:none">
     <span class="sep"></span>
     <button id="btnNewWf" class="corner mini btn-ico" data-i18n-title="新建画布" data-tip="新建画布" aria-label="新建">
@@ -110,11 +113,6 @@
       <svg class="btn-settings-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 2.6h3.2l.4 1.5 1.4.8 1.5-.3 1.6 2.8-1.1 1.1v1.6l1.1 1.1-1.6 2.8-1.5-.3-1.4.8-.4 1.5H6.4l-.4-1.5-1.4-.8-1.5.3L1.5 10.2l1.1-1.1V7.5L1.5 6.4l1.6-2.8 1.5.3 1.4-.8.4-1.5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
       <span class="btn-ico-txt" data-i18n="设置">设置</span>
     </button>
-    <span class="sep"></span>
-    <button type="button" id="btnZen" class="corner mini btn-ico btn-zen" style="display:none" data-i18n-title="提问式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流" data-tip="提问式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流" aria-label="提问式">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.2h3.6v1.7H4.9v1.9H3.2V3.2zM12.8 3.2H9.2v1.7h1.9v1.9h1.7V3.2zM3.2 12.8h3.6v-1.7H4.9V9.2H3.2v3.6zM12.8 12.8H9.2v-1.7h1.9V9.2h1.7v3.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.1" fill="currentColor" opacity=".9"/></svg>
-      <span class="btn-ico-txt" data-i18n="提问式">提问式</span>
-    </button>
   </div>
 </header>
 
@@ -151,12 +149,14 @@
           <input id="agentSideFilter" type="text" data-i18n-placeholder="搜索会话…" placeholder="搜索会话…">
         </div>
         <div class="agent-side-list" id="agentSideList"></div>
+        <div class="agent-side-resize" id="agentSideResize" data-i18n-title="拖拽调整会话列表宽度" title="拖拽调整会话列表宽度"></div>
       </aside>
       <div class="agent-main">
         <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
         <div class="agent-body">
           <div class="agent-list" id="agentList"></div>
           <div class="agent-queue" id="agentQueue" hidden></div>
+          <div class="agent-todo agent-plan" id="agentPlan" hidden></div>
           <div class="agent-todo" id="agentTodo" hidden></div>
           <div class="agent-composer">
             <div class="agent-composer-chips">
@@ -277,7 +277,7 @@
 <div id="portTip" class="port-tip" hidden></div>
 <div id="runQueue" class="run-queue" hidden aria-live="polite"></div>
 <div id="toastBox"></div>
-<div id="zenRoot" hidden aria-label="禅模式"></div>
+
 
 <script src="vendor/marked.min.js"></script>
 <script src="i18n.js"></script>
@@ -288,11 +288,12 @@
 <script src="app-db.js"></script>
 <script src="app-canvas.js"></script>
 <script src="app-nodes.js"></script>
+<script src="app-rollback.js"></script>
 <script src="app-store.js"></script>
 <script src="app-plugins.js"></script>
 <script src="app-settings.js"></script>
 <script src="app-assist.js"></script>
+<script src="app-plan.js"></script>
 <script src="app-boot.js"></script>
-<script src="zen.js"></script>
 </body>
 </html>

@@ -627,11 +627,29 @@
 }
 
 .rq-sec {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   padding: 4px 10px 2px;
   font-size: 10px;
   letter-spacing: 1px;
   color: var(--muted);
   font-family: var(--mono);
+}
+
+/* 小节小计徽标：一眼看出这一节有几条（全局助手 / 智能会话 / 处理中 / 后端生成中 / 等待中） */
+.rq-sec-n {
+  flex: none;
+  min-width: 15px;
+  padding: 0 4px;
+  border: 1px solid rgba(124, 232, 255, .28);
+  border-radius: 8px;
+  font-size: 9px;
+  line-height: 13px;
+  letter-spacing: 0;
+  text-align: center;
+  color: #7ce8ff;
+  background: rgba(56, 214, 255, .08);
 }
 
 .rq-item {
@@ -643,6 +661,8 @@
   border: 0;
   background: transparent;
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
   text-align: left;
   color: inherit;
   font: inherit;
@@ -685,8 +705,9 @@
 }
 
 .rq-title {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  /* 保底可见宽度：行宽 ~240px 时优先挤掉次要信息（.rq-sub / .rq-kind），标题不消失 */
+  min-width: 5.5em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -696,7 +717,9 @@
 }
 
 .rq-kind {
-  flex: none;
+  /* 允许收缩：整行空间不足时先省略类型徽标，避免溢出 */
+  flex: 0 2 auto;
+  min-width: 0;
   font-size: 10px;
   font-family: var(--mono);
   color: var(--muted);
@@ -738,6 +761,80 @@
 /* 开发节点（super+dev）队列行：模块绿，与画布功能块外框配色呼应 */
 .rq-item.kind-dev .rq-title {
   color: #6fe3a5
+}
+
+/* 开发块行：副标题 = 具体开发内容（本次开发需求 / 细化范围），比普通状态文案
+   更需要可见宽度；完整内容仍走行 title 悬浮 */
+.rq-item.kind-dev .rq-sub {
+  max-width: 150px;
+  color: #7bd8a8;
+  opacity: .95;
+}
+
+/* ── 全应用运行总览：会话 / 助手 / 后端生成三种新 kind ──
+   配色取自 DEV 功能色卡（ai / canvas / build），与上面 kind-dev 的模块绿同一套视觉语言。
+   「运行队列」面板底色是写死的暗色渐变（见 .run-queue），亮色主题下也仍是暗底，
+   所以这里跟 kind-dev 一样用字面亮色，不用 var(--*)，
+   免得浅色主题变量（--cyan2 / --orange2 变深）在暗底上看不清。 */
+
+/* 独立智能会话：AI 紫（功能色卡 ai #c792ea） */
+.rq-item.kind-sess .rq-title {
+  color: #c792ea
+}
+
+/* 全局助手：青（功能色卡 canvas #45cfe6） */
+.rq-item.kind-assist .rq-title {
+  color: #45cfe6
+}
+
+/* 后端媒体生成（music_gen / video_gen 在途 · 排队）：橙（功能色卡 build #ff9d5c） */
+.rq-item.kind-media .rq-title {
+  color: #ff9d5c
+}
+
+/* 状态点跟着各自标题色走，扫一眼就分得出是哪一类运行项 */
+.rq-item.kind-sess.is-run .rq-icon {
+  color: #c792ea
+}
+
+.rq-item.kind-assist.is-run .rq-icon {
+  color: #45cfe6
+}
+
+.rq-item.kind-media.is-run .rq-icon {
+  color: #ff9d5c
+}
+
+/* 行内次要信息：状态文案（自身 / 子节点 / 绑定会话运行中）+ 跨画布画布名 / 会话目录分组。
+   完整内容走行 title 悬浮，这里只做提示：收缩优先级最高（flex-shrink 4）、
+   限宽 + 单行省略，绝不把标题挤掉；行宽 ~240px 下整行不溢出。 */
+.rq-sub {
+  flex: 0 4 auto;
+  min-width: 0;
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0;
+  color: #8b93a3;
+  opacity: .9;
+}
+
+/* 会话 / 助手 / 后端三类行的次要信息略偏底色，跟标题同色系更好认 */
+.rq-item.kind-sess .rq-sub {
+  color: #a68cc4
+}
+
+.rq-item.kind-assist .rq-sub {
+  color: #6fb4c4
+}
+
+.rq-item.kind-media .rq-sub {
+  color: #c08a63
 }
 
 .n-title-input {

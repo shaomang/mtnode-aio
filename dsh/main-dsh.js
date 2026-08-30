@@ -228,6 +228,12 @@ function createDshAdapter(opts) {
       return request('interact', params, 30000)
     },
 
+    /* 回滚收尾：取回 gateway 侧「无在途 run」时暂存的 journal 帧。
+       params {key?, workspace?, sessionId?, roundId?, peek?} → {entries:[{key,data}]} */
+    rollbackDrain(params) {
+      return request('rollbackDrain', params, 30000)
+    },
+
     providerCatalog() {
       return request('providerCatalog', undefined, 30000)
     },

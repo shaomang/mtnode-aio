@@ -24,6 +24,103 @@
     "移出队列": "Remove from queue",
     "加入发送队列（不打断当前任务）":
       "Add to send queue (does not interrupt the current run)",
+    /* ── 复杂任务计划确认 ── */
+    "计划确认": "Plan confirmation",
+    "目标": "Goal",
+    "明确不做": "Explicitly excluded",
+    "任务清单（可编辑 · 增删 / 排序 / 逐项指定模型）": "Task list (editable · add / remove / reorder / per-task model)",
+    "任务标题": "Task title",
+    "详情 / 涉及文件 / 边界": "Detail / files / scope",
+    "执行模型": "Model",
+    "并行组": "Group",
+    "同组名的任务并发执行（留空 = 按顺序单独跑）":
+      "Same-name tasks run concurrently (blank = sequential)",
+    "并行组名：填相同名字的若干任务会同时异步执行；留空则按清单顺序一项一项跑。":
+      "Parallel group: tasks sharing a name run asynchronously together; leave blank to run one by one in list order.",
+    "详情（做什么 / 涉及文件 / 要点与边界）": "Details (what / files / scope)",
+    "跟随默认（不指定）": "Follow default (not specified)",
+    "建议模型": "Suggested model",
+    "还原窗口大小": "Restore window size",
+    "最大化窗口（也可拖右下角自由放大）":
+      "Maximize (or drag the bottom-right corner to resize freely)",
+    "拖拽放大 / 缩小窗口 · 双击还原默认大小":
+      "Drag to resize the window · double-click to reset",
+    "本任务的执行模型": "Model for this task",
+    "模型：自动（跟随默认）· 点击为本任务单独选择":
+      "Model: auto (follow default) · click to pick one for this task",
+    "模型：": "Model: ",
+    " · 点击修改（本任务单独用它执行）":
+      " · click to change (this task runs with it)",
+    "模型建议（未登记在模型服务）": "Suggested (not in model services)",
+    "添加任务": "Add task",
+    "上移": "Move up",
+    "下移": "Move down",
+    "删除该项": "Remove this item",
+    "至少保留一个任务": "Keep at least one task",
+    "确认执行": "Confirm & run",
+    "按清单逐项执行（顺序 / 内容 / 模型以当前编辑结果为准）": "Run per the list (order / content / model as edited)",
+    "拖右下角可放大窗口（双击还原 · ⤢ 最大化）· 清单过高时框内滚动浏览 · 标题与详情为多行输入，随内容长高 · 点「执行模型」按钮为该任务单独选模型 · 确认后按清单逐项执行（同组并行任务并发跑）· Ctrl+Enter 确认 · Esc 取消":
+      "Drag the bottom-right corner to enlarge (double-click resets · ⤢ maximizes) · scroll inside the list when it gets long · title and detail are multi-line and grow with the text · click the Model button to pick a model for that task · after confirming, tasks run one by one (same-group tasks run concurrently) · Ctrl+Enter confirm · Esc cancel",
+    "计划已全部执行完成": "Plan fully executed",
+    "执行位置": "Runs in",
+    "所属会话已关闭，计划未执行": "Its session was closed, so the plan was not executed",
+    "这份计划已过期或所属会话已关闭，未执行":
+      "This plan is stale or its session was closed — nothing was executed",
+    "已终止：本会话的计划清单已清除":
+      "Stopped: this session's plan list has been cleared",
+    "这份计划不属于当前会话，已清除":
+      "This plan does not belong to the current session — cleared",
+    "所属会话已不存在，计划已停止":
+      "The session this plan belongs to is gone — execution stopped",
+    /* ── 会话内「计划」面板（st.plan 落盘 · 逐项状态 · 可续跑） ── */
+    "展开 / 收起计划清单": "Expand / collapse the plan list",
+    "执行中…": "Running…",
+    "执行中": "In progress",
+    "待执行": "Pending",
+    "已跳过": "Skipped",
+    "继续执行": "Continue",
+    "从第一条未完成的任务接着跑（剩余 ":
+      "Resume from the first unfinished task (",
+    " 项 · 仍在本会话内执行）":
+      " left · still executed inside this session)",
+    "清除本会话的计划清单（不会撤销已完成的改动）":
+      "Clear this session's plan (completed changes are kept)",
+    "清除本会话的计划清单？\n\n还有 ":
+      "Clear this session's plan?\n\n",
+    " 项未执行，清除后无法再接着跑（已经改好的内容不会被撤销）。":
+      " task(s) are still pending — after clearing, it cannot be resumed (finished work is not reverted).",
+    "清除计划": "Clear plan",
+    "计划跑到这里：还有 ": "The plan stopped here: ",
+    " 项未完成，可在「计划」面板继续执行":
+      " task(s) left — press 继续执行 in the plan panel to resume",
+    "该计划正在执行中": "This plan is already running",
+    "该计划已全部完成": "This plan is already complete",
+    "会话正在运行中": "This session is already running",
+    "用户取消了该计划，未执行任何改动。": "The plan was cancelled; nothing was changed.",
+    "（计划已取消，未执行任何改动）": "(Plan cancelled — no changes made)",
+    "【执行已确认计划 · 并行任务】": "[Execute confirmed plan · parallel task]",
+    "【执行已确认计划 · 任务 ": "[Execute confirmed plan · task ",
+    "】": "]",
+    "【并行任务完成】": "[Parallel tasks finished]",
+    "已完成 ": "Done ",
+    " 项计划任务。": " planned tasks.",
+    "最多 ": "At most ",
+    " 项任务": " tasks",
+    /* ── 计划面板：并行组实时轨迹（行内状态条 + 详情里的流式转写区） ── */
+    "已用时": "Elapsed",
+    "输出字数": "Output chars",
+    "字": " chars",
+    "最近": "last",
+    "token": "tokens",
+    "思考": "reasoning",
+    "状态：执行中": "Status: running",
+    "状态：出错": "Status: error",
+    "状态：已取消": "Status: cancelled",
+    "状态：已结束": "Status: finished",
+    " 次更早调用": " earlier call(s)",
+    "入参": "Args",
+    "错误": "Error",
+    "（暂无正文输出）": "(No output text yet)",
     /* ── 会话任务清单（Todo） ── */
     "任务清单": "Tasks",
     "展开 / 收起任务清单": "Expand / collapse task list",
@@ -45,6 +142,11 @@
     "允许": "Allow",
     "切换为英文": "Switch to English",
     "切换为中文": "Switch to Chinese",
+    "智能会话与节点的回复语言会跟随此设置":
+      "Agent sessions and node replies follow this language too",
+    "交流语言（Agent 口味）：": "Communication language (agent taste): ",
+    " —— 智能会话、智能节点与全局助手都用该语言交流，并期望 agent 用该语言回答；顶栏「中 / EN」切换即生效。":
+      " — agent sessions, smart nodes and the global assistant all converse in this language and expect answers in it; flip it anytime with the 中 / EN button in the top bar.",
     "？": "?",
     "步": "step",
     "低": "Low",
@@ -115,6 +217,7 @@
     "内置": "Built-in",
     "批量": "Batch",
     "排版": "Layout",
+    "隐藏线": "Hide wires",
     "启用": "Enable",
     "清除": "Clear",
     "清空": "Clear all",
@@ -452,6 +555,7 @@
     " 个月前": " mo ago",
     " 年前": " yr ago",
     "最后对话：": "Last message: ",
+    "拖拽调整会话列表宽度": "Drag to resize the session list",
     "尚无对话": "No messages yet",
     "已添加节点：": "Added node: ",
     "已移除技能 ": "Removed skill ",
@@ -958,6 +1062,15 @@
     "点击打开": "Click to open",
     "预览": "Preview",
     "YAML 阅读器": "YAML Reader",
+    "Markdown 阅读器": "Markdown Reader",
+    "编辑模式：Ctrl+S 保存": "Editing — press Ctrl+S to save",
+    "编辑并保存此文件（Ctrl+S 保存）": "Edit and save this file (Ctrl+S to save)",
+    "写回文件（Ctrl+S）": "Write back to file (Ctrl+S)",
+    "放弃修改，回到预览": "Discard changes and return to preview",
+    " 个标题": " headings",
+    "用阅读器打开（Markdown / YAML · 可编辑保存）": "Open in reader (Markdown / YAML · editable)",
+    "点击用阅读器打开（Markdown / YAML · 可编辑保存）": "Click to open in reader (Markdown / YAML · editable)",
+    "打开该文件节点对应的文件（Markdown / YAML 用应用内阅读器 · 可编辑保存；其余用系统默认方式打开）": "Open this file node's file (Markdown / YAML open in the in-app reader · editable; others open with the system default)",
     "大纲": "Outline",
     "隐藏大纲": "Hide outline",
     "显示大纲": "Show outline",
@@ -1486,10 +1599,33 @@
     "运行队列": "Run queue",
     " 处理中": " running",
     " 等待": " waiting",
+    /* 运行队列汇总计数后缀（同 " running" / " waiting" 的用法：数量 + 后缀） */
+    " 会话": " sessions",
+    " 后端生成中": " backend generating",
     "处理中": "Running",
     "等待中": "Waiting",
     "点击定位到节点": "Click to focus node",
     "节点不在当前画布": "Node is not on this canvas",
+    /* ===== 运行队列 = 全应用运行总览：跨画布定位 / 逐条终止 / 后端生成状态 ===== */
+    "跨画布定位": "Click to switch canvas and focus node",
+    "点击查看调研进度": "Click to view research progress",
+    "点击打开该会话": "Click to open this session",
+    "停止该会话": "Stop this session",
+    /* 运行队列里的「并行任务」行：计划并行组（看得见 · 停得掉） */
+    "并行任务": "Parallel tasks",
+    " 并行任务": " parallel tasks",
+    "并行": "Parallel",
+    "未命名并行组": "Unnamed group",
+    "停止该并行任务组": "Stop this parallel task group",
+    "停止该会话与并行任务组": "Stop this session and its parallel task group",
+    /* 会话列表条目：并行组在跑时条目同样显示「运行中」，悬浮说明它为什么在转圈 */
+    "计划并行任务运行中（不打断你继续发消息）":
+      "Parallel plan tasks are running (this doesn't block you from sending a new message)",
+    "停止全局助手": "Stop global assistant",
+    "会话已不存在": "Session no longer exists",
+    "节点已不存在": "Node no longer exists",
+    "排队生成": "Queued generation",
+    "在途生成": "Generation in flight",
     "节点预览": "Node preview",
     "点击查看大图": "Click to view full image",
     "加载中…": "Loading…",
@@ -2002,6 +2138,12 @@
     "已整理排版（含超级节点内部）": "Layout tidied (including super insides)",
     "已紧凑排版": "Compact layout applied",
     "排版失败：": "Layout failed: ",
+    "隐藏线：临时把所有连线压到 95% 透明（几乎不可见），排版后看清布局；再次点击恢复":
+      "Hide wires: fade every wire to 95% transparency (nearly invisible) so the layout reads clearly; click again to restore",
+    "显示线：恢复所有连线的正常显示":
+      "Show wires: restore normal visibility for all wires",
+    "已临时隐藏连线（透明度 95%）": "Wires temporarily hidden (95% transparent)",
+    "已恢复显示连线": "Wires restored",
     "请整理当前画布排版：先 mtnode_canvas_get 查看每个节点与绘制的 x/y/w/h，再根据现状自行判断，用一次 mtnode_canvas_edit（layout:false）通过 update / updateMarks 校准位置与尺寸。要求美观整洁、间距舒适、图像节点便于观察、面向用户可编辑/操作的节点靠上；框体/文字/箭头等绘制要跟着节点一起调整。不要增删节点、不要改连线，不要调用任何 layout action。完成后用一句话确认。":
       "Tidy the canvas layout: first mtnode_canvas_get to read each node/mark x/y/w/h, then judge yourself and calibrate with one mtnode_canvas_edit (layout:false) via update / updateMarks. Keep it neat with comfortable spacing, image nodes easy to view, user-editable nodes toward the top; move drawings with their nodes. Do not add/remove nodes, change wires, or call any layout action. Confirm in one short sentence when done.",
     "请整理当前画布排版：立刻调用 mtnode_app，action 为 tidy_layout。要求美观整洁、面向用户可编辑/操作的节点靠上；不要增删节点、不要改连线；完成后用一句话确认。":
@@ -2235,7 +2377,7 @@
     "限制助手可访问的画布范围": "Limit which canvases the assistant may access",
     "当前画布": "Current canvas",
     "全局": "Global",
-    "仅当前画布 · 危险操作需确认": "Current canvas only · risky ops need confirm",
+    "仅当前画布": "Current canvas only",
     "仅操作当前画布；改节点图或删除本画布会弹窗确认":
       "Current canvas only; graph edits or deleting this canvas ask for confirm",
     "该操作允许助手参考其他画布内容，当画布较多时可能导致速度较慢。确定切换为「全局」？":
@@ -2717,7 +2859,6 @@
     "画布搭建": "Canvas building",
     "画布规范": "Canvas rules",
     "开发架构": "Dev architecture",
-    "禅式引导": "Zen guidance",
     "小说写作": "Novel writing",
     "文本生成": "Text generation",
     "视频生成": "Video generation",
@@ -2799,137 +2940,39 @@
       "“Always” is saved on this node; “Once” lasts for this run; “Deny” blocks this call.",
     "未能解析具体路径，请根据工具与说明判断是否放行。":
       "Could not parse a concrete path; decide from the tool name and details.",
-    /* ===== 禅模式（Zen Mode）===== */
-    "禅模式": "Zen",
-    "禅模式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流":
-      "Zen Mode: fullscreen immersive Q&A canvas to clarify ideas and generate an executable workflow",
-    /* ===== 测试版本（Beta）===== */
-    "提问式": "Question Mode",
-    "提问式：全屏沉浸式问答画布，逐步澄清想法并生成可执行工作流":
-      "Question Mode: fullscreen immersive Q&A canvas to clarify ideas and generate an executable workflow",
-    "测试版本（Beta）": "Beta (test version)",
-    "启用测试版本（显示仍在调试的功能：提问式、数据库节点）":
-      "Enable the test version (shows in-development features: Question Mode and Database node)",
-    "默认关闭。开启后顶栏显示「提问式」入口，并在添加节点菜单中提供「数据库」节点。":
-      "Off by default. When enabled, the top bar shows the \"Question Mode\" entry and the add-node menu offers a \"Database\" node.",
+    /* ===== 通用短词（多处界面共用）===== */
     "返回": "Back",
     "探索": "Explore",
     "已保存": "Saved",
     "存档": "Archives",
     "新建": "New",
     "计划": "Plan",
-    "备份": "Backup",
-    "构建画布": "Build canvas",
-    "选择或新建存档": "Pick or create an archive",
-    "Esc 返回主界面": "Esc to leave",
-    "新存档名称…": "Archive name…",
     "取消": "Cancel",
-    "版本备份": "Versions",
-    "立即备份": "Backup now",
     "关闭": "Close",
     "输入": "Input",
-    "补充想法、约束或直接回答…": "Add thoughts, constraints, or answer…",
     "提交": "Submit",
     "选择": "Select",
     "画布": "Canvas",
     "保存中…": "Saving…",
     "未保存": "Unsaved",
-    "正在思考…": "Thinking…",
-    "点击开始": "Tap to start",
     "思考中": "Thinking",
-    "待播放": "Ready",
     "就绪": "Ready",
     "中心": "Hub",
     "播放": "Play",
-    "可选 · 点击选择": "Optional · click to select",
     "点击选择": "Click to select",
     "已处理": "Done",
-    "分支提问": "Branch question",
     "候选": "Option",
-    "点击继续": "Click to continue",
     "回滚": "Rollback",
     "保存失败：": "Save failed: ",
-    "已创建版本备份": "Version backup created",
-    "备份失败：": "Backup failed: ",
-    "还没有存档，输入名称开始": "No archives yet — type a name to start",
     "节点": "Node",
-    "删除存档": "Delete archive",
-    "删除存档「{name}」？备份也将一并删除。":
-      "Delete archive “{name}”? Its backups will be deleted too.",
-    "打开存档失败": "Failed to open archive",
-    "新存档名称": "New archive name",
-    "新建禅模式存档": "New Zen archive",
     "创建": "Create",
-    "先输入存档名称": "Type an archive name first",
-    "已创建存档：": "Archive created: ",
     "创建失败：": "Create failed: ",
-    "暂无备份（每 10 分钟自动备份）": "No backups yet (auto backup every 10 min)",
     "恢复": "Restore",
-    "恢复到该备份？当前内容会被覆盖。":
-      "Restore this version? The current content will be overwritten.",
-    "恢复备份": "Restore backup",
-    "已恢复备份": "Backup restored",
-    "恢复失败": "Restore failed",
-    "请继续": "Please continue",
-    "模型未按契约返回，请重试": "The model broke the contract — please retry",
-    "（提问失败：": " (question failed: ",
-    "先选择一项，或输入文字回答": "Select an option or type an answer first",
-    "输入一个问题或想法，开一条新的探索分支":
-      "Type a question or idea to open a new exploration branch",
-    "回滚该节点？其全部下游分支将移除，并重新对它提问。":
-      "Roll back this node? Its whole downstream subtree will be removed and it will be re-questioned.",
-    "回滚分支": "Rollback branch",
-    "计划尚未生成：继续问答，或直接点击「构建画布」触发计划编译":
-      "No plan yet: keep answering, or click “Build canvas” to compile one",
-    "可编辑 · 与图谱双向同步": "Editable · synced with the graph",
-    "尚无计划": "No plan yet",
-    "尚无计划：继续问答澄清，或点击「重新编译计划」":
-      "No plan yet: keep clarifying, or click “Recompile plan”",
-    "确认计划后点击「构建画布」": "Confirm the plan, then click “Build canvas”",
-    "返回主画布查看任务进度": "Return to the main canvas for task progress",
-    "任务执行中… ": "Tasks running… ",
     "任务进度": "Progress",
-    "计划已生成，可编辑或直接构建画布": "Plan generated — edit it or build the canvas",
     "计划已生成": "Plan generated",
-    "已按图谱生成计划草稿，可手动编辑": "Draft plan compiled from the graph — edit freely",
-    "基于当前图谱重新生成计划？手动编辑的段落可能被替换。":
-      "Regenerate the plan from the graph? Manually edited sections may be replaced.",
-    "重新编译计划": "Recompile plan",
     "重新编译": "Recompile",
-    "已同步 {n} 处标题到图谱": "Synced {n} titles to the graph",
-    "先生成计划再构建画布": "Generate a plan before building the canvas",
-    "已构建过画布，重新生成将新建一个同名画布。继续？":
-      "A canvas was already built; regenerating creates a new one with the same name. Continue?",
-    "重新生成": "Regenerate",
-    "将按计划生成可执行画布，写入所选项目文件夹，并允许 AI 写入画布节点（本次免逐项确认）。":
-      "An executable canvas will be generated from the plan, written to the chosen project folder, and the AI may write canvas nodes without per-step confirmations this time.",
-    "允许写入": "Allow writing",
-    "项目文件夹已失效，请重新选择": "The project folder is invalid — pick it again",
-    "选择项目文件夹": "Choose project folder",
-    "正在生成画布…（可稍等片刻）": "Generating canvas… (this may take a moment)",
-    "画布已生成：": "Canvas built: ",
-    "画布生成失败：": "Canvas build failed: ",
-    "点击节点上的「回滚」可撤销该分支":
-      "Use “Rollback” on the node to undo this branch",
-    "当前提问": "Current question",
-    "模型选择：本次提问使用的模型": "Model: used for the next question",
-    "输入你的答案…": "Type your answer…",
-    "删除当前存档": "Delete current archive",
-    "删除当前禅模式存档「{name}」？其版本备份也将一并删除。":
-      "Delete the Zen archive “{name}”? Its version backups will be deleted too.",
-    "已删除禅模式存档": "Zen archive deleted",
-    "单选题已多选": "Multiple answers on a single-choice question",
-    "此题为单选题，但已选择多个答案。如何处理？":
-      "This is a single-choice question, but you selected multiple answers. How should we proceed?",
-    "合并为1个历史节点": "Merge into one history node",
     "新画布": "new canvas",
-    "已创建分支画布：": "Forked canvas created: ",
-    "非法存档 id": "Invalid archive id",
-    "存档不存在": "Archive not found",
-    "非法技能 id": "Invalid skill id",
     "技能不存在": "Skill not found",
-    "非法备份文件": "Invalid backup file",
-    "备份不存在": "Backup not found",
     /* ===== 数据库超级节点（事实收纳 → 副本 → mtnode_db） ===== */
     "数据库": "Database",
     "数据库副本": "Database replica",
@@ -2966,16 +3009,42 @@
     "模块": "Module",
     "细化": "Refine",
     "细化 · ": "Refine · ",
-    "细化（确认是否继续展开子元素…）": "Refine (confirm whether to expand children…)",
-    "细化：弹窗确认后在新会话中展开本模块（Agent 先给梗概 · 经你确认才建节点）；无需或无法细化时也会提示":
-      "Refine: confirm in a dialog, then it runs in a new session (the agent shows an outline first and only creates nodes after your confirmation); it also tells you when refining is unnecessary or impossible",
+    "细化（选择深度：只展开本层 / 下钻到无法再细…）":
+      "Refine (choose a depth: expand this layer only / drill down until nothing more can split…)",
+    "细化：弹窗先选「细化深度」——只展开本层，或深度细化到无法再细（一般到文件级）；确认后在新会话中自顶向下逐层建块（Agent 先给多层梗概 · 经你确认才建节点）；无需或无法细化时也会提示":
+      "Refine: the dialog first asks for the refinement DEPTH — expand this layer only, or refine all the way down until nothing can be split further (usually to file level); after you confirm, a new session creates the blocks top-down one layer at a time (the agent shows a multi-layer outline first and only creates nodes with your approval); it also tells you when refining is unnecessary or impossible",
     "确认细化": "Confirm refine",
     "无需细化": "No refinement needed",
     "已跳过细化：该功能块保持现状": "Refinement skipped: this module block stays as it is",
-    "如果确实要在这里继续展开，请先通过节点右键菜单把「元素类型」改为文件 / 模块，再执行细化。":
-      "If you really want to expand further here, first switch this node's element type to File / Module via its right-click menu, then refine again.",
+    /* —— 细化「深度」：现状统计 + 对话框单选档位 —— */
+    "细化深度": "Refinement depth",
+    "细化深度（单选）": "Refinement depth (pick one)",
+    "细化深度现状（细化＝深度，非本层展开数量）：":
+      "Refinement-depth status (refine means DEPTH, not how many children this layer has): ",
+    "当前 0 层（尚未展开下层元素）": "Currently 0 layers deep (no lower elements expanded yet)",
+    "当前已 {n} 层 · 已细化到文件级": "Currently {n} layer(s) deep · already refined down to file level",
+    "当前已 {n} 层 · {m} 个块未到文件级":
+      "Currently {n} layer(s) deep · {m} block(s) not yet at file level",
+    "（如 {eg}）": " (e.g. {eg})",
+    "深度细化到无法再细": "Deep refine — drill down until nothing more can split",
+    "默认：拆出的每个子块都继续判断能否再细，一路下钻到无法进一步细化为止（一般到文件级；文件还可拆类 / 接口 / 枚举），产物为多层开发节点树。":
+      "Default: every child block is re-checked for further splitting and the drill-down continues until nothing can be refined any more (usually to file level; a file can still split into class / interface / enum), producing a multi-layer dev-node tree.",
+    "只展开本层": "Expand this layer only",
+    "仅在本块内创建 1 层子元素，不下钻；之后可在各子块上分别点「细化」。":
+      "Create exactly one layer of children inside this block and stop; you can click Refine on each child block later.",
+    "如果确实要在这里继续展开，请先通过节点右键菜单把「元素类型」改为文件 / 模块；或到具体的下层文件块上分别点「细化」。":
+      "If you really want to expand further here, first switch this node's element type to File / Module via its right-click menu — or click Refine on the individual lower file blocks one by one.",
     "类 / 接口 / 枚举已是架构的最细粒度元素，无需继续细化。":
       "Class / interface / enum are already the finest-grained architecture elements — no further refinement needed.",
+    "该文件已展开为类 / 接口 / 枚举，已细化到无法再细。":
+      "This file is already expanded into class / interface / enum elements — it cannot be refined any further.",
+    "本功能块已细化到无法再细：子树 {n} 层，每片叶子都已到文件 / 类级（未到文件级的块为 0）。":
+      "This module block is already refined to the bottom: a {n}-layer subtree whose every leaf reaches file / class level (0 blocks left short of file level).",
+    "若还想把某个文件继续拆成类 / 接口 / 枚举，请在该文件块上单独点「细化」。":
+      "To split a particular file into class / interface / enum elements, click Refine on that file block itself.",
+    "只展开本层（1 层）细化该功能块": "Refine this module block one layer only (a single layer)",
+    "深度细化该功能块：逐层下钻到无法再细（一般文件级）":
+      "Deep-refine this module block: drill down layer by layer until nothing more can split (usually file level)",
     "确认后将新建一个细化会话：Agent 依据项目真实代码分析本模块的下层元素，先给出内容梗概清单，经你确认后才在该功能块内补充内容。若分析后认为无需或无法继续细化，它会直接告知你原因。":
       "Confirming opens a new refinement session: the agent analyzes this module's lower-level elements against the real code, first shows an outline list, and only adds content inside the module block after you approve. If it finds nothing to refine, it tells you why.",
     "细化范围（可选）": "Refinement scope (optional)",
@@ -2984,8 +3053,13 @@
     "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· Esc 取消":
       "Confirm = runs in the background in a new session (workspace = project root · titled Refine · module name · you stay on the canvas) · Esc cancels",
     "用户指定的细化范围：": "User-specified refinement scope: ",
-    "0. 先判断是否有必要细化：若本元素已无下层结构、或项目根目录内找不到可对应的真实内容，请直接告诉用户「无需 / 无法继续细化」并说明原因，不要创建任何节点。":
-      "0. First decide whether refinement is warranted: if this element has no lower-level structure, or the project root holds nothing matching it, tell the user directly that refining is unnecessary / impossible and explain why — create no nodes.",
+    "细化该功能块": "Refine this module block",
+    /* —— 细化任务书抬头（深度口径） —— */
+    "本次细化深度：": "Refinement depth this round: ",
+    "深度细化（逐层下钻到无法再细，一般到文件级）":
+      "Deep refine — drill down layer by layer until nothing more can split (usually file level)",
+    "只展开本层（1 层 · 不下钻）": "Expand this layer only (a single layer · no drill-down)",
+    "当前子树深度：": "Current subtree depth: ",
     "元素类型": "Element type",
     "元素类型（右键节点可切换）": "Element type (switch via node right-click)",
     "未知元素类型：": "Unknown element type: ",
@@ -2994,23 +3068,53 @@
     "（暂无概述）": "(no overview yet)",
     "当前概述": "Current overview",
     "现有子元素": "Existing children",
+    "现有子元素：": "Existing children: ",
     "本模块已有子元素：": "This module already contains:",
     "（无）": "(none)",
-    "请按以下步骤细化：": "Refine step by step:",
-    "1. 基于项目根目录内的真实代码/文件，分析本模块应展开的下层元素；模块细化为文件，文件细化为类 / 接口 / 枚举等类图元素。":
-      "1. Based on the real code/files inside the project root, analyze which lower-level elements this module should expand into; modules refine into files, files refine into class-diagram elements (class / interface / enum).",
-    "2. 先输出内容梗概清单：每个拟创建子元素的【名称 · 类型（文件/类/接口/枚举）· 一句话作用】，供用户审阅。":
-      "2. First output an outline list: for each planned child give [name · type (file/class/interface/enum) · one-line role] for the user to review.",
-    "3. 明确询问用户是否按此清单创建；在用户确认之前，禁止修改画布。":
-      "3. Explicitly ask the user whether to create per this list; do NOT modify the canvas before confirmation.",
-    "4. 用户确认后，用 mtnode_canvas_edit 创建子开发节点：kind=super、dev=true、devKind=file|class|interface|enum、parentSuperId=本节点、note=一句话概述；文件节点的标题用相对项目根的路径（如 renderer/app.js，便于「打开」按钮定位源码）；元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头）。":
-      "4. After confirmation, create child dev nodes with mtnode_canvas_edit: kind=super, dev=true, devKind=file|class|interface|enum, parentSuperId=this node, note=one-line overview; title file nodes with a path relative to the project root (e.g. renderer/app.js, so the Open button can locate the source); express relations between elements with relationship wires (connect entries with rel:true, optional relLabel text and relArrow arrows).",
-    "5. 不同元素类型在画布上有不同外框颜色（模块=绿、文件=蓝、类=橙、接口=紫、枚举=粉），请保持类型准确。":
-      "5. Element types have distinct frame colors on canvas (module=green, file=blue, class=orange, interface=purple, enum=pink); keep the types accurate.",
+    /* —— 细化任务书步骤：细化＝深度（多层规划树 · 一次确认 · 自顶向下逐层创建） —— */
+    "请按以下步骤细化（「细化」指的是**深度**：拆出的子块是否继续下钻，而不是本层展开多少个）：":
+      "Refine step by step (「细化」 means DEPTH — whether the blocks you split out keep getting refined, not how many children one layer has):",
+    "· 本次为深度细化：规划与创建都必须覆盖多层，一路下钻到无法进一步细化为止（一般 devKind=file；文件还可继续拆类 / 接口 / 枚举，拆不动就停），不得只规划一层就收工。":
+      "· This round is a deep refinement: both the plan and the creation must span several layers, drilling down until nothing more can be split (usually devKind=file; a file can still split into class / interface / enum — stop when it cannot), never just one planned layer.",
+    "· 本次为只展开本层：仅在本块内创建 1 层子块，不做下钻；每个子块各自还需不需要继续细化，请在梗概里说明，之后由用户到该子块上分别点「细化」。":
+      "· This round expands this layer only: create one single layer of child blocks inside this block and do not drill down; state in the outline whether each child still needs refining, so the user can click Refine on it later.",
+    "0. 先按深度判断该不该细化：本块是否还能继续下钻、已经下钻到哪一层（见上方「当前子树深度」）。若本元素已无下层结构、或项目根目录内找不到可对应的真实内容，请直接告诉用户「无需 / 无法继续细化」并说明原因（如已细化到无法再细、无对应真实代码），不要创建任何节点。":
+      "0. First judge by DEPTH whether refining makes sense: can this block still drill down, and how deep has it already gone (see “Current subtree depth” above). If the element has no lower structure, or the project root holds nothing matching it, tell the user directly that refining is unnecessary / impossible and explain why (already refined to the bottom, no matching real code) — create no nodes.",
+    "1. 基于项目根目录内的真实代码/文件，规划本块之下的**整棵结构**：元素层级为 模块 → 文件 → 类 / 接口 / 枚举。深度细化时每一片叶子都要自问「还能不能再拆」：模块拆到真实文件、文件拆到类 / 接口 / 枚举，确实拆不动了才算到底；只展开本层时只需规划紧接下一层。":
+      "1. From the real code/files under the project root, plan the WHOLE structure below this block; the element hierarchy is Module → File → Class / Interface / Enum. In deep mode every leaf must ask itself “can it still be split?”: modules down to real files, files down to class / interface / enum — only when nothing can split is it finished. When expanding this layer only, plan just the next layer.",
+    "2. 先输出**多层规划树**（缩进表示层级，同层按创建顺序排列）：每个拟建子块标注【名称 · 类型（模块 / 文件 / 类 / 接口 / 枚举）· 是否还需继续下钻（是 / 否 + 一句理由）· 【功能】拟稿（≤80字，面向非技术的说明）· 【实现】拟稿（≤120字，工程实现梗概）· 将用颜色】，供用户审阅；深度模式下叶子应全部落在文件 / 类级，若因证据不足中途停在某个模块块上，请在该节点标注「待续下钻」并在结尾说明。":
+      "2. First output a MULTI-LAYER PLAN TREE (indent = level, siblings in creation order): annotate every planned child with [name · type (module / file / class / interface / enum) · still needs drill-down (yes / no + one reason) · 【功能】 draft (≤80 chars, non-technical) · 【实现】 draft (≤120 chars, implementation outline) · planned colour] for the user to review; in deep mode all leaves should land at file / class level — if evidence runs out and you stop at some module block, mark it “drill-down pending” and say so at the end.",
+    "3. 一次确认覆盖整棵规划树：明确询问用户是否按这棵树创建（不是逐层反复追问）；在用户确认之前，禁止修改画布。":
+      "3. ONE confirmation covers the entire plan tree: ask explicitly whether to create it as planned (do not re-ask layer by layer); never modify the canvas before the user confirms.",
+    "4. 用户确认后，自顶向下**逐层创建**：每层各一次 mtnode_canvas_edit —— 该层子块的 kind=super、dev=true、devKind=module|file|class|interface|enum、parentSuperId 指向它的直接父块（第一层的父块 = 本节点，更深层的父块 = 上一层刚创建的块，可用同一批 create 里的 alias 引用），note 必须按两段式规范书写（【功能】非技术说明 + 【实现】工程梗概，与该子块拟稿一致，禁止只写一段）。禁止把不同层级一次性平铺到同一层。":
+      "4. After confirmation, create TOP-DOWN ONE LAYER AT A TIME: one mtnode_canvas_edit per layer — each child of that layer uses kind=super, dev=true, devKind=module|file|class|interface|enum and a parentSuperId pointing at its DIRECT parent (layer 1's parent = this node, deeper layers' parent = the block just created above, referenced by the alias from the same create batch); its note must follow the two-section spec (【功能】 non-technical description + 【实现】 implementation outline, matching that child's draft — never a single section). Never flatten several levels into one layer.",
+    "5. 护栏：单层子块过多（约 >12 个）时分批创建，并在规划树里标出本批未建的部分；本次新建节点总数以约 60 个为上限，触顶或项目内证据不足时立即停下，报告已建到哪一层、还剩哪些分支未展开，并询问用户是否继续下钻（也可让用户在剩余分支的块上各自点「细化」）。":
+      "5. Guard rails: if one layer has too many children (roughly more than 12), create them in batches and mark what this batch skipped in the plan tree; cap this round at about 60 new nodes — when you hit the cap or the project evidence runs out, stop immediately, report how deep you got and which branches remain, and ask the user whether to keep drilling down (they can also click Refine on the remaining branches).",
+    "6. 落定后回写各父块概述：本节点与本次新建的每个中间层块，都要在 note 第二段「【实现】工程梗概」末尾补一行「子块：A / B / C」（列直接子块名，保持两段式规范，别把整棵子树塞进去）；第一段【功能】仅在职责变化时调整。":
+      "6. Afterwards rewrite each parent block's overview: this node and every middle-layer block you created must append a “子块：A / B / C” line at the end of the second 【实现】 section (direct children only, keep the two-section shape — never dump the whole subtree); adjust the first 【功能】 section only if responsibilities changed.",
+    "7. 结尾报告最终结果：本次新增到第几层、共多少块、叶子元素类型分布（如：新增 3 层 · 18 块，叶子 = 14 文件 + 4 类），以及还有哪些块标注了「待续下钻」。":
+      "7. Close with the final result: how many new layers deep, how many blocks in total, the leaf element-type mix (e.g. +3 layers · 18 blocks, leaves = 14 files + 4 classes), and which blocks are still marked “drill-down pending”.",
+    "8. 元素类型与配色请保持准确：模块按功能色卡归类（core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f；新建 module 块系统会自动套用，归类不对时再补丁纠正，禁止自创色值），文件 / 类 / 接口 / 枚举 不传 devColor（保留类型默认色 蓝 / 橙 / 紫 / 粉）。":
+      "8. Keep element types and colours accurate: colour modules by the function palette (core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f; new module blocks get it automatically — patch only when the category is wrong, never invent hex values), and pass no devColor for file / class / interface / enum (they keep their element-type defaults: blue / orange / purple / pink).",
+    "9. 元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头，关系线不传数据）；文件节点的标题用相对项目根的路径（如 renderer/app.js，便于「打开」按钮定位源码）。":
+      "9. Express relations between elements with relationship wires (connect entries with rel:true, optional relLabel text and relArrow arrows; relation lines carry no data); title file nodes with a path relative to the project root (e.g. renderer/app.js, so the Open button can locate the source).",
     "开发 · ": "Dev · ",
     "【开发任务书】": "[Dev brief]",
     "未命名模块": "Untitled module",
     "模块概述：": "Module overview: ",
+    "模块功能（面向非技术）：": "Module role (non-technical): ",
+    "实现要点（面向技术）：": "Implementation notes (technical): ",
+    "本次开发需求：": "This round's requirements: ",
+    "（暂无）": "(none)",
+    "（暂无 · 请先说明该模块在业务上做什么、给谁用）":
+      "(none yet · state in plain business terms what this module does and who it serves)",
+    "（暂无 · 细化或开发时按两段式规范补全）":
+      "(none yet · fill it in per the two-section spec during refine or development)",
+    "（暂无 · 该块在业务上做什么、给谁用还没写清楚）":
+      "(none yet · what this block does and who it serves is not stated)",
+    "（暂无 · 实现方案梗概待补）": "(none yet · implementation outline pending)",
+    "对照该块概述的【实现】段判断真实完成度：哪些职责已落地、哪些缺失或是半成品（TODO / 空实现 / 未接线的调用 / 缺错误处理 / 无测试）；再用【功能】段核对职责是否偏离。":
+      "Check the 【实现】 section to judge real completion: which responsibilities landed, which are missing or half-done (TODO / empty implementations / unwired calls / missing error handling / no tests); then use the 【功能】 section to verify responsibilities have not drifted.",
     "（暂无概述 · 请先补充该模块在项目中的作用）":
       "(no overview yet · describe this module's role in the project first)",
     "项目根目录：": "Project root: ",
@@ -3019,6 +3123,12 @@
       "Implement/refine this module within the project; when done, update this dev node's overview and status (devStatus) on the canvas.",
     "本会话由该功能块的「开发 / 细化」对话框新建，只负责该模块；请以项目根目录内的真实代码为准，不要臆测。":
       "This session was created by the module block's Dev / Refine dialog and covers only this module; rely on the real code under the project root — never guess.",
+    "项目根目录若有 AGENTS.md（Agent 共识文件），请先读并遵守其中的「目录约定」与「不要修改」清单；新文件按约定放置，清单内路径一律不要改动。":
+      "If an AGENTS.md (agent consensus file) exists at the project root, read it first and follow its directory conventions and do-not-modify list; place new files per the conventions and never touch listed paths.",
+    "10. 若项目根目录存在 AGENTS.md（Agent 共识文件），先读并遵守：文件节点的路径与新建内容都要符合「目录约定」，不要触碰「不要修改」清单里的路径。":
+      "10. If an AGENTS.md (agent consensus file) exists at the project root, read it first and follow it: file-node paths and any new content must match the directory conventions; never touch paths on the do-not-modify list.",
+    "11. 本会话按本任务书的步骤执行即可：不要调用 mtnode-dev-architect 技能（该技能仅用于在 MTNode 画布上从零构建开发节点架构，细化任务书已内置全部规则）。":
+      "11. Just follow the steps of this brief: do not invoke the mtnode-dev-architect skill (it only builds dev-node architectures from scratch on the MTNode canvas — this refinement brief already contains every rule).",
     "完成后请更新画布上该开发节点的概述（note）与状态（devStatus），并用一句话向用户汇报改了什么。":
       "When done, update this dev node's overview (note) and status (devStatus) on the canvas, and report in one sentence what changed.",
     /* ===== 开发 / 细化对话框 ===== */
@@ -3078,10 +3188,14 @@
       "2. Judge the real completion level against the module overview: which responsibilities already exist, which are missing or half-done (TODO / empty stubs / unwired calls / no error handling / untested).",
     "给出恰好 4 条下一步方案：具体到能直接开工（写明要改 / 新增的文件与接口），彼此独立可组合，并尽量覆盖不同层面（功能补全 / 健壮性与测试 / 与相邻模块接线 / 重构与文档）。":
       "3. Give exactly 4 next-step options: concrete enough to start immediately (name the files and APIs to touch), independent and combinable, and spread across layers (feature completion / robustness and tests / wiring with neighbouring modules / refactoring and docs).",
-    "若本模块其实已经完备，不要硬凑新功能：改为给出「下一步该做什么」（如细化下层元素、集成验证、性能与边界、补概述与文档），并在 summary 里说明现状。":
-      "4. If the module is actually complete, do not invent features: say what should happen next instead (refine lower elements, integration checks, performance and edge cases, overview and docs) and explain the current state in summary.",
+    "若本模块其实已经完备，不要硬凑新功能：改为给出「下一步该做什么」（如按深度继续细化——把子块逐层下钻到文件 / 类级、集成验证、性能与边界、补概述与文档），并在 summary 里说明现状。":
+      "4. If the module is actually complete, do not invent features: say what should happen next instead (deepen the refinement — drill the child blocks down layer by layer to file / class level, integration checks, performance and edge cases, overview and docs) and explain the current state in summary.",
     "若用户指定了关注点，优先围绕它给方案；但发现更要紧的问题也要占一条，并在 desc 里说明理由。":
       "5. When the user set a focus, centre the options on it; but if you find something more urgent, still spend one option on it and explain why in desc.",
+    "若项目根目录存在 AGENTS.md（Agent 共识文件），先读并遵守：新文件按「目录约定」放置；「不要修改」清单内的路径一律不得建议改动。":
+      "6. If an AGENTS.md (agent consensus file) exists at the project root, read it first and obey it: place new files per the directory conventions; never propose touching paths on the do-not-modify list.",
+    "共识：若项目根目录有 AGENTS.md，先读并遵守（目录约定 / 不要修改清单），新文件按约定放置。":
+      "Consensus: if an AGENTS.md exists at the project root, read it first and follow it (directory conventions / do-not-modify list); place new files accordingly.",
     "给出恰好 ": "give exactly ",
     " 条下一步方案：具体到能直接开工（写明要改 / 新增的文件与接口），彼此独立可组合，并尽量覆盖不同层面（功能补全 / 健壮性与测试 / 与相邻模块接线 / 重构与文档）。":
       " next-step options: concrete enough to start immediately (name the files and APIs to touch), independent and combinable, spread across layers (features / robustness and tests / wiring / docs).",
@@ -3102,6 +3216,17 @@
     "节点颜色": "Node color",
     "恢复元素类型默认色": "Restore element-type default color",
     "无效的 Hex 颜色（示例：#6FE3A5）": "Invalid hex color (e.g. #6FE3A5)",
+    /* ===== 开发节点色板「功能色卡」快捷行（分类英文名须与 DEV_FUNC_COLORS.en 一致） ===== */
+    "功能色卡": "Function palette",
+    "按功能上色": "by function",
+    "核心运行时": "Core runtime",
+    "画布与交互": "Canvas & interaction",
+    "AI 与 Agent": "AI & agents",
+    "数据与存储": "Data & storage",
+    "媒体与本地后端": "Media & local backends",
+    "插件与生态": "Plugins & ecosystem",
+    "构建与诊断": "Build & diagnostics",
+    "测试与质量": "Tests & quality",
     /* ===== 开发节点 Agent 模型（本功能块 + 未自行选择的子功能块共用） ===== */
     "Agent 模型": "Agent model",
     "Agent 模型：": "Agent model: ",
@@ -3221,6 +3346,36 @@
       "Implementation rules: follow the real code under the project root; if an option conflicts with reality, explain the trade-off before editing; verify each finished item (build / run / test / read-only command).",
     "完成后更新画布上该开发节点的概述（note）与状态（devStatus），并用一句话汇报改了什么。":
       "When done, update this dev node's overview (note) and status (devStatus) on the canvas and report in one sentence what changed.",
+    "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），用一句话汇报改了什么。":
+      "When done, rewrite this dev node's overview (note) in the two-section spec (【功能】 non-technical description + 【实现】 implementation outline), update its status (devStatus), and report in one sentence what changed.",
+    /* ===== 建议调研：可离开 + 完成跳窗（后台作业 devSuggestJobs / sug 运行态） ===== */
+    "「": "\"",
+    "」的调研已完成，但该功能块已不在当前画布，结果未写入。":
+      "\" — the research finished, but this block is no longer on the current canvas; the result was not saved.",
+    "」的建议已就绪。检测到你在填写其它窗口，未自动弹出；点该块的「建议」即可查看。":
+      "\" — suggestions are ready, but you were filling in another window, so it did not pop up automatically; click this block's \"Suggest\" to view them.",
+    "AI 继续后台调研，完成后自动弹出。":
+      "AI keeps researching in the background and will pop up when done.",
+    "调研中·已转入后台，可点该块的「建议」查看进度。":
+      "Research moved to the background — click this block's \"Suggest\" to view progress.",
+    "关掉本框，调研继续在后台运行，完成后自动弹出":
+      "Close this dialog; research continues in the background and will pop up when done",
+    "显式取消这一轮调研（不再有结果；Esc 不会触发本操作）":
+      "Explicitly cancel this research round (no result will be produced; Esc does not trigger this)",
+    "已接回本轮调研：它仍在进行，未重复发起。":
+      "Rejoined this research round: it is still running, not restarted.",
+    "调研进度": "Research progress",
+    "AI 只读调研进行中 · ": "AI read-only research in progress · ",
+    "查看调研进度": "View research progress",
+    "这个功能块已经有一轮只读调研在跑（同一块不会重复发起，以免两轮结果互相覆盖）。你可以直接离开去画布上继续操作，或点「查看调研进度」接回去看它读到哪一步；「本轮关注点」要改动得等这轮结束后再生成一轮。":
+      "This module block already has a read-only research round running (the same block is never started twice, so two rounds cannot overwrite each other). You can leave and keep working on the canvas, or click \"View research progress\" to see how far it has read; changing \"This round's focus\" has to wait until this round finishes, then start a new round.",
+    "⏳ AI 调研中 · 点「建议」看进度":
+      "⏳ AI researching · click \"Suggest\" to see progress",
+    "💡 建议已就绪（未查看）": "💡 Suggestions ready (unviewed)",
+    "点击打开调研进度：可「返回」继续后台跑，或「停止生成」":
+      "Click to open research progress: \"Back\" keeps it running in the background, or \"Stop generating\"",
+    "点击查看 AI 给出的方案清单（可多选 + 补充 + 就地开发）":
+      "Click to view the AI's option list (multi-select + supplement + develop right away)",
     "状态": "Status",
     /* ===== 开发节点：文件节点「打开」 ===== */
     "打开该文件节点对应的源码文件（标题为相对项目根的路径 · 也支持绝对路径）":
@@ -3239,8 +3394,54 @@
     "自身运行中": "This block itself is running",
     "子节点运行中": "Child nodes are running",
     "绑定会话运行中": "A bound dev / refine session is running",
+    "用户输入": "User input",
     "已停止该功能块的运行任务": "Stopped this module block's running tasks",
     "该功能块已无运行任务": "This module block has no running tasks",
+    "建议调研中": "Suggest research running",
+    " 次只读调用": " read-only calls",
+    "已停止该功能块的建议调研": "Stopped this module block's suggestion research",
+    "该功能块已无建议调研": "This module block has no suggestion research running",
+    /* ===== 开发节点：问询（AI 只读回答模块问题） ===== */
+    "问询": "Ask",
+    "问询：弹窗确认后由 AI 只读回答关于本模块的问题（不改文件、不改画布）":
+      "Ask: after a confirmation dialog the AI answers questions about this module read-only (no file or canvas changes)",
+    "💬 AI 回答中 · 点「问询」看进度":
+      "💬 AI answering · click \"Ask\" to see progress",
+    "💬 问询已就绪（未查看）": "💬 Ask answer ready (unviewed)",
+    "点击查看 AI 给出的回答（问询只读 · 不改任何文件）":
+      "Click to view the AI's answer (ask is read-only · no file changes)",
+    "问询中": "Ask running",
+    "已停止该功能块的调研（建议 / 问询）":
+      "Stopped this module block's research (suggest / ask)",
+    "该功能块已无建议或问询调研":
+      "This module block has no suggest or ask research running",
+    "AI 正在只读调研项目代码，回答这个功能块的问题。整个过程只读，期间你可以照常操作其它节点。":
+      "The AI is reading the project code to answer your question about this module. The whole run is read-only — keep working on other nodes meanwhile.",
+    "（空回答）": "(empty answer)",
+    "本次问询只读完成：未改动任何文件与画布。想接着实现 / 修改？点该功能块的「开发」按钮正式开工。":
+      "This ask finished read-only: no files or canvas were changed. Want to implement or modify next? Click this module's \"Dev\" button to start work.",
+    "问询失败": "Ask failed",
+    "可以重试同一问题，或改一改再问。":
+      "You can retry the same question, or rephrase it.",
+    "返回后台": "Back to background",
+    "只隐藏对话框，问询继续在后台跑，完成后自动弹出":
+      "Only hides the dialog; the ask keeps running in the background and pops up when done",
+    "取消本轮问询": "Cancel this ask round",
+    "重试": "Retry",
+    "【问询任务】请依据项目真实代码与该模块的开发进度，只读地回答下面的问题。":
+      "[Ask task] Answer the following question read-only, based on the real project code and this module's progress.",
+    "用户的问题：": "User's question: ",
+    "请只读调研后直接给出回答；不要执行任何写入动作。":
+      "Investigate read-only and then answer directly; do not perform any write actions.",
+    "确认后：AI 先只读调研项目里的真实代码与该模块的开发进度（不改文件、不动画布），然后直接回答你的问题。你可以随时离开去画布上继续操作，回答完成后自动弹出。":
+      "After you confirm: the AI first reads the real code and this module's progress read-only (no file or canvas changes), then answers your question directly. You can leave and keep working on the canvas; the answer pops up when ready.",
+    "你要问的问题": "Your question",
+    "例如：这个模块现在的真实完成度如何？入口在哪？关键文件是哪些？下一步该做什么？为什么这么设计？…":
+      "e.g. How complete is this module now? Where is the entry? Which files are key? What's next? Why is it designed this way?…",
+    "请填写要问的问题": "Please enter your question",
+    "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = read-only answer (workspace = project root · forced read-only: no file or canvas changes) · Ctrl+Enter submits · Esc cancels",
+    "开始问询": "Start ask",
     /* ===== 执行节点（绑定可执行文件 · 一键启动） ===== */
     "执行节点（绑定可执行文件 · 一键启动）":
       "Execute node (bind an executable · one-click launch)",
@@ -3409,8 +3610,8 @@
     "构建工作流": "Build Workflow",
     "构建工作流（选择生成技能 · 填写要求）":
       "Build Workflow (pick a generation skill · fill in requirements)",
-    "选择要使用的工具（工作流生成类技能），并填写要求。确认后会交给右侧「全局助手」在当前画布上搭建。":
-      "Pick the tool (a workflow-generation skill) and describe what you need. On confirm, the assistant on the right builds it on the current canvas.",
+    "选择要使用的工具（工作流生成类技能），并填写要求。确认后将新建一个绑定当前画布的独立会话在其中执行（不使用全局助手）。":
+      "Pick the tool (a workflow-generation skill) and describe what you need. On confirm, a new standalone session bound to this canvas will run it (the global assistant stays untouched).",
     "工具（工作流生成技能）": "Tool (workflow-generation skill)",
     "构建要求": "Requirements",
     "开始构建": "Build",
@@ -3419,15 +3620,54 @@
     " 个可选工具": " tools available",
     "暂无可用技能": "No skills available",
     "请先填写构建要求": "Please fill in the requirements first",
-    "已发起构建：": "Build started: ",
-    "助手正在执行上一轮：请等待完成或先终止，再发起构建":
-      "The assistant is still running the previous round — wait or stop it before building",
+    "构建 · ": "Build · ",
+    "已创建构建会话「": "Build session created: ",
+    "技能正文读取失败，未发起构建：": "Could not read the skill body, build not started: ",
+    "构建会话启动失败：": "Failed to start the build session: ",
+    "该画布的构建会话正在执行中：请等待完成或先终止，再发起构建":
+      "This canvas already has a build session running — wait for it to finish or stop it before building again",
     "未找到可用的工作流生成技能：请先在 设置 → 技能 安装 generate-workflow / generate-task":
       "No workflow-generation skill found: install generate-workflow / generate-task in Settings → Skills first",
     "例如：读取「素材清单」里的条目，逐条生成商品文案与主图提示词，输出 YAML 并保存；输入节点放上方，再给一个控制节点一键重跑……":
       "e.g. read items from “Asset list”, generate copy + a main-image prompt per item, save as YAML; put inputs on top and add a control node for one-click re-run…",
     "Ctrl+Enter 开始构建 · Esc 取消 · 要求写得越具体（输入来源 / 处理步骤 / 输出格式），生成结果越接近预期":
       "Ctrl+Enter to build · Esc to cancel · the more concrete the requirements (inputs / steps / output format), the closer the result",
+  });
+
+  /* 同功能块新绑定会话沿用上次计划：弹窗预填 / 已完成参考 */
+  Object.assign(EN, {
+    "沿用上次计划": "Carried from previous plan",
+    "上一次确认的清单里还有 ": "The previously confirmed list still has ",
+    " 项未完成，已原样预填在下方（可就地增删改）":
+      " unfinished item(s), prefilled below (edit / add / remove in place)",
+    "；已完成的 ": "; the ",
+    " 项保留作记录，不会再跑一遍":
+      " finished item(s) are kept for reference and won’t run again",
+    "已完成参考（上一次计划 · 不会自动续跑）":
+      "Finished reference (previous plan · not auto-resumed)",
+    "已完成（沿用 · 不重跑）": "Done (carried · won’t re-run)",
+    "已跳过（沿用）": "Skipped (carried)",
+  });
+
+  /* 分段渲染（段 = seg）：思考段 / 正文输出段 / 工具段的段头与提示文案。
+     只增键，不删改上方既有键；段标签一律带尾随空格与「· 」分隔，便于后接字数。 */
+  Object.assign(EN, {
+    "◉ 思考 · ": "◉ Thinking · ",
+    "◉ 思考中 · ": "◉ Thinking · ",
+    "思考 · ": "Thinking · ",
+    "输出 · ": "Output · ",
+    "工具 · ": "Tool · ",
+    "🔧 工具 · ": "🔧 Tool · ",
+    "本段思考": "This block's thinking",
+    "本段输出": "This block's output",
+    "思考段": "Thinking block",
+    "输出段": "Output block",
+    "工具段": "Tool block",
+    "分开显示思考与输出": "Show thinking and output separately",
+    "思考与输出已分开显示": "Thinking and output are now shown in separate blocks",
+    "点击展开 / 收起本段思考": "Click to expand / collapse this thinking block",
+    "点击查看本段思考": "Click to view this thinking block",
+    "本段思考（模型内部推理，非回复）": "This block is the model's internal reasoning, not the reply",
   });
 
   var locale = "zh";
@@ -3453,6 +3693,44 @@
 
   function getLocale() {
     return locale;
+  }
+
+  /* ── Agent 语言口味（交流语言偏好）──────────────────────────────
+     界面语言（中 / EN）决定 agent 用什么语言与人交流，并期望它自己与
+     它派生的每个 agent 都用该语言回答。真源只在这里，各注入点不得自写一份。
+     纯 locale 派生、无 DOM 依赖，渲染层与主进程（require 本文件）共用。 */
+  var AGENT_LANG_LABEL = { zh: "中文（简体）", en: "English" };
+
+  function agentLangCode() {
+    return locale === "en" ? "en" : "zh";
+  }
+
+  function agentLangLabel() {
+    return AGENT_LANG_LABEL[agentLangCode()];
+  }
+
+  /* 每次 agent 运行注入系统提示的语言段（两种语言各写一份，模型不会漏读） */
+  function agentLangTaste() {
+    if (agentLangCode() === "en") {
+      return [
+        "【Language Taste · 交流语言】The MTNode UI language is English (en) — 请用英文与用户交流。",
+        "1. Communicate in English throughout: your questions, plans, progress notes, tool-purpose lines, summaries and final answers must all be written in English.",
+        "2. Expect the user to write in English, and expect every agent you spawn (subagent, bound dev session, smart node run) to answer in English as well.",
+        "3. Keep code, file paths, commands, identifiers and API field names verbatim; quoted source material may stay in its original language with an English explanation.",
+        "4. This taste governs communication only — do NOT translate the user's own material: fact-database records, table cells and file bodies you write keep the language of the source.",
+        "5. Other sections of this prompt may be written in Chinese — those only describe your duties, they never change the language you answer in.",
+        "6. If the user explicitly asks for another language in this conversation, follow the user and keep that choice for the rest of the conversation.",
+      ].join("\n");
+    }
+    return [
+      "【语言口味 · 交流语言】当前 MTNode 界面语言为中文（简体）。",
+      "1. 全程用中文交流：你的提问、计划、进度说明、工具用途、摘要与最终回答一律用中文书写。",
+      "2. 期望用户以中文书写，也期望你派生的每个 agent（子任务、功能块绑定会话、智能节点运行）都用中文回答。",
+      "3. 代码、文件路径、命令、标识符与 API 字段名保持原文；引用的外部资料可保留原语言并补一句中文说明。",
+      "4. 这条口味只管「交流」，不要翻译用户资料：事实库记录、表格单元格与写回文件的正文都沿用资料原本的语言。",
+      "5. 本提示的其它段落可能以英文书写——那些只描述你的职责，不改变你的回答语言。",
+      "6. 用户在本会话里明确指定其他语言时，以用户为准，并在该会话中沿用。",
+    ].join("\n");
   }
 
   function applyDom(root) {
@@ -3501,5 +3779,14 @@
     return (arr || []).join(locale === "en" ? ", " : "、");
   }
 
-  return { t: t, setLocale: setLocale, getLocale: getLocale, applyDom: applyDom, listJoin: listJoin };
+  return {
+    t: t,
+    setLocale: setLocale,
+    getLocale: getLocale,
+    applyDom: applyDom,
+    listJoin: listJoin,
+    agentLangCode: agentLangCode,
+    agentLangLabel: agentLangLabel,
+    agentLangTaste: agentLangTaste,
+  };
 });

@@ -821,6 +821,41 @@ function markElement(m) {
   return el;
 }
 
+/* ============ 顶栏「隐藏线」：临时淡出所有连线 ============ */
+
+/* 纯视觉开关（不入画布数据、不进撤销栈）：排版后想看清布局时按一下就没了。
+   开关状态存 localStorage，与「节点完成后自动执行下游」同一路子。 */
+const HIDE_WIRES_LS = "mtnode.hideWires";
+
+/** 把 S.hideWires 落到画布容器类名 + 按钮态（连线/关系线/箭头/线上文字由 CSS 一起压暗） */
+function applyWiresVisibility() {
+  const canvas = $("#canvas");
+  if (canvas) canvas.classList.toggle("hide-wires", !!S.hideWires);
+  const btn = $("#btnHideWires");
+  if (btn) {
+    btn.classList.toggle("on", !!S.hideWires);
+    btn.setAttribute("aria-pressed", S.hideWires ? "true" : "false");
+    btn.title = S.hideWires
+      ? I18n.t("显示线：恢复所有连线的正常显示")
+      : I18n.t(
+          "隐藏线：临时把所有连线压到 95% 透明（几乎不可见），排版后看清布局；再次点击恢复",
+        );
+  }
+}
+
+/** 切换「隐藏线」 */
+function toggleHideWires() {
+  S.hideWires = !S.hideWires;
+  try {
+    localStorage.setItem(HIDE_WIRES_LS, S.hideWires ? "1" : "0");
+  } catch {}
+  applyWiresVisibility();
+  toast(
+    S.hideWires ? I18n.t("已临时隐藏连线（透明度 95%）") : I18n.t("已恢复显示连线"),
+    "ok",
+  );
+}
+
 /* ============ 画布渲染 ============ */
 
 function renderCanvas() {
@@ -1711,12 +1746,17 @@ function nodeElement(node) {
     head.appendChild(folder);
     /* 「描述」小按钮：超级节点 body 已封装为文件夹外观，描述改由此处编辑 */
     const supNoteTxt = String(node.note || "").trim();
+    const supNoteTip =
+      supNoteTxt && typeof devNoteDisplayText === "function"
+        ? devNoteDisplayText(supNoteTxt)
+        : supNoteTxt;
     const noteBtn = document.createElement("button");
     noteBtn.type = "button";
     noteBtn.className = "n-super-note-btn" + (supNoteTxt ? " on" : "");
     noteBtn.textContent = I18n.t("描述");
-    noteBtn.title = supNoteTxt
-      ? I18n.t("当前描述：") + supNoteTxt + "\n" + I18n.t("点击编辑")
+    /* 两段式概述：tooltip 完整显示功能段 + 实现段（折叠卡上则只显功能段） */
+    noteBtn.title = supNoteTip
+      ? I18n.t("当前描述：") + supNoteTip + "\n" + I18n.t("点击编辑")
       : I18n.t("填写描述：以小字显示在文件夹标题下方");
     noteBtn.setAttribute("aria-label", I18n.t("编辑超级节点描述"));
     noteBtn.onclick = (ev) => {
@@ -3315,7 +3355,7 @@ function nodeElement(node) {
           { iconCls: "dev" },
         ),
         ctxAction(
-          I18n.t("细化（确认是否继续展开子元素…）"),
+          I18n.t("细化（选择深度：只展开本层 / 下钻到无法再细…）"),
           () => refineDevNode(node),
           "menu_refine",
           { iconCls: "dev" },
@@ -4169,7 +4209,7 @@ function buildBody(node, body) {
         const stream = document.createElement("div");
         stream.className = "md dsh-out-live";
         stream.id = "dsh-out-stream-" + node.id;
-        stream.textContent = node._pendingAnswer || "";
+        stream.textContent = traceSayDisplay(node.id, node._pendingAnswer);
         if (!stream.textContent) {
           stream.textContent = I18n.t("智能任务执行中…");
           stream.classList.add("n-empty");
@@ -4533,6 +4573,15 @@ function buildBody(node, body) {
         box.appendChild(more);
       }
     }
+    /* 副本自身无子画布：双击 = 进入源数据库超级节点的子画布（复用同一个 enterSuper）；
+       源已删除（orphan 文案）时不进入、静默返回，不额外报错。 */
+    box.ondblclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const src = nodeById(node.dbNodeId);
+      if (!src) return;
+      enterSuper(src);
+    };
     body.appendChild(box);
   } else if (node.kind === "super") {
     if (node.db && node.dbMode === "db") {
@@ -4546,6 +4595,8 @@ function buildBody(node, body) {
       body.classList.add("super-folder-body");
       const card = document.createElement("div");
       card.className = "super-folder";
+      /* 可发现性：整张折叠卡可双击进入（子元素自带 tooltip，空白处显示这条提示） */
+      card.title = I18n.t("双击进入子画布");
       const ft = document.createElement("div");
       ft.className = "super-folder-title";
       const fTitle = node.title || I18n.t("（未命名）");
@@ -4557,13 +4608,15 @@ function buildBody(node, body) {
       card.appendChild(ft);
       const fNote = String(node.note || "").trim();
       if (fNote) {
+        const _p =
+          typeof devNoteParts === "function" ? devNoteParts(fNote) : null;
         const fd = document.createElement("div");
         fd.className = "super-folder-desc";
-        fd.textContent = fNote;
+        /* 两段式概述：折叠卡只显示功能段（人话），完整两段留在 hover tooltip */
+        fd.textContent = _p && _p.impl ? _p.design || fNote : fNote;
         fd.removeAttribute("title");
-        /* 描述过长（被截断）时 hover 显示完整 tooltip */
         bindNodeTitleTooltip(fd, () =>
-          fd.scrollHeight > fd.clientHeight + 1 ? fNote : "",
+          fd.scrollHeight > fd.clientHeight + 1 || (_p && _p.impl) ? fNote : "",
         );
         card.appendChild(fd);
       }
@@ -4578,9 +4631,13 @@ function buildBody(node, body) {
           : "");
       meta.title = I18n.t("收纳的节点数 · 子文件夹");
       card.appendChild(meta);
+      /* 双击折叠卡 = 直接进入该超级节点的子画布（等价头部 ↪「进入」）；
+         描述编辑仍走头部「描述」按钮 / 右键菜单。只绑卡片容器，不绑整个 body，
+         避免抢掉开发节点动作按钮组（建议/开发/细化）与建议摘要的文字选择。 */
       card.ondblclick = (ev) => {
+        ev.preventDefault();
         ev.stopPropagation();
-        promptSuperNote(node);
+        enterSuper(node);
       };
       body.appendChild(card);
       /* 数据库超级节点：编译状态摘要 */
@@ -4597,88 +4654,17 @@ function buildBody(node, body) {
           : I18n.t("未编译 · 点头部 ⚙ 生成数据库副本");
         body.appendChild(info);
       }
-      /* 开发节点：项目路径 + 状态 + 「开发」按钮（进入绑定开发会话） */
+      /* 开发节点：body 保持精简——只放动作按钮组与上次建议摘要。
+         项目根目录 / 状态字样 / 生效模型行不再常驻 body（避免无用信息占用空间）：
+         路径与状态见「建议 / 开发 / 细化 / 问询」对话框，生效模型见头部 🧠 按钮悬浮提示。
+         按钮顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 会话 N（有历史时）。 */
       if (node.dev && !node.db) {
         const devBar = document.createElement("div");
         devBar.className = "n-dev-info";
-        const p = devPathOf(node);
-        if (p) {
-          const path = document.createElement("div");
-          path.className = "n-dev-path";
-          path.textContent = p;
-          path.title = p;
-          devBar.appendChild(path);
-        }
-        const st = devStatusOf(node);
-        const stRow = document.createElement("div");
-        stRow.className = "n-dev-status " + st;
-        stRow.textContent = devStatusText(st);
-        devBar.appendChild(stRow);
-        /* 生效的 Agent 模型：本块或就近上层所选（未选不占位） */
-        const effModel =
-          typeof devAgentModelOf === "function" ? devAgentModelOf(node) : null;
-        if (effModel) {
-          const mRow = document.createElement("div");
-          mRow.className =
-            "n-dev-model-info" + (effModel.inherited ? " inherited" : "");
-          mRow.textContent =
-            "🧠 " +
-            effModel.model +
-            (effModel.inherited
-              ? I18n.t("（继承自「") +
-                (effModel.source.title || effModel.source.id) +
-                I18n.t("」）")
-              : "");
-          mRow.title =
-            typeof devModelScopeText === "function"
-              ? devModelScopeText(node)
-              : effModel.model;
-          devBar.appendChild(mRow);
-        }
         const btnRow = document.createElement("div");
         btnRow.className = "n-dev-btns";
         const dk = devKindOf(node) || "module";
-        if (dk === "module" || dk === "file") {
-          const rbtn = document.createElement("button");
-          rbtn.type = "button";
-          rbtn.className = "n-dev-refine";
-          rbtn.textContent = I18n.t("细化");
-          rbtn.title = I18n.t(
-            "细化：弹窗确认后在新会话中展开本模块（Agent 先给梗概 · 经你确认才建节点）；无需或无法细化时也会提示",
-          );
-          rbtn.onclick = (ev) => {
-            ev.stopPropagation();
-            refineDevNode(node);
-          };
-          btnRow.appendChild(rbtn);
-        }
-        /* 文件节点：打开源码文件（标题 = 相对项目根 devPath 的路径，或绝对路径） */
-        if (dk === "file") {
-          const obtn = document.createElement("button");
-          obtn.type = "button";
-          obtn.className = "n-dev-file-open";
-          obtn.textContent = I18n.t("打开");
-          obtn.title = I18n.t(
-            "打开该文件节点对应的源码文件（标题为相对项目根的路径 · 也支持绝对路径）",
-          );
-          obtn.onclick = (ev) => {
-            ev.stopPropagation();
-            openDevFileNode(node);
-          };
-          btnRow.appendChild(obtn);
-        }
-        const sbtn = document.createElement("button");
-        sbtn.type = "button";
-        sbtn.className = "n-dev-suggest";
-        sbtn.textContent = I18n.t("建议");
-        sbtn.title = I18n.t(
-          "建议：弹窗确认后由 AI 依据项目真实代码与开发进度评估下一步（给出 4 条方案 · 可多选 + 补充 · 选完可就地开发）",
-        );
-        sbtn.onclick = (ev) => {
-          ev.stopPropagation();
-          suggestDevNode(node);
-        };
-        btnRow.appendChild(sbtn);
+        /* ① 开发：填写本次需求，确认后新建绑定会话运行 */
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "n-dev-open";
@@ -4691,6 +4677,62 @@ function buildBody(node, body) {
           developDevNode(node);
         };
         btnRow.appendChild(btn);
+        /* ② 细化：按「深度」下钻（模块 / 文件可细化 · 弹窗选只展开本层或细化到无法再细） */
+        if (dk === "module" || dk === "file") {
+          const rbtn = document.createElement("button");
+          rbtn.type = "button";
+          rbtn.className = "n-dev-refine";
+          rbtn.textContent = I18n.t("细化");
+          rbtn.title = I18n.t(
+            "细化：弹窗先选「细化深度」——只展开本层，或深度细化到无法再细（一般到文件级）；确认后在新会话中自顶向下逐层建块（Agent 先给多层梗概 · 经你确认才建节点）；无需或无法细化时也会提示",
+          );
+          rbtn.onclick = (ev) => {
+            ev.stopPropagation();
+            refineDevNode(node);
+          };
+          btnRow.appendChild(rbtn);
+        }
+        /* ③ 建议：AI 只读调研后给出 4 条下一步方案（可多选 + 补充 + 就地开发） */
+        const sbtn = document.createElement("button");
+        sbtn.type = "button";
+        sbtn.className = "n-dev-suggest";
+        sbtn.textContent = I18n.t("建议");
+        sbtn.title = I18n.t(
+          "建议：弹窗确认后由 AI 依据项目真实代码与开发进度评估下一步（给出 4 条方案 · 可多选 + 补充 · 选完可就地开发）",
+        );
+        sbtn.onclick = (ev) => {
+          ev.stopPropagation();
+          suggestDevNode(node);
+        };
+        btnRow.appendChild(sbtn);
+        /* ④ 问询：AI 只读回答关于本模块的问题（不改文件、不改画布） */
+        const abtn = document.createElement("button");
+        abtn.type = "button";
+        abtn.className = "n-dev-ask";
+        abtn.textContent = I18n.t("问询");
+        abtn.title = I18n.t(
+          "问询：弹窗确认后由 AI 只读回答关于本模块的问题（不改文件、不改画布）",
+        );
+        abtn.onclick = (ev) => {
+          ev.stopPropagation();
+          askDevNode(node);
+        };
+        btnRow.appendChild(abtn);
+        /* ⑤ 文件节点：打开源码文件（标题 = 相对项目根 devPath 的路径，或绝对路径） */
+        if (dk === "file") {
+          const obtn = document.createElement("button");
+          obtn.type = "button";
+          obtn.className = "n-dev-file-open";
+          obtn.textContent = I18n.t("打开");
+          obtn.title = I18n.t(
+            "打开该文件节点对应的文件（Markdown / YAML 用应用内阅读器 · 可编辑保存；其余用系统默认方式打开）",
+          );
+          obtn.onclick = (ev) => {
+            ev.stopPropagation();
+            openDevFileNode(node);
+          };
+          btnRow.appendChild(obtn);
+        }
         /* 上次建议的一句话摘要（有则显示，便于决定要不要重新评估） */
         const sug = typeof devSuggestOf === "function" ? devSuggestOf(node) : null;
         if (sug) {
@@ -4711,6 +4753,58 @@ function buildBody(node, body) {
             "）";
           line.title = sug.items.map((x) => x.title).join(" / ");
           devBar.appendChild(line);
+        }
+        /* 在途 / 已就绪的建议调研：折叠卡给出一行可见、可点的状态（用户「返回」到
+           后台后，这是离开对话框期间唯一的可见入口）。点击打开对应形态的对话框：
+           调研中 = 进度视图（可再「返回」或「停止生成」）；已就绪 = 方案清单
+           （不重跑模型，可直接多选 + 补充 + 就地开发）。作业状态一变会走
+           devSuggestQueueSync 重绘画布，这一行随之实时刷新。 */
+        const sugJob =
+          typeof devSuggestJobOf === "function" ? devSuggestJobOf(node) : null;
+        if (
+          sugJob &&
+          (sugJob.running ||
+            sugJob.ready ||
+            (sugJob.phase === "options" && !sugJob.viewed))
+        ) {
+          const sline = document.createElement("button");
+          sline.type = "button";
+          sline.className =
+            "n-dev-sugstate" + (sugJob.running ? " running" : " ready");
+          sline.textContent = sugJob.running
+            ? I18n.t("⏳ AI 调研中 · 点「建议」看进度")
+            : I18n.t("💡 建议已就绪（未查看）");
+          sline.title = sugJob.running
+            ? I18n.t("点击打开调研进度：可「返回」继续后台跑，或「停止生成」")
+            : I18n.t("点击查看 AI 给出的方案清单（可多选 + 补充 + 就地开发）");
+          sline.onclick = (ev) => {
+            ev.stopPropagation();
+            if (typeof devSuggestDialog === "function") devSuggestDialog(node, {});
+          };
+          devBar.appendChild(sline);
+        }
+        /* 在途 / 已就绪的问询：折叠卡同款可点状态行（问询中 = 琥珀色 · 已就绪 = 绿色） */
+        const askJob =
+          typeof devAskJobOf === "function" ? devAskJobOf(node) : null;
+        if (askJob && (askJob.running || (askJob.phase === "ready" && !askJob.viewed))) {
+          const aline = document.createElement("button");
+          aline.type = "button";
+          aline.className =
+            "n-dev-sugstate" + (askJob.running ? " running" : " ready");
+          aline.textContent = askJob.running
+            ? I18n.t("💬 AI 回答中 · 点「问询」看进度")
+            : I18n.t("💬 问询已就绪（未查看）");
+          aline.title = askJob.running
+            ? I18n.t("点击打开问询进度：可「返回」继续后台跑，或「停止生成」")
+            : I18n.t("点击查看 AI 给出的回答（问询只读 · 不改任何文件）");
+          aline.onclick = (ev) => {
+            ev.stopPropagation();
+            if (typeof devAskShowJob === "function") {
+              const j = typeof devAskJobOf === "function" ? devAskJobOf(node) : null;
+              if (j) devAskShowJob(j);
+            }
+          };
+          devBar.appendChild(aline);
         }
         const sessN = devSessionsOf(node).length;
         if (sessN > 0) {
@@ -4870,6 +4964,8 @@ function buildBody(node, body) {
     list.addEventListener(
       "scroll",
       () => {
+        /* 程序滚动（自动跟随 / 还原位置）不改写用户的跟随意图 */
+        if (list._convAutoScroll) return;
         node._chatNearBottom = isScrollNearBottom(list);
         node._chatScrollTop = list.scrollTop;
       },
@@ -5802,7 +5898,7 @@ function buildBody(node, body) {
         const openBtn = document.createElement("button");
         openBtn.className = "mini";
         openBtn.textContent = I18n.t("打开");
-        openBtn.title = I18n.t("用 YAML 阅读器打开");
+        openBtn.title = I18n.t("用阅读器打开（Markdown / YAML · 可编辑保存）");
         openBtn.onclick = async (ev) => {
           ev.stopPropagation();
           const last =
@@ -5823,7 +5919,7 @@ function buildBody(node, body) {
             toast(I18n.t("文件不存在或无法预览"), "warn");
             return;
           }
-          openYamlViewer(target);
+          openTextViewer(target);
         };
         pRow.appendChild(openBtn);
       }
@@ -5853,7 +5949,7 @@ function buildBody(node, body) {
       pre.id = "svpre-" + node.id;
       pre.textContent = I18n.t("尚未保存");
       pre.className = "yaml-openable";
-      pre.title = I18n.t("点击用 YAML 阅读器打开");
+      pre.title = I18n.t("点击用阅读器打开（Markdown / YAML · 可编辑保存）");
       pre.addEventListener("click", async (ev) => {
         ev.stopPropagation();
         const paths = await resolveSavePreviewPaths(node);
@@ -5867,7 +5963,7 @@ function buildBody(node, body) {
           toast(I18n.t("文件不存在或无法预览"), "warn");
           return;
         }
-        openYamlViewer(target);
+        openTextViewer(target);
       });
       prev.appendChild(pre);
     } else if (media === "audio") {

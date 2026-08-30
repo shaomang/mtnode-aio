@@ -10,6 +10,9 @@ const I18n =
     getLocale: () => "zh",
     applyDom: () => {},
     listJoin: (a) => (a || []).join("、"),
+    agentLangCode: () => "zh",
+    agentLangLabel: () => "中文（简体）",
+    agentLangTaste: () => "",
   };
 
 /* 全局运行状态（跨分片共享） */
@@ -53,6 +56,7 @@ const S = {
   selMark: null, /* 选中的画布标注（绘制）id */
   selMarkSet: new Set(), /* 多选绘制（框选 / Ctrl+点击） */
   boxMode: false, /* 框选模式开关 */
+  hideWires: false, /* 顶栏「隐藏线」：临时把连线压到几乎不可见（纯视觉，不落画布） */
   sidebarOpen: false,
   sideCollapsed: {}, /* 边栏分类折叠状态 */
   sideSuperCollapsed: {}, /* 超级节点树折叠状态 */
@@ -74,6 +78,7 @@ const S = {
   /* current = 仅当前画布；global = 可参考/切换其他画布 */
   assistScope: "current",
   assistW: 320, /* 右侧助手栏宽度：最小 320，最大半屏 */
+  agentSideW: 280, /* 会话左栏宽度：默认即最小 280，可拖拽加宽（最大半屏） */
   /* 排队等待上游执行的节点 id（▶ 显示 pending 动效） */
   pendingRun: new Set(),
   /* 任务节点「进入」：只显示 parentTaskId === taskFocus 的节点 */
@@ -4889,15 +4894,92 @@ function nodeKindPurpose(node) {
   return splitCtxParenLabel(I18n.t(key)).hint;
 }
 
-/* 开发节点在运行队列里的来源说明（自身 / 子节点 / 绑定会话），
-   与画布呼吸灯/徽标的 devNodeRunningState 判定同源 */
-function devRunStateText(node) {
+/* 开发节点在运行队列里的来源说明（自身 / 子节点 / 绑定会话 / 建议·问询调研），
+   与画布呼吸灯/徽标的 devNodeRunningState 判定同源。
+   wfNodes：跨画布条目要按「该节点归属的那张画布」扫后代与绑定会话（缺省 = 当前画布）。 */
+function devRunStateText(node, wfNodes) {
   const st =
-    typeof devNodeRunningState === "function" ? devNodeRunningState(node) : null;
+    typeof devNodeRunningState === "function"
+      ? devNodeRunningState(node, wfNodes)
+      : null;
   if (st === "self") return I18n.t("自身运行中");
   if (st === "desc") return I18n.t("子节点运行中");
-  if (st === "sess") return I18n.t("绑定会话运行中");
+  if (st === "sess") {
+    /* 绑定会话在跑：副标题直接写具体开发内容（本次开发需求 / 细化范围），
+       不再只写固定的「绑定会话运行中」；取不到需求行（旧会话 / 空要求）再回退固定文案 */
+    const req = devRunningRequestText(node);
+    if (req) return clipStr(req, 40);
+    return I18n.t("绑定会话运行中");
+  }
+  if (st === "sug") {
+    /* 只读调研：问询在跑显示「问询中」，否则按「建议调研中」；
+       附上实时耗时与只读工具调用次数，让队列行本身就能看到进度 */
+    const sugBusy =
+      typeof devSuggestJobBusy === "function" ? devSuggestJobBusy(node) : null;
+    const askBusy =
+      typeof devAskJobBusy === "function" ? devAskJobBusy(node) : null;
+    const busy = askBusy && !sugBusy ? askBusy : sugBusy;
+    const prog = busy
+      ? " · " + busy.elapsed + " · " + busy.toolCount + I18n.t(" 次只读调用")
+      : "";
+    return (askBusy && !sugBusy ? I18n.t("问询中") : I18n.t("建议调研中")) + prog;
+  }
   return "";
+}
+
+/* 开发块 · 队列展示用的绑定会话：最近一个正在运行的开发 / 细化会话（全局会话表里找）。
+   与 devNodeRunningState 的 sess 判定同源；运行队列的副标题与悬浮全文都从它身上取内容。
+   口径 = sessionBusyForUi（自己那一轮 ∪ 名下计划并行组），并行组在跑时也要能取到
+   这条会话，否则队列行只剩「绑定会话运行中」而拿不到具体开发需求。 */
+function devRunningSessionOf(node) {
+  if (!node) return null;
+  const sessions = typeof agentSessions === "function" ? agentSessions() : [];
+  for (const id of devSessionIdsOf(node)) {
+    const st = sessions.find((s) => s && s.id === id);
+    if (!st) continue;
+    const busy =
+      typeof sessionBusyForUi === "function"
+        ? sessionBusyForUi(st)
+        : typeof sessionIsRunning === "function"
+          ? sessionIsRunning(st)
+          : !!st.running;
+    if (busy) return st;
+  }
+  return null;
+}
+/* 绑定会话的「具体开发内容」：开发会话取任务书里的「本次开发需求」行，
+   细化会话取「用户指定的细化范围」行（由新到旧找第一条） */
+function devRunningRequestText(node) {
+  const sess = devRunningSessionOf(node);
+  if (!sess) return "";
+  const msgs = sess.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.role !== "user") continue;
+    const req = devReqTextOfMessage(m);
+    if (req) return req;
+    const body = String(m.content || "");
+    const scopePrefixes = [I18n.t("用户指定的细化范围："), "用户指定的细化范围："];
+    for (const prefix of scopePrefixes) {
+      const at = body.indexOf(prefix);
+      if (at < 0) continue;
+      const line = body.slice(at + prefix.length).split("\n")[0].trim();
+      if (line) return line;
+    }
+  }
+  return "";
+}
+/* 绑定会话的「全部用户输入」：首条关键输入（本次开发需求 / 细化范围）+ 会话中的后续追问，悬浮全文展示用 */
+function devRunningUserInputText(node) {
+  const sess = devRunningSessionOf(node);
+  if (!sess) return "";
+  const parts = [];
+  for (const m of sess.messages || []) {
+    if (!m || m.role !== "user") continue;
+    const t = String(m.content || "").trim();
+    if (t) parts.push(t);
+  }
+  return parts.join("\n\n");
 }
 
 function collectRunQueue() {
@@ -4944,20 +5026,529 @@ function collectRunQueue() {
   }
   return { running, waiting };
 }
+
+/* ===== 运行队列统一条目（全应用运行总览的取数层） =====
+   collectRunQueue() 只回答「哪些节点在跑」，stopAllRuns 依赖它 {running,waiting}
+   数组契约，一律不改。下面这层在它之上包一层：再补齐 其它画布上 running 的节点、
+   独立智能会话、全局助手、后端音/视频生成，并做「同一件事只出一行」的去重，
+   交给左下角面板分组渲染（点击定位 / 逐条终止）。
+   条目：{key,type,id,title,kindCls,kindLabel,stateText,sub,state,wfId,wfName,node?,sess?}
+     type  node 处理节点 · dev 开发块 · session 独立智能会话 · assist 全局助手
+           media 只有后端在跑（画布上已无 running）的生成任务
+     state run 处理中 · wait 等待中    sub 次要信息：节点 = 画布名，会话 = 工作目录分组 */
+function runQueueLookupNode(id) {
+  if (!id) return null;
+  const n = typeof nodeById === "function" ? nodeById(id) : null;
+  if (n) return n;
+  for (const wid of Object.keys(S.wfBag || {})) {
+    const w = S.wfBag[wid];
+    const hit = ((w && w.nodes) || []).find((x) => x && x.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+/* 节点归属画布：跨画布条目要显示画布名，点行时也要先切画布再定位 */
+function runQueueOwnerOf(node) {
+  let w = null;
+  try {
+    w = typeof ownerWfOfNode === "function" ? ownerWfOfNode(node) : S.wf;
+  } catch (_) {
+    w = S.wf;
+  }
+  return w || S.wf || null;
+}
+/* 状态文案拼接（自身运行中 · 会话：xxx · 后端生成中），空段自动跳过 */
+function runQueueJoinText(a, b) {
+  const x = String(a || "").trim();
+  const y = String(b || "").trim();
+  if (!x) return y;
+  if (!y) return x;
+  return x + " · " + y;
+}
+/* ---------- 计划的「并行任务」组 → 运行队列一行（看得见 · 停得掉） ----------
+ * 并行期间 owner 会话 st.running 故意为 false（保用户随时改口，见 app-plan.js
+ * planParBegin 的注释），所以 ③ 的会话扫描扫不到它 —— 左下角既看不见也停不掉。
+ * st._planPar 是那一组的运行时记账（组名 / 每条子任务的 runKey / done / total / at），
+ * 下面两个纯函数只读它和子任务的 t._live 轨迹，绝不写任何状态。 */
+function runQueueParActive(st) {
+  const par = st && st._planPar;
+  if (!par || typeof par !== "object") return null;
+  /* 「还忙不忙」只有一处判定：app-plan.js planParBusy（会话列表条目与开发块徽标
+     用的就是它）；沙箱里没有那个函数时才自己按 done / total 兜底算一次。 */
+  if (typeof planParBusy === "function") return planParBusy(st) ? par : null;
+  const total = Math.max(0, Number(par.total) || 0);
+  if (!total) return null; /* 空组：没有东西在跑 */
+  if (Math.max(0, Number(par.done) || 0) >= total) return null; /* 全了结 = 正在收尾 */
+  return par;
+}
+/* 汇总文案：「2/3 · 🔧 write_file · 42s」= 组内进度 · 最近一次工具调用 · 已跑时长。
+   工具名来自子任务的 live 轨迹（app-plan.js planLiveFeed），拿不到就只报进度与时长。 */
+function runQueueParText(st) {
+  const par = runQueueParActive(st);
+  if (!par) return "";
+  const bits = [];
+  const total = Math.max(0, Number(par.total) || 0);
+  const done = Math.min(total, Math.max(0, Number(par.done) || 0));
+  bits.push(done + "/" + total);
+  let tool = "";
+  let toolAt = -1;
+  try {
+    const pe = st._planExec;
+    let cur = pe && Array.isArray(pe.cur) && pe.cur.length ? pe.cur : null;
+    if (!cur && typeof planSteps === "function")
+      cur = (planSteps(st) || []).filter((s) => s && s.status === "active" && s._live);
+    for (const t of cur || []) {
+      const lv = t && t._live;
+      if (!lv || typeof lv !== "object") continue;
+      if (!lv.lastTool) continue;
+      const at = Number(lv.lastAt) || 0;
+      if (at >= toolAt) {
+        toolAt = at;
+        tool = String(lv.lastTool);
+      }
+    }
+  } catch (_) {}
+  if (tool)
+    bits.push(
+      "🔧 " +
+        (typeof clipStr === "function" ? clipStr(tool, 22) : String(tool).slice(0, 22)),
+    );
+  const at = Number(par.at) || 0;
+  if (at) {
+    const ms = Math.max(0, Date.now() - at);
+    bits.push(typeof fmtDur === "function" ? fmtDur(ms) : Math.round(ms / 1000) + "s");
+  }
+  return bits.join(" · ");
+}
+function collectRunQueueAll() {
+  const items = [];
+  const byKey = new Map();
+  const byNodeId = new Map();
+  const addItem = (it) => {
+    if (!it) return null;
+    if (byKey.has(it.key)) return byKey.get(it.key);
+    byKey.set(it.key, it);
+    if (it.node && it.node.id) byNodeId.set(it.node.id, it);
+    items.push(it);
+    return it;
+  };
+  const mkNodeItem = (n, runState) => {
+    if (!n || !n.id) return null;
+    const isDev = !!(n.kind === "super" && n.dev && !n.db);
+    const w = runQueueOwnerOf(n);
+    const wfName = (w && (w.name || w.id)) || "";
+    return addItem({
+      key: (isDev ? "dev:" : "node:") + n.id,
+      type: isDev ? "dev" : "node",
+      id: n.id,
+      title: n.title || I18n.t("（未命名）"),
+      kindCls: nodeKindCls(n),
+      kindLabel: nodeKindLabel(n),
+      /* 开发块：文案说明是「自身 / 子节点 / 绑定会话」哪种运行（面板 tooltip 与去重都靠它）。
+         跨画布的开发块要按它归属的那张画布扫后代，扫不到再回退当前画布的判定。 */
+      stateText: isDev
+        ? devRunStateText(n, w && w.nodes) || devRunStateText(n)
+        : "",
+      sub: wfName,
+      state: runState,
+      wfId: (w && w.id) || "",
+      wfName,
+      /* 不在当前画布：点行要先切画布（loadWorkflow）再 focusNode */
+      crossWf: !!(w && S.wf && w.id !== S.wf.id),
+      node: n,
+      sess: null,
+    });
+  };
+  /* ① + ② 当前画布：处理节点 + 开发块 + 等待队列（沿用 collectRunQueue 的判定口径） */
+  const { running, waiting } = collectRunQueue();
+  for (const n of running) mkNodeItem(n, "run");
+  for (const n of waiting) mkNodeItem(n, "wait");
+  /* 其它画布（后台补跑 / 另一个标签页）上正在运行的节点与开发块 */
+  for (const wid of Object.keys(S.wfBag || {})) {
+    const w = S.wfBag[wid];
+    const ns = (w && w.nodes) || [];
+    for (const n of ns) {
+      if (!n || !n.running || byNodeId.has(n.id)) continue;
+      mkNodeItem(n, "run");
+    }
+    if (typeof devRunningNodes === "function") {
+      for (const n of devRunningNodes(ns)) {
+        if (byNodeId.has(n.id)) continue;
+        mkNodeItem(n, "run");
+      }
+    }
+  }
+  /* ⑤ 后端音/视频生成：排队项进「等待中」，在途项进「处理中」；
+     节点本身已经出过行的绝不再加一行（同一件事两行是旧版的毛病） */
+  const mediaQueued = [];
+  const mediaBusy = [];
+  try {
+    if (typeof mediaGenWaiters !== "undefined" && mediaGenWaiters)
+      for (const id of mediaGenWaiters.keys()) mediaQueued.push(id);
+  } catch (_) {}
+  try {
+    if (typeof mediaBackendRunWatchers !== "undefined" && mediaBackendRunWatchers)
+      for (const id of mediaBackendRunWatchers.keys()) mediaBusy.push(id);
+    if (typeof mediaGenRestoreTimers !== "undefined" && mediaGenRestoreTimers)
+      for (const id of mediaGenRestoreTimers.keys()) mediaBusy.push(id);
+  } catch (_) {}
+  const mkMediaItem = (n, runState) => {
+    const w = runQueueOwnerOf(n);
+    const wfName = (w && (w.name || w.id)) || "";
+    return addItem({
+      key: "media:" + n.id,
+      type: "media",
+      id: n.id,
+      title: n.title || I18n.t("（未命名）"),
+      kindCls: "media",
+      kindLabel: nodeKindLabel(n),
+      stateText: runState === "wait" ? I18n.t("排队生成") : I18n.t("在途生成"),
+      sub: wfName,
+      state: runState,
+      wfId: (w && w.id) || "",
+      wfName,
+      crossWf: !!(w && S.wf && w.id !== S.wf.id),
+      node: n,
+      sess: null,
+    });
+  };
+  /* 后端条目按既有工具还原成画布上的生成节点（跨画布也能找到） */
+  const mediaNodeOf = (id) => {
+    try {
+      if (typeof findMediaGenNodeById === "function") return findMediaGenNodeById(id);
+    } catch (_) {}
+    const n = runQueueLookupNode(id);
+    if (!n) return null;
+    try {
+      if (typeof isMediaGenNode === "function") return isMediaGenNode(n) ? n : null;
+    } catch (_) {}
+    return n;
+  };
+  for (const id of mediaQueued) {
+    const n = mediaNodeOf(id);
+    if (!n) continue;
+    const it = byNodeId.get(id);
+    if (it) it.mediaQueued = true;
+    else mkMediaItem(n, "wait");
+  }
+  for (const id of mediaBusy) {
+    const n = mediaNodeOf(id);
+    if (!n) continue;
+    const it = byNodeId.get(id);
+    if (it) {
+      /* 画布上还在跑：只在原行上补「后端生成中」；已经落到等待队列的只打标记 */
+      if (it.state === "run")
+        it.stateText = runQueueJoinText(it.stateText, I18n.t("后端生成中"));
+      it.backendBusy = true;
+      continue;
+    }
+    mkMediaItem(n, "run");
+  }
+  /* ③ 独立智能会话：被「运行中的宿主智能节点」或「sess 态开发块」代表的，
+     折进那一行的状态文案里（带上会话标题），不再单独出条 */
+  const sessIsRun = (st) => {
+    if (!st || !st.id) return false;
+    try {
+      return typeof sessionIsRunning === "function"
+        ? !!sessionIsRunning(st)
+        : !!st.running;
+    } catch (_) {
+      return !!st.running;
+    }
+  };
+  const sessRunning = [];
+  try {
+    if (typeof agentSessions === "function")
+      for (const st of agentSessions()) if (sessIsRun(st)) sessRunning.push(st);
+  } catch (_) {}
+  /* 开发节点名下「在跑」的绑定会话（devSessionIdsOf ∩ sessRunning）：
+     同一节点多次「开发 / 细化」并行时，每一条会话都该在队列里单独成行
+     （可单独停止 / 跳转），而不是全被折进那一条开发块行 —— 旧版只看得到 1 行。 */
+  const devRunningSessionsOf = (n) => {
+    try {
+      if (!n || typeof devSessionIdsOf !== "function") return [];
+      const ids = devSessionIdsOf(n);
+      return sessRunning.filter((st) => st && ids.indexOf(st.id) >= 0);
+    } catch (_) {
+      return [];
+    }
+  };
+  const repOfSession = (sid) => {
+    for (const it of items) {
+      const n = it.node;
+      if (!n || it.state !== "run") continue;
+      if (n.agentSessionId && n.agentSessionId === sid) return it;
+      if (it.type === "dev") {
+        let dst = null;
+        try {
+          const ow = runQueueOwnerOf(n);
+          dst =
+            typeof devNodeRunningState === "function"
+              ? devNodeRunningState(n, (ow && ow.nodes) || null) ||
+                devNodeRunningState(n)
+              : null;
+        } catch (_) {}
+        if (
+          dst === "sess" &&
+          typeof devSessionIdsOf === "function" &&
+          devSessionIdsOf(n).indexOf(sid) >= 0
+        ) {
+          /* 只在该节点「唯一」在跑的会话时才折进开发块行（保留「定位节点」语义）；
+             多条在跑会话各自成行（见下方 dropSessOnlyDevRows），不再折叠成 1 行 */
+          if (devRunningSessionsOf(n).length === 1) return it;
+        }
+      }
+    }
+    return null;
+  };
+  for (const st of sessRunning) {
+    const rep = repOfSession(st.id);
+    if (rep) {
+      rep.sessTitles = rep.sessTitles || [];
+      rep.sessTitles.push(st.title || I18n.t("新会话"));
+      rep.sessions = rep.sessions || [];
+      rep.sessions.push(st);
+      continue;
+    }
+    let grp = "";
+    try {
+      grp = typeof wsGroupOf === "function" ? wsGroupOf(st.workspace) : "";
+    } catch (_) {}
+    addItem({
+      key: "sess:" + st.id,
+      type: "session",
+      id: st.id,
+      title: st.title || I18n.t("新会话"),
+      kindCls: "sess",
+      kindLabel: I18n.t("会话"),
+      stateText: I18n.t("运行中"),
+      sub: grp || "",
+      state: "run",
+      wfId: "",
+      wfName: "",
+      node: null,
+      sess: st,
+    });
+  }
+  /* ③b 计划并行组：这一组跑起来时 owner 会话 st.running 是 false（见上面的说明），
+     ③ 的扫描看不见它 → 按 st._planPar 补一条。type 仍用 "session"：
+     点行 = 切回这条会话的视图（复用 jumpRunQueueItem 的会话分支），
+     行内 ■ = 精确取消这一组的每个 runKey（见 stopSessionRuns）。 */
+  const parTitleOf = (par) => {
+    const g = String(par.group || "").trim() || I18n.t("未命名并行组");
+    const n = Math.max(0, Number(par.total) || 0);
+    return I18n.t("并行任务") + " · " + g + "/" + n;
+  };
+  try {
+    if (typeof agentSessions === "function") {
+      for (const st of agentSessions()) {
+        const par = runQueueParActive(st);
+        if (!par) continue;
+        /* 去重兜底：同一条会话已经出行（并行期间它自己的轮次通常不在跑，故互斥天然成立），
+           就只把并行进度折进那一行的文案，绝不再加一行「同一件事两行」。 */
+        const sessIt = byKey.get("sess:" + st.id);
+        if (sessIt) {
+          sessIt.stateText = runQueueJoinText(sessIt.stateText, runQueueParText(st));
+          sessIt.planParBusy = true; /* 只补文案：这一行仍然是那条会话自己的行 */
+          continue;
+        }
+        let grp = "";
+        try {
+          grp = typeof wsGroupOf === "function" ? wsGroupOf(st.workspace) : "";
+        } catch (_) {}
+        addItem({
+          key: "planpar:" + st.id,
+          type: "session",
+          id: st.id,
+          title: parTitleOf(par),
+          kindCls: "sess",
+          kindLabel: I18n.t("并行"),
+          stateText: runQueueParText(st),
+          sub: grp || "",
+          state: "run",
+          wfId: "",
+          wfName: "",
+          node: null,
+          sess: st,
+          /* 这一行代表的就是并行组：停止提示与悬浮全文都靠它识别 */
+          planPar: true,
+        });
+      }
+    }
+  } catch (_) {}
+  for (const it of items)
+    if (it.sessTitles && it.sessTitles.length)
+      it.stateText = runQueueJoinText(
+        it.stateText,
+        I18n.t("会话") + "：" + it.sessTitles.join("、"),
+      );
+  /* 同一开发节点有多条「开发 / 细化」会话同时在跑：每条已在上面单独成行
+     （可单独停止 / 跳转）。若开发块行只因会话在跑（sess 态）而存在，此时整行
+     删除 —— 否则队列又回到「1 行折叠 N 条」的老毛病（本 bug 的根因）。
+     节点自身 / 后代 / 只读调研在跑的开发块行不受影响（dst 不是 sess）。 */
+  const dropSessOnlyDevRows = () => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (!it || it.type !== "dev" || !it.node) continue;
+      let dst = null;
+      try {
+        const ow = runQueueOwnerOf(it.node);
+        dst =
+          typeof devNodeRunningState === "function"
+            ? devNodeRunningState(it.node, (ow && ow.nodes) || null) ||
+              devNodeRunningState(it.node)
+            : null;
+      } catch (_) {}
+      if (dst !== "sess" || devRunningSessionsOf(it.node).length < 2) continue;
+      items.splice(i, 1);
+      if (byKey.has(it.key)) byKey.delete(it.key);
+      if (it.node.id && byNodeId.has(it.node.id)) byNodeId.delete(it.node.id);
+    }
+  };
+  dropSessOnlyDevRows();
+  /* ④ 全局助手：全应用同时只有一个，合成一条（无宿主节点，点击 = 打开助手侧栏） */
+  const assistOn = !!(S.assistRunning || S.assistRunActive);
+  const assist = assistOn
+    ? addItem({
+        key: "assist",
+        type: "assist",
+        id: "assist",
+        title: I18n.t("全局助手执行中"),
+        kindCls: "assist",
+        kindLabel: I18n.t("助手"),
+        stateText: "",
+        sub: (S.wf && (S.wf.name || S.wf.id)) || "",
+        state: "run",
+        wfId: (S.wf && S.wf.id) || "",
+        wfName: (S.wf && (S.wf.name || S.wf.id)) || "",
+        node: null,
+        sess: null,
+      })
+    : null;
+  /* 展示顺序：助手 → 会话 → 开发块 → 处理节点 → 后端生成 → 等待中 */
+  const rank = (it) =>
+    (it.state === "wait" ? 90 : 0) +
+    (it.type === "assist"
+      ? 0
+      : it.type === "session"
+        ? 1
+        : it.type === "dev"
+          ? 2
+          : it.type === "node"
+            ? 3
+            : 4);
+  items.sort((a, b) => rank(a) - rank(b));
+  const counts = { node: 0, dev: 0, session: 0, assist: 0, media: 0, run: 0, wait: 0 };
+  for (const it of items) {
+    counts[it.type] = (counts[it.type] || 0) + 1;
+    counts[it.state === "wait" ? "wait" : "run"]++;
+  }
+  return { items, running, waiting, assist, counts, hasQueue: items.length > 0 };
+}
+/* 队列行的次要信息（画布名 / 目录分组 / 「自身·子节点·绑定会话运行中」）：
+   行内只放必要的一条，其余进 title 悬浮，避免撑爆行宽。
+   同画布的处理节点不重复显示画布名；跨画布项必须显示（否则用户不知道去哪找）。 */
+function runQueueSubOf(it) {
+  if (!it) return "";
+  const bits = [];
+  if (it.stateText) bits.push(it.stateText);
+  if (it.sub && (it.crossWf || it.type === "session" || it.type === "media"))
+    bits.push(it.sub);
+  return bits.join(" · ");
+}
+function runQueueJumpHint(it) {
+  if (!it) return "";
+  if (it.type === "assist") return I18n.t("点击打开全局助手");
+  if (it.type === "session") return I18n.t("点击打开该会话");
+  if (it.type !== "node" && it.type !== "dev" && it.type !== "media") return "";
+  /* 开发块的「建议 / 问询」只读调研在跑：点行 = 打开对应的进度窗口（见 jumpRunQueueItem） */
+  if (it.type === "dev") {
+    const n = it.node;
+    try {
+      if (
+        n &&
+        ((typeof devSuggestJobBusy === "function" && devSuggestJobBusy(n)) ||
+          (typeof devAskJobBusy === "function" && devAskJobBusy(n)))
+      )
+        return I18n.t("点击查看调研进度");
+    } catch (_) {}
+  }
+  return it.crossWf ? I18n.t("跨画布定位") : I18n.t("点击定位到节点");
+}
+function runQueueStopHint(it) {
+  if (!it) return I18n.t("停止运行");
+  if (it.type === "session") {
+    /* 独立并行组行 / 折进会话行的并行进度：文案说清楚这一枪会打掉什么 */
+    if (it.planPar) return I18n.t("停止该并行任务组");
+    if (it.planParBusy) return I18n.t("停止该会话与并行任务组");
+    return I18n.t("停止该会话");
+  }
+  if (it.type === "assist") return I18n.t("停止全局助手");
+  return I18n.t("停止运行");
+}
+/* 悬浮全文：标题一行 + 状态 / 归属画布 / 目录 + 点击语义 */
+function runQueueTipOf(it) {
+  const bits = [];
+  if (it.stateText) bits.push(it.stateText);
+  if (it.sub)
+    bits.push(
+      (it.type === "session" ? I18n.t("工作目录") : I18n.t("画布")) + "：" + it.sub,
+    );
+  /* 并行任务行：整行说的是「哪个会话跑的并行组」，悬浮要把 owner 会话标题写明 */
+  if (it.planPar && it.sess && it.sess.title)
+    bits.push(I18n.t("会话") + "：" + it.sess.title);
+  /* 开发块绑定会话在跑：悬浮给出全部用户输入（开发 / 细化任务书全文），
+     副标题只放一行摘要，完整内容在这里看 */
+  if (it.type === "dev" && it.node) {
+    const ui = devRunningUserInputText(it.node);
+    if (ui) bits.push(I18n.t("用户输入") + "：\n" + ui);
+  }
+  const hint = runQueueJumpHint(it);
+  if (hint) bits.push(hint);
+  return bits.join(" · ");
+}
+
+/* 左下角「运行队列」= 全应用运行总览：
+   全局助手 → 智能会话 → 处理中（普通节点 + 开发块）→ 后端生成中 → 等待中。
+   取数一律走 collectRunQueueAll()（跨画布节点 / 独立会话 / 助手 / 后端媒体 + 去重），
+   以前只有会话在跑时整条被隐藏（用户看不见也停不掉），现在会话与助手同样计入 hasQueue。 */
 function updateRunQueuePanel() {
   const el = $("#runQueue");
   const btn = $("#btnRunQueue");
   const btnTxt = $("#btnRunQueueTxt");
-  const { running, waiting } = collectRunQueue();
-  const assistOn = !!S.assistRunning;
-  /* 后端仍占着音/视频生成任务（画布上已清状态，但显存还在跑）：
-     条必须保留，用户才看得见、也还能再点「全部终止」 */
-  let mediaOn = false;
+  let q;
   try {
-    mediaOn = hasAnyMediaGenActivity();
-  } catch (_) {}
-  const hasQueue = !!running.length || !!waiting.length || assistOn || mediaOn;
-  /* 条状折叠按钮：有队列时显示，并高亮呼吸灯；无队列时一并隐藏 */
+    q = collectRunQueueAll();
+  } catch (_) {
+    q = { items: [], hasQueue: false }; /* 取数异常时只隐藏面板，不打断调用方渲染 */
+  }
+  const items = q.items || [];
+  const runItems = [];
+  const waitItems = [];
+  for (const it of items) (it.state === "wait" ? waitItems : runItems).push(it);
+  const countOf = (type) =>
+    runItems.reduce((m, it) => m + (it.type === type ? 1 : 0), 0);
+  const nAssist = countOf("assist");
+  /* 会话行里「并行任务」单独计数：它代表的是计划并行组，不是一条普通对话轮次 */
+  const nPar = runItems.reduce(
+    (m, it) => m + (it.type === "session" && it.planPar ? 1 : 0),
+    0,
+  );
+  const nSess = countOf("session") - nPar;
+  const nNode = countOf("node") + countOf("dev");
+  const nMedia = countOf("media");
+  const hasQueue = !!items.length;
+  /* 心跳：有运行项才定时重绘面板（解决长任务期间「看着不动」），队列空即停 */
+  syncRunQueueTicker(hasQueue);
+  /* 汇总文案（条状按钮 title 与面板 rq-count 同一份，口径不分叉） */
+  const summary = [];
+  if (nAssist) summary.push(I18n.t("助手执行中"));
+  if (nNode) summary.push(nNode + I18n.t(" 处理中"));
+  if (nSess) summary.push(nSess + I18n.t(" 会话"));
+  if (nPar) summary.push(nPar + I18n.t(" 并行任务"));
+  if (nMedia) summary.push(nMedia + I18n.t(" 后端生成中"));
+  if (waitItems.length) summary.push(waitItems.length + I18n.t(" 等待"));
+  /* 条状折叠按钮：有队列（含只有会话 / 只有助手在跑）时显示，并高亮呼吸灯 */
   if (btn) {
     if (!hasQueue) {
       btn.hidden = true;
@@ -4965,19 +5556,11 @@ function updateRunQueuePanel() {
     } else {
       btn.hidden = false;
       btn.classList.add("has-queue");
-      btn.title =
-        (assistOn ? I18n.t("助手执行中") + " " : "") +
-        (running.length ? running.length + I18n.t(" 处理中") + " " : "") +
-        (waiting.length ? waiting.length + I18n.t(" 等待") + " " : "") +
-        (mediaOn ? I18n.t("后端生成中") + " " : "") +
-        I18n.t("（点击展开 / 收起运行队列）");
-      if (btnTxt) {
-        const parts = [];
-        if (running.length) parts.push(String(running.length));
-        else if (waiting.length) parts.push(String(waiting.length));
-        else if (mediaOn) parts.push("◉");
-        btnTxt.textContent = parts.join("/") || (assistOn ? "◉" : "");
-      }
+      btn.title = summary.join(" · ") + I18n.t("（点击展开 / 收起运行队列）");
+      if (btnTxt)
+        btnTxt.textContent = String(
+          runItems.length || waitItems.length || "◉",
+        );
     }
   }
   if (!el) return;
@@ -5000,12 +5583,7 @@ function updateRunQueuePanel() {
   head.appendChild(title);
   const count = document.createElement("span");
   count.className = "rq-count";
-  const parts = [];
-  if (assistOn) parts.push(I18n.t("助手执行中"));
-  if (running.length) parts.push(running.length + I18n.t(" 处理中"));
-  if (waiting.length) parts.push(waiting.length + I18n.t(" 等待"));
-  if (mediaOn) parts.push(I18n.t("后端生成中"));
-  count.textContent = parts.join(" · ");
+  count.textContent = summary.join(" · ");
   head.appendChild(count);
   const fold = document.createElement("button");
   fold.type = "button";
@@ -5031,84 +5609,279 @@ function updateRunQueuePanel() {
   el.appendChild(head);
   const body = document.createElement("div");
   body.className = "rq-body";
-  if (assistOn) {
-    const sec = document.createElement("div");
-    sec.className = "rq-sec";
-    sec.textContent = I18n.t("全局助手");
-    body.appendChild(sec);
+  const mkRow = (it) => {
     const row = document.createElement("button");
     row.type = "button";
-    row.className = "rq-item kind-agent is-run";
-    row.title = I18n.t("点击打开全局助手");
+    row.className =
+      "rq-item kind-" +
+      (it.kindCls || "proc") +
+      (it.state === "run" ? " is-run" : " is-wait");
+    row.title = ((it.title || "") + "\n" + runQueueTipOf(it)).trim();
     const icon = document.createElement("span");
     icon.className = "rq-icon";
     icon.setAttribute("aria-hidden", "true");
-    icon.textContent = "◉";
+    /* icon 表示状态：◉ 处理中 · ○ 等待 */
+    icon.textContent = it.state === "run" ? "◉" : "○";
     const nm = document.createElement("span");
     nm.className = "rq-title";
-    nm.textContent = I18n.t("全局助手执行中");
-    const kd = document.createElement("span");
-    kd.className = "rq-kind";
-    kd.textContent = I18n.t("助手");
+    nm.textContent = it.title || I18n.t("（未命名）");
     row.appendChild(icon);
     row.appendChild(nm);
+    const sub = runQueueSubOf(it);
+    if (sub) {
+      const s = document.createElement("span");
+      s.className = "rq-sub";
+      s.textContent = sub;
+      row.appendChild(s);
+    }
+    const kd = document.createElement("span");
+    kd.className = "rq-kind";
+    kd.textContent = it.kindLabel || "";
     row.appendChild(kd);
-    row.onclick = () => setAssistOpen(true);
-    body.appendChild(row);
-  }
-  const addSec = (label, list, st) => {
+    row.onclick = () => {
+      jumpRunQueueItem(it);
+    };
+    /* 逐条终止：队列里有 N 个视频 / 音乐任务时，不想只有一刀切的全部终止 */
+    const stop = document.createElement("span");
+    stop.className = "rq-stop";
+    stop.setAttribute("role", "button");
+    stop.tabIndex = 0;
+    stop.textContent = "■";
+    stop.title = runQueueStopHint(it);
+    stop.onclick = (ev) => {
+      ev.stopPropagation();
+      stopRunQueueItem(it);
+    };
+    row.appendChild(stop);
+    return row;
+  };
+  const addSec = (label, list) => {
     if (!list.length) return;
     const sec = document.createElement("div");
     sec.className = "rq-sec";
     sec.textContent = label;
+    /* 小计徽标：一眼看出这一节有几条在跑 */
+    const n = document.createElement("span");
+    n.className = "rq-sec-n";
+    n.textContent = String(list.length);
+    sec.appendChild(n);
     body.appendChild(sec);
-    for (const n of list) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className =
-        "rq-item kind-" + nodeKindCls(n) + (st === "run" ? " is-run" : " is-wait");
-      row.title =
-        (n.kind === "super" && n.dev && !n.db
-          ? devRunStateText(n) + " · "
-          : "") + I18n.t("点击定位到节点");
-      const icon = document.createElement("span");
-      icon.className = "rq-icon";
-      icon.setAttribute("aria-hidden", "true");
-      /* icon 表示状态：◉ 处理中 · ○ 等待 */
-      icon.textContent = st === "run" ? "◉" : "○";
-      const nm = document.createElement("span");
-      nm.className = "rq-title";
-      nm.textContent = n.title || I18n.t("（未命名）");
-      const kd = document.createElement("span");
-      kd.className = "rq-kind";
-      kd.textContent = nodeKindLabel(n);
-      row.appendChild(icon);
-      row.appendChild(nm);
-      row.appendChild(kd);
-      row.onclick = () => {
-        if (nodeById(n.id)) focusNode(n.id);
-        else toast(I18n.t("节点不在当前画布"), "warn");
-      };
-      /* 逐条终止：队列里有 N 个视频 / 音乐任务时，不想只有一刀切的全部终止 */
-      const stop = document.createElement("span");
-      stop.className = "rq-stop";
-      stop.setAttribute("role", "button");
-      stop.tabIndex = 0;
-      stop.textContent = "■";
-      stop.title = I18n.t("停止运行");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        try {
-          stopNode(n);
-        } catch (_) {}
-      };
-      row.appendChild(stop);
-      body.appendChild(row);
-    }
+    for (const it of list) body.appendChild(mkRow(it));
   };
-  addSec(I18n.t("处理中"), running, "run");
-  addSec(I18n.t("等待中"), waiting, "wait");
+  const pick = (type) => runItems.filter((it) => it.type === type);
+  addSec(I18n.t("全局助手"), pick("assist"));
+  addSec(I18n.t("智能会话"), pick("session"));
+  addSec(
+    I18n.t("处理中"),
+    runItems.filter((it) => it.type === "node" || it.type === "dev"),
+  );
+  addSec(I18n.t("后端生成中"), pick("media"));
+  addSec(I18n.t("等待中"), waitItems);
   el.appendChild(body);
+}
+
+/* 轻量心跳：队列非空时每 ~2s 只重绘一次「运行队列」面板本身
+   （不 renderCanvas、不 scheduleSave —— 纯面板级 DOM 重建）。
+   长任务期间节点文案 / 后端在途 / 会话轮次都在悄悄变，光靠事件刷新会「看着不动」。
+   队列一空立刻自毁，平时零常驻开销。思路同 app-assist.js 的 startAgentSideTimeTicker。 */
+const RUN_QUEUE_TICK_MS = 2000;
+let _runQueueTicker = null;
+function stopRunQueueTicker() {
+  if (!_runQueueTicker) return;
+  try {
+    clearInterval(_runQueueTicker);
+  } catch (_) {}
+  _runQueueTicker = null;
+}
+function syncRunQueueTicker(on) {
+  if (!on) {
+    stopRunQueueTicker();
+    return;
+  }
+  if (_runQueueTicker || typeof setInterval !== "function") return;
+  _runQueueTicker = setInterval(() => {
+    try {
+      updateRunQueuePanel();
+    } catch (_) {
+      /* 取数 / 重绘异常：停掉心跳，不让它每 2s 反复抛 */
+      stopRunQueueTicker();
+    }
+  }, RUN_QUEUE_TICK_MS);
+}
+
+/* 点队列行 = 定位：助手 → 打开右侧助手栏；会话 → 切到会话视图并选中它；
+   节点 / 开发块 / 生成任务 → 先切到它归属的画布（跨画布，loadWorkflow 会保留
+   运行中的内存对象，不打断任务）再 focusNode。旧版直接 toast「节点不在当前画布」。 */
+async function jumpRunQueueItem(it) {
+  if (!it) return;
+  if (it.type === "assist") {
+    try {
+      setAssistOpen(true);
+    } catch (_) {}
+    return;
+  }
+  if (it.type === "session") {
+    const st =
+      it.sess ||
+      (typeof agentSessionById === "function" ? agentSessionById(it.id) : null);
+    if (!st) {
+      toast(I18n.t("会话已不存在"), "warn");
+      updateRunQueuePanel();
+      return;
+    }
+    try {
+      if (S.view !== "agent") setView("agent");
+      S.agentActiveId = st.id;
+      await persistAgentSession();
+      renderAgentSession();
+      renderAgentSessionSidebar();
+    } catch (_) {}
+    updateRunQueuePanel();
+    return;
+  }
+  const n = it.node || runQueueLookupNode(it.id);
+  if (!n) {
+    toast(I18n.t("节点已不存在"), "warn");
+    updateRunQueuePanel();
+    return;
+  }
+  try {
+    if (it.crossWf && it.wfId && S.wf && it.wfId !== S.wf.id)
+      await loadWorkflow(it.wfId);
+    if (S.view === "agent") setView("workflow");
+    if (!nodeById(n.id)) {
+      toast(I18n.t("节点不在当前画布"), "warn");
+      return;
+    }
+    focusNode(n.id);
+    /* 开发块的「建议 / 问询」只读调研在跑：点行 = 打开对应的进度窗口
+       （devSuggestShowJob / devAskShowJob），而不是只定位节点 */
+    if (it.type === "dev") {
+      try {
+        let opened = false;
+        if (
+          typeof devSuggestJobBusy === "function" &&
+          typeof devSuggestShowJob === "function"
+        ) {
+          const sj = devSuggestJobBusy(n);
+          if (sj) {
+            devSuggestShowJob(sj);
+            opened = true;
+          }
+        }
+        if (
+          !opened &&
+          typeof devAskJobBusy === "function" &&
+          typeof devAskShowJob === "function"
+        ) {
+          const aj = devAskJobBusy(n);
+          if (aj) devAskShowJob(aj);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  updateRunQueuePanel();
+}
+
+/* 计划「并行任务」这一组的停止：组里每个子任务各有自己的 runKey（app-plan.js
+   planParRunKey），并行期间会话自己的 agent:<id> 并不在途 → 只能逐个取消。
+   取消后各 run 以 rejected 落回 planRunParallel 现有的失败收尾（结果行显示
+   「失败：…」），游标的 runId 守卫已有，不改它的续跑契约。 */
+function stopPlanParRuns(st) {
+  const par = st && st._planPar;
+  const keys = par && Array.isArray(par.runKeys) ? par.runKeys.filter(Boolean) : [];
+  if (!par || !keys.length) return false;
+  /* 会话此刻自己有轮次在跑 → st._cancelled 那一轮需要它，收尾由那轮的 finally 负责 */
+  const hadRound = !!st.running;
+  for (const k of keys) {
+    try {
+      dshCancelActive(String(k));
+    } catch (_) {}
+  }
+  if (!hadRound) armPlanParCancelReset(st, par);
+  return true;
+}
+/* 并行期间会话自己没有轮次在跑，所以这个作废标记没有「轮次收尾」替它擦除：
+   留着它，planExecContinue 续跑的下一轮一结束就被 app-assist 当成「已终止」
+   （outcome=cancelled → planDrop）→ 整份计划被静默清掉，停一组等于废全案。
+   给本组记一个令牌，等这一组了结（planParEnd 摘掉 st._planPar）就把标记擦回原样；
+   令牌被后来的 ■ 顶掉时一律闭嘴，绝不越权擦别人的标记。 */
+function armPlanParCancelReset(st, par) {
+  if (typeof setTimeout !== "function" || !st || !st.id) return;
+  const token = "planpar:" + String(par.runId || par.at || "");
+  st._parCancelToken = token;
+  let tries = 0;
+  const poll = () => {
+    if (!st || st._parCancelToken !== token) return; /* 标记已易手，收工 */
+    /* 还挂着这一组就继续等它了结（取消慢也要等到，不能让标记漂到下一轮） */
+    if (st._planPar === par && ++tries <= 1500) {
+      setTimeout(poll, 200);
+      return;
+    }
+    st._parCancelToken = "";
+    st._cancelled = false;
+  };
+  poll();
+}
+/* 停一条会话名下的运行：左下角队列行与会话视图的 ■ 共用这一份口径。
+   先按 runKey 精确取消并行组，再照旧作废并取消会话自己那一轮
+   （agent:<id> 没在途时 dshCancelActive 就是空操作，不会误伤别的会话）。
+   clearRunning：队列行沿用旧口径（立刻置 running=false）；
+   会话视图里不提前置 false —— 那一轮的 finally 自己收尾，避免抢跑。 */
+function stopSessionRuns(st, clearRunning) {
+  if (!st || !st.id) return false;
+  st._cancelled = true;
+  const par = stopPlanParRuns(st); /* 先读 st.running 判定有没有轮次在飞 */
+  if (clearRunning) st.running = false;
+  try {
+    dshCancelActive("agent:" + st.id);
+  } catch (_) {}
+  return par;
+}
+
+/* 行内 ■ = 只停这一条（语义与各处的单条停止完全一致，不动别的运行项）：
+   节点沿用 stopNode（开发块分支会递归停后代 + 绑定会话，生成节点走
+   music_gen/video_gen 分支：关监视器 + 作废排队 + 取消后端任务）；
+   会话与「全部终止」里同款：标记作废 + 关掉该会话自己的运行时进程，
+   并在跑的是计划并行组时逐个取消那一组的 runKey（stopSessionRuns）。 */
+async function stopRunQueueItem(it) {
+  if (!it) return;
+  if (it.type === "assist") {
+    try {
+      assistStop();
+    } catch (_) {
+      S.assistRunActive = false;
+    }
+    updateRunQueuePanel();
+    return;
+  }
+  if (it.type === "session") {
+    const st =
+      it.sess ||
+      (typeof agentSessionById === "function" ? agentSessionById(it.id) : null);
+    if (!st) {
+      toast(I18n.t("会话已不存在"), "warn");
+      updateRunQueuePanel();
+      return;
+    }
+    /* 会话名下的两路运行：自己那一轮 + 计划并行组。stopSessionRuns 按各自的 runKey
+       逐个取消（并行组的 runKey 停不掉 = 用户点 ■ 后任务还在偷偷跑）。 */
+    stopSessionRuns(st, true);
+    if (S.view === "agent") renderAgentSession();
+    updateRunQueuePanel();
+    return;
+  }
+  const n = it.node || runQueueLookupNode(it.id);
+  if (!n) {
+    toast(I18n.t("节点已不存在"), "warn");
+    updateRunQueuePanel();
+    return;
+  }
+  try {
+    await stopNode(n);
+  } catch (_) {}
+  /* 开发块的后代 / 绑定会话可能各自成行，整列状态都要跟着刷新 */
+  updateRunQueuePanel();
 }
 
 /* 一键终止：运行中 + 排队中（含隐藏的媒体排队）+ 后端生成任务 + 定时触发 + 全局助手/会话。
@@ -5118,7 +5891,13 @@ function updateRunQueuePanel() {
 function stopAllRuns() {
   const { running, waiting } = collectRunQueue();
   const assistOn = !!S.assistRunning;
-  const sessRunning = agentSessions().filter((s) => s.running);
+  /* 「在跑」用展示口径：名下只有计划并行组在跑的会话也算（st.running 是 false），
+     否则「全部终止」既不会为它去中断 dsh（needDsh 判空），也取消不了那一组 runKey。 */
+  const sessRunning = agentSessions().filter((s) =>
+    typeof sessionBusyForUi === "function"
+      ? sessionBusyForUi(s)
+      : !!(s && s.running),
+  );
   if (
     !running.length &&
     !waiting.length &&
@@ -5144,6 +5923,30 @@ function stopAllRuns() {
   if (needDsh) {
     try {
       dshCancelActive();
+    } catch (_) {}
+  }
+  /* ③b 开发块的「建议 / 问询」只读调研：它们不是 dsh 任务节点，③ 的
+     dshCancelActive() 不会主动命中各自的 runKey——不显式取消的话，「全部终止」
+     后队列里还会残留「建议调研中 / 问询中」的行。只动 running 的作业：
+     已完成但未查看的作业（phase options/ready）不在此列，别误删（见 devSuggestJobDrop）。 */
+  let nDevJob = 0;
+  for (const n of running) {
+    if (!n || n.kind !== "super" || !n.dev || n.db) continue;
+    try {
+      const sj =
+        typeof devSuggestJobOf === "function" ? devSuggestJobOf(n) : null;
+      if (sj && sj.running && typeof devSuggestJobAbort === "function" && typeof devSuggestJobDrop === "function") {
+        devSuggestJobAbort(sj);
+        devSuggestJobDrop(sj);
+        nDevJob++;
+      }
+      const aj =
+        typeof devAskJobOf === "function" ? devAskJobOf(n) : null;
+      if (aj && aj.running && typeof devAskJobAbort === "function" && typeof devAskJobDrop === "function") {
+        devAskJobAbort(aj);
+        devAskJobDrop(aj);
+        nDevJob++;
+      }
     } catch (_) {}
   }
   /* ④ 当前画布 + 后台工作流：一次线性扫描，凡是「有活干」的节点全部作废 */
@@ -5202,8 +6005,14 @@ function stopAllRuns() {
     }
   }
   for (const sess of sessRunning) {
-    sess._cancelled = true;
-    sess.running = false;
+    /* 一律走 stopSessionRuns：会话自己那一轮 + 名下计划并行组的 runKeys 一起取消，
+       只置 running=false 会让那一组并行任务在「全部终止」之后继续偷跑。 */
+    try {
+      stopSessionRuns(sess, true);
+    } catch (_) {
+      sess._cancelled = true;
+      sess.running = false;
+    }
     nStop++;
   }
   renderCanvas();
@@ -5216,6 +6025,7 @@ function stopAllRuns() {
   if (waiting.length) bits.push(waiting.length + I18n.t(" 个等待"));
   if (nMedia) bits.push(nMedia + I18n.t(" 个生成任务"));
   if (nTimer) bits.push(nTimer + I18n.t(" 个定时"));
+  if (nDevJob) bits.push(nDevJob + I18n.t(" 个调研"));
   if (assistOn) bits.push(I18n.t("全局助手"));
   toast(
     I18n.t("已全部终止") + (bits.length ? "：" + bits.join(" · ") : ""),
@@ -5473,15 +6283,35 @@ function mtDialogForm(opts) {
         }
         frag.appendChild(wrap);
       }
-      if (opts.note && String(opts.note.text || "").trim()) {
+      const _noteTwo =
+        opts.note &&
+        (opts.note.design !== undefined || opts.note.impl !== undefined);
+      const _noteBody = String((opts.note && opts.note.text) || "").trim();
+      if (opts.note && (_noteTwo || _noteBody)) {
         const nb = document.createElement("div");
         nb.className = "mt-form-note";
         const nl = document.createElement("i");
         nl.textContent = opts.note.label || I18n.t("概述");
-        const np = document.createElement("p");
-        np.textContent = String(opts.note.text).trim();
         nb.appendChild(nl);
-        nb.appendChild(np);
+        if (_noteTwo) {
+          /* 两段式概述：一项两行 —— 功能段（人话）+ 实现段（技术梗概） */
+          const pd = document.createElement("p");
+          pd.textContent =
+            I18n.t("模块功能（面向非技术）：") +
+            (String(opts.note.design || "").trim() ||
+              I18n.t("（暂无 · 请先说明该模块在业务上做什么、给谁用）"));
+          nb.appendChild(pd);
+          const pi = document.createElement("p");
+          pi.textContent =
+            I18n.t("实现要点（面向技术）：") +
+            (String(opts.note.impl || "").trim() ||
+              I18n.t("（暂无 · 细化或开发时按两段式规范补全）"));
+          nb.appendChild(pi);
+        } else {
+          const np = document.createElement("p");
+          np.textContent = _noteBody;
+          nb.appendChild(np);
+        }
         frag.appendChild(nb);
       } else if (opts.note) {
         const nb = document.createElement("div");
@@ -6786,17 +7616,14 @@ function relPlanAnchors(items, refine) {
       const along = vals[i];
       const pt = relSidePoint(rec.rect, rec.side, along);
       if (rec.end === "a") {
-        if (rec.it.alongA !== along) moved++;
         rec.it.alongA = along;
         rec.it.a = pt;
       } else {
-        if (rec.it.alongB !== along) moved++;
         rec.it.alongB = along;
         rec.it.b = pt;
       }
     });
   }
-  return moved;
 }
 /* 同一节点同一侧的几条线：本端沿边顺序与「对端锚点顺序」相反的配对数。
    这正是视觉上 X 形交叉的来源（两条线进出同一块方块的顺序颠倒了）。 */
@@ -7521,26 +8348,119 @@ function devChildrenOf(node) {
 }
 function devChildLabel(k) {
   const kk = devKindOf(k) || (k.kind === "super" && k.dev ? "module" : k.kind);
+  const design = devNoteParts(k && k.note).design;
   return (
     (k.title || k.id) +
     "（" +
     (DEV_KIND_LABEL[kk] ? I18n.t(DEV_KIND_LABEL[kk]) : kk) +
     "）" +
-    (String(k.note || "").trim() ? "：" + String(k.note).trim() : "")
+    (design ? "：" + design : "")
   );
 }
-/* 已是最细粒度的元素：无需继续细化 */
+/* 本块子树内的全部下层开发块（带层级；排除端子等桥接节点与非开发节点） */
+function devDescendantBlocksOf(node) {
+  const isDevBlock = (x) => !!x && x.kind === "super" && !!x.dev;
+  const out = [];
+  const seen = new Set();
+  const walk = (parent, level) => {
+    if (!parent || seen.has(parent.id)) return;
+    seen.add(parent.id);
+    for (const k of devChildrenOf(parent)) {
+      if (!isDevBlock(k)) continue;
+      out.push({ node: k, level });
+      walk(k, level + 1);
+    }
+  };
+  walk(node, 1);
+  return out;
+}
+/* 递归统计本块子树的「细化深度」现状：层数 / 叶子元素类型分布 / 尚未到文件级的块 */
+function devDescendantStatsOf(node) {
+  const isDevBlock = (x) => !!x && x.kind === "super" && !!x.dev;
+  const blocks = devDescendantBlocksOf(node);
+  const st = {
+    levels: 0, // 本块之下的层数（1 = 只有一层子块）
+    count: blocks.length, // 子树内开发块总数
+    leafKinds: {}, // 叶子元素类型分布 { module: 3, file: 12, ... }
+    shallow: [], // 叶子仍是模块：尚未细化到文件级
+    fileLeaves: [], // 叶子已到文件级（可选继续拆类 / 接口 / 枚举）
+  };
+  for (const b of blocks) {
+    if (b.level > st.levels) st.levels = b.level;
+    if (devChildrenOf(b.node).some(isDevBlock)) continue; // 非叶子
+    const kk = devKindOf(b.node) || "module";
+    st.leafKinds[kk] = (st.leafKinds[kk] || 0) + 1;
+    if (kk === "module") st.shallow.push(b.node);
+    else if (kk === "file") st.fileLeaves.push(b.node);
+  }
+  return st;
+}
+/* 一句话深度现状：当前已 N 层 · M 个块未到文件级（示例）/ 已细化到文件级 */
+function devDepthSummaryText(node) {
+  const st = devDescendantStatsOf(node);
+  if (!st.count) return I18n.t("当前 0 层（尚未展开下层元素）");
+  if (!st.shallow.length)
+    return I18n.t("当前已 {n} 层 · 已细化到文件级", { n: st.levels });
+  const eg = st.shallow
+    .slice(0, 3)
+    .map((x) => x.title || x.id)
+    .join("、");
+  return (
+    I18n.t("当前已 {n} 层 · {m} 个块未到文件级", {
+      n: st.levels,
+      m: st.shallow.length,
+    }) + (eg ? I18n.t("（如 {eg}）", { eg }) : "")
+  );
+}
+/* 细化「深度」档位：deep = 逐层下钻到无法再细（默认）· once = 只展开本层 */
+const DEV_REFINE_DEPTHS = [
+  {
+    key: "deep",
+    label: "深度细化到无法再细",
+    desc: "默认：拆出的每个子块都继续判断能否再细，一路下钻到无法进一步细化为止（一般到文件级；文件还可拆类 / 接口 / 枚举），产物为多层开发节点树。",
+  },
+  {
+    key: "once",
+    label: "只展开本层",
+    desc: "仅在本块内创建 1 层子元素，不下钻；之后可在各子块上分别点「细化」。",
+  },
+];
+/* 无需 / 无法继续细化：类图元素本身最细；整棵子树叶子都已到文件 / 类级则视为「细化到底」 */
 function devRefineBlockedReason(node) {
   const dk = devKindOf(node) || "module";
   if (dk === "class" || dk === "interface" || dk === "enum")
     return I18n.t(
       "类 / 接口 / 枚举已是架构的最细粒度元素，无需继续细化。",
     );
+  const isDevBlock = (x) => !!x && x.kind === "super" && !!x.dev;
+  const kids = devChildrenOf(node).filter(isDevBlock);
+  const FINEST = ["class", "interface", "enum"];
+  if (dk === "file") {
+    if (
+      kids.length &&
+      kids.every((k) => FINEST.indexOf(devKindOf(k) || "module") >= 0)
+    )
+      return I18n.t("该文件已展开为类 / 接口 / 枚举，已细化到无法再细。");
+    return "";
+  }
+  const st = devDescendantStatsOf(node);
+  if (st.count && !st.shallow.length)
+    return (
+      I18n.t(
+        "本功能块已细化到无法再细：子树 {n} 层，每片叶子都已到文件 / 类级（未到文件级的块为 0）。",
+        { n: st.levels },
+      ) +
+      I18n.t(
+        "若还想把某个文件继续拆成类 / 接口 / 枚举，请在该文件块上单独点「细化」。",
+      )
+    );
   return "";
 }
-/* 细化任务书：注入细化会话，要求 agent 先判断可否细化、再给梗概并经用户确认 */
-function devRefinePrompt(node, scopeText) {
+/* 细化任务书：注入细化会话。细化按「深度」而非单层程度——先按深度判断可否下钻，
+   再输出多层规划树、一次确认后自顶向下逐层创建，直到无法再细（一般文件级） */
+function devRefinePrompt(node, scopeText, depth) {
   const kind = devKindOf(node) || "module";
+  const deep = depth !== "once";
   const lines = [];
   lines.push(
     I18n.t("【细化任务】") +
@@ -7548,6 +8468,13 @@ function devRefinePrompt(node, scopeText) {
       (node.title || I18n.t("未命名")) +
       "（" + I18n.t(DEV_KIND_LABEL[kind] || "模块") + "）",
   );
+  lines.push(
+    I18n.t("本次细化深度：") +
+      (deep
+        ? I18n.t("深度细化（逐层下钻到无法再细，一般到文件级）")
+        : I18n.t("只展开本层（1 层 · 不下钻）")),
+  );
+  lines.push(I18n.t("当前子树深度：") + devDepthSummaryText(node));
   const scope = String(scopeText || "").trim();
   if (scope) lines.push(I18n.t("用户指定的细化范围：") + scope);
   const kids = devChildrenOf(node);
@@ -7557,35 +8484,79 @@ function devRefinePrompt(node, scopeText) {
   );
   for (const k of kids.slice(0, 40)) lines.push("  - " + devChildLabel(k));
   lines.push("");
-  lines.push(I18n.t("请按以下步骤细化："));
   lines.push(
     I18n.t(
-      "0. 先判断是否有必要细化：若本元素已无下层结构、或项目根目录内找不到可对应的真实内容，请直接告诉用户「无需 / 无法继续细化」并说明原因，不要创建任何节点。",
+      "请按以下步骤细化（「细化」指的是**深度**：拆出的子块是否继续下钻，而不是本层展开多少个）：",
+    ),
+  );
+  lines.push(
+    deep
+      ? I18n.t(
+          "· 本次为深度细化：规划与创建都必须覆盖多层，一路下钻到无法进一步细化为止（一般 devKind=file；文件还可继续拆类 / 接口 / 枚举，拆不动就停），不得只规划一层就收工。",
+        )
+      : I18n.t(
+          "· 本次为只展开本层：仅在本块内创建 1 层子块，不做下钻；每个子块各自还需不需要继续细化，请在梗概里说明，之后由用户到该子块上分别点「细化」。",
+        ),
+  );
+  lines.push("");
+  lines.push(
+    I18n.t(
+      "0. 先按深度判断该不该细化：本块是否还能继续下钻、已经下钻到哪一层（见上方「当前子树深度」）。若本元素已无下层结构、或项目根目录内找不到可对应的真实内容，请直接告诉用户「无需 / 无法继续细化」并说明原因（如已细化到无法再细、无对应真实代码），不要创建任何节点。",
     ),
   );
   lines.push(
     I18n.t(
-      "1. 基于项目根目录内的真实代码/文件，分析本模块应展开的下层元素；模块细化为文件，文件细化为类 / 接口 / 枚举等类图元素。",
+      "1. 基于项目根目录内的真实代码/文件，规划本块之下的**整棵结构**：元素层级为 模块 → 文件 → 类 / 接口 / 枚举。深度细化时每一片叶子都要自问「还能不能再拆」：模块拆到真实文件、文件拆到类 / 接口 / 枚举，确实拆不动了才算到底；只展开本层时只需规划紧接下一层。",
     ),
   );
   lines.push(
     I18n.t(
-      "2. 先输出内容梗概清单：每个拟创建子元素的【名称 · 类型（文件/类/接口/枚举）· 一句话作用】，供用户审阅。",
+      "2. 先输出**多层规划树**（缩进表示层级，同层按创建顺序排列）：每个拟建子块标注【名称 · 类型（模块 / 文件 / 类 / 接口 / 枚举）· 是否还需继续下钻（是 / 否 + 一句理由）· 【功能】拟稿（≤80字，面向非技术的说明）· 【实现】拟稿（≤120字，工程实现梗概）· 将用颜色】，供用户审阅；深度模式下叶子应全部落在文件 / 类级，若因证据不足中途停在某个模块块上，请在该节点标注「待续下钻」并在结尾说明。",
     ),
   );
   lines.push(
     I18n.t(
-      "3. 明确询问用户是否按此清单创建；在用户确认之前，禁止修改画布。",
+      "3. 一次确认覆盖整棵规划树：明确询问用户是否按这棵树创建（不是逐层反复追问）；在用户确认之前，禁止修改画布。",
     ),
   );
   lines.push(
     I18n.t(
-      "4. 用户确认后，用 mtnode_canvas_edit 创建子开发节点：kind=super、dev=true、devKind=file|class|interface|enum、parentSuperId=本节点、note=一句话概述；文件节点的标题用相对项目根的路径（如 renderer/app.js，便于「打开」按钮定位源码）；元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头）。",
+      "4. 用户确认后，自顶向下**逐层创建**：每层各一次 mtnode_canvas_edit —— 该层子块的 kind=super、dev=true、devKind=module|file|class|interface|enum、parentSuperId 指向它的直接父块（第一层的父块 = 本节点，更深层的父块 = 上一层刚创建的块，可用同一批 create 里的 alias 引用），note 必须按两段式规范书写（【功能】非技术说明 + 【实现】工程梗概，与该子块拟稿一致，禁止只写一段）。禁止把不同层级一次性平铺到同一层。",
     ),
   );
   lines.push(
     I18n.t(
-      "5. 不同元素类型在画布上有不同外框颜色（模块=绿、文件=蓝、类=橙、接口=紫、枚举=粉），请保持类型准确。",
+      "5. 护栏：单层子块过多（约 >12 个）时分批创建，并在规划树里标出本批未建的部分；本次新建节点总数以约 60 个为上限，触顶或项目内证据不足时立即停下，报告已建到哪一层、还剩哪些分支未展开，并询问用户是否继续下钻（也可让用户在剩余分支的块上各自点「细化」）。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "6. 落定后回写各父块概述：本节点与本次新建的每个中间层块，都要在 note 第二段「【实现】工程梗概」末尾补一行「子块：A / B / C」（列直接子块名，保持两段式规范，别把整棵子树塞进去）；第一段【功能】仅在职责变化时调整。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "7. 结尾报告最终结果：本次新增到第几层、共多少块、叶子元素类型分布（如：新增 3 层 · 18 块，叶子 = 14 文件 + 4 类），以及还有哪些块标注了「待续下钻」。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "8. 元素类型与配色请保持准确：模块按功能色卡归类（core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f；新建 module 块系统会自动套用，归类不对时再补丁纠正，禁止自创色值），文件 / 类 / 接口 / 枚举 不传 devColor（保留类型默认色 蓝 / 橙 / 紫 / 粉）。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "9. 元素之间的关系用关系线表达（connect 项加 rel:true，可带 relLabel 文字与 relArrow 箭头，关系线不传数据）；文件节点的标题用相对项目根的路径（如 renderer/app.js，便于「打开」按钮定位源码）。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "10. 若项目根目录存在 AGENTS.md（Agent 共识文件），先读并遵守：文件节点的路径与新建内容都要符合「目录约定」，不要触碰「不要修改」清单里的路径。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "11. 本会话按本任务书的步骤执行即可：不要调用 mtnode-dev-architect 技能（该技能仅用于在 MTNode 画布上从零构建开发节点架构，细化任务书已内置全部规则）。",
     ),
   );
   return lines.join("\n");
@@ -7615,18 +8586,21 @@ async function refineDevNode(node) {
       I18n.t("现有子元素"),
       kids.length ? String(kids.length) + I18n.t(" 个") : I18n.t("（无）"),
     ],
+    [I18n.t("细化深度"), devDepthSummaryText(node)],
   ];
+  /* 深度单选（默认「深度细化到无法再细」）：点选项只改闭包变量，不关闭对话框 */
+  let depth = "deep";
   const res = await mtDialogForm({
     title: I18n.t("细化") + " · " + (node.title || I18n.t("开发节点")),
     wide: true,
     rows,
-    note: { label: I18n.t("当前概述"), text: node.note },
+    note: devNoteDialogField(node, I18n.t("当前概述")),
     list: kids.length
       ? { label: I18n.t("现有子元素"), items: kids.map(devChildLabel) }
       : null,
     msg: blocked
       ? I18n.t(
-          "如果确实要在这里继续展开，请先通过节点右键菜单把「元素类型」改为文件 / 模块，再执行细化。",
+          "如果确实要在这里继续展开，请先通过节点右键菜单把「元素类型」改为文件 / 模块；或到具体的下层文件块上分别点「细化」。",
         )
       : I18n.t(
           "确认后将新建一个细化会话：Agent 依据项目真实代码分析本模块的下层元素，先给出内容梗概清单，经你确认后才在该功能块内补充内容。若分析后认为无需或无法继续细化，它会直接告知你原因。",
@@ -7646,6 +8620,49 @@ async function refineDevNode(node) {
       : I18n.t(
           "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· Esc 取消",
         ),
+    custom: blocked
+      ? null
+      : (c) => {
+          const lab = document.createElement("label");
+          lab.className = "mt-form-lab";
+          lab.textContent = I18n.t("细化深度（单选）");
+          c.appendChild(lab);
+          const listEl = document.createElement("div");
+          listEl.className = "mt-sug-opts";
+          const rowsEl = [];
+          for (const it of DEV_REFINE_DEPTHS) {
+            const row = document.createElement("label");
+            row.className = "mt-sug-opt" + (it.key === depth ? " on" : "");
+            const rb = document.createElement("input");
+            rb.type = "radio";
+            rb.name = "devRefineDepth";
+            rb.checked = it.key === depth;
+            const txt = document.createElement("div");
+            txt.className = "mt-sug-txt";
+            const tt = document.createElement("b");
+            tt.className = "mt-sug-title";
+            tt.textContent = I18n.t(it.label);
+            txt.appendChild(tt);
+            const dd = document.createElement("div");
+            dd.className = "mt-sug-desc";
+            dd.textContent = I18n.t(it.desc);
+            txt.appendChild(dd);
+            row.appendChild(rb);
+            row.appendChild(txt);
+            /* 点选项只改闭包变量 + 选中态，不调 select（不立即关闭对话框） */
+            row.onclick = (ev) => {
+              ev.preventDefault();
+              depth = it.key;
+              for (const r of rowsEl) {
+                r.row.classList.toggle("on", r.key === depth);
+                r.rb.checked = r.key === depth;
+              }
+            };
+            rowsEl.push({ key: it.key, row, rb });
+            listEl.appendChild(row);
+          }
+          c.appendChild(listEl);
+        },
     actions: blocked
       ? [{ id: "cancel", label: I18n.t("知道了") }]
       : [
@@ -7662,10 +8679,30 @@ async function refineDevNode(node) {
   if (res.action !== "go") return;
   const sess = createDevSessionForNode(node, "refine");
   if (!sess) return;
+  /* 细化任务书并入会话契约 _devContract（发送时注入系统提示，不占用户消息位）：
+     首条消息只保留用户关键输入（细化深度 + 细化范围；范围留空则只给深度说明） */
+  const refineBrief = devRefinePrompt(node, res.text, depth);
+  sess._devContract = String(sess._devContract || "") + "\n\n" + refineBrief;
+  const scopeText = String(res.text || "").trim();
+  const depthLine =
+    depth === "once"
+      ? I18n.t("只展开本层（1 层）细化该功能块")
+      : I18n.t("深度细化该功能块：逐层下钻到无法再细（一般文件级）");
+  const visibleText = scopeText
+    ? depthLine + "\n" + I18n.t("用户指定的细化范围：") + scopeText
+    : depthLine;
+  const firstMsg = (sess.messages || [])[0];
+  if (firstMsg && firstMsg._src === "dev-node") {
+    firstMsg.content = visibleText;
+  } else {
+    sess.messages.unshift({ role: "user", content: visibleText, _src: "dev-node" });
+  }
   S.agentActiveId = sess.id;
   await persistAgentSession();
   scheduleSave(true);
   renderCanvas();
+  /* 细化会话同样绑进该功能块：运行队列按「绑定会话」口径立刻重算一次 */
+  updateRunQueuePanel();
   toast(
     I18n.t("已创建细化会话「") +
       (sess.title || "") +
@@ -7673,7 +8710,7 @@ async function refineDevNode(node) {
     "ok",
   );
   try {
-    await agentSessionSend(devRefinePrompt(node, res.text));
+    await agentSessionSend("", { _devContract: true });
   } catch (err) {
     toast(I18n.t("细化会话启动失败：") + ((err && err.message) || String(err)), "err");
   }
@@ -12812,7 +13849,7 @@ function showCanvasCreateMenu(clientX, clientY, worldPt) {
 /* ============ 右键 · 构建工作流（选工具 = 工作流生成类技能 + 填写要求） ============ */
 
 /* 「工作流生成」大类内部的优先顺序；画布规范类只是约束，不能当生成工具 */
-const WF_BUILD_TYPE_RANK = { 画布搭建: 0, 开发架构: 1, 禅式引导: 2 };
+const WF_BUILD_TYPE_RANK = { 画布搭建: 0, 开发架构: 1 };
 const WF_BUILD_SKIP_TYPES = { 画布规范: true };
 /* 这些内置技能带 .mtnode-internal 标记（skillList 不展示），需单独探测 */
 const WF_BUILD_INTERNAL_SKILLS = ["mtnode-dev-architect"];
@@ -13014,19 +14051,96 @@ function buildWorkflowToolPicker(host, groups, ref, state) {
   render();
 }
 
+/* ============ 构建工作流 → 新建独立绑定会话（不再借用全局助手） ============ */
+
+/* 会话标题「构建 · 画布名」：同一画布的构建会话靠它认出来（标题会随会话一起落盘，重启后仍有效） */
+function wfBuildSessionTitle() {
+  return I18n.t("构建 · ") + ((S.wf && S.wf.name) || I18n.t("未命名画布"));
+}
+
+/* 契约消息（会话首条）：只交代目标画布与工作边界；
+   技能正文 + 构建要求由首轮「/技能名 要求」注入，正文不在上下文里重复两遍 */
+function wfBuildContractText() {
+  const name = (S.wf && S.wf.name) || I18n.t("未命名画布");
+  const ws = wfWorkspace();
+  const lines = [
+    I18n.t("【画布构建任务书】") + " " + name,
+    I18n.t(
+      "本会话由画布右键「构建工作流」新建并绑定该画布：技能流程、构建要求与后续迭代都在这里进行，不再占用右侧全局助手。",
+    ),
+    I18n.t("工作范围：仅当前画布「") +
+      name +
+      I18n.t("」；动手改画布前先 mtnode_canvas_get 看清现状，不要编造已有节点。"),
+  ];
+  if (ws) lines.push(I18n.t("会话工作区：") + ws);
+  lines.push(
+    I18n.t(
+      "严格按技能说明书写的流程执行：技能要求由用户提供信息（项目路径 / 拆解粒度 / 方案取舍）时，先询问并等待确认，不要臆测。",
+    ),
+  );
+  return lines.join("\n");
+}
+
+/* 同一画布已有在跑的构建会话：两条会话同时改一张画布会互相覆盖，先挡住。
+   占用判断走展示口径 sessionBusyForUi：它名下跑着计划并行组时 st.running 是 false，
+   但那些子任务照样在往画布上写 —— 只看 sessionIsRunning 会放行第二条构建。 */
+function runningWfBuildSession() {
+  const title = wfBuildSessionTitle();
+  return (
+    agentSessions().find(
+      (s) =>
+        s &&
+        s.title === title &&
+        (typeof sessionBusyForUi === "function"
+          ? sessionBusyForUi(s)
+          : sessionIsRunning(s)),
+    ) || null
+  );
+}
+
+/* 每次发起构建都新建会话运行：上下文干净（首轮 = 任务书），工作区 = 画布统一目录，
+   provider / model 跟随当前默认智能路由（与开发节点绑定会话同一套做法） */
+function createWfBuildSession() {
+  if (!S.wf) return null;
+  const route =
+    typeof preferredAgentProviderRoute === "function"
+      ? preferredAgentProviderRoute()
+      : "deepseek-official";
+  const sess = {
+    id: uid("as"),
+    title: wfBuildSessionTitle(),
+    workspace: dshWorkspaceOf(null),
+    preset: "standard",
+    provider: route || "deepseek-official",
+    model:
+      typeof preferredAgentModelForRoute === "function"
+        ? preferredAgentModelForRoute(route) || ""
+        : "",
+    effort: "high",
+    messages: [],
+    archived: false,
+    updatedAt: Date.now(),
+  };
+  sess.messages.unshift({
+    role: "user",
+    content: wfBuildContractText(),
+    _src: "wf-build",
+    at: Date.now(),
+  });
+  agentSessions().unshift(sess);
+  return sess;
+}
+
 /**
  * 右键 · 构建工作流：选择工作流生成类技能（工具）+ 填写要求
- * → 交给全局助手在当前画布落地（改画布仍按用户的审批设置生效）。
+ * → 确认后将新建一个绑定当前画布的独立 agent 会话，在其中执行（改画布仍按用户的审批设置生效）。
+ * 不再投递给全局助手：一轮架构还原会把大量扫描与画布编辑上下文灌进助手会话，污染全局助手。
  */
 async function promptBuildWorkflow(pt, retryState) {
   if (!S.wf) return;
   const sup = dshSupported();
   if (!sup.ok) {
     toast(sup.reason, "warn");
-    return;
-  }
-  if (S.assistRunning) {
-    toast(I18n.t("助手正在执行上一轮：请等待完成或先终止，再发起构建"), "warn");
     return;
   }
   const groups = await collectWorkflowBuildSkills();
@@ -13054,7 +14168,7 @@ async function promptBuildWorkflow(pt, retryState) {
       [I18n.t("目标画布"), S.wf.name || I18n.t("未命名画布")],
     ],
     msg: I18n.t(
-      "选择要使用的工具（工作流生成类技能），并填写要求。确认后会交给右侧「全局助手」在当前画布上搭建。",
+      "选择要使用的工具（工作流生成类技能），并填写要求。确认后将新建一个绑定当前画布的独立会话在其中执行（不使用全局助手）。",
     ),
     actions: [
       { id: "cancel", label: I18n.t("取消") },
@@ -13073,10 +14187,58 @@ async function promptBuildWorkflow(pt, retryState) {
     await promptBuildWorkflow(pt, { chosen: skill.name, req: "" });
     return;
   }
-  const parts = [req];
-  setAssistOpen(true);
-  assistSend("/" + skill.name + " " + parts.join("\n"));
-  toast(I18n.t("已发起构建：") + (skill.title || skill.name), "ok");
+  /* 先确认技能正文真取到了：内置技能（skillList 探测不到）读不到就直接中止，绝不静默丢技能 */
+  const resolved = await resolveSkillByName(skill.name);
+  if (!resolved || !String(resolved.body || "").trim()) {
+    toast(
+      I18n.t("技能正文读取失败，未发起构建：") + (skill.title || skill.name),
+      "err",
+    );
+    return;
+  }
+  /* 占用判断只看构建会话自身（不再看全局助手是否在跑） */
+  const busy = runningWfBuildSession();
+  if (busy) {
+    toast(
+      I18n.t("该画布的构建会话正在执行中：请等待完成或先终止，再发起构建"),
+      "warn",
+    );
+    return;
+  }
+  const sess = createWfBuildSession();
+  if (!sess) return;
+  S.agentActiveId = sess.id;
+  await persistAgentSession();
+  renderAgentSessionSidebar();
+  updateRunQueuePanel();
+  toast(
+    I18n.t("已创建构建会话「") +
+      (sess.title || "") +
+      I18n.t("」并在后台运行（留在画布 · 左下角队列 / 会话列表可看进度）"),
+    "ok",
+  );
+  try {
+    /* 首轮注入「技能正文 + 构建要求」：正常走行首斜杠命令（agentSessionSend →
+       resolveSkillSlash → skillTaskPrompt 就地展开成技能说明书），会话记录里只留一行
+       /技能名，正文不重复入库。技能名含斜杠命令正则不接受的字符时展开不了，
+       就直接注入正文，绝不静默丢技能。
+       显式带 sessionId：这轮的归属就是刚建的构建会话，用户中途切会话也不会串台。 */
+    const slashOk = /^[a-zA-Z0-9_-]+$/.test(String(skill.name || ""));
+    const turn = slashOk
+      ? "/" + skill.name + " " + req
+      : skillTaskPrompt({
+          name: skill.name,
+          title: skill.title || skill.name,
+          body: resolved.body,
+          arg: req,
+        });
+    await agentSessionSend(turn, { sessionId: sess.id });
+  } catch (err) {
+    toast(
+      I18n.t("构建会话启动失败：") + ((err && err.message) || String(err)),
+      "err",
+    );
+  }
 }
 
 
@@ -14490,6 +15652,9 @@ function addNode(kind, x, y, extra) {
     const same = S.wf.nodes.filter((n) => n.title === want).length;
     node.title = same ? want + " " + (same + 1) : want;
   }
+  /* 开发节点（右键「开发节点 · 功能块」等 addNode 入口）：创建即按功能色卡上色。
+     extra 里显式给了 devColor 时优先；未归类块保持元素类型默认色。 */
+  if (typeof devAutoColorNode === "function") devAutoColorNode(node);
   ensureDefaultSavePath(node);
   pushHistory();
   S.wf.nodes.push(node);
@@ -14550,7 +15715,67 @@ async function stopNode(node) {
     const devRun =
       typeof devNodeRunningState === "function" ? devNodeRunningState(node) : null;
     if (!devRun) return;
+    /* 「建议 / 问询」只读调研在后台跑（devNodeRunningState = "sug"）：只取消这轮调研
+       作业本身（dshCancelActive + 清 job），不牵连块内节点与绑定会话——
+       那是「自身 / 后代 / 会话」态才走的递归停止。 */
+    if (devRun === "sug") {
+      let hit = false;
+      if (
+        typeof devSuggestJobOf === "function" &&
+        typeof devSuggestJobAbort === "function" &&
+        typeof devSuggestJobDrop === "function"
+      ) {
+        const job = devSuggestJobOf(node);
+        if (job) {
+          devSuggestJobAbort(job);
+          devSuggestJobDrop(job);
+          hit = true;
+        }
+      }
+      if (
+        typeof devAskJobOf === "function" &&
+        typeof devAskJobAbort === "function" &&
+        typeof devAskJobDrop === "function"
+      ) {
+        const job = devAskJobOf(node);
+        if (job) {
+          devAskJobAbort(job);
+          devAskJobDrop(job);
+          hit = true;
+        }
+      }
+      toast(
+        hit
+          ? I18n.t("已停止该功能块的调研（建议 / 问询）")
+          : I18n.t("该功能块已无建议或问询调研"),
+        "warn",
+      );
+      renderCanvas();
+      renderStatus();
+      updateRunQueuePanel();
+      if (S.view === "agent") renderAgentSession();
+      scheduleSave(true);
+      return;
+    }
     let nStop = 0;
+    /* 停一条绑定会话名下的运行一律走 stopSessionRuns：它既作废并取消会话自己那一轮
+       （agent:<会话id>），也逐个取消该会话名下的计划并行组 runKey。
+       「在不在跑」用展示口径 sessionBusyForUi 判定 —— 并行组在跑时 st.running 是 false，
+       旧写法会出现「块亮着运行中、点 ■ 却提示没有运行任务」。 */
+    const stopBoundSession = (s) => {
+      if (!s) return;
+      const busy =
+        typeof sessionBusyForUi === "function"
+          ? sessionBusyForUi(s)
+          : typeof sessionIsRunning === "function"
+            ? sessionIsRunning(s)
+            : !!s.running;
+      if (!busy) return;
+      try {
+        stopSessionRuns(s, true);
+        nStop++;
+      } catch (_) {}
+    };
     const stopSubtree = (host) => {
       const all = (S.wf && S.wf.nodes) || [];
       for (const c of all) {
@@ -14562,16 +15787,7 @@ async function stopNode(node) {
             devNodeRunningState(c)
           ) {
             stopSubtree(c);
-            for (const s of devSessionsOf(c)) {
-              if (sessionIsRunning(s)) {
-                s._cancelled = true;
-                s.running = false;
-                nStop++;
-                try {
-                  dshCancelActive("agent:" + s.id);
-                } catch (_) {}
-              }
-            }
+            for (const s of devSessionsOf(c)) stopBoundSession(s);
           }
         } else if (c.running) {
           bumpNodeStop(c);
@@ -14588,16 +15804,7 @@ async function stopNode(node) {
       }
     };
     stopSubtree(node);
-    for (const s of devSessionsOf(node)) {
-      if (sessionIsRunning(s)) {
-        s._cancelled = true;
-        s.running = false;
-        nStop++;
-        try {
-          dshCancelActive("agent:" + s.id);
-        } catch (_) {}
-      }
-    }
+    for (const s of devSessionsOf(node)) stopBoundSession(s);
     node._aborted = true;
     if (node.running) {
       node.running = false;
@@ -14824,37 +16031,29 @@ async function chatSendAgent(node, text) {
       systemPrompt:
         (node.systemPrompt || "") +
         (node.systemPrompt ? "\n" : "") +
-        "回答简洁，中文优先。用工作区文件交付结果，不要改画布。",
+        "回答简洁。用工作区文件交付结果，不要改画布。",
       onEvent: (type, data) => {
+        /* 对话气泡与节点输出区同一套分段口径：say 段之间保留空行，
+           err 段以「⚠」附在尾部；think 只进思考气泡（#chat-think-*） */
+        const paint = () => {
+          const el = document.getElementById("chat-stream-" + node.id);
+          if (!el) return;
+          el.textContent = traceSayDisplay(node.id, node._pendingAnswer);
+          const list = document.querySelector(
+            '.wf-node[data-nid="' + node.id + '"] .chat-list',
+          );
+          if (isScrollNearBottom(list)) el.scrollIntoView({ block: "nearest" });
+        };
         if (type === "reasoning" && data.text) {
           pushThinking(node.id, 0, data.text);
-        } else if (type === "tool" && data.name) {
-          pushThinking(node.id, 0, "🔧 " + data.name + "\n");
         } else if (type === "text" && data.text) {
           node._pendingAnswer = (node._pendingAnswer || "") + data.text;
-          const el = document.getElementById("chat-stream-" + node.id);
-          if (el) {
-            el.textContent = node._pendingAnswer;
-            const list = document.querySelector(
-              '.wf-node[data-nid="' + node.id + '"] .chat-list',
-            );
-            if (isScrollNearBottom(list))
-              el.scrollIntoView({ block: "nearest" });
-          }
+          paint();
         } else if (type === "error" && data && data.message) {
           if (node._aborted || isCancelishError(data.message)) return;
-          const errLine = "\n⚠ " + data.message;
-          node._pendingAnswer = (node._pendingAnswer || "") + errLine;
-          pushThinking(node.id, 0, errLine + "\n");
-          const el = document.getElementById("chat-stream-" + node.id);
-          if (el) {
-            el.textContent = node._pendingAnswer;
-            const list = document.querySelector(
-              '.wf-node[data-nid="' + node.id + '"] .chat-list',
-            );
-            if (isScrollNearBottom(list))
-              el.scrollIntoView({ block: "nearest" });
-          }
+          node._pendingAnswer =
+            (node._pendingAnswer || "") + "\n⚠ " + data.message;
+          paint();
         }
       },
       onDone: (d) => {
@@ -14870,8 +16069,11 @@ async function chatSendAgent(node, text) {
         : final || node._pendingAnswer || I18n.t("（无输出）"),
       at: Date.now(),
     };
-    const rsn = thinkingTextOf(node) || "";
-    if (String(rsn).trim()) msg.reasoning = rsn;
+    /* 思考与输出分家：reasoning = 按步分段的纯思考（不含「🔧」），正文照常；
+       段快照走统一的落盘限长 / 可还原校验 */
+    const rsn = traceThinkDisplay(node.id, "") || thinkingTextOf(node) || "";
+    if (String(rsn).trim()) msg.reasoning = String(rsn);
+    attachTraceSegments(msg, node.id);
     if (Array.isArray(node._lastTools) && node._lastTools.length)
       msg.tools = node._lastTools;
     delete node._lastTools;
@@ -15110,6 +16312,8 @@ let _yamlViewerState = {
   outline: true,
   w: 0,
   h: 0,
+  editing: false,
+  raw: "",
 };
 
 function closeYamlViewer() {
@@ -15136,6 +16340,8 @@ function ensureYamlViewer() {
     '<button type="button" class="mini" id="yamlViewerReloadBtn"></button>' +
     '<button type="button" class="mini" id="yamlViewerCopyBtn"></button>' +
     '<button type="button" class="mini" id="yamlViewerRevealBtn"></button>' +
+    '<button type="button" class="mini" id="yamlViewerEditBtn"></button>' +
+    '<button type="button" class="mini primary" id="yamlViewerSaveBtn" disabled></button>' +
     '<button type="button" class="mini" id="yamlViewerCloseBtn">✕</button>' +
     "</div></div>" +
     '<div class="yaml-viewer-path" id="yamlViewerPath"></div>' +
@@ -15166,7 +16372,16 @@ function ensureYamlViewer() {
     if (ev.target === host) close();
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && host.classList.contains("on")) {
+    if (!host.classList.contains("on")) return;
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S")) {
+      if (_yamlViewerState.editing) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        saveYamlViewer();
+      }
+      return;
+    }
+    if (ev.key === "Escape") {
       closeYamlViewer();
     }
   });
@@ -15183,8 +16398,13 @@ function ensureYamlViewer() {
     if (_yamlViewerState.path) openYamlViewer(_yamlViewerState.path, { force: true });
   };
   host.querySelector("#yamlViewerCopyBtn").onclick = async () => {
+    const ed = host.querySelector("#yamlViewerEditor");
     const pre = host.querySelector("#yamlViewerCode");
-    const text = pre && pre.dataset.raw != null ? pre.dataset.raw : "";
+    const text = ed
+      ? ed.value
+      : pre && pre.dataset.raw != null
+        ? pre.dataset.raw
+        : "";
     try {
       if (navigator.clipboard && navigator.clipboard.writeText)
         await navigator.clipboard.writeText(text);
@@ -15199,6 +16419,12 @@ function ensureYamlViewer() {
     const p = _yamlViewerState.path;
     if (p && window.api && window.api.shellShowItem) window.api.shellShowItem(p);
   };
+  /* 编辑 / 保存：编辑模式 = 全文可改的 textarea，Ctrl+S 或「保存」写回文件 */
+  host.querySelector("#yamlViewerEditBtn").onclick = () => {
+    _yamlViewerState.editing = !_yamlViewerState.editing;
+    renderYamlViewerContent(_yamlViewerState.raw);
+  };
+  host.querySelector("#yamlViewerSaveBtn").onclick = () => saveYamlViewer();
 
   const box = host.querySelector("#yamlViewerBox");
   const rz = host.querySelector("#yamlViewerResize");
@@ -15236,7 +16462,8 @@ function applyYamlViewerChrome() {
   const code = host.querySelector("#yamlViewerCode");
   const ob = host.querySelector("#yamlViewerOutlineBtn");
   const wb = host.querySelector("#yamlViewerWrapBtn");
-  if (outline) outline.style.display = _yamlViewerState.outline ? "" : "none";
+  if (outline)
+    outline.style.display = _yamlViewerState.editing || !_yamlViewerState.outline ? "none" : "";
   if (code) code.classList.toggle("wrap", !!_yamlViewerState.wrap);
   if (ob) {
     ob.textContent = I18n.t("大纲");
@@ -15267,6 +16494,20 @@ function applyYamlViewerChrome() {
     rv.textContent = I18n.t("位置");
     rv.title = I18n.t("在文件夹中显示");
   }
+  const eb = host.querySelector("#yamlViewerEditBtn");
+  if (eb) {
+    eb.textContent = _yamlViewerState.editing ? I18n.t("取消编辑") : I18n.t("编辑");
+    eb.title = _yamlViewerState.editing
+      ? I18n.t("放弃修改，回到预览")
+      : I18n.t("编辑并保存此文件（Ctrl+S 保存）");
+    eb.classList.toggle("on", !!_yamlViewerState.editing);
+  }
+  const sb = host.querySelector("#yamlViewerSaveBtn");
+  if (sb) {
+    sb.textContent = I18n.t("保存");
+    sb.title = I18n.t("写回文件（Ctrl+S）");
+    sb.disabled = !_yamlViewerState.editing;
+  }
 }
 
 function renderYamlViewerContent(text) {
@@ -15279,6 +16520,21 @@ function renderYamlViewerContent(text) {
 
   const raw = String(text ?? "");
   const lines = raw.replace(/\r\n?/g, "\n").split("\n");
+  _yamlViewerState.raw = raw;
+  if (_yamlViewerState.editing) {
+    /* 编辑模式：全文可改 textarea，Ctrl+S 或「保存」写回文件 */
+    const ta = document.createElement("textarea");
+    ta.className = "viewer-editor";
+    ta.id = "yamlViewerEditor";
+    ta.value = raw;
+    ta.spellcheck = false;
+    body.appendChild(ta);
+    meta.textContent =
+      lines.length + I18n.t(" 行") + " · " + I18n.t("编辑模式：Ctrl+S 保存");
+    applyYamlViewerChrome();
+    ta.focus();
+    return;
+  }
   const pre = document.createElement("pre");
   pre.className = "yaml-viewer-code" + (_yamlViewerState.wrap ? " wrap" : "");
   pre.id = "yamlViewerCode";
@@ -15338,6 +16594,25 @@ function renderYamlViewerContent(text) {
   applyYamlViewerChrome();
 }
 
+/* 把当前编辑内容写回文件（YAML 阅读器） */
+async function saveYamlViewer() {
+  const host = document.getElementById("yamlViewerDlg");
+  const ed = host && host.querySelector("#yamlViewerEditor");
+  const p = _yamlViewerState.path;
+  if (!host || !ed || !p) return;
+  const content = ed.value;
+  try {
+    const r = await window.api.fileWriteText(p, content);
+    if (r && r.ok === false) throw new Error((r && r.error) || "write failed");
+    _yamlViewerState.raw = content;
+    _yamlViewerState.editing = false;
+    toast(I18n.t("已保存"), "ok");
+    renderYamlViewerContent(content);
+  } catch (e) {
+    toast(I18n.t("保存失败：") + ((e && e.message) || e), "err");
+  }
+}
+
 async function openYamlViewer(filePath, opts) {
   opts = opts || {};
   const resolved = resolveOpenableFilePath(filePath);
@@ -15356,6 +16631,8 @@ async function openYamlViewer(filePath, opts) {
     box.style.height = _yamlViewerState.h + "px";
   }
   _yamlViewerState.path = resolved;
+  _yamlViewerState.editing = false;
+  _yamlViewerState.raw = "";
   host.querySelector("#yamlViewerTitle").textContent = fileName(resolved) || "YAML";
   host.querySelector("#yamlViewerPath").textContent = resolved;
   host.querySelector("#yamlViewerPath").title = resolved;
@@ -15396,6 +16673,373 @@ function bindYamlViewerIpc() {
   }
 }
 
+/* ============ Markdown 阅读器（查看 + 大纲 + 编辑 / 保存） ============
+ * 与 YAML 阅读器同窗体样式（复用 yaml-viewer-* 类），内容区渲染为文档；
+ * 「编辑」切换为全文可改的 textarea，Ctrl+S 或「保存」写回文件。 */
+function isMdFilePath(p) {
+  return /\.(md|markdown|mdown)$/i.test(String(p || "").trim());
+}
+
+let _mdViewerState = {
+  path: "",
+  outline: true,
+  w: 0,
+  h: 0,
+  editing: false,
+  raw: "",
+};
+
+function closeMdViewer() {
+  const host = document.getElementById("mdViewerDlg");
+  if (host) host.classList.remove("on");
+}
+
+function ensureMdViewer() {
+  let host = document.getElementById("mdViewerDlg");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "mdViewerDlg";
+  host.className = "yaml-viewer-dlg";
+  host.innerHTML =
+    '<div class="yaml-viewer-box" id="mdViewerBox" role="dialog" aria-modal="true">' +
+    '<div class="yaml-viewer-head">' +
+    "<b>" +
+    I18n.t("Markdown 阅读器") +
+    "</b>" +
+    '<span class="yaml-viewer-title" id="mdViewerTitle"></span>' +
+    '<div class="yaml-viewer-actions">' +
+    '<button type="button" class="mini" id="mdViewerOutlineBtn"></button>' +
+    '<button type="button" class="mini" id="mdViewerReloadBtn"></button>' +
+    '<button type="button" class="mini" id="mdViewerCopyBtn"></button>' +
+    '<button type="button" class="mini" id="mdViewerRevealBtn"></button>' +
+    '<button type="button" class="mini" id="mdViewerEditBtn"></button>' +
+    '<button type="button" class="mini primary" id="mdViewerSaveBtn" disabled></button>' +
+    '<button type="button" class="mini" id="mdViewerCloseBtn">✕</button>' +
+    "</div></div>" +
+    '<div class="yaml-viewer-path" id="mdViewerPath"></div>' +
+    '<div class="yaml-viewer-main">' +
+    '<div class="yaml-viewer-outline" id="mdViewerOutline">' +
+    '<div class="yaml-viewer-outline-h">' +
+    I18n.t("大纲") +
+    "</div>" +
+    '<div class="yaml-viewer-outline-list" id="mdViewerOutlineList"></div>' +
+    "</div>" +
+    '<div class="yaml-viewer-body" id="mdViewerBody"></div>' +
+    "</div>" +
+    '<div class="yaml-viewer-foot">' +
+    '<span class="yaml-viewer-meta" id="mdViewerMeta"></span>' +
+    '<button type="button" class="mini primary" id="mdViewerClose2">' +
+    I18n.t("关闭") +
+    "</button></div>" +
+    '<div class="yaml-viewer-resize" id="mdViewerResize" title="' +
+    I18n.t("拖拽调整大小") +
+    '"></div>' +
+    "</div>";
+  document.body.appendChild(host);
+
+  const close = () => closeMdViewer();
+  host.querySelector("#mdViewerCloseBtn").onclick = close;
+  host.querySelector("#mdViewerClose2").onclick = close;
+  host.addEventListener("click", (ev) => {
+    if (ev.target === host) close();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (!host.classList.contains("on")) return;
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S")) {
+      if (_mdViewerState.editing) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        saveMdViewer();
+      }
+      return;
+    }
+    if (ev.key === "Escape") {
+      closeMdViewer();
+    }
+  });
+
+  host.querySelector("#mdViewerOutlineBtn").onclick = () => {
+    _mdViewerState.outline = !_mdViewerState.outline;
+    applyMdViewerChrome();
+  };
+  host.querySelector("#mdViewerReloadBtn").onclick = () => {
+    if (_mdViewerState.path) openMdViewer(_mdViewerState.path, { force: true });
+  };
+  host.querySelector("#mdViewerCopyBtn").onclick = async () => {
+    const ed = host.querySelector("#mdViewerEditor");
+    const text = ed ? ed.value : _mdViewerState.raw;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText)
+        await navigator.clipboard.writeText(text);
+      else if (window.api && window.api.clipboardWriteText)
+        await window.api.clipboardWriteText(text);
+      toast(I18n.t("已复制"), "ok");
+    } catch (e) {
+      toast(I18n.t("复制失败") + ": " + ((e && e.message) || e), "warn");
+    }
+  };
+  host.querySelector("#mdViewerRevealBtn").onclick = () => {
+    const p = _mdViewerState.path;
+    if (p && window.api && window.api.shellShowItem) window.api.shellShowItem(p);
+  };
+  /* 编辑 / 保存：编辑模式 = 全文可改的 textarea，Ctrl+S 或「保存」写回文件 */
+  host.querySelector("#mdViewerEditBtn").onclick = () => {
+    _mdViewerState.editing = !_mdViewerState.editing;
+    renderMdViewerContent(_mdViewerState.raw);
+  };
+  host.querySelector("#mdViewerSaveBtn").onclick = () => saveMdViewer();
+
+  const box = host.querySelector("#mdViewerBox");
+  const rz = host.querySelector("#mdViewerResize");
+  rz.addEventListener("mousedown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const startX = ev.clientX;
+    const startY = ev.clientY;
+    const rect = box.getBoundingClientRect();
+    const startW = rect.width;
+    const startH = rect.height;
+    const onMove = (e) => {
+      const nw = Math.max(560, Math.min(window.innerWidth - 24, startW + (e.clientX - startX)));
+      const nh = Math.max(420, Math.min(window.innerHeight - 24, startH + (e.clientY - startY)));
+      box.style.width = nw + "px";
+      box.style.height = nh + "px";
+      _mdViewerState.w = nw;
+      _mdViewerState.h = nh;
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+
+  return host;
+}
+
+function applyMdViewerChrome() {
+  const host = document.getElementById("mdViewerDlg");
+  if (!host) return;
+  const outline = host.querySelector("#mdViewerOutline");
+  const ob = host.querySelector("#mdViewerOutlineBtn");
+  if (outline)
+    outline.style.display = _mdViewerState.editing || !_mdViewerState.outline ? "none" : "";
+  if (ob) {
+    ob.textContent = I18n.t("大纲");
+    ob.classList.toggle("on", !!_mdViewerState.outline && !_mdViewerState.editing);
+    ob.title = _mdViewerState.outline
+      ? I18n.t("隐藏大纲")
+      : I18n.t("显示大纲");
+  }
+  const rb = host.querySelector("#mdViewerReloadBtn");
+  if (rb) {
+    rb.textContent = I18n.t("刷新");
+    rb.title = I18n.t("重新加载文件");
+  }
+  const cb = host.querySelector("#mdViewerCopyBtn");
+  if (cb) {
+    cb.textContent = I18n.t("复制");
+    cb.title = I18n.t("复制全文");
+  }
+  const rv = host.querySelector("#mdViewerRevealBtn");
+  if (rv) {
+    rv.textContent = I18n.t("位置");
+    rv.title = I18n.t("在文件夹中显示");
+  }
+  const eb = host.querySelector("#mdViewerEditBtn");
+  if (eb) {
+    eb.textContent = _mdViewerState.editing ? I18n.t("取消编辑") : I18n.t("编辑");
+    eb.title = _mdViewerState.editing
+      ? I18n.t("放弃修改，回到预览")
+      : I18n.t("编辑并保存此文件（Ctrl+S 保存）");
+    eb.classList.toggle("on", !!_mdViewerState.editing);
+  }
+  const sb = host.querySelector("#mdViewerSaveBtn");
+  if (sb) {
+    sb.textContent = I18n.t("保存");
+    sb.title = I18n.t("写回文件（Ctrl+S）");
+    sb.disabled = !_mdViewerState.editing;
+  }
+}
+
+function buildMdOutline(text) {
+  const items = [];
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s+(.*)$/);
+    if (!m) continue;
+    const level = m[1].length;
+    const label = m[2].trim().replace(/[#*_`[\]()]/g, "").slice(0, 60);
+    if (!label) continue;
+    items.push({ line: i + 1, label, depth: Math.min(2, level - 1) });
+    if (items.length >= 120) break;
+  }
+  return items;
+}
+
+function renderMdViewerContent(text) {
+  const host = ensureMdViewer();
+  const body = host.querySelector("#mdViewerBody");
+  const list = host.querySelector("#mdViewerOutlineList");
+  const meta = host.querySelector("#mdViewerMeta");
+  body.innerHTML = "";
+  list.innerHTML = "";
+
+  const raw = String(text ?? "");
+  const lines = raw.replace(/\r\n?/g, "\n").split("\n");
+  _mdViewerState.raw = raw;
+  if (_mdViewerState.editing) {
+    /* 编辑模式：全文可改 textarea，Ctrl+S 或「保存」写回文件 */
+    const ta = document.createElement("textarea");
+    ta.className = "viewer-editor";
+    ta.id = "mdViewerEditor";
+    ta.value = raw;
+    ta.spellcheck = false;
+    body.appendChild(ta);
+    meta.textContent =
+      lines.length + I18n.t(" 行") + " · " + I18n.t("编辑模式：Ctrl+S 保存");
+    applyMdViewerChrome();
+    ta.focus();
+    return;
+  }
+
+  const doc = document.createElement("div");
+  doc.className = "md-viewer-doc md";
+  doc.innerHTML = renderMarkdown(raw);
+  /* 给渲染出的标题按顺序编锚点，供大纲跳转定位 */
+  const heads = doc.querySelectorAll("h1, h2, h3, h4, h5, h6");
+  heads.forEach((h, i) => {
+    h.id = "md-h-" + i;
+  });
+  body.appendChild(doc);
+
+  const outline = buildMdOutline(raw);
+  outline.forEach((it, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "yaml-outline-item depth-" + it.depth;
+    b.textContent = it.label;
+    b.title = I18n.t("行号") + " " + it.line;
+    b.onclick = () => {
+      const el = document.getElementById("md-h-" + i);
+      if (!el) return;
+      doc.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((n) => n.classList.remove("hl"));
+      el.classList.add("hl");
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+    };
+    list.appendChild(b);
+  });
+  if (!outline.length) {
+    const empty = document.createElement("div");
+    empty.className = "yaml-viewer-empty";
+    empty.style.padding = "12px";
+    empty.style.fontSize = "12px";
+    empty.textContent = I18n.t("无大纲条目");
+    list.appendChild(empty);
+  }
+
+  const bytes = new Blob([raw]).size;
+  meta.textContent =
+    lines.length +
+    I18n.t(" 行") +
+    " · " +
+    bytes +
+    " B" +
+    (outline.length ? " · " + outline.length + I18n.t(" 个标题") : "");
+  applyMdViewerChrome();
+}
+
+/* 把当前编辑内容写回文件（Markdown 阅读器） */
+async function saveMdViewer() {
+  const host = document.getElementById("mdViewerDlg");
+  const ed = host && host.querySelector("#mdViewerEditor");
+  const p = _mdViewerState.path;
+  if (!host || !ed || !p) return;
+  const content = ed.value;
+  try {
+    const r = await window.api.fileWriteText(p, content);
+    if (r && r.ok === false) throw new Error((r && r.error) || "write failed");
+    _mdViewerState.raw = content;
+    _mdViewerState.editing = false;
+    toast(I18n.t("已保存"), "ok");
+    renderMdViewerContent(content);
+  } catch (e) {
+    toast(I18n.t("保存失败：") + ((e && e.message) || e), "err");
+  }
+}
+
+async function openMdViewer(filePath, opts) {
+  opts = opts || {};
+  const resolved = resolveOpenableFilePath(filePath);
+  if (!resolved) {
+    toast(I18n.t("无法打开路径"), "warn");
+    return;
+  }
+  if (!window.api || !window.api.fileReadText) {
+    toast(I18n.t("无法打开路径"), "warn");
+    return;
+  }
+  const host = ensureMdViewer();
+  const box = host.querySelector("#mdViewerBox");
+  if (_mdViewerState.w > 0 && _mdViewerState.h > 0) {
+    box.style.width = _mdViewerState.w + "px";
+    box.style.height = _mdViewerState.h + "px";
+  }
+  _mdViewerState.path = resolved;
+  _mdViewerState.editing = false;
+  _mdViewerState.raw = "";
+  host.querySelector("#mdViewerTitle").textContent = fileName(resolved) || "Markdown";
+  host.querySelector("#mdViewerPath").textContent = resolved;
+  host.querySelector("#mdViewerPath").title = resolved;
+
+  const body = host.querySelector("#mdViewerBody");
+  body.innerHTML =
+    '<div class="yaml-viewer-empty">' + I18n.t("加载中…") + "</div>";
+  host.classList.add("on");
+  applyMdViewerChrome();
+
+  try {
+    const rr = await window.api.fileReadText(resolved);
+    if (!rr || !rr.exists) {
+      body.innerHTML =
+        '<div class="yaml-viewer-empty">' +
+        I18n.t("文件不存在或无法预览") +
+        "</div>";
+      host.querySelector("#mdViewerMeta").textContent = "";
+      return;
+    }
+    renderMdViewerContent(rr.content || "");
+  } catch (e) {
+    body.innerHTML =
+      '<div class="yaml-viewer-empty">' +
+      escapeHtml(I18n.t("无法打开路径：") + ((e && e.message) || e)) +
+      "</div>";
+  }
+}
+
+function bindMdViewerIpc() {
+  if (document.documentElement._mtMdViewerBound) return;
+  document.documentElement._mtMdViewerBound = true;
+  if (window.api && typeof window.api.onMdViewerOpen === "function") {
+    window.api.onMdViewerOpen((data) => {
+      const p = data && data.path;
+      if (p) openMdViewer(p);
+    });
+  }
+}
+
+/* 按扩展名选择应用内文本阅读器（Markdown / YAML；其它文本退回 YAML 行视图） */
+async function openTextViewer(filePath) {
+  const resolved = resolveOpenableFilePath(filePath);
+  if (!resolved) {
+    toast(I18n.t("无法打开路径"), "warn");
+    return;
+  }
+  if (isMdFilePath(resolved)) return openMdViewer(resolved);
+  return openYamlViewer(resolved);
+}
+
 async function openContentRef(href, kind) {
   const raw = htmlUnescape(String(href || "").trim());
   if (!raw) return;
@@ -15429,6 +17073,10 @@ async function openContentRef(href, kind) {
   if (kind === "file" || /^file:/i.test(raw)) path = fileUrlToPath(raw);
   path = String(path || "").trim();
   if (!path) return;
+  if (isMdFilePath(path)) {
+    await openMdViewer(path);
+    return;
+  }
   if (isYamlFilePath(path)) {
     await openYamlViewer(path);
     return;
@@ -15868,7 +17516,8 @@ function pushThinking(nid, attempt, txt) {
 }
 function thinkingTextOf(node) {
   if (!node || !S.thinking || !S.thinking[node.id]) return "";
-  return S.thinking[node.id][attemptIdx(node)] || "";
+  /* 只给思考正文：旧版缓冲里残留的「🔧 工具名」行不再混进思考区 */
+  return stripToolLines(S.thinking[node.id][attemptIdx(node)] || "");
 }
 /* 运行中会话:思考内容默认折叠,仅展开时刷新正文,避免每个 reasoning 块都重写大文本(降低运行期负载) */
 function agentThinkText(st, live) {
@@ -15878,6 +17527,65 @@ function agentThinkText(st, live) {
       S.thinking["agent:" + ((st && st.id) || "")] &&
       S.thinking["agent:" + ((st && st.id) || "")][0]) || ""
   );
+}
+/* 思考区（reasoning 正文）的阅读位置：整表重绘时 details/pre 都是新元素，
+   所以把 scrollTop 与「是否跟随底部」按会话 id 存到 S 上，重建后还原。
+   跟随判定只看几何：用户上翻 → 脱离跟随；自己滚回底部 → 恢复跟随。
+   程序写入 scrollTop 期间（_convAutoScroll）不重新判定，避免与用户抢滚动条。 */
+const THINK_STICK_SLACK = 24;
+function agentThinkKey(st) {
+  return (st && st.id) || "agent";
+}
+function agentThinkStickOf(st) {
+  return !(
+    S._agentThinkStick && S._agentThinkStick[agentThinkKey(st)] === false
+  );
+}
+function rememberAgentThinkScroll(st, pre) {
+  if (!pre) return;
+  /* details 收起时 pre 不参与布局（clientHeight=0），此刻读到的 scrollTop
+     没有意义，不能拿它覆盖已存的阅读位置 */
+  if (!pre.clientHeight) return;
+  const k = agentThinkKey(st);
+  if (!S._agentThinkScroll) S._agentThinkScroll = {};
+  if (!S._agentThinkStick) S._agentThinkStick = {};
+  S._agentThinkScroll[k] = pre.scrollTop;
+  S._agentThinkStick[k] = isScrollNearBottom(pre, THINK_STICK_SLACK);
+}
+/* force = 用户真实点击展开且本就贴底 → 直接定位到底；否则按跟随状态还原 */
+function applyAgentThinkScroll(st, pre, force) {
+  if (!pre) return;
+  if (force || agentThinkStickOf(st)) {
+    setConvScrollTop(pre, pre.scrollHeight);
+  } else {
+    const top =
+      (S._agentThinkScroll && S._agentThinkScroll[agentThinkKey(st)]) || 0;
+    if (pre.scrollTop !== top) setConvScrollTop(pre, top);
+  }
+  if (!force) rememberAgentThinkScroll(st, pre);
+}
+/* 用户在内层 pre 上滚动 → 记录阅读位置与跟随状态（按 st.id 隔离） */
+function bindAgentThinkScroll(st, pre) {
+  if (!pre || pre._thinkStickBound) return pre;
+  pre._thinkStickBound = true;
+  let raf = 0;
+  const recompute = () => {
+    if (raf || typeof requestAnimationFrame !== "function") return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      if (pre._convAutoScroll) return;
+      rememberAgentThinkScroll(st, pre);
+    });
+  };
+  pre.addEventListener(
+    "scroll",
+    () => {
+      /* 程序滚动不改写用户意图（守卫解除后由下一次真实滚动重新判定） */
+      if (!pre._convAutoScroll) recompute();
+    },
+    { passive: true },
+  );
+  return pre;
 }
 let _thinkSumRAF = 0;
 function updateAgentThinkEl(st, live) {
@@ -15896,33 +17604,262 @@ function updateAgentThinkEl(st, live) {
       const pre = document.getElementById("agent-think-body");
       if (pre) {
         pre.textContent = txt;
-        pre.scrollTop = pre.scrollHeight;
+        /* 不再无条件拽到底：贴底才跟随，用户上翻就停在原地继续读 */
+        applyAgentThinkScroll(st, pre, false);
       }
     }
   });
 }
-/* 对话 / 会话列表：仅在已贴底（或强制）时自动滚到底，避免运行中上翻历史被拽回 */
+/* 对话 / 会话列表：仅在已贴底（或强制）时自动滚到底，避免运行中上翻历史被拽回。
+   「贴底」以用户意图为准（_convStick）：只有用户自己滚到底部才跟随；用户一旦
+   上翻（哪怕一点）立刻脱离跟随，直到用户自己再滚回底部。程序写入 scrollTop
+   不打断该判定（_convAutoScroll 守卫），避免与用户抢滚动条。 */
 const CONV_SCROLL_SLACK = 56;
 function isScrollNearBottom(el, slack) {
   if (!el) return true;
   const s = slack == null ? CONV_SCROLL_SLACK : slack;
   return el.scrollTop + el.clientHeight >= el.scrollHeight - s;
 }
+const CONV_STICK_SLACK = 24;
+/* 程序滚动：写完后一帧内到达的 scroll 事件视为自己造成的，不反过来改用户意图 */
+function setConvScrollTop(el, top) {
+  if (!el) return;
+  el._convAutoScroll = true;
+  el.scrollTop = top;
+  if (typeof requestAnimationFrame === "function")
+    requestAnimationFrame(() => {
+      el._convAutoScroll = false;
+    });
+  else el._convAutoScroll = false;
+}
+function convStickOf(el) {
+  return !(el && el._convStick === false);
+}
+function markConvStick(el, v) {
+  if (el) el._convStick = !!v;
+}
+function bindConvStick(el) {
+  if (!el || el._convStickBound) return el;
+  el._convStickBound = true;
+  /* _convStick 只由「用户自己的滚动」决定：undefined = 还没表过态 → 默认跟随。
+     不能按当前几何初始化：节点内联会话每次重绘都是新元素（scrollTop=0），
+     一初始化成 false 就再也不会跟到底了。 */
+  let raf = 0;
+  const recompute = () => {
+    if (raf || typeof requestAnimationFrame !== "function") return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      if (el._convAutoScroll) return;
+      el._convStick = isScrollNearBottom(el, CONV_STICK_SLACK);
+    });
+  };
+  el.addEventListener(
+    "scroll",
+    () => {
+      if (el._convAutoScroll) return;
+      recompute();
+    },
+    { passive: true },
+  );
+  /* 向上滚：立刻脱离跟随（不等下一帧，避免同帧内的程序滚动抢先把它拽回去）；
+     向下滚：交给 scroll 事件重新判定，滚到底自然恢复跟随。
+     若这一帧列表其实没动（滚轮落在内层代码块 / 折叠块上），撤销这次脱离。 */
+  el.addEventListener(
+    "wheel",
+    (ev) => {
+      if ((ev.deltaY || 0) >= 0) {
+        recompute();
+        return;
+      }
+      const before = el.scrollTop;
+      const prev = el._convStick;
+      el._convStick = false;
+      if (typeof requestAnimationFrame !== "function") return;
+      requestAnimationFrame(() => {
+        if (el.scrollTop === before) el._convStick = prev;
+      });
+    },
+    { passive: true },
+  );
+  el.addEventListener("touchmove", recompute, { passive: true });
+  el.addEventListener("pointerdown", recompute);
+  el.addEventListener("keydown", (ev) => {
+    const k = ev.key;
+    if (k === "ArrowUp" || k === "PageUp" || k === "Home")
+      el._convStick = false;
+    else if (k === "ArrowDown" || k === "PageDown" || k === "End") recompute();
+  });
+  return el;
+}
 function scrollElToBottomIfStuck(el, force) {
   if (!el) return;
-  if (force || isScrollNearBottom(el)) el.scrollTop = el.scrollHeight;
+  bindConvStick(el);
+  if (force) {
+    markConvStick(el, true);
+    setConvScrollTop(el, el.scrollHeight);
+    return;
+  }
+  /* 节点内联会话的跟随状态也记在元素几何上，两者任一成立才滚 */
+  if (!convStickOf(el) && !isScrollNearBottom(el, CONV_STICK_SLACK)) return;
+  setConvScrollTop(el, el.scrollHeight);
+}
+/* 阅读锚点：视口里最靠上的那条消息 + 它在视口内的偏移。
+   重绘 / 历史折叠会突变上方内容高度，用锚点还原才不会让画面突然跳走。 */
+function convRows(el) {
+  const out = [];
+  if (!el) return out;
+  for (const c of el.children || []) {
+    if (c.classList && c.classList.contains("dsh-msg")) out.push(c);
+  }
+  return out;
+}
+/* 行在滚动内容坐标系里的顶部位置。offsetTop 会随 offsetParent 变化（历史轨道
+   包裹层是后来插入的），所以用 rect 差值换算；base 每次批量测量算一次即可。 */
+function convScrollBase(el) {
+  try {
+    if (el._convBorderTop == null)
+      el._convBorderTop = parseFloat(getComputedStyle(el).borderTopWidth) || 0;
+    return el.getBoundingClientRect().top - el.scrollTop + el._convBorderTop;
+  } catch {
+    return 0;
+  }
+}
+function convRowTop(el, r, base) {
+  const b = base == null ? convScrollBase(el) : base;
+  try {
+    return r.getBoundingClientRect().top - b;
+  } catch {
+    return r.offsetTop;
+  }
+}
+function convAnchorOf(el) {
+  const top = el.scrollTop;
+  const base = convScrollBase(el);
+  const rows = convRows(el);
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const t = convRowTop(el, r, base);
+    if (t + r.offsetHeight > top + 1)
+      return {
+        key: r.dataset && r.dataset.histKey ? r.dataset.histKey : "",
+        idx: i,
+        off: t - top,
+      };
+  }
+  return null;
 }
 function captureConvStick(el, force) {
-  if (!el) return { stick: true, top: 0 };
+  if (!el) return { stick: true, top: 0, prevH: 0, anchor: null };
+  bindConvStick(el);
+  const stick = !!(
+    force ||
+    convStickOf(el) ||
+    isScrollNearBottom(el, CONV_STICK_SLACK)
+  );
+  if (force) markConvStick(el, true);
   return {
-    stick: !!(force || isScrollNearBottom(el)),
+    stick,
     top: el.scrollTop,
+    prevH: el.scrollHeight,
+    anchor: stick ? null : convAnchorOf(el),
   };
 }
 function restoreConvStick(el, cap) {
   if (!el || !cap) return;
-  if (cap.stick) el.scrollTop = el.scrollHeight;
-  else el.scrollTop = cap.top;
+  if (cap.stick) {
+    setConvScrollTop(el, el.scrollHeight);
+    return;
+  }
+  const a = cap.anchor;
+  if (a) {
+    const rows = convRows(el);
+    let r = a.key
+      ? rows.find((x) => x.dataset && x.dataset.histKey === a.key)
+      : null;
+    if (!r) r = rows[a.idx] || null;
+    if (r) {
+      setConvScrollTop(el, Math.max(0, convRowTop(el, r) - a.off));
+      return;
+    }
+  }  /* 锚点消失（可见轮次切片变化等）→ 按比例还原，绝不回落到「滚到底」 */
+  if (cap.prevH > 0 && el.scrollHeight !== cap.prevH) {
+    setConvScrollTop(
+      el,
+      Math.max(0, Math.round((cap.top * el.scrollHeight) / cap.prevH)),
+    );
+    return;
+  }
+  setConvScrollTop(el, cap.top);
+}
+
+/* ── 内层滚动块（思考过程 pre / 节点内联思考等自带 max-height 的块）───────
+   这些块以前每次流式增量都无条件 scrollTop = scrollHeight，用户根本翻不上去。
+   统一走这里的薄封装：判定与守卫全部复用上面会话列表那套（bindConvStick /
+   convStickOf / isScrollNearBottom / setConvScrollTop），语义一致：
+     · 只有「用户自己待在底部」才跟随，上翻（哪怕一点）立刻脱离；
+     · 程序写入由 _convAutoScroll 守卫，不反过来污染用户意图；
+     · 元素每次重绘都是新节点 → 跟随状态和阅读位置按 key 存到登记表，
+       重建后用 restoreStickPos 搬回去（重绘把 scrollTop 冲成 0 也是这个 bug 的一半）。 */
+const STICK_POS_SLACK = 24;
+const _stickPos = new Map();
+/* 流式内容变高后调用：贴底才跟到底；已在底部则不重复写，避免无谓的 scroll 抖动 */
+function stickScrollToBottom(el, force) {
+  if (!el) return false;
+  bindConvStick(el);
+  if (el.scrollHeight <= el.clientHeight + STICK_POS_SLACK) return false;
+  if (force) {
+    markConvStick(el, true);
+    setConvScrollTop(el, el.scrollHeight);
+    return true;
+  }
+  if (!convStickOf(el) && !isScrollNearBottom(el, STICK_POS_SLACK)) return false;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) return false;
+  setConvScrollTop(el, el.scrollHeight);
+  return true;
+}
+/* 重建前（或每次更新后）快照，供下一次重建还原 */
+function saveStickPos(el, key) {
+  if (!el || !key) return;
+  bindConvStick(el);
+  _stickPos.set(key, {
+    top: el.scrollTop,
+    prevH: el.scrollHeight,
+    stick: !!(
+      convStickOf(el) ||
+      isScrollNearBottom(el, STICK_POS_SLACK) ||
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 1
+    ),
+  });
+}
+/* 重建后还原：没有快照（首次展开）→ 按「跟随」起步，直接贴底 */
+function restoreStickPos(el, key) {
+  if (!el) return;
+  bindConvStick(el);
+  const s = key ? _stickPos.get(key) : null;
+  if (!s) {
+    markConvStick(el, true);
+    if (el.scrollHeight > el.clientHeight + STICK_POS_SLACK)
+      setConvScrollTop(el, el.scrollHeight);
+    return;
+  }
+  markConvStick(el, s.stick);
+  if (s.stick) {
+    setConvScrollTop(el, el.scrollHeight);
+    return;
+  }
+  /* 上方内容高度没变（流式只在末尾追加）→ 原样回到阅读位置 */
+  if (Math.abs(el.scrollHeight - s.prevH) <= STICK_POS_SLACK) {
+    setConvScrollTop(el, Math.max(0, s.top));
+    return;
+  }
+  const max = Math.max(0, el.scrollHeight - el.clientHeight);
+  const top =
+    s.prevH > 0 ? Math.round((s.top * el.scrollHeight) / s.prevH) : s.top;
+  setConvScrollTop(el, Math.min(Math.max(0, top), max));
+}
+/* 会话 / 节点销毁时清登记，避免按 id 无限增长 */
+function clearStickPos(key) {
+  if (key) _stickPos.delete(key);
 }
 
 /* 对话节点：聊天列表滚动到底部（新消息 / 思考流式时保持最新；上翻时不强制） */
@@ -15933,11 +17870,11 @@ function scrollChatToBottom(node, force) {
   if (!list) return;
   if (force) {
     node._chatNearBottom = true;
-    list.scrollTop = list.scrollHeight;
+    setConvScrollTop(list, list.scrollHeight);
     return;
   }
   if (node._chatNearBottom === false) {
-    if (node._chatScrollTop != null) list.scrollTop = node._chatScrollTop;
+    if (node._chatScrollTop != null) setConvScrollTop(list, node._chatScrollTop);
     return;
   }
   scrollElToBottomIfStuck(list);
@@ -15950,6 +17887,8 @@ function agentConvListEl(node) {
   conv.addEventListener(
     "scroll",
     () => {
+      /* 程序滚动（自动跟随 / 还原位置）不改写用户的跟随意图 */
+      if (conv._convAutoScroll) return;
       node._convNearBottom = isScrollNearBottom(conv);
       node._convScrollTop = conv.scrollTop;
     },
@@ -15990,6 +17929,8 @@ function agentConvListEl(node) {
     think.className = "dsh-think-live";
     think.id = "agent-node-think-" + node.id;
     think.textContent = thinkingTextOf(node) || "";
+    /* 此处 conv 尚未挂进文档，滚不动：用户的阅读位置由流式更新处
+       （app-db.js onDshNodeEvent → restoreStickPos）在元素已入文档后搬回 */
     row.appendChild(think);
     const tools = document.createElement("div");
     tools.className = "dsh-tools";
@@ -16000,9 +17941,20 @@ function agentConvListEl(node) {
     const body = document.createElement("div");
     body.className = "dsh-msg-body dsh-stream";
     body.id = "agent-node-stream-" + node.id;
-    body.textContent = node._pendingAnswer || "";
+    body.textContent = traceSayDisplay(node.id, node._pendingAnswer);
     row.appendChild(body);
     conv.appendChild(row);
+  }
+  /* 节点内会话末尾：同一份 Token 消耗累计报告（点击展开按模型明细） */
+  if (typeof tokBadgeEl === "function" && typeof tokOwnerForRun === "function") {
+    try {
+      const owner = tokOwnerForRun({ node, runKey: node.id });
+      const badge = owner && tokBadgeEl(owner);
+      if (badge) {
+        badge.style.margin = "6px 6px 2px";
+        conv.appendChild(badge);
+      }
+    } catch {}
   }
   scheduleHistoryCollapse(conv);
   return conv;
@@ -16012,13 +17964,19 @@ function scrollAgentConv(node, force) {
     '.wf-node[data-nid="' + node.id + '"] .agent-conv',
   );
   if (!list) return;
+  /* 节点内联思考块（dsh-think-live 自带 max-height 独立滚动条）：节点重绘会把它
+     换成全新元素、scrollTop 被冲成 0，这里在元素已入文档后把用户的阅读位置搬回来；
+     流式增量时的「贴底才跟随」由 app-db.js 走同一套 helper 判定。 */
+  const tKey = "agent-node-think-" + node.id;
+  const tEl = document.getElementById(tKey);
+  if (tEl && !tEl._convStickBound) restoreStickPos(tEl, tKey);
   if (force) {
     node._convNearBottom = true;
-    list.scrollTop = list.scrollHeight;
+    setConvScrollTop(list, list.scrollHeight);
     return;
   }
   if (node._convNearBottom === false) {
-    if (node._convScrollTop != null) list.scrollTop = node._convScrollTop;
+    if (node._convScrollTop != null) setConvScrollTop(list, node._convScrollTop);
     return;
   }
   scrollElToBottomIfStuck(list);
@@ -16065,12 +18023,18 @@ function refreshThinkingUI(nid) {
     icon.classList.toggle("live", !!has && !!node.running);
     icon.textContent = node.running ? I18n.t("◉ 思考中") : I18n.t("◉ 思考");
   }
-  /* 对话节点：思考内容流式显示（空内容由 CSS :empty 隐藏） */
+  /* 对话节点：思考内容流式显示（空内容由 CSS :empty 隐藏）
+     气泡自带 max-height 独立滚动条：以前每帧无条件 scrollTop = scrollHeight，
+     用户翻不上去。现在统一走薄封装——贴底才跟随，上翻立刻脱离，滚回底部恢复。 */
   const chatBubble = document.getElementById("chat-think-" + nid);
   if (chatBubble) {
-    const t = thinkingTextOf(node);
+    const t = traceThinkDisplay(nid, thinkingTextOf(node));
+    const bKey = "chat-think-" + nid;
     chatBubble.textContent = t;
-    chatBubble.scrollTop = chatBubble.scrollHeight;
+    /* 节点重绘会换成全新元素（scrollTop 被冲成 0）：把阅读位置与跟随意图搬回来 */
+    if (chatBubble._convStickBound) stickScrollToBottom(chatBubble);
+    else restoreStickPos(chatBubble, bKey);
+    saveStickPos(chatBubble, bKey);
     scrollChatToBottom(node);
   }
   if (
@@ -16090,8 +18054,12 @@ function refreshThinkingUI(nid) {
     thinkRAF[nid] = requestAnimationFrame(() => {
       const pre = document.getElementById("thinkPre");
       if (pre) {
-        pre.textContent = thinkingTextOf(node);
-        pre.scrollTop = pre.scrollHeight;
+        const pKey = "thinkPre:" + nid;
+        pre.textContent = traceThinkDisplay(nid, thinkingTextOf(node));
+        /* 思考弹窗自身限高滚动：贴底才跟随最新内容，用户上翻后不再被拽回 */
+        if (pre._convStickBound) stickScrollToBottom(pre);
+        else restoreStickPos(pre, pKey);
+        saveStickPos(pre, pKey);
       }
       const toolsBox = document.getElementById("thinkTools");
       if (toolsBox) {
@@ -16103,27 +18071,39 @@ function refreshThinkingUI(nid) {
   }
 }
 
-/* 点击思考 icon：弹窗实时显示当前选中尝试的思考内容 */
+/* 点击思考 icon：弹窗上半 = 「思考」（模型 reasoning，按步分段，不含工具行），
+   下半 = 「输出」（工具调用轨迹，走已有 #thinkTools 区） */
 function showThinking(node) {
   const running = !!node.running;
-  openOverlay((running ? I18n.t("思考中 · ") : I18n.t("思考内容 · ")) + node.title);
+  openOverlay((running ? I18n.t("思考中 · ") : I18n.t("思考 · ")) + node.title);
   S.thinkOpen = node.id;
   const bodyEl = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
   hint.textContent = running
-    ? I18n.t("模型正在思考，内容流式显示中…（模型支持思考时自动出现此弹窗入口）")
-    : I18n.t("以下为模型运行时的思考内容（仅保留在内存中，不写入存档）。");
+    ? I18n.t(
+        "上方是模型思考（reasoning），按步分段流式显示；工具调用不写进思考，见下方「输出 · 工具调用轨迹」。",
+      )
+    : I18n.t(
+        "上方是本轮模型的思考（reasoning，仅保留在内存中，不写入存档）；工具调用见下方「输出 · 工具调用轨迹」。",
+      );
   bodyEl.appendChild(hint);
+  const thinkTitle = document.createElement("div");
+  thinkTitle.className = "settings-sec-title";
+  thinkTitle.style.marginTop = "8px";
+  thinkTitle.textContent = I18n.t("思考 · 模型 reasoning");
+  bodyEl.appendChild(thinkTitle);
   const pre = document.createElement("pre");
   pre.id = "thinkPre";
   pre.className = "think-pre";
-  pre.textContent = thinkingTextOf(node);
+  pre.textContent = traceThinkDisplay(node.id, thinkingTextOf(node));
   bodyEl.appendChild(pre);
+  /* 重开弹窗：搬回上次关掉时的阅读位置；首次打开无快照 → 按「跟随」贴底 */
+  restoreStickPos(pre, "thinkPre:" + node.id);
   const toolsTitle = document.createElement("div");
   toolsTitle.className = "settings-sec-title";
   toolsTitle.style.marginTop = "8px";
-  toolsTitle.textContent = I18n.t("工具调用轨迹（点击展开参数与结果）");
+  toolsTitle.textContent = I18n.t("输出 · 工具调用轨迹（点击展开参数与结果）");
   bodyEl.appendChild(toolsTitle);
   const toolsBox = document.createElement("div");
   toolsBox.id = "thinkTools";
@@ -18977,9 +20957,12 @@ function openMetricsDistribution(metrics) {
     [I18n.t("首 token 平均"), metrics.firstTokenAvgMs > 0 ? (metrics.firstTokenAvgMs / 1000).toFixed(1) + "s" : "—"],
     [I18n.t("生成速度"), Math.round(metrics.tokPerSec || 0) + " tok/s"],
     [I18n.t("输入 token"), fmtTok(metrics.inputTokens)],
+    [I18n.t("缓存读入"), fmtTok(metrics.cacheReadTokens || 0)],
+    [I18n.t("缓存写入"), fmtTok(metrics.cacheWriteTokens || 0)],
     [I18n.t("输出 token"), fmtTok(metrics.outputTokens)],
     [I18n.t("推理 token"), fmtTok(metrics.reasoningTokens)],
     [I18n.t("缓存命中"), Math.round(metrics.cacheHitPct || 0) + "%"],
+    [I18n.t("墙钟用时"), fmtDurLong(metrics.wallMs || 0)],
     [I18n.t("上下文窗口"), metrics.contextWindow > 0 ? fmtTok(metrics.contextWindow) + " tok" : "—"],
     [I18n.t("子代理"), String(metrics.subagents || 0)],
     [I18n.t("后台任务"), String(metrics.jobs || 0)],
@@ -18997,6 +20980,62 @@ function openMetricsDistribution(metrics) {
     table.appendChild(tr);
   }
   body.appendChild(table);
+  /* 本次运行的逐模型台账（模型不同，单价与缓存表现完全不同） */
+  if (Array.isArray(metrics.models) && metrics.models.length) {
+    const t = document.createElement("div");
+    t.className = "settings-sec-title";
+    t.style.marginTop = "8px";
+    t.textContent = I18n.t("按模型（本次运行）");
+    body.appendChild(t);
+    const mt = document.createElement("table");
+    mt.className = "tok-badge-table metrics-model-table";
+    const head = document.createElement("tr");
+    for (const h of [
+      I18n.t("模型 / 服务商"),
+      I18n.t("计费输入"),
+      I18n.t("缓存读"),
+      I18n.t("命中"),
+      I18n.t("输出"),
+      I18n.t("推理"),
+      I18n.t("调用"),
+      "LLM",
+      I18n.t("工具"),
+    ]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      head.appendChild(th);
+    }
+    mt.appendChild(head);
+    for (const b of metrics.models) {
+      const billed =
+        (b.inputTokens || 0) + (b.cacheReadTokens || 0) + (b.cacheWriteTokens || 0);
+      const tr = document.createElement("tr");
+      const name = document.createElement("td");
+      name.textContent = b.model || "?";
+      const prov = document.createElement("span");
+      prov.className = "tok-badge-prov";
+      prov.textContent = b.provider || "";
+      name.appendChild(prov);
+      tr.appendChild(name);
+      const cells = [
+        fmtTok(billed),
+        fmtTok(b.cacheReadTokens || 0),
+        Math.round(billed > 0 ? ((b.cacheReadTokens || 0) / billed) * 100 : 0) + "%",
+        fmtTok(b.outputTokens || 0),
+        fmtTok(b.reasoningTokens || 0),
+        String(b.calls || 0),
+        fmtDurLong(b.llmMs || 0),
+        fmtDurLong(b.toolMs || 0),
+      ];
+      for (const c of cells) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
+      mt.appendChild(tr);
+    }
+    body.appendChild(mt);
+  }
   if (metrics.tools && metrics.tools.length) {
     const t = document.createElement("div");
     t.className = "settings-sec-title";
@@ -19110,7 +21149,12 @@ function ensureAgentSessionForNode(node) {
     if (marked) {
       if (marked.content !== node.task) marked.content = node.task;
     } else {
-      sess.messages.unshift({ role: "user", content: node.task, _src: "node-task" });
+      sess.messages.unshift({
+        role: "user",
+        content: node.task,
+        _src: "node-task",
+        at: Number(sess.createdAt || sess.updatedAt) || Date.now(),
+      });
     }
   }
   /* 多轮会话历史同步进会话（去重追加，保持节点与会话一致） */
@@ -19149,8 +21193,8 @@ function devPathOf(node) {
   }
   return "";
 }
-/* 开发任务书：节点概述 + 项目根 + 上层模块（注入会话的契约消息） */
-function devNodeContractText(node) {
+/* 开发任务书：节点概述 + 项目根 + 上层模块 + 本次开发需求（注入会话的契约消息） */
+function devNodeContractText(node, req) {
   const lines = [];
   const dk = devKindOf(node) || "module";
   lines.push(
@@ -19161,13 +21205,25 @@ function devNodeContractText(node) {
       I18n.t(DEV_KIND_LABEL[dk] || "模块") +
       "）",
   );
-  const note = String(node.note || "").trim();
+  const noteParts = devNoteParts(node && node.note);
   lines.push(
-    I18n.t("模块概述：") +
-      (note || I18n.t("（暂无概述 · 请先补充该模块在项目中的作用）")),
+    I18n.t("模块功能（面向非技术）：") +
+      (noteParts.design || I18n.t("（暂无 · 请先说明该模块在业务上做什么、给谁用）")),
   );
+  lines.push(
+    I18n.t("实现要点（面向技术）：") +
+      (noteParts.impl || I18n.t("（暂无 · 细化或开发时按两段式规范补全）")),
+  );
+  const reqText = String(req === undefined || req === null ? "" : req).trim();
+  if (reqText) lines.push(I18n.t("本次开发需求：") + reqText);
   const p = devPathOf(node);
   if (p) lines.push(I18n.t("项目根目录：") + p);
+  if (p)
+    lines.push(
+      I18n.t(
+        "项目根目录若有 AGENTS.md（Agent 共识文件），请先读并遵守其中的「目录约定」与「不要修改」清单；新文件按约定放置，清单内路径一律不要改动。",
+      ),
+    );
   const parent = node.parentSuperId ? nodeById(node.parentSuperId) : null;
   if (parent && parent.dev) {
     lines.push(
@@ -19199,7 +21255,17 @@ function devNodeContractText(node) {
   );
   lines.push(
     I18n.t(
-      "完成后请更新画布上该开发节点的概述（note）与状态（devStatus），并用一句话向用户汇报改了什么。",
+      "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），用一句话向用户汇报改了什么。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "本会话是代码开发工作：不要调用 mtnode-dev-architect 技能（该技能仅用于在 MTNode 画布上构建开发节点架构，开发 / 细化绑定会话不需要它）。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "本次开发需求已在任务书中一次性完整给出：请按此执行，不要分两次会话输入重复提交（重复输入会造成上下文割裂与重复开工）。",
     ),
   );
   return lines.join("\n");
@@ -19220,6 +21286,9 @@ function devSessionsOf(node) {
     .filter((s) => ids.indexOf(s.id) >= 0)
     .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
 }
+/* 计划只属于发起它的那个会话：新建「开发 / 细化」绑定会话一律从干净上下文开始，
+   不再跨会话沿用旧计划（旧计划留在它自己的会话里，由面板「▶ 继续执行」续跑）。
+   devSessionsOf 仍服务「最近一次要求」展示（devLastRequestOf）。 */
 function devSessionTitleOf(node, mode) {
   return (
     (mode === "refine" ? I18n.t("细化 · ") : I18n.t("开发 · ")) +
@@ -19249,7 +21318,7 @@ function syncDevSessionTitles(node) {
   }
 }
 /* 每次「开发 / 细化」都新建会话运行：上下文干净，工作区 = 项目根 */
-function createDevSessionForNode(node, mode) {
+function createDevSessionForNode(node, mode, req) {
   if (!node || node.kind !== "super" || !node.dev) return null;
   /* 该功能块（或就近上层功能块）选定的 Agent 模型：新建绑定会话直接沿用；
      都没选则保持原有默认（DeepSeek 官方路由 + 引擎默认模型） */
@@ -19268,18 +21337,50 @@ function createDevSessionForNode(node, mode) {
     archived: false,
     updatedAt: Date.now(),
   };
+  /* 任务书整份写入会话契约 _devContract（发送时注入系统提示，见 agentSessionSend）：
+     不占用户消息位 —— 会话里只显示用户填写的关键输入（本次开发需求 / 细化范围） */
+  sess._devContract = devNodeContractText(node, req);
+  const reqText = String(req === undefined || req === null ? "" : req).trim();
   sess.messages.unshift({
     role: "user",
-    content: devNodeContractText(node),
+    content:
+      mode === "refine"
+        ? I18n.t("细化该功能块")
+        : reqText
+          ? I18n.t("本次开发需求：") + reqText
+          : sess._devContract,
     _src: "dev-node",
     _nid: node.id,
   });
+  /* 每个「开发 / 细化」绑定会话 = 独立干净上下文（首轮只有一条用户关键输入消息，
+     任务书整份在 _devContract 里随系统提示注入，不占消息位）：
+     不再整份沿用上一份没跑完的计划，也不注入「沿用旧计划」指令 ——
+     跨会话沿用正是「新会话开始时就突然执行旧计划」的直接来源，已取消。 */
   list.unshift(sess);
   node.agentSessionId = sess.id;
   if (!Array.isArray(node.devSessionIds)) node.devSessionIds = [];
   node.devSessionIds.unshift(sess.id);
   while (node.devSessionIds.length > 24) node.devSessionIds.pop();
   return sess;
+}
+/* 从任务书 / 首条 dev-node 消息里取「本次开发需求」行（还原最近一次要求；
+   新会话首条消息就是「本次开发需求：」+ 用户输入，旧会话则是整份任务书里的那一行） */
+function devReqTextOfMessage(m) {
+  if (!m || m.role !== "user") return "";
+  const body = String(m.content || "");
+  /* 任务书在创建会话时按当时 UI 语言写入，解析时兼容当前语言与中文原文 */
+  const prefixes = [I18n.t("本次开发需求："), "本次开发需求："];
+  const lines = body.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    for (const prefix of prefixes) {
+      if (line.indexOf(prefix) !== 0) continue;
+      const req = line.slice(prefix.length).trim();
+      if (req) return req;
+    }
+  }
+  return "";
 }
 /* 对话框里展示「最近一次要求」，方便用户接着迭代 */
 function devLastRequestOf(node) {
@@ -19292,6 +21393,11 @@ function devLastRequestOf(node) {
     const t = String(m.content || "").trim();
     if (!t) continue;
     return t.length > 160 ? t.slice(0, 160) + "…" : t;
+  }
+  /* 会话首轮只有合并后的任务书单条消息：从「本次开发需求：」行还原 */
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const req = devReqTextOfMessage(msgs[i]);
+    if (req) return req.length > 160 ? req.slice(0, 160) + "…" : req;
   }
   return "";
 }
@@ -19343,7 +21449,7 @@ async function developDevNode(node) {
     title: I18n.t("开发") + " · " + (node.title || I18n.t("开发节点")),
     wide: true,
     rows,
-    note: { label: I18n.t("模块概述"), text: node.note },
+    note: devNoteDialogField(node),
     msg: I18n.t("请说明本次要开发或迭代的内容；确认后将新建一个绑定该模块的开发会话并在其中运行。"),
     warn: p
       ? ""
@@ -19375,13 +21481,15 @@ async function developDevNode(node) {
 async function startDevSessionWithText(node, text) {
   const body = String(text || "").trim();
   if (!node || node.kind !== "super" || !node.dev || !body) return;
-  const sess = createDevSessionForNode(node, "dev");
+  const sess = createDevSessionForNode(node, "dev", body);
   if (!sess) return;
   if (node.devStatus !== "done") node.devStatus = "wip";
   S.agentActiveId = sess.id;
   await persistAgentSession();
   scheduleSave(true);
   renderCanvas();
+  /* 功能块刚绑上这条开发会话：运行队列按「自身 / 绑定会话」口径立刻重算一次 */
+  updateRunQueuePanel();
   toast(
     I18n.t("已创建开发会话「") +
       (sess.title || "") +
@@ -19389,15 +21497,23 @@ async function startDevSessionWithText(node, text) {
     "ok",
   );
   try {
-    await agentSessionSend(body);
+    /* 任务书整份在会话契约 _devContract 里（发送时注入系统提示），首条消息只有
+       用户关键输入；发这条单消息即可启动本轮（_devContract 分支只读首条 dev-node 消息） */
+    await agentSessionSend("", { _devContract: true });
   } catch (err) {
     toast(I18n.t("开发会话启动失败：") + ((err && err.message) || String(err)), "err");
   }
 }
 function assistantMsgFromNode(node, text) {
   const msg = { role: "assistant", content: text };
-  const rsn = thinkingTextOf(node) || "";
-  if (String(rsn).trim()) msg.reasoning = rsn;
+  /* 思考与输出彻底分家：content = 模型输出正文（下游数据口径不变），
+     reasoning = 纯思考（按步分段，段间空行，不含「🔧」），
+     segments  = 本轮轨迹的段快照（think/say/err 带正文，tool 只留 callId 与 step） */
+  const rsn =
+    traceThinkDisplay(node && node.id, "") || (node ? thinkingTextOf(node) : "");
+  if (String(rsn).trim()) msg.reasoning = String(rsn);
+  /* 段快照与落盘限长 / 可还原校验统一走 attachTraceSegments */
+  attachTraceSegments(msg, node && node.id);
   const tools = (S.nodeTools && S.nodeTools[node.id]) || [];
   if (tools.length) msg.tools = tools.map((t) => Object.assign({}, t));
   const r = node ? selResult(node) : null;

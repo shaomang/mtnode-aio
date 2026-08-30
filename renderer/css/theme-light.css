@@ -227,6 +227,21 @@ body.theme-light .wf-node:not(.global):not(.agent-super).sel {
   outline-offset: 2px;
 }
 
+/* 开发节点运行中 + 选中：呼吸灯继续并且更亮。浅底上青色霓虹会发灰，
+   故选中环与动画里的青色光晕（--dev-sel-rgb）一起换成主题蓝。 */
+body.theme-light .wf-node.super.dev-el.dev-running.sel {
+  --dev-sel-rgb: 91, 159, 216;
+  outline: 2px solid rgba(91, 159, 216, .95);
+  outline-offset: 2px;
+}
+
+/* 建议调研中（sug）+ 选中：琥珀呼吸灯照旧，选中环同样换主题蓝（浅底不刺眼） */
+body.theme-light .wf-node.super.dev-el.dev-running-sug.sel {
+  --dev-sel-rgb: 91, 159, 216;
+  outline: 2px solid rgba(91, 159, 216, .95);
+  outline-offset: 2px;
+}
+
 body.theme-light .wf-node.agent-super {
   background:
     linear-gradient(180deg, #eef1fd, #f6f9fe) padding-box,
@@ -246,6 +261,35 @@ body.theme-light .wf-node.task.st-done { border-color: #7cc99a; }
 body.theme-light .wf-node.task.st-running,
 body.theme-light .wf-node.task.st-run { border-color: #e8a860; }
 body.theme-light .wf-node.task.st-failed { border-color: #e0899a; }
+
+/* 任务节点：状态灯 + 选中。浅底上高饱和霓虹会发灰，所以选中环换成主题蓝，
+   并把各状态灯的 RGB 三元组（--task-glow-rgb）换成上面这套浅底专用色 ——
+   选中后状态灯依旧保留（同一 hue，只是光晕更浓 + 一圈蓝色描边），不熄灭。
+   阻塞中的闪烁（task-block-blink-sel）读的就是这两个变量，跟着一起换色。 */
+body.theme-light .wf-node.task { --task-sel-rgb: 91, 159, 216; }
+body.theme-light .wf-node.task.st-done { --task-glow-rgb: 60, 150, 96; }
+body.theme-light .wf-node.task.st-running,
+body.theme-light .wf-node.task.st-run { --task-glow-rgb: 206, 128, 32; }
+body.theme-light .wf-node.task.st-failed { --task-glow-rgb: 198, 78, 104; }
+body.theme-light .wf-node.task.st-blocked,
+body.theme-light .wf-node.task.st-block { --task-glow-rgb: 176, 138, 24; }
+
+body.theme-light .wf-node.task.st-done.sel,
+body.theme-light .wf-node.task.st-running.sel,
+body.theme-light .wf-node.task.st-run.sel,
+body.theme-light .wf-node.task.st-failed.sel,
+body.theme-light .wf-node.task.st-blocked.sel,
+body.theme-light .wf-node.task.st-block.sel {
+  border-color: rgb(var(--task-glow-rgb, 60, 150, 96));
+  box-shadow:
+    0 0 0 1.5px rgba(var(--task-glow-rgb, 60, 150, 96), .5),
+    0 0 12px rgba(var(--task-glow-rgb, 60, 150, 96), .32),
+    0 0 8px rgba(var(--task-sel-rgb, 91, 159, 216), .26),
+    var(--nfloat);
+  outline: 2px solid rgba(var(--task-sel-rgb, 91, 159, 216), .95);
+  outline-offset: 2px;
+}
+
 body.theme-light .wf-node.judge.sel { border-color: #c3a6ec; }
 body.theme-light .wf-node.ctrl-ok.sel { border-color: #8cc9a0; }
 body.theme-light .wf-node.ctrl-fail.sel { border-color: #e6a19a; }
@@ -474,6 +518,57 @@ body.theme-light .agent-list .dsh-think-live {
   color: var(--muted);
 }
 
+/* ── 分段渲染（.dsh-seg-*）浅色版：思考段淡灰底、正文段正常正文色 ── */
+body.theme-light .dsh-seg-think {
+  color: var(--muted);
+  background: rgba(90, 100, 114, .09);
+  border-left-color: var(--bd2);
+}
+body.theme-light .dsh-seg-think>summary {
+  color: var(--muted);
+}
+body.theme-light .dsh-seg-think>summary::before {
+  color: var(--bd2);
+}
+body.theme-light .dsh-seg-think>summary:hover,
+body.theme-light .dsh-seg-think[open]>summary {
+  color: var(--ink);
+}
+body.theme-light .dsh-seg-think pre,
+body.theme-light .dsh-seg-think .dsh-think-live {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  color: var(--muted);
+}
+body.theme-light .dsh-seg-say,
+body.theme-light .dsh-stream>.dsh-seg-say {
+  color: var(--ink);
+}
+body.theme-light .dsh-seg-tool {
+  color: var(--cyan2);
+  background: rgba(32, 104, 184, .07);
+  border-left-color: var(--cyan);
+}
+body.theme-light .agent-list .dsh-seg-think {
+  color: var(--muted);
+  background: rgba(90, 100, 114, .07);
+}
+body.theme-light .agent-list .dsh-seg-think summary {
+  color: var(--muted);
+}
+body.theme-light .agent-list .dsh-seg-think summary::before {
+  color: var(--bd2);
+}
+body.theme-light .agent-list .dsh-seg-think pre,
+body.theme-light .agent-list .dsh-seg-think .dsh-think-live {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  color: var(--muted);
+}
+body.theme-light .agent-list .dsh-seg-say {
+  color: var(--ink);
+}
+
 /* ── 消息内 Markdown 代码块：深底改浅 ── */
 body.theme-light .md code {
   background: rgba(0, 0, 0, .06);
@@ -530,6 +625,18 @@ body.theme-light .agent-conv {
 body.theme-light .agent-conv .dsh-msg-body {
   color: var(--ink);
 }
+body.theme-light .agent-conv .dsh-seg-say {
+  color: var(--ink);
+}
+body.theme-light .agent-conv .dsh-seg-think {
+  color: var(--muted);
+}
+body.theme-light .agent-conv .dsh-stream {
+  color: var(--muted);
+}
+body.theme-light .agent-conv .dsh-stream>.dsh-seg-say {
+  color: var(--ink);
+}
 
 /* ── 输入框与发送按钮 ── */
 /* ── 会话发送队列 / 任务清单：浅色主题下重涂（暗色版用的是白字 + 半透明白底） ── */
@@ -566,6 +673,30 @@ body.theme-light .at-item.st-failed .at-text {
 }
 body.theme-light .at-bar {
   background: rgba(0, 0, 0, .1);
+}
+/* 计划面板 live 观测（.ap-stat / .ap-live / .ap-tool）：随 .at-* 一起在浅色主题重涂 */
+body.theme-light .ap-stat {
+  border-color: rgba(60, 120, 220, .32);
+  background: rgba(60, 120, 220, .08);
+  color: var(--cyan2);
+}
+body.theme-light .ap-stat.ap-stat-err {
+  border-color: rgba(179, 38, 30, .3);
+  background: rgba(179, 38, 30, .07);
+  color: #b3261e;
+}
+body.theme-light .ap-live {
+  border-left-color: rgba(32, 104, 184, .45);
+}
+body.theme-light .ap-tool.st-ok .ap-tool-s {
+  color: var(--green);
+}
+body.theme-light .ap-tool.st-run .ap-tool-s {
+  color: var(--cyan);
+}
+body.theme-light .ap-tool.st-err .ap-tool-s,
+body.theme-light .ap-tool.st-err .ap-tool-r {
+  color: #b3261e;
 }
 body.theme-light .aq-del:hover,
 body.theme-light .at-del:hover {

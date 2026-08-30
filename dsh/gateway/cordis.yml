@@ -61,6 +61,14 @@
   name: './canvas-plugin.mjs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
+# MTNode 回滚捕获:在工具 pre/post 观察点采样「改前正文 / 改后指纹」,经同一条桥
+# 单向发 journal 帧给 gateway,由主进程落盘成对象库 + 轮次账本(契约见 dsh/DESIGN.md
+# 「回滚账本与 journal 帧」)。插件自己不写盘;缺 MTNODE_ROLLBACK_DIR 或
+# MTNODE_BRIDGE_PORT 时整体 no-op,行为与未接入时一致。
+- id: mtnode-rollback
+  name: './rollback-plugin.mjs'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+
 # MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实
 # （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
 - id: mtnode-db

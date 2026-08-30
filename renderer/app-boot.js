@@ -124,7 +124,10 @@ function paintLangBtn() {
   const loc = I18n.getLocale ? I18n.getLocale() : "zh";
   const en = loc === "en";
   if (badge) badge.textContent = en ? "EN" : "中";
-  const tip = en ? I18n.t("切换为中文") : I18n.t("切换为英文");
+  const tip =
+    (en ? I18n.t("切换为中文") : I18n.t("切换为英文")) +
+    "\n" +
+    I18n.t("智能会话与节点的回复语言会跟随此设置");
   btn.title = tip;
   btn.setAttribute("aria-label", tip);
   btn.classList.toggle("is-en", en);
@@ -336,8 +339,6 @@ async function init() {
   I18n.applyDom(document);
   paintLangBtn();
   paintApprovalsBtn();
-  if (typeof S.config.beta !== "boolean") S.config.beta = false;
-  applyBetaUI();
   document.querySelectorAll(".topbar .btn-ico").forEach((el) => {
     const tip = el.getAttribute("data-tip");
     const cap = el.querySelector(".btn-ico-txt");
@@ -420,6 +421,7 @@ async function init() {
   S.assistWorkspace = S.config.assistWorkspace || "";
   S.assistScope = S.config.assistScope === "global" ? "global" : "current";
   S.assistW = clampAssistW(S.config.assistW || 320);
+  S.agentSideW = clampAgentSideW(S.config.agentSideW || AGENT_SIDE_W_MIN);
   S.assistMessages = Array.isArray(S.config.assistMessages)
     ? S.config.assistMessages.map((m) => {
         const o = {
@@ -431,6 +433,11 @@ async function init() {
         return o;
       })
     : [];
+  /* 全局助手的 Token 消耗累计报告（按模型 + 时间） */
+  S.assistTokenReport =
+    S.config.assistTokenReport && typeof S.config.assistTokenReport === "object"
+      ? S.config.assistTokenReport
+      : null;
   try {
     const dc = await window.api.dshConfig();
     if (dc && dc.workspaceFallback) S.dshWorkspaceFallback = dc.workspaceFallback;
@@ -467,7 +474,6 @@ async function init() {
   $("#btnImport").onclick = importWorkflowDialog;
   $("#btnDelWf").onclick = deleteWorkflowDialog;
   $("#btnSettings").onclick = openSettings;
-  if ($("#btnZen") && window.ZenMode) $("#btnZen").onclick = () => window.ZenMode.toggle();
   if ($("#btnPlugins")) $("#btnPlugins").onclick = openAppPluginsDialog;
   if ($("#btnDocs"))
     $("#btnDocs").onclick = () => {
@@ -498,6 +504,15 @@ async function init() {
   if (btnWrapSuper) btnWrapSuper.onclick = () => wrapSelectionAsSuper();
   const btnAutoLayout = $("#btnAutoLayout");
   if (btnAutoLayout) btnAutoLayout.onclick = () => oneClickAutoLayout();
+  const btnHideWires = $("#btnHideWires");
+  if (btnHideWires) btnHideWires.onclick = () => toggleHideWires();
+  /* 「隐藏线」记住上次状态（跨重启的视觉偏好，不入画布数据） */
+  try {
+    S.hideWires = localStorage.getItem(HIDE_WIRES_LS) === "1";
+  } catch {
+    S.hideWires = false;
+  }
+  applyWiresVisibility();
   $("#btnSidebar").onclick = toggleSidebar;
   $("#sideFilter").addEventListener("input", renderSidebar);
   $("#wfName").addEventListener("input", (ev) => {
@@ -693,8 +708,14 @@ async function init() {
             stopNode(live);
             return;
           }
-          st._cancelled = true;
-          dshCancelActive("agent:" + st.id);
+          /* 会话视图里的 ■ 与左下角运行队列同一条口径（app.js stopSessionRuns）：
+             除了作废并取消自己那一轮，还顺手停掉正在跑的计划并行组
+             （并行组里每个子任务各有 runKey，只 cancel agent:<id> 停不掉它们）。 */
+          if (typeof stopSessionRuns === "function") stopSessionRuns(st);
+          else {
+            st._cancelled = true;
+            dshCancelActive("agent:" + st.id);
+          }
           return;
         }
         if (inp) inp.value = "";
@@ -737,8 +758,12 @@ async function init() {
     setAssistOpen(S.assistOpen, false);
     applyAssistWidth(S.assistW, false);
     bindAssistResize();
+    /* 会话左栏宽度：启动夹取一次 + 绑拖拽把手 */
+    applyAgentSideWidth(S.agentSideW, false);
+    bindAgentSideResize();
     bindOpenableContentClicks();
     bindYamlViewerIpc();
+    bindMdViewerIpc();
     setAssistLive2d(false, false); /* Live2D 入口已隐藏，占位默认关闭 */
     const aBtn = $("#btnAssist");
     if (aBtn) aBtn.onclick = toggleAssist;

@@ -5,9 +5,10 @@
  *   [1] 建议契约解析（JSON / 代码块 / 键名带空格 / 编号列表兜底 / 脏数据拒绝 / 缓存读写）
  *   [2] 喂给 AI 的「当前开发进度」上下文与只读纪律提示
  *   [3] 勾选结果 → 开发任务正文
+ *   [3.1] AGENTS.md 共识文件（任务书 / 技能 / 文档接线）
  *   [4] 「建议」按钮全流程：确认框 → 只读调研（进度态）→ 4 条方案多选 + 补充 → 就地「开发」
  *   [5] 已有缓存：查看上次建议（不重跑模型）·「换一批」重新评估
- *   [6] 键盘：数字键多选 · Ctrl+Enter 开发 · Esc 取消（并中断调研）
+ *   [6] 键盘：数字键多选 · Ctrl+Enter 开发 · Esc 返回（调研后台继续、不中断）
  *   [7] 异常：模型报错 / 不按契约返回 / 用户取消 / 误调非开发节点
  *   [8] 接线：脚本引入 · 两处「建议」按钮 + 文件「打开」 · 样式 · 工具描述与技能 · 英文词条 */
 const fs = require("fs");
@@ -432,6 +433,9 @@ const MODEL_JSON =
   ok(prompt.indexOf("恰好 4 条") >= 0, "任务书要求恰好 4 条方案");
   ok(prompt.indexOf("聚焦错误处理") >= 0, "任务书带用户关注点");
   ok(prompt.indexOf("只读") >= 0 && prompt.indexOf("不要全量读源码") >= 0, "任务书重申只读且限制读取量");
+  ok(sys.indexOf("AGENTS.md") >= 0, "系统提示要求先读 AGENTS.md 共识");
+  ok(sys.indexOf("不要修改") >= 0 && sys.indexOf("目录约定") >= 0, "系统提示遵守「目录约定 / 不要修改」清单");
+  ok(prompt.indexOf("AGENTS.md") >= 0, "建议任务书要求先读 AGENTS.md 共识");
 
   /* ==================== [3] 勾选 → 开发任务书 ==================== */
   console.log("\n[3] 勾选结果拼成开发任务正文");
@@ -442,9 +446,40 @@ const MODEL_JSON =
   ok(brief.indexOf("用户已勾选 2 / 4") >= 0, "写明勾选数量");
   ok(brief.indexOf("本轮明确不做：加键盘操作、方案去重") >= 0, "未选项进「明确不做」");
   ok(brief.indexOf("用户补充：别改对外 API") >= 0, "补充说明被带上");
-  ok(brief.indexOf("完成后更新画布上该开发节点的概述") >= 0, "要求回写概述与状态");
+  ok(
+    brief.indexOf("按两段式规范") >= 0 &&
+      brief.indexOf("回写该开发节点的概述（note）") >= 0 &&
+      brief.indexOf("更新状态（devStatus）") >= 0,
+    "要求按两段式规范回写概述与状态",
+  );
   const bare = ex(sb, "devSuggestBriefText(nodeById('n1'), __r, [], '只做这个')");
   ok(bare.indexOf("用户未采纳 AI 提议的方案") >= 0, "一条都没勾时按补充内容开发");
+
+  /* ==================== [3.1] AGENTS.md 共识文件（生成开发节点时同步产出） ==================== */
+  console.log("\n[3.1] AGENTS.md 共识文件（任务书 / 技能 / 文档接线）");
+  ok(brief.indexOf("AGENTS.md") >= 0, "开发正文要求遵守 AGENTS.md 共识");
+  const appjsA = read("renderer/app.js");
+  ok(appjsA.indexOf("AGENTS.md") >= 0, "开发任务书（devNodeContractText）内置 AGENTS.md 共识");
+  ok(
+    appjsA.indexOf("文件节点的路径与新建内容都要符合「目录约定」") >= 0,
+    "细化任务书（devRefinePrompt）内置 AGENTS.md 共识",
+  );
+  const skillA = read("mtnode-agent-skills/mtnode/dev-architect/SKILL.md");
+  ok(skillA.indexOf("AGENTS.md 共识文件") >= 0, "dev-architect 技能新增 AGENTS.md 章节");
+  ok(
+    skillA.indexOf("目录约定") >= 0 && skillA.indexOf("不要修改") >= 0,
+    "技能给出共识模板（目录约定 / 不要修改）",
+  );
+  ok(skillA.indexOf("同步产出 `AGENTS.md`") >= 0, "模式 A 建画布步骤同步产出 AGENTS.md");
+  ok(skillA.indexOf("动工前") >= 0 && skillA.indexOf("共识文件") >= 0, "模式 B 动工前确认并写入共识文件");
+  ok(
+    read("mtnode-agent-skills/index.json").indexOf("AGENTS.md") >= 0,
+    "技能索引已同步 AGENTS.md 描述",
+  );
+  ok(read("docs/dev-node-design.md").indexOf("AGENTS.md") >= 0, "设计文档写明 AGENTS.md 共识文件");
+  ok(read("guides/manual/dev-nodes.md").indexOf("AGENTS.md") >= 0, "中文手册写明 AGENTS.md");
+  ok(read("guides/manual/en/dev-nodes.md").indexOf("AGENTS.md") >= 0, "英文手册写明 AGENTS.md");
+  ok(read("CHANGELOG-v1.1.md").indexOf("AGENTS.md") >= 0, "版本文档记录 AGENTS.md");
 
   /* ==================== [4] 全流程 ==================== */
   console.log("\n[4] 按钮全流程：确认 → 只读调研 → 多选 + 补充 → 开发");
@@ -457,7 +492,13 @@ const MODEL_JSON =
   const form = sb.__forms[0];
   ok(form.title.indexOf("建议") === 0, "确认框标题以「建议」开头");
   ok(form.rows.some((x) => x[0] === "元素类型") && form.rows.some((x) => x[0] === "历史会话"), "确认框列出模块现状");
-  ok(form.note && String(form.note.text).indexOf("建议 / 开发 / 细化") >= 0, "确认框显示模块概述");
+  ok(
+    form.note &&
+      (String(form.note.text || "") + "|" + String(form.note.design || "")).indexOf(
+        "建议 / 开发 / 细化",
+      ) >= 0,
+    "确认框显示模块概述（两段式字段含功能段）",
+  );
   ok(form.msg.indexOf("只读") >= 0 && form.msg.indexOf("4 条") >= 0, "确认框讲清接下来会做什么");
   ok(form.textarea && form.textarea.label.indexOf("本轮关注点") >= 0, "可选填本轮关注点");
   ok(form.actions.map((a) => a.label).join("|") === "取消|确认生成建议", "首轮按钮 = 取消 / 确认生成建议");
@@ -563,7 +604,8 @@ const MODEL_JSON =
   ok(kb.indexOf("1. [常规] 加键盘操作") >= 0, "勾选结果按键盘改动生效");
   ok(kb.indexOf("] 补多选状态持久化") < 0, "取消勾选的第 1 条不在实现清单里");
   ok(kb.indexOf("本轮明确不做：补多选状态持久化") >= 0, "它被移到「明确不做」");
-  /* Esc：中断调研并关闭 */
+  /* Esc：调研中按 Esc = 「返回」（只隐藏对话框，作业后台继续跑，完成后自动弹出）；
+     破坏性的「停止生成」不再绑在 Esc 上，只能点按钮显式触发 */
   sb = makeSandbox(MODEL_JSON, "", true);
   sb.__formResult = { action: "go" };
   const node6 = sb.__nodes.filter((n) => n.id === "n1")[0];
@@ -571,8 +613,8 @@ const MODEL_JSON =
   await drain();
   sb.__host.fire("keydown", { key: "Escape" });
   await p6b;
-  ok(sb.__cancel.join(",") === "devsuggest:n1", "Esc 会中断正在跑的只读调研");
-  ok(!node6.devSuggest, "中断后不写坏节点缓存");
+  ok(sb.__cancel.length === 0, "Esc 不再中断调研（dshCancelActive 不被调用，后台继续）");
+  ok(!node6.devSuggest, "后台继续不写坏节点缓存");
   ok(sb.__devCalls.length === 0, "Esc 不会误开工");
 
   /* ==================== [7] 异常 ==================== */
@@ -676,7 +718,7 @@ const MODEL_JSON =
   ok(read("dsh/gateway/canvas-plugin.mjs").indexOf("建议 / 开发 / 细化") >= 0, "canvas 工具描述含「建议」");
   ok(read("dsh/gateway/gateway.mjs").indexOf("each dev node also has a 建议 button") >= 0, "网关人设含「建议」");
   ok(
-    read("renderer/app-assist.js").indexOf("每个开发节点有「建议」「开发」「细化」按钮") >= 0,
+    read("renderer/app-assist.js").indexOf("每个开发节点有「开发」「细化」「建议」「问询」按钮") >= 0,
     "助手系统提示含「建议」",
   );
   const skill = read("mtnode-agent-skills/mtnode/dev-architect/SKILL.md");
@@ -783,8 +825,8 @@ const MODEL_JSON =
   ok(appRun9.indexOf("stopSubtree(node)") >= 0, "stopNode 开发分支：递归停后代 + 绑定会话（逐条停止可用）");
   const assistRun9 = read("renderer/app-assist.js");
   ok(
-    (assistRun9.match(/updateRunQueuePanel\(\)/g) || []).length === 5,
-    "app-assist 会话开始 / 结束各刷一次运行队列（共 5 处）",
+    (assistRun9.match(/updateRunQueuePanel\(\)/g) || []).length === 7,
+    "app-assist 会话开始 / 结束 + 助手开始 / 结束 + 消息入队 / 出队各刷一次运行队列（共 7 处）",
   );
   const cssRun9 = read("renderer/css/components.css");
   ok(cssRun9.indexOf(".rq-item.kind-dev .rq-title") >= 0, "components.css：开发节点队列行样式（模块绿）");
@@ -802,6 +844,306 @@ const MODEL_JSON =
   ok(cssRun.indexOf("@keyframes devRunBreathe") >= 0, "canvas.css：呼吸灯 keyframes");
   ok(cssRun.indexOf(".n-chip.n-chip-run") >= 0, "canvas.css：头部运行徽标样式");
   ok(cssRun.indexOf("--dev-glow") >= 0, "canvas.css：按元素类型取呼吸光晕颜色");
+  /* 选中运行中的开发节点：呼吸灯不能因为选中而停，且要更亮 */
+  const selAt = cssRun.indexOf(".wf-node.super.dev-el.dev-running.sel {");
+  ok(selAt >= 0, "canvas.css：存在「运行中 + 选中」规则（带 .super 抬高权重）");
+  const selRule = selAt >= 0 ? cssRun.slice(selAt, cssRun.indexOf("}", selAt)) : "";
+  ok(selRule.indexOf("animation: none") < 0, "选中时不再暂停呼吸（旧 animation:none 已移除）");
+  ok(selRule.indexOf("animation-name: devRunBreatheSel") >= 0, "选中只切换动画名 → 呼吸继续进行");
+  const kfBlock = (name) => {
+    const m = cssRun.match(new RegExp("@keyframes " + name + " \\{[\\s\\S]*?\\n\\}"));
+    return m ? m[0] : "";
+  };
+  const kfAlpha = (block) =>
+    [...block.matchAll(/border-color: rgba\(var\(--dev-glow[^)]*\), ([\d.]+)\)/g)].map((m) =>
+      parseFloat(m[1]),
+    );
+  const kfNorm = kfAlpha(kfBlock("devRunBreathe"));
+  const kfSel = kfAlpha(kfBlock("devRunBreatheSel"));
+  ok(kfNorm.length === 2 && kfSel.length === 2, "常态 / 选中两套呼吸 keyframes 都在（波谷 + 波峰）");
+  ok(kfSel[0] > kfNorm[0] && kfSel[1] >= kfNorm[1], "选中态呼吸更亮：波谷抬高（不再暗下去）+ 波峰不弱于常态");
+  ok(kfSel[1] > 0.9 && kfBlock("devRunBreatheSel").includes("26px"), "选中态光晕更宽更浓");
+  ok(
+    kfBlock("devRunBreatheSel").includes("--dev-sel-rgb"),
+    "选中态把青色高亮环一起写进呼吸动画（动画优先级高于 .sel 普通规则，否则互相吞掉）",
+  );
+  const cssLight = read("renderer/css/theme-light.css");
+  ok(
+    cssLight.indexOf("body.theme-light .wf-node.super.dev-el.dev-running.sel") >= 0,
+    "theme-light.css：亮色主题下运行中 + 选中的呼吸灯同样加强",
+  );
+
+  /* ==================== [9.2] collectRunQueueAll：全应用运行总览取数层 ==================== */
+  console.log(
+    "\n[9.2] collectRunQueueAll 统一取数（跨画布节点 / 独立会话 / 全局助手 / 后端媒体 + 去重）",
+  );
+  {
+    /* 取数层源码住在 app.js 里：按标记切出 nodeKindCls → collectRunQueueAll，
+       连同 makeSandbox 已有的开发节点 / 会话桩一起跑（其余依赖就地补桩）。 */
+    const rqSrc = read("renderer/app.js");
+    const rqA = rqSrc.indexOf("function nodeKindCls(node) {");
+    const rqB = rqSrc.indexOf("/* 队列行的次要信息");
+    ok(rqA > 0 && rqB > rqA, "[9.2] 定位到 app.js 运行队列取数层源码");
+    const rqLoad = () => {
+      const s = makeSandbox(MODEL_JSON);
+      s.KIND_CLS = {
+        proc_text: "proc",
+        proc_image: "img",
+        agent_task: "agent",
+        chat: "chat",
+        music_gen: "media",
+        video_gen: "media",
+        super: "super",
+        task: "task",
+      };
+      s.S.wf.id = "wf-cur";
+      s.S.wf.name = "当前画布";
+      s.S.wfBag = {};
+      s.S.runPromises = new Map();
+      s.S.pendingRun = [];
+      s.ownerWfOfNode = (n) => {
+        const bag = s.S.wfBag || {};
+        for (const wid of Object.keys(bag)) {
+          if (((bag[wid] && bag[wid].nodes) || []).indexOf(n) >= 0) return bag[wid];
+        }
+        return s.S.wf;
+      };
+      s.wsGroupOf = (p) => (p ? "grp/" + String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() : "");
+      s.isMediaGenNode = (n) => !!n && (n.kind === "music_gen" || n.kind === "video_gen");
+      s.findMediaGenNodeById = (id) => {
+        const all = (s.S.wf.nodes || []).concat(
+          ...Object.keys(s.S.wfBag).map((k) => s.S.wfBag[k].nodes || []),
+        );
+        const n = all.filter((x) => x && x.id === id)[0] || null;
+        return s.isMediaGenNode(n) ? n : null;
+      };
+      s.mediaGenWaiters = new Map();
+      s.mediaBackendRunWatchers = new Map();
+      s.mediaGenRestoreTimers = new Map();
+      vm.runInContext(rqSrc.slice(rqA, rqB), s, { filename: "app.js#run-queue" });
+      return s;
+    };
+    /* 在 vm 内 stringify 再于宿主解析：避开跨 realm 对象 */
+    const rqView = (s) =>
+      JSON.parse(
+        ex(
+          s,
+          "JSON.stringify((function(){var r=collectRunQueueAll();" +
+            "return {hasQueue:r.hasQueue,counts:r.counts,items:r.items.map(function(it){" +
+            "return {type:it.type,state:it.state,id:it.id,title:it.title,kindCls:it.kindCls," +
+            "stateText:it.stateText,sub:it.sub,crossWf:!!it.crossWf,wfName:it.wfName};})};})())",
+        ),
+      );
+    const itemOf = (v, id) => v.items.filter((it) => it.id === id)[0] || null;
+
+    /* ① 只有独立智能会话在跑（没有任何节点 running） */
+    const s1 = rqLoad();
+    s1.__sessions = [{ id: "s-a", title: "拆解小说", running: true, workspace: "E:/novel/x" }];
+    const v1 = rqView(s1);
+    ok(v1.hasQueue === true, "只有独立会话在跑 → hasQueue 为真（左下角条状按钮会出现）");
+    ok(v1.items.length === 1 && v1.items[0].type === "session", "独立会话进队列（type=session）");
+    ok(
+      v1.items[0].kindCls === "sess" && v1.items[0].state === "run",
+      "会话行 = kind-sess 类 · 归「处理中」",
+    );
+    ok(
+      v1.items[0].title === "拆解小说" && v1.items[0].sub.indexOf("grp/") === 0,
+      "会话行副标题取工作目录分组（wsGroupOf）",
+    );
+    ok(v1.counts.session === 1 && v1.counts.run === 1, "计数：1 个会话在跑");
+
+    /* ①b 只有全局助手在跑 */
+    const s2 = rqLoad();
+    ex(s2, "S.assistRunActive = true");
+    const v2 = rqView(s2);
+    ok(
+      v2.hasQueue === true && v2.items.length === 1 && v2.items[0].type === "assist",
+      "只有全局助手在跑 → 合成一条助手行（不再整条隐藏）",
+    );
+    ok(
+      v2.items[0].kindCls === "assist" && v2.items[0].kindCls !== "agent",
+      "助手行不再与 agent_task 节点行撞同一个 kind（旧版硬编码 kind-agent）",
+    );
+
+    /* ② 宿主智能节点与它绑定的会话同时在跑 → 只出一行 */
+    const s3 = rqLoad();
+    s3.__sessions = [{ id: "s-b", title: "写章节", running: true }];
+    ex(
+      s3,
+      'S.wf.nodes.push({ id: "at1", kind: "agent_task", title: "智能任务A", running: true, agentSessionId: "s-b" })',
+    );
+    const v3 = rqView(s3);
+    ok(v3.items.length === 1 && v3.items[0].id === "at1", "会话被运行中的宿主节点代表 → 不重复出行");
+    ok(v3.items[0].type === "node" && v3.counts.session === 0, "会话不单独计数（counts.session=0）");
+    ok(
+      v3.items[0].stateText.indexOf("会话") >= 0 && v3.items[0].stateText.indexOf("写章节") >= 0,
+      "被代表的会话标题折进该行状态文案",
+    );
+
+    /* ③ 开发块 sess 态运行 → 只出开发块一行 */
+    const s4 = rqLoad();
+    s4.__sessions = [{ id: "s-c", title: "细化会话", running: true }];
+    ex(s4, 'nodeById("n1").devSessionIds = ["s-c"]');
+    const v4 = rqView(s4);
+    ok(v4.items.length === 1 && v4.items[0].type === "dev", "绑定会话运行的开发块 → 只出开发块一行");
+    ok(v4.counts.session === 0, "会话被 sess 态开发块代表 → 不再重复列");
+    ok(
+      v4.items[0].stateText.indexOf("绑定会话运行中") >= 0 &&
+        v4.items[0].stateText.indexOf("细化会话") >= 0,
+      "开发块行写明「绑定会话运行中」并带上会话标题",
+    );
+
+    /* ③a 同一开发节点多条「开发 / 细化」会话同时在跑 → 每条单独成行（本 bug 修复点）：
+       旧版全部折进那一条开发块行，队列只看得到 1 个；现在 N 条会话 = N 行，可单独停止 / 跳转 */
+    const s4b = rqLoad();
+    s4b.__sessions = [
+      { id: "s-d1", title: "开发 · 建议对话框", running: true, workspace: "E:/dev/tools/pipeline-console" },
+      { id: "s-d2", title: "开发 · 建议对话框", running: true, workspace: "E:/dev/tools/pipeline-console" },
+    ];
+    ex(s4b, 'nodeById("n1").devSessionIds = ["s-d1", "s-d2"]');
+    const v4b = rqView(s4b);
+    ok(
+      v4b.items.length === 2 && v4b.items.every((it) => it.type === "session"),
+      "同一开发节点 2 条会话在跑 → 队列出 2 行（不再 1 行折叠）",
+    );
+    ok(v4b.counts.session === 2 && v4b.counts.dev === 0, "计数：2 个会话在跑 · 开发块行已让位（counts.dev=0）");
+    ok(
+      v4b.items.filter((it) => it.id === "s-d1").length === 1 &&
+        v4b.items.filter((it) => it.id === "s-d2").length === 1,
+      "两条会话各自成行（id 一一对应，可单独停止 / 跳转）",
+    );
+
+    /* ③b 开发节点自身也在跑（self）+ 同一节点 2 条会话 → 开发块行保留（自身运行中）
+       且会话仍各占一行：开发块行只为会话而存在时才让位。
+       （n1 的祖先块 top 也照常以「子节点运行中」成行 —— devRunningNodes 既有契约） */
+    const s4c = rqLoad();
+    s4c.__sessions = [
+      { id: "s-e1", title: "开发 · 建议对话框", running: true },
+      { id: "s-e2", title: "开发 · 建议对话框", running: true },
+    ];
+    ex(s4c, 'nodeById("n1").devSessionIds = ["s-e1", "s-e2"]');
+    ex(s4c, 'nodeById("n1").running = true');
+    const v4c = rqView(s4c);
+    ok(
+      v4c.items.filter((it) => it.type === "session").length === 2 &&
+        v4c.items.filter((it) => it.type === "dev" && it.id === "n1").length === 1,
+      "自身运行 + 2 会话 → 开发块行保留（自身运行中）+ 会话各占一行",
+    );
+    const devRow4c = v4c.items.filter((it) => it.type === "dev" && it.id === "n1")[0];
+    ok(
+      !!devRow4c && devRow4c.stateText.indexOf("自身运行中") >= 0,
+      "该开发块行状态为「自身运行中」（不是绑定会话折叠行）",
+    );
+    ok(
+      v4c.items.filter((it) => it.type === "dev" && it.id === "top").length === 1,
+      "祖先块 top 仍以「子节点运行中」成行（devRunningNodes 既有契约不受影响）",
+    );
+
+    /* ④ 媒体：排队 → 等待中；节点在跑 + 后端在途 → 只补文案不加行 */
+    const s5 = rqLoad();
+    ex(s5, 'S.wf.nodes.push({ id: "v1", kind: "video_gen", title: "视频生成A" })');
+    s5.mediaGenWaiters = new Map([["v1", { jobId: "j1" }]]);
+    const v5 = rqView(s5);
+    ok(
+      v5.items.length === 1 && v5.items[0].type === "media" && v5.items[0].state === "wait",
+      "mediaGenWaiters 排队项进「等待中」而非「处理中」",
+    );
+    ok(
+      v5.items[0].stateText === "排队生成" && v5.counts.run === 0 && v5.counts.wait === 1,
+      "排队生成文案 + 计数（run=0 / wait=1）",
+    );
+    const s6 = rqLoad();
+    ex(s6, 'S.wf.nodes.push({ id: "v2", kind: "video_gen", title: "视频生成B", running: true })');
+    s6.mediaBackendRunWatchers = new Map([["v2", { jobId: "j2" }]]);
+    const v6 = rqView(s6);
+    ok(
+      v6.items.length === 1 && v6.items[0].id === "v2" && v6.counts.media === 0,
+      "同一节点既 running 又在媒体在途表里 → 只留一条",
+    );
+    ok(v6.items[0].stateText.indexOf("后端生成中") >= 0, "原行状态文案补「后端生成中」");
+    const s7 = rqLoad();
+    s7.S.wfBag = {
+      "wf-b": {
+        id: "wf-b",
+        name: "另一画布",
+        nodes: [{ id: "x1", kind: "proc_text", title: "背景节点", running: true }],
+      },
+    };
+    const x7 = itemOf(rqView(s7), "x1");
+    ok(
+      !!x7 && x7.crossWf === true && x7.wfName === "另一画布",
+      "后台画布上 running 的节点也进队列（标 crossWf + 归属画布名，供跨画布定位）",
+    );
+    const s8 = rqLoad();
+    ok(rqView(s8).hasQueue === false, "全都没跑 → hasQueue 为假（面板收起）");
+
+    /* ⑤ 静态接线：面板分组 / 行操作 / 心跳 / 样式 / 英文词条 */
+    const rqPanel = rqSrc.slice(
+      rqSrc.indexOf("function updateRunQueuePanel()"),
+      rqSrc.indexOf("/* 一键终止：运行中"),
+    );
+    ok(rqPanel.indexOf("collectRunQueueAll()") >= 0, "updateRunQueuePanel 一律走统一取数层");
+    ok(rqPanel.indexOf('addSec(I18n.t("智能会话")') >= 0, "面板有「智能会话」分组");
+    ok(rqPanel.indexOf('addSec(I18n.t("后端生成中")') >= 0, "面板有「后端生成中」分组");
+    ok(
+      rqPanel.indexOf("await loadWorkflow(it.wfId)") >= 0,
+      "jumpRunQueueItem：跨画布先 loadWorkflow(归属画布) 再 focusNode（不再只 toast）",
+    );
+    ok(
+      rqPanel.indexOf('dshCancelActive("agent:" + st.id)') >= 0,
+      "stopRunQueueItem：停会话与「全部终止」同款语义（作废标记 + 取消该会话运行时）",
+    );
+    ok(rqPanel.indexOf("assistStop()") >= 0, "stopRunQueueItem：助手行走 assistStop()");
+    ok(
+      rqPanel.indexOf("await stopNode(n)") >= 0,
+      "stopRunQueueItem：节点 / 开发块 / 媒体沿用 stopNode()",
+    );
+    ok(
+      rqPanel.indexOf("syncRunQueueTicker(hasQueue)") >= 0 &&
+        rqSrc.indexOf("const RUN_QUEUE_TICK_MS = 2000") >= 0,
+      "队列非空时每 2s 轻量心跳只重绘面板，队列空即停",
+    );
+    ok(
+      rqPanel.indexOf("renderCanvas()") < 0 && rqPanel.indexOf("scheduleSave()") < 0,
+      "刷新只做面板级 DOM 重建：不 renderCanvas()、不 scheduleSave()",
+    );
+    const cssRq = read("renderer/css/components.css");
+    ok(cssRq.indexOf(".rq-item.kind-sess .rq-title") >= 0, "components.css：会话行配色（ai 紫）");
+    ok(
+      cssRq.indexOf(".rq-item.kind-assist .rq-title") >= 0,
+      "components.css：助手行配色（canvas 青）",
+    );
+    ok(
+      cssRq.indexOf(".rq-item.kind-media .rq-title") >= 0,
+      "components.css：后端生成行配色（build 橙）",
+    );
+    ok(
+      cssRq.indexOf(".rq-sub") >= 0 && cssRq.indexOf(".rq-sec-n") >= 0,
+      "components.css：行内次要信息（ellipsis 限宽）+ 小节小计徽标",
+    );
+    const reRq = /I18n\.t\(\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
+    const rqKeys = new Set();
+    let mRq;
+    const rqWhole = rqSrc.slice(rqA, rqSrc.indexOf("/* 一键终止：运行中"));
+    while ((mRq = reRq.exec(rqWhole))) {
+      let k = mRq[2];
+      if (mRq[1] === "'") k = k.replace(/\\'/g, "'");
+      else {
+        try {
+          k = JSON.parse('"' + k + '"');
+        } catch (_) {}
+      }
+      if (k.indexOf("\n") >= 0) continue;
+      rqKeys.add(k);
+    }
+    const rqMissing = [...rqKeys].filter((k) => i18nRun9.t(k) === k);
+    rqMissing.slice(0, 10).forEach((k) => console.log("        MISSING " + JSON.stringify(k)));
+    ok(rqMissing.length === 0, "运行队列全部文案有英文词条（共 " + rqKeys.size + " 条）");
+    ok(rqKeys.size >= 30, "文案抽取有效（抽到 " + rqKeys.size + " 条 I18n.t）");
+    ok(i18nRun9.t("排队生成") !== "排队生成", "「排队生成」有英文词条");
+    ok(i18nRun9.t("在途生成") !== "在途生成", "「在途生成」有英文词条");
+    ok(i18nRun9.t("跨画布定位") !== "跨画布定位", "「跨画布定位」有英文词条");
+  }
 
   /* ==================== [10] 开发节点颜色（菜单栏小按钮 + HSV 色板） ==================== */
   console.log("\n[10] 开发节点颜色：devColor 数据 + HSV 转换 + 菜单栏按钮");
@@ -1009,7 +1351,12 @@ const MODEL_JSON =
   );
   const canvas11 = read("renderer/app-canvas.js");
   ok(canvas11.indexOf("devModelButtonEl(node)") >= 0, "节点头部菜单栏接入模型按钮");
-  ok(canvas11.indexOf("n-dev-model-info") >= 0, "折叠卡显示生效模型行");
+  ok(
+    canvas11.indexOf("n-dev-model-info") < 0 &&
+      canvas11.indexOf("n-dev-path") < 0 &&
+      canvas11.indexOf("n-dev-status") < 0,
+    "折叠卡 body 精简：不再常驻生效模型行 / 项目根目录 / 状态字样",
+  );
   const nodes11 = read("renderer/app-nodes.js");
   ok(nodes11.indexOf("patch.devModel") >= 0, "app-nodes 支持 devModel 补丁（Agent 可改模型）");
   ok(nodes11.indexOf("patch.devProvider") >= 0, "app-nodes 支持 devProvider 补丁");
@@ -1026,7 +1373,7 @@ const MODEL_JSON =
   );
   const cssC11 = read("renderer/css/canvas.css");
   ok(cssC11.indexOf(".n-dev-model") >= 0, "canvas.css：头部模型按钮样式");
-  ok(cssC11.indexOf(".n-dev-info .n-dev-model-info") >= 0, "canvas.css：折叠卡生效模型行样式");
+  ok(cssC11.indexOf(".n-dev-info .n-dev-model-info") < 0, "canvas.css：生效模型行样式已移除（body 精简）");
   const cssComp11 = read("renderer/css/components.css");
   ok(
     cssComp11.indexOf(".dev-model-pop") >= 0 && cssComp11.indexOf(".dev-model-list") >= 0,
@@ -1053,6 +1400,534 @@ const MODEL_JSON =
   ok(i18n11.t("跟随默认（不指定）") !== "跟随默认（不指定）", "「跟随默认（不指定）」有英文词条");
   ok(i18n11.t("自动（跟随默认）") !== "自动（跟随默认）", "「自动（跟随默认）」有英文词条");
   i18n11.setLocale("zh");
+
+  /* ==================== [12] 两段式概述（note）全链路 ==================== */
+  console.log("\n[12] 两段式概述（note）：解析器 / 任务书 / 提示词 / 折叠卡展示");
+  sb = makeSandbox(MODEL_JSON);
+  const parts12 = (n) => ex(sb, "devNoteParts(" + JSON.stringify(n) + ")");
+  const TWO_SEC =
+    "【功能】积木式编排工作流：非技术用户可视化拼接\n【实现】Electron 渲染层，renderer/ 目录，app-canvas.js 负责画布";
+  const pNew = parts12(TWO_SEC);
+  ok(
+    pNew.design === "积木式编排工作流：非技术用户可视化拼接" &&
+      pNew.impl === "Electron 渲染层，renderer/ 目录，app-canvas.js 负责画布",
+    "新格式：按行首【功能】/【实现】切成 design + impl",
+  );
+  const pHalf = parts12("【功能】: 功能说明\n【实现】: 实现说明");
+  ok(
+    pHalf.design === "功能说明" && pHalf.impl === "实现说明",
+    "兼容半角冒号（【功能】: / 【实现】:）",
+  );
+  const pOnlyFn = parts12("【功能】只有功能段");
+  ok(
+    pOnlyFn.design === "只有功能段" && pOnlyFn.impl === "",
+    "只有功能段 → impl 为空",
+  );
+  const pOld12 = parts12("一句话的单段概述");
+  ok(
+    pOld12.design === "一句话的单段概述" && pOld12.impl === "",
+    "旧单段 note（无前缀）→ 整段归 design、impl 为空",
+  );
+  ok(parts12("").design === "" && parts12("").impl === "", "空 note → design/impl 皆空");
+  /* devNodeContractText 住在 app.js（沙箱只装了 app-devnode.js）：按 [9.2] 同款方式切片注入 */
+  const appjs12 = read("renderer/app.js");
+  const ctA12 = appjs12.indexOf("function devNodeContractText(node");
+  const ctB12 = appjs12.indexOf("/* 该功能块名下的会话");
+  ok(ctA12 > 0 && ctB12 > ctA12, "[12] 定位 app.js 开发任务书源码（devNodeContractText）");
+  const ctSb = makeSandbox(MODEL_JSON);
+  vm.runInContext(appjs12.slice(ctA12, ctB12), ctSb, { filename: "app.js#devNodeContractText" });
+  const ctNoteOf = (nid, t) =>
+    ex(ctSb, "nodeById(" + JSON.stringify(nid) + ").note = " + JSON.stringify(t) + "; true");
+  const ctOf = () => ex(ctSb, "devNodeContractText(nodeById('n1'))");
+  ctNoteOf("n1", TWO_SEC);
+  const ct12 = ctOf();
+  ok(
+    ct12.indexOf("模块功能（面向非技术）：") >= 0 &&
+      ct12.indexOf("积木式编排工作流") >= 0,
+    "开发任务书输出功能段标签与内容",
+  );
+  ok(
+    ct12.indexOf("实现要点（面向技术）：") >= 0 &&
+      ct12.indexOf("app-canvas.js 负责画布") >= 0,
+    "开发任务书输出实现段标签与内容",
+  );
+  ok(
+    ct12.indexOf("完成后按两段式规范") >= 0 &&
+      ct12.indexOf("【功能】非技术说明") >= 0 &&
+      ct12.indexOf("【实现】工程梗概") >= 0,
+    "开发任务书收尾要求按两段式规范回写 note",
+  );
+  const st12 = ex(sb, "devSuggestContextText(nodeById('n1'), '')");
+  ok(
+    st12.indexOf("模块功能（面向非技术）：") >= 0 &&
+      st12.indexOf("实现要点（面向技术）：") >= 0,
+    "建议上下文同样输出两段标签",
+  );
+  ctNoteOf("n1", "旧版一句话概述");
+  const cOld12 = ctOf();
+  ok(
+    cOld12.indexOf("实现要点（面向技术）：") >= 0 &&
+      cOld12.indexOf("（暂无 · 细化或开发时按两段式规范补全）") >= 0,
+    "旧单段 note：开发任务书实现段给「暂无」引导",
+  );
+  ok(
+    ex(sb, "devSuggestContextText(nodeById('n1'), '')").indexOf(
+      "（暂无 · 实现方案梗概待补）",
+    ) >= 0,
+    "建议上下文：实现段提示待补",
+  );
+  ctNoteOf("n1", "");
+  ok(
+    ctOf().indexOf("（暂无 · 请先说明该模块在业务上做什么、给谁用）") >= 0,
+    "空 note：开发任务书给功能段引导文案",
+  );
+  ex(sb, "__r12 = " + JSON.stringify(parse(MODEL_JSON)));
+  const brief12 = ex(sb, "devSuggestBriefText(nodeById('n1'), __r12, ['o1','o3'], '')");
+  ok(
+    brief12.indexOf("完成后按两段式规范") >= 0 &&
+      brief12.indexOf("【实现】工程梗概") >= 0,
+    "「建议→开发」任务书收尾同样要求按两段式回写 note",
+  );
+  /* 四处提示词 / 技能真源：两段式关键词在场，防日后改回单段 */
+  const gw12 = read("dsh/gateway/canvas-plugin.mjs");
+  ok(
+    gw12.indexOf("TWO sections") >= 0 &&
+      gw12.indexOf("【功能】") >= 0 &&
+      gw12.indexOf("【实现】") >= 0,
+    "网关工具描述：note 必须两段（【功能】+【实现】）",
+  );
+  ok(
+    (gw12.match(/TWO sections/g) || []).length >= 4,
+    "网关工具描述 4 处（工具概述 / 编辑器描述 / create / update）都保留两段约束",
+  );
+  const gm12 = read("dsh/gateway/gateway.mjs");
+  ok(
+    gm12.indexOf("TWO sections") >= 0 &&
+      gm12.indexOf("【功能】") >= 0 &&
+      gm12.indexOf("【实现】") >= 0,
+    "Agent 系统提示：开发节点 note 两段式",
+  );
+  const as12 = read("renderer/app-assist.js");
+  ok(
+    as12.indexOf("note 必须两段") >= 0 &&
+      as12.indexOf("【功能】") >= 0 &&
+      as12.indexOf("【实现】") >= 0,
+    "助手画布提示词：note 必须两段",
+  );
+  const sk12 = read("mtnode-agent-skills/mtnode/dev-architect/SKILL.md");
+  ok(
+    sk12.indexOf("两段") >= 0 &&
+      sk12.indexOf("【功能】") >= 0 &&
+      sk12.indexOf("【实现】") >= 0,
+    "dev-architect 技能：概述固定分两段",
+  );
+  /* 渲染展示：折叠卡只显功能段、tooltip 给完整两段、概览行与子元素行只用功能段 */
+  const cv12 = read("renderer/app-canvas.js");
+  const descAt12 = cv12.indexOf('fd.className = "super-folder-desc"');
+  const descBlk12 = cv12.slice(descAt12, descAt12 + 320);
+  ok(descAt12 > 0, "[12] 定位折叠卡 super-folder-desc 渲染代码");
+  ok(
+    descBlk12.indexOf("_p && _p.impl ? _p.design || fNote : fNote") >= 0,
+    "折叠卡 desc：两段齐全时只写 design（功能段），无实现段才退回整段 note",
+  );
+  ok(
+    descBlk12.indexOf("(_p && _p.impl) ? fNote") >= 0,
+    "折叠卡 tooltip：有实现段时 hover 显示完整两段",
+  );
+  ok(
+    cv12.indexOf("devNoteDisplayText(supNoteTxt)") >= 0,
+    "「描述」按钮 tooltip 走 devNoteDisplayText（完整两段）",
+  );
+  ok(
+    read("renderer/app-devnode.js").indexOf(
+      "const design = devNoteParts(n && n.note).design",
+    ) >= 0,
+    "进度树概览行（devNodeBriefLine）只取功能段",
+  );
+  ok(
+    read("renderer/app.js").indexOf(
+      "const design = devNoteParts(k && k.note).design",
+    ) >= 0,
+    "子元素行内（devChildLabel）只显功能段",
+  );
+
+  /* ==================== [13] 细化＝深度（多层下钻，不是单层展开） ==================== */
+  console.log("\n[13] 细化按「深度」：子树统计 / 对话框深度单选 / 多层任务书 / 到底拦截");
+  const appjs13 = read("renderer/app.js");
+  const refSrc13 = appjs13.slice(
+    appjs13.indexOf("/* ============ 开发节点：元素类型（devKind）与细化 ============ */"),
+    appjs13.indexOf("/* 端子悬浮"),
+  );
+  ok(refSrc13.length > 3000, "[13] 截出 app.js 细化实现段（devKind → refineDevNode）");
+
+  /* 把实现段真的跑起来（迷你 DOM + 依赖桩），而不是只做字符串比对 */
+  function makeDepthSandbox() {
+    const nodes = [
+      /* t1：一路拆到底 —— 模块 → 模块 → 文件 → 类（3 层，叶子无模块） */
+      { id: "t1", kind: "super", dev: true, devKind: "module", devStatus: "wip", title: "渲染层", devPath: "E:/dev/tools/pipeline-console" },
+      { id: "a1", kind: "super", dev: true, devKind: "module", title: "画布交互", parentSuperId: "t1" },
+      { id: "f11", kind: "super", dev: true, devKind: "file", title: "app-canvas.js", parentSuperId: "a1" },
+      { id: "c11", kind: "super", dev: true, devKind: "class", title: "CanvasLayer", parentSuperId: "f11" },
+      { id: "f12", kind: "super", dev: true, devKind: "file", title: "app-devnode.js", parentSuperId: "t1" },
+      { id: "io1", kind: "super_io", title: "端子", parentSuperId: "a1" },
+      /* t2：仍有模块叶子没拆到文件级 —— 可继续深度细化 */
+      { id: "t2", kind: "super", dev: true, devKind: "module", title: "总览", devPath: "E:/dev/tools/pipeline-console" },
+      { id: "a2", kind: "super", dev: true, devKind: "module", title: "网关", parentSuperId: "t2" },
+      { id: "f21", kind: "super", dev: true, devKind: "file", title: "gateway.mjs", parentSuperId: "a2" },
+      { id: "a3", kind: "super", dev: true, devKind: "module", title: "未拆的模块", parentSuperId: "t2" },
+      { id: "t3", kind: "super", dev: true, devKind: "module", title: "空模块" },
+      /* f5：文件已全拆成类图元素 · f6：空文件（还能拆） · c6：类（最细） */
+      { id: "f5", kind: "super", dev: true, devKind: "file", title: "db-store.js" },
+      { id: "c5", kind: "super", dev: true, devKind: "class", title: "DbStore", parentSuperId: "f5" },
+      { id: "i5", kind: "super", dev: true, devKind: "interface", title: "IDb", parentSuperId: "f5" },
+      { id: "f6", kind: "super", dev: true, devKind: "file", title: "main.js" },
+      { id: "c6", kind: "super", dev: true, devKind: "class", title: "Foo" },
+      { id: "plain", kind: "proc_text", title: "普通节点" },
+    ];
+    const byId = (id) => nodes.filter((n) => n.id === id)[0] || null;
+    const sb = {
+      console,
+      setTimeout,
+      Promise,
+      JSON,
+      S: { wf: { nodes }, agentActiveId: "" },
+      /* 中文语料桩：与 i18n.js 的 {x} 插值行为一致 */
+      I18n: {
+        t: (k, vars) =>
+          String(k).replace(/\{(\w+)\}/g, (_, n) =>
+            vars && vars[n] != null ? String(vars[n]) : "",
+          ),
+      },
+      nodeById: byId,
+      nodeParentSuperId: (n) => n.parentSuperId,
+      isSuperIoNode: (n) => n.kind === "super_io",
+      devNoteParts: (s) => ({ design: String(s || ""), impl: "" }),
+      devNoteDialogField: (n) => ({ text: String((n && n.note) || "") }),
+      devPathOf: (n) => String((n && n.devPath) || ""),
+      scheduleSave() {},
+      pushHistory() {},
+      renderCanvas() {},
+      updateRunQueuePanel() {},
+      persistAgentSession: () => Promise.resolve(),
+      document: { createElement: (t) => mkEl(t) },
+      __forms: [],
+      __formResolve: null,
+      __sess: null,
+      __sends: [],
+      __toasts: [],
+      mtDialogForm: (opts) => {
+        sb.__forms.push(opts);
+        /* 对话框挂起等用户：点档位时不该把它 resolve 掉 */
+        return new Promise((res) => {
+          sb.__formResolve = res;
+        });
+      },
+      createDevSessionForNode: (node) => {
+        sb.__sess = {
+          id: "sess-" + node.id,
+          title: "细化 · " + node.title,
+          messages: [{ role: "user", content: "（占位）", _src: "dev-node" }],
+        };
+        return sb.__sess;
+      },
+      agentSessionSend: (text, opts) => {
+        sb.__sends.push({ text, opts });
+        return Promise.resolve();
+      },
+      toast: (m) => {
+        sb.__toasts.push(String(m));
+      },
+    };
+    vm.runInContext(refSrc13, vm.createContext(sb), { filename: "app-refine-slice.js" });
+    return sb;
+  }
+  const sb13 = makeDepthSandbox();
+  const exD = (sb, expr) => vm.runInContext(expr, sb);
+  ok(
+    exD(sb13, "devChildrenOf(nodeById('a1')).map(function(n){return n.id}).join(',')") ===
+      "f11",
+    "devChildrenOf 排除 super_io 桥接端子（细化统计不被端子污染）",
+  );
+
+  /* ---- 深度统计：递归层数 / 叶子元素类型分布 / 未到文件级的块 ---- */
+  const st1 = exD(sb13, "devDescendantStatsOf(nodeById('t1'))");
+  ok(st1.count === 4 && st1.levels === 3, "子树统计递归到底：4 块 · 3 层（不止本层）");
+  ok(st1.shallow.length === 0, "每片叶子都到文件 / 类级 → 未到文件级的块为 0");
+  ok(st1.fileLeaves.length === 1 && st1.leafKinds.class === 1, "叶子类型分布可统计（1 文件 + 1 类）");
+  const st2 = exD(sb13, "devDescendantStatsOf(nodeById('t2'))");
+  ok(st2.levels === 2 && st2.shallow.length === 1, "模块叶子仍算「未到文件级」");
+  ok(
+    exD(sb13, "devDepthSummaryText(nodeById('t2'))") ===
+      "当前已 2 层 · 1 个块未到文件级（如 未拆的模块）",
+    "深度现状一句话：层数 + 未到文件级块数 + 示例标题",
+  );
+  ok(
+    exD(sb13, "devDepthSummaryText(nodeById('t1'))") === "当前已 3 层 · 已细化到文件级",
+    "深度现状一句话：已到文件级",
+  );
+  ok(
+    exD(sb13, "devDepthSummaryText(nodeById('t3'))") === "当前 0 层（尚未展开下层元素）",
+    "从未展开过就如实说 0 层（不编造深度）",
+  );
+
+  /* ---- 无需 / 无法细化的判定（不再只对「无子块」开口） ---- */
+  ok(
+    exD(sb13, "devRefineBlockedReason(nodeById('c6'))").indexOf("最细粒度") >= 0,
+    "类 / 接口 / 枚举：仍按最细粒度直接拦截",
+  );
+  ok(
+    exD(sb13, "devRefineBlockedReason(nodeById('f5'))").indexOf(
+      "该文件已展开为类 / 接口 / 枚举，已细化到无法再细。",
+    ) >= 0,
+    "文件已全拆成类图元素 → 已细化到无法再细",
+  );
+  ok(exD(sb13, "devRefineBlockedReason(nodeById('f6'))") === "", "空文件块放行（还能拆类 / 接口 / 枚举）");
+  const b1 = exD(sb13, "devRefineBlockedReason(nodeById('t1'))");
+  ok(
+    b1.indexOf("本功能块已细化到无法再细") >= 0 && b1.indexOf("子树 3 层") >= 0,
+    "整棵子树叶子都已到文件 / 类级 → 拦截并说明层数",
+  );
+  ok(
+    b1.indexOf("请在该文件块上单独点「细化」") >= 0,
+    "拦截理由给出下一步（到具体文件块上单独细化）",
+  );
+  ok(
+    exD(sb13, "devRefineBlockedReason(nodeById('t2'))") === "" &&
+      exD(sb13, "devRefineBlockedReason(nodeById('t3'))") === "",
+    "仍有模块未到文件级 / 从未展开 → 放行继续深度细化",
+  );
+
+  /* ---- 细化任务书：多层递归契约 ---- */
+  const pDeep = exD(sb13, "devRefinePrompt(nodeById('t2'), '', 'deep')");
+  const pOnce = exD(sb13, "devRefinePrompt(nodeById('t2'), '只拆网关目录', 'once')");
+  const pUndef = exD(sb13, "devRefinePrompt(nodeById('t2'))");
+  ok(
+    pDeep.indexOf("本次细化深度：深度细化（逐层下钻到无法再细，一般到文件级）") >= 0,
+    "深度档位写进任务书抬头",
+  );
+  ok(
+    pDeep.indexOf("当前子树深度：当前已 2 层 · 1 个块未到文件级") >= 0,
+    "任务书带上本块当前子树深度",
+  );
+  ok(pDeep.indexOf("「细化」指的是**深度**") >= 0, "任务书开头给「细化＝深度」定调");
+  ok(pDeep.indexOf("不得只规划一层就收工") >= 0, "深度模式禁止只规划一层就收工");
+  ok(
+    pDeep.indexOf("本块是否还能继续下钻、已经下钻到哪一层") >= 0,
+    "第 0 步改为按深度判断可否继续下钻",
+  );
+  ok(
+    pDeep.indexOf("多层规划树") >= 0 && pDeep.indexOf("是否还需继续下钻") >= 0,
+    "梗概输出多层树 + 每块标注是否继续下钻",
+  );
+  ok(
+    pDeep.indexOf("一次确认覆盖整棵规划树") >= 0 && pDeep.indexOf("不是逐层反复追问") >= 0,
+    "确认门禁 = 一次确认覆盖整棵规划树",
+  );
+  ok(
+    pDeep.indexOf("自顶向下**逐层创建**") >= 0 &&
+      pDeep.indexOf("每层各一次 mtnode_canvas_edit") >= 0,
+    "确认后自顶向下逐层创建（每层一次 edit）",
+  );
+  ok(
+    pDeep.indexOf("parentSuperId 指向它的直接父块") >= 0 &&
+      pDeep.indexOf("上一层刚创建的块") >= 0,
+    "深层子块挂到刚建好的父块（真的会多层嵌套）",
+  );
+  ok(pDeep.indexOf("禁止把不同层级一次性平铺到同一层") >= 0, "明确禁止把各层平铺到同一层");
+  ok(
+    pDeep.indexOf("约 >12 个）时分批") >= 0 && pDeep.indexOf("约 60 个为上限") >= 0,
+    "护栏：单层过多分批 + 本次新建总数约 60 上限",
+  );
+  ok(
+    pDeep.indexOf("询问用户是否继续下钻") >= 0 && pDeep.indexOf("待续下钻") >= 0,
+    "触顶 / 证据不足时停下问用户，并标「待续下钻」",
+  );
+  ok(pDeep.indexOf("子块：A / B / C") >= 0, "要求回写各父块 note 的「子块」行");
+  ok(
+    pDeep.indexOf("本次新增到第几层") >= 0 && pDeep.indexOf("叶子元素类型分布") >= 0,
+    "结尾报告最终层数与叶子分布",
+  );
+  ok(pUndef.indexOf("深度细化（逐层下钻到无法再细") >= 0, "不传 depth 时默认走深度细化");
+  ok(pOnce.indexOf("只展开本层（1 层 · 不下钻）") >= 0, "「只展开本层」档位写进任务书");
+  ok(pOnce.indexOf("仅在本块内创建 1 层子块，不做下钻") >= 0, "只展开本层模式明确不下钻");
+  ok(pOnce.indexOf("不得只规划一层就收工") < 0, "只展开本层时不注入深度模式的强制下钻要求");
+  ok(pOnce.indexOf("用户指定的细化范围：只拆网关目录") >= 0, "用户填的细化范围照旧并入任务书");
+  [
+    "文件节点的路径与新建内容都要符合「目录约定」",
+    "不要调用 mtnode-dev-architect 技能",
+    "rel:true",
+    "#6db4ff",
+    "【功能】非技术说明 + 【实现】工程梗概",
+  ].forEach((k) => ok(pDeep.indexOf(k) >= 0, "深度任务书保留既有约束：" + k.slice(0, 18)));
+
+  /* ---- 对话框：深度现状行 + 深度单选（点选不关窗）→ 选中值真的传进任务书 ---- */
+  const custSrc = refSrc13.slice(
+    refSrc13.indexOf("custom: blocked"),
+    refSrc13.indexOf("actions: blocked"),
+  );
+  ok(
+    custSrc.indexOf("ev.preventDefault()") >= 0 && custSrc.indexOf("depth = it.key") >= 0,
+    "custom 槽点档位只 preventDefault + 改闭包变量",
+  );
+  ok(custSrc.indexOf("select(") < 0, "custom 槽不调 select（点档位不会立即关闭对话框）");
+
+  const sbD = makeDepthSandbox();
+  const pD = exD(sbD, "refineDevNode(nodeById('t2'))");
+  await drain(4);
+  ok(sbD.__forms.length === 1 && sbD.__sess === null, "「细化」第一步只弹确认对话框，未确认不开工");
+  const form13 = sbD.__forms[0];
+  ok(
+    form13.rows.some((r) => r[0] === "细化深度" && r[1].indexOf("当前已 2 层") >= 0),
+    "对话框 rows 列出「细化深度」现状行",
+  );
+  ok(typeof form13.custom === "function", "可细化时给出深度单选（custom 槽非空）");
+  const cont13 = mkEl("div");
+  form13.custom(cont13);
+  const optRows = rowsOf(cont13);
+  const rbOf = (row) => row.childNodes.filter((c) => c.type === "radio")[0] || null;
+  ok(cont13.textContent.indexOf("细化深度（单选）") >= 0, "单选组带「细化深度（单选）」标题");
+  ok(optRows.length === 2, "深度单选渲染出 2 个档位");
+  ok(
+    titleOf(optRows[0]) === "深度细化到无法再细" && titleOf(optRows[1]) === "只展开本层",
+    "两个档位标题取自 DEV_REFINE_DEPTHS",
+  );
+  ok(
+    rbOf(optRows[0]).checked &&
+      rbOf(optRows[0]).name === "devRefineDepth" &&
+      !rbOf(optRows[1]).checked,
+    "默认选中「深度细化到无法再细」（radio 同组互斥）",
+  );
+  ok(
+    optRows[0].classList.contains("on") && !optRows[1].classList.contains("on"),
+    "选中档位带 .on 样式（沿用 mt-sug-opt 观感）",
+  );
+  optRows[1].onclick({ preventDefault() {} });
+  ok(
+    !rbOf(optRows[0]).checked && rbOf(optRows[1]).checked,
+    "点「只展开本层」→ 选中态切换",
+  );
+  ok(
+    !optRows[0].classList.contains("on") && optRows[1].classList.contains("on"),
+    "两个档位的 .on 样式互斥跟随点击",
+  );
+  ok(sbD.__sess === null && sbD.__forms.length === 1, "点档位不关闭对话框、也不启动会话");
+  sbD.__formResolve({ action: "go", text: "" });
+  await pD;
+  ok(!!sbD.__sess, "点「确认细化」后新建绑定的细化会话");
+  ok(
+    sbD.__sess._devContract.indexOf("本次细化深度：只展开本层（1 层 · 不下钻）") >= 0,
+    "对话框里选中的深度值真的传进了 devRefinePrompt（并入会话任务书）",
+  );
+  ok(
+    sbD.__sess.messages[0].content === "只展开本层（1 层）细化该功能块",
+    "会话首条可见消息体现所选深度",
+  );
+
+  const sbE = makeDepthSandbox();
+  const pE = exD(sbE, "refineDevNode(nodeById('t2'))");
+  await drain(4);
+  sbE.__formResolve({ action: "go", text: "只拆网关" });
+  await pE;
+  ok(
+    sbE.__sess._devContract.indexOf("深度细化（逐层下钻到无法再细") >= 0,
+    "不动深度单选时按默认「深度细化」下发任务书",
+  );
+  ok(
+    sbE.__sess.messages[0].content.indexOf(
+      "深度细化该功能块：逐层下钻到无法再细（一般文件级）",
+    ) >= 0,
+    "首条可见消息默认体现深度细化",
+  );
+  ok(
+    sbE.__sess.messages[0].content.indexOf("用户指定的细化范围：只拆网关") >= 0,
+    "填了范围时首条消息带上范围",
+  );
+  ok(
+    sbE.__sends.length === 1 && sbE.__sends[0].opts._devContract === true,
+    "细化会话按会话契约（_devContract）发送",
+  );
+
+  const sbB = makeDepthSandbox();
+  const pB = exD(sbB, "refineDevNode(nodeById('t1'))");
+  await drain(4);
+  ok(sbB.__forms[0].warn.indexOf("已细化到无法再细") >= 0, "已细化到底 → 对话框 warn 说明原因");
+  ok(sbB.__forms[0].custom === null, "拦截态不再给深度单选");
+  ok(sbB.__forms[0].textarea === null, "拦截态不给细化范围输入");
+  ok(
+    sbB.__forms[0].actions.map((a) => a.label).join("|") === "知道了",
+    "拦截态只有「知道了」一个按钮",
+  );
+  sbB.__formResolve({ action: "cancel" });
+  await pB;
+  ok(sbB.__sess === null && sbB.__sends.length === 0, "拦截态不会偷偷开细化会话");
+
+  const sbN = makeDepthSandbox();
+  await exD(sbN, "refineDevNode(nodeById('plain'))");
+  await exD(sbN, "refineDevNode(null)");
+  await drain(2);
+  ok(sbN.__forms.length === 0, "非开发节点 / 空节点：什么都不做");
+
+  /* ---- 入口与建议上下文的深度口径（任务 3 的接线防回归） ---- */
+  const canvas13 = read("renderer/app-canvas.js");
+  ok(
+    canvas13.indexOf('I18n.t("细化（选择深度：只展开本层 / 下钻到无法再细…）")') >= 0,
+    "右键菜单「细化」体现深度两档口径",
+  );
+  ok(
+    canvas13.indexOf("弹窗先选「细化深度」") >= 0,
+    "折叠卡「细化」按钮 tooltip 说明深度选择",
+  );
+  const devn13 = read("renderer/app-devnode.js");
+  ok(
+    devn13.indexOf("细化深度现状（细化＝深度，非本层展开数量）：") >= 0,
+    "建议 / 问询上下文补「细化深度现状」行",
+  );
+  ok(
+    (devn13.match(/devDepthLineOf\(node\)/g) || []).length >= 2,
+    "建议与问询两处都取深度现状",
+  );
+  ok(
+    devn13.indexOf("如按深度继续细化——把子块逐层下钻到文件 / 类级") >= 0,
+    "「建议」把深度细化列为下一步方案",
+  );
+
+  /* ---- 英文词条：细化实现段全部文案有译文（沿用 [8] 的抽取方式） ---- */
+  const i18n13 = require("../renderer/i18n.js");
+  i18n13.setLocale("en");
+  const keys13 = new Set();
+  const re13 = /I18n\.t\(\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
+  let m13;
+  while ((m13 = re13.exec(refSrc13))) {
+    let k13 = m13[2];
+    if (m13[1] === "'") k13 = k13.replace(/\\'/g, "'");
+    else {
+      try {
+        k13 = JSON.parse('"' + k13 + '"');
+      } catch (_) {}
+    }
+    if (k13.indexOf("\n") >= 0) continue;
+    keys13.add(k13);
+  }
+  const missing13 = [...keys13].filter((k) => i18n13.t(k) === k);
+  missing13.slice(0, 10).forEach((k) => console.log("        MISSING " + JSON.stringify(k)));
+  ok(missing13.length === 0, "细化实现段全部文案有英文词条（共 " + keys13.size + " 条）");
+  ok(keys13.size > 40, "细化文案抽取有效（抽到 " + keys13.size + " 条 I18n.t）");
+  const depthOpts = exD(sb13, "DEV_REFINE_DEPTHS.map(function (x) { return [x.key, x.label, x.desc]; })");
+  ok(
+    depthOpts.length === 2 && depthOpts[0][0] === "deep" && depthOpts[1][0] === "once",
+    "两档深度定义在场（deep 默认 · once 只展开本层）",
+  );
+  ok(
+    depthOpts.filter((x) => i18n13.t(x[1]) === x[1] || i18n13.t(x[2]) === x[2]).length === 0,
+    "两个深度选项的标题与说明都有英文词条",
+  );
+  ok(
+    i18n13.t("当前已 {n} 层 · {m} 个块未到文件级", { n: 2, m: 1 }).indexOf("2 layer") >= 0 &&
+      i18n13.t("当前已 {n} 层 · {m} 个块未到文件级", { n: 2, m: 1 }).indexOf("file level") >= 0,
+    "深度现状词条的英文译文占位符可插值",
+  );
+  ok(i18n13.t("细化深度现状（细化＝深度，非本层展开数量）：") !== "细化深度现状（细化＝深度，非本层展开数量）：", "建议上下文深度行有英文词条");
+  i18n13.setLocale("zh");
 
     console.log(
     "\n" +

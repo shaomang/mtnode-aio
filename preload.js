@@ -51,16 +51,6 @@ contextBridge.exposeInMainWorld('api', {
   wfSave: (id, data) => ipcRenderer.invoke('workflow:save', { id, data }),
   wfDelete: (id) => ipcRenderer.invoke('workflow:delete', id),
 
-  zenList: () => ipcRenderer.invoke('zen:list'),
-  zenLoad: (id) => ipcRenderer.invoke('zen:load', id),
-  zenSave: (id, data) => ipcRenderer.invoke('zen:save', { id, data }),
-  zenCreate: (name) => ipcRenderer.invoke('zen:create', { name: name || '' }),
-  zenDelete: (id) => ipcRenderer.invoke('zen:delete', id),
-  zenBackup: (id) => ipcRenderer.invoke('zen:backup', id),
-  zenListBackups: (id) => ipcRenderer.invoke('zen:listBackups', id),
-  zenRestoreBackup: (id, file) => ipcRenderer.invoke('zen:restoreBackup', { id, file }),
-  zenSkillText: (id) => ipcRenderer.invoke('zen:skillText', id),
-
   assetCopy: (srcPath, wfId, name) => ipcRenderer.invoke('asset:copy', { srcPath, wfId, name }),
   assetWriteBase64: (wfId, name, base64, ext) => ipcRenderer.invoke('asset:writeBase64', { wfId, name, base64, ext }),
   assetReadDataUrl: (p) => ipcRenderer.invoke('asset:readDataUrl', p),
@@ -87,6 +77,15 @@ contextBridge.exposeInMainWorld('api', {
   dbDelete: (dir, ids) => ipcRenderer.invoke('db:delete', { dir, ids }),
   dbCalc: (expr) => ipcRenderer.invoke('db:calc', { expr }),
   dbLog: (dir, entry) => ipcRenderer.invoke('db:log', { dir, entry }),
+  /* 回滚存储：字节读写与路径校验全在主进程 rollback-store.js，这里只是白名单桥 */
+  rollbackPutObj: (data) => ipcRenderer.invoke('rollback:putObj', { data }),
+  rollbackPutRound: (sessionId, round) => ipcRenderer.invoke('rollback:putRound', { sessionId, round }),
+  rollbackListRounds: (sessionId, limit) => ipcRenderer.invoke('rollback:listRounds', { sessionId, limit }),
+  rollbackGetRound: (sessionId, roundId) => ipcRenderer.invoke('rollback:getRound', { sessionId, roundId }),
+  rollbackRestoreFile: (sessionId, roundId, p, obj) => ipcRenderer.invoke('rollback:restoreFile', { sessionId, roundId, path: p, obj }),
+  rollbackDeleteFile: (sessionId, roundId, p) => ipcRenderer.invoke('rollback:deleteFile', { sessionId, roundId, path: p }),
+  rollbackStat: (opts) => ipcRenderer.invoke('rollback:stat', opts || {}),
+  rollbackGc: (opts) => ipcRenderer.invoke('rollback:gc', opts || {}),
   netListen: (o) => ipcRenderer.invoke('net:listen', o),
   netUnlisten: (o) => ipcRenderer.invoke('net:unlisten', o),
   netSend: (o) => ipcRenderer.invoke('net:send', o),
@@ -118,6 +117,15 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('yaml-viewer:open', handler);
     return () => ipcRenderer.removeListener('yaml-viewer:open', handler);
+  },
+  onMdViewerOpen: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch (_) {}
+    };
+    ipcRenderer.on('md-viewer:open', handler);
+    return () => ipcRenderer.removeListener('md-viewer:open', handler);
   },
   mtnodesExport: (wf) => ipcRenderer.invoke('mtnodes:export', wf),
   mtnodesImport: () => ipcRenderer.invoke('mtnodes:import'),
@@ -352,7 +360,8 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   /* ── dsh agent 网关（见 dsh/DESIGN.md）──
-     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'error'|'done', data}。 */
+     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'journal'|'error'|'done', data}。
+     'journal' 是回滚帧（改前/改后采样），done 之后到达的帧改由 dshRollbackDrain 取回。 */
   dshConfig: () => ipcRenderer.invoke('dsh:config'),
   dshStatus: () => ipcRenderer.invoke('dsh:status'),
   dshRun: (params, cb) => {
@@ -376,6 +385,8 @@ contextBridge.exposeInMainWorld('api', {
   setLocale: (locale) => ipcRenderer.invoke('i18n:setLocale', locale),
   dshCancel: (params) => ipcRenderer.invoke('dsh:cancel', params),
   dshInteract: (params) => ipcRenderer.invoke('dsh:interact', params),
+  /* 回滚：取回 done 之后才到达的 journal 帧（网关环形缓冲），params {sessionId, roundId} */
+  dshRollbackDrain: (params) => ipcRenderer.invoke('dsh:rollbackDrain', params),
   dshProviderCatalog: () => ipcRenderer.invoke('dsh:providerCatalog'),
   skillList: () => ipcRenderer.invoke('skill:list'),
   skillGet: (name) => ipcRenderer.invoke('skill:get', name),

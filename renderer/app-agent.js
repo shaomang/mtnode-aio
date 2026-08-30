@@ -705,18 +705,37 @@ function renderSessionFooterStat() {
   }
   const running = !!(st.running || liveNodeForSession(st));
   const m = st.metrics || st._usageLive || null;
+  /* 会话累计（全部模型合计）后缀：状态栏一眼看到「这会话已经烧了多少」 */
+  let cum = "";
+  if (typeof tokViewTotals === "function") {
+    const t = tokViewTotals(st);
+    if (t.totalTokens > 0)
+      cum =
+        "  ·  " +
+        I18n.t("本会话累计 ") +
+        fmtTok(t.totalTokens) +
+        " tok · " +
+        I18n.t("缓存命中 ") +
+        Math.round(t.cacheHitPct) +
+        "% · ⏱ " +
+        fmtDurLong(t.wallMs || t.spanMs);
+  }
   if (!running && !m) {
-    el.textContent = "";
-    el.title = I18n.t("当前会话本轮 token 消耗（运行会话后显示）");
+    el.textContent = cum ? I18n.t("会话 · ") + cum.trim().replace(/^·\s*/, "") : "";
+    el.title = cum
+      ? tokBadgeTitleText(st)
+      : I18n.t("当前会话本轮 token 消耗（运行会话后显示）");
     return;
   }
   const prefix =
     I18n.t("会话 · ") + (running ? I18n.t("运行中") + " · " : I18n.t("本轮 "));
   const txt = m
-    ? prefix + fmtSessionFooterStat(m, running)
-    : prefix + I18n.t("输入 ") + "0 tok";
+    ? prefix + fmtSessionFooterStat(m, running) + cum
+    : prefix + I18n.t("输入 ") + "0 tok" + cum;
   el.textContent = txt;
-  el.title = sessionFooterTitle(st, m, running);
+  el.title =
+    sessionFooterTitle(st, m, running) +
+    (cum ? "\n" + tokBadgeTitleText(st) : "");
 }
 function recordDshMetrics(node, m) {
   if (!m) return;
@@ -803,6 +822,505 @@ function dshRunMaxTokens() {
   return effectiveDshMaxTokens(
     (S.config && S.config.dsh && S.config.dsh.maxTokens) || 0,
   );
+}
+
+/* ══════════════ 会话 Token 消耗累积报告（报告 Badge）══════════════
+ * 每次智能运行结束（会话 / 绑定节点 / 全局助手），把网关回传的 metrics 按
+ * 「服务商 · 模型」并入所属会话的累计台账 st.tokenReport；运行中则由逐次 usage
+ * 事件驱动临时台账，让 Badge 实时增长。全部数字都是累计值：
+ * 输入 / 缓存读 / 缓存写 / 输出 / 推理、缓存命中率、LLM / 工具 / 墙钟时间、轮次步数。
+ * 会话末尾渲染一个可点击展开的报告 Badge（<details>），展开是按模型的明细表。 */
+const TOK_FIELDS = [
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "reasoningTokens",
+];
+function tokNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+function tokKey(provider, model) {
+  return String(provider || "?") + "|" + String(model || "?");
+}
+function tokBucketNew(provider, model) {
+  const b = {
+    provider: String(provider || ""),
+    model: String(model || ""),
+    calls: 0,
+    steps: 0,
+    llmMs: 0,
+    toolMs: 0,
+  };
+  for (const f of TOK_FIELDS) b[f] = 0;
+  return b;
+}
+function tokReportNew() {
+  return {
+    v: 1,
+    rounds: 0,
+    startedAt: 0,
+    lastAt: 0,
+    wallMs: 0,
+    llmMs: 0,
+    toolMs: 0,
+    turns: 0,
+    steps: 0,
+    subagents: 0,
+    jobs: 0,
+    maxCtx: 0,
+    byModel: {},
+  };
+}
+function tokReportEnsure(owner) {
+  if (!owner) return null;
+  let r = owner.tokenReport;
+  if (!r || typeof r !== "object") {
+    r = tokReportNew();
+    owner.tokenReport = r;
+  } else {
+    const base = tokReportNew();
+    for (const k in base) if (r[k] == null) r[k] = base[k];
+    if (!r.byModel || typeof r.byModel !== "object") r.byModel = {};
+  }
+  return r;
+}
+/* 全局助手没有会话对象，就给它一个伪会话宿主；台账持久化在 config.assistTokenReport */
+function assistTokOwner() {
+  if (!S._assistTokOwner)
+    S._assistTokOwner = {
+      id: "assist",
+      title: I18n.t("全局助手"),
+      tokenReport: S.assistTokenReport || null,
+    };
+  if (!S._assistTokOwner.tokenReport)
+    S._assistTokOwner.tokenReport = S.assistTokenReport || null;
+  return S._assistTokOwner;
+}
+/* 一次运行归属谁：会话 agent:<id> → 该会话；节点运行 → 节点绑定的会话（无则挂节点）；助手 → 伪会话 */
+function tokOwnerForRun(opts) {
+  const key = String((opts && opts.runKey) || "");
+  if (key.indexOf("agent:") === 0) {
+    const id = key.slice(6);
+    return agentSessions().find((s) => s.id === id) || null;
+  }
+  const node = opts && opts.node;
+  if (node && node.agentSessionId) {
+    const s = agentSessions().find((x) => x.id === node.agentSessionId);
+    if (s) return s;
+  }
+  if (key === "assist") return assistTokOwner();
+  return node || null;
+}
+function tokOwnerId(owner) {
+  return String((owner && owner.id) || "run").replace(/[^A-Za-z0-9_-]/g, "_");
+}
+/* 运行中的临时台账（按模型），只用于实时显示；结束时被正式台账取代 */
+function tokLiveAdd(owner, data) {
+  if (!owner || !data) return;
+  const live = (owner._tokLive = owner._tokLive || {});
+  const key = tokKey(data.provider, data.model);
+  const b = live[key] || (live[key] = tokBucketNew(data.provider, data.model));
+  for (const f of TOK_FIELDS) b[f] = tokNum(b[f]) + tokNum(data[f]);
+  b.calls++;
+  tokBadgeTouch(owner);
+}
+/* 一轮运行结束：并入累计台账（幂等一次一页账，不重复计） */
+function tokMergeRun(owner, metrics, opts) {
+  if (!owner) return;
+  const hasLive = !!(owner._tokLive && Object.keys(owner._tokLive).length);
+  /* 空运行（没有真正发起过一次模型调用）不入账，避免凭空多一「次」 */
+  if (!metrics && !hasLive) return;
+  const r = tokReportEnsure(owner);
+  const startedAt = (metrics && metrics.startedAt) || (opts && opts.startedAt) || Date.now();
+  const endedAt = (metrics && metrics.endedAt) || Date.now();
+  const wallMs = tokNum(metrics && metrics.wallMs) || Math.max(0, endedAt - startedAt);
+  const src =
+    metrics && Array.isArray(metrics.models) && metrics.models.length
+      ? metrics.models
+      : owner._tokLive
+        ? Object.keys(owner._tokLive).map((k) => owner._tokLive[k])
+        : [];
+  let sumLlm = 0;
+  let sumTool = 0;
+  for (const m of src) {
+    const key = tokKey(m.provider, m.model);
+    const b = r.byModel[key] || (r.byModel[key] = tokBucketNew(m.provider, m.model));
+    for (const f of TOK_FIELDS) b[f] = tokNum(b[f]) + tokNum(m[f]);
+    b.calls += tokNum(m.calls);
+    b.steps += tokNum(m.steps);
+    b.llmMs += tokNum(m.llmMs);
+    b.toolMs += tokNum(m.toolMs);
+    sumLlm += tokNum(m.llmMs);
+    sumTool += tokNum(m.toolMs);
+  }
+  r.rounds += 1;
+  r.turns += tokNum(metrics && metrics.turns);
+  r.steps += tokNum(metrics && metrics.steps);
+  r.subagents += tokNum(metrics && metrics.subagents);
+  r.jobs += tokNum(metrics && metrics.jobs);
+  r.llmMs += tokNum(metrics && metrics.llmMs) || sumLlm;
+  r.toolMs += tokNum(metrics && metrics.toolMs) || sumTool;
+  r.wallMs += wallMs;
+  r.maxCtx = Math.max(tokNum(r.maxCtx), tokNum(metrics && metrics.contextWindow));
+  if (!r.startedAt) r.startedAt = startedAt;
+  r.lastAt = Math.max(tokNum(r.lastAt), endedAt);
+  owner._tokLive = null;
+  tokPersist(owner);
+  tokBadgeTouch(owner, true);
+  if (typeof renderSessionFooterStat === "function") renderSessionFooterStat();
+}
+/* 台账持久化：会话进 config.agentSessions，助手进 config.assistTokenReport，节点进工作流 */
+function tokPersist(owner) {
+  if (!owner) return;
+  try {
+    if (owner.id === "assist") {
+      S.assistTokenReport = owner.tokenReport;
+      if (S.config) S.config.assistTokenReport = owner.tokenReport;
+      if (window.api && window.api.configSave)
+        window.api.configSave(S.config).catch(() => {});
+      return;
+    }
+    if (Array.isArray(S.agentSessions) && S.agentSessions.some((s) => s.id === owner.id)) {
+      if (typeof persistAgentSession === "function") persistAgentSession();
+      return;
+    }
+    if (owner.kind && typeof scheduleSave === "function") scheduleSave();
+  } catch {}
+}
+/* 展示口径：累计台账 + 在途临时台账 */
+function tokViewModels(owner) {
+  const r = (owner && owner.tokenReport) || null;
+  const out = {};
+  if (r && r.byModel)
+    for (const k of Object.keys(r.byModel)) {
+      const b = r.byModel[k];
+      out[k] = Object.assign({}, b);
+    }
+  const live = owner && owner._tokLive;
+  if (live)
+    for (const k of Object.keys(live)) {
+      const m = live[k];
+      const b = out[k] || (out[k] = tokBucketNew(m.provider, m.model));
+      for (const f of TOK_FIELDS) b[f] = tokNum(b[f]) + tokNum(m[f]);
+      b.calls += tokNum(m.calls);
+    }
+  const arr = Object.keys(out).map((k) => out[k]);
+  arr.sort((a, b) => {
+    const ta = a.inputTokens + a.cacheReadTokens + a.cacheWriteTokens + a.outputTokens;
+    const tb = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens + b.outputTokens;
+    return tb - ta;
+  });
+  return arr;
+}
+function tokViewTotals(owner) {
+  const r = (owner && owner.tokenReport) || null;
+  const t = {
+    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
+    cacheWriteTokens: 0, reasoningTokens: 0, calls: 0,
+    models: 0, llmMs: 0, toolMs: 0,
+  };
+  for (const b of tokViewModels(owner)) {
+    t.models++;
+    for (const f of TOK_FIELDS) t[f] += tokNum(b[f]);
+    t.calls += tokNum(b.calls);
+    t.llmMs += tokNum(b.llmMs);
+    t.toolMs += tokNum(b.toolMs);
+  }
+  const billed = t.inputTokens + t.cacheReadTokens + t.cacheWriteTokens;
+  t.billedInput = billed;
+  t.cacheHitPct = billed > 0 ? (t.cacheReadTokens / billed) * 100 : 0;
+  t.totalTokens = billed + t.outputTokens;
+  t.rounds = (r && tokNum(r.rounds)) || 0;
+  t.turns = (r && tokNum(r.turns)) || 0;
+  t.steps = (r && tokNum(r.steps)) || 0;
+  t.wallMs = (r && tokNum(r.wallMs)) || 0;
+  t.spanMs = r && r.startedAt && r.lastAt ? r.lastAt - r.startedAt : 0;
+  return t;
+}
+function tokFmtPct(n) {
+  return (Math.round((Number(n) || 0) * 10) / 10).toString() + "%";
+}
+/* 墙钟/长时段的可读表达（超过 1 小时用 h） */
+function fmtDurLong(ms) {
+  ms = Number(ms) || 0;
+  if (ms <= 0) return "0s";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + "s";
+  if (s < 3600) return fmtDur(ms);
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return m ? h + "h" + m + "m" : h + "h";
+}
+function tokBadgeSummary(rep, t, running) {
+  const parts = [];
+  parts.push("Σ " + fmtTok(t.totalTokens) + " tok");
+  parts.push(
+    I18n.t("入") + fmtTok(t.billedInput) + I18n.t(" · 出") + fmtTok(t.outputTokens),
+  );
+  parts.push(I18n.t("缓存命中 ") + Math.round(t.cacheHitPct) + "%");
+  if (t.models > 1) parts.push(t.models + I18n.t(" 模型"));
+  if (t.rounds) parts.push(t.rounds + I18n.t(" 轮"));
+  parts.push("⏱ " + fmtDurLong(t.wallMs || t.spanMs));
+  let s = parts.join(" · ");
+  if (running) s = I18n.t("运行中 · ") + s;
+  return s;
+}
+function tokBadgeTitleText(owner) {
+  const t = tokViewTotals(owner);
+  const lines = [];
+  lines.push(I18n.t("本会话累计 Token 消耗") + " · " + tokBadgeSummary(owner.tokenReport, t, false));
+  for (const b of tokViewModels(owner)) {
+    const bt = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens;
+    const hit = bt > 0 ? (b.cacheReadTokens / bt) * 100 : 0;
+    lines.push(
+      (b.provider ? b.provider + " · " : "") + b.model +
+        ": " + I18n.t("入") + " " + fmtTok(bt) + " (" + I18n.t("缓存读") + " " + fmtTok(b.cacheReadTokens) + ", " + I18n.t("命中") + " " + Math.round(hit) + "%)" +
+        ", " + I18n.t("出") + " " + fmtTok(b.outputTokens) +
+        (b.reasoningTokens ? ", " + I18n.t("推理") + " " + fmtTok(b.reasoningTokens) : "") +
+        ", " + b.calls + I18n.t(" 次调用, LLM ") + fmtDurLong(b.llmMs) +
+        (b.toolMs ? " · " + I18n.t("工具") + " " + fmtDurLong(b.toolMs) : ""),
+    );
+  }
+  return lines.join("\n");
+}
+/* 纯文本报告（Badge 上的「复制」用） */
+function tokReportPlain(owner) {
+  const r = owner && owner.tokenReport;
+  const t = tokViewTotals(owner);
+  const L = [];
+  L.push(I18n.t("Token 消耗累计报告") + " · " + ((owner && owner.title) || ""));
+  L.push(
+    I18n.t("合计") + ": " + I18n.t("计费输入") + " " + t.billedInput +
+      " (" + I18n.t("未命中") + " " + t.inputTokens + " + " + I18n.t("缓存读") + " " + t.cacheReadTokens +
+      " + " + I18n.t("缓存写") + " " + t.cacheWriteTokens + ")" +
+      ", " + I18n.t("输出") + " " + t.outputTokens + ", " + I18n.t("推理") + " " + t.reasoningTokens +
+      ", " + I18n.t("缓存命中") + " " + tokFmtPct(t.cacheHitPct),
+  );
+  L.push(
+    I18n.t("时间") + ": LLM " + fmtDurLong(t.llmMs) + " · " + I18n.t("工具") + " " + fmtDurLong(t.toolMs) +
+      " · " + I18n.t("墙钟") + " " + fmtDurLong(t.wallMs) + " · " + I18n.t("跨度") + " " + fmtDurLong(t.spanMs),
+  );
+  L.push(
+    I18n.t("运行") + " " + t.rounds + " " + I18n.t(" 次 · ") + t.turns + I18n.t(" 轮 · ") + t.steps + I18n.t(" 步"),
+  );
+  L.push("");
+  L.push(I18n.t("按模型") + ":");
+  for (const b of tokViewModels(owner)) {
+    const bt = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens;
+    L.push(
+      "  " + ((b.provider ? b.provider + " · " : "") + b.model) +
+        ": " + I18n.t("计费输入") + " " + bt + " (" + I18n.t("缓存读") + " " + b.cacheReadTokens +
+        ", " + I18n.t("命中") + " " + tokFmtPct(bt > 0 ? (b.cacheReadTokens / bt) * 100 : 0) + ")" +
+        " · " + I18n.t("输出") + " " + b.outputTokens + " · " + I18n.t("推理") + " " + b.reasoningTokens +
+        " · " + b.calls + I18n.t(" 次") + " · LLM " + fmtDurLong(b.llmMs) +
+        (b.toolMs ? " · " + I18n.t("工具") + " " + fmtDurLong(b.toolMs) : ""),
+    );
+  }
+  if (r && r.startedAt) L.push(I18n.t("起始") + ": " + fmtTime(r.startedAt));
+  if (r && r.lastAt) L.push(I18n.t("最近") + ": " + fmtTime(r.lastAt));
+  return L.join("\n");
+}
+/* 报告 Badge：折叠时一行摘要，点击展开是按模型明细表 */
+function tokBadgeEl(owner) {
+  if (!owner) return null;
+  const r = owner.tokenReport;
+  const live = owner._tokLive;
+  if (!r && !live) return null;
+  const t = tokViewTotals(owner);
+  if (!t.totalTokens && !t.rounds) return null;
+  const running = !!(live && Object.keys(live).length);
+  const det = document.createElement("details");
+  det.className = "tok-badge" + (running ? " running" : "");
+  det.dataset.tokOwner = tokOwnerId(owner);
+  det.title = tokBadgeTitleText(owner);
+  const openKey = "tok:" + tokOwnerId(owner);
+  if (S.openDshTools && S.openDshTools[openKey]) det.open = true;
+  det.addEventListener("toggle", () => {
+    S.openDshTools = S.openDshTools || {};
+    if (det.open) S.openDshTools[openKey] = true;
+    else delete S.openDshTools[openKey];
+  });
+  det.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  det.addEventListener("click", (ev) => {
+    if (ev.target.closest("button")) ev.stopPropagation();
+  });
+  const sum = document.createElement("summary");
+  const chip = document.createElement("span");
+  chip.className = "tok-badge-chip";
+  chip.textContent = "📊 Token 报告";
+  sum.appendChild(chip);
+  const sm = document.createElement("span");
+  sm.className = "tok-badge-sum";
+  sm.textContent = tokBadgeSummary(r, t, running);
+  sum.appendChild(sm);
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "tok-badge-copy";
+  copy.textContent = I18n.t("复制");
+  copy.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    try {
+      const txt = tokReportPlain(owner);
+      if (navigator.clipboard && navigator.clipboard.writeText)
+        navigator.clipboard.writeText(txt).then(
+          () => toast(I18n.t("报告已复制"), "ok"),
+          () => toast(I18n.t("复制失败"), "err"),
+        );
+      else if (window.api && window.api.clipboardWriteText)
+        window.api.clipboardWriteText(txt);
+    } catch {}
+  });
+  sum.appendChild(copy);
+  det.appendChild(sum);
+  const wrap = document.createElement("div");
+  wrap.className = "tok-badge-body";
+  const models = tokViewModels(owner);
+  const table = document.createElement("table");
+  table.className = "tok-badge-table";
+  const thead = document.createElement("tr");
+  for (const h of [
+    I18n.t("模型 / 服务商"),
+    I18n.t("计费输入"),
+    I18n.t("缓存读"),
+    I18n.t("命中"),
+    I18n.t("输出"),
+    I18n.t("推理"),
+    I18n.t("调用"),
+    "LLM",
+    I18n.t("工具"),
+  ]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    thead.appendChild(th);
+  }
+  table.appendChild(thead);
+  for (const b of models) {
+    const billed = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens;
+    const hit = billed > 0 ? (b.cacheReadTokens / billed) * 100 : 0;
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = b.model || "?";
+    const prov = document.createElement("span");
+    prov.className = "tok-badge-prov";
+    prov.textContent = b.provider || "";
+    name.appendChild(prov);
+    tr.appendChild(name);
+    const cells = [
+      fmtTok(billed) + (b.cacheWriteTokens ? " (w" + fmtTok(b.cacheWriteTokens) + ")" : ""),
+      fmtTok(b.cacheReadTokens),
+      tokFmtPct(hit),
+      fmtTok(b.outputTokens),
+      fmtTok(b.reasoningTokens),
+      String(b.calls),
+      fmtDurLong(b.llmMs),
+      fmtDurLong(b.toolMs),
+    ];
+    for (const c of cells) {
+      const td = document.createElement("td");
+      td.textContent = c;
+      tr.appendChild(td);
+    }
+    table.appendChild(tr);
+  }
+  const tr = document.createElement("tr");
+  tr.className = "tok-badge-total";
+  const tds = [
+    I18n.t("合计") + " · " + t.models + I18n.t(" 模型"),
+    fmtTok(t.billedInput),
+    fmtTok(t.cacheReadTokens),
+    tokFmtPct(t.cacheHitPct),
+    fmtTok(t.outputTokens),
+    fmtTok(t.reasoningTokens),
+    String(t.calls),
+    fmtDurLong(t.llmMs),
+    fmtDurLong(t.toolMs),
+  ];
+  for (const c of tds) {
+    const td = document.createElement("td");
+    td.textContent = c;
+    tr.appendChild(td);
+  }
+  table.appendChild(tr);
+  wrap.appendChild(table);
+  const meta = document.createElement("div");
+  meta.className = "tok-badge-meta";
+  const rr = r || tokReportNew();
+  const bits = [
+    I18n.t("运行") + " " + t.rounds + " " + I18n.t(" 次"),
+    (rr.turns || 0) + I18n.t(" 轮 · ") + (rr.steps || 0) + I18n.t(" 步"),
+    I18n.t("墙钟") + " " + fmtDurLong(rr.wallMs || 0),
+    I18n.t("跨度") + " " + fmtDurLong(t.spanMs),
+  ];
+  if (rr.maxCtx) bits.push(I18n.t("上下文窗口") + " " + fmtTok(rr.maxCtx) + " tok");
+  if (rr.subagents) bits.push(I18n.t("子代理") + " " + rr.subagents);
+  if (rr.startedAt) bits.push(I18n.t("起始") + " " + fmtTime(rr.startedAt));
+  if (rr.lastAt) bits.push(I18n.t("最近") + " " + fmtTime(rr.lastAt));
+  meta.textContent = bits.join(" · ");
+  wrap.appendChild(meta);
+  det.appendChild(wrap);
+  return det;
+}
+/* Badge 该挂到哪个容器：已有 Badge 的父级 → 会话视图 / 助手栏 / 节点内会话 */
+function tokBadgeHost(owner) {
+  if (!owner) return null;
+  const sel = '.tok-badge[data-tok-owner="' + tokOwnerId(owner) + '"]';
+  const existing = document.querySelector(sel);
+  if (existing) return existing.parentElement;
+  const sid = String(owner.id || "");
+  if (sid === "assist") return document.getElementById("assistList");
+  if (S.agentActiveId === sid) {
+    const list = document.getElementById("agentList");
+    if (list && list.style.display !== "none") return list;
+  }
+  const conv = document.querySelector(
+    '.wf-node[data-nid="' + sid + '"] .agent-conv',
+  );
+  if (conv) return conv;
+  const bound = document.querySelector(
+    '.wf-node[data-nid="' + sid + '"] .chat-list',
+  );
+  return bound || null;
+}
+/* 局部刷新：找不到宿主就挂到当前可见的会话列表末尾 */
+function tokBadgeTouch(owner, force) {
+  if (!owner) return;
+  const now = Date.now();
+  if (!force && owner._tokBadgeAt && now - owner._tokBadgeAt < 400) {
+    if (!owner._tokBadgeTimer)
+      owner._tokBadgeTimer = setTimeout(() => {
+        owner._tokBadgeTimer = null;
+        owner._tokBadgeAt = Date.now();
+        tokBadgeTouch(owner, true);
+      }, 420);
+    return;
+  }
+  owner._tokBadgeAt = now;
+  const sel = '.tok-badge[data-tok-owner="' + tokOwnerId(owner) + '"]';
+  const found = Array.from(document.querySelectorAll(sel));
+  if (!found.length) {
+    const fresh = tokBadgeEl(owner);
+    if (!fresh) return;
+    const host = tokBadgeHost(owner);
+    if (!host) return;
+    if (host.classList && host.classList.contains("agent-conv"))
+      fresh.style.margin = "6px 6px 2px";
+    host.appendChild(fresh);
+    return;
+  }
+  for (const el of found) {
+    const host = el.parentElement;
+    const fresh = tokBadgeEl(owner);
+    if (!fresh) {
+      el.remove();
+      continue;
+    }
+    /* 保留宿主处写入的行内样式（节点内会话的边距等） */
+    if (el.style && el.style.cssText) fresh.style.cssText = el.style.cssText;
+    if (host) host.replaceChild(fresh, el);
+  }
 }
 
 let _mtnodeSkillIndexCache = { at: 0, text: "" };

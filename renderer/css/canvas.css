@@ -544,6 +544,30 @@
   outline-offset: 3px
 }
 
+/* ===== 顶栏「隐藏线」toggle：临时把连线压到 95% 透明 =====
+   只动视觉，不写画布数据、不进撤销栈；超级节点壳层内的连线在各自的
+   .super-wires svg 里，同样是 #canvas 的后代，所以一并生效。
+   正在拖拽的临时连线（.temp）保持可见，否则新连接看不见落点；
+   选中节点后与它相关的线（.linked）与选中的线（.sel）自动亮起，
+   隐藏的是「静态干扰」，不是刚点下去要看的那几条。
+   生成高清总览图（.is-snapshot）截的是真实 DOM，快照期间一律不压暗。 */
+.fn-canvas.hide-wires:not(.is-snapshot) path.fn-edge:not(.temp):not(.linked):not(.sel),
+.fn-canvas.hide-wires:not(.is-snapshot) path.fn-edge-ring:not(.temp):not(.linked):not(.sel) {
+  opacity: .05 !important;
+  filter: none !important;
+  pointer-events: none !important
+}
+
+.fn-canvas.hide-wires:not(.is-snapshot) .wire-rel-label:not(.linked):not(.sel) {
+  opacity: .05 !important;
+  pointer-events: none !important
+}
+
+/* marker 里的箭头三角：-hi / -lk 是选中与关联态，保留；常态与淡出态一起压掉 */
+.fn-canvas.hide-wires:not(.is-snapshot) .rel-arrow-head:not(.hi):not(.lk) {
+  opacity: .05
+}
+
 /* ===== 框选矩形 ===== */
 .box-sel {
   position: absolute;
@@ -818,7 +842,10 @@
 
 .wf-node.task {
   border-color: #3ecfcf66;
-  background: linear-gradient(180deg, #122022, #0e1618)
+  background: linear-gradient(180deg, #122022, #0e1618);
+  /* 选中环颜色（亮色主题换主题蓝，见 theme-light.css）；状态灯色由下面各状态
+     规则的 --task-glow-rgb 提供，两者一起决定「选中后状态灯仍在、并且更亮」 */
+  --task-sel-rgb: 124, 232, 255;
 }
 
 .wf-node.super {
@@ -1041,7 +1068,8 @@
     inset 0 2px 5px rgba(0, 0, 0, .3);
 }
 
-/* 卡片只是标题 / 描述 / 计数的布局容器，自身不再绘制任何形状 */
+/* 卡片只是标题 / 描述 / 计数的布局容器，自身不再绘制任何形状
+   cursor: pointer —— 折叠卡整体可「双击进入子画布」，光标要读得出来 */
 .super-folder {
   position: relative;
   flex: 1;
@@ -1050,6 +1078,12 @@
   flex-direction: column;
   gap: 5px;
   overflow: hidden;
+  cursor: pointer;
+}
+
+/* hover 轻微高亮：只提亮大标题，不改卡片形状，避免与选中态描边打架 */
+.super-folder:hover .super-folder-title {
+  color: var(--cyan2);
 }
 
 /* 收纳数量 / 子文件夹：面板右下角小字 */
@@ -1199,38 +1233,6 @@
   background: rgba(111, 227, 165, .04);
 }
 
-.n-dev-info .n-dev-path {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--muted);
-  word-break: break-all;
-}
-
-.n-dev-info .n-dev-status {
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.n-dev-info .n-dev-status.wip {
-  color: #ffd97a;
-}
-
-.n-dev-info .n-dev-status.done {
-  color: #9ef0c0;
-}
-
-/* 折叠卡里的生效模型行：本块或就近上层所选（灰字 = 继承自上层） */
-.n-dev-info .n-dev-model-info {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: #8fd8ff;
-  word-break: break-all;
-}
-
-.n-dev-info .n-dev-model-info.inherited {
-  color: var(--muted);
-}
-
 .n-dev-info .n-dev-open {
   align-self: flex-start;
   padding: 2px 10px;
@@ -1305,6 +1307,23 @@
   border-color: #cba6ff;
 }
 
+/* 问询按钮（AI 只读回答模块问题）：折叠卡 body 按钮 */
+.n-dev-info .n-dev-ask {
+  padding: 2px 10px;
+  font-size: 10.5px;
+  color: #4dd0c4;
+  background: transparent;
+  border: 1px solid rgba(77, 208, 196, .45);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.n-dev-info .n-dev-ask:hover {
+  color: #06110f;
+  background: #4dd0c4;
+  border-color: #4dd0c4;
+}
+
 /* 文件节点「打开」按钮（打开源码文件） */
 .n-dev-info .n-dev-file-open {
   padding: 2px 10px;
@@ -1332,6 +1351,41 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 在途 / 已就绪的建议调研状态行（折叠卡上的可见、可点入口）：
+   running = 琥珀色（调研中 · 后台跑）· ready = 绿色（已就绪未查看） */
+.n-dev-info .n-dev-sugstate {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 2px 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  color: #f0c14d;
+  background: rgba(240, 193, 77, .08);
+  border: 1px dashed rgba(240, 193, 77, .4);
+  border-radius: 3px;
+}
+.n-dev-info .n-dev-sugstate:hover {
+  color: #08130d;
+  background: rgba(240, 193, 77, .85);
+  border-color: rgba(240, 193, 77, .9);
+}
+.n-dev-info .n-dev-sugstate.ready {
+  color: #6fe3a5;
+  background: rgba(111, 227, 165, .08);
+  border-color: rgba(111, 227, 165, .4);
+}
+.n-dev-info .n-dev-sugstate.ready:hover {
+  color: #08130d;
+  background: rgba(111, 227, 165, .85);
+  border-color: rgba(111, 227, 165, .9);
 }
 
 /* 元素类型徽章（头部） */
@@ -1445,6 +1499,72 @@
   box-shadow: 0 0 0 1px rgba(255, 255, 255, .18);
 }
 
+/* ===== HSV 色板顶部「功能色卡」快捷行 =====
+   8 个功能分类色（色值一律来自 app-devnode.js 的 DEV_FUNC_COLORS，这里只排版、
+   不做二次调色）：点击即套用该分类色；.on = 当前已套用的颜色（高亮描边）。
+   亮色主题下金 / 黄绿这类高亮色靠统一的深色外描边 + 浅色内圈保证边界可辨。 */
+.dev-color-func {
+  padding: 8px 10px 7px;
+  border-bottom: 1px dashed var(--bd);
+}
+
+.dev-color-func-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.dev-color-func-head b {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  color: var(--muted);
+}
+
+.dev-color-func-head .hint {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 9.5px;
+  opacity: .75;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-color-func-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.dev-color-func-sw {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, .42);
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+  cursor: pointer;
+  transition: transform .08s ease;
+}
+
+.dev-color-func-sw:hover {
+  transform: translateY(-1px);
+}
+
+/* 当前色：内圈留白 + 外圈高亮描边（--ink 在暗色主题偏浅、亮色主题偏深，两主题都清晰） */
+.dev-color-func-sw.on {
+  box-shadow:
+    inset 0 0 0 2px var(--panel2),
+    0 0 0 2px var(--ink);
+}
+
 /* 菜单栏 Agent 模型小按钮：🧠 + 当前生效模型（未选 = 自动 · 虚线 = 继承上层） */
 .n-dev-model {
   flex: none;
@@ -1500,14 +1620,23 @@
 .wf-node.dev-el-interface { --dev-glow: 199, 146, 234; }
 .wf-node.dev-el-enum { --dev-glow: 255, 143, 163; }
 
+/* 常态呼吸与选中加强呼吸是两套动画名：切换 .sel 时 animation-name 变化会让动画
+   立即重建，不依赖「运行时改自定义属性、keyframes 里的 var() 会不会重新求值」
+   （选中常常是 classList.add("sel") 直接改在现存元素上，并不重绘整块画布）。 */
 .wf-node.dev-el.dev-running {
+  --dev-sel-rgb: 124, 232, 255; /* 选中环颜色（亮色主题换主题蓝，浅底不刺眼） */
   animation: devRunBreathe 1.9s ease-in-out infinite;
 }
-/* 选中时暂停呼吸，保留 .sel 的青色选择高亮 */
-.wf-node.dev-el.dev-running.sel {
-  animation: none;
-  border-color: #7ce8ff;
+
+/* 选中运行中的开发节点：呼吸不停，只是换一套更亮的动画（见 devRunBreatheSel）。
+   选择器带上 .super 抬高权重，才能压过后面 .wf-node:not(.global)….sel 的 1.5px 描边
+   （开发节点恒为 super 子类型）。 */
+.wf-node.super.dev-el.dev-running.sel {
+  animation-name: devRunBreatheSel;
+  outline: 2px solid rgba(124, 232, 255, .95);
+  outline-offset: 2px;
 }
+
 @keyframes devRunBreathe {
   0%, 100% {
     border-color: rgba(var(--dev-glow, 111, 227, 165), .35);
@@ -1521,6 +1650,79 @@
     box-shadow:
       0 0 0 1px rgba(var(--dev-glow, 111, 227, 165), .8),
       0 0 16px rgba(var(--dev-glow, 111, 227, 165), .55),
+      var(--nfloat);
+  }
+}
+
+/* 选中态：呼吸照旧进行，只是整体更亮 —— 波谷从 .35 抬到 .6（选中后不再有明显
+   「暗下去」的一段）、波峰拉满，光晕更宽更浓；青色选择环一起写进 keyframes，
+   否则动画的 box-shadow 会盖掉 .wf-node.sel 的普通规则（两者互相看不见）。 */
+@keyframes devRunBreatheSel {
+  0%, 100% {
+    border-color: rgba(var(--dev-glow, 111, 227, 165), .6);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 111, 227, 165), .55),
+      0 0 10px rgba(var(--dev-glow, 111, 227, 165), .35),
+      0 0 12px rgba(var(--dev-sel-rgb, 124, 232, 255), .5),
+      var(--nfloat);
+  }
+  50% {
+    border-color: rgba(var(--dev-glow, 111, 227, 165), 1);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 111, 227, 165), 1),
+      0 0 26px rgba(var(--dev-glow, 111, 227, 165), .8),
+      0 0 18px rgba(var(--dev-sel-rgb, 124, 232, 255), .95),
+      var(--nfloat);
+  }
+}
+
+/* ---- 开发节点「建议调研中」：琥珀色呼吸灯 ----
+   devNodeRunningState = "sug" 时元素带 .dev-running-sug（只读调研在后台跑，
+   读代码 ≠ 真在跑任务，用琥珀色光晕 + 更慢的节奏与 self/desc/sess 区分）。
+   非自定义颜色的节点把 --dev-glow 临时换成功能色卡「插件金」；用户手选的
+   devColor 仍是内联 --dev-glow，天然覆盖本规则，符合「用户手选 > 功能色 >
+   元素类型默认色」的优先级。选中态走 devRunBreatheSugSel（更亮的琥珀 + 环）。 */
+.wf-node.dev-el.dev-running-sug {
+  --dev-glow: 240, 193, 77;
+  animation: devRunBreatheSug 2.2s ease-in-out infinite;
+}
+.wf-node.super.dev-el.dev-running-sug.sel {
+  --dev-sel-rgb: 240, 193, 77;
+  animation-name: devRunBreatheSugSel;
+  outline: 2px solid rgba(240, 193, 77, .95);
+  outline-offset: 2px;
+}
+@keyframes devRunBreatheSug {
+  0%, 100% {
+    border-color: rgba(var(--dev-glow, 240, 193, 77), .3);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 240, 193, 77), .25),
+      0 0 5px rgba(var(--dev-glow, 240, 193, 77), .15),
+      var(--nfloat);
+  }
+  50% {
+    border-color: rgba(var(--dev-glow, 240, 193, 77), .8);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 240, 193, 77), .7),
+      0 0 14px rgba(var(--dev-glow, 240, 193, 77), .45),
+      var(--nfloat);
+  }
+}
+@keyframes devRunBreatheSugSel {
+  0%, 100% {
+    border-color: rgba(var(--dev-glow, 240, 193, 77), .55);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 240, 193, 77), .5),
+      0 0 9px rgba(var(--dev-glow, 240, 193, 77), .3),
+      0 0 10px rgba(var(--dev-sel-rgb, 240, 193, 77), .45),
+      var(--nfloat);
+  }
+  50% {
+    border-color: rgba(var(--dev-glow, 240, 193, 77), 1);
+    box-shadow:
+      0 0 0 1px rgba(var(--dev-glow, 240, 193, 77), 1),
+      0 0 22px rgba(var(--dev-glow, 240, 193, 77), .7),
+      0 0 14px rgba(var(--dev-sel-rgb, 240, 193, 77), .8),
       var(--nfloat);
   }
 }
@@ -1704,6 +1906,7 @@
   color: var(--cyan2)
 }
 
+/* 双击副本盒 = 进入源数据库超级节点的子画布：光标 + hover 轻微高亮 */
 .n-db-replica {
   flex: 1;
   min-height: 0;
@@ -1712,6 +1915,11 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  cursor: pointer;
+}
+
+.n-db-replica:hover {
+  background: rgba(56, 214, 255, .06)
 }
 
 .n-db-meta {
@@ -1988,23 +2196,27 @@
 }
 
 .wf-node.task.st-done {
+  --task-glow-rgb: 95, 214, 138;
   border-color: #5fd68a;
   box-shadow: var(--nfloat), 0 0 10px rgba(95, 214, 138, .35)
 }
 
 .wf-node.task.st-running,
 .wf-node.task.st-run {
+  --task-glow-rgb: 255, 143, 46;
   border-color: #ff8f2e;
   box-shadow: var(--nfloat), 0 0 10px rgba(255, 143, 46, .4)
 }
 
 .wf-node.task.st-failed {
+  --task-glow-rgb: 255, 107, 107;
   border-color: #ff6b6b;
   box-shadow: var(--nfloat), 0 0 10px rgba(255, 107, 107, .4)
 }
 
 .wf-node.task.st-blocked,
 .wf-node.task.st-block {
+  --task-glow-rgb: 255, 224, 138;
   border-color: #ffe08a;
   animation: task-block-blink 1s ease-in-out infinite;
 }
@@ -2020,6 +2232,32 @@
   50% {
     box-shadow: var(--nfloat), 0 0 14px rgba(255, 224, 138, .85);
     border-color: #ffe08a
+  }
+}
+
+/* 阻塞中的任务被选中：闪烁照旧进行，只是换一套更亮的动画（与开发节点的
+   devRunBreatheSel 同一手法——改 animation-name 让动画立即重建，不依赖运行时
+   改自定义属性后 keyframes 里的 var() 会不会重新求值）。波谷从「几乎看不见」抬到
+   .55、波峰拉满并加一圈青色选择光晕，选中环本身走 outline（动画看不见它）。 */
+@keyframes task-block-blink-sel {
+
+  0%,
+  100% {
+    border-color: rgba(var(--task-glow-rgb, 255, 224, 138), .78);
+    box-shadow:
+      0 0 0 1.5px rgba(var(--task-glow-rgb, 255, 224, 138), .55),
+      0 0 8px rgba(var(--task-glow-rgb, 255, 224, 138), .5),
+      0 0 10px rgba(var(--task-sel-rgb, 124, 232, 255), .4),
+      var(--nfloat);
+  }
+
+  50% {
+    border-color: rgb(var(--task-glow-rgb, 255, 224, 138));
+    box-shadow:
+      0 0 0 1.5px rgba(var(--task-glow-rgb, 255, 224, 138), .95),
+      0 0 22px rgba(var(--task-glow-rgb, 255, 224, 138), .9),
+      0 0 16px rgba(var(--task-sel-rgb, 124, 232, 255), .9),
+      var(--nfloat);
   }
 }
 
@@ -2435,6 +2673,36 @@
 .wf-node.task.sel {
   border-color: #7ee8e0;
   box-shadow: 0 0 10px rgba(62, 207, 207, .45), 8px 12px 24px rgba(0, 0, 0, .45)
+}
+
+/* ---- 任务节点：状态灯 + 选中 ----
+   上面那条 .wf-node.task.sel 会把任何状态（进行中 / 已完成 / 失败）的边框与光晕
+   整个换成青色 —— 一点选就看不出它还在跑，和开发节点呼吸灯「选中即熄灭」是同一类
+   毛病。这里为每个状态补一条「状态 + .sel」组合规则（权重 4 > 3，天然压得住）：
+   状态色一律保留（取该状态的 --task-glow-rgb 满值），光晕加宽一层、再叠一圈青色
+   选择光晕 + outline 选择环，即「呼吸/状态灯仍在，并且更加高亮」。
+   阻塞中的任务是动画在驱动边框与光晕，普通规则盖不住它，所以换成
+   task-block-blink-sel 一套更亮的动画（规则写在下方 st-block 组合里）。 */
+.wf-node.task.st-done.sel,
+.wf-node.task.st-running.sel,
+.wf-node.task.st-run.sel,
+.wf-node.task.st-failed.sel,
+.wf-node.task.st-blocked.sel,
+.wf-node.task.st-block.sel {
+  border-color: rgb(var(--task-glow-rgb, 126, 142, 160));
+  box-shadow:
+    0 0 0 1.5px rgba(var(--task-glow-rgb, 126, 142, 160), .65),
+    0 0 18px rgba(var(--task-glow-rgb, 126, 142, 160), .55),
+    0 0 12px rgba(var(--task-sel-rgb, 124, 232, 255), .5),
+    var(--nfloat);
+  outline: 2px solid rgba(var(--task-sel-rgb, 124, 232, 255), .95);
+  outline-offset: 2px;
+}
+
+/* 阻塞中：只切换动画名 → 闪烁继续进行（见 @keyframes task-block-blink-sel） */
+.wf-node.task.st-blocked.sel,
+.wf-node.task.st-block.sel {
+  animation-name: task-block-blink-sel;
 }
 
 .task .n-title {
@@ -3173,6 +3441,44 @@
 
 .agent-conv .dsh-stream {
   color: var(--muted)
+}
+
+/* 节点内会话的分段：框体窄，段间距与字号都收紧；
+   正文段仍是正常正文色（--ink），思考段保持灰调小字，一眼可分 */
+.agent-conv .dsh-stream>.dsh-seg {
+  margin-top: 4px
+}
+
+.agent-conv .dsh-stream>.dsh-seg:first-child {
+  margin-top: 0
+}
+
+.agent-conv .dsh-seg-say {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink)
+}
+
+.agent-conv .dsh-seg-think {
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 2px 6px 3px
+}
+
+.agent-conv .dsh-seg-think>summary {
+  font-size: 10px
+}
+
+.agent-conv .dsh-seg-think pre,
+.agent-conv .dsh-seg-think .dsh-think-live {
+  max-height: 120px;
+  font-size: 10px;
+  line-height: 1.6
+}
+
+.agent-conv .dsh-seg-tool {
+  font-size: 10px;
+  padding: 2px 6px 3px
 }
 
 /* 顶部中间竖向拖拽把手（调整框体上下高度） */

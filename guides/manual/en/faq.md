@@ -27,6 +27,9 @@ During global-assistant / agent-session canvas edits, save nodes do not write. T
 **Agent task wrote the wrong files?**  
 Check the workspace; switch Approvals to “approve each” or disable extra tools.
 
+**Cannot tell thinking from the actual reply while a run is going?**  
+Output now renders in chronological segments: **“◉ Thinking · N chars”** collapses the model's private reasoning (N counts reasoning only), what the model says mid-run appears as **normal body text** in its own paragraphs, and **🔧 tool** calls sit inline where they happened. Agent task nodes, agent sessions, chat nodes and the global assistant all render the same way; the node's Thinking overlay keeps reasoning on top, output (tool trace) below. Sessions archived before this change still display the old way. See [What agent mode is](#dsh).
+
 **Docs assistant says it does not know?**  
 It only reads this manual. Use node **Node guide** for one kind, or ask using a sidebar section name.
 

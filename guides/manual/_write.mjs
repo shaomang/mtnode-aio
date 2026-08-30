@@ -572,6 +572,12 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 
 顶栏切换到「智能会话」：多会话、按工作目录分组、归档、分支、斜杠命令（输入 \`/\` 呼出技能与 \`/new\` \`/compact\` \`/plan\` \`/help\` 等）。除读写文件、联网、命令外，还可以查看并修改当前画布。
 
+## 运行中：思考与输出分开显示
+
+运行时按**发生顺序**分段：**「◉ 思考 · N 字」** 是折叠起来的模型内部推理（N 只统计思考字数），正常字号的段落是模型说出来的**正文**（中间步骤说的话也算正文），**🔧 工具**调用就近插在它发生的位置，错误以 ⚠ 附在正文里。每调用一次工具或进入新一步推理就另起一段。
+
+智能任务节点、智能会话、对话节点、右侧全局助手口径一致；节点上的「思考中」大窗上半是思考、下半是输出。输出端子给下游的仍是完整正文，旧会话存档按原样显示。详见 [智能能力是什么](#dsh)。
+
 ## 让助手搭工作流
 
 在**智能会话**或全局助手里说「实现 xxx 的工作流」，模型会在当前画布**创建节点、改标题、连线、写 @引用**并自动排版。你再改提示词与保存路径后点 ▶。画布上的智能节点不会改图。
@@ -603,6 +609,12 @@ An agent node **cannot** read or edit the canvas, change workflows, or create ta
 ## Agent session
 
 Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type \`/\` for skills and \`/new\` \`/compact\` \`/plan\` \`/help\`). Besides files / network / commands, it can inspect and edit the current canvas.
+
+## While it runs: thinking and output are separate
+
+A run renders in **chronological segments**: **“◉ Thinking · N chars”** is the model's collapsed private reasoning (N counts reasoning only), normal-sized paragraphs are what the model **says** (text produced mid-run counts as text too), **🔧 tool** calls sit inline where they happened, and errors append to the body as ⚠. Every tool call or new reasoning step starts a fresh segment.
+
+Agent task nodes, agent sessions, chat nodes and the global assistant all render the same way; the node's Thinking overlay shows reasoning on top and output (the tool trace) below. The output port still hands downstream the full text, and sessions archived earlier render as before. See [What agent mode is](#dsh).
 
 ## Let the assistant build a workflow
 
@@ -745,6 +757,24 @@ Control nodes share a **gold outer ring**; inner color still shows the kind.
 运行中显示「◉ 思考中」，可展开思考与 **🔧 工具调用**。智能模式按任务完成计费，一次任务可能多次调用模型。
 
 写文件前请确认 [工作目录](#workspace) 正确。权限过宽或过严见 [审批与权限](#approvals)。
+
+## 思考与输出分开显示
+
+一次运行按**发生顺序**分段显示，三类段各有各的样子：
+
+- **◉ 思考 · N 字**：模型内部推理（reasoning），默认折叠，点开才看；N **只统计思考的字数**，不含工具与正文。
+- **正文**：模型真说出来的话，正常字号、Markdown 渲染，一段一块——中间步骤说的话也以正文出现，不会被埋进思考里。
+- **🔧 工具**：调用轨迹就近插在它发生的位置，点开看参数与结果；出错以 **⚠** 附在正文里。
+
+每调用一次工具、或进入新的一步推理（turn / step），都自动另起一段。智能任务节点、智能会话、右侧全局助手、对话节点用的是**同一套分段**；节点上的「思考中」大窗上半是思考、下半是输出（工具调用轨迹）。
+
+**下游数据不受影响**：输出端子给下游、以及存进保存节点的，仍是完整正文。旧的会话存档按原样显示。
+
+## 交流语言（Agent 口味）
+
+顶栏 **中 / EN** 选定界面语言后，这份语言会作为「口味」随每次智能运行一起下发：**用该语言交流，并期望 agent 用该语言回答**——提问、计划、进度说明、最终回答都跟随界面语言，派生的子任务与功能块绑定会话同样沿用。设置 · 智能能力 区块会显示当前用的是哪种语言。
+
+口味只约束**交流**。代码、路径、命令与 API 字段名保持原文；事实库记录、表格单元格与写回文件的正文沿用资料原本的语言，不会因为切换界面语言而被翻译。用户在一轮对话里明确指定别的语言时，以用户为准。
 `,
     en: `# What agent mode is
 
@@ -759,6 +789,24 @@ Configure a **text provider** with an API Key first. Agent task, agent session, 
 Runs show **◉ Thinking** with expandable thoughts and **🔧 tool calls**. Billing is per completed task and may call the model several times.
 
 Confirm the [workspace](#workspace) before writes. See [Approvals](#approvals) for permission presets.
+
+## Segmented thinking and output
+
+A run renders as **chronological segments**, each with its own look:
+
+- **◉ Thinking · N chars** — the model's private reasoning, collapsed by default; N counts **reasoning only**, not tools or prose.
+- **Body text** — what the model actually says, normal size, rendered as Markdown, one block per paragraph. Text produced mid-run shows up as text instead of being buried in the thinking block.
+- **🔧 Tools** — call chips inline where they happened (click for args and result); errors appear in the body as **⚠**.
+
+A new segment starts on every tool call and on every reasoning step (turn / step). Agent task nodes, agent sessions, the global assistant and chat nodes all share this rendering; the node's Thinking overlay keeps reasoning on top and output (the tool trace) below.
+
+**Downstream data is unchanged**: the output port and save nodes still receive the full text. Sessions archived before this change render exactly as before.
+
+## Communication language (agent taste)
+
+Whichever language you pick with the top-bar **中 / EN** button ships with every agent run as a *taste*: converse in that language and expect the agent to answer in it — questions, plans, progress notes and final answers, and the same for every sub-agent or bound dev session it spawns. Settings → agent capabilities shows which language is active.
+
+The taste covers **conversation only**. Code, paths, commands and API fields stay verbatim, and fact records, table cells and file bodies keep the language of the source material — switching the UI language never translates them. An explicit language request from the user wins for that conversation.
 `,
   },
   approvals: {

@@ -377,7 +377,7 @@ function ensureFilePluginEntries() {
    由宿主应用在设置中选择,随 run 参数下发。 */
 const PRESETS = {
   standard:
-    'You are the agent engine inside MTNode, a visual AI-workflow desktop app. Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You can build the visual canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app: create nodes, unique titles, wires, @Title references, and auto-layout. When reading the canvas with mtnode_canvas_get, use its granularity params (detail "minimal"/"standard", ids, sections, bodies:false, bodyLimit) instead of always pulling the full text of every node — default to detail:"full" only when you truly need complete bodies/rows. You can also arrange network nodes (net_recv listen / net_send push, tcp/udp with channel + host + port), database nodes (input_file import / db_table build / super with db:true compile / db_replica copy), dev nodes (super with dev:true = project module blocks: note = module overview, devPath = project root, devKind module/file/class/interface/enum hierarchy with distinct frame colors, nest onion-peel style; express relations with rel:true straight-line wires (relLabel/relArrow; clicking a node highlights its relation lines); each dev node also has a 建议 button: after a confirmation dialog the AI does a READ-ONLY pass over the real project code and the dev progress of this module and returns exactly 4 next-step options the user can multi-select (plus a free-text supplement), and the 开发 button inside that same dialog then runs development with the chosen plan; the 开发 / 细化 buttons open a confirmation dialog too, and confirmed work runs in a NEW session bound to that module (workspace = project root); refining must first report an outline and get user confirmation, and must tell the user when refining is unnecessary or impossible instead of creating nodes; skill mtnode-dev-architect drives scan/build flows), execute nodes (kind "execute" = bind an executable file at execPath — .exe/.bat/.cmd/.lnk or any system-openable file; execIcon / execColor customize the icon and body color for quick spotting; the node is standalone with no data ports and launches the bound file via the OS default handler when the user double-clicks it or clicks its play button twice), and control-flow nodes (delayer / sequencer / gate / splitter / counter / mutex) exactly like any other node kind. Prefer user-editable layouts: use createMarks (box/text) to zone 编辑区 / 说明 / 处理区, and add control nodes (run/clear) wired to processing nodes so users can re-run easily. Place nodes the user must edit or operate (inputs, editable prompts, control ▶) toward the TOP of the canvas so they are easy to see and use; put heavy processing / save / docs lower or to the right. For image input nodes use kind input_image and set imagePath to an absolute file path so the app loads the image (do not ask the user to drag-drop when the path is known). Keep text processing and image→text (multimodal) isolated: use a dedicated vision/agent node to turn images into text, then wire that text into pure-text nodes so language steps can use a better text-only model — do not hang images on text-only reasoning nodes. Mid-task pixel reading (game UI, screenshot OCR, verify a generated image): call mtnode_vision with imagePath + question instead of stuffing large image batches into the main prompt; the host asks the user for permission the first time. CRITICAL batch safety: batchMode=batch runs once per item — each run must see only that item; never feed the whole batch of N into every run (that causes ~N² image/API calls and huge token waste). Prefer a split node to pick one item before heavy 文生图; use batchMode=agg only when one run should see all items. For per-item batch prefer ordinary proc_text/proc_image (not agent_task / agent mode). CRITICAL for image generation (proc_image): each run produces exactly ONE image — never write prompts that ask for multiple images in one generation; for many images use 1:1 batch items, multiple proc_image nodes, or attempts N. Set proc_image size from imageSizes returned by mtnode_canvas_get (e.g. 2048x1360 / 1280x1280 / auto) to match portrait/landscape/square needs. CRITICAL: never create save_text/save_image after agent_task or proc_text with agent:true — smart nodes write files themselves; a save node would dump irrelevant transcript text. Use save_* only after ordinary (non-agent) proc nodes. CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs into other nodes (session noise; weak key transfer). Prefer file handoff: smart node writes a document, then wait_file (waitPath) wires OUT as a control blocker until the file exists; wait_file has no input ports and outputs nothing — later nodes read the agreed path themselves. Never wire into wait_file. CRITICAL planning: for a complex requirement FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId and kind "judge" for YES/NO branches — do not dump a mixed graph of many proc/save/chat nodes at the top level. When asked to implement a workflow, create an editable pipeline the user can re-run. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, a visual AI-workflow desktop app. Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You can build the visual canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app: create nodes, unique titles, wires, @Title references, and auto-layout. When reading the canvas with mtnode_canvas_get, use its granularity params (detail "minimal"/"standard", ids, sections, bodies:false, bodyLimit) instead of always pulling the full text of every node — default to detail:"full" only when you truly need complete bodies/rows. You can also arrange network nodes (net_recv listen / net_send push, tcp/udp with channel + host + port), database nodes (input_file import / db_table build / super with db:true compile / db_replica copy), dev nodes (super with dev:true = project module blocks: note must be TWO sections: 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, never put technical details into 【功能】; devPath = project root, devKind module/file/class/interface/enum hierarchy with distinct frame colors, nest via parentSuperId and refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer); devColor follows the DEV 功能色卡 functional colour card — colour module blocks BY FUNCTION and never invent hexes: core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f, the same list is returned by mtnode_canvas_get as devFuncColors; new module blocks are auto-coloured from this card at creation so you usually need no devColor, and patching a block to the right card colour needs no prior question to the user — never touch a colour the user hand-picked in the node-header HSV swatch; the card applies to devKind=module only); express relations with rel:true straight-line wires (relLabel/relArrow; clicking a node highlights its relation lines); each dev node also has a 建议 button: after a confirmation dialog the AI does a READ-ONLY pass over the real project code and the dev progress of this module and returns exactly 4 next-step options the user can multi-select (plus a free-text supplement), and the 开发 button inside that same dialog then runs development with the chosen plan; the 开发 / 细化 buttons open a confirmation dialog too, and confirmed work runs in a NEW session bound to that module (workspace = project root); refining must first report the outline of the whole planned multi-layer tree and get ONE user confirmation that covers the whole depth, then create the blocks top-down layer by layer in the bound session, and must tell the user when refining is unnecessary or impossible instead of creating nodes; skill mtnode-dev-architect drives scan/build flows), execute nodes (kind "execute" = bind an executable file at execPath — .exe/.bat/.cmd/.lnk or any system-openable file; execIcon / execColor customize the icon and body color for quick spotting; the node is standalone with no data ports and launches the bound file via the OS default handler when the user double-clicks it or clicks its play button twice), and control-flow nodes (delayer / sequencer / gate / splitter / counter / mutex) exactly like any other node kind. Prefer user-editable layouts: use createMarks (box/text) to zone 编辑区 / 说明 / 处理区, and add control nodes (run/clear) wired to processing nodes so users can re-run easily. Place nodes the user must edit or operate (inputs, editable prompts, control ▶) toward the TOP of the canvas so they are easy to see and use; put heavy processing / save / docs lower or to the right. For image input nodes use kind input_image and set imagePath to an absolute file path so the app loads the image (do not ask the user to drag-drop when the path is known). Keep text processing and image→text (multimodal) isolated: use a dedicated vision/agent node to turn images into text, then wire that text into pure-text nodes so language steps can use a better text-only model — do not hang images on text-only reasoning nodes. Mid-task pixel reading (game UI, screenshot OCR, verify a generated image): call mtnode_vision with imagePath + question instead of stuffing large image batches into the main prompt; the host asks the user for permission the first time. CRITICAL batch safety: batchMode=batch runs once per item — each run must see only that item; never feed the whole batch of N into every run (that causes ~N² image/API calls and huge token waste). Prefer a split node to pick one item before heavy 文生图; use batchMode=agg only when one run should see all items. For per-item batch prefer ordinary proc_text/proc_image (not agent_task / agent mode). CRITICAL for image generation (proc_image): each run produces exactly ONE image — never write prompts that ask for multiple images in one generation; for many images use 1:1 batch items, multiple proc_image nodes, or attempts N. Set proc_image size from imageSizes returned by mtnode_canvas_get (e.g. 2048x1360 / 1280x1280 / auto) to match portrait/landscape/square needs. CRITICAL: never create save_text/save_image after agent_task or proc_text with agent:true — smart nodes write files themselves; a save node would dump irrelevant transcript text. Use save_* only after ordinary (non-agent) proc nodes. CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs into other nodes (session noise; weak key transfer). Prefer file handoff: smart node writes a document, then wait_file (waitPath) wires OUT as a control blocker until the file exists; wait_file has no input ports and outputs nothing — later nodes read the agreed path themselves. Never wire into wait_file. CRITICAL planning: for a complex requirement FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId and kind "judge" for YES/NO branches — do not dump a mixed graph of many proc/save/chat nodes at the top level. When asked to implement a workflow, create an editable pipeline the user can re-run. Work step by step, show the user what you are doing, and end with a clear, complete result.',
   minimal:
     'You are a direct executor. Finish the task with minimal steps and minimal talk; reply only with what matters, and end with the result itself.',
   code:
@@ -403,6 +403,15 @@ const socketToKey = new Map()
 const bridgePending = new Map()
 /** 在途占用表:runtime key -> reqId。一台 runtime 同时只允许一个在途 run。 */
 const keyToReqId = new Map()
+/* rollback journal 的迟到暂存表:runtime key -> 帧数组(按时间先后)。
+   run 结束(或本就没有在途 run)后,运行时仍在往桥里推 journal 帧
+   (后台 job、子代理收尾),这些帧没有 reqId 可挂,先落这里,
+   渲染层用 rollbackDrain 按 sessionId/roundId 取回。
+   每 key 上限 2000 条(超出丢最旧),整表最多 32 个 key。 */
+const JOURNAL_BUFFER_LIMIT = 2000
+const JOURNAL_BUFFER_KEYS = 32
+/** @type {Map<string, any[]>} */
+const journalBuffers = new Map()
 /* cancelTag(会话 agent:<id> / 节点 id / assist)-> 该标签在途运行占用的 runtime key 集合。
    dsh 线协议没有「逐轮取消」,停一次运行只能关掉它自己那台 runtime 进程;
    若没有这层映射,cancel 只能退化成「按 workspace 全关」——同工作目录的其它会话
@@ -499,6 +508,101 @@ function closeBridge(key) {
 
 function out(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n')
+}
+
+/* ── rollback: 回合开合与 journal 路由 ─────────────────────────────────────
+   journal 的归属必须精确到「哪一轮」,而投递时机靠不住(迟到帧),所以盖章的是
+   运行时内的插件:gateway 在 run 开始时向该 runtime 的桥推 {t:'begin'},
+   结束时推 {t:'end'},插件把 begin 的 roundId 当作进程级 current round
+   (一个 runtime 同时只有一个在途 run,由 keyToReqId 保证,故进程级变量安全)。 */
+
+/* 向一台 runtime 的全部桥连接(bridge / canvas / db / journal 插件各一条 socket)
+   推一帧。未知 t 的接收方会自行忽略,因此广播比挑连接更稳。 */
+function bridgeBroadcast(key, frame) {
+  const b = bridgeServers.get(key)
+  if (!b || !b.sockets || !b.sockets.size) return false
+  let line = ''
+  try { line = JSON.stringify(frame) + '\n' } catch { return false }
+  let sent = false
+  for (const s of b.sockets) {
+    try { s.write(line); sent = true } catch { /* 连接已断 */ }
+  }
+  return sent
+}
+
+/* journal 目录约定:<DSH_HOME>/rollback/<sessionId>。渲染层本来就持有 dshHome 与
+   sessionId,用同一式子反推路径即可;sessionId 做文件名净化后两边才一致。 */
+function rollbackDirFor(dshHome, sessionId) {
+  const home = String(dshHome || process.env.DSH_HOME || '').trim()
+  const sid = String(sessionId || '').trim().replace(/[^A-Za-z0-9_.\-\u4e00-\u9fff]/g, '_').slice(0, 120)
+  if (!home || !sid) return ''
+  const dir = path.join(home, 'rollback', sid)
+  /* 建目录失败不阻断运行:插件侧自行降级为不落盘 */
+  try { mkdirSync(dir, { recursive: true }) } catch { /* best-effort */ }
+  return dir
+}
+
+function bufferJournal(key, data) {
+  let arr = journalBuffers.get(key)
+  if (!arr) journalBuffers.set(key, (arr = []))
+  arr.push(data)
+  if (arr.length > JOURNAL_BUFFER_LIMIT) arr.splice(0, arr.length - JOURNAL_BUFFER_LIMIT)
+  while (journalBuffers.size > JOURNAL_BUFFER_KEYS) {
+    const oldest = journalBuffers.keys().next().value
+    /* 仍在途的 key 不丢:它的迟到帧只是暂时无处可去 */
+    if (keyToReqId.has(oldest)) break
+    journalBuffers.delete(oldest)
+  }
+}
+
+/* journal 帧原样往外投,只剥掉用于路由的 t:gateway 不猜内容、不重组载荷,
+   插件写什么渲染层就收到什么。 */
+function journalPayload(m) {
+  const data = {}
+  for (const k of Object.keys(m)) if (k !== 't') data[k] = m[k]
+  return data
+}
+
+/* 插件盖的章在哪都认:帧顶层,或帧自带的 data 里(两种写法都不用改 gateway)。 */
+function journalField(d, name) {
+  if (!d || typeof d !== 'object') return ''
+  const top = d[name]
+  if (top !== undefined && top !== null) return String(top)
+  const inner = d.data
+  if (inner && typeof inner === 'object' && inner[name] !== undefined && inner[name] !== null) {
+    return String(inner[name])
+  }
+  return ''
+}
+
+/* 取回暂存的 journal:按插件盖的章(sessionId/roundId)过滤,并可用 runtime
+   key 或 workspace 前缀限定范围。默认取出即清;peek 只看不取。 */
+function drainJournals(opts) {
+  const p = opts && typeof opts === 'object' ? opts : {}
+  const key = typeof p.key === 'string' ? p.key : ''
+  const workspace = typeof p.workspace === 'string' ? p.workspace : ''
+  const sessionId = p.sessionId == null ? '' : String(p.sessionId)
+  const roundId = p.roundId == null ? '' : String(p.roundId)
+  const peek = !!p.peek
+  const taken = []
+  for (const [k, arr] of Array.from(journalBuffers)) {
+    if (key && k !== key) continue
+    if (!key && workspace && !k.startsWith(workspace + '|')) continue
+    if (!arr || !arr.length) {
+      if (!peek) journalBuffers.delete(k)
+      continue
+    }
+    const kept = []
+    for (const d of arr) {
+      if (sessionId && journalField(d, 'sessionId') !== sessionId) { kept.push(d); continue }
+      if (roundId && journalField(d, 'roundId') !== roundId) { kept.push(d); continue }
+      taken.push({ key: k, data: d })
+    }
+    if (peek) continue
+    if (kept.length) journalBuffers.set(k, kept)
+    else journalBuffers.delete(k)
+  }
+  return taken
 }
 
 /* 图像附件:按 dsh-attachment-local 的内容寻址布局,把图像写入
@@ -600,7 +704,7 @@ function pickRuntimeKey(baseKey, cancelTag) {
   return k
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir) {
   const home = dshHome || process.env.DSH_HOME || ''
   const effMaxTokens =
     Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
@@ -696,6 +800,10 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     throw err
   })
   env.MTNODE_BRIDGE_PORT = String(bridgePort)
+  /* rollback:journal 落盘目录。同一配置档被不同会话复用同一台 runtime 时,
+     env 只反映建桥那次传入的目录,所以 begin 帧再带一次 dir,插件以帧为准。 */
+  if (rollbackDir) env.MTNODE_ROLLBACK_DIR = rollbackDir
+  else delete env.MTNODE_ROLLBACK_DIR
   bridgeServers.set(key, bridgeState)
 
   try { linkUserPackagesIntoGateway() } catch { /* best-effort */ }
@@ -746,7 +854,19 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
 
 /* mtnode-bridge 帧路由:挂起 → 转发给对应 run 的渲染层事件 */
 function onBridgeFrame(key, m, socket) {
-  if (!m || typeof m.id !== 'string') return
+  if (!m || typeof m !== 'object') return
+  /* journal 帧不是请求/应答:不进 bridgePending、不要求 id、不回 abort。
+     有在途 run → 顺着事件流直接投给渲染层;无在途(后台 job / 子代理迟到)
+     → 落 per-key 环形缓冲,等 rollbackDrain 取回。轮次归属由插件盖章决定,
+     这里只按「此刻有没有人听」选投递通道。 */
+  if (m.t === 'journal') {
+    const data = journalPayload(m)
+    const reqId = keyToReqId.get(key)
+    if (reqId) out({ event: { reqId, type: 'journal', data } })
+    else bufferJournal(key, data)
+    return
+  }
+  if (typeof m.id !== 'string') return
   if (m.t === 'drop') {
     bridgePending.delete(m.id)
     return
@@ -780,9 +900,27 @@ function mapNotification(n, emit) {
       case 'assistant/chunk': {
         const c = ev.data && ev.data.chunk
         if (!c) return
-        if (c.type === 'reasoning-delta' && c.text) emit('reasoning', { text: c.text })
-        else if (c.type === 'text-delta' && c.text) emit('text', { text: c.text })
-        else if (c.type === 'usage') emit('usage', c.usage ?? {})
+        /* turn/step 实测在 ev.data 这一层(真实 session.jsonl:
+           {type:'assistant/chunk', data:{turn:1, step:6, chunk:{…}}}),不在事件顶层;
+           少数适配器会把它们放到事件顶层或 chunk 上,故 data → 顶层 → chunk 逐级回落。
+           index 是内容块在该步内的序号。带上它们前端才能把一次回答切成段,
+           并让思考流与正文流各自归位。老渲染层忽略新字段即可,语义不变。 */
+        const ed = ev.data || {}
+        const meta = {
+          turn: ed.turn ?? ev.turn ?? c.turn ?? 0,
+          step: ed.step ?? ev.step ?? c.step ?? 0,
+          index: c.index ?? ev.index ?? 0,
+        }
+        if (c.type === 'reasoning-delta' && c.text) emit('reasoning', { text: c.text, ...meta })
+        else if (c.type === 'text-delta' && c.text) emit('text', { text: c.text, ...meta })
+        else if (c.type === 'block-end') {
+          /* 正文块收尾 → say-end,前端据此切段(一个 turn/step/index 一段)。
+             思考块 / 工具块收尾不发,事件名与新字段都不动老语义。 */
+          const blk = c.block || (ev.data && ev.data.block) || {}
+          if ((blk.type || c.blockType) === 'text') emit('say-end', { ...meta })
+        }
+        /* usage 不在此处上报:handleRun 的统计分支会带上 provider/model 归属后再 emit,
+           否则客户端无法按模型分别累计 token */
         return
       }
       case 'tool/call': {
@@ -854,13 +992,25 @@ async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
-    permissionPreset, webSearchApiKey, hostPersona, cancelTag,
+    permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback,
   } = params
   const emit = (type, data) => out({ event: { reqId, type, data } })
   let runKey = ''
   /* 本次运行的取消标签:结束时只能清自己那条登记,别踩到同标签的下一轮 */
   const runTag = tagOf(cancelTag)
+  /* 回合开合:rollback = {sessionId, roundId}(渲染层每轮 run 生成)。
+     dir 按约定算给运行时插件写 journal;begin/end 让插件给这个进程
+     当前这一轮盖章,迟到帧靠章而不是靠投递时刻归属。 */
+  const rb = rollback && typeof rollback === 'object' ? rollback : null
+  const rbSession = rb ? String(rb.sessionId || '').trim() : ''
+  const rbRound = rb ? String(rb.roundId == null ? '' : rb.roundId).trim() : ''
+  const rollbackDir = rbSession ? rollbackDirFor(dshHome, rbSession) : ''
+  const roundOpen = !!(rbSession || rbRound)
+  /* begin 真的推出去了吗(桥可能还没连上):只有推过才需要补 end */
+  let roundBegun = false
   if (runTag) activeRunTags.add(runTag)
+  /* 度量构建器在 try 内装配(需要 route/model 等),catch 里也要能记成本,故先声明 */
+  let buildMetrics = null
   try {
     if (!input || typeof input !== 'string' || !input.trim()) {
       emit('error', { message: '任务内容为空' })
@@ -870,8 +1020,10 @@ async function handleRun(params) {
     const hostPersonaText = String(hostPersona || '').trim()
     const settings = applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersonaText)
     const cordisChanged = applyCordisPreset(permissionPreset)
+    /* win32 闪窗 workaround:首次运行时把 sandbox 注入 noop runner */
+    const sandboxChanged = applySandboxWorkaround()
     /* 设置文档热重载窗口:变更后稍候,确保首请求读到新档位 */
-    if (settings.changed || cordisChanged) await new Promise((r) => setTimeout(r, 450))
+    if (settings.changed || cordisChanged || sandboxChanged) await new Promise((r) => setTimeout(r, 450))
     /* 目录同源服务商(如 opencode-go)映射回目录路由名,与 settings 注册一致 */
     const route = routeOfProvider(provider, Array.isArray(mtnodeProviders) ? mtnodeProviders : [])
     /* 空串预设(如 bongochat)必须保留,不能 || 回退成 MTNode standard */
@@ -891,7 +1043,7 @@ async function handleRun(params) {
     }
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, effort,
-      webSearchApiKey, hostPersonaText, cancelTag, reqId,
+      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir,
     )
     runKey = rt.key
     /* 引擎还在起机时用户就按了 ■：占到位后立刻自毁，不白烧一轮 token */
@@ -904,16 +1056,79 @@ async function handleRun(params) {
       await closeRuntimeByKey(runKey)
       throw new Error('已请求终止')
     }
+    /* 开回合:等 harness 就绪再推 —— 运行时还在起机时桥连接尚未建立,
+       begin 丢了这一轮就没人盖章(宁缺勿错:无章的迟到帧走环形缓冲)。 */
+    if (roundOpen) {
+      roundBegun = bridgeBroadcast(runKey, {
+        t: 'begin', sessionId: rbSession, roundId: rbRound, dir: rollbackDir,
+      })
+    }
     emit('status', { state: 'running' })
     /* 运行统计:与 dsh 客户端一致的信息表达(轮/步/时间/token/子代理/后台任务) */
+    /* 逐模型台账:一次运行内 request/context 可能改写路由(子代理 / 模型切换),
+       所以按 provider|model 分别累计输入/输出/缓存与时间 —— 客户端的 Token 报告要用 */
     const stats = {
       turns: 0, steps: 0, llmMs: 0, toolMs: 0, firstTokenMs: [],
-      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0,
       subagents: 0, jobs: 0, tools: [], contextWindow: 0,
+      startedAt: Date.now(), endedAt: 0, wallMs: 0,
+    }
+    const byModel = new Map()
+    let curProvider = String(route || '')
+    let curModel = String(model || '')
+    const modelBucket = () => {
+      const key = curProvider + '|' + curModel
+      let b = byModel.get(key)
+      if (!b) {
+        b = {
+          provider: curProvider, model: curModel,
+          inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+          reasoningTokens: 0, calls: 0, steps: 0, llmMs: 0, toolMs: 0,
+        }
+        byModel.set(key, b)
+      }
+      return b
     }
     let stepStart = 0
     let firstSeen = false
     let toolStart = 0
+    let toolBucket = null
+    /* 一次运行的完整度量(含逐模型台账与墙钟);异常/终止也照记,累计报告不能漏账 */
+    buildMetrics = () => {
+      const ft2 = stats.firstTokenMs
+      stats.endedAt = Date.now()
+      stats.wallMs = stats.endedAt - stats.startedAt
+      const cacheTotal = stats.cacheReadTokens + stats.cacheWriteTokens
+      const billed = stats.inputTokens + cacheTotal
+      return {
+        turns: stats.turns,
+        steps: stats.steps,
+        llmMs: stats.llmMs,
+        toolMs: stats.toolMs,
+        firstTokenAvgMs: ft2.length ? ft2.reduce((a, b) => a + b, 0) / ft2.length : 0,
+        tokPerSec: stats.llmMs > 0 ? stats.outputTokens / (stats.llmMs / 1000) : 0,
+        cacheHitPct: billed > 0 ? (stats.cacheReadTokens / billed) * 100 : 0,
+        inputTokens: stats.inputTokens,
+        outputTokens: stats.outputTokens,
+        cacheReadTokens: stats.cacheReadTokens,
+        cacheWriteTokens: stats.cacheWriteTokens,
+        reasoningTokens: stats.reasoningTokens,
+        subagents: stats.subagents,
+        jobs: stats.jobs,
+        tools: stats.tools,
+        contextWindow: stats.contextWindow,
+        wallMs: stats.wallMs,
+        startedAt: stats.startedAt,
+        endedAt: stats.endedAt,
+        /* 逐模型:每个 provider|model 各自的 token 与时间,报告 Badge 展开按行显示 */
+        models: [...byModel.values()].map((b) => {
+          const bIn = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens
+          return Object.assign({}, b, {
+            cacheHitPct: bIn > 0 ? (b.cacheReadTokens / bIn) * 100 : 0,
+          })
+        }),
+      }
+    }
     const result = await harness.run(blocks, {
       onNotification: (n) => {
         mapNotification(n, emit)
@@ -929,6 +1144,7 @@ async function handleRun(params) {
             stats.steps++
             stepStart = t
             firstSeen = false
+            modelBucket().steps++
             break
           case 'assistant/chunk': {
             const c = d && d.chunk
@@ -938,12 +1154,35 @@ async function handleRun(params) {
               firstSeen = true
             }
             if (c.type === 'usage' && c.usage) {
-              stats.inputTokens += Number(c.usage.inputTokens) || 0
-              stats.outputTokens += Number(c.usage.outputTokens) || 0
-              stats.cacheReadTokens += Number(c.usage.cacheReadTokens) || 0
-              stats.reasoningTokens += Number(c.usage.reasoningTokens) || 0
-              if (stepStart) stats.llmMs += t - stepStart
+              const bucket = modelBucket()
+              const u = {
+                inputTokens: Number(c.usage.inputTokens) || 0,
+                outputTokens: Number(c.usage.outputTokens) || 0,
+                cacheReadTokens: Number(c.usage.cacheReadTokens) || 0,
+                cacheWriteTokens: Number(c.usage.cacheWriteTokens) || 0,
+                reasoningTokens: Number(c.usage.reasoningTokens) || 0,
+              }
+              stats.inputTokens += u.inputTokens
+              stats.outputTokens += u.outputTokens
+              stats.cacheReadTokens += u.cacheReadTokens
+              stats.cacheWriteTokens += u.cacheWriteTokens
+              stats.reasoningTokens += u.reasoningTokens
+              bucket.inputTokens += u.inputTokens
+              bucket.outputTokens += u.outputTokens
+              bucket.cacheReadTokens += u.cacheReadTokens
+              bucket.cacheWriteTokens += u.cacheWriteTokens
+              bucket.reasoningTokens += u.reasoningTokens
+              bucket.calls++
+              const stepMs = stepStart ? t - stepStart : 0
+              stats.llmMs += stepMs
+              bucket.llmMs += stepMs
               stepStart = 0
+              /* 逐次调用用量带模型归属下发:会话末尾的累计报告 Badge 靠它实时增长 */
+              emit('usage', Object.assign({}, u, {
+                provider: bucket.provider,
+                model: bucket.model,
+                at: t,
+              }))
             }
             break
           }
@@ -951,11 +1190,17 @@ async function handleRun(params) {
             const name = (d && (d.name || d.tool)) || ''
             stats.tools.push({ name, at: t })
             toolStart = t
+            toolBucket = modelBucket()
             break
           }
           case 'tool/result': {
-            if (toolStart) stats.toolMs += t - toolStart
+            if (toolStart) {
+              const ms = t - toolStart
+              stats.toolMs += ms
+              if (toolBucket) toolBucket.toolMs += ms
+            }
             toolStart = 0
+            toolBucket = null
             break
           }
           case 'subagent.started':
@@ -963,34 +1208,18 @@ async function handleRun(params) {
             break
           case 'request/context':
             if (d && d.contextWindow) stats.contextWindow = Number(d.contextWindow) || 0
+            /* 路由被改写(换服务商 / 换模型):之后的 usage 记到新模型名下 */
+            if (d && d.provider) curProvider = String(d.provider)
+            if (d && d.model) curModel = String(d.model)
             break
           default:
             if (ev.type.startsWith('job/') && ev.type.endsWith('started')) stats.jobs++
         }
       },
     })
-    const ft = stats.firstTokenMs
     emit('done', {
       finalResponse: result.finalResponse,
-      metrics: {
-        turns: stats.turns,
-        steps: stats.steps,
-        llmMs: stats.llmMs,
-        toolMs: stats.toolMs,
-        firstTokenAvgMs: ft.length ? ft.reduce((a, b) => a + b, 0) / ft.length : 0,
-        tokPerSec: stats.llmMs > 0 ? stats.outputTokens / (stats.llmMs / 1000) : 0,
-        cacheHitPct:
-          stats.cacheReadTokens + stats.inputTokens > 0
-            ? (stats.cacheReadTokens / (stats.cacheReadTokens + stats.inputTokens)) * 100
-            : 0,
-        inputTokens: stats.inputTokens,
-        outputTokens: stats.outputTokens,
-        reasoningTokens: stats.reasoningTokens,
-        subagents: stats.subagents,
-        jobs: stats.jobs,
-        tools: stats.tools,
-        contextWindow: stats.contextWindow,
-      },
+      metrics: buildMetrics(),
     })
   } catch (err) {
     const message = String((err && err.message) || err).slice(0, 800)
@@ -1012,8 +1241,13 @@ async function handleRun(params) {
       }
     }
     emit('error', { message })
-    emit('done', { finalResponse: '' })
+    emit('done', { finalResponse: '', metrics: buildMetrics ? buildMetrics() : undefined })
   } finally {
+    /* 闭回合:先于解除占用推送,插件据此清空进程级 current round,
+       之后的迟到 journal 帧就没有本轮的章了。 */
+    if (roundBegun) {
+      bridgeBroadcast(runKey, { t: 'end', sessionId: rbSession, roundId: rbRound })
+    }
     if (runKey) {
       /* 只有自己仍占着这台时才清桥:已被下一轮接手的，不能拆它的交互桥 */
       if (releaseClaim(runKey, reqId, runTag)) abortBridgePending(runKey)
@@ -1247,6 +1481,47 @@ function applyCordisPreset(preset) {
     if (next === text) return false
     writeFileSync(CORDIS_PATH, next, 'utf8')
     lastCordisPreset = perm
+    return true
+  } catch {
+    return false
+  }
+}
+
+/* Windows console-flash workaround: 平台的默认 runner(windows-acl,
+   CreateProcessAsUserW 受限 token)会为每条受限命令新开一个 console 窗口——
+   受限 token 下隐藏 console 会 STATUS_DLL_INIT_FAILED(0xC0000142),所以 SDK
+   故意不用 CREATE_NO_WINDOW,而 runner 自身被 windowsHide 启动没有 console,
+   子进程继承不到就在 Windows 里新建窗口闪一下。
+   解决:win32 上把 sandbox 段注入 runnerCommand 指向 noop-runner.cjs(直接
+   windowsHide spawn 命令,不建受限 token);文件写权限仍由进程内
+   dsh-fs-sandbox 约束。其他平台保持默认链。幂等:已注入则跳过。 */
+let lastSandboxWorkaround = false
+function applySandboxWorkaround() {
+  if (process.platform !== 'win32') return false
+  if (lastSandboxWorkaround) return false
+  try {
+    const text = readFileSync(CORDIS_PATH, 'utf8')
+    const want = JSON.stringify(process.execPath)
+    /* 已注入且 execPath 一致(打包/开发环境切换后路径会变)→ 跳过 */
+    if (text.includes(want) && text.includes('noop-runner.cjs')) {
+      lastSandboxWorkaround = true
+      return false
+    }
+    const to =
+      "- id: sandbox\n" +
+      "  name: '@deepseek-ai/dsh-sandbox-local'\n" +
+      "  config:\n" +
+      "    # win32 console-flash workaround: noop runner (see gateway.mjs applySandboxWorkaround)\n" +
+      "    runnerCommand: [" + want + ", " + JSON.stringify(path.join(import.meta.dirname, 'noop-runner.cjs')) + "]\n" +
+      "    runnerFailureSignatures: ['noop-runner:']\n"
+    /* 整体替换 sandbox 段(到 sandbox-policy 前),无论是否已有 config */
+    const start = text.indexOf('- id: sandbox\n')
+    const end = text.indexOf('- id: sandbox-policy', start)
+    if (start < 0 || end < 0) return false
+    const next = text.slice(0, start) + to + text.slice(end)
+    if (next === text) return false
+    writeFileSync(CORDIS_PATH, next, 'utf8')
+    lastSandboxWorkaround = true
     return true
   } catch {
     return false
@@ -1919,6 +2194,15 @@ rl.on('line', (line) => {
           const p = msg.params ?? {}
           const closed = await cancelRuntime(p.workspace, p.cancelTag)
           reply({ ok: true, closed })
+          break
+        }
+        case 'rollbackDrain': {
+          /* 取回「无在途 run」时暂存的 journal 帧(后台 job / 子代理迟到写入)。
+             params: { key?, workspace?, sessionId?, roundId?, peek? }
+             过滤按插件盖的章(sessionId/roundId);取出即清,peek=true 只看不取。
+             返回 { entries: [{ key, data }] } ,时间先后次序。 */
+          const entries = drainJournals(msg.params ?? {})
+          reply({ entries })
           break
         }
         case 'interact': {

@@ -221,6 +221,25 @@ function renderDbConsoleBody(node, body) {
       ? ' · <span class="n-db-console-folder">' + escapeHtml(idx.folder) + "</span>"
       : "");
   body.appendChild(meta);
+  /* 折叠态双击进入子画布（数据库形态）：控制台内嵌大量交互控件，
+     故只绑顶部 meta 标题行这类非交互区，并显式跳过 input/textarea/select/button/.port，
+     避免与文本选词、按钮点击冲突。复用超级节点折叠卡同一个 enterSuper（本节点即 kind==="super"），
+     不造第二套 focus 逻辑。 */
+  meta.addEventListener("dblclick", (ev) => {
+    if (ev.target && ev.target.closest) {
+      if (
+        ev.target.closest("input") ||
+        ev.target.closest("textarea") ||
+        ev.target.closest("select") ||
+        ev.target.closest("button") ||
+        ev.target.closest(".port")
+      )
+        return;
+    }
+    ev.preventDefault();
+    ev.stopPropagation();
+    enterSuper(node);
+  });
   /* 引用提示：!@ 引用方式 + 只读说明（所有处理节点通用，可经 agent 完全增删改查） */
   const hint = document.createElement("div");
   hint.className = "n-db-console-hint";
@@ -1288,6 +1307,20 @@ async function handleDbToolEvent(data, node, wf) {
     reply({ ok: false, error: (e && e.message) || String(e) });
   }
 }
+/* ---------- Agent 语言口味：界面语言 = agent 的交流与回答语言 ----------
+   文案真源在 renderer/i18n.js 的 agentLangTaste()，这里只做兜底封装；
+   所有 agent 运行（会话 / 智能节点 / 助手 / 计划子任务 / 开发节点建议·问询·开发）
+   都经 dshRunTask 的 systemPrompt 统一带上这一段。 */
+function agentLangTasteNote() {
+  try {
+    return typeof I18n !== "undefined" && typeof I18n.agentLangTaste === "function"
+      ? I18n.agentLangTaste()
+      : "";
+  } catch (_) {
+    return "";
+  }
+}
+
 /* ---------- 提示词接地：接入数据库的智能节点注入事实纪律 ---------- */
 function agentDbGroundingNote(node, wf) {
   if (!node) return "";
@@ -1320,6 +1353,215 @@ function agentDbGroundingNote(node, wf) {
       "8. 删：用 mtnode_db 的 delete，ids 为要删除的记录 id 数组（取自 provenance 的 id）。",
     ),
   ].join("\n");
+}
+
+/* ── 按步切段的运行轨迹（思考 / 正文 / 工具 / 错误 各归各位）──────────────
+   一次 run 一条轨迹，挂在 S.runTrace[runKey]。runKey 与取消句柄同键：
+   节点 = node.id、会话 = agent:<id>、全局助手 = assist。
+   段模型 items: [{ k:'think'|'say'|'tool'|'err', text, step, callId }]
+     · reasoning → think 段：同一步内连续追加，跨 turn/step 或工具调用后另起一段
+     · text      → say 段 ：收到 say-end（正文块收尾）或 turn/step 边界即封口
+     · tool      → 只挂 callId，不再往思考文本里混「🔧 工具名」
+     · error     → err 段
+   切段依据是网关新字段 turn/step 与 say-end 事件；老网关不给这些字段时统一按
+   step 0 归段，退化成「一段 think + 一段 say」的旧语义，渲染层无需分版本兼容。 */
+function traceRunKey(runKey) {
+  return String(runKey || "default");
+}
+function traceNum(v, fallback) {
+  const n =
+    typeof v === "string" && v.trim() !== ""
+      ? Number(v)
+      : typeof v === "number"
+        ? v
+        : NaN;
+  return Number.isFinite(n) ? n : fallback;
+}
+/* 新开一轮：该 runKey 的轨迹从零开始（同名 runKey 串行复用，不残留上一轮） */
+function traceReset(runKey) {
+  S.runTrace = S.runTrace || {};
+  const tr = {
+    items: [],
+    turn: 0,
+    step: 0,
+    /* 当前开放段所属的 `${turn}:${step}` 与两类可续写的段标记 */
+    _seg: "0:0",
+    _openThink: false,
+    _openSay: false,
+    _calls: Object.create(null),
+  };
+  S.runTrace[traceRunKey(runKey)] = tr;
+  return tr;
+}
+function traceOf(runKey) {
+  S.runTrace = S.runTrace || {};
+  const k = traceRunKey(runKey);
+  return S.runTrace[k] || traceReset(k);
+}
+/* 追加一条轨迹事件。kind = think | say | tool | err；say-end / turn / step 只封口不成段 */
+function tracePush(runKey, kind, txt, ev) {
+  if (!kind) return null;
+  const tr = traceOf(runKey);
+  const e = ev || {};
+  if (kind === "say-end") {
+    tr._openSay = false;
+    return null;
+  }
+  if (kind === "turn" || kind === "step") {
+    /* 边界事件在老网关 / session-event 透传里可能不带 turn/step 数字：
+       这里只负责封口，真正的数字由随后第一个增量事件带进来 */
+    if (kind === "turn") tr.turn = traceNum(e.turn, tr.turn);
+    else tr.step = traceNum(e.step, tr.step);
+    tr._openThink = false;
+    tr._openSay = false;
+    return null;
+  }
+  const turn = traceNum(e.turn, tr.turn);
+  const step = traceNum(e.step, tr.step);
+  tr.turn = turn;
+  tr.step = step;
+  const seg = turn + ":" + step;
+  if (seg !== tr._seg) {
+    tr._seg = seg;
+    tr._openThink = false;
+    tr._openSay = false;
+  }
+  const items = tr.items;
+  const last = items[items.length - 1];
+  const callId = e.callId == null ? "" : String(e.callId);
+  if (kind === "tool") {
+    if (callId && tr._calls[callId]) return null;
+    if (callId) tr._calls[callId] = 1;
+    const it = { k: "tool", text: "", step, callId };
+    items.push(it);
+    /* 一次工具调用把正在续写的段落截断：之后的思考 / 正文另起一段 */
+    tr._openThink = false;
+    tr._openSay = false;
+    return it;
+  }
+  if (kind === "err") {
+    const msg = String(txt || "");
+    if (!msg) return null;
+    if (last && last.k === "err" && last.step === step) {
+      last.text += (last.text ? "\n" : "") + msg;
+      return last;
+    }
+    const it = { k: "err", text: msg, step, callId };
+    items.push(it);
+    tr._openThink = false;
+    tr._openSay = false;
+    return it;
+  }
+  if (kind !== "think" && kind !== "say") return null;
+  const body = String(txt || "");
+  if (!body) return null;
+  const flag = kind === "think" ? "_openThink" : "_openSay";
+  if (tr[flag] && last && last.k === kind) {
+    last.text += body;
+    return last;
+  }
+  const it = { k: kind, text: body, step, callId: "" };
+  items.push(it);
+  tr[flag] = true;
+  return it;
+}
+/* 某一类轨迹的全文（think / say / err）：段与段之间空一行，便于按步折叠展示 */
+function traceText(runKey, kind) {
+  const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
+  if (!tr || !kind) return "";
+  return tr.items
+    .filter((it) => it.k === kind && it.text)
+    .map((it) => it.text)
+    .join("\n\n");
+}
+/* ── 消费侧统一口径：节点输出区 / 会话正文 / 助手侧栏都从这里取分段文本 ──
+   正文（say）按段显示、段间保留空行；错误段以「⚠ 」段落附在尾部，与旧的
+   _pendingAnswer 追加口径一致（stripStreamErrors 仍能整行剥掉）。
+   没有轨迹时（非 dsh 运行 / 异常路径）回退到调用方给的旧缓冲，显示不退化。 */
+function traceSayDisplay(runKey, fallback) {
+  const body = traceText(runKey, "say");
+  const errs = traceText(runKey, "err")
+    .split("\n\n")
+    .filter(Boolean)
+    .map((s) => "⚠ " + s)
+    .join("\n\n");
+  const out = body && errs ? body + "\n\n" + errs : body || errs;
+  return out || String(fallback || "");
+}
+/* 思考（think）按段文本；老缓冲里可能残留「🔧 工具名」行，抹掉后再返回 */
+function traceThinkDisplay(runKey, fallback) {
+  return traceText(runKey, "think") || stripToolLines(String(fallback || ""));
+}
+/* 兼容旧版内存缓冲：思考流曾把「🔧 工具名」混进正文，这里按行剔除 */
+function stripToolLines(t) {
+  const s = String(t || "");
+  if (!s || s.indexOf("🔧") < 0) return s;
+  return s
+    .split("\n")
+    .filter((l) => !/^\s*🔧/.test(l))
+    .join("\n");
+}
+/* 分段快照：think / say / err 带正文，tool 只留 callId 与 step（工具明细在 m.tools）。
+   随助手消息存档，重绘后仍能按同一步序还原「思考 · 正文 · 工具」的交替。
+   总量设闸，避免超长输出把存档撑爆。 */
+const TRACE_SEG_MAX_CHARS = 60000;
+function traceSegmentsOf(runKey) {
+  const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
+  if (!tr || !Array.isArray(tr.items) || !tr.items.length) return [];
+  const out = [];
+  let budget = TRACE_SEG_MAX_CHARS;
+  for (const it of tr.items) {
+    if (it.k === "tool") {
+      out.push({ k: "tool", step: it.step, callId: it.callId || "" });
+      continue;
+    }
+    let text = String(it.text || "");
+    if (!text || budget <= 0) continue;
+    if (text.length > budget) {
+      text = text.slice(0, budget);
+      budget = 0;
+    } else {
+      budget -= text.length;
+    }
+    out.push({ k: it.k, step: it.step, text });
+  }
+  return out;
+}
+
+/* 段快照落盘共用：先过限长闸（app-assist.js 的 agentSegsForDisk，未加载时原样），
+   再确认这些段能按时间线还原出与 content 完全一致的正文才留下，
+   避免对不上号的段白占存档。调用时机：msg.content 已写好。 */
+function attachTraceSegments(msg, runKey) {
+  if (!msg || !runKey) return msg;
+  let segs = traceSegmentsOf(runKey);
+  if (segs.length < 2) return msg;
+  if (typeof agentSegsForDisk === "function") segs = agentSegsForDisk(segs);
+  if (!segs || segs.length < 2) return msg;
+  msg.segments = segs;
+  if (typeof dshMsgSegsViewable === "function" && !dshMsgSegsViewable(msg))
+    delete msg.segments;
+  return msg;
+}
+/* 网关事件 → 轨迹：在 dshRunTask 内统一喂，节点 / 会话 / 助手共用同一套切段规则 */
+function traceFeedEvent(runKey, type, d) {
+  const e = d || {};
+  if (type === "reasoning") {
+    if (e.text) tracePush(runKey, "think", e.text, e);
+  } else if (type === "text") {
+    if (e.text) tracePush(runKey, "say", e.text, e);
+  } else if (type === "say-end") {
+    tracePush(runKey, "say-end", "", e);
+  } else if (type === "tool") {
+    tracePush(runKey, "tool", "", e);
+  } else if (type === "error") {
+    if (e.message) tracePush(runKey, "err", String(e.message), e);
+  } else if (type === "session-event") {
+    const t = e.type;
+    if (t === "turn/start" || t === "turn/end")
+      tracePush(runKey, "turn", "", e.data || {});
+    else if (t === "step/start" || t === "step/end")
+      tracePush(runKey, "step", "", e.data || {});
+  }
 }
 
 /* 运行一次 agent 任务；返回最终文本。onEvent(type, data) 观察流式事件。 */
@@ -1386,6 +1628,8 @@ function dshRunTask(input, opts) {
       agentToolPolicySystemNote({ nodeLock }),
       nodeLock ? agentNodeCapabilityNote() : "",
       opts.planMode ? planModeSystemNote() : "",
+      /* 语言口味放最后：紧贴上下文尾部，模型最容易照做 */
+      agentLangTasteNote(),
     ]
       .filter(Boolean)
       .join("\n\n"),
@@ -1396,7 +1640,10 @@ function dshRunTask(input, opts) {
     effort: dshEffortOf(opts.effort, !!(opts.node && opts.node.kind === "proc_text")),
     provider,
     mtnodeProviders: piProvs,
-    permissionPreset: resolveNodePermissionPreset(opts.node, d),
+    /* 允许单次运行显式覆盖权限档（如开发节点「问询」强制 read-only 只读回答）；
+       未指定时沿用全局预设 / 节点自身设定 */
+    permissionPreset:
+      opts.permissionPreset || resolveNodePermissionPreset(opts.node, d),
     /* 图像输入(绝对路径,网关写入附件库后随消息发给视觉模型) */
     images:
       Array.isArray(opts.images) && opts.images.length
@@ -1410,6 +1657,8 @@ function dshRunTask(input, opts) {
      其它会话（含全局助手）一起打断。 */
   runParams.cancelTag = runKey;
   S._runCancels = S._runCancels || {};
+  /* 本轮轨迹开一盏：按步切段的运行轨迹与取消句柄同键，互不串台 */
+  traceReset(runKey);
   S._runCancels[runKey] = {
     cancelTag: runKey,
     workspace: runParams.workspace,
@@ -1418,6 +1667,9 @@ function dshRunTask(input, opts) {
     apiKey: runParams.apiKey,
     baseUrl: runParams.baseUrl,
   };
+  /* 本次运行的 Token 台账归属：会话 / 绑定节点的会话 / 全局助手 */
+  const tokOwner =
+    typeof tokOwnerForRun === "function" ? tokOwnerForRun(opts) : null;
   const t0 = Date.now();
   /* 交互面板:仅首个 run 清空,后续 run 保留其他会话/节点在途的提问与审批 */
   if (!(S._runCount || 0)) ixReset();
@@ -1440,6 +1692,28 @@ function dshRunTask(input, opts) {
     S.nodeTools = S.nodeTools || {};
     S.nodeTools[opts.node.id] = [];
   }
+  /* 回滚账本：这一轮 run 开一盏账，并把 {sessionId, roundId} 随 run 交给网关 ——
+     网关据此向该 runtime 的桥推 begin/end，运行时插件给每条 journal 盖章。
+     老版网关不认这个字段就整个忽略（本轮只剩画布与清单可回退），不报错。 */
+  let rbRound = null;
+  try {
+    if (typeof rbBeginRound === "function") {
+      rbRound = rbBeginRound({
+        runKey,
+        workspace: runParams.workspace,
+        node: opts.node || null,
+        owner: opts.rollbackOwner || tokOwner || null,
+        anchor: opts.rollbackAnchor || null,
+        wfId: (boundWf && boundWf.id) || "",
+        label: opts.rollbackLabel || "",
+      });
+      if (rbRound)
+        runParams.rollback = {
+          sessionId: rbRound.sessionId,
+          roundId: rbRound.rid,
+        };
+    }
+  } catch (_) {}
   return new Promise((resolve, reject) => {
     let settled = false;
     let seenError = "";
@@ -1459,6 +1733,12 @@ function dshRunTask(input, opts) {
         );
       if (ok) resolve(val);
       else reject(val instanceof Error ? val : new Error(String(val || "")));
+      /* 轮次封口：异步收口账本（等改前正文入完库 → rollbackDrain 补收迟到帧 → 落盘）。
+         放在 resolve/reject 之后：回滚账本再慢/再坏也不影响这一轮的返回。 */
+      try {
+        if (rbRound && typeof rbEndRound === "function")
+          Promise.resolve(rbEndRound(rbRound, ok ? "done" : "error")).catch(() => {});
+      } catch (_) {}
     };
     window.api
       .dshRun(
@@ -1470,6 +1750,15 @@ function dshRunTask(input, opts) {
           }
           if (msg.type === "db") {
             handleDbToolEvent(msg.data || {}, opts.node, boundWf);
+            return;
+          }
+          /* 回滚 journal 帧：主进程已把改前正文入对象库，这里只按 rid 合并进本轮账本。
+             不判 settled —— done 之后仍可能有帧挤进来，账本合并自身幂等。 */
+          if (msg.type === "journal") {
+            try {
+              if (typeof rbCollectJournal === "function")
+                rbCollectJournal(msg.data || {}, runKey);
+            } catch (_) {}
             return;
           }
           if (settled) return;
@@ -1493,6 +1782,10 @@ function dshRunTask(input, opts) {
           }
           if (msg.type === "question") {
             ixPush(msg.type, msg.data || {});
+          }
+          /* Token 消耗实时入账（按模型），会话末尾的报告 Badge 靠它增长 */
+          if (msg.type === "usage" && tokOwner && typeof tokLiveAdd === "function") {
+            try { tokLiveAdd(tokOwner, msg.data || {}); } catch {}
           }
           if (msg.type === "text" && msg.data && msg.data.text)
             accText += msg.data.text;
@@ -1530,6 +1823,9 @@ function dshRunTask(input, opts) {
               }
             }
           }
+          /* 按步切段的运行轨迹：所有 run（节点 / 会话 / 助手）都在此统一采集，
+             再交给各自的 onEvent 做界面刷新 */
+          try { traceFeedEvent(runKey, msg.type, msg.data || {}); } catch {}
           if (opts.onEvent) {
             try { opts.onEvent(msg.type, msg.data || {}); } catch {}
           }
@@ -1537,6 +1833,10 @@ function dshRunTask(input, opts) {
             /* 完成音效:仅当任务实际运行超过 5 分钟 */
             if (Date.now() - t0 >= 300000) playTaskDoneSound();
             const data = msg.data || {};
+            /* 一轮结束：把本次用量按模型并进所属会话的累计台账 */
+            if (tokOwner && typeof tokMergeRun === "function") {
+              try { tokMergeRun(tokOwner, data.metrics, { startedAt: t0 }); } catch {}
+            }
             if (opts.onDone) {
               try { opts.onDone(data); } catch {}
             }
@@ -1612,46 +1912,50 @@ function refreshLiveDshOutTools(node) {
 /* 节点智能运行的流式事件:右侧 Output + 已打开的关联智能会话同步刷新 */
 function onDshNodeEvent(node, attemptT, type, data) {
   if (!node) return;
+  /* 思考流只装 reasoning：工具调用走 S.nodeTools 与运行轨迹的 tool 段，
+     不再把「🔧 工具名」混进思考文本 */
   if (type === "reasoning" && data.text)
     pushThinking(node.id, attemptT || 0, data.text);
-  else if (type === "tool" && data.name)
-    pushThinking(node.id, attemptT || 0, "🔧 " + data.name + "\n");
   const owner = ownerWfOfNode(node);
   const viewing = !!(owner && S.wf && owner.id === S.wf.id);
+  /* 输出区按段渲染：轨迹里每个 say / err 段独立成段（段间空行），
+     多次「思考 → 工具 → 说一段」不再被拼成一整坨连续文本 */
+  const outText = () => traceSayDisplay(node.id, node._pendingAnswer);
+  const paintStream = () => {
+    const t = outText();
+    const el = document.getElementById("dsh-out-stream-" + node.id);
+    if (el) {
+      el.classList.remove("n-empty");
+      el.textContent = t;
+    }
+    const nel = document.getElementById("agent-node-stream-" + node.id);
+    if (nel) nel.textContent = t;
+    autoFitOutputHeight(node);
+    scrollAgentConv(node);
+  };
   if (type === "text" && data.text) {
     node._pendingAnswer = (node._pendingAnswer || "") + data.text;
-    if (viewing) {
-      const el = document.getElementById("dsh-out-stream-" + node.id);
-      if (el) {
-        el.classList.remove("n-empty");
-        el.textContent = node._pendingAnswer;
-      }
-      const nel = document.getElementById("agent-node-stream-" + node.id);
-      if (nel) nel.textContent = node._pendingAnswer;
-      autoFitOutputHeight(node);
-      scrollAgentConv(node);
-    }
+    if (viewing) paintStream();
   }
   if (type === "error" && data && data.message) {
     if (node._aborted || isCancelishError(data.message)) return;
-    const errLine = "\n⚠ " + data.message;
-    node._pendingAnswer = (node._pendingAnswer || "") + errLine;
-    pushThinking(node.id, attemptT || 0, errLine + "\n");
-    if (viewing) {
-      const el = document.getElementById("dsh-out-stream-" + node.id);
-      if (el) {
-        el.classList.remove("n-empty");
-        el.textContent = node._pendingAnswer;
-      }
-      const nel = document.getElementById("agent-node-stream-" + node.id);
-      if (nel) nel.textContent = node._pendingAnswer;
-      autoFitOutputHeight(node);
-      scrollAgentConv(node);
-    }
+    node._pendingAnswer = (node._pendingAnswer || "") + "\n⚠ " + data.message;
+    if (viewing) paintStream();
   }
   if (type === "reasoning" && viewing) {
     const think = document.getElementById("agent-node-think-" + node.id);
-    if (think) think.textContent = thinkingTextOf(node) || "";
+    if (think) {
+      /* 内联思考块（CSS max-height:200px 独立滚动条）：以前每次写入都无条件
+         scrollTop = scrollHeight，用户根本翻不上去。改为与会话侧同一套判定：
+         贴底才跟随、上翻即脱离、滚回底部自动恢复。 */
+      const tKey = "agent-node-think-" + node.id;
+      think.textContent =
+        traceThinkDisplay(node.id, thinkingTextOf(node)) || "";
+      /* 节点重绘 → 全新元素（scrollTop 被冲成 0）：把用户的滚动位置搬回来 */
+      if (think._convStickBound) stickScrollToBottom(think);
+      else restoreStickPos(think, tKey);
+      saveStickPos(think, tKey);
+    }
   }
   if (type === "tool" || type === "tool-result") refreshLiveDshOutTools(node);
   if (node.kind !== "agent_task" || !node.agentSessionId) return;
@@ -1669,7 +1973,7 @@ function onDshNodeEvent(node, attemptT, type, data) {
     return;
   }
   if (thinkEl) updateAgentThinkEl(st, node);
-  if (streamEl) streamEl.textContent = node._pendingAnswer || "";
+  if (streamEl) streamEl.textContent = outText();
   const list = $("#agentList");
   scrollElToBottomIfStuck(list);
 }

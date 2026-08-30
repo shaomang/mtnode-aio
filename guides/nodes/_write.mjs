@@ -262,6 +262,9 @@ const guides = {
 - **输入**：文本（可多路 / @引用）
 - **输出**：处理后的文本
 
+## 运行显示
+开了「智能助手」后，**思考与输出分开显示**：思考折叠成 **「◉ 思考 · N 字」** 段（N 只数思考的字数），模型说出来的话以正常字号逐段显示，**🔧 工具**调用就近插在发生位置。输出端子给下游的仍是完整正文。
+
 ## 提示
 提示词里用 \`@节点名\` 引用其他节点输出。`,
   },
@@ -330,7 +333,10 @@ const guides = {
 
 ## 端子
 - **输入**：无
-- **输出**：对话结果文本（视配置）`,
+- **输出**：对话结果文本（视配置）
+
+## 运行显示
+开了智能助手，**思考与输出分开显示**：气泡上方按发生顺序分段 —— **「◉ 思考 · N 字」** 折叠思考，正文（含中间步骤说的话）以正常字号逐段显示，**🔧 工具**就近插成 chips。`,
   },
   agent_task: {
     title: "智能任务",
@@ -339,6 +345,9 @@ const guides = {
 ## 端子
 - **输入**：文本 / 引用
 - **输出**：任务产物文本
+
+## 运行显示
+**思考与输出分开显示**：运行时按发生顺序分段 —— **「◉ 思考 · N 字」** 只折叠模型内部推理（N 只数思考的字数），中间步骤说出来的话以正常字号**正文**逐段显示，**🔧 工具**调用就近插在发生位置，错误以 ⚠ 附在正文里。每调用一次工具或进入新一步推理就另起一段；点节点头部的 **「◉ 思考」** 按钮可放大查看（上半思考、下半输出）。
 
 ## 许可
 工具能力由顶栏「审批」预设控制。`,
@@ -498,7 +507,10 @@ const en = {
 
 ## Ports
 - **In**: text (multi / @refs)
-- **Out**: text` },
+- **Out**: text
+
+## While it runs
+With the assistant on, **thinking and output are shown apart**: reasoning collapses into **“◉ Thinking · N chars”** blocks (N counts reasoning only), what the model says appears as normal body text, and **🔧 tool** calls sit inline where they happened. The output port still hands downstream the full text.` },
   proc_image: { title: "Image generate", body: `Generate an image from a prompt. Accepts text or image input.
 
 ## Ports
@@ -535,8 +547,14 @@ Placing music or video gen also creates a bound save node on the right (fixed of
 
 ## Ports
 - **In**: none
-- **Out**: chat text` },
-  agent_task: { title: "Agent task", body: `Agent run: files, web, shell. Output is filled from the run. Tool allowlist is the Approvals preset.` },
+- **Out**: chat text
+
+## While it runs
+With the assistant on, **thinking and output are shown apart**: above each bubble the run renders in chronological segments — **“◉ Thinking · N chars”** collapses reasoning, body text (including what the model says mid-run) shows in normal size, and **🔧 tool** calls sit inline as chips.` },
+  agent_task: { title: "Agent task", body: `Agent run: files, web, shell. Output is filled from the run. Tool allowlist is the Approvals preset.
+
+## While it runs
+**Thinking and output are shown apart.** The run renders in chronological segments: **“◉ Thinking · N chars”** collapses the model's private reasoning (N counts reasoning only), text the model says mid-run shows as **normal body text**, **🔧 tool** calls sit inline where they happened, errors append as ⚠. Every tool call or new reasoning step starts a fresh segment; the node header's **「◉ Thinking」** button opens the big view (reasoning on top, output below). The output port still hands downstream the full text.` },
   control: { title: "Run / Clear", body: `Batch control. Wire targets in or out, then ▶ to run or clear them. Fill-only skips nodes that already have output.` },
   "ctrl-start": { title: "Start", body: `Fixed task entry. Task ▶ pulses from here. Cannot delete.
 

@@ -9,7 +9,6 @@ const CATEGORY_TITLES = {
   mtnode: "MTNode 产品与画布",
   plugins: "插件与后端",
   canvas: "画布工作流模板",
-  zen: "禅模式",
 };
 
 function bundledRoot(appRoot) {
@@ -220,6 +219,7 @@ function syncMtnodeAgentSkills(dshHome, appRoot) {
   }
   const skillsRoot = path.join(dshHome, "skills");
   fs.mkdirSync(skillsRoot, { recursive: true });
+  const keepNames = new Set(flattenIndex(index).map((s) => s.name));
   for (const sk of flattenIndex(index)) {
     const skillSrcDir = path.join(dest, path.dirname(sk.path));
     const skillDestDir = path.join(skillsRoot, sk.name);
@@ -232,6 +232,15 @@ function syncMtnodeAgentSkills(dshHome, appRoot) {
       if (fs.existsSync(builtin)) fs.unlinkSync(builtin);
     } catch {}
   }
+  /* 清理已从内置库移除的技能：只删带 .mtnode-internal 标记的目录，用户自建技能不动 */
+  try {
+    for (const ent of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
+      if (!ent.isDirectory()) continue;
+      if (keepNames.has(ent.name)) continue;
+      const dir = path.join(skillsRoot, ent.name);
+      if (fs.existsSync(path.join(dir, ".mtnode-internal"))) rmDirSafe(dir);
+    }
+  } catch {}
   const indexMd = fs.existsSync(path.join(dest, "INDEX.md"))
     ? fs.readFileSync(path.join(dest, "INDEX.md"), "utf8")
     : renderIndexMd(index);

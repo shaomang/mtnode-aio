@@ -134,8 +134,12 @@ const LAYOUT_FNS = [
   "findLayoutComponents",
   "rectsOverlap",
   "shiftToClear",
+  "layoutOrigin",
   "layoutFlowComponent",
   "layoutFlowEx",
+  "LAYOUT_OVERLAP_PAD",
+  "LAYOUT_OVERLAP_MAX_PASS",
+  "resolvePlacedOverlaps",
 ];
 
 const S = { wf: { nodes: [], wires: [] }, config: { snap: 8 } };
@@ -143,7 +147,13 @@ const ctx = {
   S,
   grid: () => 8,
   nodeById: (id) => (S.wf.nodes || []).find((n) => n.id === id) || null,
-  nodeDrawSize: (n) => ({ w: n.w || 288, h: n.h || 192 }),
+  nodeDrawSize: (n) =>
+    n && n.kind === "super" && n.superOpen
+      ? {
+          w: Math.max(320, Number(n.expandW) || 720),
+          h: Math.max(220, Number(n.expandH) || 480),
+        }
+      : { w: n.w || 288, h: n.h || 192 },
   currentTaskFocus: () => "",
   nodeParentTaskId: (n) => (n && n.parentTaskId) || "",
   nodeParentSuperId: (n) => (n && n.parentSuperId) || "",
@@ -495,6 +505,77 @@ const badDir = hardPairs.filter((p) => {
   return byId2[f].x > byId2[t].x;
 });
 ok(badDir.length === 0, "每条硬边都从左层指向右层（反向 " + badDir.length + " 条）");
+
+/* ============ [2b] 展开超级节点（绘制尺寸 > 存储尺寸）参与排版不重叠 ============ */
+console.log("\n[2b] 展开超级节点 / 障碍物按绘制尺寸参与排版");
+{
+  const openSuper = (id, x, y, expandW, expandH) => ({
+    id,
+    kind: "super",
+    superOpen: true,
+    expandW,
+    expandH,
+    x,
+    y,
+    w: 280,
+    h: 200,
+  });
+  const drawRect = (n) => {
+    const s = ex("layoutNodeSize")(n);
+    return { x: n.x, y: n.y, w: s.w, h: s.h };
+  };
+  const overlapOf = (list) => {
+    let n = 0;
+    for (let i = 0; i < list.length; i++)
+      for (let j = i + 1; j < list.length; j++) {
+        const a = drawRect(list[i]),
+          b = drawRect(list[j]);
+        if (
+          a.x < b.x + b.w - 1 &&
+          b.x < a.x + a.w - 1 &&
+          a.y < b.y + b.h - 1 &&
+          b.y < a.y + a.h - 1
+        )
+          n++;
+      }
+    return n;
+  };
+  /* 1) 障碍物 = 展开超级节点：layoutOrigin / shiftToClear 按绘制尺寸避开壳层 */
+  const obs = [openSuper("obsS", 40, 40, 900, 600)];
+  const n1 = { id: "oa", kind: "input_text", x: 0, y: 0, w: 240, h: 160 };
+  const n2 = { id: "ob", kind: "proc_text", x: 0, y: 0, w: 240, h: 160 };
+  S.wf.nodes = [n1, n2];
+  S.wf.wires = [{ id: "ow1", from: "oa", to: "ob" }];
+  const ori = ex("layoutOrigin")(obs);
+  ex(
+    `layoutFlowEx(S.wf.nodes, S.wf.wires, { x: ${ori.x}, y: ${ori.y} }, ${JSON.stringify(obs)}, {})`,
+  );
+  ok(
+    ori.x >= 40 + 900,
+    "layoutOrigin 按障碍物绘制宽度定位（origin.x=" + ori.x + " ≥ 940）",
+  );
+  const ovObs = overlapOf([n1, n2].concat(obs));
+  ok(ovObs === 0, "新布局不压住展开超级节点的可见壳层（重叠 " + ovObs + " 对）");
+  /* 2) 两个孤立展开超级节点连续装箱：nodesBBox 用绘制尺寸，后壳不撞前壳 */
+  const s1 = openSuper("sA", 0, 0, 900, 600);
+  const s2 = openSuper("sB", 0, 0, 700, 400);
+  S.wf.nodes = [s1, s2];
+  S.wf.wires = [];
+  ex(`layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 16, y: 16 }, [], {})`);
+  const d1 = drawRect(s1),
+    d2 = drawRect(s2);
+  ok(
+    d1.x + d1.w <= d2.x ||
+      d2.x + d2.w <= d1.x ||
+      d1.y + d1.h <= d2.y ||
+      d2.y + d2.h <= d1.y,
+    "两个孤立展开超级节点装箱后互不重叠（sA=[" + d1.x + "," + (d1.x + d1.w) + "]×[" + d1.y + "," + (d1.y + d1.h) + "]，sB 起点 x=" + d2.x + "）",
+  );
+  ok(
+    S.wf.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y)),
+    "展开超级节点排版后坐标仍为有限数",
+  );
+}
 
 /* ===================== [3] 直线几何 ===================== */
 function plan(nodes, wires) {

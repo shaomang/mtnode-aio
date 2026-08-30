@@ -43,6 +43,10 @@ async function assistAppSnapshot() {
     groups: full.groups,
     marks: full.marks || [],
     markColors: full.markColors || MARK_COLORS.slice(),
+    /* 开发节点功能色卡：与 canvas_get 同一张表（真源 = app-devnode.js DEV_FUNC_COLORS） */
+    devFuncColors:
+      full.devFuncColors ||
+      (typeof devFuncColorCatalog === "function" ? devFuncColorCatalog() : []),
     imageSizes: full.imageSizes || IMAGE_SIZES.slice(),
     defaultImageSize: full.defaultImageSize || DEFAULT_IMAGE_SIZE,
     providers: ((S.config && S.config.providers) || []).map((p) => ({
@@ -299,6 +303,74 @@ function bindAssistResize() {
   });
 }
 
+/* ============ 会话左栏（会话列表）宽度：默认最小，可拖拽加宽 ============ */
+const AGENT_SIDE_W_MIN = 280;
+
+function clampAgentSideW(w) {
+  const half = Math.max(
+    AGENT_SIDE_W_MIN,
+    Math.floor((window.innerWidth || 1200) / 2),
+  );
+  const n = Math.round(Number(w) || AGENT_SIDE_W_MIN);
+  return Math.max(AGENT_SIDE_W_MIN, Math.min(half, n));
+}
+
+function applyAgentSideWidth(w, persist) {
+  S.agentSideW = clampAgentSideW(w == null ? S.agentSideW : w);
+  const pane = $("#agentPane");
+  if (pane) pane.style.setProperty("--agent-side-w", S.agentSideW + "px");
+  if (persist !== false && S.config) {
+    S.config.agentSideW = S.agentSideW;
+    window.api.configSave(S.config).catch(() => {});
+  }
+}
+
+function bindAgentSideResize() {
+  const handle = $("#agentSideResize");
+  if (!handle || handle._bound) return;
+  handle._bound = true;
+  let dragging = false;
+  let startX = 0;
+  let startW = 0;
+  const onMove = (ev) => {
+    if (!dragging) return;
+    /* 向右拖 = 变宽；拖动过程中只改样式，不落盘 */
+    applyAgentSideWidth(startW + (ev.clientX - startX), false);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    applyAgentSideWidth(S.agentSideW, true);
+  };
+  handle.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    dragging = true;
+    startX = ev.clientX;
+    startW = S.agentSideW || AGENT_SIDE_W_MIN;
+    handle.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  });
+  /* 双击把手 = 回到默认（最小）宽度 */
+  handle.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    applyAgentSideWidth(AGENT_SIDE_W_MIN, true);
+  });
+  /* 窗口变窄时重新夹取，避免左栏挤掉会话内容 */
+  window.addEventListener("resize", () =>
+    applyAgentSideWidth(S.agentSideW, false),
+  );
+}
+
 function setAssistOpen(on, persist) {
   S.assistOpen = !!on;
   const layout = $("#layout");
@@ -423,8 +495,8 @@ function updateAssistScopeChrome() {
   const sub = document.querySelector("#assistPane .assist-sub");
   if (sub) {
     sub.textContent = scopeCurrent
-      ? I18n.t("仅当前画布 · 危险操作需确认")
-      : I18n.t("可见全局状态 · 危险操作需确认");
+      ? I18n.t("仅当前画布")
+      : I18n.t("可见全局状态");
   }
 }
 
@@ -462,8 +534,10 @@ function renderAssistPanel(opts) {
     const think = document.createElement("div");
     think.className = "dsh-think-live";
     think.id = "assist-think";
-    think.textContent =
-      (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "";
+    think.textContent = traceThinkDisplay(
+      "assist",
+      (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "",
+    );
     row.appendChild(think);
     const tools = document.createElement("div");
     tools.className = "dsh-tools";
@@ -474,11 +548,19 @@ function renderAssistPanel(opts) {
     const body = document.createElement("div");
     body.className = "dsh-msg-body dsh-stream";
     body.id = "assist-stream";
-    body.textContent = S.assistPending || "";
+    body.textContent = traceSayDisplay("assist", S.assistPending);
     row.appendChild(body);
     list.appendChild(row);
   }
-  scheduleHistoryCollapse(list);
+  /* 助手栏末尾：同一份 Token 累计报告 Badge（按模型累计，点击展开） */
+  if (typeof tokBadgeEl === "function" && typeof assistTokOwner === "function") {
+    try {
+      const badge = tokBadgeEl(assistTokOwner());
+      if (badge) list.appendChild(badge);
+    } catch {}
+  }
+  const reapplyStick = () => restoreConvStick(list, stickCap);
+  scheduleHistoryCollapse(list, reapplyStick);
   const sendBtn = $("#assistSend");
   if (sendBtn) {
     if (S.assistRunning) {
@@ -502,7 +584,8 @@ function renderAssistPanel(opts) {
   updateAssistScopeChrome();
   fillAssistModelControls();
   restoreConvStick(list, stickCap);
-  if (stickCap.stick && typeof requestAnimationFrame === "function") {
+  if (typeof requestAnimationFrame === "function") {
+    /* 折叠等事后高度变化：再按锚点还原一次（贴底滚到底，未贴底保持原位） */
     requestAnimationFrame(() => restoreConvStick(list, stickCap));
   }
 }
@@ -516,6 +599,12 @@ function clearAssistChat() {
   S.assistPending = "";
   S.assistLiveTools = [];
   S.assistRunActive = false;
+  /* 清空即新会话：Token 累计报告一起归零 */
+  S.assistTokenReport = null;
+  if (S._assistTokOwner) {
+    S._assistTokOwner.tokenReport = null;
+    S._assistTokOwner._tokLive = null;
+  }
   if (S.thinking) delete S.thinking.assist;
   persistAssistUi();
   renderAssistPanel({ forceStick: true });
@@ -534,7 +623,8 @@ async function assistSend(text) {
     return;
   }
   if (!Array.isArray(S.assistMessages)) S.assistMessages = [];
-  S.assistMessages.push({ role: "user", content: t, at: Date.now() });
+  const assistUm = { role: "user", content: t, at: Date.now() };
+  S.assistMessages.push(assistUm);
   if (S.assistMessages.length > 80)
     S.assistMessages.splice(0, S.assistMessages.length - 80);
   S.assistRunning = true;
@@ -551,7 +641,10 @@ async function assistSend(text) {
   updateRunQueuePanel();
 
   const stateJson = JSON.stringify(await assistAppSnapshot(), null, 2);
-  const hist = S.assistMessages
+  /* 已回滚轮次的消息不进上下文（rbActiveMessages 只在真有标记时才复制数组） */
+  const assistHist =
+    typeof rbActiveMessages === "function" ? rbActiveMessages(S.assistMessages) : S.assistMessages;
+  const hist = assistHist
     .slice(0, -1)
     .slice(-16)
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
@@ -570,7 +663,7 @@ async function assistSend(text) {
   const superConnectRule =
     "  · 【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动把源节点向上逐层连到其所在超级节点的外部输出端子、把目标节点所在超级节点的外部输入端子逐层桥接到目标节点、并把顶层超级节点之间相连，无需自己手动建桥接线；可一次传多对。\n";
   const devNodeRule =
-    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note = 模块概述（必填 ≤200 字，写明该模块在项目中的作用），devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认；用户在头部颜色小按钮的 HSV 色板里改，Agent 也可用 update 补丁设置，改色前先征询用户）；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。开发节点可用 parentSuperId 嵌套（剥洋葱式一次只细化一层）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「建议」「开发」「细化」按钮：三者都先弹对话框——「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素（无需或无法细化时也要明确告知用户）。除「建议」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出内容梗概清单、经用户确认后才创建节点。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。\n" +
+    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note 必须两段（必填 ≤200 字）：【功能】= 面向非技术的设计说明 + 【实现】= 面向技术人员的实现梗概；禁止只写一段，禁止把技术细节写进【功能】段，devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认）。**功能色卡**：开发节点按「功能分类」统一上色，整张架构图一眼可辨（同一张表也由 mtnode_canvas_get 以 devFuncColors 返回）：core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f。新建 devKind=module 的功能块时，系统已按标题与概述关键词自动套好色卡颜色，你一般无需再传 devColor；归类确实不对时，直接用 update 补丁改成色卡里对应分类的那个 hex——**按色卡上色即可，不必先征询用户**，但绝不要自创色值、也不要把功能色卡之外的颜色批量刷到节点上。色卡只作用于 module 功能块（file / class / interface / enum 保留元素类型默认色）；用户可在节点头部颜色小按钮的 HSV 色板里手选颜色，手选过的块视为用户意图，除非用户要求，不要再改它的颜色；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。开发节点可用 parentSuperId 嵌套（细化按深度：只展开本层，或深度细化到无法再细——一般到文件级；多层梗概经一次确认即可，确认后自顶向下逐层建块）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」）：按钮顺序固定为 开发 → 细化 → 建议 → 问询 → 打开（→ 会话 N）。四者都先弹对话框——「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素、以及细化深度（只展开本层 / 深度细化到无法再细，一般到文件级；无需或无法细化时也要明确告知用户）；「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「问询」先请用户确认并填写问题，然后由 AI **只读**回答关于本模块的问题——全程强制只读（网关 read-only 权限档 + 只读系统提示，写文件 / 改画布会被拒绝），不改文件、不改画布，可「返回后台」继续跑、完成后自动弹出。除「建议 / 问询」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出覆盖多层的整棵结构梗概、经用户一次确认后在新会话中自顶向下逐层建块（一次确认即覆盖整个细化深度）。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。\n" +
     "  · 【执行节点】kind \"execute\" = 执行节点：绑定可执行文件（execPath = 绝对路径，.exe/.bat/.cmd/.lnk 或任何系统可打开的文件），execIcon / execColor 自定义图标与 body 颜色便于快速定位。该节点独立存在、无数据端口，body 内点两次播放键或双击即用系统默认方式启动绑定文件。画布上要「一键启动某个程序 / 脚本 / 文件」时用这种节点。它与开发节点同属一个创建菜单，属于某个功能块时（如该模块的启动脚本）用 parentSuperId 放进该开发节点内部。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
@@ -606,8 +699,8 @@ async function assistSend(text) {
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
     "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
     (scopeCurrent
-      ? "原则：仅操作当前画布；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n"
-      : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁，中文优先。不要编造不存在的节点或画布。\n") +
+      ? "原则：仅操作当前画布；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n"
+      : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n") +
     "当前应用状态 JSON：\n" +
     stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
@@ -617,6 +710,9 @@ async function assistSend(text) {
   try {
     const final = await dshRunTask(input, {
       runKey: "assist",
+      /* 本轮的开轮消息：rid 由回滚账本盖在它身上（供「↶ 回滚到此处」寻址） */
+      rollbackAnchor: assistUm,
+      rollbackLabel: t.slice(0, 160),
       workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
       preset: S.assistPreset || "standard",
       provider: S.assistProvider || "deepseek-official",
@@ -639,10 +735,12 @@ async function assistSend(text) {
           pushThinking("assist", 0, data.text);
           const el = document.getElementById("assist-think");
           if (el)
-            el.textContent =
-              (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "";
+            el.textContent = traceThinkDisplay(
+              "assist",
+              (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "",
+            );
         } else if (type === "tool" && data && data.name) {
-          pushThinking("assist", 0, "🔧 " + data.name + "\n");
+          /* 工具调用只进 assistLiveTools（与运行轨迹的 tool 段），不污染思考文本 */
           S.assistLiveTools = S.assistLiveTools || [];
           if (!S.assistLiveTools.some((x) => x.callId === data.callId))
             S.assistLiveTools.push({
@@ -667,15 +765,13 @@ async function assistSend(text) {
         } else if (type === "text" && data && data.text) {
           S.assistPending = (S.assistPending || "") + data.text;
           const el = document.getElementById("assist-stream");
-          if (el) el.textContent = S.assistPending;
+          if (el) el.textContent = traceSayDisplay("assist", S.assistPending);
           scrollElToBottomIfStuck($("#assistList"));
         } else if (type === "error" && data && data.message) {
           if (S.assistStopRequested || isCancelishError(data.message)) return;
-          const errLine = "\n⚠ " + data.message;
-          S.assistPending = (S.assistPending || "") + errLine;
-          pushThinking("assist", 0, errLine + "\n");
+          S.assistPending = (S.assistPending || "") + "\n⚠ " + data.message;
           const el = document.getElementById("assist-stream");
-          if (el) el.textContent = S.assistPending;
+          if (el) el.textContent = traceSayDisplay("assist", S.assistPending);
           scrollElToBottomIfStuck($("#assistList"));
         }
       },
@@ -708,9 +804,14 @@ async function assistSend(text) {
         content: body,
         at: Date.now(),
       };
-      const rsn =
-        (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "";
+      /* 思考与输出分家：reasoning = 按步分段的纯思考（不含「🔧」），
+         segments = 本轮轨迹段快照，重绘后仍能还原「思考 / 正文 / 工具」步序 */
+      const rsn = traceThinkDisplay(
+        "assist",
+        (S.thinking && S.thinking.assist && S.thinking.assist[0]) || "",
+      );
       if (String(rsn).trim()) msg.reasoning = rsn;
+      attachTraceSegments(msg, "assist");
       if (Array.isArray(S.assistLiveTools) && S.assistLiveTools.length)
         msg.tools = S.assistLiveTools.slice();
       S.assistMessages.push(msg);
@@ -762,7 +863,55 @@ function assistStop() {
 /* 会话列表:全部持久化于 config.agentSessions,活动会话由 agentActiveId 指定 */
 function agentSessions() {
   if (!Array.isArray(S.agentSessions)) S.agentSessions = [];
+  /* 从配置载回的会话做一次水合（planDelivered / plan → 运行时字段）；
+     水合过就有 _planHydrated 标记，后续调用只是几次属性读，开销可忽略。 */
+  if (typeof planHydrateSession === "function")
+    for (const s of S.agentSessions) planHydrateSession(s);
+  /* 开发 / 细化绑定会话的水合：旧版把整份任务书当作首条 _src:"dev-node" 用户消息，
+     现改为写入 _devContract（发送时注入系统提示）；载回旧会话时做一次迁移。 */
+  if (typeof devContractHydrateSession === "function")
+    for (const s of S.agentSessions) devContractHydrateSession(s);
   return S.agentSessions;
+}
+/* 旧版开发 / 细化会话迁移：首条 _src:"dev-node" 消息里是整份任务书 →
+   搬进 s._devContract，消息内容缩成用户关键输入（本次开发需求 / 细化范围）行。
+   幂等：新形态会话（消息已精简、_devContract 已就位）直接跳过。 */
+function devContractHydrateSession(s) {
+  if (!s || s._devContractHydrated) return;
+  s._devContractHydrated = true;
+  /* 新形态会话重启后只有持久化的 devContract 字段：还原成运行时字段 _devContract */
+  if (!s._devContract && s.devContract) s._devContract = s.devContract;
+  if (s._devContract) return;
+  const msgs = Array.isArray(s.messages) ? s.messages : [];
+  const first = msgs[0];
+  if (!first || first.role !== "user" || first._src !== "dev-node") return;
+  const body = String(first.content || "");
+  /* 任务书在创建会话时按当时 UI 语言写入：兼容当前语言与中文原文两种抬头 */
+  const headers = [I18n.t("【开发任务书】"), "【开发任务书】"];
+  let isFull = false;
+  for (const h of headers) if (body.indexOf(h) >= 0) isFull = true;
+  if (!isFull) return;
+  let visible = "";
+  if (typeof devReqTextOfMessage === "function") {
+    const req = devReqTextOfMessage(first);
+    if (req) visible = I18n.t("本次开发需求：") + req;
+  }
+  if (!visible) {
+    const scopePrefixes = [I18n.t("用户指定的细化范围："), "用户指定的细化范围："];
+    for (const p of scopePrefixes) {
+      const at = body.indexOf(p);
+      if (at < 0) continue;
+      const scope = body.slice(at + p.length).split("\n")[0].trim();
+      if (scope) {
+        visible = I18n.t("用户指定的细化范围：") + scope;
+        break;
+      }
+    }
+  }
+  /* 还原不出关键输入（如旧细化会话无范围行）：保持原样，不破坏旧会话展示 */
+  if (!visible) return;
+  s._devContract = body;
+  first.content = visible;
 }
 function activeAgentId() {
   const list = agentSessions();
@@ -770,6 +919,15 @@ function activeAgentId() {
     S.agentActiveId = list.length ? list[0].id : "";
   }
   return S.agentActiveId;
+}
+/* 按 id 取会话：取不到就是 null —— 绝不回退到「当前活动会话」。
+   计划等有明确归属（owner）的调用必须走它，否则用户一切换会话，
+   剩余任务就会发进别的会话（runKey / outbox / 上下文全部串台）。 */
+function agentSessionById(id) {
+  const sid = String(id || "").trim();
+  if (!sid) return null;
+  const list = agentSessions();
+  return list.find((s) => s && s.id === sid) || null;
 }
 function agentSessionState() {
   const list = agentSessions();
@@ -816,7 +974,20 @@ async function persistAgentSession() {
     model: s.model || "",
     effort: s.effort || "high",
     draft: s._draft || "",
-    messages: (s.messages || []).slice(-100),
+    /* 整对象落盘（含 reasoning / tools / segments）；segments 再限一次长：
+       每段 ≤8000 字、总 ≤40 段，控制 messages.slice(-100) 的存档体积 */
+    messages: (s.messages || []).slice(-100).map((m) => {
+      if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
+      try {
+        const segs = agentSegsForDisk(m.segments);
+        const c = Object.assign({}, m);
+        if (segs && segs.length) c.segments = segs;
+        else delete c.segments;
+        return c;
+      } catch (_) {
+        return m;
+      }
+    }),
     archived: !!s.archived,
     updatedAt: s.updatedAt || 0,
     /* 会话发送队列 + 任务清单（Todo）：重启后仍在 */
@@ -824,6 +995,11 @@ async function persistAgentSession() {
       id: x.id,
       text: String(x.text || "").slice(0, 4000),
       at: x.at || 0,
+      /* 计划执行残留的元数据随条目持久化：重启后排水仍按原归属校验，
+         已作废的计划任务不会因重启就退化成普通消息被自动发出 */
+      _planExec: !!x._planExec || undefined,
+      planRunId: x.planRunId != null ? String(x.planRunId) : undefined,
+      sessionId: x.sessionId != null ? String(x.sessionId) : undefined,
     })),
     todos: (s.todos || []).slice(-80).map((x) => ({
       content: String(x.content || "").slice(0, 400),
@@ -832,6 +1008,24 @@ async function persistAgentSession() {
     })),
     todoHidden: (s.todoHidden || []).slice(-80).map(String),
     todosCollapsed: !!s.todosCollapsed,
+    /* 已确认的计划清单（逐项状态 + 进度指针）：重启后「计划」面板仍在，
+       未完成项可从那一台会话继续跑，而不是随弹窗一起消失 */
+    plan:
+      typeof planSanitize === "function"
+        ? planSanitize(s.plan)
+        : s.plan && Array.isArray(s.plan.steps) && s.plan.steps.length
+          ? s.plan
+          : null,
+    planDelivered: !!(s._planDelivered || s.planDelivered),
+    planCollapsed: !!s.planCollapsed,
+    /* 作废计数：终止 / 清除 / 归档 / 用户改口后随会话一起落盘；
+       重启载回后这份会话不再点亮任何续跑入口（崩溃 / 落盘失败的窗口也不复活旧计划） */
+    planDrops: Math.max(0, Number(s._planDrops) || 0),
+    /* Token 消耗累计报告（按模型分别累计 + 时间），会话末尾 Badge 用它渲染 */
+    tokenReport: s.tokenReport || null,
+    /* 开发 / 细化绑定会话的任务书契约：发送时注入系统提示（不占用户消息位，
+       首条消息只显示用户关键输入）；随会话持久化，重启后仍按契约运行 */
+    devContract: s._devContract || "",
   }));
   S.config.agentActiveId = activeAgentId();
   try {
@@ -871,6 +1065,17 @@ async function archiveAgentSession(id, archived) {
   )
     return;
   s.archived = archived;
+  /* 归档 = 这条会话不再接活：它那份计划就地作废（弹窗里就是这么承诺的），
+     恢复会话后不会再冒出一份「可以继续跑」的旧清单。 */
+  if (archived && s.plan) {
+    try {
+      if (typeof planDrop === "function") planDrop(s, "archived");
+      else {
+        delete s._planExec;
+        s.plan = null;
+      }
+    } catch (_) {}
+  }
   if (archived && S.agentActiveId === id) {
     const next = list.find((x) => !x.archived && x.id !== id);
     S.agentActiveId = next ? next.id : "";
@@ -1093,12 +1298,6 @@ const SKILL_MENU_TAX = {
   "mtnode-db-facts": ["workflow", "画布规范"],
   "mtnode-media-gen-nodes": ["workflow", "画布规范"],
   "mtnode-dev-architect": ["workflow", "开发架构"],
-  "zen-bootstrap": ["workflow", "禅式引导"],
-  "zen-plan-compile": ["workflow", "禅式引导"],
-  "zen-domain-software": ["workflow", "禅式引导"],
-  "zen-domain-writing": ["workflow", "禅式引导"],
-  "zen-domain-video": ["workflow", "禅式引导"],
-  "zen-domain-game": ["workflow", "禅式引导"],
   "compose-novel-from-canvas": ["prompt", "小说写作"],
   "minimax-music-prompt": ["prompt", "音乐生成"],
   "minimax-music-lyrics": ["prompt", "音乐生成"],
@@ -1106,7 +1305,7 @@ const SKILL_MENU_TAX = {
 };
 /* 各大类内二级类型的固定顺序（未列出的按出现顺序排在后面） */
 const SKILL_MENU_TYPE_ORDER = {
-  workflow: ["画布搭建", "画布规范", "开发架构", "禅式引导"],
+  workflow: ["画布搭建", "画布规范", "开发架构"],
   prompt: ["小说写作", "文本生成", "音乐生成", "视频生成", "图像生成"],
   misc: ["通用"],
 };
@@ -1126,7 +1325,6 @@ function skillMenuClassify(s) {
   else if (/小说|正文|章节|文章|写作|文案/.test(hay)) type = "小说写作";
   else if (/开发|架构|代码|模块/.test(hay)) type = "开发架构";
   else if (/规范|排版|批量|事实/.test(hay)) type = "画布规范";
-  else if (/引导|追问|澄清|计划/.test(hay)) type = "禅式引导";
   return { cat, type };
 }
 function skillMenuSortTypes(catId, types) {
@@ -1825,10 +2023,12 @@ function applyHistoryCollapse(list) {
   updateHistRail(list);
 }
 
-function scheduleHistoryCollapse(list) {
+function scheduleHistoryCollapse(list, after) {
   if (!list) return;
   const run = () => {
     if (list.isConnected) applyHistoryCollapse(list);
+    else requestAnimationFrame(run);
+    if (typeof after === "function") after();
   };
   if (typeof requestAnimationFrame === "function") {
     requestAnimationFrame(() => {
@@ -1949,17 +2149,14 @@ function formatRelTime(ts) {
   return Math.floor(day / 365) + I18n.t(" 年前");
 }
 
-/* 会话最后对话时间：updatedAt 与最后一条消息时间取较新者 */
+/* 会话最后对话时间：updatedAt / 所有消息 / outbox 取最大者（全量扫描：历史可能乱序、末尾几条可能缺 at） */
 function sessionLastAt(s) {
   if (!s) return 0;
   let t = Number(s.updatedAt) || 0;
   const msgs = Array.isArray(s.messages) ? s.messages : [];
   for (let i = msgs.length - 1; i >= 0; i--) {
     const at = Number(msgs[i] && (msgs[i].at || msgs[i].createdAt || msgs[i].ts)) || 0;
-    if (at) {
-      if (at > t) t = at;
-      break;
-    }
+    if (at > t) t = at;
   }
   const ob = Array.isArray(s.outbox) ? s.outbox : [];
   for (let i = ob.length - 1; i >= 0; i--) {
@@ -1969,17 +2166,287 @@ function sessionLastAt(s) {
   return t;
 }
 
+/* ── 会话视图时间线分段（seg）：消费 app-db.js 的 runTrace 轨迹段模型 ──
+   网关事件由 dshRunTask 统一喂进 S.runTrace[runKey].items（think / say /
+   tool / err，按 turn/step 与 say-end 切段）。会话视图的 live 行按段序渲染；
+   轮次收尾转成 msg.segments（限长）随消息持久化，历史消息按段重绘。 */
+const AGENT_SEG_TEXT_MAX = 8000; // 落盘单段上限（字）
+const AGENT_SEG_MAX = 40; // 落盘总段数上限
+function agentTraceItems(runKey) {
+  const k =
+    typeof traceRunKey === "function" ? traceRunKey(runKey) : String(runKey);
+  const tr = S.runTrace && S.runTrace[k];
+  return tr && Array.isArray(tr.items) && tr.items.length ? tr.items : null;
+}
+/* 仅「本会话正在进行的聊天运行」走分段渲染：runKey=agent:<id> 且该 run 还活着
+   （节点绑定的 dev 运行走各自的 runKey，保持旧渲染，不与 app-db 的就地更新打架） */
+function agentChatSegItems(st) {
+  if (!st || !st.running) return null;
+  const rk = "agent:" + st.id;
+  if (!S._runCancels || !S._runCancels[rk]) return null;
+  return agentTraceItems(rk);
+}
+/* 收尾 / 落盘共用：总段数 ≤40（超了保留最近的），单段 ≤8000 字加省略号。
+   say / err 段被裁剪后正文拼接不再等于 content，历史渲染自动退回旧版，不丢字。 */
+function agentSegsForDisk(segList) {
+  if (!Array.isArray(segList) || !segList.length) return null;
+  const arr =
+    segList.length > AGENT_SEG_MAX
+      ? segList.slice(segList.length - AGENT_SEG_MAX)
+      : segList;
+  const out = [];
+  for (const s of arr) {
+    if (!s || !s.k) continue;
+    let text = String(s.text || "");
+    if (s.k === "tool") text = "";
+    if (text.length > AGENT_SEG_TEXT_MAX)
+      text = text.slice(0, AGENT_SEG_TEXT_MAX) + "…";
+    const o = { k: s.k, text, step: s.step != null ? s.step : null };
+    if (s.callId) o.callId = s.callId;
+    out.push(o);
+  }
+  return out.length ? out : null;
+}
+/* 历史消息能否按时间线分段渲染：段里重建出的正文（say + ⚠err 尾部）必须与
+   content 完全一致（落盘裁剪过 / 无段时退回旧渲染，保证不丢字） */
+function dshMsgSegsViewable(m) {
+  if (!m || m.role !== "assistant") return false;
+  const segs = m.segments;
+  if (!Array.isArray(segs) || !segs.length) return false;
+  const says = [];
+  const errs = [];
+  for (const s of segs) {
+    if (!s) continue;
+    const t = String(s.text || "");
+    if (s.k === "say" && t.trim()) says.push(t);
+    else if (s.k === "err" && t.trim()) errs.push(t);
+  }
+  if (!says.length && !errs.length) return false;
+  const body = says.join("\n\n");
+  const eTxt = errs.map((s) => "⚠ " + s).join("\n\n");
+  const rebuilt = body && eTxt ? body + "\n\n" + eTxt : body || eTxt;
+  return String(m.content || "") === rebuilt;
+}
+/* 历史消息的一段 → DOM。工具段按 callId / step 从 m.tools 池里取对应条目，
+   取走的从池里移除，剩余（没匹配到的）由调用方补一行 chips 兜底。 */
+function dshHistSegEl(seg, pool, nodeId, idx, n) {
+  if (!seg || !seg.k) return null;
+  if (seg.k === "think") {
+    const txt = String(seg.text || "");
+    if (!txt.trim()) return null;
+    const det = document.createElement("details");
+    det.className = "dsh-seg dsh-seg-think";
+    const oKey =
+      "segthink:" + (nodeId || "") + ":" + (idx == null ? "" : idx) + ":" + n;
+    if (S.openDshTools && S.openDshTools[oKey]) det.open = true;
+    det.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    det.addEventListener("click", (ev) => ev.stopPropagation());
+    det.addEventListener("toggle", () => {
+      S.openDshTools = S.openDshTools || {};
+      if (det.open) S.openDshTools[oKey] = true;
+      else delete S.openDshTools[oKey];
+    });
+    const sum = document.createElement("summary");
+    sum.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+    sum.title = I18n.t("点击展开 / 收起模型思考过程");
+    const pre = document.createElement("pre");
+    pre.innerHTML = plainTextToLinkHtml(txt);
+    det.appendChild(sum);
+    det.appendChild(pre);
+    return det;
+  }
+  if (seg.k === "say" || seg.k === "err") {
+    let txt = String(seg.text || "");
+    if (seg.k === "err") txt = "⚠ " + txt;
+    if (!txt.trim()) return null;
+    const d = document.createElement("div");
+    d.className = "dsh-seg dsh-seg-say";
+    const md = document.createElement("div");
+    md.className = "md";
+    md.innerHTML = renderMarkdown(txt);
+    d.appendChild(md);
+    return d;
+  }
+  if (seg.k === "tool") {
+    let at = -1;
+    for (let i = 0; i < pool.length; i++) {
+      const t = pool[i];
+      if (!t) continue;
+      if (seg.callId) {
+        if (String(t.callId) === String(seg.callId)) {
+          at = i;
+          break;
+        }
+      } else if (seg.step != null && t.step === seg.step) {
+        at = i;
+        break;
+      }
+    }
+    if (at < 0) return null;
+    const t = pool.splice(at, 1)[0];
+    const wrap = document.createElement("div");
+    wrap.className = "dsh-seg dsh-seg-tool";
+    const chips = document.createElement("div");
+    chips.className = "dsh-tools";
+    chips.appendChild(dshToolDetailsEl(t, false, nodeId));
+    wrap.appendChild(chips);
+    return wrap;
+  }
+  return null;
+}
+/* live 行：按轨迹段序输出（think → details 折叠 / say → 正文 / tool → chips / err → ⚠） */
+function agentLiveSegsEl(row, st, live, items) {
+  const tools = Array.isArray(st._liveTools) ? st._liveTools : [];
+  const nodeId = live ? live.id : st.id;
+  for (let i = 0; i < items.length; i++) {
+    const seg = items[i];
+    if (!seg) continue;
+    const streaming = i === items.length - 1;
+    if (seg.k === "think") {
+      const txt = String(seg.text || "");
+      if (!txt) continue;
+      const det = document.createElement("details");
+      det.className = "dsh-seg dsh-seg-think";
+      /* 尾段（仍在增长的思考段）挂上旧 id + 段序：重绘前的
+         rememberAgentThinkScroll 与就地更新都按这两个信息找到它 */
+      if (streaming) {
+        det.id = "agent-think";
+        det.dataset.segIdx = String(i);
+      }
+      const oKey = "segthink:" + (st.id || "") + ":" + i;
+      const sum = document.createElement("summary");
+      sum.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+      sum.title = I18n.t("点击展开 / 收起模型思考过程");
+      const pre = document.createElement("pre");
+      if (streaming) {
+        pre.id = "agent-think-body";
+        bindAgentThinkScroll(st, pre);
+      }
+      det.appendChild(sum);
+      det.appendChild(pre);
+      /* 先挂监听再程序设 open（toggle 异步派发），沿用现有滚动跟随逻辑 */
+      det.addEventListener("toggle", () => {
+        S.openDshTools = S.openDshTools || {};
+        if (det.open) S.openDshTools[oKey] = true;
+        else delete S.openDshTools[oKey];
+        if (!det.open) return;
+        pre.textContent = String(seg.text || "");
+        applyAgentThinkScroll(
+          st,
+          pre,
+          streaming && !det._progToggle && agentThinkStickOf(st),
+        );
+      });
+      if (S.openDshTools && S.openDshTools[oKey]) {
+        det._progToggle = true;
+        det.open = true;
+        if (typeof requestAnimationFrame === "function")
+          requestAnimationFrame(() => {
+            det._progToggle = false;
+          });
+        else det._progToggle = false;
+      }
+      row.appendChild(det);
+    } else if (seg.k === "say" || seg.k === "err") {
+      const d = document.createElement("div");
+      d.className = "dsh-seg dsh-seg-say";
+      if (streaming) {
+        /* 正在流的正文段：纯文本 + 旧 id，text 事件就地更新，避免每块重渲 markdown */
+        d.id = "agent-stream";
+        d.dataset.segIdx = String(i);
+        d.classList.add("dsh-stream");
+        d.textContent =
+          seg.k === "err" && !String(seg.text || "").startsWith("⚠")
+            ? "⚠ " + String(seg.text || "")
+            : String(seg.text || "");
+      } else {
+        const md = document.createElement("div");
+        md.className = "md";
+        md.innerHTML = renderMarkdown(
+          seg.k === "err" ? "⚠ " + String(seg.text || "") : String(seg.text || ""),
+        );
+        d.appendChild(md);
+      }
+      row.appendChild(d);
+    } else if (seg.k === "tool") {
+      const t = tools.find((x) =>
+        seg.callId
+          ? String(x.callId) === String(seg.callId)
+          : seg.step != null && x.step != null && x.step === seg.step,
+      );
+      if (!t) continue;
+      const wrap = document.createElement("div");
+      wrap.className = "dsh-seg dsh-seg-tool";
+      const chips = document.createElement("div");
+      chips.className = "dsh-tools";
+      chips.appendChild(dshToolDetailsEl(t, true, nodeId));
+      wrap.appendChild(chips);
+      row.appendChild(wrap);
+    }
+  }
+}
+/* 流式事件就地更新的公共判定：目标段还是不是尾段、DOM 元素对不对得上段序，
+   对不上（刚从别的段类型切换过来）→ 整表重绘一次，之后继续在原地追加 */
+function agentLiveSegTail(items, el, kind) {
+  if (!items || !items.length || !el) return null;
+  const last = items[items.length - 1];
+  if (!last || last.k !== kind) return null;
+  if (Number(el.dataset.segIdx) !== items.length - 1) return null;
+  return last;
+}
+/* reasoning 事件的分段更新：只刷尾部正在增长的思考段的摘要字数与展开中的正文。
+   非分段模式（如节点绑定运行）自动退回旧的 updateAgentThinkEl 整段写入。 */
+let _liveSegThinkRAF = 0;
+function updateAgentLiveThink(st) {
+  if (typeof requestAnimationFrame !== "function") return;
+  if (_liveSegThinkRAF) return;
+  _liveSegThinkRAF = requestAnimationFrame(() => {
+    _liveSegThinkRAF = 0;
+    const items = agentChatSegItems(st);
+    if (!items) {
+      updateAgentThinkEl(st, null);
+      return;
+    }
+    const seg = agentLiveSegTail(items, document.getElementById("agent-think"), "think");
+    if (!seg) {
+      try {
+        renderAgentSession();
+      } catch (_) {}
+      return;
+    }
+    const det = document.getElementById("agent-think");
+    const txt = String(seg.text || "");
+    const sum = det && det.querySelector("summary");
+    if (sum)
+      sum.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+    if (det && det.open) {
+      const pre = document.getElementById("agent-think-body");
+      if (pre) {
+        pre.textContent = txt;
+        applyAgentThinkScroll(st, pre, false);
+      }
+    }
+  });
+}
+
 function dshMsgBlock(m, nodeId, idx) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
   if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
+  /* 有分段轨迹（且正文拼接与 content 一致）就按段渲染，否则走旧渲染 */
+  const segsView = dshMsgSegsViewable(m);
   const head = document.createElement("div");
   head.className = "dsh-msg-head";
   const role = document.createElement("span");
   role.className = "dsh-role";
   role.textContent = m.role === "user" ? I18n.t("你") : "AI";
   head.appendChild(role);
-  if (m.role === "assistant" && m.reasoning && String(m.reasoning).trim()) {
+  if (
+    m.role === "assistant" &&
+    !segsView &&
+    m.reasoning &&
+    String(m.reasoning).trim()
+  ) {
     const det = document.createElement("details");
     det.className = "dsh-think";
     const rKey = "think:" + (nodeId || "") + ":" + String(m.content || "").slice(0, 40);
@@ -2039,17 +2506,39 @@ function dshMsgBlock(m, nodeId, idx) {
   });
   head.appendChild(copyBtn);
   row.appendChild(head);
-  if (m.role === "assistant" && Array.isArray(m.tools) && m.tools.length) {
-    const chips = document.createElement("div");
-    chips.className = "dsh-tools";
-    for (const t of m.tools) chips.appendChild(dshToolDetailsEl(t, false, nodeId));
-    row.appendChild(chips);
+  if (segsView) {
+    /* 时间线：思考 / 正文 / 工具按段序就近插入（工具段从 m.tools 里取对应条目） */
+    const body = document.createElement("div");
+    body.className = "dsh-msg-body dsh-msg-segs";
+    const pool = Array.isArray(m.tools) ? m.tools.slice() : [];
+    m.segments.forEach((seg, n) => {
+      const el = dshHistSegEl(seg, pool, nodeId, idx, n);
+      if (el) body.appendChild(el);
+    });
+    if (pool.length) {
+      const chips = document.createElement("div");
+      chips.className = "dsh-tools";
+      for (const t of pool)
+        chips.appendChild(dshToolDetailsEl(t, false, nodeId));
+      body.appendChild(chips);
+    }
+    row.appendChild(body);
+  } else {
+    if (m.role === "assistant" && Array.isArray(m.tools) && m.tools.length) {
+      const chips = document.createElement("div");
+      chips.className = "dsh-tools";
+      for (const t of m.tools)
+        chips.appendChild(dshToolDetailsEl(t, false, nodeId));
+      row.appendChild(chips);
+    }
+    const body = document.createElement("div");
+    body.className = "dsh-msg-body";
+    if (m.role === "user") body.innerHTML = plainTextToLinkHtml(m.content);
+    else
+      body.innerHTML =
+        '<div class="md">' + renderMarkdown(m.content) + "</div>";
+    row.appendChild(body);
   }
-  const body = document.createElement("div");
-  body.className = "dsh-msg-body";
-  if (m.role === "user") body.innerHTML = plainTextToLinkHtml(m.content);
-  else body.innerHTML = '<div class="md">' + renderMarkdown(m.content) + "</div>";
-  row.appendChild(body);
   /* 消息末尾：时间（精确到秒） */
   const endTxt = formatMsgTimeSec(m.at || m.createdAt || m.ts);
   if (endTxt) {
@@ -2084,9 +2573,20 @@ function renderAgentSession(opts) {
   const st = agentSessionState();
   const list = $("#agentList");
   if (!list) return;
-  const stickCap = captureConvStick(list, opts && opts.forceStick);
+  /* 切换会话 = 新的阅读上下文：清掉上一个会话遗留的「用户已上翻」状态，
+     直接定位到新会话底部；同一会话内则完全尊重用户自己的滚动位置 */
+  const switched = S._agentRenderedSessionId && S._agentRenderedSessionId !== st.id;
+  if (switched) markConvStick(list, true);
+  const stickCap = captureConvStick(
+    list,
+    (opts && opts.forceStick) || switched,
+  );
   const live = liveNodeForSession(st);
   const running = !!(st.running || live);
+  /* 整表重绘会销毁旧的 details/pre（工具事件也会走到这里）：清空前先把
+     思考区的阅读位置与跟随状态存到 S（按会话 id 隔离），重建后再还原 */
+  if (!switched)
+    rememberAgentThinkScroll(st, document.getElementById("agent-think-body"));
   list.innerHTML = "";
   if (list) list.style.display = "";
   if (!st.messages.length && !running) {
@@ -2112,7 +2612,7 @@ function renderAgentSession(opts) {
       st._visRounds = slice.vis + AGENT_LOAD_MORE_ROUNDS;
       renderAgentSession();
       const l2 = $("#agentList");
-      if (l2 && prevH > 0) l2.scrollTop = prevScroll + (l2.scrollHeight - prevH);
+      if (l2 && prevH > 0) setConvScrollTop(l2, prevScroll + (l2.scrollHeight - prevH));
     });
     loadRow.appendChild(btn);
     list.appendChild(loadRow);
@@ -2129,50 +2629,83 @@ function renderAgentSession(opts) {
     role.textContent = I18n.t("AI · 运行中");
     head.appendChild(role);
     row.appendChild(head);
-    const think = document.createElement("details");
-    think.className = "dsh-think-live";
-    think.id = "agent-think";
-    think.open = !!S._agentThinkOpen;
-    const thinkSum = document.createElement("summary");
-    thinkSum.textContent = I18n.t("思考过程 · ") + "0" + I18n.t(" 字") + I18n.t(" · 点击查看");
-    thinkSum.title = I18n.t("点击展开 / 收起模型思考过程");
-    const thinkPre = document.createElement("pre");
-    thinkPre.id = "agent-think-body";
-    think.appendChild(thinkSum);
-    think.appendChild(thinkPre);
-    think.addEventListener("toggle", () => {
-      S._agentThinkOpen = !!think.open;
-      if (think.open) {
-        const txt = agentThinkText(st, live);
-        thinkPre.textContent = txt;
-        thinkPre.scrollTop = thinkPre.scrollHeight;
-      }
-    });
-    row.appendChild(think);
-    updateAgentThinkEl(st, live);
-    const tools = document.createElement("div");
-    tools.className = "dsh-tools";
-    tools.id = "agent-tools";
-    const liveTools = live
-      ? (S.nodeTools && S.nodeTools[live.id]) || []
-      : Array.isArray(st._liveTools)
-        ? st._liveTools
-        : [];
-    for (const t of liveTools)
-      tools.appendChild(dshToolDetailsEl(t, true, live ? live.id : st.id));
-    row.appendChild(tools);
-    const body = document.createElement("div");
-    body.className = "dsh-msg-body dsh-stream";
-    body.id = "agent-stream";
-    body.textContent = live
-      ? live._pendingAnswer || ""
-      : st._pending || "";
-    row.appendChild(body);
+    const segItems = agentChatSegItems(st);
+    if (segItems) {
+      /* 分段轨迹：思考 / 正文 / 工具 / 错误按发生顺序逐段插进时间线 */
+      row.dataset.seg = "1";
+      agentLiveSegsEl(row, st, live, segItems);
+    } else {
+      const think = document.createElement("details");
+      think.className = "dsh-think-live";
+      think.id = "agent-think";
+      const thinkSum = document.createElement("summary");
+      thinkSum.textContent =
+        I18n.t("思考过程 · ") +
+        "0" +
+        I18n.t(" 字") +
+        I18n.t(" · 点击查看");
+      thinkSum.title = I18n.t("点击展开 / 收起模型思考过程");
+      const thinkPre = document.createElement("pre");
+      thinkPre.id = "agent-think-body";
+      bindAgentThinkScroll(st, thinkPre);
+      think.appendChild(thinkSum);
+      think.appendChild(thinkPre);
+      /* 先挂监听：程序设 open 同样会派发 toggle（异步排队），
+         用一次性标记 _progToggle 把它和用户真实点击区分开 */
+      think.addEventListener("toggle", () => {
+        S._agentThinkOpen = !!think.open;
+        if (!think.open) return;
+        thinkPre.textContent = agentThinkText(st, live);
+        /* 重建（工具事件触发整表重绘）只还原上次阅读位置，不跳底；
+           只有用户真实点击展开且本就贴底时才定位到底 */
+        applyAgentThinkScroll(
+          st,
+          thinkPre,
+          !think._progToggle && agentThinkStickOf(st),
+        );
+      });
+      think._progToggle = true;
+      think.open = !!S._agentThinkOpen;
+      if (typeof requestAnimationFrame === "function")
+        requestAnimationFrame(() => {
+          think._progToggle = false;
+        });
+      else think._progToggle = false;
+      row.appendChild(think);
+      updateAgentThinkEl(st, live);
+      const tools = document.createElement("div");
+      tools.className = "dsh-tools";
+      tools.id = "agent-tools";
+      const liveTools = live
+        ? (S.nodeTools && S.nodeTools[live.id]) || []
+        : Array.isArray(st._liveTools)
+          ? st._liveTools
+          : [];
+      for (const t of liveTools)
+        tools.appendChild(dshToolDetailsEl(t, true, live ? live.id : st.id));
+      row.appendChild(tools);
+      const body = document.createElement("div");
+      body.className = "dsh-msg-body dsh-stream";
+      body.id = "agent-stream";
+      body.textContent = live
+        ? traceSayDisplay(live.id, live._pendingAnswer)
+        : st._pending || "";
+      row.appendChild(body);
+    }
     list.appendChild(row);
   }
-  scheduleHistoryCollapse(list);
+  /* 会话末尾：Token 消耗累计报告 Badge（点击展开，按模型分别累计） */
+  if (typeof tokBadgeEl === "function") {
+    try {
+      const badge = tokBadgeEl(st);
+      if (badge) list.appendChild(badge);
+    } catch {}
+  }
+  const reapplyStick = () => restoreConvStick(list, stickCap);
+  scheduleHistoryCollapse(list, reapplyStick);
   restoreConvStick(list, stickCap);
-  if (stickCap.stick && typeof requestAnimationFrame === "function") {
+  /* 折叠 / 展开、图片懒加载等会事后改变高度：补一帧再按锚点还原一次 */
+  if (typeof requestAnimationFrame === "function") {
     requestAnimationFrame(() => restoreConvStick(list, stickCap));
   }
   const ws = $("#agentWsInput");
@@ -2291,6 +2824,10 @@ function renderAgentSession(opts) {
   paintAgentSendState();
   renderAgentQueueBar(st);
   renderAgentTodoPanel(st);
+  /* 「计划」面板：只吃当前这个 st（切会话时重绘，不残留上一会话的清单） */
+  try {
+    if (typeof renderAgentPlanPanel === "function") renderAgentPlanPanel(st);
+  } catch (_) {}
   renderAgentComposer();
   renderAgentSessionSidebar();
   renderSessionFooterStat();
@@ -2403,13 +2940,45 @@ function renderAgentSessionSidebar() {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
   }
+  /* 排序：越新的越靠上。时间与行尾显示同源（sessionLastAt：updatedAt / 消息 / outbox 取最大），
+     否则会出现「5 分钟前」排在「3 天前」下面。
+     只排本次渲染用的临时数组，不动 S.agentSessions 本体顺序（持久化与截断 60 条依赖本体）。 */
+  const lastAtOf = (s) => sessionLastAt(s) || Number(s && s.createdAt) || 0;
+  const byNewest = (a, b) =>
+    lastAtOf(b) - lastAtOf(a) ||
+    String((a && a.title) || "").localeCompare(String((b && b.title) || ""));
+  for (const items of groups.values()) items.sort(byNewest);
+  archived.sort(byNewest);
+  /* 分组之间也按组内最新会话倒序：整列从上往下读就是时间从新到旧 */
+  const groupOrder = [...groups.entries()]
+    .map(([key, items]) => ({
+      key,
+      items,
+      newest: items.reduce((m, s) => Math.max(m, lastAtOf(s)), 0),
+    }))
+    .sort((a, b) => b.newest - a.newest || a.key.localeCompare(b.key));
 
   const mkRow = (s, isArchived) => {
+    /* 「运行中」走展示口径：自己那一轮在跑 ∪ 名下有一组计划并行任务在跑。
+       并行期间 st.running 故意为 false（保用户随时改口），只看 sessionIsRunning
+       会让这一整段时间在会话列表里显示「空闲」（本 bug）。 */
+    const busy =
+      typeof sessionBusyForUi === "function"
+        ? sessionBusyForUi(s)
+        : typeof sessionIsRunning === "function"
+          ? sessionIsRunning(s)
+          : !!s.running;
+    /* 只有并行组在跑（会话自己那轮已让位）时，悬浮说明它为什么也在转圈 */
+    const parOnly =
+      busy &&
+      !(typeof sessionIsRunning === "function"
+        ? sessionIsRunning(s)
+        : !!(s && s.running));
     const row = document.createElement("div");
     row.className =
       "side-sess" +
       (s.id === active ? " active" : "") +
-      (sessionIsRunning(s) ? " running" : "");
+      (busy ? " running" : "");
     const nm = document.createElement("span");
     nm.className = "side-sess-name";
     nm.textContent = s.title || I18n.t("新会话");
@@ -2421,6 +2990,8 @@ function renderAgentSessionSidebar() {
     sp.className = "side-sess-spinner";
     stt.appendChild(sp);
     stt.appendChild(document.createTextNode(I18n.t("运行中")));
+    /* 并行组在跑而会话自己那轮已让位：说清楚条目为什么也在转圈（不影响改口） */
+    if (parOnly) stt.title = I18n.t("计划并行任务运行中（不打断你继续发消息）");
     const btns = document.createElement("div");
     btns.className = "side-sess-btns";
     const rn = document.createElement("button");
@@ -2493,7 +3064,7 @@ function renderAgentSessionSidebar() {
       tree.appendChild(e);
       continue;
     }
-    for (const [key, items] of groups) {
+    for (const { key, items } of groupOrder) {
       const gh = document.createElement("div");
       gh.className = "side-group";
       gh.textContent = "📁 " + key + " · " + items.length;
@@ -2564,7 +3135,10 @@ async function agentCompact() {
   }
 }
 async function agentCompactRun(st) {
-  const hist = st.messages
+  /* 已回滚轮次的消息不参与压缩：它们已不在上下文里，摘要也不该复述它们 */
+  const rbSrc =
+    typeof rbActiveMessages === "function" ? rbActiveMessages(st.messages) : st.messages;
+  const hist = rbSrc
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
   toast(I18n.t("正在压缩上文…"), "ok");
@@ -2627,6 +3201,8 @@ async function agentExecutePlan() {
     I18n.t(
       "计划已确认：请严格按上一条计划开始实施，不要重复规划；逐步执行并在结束时报告改动与验证结果。",
     ),
+    /* 显式带上 owner 会话 id：点「执行计划」后即使立刻切换会话，实施轮仍回到本会话 */
+    { planFlow: false, sessionId: st.id },
   );
 }
 
@@ -2642,19 +3218,31 @@ const PLAN_MODE_USER_DIRECTIVE =
 
 /* ============ 会话发送队列（运行中收到的新消息按序排队） ============ */
 
-/* 入队：保留原文，不打断当前轮 */
-async function agentEnqueueMessage(st, text) {
+/* 入队：保留原文，不打断当前轮；计划执行消息的元数据一并随条目保存，
+   drain 时据此原样恢复 opts 发送：已终止 / 清除 / 另起一轮的残留绝不会被当作普通消息发出。 */
+async function agentEnqueueMessage(st, text, opts) {
   if (!st) return;
   if (!Array.isArray(st.outbox)) st.outbox = [];
   const body = String(text || "").trim();
   if (!body) return;
-  st.outbox.push({ id: uid("ob"), text: body, at: Date.now() });
+  const o = opts || {};
+  st.outbox.push({
+    id: uid("ob"),
+    text: body,
+    at: Date.now(),
+    /* 计划执行残留标记：runId + 归属会话随条目保存，排水时校验不通过则整条丢弃 */
+    _planExec: !!o._planExec || undefined,
+    planRunId: o.planRunId != null ? String(o.planRunId) : undefined,
+    sessionId: o.sessionId != null ? String(o.sessionId) : String(st.id || ""),
+  });
   st.updatedAt = Date.now();
   await persistAgentSession();
   if (S.agentActiveId === st.id) {
     renderAgentQueueBar(st);
     $("#agentInput") && $("#agentInput").focus();
   } else renderAgentSessionSidebar();
+  /* 入队 = 这条会话的运行态可能刚被延后（跑完还要接下一轮）：队列同步一次 */
+  updateRunQueuePanel();
   toast(I18n.t("已加入发送队列，当前任务继续执行"), "ok");
 }
 
@@ -2682,11 +3270,47 @@ async function agentDrainQueue(st) {
     st._draining = true;
     try {
       while (st.outbox.length && !sessionIsRunning(st)) {
+        /* 队列属于它自己那条会话：会话没了（被删 / 归档后清空）就整条作废，不再外漏 */
+        if (!agentSessionById(st.id)) {
+          st.outbox = [];
+          break;
+        }
         const item = st.outbox.shift();
         await persistAgentSession();
         if (S.agentActiveId === st.id) renderAgentQueueBar(st);
+        /* 出队发送：队列少一条、这条会话即将接下一轮运行 → 左下角同步一次 */
+        updateRunQueuePanel();
         if (!item || !item.text) continue;
-        await agentSessionSend(item.text);
+        /* 计划执行残留的排队条目：发出前必须仍然有效 —— 游标还在、runId 对上、
+           归属仍是这条会话（planOwnedHere / planCursorOwned）。
+           已终止 / 清除 / 另起一轮的旧任务一律丢弃，绝不当作普通消息自动发出。 */
+        if (item._planExec) {
+          let keep = false;
+          try {
+            keep =
+              !!(st && st._planExec && st.plan) &&
+              String((st._planExec && st._planExec.runId) || "") ===
+                String(item.planRunId || "") &&
+              typeof planOwnedHere === "function" &&
+              planOwnedHere(st) &&
+              typeof planCursorOwned === "function" &&
+              planCursorOwned(st);
+          } catch (_) {}
+          if (!keep) continue; /* 丢弃：这项计划已经不存在 / 不归本会话 */
+        }
+        /* sessionId 固定为这条队列所属的会话：排水期间用户切了会话，
+           排队消息（含计划续跑的那一轮）也不会漏进别的会话。
+           计划执行消息原样恢复入队时的 opts（_planExec / planRunId / sessionId）。 */
+        await agentSessionSend(
+          item.text,
+          item._planExec
+            ? {
+                _planExec: true,
+                planRunId: item.planRunId,
+                sessionId: item.sessionId || st.id,
+              }
+            : { sessionId: st.id },
+        );
       }
     } finally {
       st._draining = false;
@@ -2914,14 +3538,44 @@ function renderAgentTodoPanel(st) {
   el.appendChild(ul);
 }
 
-async function agentSessionSend(text) {
-  const st = agentSessionState();
+async function agentSessionSend(text, opts) {
+  opts = opts || {};
+  /* 计划执行器的单轮任务消息：不注入「任务流程」指令、不入「最近一次要求」 */
+  const planExecMsg = !!opts._planExec;
+  /* 归属会话：opts.sessionId 有值时严格按 id 取 owner。
+     取不到 → 直接结束本轮并提示，**绝不回退到当前活动会话**
+     （用户切会话后计划续跑挤进别的会话，就是「计划串台」的直接原因）。
+     这样一来 runKey:"agent:"+st.id、发送队列、工作区、服务商 / 模型全部落在 owner 上。 */
+  let st;
+  if (String(opts.sessionId || "").trim()) {
+    st = agentSessionById(opts.sessionId);
+    if (!st) {
+      try {
+        toast(I18n.t("所属会话已不存在，计划已停止"), "warn");
+      } catch (_) {}
+      return null;
+    }
+  } else {
+    st = agentSessionState();
+  }
+  /* 开发 / 细化绑定会话：任务书整份在会话契约 _devContract（发送时注入系统提示），
+     首条 _src:"dev-node" 消息只有用户关键输入（本次开发需求 / 细化范围）；
+     这里只读它作为最新用户消息，不再追加第二条 */
+  const devContractMsg = !!opts._devContract;
   let t = String(text || "").trim();
-  if (!t) return;
+  if (devContractMsg) {
+    const first = (st.messages || []).find(
+      (m) => m && m.role === "user" && m._src === "dev-node" && String(m.content || "").trim(),
+    );
+    if (!first) return;
+    t = String(first.content || "").trim();
+  } else if (!t) {
+    return;
+  }
   /* 会话正忙：新消息进「发送队列」，不打断当前任务（旧行为是直接丢弃 / 取消本轮）。
      队列在当前这一轮结束后按序自动发送；用户可随时删除单条或清空。 */
   if (sessionIsRunning(st)) {
-    await agentEnqueueMessage(st, t);
+    await agentEnqueueMessage(st, t, opts);
     return;
   }
   /* 中文输入法行首顿号视为斜杠命令前缀 */
@@ -3008,9 +3662,36 @@ async function agentSessionSend(text) {
     toast(sup.reason, "warn");
     return;
   }
-  st.messages.push({ role: "user", content: t, at: Date.now() });
-  if (st.messages.filter((m) => m.role === "user").length === 1) {
-    st.title = t.slice(0, 24) + (t.length > 24 ? "…" : "");
+  /* 用户亲口发的一轮 = 新任务：先把上一份计划的执行游标摘掉（计划数据仍留在面板上，
+     要接着跑必须由用户点「▶ 继续执行」）。并行任务在跑时 st.running 为 false，
+     所以这里也兜住它：并行结果回来后发现游标没了，只了结状态、不再续跑。 */
+  if (!opts._planExec) {
+    try {
+      delete st._planExec;
+    } catch (_) {}
+    /* 排队中还没弹出来的计划确认框：用户已经改口了 → 直接作废，不再弹给他 */
+    try {
+      if (typeof planStalePendingOffers === "function")
+        planStalePendingOffers(st, "userRound");
+    } catch (_) {}
+  }
+  /* 合并模式不追加消息：任务书消息（_src:"dev-node"）已在会话里，直接发它；
+     标题也保持 createDevSessionForNode 设定的「开发 · 模块名」不被任务书覆盖 */
+  let rbAnchor = null;
+  if (!devContractMsg) {
+    const um = { role: "user", content: t, at: Date.now() };
+    if (planExecMsg) um._src = "plan-exec";
+    st.messages.push(um);
+    rbAnchor = um;
+    if (st.messages.filter((m) => m.role === "user").length === 1) {
+      st.title = t.slice(0, 24) + (t.length > 24 ? "…" : "");
+    }
+  } else {
+    /* 开发 / 细化绑定会话：开轮锚点就是那条任务书消息 */
+    rbAnchor =
+      (st.messages || []).find(
+        (m) => m && m.role === "user" && m._src === "dev-node",
+      ) || null;
   }
   st.updatedAt = Date.now();
   if (st.messages.length > 100) st.messages.splice(0, st.messages.length - 100);
@@ -3034,18 +3715,38 @@ async function agentSessionSend(text) {
   await persistAgentSession();
   if (S.agentActiveId === st.id) renderAgentSession({ forceStick: true });
   else renderAgentSessionSidebar();
-  const hist = st.messages
+  /* 已回滚轮次的消息不进上下文（rbActiveMessages 无标记时直接复用原数组，不复制） */
+  const rbHistSrc =
+    typeof rbActiveMessages === "function" ? rbActiveMessages(st.messages) : st.messages;
+  const hist = rbHistSrc
     .slice(0, -1)
     .slice(-20)
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
-  const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
+  /* 「任务流程」指令：会话里已有未跑完的计划时注入的是「沿用 / 续跑」那段，
+     而不是逼模型再规划一份新的（新旧计划互相覆盖 · 已执行项被重跑） */
+  let flowText = "";
+  try {
+    if (typeof planFlowInjectText === "function")
+      flowText = String(planFlowInjectText(st, opts, planExecMsg) || "");
+    else if (
+      typeof planFlowInjectNeeded === "function" &&
+      planFlowInjectNeeded(st, opts, planExecMsg) &&
+      typeof planFlowDirective === "function"
+    )
+      flowText = planFlowDirective();
+  } catch (_) {}
+  const latest = skillWrap
+    ? skillTaskPrompt(skillWrap)
+    : flowText
+      ? flowText + "\n" + t
+      : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   /* 规划模式：本轮只出计划，不做任何改动（系统提示 + 用户指令双重约束，
      画布 / 应用改动另由宿主在 handleCanvasEvent 中硬性拒绝） */
   const planMode = !!st.planNext;
   if (planMode) input = PLAN_MODE_USER_DIRECTIVE + input;
-  const systemPrompt =
+  let systemPrompt =
     "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
     "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
     (!!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove)
@@ -3053,18 +3754,30 @@ async function agentSessionSend(text) {
       : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
     "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
     "【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动逐层连通（源→其超级节点输出端子→顶层→目标超级节点输入端子→目标），无需手动建桥接线。\n" +
-    "改画布前先 mtnode_canvas_get；回答简洁，中文优先。";
+    "改画布前先 mtnode_canvas_get；回答简洁（交流语言见文末「语言口味」）。";
+  /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
+     会话里只显示用户填写的关键输入；后续追问也持续携带该契约） */
+  const devContract = String(st._devContract || "").trim();
+  if (devContract) {
+    systemPrompt +=
+      "\n\n【开发任务书 · 本会话模块契约（非用户消息，无需回复该段）】\n" +
+      devContract +
+      "\n【任务书结束】";
+  }
   try {
     const final = await dshRunTask(input, {
       runKey: "agent:" + st.id,
+      /* 本轮开轮消息 + 摘要：回滚账本把稳定 rid 盖在这条消息上，并按会话建目录 */
+      rollbackAnchor: rbAnchor,
+      rollbackLabel: t.slice(0, 160),
       planMode,
       workspace:
         st.workspace ||
         S.dshWorkspaceFallback ||
         "",
       preset: st.preset || "standard",
-      provider: st.provider || "deepseek-official",
-      model: st.model || undefined,
+      provider: (opts.provider || st.provider || "deepseek-official"),
+      model: (opts.model || st.model || undefined),
       effort: st.effort || "high",
       systemPrompt,
       onEvent: (type, data) => {
@@ -3073,9 +3786,10 @@ async function agentSessionSend(text) {
         const mine = S.agentActiveId === st.id;
         if (type === "reasoning" && data.text) {
           pushThinking("agent:" + st.id, 0, data.text);
-          if (mine) updateAgentThinkEl(st, null);
+          /* 分段模式刷尾部思考段；非分段（节点绑定运行等）退回旧整段更新 */
+          if (mine) updateAgentLiveThink(st);
         } else if (type === "tool" && data.name) {
-          pushThinking("agent:" + st.id, 0, "🔧 " + data.name + "\n");
+          /* 工具调用只进 st._liveTools（与运行轨迹的 tool 段），不污染思考文本 */
           /* agent 自己建的任务清单：实时同步到会话底部的 Todo 面板 */
           if (/todo/i.test(String(data.name || "")))
             agentApplyTodoWrite(st, data.args);
@@ -3117,18 +3831,32 @@ async function agentSessionSend(text) {
           st._pending = (st._pending || "") + data.text;
           if (mine) {
             const el = document.getElementById("agent-stream");
-            if (el) el.textContent = st._pending;
+            const items = agentChatSegItems(st);
+            const seg = items
+              ? agentLiveSegTail(items, el, "say")
+              : null;
+            if (seg) el.textContent = String(seg.text || "");
+            else if (items || !el) {
+              /* 分段模式（含尾段切换 / 首次成段）→ 整表重绘一次对齐 DOM；
+                 items 刚消失（run 收尾竞态）且无流式元素时也要重绘回旧块 */
+              try {
+                renderAgentSession();
+              } catch (_) {}
+            } else el.textContent = st._pending;
             scrollElToBottomIfStuck($("#agentList"));
           }
         } else if (type === "error" && data && data.message) {
           if (st._cancelled || isCancelishError(data.message)) return;
           const errLine = "\n⚠ " + data.message;
           st._pending = (st._pending || "") + errLine;
-          pushThinking("agent:" + st.id, 0, errLine + "\n");
           if (mine) {
-            updateAgentThinkEl(st, null);
             const el = document.getElementById("agent-stream");
-            if (el) el.textContent = st._pending;
+            if (agentChatSegItems(st)) {
+              /* 错误已成 err 段：重绘让 ⚠ 段落在时间线正确位置 */
+              try {
+                renderAgentSession();
+              } catch (_) {}
+            } else if (el) el.textContent = st._pending;
             scrollElToBottomIfStuck($("#agentList"));
           }
         }
@@ -3148,19 +3876,48 @@ async function agentSessionSend(text) {
         at: Date.now(),
       });
     } else {
+      /* 收尾消息：正文 = say 段按 \n\n 连接（err 段以「⚠ 」附尾，与流式口径一致），
+         无段可拼时回退 final / 累加文本 /（无输出），保证不丢字；
+         reasoning = 纯 think 段连接（不含 🔧 / ⚠）；segments 限长随消息落盘 */
+      const rk = "agent:" + st.id;
+      const traceBody =
+        typeof traceSayDisplay === "function"
+          ? String(traceSayDisplay(rk, "") || "")
+          : "";
       const msg = {
         role: "assistant",
-        content: final || st._pending || I18n.t("（无输出）"),
+        content: traceBody || final || st._pending || I18n.t("（无输出）"),
         at: Date.now(),
       };
+      const rsnLegacy =
+        (S.thinking && S.thinking[rk] && S.thinking[rk][0]) || "";
       const rsn =
-        (S.thinking &&
-          S.thinking["agent:" + st.id] &&
-          S.thinking["agent:" + st.id][0]) || "";
+        typeof traceThinkDisplay === "function"
+          ? traceThinkDisplay(rk, rsnLegacy)
+          : rsnLegacy;
       if (String(rsn).trim()) msg.reasoning = rsn;
       if (Array.isArray(st._liveTools) && st._liveTools.length)
         msg.tools = st._liveTools.slice();
+      try {
+        const segs = agentSegsForDisk(
+          typeof traceSegmentsOf === "function"
+            ? traceSegmentsOf(rk)
+            : null,
+        );
+        if (segs && segs.length) msg.segments = segs;
+      } catch (_) {}
       st.messages.push(msg);
+      /* 复杂任务计划：agent 本轮输出计划标记 → 弹窗确认（音效 + 可编辑清单） */
+      try {
+        if (
+          !planExecMsg &&
+          !st._planExec &&
+          typeof planMaybeOffer === "function"
+        ) {
+          const pm = planParseFromText(msg.content);
+          if (pm) planMaybeOffer(st, pm);
+        }
+      } catch (_) {}
       /* 规划模式跑完：标记「计划待执行」，输入区浮现「▶ 执行计划」 */
       if (planMode) {
         st._planDelivered = true;
@@ -3195,6 +3952,24 @@ async function agentSessionSend(text) {
     updateRunQueuePanel();
     const outcome = st._roundOutcome || "ok";
     const hasQueued = Array.isArray(st.outbox) && st.outbox.length > 0;
+    /* 计划执行被打断：终止 = 用户明确不要这份计划 → 就地永久清除
+       （不留 pending 项、不留「▶ 继续执行」，重启后也不会再冒出来） */
+    if (outcome === "cancelled") {
+      if (st._planExec || st.plan) {
+        try {
+          if (typeof planDrop === "function") planDrop(st, "cancelled");
+          else {
+            delete st._planExec;
+            st.plan = null;
+          }
+        } catch (_) {}
+        if (S.agentActiveId === st.id) {
+          try {
+            toast(I18n.t("已终止：本会话的计划清单已清除"), "warn");
+          } catch (_) {}
+        }
+      }
+    }
     /* 被「全部终止」打断 → 排队消息留在队列里等用户，不再自动接管发送 */
     const holdQueue = outcome === "cancelled";
     /* 会话收尾：清单里没跑完的条目按本轮结局定性（红叉 / 问号）。
@@ -3212,6 +3987,26 @@ async function agentSessionSend(text) {
     syncAgentTaskFromSession(st.id);
     endSaveNodeHold();
     /* 本轮真正结束 → 自动发送排队中的下一条消息 */
+    /* 计划续跑只对「计划执行器自己那一轮」生效：用户手动发的一轮跑完绝不自动接着跑计划
+       （否则就会出现「开头突然执行不想干的旧计划」）。手动那一轮之后计划停在面板上，
+       要接着跑只能由用户点「▶ 继续执行」。 */
+    try {
+      if (
+        planExecMsg &&
+        !hasQueued &&
+        !holdQueue &&
+        !st._cancelled &&
+        st._planExec &&
+        st.plan &&
+        /* 本轮所属的那一次执行仍然活着才续跑：用户中途「继续执行」另起一轮、
+           或这份计划已被终止 / 清除，旧轮次的收尾一律闭嘴。 */
+        String(st._planExec.runId || "") === String(opts.planRunId || "") &&
+        typeof planCursorOwned === "function" &&
+        planCursorOwned(st) &&
+        typeof planExecContinue === "function"
+      )
+        planExecContinue(st);
+    } catch (_) {}
     if (!holdQueue) agentDrainQueue(st);
   }
 }

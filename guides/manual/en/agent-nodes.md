@@ -24,6 +24,12 @@ An agent node **cannot** read or edit the canvas, change workflows, or create ta
 
 Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type `/` for skills and `/new` `/compact` `/plan` `/help`). Besides files / network / commands, it can inspect and edit the current canvas.
 
+## While it runs: thinking and output are separate
+
+A run renders in **chronological segments**: **“◉ Thinking · N chars”** is the model's collapsed private reasoning (N counts reasoning only), normal-sized paragraphs are what the model **says** (text produced mid-run counts as text too), **🔧 tool** calls sit inline where they happened, and errors append to the body as ⚠. Every tool call or new reasoning step starts a fresh segment.
+
+Agent task nodes, agent sessions, chat nodes and the global assistant all render the same way; the node's Thinking overlay shows reasoning on top and output (the tool trace) below. The output port still hands downstream the full text, and sessions archived earlier render as before. See [What agent mode is](#dsh).
+
 ## Let the assistant build a workflow
 
 In **Agent session** or the global assistant, say “build a workflow for xxx”. The model **creates nodes, titles, wires, @refs** and lays them out. Then you edit prompts/paths and ▶. Canvas agent nodes will not change the graph.

@@ -28,13 +28,6 @@ async function reloadConfigProvidersFromDisk() {
   } catch {}
 }
 
-/* 测试版本（Beta）UI：把仍在调试的功能按开关显隐。
-   当前：顶栏「提问式」入口（仅 Beta 开启时显示）。 */
-function applyBetaUI() {
-  const zen = $("#btnZen");
-  if (zen) zen.style.display = S.config.beta ? "" : "none";
-}
-
 function openSettings() {
   reloadConfigProvidersFromDisk().then(() => {
     openSettingsBody();
@@ -104,35 +97,6 @@ function openSettingsBody() {
   themeRow.appendChild(themeSel);
   body.appendChild(themeRow);
   const themeSelEl = themeSel;
-
-  /* ── 测试版本（Beta）── */
-  const betaSec = document.createElement("div");
-  betaSec.className = "settings-sec";
-  const betaTitle = document.createElement("div");
-  betaTitle.className = "settings-sec-title";
-  betaTitle.textContent = I18n.t("测试版本（Beta）");
-  betaSec.appendChild(betaTitle);
-  const betaRow = document.createElement("label");
-  betaRow.className = "n-field";
-  betaRow.style.flexDirection = "row";
-  betaRow.style.alignItems = "center";
-  const betaCb = document.createElement("input");
-  betaCb.type = "checkbox";
-  betaCb.checked = !!S.config.beta;
-  betaRow.appendChild(betaCb);
-  betaRow.appendChild(
-    document.createTextNode(I18n.t("启用测试版本（显示仍在调试的功能：提问式、数据库节点）")),
-  );
-  betaSec.appendChild(betaRow);
-  const betaHint = document.createElement("div");
-  betaHint.className = "n-field";
-  betaHint.style.fontSize = "12px";
-  betaHint.style.opacity = "0.9";
-  betaHint.textContent = I18n.t(
-    "默认关闭。开启后顶栏显示「提问式」入口，并在添加节点菜单中提供「数据库」节点。",
-  );
-  betaSec.appendChild(betaHint);
-  body.appendChild(betaSec);
 
   /* ── 网络（Network）：所有网络节点共用的固定端口 ── */
   let netPortInp = null;
@@ -529,6 +493,20 @@ function openSettingsBody() {
     presetRow.appendChild(presetSel);
     sec.appendChild(presetRow);
     dshEls.preset = presetSel;
+
+    /* Agent 语言口味：跟随顶栏「中 / EN」的语言选择（无独立开关，纯派生），
+       这里只把「agent 会用哪种语言交流并期望被这样回答」摊开给用户看见 */
+    const langTasteHint = document.createElement("div");
+    langTasteHint.className = "settings-hint";
+    langTasteHint.textContent =
+      I18n.t("交流语言（Agent 口味）：") +
+      (typeof I18n.agentLangLabel === "function"
+        ? I18n.agentLangLabel()
+        : I18n.getLocale && I18n.getLocale()) +
+      I18n.t(
+        " —— 智能会话、智能节点与全局助手都用该语言交流，并期望 agent 用该语言回答；顶栏「中 / EN」切换即生效。",
+      );
+    sec.appendChild(langTasteHint);
 
     /* 权限预设(dsh permission-presets:沙箱模式 + 审批策略,热重载生效) */
     const permRow = document.createElement("label");
@@ -1043,7 +1021,6 @@ function openSettingsBody() {
     theme: themeSelEl ? themeSelEl.value : (S.config.dsh && S.config.dsh.theme) || "industrial",
   });
 
-
   /* ── 模型服务:标题 + 添加服务商按钮同行 ── */
   const provTitleRow = document.createElement("div");
   provTitleRow.className = "settings-sec-title settings-sec-title-row";
@@ -1075,7 +1052,7 @@ function openSettingsBody() {
   save.onclick = async () => {
     const snap = Math.max(4, Math.min(64, Number(snapInp.value) || 24));
     S.config.snap = snap;
-    S.config.beta = !!betaCb.checked;
+
     if (netPortInp) S.config.netPort = Math.max(1, Math.min(65535, Number(netPortInp.value) || NET_DEFAULT_PORT));
     for (const p of S.config.providers) {
       p.name = String(p.name || "").trim();
@@ -1111,7 +1088,7 @@ function openSettingsBody() {
     renderCanvas();
     renderStatus();
     paintApprovalsBtn();
-    applyBetaUI();
+
     toast(I18n.t("设置已保存（") + S.config.providers.length + I18n.t(" 个服务商）"), "ok");
   };
   const storageBtn = document.createElement("button");

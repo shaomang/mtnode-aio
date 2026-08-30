@@ -5,7 +5,8 @@
  * 「下一步该实现什么」的方案；对话框里允许多选、允许用户补充；用户选完可以在
  * 同一个对话框里再点「开发」，等同于用当前勾选的建议 + 补充内容直接开工。
  *
- * 三段式（同一个对话框宿主 #mtDialog 内完成，不跳视图、不打断用户）：
+ * 三段式（同一对话框宿主 #mtDialog 内完成；调研中可「返回」把调研留在后台继续跑，
+ * 完成后自动跳窗重弹方案清单；Esc 在调研中同样只「返回」、不会停止生成）：
  *   1) mtDialogForm 确认框：显示现状（类型 / 状态 / 项目根 / 子元素 / 历史会话 /
  *      上次建议），可选填「本轮关注点」→「确认生成建议」
  *   2) 只读调研中：实时显示 Agent 的工具调用（read/grep/git status…）与耗时，
@@ -17,6 +18,9 @@
  *
  * 结果缓存在节点上（node.devSuggest：items / summary / basis / at / picked /
  * supplement），随工作流保存；再次点「建议」可直接查看上次结果而不必重跑模型。
+ *
+ * 调研本身是一个「后台作业」（见下方 devSuggestJobs）：运行态与对话框分离，
+ * 同一个功能块同一时刻只允许一轮在途调研（入口幂等），不同功能块各跑各的。
  */
 const DEV_SUGGEST_COUNT = 4;
 const DEV_SUGGEST_PRIORITY = { high: "优先", mid: "常规", low: "可延后" };
@@ -77,13 +81,18 @@ function devSuggestStamp(at) {
   return fmtTime(t);
 }
 
-/* ---------- 运行状态判定（自身 / 后代节点 / 绑定会话） ---------- */
-/* 开发节点“运行中”的三种来源，返回：
+/* ---------- 运行状态判定（自身 / 后代节点 / 绑定会话 / 建议·问询调研） ---------- */
+/* 开发节点“运行中”的四种来源，返回：
  *   "self" —— 节点自身正在运行（整块作为超级节点被执行）
  *   "desc" —— 块内任意后代节点（递归，含子开发节点）正在运行
- *   "sess" —— 绑定的开发 / 细化会话正在运行
+ *   "sess" —— 绑定的开发 / 细化会话正在运行（含它名下在跑的计划并行组：
+ *              那一组跑时会话自己的 st.running 故意为 false，判定走 sessionBusyForUi）
+ *   "sug"  —— 本功能块有在途只读调研（「建议」devSuggestJobs / 「问询」devAskJobs）
  *   null   —— 未运行
- * 画布据此给节点加 .dev-running 类：头部显示运行徽标 + 边框呼吸灯。
+ * 画布据此给节点加 .dev-running 类：头部显示运行徽标 + 边框呼吸灯
+ * （sug 态用另一套琥珀色呼吸灯 .dev-running-sug，见 canvas.css）。
+ * 只读调研（建议 / 问询）是轻量的后台作业，放在最后判定，其它更重的
+ * 运行态优先占位；devRunningNodes 据此把它列进左下角运行队列（可单独停止）。
  * wfNodes 可指定后代扫描所在的工作流节点数组（默认当前画布 S.wf.nodes）。 */
 function devNodeRunningState(node, wfNodes) {
   if (!node || node.kind !== "super" || !node.dev || node.db) return null;
@@ -103,19 +112,33 @@ function devNodeRunningState(node, wfNodes) {
     return false;
   };
   if (walk(node, new Set())) return "desc";
-  /* 绑定会话（最近一次 + 历史）任一在跑也算运行中 */
+  /* 绑定会话（最近一次 + 历史）任一在跑也算运行中。
+     走展示口径 sessionBusyForUi：会话名下跑「计划并行组」时 st.running 故意为 false
+     （保用户改口），只看 sessionIsRunning 会让功能块在整组并行期间不亮呼吸灯。 */
   const sessions =
     typeof agentSessions === "function" ? agentSessions() : [];
   for (const id of devSessionIdsOf(node)) {
     const st = sessions.find((s) => s && s.id === id);
-    if (st && sessionIsRunning(st)) return "sess";
+    if (!st) continue;
+    const busy =
+      typeof sessionBusyForUi === "function"
+        ? sessionBusyForUi(st)
+        : typeof sessionIsRunning === "function"
+          ? sessionIsRunning(st)
+          : !!st.running;
+    if (busy) return "sess";
   }
+  /* 在途只读调研：「建议」或「问询」（入口幂等保证同一块同一时刻最多一轮） */
+  if (typeof devSuggestJobBusy === "function" && devSuggestJobBusy(node))
+    return "sug";
+  if (typeof devAskJobBusy === "function" && devAskJobBusy(node)) return "sug";
   return null;
 }
 
-/* 当前画布中「运行中」的开发节点列表（自身 / 后代 / 绑定会话任一运行，不含 db 超级节点）。
- * 供左下角运行队列展示（与处理节点同款行）：队列据此把 desc / sess 态的开发块列进「处理中」，
- * 点击定位、逐条停止（stopNode 的开发分支）与「全部终止」都能复用同一判定。
+/* 当前画布中「运行中」的开发节点列表（自身 / 后代 / 绑定会话 / 建议调研任一运行，
+ * 不含 db 超级节点）。供左下角运行队列展示（与处理节点同款行）：队列据此把
+ * desc / sess / sug 态的开发块列进「处理中」，点击定位、逐条停止（stopNode 的
+ * 开发分支，sug 态只取消调研作业）与「全部终止」都能复用同一判定。
  * wfNodes 可指定工作流节点数组（默认当前画布 S.wf.nodes）；返回的是其中的开发节点（引用）。 */
 function devRunningNodes(wfNodes) {
   const out = [];
@@ -127,10 +150,43 @@ function devRunningNodes(wfNodes) {
   return out;
 }
 
+/* ---------- 两段式概述解析（共享） ----------
+ * note 两段式规范（docs/dev-node-design.md §6）：【功能】非技术说明 + 【实现】工程梗概。
+ * 返回 { design, impl }：按行首 【功能】/【实现】（兼容全角/半角冒号、无冒号）切分；
+ * 旧单段 note（无【功能】前缀）整段归入 design、impl 为空；空 note 两段均为空。
+ * 渲染剪裁（折叠卡 / 概览行只显功能段）与任务书 / 对话框拆分都从这里读，避免各处重复 split。 */
+function devNoteParts(note) {
+  const src = String(note || "").trim();
+  if (!src) return { design: "", impl: "" };
+  const impl = src.match(/(?:^|\n)\s*【实现】\s*[:：]?\s*([\s\S]*)$/);
+  const design = (impl ? src.slice(0, impl.index) : src)
+    .replace(/^\s*【功能】\s*[:：]?\s*/, "")
+    .trim();
+  return { design, impl: impl ? impl[1].trim() : "" };
+}
+/* 面向展示的两段式文本：两段齐全时带标签分行（tooltip 用）；只有单段时原样返回（不加标签） */
+function devNoteDisplayText(note) {
+  const p = devNoteParts(note);
+  if (!p.design && !p.impl) return "";
+  if (!p.impl) return p.design;
+  return (
+    I18n.t("模块功能（面向非技术）：") +
+    (p.design || I18n.t("（暂无）")) +
+    "\n" +
+    I18n.t("实现要点（面向技术）：") +
+    p.impl
+  );
+}
+/* 对话框 note 字段：一项两行（功能段 + 实现段），供「建议 / 开发 / 细化」弹窗复用 */
+function devNoteDialogField(node, label) {
+  const p = devNoteParts(node && node.note);
+  return { label: label || I18n.t("模块概述"), design: p.design, impl: p.impl };
+}
+
 /* ---------- 进度上下文（喂给 AI 的「当前开发进度」） ---------- */
 function devNodeBriefLine(n, mark) {
   const dk = devKindOf(n) || "module";
-  const note = String(n.note || "").trim();
+  const design = devNoteParts(n && n.note).design;
   return (
     (mark || "  - ") +
     (n.title || n.id) +
@@ -139,7 +195,7 @@ function devNodeBriefLine(n, mark) {
     " · " +
     devStatusText(devStatusOf(n)) +
     "）" +
-    (note ? "：" + clipStr(note, 120) : "")
+    (design ? "：" + clipStr(design, 120) : "")
   );
 }
 /* 从顶层到本节点的祖先链（不含自身） */
@@ -218,6 +274,11 @@ function devSessionDigestText(node) {
       else if (!lastUser && msgs[k].role === "user") lastUser = t;
       if (lastAi && lastUser) break;
     }
+    /* 合并后的单条任务书会话（首轮只有 _src:"dev-node" 一条）：从「本次开发需求：」行还原要求 */
+    if (!lastUser && typeof devReqTextOfMessage === "function") {
+      const req = devReqTextOfMessage((s.messages || [])[0]);
+      if (req) lastUser = req;
+    }
     lines.push(
       (i === 0 ? I18n.t("最近一次会话") : I18n.t("更早会话")) +
         "「" +
@@ -233,6 +294,12 @@ function devSessionDigestText(node) {
       I18n.t("（另有 ") + (all.length - list.length) + I18n.t(" 个更早会话未列出）"),
     );
   return lines.join("\n");
+}
+/* 「细化深度」现状一行（统计函数 devDepthSummaryText 住在 app.js；缺省时留空不阻塞调研） */
+function devDepthLineOf(node) {
+  return typeof devDepthSummaryText === "function"
+    ? devDepthSummaryText(node)
+    : "";
 }
 function devSuggestContextText(node, focus) {
   const dk = devKindOf(node) || "module";
@@ -251,10 +318,14 @@ function devSuggestContextText(node, focus) {
       devStatusText(devStatusOf(node)) +
       "）",
   );
+  const noteParts = devNoteParts(node && node.note);
   lines.push(
-    I18n.t("模块概述：") +
-      (String(node.note || "").trim() ||
-        I18n.t("（暂无概述 · 该块职责还没写清楚）")),
+    I18n.t("模块功能（面向非技术）：") +
+      (noteParts.design || I18n.t("（暂无 · 该块在业务上做什么、给谁用还没写清楚）")),
+  );
+  lines.push(
+    I18n.t("实现要点（面向技术）：") +
+      (noteParts.impl || I18n.t("（暂无 · 实现方案梗概待补）")),
   );
   lines.push(
     I18n.t("项目根目录：") + (p || I18n.t("（未设置 · 请以会话工作区为项目根）")),
@@ -276,6 +347,9 @@ function devSuggestContextText(node, focus) {
     if (sibs.length > 14)
       lines.push("  … " + I18n.t("其余 ") + (sibs.length - 14) + I18n.t(" 个"));
   }
+  const depthTxt = devDepthLineOf(node);
+  if (depthTxt)
+    lines.push(I18n.t("细化深度现状（细化＝深度，非本层展开数量）：") + depthTxt);
   lines.push(I18n.t("本块已有下层元素（共 ") + kids.length + I18n.t(" 个）："));
   if (!kids.length) lines.push("  " + I18n.t("（无 · 尚未细化到文件 / 类）"));
   for (const k of kids.slice(0, 30)) lines.push(devNodeBriefLine(k));
@@ -305,6 +379,7 @@ function devSuggestSystemPrompt() {
     "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、git commit/checkout、重启服务、清理目录）；调用 mtnode_canvas_edit / mtnode_app 的修改类动作；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。",
     "允许并鼓励只读调研：read、glob、grep、只读命令（git status / git log / git diff --stat / node --check / ls）、mtnode_canvas_get、web_search。",
     "纪律：结论必须来自你真实读到的代码，引用具体文件路径（能带行号更好）；查不到就直说，禁止臆测或用通用最佳实践凑数。",
+    "共识：若项目根目录存在 AGENTS.md（Agent 共识文件），先读它并严格遵守其中的「目录约定」与「不要修改」清单；任何方案都不得触碰清单内路径。",
     "输出纪律：最后一条消息只输出一个 JSON 对象，前后不要任何文字、解释或 markdown 代码块。",
     'JSON 契约：{"summary":"≤80字：该模块当前真实进度与最大缺口","basis":["证据：文件路径(:行号) + 一句话","…"],"options":[{"title":"≤24字方案名","desc":"≤90字：做什么 + 为什么 + 涉及哪些文件","priority":"high|mid|low"}]}',
     "options 必须恰好 " +
@@ -332,7 +407,7 @@ function devSuggestPrompt(node, focus) {
   lines.push(
     "2. " +
       I18n.t(
-        "对照「模块概述」判断真实完成度：哪些职责已落地、哪些缺失或是半成品（TODO / 空实现 / 未接线的调用 / 缺错误处理 / 无测试）。",
+        "对照该块概述的【实现】段判断真实完成度：哪些职责已落地、哪些缺失或是半成品（TODO / 空实现 / 未接线的调用 / 缺错误处理 / 无测试）；再用【功能】段核对职责是否偏离。",
       ),
   );
   lines.push(
@@ -346,13 +421,19 @@ function devSuggestPrompt(node, focus) {
   lines.push(
     "4. " +
       I18n.t(
-        "若本模块其实已经完备，不要硬凑新功能：改为给出「下一步该做什么」（如细化下层元素、集成验证、性能与边界、补概述与文档），并在 summary 里说明现状。",
+        "若本模块其实已经完备，不要硬凑新功能：改为给出「下一步该做什么」（如按深度继续细化——把子块逐层下钻到文件 / 类级、集成验证、性能与边界、补概述与文档），并在 summary 里说明现状。",
       ),
   );
   lines.push(
     "5. " +
       I18n.t(
         "若用户指定了关注点，优先围绕它给方案；但发现更要紧的问题也要占一条，并在 desc 里说明理由。",
+      ),
+  );
+  lines.push(
+    "6. " +
+      I18n.t(
+        "若项目根目录存在 AGENTS.md（Agent 共识文件），先读并遵守：新文件按「目录约定」放置；「不要修改」清单内的路径一律不得建议改动。",
       ),
   );
   lines.push("");
@@ -598,7 +679,12 @@ function devSuggestBriefText(node, sug, pickedIds, supplement) {
   );
   lines.push(
     I18n.t(
-      "完成后更新画布上该开发节点的概述（note）与状态（devStatus），并用一句话汇报改了什么。",
+      "共识：若项目根目录有 AGENTS.md，先读并遵守（目录约定 / 不要修改清单），新文件按约定放置。",
+    ),
+  );
+  lines.push(
+    I18n.t(
+      "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），用一句话汇报改了什么。",
     ),
   );
   return lines.join("\n");
@@ -751,200 +837,429 @@ function devSuggestPickBody(host, opts) {
   return { ta };
 }
 
-/* ---------- 建议对话框（进度 → 就地变成方案清单） ---------- */
+/* ============ 建议调研 = 后台作业（运行态与对话框解耦） ============
+ * 「建议」的只读调研不再绑在 devSuggestDialog 的生命周期上：运行态
+ * （phase / lines / toolCount / elapsed / err / suggestion / picked / focus）
+ * 外置到模块级注册表 devSuggestJobs，key = node.id（与 devSuggestRunKey(node)
+ * 一一对应：一个 runKey 只有一个取消句柄，重复发起会互相覆盖，所以同一个功能块
+ * 同一时刻绝不允许两轮调研；不同功能块 key 隔离，可以各跑各的）。
+ * 于是对话框退化成一个「视图」：挂上就实时渲染，摘掉（关框 / 被别的弹窗顶掉）
+ * 作业照旧推进，结果仍写回 node.devSuggest + scheduleSave(true)，切画布/保存不丢。
+ * 生命周期：suggestDevNode（入口幂等）→ devSuggestJobRun（start）→
+ * devSuggestJobSettle（then / catch 只写 job，不再走 alive()）→ 有视图就渲染、
+ * 没视图就留在注册表等用户回来接。运行队列同步点也从对话框搬到作业
+ * （start / settle / 出栈各同步一次，见 devSuggestQueueSync）。
+ * 边界：节点被删除或已切到别的画布（wfId 不符）时，结算不报错——清作业 + 提示。
+ * 注：作业只存在于渲染进程内存，不跨页面刷新 / 应用重启续跑。
+ */
+const devSuggestJobs = new Map();
+
+function devSuggestJobKeyOf(node) {
+  return String((node && node.id) || "");
+}
+/* 取该功能块的调研作业（可能为 null） */
+function devSuggestJobOf(node) {
+  return devSuggestJobs.get(devSuggestJobKeyOf(node)) || null;
+}
+/* 该块是否有「在途」调研（入口幂等据此决定：接管视图，而不是再发一轮） */
+function devSuggestJobBusy(node) {
+  const j = devSuggestJobOf(node);
+  return j && j.running ? j : null;
+}
+/* 作业结算时还能不能落到节点上：返回当前画布里那个开发节点，取不到 = null。
+   节点被删 / 已切到别的画布（wfId 不一致）都算取不到。 */
+function devSuggestJobTarget(job) {
+  if (!job) return null;
+  const curWf = (typeof S !== "undefined" && S.wf && S.wf.id) || "";
+  if (job.wfId && curWf && job.wfId !== curWf) return null;
+  const node = typeof nodeById === "function" ? nodeById(job.nodeId) : job.node;
+  if (!node || node.kind !== "super" || !node.dev) return null;
+  return node;
+}
+/* 作业状态变化的唯一同步出口：左下角运行队列 + 画布折叠卡状态行
+   （.n-dev-sugstate 两态行由 renderCanvas 重建）各同步一次。
+   只读调研可「返回」后台跑，离开后画布是用户唯一的可见入口，必须实时跟上。 */
+function devSuggestQueueSync() {
+  if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
+  if (typeof renderCanvas === "function") {
+    try {
+      renderCanvas();
+    } catch (_) {}
+  }
+}
+/* 通知挂载在本作业上的视图（没有视图 = 用户不在框内，静默） */
+function devSuggestJobNotify(job, kind, arg) {
+  const h = job && job.hooks;
+  if (!h || typeof h[kind] !== "function") return;
+  h[kind](arg);
+}
+/* 出栈：结果已在 node.devSuggest 上（或本轮被停止），注册表不必再留 */
+function devSuggestJobDrop(job) {
+  if (!job) return;
+  if (job.timer) {
+    clearInterval(job.timer);
+    job.timer = null;
+  }
+  job.running = false;
+  job.hooks = null;
+  if (devSuggestJobs.get(job.id) === job) devSuggestJobs.delete(job.id);
+  devSuggestQueueSync();
+}
+function devSuggestJobCreate(node, opts) {
+  opts = opts || {};
+  const id = devSuggestJobKeyOf(node);
+  const prev = devSuggestJobs.get(id);
+  if (prev) devSuggestJobDrop(prev);
+  const job = {
+    id,
+    nodeId: id,
+    wfId: (typeof S !== "undefined" && S.wf && S.wf.id) || "",
+    node,
+    focus: String(opts.focus || ""),
+    /* run = 调研中 · options = 有方案可看 · failed = 这轮没拿到方案 */
+    phase: "run",
+    running: false,
+    started: false,
+    lines: [],
+    toolCount: 0,
+    startedAt: 0,
+    elapsed: "0s",
+    err: "",
+    suggestion: null,
+    picked: {},
+    /* 用户是否真看过本轮方案清单：没看过 → 再点「建议」直接开清单，不重跑模型 */
+    viewed: false,
+    /* 用户是否已「返回」到后台（mt-sug-log 底部提示） ·
+       结算时因宿主被占未能跳窗（该块「建议」按钮变成一键直达方案清单） */
+    bg: false,
+    ready: false,
+    timer: null,
+    hooks: null,
+  };
+  devSuggestJobs.set(id, job);
+  return job;
+}
+function devSuggestJobAttach(job, hooks) {
+  if (job) job.hooks = hooks || null;
+}
+/* 视图摘掉后：还在跑 / 跑完没被看过 → 留在注册表里等接回来；否则出栈 */
+function devSuggestJobDetach(job, hooks) {
+  if (!job) return;
+  if (!hooks || job.hooks === hooks) job.hooks = null;
+  if (job.running) return;
+  if (job.phase === "options" && !job.viewed) return;
+  devSuggestJobDrop(job);
+}
+function devSuggestJobLog(job, txt) {
+  const t = String(txt || "").replace(/\s+/g, " ").trim();
+  if (!t || job.phase !== "run") return;
+  if (job.lines[job.lines.length - 1] === t) return;
+  job.lines.push(t);
+  while (job.lines.length > 200) job.lines.shift();
+  devSuggestJobNotify(job, "log", t);
+}
+function devSuggestJobTick(job) {
+  const sec = Math.round((Date.now() - job.startedAt) / 1000);
+  job.elapsed =
+    sec >= 60 ? Math.floor(sec / 60) + "m" + (sec % 60) + "s" : sec + "s";
+  devSuggestJobNotify(job, "tick");
+}
+/* 用户显式「停止生成」：取消这一轮调研（离开对话框不等于停止） */
+function devSuggestJobAbort(job) {
+  if (!job || !job.running) return;
+  job.running = false;
+  try {
+    dshCancelActive(devSuggestRunKey(job.node));
+  } catch (_) {}
+  /* 运行态立刻结束，不等心跳 */
+  devSuggestQueueSync();
+}
+/* 从工具调用事件里抠出最有辨识度的一句参数（路径 / 模式）供进度日志显示 */
+function devSuggestToolArg(data) {
+  const rawArgs = data && data.args;
+  if (typeof rawArgs === "string") {
+    const hit = rawArgs.match(
+      /"(?:file_path|path|pattern|query|command|include)"\s*:\s*"([^"]{1,160})"/i,
+    );
+    return hit ? hit[1] : rawArgs.slice(0, 120);
+  }
+  if (rawArgs && typeof rawArgs === "object") {
+    return String(
+      rawArgs.file_path ||
+        rawArgs.path ||
+        rawArgs.pattern ||
+        rawArgs.query ||
+        rawArgs.include ||
+        rawArgs.command ||
+        "",
+    ).slice(0, 120);
+  }
+  return "";
+}
+/* ---- 发起一轮只读调研：只写 job，不假设有人在看着它 ---- */
+function devSuggestJobRun(job) {
+  if (!job || job.running) return;
+  const node = job.node;
+  const sup = typeof dshSupported === "function" ? dshSupported() : { ok: false };
+  job.phase = "run";
+  job.started = true;
+  job.lines = [];
+  job.err = "";
+  job.toolCount = 0;
+  job.bg = false;
+  job.ready = false;
+  job.startedAt = Date.now();
+  job.elapsed = "0s";
+  /* 先置 running 再通知：进度态的按钮要直接是「停止生成」 */
+  job.running = true;
+  devSuggestJobNotify(job, "render");
+  /* 本功能块进入「建议（只读调研）运行态」：左下角运行队列同步一次 */
+  devSuggestQueueSync();
+  if (!sup.ok) {
+    job.running = false;
+    job.err = sup.reason || I18n.t("智能能力不可用");
+    job.phase = "failed";
+    devSuggestJobNotify(job, "render");
+    devSuggestQueueSync();
+    return;
+  }
+  devSuggestJobLog(
+    job,
+    I18n.t("开始只读调研（不改文件、不改画布）· 项目根：") +
+      (devPathOf(node) || I18n.t("（未设置 · 用默认工作区）")),
+  );
+  if (job.timer) clearInterval(job.timer);
+  job.timer = setInterval(() => devSuggestJobTick(job), 1000);
+  /* 真正向引擎发起只读调研的这一刻再同步一次队列（上面可能已因不可用提前退出） */
+  devSuggestQueueSync();
+  /* 本功能块（或就近上层功能块）选定的 Agent 模型：只读调研也照用 */
+  const eff = devAgentModelOf(node);
+  if (eff)
+    devSuggestJobLog(
+      job,
+      I18n.t("本轮模型：") +
+        devAgentRouteName(eff.provider) +
+        " · " +
+        eff.model +
+        (eff.inherited
+          ? I18n.t("（继承自「") +
+            (eff.source.title || eff.source.id) +
+            I18n.t("」）")
+          : ""),
+    );
+  dshRunTask(devSuggestPrompt(node, job.focus), {
+    workspace: devPathOf(node) || "",
+    runKey: devSuggestRunKey(node),
+    preset: "standard",
+    effort: "high",
+    provider: eff ? eff.provider : undefined,
+    model: eff ? eff.model : undefined,
+    systemPrompt: devSuggestSystemPrompt(),
+    onEvent: (type, data) => {
+      /* 视图在不在都照样记账：日志与调用次数属于作业，不属于 DOM */
+      if (type === "tool" && data && data.name) {
+        job.toolCount++;
+        const arg = devSuggestToolArg(data);
+        devSuggestJobLog(job, "🔧 " + data.name + (arg ? "  " + arg : ""));
+        devSuggestJobNotify(job, "tick");
+      } else if (type === "error" && data && data.message) {
+        devSuggestJobLog(job, "⚠ " + data.message);
+      }
+    },
+  })
+    /* 用 then(onOk, onErr) 而不是 then().catch()：成功分支自己抛错时不应再被当成
+       「模型报错」结算一遍（否则同一轮会被结算两次） */
+    .then(
+      (text) => devSuggestJobSettle(job, text, null),
+      (err) =>
+        devSuggestJobSettle(job, null, err || new Error("devsuggest run failed")),
+    );
+}
+/* ---- 一轮调研结束：先写回 job / 节点，再通知视图（无视图则留在注册表等接回来） ---- */
+function devSuggestJobSettle(job, text, err) {
+  if (!job) return;
+  if (job.timer) {
+    clearInterval(job.timer);
+    job.timer = null;
+  }
+  job.running = false;
+  /* 调研结束（成功 / 失败 / 被停止）：运行态消失 → 队列同步 */
+  devSuggestQueueSync();
+  const cancelish =
+    !!err &&
+    typeof isCancelishError === "function" &&
+    isCancelishError((err && err.message) || String(err));
+  if (cancelish) {
+    /* 用户主动停止：本轮没有结果可看 → 视图收尾 + 作业出栈（不打扰） */
+    devSuggestJobNotify(job, "cancel");
+    devSuggestJobDrop(job);
+    return;
+  }
+  const target = devSuggestJobTarget(job);
+  if (!target) {
+    /* 节点已被删除 / 用户已切到别的画布：不报错，只静默清作业并提示一句 */
+    devSuggestJobDrop(job);
+    if (typeof toast === "function")
+      toast(
+        I18n.t("「") +
+          ((job.node && job.node.title) || I18n.t("开发节点")) +
+          I18n.t("」的调研已完成，但该功能块已不在当前画布，结果未写入。"),
+        "warn",
+      );
+    return;
+  }
+  if (err) {
+    job.phase = "failed";
+    job.err = (err && err.message) || String(err);
+    devSuggestJobNotify(job, "render");
+    return;
+  }
+  const sug = devSuggestParse(text);
+  if (!sug) {
+    job.phase = "failed";
+    job.err = I18n.t(
+      "模型没有按契约返回方案。可以再试一次，或关掉本框改用「开发」按钮自己填写内容。",
+    );
+    devSuggestJobNotify(job, "render");
+    return;
+  }
+  job.suggestion = sug;
+  job.picked = {};
+  job.picked[sug.items[0].id] = true;
+  job.phase = "options";
+  /* 结果落在节点上（与对话框开没开无关）：随工作流保存，切画布也不丢 */
+  target.devSuggest = {
+    at: sug.at,
+    summary: sug.summary,
+    basis: sug.basis,
+    items: sug.items,
+  };
+  scheduleSave(true);
+  try {
+    renderCanvas();
+  } catch (_) {}
+  /* 用户还在框内 → 就地渲染方案清单；已离开 → 自动重开对话框（宿主被占则只
+     toast + 标 ready，该块「建议」按钮随即变成一键直达方案清单） */
+  if (devSuggestJobViewAlive(job)) devSuggestJobNotify(job, "render");
+  else devSuggestJobReopen(job);
+}
+
+/* ---- 可离开 + 完成跳窗（任务 2） ----
+ * devSuggestJobViewAlive：当前是否还有「活着的」视图挂在作业上（用户仍在框内）。
+ * devMtDialogOccupied：宿主正被别的弹窗占用（用户在填别的框 → 跳窗会冲掉输入）。
+ * devSuggestJobReopen：作业结算而用户不在框内时：宿主空闲 → 自动重开对话框到
+ *   phase=options（新 _mtDialogSeq 拿宿主）；宿主被占 → 只 toast + 标 ready，
+ *   不打扰用户正在填的弹窗。 */
+function devSuggestJobViewAlive(job) {
+  return !!(
+    job &&
+    job.hooks &&
+    typeof job.hooks.isAlive === "function" &&
+    job.hooks.isAlive()
+  );
+}
+function devMtDialogOccupied() {
+  const host = document.getElementById("mtDialog");
+  return !!(host && host.classList.contains("on"));
+}
+function devSuggestJobReopen(job) {
+  if (!job || job.running || job.phase !== "options") return;
+  if (devMtDialogOccupied()) {
+    job.ready = true;
+    if (typeof toast === "function")
+      toast(
+        I18n.t("「") +
+          ((job.node && job.node.title) || I18n.t("开发节点")) +
+          I18n.t(
+            "」的建议已就绪。检测到你在填写其它窗口，未自动弹出；点该块的「建议」即可查看。",
+          ),
+        "ok",
+      );
+    return;
+  }
+  try {
+    devSuggestShowJob(job);
+  } catch (_) {}
+}
+
+/* ---------- 建议对话框入口（幂等：有在途作业就接管视图，不再发第二轮） ---------- */
 function devSuggestDialog(node, opts) {
   opts = opts || {};
+  let job = devSuggestJobOf(node);
+  if (!job || (!job.running && !(job.phase === "options" && !job.viewed)))
+    job = devSuggestJobCreate(node, opts);
+  else if (opts.focus && !job.running) job.focus = String(opts.focus);
+  return devSuggestShowJob(job);
+}
+
+/* ---------- 建议视图（挂到作业上：进度 → 就地变成方案清单） ---------- */
+function devSuggestShowJob(job) {
+  const node = job.node;
   return new Promise((resolve) => {
     const host = ensureMtDialog();
     const seq = ++_mtDialogSeq;
     const box = devDlgOpen(host, "mt-sug-box");
     const titleEl = host.querySelector("#mtDlgTitle");
     const bodyEl = host.querySelector("#mtDlgBody");
-    const st = {
-      phase: "run",
-      focus: String(opts.focus || ""),
-      suggestion: null,
-      picked: {},
-      err: "",
-      running: false,
-      settled: false,
-      lines: [],
-      toolCount: 0,
-      startedAt: 0,
-      elapsed: "0s",
-    };
+    /* 视图只保留「自己还活不活」；运行态全在 job 上 */
+    const st = { settled: false };
     let ta = null;
     let logEl = null;
-    let tick = null;
     const alive = () => !st.settled && seq === _mtDialogSeq;
     const finish = (val) => {
       if (st.settled) return;
       st.settled = true;
-      if (tick) clearInterval(tick);
-      tick = null;
+      devSuggestJobDetach(job, hooks);
       host.removeEventListener("keydown", onKey);
-      devDlgClose(host, box, "mt-sug-box");
+      /* 宿主已被更新的弹窗接管 → 只摘自己的键盘监听，不去关别人的框 */
+      if (seq === _mtDialogSeq) devDlgClose(host, box, "mt-sug-box");
       resolve(val || null);
     };
     const stampElapsed = () => {
       const el = host.querySelector("#mtSugElapsed");
       if (el)
         el.textContent =
-          st.elapsed + " · " + st.toolCount + I18n.t(" 次只读工具调用");
+          job.elapsed + " · " + job.toolCount + I18n.t(" 次只读工具调用");
     };
-    const logLine = (txt) => {
-      const t = String(txt || "").replace(/\s+/g, " ").trim();
-      if (!t || !alive() || st.phase !== "run") return;
-      if (st.lines[st.lines.length - 1] === t) return;
-      st.lines.push(t);
-      while (st.lines.length > 200) st.lines.shift();
-      if (logEl) {
+    /* 作业 → 视图的回调：状态由作业推进，DOM 只负责画 */
+    const hooks = {
+      render: () => render(),
+      tick: () => stampElapsed(),
+      cancel: () => finish(null),
+      isAlive: () => alive(),
+      log: (t) => {
+        if (!alive() || job.phase !== "run" || !logEl) return;
         logEl.appendChild(devDlgEl("div", "mt-sug-log-row", t));
         while (logEl.childNodes.length > 200) logEl.removeChild(logEl.firstChild);
         logEl.scrollTop = logEl.scrollHeight;
-      }
+      },
     };
-    /* ---- 跑一轮建议（只读） ---- */
-    const runOnce = () => {
-      if (!alive() || st.running) return;
-      const sup = typeof dshSupported === "function" ? dshSupported() : { ok: false };
-      st.phase = "run";
-      st.lines = [];
-      st.err = "";
-      st.toolCount = 0;
-      st.startedAt = Date.now();
-      st.elapsed = "0s";
-      /* 先置 running 再渲染：进度态的按钮要直接是「停止生成」 */
-      st.running = true;
-      render();
-      if (!sup.ok) {
-        st.running = false;
-        st.err = sup.reason || I18n.t("智能能力不可用");
-        st.phase = "failed";
-        render();
-        return;
-      }
-      logLine(
-        I18n.t("开始只读调研（不改文件、不改画布）· 项目根：") +
-          (devPathOf(node) || I18n.t("（未设置 · 用默认工作区）")),
-      );
-      if (tick) clearInterval(tick);
-      tick = setInterval(() => {
-        if (!alive()) return;
-        const sec = Math.round((Date.now() - st.startedAt) / 1000);
-        st.elapsed = sec >= 60 ? Math.floor(sec / 60) + "m" + sec % 60 + "s" : sec + "s";
-        stampElapsed();
-      }, 1000);
-      st.running = true;
-      /* 本功能块（或就近上层功能块）选定的 Agent 模型：只读调研也照用 */
-      const eff = devAgentModelOf(node);
-      if (eff)
-        logLine(
-          I18n.t("本轮模型：") +
-            devAgentRouteName(eff.provider) +
-            " · " +
-            eff.model +
-            (eff.inherited
-              ? I18n.t("（继承自「") +
-                (eff.source.title || eff.source.id) +
-                I18n.t("」）")
-              : ""),
-        );
-      dshRunTask(devSuggestPrompt(node, st.focus), {
-        workspace: devPathOf(node) || "",
-        runKey: devSuggestRunKey(node),
-        preset: "standard",
-        effort: "high",
-        provider: eff ? eff.provider : undefined,
-        model: eff ? eff.model : undefined,
-        systemPrompt: devSuggestSystemPrompt(),
-        onEvent: (type, data) => {
-          if (!alive()) return;
-          if (type === "tool" && data && data.name) {
-            st.toolCount++;
-            let arg = "";
-            const rawArgs = data.args;
-            if (typeof rawArgs === "string") {
-              const hit = rawArgs.match(
-                /"(?:file_path|path|pattern|query|command|include)"\s*:\s*"([^"]{1,160})"/i,
-              );
-              arg = hit ? hit[1] : rawArgs.slice(0, 120);
-            } else if (rawArgs && typeof rawArgs === "object") {
-              arg = String(
-                rawArgs.file_path ||
-                  rawArgs.path ||
-                  rawArgs.pattern ||
-                  rawArgs.query ||
-                  rawArgs.include ||
-                  rawArgs.command ||
-                  "",
-              ).slice(0, 120);
-            }
-            logLine("🔧 " + data.name + (arg ? "  " + arg : ""));
-            stampElapsed();
-          } else if (type === "error" && data && data.message) {
-            logLine("⚠ " + data.message);
-          }
-        },
-      })
-        .then((text) => {
-          if (!alive()) return;
-          st.running = false;
-          if (tick) clearInterval(tick);
-          const sug = devSuggestParse(text);
-          if (!sug) {
-            st.phase = "failed";
-            st.err = I18n.t(
-              "模型没有按契约返回方案。可以再试一次，或关掉本框改用「开发」按钮自己填写内容。",
-            );
-            render();
-            return;
-          }
-          st.suggestion = sug;
-          st.picked = {};
-          st.picked[sug.items[0].id] = true;
-          node.devSuggest = {
-            at: sug.at,
-            summary: sug.summary,
-            basis: sug.basis,
-            items: sug.items,
-          };
-          scheduleSave(true);
-          try {
-            renderCanvas();
-          } catch (_) {}
-          st.phase = "options";
-          render();
-        })
-        .catch((err) => {
-          if (!alive()) return;
-          st.running = false;
-          if (tick) clearInterval(tick);
-          const msg = (err && err.message) || String(err);
-          if (typeof isCancelishError === "function" && isCancelishError(msg)) {
-            finish(null);
-            return;
-          }
-          st.phase = "failed";
-          st.err = msg;
-          render();
-        });
-    };
-    const abortRun = () => {
-      if (!st.running) return;
-      st.running = false;
-      try {
-        dshCancelActive(devSuggestRunKey(node));
-      } catch (_) {}
+    devSuggestJobAttach(job, hooks);
+    /* 视图上的动作只是作业的薄封装：停止 = 显式取消本轮（离开不等于取消） */
+    const abortRun = () => devSuggestJobAbort(job);
+    const runOnce = () => devSuggestJobRun(job);
+    /* 「返回」：只隐藏对话框（closeMtDialog），作业继续在后台跑，完成后自动弹出。
+       与「停止生成」的区别：不碰 dshCancelActive，作业留在注册表里等结算 / 接回 */
+    const leave = () => {
+      if (st.settled) return;
+      st.settled = true;
+      job.bg = true;
+      devSuggestJobDetach(job, hooks);
+      host.removeEventListener("keydown", onKey);
+      /* 只隐藏，不关作业；devDlgClose 顺带清掉本框的样式类，避免污染下一个弹窗 */
+      if (seq === _mtDialogSeq) devDlgClose(host, box, "mt-sug-box");
+      resolve(null);
+      if (typeof toast === "function")
+        toast(I18n.t("AI 继续后台调研，完成后自动弹出。"));
     };
     const goDevelop = (ids, supplement) => {
-      if (!st.suggestion) return;
+      if (!job.suggestion) return;
       if (!ids.length && !supplement) {
-        st.err = I18n.t("至少勾选一个方案，或在「补充说明」里写下你要做什么。");
+        job.err = I18n.t("至少勾选一个方案，或在「补充说明」里写下你要做什么。");
         render();
         return;
       }
-      const brief = devSuggestBriefText(node, st.suggestion, ids, supplement);
+      const brief = devSuggestBriefText(node, job.suggestion, ids, supplement);
       node.devSuggest = Object.assign({}, node.devSuggest || {}, {
         picked: ids,
         supplement,
@@ -954,22 +1269,29 @@ function devSuggestDialog(node, opts) {
       startDevSessionWithText(node, brief);
     };
     function onKey(ev) {
+      /* 视图已被更新的弹窗取代 → 摘掉自己的监听并装死（绝不误停别人的作业） */
+      if (!alive()) {
+        host.removeEventListener("keydown", onKey);
+        return;
+      }
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopPropagation();
-        abortRun();
-        finish(null);
+        /* 调研中按 Esc = 「返回」（后台继续跑，完成后跳窗）；方案 / 失败态 = 关闭对话框。
+           破坏性的「停止生成」不再绑在 Esc 上，只能点按钮显式触发 */
+        if (job.phase === "run") leave();
+        else finish(null);
       } else if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
         ev.preventDefault();
-        if (st.phase === "options") {
+        if (job.phase === "options") {
           const extra = ta ? String(ta.value || "").trim() : "";
           goDevelop(
-            st.suggestion.items.filter((it) => st.picked[it.id]).map((it) => it.id),
+            job.suggestion.items.filter((it) => job.picked[it.id]).map((it) => it.id),
             extra,
           );
-        } else if (st.phase === "failed") runOnce();
+        } else if (job.phase === "failed") runOnce();
       } else if (
-        st.phase === "options" &&
+        job.phase === "options" &&
         !ev.ctrlKey &&
         !ev.metaKey &&
         !ev.altKey &&
@@ -977,10 +1299,10 @@ function devSuggestDialog(node, opts) {
       ) {
         const ae = document.activeElement;
         if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT")) return;
-        const it = st.suggestion.items[Number(ev.key) - 1];
+        const it = job.suggestion.items[Number(ev.key) - 1];
         if (!it) return;
         ev.preventDefault();
-        st.picked[it.id] = !st.picked[it.id];
+        job.picked[it.id] = !job.picked[it.id];
         render();
       }
     }
@@ -988,9 +1310,9 @@ function devSuggestDialog(node, opts) {
       if (!alive()) return;
       if (titleEl)
         titleEl.textContent =
-          (st.phase === "run"
+          (job.phase === "run"
             ? I18n.t("生成建议")
-            : st.phase === "failed"
+            : job.phase === "failed"
               ? I18n.t("建议生成失败")
               : I18n.t("建议")) +
           " · " +
@@ -1000,7 +1322,7 @@ function devSuggestDialog(node, opts) {
       if (footEl) footEl.innerHTML = "";
       ta = null;
       logEl = null;
-      if (st.phase !== "options") {
+      if (job.phase !== "options") {
         const rows = devDlgEl("div", "mt-form-rows");
         const addRow = (k, v) => {
           const r = devDlgEl("div", "mt-form-row");
@@ -1012,8 +1334,8 @@ function devSuggestDialog(node, opts) {
           I18n.t("项目根目录"),
           devPathOf(node) || I18n.t("（未设置 · 用默认工作区）"),
         );
-        if (st.focus) addRow(I18n.t("本轮关注点"), clipStr(st.focus, 90));
-        if (st.phase === "run") {
+        if (job.focus) addRow(I18n.t("本轮关注点"), clipStr(job.focus, 90));
+        if (job.phase === "run") {
           const r = devDlgEl("div", "mt-form-row");
           r.appendChild(devDlgEl("span", "mt-form-k", I18n.t("进度")));
           const v = devDlgEl("span", "mt-form-v");
@@ -1024,7 +1346,7 @@ function devSuggestDialog(node, opts) {
           rows.appendChild(r);
         }
         bodyEl.appendChild(rows);
-        if (st.phase === "run") {
+        if (job.phase === "run") {
           bodyEl.appendChild(
             devDlgEl(
               "p",
@@ -1035,22 +1357,47 @@ function devSuggestDialog(node, opts) {
             ),
           );
           logEl = devDlgEl("div", "mt-sug-log");
-          for (const l of st.lines) logEl.appendChild(devDlgEl("div", "mt-sug-log-row", l));
+          for (const l of job.lines) logEl.appendChild(devDlgEl("div", "mt-sug-log-row", l));
           bodyEl.appendChild(logEl);
+          /* 已「返回」后台：在日志底部留一条常驻提示（用户接回来时能立刻明白状态） */
+          if (job.bg)
+            bodyEl.appendChild(
+              devDlgEl(
+                "p",
+                "mt-sug-log-note",
+                I18n.t("调研中·已转入后台，可点该块的「建议」查看进度。"),
+              ),
+            );
         } else {
-          bodyEl.appendChild(devDlgEl("p", "mt-form-warn", st.err));
+          bodyEl.appendChild(devDlgEl("p", "mt-form-warn", job.err));
         }
         if (footEl) {
-          footEl.appendChild(
-            devDlgBtn({
-              label: st.running ? I18n.t("停止生成") : I18n.t("关闭"),
-              run: () => {
-                abortRun();
-                finish(null);
-              },
-            }),
-          );
-          if (st.phase === "failed")
+          if (job.running) {
+            /* 调研中：可「返回」让它在后台继续跑，也可显式「停止生成」 */
+            footEl.appendChild(
+              devDlgBtn({
+                label: I18n.t("返回"),
+                title: I18n.t("关掉本框，调研继续在后台运行，完成后自动弹出"),
+                run: leave,
+              }),
+            );
+            footEl.appendChild(
+              devDlgBtn({
+                label: I18n.t("停止生成"),
+                danger: true,
+                title: I18n.t("显式取消这一轮调研（不再有结果；Esc 不会触发本操作）"),
+                run: () => {
+                  abortRun();
+                  finish(null);
+                },
+              }),
+            );
+          } else {
+            footEl.appendChild(
+              devDlgBtn({ label: I18n.t("关闭"), run: () => finish(null) }),
+            );
+          }
+          if (job.phase === "failed")
             footEl.appendChild(
               devDlgBtn({
                 label: I18n.t("再试一次"),
@@ -1062,17 +1409,20 @@ function devSuggestDialog(node, opts) {
         }
       } else {
         const r = devSuggestPickBody(host, {
-          suggestion: st.suggestion,
-          picked: st.picked,
-          err: st.err,
-          supplement: String(st.focus || ""),
+          suggestion: job.suggestion,
+          picked: job.picked,
+          err: job.err,
+          supplement: String(job.focus || ""),
           onCancel: () => finish(null),
           onRegen: runOnce,
           onDev: goDevelop,
           onPick: () => {
-            st.err = "";
+            job.err = "";
           },
         });
+        job.viewed = true;
+        /* 就绪态已被用户消费：该块「建议」按钮回到标准流程（先确认框，可看上次结果） */
+        job.ready = false;
         ta = r.ta;
         try {
           ta.focus();
@@ -1085,7 +1435,11 @@ function devSuggestDialog(node, opts) {
       stampElapsed();
     }
     render();
-    runOnce();
+    /* 幂等发起：只有这一轮从没跑过才向引擎发调研。
+       接管在途作业 = 只看进度，绝不重复发起（同一个 runKey 会互相覆盖取消句柄） */
+    if (!job.started) runOnce();
+    else
+      devSuggestJobLog(job, I18n.t("已接回本轮调研：它仍在进行，未重复发起。"));
   });
 }
 
@@ -1191,6 +1545,11 @@ async function suggestDevNode(node) {
   const p = devPathOf(node);
   const kids = devChildrenOf(node);
   const cached = devSuggestOf(node);
+  /* 入口幂等：该块的调研作业（可能正在后台跑，也可能跑完还没被看过） */
+  const job = devSuggestJobOf(node);
+  const busy = devSuggestJobBusy(node);
+  if (job && !busy && (job.ready || (job.phase === "options" && !job.viewed)))
+    return devSuggestDialog(node, {});
   const rows = [
     [I18n.t("元素类型"), I18n.t(DEV_KIND_LABEL[dk] || "模块")],
     [I18n.t("开发状态"), devStatusText(devStatusOf(node))],
@@ -1202,6 +1561,15 @@ async function suggestDevNode(node) {
     ],
     [I18n.t("历史会话"), devSessionsOf(node).length + I18n.t(" 个")],
   ];
+  if (busy)
+    rows.push([
+      I18n.t("调研进度"),
+      I18n.t("AI 只读调研进行中 · ") +
+        busy.elapsed +
+        " · " +
+        busy.toolCount +
+        I18n.t(" 次工具调用"),
+    ]);
   if (cached)
     rows.push([
       I18n.t("上次建议"),
@@ -1214,15 +1582,23 @@ async function suggestDevNode(node) {
     ]);
   const actions = [{ id: "cancel", label: I18n.t("取消") }];
   if (cached) actions.push({ id: "cached", label: I18n.t("查看上次建议") });
-  actions.push({ id: "go", label: I18n.t("确认生成建议"), primary: true });
+  if (busy)
+    /* 已有在途调研：只给「接回去看」，不给第二个「确认生成建议」 */
+    actions.push({ id: "attach", label: I18n.t("查看调研进度"), primary: true });
+  else
+    actions.push({ id: "go", label: I18n.t("确认生成建议"), primary: true });
   const res = await mtDialogForm({
     title: I18n.t("建议") + " · " + (node.title || I18n.t("开发节点")),
     wide: true,
     rows,
-    note: { label: I18n.t("模块概述"), text: node.note },
-    msg: I18n.t(
-      "确认后：AI 先只读调研项目里的真实代码与该模块的开发进度（不改文件、不动画布），再给出 4 条「下一步实现什么」的方案。你可以在同一个对话框里多选、补充，然后点该对话框里的「开发」直接开工。",
-    ),
+    note: devNoteDialogField(node),
+    msg: busy
+      ? I18n.t(
+          "这个功能块已经有一轮只读调研在跑（同一块不会重复发起，以免两轮结果互相覆盖）。你可以直接离开去画布上继续操作，或点「查看调研进度」接回去看它读到哪一步；「本轮关注点」要改动得等这轮结束后再生成一轮。",
+        )
+      : I18n.t(
+          "确认后：AI 先只读调研项目里的真实代码与该模块的开发进度（不改文件、不动画布），再给出 4 条「下一步实现什么」的方案。你可以在同一个对话框里多选、补充，然后点该对话框里的「开发」直接开工。",
+        ),
     warn: p
       ? ""
       : I18n.t(
@@ -1247,7 +1623,546 @@ async function suggestDevNode(node) {
     if (out && out.action === "regen") await devSuggestDialog(node, { focus });
     return;
   }
-  if (res.action === "go") await devSuggestDialog(node, { focus });
+  /* go / attach 都交给 devSuggestDialog：它在途时只会接管视图，不会再发一轮 */
+  if (res.action === "go" || res.action === "attach")
+    await devSuggestDialog(node, { focus });
+}
+
+/* ============ 开发节点「问询」：只读回答模块问题 ============
+ * 需求：开发节点 body 增加「问询」按钮 —— 回答用户关于该模块的任意问题
+ * （职责 / 代码结构 / 真实完成度 / 接口 / 下一步…）。问询全程**只读**，三层保证：
+ *   1) 系统提示明确只允许只读工具（read / glob / grep / 只读命令 / canvas_get /
+ *      mtnode_db 查询 / web_search / 加载技能），禁止一切写文件与改画布动作；
+ *   2) dshRunTask 强制 permissionPreset = "read-only"：网关按只读档运行，
+ *      写操作由 DSH 沙箱直接拦截（不依赖模型自觉）；
+ *   3) 运行态与「建议」同属只读调研（sug 态）：可后台跑、可单独停止、不牵连会话。
+ * 与「建议」的区别：不产出 4 条方案契约，直接给出针对问题的自由文本回答。
+ * 回答缓存在作业上（devAskJobs，内存注册表），对话框关闭后节点折叠卡出现
+ * 可点的状态行（问询中 / 已就绪未查看），点击可接回。
+ * 生命周期：askDevNode（入口幂等）→ devAskJobCreate + devAskJobRun →
+ * devAskJobSettle（then / catch 只写 job）→ devAskShowJob 渲染（进度 / 回答 / 失败）。
+ */
+const devAskJobs = new Map();
+function devAskRunKey(node) {
+  return "devask:" + (node && node.id);
+}
+function devAskJobOf(node) {
+  return (node && devAskJobs.get(String(node.id))) || null;
+}
+/* 该块是否有「在途」问询（入口幂等据此决定：接管视图，而不是再发一轮） */
+function devAskJobBusy(node) {
+  const j = devAskJobOf(node);
+  return j && j.running ? j : null;
+}
+/* 出栈：结果已在 job 上（或本轮被停止），注册表不必再留 */
+function devAskJobDrop(job) {
+  if (!job) return;
+  if (job.timer) {
+    clearInterval(job.timer);
+    job.timer = null;
+  }
+  job.running = false;
+  job._hooks = null;
+  if (devAskJobs.get(job.id) === job) devAskJobs.delete(job.id);
+  devSuggestQueueSync();
+}
+function devAskJobCreate(node, question) {
+  const id = String(node.id);
+  const prev = devAskJobs.get(id);
+  if (prev) devAskJobDrop(prev);
+  const job = {
+    id,
+    node,
+    question: String(question || "").trim(),
+    /* init → run → ready | failed */
+    phase: "init",
+    running: false,
+    started: false,
+    bg: false,
+    viewed: false,
+    answer: "",
+    err: "",
+    lines: [],
+    toolCount: 0,
+    startedAt: 0,
+    elapsed: "0s",
+    timer: null,
+    _hooks: null,
+  };
+  devAskJobs.set(id, job);
+  return job;
+}
+/* 作业 → 视图回调（与建议调研同款：状态由作业推进，DOM 只负责画） */
+function devAskJobAttach(job, hooks) {
+  if (job) job._hooks = hooks || null;
+}
+function devAskJobDetach(job, hooks) {
+  if (!job) return;
+  if (!hooks || job._hooks === hooks) job._hooks = null;
+  if (job.running) return;
+  if (job.phase === "ready" && !job.viewed) return;
+  devAskJobDrop(job);
+}
+function devAskJobNotify(job, kind, arg) {
+  const h = job && job._hooks;
+  if (!h || typeof h[kind] !== "function") return;
+  h[kind](arg);
+}
+function devAskJobLog(job, txt) {
+  const t = String(txt || "").replace(/\s+/g, " ").trim();
+  if (!t || !job || job.phase !== "run") return;
+  if (job.lines[job.lines.length - 1] === t) return;
+  job.lines.push(t);
+  while (job.lines.length > 200) job.lines.shift();
+  devAskJobNotify(job, "log", t);
+}
+function devAskJobTick(job) {
+  const sec = Math.round((Date.now() - job.startedAt) / 1000);
+  job.elapsed =
+    sec >= 60 ? Math.floor(sec / 60) + "m" + (sec % 60) + "s" : sec + "s";
+  devAskJobNotify(job, "tick");
+}
+/* 用户显式「停止生成」：取消这一轮问询（离开对话框不等于停止） */
+function devAskJobAbort(job) {
+  if (!job || !job.running) return;
+  job.running = false;
+  try {
+    if (typeof dshCancelActive === "function")
+      dshCancelActive(devAskRunKey(job.node));
+  } catch (_) {}
+  devAskJobNotify(job, "cancel");
+  devSuggestQueueSync();
+}
+/* 只读系统提示：回答问题，绝不写入 */
+function devAskSystemPrompt() {
+  return [
+    "你是 MTNode「开发节点」的模块问询助手：只读地回答用户关于本功能块（模块）的问题——职责、代码结构、真实完成度、接口与数据流、下一步建议等。",
+    "整个过程**严格只读**：禁止创建 / 修改 / 删除任何文件（write、edit、str_replace_editor、文件保存类动作）；禁止执行任何有副作用的命令（安装 / 删除 / 移动 / 复制 / 构建 / git commit 与 checkout / 重启服务 / 清理目录）；禁止调用 mtnode_canvas_edit / mtnode_app 的修改类动作；禁止用 todo_write 登记执行清单；禁止用 create_goal 立执行目标；禁止用 subagent 派生实现工作。",
+    "允许并鼓励只读调研：read、glob、grep、只读命令（git status / git log / git diff --stat / node --check / ls）、mtnode_canvas_get、mtnode_db 查询、web_search、加载技能。",
+    "纪律：回答必须来自你真实读到的代码与画布信息，引用具体文件路径（能带行号更好）；查不到就直说「代码里没找到」，禁止臆测或用通用最佳实践凑数。",
+    "共识：若项目根目录存在 AGENTS.md（Agent 共识文件），先读它并遵守其中的「目录约定」与「不要修改」清单；回答中涉及路径时按约定表述，绝不建议触碰清单内路径。",
+    "若用户的问题本质上是「请帮我改 / 实现 / 重构」，先礼貌说明问询是只读的、不会改动任何文件，再给出实现思路或修改方案概要，并建议用户点击该功能块的「开发」按钮正式开工。",
+    "回答简洁、直接、分点（交流语言按文末「语言口味」跟随界面设置），最后不要输出任何 JSON 契约或多余格式。",
+  ].join("\n");
+}
+/* 问询上下文：比建议精简（不带「上一次 AI 建议」的纠偏说明），其余同源 */
+function devAskContextText(node) {
+  const dk = devKindOf(node) || "module";
+  const p = devPathOf(node);
+  const kids = devChildrenOf(node);
+  const chain = devAncestorChain(node);
+  const lines = [];
+  lines.push(
+    I18n.t("目标功能块：") +
+      (node.title || I18n.t("未命名模块")) +
+      "（" +
+      I18n.t(DEV_KIND_LABEL[dk] || "模块") +
+      " · " +
+      devStatusText(devStatusOf(node)) +
+      "）",
+  );
+  const noteParts = devNoteParts(node && node.note);
+  lines.push(
+    I18n.t("模块功能（面向非技术）：") +
+      (noteParts.design || I18n.t("（暂无 · 该块在业务上做什么、给谁用还没写清楚）")),
+  );
+  lines.push(
+    I18n.t("实现要点（面向技术）：") +
+      (noteParts.impl || I18n.t("（暂无 · 实现方案梗概待补）")),
+  );
+  lines.push(
+    I18n.t("项目根目录：") + (p || I18n.t("（未设置 · 请以会话工作区为项目根）")),
+  );
+  if (chain.length) {
+    lines.push(I18n.t("所属上层链路："));
+    chain.forEach((a, i) => {
+      lines.push(
+        "  ".repeat(i + 1) + (a.title || a.id) + "（" + devStatusText(devStatusOf(a)) + "）",
+      );
+    });
+  }
+  const depthTxt = devDepthLineOf(node);
+  if (depthTxt)
+    lines.push(I18n.t("细化深度现状（细化＝深度，非本层展开数量）：") + depthTxt);
+  lines.push(I18n.t("本块已有下层元素（共 ") + kids.length + I18n.t(" 个）："));
+  if (!kids.length) lines.push("  " + I18n.t("（无 · 尚未细化到文件 / 类）"));
+  for (const k of kids.slice(0, 30)) lines.push(devNodeBriefLine(k));
+  if (kids.length > 30)
+    lines.push("  … " + I18n.t("其余 ") + (kids.length - 30) + I18n.t(" 个"));
+  lines.push(I18n.t("画布上的开发进度总览（* 为本块）："));
+  lines.push(devProgressOverviewText(node) || "  " + I18n.t("（无）"));
+  lines.push(I18n.t("本块的历史开发会话："));
+  lines.push(devSessionDigestText(node));
+  return lines.join("\n");
+}
+function devAskPrompt(node, question) {
+  const lines = [];
+  lines.push(
+    I18n.t(
+      "【问询任务】请依据项目真实代码与该模块的开发进度，只读地回答下面的问题。",
+    ),
+  );
+  lines.push("");
+  lines.push(I18n.t("用户的问题：") + String(question || "").trim());
+  lines.push("");
+  lines.push(devAskContextText(node));
+  lines.push("");
+  lines.push(I18n.t("请只读调研后直接给出回答；不要执行任何写入动作。"));
+  return lines.join("\n");
+}
+/* ---- 发起一轮只读问询：只写 job，不假设有人在看着它 ---- */
+function devAskJobRun(job) {
+  if (!job || job.running) return;
+  const node = job.node;
+  const sup = typeof dshSupported === "function" ? dshSupported() : { ok: false };
+  job.phase = "run";
+  job.started = true;
+  job.running = true;
+  job.lines = [];
+  job.err = "";
+  job.toolCount = 0;
+  job.bg = false;
+  job.viewed = false;
+  job.startedAt = Date.now();
+  job.elapsed = "0s";
+  devAskJobNotify(job, "render");
+  /* 本功能块进入「问询（只读调研）运行态」：左下角运行队列同步一次 */
+  devSuggestQueueSync();
+  if (!sup.ok) {
+    job.running = false;
+    job.phase = "failed";
+    job.err = sup.reason || I18n.t("智能能力不可用");
+    devAskJobNotify(job, "render");
+    devSuggestQueueSync();
+    return;
+  }
+  devAskJobLog(
+    job,
+    I18n.t("开始只读调研（不改文件、不改画布）· 项目根：") +
+      (devPathOf(node) || I18n.t("（未设置 · 用默认工作区）")),
+  );
+  if (job.timer) clearInterval(job.timer);
+  job.timer = setInterval(() => devAskJobTick(job), 1000);
+  /* 本功能块（或就近上层功能块）选定的 Agent 模型：只读问询也照用 */
+  const eff = devAgentModelOf(node);
+  if (eff)
+    devAskJobLog(
+      job,
+      I18n.t("本轮模型：") +
+        devAgentRouteName(eff.provider) +
+        " · " +
+        eff.model +
+        (eff.inherited
+          ? I18n.t("（继承自「") +
+            (eff.source.title || eff.source.id) +
+            I18n.t("」）")
+          : ""),
+    );
+  dshRunTask(devAskPrompt(node, job.question), {
+    workspace: devPathOf(node) || "",
+    runKey: devAskRunKey(node),
+    preset: "standard",
+    effort: "high",
+    provider: eff ? eff.provider : undefined,
+    model: eff ? eff.model : undefined,
+    /* 问询强制只读：网关按 read-only 权限档运行，写操作被 DSH 沙箱拦截 */
+    permissionPreset: "read-only",
+    systemPrompt: devAskSystemPrompt(),
+    onEvent: (type, data) => {
+      if (type === "tool" && data && data.name) {
+        job.toolCount++;
+        const arg =
+          typeof devSuggestToolArg === "function"
+            ? devSuggestToolArg(data)
+            : "";
+        devAskJobLog(job, "🔧 " + data.name + (arg ? "  " + arg : ""));
+        devAskJobNotify(job, "tick");
+      } else if (type === "error" && data && data.message) {
+        devAskJobLog(job, "⚠ " + data.message);
+      }
+    },
+  })
+    .then(
+      (text) => devAskJobSettle(job, text, null),
+      (err) =>
+        devAskJobSettle(job, null, err || new Error("devask run failed")),
+    );
+}
+/* ---- 一轮问询结束：结果写回 job（无视图则留在注册表等接回来） ---- */
+function devAskJobSettle(job, text, err) {
+  if (!job) return;
+  if (job.timer) {
+    clearInterval(job.timer);
+    job.timer = null;
+  }
+  job.running = false;
+  /* 运行态消失 → 队列同步 */
+  devSuggestQueueSync();
+  const cancelish =
+    !!err &&
+    typeof isCancelishError === "function" &&
+    isCancelishError((err && err.message) || String(err));
+  if (cancelish) {
+    /* 用户主动停止：本轮没有结果可看 → 视图收尾 + 作业出栈（不打扰） */
+    devAskJobNotify(job, "cancel");
+    devAskJobDrop(job);
+    return;
+  }
+  if (err) {
+    job.phase = "failed";
+    job.err = (err && err.message) || String(err);
+    devAskJobNotify(job, "render");
+    return;
+  }
+  job.answer = String(text || "").trim();
+  job.phase = "ready";
+  job.viewed = false;
+  devAskJobNotify(job, "render");
+}
+/* ---------- 问询视图（挂到作业上：进度 → 就地变成回答） ---------- */
+function devAskShowJob(job) {
+  const node = job.node;
+  return new Promise((resolve) => {
+    const host = ensureMtDialog();
+    const seq = ++_mtDialogSeq;
+    const box = devDlgOpen(host, "mt-ask-box");
+    const titleEl = host.querySelector("#mtDlgTitle");
+    const bodyEl = host.querySelector("#mtDlgBody");
+    const footEl = host.querySelector("#mtDlgFoot");
+    /* 视图只保留「自己还活不活」；运行态全在 job 上 */
+    const st = { settled: false };
+    let logEl = null;
+    const alive = () => !st.settled && seq === _mtDialogSeq;
+    const finish = (val) => {
+      if (st.settled) return;
+      st.settled = true;
+      devAskJobDetach(job, hooks);
+      host.removeEventListener("keydown", onKey);
+      if (seq === _mtDialogSeq) devDlgClose(host, box, "mt-ask-box");
+      resolve(val || null);
+    };
+    const stampElapsed = () => {
+      const el = host.querySelector("#mtAskElapsed");
+      if (el)
+        el.textContent =
+          job.elapsed + " · " + job.toolCount + I18n.t(" 次只读工具调用");
+    };
+    const hooks = {
+      render: () => render(),
+      tick: () => stampElapsed(),
+      cancel: () => finish(null),
+      log: (t) => {
+        if (!alive() || job.phase !== "run" || !logEl) return;
+        logEl.appendChild(devDlgEl("div", "mt-sug-log-row", t));
+        while (logEl.childNodes.length > 200)
+          logEl.removeChild(logEl.firstChild);
+        logEl.scrollTop = logEl.scrollHeight;
+      },
+    };
+    devAskJobAttach(job, hooks);
+    const render = () => {
+      if (!alive()) return;
+      /* 用户看到回答即视为已查看：折叠卡「已就绪」状态行随之消失 */
+      if (job.phase === "ready" && !job.viewed) job.viewed = true;
+      const t = I18n.t("问询") + " · " + (node.title || I18n.t("开发节点"));
+      if (titleEl && titleEl.textContent !== t) titleEl.textContent = t;
+      if (bodyEl) {
+        bodyEl.innerHTML = "";
+        const frag = document.createDocumentFragment();
+        if (job.phase === "run") {
+          /* 进度视图：问题 + 只读调研日志（与「建议」同款结构） */
+          frag.appendChild(
+            devDlgEl("p", "mt-form-note", I18n.t("问题：") + job.question),
+          );
+          const rows = devDlgEl("div", "mt-form-rows");
+          const addRow = (k, v) => {
+            const r = devDlgEl("div", "mt-form-row");
+            r.appendChild(devDlgEl("span", "mt-form-k", k));
+            r.appendChild(devDlgEl("span", "mt-form-v", v));
+            rows.appendChild(r);
+          };
+          addRow(
+            I18n.t("项目根目录"),
+            devPathOf(node) || I18n.t("（未设置 · 用默认工作区）"),
+          );
+          const pr = devDlgEl("div", "mt-form-row");
+          pr.appendChild(devDlgEl("span", "mt-form-k", I18n.t("进度")));
+          const pv = devDlgEl("span", "mt-form-v");
+          const ps = devDlgEl("span", null, "");
+          ps.id = "mtAskElapsed";
+          pv.appendChild(ps);
+          pr.appendChild(pv);
+          rows.appendChild(pr);
+          frag.appendChild(rows);
+          logEl = devDlgEl("div", "mt-sug-log");
+          for (const ln of job.lines)
+            logEl.appendChild(devDlgEl("div", "mt-sug-log-row", ln));
+          frag.appendChild(logEl);
+          frag.appendChild(
+            devDlgEl(
+              "p",
+              "mt-form-hint",
+              I18n.t("AI 正在只读调研项目代码，回答这个功能块的问题。整个过程只读，期间你可以照常操作其它节点。"),
+            ),
+          );
+        } else if (job.phase === "ready") {
+          /* 回答视图 */
+          const nb = devDlgEl("div", "mt-form-note");
+          nb.appendChild(devDlgEl("i", null, I18n.t("问题：") + job.question));
+          const ans = devDlgEl(
+            "pre",
+            "mt-ask-answer",
+            job.answer || I18n.t("（空回答）"),
+          );
+          nb.appendChild(ans);
+          frag.appendChild(nb);
+          frag.appendChild(
+            devDlgEl(
+              "p",
+              "mt-form-hint",
+              I18n.t("本次问询只读完成：未改动任何文件与画布。想接着实现 / 修改？点该功能块的「开发」按钮正式开工。"),
+            ),
+          );
+        } else {
+          /* failed */
+          frag.appendChild(
+            devDlgEl("p", "mt-form-err", job.err || I18n.t("问询失败")),
+          );
+          frag.appendChild(
+            devDlgEl(
+              "p",
+              "mt-form-hint",
+              I18n.t("可以重试同一问题，或改一改再问。"),
+            ),
+          );
+        }
+        bodyEl.appendChild(frag);
+      }
+      if (footEl) {
+        footEl.innerHTML = "";
+        if (job.phase === "run") {
+          footEl.appendChild(
+            devDlgBtn({
+              label: I18n.t("返回后台"),
+              title: I18n.t("只隐藏对话框，问询继续在后台跑，完成后自动弹出"),
+              run: () => leave(),
+            }),
+          );
+          footEl.appendChild(
+            devDlgBtn({
+              label: I18n.t("停止生成"),
+              title: I18n.t("取消本轮问询"),
+              run: () => {
+                devAskJobAbort(job);
+                finish(null);
+              },
+            }),
+          );
+        } else {
+          if (job.phase === "failed")
+            footEl.appendChild(
+              devDlgBtn({
+                label: I18n.t("重试"),
+                run: () => {
+                  devAskJobRun(job);
+                },
+              }),
+            );
+          footEl.appendChild(
+            devDlgBtn({
+              label: I18n.t("关闭"),
+              primary: true,
+              run: () => finish(null),
+            }),
+          );
+        }
+      }
+    };
+    /* 「返回后台」：只隐藏对话框，作业继续在后台跑，完成后节点卡出现「已就绪」行 */
+    const leave = () => {
+      if (st.settled) return;
+      st.settled = true;
+      job.bg = true;
+      devAskJobDetach(job, hooks);
+      host.removeEventListener("keydown", onKey);
+      if (seq === _mtDialogSeq) devDlgClose(host, box, "mt-ask-box");
+      resolve(null);
+      if (typeof toast === "function")
+        toast(I18n.t("AI 继续后台调研，完成后自动弹出。"));
+    };
+    function onKey(ev) {
+      if (!alive()) {
+        host.removeEventListener("keydown", onKey);
+        return;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (job.phase === "run") leave();
+        else finish(null);
+      }
+    }
+    host.addEventListener("keydown", onKey);
+    render();
+  });
+}
+/* ---------- 「问询」按钮入口：确认框 → 只读回答 ---------- */
+async function askDevNode(node) {
+  if (!node || node.kind !== "super" || !node.dev) return;
+  const dk = devKindOf(node) || "module";
+  const p = devPathOf(node);
+  const kids = devChildrenOf(node);
+  /* 入口幂等：该块已有问询作业（后台跑 / 回答已就绪未查看）→ 直接接管视图 */
+  const job = devAskJobOf(node);
+  if (job && (job.running || (job.phase === "ready" && !job.viewed)))
+    return devAskShowJob(job);
+  const rows = [
+    [I18n.t("元素类型"), I18n.t(DEV_KIND_LABEL[dk] || "模块")],
+    [I18n.t("开发状态"), devStatusText(devStatusOf(node))],
+    [I18n.t("Agent 模型"), devModelDialogText(node)],
+    [I18n.t("项目根目录"), p || I18n.t("（未设置）")],
+    [
+      I18n.t("下层元素"),
+      kids.length ? kids.length + I18n.t(" 个") : I18n.t("（无）"),
+    ],
+    [I18n.t("历史会话"), devSessionsOf(node).length + I18n.t(" 个")],
+  ];
+  const res = await mtDialogForm({
+    title: I18n.t("问询") + " · " + (node.title || I18n.t("开发节点")),
+    wide: true,
+    rows,
+    note: devNoteDialogField(node),
+    msg: I18n.t(
+      "确认后：AI 先只读调研项目里的真实代码与该模块的开发进度（不改文件、不动画布），然后直接回答你的问题。你可以随时离开去画布上继续操作，回答完成后自动弹出。",
+    ),
+    warn: p
+      ? ""
+      : I18n.t(
+          "尚未设置项目根目录（devPath）：AI 只能在默认工作区里找代码，建议先在顶层功能块上设置项目路径。",
+        ),
+    textarea: {
+      label: I18n.t("你要问的问题"),
+      placeholder: I18n.t(
+        "例如：这个模块现在的真实完成度如何？入口在哪？关键文件是哪些？下一步该做什么？为什么这么设计？…",
+      ),
+      rows: 5,
+      requiredMsg: I18n.t("请填写要问的问题"),
+    },
+    hint: I18n.t(
+      "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· Ctrl+Enter 提交 · Esc 取消",
+    ),
+    requireText: true,
+    actions: [
+      { id: "cancel", label: I18n.t("取消") },
+      { id: "go", label: I18n.t("开始问询"), primary: true },
+    ],
+  });
+  if (!res || res.action !== "go") return;
+  const question = String(res.text || "").trim();
+  if (!question) return;
+  const nj = devAskJobCreate(node, question);
+  devAskJobRun(nj);
+  await devAskShowJob(nj);
 }
 
 /* ---------- 文件节点「打开」：打开对应的源码文件 ---------- */
@@ -1278,8 +2193,27 @@ async function openDevFileNode(node) {
   try {
     ex = !!(await window.api.fileExists(target));
   } catch (_) {}
+  /* agent.md 入口：项目根没有 agent.md 时回退到既有 AGENTS.md 共识文件 */
+  if (/^agent\.md$/i.test(fileName(target) || target) && !ex) {
+    const alt = joinPath(root, "AGENTS.md");
+    try {
+      ex = !!(await window.api.fileExists(alt));
+      if (ex) target = alt;
+    } catch (_) {}
+  }
   if (!ex) {
     toast(I18n.t("文件不存在：") + target, "warn");
+    return;
+  }
+  /* Markdown / YAML：应用内阅读器（可查看 / 编辑 / 保存）；其余交给系统默认方式打开 */
+  if (isMdFilePath(target)) {
+    openMdViewer(target);
+    toast(I18n.t("已打开：") + target, "ok");
+    return;
+  }
+  if (isYamlFilePath(target)) {
+    openYamlViewer(target);
+    toast(I18n.t("已打开：") + target, "ok");
     return;
   }
   let r = null;
@@ -1299,6 +2233,8 @@ async function openDevFileNode(node) {
  * 数据存 node.devColor（#rrggbb 小写；空串 = 按元素类型默认色），随工作流保存。
  * 渲染：nodeElement 依据 devColorOf() 给节点元素加 .dev-custom-color 并注入
  * --dev-color（外框）/ --dev-glow（运行呼吸灯），覆盖元素类型的默认配色。
+ * 本节含两张色卡：DEV_KIND_COLOR（元素类型默认色）与 DEV_FUNC_COLORS
+ * （功能色卡：按功能分类给功能块上色，见下方「功能色卡」小节）。
  */
 
 /* 元素类型默认外框色（与 canvas.css 的 .dev-el-* 配色保持一致） */
@@ -1310,6 +2246,136 @@ const DEV_KIND_COLOR = {
   enum: "#ff8fa3",
 };
 
+/* ============ 功能色卡：按「功能分类」给功能块不同颜色的边框 ============
+ * 需求：创建开发节点时，根据功能和类型使用不同的颜色边框（提前设计一套
+ * 色卡对应不同功能）。
+ * 维度：功能色只作用于 devKind = module 的功能块；file / class / interface /
+ * enum 等下层元素继续用 DEV_KIND_COLOR 的元素类型默认色，层级一眼可辨。
+ * 优先级：用户手选（devColorOf 非空）> 功能色（本表按关键词推断）> 元素类型默认色。
+ * 唯一真源：色板 UI、自动上色、Agent 透出、设计文档 / 用户手册、冒烟测试一律
+ * 复用这份常量的 key / zh / en / hex / keywords，禁止在别处硬编码色值。
+ * keywords 匹配规则：中文关键词按子串匹配；纯 ASCII 关键词按「单词边界」匹配
+ * （避免 ai 命中 chain / detail 之类的误判）。打分 = 标题命中数 ×2 + 概述命中数
+ * （标题短而具体，更能定性），分数最高的分类胜出，同分按本表声明顺序取先者；
+ * 一个都不命中 → 返回空串 = 不上色，回到元素类型默认色。
+ */
+const DEV_FUNC_COLORS = [
+  {
+    key: "core",
+    zh: "核心运行时",
+    en: "Core runtime",
+    hex: "#6db4ff",
+    keywords: [
+      "主进程", "外壳", "启动", "引导", "状态机", "运行时", "内核", "窗口",
+      "菜单", "快捷键", "撤销", "编辑器", "引擎",
+      "main", "main-process", "shell", "bootstrap", "startup", "runtime",
+      "kernel", "electron", "window", "menu", "hotkey", "shortcut",
+      "undo", "redo", "core",
+    ],
+  },
+  {
+    key: "canvas",
+    zh: "画布与交互",
+    en: "Canvas & interaction",
+    hex: "#45cfe6",
+    keywords: [
+      "画布", "连线", "排版", "标注", "主题", "交互", "组件", "弹层", "面板",
+      "视图", "缩放", "拖拽", "框选",
+      "canvas", "render", "renderer", "layout", "wire", "edge", "widget",
+      "panel", "toolbar", "tooltip", "zoom", "drag", "theme", "marks", "ui",
+      "ux", "css",
+    ],
+  },
+  {
+    key: "ai",
+    zh: "AI 与 Agent",
+    en: "AI & agents",
+    hex: "#c792ea",
+    keywords: [
+      "智能体", "智能会话", "智能节点", "网关", "会话", "助手", "提示词",
+      "大模型", "模型", "推理", "对话", "意图",
+      "agent", "agents", "ai", "llm", "model", "models", "gateway", "session",
+      "chat", "assistant", "prompt", "prompts", "reasoning", "token",
+      "mcp", "dsh", "harness", "deepseek", "minimax",
+    ],
+  },
+  {
+    key: "data",
+    zh: "数据与存储",
+    en: "Data & storage",
+    hex: "#4dd0c4",
+    keywords: [
+      "数据库", "存储", "持久化", "缓存", "配置", "设置", "导入", "导出",
+      "备份", "副本", "数据表", "建表", "记录", "迁移",
+      "database", "db", "sqlite", "fts", "storage", "persist", "cache",
+      "config", "settings", "import", "export", "backup", "replica",
+      "schema", "migration", "json", "yaml", "csv",
+    ],
+  },
+  {
+    key: "media",
+    zh: "媒体与本地后端",
+    en: "Media & local backends",
+    hex: "#ff8fa3",
+    keywords: [
+      "文生图", "音乐", "视频", "图像", "图片", "音频", "语音", "显存",
+      "后端", "权重", "补帧", "超分",
+      "music", "video", "audio", "image", "images", "tts", "asr", "vram",
+      "gpu", "comfyui", "backend", "ffmpeg", "voice", "thumbnail",
+    ],
+  },
+  {
+    key: "plugin",
+    zh: "插件与生态",
+    en: "Plugins & ecosystem",
+    hex: "#f0c14d",
+    keywords: [
+      "插件", "技能", "扩展", "生态", "商店", "市场", "云端", "服务端",
+      "套件",
+      "plugin", "plugins", "extension", "extensions", "skill", "skills",
+      "marketplace", "catalog", "store", "ecosystem", "server", "cloud",
+      "registry",
+    ],
+  },
+  {
+    key: "build",
+    zh: "构建与诊断",
+    en: "Build & diagnostics",
+    hex: "#ff9d5c",
+    keywords: [
+      "构建", "打包", "发布", "脚本", "更新", "升级", "日志", "诊断",
+      "崩溃", "监控", "安装",
+      "build", "bundle", "package", "packaging", "release", "script",
+      "scripts", "npm", "vite", "electron-builder", "updater", "update",
+      "changelog", "log", "logs", "diagnostic", "diagnostics", "crash",
+      "deploy", "ci",
+    ],
+  },
+  {
+    key: "test",
+    zh: "测试与质量",
+    en: "Tests & quality",
+    hex: "#a8e05f",
+    keywords: [
+      "测试", "冒烟", "断言", "覆盖率", "用例", "质检", "回归",
+      "test", "tests", "testing", "smoke", "lint", "coverage", "assert",
+      "assertion", "spec", "fixture", "mock", "e2e", "regression", "qa",
+    ],
+  },
+];
+
+/* 分类展示名（中 / 英文跟随当前语言；en 文案与 i18n.js「功能色卡」条目一致） */
+function devFuncCatName(cat) {
+  if (!cat) return "";
+  const zh = String(cat.zh || cat.key || "");
+  const en = String(cat.en || zh);
+  try {
+    if (typeof I18n !== "undefined" && I18n.getLocale && I18n.getLocale() === "en")
+      return en;
+  } catch (_) {}
+  return zh;
+}
+
 /* 自定义外框色：合法 #rrggbb 返回小写 hex，否则空串（= 元素类型默认色） */
 function devColorOf(node) {
   if (!node || node.kind !== "super" || !node.dev || node.db) return "";
@@ -1317,6 +2383,87 @@ function devColorOf(node) {
   return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c)
     ? c.toLowerCase()
     : "";
+}
+
+/* ---- 功能归类推断（标题 + 概述做关键词匹配） ---- */
+/* ASCII 关键词要转成正则做单词边界匹配；中文关键词直接子串匹配 */
+const _devFuncKwCache = new Map();
+function devFuncKeywordRe(kw) {
+  const cache = _devFuncKwCache;
+  if (cache.has(kw)) return cache.get(kw);
+  let re = null;
+  if (/^[\x00-\x7F]*$/.test(kw)) {
+    const esc = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    /* 词边界含 "-"：electron-builder 这类带连字符的词仍算整词命中 */
+    re = new RegExp("(^|[^a-z0-9])" + esc + "($|[^a-z0-9])", "i");
+  }
+  cache.set(kw, re);
+  return re;
+}
+
+/* 单类关键词在一小段文本里的命中次数 */
+function devFuncHits(text, cat) {
+  if (!text) return 0;
+  const lower = text.toLowerCase();
+  let hits = 0;
+  for (const kwRaw of cat.keywords || []) {
+    const kw = String(kwRaw || "").trim();
+    if (!kw) continue;
+    const re = devFuncKeywordRe(kw);
+    if (re ? re.test(text) : lower.includes(kw.toLowerCase())) hits += 1;
+  }
+  return hits;
+}
+
+/* 命中的功能分类 key（core / canvas / …）；未命中返回空串 = 不上色。
+ * 打分：标题命中权重 2、概述命中权重 1（标题短而具体，更能定性）；
+ * 同分按 DEV_FUNC_COLORS 声明顺序取先者。 */
+function devFuncGuess(node) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return "";
+  const title = String(node.title || "").trim();
+  const note = String(node.note || "").trim();
+  if (!title && !note) return "";
+  let bestKey = "";
+  let bestScore = 0;
+  for (const cat of DEV_FUNC_COLORS) {
+    const score = devFuncHits(title, cat) * 2 + devFuncHits(note, cat);
+    if (score > bestScore) {
+      bestScore = score;
+      bestKey = cat.key;
+    }
+  }
+  return bestScore > 0 ? bestKey : "";
+}
+
+/* 功能色（推断出的 #rrggbb）：仅 module 功能块参与，未归类返回空串。
+ * 用户已手选颜色时返回空串——devColorOf 优先级最高，推断只填「空值」。 */
+function devFuncColorOf(node) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return "";
+  if ((devKindOf(node) || "module") !== "module") return "";
+  if (devColorOf(node)) return "";
+  const cat = DEV_FUNC_COLORS.find((c) => c.key === devFuncGuess(node));
+  const hex = cat && typeof cat.hex === "string" ? cat.hex.toLowerCase() : "";
+  return /^#[0-9a-f]{6}$/.test(hex) ? hex : "";
+}
+
+/* 创建开发节点时按功能色卡自动上色：把推断出的功能色**写入** node.devColor，
+ * 之后随工作流持久化，用户仍可在色板里手选覆盖。
+ * 生效条件（全部满足才上色）：
+ *   · 是 dev 超级节点且不是 db 节点；
+ *   · devKind = module（file / class / interface / enum 保留元素类型默认色）；
+ *   · devColor 为空——调用方显式传过 devColor 时优先级最高，一律不覆盖。
+ * 两个创建入口都调它：Agent 的 canvas_edit create（app-nodes.js）与右键
+ * 「开发节点（功能块）」菜单（app.js addNode）。未归类（关键词不命中）的块
+ * 返回空串 = 不上色，继续显示 module 的类型默认色。
+ * 返回实际写入的 hex（空串 = 未上色）。 */
+function devAutoColorNode(node) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return "";
+  if (devColorOf(node)) return "";
+  if ((devKindOf(node) || "module") !== "module") return "";
+  const hex = devFuncColorOf(node);
+  if (!hex) return "";
+  node.devColor = hex;
+  return hex;
 }
 
 /* 当前应显示的颜色：自定义优先，否则按元素类型默认 */
@@ -1443,6 +2590,11 @@ function devColorPopEl() {
   el.className = "dev-color-pop";
   el.innerHTML =
     '<div class="dev-color-head"><b></b><button type="button" class="mini" data-act="close">✕</button></div>' +
+    /* 功能色卡快捷行：与自动上色同一张色卡，一眼看懂 + 一键覆盖 */
+    '<div class="dev-color-func">' +
+    '<div class="dev-color-func-head"><b></b><span class="hint"></span></div>' +
+    '<div class="dev-color-func-row"></div>' +
+    "</div>" +
     '<div class="dev-color-canvas">' +
     '<canvas class="dev-color-sv" width="180" height="180"></canvas>' +
     '<canvas class="dev-color-hue" width="180" height="16"></canvas>' +
@@ -1465,6 +2617,31 @@ function devColorPopEl() {
     _devColorNode.devColor = "";
     devColorSyncAll();
   };
+  /* 功能色卡快捷行：8 个分类色 swatch，点击即手动套用（色值 / 名称均取自
+     DEV_FUNC_COLORS 唯一真源，不在此硬编码） */
+  const funcRow = el.querySelector(".dev-color-func-row");
+  if (funcRow) {
+    for (const cat of DEV_FUNC_COLORS) {
+      const hex = String(cat.hex || "").toLowerCase();
+      if (!/^#[0-9a-f]{6}$/.test(hex)) continue;
+      const sw = document.createElement("button");
+      sw.type = "button";
+      sw.className = "dev-color-func-sw";
+      sw.dataset.hex = hex;
+      sw.dataset.cat = String(cat.key || "");
+      sw.style.background = hex;
+      sw.onclick = (ev) => {
+        ev.stopPropagation();
+        if (!_devColorNode) return;
+        if (devColorOf(_devColorNode) === hex) return; /* 已是当前色：不留冗余历史 */
+        pushHistory();
+        _devColorNode.devColor = hex;
+        devColorSyncAll();
+        scheduleSave();
+      };
+      funcRow.appendChild(sw);
+    }
+  }
   /* 方块拖动（饱和度 × 明度） */
   const svC = el.querySelector(".dev-color-sv");
   const hueC = el.querySelector(".dev-color-hue");
@@ -1530,12 +2707,35 @@ function devColorPopEl() {
   return el;
 }
 
+/* 功能色卡快捷行：小标题 + 每个 swatch 的 tooltip（分类名 + hex）+ 当前色高亮。
+ * 由 syncDevColorFields 调用，颜色或语言变化都会就地刷新。 */
+function syncDevColorFuncRow(el) {
+  const box = el.querySelector(".dev-color-func");
+  if (!box) return;
+  const title = box.querySelector(".dev-color-func-head b");
+  if (title) title.textContent = I18n.t("功能色卡");
+  const hint = box.querySelector(".dev-color-func-head .hint");
+  if (hint) hint.textContent = I18n.t("按功能上色");
+  const cur = devColorOf(_devColorNode);
+  const sws = el.querySelectorAll(".dev-color-func-sw");
+  for (let i = 0; i < sws.length; i++) {
+    const sw = sws[i];
+    const hex = String(sw.dataset.hex || "");
+    const cat = DEV_FUNC_COLORS.find((c) => String(c.hex || "").toLowerCase() === hex);
+    const tip = devFuncCatName(cat) + " · " + hex.toUpperCase();
+    sw.title = tip;
+    if (typeof sw.setAttribute === "function") sw.setAttribute("aria-label", tip);
+    sw.classList.toggle("on", !!cur && cur === hex);
+  }
+}
+
 /* 弹出层控件同步到节点当前值（色板 canvas / 色块 / Hex / RGB 文本） */
 function syncDevColorFields() {
   const el = document.getElementById("devColorPop");
   if (!el) return;
   _devColorHSV = hexToHsv(devColorOf(_devColorNode) || devShownColor(_devColorNode));
   renderDevColorCanvases(el);
+  syncDevColorFuncRow(el);
   const hex = hsvToHex(_devColorHSV.h, _devColorHSV.s, _devColorHSV.v);
   const sw = el.querySelector(".dev-color-swatch");
   if (sw) sw.style.background = hex;
@@ -1614,10 +2814,11 @@ function openDevColorPop(node, anchor) {
   el.classList.add("on");
   const r = anchor.getBoundingClientRect();
   const pad = 8;
-  const w = 200;
+  /* 弹层尺寸实测（新增功能色卡快捷行后高度变大；兜底值同步上调） */
+  const w = el.offsetWidth || 200;
   let left = r.left;
   let top = r.bottom + 6;
-  const h = el.offsetHeight || 290;
+  const h = el.offsetHeight || 386;
   if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
   if (left < pad) left = pad;
   if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
