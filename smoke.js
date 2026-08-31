@@ -238,7 +238,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       const i1 = S.config.providers.find((p) => p.type.startsWith('image_'));
       log('first text provider=' + t1.id + ':' + t1.name + ' models=' + t1.models.join(','));
       log('first image provider=' + i1.id + ':' + i1.name + ' models=' + i1.models.join(',') + ' baseUrlEmpty=' + (i1.baseUrl === ''));
-      log('stability/mj removed=' + !S.config.providers.some((p) => p.id === 'stability' || p.id === 'mj'));
+      log('stability/mj no-key kept (no auto-remove)=' + S.config.providers.some((p) => p.id === 'stability' || p.id === 'mj'));
 
       // —— 请求预览 ——
       const n2b = S.wf.nodes.find((x) => x.kind === 'proc_text');

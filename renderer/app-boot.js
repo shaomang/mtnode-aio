@@ -43,7 +43,11 @@ window.addEventListener("unhandledrejection", (ev) => {
   } catch {}
 });
 
-/* 保证默认服务商存在（DeepSeek 文本 / GPT Image 2 图像），并置于列表首位 */
+/* 保证默认服务商存在（DeepSeek 文本 / GPT Image 2 图像）。
+   只做「全新空列表时的播种」：用户保存过任何服务商（列表非空）就一律不动
+   —— 不再自动补回被删的默认项、不再改写已有项的模型列表、不再强制重排、
+   也不再剔除无 Key 的 stability/mj，否则设置里删除/编辑/排序都会在重启
+   或再次打开设置时被改回去（gpt-image 删不掉、配置一改就还原的根因）。 */
 const DEEPSEEK_DEFAULT_MODELS = [
   "deepseek-v4-flash",
   "deepseek-v4-pro",
@@ -51,15 +55,21 @@ const DEEPSEEK_DEFAULT_MODELS = [
 ];
 
 function ensureDefaultProviders() {
-  let provs = S.config.providers || [];
-  provs = provs.filter(
-    (p) =>
-      !(
-        (p.id === "stability" || p.id === "mj") &&
-        !String(p.apiKey || "").trim()
-      ),
+  const provs = Array.isArray(S.config.providers)
+    ? S.config.providers.slice()
+    : [];
+  if (provs.length) {
+    /* 已有任何服务商：尊重用户已保存的列表原样，不做任何改动 */
+    S.config.providers = provs;
+    return;
+  }
+  const removed = new Set(
+    (Array.isArray(S.config.removedProviders)
+      ? S.config.removedProviders
+      : []
+    ).map(String),
   );
-  if (!provs.some((p) => p.id === "deepseek")) {
+  if (!removed.has("deepseek")) {
     provs.unshift({
       id: "deepseek",
       name: "DeepSeek",
@@ -69,17 +79,8 @@ function ensureDefaultProviders() {
       models: DEEPSEEK_DEFAULT_MODELS.slice(),
       vision: false,
     });
-  } else {
-    const d = provs.find((p) => p.id === "deepseek");
-    if (!(d.models || []).some((m) => String(m).includes("deepseek-v4"))) {
-      d.models = DEEPSEEK_DEFAULT_MODELS.slice();
-    } else if (
-      !(d.models || []).includes("deepseek-v4-flash-vision-exp")
-    ) {
-      d.models = d.models.concat(["deepseek-v4-flash-vision-exp"]);
-    }
   }
-  if (!provs.some((p) => p.id === "gpt_image_2")) {
+  if (!removed.has("gpt_image_2")) {
     provs.push({
       id: "gpt_image_2",
       name: "GPT Image 2",
@@ -88,16 +89,17 @@ function ensureDefaultProviders() {
       apiKey: "",
       models: ["gpt-image-2-vip"],
     });
-  } else {
-    const g = provs.find((p) => p.id === "gpt_image_2");
-    if (!String(g.baseUrl || "").trim()) g.baseUrl = "";
-    if (!(g.models || []).includes("gpt-image-2-vip"))
-      g.models = ["gpt-image-2-vip"];
   }
-  const text = provs.filter((p) => p.type === "text_openai");
-  const img = provs.filter((p) => p.type.startsWith("image_"));
+  /* 仅播种这一次把默认项排到同类型首位（此后顺序完全由用户控制） */
+  const text = provs.filter((p) => p && p.type === "text_openai");
+  const img = provs.filter(
+    (p) => p && p.type && p.type.startsWith("image_"),
+  );
   const rest = provs.filter(
-    (p) => !p.type.startsWith("text_openai") && !p.type.startsWith("image_"),
+    (p) =>
+      !p ||
+      (p.type !== "text_openai" &&
+        !(p.type && p.type.startsWith("image_"))),
   );
   text.sort((a, b) => (a.id === "deepseek" ? -1 : b.id === "deepseek" ? 1 : 0));
   img.sort((a, b) =>

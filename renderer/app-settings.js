@@ -16,14 +16,16 @@ function mergePluginManagedProviders(targetCfg, sourceCfg) {
 
 /* 打开设置时仅合并插件托管服务商（llama 本地等），绝不整表覆盖：
    整表覆盖会把「添加服务商」弹窗刚 push 的内存项与用户在本页的
-   增/删/排序全部丢弃 —— 手动添加服务商保存后不在列表中的根因。 */
+   增/删/排序全部丢弃 —— 手动添加服务商保存后不在列表中的根因。
+   注意：此处不调用 ensureDefaultProviders()——默认服务商只在启动时播种
+   （app-boot.js），若每次打开设置都补默认，被用户删除的 gpt_image_2 /
+   deepseek 会在列表里立刻「复活」，删除与编辑永远无法保存。 */
 async function reloadConfigProvidersFromDisk() {
   if (!window.api || !window.api.configLoad || !S.config) return;
   try {
     const fresh = await window.api.configLoad();
     if (fresh && Array.isArray(fresh.providers)) {
       mergePluginManagedProviders(S.config, fresh);
-      ensureDefaultProviders();
     }
   } catch {}
 }
@@ -2012,6 +2014,12 @@ async function validateProviderApiKey(prov, btn) {
 function provCard(prov, i, list) {
   const card = document.createElement("div");
   card.className = "prov-card";
+  /* 列表就地重建：增/删/排序/改类型只刷新服务商卡片，不整页重开设置，
+     也避免 openSettings() 重读磁盘把未保存的改动吞掉 */
+  const rerender = () => {
+    list.innerHTML = "";
+    S.config.providers.forEach((p, j) => list.appendChild(provCard(p, j, list)));
+  };
   const head = document.createElement("div");
   head.className = "prov-head";
   const idx = document.createElement("span");
@@ -2039,7 +2047,7 @@ function provCard(prov, i, list) {
     const t = arr[i - 1];
     arr[i - 1] = arr[i];
     arr[i] = t;
-    openSettings();
+    rerender();
   };
   const down = document.createElement("button");
   down.type = "button";
@@ -2055,7 +2063,7 @@ function provCard(prov, i, list) {
     const t = arr[i + 1];
     arr[i + 1] = arr[i];
     arr[i] = t;
-    openSettings();
+    rerender();
   };
   move.appendChild(up);
   move.appendChild(down);
@@ -2065,8 +2073,18 @@ function provCard(prov, i, list) {
   del.textContent = I18n.t("✕ 删除");
   del.title = I18n.t("删除该服务商");
   del.onclick = () => {
+    const pid = prov && prov.id ? String(prov.id) : "";
     S.config.providers.splice(i, 1);
-    openSettings();
+    if (pid) {
+      /* 记入删除清单，随保存持久化：重启时 ensureDefaultProviders()
+         不再把该默认项补回来 */
+      S.config.removedProviders = Array.isArray(S.config.removedProviders)
+        ? S.config.removedProviders.slice()
+        : [];
+      if (S.config.removedProviders.indexOf(pid) < 0)
+        S.config.removedProviders.push(pid);
+    }
+    rerender();
   };
   head.appendChild(del);
   card.appendChild(head);
@@ -2093,7 +2111,7 @@ function provCard(prov, i, list) {
   typeSel.value = prov.type;
   typeSel.onchange = () => {
     prov.type = typeSel.value;
-    openSettings();
+    rerender();
   };
   mkField(I18n.t("类型"), typeSel);
 
