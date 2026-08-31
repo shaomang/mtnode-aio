@@ -849,13 +849,13 @@ async function assistSend(text) {
     "  · 批次处理时：批量并行（batchMode=batch）尽量不用智能节点（agent_task / 文本智能模式），改用普通 proc_text / proc_image；聚合模式（batchMode=agg）允许使用智能节点。\n" +
     "  · 【重要】不要给 agent_task 或已开启智能的 proc_text 后面再接保存节点：智能节点本身会写文件，保存节点只会把无关的任务/对话文本落盘。保存节点只接在普通（非智能）proc_text / proc_image 之后。旧版 save_text / save_image 会自动升级为统一保存节点。\n" +
     "  · 【重要】不要给 music_gen / video_gen 后面再接保存节点：它们在节点内填写 outputPath 直接写出音视频，无配对保存节点。\n" +
-    "  · 【Remotion 视频节点】kind \"remotion\"：仅当已安装「remotion」应用插件时使用（未安装时节点会显示警示条，运行也会被拦）。描述文本来自连线端口1（接文本源，如 input_text）；节点上可设 duration（秒 1–60）、fps（1–60）、remotionSize（1280x720 / 1920x1080 / 720x1280 / 1080x1920 / 1024x1024 / 1080x1080）、providerId + model（生成动效代码的 LLM）。与 music_gen/video_gen 相反：remotion 没有 outputPath，渲染出的 mp4 要由下游「保存」节点落盘（savePath 用 .mp4），所以生成含 remotion 的工作流时，务必在 remotion 后面接一个保存节点。\n" +
+    "  · 【Remotion 视频节点】kind \"remotion\"：仅当已安装「remotion」应用插件时使用（未安装时节点会显示警示条，运行也会被拦）。描述文本来自连线端口1（接文本源，如 input_text）；节点上可设 duration（秒 1–60）、fps（1–60）、remotionSize（1280x720 / 1920x1080 / 720x1280 / 1080x1920 / 1024x1024 / 1080x1080）、providerId + model（生成动效代码的 LLM）。与 music_gen/video_gen 相反：remotion 没有 outputPath，渲染出的 mp4 要由下游「保存」节点落盘（savePath 用 .mp4），所以生成含 remotion 的工作流时，务必在 remotion 后面接一个保存节点。remotion 也可被 control 控制节点直接连线后一键启动重跑。\n" +
     "  · 【重要·文件交接】尽量不要把智能节点（agent_task / 智能 proc_text）作为数据输入接到其他节点：会话输出噪声大且未必含关键信息。优先让智能节点写出文档/文件，再用 wait_file（waitPath）以控制线连到后续节点阻塞执行；wait_file 无输入端子、不输出任何内容，仅监视文件防止下游提前运行，下游自行按约定路径读文件。\n" +
     "  · 【极重要·防 N² 爆 token】batchMode=batch 时每次运行只应对「当前这一条」。严禁把整批 N 张图/N 条再全部塞进每一次运行的参考图或提示词（否则 ≈N×N 次调用，巨量浪费）。需要只处理其中一项时，先接「拆分」节点选出单项再连文生图；要一次看全部才用 batchMode=agg。两条批量源不要交叉接到同一文生图。\n" +
     "  · 文生图（proc_image）每次运行只生成 1 张图，API 不支持一次出多张。prompt 里严禁写「生成多张/几张图」之类要求；需要多图时用：批量 1 条出 1 张、多个文生图节点、或 attempts×N。\n" +
     "  · 文生图尺寸：create/update 传 size，须为 mtnode_canvas_get 返回的 imageSizes 之一（如 2048x1360 / 1280x1280 / auto）；按横竖构图选择，省略则默认 defaultImageSize。\n" +
     "  · @引用：连线节点用 @标题；引用全局节点广播时须同时 (1) 在处理节点上设 globalRefs:true，(2) 在 prompt/task 内写 @源标题（缺一不可）。@Tag标签 引用该标签下全部节点内容（给节点设 tags，见 tagCatalog），UI 中 Tag 为紫色、节点为青色。\n" +
-    "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run/clear，ctrlFillOnly=true 时仅补跑无输出节点）连到处理/保存节点，方便用户一键重跑、补缺或清空。\n" +
+    "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run，ctrlFillOnly=true 时仅补跑无输出节点）方便用户一键重跑或补缺；不要创建 ctrlAction=clear 的「清空」控制节点。控制流不会沿数据线传导：control 必须直接连线到每一个需要一键启动的节点（处理/保存/媒体等）。\n" +
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
     "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
     (scopeCurrent

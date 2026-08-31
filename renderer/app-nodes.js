@@ -4306,6 +4306,7 @@ function canControlRun(n) {
       isSaveNode(n) ||
       n.kind === "music_gen" ||
       n.kind === "video_gen" ||
+      n.kind === "remotion" ||
       n.kind === "control" ||
       n.kind === "net_send" ||
       n.kind === "net_recv")
@@ -4592,6 +4593,7 @@ async function runControlledNode(n, seen) {
     n.kind === "agent_task" ||
     n.kind === "music_gen" ||
     n.kind === "video_gen" ||
+    n.kind === "remotion" ||
     n.kind === "wait_file" ||
     n.kind === "net_send" ||
     n.kind === "net_recv"

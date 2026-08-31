@@ -21,8 +21,8 @@ description: MTNode 画布节点排版：可编辑/控制节点靠上（小 y）
 
 ## 控制节点
 
-- `control`：`ctrlAction=run` / `clear`，`ctrlFillOnly=true` 时仅补跑无输出节点
-- 控制线连到处理 / 保存节点，方便用户一键重跑
+- `control`：`ctrlAction=run`（不要创建 `clear`「清空」控制节点），`ctrlFillOnly=true` 时仅补跑无输出节点
+- 控制流不会沿数据线传导：`control` 必须**直接连线到每一个**需要一键重跑的节点（处理 / 保存 / 媒体等）
 
 ## 一键排版（用户要求整理时）
 

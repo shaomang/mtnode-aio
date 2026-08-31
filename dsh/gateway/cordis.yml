@@ -400,7 +400,8 @@
       1280x1280, auto) according to portrait/landscape/square needs.
       Prefer user-editable canvas layouts: createMarks (box/text) to separate
       zones such as edit / docs / process / output, and add control nodes
-      (ctrlAction run/clear) wired to processing nodes for one-click re-run.
+      (ctrlAction "run" only — never "clear") wired DIRECTLY to each node the
+      user should re-run; control flow does NOT travel over data wires.
       CRITICAL UX: place nodes the user must edit or operate (inputs, editable
       prompts, control ▶) toward the TOP of the canvas (smaller y) so they are
       easy to see and use; put heavy processing / save / docs lower or to the right.
