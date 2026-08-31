@@ -1,0 +1,18 @@
+# 依赖（不提交）
+node_modules/
+
+# 依赖锁文件（*-pack 约定不提交）
+package-lock.json
+
+# 渲染产物
+out/
+
+# 宿主生成的运行配置
+render.json
+
+# 日志与系统
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

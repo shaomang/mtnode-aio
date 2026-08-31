@@ -174,14 +174,18 @@ function modelLabel(m, vis) {
   return base + (vis && vis.has(m.id) ? I18n.t(" 图") : "");
 }
 
-/* 节点默认工作目录：工作流统一目录(设置后只读固定) > 节点自身 > 应用数据目录 */
+/* 节点默认工作目录，优先级：节点/会话手填目录 > 画布项目根（开发节点 devPath 单一真源，
+   见 devProjectRootOf；多根歧义时另置 S.devProjectRootAmbiguous = true 供 UI 提示）>
+   画布统一目录 wf.workspace > 应用默认数据目录。
+   ⚠ 同名副本有两份：renderer/app.js 与 renderer/app-agent.js（后者后加载生效），
+   两份必须与 devProjectRootOf 保持同一逻辑，任何改动都要逐字同步。 */
 function dshWorkspaceOf(node) {
+  const manual = node && (node.agentWorkspace || node.workspace);
+  if (manual) return manual;
+  const projRoot = devProjectRootOf();
+  if (projRoot) return projRoot;
   if (S.wf && S.wf.workspace) return S.wf.workspace;
-  return (
-    (node && (node.agentWorkspace || node.workspace)) ||
-    S.dshWorkspaceFallback ||
-    ""
-  );
+  return S.dshWorkspaceFallback || "";
 }
 
 /* ── 图像输入与视觉模型(智能任务节点连接图像时) ── */

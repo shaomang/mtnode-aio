@@ -82,8 +82,22 @@ contextBridge.exposeInMainWorld('api', {
   rollbackPutRound: (sessionId, round) => ipcRenderer.invoke('rollback:putRound', { sessionId, round }),
   rollbackListRounds: (sessionId, limit) => ipcRenderer.invoke('rollback:listRounds', { sessionId, limit }),
   rollbackGetRound: (sessionId, roundId) => ipcRenderer.invoke('rollback:getRound', { sessionId, roundId }),
-  rollbackRestoreFile: (sessionId, roundId, p, obj) => ipcRenderer.invoke('rollback:restoreFile', { sessionId, roundId, path: p, obj }),
-  rollbackDeleteFile: (sessionId, roundId, p) => ipcRenderer.invoke('rollback:deleteFile', { sessionId, roundId, path: p }),
+  rollbackRestoreFile: (sessionId, roundId, p, obj, opts) =>
+    ipcRenderer.invoke('rollback:restoreFile', {
+      sessionId,
+      roundId,
+      path: p,
+      obj,
+      expectHash: opts && opts.expectHash,
+      expectMissing: opts && opts.expectMissing,
+    }),
+  rollbackDeleteFile: (sessionId, roundId, p, opts) =>
+    ipcRenderer.invoke('rollback:deleteFile', {
+      sessionId,
+      roundId,
+      path: p,
+      expectHash: opts && opts.expectHash,
+    }),
   rollbackStat: (opts) => ipcRenderer.invoke('rollback:stat', opts || {}),
   rollbackGc: (opts) => ipcRenderer.invoke('rollback:gc', opts || {}),
   netListen: (o) => ipcRenderer.invoke('net:listen', o),
@@ -341,6 +355,28 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('tts:providerSynced', handler);
     return () => ipcRenderer.removeListener('tts:providerSynced', handler);
   },
+  remotionStatus: () => ipcRenderer.invoke('remotion:getStatus'),
+  remotionInstall: (opts) => ipcRenderer.invoke('remotion:install', opts || {}),
+  remotionOpen: () => ipcRenderer.invoke('remotion:open'),
+  remotionClose: () => ipcRenderer.invoke('remotion:close'),
+  remotionGenerate: (params) => ipcRenderer.invoke('remotion:render', params || {}),
+  remotionCancel: (nodeId) => ipcRenderer.invoke('remotion:cancelRender', nodeId),
+  remotionRemovePluginMeta: () => ipcRenderer.invoke('remotion:removePluginMeta'),
+  onRemotionProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('remotion:progress', handler);
+    return () => ipcRenderer.removeListener('remotion:progress', handler);
+  },
+  onRemotionConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('remotion:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('remotion:consoleChanged', handler);
+  },
+
   apiCall: (spec) => ipcRenderer.invoke('api:call', spec),
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),
   apiPreview: (spec) => ipcRenderer.invoke('api:preview', spec),

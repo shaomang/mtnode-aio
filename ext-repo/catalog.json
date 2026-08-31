@@ -1,7 +1,7 @@
 {
   "format": "mtnode-ext-v1",
   "name": "MTNode Official",
-  "updatedAt": "2026-08-21T09:28:02.000Z",
+  "updatedAt": "2026-08-31T04:57:51.850Z",
   "plugins": [],
   "skills": [
     {
@@ -45,6 +45,12 @@
       "name": "小说视频素材与分镜拆解",
       "description": "使用多Agent协作，从长篇小说中完整提取人物、组织、场景、道具、事件、任务和剧情，生成剧情大纲、视频素材清单与可拍摄分镜，并通过覆盖率审计防止遗漏。",
       "path": "skills/novel-to-video-preproduction/SKILL.md"
+    },
+    {
+      "id": "remotion-video",
+      "name": "Remotion 动效视频",
+      "description": "自撰的 Remotion 动效视频技能（MTNode 版）。在用户要用 MTNode「Remotion 视频」节点或本机 Remotion 项目做动效视频、写/改 Composition.tsx、调整渲染参数（时长、fps、分辨率、输出路径），或排查渲染失败（render_exit_1、bundleProgress 后 esbuild Transform failed）时使用。含 MTNode 宿主契约（render.json、src/index.tsx、合成 id Main）与 Remotion 通用最佳实践摘要。",
+      "path": "skills/remotion-video/SKILL.md"
     }
   ],
   "mcp": []

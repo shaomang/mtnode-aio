@@ -14,7 +14,7 @@ const zlib = require("zlib");
 
 const PLUGIN_FEED =
   process.env.MTNODE_PLUGIN_URL || "http://mt-agent.com/mtnode/plugins";
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "h3", "llama", "tts"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "h3", "llama", "tts", "remotion"]);
 const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 80 * 1024 * 1024;
@@ -259,6 +259,7 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "h3") kind = "h3";
   if (!kind && raw.handler === "llama") kind = "llama";
   if (!kind && raw.handler === "tts") kind = "tts";
+  if (!kind && raw.handler === "remotion") kind = "remotion";
   const iconName = safeIconName(raw.icon) || (id + ".png");
   const known = KNOWN_KINDS.has(kind);
   const win = (raw.window && typeof raw.window === "object") ? raw.window : {};
@@ -267,7 +268,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "tts" ? "tts" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "tts" ? "tts" : kind === "remotion" ? "remotion" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -348,8 +349,8 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts") {
-      /* 版本/可更新状态由 music3/h3/llama 主进程 status 异步判定；此处仅占位 */
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion") {
+      /* 版本/可更新状态由 music3/h3/llama/remotion 主进程 status 异步判定；此处仅占位 */
       out.push(Object.assign({}, p, {
         installed: true,
         installedVersion: p.version || "",
@@ -446,7 +447,7 @@ async function loadCatalog() {
     for (const p of fallback.plugins || []) {
       if (!p || !p.id || have.has(p.id)) continue;
       // Keep built-in handlers (pet/music3) visible even if remote catalog omits them
-      if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "pet" || p.handler === "pet") {
+      if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "pet" || p.handler === "pet") {
         list.push(p);
         have.add(p.id);
       }

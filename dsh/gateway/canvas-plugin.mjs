@@ -18,7 +18,7 @@ export const name = 'mtnode-canvas'
 export const inject = ['tools']
 
 const KINDS = [
-  'input_text', 'input_image', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'video_gen',
+  'input_text', 'input_image', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'video_gen', 'remotion',
   'save', 'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
   'agent_task', 'task', 'super', 'db_replica', 'chat',
@@ -64,7 +64,7 @@ const GET_DESC =
   'When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
 
 const KIND_GUIDE =
-  'Available create.kind values: input_text / input_image / input_file (输入节点) · db_table (数据库建表) · proc_text / proc_image (文本/图像处理) · agent_task / chat (智能节点) · save / save_text / save_image (保存) · split / merge (批次拆分/合并) · global (全局广播) · control / judge / task (控制/判断/任务) · wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex (等待/定时/延时/序列/闸门/分发/计数/互斥) · super / db_replica (超级节点 / 数据库副本) · music_gen / video_gen (音乐/视频生成) · net_recv / net_send (网络接收 / 网络发送) · execute (执行节点：绑定 .exe/.bat/.cmd 或任何系统可打开的文件，一键启动；execPath 存绝对路径，execIcon / execColor 自定义图标与 body 颜色便于快速定位；节点上点两次播放键或双击即执行). net_recv listens on a port/channel and forwards incoming text to downstream; net_send pushes its data-input text to a target host:port — both support tcp/udp, channel multiplexing and per-node host/port. Database nodes: input_file imports local files, db_table builds a table from them (agent extracts metadata, user confirms form), a kind "super" with db:true holds facts and compiles into a db_replica that smart nodes query with mtnode_db; you may also create a db_replica directly and set dbNodeId/dbName to point at an existing database super node. Dev nodes (开发节点): a kind "super" with dev:true is a project module block — note must be TWO sections (REQUIRED, ≤200 chars): 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, and never put technical details into 【功能】; devPath = project root, nest via parentSuperId and refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer), and devKind=module blocks carry a FUNCTION colour from the DEV 功能色卡 (functional colour card, auto-applied at creation — see "DEV 功能色卡" below); its body 建议 / 开发 / 细化 buttons all confirm via a dialog first: 建议 has the AI READ-only inspect the real project code plus the dev progress of this module and return exactly 4 next-step options the user can multi-select (with a free-text supplement), and the 开发 button in the same dialog then starts the dev session of that module with the chosen plan; 开发 asks what to build this round; 细化 confirms whether to expand children and at what depth (expand this layer only, or drill all the way down until nothing can be split further). Every confirmed 开发 / 细化 runs in a NEW session bound to that module. '
+  'Available create.kind values: input_text / input_image / input_file (输入节点) · db_table (数据库建表) · proc_text / proc_image (文本/图像处理) · agent_task / chat (智能节点) · save / save_text / save_image (保存) · split / merge (批次拆分/合并) · global (全局广播) · control / judge / task (控制/判断/任务) · wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex (等待/定时/延时/序列/闸门/分发/计数/互斥) · super / db_replica (超级节点 / 数据库副本) · music_gen / video_gen / remotion (音乐/视频生成) · net_recv / net_send (网络接收 / 网络发送) · execute (执行节点：绑定 .exe/.bat/.cmd 或任何系统可打开的文件，一键启动；execPath 存绝对路径，execIcon / execColor 自定义图标与 body 颜色便于快速定位；节点上点两次播放键或双击即执行). net_recv listens on a port/channel and forwards incoming text to downstream; net_send pushes its data-input text to a target host:port — both support tcp/udp, channel multiplexing and per-node host/port. Database nodes: input_file imports local files, db_table builds a table from them (agent extracts metadata, user confirms form), a kind "super" with db:true holds facts and compiles into a db_replica that smart nodes query with mtnode_db; you may also create a db_replica directly and set dbNodeId/dbName to point at an existing database super node. Dev nodes (开发节点): a kind "super" with dev:true is a project module block — note must be TWO sections (REQUIRED, ≤200 chars): 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, and never put technical details into 【功能】; devPath = project root, nest via parentSuperId and refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer), and devKind=module blocks carry a FUNCTION colour from the DEV 功能色卡 (functional colour card, auto-applied at creation — see "DEV 功能色卡" below); its body 建议 / 开发 / 细化 buttons all confirm via a dialog first: 建议 has the AI READ-only inspect the real project code plus the dev progress of this module and return exactly 4 next-step options the user can multi-select (with a free-text supplement), and the 开发 button in the same dialog then starts the dev session of that module with the chosen plan; 开发 asks what to build this round; 细化 confirms whether to expand children and at what depth (expand this layer only, or drill all the way down until nothing can be split further). Every confirmed 开发 / 细化 runs in a NEW session bound to that module. '
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
@@ -106,7 +106,7 @@ CRITICAL — to keep the canvas tidy, pack related clusters into kind "super" (u
 DATABASE super nodes: create a kind "super" with db:true (subFolder holds fact files; put facts as inner input_text nodes). The user compiles it (⚙) which produces a db_replica child-top node; when a smart node (agent_task / proc_text agent) is wired to that replica it can query the facts with the mtnode_db tool (list/query/get/calc) — facts then MUST come from that tool, never from model memory.
 DEV nodes (开发节点 / 功能块 = software project architecture): create a kind "super" with dev:true, note must be TWO sections (REQUIRED, ≤200 chars): 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, and never put technical details into 【功能】; devPath = project root on the top block, devStatus pending/wip/done. Element hierarchy via devKind: module (功能块) → file (source file) → class / interface / enum (class-diagram elements); each type renders with a distinct frame color (module=green, file=blue, class=orange, interface=purple, enum=pink) — and module blocks are recoloured by FUNCTION from the DEV 功能色卡 below, which is the colour you should set on them. Dev nodes nest via parentSuperId — refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer), and ALWAYS propose the outline of the planned descendants and get the user's confirmation BEFORE creating them (细化 flow). Express relations between elements with RELATIONSHIP wires: connect entries with rel:true (+ relLabel text, relArrow forward/backward/both/none) — plain STRAIGHT UML-style lines (never elbow/orthogonal routing) that never carry data; when the user clicks a node its relationship lines light up while the rest fade back. Relation lines ARE part of layout now: auto layout / 「按关系线整理内部排版」 layers blocks along the arrow direction (cycle-closing lines degrade to soft ordering-only constraints) and the engine fans the anchors out along each block edge and slides near-coincident straight lines apart, so DO NOT hand-place dev blocks in a 5-per-row grid — just create them (no x/y) and let layout do its job. Expanded dev shells grow to fit their children automatically. Each dev node body offers 建议 / 开发 / 细化 buttons that all open a confirmation dialog first: 建议 has the AI do a READ-ONLY investigation of the real project code and the dev progress of this module, then return exactly 4 next-step options in the same dialog where the user multi-selects and may add a supplement — the 开发 button in that dialog then runs development with the picked plan (so you do not need to invent this yourself; point the user at 建议 when they ask "what next"). 开发 shows the module's title / overview / status and asks the user what to build or iterate this round; 细化 asks whether this element should be expanded further and at what depth — expand this layer only, or drill all the way down until nothing can be split further (the dialog also states when refining is unnecessary or impossible). Every confirmed action runs in a NEW session bound to that module (workspace = project root, titled 开发 · 模块名 / 细化 · 模块名); the node keeps its session history. When refining, first report the outline of the whole planned multi-layer tree and get the user's confirmation BEFORE creating any node (ONE confirmation covers the whole depth, then create the blocks top-down layer by layer in the bound session; a class / interface / enum is already finest-grained — say so instead of creating nodes). Two per-block appearance/behaviour fields are patchable too: devColor (#rrggbb frame + glow, empty = element-type default) and devModel (+ optional devProvider) which pins the Agent model used by this block's 建议 read-only run and by its 开发 / 细化 bound sessions — a child dev block with no pick of its own inherits the nearest ancestor's devModel, so to apply one model project-wide set it on the top block only; patch devModel to an empty string to fall back to the app default. DEV 功能色卡 (functional colour card — colour devKind=module blocks BY FUNCTION so the canvas reads at a glance; same list is returned by mtnode_canvas_get as devFuncColors): ${DEV_FUNC_COLORS_TABLE}. New dev blocks are auto-coloured from this card at creation (title + note keyword match, only when devColor was left empty), so: pick the card entry that fits the block's function when you set devColor explicitly, never invent one-off hexes, do NOT ask the user before colouring (just apply the card), and leave the colour alone when the user already hand-picked one in the HSV swatch button of the node header — a hand-picked devColor always wins and auto-colouring will not touch it. file / class / interface / enum keep their element-type colours (the card is module-only). When uncertain (include a plugin? tech choice?), ASK the user first.
 CRITICAL — do NOT create save after agent_task or proc_text with agent:true: those smart nodes can write files themselves; a save node would dump chat/task transcript junk to disk. Use save only after ordinary proc_text / proc_image (agent off). Old aliases save_text / save_image still work and become a unified save node.
-CRITICAL — do NOT create save after music_gen / video_gen: they write audio/video via the node's own outputPath (required). No paired/bound save node.
+CRITICAL — do NOT create save after music_gen / video_gen: they write audio/video via the node's own outputPath (required). No paired/bound save node. remotion is DIFFERENT: it has NO outputPath — the rendered mp4 is picked up by a downstream save node, so DO wire a save node (savePath ending .mp4) after a remotion node.
 CRITICAL — avoid wiring agent_task / proc_text(agent:true) as DATA inputs into other nodes: their outputs carry irrelevant session/transcript noise and often omit the key facts. Prefer file handoff: the smart node WRITES a document (md/yaml/json/…), then use wait_file (监视路径 / waitPath) as a CONTROL node wired OUT to downstream so they block until that file exists; wait_file has NO input ports and outputs NOTHING — later nodes READ the agreed path themselves. Do not wire anything into wait_file.
 wait_file: control-kind blocker with output only; polls waitPath (relative to workspace or absolute) every waitIntervalSec seconds (default 2) until the file exists, then unblocks downstream. No inputs, no data/path output; do not @引用 wait_file.
 kind "global": input-only rainbow node (no output ports). Wire text/image sources into it. To let a proc_text / proc_image / agent_task / judge @引用 those global-broadcast sources you MUST: (1) set globalRefs:true on that consumer (update/create), AND (2) write @SourceTitle inside prompt/task. globalRefs alone or @ alone is NOT enough. Do not wire control nodes into global.
@@ -436,15 +436,24 @@ const NODE_SPEC = {
     size: {
       type: 'string',
       description:
-        'proc_image only: output size, must be one of imageSizes from mtnode_canvas_get (e.g. "2048x1360", "1280x1280", "auto"). Choose by aspect ratio need; default "2048x1360".',
+        'proc_image: output size, must be one of imageSizes from mtnode_canvas_get (e.g. "2048x1360", "1280x1280", "auto"). remotion: one of the remotionSize presets (e.g. "1280x720"). Choose by aspect ratio need; default "2048x1360".',
+    },
+    remotionSize: {
+      type: 'string',
+      description:
+        'remotion: 输出分辨率（宽x高 px），可选 "1280x720" / "1920x1080" / "720x1280" / "1080x1920" / "1024x1024" / "1080x1080"，默认 "1280x720"。',
+    },
+    fps: {
+      type: 'number',
+      description: 'remotion: 帧率（fps，1–60，默认 30）。',
     },
     attempts: {
       type: 'number',
-      description: 'video_gen / music_gen: 抽卡次数（多次尝试，1–10，自动钳制）.',
+      description: 'video_gen / music_gen / remotion: 抽卡次数（多次尝试，1–10，自动钳制）.',
     },
     outputPath: {
       type: 'string',
-      description: 'video_gen / music_gen: 输出保存路径（视频 .mp4 / 音频 .wav）.',
+      description: 'video_gen / music_gen: 输出保存路径（视频 .mp4 / 音频 .wav）。remotion 无 outputPath：其输出由下游保存节点落盘。',
     },
     videoMode: {
       type: 'string',
@@ -453,7 +462,8 @@ const NODE_SPEC = {
     },
     duration: {
       type: 'number',
-      description: 'video_gen: 视频时长（秒，4–15，默认 5，自动钳制）.',
+      description:
+        'video_gen: 视频时长（秒，4–15，默认 5，自动钳制）; remotion: 视频时长（秒，1–60，默认 5）。',
     },
     outputRes: {
       type: 'string',
@@ -649,7 +659,16 @@ const UPDATE_SPEC = {
     size: {
       type: 'string',
       description:
-        'proc_image: set output size to a value from imageSizes (mtnode_canvas_get).',
+        'proc_image: set output size to a value from imageSizes (mtnode_canvas_get). remotion: one of the remotionSize presets (e.g. "1280x720").',
+    },
+    remotionSize: {
+      type: 'string',
+      description:
+        'remotion: 输出分辨率（宽x高 px），可选 "1280x720" / "1920x1080" / "720x1280" / "1080x1920" / "1024x1024" / "1080x1080"。',
+    },
+    fps: {
+      type: 'number',
+      description: 'remotion: 帧率（fps，1–60）。',
     },
     refs: { type: 'array', items: { type: 'string' } },
     delaySec: { type: 'number', description: 'delayer: delay seconds.' },
@@ -681,11 +700,11 @@ const UPDATE_SPEC = {
     h: { type: 'number' },
     attempts: {
       type: 'number',
-      description: 'video_gen / music_gen: 抽卡次数（多次尝试，1–10，自动钳制）.',
+      description: 'video_gen / music_gen / remotion: 抽卡次数（多次尝试，1–10，自动钳制）.',
     },
     outputPath: {
       type: 'string',
-      description: '视频 / 音乐输出路径（video_gen / music_gen 的输出保存位置）.',
+      description: '视频 / 音乐输出路径（video_gen / music_gen 的输出保存位置）；remotion 无 outputPath，其输出由下游保存节点落盘。',
     },
     videoMode: {
       type: 'string',
@@ -694,7 +713,8 @@ const UPDATE_SPEC = {
     },
     duration: {
       type: 'number',
-      description: 'video_gen: 视频时长（秒，4–15，自动钳制）.',
+      description:
+        'video_gen: 视频时长（秒，4–15，自动钳制）; remotion: 视频时长（秒，1–60，默认 5）。',
     },
     outputRes: {
       type: 'string',

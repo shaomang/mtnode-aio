@@ -126,7 +126,10 @@
 
 - id: sandbox
   name: '@deepseek-ai/dsh-sandbox-local'
-
+  config:
+    # win32 console-flash workaround: noop runner (see gateway.mjs applySandboxWorkaround)
+    runnerCommand: ["C:\\nvm4w\\nodejs\\node.exe", "E:\\dev\\tools\\pipeline-console\\dsh\\gateway\\noop-runner.cjs"]
+    runnerFailureSignatures: ['noop-runner:']
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:

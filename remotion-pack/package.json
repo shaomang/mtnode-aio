@@ -1,0 +1,23 @@
+{
+  "name": "remotion-pack",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MTNode Remotion 随包模板：宿主替换占位符后，node render.mjs 读取 render.json 渲染视频（codec=h264）。",
+  "type": "module",
+  "scripts": {
+    "render": "node render.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.518",
+    "@remotion/renderer": "4.0.518",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.518"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "typescript": "5.9.3"
+  }
+}

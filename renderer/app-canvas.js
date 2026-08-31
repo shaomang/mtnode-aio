@@ -55,11 +55,12 @@ function addMark(kind, x, y) {
   let parentSuperId = "";
   let parentTaskId = currentTaskFocus();
   const sf = currentSuperFocus();
-  if (sf) {
+  const sfHost = sf ? nodeById(sf) : null;
+  if (sf && sfHost && sfHost.kind === "super") {
     parentSuperId = sf;
-    const host = nodeById(sf);
-    parentTaskId = host ? host.parentTaskId || "" : "";
+    parentTaskId = sfHost.parentTaskId || "";
   } else {
+    /* superFocus 失效（指向已不存在的超级节点）时不挂幽灵父级，退回按坐标找宿主 */
     const host =
       findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false);
     if (host) {
@@ -2190,6 +2191,56 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
+  if (node.kind === "remotion") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("Remotion");
+    chip.title = I18n.t("React 动效合成 · 本地渲染 mp4");
+    head.appendChild(chip);
+    appendRemotionConsoleBtn(head, node);
+    const sessionBtn = document.createElement("button");
+    sessionBtn.className = "n-play n-chat-mode";
+    sessionBtn.textContent = "💬";
+    sessionBtn.title = I18n.t("查看生成过程 / 编辑迭代（打开绑定会话）");
+    sessionBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      openRemotionSession(node);
+    };
+    head.appendChild(sessionBtn);
+    const setBtn = document.createElement("button");
+    setBtn.className =
+      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
+    setBtn.textContent = I18n.t("设置");
+    setBtn.title = I18n.t("服务商 / 模型 / 温度");
+    setBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
+      renderCanvas();
+    };
+    head.appendChild(setBtn);
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t("生成动效代码并本地渲染视频");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消生成请求");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
   if (node.kind === "chat") {
     head.append(...apiPreviewButtons(node));
     head.appendChild(effortButtonEl(node));
@@ -2381,7 +2432,8 @@ function nodeElement(node) {
     node.kind === "chat" ||
     node.kind === "agent_task" ||
     node.kind === "music_gen" ||
-    node.kind === "video_gen"
+    node.kind === "video_gen" ||
+    node.kind === "remotion"
   ) {
     const panel = document.createElement("div");
     panel.className = "n-api-panel";
@@ -2827,7 +2879,12 @@ function nodeElement(node) {
       f1.className = "n-field";
       f1.appendChild(document.createTextNode(I18n.t("服务商（自动读取全局 API 配置）")));
       const provSel = document.createElement("select");
-      const want = node.kind === "proc_text" || node.kind === "chat" ? "text_openai" : null;
+      const want =
+        node.kind === "proc_text" ||
+        node.kind === "chat" ||
+        node.kind === "remotion"
+          ? "text_openai"
+          : null;
       const provs = S.config.providers.filter((p) =>
         want ? p.type === want : p.type.startsWith("image_"),
       );
@@ -2880,7 +2937,7 @@ function nodeElement(node) {
       f2.appendChild(mod);
       panel.appendChild(f2);
     }
-    if (node.kind === "proc_text" || node.kind === "chat") {
+    if (node.kind === "proc_text" || node.kind === "chat" || node.kind === "remotion") {
       const f3 = document.createElement("label");
       f3.className = "n-field";
       f3.appendChild(document.createTextNode(I18n.t("温度 Temperature（0-2）")));
@@ -2952,7 +3009,8 @@ function nodeElement(node) {
         : isControlKind(node) ||
           (node.kind === "net_send" && i >= 1) ||
           (node.kind === "music_gen" && i === 2) ||
-          (node.kind === "video_gen" && i === 0);
+          (node.kind === "video_gen" && i === 0) ||
+          (node.kind === "remotion" && i === 0);
     p.className =
       "port in" + (spare ? " spare" : "") + (ctrlIn ? " ctrl" : "");
     p.dataset.node = node.id;
@@ -2990,11 +3048,16 @@ function nodeElement(node) {
         } else if (meta.kind === "video") inTitle = I18n.t("参考视频路径 ") + meta.label;
         else inTitle = I18n.t("参考音频路径 ") + meta.label;
       }
+    } else if (node.kind === "remotion") {
+      inTitle =
+        i === 0
+          ? I18n.t("控制输入（触发生成）")
+          : I18n.t("描述文本（视频内容描述）");
     }
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = (PORT_OFF - PORT_R) + "px";
-    if (node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "task") {
+    if (node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "remotion" || node.kind === "task") {
       const badge = document.createElement("span");
       badge.className = "port-badge";
       if (node.kind === "music_gen") {
@@ -3013,6 +3076,9 @@ function nodeElement(node) {
             badge.textContent = meta.label;
           }
         }
+      } else if (node.kind === "remotion") {
+        badge.classList.add("zh-label");
+        badge.textContent = i === 0 ? I18n.t("控制") : I18n.t("描述");
       } else if (node.kind === "task") {
         badge.classList.add("zh-label");
         badge.textContent = I18n.t("控制");
@@ -3088,7 +3154,7 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
-    else if (node.kind === "music_gen" || node.kind === "video_gen")
+    else if (node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "remotion")
       outTitle = oi === 0 ? I18n.t("输出端子（输出本节点内容）") : I18n.t("控制输出（生成完成后触发下游控制目标）");
     else if (isControlKind(node))
       outTitle = I18n.t("输出端子（连接到要控制的节点）");
@@ -3101,12 +3167,16 @@ function nodeElement(node) {
       node.kind === "splitter" ||
       node.kind === "task" ||
       node.kind === "music_gen" ||
-      node.kind === "video_gen"
+      node.kind === "video_gen" ||
+      node.kind === "remotion"
     ) {
       const badge = document.createElement("span");
       badge.className =
         "port-badge" +
-        (node.kind === "task" || node.kind === "music_gen" || node.kind === "video_gen"
+        (node.kind === "task" ||
+        node.kind === "music_gen" ||
+        node.kind === "video_gen" ||
+        node.kind === "remotion"
           ? " zh-label"
           : "");
       badge.textContent =
@@ -3114,7 +3184,9 @@ function nodeElement(node) {
           ? oi === 0
             ? I18n.t("成功")
             : I18n.t("失败")
-          : node.kind === "music_gen" || node.kind === "video_gen"
+          : node.kind === "music_gen" ||
+              node.kind === "video_gen" ||
+              node.kind === "remotion"
             ? oi === 0
               ? I18n.t("内容")
               : I18n.t("控制")
@@ -3232,6 +3304,8 @@ function nodeElement(node) {
     )
       return;
     ev.stopPropagation();
+    /* 阻止原生框选：拖动节点体时不产生文字选区（输入框 / 文字标注等可编辑处已在上方放行） */
+    ev.preventDefault();
     startNodeDrag(ev, node);
   });
   el.addEventListener("contextmenu", (ev) => {
@@ -5710,6 +5784,155 @@ function buildBody(node, body) {
       st.textContent = node.error;
       body.appendChild(st);
     }
+  } else if (node.kind === "remotion") {
+    /* 未安装插件警示条（安装后 S.plugins 缓存刷新，重渲染自动消失） */
+    if (!appPluginInstalled("remotion")) {
+      const warn = document.createElement("div");
+      warn.className = "n-empty n-plugin-warn";
+      warn.textContent = I18n.t("⚠ Remotion 插件未安装：请在「插件」中安装后使用本节点");
+      warn.title = I18n.t("插件 · Remotion 动效视频：设置安装目录 → 安装（npm install）");
+      body.appendChild(warn);
+    }
+    const meta = document.createElement("div");
+    meta.className = "n-empty";
+    meta.id = "mgmeta-" + node.id;
+    meta.textContent =
+      (node.size || "1280x720") +
+      " · " +
+      (node.fps || 30) +
+      " fps · " +
+      (node.duration || 5) +
+      "s";
+    body.appendChild(meta);
+    /* 参数行：时长 / fps / 分辨率 */
+    const params = document.createElement("div");
+    params.className = "mg-params";
+    const addParam = (label, el) => {
+      const w = document.createElement("label");
+      w.className = "mg-param";
+      const labEl = document.createElement("span");
+      labEl.textContent = label;
+      w.appendChild(labEl);
+      w.appendChild(el);
+      params.appendChild(w);
+    };
+    const dur = document.createElement("input");
+    dur.type = "number";
+    dur.min = "1";
+    dur.max = "60";
+    dur.step = "1";
+    dur.value = String(node.duration != null ? node.duration : 5);
+    dur.title = I18n.t("时长（秒，1–60）");
+    dur.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    dur.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    dur.addEventListener("change", () => {
+      node.duration = Math.max(1, Math.min(60, Number(dur.value) || 5));
+      dur.value = String(node.duration);
+      scheduleSave();
+      const metaEl = document.querySelector("#mgmeta-" + node.id);
+      if (metaEl)
+        metaEl.textContent =
+          (node.size || "1280x720") +
+          " · " +
+          (node.fps || 30) +
+          " fps · " +
+          (node.duration || 5) +
+          "s";
+    });
+    addParam(I18n.t("时长"), dur);
+    const fps = document.createElement("input");
+    fps.type = "number";
+    fps.min = "1";
+    fps.max = "60";
+    fps.step = "1";
+    fps.value = String(node.fps != null ? node.fps : 30);
+    fps.title = I18n.t("帧率（fps，1–60）");
+    fps.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    fps.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    fps.addEventListener("change", () => {
+      node.fps = Math.max(1, Math.min(60, Number(fps.value) || 30));
+      fps.value = String(node.fps);
+      scheduleSave();
+      const metaEl = document.querySelector("#mgmeta-" + node.id);
+      if (metaEl)
+        metaEl.textContent =
+          (node.size || "1280x720") +
+          " · " +
+          (node.fps || 30) +
+          " fps · " +
+          (node.duration || 5) +
+          "s";
+    });
+    addParam("fps", fps);
+    const sizeSel = document.createElement("select");
+    for (const s of REMOTION_SIZES) {
+      const o = document.createElement("option");
+      o.value = s;
+      o.textContent = s;
+      if ((node.size || "1280x720") === s) o.selected = true;
+      sizeSel.appendChild(o);
+    }
+    sizeSel.addEventListener("change", () => {
+      node.size = sizeSel.value;
+      scheduleSave();
+      const metaEl = document.querySelector("#mgmeta-" + node.id);
+      if (metaEl)
+        metaEl.textContent =
+          (node.size || "1280x720") +
+          " · " +
+          (node.fps || 30) +
+          " fps · " +
+          (node.duration || 5) +
+          "s";
+    });
+    addParam(I18n.t("分辨率"), sizeSel);
+    body.appendChild(params);
+    /* 输出由下游「保存」节点负责（渲染产物在主进程插件安装目录 out/） */
+    const outHint = document.createElement("div");
+    outHint.className = "sv-note";
+    outHint.textContent = I18n.t("视频输出由下游「保存」节点保存（渲染产物在插件安装目录 out/）");
+    body.appendChild(outHint);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.remotionStatus ||
+      (node.running
+        ? node.remotionPct > 0
+          ? I18n.t("渲染中 ") + Math.round(node.remotionPct) + "%"
+          : I18n.t("处理中…")
+        : I18n.t("描述文本 → LLM 动效合成 → 本地渲染 mp4"));
+    body.appendChild(st);
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const vid = document.createElement("video");
+    vid.id = "mgvid-" + node.id;
+    vid.controls = true;
+    vid.preload = "metadata";
+    prev.appendChild(vid);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "mgempty-" + node.id;
+    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "mgname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint =
+        (node.output && (node.output.path || node.output.text)) ||
+        mediaGenOutputRaw(node) ||
+        "";
+      if (hint) nameEl.textContent = fileName(hint);
+    }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
   } else if (node.kind === "net_recv") {
     buildNetRecvBody(body, node);
   } else if (node.kind === "net_send") {
@@ -6356,7 +6579,7 @@ async function fillPreviews() {
     }
     if (isMediaGenNode(n)) {
       const path = await resolveMediaGenDisplayPath(n);
-      const isVid = n.kind === "video_gen";
+      const isVid = n.kind === "video_gen" || n.kind === "remotion";
       const el = document.querySelector((isVid ? "#mgvid-" : "#mgaud-") + n.id);
       const empty = document.querySelector("#mgempty-" + n.id);
       const nameEl = document.querySelector("#mgname-" + n.id);

@@ -454,14 +454,55 @@ function openSettingsBody() {
     modelRow.appendChild(document.createTextNode(I18n.t("默认模型（智能能力使用）")));
     const modelSel = document.createElement("select");
     {
+      /* 默认模型下拉 = 全部文本服务商的模型（分组列出，与智能会话 / 全局助手同源）：
+         旧实现只取第一个 DeepSeek 兼容服务商（dshProvider()），导致非 DeepSeek
+         服务商用户的默认模型被强制指定成 deepseek 模型。 */
+      const groups = [];
       const dp = dshProvider();
-      const models = dp && dp.models ? dp.models.slice() : [];
-      const cur = S.config.dsh.model || "deepseek-v4-flash";
-      if (cur && !models.includes(cur)) models.unshift(cur);
-      for (const m of models) {
+      if (dp && Array.isArray(dp.models) && dp.models.length)
+        groups.push({
+          label: (dp && dp.name) || I18n.t("DeepSeek 官方"),
+          models: dp.models.map((m) => String(m)),
+        });
+      for (const p of mtnodePiProviders()) {
+        const models = (p && p.models) || [];
+        if (!models.length) continue;
+        groups.push({ label: p.name, models: models.map((m) => String(m)) });
+      }
+      /* 当前值：已保存的 dsh.model 优先；从未保存则跟随实际生效的默认智能路由
+         （preferredAgentProviderRoute 优先其它文本服务商），不再硬编码 deepseek */
+      let cur = (S.config.dsh && S.config.dsh.model) || "";
+      if (!cur) {
+        try {
+          cur =
+            preferredAgentModelForRoute(preferredAgentProviderRoute()) || "";
+        } catch (_) {}
+      }
+      const all = [];
+      for (const g of groups) {
+        const og = document.createElement("optgroup");
+        og.label = g.label;
+        for (const m of g.models) {
+          all.push(m);
+          const o = document.createElement("option");
+          o.value = m;
+          o.textContent = m;
+          og.appendChild(o);
+        }
+        modelSel.appendChild(og);
+      }
+      /* 保底：老配置里保存过、但已不在任何服务商模型清单中的值，也要能显示出来 */
+      if (cur && all.indexOf(cur) < 0) {
+        all.push(cur);
         const o = document.createElement("option");
-        o.value = m;
-        o.textContent = m;
+        o.value = cur;
+        o.textContent = cur;
+        modelSel.appendChild(o);
+      }
+      if (!all.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = I18n.t("（无可用模型）");
         modelSel.appendChild(o);
       }
       modelSel.value = cur;

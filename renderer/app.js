@@ -96,7 +96,51 @@ const S = {
     matches: [],
     idx: -1,
   },
+  /* 应用插件目录缓存（appPluginsCatalog 快照）：菜单项可见性 / 节点未安装警示条用。
+     启动时与插件对话框增删后刷新（refreshAppPluginsCache）。 */
+  plugins: [],
 };
+
+/* 节点粘贴板（Ctrl+C 复制 / Ctrl+V 粘贴）：仅保存最近一次。
+   保存选中节点（含全部后代）与两端都在复制集内的连线；
+   内部子节点归属（parentTaskId / parentSuperId）随节点一起保存，粘贴时重建。 */
+let nodeClipboard = null;
+
+/* ── 应用插件目录缓存：菜单项可见性 / 节点未安装警示条 ──
+   刷新 S.plugins = appPluginsCatalog().plugins 快照。启动时（app-boot）与
+   插件对话框增删后（app-plugins）调用；appPluginInstalled(id) 判断某插件是否已安装。
+   remotion：主进程目录对宿主型插件 installed 恒为 true（占位），这里用
+   remotionStatus IPC 异步修正为真实状态（未安装 → 菜单隐藏 + 节点警示条）。 */
+async function refreshAppPluginsCache() {
+  try {
+    if (!window.api || !window.api.appPluginsCatalog) return;
+    const cat = await window.api.appPluginsCatalog();
+    let list = Array.isArray(cat && cat.plugins) ? cat.plugins : [];
+    if (window.api.remotionStatus) {
+      try {
+        const st = await window.api.remotionStatus();
+        list = list.map((p) =>
+          p && p.id === "remotion"
+            ? Object.assign({}, p, {
+                installed: !!(st && st.installed && st.runtimeReady),
+              })
+            : p,
+        );
+      } catch (_) {
+        /* 状态查询失败：保留目录占位值 */
+      }
+    }
+    S.plugins = list;
+  } catch (_) {
+    /* 目录拉取失败：保留旧缓存（首启为空 → 菜单不显示插件节点，安全） */
+  }
+}
+function appPluginInstalled(id) {
+  return !!(
+    S.plugins &&
+    (S.plugins || []).some((p) => p && p.id === id && p.installed)
+  );
+}
 
 const HEAD = 28;
 const PORT_R = 4;
@@ -159,6 +203,7 @@ const KIND_CLS = {
   global: "global",
   music_gen: "music",
   video_gen: "video",
+  remotion: "video",
   net_recv: "net",
   net_send: "net",
   execute: "exec",
@@ -270,6 +315,9 @@ const KIND_ICON_SVG = {
   /* 视频生成 */
   video_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/></svg>',
+  /* Remotion 视频（React 动效合成 · 本地渲染）：播放框 + 右上生成星火 */
+  remotion:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/><path d="M12.5 2.3l.45 1.05.9.25-.9.25-.45 1.05-.45-1.05-.9-.25.9-.25z" fill="currentColor"/></svg>',
   /* 网络 · 接收：圆节点 + 上方接收箭头 + 下横线 */
   net_recv:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 5.7V2.4M8 2.4L5.9 4.5M8 2.4L10.1 4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.2 11.6h9.6M5.2 13.4h5.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
@@ -404,6 +452,15 @@ const IMAGE_SIZES = [
   "3840x1632",
 ];
 const DEFAULT_IMAGE_SIZE = "2048x1360";
+/* Remotion 视频输出分辨率预设（宽x高，px）——app-canvas.js / app-nodes.js 共用 */
+const REMOTION_SIZES = [
+  "1280x720",
+  "1920x1080",
+  "720x1280",
+  "1080x1920",
+  "1024x1024",
+  "1080x1080",
+];
 const NODE_DEFAULTS = {
   input_text: {
     w: 240,
@@ -812,6 +869,32 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  /* Remotion 视频（应用插件 remotion · React 动效合成 → 本地渲染 mp4）：
+     描述文本 → LLM 生成 Composition.tsx → 主进程 remotion/main-remotion.js 渲染。
+     端口0=控制输入（固定）· 端口1=描述文本输入。 */
+  remotion: {
+    w: 400,
+    h: 320,
+    title: "Remotion 视频",
+    duration: 5,
+    fps: 30,
+    size: "1280x720", /* 输出分辨率 宽x高（16:9） */
+    seed: 0,
+    rerollSeed: true,
+    providerId: "",
+    model: "",
+    temperature: 0.4,
+    /* 输出路径由下游「保存」节点负责（渲染产物在主进程插件安装目录 out/） */
+    filename: "",
+    boundSaveId: "",
+    remotionStatus: "",
+    remotionPct: 0,
+    tsx: "", /* 最近一次 LLM 生成的 Composition.tsx（展示用，宿主当前按结构化参数渲染模板） */
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
   net_recv: {
     w: 320,
     h: 190,
@@ -1097,8 +1180,12 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   if (isControlKind(node)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (node.kind === "net_recv") return Number(portIndex || 0) >= 1;
-  /* 音乐 / 视频：端口1 为控制输出（生成完成后触发下游控制目标） */
-  if (node.kind === "music_gen" || node.kind === "video_gen")
+  /* 音乐 / 视频 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
+  if (
+    node.kind === "music_gen" ||
+    node.kind === "video_gen" ||
+    node.kind === "remotion"
+  )
     return Number(portIndex || 0) >= 1;
   if (node.kind === "super")
     return superOutPortIsControl(node, portIndex, wf, seen);
@@ -1985,7 +2072,9 @@ function rewriteNodePathsForSuperContext(node) {
     applySavePathExt(node);
   }
   if (
-    (node.kind === "music_gen" || node.kind === "video_gen") &&
+    (node.kind === "music_gen" ||
+      node.kind === "video_gen" ||
+      node.kind === "remotion") &&
     String(node.outputPath || "").trim()
   ) {
     node.outputPath = applySuperRelToPath(
@@ -2258,7 +2347,7 @@ function dirOfPath(p) {
 function inferMediaFromSource(from) {
   if (!from) return "text";
   if (from.kind === "music_gen") return "audio";
-  if (from.kind === "video_gen") return "video";
+  if (from.kind === "video_gen" || from.kind === "remotion") return "video";
   if (from.kind === "input_image" || from.kind === "proc_image") return "image";
   if (from.kind === "split" || from.kind === "merge") {
     const v = valueForInput(from, 0);
@@ -2293,7 +2382,7 @@ function saveMediaKind(node) {
   if (node.boundFromId) {
     const g = nodeById(node.boundFromId);
     if (g && g.kind === "music_gen") return "audio";
-    if (g && g.kind === "video_gen") return "video";
+    if (g && (g.kind === "video_gen" || g.kind === "remotion")) return "video";
   }
   const srcs = saveDataSources(node);
   if (!srcs.length) {
@@ -2347,7 +2436,11 @@ function mediaGenOutputRaw(node) {
   return raw;
 }
 function mediaGenExt(node) {
-  return saveExtForMedia(node && node.kind === "video_gen" ? "video" : "audio");
+  return saveExtForMedia(
+    node && (node.kind === "video_gen" || node.kind === "remotion")
+      ? "video"
+      : "audio",
+  );
 }
 /**
  * Resolve music/video export to { ok, outputDir, filename, path }.
@@ -2381,6 +2474,7 @@ function requireMediaGenExport(node, quiet) {
   if (node) {
     if (node.kind === "music_gen") node.musicStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
+    if (node.kind === "remotion") node.remotionStatus = msg;
   }
   return null;
 }
@@ -2603,8 +2697,9 @@ function outputCount(n) {
   if (n.kind === "judge" || n.kind === "task") return 2;
   if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
   if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
-  /* 音乐 / 视频：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
-  if (n.kind === "music_gen" || n.kind === "video_gen") return 2;
+  /* 音乐 / 视频 / Remotion：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
+  if (n.kind === "music_gen" || n.kind === "video_gen" || n.kind === "remotion")
+    return 2;
   if (n.kind === "sequencer")
     return Math.max(2, Math.min(8, Math.round(Number(n.seqOutputs) || 3)));
   if (n.kind === "splitter")
@@ -3418,14 +3513,18 @@ function modelLabel(m, vis) {
   return base + (vis && vis.has(m.id) ? I18n.t(" 图") : "");
 }
 
-/* 节点默认工作目录：工作流统一目录(设置后只读固定) > 节点自身 > 应用数据目录 */
+/* 节点默认工作目录，优先级：节点/会话手填目录 > 画布项目根（开发节点 devPath 单一真源，
+   见 devProjectRootOf；多根歧义时另置 S.devProjectRootAmbiguous = true 供 UI 提示）>
+   画布统一目录 wf.workspace > 应用默认数据目录。
+   ⚠ 同名副本有两份：renderer/app.js 与 renderer/app-agent.js（后者后加载生效），
+   两份必须与 devProjectRootOf 保持同一逻辑，任何改动都要逐字同步。 */
 function dshWorkspaceOf(node) {
+  const manual = node && (node.agentWorkspace || node.workspace);
+  if (manual) return manual;
+  const projRoot = devProjectRootOf();
+  if (projRoot) return projRoot;
   if (S.wf && S.wf.workspace) return S.wf.workspace;
-  return (
-    (node && (node.agentWorkspace || node.workspace)) ||
-    S.dshWorkspaceFallback ||
-    ""
-  );
+  return S.dshWorkspaceFallback || "";
 }
 
 /* ── 图像输入与视觉模型(智能任务节点连接图像时) ── */
@@ -4133,6 +4232,24 @@ function clearSelection() {
   /* 取消选中 → 关系线的高亮 / 淡出一起撤掉 */
   refreshRelWireStates();
 }
+/* Ctrl+A：全选当前范围内的节点与绘制（与框选同一套命中口径：nodes 按 nodeInCurrentScope、
+   marks 按 markInCurrentScope；可复制文本的「输出区」不在此列，保持原生全选） */
+function selectAllNodesInScope() {
+  const wf = S.wf;
+  if (!wf) return;
+  const nodes = (wf.nodes || []).filter((n) => nodeInCurrentScope(n));
+  const marks = marksOf().filter((m) => markInCurrentScope(m));
+  if (!nodes.length && !marks.length) return;
+  S.selSet = new Set(nodes.map((n) => n.id));
+  S.sel = nodes.length ? nodes[nodes.length - 1].id : null;
+  const mset = ensureSelMarkSet();
+  mset.clear();
+  for (const m of marks) mset.add(m.id);
+  S.selMark = marks.length ? marks[marks.length - 1].id : null;
+  S.selGroup = null;
+  S.selWire = null;
+  renderCanvas();
+}
 function ensureSelMarkSet() {
   if (!S.selMarkSet) S.selMarkSet = new Set();
   return S.selMarkSet;
@@ -4252,6 +4369,7 @@ function hasFixedInPorts(n) {
       n.kind === "mutex" ||
       n.kind === "music_gen" ||
       n.kind === "video_gen" ||
+      n.kind === "remotion" ||
       n.kind === "task" ||
       n.kind === "super" ||
       n.kind === "net_send")
@@ -4265,9 +4383,11 @@ function wireFromIsControl(w, wf) {
   if (isControlKind(from)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (from.kind === "net_recv" && Number(w.fromIndex || 0) >= 1) return true;
-  /* 音乐 / 视频：端口1 为控制输出（生成完成后触发下游控制目标） */
+  /* 音乐 / 视频 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
   if (
-    (from.kind === "music_gen" || from.kind === "video_gen") &&
+    (from.kind === "music_gen" ||
+      from.kind === "video_gen" ||
+      from.kind === "remotion") &&
     Number(w.fromIndex || 0) >= 1
   )
     return true;
@@ -4308,6 +4428,7 @@ function isTextSource(n) {
     n.kind === "chat" ||
     n.kind === "music_gen" ||
     n.kind === "video_gen" ||
+    n.kind === "remotion" ||
     n.kind === "super"
   );
 }
@@ -4331,7 +4452,7 @@ function isAudioWireFrom(n) {
   return !!(n && n.kind === "music_gen");
 }
 function isVideoWireFrom(n) {
-  return !!(n && n.kind === "video_gen");
+  return !!(n && (n.kind === "video_gen" || n.kind === "remotion"));
 }
 
 function canUseGlobalRefs(node) {
@@ -4544,6 +4665,7 @@ function inputCount(node) {
     return Math.max(2, Math.min(8, Math.round(Number(node.mutexInputs) || 2)));
   if (node.kind === "music_gen") return 3; /* 端口0=提示词 · 端口1=歌词 · 端口2=控制输入 */
   if (node.kind === "video_gen") return videoGenInputCount(node) + 1; /* 端口0=控制输入（固定）· 端口1+=数据槽 */
+  if (node.kind === "remotion") return 2; /* 端口0=控制输入（固定）· 端口1=描述文本输入 */
   if (node.kind === "net_recv") return 0; /* 接收是异步源，无数据输入 */
   if (node.kind === "net_send") return 2; /* 端口0=信息输入(数据) · 端口1=控制输入 */
   return Math.max(1, allWiresTo(node.id).length + 1);
@@ -4633,6 +4755,8 @@ function minWFor(n) {
       return 320;
     case "video_gen":
       return 340;
+    case "remotion":
+      return 360;
     case "net_recv":
       return 300;
     case "net_send":
@@ -4664,6 +4788,8 @@ function minHFor(n) {
       return 220;
     case "video_gen":
       return 260;
+    case "remotion":
+      return 280;
     case "net_recv":
       return 130;
     case "net_send":
@@ -4828,6 +4954,7 @@ function nodeKindLabel(node) {
     global: "全局",
     music_gen: "音乐生成",
     video_gen: "视频生成",
+    remotion: "Remotion 视频",
     net_recv: "接收",
     net_send: "发送",
     super: "超级节点",
@@ -4862,6 +4989,7 @@ function nodeKindPurposeKey(node) {
     proc_image: "图像生成（文生图）",
     music_gen: "音乐生成（MiniMax Music 3 · 提示词+歌词）",
     video_gen: "视频生成（MiniMax H3 · 文本/图像/音频/视频）",
+    remotion: "Remotion 视频（React 动效合成 · 本地渲染 mp4）",
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
     execute: "执行节点（绑定可执行文件 · 一键启动）",
@@ -10100,7 +10228,7 @@ function valueForInput(src, idx, consumer, seen) {
     if (!p) return null;
     return { kind: "audio", path: String(p), text: String(p) };
   }
-  if (src.kind === "video_gen") {
+  if (src.kind === "video_gen" || src.kind === "remotion") {
     const r = selResult(src);
     const p =
       (r && r.output && (r.output.path || r.output.text)) ||
@@ -12372,62 +12500,31 @@ async function deleteNodes(ids, quiet) {
   }
   return true;
 }
-/* 批量复制选中节点（各自错开一格网格） */
+/* 批量复制选中节点（含全部后代与内部内容；整体错开一格网格）。
+   保持两端都在复制集内的连线；标题保持原名（不加「副本」）；
+   相对路径的保存节点不复制保存目标（复制后需重新指定）；
+   图像节点相对路径固化为绝对路径，复制品正确引用同一图像。 */
 function duplicateNodes(nodes) {
   if (!nodes || !nodes.length) return;
-  const srcs = [];
-  const seen = new Set();
-  for (const node of nodes) {
-    if (!node || seen.has(node.id)) continue;
-    seen.add(node.id);
-    srcs.push(node);
-  }
-  pushHistory();
-  const cps = [];
-  const idMap = new Map();
-  srcs.forEach((node, i) => {
-    if (isPinnedCtrl(node)) return;
-    const cp = JSON.parse(JSON.stringify(node));
-    cp.id = uid("n");
-    idMap.set(node.id, cp.id);
-    cp.x = snap(cp.x + grid() * 4);
-    cp.y = snap(cp.y + grid() * 4 + i * grid());
-    cp.title = node.title + " 副本";
-    cp.output = null;
-    cp.batchOutputs = null;
-    cp.error = null;
-    cp.ranAt = 0;
-    cp.attemptOutputs = null;
-    cp.attemptIdx = 0;
-    cp.attemptsDone = 0;
-    if (isMediaGenNode(cp)) {
-      cp.running = false;
-      cp.backendUi = {
-        ok: null,
-        probing: false,
-        lastAt: 0,
-        info: null,
-        genPct: 0,
-        genMsg: "",
-      };
-    }
-    /* 副本不带会话关联:每个智能任务节点对应唯一会话 */
-    cp.agentSessionId = "";
-    if (isSaveNode(cp)) {
-      cp.savedPaths = [];
-      cp.savedPath = "";
-    }
-    cps.push(cp);
-  });
-  for (const cp of cps) {
-    if (isMediaGenNode(cp)) cp.boundSaveId = "";
-    if (isSaveNode(cp)) cp.boundFromId = "";
-  }
+  const srcs = collectWithDescendants(nodes);
+  const { cps, idMap } = cloneNodesDeep(srcs, { keepOrphanParent: true });
   if (!cps.length) {
     toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
     return;
   }
+  pushHistory();
+  const dx = grid() * 4;
+  const dy = grid() * 4;
+  const innerSids = copiedSuperIdsOf(cps);
+  for (const cp of cps) {
+    /* super 内部节点使用内部坐标系：外壳偏移即可，内部坐标保持不动 */
+    if (cp.parentSuperId && innerSids.has(cp.parentSuperId)) continue;
+    cp.x = snap((cp.x || 0) + dx);
+    cp.y = snap((cp.y || 0) + dy);
+  }
+  const wireCps = cloneWiresForSet(S.wf.wires, idMap);
   S.wf.nodes.push(...cps);
+  if (wireCps.length) S.wf.wires.push(...wireCps);
   for (const cp of cps) {
     if (cp.kind === "task") ensureTaskScaffold(cp);
     if (isMediaGenNode(cp)) {
@@ -12484,29 +12581,22 @@ function duplicateSelection() {
   const marks = selectedMarks();
   if (!ns.length && !marks.length) return false;
   if (ns.length && marks.length) {
-    /* 混合选区：一次复制节点 + 绘制，并保持两者同时选中 */
+    /* 混合选区：一次复制节点 + 绘制，并保持两者同时选中（节点含全部后代与连线） */
     pushHistory();
-    const nodeCps = [];
-    ns.forEach((node, i) => {
-      const cp = JSON.parse(JSON.stringify(node));
-      cp.id = uid("n");
-      cp.x = snap(cp.x + grid() * 4);
-      cp.y = snap(cp.y + grid() * 4 + i * grid());
-      cp.title = node.title + " 副本";
-      cp.output = null;
-      cp.batchOutputs = null;
-      cp.error = null;
-      cp.ranAt = 0;
-      cp.attemptOutputs = null;
-      cp.attemptIdx = 0;
-      cp.attemptsDone = 0;
-      cp.agentSessionId = "";
-      if (isSaveNode(cp)) {
-        cp.savedPaths = [];
-        cp.savedPath = "";
-      }
-      nodeCps.push(cp);
+    const srcs = collectWithDescendants(ns);
+    const { cps: nodeCps, idMap } = cloneNodesDeep(srcs, {
+      keepOrphanParent: true,
     });
+    const ndx = grid() * 4;
+    const ndy = grid() * 4;
+    const innerSids = copiedSuperIdsOf(nodeCps);
+    for (const cp of nodeCps) {
+      /* super 内部节点使用内部坐标系：外壳偏移即可，内部坐标保持不动 */
+      if (cp.parentSuperId && innerSids.has(cp.parentSuperId)) continue;
+      cp.x = snap((cp.x || 0) + ndx);
+      cp.y = snap((cp.y || 0) + ndy);
+    }
+    const wireCps = cloneWiresForSet(S.wf.wires, idMap);
     const markCps = [];
     const off = grid() * 4;
     marks.forEach((m, i) => {
@@ -12522,6 +12612,11 @@ function duplicateSelection() {
       markCps.push(cp);
     });
     S.wf.nodes.push(...nodeCps);
+    if (wireCps.length) S.wf.wires.push(...wireCps);
+    for (const cp of nodeCps) {
+      if (cp.kind === "task") ensureTaskScaffold(cp);
+      if (isMediaGenNode(cp)) probeMediaBackend(cp, { quiet: true });
+    }
     marksOf().push(...markCps);
     S.selSet = new Set(nodeCps.map((c) => c.id));
     S.sel = nodeCps[0].id;
@@ -12552,6 +12647,368 @@ function duplicateSelection() {
     return true;
   }
   duplicateMarks(marks);
+  return true;
+}
+/* ============ 节点粘贴板（Ctrl+C / Ctrl+V） ============ */
+/* 扩展节点集：任意深度的任务子节点 / 超级节点内部节点一并收入（父在集合内即迭代至不再变化） */
+function collectWithDescendants(srcs, wf) {
+  wf = wf || S.wf;
+  const seen = new Set();
+  const out = [];
+  for (const n of srcs) {
+    if (!n || seen.has(n.id)) continue;
+    seen.add(n.id);
+    out.push(n);
+  }
+  if (out.length) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const n of wf.nodes) {
+        if (seen.has(n.id)) continue;
+        const p = n.parentTaskId || n.parentSuperId;
+        if (p && seen.has(p)) {
+          seen.add(n.id);
+          out.push(n);
+          changed = true;
+        }
+      }
+    }
+  }
+  return out;
+}
+/* 图像引用路径：相对路径固化为绝对路径（相对工作区），保证复制品引用同一图像文件；
+   绝对路径或空值原样返回（无法解析的相对路径保持原样，由调用方兜底）。 */
+function absImagePathOf(raw) {
+  const s = String(raw || "").trim();
+  if (!s || isAbsPath(s)) return raw;
+  const base = String(wfWorkspace() || "").trim();
+  if (!base) return raw;
+  return joinPath(base, s.replace(/\\/g, "/"));
+}
+/* 克隆节点集：深拷贝 → 新 id → 标题唯一化（保持原名，不加「副本」）→ 运行时字段清空。
+   相对路径的保存节点不复制保存目标（复制品与源会写同一文件，需重新指定）；
+   图像节点（input_image）的相对路径固化为绝对路径，复制品才能正确引用同一图像。
+   第二遍把父子归属 / 媒体-保存绑定（boundSaveId / boundFromId）按新 id 重映射：
+   另一端也在复制集内 → 指向新 id；否则断开（keepOrphanParent 时父归属保留原值）。 */
+function cloneNodesDeep(srcs, opts) {
+  opts = opts || {};
+  const cps = [];
+  const idMap = new Map();
+  for (const src of srcs) {
+    if (!src || isPinnedCtrl(src)) continue;
+    const cp = JSON.parse(JSON.stringify(src));
+    const nid = uid("n");
+    idMap.set(src.id, nid);
+    cp.id = nid;
+    cp.title = uniqueTitleInWf(S.wf, src.title);
+    cp.output = null;
+    cp.batchOutputs = null;
+    cp.error = null;
+    cp.ranAt = 0;
+    cp.attemptOutputs = null;
+    cp.attemptIdx = 0;
+    cp.attemptsDone = 0;
+    if (isMediaGenNode(cp)) {
+      cp.running = false;
+      cp.backendUi = {
+        ok: null,
+        probing: false,
+        lastAt: 0,
+        info: null,
+        genPct: 0,
+        genMsg: "",
+      };
+    }
+    /* 复制的智能节点不带会话关联：每个智能任务节点对应唯一会话 */
+    cp.agentSessionId = "";
+    if (isSaveNode(cp)) {
+      cp.savedPaths = [];
+      cp.savedPath = "";
+      /* 使用相对路径的保存节点：不复制保存目标（相对路径仍指向源同一位置） */
+      if (String(cp.savePath || "").trim() && !isAbsPath(cp.savePath))
+        cp.savePath = "";
+    }
+    /* 图像节点：相对路径固化为绝对路径，复制品与源引用同一图像（绝对路径保持原样） */
+    if (cp.kind === "input_image") {
+      if (cp.imageAsset) cp.imageAsset = absImagePathOf(cp.imageAsset);
+      if (Array.isArray(cp.entries)) {
+        for (const e of cp.entries) {
+          if (!e || typeof e !== "object") continue;
+          if (e.path) e.path = absImagePathOf(e.path);
+          if (e.value && typeof e.value === "object" && e.value.path)
+            e.value.path = absImagePathOf(e.value.path);
+          if (e.imageAsset) e.imageAsset = absImagePathOf(e.imageAsset);
+        }
+      }
+    }
+    cps.push(cp);
+  }
+  for (const cp of cps) {
+    cp.parentTaskId =
+      cp.parentTaskId && idMap.has(cp.parentTaskId)
+        ? idMap.get(cp.parentTaskId)
+        : opts.keepOrphanParent
+          ? cp.parentTaskId
+          : "";
+    cp.parentSuperId =
+      cp.parentSuperId && idMap.has(cp.parentSuperId)
+        ? idMap.get(cp.parentSuperId)
+        : opts.keepOrphanParent
+          ? cp.parentSuperId
+          : "";
+    if (isMediaGenNode(cp))
+      cp.boundSaveId =
+        cp.boundSaveId && idMap.has(cp.boundSaveId)
+          ? idMap.get(cp.boundSaveId)
+          : "";
+    if (isSaveNode(cp))
+      cp.boundFromId =
+        cp.boundFromId && idMap.has(cp.boundFromId)
+          ? idMap.get(cp.boundFromId)
+          : "";
+  }
+  return { cps, idMap };
+}
+/* 保持连线：仅复制两端都在复制集内的连线（数据 / 控制 / 关系线），按新 id 重建 */
+function cloneWiresForSet(wires, idMap) {
+  const out = [];
+  for (const w of wires || []) {
+    if (!idMap.has(w.from) || !idMap.has(w.to)) continue;
+    const cpw = {
+      id: uid("w"),
+      from: idMap.get(w.from),
+      to: idMap.get(w.to),
+      fromIndex: Number(w.fromIndex || 0),
+      toIndex: Number(w.toIndex || 0),
+    };
+    if (w.pinned) cpw.pinned = true;
+    if (w.rel) {
+      cpw.rel = true;
+      cpw.relArrow = w.relArrow || "forward";
+      cpw.relLabel = w.relLabel || "";
+    }
+    out.push(cpw);
+  }
+  return out;
+}
+/* 复制集内的 super 节点 id 集合：其内部节点使用内部坐标系（superInnerOrigin），
+   整体复制时外壳偏移即可，内部节点坐标保持不动 */
+function copiedSuperIdsOf(cps) {
+  const s = new Set();
+  for (const c of cps) if (c && c.kind === "super") s.add(c.id);
+  return s;
+}
+/* 复制：把选中的节点连同其全部后代（任意深度的任务子节点 / 超级节点内部节点）与选中绘制
+   存入临时粘贴板（仅保存最近一次）。保持两端都在复制集内的连线；内部父子归属在粘贴时重建。 */
+function copyNodesToClipboard() {
+  const ns = currentSelection();
+  const marks = selectedMarks();
+  if (!ns.length && !marks.length) return false;
+  const srcs = collectWithDescendants(ns);
+  /* 固定起点 / 终点（ctrlPinned）不入粘贴板：粘贴任务节点时由 ensureTaskScaffold 重新生成 */
+  const nodeList = srcs.filter((n) => !isPinnedCtrl(n));
+  if (!nodeList.length && !marks.length) {
+    toast(I18n.t("起点 / 终点为固定节点，无法复制"), "warn");
+    return true;
+  }
+  /* 保持连线：仅收录两端都在复制集内的连线 */
+  const copyIds = new Set(nodeList.map((n) => n.id));
+  const wireList = (S.wf.wires || []).filter(
+    (w) => copyIds.has(w.from) && copyIds.has(w.to),
+  );
+  nodeClipboard = {
+    wfId: S.wf && S.wf.id,
+    nodes: nodeList.map((n) => JSON.parse(JSON.stringify(n))),
+    wires: wireList.map((w) => JSON.parse(JSON.stringify(w))),
+    marks: marks.map((m) => JSON.parse(JSON.stringify(m))),
+  };
+  toast(
+    I18n.t("已复制 ") +
+      nodeList.length +
+      I18n.t(" 个节点到粘贴板（Ctrl+V 粘贴）"),
+    "ok",
+  );
+  return true;
+}
+/* 粘贴：把粘贴板中的节点 / 绘制复制到当前画布，包围盒中心对准当前视口中心（吸附网格）。
+   复制后的节点拿到新 id；内部父子归属按新 id 重建，父不在粘贴集内的一律落为顶层；
+   两端都在粘贴集内的连线一并重建。 */
+function pasteNodesFromClipboard() {
+  const clipNodes = (nodeClipboard && nodeClipboard.nodes) || [];
+  const clipMarks = (nodeClipboard && nodeClipboard.marks) || [];
+  if (!clipNodes.length && !clipMarks.length) {
+    toast(I18n.t("粘贴板为空，请先 Ctrl+C 复制节点"), "warn");
+    return false;
+  }
+  pushHistory();
+  /* 克隆节点：新 id、标题唯一化（不加「副本」）、运行时字段清空；
+     相对路径的保存节点不复制保存目标（避免复制品与源写同一文件）；
+     图像节点相对路径固化为绝对路径（复制品正确引用同一图像） */
+  const { cps, idMap } = cloneNodesDeep(clipNodes);
+  /* 跨画布粘贴：复制时相对路径已固化为绝对路径，绝对引用直接保留以正确引用图像；
+     仅仍为非绝对的路径（无法解析的无效引用）清空，避免指向不存在的文件 */
+  if (nodeClipboard.wfId && S.wf && S.wf.id !== nodeClipboard.wfId) {
+    for (const cp of cps) {
+      if (cp.kind !== "input_image") continue;
+      if (cp.imageAsset && !isAbsPath(cp.imageAsset)) {
+        cp.imageAsset = "";
+        cp.sourceName = "";
+      }
+      if (Array.isArray(cp.entries)) {
+        for (const e of cp.entries) {
+          if (e && e.path && !isAbsPath(e.path)) e.path = "";
+        }
+      }
+    }
+  }
+  /* 重建内部父子归属：父在粘贴集内 → 指到新 id；否则落为当前任务 / 超级节点作用域（忽略外部关系） */
+  const taskFocus = currentTaskFocus();
+  const superFocus = currentSuperFocus();
+  const sfHost = superFocus ? nodeById(superFocus) : null;
+  const inSuper = !!(sfHost && sfHost.kind === "super");
+  for (const cp of cps) {
+    cp.parentTaskId =
+      cp.parentTaskId && idMap.has(cp.parentTaskId)
+        ? idMap.get(cp.parentTaskId)
+        : "";
+    cp.parentSuperId =
+      cp.parentSuperId && idMap.has(cp.parentSuperId)
+        ? idMap.get(cp.parentSuperId)
+        : "";
+    if (cp.parentTaskId || cp.parentSuperId) continue;
+    /* 无内部父级（顶层节点）：落到当前任务 / 超级节点作用域，与新建节点一致 */
+    if (inSuper) {
+      cp.parentSuperId = superFocus;
+      cp.parentTaskId = sfHost.parentTaskId || "";
+    } else if (taskFocus) {
+      cp.parentTaskId = taskFocus;
+    }
+  }
+  /* 粘贴位置：粘贴集包围盒中心对准当前视口中心（吸附网格），避免与源节点重叠 */
+  const cv = $("#canvas");
+  const vw = cv ? cv.clientWidth : window.innerWidth;
+  const vh = cv ? cv.clientHeight : window.innerHeight;
+  const z = S.cam && S.cam.z > 0 ? S.cam.z : 1;
+  const cx = (vw / 2 - (S.cam ? S.cam.x : 0)) / z;
+  const cy = (vh / 2 - (S.cam ? S.cam.y : 0)) / z;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  const extend = (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  };
+  for (const n of clipNodes) {
+    extend(n.x, n.y);
+    extend((n.x || 0) + (Number(n.w) || 180), (n.y || 0) + (Number(n.h) || 96));
+  }
+  for (const m of clipMarks) {
+    const b = markBounds(m);
+    if (b) {
+      extend(b.x, b.y);
+      extend(b.x + b.w, b.y + b.h);
+    }
+  }
+  let dx = 0,
+    dy = 0;
+  if (Number.isFinite(minX)) {
+    dx = snap(cx - (minX + maxX) / 2);
+    dy = snap(cy - (minY + maxY) / 2);
+  }
+  /* 粘贴位置：super 内部节点用内部坐标系，不参与整体偏移（外壳偏移即可） */
+  const innerSids = copiedSuperIdsOf(cps);
+  for (const cp of cps) {
+    if (cp.parentSuperId && innerSids.has(cp.parentSuperId)) continue;
+    cp.x = snap((cp.x || 0) + dx);
+    cp.y = snap((cp.y || 0) + dy);
+  }
+  /* 顶层节点粘贴进展开的超级节点：绝对坐标换算为该壳的内部坐标系 */
+  if (inSuper) {
+    const o = superInnerOrigin(sfHost);
+    const pan = superInnerPan(sfHost);
+    for (const cp of cps) {
+      if (cp.parentSuperId !== superFocus) continue;
+      cp.x = snap(Math.max(8, cp.x - sfHost.x - o.ox - pan.x));
+      cp.y = snap(Math.max(8, cp.y - sfHost.y - o.oy - pan.y));
+    }
+  }
+  S.wf.nodes.push(...cps);
+  /* 保持连线：两端都在复制集内的连线按新 id 重建 */
+  const wireCps = cloneWiresForSet(nodeClipboard && nodeClipboard.wires, idMap);
+  if (wireCps.length) S.wf.wires.push(...wireCps);
+  for (const cp of cps) {
+    if (cp.kind === "task") ensureTaskScaffold(cp);
+    if (isMediaGenNode(cp)) probeMediaBackend(cp, { quiet: true });
+  }
+  const mkCps = [];
+  for (const m of clipMarks) {
+    const cp = JSON.parse(JSON.stringify(m));
+    cp.id = uid("mk");
+    cp.x = snap((cp.x || 0) + dx);
+    cp.y = snap((cp.y || 0) + dy);
+    if (cp.kind === "arrow") {
+      cp.x2 = snap((cp.x2 != null ? cp.x2 : cp.x) + dx);
+      cp.y2 = snap((cp.y2 != null ? cp.y2 : cp.y) + dy);
+    }
+    /* 标注归属与节点一致：父在粘贴集内指新 id，否则落当前作用域 */
+    cp.parentTaskId =
+      cp.parentTaskId && idMap.has(cp.parentTaskId)
+        ? idMap.get(cp.parentTaskId)
+        : "";
+    cp.parentSuperId =
+      cp.parentSuperId && idMap.has(cp.parentSuperId)
+        ? idMap.get(cp.parentSuperId)
+        : "";
+    if (!cp.parentTaskId && !cp.parentSuperId) {
+      if (inSuper) {
+        cp.parentSuperId = superFocus;
+        cp.parentTaskId = sfHost.parentTaskId || "";
+      } else if (taskFocus) {
+        cp.parentTaskId = taskFocus;
+      }
+    }
+    mkCps.push(cp);
+  }
+  /* 顶层标注粘贴进展开的超级节点：坐标换算为该壳的内部坐标系 */
+  if (inSuper) {
+    const o = superInnerOrigin(sfHost);
+    const pan = superInnerPan(sfHost);
+    for (const cp of mkCps) {
+      if (cp.parentSuperId !== superFocus) continue;
+      cp.x = snap((cp.x || 0) - sfHost.x - o.ox - pan.x);
+      cp.y = snap((cp.y || 0) - sfHost.y - o.oy - pan.y);
+      if (cp.kind === "arrow") {
+        cp.x2 = snap((cp.x2 != null ? cp.x2 : cp.x) - sfHost.x - o.ox - pan.x);
+        cp.y2 = snap((cp.y2 != null ? cp.y2 : cp.y) - sfHost.y - o.oy - pan.y);
+      }
+    }
+  }
+  marksOf().push(...mkCps);
+  const mset = ensureSelMarkSet();
+  mset.clear();
+  for (const c of mkCps) mset.add(c.id);
+  S.selSet = new Set(cps.map((c) => c.id));
+  S.sel = cps.length ? cps[0].id : null;
+  S.selGroup = null;
+  S.selWire = null;
+  S.selMark = mkCps.length ? mkCps[0].id : null;
+  blurMarkEditing();
+  S._deferCanvasForMarkEdit = false;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  toast(
+    I18n.t("已粘贴 ") +
+      cps.length +
+      I18n.t(" 个节点") +
+      (mkCps.length ? " · " + mkCps.length + I18n.t(" 项绘制") : ""),
+    "ok",
+  );
   return true;
 }
 function syncGroupBtns() {
@@ -12606,16 +13063,22 @@ function syncGroupBtns() {
 
 /* ============ 左侧边栏（节点树状图 + 筛选） ============ */
 
+/* 左侧栏「当前画布」分类：必须覆盖全部节点类型，否则该类型的节点不出现在列表里。
+ * 开发节点 = kind "super" + dev:true（含普通超级节点），单独归类便于定位。 */
 const SIDE_CATS = [
-  ["输入节点", ["input_text", "input_image"]],
+  ["输入节点", ["input_text", "input_image", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "music_gen", "video_gen"]],
+  ["处理节点", ["proc_text", "proc_image", "music_gen", "video_gen", "remotion"]],
   ["保存节点", ["save"]],
   ["工具节点", ["split", "merge"]],
+  ["网络节点", ["net_recv", "net_send"]],
   ["智能节点", ["agent_task"]],
   ["任务节点", ["task"]],
   ["对话节点", ["chat"]],
   ["控制节点", ["control", "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex", "judge"]],
+  ["执行节点", ["execute"]],
+  ["数据库", ["db_replica"]],
+  ["超级/开发节点", ["super"]],
 ];
 const KIND_TAGS = {
   input_text: "文本",
@@ -12626,6 +13089,7 @@ const KIND_TAGS = {
   proc_image: "文生图",
   music_gen: "音乐",
   video_gen: "视频",
+  remotion: "视频",
   net_recv: "接收",
   net_send: "发送",
   execute: "执行",
@@ -12934,7 +13398,16 @@ function renderSidebar() {
       it.title = I18n.t("画布居中定位到：") + (n.title || "");
       const tag = document.createElement("span");
       tag.className = "side-tag";
-      tag.textContent = I18n.t(KIND_TAGS[n.kind] || n.kind);
+      let tagText = KIND_TAGS[n.kind] || n.kind;
+      /* 开发节点（kind=super + dev）标注元素类型，便于与普通超级节点区分 */
+      if (n.kind === "super" && n.dev) {
+        tagText =
+          "开发·" +
+          I18n.t(DEV_KIND_LABEL[devKindOf(n) || "module"] || "模块");
+      } else if (n.kind === "super") {
+        tagText = I18n.t(KIND_TAGS.super);
+      }
+      tag.textContent = tagText;
       const t = document.createElement("span");
       t.className = "t";
       t.textContent = n.title || I18n.t("（未命名）");
@@ -13611,6 +14084,14 @@ function canvasCreateMenuGroups(pt) {
         ctxKindItem("video_gen", I18n.t("视频生成（MiniMax H3）"), () =>
           addNode("video_gen", pt.x, pt.y),
         ),
+        /* Remotion 插件节点：仅当已安装「remotion」应用插件时显示 */
+        ...(appPluginInstalled("remotion")
+          ? [
+              ctxKindItem("remotion", I18n.t("Remotion 视频（React 动效合成）"), () =>
+                addNode("remotion", pt.x, pt.y),
+              ),
+            ]
+          : []),
       ],
     ],
     [
@@ -14308,6 +14789,20 @@ function bindCanvas() {
     },
     true,
   );
+  /* 画布内禁止原生文字框选（输入框 / 节点输出 / 聊天 / 文字标注等可复制区除外）：
+     鼠标拖动（节点 / 组 / 空白 / 端子 / 绘制等）一律不产生大范围选区，避免干扰画布操作 */
+  document.addEventListener("selectstart", (ev) => {
+    const t = ev.target;
+    if (!t || typeof t.closest !== "function") return;
+    if (!t.closest("#canvas")) return;
+    if (
+      t.closest(
+        "input, textarea, select, [contenteditable], .n-out, .agent-conv, .chat-list, .mk-text",
+      )
+    )
+      return;
+    ev.preventDefault();
+  });
   canvas.addEventListener(
     "wheel",
     (ev) => {
@@ -14995,6 +15490,20 @@ function bindCanvas() {
     toast(I18n.t("图像已载入输入节点"), "ok");
   });
 
+  /* 记录最近一次鼠标点击的元素（捕获阶段）：Ctrl+A 需判断焦点是否落在「可复制文本的输出区」 */
+  let _lastClickEl = null;
+  document.addEventListener(
+    "mousedown",
+    (ev) => {
+      _lastClickEl = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    },
+    true,
+  );
+  /* 允许浏览器原生全选（Ctrl+A）的容器：输入框由 inField 单独放行，这里是输出 / 弹层等可复制文本区 */
+  const SELECTABLE_TEXT_HOSTS =
+    ".assist-list, .agent-list, .agent-body, .chat-list, .agent-conv, .n-out, " +
+    ".app-docs-article, .app-docs-box, .md, .dsh-msg-body, .overlay, .mt-dialog";
+
   window.addEventListener("keydown", (ev) => {
     const tag = (ev.target.tagName || "").toLowerCase();
     const inField =
@@ -15041,7 +15550,20 @@ function bindCanvas() {
       if (tag === "textarea" && S.refMenu) refKey(ev.target, ev);
       return;
     }
-    /* Ctrl+C：有文字选区时交给浏览器复制；否则复制选中的节点或绘制 */
+    /* Ctrl+A：输入框内由浏览器全选；可复制文本的输出区（助手 / 会话 / 聊天 / 文档 / 弹层等）
+       保留原生全选；其余场合（画布 / 普通面板焦点）拦截，避免整页文字被框选——
+       画布视图改为全选当前范围内的节点与绘制（与框选同一套命中口径） */
+    if (mod && key === "a") {
+      if (S.view !== "workflow") return;
+      const host =
+        (ev.target && ev.target.nodeType === 1 ? ev.target : null) ||
+        _lastClickEl;
+      if (host && host.closest && host.closest(SELECTABLE_TEXT_HOSTS)) return;
+      ev.preventDefault();
+      selectAllNodesInScope();
+      return;
+    }
+    /* Ctrl+C：有文字选区时交给浏览器复制；否则把选中的节点（含子节点）/ 绘制存入临时粘贴板 */
     if (mod && key === "c") {
       const sel = window.getSelection && window.getSelection();
       if (sel && !sel.isCollapsed && String(sel).length) return;
@@ -15054,8 +15576,24 @@ function bindCanvas() {
       )
         return;
       ev.preventDefault();
-      if (!duplicateSelection())
+      if (!copyNodesToClipboard())
         toast(I18n.t("请先选中节点或绘制"), "warn");
+      return;
+    }
+    /* Ctrl+V：把粘贴板中的节点 / 绘制粘贴到当前视口中心（输入框 / 文字选区内不拦截，交给原生粘贴） */
+    if (mod && key === "v") {
+      const sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && String(sel).length) return;
+      const assistPane = document.getElementById("assistPane");
+      if (
+        assistPane &&
+        ((ev.target && assistPane.contains(ev.target)) ||
+          (document.activeElement &&
+            assistPane.contains(document.activeElement)))
+      )
+        return;
+      ev.preventDefault();
+      pasteNodesFromClipboard();
       return;
     }
     if (mod && key === "z") {
@@ -15564,7 +16102,11 @@ async function saveImageAs(p) {
 }
 
 function assignDefaultProvider(node) {
-  if (node.kind === "proc_text" || node.kind === "chat") {
+  if (
+    node.kind === "proc_text" ||
+    node.kind === "chat" ||
+    node.kind === "remotion"
+  ) {
     const prov = (S.config.providers || []).find((p) => p.type === "text_openai");
     if (prov) {
       node.providerId = prov.id;
@@ -15594,11 +16136,12 @@ function makeNode(kind, x, y) {
   if (node.kind === "agent_task") syncAgentProviderRoute(node);
   node.parentTaskId = currentTaskFocus();
   const sf = currentSuperFocus();
-  if (sf) {
+  const sfHost = sf ? nodeById(sf) : null;
+  if (sf && sfHost && sfHost.kind === "super") {
     node.parentSuperId = sf;
-    const host = nodeById(sf);
-    node.parentTaskId = host ? host.parentTaskId || "" : "";
+    node.parentTaskId = sfHost.parentTaskId || "";
   } else {
+    /* superFocus 失效（指向已不存在的超级节点）时不挂幽灵父级，退回按坐标找宿主 */
     const host = findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false);
     if (host) {
       const o = superInnerOrigin(host);
@@ -15838,7 +16381,7 @@ async function stopNode(node) {
     renderCanvas();
     return;
   }
-  if (node.kind === "music_gen" || node.kind === "video_gen") {
+  if (node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "remotion") {
     /* 单节点停止也要：关监视器 + 作废排队 + 取消主进程在途任务（释放大锁）。
        旧实现只把 running 置 false，串行队列 / 后端任务照跑，稍后节点又回到运行队列。 */
     if (!node.running && !mediaGenWaiters.has(node.id)) return;
@@ -15852,9 +16395,19 @@ async function stopNode(node) {
     node.running = false;
     if (wasRunning) mediaGenCancelRemote(node);
     if (node.kind === "music_gen") node.musicStatus = I18n.t("已取消");
-    else node.videoStatus = I18n.t("已取消");
+    else if (node.kind === "video_gen") node.videoStatus = I18n.t("已取消");
+    else node.remotionStatus = I18n.t("已取消");
     node.error = null;
-    toast(I18n.t(node.kind === "music_gen" ? "已取消音乐生成" : "已取消视频生成"), "warn");
+    toast(
+      I18n.t(
+        node.kind === "music_gen"
+          ? "已取消音乐生成"
+          : node.kind === "video_gen"
+            ? "已取消视频生成"
+            : "已取消 Remotion 渲染",
+      ),
+      "warn",
+    );
     renderCanvas();
     updateRunQueuePanel();
     return;
@@ -20448,7 +21001,7 @@ function migrateWf(wf) {
       if (n.attempts == null) n.attempts = 1;
       if (n.attemptIdx == null) n.attemptIdx = 0;
     }
-    if (n.kind === "music_gen" || n.kind === "video_gen") {
+    if (n.kind === "music_gen" || n.kind === "video_gen" || n.kind === "remotion") {
       if (n.attempts == null) n.attempts = 1;
     }
     if (n.kind === "task") {
@@ -20642,8 +21195,16 @@ function migrateWf(wf) {
   }
   {
     const ids = new Set(wf.nodes.map((n) => n.id));
+    const byId = new Map(wf.nodes.map((n) => [n.id, n]));
     for (const n of wf.nodes) {
       if (n.parentTaskId && !ids.has(n.parentTaskId)) n.parentTaskId = "";
+    }
+    /* 孤儿超级节点引用自愈：父级不存在或不是超级节点时清空，
+       避免节点挂到幽灵父级后从层级视图 / 左侧栏中消失（历史数据损坏的降级：
+       节点回到顶层画布，至少可见可操作，不再整体消失） */
+    for (const n of wf.nodes) {
+      const host = n.parentSuperId ? byId.get(n.parentSuperId) : null;
+      if (n.parentSuperId && (!host || host.kind !== "super")) n.parentSuperId = "";
     }
     for (const n of wf.nodes) {
       if (n.kind === "task") ensureTaskScaffold(n, wf);
@@ -20653,11 +21214,11 @@ function migrateWf(wf) {
     }
     /* 任务节点仅控制信号：去掉内容入线；输出 fromIndex 钳制为成功(0)/失败(1) */
     {
-      const byId = new Map(wf.nodes.map((n) => [n.id, n]));
+      const byId2 = new Map(wf.nodes.map((n) => [n.id, n]));
       wf.wires = (wf.wires || []).filter((w) => {
         if (w.rel) return true; /* 关系线：仅表达关系，不受数据流规则裁剪 */
-        const to = byId.get(w.to);
-        const from = byId.get(w.from);
+        const to = byId2.get(w.to);
+        const from = byId2.get(w.from);
         if (!to || !from) return false;
         if (to.kind === "task" && !isControlKind(from)) return false;
         if (from.kind === "task") {
@@ -20670,6 +21231,9 @@ function migrateWf(wf) {
     for (const m of wf.marks || []) {
       if (typeof m.parentTaskId !== "string") m.parentTaskId = "";
       if (m.parentTaskId && !ids.has(m.parentTaskId)) m.parentTaskId = "";
+      if (typeof m.parentSuperId !== "string") m.parentSuperId = "";
+      const mhost = m.parentSuperId ? byId.get(m.parentSuperId) : null;
+      if (m.parentSuperId && (!mhost || mhost.kind !== "super")) m.parentSuperId = "";
     }
   }
   /* 需求等待 / 起点无输入端子：去掉指向它们的旧连线；终点无输出端子 */
@@ -21114,9 +21678,11 @@ async function forkAgentSession(id) {
   toast(I18n.t("已分支新会话：") + copy.title, "ok");
 }
 
-/* 智能任务节点 ↔ 智能会话 双向内容同步 */
+/* 智能任务节点 ↔ 智能会话 双向内容同步。
+   remotion 节点复用同一会话绑定（💬 查看过程/编辑迭代）：无 task/messages 字段，
+   下方 node-task 同步与多轮历史同步对其自动跳过（空值短路），agent_task 行为不变。 */
 function ensureAgentSessionForNode(node) {
-  if (!node || node.kind !== "agent_task") return null;
+  if (!node || (node.kind !== "agent_task" && node.kind !== "remotion")) return null;
   const list = agentSessions();
   let sess = list.find((s) => s.id === node.agentSessionId);
   if (!sess) {
@@ -21192,6 +21758,90 @@ function devPathOf(node) {
     cur = cur.parentSuperId ? nodeById(cur.parentSuperId) : null;
   }
   return "";
+}
+/* 画布项目根（单一真源）：扫描画布上的开发节点块（kind super + dev:true），就近解析
+   devPath（含祖先继承），优先顶层块（devPath 约定设在顶层块、子块继承）；空值与相对路径忽略。
+   多块解析出多个不同根时：若存在共同祖先目录就用祖先（一个根覆盖全部），
+   否则取文档序第一个，并置 S.devProjectRootAmbiguous = true 供 UI 提示。
+   歧义标记在每次调用本函数时刷新（无开发块 / 单根时为 false），UI 读取前先调用一次。
+   本结果由 dshWorkspaceOf 并入工作区解析优先级（app.js / app-agent.js 两份逐字同步）。 */
+function devProjectRootOf() {
+  S.devProjectRootAmbiguous = false;
+  if (!S.wf) return "";
+  const clean = (raw) => String(raw || "").trim().replace(/[\\/]+$/, "");
+  const fwd = (p) => {
+    const s = String(p).replace(/\\/g, "/");
+    return s.startsWith("//")
+      ? "//" + s.slice(2).replace(/\/{2,}/g, "/")
+      : s.replace(/\/{2,}/g, "/");
+  };
+  /* 比较键：Windows 盘符路径忽略大小写，POSIX 路径区分大小写 */
+  const keyOf = (p) => {
+    const t = fwd(p);
+    return /^[a-zA-Z]:/.test(t) ? t.toLowerCase() : t;
+  };
+  const isDevBlock = (n) => !!(n && n.kind === "super" && n.dev && !n.db);
+  /* 顶层开发块：祖先链上没有别的开发块（父级是普通超级节点仍算顶层） */
+  const isTopDevBlock = (n) => {
+    let cur = n && n.parentSuperId ? nodeById(n.parentSuperId) : null;
+    let guard = 0;
+    while (cur && guard++ < 64) {
+      if (isDevBlock(cur)) return false;
+      cur = cur.parentSuperId ? nodeById(cur.parentSuperId) : null;
+    }
+    return true;
+  };
+  const devBlocks = (S.wf.nodes || []).filter(isDevBlock);
+  if (!devBlocks.length) return "";
+  const rootsIn = (list) => {
+    const out = [];
+    const seen = new Set();
+    for (const n of list) {
+      const p = clean(devPathOf(n));
+      if (!p || !isAbsPath(p)) continue;
+      const k = keyOf(p);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(p);
+    }
+    return out;
+  };
+  let roots = rootsIn(devBlocks.filter(isTopDevBlock));
+  if (!roots.length) roots = rootsIn(devBlocks);
+  if (!roots.length) return "";
+  if (roots.length === 1) return roots[0];
+  /* 共同祖先：拆成「锚点（盘符 / UNC 共享 / 文件系统根）+ 段」逐段比对，
+     只剩锚点本身（如 E: / ）不算有意义的共同祖先，交给调用方标歧义 */
+  const split = (p) => {
+    const t = fwd(p);
+    const m = /^(\/\/[^/]+\/[^/]+|[a-zA-Z]:|\/)/.exec(t);
+    const anchor = m ? m[1] : "";
+    if (!anchor) return null;
+    return { anchor, segs: t.slice(anchor.length).split("/").filter(Boolean) };
+  };
+  const parts = roots.map(split);
+  let common = "";
+  if (parts.every((x) => !!x)) {
+    const win = /^[a-zA-Z]:/.test(parts[0].anchor);
+    const sameAnchor = parts.every(
+      (x) =>
+        win === /^[a-zA-Z]:/.test(x.anchor) &&
+        (win ? x.anchor.toLowerCase() === parts[0].anchor.toLowerCase() : x.anchor === parts[0].anchor),
+    );
+    if (sameAnchor) {
+      const eq = (a, b) => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
+      let i = 0;
+      while (i < parts[0].segs.length && parts.every((x) => x.segs[i] !== undefined && eq(x.segs[i], parts[0].segs[i]))) i++;
+      if (i) {
+        const head = parts[0].anchor === "/" ? "" : parts[0].anchor;
+        common = head + "/" + parts[0].segs.slice(0, i).join("/");
+        if (roots[0].includes("\\")) common = common.replace(/\//g, "\\");
+      }
+    }
+  }
+  if (common) return common;
+  S.devProjectRootAmbiguous = true;
+  return roots[0];
 }
 /* 开发任务书：节点概述 + 项目根 + 上层模块 + 本次开发需求（注入会话的契约消息） */
 function devNodeContractText(node, req) {
@@ -21537,6 +22187,58 @@ async function expandAgentTaskToSession(node) {
   scheduleSave(true);
   setView("agent");
   toast(I18n.t("已扩展为智能会话（内容完全同步）"), "ok");
+}
+/* Remotion 节点 ↔ 智能会话 打通：一键打开绑定会话，查看生成过程 / 编辑迭代。
+   生成记录（node.output / node.tsx / node.error）以 assistant 消息补写进会话，
+   去重追加（同内容不重复），之后在会话里可直接查看/复制 TSX 或改节点参数回画布重跑。 */
+async function openRemotionSession(node) {
+  if (!node || node.kind !== "remotion") return;
+  const sess = ensureAgentSessionForNode(node);
+  if (!sess) return;
+  const recap = remotionSessionRecapText(node);
+  if (recap) {
+    const hasAi = sess.messages.some(
+      (m) => m.role === "assistant" && m.content === recap,
+    );
+    if (!hasAi) sess.messages.push(assistantMsgFromNode(node, recap));
+  }
+  S.agentActiveId = sess.id;
+  await persistAgentSession();
+  scheduleSave(true);
+  setView("agent");
+  toast(I18n.t("已打开会话：可查看过程与编辑迭代"), "ok");
+}
+/* 生成过程摘要（assistant 消息正文）：成功（视频路径 + 参数）/ 失败 / 已取消 + TSX 代码块 */
+function remotionSessionRecapText(node) {
+  if (!node) return "";
+  const lines = [];
+  const out = node.output;
+  if (node.error) {
+    lines.push(I18n.t("上次生成失败：") + String(node.error));
+  } else if (out && out.path) {
+    const meta = [];
+    if (String(node.size || "").trim())
+      meta.push(String(node.size).trim().replace("x", "×"));
+    if (node.duration) meta.push(node.duration + "s");
+    if (node.fps) meta.push(node.fps + "fps");
+    lines.push(
+      I18n.t("上次生成完成：视频已输出到 ") +
+        out.path +
+        (meta.length ? "（" + meta.join(" · ") + "）" : ""),
+    );
+  } else if (
+    !node.running &&
+    String(node.remotionStatus || "").indexOf(I18n.t("已取消")) >= 0
+  ) {
+    lines.push(I18n.t("上次生成已取消"));
+  }
+  if (String(node.tsx || "").trim()) {
+    lines.push(I18n.t("生成的动效代码（TSX，可在会话中编辑迭代）："));
+    lines.push("```tsx");
+    lines.push(String(node.tsx).trim());
+    lines.push("```");
+  }
+  return lines.join("\n");
 }
 function syncAgentTaskToSession(node, input, output) {
   if (!node || !node.agentSessionId || !output) return;

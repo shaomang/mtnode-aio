@@ -3301,6 +3301,60 @@ button.mini.btn-sq.tpl-ico {
   opacity: 1
 }
 
+/* AI 回复尾部时间行的小「复制本条回复」按钮（与时间同行，仅复制该次回复） */
+.dsh-msg-tail .dsh-msg-tail-copy {
+  flex: none;
+  pointer-events: auto;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 9px;
+  border: 1px solid var(--bd2);
+  color: var(--muted);
+  background: rgba(0, 0, 0, .18);
+  cursor: pointer;
+  user-select: none;
+  letter-spacing: .5px;
+  transition: color .15s, border-color .15s, background .15s;
+}
+
+.dsh-msg-tail .dsh-msg-tail-copy:hover {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+  background: rgba(56, 214, 255, .12);
+}
+
+.dsh-msg-tail .dsh-msg-tail-copy.ok {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(62, 158, 110, .14);
+}
+
+/* 上一轮用户输入下方的「回滚」小按钮（回滚入口） */
+.dsh-msg-rollback {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 143, 46, .35);
+  color: var(--orange2);
+  background: rgba(255, 143, 46, .08);
+  cursor: pointer;
+  pointer-events: auto;
+  user-select: none;
+  flex: none;
+}
+
+.dsh-msg-rollback:hover {
+  background: rgba(255, 143, 46, .18);
+  color: var(--orange);
+  border-color: rgba(255, 143, 46, .55);
+}
+
+.dsh-msg-rollback:active {
+  transform: translateY(1px);
+}
+
 .dsh-think {
   font-size: 10.5px;
   color: var(--muted)

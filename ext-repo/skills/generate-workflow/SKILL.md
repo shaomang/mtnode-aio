@@ -29,6 +29,7 @@ description: 在当前画布生成可编辑、可一键重跑的数据流工作�
 - 智能节点（`agent_task` / `proc_text`+`agent:true`）后面不要接 `save_*`
 - 不要把智能节点当数据输入接到下游（改用写文件 + `wait_file` 控制阻塞）
 - 不要给 `music_gen` / `video_gen` 再接保存节点：在节点上设 `outputPath` 即可
+- `remotion`（Remotion 动效视频节点）**仅当已安装「remotion」应用插件时使用**；描述文本来自连线端口1（文本源），节点上可设 `duration`（秒 1–60）/ `fps`（1–60）/ `remotionSize`（如 `1280x720`、`1920x1080`、`720x1280`、`1080x1920`）/ `providerId` + `model`。与 music_gen/video_gen 相反：remotion 没有 `outputPath`，渲染出的 mp4 由**下游保存节点**落盘（`savePath` 用 `.mp4`），所以它后面要接一个 `save` 节点
 - 批量 `batchMode:batch` 时不要把整批 N 条再塞进每一次运行（防 N²）
 - 文生图一次不要要求「生成多张」；一跑只出 1 张
 - 不要删除或挡住正在运行的节点

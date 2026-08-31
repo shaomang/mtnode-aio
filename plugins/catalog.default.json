@@ -112,6 +112,23 @@
         "zh": "基于 GPT-SoVITS 的本地文本转语音：指定目录安装、参考音频音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。服务不随 MTNode 退出，托盘可手动关闭。",
         "en": "GPT-SoVITS local TTS: custom install dir, reference-audio voice manager, OpenAI-compatible TTS API with API key auth. Service survives MTNode exit; close via tray."
       }
+    },
+    {
+      "id": "remotion",
+      "kind": "remotion",
+      "handler": "remotion",
+      "order": 70,
+      "version": "1.0.0",
+      "minAppVersion": "1.1.28",
+      "icon": "remotion.png",
+      "title": {
+        "zh": "Remotion 动效视频",
+        "en": "Remotion Motion Video"
+      },
+      "subtitle": {
+        "zh": "本地 Remotion（React 动效）视频生成：文本描述 → LLM 生成动效合成 → 渲染 mp4；画布「Remotion 视频」节点。移除插件不删已装项目。",
+        "en": "Local Remotion (React motion) video: text → LLM-generated composition → render mp4; adds a canvas Remotion video node. Removing the plugin keeps your install."
+      }
     }
   ]
 }

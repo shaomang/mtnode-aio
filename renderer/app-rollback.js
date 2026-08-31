@@ -1358,6 +1358,182 @@ function rbActiveMessages(list) {
   return a.filter((m) => m && !m._rolledBack);
 }
 
+/* ---------------- 回滚入口寻址 / 还原编排 ----------------
+ * 字节写回一律走主进程受守卫的 restoreFile / deleteFile；
+ * 画布 / 计划 / 事实库的自动还原未就绪，如实列出待人工处理，绝不静默。 */
+
+/** 一条用户消息归属的会话目录（与 rbSessionIdFor 同构）：
+ *  助手面板 nodeId="assist" → assist；智能会话 → agent_<id>。 */
+function rbSessionIdForMsg(nodeId) {
+  const n = String(nodeId || "").trim();
+  if (n === "assist") return "assist";
+  return rbSanitizeId("agent_" + n, "session");
+}
+
+/** 一条用户消息上最新一轮的 rid：锚点消息可被重跑追加多轮（rids），最新在末尾。 */
+function rbLatestRid(m) {
+  try {
+    if (!m || typeof m !== "object") return "";
+    if (Array.isArray(m.rids) && m.rids.length)
+      return String(m.rids[m.rids.length - 1]);
+    return String(m.rid || "");
+  } catch (_) {
+    return "";
+  }
+}
+
+/** 这条用户消息是否挂着可寻址的回滚轮次（入口按钮显示条件之一）。 */
+function rbHasMsgRound(m) {
+  return !!rbLatestRid(m);
+}
+
+/** 轮初 / 轮末计划快照是否不同（有变更才需要人工处理提示）。 */
+function rbPlanChanged(round) {
+  try {
+    const a = round && round.planOpen ? JSON.stringify(round.planOpen) : "";
+    const b = round && round.plan ? JSON.stringify(round.plan) : "";
+    return !!a || !!b ? a !== b : false;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 还原一轮（一次 rid = 一次回滚单位）：
+ *  - 文件逐条走主进程守卫：本轮新建 → 删；修改 / 删除 → 写回改前内容；
+ *    指纹校验不过 / 内容不可得 / 工作区外 / 本轮捕获期即已变动 → 跳过并报告。
+ *  - 画布 / 计划 / 事实库自动还原未就绪 → 如实列入 pending，由调用方提示人工处理。
+ *  - 不在这里写 restoredAt：调用方确认「完整还原」后再标（见 rbMarkRoundRestored）。
+ */
+async function rbRestoreRound(sessionId, rid) {
+  const api = rbStoreApi();
+  if (!api) return { ok: false, error: "回滚能力未启用" };
+  const round = await rbGetRound(sessionId, rid);
+  if (!round) return { ok: false, error: "找不到该轮账本" };
+  if (round.restoredAt) return { ok: false, already: true, error: "该轮已回滚，不能重复回滚" };
+  if (round.status === "open")
+    return { ok: false, live: true, error: "该轮仍在运行中，结束后才能回滚" };
+  const files = Array.isArray(round.files) ? round.files : [];
+  const restored = [];
+  const deleted = [];
+  const skipped = [];
+  const errors = [];
+  for (const f of files) {
+    const show = String(f.rel || f.path || "");
+    if (f.unsupported) {
+      skipped.push({ path: show, reason: "改前内容不可得" });
+      continue;
+    }
+    if (f.outside) {
+      skipped.push({ path: show, reason: "工作区外，不还原" });
+      continue;
+    }
+    if (f.hashMismatch) {
+      skipped.push({ path: show, reason: "本轮捕获期间文件即已变动" });
+      continue;
+    }
+    try {
+      if (f.kind === "create") {
+        const r = await api.rollbackDeleteFile(sessionId, rid, f.path, {
+          expectHash: f.afterHash || "",
+        });
+        if (r && r.ok) deleted.push({ path: show, deleted: !!r.deleted });
+        else errors.push({ path: show, error: (r && r.error) || "删除失败" });
+      } else if (f.kind === "delete") {
+        /* 本轮删掉的文件：仅当现在仍不存在（没人重建过）才写回改前内容 */
+        const r = await api.rollbackRestoreFile(sessionId, rid, f.path, f.objId || "", {
+          expectMissing: true,
+        });
+        if (r && r.ok) restored.push({ path: show, kind: "delete" });
+        else errors.push({ path: show, error: (r && r.error) || "还原失败" });
+      } else {
+        if (!f.objId) {
+          skipped.push({ path: show, reason: "无改前内容" });
+          continue;
+        }
+        if (f.afterUnknown) {
+          skipped.push({ path: show, reason: "改后状态无法校验" });
+          continue;
+        }
+        const r = await api.rollbackRestoreFile(sessionId, rid, f.path, f.objId, {
+          expectHash: f.afterHash || "",
+        });
+        if (r && r.ok) restored.push({ path: show, kind: "modify" });
+        else errors.push({ path: show, error: (r && r.error) || "还原失败" });
+      }
+    } catch (e) {
+      errors.push({ path: show, error: (e && e.message) || String(e) });
+    }
+  }
+  const pending = [];
+  const canvas = Array.isArray(round.canvas) ? round.canvas : [];
+  if (canvas.length) pending.push("画布改动 " + canvas.length + " 处");
+  if (rbPlanChanged(round)) pending.push("计划清单变更");
+  const db = Array.isArray(round.db) ? round.db : [];
+  if (db.length) pending.push("事实库改动 " + db.length + " 条");
+  const untracked = round.untracked || {};
+  const warnings = [];
+  if ((Number(untracked.shellCalls) || 0) > 0)
+    warnings.push(
+      "有 " + untracked.shellCalls + " 次命令调用可能改了文件，账本无法覆盖，请自查",
+    );
+  if (untracked.dbCapped)
+    warnings.push("事实库改动超过逐条记账上限，无法逐条回退");
+  if ((Number(round.dropped) || 0) > 0 || round.status === "partial")
+    warnings.push("该轮记录不完整，还原可能不完整");
+  const complete =
+    errors.length === 0 &&
+    pending.length === 0 &&
+    warnings.length === 0;
+  return {
+    ok: errors.length === 0,
+    complete,
+    restored,
+    deleted,
+    skipped,
+    errors,
+    pending,
+    warnings,
+    round,
+    rid,
+  };
+}
+
+/** 完整回滚成功后把 restoredAt 写回同一账本（再次还原默认拒绝）。 */
+function rbMarkRoundRestored(sessionId, round, restoredAt) {
+  const api = rbStoreApi();
+  if (!api || !round || !round.id) return Promise.resolve(false);
+  const body = Object.assign({}, round, { restoredAt: restoredAt || Date.now() });
+  return Promise.resolve()
+    .then(() => api.rollbackPutRound(sessionId, body))
+    .then((r) => !!(r && r.ok !== false))
+    .catch(() => false);
+}
+
+/** 把已回滚轮次的消息（开轮消息起、到下一条用户消息止）标记 _rolledBack，
+ *  上下文构造（rbActiveMessages）会自动把它们摘出去。返回标记条数。 */
+function rbDropRoundMessages(list, rid) {
+  if (!Array.isArray(list) || !rid) return 0;
+  let n = 0;
+  let hit = false;
+  for (const m of list) {
+    if (!m || typeof m !== "object") continue;
+    if (!hit) {
+      const has =
+        (Array.isArray(m.rids) && m.rids.indexOf(rid) >= 0) || m.rid === rid;
+      if (!has) continue;
+      hit = true;
+    } else if (m.role === "user") {
+      break; /* 下一条用户消息 = 下一轮，不摘 */
+    }
+    if (!m._rolledBack) {
+      m._rolledBack = true;
+      n++;
+    }
+  }
+  return n;
+}
+
 /** 存储占用（设置页展示）；能力缺席返回 null。 */
 function rbStat() {
   const api = rbStoreApi();

@@ -616,6 +616,20 @@ body.theme-light .dsh-msg-copy:hover {
   border-color: var(--cyan);
   color: var(--cyan2);
 }
+body.theme-light .dsh-msg-tail .dsh-msg-tail-copy {
+  background: rgba(0, 0, 0, .05);
+  color: var(--muted);
+}
+body.theme-light .dsh-msg-tail .dsh-msg-tail-copy:hover {
+  background: rgba(32, 104, 184, .10);
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+body.theme-light .dsh-msg-tail .dsh-msg-tail-copy.ok {
+  color: #1d7a4f;
+  border-color: rgb(62, 158, 110);
+  background: rgb(214, 240, 225);
+}
 
 /* ── 智能任务节点内的会话区 ── */
 body.theme-light .agent-conv {

@@ -176,6 +176,17 @@ function atomicWriteFile(dest, buf) {
   }
 }
 
+/** 当前文件 sha256（还原守卫用：校验当前字节 == 该轮结束后的 afterHash，
+ *  证明本轮结束后没人动过它才允许写回）。文件不存在返回 null。 */
+function sha256File(abs) {
+  try {
+    const buf = fs.readFileSync(abs);
+    return crypto.createHash("sha256").update(buf).digest("hex");
+  } catch (_) {
+    return null;
+  }
+}
+
 /* ---------------- 内容寻址对象 ---------------- */
 
 function objPath(id) {
@@ -510,7 +521,10 @@ function findLedgerEntry(round, absPath) {
   return null;
 }
 
-/** 把该轮记录的（或显式指定的）对象字节原子写回目标路径。 */
+/** 把该轮记录的（或显式指定的）对象字节原子写回目标路径。
+ *  守卫（契约）：expectMissing=true 时目标必须仍不存在（本轮删掉的文件没人重建过）；
+ *  否则给 expectHash 时当前字节必须等于该轮结束时的 afterHash（本轮结束后没人动过）。
+ *  校验不过一律拒绝并如实报告，绝不凭猜测覆盖文件。 */
 function restoreFile(opts) {
   const round = readRound(opts && opts.sessionId, opts && opts.roundId);
   const g = guardTarget(round, opts && opts.path);
@@ -526,6 +540,38 @@ function restoreFile(opts) {
       };
     }
     objId = entry.obj || objId;
+  }
+  const expectHash = String((opts && opts.expectHash) || "").trim().toLowerCase();
+  if (opts && opts.expectMissing) {
+    if (fs.existsSync(g.path)) {
+      return {
+        ok: false,
+        conflict: true,
+        path: g.path,
+        rel: relOf(g.workspace, g.path),
+        error: t("文件在本轮之后被重新创建/改动，已跳过还原：") + String(opts.path || ""),
+      };
+    }
+  } else if (expectHash) {
+    const cur = sha256File(g.path);
+    if (cur === null) {
+      return {
+        ok: false,
+        conflict: true,
+        path: g.path,
+        rel: relOf(g.workspace, g.path),
+        error: t("文件已不存在，无法校验，已跳过还原：") + String(opts.path || ""),
+      };
+    }
+    if (cur !== expectHash) {
+      return {
+        ok: false,
+        hashMismatch: true,
+        path: g.path,
+        rel: relOf(g.workspace, g.path),
+        error: t("文件在本轮之后被改动（指纹不符），已跳过还原：") + String(opts.path || ""),
+      };
+    }
   }
   if (!OBJ_ID_RE.test(objId)) {
     return {
@@ -554,13 +600,28 @@ function restoreFile(opts) {
   };
 }
 
-/** 删除该轮新建的文件（撤销「新增」）。校验与 restoreFile 同一套。 */
+/** 删除该轮新建的文件（撤销「新增」）。校验与 restoreFile 同一套。
+ *  守卫：给 expectHash 时当前字节必须等于该轮结束后的 afterHash
+ *  （文件创建后被用户改过就不删，避免毁掉改后内容）。 */
 function deleteFile(opts) {
   const round = readRound(opts && opts.sessionId, opts && opts.roundId);
   const g = guardTarget(round, opts && opts.path);
   if (!g.ok) return g;
   if (!fs.existsSync(g.path)) {
     return { ok: true, path: g.path, rel: relOf(g.workspace, g.path), deleted: false };
+  }
+  const expectHash = String((opts && opts.expectHash) || "").trim().toLowerCase();
+  if (expectHash) {
+    const cur = sha256File(g.path);
+    if (cur !== null && cur !== expectHash) {
+      return {
+        ok: false,
+        hashMismatch: true,
+        path: g.path,
+        rel: relOf(g.workspace, g.path),
+        error: t("文件在本轮之后被改动（指纹不符），已跳过删除：") + String(opts.path || ""),
+      };
+    }
   }
   let st = null;
   try {

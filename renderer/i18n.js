@@ -292,6 +292,9 @@
     " · 第": " · Turn ",
     " 次成功": " succeeded",
     " 个节点": " nodes",
+    " 个节点到粘贴板（Ctrl+V 粘贴）": " node(s) to clipboard (Ctrl+V to paste)",
+    "已粘贴 ": "Pasted ",
+    "粘贴板为空，请先 Ctrl+C 复制节点": "Clipboard is empty — press Ctrl+C on nodes first",
     " 个文件": " files",
     " 节点）": " nodes)",
     " 切割）": " grid)",
@@ -932,8 +935,7 @@
     "服务商（自动读取全局 API 配置）": "Provider (reads global API config automatically)",
     "横向缩放（仅改变横向布局，纵向不变）": "Scale horizontally (layout width only; height unchanged)",
     "请先指定保存路径（可用「浏览」选择）": "Set a save path first (use \"Browse\" to choose)",
-    "智能助手仍在处理画布，保存将在结束后自动执行":
-      "The agent is still editing the canvas; saves will run automatically when it finishes",
+
     "请先在节点设置中指定输出路径（可用「浏览」选择）":
       "Set an output path in node settings first (use \"Browse\" to choose)",
     "输出路径（必填）": "Output path (required)",
@@ -2394,6 +2396,32 @@
     "跟随当前画布工作目录（只读）": "Follows this canvas working directory (read-only)",
     "运行中已锁定工作目录，切换画布也不会更改":
       "Working directory is locked for this run; switching canvases will not change it",
+    /* ── 工作区真源（运行与显示同一口径）：手填 > 画布项目根 > 画布目录 / 默认 ── */
+    "手填指定": "set by hand",
+    "画布项目根（开发节点 devPath）": "canvas project root (dev node devPath)",
+    "应用默认目录": "app default directory",
+    "未指定": "not set",
+    "本画布有多个项目根，已用第一个；要换另一个请在顶层功能块设置 devPath，或直接手填工作目录。":
+      "This canvas declares several project roots — using the first one. To pick another, set devPath on the top-level module block or type a working directory by hand.",
+    "本画布有开发节点但尚未设置项目根：在顶层功能块设 devPath 后，工作目录会优先用它。":
+      "This canvas has dev nodes but no project root yet: set devPath on the top-level module block and the working directory will prefer it.",
+    "跟随当前画布：项目根优先，其次画布工作目录":
+      "Follows this canvas: project root first, then the canvas working directory",
+    "跟随当前画布（项目根优先，只读）":
+      "Follows this canvas (project root first, read-only)",
+    "留空 = 画布项目根 / 画布工作目录…":
+      "Leave empty = canvas project root / canvas working directory…",
+    "助手可读写此目录下的文件；留空则用画布项目根 / 画布工作目录":
+      "The assistant reads/writes files in this directory; leave empty to use the canvas project root / canvas working directory",
+    "生效工作目录：": "Effective working directory: ",
+    "来源：本轮开轮时锁定": "Source: locked at the start of this run",
+    "点击可改选其它目录（手填优先于画布项目根）":
+      "Click to choose another directory (a manual pick outranks the canvas project root)",
+    "选择工作区": "Choose a workspace",
+    "项目根已并入工作区":
+      "Project root merged into the workspace — the agent writes files there",
+    "画布上有多个项目根：本轮使用「{p}」，可在上方工作目录里指定其它项目根":
+      "This canvas declares several project roots; this run uses “{p}”. Pick another one in the working-directory field above.",
     "我能看到当前画布、节点与配置，也可参考其他画布列表。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除画布前会请你确认。":
       "I can see the canvas, nodes, and settings, and can list other canvases.\nTry \"summarize the canvas\" or \"build a xxx workflow\".\nGraph edits or deleting a canvas will ask for confirmation.",
     "第{n}张参考图": "reference image {n}",
@@ -2963,6 +2991,50 @@
     "已处理": "Done",
     "候选": "Option",
     "回滚": "Rollback",
+    "↶ 回滚": "↶ Rollback",
+    "撤销上一轮的全部更改": "Undo all changes of the previous round",
+    "确认回滚": "Confirm rollback",
+    "回滚将撤销此轮次的所有更改，且不可撤销。确认继续？":
+      "Rollback will undo ALL changes of this round, and it cannot be undone. Continue?",
+    "本次更改的内容": "Changes in this round",
+    "（本轮无可自动列举的具体条目）": "(no concrete items to list)",
+    "画布改动：": "Canvas changes: ",
+    "（需人工处理）": " (manual handling needed)",
+    "计划清单变更（需人工处理）": "Plan changed (manual handling needed)",
+    "事实库改动 ": "DB changes: ",
+    " 条（需人工处理）": " record(s) (manual handling needed)",
+    "该轮仍在运行中，结束后才能回滚": "This round is still running; roll back after it finishes",
+    "该轮没有可回滚的账本": "No rollback ledger for this round",
+    "该轮已回滚过，不能重复回滚": "This round was already rolled back",
+    "已还原 ": "Restored ",
+    " 个文件": " file(s)",
+    "已删除 ": "Deleted ",
+    " 个本轮新建文件": " file(s) created this round",
+    "跳过 ": "Skipped ",
+    " 项（": " item(s) (",
+    "失败 ": "Failed ",
+    " 项": " item(s)",
+    "需人工处理：": "Needs manual handling: ",
+    "本轮没有可回退的文件改动": "No file changes to roll back in this round",
+    "已回滚该轮：": "Rolled back this round: ",
+    "条消息已移出上下文": " message(s) removed from context",
+    "回滚未完全完成：": "Rollback incomplete: ",
+    "回滚失败：": "Rollback failed: ",
+    "（未记录）": "(not recorded)",
+    "（未逐条记录）": "(not recorded per-item)",
+    "有 ": "There ",
+    " 次命令调用可能改了文件，账本无法覆盖，请自查":
+      " shell command(s) may have changed files beyond the ledger; please check",
+    "事实库改动超过逐条记账上限，无法逐条回退":
+      "DB changes exceed the per-record cap; cannot roll back individually",
+    "该轮记录不完整，还原可能不完整": "This round's ledger is incomplete; rollback may be partial",
+    "时间": "Time",
+    "工作区": "Workspace",
+    "修改": "Modify",
+    "新增": "Add",
+    "连线": "Wire",
+    "标注": "Mark",
+    "分组": "Group",
     "保存失败：": "Save failed: ",
     "节点": "Node",
     "创建": "Create",
@@ -2978,6 +3050,9 @@
     "数据库副本": "Database replica",
     "数据库（事实收纳 · 编译副本供智能节点查询）":
       "Database (fact storage · compile replica for agent queries)",
+    "网络节点": "Network Node",
+    "执行节点": "Execute Node",
+    "超级/开发节点": "Super / Dev Nodes",
     /* ===== 开发节点（功能块 · 项目架构 · 绑定开发会话） ===== */
     "开发": "Dev",
     "开发节点": "Dev node",
@@ -3211,6 +3286,8 @@
     "建议（上次结果）": "Suggestions (last run)",
     "查看上次建议": "Show last suggestions",
     "确认生成建议": "Confirm · generate suggestions",
+    "【AI 建议评估】": "[AI suggestion assessment]",
+    "【本轮采纳】": "[Adopted this round]",
     "节点颜色：点击展开 HSV 色板，手动修改外框与呼吸灯颜色":
       "Node color: open the HSV picker to change the frame and glow color",
     "节点颜色": "Node color",
@@ -3418,8 +3495,10 @@
     "AI 正在只读调研项目代码，回答这个功能块的问题。整个过程只读，期间你可以照常操作其它节点。":
       "The AI is reading the project code to answer your question about this module. The whole run is read-only — keep working on other nodes meanwhile.",
     "（空回答）": "(empty answer)",
-    "本次问询只读完成：未改动任何文件与画布。想接着实现 / 修改？点该功能块的「开发」按钮正式开工。":
-      "This ask finished read-only: no files or canvas were changed. Want to implement or modify next? Click this module's \"Dev\" button to start work.",
+    "本次问询只读完成：未改动任何文件与画布。回答已记录到会话「":
+      "This ask finished read-only: no files or canvas were changed. The answer is saved to the session “",
+    "」，可随时在会话列表查看。想接着实现 / 修改？点该功能块的「开发」按钮正式开工。":
+      "” — revisit it anytime in the session list. To implement or modify next, click this module's \"Dev\" button to start work.",
     "问询失败": "Ask failed",
     "可以重试同一问题，或改一改再问。":
       "You can retry the same question, or rephrase it.",
@@ -3668,6 +3747,95 @@
     "点击展开 / 收起本段思考": "Click to expand / collapse this thinking block",
     "点击查看本段思考": "Click to view this thinking block",
     "本段思考（模型内部推理，非回复）": "This block is the model's internal reasoning, not the reply",
+  });
+
+  /* ── Remotion 动效视频（应用插件 remotion） ── */
+  Object.assign(EN, {
+    "Remotion": "Remotion",
+    "Remotion 视频": "Remotion video",
+    "Remotion 视频（React 动效合成）": "Remotion video (React motion)",
+    "Remotion 视频（React 动效合成 · 本地渲染 mp4）":
+      "Remotion video (React motion · rendered locally as mp4)",
+    "React 动效合成 · 本地渲染 mp4": "React motion · rendered locally as mp4",
+    "服务商 / 模型 / 温度": "Provider / model / temperature",
+    "生成动效代码并本地渲染视频": "Generate motion code and render video locally",
+    "打开 Remotion 控制台（状态 / 安装 / 日志）":
+      "Open Remotion console (status / install / logs)",
+    "打开控制台安装": "Open console & install",
+    "在控制台窗中设置安装目录并安装（npm install，需联网）":
+      "Pick an install directory in the console window, then install (npm install, needs network)",
+    "⚠ Remotion 插件未安装：请在「插件」中安装后使用本节点":
+      "⚠ Remotion plugin is not installed: install it in Plugins first",
+    "插件 · Remotion 动效视频：设置安装目录 → 安装（npm install）":
+      "Plugins · Remotion video: pick install dir → install (npm install)",
+    "描述文本（视频内容描述）": "Description text (video content)",
+    "请接入文本节点": "Connect a text node first",
+    "视频输出由下游「保存」节点保存（渲染产物在插件安装目录 out/）":
+      "Video output is saved by a downstream Save node (render lands in the plugin install dir out/)",
+    "时长（秒，1–60）": "Duration (sec, 1–60)",
+    "帧率（fps，1–60）": "Frame rate (fps, 1–60)",
+    "分辨率": "Resolution",
+    "渲染中 ": "Rendering ",
+    "处理中…": "Processing…",
+    "描述文本 → LLM 动效合成 → 本地渲染 mp4":
+      "Description → LLM motion composition → local mp4 render",
+    "LLM 生成动效代码…": "LLM writing motion code…",
+    "LLM 未返回动效代码": "LLM returned no motion code",
+    "渲染视频…": "Rendering video…",
+    "渲染失败": "Render failed",
+    "渲染完成但未返回输出路径": "Render finished but no output path returned",
+    "已取消 Remotion 渲染": "Remotion render cancelled",
+    /* ── Remotion 节点 ↔ 智能会话：会话按钮 / toast / 过程记录 ── */
+    "查看生成过程 / 编辑迭代（打开绑定会话）":
+      "View the generation process / edit iterations (open the bound session)",
+    "已打开会话：可查看过程与编辑迭代":
+      "Session opened: view the process and edit iterations here",
+    "上次生成完成：视频已输出到 ":
+      "Last generation done: video saved to ",
+    "上次生成失败：": "Last generation failed: ",
+    "上次生成已取消": "Last generation cancelled",
+    "生成的动效代码（TSX，可在会话中编辑迭代）：":
+      "Generated motion code (TSX — editable & iterable in the session): ",
+    "Remotion 描述文本输入端子为端口 1": "Remotion description port is port 1",
+    "Remotion 描述端子需要文本来源": "Remotion description port needs a text source",
+    "Remotion 控制输入端子为端口 0": "Remotion control port is port 0",
+    "Remotion 插件未就绪（请先在插件中安装）":
+      "Remotion plugin not ready (install it in Plugins first)",
+    "Remotion 插件尚未安装或未就绪（请先在「插件 · Remotion 动效视频」中安装）":
+      "Remotion plugin is not installed or not ready (install it in Plugins · Remotion video first)",
+    "请为下面这段视频描述编写一个完整的 Remotion Composition.tsx 文件（React 动效合成）。\n":
+      "Write a complete Remotion Composition.tsx file (React motion composition) for the video description below.\n",
+    "视频描述：": "Video description: ",
+    "输出要求（必须全部满足）：": "Requirements (all must be met):",
+    "只输出一个完整的 TypeScript 源文件，不要解释、不要 Markdown 代码围栏，文件内容从 import 开始到文件末尾。":
+      "Output only one complete TypeScript source file: no explanations, no Markdown fences; the file starts at the import and ends at the last line.",
+    "仅允许从 \"remotion\" 和 \"react\" 导入（例如 react 的 useState/useMemo，remotion 的 AbsoluteFill/useCurrentFrame/useVideoConfig/interpolate/spring/Sequence/Img/Audio/Easing 等）；禁止导入任何其它 npm 包。":
+      "Import only from \"remotion\" and \"react\" (e.g. useState/useMemo from react; AbsoluteFill/useCurrentFrame/useVideoConfig/interpolate/spring/Sequence/Img/Audio/Easing from remotion); no other npm packages.",
+    "导出组件名必须是 Main（export const Main: React.FC = ...），并使用 AbsoluteFill 作为根容器。":
+      "The exported component must be named Main (export const Main: React.FC = ...) with AbsoluteFill as the root container.",
+    "必须使用 useVideoConfig() 读取 width/height/fps/durationInFrames，不要硬编码视频尺寸与总帧数。":
+      "Read width/height/fps/durationInFrames via useVideoConfig(); never hard-code dimensions or total frames.",
+    "时长按 ": "Timing: ",
+    " 秒 × ": " seconds × ",
+    " fps 设计动画节奏；动效要连贯自然（淡入淡出 / 位移 / 缩放 / 颜色过渡至少两种），内容贴合描述，文字用中文。":
+      " fps; animate with at least two smooth effects (fade, translate, scale, color transitions), content should match the description, text in Chinese.",
+    "所有样式用内联 style 对象（style={{...}}），不要 CSS 文件、不要 class 选择器；颜色用十六进制。":
+      "Use inline style objects (style={{...}}) only — no CSS files, no class selectors; colors in hex.",
+    "代码必须可被 TypeScript 直接编译（宽松配置下），不要使用未定义变量，不要在顶层执行副作用。":
+      "The code must compile under loose TypeScript config: no undefined variables, no top-level side effects.",
+    "interpolate 的 inputRange 关键帧数组必须严格递增且元素不重复（从小到大，如 [0,20,60]）；在 map / 循环里按 i 计算关键帧时，后一个帧号必须严格大于前一个（可用 Math.max 兜底），否则渲染会直接失败。":
+      "The interpolate() inputRange keyframe array must be strictly increasing with no duplicate frames (e.g. [0,20,60]); when keyframes are computed from i inside map/loops, each later frame must be strictly greater than the previous one (use Math.max as a floor) — otherwise rendering fails.",
+    "Remotion API 速查：": "Remotion API cheat sheet:",
+    "当前帧号": "current frame number",
+    "数值插值（inputRange 必须严格递增、元素不重复）":
+      "numeric interpolation (inputRange must be strictly increasing, no duplicate frames)",
+    "弹性动画 0→1": "spring animation 0→1",
+    "子序列延迟": "delayed sub-sequence",
+    "图像 / 音频（本任务不提供外部资源，可不使用）":
+      "image / audio (no external assets in this task; optional)",
+    "画面尺寸 ": "Canvas size ",
+    "参考它设计字号与元素布局（可用百分比 / 相对计算）。":
+      "Use it to size fonts and layout elements (percentages / relative math are fine).",
   });
 
   var locale = "zh";

@@ -359,12 +359,14 @@ async function init() {
   }
   bindUpdateUi();
   if (window.api.setLocale) window.api.setLocale(S.config.locale);
-  /* dsh 配置缺省合并；workspaceFallback 由主进程给出（应用数据目录） */
+  /* dsh 配置缺省合并；workspaceFallback 由主进程给出（应用数据目录）
+     默认模型不在此硬编码（曾强制 deepseek-v4-flash）：留空 = 跟随实际生效的
+     智能路由默认模型（设置面板 / 运行时统一按 preferredAgentProviderRoute 计算） */
   S.config.dsh = Object.assign(
     {
       enabled: true,
       nodePath: "",
-      model: "deepseek-v4-flash",
+      model: "",
       maxTokens: 0,
       defaultWorkspace: "",
       preset: "standard",
@@ -557,6 +559,8 @@ async function init() {
   bindCanvas();
   bindMediaBackendListeners();
   bindNetMessageListener();
+  /* 应用插件目录缓存（菜单可见性 / remotion 节点警示条）；插件对话框增删后再刷 */
+  refreshAppPluginsCache().catch(() => {});
   renderAll();
   /* MTNode 启动：让当前画布处于监听模式的接收节点自动进入监听状态 */
   autoListenNetRecvNodes(true).catch(() => {});

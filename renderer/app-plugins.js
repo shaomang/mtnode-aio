@@ -556,6 +556,109 @@ function bindH3Progress(host) {
     }
   });
 }
+
+/* ── Remotion 动效视频（应用插件 kind remotion） ──
+   安装流程在插件控制台窗内完成（设置目录 → 复制 remotion-pack → npm install），
+   卡片只做状态展示与入口：未安装 → 「打开控制台安装」；已安装 → 运行/停止控制台 + 移除入口。 */
+async function refreshRemotionPluginCard(root) {
+  if (!root || !window.api || !window.api.remotionStatus) return;
+  const st = await window.api.remotionStatus();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: !!st.installed });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  const openConsole = async () => {
+    const r = await window.api.remotionOpen();
+    if (!r || !r.ok) {
+      toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+    }
+  };
+  if (!st.installed) {
+    addBtn("download", I18n.t("打开控制台安装"), openConsole, {
+      primary: true,
+      disabled: !!st.installing,
+    });
+    const hint = document.createElement("div");
+    hint.className = "plugin-progress-txt";
+    hint.style.display = "block";
+    hint.textContent = I18n.t("在控制台窗中设置安装目录并安装（npm install，需联网）");
+    actions.appendChild(hint);
+  } else {
+    if (st.consoleOpen) {
+      addBtn("stop", I18n.t("停止"), async () => {
+        if (window.api.remotionClose) await window.api.remotionClose();
+        refreshRemotionPluginCard(root);
+      });
+    } else {
+      addBtn("play", I18n.t("运行"), openConsole, { primary: true });
+    }
+    addBtn("trash", I18n.t("移除入口"), async () => {
+      if (
+        !(await confirmDialog(
+          I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
+          { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
+        ))
+      )
+        return;
+      if (window.api.remotionRemovePluginMeta) await window.api.remotionRemovePluginMeta();
+      toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
+      refreshRemotionPluginCard(root);
+      if (typeof refreshAppPluginsCache === "function") refreshAppPluginsCache();
+    }, { danger: true });
+  }
+  if (st.installed && st.installDir) {
+    const dirHint = document.createElement("div");
+    dirHint.className = "plugin-progress-txt";
+    dirHint.style.display = "block";
+    dirHint.textContent = st.installDir;
+    actions.appendChild(dirHint);
+  }
+  if (prog && (st.installing || st.rendering)) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = st.installing
+        ? I18n.t("安装中…")
+        : I18n.t("渲染中 ") + Math.round(st.renderState ? st.renderState.pct || 0 : 0) + "%";
+    }
+  }
+}
+function bindRemotionProgress(host) {
+  if (!window.api || !window.api.onRemotionProgress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onRemotionProgress((data) => {
+    if (!data || (data.id && data.id !== "remotion")) return;
+    if (data.phase !== "install" && data.phase !== "render") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshRemotionPluginCard(host);
+        /* 安装完成 / 失败后刷新画布插件缓存（菜单项可见性 / 节点警示条） */
+        if (typeof refreshAppPluginsCache === "function") refreshAppPluginsCache();
+      }, 600);
+    }
+  });
+}
 async function refreshLlamaPluginCard(root) {
   if (!root || !window.api || !window.api.llamaStatus) return;
   const st = await window.api.llamaStatus();
@@ -1037,6 +1140,15 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onH3ConsoleChanged(() => refreshH3PluginCard(card)));
       }
       refreshH3PluginCard(card);
+    } else if (item.kind === "remotion" || item.handler === "remotion") {
+      const off = bindRemotionProgress(card);
+      if (off) offs.push(off);
+      if (window.api && window.api.onRemotionConsoleChanged) {
+        offs.push(
+          window.api.onRemotionConsoleChanged(() => refreshRemotionPluginCard(card)),
+        );
+      }
+      refreshRemotionPluginCard(card);
     } else if (item.kind === "llama" || item.handler === "llama") {
       const off = bindLlamaProgress(card);
       if (off) offs.push(off);

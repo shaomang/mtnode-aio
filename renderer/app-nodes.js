@@ -688,6 +688,7 @@ function isAutoProcKind(n) {
       n.kind === "agent_task" ||
       n.kind === "music_gen" ||
       n.kind === "video_gen" ||
+      n.kind === "remotion" ||
       n.kind === "wait_file" ||
       n.kind === "task")
   );
@@ -1130,7 +1131,10 @@ const mediaBackendRunWatchers = new Map();
 let mediaBackendListenersBound = false;
 
 function isMediaGenNode(node) {
-  return !!(node && (node.kind === "music_gen" || node.kind === "video_gen"));
+  return !!(
+    node &&
+    (node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "remotion")
+  );
 }
 
 /* ── 网络节点（net_recv / net_send）：节点级独立端口（监听/发送可不同）+ 通道(16bit) 分流，异步互不干涉 ── */
@@ -1779,6 +1783,8 @@ function refreshMediaNodeUi(node, opts) {
 async function probeMediaBackend(node, opts) {
   opts = opts || {};
   if (!isMediaGenNode(node) || !window.api) return;
+  /* remotion 无远端后端：渲染在本地主进程宿主完成，不做连接探测 */
+  if (node.kind === "remotion") return;
   const ui = ensureBackendUiState(node);
   if (ui.probing && !opts.force) return;
   ui.probing = true;
@@ -1932,6 +1938,41 @@ function bindMediaBackendListeners() {
       }
     });
   }
+  bindRemotionNodeListeners();
+}
+
+/* Remotion 渲染进度（remotion:progress，phase=render）：驱动节点状态与进度条。
+   与 onH3Progress 同构；渲染在本地主进程宿主完成，无后端连接探测。 */
+function bindRemotionNodeListeners() {
+  if (!window.api || !window.api.onRemotionProgress) return;
+  window.api.onRemotionProgress((data) => {
+    if (!data || data.phase !== "render" || !data.nodeId) return;
+    const n = nodeById(data.nodeId);
+    if (!n || n.kind !== "remotion") return;
+    if (data.cancelled || n._aborted || String(data.message || "") === "已取消") {
+      n.running = false;
+      n.error = null;
+      n.remotionStatus = I18n.t("已取消");
+      n.remotionPct = 0;
+      renderCanvas();
+      return;
+    }
+    if (data.pct != null)
+      n.remotionPct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    if (data.message) {
+      const ui = ensureBackendUiState(n);
+      n.remotionStatus =
+        mediaGenRollProgressTag(n) + String(data.message);
+      ui.genPct = n.remotionPct;
+      ui.genMsg = n.remotionStatus;
+    }
+    if (data.error) {
+      n.error = String(data.message || data.error || "");
+      n.running = false;
+      n.remotionPct = 0;
+    }
+    renderCanvas();
+  });
 }
 
 function appendBackendProbeBtn(head, node) {
@@ -1990,6 +2031,30 @@ function appendMediaConsoleBtn(head, node) {
   head.appendChild(b);
 }
 
+/* Remotion 控制台按钮（▤）：打开主进程 remotion 控制台窗（状态 / 安装 / 日志） */
+function appendRemotionConsoleBtn(head, node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-media-console";
+  b.textContent = "▤";
+  b.title = I18n.t("打开 Remotion 控制台（状态 / 安装 / 日志）");
+  b.onclick = async (ev) => {
+    ev.stopPropagation();
+    if (!window.api || !window.api.remotionOpen) return;
+    try {
+      const r = await window.api.remotionOpen();
+      if (!r || !r.ok) {
+        toast(
+          I18n.t("打开控制台失败：") + ((r && r.error) || I18n.t("未知错误")),
+          "err",
+        );
+      }
+    } catch (e) {
+      toast(I18n.t("打开控制台失败：") + ((e && e.message) || String(e)), "err");
+    }
+  };
+  head.appendChild(b);
+}
 function appendMediaBackendPanel(body, node) {
   const ui = ensureBackendUiState(node);
   const info = ui.info || {};
@@ -2675,6 +2740,8 @@ function mediaGenCancelRemote(node) {
       window.api.music3CancelGenerate(node.id);
     else if (node.kind === "video_gen" && window.api.h3CancelGenerate)
       window.api.h3CancelGenerate(node.id);
+    else if (node.kind === "remotion" && window.api.remotionCancel)
+      window.api.remotionCancel(node.id);
   } catch (_) {}
 }
 function findMediaGenNodeById(id) {
@@ -2697,6 +2764,7 @@ function mediaGenMarkDropped(node, wasRunning) {
   node.error = null;
   if (node.kind === "music_gen") node.musicStatus = msg;
   else if (node.kind === "video_gen") node.videoStatus = msg;
+  else if (node.kind === "remotion") node.remotionStatus = msg;
   const ui = ensureBackendUiState(node);
   ui.genPct = 0;
   ui.genMsg = msg;
@@ -3051,6 +3119,363 @@ async function restoreVideoGenLocks() {
   return restoreMediaGenLocks();
 }
 
+/* ── Remotion 视频节点（应用插件 remotion） ──
+   流程：描述文本（连线端子1 文本源）→ apiCall 生成 Composition.tsx（React 动效，
+   提示词模板含 Remotion API 速查与约束，仅允许 import remotion/react）→
+   window.api.remotionGenerate（主进程 remotion/main-remotion.js：写模板 → spawn
+   node render.mjs → 本地渲染 mp4，取 media-gen-global-lock 全局互斥）→ 进度/取消 → node.output=视频路径。
+   注：宿主优先采用这份 TSX 作为 src/Composition.tsx（渲染即所见，见 writeRenderSources）；
+   无它时才回退内置标题卡模板（按 title / subtitle / bgColor 结构化参数渲染）。 */
+
+/* Remotion 输出分辨率预设（宽x高，px）定义在 app.js（REMOTION_SIZES，先加载共用）。 */
+
+function remotionSizeWH(node) {
+  const raw = String(node && node.size || "").trim();
+  const m = raw.match(/^(\d{2,5})\s*[x×]\s*(\d{2,5})$/);
+  if (m) return { width: Number(m[1]) || 1280, height: Number(m[2]) || 720 };
+  return { width: 1280, height: 720 };
+}
+
+/* LLM 生成 Composition.tsx 的提示词模板：Remotion API 速查 + 硬约束 */
+function remotionTsxPrompt(desc, opt) {
+  opt = opt || {};
+  const w = opt.width || 1280;
+  const h = opt.height || 720;
+  const fps = opt.fps || 30;
+  const dur = opt.duration || 5;
+  return (
+    I18n.t("请为下面这段视频描述编写一个完整的 Remotion Composition.tsx 文件（React 动效合成）。\n") +
+    I18n.t("视频描述：") +
+    "“" +
+    desc +
+    "”\n\n" +
+    I18n.t("输出要求（必须全部满足）：") +
+    "\n" +
+    "1. " +
+    I18n.t("只输出一个完整的 TypeScript 源文件，不要解释、不要 Markdown 代码围栏，文件内容从 import 开始到文件末尾。") +
+    "\n" +
+    "2. " +
+    I18n.t("仅允许从 \"remotion\" 和 \"react\" 导入（例如 react 的 useState/useMemo，remotion 的 AbsoluteFill/useCurrentFrame/useVideoConfig/interpolate/spring/Sequence/Img/Audio/Easing 等）；禁止导入任何其它 npm 包。") +
+    "\n" +
+    "3. " +
+    I18n.t("导出组件名必须是 Main（export const Main: React.FC = ...），并使用 AbsoluteFill 作为根容器。") +
+    "\n" +
+    "4. " +
+    I18n.t("必须使用 useVideoConfig() 读取 width/height/fps/durationInFrames，不要硬编码视频尺寸与总帧数。") +
+    "\n" +
+    "5. " +
+    I18n.t("时长按 ") +
+    dur +
+    I18n.t(" 秒 × ") +
+    fps +
+    I18n.t(" fps 设计动画节奏；动效要连贯自然（淡入淡出 / 位移 / 缩放 / 颜色过渡至少两种），内容贴合描述，文字用中文。") +
+    "\n" +
+    "6. " +
+    I18n.t("所有样式用内联 style 对象（style={{...}}），不要 CSS 文件、不要 class 选择器；颜色用十六进制。") +
+    "\n" +
+    "7. " +
+    I18n.t("代码必须可被 TypeScript 直接编译（宽松配置下），不要使用未定义变量，不要在顶层执行副作用。") +
+    "\n" +
+    "8. " +
+    I18n.t("interpolate 的 inputRange 关键帧数组必须严格递增且元素不重复（从小到大，如 [0,20,60]）；在 map / 循环里按 i 计算关键帧时，后一个帧号必须严格大于前一个（可用 Math.max 兜底），否则渲染会直接失败。") +
+    "\n\n" +
+    I18n.t("Remotion API 速查：") +
+    "\n" +
+    "- useCurrentFrame(): " +
+    I18n.t("当前帧号") +
+    "\n" +
+    "- interpolate(frame, [a,b], [c,d], {extrapolateLeft/Right: \"clamp\"}): " +
+    I18n.t("数值插值（inputRange 必须严格递增、元素不重复）") +
+    "\n" +
+    "- spring({frame, fps, config: {damping, stiffness, mass}}): " +
+    I18n.t("弹性动画 0→1") +
+    "\n" +
+    "- <Sequence from={n}>…</Sequence>: " +
+    I18n.t("子序列延迟") +
+    "\n" +
+    "- <Img src={\"...\"}/> / <Audio src={\"...\"}/>: " +
+    I18n.t("图像 / 音频（本任务不提供外部资源，可不使用）") +
+    "\n" +
+    "- opacity/transform 过渡示例：opacity: interpolate(frame,[0,20],[0,1],{extrapolateRight:\"clamp\"})；transform: `translateY(${interpolate(...)}px)`" +
+    "\n" +
+    I18n.t("画面尺寸 ") +
+    w +
+    "×" +
+    h +
+    "，" +
+    I18n.t("参考它设计字号与元素布局（可用百分比 / 相对计算）。")
+  );
+}
+
+async function playRemotionNode(node, quiet) {
+  if (!window.api || !window.api.remotionGenerate) {
+    toast(I18n.t("Remotion 插件未就绪（请先在插件中安装）"), "err");
+    return;
+  }
+  if (node.running) return;
+  if (mediaRunStopped(node)) {
+    mediaGenMarkDropped(node, false);
+    return;
+  }
+  /* 全局音视频互斥预检：友好提示（宿主仍会强制取锁） */
+  try {
+    const st = await window.api.remotionStatus();
+    if (!st || !st.installed || !st.runtimeReady) {
+      const msg = I18n.t("Remotion 插件尚未安装或未就绪（请先在「插件 · Remotion 动效视频」中安装）");
+      node.error = msg;
+      node.remotionStatus = msg;
+      if (!quiet) toast(msg, "warn");
+      renderCanvas();
+      return;
+    }
+    /* 已就绪：同步一次插件缓存，让节点「未安装」警示条及时消失 */
+    if (typeof refreshAppPluginsCache === "function") refreshAppPluginsCache();
+    const lock = st.lock;
+    if (lock && lock.nodeId && lock.nodeId !== node.id) {
+      node.error = mediaGenLockBusyMsg(lock);
+      node.remotionStatus = node.error;
+      if (!quiet) toast(node.error, "warn");
+      renderCanvas();
+      return;
+    }
+  } catch (_) {}
+
+  /* 描述文本：仅取连线端口1（文本源），节点内不再提供描述字段 */
+  let desc = "";
+  {
+    const v = videoGenSlotValue(node, 1); /* 复用端子取值：端口1=文本输入 */
+    if (v && v.text) desc = String(v.text).trim();
+  }
+  if (!desc) {
+    toast(I18n.t("请接入文本节点"), "warn");
+    return;
+  }
+
+  /* 服务商 / 模型校验（与 proc_text 一致：text_openai 服务商 + API Key） */
+  let prov = (S.config.providers || []).find((p) => p.id === node.providerId);
+  if (!prov) {
+    node.error = I18n.t("未配置服务商（设置 · API/配置）");
+    node.remotionStatus = node.error;
+    renderCanvas();
+    return;
+  }
+  if (!String(prov.apiKey || "").trim()) {
+    node.error = I18n.t("该服务商未填写 API Key（设置 · API/配置）");
+    node.remotionStatus = node.error;
+    renderCanvas();
+    return;
+  }
+
+  node.running = true;
+  node.error = null;
+  node._abKey = uid("ab");
+  beginNodeRun(node);
+  node.remotionStatus = I18n.t("LLM 生成动效代码…");
+  node.remotionPct = 2;
+  renderCanvas();
+
+  const { width, height } = remotionSizeWH(node);
+  const duration = Math.max(1, Math.min(60, Number(node.duration) || 5));
+  const fps = Math.max(1, Math.min(60, Number(node.fps) || 30));
+  let tsx = "";
+  try {
+    const spec = {
+      provider: prov,
+      kind: "text",
+      model: node.model || (prov.models || [])[0] || "",
+      temperature:
+        node.temperature == null
+          ? 0.4
+          : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
+      effort: "low",
+      prompt: remotionTsxPrompt(desc, { width, height, fps, duration }),
+      texts: [],
+      images: [],
+      refImage: "",
+      abKey: node._abKey || "",
+    };
+    const rr = await window.api.apiCall(spec);
+    if (node._aborted || !node.running || mediaRunStopped(node)) {
+      node.error = null;
+      node.remotionStatus = I18n.t("已取消");
+      node.remotionPct = 0;
+      renderCanvas();
+      syncRemotionToSession(node, { desc, cancelled: true });
+      return;
+    }
+    if (!rr || !rr.ok) throw new Error((rr && (rr.error || rr.message)) || I18n.t("调用失败"));
+    tsx = String(rr.text || "").trim();
+    if (!tsx) throw new Error(I18n.t("LLM 未返回动效代码"));
+    node.tsx = tsx;
+    node.remotionStatus = I18n.t("渲染视频…");
+    node.remotionPct = 4;
+    renderCanvas();
+  } catch (e) {
+    node.running = false;
+    node.error = (e && e.message) || String(e);
+    node.remotionStatus = node.error;
+    renderCanvas();
+    scheduleSave();
+    syncRemotionToSession(node, { desc, ok: false, error: node.error });
+    return;
+  }
+
+  const seed = nextMediaGenSeed(node);
+  const t0 = Date.now();
+  try {
+    if (node._aborted || !node.running || mediaRunStopped(node)) {
+      node.error = null;
+      node.remotionStatus = I18n.t("已取消");
+      node.remotionPct = 0;
+      renderCanvas();
+      syncRemotionToSession(node, { desc, cancelled: true });
+      return;
+    }
+    const r = await window.api.remotionGenerate({
+      nodeId: node.id,
+      workflowId: (S.wf && S.wf.id) || "",
+      /* LLM 生成的动效合成：宿主直接采用为 src/Composition.tsx（不合规则渲染失败并报 custom_tsx_*） */
+      prompt: tsx,
+      tsx,
+      /* 回退路径（内置模板）的结构化参数：标题取描述首行 */
+      title: desc.split(/\r?\n/)[0].slice(0, 60) || I18n.t("Remotion 视频"),
+      subtitle: "",
+      backgroundColor: "#0f1218",
+      durationSeconds: duration,
+      fps,
+      width,
+      height,
+      seed,
+    });
+    if (node._aborted || (r && (r.error === "cancelled" || r.cancelled))) {
+      node.error = null;
+      node.remotionStatus = I18n.t("已取消");
+      node.remotionPct = 0;
+      syncRemotionToSession(node, { desc, cancelled: true });
+      return;
+    }
+    if (!r || !r.ok) {
+      const err = (r && (r.message || r.error)) || I18n.t("渲染失败");
+      if (String(err) === "busy_other_node" || (r && r.error === "busy_other_node")) {
+        node.error = I18n.t("已有音视频生成任务进行中，已中断本节点（全局仅 1 个，禁止并行）");
+      } else if (String(err) === "cancelled") {
+        node.error = null;
+        node.remotionStatus = I18n.t("已取消");
+        syncRemotionToSession(node, { desc, cancelled: true });
+        return;
+      } else {
+        node.error = String(err);
+      }
+      node.remotionStatus = node.error;
+      if (!quiet) toast(node.error, "err");
+      syncRemotionToSession(node, { desc, ok: false, error: node.error });
+      return;
+    }
+    const path = String(r.path || r.outputPath || "");
+    if (!path) throw new Error(I18n.t("渲染完成但未返回输出路径"));
+    node.output = { kind: "video", path, text: path };
+    node.ranAt = Date.now();
+    node.remotionPct = 100;
+    node.remotionStatus = mediaGenDoneMsg(Date.now() - t0);
+    if (!quiet) toast(I18n.t("视频已生成：") + path, "ok");
+    syncRemotionToSession(node, {
+      desc,
+      ok: true,
+      tsx,
+      path,
+      size: width + "x" + height,
+      fps,
+      duration,
+      elapsed: Date.now() - t0,
+    });
+  } catch (e) {
+    if (node._aborted) {
+      node.error = null;
+      node.remotionStatus = I18n.t("已取消");
+      syncRemotionToSession(node, { desc, cancelled: true });
+    } else {
+      node.error = (e && e.message) || String(e);
+      node.remotionStatus = node.error;
+      if (!quiet) toast(node.error, "err");
+      syncRemotionToSession(node, { desc, ok: false, error: node.error });
+    }
+  } finally {
+    const wasStopped = mediaRunStopped(node);
+    node.running = false;
+    node._aborted = false;
+    renderCanvas();
+    scheduleSave();
+    /* 生成成功：触发控制输出端子（端口1）驱动下游控制目标 */
+    if (!wasStopped && nodeHasOutputContent(node))
+      await fireControlOutgoing(node, 1, new Set([node.id]));
+  }
+}
+
+/* Remotion 节点生成记录 → 绑定智能会话（参照 syncAgentTaskToSession 口径）：
+   user=生成描述（_src:'node-desc'，同标记更新 / hasUser 去重）；
+   assistant=结果摘要（成功=输出路径+分辨率/fps/时长/耗时+TSX 代码块；失败=错误信息；取消=已取消），
+   hasAi 去重后经 assistantMsgFromNode 构造；写后 persistAgentSession()。 */
+function syncRemotionToSession(node, info) {
+  if (!node || !node.agentSessionId || !info) return;
+  const list = agentSessions();
+  const sess = list.find((s) => s.id === node.agentSessionId);
+  if (!sess) return;
+  /* user：本次生成描述（_src:'node-desc' 去重，参照 syncAgentTaskToSession 的 hasUser） */
+  const desc = String((info && info.desc) || "").trim();
+  if (desc) {
+    const marked = sess.messages.find((m) => m._src === "node-desc");
+    if (marked) {
+      if (marked.content !== desc) marked.content = desc;
+    } else {
+      const hasUser = sess.messages.some(
+        (m) => m.role === "user" && m.content === desc,
+      );
+      if (!hasUser)
+        sess.messages.push({
+          role: "user",
+          content: desc,
+          _src: "node-desc",
+          at: Date.now(),
+        });
+    }
+  }
+  /* assistant：结果摘要（成功=输出路径+分辨率/fps/时长/耗时+TSX；失败=错误信息；取消=已取消），hasAi 去重 */
+  const lines = [];
+  if (info.cancelled) {
+    lines.push(I18n.t("生成已取消"));
+  } else if (!info.ok || info.error) {
+    lines.push(I18n.t("生成失败：") + String(info.error || I18n.t("未知错误")));
+  } else {
+    const meta = [];
+    if (String(info.size || "").trim())
+      meta.push(String(info.size).trim().replace("x", "×"));
+    if (info.duration != null) meta.push(info.duration + "s");
+    if (info.fps != null) meta.push(info.fps + "fps");
+    if (info.elapsed != null) meta.push((info.elapsed / 1000).toFixed(1) + "s");
+    lines.push(
+      I18n.t("生成完成：视频已输出到 ") +
+        String(info.path || "") +
+        (meta.length ? "（" + meta.join(" · ") + "）" : ""),
+    );
+  }
+  const tsx = String(info.tsx || node.tsx || "").trim();
+  if (tsx) {
+    lines.push(I18n.t("生成的动效代码（TSX）："));
+    lines.push("```tsx");
+    lines.push(tsx);
+    lines.push("```");
+  }
+  const summary = lines.join("\n");
+  if (summary) {
+    const hasAi = sess.messages.some(
+      (m) => m.role === "assistant" && m.content === summary,
+    );
+    if (!hasAi) sess.messages.push(assistantMsgFromNode(node, summary));
+  }
+  sess.updatedAt = Date.now();
+  persistAgentSession().catch(() => {});
+}
+
 /* 全局媒体生成串行链：video_gen / music_gen 共享主进程单一后端，
    控制节点并行触发 / 多次尝试并发时排队串行执行，避免并发 busy 与后端竞争。
    排队项登记在 mediaGenWaiters：「全部终止」清空该表后，排队项直接作废，
@@ -3164,6 +3589,9 @@ async function playNodeBody(node, quiet, opts) {
   }
   if (node.kind === "video_gen") {
     return runMediaGenSerial(node, () => playVideoGenNode(node, quiet));
+  }
+  if (node.kind === "remotion") {
+    return runMediaGenSerial(node, () => playRemotionNode(node, quiet));
   }
   if (node.kind === "wait_file") {
     return playWaitFileNode(node, quiet);
@@ -3673,7 +4101,8 @@ async function saveMediaFileOnce(node, quiet, media) {
   return true;
 }
 
-/* 全局助手 / 智能会话改画布期间：禁止保存节点落盘，避免半成品与移入超节点后路径重复写 */
+/* 全局助手 / 智能会话改画布期间：自动保存先不落盘，避免半成品与移入超节点后路径重复写。
+   注意：仅约束「自动保存」；用户手动 ▶ 执行保存节点不受影响，直接保存输入内容。 */
 function beginSaveNodeHold() {
   S._saveNodeHold = (S._saveNodeHold || 0) + 1;
 }
@@ -3699,8 +4128,9 @@ function flushDeferredSaveNodes() {
   }
 }
 
-async function saveNodeOnce(node, quiet) {
-  if (agentBlocksSaveNodes()) {
+async function saveNodeOnce(node, quiet, opts) {
+  /* 手动执行（saveNodeAction）与智能助手/会话无关：直接保存输入内容，不受 hold 约束 */
+  if (!(opts && opts.manual) && agentBlocksSaveNodes()) {
     S._deferAutoSaveAfterAgent = true;
     return false;
   }
@@ -3712,14 +4142,7 @@ async function saveNodeOnce(node, quiet) {
 
 async function saveNodeAction(node) {
   beginNodeRun(node);
-  if (agentBlocksSaveNodes()) {
-    S._deferAutoSaveAfterAgent = true;
-    toast(
-      I18n.t("智能助手仍在处理画布，保存将在结束后自动执行"),
-      "warn",
-    );
-    return;
-  }
+  /* 保存节点独立于会话/智能助手：手动 ▶ 直接保存来自输入的内容 */
   if (!String(node.savePath || "").trim()) {
     toast(I18n.t("请先指定保存路径（可用「浏览」选择）"), "warn");
     return;
@@ -3750,7 +4173,7 @@ async function saveNodeAction(node) {
   try {
     await ensureProcessedAll(procSourcesOutsideSchedule(node), ran);
     if (ran.length) toast(I18n.t("已自动执行上游节点：") + I18n.listJoin(ran), "ok");
-    const ok = await saveNodeOnce(node, false);
+    const ok = await saveNodeOnce(node, false, { manual: true });
     if (ok) {
       renderCanvas();
       renderStatus();
@@ -4983,6 +5406,27 @@ function connectError(fromId, toId, toIndex, fromIndex) {
       )
     )
       return I18n.t("控制输入端子已被数据线占用");
+  } else if (!fromCtrl && to.kind === "remotion") {
+    /* Remotion：端口1=描述文本输入（固定），仅接受文本来源 */
+    const slot = toIndex == null ? 1 : Number(toIndex);
+    if (slot !== 1) return I18n.t("Remotion 描述文本输入端子为端口 1");
+    if (!isTextSource(from)) return I18n.t("Remotion 描述端子需要文本来源");
+    if (
+      S.wf.wires.some(
+        (w) => !w.rel && w.to === toId && Number(w.toIndex) === 1 && !wireFromIsControl(w),
+      )
+    )
+      return I18n.t("该输入端子已被占用");
+  } else if (fromCtrl && to.kind === "remotion") {
+    /* 控制线：固定连到控制输入端子（端口0） */
+    const slot = toIndex == null ? 0 : Number(toIndex);
+    if (slot !== 0) return I18n.t("Remotion 控制输入端子为端口 0");
+    if (
+      S.wf.wires.some(
+        (w) => !w.rel && w.to === toId && Number(w.toIndex) === 0 && !wireFromIsControl(w),
+      )
+    )
+      return I18n.t("控制输入端子已被数据线占用");
   }
   /* 超级节点：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入（含控制线） */
   if (to.kind === "super") {
@@ -5010,6 +5454,11 @@ function nextFreeMediaDataSlot(node, from) {
     );
   if (node.kind === "music_gen") {
     for (let i = 0; i < 2; i++) if (!occupied(i)) return i;
+    return null;
+  }
+  if (node.kind === "remotion") {
+    /* 端口0=控制输入（固定）· 端口1=描述文本输入；数据线只落端口1 */
+    if (!occupied(1)) return 1;
     return null;
   }
   if (node.kind !== "video_gen") return null;
@@ -5040,10 +5489,10 @@ function addWire(fromId, toId, toIndex, opts) {
   let idx = toIndex == null ? cur : toIndex;
   const toN = nodeById(toId);
   const fromN = nodeById(fromId);
-  if (toIndex == null && toN && (toN.kind === "video_gen" || toN.kind === "music_gen")) {
+  if (toIndex == null && toN && (toN.kind === "video_gen" || toN.kind === "music_gen" || toN.kind === "remotion")) {
     if (fromN && isControlKind(fromN)) {
-      /* 控制线：video_gen 固定落到端口0（控制输入，不随数据槽数变化）；music_gen 落到端口2 */
-      idx = toN.kind === "video_gen" ? 0 : 2;
+      /* 控制线：video_gen/remotion 固定落到端口0（控制输入）；music_gen 落到端口2 */
+      idx = toN.kind === "music_gen" ? 2 : 0;
     } else {
       /* 数据线：落到空闲数据槽（跳过控制槽），避免误占控制端子 */
       const free = nextFreeMediaDataSlot(toN, fromN);
@@ -5618,7 +6067,9 @@ function canvasSnapshot(opts) {
       /* video_gen / music_gen 配置（agent 可读可改） */
       videoMode: n.kind === "video_gen" ? n.videoMode || "fl2va" : undefined,
       duration:
-        n.kind === "video_gen" ? Number(n.duration) || 5 : undefined,
+        n.kind === "video_gen" || n.kind === "remotion"
+          ? Number(n.duration) || 5
+          : undefined,
       outputRes:
         n.kind === "video_gen" ? n.outputRes || "auto" : undefined,
       steps: n.kind === "video_gen" ? Number(n.steps) || 20 : undefined,
@@ -5628,13 +6079,24 @@ function canvasSnapshot(opts) {
       postInterp:
         n.kind === "video_gen" ? n.postInterp !== false : undefined,
       attempts:
-        n.kind === "video_gen" || n.kind === "music_gen"
+        n.kind === "video_gen" ||
+        n.kind === "music_gen" ||
+        n.kind === "remotion"
           ? Math.max(1, Math.min(10, Math.round(Number(n.attempts) || 1)))
           : undefined,
       outputPath:
-        n.kind === "video_gen" || n.kind === "music_gen"
+        n.kind === "video_gen" || n.kind === "music_gen" || n.kind === "remotion"
           ? mediaGenOutputRaw(n) || n.outputPath || undefined
           : undefined,
+      /* remotion 配置（agent 可读可改） */
+      remotionSize:
+        n.kind === "remotion" ? n.size || "1280x720" : undefined,
+      fps:
+        n.kind === "remotion" ? Math.max(1, Math.min(60, Number(n.fps) || 30)) : undefined,
+      seed: n.kind === "remotion" ? Math.floor(Number(n.seed) || 0) : undefined,
+      remotionText:
+        n.kind === "remotion" ? String(n.text || "").slice(0, 500) : undefined,
+      remotionTsxLen: n.kind === "remotion" ? (n.tsx || "").length : undefined,
       goal: goalSnap ? goalSnap.text : undefined,
       goalLen: goalSnap ? goalSnap.textLen : undefined,
       steps:
@@ -9025,10 +9487,10 @@ function applyNodePatch(node, patch, warnings) {
     node.w = snapDim(patch.w, minWFor(node));
   if (typeof patch.h === "number" && isFinite(patch.h))
     node.h = snapDim(patch.h, minHFor(node));
-  /* video_gen / music_gen：抽卡次数与输出路径 */
+  /* video_gen / music_gen：输出路径 patch（remotion 输出由下游保存节点负责，不接受） */
   if (
     patch.attempts != null &&
-    (node.kind === "video_gen" || node.kind === "music_gen")
+    (node.kind === "video_gen" || node.kind === "music_gen" || node.kind === "remotion")
   ) {
     const n = Math.round(Number(patch.attempts));
     if (isFinite(n)) node.attempts = Math.max(1, Math.min(10, n || 1));
@@ -9042,9 +9504,27 @@ function applyNodePatch(node, patch, warnings) {
       applyMediaGenConfiguredPath(
         node,
         p,
-        node.kind === "video_gen" ? "video" : "audio",
+        node.kind === "music_gen" ? "audio" : "video",
       );
     }
+  }
+  /* remotion：描述 / 时长 / fps / 分辨率 / 服务商 / 模型 */
+  if (node.kind === "remotion") {
+    if (patch.text != null) node.text = String(patch.text);
+    if (patch.duration != null) {
+      const d = Math.round(Number(patch.duration));
+      if (isFinite(d)) node.duration = Math.max(1, Math.min(60, d || 5));
+    }
+    if (patch.fps != null) {
+      const f = Math.round(Number(patch.fps));
+      if (isFinite(f)) node.fps = Math.max(1, Math.min(60, f || 30));
+    }
+    if (patch.remotionSize != null && REMOTION_SIZES.includes(String(patch.remotionSize).trim()))
+      node.size = String(patch.remotionSize).trim();
+    if (patch.size != null && REMOTION_SIZES.includes(String(patch.size).trim()))
+      node.size = String(patch.size).trim();
+    if (patch.providerId != null) node.providerId = String(patch.providerId);
+    if (patch.model != null) node.model = String(patch.model);
   }
   /* video_gen：生成模式与时长 */
   if (node.kind === "video_gen") {
@@ -9325,6 +9805,7 @@ function ensurePromptRefs(node, refs, aliasMap) {
 function resolveCanvasRef(token, aliasMap, warnings) {
   const s = String(token || "").trim();
   if (!s) return null;
+  warnings = warnings || []; /* 兜底：调用方传 null 时不得在 null 上 push */
   if (aliasMap && aliasMap.has(s)) return aliasMap.get(s);
   const byId = nodeById(s);
   if (byId) return byId;
@@ -9432,11 +9913,10 @@ async function applyCanvasEdit(params, ctx) {
   const removeMarksList = Array.isArray(params.removeMarks)
     ? params.removeMarks
     : [];
-  if (creates.length > 40) warnings.push(I18n.t("一次最多创建 40 个节点，已截断"));
-  if (updates.length > 80) warnings.push(I18n.t("一次最多更新 80 个节点，已截断"));
-  if (connects.length > 80) warnings.push(I18n.t("一次最多连接 80 条线，已截断"));
-  if (createMarks.length > 40)
-    warnings.push(I18n.t("一次最多创建 40 个绘制，已截断"));
+  /* 数量上限已移除：整笔调用完整执行。此前 40/80 的截断会造成「部分创建」——
+     大调用（架构图、批量建图）的 connect / createMarks / group 引用被截掉的
+     alias 全部落空，曾导致超级节点 / 开发节点架构图建成半成品（孤儿节点）。
+     null.push 崩溃根因已修，大调用现在可安全完整执行。 */
   const doLayout =
     params.layout === true || (params.layout !== false && creates.length > 0);
 
@@ -9485,7 +9965,7 @@ async function applyCanvasEdit(params, ctx) {
   let placeX = originHint.x;
   let placeY = originHint.y;
 
-  for (const spec of creates.slice(0, 40)) {
+  for (const spec of creates) {
     let kind = spec && spec.kind;
     if (kind === "image" || kind === "img") kind = "input_image";
     if (kind === "text") kind = "input_text";
@@ -9536,7 +10016,7 @@ async function applyCanvasEdit(params, ctx) {
     /* media gens: path is set in-node; no bound save */
   }
 
-  for (const spec of creates.slice(0, 40)) {
+  for (const spec of creates) {
     const alias = String((spec && spec.alias) || "").trim();
     const node = aliasMap.get(alias);
     if (!node || !spec || spec.parentTaskId == null) continue;
@@ -9568,7 +10048,7 @@ async function applyCanvasEdit(params, ctx) {
       warningsArr.push(I18n.t("无效的超级节点：") + token);
     }
   };
-  for (const spec of creates.slice(0, 40)) {
+  for (const spec of creates) {
     const alias = String((spec && spec.alias) || "").trim();
     const node = aliasMap.get(alias);
     if (!node || !spec) continue;
@@ -9578,7 +10058,7 @@ async function applyCanvasEdit(params, ctx) {
     applyParentSuper(node, raw, warnings);
   }
 
-  for (const spec of updates.slice(0, 80)) {
+  for (const spec of updates) {
     const token = (spec && (spec.id || spec.alias || spec.title)) || "";
     const node = resolveCanvasRef(token, aliasMap, warnings);
     if (!node) continue;
@@ -9621,7 +10101,7 @@ async function applyCanvasEdit(params, ctx) {
   }
 
   /* update 里的 parentSuperId 可能是 alias/title：在 patch 后再用 aliasMap 解析一次 */
-  for (const spec of updates.slice(0, 80)) {
+  for (const spec of updates) {
     if (!spec || (spec.parentSuperId == null && spec.packIntoSuper == null))
       continue;
     const token = (spec.id || spec.alias || spec.title) || "";
@@ -9632,7 +10112,7 @@ async function applyCanvasEdit(params, ctx) {
     applyParentSuper(node, raw, warnings);
   }
 
-  for (const spec of creates.slice(0, 40)) {
+  for (const spec of creates) {
     const alias = String((spec && spec.alias) || "").trim();
     const node = aliasMap.get(alias);
     if (node && spec && spec.refs) ensurePromptRefs(node, spec.refs, aliasMap);
@@ -9658,7 +10138,7 @@ async function applyCanvasEdit(params, ctx) {
     else clearDownstream(b.id);
   }
 
-  for (const pair of connects.slice(0, 80)) {
+  for (const pair of connects) {
     const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
     if (!a || !b) continue;
@@ -9822,7 +10302,7 @@ async function applyCanvasEdit(params, ctx) {
       warningsArr.push(I18n.t("无效的超级节点：") + token);
     }
   };
-  for (const raw of createMarks.slice(0, 40)) {
+  for (const raw of createMarks) {
     const alias = String((raw && raw.alias) || "").trim();
     let spec = applyAroundToSpec(raw || {});
     if (!spec.kind && (spec.around || spec.nodes || spec.wrap))
@@ -9880,7 +10360,7 @@ async function applyCanvasEdit(params, ctx) {
     });
   }
 
-  for (const raw of updateMarks.slice(0, 80)) {
+  for (const raw of updateMarks) {
     const token = (raw && (raw.id || raw.alias || raw.title || raw.text)) || "";
     const m = resolveMarkRef(token, markAliasMap, warnings);
     if (!m) continue;
@@ -9928,12 +10408,14 @@ async function applyCanvasEdit(params, ctx) {
     let markIds = [];
     if (Array.isArray(gspec.nodes) && gspec.nodes.length) {
       for (const t of gspec.nodes) {
-        const n = resolveCanvasRef(t, aliasMap, null);
+        /* 传入真实 warnings：resolveCanvasRef 找不到成员时会 push 提示，
+           传 null 会在 null 上 push 抛 TypeError（曾导致建图调用半途崩溃） */
+        const n = resolveCanvasRef(t, aliasMap, warnings);
         if (n) {
           nodeIds.push(n.id);
           continue;
         }
-        const m = resolveMarkRef(t, markAliasMap, null);
+        const m = resolveMarkRef(t, markAliasMap, warnings);
         if (m) markIds.push(m.id);
         else warnings.push(I18n.t("组内找不到成员：") + t);
       }
@@ -9963,6 +10445,33 @@ async function applyCanvasEdit(params, ctx) {
       };
       S.wf.groups.push(grouped);
       fitGroupBoxesToMembers(grouped);
+    }
+  }
+
+  /* 孤儿防护：本笔编辑产生的节点 / 绘制不允许挂在画布上不存在的超级节点下
+     （历史 bug：整棵开发节点架构图挂到幽灵父级后，最外层功能块从此消失，
+      内部块仍在，但左侧栏与层级视图全部错乱） */
+  {
+    const liveIds = new Set((S.wf.nodes || []).map((n) => n.id));
+    let orphanNodes = 0;
+    for (const n of createdLive) {
+      const sid = nodeParentSuperId(n);
+      if (sid && !liveIds.has(sid)) {
+        n.parentSuperId = "";
+        orphanNodes++;
+      }
+    }
+    for (const rec of createdMarks) {
+      const m = rec && rec.id ? markById(rec.id) : null;
+      if (m && m.parentSuperId && !liveIds.has(m.parentSuperId)) {
+        m.parentSuperId = "";
+        orphanNodes++;
+      }
+    }
+    if (orphanNodes) {
+      warnings.push(
+        I18n.t("已清理 ") + orphanNodes + I18n.t(" 个指向不存在超级节点的引用"),
+      );
     }
   }
 

@@ -162,9 +162,119 @@ function assistWorkspaceLocked() {
   return assistRunLocked() || assistScopeIsCurrent();
 }
 
+/* ══════════ 工作区真源（运行与显示同一口径）══════════
+   优先级：手填（助手 S.assistWorkspace / 会话 st.workspace）
+          > 画布项目根（开发节点 devPath）
+          > 画布工作目录 / 应用默认目录。
+   运行按它解析，界面也按它显示：只改运行不改显示，用户会以为文件
+   还落在画布目录里。 */
+
+/* 画布工作目录（顶栏统一目录）；宿主未加载该函数时退回空（不抛错） */
+function canvasWorkspaceDir() {
+  try {
+    return String(typeof wfWorkspace === "function" ? wfWorkspace() : "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+/* 当前画布的项目根。单一真源 = app.js 的 devProjectRootOf()（顶层开发块优先、
+   devPath 就近继承、多根先归并共同祖先，归并不了才标歧义并取文档序第一个）；
+   这里只把它整理成 { path, roots, ambiguous, hasDevNodes } 供运行与显示共用。
+   宿主尚未加载该函数时（独立沙箱）退回本地最小扫描，逻辑保持一致。 */
+function canvasProjectRoot() {
+  const nodes = S.wf && Array.isArray(S.wf.nodes) ? S.wf.nodes : [];
+  const isDev = (n) => !!(n && n.kind === "super" && n.dev && !n.db);
+  const devs = nodes.filter(isDev);
+  const empty = { path: "", roots: [], ambiguous: false, hasDevNodes: !!devs.length };
+  try {
+    if (typeof devProjectRootOf === "function") {
+      /* 先调用再读标记：devProjectRootOf 每次刷新 S.devProjectRootAmbiguous */
+      const p = String(devProjectRootOf() || "").trim();
+      return {
+        path: p,
+        roots: p ? [p] : [],
+        ambiguous: !!S.devProjectRootAmbiguous,
+        hasDevNodes: !!devs.length,
+      };
+    }
+    if (!devs.length || typeof devPathOf !== "function") return empty;
+    const byId = typeof nodeById === "function" ? nodeById : () => null;
+    const parentOf = (n) => (n && n.parentSuperId ? byId(n.parentSuperId) : null);
+    /* 顶层功能块（祖先链上没有别的开发块）优先，其次任意开发块 */
+    const tops = devs.filter((n) => {
+      let cur = parentOf(n);
+      let guard = 0;
+      while (cur && guard++ < 64) {
+        if (isDev(cur)) return false;
+        cur = cur.parentSuperId ? byId(cur.parentSuperId) : null;
+      }
+      return true;
+    });
+    const roots = [];
+    const add = (p) => {
+      const s = String(p || "").trim();
+      if (s && roots.indexOf(s) < 0) roots.push(s);
+    };
+    for (const n of tops) add(devPathOf(n));
+    if (!roots.length) for (const n of devs) add(devPathOf(n));
+    return {
+      path: roots[0] || "",
+      roots,
+      ambiguous: roots.length > 1,
+      hasDevNodes: true,
+    };
+  } catch (_) {
+    return empty;
+  }
+}
+
+/* 生效工作区的来源标签（tooltip 用） */
+function workspaceSourceLabel(src) {
+  if (src === "manual") return I18n.t("手填指定");
+  if (src === "project") return I18n.t("画布项目根（开发节点 devPath）");
+  if (src === "canvas") return I18n.t("画布工作目录");
+  if (src === "default") return I18n.t("应用默认目录");
+  return I18n.t("未指定");
+}
+
+/* 一句话说清这个目录是哪儿来的；多个项目根 / 有开发块但没设项目根时给出指引 */
+function workspaceInfoNote(info) {
+  const src = info && info.source;
+  const bits = [I18n.t("来源：") + workspaceSourceLabel(src)];
+  const root = info && info.root;
+  if (src === "project" && root && root.ambiguous)
+    bits.push(
+      I18n.t(
+        "本画布有多个项目根，已用第一个；要换另一个请在顶层功能块设置 devPath，或直接手填工作目录。",
+      ),
+    );
+  if (src !== "project" && root && root.hasDevNodes && !root.path)
+    bits.push(
+      I18n.t(
+        "本画布有开发节点但尚未设置项目根：在顶层功能块设 devPath 后，工作目录会优先用它。",
+      ),
+    );
+  return bits.join(" ");
+}
+
+/* 助手（右侧栏）生效工作区：手填 > 画布项目根 > 画布目录 > 默认目录。
+   「仅当前画布」范围下手填无效（输入框本就只读），仍跟随画布：项目根优先。 */
+function assistWorkspaceInfo() {
+  const manual = String(S.assistWorkspace || "").trim();
+  if (manual && !assistScopeIsCurrent())
+    return { path: manual, source: "manual", root: null };
+  const root = canvasProjectRoot();
+  if (root.path) return { path: root.path, source: "project", root };
+  const cw = canvasWorkspaceDir();
+  if (cw) return { path: cw, source: "canvas", root };
+  const fb = String(S.dshWorkspaceFallback || "").trim();
+  if (fb) return { path: fb, source: "default", root };
+  return { path: "", source: "", root };
+}
+
 function assistResolveWorkspace() {
-  if (assistScopeIsCurrent()) return String(wfWorkspace() || "").trim();
-  return String(S.assistWorkspace || wfWorkspace() || "").trim();
+  return String(assistWorkspaceInfo().path || "").trim();
 }
 
 function assistDisplayWorkspace() {
@@ -173,24 +283,64 @@ function assistDisplayWorkspace() {
   return assistResolveWorkspace();
 }
 
+/* 会话运行 / 上文压缩的生效工作区（唯一真源）：
+   st.workspace 手填优先 > 画布项目根 > 应用默认目录，不再各处自写 || 兜底 */
+function agentWorkspaceInfo(st) {
+  const manual = String((st && st.workspace) || "").trim();
+  if (manual) return { path: manual, source: "manual", root: null };
+  const root = canvasProjectRoot();
+  if (root.path) return { path: root.path, source: "project", root };
+  const fb = String(S.dshWorkspaceFallback || "").trim();
+  if (fb) return { path: fb, source: "default", root };
+  return { path: "", source: "", root };
+}
+
+function agentRunWorkspace(st) {
+  return String(agentWorkspaceInfo(st).path || "").trim();
+}
+
+/* 展示口径的生效工作区：与 agentRunWorkspace 同一真源（看得见文件会落在哪） */
+function sessionWorkspaceShown(st) {
+  return agentRunWorkspace(st);
+}
+
+/* 悬浮说明整行：生效目录 + 它从哪儿来（手填 / 项目根 / 默认） */
+function sessionWorkspaceTooltipLine(st) {
+  const info = agentWorkspaceInfo(st);
+  return (
+    I18n.t("\n工作目录: ") +
+    (info.path || I18n.t("（默认）")) +
+    "\n" +
+    workspaceInfoNote(info)
+  );
+}
+
 function syncAssistWorkspaceChrome() {
   const ws = $("#assistWsInput");
   const br = $("#assistWsBrowse");
   const locked = assistWorkspaceLocked();
   const runLock = assistRunLocked();
   const shown = assistDisplayWorkspace();
+  /* 来源说明只认「当前解析出的生效工作区」：运行中显示的是开轮时锁定的目录，
+     两者不一致时不硬套来源（宁可不说，也不说错） */
+  const live = assistWorkspaceInfo();
+  const note =
+    shown === live.path ? workspaceInfoNote(live) : I18n.t("来源：本轮开轮时锁定");
+  const withNote = (text) => (note ? text + "\n" + note : text);
   if (ws) {
     if (document.activeElement !== ws || locked) ws.value = shown;
     ws.readOnly = locked;
     ws.placeholder = assistScopeIsCurrent()
-      ? I18n.t("跟随当前画布工作目录")
-      : I18n.t("留空 = 当前画布 / 应用默认目录…");
+      ? I18n.t("跟随当前画布：项目根优先，其次画布工作目录")
+      : I18n.t("留空 = 画布项目根 / 画布工作目录…");
     if (runLock)
-      ws.title = I18n.t("运行中已锁定工作目录，切换画布也不会更改");
+      ws.title = withNote(I18n.t("运行中已锁定工作目录，切换画布也不会更改"));
     else if (assistScopeIsCurrent())
-      ws.title = I18n.t("跟随当前画布工作目录（只读）");
+      ws.title = withNote(I18n.t("跟随当前画布（项目根优先，只读）"));
     else
-      ws.title = I18n.t("助手可读写此目录下的文件；留空使用应用默认数据目录");
+      ws.title = withNote(
+        I18n.t("助手可读写此目录下的文件；留空则用画布项目根 / 画布工作目录"),
+      );
   }
   if (br) {
     br.disabled = locked;
@@ -519,8 +669,17 @@ function renderAssistPanel(opts) {
         );
     list.appendChild(empty);
   }
+  /* 回滚入口挂在每条挂有回滚轮次的用户消息上（会话不在运行中时显示） */
   for (let i = 0; i < msgs.length; i++)
-    list.appendChild(dshMsgBlock(msgs[i], "assist", i));
+    list.appendChild(
+      dshMsgBlock(msgs[i], "assist", i, {
+        showRollback:
+          !S.assistRunning &&
+          !msgs[i]._rolledBack &&
+          typeof rbHasMsgRound === "function" &&
+          rbHasMsgRound(msgs[i]),
+      }),
+    );
   if (S.assistRunning) {
     const row = document.createElement("div");
     row.className = "dsh-msg dsh-ai";
@@ -663,7 +822,7 @@ async function assistSend(text) {
   const superConnectRule =
     "  · 【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动把源节点向上逐层连到其所在超级节点的外部输出端子、把目标节点所在超级节点的外部输入端子逐层桥接到目标节点、并把顶层超级节点之间相连，无需自己手动建桥接线；可一次传多对。\n";
   const devNodeRule =
-    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note 必须两段（必填 ≤200 字）：【功能】= 面向非技术的设计说明 + 【实现】= 面向技术人员的实现梗概；禁止只写一段，禁止把技术细节写进【功能】段，devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认）。**功能色卡**：开发节点按「功能分类」统一上色，整张架构图一眼可辨（同一张表也由 mtnode_canvas_get 以 devFuncColors 返回）：core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f。新建 devKind=module 的功能块时，系统已按标题与概述关键词自动套好色卡颜色，你一般无需再传 devColor；归类确实不对时，直接用 update 补丁改成色卡里对应分类的那个 hex——**按色卡上色即可，不必先征询用户**，但绝不要自创色值、也不要把功能色卡之外的颜色批量刷到节点上。色卡只作用于 module 功能块（file / class / interface / enum 保留元素类型默认色）；用户可在节点头部颜色小按钮的 HSV 色板里手选颜色，手选过的块视为用户意图，除非用户要求，不要再改它的颜色；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。开发节点可用 parentSuperId 嵌套（细化按深度：只展开本层，或深度细化到无法再细——一般到文件级；多层梗概经一次确认即可，确认后自顶向下逐层建块）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」）：按钮顺序固定为 开发 → 细化 → 建议 → 问询 → 打开（→ 会话 N）。四者都先弹对话框——「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素、以及细化深度（只展开本层 / 深度细化到无法再细，一般到文件级；无需或无法细化时也要明确告知用户）；「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「问询」先请用户确认并填写问题，然后由 AI **只读**回答关于本模块的问题——全程强制只读（网关 read-only 权限档 + 只读系统提示，写文件 / 改画布会被拒绝），不改文件、不改画布，可「返回后台」继续跑、完成后自动弹出。除「建议 / 问询」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出覆盖多层的整棵结构梗概、经用户一次确认后在新会话中自顶向下逐层建块（一次确认即覆盖整个细化深度）。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。\n" +
+    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note 必须两段（必填 ≤200 字）：【功能】= 面向非技术的设计说明 + 【实现】= 面向技术人员的实现梗概；禁止只写一段，禁止把技术细节写进【功能】段，devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认）。**功能色卡**：开发节点按「功能分类」统一上色，整张架构图一眼可辨（同一张表也由 mtnode_canvas_get 以 devFuncColors 返回）：core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f。新建 devKind=module 的功能块时，系统已按标题与概述关键词自动套好色卡颜色，你一般无需再传 devColor；归类确实不对时，直接用 update 补丁改成色卡里对应分类的那个 hex——**按色卡上色即可，不必先征询用户**，但绝不要自创色值、也不要把功能色卡之外的颜色批量刷到节点上。色卡只作用于 module 功能块（file / class / interface / enum 保留元素类型默认色）；用户可在节点头部颜色小按钮的 HSV 色板里手选颜色，手选过的块视为用户意图，除非用户要求，不要再改它的颜色；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。开发节点可用 parentSuperId 嵌套（细化按深度：只展开本层，或深度细化到无法再细——一般到文件级；多层梗概经一次确认即可，确认后自顶向下逐层建块）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」）：按钮顺序固定为 开发 → 细化 → 建议 → 问询 → 打开（→ 会话 N）。四者都先弹对话框——「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素、以及细化深度（只展开本层 / 深度细化到无法再细，一般到文件级；无需或无法细化时也要明确告知用户）；「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「问询」先请用户确认并填写问题，然后由 AI **只读**回答关于本模块的问题——全程强制只读（网关 read-only 权限档 + 只读系统提示，写文件 / 改画布会被拒绝），不改文件、不改画布，可「返回后台」继续跑、完成后自动弹出。除「建议 / 问询」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出覆盖多层的整棵结构梗概、经用户一次确认后在新会话中自顶向下逐层建块（一次确认即覆盖整个细化深度）。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。**画布含开发节点时，项目根即 Agent 工作区根**（工作区真源优先级：手填工作目录 > 画布项目根 devPath > 画布工作目录 > 默认目录），所以在建图首轮就把 devPath 写到顶层功能块，之后项目根内的文件（含 AGENTS.md 共识文件）可直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n" +
     "  · 【执行节点】kind \"execute\" = 执行节点：绑定可执行文件（execPath = 绝对路径，.exe/.bat/.cmd/.lnk 或任何系统可打开的文件），execIcon / execColor 自定义图标与 body 颜色便于快速定位。该节点独立存在、无数据端口，body 内点两次播放键或双击即用系统默认方式启动绑定文件。画布上要「一键启动某个程序 / 脚本 / 文件」时用这种节点。它与开发节点同属一个创建菜单，属于某个功能块时（如该模块的启动脚本）用 parentSuperId 放进该开发节点内部。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
@@ -690,6 +849,7 @@ async function assistSend(text) {
     "  · 批次处理时：批量并行（batchMode=batch）尽量不用智能节点（agent_task / 文本智能模式），改用普通 proc_text / proc_image；聚合模式（batchMode=agg）允许使用智能节点。\n" +
     "  · 【重要】不要给 agent_task 或已开启智能的 proc_text 后面再接保存节点：智能节点本身会写文件，保存节点只会把无关的任务/对话文本落盘。保存节点只接在普通（非智能）proc_text / proc_image 之后。旧版 save_text / save_image 会自动升级为统一保存节点。\n" +
     "  · 【重要】不要给 music_gen / video_gen 后面再接保存节点：它们在节点内填写 outputPath 直接写出音视频，无配对保存节点。\n" +
+    "  · 【Remotion 视频节点】kind \"remotion\"：仅当已安装「remotion」应用插件时使用（未安装时节点会显示警示条，运行也会被拦）。描述文本来自连线端口1（接文本源，如 input_text）；节点上可设 duration（秒 1–60）、fps（1–60）、remotionSize（1280x720 / 1920x1080 / 720x1280 / 1080x1920 / 1024x1024 / 1080x1080）、providerId + model（生成动效代码的 LLM）。与 music_gen/video_gen 相反：remotion 没有 outputPath，渲染出的 mp4 要由下游「保存」节点落盘（savePath 用 .mp4），所以生成含 remotion 的工作流时，务必在 remotion 后面接一个保存节点。\n" +
     "  · 【重要·文件交接】尽量不要把智能节点（agent_task / 智能 proc_text）作为数据输入接到其他节点：会话输出噪声大且未必含关键信息。优先让智能节点写出文档/文件，再用 wait_file（waitPath）以控制线连到后续节点阻塞执行；wait_file 无输入端子、不输出任何内容，仅监视文件防止下游提前运行，下游自行按约定路径读文件。\n" +
     "  · 【极重要·防 N² 爆 token】batchMode=batch 时每次运行只应对「当前这一条」。严禁把整批 N 张图/N 条再全部塞进每一次运行的参考图或提示词（否则 ≈N×N 次调用，巨量浪费）。需要只处理其中一项时，先接「拆分」节点选出单项再连文生图；要一次看全部才用 batchMode=agg。两条批量源不要交叉接到同一文生图。\n" +
     "  · 文生图（proc_image）每次运行只生成 1 张图，API 不支持一次出多张。prompt 里严禁写「生成多张/几张图」之类要求；需要多图时用：批量 1 条出 1 张、多个文生图节点、或 attempts×N。\n" +
@@ -1156,7 +1316,26 @@ function renderAgentComposer() {
   const mv = document.getElementById("agentModelTriggerVal");
   if (mv) mv.textContent = agentPresetLabel(st.preset) + " · " + agentModelName(st);
   const wv = document.getElementById("agentWsTriggerVal");
-  if (wv) wv.textContent = st.workspace ? wsGroupOf(st.workspace) : I18n.t("选择工作区");
+  if (wv) {
+    /* 芯片显示的是「生效工作区」（手填 > 画布项目根 > 默认）：运行就按它落盘，
+       不能只回显 st.workspace，否则用户会以为还在默认目录里写文件 */
+    const shownWs = sessionWorkspaceShown(st);
+    wv.textContent = shownWs ? wsGroupOf(shownWs) : I18n.t("选择工作区");
+    const tip =
+      I18n.t("生效工作目录：") +
+      (shownWs || I18n.t("（默认）")) +
+      "\n" +
+      workspaceInfoNote(agentWorkspaceInfo(st)) +
+      "\n" +
+      I18n.t("点击可改选其它目录（手填优先于画布项目根）");
+    wv.title = tip;
+    const wt = document.getElementById("agentWsTrigger");
+    if (wt) {
+      /* 同步 dataset.i18nTitle：切换语言时 I18n.apply 会重刷 title，不会退回旧文案 */
+      wt.dataset.i18nTitle = tip;
+      wt.title = tip;
+    }
+  }
   const pt = document.getElementById("agentPlanToggle");
   if (pt) {
     pt.classList.toggle("on", !!st.planNext);
@@ -2429,7 +2608,39 @@ function updateAgentLiveThink(st) {
   });
 }
 
-function dshMsgBlock(m, nodeId, idx) {
+/* 单条消息复制按钮：点击复制本条正文（用户消息放头部、AI 回复放尾部时间行），复制成功后短暂变 ok */
+function dshCopyBtn(m, cls) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = cls || "dsh-msg-copy";
+  b.textContent = I18n.t("复制");
+  b.title = I18n.t("复制本条到剪贴板");
+  b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  b.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const txt = String(m.content == null ? "" : m.content);
+    const done = () => {
+      b.classList.add("ok");
+      b.textContent = I18n.t("已复制");
+      toast(I18n.t("已复制"), "ok");
+      setTimeout(() => {
+        b.classList.remove("ok");
+        b.textContent = I18n.t("复制");
+      }, 1200);
+    };
+    const fail = () => toast(I18n.t("复制失败"), "err");
+    dshClipboardWrite(txt)
+      .then((r) => {
+        if (r && r.ok === false) fail();
+        else done();
+      })
+      .catch(fail);
+  });
+  return b;
+}
+
+function dshMsgBlock(m, nodeId, idx, opts) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
   if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
@@ -2467,44 +2678,8 @@ function dshMsgBlock(m, nodeId, idx) {
     det.appendChild(pre);
     head.appendChild(det);
   }
-  const copyBtn = document.createElement("button");
-  copyBtn.type = "button";
-  copyBtn.className = "dsh-msg-copy";
-  copyBtn.textContent = I18n.t("复制");
-  copyBtn.title = I18n.t("复制本条到剪贴板");
-  copyBtn.addEventListener("mousedown", (ev) => ev.stopPropagation());
-  copyBtn.addEventListener("click", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const txt = String(m.content == null ? "" : m.content);
-    const done = () => {
-      copyBtn.classList.add("ok");
-      copyBtn.textContent = I18n.t("已复制");
-      toast(I18n.t("已复制"), "ok");
-      setTimeout(() => {
-        copyBtn.classList.remove("ok");
-        copyBtn.textContent = I18n.t("复制");
-      }, 1200);
-    };
-    const fail = () => toast(I18n.t("复制失败"), "err");
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(txt).then(done).catch(fail);
-      } else if (window.api && window.api.clipboardWriteText) {
-        Promise.resolve(window.api.clipboardWriteText(txt))
-          .then((r) => {
-            if (r && r.ok === false) fail();
-            else done();
-          })
-          .catch(fail);
-      } else {
-        fail();
-      }
-    } catch (_) {
-      fail();
-    }
-  });
-  head.appendChild(copyBtn);
+  /* 用户消息的复制按钮留在头部；AI 回复的复制按钮放在尾部与时间同行（仅复制该条回复） */
+  if (m.role === "user") head.appendChild(dshCopyBtn(m, "dsh-msg-copy"));
   row.appendChild(head);
   if (segsView) {
     /* 时间线：思考 / 正文 / 工具按段序就近插入（工具段从 m.tools 里取对应条目） */
@@ -2539,19 +2714,193 @@ function dshMsgBlock(m, nodeId, idx) {
         '<div class="md">' + renderMarkdown(m.content) + "</div>";
     row.appendChild(body);
   }
-  /* 消息末尾：时间（精确到秒） */
+  /* 消息末尾：AI 回复带「复制本条回复」小按钮（与时间同行）；用户消息带回滚轮次时，前面加一个小「回滚」按钮 */
+  const rbRid = opts && opts.showRollback ? rbLatestRid(m) : "";
   const endTxt = formatMsgTimeSec(m.at || m.createdAt || m.ts);
-  if (endTxt) {
+  if (rbRid || endTxt || m.role === "assistant") {
     const tail = document.createElement("div");
     tail.className = "dsh-msg-tail";
-    const tEl = document.createElement("span");
-    tEl.className = "dsh-msg-time";
-    tEl.textContent = endTxt;
-    tEl.title = formatMsgStamp(m.at || m.createdAt || m.ts);
-    tail.appendChild(tEl);
+    if (rbRid) {
+      const rbBtn = document.createElement("button");
+      rbBtn.type = "button";
+      rbBtn.className = "dsh-msg-rollback";
+      rbBtn.textContent = I18n.t("↶ 回滚");
+      rbBtn.title = I18n.t("撤销上一轮的全部更改");
+      rbBtn.addEventListener("mousedown", (ev) => ev.stopPropagation());
+      rbBtn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        rbAskRollback(m, nodeId);
+      });
+      tail.appendChild(rbBtn);
+    }
+    if (m.role === "assistant")
+      tail.appendChild(dshCopyBtn(m, "dsh-msg-tail-copy"));
+    if (endTxt) {
+      const tEl = document.createElement("span");
+      tEl.className = "dsh-msg-time";
+      tEl.textContent = endTxt;
+      tEl.title = formatMsgStamp(m.at || m.createdAt || m.ts);
+      tail.appendChild(tEl);
+    }
     row.appendChild(tail);
   }
   return row;
+}
+
+/* ── 回滚入口：上一轮用户输入下方的「回滚」小按钮 → 确认弹窗 → 还原 ── */
+
+/** 弹窗里「本次更改的内容」清单：文件逐条 + 画布 / 计划 / 事实库计数。 */
+function rbRoundChangeItems(round) {
+  const items = [];
+  const verb = {
+    modify: I18n.t("修改"),
+    create: I18n.t("新增"),
+    delete: I18n.t("删除"),
+  };
+  const files = Array.isArray(round.files) ? round.files : [];
+  for (const f of files) {
+    const rel = String(f.rel || f.path || "");
+    items.push((verb[f.kind] || I18n.t("修改")) + " " + rel);
+  }
+  const canvas = Array.isArray(round.canvas) ? round.canvas : [];
+  for (const c of canvas) {
+    const t = (c && c.touched) || {};
+    const parts = [];
+    if ((t.nodeIds || []).length) parts.push(I18n.t("节点") + "×" + t.nodeIds.length);
+    if ((t.wireIds || []).length) parts.push(I18n.t("连线") + "×" + t.wireIds.length);
+    if ((t.markIds || []).length) parts.push(I18n.t("标注") + "×" + t.markIds.length);
+    if ((t.groupIds || []).length) parts.push(I18n.t("分组") + "×" + t.groupIds.length);
+    items.push(
+      I18n.t("画布改动：") +
+        (parts.join("、") || I18n.t("（未逐条记录）")) +
+        I18n.t("（需人工处理）"),
+    );
+  }
+  if (typeof rbPlanChanged === "function" && rbPlanChanged(round))
+    items.push(I18n.t("计划清单变更（需人工处理）"));
+  const db = Array.isArray(round.db) ? round.db : [];
+  if (db.length) items.push(I18n.t("事实库改动 ") + db.length + I18n.t(" 条（需人工处理）"));
+  if (!items.length) items.push(I18n.t("（本轮无可自动列举的具体条目）"));
+  return items;
+}
+
+/** 弹窗警示：账本覆盖不到的部分（命令调用 / 记录不完整等）。 */
+function rbRoundWarnings(round) {
+  const u = (round && round.untracked) || {};
+  const w = [];
+  if ((Number(u.shellCalls) || 0) > 0)
+    w.push(
+      I18n.t("有 ") + u.shellCalls + I18n.t(" 次命令调用可能改了文件，账本无法覆盖，请自查"),
+    );
+  if (u.dbCapped) w.push(I18n.t("事实库改动超过逐条记账上限，无法逐条回退"));
+  if ((Number(round && round.dropped) || 0) > 0 || (round && round.status === "partial"))
+    w.push(I18n.t("该轮记录不完整，还原可能不完整"));
+  return w;
+}
+
+/** 回滚入口点击：先确认（说明 + 本轮更改清单），确认后执行还原并汇报结果。 */
+async function rbAskRollback(m, nodeId) {
+  try {
+    const rid = rbLatestRid(m);
+    if (!rid) return;
+    const sessionId = rbSessionIdForMsg(nodeId);
+    const runKey = nodeId === "assist" ? "assist" : "agent:" + String(nodeId);
+    if (typeof rbActiveRid === "function" && rbActiveRid(runKey) === rid) {
+      toast(I18n.t("该轮仍在运行中，结束后才能回滚"), "warn");
+      return;
+    }
+    const round = await rbGetRound(sessionId, rid);
+    if (!round) {
+      toast(I18n.t("该轮没有可回滚的账本"), "warn");
+      return;
+    }
+    if (round.restoredAt) {
+      toast(I18n.t("该轮已回滚过，不能重复回滚"), "warn");
+      return;
+    }
+    const items = rbRoundChangeItems(round);
+    const warned = rbRoundWarnings(round);
+    const dlg = await mtDialogForm({
+      title: I18n.t("确认回滚"),
+      wide: true,
+      rows: [
+        [I18n.t("时间"), formatMsgStamp(round.startedAt || round.ts)],
+        [I18n.t("工作区"), round.workspace || I18n.t("（未记录）")],
+      ],
+      list: { label: I18n.t("本次更改的内容") + "（" + items.length + "）", items },
+      msg: I18n.t("回滚将撤销此轮次的所有更改，且不可撤销。确认继续？"),
+      warn: warned.length ? warned.join("\n") : "",
+      actions: [
+        { id: "cancel", label: I18n.t("取消") },
+        { id: "rollback", label: I18n.t("确认回滚"), primary: true, danger: true },
+      ],
+    });
+    if (!dlg || dlg.action !== "rollback") return;
+    const res = await rbRestoreRound(sessionId, rid);
+    if (!res.ok && res.error) {
+      toast(res.error, "err");
+      return;
+    }
+    /* 结果汇报：还原 / 删除 / 跳过 / 失败 / 待人工处理 / 账本警示 */
+    const parts = [];
+    if (res.restored.length)
+      parts.push(I18n.t("已还原 ") + res.restored.length + I18n.t(" 个文件"));
+    if (res.deleted.length)
+      parts.push(I18n.t("已删除 ") + res.deleted.length + I18n.t(" 个本轮新建文件"));
+    if (res.skipped.length) {
+      const first = res.skipped
+        .slice(0, 3)
+        .map((s) => s.path)
+        .join("、");
+      parts.push(
+        I18n.t("跳过 ") +
+          res.skipped.length +
+          I18n.t(" 项（") +
+          first +
+          (res.skipped.length > 3 ? "…" : "") +
+          "）",
+      );
+    }
+    if (res.errors.length)
+      parts.push(I18n.t("失败 ") + res.errors.length + I18n.t(" 项"));
+    if (res.pending.length)
+      parts.push(I18n.t("需人工处理：") + res.pending.join("、"));
+    if (res.warnings.length) parts.push(res.warnings.join("；"));
+    const summary = parts.length
+      ? parts.join("；")
+      : I18n.t("本轮没有可回退的文件改动");
+    if (res.complete) {
+      /* 完整回滚：账本标已回滚 + 该轮消息摘出上下文（不再进入后续对话） */
+      await rbMarkRoundRestored(sessionId, res.round, Date.now());
+      let dropped = 0;
+      if (nodeId === "assist") {
+        dropped = rbDropRoundMessages(S.assistMessages || [], rid);
+        persistAssistUi();
+        renderAssistPanel({ forceStick: true });
+      } else {
+        const st = agentSessionById(String(nodeId));
+        if (st) {
+          dropped = rbDropRoundMessages(st.messages || [], rid);
+          await persistAgentSession();
+          if (S.agentActiveId === st.id) renderAgentSession({ forceStick: true });
+          else renderAgentSessionSidebar();
+        }
+      }
+      toast(
+        I18n.t("已回滚该轮：") +
+          summary +
+          (dropped ? I18n.t("（") + dropped + I18n.t(" 条消息已移出上下文）") : ""),
+        "ok",
+      );
+    } else {
+      /* 部分完成：不标 restoredAt、不摘消息（上下文须如实反映现状）；
+         文件部分幂等，可稍后重试。 */
+      toast(I18n.t("回滚未完全完成：") + summary, "warn");
+    }
+  } catch (e) {
+    toast(I18n.t("回滚失败：") + ((e && e.message) || String(e)), "err");
+  }
 }
 
 /* ── 会话消息显示轮数:默认最多 10 轮(一轮=一条用户消息),更早的可从最前端逐步载入 ── */
@@ -2568,6 +2917,14 @@ function agentRoundSlice(st) {
   let start = 0;
   if (totalRounds > vis) start = userIdx[totalRounds - vis];
   return { msgs, start, totalRounds, vis: Math.min(vis, Math.max(totalRounds, 1)) };
+}
+/* 写剪贴板：navigator.clipboard 优先，回退 preload 桥（失败 reject） */
+function dshClipboardWrite(txt) {
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    return Promise.resolve(navigator.clipboard.writeText(txt));
+  if (window.api && window.api.clipboardWriteText)
+    return Promise.resolve(window.api.clipboardWriteText(txt));
+  return Promise.reject(new Error("no clipboard"));
 }
 function renderAgentSession(opts) {
   const st = agentSessionState();
@@ -2617,8 +2974,19 @@ function renderAgentSession(opts) {
     loadRow.appendChild(btn);
     list.appendChild(loadRow);
   }
-  for (let i = slice.start; i < slice.msgs.length; i++)
-    list.appendChild(dshMsgBlock(slice.msgs[i], st.id || "agent", i));
+  /* 回滚入口挂在每条挂有回滚轮次的用户消息上（仅限可见列表内、且会话不在运行中） */
+  for (let i = slice.start; i < slice.msgs.length; i++) {
+    const m = slice.msgs[i];
+    list.appendChild(
+      dshMsgBlock(m, st.id || "agent", i, {
+        showRollback:
+          !running &&
+          !m._rolledBack &&
+          typeof rbHasMsgRound === "function" &&
+          rbHasMsgRound(m),
+      }),
+    );
+  }
   if (running) {
     const row = document.createElement("div");
     row.className = "dsh-msg dsh-ai";
@@ -2709,7 +3077,8 @@ function renderAgentSession(opts) {
     requestAnimationFrame(() => restoreConvStick(list, stickCap));
   }
   const ws = $("#agentWsInput");
-  if (ws && document.activeElement !== ws) ws.value = st.workspace || "";
+  /* 回填「生效工作区」（与运行同一真源），📂 打开的也就是文件真正落的目录 */
+  if (ws && document.activeElement !== ws) ws.value = sessionWorkspaceShown(st) || "";
   const chatEnterSend = !S.config.dsh || S.config.dsh.chatEnter !== "newline";
   const inp = $("#agentInput");
   if (inp) {
@@ -2936,7 +3305,9 @@ function renderAgentSessionSidebar() {
       archived.push(s);
       continue;
     }
-    const key = wsGroupOf(s.workspace);
+    /* 分组按「生效工作区」归：没手填的会话若仍按 st.workspace 分，会全堆进
+       「默认目录」，而它们的文件其实写在画布项目根里（显示与运行分家） */
+    const key = wsGroupOf(sessionWorkspaceShown(s));
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
   }
@@ -2982,7 +3353,7 @@ function renderAgentSessionSidebar() {
     const nm = document.createElement("span");
     nm.className = "side-sess-name";
     nm.textContent = s.title || I18n.t("新会话");
-    nm.title = s.title + I18n.t("\n工作目录: ") + (s.workspace || I18n.t("（默认）"));
+    nm.title = s.title + sessionWorkspaceTooltipLine(s);
     /* 运行状态指示:转圈动效 + 「运行中」(仅运行中的会话显示) */
     const stt = document.createElement("span");
     stt.className = "side-sess-status";
@@ -3089,7 +3460,8 @@ function renderAgentSessionSidebar() {
   /* 活动会话的工作目录显示同步 */
   if (activeSt) {
     const ws = $("#agentWsInput");
-    if (ws && document.activeElement !== ws) ws.value = activeSt.workspace || "";
+    if (ws && document.activeElement !== ws)
+      ws.value = sessionWorkspaceShown(activeSt) || "";
   }
   startAgentSideTimeTicker();
 }
@@ -3147,10 +3519,9 @@ async function agentCompactRun(st) {
       "【压缩任务】把以下对话压缩为一段简明摘要,保留任务目标、关键结论与未完成事项:\n\n" + hist.slice(-40000),
       {
         runKey: "agent:" + st.id,
-        workspace:
-          st.workspace ||
-          S.dshWorkspaceFallback ||
-          "",
+        /* 与本轮运行同一真源（手填 > 画布项目根 > 默认）：压缩用的引擎目录
+           必须与会话运行一致，否则引擎按不同工作区重启、上文的账也分家 */
+        workspace: agentRunWorkspace(st),
         preset: st.preset || "standard",
         provider: st.provider || "deepseek-official",
         model: st.model || undefined,
@@ -3771,10 +4142,8 @@ async function agentSessionSend(text, opts) {
       rollbackAnchor: rbAnchor,
       rollbackLabel: t.slice(0, 160),
       planMode,
-      workspace:
-        st.workspace ||
-        S.dshWorkspaceFallback ||
-        "",
+      /* 生效工作区（st.workspace 手填优先 > 画布项目根 > 默认）：与展示层同源 */
+      workspace: agentRunWorkspace(st),
       preset: st.preset || "standard",
       provider: (opts.provider || st.provider || "deepseek-official"),
       model: (opts.model || st.model || undefined),

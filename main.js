@@ -55,6 +55,7 @@ const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
 const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lock.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
+const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
 const { patchProviders } = require("./config-providers.js");
 const { registerRollbackIpc } = require("./rollback-store.js");
 let dshAdapter = null;
@@ -3129,6 +3130,12 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
+  registerRemotionIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+  });
   /* 回滚存储：内容寻址对象 + 轮次账本 + GC（渲染层无 fs，字节读写只走这里） */
   registerRollbackIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   mainWin.webContents.once("did-finish-load", () => {
@@ -3149,6 +3156,7 @@ app.on("before-quit", () => {
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}
   try { shutdownTtsUiOnly(); } catch {}
+  try { shutdownRemotionUiOnly(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }

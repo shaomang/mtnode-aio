@@ -837,6 +837,154 @@ function devSuggestPickBody(host, opts) {
   return { ta };
 }
 
+/* ============ 建议 / 问询结果写入会话（避免内容只留在弹窗里而丢失） ============
+ * 需求：开发节点的「建议」AI 评估与「问询」AI 回答目前只显示在弹窗里——
+ * 「建议」结果虽缓存到 node.devSuggest（随工作流保存），但不出现在任何会话中；
+ * 「问询」回答更只活在 devAskJobs 内存注册表，弹窗关闭即丢。
+ * 修复：各自记入一个归属该功能块的「记录会话」（建议 · 模块名 / 问询 · 模块名），
+ * 与开发 / 细化绑定会话一样随会话列表持久化落盘，随时可回溯。
+ * 记录会话只存档、不参与绑定会话的「运行 / 停止」语义：id 记在节点字段
+ * （node.devSuggestSessionId / node.devAskSessionId）上，不进 devSessionIds。
+ * 消息带 _src:"dev-record" 标记，避免被「最近一次要求 / 绑定会话首条任务书」
+ * 等只认 _src:"dev-node" 的逻辑误判。
+ */
+function devRecordSessionTitleOf(node, kind) {
+  return (
+    (kind === "ask" ? I18n.t("问询") + " · " : I18n.t("建议") + " · ") +
+    (node.title || I18n.t("开发节点"))
+  );
+}
+/* 取（或新建）该功能块的记录会话：节点字段优先，其次按标题找（节点改名后兜底） */
+function devRecordSessionOf(node, kind) {
+  if (!node || node.kind !== "super" || !node.dev) return null;
+  const list = agentSessions();
+  const idField = kind === "ask" ? "devAskSessionId" : "devSuggestSessionId";
+  let sess = null;
+  if (node[idField]) sess = list.find((s) => s && s.id === node[idField]) || null;
+  if (!sess) {
+    const wantTitle = devRecordSessionTitleOf(node, kind);
+    sess = list.find((s) => s && s.title === wantTitle) || null;
+  }
+  if (!sess) {
+    sess = {
+      id: uid("as"),
+      title: devRecordSessionTitleOf(node, kind),
+      workspace:
+        devPathOf(node) ||
+        (typeof dshWorkspaceOf === "function" ? dshWorkspaceOf(node) : ""),
+      preset: "standard",
+      provider: "deepseek-official",
+      model: "",
+      effort: "high",
+      messages: [],
+      archived: false,
+      updatedAt: Date.now(),
+    };
+    list.unshift(sess);
+  }
+  if (node[idField] !== sess.id) node[idField] = sess.id;
+  return sess;
+}
+/* 记录会话持久化 + 会话列表即时可见（消息已入 S.agentSessions，fire-and-forget 落盘） */
+function devRecordSessionFlush() {
+  try {
+    if (typeof persistAgentSession === "function") persistAgentSession();
+  } catch (_) {}
+  try {
+    if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+  } catch (_) {}
+  if (typeof scheduleSave === "function") scheduleSave(true);
+}
+/* 「建议」AI 评估 → 建议会话（assistant 消息；同正文不重复写） */
+function devSuggestRecordText(node, sug) {
+  const lines = [];
+  lines.push(
+    I18n.t("【AI 建议评估】") +
+      " · " +
+      (node.title || I18n.t("开发节点")) +
+      (sug.at ? " · " + devSuggestStamp(sug.at) : ""),
+  );
+  if (sug.summary) lines.push(I18n.t("AI 评估：") + sug.summary);
+  sug.items.forEach((it, i) => {
+    lines.push(
+      (i + 1) +
+        ". [" +
+        devSuggestPriorityText(it.priority) +
+        "] " +
+        it.title +
+        (it.desc ? " —— " + it.desc : ""),
+    );
+  });
+  if (Array.isArray(sug.basis) && sug.basis.length) {
+    lines.push(I18n.t("依据（AI 真实读到的代码）") + "：");
+    for (const b of sug.basis) lines.push("  · " + b);
+  }
+  return lines.join("\n");
+}
+function devSuggestRecordToSession(node, sug) {
+  if (!node || !sug || !Array.isArray(sug.items) || !sug.items.length) return;
+  const sess = devRecordSessionOf(node, "suggest");
+  if (!sess) return;
+  const text = devSuggestRecordText(node, sug);
+  const msgs = sess.messages || [];
+  if (msgs.some((m) => m && m.role === "assistant" && m.content === text)) return;
+  msgs.push({ role: "assistant", content: text, _src: "dev-record", at: Date.now() });
+  sess.updatedAt = Date.now();
+  devRecordSessionFlush();
+}
+/* 用户在方案清单里的勾选 + 补充 → 追加进建议会话（user 消息，决策不丢失） */
+function devSuggestRecordPicked(node, ids, supplement) {
+  if (!node) return;
+  const sess = devRecordSessionOf(node, "suggest");
+  if (!sess) return;
+  const sug = devSuggestOf(node);
+  const all = (sug && sug.items) || [];
+  const picked = all.filter((it) => ids.indexOf(it.id) >= 0);
+  const extra = String(supplement || "").trim();
+  const lines = [I18n.t("【本轮采纳】") + " · " + (node.title || I18n.t("开发节点"))];
+  if (picked.length) {
+    lines.push(I18n.t("用户已勾选 ") + picked.length + " / " + all.length + "：");
+    picked.forEach((it, i) => {
+      lines.push(
+        "  " + (i + 1) + ". [" + devSuggestPriorityText(it.priority) + "] " + it.title,
+      );
+    });
+  } else {
+    lines.push(I18n.t("用户未采纳 AI 提议的方案，按下述补充要求开发："));
+  }
+  if (extra) lines.push(I18n.t("用户补充：") + extra);
+  const text = lines.join("\n");
+  const msgs = sess.messages || [];
+  if (msgs.some((m) => m && m.role === "user" && m.content === text)) return;
+  msgs.push({ role: "user", content: text, _src: "dev-record", at: Date.now() });
+  sess.updatedAt = Date.now();
+  devRecordSessionFlush();
+}
+/* 「问询」问答对 → 问询会话（user 问题 + assistant 回答；同回答不重复写） */
+function devAskRecordToSession(node, job) {
+  if (!node || !job) return;
+  const question = String(job.question || "").trim();
+  const answer = String(job.answer || "").trim();
+  if (!question || !answer) return;
+  const sess = devRecordSessionOf(node, "ask");
+  if (!sess) return;
+  const msgs = sess.messages || [];
+  if (
+    msgs.some(
+      (m) =>
+        m &&
+        m.role === "assistant" &&
+        m._src === "dev-record" &&
+        String(m.content || "") === answer,
+    )
+  )
+    return;
+  msgs.push({ role: "user", content: question, _src: "dev-record", at: Date.now() });
+  msgs.push({ role: "assistant", content: answer, _src: "dev-record", at: Date.now() });
+  sess.updatedAt = Date.now();
+  devRecordSessionFlush();
+}
+
 /* ============ 建议调研 = 后台作业（运行态与对话框解耦） ============
  * 「建议」的只读调研不再绑在 devSuggestDialog 的生命周期上：运行态
  * （phase / lines / toolCount / elapsed / err / suggestion / picked / focus）
@@ -1135,6 +1283,8 @@ function devSuggestJobSettle(job, text, err) {
     items: sug.items,
   };
   scheduleSave(true);
+  /* AI 评估同步记入该功能块的「建议」会话：弹窗之外也能回溯，避免内容丢失 */
+  devSuggestRecordToSession(target, sug);
   try {
     renderCanvas();
   } catch (_) {}
@@ -1265,6 +1415,8 @@ function devSuggestShowJob(job) {
         supplement,
       });
       scheduleSave(true);
+      /* 本轮勾选 + 补充也记入「建议」会话：用户的决策随会话留存，不只在弹窗里 */
+      devSuggestRecordPicked(node, ids, supplement);
       finish({ action: "dev", text: brief, picked: ids, supplement });
       startDevSessionWithText(node, brief);
     };
@@ -1476,6 +1628,8 @@ function devSuggestCachedDialog(node, sug, focus) {
         supplement: extra,
       });
       scheduleSave(true);
+      /* 本轮勾选 + 补充也记入「建议」会话：用户的决策随会话留存，不只在弹窗里 */
+      devSuggestRecordPicked(node, ids, extra);
       finish({ action: "dev", text: brief, picked: ids, supplement: extra });
       startDevSessionWithText(node, brief);
     };
@@ -1917,6 +2071,8 @@ function devAskJobSettle(job, text, err) {
   job.answer = String(text || "").trim();
   job.phase = "ready";
   job.viewed = false;
+  /* 问答对同步记入该功能块的「问询」会话：回答持久化落盘，弹窗关闭也不丢 */
+  devAskRecordToSession(job.node, job);
   devAskJobNotify(job, "render");
 }
 /* ---------- 问询视图（挂到作业上：进度 → 就地变成回答） ---------- */
@@ -2020,7 +2176,11 @@ function devAskShowJob(job) {
             devDlgEl(
               "p",
               "mt-form-hint",
-              I18n.t("本次问询只读完成：未改动任何文件与画布。想接着实现 / 修改？点该功能块的「开发」按钮正式开工。"),
+              I18n.t("本次问询只读完成：未改动任何文件与画布。回答已记录到会话「") +
+                I18n.t("问询") +
+                " · " +
+                (node.title || I18n.t("开发节点")) +
+                I18n.t("」，可随时在会话列表查看。想接着实现 / 修改？点该功能块的「开发」按钮正式开工。"),
             ),
           );
         } else {
