@@ -95,6 +95,9 @@ class DownloadBody(BaseModel):
     modelId: str
     kind: str = "llm"
     pipelineTag: str = ""
+    ggufRepo: str = ""
+    ggufFile: str = ""
+    quant: str = ""
 
 
 class DeployBody(BaseModel):
@@ -118,6 +121,7 @@ async def status():
         "port": DEFAULT_PORT,
         "deployed": deployed,
         "deployedModels": models.deployed_model_names(),
+        "downloads": models.list_downloads(),
         "gpu": query_gpu(),
         "allocatedVramGb": models._allocated_vram_gb(),
         "engine": "llama.cpp",
@@ -155,12 +159,28 @@ async def local_models():
     return {"ok": True, "items": models.list_local_models()}
 
 
+@app.get("/api/downloads")
+async def downloads():
+    return {"ok": True, "items": models.list_downloads()}
+
+
 @app.post("/api/models/download")
 async def download(body: DownloadBody, authorization: str | None = Header(None)):
     require_key(authorization)
     try:
-        info = models.download_model(body.modelId, body.kind, body.pipelineTag)
+        info = models.download_model(
+            body.modelId,
+            body.kind,
+            body.pipelineTag,
+            gguf_repo=body.ggufRepo,
+            gguf_file=body.ggufFile,
+            quant=body.quant,
+        )
+        if info.get("ok") is False:
+            raise HTTPException(status_code=400, detail=str(info.get("error") or "download_failed"))
         return {"ok": True, "model": info}
+    except HTTPException:
+        raise
     except Exception as e:
         _log(f"download error {body.modelId}: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from e

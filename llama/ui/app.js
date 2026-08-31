@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const api = window.llamaApi;
 if (!api) {
@@ -15,6 +15,7 @@ let state = {
   startRunning: false,
   downloadIds: new Set(),
   deployIds: new Set(),
+  downloadProgress: {},
   restoreOnce: false,
 };
 
@@ -83,6 +84,62 @@ function mkWaitBtn(label) {
   b.appendChild(spin);
   b.appendChild(document.createTextNode(label || "等待中"));
   return b;
+}
+
+let downloadPollTimer = null;
+
+async function fetchDownloads() {
+  try {
+    const r = await apiCall("/api/downloads", "GET", null, true);
+    return Array.isArray(r.items) ? r.items : [];
+  } catch {
+    return null;
+  }
+}
+
+function syncDownloadProgress(items) {
+  const next = {};
+  for (const it of items || []) {
+    if (it && it.modelId) next[it.modelId] = it;
+  }
+  const keys = Object.keys(next);
+  const oldKeys = Object.keys(state.downloadProgress);
+  let changed = keys.length !== oldKeys.length;
+  if (!changed) {
+    for (const k of keys) {
+      const a = next[k];
+      const b = state.downloadProgress[k];
+      if (
+        !b ||
+        Math.round(Number(a.pct) || 0) !== Math.round(Number(b.pct) || 0) ||
+        String(a.phase || "") !== String(b.phase || "")
+      ) {
+        changed = true;
+        break;
+      }
+    }
+  }
+  state.downloadProgress = next;
+  return changed;
+}
+
+function ensureDownloadPoll() {
+  if (downloadPollTimer) return;
+  downloadPollTimer = setInterval(async () => {
+    const items = await fetchDownloads();
+    if (items && syncDownloadProgress(items)) renderItems(state.items);
+    if (!Object.keys(state.downloadProgress).length && !state.downloadIds.size) {
+      clearInterval(downloadPollTimer);
+      downloadPollTimer = null;
+    }
+  }, 1000);
+}
+
+function stopDownloadPollIfIdle() {
+  if (downloadPollTimer && !Object.keys(state.downloadProgress).length && !state.downloadIds.size) {
+    clearInterval(downloadPollTimer);
+    downloadPollTimer = null;
+  }
 }
 
 function sleep(ms) {
@@ -163,6 +220,12 @@ async function refreshStatus() {
     state.apiKey = st.apiStatus.apiKey || "";
   }
 
+  if (st.apiStatus && Array.isArray(st.apiStatus.downloads)) {
+    const dlChanged = syncDownloadProgress(st.apiStatus.downloads);
+    if (dlChanged && state.tab === "local") renderItems(state.items);
+  }
+  if (Object.keys(state.downloadProgress).length) ensureDownloadPoll();
+
   if (!(st.installing || state.installRunning)) {
     setInstallProgress(false);
   }
@@ -208,6 +271,66 @@ function mkRowBtn(label, onClick, cls) {
   b.className = "mini" + (cls ? " " + cls : "");
   b.onclick = onClick;
   return b;
+}
+
+function mkDownloadProgress(p) {
+  const cell = document.createElement("div");
+  cell.className = "dl-cell";
+  const bar = document.createElement("div");
+  bar.className = "bar dl-bar";
+  bar.innerHTML = "<i></i>";
+  cell.appendChild(bar);
+  const txt = document.createElement("span");
+  txt.className = "dl-txt";
+  cell.appendChild(txt);
+  const pct = Number(p && p.pct);
+  const total = Number(p && p.total) || 0;
+  const received = Number(p && p.received) || 0;
+  if (Number.isFinite(pct) && pct >= 0) {
+    setBar(bar, pct);
+    txt.textContent = Math.round(pct) + "%";
+  } else if (total > 0) {
+    setBar(bar, (received / total) * 100);
+    txt.textContent = Math.round((received / total) * 100) + "%";
+  } else {
+    setBar(bar, 0);
+    txt.textContent = "下载中…";
+  }
+  return cell;
+}
+
+function localItemsView() {
+  const seen = new Set(state.items.map((x) => x.id));
+  const merged = state.items.slice();
+  for (const [id] of Object.entries(state.downloadProgress)) {
+    if (!seen.has(id)) merged.push({ id, kind: "llm", status: "downloading" });
+  }
+  return merged;
+}
+
+function encModelId(id) {
+  return String(id || "")
+    .split("/")
+    .map((s) => encodeURIComponent(s))
+    .join("/");
+}
+
+async function deleteLocalModel(m) {
+  const title = m.id || m.name || "?";
+  const extra = m.deployed
+    ? "\n\n该模型正在运行，删除会先停止引擎再移除文件。"
+    : "\n\n将删除该模型的全部本地文件，不可恢复。";
+  if (!confirm("确认删除已安装模型？\n\n" + title + extra)) return;
+  logLine("删除 " + title + "…");
+  try {
+    await apiCall("/api/models/" + encModelId(m.id), "DELETE", null);
+    await api.syncProvider();
+    await loadLocal();
+    refreshStatus();
+    logLine("已删除 " + title);
+  } catch (e) {
+    logLine("删除失败: " + e.message);
+  }
 }
 
 function fmtRelease(iso) {
@@ -258,17 +381,21 @@ function syncCatalogFilters() {
 function renderItems(items) {
   const list = $("modelList");
   list.innerHTML = "";
-  if (!items.length) {
+  const view = state.tab === "local" ? localItemsView() : items || [];
+  if (!view.length) {
     list.innerHTML = '<div class="meta">无结果</div>';
     return;
   }
-  for (const m of items) {
+  for (const m of view) {
     const row = document.createElement("div");
     row.className = "item-row";
     const title = m.id || m.name || "?";
 
     if (state.tab === "catalog") {
-      if (state.downloadIds.has(m.id)) {
+      const dl = state.downloadProgress[m.id];
+      if (state.downloadIds.has(m.id) && dl) {
+        row.appendChild(mkDownloadProgress(dl));
+      } else if (state.downloadIds.has(m.id)) {
         row.appendChild(mkWaitBtn("等待中"));
       } else if (!state.downloadedIds.has(m.id)) {
         row.appendChild(mkRowBtn("下载", () => confirmDownload(m), "primary"));
@@ -276,8 +403,11 @@ function renderItems(items) {
       row.appendChild(mkRowBtn("详情", () => showModelDetail(m)));
     } else {
       const deploying = state.deployIds.has(m.id);
+      const dl = state.downloadProgress[m.id];
       if (deploying) {
         row.appendChild(mkWaitBtn("等待中"));
+      } else if (dl) {
+        row.appendChild(mkDownloadProgress(dl));
       } else if (m.status === "starting") {
         row.appendChild(mkWaitBtn("加载中"));
       } else if (!m.deployed || m.status === "failed" || m.status === "dead" || m.status === "idle") {
@@ -293,6 +423,9 @@ function renderItems(items) {
         );
       }
       row.appendChild(mkRowBtn("详情", () => showModelDetail(m, true)));
+      if (!deploying && !dl) {
+        row.appendChild(mkRowBtn("删除", () => deleteLocalModel(m), "danger"));
+      }
     }
 
     row.appendChild(mkItemMeta(m, state.tab === "local"));
@@ -310,31 +443,46 @@ async function confirmDownload(m) {
   const title = m.id || m.name || "?";
   if (
     !confirm(
-      "确认下载此模型？\n\n" + title + "\n\n下载将占用磁盘空间，可在 Console 查看进度。",
+      "确认下载此模型？\n\n" + title + "\n\n下载将占用磁盘空间，可在「已安装」页查看实时进度。",
     )
   ) {
     return;
   }
   state.downloadIds.add(m.id);
+  state.downloadProgress[m.id] = {
+    modelId: m.id,
+    phase: "start",
+    pct: 0,
+    received: 0,
+    total: 0,
+    message: "准备下载…",
+  };
+  switchToLocalTab();
   renderItems(state.items);
+  ensureDownloadPoll();
   logLine("下载 " + title + "…");
   try {
-    await apiCall("/api/models/download", "POST", {
+    const r = await apiCall("/api/models/download", "POST", {
       modelId: m.id,
       kind: m.kind || "llm",
       pipelineTag: m.pipelineTag || "",
+      ggufRepo: m.ggufRepo || "",
+      ggufFile: m.ggufFile || "",
+      quant: m.quant || "",
     });
+    const model = r && r.model;
+    if (model && model.ok === false) {
+      throw new Error(model.error || "下载失败");
+    }
     logLine("下载完成 " + title);
     state.downloadedIds.add(m.id);
-    state.tab = "local";
-    document.querySelector('[data-tab="local"]').classList.add("active");
-    document.querySelector('[data-tab="catalog"]').classList.remove("active");
-    syncCatalogFilters();
     await loadLocal();
   } catch (e) {
     logLine("下载失败: " + e.message);
   } finally {
     state.downloadIds.delete(m.id);
+    delete state.downloadProgress[m.id];
+    stopDownloadPollIfIdle();
   }
   refreshStatus();
 }

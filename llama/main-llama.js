@@ -1395,7 +1395,8 @@ function registerLlamaIpc(opts) {
           headers: hasBody
             ? Object.assign({}, headers, { "Content-Length": Buffer.byteLength(data) })
             : headers,
-          timeout: 300000,
+          // 30 min: model downloads can take a long time on mirror networks.
+          timeout: 1800000,
         },
         (res) => {
           let buf = "";

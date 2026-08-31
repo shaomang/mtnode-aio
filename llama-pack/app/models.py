@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -75,6 +76,163 @@ _log_fn: Callable[[str], None] | None = None
 _json_lock = threading.Lock()
 _deploy_lock = threading.Lock()
 _restore_lock = threading.Lock()
+
+# In-flight model download progress (model_id -> snapshot), served to the UI via /api/downloads.
+_downloads: dict[str, dict[str, Any]] = {}
+_downloads_lock = threading.Lock()
+
+
+def _set_download(
+    model_id: str,
+    phase: str,
+    message: str,
+    pct: float | None = None,
+    received: int = 0,
+    total: int = 0,
+) -> None:
+    with _downloads_lock:
+        _downloads[model_id] = {
+            "modelId": model_id,
+            "phase": phase,
+            "message": message,
+            "pct": None if pct is None else round(float(pct), 1),
+            "received": int(received or 0),
+            "total": int(total or 0),
+            "updatedAt": time.time(),
+        }
+
+
+def _clear_download(model_id: str) -> None:
+    with _downloads_lock:
+        _downloads.pop(model_id, None)
+
+
+def list_downloads() -> list[dict[str, Any]]:
+    with _downloads_lock:
+        return [dict(v) for v in _downloads.values()]
+
+
+def _fmt_bytes(n: int) -> str:
+    try:
+        n = int(n or 0)
+        if n <= 0:
+            return "0 B"
+        if n >= 1024**3:
+            return f"{n / 1024**3:.2f} GB"
+        if n >= 1024**2:
+            return f"{n / 1024**2:.1f} MB"
+        return f"{n} B"
+    except Exception:
+        return ""
+
+
+def _remote_file_size(repo: str, fname: str) -> int:
+    """Total size in bytes of a remote HF file (0 when unknown)."""
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
+        meta = get_hf_file_metadata(hf_hub_url(repo_id=repo, filename=fname))
+        return int(getattr(meta, "size", 0) or 0)
+    except Exception:
+        return 0
+
+
+# Quantization preference when a GGUF repo offers several files (lower = better).
+_QUANT_PREFERENCE = [
+    "q4_k_m",
+    "q5_k_m",
+    "q8_0",
+    "q6_k",
+    "q4_0",
+    "q3_k_m",
+    "q2_k",
+    "f16",
+    "bf16",
+]
+
+
+def _quant_of(fname: str) -> str:
+    """Extract the quant label from a GGUF filename, e.g. 'Qwen-27B-Q4_K_M.gguf' -> 'Q4_K_M'."""
+    m = re.search(r"(?:[-_.])(q\d(?:_[a-z0-9]+)*|f16|bf16|fp16)(?:\.|$)", fname, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    return ""
+
+
+def _quant_rank(fname: str) -> int:
+    lower = (fname or "").lower()
+    for i, q in enumerate(_QUANT_PREFERENCE):
+        if q in lower:
+            return i
+    return len(_QUANT_PREFERENCE)
+
+
+def _pick_gguf_file(repo: str) -> dict[str, str]:
+    """Pick the best single-file GGUF of a HF repo via list_repo_files.
+
+    Split shards (*-00001-of-00002.gguf) are rejected because downloading a
+    single shard yields an unusable model; a repo with only shards is skipped.
+    """
+    try:
+        files = list_repo_files(repo_id=repo)
+    except Exception as e:
+        log(f"list_repo_files failed {repo}: {str(e)[:160]}")
+        return {}
+    candidates: list[str] = []
+    for f in files or []:
+        name = str(f)
+        low = name.lower()
+        if not low.endswith(".gguf"):
+            continue
+        if "-of-" in low or "split" in low:
+            continue
+        candidates.append(name)
+    if not candidates:
+        return {}
+    candidates.sort(key=_quant_rank)
+    best = candidates[0]
+    return {"repo": repo, "file": best, "quant": _quant_of(best)}
+
+
+def _find_partial_size(dest_dir: Path, fname: str) -> int:
+    """Largest on-disk byte count of the target file (or its .incomplete temp)."""
+    if not fname:
+        return 0
+    best = 0
+    try:
+        for p in dest_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            if p.name == fname or p.name.endswith(".incomplete"):
+                try:
+                    best = max(best, p.stat().st_size)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return best
+
+
+def _spawn_download_watcher(model_id: str, dest_dir: Path, state: dict[str, Any]) -> threading.Event:
+    """Poll the partial file size every second and publish progress to _downloads."""
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.is_set():
+            fname = str(state.get("fname") or "")
+            total = int(state.get("total") or 0)
+            received = _find_partial_size(dest_dir, fname)
+            pct = (received / total * 100.0) if total > 0 else None
+            if total > 0:
+                message = f"下载中 {_fmt_bytes(received)} / {_fmt_bytes(total)}"
+            else:
+                message = "下载中（未知大小）…"
+            _set_download(model_id, "download", message, pct, received, total)
+            stop.wait(1.0)
+
+    t = threading.Thread(target=watch, daemon=True, name="dl-watch")
+    t.start()
+    return stop
 
 
 def set_logger(fn: Callable[[str], None]) -> None:
@@ -308,56 +466,110 @@ def _upsert_registry(model_id: str, **fields: Any) -> dict[str, Any]:
     return base
 
 
-def download_model(model_id: str, kind: str = "llm", pipeline_tag: str = "") -> dict[str, Any]:
+def download_model(
+    model_id: str,
+    kind: str = "llm",
+    pipeline_tag: str = "",
+    gguf_repo: str = "",
+    gguf_file: str = "",
+    quant: str = "",
+) -> dict[str, Any]:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    with _downloads_lock:
+        if model_id in _downloads:
+            return {"ok": False, "error": "already_downloading", "modelId": model_id}
     src = GGUF_SOURCES.get(model_id)
-    if not src:
-        return {"ok": False, "error": "no_gguf_source", "modelId": model_id}
     dest_dir = model_dir(model_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     os.environ["HF_HUB_DISABLE_XET"] = "1"
     candidates: list[dict[str, str]] = []
-    if src.get("repo") and src.get("file"):
-        candidates.append(
-            {
-                "repo": src["repo"],
-                "file": src["file"],
-                "quant": str(src.get("quant") or ""),
-            }
-        )
-    for fb in src.get("fallbacks") or []:
-        if fb.get("repo") and fb.get("file"):
+    if src:
+        # Whitelisted models keep their primary + fallback chain.
+        if src.get("repo") and src.get("file"):
             candidates.append(
                 {
-                    "repo": fb["repo"],
-                    "file": fb["file"],
-                    "quant": str(fb.get("quant") or src.get("quant") or ""),
+                    "repo": src["repo"],
+                    "file": src["file"],
+                    "quant": str(src.get("quant") or ""),
                 }
             )
+        for fb in src.get("fallbacks") or []:
+            if fb.get("repo") and fb.get("file"):
+                candidates.append(
+                    {
+                        "repo": fb["repo"],
+                        "file": fb["file"],
+                        "quant": str(fb.get("quant") or src.get("quant") or ""),
+                    }
+                )
+    elif gguf_repo:
+        # Explicit GGUF repo passed from the catalog (e.g. bartowski/Qwen2.5-7B-Instruct-GGUF).
+        if gguf_file:
+            candidates.append(
+                {
+                    "repo": gguf_repo,
+                    "file": gguf_file,
+                    "quant": quant or _quant_of(gguf_file),
+                }
+            )
+        else:
+            picked = _pick_gguf_file(gguf_repo)
+            if picked:
+                candidates.append(picked)
+    else:
+        # Generic: treat the model id itself as a GGUF repo (catalog search result,
+        # e.g. unsloth/Qwen3.8-27B-GGUF) and pick the best single-file quant.
+        picked = _pick_gguf_file(model_id)
+        if picked:
+            candidates.append(picked)
+    if not candidates:
+        return {"ok": False, "error": "no_gguf_source", "modelId": model_id}
     last_err = ""
     path = ""
     matched: dict[str, str] = {}
-    for cand in candidates:
-        repo = cand["repo"]
-        fname = cand["file"]
-        log(f"downloading {repo}/{fname} -> {dest_dir}")
-        try:
-            path = hf_hub_download(
-                repo_id=repo,
-                filename=fname,
-                local_dir=str(dest_dir),
+    watcher_state: dict[str, Any] = {"fname": "", "total": 0}
+    watcher_stop: threading.Event | None = None
+    _set_download(model_id, "start", "准备下载…", 0)
+    try:
+        for cand in candidates:
+            repo = cand["repo"]
+            fname = cand["file"]
+            total = _remote_file_size(repo, fname)
+            watcher_state["fname"] = fname
+            watcher_state["total"] = total
+            if watcher_stop is None:
+                watcher_stop = _spawn_download_watcher(model_id, dest_dir, watcher_state)
+            _set_download(
+                model_id,
+                "download",
+                f"下载 {repo}/{fname}" + (f"（{_fmt_bytes(total)}）" if total > 0 else ""),
+                0,
+                0,
+                total,
             )
-            matched = cand
-            break
-        except Exception as e:
-            last_err = str(e)
-            log(f"download failed {repo}/{fname}: {last_err[:200]}")
+            log(f"downloading {repo}/{fname} -> {dest_dir}")
+            try:
+                path = hf_hub_download(
+                    repo_id=repo,
+                    filename=fname,
+                    local_dir=str(dest_dir),
+                )
+                matched = cand
+                break
+            except Exception as e:
+                last_err = str(e)
+                log(f"download failed {repo}/{fname}: {last_err[:200]}")
+    finally:
+        if watcher_stop is not None:
+            watcher_stop.set()
     if not path:
+        _clear_download(model_id)
         return {"ok": False, "error": last_err or "download_failed", "modelId": model_id}
     repo = matched["repo"]
     fname = matched["file"]
-    quant = matched.get("quant") or src.get("quant") or ""
+    quant = matched.get("quant") or (src or {}).get("quant") or ""
+    _set_download(model_id, "template", "整理对话模板…", 100)
     tpl_path = _ensure_chat_template(model_id, src)
     entry = _upsert_registry(
         model_id,
@@ -371,6 +583,7 @@ def download_model(model_id: str, kind: str = "llm", pipeline_tag: str = "") -> 
         status="downloaded",
     )
     log(f"download complete {model_id} -> {path}")
+    _clear_download(model_id)
     return local_model_info(entry)
 
 
