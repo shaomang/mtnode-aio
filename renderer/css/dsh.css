@@ -3124,6 +3124,9 @@ button.mini.btn-sq.tpl-ico {
 }
 
 .ix-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
   letter-spacing: 1px;
   color: var(--cyan2);
@@ -3133,6 +3136,15 @@ button.mini.btn-sq.tpl-ico {
   border-radius: 4px;
   padding: 7px 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+}
+
+/* 计数标题占满剩余宽度，右侧留给「全部中断」 */
+.ix-head-txt {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ix-card {
@@ -3151,6 +3163,66 @@ button.mini.btn-sq.tpl-ico {
   font-size: 12.5px;
   font-weight: 700;
   color: var(--ink)
+}
+
+/* 卡片头部来源行:多条并行运行时分清「是谁在问」,点一下跳回那个会话 / 定位那个节点 */
+.ix-src {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  color: var(--cyan);
+  cursor: pointer;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--bd2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
+.ix-src::before {
+  content: "🧭";
+  font-size: 10px;
+  flex: 0 0 auto;
+}
+
+.ix-src:hover {
+  color: var(--cyan2);
+  text-decoration: underline;
+}
+
+/* 「稍后（终止本轮）」出口:不是回答,是放弃这一轮 → 用次要样式与主按钮区分 */
+.ix-later {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.ix-later:hover {
+  color: var(--orange2);
+  border-color: var(--orange);
+}
+
+/* 「中断任务」出口：撤销这次提问 + 终止该轮，并给模型「已中断」失败回执。
+   不是回答，所以与「稍后」同为次要样式（虚线），但用红色提示它更有决定性。 */
+.ix-abort {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.ix-abort:hover {
+  color: var(--red);
+  border-color: var(--red);
+  border-style: solid;
+}
+
+/* 面板头部的「全部中断」：不参与标题的省略号挤压 */
+.ix-abort-all {
+  flex: 0 0 auto;
+  font-weight: 400;
+  letter-spacing: 0;
 }
 
 .ix-q {
@@ -3203,10 +3275,12 @@ button.mini.btn-sq.tpl-ico {
   border-color: var(--cyan)
 }
 
+/* 按钮行：提问卡 3 个、审批卡 4 个出口（含「中断任务」），窄面板下允许换行不挤压 */
 .ix-btns {
   display: flex;
   gap: 6px;
-  justify-content: center
+  justify-content: center;
+  flex-wrap: wrap;
 }
 
 /* ── dsh 风格消息流(透明背景):会话与对话节点共用 ── */

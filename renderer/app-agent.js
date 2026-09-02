@@ -302,9 +302,9 @@ function imageInputsOf(node, idx) {
     });
   };
   for (const w of wiresTo(node.id)) pushImg(nodeById(w.from));
-  if (usesGlobalRefs(node)) {
-    for (const src of globalRefSources(node.id)) pushImg(src);
-  }
+  /* 全局广播图像：只有任务/提示词里明文 @ 命中的来源才算已连接图像输入 */
+  for (const src of globalRefSourcesForRun(node, procPromptForRun(node)))
+    pushImg(src);
   return out;
 }
 
@@ -777,6 +777,9 @@ function dshCancelActive(runKey) {
     if (!h) continue;
     delete map[k];
     list.push({ cancelTag: h.cancelTag || k, workspace: h.workspace });
+    /* 用户点「终止」= 这一轮的宿主确认框立刻作废：先本地自毁，不等网关回帧
+       （与 app.js 同名函数保持一致 —— 本文件在 app.js 之后加载，这份才生效） */
+    if (typeof canvasConfirmDropRun === "function") canvasConfirmDropRun(k);
   }
   if (!list.length) return Promise.resolve();
   return Promise.all(list.map((p) => window.api.dshCancel(p).catch(() => {})));

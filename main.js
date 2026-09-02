@@ -88,6 +88,9 @@ function dsh() {
       log: dshLog,
       onEvent: (ev) => {
         if (mainWin && !mainWin.isDestroyed()) {
+          /* 全部事件原样转发（含 reqId 为空的帧）：网关撤销「无在途归属」的提问 /
+             审批卡时发的 ix-drop 就是 reqId:'' 的全局撤卡帧，它不属于任何一次 run
+             的事件流，渲染层由 preload.dshOnIxDrop 在全局通道上按 id 兜底撤卡。 */
           mainWin.webContents.send("dsh:event", ev);
         }
         try {
@@ -221,7 +224,86 @@ function backupConfigFile(configPath) {
 }
 const wfIdOk = (id) => /^[A-Za-z0-9_-]{4,120}$/.test(String(id || ""));
 const wfPath = (id) => join(DATA(), "save", String(id) + ".json");
-const assetDir = (wfId) => mk(join(DATA(), "assets", String(wfId)));
+/* 只算路径不建目录：删除 / 校验一类的只读路径必须无副作用（assetDir 会 mkdir） */
+const assetDirPath = (wfId) => join(DATA(), "assets", String(wfId));
+const assetDir = (wfId) => mk(assetDirPath(wfId));
+/* 误删画布的回收站：save/<id>.json + assets/<id> 整体搬进 trash/<时间戳>__<id>/ */
+const TRASH_DIR = () => join(DATA(), "trash");
+
+/* ── 画布备份：每 5 分钟把 save/ 里各工作流 JSON 快照到独立的 save-backups/ 文件夹 ──
+   与自动保存链路完全解耦：只做只读复制，绝不写 save/。copyFileSync 保留源文件
+   mtime，因此「源 mtime ≤ 最新备份 mtime」即表示上次备份后无改动，直接跳过；
+   每条工作流保留最近 72 份（≈6 小时），误删/改坏可从备份文件夹手工找回。 */
+const WF_BACKUP_DIR = () => join(DATA(), "save-backups");
+const WF_BACKUP_MS = 5 * 60 * 1000;
+const WF_BACKUP_KEEP = 72;
+
+function workflowBackupTick() {
+  try {
+    const srcDir = mk(join(DATA(), "save"));
+    const bakRoot = mk(WF_BACKUP_DIR());
+    for (const f of fs.readdirSync(srcDir)) {
+      if (!f.endsWith(".json")) continue;
+      const id = f.slice(0, -5);
+      if (!wfIdOk(id)) continue;
+      const src = join(srcDir, f);
+      let st;
+      try {
+        st = fs.statSync(src);
+      } catch {
+        continue;
+      }
+      const dir = mk(join(bakRoot, id));
+      let files = [];
+      try {
+        files = fs
+          .readdirSync(dir)
+          .filter((b) => b.startsWith(id + "-") && b.endsWith(".json"))
+          .map((b) => ({ b, t: fs.statSync(join(dir, b)).mtimeMs }))
+          .sort((a, b) => b.t - a.t);
+      } catch {}
+      if (files.length && st.mtimeMs <= files[0].t) continue;
+      const name = id + "-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+      try {
+        fs.copyFileSync(src, join(dir, name));
+      } catch {
+        continue;
+      }
+      files = [{ b: name, t: st.mtimeMs }].concat(files);
+      for (const old of files.slice(WF_BACKUP_KEEP)) {
+        try {
+          fs.unlinkSync(join(dir, old.b));
+        } catch {}
+      }
+    }
+  } catch {
+    /* 备份失败绝不影响应用 */
+  }
+}
+
+function workflowBackupStatus() {
+  try {
+    const dir = mk(WF_BACKUP_DIR());
+    let count = 0;
+    let latest = 0;
+    for (const id of fs.readdirSync(dir)) {
+      try {
+        const d = join(dir, id);
+        if (!fs.statSync(d).isDirectory()) continue;
+        for (const b of fs.readdirSync(d)) {
+          if (!b.endsWith(".json")) continue;
+          count++;
+          const s = fs.statSync(join(d, b));
+          const born = s.birthtimeMs || s.mtimeMs;
+          if (born > latest) latest = born;
+        }
+      } catch {}
+    }
+    return { ok: true, dir, count, latest };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
 
 /* 一次性迁移：旧版本工作流在 workflows/ 下，新版本统一存到 save/ */
 function migrateLegacyWorkflows() {
@@ -476,15 +558,244 @@ ipcMain.handle("workflow:save", (e, { id, data }) => {
   writeJson(wfPath(id), data);
   return { ok: true, mtime: Date.now() };
 });
-ipcMain.handle("workflow:delete", (e, id) => {
-  if (!wfIdOk(id)) return { ok: false };
+/* target 是否严格位于 parentDir 之下（parentDir 本身算越界）。
+   一律用 path.resolve 后的绝对路径比较，防 .. / 大小写别名绕过。 */
+function pathStrictlyUnder(parentDir, target) {
+  const p = path.resolve(parentDir);
+  const t = path.resolve(target);
+  return t.length > p.length && t.startsWith(p + path.sep);
+}
+
+/* 磁盘占用指纹（文件数 + 总字节），用于回收站复制后的完整性校验 */
+function diskFootprint(p) {
+  const st = fs.statSync(p);
+  if (st.isFile()) return { files: 1, bytes: st.size };
+  let files = 0;
+  let bytes = 0;
+  for (const name of fs.readdirSync(p)) {
+    const sub = diskFootprint(join(p, name));
+    files += sub.files;
+    bytes += sub.bytes;
+  }
+  return { files, bytes };
+}
+
+/* 把 src 搬进回收站 dest：首选同盘 rename（原子、零拷贝）；
+   rename 失败（被占用 EPERM/EBUSY、跨卷 EXDEV）退化为同盘 copy + 指纹校验，
+   校验通过才尽力移除源文件。任何一步不如预期都如实返回 { ok:false, code }，
+   绝不静默物理删。 */
+function trashMove(src, dest) {
+  const errors = [];
+  let renamedTo = null;
   try {
-    fs.rmSync(wfPath(id));
-  } catch {}
+    fs.renameSync(src, dest);
+    renamedTo = dest;
+  } catch (err) {
+    errors.push(String((err && err.code) || err));
+    const alt =
+      dest + ".trash" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    try {
+      fs.renameSync(src, alt);
+      renamedTo = alt;
+    } catch (err2) {
+      errors.push(String((err2 && err2.code) || err2));
+    }
+  }
+  if (renamedTo) return { ok: true, dest: renamedTo };
+
+  /* rename 走不通：复制进同盘回收站，校验一致后再移除源 */
+  const cdest =
+    dest + ".copy" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   try {
-    fs.rmSync(assetDir(id), { recursive: true, force: true });
+    fs.cpSync(src, cdest, { recursive: true, dereference: true });
+    const before = diskFootprint(src);
+    const after = diskFootprint(cdest);
+    if (before.files !== after.files || before.bytes !== after.bytes)
+      return {
+        ok: false,
+        code: "wf_copy_unverified",
+        error: I18n.t("回收站复制校验不一致，画布未删除"),
+        dest: cdest,
+      };
+    try {
+      fs.rmSync(src, { recursive: true, force: true });
+    } catch (err) {
+      return {
+        ok: false,
+        code: "wf_source_locked",
+        error:
+          I18n.t("画布已复制到回收站，但源文件被占用无法移除；请关闭占用后重试：") +
+          cdest,
+        copied: true,
+        dest: cdest,
+      };
+    }
+    return { ok: true, dest: cdest, copied: true };
+  } catch (err) {
+    errors.push(String((err && err.message) || err));
+    return {
+      ok: false,
+      code: "wf_move_failed",
+      error: I18n.t("移入回收站失败，画布未删除：") + errors.join(" / "),
+    };
+  }
+}
+
+ipcMain.handle("workflow:delete", (e, arg) => {
+  /* ── 删除画布：双重校验 + 回收站软删 ─────────────────────────────
+     兼容旧调用：arg 可以是 id 字符串；新调用传 { id, expectId, expectName }。
+     1) wfIdOk 校验 id；
+     2) path.resolve 断言目标严格位于 save/ 与 assets/ 之下，越界一律拒绝；
+     3) 读磁盘 json 比对 expectId / expectName，不一致直接拒绝（fail closed，
+        返回 code 供 UI 提示），不猜、不只按文件名删；
+     4) 不再 rmSync：把 <id>.json 与 assets/<id> 整体 move 进
+        trash/<时间戳>__<id>/；rename 失败退化为同盘 copy + 校验，任何失败都
+        如实返回，绝不静默物理删；
+     5) 成功返回被删画布名与节点数 + 回收站路径，供 UI 显示「可在回收站恢复」。 */
+  const opts = arg && typeof arg === "object" ? arg : { id: arg };
+  const id = String(opts.id == null ? "" : opts.id);
+  const expectId = opts.expectId == null ? "" : String(opts.expectId);
+  const expectName = opts.expectName == null ? "" : String(opts.expectName);
+  if (!wfIdOk(id))
+    return { ok: false, code: "wf_bad_id", error: I18n.t("非法工作流 id") };
+
+  const saveRoot = path.resolve(join(DATA(), "save"));
+  const assetsRoot = path.resolve(join(DATA(), "assets"));
+  const srcFile = path.resolve(wfPath(id));
+  const srcAssets = path.resolve(assetDirPath(id));
+  if (!pathStrictlyUnder(saveRoot, srcFile) || !pathStrictlyUnder(assetsRoot, srcAssets))
+    return {
+      ok: false,
+      code: "wf_path_escape",
+      error: I18n.t("删除目标不在画布数据目录内，已拒绝"),
+    };
+
+  let exists = false;
+  try {
+    exists = fs.statSync(srcFile).isFile();
   } catch {}
-  return { ok: true };
+  if (!exists)
+    /* 磁盘上本就没有这份画布：与旧行为一致视为删除完成（无事可删） */
+    return { ok: true, id, name: expectName || id, nodes: 0, noop: true };
+
+  let diskJson = null;
+  try {
+    diskJson = JSON.parse(fs.readFileSync(srcFile, "utf8"));
+  } catch {
+    return {
+      ok: false,
+      code: "wf_unreadable",
+      error: I18n.t("画布文件无法读取，已拒绝删除（请手动检查 save 目录）"),
+    };
+  }
+  if (!diskJson || typeof diskJson !== "object")
+    return {
+      ok: false,
+      code: "wf_unreadable",
+      error: I18n.t("画布文件内容异常，已拒绝删除（请手动检查 save 目录）"),
+    };
+
+  const diskId = String(diskJson.id || id);
+  const shownName = String(diskJson.name || id);
+  if ((expectId && diskId !== expectId) || (expectName && shownName !== expectName))
+    return {
+      ok: false,
+      code: "wf_mismatch",
+      error:
+        I18n.t("画布校验不一致，已拒绝删除：磁盘上是") +
+        " " +
+        shownName +
+        " (id: " +
+        diskId +
+        ")" +
+        I18n.t("，请求要删的是") +
+        " " +
+        (expectName || shownName) +
+        " (id: " +
+        (expectId || diskId) +
+        ")",
+      id,
+      name: shownName,
+      diskId,
+      diskName: shownName,
+    };
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const trashRoot = path.resolve(TRASH_DIR());
+  const entry = path.resolve(join(trashRoot, stamp + "__" + id));
+  if (!pathStrictlyUnder(trashRoot, entry))
+    return {
+      ok: false,
+      code: "wf_path_escape",
+      error: I18n.t("回收站目标路径越界，已拒绝"),
+    };
+  try {
+    fs.mkdirSync(entry, { recursive: true });
+  } catch (err) {
+    return {
+      ok: false,
+      code: "wf_trash_failed",
+      error: I18n.t("无法创建回收站目录，画布未删除：") + ((err && err.message) || String(err)),
+    };
+  }
+
+  /* 先搬资产目录，再搬画布 json：任一步失败画布都保持完整（或已回滚） */
+  let hadAssets = false;
+  try {
+    hadAssets = fs.statSync(srcAssets).isDirectory();
+  } catch {}
+  let assetsDest = null;
+  if (hadAssets) {
+    const r = trashMove(srcAssets, join(entry, "assets"));
+    if (!r.ok)
+      return {
+        ok: false,
+        code: r.code || "wf_move_failed",
+        error: r.error,
+        id,
+        name: shownName,
+        trashPath: entry,
+      };
+    assetsDest = r.dest;
+  }
+  const rJson = trashMove(srcFile, join(entry, id + ".json"));
+  if (!rJson.ok) {
+    if (assetsDest) {
+      /* 回滚：把已搬走的资产放回原位，宁可删不掉也不能留下半份画布 */
+      try {
+        fs.mkdirSync(path.dirname(srcAssets), { recursive: true });
+        fs.renameSync(assetsDest, srcAssets);
+      } catch {}
+    }
+    return {
+      ok: false,
+      code: rJson.code || "wf_move_failed",
+      error: rJson.error,
+      id,
+      name: shownName,
+      trashPath: entry,
+    };
+  }
+
+  return {
+    ok: true,
+    id,
+    name: shownName,
+    nodes: Array.isArray(diskJson.nodes) ? diskJson.nodes.length : 0,
+    trashPath: entry,
+    assets: !!hadAssets,
+  };
+});
+/* 画布备份：状态查询与打开备份文件夹（备份文件本身只在定时任务里只读复制） */
+ipcMain.handle("workflow:backupStatus", () => workflowBackupStatus());
+ipcMain.handle("workflow:backupOpen", () => {
+  try {
+    const dir = mk(WF_BACKUP_DIR());
+    shell.openPath(dir);
+    return { ok: true, path: dir };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
 });
 
 /* ---------------- IPC：数据库超级节点（SQLite/FTS5 事实库） ---------------- */
@@ -2089,7 +2400,14 @@ ipcMain.handle("api:abort", (e, key) => {
 
 /* 使用 http/https 直接发请求：每次新建连接（Connection: close），
    避免 keep-alive 池中半开连接导致的下一次请求长时间挂起；
-   超时覆盖整个请求（含响应体读取）。 */
+   超时覆盖整个请求（含响应体读取）。
+   timeoutMs 传 0 = 不设时限：生图这类耗时不定的长任务用它，
+   要停可点节点上的 ■ 停止（走 activeRequests 中止），不靠超时兜底。 */
+function effectiveTimeout(timeoutMs) {
+  const t = Number(timeoutMs);
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
+
 async function fetchJson(url, opts, timeoutMs = 180000, reqKey) {
   const u = new URL(url);
   const lib = u.protocol === "https:" ? https : http;
@@ -2148,7 +2466,9 @@ async function fetchJson(url, opts, timeoutMs = 180000, reqKey) {
         res.on("error", (e) => reject(e));
       },
     );
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(I18n.t("请求超时"))));
+    const tmoJson = effectiveTimeout(timeoutMs);
+    if (tmoJson)
+      req.setTimeout(tmoJson, () => req.destroy(new Error(I18n.t("请求超时"))));
     req.on("error", (e) => reject(e));
     if (reqKey) registerRequest(reqKey, req);
     if (payload) req.write(payload);
@@ -2172,7 +2492,11 @@ async function fetchRaw(url, timeoutMs = 60000, reqKey) {
         res.on("error", (e) => reject(e));
       },
     );
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(I18n.t("下载图像超时"))));
+    const tmoRaw = effectiveTimeout(timeoutMs);
+    if (tmoRaw)
+      req.setTimeout(tmoRaw, () =>
+        req.destroy(new Error(I18n.t("下载图像超时"))),
+      );
     req.on("error", (e) => reject(e));
     if (reqKey) registerRequest(reqKey, req);
     req.end();
@@ -2370,7 +2694,8 @@ function buildRequestSpec(
   throw new Error(I18n.t("未知服务商类型：") + provider.type);
 }
 
-/* multipart 表单请求：image 字段支持字符串（单张）或数组（多张参考图，顺序=图1/图2/…） */
+/* multipart 表单请求：image 字段支持字符串（单张）或数组（多张参考图，顺序=图1/图2/…）
+   timeoutMs 传 0 = 不设时限（生图走这条） */
 async function sendMultipart(url, headers, form, timeoutMs = 180000, reqKey) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(form || {})) {
@@ -2442,7 +2767,8 @@ async function apiCall({
         headers: req.headers,
         body: JSON.stringify(req.body),
       },
-      undefined,
+      /* 文本保留默认 3 分钟时限；MJ 自定义接口是生图，不设上限 */
+      kind === "text" ? undefined : 0,
       abKey,
     );
     if (status >= 400) throw new Error(apiErr(status, j, text));
@@ -2481,7 +2807,8 @@ async function apiCall({
         I18n.t("响应无图像数据（请检查自定义接口返回格式：{image: url|base64}）"),
       );
     if (url) {
-      const r = await fetchRaw(url, 60000, abKey);
+      /* 取回生成结果的那张图：不设下载时限（0），慢网络也等得到 */
+      const r = await fetchRaw(url, 0, abKey);
       if (r.status >= 400) throw new Error(I18n.t("下载图像失败 HTTP ") + r.status);
       b64 = r.buf.toString("base64");
     }
@@ -2491,14 +2818,16 @@ async function apiCall({
   if (provider.type === "image_openai") {
     let status, j, text;
     if (req.body && req.body.__multipart) {
+      /* 图生图 /images/edits：不设超时上限（0），高分辨率/多参考图都可能很久 */
       ({ status, j, text } = await sendMultipart(
         req.url,
         req.headers,
         req.body.__multipart,
-        180000,
+        0,
         abKey,
       ));
     } else {
+      /* 文生图 /images/generations：同样不设超时上限 */
       ({ status, j, text } = await fetchJson(
         req.url,
         {
@@ -2506,7 +2835,7 @@ async function apiCall({
           headers: req.headers,
           body: JSON.stringify(req.body),
         },
-        undefined,
+        0,
         abKey,
       ));
     }
@@ -2517,11 +2846,12 @@ async function apiCall({
   }
 
   if (provider.type === "image_stability") {
+    /* Stability 生图：不设超时上限（0） */
     const { status, j, text } = await sendMultipart(
       req.url,
       req.headers,
       req.body.__multipart,
-      180000,
+      0,
       abKey,
     );
     if (status >= 400) throw new Error(apiErr(status, j, text));
@@ -3042,6 +3372,9 @@ app.whenReady().then(() => {
   /* 隐藏原生窗口菜单栏（File/Edit/View/Window/Help），按键快捷方式由渲染层自行处理 */
   Menu.setApplicationMenu(null);
   migrateLegacyWorkflows();
+  /* 画布备份：启动片刻后先做一次基线（无改动的后续 tick 自动跳过），之后每 5 分钟一次 */
+  setTimeout(workflowBackupTick, 5000);
+  setInterval(workflowBackupTick, WF_BACKUP_MS);
   applyMainLocale(localeFromDisk());
   crashReport.installAppHandlers();
   /* dsh 网关随应用启动(幂等,失败不阻塞应用;引擎自愈见 main-dsh.js) */

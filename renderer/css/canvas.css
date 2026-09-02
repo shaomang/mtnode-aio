@@ -1388,6 +1388,141 @@
   border-color: rgba(111, 227, 165, .9);
 }
 
+/* 「文件 N」按钮：本功能块的核心文件列表开关（顶层项目块不插入） */
+.n-dev-info .n-dev-files-btn {
+  padding: 2px 8px;
+  font-size: 10.5px;
+  color: #6db4ff;
+  background: transparent;
+  border: 1px solid rgba(109, 180, 255, .4);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.n-dev-info .n-dev-files-btn:hover {
+  color: #06111d;
+  background: #6db4ff;
+  border-color: #6db4ff;
+}
+
+/* 展开态：按钮保持高亮，便于认出面板是哪一块的 */
+.n-dev-info .n-dev-files-btn.on {
+  color: #06111d;
+  background: #6db4ff;
+  border-color: #6db4ff;
+}
+
+/* 核心文件列表面板（在按钮行之后展开 · 暗/亮主题都用主题变量保证可读） */
+.n-dev-info .n-dev-files {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 6px;
+  font-family: var(--mono);
+  background: var(--panel2);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+}
+
+.n-dev-info .n-dev-files-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.n-dev-info .n-dev-files-head .cap {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.n-dev-info .n-dev-files-head button {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 10px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.n-dev-info .n-dev-files-head button:hover {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.n-dev-info .n-dev-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 折叠卡的 .n-body 会裁掉超出板身的 content：列表自身滚动，面板保持紧凑 */
+  max-height: 122px;
+  overflow-y: auto;
+}
+
+/* 一行 = 文件名 + 灰色相对路径 + （异步）不存在标记；点整行定位该文件 */
+.n-dev-info .n-dev-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  color: var(--ink);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.n-dev-info .n-dev-file:hover {
+  background: rgba(109, 180, 255, .14);
+  border-color: rgba(109, 180, 255, .4);
+}
+
+.n-dev-info .n-dev-file .f {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.n-dev-info .n-dev-file .p {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+  color: var(--muted);
+}
+
+.n-dev-info .n-dev-file .miss {
+  flex: none;
+  padding: 0 4px;
+  font-size: 9px;
+  color: var(--red);
+  border: 1px solid var(--red);
+  border-radius: 2px;
+}
+
+.n-dev-info .n-dev-file .miss[hidden] {
+  display: none;
+}
+
+/* 文件已不存在：整行压暗，避免误以为可点开 */
+.n-dev-info .n-dev-file.missing {
+  color: var(--muted);
+}
+
+.n-dev-info .n-dev-files-empty {
+  padding: 2px 4px;
+  font-family: var(--sans);
+  color: var(--muted);
+}
+
 /* 元素类型徽章（头部） */
 .n-chip.n-chip-devkind {
   cursor: default;
@@ -4037,11 +4172,15 @@
   min-height: 0
 }
 
+/* 高亮镜像层：排版度量必须与 .n-text.n-text-layered（textarea）逐条相同，
+   否则两层断行位置错开。这里刻意不写 word-break（textarea 侧没有），
+   并恒定预留 10px 滚动条槽，使 textarea 出不出滚动条两侧内容宽度都一致。 */
 .n-prompt-hl {
   position: absolute;
   inset: 0;
   pointer-events: none;
   overflow: hidden;
+  scrollbar-gutter: stable;
   background: var(--code);
   border: 1px solid transparent;
   border-radius: 3px;
@@ -4049,8 +4188,9 @@
   font-size: 12.5px;
   font-family: var(--mono);
   line-height: 1.5;
+  letter-spacing: normal;
+  tab-size: 4;
   white-space: pre-wrap;
-  word-break: break-word;
   overflow-wrap: break-word;
   box-sizing: border-box;
   color: var(--ink);
@@ -4072,6 +4212,12 @@
   color: transparent;
   caret-color: var(--ink);
   -webkit-text-fill-color: transparent;
+  /* 与 .n-prompt-hl 同步：两侧都恒定预留滚动条槽，
+     避免「出滚动条 → 内容宽度 -10px → 重排错位 / 宽度抖动」；
+     letter-spacing / tab-size 显式钉死为与镜像层相同的值。 */
+  scrollbar-gutter: stable;
+  letter-spacing: normal;
+  tab-size: 4;
 }
 
 .n-text.n-text-layered::selection {
@@ -4929,5 +5075,269 @@
 .wf-mark .mk-handle:active,
 .wf-mark .mk-h-move:active {
   cursor: grabbing
+}
+
+/* ===== 节点浏览态（未选中 = 浏览形态）=====
+   全部规则走 .wf-node.browse 前缀，编辑态样式零改动。
+   · body 由 app-nodeview.js 填成只读视图 .n-view（纯文本 / Markdown / YAML / 批次条目 / 裸图）。
+   · 内边距收紧但左右仍留 16px，躲开 .wf-node::before/::after 的接线排，不能真贴到 0。
+   · body 变纯文本后 .wf-node 的 mousedown 放行名单不再命中：点击文字 = 拖节点（与超级节点
+     折叠卡同一语义，属预期）；纵向滚动交给 .n-view 自身——canvas 的 wheel 对 .wf-node 内
+     直接 return（不缩放、不 preventDefault），原生滚动可用，无需改 JS。 */
+.wf-node.browse>.n-body {
+  gap: 4px;
+  padding: 6px 16px;
+  overflow: hidden
+}
+
+/* 只读视图容器：去边框去 --code 底，与板身一体化；超高时自身滚动 */
+.wf-node.browse .n-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent
+}
+
+/* 滚动只发生在 .n-view 一层：内部块不再各自滚，避免双层滚动条 */
+.wf-node.browse .n-view>* {
+  flex: none;
+  min-height: 0;
+  overflow: visible
+}
+
+/* 细滚动条：默认近乎透明，hover 节点时淡显 */
+.wf-node.browse .n-view::-webkit-scrollbar {
+  width: 8px;
+  height: 8px
+}
+
+.wf-node.browse .n-view::-webkit-scrollbar-track {
+  background: transparent
+}
+
+.wf-node.browse .n-view::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 5px
+}
+
+.wf-node.browse:hover .n-view {
+  scrollbar-color: var(--bd2) transparent
+}
+
+.wf-node.browse:hover .n-view::-webkit-scrollbar-thumb {
+  background: var(--bd2);
+  border-color: transparent
+}
+
+.wf-node.browse:hover .n-view::-webkit-scrollbar-thumb:hover {
+  background: var(--orange)
+}
+
+/* 纯文本块：保留换行与缩进 */
+.wf-node.browse .n-view-plain {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word
+}
+
+/* 节点内 Markdown：压缩排版（标题收到 13–15px、列表与表格小字、代码不换行溢出裁掉） */
+.wf-node.browse .n-view-md {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink)
+}
+
+.wf-node.browse .md {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  overflow: visible
+}
+
+.wf-node.browse .md h1,
+.wf-node.browse .md h2,
+.wf-node.browse .md h3,
+.wf-node.browse .md h4 {
+  margin: 8px 0 4px;
+  line-height: 1.35
+}
+
+.wf-node.browse .md h1 {
+  font-size: 15px
+}
+
+.wf-node.browse .md h2 {
+  font-size: 14px
+}
+
+.wf-node.browse .md h3 {
+  font-size: 13.5px
+}
+
+.wf-node.browse .md h4 {
+  font-size: 13px
+}
+
+.wf-node.browse .md p {
+  margin: 4px 0
+}
+
+.wf-node.browse .md ul,
+.wf-node.browse .md ol {
+  margin: 4px 0;
+  padding-left: 18px
+}
+
+.wf-node.browse .md li {
+  margin: 1px 0
+}
+
+.wf-node.browse .md code {
+  font-size: 11.5px;
+  padding: 0 3px;
+  background: rgba(0, 0, 0, .28);
+  border-color: rgba(255, 255, 255, .10)
+}
+
+/* pre 不换行：宽内容被 .n-view 的 overflow-x 裁掉，不撑破板身 */
+.wf-node.browse .md pre {
+  margin: 5px 0;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, .28);
+  border: 1px solid var(--bd);
+  overflow: hidden
+}
+
+.wf-node.browse .md pre code {
+  white-space: pre;
+  overflow: hidden;
+  line-height: 1.5
+}
+
+.wf-node.browse .md blockquote {
+  margin: 5px 0;
+  padding: 1px 8px;
+  border-left: 2px solid var(--bd2);
+  background: none;
+  color: var(--muted)
+}
+
+.wf-node.browse .md table {
+  margin: 5px 0;
+  font-size: 11.5px
+}
+
+.wf-node.browse .md th,
+.wf-node.browse .md td {
+  padding: 2px 6px
+}
+
+.wf-node.browse .md hr {
+  margin: 6px 0
+}
+
+.wf-node.browse .md img {
+  border: none
+}
+
+/* YAML：等宽、保持缩进、不显示行号 */
+.wf-node.browse .n-view-yaml {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2
+}
+
+/* 批次条目 */
+.wf-node.browse .n-view-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0
+}
+
+.wf-node.browse .n-view-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0
+}
+
+.wf-node.browse .n-view-entry+.n-view-entry {
+  border-top: 1px solid var(--bd);
+  padding-top: 5px
+}
+
+.wf-node.browse .n-view-entry-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: var(--cyan2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.wf-node.browse .n-view-entry-body {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink)
+}
+
+.wf-node.browse .n-view-empty {
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  letter-spacing: .5px;
+  color: var(--muted);
+  text-align: center
+}
+
+/* 裸图：与板身一体，铺满并保持完整画面 */
+.wf-node.browse .n-img {
+  border: none;
+  border-radius: 0;
+  background: none;
+  padding: 0;
+  /* .n-view>* 放行到 visible，图框仍要自己裁住 */
+  overflow: hidden
+}
+
+.wf-node.browse .n-img.bare {
+  flex: 1;
+  min-height: 0
+}
+
+.wf-node.browse .n-img.bare img {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain
 }
 

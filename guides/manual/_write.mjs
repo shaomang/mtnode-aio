@@ -462,36 +462,8 @@ After selecting nodes, toolbar **Wrap super** (or right-click → Super) packs t
     en: fs.readFileSync(path.join(root, "en", "super-nodes.md"), "utf8"),
   },
   workflows: {
-    zh: `# 工作流与创意工坊
-
-## 本地工作流
-
-顶栏可 **新建 / 切换 / 改名 / 删除**。默认工作流 id 为 \`default\`，删掉会自动重建。编辑后数百毫秒内自动保存；启动恢复上次现场。
-
-## 导入 / 导出
-
-- **导出**：打包为 \`.mtnodes\`（含节点、连线、提示词与图像资产），或复制 Base64（适合小纯文本画布）。
-- **导入**：从文件或粘贴 Base64 还原。他人模板若引用了你没有的服务商，会引导批量替换。
-
-## 创意工坊
-
-顶栏「创意工坊」浏览 / 搜索公开模板并下载。上传需要注册登录，可管理标题、预览图、描述与标签。
-`,
-    en: `# Workflows & workshop
-
-## Local workflows
-
-Toolbar **New / switch / rename / delete**. Default id is \`default\` (recreated if deleted). Edits auto-save within a few hundred ms; the last session restores on startup.
-
-## Import / export
-
-- **Export**: \`.mtnodes\` pack (nodes, wires, prompts, image assets) or Base64 (small text canvases).
-- **Import**: from file or pasted Base64. Shared templates that reference missing providers prompt a batch replace.
-
-## Creative Workshop
-
-Browse / search public templates and download. Upload requires an account; you can manage title, preview, description, and tags.
-`,
+    zh: fs.readFileSync(path.join(root, "workflows.md"), "utf8"),
+    en: fs.readFileSync(path.join(root, "en", "workflows.md"), "utf8"),
   },
   "io-proc": {
     zh: `# 输入 / 处理 / 保存

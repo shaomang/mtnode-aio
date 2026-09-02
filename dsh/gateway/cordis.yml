@@ -59,7 +59,7 @@
 # MTNode 画布工具:模型可在当前工作流中创建/改标题/连线/@引用/自动排版节点。
 - id: mtnode-canvas
   name: './canvas-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 # MTNode 回滚捕获:在工具 pre/post 观察点采样「改前正文 / 改后指纹」,经同一条桥
 # 单向发 journal 帧给 gateway,由主进程落盘成对象库 + 轮次账本(契约见 dsh/DESIGN.md
@@ -67,13 +67,13 @@
 # MTNODE_BRIDGE_PORT 时整体 no-op,行为与未接入时一致。
 - id: mtnode-rollback
   name: './rollback-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 # MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实
 # （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
 - id: mtnode-db
   name: './db-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: agent
   name: '@deepseek-ai/dsh-agent'
@@ -187,47 +187,47 @@
 
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
-  disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-pwsh
   name: '@deepseek-ai/dsh-tool-pwsh'
-  disabled: !!js process.platform !== 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.platform !== 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-jobs
   name: '@deepseek-ai/dsh-tool-jobs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: fs-observation-policy
   name: '@deepseek-ai/dsh-fs-observation-policy'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-fs-search
   name: '@deepseek-ai/dsh-tool-fs-search'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     sampleOverCapGlobResults: false
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     maxBytes: 65536
 
 - id: skill
   name: '@deepseek-ai/dsh-skill'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: commands
   name: '@deepseek-ai/dsh-commands'
@@ -246,7 +246,7 @@
 
 - id: plan-mode
   name: '@deepseek-ai/dsh-plan-mode'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     section: |
           You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it.
@@ -262,31 +262,31 @@
 
 - id: subagent
   name: '@deepseek-ai/dsh-subagent'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: subagent-spawn-in-process
   name: '@deepseek-ai/dsh-subagent-spawn-in-process'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     providerName: spawn
 
 - id: subagent-fork-in-process
   name: '@deepseek-ai/dsh-subagent-fork-in-process'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     providerName: fork
 
 - id: tool-subagent-control
   name: '@deepseek-ai/dsh-tool-subagent-control'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-subagent-list-agents
   name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-subagent
   name: '@deepseek-ai/dsh-tool-subagent'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     provider: spawn
     toolName: subagent
@@ -294,7 +294,7 @@
 
 - id: tool-subagent-fork
   name: '@deepseek-ai/dsh-tool-subagent'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     provider: fork
     toolName: subagent_fork
@@ -302,7 +302,7 @@
 
 - id: tool-subagent-report
   name: '@deepseek-ai/dsh-tool-subagent-report'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: timeout-policy
   name: '@deepseek-ai/dsh-tool-call-timeout-policy'
@@ -327,17 +327,17 @@
 
 - id: tool-todo
   name: '@deepseek-ai/dsh-tool-todo'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     allowParallelInProgress: true
 
 - id: tool-goal
   name: '@deepseek-ai/dsh-tool-goal'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-str-replace-editor
   name: '@deepseek-ai/dsh-tool-str-replace-editor'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     maxOutputChars: 16000
 
@@ -370,11 +370,13 @@
 # not a coding agent. The hosting app describes the concrete task per run.
 # BongoChat：隔离时关掉 harness/runtime 段；人设正文由 MTNODE_HOST_PERSONA 经
 # bongochat-prompt 覆盖（本段 cordis 默认文案对桌宠无效）。
+# 纯净模式（MTNODE_PURE=1）：harness/runtime 段在源头就不发（pure-prompt 的
+# 段过滤只作兜底），会注入提示/工具的插件行也各自按同一环境变量禁用。
 - id: system-prompt
   name: '@deepseek-ai/dsh-system-prompt'
   config:
-    includeHarnessIdentity: !!js process.env.MTNODE_CHAT_ISOLATE !== '1'
-    includeRuntimeContext: !!js process.env.MTNODE_CHAT_ISOLATE !== '1'
+    includeHarnessIdentity: !!js process.env.MTNODE_CHAT_ISOLATE !== '1' && process.env.MTNODE_PURE !== '1'
+    includeRuntimeContext: !!js process.env.MTNODE_CHAT_ISOLATE !== '1' && process.env.MTNODE_PURE !== '1'
     persona: >-
       You are the agent engine inside MTNode, a visual AI-workflow desktop app.
       You help ordinary users finish concrete content and file tasks: read and
@@ -457,3 +459,7 @@
 # BongoChat：用人设环境变量覆盖 system prompt，并裁剪工具为联网搜索
 - id: bongochat-prompt
   name: './plugins/bongochat-prompt.mjs'
+
+# 纯净模式：MTNODE_PURE=1 时移除 deployment:persona（会话「纯净模式」按钮开启）
+- id: pure-prompt
+  name: './plugins/pure-prompt.mjs'

@@ -14,7 +14,7 @@
   - 文件：`mtnode/canvas-layout-ux/SKILL.md`
 - **mtnode-db-facts** — 数据库事实查询纪律：任务接入数据库副本节点（db_replica）时的强制事实纪律：一切事实走 mtnode_db 工具（list/query/get/calc）、断言必须带 [记录id · 标题] 引用、查不到就说「数据库中没有该信息」、数字走 calc、禁止用记忆补全。Use when the task is wired to a database replica or asks about stored facts.
   - 文件：`mtnode/db-facts/SKILL.md`
-- **mtnode-dev-architect** — 开发节点架构师：用「开发节点」（super + dev:true 的项目功能块）在 MTNode 画布上搭建/分析软件项目架构。模式 A：扫描已有项目，生成覆盖全项目的开发节点架构图（不确定处询问用户）；模式 B：新项目先搭架构、用户明确「确认」后按画布逐块搭建项目。生成开发节点时同步在项目根产出 AGENTS.md 共识文件（目录约定 / 不要修改清单），所有建议 / 开发 / 细化会话先读并遵守，并在最外层建 agent.md 入口文件节点（应用内 Markdown 阅读器可查看 / 编辑 / 保存）。每个功能块可用 devModel 指定 Agent 模型（建议 / 开发 / 细化都用它，未自行选择的子块就近继承），可用 devColor 自定义外框颜色；细化按**深度**口径执行（剥洋葱指逐层下钻到底，不是一次只建一层）：默认一次把该块拆到无法再细为止（一般停在文件级），最终画布应呈现多层开发节点
+- **mtnode-dev-architect** — 开发节点架构师：用「开发节点」（super + dev:true 的项目功能块）在 MTNode 画布上搭建/分析软件项目架构。模式 A：扫描已有项目，生成覆盖全项目的开发节点架构图（不确定处询问用户）；模式 B：新项目先搭架构、用户明确「确认」后按画布逐块搭建项目。生成开发节点时同步在项目根产出 AGENTS.md 共识文件（目录约定 / 不要修改清单），所有建议 / 开发 / 细化会话先读并遵守，并在最外层建 agent.md 入口文件节点（应用内 Markdown 阅读器可查看 / 编辑 / 保存）。每个功能块可用 devModel 指定 Agent 模型（建议 / 开发 / 细化都用它，未自行选择的子块就近继承），可用 devColor 自定义外框颜色，可用 devFiles 记录本块核心文件列表（最多 10 条 · 相对项目根 · 建块时就填 · 最外层项目块不填）；细化按**深度**口径执行（
   - 文件：`mtnode/dev-architect/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/视频生成节点：MTNode music_gen 与 video_gen 节点：MiniMax Music 3 / H3 后端、输出路径、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥。Use when wiring music_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
   - 文件：`mtnode/media-gen-nodes/SKILL.md`

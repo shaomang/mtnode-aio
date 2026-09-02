@@ -334,6 +334,21 @@ async function init() {
       } catch {}
     });
   }
+  /* 全局撤卡通道：网关撤销「无在途归属」的提问 / 审批卡时会发 reqId 为空的 ix-drop
+     （预热轮在问话、上一轮遗留 job 现在才醒过来提问，卡可能已经推到界面上）。
+     这类帧不属于任何一次 run 的事件流，只有这条全局通道能收到 → 按 id 兜底撤卡，
+     绝不让它变成一张点任何选项都没反应的死卡。 */
+  if (window.api && window.api.dshOnIxDrop) {
+    window.api.dshOnIxDrop((data) => {
+      try {
+        if (typeof ixDrop === "function") ixDrop((data && data.id) || "");
+        /* 同一帧 id 也可能属于画布 / 危险操作确认框（网关 abortBridgePending 对
+           canvas 类 pending 一并补发），无在途归属时只有这条全局通道能收到 */
+        if (typeof canvasConfirmDrop === "function")
+          canvasConfirmDrop((data && data.id) || "");
+      } catch (_) {}
+    });
+  }
   if (S.config.locale !== "en" && S.config.locale !== "zh") S.config.locale = "zh";
   I18n.setLocale(S.config.locale);
   document.documentElement.lang = S.config.locale === "en" ? "en" : "zh-CN";
@@ -426,6 +441,8 @@ async function init() {
   S.assistScope = S.config.assistScope === "global" ? "global" : "current";
   S.assistW = clampAssistW(S.config.assistW || 320);
   S.agentSideW = clampAgentSideW(S.config.agentSideW || AGENT_SIDE_W_MIN);
+  /* 会话「计划」清单最小高度：默认即最小，把手可继续向上拖高（全局偏好，启动先夹一次） */
+  S.agentPlanH = clampAgentPlanH(S.config.agentPlanH || PLAN_LIST_MIN_H);
   S.assistMessages = Array.isArray(S.config.assistMessages)
     ? S.config.assistMessages.map((m) => {
         const o = {
@@ -638,6 +655,17 @@ async function init() {
         if (el.hidden) { buildAgentToolsMenu(); openAgentMenu("agentToolsMenu"); }
         else closeAgentMenus();
       };
+    /* 纯净模式：会话级开关（移除 system prompt，模型输入 = 纯粹的用户输入）。
+       状态随会话持久化；仅影响该会话后续轮次，不改其它会话 / 节点 / 助手。 */
+    const puret = $("#agentPureTrigger");
+    if (puret)
+      puret.onclick = () => {
+        const st = agentSessionState();
+        st.pure = !st.pure;
+        persistAgentSession();
+        renderAgentComposer();
+        if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
+      };
     const wt = $("#agentWsTrigger");
     if (wt)
       wt.onclick = () => {
@@ -767,6 +795,8 @@ async function init() {
     /* 会话左栏宽度：启动夹取一次 + 绑拖拽把手 */
     applyAgentSideWidth(S.agentSideW, false);
     bindAgentSideResize();
+    /* 会话「计划」清单最小高度：把夹好的值写进 #agentPlan 的 --ap-h（把手在 app-plan.js 渲染） */
+    applyAgentPlanH(S.agentPlanH, false);
     bindOpenableContentClicks();
     bindYamlViewerIpc();
     bindMdViewerIpc();

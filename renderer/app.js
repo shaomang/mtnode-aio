@@ -48,8 +48,23 @@ const S = {
   canvasRunStack: [],
   /* 节点所属画布 id（运行期间），便于后台完成后写回正确画布 */
   nodeWfId: {},
+  /* 已删画布黑名单：id → { at, name }。主进程删除成功后，这张画布在磁盘上
+     已不存在，此后任何一次 wfSave 都会凭空复活一个空壳画布（或把旧内容串写
+     进同名新建画布），所以 persist / persistWf / flushCurrentWf 命中即丢弃。 */
+  _deletedWfIds: {},
+  /* 被删画布【对象】的墓碑：同名画布之后被合法重建（default 最常见）时只解
+     id 黑名单，旧对象引用依然写不进新画布，防 agent 拿残留引用串写。 */
+  _deadWfObjs: typeof WeakSet === "function" ? new WeakSet() : null,
   /* 后台对非当前画布做 canvas 编辑时为 false，禁止 renderCanvas 闪到别的画布 */
   _canvasEditVisible: true,
+  /* 前台画布唯一真源：用户当前看到的那个画布对象。只由用户可见的切换
+     （ensureWorkflow / loadWorkflow / newWorkflowDialog / createWorkflowNamed /
+     adoptImportedWorkflow / 删除后重建默认画布）经 setForegroundWf 赋值；
+     runAgainstWf 等后台编辑只临时换 S.wf，绝不改这里。 */
+  _fgWf: null,
+  /* 后台换画布编辑的在飞行计数（runAgainstWf 进出 ±1，异常也减）。
+     >0 期间 S.wf 可能正指向别的画布，「保存当前画布」只准写 currentVisibleWf()。 */
+  _bgCanvasDepth: 0,
   /* 多选节点集合（框选 / Ctrl+点击），S.sel 保持为主选中项（兼容旧逻辑） */
   selSet: new Set(),
   selGroup: null, /* 选中的「组」id */
@@ -79,6 +94,9 @@ const S = {
   assistScope: "current",
   assistW: 320, /* 右侧助手栏宽度：最小 320，最大半屏 */
   agentSideW: 280, /* 会话左栏宽度：默认即最小 280，可拖拽加宽（最大半屏） */
+  /* 会话「计划」清单的最小高度：默认即最小（app-plan.js PLAN_LIST_MIN_H），
+     清单上方的把手可继续向上拖高（上限按当下窗口与输入区实测），全局偏好、松手落盘 */
+  agentPlanH: 120,
   /* 排队等待上游执行的节点 id（▶ 显示 pending 动效） */
   pendingRun: new Set(),
   /* 任务节点「进入」：只显示 parentTaskId === taskFocus 的节点 */
@@ -617,6 +635,10 @@ const NODE_DEFAULTS = {
        路由，由模型自动推断，未选模型时无意义）；子块未选择时继承上层 */
     devModel: "",
     devProvider: "",
+    /* 开发节点「核心文件列表」：本块最关键的源码文件路径（相对本块项目根，
+       分隔符统一 '/'；也容忍绝对路径），最多 DEV_CORE_FILES_MAX 个。
+       最外层开发节点（项目节点）不列举。口径见 app-devnode.js 同名小节。 */
+    devFiles: [],
   },
   super_io: {
     w: 132,
@@ -3641,9 +3663,9 @@ function imageInputsOf(node, idx) {
     });
   };
   for (const w of wiresTo(node.id)) pushImg(nodeById(w.from));
-  if (usesGlobalRefs(node)) {
-    for (const src of globalRefSources(node.id)) pushImg(src);
-  }
+  /* 全局广播图像：只有任务/提示词里明文 @ 命中的来源才算已连接图像输入 */
+  for (const src of globalRefSourcesForRun(node, procPromptForRun(node)))
+    pushImg(src);
   return out;
 }
 
@@ -4097,6 +4119,9 @@ function dshCancelActive(runKey) {
     if (!h) continue;
     delete map[k];
     list.push({ cancelTag: h.cancelTag || k, workspace: h.workspace });
+    /* 用户点「终止」= 这一轮的宿主确认框立刻作废：先本地自毁，不等网关回帧
+       （否则框还挂着，点「确认」只会写进一个即将被关掉的 socket） */
+    if (typeof canvasConfirmDropRun === "function") canvasConfirmDropRun(k);
   }
   if (!list.length) return Promise.resolve();
   return Promise.all(list.map((p) => window.api.dshCancel(p).catch(() => {})));
@@ -4507,6 +4532,58 @@ function globalRefSources(exceptId) {
     }
   }
   return out;
+}
+
+/* ===== @ 明文引用命中判定（全局广播注入的唯一门槛）=====
+   与 resolveRefs / resolveRefsAgg / promptRefBackdropHtml 用同一套 token 正则
+   与同一套匹配规则（findCandidateByTitle / tagByAtToken + nodeHasTag），
+   保证「提示词里明文 @ 命中的来源」与「实际被解析注入的来源」严格一致。 */
+function atTokensOf(text) {
+  const out = [];
+  const s = String(text == null ? "" : text);
+  const re = /@([^\s@，。；、！？：,!?;:]+)/g;
+  let m;
+  while ((m = re.exec(s))) out.push(m[1]);
+  return out;
+}
+
+/* 从候选来源里只保留被明文 @ 命中的：@标题（含 resolveRefs 的「全等 → 去尾标点 → 前缀」三级规则）
+   或 @Tag（该来源确实带这个 Tag）。返回顺序与入参一致，去重。 */
+function mentionedRefSources(prompt, srcs) {
+  const list = [];
+  const dedup = new Set();
+  for (const s of Array.isArray(srcs) ? srcs : []) {
+    if (!s || !s.id || dedup.has(s.id)) continue;
+    dedup.add(s.id);
+    list.push(s);
+  }
+  if (!list.length) return [];
+  const toks = atTokensOf(prompt);
+  if (!toks.length) return [];
+  const out = [];
+  for (const src of list) {
+    let hit = false;
+    for (const tok of toks) {
+      if (findCandidateByTitle([src], tok)) {
+        hit = true;
+        break;
+      }
+      const tag = tagByAtToken(tok);
+      if (tag && nodeHasTag(src, tag)) {
+        hit = true;
+        break;
+      }
+    }
+    if (hit) out.push(src);
+  }
+  return out;
+}
+
+/* 本次运行真正应注入的全局来源：既要开着彩虹开关（globalRefs），
+   也要在提示词/任务正文里明文 @ 命中，二者缺一律不注入。 */
+function globalRefSourcesForRun(node, prompt) {
+  if (!usesGlobalRefs(node)) return [];
+  return mentionedRefSources(prompt, globalRefSources(node.id));
 }
 
 function wfTagCatalog() {
@@ -6176,6 +6253,10 @@ function openOverlay(title, opts) {
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
+    /* 上一个宿主确认框的归属标识必须随弹窗一起作废：残留会让确认框自毁时
+       把「正在显示的别的弹窗」误认成自己而 closeOverlay（见 app-nodes.js
+       confirmAssistAction 的 overlayIsMine） */
+    if (box.dataset.ixConfirmId) delete box.dataset.ixConfirmId;
   }
   const ovBody = $("#ovBody");
   if (ovBody) ovBody.classList.remove("tpl-store-body", "g-ref-ov");
@@ -6204,6 +6285,7 @@ function closeOverlay() {
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
+    if (box.dataset.ixConfirmId) delete box.dataset.ixConfirmId;
   }
   const body = $("#ovBody");
   if (body) body.classList.remove("tpl-store-body", "g-ref-ov");
@@ -6390,6 +6472,14 @@ function mtDialogForm(opts) {
     let ta = null;
     let errP = null;
     let customSelect = null;
+    /* 实时把输入交给调用方留存（opts.onText）：
+       取消、Esc、被其它弹窗顶掉、切画布甚至重载应用，都不该让用户白写一轮 */
+    const emitDraft = () => {
+      if (!ta || typeof opts.onText !== "function") return;
+      try {
+        opts.onText(String(ta.value || ""));
+      } catch (_) {}
+    };
     if (bodyEl) {
       bodyEl.innerHTML = "";
       const frag = document.createDocumentFragment();
@@ -6493,12 +6583,35 @@ function mtDialogForm(opts) {
         ta.placeholder = opts.textarea.placeholder || "";
         ta.value = String(opts.textarea.value || "");
         frag.appendChild(ta);
+        /* 草稿提示：本框回填了上次未提交的内容（见 opts.onText 的实时留存），
+           并给一个显式丢弃入口 —— 不想接着写上「清空草稿」即可，不必手动全选删除 */
+        if (opts.textarea.draft && String(ta.value || "").trim()) {
+          const dn = document.createElement("div");
+          dn.className = "mt-form-draft";
+          const ds = document.createElement("span");
+          ds.textContent = I18n.t("已恢复上次未提交的内容");
+          dn.appendChild(ds);
+          const db = document.createElement("button");
+          db.type = "button";
+          db.className = "mini";
+          db.textContent = I18n.t("清空草稿");
+          db.title = I18n.t("丢弃上次未提交的内容，重新填写");
+          db.onclick = () => {
+            ta.value = "";
+            ta.focus();
+            emitDraft();
+            dn.remove();
+          };
+          dn.appendChild(db);
+          frag.appendChild(dn);
+        }
         errP = document.createElement("p");
         errP.className = "mt-form-err";
         errP.textContent = opts.textarea.requiredMsg || I18n.t("请先填写内容");
         errP.hidden = true;
         frag.appendChild(errP);
         ta.addEventListener("input", () => {
+          emitDraft();
           if (!String(ta.value || "").trim()) return;
           ta.classList.remove("invalid");
           if (errP) errP.hidden = true;
@@ -8649,7 +8762,7 @@ function devRefinePrompt(node, scopeText, depth) {
   );
   lines.push(
     I18n.t(
-      "4. 用户确认后，自顶向下**逐层创建**：每层各一次 mtnode_canvas_edit —— 该层子块的 kind=super、dev=true、devKind=module|file|class|interface|enum、parentSuperId 指向它的直接父块（第一层的父块 = 本节点，更深层的父块 = 上一层刚创建的块，可用同一批 create 里的 alias 引用），note 必须按两段式规范书写（【功能】非技术说明 + 【实现】工程梗概，与该子块拟稿一致，禁止只写一段）。禁止把不同层级一次性平铺到同一层。",
+      "4. 用户确认后，自顶向下**逐层创建**：每层各一次 mtnode_canvas_edit —— 该层子块的 kind=super、dev=true、devKind=module|file|class|interface|enum、parentSuperId 指向它的直接父块（第一层的父块 = 本节点，更深层的父块 = 上一层刚创建的块，可用同一批 create 里的 alias 引用），note 必须按两段式规范书写（【功能】非技术说明 + 【实现】工程梗概，与该子块拟稿一致，禁止只写一段）；每个新建的模块块都要顺手带上 devFiles（本模块的核心文件 · 最多 10 条 · 每项是相对项目根 devPath 的路径，如 renderer/app-devnode.js；文件 / 类 / 接口 / 枚举块可留空，最外层项目节点一律不填），别留给以后补。禁止把不同层级一次性平铺到同一层。",
     ),
   );
   lines.push(
@@ -8716,8 +8829,14 @@ async function refineDevNode(node) {
     ],
     [I18n.t("细化深度"), devDepthSummaryText(node)],
   ];
-  /* 深度单选（默认「深度细化到无法再细」）：点选项只改闭包变量，不关闭对话框 */
-  let depth = "deep";
+  /* 深度单选（默认「深度细化到无法再细」）：点选项只改闭包变量，不关闭对话框。
+     选过的深度也随草稿留存，取消后再开不用重选 */
+  const savedDepth = devDraftOf(node, "refineDepth");
+  let depth =
+    savedDepth &&
+    (DEV_REFINE_DEPTHS || []).some((it) => it.key === savedDepth)
+      ? savedDepth
+      : "deep";
   const res = await mtDialogForm({
     title: I18n.t("细化") + " · " + (node.title || I18n.t("开发节点")),
     wide: true,
@@ -8736,17 +8855,19 @@ async function refineDevNode(node) {
     warn,
     textarea: blocked
       ? null
-      : {
+      : devDraftTextareaOpts(node, "refine", {
           label: I18n.t("细化范围（可选）"),
           placeholder: I18n.t(
             "例如：只展开 renderer 目录下的文件；或仅细化某个子模块。留空 = 由 Agent 自行判断。",
           ),
           rows: 4,
-        },
+        }),
+    /* 边写边留存：取消 / 被别的事务顶出对话框都不丢，下次打开原样回填 */
+    onText: (t) => devDraftSet(node, "refine", t),
     hint: blocked
       ? ""
       : I18n.t(
-          "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· Esc 取消",
+          "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Esc 取消",
         ),
     custom: blocked
       ? null
@@ -8781,6 +8902,7 @@ async function refineDevNode(node) {
             row.onclick = (ev) => {
               ev.preventDefault();
               depth = it.key;
+              devDraftSet(node, "refineDepth", it.key);
               for (const r of rowsEl) {
                 r.row.classList.toggle("on", r.key === depth);
                 r.rb.checked = r.key === depth;
@@ -8805,6 +8927,9 @@ async function refineDevNode(node) {
     return;
   }
   if (res.action !== "go") return;
+  /* 已确认开工：清掉本框草稿（范围文本 + 深度选择），下次打开重新填 */
+  devDraftSet(node, "refine", "");
+  devDraftSet(node, "refineDepth", "");
   const sess = createDevSessionForNode(node, "refine");
   if (!sess) return;
   /* 细化任务书并入会话契约 _devContract（发送时注入系统提示，不占用户消息位）：
@@ -10808,19 +10933,26 @@ function escapePromptHl(s) {
     .replace(/>/g, "&gt;");
 }
 
+/* 高亮层与 textarea 严格同源：正文一律用 textarea 的实际值，末尾恒定追加同一行占位。
+   （行尾换行在 pre-wrap 镜像层里会被折叠掉，所以恒定补 "\n" 而不是按 endsWith 手工补换行，
+   两层的行位置始终一致，滚动位置也能一一对应。） */
+const PROMPT_HL_TAIL = "\n";
+
 function promptRefBackdropHtml(text, node) {
   const cands = refCandidates(node);
   const tags = new Set(refTagCandidates(node));
-  return escapePromptHl(text).replace(
-    /@([^\s@，。；、！？：,!?;:]+)/g,
-    (m, tok) => {
-      if (findCandidateByTitle(cands, tok))
-        return '<span class="at-ref-node">' + m + "</span>";
-      const tag = tagByAtToken(tok);
-      if (tag && tags.has(tag))
-        return '<span class="at-ref-tag">' + m + "</span>";
-      return m;
-    },
+  return (
+    escapePromptHl(text).replace(
+      /@([^\s@，。；、！？：,!?;:]+)/g,
+      (m, tok) => {
+        if (findCandidateByTitle(cands, tok))
+          return '<span class="at-ref-node">' + m + "</span>";
+        const tag = tagByAtToken(tok);
+        if (tag && tags.has(tag))
+          return '<span class="at-ref-tag">' + m + "</span>";
+        return m;
+      },
+    ) + PROMPT_HL_TAIL
   );
 }
 
@@ -10829,8 +10961,8 @@ function syncPromptRefBackdrop(ta, node) {
   const wrap = ta.closest(".n-prompt-wrap");
   const hl = wrap && wrap.querySelector(".n-prompt-hl");
   if (!hl) return;
-  const raw = String(ta.value || "");
-  hl.innerHTML = promptRefBackdropHtml(raw, node) + (raw.endsWith("\n") ? "\n" : "");
+  /* 与 textarea 完全相同的文本，占位已在 promptRefBackdropHtml 内统一追加 */
+  hl.innerHTML = promptRefBackdropHtml(String(ta.value || ""), node);
   hl.scrollTop = ta.scrollTop;
   hl.scrollLeft = ta.scrollLeft;
 }
@@ -10856,6 +10988,12 @@ function mountPromptTextarea(f3, ta, node, persistPrompt) {
     closeSlashMenu();
     syncHl();
   });
+  /* 除 input/scroll 外，这些时机 textarea 的实际值或滚动位置也可能已经变了：
+     select / selectionchange（落在本元素的选区变化，拖拽改选时常自行滚动）、
+     focus（重新聚焦时浏览器可能把光标滚回可视区而不派发 scroll）、
+     compositionend（输入法上屏后的最终值）。统一补一次高亮层同步，避免漂移。 */
+  for (const ev of ["select", "selectionchange", "focus", "compositionend"])
+    ta.addEventListener(ev, syncHl);
   f3.appendChild(wrap);
   syncHl();
 }
@@ -10890,11 +11028,10 @@ function resolveRefs(prompt, node, idx, opts) {
           addText(src, refInputIdxFor(node, src, idx));
       }
     }
-    if (usesGlobalRefs(node)) {
-      for (const src of globalRefSources(node.id)) {
-        if (wiredLeaves.has(src.id)) continue;
-        addText(src);
-      }
+    /* 全局广播只注入被明文 @ 命中的来源（未 @ 的全局源不进背景信息） */
+    for (const src of globalRefSourcesForRun(node, prompt)) {
+      if (wiredLeaves.has(src.id)) continue;
+      addText(src);
     }
   }
   const out = String(prompt || "").replace(
@@ -10973,13 +11110,33 @@ function assemblePrompt(prompt, sources) {
   return "【背景信息】\n" + blocks.join("\n\n") + "\n\n【内容】\n" + prompt;
 }
 
-/* @ 输入时的临时下拉菜单 */
-function caretXY(ta) {
+/* 量出光标在输入框内的位置（屏幕坐标），供 @ 引用菜单 / 技能斜杠菜单定位。
+   结论（本次光标错位排查记录，勿再猜）：
+   1) 节点正文的「点击 → 光标」由浏览器在 textarea 自身布局里算，#stage 的
+      translate+scale 由 Blink 反过来映射，缩放不会让光标落到别的字符上；
+      真正会让「看到的字」与「编辑到的字」错位的是高亮镜像层与 textarea 的
+      排版几何不一致，那部分修在 css（scrollbar-gutter / 断行规则）里。
+   2) 但本函数确实掺了第二处偏移：r 是已缩放的屏幕坐标，而 span.offsetLeft /
+      scrollTop 都是未缩放的本地 CSS px，混着相加在画布缩放 ≠100% 时会让弹层
+      整体偏离光标（偏离量 = 本地位移 ×(z-1)，越靠行尾偏得越多）。故本地量出的
+      位移统一乘该元素实测渲染倍率；倍率由自身矩形反推，不读 S.cam.z ——
+      助手侧栏 / 会话面板里同类输入框不在画布变换下，倍率天然是 1，一份代码
+      两种场合都正确，也不需要动画布变换。
+   3) 镜像的断行规则改成抄 textarea 的计算值：原先写死 word-break:break-all，
+      长 URL / 连续 token 时换行点与实际正文不同，量出来会整行偏掉。 */
+function caretXY(ta, atIdx) {
   const r = ta.getBoundingClientRect();
   const cs = getComputedStyle(ta);
+  const kx = ta.offsetWidth > 0 ? r.width / ta.offsetWidth : 1;
+  const ky = ta.offsetHeight > 0 ? r.height / ta.offsetHeight : 1;
   const mirror = document.createElement("div");
   mirror.style.cssText =
-    "position:absolute;visibility:hidden;white-space:pre-wrap;word-break:break-all;" +
+    "position:absolute;visibility:hidden;white-space:pre-wrap;" +
+    "word-break:" +
+    cs.wordBreak +
+    ";overflow-wrap:" +
+    cs.overflowWrap +
+    ";" +
     "font-family:" +
     cs.fontFamily +
     ";font-size:" +
@@ -11000,16 +11157,67 @@ function caretXY(ta) {
     ta.clientWidth +
     "px;letter-spacing:" +
     cs.letterSpacing +
+    ";tab-size:" +
+    (cs.tabSize || "4") +
     ";";
-  mirror.textContent = ta.value.slice(0, ta.selectionStart || 0);
+  mirror.textContent = ta.value.slice(
+    0,
+    atIdx == null ? ta.selectionStart || 0 : atIdx,
+  );
   document.body.appendChild(mirror);
   const span = document.createElement("span");
   span.textContent = "|";
   mirror.appendChild(span);
-  const x = span.offsetLeft;
-  const y = span.offsetTop + span.offsetHeight - (ta.scrollTop || 0);
+  /* offsetLeft/Top 从镜像的 padding 边起算（镜像无边框），textarea 还要再多一层
+     1px 边框才是 r 的原点；横向滚动原先漏扣，一并补上 */
+  const bl = parseFloat(cs.borderLeftWidth) || 0;
+  const bt = parseFloat(cs.borderTopWidth) || 0;
+  const lx = span.offsetLeft + bl - (ta.scrollLeft || 0);
+  const ly = span.offsetTop + bt + span.offsetHeight - (ta.scrollTop || 0);
   mirror.remove();
-  return { x: r.left + x, y: r.top + y };
+  return { x: r.left + lx * kx, y: r.top + ly * ky };
+}
+
+/* 光标前正在输入的 @token（只打了裸 @ 也算）：@ 前必须是行首或分隔符，
+   避免把 xxx@yyy、邮箱之类误判成引用。返回 { start, query } 或 null。
+   start = 「@」在正文里的下标；query = @ 之后已打出的片段，用来筛候选。 */
+const REF_SEP = "\\s@，。；、！？：,.!?;:()（）\"'「」【】";
+const REF_TOKEN_RE = new RegExp(
+  "(^|[" + REF_SEP + "])@([^" + REF_SEP + "]*)$",
+);
+
+function refTokenAt(ta) {
+  if (!ta) return null;
+  const before = String(ta.value || "").slice(0, ta.selectionStart || 0);
+  const m = REF_TOKEN_RE.exec(before);
+  if (!m) return null;
+  return { start: m.index + m[1].length, query: m[2] || "" };
+}
+
+function refEntryTitle(e) {
+  if (!e) return "";
+  return e.kind === "tag"
+    ? String(e.tag || "")
+    : String((e.node && e.node.title) || "");
+}
+
+/* 候选集合指纹：标题序列相同即同一批（用来决定要不要保留键盘高亮项） */
+function refEntriesHash(entries) {
+  return (entries || []).map((e) => refEntryTitle(e)).join("\u0001");
+}
+
+/* 按 @ 后已打出的片段筛候选：标题（或标签名）包含即命中，前缀命中排前面 */
+function filterRefEntries(entries, query) {
+  const q = String(query || "").toLowerCase().trim();
+  if (!q) return entries;
+  const pre = [];
+  const rest = [];
+  for (const e of entries) {
+    const t = refEntryTitle(e).toLowerCase();
+    if (t.indexOf(q) < 0) continue;
+    (t.indexOf(q) === 0 ? pre : rest).push(e);
+  }
+  return pre.concat(rest);
 }
 
 function closeRefMenu() {
@@ -11023,11 +11231,16 @@ function closeRefMenu() {
   }
 }
 
-function showRefMenu(ta, node, items) {
-  const entries = items
+function showRefMenu(ta, node, items, query, at) {
+  let entries = items
     ? items.map((n) => ({ kind: "node", node: n }))
     : refMenuEntries(node);
-  if (!entries.length) return;
+  entries = filterRefEntries(entries, query);
+  /* 筛选后一个都不剩：收起菜单，让回车 / 上下键回到输入框原生行为 */
+  if (!entries.length) {
+    closeRefMenu();
+    return;
+  }
   closeSlashMenu();
   const menu = $("#refMenu");
   menu.classList.remove("slash-menu");
@@ -11035,16 +11248,23 @@ function showRefMenu(ta, node, items) {
   const head = document.createElement("div");
   head.className = "ref-head";
   const hasTags = entries.some((e) => e.kind === "tag");
-  head.textContent =
+  const headT = document.createElement("span");
+  headT.className = "ref-head-t";
+  headT.textContent =
     node && node.batchMode === "agg"
       ? I18n.t("引用聚合条目（@条目标题）")
       : usesGlobalRefs(node) && globalRefSources(node.id).length
         ? hasTags
-          ? I18n.t("引用已连接/全局节点（@标题）或 Tag（@标签 · 紫色）")
-          : I18n.t("引用已连接或全局节点（@标题）")
+          ? I18n.t("全局来源需明文 @ 才注入（@标题 / @标签 · 紫色）")
+          : I18n.t("全局来源需明文 @ 才注入（@标题）")
         : hasTags
           ? I18n.t("引用输入节点（@标题）或 Tag（@标签 · 紫色）")
           : I18n.t("引用输入节点（@标题）");
+  const headK = document.createElement("span");
+  headK.className = "ref-keys";
+  headK.textContent = I18n.t("↑↓ 选择 · 回车确认 · Esc 取消");
+  head.appendChild(headT);
+  head.appendChild(headK);
   menu.appendChild(head);
   const list = document.createElement("div");
   list.className = "ref-list";
@@ -11066,6 +11286,18 @@ function showRefMenu(ta, node, items) {
       tagEl.textContent = imgKind ? "I" : "T";
       nm.textContent = n.title;
     }
+    /* 边打边筛：把命中的片段加粗，一眼确认回车会插入哪一条 */
+    const rq = String(query || "").trim().toLowerCase();
+    const rTitle = refEntryTitle(e);
+    const rHit = rq ? rTitle.toLowerCase().indexOf(rq) : -1;
+    if (rHit >= 0) {
+      nm.innerHTML =
+        escapePromptHl(rTitle.slice(0, rHit)) +
+        '<b class="ref-hit">' +
+        escapePromptHl(rTitle.slice(rHit, rHit + rq.length)) +
+        "</b>" +
+        escapePromptHl(rTitle.slice(rHit + rq.length));
+    }
     b.appendChild(tagEl);
     b.appendChild(nm);
     b.onmousedown = (ev) => ev.preventDefault();
@@ -11074,43 +11306,71 @@ function showRefMenu(ta, node, items) {
     list.appendChild(b);
   });
   menu.appendChild(list);
-  const pos = caretXY(ta);
+  /* 弹层钉在「@」那一列，不随打字右移；候选集合没变时沿用上一次的高亮项，
+     否则边打字边筛时每按一键都跳回第一条，回车选到的不是用户看中的那条。 */
+  const prev = S.refMenu;
+  const sameSet =
+    prev &&
+    prev.ta === ta &&
+    prev.entriesHash === refEntriesHash(entries);
+  const sel = sameSet ? Math.min(prev.sel, entries.length - 1) : 0;
+  const pos = caretXY(ta, typeof at === "number" ? at : undefined);
   const mw = menu.offsetWidth || 240;
   menu.style.left =
     Math.max(8, Math.min(pos.x, window.innerWidth - mw - 8)) + "px";
   menu.style.top = pos.y + 4 + "px";
   menu.style.display = "block";
-  S.refMenu = { ta, node, entries, sel: 0, focusable: list };
+  S.refMenu = {
+    ta,
+    node,
+    entries,
+    sel,
+    focusable: list,
+    entriesHash: refEntriesHash(entries),
+  };
   paintRefSel();
 }
 
 function paintRefSel() {
   if (!S.refMenu) return;
   const menu = $("#refMenu");
-  menu
-    .querySelectorAll(".ref-item")
-    .forEach((b, i) => b.classList.toggle("on", i === S.refMenu.sel));
+  const items = menu.querySelectorAll(".ref-item");
+  items.forEach((b, i) => b.classList.toggle("on", i === S.refMenu.sel));
+  const cur = items[S.refMenu.sel];
+  /* 键盘走到底部时把它滚进视野，否则高亮项在 240px 的滚动区外看不见 */
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
 }
 
+/* 把当前正在输入的 @token 换成选中的引用：只替换这一段，正文里更早的 @引用 不动 */
 function selectRefEntry(entry, i) {
   const rm = S.refMenu;
-  if (!rm) return;
-  const v = rm.ta.value;
-  const caret = rm.ta.selectionStart || 0;
-  const before = v.slice(0, caret);
-  const at = before.lastIndexOf("@");
-  const prefix = at >= 0 ? v.slice(0, at) : before;
+  if (!rm || !entry) return;
+  const ta = rm.ta;
+  const v = String(ta.value || "");
+  const caret = ta.selectionStart || 0;
+  const tok = refTokenAt(ta);
+  let at;
+  if (tok) at = tok.start;
+  else {
+    const b = v.lastIndexOf("@", Math.max(0, caret - 1));
+    at = b >= 0 ? b : caret;
+  }
+  const prefix = v.slice(0, at);
   const suffix = v.slice(caret);
-  const token =
-    entry && entry.kind === "tag"
-      ? "@" + entry.tag
-      : "@" + (entry && entry.node ? entry.node.title : "");
-  rm.ta.value = prefix + token + suffix;
+  let token = "@" + refEntryTitle(entry);
+  /* 引用后面该补空格时补一个：紧跟正文（非分隔符）不补会把标题和正文连成同一个
+     @token；光标处已是文末也补一个，方便接着 @ 下一个来源。已有分隔符则不重复补。 */
+  if (
+    suffix === "" ||
+    /^[^\s@，。；、！？：,!?;:()（）"'「」【】]/.test(suffix)
+  )
+    token += " ";
+  ta.value = prefix + token + suffix;
   const np = prefix.length + token.length;
-  rm.ta.setSelectionRange(np, np);
-  setProcPrompt(rm.node, rm.ta.value);
-  syncPromptRefBackdrop(rm.ta, rm.node);
-  rm.ta.focus();
+  ta.setSelectionRange(np, np);
+  setProcPrompt(rm.node, ta.value);
+  syncPromptRefBackdrop(ta, rm.node);
+  ta.focus();
   closeRefMenu();
 }
 
@@ -11119,46 +11379,70 @@ function selectRef(node, i) {
 }
 
 function refTick(ta, node) {
-  const v = ta.value;
-  const pos = ta.selectionStart || 0;
-  if (v[pos - 1] === "@") {
-    const prev = pos >= 2 ? v[pos - 2] : "";
-    if (!prev || /[\s，。；、！？：,.!?;:()（）"'「」【】]/.test(prev)) {
-      const isAgg =
-        (node.kind === "proc_text" ||
-          node.kind === "proc_image" ||
-          node.kind === "agent_task") &&
-        node.batchMode === "agg" &&
-        batchTitles(node);
-      showRefMenu(ta, node, isAgg ? aggCandidates(node) : null);
-      return;
-    }
+  const tok = refTokenAt(ta);
+  /* 光标前没有正在输入的 @token（连裸 @ 都没打）：收起菜单 */
+  if (!tok) {
+    closeRefMenu();
+    return;
   }
-  closeRefMenu();
+  const isAgg =
+    (node.kind === "proc_text" ||
+      node.kind === "proc_image" ||
+      node.kind === "agent_task") &&
+    node.batchMode === "agg" &&
+    batchTitles(node);
+  /* 带上已打出的片段：菜单不再「一打字就关掉」，可以边打边筛再回车确认 */
+  showRefMenu(
+    ta,
+    node,
+    isAgg ? aggCandidates(node) : null,
+    tok.query,
+    tok.start,
+  );
 }
 
+/* @ 引用的键盘操作：↑↓ 选条目 · 回车 / Tab 直接确认（不用鼠标点）· Esc 收起。
+   返回 true = 这次按键已被菜单消费，调用方不要再按「换行 / ▶ 运行」处理。 */
 function refKey(ta, ev, node) {
-  if (!S.refMenu) return;
   const rm = S.refMenu;
-  const items = rm.focusable.querySelectorAll(".ref-item");
-  if (ev.key === "ArrowDown") {
+  if (!rm) return false;
+  /* 输入法组词中：回车与上下键属于候选框（用来上屏），一律不截获 */
+  if (ev.isComposing || ev.keyCode === 229) return false;
+  const n = (rm.entries || []).length;
+  if (!n) return false;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
     ev.preventDefault();
-    rm.sel = (rm.sel - 1 + items.length) % items.length;
+    rm.sel = (rm.sel + (ev.key === "ArrowDown" ? 1 : n - 1)) % n;
     paintRefSel();
-  } else if (ev.key === "ArrowUp") {
+    return true;
+  }
+  if (ev.key === "Enter") {
+    if (ev.shiftKey) return false; /* Shift+Enter 仍是正文换行 */
+    /* 光标已经离开 @token（比如按了左右键）：回车交回原生行为，别硬插一条 */
+    if (!refTokenAt(rm.ta)) {
+      closeRefMenu();
+      return false;
+    }
     ev.preventDefault();
-    rm.sel = (rm.sel + 1) % items.length;
-    paintRefSel();
-  } else if (ev.key === "Enter") {
+    selectRefEntry(rm.entries[rm.sel] || rm.entries[0]);
+    return true;
+  }
+  if (ev.key === "Tab") {
+    if (!refTokenAt(rm.ta)) {
+      closeRefMenu();
+      return false;
+    }
     ev.preventDefault();
-    if (items[rm.sel]) items[rm.sel].click();
-  } else if (ev.key === "Escape") {
+    selectRefEntry(rm.entries[rm.sel] || rm.entries[0]);
+    return true;
+  }
+  if (ev.key === "Escape") {
     ev.preventDefault();
     closeRefMenu();
-  } else if (ev.key === "Tab") {
-    ev.preventDefault();
-    if (items[rm.sel]) items[rm.sel].click();
+    return true;
   }
+  return false;
 }
 
 /* 智能会话 / 助手：输入 / 或中文输入法顿号 、 呼出技能与少量斜杠命令
@@ -11469,6 +11753,8 @@ function startNodeDrag(ev, node, opts) {
   const multi = ev.ctrlKey || ev.metaKey || ev.shiftKey;
   if (!multi) S.selGroup = null;
   const already = S.selSet.has(node.id);
+  /* 点击前是否处于浏览态：首次点选会切到编辑态，重绘后需把光标送回主输入框 */
+  const wasBrowse = nodeBrowseMode(node);
   if (multi) {
     /* Shift/Ctrl+点击：切换该节点的多选状态；保留已选绘制 */
     if (already) {
@@ -11479,12 +11765,14 @@ function startNodeDrag(ev, node, opts) {
     }
     S.selSet.add(node.id);
     S.sel = node.id;
+    if (wasBrowse) markFormFocusAfterRender(node);
     renderCanvas();
   } else if (!already) {
     S.selSet = new Set([node.id]);
     S.sel = node.id;
     S.selMark = null;
     if (S.selMarkSet) S.selMarkSet.clear();
+    if (wasBrowse) markFormFocusAfterRender(node);
     renderCanvas();
   }
   /* 点选节点 → 相关的关系线立刻亮起（含再次点同一个节点、只改选中态不重绘的场合） */
@@ -15545,11 +15833,10 @@ function bindCanvas() {
     }
     /* 查找栏内：不触发画布 Delete / G 等快捷键 */
     if (isCanvasFindBarTarget(ev.target)) return;
-    /* 节点 / 绘制文字等输入中：只保留引用菜单，不触发任何画布快捷键 */
-    if (inField) {
-      if (tag === "textarea" && S.refMenu) refKey(ev.target, ev);
-      return;
-    }
+    /* 节点 / 绘制文字等输入中：不触发任何画布快捷键。
+       @ 引用菜单由输入框自己的 keydown 调 refKey 处理——这里不能再调一次，
+       否则一次上下键会被消费两遍（跳两格）。 */
+    if (inField) return;
     /* Ctrl+A：输入框内由浏览器全选；可复制文本的输出区（助手 / 会话 / 聊天 / 文档 / 弹层等）
        保留原生全选；其余场合（画布 / 普通面板焦点）拦截，避免整页文字被框选——
        画布视图改为全选当前范围内的节点与绘制（与框选同一套命中口径） */
@@ -20189,7 +20476,9 @@ async function playJudgeNode(node, quiet) {
           bits.push("### " + (src.title || "") + "\n" + String(v.text));
       };
       for (const w of wiresTo(node.id)) addBit(nodeById(w.from), w);
-      for (const src of globalRefSources(node.id)) addBit(src, null);
+      /* 全局广播：需同时满足「开启彩虹开关」+「判断标准里明文 @ 引用」，否则一律不注入 */
+      for (const src of globalRefSourcesForRun(node, procPromptForRun(node)))
+        addBit(src, null);
       const prov = pickTextProviderForJudge(node);
       if (!prov) {
         node.error = I18n.t("未配置带 API Key 的文本服务商");
@@ -20702,14 +20991,97 @@ async function pickImage(node) {
 
 /* ============ 实时保存 ============ */
 
+/* ── 已删画布黑名单（防复活 / 防串写）──
+   主进程删除是物理删（软删同理：列表里已经不再有它）：画布文件一旦没了，
+   渲染层残留的任何一次 wfSave 都会在磁盘上凭空写出一个 JSON —— 用户看到
+   「删掉的画布又回来了」。更糟的是同名重建（default 最常见）时，agent 手里
+   的旧对象写回会把旧内容串进新画布。所以删除确认后：
+   ① id 记进黑名单  ② 被删对象盖墓碑  ③ 它在渲染层的残留状态全部摘掉，
+   persist / persistWf / flushCurrentWf / rememberWf 命中即丢弃，agent 写入
+   入口（画布编辑 / 重命名 / 再删）直接抛「画布已删除」，不再静默落盘。 */
+function wfBlacklist() {
+  if (!S._deletedWfIds || typeof S._deletedWfIds !== "object")
+    S._deletedWfIds = {};
+  return S._deletedWfIds;
+}
+/* 该 id 是否已被登记为「已删除」（同名画布合法重建后由 reviveWf 解禁） */
+function wfIsDeleted(id) {
+  const k = id == null ? "" : String(id);
+  return !!k && !!wfBlacklist()[k];
+}
+/* 目标画布对象是否禁止写盘：对象墓碑（优先，同名重建也拦得住）或 id 在黑名单 */
+function wfWriteBlocked(wf) {
+  if (!wf) return false;
+  try {
+    if (S._deadWfObjs && typeof S._deadWfObjs.has === "function" && S._deadWfObjs.has(wf))
+      return true;
+  } catch (_) {}
+  return wfIsDeleted(wf.id);
+}
+/* 给 agent / 用户看的统一错误文案（画布已删后继续写回的调用用它） */
+function deletedWfError(wf) {
+  const nm = String((wf && (wf.name || wf.id)) || "").trim();
+  return nm ? I18n.t("画布已删除：") + nm : I18n.t("画布已删除");
+}
+/* 删除成功后的统一收口：掐待保存定时器 + 摘内存袋 + 剔运行栈 + 清节点归属 + 记黑名单 */
+function forgetDeletedWf(id, wf) {
+  const key = String((id == null ? "" : id) || (wf && wf.id) || "");
+  if (!key) return;
+  /* 被删对象优先取显式传入，其次前台真源 / 袋里那一份（用于盖墓碑） */
+  let dead = wf && String(wf.id) === key ? wf : null;
+  if (!dead && S.wf && String(S.wf.id) === key) dead = S.wf;
+  if (!dead && currentVisibleWf && String((currentVisibleWf() || {}).id || "") === key)
+    dead = currentVisibleWf();
+  if (!dead && S.wfBag && S.wfBag[key] && String(S.wfBag[key].id) === key)
+    dead = S.wfBag[key];
+  wfBlacklist()[key] = { at: Date.now(), name: String((dead && dead.name) || key) };
+  if (dead) {
+    try {
+      if (S._deadWfObjs && typeof S._deadWfObjs.add === "function")
+        S._deadWfObjs.add(dead);
+    } catch (_) {}
+  }
+  /* 250ms 的待保存定时器必须在摘对象之前掐掉，否则它回调时把已删画布写回磁盘 */
+  clearTimeout(S.saveTimer);
+  S.saving = false;
+  if (S.wfBag) delete S.wfBag[key];
+  /* 运行绑定栈：按 id 与对象身份双口径剔除，别把幽灵留在栈顶当写入目标 */
+  if (Array.isArray(S.canvasRunStack)) {
+    S.canvasRunStack = S.canvasRunStack.filter(
+      (w) => w && String(w.id) !== key && w !== dead,
+    );
+  } else S.canvasRunStack = [];
+  if (S.canvasRunWf && (String(S.canvasRunWf.id) === key || S.canvasRunWf === dead))
+    S.canvasRunWf = S.canvasRunStack.length
+      ? S.canvasRunStack[S.canvasRunStack.length - 1]
+      : null;
+  /* 节点归属表里指向这张画布的条目一并清掉（ownerWfOfNode 靠它找回画布） */
+  if (S.nodeWfId && typeof S.nodeWfId === "object") {
+    for (const nid of Object.keys(S.nodeWfId))
+      if (String(S.nodeWfId[nid]) === key) delete S.nodeWfId[nid];
+  }
+}
+/* 解禁某 id：新建 / 导入 / 从磁盘成功加载同名画布时调用（只解 id，墓碑保留） */
+function reviveWf(id) {
+  const k = String(id == null ? "" : id);
+  if (!k) return;
+  const bag = wfBlacklist();
+  if (bag[k]) delete bag[k];
+}
+
 function rememberWf(wf) {
-  if (wf && wf.id) S.wfBag[wf.id] = wf;
+  if (!wf || !wf.id) return;
+  /* 已删画布不得再入袋：入袋就等于给它留了一条被 persistWf 写回磁盘的路 */
+  if (wfWriteBlocked(wf)) return;
+  S.wfBag[wf.id] = wf;
 }
 function wfHasRunning(wf) {
   return !!(wf && Array.isArray(wf.nodes) && wf.nodes.some((n) => n.running));
 }
 function beginCanvasRun(wf) {
   if (!wf) return;
+  /* 已删画布不再被绑成写入目标：agent 后续 canvas 事件落到真正活着的前台画布 */
+  if (wfWriteBlocked(wf)) return;
   rememberWf(wf);
   if (!Array.isArray(S.canvasRunStack)) S.canvasRunStack = [];
   S.canvasRunStack.push(wf);
@@ -20729,18 +21101,72 @@ function endCanvasRun(wf) {
 function canvasTargetWf() {
   return S.canvasRunWf || S.wf;
 }
-/* 在指定工作流上下文中执行（canvas 事件 / 后台写回），visible=false 时不刷新当前画面 */
+/* ── 前台画布唯一真源（可判定锁）──
+   currentVisibleWf() 永远返回用户界面上「当前画布」那个对象：后台换画布编辑
+   （runAgainstWf 临时把 S.wf 换成别的画布）不会污染它，删除 / 定位目标的入口都读这里。 */
+function currentVisibleWf() {
+  return S._fgWf || S.wf || null;
+}
+/* 用户可见的画布切换（打开 / 新建 / 导入 / 删除后重建）唯一经此赋值 */
+function setForegroundWf(wf) {
+  S._fgWf = wf;
+  S.wf = wf;
+  return wf;
+}
+/* 是否正有画布写入在飞（前台或后台换画布）：>0 期间 S.wf 未必是用户看到的画布 */
+function bgCanvasWriteActive() {
+  return (S._bgCanvasDepth || 0) > 0;
+}
+/* 编辑锁外壳：进入 +1、收尾 -1（成功 / 失败 / 异常都减，且只减一次），
+   让 await 期间 currentVisibleWf() 与 persist() 的归属判定始终可依赖。 */
 function runAgainstWf(wf, fn) {
-  if (!wf || wf === S.wf) {
+  S._bgCanvasDepth = (S._bgCanvasDepth || 0) + 1;
+  let closed = false;
+  const closeBg = () => {
+    if (closed) return;
+    closed = true;
+    S._bgCanvasDepth = Math.max(0, (S._bgCanvasDepth || 1) - 1);
+  };
+  try {
+    const out = runAgainstWfInner(wf, fn);
+    if (out && typeof out.then === "function") {
+      return Promise.resolve(out).then(
+        (v) => {
+          closeBg();
+          return v;
+        },
+        (e) => {
+          closeBg();
+          throw e;
+        },
+      );
+    }
+    closeBg();
+    return out;
+  } catch (e) {
+    closeBg();
+    throw e;
+  }
+}
+/* 在指定工作流上下文中执行（canvas 事件 / 后台写回），visible=false 时不刷新当前画面 */
+function runAgainstWfInner(wf, fn) {
+  const fg = currentVisibleWf();
+  const target = wf || fg;
+  /* 目标就是用户看到的那个画布，且 S.wf 没被外层后台换走：不换手，也不污染 _fgWf */
+  if (target === fg && S.wf === fg) {
     S._canvasEditVisible = true;
     return fn(true);
   }
   const prev = S.wf;
-  S.wf = wf;
-  S._canvasEditVisible = false;
+  S.wf = target;
+  /* 换到后台画布时禁止 renderCanvas；换回前台画布（嵌套调用）才允许刷新 */
+  S._canvasEditVisible = target === fg;
   const restore = () => {
-    S.wf = prev;
-    S._canvasEditVisible = true;
+    /* 期间用户切了画布（loadWorkflow 改了 S.wf）就别把手换回去，避免覆盖新画布 */
+    if (S.wf === target) S.wf = prev;
+    /* 还有外层后台编辑在飞行时保持「非可见」，不让内层收尾把画布闪出来 */
+    const outerInFlight = (S._bgCanvasDepth || 0) > 1;
+    S._canvasEditVisible = !outerInFlight && S.wf === currentVisibleWf();
   };
   try {
     const out = fn(false);
@@ -20765,6 +21191,8 @@ function runAgainstWf(wf, fn) {
 }
 function persistWf(wf) {
   if (!wf || !wf.id) return;
+  /* 已删画布：直接丢弃这次写回（后台节点跑完的兜底写盘最容易踩到） */
+  if (wfWriteBlocked(wf)) return;
   rememberWf(wf);
   let data;
   try {
@@ -20781,11 +21209,12 @@ function persistWf(wf) {
 function ownerWfOfNode(node) {
   if (!node) return S.wf;
   const id = S.nodeWfId && S.nodeWfId[node.id];
-  if (id && S.wfBag[id]) return S.wfBag[id];
-  if (S.wf && Array.isArray(S.wf.nodes) && S.wf.nodes.some((n) => n.id === node.id))
+  if (id && S.wfBag[id] && !wfWriteBlocked(S.wfBag[id])) return S.wfBag[id];
+  if (!wfWriteBlocked(S.wf) && S.wf && Array.isArray(S.wf.nodes) && S.wf.nodes.some((n) => n.id === node.id))
     return S.wf;
   for (const wid of Object.keys(S.wfBag || {})) {
     const w = S.wfBag[wid];
+    if (wfWriteBlocked(w)) continue;
     if (w && Array.isArray(w.nodes) && w.nodes.some((n) => n.id === node.id))
       return w;
   }
@@ -20802,12 +21231,21 @@ function refreshNodeUi(node) {
 }
 
 async function flushCurrentWf() {
-  if (!S.wf) return;
+  /* 前台画布锁：_bgCanvasDepth>0 期间 S.wf 可能正被后台换成别的画布，
+     这里只准落 currentVisibleWf() 对应的对象（对象与 id 同源，绝不把后台内容
+     写进前台 id）。后台画布的内容走 persistWf(wf)，按它自己的 id 落盘。 */
+  const wf = bgCanvasWriteActive() ? currentVisibleWf() : S.wf;
+  if (!wf || !wf.id) return;
   clearTimeout(S.saveTimer);
-  rememberWf(S.wf);
+  /* 已删画布：这次落盘直接丢弃（写下去就是凭空复活一个空壳画布） */
+  if (wfWriteBlocked(wf)) {
+    S.saving = false;
+    return;
+  }
+  rememberWf(wf);
   try {
-    const data = JSON.parse(JSON.stringify(S.wf));
-    await window.api.wfSave(S.wf.id, data);
+    const data = JSON.parse(JSON.stringify(wf));
+    await window.api.wfSave(wf.id, data);
     S.lastSaved = Date.now();
   } catch (e) {
     toast(I18n.t("保存失败：") + ((e && e.message) || String(e)), "err");
@@ -20815,14 +21253,22 @@ async function flushCurrentWf() {
 }
 
 function persist() {
-  if (!S.wf) return;
+  /* 同上：保存「当前（用户看到的）画布」，后台换画布在飞时以 _fgWf 为准 */
+  const wf = bgCanvasWriteActive() ? currentVisibleWf() : S.wf;
+  if (!wf || !wf.id) return;
   clearTimeout(S.saveTimer);
+  /* 已删画布（含 250ms 定时器迟到回调 / 失焦 flushNow）：丢弃，绝不落盘复活 */
+  if (wfWriteBlocked(wf)) {
+    S.saving = false;
+    renderStatus();
+    return;
+  }
   S.saving = true;
   renderStatus();
-  rememberWf(S.wf);
+  rememberWf(wf);
   let data;
   try {
-    data = JSON.parse(JSON.stringify(S.wf)); // 去除 Promise/函数等不可克隆字段，防御 IPC 序列化失败
+    data = JSON.parse(JSON.stringify(wf)); // 去除 Promise/函数等不可克隆字段，防御 IPC 序列化失败
   } catch (e) {
     S.saving = false;
     const msg = I18n.t("画布包含无法序列化的数据：") + (e.message || e);
@@ -20832,7 +21278,7 @@ function persist() {
     return;
   }
   window.api
-    .wfSave(S.wf.id, data)
+    .wfSave(wf.id, data)
     .then(() => {
       S.saving = false;
       S.lastSaved = Date.now();
@@ -21280,12 +21726,14 @@ async function ensureWorkflow() {
   if (!id) {
     id = "default";
     S.wf = { id, name: I18n.t("默认画布"), nodes: [], wires: [], groups: [], marks: [] };
+    reviveWf(id); /* 新建的是一张全新画布：允许落盘（旧同名对象仍有墓碑拦着） */
     await window.api.wfSave(id, S.wf);
   } else {
     const r = await window.api.wfLoad(id);
     S.wf = r.ok ? r.data : { id, name: id, nodes: [], wires: [], groups: [], marks: [] };
   }
   S.wf.id = id;
+  setForegroundWf(S.wf); /* 用户可见的画布切换：登记前台真源 */
   if (migrateWf(S.wf)) scheduleSave(true); /* 视频端口迁移：立即落盘打标 */
   resetTaskFocus();
   rememberWf(S.wf);
@@ -21295,10 +21743,13 @@ async function ensureWorkflow() {
   trackWorkflow(id, S.wf.name);
 }
 
-async function loadWorkflow(id) {
+async function loadWorkflow(id, opts) {
+  const skipFlush = !!(opts && opts.skipFlush);
   if (S.wf && S.wf.id === id) return;
-  /* 先落盘当前画布；若有运行中节点则保留内存对象，避免任务结果/会话丢失 */
-  if (S.wf) {
+  /* 先落盘当前画布；若有运行中节点则保留内存对象，避免任务结果/会话丢失。
+     skipFlush=true：切换前这张画布已被删除（删除后的落点切换），此时任何写盘
+     都会把刚删掉的画布凭空复活，绝不能 rememberWf / flushCurrentWf。 */
+  if (S.wf && !skipFlush) {
     rememberWf(S.wf);
     await flushCurrentWf();
   }
@@ -21314,6 +21765,8 @@ async function loadWorkflow(id) {
       toast(I18n.t("打开失败：") + r.error, "err");
       return;
     }
+    /* 磁盘上确实读得出这张画布 = 它是活的（例如删除后又新建了同名 id），解禁黑名单 */
+    reviveWf(id);
     wf = r.data;
     wf.id = id;
     if (migrateWf(wf)) S._pendingVideoPortMigrateSave = true;
@@ -21330,7 +21783,7 @@ async function loadWorkflow(id) {
       wf.groups = live.groups || wf.groups;
     }
   }
-  S.wf = wf;
+  setForegroundWf(wf); /* 用户可见的画布切换：_fgWf 与 S.wf 同步换 */
   rememberWf(wf);
   resetTaskFocus();
   if (S._pendingVideoPortMigrateSave) {
@@ -21658,6 +22111,7 @@ async function forkAgentSession(id) {
     provider: src.provider || "deepseek-official",
     model: src.model || "",
     effort: src.effort || "high",
+    pure: !!src.pure,
     messages: cloneMsgs(src.messages),
     planNext: !!src.planNext,
     forkedFrom: src.id,
@@ -21759,6 +22213,24 @@ function devPathOf(node) {
   }
   return "";
 }
+/* 开发节点块判定（单一真源）：super + dev:true，数据库超级节点（db:true）不算。
+   devProjectRootOf 与「核心文件列表」（app-devnode.js 的 devCoreFilesOf）共用此口径。 */
+function devIsDevBlock(node) {
+  return !!(node && node.kind === "super" && node.dev && !node.db);
+}
+/* 顶层开发块 = 项目节点：祖先链上再没有别的开发块（父级是普通超级节点仍算顶层）。
+   走链思路与 app-devnode.js 的 devAncestorChain 一致，这里只做存在性判定；
+   「核心文件列表最外层不列举」也用它，两处永不分叉。 */
+function devIsTopBlock(node) {
+  if (!devIsDevBlock(node)) return false;
+  let cur = node.parentSuperId ? nodeById(node.parentSuperId) : null;
+  let guard = 0;
+  while (cur && guard++ < 64) {
+    if (devIsDevBlock(cur)) return false;
+    cur = cur.parentSuperId ? nodeById(cur.parentSuperId) : null;
+  }
+  return true;
+}
 /* 画布项目根（单一真源）：扫描画布上的开发节点块（kind super + dev:true），就近解析
    devPath（含祖先继承），优先顶层块（devPath 约定设在顶层块、子块继承）；空值与相对路径忽略。
    多块解析出多个不同根时：若存在共同祖先目录就用祖先（一个根覆盖全部），
@@ -21780,17 +22252,9 @@ function devProjectRootOf() {
     const t = fwd(p);
     return /^[a-zA-Z]:/.test(t) ? t.toLowerCase() : t;
   };
-  const isDevBlock = (n) => !!(n && n.kind === "super" && n.dev && !n.db);
-  /* 顶层开发块：祖先链上没有别的开发块（父级是普通超级节点仍算顶层） */
-  const isTopDevBlock = (n) => {
-    let cur = n && n.parentSuperId ? nodeById(n.parentSuperId) : null;
-    let guard = 0;
-    while (cur && guard++ < 64) {
-      if (isDevBlock(cur)) return false;
-      cur = cur.parentSuperId ? nodeById(cur.parentSuperId) : null;
-    }
-    return true;
-  };
+  /* 判定统一走共用函数 devIsDevBlock / devIsTopBlock（与本函数同一节，切片可独立运行） */
+  const isDevBlock = devIsDevBlock;
+  const isTopDevBlock = devIsTopBlock;
   const devBlocks = (S.wf.nodes || []).filter(isDevBlock);
   if (!devBlocks.length) return "";
   const rootsIn = (list) => {
@@ -21905,7 +22369,7 @@ function devNodeContractText(node, req) {
   );
   lines.push(
     I18n.t(
-      "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），用一句话向用户汇报改了什么。",
+      "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），同时用 mtnode_canvas_edit 的 devFiles 补丁回写本模块的核心文件列表（最多 10 条 · 每项是相对项目根的文件路径 · 最外层项目节点不填），用一句话向用户汇报改了什么。",
     ),
   );
   lines.push(
@@ -22106,16 +22570,18 @@ async function developDevNode(node) {
       : I18n.t(
           "尚未设置项目根目录（devPath）：会话工作区将退回默认目录，建议在顶层功能块上先设置项目路径。",
         ),
-    textarea: {
+    textarea: devDraftTextareaOpts(node, "dev", {
       label: I18n.t("本次希望开发 / 迭代的内容"),
       placeholder: I18n.t(
         "例如：补该模块的错误处理与日志；按现有风格新增 XX 接口；重构某文件但不改变对外 API…",
       ),
       rows: 6,
       requiredMsg: I18n.t("请填写本次希望开发或迭代的内容"),
-    },
+    }),
+    /* 边写边留存：取消 / Esc / 被别的事务顶出对话框都不丢，下次打开原样回填 */
+    onText: (t) => devDraftSet(node, "dev", t),
     hint: I18n.t(
-      "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· Ctrl+Enter 提交 · Esc 取消",
+      "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
     ),
     requireText: true,
     actions: [
@@ -22124,6 +22590,8 @@ async function developDevNode(node) {
     ],
   });
   if (!res || res.action !== "go") return;
+  /* 已提交进会话：草稿使命完成，清掉，避免下次打开重复带上同一份内容 */
+  devDraftSet(node, "dev", "");
   await startDevSessionWithText(node, String(res.text || "").trim());
 }
 /* 「开发」与「建议 → 开发」共用的收尾：新建绑定会话 → 状态转进行中 → 后台运行（留在画布，不跳会话视图）。
@@ -22363,7 +22831,7 @@ function newWorkflowDialog() {
     }
     const id = "wf_" + Date.now().toString(36);
     clearHistory();
-    S.wf = {
+    setForegroundWf({
       id,
       name: inp.value.trim() || I18n.t("未命名画布"),
       nodes: [],
@@ -22371,7 +22839,7 @@ function newWorkflowDialog() {
       groups: [],
       marks: [],
       workspace: ws,
-    };
+    }); /* 用户可见的画布切换：新建的即前台画布 */
     await window.api.wfSave(id, S.wf);
     S.config.activeWorkflowId = id;
     await window.api.configSave(S.config);
@@ -22391,34 +22859,143 @@ function newWorkflowDialog() {
 
 function deleteWorkflowDialog() {
   const wf = S.wf;
+  if (!wf || !wf.id) {
+    toast(I18n.t("当前没有打开的画布"), "err");
+    return;
+  }
+  /* 弹窗打开的一刻就锁定删除目标：此后即使用户切换了画布、后台改掉了图，
+     确认时校验的仍是这份快照，绝不会删成「此刻恰好打开的那张画布」。 */
+  const snap = {
+    wf,
+    id: wf.id,
+    name: String(wf.name || wf.id),
+    nodeCount: Array.isArray(wf.nodes) ? wf.nodes.length : 0,
+  };
   openOverlay(I18n.t("删除画布"));
   const body = $("#ovBody");
   const w = document.createElement("div");
   w.className = "settings-hint";
   w.innerHTML =
     I18n.t("将删除画布 <b>") +
-    esc(wf.name) +
-    I18n.t("</b> 及其全部本地数据文件（含节点图像资产）。此操作不可恢复。");
+    esc(snap.name) +
+    I18n.t("</b>（id <code>") +
+    esc(snap.id) +
+    I18n.t("</code> · 节点 <b>") +
+    esc(String(snap.nodeCount)) +
+    I18n.t(
+      "</b> 个）及其全部本地数据文件（含节点图像资产）。此操作不可恢复。",
+    ) +
+    "<br>" +
+    I18n.t("请先核对上面的 id 与节点数，确认要删的就是它。");
   body.appendChild(w);
   const foot = $("#ovFoot");
   const ok = document.createElement("button");
   ok.className = "mini danger";
   ok.textContent = I18n.t("确认删除");
   ok.onclick = async () => {
-    await window.api.wfDelete(wf.id);
-    closeOverlay();
-    const list = S.config.visitedWorkflows || [];
-    const i = list.findIndex((t) => t.id === wf.id);
-    if (i >= 0) list.splice(i, 1);
-    const id = "default";
-    clearHistory();
-    S.wf = { id, name: I18n.t("默认画布"), nodes: [], wires: [], groups: [], marks: [] };
-    await window.api.wfSave(id, S.wf);
-    S.config.activeWorkflowId = id;
-    await window.api.configSave(S.config);
-    renderAll();
-    trackWorkflow(id, S.wf.name);
-    toast(I18n.t("画布已删除，已重建默认画布"), "ok");
+    /* 三重复核 ① 弹窗打开后画布被切走：对象与 id 都必须仍是快照那一个 */
+    if (!S.wf || S.wf !== snap.wf || S.wf.id !== snap.id) {
+      closeOverlay();
+      toast(
+        I18n.t("当前画布已切换，本框只删除打开时锁定的画布，请重新发起删除"),
+        "err",
+      );
+      return;
+    }
+    /* 三重复核 ② 有画布写入在飞（智能体后台编辑画布）时不允许删除 */
+    if (bgCanvasWriteActive()) {
+      toast(I18n.t("智能体正在后台写入画布，请稍候"), "warn");
+      return;
+    }
+    ok.disabled = true;
+    try {
+      /* 三重复核 ③ 目标 id 仍在画布列表里（已被别处删掉就不再往下走） */
+      let list = [];
+      try {
+        list = await window.api.wfList();
+      } catch (e) {
+        toast(
+          I18n.t("读取画布列表失败：") + ((e && e.message) || String(e)),
+          "err",
+        );
+        return;
+      }
+      if (!wfInList(list, snap.id)) {
+        closeOverlay();
+        toast(I18n.t("画布已不存在，可能已被删除：") + snap.name, "warn");
+        return;
+      }
+      /* 删除前唯一的写盘：把当前画布未保存的改动落掉，不留「待保存…」脏状态 */
+      await flushCurrentWf();
+      /* 上面两次 await 之间状态可能又变了：派发删除前按同一口径再核一遍 */
+      if (!S.wf || S.wf !== snap.wf || S.wf.id !== snap.id) {
+        closeOverlay();
+        toast(
+          I18n.t("当前画布已切换，本框只删除打开时锁定的画布，请重新发起删除"),
+          "err",
+        );
+        return;
+      }
+      if (bgCanvasWriteActive()) {
+        toast(I18n.t("智能体正在后台写入画布，请稍候"), "warn");
+        return;
+      }
+      let list2 = [];
+      try {
+        list2 = await window.api.wfList();
+      } catch (e) {
+        toast(
+          I18n.t("读取画布列表失败：") + ((e && e.message) || String(e)),
+          "err",
+        );
+        return;
+      }
+      if (!wfInList(list2, snap.id)) {
+        closeOverlay();
+        toast(I18n.t("画布已不存在，可能已被删除：") + snap.name, "warn");
+        return;
+      }
+      /* 删除结果必须看返回值：失败就不谎报成功，也不重建默认画布。
+         主进程无论物理删还是软删（进回收站），只要回 ok 就代表这张画布
+         「对用户已不存在、对渲染层已不可写」，后面统一按已删收口。 */
+      const r = await window.api.wfDelete(snap.id);
+      if (!r || !r.ok) {
+        toast(
+          I18n.t("删除失败：") + ((r && r.error) || I18n.t("未知错误")),
+          "err",
+        );
+        return;
+      }
+      closeOverlay();
+      /* 已删画布绝不能再落盘：掐待保存定时器 + 摘 wfBag + 剔运行绑定栈 +
+         清 nodeWfId 归属，并把 id 记进黑名单（此后 persist 类写回一律丢弃）。 */
+      forgetDeletedWf(snap.id, snap.wf);
+      /* 落点要在摘标签之前选定：需要在原标签序列里找「下一个」标签 */
+      const land = await pickLandingWfAfterDelete(snap.id);
+      const visited = S.config.visitedWorkflows || [];
+      const vi = visited.findIndex((t) => t.id === snap.id);
+      if (vi >= 0) visited.splice(vi, 1);
+      let landed = false;
+      if (land.exists) {
+        /* 切到落点走真实加载：workspace / tagCatalog 等字段随磁盘数据一起回来，
+           不再手工拼 S.wf（原来这里造的是没有 workspace 的空壳对象） */
+        await loadWorkflow(land.id, { skipFlush: true });
+        landed = !!(S.wf && S.wf.id === land.id);
+        if (landed)
+          toast(
+            I18n.t("画布已删除，已切换到：") + (S.wf.name || land.id),
+            "ok",
+          );
+      }
+      if (!landed) {
+        /* ③ 只有磁盘上确实不存在 default.json（或落点加载失败）时才新建空默认画布 */
+        await createDefaultWorkflowFresh();
+        toast(I18n.t("画布已删除，已重建默认画布"), "ok");
+      }
+      await refreshWfSelect();
+    } finally {
+      ok.disabled = false;
+    }
   };
   const cancel = document.createElement("button");
   cancel.className = "mini";
@@ -22426,6 +23003,73 @@ function deleteWorkflowDialog() {
   cancel.onclick = closeOverlay;
   foot.appendChild(cancel);
   foot.appendChild(ok);
+}
+
+/* 目标画布是否仍存在于画布列表（wfList 项：{id,name,mtime,nodes}） */
+function wfInList(list, id) {
+  return (
+    !!id &&
+    Array.isArray(list) &&
+    list.some((t) => t && String(t.id) === String(id))
+  );
+}
+
+/* ── 删除画布后的落点选择 ──
+   曾经的 bug（R1）：删除任何画布后都无条件 wfSave("default", {nodes:[],…})，
+   把磁盘上已存在的「默认画布」整个清空 —— 用户看到的就是「别的画布被删了」。
+   现在按顺序找落点，且只有 default.json 真的不存在时才新建空画布：
+   ① 标签条（visitedWorkflows）里删除后仍存在的「下一个」标签
+   ② 画布列表（wfList 按 mtime 倒序）里任意仍存在的画布
+   ③ 都没有 → 新建空默认画布 */
+async function pickLandingWfAfterDelete(deletedId) {
+  const del = String(deletedId || "");
+  let list = [];
+  try {
+    list = await window.api.wfList();
+  } catch {
+    list = [];
+  }
+  const alive = (Array.isArray(list) ? list : []).filter(
+    (w) => w && String(w.id) !== del,
+  );
+  const inList = (id) => alive.some((w) => String(w.id) === String(id));
+  const visited = (S.config && S.config.visitedWorkflows) || [];
+  const at = visited.findIndex((t) => t && String(t.id) === del);
+  const tabs = visited.filter((t) => t && String(t.id) !== del && inList(t.id));
+  if (tabs.length) {
+    /* ① tabs 已剔除被删那一项：下标 at 就是原先紧跟其后的那个标签 */
+    const i = at >= 0 ? Math.min(at, tabs.length - 1) : 0;
+    return { id: String(tabs[Math.max(0, i)].id), exists: true };
+  }
+  /* ② 标签条没有可用页：落到画布列表里任意仍存在的画布（wfList 按 mtime 倒序，
+     即最近动过的那张）。不按名字偏爱 default。 */
+  if (alive.length) return { id: String(alive[0].id), exists: true };
+  /* ③ 一张画布都不剩（default.json 也确实不存在）→ 由调用方新建空默认画布 */
+  return { id: "default", exists: false };
+}
+
+/* 新建一张空默认画布并切为前台（仅在 default.json 确实不存在时调用） */
+async function createDefaultWorkflowFresh() {
+  const id = "default";
+  clearHistory();
+  setForegroundWf({
+    id,
+    name: I18n.t("默认画布"),
+    nodes: [],
+    wires: [],
+    groups: [],
+    marks: [],
+    workspace: "",
+  });
+  /* 刚删掉 default 又重建同名画布是正常路径：解禁 id（被删的旧对象仍有墓碑），
+     否则这张新画布会被黑名单永久拦成「存不下去」。 */
+  reviveWf(id);
+  await window.api.wfSave(id, S.wf);
+  S.config.activeWorkflowId = id;
+  rememberWf(S.wf);
+  renderAll();
+  trackWorkflow(id, S.wf.name);
+  await window.api.configSave(S.config);
 }
 
 function esc(s) {
@@ -22552,11 +23196,12 @@ async function doImportFile() {
 /* 导入成功后接管画布 */
 async function adoptImportedWorkflow(workflow) {
   clearHistory();
-  S.wf = workflow;
+  setForegroundWf(workflow); /* 导入接管画布：用户可见切换，_fgWf 同步 */
   S.wf.id = workflow.id;
   migrateWf(S.wf);
   S.config.activeWorkflowId = S.wf.id;
   await sanitizeWfEnvironment({ quiet: false });
+  reviveWf(S.wf.id); /* 导入的是全新对象：同名 id 曾被删时，解禁让这张新画布能落盘 */
   await window.api.wfSave(S.wf.id, S.wf);
   await window.api.configSave(S.config);
   renderAll();

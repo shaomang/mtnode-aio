@@ -183,6 +183,44 @@ function devNoteDialogField(node, label) {
   return { label: label || I18n.t("模块概述"), design: p.design, impl: p.impl };
 }
 
+/* ---------- 开发节点对话框草稿（用户输入不白写） ----------
+ * 需求：在功能块点「开发 / 细化 / 建议 / 问询」写好一段内容后，因取消、Esc、
+ *      或被别的事务顶出对话框（同一弹窗宿主会被后开的框接管）而丢光输入，
+ *      用户只能从头再敲一遍。
+ * 做法：mtDialogForm 每次输入都回调 devDraftSet()，按用途存进 node.devDraft
+ *      （随工作流自动落盘，切画布 / 重启也在）；再次打开同一个框回填 + 提示可清空；
+ *      只有真正提交（开始开发 / 确认细化 / 生成建议 / 开始问询）才清掉草稿。 */
+const DEV_DRAFT_MAX = 20000; /* 单份草稿上限，防止超长粘贴把存档撑大 */
+function devDraftOf(node, field) {
+  const d = node && node.devDraft;
+  if (!d || typeof d !== "object" || Array.isArray(d)) return "";
+  return typeof d[field] === "string" ? d[field] : "";
+}
+function devDraftSet(node, field, text) {
+  if (!node || !field) return;
+  let t = String(text == null ? "" : text);
+  if (t.length > DEV_DRAFT_MAX) t = t.slice(0, DEV_DRAFT_MAX);
+  if (devDraftOf(node, field) === t) return;
+  if (
+    !node.devDraft ||
+    typeof node.devDraft !== "object" ||
+    Array.isArray(node.devDraft)
+  )
+    node.devDraft = {};
+  if (t.trim()) node.devDraft[field] = t;
+  else delete node.devDraft[field];
+  /* 走常规防抖保存：停手后一次落盘，不逐键写盘 */
+  scheduleSave();
+}
+/* 草稿 → mtDialogForm 的 textarea 参数（带内容时打上「已恢复」提示标记） */
+function devDraftTextareaOpts(node, field, base) {
+  const draft = devDraftOf(node, field);
+  return Object.assign({}, base || {}, {
+    value: draft || String((base && base.value) || ""),
+    draft: !!draft.trim(),
+  });
+}
+
 /* ---------- 进度上下文（喂给 AI 的「当前开发进度」） ---------- */
 function devNodeBriefLine(n, mark) {
   const dk = devKindOf(n) || "module";
@@ -788,6 +826,11 @@ function devSuggestPickBody(host, opts) {
   ta.rows = Number(opts.taRows || 4);
   ta.placeholder = opts.placeholder || I18n.t("例如：第 2 条顺便把超时改成可配置；先做最小可运行版本；不要改对外 API…");
   ta.value = String(opts.supplement || "");
+  /* 边写边回报：本框任何一次重绘（数字键勾选、换一批、校验报错）都不该吞掉用户已写的内容 */
+  ta.addEventListener("input", () => {
+    if (typeof opts.onSupplement === "function")
+      opts.onSupplement(String(ta.value || ""));
+  });
   frag.appendChild(ta);
   const errP = devDlgEl("p", "mt-form-err", opts.err || "");
   errP.hidden = !opts.err;
@@ -1351,8 +1394,14 @@ function devSuggestShowJob(job) {
     const box = devDlgOpen(host, "mt-sug-box");
     const titleEl = host.querySelector("#mtDlgTitle");
     const bodyEl = host.querySelector("#mtDlgBody");
-    /* 视图只保留「自己还活不活」；运行态全在 job 上 */
-    const st = { settled: false };
+    /* 视图只保留「自己还活不活」与本框未提交的补充说明；运行态全在 job 上。
+       supplement 初值：本轮关注点 → 上次留下的草稿（有则回填，取消/跳出都不丢） */
+    const st = {
+      settled: false,
+      supplement: String(
+        job.focus || devDraftOf(node, "supplement") || "",
+      ),
+    };
     let ta = null;
     let logEl = null;
     const alive = () => !st.settled && seq === _mtDialogSeq;
@@ -1415,6 +1464,8 @@ function devSuggestShowJob(job) {
         supplement,
       });
       scheduleSave(true);
+      /* 补充说明已随本轮开工：清掉草稿，下次打开方案清单不带重复内容 */
+      devDraftSet(node, "supplement", "");
       /* 本轮勾选 + 补充也记入「建议」会话：用户的决策随会话留存，不只在弹窗里 */
       devSuggestRecordPicked(node, ids, supplement);
       finish({ action: "dev", text: brief, picked: ids, supplement });
@@ -1564,10 +1615,14 @@ function devSuggestShowJob(job) {
           suggestion: job.suggestion,
           picked: job.picked,
           err: job.err,
-          supplement: String(job.focus || ""),
+          supplement: st.supplement,
           onCancel: () => finish(null),
           onRegen: runOnce,
           onDev: goDevelop,
+          onSupplement: (t) => {
+            st.supplement = t;
+            devDraftSet(node, "supplement", t);
+          },
           onPick: () => {
             job.err = "";
           },
@@ -1602,7 +1657,15 @@ function devSuggestCachedDialog(node, sug, focus) {
     const seq = ++_mtDialogSeq;
     const box = devDlgOpen(host, "mt-sug-box");
     const titleEl = host.querySelector("#mtDlgTitle");
-    const st = { picked: {}, err: "", settled: false };
+    /* st.supplement：本框未提交的补充说明（数字键重绘 / 报错重绘都不吞内容） */
+    const st = {
+      picked: {},
+      err: "",
+      settled: false,
+      supplement: String(
+        (sug && sug.supplement) || focus || devDraftOf(node, "supplement") || "",
+      ),
+    };
     let taRef = null;
     const prev = (sug && sug.picked) || [];
     sug.items.forEach((it, i) => {
@@ -1628,6 +1691,8 @@ function devSuggestCachedDialog(node, sug, focus) {
         supplement: extra,
       });
       scheduleSave(true);
+      /* 补充说明已随本轮开工：清掉草稿，下次打开方案清单不带重复内容 */
+      devDraftSet(node, "supplement", "");
       /* 本轮勾选 + 补充也记入「建议」会话：用户的决策随会话留存，不只在弹窗里 */
       devSuggestRecordPicked(node, ids, extra);
       finish({ action: "dev", text: brief, picked: ids, supplement: extra });
@@ -1672,13 +1737,17 @@ function devSuggestCachedDialog(node, sug, focus) {
         suggestion: sug,
         picked: st.picked,
         err: st.err,
-        supplement: String((sug && sug.supplement) || focus || ""),
+        supplement: st.supplement,
         hint: I18n.t(
           "这是上一次生成的方案（未重新调用模型）。想听新的评估：点「换一批」重新让 AI 判断，或取消后在确认框里选「确认生成建议」。数字键勾选 · Ctrl+Enter 开发 · Esc 取消",
         ),
         onCancel: () => finish(null),
         onRegen: () => finish({ action: "regen" }),
         onDev: go,
+        onSupplement: (t) => {
+          st.supplement = t;
+          devDraftSet(node, "supplement", t);
+        },
         onPick: () => {
           st.err = "";
         },
@@ -1758,28 +1827,33 @@ async function suggestDevNode(node) {
       : I18n.t(
           "尚未设置项目根目录（devPath）：AI 只能在默认工作区里找代码，建议先在顶层功能块上设置项目路径。",
         ),
-    textarea: {
+    textarea: devDraftTextareaOpts(node, "suggest", {
       label: I18n.t("本轮关注点（可选 · 留空由 AI 自行判断）"),
       placeholder: I18n.t(
         "例如：这轮只看健壮性和测试；优先把与「网络层」的接线补上；不要引入新依赖…",
       ),
       rows: 4,
-    },
+    }),
+    /* 边写边留存：取消 / 被别的事务顶出对话框都不丢，下次打开原样回填 */
+    onText: (t) => devDraftSet(node, "suggest", t),
     hint: I18n.t(
-      "确认 = 只读评估（工作区 = 项目根目录）· 生成后可多选 / 换一批 · Ctrl+Enter 确认 · Esc 取消",
+      "确认 = 只读评估（工作区 = 项目根目录）· 生成后可多选 / 换一批 · 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 确认 · Esc 取消",
     ),
     actions,
   });
   if (!res) return;
   const focus = String(res.text || "").trim();
   if (res.action === "cached") {
+    devDraftSet(node, "suggest", "");
     const out = await devSuggestCachedDialog(node, cached, focus);
     if (out && out.action === "regen") await devSuggestDialog(node, { focus });
     return;
   }
   /* go / attach 都交给 devSuggestDialog：它在途时只会接管视图，不会再发一轮 */
-  if (res.action === "go" || res.action === "attach")
+  if (res.action === "go" || res.action === "attach") {
+    devDraftSet(node, "suggest", "");
     await devSuggestDialog(node, { focus });
+  }
 }
 
 /* ============ 开发节点「问询」：只读回答模块问题 ============
@@ -2300,16 +2374,18 @@ async function askDevNode(node) {
       : I18n.t(
           "尚未设置项目根目录（devPath）：AI 只能在默认工作区里找代码，建议先在顶层功能块上设置项目路径。",
         ),
-    textarea: {
+    textarea: devDraftTextareaOpts(node, "ask", {
       label: I18n.t("你要问的问题"),
       placeholder: I18n.t(
         "例如：这个模块现在的真实完成度如何？入口在哪？关键文件是哪些？下一步该做什么？为什么这么设计？…",
       ),
       rows: 5,
       requiredMsg: I18n.t("请填写要问的问题"),
-    },
+    }),
+    /* 边写边留存：取消 / 被别的事务顶出对话框都不丢，下次打开原样回填 */
+    onText: (t) => devDraftSet(node, "ask", t),
     hint: I18n.t(
-      "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· Ctrl+Enter 提交 · Esc 取消",
+      "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
     ),
     requireText: true,
     actions: [
@@ -2320,6 +2396,8 @@ async function askDevNode(node) {
   if (!res || res.action !== "go") return;
   const question = String(res.text || "").trim();
   if (!question) return;
+  /* 问题已交给本轮问询：清掉草稿，下次打开是空白 */
+  devDraftSet(node, "ask", "");
   const nj = devAskJobCreate(node, question);
   devAskJobRun(nj);
   await devAskShowJob(nj);
@@ -2384,6 +2462,221 @@ async function openDevFileNode(node) {
   }
   if (r && r.ok) toast(I18n.t("已打开：") + target, "ok");
   else toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "warn");
+}
+
+/* ============ 开发节点「核心文件列表」（node.devFiles） ============
+ * 需求：给开发节点增加一个「核心文件列表」，最多只列举 10 个；最外层开发节点
+ *      （项目节点）不列举。展示与交互在 app-canvas.js：节点 body 下方一个
+ *      「文件 N」按钮，点开成列表，点任意一行 = 在资源管理器中定位该文件。
+ * 三条来源合流（优先级从高到低）：
+ *   1) 开发 / 细化 / 建议会话用 mtnode_canvas_edit 的 devFiles 补丁回写；
+ *   2) 用户在展开面板里手工编辑（每行一个路径）；
+ *   3) 前两者都为空时的自动兜底收集：本块（或后代 devKind=file 块）的标题
+ *      + 本块概述【实现】里出现的路径 token，按 devPathOf(node) 解析。
+ * 单一口径（避免各处各写各的）：
+ *   · 路径归一与 DEV_CORE_FILES_MAX 上限只在 devCoreFilesNormalize() 里强制一次，
+ *     UI 编辑 / Agent 补丁 / 兜底收集三个写入口全部经过它；
+ *   · 分隔符统一存 '/'；绝对路径若落在本块项目根内会折成相对路径（与保存节点
+ *     preferRelativeSavePath 同一取向），根外的绝对路径原样保留；
+ *   · 最外层（项目）块一律：读为空、写被拒（devCoreFilesSet 返回 null）。
+ */
+const DEV_CORE_FILES_MAX = 10;
+/* 单条路径长度上限：防脏数据（整段说明文字被当成一条路径）把节点撑大 */
+const DEV_CORE_FILE_MAX_LEN = 240;
+/* 自动兜底时认作「源码文件」的扩展名白名单：宁可少收，不把 "v1.1.28" / "e.g" 当路径 */
+const DEV_CORE_FILE_EXTS = [
+  "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts", "json", "json5", "yaml",
+  "yml", "toml", "md", "mdx", "html", "htm", "css", "scss", "less", "svg", "txt",
+  "csv", "sql", "db", "sqlite", "py", "rs", "go", "java", "kt", "c", "h", "cpp",
+  "hpp", "cc", "sh", "ps1", "bat", "cmd", "nsh", "nsi", "ini", "cfg", "env",
+  "lock", "njk", "tpl", "glsl", "wgsl", "proto", "graphql",
+];
+
+/* 开发块判定优先用 app.js 的共用真源；单独加载本文件的沙箱（冒烟测试）退回同口径 */
+function devCoreIsBlock(node) {
+  return typeof devIsDevBlock === "function"
+    ? devIsDevBlock(node)
+    : !!(node && node.kind === "super" && node.dev && !node.db);
+}
+/* 顶层（项目）开发块：优先 app.js 的 devIsTopBlock；沙箱里用 devAncestorChain 走同一条链 */
+function devCoreIsTopBlock(node) {
+  if (!devCoreIsBlock(node)) return false;
+  if (typeof devIsTopBlock === "function") return devIsTopBlock(node);
+  return !devAncestorChain(node).some(devCoreIsBlock);
+}
+/* 绝对路径判定（isAbsPath 真源在 app.js，依赖 window.api；缺省时退回等价正则） */
+function devCoreIsAbsPath(p) {
+  const s = String(p || "");
+  if (!s) return false;
+  return typeof isAbsPath === "function"
+    ? !!isAbsPath(s)
+    : /^[a-zA-Z]:[\\/]/.test(s) || s.startsWith("\\\\") || (s.startsWith("/") && !s.startsWith("//"));
+}
+/* 本块的项目根（统一正斜杠、无尾斜杠）；未设置 → "" */
+function devCoreFileRoot(node) {
+  const raw =
+    typeof devPathOf === "function" ? String(devPathOf(node) || "") : "";
+  return raw.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+}
+/* 单条路径清洗：剥引号 / 括号包裹、反斜杠转 '/'、去掉首尾多余标点与 './'。
+   只做「像不像一条路径」的最低判断（通配符、越权的 ../、超长一律拒绝），
+   扩展名白名单只用于自动兜底（那里是从自由文本里抠 token，需要更严）。 */
+function devCoreFileNormEntry(raw) {
+  let s = String(raw == null ? "" : raw).trim();
+  if (!s) return "";
+  s = s.replace(/^[`'"“”‘’(\[【]+/, "").replace(/[`'"“”‘’)\]】.,;:，。；：]+$/, "");
+  s = s.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  /* 越出项目根的相对写法（../x.js）一律拒绝：展示与 reveal 都按 devPathOf 解析，
+     让它进来等于给了条逃出项目根的路 */
+  if (/(^|\/)\.\.(\/|$)/.test(s)) return "";
+  s = s.replace(/\/\.\//g, "/");
+  while (/^\.\//.test(s)) s = s.replace(/^\.\//, "");
+  /* 以 / 结尾 = 目录（本列表只收文件） */
+  if (/\/$/.test(s)) return "";
+  s = s.trim();
+  if (!devCoreIsAbsPath(s)) s = s.replace(/^\/+/, "");
+  if (!s || s.length > DEV_CORE_FILE_MAX_LEN) return "";
+  if (/[*?<>|"“”‘’]/.test(s) || /[\r\n\t]/.test(s)) return "";
+  return s;
+}
+/* 扩展名白名单（自动兜底用）：token 必须以某个已知扩展名结尾 */
+function devCoreFileLooksLikeFile(p) {
+  const m = /\.([a-z0-9]+)$/i.exec(String(p || ""));
+  return !!(m && DEV_CORE_FILE_EXTS.indexOf(m[1].toLowerCase()) >= 0);
+}
+/* 落在本块项目根内的绝对路径折成相对路径（根外原样），便于展示与去重 */
+function devCoreFileRelativize(rootFwd, entry) {
+  if (!rootFwd || !devCoreIsAbsPath(entry)) return entry;
+  const a = entry.replace(/\\/g, "/");
+  const win = /^[a-zA-Z]:/.test(rootFwd);
+  const same = win ? a.toLowerCase().startsWith(rootFwd.toLowerCase() + "/") : a.startsWith(rootFwd + "/");
+  return same ? a.slice(rootFwd.length + 1) : entry;
+}
+/**
+ * 核心文件列表的**唯一**归一入口：去空 → 逐条清洗 → 绝对折相对 → 去重 → 裁剪到上限。
+ * @param {string[]|string} list 数组，或按行 / 逗号分隔的字符串
+ * @param {object} node 目标开发节点（用于取项目根做相对化与去重键）
+ * @param {object} [stats] 可选回报对象：stats.dropped = 因超出上限被丢弃的条数
+ * @returns {string[]} 最多 DEV_CORE_FILES_MAX 条，全部以 '/' 分隔
+ */
+function devCoreFilesNormalize(list, node, stats) {
+  const src = Array.isArray(list)
+    ? list
+    : typeof list === "string"
+      ? list.split(/[\r\n]+|[,，;；]\s*/)
+      : [];
+  const root = devCoreFileRoot(node);
+  const out = [];
+  const seen = new Set();
+  let dropped = 0;
+  for (const raw of src) {
+    let s = devCoreFileNormEntry(raw);
+    if (!s) continue;
+    s = devCoreFileRelativize(root, s);
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (out.length >= DEV_CORE_FILES_MAX) {
+      dropped++;
+      continue;
+    }
+    out.push(s);
+  }
+  if (stats && typeof stats === "object") stats.dropped = dropped;
+  return out;
+}
+/* 本块已显式写入（Agent 回写 / 用户编辑）的核心文件；顶层块与非开发块恒为空 */
+function devCoreFilesStoredOf(node) {
+  if (!devCoreIsBlock(node) || devCoreIsTopBlock(node)) return [];
+  return devCoreFilesNormalize(node && node.devFiles, node);
+}
+/* 后代 devKind=file 块的标题（按约定就是相对项目根的路径），就近优先、深度优先 */
+function devCoreFileTitlesOf(node) {
+  const out = [];
+  const seen = new Set();
+  seen.add(node.id);
+  const walk = (host) => {
+    for (const k of devChildrenOf(host)) {
+      if (!k || seen.has(k.id) || out.length >= DEV_CORE_FILES_MAX) continue;
+      seen.add(k.id);
+      const isDev = k.kind === "super" && k.dev;
+      if (isDev && devKindOf(k) === "file" && String(k.title || "").trim())
+        out.push(String(k.title).trim());
+      if (isDev) walk(k);
+    }
+  };
+  walk(node);
+  return out;
+}
+/* 从自由文本（概述【实现】段）里抠路径 token：允许相对路径与盘符绝对路径 */
+function devCoreFileTokensOf(text) {
+  const s = String(text || "");
+  const re =
+    /[A-Za-z0-9_.@\-]+(?:\/[A-Za-z0-9_.@\-]+)*\.[A-Za-z][A-Za-z0-9]{1,9}/g;
+  const out = [];
+  let m;
+  while ((m = re.exec(s))) {
+    if (m[0].indexOf(":") >= 0 && !/^[a-zA-Z]:\//.test(m[0])) continue;
+    const t = devCoreFileNormEntry(m[0]);
+    if (!t || !devCoreFileLooksLikeFile(t)) continue;
+    out.push(t);
+    if (out.length >= DEV_CORE_FILES_MAX * 2) break;
+  }
+  return out;
+}
+/* 自动兜底收集：本块自身是文件级块（标题即路径）→ 本块概述【实现】的路径 token
+   → 后代 devKind=file 块的标题；全部经 devCoreFilesNormalize 归一与裁剪 */
+function devCoreFilesAutoOf(node) {
+  if (!devCoreIsBlock(node) || devCoreIsTopBlock(node)) return [];
+  const cands = [];
+  if (devKindOf(node) === "file" && String(node.title || "").trim())
+    cands.push(String(node.title).trim());
+  const parts = devNoteParts(node && node.note);
+  for (const t of devCoreFileTokensOf(parts.impl || parts.design)) cands.push(t);
+  for (const t of devCoreFileTitlesOf(node)) cands.push(t);
+  return devCoreFilesNormalize(cands, node);
+}
+/* 展示口径的最终列表：显式写入优先，为空时自动兜底；最外层（项目）块不列举 */
+function devCoreFilesOf(node) {
+  const stored = devCoreFilesStoredOf(node);
+  if (stored.length) return stored;
+  return devCoreFilesAutoOf(node);
+}
+/* 当前列表来源（UI 据此提示「自动收集 · 点编辑确认」）：manual / auto / "" */
+function devCoreFilesSourceOf(node) {
+  if (!devCoreIsBlock(node) || devCoreIsTopBlock(node)) return "";
+  if (devCoreFilesStoredOf(node).length) return "manual";
+  return devCoreFilesAutoOf(node).length ? "auto" : "";
+}
+/**
+ * 写入本块核心文件（UI 编辑入口用）：归一化 → 记历史 → 立刻落盘。
+ * @returns {string[]|null} 实际写入的列表；非开发块 / 最外层（项目）块返回 null（拒绝）
+ */
+function devCoreFilesSet(node, list, stats) {
+  if (!devCoreIsBlock(node) || devCoreIsTopBlock(node)) return null;
+  const next = devCoreFilesNormalize(list, node, stats);
+  const prev = Array.isArray(node.devFiles) ? node.devFiles : [];
+  if (JSON.stringify(next) === JSON.stringify(prev)) return next;
+  pushHistory();
+  node.devFiles = next;
+  scheduleSave(true);
+  return next;
+}
+/* 一条核心文件在本块项目根下的绝对路径（相对路径按 devPathOf 解析）；解不出 → "" */
+function devCoreFileAbs(node, entry) {
+  const s = devCoreFileNormEntry(entry);
+  if (!s) return "";
+  if (devCoreIsAbsPath(s)) return s;
+  const root = devCoreFileRoot(node);
+  if (!root) return "";
+  return typeof joinPath === "function" ? joinPath(root, s) : root + "/" + s;
+}
+/* 展示用主标签 = 文件名（最后一段）；整条相对路径本身可直接作副标签 */
+function devCoreFileLabel(entry) {
+  const s = devCoreFileNormEntry(entry);
+  if (!s) return "";
+  const base = typeof fileName === "function" ? fileName(s) : s.split("/").pop();
+  return String(base || s).trim();
 }
 
 /* ============ 开发节点颜色：菜单栏小按钮 + HSV 色板 ============

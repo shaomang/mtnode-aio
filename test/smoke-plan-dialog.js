@@ -1534,6 +1534,277 @@ async function main() {
     ok(/【乙】/.test(lastF) && /失败：.*网关 500/.test(lastF), "失败结果按原契约写进汇总消息");
   }
 
+  /* ── 会话「计划」清单高度：--ap-h = 最小高度，上限按当下 DOM 实测夹 ──
+   * 回归「计划列表压住下方对话输入栏 / 收起后多半被下方遮挡」这条 bug 的**算法侧**：
+   * 底栏每一项都必须进预算（含上一版整块漏掉的发送队列），兄弟项按「没被压缩时的自然高」
+   * 算而不是按被砍过的 rect 算，面板装饰实测优先。
+   * 真实的让位次序（消息区 → 计划清单 → 任务卡 / 队列 → 输入区钉死）由
+   * test/layout-agent-plan.js 在真 Blink 里逐格量，迷你 DOM 不假装有布局引擎。 */
+  {
+    const sbHt = makeSandbox();
+    const hostHt = mkEl("div");
+    hostHt.className = "agent-body";
+    hostHt.clientHeight = 600; /* .agent-body 此刻的可用高度 */
+    const panelHt = mkEl("div");
+    panelHt.id = "agentPlan";
+    panelHt.className = "agent-todo agent-plan";
+    /* 迷你 DOM 不维护 parentElement，而夹取要顺着宿主量高度，这里手工补上 */
+    panelHt.parentElement = hostHt;
+    hostHt.appendChild(panelHt);
+    sbHt.__doc.body.appendChild(hostHt);
+    panelHt.style.setProperty = function (k, v) {
+      this[k] = v;
+    };
+    /* 落盘口：只有「松手 / 双击」这类终态才该调 configSave，条数即落盘次数 */
+    const saves = [];
+    sbHt.window.api = {
+      configSave: async (c) => {
+        saves.push(c.agentPlanH);
+        return true;
+      },
+    };
+    const clampMax = () => sbHt.clampAgentPlanH(9999);
+    /* 沙箱里没有 getComputedStyle → 装饰一律走 app-plan.js 的兜底常量：
+       600 −（消息区下限 72 + 输入区 132 + 头部 36 + 把手 7 + 面板外边距 2）= 351 */
+    ok(sbHt.clampAgentPlanH(40) === 120, "再矮也守住最小高度 120（旧的封顶值 120 如今是最小值）");
+    ok(sbHt.clampAgentPlanH(0) === 120, "非法高度回落到最小高度");
+    ok(
+      clampMax() === 351,
+      "基线上限 351 = 600 −（消息区下限 72 + 输入区兜底 132 + 头部兜底 36 + 把手 7 + 面板外边距 2）",
+    );
+    ok(
+      sbHt.agentPlanCurMaxH() === 351,
+      "把手 tooltip 报的「当前最多」与夹取上限同一个口径（不是两套数）",
+    );
+    /* 用户诉求：维持最小高度的基础上还能继续加高 —— 底栏腾出的空间必须 1:1 给清单 */
+    hostHt.clientHeight = 700;
+    ok(clampMax() === 451, "底栏多出的 100px 原样让给清单（不做二次折损）");
+    hostHt.clientHeight = 600;
+    /* 面板自身装饰 = 实测优先（旧版写死 34+7+2，头部/把手一长高预算就虚高，清单越过下沿） */
+    const headHt = mkEl("div");
+    headHt.className = "at-head";
+    headHt.__boxH = 40;
+    panelHt.appendChild(headHt);
+    ok(clampMax() === 347, "头部实测 40px（比兜底 36 高 4）→ 上限立刻降 4：装饰是量出来的");
+    const gripHt = mkEl("div");
+    gripHt.className = "ap-grip";
+    gripHt.__boxH = 12;
+    panelHt.appendChild(gripHt);
+    ok(clampMax() === 342, "把手实测 12px（比兜底 7 高 5）→ 再降 5：展开态不能把把手算漏");
+
+    /* 输入区（对话栏）变高 → 上限立刻跟着降。这正是「chips 一换行就压住输入栏」那一格 */
+    const composerHt = mkEl("div");
+    composerHt.className = "agent-composer";
+    composerHt.__boxH = 200; /* 窄窗口下 chips 换成两行，输入区被撑高 */
+    sbHt.__doc.querySelector = (sel) => (sel === ".agent-composer" ? composerHt : null);
+    ok(clampMax() === 274, "输入区实测 200px（比兜底 132 高 68）→ 上限降到 274");
+    ok(sbHt.clampAgentPlanH(300) === 274, "超过上限的设定被夹到实测上限，不会压住输入栏");
+
+    /* 发送队列 #agentQueue：上一版**整块漏算**（实测凭空近百 px，正好压在输入栏那一截上）。
+       它在契约④' 之后是可收缩兄弟项 → 必须按「没被压缩时的自然高」扣，不能量被砍过的 rect，
+       否则「面板越扁 → 预算越空 → 上限越算越大」（测量台 D 组抓到 −74~−80px 的那条自反馈）。 */
+    const queueHt = mkEl("div");
+    queueHt.id = "agentQueue";
+    queueHt.className = "agent-queue";
+    queueHt.__boxH = 20; /* 被 flex 砍过之后的实测高：拿它算预算就是错的 */
+    const qHead = mkEl("div");
+    qHead.className = "aq-head";
+    qHead.__boxH = 35;
+    const qList = mkEl("div");
+    qList.className = "aq-list";
+    qList.scrollHeight = 60; /* 未压缩时内容要吃掉的 60px */
+    queueHt.appendChild(qHead);
+    queueHt.appendChild(qList);
+    hostHt.appendChild(queueHt);
+    ok(
+      clampMax() === 179 && clampMax() !== 254,
+      "队列在场 → 扣自然高 95（头部 35 + 清单 60），不是被砍过的 20：预算 274 → 179",
+    );
+    queueHt.hidden = true;
+    ok(clampMax() === 274, "队列收起（hidden）后一分地都不占：空壳不得留在预算里");
+    queueHt.hidden = false;
+
+    /* 消息区（契约① 的唯一填充项）不参与预算求和 —— 真因就是它拿整段会话正文的高来抢地方 */
+    const wrapHt = mkEl("div");
+    wrapHt.className = "hist-scroll-wrap is-flex-fill";
+    wrapHt.__boxH = 400;
+    wrapHt.scrollHeight = 3000; /* 会话很长的实际情况 */
+    hostHt.appendChild(wrapHt);
+    ok(
+      clampMax() === 179,
+      "消息区内容 3000px 也不挤清单：只按 PLAN_LIST_MSG_MIN_H=72 预留（它先让位，见 layout smoke）",
+    );
+
+    /* 极端矮窗口：预算已经是负的 → 仍回落到最小高度，物理放不下时由 CSS 的 flex 收缩清单
+       （绝不再溢出成重叠；真实收缩量由 test/layout-agent-plan.js 逐格判定） */
+    hostHt.clientHeight = 260;
+    ok(clampMax() === 120, "矮到装不下时仍返回最小高度 120，收缩交给 flex 布局兜底");
+    hostHt.clientHeight = 600;
+
+    /* —— 清回干净现场（只剩面板 → 基线 351），再验「设定值 / 临时夹取」两份数的语义 —— */
+    hostHt.childNodes.length = 0;
+    hostHt.appendChild(panelHt);
+    panelHt.innerHTML = "";
+    sbHt.__doc.querySelector = () => null;
+    ok(clampMax() === 351, "现场复位回到基线 351（去掉全部兄弟项与实测装饰）");
+    sbHt.S.config = { agentPlanH: 300 };
+    ok(sbHt.clampAgentPlanH(300) === 300, "空间放得下 300 → 原样给 300：有地方就绝不额外摁住");
+    sbHt.applyAgentPlanH(300, true);
+    ok(
+      sbHt.S.agentPlanH === 300 &&
+        panelHt.style["--ap-h"] === "300px" &&
+        sbHt.S.config.agentPlanH === 300 &&
+        saves.length === 1,
+      "设定值写成 #agentPlan 的 --ap-h（清单最小高度 = flex-basis）并落进 S.config",
+    );
+    hostHt.clientHeight = 300; /* 底栏突然被挤窄：拖分栏 / chips 换行 / 队列出现 */
+    sbHt.applyAgentPlanH(null, false);
+    ok(
+      sbHt.S.agentPlanH === 120 &&
+        sbHt.S.config.agentPlanH === 300 &&
+        panelHt.style["--ap-h"] === "120px" &&
+        saves.length === 1,
+      "applyAgentPlanH(null) = 按设定值重夹：显示值临时夹到 120，设定值 300 保持原样且不落盘",
+    );
+    hostHt.clientHeight = 600;
+    sbHt.applyAgentPlanH(null, false);
+    ok(
+      sbHt.S.agentPlanH === 300 && panelHt.style["--ap-h"] === "300px",
+      "底栏恢复后清单长回设定值 300（不会停在被临时夹小的 120）—— ResizeObserver 重夹走的就是这条路径",
+    );
+    sbHt.applyAgentPlanH(40, false);
+    ok(
+      sbHt.S.agentPlanH === 120 && panelHt.style["--ap-h"] === "120px",
+      "拖到最小以下仍停在 120px：清单至少有这么高，不会塌成一截",
+    );
+
+    /* —— 拖把手：过程中实时夹到「此刻最大值」且绝不落盘，松手才写设定值（任务 3 的口径） —— */
+    panelHt.appendChild(headHt);
+    panelHt.appendChild(gripHt);
+    sbHt.S.agentPlanH = 300;
+    sbHt.bindAgentPlanGrip(panelHt, gripHt);
+    ok(
+      sbHt.S.agentPlanH === 300 && saves.length === 1,
+      "绑把手时顺带的 watchAgentPlanHost 在无 ResizeObserver 环境下静默降级（不改值、不落盘、不抛）",
+    );
+    gripHt.fire("pointerdown", { button: 0, clientY: 700 });
+    sbHt.__docFire("pointermove", { clientY: 200 }); /* 向上拖 500px = 想要 800px */
+    ok(
+      sbHt.S.agentPlanH === 342 && saves.length === 1,
+      "拖动过程中每一步都按实时剩余空间夹住（此刻上限 342 = 600−72−132−40−12−2），绝不中途落盘",
+    );
+    ok(
+      /342px/.test(gripHt.title) && /当前最多/.test(gripHt.title),
+      "把手 tooltip 实时报「现在多少 / 当前最多多少」：拖到顶了看得见，不会以为卡住",
+    );
+    sbHt.__docFire("pointermove", { clientY: 900 }); /* 反向拖回：startH 300 + (700−900) = 100 */
+    ok(sbHt.S.agentPlanH === 120, "向下拖同样被最小高度接住（120），不会塌成一条缝");
+    sbHt.__docFire("pointermove", { clientY: 200 });
+    sbHt.__docFire("pointerup", {});
+    ok(
+      sbHt.S.agentPlanH === 342 && saves.length === 2 && saves[saves.length - 1] === 342,
+      "松手才落盘：落的正是此刻放得下的最大值 342（用户设定的就是它）",
+    );
+    gripHt.fire("dblclick", {});
+    ok(
+      sbHt.S.agentPlanH === 120 && sbHt.S.config.agentPlanH === 120 && saves.length === 3,
+      "双击把手 → 回到默认最小高度 120 并落盘",
+    );
+
+    /* 视口保险：宿主量不到（会话面板还没显示）时退回视口 70% —— 放在最后，它会摘掉 parentElement */
+    sbHt.__doc.querySelector = () => null;
+    panelHt.parentElement = null;
+    ok(sbHt.clampAgentPlanH(9999) === 630, "量不到宿主时上限退回视口 70%（900×0.7）");
+    /* —— 样式契约（base.css 里编号的 ①–⑤ 不变式）：这一组是**文本面**的护栏，防的是
+       「有人把那条规则删了 / 改了，却没人记得让位次序」。真正判定「谁赢了特异度」的
+       是 test/layout-agent-plan.js —— 它读真实引擎里生效的计算值，逐格量越界与裁切
+       （上一轮就是栽在「同特异度靠加载顺序取胜」这个假设上，grep 判不了这个）。 —— */
+    const cssBase = read("renderer/css/base.css");
+    /* 规则体按行首 } 收尾：注释里也带 { }，用 indexOf("}") 会截在注释中间 */
+    const cssRule = (sel) => {
+      const at = cssBase.indexOf(sel);
+      if (at < 0) return null;
+      const end = cssBase.indexOf("\n}", at);
+      return end < 0 ? null : cssBase.slice(at, end + 1);
+    };
+    const r1 = cssRule(".agent-body>.hist-scroll-wrap.is-flex-fill {");
+    ok(
+      !!r1 && /flex:\s*1 1 0px/.test(r1) && /min-height:\s*0/.test(r1),
+      "契约① 消息区假想主尺寸归 0（真因：dsh.css 的 flex:1 1 auto 会拿整段会话正文的内容高来抢地方）",
+    );
+    ok(
+      read("renderer/css/dsh.css").indexOf(".hist-scroll-wrap.is-flex-fill") >= 0,
+      "契约① 的覆盖对象确实还在 dsh.css 里（选择器多带一层 .agent-body> 才压得住，别顺手删）",
+    );
+    const r2 = cssRule(".agent-todo.agent-plan {");
+    ok(
+      !!r2 &&
+        /flex:\s*0 1 auto/.test(r2) &&
+        /min-height:\s*3[89]px/.test(r2) &&
+        /overflow:\s*hidden/.test(r2),
+      "契约② 面板可收缩但下限 = 自身头部高，overflow:hidden 降为兜底（收起态头部不被裁 = 「被下方遮挡」那一格）",
+    );
+    const r2b = cssRule(".agent-todo.agent-plan:not(.collapsed) {");
+    ok(
+      !!r2b && /min-height:\s*45px/.test(r2b),
+      "契约② 展开态下限再加把手（45 = 头部 38 + 把手 7）：把手被裁掉就等于再也拖不动了",
+    );
+    const r2h = cssRule(".agent-plan .at-head {");
+    ok(
+      !!r2h && /flex:\s*none/.test(r2h),
+      "契约② 面板内部的缺口全落到清单上：.at-head 不参与收缩",
+    );
+    const r3 = cssRule(".agent-plan .at-list {");
+    ok(
+      !!r3 && /flex:\s*0 1 var\(--ap-h/.test(r3) && /min-height:\s*0/.test(r3),
+      "契约③ 清单高度走 --ap-h 的 flex-basis = 最小高度（守住它，还能继续加高）",
+    );
+    ok(
+      !!r3 && /max-height:\s*none/.test(r3),
+      "契约③ 显式清掉 dsh.css 的 .at-list{max-height:190px} 死上限（否则又回到「名义最低、实为封顶」）",
+    );
+    const r4 = cssRule("#agentTodo {");
+    const r4q = cssRule("#agentQueue {");
+    ok(
+      !!r4 && /flex:\s*0 1 auto/.test(r4) && /min-height:\s*38px/.test(r4),
+      "契约④ 实时任务卡不再 flex:none 顶穿底栏：可收缩 + 头部下限",
+    );
+    ok(
+      !!r4q && /flex:\s*0 1 auto/.test(r4q) && /min-height:\s*36px/.test(r4q),
+      "契约④' 发送队列同口径（上一版夹取预算整块漏算的就是它，实测凭空近百 px）",
+    );
+    const r4h1 = cssRule("#agentTodo[hidden] {");
+    const r4h2 = cssRule("#agentQueue[hidden] {");
+    ok(
+      !!r4h1 &&
+        !!r4h2 &&
+        /display:\s*none/.test(r4h1) &&
+        /display:\s*none/.test(r4h2) &&
+        /display:\s*none/.test(cssRule(".agent-todo.agent-plan[hidden] {") || ""),
+      "契约④ 用 #id 特异度会盖过 dsh.css 的 .agent-todo[hidden] → 三处「收起来」都必须显式在，否则收起后留一屏空白",
+    );
+    const r5 = cssRule(".agent-body>.agent-composer {");
+    ok(
+      !!r5 && /flex:\s*none/.test(r5),
+      "契约⑤ 输入区是底栏唯一的钉死项（让位次序的最后一项）：写进契约锁死，防以后被改回可收缩又重叠",
+    );
+    ok(
+      cssBase.indexOf("--ap-maxh") < 0 && read("renderer/app-plan.js").indexOf("--ap-maxh") < 0,
+      "全仓零残留：不再有 --ap-maxh 这个写死上限（重叠 bug 的源头）",
+    );
+    /* 把手文案：常量必须真的能在 i18n 里查到（改了常量忘改词条 → 英文界面漏出中文） */
+    const planJs = read("renderer/app-plan.js");
+    const i18Tip = /const PLAN_GRIP_TIP\s*=\s*"([^"]+)"/.exec(planJs);
+    const i18All = read("renderer/i18n.js");
+    ok(
+      !!i18Tip &&
+        i18All.indexOf('"' + i18Tip[1] + '"') >= 0 &&
+        i18All.indexOf('"当前最多"') >= 0 &&
+        planJs.indexOf('I18n.t("当前最多")') >= 0,
+      "把手提示（含实时「当前最多 Npx」）已进 i18n 词条表，常量与词条不漂移",
+    );
+  }
+
   console.log(
     "\n———— " +
       (checks - fails) +

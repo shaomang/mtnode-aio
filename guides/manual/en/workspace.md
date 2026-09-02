@@ -14,4 +14,6 @@ A super can set a **subfolder** (relative to the workspace). Relative paths of n
 
 Workflow JSON lives under `save/` in the app data directory (Windows: often `%APPDATA%\pipeline-console\...`). Settings → **Open archive folder**.
 
+A separate `save-backups/` folder holds automatic canvas snapshots every 5 minutes (Settings → **Canvas backup**; see [Workflows & workshop](#workflows)).
+
 **Workflows are not uploaded by default.** Prompts go to your provider only when you run a node. Workshop upload is an explicit template you choose.

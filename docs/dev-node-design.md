@@ -47,14 +47,15 @@
 | `devColor` | string | 外框颜色（`#rrggbb`，小写存储；空串 = 按元素类型默认色；可经 `mtnode_canvas_edit` 补丁设置）。用户手选色与**功能色卡自动上色**都写这一个字段——自动上色只在创建时写一次，之后仍可被手选覆盖或清空（见 §6「功能色卡」） |
 | `devModel` | string | 该功能块选定的 **Agent 模型 id**（空串 = 未选择，跟随默认）。本块的「建议 / 问询」只读调研与「开发 / 细化」绑定会话都使用它；**未自行选择的子功能块就近向上继承**，子块自选则以子块为准 |
 | `devProvider` | string | `devModel` 对应的**智能路由**（`deepseek-official` / `mtnode_<id>` / 服务商名）。可由模型反查自动纠正，未选模型时无意义 |
+| `devFiles` | string[] | **核心文件列表**：本功能块最关键的源码文件，**最多 10 条**，以 `/` 分隔、**相对本块项目根（`devPath`）**（落在项目根内的绝对路径会被折成相对路径，根外绝对路径原样保留）。空 / 未填 = 折叠卡按兜底规则自动收集；**最外层（项目）开发块不列举**（读恒为空、写被拒绝）。详见下文「核心文件列表」 |
 
-`mtnode_canvas_get` 序列化与 `mtnode_canvas_edit` create/update schema 均透出以上字段（`superTree` 也带 `dev` 标记，便于全局导航）。
+`mtnode_canvas_get` 序列化与 `mtnode_canvas_edit` create/update schema 均透出以上字段（`superTree` 也带 `dev` 标记，便于全局导航；`devFiles` 同时出现在 `superTree` 与节点快照，列表仅来自自动兜底收集时节点快照另带 `devFilesAuto: true`）。
 
 ## 4. 「开发」「细化」「建议」「问询」按钮：对话框确认 → 只读调研 / 新会话运行
 
 通用对话框：`mtDialogForm()`（`app.js`，复用 `#mtDialog` 深色对话框宿主）——信息区（键值行 / 概述块 / 子元素清单）+ 可选输入区 + 多按钮；`requireText` 时输入为空不关闭并内联提示；Esc 取消、Ctrl+Enter 提交。
 
-- 渲染位置：节点头部菜单栏**只保留元素类型徽章 + 颜色 / 模型小按钮**；「开发 / 细化 / 建议 / 问询 / 会话 N」等动作按钮全部放在折叠卡 body 下方按钮组（**顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 会话 N**）。body **保持精简**：只含按钮组 + 上次建议摘要 + 在途调研状态行——项目根目录、状态字样（「已完成」等）、生效模型行一律不再常驻 body（避免无用信息占用空间）：路径与状态在「开发 / 细化 / 建议 / 问询」四个确认对话框展示，生效模型看头部 🧠 按钮（含悬浮提示）。右键菜单提供同动作。
+- 渲染位置：节点头部菜单栏**只保留元素类型徽章 + 颜色 / 模型小按钮**；「开发 / 细化 / 建议 / 问询 / 文件 N / 会话 N」等动作按钮全部放在折叠卡 body 下方按钮组（**顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 文件 N（核心文件列表）→ 会话 N**）。body **保持精简**：只含按钮组 +（展开时）核心文件列表 + 上次建议摘要 + 在途调研状态行——项目根目录、状态字样（「已完成」等）、生效模型行一律不再常驻 body（避免无用信息占用空间）：路径与状态在「开发 / 细化 / 建议 / 问询」四个确认对话框展示，生效模型看头部 🧠 按钮（含悬浮提示）。右键菜单提供同动作。
 - **文件节点「打开」** `openDevFileNode(node)`（`renderer/app-devnode.js`）：`devKind = file` 的节点在下方按钮组多一个「打开」按钮。路径约定——文件节点标题 = 相对项目根（`devPath`）的路径（如 `renderer/app.js`），也支持绝对路径；标题不像路径时退回打开项目根目录；文件不存在或未设 `devPath` 时 toast 提示。**Markdown / YAML 文件改走应用内阅读器**（查看 / 编辑 / 保存，见「阅读器」小节）；标题为 `agent.md` 时自动回退打开既有 `AGENTS.md`。
 - **「建议」`suggestDevNode(node)`**（`renderer/app-devnode.js`）—— 让用户不必自己想「下一步做什么」：
   1. **先确认**：`mtDialogForm` 展示现状（元素类型 / 开发状态 / 项目根 / 下层元素数 / 历史会话数 / 上次建议时间）并说明接下来的动作；可选填**本轮关注点**；未设 `devPath` 时给黄条提醒。按钮：「取消」／（有缓存时）「查看上次建议」／**「确认生成建议」**；
@@ -339,6 +340,22 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 - **作用范围**：①「建议 / 问询」的只读调研把 `provider/model` 传给 `dshRunTask`（并在进度日志首行写明「本轮模型：服务商 · 模型（继承自「×」）」）；②「开发 / 细化」新建的绑定会话直接以所选路由与模型开局（`createDevSessionForNode`）；③四个确认对话框（建议 / 开发 / 细化 / 问询）都多出「Agent 模型」一行（折叠卡 body 不再常驻生效模型行，生效模型看头部 🧠 按钮）。取消选择 = 「跟随默认（不指定）」，回到引擎默认路由与默认模型；
 - **实现**（`renderer/app-devnode.js`）：`devAgentRoutes` / `devAgentRouteName` / `devAgentModelGroups` / `devModelFitsRoute` / `devRouteOfModel`（路由与模型互校，路由失效或不匹配时**以模型为准**反查路由）→ `devModelOwn` / `devAgentModelOf` / `devAgentModelText` / `devModelScopeText` / `devModelDialogText` → `devModelButtonEl` / `devModelButtonRefresh`（不整盘重绘也能就地刷新按钮）→ `devModelPopEl` / `renderDevModelPop` / `openDevModelPop` / `applyDevModelChoice` / `toggleDevModelPicker`；`applyDevModelChoice` 先 `pushHistory()`（可撤销）再 `scheduleSave(true)`，`S.uiDevModelNode` 交给 `app.js` 的全局 mousedown 做「点外部收起」，全局 keydown 里 Esc 同时收起色板与模型弹层（Hex 输入框聚焦时也生效）。
 
+### 核心文件列表（`devFiles` · 「文件 N」按钮）
+
+需求：让用户在功能块上**一眼看到、并一键跳到本模块最关键的几个源码文件**——不必先展开壳层、也不必去项目树里翻。
+
+- **上限 10 条**：常量 `DEV_CORE_FILES_MAX = 10`（`renderer/app-devnode.js`）。裁剪、去重、路径归一**只在 `devCoreFilesNormalize(list, node, stats)` 一处**强制，UI 手工编辑、Agent `devFiles` 补丁、自动兜底收集**三个写入口全部经过它**（避免各处各写各的口径）；被裁掉的条数经 `stats.dropped` 回报，界面 toast 提示「核心文件最多 10 个，多余部分已忽略」，不静默丢弃。
+- **顶层（项目）节点不列举**：祖先链上再无开发块的那一块 = 项目节点，它的「核心文件」等于整个项目，没有信息量。口径统一走 `app.js` 的共用真源 `devIsDevBlock(node)` / `devIsTopBlock(node)`（`devProjectRootOf()` 也复用同一对函数，判定永不分叉）：顶层块 **读恒为空、写被拒绝**（`devCoreFilesSet()` 返回 `null`；`applyNodePatch` 丢弃补丁并 `warnings.push` 点名原因），并且**连「文件」按钮都不渲染**（`devCoreFilesButtonVisible()`）。
+- **三条来源合流**（优先级从高到低）：
+  1. **会话回写**（长期有真实数据的关键）：开发 / 细化 / 建议任务书都明确要求——收尾除回写 `note` 与 `devStatus` 外，**同时用 `mtnode_canvas_edit` 的 `devFiles` 补丁回写本模块核心文件**；细化时每个新建模块块顺手带上，不留给以后补。网关 `create` / `update` 两处 schema 均声明该字段（`additionalProperties:false`，不声明 Agent 就传不进来）；
+  2. **用户手工编辑**：展开面板头部「编辑」→ `mtDialogForm` textarea（**每行一个路径**，预填当前列表）+ 动作「自动收集 / 清空」（只改输入框、重开同一对话框回填，避免两套输入控件）+「确定」才写入；
+  3. **自动兜底**（前两者都为空时，`devCoreFilesAutoOf()`）：本块自身是 `file` 级块则取其标题 → 本块概述 `【实现】` 段里出现的**路径 token**（`devCoreFileTokensOf()`，扩展名白名单 `DEV_CORE_FILE_EXTS`：宁可少收，不把 `renderer/`、`%APPDATA%`、`FTS5`、`v1.1.28` 当文件）→ 后代 `devKind = file` 块的标题（标题按约定就是相对项目根的路径）。来源经 `devCoreFilesSourceOf()` 回报 `manual` / `auto`，界面据此在面板头部标「自动收集 · 点『编辑』确认」或「已确认」，`mtnode_canvas_get` 也只在纯兜底时透出 `devFilesAuto: true`。
+- **存储取向**：分隔符统一存 `/`；绝对路径若落在本块项目根内**折成相对路径**（与保存节点 `preferRelativeSavePath` 同一取向，便于展示与去重），根外绝对路径原样保留。单条清洗（`devCoreFileNormEntry`）剥引号 / 括号包裹与首尾标点、去掉 `./`、拒绝**越出项目根的 `../` 写法**（展示与定位都按 `devPathOf(node)` 解析，放它进来等于开了条逃出项目根的路）、拒绝通配符 / 目录（尾斜杠）/ 超过 `DEV_CORE_FILE_MAX_LEN = 240` 的脏数据。
+- **UI**（`renderer/app-canvas.js`）：按钮 `文件 N`（N = 条数，0 条只显示「文件」）插在**「打开」之后、「会话 N」之前**，`onclick` 先 `stopPropagation`（不触发超级节点展开/选中）再 `toggleDevFilesPanel(node)`；展开态记 `S.uiDevFiles = node.id`（与 `S.uiDevModelNode` 同一做法，只存节点 id），画布重绘时由 `nodeElement()` 在按钮行之后复原面板。样式全部作用在折叠卡 `.n-dev-info` 内（`renderer/css/canvas.css`）：按钮 `.n-dev-files-btn`（`.on` = 已展开）、面板 `.n-dev-files` + 头部 `.n-dev-files-head`（来源提示 +「编辑」`.n-dev-files-edit` +「打开项目根」`.n-dev-files-root`）、列表 `.n-dev-files-list`（自身 `max-height` 滚动，避开 `.n-body` 裁剪）、行 `.n-dev-file`（`.f` 文件名 / `.p` 灰色相对路径 / `.miss` 不存在标记 / `.missing` 行态）、空态 `.n-dev-files-empty`；颜色一律取既有 CSS 变量，暗 / 亮主题都可读，`[hidden]` 显式兜底 `display:none`。新中文词条在 `renderer/i18n.js` 补齐英文镜像。
+- **点一行 = 定位该文件**：`revealDevCoreFile(node, entry)` → `devCoreFileAbs()` 解析绝对路径 → **`window.api.shellShowItem(abs)`**（在资源管理器中选中该文件，即打开其所在文件夹；**复用既有 `shell:showItem` IPC，不新增主进程能力**）。解不出路径 / 未设 `devPath` / API 缺失一律 **toast 说明原因**，与 `openDevFileNode()` 同口径，绝不静默。每行显示 文件名（`devCoreFileLabel()`）+ 灰色相对路径，「不存在」标记由异步 `window.api.fileExists` 回填，结果缓存到模块级 `_devFileExistsCache`，只改 `.miss` 与 `.missing` 类、**不整盘重绘**。
+- **写入与持久化**：`devCoreFilesSet()` = 归一化 → 与旧值比较（相同不动）→ `pushHistory()`（可撤销）→ `scheduleSave(true)`；字段挂在 `NODE_DEFAULTS.super.devFiles`，`persist()` 全量序列化工作流、`migrateWf` 对 super 无字段白名单，故与 `devSuggest` 同机制自动随工作流 JSON 保存。
+- **测试口径**：`node test/smoke-dev-corefiles.js` 覆盖规范化（去重 / 裁剪到 10 / 绝对折相对 / 拒绝 `../`）、顶层块与非开发块**读写双向拒绝**、按钮渲染与「文件 N」计数、展开与再点收起、行点击调 `shellShowItem`、编辑对话框写回、兜底收集（后代 `file` 标题 + 概述 token）、`canvas_get` 快照与网关 schema 接线、CSS / i18n / 手册 / CHANGELOG / 技能索引接线；并须与既有 `node test/smoke-dev-suggest.js`、`node smoke.js` 一起保持通过（`devProjectRootOf` 相关回归 `test/smoke-workspace-project.js` 会把该段源码抠进沙箱独立跑，故 `devIsDevBlock` / `devIsTopBlock` 必须留在 `app.js` 同一节内）。
+
 ## 7. 关系线渲染与架构图排版
 
 ### 关系线为什么必须「整层一起规划」
@@ -440,6 +457,7 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 
 ```
 node test/smoke-dev-suggest.js     # 309 项：「建议 / 开发 / 细化」行为契约（含 AGENTS.md 共识文件接线）
+node test/smoke-dev-corefiles.js   # 核心文件列表 devFiles：归一化与 10 条上限 / 顶层块读写拒绝 / 「文件 N」按钮与展开面板 / 行点击 reveal / 自动兜底收集 / 契约与文档接线
 node test/smoke-rel-layout.js      #  51 项：关系线几何 + 架构图排版 + 端子文字
 node test/smoke-plan-dialog.js     # 274 项：计划弹窗结构（头部单块：归属=标题 · 目标=内容 · 无「明确不做」栏）+ 归属绑定 / 弹窗过期 / 终止即永久消失
 node test/smoke-db.js              #  20 项：db-store（FTS 增量 / 查询 / calc / 日志）

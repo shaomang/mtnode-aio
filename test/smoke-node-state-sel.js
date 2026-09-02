@@ -189,7 +189,7 @@ console.log("\n[7] JS 接线：状态类仍然写进节点元素");
   ok(jsCanvas.includes('el.classList.add("dev-running", "dev-running-"'), "开发节点运行中 → nodeElement 加 .dev-running（+ self/desc/sess 细分）");
   ok(/el\.classList\.add\("st-" \+ st\)/.test(jsCanvas), "任务节点 → nodeElement 加 st-<taskStatus>（running/done/failed/blocked 的状态灯来源）");
   ok(/el\.className = "wf-node " \+ kindCls \+ \(isSel\(node\.id\) \? " sel" : ""\)/.test(jsCanvas), "选中态用 .sel 类叠加（CSS 组合规则的前提）");
-  ok(jsCanvas.includes('hostEl.classList.add("sel")'), "拖拽尺寸的快速路径也只加 .sel 类（不重绘 → 靠切 animation-name 才有效）");
+  ok(jsCanvas.includes("setNodeSelClass(hostEl, node, true)") && !jsCanvas.includes('.classList.add("sel")'), "拖拽尺寸的快速路径仍只切 .sel 类不重绘（改走 setNodeSelClass 统一 helper → 靠切 animation-name 才有效）");
 }
 
 console.log(

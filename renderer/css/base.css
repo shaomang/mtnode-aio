@@ -390,6 +390,21 @@ input[type="number"]::-webkit-outer-spin-button {
   color: #ff8f98;
 }
 
+/* 对话框草稿提示：回填了上次未提交的内容 + 一键丢弃 */
+.mt-form-draft {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: #9fd8a6;
+}
+
+.mt-form-draft button {
+  flex: none;
+}
+
 .mt-form-hint {
   margin: 10px 0 0;
   font-size: 11.5px;
@@ -800,18 +815,177 @@ body.plan-resizing * {
 }
 
 /* ── 会话内「计划」面板（#agentPlan）：复用任务清单卡的 .at-* 结构，只补差异 ──
- * 计划是用户确认过的持久清单，所以头部偏蓝、多了序号 / 模型标签 / 可展开详情。 */
-.agent-plan {
+ * 计划是用户确认过的持久清单，所以头部偏蓝、多了序号 / 模型标签 / 可展开详情。
+ * 纵向伸缩不靠「再补一个写死的 max-height」，而是把「谁先让位」固定成下面五条不变式。
+ *
+ * 真因（test/layout-agent-plan.js 在真实 Electron 里量出来，收缩分配与 Flexbox §7.2 的
+ * shrink×basis 加权公式吻合到 ±0.3px）：dsh.css 的 .hist-scroll-wrap.is-flex-fill{flex:1 1 auto}
+ * 假想主尺寸 = 整段会话正文的内容高（实测 1096px）。容器装不下时缺口按 basis 加权分摊，
+ * 于是计划面板被按比例砍掉一半以上（会话 12 条时清单 120→16px；收起态面板 36→14px），
+ * 面板自己的 overflow:hidden 把 .at-head 裁掉，DOM 更靠后的 #agentTodo 恰好画在那一截上
+ * —— 用户看到的「计划列表压住对话栏」「收起后多半被下方遮挡」就是这么来的。
+ * 上一轮只改了 --ap-h 那条 max-height，没碰到这条分摊路径（收起态 --ap-h 根本不参与布局），
+ * 所以问题依旧。五条不变式：
+ *   ① 消息区 basis 归 0：它是唯一的填充项，只吃「剩下的」空间，绝不按内容高提需求；
+ *   ② 计划面板可收缩，但下限 = 自身头部（展开态再加把手），头部与把手永不被裁；
+ *   ③ 面板内的缺口全落到清单上：--ap-h（把手拖出来的值）只是清单的「最小高度」（flex-basis），
+ *      有空间就守住，想多看几行继续往上拖，空间真不够时只让清单变矮（min-height:0）；
+ *   ④ 任务卡 / 发送队列同口径：可收缩 + 头部下限 + 内部列表各自封顶（.at-list 190 / .aq-list 132）；
+ *   ⑤ 输入区 .agent-composer 是唯一钉死项（flex:none）：上面三项下限之和 45+38+36 = 119px，
+ *      加最坏情况的输入区（chips 换两行）180px 也才 299px；实测 .agent-body 高 = 窗口高 − 125px，
+ *      主窗口 minHeight:640 时还剩 515px（测量台里 420px 高的非法窗口都还剩 295px）——
+ *      所以输入区必然完整可见，清单永远盖不到他身上，消息区还留着 200px 上下的余量。
+ * 反过来说，消息区故意不设下限：它是第一个被牺牲的（见 ①），给他加下限就会把压力转嫁给输入区。
+ * 这里用「①②③④⑤」编号，与下面各条规则前的标号一一对应。
+ * overflow:hidden 从此只作异常兜底，不再是「不越界」的手段；能给空间时清单该多高就多高，
+ * 上限由 app-plan.js 的 clampAgentPlanH 按当下 DOM 实测（统一预算含 ④⑤）夹住。
+ * 选择器一律带 #id 或多一层 class：base.css 在 dsh.css 之前 @import，同特异度会被后者反压回去。
+ * 改这几条前先跑 node test/layout-agent-plan.js（它会逐格给出越界 / 裁切判定）。 */
+
+/* ① 消息区 = 唯一填充项：假想主尺寸归 0，先由他让位（dsh.css 的 flex:1 1 auto 就是真因） */
+.agent-body>.hist-scroll-wrap.is-flex-fill {
+  flex: 1 1 0px;
+  min-height: 0;
+}
+
+/* ② 计划面板：可收缩，但永不低于自己的头部（收起态整块就只剩这个头部，被裁掉就是「被下方遮挡」）
+   38px = 实测 .at-head 36px + 2px 余量。max-height 只是防呆，清单真正的上限看 clampAgentPlanH。 */
+.agent-todo.agent-plan {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 38px;
+  max-height: 100%;
+  /* 兜底：布局异常时多出来的部分裁在面板内，也不去糊住下方输入栏（正常让位走 ①②③④） */
+  overflow: hidden;
   margin-bottom: 2px;
 }
 
+/* 展开态的下限还要带上清单上方的把手：把手被裁掉就等于再也拖不动了（.ap-grip 固定 7px） */
+.agent-todo.agent-plan:not(.collapsed) {
+  min-height: 45px;
+}
+
+/* 收起（hidden）仍要收得起来：dsh.css 的 .agent-todo[hidden] 与基规则同特异度、只是靠加载顺序取胜，
+   这里显式写死一次（0,3,0 压过 0,2,0），样式分片顺序万一变动也不会让空面板占住一屏。 */
+.agent-todo.agent-plan[hidden] {
+  display: none;
+}
+
 .agent-plan .at-head {
+  flex: none; /* 面板内部的缺口全落到清单上：头部不参与收缩，永远不会被压扁 */
   border-color: rgba(86, 134, 254, .22);
   background: rgba(86, 134, 254, .08);
 }
 
+/* ③ 清单：--ap-h 只表示「最小高度」，往上仍可继续加高（把手设定 + clampAgentPlanH 实测上限） */
 .agent-plan .at-list {
-  max-height: 244px;
+  /* flex-basis（而非 max-height）承载用户设定值：有空间时清单始终守住这个最小高度，
+     内容更多也不把他撑高（自己内部滚动），窗口一矮又能跟着面板收缩 —— 怎么都不越过下沿。
+     max-height 必须显式清掉：dsh.css 的 .at-list{max-height:190px} 会把加高重新摁死。 */
+  flex: 0 1 var(--ap-h, 120px);
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* ④ 实时任务卡（todo_write 那张）：旧版 dsh.css 的 .agent-todo{flex:none} 把他钉成一整块，
+      矮窗口里他和计划面板一起把输入区顶出 .agent-main。现在同口径让位：可收缩 + 头部下限，
+      清单仍由 dsh.css 的 max-height:190px 封顶（= 契约里的「各自封顶」）。
+      #id 特异度高于 dsh.css 的 .agent-todo[hidden]，所以 hidden 必须在下面再压一次。 */
+#agentTodo {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 38px;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+#agentTodo>.at-head {
+  flex: none;
+}
+
+#agentTodo>.at-list {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+#agentTodo[hidden] {
+  display: none;
+}
+
+/* ④' 发送队列：与任务卡同口径（内部 .aq-list 的 max-height:132px 就是他的封顶）。
+       旧版夹取预算完全没算他 —— 队列一在场凭空多出近百 px，正好压在输入区那一截上。 */
+#agentQueue {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 36px;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+#agentQueue>.aq-head {
+  flex: none;
+}
+
+#agentQueue>.aq-list {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+#agentQueue[hidden] {
+  display: none;
+}
+
+/* ⑤ 输入区 = 底栏唯一的钉死项：谁都可以从他身上让位，他不能。
+      写进契约里锁死，免得以后 dsh.css 把他改成可收缩又是一次重叠。 */
+.agent-body>.agent-composer {
+  flex: none;
+  min-height: 0;
+}
+
+/* 清单上方的拖拽把手：向上拖 = 清单变高（拖到的值即此后守住的最小高度），双击 = 回到默认最小高度
+ * （app-plan.js bindAgentPlanGrip）。它夹在 .at-head 与 .at-list 之间，所以左右各补 1px 边框接上
+ * 被断开的卡片框线；观感（细条 + hover 高亮）对齐 .agent-side-resize，方向换成 ns-resize。
+ * 配色一律走 --bd2 / --muted / --cyan 主题变量，浅色主题自动跟随，不必另补覆盖。
+ * touch-action:none 让指针事件不被滚动吞掉，否则触屏上拖把手会变成滚页面。 */
+.ap-grip {
+  flex: none;
+  position: relative;
+  height: 7px;
+  box-sizing: border-box;
+  border-left: 1px solid var(--bd2);
+  border-right: 1px solid var(--bd2);
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  opacity: .7;
+  transition: opacity .12s, background-color .12s;
+}
+
+.ap-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+
+.ap-grip:hover,
+.ap-grip.dragging {
+  opacity: 1;
+  background: rgba(128, 128, 128, .14);
+}
+
+.ap-grip:hover::after,
+.ap-grip.dragging::after {
+  background: var(--cyan);
 }
 
 .ap-goal {

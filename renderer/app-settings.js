@@ -329,6 +329,77 @@ function openSettingsBody() {
     body.appendChild(sec);
   }
 
+  /* ── 画布备份（每 5 分钟自动快照到独立备份文件夹）── */
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("画布备份");
+    sec.appendChild(secTitle);
+
+    const hint = document.createElement("div");
+    hint.className = "n-field";
+    hint.textContent = I18n.t(
+      "每 5 分钟自动把各工作流的最新状态另存一份快照，放在与自动保存分开的 save-backups 文件夹（内容无变化不重复存），每条工作流保留最近 72 份；误删或改坏时可从备份文件夹找回。",
+    );
+    sec.appendChild(hint);
+
+    const statusEl = document.createElement("div");
+    statusEl.className = "n-field";
+    statusEl.style.fontSize = "12px";
+    statusEl.style.opacity = "0.9";
+    statusEl.textContent = I18n.t("正在读取备份状态…");
+    sec.appendChild(statusEl);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "n-field";
+    btnRow.style.flexDirection = "row";
+    btnRow.style.gap = "8px";
+    btnRow.style.flexWrap = "wrap";
+
+    const openBakBtn = document.createElement("button");
+    openBakBtn.className = "mini";
+    openBakBtn.textContent = I18n.t("打开备份文件夹");
+    openBakBtn.title = I18n.t("在资源管理器中打开工作流备份目录");
+    openBakBtn.onclick = async () => {
+      const r = await window.api.wfBackupOpen();
+      if (!r || !r.ok)
+        toast(
+          I18n.t("无法打开目录：") +
+            ((r && r.error) || I18n.t("未知错误")),
+          "err",
+        );
+      refreshBak();
+    };
+    btnRow.appendChild(openBakBtn);
+    sec.appendChild(btnRow);
+
+    const refreshBak = async () => {
+      try {
+        const st = await window.api.wfBackupStatus();
+        if (!st || !st.ok) {
+          statusEl.textContent =
+            I18n.t("无法读取：") + ((st && st.error) || I18n.t("未知错误"));
+          return;
+        }
+        const bits = [
+          I18n.t("备份目录：") + (st.dir || ""),
+          (st.count || 0) + " " + I18n.t("份"),
+        ];
+        if (st.latest)
+          bits.push(
+            I18n.t("最近更新：") + new Date(st.latest).toLocaleString(),
+          );
+        statusEl.textContent = bits.join(" · ");
+      } catch (e) {
+        statusEl.textContent = I18n.t("无法读取：") + (e.message || String(e));
+      }
+    };
+    refreshBak();
+    body.appendChild(sec);
+  }
+
   /* ── 错误与崩溃日志（自动保存，可导出提交给开发者）── */
   {
     const sec = document.createElement("div");
@@ -1203,7 +1274,162 @@ function catalogAddableProviders() {
   return out;
 }
 
-/* 添加服务商:从目录选择(选服务商 → 输 Key → 自动载入模型列表)或手动配置 */
+/* 粘贴导入:把剪贴板 / 粘贴的配置文字解析为服务商字段
+   (名称 / 接口地址 / API Key / 模型 / 类型)。按优先级尝试三种格式:
+   1) JSON 对象(含 name/baseUrl/apiKey/models 等字段,models 可为数组或逗号分隔字符串)
+   2) 逐行「字段名: 值」或「字段名=值」(中英文键名均可;模型可多行,值可逗号/分号分隔)
+   3) 纯逐行位置:第1行=名称,第2行=接口地址,第3行=API Key,其余行=模型(每行可再拆分) */
+function parseProviderText(text) {
+  const t = String(text || "").replace(/^\uFEFF/, "").trim();
+  if (!t) return { ok: false, error: I18n.t("粘贴内容为空") };
+  const clean = (v) =>
+    String(v == null ? "" : v)
+      .trim()
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+      .trim();
+  const normKey = (k) =>
+    String(k || "").trim().toLowerCase().replace(/[\s_-]+/g, "").replace(/[：:]/g, "");
+  const splitModels = (val) => {
+    const out = [];
+    for (const id of String(val).split(/[,，;；\n]+/)) {
+      const x = clean(id);
+      if (x) out.push(x);
+    }
+    return out;
+  };
+
+  /* 1) JSON */
+  if (t[0] === "{" || t[0] === "[") {
+    try {
+      const obj = JSON.parse(t);
+      const src = Array.isArray(obj) ? obj[0] : obj;
+      if (src && typeof src === "object") {
+        const data = {
+          name: clean(src.name || src.title || src.provider || src.providerName),
+          baseUrl: clean(
+            src.baseUrl || src.base_url || src.url || src.endpoint || src.apiBase || src.api_base,
+          ),
+          apiKey: clean(
+            src.apiKey || src.api_key || src.key || src.token || src.secret || src.secretKey,
+          ),
+          type: clean(src.type || src.api || src.kind),
+          models: [],
+        };
+        if (Array.isArray(src.models)) {
+          for (const m of src.models) {
+            const id = clean(m && typeof m === "object" ? m.id || m.model || m.name : m);
+            if (id) data.models.push(id);
+          }
+        } else if (typeof src.models === "string") {
+          data.models = splitModels(src.models);
+        }
+        if (data.name || data.baseUrl || data.apiKey || data.type || data.models.length)
+          return { ok: true, data };
+      }
+    } catch {}
+    return { ok: false, error: I18n.t("JSON 解析失败：请确认内容为有效的 JSON 配置") };
+  }
+
+  /* 2) 逐行「字段名: 值」/「字段名=值」(中英文键名) */
+  const KEY_MAP = [
+    [
+      "name",
+      ["name", "title", "provider", "providername", "服务商名称", "服务商", "供应商", "名称", "名字"],
+    ],
+    [
+      "baseUrl",
+      [
+        "baseurl",
+        "baseurl地址",
+        "base_url",
+        "api_base",
+        "apibase",
+        "url",
+        "接口地址",
+        "接口",
+        "地址",
+        "endpoint",
+        "api地址",
+        "服务器地址",
+      ],
+    ],
+    [
+      "apiKey",
+      ["apikey", "api_key", "api-key", "api密钥", "api key", "key", "密钥", "token", "secret", "sk", "授权码", "authorization"],
+    ],
+    ["models", ["models", "model", "模型列表", "模型id", "模型", "modelslist", "modelids"]],
+    ["type", ["type", "类型", "api类型", "apitype", "kind", "api"]],
+  ];
+  const data = { name: "", baseUrl: "", apiKey: "", type: "", models: [] };
+  let labeledHits = 0;
+  const extra = [];
+  const lines = t.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim().replace(/^[-*•·#>\d.)、\s]+/, "");
+    if (!line) continue;
+    const m = line.match(/^([^=:：]+?)\s*[:=：]\s*(.*)$/);
+    if (!m) {
+      extra.push(line);
+      continue;
+    }
+    const key = normKey(m[1]);
+    const val = clean(m[2]);
+    if (!key || !val) continue;
+    let field = null;
+    for (const [f, keys] of KEY_MAP) {
+      if (keys.some((k) => normKey(k) === key)) {
+        field = f;
+        break;
+      }
+    }
+    if (!field) continue;
+    labeledHits++;
+    if (field === "models") data.models = data.models.concat(splitModels(val));
+    else if (!data[field]) data[field] = val;
+  }
+  if (labeledHits) {
+    /* 无分隔符的整行并入模型(如「模型:」后另起一行的模型名);
+       跳过疑似 Key / URL,避免把密钥误当模型 */
+    for (const e of extra) {
+      const x = clean(e);
+      if (!x) continue;
+      if (/^https?:\/\//i.test(x)) continue;
+      if (/^sk[-_]?[a-z0-9]/i.test(x)) continue;
+      if (!data.models.includes(x)) data.models.push(x);
+    }
+    return { ok: true, data };
+  }
+
+  /* 3) 纯逐行位置 */
+  const pos = lines.map(clean).filter(Boolean);
+  if (pos.length >= 2) {
+    data.name = pos[0];
+    data.baseUrl = pos[1];
+    if (pos[2] && !/^https?:\/\//i.test(pos[2])) data.apiKey = pos[2];
+    for (let i = 3; i < pos.length; i++) data.models = data.models.concat(splitModels(pos[i]));
+    return { ok: true, data };
+  }
+
+  return {
+    ok: false,
+    error: I18n.t(
+      "未能识别配置：请使用「字段名: 值」逐行、JSON 或「名称/接口地址/API Key/模型」顺序粘贴",
+    ),
+  };
+}
+
+/* 把粘贴 / JSON 里的类型写法归一为设置页类型值(text_openai 等) */
+function normalizeProviderType(t) {
+  const v = String(t || "").trim().toLowerCase();
+  if (!v) return "text_openai";
+  if (v.includes("stability") || v === "image_stability") return "image_stability";
+  if (v.includes("midjourney") || v === "image_mj" || v === "mj") return "image_mj";
+  if (v.includes("图像") || v.includes("image") || v.includes("images/generations"))
+    return "image_openai";
+  return "text_openai";
+}
+
+/* 添加服务商:从目录选择(选服务商 → 输 Key → 自动载入模型列表)、粘贴导入或手动配置 */
 function addProviderDialog() {
   openOverlay(I18n.t("添加服务商"));
   overlayPersistent = true;
@@ -1223,6 +1449,10 @@ function addProviderDialog() {
     o2.textContent = I18n.t("手动配置");
     srcSel.appendChild(o1);
     srcSel.appendChild(o2);
+    const o3 = document.createElement("option");
+    o3.value = "paste";
+    o3.textContent = I18n.t("粘贴导入（一键解析）");
+    srcSel.appendChild(o3);
   }
   srcRow.appendChild(srcSel);
   body.appendChild(srcRow);
@@ -1353,10 +1583,89 @@ function addProviderDialog() {
   manBox.appendChild(mModels);
   body.appendChild(manBox);
 
+  /* 粘贴导入容器 */
+  const pasteBox = document.createElement("div");
+  pasteBox.className = "store-form";
+  pasteBox.style.display = "none";
+  const pasteHint = document.createElement("div");
+  pasteHint.className = "settings-hint";
+  pasteHint.textContent = I18n.t(
+    "把服务商配置文字粘贴到下方（支持「字段名: 值」逐行、JSON，或按 名称/接口地址/API Key/模型 顺序逐行），点「解析并填入」自动识别。",
+  );
+  pasteBox.appendChild(pasteHint);
+  const pasteInp = document.createElement("textarea");
+  pasteInp.rows = 8;
+  pasteInp.placeholder =
+    "名称: SiliconFlow\n接口地址: https://api.siliconflow.cn/v1\nAPI Key: sk-xxxx\n模型: deepseek-ai/DeepSeek-V3, Qwen/Qwen2.5-7B-Instruct";
+  pasteInp.style.cssText =
+    "width:100%; box-sizing:border-box; font-family:monospace; margin-top:8px;";
+  pasteBox.appendChild(pasteInp);
+  const pasteBtns = document.createElement("div");
+  pasteBtns.style.cssText = "display:flex; gap:8px; margin-top:8px;";
+  const pasteClip = document.createElement("button");
+  pasteClip.type = "button";
+  pasteClip.className = "mini";
+  pasteClip.textContent = I18n.t("读取剪贴板");
+  pasteClip.title = I18n.t("从系统剪贴板读取文字并解析");
+  pasteClip.onclick = async (ev) => {
+    ev.preventDefault();
+    let txt = "";
+    try {
+      if (window.api && window.api.clipboardReadText) txt = await window.api.clipboardReadText();
+    } catch {}
+    if (!txt || !txt.trim()) {
+      toast(I18n.t("剪贴板为空：请先复制配置文字再点此按钮"), "warn");
+      return;
+    }
+    pasteInp.value = txt;
+    doParsePaste();
+  };
+  const pasteGo = document.createElement("button");
+  pasteGo.type = "button";
+  pasteGo.className = "mini primary";
+  pasteGo.textContent = I18n.t("解析并填入");
+  pasteGo.title = I18n.t("按行解析并填入下方表单，可再核对修改");
+  pasteGo.onclick = (ev) => {
+    ev.preventDefault();
+    doParsePaste();
+  };
+  pasteBtns.appendChild(pasteClip);
+  pasteBtns.appendChild(pasteGo);
+  pasteBox.appendChild(pasteBtns);
+  body.appendChild(pasteBox);
+
+  /* 解析成功 → 填入手动表单并切到手动模式,用户核对后点「添加」 */
+  const doParsePaste = () => {
+    const r = parseProviderText(pasteInp.value);
+    if (!r.ok) {
+      toast(r.error, "warn");
+      return;
+    }
+    const d = r.data;
+    if (d.name) mNameInp.value = d.name;
+    if (d.baseUrl) mUrlInp.value = d.baseUrl;
+    if (d.apiKey) mKeyInp.value = d.apiKey;
+    if (Array.isArray(d.models) && d.models.length) mModelsInp.value = d.models.join(", ");
+    const t = normalizeProviderType(d.type);
+    if (PROVIDER_TYPE_LABELS.some(([v]) => v === t)) mTypeSel.value = t;
+    srcSel.value = "manual";
+    catBox.style.display = "none";
+    manBox.style.display = "";
+    pasteBox.style.display = "none";
+    const parts = [];
+    if (d.name) parts.push(I18n.t("名称 ") + d.name);
+    if (d.baseUrl) parts.push(I18n.t("接口 ") + d.baseUrl);
+    if (d.apiKey) parts.push(I18n.t("API Key 已填入"));
+    if (d.models.length) parts.push(d.models.length + I18n.t(" 个模型"));
+    toast(I18n.t("已解析并填入（请核对后点「添加」）：") + parts.join(" · "), "ok");
+  };
+
   srcSel.addEventListener("change", () => {
     const manual = srcSel.value === "manual";
-    catBox.style.display = manual ? "none" : "";
+    const paste = srcSel.value === "paste";
+    catBox.style.display = paste ? "none" : "";
     manBox.style.display = manual ? "" : "none";
+    pasteBox.style.display = paste ? "" : "none";
   });
 
   const renderCatalog = () => {
@@ -1418,6 +1727,10 @@ function addProviderDialog() {
   ok.textContent = "添加";
   ok.onclick = () => {
     let prov = null;
+    if (srcSel.value === "paste") {
+      toast(I18n.t("请先粘贴配置文字并点「解析并填入」"), "warn");
+      return;
+    }
     if (srcSel.value === "catalog") {
       const p = catalogAddableProviders().find((x) => x.id === provSel.value);
       if (!p) {

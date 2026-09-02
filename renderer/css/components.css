@@ -2326,12 +2326,34 @@
 }
 
 .ref-menu .ref-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px 10px;
   font-size: 10px;
   letter-spacing: 2px;
   color: var(--orange);
   padding: 6px 10px;
   border-bottom: 1px dashed var(--bd);
   user-select: none
+}
+
+.ref-menu .ref-head-t {
+  flex: 1 1 auto
+}
+
+/* 菜单里的键盘提示：↑↓ 选 · 回车确认 · Esc 取消（不必再鼠标点） */
+.ref-menu .ref-keys {
+  flex: none;
+  letter-spacing: 0;
+  color: var(--muted)
+}
+
+/* 边打边筛时命中的片段 */
+.ref-menu .ref-item .ref-hit {
+  color: var(--orange2);
+  font-weight: 700
 }
 
 .ref-list {

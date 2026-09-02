@@ -19,23 +19,23 @@ function buildSpec(node, prov, idx) {
       });
     }
   }
-  const refs = resolveRefs(procPromptForRun(node), node, idx);
-  if (usesGlobalRefs(node)) {
-    const wired = new Set(wiresTo(node.id).map((w) => w.from));
-    for (const src of globalRefSources(node.id)) {
-      if (wired.has(src.id)) continue;
-      const v = valueForInput(src, idx);
-      if (v && v.kind === "image") {
-        images.push(v.path);
-        imageSources.push({
-          title: itemTitleOf(src, idx) || I18n.t("图像"),
-          text:
-            I18n.t("（图像输入）") +
-            "\n" +
-            I18n.t("标题：") +
-            (itemTitleOf(src, idx) || I18n.t("图像")),
-        });
-      }
+  const runPrompt = procPromptForRun(node);
+  const refs = resolveRefs(runPrompt, node, idx);
+  /* 全局广播图像：同样只有提示词里明文 @ 命中的来源才进参考图 */
+  const wiredFrom = new Set(wiresTo(node.id).map((w) => w.from));
+  for (const src of globalRefSourcesForRun(node, runPrompt)) {
+    if (wiredFrom.has(src.id)) continue;
+    const v = valueForInput(src, idx);
+    if (v && v.kind === "image") {
+      images.push(v.path);
+      imageSources.push({
+        title: itemTitleOf(src, idx) || I18n.t("图像"),
+        text:
+          I18n.t("（图像输入）") +
+          "\n" +
+          I18n.t("标题：") +
+          (itemTitleOf(src, idx) || I18n.t("图像")),
+      });
     }
   }
   /* 图生图：连线图已可能被 @ 引用进 refImages，再 concat 会翻倍；文生图背景仍可带标题说明 */
@@ -430,25 +430,25 @@ function buildSpecAgg(node, prov) {
       });
     }
   }
-  if (usesGlobalRefs(node)) {
-    const wired = new Set(wiresTo(node.id).map((w) => w.from));
-    for (const src of globalRefSources(node.id)) {
-      if (wired.has(src.id)) continue;
-      for (const it of allTextItems(src)) textBlocks.push(it);
-      for (const it of allImageItems(src)) {
-        images.push(it.path);
-        textBlocks.push({
-          title: it.title || src.title || I18n.t("图像"),
-          text:
-            I18n.t("（图像输入）") +
-            "\n" +
-            I18n.t("标题：") +
-            (it.title || src.title || I18n.t("图像")),
-        });
-      }
+  const runPrompt = procPromptForRun(node);
+  const wiredAgg = new Set(wiresTo(node.id).map((w) => w.from));
+  /* 聚合模式同样只注入被明文 @ 命中的全局来源 */
+  for (const src of globalRefSourcesForRun(node, runPrompt)) {
+    if (wiredAgg.has(src.id)) continue;
+    for (const it of allTextItems(src)) textBlocks.push(it);
+    for (const it of allImageItems(src)) {
+      images.push(it.path);
+      textBlocks.push({
+        title: it.title || src.title || I18n.t("图像"),
+        text:
+          I18n.t("（图像输入）") +
+          "\n" +
+          I18n.t("标题：") +
+          (it.title || src.title || I18n.t("图像")),
+      });
     }
   }
-  const refs = resolveRefsAgg(procPromptForRun(node), node);
+  const refs = resolveRefsAgg(runPrompt, node);
   /* 聚合图生图：去掉「（图像输入）」标题块，避免与「第 N 张参考图」重复说明 */
   const promptBlocks =
     node.kind === "proc_image"
@@ -815,9 +815,9 @@ function procSourcesOf(node) {
     out.push(src);
   };
   for (const w of wiresTo(node.id)) add(nodeById(w.from));
-  if (usesGlobalRefs(node)) {
-    for (const src of globalRefSources(node.id)) add(src);
-  }
+  /* 未被明文 @ 命中的全局来源本次不会注入内容，也就不必强制补跑其上游 */
+  for (const src of globalRefSourcesForRun(node, procPromptForRun(node)))
+    add(src);
   /* 需求等待以控制线连入时：仍作为阻塞依赖，先等文件就绪再跑本节点 */
   for (const w of allWiresTo(node.id)) {
     if (!wireFromIsControl(w)) continue;
@@ -3660,6 +3660,15 @@ async function playNodeBody(node, quiet, opts) {
           : resolveRefs(procPromptOf(node), node, 0).unresolved;
       if (un.length)
         toast(I18n.t("未解析的 @引用：") + I18n.listJoin(un), "warn");
+      /* 全局广播只注入被明文 @ 命中的来源：开了彩虹却零命中时给出提示，避免用户以为静默生效 */
+      if (usesGlobalRefs(node)) {
+        const gs = globalRefSources(node.id);
+        if (gs.length && !mentionedRefSources(procPromptOf(node), gs).length)
+          toast(
+            I18n.t("已开启全局引用，但提示词未 @ 引用任何全局来源，本次未注入内容"),
+            "warn",
+          );
+      }
     }
   }
   const clearPendingEarly = () => {
@@ -5875,6 +5884,8 @@ function canvasSnapshot(opts) {
         devPath: n.dev ? String(n.devPath || "") || undefined : undefined,
         devStatus: n.dev ? n.devStatus || "pending" : undefined,
         devKind: n.dev ? devKindOf(n) || "module" : undefined,
+        /* 核心文件列表（展示口径：显式写入优先，为空时是自动兜底收集的结果） */
+        devFiles: n.dev ? devCoreFilesOf(n) : undefined,
         devModel: n.dev ? String(n.devModel || "").trim() || undefined : undefined,
         devProvider: n.dev
           ? String(n.devProvider || "").trim() || undefined
@@ -6036,6 +6047,14 @@ function canvasSnapshot(opts) {
       devProvider:
         n.kind === "super" && n.dev
           ? String(n.devProvider || "").trim() || undefined
+          : undefined,
+      /* 核心文件列表（≤10 · 相对本块项目根）：与节点「文件」按钮同一口径；
+         最外层（项目）开发节点恒为空数组 */
+      devFiles:
+        n.kind === "super" && n.dev ? devCoreFilesOf(n) : undefined,
+      devFilesAuto:
+        n.kind === "super" && n.dev && devCoreFilesSourceOf(n) === "auto"
+          ? true
           : undefined,
       execPath:
         n.kind === "execute" ? String(n.execPath || "") || undefined : undefined,
@@ -6332,14 +6351,15 @@ async function resolveWorkflowRef(token) {
 async function createWorkflowNamed(name) {
   const id = "wf_" + Date.now().toString(36);
   clearHistory();
-  S.wf = {
+  setForegroundWf({
     id,
     name: String(name || "").trim() || I18n.t("未命名画布"),
     nodes: [],
     wires: [],
     groups: [],
     marks: [],
-  };
+  }); /* 新建即切为用户可见的前台画布：_fgWf 同步登记 */
+  reviveWf(id); /* 全新画布对象：解禁同名 id（旧对象墓碑仍在，串写不进来） */
   await window.api.wfSave(id, S.wf);
   S.config.activeWorkflowId = id;
   await window.api.configSave(S.config);
@@ -6360,6 +6380,9 @@ async function renameWorkflowByRef(workflow, name) {
     id = w.id;
   }
   if (!id) throw new Error(I18n.t("当前没有打开的画布"));
+  /* 已删画布（黑名单）不允许再改名：这里的 wfSave 会凭空复活一个空壳画布 */
+  if (wfIsDeleted(id))
+    throw new Error(deletedWfError({ id, name: S.wf && S.wf.id === id ? S.wf.name : "" }));
   if (S.wf && S.wf.id === id) {
     S.wf.name = nm;
     scheduleSave(true);
@@ -6379,34 +6402,149 @@ async function renameWorkflowByRef(workflow, name) {
   return { id, name: nm };
 }
 
-async function deleteWorkflowByRef(workflow) {
-  const w = workflow
-    ? await resolveWorkflowRef(workflow)
-    : S.wf
-      ? { id: S.wf.id, name: S.wf.name }
-      : null;
-  if (!w || !w.id) throw new Error(I18n.t("当前没有打开的画布"));
-  await window.api.wfDelete(w.id);
+/* ── 删除画布的目标解析（确认框与执行体共用同一口径）─────────────────────
+   杜绝「弹窗显示 A、实际删掉 B」：
+   - 受限范围（智能任务 / 会话锁画布）：无 ref 时只能删本会话绑定的画布
+     （S.canvasRunWf，退一步用「用户可见的前台画布」），有 ref 也必须就是它。
+     绝不兜底 S.wf —— 后台换画布编辑（runAgainstWf）在飞时 S.wf 是别人的画布。
+   - 全局范围：必须显式给出 workflow，缺失直接报错要求指定，不再默认「删当前」。
+   返回磁盘上的真实目标 { id, name, nodes }（wfList 口径，与主进程校验同源）。 */
+async function resolveDeleteWfTarget(params, opts) {
+  const p = params || {};
+  const ref = String(p.workflow || p.id || p.name || "").trim();
+  const restricted = assistRestrictOtherCanvases();
+  let bound = null;
+  if (restricted) {
+    bound =
+      (S.canvasRunWf && S.canvasRunWf.id ? S.canvasRunWf : null) ||
+      currentVisibleWf();
+    if (!bound || !bound.id) throw new Error(I18n.t("当前会话没有绑定画布，无法删除"));
+  } else if (!ref) {
+    throw new Error(
+      I18n.t(
+        "缺少 workflow：请显式指定要删除的画布（id 或名称）。为避免误删，全局范围不会默认删除「当前画布」。",
+      ),
+    );
+  }
+  const token = ref || (bound && bound.id);
+  const w = await resolveWorkflowRef(token);
+  if (!w || !w.id) throw new Error(I18n.t("找不到画布：") + token);
+  if (restricted && String(w.id) !== String(bound.id))
+    throw new Error(
+      (opts && opts.scopeBlocked) ||
+        I18n.t("智能任务仅能访问当前画布，无法读取或操作其他画布。"),
+    );
+  /* 已在黑名单里的画布（本轮删除成功后 agent 又调一次）：明确报错 */
+  if (wfIsDeleted(w.id)) throw new Error(deletedWfError(w));
+  return {
+    id: String(w.id),
+    name: String(w.name || w.id),
+    nodes: Number(w.nodes || 0),
+    restricted: !!restricted,
+  };
+}
+
+/* params 对象身份为键的「确认戳」：确认框解析并展示过的目标登记在这里，
+   执行前复核弹窗期间目标没被换掉（模型无法伪造，不进任何数据通道）。 */
+const APP_OP_CONFIRM_STAMPS = new WeakMap();
+function stampAppOpConfirm(params, stamp) {
+  if (!params || typeof params !== "object") return;
+  try {
+    APP_OP_CONFIRM_STAMPS.set(params, stamp);
+  } catch {}
+}
+function takeAppOpConfirmStamp(params) {
+  if (!params || typeof params !== "object") return null;
+  const s = APP_OP_CONFIRM_STAMPS.get(params) || null;
+  try {
+    APP_OP_CONFIRM_STAMPS.delete(params);
+  } catch {}
+  return s;
+}
+
+async function deleteWorkflowByRef(workflow, opts) {
+  opts = opts || {};
+  const ref = String(workflow == null ? "" : workflow).trim();
+  /* 删除入口不再兜底 S.wf：调用方（applyAppOp 的 delete_workflow 分支）必须
+     先经 resolveDeleteWfTarget 锁定目标，把画布引用显式传进来。 */
+  if (!ref)
+    throw new Error(
+      I18n.t("缺少 workflow：请显式指定要删除的画布（id 或名称）。"),
+    );
+  const w = await resolveWorkflowRef(ref);
+  if (!w || !w.id) throw new Error(I18n.t("找不到画布：") + ref);
+  /* 与调用方锁定的目标不一致（弹窗到执行之间画布列表变了）：立刻中止 */
+  if (opts.expectId && String(w.id) !== String(opts.expectId))
+    throw new Error(
+      I18n.t("删除目标与锁定的画布不一致，已中止：") + w.id,
+    );
+  /* 已在黑名单里的画布（本轮删除成功后 agent 又调一次）：明确报错，不重复删、
+     更不能让它走后面的落点重建路径把旧对象再写回磁盘。 */
+  if (wfIsDeleted(w.id)) throw new Error(deletedWfError(w));
+  const expectName = String(opts.expectName || w.name || w.id);
+  /* 主进程双重校验：id + 名称都要和磁盘上那份 json 对得上，否则 fail closed */
+  const r = await window.api.wfDelete({
+    id: w.id,
+    expectId: String(w.id),
+    expectName,
+  });
+  /* 主进程回 ok 才算删除成功（物理删 / 软删都按「对用户已不存在」收口）；
+     失败原因原样回给用户（toast）与模型（抛出的 error），绝不谎报成功、
+     不摘状态、不重建画布。 */
+  if (!r || !r.ok) {
+    const reason =
+      (r && (r.error || r.code)) || I18n.t("主进程未返回删除结果");
+    toast(I18n.t("删除被拒绝：") + reason, "err");
+    throw new Error(I18n.t("删除失败：") + reason);
+  }
+  /* 删除已确认：统一收口 —— 掐待保存定时器、从 wfBag / canvasRunStack /
+     nodeWfId 里摘干净，并把 id 记入黑名单（此后 persist 类写回一律丢弃）。 */
+  forgetDeletedWf(
+    w.id,
+    (S.wfBag && S.wfBag[w.id]) || (S.wf && String(S.wf.id) === String(w.id) ? S.wf : null),
+  );
+  /* 落点必须在摘标签之前选定（要在原标签序列里找「下一个」）。
+     R1：不再无条件 wfSave("default", 空壳) 把已有默认画布整个清空。 */
+  const land = await pickLandingWfAfterDelete(w.id);
   const list = S.config.visitedWorkflows || [];
   const i = list.findIndex((t) => t.id === w.id);
   if (i >= 0) list.splice(i, 1);
-  if (S.wfBag) delete S.wfBag[w.id];
-  const id = "default";
-  clearHistory();
-  if (S.wf && S.wf.id === w.id) {
-    S.wf = { id, name: I18n.t("默认画布"), nodes: [], wires: [], groups: [], marks: [] };
-    await window.api.wfSave(id, S.wf);
-    S.config.activeWorkflowId = id;
-    rememberWf(S.wf);
-    trackWorkflow(id, S.wf.name);
-    toast(I18n.t("画布已删除，已重建默认画布"), "ok");
+  const fg = currentVisibleWf();
+  if ((S.wf && S.wf.id === w.id) || (fg && fg.id === w.id)) {
+    let landed = false;
+    if (land.exists) {
+      /* 切到落点走真实加载（workspace 等字段随磁盘数据回来），skipFlush 防复活 */
+      await loadWorkflow(land.id, { skipFlush: true });
+      if (S.wf && S.wf.id === land.id) {
+        landed = true;
+        /* loadWorkflow 可能因「目标已是 S.wf」直接返回：仍要把前台真源指过来 */
+        if (currentVisibleWf() !== S.wf) setForegroundWf(S.wf);
+        toast(
+          I18n.t("画布已删除，已切换到：") + (S.wf.name || land.id),
+          "ok",
+        );
+      }
+    }
+    if (!landed) {
+      /* 只有磁盘上确实没有 default.json（或落点加载失败）时才新建空默认画布 */
+      await createDefaultWorkflowFresh();
+      toast(I18n.t("画布已删除，已重建默认画布"), "ok");
+    }
   } else {
     toast(I18n.t("已删除画布：") + (w.name || w.id), "ok");
   }
   await window.api.configSave(S.config);
   renderAll();
   await refreshWfSelect();
-  return { ok: true, deleted: w.id, active: S.wf && S.wf.id };
+  return {
+    ok: true,
+    deleted: w.id,
+    /* 把「到底删了哪一张」原样回给模型：名称 + 节点数 + 回收站路径 */
+    deletedName: w.name || w.id,
+    deletedNodes: Number(w.nodes || 0),
+    trashPath: r.trashPath || null,
+    active: S.wf && S.wf.id,
+  };
 }
 
 async function applyAppOp(params) {
@@ -6554,17 +6692,24 @@ async function applyAppOp(params) {
   }
 
   if (action === "delete_workflow") {
-    if (assistRestrictOtherCanvases()) {
-      const bound = canvasTargetWf() || S.wf;
-      const ref = String(params.workflow || params.id || params.name || "").trim();
-      if (ref && bound && ref !== bound.id && ref !== bound.name)
-        throw new Error(scopeBlocked);
-      if (!ref && bound) {
-        const deleted = await deleteWorkflowByRef(bound.id);
-        return Object.assign({ ok: true, action }, deleted, await canvasSnapshotFull());
-      }
-    }
-    const deleted = await deleteWorkflowByRef(params.workflow || params.id || params.name);
+    /* 收紧删除入口：目标一律经 resolveDeleteWfTarget 锁定 ——
+       受限范围只允许删本会话绑定的画布（不兜底 S.wf），全局范围必须显式
+       指定 workflow。与确认框（summarizeAppOp）共用同一解析，弹窗期间目标
+       变了就中止；主进程再按 id + 名称双重校验，拒绝原因原样回传。 */
+    const t = await resolveDeleteWfTarget(params, { scopeBlocked });
+    const stamp = takeAppOpConfirmStamp(params);
+    if (stamp && String(stamp.id) !== String(t.id))
+      throw new Error(
+        I18n.t("删除目标与确认框里的画布不一致，已中止，请重新发起删除。"),
+      );
+    if (stamp && String(stamp.name) !== String(t.name))
+      throw new Error(
+        I18n.t("画布名称在确认期间已变化，已中止，请重新确认后删除。"),
+      );
+    const deleted = await deleteWorkflowByRef(t.id, {
+      expectId: t.id,
+      expectName: t.name,
+    });
     return Object.assign({ ok: true, action }, deleted, await canvasSnapshotFull());
   }
 
@@ -7823,15 +7968,44 @@ async function applyVisionInspect(params) {
   };
 }
 
-function summarizeAppOp(params) {
+async function summarizeAppOp(params) {
   params = params || {};
   if (params.action === "delete_workflow") {
+    /* 与执行体同一口径解析删除目标，把 id + 节点数 + 名称摊给用户看，
+       并把解析结果登记成「确认戳」供 applyAppOp 复核（防弹窗期间目标漂移）。
+       解析失败时不猜测目标，直接把原因显示出来（执行端还会再校验一次）。 */
+    let t = null;
+    let fail = "";
+    try {
+      t = await resolveDeleteWfTarget(params);
+    } catch (e) {
+      fail = (e && e.message) || String(e);
+    }
+    if (t) stampAppOpConfirm(params, { id: t.id, name: t.name, nodes: t.nodes });
+    const ref = String(params.workflow || params.id || params.name || "").trim();
     return {
       summary:
         I18n.t("删除画布") +
         " · " +
-        String(params.workflow || params.id || params.name || (S.wf && S.wf.name) || ""),
-      detail: I18n.t("将删除该画布及其全部本地数据文件（含节点图像资产）。此操作不可恢复。"),
+        (t ? t.name : ref || I18n.t("未指定画布")),
+      detail:
+        (t
+          ? I18n.t("将删除画布") +
+            "「" +
+            t.name +
+            "」" +
+            I18n.t("（id ") +
+            t.id +
+            I18n.t(" · 节点 ") +
+            t.nodes +
+            I18n.t(" 个），仅影响这一个画布。")
+          : I18n.t("无法定位要删除的画布：") + fail) +
+        "\n" +
+        I18n.t("请先核对上面的 id 与节点数，确认要删的就是它。") +
+        "\n" +
+        I18n.t(
+          "画布文件与其图像资产会移入本机回收站目录（%APPDATA%\\pipeline-console\\trash），不会静默物理删除。",
+        ),
       raw: JSON.stringify(params, null, 2).slice(0, 2000),
     };
   }
@@ -7869,12 +8043,75 @@ function summarizeAppOp(params) {
   };
 }
 
+/* ── 宿主确认框的「归属轮次」绑定 ────────────────────────────────────────
+   confirmAssistCanvasEdit / confirmAssistAppOp 弹出的是宿主级模态框：它只知道
+   「有智能体请求改画布」，不知道是哪一轮发起的。发起它的可能是一轮早已结束的
+   运行（本轮的预热轮、上一轮遗留的后台 job 或子代理）。网关侧已按 session 章
+   门控这类帧（见 dsh/gateway/gateway.mjs 的 [ix-gate]），这里补另一半：每个
+   确认框登记到发起轮（帧 id + runKey + 帧 sessionId），本轮收尾、网关撤帧
+   （ix-drop）或用户点终止时一律自动关闭并回失败回执 —— 否则用户点「确认」只
+   把结果写回一个没人再听的 socket，就是「弹窗跳出来、回答后执行无效」。 */
+const IX_CONFIRM_DEAD = "__ix_confirm_dead__";
+function canvasConfirmRegistry() {
+  if (!S._canvasConfirms) S._canvasConfirms = new Map();
+  return S._canvasConfirms;
+}
+/* 与 ixPruneOrphanCards 同一判活口径：取消句柄已从 _runCancels 消失 = 那一轮
+   已经结束（正常收尾 / 用户终止 / 看门狗兜底）。runKey 为空 = 不归属任何智能
+   轮次（渲染层本地调用），不做判定，保持原行为。 */
+function canvasConfirmRunLive(runKey) {
+  if (!runKey) return true;
+  return !!(S._runCancels && S._runCancels[runKey]);
+}
+function canvasConfirmUnregister(id) {
+  const k = String(id || "");
+  const reg = canvasConfirmRegistry();
+  const it = reg.get(k);
+  if (!it) return null;
+  reg.delete(k);
+  return it;
+}
+function canvasConfirmRegister(entry) {
+  if (!entry || !entry.id || typeof entry.settle !== "function") return;
+  canvasConfirmRegistry().set(String(entry.id), entry);
+}
+/* 网关撤帧（ix-drop）：按帧 id 精确自毁 */
+function canvasConfirmDrop(id) {
+  const it = canvasConfirmUnregister(id);
+  if (it) it.settle();
+}
+/* 本轮收尾 / 用户点终止：撤掉这一轮挂起的全部确认框 */
+function canvasConfirmDropRun(runKey) {
+  const k = String(runKey || "");
+  if (!k) return;
+  const reg = canvasConfirmRegistry();
+  for (const [id, it] of Array.from(reg)) {
+    if (String(it.runKey || "") !== k) continue;
+    reg.delete(id);
+    it.settle();
+  }
+}
+/* 本地兜底：所属轮已不在途（网关被强杀、老版网关不发撤帧）→ 立刻自毁。
+   由 ixPruneOrphanCards 与本轮看门狗周期调用，与提问 / 审批卡同一清理节奏。 */
+function canvasConfirmPruneOrphans() {
+  const reg = canvasConfirmRegistry();
+  if (!reg.size) return;
+  for (const [id, it] of Array.from(reg)) {
+    if (canvasConfirmRunLive(it.runKey)) continue;
+    reg.delete(id);
+    it.settle();
+  }
+}
+
 function confirmAssistAction(title, info, opts) {
   info = info || {};
   opts = opts || {};
   return new Promise((resolve) => {
     openOverlay(title || I18n.t("确认操作"));
     overlayPersistent = true;
+    /* owner = 发起这一帧的那一轮：{ id: 帧 id, runKey, sessionId } */
+    const owner = opts.owner || null;
+    const confirmId = owner && owner.id ? String(owner.id) : "";
     const body = $("#ovBody");
     const foot = $("#ovFoot");
     body.innerHTML = "";
@@ -7901,28 +8138,59 @@ function confirmAssistAction(title, info, opts) {
       ? I18n.t("拒绝后本次修改不会生效，并立即停止智能会话继续工作。")
       : I18n.t("拒绝后本次修改不会生效；可让助手改方案后再试。");
     body.appendChild(note);
+    if (confirmId) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "margin-top:6px; color:var(--muted); font-size:11px";
+      hint.textContent = I18n.t("发起该请求的运行结束后，此确认框会自动消失。");
+      body.appendChild(hint);
+    }
     foot.innerHTML = "";
+    /* 屏幕上这一刻显示的框是不是我：自毁路径可能晚于用户打开别的弹窗（设置、
+       保存路径…），那时绝不能越界 closeOverlay 把别人正在填的表关掉。 */
+    const overlayBox = () => document.querySelector("#overlay .overlay-box");
+    const overlayIsMine = () => {
+      if (!confirmId) return true;
+      const b = overlayBox();
+      return !!b && b.dataset.ixConfirmId === confirmId;
+    };
     let done = false;
-    const finish = (ok) => {
+    /* ans: true=确认 / false=拒绝 / IX_CONFIRM_DEAD=发起轮已结束，自动撤框 */
+    const settle = (ans, closeDom) => {
       if (done) return;
       done = true;
-      closeOverlay();
-      resolve(ok);
+      canvasConfirmUnregister(confirmId);
+      const b = overlayBox();
+      if (closeDom && overlayIsMine()) {
+        if (b && b.dataset.ixConfirmId) delete b.dataset.ixConfirmId;
+        closeOverlay();
+      }
+      resolve(ans);
     };
+    if (confirmId) {
+      const b = overlayBox();
+      if (b) b.dataset.ixConfirmId = confirmId;
+      /* 登记到发起轮：本轮收尾 / ix-drop / 用户终止时会调用 settle */
+      canvasConfirmRegister({
+        id: confirmId,
+        runKey: String((owner && owner.runKey) || ""),
+        sessionId: String((owner && owner.sessionId) || ""),
+        settle: () => settle(IX_CONFIRM_DEAD, true),
+      });
+    }
     const cancel = document.createElement("button");
     cancel.className = "mini";
     cancel.textContent = I18n.t("拒绝");
-    cancel.onclick = () => finish(false);
+    cancel.onclick = () => settle(false, true);
     const ok = document.createElement("button");
     ok.className = "mini primary";
     ok.textContent = I18n.t("确认修改");
-    ok.onclick = () => finish(true);
+    ok.onclick = () => settle(true, true);
     foot.appendChild(cancel);
     foot.appendChild(ok);
   });
 }
 
-function confirmAssistCanvasEdit(params) {
+function confirmAssistCanvasEdit(params, owner) {
   const info = summarizeCanvasEdit(params);
   const fromSession = canvasConfirmFromAgentSession();
   info.summary =
@@ -7931,11 +8199,14 @@ function confirmAssistCanvasEdit(params) {
       : I18n.t("全局助手请求修改当前画布：")) + info.summary;
   return confirmAssistAction(I18n.t("确认画布修改"), info, {
     rejectStopsAgent: fromSession,
+    owner,
   });
 }
 
-function confirmAssistAppOp(params) {
-  const info = summarizeAppOp(params);
+async function confirmAssistAppOp(params, owner) {
+  /* 摘要需要读一次画布列表才能显示真实 id / 节点数，故为异步；
+     调用方以 Promise 方式消费（.then / .catch），行为不变。 */
+  const info = await summarizeAppOp(params);
   const fromSession = canvasConfirmFromAgentSession();
   info.summary =
     (fromSession
@@ -7943,6 +8214,7 @@ function confirmAssistAppOp(params) {
       : I18n.t("全局助手请求：")) + info.summary;
   return confirmAssistAction(I18n.t("确认危险操作"), info, {
     rejectStopsAgent: fromSession,
+    owner,
   });
 }
 
@@ -7958,6 +8230,9 @@ async function applyCanvasOp(op, params, runCtx) {
     return await applyVisionInspect(params || {});
   }
   if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
+  /* 绑定的画布已被删除（黑名单 / 对象墓碑）：明确报「画布已删除」，
+     不再静默改内存 + 落盘 —— 那会把用户刚删掉的画布凭空复活。 */
+  if (wfWriteBlocked(S.wf)) throw new Error(deletedWfError(S.wf));
   if (op === "get") {
     await ensureAgentTool("canvas_read");
     return Object.assign({ ok: true }, await canvasSnapshotFull(params || {}));
@@ -7969,9 +8244,30 @@ async function applyCanvasOp(op, params, runCtx) {
 function handleCanvasEvent(data, runCtx) {
   const id = data && data.id;
   if (!id) return;
-  const finish = (result, error) => {
+  runCtx = runCtx || {};
+  /* 归属：这一帧由哪一轮（runKey）发起、盖的是哪个 session 章（sessionId）。
+     dshRunTask 会把两者透传进来；网关已按 sessionId 拦掉不属于本轮的帧，这里
+     的 runKey 只用于本地判活与自毁，不重复裁决放行。 */
+  const frameOwner = {
+    id: String(id),
+    runKey: String(runCtx.runKey || ""),
+    sessionId: String(data.sessionId || runCtx.sessionId || ""),
+  };
+  const deadRunError = I18n.t("发起轮已结束，未执行");
+  let replied = false;
+  const finish = (result, error, opts) => {
+    /* 一帧只有一次回执：确认后走 run()、或确认框自毁，谁先到算谁，绝不重复发帧 */
+    if (replied) return;
+    replied = true;
     window.api
       .dshInteract({ kind: "canvas", id, result, error: error || undefined })
+      .then((res) => {
+        /* stale = 网关侧这条 pending 已经没了（本轮结束 / 已被撤销）：插件那端
+           早已收到 {t:'abort'} 并以失败收场，模型不会拿到半截结果。自毁路径自己
+           会提示一次，这里别再重复刷屏；其余路径必须说明，否则用户以为改了。 */
+        if (res && res.stale && !(opts && opts.silentStale))
+          toast(I18n.t("画布操作已失效（发起轮已结束），未执行"), "warn");
+      })
       .catch(() => {});
   };
   const opEarly = data.op || "get";
@@ -7987,6 +8283,15 @@ function handleCanvasEvent(data, runCtx) {
   if (isPlanModeCanvasRun(runCtx) && canvasOpMutates(opEarly, data.params || {})) {
     const err = planModeCanvasDeniedError();
     finish({ ok: false, error: err }, err);
+    return;
+  }
+  /* 发起轮已经结束（取消句柄被删）：与 ixPush 同一判活口径。这一帧的回执注定
+     没人接，弹框就是一张「点了没反应」的死框 —— 直接不弹，回失败让模型继续。 */
+  if (!canvasConfirmRunLive(frameOwner.runKey)) {
+    canvasConfirmPruneOrphans();
+    finish({ ok: false, error: deadRunError }, deadRunError, {
+      silentStale: true,
+    });
     return;
   }
   const run = async () => {
@@ -8012,11 +8317,19 @@ function handleCanvasEvent(data, runCtx) {
   if (canvasOpNeedsConfirm(op, data.params || {})) {
     const ask =
       op === "app"
-        ? confirmAssistAppOp(data.params || {})
-        : confirmAssistCanvasEdit(data.params || {});
+        ? confirmAssistAppOp(data.params || {}, frameOwner)
+        : confirmAssistCanvasEdit(data.params || {}, frameOwner);
     ask
-      .then((ok) => {
-        if (!ok) {
+      .then((ans) => {
+        if (ans === IX_CONFIRM_DEAD) {
+          /* 自动撤框：本轮已经收尾，操作不执行，回执按失败补上 */
+          finish({ ok: false, error: deadRunError }, deadRunError, {
+            silentStale: true,
+          });
+          toast(I18n.t("画布修改询问已自动关闭（发起轮已结束），未执行"), "warn");
+          return;
+        }
+        if (!ans) {
           finish(
             { ok: false, error: I18n.t("用户拒绝了此次操作") },
             I18n.t("用户拒绝了此次操作"),
@@ -9297,6 +9610,51 @@ function applyNodePatch(node, patch, warnings) {
           : "";
       if (!node.devModel) node.devProvider = "";
     }
+    /* 核心文件列表（node.devFiles · 最多 10 条 · 相对本块项目根）：
+       归一化与上限只在 devCoreFilesNormalize 一处做（与 UI 编辑 / 自动兜底同一函数）；
+       非开发块与最外层（项目）开发块一律拒绝写入并回报原因。 */
+    if (patch.devFiles != null) {
+      const who = "（" + (node.title || node.id) + "）";
+      const arr = Array.isArray(patch.devFiles)
+        ? patch.devFiles
+        : typeof patch.devFiles === "string"
+          ? patch.devFiles.split(/[\r\n]+|[,，;；]\s*/)
+          : null;
+      /* 本批次里 parentSuperId 可能是 alias，要到 patch 之后才解析成真实父级；
+         spec 声明了父级就先按「会被挂进上层块」处理，别把新建的子块误判成顶层块 */
+      const willNest =
+        patch.parentSuperId != null || patch.packIntoSuper != null;
+      const topBlock =
+        !willNest &&
+        typeof devIsTopBlock === "function" &&
+        devIsTopBlock(node);
+      if (!node.dev || node.db)
+        warnings.push(I18n.t("核心文件列表 devFiles 仅适用于开发节点") + who);
+      else if (topBlock)
+        warnings.push(
+          I18n.t("最外层（项目）开发节点不列举核心文件，已忽略 devFiles") + who,
+        );
+      else if (!arr)
+        warnings.push(
+          I18n.t("devFiles 需是路径数组（每项一条相对项目根的路径）") + who,
+        );
+      else {
+        const stats = {};
+        const list =
+          typeof devCoreFilesNormalize === "function"
+            ? devCoreFilesNormalize(arr, node, stats)
+            : [];
+        node.devFiles = list;
+        if (!list.length && arr.length)
+          warnings.push(I18n.t("devFiles 里没有可用的文件路径（已置空）") + who);
+        else if (stats.dropped > 0)
+          warnings.push(
+            I18n.t("核心文件最多 {n} 个，多余部分已忽略", {
+              n: typeof DEV_CORE_FILES_MAX === "number" ? DEV_CORE_FILES_MAX : 10,
+            }) + who,
+          );
+      }
+    }
   }
   if (node.kind === "execute") {
     if (patch.execPath != null) {
@@ -9885,6 +10243,10 @@ function rbNamedFromParams(params, aliasMap, markAliasMap) {
 
 async function applyCanvasEdit(params, ctx) {
   params = params || {};
+  /* 二次防线：这是真正改图并落盘的入口，绑定画布若已被删除就直接抛错，
+     绝不再往内存 / 磁盘写（applyCanvasOp 已拦一次，这里防别的调用路径）。 */
+  if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
+  if (wfWriteBlocked(S.wf)) throw new Error(deletedWfError(S.wf));
   const warnings = [];
   const created = [];
   const updated = [];

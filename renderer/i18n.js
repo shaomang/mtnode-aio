@@ -74,6 +74,9 @@
       "The session this plan belongs to is gone — execution stopped",
     /* ── 会话内「计划」面板（st.plan 落盘 · 逐项状态 · 可续跑） ── */
     "展开 / 收起计划清单": "Expand / collapse the plan list",
+    "向上拖拽加高计划清单 · 可拖到此刻放得下的最大值 · 双击回到默认最小高度":
+      "Drag up to grow the plan list · it stops at the tallest height that actually fits right now · double-click to reset to its default minimum height",
+    "当前最多": "max",
     "执行中…": "Running…",
     "执行中": "In progress",
     "待执行": "Pending",
@@ -419,8 +422,12 @@
     "（未命名）": "(Untitled)",
     "（无输出）": "(No output)",
     "（无图像）": "(No image)",
+    "（图像输入）": "(Image input)",
     "（已停用）": "(Disabled)",
     "（已终止）": "(Stopped)",
+    "已手动终止": "Stopped manually",
+    "运行长时间无响应，已自动终止": "Run timed out (no response), auto-stopped",
+    "交互等待超时，已自动终止": "Interaction wait timed out, auto-stopped",
     "[图像] ": "[Image] ",
     "＋ 添加源": "+ Add source",
     "◉ 处理中": "◉ Processing",
@@ -468,6 +475,24 @@
     "审批失败：": "Approval failed: ",
     "输入端子 ": "Input port ",
     "添加服务商": "Add provider",
+    "粘贴导入（一键解析）": "Paste import (auto-parse)",
+    "读取剪贴板": "Read clipboard",
+    "从系统剪贴板读取文字并解析": "Read text from the system clipboard and parse it",
+    "解析并填入": "Parse & fill",
+    "按行解析并填入下方表单，可再核对修改": "Parse line by line into the form below; review before adding",
+    "把服务商配置文字粘贴到下方（支持「字段名: 值」逐行、JSON，或按 名称/接口地址/API Key/模型 顺序逐行），点「解析并填入」自动识别。":
+      "Paste the provider config text below (supports \"field: value\" lines, JSON, or plain lines in the order name / base URL / API Key / models), then click \"Parse & fill\".",
+    "粘贴内容为空": "Pasted content is empty",
+    "JSON 解析失败：请确认内容为有效的 JSON 配置": "JSON parse failed: make sure the content is valid JSON",
+    "未能识别配置：请使用「字段名: 值」逐行、JSON 或「名称/接口地址/API Key/模型」顺序粘贴":
+      "Could not recognize the config: paste it as \"field: value\" lines, JSON, or plain lines in the order name / base URL / API Key / models",
+    "剪贴板为空：请先复制配置文字再点此按钮": "Clipboard is empty: copy the config text first, then click this button",
+    "名称 ": "Name ",
+    "接口 ": "Base URL ",
+    "API Key 已填入": "API Key filled",
+    " 个模型": " models",
+    "已解析并填入（请核对后点「添加」）：": "Parsed and filled (review, then click Add): ",
+    "请先粘贴配置文字并点「解析并填入」": "Paste the config text first, then click \"Parse & fill\"",
     "添加失败：": "Add failed: ",
     "添加在线源": "Add online source",
     "未命名节点": "Untitled node",
@@ -784,7 +809,12 @@
     "已保存 YAML → ": "Saved YAML → ",
     "已关闭:下一轮直接执行": "Off: execute directly next round",
     "引用输入节点（@标题）": "Reference input nodes (@title)",
-    "引用已连接或全局节点（@标题）": "Reference connected or global nodes (@title)",
+    "↑↓ 选择 · 回车确认 · Esc 取消":
+      "↑↓ select · Enter confirm · Esc close",
+    "全局来源需明文 @ 才注入（@标题）":
+      "Global sources inject only when @-mentioned (@title)",
+    "全局来源需明文 @ 才注入（@标题 / @标签 · 紫色）":
+      "Global sources inject only when @-mentioned (@title / @tag · purple)",
     "预设（与智能会话一致）": "Preset (same as agent session)",
     "运行中的节点未改标题：": "Running nodes were not renamed: ",
     "紫晶 Amethyst": "Amethyst",
@@ -877,6 +907,8 @@
     "复制 API Key 到剪贴板": "Copy API Key to clipboard",
     "工具节点（批次拆分 / 合并）": "Tool Node (batch split / merge)",
     "画布已删除，已重建默认画布": "Canvas deleted; default canvas recreated",
+    "画布已删除": "Canvas deleted",
+    "画布已删除：": "Canvas deleted: ",
     "会话列表边栏（按工作目录归类）": "Session list sidebar (grouped by working directory)",
     "技能已创建，智能节点可立即使用": "Skill created; agent nodes can use it immediately",
     "聚合：保存为 {路径}.png": "Aggregate: save as {path}.png",
@@ -1179,6 +1211,10 @@
     "\n在任务描述中用 @标题 引用图像；运行时会自动使用视觉模型（DeepSeek 官方不支持图像，需支持视觉的服务商，如 opencode 等）": "\nIn the task description, use @title to reference images; a vision model is used automatically at runtime (DeepSeek Official does not support images; you need a vision-capable provider such as opencode)",
     "并行运行 <b>N</b> 次该节点（N 为 1-10 的整数）。N &gt; 1 时：运行后输出面板（Output 下一行）出现 <b>1..N 方块 Tab</b>，": "Run this node <b>N</b> times in parallel (N is an integer from 1-10). When N &gt; 1: after running, the output panel (the row below Output) shows <b>1..N square tabs</b>,",
     "命令:/new 新会话 · /compact 压缩上文 · /plan 规划模式 · /rename 标题 · /export 导出会话 · /permissions 查看权限预设": "Commands: /new new session · /compact compact context · /plan plan mode · /rename title · /export export session · /permissions view permission preset",
+    "纯净模式": "Pure mode",
+    "纯净": "Pure",
+    "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this session no longer reads/writes files or edits the canvas; saves tokens",
+    "纯净模式：开启中，点击关闭": "Pure mode: ON — click to turn off",
     "插件:https://registry.npmmirror.com/-/v1/search?text=xxx\n技能/MCP:https://data.jsdelivr.com/v1/package/gh/用户/仓库@main": "Plugins: https://registry.npmmirror.com/-/v1/search?text=xxx\nSkills/MCP: https://data.jsdelivr.com/v1/package/gh/user/repo@main",
     "MTNode 目录：http://mt-agent.com/mtnode/ext/catalog.json": "MTNode catalog: http://mt-agent.com/mtnode/ext/catalog.json",
     "插件源返回 npm search 格式；技能源每个子目录含 SKILL.md；MCP 源子目录作为服务器(经 npx @modelcontextprotocol/server-<名> 安装)。": "Plugin sources return npm search format; each skill-source subdirectory contains SKILL.md; MCP source subdirectories are servers (installed via npx @modelcontextprotocol/server-<name>).",
@@ -1212,10 +1248,12 @@
       " sources · available to subscribed processing nodes",
     "已引用全局节点": "Now referencing global nodes",
     "已关闭全局节点引用": "Stopped referencing global nodes",
-    "已引用全局节点（彩虹）· 点击关闭 · 拖动移动":
-      "Referencing global nodes (rainbow) · click to turn off · drag to move",
-    "点击引用全局节点 · 拖动移动":
-      "Click to reference global nodes · drag to move",
+    "已引用全局节点（彩虹）· 提示词需 @ 标题才注入 · 点击关闭 · 拖动移动":
+      "Referencing global nodes (rainbow) · content injects only when @-mentioned in the prompt · click to turn off · drag to move",
+    "点击开启全局引用（提示词需 @ 标题才注入）· 拖动移动":
+      "Click to reference global nodes (@-mention in the prompt to inject) · drag to move",
+    "已开启全局引用，但提示词未 @ 引用任何全局来源，本次未注入内容":
+      "Global references are on, but the prompt @-mentions none of the global sources — nothing was injected this run",
     "全局参考": "Global reference",
     "全局 Tag · ": "Global tags · ",
     "Tag 筛选已开 · 点击管理标签": "Tag filter on · click to manage tags",
@@ -2318,6 +2356,16 @@
     "已恢复默认路径，请手动重启应用后生效":
       "Default path restored; restart the app manually for it to take effect",
     "无法打开目录：": "Cannot open folder: ",
+    "画布备份": "Canvas backup",
+    "每 5 分钟自动把各工作流的最新状态另存一份快照，放在与自动保存分开的 save-backups 文件夹（内容无变化不重复存），每条工作流保留最近 72 份；误删或改坏时可从备份文件夹找回。":
+      "Every 5 minutes each workflow is snapshotted into the save-backups folder, separate from auto-save (unchanged content is skipped). The latest 72 copies per workflow are kept; restore manually from there after an accidental delete or bad edit.",
+    "正在读取备份状态…": "Reading backup status…",
+    "打开备份文件夹": "Open backup folder",
+    "在资源管理器中打开工作流备份目录":
+      "Open the workflow backup folder in the file manager",
+    "无法读取：": "Cannot read: ",
+    "份": " copies",
+    "最近更新：": "Latest: ",
     "请选择绝对路径": "Choose an absolute path",
     "目录不可写": "Directory is not writable",
     "复制现有配置失败：": "Failed to copy existing config: ",
@@ -3125,8 +3173,8 @@
     "细化范围（可选）": "Refinement scope (optional)",
     "例如：只展开 renderer 目录下的文件；或仅细化某个子模块。留空 = 由 Agent 自行判断。":
       "e.g. only expand files under the renderer folder; or refine just one sub-module. Leave empty = the agent decides.",
-    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· Esc 取消":
-      "Confirm = runs in the background in a new session (workspace = project root · titled Refine · module name · you stay on the canvas) · Esc cancels",
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Esc 取消":
+      "Confirm = runs in the background in a new session (workspace = project root · titled Refine · module name · you stay on the canvas) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · Esc cancels",
     "用户指定的细化范围：": "User-specified refinement scope: ",
     "细化该功能块": "Refine this module block",
     /* —— 细化任务书抬头（深度口径） —— */
@@ -3161,8 +3209,8 @@
       "2. First output a MULTI-LAYER PLAN TREE (indent = level, siblings in creation order): annotate every planned child with [name · type (module / file / class / interface / enum) · still needs drill-down (yes / no + one reason) · 【功能】 draft (≤80 chars, non-technical) · 【实现】 draft (≤120 chars, implementation outline) · planned colour] for the user to review; in deep mode all leaves should land at file / class level — if evidence runs out and you stop at some module block, mark it “drill-down pending” and say so at the end.",
     "3. 一次确认覆盖整棵规划树：明确询问用户是否按这棵树创建（不是逐层反复追问）；在用户确认之前，禁止修改画布。":
       "3. ONE confirmation covers the entire plan tree: ask explicitly whether to create it as planned (do not re-ask layer by layer); never modify the canvas before the user confirms.",
-    "4. 用户确认后，自顶向下**逐层创建**：每层各一次 mtnode_canvas_edit —— 该层子块的 kind=super、dev=true、devKind=module|file|class|interface|enum、parentSuperId 指向它的直接父块（第一层的父块 = 本节点，更深层的父块 = 上一层刚创建的块，可用同一批 create 里的 alias 引用），note 必须按两段式规范书写（【功能】非技术说明 + 【实现】工程梗概，与该子块拟稿一致，禁止只写一段）。禁止把不同层级一次性平铺到同一层。":
-      "4. After confirmation, create TOP-DOWN ONE LAYER AT A TIME: one mtnode_canvas_edit per layer — each child of that layer uses kind=super, dev=true, devKind=module|file|class|interface|enum and a parentSuperId pointing at its DIRECT parent (layer 1's parent = this node, deeper layers' parent = the block just created above, referenced by the alias from the same create batch); its note must follow the two-section spec (【功能】 non-technical description + 【实现】 implementation outline, matching that child's draft — never a single section). Never flatten several levels into one layer.",
+    "4. 用户确认后，自顶向下**逐层创建**：每层各一次 mtnode_canvas_edit —— 该层子块的 kind=super、dev=true、devKind=module|file|class|interface|enum、parentSuperId 指向它的直接父块（第一层的父块 = 本节点，更深层的父块 = 上一层刚创建的块，可用同一批 create 里的 alias 引用），note 必须按两段式规范书写（【功能】非技术说明 + 【实现】工程梗概，与该子块拟稿一致，禁止只写一段）；每个新建的模块块都要顺手带上 devFiles（本模块的核心文件 · 最多 10 条 · 每项是相对项目根 devPath 的路径，如 renderer/app-devnode.js；文件 / 类 / 接口 / 枚举块可留空，最外层项目节点一律不填），别留给以后补。禁止把不同层级一次性平铺到同一层。":
+      "4. After confirmation, create TOP-DOWN ONE LAYER AT A TIME: one mtnode_canvas_edit per layer — each child of that layer uses kind=super, dev=true, devKind=module|file|class|interface|enum and a parentSuperId pointing at its DIRECT parent (layer 1's parent = this node, deeper layers' parent = the block just created above, referenced by the alias from the same create batch); its note must follow the two-section spec (【功能】 non-technical description + 【实现】 implementation outline, matching that child's draft — never a single section). Every module block you create must also carry its devFiles right away (that module's core files · up to 10 · each a path relative to the project root devPath, e.g. renderer/app-devnode.js; file / class / interface / enum blocks may leave it empty, and the outermost project block never carries it) — do not defer it to later. Never flatten several levels into one layer.",
     "5. 护栏：单层子块过多（约 >12 个）时分批创建，并在规划树里标出本批未建的部分；本次新建节点总数以约 60 个为上限，触顶或项目内证据不足时立即停下，报告已建到哪一层、还剩哪些分支未展开，并询问用户是否继续下钻（也可让用户在剩余分支的块上各自点「细化」）。":
       "5. Guard rails: if one layer has too many children (roughly more than 12), create them in batches and mark what this batch skipped in the plan tree; cap this round at about 60 new nodes — when you hit the cap or the project evidence runs out, stop immediately, report how deep you got and which branches remain, and ask the user whether to keep drilling down (they can also click Refine on the remaining branches).",
     "6. 落定后回写各父块概述：本节点与本次新建的每个中间层块，都要在 note 第二段「【实现】工程梗概」末尾补一行「子块：A / B / C」（列直接子块名，保持两段式规范，别把整棵子树塞进去）；第一段【功能】仅在职责变化时调整。":
@@ -3228,9 +3276,13 @@
     "例如：补该模块的错误处理与日志；按现有风格新增 XX 接口；重构某文件但不改变对外 API…":
       "e.g. add error handling and logging to this module; add an XX API in the existing style; refactor a file without changing its public API…",
     "请填写本次希望开发或迭代的内容": "Please describe what to develop or iterate this round",
-    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· Ctrl+Enter 提交 · Esc 取消":
-      "Confirm = runs in the background in a new session (workspace = project root · titled Dev · module name · status becomes in progress · you stay on the canvas) · Ctrl+Enter submits · Esc cancels",
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = runs in the background in a new session (workspace = project root · titled Dev · module name · status becomes in progress · you stay on the canvas) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · Ctrl+Enter submits · Esc cancels",
     "开始开发": "Start developing",
+    /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */
+    "已恢复上次未提交的内容": "Your unsent text from last time was restored",
+    "清空草稿": "Clear draft",
+    "丢弃上次未提交的内容，重新填写": "Discard the unsent text and start fresh",
     "开发会话启动失败：": "Failed to start the dev session: ",
     "细化会话启动失败：": "Failed to start the refinement session: ",
     "已创建开发会话「": "Dev session created: ",
@@ -3397,8 +3449,8 @@
     "本轮关注点（可选 · 留空由 AI 自行判断）": "Focus for this round (optional · leave empty to let the AI judge)",
     "例如：这轮只看健壮性和测试；优先把与「网络层」的接线补上；不要引入新依赖…":
       "e.g. this round only robustness and tests; wire up the network layer first; no new dependencies…",
-    "确认 = 只读评估（工作区 = 项目根目录）· 生成后可多选 / 换一批 · Ctrl+Enter 确认 · Esc 取消":
-      "Confirm = read-only assessment (workspace = project root) · afterwards you can multi-select or take another batch · Ctrl+Enter confirms · Esc cancels",
+    "确认 = 只读评估（工作区 = 项目根目录）· 生成后可多选 / 换一批 · 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 确认 · Esc 取消":
+      "Confirm = read-only assessment (workspace = project root) · afterwards you can multi-select or take another batch · cancelling or stepping away keeps this text — reopen the box and continue where you left off · Ctrl+Enter confirms · Esc cancels",
     "建议：弹窗确认后由 AI 只读调研项目代码与该模块进度，给出 4 条下一步方案（可多选 + 补充，选完点同一对话框里的「开发」即开工）":
       "Suggest: after a confirmation dialog the AI reads the project code and this module's progress (read-only) and returns 4 next-step options — multi-select, add notes, then press Develop in the same dialog to start.",
     "已有上次建议，可直接查看": "Last suggestions available — you can just review them",
@@ -3425,6 +3477,8 @@
       "When done, update this dev node's overview (note) and status (devStatus) on the canvas and report in one sentence what changed.",
     "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），用一句话汇报改了什么。":
       "When done, rewrite this dev node's overview (note) in the two-section spec (【功能】 non-technical description + 【实现】 implementation outline), update its status (devStatus), and report in one sentence what changed.",
+    "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），同时用 mtnode_canvas_edit 的 devFiles 补丁回写本模块的核心文件列表（最多 10 条 · 每项是相对项目根的文件路径 · 最外层项目节点不填），用一句话向用户汇报改了什么。":
+      "When done, rewrite this dev node's overview (note) in the two-section spec (【功能】 non-technical description + 【实现】 implementation outline), update its status (devStatus), and also patch this module's core file list back through mtnode_canvas_edit's devFiles (up to 10 entries · each a path relative to the project root · the outermost project block stays empty), then report in one sentence what changed.",
     /* ===== 建议调研：可离开 + 完成跳窗（后台作业 devSuggestJobs / sug 运行态） ===== */
     "「": "\"",
     "」的调研已完成，但该功能块已不在当前画布，结果未写入。":
@@ -3460,6 +3514,53 @@
     "无法定位文件：请先在顶层功能块设置项目根目录（devPath），并把文件节点标题改为相对路径（如 renderer/app.js）":
       "Cannot locate the file: set the project root (devPath) on a top-level block first, and give the file node a relative-path title (e.g. renderer/app.js)",
     "已打开：": "Opened: ",
+    /* ===== 开发节点：核心文件列表（devFiles · 最多 10 个 · 项目节点不列举） ===== */
+    "核心文件列表 devFiles 仅适用于开发节点":
+      "devFiles (core file list) only applies to a dev node",
+    "最外层（项目）开发节点不列举核心文件，已忽略 devFiles":
+      "The outermost (project) dev node lists no core files — devFiles ignored",
+    "devFiles 需是路径数组（每项一条相对项目根的路径）":
+      "devFiles must be an array of paths (each one a path relative to the project root)",
+    "devFiles 里没有可用的文件路径（已置空）":
+      "No usable file path found in devFiles (the list was cleared)",
+    "核心文件最多 {n} 个，多余部分已忽略":
+      "A block lists at most {n} core files — the extra ones were dropped",
+    /* ===== 开发节点：核心文件列表 UI（折叠卡「文件 N」按钮 + 展开面板） ===== */
+    "核心文件": "Core files",
+    "不存在": "missing",
+    "已确认": "confirmed",
+    "当前来源": "Current source",
+    "自动收集": "Auto-collect",
+    "手动 / 会话回写": "Manual / written back by a session",
+    "自动收集（尚未确认）": "Auto-collected (not confirmed yet)",
+    "自动收集 · 点「编辑」确认": "auto-collected · click “Edit” to confirm",
+    "打开项目根": "Open project root",
+    "编辑核心文件列表": "Edit core file list",
+    "已保存核心文件列表：": "Core file list saved: ",
+    "无法定位该文件": "Cannot locate this file",
+    "核心文件列表：本功能块最关键的源码文件（点开成列表 · 点任意一行在资源管理器中定位该文件）":
+      "Core file list: the source files this module block depends on most (click to expand · click a row to reveal the file in the file manager)",
+    "核心文件（每行一个路径）": "Core files (one path per line)",
+    "最多 {n} 个 · 相对项目根或绝对路径都可":
+      "Up to {n} entries · relative to the project root, or absolute paths",
+    "「自动收集 / 清空」只改输入框，点「确定」才写入":
+      "“Auto-collect / Clear all” only edits the box above — the list is written when you click “OK”",
+    "未设置项目根目录：列表仍可保存，但要设置 devPath 才能定位文件":
+      "No project root set: the list can still be saved, but you need a devPath to locate the files",
+    "本功能块最关键的源码文件（最多 {n} 个 · 相对项目根 · 由开发 / 细化会话回写或手工编辑，为空时自动收集）":
+      "The source files this module block depends on most (up to {n} · paths relative to the project root · written back by a dev / refine session or edited by hand; auto-collected when empty)",
+    "编辑本功能块的核心文件（每行一个路径 · 可自动收集 / 清空 · 确认后写入节点）":
+      "Edit this block's core files (one path per line · auto-collect / clear available · written to the node after you confirm)",
+    "用系统默认方式打开本功能块所属项目的根目录（devPath）":
+      "Open this block's project root folder (devPath) with the system default handler",
+    "暂无核心文件：点「编辑」逐行填写，或在开发 / 细化会话里回写 devFiles":
+      "No core files yet: click “Edit” and enter one path per line, or let a dev / refine session write back devFiles",
+    "无法定位该文件：请先在顶层功能块设置项目根目录（devPath），核心文件才能解析成绝对路径":
+      "Cannot locate this file: set the project root (devPath) on the top-level block first, so core files resolve to absolute paths",
+    "尚未设置项目根目录（devPath）：请先在顶层功能块设置项目路径":
+      "No project root (devPath) yet: set the project path on the top-level block first",
+    "最外层（项目）开发节点不列举核心文件":
+      "The outermost (project) dev node lists no core files",
     /* ===== 开发节点：运行中徽标 / 呼吸灯边框 ===== */
     "本功能块正在运行（作为超级节点被执行）":
       "This module is running (executed as a super node)",
@@ -3518,8 +3619,8 @@
     "例如：这个模块现在的真实完成度如何？入口在哪？关键文件是哪些？下一步该做什么？为什么这么设计？…":
       "e.g. How complete is this module now? Where is the entry? Which files are key? What's next? Why is it designed this way?…",
     "请填写要问的问题": "Please enter your question",
-    "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· Ctrl+Enter 提交 · Esc 取消":
-      "Confirm = read-only answer (workspace = project root · forced read-only: no file or canvas changes) · Ctrl+Enter submits · Esc cancels",
+    "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = read-only answer (workspace = project root · forced read-only: no file or canvas changes) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · Ctrl+Enter submits · Esc cancels",
     "开始问询": "Start ask",
     /* ===== 执行节点（绑定可执行文件 · 一键启动） ===== */
     "执行节点（绑定可执行文件 · 一键启动）":
@@ -3836,6 +3937,112 @@
     "画面尺寸 ": "Canvas size ",
     "参考它设计字号与元素布局（可用百分比 / 相对计算）。":
       "Use it to size fonts and layout elements (percentages / relative math are fine).",
+  });
+
+  /* ── 交互卡片（提问 / 审批）的来源标注 + 「稍后」出口 ── */
+  Object.assign(EN, {
+    "来自：": "From: ",
+    "智能节点「{n}」· {w}": "Agent node “{n}” · {w}",
+    "智能节点「{n}」": "Agent node “{n}”",
+    "开发/细化会话「{n}」": "Dev / refine session “{n}”",
+    "功能块「{n}」的建议": "Suggestion for module “{n}”",
+    "功能块「{n}」的问询": "Inquiry to module “{n}”",
+    "稍后（终止本轮）": "Later (stop this run)",
+    "先不回答：终止发起这张卡片的这一轮运行":
+      "Answer later: stops the run that raised this card",
+    "已稍后处理：本轮已终止": "Deferred — this run was stopped",
+    "该询问已失效（发起轮已结束）":
+      "This prompt is no longer live (the run that asked has ended)",
+    /* 宿主确认框（画布修改 / 危险操作）绑定发起轮次后的自动撤框文案 */
+    "发起轮已结束，未执行": "The run that asked has ended — nothing was executed",
+    "画布操作已失效（发起轮已结束），未执行":
+      "Canvas action is no longer live (the run that asked has ended) — nothing was executed",
+    "画布修改询问已自动关闭（发起轮已结束），未执行":
+      "Canvas edit prompt auto-dismissed (the run that asked has ended) — nothing was executed",
+    "发起该请求的运行结束后，此确认框会自动消失。":
+      "This dialog closes on its own once the run that requested it has ended.",
+  });
+
+  /* ── 交互卡片的「中断任务」出口（卡片按钮 + 面板头部全部中断） ── */
+  Object.assign(EN, {
+    "中断任务": "Interrupt task",
+    "中断：撤掉本轮全部询问并终止这一轮，模型侧收到「已中断」失败回执（不同于「稍后」）":
+      "Interrupt: clears every prompt from this run and stops it — the model gets an explicit “interrupted” failure instead of an answer (unlike “Later”)",
+    "已中断该询问": "Prompt interrupted",
+    "已中断任务：本轮已终止": "Task interrupted — this run was stopped",
+    "全部中断": "Interrupt all",
+    "中断所有在途运行并撤掉它们的全部询问卡片":
+      "Interrupt every in-flight run and dismiss all of their prompts",
+    "已中断全部在途任务（{n} 轮）": "Interrupted all in-flight runs ({n})",
+  });
+
+  /* ── 删除画布安全（锁定目标 · 后台写入互斥 · 回收站软删）───────────────
+     删除任何画布都只影响打开弹窗时锁定的那一张，其余画布不会被牵连。 */
+  Object.assign(EN, {
+    /* 前台画布锁：后台换画布写入期间禁止删除 */
+    "智能体正在后台写入画布，请稍候":
+      "An agent is writing to a canvas in the background — please wait a moment",
+    "当前画布已切换，本框只删除打开时锁定的画布，请重新发起删除":
+      "The current canvas has switched. This dialog only deletes the canvas that was locked when it opened — start the deletion again.",
+    "读取画布列表失败：": "Failed to read the canvas list: ",
+    "画布已不存在，可能已被删除：":
+      "Canvas no longer exists — it may already have been deleted: ",
+    /* 删除确认弹窗正文（分段拼接：名称 + id + 节点数） */
+    "</b>（id <code>": "</b> (id <code>",
+    "</code> · 节点 <b>": "</code> · nodes <b>",
+    "</b> 个）及其全部本地数据文件（含节点图像资产）。此操作不可恢复。":
+      "</b>), together with all of its local data files (including node image assets). This cannot be undone.",
+    "请先核对上面的 id 与节点数，确认要删的就是它。":
+      "Check the id and node count above first — make sure that is the canvas you mean.",
+    /* 删除结果与落点 */
+    "删除失败：": "Delete failed: ",
+    "删除被拒绝：": "Delete rejected: ",
+    "主进程未返回删除结果": "the main process returned no deletion result",
+    "画布已删除，已切换到：": "Canvas deleted; switched to: ",
+    /* 智能体侧删除入口（受限范围 / 必须显式指定） */
+    "当前会话没有绑定画布，无法删除":
+      "This session has no bound canvas, so nothing can be deleted",
+    "缺少 workflow：请显式指定要删除的画布（id 或名称）。为避免误删，全局范围不会默认删除「当前画布」。":
+      "Missing workflow: specify the canvas to delete (id or name). To prevent mis-deletion, the global scope never deletes “the current canvas” by default.",
+    "缺少 workflow：请显式指定要删除的画布（id 或名称）。":
+      "Missing workflow: specify the canvas to delete (id or name).",
+    "删除目标与锁定的画布不一致，已中止：":
+      "The delete target differs from the locked canvas — aborted: ",
+    "删除目标与确认框里的画布不一致，已中止，请重新发起删除。":
+      "The delete target differs from the canvas in the confirmation dialog — aborted. Start the deletion again.",
+    "画布名称在确认期间已变化，已中止，请重新确认后删除。":
+      "The canvas name changed while you were confirming — aborted. Confirm again, then delete.",
+    /* 危险操作确认框摘要（名称 + id + 节点数 + 回收站说明） */
+    "未指定画布": "no canvas specified",
+    "将删除画布": "Will delete canvas ",
+    "（id ": " (id ",
+    " · 节点 ": " · nodes ",
+    " 个），仅影响这一个画布。":
+      "), and it affects this canvas only.",
+    "无法定位要删除的画布：": "Cannot locate the canvas to delete: ",
+    "画布文件与其图像资产会移入本机回收站目录（%APPDATA%\\pipeline-console\\trash），不会静默物理删除。":
+      "The canvas file and its image assets are moved into the local trash folder (%APPDATA%\\pipeline-console\\trash) — nothing is deleted outright.",
+    /* 主进程 workflow:delete 的校验与回收站文案（错误原样回传给界面与模型） */
+    "非法工作流 id": "Invalid workflow id",
+    "删除目标不在画布数据目录内，已拒绝":
+      "The delete target lies outside the canvas data folder — rejected",
+    "画布文件无法读取，已拒绝删除（请手动检查 save 目录）":
+      "The canvas file cannot be read — deletion rejected (check the save folder manually)",
+    "画布文件内容异常，已拒绝删除（请手动检查 save 目录）":
+      "The canvas file looks malformed — deletion rejected (check the save folder manually)",
+    "画布校验不一致，已拒绝删除：磁盘上是":
+      "Canvas check failed — deletion rejected. On disk it is",
+    "，请求要删的是": " · requested for deletion:",
+    "回收站目标路径越界，已拒绝":
+      "The trash destination path escapes the data folder — rejected",
+    "无法创建回收站目录，画布未删除：":
+      "Cannot create the trash folder, canvas not deleted: ",
+    "回收站复制校验不一致，画布未删除":
+      "Copy verification against the trash folder failed, canvas not deleted",
+    "画布已复制到回收站，但源文件被占用无法移除；请关闭占用后重试：":
+      "The canvas was copied to the trash folder, but the source is locked and could not be removed — close whatever holds it and retry: ",
+    "移入回收站失败，画布未删除：":
+      "Moving to the trash folder failed, canvas not deleted: ",
   });
 
   var locale = "zh";

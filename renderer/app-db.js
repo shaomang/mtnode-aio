@@ -1610,6 +1610,10 @@ function dshRunTask(input, opts) {
     .then(async (workspace) => {
   const indexBlock = await mtnodeInternalSkillIndexBlock();
   const nodeLock = isCanvasScopedAgentNode(opts.node);
+  /* 纯净模式（会话输入区「纯净模式」按钮）：整段 system prompt 置空，
+     不含技能索引 / 数据库接地 / 工具策略 / 语言口味 —— 模型输入 = 纯粹的用户输入。
+     网关侧 preset 强制走空文本档（pure），引擎人设由 MTNODE_PURE 标记移除。 */
+  const pureOn = !!opts.pure;
   const runParams = {
     workspace,
     input: String(input || ""),
@@ -1621,19 +1625,27 @@ function dshRunTask(input, opts) {
     apiKey,
     baseUrl,
     webSearchApiKey,
-    systemPrompt: [
-      opts.systemPrompt || "",
-      indexBlock,
-      agentDbGroundingNote(opts.node, S.wf),
-      agentToolPolicySystemNote({ nodeLock }),
-      nodeLock ? agentNodeCapabilityNote() : "",
-      opts.planMode ? planModeSystemNote() : "",
-      /* 语言口味放最后：紧贴上下文尾部，模型最容易照做 */
-      agentLangTasteNote(),
-    ]
-      .filter(Boolean)
-      .join("\n\n"),
+    systemPrompt: pureOn
+      ? ""
+      : [
+          opts.systemPrompt || "",
+          indexBlock,
+          agentDbGroundingNote(opts.node, S.wf),
+          agentToolPolicySystemNote({ nodeLock }),
+          nodeLock ? agentNodeCapabilityNote() : "",
+          opts.planMode ? planModeSystemNote() : "",
+          /* 语言口味放最后：紧贴上下文尾部，模型最容易照做 */
+          agentLangTasteNote(),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+    /* pure 标记必须原样下发网关：gateway 据此强制空预设文本，并给运行时进程
+       注入 MTNODE_PURE（引擎侧 pure-prompt 插件与 cordis 门控全看这个环境变量）。
+       此前 runParams 漏掉该字段 → 网关 pureFlag 恒为 false，纯净分支沦为死代码，
+       这正是「纯净模式实现有误」的根因。 */
+    pure: pureOn,
     preset: (() => {
+      if (pureOn) return "pure";
       const p = opts.preset || d.preset || "standard";
       return nodeLock && p === "standard" ? "node" : p;
     })(),
@@ -1652,6 +1664,10 @@ function dshRunTask(input, opts) {
   };
   /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist) */
   const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
+  /* 这一轮的「来自」归属：提问 / 审批卡片头部那行文案 + 点击跳转目标。
+     runKey 已在上一行定型（会话 = agent:<id> / 节点 = node.id / 助手 = assist），
+     这里只读不算，一次 run 定一次归属，后续推卡片直接复用。 */
+  const ixSrc = dshIxSrcOf(opts, runKey);
   /* 网关凭 cancelTag 精确关闭「这一次运行」自己的运行时进程。
      dsh 线协议没有逐轮取消，过去只能按工作目录整批关 → 停一个会话会把同目录的
      其它会话（含全局助手）一起打断。 */
@@ -1659,6 +1675,10 @@ function dshRunTask(input, opts) {
   S._runCancels = S._runCancels || {};
   /* 本轮轨迹开一盏：按步切段的运行轨迹与取消句柄同键，互不串台 */
   traceReset(runKey);
+  /* 本次运行的唯一实例标识：同 runKey 可能被连续两轮复用（如「立即终止 + 立刻重发」），
+     旧一轮的 finish 只能删自己的条目，绝不能误删新一轮的 —— 否则新一轮会被看门狗
+     当成「已手动终止」、回复变成（已终止），两轮乱序。 */
+  const runInst = {};
   S._runCancels[runKey] = {
     cancelTag: runKey,
     workspace: runParams.workspace,
@@ -1666,6 +1686,7 @@ function dshRunTask(input, opts) {
     maxTokens: runParams.maxTokens,
     apiKey: runParams.apiKey,
     baseUrl: runParams.baseUrl,
+    _runInst: runInst,
   };
   /* 本次运行的 Token 台账归属：会话 / 绑定节点的会话 / 全局助手 */
   const tokOwner =
@@ -1719,12 +1740,37 @@ function dshRunTask(input, opts) {
     let seenError = "";
     /* SDK finalResponse 只含最后一条 assistant 正文;累计全部 text-delta 才是完整输出 */
     let accText = "";
+    /* 看门狗：网关 / 运行时卡住（harness.run 不返回、不发 done）时保证本轮一定收尾，
+       渲染层绝不永久等待 —— 否则 assistRunning / st.running 残留 true，新消息全被丢弃，
+       AI 回复永不追加，列表最底层永远停在旧会话内容（全局助手卡死 Bug 的根因）。
+       - 终止宽限：用户点「■ 终止」后 dshCancelActive 会删掉 _runCancels 条目，
+         若网关 N 秒内不响应取消 → 兜底强制 finish；
+       - 静默超时：超过 DSH_RUN_IDLE_TIMEOUT_MS 无任何事件、且没有待处理提问/审批
+         （模型在等用户回答是合法静默）→ 自动取消并终止。 */
+    const DSH_WATCHDOG_INTERVAL_MS = 5000;
+    const DSH_CANCEL_GRACE_MS = 10000;
+    const DSH_RUN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+    /* 有未消费的提问 / 审批卡片时也设独立上限（模型在等用户，但引擎若挂起同样不能无限等） */
+    const DSH_IX_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+    let lastActivity = Date.now();
     const finish = (ok, val) => {
       if (settled) return;
       settled = true;
-      if (S._runCancels) delete S._runCancels[runKey];
+      clearInterval(watchdog);
+      /* 只删自己这一轮登记的条目：同 runKey 的下一轮可能已覆盖它（见 runInst 注释），
+         误删会让新一轮被看门狗当成「已手动终止」 */
+      if (S._runCancels) {
+        const cur = S._runCancels[runKey];
+        if (cur && cur._runInst === runInst) delete S._runCancels[runKey];
+      }
       S._runCount = Math.max(0, (S._runCount || 1) - 1);
-      if (!S._runCount) ixDropRun();
+      /* 本轮收尾只清自己这一轮(runKey)的提问 / 审批卡片:另一条在途会话的卡片保留,
+         而本轮的卡片也不会因为「还有别的 run 活着」变成没人清的幽灵 */
+      ixDropRun(runKey);
+      /* 同理撤掉这一轮挂起的宿主确认框（画布修改 / 危险操作）：本轮已经封口，
+         再留着就是一张点「确认」也没人回执的死框 */
+      if (typeof canvasConfirmDropRun === "function")
+        canvasConfirmDropRun(runKey);
       endCanvasRun(boundWf);
       if (scopeLock)
         S._canvasNodeAgentDepth = Math.max(
@@ -1740,21 +1786,52 @@ function dshRunTask(input, opts) {
           Promise.resolve(rbEndRound(rbRound, ok ? "done" : "error")).catch(() => {});
       } catch (_) {}
     };
+    const watchdog = setInterval(() => {
+      if (settled) return;
+      /* 每拍兜底自毁：网关被强杀 / 老版网关不发撤帧时 ix-drop 不会来，挂起的
+         宿主确认框靠同一个判活口径（取消句柄是否还在）自动消失 */
+      if (typeof canvasConfirmPruneOrphans === "function")
+        canvasConfirmPruneOrphans();
+      const h = S._runCancels && S._runCancels[runKey];
+      const idle = Date.now() - lastActivity;
+      if (!h || (h && h._runInst !== runInst)) {
+        /* 条目被 dshCancelActive 删除 = 用户请求终止；或已被同 runKey 的新一轮覆盖。
+           网关若迟迟不响应取消，在这里兜底收尾，避免「终止无反应 → running 残留 → UI 卡死」 */
+        if (idle >= DSH_CANCEL_GRACE_MS)
+          finish(false, new Error(I18n.t("已手动终止")));
+        return;
+      }
+      /* 模型等待用户回答（提问 / 审批）时没有任何事件，属合法静默：给一个更长的上限，
+         引擎若在等待中挂起，也不能无限卡死 UI。
+         只数本 runKey 的卡片：全局条数会把「别的会话正挂着提问」算进本轮静默，
+         本轮的静默上限会从 30 分钟被莫名抬到 2 小时。 */
+      const pendingIx = ((S.activeIx && S.activeIx.items) || []).filter(
+        (x) => x && x.runKey === runKey,
+      ).length;
+      if (idle >= (pendingIx ? DSH_IX_WAIT_TIMEOUT_MS : DSH_RUN_IDLE_TIMEOUT_MS)) {
+        try {
+          dshCancelActive(runKey);
+        } catch (_) {}
+        finish(
+          false,
+          new Error(
+            I18n.t(
+              pendingIx
+                ? "交互等待超时，已自动终止"
+                : "运行长时间无响应，已自动终止",
+            ),
+          ),
+        );
+      }
+    }, DSH_WATCHDOG_INTERVAL_MS);
     window.api
       .dshRun(
         runParams,
         (msg) => {
-          if (msg.type === "canvas") {
-            handleCanvasEvent(msg.data || {}, { planMode: !!opts.planMode });
-            return;
-          }
-          if (msg.type === "db") {
-            handleDbToolEvent(msg.data || {}, opts.node, boundWf);
-            return;
-          }
-          /* 回滚 journal 帧：主进程已把改前正文入对象库，这里只按 rid 合并进本轮账本。
-             不判 settled —— done 之后仍可能有帧挤进来，账本合并自身幂等。 */
           if (msg.type === "journal") {
+            /* 回滚 journal 帧：主进程已把改前正文入对象库，这里只按 rid 合并进本轮账本。
+               不判 settled —— done 之后仍可能有帧挤进来，账本合并自身幂等。
+               迟到帧不算「活动」：看门狗不能因为它们无限期续命。 */
             try {
               if (typeof rbCollectJournal === "function")
                 rbCollectJournal(msg.data || {}, runKey);
@@ -1762,6 +1839,22 @@ function dshRunTask(input, opts) {
             return;
           }
           if (settled) return;
+          /* 任何业务事件（含 canvas / db 工具回执）都刷新看门狗的活动时间戳 */
+          lastActivity = Date.now();
+          if (msg.type === "canvas") {
+            /* 把这一轮的 runKey 与帧上的 sessionId 透传给宿主：确认框据此登记归属，
+               本轮结束 / 被终止时才能自动撤框（见 app-nodes.js canvasConfirm*） */
+            handleCanvasEvent(msg.data || {}, {
+              planMode: !!opts.planMode,
+              runKey,
+              sessionId: (msg.data && msg.data.sessionId) || "",
+            });
+            return;
+          }
+          if (msg.type === "db") {
+            handleDbToolEvent(msg.data || {}, opts.node, boundWf);
+            return;
+          }
           if (msg.type === "error" && msg.data && msg.data.message) seenError = msg.data.message;
           if (msg.type === "approval") {
             const node = opts.node;
@@ -1772,16 +1865,26 @@ function dshRunTask(input, opts) {
             ) {
               handleSuperAskApproval(node, msg.data || {}, workspace).then(
                 (handled) => {
-                  if (!handled) ixPush("approval", msg.data || {});
+                  if (!handled) ixPush("approval", msg.data || {}, runKey, ixSrc);
                 },
               );
               return;
             }
-            ixPush("approval", msg.data || {});
+            ixPush("approval", msg.data || {}, runKey, ixSrc);
             return;
           }
           if (msg.type === "question") {
-            ixPush(msg.type, msg.data || {});
+            ixPush(msg.type, msg.data || {}, runKey, ixSrc);
+          }
+          /* 运行时撤问(提问被中止 / 审批被取消):同步撤卡,别留幽灵卡片 */
+          if (msg.type === "ix-drop") {
+            const dropId = (msg.data && msg.data.id) || "";
+            ixDrop(dropId);
+            /* 网关撤销画布 / 危险操作帧时同样补发 ix-drop（data.kind = canvas）：
+               那一帧的宿主确认框必须一起消失，不能等用户去点一个没人听的「确认」 */
+            if (typeof canvasConfirmDrop === "function")
+              canvasConfirmDrop(dropId);
+            return;
           }
           /* Token 消耗实时入账（按模型），会话末尾的报告 Badge 靠它增长 */
           if (msg.type === "usage" && tokOwner && typeof tokLiveAdd === "function") {
@@ -2056,14 +2159,189 @@ function previewDoneSound(file) {
 }
 
 /* ── 交互面板:dsh 提问(ask_user)/ 审批(approval)的宿主侧 UI ── */
+/* 一次 run 的来源归属 → 卡片头部那行「来自：」+ 点击跳转目标。
+   并行运行时（多个会话 / 多个节点 / 助手同时在跑）不标来源，用户根本分不清
+   是谁在等自己回答。分类口径与运行队列（collectRunQueueAll）保持一致：
+     - opts.node                     画布上的智能节点（agent_task / 智能文本 / 计划节点模式）
+     - runKey === "assist"           全局助手
+     - runKey === "agent:<id>"       智能会话；带 _devContract = 开发 / 细化绑定会话
+     - runKey === "devsuggest:<id>"  功能块的「建议」只读调研
+     - runKey === "devask:<id>"      功能块的「问询」只读回答
+   其余（如计划并行子任务）拿不到更细的归属 → label 留空，卡片不显示来源行。 */
+function dshIxSrcOf(opts, runKey) {
+  const key = String(runKey || "");
+  const src = { type: "", label: "", id: "", wfId: "", hint: "" };
+  /* 标题可能很长（会话标题常被拿首句当名）：卡片只有一行，掐断加省略号 */
+  const clip = (s) => {
+    const t = String(s || "").replace(/\s+/g, " ").trim();
+    return t.length > 24 ? t.slice(0, 24) + "…" : t;
+  };
+  const wfOf = (n) => {
+    try {
+      return typeof ownerWfOfNode === "function" ? ownerWfOfNode(n) : S.wf;
+    } catch (_) {
+      return S.wf;
+    }
+  };
+  try {
+    const node = opts && opts.node;
+    if (node && node.id) {
+      const w = wfOf(node);
+      const name = clip(node.title) || I18n.t("（未命名）");
+      const wfName = String((w && (w.name || w.id)) || "");
+      src.type = "node";
+      src.id = String(node.id);
+      src.wfId = (w && w.id) || "";
+      /* 画布名一并带上：跨画布运行时只给节点标题照样找不到人在哪 */
+      src.label = wfName
+        ? I18n.t("智能节点「{n}」· {w}", { n: name, w: wfName })
+        : I18n.t("智能节点「{n}」", { n: name });
+      src.hint = I18n.t("点击定位到节点");
+      return src;
+    }
+    if (key === "assist") {
+      src.type = "assist";
+      src.label = I18n.t("全局助手");
+      src.hint = I18n.t("点击打开全局助手");
+      return src;
+    }
+    if (key.indexOf("agent:") === 0) {
+      const sid = key.slice(6);
+      const st =
+        typeof agentSessionById === "function" ? agentSessionById(sid) : null;
+      const name = clip((st && st.title) || "") || I18n.t("（未命名）");
+      src.type = "session";
+      src.id = String((st && st.id) || sid);
+      /* 开发 / 细化绑定会话：任务书契约挂在 _devContract 上，必须一眼区别于普通会话 */
+      src.label =
+        st && st._devContract
+          ? I18n.t("开发/细化会话「{n}」", { n: name })
+          : name;
+      src.hint = I18n.t("点击打开该会话");
+      return src;
+    }
+    const dm = /^dev(suggest|ask):(.+)$/.exec(key);
+    if (dm) {
+      const n =
+        typeof runQueueLookupNode === "function"
+          ? runQueueLookupNode(dm[2])
+          : typeof nodeById === "function"
+            ? nodeById(dm[2])
+            : null;
+      const name = clip((n && n.title) || "") || I18n.t("（未命名）");
+      const w = n ? wfOf(n) : S.wf;
+      src.type = "dev";
+      src.id = dm[2];
+      src.wfId = (w && w.id) || "";
+      src.label =
+        dm[1] === "suggest"
+          ? I18n.t("功能块「{n}」的建议", { n: name })
+          : I18n.t("功能块「{n}」的问询", { n: name });
+      src.hint = I18n.t("点击查看调研进度");
+      return src;
+    }
+    return src;
+  } catch (_) {
+    return src;
+  }
+}
+/* 点卡片来源行：跳回发起这一轮的地方。跳转口径抄运行队列（jumpRunQueueItem）：
+   会话 → 切 agent 视图并置为活动会话；节点 → 切回画布、跨画布先 loadWorkflow、
+   再 focusNode 让镜头定位；助手 → 打开助手抽屉。全部 try 住，目标可能已经没了。 */
+async function ixSrcJump(src) {
+  if (!src || !src.type) return;
+  try {
+    if (src.type === "assist") {
+      if (typeof setAssistOpen === "function") setAssistOpen(true);
+      return;
+    }
+    if (src.type === "session") {
+      const st =
+        typeof agentSessionById === "function"
+          ? agentSessionById(src.id)
+          : null;
+      if (!st) {
+        toast(I18n.t("会话已不存在"), "warn");
+        return;
+      }
+      if (typeof setView === "function" && S.view !== "agent")
+        setView("agent");
+      S.agentActiveId = st.id;
+      if (typeof persistAgentSession === "function") await persistAgentSession();
+      if (typeof renderAgentSession === "function") renderAgentSession();
+      if (typeof renderAgentSessionSidebar === "function")
+        renderAgentSessionSidebar();
+      return;
+    }
+    const n =
+      (typeof runQueueLookupNode === "function"
+        ? runQueueLookupNode(src.id)
+        : null) ||
+      (typeof nodeById === "function" ? nodeById(src.id) : null);
+    if (!n) {
+      toast(I18n.t("节点已不存在"), "warn");
+      return;
+    }
+    if (typeof setView === "function" && S.view === "agent")
+      setView("workflow");
+    if (src.wfId && S.wf && src.wfId !== S.wf.id && typeof loadWorkflow === "function")
+      await loadWorkflow(src.wfId);
+    if (typeof focusNode === "function") focusNode(n.id);
+    /* 功能块的「建议 / 问询」在跑：定位节点之外再打开那个进度窗口（与队列点行一致） */
+    if (src.type === "dev") {
+      try {
+        if (
+          typeof devSuggestJobBusy === "function" &&
+          typeof devSuggestShowJob === "function" &&
+          devSuggestJobBusy(n)
+        ) {
+          devSuggestShowJob(devSuggestJobBusy(n));
+        } else if (
+          typeof devAskJobBusy === "function" &&
+          typeof devAskShowJob === "function" &&
+          devAskJobBusy(n)
+        ) {
+          devAskShowJob(devAskJobBusy(n));
+        }
+      } catch (_) {}
+    }
+  } catch (_) {
+    toast(I18n.t("节点不在当前画布"), "warn");
+  }
+}
+/* 「稍后（终止本轮）」出口：提问 / 审批都是运行时进程在等一次回答，线协议里没有
+   「挂起、回头再答」这一档 —— 唯一的「先放着」就是把这一轮停下来（之后用户重发）。
+   只取消这一轮自己的 runKey，同目录其它在途运行不受影响。 */
+function ixDeferRun(it) {
+  const runKey = String((it && it.runKey) || "");
+  if (it && it.data && it.data.id) ixDrop(it.data.id);
+  try {
+    if (runKey) dshCancelActive(runKey);
+  } catch (_) {}
+  toast(I18n.t("已稍后处理：本轮已终止"), "ok");
+}
 function ixReset() {
   S.activeIx = { items: [] };
   renderIxPanel();
 }
-function ixPush(kind, data) {
+function ixPush(kind, data, runKey, src) {
   if (!S.activeIx) S.activeIx = { items: [] };
-  S.activeIx.items.push({ kind, data });
-  playIxSound();
+  /* 先清孤儿卡，再决定这张要不要收 */
+  ixPruneOrphanCards();
+  /* 发起轮已经结束（取消句柄被删）→ 这一帧的答案注定没人接，
+     收进来就是一张点了没反应的死卡，直接丢弃 */
+  const deadRun = !!runKey && !(S._runCancels && S._runCancels[runKey]);
+  if (!deadRun) {
+    /* 记下这张卡片属于哪一次运行(runKey):收尾时只清自己这轮的,
+       避免一条会话结束误清另一条在途会话的提问;src 是它的「来自：」归属（卡片头部一行） */
+    S.activeIx.items.push({
+      kind,
+      data,
+      runKey: runKey || "",
+      src: src && src.label ? src : null,
+    });
+    playIxSound();
+  }
   renderIxPanel();
 }
 function ixDrop(id) {
@@ -2071,13 +2349,50 @@ function ixDrop(id) {
   S.activeIx.items = S.activeIx.items.filter((x) => x.data.id !== id);
   renderIxPanel();
 }
-function ixDropRun() {
-  if (S.activeIx && S.activeIx.items.length) {
-    S.activeIx.items = [];
-    renderIxPanel();
-  }
+function ixDropRun(runKey) {
+  if (!runKey || !S.activeIx || !S.activeIx.items.length) return;
+  /* 按 runKey 过滤:只清这一轮推上来的卡片,其余在途运行的卡片保留 */
+  const items = S.activeIx.items.filter((x) => x.runKey !== runKey);
+  if (items.length === S.activeIx.items.length) return;
+  S.activeIx.items = items;
+  renderIxPanel();
+}
+/* 本地兜底撤卡：卡片所属那一轮的取消句柄已经不在 _runCancels 里 = 那一轮已经结束
+   （正常收尾 / 用户点终止 / 看门狗兜底），网关的 ix-drop 却没来（进程被强杀、
+   老版网关不认识撤卡帧）。这种卡点任何选项都会撞「交互已失效」，是永不消失的死卡，
+   所以在每次推送与重绘前先把孤儿卡清掉。runKey 为空的卡不做归属判定，保留。
+   返回是否删过，由调用方决定是否重绘（本函数不自己重绘，避免递归）。 */
+function ixPruneOrphanCards() {
+  if (!S.activeIx || !S.activeIx.items || !S.activeIx.items.length) return false;
+  const live = S._runCancels || {};
+  const items = S.activeIx.items.filter((x) => !x.runKey || live[x.runKey]);
+  if (items.length === S.activeIx.items.length) return false;
+  S.activeIx.items = items;
+  return true;
+}
+/* 宿主确认框（画布修改 / 危险操作）与卡片共用同一套判活口径，挂在同一清理节奏上。
+   注意：即使本轮没有任何提问卡片也要扫 —— 否则「只弹确认框、没弹提问」的死框
+   永远等不到清理入口。 */
+function ixPruneAllInteraction() {
+  ixPruneOrphanCards();
+  if (typeof canvasConfirmPruneOrphans === "function")
+    canvasConfirmPruneOrphans();
+}
+/* 交互回执统一收尾：无论网关说 stale（pending 已没了）还是真失败，这张卡都不该
+   再留在屏上 —— 网关侧没人接这帧，继续显示只会变成点了没反应的死卡。 */
+function ixFinalizeCard(it, why) {
+  if (it && it.data && it.data.id) ixDrop(it.data.id);
+  if (why) toast(why, "warn");
+}
+/* 幂等：一次点击只发一帧。重复点击既没有意义（网关侧 pending 已删），
+   也会让第二次必然撞上 stale。返回 true = 本次是首次提交，可以发帧。 */
+function ixMarkFirstSend(it) {
+  if (!it || it._ixSent) return false;
+  it._ixSent = true;
+  return true;
 }
 function ixAnswerQuestion(it) {
+  if (!ixMarkFirstSend(it)) return;
   const card = document.getElementById("ixCard_" + it.data.id);
   if (!card) return;
   const byQ = {};
@@ -2102,21 +2417,111 @@ function ixAnswerQuestion(it) {
   window.api
     .dshInteract({ kind: "question", id: it.data.id, answers })
     .then((res) => {
+      if (res && res.stale)
+        return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
       if (res && res.ok === false) throw new Error(res.error);
       ixDrop(it.data.id);
     })
-    .catch((e) => toast(I18n.t("回答失败：") + (e.message || String(e)), "err"));
+    .catch((e) =>
+      ixFinalizeCard(
+        it,
+        I18n.t("回答失败：") + ((e && e.message) || String(e)),
+      ),
+    );
 }
 function ixAnswerApproval(it, outcome) {
+  if (!ixMarkFirstSend(it)) return;
   window.api
     .dshInteract({ kind: "approval", id: it.data.id, outcome })
     .then((res) => {
+      if (res && res.stale)
+        return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
       if (res && res.ok === false) throw new Error(res.error);
       ixDrop(it.data.id);
     })
-    .catch((e) => toast(I18n.t("审批失败：") + (e.message || String(e)), "err"));
+    .catch((e) =>
+      ixFinalizeCard(
+        it,
+        I18n.t("审批失败：") + ((e && e.message) || String(e)),
+      ),
+    );
+}
+/* 「稍后（终止本轮）」出口：提问 / 审批都只有这一次运行的进程在等回答，
+   来不及处理时不能把卡片晾在这儿（看门狗只能按 2 小时上限兜底），
+   所以两种卡片的按钮行末尾都给一个「稍后」—— 撤卡 + 终止这一轮自己。 */
+function ixLaterButton(it) {
+  const b = document.createElement("button");
+  b.className = "mini ix-later";
+  b.textContent = I18n.t("稍后（终止本轮）");
+  b.title = I18n.t("先不回答：终止发起这张卡片的这一轮运行");
+  b.onclick = () => ixDeferRun(it);
+  return b;
+}
+/* ── 「中断任务」出口 ──
+   与「稍后」的区别（写在中断按钮的 title 提示里）：稍后 = 暂时不答、把这轮停掉；
+   中断 = 明确放弃这次提问，并给运行时一个**失败**回执 —— 先发 kind:'abort'
+   （网关 gateway.mjs 的 interact 与桥侧 t:'abort' 都已支持：ask_user_question 直接
+   reject，而不是回一份空 selected 的答案把模型骗过去继续跑），
+   再终止发起这张卡片的那一轮，最后撤掉该轮全部卡片
+   （网关的 ix-drop 可能因进程被强杀而不来，这里本地兜底，绝不留死卡）。 */
+function ixAckAbort(it) {
+  const id = it && it.data && it.data.id;
+  if (!id || it._ixSent) return; /* 已回答 / 已中断过的卡不再发第二帧 */
+  it._ixSent = true;
+  try {
+    Promise.resolve(window.api.dshInteract({ kind: "abort", id })).catch(() => {});
+  } catch (_) {}
+}
+function ixAbortRun(it) {
+  ixAckAbort(it);
+  const runKey = String((it && it.runKey) || "");
+  if (!runKey) {
+    /* 归属丢失的卡：无轮可停，撤卡 + 已发中止回执即可 */
+    if (it && it.data && it.data.id) ixDrop(it.data.id);
+    toast(I18n.t("已中断该询问"), "ok");
+    return;
+  }
+  try {
+    dshCancelActive(runKey);
+  } catch (_) {}
+  ixDropRun(runKey);
+  toast(I18n.t("已中断任务：本轮已终止"), "ok");
+}
+/* 面板头部「全部中断」：多条运行并行时逐轮执行同样的动作，不用一张张点 */
+function ixAbortAllRuns() {
+  const items = ((S.activeIx && S.activeIx.items) || []).slice();
+  if (!items.length) return;
+  const keys = [];
+  for (const it of items) {
+    ixAckAbort(it);
+    const k = String(it.runKey || "");
+    if (k && !keys.includes(k)) keys.push(k);
+  }
+  for (const k of keys) {
+    try {
+      dshCancelActive(k);
+    } catch (_) {}
+  }
+  ixReset();
+  toast(
+    I18n.t("已中断全部在途任务（{n} 轮）", { n: keys.length || items.length }),
+    "ok",
+  );
+}
+function ixAbortButton(it) {
+  const b = document.createElement("button");
+  b.className = "mini danger ix-abort";
+  b.textContent = I18n.t("中断任务");
+  b.title = I18n.t(
+    "中断：撤掉本轮全部询问并终止这一轮，模型侧收到「已中断」失败回执（不同于「稍后」）",
+  );
+  b.onclick = () => ixAbortRun(it);
+  return b;
 }
 function renderIxPanel() {
+  /* 每次重绘先做一次孤儿清理（网关没发撤卡帧时的本地兜底）：提问 / 审批卡片
+     与宿主确认框一起扫 —— 只有确认框、没有卡片时本函数也会被 ixReset 带进来 */
+  ixPruneAllInteraction();
   const items = (S.activeIx && S.activeIx.items) || [];
   let box = $("#ixPanel");
   if (!items.length) {
@@ -2131,12 +2536,32 @@ function renderIxPanel() {
   box.innerHTML = "";
   const head = document.createElement("div");
   head.className = "ix-head";
-  head.textContent = I18n.t("🐋 模型等待你的回应（") + items.length + I18n.t(" 项）");
+  const headTxt = document.createElement("span");
+  headTxt.className = "ix-head-txt";
+  headTxt.textContent =
+    I18n.t("🐋 模型等待你的回应（") + items.length + I18n.t(" 项）");
+  head.appendChild(headTxt);
+  /* 头部总出口：一次性中断所有在途询问（逐轮发 abort + 停轮） */
+  const abortAll = document.createElement("button");
+  abortAll.className = "mini danger ix-abort ix-abort-all";
+  abortAll.textContent = I18n.t("全部中断");
+  abortAll.title = I18n.t("中断所有在途运行并撤掉它们的全部询问卡片");
+  abortAll.onclick = () => ixAbortAllRuns();
+  head.appendChild(abortAll);
   box.appendChild(head);
   for (const it of items) {
     const card = document.createElement("div");
     card.className = "ix-card";
     card.id = "ixCard_" + it.data.id;
+    /* 来源行放卡片最顶：多条运行并行时先回答「这是谁在问」，点一下跳回去 */
+    if (it.src && it.src.label) {
+      const s = document.createElement("div");
+      s.className = "ix-src";
+      s.textContent = I18n.t("来自：") + it.src.label;
+      if (it.src.hint) s.title = it.src.hint;
+      s.onclick = () => ixSrcJump(it.src);
+      card.appendChild(s);
+    }
     if (it.kind === "approval") {
       const d = it.data;
       const t1 = document.createElement("div");
@@ -2161,11 +2586,20 @@ function renderIxPanel() {
       deny.onclick = () => ixAnswerApproval(it, "rejected");
       row.appendChild(allow);
       row.appendChild(deny);
+      row.appendChild(ixLaterButton(it));
+      row.appendChild(ixAbortButton(it));
       card.appendChild(row);
     } else {
       const d = it.data;
       const qs = d.questions || [];
+      /* radio 的 name 是整个 document 的互斥域：原来只用 "ix_" + q.id，
+         两条并行运行的题 id 常常都是 q1 / confirm —— B 卡一选就把 A 卡的选中取消，
+         A 卡提交时 inp.checked 全 false → selected 空 → 模型收到空答案，
+         表现正是「任何选项都不起作用」。分组键必须是「卡片 id + 卡内题序」。 */
+      const ixGroup = "ix_" + String(d.id || "card") + "_";
+      let ixQi = 0;
       for (const q of qs) {
+        const qGroup = ixGroup + ixQi++;
         const qt = document.createElement("div");
         qt.className = "ix-q";
         qt.textContent = (q.header ? q.header + " · " : "") + (q.question || "");
@@ -2185,7 +2619,7 @@ function renderIxPanel() {
             lab.className = "ix-opt";
             const cb = document.createElement("input");
             cb.type = q.multiSelect ? "checkbox" : "radio";
-            cb.name = "ix_" + q.id;
+            cb.name = qGroup;
             cb.value = o.label;
             cb.dataset.qid = q.id;
             lab.appendChild(cb);
@@ -2209,6 +2643,8 @@ function renderIxPanel() {
       submit.textContent = I18n.t("回答");
       submit.onclick = () => ixAnswerQuestion(it);
       row.appendChild(submit);
+      row.appendChild(ixLaterButton(it));
+      row.appendChild(ixAbortButton(it));
       card.appendChild(row);
     }
     box.appendChild(card);

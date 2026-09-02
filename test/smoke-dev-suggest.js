@@ -71,6 +71,10 @@ function mkEl(tag) {
     _l: {},
     focus() {},
     setSelectionRange() {},
+    remove() {
+      if (el.parentNode) el.parentNode.removeChild(el);
+      else if (el.parentElement) el.parentElement.removeChild(el);
+    },
     appendChild(c) {
       if (c && c.__frag) {
         for (const x of c.childNodes.slice()) el.appendChild(x);
@@ -233,6 +237,8 @@ function makeSandbox(modelText, runError, holdRun) {
     devStatusText: (s) => (s === "done" ? "已完成" : s === "wip" ? "进行中" : "待开发"),
     devChildrenOf: (n) => nodes.filter((k) => k.parentSuperId === n.id),
     devSessionsOf: () => [],
+    /* 「开发」对话框要显示「最近一次要求」（真身在 app.js） */
+    devLastRequestOf: () => "",
     devPathOf: (n) => {
       let cur = n;
       let g = 0;
@@ -270,6 +276,9 @@ function makeSandbox(modelText, runError, holdRun) {
       const t = String(s || "");
       return t.length > n ? t.slice(0, n) + "…" : t;
     },
+    /* 「建议 / 问询」记录会话要造会话 id（devRecordSessionOf → uid("as")） */
+    uid: (p) => (p || "n") + (++sb.__uids),
+    __uids: 0,
     fmtTime: (t) => "T" + Number(t),
     __devCalls: [],
     __sessions: [],
@@ -1559,6 +1568,13 @@ const MODEL_JSON =
     appjs13.indexOf("/* 端子悬浮"),
   );
   ok(refSrc13.length > 3000, "[13] 截出 app.js 细化实现段（devKind → refineDevNode）");
+  /* 草稿三件套（devDraftOf / devDraftSet / devDraftTextareaOpts）在 app-devnode.js：
+     细化 / 开发对话框都调它，切片一起装进沙箱跑真逻辑，不写假桩 */
+  const devnode13Src = read("renderer/app-devnode.js");
+  const draftA13 = devnode13Src.indexOf("const DEV_DRAFT_MAX");
+  const draftB13 = devnode13Src.indexOf("/* ---------- 进度上下文");
+  ok(draftA13 > 0 && draftB13 > draftA13, "[13] 截出 app-devnode.js 的草稿三件套源码");
+  const draftSliceSrc = devnode13Src.slice(draftA13, draftB13);
 
   /* 把实现段真的跑起来（迷你 DOM + 依赖桩），而不是只做字符串比对 */
   function makeDepthSandbox() {
@@ -1638,7 +1654,11 @@ const MODEL_JSON =
         sb.__toasts.push(String(m));
       },
     };
-    vm.runInContext(refSrc13, vm.createContext(sb), { filename: "app-refine-slice.js" });
+    /* 草稿三件套（devDraftOf / devDraftSet / devDraftTextareaOpts）住在 app-devnode.js，
+       细化切片要用 → 先在同一上下文里把这段真源码装进去，不写假桩 */
+    const ctx13 = vm.createContext(sb);
+    vm.runInContext(draftSliceSrc, ctx13, { filename: "app-devnode-draft.js" });
+    vm.runInContext(refSrc13, ctx13, { filename: "app-refine-slice.js" });
     return sb;
   }
   const sb13 = makeDepthSandbox();
@@ -1811,6 +1831,38 @@ const MODEL_JSON =
     "两个档位的 .on 样式互斥跟随点击",
   );
   ok(sbD.__sess === null && sbD.__forms.length === 1, "点档位不关闭对话框、也不启动会话");
+  /* 深度选择随草稿留存（与输入内容同一条纪律：取消后再开不用重做） */
+  ok(
+    exD(sbD, "nodeById('t2').devDraft && nodeById('t2').devDraft.refineDepth") === "once",
+    "点过的深度档位写进 node.devDraft.refineDepth",
+  );
+  const sbR = makeDepthSandbox();
+  exD(sbR, "nodeById('t2').devDraft = { refine: '只拆 dsh 目录', refineDepth: 'once' }");
+  const pR = exD(sbR, "refineDevNode(nodeById('t2'))");
+  await drain(4);
+  const fR = sbR.__forms[0];
+  ok(
+    fR.textarea.value === "只拆 dsh 目录" && fR.textarea.draft === true,
+    "重开细化框：上次未提交的细化范围原样回填 + 打上「已恢复」标记",
+  );
+  const contR = mkEl("div");
+  fR.custom(contR);
+  ok(
+    rbOf(rowsOf(contR)[1]).checked === true && !rbOf(rowsOf(contR)[0]).checked,
+    "重开细化框：上次选的「只展开本层」仍是选中态（深度不重选）",
+  );
+  fR.onText("改成拆 dsh + gateway");
+  ok(
+    exD(sbR, "nodeById('t2').devDraft.refine") === "改成拆 dsh + gateway",
+    "细化框每次输入都实时写回草稿（onText）",
+  );
+  sbR.__formResolve({ action: "go", text: "改成拆 dsh + gateway" });
+  await pR;
+  ok(
+    exD(sbR, "nodeById('t2').devDraft.refine === undefined") === true &&
+      exD(sbR, "nodeById('t2').devDraft.refineDepth === undefined") === true,
+    "确认开工后草稿清空（范围 + 深度），下次打开是空白默认",
+  );
   sbD.__formResolve({ action: "go", text: "" });
   await pD;
   ok(!!sbD.__sess, "点「确认细化」后新建绑定的细化会话");
@@ -1928,6 +1980,167 @@ const MODEL_JSON =
   );
   ok(i18n13.t("细化深度现状（细化＝深度，非本层展开数量）：") !== "细化深度现状（细化＝深度，非本层展开数量）：", "建议上下文深度行有英文词条");
   i18n13.setLocale("zh");
+
+  /* ==================== [14] 对话框草稿：取消 / 跳出都不吞用户输入 ==================== */
+  console.log("\n[14] 开发节点对话框草稿：实时留存 · 重开回填 · 一键丢弃 · 开工清空");
+  const appjs14 = read("renderer/app.js");
+  const devnode14 = read("renderer/app-devnode.js");
+  const dlgA14 = appjs14.indexOf("function mtDialogForm(opts) {");
+  const dlgB14 = appjs14.indexOf("function nodeGuideId(node) {");
+  const devA14 = appjs14.indexOf("async function developDevNode(node) {");
+  const devB14 = appjs14.indexOf("/* 「开发」与「建议 → 开发」共用的收尾");
+  ok(dlgA14 > 0 && dlgB14 > dlgA14, "[14] 截出 app.js 真实对话框实现 mtDialogForm");
+  ok(devA14 > 0 && devB14 > devA14, "[14] 截出 app.js「开发」入口 developDevNode");
+  const bodyOf = (sb) => sb.__host.querySelector("#mtDlgBody");
+  const listTa = (sb) => (bodyOf(sb) || { querySelectorAll: () => [] }).querySelectorAll("textarea");
+  const btnIn = (sb, label) =>
+    ((bodyOf(sb) || { querySelectorAll: () => [] }).querySelectorAll("button") || []).filter(
+      (b) => b.textContent === label,
+    )[0] || null;
+  const mkDlgSandbox = () => {
+    const s = makeSandbox(MODEL_JSON);
+    /* 迷你 DOM 的 #mtDlg* 挂在未进 body 的宿主上：让 getElementById 查得到宿主内部 */
+    s.document.getElementById = function (id) {
+      if (this.body.id === id) return this.body;
+      for (const d of walk(s.__host, [])) if (d.id === id) return d;
+      return null;
+    };
+    const ctx = vm.createContext(s);
+    vm.runInContext(appjs14.slice(dlgA14, dlgB14), ctx, { filename: "app.js#mtDialogForm" });
+    vm.runInContext(appjs14.slice(devA14, devB14), ctx, { filename: "app.js#developDevNode" });
+    return s;
+  };
+  const sbE14 = mkDlgSandbox();
+  const n14 = sbE14.__nodes.filter((n) => n.id === "n1")[0];
+  const p14a = ex(sbE14, "developDevNode(nodeById('n1'))");
+  await drain();
+  ok(!!listTa(sbE14)[0], "「开发」框渲染出内容输入框");
+  ok(listTa(sbE14)[0].value === "", "首次打开为空白（无草稿）");
+  ok(!btnIn(sbE14, "清空草稿"), "无草稿时不出现「清空草稿」");
+  listTa(sbE14)[0].value = "先补超时与重试";
+  listTa(sbE14)[0].fire("input");
+  ok(n14.devDraft && n14.devDraft.dev === "先补超时与重试", "每次输入实时写回 node.devDraft.dev");
+  ok(sbE14.__saves > 0, "草稿写入走防抖存盘（随工作流落盘）");
+  listTa(sbE14)[0].value = "   ";
+  listTa(sbE14)[0].fire("input");
+  ok(!n14.devDraft.dev, "纯空白不存草稿（不该留下待恢复内容）");
+  listTa(sbE14)[0].value = "先补超时与重试，再补日志";
+  listTa(sbE14)[0].fire("input");
+  /* ① 点「取消」：内容留在草稿里，且绝不开工 */
+  footBtn(sbE14.__host, "取消").onclick();
+  await p14a;
+  ok(n14.devDraft.dev === "先补超时与重试，再补日志", "点「取消」后输入内容完整保留");
+  ok(sbE14.__devCalls.length === 0, "取消不会开工");
+  /* ② 再次打开：原样回填 + 给出可丢弃入口 */
+  const p14b = ex(sbE14, "developDevNode(nodeById('n1'))");
+  await drain();
+  ok(listTa(sbE14)[0].value === "先补超时与重试，再补日志", "再次打开自动回填上次内容");
+  ok(!!btnIn(sbE14, "清空草稿"), "回填了草稿 → 出现「清空草稿」按钮");
+  ok(bodyOf(sbE14).textContent.indexOf("已恢复上次未提交的内容") >= 0, "草稿行说明这是恢复的内容");
+  btnIn(sbE14, "清空草稿").onclick();
+  ok(listTa(sbE14)[0].value === "", "「清空草稿」立刻清掉输入框");
+  ok(!n14.devDraft.dev, "「清空草稿」同时抹掉留存草稿（下次不再冒出同一份）");
+  /* ③ 真正提交：会话拿到内容，草稿随之清空 */
+  listTa(sbE14)[0].value = "本轮只做错误处理";
+  listTa(sbE14)[0].fire("input");
+  footBtn(sbE14.__host, "开始开发").onclick();
+  await p14b;
+  ok(sbE14.__devCalls.length === 1, "点「开始开发」→ 与原来同一条路径开工");
+  ok(sbE14.__devCalls[0].text === "本轮只做错误处理", "开工正文 = 框里填写的内容");
+  ok(!n14.devDraft.dev, "提交后草稿清空（下次打开不带重复内容）");
+  /* ④ 被别的事务顶出对话框（同一宿主被后开的框接管，本框永不结算）：内容同样不丢 */
+  const sbF14 = mkDlgSandbox();
+  const n14f = sbF14.__nodes.filter((n) => n.id === "n1")[0];
+  ex(sbF14, "developDevNode(nodeById('n1'))");
+  await drain();
+  listTa(sbF14)[0].value = "写到一半被别的事打断";
+  listTa(sbF14)[0].fire("input");
+  ex(sbF14, "mtDialogForm({ title: '另一个弹窗', msg: '别的事务' })");
+  await drain();
+  ok(n14f.devDraft.dev === "写到一半被别的事打断", "被其它弹窗顶出去：已写内容留在草稿里");
+  const p14c = ex(sbF14, "developDevNode(nodeById('n1'))");
+  await drain();
+  ok(
+    listTa(sbF14)[0].value === "写到一半被别的事打断",
+    "顶出去之后再开「开发」：接着上次写（不用从头敲）",
+  );
+  footBtn(sbF14.__host, "取消").onclick();
+  await p14c;
+  /* ⑤ 空内容提交：就地报错不关框，草稿不被写成空 */
+  const sbG14 = mkDlgSandbox();
+  const n14g = sbG14.__nodes.filter((n) => n.id === "n1")[0];
+  const p14e = ex(sbG14, "developDevNode(nodeById('n1'))");
+  await drain();
+  footBtn(sbG14.__host, "开始开发").onclick();
+  await drain(4);
+  ok(sbG14.__devCalls.length === 0, "空内容点「开始开发」不会偷偷开工");
+  const err14 = bodyOf(sbG14).querySelectorAll(".mt-form-err")[0];
+  ok(!!err14 && !err14.hidden, "空内容就地报错（提示条可见 · 对话框不关）");
+  listTa(sbG14)[0].value = "补一句就开工";
+  listTa(sbG14)[0].fire("input");
+  ok(n14g.devDraft.dev === "补一句就开工", "报错后继续写照样留存");
+  footBtn(sbG14.__host, "开始开发").onclick();
+  await p14e;
+  ok(sbG14.__devCalls.length === 1, "补上内容后即可正常开工");
+  /* ⑥ 「建议」方案清单：数字键重绘不吞已写的补充说明 */
+  sb = makeSandbox(MODEL_JSON, "", true);
+  sb.__formResult = { action: "go", text: "聚焦健壮性" };
+  const node14s = sb.__nodes.filter((n) => n.id === "n1")[0];
+  const p14s = ex(sb, "suggestDevNode(nodeById('n1'))");
+  await drain();
+  sb.__resolveRun(MODEL_JSON);
+  await drain();
+  b = sb.__host.querySelector("#mtDlgBody");
+  const taS = b.querySelectorAll("textarea")[0];
+  ok(taS.value === "聚焦健壮性", "确认框填的关注点带进方案清单的补充框");
+  taS.value = "聚焦健壮性 + 顺手补测试";
+  taS.fire("input");
+  ok(node14s.devDraft.supplement === "聚焦健壮性 + 顺手补测试", "补充说明实时写回草稿");
+  sb.__host.fire("keydown", { key: "2" });
+  b = sb.__host.querySelector("#mtDlgBody");
+  ok(
+    b.querySelectorAll("textarea")[0].value === "聚焦健壮性 + 顺手补测试",
+    "数字键勾选触发重绘：已写的补充说明不被吞掉",
+  );
+  footBtn(sb.__host, "开发").onclick();
+  await p14s;
+  ok(sb.__devCalls.length === 1, "方案清单里的「开发」照常开工");
+  ok(sb.__devCalls[0].text.indexOf("顺手补测试") >= 0, "重绘后的补充说明真的进了开发任务书");
+  ok(!node14s.devDraft.supplement, "开工后补充说明草稿清空");
+  /* ⑦ 接线：四个框共用同一套草稿纪律 + 样式 + 英文词条 */
+  ok(
+    (appjs14.match(/onText: \(t\) => devDraftSet\(node, "(dev|refine)", t\)/g) || []).length === 2,
+    "「开发」「细化」两框都接上实时留存",
+  );
+  ok(
+    (devnode14.match(/onText: \(t\) => devDraftSet\(node, "(suggest|ask)", t\)/g) || []).length === 2,
+    "「建议」「问询」两框都接上实时留存",
+  );
+  ok(
+    ((appjs14 + devnode14).match(/devDraftTextareaOpts\(node, "(dev|refine|suggest|ask)"/g) || [])
+      .length === 4,
+    "四个框都从草稿回填（devDraftTextareaOpts）",
+  );
+  ok(
+    (devnode14.match(/devDraftSet\(node, "supplement", t\)/g) || []).length === 2 &&
+      devnode14.indexOf('typeof opts.onSupplement === "function"') >= 0,
+    "方案清单补充框：新建议 / 上次建议两条路径都实时留存",
+  );
+  const cssB14 = read("renderer/css/base.css");
+  ok(cssB14.indexOf(".mt-form-draft") >= 0, "base.css：草稿提示行样式");
+  const i18n14 = require("../renderer/i18n.js");
+  i18n14.setLocale("en");
+  ["已恢复上次未提交的内容", "清空草稿", "丢弃上次未提交的内容，重新填写"].forEach((k) =>
+    ok(i18n14.t(k) !== k, "「" + k + "」有英文词条"),
+  );
+  const hintKeys14 = [
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Esc 取消",
+    "确认 = 只读评估（工作区 = 项目根目录）· 生成后可多选 / 换一批 · 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 确认 · Esc 取消",
+    "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
+  ];
+  hintKeys14.forEach((k) => ok(i18n14.t(k) !== k, "提示条有英文词条：" + k.slice(0, 14) + "…"));
+  i18n14.setLocale("zh");
 
     console.log(
     "\n" +

@@ -589,6 +589,49 @@ body.theme-light .md blockquote {
   background: rgba(217, 102, 10, .05);
 }
 
+/* ── 节点浏览态（未选中 = 浏览形态）：白板上与板身一体的只读视图 ── */
+body.theme-light .wf-node.browse .n-view {
+  color: var(--ink);
+}
+body.theme-light .wf-node.browse .n-view-plain,
+body.theme-light .wf-node.browse .n-view-md,
+body.theme-light .wf-node.browse .n-view-yaml,
+body.theme-light .wf-node.browse .md {
+  color: var(--ink);
+}
+/* 暗色里用的半透明黑块，浅底换成浅灰芯片 + 深一点的描边 */
+body.theme-light .wf-node.browse .md code {
+  background: rgba(20, 30, 45, .07);
+  border-color: rgba(20, 30, 45, .14);
+}
+body.theme-light .wf-node.browse .md pre {
+  background: rgba(255, 255, 255, .62);
+  border-color: var(--bd);
+}
+body.theme-light .wf-node.browse .md pre code {
+  color: var(--ink);
+}
+body.theme-light .wf-node.browse .md blockquote {
+  border-left-color: var(--bd2);
+  background: none;
+  color: var(--muted);
+}
+body.theme-light .wf-node.browse .n-view-entry+.n-view-entry {
+  border-top-color: var(--bd);
+}
+body.theme-light .wf-node.browse .n-view-entry-title {
+  color: var(--cyan2);
+}
+body.theme-light .wf-node.browse:hover .n-view {
+  scrollbar-color: var(--bd2) transparent;
+}
+body.theme-light .wf-node.browse:hover .n-view::-webkit-scrollbar-thumb {
+  background: var(--bd2);
+}
+body.theme-light .wf-node.browse:hover .n-view::-webkit-scrollbar-thumb:hover {
+  background: var(--orange);
+}
+
 /* ── 工具调用块 / 思考块 ── */
 body.theme-light .dsh-tool summary:hover,
 body.theme-light .dsh-tool[open] summary {

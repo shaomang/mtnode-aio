@@ -670,16 +670,24 @@ function renderAssistPanel(opts) {
     list.appendChild(empty);
   }
   /* 回滚入口挂在每条挂有回滚轮次的用户消息上（会话不在运行中时显示） */
-  for (let i = 0; i < msgs.length; i++)
-    list.appendChild(
-      dshMsgBlock(msgs[i], "assist", i, {
-        showRollback:
-          !S.assistRunning &&
-          !msgs[i]._rolledBack &&
-          typeof rbHasMsgRound === "function" &&
-          rbHasMsgRound(msgs[i]),
-      }),
-    );
+  for (let i = 0; i < msgs.length; i++) {
+    try {
+      list.appendChild(
+        dshMsgBlock(msgs[i], "assist", i, {
+          showRollback:
+            !S.assistRunning &&
+            !msgs[i]._rolledBack &&
+            typeof rbHasMsgRound === "function" &&
+            rbHasMsgRound(msgs[i]),
+        }),
+      );
+    } catch (e) {
+      /* 单条消息坏数据不拖垮整表：跳过并留痕，避免列表停在旧消息处、新消息永远不出现 */
+      try {
+        console.error("assist 消息渲染失败: idx=" + i, e);
+      } catch (_) {}
+    }
+  }
   if (S.assistRunning) {
     const row = document.createElement("div");
     row.className = "dsh-msg dsh-ai";
@@ -822,7 +830,7 @@ async function assistSend(text) {
   const superConnectRule =
     "  · 【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动把源节点向上逐层连到其所在超级节点的外部输出端子、把目标节点所在超级节点的外部输入端子逐层桥接到目标节点、并把顶层超级节点之间相连，无需自己手动建桥接线；可一次传多对。\n";
   const devNodeRule =
-    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note 必须两段（必填 ≤200 字）：【功能】= 面向非技术的设计说明 + 【实现】= 面向技术人员的实现梗概；禁止只写一段，禁止把技术细节写进【功能】段，devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认）。**功能色卡**：开发节点按「功能分类」统一上色，整张架构图一眼可辨（同一张表也由 mtnode_canvas_get 以 devFuncColors 返回）：core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f。新建 devKind=module 的功能块时，系统已按标题与概述关键词自动套好色卡颜色，你一般无需再传 devColor；归类确实不对时，直接用 update 补丁改成色卡里对应分类的那个 hex——**按色卡上色即可，不必先征询用户**，但绝不要自创色值、也不要把功能色卡之外的颜色批量刷到节点上。色卡只作用于 module 功能块（file / class / interface / enum 保留元素类型默认色）；用户可在节点头部颜色小按钮的 HSV 色板里手选颜色，手选过的块视为用户意图，除非用户要求，不要再改它的颜色；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。开发节点可用 parentSuperId 嵌套（细化按深度：只展开本层，或深度细化到无法再细——一般到文件级；多层梗概经一次确认即可，确认后自顶向下逐层建块）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」）：按钮顺序固定为 开发 → 细化 → 建议 → 问询 → 打开（→ 会话 N）。四者都先弹对话框——「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素、以及细化深度（只展开本层 / 深度细化到无法再细，一般到文件级；无需或无法细化时也要明确告知用户）；「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「问询」先请用户确认并填写问题，然后由 AI **只读**回答关于本模块的问题——全程强制只读（网关 read-only 权限档 + 只读系统提示，写文件 / 改画布会被拒绝），不改文件、不改画布，可「返回后台」继续跑、完成后自动弹出。除「建议 / 问询」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出覆盖多层的整棵结构梗概、经用户一次确认后在新会话中自顶向下逐层建块（一次确认即覆盖整个细化深度）。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。**画布含开发节点时，项目根即 Agent 工作区根**（工作区真源优先级：手填工作目录 > 画布项目根 devPath > 画布工作目录 > 默认目录），所以在建图首轮就把 devPath 写到顶层功能块，之后项目根内的文件（含 AGENTS.md 共识文件）可直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n" +
+    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note 必须两段（必填 ≤200 字）：【功能】= 面向非技术的设计说明 + 【实现】= 面向技术人员的实现梗概；禁止只写一段，禁止把技术细节写进【功能】段，devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认）。**功能色卡**：开发节点按「功能分类」统一上色，整张架构图一眼可辨（同一张表也由 mtnode_canvas_get 以 devFuncColors 返回）：core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f。新建 devKind=module 的功能块时，系统已按标题与概述关键词自动套好色卡颜色，你一般无需再传 devColor；归类确实不对时，直接用 update 补丁改成色卡里对应分类的那个 hex——**按色卡上色即可，不必先征询用户**，但绝不要自创色值、也不要把功能色卡之外的颜色批量刷到节点上。色卡只作用于 module 功能块（file / class / interface / enum 保留元素类型默认色）；用户可在节点头部颜色小按钮的 HSV 色板里手选颜色，手选过的块视为用户意图，除非用户要求，不要再改它的颜色；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。devFiles = 该功能块的「核心文件列表」（字符串数组 · 最多 10 条 · 每项是相对项目根 devPath 的文件路径，如 renderer/app-devnode.js）：建块时就顺手填上，且开发 / 细化 / 建议会话收尾必须用 update 补丁把本模块的真实核心文件回写进 devFiles——节点 body 上的「文件」按钮与 canvas_get 都只读这份列表，不填就永远停在自动兜底甚至空表；传空数组 = 清空该表；最外层（项目）开发节点不列核心文件，不要给它传 devFiles（会被拒绝并回报）。开发节点可用 parentSuperId 嵌套（细化按深度：只展开本层，或深度细化到无法再细——一般到文件级；多层梗概经一次确认即可，确认后自顶向下逐层建块）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」）：按钮顺序固定为 开发 → 细化 → 建议 → 问询 → 打开（→ 会话 N）。四者都先弹对话框——「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素、以及细化深度（只展开本层 / 深度细化到无法再细，一般到文件级；无需或无法细化时也要明确告知用户）；「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「问询」先请用户确认并填写问题，然后由 AI **只读**回答关于本模块的问题——全程强制只读（网关 read-only 权限档 + 只读系统提示，写文件 / 改画布会被拒绝），不改文件、不改画布，可「返回后台」继续跑、完成后自动弹出。除「建议 / 问询」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出覆盖多层的整棵结构梗概、经用户一次确认后在新会话中自顶向下逐层建块（一次确认即覆盖整个细化深度）。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。**画布含开发节点时，项目根即 Agent 工作区根**（工作区真源优先级：手填工作目录 > 画布项目根 devPath > 画布工作目录 > 默认目录），所以在建图首轮就把 devPath 写到顶层功能块，之后项目根内的文件（含 AGENTS.md 共识文件）可直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n" +
     "  · 【执行节点】kind \"execute\" = 执行节点：绑定可执行文件（execPath = 绝对路径，.exe/.bat/.cmd/.lnk 或任何系统可打开的文件），execIcon / execColor 自定义图标与 body 颜色便于快速定位。该节点独立存在、无数据端口，body 内点两次播放键或双击即用系统默认方式启动绑定文件。画布上要「一键启动某个程序 / 脚本 / 文件」时用这种节点。它与开发节点同属一个创建菜单，属于某个功能块时（如该模块的启动脚本）用 parentSuperId 放进该开发节点内部。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
@@ -854,7 +862,7 @@ async function assistSend(text) {
     "  · 【极重要·防 N² 爆 token】batchMode=batch 时每次运行只应对「当前这一条」。严禁把整批 N 张图/N 条再全部塞进每一次运行的参考图或提示词（否则 ≈N×N 次调用，巨量浪费）。需要只处理其中一项时，先接「拆分」节点选出单项再连文生图；要一次看全部才用 batchMode=agg。两条批量源不要交叉接到同一文生图。\n" +
     "  · 文生图（proc_image）每次运行只生成 1 张图，API 不支持一次出多张。prompt 里严禁写「生成多张/几张图」之类要求；需要多图时用：批量 1 条出 1 张、多个文生图节点、或 attempts×N。\n" +
     "  · 文生图尺寸：create/update 传 size，须为 mtnode_canvas_get 返回的 imageSizes 之一（如 2048x1360 / 1280x1280 / auto）；按横竖构图选择，省略则默认 defaultImageSize。\n" +
-    "  · @引用：连线节点用 @标题；引用全局节点广播时须同时 (1) 在处理节点上设 globalRefs:true，(2) 在 prompt/task 内写 @源标题（缺一不可）。@Tag标签 引用该标签下全部节点内容（给节点设 tags，见 tagCatalog），UI 中 Tag 为紫色、节点为青色。\n" +
+    "  · @引用：连线节点用 @标题；引用全局节点广播时须同时 (1) 在处理节点上设 globalRefs:true，(2) 在 prompt/task 内写 @源标题（缺一不可）——且只有被明文 @ 命中的全局来源才会进入本次输入，未点名的不注入。@Tag标签 引用该标签下全部节点内容（给节点设 tags，见 tagCatalog），UI 中 Tag 为紫色、节点为青色。\n" +
     "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run，ctrlFillOnly=true 时仅补跑无输出节点）方便用户一键重跑或补缺；不要创建 ctrlAction=clear 的「清空」控制节点。控制流不会沿数据线传导：control 必须直接连线到每一个需要一键启动的节点（处理/保存/媒体等）。\n" +
     "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
     "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
@@ -1101,6 +1109,7 @@ function agentSessionState() {
       provider: "deepseek-official",
       model: "",
       effort: "high",
+      pure: false,
       messages: [],
       archived: false,
       updatedAt: Date.now(),
@@ -1133,6 +1142,7 @@ async function persistAgentSession() {
     provider: s.provider || "deepseek-official",
     model: s.model || "",
     effort: s.effort || "high",
+    pure: !!s.pure,
     draft: s._draft || "",
     /* 整对象落盘（含 reasoning / tools / segments）；segments 再限一次长：
        每段 ≤8000 字、总 ≤40 段，控制 messages.slice(-100) 的存档体积 */
@@ -1314,7 +1324,9 @@ function agentPresetLabel(id) {
 function renderAgentComposer() {
   const st = agentSessionState();
   const mv = document.getElementById("agentModelTriggerVal");
-  if (mv) mv.textContent = agentPresetLabel(st.preset) + " · " + agentModelName(st);
+  if (mv)
+    mv.textContent =
+      (st.pure ? I18n.t("纯净") + " · " : "") + agentPresetLabel(st.preset) + " · " + agentModelName(st);
   const wv = document.getElementById("agentWsTriggerVal");
   if (wv) {
     /* 芯片显示的是「生效工作区」（手填 > 画布项目根 > 默认）：运行就按它落盘，
@@ -1343,6 +1355,15 @@ function renderAgentComposer() {
       ? "规划模式：开启中，点击关闭"
       : "规划模式：本轮只出计划，不做改动";
     pt.title = I18n.t(pt.dataset.i18nTitle);
+  }
+  /* 纯净模式 chip：开启态高亮 + tooltip 切换（说明同按钮标题） */
+  const put = document.getElementById("agentPureTrigger");
+  if (put) {
+    put.classList.toggle("on", !!st.pure);
+    put.dataset.i18nTitle = st.pure
+      ? "纯净模式：开启中，点击关闭"
+      : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token";
+    put.title = I18n.t(put.dataset.i18nTitle);
   }
   /* 计划已产出且未在运行 → 浮现「▶ 执行计划」 */
   const rp = document.getElementById("agentRunPlanBtn");
@@ -2163,14 +2184,23 @@ function updateHistRail(list) {
 function applyHistoryCollapse(list) {
   if (!list) return;
   const rows = histCollectRows(list);
+  const lastRow = rows[rows.length - 1];
+  /* 最后一行是「AI · 运行中」live 行时，它前面一行通常是用户刚发的新消息：
+     不能让 live 行占着末位就把新消息折叠成 2 行小条（看起来像消息没出现/没放好） */
+  const liveLast = !!(
+    lastRow &&
+    lastRow.classList.contains("dsh-ai") &&
+    lastRow.querySelector(".dsh-role.live")
+  );
   S.histExpanded = S.histExpanded || {};
   rows.forEach((el, i) => {
     const body = el.querySelector(".dsh-msg-body");
     el.classList.remove("hist-collapsed");
     if (body) body.style.maxHeight = "";
     const isLast = i === rows.length - 1;
+    const isPrevOfLive = !isLast && liveLast && i === rows.length - 2;
     const key = el.dataset.histKey || "";
-    if (isLast) {
+    if (isLast || isPrevOfLive) {
       el.classList.remove("hist-expanded");
       el.removeAttribute("title");
       return;
@@ -2977,15 +3007,22 @@ function renderAgentSession(opts) {
   /* 回滚入口挂在每条挂有回滚轮次的用户消息上（仅限可见列表内、且会话不在运行中） */
   for (let i = slice.start; i < slice.msgs.length; i++) {
     const m = slice.msgs[i];
-    list.appendChild(
-      dshMsgBlock(m, st.id || "agent", i, {
-        showRollback:
-          !running &&
-          !m._rolledBack &&
-          typeof rbHasMsgRound === "function" &&
-          rbHasMsgRound(m),
-      }),
-    );
+    try {
+      list.appendChild(
+        dshMsgBlock(m, st.id || "agent", i, {
+          showRollback:
+            !running &&
+            !m._rolledBack &&
+            typeof rbHasMsgRound === "function" &&
+            rbHasMsgRound(m),
+        }),
+      );
+    } catch (e) {
+      /* 单条消息坏数据不拖垮整表：跳过并留痕，避免列表停在旧消息处 */
+      try {
+        console.error("会话消息渲染失败: idx=" + i, e);
+      } catch (_) {}
+    }
   }
   if (running) {
     const row = document.createElement("div");
@@ -4117,19 +4154,26 @@ async function agentSessionSend(text, opts) {
      画布 / 应用改动另由宿主在 handleCanvasEvent 中硬性拒绝） */
   const planMode = !!st.planNext;
   if (planMode) input = PLAN_MODE_USER_DIRECTIVE + input;
-  let systemPrompt =
-    "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
-    "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
-    (!!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove)
-      ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
-      : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
-    "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
-    "【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动逐层连通（源→其超级节点输出端子→顶层→目标超级节点输入端子→目标），无需手动建桥接线。\n" +
-    "改画布前先 mtnode_canvas_get；回答简洁（交流语言见文末「语言口味」）。";
+  /* 纯净模式：移除 system prompt，模型输入 = 纯粹的用户输入（避免 MTNode
+     system prompt 的 token 开销）。systemPrompt 置空 + pure 标记下发网关：
+     网关强制空预设文本，引擎侧 pure-prompt 插件按 MTNODE_PURE 移除人设段。
+     开发任务书契约同样不再注入（纯净模式由用户显式开启，接受该取舍）。 */
+  const pureMode = !!st.pure;
+  let systemPrompt = pureMode
+    ? ""
+    : "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
+      "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
+      (!!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove)
+        ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
+        : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
+      "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
+      "【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动逐层连通（源→其超级节点输出端子→顶层→目标超级节点输入端子→目标），无需手动建桥接线。\n" +
+      "【开发节点契约】新建或改动开发节点（kind super + dev:true）时，每个功能块都用 devFiles 补丁维护它的「核心文件列表」（字符串数组 · 最多 10 条 · 每项是相对项目根 devPath 的文件路径）：建块时顺手填，开发 / 细化收尾必须回写本模块的真实核心文件（节点「文件」按钮只读这份列表）；最外层（项目）开发节点不列核心文件，不要给它传 devFiles。\n" +
+      "改画布前先 mtnode_canvas_get；回答简洁（交流语言见文末「语言口味」）。";
   /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
      会话里只显示用户填写的关键输入；后续追问也持续携带该契约） */
   const devContract = String(st._devContract || "").trim();
-  if (devContract) {
+  if (devContract && !pureMode) {
     systemPrompt +=
       "\n\n【开发任务书 · 本会话模块契约（非用户消息，无需回复该段）】\n" +
       devContract +
@@ -4149,6 +4193,7 @@ async function agentSessionSend(text, opts) {
       model: (opts.model || st.model || undefined),
       effort: st.effort || "high",
       systemPrompt,
+      pure: pureMode,
       onEvent: (type, data) => {
         /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
            重绘/滚动打扰用户正在看的其他会话 */

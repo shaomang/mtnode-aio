@@ -2,7 +2,20 @@
 
 ## Local workflows
 
-Toolbar **New / switch / rename / delete**. Default id is `default` (recreated if deleted). Edits auto-save within a few hundred ms; the last session restores on startup.
+Toolbar **New / switch / rename / delete**. The default workflow id is `default`; a fresh empty one is only created when you delete **every** canvas — deleting another canvas never touches it. Edits auto-save within a few hundred ms; the last session restores on startup.
+
+Additionally, every 5 minutes each workflow is snapshotted into a separate `save-backups/` folder in the app data directory (unchanged content is skipped; the latest 72 copies per workflow are kept). Settings → **Canvas backup** opens that folder to recover an older version.
+
+## Deleting a canvas: this one only
+
+Deleting a canvas affects **that canvas and nothing else** — other canvases, including the default one, stay untouched.
+
+- **The target is locked the moment the dialog opens**: it shows the canvas **name, id and node count**, so check them before clicking *Confirm delete*. If you switch canvases while the dialog is open, or an agent is writing to a canvas in the background, the deletion is **blocked on the spot** and you have to start it again — it never silently becomes "delete whatever is open right now".
+- **Where you land afterwards**: the tab that followed the deleted one in the tab bar; if no tab is left, the most recently touched canvas.
+- **Soft delete into a trash folder, no physical delete**: the canvas JSON and its image assets are moved as a whole to `%APPDATA%\pipeline-console\trash\<timestamp>__<canvas id>\` (containing `<canvas id>.json` plus `assets\`). After an accidental delete, put that JSON back into the data directory's `save\` and its `assets\` back into `assets\<canvas id>\`, then restart the app to get it back — a one-click restore button is not part of this build.
+- **Agent deletions need confirming too**: the confirmation dialog spells out name, id and node count. A restricted-scope session can only delete the canvas it is bound to; the global scope must name the canvas explicitly (it never defaults to "delete the current one"). The main process additionally re-checks id + name against the file on disk and **refuses outright** on any mismatch, showing you the reason verbatim.
+
+> To reclaim disk space, empty the `trash\` folder yourself — the app never clears it on its own.
 
 ## Import / export
 

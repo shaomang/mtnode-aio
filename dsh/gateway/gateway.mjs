@@ -391,6 +391,9 @@ const PRESETS = {
     'You are the agent engine inside MTNode, running as a canvas AGENT NODE (agent_task / proc_text with agent / chat with agent). Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You MUST NOT edit the canvas, modify workflows, or create tasks/nodes/wires/marks. Do not call mtnode_canvas_get, mtnode_canvas_edit, or mtnode_app — the host rejects them. Deliver results by writing files. Mid-task pixel reading (screenshots, OCR, verify an image): call mtnode_vision with imagePath + question. DATABASE grounding: when wired to a database replica, facts must come from the mtnode_db tool (list/query/get/calc), every assertion must cite [记录id · 标题], unknown facts are answered as "数据库中没有该信息", and all numeric math goes through mtnode_db calc. Work step by step, show the user what you are doing, and end with a clear, complete result.',
   /* 桌宠对话:不走 MTNode 画布/文件助手人设,身份由 hostPersona 覆盖 system-prompt */
   bongochat: '',
+  /* 会话「纯净模式」(renderer 会话输入区按钮开启):不注入任何角色前缀,
+     配合宿主清空的 systemPrompt,模型输入 = 纯粹的用户消息 */
+  pure: '',
 }
 
 /** @type {Map<string, {harness: Promise<DeepSeekHarness>, order: number}>} */
@@ -401,10 +404,33 @@ let runtimeOrder = 0
 /** @type {Map<string, {server: import('node:net').Server, sockets: Set<any>}>} */
 const bridgeServers = new Map()
 const socketToKey = new Map()
-/** @type {Map<string, {socket: any, key: string, kind: string}>} */
+/** @type {Map<string, {socket: any, key: string, kind: string, reqId: string, sessionId: string}>} */
 const bridgePending = new Map()
-/** 在途占用表:runtime key -> reqId。一台 runtime 同时只允许一个在途 run。 */
+/** 在途占用表:runtime key -> {reqId, sessionId, sessions}。一台 runtime 同时只允许一个在途 run。
+    sessionId = 本轮「真实轮」在运行时里的 dsh session id(网关铸造并显式传给 harness.run);
+    sessions = 本轮通知流里见到过的全部 session id 集合(真实轮 + 它自己派生的子代理/后台 job)。
+    交互桥帧自带发起方的 sessionId,网关据此判定「这帧属不属于此刻在跑的这一轮」——
+    预热轮('ok')、上一轮遗留的后台 job / 子代理拿的都是别的 session,在此归零。 */
 const keyToReqId = new Map()
+/* 上一轮的归属快照(只为日志分类,绝不参与放行):runtime key -> 那一轮见过的全部 session
+   (真实轮 + 它派生的子代理/后台 job + 它的预热轮)。轮次结束或易主时写入,runtime 关闭即清。
+   有了它,越权帧才能分清三种来路:本轮预热轮在问话 / 上一轮遗留的后台 job 现在才醒 /
+   完全来路不明。整表上限 64 台,超出丢最早登记的。 */
+const PRIOR_SESSIONS_KEYS = 64
+/** @type {Map<string, Set<string>>} */
+const priorRunSessions = new Map()
+
+/* 诊断出口:stdout 是本进程的协议信道,不能掺杂东西;stderr 由主进程落日志
+   (dsh/main-dsh.js 把 gateway stderr 逐行写进日志),越权提问必须留下痕迹。 */
+function diag(line) {
+  try { process.stderr.write('[ix-gate] ' + line + '\n') } catch {}
+}
+
+/* runtime key 里含绝对路径,日志只留足够定位的尾巴 */
+function shortKey(key) {
+  const s = String(key || '')
+  return s.length > 72 ? '…' + s.slice(-72) : s
+}
 /* rollback journal 的迟到暂存表:runtime key -> 帧数组(按时间先后)。
    run 结束(或本就没有在途 run)后,运行时仍在往桥里推 journal 帧
    (后台 job、子代理收尾),这些帧没有 reqId 可挂,先落这里,
@@ -447,17 +473,51 @@ function tagOf(cancelTag) {
 function forgetKey(k) {
   if (k == null) {
     tagToKey.clear()
+    priorRunSessions.clear()
     return
   }
+  priorRunSessions.delete(k)
   for (const [t, set] of Array.from(tagToKey)) {
     set.delete(k)
     if (!set.size) tagToKey.delete(t)
   }
 }
 
-/* 登记一次运行对 runtime 的占用(同步完成,中间不 await,避免并发 run 抢同一台) */
-function claimRuntime(key, reqId, cancelTag) {
-  if (reqId) keyToReqId.set(key, reqId)
+/* 把一轮的归属快照成「上一轮」,供越权帧分类(warm / stale)用。
+   只在轮次结束或易主时调用,放行判据永远只看当前 claim.sessions —— 快照不开任何口子。 */
+function snapshotPriorSessions(key, c) {
+  if (!key || !c) return
+  const set = new Set(c.sessions || [])
+  if (c.warmSession) set.add(c.warmSession)
+  if (!set.size) {
+    priorRunSessions.delete(key)
+    return
+  }
+  priorRunSessions.set(key, set)
+  if (priorRunSessions.size > PRIOR_SESSIONS_KEYS) {
+    for (const k of priorRunSessions.keys()) {
+      if (priorRunSessions.size <= PRIOR_SESSIONS_KEYS) break
+      if (k === key) continue
+      priorRunSessions.delete(k)
+    }
+  }
+}
+
+/* 登记一次运行对 runtime 的占用(同步完成,中间不 await,避免并发 run 抢同一台)。
+   sessionId 在登记时就带上:真实轮的 session 由网关铸造(handleRun 的 runSession),
+   所以第一帧交互到达前归属判据已经完整,不存在「先放行再补票」的空窗。 */
+function claimRuntime(key, reqId, cancelTag, sessionId) {
+  if (reqId) {
+    /* 上一轮没走正常收尾就被新一轮顶掉:先把它快照下来,别丢分类判据 */
+    snapshotPriorSessions(key, keyToReqId.get(key))
+    const sid = String(sessionId || '')
+    keyToReqId.set(key, {
+      reqId, sessionId: sid,
+      sessions: new Set(sid ? [sid] : []),
+      /* 本轮预热轮('ok')的 session,起机预热时补记(见 handleRun);仅用于日志分类 */
+      warmSession: '',
+    })
+  }
   const tag = tagOf(cancelTag)
   if (tag) {
     let set = tagToKey.get(tag)
@@ -467,12 +527,82 @@ function claimRuntime(key, reqId, cancelTag) {
   return tag
 }
 
+/* 此刻占用这台 runtime 的那一轮(没有 = 这台没有在途 run) */
+function claimOf(key) {
+  return keyToReqId.get(key) || null
+}
+
+/* 本轮在通知流里见到过的 session id 全部记入归属集合:
+   真实轮自己 + 它派生出的子代理 / 后台 job(它们仍在这一棵会话树里)。
+   别的 session(预热轮、上一轮遗留的进程内残留轮次)永远不会出现在本轮流里,
+   因此永远进不了这个集合。 */
+function noteRunSession(key, reqId, sessionId) {
+  const c = keyToReqId.get(key)
+  if (!c || !reqId || c.reqId !== reqId) return
+  const sid = String(sessionId || '')
+  if (sid) c.sessions.add(sid)
+}
+
+/* 改票:本轮首条 session.event 携带的 id 才是运行时真正在跑的 session。
+   显式传的 sessionId 被忽略时(版本漂移/运行时自己另铸),以事件里的为准——
+   否则本轮自己的提问会被自己门掉。 */
+function rebindRunSession(key, reqId, sessionId) {
+  const c = keyToReqId.get(key)
+  if (!c || !reqId || c.reqId !== reqId) return
+  const sid = String(sessionId || '')
+  if (!sid || c.sessionId === sid) return
+  diag(`rebind reqId=${reqId} key=${shortKey(key)} from=${c.sessionId || '(空)'} to=${sid}`)
+  /* 原来那个 id 已被证实现实里没人用它:从归属集合里摘掉,免得伪装帧蒙混过关 */
+  if (c.sessionId) c.sessions.delete(c.sessionId)
+  c.sessionId = sid
+  c.sessions.add(sid)
+}
+
+/* 记下本轮的预热轮 session(见 handleRun 的 fresh 分支)。预热轮合法跑在这台 runtime 里,
+   但它既没有通知出口也没人会答它的提问 —— 单独记账,门控日志才能把它判成 warm,
+   与「上一轮遗留」区分开。放行业判据不受影响:预热轮永远不在 claim.sessions 里。 */
+function noteWarmSession(key, reqId, sessionId) {
+  const c = keyToReqId.get(key)
+  if (!c || !reqId || c.reqId !== reqId) return
+  const sid = String(sessionId || '')
+  if (sid) c.warmSession = sid
+}
+
+/* 越权帧是哪种来路(只影响日志措辞,放行与否早已由 claim.sessions 判定):
+   no-sid   帧上根本没盖 sessionId(老插件/漏盖章)→ 归属不明,按越权处理
+   warm     本轮预热轮('ok')在发起交互 —— 没人会应答,弹出来就是死框
+   stale    上一轮遗留的后台 job / 子代理现在才醒 —— 它那一轮早收场了
+   foreign  以上都不是:本轮会话树之外的 session,来路不明 */
+function bridgeFrameOrigin(key, claim, sid) {
+  if (!sid) return 'no-sid'
+  if (claim && claim.warmSession === sid) return 'warm'
+  const prior = priorRunSessions.get(key)
+  if (prior && prior.has(sid)) return 'stale'
+  return 'foreign'
+}
+
+/* 越权交互帧的统一处置:先回 abort(插件据此 reject,工具以失败收场,模型继续往下走,
+   不会永远挂在那儿等一个不来的答案),再留一行能一眼定位的日志。
+   没有这层门控,别人的轮次就能把确认框弹进你正在看的会话里。 */
+function rejectBridgeFrame(key, claim, m, socket, sid) {
+  try { socket.write(JSON.stringify({ t: 'abort', id: m.id }) + '\n') } catch {}
+  diag(
+    `reject ${m.t} origin=${bridgeFrameOrigin(key, claim, sid)} runKey=${shortKey(key)} ` +
+    `reqId=${claim && claim.reqId ? claim.reqId : '(无在途轮)'} ` +
+    `frameSid=${sid || '(无)'} runSid=${claim && claim.sessionId ? claim.sessionId : '(未定型)'} ` +
+    `tree=${claim && claim.sessions ? claim.sessions.size : 0}`,
+  )
+}
+
 /* 解除占用:只在自己的登记仍生效时清（同一台可能已被下一轮接手；
    被 cancel 关掉时 closeBridge/forgetKey 已经清过，这里不重复踩）。 */
 function releaseClaim(key, reqId, tag) {
-  const owns = !!reqId && keyToReqId.get(key) === reqId
+  const c = claimOf(key)
+  const owns = !!reqId && !!c && c.reqId === reqId
   if (!owns) return false
   keyToReqId.delete(key)
+  /* 本轮已结束:它的 session 从此变成「上一轮」,之后迟到的交互帧分类为 stale 并 abort */
+  snapshotPriorSessions(key, c)
   if (tag) {
     const set = tagToKey.get(tag)
     if (set) {
@@ -483,22 +613,33 @@ function releaseClaim(key, reqId, tag) {
   return true
 }
 
-function abortBridgePending(key, socket) {
+/* 撤销一台 runtime 的在途交互(整轮结束 / 桥断开 / 进程被取消)。
+   光通知插件不够:渲染层那张卡还在屏上,而网关侧 pending 已删,用户点任何选项
+   都会撞上「交互已失效」→ 卡永远撤不掉(就是「弹窗选项全都没反应」的直接成因)。
+   因此每撤一条都补发 ix-drop。ownerReqId 由调用方在解除占用**之前**取好,
+   卡片才能挂回它所属那一轮;确实没有归属时发 reqId:'' 的全局撤卡帧,渲染层按 id 兜底撤卡。 */
+function abortBridgePending(key, socket, ownerReqId) {
+  const reqId = String(ownerReqId || (claimOf(key) && claimOf(key).reqId) || '')
   for (const [id, p] of bridgePending) {
     if (p.key !== key) continue
     if (socket && p.socket !== socket) continue
     bridgePending.delete(id)
     try { p.socket.write(JSON.stringify({ t: 'abort', id }) + '\n') } catch {}
+    /* 撤卡通知不能反过来掀掉调用方:关闭流程里 stdout 可能已经断了 */
+    try {
+      out({ event: { reqId, type: 'ix-drop', data: { id, kind: p.kind, reason: 'aborted' } } })
+    } catch {}
   }
 }
 
 function closeBridge(key) {
   const b = bridgeServers.get(key)
   forgetKey(key)
+  /* 撤在途交互要赶在解除占用之前:那时 reqId 还在,ix-drop 才能挂到本轮头上 */
+  abortBridgePending(key, null, claimOf(key) && claimOf(key).reqId)
   if (!b) return
   bridgeServers.delete(key)
   keyToReqId.delete(key)
-  abortBridgePending(key)
   if (b.sockets) {
     for (const s of b.sockets) {
       try { s.destroy() } catch {}
@@ -706,7 +847,7 @@ function pickRuntimeKey(baseKey, cancelTag) {
   return k
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir, pure, runSession) {
   const home = dshHome || process.env.DSH_HOME || ''
   const effMaxTokens =
     Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
@@ -714,6 +855,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
       : undefined
   const searchKey = String(webSearchApiKey || '').trim() || String(apiKey || '').trim()
   const personaHash = crypto.createHash('sha1').update(String(hostPersona || '')).digest('hex').slice(0, 12)
+  const pureOn = !!pure
   const baseKey = runtimeKey(
     workspace,
     model,
@@ -721,7 +863,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     provider,
     apiKey,
     baseUrl,
-    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash,
+    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0'),
     effort,
   )
   const key = pickRuntimeKey(baseKey, cancelTag)
@@ -729,7 +871,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   if (existing) {
     existing.order = ++runtimeOrder
     /* 复用也要先占住:一旦返回给 handleRun,中间让出事件循环就会被并发 run 抢走 */
-    claimRuntime(key, reqId, cancelTag)
+    claimRuntime(key, reqId, cancelTag, runSession)
     return { harness: existing.harness, key, fresh: false }
   }
   mkdirSync(workspace, { recursive: true })
@@ -754,11 +896,17 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     delete env.MTNODE_CHAT_ISOLATE
     delete env.MTNODE_HOST_PERSONA
   }
+  /* 纯净模式：注入 MTNODE_PURE=1 给运行时。pure-prompt 插件据此在系统提示装配时
+     清空全部 system prompt 段与运行时上下文、工具只保留联网搜索；cordis.yml 用同一
+     标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 工具插件。 */
+  if (pureOn) env.MTNODE_PURE = '1'
+  else delete env.MTNODE_PURE
   if (envPatch) Object.assign(env, envPatch)
 
   /* 占用登记:放在本函数第一个 await 之前(同步完成),否则并发 run 会挑中同一台
-     runtime —— 那正是「停一个会话把别的会话一起打断」的根因。 */
-  const tag = claimRuntime(key, reqId, cancelTag)
+     runtime —— 那正是「停一个会话把别的会话一起打断」的根因。
+     runSession 一并登记:交互桥帧的归属从这一刻起就有判据了。 */
+  const tag = claimRuntime(key, reqId, cancelTag, runSession)
 
   /* 交互桥:每个运行时独占一个 localhost 端口。bridge + canvas 插件各连一条
      socket,按帧上的 id 把回答写回对应连接。 */
@@ -777,7 +925,19 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
           if (!line) continue
           let m
           try { m = JSON.parse(line) } catch { continue }
-          onBridgeFrame(key, m, s)
+          /* 逐帧兜底:net socket 的 data 回调里抛出任何异常都没有人接管 —— 整个网关进程当场
+             退出(此前这里引用了一个已被改名删掉的变量,一投交互帧 ReferenceError 掀翻全仓
+             AI,且只在下次请求时才懒重启)。单帧出错只 abort 它自己那一条交互并留痕,
+             桥与其余帧继续。 */
+          try {
+            onBridgeFrame(key, m, s)
+          } catch (err) {
+            try {
+              if (m && typeof m.id === 'string') s.write(JSON.stringify({ t: 'abort', id: m.id }) + '\n')
+            } catch {}
+            const where = String((err && err.stack) || err).split('\n').slice(0, 3).join(' | ')
+            diag(`frame-error t=${(m && m.t) || '(无)'} id=${(m && m.id) || '(无)'} ${where}`)
+          }
         }
       })
       s.on('error', () => {})
@@ -863,24 +1023,42 @@ function onBridgeFrame(key, m, socket) {
      这里只按「此刻有没有人听」选投递通道。 */
   if (m.t === 'journal') {
     const data = journalPayload(m)
-    const reqId = keyToReqId.get(key)
-    if (reqId) out({ event: { reqId, type: 'journal', data } })
+    const claim = claimOf(key)
+    if (claim) out({ event: { reqId: claim.reqId, type: 'journal', data } })
     else bufferJournal(key, data)
     return
   }
   if (typeof m.id !== 'string') return
   if (m.t === 'drop') {
     bridgePending.delete(m.id)
+    /* 运行时已放弃这条交互(提问被中止 / 审批被取消):光删 pending 会让卡片留在界面上
+       变幽灵。无条件推 ix-drop,渲染层据此撤卡;没有在途 run 时 reqId 为空,
+       渲染层按 id 全局兜底撤卡。老渲染层忽略未知事件类型,不影响既有链路。 */
+    const claim = claimOf(key)
+    out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
   if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db') return
-  const reqId = keyToReqId.get(key)
-  if (!reqId) {
-    try { socket.write(JSON.stringify({ t: 'abort', id: m.id }) + '\n') } catch {}
+  const claim = claimOf(key)
+  /* 归属校验:四类交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
+     canvas/db 来自 canvas-plugin/db-plugin 的 exec agent),网关据此判定「这帧属不属于此刻
+     在跑的这一轮」。与本轮对不上 = 预热轮('ok')在问话,或上一轮遗留的后台 job / 子代理
+     现在才醒过来发起交互。这类帧一旦弹进当前会话就是死框(答案送回一个没人听的 session,
+     点了毫无反应),所以直接 abort:运行时侧那个工具以失败收场,模型继续往下走。
+     画布/数据库帧以前不门控,于是别人的轮次能把「危险操作确认框」弹进你这一轮 ——
+     这正是「跑着跑着多出一个询问窗、回答后执行无效」的成因,现在同规矩处理。
+     不带 sessionId 的帧同样按越权处理(fail closed)——归属不明的交互不该出现在任何会话里。 */
+  const sid = typeof m.sessionId === 'string' ? m.sessionId : ''
+  if (!claim || !claim.reqId) {
+    rejectBridgeFrame(key, claim, m, socket, sid)
     return
   }
-  bridgePending.set(m.id, { socket, key, kind: m.t })
-  const data = { id: m.id, sessionId: m.sessionId || '' }
+  if (!sid || !claim.sessions.has(sid)) {
+    rejectBridgeFrame(key, claim, m, socket, sid)
+    return
+  }
+  bridgePending.set(m.id, { socket, key, kind: m.t, reqId: claim.reqId, sessionId: sid })
+  const data = { id: m.id, sessionId: sid }
   if (m.t === 'question') data.questions = Array.isArray(m.questions) ? m.questions : []
   else if (m.t === 'approval') {
     data.toolName = m.toolName || ''
@@ -891,7 +1069,7 @@ function onBridgeFrame(key, m, socket) {
     if (typeof m.action === 'string') data.action = m.action
     data.params = m.params && typeof m.params === 'object' ? m.params : {}
   }
-  out({ event: { reqId, type: m.t, data } })
+  out({ event: { reqId: claim.reqId, type: m.t, data } })
 }
 
 function mapNotification(n, emit) {
@@ -994,12 +1172,17 @@ async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
-    permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback,
+    permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback, pure,
   } = params
   const emit = (type, data) => out({ event: { reqId, type, data } })
   let runKey = ''
   /* 本次运行的取消标签:结束时只能清自己那条登记,别踩到同标签的下一轮 */
   const runTag = tagOf(cancelTag)
+  /* 本轮「真实轮」的 dsh session id:由网关铸造并显式传给 harness.run,
+     同时登记进 runtime 占用表,交互桥帧(question / approval)按它判归属。
+     形如 SDK 自己铸的 `session-<uuid去横线>`,运行时按未知 id 新建会话,语义与从前一致
+     (每轮一个新 session,预热轮也是各自一个),只是现在网关提前知道真实轮叫什么。 */
+  const runSession = 'session-' + crypto.randomUUID().replaceAll('-', '')
   /* 回合开合:rollback = {sessionId, roundId}(渲染层每轮 run 生成)。
      dir 按约定算给运行时插件写 journal;begin/end 让插件给这个进程
      当前这一轮盖章,迟到帧靠章而不是靠投递时刻归属。 */
@@ -1020,6 +1203,11 @@ async function handleRun(params) {
       return
     }
     const hostPersonaText = String(hostPersona || '').trim()
+    /* 纯净模式「双清空」:宿主侧 systemPrompt 置空(app-assist.js / app-db.js 的 pure
+       分支) + 网关侧强制空预设文本 —— 两段都为空,下面的 sys 才为空,用户消息原样
+       直达模型,不拼【系统设定】前缀。引擎人设 / 运行时上下文由 pure-prompt 插件按
+       MTNODE_PURE 标记整段清除(两侧缺一都会让提示词漏进纯净会话)。 */
+    const pureFlag = !!pure
     const settings = applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersonaText)
     const cordisChanged = applyCordisPreset(permissionPreset)
     /* win32 闪窗 workaround:首次运行时把 sandbox 注入 noop runner */
@@ -1028,12 +1216,17 @@ async function handleRun(params) {
     if (settings.changed || cordisChanged || sandboxChanged) await new Promise((r) => setTimeout(r, 450))
     /* 目录同源服务商(如 opencode-go)映射回目录路由名,与 settings 注册一致 */
     const route = routeOfProvider(provider, Array.isArray(mtnodeProviders) ? mtnodeProviders : [])
-    /* 空串预设(如 bongochat)必须保留,不能 || 回退成 MTNode standard */
-    const presetText = Object.prototype.hasOwnProperty.call(PRESETS, preset) ? PRESETS[preset] : PRESETS.standard
+    /* 空串预设(如 bongochat)必须保留,不能 || 回退成 MTNode standard;
+       纯净模式(pure)强制空预设文本,不拼任何角色前缀 */
+    const presetText = pureFlag
+      ? ''
+      : (Object.prototype.hasOwnProperty.call(PRESETS, preset) ? PRESETS[preset] : PRESETS.standard)
     const sys = [presetText, systemPrompt]
       .filter((s) => s && String(s).trim())
       .join('\n\n')
-    /* 宿主人设已写入真正的 system-prompt,不再塞进用户消息以免被当成越权改角色 */
+    /* 宿主人设已写入真正的 system-prompt,不再塞进用户消息以免被当成越权改角色。
+       pure 时 sys 为空(双清空,见上),条件走 input 分支:消息里没有任何
+       【系统设定】前缀,模型收到的就是用户原话。 */
     const prompt = sys && !hostPersonaText
       ? `【系统设定】\n${sys}\n\n【内容】\n${input}`
       : input
@@ -1045,7 +1238,7 @@ async function handleRun(params) {
     }
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, effort,
-      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir,
+      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir, pureFlag, runSession,
     )
     runKey = rt.key
     /* 引擎还在起机时用户就按了 ■：占到位后立刻自毁，不白烧一轮 token */
@@ -1060,14 +1253,22 @@ async function handleRun(params) {
     }
     /* 新 spawn 的运行时首轮预热:运行时刚起机时插件装载 / 指令基线 / 技能目录加载
        与首条消息之间存在竞态窗口,偶发把用户消息吞掉 → 模型只按系统提示回欢迎语。
-       先跑一条极短预热(ok)把运行时拉出竞态窗口,真实消息成为其第二轮,必定送达;
-       已复用的运行时跳过,零开销。预热轮是独立 session,与真实消息并发无干扰。 */
+       先跑一条极短预热(ok)把运行时拉出竞态窗口,真实消息成为同一进程的第二轮,必定送达;
+       已复用的运行时跳过,零开销。
+       session 归属:预热轮显式用自己的 warm session(真实轮用 handleRun 顶部铸的
+       runSession),两轮因此分属两个独立 session —— 'ok' 不进真实轮的上下文,真实轮的
+       宿主提示也不会漏进预热轮;纯净会话(pure)同理只看到自己那条原样用户消息。
+       预热轮不接 onNotification:运行时通知(reasoning/text/tool/usage/status…)不进
+       mapNotification,不外泄任何事件;它若发起交互(提问/审批/画布/数据库),桥帧 sessionId
+       与本轮的归属集合对不上,由 onBridgeFrame 直接 abort —— 预热轮的 ask 没人会答,
+       弹出来就是死卡。noteWarmSession 只把它的 session 记进分类账,让日志说清
+       「这是预热轮越权」而不是「上一轮遗留」。 */
     if (rt.fresh) {
+      const warmSession = 'session-' + crypto.randomUUID().replaceAll('-', '')
+      noteWarmSession(runKey, reqId, warmSession)
       try {
         await Promise.race([
-          /* 不传 onNotification:运行时通知(reasoning/text/tool/usage/status…)不进
-             mapNotification,不外泄任何事件;不传 rollback:不建回滚账本 */
-          harness.run([{ type: 'text', text: 'ok' }], {}),
+          harness.run([{ type: 'text', text: 'ok' }], { sessionId: warmSession }),
           new Promise((resolve) => setTimeout(resolve, WARMUP_TIMEOUT_MS)),
         ])
       } catch {
@@ -1152,8 +1353,26 @@ async function handleRun(params) {
         }),
       }
     }
+    /* 本轮首条 session.event 之前 session 归属只靠网关铸的 runSession;
+       首条到达后以运行时给的为权威(见 rebindRunSession) */
+    let sessionBound = false
     const result = await harness.run(blocks, {
+      /* 显式绑定本轮 session:交互桥帧(question / approval)按它判归属,
+         预热轮与上一轮遗留轮次的提问因此可被识别并 abort(见 onBridgeFrame) */
+      sessionId: runSession,
       onNotification: (n) => {
+        /* 登记本轮会话树里出现过的 session id(真实轮 + 它派生的子代理 / 后台 job)。
+           SDK 只把本轮那棵树的通知送进这个回调,且首条必是真实轮的收件回执,
+           所以首条的 sessionId 就是运行时真正在跑的根 session —— 若与网关铸的不一致
+           (运行时自己另铸 / 版本漂移),以事件里的为准。 */
+        const sid = n && n.params ? n.params.sessionId : ''
+        if (typeof sid === 'string' && sid) {
+          noteRunSession(runKey, reqId, sid)
+          if (!sessionBound && n.method === 'session.event') {
+            sessionBound = true
+            rebindRunSession(runKey, reqId, sid)
+          }
+        }
         mapNotification(n, emit)
         if (n.method !== 'session.event' || !n.params || !n.params.event) return
         const ev = n.params.event
@@ -1273,7 +1492,9 @@ async function handleRun(params) {
     }
     if (runKey) {
       /* 只有自己仍占着这台时才清桥:已被下一轮接手的，不能拆它的交互桥 */
-      if (releaseClaim(runKey, reqId, runTag)) abortBridgePending(runKey)
+      const owns = releaseClaim(runKey, reqId, runTag)
+      /* reqId 显式传进去:占用登记刚被清掉,不传就没人知道这些卡属于哪一轮了 */
+      if (owns) abortBridgePending(runKey, null, reqId)
     }
     if (runTag) {
       activeRunTags.delete(runTag)
@@ -2233,7 +2454,11 @@ rl.on('line', (line) => {
           const p = msg.params ?? {}
           const pending = bridgePending.get(p.id)
           if (!pending) {
-            reply(undefined, '交互已失效(任务已结束或被取消)')
+            /* 这条交互已经不在(pending 被撤销 / 网关从没见过):回 ok+stale 而不是 error。
+               error 会让渲染层以为"发送失败"而把卡片留在屏上,用户于是对着死卡反复点;
+               stale 明确告诉它"这卡已经作废",渲染层据此撤卡并给出说明。 */
+            reply({ ok: true, stale: true })
+            diag(`interact stale id=${String(p.id || '')} kind=${String(p.kind || '')}`)
             break
           }
           bridgePending.delete(p.id)

@@ -49,7 +49,17 @@ contextBridge.exposeInMainWorld('api', {
   wfList: () => ipcRenderer.invoke('workflow:list'),
   wfLoad: (id) => ipcRenderer.invoke('workflow:load', id),
   wfSave: (id, data) => ipcRenderer.invoke('workflow:save', { id, data }),
-  wfDelete: (id) => ipcRenderer.invoke('workflow:delete', id),
+  /* 删除画布：兼容旧调用（传 id 字符串）；新调用传 { id, expectId, expectName }
+     由主进程双重校验后移入回收站（软删），失败返回 { ok:false, code, error }。 */
+  wfDelete: (idOrOpts, maybeOpts) => {
+    const isPlainId = typeof idOrOpts === 'string' || typeof idOrOpts === 'number';
+    const payload = isPlainId
+      ? (maybeOpts ? Object.assign({}, maybeOpts, { id: String(idOrOpts) }) : String(idOrOpts))
+      : idOrOpts;
+    return ipcRenderer.invoke('workflow:delete', payload);
+  },
+  wfBackupStatus: () => ipcRenderer.invoke('workflow:backupStatus'),
+  wfBackupOpen: () => ipcRenderer.invoke('workflow:backupOpen'),
 
   assetCopy: (srcPath, wfId, name) => ipcRenderer.invoke('asset:copy', { srcPath, wfId, name }),
   assetWriteBase64: (wfId, name, base64, ext) => ipcRenderer.invoke('asset:writeBase64', { wfId, name, base64, ext }),
@@ -396,7 +406,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   /* ── dsh agent 网关（见 dsh/DESIGN.md）──
-     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'journal'|'error'|'done', data}。
+     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'journal'|'canvas'|'db'|'question'|'approval'|'ix-drop'|'error'|'done', data}。
      'journal' 是回滚帧（改前/改后采样），done 之后到达的帧改由 dshRollbackDrain 取回。 */
   dshConfig: () => ipcRenderer.invoke('dsh:config'),
   dshStatus: () => ipcRenderer.invoke('dsh:status'),
@@ -409,6 +419,18 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('dsh:event', onEv);
     return ipcRenderer.invoke('dsh:run', Object.assign({}, params, { reqId }));
+  },
+  /* 全局撤卡通道：reqId 为空的 ix-drop 不属于任何一次 run（预热轮在问话、
+     上一轮遗留的后台 job 现在才醒过来提问 —— 网关已就地 abort，但那张卡可能
+     已经推到界面）。dshRun 的按 reqId 过滤收不到它，所以单独订阅，渲染层按 id 兜底撤卡。
+     返回退订函数（启动时订阅一次即可）。 */
+  dshOnIxDrop: (cb) => {
+    const onEv = (ev, msg) => {
+      if (!msg || msg.type !== 'ix-drop' || msg.reqId) return;
+      try { cb(msg.data || {}); } catch (e) { console.error('dshOnIxDrop cb error:', e); }
+    };
+    ipcRenderer.on('dsh:event', onEv);
+    return () => ipcRenderer.removeListener('dsh:event', onEv);
   },
   dshPluginList: () => ipcRenderer.invoke('dsh:pluginList'),
   dshPluginAdd: (pkg) => ipcRenderer.invoke('dsh:pluginAdd', pkg),

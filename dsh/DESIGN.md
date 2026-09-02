@@ -72,6 +72,48 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
   审批 answerer;`canvas-plugin.mjs` 注册 `mtnode_canvas_get` /
   `mtnode_canvas_edit`(import `defineTool`,dsh 升级只改 `dsh/`)。帧转发到
   gateway,再由本地协议事件送达 renderer;回答经 `interact` 原路返回。
+- **交互桥的归属契约(询问不得成为死卡)**:
+  - 真实轮的 dsh session id 由 **gateway 铸造**并显式传给 `harness.run(blocks,
+    {sessionId})`(SDK `RunOptions.sessionId`,未知 id = 新建会话);预热轮另铸一个,
+    两轮因此不可能共用 session。占用表 `keyToReqId` 的值为
+    `{reqId, sessionId, sessions}`:`sessions` 是本轮通知流里见到过的全部 session id
+    (真实轮 + 它派生的子代理/后台 job),即这一轮的**会话树**。
+  - **四类交互帧一律盖发起方的 session 章**:`question` / `approval` 由 `bridge-plugin.mjs`
+    盖(分别取 `request.agent.id` 与 `req.agent.session.id`),`canvas` / `db` 由
+    `canvas-plugin.mjs` / `db-plugin.mjs` 在发帧处盖 `exec.agent.id`(`Agent.id` 的类型就是
+    `SessionId`,与提问同源)。拿不到 `agent` 时发**空串**,由网关按越权处理(fail closed)——
+    归属不明的交互不该出现在任何会话里。`{t:'drop'}` 撤帧带同一枚章,与主帧归属一致。
+  - gateway 收到后比对占用表:**没有归属本轮的 sessionId(与本轮会话树无交集、帧不带 id、
+    或本轮尚未定型)一律立刻回 `{t:'abort'}`**,并在 stderr 打 `[ix-gate] reject …` 诊断。
+    于是「本轮预热轮(`harness.run('ok')`)在问话」「上一轮遗留的后台 job / 子代理现在才醒
+    过来发起交互」这类越权请求不会再弹进用户当前会话(答案送回没人听的 session = 点了没反应
+    的死框);运行时侧那个工具以失败收场,模型继续走。
+    **`canvas` / `db` 从前豁免门控,是「开发任务跑一会儿突然多出一个确认框、回答后执行无效」
+    的直接成因**:预热轮与上一轮遗留的后台任务一样能把「危险操作确认框」弹进你正在看的这一轮,
+    而那一轮早就收场了,点「确认」只把结果写回一条没人听的 socket。现在四类帧同走一道门。
+  - 门控诊断必须带**来路分类**,方便按 `%APPDATA%\pipeline-console\dsh.log` 定位:
+    `origin=no-sid`(帧没盖章)/ `warm`(本轮预热轮)/ `stale`(上一轮遗留,靠 `priorRunSessions`
+    快照识别)/ `foreign`(会话树之外)。快照**只用于日志分类**,放行判据永远只看当前
+    `claim.sessions`,快照不开任何口子。一行打全 `runKey / reqId / frameSid / runSid / tree`。
+  - **逐帧异常兜底**:桥的 `socket.on('data')` 回调里对每一帧 `try/catch`。net socket 的
+    `data` 回调抛出异常没有任何人接管 —— 整个网关进程当场退出(实测:一次改名漏改末行引用,
+    `ReferenceError` 让网关一投交互帧就死,而主进程只在下次请求时才懒重启),所以单帧出错
+    只 `{t:'abort'}` 它那一条交互并打 `[ix-gate] frame-error …`,桥与其余帧继续。
+  - 撤销在途交互(`run` 收尾、`closeBridge`、单条 socket 断开)**必须同步发
+    `ix-drop` 事件**:`{event:{reqId, type:'ix-drop', data:{id, kind, reason}}}`。
+    本轮 reqId 已解除时发 `reqId:''` 的**全局撤卡帧**,渲染层按 `data.id` 兜底撤卡。
+    插件主动放弃一条交互(`{t:'drop'}`)同样无条件发 `ix-drop`。
+    pending 登记的是**四类**帧,所以画布 / 数据库的挂起确认框也一起被撤。
+  - 渲染层配套(`renderer/app-nodes.js` 的 `canvasConfirm*` + `app-db.js`):由 `canvas` /
+    `db` 帧弹出的确认框登记在**发起轮**的句柄上,命中 `ix-drop`、本轮收尾或该轮已不在
+    `S._runCancels`(与 `ixPruneOrphanCards` 同口径)时自动关闭并以
+    `{ok:false, error:'发起轮已结束,未执行'}` 回执;`{ok:true, stale:true}` 一律 toast 说明,
+    绝不留「点了没反应」的死框。
+  - 本契约由 `dsh/smoke-interaction-gate.mjs` 锁住(不起真实模型、不联网:网关进程内加载,
+    假运行时讲 JSON-RPC,测试直连桥端口喂假帧),改门控 / 盖章 / 撤帧任一条都会红。
+  - `interact` 找不到 pending 时回 `{ok:true, stale:true}`(**不是** error):
+    error 会让渲染层以为"没发出去"而把卡留在屏上,用户对着死卡反复点;`stale`
+    明确"这张卡作废了",渲染层据此撤卡并说明原因。
 - 回滚目录:`MTNODE_ROLLBACK_DIR` 由 gateway 在 spawn 时注入**绝对路径**(默认
   `<DATA>/rollback`,`<DATA>` = 主进程数据目录)。运行时侧回滚插件用它排除自指(账本与
   对象库自身的写入不进捕获)。未注入 = 回滚能力整体 no-op,其余行为一字不改
@@ -89,9 +131,9 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | method | params | 语义 |
 |---|---|---|
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
-| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件 |
+| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?}` | 排队一条提示,流式事件直至整轮 idle。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`），工具**仅保留联网搜索**；cordis.yml 用同一标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 插件。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
-| `interact` | `{kind:'question'\|'approval'\|'canvas', id, answers?\|outcome?\|result?}` | 回答提问 / 审批 / 画布工具结果,按交互 id 路由回对应运行时 |
+| `interact` | `{kind:'question'\|'approval'\|'canvas'\|'db'\|'abort', id, answers?\|outcome?\|result?\|error?}` | 回答提问 / 审批 / 画布工具 / 数据库工具结果,按交互 id 路由回对应运行时(`canvas` → `{t:'canvas-result'}`,`db` → `{t:'db-result'}`);`kind:'abort'` 让该次交互以失败收场(工具报错而非空答案)。id 已失效 → `{ok:true, stale:true}`(见「交互桥的归属契约」) |
 | `rollbackDrain` | `{reqId?}` | 回滚收尾拉取:取走 gateway 侧该轮(缺省 = 最近一轮)缓冲的 rollback 帧,返回 `{frames:[…], dropped:n, sealed:true\|false}`,取后即清缓冲。主进程在 `done` / `cancel` / 运行时关闭后各调一次,**账本封口只以本方法的返回值为权威**(事件是推的、drain 是兜底与封口);无缓冲返回 `{frames:[],dropped:0,sealed:true}`。详见「回滚账本与 journal 帧(契约)」 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
 | `pluginList` / `pluginAdd` / `pluginRemove` / `pluginEnable` / `pluginDisable` | `{pkg, id?}` 等 | 读取/安装/移除/挂载/卸载 cordis.yml 插件。`pluginList` 每项含 `title`/`description`/`purpose`/`version`(来自 package.json、preset.yml、行上注释)。核心运行时行只读;非核心(用户插件、套装、可选 shipped 行)可在设置中挂载/卸载;变更后重启运行时 |
@@ -103,11 +145,16 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 仅 `assistant/chunk` 的 `block-end` 且块类型为 `text` 时发)、`tool`(工具调用
 `{name, args}`)、`status`(`{state}`)、`question`(模型提问,`{id, sessionId,
 questions}`)、`approval`(越权审批,`{id, sessionId, toolName, callId?, reason?}`)、
-`canvas`(画布/应用读写,`{id, op:'get'|'edit'|'app', params}` —— 渲染层执行后经 `interact`
-`kind:'canvas'` 回传结果)、`journal`(回滚账本帧,`{phase:'begin'|'pre'|'post'|'end',
+`canvas`(画布/应用读写,`{id, sessionId, op:'get'|'edit'|'app', params}` —— 渲染层执行后经 `interact`
+`kind:'canvas'` 回传结果)、`db`(事实库读写,`{id, sessionId, action, params}` —— 经 `interact`
+`kind:'db'` 回传结果;两类帧的 `sessionId` 是发起轮的章,网关据此门控归属)、`ix-drop`(**撤卡通知**,`{id, kind?, reason:'aborted'|'dropped'}`
+—— 该交互在本轮收尾 / 桥断开 / 运行时放弃时已作废,渲染层必须撤掉对应卡片;`reqId` 为**空串**
+时是「无归属的全局撤卡帧」,渲染层按 `id` 兜底撤卡。见「交互桥的归属契约」)、
+`journal`(回滚账本帧,`{phase:'begin'|'pre'|'post'|'end',
 rid, sessionId, kind, …}` —— 主进程是唯一落盘者,转给渲染层时剥掉正文,见「回滚账本与
 journal 帧(契约)`)、`session-event`(其余会话事件全量透传)、`usage`、`title`、
-`error`、`done`(`{finalResponse, metrics}`)。所有事件带 `reqId`,对应一次 `run`。
+`error`、`done`(`{finalResponse, metrics}`)。所有事件带 `reqId`,对应一次 `run`
+(`ix-drop` 的全局撤卡帧例外:reqId 为空串)。
 
 > `turn` / `step` 取自 `assistant/chunk` 事件的 `params.event.data`(实测记录形如
 > `{type:'assistant/chunk', seq, time, data:{turn, step, chunk:{…}}}`),取不到时回落事件顶层、
@@ -414,6 +461,8 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
   `mtnode-unattended`(workspace-write + approval never)。
 - `dsh/smoke-gateway.mjs`:本地协议 status/pluginList/run/shutdown 全通过;模型错误
   正确穿透为 error+done 事件。
+- `dsh/smoke-interaction-gate.mjs`:交互桥归属契约(四类帧的盖章 / 门控 / 分类诊断 /
+  逐帧异常兜底 / 收尾与 closeBridge 撤帧)41 项断言全通过;不起真实模型、不联网。
 - `dsh/smoke-real.mjs`(需 key):agent 真实执行「写文件」任务 —— 流式 reasoning →
   write 工具调用 → 文件落盘 → done;在 **Electron 39 自带 Node 22.22.1**
   (`ELECTRON_RUN_AS_NODE=1` 下的 electron.exe)再次全链路通过,工具 write+read。

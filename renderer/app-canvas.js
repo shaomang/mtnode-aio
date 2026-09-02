@@ -381,6 +381,8 @@ function selectMark(id, opts) {
   }
   if (soft) {
     syncMarkSelDom();
+    /* 节点选中刚被撤掉又不重绘 → 同步撤下各节点的编辑形态，避免「未选中还是输入框」 */
+    syncNodeForms();
     return;
   }
   renderCanvas();
@@ -435,6 +437,8 @@ function startMarkDrag(m, ev) {
     S.selGroup = null;
     S.selWire = null;
     syncMarkSelDom();
+    /* 同 selectMark：撤掉节点选中但不重绘，形态要一起回落 */
+    syncNodeForms();
   } else {
     S.selMark = m.id;
   }
@@ -996,6 +1000,8 @@ function renderCanvas() {
     syncGroupBtns();
     if (S.sidebarOpen) renderSidebar();
     renderTaskCrumb();
+    /* 浏览态节点刚被点选 → 表单已换成编辑态，把光标落回主输入框末尾 */
+    applyFocusFormAfterRender();
   } finally {
     S._ignoreMarkBlurFlush = false;
     S._renderingCanvas = false;
@@ -1282,6 +1288,321 @@ function fitSuperFolderCard(el) {
   }
 }
 
+/* ============ 开发节点折叠卡：「文件 N」按钮 + 核心文件列表面板 ============
+ * 数据口径全在 app-devnode.js 的 devCoreFiles*（这里只做展示与交互）：
+ *   · 顶层（项目）块不列举核心文件 → 连按钮都不插入；
+ *   · 其余开发块在「打开」之后、「会话 N」之前插入「文件 N」（0 条只显示「文件」）；
+ *   · 展开态记在 S.uiDevFiles（只存节点 id · 与 S.uiDevModelNode 同一做法）：画布重绘时
+ *     nodeElement 依据它重新渲染面板，所以重绘后依然保持展开；
+ *   · 点任意一行 = shellShowItem(绝对路径) 在资源管理器中定位该文件所在文件夹；
+ *     解不出路径 / 没有 devPath 时给 toast（与文件节点「打开」同一口径，不静默）；
+ *   · 存在性异步问主进程（window.api.fileExists），结果缓存到模块级 Map，避免每次
+ *     重绘都重复探测；探测为 false 的行补一个「不存在」标记。
+ */
+const _devFileExistsCache = new Map();
+
+/* 本块要展示的核心文件（≤10 · 相对本块项目根）；顶层块恒为空 */
+function devCoreFilesShown(node) {
+  if (typeof devCoreFilesOf !== "function") return [];
+  if (typeof devIsTopBlock === "function" && devIsTopBlock(node)) return [];
+  const list = devCoreFilesOf(node);
+  return Array.isArray(list) ? list : [];
+}
+
+/* 顶层（项目）块之外才显示「文件 N」按钮 */
+function devCoreFilesButtonVisible(node) {
+  if (!node || node.kind !== "super" || !node.dev || node.db) return false;
+  return typeof devIsTopBlock === "function" ? !devIsTopBlock(node) : true;
+}
+
+function devFilesPanelOpen(node) {
+  return !!(node && S.uiDevFiles === node.id);
+}
+
+/* 展开 / 收起：只记节点 id，重绘后由 nodeElement 复原面板 */
+function toggleDevFilesPanel(node) {
+  if (!node) return;
+  S.uiDevFiles = S.uiDevFiles === node.id ? null : node.id;
+  try {
+    renderCanvas();
+  } catch (_) {}
+}
+
+/* 一条路径的绝对形式（相对路径按本块 devPathOf 解析）；解不出 → "" */
+function devCoreFileAbsOf(node, entry) {
+  return typeof devCoreFileAbs === "function" ? devCoreFileAbs(node, entry) : "";
+}
+
+/* 异步存在性（结果缓存到模块级 Map；解不出绝对路径 → null = 不标记） */
+async function devFileExistsCached(abs) {
+  const key = String(abs || "");
+  if (!key) return null;
+  if (_devFileExistsCache.has(key)) return _devFileExistsCache.get(key);
+  if (!window.api || !window.api.fileExists) return null;
+  let ex = null;
+  try {
+    ex = !!(await window.api.fileExists(key));
+  } catch (_) {
+    ex = null;
+  }
+  if (ex !== null) _devFileExistsCache.set(key, ex);
+  return ex;
+}
+
+/* 面板渲染后补「不存在」标记：只更新这批行，不整盘重绘 */
+async function refreshDevFileFlags(host) {
+  if (!host || !host.querySelectorAll) return;
+  const rows = Array.prototype.slice.call(
+    host.querySelectorAll("[data-dev-file]"),
+  );
+  for (const row of rows) {
+    const abs = String(row.dataset.devFile || "");
+    if (!abs) continue;
+    const ex = await devFileExistsCached(abs);
+    if (ex !== false || !row.isConnected) continue;
+    const miss = row.querySelector(".miss");
+    if (miss) miss.hidden = false;
+    row.classList.add("missing");
+  }
+}
+
+/* 点行：在资源管理器中定位该文件（解不出路径时与 openDevFileNode 同样给提示） */
+function revealDevCoreFile(node, entry) {
+  const abs = devCoreFileAbsOf(node, entry);
+  if (!abs) {
+    toast(
+      I18n.t(
+        "无法定位该文件：请先在顶层功能块设置项目根目录（devPath），核心文件才能解析成绝对路径",
+      ),
+      "warn",
+    );
+    return;
+  }
+  if (!window.api || !window.api.shellShowItem) {
+    toast(I18n.t("无法打开路径"), "warn");
+    return;
+  }
+  Promise.resolve()
+    .then(() => window.api.shellShowItem(abs))
+    .then((r) => {
+      if (r && r.ok === false)
+        toast(I18n.t("无法打开路径：") + (r.error || abs), "warn");
+    })
+    .catch((e) =>
+      toast(I18n.t("无法打开路径：") + ((e && e.message) || abs), "warn"),
+    );
+}
+
+/* 「打开项目根」：用本块（或最近祖先）的 devPath */
+function openDevProjectRoot(node) {
+  const root =
+    typeof devPathOf === "function" ? String(devPathOf(node) || "").trim() : "";
+  if (!root) {
+    toast(
+      I18n.t("尚未设置项目根目录（devPath）：请先在顶层功能块设置项目路径"),
+      "warn",
+    );
+    return;
+  }
+  if (!window.api || !window.api.shellOpenPath) {
+    toast(I18n.t("无法打开路径"), "warn");
+    return;
+  }
+  Promise.resolve()
+    .then(() => window.api.shellOpenPath(root))
+    .then((r) => {
+      if (r && r.ok === false)
+        toast(I18n.t("无法打开路径：") + (r.error || root), "warn");
+    })
+    .catch((e) =>
+      toast(I18n.t("无法打开路径：") + ((e && e.message) || root), "warn"),
+    );
+}
+
+/* 编辑核心文件：textarea 每行一个路径；「自动收集 / 清空」只改输入框，
+   写入一律走 devCoreFilesSet（归一 + 记历史 + 落盘都在那一处） */
+async function editDevCoreFiles(node) {
+  if (!devCoreFilesButtonVisible(node)) return;
+  if (typeof devCoreFilesSet !== "function") return;
+  let text = devCoreFilesShown(node).join("\n");
+  const maxN = typeof DEV_CORE_FILES_MAX === "number" ? DEV_CORE_FILES_MAX : 10;
+  /* 自动收集 / 清空 = 重新弹出同一对话框（回填新内容），避免两套输入控件 */
+  for (let guard = 0; guard < 24; guard++) {
+    const src =
+      typeof devCoreFilesSourceOf === "function"
+        ? devCoreFilesSourceOf(node)
+        : "";
+    const root =
+      typeof devPathOf === "function" ? String(devPathOf(node) || "").trim() : "";
+    const res = await mtDialogForm({
+      title: I18n.t("编辑核心文件列表") + " · " + String(node.title || ""),
+      wide: true,
+      rows: [
+        [I18n.t("项目根目录"), root || I18n.t("（未设置）")],
+        [
+          I18n.t("当前来源"),
+          src === "manual"
+            ? I18n.t("手动 / 会话回写")
+            : src === "auto"
+              ? I18n.t("自动收集（尚未确认）")
+              : I18n.t("（空）"),
+        ],
+      ],
+      textarea: {
+        label: I18n.t("核心文件（每行一个路径）"),
+        rows: 9,
+        value: text,
+        placeholder: "renderer/app-canvas.js",
+      },
+      hint:
+        I18n.t("最多 {n} 个 · 相对项目根或绝对路径都可", { n: maxN }) +
+        " · " +
+        I18n.t("「自动收集 / 清空」只改输入框，点「确定」才写入") +
+        (root
+          ? ""
+          : " · " +
+            I18n.t("未设置项目根目录：列表仍可保存，但要设置 devPath 才能定位文件")),
+      actions: [
+        { id: "cancel", label: I18n.t("取消") },
+        { id: "auto", label: I18n.t("自动收集") },
+        { id: "clear", label: I18n.t("清空") },
+        { id: "ok", label: I18n.t("确定"), primary: true },
+      ],
+    });
+    if (!res) return;
+    if (res.action === "auto") {
+      text =
+        typeof devCoreFilesAutoOf === "function"
+          ? devCoreFilesAutoOf(node).join("\n")
+          : devCoreFilesShown(node).join("\n");
+      continue;
+    }
+    if (res.action === "clear") {
+      text = "";
+      continue;
+    }
+    if (res.action !== "ok") return;
+    const stats = {};
+    const next = devCoreFilesSet(node, String(res.text || ""), stats);
+    if (next === null) {
+      toast(I18n.t("最外层（项目）开发节点不列举核心文件"), "warn");
+      return;
+    }
+    S.uiDevFiles = node.id;
+    try {
+      renderCanvas();
+    } catch (_) {}
+    if (stats.dropped)
+      toast(I18n.t("核心文件最多 {n} 个，多余部分已忽略", { n: maxN }), "warn");
+    else
+      toast(
+        I18n.t("已保存核心文件列表：") + next.length + I18n.t(" 个"),
+        "ok",
+      );
+    return;
+  }
+}
+
+/* 面板里的一行：文件名 + 灰色相对路径 + （异步）不存在标记 */
+function devFilesRowEl(node, entry) {
+  const rel =
+    typeof devCoreFileNormEntry === "function"
+      ? devCoreFileNormEntry(entry)
+      : String(entry || "");
+  const abs = devCoreFileAbsOf(node, entry);
+  const name =
+    (typeof devCoreFileLabel === "function" ? devCoreFileLabel(entry) : "") ||
+    rel ||
+    String(entry || "");
+  const row = document.createElement("div");
+  row.className = "n-dev-file";
+  row.dataset.devFile = abs || "";
+  row.title = abs || rel || I18n.t("无法定位该文件");
+  const nm = document.createElement("span");
+  nm.className = "f";
+  nm.textContent = name;
+  row.appendChild(nm);
+  if (rel && rel !== name) {
+    const p = document.createElement("span");
+    p.className = "p";
+    p.textContent = rel;
+    p.title = rel;
+    row.appendChild(p);
+  }
+  const miss = document.createElement("span");
+  miss.className = "miss";
+  miss.textContent = I18n.t("不存在");
+  miss.hidden = true;
+  row.appendChild(miss);
+  row.onclick = (ev) => {
+    ev.stopPropagation();
+    revealDevCoreFile(node, entry);
+  };
+  return row;
+}
+
+/* 展开态面板：头部（来源 + 编辑 + 打开项目根）+ 文件行列表 */
+function devFilesPanelEl(node, list) {
+  const wrap = document.createElement("div");
+  wrap.className = "n-dev-files";
+  const head = document.createElement("div");
+  head.className = "n-dev-files-head";
+  const cap = document.createElement("span");
+  cap.className = "cap";
+  const src =
+    typeof devCoreFilesSourceOf === "function" ? devCoreFilesSourceOf(node) : "";
+  cap.textContent =
+    I18n.t("核心文件") +
+    (src === "auto"
+      ? " · " + I18n.t("自动收集 · 点「编辑」确认")
+      : src === "manual"
+        ? " · " + I18n.t("已确认")
+        : "");
+  cap.title = I18n.t(
+    "本功能块最关键的源码文件（最多 {n} 个 · 相对项目根 · 由开发 / 细化会话回写或手工编辑，为空时自动收集）",
+    { n: typeof DEV_CORE_FILES_MAX === "number" ? DEV_CORE_FILES_MAX : 10 },
+  );
+  head.appendChild(cap);
+  const be = document.createElement("button");
+  be.type = "button";
+  be.className = "n-dev-files-edit";
+  be.textContent = I18n.t("编辑");
+  be.title = I18n.t(
+    "编辑本功能块的核心文件（每行一个路径 · 可自动收集 / 清空 · 确认后写入节点）",
+  );
+  be.onclick = (ev) => {
+    ev.stopPropagation();
+    editDevCoreFiles(node);
+  };
+  head.appendChild(be);
+  const br = document.createElement("button");
+  br.type = "button";
+  br.className = "n-dev-files-root";
+  br.textContent = I18n.t("打开项目根");
+  br.title = I18n.t("用系统默认方式打开本功能块所属项目的根目录（devPath）");
+  br.onclick = (ev) => {
+    ev.stopPropagation();
+    openDevProjectRoot(node);
+  };
+  head.appendChild(br);
+  wrap.appendChild(head);
+  const listEl = document.createElement("div");
+  listEl.className = "n-dev-files-list";
+  if (!list || !list.length) {
+    const e = document.createElement("div");
+    e.className = "n-dev-files-empty";
+    e.textContent = I18n.t(
+      "暂无核心文件：点「编辑」逐行填写，或在开发 / 细化会话里回写 devFiles",
+    );
+    listEl.appendChild(e);
+  } else {
+    for (const entry of list) listEl.appendChild(devFilesRowEl(node, entry));
+  }
+  wrap.appendChild(listEl);
+  refreshDevFileFlags(wrap);
+  return wrap;
+}
+
 function nodeElement(node) {
   clampNodeToMinSize(node);
   const el = document.createElement("div");
@@ -1295,6 +1616,11 @@ function nodeElement(node) {
         ? "ctrl " + nodeKindIconCls(node)
         : KIND_CLS[node.kind] || "proc";
   el.className = "wf-node " + kindCls + (isSel(node.id) ? " sel" : "");
+  /* 浏览态标记（未选中的文本 / 图像类节点）：形态同时记在 dataset 上，
+     供 applyNodeForm 判断「选中 → 编辑态」时就地重建 body（见 buildBody 入口分流） */
+  const _browse = nodeBrowseMode(node);
+  if (_browse) el.classList.add("browse");
+  el.dataset.nodeForm = _browse ? "browse" : "edit";
   /* 开发节点：元素类型外框配色 + 关系线起点高亮 + 运行中呼吸灯/徽标 */
   let devRun = null;
   if (node.kind === "super" && node.dev && !node.db) {
@@ -1372,8 +1698,8 @@ function nodeElement(node) {
     const purpose = nodeKindPurpose(node);
     if (canUseGlobalRefs(node)) {
       const g = usesGlobalRefs(node)
-        ? I18n.t("已引用全局节点（彩虹）· 点击关闭 · 拖动移动")
-        : I18n.t("点击引用全局节点 · 拖动移动");
+        ? I18n.t("已引用全局节点（彩虹）· 提示词需 @ 标题才注入 · 点击关闭 · 拖动移动")
+        : I18n.t("点击开启全局引用（提示词需 @ 标题才注入）· 拖动移动");
       return purpose ? g + "\n" + purpose : g;
     }
     return purpose || I18n.t("拖拽移动节点（按住手柄拖动）");
@@ -3243,12 +3569,9 @@ function nodeElement(node) {
     const openSuper = superIsOpenShell(node);
     const sz = node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
     const hostEl = ev.target.closest(".wf-node");
-    if (hostEl) {
-      hostEl.classList.add("sel");
-      document.querySelectorAll(".wf-node.sel").forEach((x) => {
-        if (x !== hostEl) x.classList.remove("sel");
-      });
-    }
+    /* 就地改选中 class（不经 renderCanvas）：必须走 setNodeSelClass，
+       sel class 与浏览 / 编辑形态一起切，否则拖完尺寸会出现「已选中却还是浏览态」的节点 */
+    setNodeSelClass(hostEl, node, true);
     S.drag = {
       mode: "resize",
       id: node.id,
@@ -3705,7 +4028,751 @@ function readonlyBatchRows(items, list, isImage) {
   }
 }
 
+/* ============ 节点浏览态（未选中 = 浏览形态）============
+   全局约定（后续改动按此对齐）：
+   · 判定口径：nodeBrowseMode(n) = 未选中(n)，且仅对 NODE_BROWSE_KINDS 内的 kind 生效；
+     其余 kind（控制流 / 判断 / 任务 / 超级 / 开发 / 数据库 / 媒体 / 网络…）恒为编辑形态。
+   · DOM：浏览态节点根元素带 .wf-node.browse；el.dataset.nodeForm 记录当前形态（browse / edit）。
+   · 只读视图容器：.n-view（子块 .n-view-plain / .n-view-md / .n-view-yaml /
+     .n-view-entries / .n-view-entry / .n-view-entry-title / .n-view-entry-body /
+     .n-view-empty；图像为 .n-img.bare），由 app-nodeview.js 生成。
+     浏览态只渲染展示型元素，不挂任何 onclick —— 可交互元素只保留节点头部那一排小按钮。
+   · 形态与选中必须同步：全量重绘由 renderCanvas 走 nodeElement；就地改 class 的场合
+     （如 .n-resize 的 mousedown）一律走 setNodeSelClass，否则会出现「已选中却还是浏览态」。 */
+
+const NODE_BROWSE_KINDS = new Set([
+  "input_text",
+  "input_image",
+  "proc_text",
+  "proc_image",
+  "agent_task",
+  "chat",
+  "save",
+]);
+
+/* 浏览态分流用的 kind 键：旧 save_text / save_image 别名归一到 save */
+function nodeBrowseKindKey(n) {
+  if (!n || !n.kind) return "";
+  if (typeof isSaveKind === "function" && isSaveKind(n.kind)) return "save";
+  return n.kind;
+}
+
+/* 该节点是否参与「未选中 = 浏览态」 */
+function nodeBrowseKind(n) {
+  return NODE_BROWSE_KINDS.has(nodeBrowseKindKey(n));
+}
+
+/* 选中语义：S.selSet（多选）与 S.sel（主选中）都认，兼容只改 S.sel 的调用方 */
+function nodeSelState(n) {
+  if (!n) return false;
+  return !!isSel(n.id) || S.sel === n.id;
+}
+
+/* 浏览态判定：文本 / 图像相关节点，未被选中即为浏览态 */
+function nodeBrowseMode(n) {
+  if (!nodeBrowseKind(n)) return false;
+  return !nodeSelState(n);
+}
+
+/* 各 kind 的浏览态 body 渲染器（kind 键 → function(node, body)）；
+   未登记 = 该 kind 尚无浏览形态 → buildBody 回落到编辑态渲染（与今天一致） */
+const NODE_BROWSE_BODY = {};
+
+/* 浏览态 body 入口：body 传入时为空，handler 填满并返回真值；失败则清空后回落编辑态 */
+function buildBrowseBody(node, body) {
+  const fn = NODE_BROWSE_BODY[nodeBrowseKindKey(node)];
+  if (typeof fn !== "function") return false;
+  let ok = false;
+  try {
+    ok = fn(node, body) !== false;
+  } catch (_) {
+    ok = false;
+  }
+  if (!ok) {
+    while (body.firstChild) body.removeChild(body.firstChild);
+  }
+  return ok;
+}
+
+/* 节点自身的 body（不含嵌套壳里的子节点 body） */
+function nodeBodyEl(el) {
+  return el && el.querySelector ? el.querySelector(":scope > .n-body") : null;
+}
+
+/* 只重建该节点的 .n-body：保留头部、端子、.n-resize 等外层元素，并同步板身尺寸 */
+function rebuildNodeBody(node, bodyEl) {
+  const el = bodyEl.closest ? bodyEl.closest(".wf-node") : null;
+  const ae = document.activeElement;
+  if (
+    ae &&
+    ae !== document.body &&
+    bodyEl.contains(ae) &&
+    typeof ae.blur === "function"
+  ) {
+    try {
+      ae.blur();
+    } catch (_) {}
+  }
+  while (bodyEl.firstChild) bodyEl.removeChild(bodyEl.firstChild);
+  buildBody(node, bodyEl);
+  if (!el) return;
+  const sz =
+    node.kind === "super" ? superDisplaySize(node) : { w: node.w, h: node.h };
+  el.style.width = sz.w + "px";
+  el.style.height = sz.h + "px";
+  refreshPorts(el, node);
+}
+
+/* 刷新单个节点元素的浏览 / 编辑形态；形态真的变了才重建 body（不打断正在进行的输入） */
+function applyNodeForm(el, node) {
+  if (!el || !node) return;
+  const browse = nodeBrowseMode(node);
+  el.classList.toggle("browse", browse);
+  const form = browse ? "browse" : "edit";
+  if (el.dataset.nodeForm === form) return;
+  el.dataset.nodeForm = form;
+  const body = nodeBodyEl(el);
+  if (body) rebuildNodeBody(node, body);
+}
+
+/* 不重绘而直接改选中 class 的唯一正确姿势：sel class 与浏览 / 编辑形态一起同步。
+   调用方必须先更新 S.selSet / S.sel，再调本函数（on = 本节点是否被选中）。 */
+function setNodeSelClass(el, node, on) {
+  const host =
+    el && el.classList && el.classList.contains("wf-node")
+      ? el
+      : node && document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+  if (!host || !node) return;
+  /* 被取消选中的其它节点：撤 sel 的同时换回各自的形态 */
+  document.querySelectorAll(".wf-node.sel").forEach((x) => {
+    if (x === host) return;
+    x.classList.remove("sel");
+    applyNodeForm(x, nodeById(x.dataset.nid));
+  });
+  host.classList.toggle("sel", !!on);
+  applyNodeForm(host, node);
+}
+
+/* 只改选择状态、不整幅重绘的场合（如点选绘制标注会撤掉节点选中）的兜底：
+   把形态刷到全部已渲染节点。sel class 与 nodeElement 同口径（只撤不加），
+   不新增高亮，只保证「没有选中就不可能是编辑态」。 */
+function syncNodeForms() {
+  document.querySelectorAll(".wf-node").forEach((x) => {
+    const n = nodeById(x.dataset.nid);
+    if (!n) return;
+    if (!nodeSelState(n)) x.classList.remove("sel");
+    applyNodeForm(x, n);
+  });
+}
+
+/* 点选一个原本处于浏览态的节点 → 本次重绘收尾时把光标落到它的主输入框末尾，
+   保住「点文字就能直接打字」的手感（今天 textarea 的 mousedown 放行并直接聚焦）。
+   调用方：在更新 S.selSet / S.sel 之后、renderCanvas 之前调用。 */
+function markFormFocusAfterRender(node) {
+  if (!nodeBrowseKind(node)) return;
+  S._focusFormAfterRender = node.id;
+}
+
+/* 主输入框：转编辑态后的聚焦目标（textarea 优先，退回第一个可写文本 input） */
+function nodeMainInputEl(el) {
+  const body = nodeBodyEl(el);
+  if (!body) return null;
+  return (
+    body.querySelector("textarea.n-text:not([readonly])") ||
+    body.querySelector("textarea:not([readonly])") ||
+    body.querySelector('input[type="text"]:not([readonly])') ||
+    null
+  );
+}
+
+/* renderCanvas 收尾：兑现 markFormFocusAfterRender 许下的聚焦 */
+function applyFocusFormAfterRender() {
+  const id = S._focusFormAfterRender;
+  if (!id) return;
+  S._focusFormAfterRender = null;
+  const node = nodeById(id);
+  if (!node || nodeBrowseMode(node)) return;
+  const inp = nodeMainInputEl(
+    document.querySelector('.wf-node[data-nid="' + id + '"]'),
+  );
+  if (!inp) return;
+  try {
+    inp.focus({ preventScroll: true });
+    const end = String(inp.value || "").length;
+    if (typeof inp.setSelectionRange === "function")
+      inp.setSelectionRange(end, end);
+  } catch (_) {}
+}
+
+/* ============ 浏览态 body 渲染器（NODE_BROWSE_BODY 登记表） ============
+   口径：浏览态只渲染展示型元素 —— 只读文本视图 / 紧凑条目列表 / 裸图 / 会话流 /
+   输出正文 + status 行；不挂任何 onclick（图像保留点击预览大图这一查看动作）。
+   节点头部那排小按钮（▶、批量、拆、🐋、×N、💬、↗、⚙、✕…）在 nodeElement 里，
+   本层一概不动 —— 它们就是浏览态要留下的「菜单栏」。
+   依赖缺失（返回 null / false）时 buildBrowseBody 会清空并回落编辑态渲染。 */
+
+/* 只读文本块：语言判定（plain / md / yaml）与 @引用着色都在 app-nodeview.js，
+   这里只补 canvas.css 浏览态约定的类：外层 .n-view 负责滚动，内层 .n-view-<lang>
+   负责排版（md 再挂 .md，让节点内 Markdown 压缩规则命中）。
+   opts.inner = true：嵌在条目体内，不套 .n-view（避免出现双层滚动）。 */
+function browseTextEl(text, node, opts) {
+  if (
+    typeof nodeTextViewEl !== "function" ||
+    typeof detectViewLang !== "function" ||
+    typeof nodeViewIsEmpty !== "function"
+  )
+    return null;
+  const o = opts || {};
+  const raw = String(text == null ? "" : text);
+  const emptyEl = () => {
+    const e = document.createElement("div");
+    e.className = o.inner ? "n-view-empty" : "n-view n-view-empty";
+    if (o.inner) e.style.minHeight = "0";
+    e.textContent = o.emptyText || I18n.t("（空）");
+    return e;
+  };
+  if (nodeViewIsEmpty(raw)) return emptyEl();
+  const lang = detectViewLang(raw);
+  const cls =
+    "n-view-" + lang + (lang === "md" ? " md" : "") + (o.inner ? "" : " n-view");
+  return nodeTextViewEl(raw, { node: node, lang: lang, class: cls });
+}
+
+/* 一行只读摘要（浏览态的任务文本 / 保存路径）：超一行裁尾，不是编辑入口 */
+function browseBriefEl(text, node, opts) {
+  const o = opts || {};
+  const raw = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+  const el = document.createElement("div");
+  el.className = "n-view-brief";
+  el.style.flex = "none";
+  el.style.minHeight = "0";
+  el.style.whiteSpace = "nowrap";
+  el.style.overflow = "hidden";
+  el.style.textOverflow = "ellipsis";
+  el.style.lineHeight = "1.5";
+  el.style.fontSize = o.mono ? "11.5px" : "12.5px";
+  if (o.mono) el.style.fontFamily = "var(--mono)";
+  el.style.color = raw ? "var(--ink)" : "var(--muted)";
+  el.title = raw || o.empty || "";
+  if (!raw) {
+    el.textContent = o.empty || I18n.t("（空）");
+    return el;
+  }
+  if (typeof escapeHtml === "function") {
+    const h = escapeHtml(raw);
+    el.innerHTML =
+      typeof highlightAtRefsHtml === "function" ? highlightAtRefsHtml(h, node) : h;
+  } else el.textContent = raw;
+  return el;
+}
+
+/* 紧凑条目列表：替代编辑态 n-bentries 里那一排 textarea ——
+   标题一行 + 内容各自再判语言渲染；图像条目走缩略图 + 尺寸小字 */
+function browseEntriesEl(items, node, isImage, emptyText) {
+  const list = document.createElement("div");
+  list.className = "n-view n-view-entries";
+  const arr = Array.isArray(items) ? items : [];
+  if (!arr.length) {
+    const e = document.createElement("div");
+    e.className = "n-view-empty";
+    e.textContent = emptyText || I18n.t("（空）");
+    list.appendChild(e);
+    return list;
+  }
+  for (let i = 0; i < arr.length; i++) {
+    const it = arr[i] || {};
+    const title =
+      typeof entryDisplayTitle === "function" ? entryDisplayTitle(it, i) : String(it.title || "");
+    const row = document.createElement("div");
+    row.className = "n-view-entry";
+    const t = document.createElement("div");
+    t.className = "n-view-entry-title";
+    t.textContent = title;
+    t.title = title;
+    row.appendChild(t);
+    const b = document.createElement("div");
+    b.className = "n-view-entry-body";
+    const path = it.path || (it.value && it.value.path) || it.imageAsset || "";
+    if (isImage && path) {
+      const img = document.createElement("img");
+      img.className = "bentry-thumb";
+      img.src = fileUrlWithBust(path, path);
+      img.alt = title;
+      bindImagePreview(img, path, title);
+      bindImgSaveAs(img);
+      b.appendChild(img);
+      b.appendChild(makeImageMetaEl(path, "bentry-meta"));
+    } else {
+      const inner = browseTextEl(
+        it.content != null ? it.content : it.text,
+        node,
+        { inner: true },
+      );
+      if (!inner) return null;
+      b.appendChild(inner);
+    }
+    row.appendChild(b);
+    list.appendChild(row);
+  }
+  return list;
+}
+
+/* 图像铺满 body：.n-img.bare（虚线框与 padding 由 CSS 撤掉）；
+   不渲染「选择图像 / 清除」ops 行，也不挂「点空白换图」的 onclick。
+   拖文件进来照旧可用 —— canvas 的 drop 用坐标命中节点，不依赖 body DOM。 */
+function browseImageEl(path, title, sourceName) {
+  const wrap = document.createElement("div");
+  wrap.className = "n-view";
+  const box = document.createElement("div");
+  box.className = "n-img bare";
+  if (!path) {
+    const e = document.createElement("div");
+    e.className = "n-view-empty";
+    e.textContent = I18n.t("（无图像）");
+    box.appendChild(e);
+    wrap.appendChild(box);
+    return wrap;
+  }
+  const img = document.createElement("img");
+  img.src = fileUrlWithBust(path, path);
+  img.alt = title || I18n.t("输入图像");
+  img.onerror = () => {
+    box.innerHTML = "";
+    const g = document.createElement("div");
+    g.className = "img-ghost";
+    g.textContent = I18n.t("文件不存在或无法预览");
+    box.appendChild(g);
+  };
+  bindImagePreview(img, path, title || I18n.t("输入图像"));
+  bindImgSaveAs(img);
+  box.appendChild(img);
+  const meta = makeImageMetaEl(path);
+  if (sourceName)
+    meta.textContent =
+      I18n.t("标题：") + sourceName + (meta.textContent ? " · " + meta.textContent : "");
+  box.appendChild(meta);
+  wrap.appendChild(box);
+  return wrap;
+}
+
+/* 等待上游 / 无内容时的占位视图 */
+function browseEmptyViewEl(text) {
+  const wrap = document.createElement("div");
+  wrap.className = "n-view";
+  const e = document.createElement("div");
+  e.className = "n-view-empty";
+  e.style.margin = "auto";
+  e.textContent = text || I18n.t("（空）");
+  wrap.appendChild(e);
+  return wrap;
+}
+
+/* status 行（与编辑态同一个元素与 id，状态刷新照常命中） */
+function browseStatusEl(node) {
+  const so = statusOf(node);
+  const st = document.createElement("div");
+  st.className = "n-status" + (so.cls ? " " + so.cls : "");
+  st.id = "st-" + node.id;
+  st.textContent = so.txt;
+  st.title = st.textContent;
+  return st;
+}
+
+/* 输出面板（浏览态）：只留标题行与正文 ——「复制 / 清空 / 浏览」按钮和
+   左缘拖宽条（.n-out-resize）都不渲染；元素 id 与编辑态一致，
+   所以运行中的流式增量与 fillPreviews 的图像回填都不用另写一套。 */
+function browseProcOutEl(node) {
+  const r = selResult(node);
+  const liveDsh = !!(node.running && typeof isDshTask === "function" && isDshTask(node));
+  if (!liveDsh && !(r && (r.output || r.batchOutputs || r.error))) return null;
+  if (node.outW == null) node.outW = 210;
+  const out = document.createElement("div");
+  out.className = "n-out";
+  out.style.width = node.outW + "px";
+  const nA = attemptCount(node);
+  const oh = document.createElement("div");
+  oh.className = "n-out-head";
+  oh.appendChild(
+    document.createTextNode(
+      liveDsh
+        ? I18n.t("OUTPUT · 运行中")
+        : ((r && r.error ? "ERROR" : r && r.batchOutputs ? I18n.t("OUTPUT · 批量") : "OUTPUT") +
+            (nA > 1
+              ? I18n.t(" · 尝试 ") + (attemptIdx(node) + 1) + "/" + nA
+              : "")),
+    ),
+  );
+  out.appendChild(oh);
+  if (liveDsh) {
+    if (node.kind !== "agent_task" && typeof dshToolDetailsEl === "function") {
+      const toolsBox = document.createElement("div");
+      toolsBox.className = "dsh-tools";
+      toolsBox.id = "dsh-out-tools-" + node.id;
+      for (const t of (S.nodeTools && S.nodeTools[node.id]) || [])
+        toolsBox.appendChild(dshToolDetailsEl(t, true, node.id));
+      out.appendChild(toolsBox);
+    }
+    const stream = document.createElement("div");
+    stream.className = "md dsh-out-live";
+    stream.id = "dsh-out-stream-" + node.id;
+    stream.textContent =
+      typeof traceSayDisplay === "function"
+        ? traceSayDisplay(node.id, node._pendingAnswer)
+        : "";
+    if (!stream.textContent) {
+      stream.textContent = I18n.t("智能任务执行中…");
+      stream.classList.add("n-empty");
+    }
+    out.appendChild(stream);
+    return out;
+  }
+  if (r.batchOutputs && r.batchOutputs.length) {
+    const list = document.createElement("div");
+    list.className = "n-bout-list";
+    r.batchOutputs.forEach((x, idx) => {
+      const rr = document.createElement("div");
+      rr.className = "n-bout-row" + (x.ok ? "" : " err");
+      const t = document.createElement("span");
+      t.className = "n-bout-title";
+      t.textContent = x.title;
+      t.title = x.title;
+      rr.appendChild(t);
+      if (x.ok && x.output && x.output.kind === "text") {
+        const s = document.createElement("span");
+        s.className = "n-bout-snip";
+        s.textContent =
+          x.output.text.slice(0, 80) + (x.output.text.length > 80 ? "…" : "");
+        s.title = x.output.text;
+        rr.appendChild(s);
+      } else if (x.ok && x.output) {
+        const img = document.createElement("img");
+        img.id = "outimg-" + node.id + "-" + idx;
+        img.alt = x.title;
+        img.dataset.path = (x.output && x.output.path) || "";
+        if (node.bgRmOn) img.classList.add("bg-rm-preview");
+        bindImgSaveAs(img);
+        bindImagePreview(img, img.dataset.path, x.title);
+        rr.appendChild(img);
+      } else if (x.error) {
+        const s = document.createElement("span");
+        s.className = "n-bout-snip err";
+        s.textContent = "✕ " + x.error;
+        s.title = x.error;
+        rr.appendChild(s);
+      }
+      list.appendChild(rr);
+    });
+    out.appendChild(list);
+  } else if (r.output && r.output.kind === "text") {
+    const md = document.createElement("div");
+    md.className = "md";
+    md.innerHTML = renderMarkdown(r.output.text);
+    out.appendChild(md);
+  } else if (r.output && r.output.kind === "image") {
+    const img = document.createElement("img");
+    img.id = "out-img-" + node.id;
+    img.alt = I18n.t("输出图像");
+    img.dataset.path = r.output.path || "";
+    if (node.bgRmOn) img.classList.add("bg-rm-preview");
+    bindImgSaveAs(img);
+    bindImagePreview(img, img.dataset.path, node.title || I18n.t("输出图像"));
+    out.appendChild(img);
+  } else {
+    const e = document.createElement("div");
+    e.className = "n-empty";
+    e.textContent = (r && r.error) || "";
+    out.appendChild(e);
+  }
+  return out;
+}
+
+/* input_text：单条 → 只读文本视图；批量 / YAML 条目 / 继承只读 → 紧凑条目列表 */
+NODE_BROWSE_BODY.input_text = function (node, body) {
+  if (node.ro) {
+    const v = browseTextEl(node.text, node);
+    if (!v) return false;
+    body.appendChild(v);
+    return;
+  }
+  if (inputInherited(node)) {
+    const disp = displayValueOf(firstSource(node), node);
+    if (disp && disp.items && disp.items.length) {
+      body.appendChild(browseEntriesEl(disp.items, node, false));
+      return;
+    }
+    if (disp && disp.images && disp.images.length) {
+      body.appendChild(browseEntriesEl(disp.images, node, true));
+      return;
+    }
+    if (disp && disp.text != null) {
+      const es = !node.yamlOff ? parseSimpleYaml(disp.text) || [] : [];
+      if (es.length) {
+        body.appendChild(
+          browseEntriesEl(
+            es.map((e) => ({ title: e.title, content: e.content })),
+            node,
+            false,
+          ),
+        );
+        return;
+      }
+      const v = browseTextEl(disp.text, node);
+      if (!v) return false;
+      body.appendChild(v);
+      return;
+    }
+    if (disp && disp.image) {
+      body.appendChild(
+        browseImageEl(
+          disp.image,
+          disp.title || singleImageTitle({ imageAsset: disp.image, sourceName: "" }),
+          "",
+        ),
+      );
+      return;
+    }
+    body.appendChild(browseEmptyViewEl(I18n.t("（等待上游输出…）内容只读")));
+    return;
+  }
+  if (node.batch) {
+    body.appendChild(
+      browseEntriesEl(node.entries || [], node, false, I18n.t("暂无条目")),
+    );
+    return;
+  }
+  const v = browseTextEl(node.text, node);
+  if (!v) return false;
+  body.appendChild(v);
+};
+
+/* input_image：图像铺满 body（点击预览大图 + 右下尺寸小字），批量走缩略图条目 */
+NODE_BROWSE_BODY.input_image = function (node, body) {
+  if (node.ro) {
+    body.appendChild(
+      browseImageEl(node.imageAsset, singleImageTitle(node), node.sourceName),
+    );
+    return;
+  }
+  if (inputInherited(node)) {
+    const disp = displayValueOf(firstSource(node), node);
+    if (disp && disp.images && disp.images.length) {
+      body.appendChild(browseEntriesEl(disp.images, node, true));
+      return;
+    }
+    if (disp && disp.image) {
+      body.appendChild(
+        browseImageEl(disp.image, disp.title || I18n.t("输入图像"), ""),
+      );
+      return;
+    }
+    if (disp && disp.items && disp.items.length) {
+      body.appendChild(browseEntriesEl(disp.items, node, false));
+      return;
+    }
+    if (disp && disp.text != null) {
+      const v = browseTextEl(disp.text, node);
+      if (!v) return false;
+      body.appendChild(v);
+      return;
+    }
+    body.appendChild(browseEmptyViewEl(I18n.t("（等待上游输出中）内容只读")));
+    return;
+  }
+  if (node.batch) {
+    body.appendChild(browseEntriesEl(node.entries || [], node, true, I18n.t("暂无条目")));
+    return;
+  }
+  body.appendChild(browseImageEl(node.imageAsset, singleImageTitle(node), node.sourceName));
+};
+
+/* proc_text / proc_image：提示词只读视图（无「提示词 Prompt」标签、无输入框）
+   + status 行；输出面板只留正文，按钮与拖宽条不渲染 */
+function browseProcBody(node, body) {
+  const pv = browseTextEl(procPromptOf(node), node);
+  if (!pv) return false;
+  const row = document.createElement("div");
+  row.className = "n-proc-row";
+  const left = document.createElement("div");
+  left.className = "n-proc-left";
+  left.appendChild(pv);
+  left.appendChild(browseStatusEl(node));
+  row.appendChild(left);
+  const out = browseProcOutEl(node);
+  if (out) {
+    row.appendChild(out);
+    /* 与编辑态同口径：OUTPUT 出现就把板身加宽，DOM 宽度由 nodeElement 写回 */
+    node.w = Math.max(node.w, procMinNodeW(node.outW));
+  }
+  body.appendChild(row);
+}
+NODE_BROWSE_BODY.proc_text = browseProcBody;
+NODE_BROWSE_BODY.proc_image = browseProcBody;
+
+/* agent_task：会话流（.agent-conv）就是浏览主体；
+   输入 textarea、工作目录行、上下拖宽把手一概不渲染，任务文本以一行只读显示在会话上方 */
+NODE_BROWSE_BODY.agent_task = function (node, body) {
+  if (typeof agentConvListEl !== "function") return false;
+  const row = document.createElement("div");
+  row.className = "n-proc-row";
+  const left = document.createElement("div");
+  left.className = "n-proc-left n-agent-split";
+  left.appendChild(
+    browseBriefEl(procPromptOf(node), node, { empty: I18n.t("（空）") }),
+  );
+  const conv = agentConvListEl(node);
+  delete conv.dataset.vbox;
+  conv.style.flex = "1 1 auto";
+  conv.style.height = "auto";
+  conv.style.minHeight = "0";
+  left.appendChild(conv);
+  left.appendChild(browseStatusEl(node));
+  row.appendChild(left);
+  body.appendChild(row);
+  if (typeof scrollAgentConv === "function") scrollAgentConv(node);
+};
+
+/* chat：会话流（.chat-list）就是浏览主体；
+   输入行、智能助手勾选与工作目录行都不渲染
+   （系统提示词在头部「设置」面板里，本就不属于 body） */
+NODE_BROWSE_BODY.chat = function (node, body) {
+  if (typeof dshMsgBlock !== "function") return false;
+  const list = document.createElement("div");
+  list.className = "chat-list";
+  list.addEventListener(
+    "scroll",
+    () => {
+      /* 与编辑态同一个「贴底才跟随」判定；程序滚动不改写用户意图 */
+      if (list._convAutoScroll) return;
+      node._chatNearBottom = isScrollNearBottom(list);
+      node._chatScrollTop = list.scrollTop;
+    },
+    { passive: true },
+  );
+  const msgs = node.messages || [];
+  if (!msgs.length && !node.running) {
+    const hint = document.createElement("div");
+    hint.className = "n-view-empty";
+    hint.textContent = I18n.t("开始对话吧…");
+    list.appendChild(hint);
+  }
+  for (let i = 0; i < msgs.length; i++)
+    list.appendChild(dshMsgBlock(msgs[i], node.id, i));
+  if (node.running) {
+    /* 运行中：流式占位的 id 与编辑态一致，增量文本照常写入 */
+    const row = document.createElement("div");
+    row.className = "dsh-msg dsh-ai";
+    const head = document.createElement("div");
+    head.className = "dsh-msg-head";
+    const role = document.createElement("span");
+    role.className = "dsh-role live";
+    role.textContent = I18n.t("AI · 运行中");
+    head.appendChild(role);
+    row.appendChild(head);
+    const tb = document.createElement("div");
+    tb.className = "dsh-think-live";
+    tb.id = "chat-think-" + node.id;
+    tb.textContent =
+      typeof thinkingTextOf === "function" ? thinkingTextOf(node) || "" : "";
+    row.appendChild(tb);
+    const sb = document.createElement("div");
+    sb.className = "dsh-msg-body dsh-stream";
+    sb.id = "chat-stream-" + node.id;
+    sb.textContent = node._pendingAnswer || "";
+    row.appendChild(sb);
+    list.appendChild(row);
+  }
+  body.appendChild(list);
+  if (typeof scheduleHistoryCollapse === "function") scheduleHistoryCollapse(list);
+};
+
+/* save：路径显示为等宽只读文本（「浏览 / 位置 / 打开」按钮与自动保存勾选不渲染），
+   预览区照旧保留（含各媒体类型的填充 id，保存后 fillPreviews 正常回填） */
+NODE_BROWSE_BODY.save = function (node, body) {
+  const media = saveMediaKind(node);
+  const pRow = document.createElement("div");
+  pRow.className = "sv-path";
+  pRow.style.alignItems = "flex-start";
+  pRow.appendChild(
+    browseBriefEl(node.savePath, node, {
+      mono: true,
+      empty: I18n.t("（空）"),
+    }),
+  );
+  body.appendChild(pRow);
+
+  const emptyEl = (txt) => {
+    const e = document.createElement("div");
+    e.className = "sv-empty";
+    e.id = "svempty-" + node.id;
+    e.textContent = txt;
+    return e;
+  };
+  const prev = document.createElement("div");
+  prev.className = "sv-prev";
+  if (media === "text") {
+    const pre = document.createElement("pre");
+    pre.id = "svpre-" + node.id;
+    pre.textContent = I18n.t("尚未保存");
+    prev.appendChild(pre);
+  } else if (media === "audio" || media === "video") {
+    const el = document.createElement(media === "audio" ? "audio" : "video");
+    el.id = (media === "audio" ? "svaud-" : "svvid-") + node.id;
+    el.controls = true;
+    el.preload = "metadata";
+    if (node.savedPath) el.dataset.path = node.savedPath;
+    prev.appendChild(el);
+    if (!node.savedPath)
+      prev.appendChild(
+        emptyEl(
+          media === "audio"
+            ? I18n.t("尚未保存（指定路径后点击 ▶，预览显示音频）")
+            : I18n.t("尚未保存（指定路径后点击 ▶，预览显示视频）"),
+        ),
+      );
+  } else if (isBatch(node) && node.savedPaths && node.savedPaths.length) {
+    const thumbs = document.createElement("div");
+    thumbs.className = "sv-thumbs";
+    thumbs.id = "svthumbs-" + node.id;
+    node.savedPaths.slice(0, 6).forEach((p, i) => {
+      const img = document.createElement("img");
+      img.className = "sv-thumb";
+      img.dataset.idx = String(i);
+      img.dataset.path = p;
+      img.alt = fileName(p);
+      img.title = p;
+      bindImagePreview(img, p, fileName(p));
+      bindImgSaveAs(img);
+      thumbs.appendChild(img);
+    });
+    prev.appendChild(thumbs);
+    if (node.savedPaths.length > 6) {
+      const note = document.createElement("div");
+      note.className = "sv-note";
+      note.textContent =
+        I18n.t("… 共 ") + node.savedPaths.length + I18n.t(" 个文件");
+      prev.appendChild(note);
+    }
+  } else {
+    const img = document.createElement("img");
+    img.id = "svimg-" + node.id;
+    img.style.display = node.savedPath ? "" : "none";
+    if (node.savedPath) {
+      img.dataset.path = node.savedPath;
+      bindImagePreview(img, node.savedPath, fileName(node.savedPath));
+      bindImgSaveAs(img);
+    }
+    prev.appendChild(img);
+    if (!node.savedPath)
+      prev.appendChild(
+        emptyEl(I18n.t("尚未保存（指定路径后点击 ▶，预览显示所保存的图像）")),
+      );
+  }
+  body.appendChild(prev);
+};
+
 function buildBody(node, body) {
+  /* 浏览态（未选中）优先走只读视图分支；handler 未接管时回落到下方编辑态渲染 */
+  if (nodeBrowseMode(node) && buildBrowseBody(node, body)) return;
   if (node.kind === "input_text") {
     if (node.ro) {
       const ta = document.createElement("textarea");
@@ -4073,7 +5140,9 @@ function buildBody(node, body) {
     });
     ta.addEventListener("keydown", (ev) => {
       if (isDshTask(node) && slashKey(ta, ev)) return;
-      refKey(ta, ev, node);
+      /* @ 引用菜单吃掉了这次按键（↑↓ / 回车确认 / Tab / Esc）→ 不再往下走，
+         否则智能任务节点会在选完引用的同一次回车里顺带把节点跑起来 */
+      if (refKey(ta, ev, node)) return;
       if (node.kind === "agent_task" && ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
         if (S.refMenu || S.slashMenu) return; /* 菜单打开时 Enter 只选条目 */
@@ -4731,7 +5800,7 @@ function buildBody(node, body) {
       /* 开发节点：body 保持精简——只放动作按钮组与上次建议摘要。
          项目根目录 / 状态字样 / 生效模型行不再常驻 body（避免无用信息占用空间）：
          路径与状态见「建议 / 开发 / 细化 / 问询」对话框，生效模型见头部 🧠 按钮悬浮提示。
-         按钮顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 会话 N（有历史时）。 */
+         按钮顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 文件 N（核心文件 · 顶层块不插入）→ 会话 N（有历史时）。 */
       if (node.dev && !node.db) {
         const devBar = document.createElement("div");
         devBar.className = "n-dev-info";
@@ -4806,6 +5875,26 @@ function buildBody(node, body) {
             openDevFileNode(node);
           };
           btnRow.appendChild(obtn);
+        }
+        /* ⑥ 核心文件列表：顶层（项目）块不列举 → 不插入按钮；
+           其余块在「打开」之后、「会话 N」之前插入「文件 N」（0 条只显示「文件」）。 */
+        const showFiles = devCoreFilesButtonVisible(node);
+        const devFiles = showFiles ? devCoreFilesShown(node) : [];
+        if (showFiles) {
+          const fbtn = document.createElement("button");
+          fbtn.type = "button";
+          fbtn.className = "n-dev-files-btn" + (devFilesPanelOpen(node) ? " on" : "");
+          fbtn.textContent = devFiles.length
+            ? I18n.t("文件") + " " + devFiles.length
+            : I18n.t("文件");
+          fbtn.title = I18n.t(
+            "核心文件列表：本功能块最关键的源码文件（点开成列表 · 点任意一行在资源管理器中定位该文件）",
+          );
+          fbtn.onclick = (ev) => {
+            ev.stopPropagation();
+            toggleDevFilesPanel(node);
+          };
+          btnRow.appendChild(fbtn);
         }
         /* 上次建议的一句话摘要（有则显示，便于决定要不要重新评估） */
         const sug = typeof devSuggestOf === "function" ? devSuggestOf(node) : null;
@@ -4894,6 +5983,9 @@ function buildBody(node, body) {
           btnRow.appendChild(hbtn);
         }
         devBar.appendChild(btnRow);
+        /* 「文件 N」展开态面板：紧接按钮行之后渲染（重绘时按 S.uiDevFiles 复原） */
+        if (showFiles && devFilesPanelOpen(node))
+          devBar.appendChild(devFilesPanelEl(node, devFiles));
         body.appendChild(devBar);
       }
     } else {

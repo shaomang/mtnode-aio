@@ -171,6 +171,7 @@
               <button type="button" class="agent-chip run-plan" id="agentRunPlanBtn" hidden data-i18n-title="关闭规划模式并按上一条计划开始实施" title="关闭规划模式并按上一条计划开始实施"><span data-i18n="▶ 执行计划">▶ 执行计划</span></button>
               <button type="button" class="agent-chip" id="agentCompactBtn" data-i18n-title="压缩上下文" title="压缩上下文"><span data-i18n="压缩">压缩</span></button>
               <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span><span class="agent-tool-val" id="agentToolsTriggerVal"></span></button>
+              <button type="button" class="agent-chip" id="agentPureTrigger" data-i18n-title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token" title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token"><span data-i18n="纯净模式">纯净模式</span></button>
             </div>
             <div class="agent-composer-card">
               <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
@@ -286,6 +287,7 @@
 <script src="app-devnode.js"></script>
 <script src="app-agent.js"></script>
 <script src="app-db.js"></script>
+<script src="app-nodeview.js"></script>
 <script src="app-canvas.js"></script>
 <script src="app-nodes.js"></script>
 <script src="app-rollback.js"></script>

@@ -42,8 +42,13 @@ export function apply(ctx) {
   const failAll = (err) => {
     for (const [id, p] of pending) {
       pending.delete(id)
-      if (p.kind === 'question') p.reject(err)
-      else p.resolve('unavailable')
+      if (p.kind === 'question') {
+        /* 别让提问卡片留在界面上:补发 drop 让网关同步撤卡。
+           本 socket 已断时 send 静默 no-op(网关侧 closeBridge 自会收尾);
+           重连后旧 socket 才关闭的情况下,这条 drop 仍能送达。 */
+        send({ t: 'drop', id })
+        p.reject(err)
+      } else p.resolve('unavailable')
     }
   }
 

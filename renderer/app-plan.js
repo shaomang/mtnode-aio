@@ -2247,6 +2247,325 @@ function planPanelEl(tag, cls, txt) {
   if (txt != null) el.textContent = txt;
   return el;
 }
+/* 只在清单容器内部把某个块滚进可视区：scrollIntoView 会连外层会话一起滚，
+   用户点一行详情却把整个对话顶走，反而更像「滚不动了」。 */
+function planScrollInList(list, node) {
+  if (!list || !node || !node.getBoundingClientRect) return;
+  try {
+    const cr = list.getBoundingClientRect();
+    const nr = node.getBoundingClientRect();
+    if (nr.top < cr.top) list.scrollTop -= cr.top - nr.top;
+    else if (nr.bottom > cr.bottom) list.scrollTop += nr.bottom - cr.bottom;
+  } catch (_) {}
+}
+/* ---------- 计划清单高度：拖拽设定的是「最小高度」，往上仍可继续加高（全局偏好 agentPlanH） ----------
+ * 旧版把 agentPlanH 写成清单的 max-height：120px 名义上是「最低」，实际是「封顶」——
+ * 清单被摁死在一小截里，长计划只能反复滚；而且那个写死的值读不到「此刻还剩多少空间」，
+ * 窗口一矮（或输入区 chips 换行变高），清单连同输入栏就被顶出 .agent-main，
+ * 看起来就是「计划列表和下方对话栏重叠」。
+ * 现在口径反过来：agentPlanH = 清单的最小高度（走 flex-basis），往上仍可继续拖高。两件事分开做：
+ *  1) 真·空间分配由 renderer/css/base.css 的「会话底栏布局契约」①–⑤ 负责（消息区 basis 归 0 先让位
+ *     → 面板可收缩但永不低于头部 → 面板内的缺口全落到清单上 → 任务卡 / 发送队列各自带头部下限
+ *     + 内部列表封顶 → 输入区唯一钉死）。清单就算被设成当下放不下的高度，也只会自己变矮，绝不越过下沿。
+ *  2) 本模块的夹取只做一件事：上限 = 此刻**真实放得下**的最大值，而且拖把手的每一步都实时按它夹，
+ *     所以用户能一路拖到最大值就停手（旧版预算漏了发送队列、又拿被压扁后的兄弟项高度做减法，
+ *     算出的上限比物理空间大 74~80px —— 松手就重叠，这就是「仍然存在 bug」）。
+ * 预算一律实测、不再拿常量近似：#agentPlan 在 .agent-body 里的**全部**可见兄弟项都要先扣掉——
+ * 输入区（⑤）、任务卡（④）、发送队列（④'），收起态的兄弟项就只剩它自己的头部（同样实测）。
+ * 唯一保留的常量 PLAN_LIST_MSG_MIN_H 是我们主动给消息区留的下限（产品口径），不是对某个元素高度的猜测。
+ * 落盘口径对齐 applyAgentSideWidth：S.agentPlanH 是即时值，拖动过程只改 CSS 变量、不落盘，
+ * 松手（或双击还原）时才写 S.config.agentPlanH + configSave。S.config 里存的是「用户设定的值」，
+ * 所以底栏重新变宽时清单会长回它，不会停在被临时夹小的那一档（见 applyAgentPlanH(null)）。
+ * 重夹的触发口径也从「只有 window.resize」换成观察 .agent-body 与底栏各兄弟项的尺寸：
+ * 拖左右分栏、输入区 chips 换行、任务卡 / 发送队列出现都不触发 window.resize，旧版因此一次也不重夹。
+ * 注意：#agentPlan 每次重绘都整块 innerHTML 重建，把手元素活不过一次 live tick，
+ * 所以拖拽状态一律挂在模块级变量 + document 监听上，--ap-h 写在稳定的 #agentPlan 上。 */
+const PLAN_LIST_MIN_H = 120; /* 默认 = 最小高度（约 4 行；再矮就没法一眼看到进度），双击把手回到这里 */
+const PLAN_LIST_MSG_MIN_H = 72; /* 无论清单多高，都必须给上方的会话消息区留这么多，免得会话被顶成一条缝 */
+const PLAN_LIST_HEAD_H = 36; /* 面板头部 .at-head 实测高（base.css 契约② 的下限 38px 已含 2px 余量） */
+const PLAN_LIST_GRIP_H = 7; /* 清单上方的拖拽把手（.ap-grip）高度：展开态面板下限 = 头部 + 把手 */
+const PLAN_LIST_PANEL_H = 2; /* #agentPlan 自身的上下外边距（base.css 契约② 的 margin-bottom）量不到时的兜底 */
+const PLAN_LIST_COMPOSER_H = 132; /* 输入区（chips + 两行输入 + 内边距）连文档都量不到时的兜底高度 */
+const PLAN_GRIP_TIP = "向上拖拽加高计划清单 · 可拖到此刻放得下的最大值 · 双击回到默认最小高度";
+let planGripDrag = null; /* { startY, startH } | null —— 拖拽中的唯一状态源 */
+let planHostRO = null; /* 观察底栏尺寸的 ResizeObserver：宿主没换人就一直复用 */
+let planHostWatched = null; /* 已被观察的那批元素：换宿主元素时才重建，重绘不重建 */
+let planRemeasuring = false; /* 重夹过程中写的 CSS 变量不再回调一次（防回环的闸门） */
+
+/* 量一个块此刻的整高（含边框）；面板还没显示 / 还没建出来时返回 0，由调用方决定兜底 */
+function planRectH(el) {
+  try {
+    const r = el && el.getBoundingClientRect && el.getBoundingClientRect();
+    return Math.ceil((r && r.height) || (el && el.offsetHeight) || 0);
+  } catch (_) {
+    return 0;
+  }
+}
+
+/* 还没显示 / 还没建出来时用兜底值，保证不会算出负上限 */
+function planBoxH(el, fallback) {
+  const h = planRectH(el);
+  return h > 0 ? h : fallback;
+}
+
+/* 计算样式里的一个长度：'none' / 沙箱里没有 getComputedStyle → null（= 没有这条约束），
+   绝不能当成 0，否则「无上限」会被误算成「上限 0」。 */
+function planCssPx(el, prop) {
+  try {
+    if (!el || typeof getComputedStyle !== "function") return null;
+    const v = parseFloat(getComputedStyle(el)[prop]);
+    return Number.isFinite(v) ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/* 直接子元素里找第一个带指定 class 的（迷你 DOM 沙箱没有 children，也没有 :scope 选择器，自己过滤） */
+function planChildByCls(el, names) {
+  const kids = (el && (el.children || el.childNodes)) || [];
+  for (let i = 0; i < kids.length; i++) {
+    const c = kids[i];
+    if (!c || !c.classList) continue;
+    for (let j = 0; j < names.length; j++) if (c.classList.contains(names[j])) return c;
+  }
+  return null;
+}
+
+/* 元素自身在纵向上额外吃掉的尺寸：内边距 + 边框 + 外边距（rect 高度不含外边距，必须补回来） */
+function planExtraVH(el) {
+  const parts = ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth", "marginTop", "marginBottom"];
+  let n = 0;
+  for (let i = 0; i < parts.length; i++) n += planCssPx(el, parts[i]) || 0;
+  return Math.ceil(n);
+}
+
+/* 绝对定位的装饰（如浮在输入区上方的下拉菜单）不吃 flex 主轴空间，别把它算进预算 */
+function planTakesFlow(el) {
+  try {
+    if (typeof getComputedStyle !== "function") return true;
+    const p = getComputedStyle(el).position;
+    return p !== "absolute" && p !== "fixed";
+  } catch (_) {
+    return true;
+  }
+}
+
+/* 会话消息区（契约① 的唯一填充项）：它的高度是「剩下的」，不参与预算求和，另按下限预留 */
+function planIsFillArea(el) {
+  const c = el && el.classList;
+  if (c) {
+    const names = ["hist-scroll-wrap", "agent-list", "assist-list", "chat-list", "agent-conv"];
+    for (let i = 0; i < names.length; i++) if (c.contains(names[i])) return true;
+  }
+  return (planCssPx(el, "flexGrow") || 0) > 0;
+}
+
+/* 底栏某个兄弟项「没被压缩时」要占多高 —— 本任务的核心修正。
+ * 契约④ 之后这些兄弟都是 flex:0 1 auto（可收缩）：直接量 rect 会量到**已经被砍过**的值，
+ * 于是「面板越扁 → 预算越空 → 上限越算越大」，实测台 D 组抓到的就是这条自反馈（偏差 −74~−80px）。
+ * 所以按「头部 + 内部列表（各自被 max-height 封顶：任务卡 190 / 队列 132）+ 自身边框内边距」
+ * 把没被压缩时的自然高度重算出来；拆不出头部或列表（收起态整块就只剩头部）才退回整块实测。
+ * 返回两者取大：宁可高估别人占的地方（清单少给几 px），也不能低估（那才会压到输入栏）。 */
+function planSiblingH(el) {
+  const used = planRectH(el);
+  const head = planChildByCls(el, ["at-head", "aq-head"]);
+  const list = planChildByCls(el, ["at-list", "aq-list"]);
+  const headH = planRectH(head);
+  if (!headH || !list) return used;
+  const borderV = (planCssPx(list, "borderTopWidth") || 0) + (planCssPx(list, "borderBottomWidth") || 0);
+  /* scrollHeight 是滚动容器里内容的完整高度（被裁掉的部分照样算），正好等于没压缩时的应占高 */
+  const content = Math.ceil((list.scrollHeight || 0) + borderV);
+  const cap = planCssPx(list, "maxHeight"); /* 全局 *{box-sizing:border-box} → max-height 就是含边框的外挡高 */
+  const inner = cap == null ? content : Math.min(cap, content);
+  return Math.max(used, Math.ceil(headH + inner + planExtraVH(el)));
+}
+
+/* 输入区高度：它就在 .agent-body 里，正常由兄弟遍历量到；万一面板被挪出该容器，
+   仍要先给它留位（拿文档里的实测，再退常量）—— 输入栏绝不能被清单顶掉。 */
+function planComposerReserveH() {
+  try {
+    const c = document.querySelector(".agent-composer");
+    const h = planRectH(c);
+    if (h > 0) return h;
+  } catch (_) {}
+  return PLAN_LIST_COMPOSER_H;
+}
+
+/* 此刻清单还能要到多高 = 宿主高 − 消息区下限 − 全部可见兄弟项实测 − 面板自身装饰（头部 + 把手 + 外边距）。
+   每一项都顺着 #agentPlan 的宿主现量，包括收起态只剩一个 .at-head 的那种；量不到宿主
+   （会话面板还没显示 / 迷你 DOM 冒烟）才退回视口保险值。 */
+function agentPlanMaxH() {
+  try {
+    const el = document.getElementById("agentPlan");
+    const host = el && el.parentElement;
+    const hostH = (host && host.clientHeight) || 0;
+    if (!el || hostH <= 0) return Math.round((window.innerHeight || 800) * 0.7);
+    let used = PLAN_LIST_MSG_MIN_H; /* ① 主动给消息区留的下限（不是近似值） */
+    const kids = host.children || host.childNodes || [];
+    let sawComposer = false;
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i];
+      if (!c || c === el || !c.classList || c.hidden) continue;
+      if (planIsFillArea(c)) continue; /* 填充项已由上面的消息区下限代表 */
+      if (c.classList.contains("agent-composer")) sawComposer = true;
+      const h = planTakesFlow(c) ? planSiblingH(c) : 0;
+      if (h > 0) used += h; /* 空壳（innerHTML 已清 / display:none）一点空间都不占 */
+    }
+    if (!sawComposer) used += planComposerReserveH();
+    /* 面板自身装饰：头部与把手都是 flex:none（实测即自然高）；收起态没有把手，
+       也照样按 7px 留着 —— 展开后就出现在那里，不能到时候又超出去。 */
+    used +=
+      planBoxH(planChildByCls(el, ["at-head"]), PLAN_LIST_HEAD_H) +
+      planBoxH(planChildByCls(el, ["ap-grip"]), PLAN_LIST_GRIP_H) +
+      (planExtraVH(el) || PLAN_LIST_PANEL_H);
+    return hostH - used;
+  } catch (_) {
+    return Math.round((window.innerHeight || 800) * 0.7);
+  }
+}
+
+function clampAgentPlanH(h) {
+  const min = PLAN_LIST_MIN_H;
+  const max = Math.max(min, Math.round(agentPlanMaxH()));
+  const n = Math.round(Number(h) || min);
+  return Math.max(min, Math.min(max, n));
+}
+
+/* 此刻能拖到的最大值（= 夹取上限，至少等于最小高度），拖拽时显示在把手 tooltip 上 */
+function agentPlanCurMaxH() {
+  return Math.max(PLAN_LIST_MIN_H, Math.round(agentPlanMaxH()));
+}
+
+/* 把高度写成 #agentPlan 上的 --ap-h：.agent-plan .at-list 的 flex-basis 读它，
+   = 清单至少要这么高（内容更少也撑住这块），要更高就继续拖把手。
+   h 传 null/undefined = 「按用户设定的值重夹一遍」：读 S.config（落盘里那份设定值），
+   于是底栏重新变宽时清单会长回去，而不是停在空间紧张时被临时夹小的即时值。 */
+function applyAgentPlanH(h, persist) {
+  if (h == null) {
+    const want = S && S.config ? Math.round(Number(S.config.agentPlanH) || 0) : 0;
+    h = want > 0 ? want : S.agentPlanH;
+  }
+  S.agentPlanH = clampAgentPlanH(h);
+  const el = document.getElementById("agentPlan");
+  if (el) el.style.setProperty("--ap-h", S.agentPlanH + "px");
+  if (persist !== false && S.config) {
+    S.config.agentPlanH = S.agentPlanH;
+    window.api.configSave(S.config).catch(() => {});
+  }
+}
+
+/* 底栏任何一次尺寸变化都重夹一次清单：拖左右分栏（.agent-body 变高）、输入区 chips 换行、
+ * 任务卡 / 发送队列出现或长高（后两者都会吃掉底栏高度）——这些全都不触发 window.resize，
+ * 旧版一次也不会重夹，所以「一换行就压住输入栏」。观察对象只有底栏那几个稳定节点，
+ * 不含 #agentPlan 自己（清单加高正是我们写的值，观察它就是自激回环）。
+ * 只改 CSS 变量、绝不落盘（与 applyAgentSideWidth 一致）。 */
+function watchAgentPlanHost() {
+  try {
+    const el = document.getElementById("agentPlan");
+    const host = el && el.parentElement;
+    if (!host) return;
+    const targets = [host, document.querySelector(".agent-composer"), document.getElementById("agentTodo"), document.getElementById("agentQueue")].filter(Boolean);
+    if (planHostRO && planHostWatched === targets[0]) return; /* 已经贴着同一批节点 */
+    const remeasure = () => {
+      if (planRemeasuring || planGripDrag) return; /* 拖拽过程中由 onMove 自己实时夹，别抢值 */
+      planRemeasuring = true;
+      try {
+        applyAgentPlanH(null, false);
+      } finally {
+        planRemeasuring = false;
+      }
+    };
+    if (typeof ResizeObserver === "function") {
+      if (planHostRO) {
+        try {
+          planHostRO.disconnect();
+        } catch (_) {}
+      }
+      planHostRO = new ResizeObserver(remeasure);
+      for (let i = 0; i < targets.length; i++) planHostRO.observe(targets[i]);
+      planHostWatched = targets[0];
+    } else if (!planHostWatched) {
+      /* 观察器不可用（迷你 DOM 冒烟 / 极老内核）：退回旧口径，至少 window.resize 还兜得住 */
+      try {
+        if (window.addEventListener) window.addEventListener("resize", remeasure);
+        planHostWatched = targets[0];
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+/* 把手元素可能被重绘换掉，高亮与光标一律按当前 DOM 重新贴 */
+function planGripMark(on) {
+  try {
+    const el = document.getElementById("agentPlan");
+    const g = el && el.querySelector(".ap-grip");
+    if (g) g.classList.toggle("dragging", !!on);
+    document.body.style.cursor = on ? "ns-resize" : "";
+    document.body.style.userSelect = on ? "none" : "";
+  } catch (_) {}
+}
+
+/* 把手 tooltip 实时报「现在多少 / 此刻最多多少」：拖到最大值时左边那个数字不再涨，
+   用户一眼就看出到头了，不会以为卡住。把手可能被 live 重绘换掉，每次都重新取当前 DOM。 */
+function planGripReadout() {
+  try {
+    const el = document.getElementById("agentPlan");
+    const g = planChildByCls(el, ["ap-grip"]);
+    if (!g) return;
+    g.title =
+      I18n.t(PLAN_GRIP_TIP) +
+      " · " + S.agentPlanH + "px / " + I18n.t("当前最多") + " " + agentPlanCurMaxH() + "px";
+  } catch (_) {}
+}
+
+function bindAgentPlanGrip(el, grip) {
+  grip.title = I18n.t(PLAN_GRIP_TIP);
+  grip.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || planGripDrag) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    planGripDrag = {
+      startY: ev.clientY,
+      startH: clampAgentPlanH(S.agentPlanH),
+    };
+    planGripMark(true);
+    /* 移动 / 抬手挂在 document 上：把手中途被 live 重绘替换也不会打断拖动 */
+    const onMove = (e) => {
+      if (!planGripDrag) return;
+      /* 清单在把手下方：向上拖（Y 变小）= 增高。每一步都按「此刻实测的剩余空间」夹住，
+         所以能真实拖到当前最大值就停手；预算里兄弟项取的是自然高（planSiblingH），不会跟着
+         清单变高、别人被压扁而越算越空（旧版正是这条自反馈让把手能拖出物理上放不下的高度）。 */
+      applyAgentPlanH(planGripDrag.startH + (planGripDrag.startY - e.clientY), false);
+      planGripReadout();
+    };
+    const onUp = () => {
+      if (!planGripDrag) return;
+      planGripDrag = null;
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      planGripMark(false);
+      applyAgentPlanH(S.agentPlanH, true); /* 松手才落盘：拖到的就是此刻放得下的那个值 */
+      planGripReadout();
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  });
+  /* 双击把手 = 回到默认最小高度（与 .agent-side-resize 双击还原同口径；落盘的也是这个设定值） */
+  grip.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    applyAgentPlanH(PLAN_LIST_MIN_H, true);
+    planGripReadout();
+  });
+  /* 底栏尺寸一变（拖分栏 / chips 换行 / 任务卡与发送队列出现）就按实测重夹，清单只会自己收缩，
+     绝不把会话和输入栏顶没（不落盘，与 applyAgentSideWidth 一致）。
+     冒烟测试的迷你 DOM 没有 ResizeObserver / window.addEventListener，内部已容错。 */
+  watchAgentPlanHost();
+  planGripReadout();
+}
+
 /* 「▶ 继续执行」：重启或中断之后，从未完成的那一项接着跑 */
 function planResumeSession(st) {
   if (!st || !st.plan) return;
@@ -2499,7 +2818,36 @@ function renderAgentPlanPanel(st) {
       liveTop = Number(old.scrollTop) || 0;
     }
   } catch (_) {}
+  /* 清单容器 .at-list 更要紧：执行期每隔 PLAN_LIVE_RENDER_MS 就整块重建一次，
+     不显式还原就会把用户刚拖到一半的滚动条甩回顶部 —— 这正是「滚不到底」的根因。
+     判定沿用会话那套贴底口径（bindConvStick / setConvScrollTop），但更保守：
+     只有用户自己滚到过底部（_convStick 被真实滚动写成 true）才继续贴底跟随，
+     其余一律原样回到他的阅读位置，绝不主动把他跳上跳下。
+     换会话 / 换计划（plan 对象换了引用）= 全新清单，不还原旧位置。 */
+  const listKey = "plan-list:" + String((st && st.id) || "");
+  let listSnap = false;
+  let listStick = false;
+  let listTop = 0;
+  try {
+    const oldList = el.querySelector(".at-list");
+    if (oldList && el._apListKey === listKey && el._apListPlan === st.plan) {
+      listSnap = true;
+      listStick = oldList._convStick === true;
+      listTop = Number(oldList.scrollTop) || 0;
+    }
+  } catch (_) {}
+  el._apListKey = listKey;
+  el._apListPlan = st.plan;
+  /* 本次渲染是否由「用户刚点开某条详情」触发：标记只由行点击设置、用完即清，
+     live tick 的反复重绘绝不会一次次抢滚动（滚不到底的第二个根因）。
+     判定必须显式认整数：Number(null) === 0，用 Number() 会把第 0 项误判成刚点开。 */
+  const justOpen =
+    Number.isInteger(st._planJustOpen) && st._planJustOpen >= 0
+      ? st._planJustOpen
+      : null;
+  st._planJustOpen = null;
   let liveEl = null;
+  let detailEl = null;
   el.innerHTML = "";
   el.classList.toggle("collapsed", !!(st && st.planCollapsed));
   /* ---- 头部 ---- */
@@ -2555,14 +2903,28 @@ function renderAgentPlanPanel(st) {
   head.appendChild(clear);
   el.appendChild(head);
   if (st.planCollapsed) return;
+  /* 清单最小高度每次重绘都按全局偏好 + 此刻实测的可用空间走一遍（只改 CSS 变量，不落盘）：
+     启动路径万一没跑到，这里也兜得住；窗口变矮、输入区变高、任务卡 / 发送队列出现时
+     上限跟着降，清单只会自己收缩，绝不越过下沿盖住下方对话栏。
+     放在把手与清单建出来之前量最准：此刻 #agentPlan 只剩头部，底栏兄弟项都还没被挤压。 */
+  try {
+    applyAgentPlanH(S.agentPlanH, false);
+  } catch (_) {}
+  /* ---- 清单高度把手：向上拖增高（拖到的值即此后守住的最小高度），双击回默认最小 ---- */
+  const grip = planPanelEl("div", "ap-grip");
+  /* 先进 DOM 再绑定：bind 里要把「现在多少 / 当前最多多少」写进 tooltip，得能在面板里找着它 */
+  el.appendChild(grip);
+  bindAgentPlanGrip(el, grip);
   /* ---- 清单 ---- */
   const ul = planPanelEl("div", "at-list");
-  const openIdx = Number(st._planOpen);
   steps.forEach((s, i) => {
     const stt = planStepStatus(s.status);
     const row = planPanelEl("div", "at-item ap-item st-" + stt);
     row.onclick = () => {
-      st._planOpen = st._planOpen === i ? null : i;
+      const next = st._planOpen === i ? null : i;
+      st._planOpen = next;
+      /* 只有「刚点开」才允许把详情滚进可视区；收起与折叠都不抢滚动 */
+      if (next === i) st._planJustOpen = i;
       renderAgentPlanPanel(st);
     };
     const ic = planPanelEl("span", "at-icon", PLAN_STEP_ICON[stt]);
@@ -2611,12 +2973,9 @@ function renderAgentPlanPanel(st) {
           ),
         );
       ul.appendChild(d);
-      /* 展开后把详情滚进可视区（挂进 DOM 之后 scrollIntoView 才有效） */
-      if (openIdx === i && typeof d.scrollIntoView === "function") {
-        try {
-          d.scrollIntoView(false);
-        } catch (_) {}
-      }
+      /* 展开后把详情滚进可视区：此刻 ul 还没挂进文档，直接 scrollIntoView 是空操作；
+         先记下元素，等清单进 DOM、滚动位置还原之后再滚一次（且只在用户刚点开时）。 */
+      if (justOpen === i) detailEl = d;
     }
     /* ② 流式转写区：挂在详情块下方（自己就是滚动容器，不与 .ap-detail 套娃） */
     if (st._planOpen === i && live) {
@@ -2642,4 +3001,24 @@ function renderAgentPlanPanel(st) {
       else if (liveStick) liveEl.scrollTop = liveEl.scrollHeight;
     } catch (_) {}
   }
+  /* 清单滚动还原：上一次重绘之后用户把滚动条拖到哪儿，这一次还在哪儿；
+     他本来就停在底部则继续贴底跟随最新状态 —— 滚动条因此真能拖到底并停住。 */
+  try {
+    if (typeof bindConvStick === "function") bindConvStick(ul);
+  } catch (_) {}
+  if (listSnap) {
+    try {
+      if (typeof markConvStick === "function") markConvStick(ul, listStick);
+      else ul._convStick = listStick;
+      const top = listStick ? ul.scrollHeight : listTop;
+      if (typeof setConvScrollTop === "function") setConvScrollTop(ul, top);
+      else ul.scrollTop = top;
+    } catch (_) {}
+  }
+  /* 用户刚点开的详情：等清单自己的滚动尘埃落定后再滚进可视区（只动清单，
+     不顺带把外层会话也滚走）。live tick 走不到这里（justOpen 已用完即清）。 */
+  if (detailEl && st._planOpen === justOpen)
+    try {
+      planScrollInList(ul, detailEl);
+    } catch (_) {}
 }

@@ -14,8 +14,14 @@
 // never invents facts: every result is host-verified data.
 //
 // Protocol (newline-delimited JSON):
-//   plugin → gateway: {t:'db', id, action:'list'|'query'|'get'|'calc', params}
+//   plugin → gateway: {t:'db', id, sessionId, action:'list'|'query'|'get'|'calc', params}
+//   plugin → gateway: {t:'drop', id, sessionId}  (we gave up on a frame we just sent)
 //   gateway → plugin: {t:'db-result', id, ok, result?, error?} | {t:'abort', id}
+//
+// sessionId = the id of the agent session that issued the call (exec.agent.id), the same
+// stamp canvas-plugin.mjs carries. The gateway gates interaction frames on it, so a result
+// can never be routed to a run that did not ask for it; an unstamped frame is aborted
+// (fail closed) rather than shown.
 
 import { createConnection } from 'node:net'
 import { randomUUID } from 'node:crypto'
@@ -106,13 +112,16 @@ export function apply(ctx) {
       return Promise.reject(new Error('db channel unavailable (only works inside the MTNode app)'))
     }
     const id = randomUUID()
+    /* 发起轮盖章:agent.id 就是该 agent 所在 session 的 id(与 canvas-plugin 同一契约),
+       网关据此判归属;取不到 agent 发空串,由网关 fail closed 直接 abort。 */
+    const sessionId = exec && exec.agent ? String(exec.agent.id || '') : ''
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject })
-      send({ t: 'db', id, action, params: params || {} })
+      send({ t: 'db', id, sessionId, action, params: params || {} })
       const onAbort = () => {
         if (!pending.has(id)) return
         pending.delete(id)
-        send({ t: 'drop', id })
+        send({ t: 'drop', id, sessionId })
         reject(new Error('db op aborted'))
       }
       exec && exec.signal && exec.signal.addEventListener('abort', onAbort, { once: true })
