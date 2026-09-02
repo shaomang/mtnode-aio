@@ -932,22 +932,22 @@
   background: rgba(255, 143, 46, .14)
 }
 
+/* ===== 图像生成 · 透明背景 Toggle（双通道差分抠图）=====
+   关闭 = 灰白格「透明」图标；开启 = 图标内容隐去，整颗按钮只剩一圈旋转的彩虹边缘。
+   单击切换开关，右键打开抠图参数面板（hover 有 2 倍 Token 的警示）。 */
 .n-bgrm-btn {
+  position: relative;
   width: 26px;
   padding: 0;
   color: var(--muted);
   background: rgba(154, 160, 168, .08);
+  cursor: pointer;
 }
 
 .n-bgrm-btn:hover {
   border-color: var(--cyan);
   color: var(--cyan2);
   background: rgba(56, 214, 255, .12)
-}
-
-.n-bgrm-btn.on {
-  border-color: #e0a0ff;
-  background: rgba(224, 160, 255, .16)
 }
 
 .n-bgrm-ico {
@@ -967,14 +967,36 @@
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25);
 }
 
+/* 开启态：不再显示任何内容，只留彩虹边缘动效（配色与「全局广播」节点同源） */
+.n-bgrm-btn.on {
+  border: 2px solid transparent;
+  background:
+    linear-gradient(180deg, var(--panel2), var(--panel)) padding-box,
+    conic-gradient(from var(--g-ang), #ff4d6d, #ffc14a, #5dff8a, #4ad6ff, #8a6bff, #ff4d6d) border-box;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  animation: wf-global-spin 2.6s linear infinite;
+  color: transparent;
+}
+
 .n-bgrm-btn.on .n-bgrm-ico {
-  background-color: #b07ad4;
-  background-image:
-    linear-gradient(45deg, #e8d0ff 25%, transparent 25%),
-    linear-gradient(-45deg, #e8d0ff 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #e8d0ff 75%),
-    linear-gradient(-45deg, transparent 75%, #e8d0ff 75%);
-  border-color: rgba(224, 160, 255, .55);
+  display: none
+}
+
+/* 开启态再叠一层彩虹辉光，让「这一张图会出两次」在远处也看得出来 */
+.n-matte-toggle.on {
+  box-shadow: 0 0 7px rgba(138, 107, 255, .5), 0 0 3px rgba(74, 214, 255, .55)
+}
+
+.n-bgrm-btn.on:hover {
+  border-color: transparent;
+  color: transparent;
+  filter: brightness(1.22);
+  background:
+    linear-gradient(180deg, var(--panel2), var(--panel)) padding-box,
+    conic-gradient(from var(--g-ang), #ff4d6d, #ffc14a, #5dff8a, #4ad6ff, #8a6bff, #ff4d6d) border-box;
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
 }
 
 .bg-rm-pop {
@@ -1045,27 +1067,6 @@
 
 .bg-rm-field input:focus {
   border-color: var(--orange)
-}
-
-.bg-rm-keyrow {
-  display: flex;
-  align-items: center;
-  gap: 6px
-}
-
-.bg-rm-keyrow input[type="text"] {
-  flex: 1;
-  min-width: 0
-}
-
-.bg-rm-keyrow input[type="color"] {
-  width: 28px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--bd2);
-  border-radius: 3px;
-  background: transparent;
-  cursor: pointer;
 }
 
 .bg-rm-hint {

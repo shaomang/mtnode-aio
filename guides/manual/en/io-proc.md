@@ -11,7 +11,7 @@
 ## Process
 
 - **Text**: prompt + inputs → LLM. **🐋 Agent** turns it into a task ([Agent task](#agent-nodes)).
-- **Image generation**: text-to-image; reference images use edit APIs. Vision needs “Vision” enabled (DeepSeek Official has no vision).
+- **Image generation**: text-to-image; reference images use edit APIs. Vision needs “Vision” enabled (DeepSeek Official has no vision). The **transparent toggle** in the title bar (click to toggle; when on it becomes a spinning rainbow edge) runs **two-pass difference matting**: it renders a pure-white pass, then an automatically aligned pure-black pass, and differences them into a real alpha channel — the output is a transparent PNG. It stays invisible to you, but every run generates twice (≈2× tokens). Right-click the toggle for matte settings; see [Node guide](#node-guide).
 - **Music / video generation**: MiniMax Music 3 / H3 local backends with their own output paths, see [Music, video, network and execute nodes](#media-net).
 - **Anim**: slice an image on a grid into a GIF; chroma key optional.
 

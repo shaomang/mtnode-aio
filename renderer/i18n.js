@@ -2086,31 +2086,51 @@
       "Click empty area or “Choose image” to replace; click the image to preview",
     "预览图像": "Preview image",
     "去背": "Cutout",
+    /* ── 图像生成 · 透明背景（双通道差分抠图 Two-Pass Difference Matting）── */
+    "透明背景": "Transparent background",
+    "透明背景 · 双通道差分抠图": "Transparent bg · two-pass difference matting",
     "背景移除": "Background remove",
-    "背景移除已启用 · 点击设置色键与容差":
-      "Background remove on · click to set key color & tolerance",
-    "背景移除：点击打开设置（色键抠图）":
-      "Background remove: open settings (chroma key)",
-    "启用（生成时追加色键提示词，并抠除该色）":
-      "Enable (append key-color prompt; punch out that color)",
-    "色键颜色": "Key color",
-    "容差（完全透明，0-128）": "Tolerance (full transparent, 0–128)",
-    "软边（半透明过渡，0-128）": "Soft edge (alpha fade, 0–128)",
-    "开启后提示词会要求模型用该纯色填充透明区；生成结果与「立即处理」会按容差/软边抠图为 PNG 透明通道。":
-      "When on, the prompt asks for a solid key-color background; generation and “Process now” punch it to a PNG alpha channel.",
-    "立即处理当前输出": "Process current output",
-    "请先启用背景移除": "Enable background remove first",
-    "暂无输出图像可处理": "No output images to process",
-    "已对 ": "Processed ",
-    " 张输出图像执行背景移除": " output image(s)",
-    "背景移除失败：": "Background remove failed: ",
-    "背景移除写入失败": "Failed to write keyed image",
+    "启用（自动生成白底 + 黑底两张图后差分抠图，2 倍 Token）":
+      "Enable (auto-generate white + black passes, then difference-matte them; 2× tokens)",
+    "自动对齐修正（按前景包围盒与边缘吻合度对齐第 2 通道）":
+      "Auto alignment fix (match pass 2 to pass 1 by foreground box and edge agreement)",
+    "噪点地板（越低越保留半透明，越高越敢判为全透明，0-128）":
+      "Noise floor (lower keeps more semi-transparency, higher punches to fully clear, 0–128)",
+    "边缘羽化（只平滑 Alpha 通道，0-128）":
+      "Edge feather (smooths the alpha channel only, 0–128)",
+    "第 1 通道注入纯白背景要求，第 2 通道自动注入完全一致的纯黑背景要求（OpenAI 兼容生图会把第 1 张当参考图下发，对齐度更高），两图按 α=(255-白+黑)/255 逐像素求出 Alpha。提示词正文由你正常书写，注入段不会显示在你的输入里。":
+      "Pass 1 injects a pure-white background request; pass 2 automatically injects the identical request with a pure-black background (OpenAI-compatible image APIs also receive pass 1 as a reference for tighter alignment). Alpha is solved per pixel as α=(255−white+black)/255. Your own prompt stays untouched — the injected block is appended separately.",
+    "用已存的两通道重算抠图": "Re-matte from the stored two passes",
+    "请先开启透明背景": "Turn on transparent background first",
+    "没有可复用的两通道记录：请点 ▶ 重新生成一次":
+      "No stored pass pair to reuse: press ▶ to generate once more",
+    "重算失败：": "Re-matte failed: ",
+    "已按新参数重算 ": "Re-matted ",
+    " 张透明背景图像": " transparent image(s) with the new settings",
+    "透明背景写入失败": "Failed to write matted image",
+    "第 2 通道（纯黑背景）调用失败": "Pass 2 (pure black background) call failed",
+    "第 2 通道响应无图像数据": "Pass 2 response has no image data",
+    "第 2 通道写入失败": "Failed to write pass 2 image",
+    "透明背景完成（双通道差分抠图，耗时 ": "Transparent background done (two-pass matting, ",
+    " 秒）": " s)",
+    "透明背景抠图未完成，已交付白底原图：":
+      "Transparent matting incomplete; delivering the white-background image: ",
+    "透明背景已开启：每次生成会出 2 张图（白底 + 对齐的黑底），Token 与耗时约 2 倍":
+      "Transparent background on: every run now generates 2 images (white + aligned black), about 2× tokens and time",
+    "透明背景已关闭": "Transparent background off",
+    "透明背景（双通道差分抠图）已开启：以下是第 1 通道（纯白背景）请求。运行时会自动补发第 2 通道（完全一致、严格对齐的纯黑背景）并差分出 Alpha —— 共 2 次生成，约 2 倍 Token。\n\n":
+      "Transparent background (two-pass difference matting) is on: below is pass 1 (pure white). Running it will automatically send pass 2 (identical, strictly aligned pure black) and difference-matte the alpha — 2 generations, about 2× tokens.\n\n",
+    "【透明背景 · 双通道差分抠图｜第 1 通道：纯白背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯白 #FFFFFF：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节。":
+      "[Transparent background · two-pass difference matting | Pass 1: pure white] Paint every area outside the subject (sky, ground, shadows, environment) as perfectly uniform pure white #FFFFFF: no gradient, texture, shading, reflection, vignette or cast shadow. Keep the subject complete and crisp with clean edges, centred and stable, with empty margin on all sides and nothing touching the frame edge. Change nothing about the subject's shape, colours or detail.",
+    "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把参考图的背景整体替换为完全均匀的纯黑 #000000：无渐变、无纹理、无光晕、无投影。除背景颜色以外，画面的一切内容必须与参考图逐像素完全一致——主体的位置、大小、比例、朝向、姿态、轮廓、颜色、纹理、细节、光照、构图与画幅都不得有任何变化；不要重绘主体，不要移动，不要缩放，不要裁切，不要加边框。":
+      "[Transparent background · two-pass difference matting | Pass 2: pure black] Replace the reference image's background entirely with perfectly uniform pure black #000000: no gradient, texture, glow or cast shadow. Apart from the background colour, every pixel must match the reference exactly — subject position, size, scale, orientation, pose, silhouette, colours, texture, detail, lighting, composition and canvas bounds must not change at all. Do not repaint, move, scale, crop or add a border.",
+    "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯黑 #000000：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节；本通道必须与第 1 通道完全对齐。":
+      "[Transparent background · two-pass difference matting | Pass 2: pure black] Paint every area outside the subject (sky, ground, shadows, environment) as perfectly uniform pure black #000000: no gradient, texture, shading, reflection, vignette or cast shadow. Keep the subject complete and crisp with clean edges, centred and stable, with empty margin on all sides and nothing touching the frame edge. Change nothing about the subject's shape, colours or detail; this pass must align pixel-perfectly with pass 1.",
+    "透明背景 · 双通道差分抠图：已开启\n\n开启后本节点生成的图像会自动变为透明背景（带 Alpha 的 PNG）。\n算法：第 1 次生成纯白背景，随后自动补生成一张完全一致、严格对齐的纯黑背景图，两图逐像素差分出真实 Alpha（半透明边缘也能保留）。\n\n⚠ 整个过程在内部完成，你只需正常写提示词；但每次出图实际要生成 2 张，Token 与耗时约为 2 倍，请慎用。\n\n单击 = 关闭 · 右键 = 调整抠图参数":
+      "Transparent background · two-pass difference matting: ON\n\nGenerated images automatically come out with a transparent background (PNG with alpha).\nHow: pass 1 renders on pure white, then an identical, strictly aligned pass 2 renders on pure black, and the two are differenced into real alpha per pixel (semi-transparent edges survive).\n\n⚠ This all happens internally — just write your prompt as usual; but every output costs 2 generations, so tokens and wait are roughly 2×. Use with care.\n\nClick = off · right-click = matte settings",
+    "透明背景 · 双通道差分抠图：已关闭（单击开启）\n\n开启后生成的图像会变为透明背景：先出纯白背景，再自动出严格对齐的纯黑背景，两图差分抠出 Alpha。\n\n⚠ 需要生成 2 次图像，因此耗费 2 倍 Token，请慎用。\n\n右键 = 调整抠图参数":
+      "Transparent background · two-pass difference matting: OFF (click to turn on)\n\nWhen on, output comes with a transparent background: first a pure-white pass, then a strictly aligned pure-black pass, differenced into an alpha matte.\n\n⚠ It generates the image twice, so it costs 2× tokens — use with care.\n\nRight-click = matte settings",
     "无法读取图像": "Cannot read image",
-    "请输入有效 Hex 颜色（如 #FF00FF）": "Enter a valid hex color (e.g. #FF00FF)",
-    "\n\n【背景移除 / 色键】请将需要透明的背景区域全部填充为纯色 ":
-      "\n\n[Background remove / chroma key] Fill all areas that should be transparent with solid color ",
-    "。背景必须均匀、无渐变、无纹理；主体/前景中严禁出现该颜色（可用相近但可区分的其他颜色）。边缘尽量干净，便于后期抠除该色。":
-      ". Background must be flat (no gradient/texture). Do not use this color in the subject/foreground (nearby but distinct colors OK). Keep edges clean for keying.",
     "文生图每次只生成 1 张：请改写 prompt 为单张描述；多图请用批量条目 / 多个节点 / attempts×N":
       "Image gen produces 1 image per run: rewrite the prompt for a single image; for many images use batch items / multiple nodes / attempts×N",
     "无效的图像尺寸（须为可选列表之一）：":

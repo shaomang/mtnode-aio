@@ -346,7 +346,8 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     rr.base64,
     rr.ext || "png",
   );
-  const path = await maybeApplyBgRm(node, res.path);
+  /* 透明背景开启时：这里会在内部自动补生成严格对齐的黑底第 2 通道并差分抠图（用户无感知） */
+  const path = await finishProcImageOutput(node, spec, res.path, itemTitle, attemptT);
   return { kind: "image", path };
 }
 
@@ -558,7 +559,7 @@ async function runOnceAgg(node, prov, attemptT) {
     rr.base64,
     rr.ext || "png",
   );
-  const path = await maybeApplyBgRm(node, res.path);
+  const path = await finishProcImageOutput(node, spec, res.path, "", attemptT);
   return { kind: "image", path };
 }
 
@@ -658,6 +659,15 @@ async function previewNode(node) {
     !prov.vision
   ) {
     txt = "⚠ " + I18n.t(VISION_HINT) + I18n.t("\n（以下请求将忽略图像输入）\n\n") + txt;
+  }
+  if (node.kind === "proc_image" && node.bgRmOn) {
+    /* 透明背景：让「其实要出两张图」在预览里就看得见 */
+    txt =
+      "⚠ " +
+      I18n.t(
+        "透明背景（双通道差分抠图）已开启：以下是第 1 通道（纯白背景）请求。运行时会自动补发第 2 通道（完全一致、严格对齐的纯黑背景）并差分出 Alpha —— 共 2 次生成，约 2 倍 Token。\n\n",
+      ) +
+      txt;
   }
   const pre = document.createElement("pre");
   pre.className = "preview-req";

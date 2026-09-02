@@ -549,9 +549,13 @@ const NODE_DEFAULTS = {
     size: DEFAULT_IMAGE_SIZE,
     batchMode: "batch",
     bgRmOn: false,
+    /* 透明背景 = 双通道差分抠图：tol 噪点地板 / soft 边缘羽化 / align 第 2 通道自动对齐
+       bgRmKey 是旧「色键抠图」遗留字段，现已不再参与算法，仅保留以兼容旧画布 */
     bgRmKey: "#FF00FF",
-    bgRmTol: 32,
-    bgRmSoft: 24,
+    bgRmTol: 24,
+    bgRmSoft: 32,
+    bgRmAlign: true,
+    bgRmPairs: [],
     globalRefs: false,
     output: null,
     batchOutputs: null,
@@ -18005,73 +18009,69 @@ function parseHexColor(h) {
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
-/* 图像生成 · 背景移除（色键）：参数 / 提示词 / 像素处理 */
+/* 图像生成 · 透明背景（双通道差分抠图 Two-Pass Difference Matting）
+   第 1 次生成纯白背景，随后自动生成严格对齐的纯黑背景第 2 通道，两图差分出真实 Alpha。
+   成像模型：A = F·α + 255·(1-α)（白底）  B = F·α（黑底）
+   ⇒ α = (255 - A + B) / 255    F = (A + B - 255·(1-α)) / (2α)                       */
+/* 双通道差分抠图的算法参数：
+   bgRmTol  = 噪点地板（0-128，越大越敢把半透明像素判成完全透明，用于压掉生图噪声/边缘灰雾）
+   bgRmSoft = 边缘羽化（0-128，只糊 Alpha 通道，不动颜色，让抠图边缘更自然）
+   bgRmAlign= 自动对齐修正（默认开：把第 2 通道按前景包围盒对齐到第 1 通道）
+   bgRmKey  = 旧「色键抠图」遗留字段，保留读写仅为兼容旧画布，本算法不再使用 */
 function normalizeBgRm(node) {
   if (!node || node.kind !== "proc_image") return;
   if (node.bgRmOn == null) node.bgRmOn = false;
   if (!parseHexColor(node.bgRmKey)) node.bgRmKey = "#FF00FF";
   else node.bgRmKey = "#" + node.bgRmKey.trim().replace(/^#/, "").toUpperCase();
   const tol = Number(node.bgRmTol);
-  node.bgRmTol = Number.isFinite(tol) ? Math.max(0, Math.min(128, Math.round(tol))) : 32;
+  node.bgRmTol = Number.isFinite(tol) ? Math.max(0, Math.min(128, Math.round(tol))) : 24;
   const soft = Number(node.bgRmSoft);
   node.bgRmSoft = Number.isFinite(soft)
     ? Math.max(0, Math.min(128, Math.round(soft)))
-    : 24;
+    : 32;
+  if (node.bgRmAlign == null) node.bgRmAlign = true;
+  if (!Array.isArray(node.bgRmPairs)) node.bgRmPairs = [];
 }
-function bgRmKeyOf(node) {
-  return parseHexColor((node && node.bgRmKey) || "#FF00FF") || {
-    r: 255,
-    g: 0,
-    b: 255,
-  };
+/* 注入段用 ASCII 标记包裹：中英文界面下都能被精确剥离，用户正文永不污染第 2 通道 */
+const MATTE_BLOCK_HEAD = "\n\n[[MTNODE-MATTE-PASS]]";
+const MATTE_BLOCK_TAIL = "[[/MTNODE-MATTE-PASS]]";
+const MATTE_BLOCK_RE = /\n\n\[\[MTNODE-MATTE-PASS\]\][\s\S]*?\[\[\/MTNODE-MATTE-PASS\]\]/g;
+function stripMatteBlocks(prompt) {
+  return String(prompt || "").replace(MATTE_BLOCK_RE, "");
 }
+function matteBlock(text) {
+  return MATTE_BLOCK_HEAD + "\n" + text + "\n" + MATTE_BLOCK_TAIL;
+}
+/* 第 1 通道：纯白背景 */
 function bgRmPromptSuffix(node) {
   if (!node || node.kind !== "proc_image" || !node.bgRmOn) return "";
   normalizeBgRm(node);
-  const hex = node.bgRmKey || "#FF00FF";
-  return (
-    I18n.t("\n\n【背景移除 / 色键】请将需要透明的背景区域全部填充为纯色 ") +
-    hex +
+  return matteBlock(
     I18n.t(
-      "。背景必须均匀、无渐变、无纹理；主体/前景中严禁出现该颜色（可用相近但可区分的其他颜色）。边缘尽量干净，便于后期抠除该色。",
-    )
+      "【透明背景 · 双通道差分抠图｜第 1 通道：纯白背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯白 #FFFFFF：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节。",
+    ),
+  );
+}
+/* 第 2 通道：纯黑背景（anchor=true 时把第 1 通道作为参考图下发，要求逐像素复刻只换背景） */
+function bgRmSecondSuffix(node, anchor) {
+  if (!node || node.kind !== "proc_image" || !node.bgRmOn) return "";
+  normalizeBgRm(node);
+  return matteBlock(
+    anchor
+      ? I18n.t(
+          "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把参考图的背景整体替换为完全均匀的纯黑 #000000：无渐变、无纹理、无光晕、无投影。除背景颜色以外，画面的一切内容必须与参考图逐像素完全一致——主体的位置、大小、比例、朝向、姿态、轮廓、颜色、纹理、细节、光照、构图与画幅都不得有任何变化；不要重绘主体，不要移动，不要缩放，不要裁切，不要加边框。",
+        )
+      : I18n.t(
+          "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯黑 #000000：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节；本通道必须与第 1 通道完全对齐。",
+        ),
   );
 }
 function withBgRmPrompt(node, prompt) {
   return String(prompt || "") + bgRmPromptSuffix(node);
 }
-function applyChromaKeyPixels(data, key, tol, soft) {
-  const t0 = Math.max(0, tol);
-  const t1 = t0 + Math.max(0, soft);
-  const kr = key.r,
-    kg = key.g,
-    kb = key.b;
-  for (let i = 0; i < data.length; i += 4) {
-    const dr = data[i] - kr;
-    const dg = data[i + 1] - kg;
-    const db = data[i + 2] - kb;
-    const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-    if (dist <= t0) {
-      data[i + 3] = 0;
-    } else if (soft > 0 && dist < t1) {
-      const f = (dist - t0) / (t1 - t0);
-      data[i + 3] = Math.round(data[i + 3] * f);
-      /* 溢色抑制：边缘像素略向中性灰靠拢，减轻色键边缘染色 */
-      const spill = 1 - f;
-      data[i] = Math.max(
-        0,
-        Math.min(255, Math.round(data[i] + (128 - kr) * spill * 0.4)),
-      );
-      data[i + 1] = Math.max(
-        0,
-        Math.min(255, Math.round(data[i + 1] + (128 - kg) * spill * 0.4)),
-      );
-      data[i + 2] = Math.max(
-        0,
-        Math.min(255, Math.round(data[i + 2] + (128 - kb) * spill * 0.4)),
-      );
-    }
-  }
+/* 由第 1 通道请求规格派生第 2 通道请求：剥掉白底注入段，换上黑底注入段 */
+function bgRmSecondPrompt(node, prompt, anchor) {
+  return stripMatteBlocks(prompt) + bgRmSecondSuffix(node, anchor);
 }
 function loadImageFromUrl(url) {
   return new Promise((resolve, reject) => {
@@ -18081,40 +18081,306 @@ function loadImageFromUrl(url) {
     img.src = url;
   });
 }
-async function chromaKeyAssetPath(srcPath, node) {
-  normalizeBgRm(node);
-  const key = bgRmKeyOf(node);
-  const img = await loadImageFromUrl(fileUrlWithBust(srcPath, Date.now()));
+function makeRgbaCanvas(w, h) {
   const c = document.createElement("canvas");
-  c.width = Math.max(1, img.naturalWidth || img.width);
-  c.height = Math.max(1, img.naturalHeight || img.height);
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(img, 0, 0);
-  const id = ctx.getImageData(0, 0, c.width, c.height);
-  applyChromaKeyPixels(id.data, key, node.bgRmTol, node.bgRmSoft);
-  ctx.putImageData(id, 0, 0);
-  const b64 = c.toDataURL("image/png").split(",")[1];
-  const base =
-    String(fileName(srcPath) || "img")
-      .replace(/\.[^.]+$/, "")
-      .replace(/[^\w.-]+/g, "_")
-      .slice(0, 48) || "img";
-  const res = await window.api.assetWriteBase64(
-    S.wf.id,
-    base + "_bgrm_" + Date.now().toString(36),
-    b64,
-    "png",
-  );
+  c.width = Math.max(1, w | 0);
+  c.height = Math.max(1, h | 0);
+  return { c, ctx: c.getContext("2d", { willReadFrequently: true }) };
+}
+/* 读本地图像为 RGBA 像素（含 canvas 与 ctx，便于后续变换绘制） */
+async function readImageRGBA(path) {
+  const img = await loadImageFromUrl(fileUrlWithBust(path, Date.now()));
+  const w = Math.max(1, img.naturalWidth || img.width || 1);
+  const h = Math.max(1, img.naturalHeight || img.height || 1);
+  const { c, ctx } = makeRgbaCanvas(w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  return { img, c, ctx, id: ctx.getImageData(0, 0, w, h), w, h };
+}
+/* 前景包围盒：与背景色（纯白 / 纯黑）足够不同的像素才算主体 */
+function matteFgBBox(id, w, h, bg, thr) {
+  const d = id.data;
+  let x0 = w,
+    y0 = h,
+    x1 = -1,
+    y1 = -1,
+    n = 0;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = (row + x) << 2;
+      const dr = Math.abs(d[i] - bg[0]);
+      const dg = Math.abs(d[i + 1] - bg[1]);
+      const db = Math.abs(d[i + 2] - bg[2]);
+      if (Math.max(dr, dg, db) <= thr) continue;
+      n++;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < x0 || y1 < y0) return null;
+  /* 主体过小说明这一通道几乎被背景吃掉（模型没按指令出图）或是噪点，不做仿射对齐 */
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (n < Math.max(8, w * h * 0.0015) || bw < 4 || bh < 4) return null;
+  return { x: x0, y: y0, w: bw, h: bh, n };
+}
+/* Alpha 逐通道估计：α = (255 - 白底值 + 黑底值) / 255 */
+function matteAlphaOf(ar, ag, ab, br, bg, bb) {
+  let r = (255 - ar + br) / 255;
+  let g = (255 - ag + bg) / 255;
+  let b = (255 - ab + bb) / 255;
+  r = r < 0 ? 0 : r > 1 ? 1 : r;
+  g = g < 0 ? 0 : g > 1 ? 1 : g;
+  b = b < 0 ? 0 : b > 1 ? 1 : b;
+  return (r + g + b) / 3;
+}
+/* 对齐质量评分：过渡带上「三通道 Alpha 是否互相吻合」，越吻合说明两通道对得越准 */
+function matteShiftScore(a, b, w, h, dx, dy) {
+  let sum = 0,
+    cnt = 0;
+  /* 取 B 的 (x+dx, y+dy) 与 A 的 (x,y) 比对：源坐标必须留在画面内，否则会跨行取样 */
+  const x0 = dx < 0 ? -dx : 0;
+  const x1 = w - (dx > 0 ? dx : 0);
+  const y0 = dy < 0 ? -dy : 0;
+  const y1 = h - (dy > 0 ? dy : 0);
+  for (let y = y0; y < y1; y += 3) {
+    const row = y * w;
+    for (let x = x0; x < x1; x += 3) {
+      const i = (row + x) << 2;
+      const j = ((y + dy) * w + (x + dx)) << 2;
+      const al = matteAlphaOf(
+        a[i],
+        a[i + 1],
+        a[i + 2],
+        b[j],
+        b[j + 1],
+        b[j + 2],
+      );
+      if (al < 0.08 || al > 0.92) continue; // 只看边缘过渡像素
+      let r = (255 - a[i] + b[j]) / 255;
+      let g = (255 - a[i + 1] + b[j + 1]) / 255;
+      let bl = (255 - a[i + 2] + b[j + 2]) / 255;
+      const mx = r > g ? (r > bl ? r : bl) : g > bl ? g : bl;
+      const mn = r < g ? (r < bl ? r : bl) : g < bl ? g : bl;
+      sum += mx - mn;
+      cnt++;
+    }
+  }
+  return cnt < 24 ? Infinity : sum / cnt;
+}
+/* 半分辨率小图（对齐搜索用，省掉数倍像素遍历） */
+function downscaleRGBA(src, sw, sh, scale) {
+  const w = Math.max(8, Math.round(sw * scale));
+  const h = Math.max(8, Math.round(sh * scale));
+  const { c, ctx } = makeRgbaCanvas(w, h);
+  ctx.drawImage(src, 0, 0, w, h);
+  return { id: ctx.getImageData(0, 0, w, h), w, h };
+}
+/* 把第 2 通道（黑底）对齐到第 1 通道（白底）：前景包围盒仿射 + 小范围平移搜索 */
+function alignMatteSecond(aFull, bFull, node) {
+  const w = aFull.w,
+    h = aFull.h;
+  const sameSize = bFull.w === w && bFull.h === h;
+  const { c, ctx } = makeRgbaCanvas(w, h);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const bbA = matteFgBBox(aFull.id, w, h, [255, 255, 255], 40);
+  const bbB = matteFgBBox(bFull.id, bFull.w, bFull.h, [0, 0, 0], 40);
+  let sx = 1,
+    sy = 1,
+    tx = 0,
+    ty = 0;
+  if (!sameSize) {
+    /* 尺寸不一致（服务商按宽高比取整等）：等比铺满到第 1 通道尺寸，不再做仿射 */
+    ctx.drawImage(bFull.c, 0, 0, w, h);
+    return ctx.getImageData(0, 0, w, h);
+  }
+  if (node.bgRmAlign && bbA && bbB) {
+    /* 前景包围盒对齐：把第 2 通道的主体框映射到第 1 通道的主体框上 */
+    sx = Math.max(0.5, Math.min(2, bbA.w / bbB.w));
+    sy = Math.max(0.5, Math.min(2, bbA.h / bbB.h));
+    tx = bbA.x - bbB.x * sx;
+    ty = bbA.y - bbB.y * sy;
+  }
+  ctx.save();
+  ctx.setTransform(sx, 0, 0, sy, tx, ty);
+  ctx.drawImage(bFull.c, 0, 0);
+  ctx.restore();
+  const placed = ctx.getImageData(0, 0, w, h);
+  if (!node.bgRmAlign) return placed;
+  /* 平移微调：在半分辨率上找最吻合的整数偏移，再映射回全分辨率 */
+  const sa = downscaleRGBA(aFull.c, w, h, 0.5);
+  const sb = downscaleRGBA(c, w, h, 0.5);
+  const range = 6;
+  let bestDx = 0,
+    bestDy = 0,
+    best = matteShiftScore(sa.id.data, sb.id.data, sa.w, sa.h, 0, 0);
+  if (!Number.isFinite(best)) return placed;
+  for (let dy = -range; dy <= range; dy++) {
+    for (let dx = -range; dx <= range; dx++) {
+      if (!dx && !dy) continue;
+      const s = matteShiftScore(sa.id.data, sb.id.data, sa.w, sa.h, dx, dy);
+      if (s < best) {
+        best = s;
+        bestDx = dx;
+        bestDy = dy;
+      }
+    }
+  }
+  if (!bestDx && !bestDy) return placed;
+  const c2 = makeRgbaCanvas(w, h);
+  c2.ctx.drawImage(c, bestDx * 2, bestDy * 2);
+  return c2.ctx.getImageData(0, 0, w, h);
+}
+/* Alpha 通道单独羽化（只糊透明度，不动颜色） */
+function featherMatteAlpha(out, w, h, radius) {
+  if (radius < 1) return;
+  const n = w * h;
+  const tmp = new Float32Array(n);
+  const a = new Float32Array(n);
+  for (let i = 0; i < n; i++) a[i] = out[i << 2 | 3];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0,
+        c = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const xx = x + k;
+        if (xx < 0 || xx >= w) continue;
+        s += a[y * w + xx];
+        c++;
+      }
+      tmp[y * w + x] = s / (c || 1);
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      let s = 0,
+        c = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const yy = y + k;
+        if (yy < 0 || yy >= h) continue;
+        s += tmp[yy * w + x];
+        c++;
+      }
+      out[(y * w + x) << 2 | 3] = Math.round(s / (c || 1));
+    }
+  }
+}
+/* 核心：两通道差分 → 透明 PNG 像素 */
+function differenceMattePixels(aId, bId, node) {
+  normalizeBgRm(node);
+  const a = aId.data,
+    b = bId.data;
+  const out = new Uint8ClampedArray(a.length);
+  const floor = (node.bgRmTol / 128) * 0.5;
+  for (let i = 0; i < a.length; i += 4) {
+    const ar = a[i], ag = a[i + 1], ab = a[i + 2];
+    const br = b[i], bg = b[i + 1], bb = b[i + 2];
+    let al = matteAlphaOf(ar, ag, ab, br, bg, bb);
+    if (floor > 0) al = al <= floor ? 0 : (al - floor) / (1 - floor);
+    if (al > 0.985) al = 1;
+    if (al <= 0) {
+      out[i + 3] = 0;
+      continue;
+    }
+    /* 直出非预乘色：取白底/黑底两条估计的均值再除以 α，噪声最低 */
+    const inv = 1 / al;
+    const pr = (ar - 255 * (1 - al) + br) * 0.5 * inv;
+    const pg = (ag - 255 * (1 - al) + bg) * 0.5 * inv;
+    const pb = (ab - 255 * (1 - al) + bb) * 0.5 * inv;
+    out[i] = pr < 0 ? 0 : pr > 255 ? 255 : pr;
+    out[i + 1] = pg < 0 ? 0 : pg > 255 ? 255 : pg;
+    out[i + 2] = pb < 0 ? 0 : pb > 255 ? 255 : pb;
+    out[i + 3] = Math.round(al * 255);
+  }
+  const w = aId.width,
+    h = aId.height;
+  featherMatteAlpha(out, w, h, Math.max(0, Math.min(4, Math.round(node.bgRmSoft / 32))));
+  const { c, ctx } = makeRgbaCanvas(w, h);
+  ctx.putImageData(new ImageData(out, w, h), 0, 0);
+  return c;
+}
+async function differenceMatteAssetPath(node, whitePath, blackPath, outName) {
+  const a = await readImageRGBA(whitePath);
+  const b = await readImageRGBA(blackPath);
+  const aligned = alignMatteSecond(a, b, node);
+  const canvas = differenceMattePixels(a.id, aligned, node);
+  const b64 = canvas.toDataURL("image/png").split(",")[1];
+  const res = await window.api.assetWriteBase64(S.wf.id, outName, b64, "png");
   if (!res || !res.ok || !res.path)
-    throw new Error((res && res.error) || I18n.t("背景移除写入失败"));
+    throw new Error((res && res.error) || I18n.t("透明背景写入失败"));
   return res.path;
 }
-async function maybeApplyBgRm(node, path) {
-  if (!node || node.kind !== "proc_image" || !node.bgRmOn || !path) return path;
+/* 记录两通道配对（白底 / 黑底 / 透明结果），改参数后可「立即重算」而不必再次消耗 Token */
+function rememberMattePair(node, whitePath, blackPath, outPath) {
+  if (!Array.isArray(node.bgRmPairs)) node.bgRmPairs = [];
+  node.bgRmPairs = node.bgRmPairs.filter(
+    (p) => p && p.white !== whitePath && p.out !== outPath,
+  );
+  node.bgRmPairs.push({ white: whitePath, black: blackPath, out: outPath });
+  if (node.bgRmPairs.length > 12) node.bgRmPairs.shift();
+}
+/* 第 2 通道请求：OpenAI 兼容生图带上白底那张当参考图（edits），对齐度远高于重新文生图 */
+async function runBgRmSecondPass(node, spec, whitePath, itemTitle, attemptT) {
+  const ptype = (spec.provider && spec.provider.type) || "";
+  const anchor = ptype === "image_openai" && !!whitePath;
+  const base = Array.isArray(spec.images) ? spec.images.slice() : [];
+  const spec2 = Object.assign({}, spec, {
+    prompt: bgRmSecondPrompt(node, spec.prompt, anchor),
+    images: anchor ? base.concat([whitePath]) : base,
+  });
+  if (anchor) spec2.refImage = spec2.images[0] || "";
+  const rr = await window.api.apiCall(spec2);
+  if (node._aborted) throw new Error(I18n.t("已手动停止"));
+  if (!rr || !rr.ok)
+    throw new Error((rr && rr.error) || I18n.t("第 2 通道（纯黑背景）调用失败"));
+  if (!rr.base64) throw new Error(I18n.t("第 2 通道响应无图像数据"));
+  const res = await window.api.assetWriteBase64(
+    S.wf.id,
+    assetName(node, itemTitle, attemptT, "matteB"),
+    rr.base64,
+    rr.ext || "png",
+  );
+  if (!res || !res.ok || !res.path)
+    throw new Error((res && res.error) || I18n.t("第 2 通道写入失败"));
+  return res.path;
+}
+/* 图像生成节点出图后的收尾：透明背景开启时内部自动补第 2 通道并抠图。
+   对用户全程无感知 —— 正常输入提示词即可，失败时退回白底原图并提示原因。 */
+async function finishProcImageOutput(node, spec, path, itemTitle, attemptT) {
+  if (!node || node.kind !== "proc_image" || !path) return path;
+  normalizeBgRm(node);
+  if (!node.bgRmOn) return path;
+  if (node._aborted) throw new Error(I18n.t("已手动停止"));
+  const t0 = Date.now();
   try {
-    return await chromaKeyAssetPath(path, node);
+    const blackPath = await runBgRmSecondPass(node, spec, path, itemTitle, attemptT);
+    const out = await differenceMatteAssetPath(
+      node,
+      path,
+      blackPath,
+      assetName(node, itemTitle, attemptT, "alpha"),
+    );
+    rememberMattePair(node, path, blackPath, out);
+    scheduleSave(true);
+    /* 只在单张出图时提示，批量 × 多次尝试时不打扰（每条都弹一次会变成刷屏） */
+    const single = !node.batchOutputs && (typeof attemptCount !== "function" || attemptCount(node) <= 1);
+    if (single)
+      toast(
+        I18n.t("透明背景完成（双通道差分抠图，耗时 ") +
+          Math.max(1, Math.round((Date.now() - t0) / 1000)) +
+          I18n.t(" 秒）"),
+        "ok",
+      );
+    return out;
   } catch (e) {
-    toast(I18n.t("背景移除失败：") + (e.message || e), "warn");
+    if (node._aborted) throw e;
+    toast(
+      I18n.t("透明背景抠图未完成，已交付白底原图：") + (e.message || e),
+      "warn",
+    );
     return path;
   }
 }
@@ -18122,37 +18388,30 @@ async function reprocessProcImageBgRm(node) {
   if (!node || node.kind !== "proc_image") return 0;
   normalizeBgRm(node);
   if (!node.bgRmOn) {
-    toast(I18n.t("请先启用背景移除"), "warn");
+    toast(I18n.t("请先开启透明背景"), "warn");
     return 0;
   }
-  const paths = [];
-  const pushPath = (p) => {
-    if (p && paths.indexOf(p) < 0) paths.push(p);
-  };
-  if (node.batchOutputs) {
-    for (const x of node.batchOutputs) {
-      if (x && x.ok && x.output && x.output.path) pushPath(x.output.path);
-    }
-  }
-  if (node.output && node.output.path) pushPath(node.output.path);
-  if (Array.isArray(node.attemptOutputs)) {
-    for (const a of node.attemptOutputs) {
-      if (!a) continue;
-      if (a.output && a.output.path) pushPath(a.output.path);
-      if (a.batchOutputs) {
-        for (const x of a.batchOutputs) {
-          if (x && x.ok && x.output && x.output.path) pushPath(x.output.path);
-        }
-      }
-    }
-  }
-  if (!paths.length) {
-    toast(I18n.t("暂无输出图像可处理"), "warn");
+  /* 只复用本节点已生成的两通道记录重算：不再调用 API，因此不额外耗 Token */
+  const pairs = (node.bgRmPairs || []).filter((p) => p && p.white && p.black);
+  if (!pairs.length) {
+    toast(I18n.t("没有可复用的两通道记录：请点 ▶ 重新生成一次"), "warn");
     return 0;
   }
   const map = new Map();
-  for (const p of paths) {
-    map.set(p, await chromaKeyAssetPath(p, node));
+  for (const p of pairs) {
+    try {
+      const out = await differenceMatteAssetPath(
+        node,
+        p.white,
+        p.black,
+        assetName(node, "", 0, "alpha"),
+      );
+      map.set(p.out, out);
+      map.set(p.white, out);
+      p.out = out;
+    } catch (e) {
+      toast(I18n.t("重算失败：") + (e.message || e), "warn");
+    }
   }
   const rewrite = (obj) => {
     if (!obj || !obj.path || !map.has(obj.path)) return;
@@ -18173,14 +18432,28 @@ async function reprocessProcImageBgRm(node) {
   }
   scheduleSave(true);
   renderCanvas();
-  toast(I18n.t("已对 ") + map.size + I18n.t(" 张输出图像执行背景移除"), "ok");
-  return map.size;
+  const done = new Set([...map.values()]).size;
+  if (done)
+    toast(I18n.t("已按新参数重算 ") + done + I18n.t(" 张透明背景图像"), "ok");
+  return done;
 }
 function closeBgRmPop() {
   S.uiBgRmNode = null;
   const el = $("#bgRmPop");
   if (el) el.classList.remove("on");
 }
+/* Hover 提示：开关两态各一条，把「2 张图 / 2 倍 Token」的代价说在前面 */
+function bgRmTipOn() {
+  return I18n.t(
+    "透明背景 · 双通道差分抠图：已开启\n\n开启后本节点生成的图像会自动变为透明背景（带 Alpha 的 PNG）。\n算法：第 1 次生成纯白背景，随后自动补生成一张完全一致、严格对齐的纯黑背景图，两图逐像素差分出真实 Alpha（半透明边缘也能保留）。\n\n⚠ 整个过程在内部完成，你只需正常写提示词；但每次出图实际要生成 2 张，Token 与耗时约为 2 倍，请慎用。\n\n单击 = 关闭 · 右键 = 调整抠图参数",
+  );
+}
+function bgRmTipOff() {
+  return I18n.t(
+    "透明背景 · 双通道差分抠图：已关闭（单击开启）\n\n开启后生成的图像会变为透明背景：先出纯白背景，再自动出严格对齐的纯黑背景，两图差分抠出 Alpha。\n\n⚠ 需要生成 2 次图像，因此耗费 2 倍 Token，请慎用。\n\n右键 = 调整抠图参数",
+  );
+}
+/* 抠图参数面板：开关已上移到节点头部 Toggle，这里只放算法微调（右键 Toggle 打开） */
 function openBgRmPop(node, anchorEl) {
   if (!node || node.kind !== "proc_image") return;
   normalizeBgRm(node);
@@ -18193,11 +18466,7 @@ function openBgRmPop(node, anchorEl) {
     el.innerHTML =
       '<div class="bg-rm-head"><b></b><button type="button" class="mini" data-act="close">✕</button></div>' +
       '<label class="bg-rm-row"><input type="checkbox" data-f="on"/> <span></span></label>' +
-      '<label class="bg-rm-field"><span data-l="key"></span>' +
-      '<div class="bg-rm-keyrow">' +
-      '<input type="color" data-f="color"/>' +
-      '<input type="text" data-f="key" spellcheck="false"/>' +
-      '<div class="anim-key-swatch" data-f="swatch"></div></div></label>' +
+      '<label class="bg-rm-row"><input type="checkbox" data-f="align"/> <span></span></label>' +
       '<label class="bg-rm-field"><span data-l="tol"></span>' +
       '<input type="number" data-f="tol" min="0" max="128" step="1"/></label>' +
       '<label class="bg-rm-field"><span data-l="soft"></span>' +
@@ -18210,46 +18479,38 @@ function openBgRmPop(node, anchorEl) {
     el.addEventListener("mousedown", (ev) => ev.stopPropagation());
     el.querySelector('[data-act="close"]').onclick = () => closeBgRmPop();
   }
-  const titleB = el.querySelector(".bg-rm-head b");
-  titleB.textContent = I18n.t("背景移除");
-  el.querySelector('[data-f="on"]').nextElementSibling.textContent =
-    I18n.t("启用（生成时追加色键提示词，并抠除该色）");
-  el.querySelector('[data-l="key"]').textContent = I18n.t("色键颜色");
-  el.querySelector('[data-l="tol"]').textContent =
-    I18n.t("容差（完全透明，0-128）");
-  el.querySelector('[data-l="soft"]').textContent =
-    I18n.t("软边（半透明过渡，0-128）");
-  el.querySelector('[data-f="hint"]').textContent = I18n.t(
-    "开启后提示词会要求模型用该纯色填充透明区；生成结果与「立即处理」会按容差/软边抠图为 PNG 透明通道。",
+  el.querySelector(".bg-rm-head b").textContent = I18n.t(
+    "透明背景 · 双通道差分抠图",
   );
-  el.querySelector('[data-act="apply"]').textContent =
-    I18n.t("立即处理当前输出");
+  el.querySelector('[data-f="on"]').nextElementSibling.textContent = I18n.t(
+    "启用（自动生成白底 + 黑底两张图后差分抠图，2 倍 Token）",
+  );
+  el.querySelector('[data-f="align"]').nextElementSibling.textContent = I18n.t(
+    "自动对齐修正（按前景包围盒与边缘吻合度对齐第 2 通道）",
+  );
+  el.querySelector('[data-l="tol"]').textContent = I18n.t(
+    "噪点地板（越低越保留半透明，越高越敢判为全透明，0-128）",
+  );
+  el.querySelector('[data-l="soft"]').textContent = I18n.t(
+    "边缘羽化（只平滑 Alpha 通道，0-128）",
+  );
+  el.querySelector('[data-f="hint"]').textContent = I18n.t(
+    "第 1 通道注入纯白背景要求，第 2 通道自动注入完全一致的纯黑背景要求（OpenAI 兼容生图会把第 1 张当参考图下发，对齐度更高），两图按 α=(255-白+黑)/255 逐像素求出 Alpha。提示词正文由你正常书写，注入段不会显示在你的输入里。",
+  );
+  el.querySelector('[data-act="apply"]').textContent = I18n.t(
+    "用已存的两通道重算抠图",
+  );
 
   const onBox = el.querySelector('[data-f="on"]');
-  const keyIn = el.querySelector('[data-f="key"]');
-  const colorIn = el.querySelector('[data-f="color"]');
+  const alignBox = el.querySelector('[data-f="align"]');
   const tolIn = el.querySelector('[data-f="tol"]');
   const softIn = el.querySelector('[data-f="soft"]');
-  const swatch = el.querySelector('[data-f="swatch"]');
-  const paintSwatch = () => {
-    const c = parseHexColor(keyIn.value);
-    swatch.style.background = c
-      ? "rgb(" + c.r + "," + c.g + "," + c.b + ")"
-      : "repeating-conic-gradient(#555 0% 25%, #222 0% 50%) 0 0 / 8px 8px";
-    if (c) {
-      const hex =
-        "#" +
-        ((1 << 24) | (c.r << 16) | (c.g << 8) | c.b).toString(16).slice(1);
-      colorIn.value = hex;
-    }
-  };
   const syncFromNode = () => {
     normalizeBgRm(node);
     onBox.checked = !!node.bgRmOn;
-    keyIn.value = node.bgRmKey || "#FF00FF";
+    alignBox.checked = !!node.bgRmAlign;
     tolIn.value = String(node.bgRmTol);
     softIn.value = String(node.bgRmSoft);
-    paintSwatch();
   };
   syncFromNode();
   onBox.onchange = () => {
@@ -18262,28 +18523,11 @@ function openBgRmPop(node, anchorEl) {
     );
     openBgRmPop(node, btn);
   };
-  const commitKey = () => {
-    const c = parseHexColor(keyIn.value);
-    if (!c) {
-      toast(I18n.t("请输入有效 Hex 颜色（如 #FF00FF）"), "warn");
-      keyIn.value = node.bgRmKey || "#FF00FF";
-      paintSwatch();
-      return;
-    }
+  alignBox.onchange = () => {
     pushHistory();
-    node.bgRmKey =
-      "#" + ((1 << 24) | (c.r << 16) | (c.g << 8) | c.b).toString(16).slice(1).toUpperCase();
-    keyIn.value = node.bgRmKey;
+    node.bgRmAlign = !!alignBox.checked;
     scheduleSave();
-    paintSwatch();
   };
-  keyIn.onchange = commitKey;
-  keyIn.oninput = paintSwatch;
-  colorIn.oninput = () => {
-    keyIn.value = String(colorIn.value || "").toUpperCase();
-    paintSwatch();
-  };
-  colorIn.onchange = commitKey;
   tolIn.onchange = () => {
     pushHistory();
     node.bgRmTol = Math.max(0, Math.min(128, Math.round(Number(tolIn.value) || 0)));
@@ -18303,7 +18547,7 @@ function openBgRmPop(node, anchorEl) {
     try {
       await reprocessProcImageBgRm(node);
     } catch (e) {
-      toast(I18n.t("背景移除失败：") + (e.message || e), "err");
+      toast(I18n.t("重算失败：") + (e.message || e), "err");
     }
   };
 
@@ -18320,18 +18564,38 @@ function openBgRmPop(node, anchorEl) {
   el.style.left = left + "px";
   el.style.top = top + "px";
 }
+/* 节点头部的「透明背景」Toggle：
+   关 = 灰白格图标；开 = 图标内容隐去，整颗按钮只剩一圈旋转的彩虹边缘动效 */
 function bgRmButtonEl(node) {
+  normalizeBgRm(node);
+  const on = !!node.bgRmOn;
   const btn = document.createElement("button");
   btn.type = "button";
-  const paint = () => {
-    btn.className = "n-play n-bgrm-btn" + (node.bgRmOn ? " on" : "");
-    btn.innerHTML = '<span class="n-bgrm-ico" aria-hidden="true"></span>';
-    btn.title = node.bgRmOn
-      ? I18n.t("背景移除已启用 · 点击设置色键与容差")
-      : I18n.t("背景移除：点击打开设置（色键抠图）");
-  };
-  paint();
+  btn.className = "n-play n-bgrm-btn n-matte-toggle" + (on ? " on" : "");
+  btn.setAttribute("role", "switch");
+  btn.setAttribute("aria-checked", on ? "true" : "false");
+  btn.setAttribute("aria-label", I18n.t("透明背景"));
+  btn.dataset.on = on ? "1" : "0";
+  btn.innerHTML = '<span class="n-bgrm-ico" aria-hidden="true"></span>';
+  btn.title = on ? bgRmTipOn() : bgRmTipOff();
   btn.onclick = (ev) => {
+    ev.stopPropagation();
+    closeBgRmPop();
+    pushHistory();
+    node.bgRmOn = !node.bgRmOn;
+    scheduleSave(true);
+    renderCanvas();
+    toast(
+      node.bgRmOn
+        ? I18n.t(
+            "透明背景已开启：每次生成会出 2 张图（白底 + 对齐的黑底），Token 与耗时约 2 倍",
+          )
+        : I18n.t("透明背景已关闭"),
+      node.bgRmOn ? "warn" : "ok",
+    );
+  };
+  btn.oncontextmenu = (ev) => {
+    ev.preventDefault();
     ev.stopPropagation();
     if (S.uiBgRmNode === node.id) {
       closeBgRmPop();
