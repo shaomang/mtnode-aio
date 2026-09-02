@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 430 188" width="430" height="188">
+  <rect width="430" height="188" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="16" y="28" width="90" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="61" y="50" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入 1</text>
+  <rect x="16" y="78" width="90" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="61" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入 2</text>
+  <rect x="16" y="128" width="90" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="61" y="150" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入 3</text>
+  <line x1="106" y1="46" x2="150" y2="88" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="106" y1="96" x2="150" y2="96" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="106" y1="146" x2="150" y2="104" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="150" y="74" width="100" height="44" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="200" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">闸门 AND</text>
+  <line x1="250" y1="96" x2="296" y2="96" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="296" y="74" width="100" height="44" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="346" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">下游</text>
+  <text x="215" y="176" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">闸门按配置的输入路数等待；未接线的端口也会挡住</text>
+</svg>

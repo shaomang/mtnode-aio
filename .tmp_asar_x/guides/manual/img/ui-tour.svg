@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 188" width="560" height="188">
+  <rect width="560" height="188" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="20" y="18" width="520" height="28" rx="4" fill="#161b24" stroke="#ff8f2e" stroke-width="1.4"/>
+  <text x="36" y="37" fill="#ff8f2e" font-size="11" font-family="Segoe UI,sans-serif">顶栏 · 工作流 / 智能会话 / 文档 / 插件 / 审批</text>
+  <rect x="20" y="52" width="92" height="108" rx="4" fill="#101820" stroke="#38d6ff" stroke-width="1.4"/>
+  <text x="66" y="108" text-anchor="middle" fill="#e8eef6" font-size="11" font-family="Segoe UI,sans-serif">节点树</text>
+  <rect x="120" y="52" width="320" height="108" rx="4" fill="#12161e" stroke="#f0c14d" stroke-width="1.4"/>
+  <text x="280" y="108" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">画布</text>
+  <rect x="448" y="52" width="92" height="108" rx="4" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.4"/>
+  <text x="494" y="108" text-anchor="middle" fill="#e8eef6" font-size="11" font-family="Segoe UI,sans-serif">助手栏</text>
+  <text x="280" y="176" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">界面分区：顶栏 · 左侧节点树 · 中央画布 · 右侧全局助手</text>
+</svg>

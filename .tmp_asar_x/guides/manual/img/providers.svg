@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 558 150" width="558" height="150">
+  <rect width="558" height="150" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="24" y="50" width="140" height="52" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="94" y="80" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">设置 · 模型服务</text>
+  <line x1="164" y1="76" x2="214" y2="76" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="214" y="50" width="140" height="52" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="284" y="80" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">填写 API Key</text>
+  <line x1="354" y1="76" x2="404" y2="76" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="404" y="50" width="130" height="52" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="469" y="80" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">节点自动读取</text>
+  <text x="279" y="138" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">Key 只保存在本机；节点从全局配置取服务商与模型</text>
+</svg>

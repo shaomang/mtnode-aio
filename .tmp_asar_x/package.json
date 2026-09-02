@@ -1,0 +1,16 @@
+{
+  "name": "mtnode-ai-orchestrator",
+  "productName": "MTNode AI编排器",
+  "version": "1.2.1",
+  "description": "MTNode AI编排器（MTNode AI Orchestrator）— AI 工作流编排",
+  "main": "main.js",
+  "author": "New Earth Habitat",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "electron-updater": "^6.8.9",
+    "gifenc": "^1.0.3",
+    "marked": "^18.0.9",
+    "uiohook-napi": "^1.5.5"
+  }
+}

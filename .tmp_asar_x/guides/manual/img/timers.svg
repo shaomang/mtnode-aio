@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 170" width="360" height="170">
+  <rect width="360" height="170" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <rect x="24" y="58" width="130" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="89" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">定时触发器</text>
+  <line x1="154" y1="82" x2="210" y2="82" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="210" y="30" width="110" height="40" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="265" y="54" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">目标 A</text>
+  <rect x="210" y="94" width="110" height="40" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="265" y="118" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">目标 B</text>
+  <line x1="154" y1="74" x2="210" y2="50" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="154" y1="90" x2="210" y2="114" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="180" y="158" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">▶ = 打开闹钟；到点后沿金色控制线脉冲下游</text>
+</svg>
