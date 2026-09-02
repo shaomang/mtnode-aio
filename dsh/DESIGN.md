@@ -442,13 +442,76 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
   文件系统上。gateway 路径已在 main-dsh.js 按 `app.isPackaged` 区分。
 - 不用 extraResources:electron-builder 对 extraResources 来源同样应用
   .gitignore 剪枝,而 node_modules 必须保持 git 忽略,因此改用 afterPack 手动复制。
-- **体积优化**:after-pack 排除未挂载能力的死重依赖(sharp/@img);`llm-pi-ai`
-  已随服务商目录需求重新挂载,其依赖(openai/@mistralai/@opentelemetry/
-  @earendil-works)不可排除。安装包约 116~123 MB。
+- **减重(依赖体检)**:`resources/dsh/gateway` 是安装包里最大的一块。剪枝依据是 `docs/` 下**两份名单**,
+  都由 `scripts/app-deps-usage.mjs` 生成,`dsh/after-pack.cjs` 经 `scripts/app-deps-rules.cjs` 的
+  `loadExcluder()` 合并读取(三处共用同一判定,不各自写死名单),`build.json` 的 `files` 取反只管根树:
+  ① `docs/app-deps-prune.json` —— **零引用口径**(机器判定:从入口出发完全没有任何引用);
+  ② `docs/app-deps-capability.json` —— **能力组口径**(人工判定:包在懒加载分支里可达,但本部署永不加载)。
+
+  ```
+  npm run deps:usage   # 体检 → 两份 JSON(两棵 node_modules 可达性 + 能力组闭包)
+  npm run deps:cap     # 只重算能力组闭包(groups[] + rejected)并打印(两份 JSON 同步刷新)
+  npm run deps:check   # 临时镜像复现同一套剪枝 + 六道守卫(改规则/改名单/升级 dsh 后必跑)
+  npm run compile      # 或 --win nsis 真打包,看 after-pack 报的「剪枝明细」
+  ```
+
+  零引用口径(按用户约定):**只移除「从入口出发完全没有任何引用」的东西**,懒加载分支
+  (pi-ai 的 google/anthropic 适配器、sharp 的 wasm32 回退)一律保留。六道守卫(全在
+  「零引用 ∪ 能力组」的完整排除集上跑):① 保留包的 `main`/`exports` 入口不得被剪;
+  ② 保留代码里 `./`、`../` 相对引用的文件不得被剪(yaml 的 `dist/doc/directives.js` 就是
+  靠这条发现的);③ 保留代码里的**裸包名**不得命中排除集 —— 例外只有写死的懒加载白名单
+  (`pi-ai/dist/api/mistral-conversations.js` ← `mistral-conversations.lazy.js`、
+  `bedrock-converse-stream.js` ← `bedrock-converse-stream.lazy.js`、`dsh-session-telemetry-otel/**`);
+  ④ 在镜像与打包产物上真跑 runtimeBin 加载探针;⑤ 启动探针(真实 `import` pi-ai 的
+  `providers/all` 与 `openai-completions.lazy` + 按 `cordis.yml` 逐行 import 插件链 + 真起一次
+  `gateway.mjs`);⑥ `dsh/smoke-gateway.mjs` 协议冒烟。外加体检内的声明守卫(不可达但被活包
+  声明为 runtime/optional 依赖 → 不排除,`--no-decl-guard` 可看差异)。
+  目录级规则**只认包根第一层**的 `test/docs/examples`(歧义目录如 `dist/doc` 是运行时代码),
+  异平台目录(`prebuilds/win32-arm64`、`win10-arm64`)与异平台 `.node` 任意层都剪,
+  `.dll`/`.exe` 永远保留(node-pty 的 winpty、OpenConsole 要它们),LICENSE 一律保留。
+- **能力组契约(第二种口径,排除来源)**:见 `docs/app-deps-slimming.md` §7。要点三条 ——
+  - 组对象 `{key,title,globs,entries,downstream,reason,risk}`;生效判定 = 各组 `entries ∪ downstream`
+    的逐包名 **+** 各组 `globs` 的 scope 通配**在判定时展开**(`@opentelemetry/* · @aws-sdk/* ·
+    @smithy/* · @aws-crypto/*`),所以**从 JSON 里删掉一个组对象 = 一键回滚该组**,不改任何代码,
+    dsh 升级后新出现的同 scope 包自动落进同一组。当前四组:`otel` OTLP 遥测导出、`awsui` 网关自带
+    Web 外壳与前端产物、`mistral` Mistral SDK、`aws` Bedrock 运行时 SDK。
+  - `rejected`(114 包)是**硬保护名单**:仍被保留侧硬引用(mount / import / prefix / declared)的名字,
+    通配与连带桶都越不过它 —— `@deepseek-ai/dsh-web`(联网搜索,`cordis.yml:351` 挂载)因此留在包里,
+    `awsui` 的 globs 只写 `dsh-web-app` / `dsh-web-frontend` 两个精确名而非同前缀通配;「独占下游」
+    由闭包重算得出(不是手写),在保留包里还有嵌套副本的包自动退回 rejected。
+  - 摘的只是**打进 `resources` 的副本**,开发树 `node_modules`、依赖声明、锁文件一律不动;要恢复
+    某项能力 → 删组 + `npm run deps:check` + 重打包。**若改走 `dsh --profile web/headless` 或挂载
+    `dsh-session-telemetry-otel`,必须先撤 `otel` 与 `awsui` 两组**,否则网关启动即 `ERR_MODULE_NOT_FOUND`。
+- **实测效果(1.2.2,win32-x64)**:`resources` 243.71MB → **93.27MB**;其中
+  `resources/dsh` 191.18MB → **76.30MB**(复制 6129 files / 1501 dirs,pruned 151.57MB)。
+  after-pack 分桶报的明细(单位 MB):能力组 77.21(`otel` 21.51 / `awsui` 40.01 / `mistral` 9.24 /
+  `aws` 5.79 / `cap:collateral` 连带 0.66)+ 零引用包 1.92 + 文件级 72.44(sourcemap、类型声明、
+  异平台目录与二进制、MSVC 中间产物、README/CHANGELOG、包根顶层 test/docs/examples、缓存、
+  `better-sqlite3/deps` 类源码)。另 `app.asar` 10.68 → 9.29MB,`app.asar.unpacked` 29.08 → 2.43MB,
+  `resources/uiohook-napi` 8.02 → 0.50MB;安装包 154.9MB → **117.79MB**(安装包降幅小于 resources
+  降幅:NSIS 对 JS 文本压缩率远高于 1:1)。**升级 dsh 后必须重跑 `deps:usage` + `deps:check`**
+  (两份名单都会重算,守卫会拦住新的误剪;`reason`/`risk` 里的证据链要人再核一遍)。回滚:删掉
+  JSON 里对应条目 / 删掉能力组对象 / 注释掉 build.json 取反规则。已知观感问题:`@opentelemetry`
+  `@mistralai` `@aws-sdk` `@smithy` `@aws-crypto` `@shikijs` 在包内留 0 文件的空 scope 目录。
+  注:`scripts/` 与 `build.json` 按 `.gitignore` 约定不入库(打包链只在作者工作副本里跑),
+  `docs/app-deps-{prune,capability}.json` 入库,是 after-pack 的全部剪枝依据。
+- 包级移除的实测结论:根 `node_modules` 441MB 里 production 闭包只有 22 包 / 37.5MB
+  (devDependencies 本就不随包发布),**零引用可移除的包 = 0**;网关树 540 包里零引用可
+  移除的只有 16 包 / 1.92MB。也就是说「删包」几乎没得删,重量全在保留包内部的非运行时
+  文件里 —— 这正是文件级规则承担 99% 减重量的原因。包级还能挤出的量只来自**能力取舍**
+  (见上条「能力组契约」):用户点名四组后网关树才又少 77.21MB —— 那是「砍能力」,不是「删冗余」。
+  根树侧四组通配实测命中 0 个包,故 `build.json` 不需要跟随取反。
 - **未实施(成本过高,记录备查)**:按需联网安装运行库(需捆绑 npm CLI + 镜像
   配置 + 离线失败路径,复杂度与首启体验代价不成比例);NSIS 向导日志页
   (electron-builder 的 assisted 向导已显示逐文件进度,自定义日志页需自写
   NSIS UI 宏)。
+- electron-builder 自身对 node_modules 还会兜底排除 `.d.ts/.pdb/.o/.obj/.a/.cc/.sln/
+  .csproj` 与包根 `README*/test*/example*`(`app-builder-lib/out/fileMatcher.js`
+  的 `excludedExts/excludedNames`),所以 `build.json` 的取反规则只需补它没覆盖的:
+  异平台 prebuild、`better-sqlite3/{deps,src}`、`.map/.lib/.iobj/.ipdb/.exp/.tlog` 等。
+  网关树由 after-pack 手动复制,**不经过** electron-builder 的这套默认排除,故所有
+  规则在 `scripts/app-deps-rules.cjs` 里自带一份。
+
 - 无需附带独立 node.exe:Electron 39 内置 Node 22.22.1,gateway/runtime 经
   `process.execPath + ELECTRON_RUN_AS_NODE=1` 复用同一二进制(见「运行时托管」)。
 - `dsh/gateway/package.json` 锁死 dsh 全家族精确版本,升级 = 改这里 + `npm install`
