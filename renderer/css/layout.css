@@ -256,16 +256,7 @@ button:disabled {
   flex: none
 }
 
-/* 顶栏「工具库」＝程序（本应用）自己的图标：位图跟随主题不变色，压到 14px 与线性图标同大小 */
-.topbar .btn-ico .btn-app-ico {
-  width: 14px;
-  height: 14px;
-  display: block;
-  flex: none;
-  border-radius: 2px;
-  image-rendering: pixelated;
-  object-fit: contain;
-}
+/* 顶栏「工具库」＝普通工具箱线性图标：走 currentColor，尺寸由上面的 .btn-ico svg 统一（14px） */
 
 .topbar .btn-ico .btn-ico-txt {
   font-size: 9px;
@@ -405,7 +396,18 @@ button:disabled {
   color: var(--orange)
 }
 
-/* 顶栏「素材库」：与相邻入口（工具库＝程序图标 / 工坊＝橙）区分，走青色 */
+/* 顶栏「工具库」＝工具箱线性图标 · 专属紫，与插件（绿）/ 工坊（橙）/ 素材库（青）/ 讨论（蓝）区分 */
+.topbar .btn-tools {
+  color: #c792ea
+}
+
+.topbar .btn-tools:hover,
+.topbar .btn-tools.on {
+  border-color: #c792ea;
+  color: #d0a6ff
+}
+
+/* 顶栏「素材库」：与相邻入口（工具库＝紫 / 工坊＝橙）区分，走青色 */
 .topbar .btn-assets {
   color: var(--cyan)
 }
