@@ -8,9 +8,9 @@ An inner control graph: pinned **start**, steps / sub-tasks / judges, and **succ
 
 Packs related nodes into a subgraph (not a control-flow container). Expand the shell or **↪ Enter**; tunnel data via edge ports; optional subfolder for relative paths. See [Super nodes](#super-nodes).
 
-## Chat node
+## Agent node chat mode (💬)
 
-WeChat-style bubbles (assistant left, user right). System prompt, provider, thinking effort. History saves with the workflow; the output port emits the transcript. Enable **Agent** to read files / search / run commands.
+The standalone **Chat node was removed**. For WeChat-style multi-turn chat (assistant left, user right, history saved with the canvas), click **💬** in an **Agent task** node header to turn on chat mode — older canvases migrate their chat nodes into that on open. See [Agent task & session](#agent-nodes).
 
 ## Control · Run / Clear
 

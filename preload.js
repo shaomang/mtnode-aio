@@ -132,6 +132,23 @@ contextBridge.exposeInMainWorld('api', {
   shellShowItem: (p) => ipcRenderer.invoke('shell:showItem', p),
   shellOpenPath: (p) => ipcRenderer.invoke('shell:openPath', p),
   shellOpenPathDetached: (p) => ipcRenderer.invoke('shell:openPathDetached', p),
+  /* 隐藏进程宿主（函数节点运行期）：起隐藏外部进程并按 runId 记账 / 回收 */
+  procRun: (o) => ipcRenderer.invoke('proc:run', o || {}),
+  procSpawn: (o) => ipcRenderer.invoke('proc:spawn', o || {}),
+  procKillRun: (runId) => ipcRenderer.invoke('proc:killRun', runId),
+  /* 函数节点运行时：代码在主进程的独立线程里跑（见 fn-runtime.js），
+     一次运行 = 一个 runId；停止即终止线程并回收它拉起的外部进程。
+     事件帧（log / progress / end）经 onFnEvent 回传。 */
+  fnRun: (o) => ipcRenderer.invoke('fn:run', o || {}),
+  fnCancel: (runId) => ipcRenderer.invoke('fn:cancel', { runId }),
+  fnActive: () => ipcRenderer.invoke('fn:active'),
+  onFnEvent: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('fn:event', handler);
+    return () => ipcRenderer.removeListener('fn:event', handler);
+  },
   openInAppDialog: (opts) => ipcRenderer.invoke('shell:openInAppDialog', opts || {}),
   onYamlViewerOpen: (cb) => {
     const handler = (_e, data) => {
@@ -277,6 +294,11 @@ contextBridge.exposeInMainWorld('api', {
   h3PickInstallDir: () => ipcRenderer.invoke('h3:pickInstallDir'),
   h3Generate: (params) => ipcRenderer.invoke('h3:generate', params || {}),
   h3CancelGenerate: (nodeId) => ipcRenderer.invoke('h3:cancelGenerate', nodeId),
+  h3WorkflowList: () => ipcRenderer.invoke('h3:wfList'),
+  h3WorkflowGet: (id) => ipcRenderer.invoke('h3:wfGet', id),
+  h3WorkflowValidate: (id) => ipcRenderer.invoke('h3:wfValidate', id),
+  h3WorkflowSyncParams: (opts) => ipcRenderer.invoke('h3:wfSyncParams', opts || {}),
+  h3WorkflowTemplateExport: (mode) => ipcRenderer.invoke('h3:wfTemplateExport', mode),
   h3ForceKillBackend: () => ipcRenderer.invoke('h3:forceKillBackend'),
   h3GetLock: () => ipcRenderer.invoke('h3:getLock'),
   h3RemovePluginMeta: () => ipcRenderer.invoke('h3:removePluginMeta'),
@@ -452,4 +474,29 @@ contextBridge.exposeInMainWorld('api', {
   mtnodeAgentSkillGet: (name) => ipcRenderer.invoke('mtnodeAgentSkill:get', name),
   skillAdd: (skill) => ipcRenderer.invoke('skill:add', skill),
   skillRemove: (name) => ipcRenderer.invoke('skill:remove', name),
+
+  /* ── 工具库：跨画布可复用工具包（tools-store.js 落盘 <数据目录>/tools/*.json）── */
+  toolsList: () => ipcRenderer.invoke('tools:list'),
+  toolsGet: (id) => ipcRenderer.invoke('tools:get', id),
+  toolsSave: (pkg) => ipcRenderer.invoke('tools:save', pkg),
+  toolsDelete: (id) => ipcRenderer.invoke('tools:delete', id),
+  toolsPatch: (id, patch) => ipcRenderer.invoke('tools:patch', { id, patch }),
+
+  /* ── 素材库：独立于画布的内容仓库（assets-store.js，根目录由用户指定并记在 config.json）── */
+  assetsGetRoot: () => ipcRenderer.invoke('assets:getRoot'),
+  assetsSetRoot: (p) => ipcRenderer.invoke('assets:setRoot', p),
+  assetsScan: () => ipcRenderer.invoke('assets:scan'),
+  assetsMkdir: (parentRel, name) => ipcRenderer.invoke('assets:mkdir', { parentRel, name }),
+  assetsRename: (rel, name, toCatRel) => ipcRenderer.invoke('assets:rename', { rel, name, toCatRel }),
+  assetsRemove: (rel) => ipcRenderer.invoke('assets:remove', { rel }),
+  assetsCreate: (arg) => ipcRenderer.invoke('assets:create', arg),
+  assetsSaveMeta: (arg) => ipcRenderer.invoke('assets:saveMeta', arg),
+  assetsDelete: (id) => ipcRenderer.invoke('assets:delete', { id }),
+  assetsItemAdd: (arg) => ipcRenderer.invoke('assets:itemAdd', arg),
+  assetsItemRead: (id, itemId, version) => ipcRenderer.invoke('assets:itemRead', { id, itemId, version }),
+  assetsItemUpdateText: (id, itemId, content, title) => ipcRenderer.invoke('assets:itemUpdateText', { id, itemId, content, title }),
+  assetsItemUpdateBytes: (id, itemId, arg) => ipcRenderer.invoke('assets:itemUpdateBytes', Object.assign({ id, itemId }, arg || {})),
+  assetsItemRemove: (id, itemId) => ipcRenderer.invoke('assets:itemRemove', { id, itemId }),
+  assetsImportDir: (arg) => ipcRenderer.invoke('assets:importDir', arg),
+  assetsImportFiles: (id, paths) => ipcRenderer.invoke('assets:importFiles', { id, paths }),
 });

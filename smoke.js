@@ -702,33 +702,9 @@ mockServer.listen(0, '127.0.0.1', () => {
       const gridCell = tk2El && tk2El.querySelector('.task-cell');
       log('task grid cell=' + !!gridCell);
 
-      // —— 文本对话节点 ——
-      addNode('chat', 100, 2450);
-      const ch = S.wf.nodes[S.wf.nodes.length - 1];
-      ch.title = '对话';
-      ch.providerId = 'local'; ch.model = 'm';
-      await chatSend(ch, '你好');
-      log('chat messages=' + ch.messages.length + ' roles=' + ch.messages.map((m) => m.role).join(',') + ' reply=' + (ch.messages[1] && ch.messages[1].content));
-      renderCanvas();
-      const chEl = document.querySelector('.wf-node[data-nid="' + ch.id + '"]');
-      const bubbles = chEl.querySelectorAll('.chat-bubble');
-      log('chat bubbles=' + bubbles.length + ' me=' + (chEl.querySelector('.chat-msg.me .chat-bubble') !== null) + ' ai=' + (chEl.querySelector('.chat-msg.ai .chat-bubble') !== null));
-      log('chat input+btn=' + (chEl.querySelector('.chat-input') !== null && chEl.querySelector('.chat-input-row .mini') !== null));
-      log('chat hasOutput=' + hasOutput(ch) + ' value=' + (valueForInput(ch, 0) && valueForInput(ch, 0).kind));
-      const tr = chatTranscript(ch);
-      log('chat transcript=' + (tr.indexOf('【对话记录】') === 0 && tr.indexOf('**用户**：你好') >= 0 && tr.indexOf('**AI**：答案') >= 0));
-      log('chat textSource=' + isTextSource(ch));
-      const chList = chEl.querySelector('.chat-list');
-      chList.dispatchEvent(new MouseEvent('mousedown', { clientX: 200, clientY: 200, bubbles: true }));
-      const listDrag = S.drag && S.drag.mode === 'node';
-      window.dispatchEvent(new MouseEvent('mouseup', { clientX: 200, clientY: 200, bubbles: true }));
-      const chInput2 = document.querySelector('.wf-node[data-nid="' + ch.id + '"] .chat-input');
-      chInput2.dispatchEvent(new MouseEvent('mousedown', { clientX: 210, clientY: 240, bubbles: true }));
-      const inputDrag = !!(S.drag && S.drag.mode === 'node');
-      window.dispatchEvent(new MouseEvent('mouseup', { clientX: 210, clientY: 240, bubbles: true }));
-      log('chat list drag works=' + listDrag + ' input drag blocked=' + !inputDrag);
-      // —— 对话节点输出端子拉线可视化 ——
-      const chPort = document.querySelector('.wf-node[data-nid="' + ch.id + '"] .port.out');
+      // —— 输出端子拉线可视化（「文本对话」节点已移除：改用任务节点的端子验证同一路径）——
+      const dragN = tk2;
+      const chPort = document.querySelector('.wf-node[data-nid="' + dragN.id + '"] .port.out');
       const chPr = chPort.getBoundingClientRect();
       const chMX = chPr.left + chPr.width / 2, chMY = chPr.top + chPr.height / 2;
       chPort.dispatchEvent(new MouseEvent('mousedown', { clientX: chMX, clientY: chMY, bubbles: true }));
@@ -739,7 +715,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       const end2 = [nums2[nums2.length - 2], nums2[nums2.length - 1]];
       const want2 = toStage(chMX + 250, chMY + 100);
       const tempVis = getComputedStyle(chTemp).display !== 'none' && chD.length > 5;
-      log('chat wire temp: vis=' + tempVis + ' end=' + end2.map((v) => Math.round(v)) + ' want=' + [Math.round(want2.x), Math.round(want2.y)] + ' d=' + chD.slice(0, 40));
+      log('wire temp: vis=' + tempVis + ' end=' + end2.map((v) => Math.round(v)) + ' want=' + [Math.round(want2.x), Math.round(want2.y)] + ' d=' + chD.slice(0, 40));
       window.dispatchEvent(new MouseEvent('mouseup', { clientX: chMX + 250, clientY: chMY + 100, bubbles: true }));
 
       // —— 控制节点：金色边框/连线、指挥线不占用数据、批量清空 ——
@@ -1084,9 +1060,9 @@ mockServer.listen(0, '127.0.0.1', () => {
       });
       log('canvas cycle blocked=' + ((blocked.warnings || []).some((w) => String(w).indexOf('回路') >= 0)));
       ensureAgentToolPresets();
-      const tp = agentToolActivePreset();
-      const prevDraw = tp.allow.canvas_draw;
-      tp.allow.canvas_draw = false;
+      const tpP = agentToolActivePreset();
+      const prevDraw = tpP.allow.canvas_draw;
+      tpP.allow.canvas_draw = false;
       let drawDenied = false;
       try {
         await applyCanvasOp('edit', {
@@ -1096,16 +1072,16 @@ mockServer.listen(0, '127.0.0.1', () => {
       } catch (e) {
         drawDenied = String((e && e.message) || e).indexOf('不允许') >= 0;
       }
-      tp.allow.canvas_draw = prevDraw;
-      const prevRead = tp.allow.canvas_read;
-      tp.allow.canvas_read = false;
+      tpP.allow.canvas_draw = prevDraw;
+      const prevRead = tpP.allow.canvas_read;
+      tpP.allow.canvas_read = false;
       let getDenied = false;
       try {
         await applyCanvasOp('get', {});
       } catch (e) {
         getDenied = String((e && e.message) || e).indexOf('不允许') >= 0;
       }
-      tp.allow.canvas_read = prevRead;
+      tpP.allow.canvas_read = prevRead;
       log('agent tool deny draw=' + drawDenied + ' get=' + getDenied);
 
       const superN = addNode('super', 200, 200);
@@ -1133,7 +1109,41 @@ mockServer.listen(0, '127.0.0.1', () => {
         resetSuperFocus();
       }
 
-      window.__chatId = ch.id;
+      // —— 工具 / 函数节点：创建默认形状 / 参数增删即端子增删 / 引擎执行 ——
+      const tN = addNode('tool', 1500, 3600);
+      const fN = addNode('function', 1880, 3600);
+      log('fn/tool created=' + (!!tN && !!fN && tN.kind === 'tool' && fN.kind === 'function') + ' titles=' + tN.title + ' / ' + fN.title);
+      log('tool default shape=' + (!!(tN.toolConfig && Array.isArray(tN.toolConfig.inputs) && Array.isArray(tN.toolConfig.outputs) && tN.toolConfig.name === '')) + ' toolCfg=' + JSON.stringify(tN.toolConfig));
+      log('fn default shape=' + (Array.isArray(fN.inputs) && Array.isArray(fN.outputs) && fN.jscode === ''));
+      log('default ports fn/tool=' + (inputCount(fN) === 1 && outputCount(fN) === 1 && inputCount(tN) === 1 && outputCount(tN) === 1) + ' expect 1in/1out（0 参 + 控制口）');
+      tN.toolConfig.inputs.push({ name: '关键词', kind: 'text' }, { name: '图片', kind: 'image' });
+      tN.toolConfig.outputs.push({ name: '结果', kind: 'text' });
+      fN.inputs.push({ name: 'a', kind: 'text' }, { name: 'b', kind: 'text' });
+      fN.outputs.push({ name: 'sum', kind: 'text' });
+      ensureFnToolNodeState(tN); ensureFnToolNodeState(fN);
+      log('param add ports tool=' + inputCount(tN) + 'in/' + outputCount(tN) + 'out expect 3/2 fn=' + inputCount(fN) + 'in/' + outputCount(fN) + 'out expect 3/2');
+      tN.toolConfig.inputs.splice(0, 1);
+      ensureFnToolNodeState(tN);
+      log('param del port shrink=' + (inputCount(tN) === 2 && fnToolParamList(tN, 'in').length === 1) + ' kind image kept=' + (fnToolParamList(tN, 'in')[0].kind === 'image'));
+      // 工具节点：空内部图 → 引擎报「内部没有可执行节点」
+      tN.error = null;
+      await playNode(tN, true);
+      log('tool empty inner err=' + (tN.error && tN.error.indexOf('内部没有可执行') >= 0));
+      // 函数节点：接两个输入参数真跑（input.$1 / $2 = 端子 1..n 的值）
+      addNode('input_text', 1500, 3840);
+      const fna = S.wf.nodes[S.wf.nodes.length - 1];
+      fna.title = '数甲'; fna.text = '5';
+      addNode('input_text', 1500, 3960);
+      const fnb = S.wf.nodes[S.wf.nodes.length - 1];
+      fnb.title = '数乙'; fnb.text = '7';
+      connect(fna.id, fN.id, 1);
+      connect(fnb.id, fN.id, 2);
+      fN.jscode = 'return Number(input.$1.text) + Number(input.$2.text)';
+      fN.error = null; fN.output = null;
+      await playNode(fN, true);
+      log('fn run out=' + (fN.output && fN.output.kind === 'text' && fN.output.text === '12') + ' err=' + (fN.error || ''));
+
+      window.__dragId = dragN.id;
       window.__procId = la.id;
       return 'DONE';
     })()`;
@@ -1145,12 +1155,13 @@ mockServer.listen(0, '127.0.0.1', () => {
           /* 真实输入事件拖线测试（走完整命中测试管线） */
           try {
             const ids = await win.webContents.executeJavaScript(`(() => {
-              const nc = nodeById(window.__chatId);
+              /* 「文本对话」节点已移除：拉线源改用上面登记的输出端子节点 __dragId */
+              const nc = nodeById(window.__dragId);
               nc.x = 100; nc.y = 300;
               const np = nodeById(window.__procId);
               np.x = 600; np.y = 300;
               renderCanvas();
-              return [window.__chatId, window.__procId];
+              return [window.__dragId, window.__procId];
             })()`);
             console.log('[real-drag nodes] ' + JSON.stringify(ids));
             await win.webContents.executeJavaScript(`window.__lastDown = null; window.addEventListener('mousedown', (ev) => { window.__lastDown = { x: ev.clientX, y: ev.clientY, target: ev.target.className + '|' + ev.target.tagName }; }, true);`);

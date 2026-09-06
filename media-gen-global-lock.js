@@ -75,7 +75,13 @@ function releaseLock(nodeId) {
 function busyMessage(lock) {
   const kind = lock && lock.kind;
   const label =
-    kind === "video_gen" ? "视频" : kind === "music_gen" ? "音乐" : "音视频";
+    kind === "video_gen"
+      ? "视频"
+      : kind === "music_gen"
+        ? "音乐"
+        : kind === "tts_gen"
+          ? "语音"
+          : "音视频";
   return (
     "已有" +
     label +

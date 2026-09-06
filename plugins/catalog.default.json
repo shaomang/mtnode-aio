@@ -101,7 +101,7 @@
       "kind": "tts",
       "handler": "tts",
       "order": 60,
-      "version": "1.0.0",
+      "version": "1.0.2",
       "minAppVersion": "1.1.26",
       "icon": "tts-local.png",
       "title": {

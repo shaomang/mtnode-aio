@@ -607,7 +607,10 @@ function dbFirstVisionModel() {
   if (dvm.length) return { provider: "deepseek-official", model: dvm[0].id };
   return null;
 }
-/* 图像识图：返回内容说明（失败则回退为占位） */
+/* 图像识图：返回内容说明（失败则回退为占位）
+   注：这三处内部抽取跑（识图 / 建表列结构 / 行抽取）写死 standard 是**刻意选择**，
+   不是界面默认档的兜底（默认档真源见 app.js 的 AGENT_PRESET_DEFAULT，现已是 minimal）：
+   它们要的是可被 JSON 解析器直接吞下的规整输出，与用户在界面上选哪档无关。 */
 async function dbRecognizeImage(node, absPath) {
   const vis = dbFirstVisionModel();
   const opts = { node, effort: "low", preset: "standard" };
@@ -1038,10 +1041,9 @@ function dbNodesReferencedByBang(node, wf) {
   if (!supers.length) return [];
   const out = [];
   const seen = new Set();
-  const re = /!@([^\s!@，。；、！？：,:!?;:]+)/g;
-  let m;
-  while ((m = re.exec(p))) {
-    const tok = m[1].trim();
+  /* 与 resolveDbBangRefs 同一套切词：库标题带空格也不会只读到前半截 */
+  for (const h of atMentionsOf(p, supers.map((s) => s.title), { bang: true })) {
+    const tok = (h.name || h.token).trim();
     if (!tok || seen.has(tok)) continue;
     seen.add(tok);
     const db =
@@ -1060,24 +1062,31 @@ function dbNodesForRun(node, wf) {
   return out;
 }
 
-/* 把 prompt 里的 !@标题 数据库引用替换为可读指针（避免被 @ 正则吃掉），并顺手收集引用库 */
+/* 把 prompt 里的 !@标题 数据库引用替换为可读指针（避免被 @ 正则吃掉），并顺手收集引用库
+   切词与 @ 引用同源（atMentionsOf 的 bang 口径）：库标题本身可以含空格。 */
 function resolveDbBangRefs(prompt, node) {
   const p = String(prompt || "");
   if (!p.includes("!@")) return { prompt: p, dbs: [] };
   const supers = compiledDbSupers(S.wf);
   const dbs = [];
-  const out = p.replace(/!@([^\s!@，。；、！？：,:!?;:]+)/g, (m, tok) => {
-    const t = tok.trim();
-    if (!t) return m;
-    const db =
-      supers.find((s) => s.title === t) ||
-      supers.find((s) => (s.title || "").startsWith(t));
-    if (db) {
-      if (!dbs.some((x) => x.id === db.id)) dbs.push(db);
-      return I18n.t("【数据库：{t}】", { t: db.title });
-    }
-    return I18n.t("【数据库：{t}】", { t });
-  });
+  const out = eachAtMention(
+    p,
+    supers.map((s) => s.title),
+    null,
+    (h) => {
+      const t = (h.name || h.token).trim();
+      if (!t) return null;
+      const db =
+        supers.find((s) => s.title === t) ||
+        supers.find((s) => (s.title || "").startsWith(t));
+      if (db) {
+        if (!dbs.some((x) => x.id === db.id)) dbs.push(db);
+        return I18n.t("【数据库：{t}】", { t: db.title });
+      }
+      return I18n.t("【数据库：{t}】", { t });
+    },
+    { bang: true },
+  );
   return { prompt: out, dbs };
 }
 
@@ -1343,14 +1352,11 @@ function agentDbGroundingNote(node, wf) {
     I18n.t(
       "5. 数据库未记载但任务需要的推断，必须明确标注「此为推断，数据库未记载」。",
     ),
+    /* 6/7/8 条原文（各动作返回结构、write 的 records 字段、delete 的 ids）与
+       mtnode_db 工具说明是同一份机制抄两遍 —— 每步都在重发。机制只留在工具描述里，
+       这里只补一句指向它，外加「写前先查」这条行为纪律。 */
     I18n.t(
-      "6. mtnode_db 读取（查）：list / get / query 返回结构化数据——provenance 为溯源（记录 id/标题/来源），sql 为实际访问数据库的语句，data 为输出的记录（JSON 数组）。",
-    ),
-    I18n.t(
-      "7. 增 / 改：用 mtnode_db 的 write，records 为记录数组，每条含 title、content（可带 id / kind / source / file）；未带 id 会自动生成新 id（=新增一条），带了已存在的 id 则覆盖该条（=修改）。写入的记录会以 source=agent: 标记并持久保存，不会被后续编译清除。写前请先 query 确认，避免重复。",
-    ),
-    I18n.t(
-      "8. 删：用 mtnode_db 的 delete，ids 为要删除的记录 id 数组（取自 provenance 的 id）。",
+      "6. 各动作与记录字段的口径以 mtnode_db 工具说明为准（list / get / query / write / delete / calc）；写 / 删之前先 query 确认，避免重复记录。",
     ),
   ].join("\n");
 }
@@ -1565,7 +1571,385 @@ function traceFeedEvent(runKey, type, d) {
 }
 
 /* 运行一次 agent 任务；返回最终文本。onEvent(type, data) 观察流式事件。 */
+/* ---------- 出错自动重发（宿主侧最外层重试 · 需求「429 不要跳过下一个任务」） ----------
+ * 网关一次 error = 整轮失败。旧行为：会话落一条「（错误：…）」就完事，计划执行器
+ * 把这一项记为 failed 并**直接接着跑下一项** —— 用户看到的是「429 一响，任务全跳过」。
+ * 现在在最外面补一道闸：一次运行失败 → 等 5 秒 → **原样重发这一轮**（同 input、同 runKey、
+ * 同轨迹口径；重发那一轮开头 traceReset 会把上一轮的部分正文与 ⚠ 错误行一起清掉），
+ * 最多 DSH_RETRY_MAX 次。等待窗口里这一轮仍算「在跑」：计划不会往下走、用户新消息
+ * 照旧进发送队列、左下角运行队列仍然挂着这条会话 —— 正是「不跳过，等一会儿重发」。
+ * 绝不重发的两种情形：
+ *   · 用户主动终止（错误文案是取消类 / 节点 _aborted / 等待中被 ■ 打断）；
+ *   · 重发也不可能变好的配置类错误（没配 API Key、任务内容为空、工作范围受限）。
+ * 引擎内部另有一层 @deepseek-ai/dsh-llm-retry（按服务商 retryPolicy，见 cordis.yml），
+ * 那一层管单次模型请求；本层管「整轮消息」，两者互不替代。
+ * ---------- 优先续跑（重发闸的新默认 · 「原样重发」退为兜底） ----------
+ * 整轮重发的代价是前功尽弃：模型上下文从零重建，已经写出来的几千字白烧一遍 token。
+ * 现在重发前先试着接着写：
+ *   · dshRunOnce 捕获网关报回的本轮 dsh 会话 id（session 帧，以及 done / error 上的
+ *     data.sessionId），连同这一轮的配置指纹 sig 存进 S._runSession[runKey]，
+ *     本轮成功结束后清掉该键；
+ *   · 失败要重发时：会话在、指纹没变、而且确实攒到了部分产出 → 下一 attempt 发
+ *     dshResumeDirective 的「从中断处接着写」指令 + resumeSession，运行时沿用原上下文
+ *     （见 dsh/DESIGN.md 断点续跑契约），不再重发任务原文；已累计的正文以 seedText
+ *     带进 dshRunOnce，所以返回给调用方的仍是整轮完整正文；keepTrace 让失败轮的
+ *     轨迹不被抹掉，归档段仍能还原「前半 + 续写后半」；
+ *   · 续不上（没抓到会话 / 指纹变了 / 一个字都还没写出来）就退回上面的整轮重发；
+ *   · 网关点名 RESUME_UNAVAILABLE（会话不可续跑：盘上无日志、或运行时经 session/resume
+ *     握手也恢复不了 —— 宿主只认这个前缀，见 dshResumeUnavailable）时立刻用原始 input
+ *     整轮重发；老网关没有握手桥、原样透传运行时 id collision（见 dshResumeCollision）
+ *     时同样整轮重发，且这一次不计入 DSH_RETRY_MAX 预算 —— 它只是续不上，不是又
+ *     失败了一次。（续跑三态：同进程复用 / 跨进程盘上恢复 / 整轮重发兜底，见
+ *     dsh/DESIGN.md「断点续跑契约」。） */
+const DSH_RETRY_DELAY_MS = 5000; /* 需求指定：等 5 秒后重新发送 */
+const DSH_RETRY_MAX = 5; /* 上限：持续限流也不能无限占着这一轮 */
+const DSH_RESUME_UNAVAILABLE = /^RESUME_UNAVAILABLE\b/; /* 网关固定的「不可续跑」标记 */
+
+/* 续跑点名的会话「盘上有日志但接不上」（运行时侧 id collision）：dsh-session-persistence
+   在会话/created 时发现盘上旧日志与实时会话的前缀对不上，会硬抛这几句。接入 session/resume
+   桥（plugins/session-resume-server.mjs）后，续跑轮会先握手让运行时从盘上恢复（跨进程真续），
+   同进程命中更是零开销 —— collision 只剩兜底路径才出现：老网关没有握手桥而回落 create
+   语义（新 runtime 以「新会话 + 只有续跑指令的 seed」去碰盘上旧日志 → 冲突报错），或
+   恢复被拒后仍落到 create 路径；即「文件在盘 ≠ 续得上」的最终形态。
+   这类报文对宿主与 RESUME_UNAVAILABLE 同义：续不上 → 立即用原始 input 整轮重发，
+   绝不拿同一个 dead id 连撞 5 次重发预算（用户只看到莫名 id collision 报错）。
+   （三态与握手细节见 dsh/DESIGN.md「断点续跑契约」。） */
+const DSH_RESUME_COLLISION = /\(id collision\)|persisted log on disk|does not match this live session|persisted at a different cwd|bound to a different live session/;
+
+/* 报文是否属「运行时续不上」的 id collision 家族（网关新版本会先转译成
+   RESUME_UNAVAILABLE 前缀；老网关原样透传时这里兜底识别） */
+function dshResumeCollision(msg) {
+  return DSH_RESUME_COLLISION.test(String(msg || ""));
+}
+
+/* 本轮配置指纹：原七项（workspace|model|provider|preset|effort|pure|maxTokens）
+   + 网关 runtimeKey 的同源成分（见 dsh/gateway/gateway.mjs getRuntime →
+   runtimeKey / provHash：apiKey secret、baseUrl、webSearchKey 前缀 ws:、persona
+   hp:、工具集 tl:、envPatch 服务商密钥表）的稳定哈希。缺失字段一律按空串计
+   （调用点只传它拿得到的值，如分节快照口径只传配置七项也合法）。
+   指纹变了 = 这一次运行与那条会话不是同一套配置跑出来的，续跑会把别的配置的上下文
+   灌进本轮，只能整轮重发。
+   为什么必须带 runtimeKey 同源成分：网关的 runtime key 由上述全部成分拼成，任一
+   成分漂移（密钥 / 端点 / 联网搜索 Key / 人设 / 工具集 / 服务商密钥表）都会让网关
+   另起一台新 runtime；此时若宿主侧签名还判「一致」、点名续跑那条旧会话，即使
+   session/resume 握手能把旧日志从盘上恢复为 live，恢复出来的也是**旧配置的上下文**，
+   与本轮不符 —— 等价于「假装续上，实则换配置冷起」（老网关/老运行时无握手桥时则
+   直接撞 id collision）。把这些成分纳入签名后，漂移即判整轮重发，从根上杜绝该场景。 */
+function dshRunSigOf(p) {
+  return dbHash(
+    [
+      p.workspace || "",
+      p.model || "",
+      p.provider || "",
+      p.preset || "",
+      p.effort || "",
+      p.pure ? 1 : 0,
+      /* 按运行裁剪可见工具集（精简工具负载 / 画布智能节点不给画布工具）：
+         两者都改网关 runtime key 与固定前缀的 tools 段 → 漂移 = 换 runtime 冷起，
+         必须进签名，否则会把「旧可见集的会话」当同配置续跑。 */
+      p.lean ? 1 : 0,
+      p.noCanvas ? 1 : 0,
+      /* hideTools 名单通道：网关把规范后的名单打进 runtime key 的 hx: 指纹 */
+      p.hide || "",
+      p.maxTokens == null ? "" : p.maxTokens,
+      /* ── runtimeKey 同源成分（对齐网关 getRuntime 的指纹输入）── */
+      p.apiKey || "", /* runtimeKey 的 apiKey secret（sha1 前 12 hex 的原文输入） */
+      p.baseUrl || "", /* runtimeKey 的 baseUrl */
+      p.webSearchKey || "", /* provHash 的 ws:（联网搜索 Key，取原文） */
+      p.persona || "", /* provHash 的 hp:（hostPersona 哈希的原文输入） */
+      p.tools || "", /* provHash 的 tl:（工具描述子 JSON，取原文） */
+      p.envPatch || "", /* provHash 的 envPatch（服务商密钥表 JSON，取原文） */
+    ].join("|"),
+  );
+}
+
+/* 设置里的「精简工具负载」开关（默认关 → 行为与此前逐字一致）。唯一读点在
+   dshRunOnce 拼 runParams.lean 处。开了它，运行时干脆不注册 mtnode_app /
+   mtnode_vision（两者合计 ~4.9K 字符，每一步都随固定前缀重发一遍）。 */
+function dshLeanToolsOn() {
+  return !!(S.config && S.config.dsh && S.config.dsh.leanToolPayload);
+}
+
+/* lean / noCanvas 两个整档闸各自裁掉的名字（与 dsh/gateway/canvas-plugin.mjs 里的
+   LEAN_DROP_WHEN_LEAN / NODE_LOCK_DROP_CANVAS 同值 —— 那边是真源，改那边记得改这里）。
+   宿主侧列这份只为「别把已经被整档闸裁掉的名字再重复写进 hideTools 名单」：重复不致错
+   （注册口取并集），但会让网关那句「本轮不注册的工具」与「精简工具负载」说两遍。 */
+const DSH_TOOLS_DROPPED_BY_LEAN = ["mtnode_app", "mtnode_vision"];
+const DSH_TOOLS_DROPPED_BY_NO_CANVAS = [
+  "mtnode_canvas_get",
+  "mtnode_canvas_edit",
+  "mtnode_app",
+];
+
+/* 按运行要隐藏的工具名（第三个闸：随 run 参数 hideTools 下发网关 → runtime key 的
+   hx: 指纹 + spawn env MTNODE_HIDE_TOOLS → 注册口不注册 / mtnode-tool-visibility 插件
+   在 agent 作用域 ctx.tools.restrict({deny}) 摘除）。判据全部来自「这一轮宿主会不会
+   直接拒绝这个调用」：
+   · Agent 工具许可预设里被拒到点上的类别（映射真源 app-nodes.js agentDeniedToolNames）；
+   · 本轮没接入任何数据库副本 → mtnode_db（未接入时宿主一律回「当前任务未接入数据库」）。
+   输出排序去重：同一档每轮逐字相同，runtime key 才稳定，同档会话共享一台运行时、
+   每一步前缀一致 —— 轮内改可见集是从第一个变化的 schema 起整段缓存失效，赔得更多。 */
+function dshHiddenToolsFor(o) {
+  if (!o || o.pure) return [];
+  let names = [];
+  try {
+    names =
+      typeof agentDeniedToolNames === "function" ? agentDeniedToolNames() : [];
+  } catch (_) {
+    names = [];
+  }
+  names = Array.from(names || []);
+  if (!o.dbGrounded) names.push("mtnode_db");
+  const covered = {};
+  if (o.lean) for (const n of DSH_TOOLS_DROPPED_BY_LEAN) covered[n] = 1;
+  if (o.noCanvas) for (const n of DSH_TOOLS_DROPPED_BY_NO_CANVAS) covered[n] = 1;
+  const seen = {};
+  const out = [];
+  for (const n of names) {
+    const s = String(n || "").trim();
+    if (!s || seen[s] || covered[s]) continue;
+    seen[s] = 1;
+    out.push(s);
+  }
+  return out.sort();
+}
+
+/* 续跑指令：只说「从中断处接着写」，绝不带任务原文 —— 原文已经在那份 session 的
+   上下文里，再塞一遍等于让模型从头重写（文案经 I18n.t，跟随界面语言）。 */
+function dshResumeDirective(errMsg) {
+  const s = String(errMsg || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const brief = s.length > 160 ? s.slice(0, 160) + "…" : s;
+  return (
+    I18n.t("【续跑】上一轮回答在中途报错：") +
+    (brief || I18n.t("（无错误信息）")) +
+    "\n" +
+    I18n.t(
+      "请在原有上下文的基础上，从刚才中断的地方继续把任务做完：直接往下输出剩余内容，" +
+        "不要重复已经写出的部分，也不要重新从头开始或再次复述任务。",
+    )
+  );
+}
+
+/* 网关说「这个会话在本机不可续跑」？（会话文件被清理 / id 不属于这台机器） */
+function dshResumeUnavailable(msg) {
+  return DSH_RESUME_UNAVAILABLE.test(String(msg || ""));
+}
+
+/* 可续跑的会话登记：这一轮登记过 session id，且它的配置指纹与刚失败的这一轮一致
+   （不是别的轮次留在表里的旧条目）。不满足返回 null → 退回整轮重发。
+   指纹口径 = dshRunSigOf 全量成分（含网关 runtimeKey 同源成分）：apiKey / baseUrl /
+   webSearchKey / persona / tools / envPatch 任一漂移都会让网关另起 runtime —— 即便
+   session/resume 握手把旧会话恢复为 live，恢复出的也是旧配置的上下文，必须在此判
+   null、整轮重发。 */
+function dshResumableSession(runKey) {
+  const sess = S._runSession && S._runSession[runKey];
+  if (!sess || !sess.sid) return null;
+  const cur = S._runSig && S._runSig[runKey];
+  if (!cur || sess.sig !== cur) return null;
+  return sess;
+}
+
+/* 重发判据：取消类与配置类不重发，其余（429 / RATE_LIMIT / 5xx / 网络 / 引擎掉线）都重发 */
+function dshRunRetryable(msg) {
+  const s = String(msg || "");
+  if (!s.trim()) return false;
+  if (typeof isCancelishError === "function" && isCancelishError(s)) return false;
+  if (
+    /未配置|API Key|任务内容为空|工作范围为「当前画布」|智能能力未启用/.test(s)
+  )
+    return false;
+  return true;
+}
+
+/* 与 dshRunOnce 同一口径算出取消句柄键（会话 agent:<id> / 节点 node.id / 助手 assist） */
+function dshRunKeyOf(opts) {
+  return String(opts.runKey || (opts.node && opts.node.id) || "default");
+}
+
+/* 续跑不可用的原因（消费方据此给 toast 措辞；返回 null = 本轮可续跑）：
+   · 'no-session' —— 本轮还没登记到网关报回的 session id（很早期就挂了 / 宿主没接入续跑）；
+   · 'sig-drift'  —— 会话在，但配置指纹变了：不是同一套配置跑出来的。指纹含网关
+      runtimeKey 同源成分（apiKey / baseUrl / webSearchKey / persona / tools /
+      envPatch），这些漂移 = 网关会另起新 runtime —— 即便握手把旧会话恢复为 live，
+      恢复出的也是旧配置的上下文，只能整轮重发（杜绝「假装续上，实则换配置冷起」）；
+   · 'no-output'  —— 会话与配置都吻合，但一个字都还没写出来（续跑没有意义）。 */
+function dshResumeBlockReason(runKey, carriedChars) {
+  const sess = dshResumableSession(runKey);
+  if (!sess) {
+    const had = S._runSession && S._runSession[runKey];
+    const cur = S._runSig && S._runSig[runKey];
+    if (had && cur && had.sig !== cur) return "sig-drift";
+    return "no-session";
+  }
+  return carriedChars > 0 ? null : "no-output";
+}
+
+/* 这一次重发算「续写」还是「整轮重发」（消费方据此决定清不清失败轮的残文）：
+   · resumed=true  —— 重发点名沿用失败轮那条 dsh 会话（resumeSession），新内容接在
+     **同一条逻辑轮次**后面：已显示的部分正文 / 工具列表 / 思考槽一律保留；
+   · resumed=false —— 整轮重发（新铸会话、上文全丢）：照旧清空重画，否则同一轮
+     内容会叠两遍。
+   判据与重发闸同源：本轮已在续跑通道上（opts.resumeSession）、或该 runKey 登记过
+   可续跑的会话（配置指纹一致，见 dshResumableSession）都算续写；网关已判
+   RESUME_UNAVAILABLE（会话不可续跑：盘上无日志、或运行时握手也恢复不了）时一律
+   false，退回整轮重发。
+   指纹口径含网关 runtimeKey 同源成分：apiKey / baseUrl / webSearchKey / persona /
+   tools / envPatch 任一漂移时 dshResumableSession 已判 null → resumed=false
+   （整轮重发），绝不在配置已变时点名续跑旧会话 —— 哪怕握手能把旧会话恢复为 live，
+   恢复出的也是旧配置的上下文。
+   宿主完全没接入续跑（没有会话登记）时也恒为 false，与接入前行为一字不差。 */
+function dshRetryResumed(opts, msg, runKey) {
+  if (dshResumeUnavailable(msg) || dshResumeCollision(msg)) return false;
+  if (opts && opts.resumeSession) return true;
+  return typeof dshResumableSession === "function" &&
+    !!dshResumableSession(runKey);
+}
+
+/* 重发等待窗口：先占一个「本轮仍在途」的取消句柄，用户此刻按 ■ 也能立刻打断
+   （dshCancelActive 删掉句柄 = 用户不要这一轮了 → 不再重发）。
+   句柄已被别的新一轮接管时同样不重发，绝不与新一轮抢同一个 runKey。 */
+function dshRetryWait(runKey, delayMs) {
+  S._runCancels = S._runCancels || {};
+  if (S._runCancels[runKey]) return Promise.resolve(false);
+  const ticket = { cancelTag: runKey, workspace: "", _retryWait: true };
+  S._runCancels[runKey] = ticket;
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      const cur = S._runCancels && S._runCancels[runKey];
+      if (cur === ticket) delete S._runCancels[runKey];
+      resolve(cur === ticket);
+    }, delayMs);
+  });
+}
+
+/* 一次智能运行的唯一入口：失败自动等 5 秒重发（见上），真正发请求的是 dshRunOnce。
+   重发的新默认是「优先续跑」：拿得到本轮会话就发续跑指令接着写，续不上才整轮重发。 */
 function dshRunTask(input, opts) {
+  opts = opts || {};
+  const runKey = dshRunKeyOf(opts);
+  let tries = 0;
+  /* 已累计正文：包一层 onEvent 把各轮的 text 增量攒下来 —— 续跑那一轮拿它当
+     seedText，所以 dshRunOnce 返回的仍是「前半 + 续写后半」的整轮完整正文 */
+  let carried = "";
+  const userOnEvent = typeof opts.onEvent === "function" ? opts.onEvent : null;
+  const baseOpts = Object.assign({}, opts, {
+    onEvent: (type, data) => {
+      if (type === "text" && data && data.text) carried += String(data.text);
+      if (userOnEvent) {
+        try {
+          userOnEvent(type, data);
+        } catch (_) {}
+      }
+    },
+  });
+  const notifyRetry = (probeOpts, msg, delayMs, carriedChars) => {
+    /* 通知调用方本轮重发的口径（resumed 见 dshRetryResumed）：
+       · resumed=true  → 续写，保留已显示的部分正文 / 工具列表 / 思考槽；
+       · resumed=false → 整轮重发，清掉上一轮残文（否则重发后内容会叠两遍）
+       carriedChars = 这一次重发还替调用方守着多少已写正文（整轮重发记 0） */
+    try {
+      if (typeof opts.onEvent === "function")
+        opts.onEvent("retry", {
+          attempt: tries,
+          max: DSH_RETRY_MAX,
+          delayMs,
+          message: msg,
+          resumed: dshRetryResumed(probeOpts, msg, runKey),
+          carriedChars: carriedChars || 0,
+        });
+    } catch (_) {}
+  };
+  /* resume = {sid, err}：沿用的会话 id + 刚失败的报错（写进续跑指令）；null = 整轮重发 */
+  const attempt = (resume) => {
+    const sid = resume && resume.sid ? String(resume.sid) : "";
+    /* 整轮重发从零累计（新会话会把全文重写一遍）；续跑轮沿用已累计的半截正文 */
+    if (!sid) carried = "";
+    const nextOpts = sid
+      ? Object.assign({}, baseOpts, {
+          resumeSession: sid,
+          /* 同一个会话的 system 已经落在那份 session 里：再下发只会污染上下文
+             （宿主人设一节因此为空；dshRunOnce 识别这一轮走 full 旁路并作废分节快照） */
+          systemPrompt: "",
+          seedText: carried,
+          keepTrace: true,
+        })
+      : baseOpts;
+    return dshRunOnce(
+      sid ? dshResumeDirective(resume.err) : input,
+      nextOpts,
+    ).catch(async (err) => {
+      const msg = (err && err.message) || String(err || "");
+      const node = opts.node;
+      if (node && node._aborted) throw err;
+      /* 续跑点名的会话在本机不可续跑：立刻用原始 input 整轮重发，不消耗 5 次
+         重发预算 —— 它只是续不上，不是又失败了一次（见上方续跑闸注释）。
+         识别口径两类：网关固定的 RESUME_UNAVAILABLE 前缀（盘上无日志 / 运行时握手
+         也恢复不了），以及运行时侧 id collision 家族（老网关没有握手桥而回落 create
+         语义撞盘上旧日志、原样透传时在这里兜底；新网关会先转译成
+         RESUME_UNAVAILABLE 前缀）。 */
+      if (sid && (dshResumeUnavailable(msg) || dshResumeCollision(msg))) {
+        notifyRetry(baseOpts, msg, 0, 0);
+        try {
+          toast(
+            I18n.t("该会话已不可续跑，立即用原任务整轮重发（不计入重发次数）"),
+            "warn",
+          );
+        } catch (_) {}
+        carried = "";
+        const go = await dshRetryWait(runKey, 0);
+        if (!go) throw new Error(I18n.t("已手动终止"));
+        return attempt(null);
+      }
+      if (tries >= DSH_RETRY_MAX || !dshRunRetryable(msg)) throw err;
+      tries++;
+      const brief = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
+      /* 优先续跑的三条件：本轮登记过会话且配置指纹没变（dshResumableSession，
+         指纹含网关 runtimeKey 同源成分：apiKey / baseUrl / webSearchKey / persona /
+         tools / envPatch —— 这些漂移 = 网关另起 runtime 冷起伪续跑，
+         必须退回整轮重发）+ 确实攒到了部分产出（carried）；缺一就退回整轮重发。
+         resumeBlocked 区分「为什么续不上」，配置漂移时给用户明确 toast。 */
+      const sess = dshResumableSession(runKey);
+      const next = sess && carried.length > 0 ? { sid: sess.sid, err: msg } : null;
+      const resumeBlocked = dshResumeBlockReason(runKey, carried.length);
+      const chars = next ? carried.length : 0;
+      notifyRetry(next ? { resumeSession: next.sid } : baseOpts, msg, DSH_RETRY_DELAY_MS, chars);
+      try {
+        toast(
+          I18n.t("本轮出错，") +
+            Math.round(DSH_RETRY_DELAY_MS / 1000) +
+            (next
+              ? I18n.t(" 秒后从中断处继续（第 ")
+              : I18n.t(" 秒后整轮重发（第 ")) +
+            tries +
+            "/" +
+            DSH_RETRY_MAX +
+            I18n.t(
+              next
+                ? " 次）· 已写内容不重烧 · "
+                : resumeBlocked === "sig-drift"
+                  ? " 次）· 运行配置已变化，无法从中断处续跑 · "
+                  : " 次）· 不跳到下一个任务 · ",
+            ) +
+            brief,
+          "warn",
+        );
+      } catch (_) {}
+      const go = await dshRetryWait(runKey, DSH_RETRY_DELAY_MS);
+      if (!go) throw new Error(I18n.t("已手动终止"));
+      return attempt(next);
+    });
+  };
+  return attempt(null).catch((err) => {
+    /* 彻底放弃这一轮：它登记的可续跑会话到此作废，别留给下一次运行 */
+    if (S._runSession) delete S._runSession[runKey];
+    throw err;
+  });
+}
+
+/* 单次运行（一次请求 = 一轮）：组装 runParams、挂取消句柄、收流式事件 */
+function dshRunOnce(input, opts) {
   opts = opts || {};
   const sup = dshSupported();
   if (!sup.ok) return Promise.reject(new Error(sup.reason));
@@ -1614,42 +1998,174 @@ function dshRunTask(input, opts) {
      不含技能索引 / 数据库接地 / 工具策略 / 语言口味 —— 模型输入 = 纯粹的用户输入。
      网关侧 preset 强制走空文本档（pure），引擎人设由 MTNODE_PURE 标记移除。 */
   const pureOn = !!opts.pure;
+  /* 按运行裁剪可见工具集（下发网关 → spawn env → canvas-plugin 的 register()）：
+     · leanOn = 设置「精简工具负载」：整个不注册 mtnode_app / mtnode_vision；
+     · noCanvasOn = 画布智能节点（nodeLock）：宿主对 get / edit / app 帧一律直接拒绝，
+       那约 25.6K 字符的画布工具定义干脆不发（每步约省 7K token），
+       mtnode_vision 仍保留（智能节点人设明确允许它识图）。
+     两者都改 runtime key 与固定前缀形状 → 一并进 runSig（见 dshRunSigOf）。 */
+  const leanOn = dshLeanToolsOn() && !pureOn;
+  const noCanvasOn = nodeLock && !pureOn;
+  /* 数据库接地注记：非空 = 本轮真接入了数据库副本（连线进来的副本 + prompt 里的
+     !@数据库标题）。先算出来，两处共用同一判据 —— 注记与 mtnode_db 的存在性必须
+     同进同退，绝不允许「提示词说接了库、工具却不在」或反过来。 */
+  const dbGrounding = pureOn ? "" : agentDbGroundingNote(opts.node, S.wf);
+  /* 第三个闸：按名字的隐藏名单（见 dshHiddenToolsFor） */
+  const hideToolsOn = dshHiddenToolsFor({
+    pure: pureOn,
+    dbGrounded: !!String(dbGrounding || "").trim(),
+    lean: leanOn,
+    noCanvas: noCanvasOn,
+  });
+  /* 用户工具描述子（func call 单一真源，见 app-tools.js）：当前画布的工具节点 +
+     工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
+     纯净模式只留联网搜索）。 */
+  const agentTools = pureOn
+    ? { descs: [], byKey: {} }
+    : await agentUserToolsSnapshot(S.wf);
+  /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist)。
+     systemPrompt 分节快照也以它为主键，故提前到 runParams 之前定型（取值口径一字未改）。 */
+  const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
+  /* 分节装配要先有配置指纹（快照的准入条件），而 dshRunSigOf 先读基础七项
+     （workspace/model/provider/preset/effort/pure/maxTokens）再读网关 runtimeKey
+     同源成分 —— 先把它们全定成局部量，探针与 runParams 共用同一份取值：
+     本轮探针与续跑重发之间这些成分若漂移，网关会另起 runtime（即便握手把旧会话
+    恢复出来，也是旧配置的上下文），所以它们必须进签名（见 dshRunSigOf 注释）。 */
+  const runModel = opts.model || d.model || "deepseek-v4-flash";
+  const runMaxTokens = (() => {
+    const t = effectiveDshMaxTokens(d.maxTokens);
+    return t > 0 ? t : undefined;
+  })();
+  const runPreset = (() => {
+    if (pureOn) return "pure";
+    const p = opts.preset || d.preset || AGENT_PRESET_DEFAULT;
+    /* 画布智能节点（nodeLock）跑内部 node 档：只办事不改图。判定 keyed 在「默认档」
+       上而不是某个档名上 —— 默认档已从 standard 换成 minimal，老画布节点存的
+       "standard" 与新默认都照常落到 node 档（行为逐字不变）；用户为节点显式
+       挑选的其它档（code / cordis / lean）不改写。 */
+    return nodeLock && (p === "standard" || p === AGENT_PRESET_DEFAULT)
+      ? "node"
+      : p;
+  })();
+  const runEffort = dshEffortOf(
+    opts.effort,
+    !!(opts.node && opts.node.kind === "proc_text"),
+  );
+  /* runtimeKey 同源成分的宿主侧取值（网关 getRuntime 的指纹输入，见 dshRunSigOf）：
+     · apiKey / baseUrl / webSearchApiKey 上面已按路由定好（本路由密钥、端点、联网搜索 Key）；
+     · persona = 本轮下发的宿主人设（主链路恒空，桌宠类独立进程由 main 直传 hostPersona）；
+     · tools = 本轮工具描述子原文（网关 normRunTools → JSON 哈希 tl: 进 runtime key，
+       工具集漂移 → 换 runtime 冷起 → 续跑点名撞 id collision，必须进签名）；
+     · envPatch = 网关注入运行时的服务商密钥表 MTNODE_KEY_i 同源投影（= mtnodeProviders
+       里每个可用服务商的 route/baseUrl/apiKey/api/models；key 表与端点模型任一漂移
+       都让网关另起 runtime）。只取网关消费的字段，不含展示用 name。 */
+  const runPersona = String(opts.persona || "").trim();
+  const runToolsJson =
+    agentTools.descs && agentTools.descs.length
+      ? JSON.stringify(agentTools.descs)
+      : "";
+  const runEnvPatch =
+    piProvs && piProvs.length
+      ? JSON.stringify(
+          piProvs.map((x) => ({
+            route: x.route,
+            baseUrl: x.baseUrl,
+            apiKey: x.apiKey,
+            api: x.api,
+            models: x.models || [],
+          })),
+        )
+      : "";
+  const runSig = dshRunSigOf({
+    workspace,
+    model: runModel,
+    provider,
+    preset: runPreset,
+    effort: runEffort,
+    pure: pureOn,
+    lean: leanOn,
+    noCanvas: noCanvasOn,
+    /* 名单通道也进签名：隐藏名单变化 = 网关 hx: 指纹变化 → 另起 runtime，点名续跑
+       旧会话等于把别的可见集的上下文灌进本轮（与 lean / noCanvas 同一判据）。 */
+    hide: hideToolsOn.join(","),
+    maxTokens: runMaxTokens,
+    /* runtimeKey 同源成分（漂移 = 网关换 runtime 冷起，握手恢复也只拿回旧配置的上下文，
+       必须进签名 → 漂移即判整轮重发） */
+    apiKey,
+    baseUrl,
+    webSearchKey: webSearchApiKey,
+    persona: runPersona,
+    tools: runToolsJson,
+    envPatch: runEnvPatch,
+  });
+  /* 本轮下发的 systemPrompt 不是完整一节时（pure 轮整段置空；续跑轮的宿主人设已经落在
+     那份 session 里，见 dshRunTask 的 systemPrompt:""），一律作废快照并走全量旁路 ——
+     绝不允许「上一轮发过」被当成本轮可以省的依据。 */
+  const resumeRound = !!String(opts.resumeSession || "").trim();
+  if (pureOn || resumeRound) invalidatePromptSections(runKey);
+  /* 七段片段来源与改造前一字不差，只把「顺序 + 丢空节 + 拼接」交给内核：
+     节序即历史顺序（语言口味放最后，紧贴上下文尾部模型最容易照做），nodeLock 决定
+     要不要 node_capability 节；diff 出厂关闭 → text 与旧的 join("\n\n") 逐字节等价。 */
+  const promptSections = pureOn
+    ? []
+    : buildSections([
+        {
+          id: PROMPT_SECTION_IDS.persona_host,
+          text: opts.systemPrompt || "",
+        },
+        { id: PROMPT_SECTION_IDS.skill_index, text: indexBlock },
+        {
+          id: PROMPT_SECTION_IDS.db_grounding,
+          text: dbGrounding,
+        },
+        {
+          id: PROMPT_SECTION_IDS.tool_policy,
+          text: agentToolPolicySystemNote({ nodeLock }),
+        },
+        {
+          id: PROMPT_SECTION_IDS.node_capability,
+          text: nodeLock ? agentNodeCapabilityNote() : "",
+        },
+        {
+          id: PROMPT_SECTION_IDS.plan_mode,
+          text: opts.planMode ? planModeSystemNote() : "",
+        },
+        /* 语言口味放最后（节序表把它钉在末位）：紧贴上下文尾部，模型最容易照做 */
+        { id: PROMPT_SECTION_IDS.lang_taste, text: agentLangTasteNote() },
+      ]);
+  const promptRender = pureOn
+    ? null
+    : renderSections(runKey, promptSections, { sig: runSig, full: resumeRound });
   const runParams = {
     workspace,
     input: String(input || ""),
-    model: opts.model || d.model || "deepseek-v4-flash",
-    maxTokens: (() => {
-      const t = effectiveDshMaxTokens(d.maxTokens);
-      return t > 0 ? t : undefined;
-    })(),
+    model: runModel,
+    maxTokens: runMaxTokens,
     apiKey,
     baseUrl,
     webSearchApiKey,
-    systemPrompt: pureOn
-      ? ""
-      : [
-          opts.systemPrompt || "",
-          indexBlock,
-          agentDbGroundingNote(opts.node, S.wf),
-          agentToolPolicySystemNote({ nodeLock }),
-          nodeLock ? agentNodeCapabilityNote() : "",
-          opts.planMode ? planModeSystemNote() : "",
-          /* 语言口味放最后：紧贴上下文尾部，模型最容易照做 */
-          agentLangTasteNote(),
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
+    /* 工具节点函数调用清单：网关按指纹分池并注入运行时 tools-plugin.mjs */
+    tools: agentTools.descs,
+    systemPrompt: pureOn ? "" : promptRender.text,
+    /* 跨轮注入预留的出参（runKey + sig + 每节哈希）：老网关忽略即降级保底，
+       等 dsh 线协议支持 session 常驻后据此只重注变化分节 */
+    sectionCache: pureOn ? undefined : promptRender.sectionCache,
     /* pure 标记必须原样下发网关：gateway 据此强制空预设文本，并给运行时进程
        注入 MTNODE_PURE（引擎侧 pure-prompt 插件与 cordis 门控全看这个环境变量）。
        此前 runParams 漏掉该字段 → 网关 pureFlag 恒为 false，纯净分支沦为死代码，
        这正是「纯净模式实现有误」的根因。 */
     pure: pureOn,
-    preset: (() => {
-      if (pureOn) return "pure";
-      const p = opts.preset || d.preset || "standard";
-      return nodeLock && p === "standard" ? "node" : p;
-    })(),
-    effort: dshEffortOf(opts.effort, !!(opts.node && opts.node.kind === "proc_text")),
+    /* 按运行裁剪可见工具集的两个整档标记（见上方 leanOn / noCanvasOn）：网关把它们
+       注入 spawn env（MTNODE_LEAN_TOOLS / MTNODE_NO_CANVAS）并写进 runtime key。
+       老网关忽略未知字段 = 全量注册，降级保底。 */
+    lean: leanOn,
+    noCanvas: noCanvasOn,
+    /* 第三个通道：按名字的隐藏名单（见 dshHiddenToolsFor）。网关归一（白名单 + 去重
+       + 排序）后进 runtime key 的 hx: 指纹并注入 MTNODE_HIDE_TOOLS；空名单不下发
+       （= 老网关同一条路径，可见集一字不变）。 */
+    hideTools: hideToolsOn.length ? hideToolsOn : undefined,
+    preset: runPreset,
+    effort: runEffort,
     provider,
     mtnodeProviders: piProvs,
     /* 允许单次运行显式覆盖权限档（如开发节点「问询」强制 read-only 只读回答）；
@@ -1661,11 +2177,30 @@ function dshRunTask(input, opts) {
       Array.isArray(opts.images) && opts.images.length
         ? opts.images.slice()
         : undefined,
+    /* 断点续跑（重发闸的「优先续跑」分支）：点名沿用上一轮那条 dsh 会话，
+       运行时带着原上下文继续，而不是新铸一个空会话。网关判它在本机不可续跑时
+       以 RESUME_UNAVAILABLE 报错收轮、绝不静默新铸，由 dshRunTask 退回整轮重发。 */
+    resumeSession: String(opts.resumeSession || "").trim() || undefined,
   };
-  /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist) */
-  const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
+  /* 本轮配置指纹：与网关报回的 session id 一起登记（见 captureRunSession），
+     重发闸据此判断「这条会话还是不是这一套配置跑出来的」；runSig 已在分节装配前
+     算出，口径 = dshRunSigOf 全量成分（含网关 runtimeKey 同源成分：apiKey / baseUrl /
+     webSearchKey / persona / tools / envPatch）—— 这些漂移即换 runtime 冷起，
+     握手恢复也只拿回旧配置的上下文，指纹变化正是退回整轮重发的判据。 */
+  S._runSig = S._runSig || {};
+  S._runSig[runKey] = runSig;
+  /* 可续跑会话登记表：session 帧最先到达，done / error 上的 sessionId 兜底 */
+  S._runSession = S._runSession || {};
+  const captureRunSession = (id) => {
+    const sid = String(id || "").trim();
+    if (!sid) return;
+    S._runSession[runKey] = { sid: sid, sig: runSig, at: Date.now() };
+  };
+  /* 本次 run 的工具定位表：tool-run 帧按描述子 key 回来时在这里找执行目标 */
+  S._runToolDescs = S._runToolDescs || {};
+  S._runToolDescs[runKey] = agentTools.byKey;
   /* 这一轮的「来自」归属：提问 / 审批卡片头部那行文案 + 点击跳转目标。
-     runKey 已在上一行定型（会话 = agent:<id> / 节点 = node.id / 助手 = assist），
+     runKey 已在组装 runParams 之前定型（会话 = agent:<id> / 节点 = node.id / 助手 = assist），
      这里只读不算，一次 run 定一次归属，后续推卡片直接复用。 */
   const ixSrc = dshIxSrcOf(opts, runKey);
   /* 网关凭 cancelTag 精确关闭「这一次运行」自己的运行时进程。
@@ -1673,8 +2208,10 @@ function dshRunTask(input, opts) {
      其它会话（含全局助手）一起打断。 */
   runParams.cancelTag = runKey;
   S._runCancels = S._runCancels || {};
-  /* 本轮轨迹开一盏：按步切段的运行轨迹与取消句柄同键，互不串台 */
-  traceReset(runKey);
+  /* 本轮轨迹开一盏：按步切段的运行轨迹与取消句柄同键，互不串台。
+     续跑那一轮（keepTrace）例外：失败轮已经写出来的前半正文必须留在轨迹里，
+     续写接在后面，归档段才能还原「前半 + 续写后半」这条完整时间线。 */
+  if (!opts.keepTrace) traceReset(runKey);
   /* 本次运行的唯一实例标识：同 runKey 可能被连续两轮复用（如「立即终止 + 立刻重发」），
      旧一轮的 finish 只能删自己的条目，绝不能误删新一轮的 —— 否则新一轮会被看门狗
      当成「已手动终止」、回复变成（已终止），两轮乱序。 */
@@ -1738,8 +2275,9 @@ function dshRunTask(input, opts) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let seenError = "";
-    /* SDK finalResponse 只含最后一条 assistant 正文;累计全部 text-delta 才是完整输出 */
-    let accText = "";
+    /* SDK finalResponse 只含最后一条 assistant 正文;累计全部 text-delta 才是完整输出。
+       续跑那一轮从已累计的半截正文起步（seedText），返回值才是整轮完整正文 */
+    let accText = String(opts.seedText || "");
     /* 看门狗：网关 / 运行时卡住（harness.run 不返回、不发 done）时保证本轮一定收尾，
        渲染层绝不永久等待 —— 否则 assistRunning / st.running 残留 true，新消息全被丢弃，
        AI 回复永不追加，列表最底层永远停在旧会话内容（全局助手卡死 Bug 的根因）。
@@ -1757,6 +2295,8 @@ function dshRunTask(input, opts) {
       if (settled) return;
       settled = true;
       clearInterval(watchdog);
+      /* 本轮工具定位表只活到本轮结束：下一轮重收集（画布 / 工具库可能已变） */
+      if (S._runToolDescs) delete S._runToolDescs[runKey];
       /* 只删自己这一轮登记的条目：同 runKey 的下一轮可能已覆盖它（见 runInst 注释），
          误删会让新一轮被看门狗当成「已手动终止」 */
       if (S._runCancels) {
@@ -1777,6 +2317,10 @@ function dshRunTask(input, opts) {
           0,
           (S._canvasNodeAgentDepth || 1) - 1,
         );
+      /* 本轮跑完了（成功）：它登记的可续跑会话就此作废，绝不留给下一次运行 ——
+         下一次是新的任务，拿旧会话续跑会把上一轮的上下文灌进来。
+         失败收尾不清：正是失败那一轮留着的会话才是重发闸的续跑原料。 */
+      if (ok && S._runSession) delete S._runSession[runKey];
       if (ok) resolve(val);
       else reject(val instanceof Error ? val : new Error(String(val || "")));
       /* 轮次封口：异步收口账本（等改前正文入完库 → rollbackDrain 补收迟到帧 → 落盘）。
@@ -1841,6 +2385,19 @@ function dshRunTask(input, opts) {
           if (settled) return;
           /* 任何业务事件（含 canvas / db 工具回执）都刷新看门狗的活动时间戳 */
           lastActivity = Date.now();
+          /* 断点续跑的原料：网关在起真实轮之前就把本轮 dsh session id 报回来
+             （session 帧，运行时自行改铸 id 时还会再报一次），done / error 上各带
+             一份兜底 —— 拿到它，这一轮失败后才有可能接着写而不是从头再烧一遍。
+             本轮成功结束时在 finish 里清掉这个键。 */
+          if (msg.type === "session") {
+            captureRunSession(msg.data && msg.data.sessionId);
+          } else if (
+            (msg.type === "done" || msg.type === "error") &&
+            msg.data &&
+            msg.data.sessionId
+          ) {
+            captureRunSession(msg.data.sessionId);
+          }
           if (msg.type === "canvas") {
             /* 把这一轮的 runKey 与帧上的 sessionId 透传给宿主：确认框据此登记归属，
                本轮结束 / 被终止时才能自动撤框（见 app-nodes.js canvasConfirm*） */
@@ -1853,6 +2410,18 @@ function dshRunTask(input, opts) {
           }
           if (msg.type === "db") {
             handleDbToolEvent(msg.data || {}, opts.node, boundWf);
+            return;
+          }
+          if (msg.type === "tool-run") {
+            /* 工具节点 func call：宿主执行节点内部图并回执结果；任何失败都以
+               错误文本回执（会话不中断），见 app-tools.js handleToolRunEvent */
+            try {
+              handleToolRunEvent(msg.data || {}, {
+                runKey,
+                wf: S.wf,
+                toolDescs: (S._runToolDescs && S._runToolDescs[runKey]) || {},
+              });
+            } catch (_) {}
             return;
           }
           if (msg.type === "error" && msg.data && msg.data.message) seenError = msg.data.message;
@@ -2015,6 +2584,30 @@ function refreshLiveDshOutTools(node) {
 /* 节点智能运行的流式事件:右侧 Output + 已打开的关联智能会话同步刷新 */
 function onDshNodeEvent(node, attemptT, type, data) {
   if (!node) return;
+  /* 出错自动重发（dshRunTask 触发 retry 事件 · 需求「429 不跳过下一个任务」）：
+     清不清残文看 resumed ——
+     · resumed=true（续写）：新内容接在**同一条逻辑轮次**后面，已显示的部分正文 /
+       工具清单 / 思考槽一律保留，这里什么都不清（清了等于把已经说出去的话抹掉）；
+     · resumed=false（整轮重发）：上一失败轮的部分正文 / ⚠ 错误行 / 思考槽先清空，
+       重发那一轮从零流式，不会把失败轮内容叠两遍；节点工具清单由 dshRunOnce 自行重置 */
+  if (type === "retry") {
+    if (data && data.resumed) return;
+    node._pendingAnswer = "";
+    if (S.thinking) {
+      if (!S.thinking[node.id]) S.thinking[node.id] = [];
+      S.thinking[node.id][attemptT || 0] = "";
+    }
+    const el = document.getElementById("dsh-out-stream-" + node.id);
+    if (el) {
+      el.classList.add("n-empty");
+      el.textContent = "";
+    }
+    const nel = document.getElementById("agent-node-stream-" + node.id);
+    if (nel) nel.textContent = "";
+    autoFitOutputHeight(node);
+    scrollAgentConv(node);
+    return;
+  }
   /* 思考流只装 reasoning：工具调用走 S.nodeTools 与运行轨迹的 tool 段，
      不再把「🔧 工具名」混进思考文本 */
   if (type === "reasoning" && data.text)
@@ -2622,9 +3215,21 @@ function renderIxPanel() {
             cb.name = qGroup;
             cb.value = o.label;
             cb.dataset.qid = q.id;
+            /* 选项做成「勾选框 + 两行文字列」：第二行显示 description（一句话理由）。
+               原来理由只挂在 title 上，鼠标不悬停就看不到 —— 需求拷问（grill-me）
+               整轮的推荐依据全指望这一句，看不到等于没问。 */
+            const txt = document.createElement("span");
+            txt.className = "ix-opt-label";
+            txt.textContent = o.label;
+            if (o.description) {
+              const d = document.createElement("span");
+              d.className = "ix-opt-desc";
+              d.textContent = o.description;
+              txt.appendChild(d);
+              lab.title = o.description;
+            }
             lab.appendChild(cb);
-            lab.appendChild(document.createTextNode(o.label));
-            if (o.description) lab.title = o.description;
+            lab.appendChild(txt);
             ol.appendChild(lab);
           }
           card.appendChild(ol);

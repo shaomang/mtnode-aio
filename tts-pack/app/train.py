@@ -1249,7 +1249,7 @@ def _norm_train_opts(opts: dict[str, Any] | None) -> dict[str, Any]:
     mode:      fresh|retrain|重新训练 -> fresh ；continue|resume|继续迭代 -> continue
                 其它（含 auto）-> auto（有模型就继续迭代，没有就全新训练）
     reuseData: 是否复用已整理好的音频/文字/特征（默认 True）
-    dither:    是否对低带宽语料做高频空带填充（默认 False；缓解电流音的缓解手段）
+    dither:    是否对低带宽语料做高频空带填充（默认开启，与训练面板一致；缓解电流音的缓解手段）
     s1Epochs:  fresh=总轮数 / continue=在已完成轮数上追加的轮数
     s2Epochs:  同上
     """
@@ -1270,7 +1270,12 @@ def _norm_train_opts(opts: dict[str, Any] | None) -> dict[str, Any]:
     if rd is None:
         rd = o.get("reusePrep")
     o["reuseData"] = True if rd is None else bool(rd)
-    o["dither"] = True if o.get("dither") in (True, 1, "1", "true", "True", "on") else False
+    dh = o.get("dither")
+    if dh is None:
+        dh = True  # 缺省即开启，与训练面板勾选态和 server.py 的 dither: bool = True 保持一致
+    elif isinstance(dh, str):
+        dh = dh.strip().lower() not in ("false", "0", "off", "no", "")
+    o["dither"] = bool(dh)
 
     def _ep(k: str) -> int | None:
         v = o.get(k)
@@ -2454,11 +2459,14 @@ def _run_train(slug: str, opts: dict[str, Any] | None = None) -> None:
                 _convert_to_wav(src, raw)
                 raws.append(raw)
 
-            # 1a) 可选高频空带填充（缓解电流音；默认关，勾选才启用）。
+            # 1a) 可选高频空带填充（缓解电流音；默认开启，面板取消勾选才关闭）。
             # 只改 raw（32k mono），切分出的每段 clip 都带填充效果；且 raw 内容
             # 变了 -> 音频指纹变 -> 复用判定自然失效，重训即重新整理，无需手动删数据。
+            # reuseData 命中（沿用已整理音频）时走不到这一分支，本步不执行——此时是否
+            # 已填充取决于上次整理时的设置。raw 每次重新整理都重新生成，_dither_highband
+            # 就地填充且填充后 99% 能量截止上升，二次运行自动跳过，幂等安全。
             dither_done = 0
-            if o.get("dither"):
+            if opts.get("dither"):
                 _update(m, "audio", "高频空带填充", 7.1, "检测并填充低带宽音频…")
                 for raw in raws:
                     if _dither_highband(raw):

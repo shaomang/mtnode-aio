@@ -58,15 +58,6 @@
   background: rgba(255, 143, 46, .12);
 }
 
-.chat-agent-row {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border-top: 1px dashed var(--bd);
-  padding-top: 6px
-}
-
 .mini-toggle {
   display: flex;
   align-items: center;
@@ -96,12 +87,6 @@
 
 .agent-ws:focus {
   border-color: var(--cyan)
-}
-
-.chat-live {
-  background: #eef4ff;
-  max-height: 240px;
-  overflow: auto
 }
 
 .agent-task-input {
@@ -1153,7 +1138,7 @@ button.mini.btn-sq.tpl-ico {
   min-width: 0
 }
 
-/* ── 近全屏 DSH 插件对话框 ── */
+/* ── 近全屏「扩展能力管理」对话框（DSH 插件 / 技能 / MCP 共用一套样式）── */
 .dsh-plugins-dlg {
   z-index: 2350;
   padding: 10px
@@ -1189,6 +1174,96 @@ button.mini.btn-sq.tpl-ico {
   flex: 1;
   min-width: 160px;
   margin: 0
+}
+
+/* ── 扩展能力对话框：分类标签条 / 工具条 / 表单 ── */
+.dsh-ext-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.dsh-ext-tab {
+  background: rgba(0, 0, 0, .25);
+  color: var(--muted);
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  letter-spacing: .5px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.dsh-ext-tab:hover {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+}
+
+.dsh-ext-tab.on {
+  color: var(--ink);
+  background: rgba(56, 214, 255, .1);
+  border: 1px solid var(--cyan);
+}
+
+.dsh-ext-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px dashed var(--bd2);
+}
+
+.dsh-ext-toolbar .mini {
+  flex: none;
+}
+
+.dsh-ext-install {
+  width: auto;
+  flex: 1;
+  min-width: 140px;
+  max-width: 420px;
+  margin: 0
+}
+
+.dsh-ext-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dsh-ext-count {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.dsh-ext-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dsh-ext-field .dsh-plugin-info-label {
+  margin-top: 4px;
+}
+
+.dsh-skill-body summary {
+  font-size: 10.5px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.dsh-skill-body summary:hover {
+  color: var(--cyan2);
+}
+
+.dsh-skill-body .dsh-plugin-detail {
+  max-height: 220px;
 }
 
 .dsh-plugins-main {
@@ -3254,6 +3329,21 @@ button.mini.btn-sq.tpl-ico {
   font-size: 12px;
   color: var(--ink);
   cursor: pointer
+}
+
+.ix-opt-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0
+}
+
+/* 选项第二行：模型给的一句话理由（options[].description）。
+   以前只挂在 title 上，不悬停就看不到，需求拷问的「为什么推荐这项」等于没显示。 */
+.ix-opt-desc {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted)
 }
 
 .ix-opt input {

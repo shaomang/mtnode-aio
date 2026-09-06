@@ -23,7 +23,7 @@
       font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
       height: 100%;
     }
-    .wrap { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; }
+    .wrap { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; overflow-y: auto; overflow-x: hidden; }
     h1 { font-size: 15px; margin: 0; font-weight: 600; }
     .sub { color: var(--muted); font-size: 12px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -82,12 +82,35 @@
       display: none; align-items: center; justify-content: center; z-index: 20;
     }
     .modal-bg.show { display: flex; }
+    .modal-bg[hidden] { display: none !important; }
     .modal {
       width: min(380px, 92vw); max-height: 80vh; overflow: auto;
       background: #1a2030; border: 1px solid var(--border); border-radius: 12px;
       padding: 14px; display: flex; flex-direction: column; gap: 10px;
     }
     .modal ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+    /* 自建工作流库 */
+    .wf-item {
+      background: #141926; border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+    }
+    .wf-item .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .wf-item .title { font-weight: 600; word-break: break-all; }
+    .wf-item .ops { display: flex; gap: 6px; flex-wrap: wrap; }
+    .wf-item .ops button { padding: 3px 8px; font-size: 12px; }
+    .badge.ok { color: var(--ok); border-color: #2f6b4e; }
+    .badge.warn { color: var(--warn); border-color: #6b5418; }
+    .wf-paste {
+      width: 100%; height: 180px; resize: vertical; background: #0c0f14;
+      color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px; font: 11px/1.4 ui-monospace, Consolas, monospace;
+    }
+    .wf-input {
+      width: 100%; padding: 7px 10px; border-radius: 8px; background: #0c0f14;
+      border: 1px solid var(--border); color: var(--text);
+    }
+    .wf-empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+    #wfModal .modal { width: min(520px, 94vw); }
   </style>
 </head>
 <body>
@@ -128,6 +151,21 @@
       <div class="bar util" id="gpuUtilBar"><i></i></div>
     </div>
 
+    <div class="card" id="wfCard">
+      <div class="row">
+        <div class="meta">自建工作流库 <span id="wfStatsTxt" style="color:var(--muted)"></span></div>
+        <div style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap">
+          <button id="btnWfImport" title="导入 ComfyUI 导出的工作流 JSON（API 或 UI 格式均可，自动识别转换）">导入 JSON</button>
+          <button id="btnWfPaste" title="把工作流 JSON 文本粘贴进来导入">粘贴导入</button>
+          <button id="btnWfTemplate" title="把内置 FL2VA / R2V 图另存为库里的自定义工作流，可自由编辑">内置图另存</button>
+        </div>
+      </div>
+      <div class="meta" style="color:var(--muted)">
+        画布 video_gen 节点选「自建工作流」即可使用；参数映射在节点面板里编辑。格式自动识别：API 格式（{节点id:{class_type,inputs}}）或 UI 格式（nodes/links）。
+      </div>
+      <div id="wfList" style="display:flex; flex-direction:column; gap:6px; max-height:300px; overflow:auto"></div>
+    </div>
+
     <div class="card" id="launchOptsCard">
       <div class="meta">24G 启动优化（默认开 · 下次启动后端生效）</div>
       <label class="meta"><input type="checkbox" id="optCpuVae" checked /> CPU VAE（减轻解码峰值）</label>
@@ -146,7 +184,7 @@
     </div>
   </div>
 
-  <div class="modal-bg" id="modal">
+  <div class="modal-bg" id="modal" hidden>
     <div class="modal">
       <h1>确认卸载</h1>
       <div class="warn">将删除下列已安装内容（不可恢复）。默认保留 output/ 与 ComfyUI/output/。</div>
@@ -158,6 +196,23 @@
       </div>
     </div>
   </div>
+
+  <div class="modal-bg" id="wfModal" hidden>
+    <div class="modal">
+      <h1>粘贴工作流 JSON</h1>
+      <div class="meta">
+        在 ComfyUI 里用「导出 (API)」或开发模式「Save (API Format)」得到 API JSON；直接粘贴 UI 格式（nodes/links）也会自动转换。重复名称会覆盖并提示。
+      </div>
+      <input class="wf-input" id="wfPasteTitle" placeholder="工作流名称（留空自动取默认 / 文件名）" />
+      <textarea class="wf-paste" id="wfPasteText" spellcheck="false" placeholder='{"1":{"class_type":"CLIPTextEncode","inputs":{"text":"...","clip":["4",0]}},…}'></textarea>
+      <div class="row">
+        <button id="btnWfPasteCancel">取消</button>
+        <button class="primary" id="btnWfPasteOk">导入</button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="wfFileInput" accept=".json,application/json" style="display:none" />
 
   <script src="ui.js"></script>
 </body>

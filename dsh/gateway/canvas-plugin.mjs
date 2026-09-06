@@ -22,20 +22,68 @@
 import { createConnection } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { hiddenToolsFromEnv } from './tool-visibility.mjs'
 
 export const name = 'mtnode-canvas'
 export const inject = ['tools']
 
 const KINDS = [
-  'input_text', 'input_image', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'video_gen', 'remotion',
+  'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'tts_gen', 'video_gen', 'remotion',
   'save', 'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
-  'agent_task', 'task', 'super', 'db_replica', 'chat',
+  'agent_task', 'task', 'super', 'db_replica',
   'control', 'judge', 'net_recv', 'net_send', 'execute',
+  /* 工具节点（＝super + tool:true 变体）/ 函数节点：右键「工具」菜单的两种计算节点 */
+  'tool', 'function',
 ]
 
 const NODE_LOCK =
-  'CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text/chat with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\n'
+  'CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\n'
+
+/* ── 按运行裁剪工具负载（gateway 在 spawn 时注入的可见集标记）──
+ * 每一次模型调用都把全部工具定义重发一遍（优化前实测：固定前缀 tools ≈ 98K 字符、空会话
+ * 首步 32K token，且每一步都付），所以「这次运行根本用不上的工具」就该整个不注册。
+ * 本文件里唯一判定点是 apply() 内的 register()（两个丢弃集合 + 一份规范隐藏名单）。
+ * 取舍与实测见 docs/codex-agent-benchmark.md「本轮落地：Token 开销」。
+ * 三个标记（lean: / nc: / hx:）都进 runtime key（gateway.getRuntime）：换档即冷起自己的
+ * 运行时，绝不会出现「同一台运行时两种可见集」互相打爆提示缓存。名单真源见 tool-visibility.mjs。 */
+
+/** 设置里的「精简工具负载」开关 → env（gateway.handleRun 按 run 参数注入）。 */
+const LEAN_ENV = 'MTNODE_LEAN_TOOLS'
+/** 画布智能节点（nodeLock）运行 → env：宿主本来就拒收画布工具，定义纯属白发。 */
+const NO_CANVAS_ENV = 'MTNODE_NO_CANVAS'
+
+/** env 真值口径（两个标记共用）：1 / on / true / yes，其余（缺席、空、非法）= 关。 */
+function envFlagOn(key) {
+  let raw = ''
+  try {
+    raw = String(process.env[key] || '').trim().toLowerCase()
+  } catch {
+    return false
+  }
+  return raw === '1' || raw === 'on' || raw === 'true' || raw === 'yes'
+}
+
+/* 开精简负载时不注册的「可选能力」工具：
+   · mtnode_app    3,177 字符 —— 改名 / 选中 / 撤销重做 / 删除画布 / DSH 插件管理，
+                    用户在界面里自己就能做，却每次模型调用都要跟着重发一遍；
+   · mtnode_vision 1,544 字符 —— 首次调用必弹窗授权，多数会话整轮用不到。
+   画布主干（canvas_get / canvas_edit）与 mtnode_db（接了数据库副本时事实的唯一真源）
+   任何档位都保留。合计省约 4.7K 字符 ≈ 1.5K token/步。 */
+const LEAN_DROP_WHEN_LEAN = new Set(['mtnode_app', 'mtnode_vision'])
+
+/* 画布智能节点（agent_task / proc_text 智能模式）运行时不注册的画布工具：宿主侧
+   applyCanvasOp / handleCanvasEvent 对 get / edit / app 一律直接拒绝
+   （isCanvasNodeAgentRun），把这约 25.6K 字符（三件套实测）发过去只换来一次次撞不存在的工具。
+   mtnode_vision 保留 —— 智能节点人设明确允许它识图（agentNodeCapabilityNote）。 */
+const NODE_LOCK_DROP_CANVAS = new Set([
+  'mtnode_canvas_get',
+  'mtnode_canvas_edit',
+  'mtnode_app',
+])
+
+const leanToolsOn = () => envFlagOn(LEAN_ENV)
+const noCanvasToolsOn = () => envFlagOn(NO_CANVAS_ENV)
 
 // 开发节点「功能色卡」(functional color card): one frame colour per functional
 // category, so a project canvas can be read by colour. The single source of
@@ -57,23 +105,22 @@ const DEV_FUNC_COLORS_SHORT =
 
 const GET_DESC =
   NODE_LOCK +
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dev/devPath/devStatus/devKind/devColor/devModel/devProvider/devFiles (+devFilesAuto when the list is only the automatic fallback) for DEV super nodes, dbNodeId/dbName/compiledAt for db_replica, execPath/execIcon/execColor for execute nodes), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires (each: from/to titles, and for UML-style relationship wires rel:true + relLabel + relArrow), groups, camera, UI view, imageSizes, markColors, devFuncColors (the DEV 功能色卡 / functional colour card), and workflows. Node body fields (input_text.text, prompt, task, goal) default to FULL text (with bodyLimit they are truncated); *Len fields report character counts only.\n\n' +
+  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dev/devPath/devStatus/devKind/devColor/devModel/devProvider/devPreset/devEffort/devFiles (+devFilesAuto when the list is only the automatic fallback) for DEV super nodes, dbNodeId/dbName/compiledAt for db_replica, execPath/execIcon/execColor for execute nodes, tool + toolConfig{name,description,inputs,outputs} for 工具 nodes, and fnName/description/jscode/jscodeLen/inputs/outputs for 函数 nodes — for both of those the params ARE the ports, and every input param carries kind (text | image) plus the list flag — their semantics live in the mtnode_canvas_edit param table, and the declared type is what decides wire compatibility, port/wire colouring and downstream auto-selection (e.g. a save node flipping to .png)), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires (each: from/to titles, and for UML-style relationship wires rel:true + relLabel + relArrow), groups, camera, UI view, imageSizes, markColors, devFuncColors (the DEV 功能色卡 / functional colour card), and workflows. Node body fields (input_text.text, prompt, task, goal) are NOT included by default: detail defaults to "standard", which reports only *Len character counts for them — pass detail:"full" (ideally together with ids:[...]) when you truly need complete text; bodyLimit then truncates whatever bodies you asked for.\n\n' +
   'DEV 功能色卡 (functional colour card for dev nodes — also returned as the devFuncColors list [{key,zh,en,hex}]): ' +
   DEV_FUNC_COLORS_TABLE +
   '. New dev blocks are auto-coloured from this card at creation (title + note keyword match), so a devKind=module block normally needs no devColor from you; when you DO set it, pick the card entry matching the block\'s function — no need to ask the user before colouring (the card is the default), and the user can override any colour later with the HSV swatch button in the node header. file / class / interface / enum keep their element-type colour (the card does not apply to them).\n\n' +
-  'GRANULARITY (use it to save tokens — every node\'s full config is expensive):\n' +
+  'GRANULARITY (use it to save tokens — every node\'s full config is expensive; the result also carries a sizeHint line telling you how many characters this call cost):\n' +
   '- detail "minimal": per node only id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags. Fastest orientation.\n' +
-  '- detail "standard": minimal + all config fields (provider/model/size/savePath/waitPath/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, NO body text.\n' +
-  '- detail "full" (DEFAULT): everything, including full body text, rows, files, steps.\n' +
+  '- detail "standard" (DEFAULT): minimal + all config fields (provider/model/size/savePath/waitPath/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only (textLen/promptLen/taskLen/goalLen/jscodeLen), NO body text.\n' +
+  '- detail "full": everything, including full body text, rows, files, steps. You must ask for it explicitly — best with ids:["标题A"] so only the nodes you actually need come back heavy.\n' +
   '- ids: [nodeIdOrTitle…] — return ONLY those nodes (wires restricted to them). Use it to fetch one node\'s full config cheaply (e.g. ids:["标题A"] + detail:"full").\n' +
   '- bodies: false — drop body text at any detail (lengths stay); true forces inclusion.\n' +
   '- bodyLimit: N — truncate each body value to N chars (textLen stays true length).\n' +
   '- sections: ["nodes","marks","wires","groups","taskTree","superTree","tagCatalog","workflows","selection"] — restrict these heavy top-level blocks to the listed ones (default: all). Small context (workflow/view/cam/imageSizes/kinds/markColors/devFuncColors/taskFocus/superFocus/assistScope/scopeNote) is always included.\n' +
-  'PREFER detail:"standard" or "minimal", ids and sections for routine structure/config reads; use detail:"full" only when you truly need complete bodies/rows.\n\n' +
-  'When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Call this before editing. Complex requirements: FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId. To reduce clutter, pack clusters into kind "super" (parentSuperId); creating/packing super nodes is gated by tool canvas_super (often ask/approve). Use kind "judge" (fromIndex 0=YES, 1=NO) to branch. Use kind "timer" for schedule/cron triggers that arm and fire outgoing targets. Prefer building human-editable layouts with createMarks (zone boxes + labels) and control nodes; put user-editable/operable nodes toward the top of the canvas. @ references: (1) wired source @Title in prompt/task; (2) global-broadcast sources need kind "global" wired to inputs AND consumer globalRefs:true AND @Title in prompt/task; (3) @TagName pulls ALL content from every node carrying that tag (set tags on nodes; tagCatalog lists names). Node titles must be unique for @Title.'
+  'When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Always call this before editing; 建图 / 连线 / 排版的硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在 mtnode_canvas_edit 的说明里，不在此重复。'
 
 const KIND_GUIDE =
-  'Available create.kind values: input_text / input_image / input_file (输入节点) · db_table (数据库建表) · proc_text / proc_image (文本/图像处理) · agent_task / chat (智能节点) · save / save_text / save_image (保存) · split / merge (批次拆分/合并) · global (全局广播) · control / judge / task (控制/判断/任务) · wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex (等待/定时/延时/序列/闸门/分发/计数/互斥) · super / db_replica (超级节点 / 数据库副本) · music_gen / video_gen / remotion (音乐/视频生成) · net_recv / net_send (网络接收 / 网络发送) · execute (执行节点：绑定 .exe/.bat/.cmd 或任何系统可打开的文件，一键启动；execPath 存绝对路径，execIcon / execColor 自定义图标与 body 颜色便于快速定位；节点上点两次播放键或双击即执行). net_recv listens on a port/channel and forwards incoming text to downstream; net_send pushes its data-input text to a target host:port — both support tcp/udp, channel multiplexing and per-node host/port. Database nodes: input_file imports local files, db_table builds a table from them (agent extracts metadata, user confirms form), a kind "super" with db:true holds facts and compiles into a db_replica that smart nodes query with mtnode_db; you may also create a db_replica directly and set dbNodeId/dbName to point at an existing database super node. Dev nodes (开发节点): a kind "super" with dev:true is a project module block — note must be TWO sections (REQUIRED, ≤200 chars): 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, and never put technical details into 【功能】; devPath = project root, nest via parentSuperId and refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer), and devKind=module blocks carry a FUNCTION colour from the DEV 功能色卡 (functional colour card, auto-applied at creation — see "DEV 功能色卡" below); its body 建议 / 开发 / 细化 buttons all confirm via a dialog first: 建议 has the AI READ-only inspect the real project code plus the dev progress of this module and return exactly 4 next-step options the user can multi-select (with a free-text supplement), and the 开发 button in the same dialog then starts the dev session of that module with the chosen plan; 开发 asks what to build this round; 细化 confirms whether to expand children and at what depth (expand this layer only, or drill all the way down until nothing can be split further). Every confirmed 开发 / 细化 runs in a NEW session bound to that module. '
+  'create.kind 速查：输入 input_text / input_image / input_audio / input_video / input_file（媒体输入由用户自己选文件，数据端子值 = file:/// URL，可直接连给需要媒体参考的端子）· 处理 proc_text / proc_image / agent_task（智能节点）/ db_table · 生成 music_gen / tts_gen / video_gen / remotion · 保存 save（旧别名 save_text / save_image）· 批次 split / merge · 控制 control / judge / task · 节拍等待 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute（执行节点绑 execPath，无数据端子）· 计算 tool / function（参数即端子）。'
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
@@ -92,664 +139,207 @@ Needs user confirmation (UI will prompt; may be rejected):
 
 For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
-const EDIT_DESC = NODE_LOCK + `Create, update, connect, disconnect, remove, group, and auto-layout nodes on the CURRENT MTNode canvas — and createMarks / updateMarks / removeMarks for decorative drawings (text / box / arrow). Use this when the user asks you to build or rearrange a workflow. When invoked from the global assistant sidebar or the fullscreen agent-session view, each edit is confirmed by the user before applying; if the user rejects an agent-session edit, the run stops immediately.
+const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图。标题必须唯一；alias 只在本调用内有效（connect / update / refs 用它），不是画布 id。返回只给「计数 + 别名 / 标题 + warnings」的改动回执，不回整图快照——要看改完的样子再用 mtnode_canvas_get（detail:"minimal" 或 ids:[...]）。
 
 ${KIND_GUIDE}
 
-Typical pattern for a COMPLEX requirement (planning first):
-1. Optionally mtnode_canvas_get first (see taskTree + current-scope nodes).
-2. One mtnode_canvas_edit that creates kind "task" nodes as the PLAN. Each task auto-has a pinned start + success end + fail end (do not delete). Put implementation INSIDE via parentTaskId.
-3. Wire control flow: start → work/sub-tasks/judge → endSuccess or endFail. kind "judge" has TWO outputs: fromIndex 0 = YES (goal met), fromIndex 1 = NO. ▶ on a task fires start and walks the control graph; status is success/fail by which end is reached.
-4. For a SMALL single-pass pipeline (few nodes), you may still create input/proc/save/control directly without a task wrapper.
+硬规则（误接线主要来源）：
+- task 自带固定 start / endSuccess / endFail（勿删）：活儿非平凡先建 task 当计划，实现用 parentTaskId 放进去，控制线必须从 start 走到成功或失败终点；judge 只有两个输出：fromIndex 0 = YES、1 = NO。
+- super 用 parentSuperId 打包（需 canvas_super）：对外只暴露边界输入/输出端子，连线要从 super 的输入端子进子节点、再由子节点连回它的输出端子；跨 super / 跨层级接通用 superConnect。
+- tool / function 节点：参数表就是端子表——输入端子 0 = 控制入、1..N = 按顺序的各入参；输出端子 0..M-1 = 各出参、末位 = 控制出。fromIndex / toIndex 必须按这份表来数（目标的 toIndex 0 = 控制入）；数组端子看参数的 list 说明；传 inputs / outputs = 整体替换该表，删参数会让已连的端子改指别的参数，改完提醒用户复核连线。
+- @引用：连线源在 prompt/task 里写 @标题；引用全局广播须同时 (1) 源接进 kind "global"、(2) 消费节点 globalRefs:true、(3) prompt/task 里 @源标题——只有被明文 @ 命中的才注入；@标签名 注入带该标签的全部节点内容。
+- 智能节点（agent_task、开了 agent 的 proc_text）自己会写文件：其后绝不接 save（会把会话噪声落盘），也别当数据输入连给别人——让它写文档，再用 wait_file 以控制线挡住下游（它无输入端子、不输出值，别往它连线），后续节点自己读约定路径。
+- save 只接在普通（非智能）proc_text / proc_image 之后；music_gen / tts_gen / video_gen 由节点自己的 outputPath 直接写出音/视频，不配 save；remotion 例外：无 outputPath，mp4 由下游 save 落盘（.mp4 结尾）。
+- proc_image 每次运行只出 1 张图：要多图就一条批量项出一张、或用多个 proc_image 节点、或 attempts N。
+- batchMode "batch" = 每条一次运行、每次只看该条：严禁把整批 N 条又全部塞进每次运行（≈N² 次调用）；只处理其中一项先接 split，要一次看全部才用 "agg"。逐条批量优先普通 proc_text / proc_image（智能节点只用于 agg）。细则见技能 mtnode-canvas-batch-safety。
+- 数据库：super + db:true 存事实、用户编译（⚙）产出 db_replica；接到副本的智能节点一切事实走 mtnode_db（纪律见该工具说明与技能 mtnode-db-facts），禁止凭记忆。
+- 开发节点（super + dev:true）：note 两段 ≤200 字（【功能】非技术设计 + 【实现】技术梗概）、devPath = 项目根、parentSuperId 逐层嵌套按深度细化、元素间关系用 rel:true 关系线表达、按 DEV 功能色卡上色；建块与细化完整规范见技能 mtnode-dev-architect。
+- 排版：用户要编辑或点 ▶ 的节点放上方（较小 y）。完整规范（createMarks box + around 分区、control 直连每个该一键重跑的节点且控制流不走数据线、不要建 "clear"）见技能 mtnode-canvas-layout-ux。
+- 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。`
 
-Typical pattern for a small user-editable pipeline:
-1. Optionally mtnode_canvas_get first.
-2. One mtnode_canvas_edit that creates:
-   - input / proc nodes for the real work (and save_* only after ordinary non-agent proc nodes — never after agent_task / agent:true)
-   - control nodes (kind "control", ctrlAction "run") wired DIRECTLY to every node the user should re-run in one click (control flow does NOT travel over data wires — never create a ctrlAction "clear" node)
-   - createMarks: large box zones (+ label) separating areas such as 编辑区 / 说明 / 处理区 / 输出区; optional text marks for short workflow instructions
-   then connect left-to-right, layout true (marks with around:[aliases] wrap nodes AFTER layout).
-Prefer agent_task when a step must READ existing files and merge; prefer proc_text for single-pass generation or per-item batch; save_* writes outputs for re-runs of ordinary (non-agent) proc nodes.
-CRITICAL — for anything more than a handful of nodes, START with task nodes (kind "task") as the plan. Implementation goes INSIDE (parentTaskId) and MUST be wired from the pinned start to a success/fail end. Use kind "judge" to branch YES/NO. Do not flatten a complex job into a messy mixed graph.
-CRITICAL — to keep the canvas tidy, pack related clusters into kind "super" (update parentSuperId on children, or create super then set parentSuperId). Super nodes expose edge I/O ports (no inner input/output port nodes). Inside, wire from the super node's input ports into children, and from children back to the super node's output ports. Optionally set subFolder so new relative save paths default under that folder. Creating or packing super nodes requires canvas_super (often user approval). Prefer supers for large reusable subgraphs; use tasks for control-flow plans.
-DATABASE super nodes: create a kind "super" with db:true (subFolder holds fact files; put facts as inner input_text nodes). The user compiles it (⚙) which produces a db_replica child-top node; when a smart node (agent_task / proc_text agent) is wired to that replica it can query the facts with the mtnode_db tool (list/query/get/calc) — facts then MUST come from that tool, never from model memory.
-DEV nodes (开发节点 / 功能块 = software project architecture): create a kind "super" with dev:true, note must be TWO sections (REQUIRED, ≤200 chars): 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, and never put technical details into 【功能】; devPath = project root on the top block, devStatus pending/wip/done. Element hierarchy via devKind: module (功能块) → file (source file) → class / interface / enum (class-diagram elements); each type renders with a distinct frame color (module=green, file=blue, class=orange, interface=purple, enum=pink) — and module blocks are recoloured by FUNCTION from the DEV 功能色卡 below, which is the colour you should set on them. Dev nodes nest via parentSuperId — refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer), and ALWAYS propose the outline of the planned descendants and get the user's confirmation BEFORE creating them (细化 flow). Express relations between elements with RELATIONSHIP wires: connect entries with rel:true (+ relLabel text, relArrow forward/backward/both/none) — plain STRAIGHT UML-style lines (never elbow/orthogonal routing) that never carry data; when the user clicks a node its relationship lines light up while the rest fade back. Relation lines ARE part of layout now: auto layout / 「按关系线整理内部排版」 layers blocks along the arrow direction (cycle-closing lines degrade to soft ordering-only constraints) and the engine fans the anchors out along each block edge and slides near-coincident straight lines apart, so DO NOT hand-place dev blocks in a 5-per-row grid — just create them (no x/y) and let layout do its job. Expanded dev shells grow to fit their children automatically. Each dev node body offers 建议 / 开发 / 细化 buttons that all open a confirmation dialog first: 建议 has the AI do a READ-ONLY investigation of the real project code and the dev progress of this module, then return exactly 4 next-step options in the same dialog where the user multi-selects and may add a supplement — the 开发 button in that dialog then runs development with the picked plan (so you do not need to invent this yourself; point the user at 建议 when they ask "what next"). 开发 shows the module's title / overview / status and asks the user what to build or iterate this round; 细化 asks whether this element should be expanded further and at what depth — expand this layer only, or drill all the way down until nothing can be split further (the dialog also states when refining is unnecessary or impossible). Every confirmed action runs in a NEW session bound to that module (workspace = project root, titled 开发 · 模块名 / 细化 · 模块名); the node keeps its session history. When refining, first report the outline of the whole planned multi-layer tree and get the user's confirmation BEFORE creating any node (ONE confirmation covers the whole depth, then create the blocks top-down layer by layer in the bound session; a class / interface / enum is already finest-grained — say so instead of creating nodes). Two per-block appearance/behaviour fields are patchable too: devColor (#rrggbb frame + glow, empty = element-type default) and devModel (+ optional devProvider) which pins the Agent model used by this block's 建议 read-only run and by its 开发 / 细化 bound sessions — a child dev block with no pick of its own inherits the nearest ancestor's devModel, so to apply one model project-wide set it on the top block only; patch devModel to an empty string to fall back to the app default. devFiles (string[] · up to 10 paths RELATIVE to the project root) is that block's 核心文件列表 — fill it in as you create each dev block, and patch it back at the END of every 开发 / 细化 / 建议 run of that block (the node's 「文件」 button and mtnode_canvas_get both read only this list), otherwise the list stays fake/empty forever; pass [] to clear it. The outermost (project) dev block lists NO core files — never pass devFiles there. DEV 功能色卡 (functional colour card — colour devKind=module blocks BY FUNCTION so the canvas reads at a glance; same list is returned by mtnode_canvas_get as devFuncColors): ${DEV_FUNC_COLORS_TABLE}. New dev blocks are auto-coloured from this card at creation (title + note keyword match, only when devColor was left empty), so: pick the card entry that fits the block's function when you set devColor explicitly, never invent one-off hexes, do NOT ask the user before colouring (just apply the card), and leave the colour alone when the user already hand-picked one in the HSV swatch button of the node header — a hand-picked devColor always wins and auto-colouring will not touch it. file / class / interface / enum keep their element-type colours (the card is module-only). When uncertain (include a plugin? tech choice?), ASK the user first.
-CRITICAL — do NOT create save after agent_task or proc_text with agent:true: those smart nodes can write files themselves; a save node would dump chat/task transcript junk to disk. Use save only after ordinary proc_text / proc_image (agent off). Old aliases save_text / save_image still work and become a unified save node.
-CRITICAL — do NOT create save after music_gen / video_gen: they write audio/video via the node's own outputPath (required). No paired/bound save node. remotion is DIFFERENT: it has NO outputPath — the rendered mp4 is picked up by a downstream save node, so DO wire a save node (savePath ending .mp4) after a remotion node. A control node (ctrlAction run) can start a remotion node when wired directly to it.
-CRITICAL — avoid wiring agent_task / proc_text(agent:true) as DATA inputs into other nodes: their outputs carry irrelevant session/transcript noise and often omit the key facts. Prefer file handoff: the smart node WRITES a document (md/yaml/json/…), then use wait_file (监视路径 / waitPath) as a CONTROL node wired OUT to downstream so they block until that file exists; wait_file has NO input ports and outputs NOTHING — later nodes READ the agreed path themselves. Do not wire anything into wait_file.
-wait_file: control-kind blocker with output only; polls waitPath (relative to workspace or absolute) every waitIntervalSec seconds (default 2) until the file exists, then unblocks downstream. No inputs, no data/path output; do not @引用 wait_file.
-kind "global": input-only rainbow node (no output ports). Wire text/image sources into it. To let a proc_text / proc_image / agent_task / judge @引用 those global-broadcast sources you MUST: (1) set globalRefs:true on that consumer (update/create), AND (2) write @SourceTitle inside prompt/task. globalRefs alone or @ alone is NOT enough. Only the global sources you actually @-mention get injected into that run — a globalRefs consumer whose prompt names none of them receives nothing. Do not wire control nodes into global.
-Tag @ references: assign tags:[...] on source nodes (tagCatalog in canvas_get). In prompt/task write @TagName to inject ALL text/image content from every tagged node (no wire needed). UI shows Tag refs in purple vs node refs in cyan.
-
-Layout & drawings (recommended whenever you build a non-trivial workflow):
-- CRITICAL UX: nodes the user must edit or operate (input_text / input_image, editable prompts, control run/clear buttons, split pickers) go toward the TOP of the canvas (smaller y). Put heavy processing / save / docs lower or further right so the first thing users see is what they can change and ▶ run.
-- Prefer a top band for 编辑区 + control nodes; processing and output zones below or to the right.
-- To RETIDY an existing canvas: mtnode_canvas_get first, inspect each node's and mark's x/y/w/h, then ONE mtnode_canvas_edit with layout:false and update/updateMarks setting explicit coordinates/sizes. Keep spacing comfortable and neat; re-wrap or move marks with their nodes.
-- Use createMarks with kind "box" and around:["alias1","alias2"] (plus label:"编辑区") so zone frames hug the nodes after auto-layout. pad defaults to 36.
-- Add kind "text" marks for titles / how-to notes the user can edit later (not wired; pure decoration).
-- Separate regions: editable inputs, documentation, processing, outputs — different box colors from markColors help.
-- Add at least one control node near the process zone: ctrlAction "run" wired to EACH node the user should ▶ re-run (data wires do not carry control flow), so the user can re-run without hunting nodes. Do not create ctrlAction "clear" nodes.
-- Do not rely only on groups for visibility — boxes + text remain useful — but DO put related nodes AND their zone marks into the same group so users can move/scale the whole section.
-
-Image reference nodes:
-- kind must be input_image (not "image").
-- Set imagePath to an absolute path on THIS machine. The app copies into workflow assets — do NOT ask the user to drag-and-drop when you know the path.
-- For several images on one node: batch:true and imagePaths:[...].
-
-Separate text processing from image→text (multimodal):
-- Keep vision/OCR on its own node; downstream pure-text nodes take that text, NOT raw images.
-
-Batch pipelines — CRITICAL (avoid N² token blow-ups):
-- batchMode "batch" = one run PER item. Each run must see ONLY that item's data — never the whole batch again.
-- FORBIDDEN: wiring a batch of N images/texts into a per-item proc_image/proc_text such that every run also receives all N items as refs/@mentions/extra wires. That yields ~N×N image/API calls and huge token waste.
-- FORBIDDEN: treating a batch source as if it were a single image while still leaving the node in batch mode (or listing every batch title inside one prompt and also running batch).
-- SAFE patterns:
-  1) One linear batch chain: input_batch → proc (batchMode batch) → save — each step aligned 1:1.
-  2) Need one item only (or before a heavy 文生图): insert a split node, pick the item, then wire the single output into proc_image — split breaks batch so downstream is NOT multiplied.
-  3) Need "see all items once": batchMode "agg" on that node only (single run), not batch+all-refs.
-- Prefer split when unsure. Prefer ordinary proc_text/proc_image for per-item batch; avoid agent_task / agent:true on long batch chains.
-- Aggregate mode (batchMode "agg"): smart/agent nodes are allowed (single run over all items).
-
-Image generation (proc_image / 文生图) — CRITICAL:
-- Each run produces EXACTLY ONE image. Never ask for multiple images in one prompt.
-- Need many images? One batch item → one image (batchMode batch), OR multiple proc_image nodes, OR attempts N — never "generate N images in one prompt" and never N² via batch×all-refs.
-- Set size from imageSizes (e.g. "2048x1360", "1280x1280", "auto").
-
-Change node model / provider:
-- API nodes: providerId + model. Agent nodes: provider + model.
-- Call mtnode_canvas_get first when unsure. Do not change model on a running node.
-
-Rules:
-- Titles must be unique. @Title: source wired into consumer OR into kind "global" (with consumer globalRefs:true + @Title in prompt/task). @TagName: all nodes with that tag (tags field); injects full content.
-- One edit call should create the whole subgraph. layout defaults true when create is non-empty.
-- Marks are created AFTER layout when around is used; absolute x/y also allowed (set layout false if you place everything yourself).
-- Never remove or overlap the node that is currently running this task.
-- After building, tell the user they can edit inputs / marks and use control ▶ to re-run.`
+/* 绘制（mark）字段表：createMarks 用这份表；updateMarks 与旧别名 marks 只指回它，不重复序列化。
+   around 的旧别名 nodes 仍被渲染层接受，但不再写进 schema。 */
+const MARK_PROPS = {
+  kind: { type: 'string', enum: ['text', 'box', 'arrow'], description: 'text 文字 · box 分区框 · arrow 箭头。' },
+  label: { type: 'string', description: 'box 上方的标题（title 同义）。' },
+  text: { type: 'string', description: 'text 标注正文。' },
+  around: { type: 'array', items: { type: 'string' }, description: '框住哪些节点（id / alias / 标题）：排版后 box 贴合它们再加 pad。' },
+  pad: { type: 'number', description: 'around 留白（默认 36）。' },
+  x: { type: 'number' },
+  y: { type: 'number' },
+  w: { type: 'number' },
+  h: { type: 'number' },
+  x2: { type: 'number', description: 'arrow 终点 x。' },
+  y2: { type: 'number', description: 'arrow 终点 y。' },
+  color: { type: 'string', description: '#rrggbb（取 canvas_get 的 markColors）。' },
+  fontSize: { type: 'number', description: '字号 10–48。' },
+  stroke: { type: 'number', description: '线宽 1–8。' },
+}
 
 const MARK_SPEC = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    alias: {
-      type: 'string',
-      description: 'Local name for this mark in the SAME call (for updateMarks / removeMarks).',
-    },
-    kind: {
-      type: 'string',
-      enum: ['text', 'box', 'arrow'],
-      description: 'Drawing type. box = zone frame; text = label/note; arrow = connector decoration.',
-    },
-    label: {
-      type: 'string',
-      description: 'When kind is box (or around implies box): also create a text title above the box.',
-    },
-    title: { type: 'string', description: 'Alias of label for box title text.' },
-    text: { type: 'string', description: 'text mark body / note content.' },
-    around: {
-      type: 'array',
-      items: { type: 'string' },
-      description:
-        'Node ids/aliases/titles to wrap. After layout, box (default) is sized to cover them + pad. Prefer this over guessing x/y.',
-    },
-    nodes: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'Same as around.',
-    },
-    pad: { type: 'number', description: 'Padding around wrapped nodes (default 36).' },
-    x: { type: 'number' },
-    y: { type: 'number' },
-    w: { type: 'number' },
-    h: { type: 'number' },
-    x2: { type: 'number', description: 'arrow end x' },
-    y2: { type: 'number', description: 'arrow end y' },
-    color: {
-      type: 'string',
-      description: 'Hex color; prefer values from markColors in canvas_get.',
-    },
-    fontSize: { type: 'number', description: 'text mark font size 10-48.' },
-    stroke: { type: 'number', description: 'box/arrow stroke width 1-8.' },
+    alias: { type: 'string', description: '本调用内局部名（updateMarks / removeMarks / group 引用）。' },
+    ...MARK_PROPS,
   },
 }
 
 const MARK_UPDATE_SPEC = {
   type: 'object',
-  additionalProperties: false,
+  additionalProperties: true,
+  description: '改已有绘制：按 id | alias | 精确正文（title）定位，其余字段沿用 createMarks[] 那份表。',
   properties: {
     id: { type: 'string' },
     alias: { type: 'string' },
-    title: { type: 'string', description: 'Find text mark by exact text content (must be unique).' },
-    text: { type: 'string' },
-    around: { type: 'array', items: { type: 'string' } },
-    nodes: { type: 'array', items: { type: 'string' } },
-    pad: { type: 'number' },
-    x: { type: 'number' },
-    y: { type: 'number' },
-    w: { type: 'number' },
-    h: { type: 'number' },
-    x2: { type: 'number' },
-    y2: { type: 'number' },
-    color: { type: 'string' },
-    fontSize: { type: 'number' },
-    stroke: { type: 'number' },
+    title: { type: 'string', description: '按精确正文查找（须唯一）。' },
   },
+}
+
+/* 工具 / 函数节点的参数条目与工具定义（同一参数模型 [{name,kind,list}]）：
+   参数即端子；list = 数组端子，可重复连数据线，JS 侧取到数组。 */
+const PARAM_ENTRY_SPEC = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    name: { type: 'string', description: '参数名 = 端子名；留空补「参数 N」。' },
+    kind: { type: 'string', enum: ['text', 'image'], description: '端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。' },
+    list: { type: 'boolean', description: '数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。' },
+  },
+}
+
+const TOOL_CONFIG_SPEC = {
+  type: 'object',
+  additionalProperties: false,
+  description: '工具节点（kind "tool" = super + tool:true 变体）的定义；参数即端子，端子数由参数钉死。',
+  properties: {
+    name: { type: 'string', description: '工具名（标题默认跟随它）。' },
+    description: { type: 'string', description: '用途说明。' },
+    inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输入端子表（传完整数组；增删参数即增删端子）。' },
+    outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '输出端子表（传完整数组；末位控制出不在表内）。' },
+  },
+}
+
+/* 节点属性表：create 与 update 共用（同一份对象引用、每个字段的描述只写一遍）。
+   旧「文本对话」节点的遗留字段 systemPrompt 已移除（该 kind 已不存在，渲染层不认）。
+   各类型的长规范在助手系统提示与内置技能里，这里只留取值 / 端子口径；
+   不言自明的数值项不再配描述（省负载）。 */
+const NODE_PROPS = {
+  title: { type: 'string', description: '唯一显示标题；@标题 引用它。' },
+  tags: { type: 'array', items: { type: 'string' }, description: '节点标签，供 @标签名 引用。' },
+  text: { type: 'string', description: 'input_text 正文。' },
+  prompt: { type: 'string', description: 'proc_text / proc_image 提示词（也是 judge 判据）；可写 @标题 / @标签名。' },
+  task: { type: 'string', description: 'agent_task 任务描述；可写 @标题 / @标签名。' },
+  goal: { type: 'string', description: 'task：本步要达成什么。' },
+  steps: { type: 'array', items: { type: 'string' }, description: 'task：有序子步骤标题。' },
+  parentTaskId: { type: 'string', description: '放进某 task 内部（id / alias / 标题）；父 task 要先在同一次调用里建。' },
+  parentSuperId: { type: 'string', description: '放进某 super 内部（id / alias / 标题）；需 canvas_super。' },
+  note: { type: 'string', description: 'super 卡片说明（开发节点必须【功能】+【实现】两段）。' },
+  expandW: { type: 'number', description: 'super 展开态宽度。' },
+  expandH: { type: 'number', description: 'super 展开态高度。' },
+  subFolder: { type: 'string', description: 'super 下相对工作目录的子目录（内部节点相对路径默认落这里）。' },
+  superOpen: { type: 'boolean' },
+  db: { type: 'boolean', description: 'super 标为数据库节点（事实存 subFolder + 内部信息节点，编译后出 db_replica）。' },
+  dbMode: { type: 'string', enum: ['super', 'db'], description: '数据库 super 形态：画布式 / 控制台。' },
+  dev: { type: 'boolean', description: 'super 标为开发节点（见技能 mtnode-dev-architect）。' },
+  devPath: { type: 'string', description: 'dev：项目根绝对路径（顶层块设，子块就近继承）。' },
+  devStatus: { type: 'string', enum: ['pending', 'wip', 'done'] },
+  devKind: { type: 'string', enum: ['module', 'file', 'class', 'interface', 'enum'], description: 'dev：module → file → 类图元素。' },
+  devColor: { type: 'string', description: 'dev：外框色 #rrggbb；只用于改正功能色卡的自动上色，勿自创色值。' },
+  devModel: { type: 'string', description: 'dev：本块 Agent 模型 id（建议 / 开发 / 细化都用它）；子块未自选则就近继承。' },
+  devProvider: { type: 'string', description: 'dev：devModel 的路由（可省，按模型推断）。' },
+  devPreset: { type: 'string', description: 'dev：预设档 = AGENT_PRESETS id（minimal / standard / lean / code / cordis）。' },
+  devEffort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', ''], description: 'dev：思考强度档。' },
+  devFiles: { type: 'array', items: { type: 'string' }, description: 'dev：核心文件（≤10 条 · 相对 devPath）；最外层项目块不要传。' },
+  execPath: { type: 'string', description: 'execute：绑定文件绝对路径（.exe / .bat / .cmd / .lnk）；无数据端子。' },
+  execIcon: { type: 'string', description: 'execute：图标 auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power。' },
+  execColor: { type: 'string' },
+  savePath: { type: 'string', description: 'save 落盘路径；扩展名按输入类型强制 .yaml / .png / .wav / .mp4。' },
+  waitPath: { type: 'string', description: 'wait_file：监视到该文件存在才放行下游。' },
+  waitIntervalSec: { type: 'number', description: 'wait_file：轮询秒 1–60。' },
+  timerMode: { type: 'string', enum: ['once', 'interval', 'cron'], description: 'timer：once → timerAt · interval → timerEverySec · cron → timerCron。' },
+  timerAt: { type: 'string', description: 'timer once：本地时间 "YYYY-MM-DDTHH:mm"。' },
+  timerEverySec: { type: 'number', description: 'timer interval：间隔秒 1–604800。' },
+  timerCron: { type: 'string', description: '5 段 "min hour dom mon dow"。' },
+  timerArmed: { type: 'boolean', description: 'timer：是否上膛。' },
+  imagePath: { type: 'string', description: 'input_image：本机图片绝对路径（应用复制进画布资产）。' },
+  imagePaths: { type: 'array', items: { type: 'string' }, description: 'input_image：多张图片路径（即批量项）。' },
+  toolConfig: TOOL_CONFIG_SPEC,
+  fnName: { type: 'string', description: '函数节点函数名。' },
+  description: { type: 'string', description: '函数节点用途说明。' },
+  jscode: { type: 'string', description: '函数节点 JS：input = { 参数名: 值 }（图像 = { kind:"image", path }），return { 输出参数名: 值 }。' },
+  inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '函数节点输入端子表（工具节点用 toolConfig.inputs）；改表即改端子。' },
+  outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '函数节点输出端子表（工具节点用 toolConfig.outputs）；末位控制出不在表内。' },
+  agent: { type: 'boolean', description: 'proc_text：开启智能模式。' },
+  globalRefs: { type: 'boolean', description: '允许 @引用全局广播（还要在 prompt/task 写明 @标题）。' },
+  auto: { type: 'boolean', description: 'save：上游运行即自动保存。' },
+  batch: { type: 'boolean', description: 'input_*：开启批量项。' },
+  batchMode: { type: 'string', enum: ['batch', 'agg'], description: '"batch" 每条一次运行（只看该条）；"agg" 一次看全部。' },
+  providerId: { type: 'string', description: 'proc_text / proc_image：API 服务商 id 或名称。' },
+  provider: { type: 'string', description: '智能节点路由：deepseek-official / mtnode_<id> / 服务商名。' },
+  model: { type: 'string', description: '本节点模型 id（运行中的别改）。' },
+  size: { type: 'string', description: 'proc_image 尺寸，须是 canvas_get 的 imageSizes 之一（如 "2048x1360" / "auto"）。' },
+  remotionSize: { type: 'string', description: 'remotion 分辨率（宽x高）。' },
+  fps: { type: 'number', description: 'remotion 帧率 1–60。' },
+  attempts: { type: 'number', description: '抽卡次数 1–10（生成类节点）。' },
+  outputPath: { type: 'string', description: 'video_gen / music_gen / tts_gen 输出路径（.mp4 / .wav / .mp3）。' },
+  voice: { type: 'string', description: 'tts_gen 音色（留空 = 默认，勿编造）。' },
+  speed: { type: 'number', description: 'tts_gen 语速 0.5–2.0。' },
+  videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: 'video_gen：fl2va 首末帧（默认）/ r2v 多参考图。' },
+  duration: { type: 'number', description: '时长秒：video_gen 4–15，remotion 1–60。' },
+  outputRes: { type: 'string', enum: ['auto', '480p', '720p', '1080p'] },
+  postEnabled: { type: 'boolean', description: 'video_gen 超分补帧后处理（24G 建议关）。' },
+  postInterp: { type: 'boolean', description: 'video_gen RIFE 补帧开关。' },
+  workflowId: { type: 'string', description: 'video_gen 自建 ComfyUI 工作流库 id（H3 窗口导入，勿编造）；非空时端子按该工作流参数重排。' },
+  ctrlAction: { type: 'string', enum: ['run', 'clear'], description: 'control 动作：只建 run，不要建 clear。' },
+  ctrlRole: { type: 'string', enum: ['start', 'endSuccess', 'endFail'], description: 'control 角色（task 自带三端勿删）。' },
+  refs: { type: 'array', items: { type: 'string' }, description: '要补进 prompt/task 的 @标题 / @标签名。' },
+  delaySec: { type: 'number', description: 'delayer：延时秒。' },
+  seqOutputs: { type: 'number', description: 'sequencer：顺序输出数 2–8。' },
+  seqGapSec: { type: 'number', description: 'sequencer：输出间隔秒。' },
+  gateInputs: { type: 'number', description: 'gate：AND 输入数 2–8。' },
+  splitOutputs: { type: 'number', description: 'splitter：并行输出数 2–8。' },
+  counterEvery: { type: 'number', description: 'counter：每 N 次触发放行 2–99。' },
+  counterCount: { type: 'number' },
+  mutexInputs: { type: 'number', description: 'mutex：输入数 2–8。' },
+  mutexMode: { type: 'string', enum: ['first', 'priority', 'random'], description: 'mutex：哪个输入胜出。' },
+  netChannel: { type: 'number', description: 'net_recv / net_send：通道号 0–65535。' },
+  netProto: { type: 'string', enum: ['tcp', 'udp'] },
+  netHost: { type: 'string', description: 'net_recv / net_send：地址。' },
+  netPort: { type: 'number', description: 'net_recv / net_send：端口（0 = 全局设置）。' },
+  netAutoListen: { type: 'boolean', description: 'net_recv：启动即监听。' },
+  dbNodeId: { type: 'string', description: 'db_replica：镜像的数据库 super id。' },
+  dbName: { type: 'string', description: 'db_replica：源数据库显示名。' },
+  ctrlPinned: { type: 'boolean' },
+  ctrlFillOnly: { type: 'boolean', description: 'control run：只填数据不触发运行。' },
+  x: { type: 'number' },
+  y: { type: 'number' },
 }
 
 const NODE_SPEC = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    alias: {
-      type: 'string',
-      required: true,
-      description: 'Local name for this create item. Use it in connect/update/refs in the SAME call (not a canvas id).',
-    },
-    kind: {
-      type: 'string',
-      required: true,
-      enum: KINDS,
-      description: 'Node type. Use input_image for image reference nodes.',
-    },
-    title: { type: 'string', description: 'Unique display title. Used by @Title node references.' },
-    tags: {
-      type: 'array',
-      items: { type: 'string' },
-      description:
-        'User tags on this node (for @TagName references in other nodes; see tagCatalog in canvas_get).',
-    },
-    text: { type: 'string', description: 'input_text body.' },
-    prompt: {
-      type: 'string',
-      description:
-        'proc_text / proc_image prompt. Use @Title for wired or global-broadcast inputs (global needs globalRefs:true on this node, and only the sources you actually @ here are injected). Use @TagName for all nodes with that tag. proc_image: ONE image only. Also judge criteria.',
-    },
-    task: {
-      type: 'string',
-      description:
-        'agent_task task text. Use @Title (wired/global+globalRefs — only global sources you @ here are injected) or @TagName in task body.',
-    },
-    goal: {
-      type: 'string',
-      description: 'task node: what this step should accomplish.',
-    },
-    steps: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'task node: ordered sub-step titles. Can later be expanded into inner child tasks.',
-    },
-    parentTaskId: {
-      type: 'string',
-      description:
-        'Put this node INSIDE a task (id, alias from this call, or unique title). Empty = current canvas scope. Create the parent task first in the same call.',
-    },
-    parentSuperId: {
-      type: 'string',
-      description:
-        'Put this node INSIDE a super node (id/alias/title). Empty = not packed. Creating/packing supers needs canvas_super (often ask). Inside supers, wire from the super edge input ports into children and from children back to the super edge output ports.',
-    },
-    note: {
-      type: 'string',
-      description: 'super node: short description shown on the collapsed card.',
-    },
-    expandW: {
-      type: 'number',
-      description: 'super node: expanded shell width (persisted; collapsed w/h unchanged).',
-    },
-    expandH: {
-      type: 'number',
-      description: 'super node: expanded shell height (persisted; collapsed w/h unchanged).',
-    },
-    subFolder: {
-      type: 'string',
-      description:
-        'super node: relative subfolder under the canvas workspace. Inner nodes get default relative paths under this folder (existing paths are not rewritten).',
-    },
-    superOpen: {
-      type: 'boolean',
-      description: 'super node: whether the expanded in-place sub-canvas is open.',
-    },
-    db: {
-      type: 'boolean',
-      description:
-        'super node: mark as a DATABASE super node (fact storage = subFolder files + inner info nodes). Compile produces a db_replica node; smart nodes wired to the replica can query facts with mtnode_db. Needs canvas_super.',
-    },
-    dbMode: {
-      type: 'string',
-      enum: ['super', 'db'],
-      description:
-        'db super node display mode: super = super-node canvas form; db = database console form (query/calc/dirty-check debugging tools).',
-    },
-    dev: {
-      type: 'boolean',
-      description:
-        'super node: mark as a DEV node (开发节点 / 功能块) = one module of a software project architecture. Set note to TWO sections (≤200 chars — REQUIRED, used by agents to locate modules): 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, and never put technical details into 【功能】. Dev nodes nest (parentSuperId) and refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer); their body shows 建议 / 开发 / 细化 buttons that confirm in a dialog first (建议 = AI read-only review of code + progress returning 4 selectable next-step options, whose dialog also has a 开发 button that starts the chosen plan). Needs canvas_super.',
-    },
-    devPath: {
-      type: 'string',
-      description:
-        'dev super node: absolute path of the project root folder. Set on the top-level dev node; children inherit from their nearest dev ancestor.',
-    },
-    devStatus: {
-      type: 'string',
-      enum: ['pending', 'wip', 'done'],
-      description: 'dev super node: development status (default pending).',
-    },
-    devKind: {
-      type: 'string',
-      enum: ['module', 'file', 'class', 'interface', 'enum'],
-      description:
-        'dev super node: element type in the architecture hierarchy — module (功能块, default) refines into file (source file), file refines into class-diagram elements (class / interface / enum). Each type gets a distinct frame color (module=green, file=blue, class=orange, interface=purple, enum=pink).',
-    },
-    devColor: {
-      type: 'string',
-      description:
-        'dev super node: custom frame + running-glow color as #rrggbb (empty = element-type default). Use the DEV 功能色卡 (functional colour card, module blocks only) rather than inventing a hex — ' +
-        DEV_FUNC_COLORS_SHORT +
-        ' (see DEV 功能色卡 in the tool description / devFuncColors in canvas_get). New dev blocks are auto-coloured from this card at creation, so pass a card hex only to correct the category; there is no need to ask the user before colouring, and a hex the user hand-picked in the node-header HSV swatch is never overwritten.',
-    },
-    devModel: {
-      type: 'string',
-      description:
-        'dev super node: pin the Agent model (model id) used by this block — its 建议 read-only run plus its 开发 / 细化 bound sessions. Child dev blocks without their own pick inherit the nearest ancestor choice; empty = follow the app default. devProvider may be omitted — the route is inferred from the model.',
-    },
-    devProvider: {
-      type: 'string',
-      description:
-        'dev super node: agent route for devModel (deepseek-official / mtnode_<id> / provider name). Only meaningful together with devModel.',
-    },
-    devFiles: {
-      type: 'array',
-      items: { type: 'string' },
-      description:
-        'dev super node: this block\'s CORE FILE list — at most 10 paths RELATIVE to the project root (devPath), e.g. ["renderer/app-devnode.js", "dsh/gateway/canvas-plugin.mjs"]. Fill it in right when you create the block (it is what the node\'s 文件 button shows the user), and keep it truthful: only files that really belong to this module. NEVER pass it on the outermost (project) dev block — that node lists no core files and the app drops it with a warning.',
-    },
-    execPath: {
-      type: 'string',
-      description:
-        'execute node (执行节点): absolute path of the bound file — .exe / .bat / .cmd / .lnk or any system-openable file. The node launches it through the OS default handler (play twice or double-click to run). It has no data ports; when it is a launcher for one module, set parentSuperId to that dev node so it lives inside the feature block.',
-    },
-    execIcon: {
-      type: 'string',
-      description:
-        'execute node: icon key for quick identification (auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power).',
-    },
-    execColor: {
-      type: 'string',
-      description:
-        'execute node: body color as hex (e.g. "#1e5f4f"), or empty for the default. Helps to spot the node fast.',
-    },
-    savePath: { type: 'string', description: 'save node destination. Prefer relative path under the canvas working directory (e.g. items.yaml). Extension is forced by input type: .yaml / .png / .wav / .mp4. Aliases save_text / save_image still accepted.' },
-    waitPath: {
-      type: 'string',
-      description:
-        'wait_file: path to watch until the file exists (relative to workspace preferred, or absolute). No input ports; wire output to downstream only to block early runs; does not output content.',
-    },
-    waitIntervalSec: {
-      type: 'number',
-      description: 'wait_file: poll interval in seconds (1–60, default 2).',
-    },
-    timerMode: {
-      type: 'string',
-      enum: ['once', 'interval', 'cron'],
-      description: 'timer: once at timerAt, interval every timerEverySec, or cron.',
-    },
-    timerAt: {
-      type: 'string',
-      description: 'timer once: local datetime "YYYY-MM-DDTHH:mm".',
-    },
-    timerEverySec: {
-      type: 'number',
-      description: 'timer interval seconds (1–604800, default 3600).',
-    },
-    timerCron: {
-      type: 'string',
-      description: 'timer cron: 5 fields "min hour dom mon dow" local time.',
-    },
-    timerArmed: {
-      type: 'boolean',
-      description: 'timer: start armed so the schedule fires and runs outgoing targets.',
-    },
-    imagePath: {
-      type: 'string',
-      description:
-        'input_image: absolute file path on this machine. App copies it into workflow assets (single image). Prefer this over asking the user to drag-drop.',
-    },
-    imagePaths: {
-      type: 'array',
-      items: { type: 'string' },
-      description:
-        'input_image: multiple absolute image paths (enables batch entries). Each path is copied into workflow assets.',
-    },
-    agent: { type: 'boolean', description: 'proc_text: turn on 智能 mode (agent run).' },
-    globalRefs: {
-      type: 'boolean',
-      description:
-        'proc_text / proc_image / agent_task / judge: enable referencing sources wired into kind "global" nodes. REQUIRED together with @Title in prompt/task for global broadcast to work.',
-    },
-    auto: { type: 'boolean', description: 'save_*: auto-save when upstream runs.' },
-    batch: { type: 'boolean', description: 'input_*: batch entries mode.' },
-    batchMode: {
-      type: 'string',
-      enum: ['batch', 'agg'],
-      description:
-        'proc_*/save_*/agent_task: "batch"=one run per item (each run must NOT also ingest the whole batch — use split to pick one item); "agg"=one run over all items. Wrong combo causes N² token cost.',
-    },
-    providerId: {
-      type: 'string',
-      description:
-        'proc_text / proc_image / chat: API provider id or unique name from Settings.',
-    },
-    provider: {
-      type: 'string',
-      description:
-        'agent_task / proc_text(agent): deepseek-official, mtnode_<id>, or provider display name.',
-    },
-    model: {
-      type: 'string',
-      description: 'Model id to use on this node (replaces the current model).',
-    },
-    size: {
-      type: 'string',
-      description:
-        'proc_image: output size, must be one of imageSizes from mtnode_canvas_get (e.g. "2048x1360", "1280x1280", "auto"). remotion: one of the remotionSize presets (e.g. "1280x720"). Choose by aspect ratio need; default "2048x1360".',
-    },
-    remotionSize: {
-      type: 'string',
-      description:
-        'remotion: 输出分辨率（宽x高 px），可选 "1280x720" / "1920x1080" / "720x1280" / "1080x1920" / "1024x1024" / "1080x1080"，默认 "1280x720"。',
-    },
-    fps: {
-      type: 'number',
-      description: 'remotion: 帧率（fps，1–60，默认 30）。',
-    },
-    attempts: {
-      type: 'number',
-      description: 'video_gen / music_gen / remotion: 抽卡次数（多次尝试，1–10，自动钳制）.',
-    },
-    outputPath: {
-      type: 'string',
-      description: 'video_gen / music_gen: 输出保存路径（视频 .mp4 / 音频 .wav）。remotion 无 outputPath：其输出由下游保存节点落盘。',
-    },
-    videoMode: {
-      type: 'string',
-      enum: ['r2v', 'fl2va'],
-      description: 'video_gen: 生成模式，fl2va = 首末帧（默认），r2v = 多参考图.',
-    },
-    duration: {
-      type: 'number',
-      description:
-        'video_gen: 视频时长（秒，4–15，默认 5，自动钳制）; remotion: 视频时长（秒，1–60，默认 5）。',
-    },
-    outputRes: {
-      type: 'string',
-      enum: ['auto', '480p', '720p', '1080p'],
-      description: 'video_gen: 输出分辨率档位（auto=按比例默认 / 480p 抽卡 / 720p / 1080p，24G 超限自动钳制）.',
-    },
-    postEnabled: {
-      type: 'boolean',
-      description: 'video_gen: 4K 超分补帧后处理开关（默认开，24G 建议关以提速）.',
-    },
-    postInterp: {
-      type: 'boolean',
-      description: 'video_gen: RIFE 补帧开关（后处理内）.',
-    },
-    ctrlAction: {
-      type: 'string',
-      enum: ['run', 'clear'],
-      description: 'control node: run or clear all connected nodes (not used on start/end).',
-    },
-    ctrlRole: {
-      type: 'string',
-      enum: ['start', 'endSuccess', 'endFail'],
-      description:
-        'control node role. Tasks auto-create pinned start / endSuccess / endFail; do not delete pinned ones. Extra ends may be created with these roles.',
-    },
-    refs: {
-      type: 'array',
-      items: { type: 'string' },
-      description:
-        'Node titles or tag names to insert as @Title / @Tag in prompt/task if missing.',
-    },
-    /* 控制类 · 延时/序列/闸门/分发/计数/互斥 */
-    delaySec: { type: 'number', description: 'delayer: delay in seconds before continuing (1–604800, default 60).' },
-    seqOutputs: { type: 'number', description: 'sequencer: number of sequential outputs (2–8, default 3).' },
-    seqGapSec: { type: 'number', description: 'sequencer: gap in seconds between outputs (default 0).' },
-    gateInputs: { type: 'number', description: 'gate: number of AND inputs (2–8, default 2).' },
-    splitOutputs: { type: 'number', description: 'splitter: number of parallel outputs (2–8, default 3).' },
-    counterEvery: { type: 'number', description: 'counter: pass through every N triggers (2–99, default 2).' },
-    counterCount: { type: 'number', description: 'counter: current count value.' },
-    mutexInputs: { type: 'number', description: 'mutex: number of inputs (2–8, default 2).' },
-    mutexMode: { type: 'string', enum: ['first', 'priority', 'random'], description: 'mutex: which input wins (default first).' },
-    /* 网络节点（net_recv 接收 / net_send 发送） */
-    netChannel: { type: 'number', description: 'net_recv/net_send: channel id 0–65535 to multiplex on one port (default auto-assigned next free channel).' },
-    netProto: { type: 'string', enum: ['tcp', 'udp'], description: 'net_recv/net_send: transport protocol (default tcp).' },
-    netHost: { type: 'string', description: 'net_recv/net_send: target/interface host (default 127.0.0.1).' },
-    netPort: { type: 'number', description: 'net_recv/net_send: port 1–65535, or 0 to use the global setting (recv listens 40999 / send targets 41000 by default).' },
-    netAutoListen: { type: 'boolean', description: 'net_recv only: auto enter listening state when the workflow starts (default true).' },
-    /* 数据库 · 副本关联 */
-    dbNodeId: { type: 'string', description: 'db_replica: id of the source DATABASE super node this replica mirrors.' },
-    dbName: { type: 'string', description: 'db_replica: display name of the source database.' },
-    /* 对话系统提示 */
-    systemPrompt: { type: 'string', description: 'chat: system prompt for the conversation.' },
-    /* 控制节点细节 */
-    ctrlPinned: { type: 'boolean', description: 'control: pinned (fixed) end role cannot be deleted.' },
-    ctrlFillOnly: { type: 'boolean', description: 'control run: only fill data into targets, do not trigger runs.' },
-    x: { type: 'number', description: 'Optional canvas x; omit to let layout place it.' },
-    y: { type: 'number', description: 'Optional canvas y; omit to let layout place it.' },
+    alias: { type: 'string', required: true, description: '本调用内局部名（必填）。' },
+    kind: { type: 'string', required: true, enum: KINDS, description: '节点类型（必填）；图像参考节点用 input_image。' },
+    ...NODE_PROPS,
   },
 }
 
+/* update 与 create 共用上面那份属性表：这里不再整表重复一遍（那会在工具 JSON 里
+   序列化两次），只显式列定位与尺寸键，其余字段语义指向 create[]。
+   渲染层 applyNodePatch 只认属性表内的字段（kind 建好即不可改）。 */
 const UPDATE_SPEC = {
   type: 'object',
-  additionalProperties: false,
+  additionalProperties: true,
+  description: '可改字段与 create[] 的属性表同一份（省略的键保持原样，数组整体替换；kind 不可改）。',
   properties: {
-    id: { type: 'string', description: 'Existing node id.' },
-    alias: { type: 'string', description: 'Alias from create in this same call.' },
-    title: { type: 'string', description: 'Find existing node by current title (must be unique).' },
-    setTitle: { type: 'string', description: 'New title.' },
-    text: { type: 'string' },
-    prompt: { type: 'string' },
-    task: { type: 'string' },
-    goal: { type: 'string', description: 'task node goal.' },
-    steps: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'task node: replace step titles.',
-    },
-    parentTaskId: {
-      type: 'string',
-      description: 'Move node into a task (id/alias/title) or empty for top-level.',
-    },
-    parentSuperId: {
-      type: 'string',
-      description: 'Pack node into a super (id/alias/title) or empty to unpack. Needs canvas_super.',
-    },
-    note: { type: 'string', description: 'super: description text.' },
-    expandW: { type: 'number', description: 'super: expanded width.' },
-    expandH: { type: 'number', description: 'super: expanded height.' },
-    subFolder: {
-      type: 'string',
-      description:
-        'super: relative subfolder under workspace for default inner-node paths.',
-    },
-    superOpen: { type: 'boolean', description: 'super: expand in-place sub-canvas.' },
-    db: {
-      type: 'boolean',
-      description:
-        'super: mark/unmark as DATABASE super node (facts storage → db_replica + mtnode_db queries). Needs canvas_super.',
-    },
-    dbMode: {
-      type: 'string',
-      enum: ['super', 'db'],
-      description:
-        'db super node display mode: super = super-node canvas form; db = database console form.',
-    },
-    dev: {
-      type: 'boolean',
-      description:
-        'super: mark/unmark as DEV node (开发节点 / 功能块). Keep note in TWO sections (≤200 chars, required): 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, and never put technical details into 【功能】. Needs canvas_super.',
-    },
-    devPath: { type: 'string', description: 'dev super node: project root folder (absolute path).' },
-    devStatus: {
-      type: 'string',
-      enum: ['pending', 'wip', 'done'],
-      description: 'dev super node: development status.',
-    },
-    devKind: {
-      type: 'string',
-      enum: ['module', 'file', 'class', 'interface', 'enum'],
-      description: 'dev super node: element type (module → file → class/interface/enum hierarchy).',
-    },
-    devColor: { type: 'string', description: 'dev super node: custom frame color #rrggbb, or empty for the element-type default. Colour by function with the DEV 功能色卡 (module blocks only): ' + DEV_FUNC_COLORS_SHORT + ' — never invent one-off hexes; auto-colouring already applied this card at creation, a user-picked HSV colour is not overwritten, and no need to ask the user first.' },
-    devModel: {
-      type: 'string',
-      description:
-        'dev super node: pinned Agent model for this block plus any child block without its own pick; empty string clears it (follow default).',
-    },
-    devProvider: { type: 'string', description: 'dev super node: agent route for devModel (optional; inferred).' },
-    devFiles: {
-      type: 'array',
-      items: { type: 'string' },
-      description:
-        'dev super node: REWRITE this block\'s core file list — up to 10 paths relative to the project root (devPath), e.g. ["renderer/app-devnode.js"]. Every 开发 / 细化 / 建议 session MUST patch it back when it finishes (the node\'s 文件 button reads it), so the canvas keeps showing real files instead of an empty list; pass [] to clear it. The outermost (project) dev block lists nothing — devFiles there is refused with a warning.',
-    },
-    execPath: { type: 'string', description: 'execute node: bound file absolute path.' },
-    execIcon: { type: 'string', description: 'execute node: icon key (auto/rocket/gear/terminal/play/bolt/wrench/folder/file/power).' },
-    execColor: { type: 'string', description: 'execute node: body color hex, or empty for default.' },
-    savePath: { type: 'string' },
-    waitPath: { type: 'string', description: 'wait_file: path to watch.' },
-    waitIntervalSec: { type: 'number', description: 'wait_file: poll seconds 1–60.' },
-    timerMode: {
-      type: 'string',
-      enum: ['once', 'interval', 'cron'],
-      description: 'timer: once at timerAt, interval every timerEverySec, or cron expression.',
-    },
-    timerAt: {
-      type: 'string',
-      description: 'timer once: local datetime "YYYY-MM-DDTHH:mm".',
-    },
-    timerEverySec: {
-      type: 'number',
-      description: 'timer interval: seconds between fires (1–604800).',
-    },
-    timerCron: {
-      type: 'string',
-      description: 'timer cron: 5 fields "min hour dom mon dow" in local time.',
-    },
-    timerArmed: {
-      type: 'boolean',
-      description: 'timer: arm/disarm the schedule; when armed each fire runs outgoing targets.',
-    },
-    imagePath: {
-      type: 'string',
-      description: 'input_image: replace/set single image from absolute path.',
-    },
-    imagePaths: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'input_image: append/replace batch images from absolute paths.',
-    },
-    agent: { type: 'boolean' },
-    globalRefs: {
-      type: 'boolean',
-      description:
-        'proc_text / proc_image / agent_task / judge: toggle global node @ references (must also @Title in prompt/task).',
-    },
-    tags: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'Replace user tags on this node (for @Tag references).',
-    },
-    auto: { type: 'boolean' },
-    batch: { type: 'boolean' },
-    batchMode: { type: 'string', enum: ['batch', 'agg'] },
-    providerId: {
-      type: 'string',
-      description:
-        'proc_text / proc_image / chat: set API provider by id or unique name.',
-    },
-    provider: {
-      type: 'string',
-      description:
-        'agent_task / proc_text(agent): set route provider (deepseek-official / mtnode_<id> / name).',
-    },
-    model: {
-      type: 'string',
-      description: 'Replace this node\'s model id.',
-    },
-    size: {
-      type: 'string',
-      description:
-        'proc_image: set output size to a value from imageSizes (mtnode_canvas_get). remotion: one of the remotionSize presets (e.g. "1280x720").',
-    },
-    remotionSize: {
-      type: 'string',
-      description:
-        'remotion: 输出分辨率（宽x高 px），可选 "1280x720" / "1920x1080" / "720x1280" / "1080x1920" / "1024x1024" / "1080x1080"。',
-    },
-    fps: {
-      type: 'number',
-      description: 'remotion: 帧率（fps，1–60）。',
-    },
-    refs: { type: 'array', items: { type: 'string' } },
-    delaySec: { type: 'number', description: 'delayer: delay seconds.' },
-    seqOutputs: { type: 'number', description: 'sequencer: output count 2–8.' },
-    seqGapSec: { type: 'number', description: 'sequencer: gap seconds.' },
-    gateInputs: { type: 'number', description: 'gate: input count 2–8.' },
-    splitOutputs: { type: 'number', description: 'splitter: output count 2–8.' },
-    counterEvery: { type: 'number', description: 'counter: every N triggers.' },
-    counterCount: { type: 'number', description: 'counter: current count.' },
-    mutexInputs: { type: 'number', description: 'mutex: input count 2–8.' },
-    mutexMode: { type: 'string', enum: ['first', 'priority', 'random'], description: 'mutex: win mode.' },
-    netChannel: { type: 'number', description: 'net_recv/net_send: channel 0–65535.' },
-    netProto: { type: 'string', enum: ['tcp', 'udp'], description: 'net_recv/net_send: protocol.' },
-    netHost: { type: 'string', description: 'net_recv/net_send: host.' },
-    netPort: { type: 'number', description: 'net_recv/net_send: port 1–65535 or 0 for global default.' },
-    netAutoListen: { type: 'boolean', description: 'net_recv: auto listen on start.' },
-    dbNodeId: { type: 'string', description: 'db_replica: source DATABASE super node id.' },
-    dbName: { type: 'string', description: 'db_replica: source database name.' },
-    systemPrompt: { type: 'string', description: 'chat: system prompt.' },
-    ctrlPinned: { type: 'boolean', description: 'control: pinned end role.' },
-    ctrlFillOnly: { type: 'boolean', description: 'control run: fill only, no run.' },
-    ctrlRole: {
-      type: 'string',
-      enum: ['start', 'endSuccess', 'endFail'],
-    },
-    x: { type: 'number' },
-    y: { type: 'number' },
+    id: { type: 'string', description: '目标节点 id（最稳）。' },
+    alias: { type: 'string', description: '本次 create[] 的 alias。' },
+    title: { type: 'string', description: '按现有标题查找（须唯一）。' },
+    setTitle: { type: 'string', description: '改标题（自动去重）。' },
     w: { type: 'number' },
     h: { type: 'number' },
-    attempts: {
-      type: 'number',
-      description: 'video_gen / music_gen / remotion: 抽卡次数（多次尝试，1–10，自动钳制）.',
-    },
-    outputPath: {
-      type: 'string',
-      description: '视频 / 音乐输出路径（video_gen / music_gen 的输出保存位置）；remotion 无 outputPath，其输出由下游保存节点落盘。',
-    },
-    videoMode: {
-      type: 'string',
-      enum: ['r2v', 'fl2va'],
-      description: 'video_gen: 生成模式，r2v = 多参考图，fl2va = 首末帧.',
-    },
-    duration: {
-      type: 'number',
-      description:
-        'video_gen: 视频时长（秒，4–15，自动钳制）; remotion: 视频时长（秒，1–60，默认 5）。',
-    },
-    outputRes: {
-      type: 'string',
-      enum: ['auto', '480p', '720p', '1080p'],
-      description: 'video_gen: 输出分辨率档位（auto=按比例默认 / 480p 抽卡 / 720p / 1080p，24G 超限自动钳制）.',
-    },
-    postEnabled: {
-      type: 'boolean',
-      description: 'video_gen: 4K 超分补帧后处理开关（默认开，24G 建议关以提速）.',
-    },
-    postInterp: {
-      type: 'boolean',
-      description: 'video_gen: RIFE 补帧开关（后处理内）.',
-    },
   },
 }
 
@@ -757,39 +347,83 @@ const PAIR_SPEC = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    from: {
-      type: 'string',
-      required: true,
-      description: 'Source node: id, create-alias, or unique title.',
-    },
-    to: {
-      type: 'string',
-      required: true,
-      description: 'Target node: id, create-alias, or unique title.',
-    },
-    fromIndex: {
-      type: 'number',
-      description: 'Source output port. judge: 0 = YES, 1 = NO. Default 0.',
-    },
-    rel: {
-      type: 'boolean',
-      description:
-        'RELATIONSHIP wire (UML-style): a plain straight line (no elbow routing), purely expresses a relation between two elements (no data flow, no execution). Clicking a node highlights its relation lines. Use for dev-node architecture diagrams (依赖/调用/实现/包含…). Ignores fromIndex.',
-    },
-    relLabel: {
-      type: 'string',
-      description: 'rel wire: text label drawn on the line (e.g. 调用 / 依赖 / 实现).',
-    },
-    relArrow: {
-      type: 'string',
-      enum: ['forward', 'backward', 'both', 'none'],
-      description: 'rel wire: arrowheads (default forward; both = bidirectional).',
-    },
+    from: { type: 'string', required: true, description: '源节点：id / alias / 唯一标题。' },
+    to: { type: 'string', required: true, description: '目标节点：id / alias / 唯一标题。' },
+    fromIndex: { type: 'number', description: '源的输出端子序号（默认 0）；judge 0 = YES、1 = NO；tool / function 按参数表数端子。' },
+    rel: { type: 'boolean', description: '关系线：UML 直线，不传数据也不参与执行（忽略 fromIndex）。' },
+    relLabel: { type: 'string', description: '关系线文字（如 调用 / 依赖）。' },
+    relArrow: { type: 'string', enum: ['forward', 'backward', 'both', 'none'] },
   },
 }
 
 function jsonResult(value) {
   return [{ type: 'text', text: JSON.stringify(value) }]
+}
+
+/* 返回体积收紧：canvas_get 默认档位（渲染层的缺省是 full，整图正文一灌就是几万字符，
+   并且会长期常驻历史）；这里在网关侧把缺省改成 standard —— 配置字段齐全、正文只给
+   *Len，模型要看全文必须显式传 detail:"full"（配合 ids / sections 收窄）。 */
+const DEFAULT_GET_DETAIL = 'standard'
+
+/* 在返回体里带一句体积提示：让模型知道这次读了多少字符、怎么读更省。 */
+function withGetHint(value, detail) {
+  if (!value || typeof value !== 'object') return value
+  const chars = JSON.stringify(value).length
+  const nodes = Array.isArray(value.nodes) ? value.nodes.length : 0
+  return Object.assign({}, value, {
+    sizeHint:
+      '本次返回 ' + chars + ' 字符 / ' + nodes + ' 个节点（detail=' + detail +
+      '，正文默认省略，只有 *Len）。要全文就显式传 detail:"full" 并用 ids:[...] 收窄到那几个节点；' +
+      '只要结构用 detail:"minimal" + sections:["nodes","wires"]。',
+  })
+}
+
+function clipLabel(s, n) {
+  const str = String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
+  return str.length > n ? str.slice(0, n) + '…' : str
+}
+
+/* canvas_edit 成功时渲染层会回一整份 canvasSnapshot（含全部节点正文），历史里最占体积。
+   这里只留「计数 + 别名/标题」的改动回执，需要看画布再走 mtnode_canvas_get。 */
+function editSummary(value) {
+  if (!value || typeof value !== 'object') return value
+  const list = (v) => (Array.isArray(v) ? v : [])
+  const created = list(value.created)
+  const updated = list(value.updated)
+  const connected = list(value.connected)
+  const removed = list(value.removed)
+  const createdMarks = list(value.createdMarks)
+  const updatedMarks = list(value.updatedMarks)
+  const removedMarks = list(value.removedMarks)
+  const out = {
+    ok: value.ok !== false,
+    counts: {
+      created: created.length,
+      updated: updated.length,
+      connected: connected.length,
+      removed: removed.length,
+      marksCreated: createdMarks.length,
+      marksUpdated: updatedMarks.length,
+      marksRemoved: removedMarks.length,
+      grouped: value.grouped ? 1 : 0,
+    },
+    /* alias 只在本调用内有效，下一轮定位靠标题 / id，故两个都给出 */
+    created: created.map((n) =>
+      (n && n.alias ? n.alias + '=' : '') + clipLabel((n && (n.title || n.id)) || '', 60) +
+      '(' + clipLabel((n && n.kind) || '', 24) + ')'),
+    updated: updated.map((n) => clipLabel((n && (n.title || n.id)) || '', 60) + '(' + clipLabel((n && n.kind) || '', 24) + ')'),
+    connected: connected.map((w) => clipLabel((w && (w.fromTitle || w.from)) || '', 60) + '→' + clipLabel((w && (w.toTitle || w.to)) || '', 60)),
+    removed: removed.map((id) => clipLabel(id, 60)),
+    marks: createdMarks.concat(updatedMarks).map((m) =>
+      (m && m.alias ? m.alias + '=' : '') + clipLabel((m && m.kind) || 'mark', 12) +
+      (m && m.text ? ':' + clipLabel(m.text, 40) : '')),
+    removedMarks: removedMarks.map((id) => clipLabel(id, 60)),
+    warnings: list(value.warnings),
+    hint: '整图快照已省略（只回计数与别名 / 标题）；需要复核排版与连线用 mtnode_canvas_get（detail:"minimal" 或 ids:[...]）。',
+  }
+  if (value.message) out.message = clipLabel(value.message, 80)
+  if (value.grouped) out.grouped = clipLabel(value.grouped.title || value.grouped.id || '', 60)
+  return out
 }
 
 export function apply(ctx) {
@@ -850,6 +484,28 @@ export function apply(ctx) {
   }
   connect()
 
+  /* 注册口（本文件里唯一的裁剪判定点）：三个闸都在 spawn 时定死，整台运行时一个形状。
+     · env MTNODE_LEAN_TOOLS（设置里的「精简工具负载」）→ 不注册「可选能力」工具
+       mtnode_app / mtnode_vision（集合见 LEAN_DROP_WHEN_LEAN）；
+     · env MTNODE_NO_CANVAS（画布智能节点 nodeLock 运行）→ 不注册画布主干
+       mtnode_canvas_get / mtnode_canvas_edit / mtnode_app（集合见 NODE_LOCK_DROP_CANVAS），
+       宿主对这三类帧本来就一律拒收；mtnode_vision 保留 —— 智能节点被允许用它识图。
+     · env MTNODE_HIDE_TOOLS（按运行算出的规范名单，真源 tool-visibility.mjs）→ 点名的
+       工具整个不注册。走这条的是「Agent 工具许可」预设里被拒到点上的画布 / 应用 / 识图
+       工具：宿主侧本来就硬拦，定义照发只换来模型一次次撞没有的工具。
+     两个标记与这份名单都进 runtime key（gateway.mjs 的 lean: / nc: / hx:），换档即冷起
+     自己的运行时，绝不会出现「同一台运行时两种可见集」互相打爆提示缓存。网关同时在预设
+     文本后补一句「这些工具不存在」，模型不会去撞没有的工具（见 LEAN_TOOLS_NOTE）。 */
+  const lean = leanToolsOn()
+  const noCanvas = noCanvasToolsOn()
+  const hidden = hiddenToolsFromEnv()
+  const register = (tool) => {
+    const toolName = tool && tool.name
+    if (lean && LEAN_DROP_WHEN_LEAN.has(toolName)) return
+    if (noCanvas && NODE_LOCK_DROP_CANVAS.has(toolName)) return
+    if (hidden.has(toolName)) return
+    ctx.tools.register(tool)
+  }
   const rpc = (op, params, exec) => {
     if (!socket || socket.destroyed) {
       return Promise.reject(new Error('canvas channel unavailable (only works inside the MTNode app)'))
@@ -873,7 +529,7 @@ export function apply(ctx) {
     })
   }
 
-  ctx.tools.register(defineTool({
+  register(defineTool({
     name: 'mtnode_canvas_get',
     description: GET_DESC,
     parameters: {
@@ -881,7 +537,7 @@ export function apply(ctx) {
         type: 'string',
         enum: ['minimal', 'standard', 'full'],
         description:
-          'Node field granularity. minimal = id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags only (fastest orientation). standard = minimal + all config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text. full (default) = everything incl. full text bodies (input_text.text, prompt, task, goal), rows, files, steps. Prefer standard/minimal to save tokens.',
+          'Node field granularity. DEFAULT (when omitted) = "standard". minimal = id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags only (fastest orientation). standard = minimal + all config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text. full = everything incl. full text bodies (input_text.text, prompt, task, goal), rows, files, steps — you must ask for it explicitly, ideally with ids:[...] so only the nodes you need come back heavy.',
       },
       ids: {
         type: 'array',
@@ -912,11 +568,16 @@ export function apply(ctx) {
       render: (_args, value) => jsonResult(value),
     },
     async execute(args, exec) {
-      return rpc('get', args || {}, exec)
+      const a = Object.assign({}, args || {})
+      if (a.detail !== 'minimal' && a.detail !== 'standard' && a.detail !== 'full') {
+        a.detail = DEFAULT_GET_DETAIL
+      }
+      const value = await rpc('get', a, exec)
+      return withGetHint(value, a.detail)
     },
   }))
 
-  ctx.tools.register(defineTool({
+  register(defineTool({
     name: 'mtnode_app',
     description: APP_DESC,
     parameters: {
@@ -983,85 +644,78 @@ export function apply(ctx) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  register(defineTool({
     name: 'mtnode_canvas_edit',
     description: EDIT_DESC,
     parameters: {
       create: {
         type: 'array',
-        description: 'Nodes to add. alias is required and is used by connect in this same call.',
+        description: '要新增的节点；alias 必填，本次调用内的 connect / update / refs 用它引用这个新节点。',
         items: NODE_SPEC,
       },
       update: {
         type: 'array',
-        description: 'Patch existing or just-created nodes (id, alias, or unique title).',
+        description: '补丁已有或本次新建的节点：按 id / alias / 唯一标题定位，可改字段与 create[] 同一份属性表（kind 不可改）。',
         items: UPDATE_SPEC,
       },
       connect: {
         type: 'array',
-        description:
-          'Wires from source to target. from/to = id, alias, or unique title. Set rel:true for a UML-style RELATIONSHIP wire (straight line, optional relLabel/relArrow; no data flow; clicking a node highlights its relation lines).',
+        description: '连线：源 → 目标。表达关系的 UML 直线（不传数据、不参与执行）用 rel:true + relLabel / relArrow。',
         items: PAIR_SPEC,
       },
       disconnect: {
         type: 'array',
-        description: 'Remove wires matching from→to.',
-        items: PAIR_SPEC,
+        description: '删除匹配 from→to 的连线；字段与 connect[] 同一份表（from / to / fromIndex，断关系线带 rel:true）。',
+        items: { type: 'object', additionalProperties: true },
+      },
+      superConnect: {
+        type: 'array',
+        description:
+          '跨 super / 跨层级连通两个节点：[{from,to}]（字段同 connect[]）。自动逐层桥接边界端子，无需手建桥接线；需 canvas_super。',
+        items: { type: 'object', additionalProperties: true },
       },
       remove: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Node ids, aliases, or unique titles to delete. Cannot delete a running node.',
+        description: '要删除的节点 id / alias / 唯一标题；正在运行本任务的节点删不掉。',
       },
       group: {
         type: 'object',
         additionalProperties: false,
-        description:
-          'Wrap nodes and/or marks in a canvas group. Prefer including zone marks so the whole region moves/scales together.',
+        description: '把节点与绘制打包成组（整组一起移动 / 缩放）；分区框建议一并放进来。',
         properties: {
-          title: { type: 'string', description: 'Group label, e.g. 处理区.' },
-          nodes: {
-            type: 'array',
-            items: { type: 'string' },
-            description:
-              'Node and/or mark ids/aliases/titles to include. Mark refs resolve after createMarks. Omit to group every node created in this call (and createMarks if marks omitted).',
-          },
-          marks: {
-            type: 'array',
-            items: { type: 'string' },
-            description:
-              'Mark ids/aliases (or unique text). Omit with nodes omitted to include all createMarks from this call.',
-          },
+          title: { type: 'string', description: '组名，如 处理区。' },
+          nodes: { type: 'array', items: { type: 'string' }, description: '要包含的节点 / 绘制 id、alias 或标题；省略 = 本次 create[] 的全部节点。' },
+          marks: { type: 'array', items: { type: 'string' }, description: '要包含的绘制 id / alias / 精确正文。' },
         },
       },
       createMarks: {
         type: 'array',
-        description:
-          'Canvas drawings (text / box / arrow). Prefer box+around+label to zone the layout for the user. Created after node layout.',
+        description: '画布绘制（text / box / arrow）；优先 box + around:[alias] + label 划分区，在节点自动排版之后贴合生成。',
         items: MARK_SPEC,
       },
       marks: {
         type: 'array',
-        description: 'Alias of createMarks.',
-        items: MARK_SPEC,
+        description: 'createMarks 的旧别名，字段完全相同。',
+        items: { type: 'object', additionalProperties: true },
       },
       updateMarks: {
         type: 'array',
-        description: 'Patch existing marks by id, createMarks alias, or unique text content.',
+        description: '改已有绘制（按 id / createMarks 的 alias / 精确正文定位）。',
         items: MARK_UPDATE_SPEC,
       },
       removeMarks: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Mark ids, aliases, or unique text labels to delete.',
+        description: '要删除的绘制 id / alias / 精确正文。',
       },
       layout: {
         type: 'boolean',
-        description: 'Auto-layout so nodes do not overlap (layered left-to-right). Defaults true when create is non-empty; pass false only if you set x/y yourself. Marks with around wrap nodes after this layout.',
+        description: '自动排版（分层左到右、互不重叠）：create 非空时默认 true，只有你自己给了 x/y 时才传 false。',
       },
       setWorkflowName: {
         type: 'string',
-        description: 'Optional new name for the current workflow tab.',
+        description: '改当前画布标签名（可选）。',
       },
     },
     timeoutMs: 300000,
@@ -1070,7 +724,7 @@ export function apply(ctx) {
       render: (_args, value) => jsonResult(value),
     },
     async execute(args, exec) {
-      return rpc('edit', args || {}, exec)
+      return editSummary(await rpc('edit', args || {}, exec))
     },
   }))
 
@@ -1084,7 +738,7 @@ Requirements:
 - Prefer this over attaching large image batches to the main agent prompt (saves tokens; avoids N² batch mistakes).
 - Do not use for generating new images — only for understanding existing ones.`
 
-  ctx.tools.register(defineTool({
+  register(defineTool({
     name: 'mtnode_vision',
     description: VISION_DESC,
     parameters: {

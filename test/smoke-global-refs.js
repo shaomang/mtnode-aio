@@ -209,6 +209,15 @@ const APP_FNS = [
   "nodeByIdIn",
   "isControlKind",
   "wireFromIsControl",
+  /* 控制判定现在会问工具 / 函数节点的控制出端子 */
+  "fnToolOutPortIsControl",
+  "fnToolInPortIsControl",
+  "isFnToolNode",
+  /* @ 引用取值时用的文本归一（媒体输入节点输出 file:/// URL 后新增） */
+  "refTextFromValue",
+  "refInputIdxFor",
+  "isFunctionNode",
+  "isToolNode",
   "wiresTo",
   "allWiresTo",
   "isTextSource",
@@ -219,6 +228,13 @@ const APP_FNS = [
   "normalizeNodeTags",
   "nodeHasTag",
   "nodesForTagRef",
+  /* 统一 @ 切词（标题 / Tag 可含空格）：各解析入口共用同一套，避免各写各的分裂 */
+  "atRefNames",
+  "atRefSpanEnd",
+  "atRefNamesFor",
+  "atMentionsOf",
+  "eachAtMention",
+  "mapAtMentions",
   /* 彩虹开关 + @ 命中判定（本轮新增的门槛） */
   "canUseGlobalRefs",
   "usesGlobalRefs",
@@ -242,8 +258,12 @@ const APP_FNS = [
   "parseJudgeYesNo",
   "playJudgeNode",
 ];
+/* atMentionsOf / atRefSpanEnd 引用的三个切词常量（单行 const，走同一 fnBody 抽取） */
+const AT_REF_CONSTS = ["AT_REF_STOP", "AT_REF_EDGE", "AT_REF_WS_TEXT"];
 vm.runInContext(
   extract(appSrc, APP_FNS) +
+    "\n" +
+    extract(appSrc, AT_REF_CONSTS) +
     "\n" +
     extract(nodesSrc, ["isAutoProcKind", "buildSpec", "procSourcesOf"]) +
     "\n" +
@@ -323,13 +343,23 @@ eqArr(
 eqNum(F.atTokensOf("").length, 0, "空正文 → 零 token");
 eqNum(F.atTokensOf(null).length, 0, "null 正文 → 零 token");
 eqStr(F.atTokensOf(" @配图 ")[0], "配图", "token 不含首尾空格");
-const RE_LIT = "/@([^\\s@，。；、！？：,!?;:]+)/g";
+/* 标题 / Tag 可含空格 —— 同一套 atMentionsOf 统一切词（修「空格导致错误引用」的锚点） */
 ok(
-  fnBody(appSrc, "atTokensOf").indexOf(RE_LIT) >= 0 &&
-    fnBody(appSrc, "resolveRefs").indexOf(RE_LIT) >= 0 &&
-    fnBody(nodesSrc, "resolveRefsAgg").indexOf(RE_LIT) >= 0,
-  "三处 @ 正则逐字符一致（atTokensOf / resolveRefs / resolveRefsAgg）",
+  /return atMentionsOf\(/.test(fnBody(appSrc, "atTokensOf")),
+  "atTokensOf 不再自带切词循环，直接委托共享 atMentionsOf",
 );
+ok(
+  /mapAtMentions\(\s*prompt,\s*atRefNamesFor\(/.test(fnBody(appSrc, "resolveRefs")) &&
+    /mapAtMentions\(\s*prompt,\s*atRefNamesFor\(/.test(fnBody(nodesSrc, "resolveRefsAgg")),
+  "resolveRefs / resolveRefsAgg 都经 atRefNamesFor + mapAtMentions 走同一套切词（标题带空格整名识别）",
+);
+{
+  /* 带空格候选与它的「前缀」候选并存：引用后一条必须整名命中，绝不能错指到前缀节点 */
+  const spacey = ["角色", "角色 主角设定"];
+  eqArr(F.atTokensOf("@角色 主角设定 展开", spacey), ["角色 主角设定"], "带空格标题整段消费（不残渣、不退回前缀）");
+  eqArr(F.atTokensOf("@角色主角设定", spacey), ["角色 主角设定"], "正文少打空格（名字里的空格可省略）仍整名命中");
+  eqArr(F.atTokensOf("@角色，接下来", spacey), ["角色"], "不带空格只指前缀节点 → 仍只命中前缀那条（无误伤）");
+}
 
 /* ===================== [1] 有 @标题：只注入被点名的来源 ===================== */
 console.log("\n[1] 明文 @标题 → 命中的全局文本源进入本次输入");

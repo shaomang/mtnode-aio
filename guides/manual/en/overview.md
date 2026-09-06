@@ -1,8 +1,9 @@
 # Welcome to MTNode AI Orchestrator
 
-MTNode puts complex AI work on **one visual canvas**: text/image input, LLM processing, image generation, batch production, task graphs, chat, agent tasks—and **super nodes** to pack large subgraphs.
+MTNode puts complex AI work on **one visual canvas**: text / image / media input, LLM processing, image generation, music / speech / video generation, batch production, task graphs, chat, agent tasks—and **super nodes** to pack large subgraphs.
 
-- **Audio / video generation**: music (MiniMax Music 3) and video (MiniMax H3) local-backend nodes, one file per run.
+- **Audio / video generation**: two first-level submenus — **Audio generation** (Minimax Music 3 for music, SoVITS speech for text-to-speech) and **Video generation** (Minimax H3, Remotion video), all local backends, one file per run.
+- **Audio / video input**: pick a local media file to preview it and output that file’s `file:///` URL, ready to feed a Minimax H3 reference slot.
 - **Network nodes**: `net_recv` / `net_send` text channels across canvases / machines (TCP / UDP).
 - **Execute node**: bind a `.exe` / `.bat` or any file and launch it from the canvas in one click.
 - **Dev nodes**: software project architecture (module → file → class / interface / enum) with 建议 / 开发 / 细化 buttons; the AI reviews read-only and proposes next steps.

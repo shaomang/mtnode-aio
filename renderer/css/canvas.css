@@ -860,6 +860,15 @@
     0 1px 0 rgba(255, 255, 255, .04);
 }
 
+/* 工具节点＝超级节点变体（kind "super" + tool:true）：收起态只是「参数即端子」的叶子
+   卡片（body 由 buildFnToolBodyMain 渲染，不是文件夹卡），外观与处理 / 函数节点同族；
+   展开成壳层（.super-open）后回到超级节点的文件夹底色。
+   刻意只改 border-color / background：拖放高亮、选中环、壳层阴影继续由 .super 系列规则负责。 */
+.wf-node.tool-node:not(.super-open) {
+  border-color: #ff8f2e66;
+  background: linear-gradient(180deg, #221a12, #171310);
+}
+
 .wf-node.super.super-open {
   display: flex;
   flex-direction: column;
@@ -1996,6 +2005,181 @@
 }
 .exec-path.empty { color: var(--warn); font-style: italic; }
 
+/* 素材节点（kind "asset"）：内容条目逐条竖排 · 允许下拉滚动 =====
+   一行 = 一个内容条目 = 一对端子（第 i 入 ↔ 第 i 出）：标题行（标题 + 类型 + 同步）
+   在上，内容视图在下（文本 = 可编辑 textarea · 图像 = 缩略图 · 音频 / 视频 = 播放器）。
+   .asset-node 由 nodeElement 打在输入族（.in）底色之上，只用来收本族排版。 */
+.wf-node.asset-node .n-body { gap: 4px; }
+
+.n-asset-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.n-asset-item {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 5px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .02);
+}
+
+.n-asset-hd {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.n-asset-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.n-asset-kind {
+  flex: none;
+  font-size: 9px;
+  line-height: 1.5;
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--cyan);
+  background: rgba(56, 214, 255, .12);
+}
+
+.n-asset-kind.image { color: #ff8ab8; background: rgba(255, 94, 168, .14); }
+.n-asset-kind.audio { color: #7ab4ff; background: rgba(106, 166, 255, .14); }
+.n-asset-kind.video { color: #6fe0bb; background: rgba(94, 200, 168, .14); }
+
+/* 小同步按钮：默认淡、条目端子有新内容时点亮（.on）—— 点击才更换库内容 */
+.n-asset-sync {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.n-asset-sync:hover { color: var(--ink); border-color: var(--cyan); }
+
+.n-asset-sync.on {
+  color: #0d1117;
+  border-color: #ffd66a;
+  background: #ffd66a;
+  box-shadow: 0 0 6px rgba(255, 214, 106, .6);
+}
+
+.n-asset-cell { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+
+.n-asset-text {
+  flex: none;
+  min-height: 54px;
+  max-height: 120px;
+  font-size: 11.5px;
+}
+
+.n-asset-img { flex: none; max-height: 118px; }
+.n-asset-av { flex: none; min-height: 42px; }
+.n-asset-ops { flex: none; }
+
+.n-asset-file {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== 音频 / 视频输入节点：选本机文件，输出端子给该文件的 file:/// URL ===== */
+/* 沿用输入族（.in）的青色描边，body 里排三行：预览框 / 文件名 / 操作 + 说明 */
+.wf-node.in-media .n-av {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+  background: var(--code);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.wf-node.in-media .n-av-el {
+  width: 100%;
+  max-height: 100%;
+  margin: auto;
+  background: #0a0c10;
+  border-radius: 2px;
+}
+
+.wf-node.in-media .n-av-ghost {
+  padding: 6px 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+/* 文件名一行：点击在文件夹中显示 */
+.wf-node.in-media .n-av-name {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.wf-node.in-media .n-av-name.empty {
+  color: var(--orange2);
+  font-style: italic;
+  cursor: default;
+}
+
+.wf-node.in-media .n-av-note {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+  opacity: .8;
+  text-align: center;
+}
+
+/* 节点头部「输出 URL」徽标：提示这两个输入节点的输出端子给出文件 URL */
+.wf-node.in-media .n-chip.av-chip {
+  color: var(--cyan2);
+  border-color: #38d6ff55;
+}
+
 /* 图标 / 颜色选择网格（mtDialogForm custom 区域） */
 .exec-icon-grid,
 .exec-color-grid {
@@ -2650,6 +2834,25 @@
   margin-right: 0
 }
 
+/* 工具节点（super + tool:true）在子画布内侧显示「参数名即端子名」：
+   舞台 overflow:hidden 且端子贴在舞台左右缘，全屏进入态的端子钉在屏幕边缘 ——
+   这两种场合徽标朝「外侧」出字都会被裁掉 / 甩出屏幕，一律改为朝内侧出字。 */
+.super-stage .port.out.super-inner-bridge>.port-badge,
+.super-focus-port-layer .port.out.super-inner-bridge>.port-badge {
+  left: 100%;
+  right: auto;
+  margin-left: 8px;
+  margin-right: 0
+}
+
+.super-stage .port.in.super-inner-sink>.port-badge,
+.super-focus-port-layer .port.in.super-inner-sink>.port-badge {
+  right: 100%;
+  left: auto;
+  margin-right: 8px;
+  margin-left: 0
+}
+
 .port-badge.zh-label {
   font-family: inherit;
   letter-spacing: 0
@@ -3237,7 +3440,13 @@
   word-break: break-word;
   overflow: auto;
   min-height: 0;
-  flex: 1
+  flex: 1;
+  /* 关键：markdown 产物是 HTML，源码里的块间换行（</p>\n<ul>、</li>\n<li>）没有语义。
+     会话容器（.dsh-msg-body / .dsh-seg-say / .chat-bubble）为了显示未渲染的流式纯文本
+     整块设了 white-space: pre-wrap，这个值会被 .md 继承 → 每个块边界都多出一个空行、
+     列表项之间也被撑开，表现为「正文莫名频繁换行」。这里就地归位 normal：
+     段内换行由 renderMarkdown 的 breaks:true 发成 <br>，代码块另有 pre 规则。 */
+  white-space: normal
 }
 
 .md>*:first-child {
@@ -3379,36 +3588,6 @@
   border: 1px solid var(--bd)
 }
 
-.chat-msg.ai .chat-bubble .md {
-  color: #1a1a1a
-}
-
-.chat-msg.ai .chat-bubble .md code {
-  background: rgba(0, 0, 0, .08);
-  border-color: rgba(0, 0, 0, .2);
-  color: #c7254e
-}
-
-.chat-msg.ai .chat-bubble .md pre {
-  background: rgba(0, 0, 0, .06);
-  border-color: rgba(0, 0, 0, .18)
-}
-
-.chat-msg.ai .chat-bubble .md pre code {
-  color: #222
-}
-
-.chat-msg.ai .chat-bubble .md h1,
-.chat-msg.ai .chat-bubble .md h2,
-.chat-msg.ai .chat-bubble .md h3,
-.chat-msg.ai .chat-bubble .md h4 {
-  color: #9a5b00
-}
-
-.chat-msg.ai .chat-bubble .md a {
-  color: #1267c9
-}
-
 .chat-list {
   flex: 1;
   min-height: 0;
@@ -3417,18 +3596,6 @@
   flex-direction: column;
   gap: 8px;
   padding: 2px 2px 6px
-}
-
-.chat-msg {
-  display: flex
-}
-
-.chat-msg.me {
-  justify-content: flex-end
-}
-
-.chat-msg.ai {
-  justify-content: flex-start
 }
 
 .chat-bubble {
@@ -3440,75 +3607,6 @@
   white-space: pre-wrap;
   word-break: break-all;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
-}
-
-.chat-msg.me .chat-bubble {
-  background: #95ec69;
-  color: #0d1016;
-  border-top-right-radius: 2px
-}
-
-.chat-msg.ai .chat-bubble {
-  background: #ffffff;
-  color: #1a1a1a;
-  border-top-left-radius: 2px
-}
-
-.chat-col {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  max-width: 82%
-}
-
-.chat-col .chat-bubble {
-  max-width: 100%
-}
-
-.chat-msg .chat-col {
-  margin: 0
-}
-
-.chat-think-btn {
-  align-self: flex-start;
-  border: 1px dashed var(--bd2);
-  border-radius: 10px;
-  background: rgba(56, 214, 255, .07);
-  color: var(--muted);
-  font-size: 10.5px;
-  padding: 3px 9px;
-  cursor: pointer;
-  letter-spacing: 1px;
-  user-select: none;
-}
-
-.chat-think-btn:hover {
-  border-color: var(--cyan);
-  color: var(--cyan2);
-  background: rgba(56, 214, 255, .16)
-}
-
-/* 思考中：灰色字体流式显示在「输入中」位置 */
-.chat-typing {
-  color: var(--muted);
-  font-weight: 400;
-  letter-spacing: 0;
-  font-style: italic;
-  font-size: 12px;
-  background: #f0f1f3;
-  max-height: 150px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-/* 回复正文流式（:empty 时隐藏） */
-.chat-stream {
-  background: #eef4ff
-}
-
-.chat-stream:empty {
-  display: none
 }
 
 /* 智能任务节点：上下分栏会话（与智能会话同款消息流；背景与 Output 一致的深色） */
@@ -3638,13 +3736,6 @@
 
 .n-field .vresize-handle {
   top: -6px
-}
-
-.chat-input-row {
-  flex: none;
-  display: flex;
-  gap: 6px;
-  align-items: flex-end
 }
 
 .chat-input {
@@ -4120,6 +4211,65 @@
   border-color: var(--orange)
 }
 
+/* ===== 节点 body 的「设置摘要行」（设置本体已搬进 ⚙ 跳窗）=====
+   一行只读文本 + ⚙：文本永远是最新真源的投影，不作为输入框存在
+   （浏览态传 gear:false，只剩只读文本，绝不构造交互构件）。 */
+.n-setsum {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 0 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted)
+}
+
+.n-setsum-txt {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: .92
+}
+
+.n-setsum .n-play.n-setsum-btn {
+  width: auto;
+  height: 17px;
+  padding: 0 5px;
+  font-size: 11px;
+  letter-spacing: 0
+}
+
+/* 片段式摘要（生成 / 保存类）：label 淡、value 正色；value 带老控件 id，
+   运行期回填与跳窗改动都通过 syncNodeSettingsValue() 只换这一段文本。 */
+.n-setsum-lab {
+  opacity: .62
+}
+
+.n-setsum-val {
+  color: var(--text);
+  opacity: .95
+}
+
+/* 路径那一行宁可换行也要看全（长路径截断等于没显示） */
+.n-setsum.mg-sum-path .n-setsum-txt {
+  white-space: normal;
+  word-break: break-all;
+  overflow: visible
+}
+
+/* 摘要行右边的动作按钮（浏览 / 位置 / 打开 / 刷新）：与 .mini 同型，压一档高度 */
+.n-setsum .mini {
+  flex: 0 0 auto;
+  height: 17px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  line-height: 15px
+}
+
 .n-status {
   font-size: 10.5px;
   color: var(--muted);
@@ -4444,12 +4594,119 @@
   font-family: var(--mono)
 }
 
+/* SoVITS 语音节点（tts_gen）：音色下拉 / 手填 + 刷新、输出格式 select 的宽度约束 */
+.mg-param select {
+  max-width: 104px;
+  min-width: 0;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 4px;
+  font-size: 11.5px;
+}
+.mg-voice-box {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 140px;
+}
+.mg-voice-box select,
+.mg-voice-box input[type="text"] {
+  width: 100%;
+  max-width: 132px;
+  min-width: 0;
+}
+.mg-voice-box input[type="text"] {
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+}
+.mg-param-voice .mini {
+  flex: none;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
 .mg-reroll {
   width: auto;
   min-width: 36px;
   padding: 0 6px;
   flex: none
 }
+
+/* H3 自建 ComfyUI 工作流：video_gen 参数面板里的「工作流选择 + 参数映射」行 */
+.mgwf-row {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0
+}
+
+.mgwf-row-sub {
+  margin: 0 0 4px 14px;
+  opacity: .92
+}
+
+.mgwf-row select,
+.mgwf-row input {
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 3px 5px;
+  font-size: 11.5px;
+  min-width: 0
+}
+
+.mgwf-row select:focus,
+.mgwf-row input:focus {
+  border-color: var(--orange)
+}
+
+.mgwf-grow {
+  flex: 1 1 120px
+}
+
+.mgwf-type {
+  flex: none;
+  width: 74px
+}
+
+.mgwf-port {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--cyan2);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 1px 4px
+}
+
+.mgwf-port.off {
+  color: var(--muted);
+  opacity: .75
+}
+
+.mgwf-src {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  letter-spacing: .3px
+}
+
+.mgwf-head {
+  margin-top: 6px;
+  opacity: .8;
+  font-size: 10.5px
+}
+
 
 .sv-prev {
   flex: 1;
@@ -4732,6 +4989,120 @@
   --rim: #c8922f
 }
 
+/* 图像数据类型端子（工具 / 函数节点的 image 参数）：与 .port.ctrl 同一写法，
+   换金属圈颜色 + 徽标色，一眼与文本端子区分（粉 = 图像节点既有识别色 #ff5ea8 一族） */
+.port.img {
+  --rim: #a8407a
+}
+
+.port.img>.port-badge {
+  color: #ff8ab8
+}
+
+.port.img.hover {
+  transform: scale(1.25);
+  filter: brightness(1.2);
+  box-shadow: 0 0 10px rgba(255, 94, 168, .95)
+}
+
+.port.img.hover::before {
+  background: radial-gradient(circle at 38% 32%, #ffd7e8 0%, #ff5ea8 80%);
+  box-shadow: 0 0 6px rgba(255, 94, 168, .9)
+}
+
+/* 音频 / 视频条目端子（素材节点按内容类型着色）：与 .port.img 同一写法，
+   音频走音乐蓝、视频走视频绿，一眼分得清这条线喂的是哪种内容 */
+.port.aud {
+  --rim: #2f6ea8
+}
+
+.port.aud>.port-badge {
+  color: #7ab4ff
+}
+
+.port.aud.hover {
+  transform: scale(1.25);
+  filter: brightness(1.2);
+  box-shadow: 0 0 10px rgba(106, 166, 255, .95)
+}
+
+.port.aud.hover::before {
+  background: radial-gradient(circle at 38% 32%, #dbe8ff 0%, #6aa6ff 80%);
+  box-shadow: 0 0 6px rgba(106, 166, 255, .9)
+}
+
+.port.vid {
+  --rim: #2f9e7a
+}
+
+.port.vid>.port-badge {
+  color: #6fe0bb
+}
+
+.port.vid.hover {
+  transform: scale(1.25);
+  filter: brightness(1.2);
+  box-shadow: 0 0 10px rgba(94, 200, 168, .95)
+}
+
+.port.vid.hover::before {
+  background: radial-gradient(circle at 38% 32%, #d8fff0 0%, #5ec8a8 80%);
+  box-shadow: 0 0 6px rgba(94, 200, 168, .9)
+}
+
+/* 设置面板参数行左侧的类型标记：与端子 .img 同一识别色 */
+.fn-p-kind {
+  flex: none;
+  font-size: 9px;
+  line-height: 1;
+  color: #2f88ad;
+  opacity: .8;
+  cursor: default;
+}
+
+.fn-p-kind.img {
+  color: #ff5ea8;
+  opacity: 1
+}
+
+/* 数组端子槽位组（渐进槽位端子组 · 与引擎同一端子号多线口径）：
+   徽标里参数名后跟一组小槽点 —— 每挂一条数据线亮一个实心槽（参考图[1] [2]…），
+   末尾留一个空槽环代表「还能再接」；长名端子把槽点折行不换字体度量。 */
+.fn-arr-slots {
+  font-size: 0;
+  line-height: 1;
+  white-space: nowrap
+}
+
+.fn-arr-slot-dot,
+.fn-arr-slot-add {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  vertical-align: middle;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .8), 0 0 2px rgba(0, 0, 0, .6)
+}
+
+.fn-arr-slot-dot {
+  background: radial-gradient(circle at 40% 35%, #cfe6ff 0%, #5ea8ff 70%, #2f6fa8 100%);
+  pointer-events: auto;
+  cursor: crosshair
+}
+
+.fn-arr-slot-add {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(143, 200, 255, .8), 0 0 2px rgba(0, 0, 0, .5);
+  pointer-events: auto;
+  cursor: crosshair
+}
+
+.fn-arr-slot-dot:hover,
+.fn-arr-slot-add:hover {
+  box-shadow: 0 0 5px rgba(255, 143, 46, .9), inset 0 0 0 1px rgba(255, 255, 255, .4)
+}
+
+
 .port.ctrl.hover {
   transform: scale(1.25);
   filter: brightness(1.2);
@@ -4754,8 +5125,7 @@
   box-shadow: 0 0 6px rgba(255, 143, 46, .9)
 }
 
-/* ===== 接线排文字（输入 / 输出）：贴到节点板「外侧」——输入在左缘外、输出在右缘外。
-   放在插排内侧时它会压住最上面的端子（插排只有 16px 宽，端子又从上往下排），
+/* ===== 接线排文字（输入 / 输出）：贴到节点板「外侧」——输入在左缘外、输出在右缘外。   放在插排内侧时它会压住最上面的端子（插排只有 16px 宽，端子又从上往下排），
    出板后与整排端子不再有任何遮挡关系。 */
 .n-port-label {
   position: absolute;
@@ -5339,5 +5709,196 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   函数节点 JS 代码编辑器（renderer/app-codeedit.js · createJsCodeEditor）
+   ------------------------------------------------------------------------
+   三层结构（DOM 顺序 = 叠放顺序）：
+     .js-edit            容器：position:relative，自己铺 --code 底色并裁边
+     .js-edit-gutter     行号槽：左列（绝对贴在容器左缘，与 textarea 同步 scrollTop）
+     .js-edit-hl         高亮镜像层：absolute 铺满代码区 + pointer-events:none，只负责显示
+     .js-edit-input      真正可编辑的 textarea（.n-text）：绝对叠在同一位置，
+                         字透明只留 caret-color，所以点击 / 输入全部落在它身上
+   没有这份 CSS 时三层按文档流竖排 → 看到的是不可点的镜像文字，textarea 被挤出板身。
+
+   对齐口径抄 .n-prompt-hl + .n-text.n-text-layered（已验证方案）：字体度量写进 CSS 变量，
+   两层共用「同一条声明块」，逐条钉死相同（font-size / line-height / padding / border /
+   tab-size / letter-spacing / scrollbar-gutter），任何一条不一致都会两层错位。
+   与 prompt 的唯一差别：textarea 上挂了 wrap="off" → 两层都 white-space:pre，
+   绝不软换行（行号必须与视觉行 1:1），超宽走横向滚动；两侧都恒定预留 10px 滚动条槽，
+   使 clientWidth 相同 → scrollLeft 可直接照搬。
+   ════════════════════════════════════════════════════════════════════════ */
+.js-edit {
+  /* 度量真源：改这里就等于同时改两层，不存在只改一侧的机会 */
+  --js-gw: 36px;
+  --js-fs: 12.5px;
+  --js-lh: 1.5;
+  --js-pad: 6px;
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  background: var(--code);
+  border-radius: 3px;
+  font-family: var(--mono);
+}
+
+/* ── 行号槽（左列）──
+   宽度固定 = 容器上 --js-gw，代码两层用 inset-left 让出同一宽度；
+   字号 / 行高与代码区共用变量，才能上下逐行对齐。JS 里 gutter.scrollTop = ta.scrollTop。 */
+.js-edit-gutter {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--js-gw);
+  overflow: hidden;
+  box-sizing: border-box;
+  /* 1px 透明边框与代码两层的边框同宽，行号的首行才能与首行代码同一基线 */
+  border: 1px solid transparent;
+  padding: var(--js-pad) 0;
+  background: var(--bg2);
+  font-size: var(--js-fs);
+  line-height: var(--js-lh);
+  font-family: var(--mono);
+  text-align: right;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+.js-ln {
+  padding-right: 8px;
+  /* 36px 槽够排到 3 位行号（再宽改 .js-edit 的 --js-gw 一处即可） */
+  color: var(--muted);
+  opacity: .75;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+}
+
+.js-ln.cur {
+  color: var(--cyan2);
+  opacity: 1
+}
+
+/* 与镜像层 JS 里恒定追加的那个换行同口径：行号槽末尾也垫一行空行，
+   这样滚到底时槽的 scrollTop 上限与 textarea 相同，最后一行的行号不会整体错位一行。 */
+.js-edit-gutter::after {
+  content: "\A";
+  white-space: pre;
+}
+
+/* ── 两层共用的字体度量：只写一次，保证镜像层与 textarea 完全同轴 ── */
+.js-edit-hl,
+.js-edit-input {
+  position: absolute;
+  inset: 0 0 0 var(--js-gw);
+  box-sizing: border-box;
+  margin: 0;
+  padding: var(--js-pad);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: var(--js-fs);
+  line-height: var(--js-lh);
+  letter-spacing: normal;
+  font-variant-ligatures: none;
+  /* 镜像层把文字切成一个个 span，连字会把跨 span 的 == / => 拆掉，
+     与 textarea 的整段排版宽度就不一样了 → 两层一律关掉连字 */
+  tab-size: 4;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  scrollbar-gutter: stable;
+}
+
+/* 镜像层：只画彩色文字，滚动位置由 JS 照搬 textarea */
+.js-edit-hl {
+  overflow: hidden;
+  pointer-events: none;
+  background: transparent;
+  color: var(--ink);
+}
+
+/* 输入层：绝对叠在镜像层同位置，字透明只留光标（边框宽度与镜像层同为 1px，颜色可见，
+   顺带充当代码区与行号槽之间的分隔线） */
+.js-edit-input {
+  z-index: 1;
+  overflow: auto;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--ink);
+  border-color: var(--bd2);
+  resize: none;
+  outline: none;
+  /* .n-text 是 pre-wrap + break-word，会把 wrap="off" 顶掉并导致两层换行位置不同 → 由上面的共用块改回 pre */
+}
+
+.js-edit-input:focus {
+  border-color: var(--cyan)
+}
+
+.js-edit-input::selection {
+  background: rgba(56, 214, 255, .35);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.js-edit-input::placeholder {
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+  opacity: 1;
+}
+
+/* ── 语法着色 token（jsHighlightHtml 的 class 名一一对应）── */
+.jsl-com {
+  color: #6b7a90;
+  font-style: italic
+}
+
+.jsl-str {
+  color: #98c379
+}
+
+.jsl-num {
+  color: #d19a66
+}
+
+.jsl-punc {
+  color: #8f9bb0
+}
+
+.jsl-kw {
+  color: #c678dd
+}
+
+.jsl-bool {
+  color: #d19a66
+}
+
+/* 契约词（input / values / $1…）：函数节点执行契约，给最高识别度。
+   只用颜色区分，一律不加 font-weight —— 镜像层字重一旦和 textarea 不同，
+   同样的文字就会比 textarea 宽，整行随之与光标错位（italic 是等宽斜切，不受此限）。 */
+.jsl-con {
+  color: #e5c07b
+}
+
+.jsl-fn {
+  color: #61afef
+}
+
+.jsl-prop {
+  color: #56b6c2
+}
+
+/* 代码工具条（格式化按钮 + 行数 / 光标行提示）排在编辑器上方 */
+.fn-code-bar {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  margin: 0 0 4px;
+  font-size: 11px;
 }
 

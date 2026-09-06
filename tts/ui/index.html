@@ -109,11 +109,7 @@
     #voicePanel { display: none; }
     #voicePanel.on { display: flex; }
     textarea { width: 100%; resize: vertical; min-height: 48px; }
-    select.lang-select { flex: 1; min-width: 0; }
     input[type="checkbox"] { width: auto; padding: 0; margin: 0; accent-color: var(--accent); }
-    .lang-row { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; }
-    .lang-row label { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); cursor: pointer; white-space: nowrap; }
-    #langHint { color: var(--muted); font-size: 11px; line-height: 1.5; }
     .test-row { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
     /* 训练中间模型（试听）一行：默认跟随训练进度，可固定轮次做对比 */
     .live-row { display: none; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -260,7 +256,7 @@
           <span class="mode-hint">复用已整理过的音频与文字（跳过转换 / 切分 / ASR / 特征提取）</span>
         </label>
         <label class="mode-opt" title="对 99% 能量截止低于 7 kHz 的语料，在 8–15 kHz 空频带填充极低电平噪声，让声码器那一段不再凭空生成。缓解电流音 / 毛刺，根治仍是换 ≥32 kHz 原始素材重训。">
-          <input type="checkbox" id="ditherFill" />
+          <input type="checkbox" id="ditherFill" checked />
           <span class="mode-hint">高频空带填充（缓解低带宽语料训练后的电流音；根治仍是换 ≥32 kHz 原始素材）</span>
         </label>
         <div class="meta mode-plan" id="trainPlanHint"></div>
@@ -282,19 +278,6 @@
     <div class="card test-row">
       <div class="meta">测试合成</div>
       <select id="voiceSelect"></select>
-      <div class="lang-row">
-        <span class="meta">语种</span>
-        <select id="langSelect" class="lang-select" title="默认「仅中文」：纯汉字句子不会被引擎误判成日语"></select>
-        <label title="锁定后，画布节点 / OpenAI 接口 / 脚本传来的语种参数一律忽略，全按上面的语种读">
-          <input type="checkbox" id="langLock" /><span>锁定</span>
-        </label>
-      </div>
-      <div class="meta" id="langHint">—</div>
-      <div class="lang-row">
-        <span class="meta">采样步数</span>
-        <select id="stepsSelect" class="lang-select" title="SoVITS 声码器（v3 / v4）的合成步数。默认 32；调大更细但更慢。注意：v1 / v2 / v2Pro 权重不消费这个参数（实测 32/64/128 输出字节完全相同），练完有电流音请先看训练卡片里的「语料体检」。"></select>
-        <span class="meta" id="stepsHint" style="flex:1;min-width:120px"></span>
-      </div>
       <!-- 训练中间模型：每练完一轮自动换新，选中即可直接试听当前训练到第几轮的效果 -->
       <div class="live-row" id="liveRow">
         <span class="badge live" id="liveBadge">中间模型</span>

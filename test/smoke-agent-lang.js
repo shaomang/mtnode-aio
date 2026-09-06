@@ -74,7 +74,10 @@ ok(
   "app-db.js 提供 agentLangTasteNote() 兜底封装",
 );
 ok(
-  /systemPrompt:\s*\[[\s\S]{0,700}?agentLangTasteNote\(\),[\s\S]{0,120}?\]/.test(db),
+  /* 纯净模式（pureOn）把 systemPrompt 变成了三元式：口味在「非纯净」那条数组里即可 */
+  /systemPrompt:\s*(?:pureOn[\s\S]{0,40}\?:?\s*)?\[[\s\S]{0,700}?agentLangTasteNote\(\),[\s\S]{0,120}?\]/.test(
+    db,
+  ) || /systemPrompt:[\s\S]{0,160}?\[[\s\S]{0,700}?agentLangTasteNote\(\),/.test(db),
   "dshRunTask 组装 systemPrompt 时带上语言口味（会话 / 节点 / 助手 / 计划 / 开发节点全覆盖）",
 );
 ok(

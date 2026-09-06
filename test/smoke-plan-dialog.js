@@ -278,6 +278,10 @@ function loadSandbox(files) {
     window: { innerWidth: 1600, innerHeight: 900 },
     document: doc,
     I18n: { t: (s) => String(s) },
+    /* 渲染层默认预设真源（app.js 的 AGENT_PRESET_DEFAULT）：
+       沙箱里加载 app-plan.js / app-assist.js 后要跑到「未选预设 → 兜底」的
+       运行入口，缺这个全局就会 ReferenceError。 */
+    AGENT_PRESET_DEFAULT: "minimal",
     ensureMtDialog: () => host,
     closeMtDialog: () => host.classList.remove("on"),
     playIxSound: () => {},
@@ -1802,6 +1806,133 @@ async function main() {
         i18All.indexOf('"当前最多"') >= 0 &&
         planJs.indexOf('I18n.t("当前最多")') >= 0,
       "把手提示（含实时「当前最多 Npx」）已进 i18n 词条表，常量与词条不漂移",
+    );
+  }
+
+  /* ===================== [12] 计划漏弹检测与自动纠错 ===================== */
+  console.log("\n[12] 计划漏弹：关键词检测 + 自动重新生成（模型生成失误的自愈）");
+  {
+    const s12 = makeSandbox();
+    /* —— 命中判定：解析不出合法计划，但正文明显在「交计划」 —— */
+    ok(
+      s12.planMissedDetection(PLAN_TEXT) === "",
+      "合法计划块 → 不算漏弹（正常弹窗，绝不多追一轮）",
+    );
+    ok(
+      s12.planMissedDetection(
+        "计划如下：\n<!--MTNODE-PLAN-->\n{\"goal\":\"g\",\"tasks\":[{\"title\":\"t1\"}]}",
+      ) === "mark",
+      "漏了闭合标记 → 命中 mark",
+    );
+    ok(
+      s12.planMissedDetection(
+        "<!--MTNODE PLAN-->这里标记被写坏了，没有 JSON<!--/MTNODE PLAN-->",
+      ) === "mark",
+      "标记串写法漂移（连字符写成空格）也认得出来 → 命中 mark",
+    );
+    ok(
+      s12.planMissedDetection(
+        "<!—MTNODE—PLAN—>正文<!--/MTNODE—PLAN—>（全角破折号）",
+      ) === "mark",
+      "全角破折号写坏标记 → 命中 mark",
+    );
+    ok(
+      s12.planMissedDetection(
+        '好的，这是计划：\n{"goal": "补检测", "tasks": [{"title": "改 app-plan.js"}]}',
+      ) === "json",
+      "整份计划裸 JSON 输出（没包标记）→ 命中 json",
+    );
+    /* —— 不命中：正常答复一律不许触发纠错（误伤 = 白烧一轮 token） —— */
+    ok(
+      s12.planMissedDetection("这任务很简单，我直接改了 renderer/app-plan.js 一处。") ===
+        "",
+      "普通直答 → 不命中",
+    );
+    ok(
+      s12.planMissedDetection('配置长这样：{ "tasks": [1,2] }，goal 字段略。') === "",
+      "只有 tasks 一个键（谈论文档/配置）→ 不命中：必须 goal+tasks 同现",
+    );
+    ok(s12.planMissedDetection("") === "", "空正文 → 不命中");
+    ok(s12.planMissedDetection(null) === "", "null → 不命中（不抛）");
+    /* —— 闸门：只有「本轮被要求交计划块」才允许自愈 —— */
+    ok(
+      s12.planFlowAsksForNewPlan(s12.planFlowDirective()) === true,
+      "注入的是任务流程契约 → 允许检测",
+    );
+    ok(
+      s12.planFlowAsksForNewPlan(
+        s12.planFlowCarryDirective({
+          plan: { goal: "g", steps: [{ n: 1, title: "t", status: "pending" }] },
+        }),
+      ) === false,
+      "注入的是「沿用现有计划」（明令禁止再出计划）→ 不检测、不自愈",
+    );
+    ok(
+      s12.planFlowAsksForNewPlan("") === false &&
+        s12.planFlowAsksForNewPlan("随便一段别的提示") === false,
+      "没注入契约 / 注入别的文字 → 不检测",
+    );
+    /* —— 纠错指令本身必须把契约讲清楚（标记 + JSON 骨架 + 一次为限的口径） —— */
+    const fix = s12.planFixDirective();
+    ok(
+      fix.indexOf("<!--MTNODE-PLAN-->") >= 0 &&
+        fix.indexOf("<!--/MTNODE-PLAN-->") >= 0,
+      "纠错指令里带上正确的起止标记原文（模型照着抄就不会再写坏）",
+    );
+    ok(
+      /重新完整输出一次/.test(fix) && /"tasks"/.test(fix) && /不要开始实施/.test(fix),
+      "纠错指令：重出一次 + JSON 骨架 + 禁止实施（不让它借机开工）",
+    );
+    ok(
+      /const PLAN_FIX_MAX_ROUNDS\s*=\s*1;/.test(read("renderer/app-plan.js")),
+      "配额常量 = 1 次（一个用户轮最多自愈一次）",
+    );
+    /* —— 接线检查（渲染层三处 + 词条，缺一不可） —— */
+    const assistJs = read("renderer/app-assist.js");
+    const nodesJs = read("renderer/app-nodes.js");
+    const i18 = read("renderer/i18n.js");
+    ok(
+      /const planFixMsg = !!opts\._planFix;/.test(assistJs),
+      "会话路径：自愈轮有独立身份（opts._planFix）",
+    );
+    ok(
+      /if \(!planFixMsg\) st\._planFixRounds = 0;/.test(assistJs) &&
+        /st\._planFixAsk = false;/.test(assistJs),
+      "配额只在用户亲口那一轮清零 + 每轮先清「待纠错」位（防残留连环）",
+    );
+    ok(
+      /const planAskedNew =/.test(assistJs) &&
+        /!skillWrap &&[\s\S]{0,120}!planFixMsg &&/.test(assistJs),
+      "闸门：Skill 轮 / 计划执行轮 / 自愈轮一律不检测",
+    );
+    ok(
+      /else \{\s*const miss =[\s\S]{0,200}planMissedDetection\(msg\.content\)[\s\S]{0,400}st\._planFixAsk = true;/.test(
+        assistJs,
+      ),
+      "轮末：解析失败 + 命中关键词 → 记下「待纠错」",
+    );
+    ok(
+      assistJs.indexOf("st.running = false;") <
+          assistJs.indexOf("await agentSessionSend(planFixDirective()") &&
+        /\(Number\(st\._planFixRounds\) \|\| 0\) < cap/.test(assistJs) &&
+        /_planFix: true,/.test(assistJs),
+      "收尾在 running=false 之后才追发（不会被塞进发送队列）+ 受配额约束",
+    );
+    ok(
+      /!hasQueued &&[\s\S]{0,80}!holdQueue &&[\s\S]{0,80}outcome === "ok"/.test(assistJs),
+      "让路口径：有排队消息 / 本轮被终止或出错 → 不自愈",
+    );
+    ok(
+      /planFlowInjected &&/.test(nodesJs) &&
+        /planMissedDetection\(out\)/.test(nodesJs) &&
+        /const again = await dshRunTask\(/.test(nodesJs) &&
+        /out\.slice\(-2500\)/.test(nodesJs),
+      "智能节点路径：注入过契约 + 命中漏弹 → 同一份 runOpts 重跑一次（带上轮尾部供改写）",
+    );
+    ok(
+      i18.indexOf("检测到计划未弹出，已自动要求重新生成一次") >= 0 &&
+        i18.indexOf("计划仍未正确生成：请重新发送你的要求，或手动整理任务清单") >= 0,
+      "两条新提示都已进 i18n 词条表（英文界面不漏中文）",
     );
   }
 

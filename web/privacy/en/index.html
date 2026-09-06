@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy · MTNode AI Orchestrator</title>
+<meta name="description" content="Privacy policy for MTNode (mtnode-aio), English mirror of the Chinese policy: workflows, configuration and API keys stay in the local %APPDATA%\pipeline-console folder; the app ships no telemetry, analytics or advertising SDK; what is transmitted to AI-provider APIs and to mt-agent.com, server-side logs, retention periods and deletion routes.">
+<meta name="robots" content="index, follow">
+<style>
+:root{
+  --bg:#0d1016; --bg2:#12161f; --panel:#161b25; --panel2:#1b2230;
+  --bd:#2a3342; --bd2:#39465c; --ink:#d8dee8; --muted:#7f8a9c;
+  --orange:#ff8f2e; --orange2:#ffb066; --cyan:#38d6ff; --cyan2:#7ce8ff;
+  --green:#5fd68a; --red:#ff5f56; --code:#0c0f15;
+  --mono:'Consolas','Cascadia Code','JetBrains Mono',monospace;
+  --sans:'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.8}
+::selection{background:rgba(255,143,46,.35)}
+a{color:var(--cyan);text-decoration:none}
+a:hover{color:#fff;text-decoration:underline}
+.wrap{max-width:980px;margin:0 auto;padding:0 20px}
+.topbar{
+  position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;
+  padding:10px 20px;background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border-bottom:3px solid var(--bd);
+}
+.logo{display:flex;align-items:center;gap:10px;flex:none}
+.logo-mark{
+  width:28px;height:28px;position:relative;flex:none;
+  background:linear-gradient(135deg,var(--panel2),#0f1320);
+  border:2px solid var(--orange);
+}
+.logo-mark::before,.logo-mark::after{content:"";position:absolute;background:var(--cyan);width:5px;height:5px}
+.logo-mark::before{top:3px;left:3px}
+.logo-mark::after{bottom:3px;right:3px}
+.logo-txt{font-weight:800;letter-spacing:2px;font-size:15px;color:var(--orange);line-height:1.15}
+.logo-sub{display:block;font-size:9px;letter-spacing:2px;color:var(--muted);font-weight:400}
+.nav{display:flex;flex-wrap:wrap;gap:4px 14px;flex:1;justify-content:flex-end}
+.nav a{color:var(--muted);font-size:12px;letter-spacing:1px;font-weight:600}
+.nav a:hover{color:var(--orange2);text-decoration:none}
+
+section{padding:8px 0 6px}
+h1{font-size:30px;font-weight:800;letter-spacing:2px;margin:26px 0 8px}
+h1 b{color:var(--orange)}
+h2{font-size:17px;letter-spacing:2px;margin:28px 0 12px;color:var(--ink)}
+h2::before{content:"■ ";color:var(--orange);font-size:12px;vertical-align:1px}
+h3{font-size:14px;letter-spacing:1px;margin:16px 0 6px;color:var(--orange2)}
+p{margin:8px 0;color:var(--ink)}
+.muted{color:var(--muted);font-size:13px}
+code{font-family:var(--mono);font-size:12px;background:rgba(0,0,0,.45);border:1px solid var(--bd);border-radius:3px;padding:1px 6px;color:var(--cyan2);word-break:break-all}
+ul{margin:8px 0 8px 22px;color:var(--ink)}
+li{margin:5px 0}
+b.hl{color:var(--orange2)}
+.lead{font-size:15px;max-width:820px}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 6px}
+.pill{
+  font-size:11px;letter-spacing:1px;color:var(--cyan2);font-family:var(--mono);
+  border:1px solid var(--bd2);border-radius:3px;padding:2px 9px;background:rgba(0,0,0,.25);
+}
+.pill.accent{border-color:var(--orange);color:var(--orange2)}
+
+.tl{width:100%;border-collapse:collapse;margin:12px 0 6px;font-size:13px}
+.tl th,.tl td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top;line-height:1.7}
+.tl th{background:var(--panel2);color:var(--orange2);letter-spacing:1px;font-weight:700;white-space:nowrap}
+.tl td:first-child{color:var(--ink);font-weight:600;width:190px}
+.tl tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:12px 0 8px}
+.card{border:1px solid var(--bd);border-radius:5px;padding:14px 16px;background:var(--panel)}
+.card h3{margin:0 0 6px;font-size:13.5px;letter-spacing:1px;color:var(--ink)}
+.card h3 b{color:var(--orange)}
+.card p{margin:4px 0 0;font-size:13px;color:var(--muted)}
+
+.note{
+  border:1.5px solid var(--orange);border-radius:6px;padding:16px 20px;margin:18px 0 10px;
+  background:linear-gradient(180deg,#221a12,#171310);box-shadow:0 8px 30px rgba(0,0,0,.4);
+}
+.note h3{margin:0 0 6px;color:var(--orange2);font-size:14px;letter-spacing:2px}
+.note p{font-size:13.5px;margin:6px 0}
+.note.warn{border-color:var(--bd2);background:linear-gradient(180deg,var(--panel),var(--bg2))}
+.note.warn h3{color:var(--cyan2)}
+
+footer{
+  margin-top:44px;padding:16px 20px;background:var(--panel2);border-top:3px solid var(--bd);
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  font-size:11.5px;letter-spacing:1px;color:var(--muted);font-family:var(--mono);
+}
+footer .spacer{flex:1}
+footer a.author{color:var(--cyan);font-weight:700;border:1px solid var(--bd2);border-radius:3px;padding:1px 8px}
+footer a.author:hover{color:#fff;border-color:var(--cyan)}
+
+@media (max-width:760px){
+  .nav{display:none}
+  .grid{grid-template-columns:1fr}
+  h1{font-size:24px;letter-spacing:1px}
+  .tl td:first-child{width:auto}
+  .note{padding:14px}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">
+    <span class="logo-mark"></span>
+    <span class="logo-txt">MTNode<span class="logo-sub">PRIVACY POLICY</span></span>
+  </div>
+  <nav class="nav">
+    <a href="#scope">Scope</a>
+    <a href="#local">Local data</a>
+    <a href="#provider">Provider APIs</a>
+    <a href="#server">mt-agent.com</a>
+    <a href="#delete">Retention</a>
+    <a href="#contact">Contact</a>
+    <a href="../">简体中文</a>
+    <a href="../../">Download</a>
+  </nav>
+</header>
+
+<main class="wrap">
+<section class="hero">
+  <h1>MTNode <b>Privacy Policy</b></h1>
+  <p class="lead">This page explains what information MTNode AI Orchestrator (below, "the app") and its companion online services process on your computer and in network traffic, why it is processed, how long it is kept and how it can be deleted. It is written in everyday language rather than legal jargon; every statement below about collecting / not collecting / transmitting / retaining is grounded in this project's source code and in measurements taken on our own server.</p>
+  <div class="pills">
+    <span class="pill accent">Effective: 2026-09-04</span>
+    <span class="pill">Policy version v1.0</span>
+    <span class="pill">No telemetry · no analytics · no ads</span>
+    <span class="pill">API keys kept on your machine</span>
+    <span class="pill">MIT open source</span>
+  </div>
+</section>
+
+<section id="scope">
+  <h2>1. Scope and effective date</h2>
+  <p>This policy applies to: (1) the Windows desktop app — the NSIS installer offered on the download page and the MSIX build distributed through the Microsoft Store; (2) the companion online service <code>mt-agent.com</code> operated by this project, namely in-app automatic updates, the application-plugin catalogue, the extension catalogue (plugins / skills / MCP), the Creative Workshop (template and skill sharing), the Forum, and delivery of the desktop-pet and local back-end install packages; (3) this privacy policy page itself.</p>
+  <p>This policy does <b class="hl">not</b> apply to the third-party AI provider APIs that you configure yourself in "Settings · Providers" and <b class="hl">pay for with your own account</b> (the built-in default is the <b class="hl">DeepSeek</b> official API; the sample configuration you can paste in includes <b class="hl">SiliconFlow</b>; any other OpenAI-compatible provider is one you add yourself), to the MCP servers you add yourself, or to the third-party sites that serve dependencies and model weights when you install a local back-end (PyPI mirrors, ModelScope, Hugging Face and its mirrors, the npm registry, GitHub, Alibaba Cloud OSS, and so on). Those parties publish and enforce their own privacy terms — please read them as well.</p>
+  <p>This policy takes effect on <b class="hl">2026-09-04</b>. Continuing to use the app after an update means you accept the version then in force; material changes are recorded in section 14 below.</p>
+</section>
+
+<section id="summary">
+  <h2>2. The short answer</h2>
+  <div class="note">
+    <h3>In one sentence</h3>
+    <p>The app <b class="hl">does not require an account</b> to be used (an account is needed only for uploading to / liking items in the Creative Workshop and for posting in the Forum, and is entirely optional); it <b class="hl">contains no telemetry, no usage tracking, no advertising SDK and no third-party analytics script</b>; your canvases, assets, configuration and API keys <b class="hl">all stay on your machine</b>; prompts and input content are sent to the model provider <b class="hl">that you yourself configured</b> only when you click "Run" yourself.</p>
+  </div>
+  <p>Three things must nevertheless be stated plainly. They do not contradict the "we do not collect" wording above, but they do involve your data or your machine's permissions:</p>
+  <ul>
+    <li>Running nodes, starting conversations, checking for updates, browsing the store and installing back-ends all issue network requests to the corresponding servers; the web server behind <code>mt-agent.com</code> keeps access logs (including IP address and User-Agent).</li>
+    <li><code>mt-agent.com</code> currently offers <b class="hl">HTTP (port 80) only</b> — HTTPS is not enabled. Whether traffic to a third-party provider is encrypted depends on the address you configure (the built-in DeepSeek official endpoint defaults to <code>https://api.deepseek.com</code>).</li>
+    <li>The agent gateway may, within the authorisation you grant, <b class="hl">read and write local files and execute commands</b> (section 8). This is a core feature of the app, not information collection — but it does mean the content of files that get read ends up inside the requests sent to the model provider you selected.</li>
+  </ul>
+</section>
+
+<section id="local">
+  <h2>3. What we process: the part that stays on your machine</h2>
+  <p>All user data is written under the Electron user-data directory, by default <code>%APPDATA%\pipeline-console\</code> (the app's own data sits in the <code>pipeline-console\</code> sub-directory below it). You can change the target folder under "Configuration data directory" in Settings; only the pointer file <code>data-root.json</code> then remains in the original location. This data is <b class="hl">not</b> uploaded to any server automatically.</p>
+  <table class="tl">
+    <tr><th>Item</th><th>What it is / where it lives</th></tr>
+    <tr><td>Workflows and assets</td><td>Canvas JSON (<code>save/&lt;id&gt;.json</code>: node prompts, input text, parameters, @-references) and copies of the original image files you dropped in (<code>assets/&lt;workflow id&gt;/</code>).</td></tr>
+    <tr><td>Snapshots and recycle bin</td><td>Timed snapshots in <code>save-backups/</code> (taken every 5 minutes, and only when the source file actually changed; the 72 most recent copies per workflow, roughly 6 hours); when you delete a canvas, its files are moved into <code>trash/</code> instead of being erased.</td></tr>
+    <tr><td>Configuration and API keys</td><td><code>config.json</code> holds the provider list, <b class="hl">API keys (as plain text in a local file)</b>, the Workshop login token, the online-source list, language, theme and similar settings; before each change to the provider configuration a historical copy is written to <code>config-backups/</code> (the 30 most recent). <b class="hl">API keys are stored on this computer only</b>; they travel only to the one provider you configured them for, and are never uploaded to <code>mt-agent.com</code>.</td></tr>
+    <tr><td>Fact database</td><td>Records of the database super nodes (SQLite + FTS5): the facts you enter in a canvas table, plus the local file paths they reference.</td></tr>
+    <tr><td>Agent sessions and rollback</td><td><code>dsh-home/sessions/</code> (JSONL transcripts of conversation text and tool results), <code>dsh-home/rollback/</code> (copies of file content taken before an agent modified a file), <code>dsh-home/attachments/</code> (images attached to a session). These may contain fragments of local files the agent was allowed to read.</td></tr>
+    <tr><td>Engine settings</td><td><code>dsh-home/settings.yaml</code>: provider route names, <code>baseURL</code>, thinking level, permission preset and so on. For keys it records <b class="hl">only the environment-variable name</b> (for example <code>MTNODE_KEY_1</code>), never the key value; the key is injected through the process environment at run time.</td></tr>
+    <tr><td>Anonymous identifier file</td><td><code>dsh-home/.anonymous-user-id</code>: a random UUID v4 generated locally before the first model request (one bare line). It contains no name, no e-mail address and no hardware information, is <b class="hl">not issued by any server</b>, and this project cannot use it to identify a person. Its single purpose is described in section 4.</td></tr>
+    <tr><td>Plugins and caches</td><td>Installed application plugins and whatever data they keep for themselves in <code>app-plugins/</code>; Forum message and image cache in <code>forum/</code>; Workshop preview images and template packages in <code>store-cache/</code>.</td></tr>
+    <tr><td>Logs</td><td><code>error.log</code>, <code>logs/error.log</code> (rotated at 4 MB), <code>dsh.log</code>; see section 9.</td></tr>
+    <tr><td>Runtime-managed storage</td><td>Rendering caches and network-state files that Electron / Chromium maintain on their own (<code>Cache</code>, <code>Local Storage</code>, <code>IndexedDB</code>, <code>Preferences</code>, etc.) in the same data root.</td></tr>
+    <tr><td>Local back-ends and models</td><td>Model weights and Python/Node dependencies for the Music3 / H3 / TTS / llama / Remotion back-ends, in same-named sub-directories of the data folder and in the install directories you chose. <b class="hl">These files contain none of your data</b>.</td></tr>
+  </table>
+  <p class="muted">The following are <b class="hl">not</b> collected: we do not request camera, microphone, screen or location permissions; we do not read the network-interface MAC address, host name, hardware serial number, Windows account name or <code>MachineGuid</code>, or any other device identifier; we load no third-party CDN, web font or analytics script; we ship no telemetry or usage-tracking reporting (the OTLP telemetry components that come with the underlying framework are removed from the installer package and are not mounted).</p>
+</section>
+
+<section id="provider">
+  <h2>4. What we process: the part sent to AI provider APIs</h2>
+  <p>When you run a text / image / smart node, or start an assistant conversation, the app sends whatever that request needs to the endpoint <b class="hl">you configured yourself under "Settings · Providers" and for which you are billed by that provider directly</b> (built-in default: <code>https://api.deepseek.com</code>; the paste-in sample configuration references <code>https://api.siliconflow.cn/v1</code>). This project does not resell or proxy model access: no request in this section ever passes through <code>mt-agent.com</code>. Requests are made by the main process or by the gateway child process — the interface itself cannot reach the network directly. What is sent includes:</p>
+  <ul>
+    <li>The prompts and system / persona prompts you wrote; the body of any node @-referenced into the request; the content of images you uploaded and referenced in a node.</li>
+    <li>In an agent session, the local file content and command output that the agent was authorised to read — these come back as tool results and are included in the next model request.</li>
+    <li>The request header <code>User-Agent: deepseek-harness/&lt;version&gt;</code>: an application-attribution string the framework always sends and which contains no personal information.</li>
+    <li>On the DeepSeek official route, two additional HTTP headers: <code>x-deepseek-harness-user-id</code> (the locally generated random anonymous UUID described in section 3) and, when a session exists, <code>x-deepseek-harness-session-id</code>. Both appear in request headers only, are never written into the request body, and are not visible to the model.</li>
+    <li>Search queries for online search: the search provider is fixed to DeepSeek official and accepts only your own DeepSeek key.</li>
+    <li>MCP servers you added yourself: a stdio server is a local process; a remote server is connected at whatever URL you entered, and the inputs and outputs of its tool calls are sent to that address.</li>
+  </ul>
+  <p class="muted">In other words: which provider receives your content and under which terms is entirely determined by the address you configure and the key you use. We keep no copy of these requests on our side (apart from the local session records described in section 3), and we do not process their content.</p>
+</section>
+
+<section id="server">
+  <h2>5. Purposes and data for requests to mt-agent.com</h2>
+  <p>Below are all the situations in which the app sends requests to this project's own server. Every one of them is <b class="hl">triggered by an action of yours</b> (opening a panel, clicking "Check for updates", clicking install, posting, uploading) and carries a fixed application user agent (such as <code>MTNodeAIO/1.1</code>); requests <b class="hl">never include your name, e-mail address, a device identifier or the content of your canvases</b>. Exceptions, if any, are noted in the table.</p>
+  <table class="tl">
+    <tr><th>Purpose</th><th>Address and data sent</th></tr>
+    <tr><td>In-app automatic updates</td><td><code>http://mt-agent.com/mtnode/updates</code> — GET requests for <code>latest.yml</code> and other metadata and for differential blocks only. Packaged builds check once 8 seconds after start, then every 6 hours, plus whenever you click "Check for updates". <b class="hl">In the Microsoft Store (MSIX) build this entire chain is disabled</b>: the updater is not loaded and no update source is set.</td></tr>
+    <tr><td>Application-plugin catalogue</td><td><code>/mtnode/plugins/catalog.json</code> and the zip files listed in it: GET list and package download, no user data.</td></tr>
+    <tr><td>Extension catalogue (official plugins / skills / MCP sources)</td><td><code>/mtnode/ext/catalog.json</code> and its <code>.tgz</code> assets: GET requests, no user data.</td></tr>
+    <tr><td>Local back-end and desktop-pet packages</td><td><code>/mtnode/music3</code>, <code>/mtnode/h3</code>, <code>/mtnode/pet</code>: GET requests for manifests and package files, occurring when you click install or check a back-end for updates.</td></tr>
+    <tr><td>Creative Workshop (store) API</td><td><code>http://mt-agent.com/mtnode/store-api</code> — see section 6.</td></tr>
+    <tr><td>"Browse online" retrieval</td><td>Any http(s) address you type into a canvas or into Settings is fetched on your behalf by the main process, carrying the fixed application user agent.</td></tr>
+  </table>
+  <h3>Access logs on the server side</h3>
+  <p>The nginx server behind <code>mt-agent.com</code> keeps access logs for <b class="hl">all</b> requests (default combined format; no path is excluded). The fields recorded are: <b class="hl">client IP address</b>, timestamp, the full request line (method + path including the query string), status code, response bytes, <code>Referer</code> and <b class="hl">User-Agent</b>; for routes reverse-proxied to the Workshop service, <code>X-Real-IP</code> / <code>X-Forwarded-For</code> are additionally passed to the back end. Logs are rotated daily and compressed, and are deleted automatically after about 14 days.</p>
+  <p>The Workshop service itself has <b class="hl">no per-request log</b> — it emits only its startup line and save-failure records — and its data file contains <b class="hl">no e-mail, telephone or IP field</b> (your IP appears only in the nginx access logs described above).</p>
+  <p>When a download or update request is not matched by a local route, it is forwarded to Alibaba Cloud OSS (<code>mtnode-download.oss-cn-beijing.aliyuncs.com</code>); OSS-side logging is performed by Alibaba Cloud under its own terms and is outside this project's control.</p>
+  <div class="note warn">
+    <h3>About encryption in transit</h3>
+    <p>Our cloud server currently <b class="hl">listens on port 80 only (plain HTTP); port 443 and a certificate are not configured</b>. Requests to the update source, the store, the Forum and package downloads are therefore readable in clear text on the network path. Please do not reuse a password from elsewhere when registering a Workshop account. Whether access to a third-party provider uses HTTPS depends on the address you configure.</p>
+  </div>
+</section>
+
+<section id="store">
+  <h2>6. Creative Workshop and Forum: uploading publishes content</h2>
+  <p>No account is needed to use the app; an account is required only for uploading to / liking items in the Creative Workshop and for posting in the Forum, and using those features is entirely optional.</p>
+  <ul>
+    <li><b class="hl">Registration takes three values only</b>: user name (3–24 characters: letters, digits, underscore), password (6–72 characters; the server stores it as a scrypt hash with a random salt and <b class="hl">never keeps the plain text</b>), nickname (1–32 characters). <b class="hl">No e-mail address and no phone number is collected.</b> The login token is stored locally in <code>config.json</code>, and subsequent requests carry it as <code>Authorization: Bearer &lt;token&gt;</code>.</li>
+    <li><b class="hl">Templates and preview images you upload are public content</b>: when you upload a canvas (<code>.mtnodes</code>) or a skill (<code>SKILL.md</code> plus attachments) to the Workshop, its title, description, tags, preview images and canvas body are shown to all users and can be downloaded. Before uploading, the app <b class="hl">deliberately clears the local working-directory fields</b> (the workspace paths in the workflow and in the nodes are set to empty strings) so that local paths are not leaked; nevertheless <b class="hl">the canvas body itself — the prompts you wrote, the parameters, the copies of your assets — is published, as you intended</b>. Review the content before uploading, and do not upload canvases that contain private material, secrets or internal documents.</li>
+    <li><b class="hl">Deletion on request</b>: templates and skills can be deleted by their author (or by an administrator) from within the store — removing the entry also removes the likes attached to it, the package file and the preview images, and the download counters go with them. If you cannot find the control in the app, or if you want your account, nickname or other published content removed, send us a request as described in section 15: the server currently has <b class="hl">no self-service account-deletion endpoint</b>, so this is done manually.</li>
+    <li><b class="hl">Forum</b>: a post consists of the room (<code>general</code> / <code>bug</code> / <code>improve</code>), the message text (up to 2000 characters) and optionally an image that is first rescaled locally to at most 1080 px on its longest edge and encoded as JPEG no larger than 3 MB; reading the Forum additionally sends the client time-zone offset <code>tzOffset</code> (in minutes, used only to bucket messages by day for display). Messages expire automatically after 30 days, together with their images; there is currently no self-service control for deleting a single message — you may ask us to (section 15).</li>
+  </ul>
+</section>
+
+<section id="backend">
+  <h2>7. Local back-ends: installing downloads dependencies and models</h2>
+  <p>The music, video, speech and local-LLM back-ends (Music3 / H3 / GPT-SoVITS / llama.cpp / Remotion) are downloaded only after you click "Install". The installation fetches Python / Node dependencies and model weights from third-party sites; those requests carry your client IP address and user agent. What is downloaded contains none of your data, and its use is governed by the terms of the corresponding third party:</p>
+  <ul>
+    <li>Dependencies: the domestic PyPI mirrors (Tsinghua / Alibaba Cloud), <code>download.pytorch.org</code>, <code>mirrors.aliyun.com/pytorch-wheels</code>, the npm registry, and the GitHub repository URLs involved when you install a DSH plugin or the Remotion back-end.</li>
+    <li>Model weights: ModelScope (<code>modelscope.cn</code>), the mirror <code>hf-mirror.com</code> and, where necessary, <code>huggingface.co</code>.</li>
+    <li>Browsing plugins / skills / MCP online in "Manage extensions" additionally sends search requests to the default online sources <code>registry.npmmirror.com</code> and <code>data.jsdelivr.com</code>, and these requests <b class="hl">include the keywords you type into the search box</b>.</li>
+  </ul>
+  <p class="muted">These online sources can be added or removed in Settings. If you never use "Install" or online browsing, none of the requests above occur.</p>
+</section>
+
+<section id="agent">
+  <h2>8. Agent gateway: reading and writing local files, running commands (a feature, not collection)</h2>
+  <p>The app's smart nodes and assistant can, within the permissions you grant, <b class="hl">read and write files on your machine and execute commands</b>. Three points need to be clear about this:</p>
+  <ul>
+    <li><b class="hl">This is a feature, not information collection.</b> Before an agent modifies a file, a copy of the previous content is written to the local rollback directory (<code>dsh-home/rollback/</code>), and command output and conversation text are likewise written only to the local machine (<code>dsh-home/sessions/</code>).</li>
+    <li><b class="hl">Authorisation is governed by the agent preset.</b> The permission preset can be chosen in Settings; the packaged app runs on the unattended preset by default. "Pure mode" strips all prompts and tools and leaves only online search. Whether tools may read or write files and run commands depends on the preset you select and on the individual approvals.</li>
+    <li><b class="hl">Data flows as described in section 4.</b> The content the agent reads is sent to the model provider selected for that session as tool results — do not grant file and command permissions in directories that contain confidential files.</li>
+  </ul>
+  <p>Two further items of the same kind — local functionality that you should still know about:</p>
+  <ul>
+    <li><b class="hl">Global input listening by the desktop-pet plugin</b>: while the pet is enabled it registers system-level keyboard and mouse hooks, but it passes only the <b class="hl">key name and the mouse coordinates</b> to the pet's own window for its animation reactions. Everything stays inside local processes, <b class="hl">is not written to disk and is not sent over the network</b>. Simply disable or uninstall the plugin when you do not need it.</li>
+    <li><b class="hl">The "Network Receive" node listens on <code>0.0.0.0</code></b>: while that node runs, it listens on all of the machine's network interfaces on the port you filled in (TCP / UDP), so other devices on your local network can connect to it and push data. This is a data entry point you opened yourself; nothing sent or received <b class="hl">passes through any server</b>. Stop the node when you are not using it.</li>
+  </ul>
+</section>
+
+<section id="crash">
+  <h2>9. Crash and diagnostic reports: written locally, exported only by you</h2>
+  <p>When something fails, the app appends the error stack and an environment block to local logs (<code>logs/error.log</code> and similar) and to the crash-report directory (<code>logs/crash-reports/</code>, the 30 most recent reports). The environment block contains the version number, the Electron / Chrome / Node versions, platform and OS release, architecture, interface language, and the executable, data and working directory paths. This information is <b class="hl">never uploaded automatically</b>: the crash dialog offers exactly three local actions — "Export diagnostic log…", "Open log folder" and "Close".</p>
+  <p>A <code>MTNode-diagnostic-*.txt</code> file is created only after you click "Export diagnostic log" and choose a path in the Save-As dialog (the Desktop by default). It consists of the tail of the log plus the environment block, and its first two lines state explicitly: <code>note: API keys and secrets are NOT included.</code> — that is, API keys and secrets are not collected into it. <b class="hl">Until you forward that file yourself, it stays on your computer.</b></p>
+  <p class="muted">One boundary is worth noting: the log tail consists of <b class="hl">text you produced yourself</b> (workflow content, error messages, command output), and the paths in the environment block may contain your Windows user name. If you attach an exported diagnostic file to a GitHub issue or send it to anyone else, that information leaves your machine through your own action — check it and remove anything you do not want to disclose before submitting.</p>
+</section>
+
+<section id="cookie">
+  <h2>10. Cookies and similar technologies</h2>
+  <p><b class="hl">The app does not use cookies.</b> It is a desktop program: it does not identify users or serve advertising through cookies or comparable technologies (local shared objects, pixel tracking); the interface loads no third-party script and no external resource, and network requests are issued by the main process. The Workshop's signed-in state relies on the Bearer token stored in the local <code>config.json</code> (section 6), not on a cookie. This privacy policy page is a plain static single file: it contains no script and no analytics code, and it sets no cookie in your browser.</p>
+  <p class="muted">The only browser-like storage involved is the rendering cache that the Electron / Chromium runtime maintains locally (last two rows of the table in section 3), and it never leaves this computer.</p>
+</section>
+
+<section id="share">
+  <h2>11. No sale, no sharing</h2>
+  <p>We do <b class="hl">not sell or share your personal information with any third party</b>. Neither this project's own server nor the shipped code contains any route that would forward user data to a third party. Apart from the following two categories, there is no automatic forwarding at all:</p>
+  <ul>
+    <li>The <b class="hl">providers you chose and pay for yourself</b> listed in section 4, and the <b class="hl">addresses you configured yourself</b> (including MCP servers, online-browsing targets, and the sources from which dependencies and models are downloaded).</li>
+    <li>Content you <b class="hl">deliberately publish</b> in the Creative Workshop / Forum — once posted, it is visible to all users.</li>
+  </ul>
+  <p>Where the law requires it (a request from a judicial or administrative authority following due process, or disclosure necessary to respond to litigation or a dispute involving this project), we may disclose information to the minimum required extent, and where legally permitted we will tell you about it. That is the only general exception in this section.</p>
+</section>
+
+<section id="delete">
+  <h2>12. Retention and deletion</h2>
+  <h3>On your machine: delete the directory and it is gone</h3>
+  <p>Quit the app and delete the data root <code>%APPDATA%\pipeline-console\</code> (or the folder you pointed Settings at). In one step this removes all workflows, assets, snapshots and recycle bin, configuration and API keys, the fact database, agent session records and rollback copies, logs and caches. <b class="hl">The Microsoft Store (MSIX) build is no exception</b>: this project does not write user data into the registry or any other system location. You can also be selective — delete individual workflows in the app (they go to the recycle bin), clear a plugin's data in <code>app-plugins/&lt;plugin id&gt;/</code>, or remove only the key fields in <code>config.json</code>.</p>
+  <h3>On the server (mt-agent.com)</h3>
+  <table class="tl">
+    <tr><th>Data</th><th>Retention</th><th>How it is deleted</th></tr>
+    <tr><td>Account (user name / nickname / password hash and salt)</td><td>Until deleted — the server performs no expiry-based cleanup</td><td><b class="hl">No self-service account deletion</b>: the server offers only register / login / change-password / logout / profile / my-templates, with no account-deletion endpoint. Send a request as described in section 15 and the developer will delete it manually.</td></tr>
+    <tr><td>Login token</td><td>30 days; signing in again from the same account invalidates earlier sessions</td><td>Expires automatically; "Sign out" (<code>/api/logout</code>) deletes that token immediately.</td></tr>
+    <tr><td>Templates / skills you uploaded (files, preview images, metadata)</td><td>Until deleted</td><td>The author or an administrator removes the entry: record, like relationships, package file and preview images are deleted together.</td></tr>
+    <tr><td>Forum messages and their images</td><td><b class="hl">30 days</b>, then they expire automatically</td><td>The server prunes expired messages before each read or write and deletes their image files; there is currently no self-service control for a single message — you may ask us.</td></tr>
+    <tr><td>nginx access logs (IP / user agent / request path)</td><td>About 14 days (daily rotation + 14 rotated files + compression)</td><td>Deleted automatically when they age out; no request needed.</td></tr>
+    <tr><td>Download counters and similar statistics</td><td>Same lifetime as the template they belong to</td><td>Removed together with the template.</td></tr>
+  </table>
+</section>
+
+<section id="minors">
+  <h2>13. Minors</h2>
+  <p>The app is a workflow-orchestration and content-production tool aimed at <b class="hl">adult and professional users</b>. It offers no feature intended for minors and has no age-verification mechanism. We do not target minors and we do not knowingly collect personal information from minors; a minor should use the app only under the guidance of a guardian. If you believe we have collected a minor's information knowingly, contact us per section 15 and we will verify it and delete it.</p>
+</section>
+
+<section id="changes">
+  <h2>14. Policy changes and version record</h2>
+  <p>When the app's outbound network behaviour, the server's retention policy or the permission model changes, we update the internal fact inventory first and this page afterwards, and we record the version and the substance of the change here. Continuing to use a newer build means accepting the policy version then in force; where the change is substantial we will also say so on the download page and inside the app.</p>
+  <table class="tl">
+    <tr><th>Version</th><th>Date</th><th>Change</th></tr>
+    <tr><td>v1.0</td><td>2026-09-04</td><td>English edition published as a mirror of the Chinese privacy policy page (same sections, same facts).</td></tr>
+  </table>
+</section>
+
+<section id="contact">
+  <h2>15. Contact</h2>
+  <p>For questions about this policy, to exercise a deletion request (closing an account, removing something you published, deleting a single Forum message), or to ask us to clarify a data-processing item, use our <b class="hl">single public channel</b>:</p>
+  <p><a href="https://github.com/shaomang/mtnode-aio/issues" target="_blank" rel="noopener">GitHub Issues · shaomang/mtnode-aio</a></p>
+  <p class="muted">This project publishes no e-mail address and does not handle requests by e-mail — please state the version you are using and what you want done directly in an issue. To protect your own privacy, do not paste a complete diagnostic log or canvas file into the issue unless you have confirmed that it contains nothing sensitive.</p>
+</section>
+
+<p class="muted" style="margin:26px 0 0">The content of this page is grounded solely in this project's source code and in measured records from its server. Where the wording here and in the Chinese edition differs, the Chinese edition prevails (Chinese: <a href="../">隐私政策 · 简体中文</a>).</p>
+</main>
+
+<footer>
+  <span>MTNode AI Orchestrator · Privacy Policy · v1.0 / 2026-09-04</span>
+  <span class="spacer"></span>
+  <a class="author" href="../">简体中文</a>
+  <a class="author" href="../../">Download page</a>
+  <a class="author" href="https://github.com/shaomang/mtnode-aio/issues">GitHub Issues</a>
+</footer>
+
+</body>
+</html>

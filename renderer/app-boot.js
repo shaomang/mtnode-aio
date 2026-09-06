@@ -296,6 +296,10 @@ function applyLocale(locale, persist) {
     renderAgentSession();
   }
   renderSidebar();
+  /* 助手栏「预设」下拉的档位名现在由 JS 按 AGENT_PRESETS 真源生成
+     （app-assist.js 的 syncAssistPresetOptions），applyDom 碰不到它们 →
+     切语言后重画一次助手栏，档位名与 tooltip 跟着换。 */
+  if (S.assistOpen && typeof renderAssistPanel === "function") renderAssistPanel();
   if (reopenSettings) openSettings();
   if (reopenTpl) openTemplateStore();
   refreshAppDocsIfOpen();
@@ -386,7 +390,7 @@ async function init() {
       model: "",
       maxTokens: 0,
       defaultWorkspace: "",
-      preset: "standard",
+      preset: AGENT_PRESET_DEFAULT,
       chatEnter: "send",
       permissionPreset: "mtnode-unattended",
       visionInspectAllowed: false,
@@ -413,9 +417,9 @@ async function init() {
         id: uid("as"),
         title: I18n.t("历史会话"),
         workspace: legacy.workspace || "",
-        preset: legacy.preset || "standard",
+        preset: legacy.preset || AGENT_PRESET_DEFAULT,
         model: legacy.model || "",
-        effort: legacy.effort || "high",
+        effort: normalizeAgentEffort(legacy.effort || "high"),
         messages: legacy.messages,
         archived: false,
         updatedAt: Date.now(),
@@ -423,20 +427,24 @@ async function init() {
     }
     delete S.config.agentSession;
   }
-  S.agentSessions = S.config.agentSessions.map((s) =>
-    Object.assign(
-      { title: I18n.t("新会话"), preset: "standard", model: "", effort: "high", draft: "", archived: false, updatedAt: 0 },
+  /* 会话档位白名单归一：值在词汇表内（high/max 等）原样保留 —— 不迁移不重置已存档位；
+     旧档/非法值 → high 兜底默认 */
+  S.agentSessions = S.config.agentSessions.map((s) => {
+    const sess = Object.assign(
+      { title: I18n.t("新会话"), preset: AGENT_PRESET_DEFAULT, model: "", effort: "high", draft: "", archived: false, updatedAt: 0 },
       s,
-    ),
-  );
+    );
+    sess.effort = normalizeAgentEffort(sess.effort);
+    return sess;
+  });
   S.agentActiveId = S.config.agentActiveId || "";
   /* 右侧全局助手：开关 / 对话历史 / 模型与预设 */
   S.assistOpen = !!S.config.assistOpen;
   S.assistLive2d = !!S.config.assistLive2d;
-  S.assistPreset = S.config.assistPreset || "standard";
+  S.assistPreset = S.config.assistPreset || AGENT_PRESET_DEFAULT;
   S.assistProvider = S.config.assistProvider || "deepseek-official";
   S.assistModel = S.config.assistModel || "";
-  S.assistEffort = S.config.assistEffort || "high";
+  S.assistEffort = normalizeAgentEffort(S.config.assistEffort || "high");
   S.assistWorkspace = S.config.assistWorkspace || "";
   S.assistScope = S.config.assistScope === "global" ? "global" : "current";
   S.assistW = clampAssistW(S.config.assistW || 320);
@@ -496,6 +504,12 @@ async function init() {
   $("#btnDelWf").onclick = deleteWorkflowDialog;
   $("#btnSettings").onclick = openSettings;
   if ($("#btnPlugins")) $("#btnPlugins").onclick = openAppPluginsDialog;
+  /* 顶栏「工具库」＝直达工具库对话框（只管理本机已保存的工具 / 函数）；
+     新建工具节点 / 函数节点的入口在画布右键菜单的「工具」一级菜单下（app.js canvasCreateMenuGroups） */
+  if ($("#btnTools")) $("#btnTools").onclick = () => openToolsLibrary();
+  /* 顶栏「素材库」＝跨画布的本机素材仓库（首次使用会先引导指定根目录）；
+     左右栏对话框与全部库操作在 app-assets.js，素材节点「绑定」选择器复用同一份组件 */
+  if ($("#btnAssets")) $("#btnAssets").onclick = () => openAssetsLibrary();
   if ($("#btnDocs"))
     $("#btnDocs").onclick = () => {
       const host = document.getElementById("appDocsDlg");
@@ -795,6 +809,8 @@ async function init() {
     /* 会话左栏宽度：启动夹取一次 + 绑拖拽把手 */
     applyAgentSideWidth(S.agentSideW, false);
     bindAgentSideResize();
+    /* 会话窗：滚轮落在主会话列两侧的空白也能上下滚动会话（app-assist.js） */
+    bindAgentPaneWheelScroll();
     /* 会话「计划」清单最小高度：把夹好的值写进 #agentPlan 的 --ap-h（把手在 app-plan.js 渲染） */
     applyAgentPlanH(S.agentPlanH, false);
     bindOpenableContentClicks();

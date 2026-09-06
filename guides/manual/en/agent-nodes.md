@@ -2,7 +2,9 @@
 
 ## Agent task node
 
-Right-click → Agent node. The prompt is the task. Supports `@`, type `/` for skills, multi-input, batch / aggregate, model picker, browse. Pick the workspace with a folder dialog. No “attempts” (multi-step, not parallel sampling). Text / chat nodes with Agent on have the same capabilities.
+Right-click → Agent node. The prompt is the task. Supports `@`, type `/` for skills, multi-input, batch / aggregate, model picker, browse. Pick the workspace with a folder dialog. No “attempts” (multi-step, not parallel sampling). Text nodes with 🐋 Agent on have the same capabilities.
+
+The **💬** button in the header switches the node to **chat mode**: WeChat-style multi-turn bubbles (assistant left, user right) with history saved on the node. The standalone Chat node was removed — older canvases migrate their chat nodes into an agent task in chat mode on open.
 
 **Expand to agent session** keeps node and session in sync. Deleting the node can delete the linked session (you are asked).
 
@@ -28,7 +30,7 @@ Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, s
 
 A run renders in **chronological segments**: **“◉ Thinking · N chars”** is the model's collapsed private reasoning (N counts reasoning only), normal-sized paragraphs are what the model **says** (text produced mid-run counts as text too), **🔧 tool** calls sit inline where they happened, and errors append to the body as ⚠. Every tool call or new reasoning step starts a fresh segment.
 
-Agent task nodes, agent sessions, chat nodes and the global assistant all render the same way; the node's Thinking overlay shows reasoning on top and output (the tool trace) below. The output port still hands downstream the full text, and sessions archived earlier render as before. See [What agent mode is](#dsh).
+Agent task nodes (chat mode included), agent sessions and the global assistant all render the same way; the node's Thinking overlay shows reasoning on top and output (the tool trace) below. The output port still hands downstream the full text, and sessions archived earlier render as before. See [What agent mode is](#dsh).
 
 ## Let the assistant build a workflow
 

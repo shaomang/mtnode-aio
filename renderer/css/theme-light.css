@@ -43,6 +43,13 @@ body.theme-light .wf-node.super {
     linear-gradient(180deg, #f2f4f8, #e9edf3);
 }
 
+/* 工具节点（super + tool:true 变体）收起态：与处理节点同族的叶子卡片外观；
+   展开成壳层后回到上面的超级节点底色（暗色主题同一口径，见 canvas.css）。 */
+body.theme-light .wf-node.tool-node:not(.super-open) {
+  border-color: #e8b884;
+  background: linear-gradient(180deg, #fdf2e4, #fef9f0);
+}
+
 /* 超级节点 / 开发节点「包体」面板：浅色版（仅渐变 + 阴影） */
 body.theme-light .super-folder-body {
   background:
@@ -74,6 +81,16 @@ body.theme-light .n-super-note-btn.on {
 body.theme-light .wf-node.in {
   border-color: #8fb6e6;
   background: linear-gradient(180deg, #eef4fd, #f7fbfe);
+}
+
+/* 音频 / 视频输入：播放器底色在浅色下改成正白，「输出 URL」徽标改深青 */
+body.theme-light .wf-node.in-media .n-av-el {
+  background: #ffffff;
+}
+
+body.theme-light .wf-node.in-media .n-chip.av-chip {
+  color: #15508f;
+  border-color: rgba(32, 104, 184, .45);
 }
 
 body.theme-light .wf-node.proc {
@@ -353,10 +370,7 @@ body.theme-light .n-port-label {
 }
 
 /* ── 网络 / 调试等深色浮层：改浅 ── */
-body.theme-light .n-api-panel {
-  background: var(--panel);
-  border-color: var(--bd2);
-}
+/* （.n-api-panel 节点内联设置面板已废除 —— 设置统一走 #overlay 跳窗，浅色随 overlay 现成规则） */
 
 /* 画布顶端查找条、菜单等灰黑底改为浅灰，保证文字可读 */
 body.theme-light .canvas-find-bar input,
@@ -935,4 +949,51 @@ body.theme-light .wfb-item.on {
 }
 body.theme-light .wfb-list {
   background: rgba(255, 255, 255, .6);
+}
+
+/* ── 函数节点 JS 代码编辑器（.js-edit 三层）：浅色底上的 token 与行号配色 ──
+   暗色那套（canvas.css，One Dark 系）在 #f6f8fa 底上对比不足，这里换成 One Light 系深字。
+   只改颜色，度量一条都不碰 —— 两层对齐靠的是同一份 font-size / line-height / padding。 */
+body.theme-light .js-edit-gutter {
+  background: #e9edf3;
+}
+body.theme-light .js-ln {
+  color: #7b8494;
+  opacity: 1;
+}
+body.theme-light .js-ln.cur {
+  color: var(--cyan);
+}
+body.theme-light .jsl-com {
+  color: #5c6773;
+}
+body.theme-light .jsl-str {
+  color: #2b7a35;
+}
+body.theme-light .jsl-num {
+  color: #8a5a00;
+}
+body.theme-light .jsl-punc {
+  color: #4b5563;
+}
+body.theme-light .jsl-kw {
+  color: #8f2bb3;
+}
+body.theme-light .jsl-bool {
+  color: #8a5a00;
+}
+body.theme-light .jsl-con {
+  color: #8a6100;
+}
+body.theme-light .jsl-fn {
+  color: #1a63a8;
+}
+body.theme-light .jsl-prop {
+  color: #01709c;
+}
+body.theme-light .js-edit-input::selection {
+  /* 暗色那层青色半透明选中底在白底上几乎看不见 */
+  background: rgba(32, 104, 184, .22);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }

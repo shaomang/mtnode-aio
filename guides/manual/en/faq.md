@@ -28,7 +28,7 @@ During global-assistant / agent-session canvas edits, save nodes do not write. T
 Check the workspace; switch Approvals to “approve each” or disable extra tools.
 
 **Cannot tell thinking from the actual reply while a run is going?**  
-Output now renders in chronological segments: **“◉ Thinking · N chars”** collapses the model's private reasoning (N counts reasoning only), what the model says mid-run appears as **normal body text** in its own paragraphs, and **🔧 tool** calls sit inline where they happened. Agent task nodes, agent sessions, chat nodes and the global assistant all render the same way; the node's Thinking overlay keeps reasoning on top, output (tool trace) below. Sessions archived before this change still display the old way. See [What agent mode is](#dsh).
+Output now renders in chronological segments: **“◉ Thinking · N chars”** collapses the model's private reasoning (N counts reasoning only), what the model says mid-run appears as **normal body text** in its own paragraphs, and **🔧 tool** calls sit inline where they happened. Agent task nodes (chat mode included), agent sessions and the global assistant all render the same way; the node's Thinking overlay keeps reasoning on top, output (tool trace) below. Sessions archived before this change still display the old way. See [What agent mode is](#dsh).
 
 **Docs assistant says it does not know?**  
 It only reads this manual. Use node **Node guide** for one kind, or ask using a sidebar section name.
@@ -39,8 +39,8 @@ Yes. The AI does a **read-only** review (project code + module progress) and ret
 **Agent node cannot answer database questions?**  
 Make sure the database is attached: wire the **Database replica** into the input, or write `!@数据库标题` in the prompt. If attached but nothing matches, the discipline says to answer “数据库中没有该信息” — never guess.
 
-**Do music / video nodes need a save node after them?**  
-No. They have their own output paths (`.wav` / `.mp4`); adding a save node writes irrelevant content.
+**Do music / speech / video nodes need a save node after them?**  
+No. Minimax Music 3, SoVITS speech and Minimax H3 all carry their own output path (`.wav` / `.mp3` / `.mp4`); adding a save node writes irrelevant content. Only Remotion needs a downstream save node to land its file.
 
 **Network node receives nothing?**  
 Check three things: protocol (TCP / UDP), channel id, host/port (defaults in Settings · Network). Confirm the receive node is listening.

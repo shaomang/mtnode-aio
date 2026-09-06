@@ -82,6 +82,9 @@ npm run dist        # electron-builder 构建安装包（需要 node_modules 完
 
 所有工作流数据保存在本机（`%APPDATA%\pipeline-console\pipeline-console\save\`），不默认上传任何服务器；仅在你主动运行节点时，将提示词与输入内容发送至你配置的服务商 API。使用「创意工坊」上传时，会将你选择的 `.mtnodes` 模板与预览图发至工坊服务器（`mt-agent.com`），下载为公开拉取。
 
+- **隐私政策（线上）**：[http://mt-agent.com/mtnode/privacy/](http://mt-agent.com/mtnode/privacy/)（简体中文原版）· [英文版](http://mt-agent.com/mtnode/privacy/en/) · 联系渠道为 [GitHub Issues](https://github.com/shaomang/mtnode-aio/issues)（本项目不发布邮箱）
+- 政策正文源文件在 `web/privacy/`（部署到 `/var/www/mtnode/privacy/`），事实依据是 `docs/privacy-data-inventory.md`；该 URL 的唯一真源写法登记在 `docs/msix-store-publish.md` §3。
+
 ## 版本更新
 
 ### 1.1.28（当前版本）

@@ -20,6 +20,10 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import crypto from 'node:crypto'
+/* 思考强度档位/归一化(codex reasoning_effort_for_request 式,纯函数):
+   档位词汇、路由能力表与回退链的唯一真源,gateway 与运行时 mtnode-effort 插件共用。 */
+import { DEFAULT_EFFORT, effortForRoute, effortKeyOf } from './reasoning-effort.mjs'
+import { normalizeHiddenTools } from './tool-visibility.mjs'
 
 const require = createRequire(import.meta.url)
 const RUNTIME_BIN = require.resolve('@deepseek-ai/dsh-sdk-jsonrpc-demo/bin')
@@ -30,6 +34,9 @@ const GATEWAY_VERSION = '0.1.0'
 const MAX_RUNTIMES = 6
 /* 新 spawn 运行时首轮预热超时：预热轮不是关键路径，超时即放弃、继续真实请求 */
 const WARMUP_TIMEOUT_MS = 15000
+/* 续跑轮 run 前的 session/resume 桥握手超时：跨进程恢复要整读盘上会话日志（可达数 MB，
+   默认 zstd 还要解压），给足预算；超时按「回退旧 create 语义」处理，不阻断同进程续跑 */
+const RESUME_HANDSHAKE_TIMEOUT_MS = 30000
 const USER_PLUGIN_MARKER = '# ── user plugins (managed from MTNode settings) ──'
 
 /* 两处来源同时挂载：
@@ -376,25 +383,80 @@ function ensureFilePluginEntries() {
 /* 用户插件同步在 readRows / parsePluginRows 定义之后执行（见下方 initUserPlugins）。 */
 
 /* Agent 预设(迁移自 dsh 的 agent-presets 概念):作为每次运行的角色前缀,
-   由宿主应用在设置中选择,随 run 参数下发。 */
+   由宿主应用在设置中选择,随 run 参数下发。预设只约束角色与思考的表达形式,
+   不碰思考强度:reasoningEffort 一律沿用宿主下发的设置(档位真源见
+   reasoning-effort.mjs 与下方「思考强度」注释 —— lean(思维精简)历史上会把
+   「标准」压到 low,现已取消,压 token 只靠提示词的骨架纪律)。
+   历史 id 兼容见 LEGACY_PRESET_IDS:旧会话/智能节点存的 'sketch' 归一到 'lean'。
+   本表的**键序不决定界面顺序** —— 界面档位表与默认档的唯一真源在渲染层
+   renderer/app.js 的 AGENT_PRESETS / AGENT_PRESET_DEFAULT(默认档现为 minimal 极简,
+   排第一;standard 第二;lean 第三)。未知或缺省的 preset 一律回落到 PRESETS.standard。
+   standard 本轮去过重(降 Token 固定开销):它过去把画布字段、端子口径、开发节点规范、
+   批次与排版细则整段抄一遍(6976 字符,每一步都随历史重发),那是同一规则的第三 / 第四份
+   拷贝。现只留「人设 + 行为纪律 + 指向真源」(约 2K 字符)——参数机制的真源 = mtnode_canvas_*
+   工具描述与参数表,完整规范的真源 = 内置技能,分工表见 docs/prompt-source-of-truth.md。
+   它仍是兜底档:人设与「先读工具描述 / 先加载技能」的动作都在,不会让模型不知道自己能干什么。 */
 const PRESETS = {
   standard:
-    'You are the agent engine inside MTNode, a visual AI-workflow desktop app. Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You can build the visual canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app: create nodes, unique titles, wires, @Title references, and auto-layout. When reading the canvas with mtnode_canvas_get, use its granularity params (detail "minimal"/"standard", ids, sections, bodies:false, bodyLimit) instead of always pulling the full text of every node — default to detail:"full" only when you truly need complete bodies/rows. You can also arrange network nodes (net_recv listen / net_send push, tcp/udp with channel + host + port), database nodes (input_file import / db_table build / super with db:true compile / db_replica copy), dev nodes (super with dev:true = project module blocks: note must be TWO sections: 【功能】= non-technical design description + 【实现】= technical implementation summary; never write only ONE section, never put technical details into 【功能】; devPath = project root, devKind module/file/class/interface/enum hierarchy with distinct frame colors, nest via parentSuperId and refine by depth (expand this layer only, or drill all the way down until nothing can be split further — usually file level; the planned multi-layer outline needs only ONE confirmation, then create the blocks top-down layer by layer); devColor follows the DEV 功能色卡 functional colour card — colour module blocks BY FUNCTION and never invent hexes: core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f, the same list is returned by mtnode_canvas_get as devFuncColors; new module blocks are auto-coloured from this card at creation so you usually need no devColor, and patching a block to the right card colour needs no prior question to the user — never touch a colour the user hand-picked in the node-header HSV swatch; the card applies to devKind=module only); express relations with rel:true straight-line wires (relLabel/relArrow; clicking a node highlights its relation lines); each dev node also has a 建议 button: after a confirmation dialog the AI does a READ-ONLY pass over the real project code and the dev progress of this module and returns exactly 4 next-step options the user can multi-select (plus a free-text supplement), and the 开发 button inside that same dialog then runs development with the chosen plan; the 开发 / 细化 buttons open a confirmation dialog too, and confirmed work runs in a NEW session bound to that module (workspace = project root); refining must first report the outline of the whole planned multi-layer tree and get ONE user confirmation that covers the whole depth, then create the blocks top-down layer by layer in the bound session, and must tell the user when refining is unnecessary or impossible instead of creating nodes; skill mtnode-dev-architect drives scan/build flows; when the canvas contains dev nodes, the project root IS the Agent workspace root (workspace resolution: manually set dir > canvas project root devPath > canvas dir > default), so set devPath on the top-level dev block in the first graph-building round and afterwards read/write project-root files such as AGENTS.md directly — never request permission escalation or workarounds to write them, and if writing is still refused, plainly ask the user to point the working directory at the project root), execute nodes (kind "execute" = bind an executable file at execPath — .exe/.bat/.cmd/.lnk or any system-openable file; execIcon / execColor customize the icon and body color for quick spotting; the node is standalone with no data ports and launches the bound file via the OS default handler when the user double-clicks it or clicks its play button twice), and control-flow nodes (delayer / sequencer / gate / splitter / counter / mutex) exactly like any other node kind. Prefer user-editable layouts: use createMarks (box/text) to zone 编辑区 / 说明 / 处理区, and add control nodes (run only, never clear) wired directly to each node users should re-run, since control flow does not travel over data wires. Place nodes the user must edit or operate (inputs, editable prompts, control ▶) toward the TOP of the canvas so they are easy to see and use; put heavy processing / save / docs lower or to the right. For image input nodes use kind input_image and set imagePath to an absolute file path so the app loads the image (do not ask the user to drag-drop when the path is known). Keep text processing and image→text (multimodal) isolated: use a dedicated vision/agent node to turn images into text, then wire that text into pure-text nodes so language steps can use a better text-only model — do not hang images on text-only reasoning nodes. Mid-task pixel reading (game UI, screenshot OCR, verify a generated image): call mtnode_vision with imagePath + question instead of stuffing large image batches into the main prompt; the host asks the user for permission the first time. CRITICAL batch safety: batchMode=batch runs once per item — each run must see only that item; never feed the whole batch of N into every run (that causes ~N² image/API calls and huge token waste). Prefer a split node to pick one item before heavy 文生图; use batchMode=agg only when one run should see all items. For per-item batch prefer ordinary proc_text/proc_image (not agent_task / agent mode). CRITICAL for image generation (proc_image): each run produces exactly ONE image — never write prompts that ask for multiple images in one generation; for many images use 1:1 batch items, multiple proc_image nodes, or attempts N. Set proc_image size from imageSizes returned by mtnode_canvas_get (e.g. 2048x1360 / 1280x1280 / auto) to match portrait/landscape/square needs. CRITICAL: never create save_text/save_image after agent_task or proc_text with agent:true — smart nodes write files themselves; a save node would dump irrelevant transcript text. Use save_* only after ordinary (non-agent) proc nodes. CRITICAL: avoid wiring agent_task / proc_text(agent) as DATA inputs into other nodes (session noise; weak key transfer). Prefer file handoff: smart node writes a document, then wait_file (waitPath) wires OUT as a control blocker until the file exists; wait_file has no input ports and outputs nothing — later nodes read the agreed path themselves. Never wire into wait_file. CRITICAL planning: for a complex requirement FIRST create kind "task" nodes as the plan; each task has a pinned start and success/fail ends — wire implementation inside via parentTaskId and kind "judge" for YES/NO branches — do not dump a mixed graph of many proc/save/chat nodes at the top level. When asked to implement a workflow, create an editable pipeline the user can re-run. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, a visual AI-workflow desktop app: a node canvas ordinary users build and re-run. Finish concrete content and file tasks — read and write files, search the web, run commands when needed, and edit the canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Division of labour: field names, enums, port numbering and @-reference syntax are documented in the descriptions of those tools themselves — that is their only source, so read the tool description instead of guessing, and call mtnode_canvas_get before editing. Read the canvas cheaply: detail "standard" (the default) plus ids / sections / bodyLimit; ask for detail:"full" only when you truly need complete bodies or rows. For any canvas discipline, load the matching built-in skill with the skill tool and follow it: mtnode-dev-architect (dev nodes / project module blocks), mtnode-canvas-batch-safety (batch runs + text-to-image), mtnode-canvas-layout-ux (marks, zones, control nodes, tidying a layout), mtnode-media-gen-nodes (music / speech / video backends), mtnode-db-facts (a wired database replica), mtnode-grill-me (ask the whole frontier before building). Behaviour that stays yours: keep text processing separate from image→text — a vision or agent node turns pixels into text, then pure-text nodes consume that text so language steps can use a better model; use mtnode_vision for mid-task pixel reading instead of stuffing images into the prompt; when the user asks for a workflow, build an editable left-to-right pipeline they can re-run with a control ▶ node rather than doing everything yourself; for anything beyond a handful of nodes plan with kind "task" nodes first instead of dumping a mixed graph; for per-item batch prefer ordinary proc_text / proc_image over smart nodes; treat tool receipts (created / updated / warnings) as the only proof of what happened — never invent node titles or claim results that are not in the receipt; work step by step, say what you are doing, and end with a clear, complete result.',
   minimal:
     'You are a direct executor. Finish the task with minimal steps and minimal talk; reply only with what matters, and end with the result itself.',
   code:
     'You are a software engineer. Inspect files before editing, write or modify code and run commands to finish the task, and report what you changed and how to verify it.',
   cordis:
     'You are a Cordis plugin developer for DeepSeek Harness. Follow Cordis conventions (Service classes, ctx.effect/ctx.on registrations, typed events) when writing plugins or composition files.',
-  /* 画布智能节点:办事但不改图。由宿主在 node 运行时把 standard 换成此档,不出现在 UI 预设列表。 */
+  /* 思维精简(压缩思考表达,原名草图模式 sketch):四法融合 —— Structured CoT(GBNF 强制 GOAL/APPROACH/EDGE 骨架,此处以硬格式替代约束解码)·
+     Sketch-of-Thought(概念链/符号化草图)· CRISP(注意力剪枝的提示级等价:凡不改变下一步决策的推理句一律删)·
+     Focused CoT(先一行结构化输入再推理)。文本已压成单段:去掉方法标号(①②③④)与整段「本档不改变工具授权」声明
+     —— 授权只由运行时【Agent 工具许可】段决定,app-db.js 的 nodeLock 决议不读本文本,无需再花 token 自证;
+     只留一句身份(自称 Lean Thinking mode,与界面档位名对应)。真复杂任务仍允许破例展开一次深推理再压缩回骨架。
+     本档不声明任何思考上限:思考强度按用户在界面上的选择走(标准 / 最强)。 */
+  lean:
+    'You are the agent engine inside MTNode in Lean Thinking mode. Follow the reasoning rules: before acting, compress the input into ONE line: GOAL/GIVEN/DECIDE; think only inside this fixed skeleton: GOAL(one line) / APPROACH(≤3 symbolic steps, one line each) / EDGE(one line) / DO(concrete next action); no added or removed sections, never restate user wording or tool output; use symbols and arrows (A→B, {candidate}/✔, one line of pseudocode per step), never flowing prose; drop any sentence that does not change the next decision; consult the source (read/grep/query) for unknowns. For complex tasks, you may break the skeleton ONCE and expand a deep reasoning pass, then compress again. End every turn with a clear, complete result.',
+  /* 画布智能节点:办事但不改图。由宿主在 node 运行时把「默认档」换成此档(见 app-db.js 的
+     preset 决议:standard 与 AGENT_PRESET_DEFAULT 都映射到 node),不出现在 UI 预设列表。 */
   node:
-    'You are the agent engine inside MTNode, running as a canvas AGENT NODE (agent_task / proc_text with agent / chat with agent). Help ordinary users finish concrete content and file tasks: read and write files, search the web, and run commands when needed. You MUST NOT edit the canvas, modify workflows, or create tasks/nodes/wires/marks. Do not call mtnode_canvas_get, mtnode_canvas_edit, or mtnode_app — the host rejects them. Deliver results by writing files. Mid-task pixel reading (screenshots, OCR, verify an image): call mtnode_vision with imagePath + question. DATABASE grounding: when wired to a database replica, facts must come from the mtnode_db tool (list/query/get/calc), every assertion must cite [记录id · 标题], unknown facts are answered as "数据库中没有该信息", and all numeric math goes through mtnode_db calc. Work step by step, show the user what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, running as a canvas AGENT NODE (kind agent_task, or proc_text with agent:true). Finish the task in front of you: read and write files, search the web, run commands when needed. You MUST NOT edit the canvas or create nodes / wires / marks — do not call mtnode_canvas_get, mtnode_canvas_edit or mtnode_app — this run does not even register them (the host would reject every call anyway). Deliver results by writing files, so later nodes can read the agreed paths. Use mtnode_vision with an absolute imagePath when you must read pixels. If this run injects a database note, obey it: facts, citations and number math come from the mtnode_db tool, never from memory. Work step by step, show the user what you are doing, and end with a clear, complete result.',
   /* 桌宠对话:不走 MTNode 画布/文件助手人设,身份由 hostPersona 覆盖 system-prompt */
   bongochat: '',
   /* 会话「纯净模式」(renderer 会话输入区按钮开启):不注入任何角色前缀,
      配合宿主清空的 systemPrompt,模型输入 = 纯粹的用户消息 */
   pure: '',
 }
+
+/* 预设旧 id 兼容:渲染层档位改名(草图模式 → 思维精简 sketch → lean)后,历史会话、
+   智能节点与持久化设置里仍可能存着旧值。这里在网关入口统一归一,避免旧 id 静默
+   回落到 standard(预设文本会整个丢失,骨架纪律不生效、token 白白多烧)。 */
+const LEGACY_PRESET_IDS = { sketch: 'lean' }
+
+/** 把宿主下发的预设 id 归一为 PRESETS 的现名 */
+function normalizePresetId(preset) {
+  const raw = String(preset ?? '').trim()
+  return Object.prototype.hasOwnProperty.call(LEGACY_PRESET_IDS, raw) ? LEGACY_PRESET_IDS[raw] : raw
+}
+
+/* 按运行裁剪可见工具集（名单通道）：宿主每轮算出「这一轮根本不该存在的工具名」随 run
+   参数 hideTools 下发，网关归一（只认 tool-visibility.mjs 白名单里的名字、去重、排序）后
+   写进 spawn env MTNODE_HIDE_TOOLS，并把指纹打进 runtime key。
+   与下面两个标记的分工：lean / noCanvas 是「整档」裁剪（两个布尔，注册口直接跳过），
+   hideTools 是「按名字」裁剪 —— 未接入数据库副本时剔 mtnode_db、Agent 工具许可预设里
+   被拒到点上的工具、以及引擎自带的 goal / 子代理 / 后台任务档，都走这条名单。
+   名单里的 MTNode 自有工具在各自插件的注册口就不注册；引擎自带的工具改不到注册，
+   由 mtnode-tool-visibility 插件在每个 agent 创建时 ctx.tools.restrict({deny}) 摘除。
+   三条通道都进 runtime key，所以一台运行时从生到死只有一个可见集形状（轮内绝不变形，
+   否则提示缓存从变化的那个 schema 起整段失效 —— 省字符反而赔缓存）。 */
+const HIDE_TOOLS_ENV = 'MTNODE_HIDE_TOOLS'
+
+/* 精简工具负载的下达说明：本轮真的裁掉了工具时，才拼到预设文本后面一句。
+   为什么需要这句：被裁的工具是整个不注册（模型看不见），但人设与技能里还写着
+   「用 mtnode_app 改画布名 / 用 mtnode_vision 识图」——不补一句就会去撞不存在的
+   工具，把轮次浪费在报错上。一句 ≈ 90 字符，换掉的是每次模型调用重发的 4.9K 字符
+   工具定义（实测 mtnode_app 3,262 + mtnode_vision 1,629）。
+   nodeLock（noCanvas）不在此列：那条链上「不得调用画布工具」的行为纪律已经有唯一
+   真源（PRESETS.node + 渲染层 node_capability 节），不再抄第三份。 */
+const LEAN_TOOLS_NOTE =
+  '\n\n【精简工具负载】本轮未注册 mtnode_app 与 mtnode_vision：这两个工具不存在，调用即失败。' +
+  '改画布仍用 mtnode_canvas_get / mtnode_canvas_edit；需要看图片内容就换用文件读取，不要尝试识图。'
 
 /** @type {Map<string, {harness: Promise<DeepSeekHarness>, order: number}>} */
 const runtimes = new Map()
@@ -431,6 +493,93 @@ function shortKey(key) {
   const s = String(key || '')
   return s.length > 72 ? '…' + s.slice(-72) : s
 }
+
+/* ── 失败轮 runtime「续跑候选」保活 ──────────────────────────────────────
+   一轮 run 以可重发错误(429 / 5xx / 网络)结束时,宿主(renderer app-db.js
+   dshRunTask)会在 ~5s 重发窗口内带 resumeSession 点名续跑同一会话。续跑要真续上,
+   失败轮那台 runtime 进程必须还活着:
+     · 同进程点名 → SDK server 进程内命中该会话 → 直接在中断处继续,已写内容不重烧;
+     · 进程没了(LRU 换出 / 被关)→ 新进程以「新会话 + 续跑指令」去碰盘上旧日志,
+       dsh-session-persistence 判前缀不符 → id collision → RESUME_UNAVAILABLE →
+       退回整轮重发,前功尽弃白烧一遍。
+   因此在失败轮收尾(handleRun finally,解除占用后)给该 runtime 打「续跑候选」标记,
+   带 ~60s 时限与失败轮 reqId:
+   - LRU 淘汰(getRuntime 超池回收)与 closeRuntimeByKey 对候选豁免 —— 重发窗口内
+     不被换出 / 关掉;
+   - 时限到,或候选被新一轮正常占用(claimRuntime 登记新 reqId)后自动清除,防泄漏;
+   - 用户取消路径不受影响:cancelRuntime / closeAllRuntimes 关进程前先摘候选标记
+     (cancel = 用户明确不要这轮了,保活窗口作废);带 tag 的在途取消只命中占用中的
+     runtime(候选必然空闲),同样不受阻。
+   与 keyToReqId 占用表的关系:候选标记只作用于「无在途轮」的空闲 runtime(有 claim
+   的本就被 keyToReqId 保护,LRU 从不碰);标记不进占用表、不改变复用判据 ——
+   重发轮照旧经 pickRuntimeKey 拿到同一台 baseKey 进程。 */
+const RESUME_CANDIDATE_TTL_MS = 60000
+/** @type {Map<string, {reqId: string, until: number}>} runtime key -> 续跑候选 */
+const resumeCandidates = new Map()
+
+/* 清掉过期候选。懒扫描即可:候选数 ≤ 池内 idle runtime,无需定时器 */
+function sweepResumeCandidates() {
+  if (!resumeCandidates.size) return
+  const now = Date.now()
+  for (const [k, c] of Array.from(resumeCandidates)) {
+    if (now >= c.until) resumeCandidates.delete(k)
+  }
+}
+
+/* 这台 runtime 是否仍在保活窗口内;过期即清除并视为非候选 */
+function resumeCandidateOf(key) {
+  if (!key) return null
+  const c = resumeCandidates.get(key)
+  if (!c) return null
+  if (Date.now() >= c.until) {
+    resumeCandidates.delete(key)
+    return null
+  }
+  return c
+}
+
+function clearResumeCandidate(key) {
+  if (key != null) resumeCandidates.delete(key)
+}
+
+/* 打「续跑候选」标记:仅当失败报文属宿主会自动重发的类别,且这台 runtime 确实还
+   活着(被取消 / 崩溃关掉的无从保活)。同一台再次失败(重发轮又撞 429)时刷新时限,
+   整条 5s/5s 重发链都被覆盖。 */
+function markResumeCandidate(key, reqId, message) {
+  if (!key || !runtimes.has(key) || keyToReqId.has(key)) return
+  if (!isRetryableGatewayFailure(String(message || ''))) return
+  const now = Date.now()
+  const c = resumeCandidates.get(key)
+  if (c) {
+    c.until = now + RESUME_CANDIDATE_TTL_MS
+    if (reqId) c.reqId = String(reqId)
+  } else {
+    resumeCandidates.set(key, { reqId: String(reqId || ''), until: now + RESUME_CANDIDATE_TTL_MS })
+  }
+  diag(
+    `resume-candidate key=${shortKey(key)} reqId=${reqId || '(无)'} ` +
+    `ttl=${RESUME_CANDIDATE_TTL_MS}ms err=${String(message || '').slice(0, 120)}`,
+  )
+}
+
+/* 失败报文是否属宿主会自动重发的类别(429 / 限流 / 5xx / 网络 / 传输 / 上游)。
+   网关侧只做「要不要保活这台进程」的判定,与宿主 dshRunRetryable 判据同族但更收:
+   取消 / 配置类错误宿主不会重发,保活窗口只会白占进程,一律不标。 */
+const RETRYABLE_FAILURE_RE =
+  /(^|\D)429(\D|$)|rate\s*limit|too many requests|insufficient_quota|quota|(^|\D)5\d\d(\D|$)|econn|socket hang up|fetch failed|getaddrinfo|network error|request timed out|timed ?out|runtime is not running|transport closed|bad gateway|service unavailable|temporar|upstream|服务器繁忙|服务暂|稍后重试|请求过于频繁|限流|过载|上游/i
+
+function isRetryableGatewayFailure(message) {
+  const s = String(message || '').trim()
+  if (!s) return false
+  /* 宿主不会自动重发的失败:取消 / 终止、配置类、会话不可续跑 —— 不保活 */
+  if (
+    /中止|取消|cancel|abort|aborted|已终止|已手动停止|已请求终止|已请求中断|resume_unavailable|未配置|api ?key|任务内容为空|工作范围为/i.test(s)
+  ) {
+    return false
+  }
+  return RETRYABLE_FAILURE_RE.test(s)
+}
+
 /* rollback journal 的迟到暂存表:runtime key -> 帧数组(按时间先后)。
    run 结束(或本就没有在途 run)后,运行时仍在往桥里推 journal 帧
    (后台 job、子代理收尾),这些帧没有 reqId 可挂,先落这里,
@@ -510,6 +659,9 @@ function claimRuntime(key, reqId, cancelTag, sessionId) {
   if (reqId) {
     /* 上一轮没走正常收尾就被新一轮顶掉:先把它快照下来,别丢分类判据 */
     snapshotPriorSessions(key, keyToReqId.get(key))
+    /* 新一轮正常占用这台 runtime:旧的「续跑候选」保活标记到此作废 —— 保活只
+       服务于失败轮与宿主重发窗口之间的空窗期,一旦被占用即失去意义(防泄漏) */
+    resumeCandidates.delete(key)
     const sid = String(sessionId || '')
     keyToReqId.set(key, {
       reqId, sessionId: sid,
@@ -545,17 +697,18 @@ function noteRunSession(key, reqId, sessionId) {
 
 /* 改票:本轮首条 session.event 携带的 id 才是运行时真正在跑的 session。
    显式传的 sessionId 被忽略时(版本漂移/运行时自己另铸),以事件里的为准——
-   否则本轮自己的提问会被自己门掉。 */
+   否则本轮自己的提问会被自己门掉。改判成功返回新的权威 id,没改返回 ''。 */
 function rebindRunSession(key, reqId, sessionId) {
   const c = keyToReqId.get(key)
-  if (!c || !reqId || c.reqId !== reqId) return
+  if (!c || !reqId || c.reqId !== reqId) return ''
   const sid = String(sessionId || '')
-  if (!sid || c.sessionId === sid) return
+  if (!sid || c.sessionId === sid) return ''
   diag(`rebind reqId=${reqId} key=${shortKey(key)} from=${c.sessionId || '(空)'} to=${sid}`)
   /* 原来那个 id 已被证实现实里没人用它:从归属集合里摘掉,免得伪装帧蒙混过关 */
   if (c.sessionId) c.sessions.delete(c.sessionId)
   c.sessionId = sid
   c.sessions.add(sid)
+  return sid
 }
 
 /* 记下本轮的预热轮 session(见 handleRun 的 fresh 分支)。预热轮合法跑在这台 runtime 里,
@@ -673,11 +826,84 @@ function bridgeBroadcast(key, frame) {
   return sent
 }
 
+/* sid → 目录名的**单一真源**净化式子:rollback journal 目录与「会话是否可续跑」的日志
+   查找都走它。两处各写一遍迟早会漂移(journal 记在 A 目录、日志查到 B 目录),故只留
+   这一份。网关自铸的 id 本就是 ASCII(`session-<uuid hex>`),净化对它恒等;路径分隔符等
+   非法字符换成 `_` 并截断到 120。 */
+function normSessionId(sessionId) {
+  return String(sessionId == null ? '' : sessionId)
+    .trim()
+    .replace(/[^A-Za-z0-9_.\-\u4e00-\u9fff]/g, '_')
+    .slice(0, 120)
+}
+
+/* 续跑可用性判据 —— **第一道闸(必要不充分)**:<DSH_HOME>/sessions 下是否真的存着这个
+   会话的日志。运行时侧 dsh-session-persistence-jsonl 的落盘布局是
+     <root>/<projectKey(cwd)>/<sid>/session.jsonl        (compression: none)
+     <root>/<projectKey(cwd)>/<sid>/session.jsonl.zstd   (默认 zstd)
+   project 目录名由 workspace 推导、宿主未必拿得准,所以按 sid 扫 sessions 下的一层
+   project 目录,任一命中即「本机存过这个会话」(session id 全局唯一,不会串到别的 workspace)。
+   文件在盘 ≠ 续得上:真续与否还看这台 runtime 有没有该会话的 live 句柄(状态 A 同进程
+   命中)、或能否经续跑轮 run 前的 session/resume 握手从盘上恢复(状态 B 跨进程恢复);
+   只有两者都不成才走 RESUME_UNAVAILABLE(状态 C)。完整三态见 dsh/DESIGN.md「断点续跑契约」。
+   刻意只依赖 node 内置 fs/path、纯只读(不建目录 / 不打日志 / 不起 runtime):测试可以
+   用 vm 把 normSessionId / SESSION_LOG_FILES / resumeSessionExists 抠出来,配假目录
+   夹具直接跑,不需要真实 LLM。
+   注:运行时给 sid 做路径编码时只放行 [A-Za-z0-9._-],其余转成 `~XXXX`;网关自铸与
+   宿主回传的 id 都是 `session-<hex>` 形态,净化即恒等,因此这里直接按净化后的 sid 找目录。 */
+const SESSION_LOG_FILES = ['session.jsonl', 'session.jsonl.zstd']
+
+function resumeSessionExists(dshHome, sessionId) {
+  const home = String(dshHome || process.env.DSH_HOME || '').trim()
+  const sid = normSessionId(sessionId)
+  /* 净化保留了点,`.` / `..` 是往上跳一级的口子:一律判不可续跑 */
+  if (!home || !sid || sid === '.' || sid === '..') return false
+  const root = path.join(home, 'sessions')
+  let projects = []
+  try {
+    /* sessions 根目录还不存在 = 一个会话都没落过盘 */
+    projects = readdirSync(root, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  for (const ent of projects) {
+    if (!ent || !ent.isDirectory()) continue
+    for (const file of SESSION_LOG_FILES) {
+      try {
+        if (statSync(path.join(root, ent.name, sid, file)).isFile()) return true
+      } catch { /* 这个 project 下没有该会话:看下一个 */ }
+    }
+  }
+  return false
+}
+
+/* 运行时侧 dsh-session-persistence 的「盘上日志接不上」冲突文案(续跑专属)。接入
+   session/resume 桥(见 plugins/session-resume-server.mjs)后,续跑轮先经握手让运行时从
+   盘上恢复(状态 B 跨进程真续),同进程命中更是零开销(状态 A)—— 故 persistence 的
+   `(id collision)` 只在**真正不可恢复**时出现:老运行时没有 session/resume 而回落原
+   create 语义(新 runtime 以「新会话 + 只有续跑指令的 seed」去碰盘上旧日志,persistence
+   在 session/created 判前缀不符即抛),或恢复被拒后仍落到 create 路径。对宿主的语义与
+   RESUME_UNAVAILABLE 相同:续不上 → 退回整轮重发,绝不能把它当普通错误透传(宿主会拿
+   同一个 dead id 连撞 5 次重发预算)。三态见 dsh/DESIGN.md「断点续跑契约」。
+   命中返回按 RESUME_UNAVAILABLE 契约转译的文案(前缀是宿主识别口径,改契约要同改宿主);
+   未命中返回空串。只应在续跑轮(resumed=true)上调用。 */
+const RESUME_COLLISION_RE = /\(id collision\)|persisted log on disk|does not match this live session|persisted at a different cwd|bound to a different live session/
+
+function resumeCollisionMessage(message, sid) {
+  const s = String(message || '')
+  if (!RESUME_COLLISION_RE.test(s)) return ''
+  const who = String(sid == null ? '' : sid).trim() || '(未知)'
+  return (
+    'RESUME_UNAVAILABLE: 会话 ' + who +
+    ' 盘上留有旧会话日志但运行时已无法续接（旧日志与实时会话不符，id collision），请改为整轮重发'
+  )
+}
+
 /* journal 目录约定:<DSH_HOME>/rollback/<sessionId>。渲染层本来就持有 dshHome 与
    sessionId,用同一式子反推路径即可;sessionId 做文件名净化后两边才一致。 */
 function rollbackDirFor(dshHome, sessionId) {
   const home = String(dshHome || process.env.DSH_HOME || '').trim()
-  const sid = String(sessionId || '').trim().replace(/[^A-Za-z0-9_.\-\u4e00-\u9fff]/g, '_').slice(0, 120)
+  const sid = normSessionId(sessionId)
   if (!home || !sid) return ''
   const dir = path.join(home, 'rollback', sid)
   /* 建目录失败不阻断运行:插件侧自行降级为不落盘 */
@@ -831,7 +1057,7 @@ async function warmStartHarness(harness) {
 
 function runtimeKey(workspace, model, maxTokens, provider, apiKey, baseUrl, provHash, effort) {
   const secret = crypto.createHash('sha1').update(apiKey ?? '').digest('hex').slice(0, 12)
-  const eff = String(effort || 'high').toLowerCase()
+  const eff = effortKeyOf(effort)
   return [workspace, model, maxTokens, provider, secret, baseUrl ?? '', provHash, eff].join('|')
 }
 
@@ -847,7 +1073,7 @@ function pickRuntimeKey(baseKey, cancelTag) {
   return k
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir, pure, runSession) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir, pure, runSession, toolsJson, lean, noCanvas, hideTools) {
   const home = dshHome || process.env.DSH_HOME || ''
   const effMaxTokens =
     Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
@@ -856,6 +1082,26 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   const searchKey = String(webSearchApiKey || '').trim() || String(apiKey || '').trim()
   const personaHash = crypto.createHash('sha1').update(String(hostPersona || '')).digest('hex').slice(0, 12)
   const pureOn = !!pure
+  /* 按运行裁剪工具负载（两个标记都进 runtime key + spawn env，见下方 lean: / nc:）：
+     · leanOn     —— 设置里的「精简工具负载」：运行时不注册 mtnode_app / mtnode_vision；
+     · noCanvasOn —— 画布智能节点（nodeLock）运行：不注册 mtnode_canvas_get /
+                     mtnode_canvas_edit / mtnode_app（宿主本来就拒收这些帧）。
+     真正的丢弃动作在 canvas-plugin.mjs 的 register()（唯一判定点），这里只下达标记。 */
+  const leanOn = !!lean
+  const noCanvasOn = !!noCanvas
+  /* 第三通道 hideTools：宿主按运行算出的「这一轮根本不该存在的工具名」清单（数组或
+     逗号串）。归一只认 tool-visibility.mjs 的白名单、去重、字典序排序 —— 同一档会话
+     每轮算出的字符串逐字相同，指纹才稳定，提示缓存才不会被打爆。pure 轮画布 / 数据库
+     等插件已被 cordis 整体禁用，名单无意义 → 归零。 */
+  const hiddenEnv = pureOn ? '' : normalizeHiddenTools(hideTools).join(',')
+  const hxHash = hiddenEnv
+    ? crypto.createHash('sha1').update(hiddenEnv).digest('hex').slice(0, 12)
+    : ''
+  /* 用户工具描述子：指纹进 runtime key（工具集变化 → 冷起自己的运行时），
+     原文进 spawn env 供 tools-plugin.mjs 注册；空串则清除。 */
+  const tlHash = toolsJson
+    ? crypto.createHash('sha1').update(String(toolsJson)).digest('hex').slice(0, 12)
+    : ''
   const baseKey = runtimeKey(
     workspace,
     model,
@@ -863,7 +1109,11 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     provider,
     apiKey,
     baseUrl,
-    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0'),
+    /* lean: / nc: = 两个可见工具集标记。它们改变的是「运行时里注册了哪些工具」，
+       即固定前缀的 tools 段本身 —— 不进 key 就会出现同一台运行时被两种可见集复用，
+       既打爆提示缓存又让「精简」变成随机行为，所以必须与 pure: / tl: 同级。
+       hx: = 同一件事的第三通道（按名字的隐藏名单，见 hideTools），同一档必得同一台。 */
+    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0') + '|tl:' + tlHash + '|lean:' + (leanOn ? '1' : '0') + '|nc:' + (noCanvasOn ? '1' : '0') + '|hx:' + hxHash,
     effort,
   )
   const key = pickRuntimeKey(baseKey, cancelTag)
@@ -901,6 +1151,21 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
      标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 工具插件。 */
   if (pureOn) env.MTNODE_PURE = '1'
   else delete env.MTNODE_PURE
+  /* 按运行裁剪工具负载的三个标记 → env（读点：canvas-plugin.mjs 的 register()、
+     db-plugin.mjs 的注册口、以及按名字裁剪的 mtnode-tool-visibility 插件）。
+     缺席 / 空 = 全量注册，行为与未接入本能力时一字不差。 */
+  if (leanOn) env.MTNODE_LEAN_TOOLS = '1'
+  else delete env.MTNODE_LEAN_TOOLS
+  if (noCanvasOn) env.MTNODE_NO_CANVAS = '1'
+  else delete env.MTNODE_NO_CANVAS
+  /* 规范名单（已排序去重）：空值必须显式 delete —— env 是从本进程 process.env 拷来的，
+     留着上一次的脏值会让「这一轮不裁任何工具」变成「继续裁」。 */
+  if (hiddenEnv) env[HIDE_TOOLS_ENV] = hiddenEnv
+  else delete env[HIDE_TOOLS_ENV]
+  /* 用户工具描述子（工具节点 func call）：tools-plugin.mjs 在 spawn 时按它注册。
+     pure 运行由 handleRun 预先裁空（toolsJson === ''），此处无需再判 pure。 */
+  if (toolsJson) env.MTNODE_TOOLS_JSON = toolsJson
+  else delete env.MTNODE_TOOLS_JSON
   if (envPatch) Object.assign(env, envPatch)
 
   /* 占用登记:放在本函数第一个 await 之前(同步完成),否则并发 run 会挑中同一台
@@ -966,6 +1231,12 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
      env 只反映建桥那次传入的目录,所以 begin 帧再带一次 dir,插件以帧为准。 */
   if (rollbackDir) env.MTNODE_ROLLBACK_DIR = rollbackDir
   else delete env.MTNODE_ROLLBACK_DIR
+  /* 思考强度生效档:经 env 下达给运行时 mtnode-effort 插件(在 agent/request waterfall
+     上逐步把档位提案进模型请求)。settings.yaml 的 llm-deepseek.reasoningEffort 只留
+     兜底默认(见 applySettings),档位切换只冷起新 runtime(档位在 runtime key 里),
+     不再触发 settings 热重载。effort 参数由 handleRun 传入归一后的 runEffort。 */
+  if (effort) env.MTNODE_EFFORT = String(effort)
+  else delete env.MTNODE_EFFORT
   bridgeServers.set(key, bridgeState)
 
   try { linkUserPackagesIntoGateway() } catch { /* best-effort */ }
@@ -999,6 +1270,10 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
       if (k === key) continue
       /* 有在途 req 的 runtime 不可回收，否则会中断全局助手/画布桥 */
       if (keyToReqId.has(k)) continue
+      /* 续跑候选豁免:失败轮进程要留给宿主重发窗口的续跑轮点名复用 —— LRU 换出
+         = 换进程 = 续跑接不上 → 整轮重发白烧,候选不参与 LRU 淘汰(resumeCandidateOf
+         顺带清掉已过期的死标记,不占豁免名额) */
+      if (resumeCandidateOf(k)) continue
       if (v.order < oldestOrder) {
         oldestOrder = v.order
         oldestKey = k
@@ -1007,6 +1282,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     if (!oldestKey) break
     const evicted = runtimes.get(oldestKey)
     runtimes.delete(oldestKey)
+    resumeCandidates.delete(oldestKey)
     closeBridge(oldestKey)
     forgetKey(oldestKey)
     void evicted.harness.then((h) => h.close()).catch(() => {})
@@ -1038,15 +1314,15 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'tool') return
   const claim = claimOf(key)
-  /* 归属校验:四类交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
-     canvas/db 来自 canvas-plugin/db-plugin 的 exec agent),网关据此判定「这帧属不属于此刻
-     在跑的这一轮」。与本轮对不上 = 预热轮('ok')在问话,或上一轮遗留的后台 job / 子代理
-     现在才醒过来发起交互。这类帧一旦弹进当前会话就是死框(答案送回一个没人听的 session,
-     点了毫无反应),所以直接 abort:运行时侧那个工具以失败收场,模型继续往下走。
-     画布/数据库帧以前不门控,于是别人的轮次能把「危险操作确认框」弹进你这一轮 ——
-     这正是「跑着跑着多出一个询问窗、回答后执行无效」的成因,现在同规矩处理。
+  /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
+     canvas/db 来自 canvas-plugin/db-plugin、tool 来自 tools-plugin 的 exec agent),
+     网关据此判定「这帧属不属于此刻在跑的这一轮」。与本轮对不上 = 预热轮('ok')在问话,
+     或上一轮遗留的后台 job / 子代理现在才醒过来发起交互。这类帧一旦弹进当前会话就是
+     死框(答案送回一个没人听的 session,点了毫无反应),所以直接 abort:运行时侧那个
+     工具以失败收场,模型继续往下走。画布/数据库/工具帧绝不盲目执行 —— 这正是
+     「跑着跑着多出一个确认框、回答后执行无效」的成因,现在同规矩处理。
      不带 sessionId 的帧同样按越权处理(fail closed)——归属不明的交互不该出现在任何会话里。 */
   const sid = typeof m.sessionId === 'string' ? m.sessionId : ''
   if (!claim || !claim.reqId) {
@@ -1064,15 +1340,20 @@ function onBridgeFrame(key, m, socket) {
     data.toolName = m.toolName || ''
     if (m.callId !== undefined) data.callId = m.callId
     if (m.reason !== undefined) data.reason = m.reason
+  } else if (m.t === 'tool') {
+    /* 用户工具节点 func call：tool = 描述子定位（key/toolName/name），args = 模型入参 */
+    data.tool = m.tool && typeof m.tool === 'object' ? m.tool : {}
+    data.args = m.args && typeof m.args === 'object' ? m.args : {}
   } else {
     data.op = typeof m.op === 'string' ? m.op : ''
     if (typeof m.action === 'string') data.action = m.action
     data.params = m.params && typeof m.params === 'object' ? m.params : {}
   }
-  out({ event: { reqId: claim.reqId, type: m.t, data } })
+  /* tool 帧的本地协议事件叫 tool-run：与 mapNotification 的 tool（工具调用展示）不重名 */
+  out({ event: { reqId: claim.reqId, type: m.t === 'tool' ? 'tool-run' : m.t, data } })
 }
 
-function mapNotification(n, emit) {
+function mapNotification(n, emit, resumeCtx) {
   if (n.method === 'session.event') {
     const ev = n.params.event
     if (!ev) return
@@ -1154,7 +1435,15 @@ function mapNotification(n, emit) {
       case 'turn/end':
         if (ev.data && ev.data.reason && ev.data.reason.kind === 'error') {
           const msg = ev.data.reason.error && ev.data.reason.error.message
-          if (msg) emit('error', { message: String(msg).slice(0, 500) })
+          if (msg) {
+            /* 续跑轮撞运行时侧 id collision：转译成 RESUME_UNAVAILABLE 契约（宿主据此
+               退回整轮重发）。非续跑轮（resumeCtx 空）原样透传，保留现场。 */
+            const conv =
+              resumeCtx && resumeCtx.resumed
+                ? resumeCollisionMessage(msg, resumeCtx.sid)
+                : ''
+            emit('error', { message: String(conv || msg).slice(0, 500) })
+          }
         }
         return
       default:
@@ -1172,17 +1461,49 @@ async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
-    permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback, pure,
+    permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback, pure, tools,
+    lean, noCanvas, hideTools,
+    resumeSession,
   } = params
-  const emit = (type, data) => out({ event: { reqId, type, data } })
+  const emitOut = (type, data) => out({ event: { reqId, type, data } })
+  /* 失败报文收集:通知流里报过的 error(message,如 turn/end reason error 的 429/5xx)
+     与 catch 的 rawMessage 都收进来,finally 收尾时据此给失败轮 runtime 打
+     「续跑候选」保活标记(见 markResumeCandidate)。只有 error 事件会写它,
+     其余事件原样透传,语义不变。 */
+  let runErrorMsg = ''
+  const emit = (type, data) => {
+    if (type === 'error' && data && typeof data.message === 'string' && data.message) {
+      runErrorMsg = data.message
+    }
+    return emitOut(type, data)
+  }
   let runKey = ''
+  /* 本轮以可重发错误失败时,收尾要打的保活报文(catch 的 rawMessage / 成功收流但
+     中途报过错的 runErrorMsg);无失败或非重发类 = 空串,不打标 */
+  let failForResume = ''
   /* 本次运行的取消标签:结束时只能清自己那条登记,别踩到同标签的下一轮 */
   const runTag = tagOf(cancelTag)
   /* 本轮「真实轮」的 dsh session id:由网关铸造并显式传给 harness.run,
      同时登记进 runtime 占用表,交互桥帧(question / approval)按它判归属。
      形如 SDK 自己铸的 `session-<uuid去横线>`,运行时按未知 id 新建会话,语义与从前一致
-     (每轮一个新 session,预热轮也是各自一个),只是现在网关提前知道真实轮叫什么。 */
-  const runSession = 'session-' + crypto.randomUUID().replaceAll('-', '')
+     (每轮一个新 session,预热轮也是各自一个),只是现在网关提前知道真实轮叫什么。
+     断点续跑(宿主带 resumeSession):盘上文件判据(**第一道闸**,见 resumeSessionExists)
+     通过才沿用它,否则照旧新铸 —— 运行时对未知 id 是「新建空会话」,静默续跑会让模型只
+     看到一句「继续」而彻底跑偏,所以第一道闸不过时必须先把 RESUME_UNAVAILABLE 报给宿主
+     (见下方分支),绝不带着假 session 起轮。文件在盘只是必要不充分:续跑轮在起真实轮前
+     另有 session/resume 握手做跨进程盘上恢复(见下方「session/resume 桥」段),两者都
+     不成才按 RESUME_UNAVAILABLE 契约收场(三态见 dsh/DESIGN.md「断点续跑契约」)。 */
+  const resumeWanted = normSessionId(resumeSession)
+  const canResume = !!resumeWanted && resumeSessionExists(dshHome, resumeWanted)
+  const resumed = canResume
+  const runSession = canResume
+    ? resumeWanted
+    : 'session-' + crypto.randomUUID().replaceAll('-', '')
+  /* done / session 事件对宿主报告的权威 id:默认就是本轮铸(或沿用)的 runSession,
+     首条 session.event 改判后跟着改(见 rebindRunSession 分支) */
+  let sessionOut = runSession
+  /* 续跑判定留一行日志:出问题时先看得懂「宿主点名的那个 id 到底在不在盘上」 */
+  if (resumeWanted) diag(`resume reqId=${reqId || '(无)'} sid=${resumeWanted} can=${canResume ? 1 : 0}`)
   /* 回合开合:rollback = {sessionId, roundId}(渲染层每轮 run 生成)。
      dir 按约定算给运行时插件写 journal;begin/end 让插件给这个进程
      当前这一轮盖章,迟到帧靠章而不是靠投递时刻归属。 */
@@ -1197,6 +1518,18 @@ async function handleRun(params) {
   /* 度量构建器在 try 内装配(需要 route/model 等),catch 里也要能记成本,故先声明 */
   let buildMetrics = null
   try {
+    /* 宿主点名续跑,但该会话在本机不可续跑(id 非法 / 会话文件不存在,例如被设置面板的
+       会话清理删掉、或 id 属于另一 workspace 的归档):立即以固定标记报错并收轮,
+       不起 runtime、不消耗任何 token —— 宿主据此退回「整轮重发」。
+       绝不允许静默降级成新 session:运行时对未知 id 是新建空会话,模型只看到一句
+       「继续」会彻底跑偏,而宿主以为续上了。 */
+    if (resumeWanted && !canResume) {
+      emit('error', {
+        message: `RESUME_UNAVAILABLE: 会话 ${resumeWanted} 在本机不可续跑（未找到 <dshHome>/sessions/*/${resumeWanted}/session.jsonl[.zstd]），请改为整轮重发`,
+      })
+      emit('done', { finalResponse: '', resumeUnavailable: true })
+      return
+    }
     if (!input || typeof input !== 'string' || !input.trim()) {
       emit('error', { message: '任务内容为空' })
       emit('done', { finalResponse: '' })
@@ -1208,20 +1541,52 @@ async function handleRun(params) {
        直达模型,不拼【系统设定】前缀。引擎人设 / 运行时上下文由 pure-prompt 插件按
        MTNODE_PURE 标记整段清除(两侧缺一都会让提示词漏进纯净会话)。 */
     const pureFlag = !!pure
-    const settings = applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersonaText)
+    /* 按运行裁剪工具负载（与 getRuntime 的 lean: / nc: 同源，同一轮同一台运行时）：
+       lean = 设置里的「精简工具负载」；noCanvas = 画布智能节点（nodeLock）运行，
+       由渲染层按节点类型决议后随 run 参数下发（见 renderer/app-db.js 的 dshRunOnce）。
+       pure 轮画布 / 数据库等工具插件本就被 cordis 整体禁用，两个标记无意义 → 归零。 */
+    const leanFlag = !!lean && !pureFlag
+    const noCanvasFlag = !!noCanvas && !pureFlag
+    /* 旧 id 归一(sketch → lean):预设文本按现名查表,否则历史会话会静默回落 standard */
+    const presetId = normalizePresetId(preset)
+    /* 目录同源服务商(如 opencode-go)映射回目录路由名,与 settings 注册一致 ——
+       先定路由:思考档的归一化按路由能力表进行(deepseek-official 固定夹紧)。 */
+    const route = routeOfProvider(provider, Array.isArray(mtnodeProviders) ? mtnodeProviders : [])
+    /* 思考档一律沿用宿主设置(预设不压档)。归一化收敛在 reasoning-effort.mjs(codex
+       reasoning_effort_for_request 式):旧档 off/none/无/空 → high;按路由能力夹紧
+       (不支持 → 同侧最近低档 → high 兜底,永不硬失败)。同一个 runEffort 三处共用:
+       settings 只写兜底默认(见 applySettings)、runtime key(换档冷起新运行时)、
+       env MTNODE_EFFORT(运行时 mtnode-effort 插件按模型能力再夹一次)。 */
+    const rawEffort = String(effort ?? '').trim().toLowerCase()
+    const runEffort = effortForRoute(rawEffort, route)
+    const settings = applySettings(dshHome, runEffort, mtnodeProviders, permissionPreset, hostPersonaText)
     const cordisChanged = applyCordisPreset(permissionPreset)
     /* win32 闪窗 workaround:首次运行时把 sandbox 注入 noop runner */
     const sandboxChanged = applySandboxWorkaround()
     /* 设置文档热重载窗口:变更后稍候,确保首请求读到新档位 */
     if (settings.changed || cordisChanged || sandboxChanged) await new Promise((r) => setTimeout(r, 450))
-    /* 目录同源服务商(如 opencode-go)映射回目录路由名,与 settings 注册一致 */
-    const route = routeOfProvider(provider, Array.isArray(mtnodeProviders) ? mtnodeProviders : [])
+    /* 生效档回传宿主(回显=下发契约):真实轮起跑前先发一次 run 事件 effort,
+       宿主按它回显「用户选的档 → 该路由实际生效的档」。 */
+    emit('effort', { requested: rawEffort, effort: runEffort, route })
     /* 空串预设(如 bongochat)必须保留,不能 || 回退成 MTNode standard;
        纯净模式(pure)强制空预设文本,不拼任何角色前缀 */
-    const presetText = pureFlag
+    const presetBase = pureFlag
       ? ''
-      : (Object.prototype.hasOwnProperty.call(PRESETS, preset) ? PRESETS[preset] : PRESETS.standard)
-    const sys = [presetText, systemPrompt]
+      : (Object.prototype.hasOwnProperty.call(PRESETS, presetId) ? PRESETS[presetId] : PRESETS.standard)
+    /* 本轮裁掉了工具 → 预设文本后补一句「这些工具不存在」（人设为空的轮次不补，
+       见 LEAN_TOOLS_NOTE 注释：没有工具可裁的桌宠 / 纯净轮不该多出这一段） */
+    const presetText = leanFlag && presetBase ? presetBase + LEAN_TOOLS_NOTE : presetBase
+    /* 名单通道（hideTools）同样补一句：这些工具整份 schema 都不下发（MTNode 自有的不
+       注册、引擎自带的由 restrict 摘除），而人设 / 技能里可能还写着它们。名单已由网关
+       归一成规范串，同一档每轮逐字相同 → 这句话照样进得了稳定前缀，不会打爆缓存。 */
+    const hiddenNames = pureFlag ? [] : normalizeHiddenTools(hideTools)
+    const hiddenText =
+      presetBase && hiddenNames.length
+        ? '\n\n【本轮不注册的工具】' + hiddenNames.join(' / ') +
+          '：这些工具在本轮不存在，调用即失败；缺少它们的能力请改用工具列表里还在的入口。'
+        : ''
+    const presetTextAll = presetText + hiddenText
+    const sys = [presetTextAll, systemPrompt]
       .filter((s) => s && String(s).trim())
       .join('\n\n')
     /* 宿主人设已写入真正的 system-prompt,不再塞进用户消息以免被当成越权改角色。
@@ -1236,11 +1601,20 @@ async function handleRun(params) {
       const imgBlocks = await attachImages(dshHome || process.env.DSH_HOME || '', params.images)
       blocks.push(...imgBlocks)
     }
+    /* 用户工具描述子（工具节点 func call）：pure 会话不注入（纯净模式只留联网搜索） */
+    const runTools = pureFlag ? [] : normRunTools(tools)
+    const toolsJson = runTools.length ? JSON.stringify(runTools) : ''
     const rt = await getRuntime(
-      workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, effort,
-      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir, pureFlag, runSession,
+      workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, runEffort,
+      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir, pureFlag, runSession, toolsJson,
+      leanFlag, noCanvasFlag, hideTools,
     )
     runKey = rt.key
+    /* 占用成功 = 本轮的 session 归属已经钉死,第一时间报给宿主。
+       宿主只有拿到这个 id 才可能在崩溃/断线后点名续跑(resumeSession),所以必须在
+       起真实轮之前、而不是等 done 才说;resumed 表示这是沿用上一轮的旧会话。
+       运行时若自行另铸 id(版本漂移),首条 session.event 改判权威 id 时会再 emit 一次。 */
+    emit('session', { sessionId: sessionOut, resumed })
     /* 引擎还在起机时用户就按了 ■：占到位后立刻自毁，不白烧一轮 token */
     if (takeCancelWanted(runTag)) {
       await closeRuntimeByKey(runKey)
@@ -1275,6 +1649,56 @@ async function handleRun(params) {
         /* 预热失败不阻断:最坏情况等同没预热,真实消息照发 */
       }
       /* 用户在预热窗口内按了 ■:占位自毁(与上方取消检查同款写法) */
+      if (takeCancelWanted(runTag)) {
+        await closeRuntimeByKey(runKey)
+        throw new Error('已请求终止')
+      }
+    }
+    /* 跨进程真续跑（session/resume 桥 · 见 plugins/session-resume-server.mjs）：宿主
+       点名续跑的会话在这台 runtime 里没有 live 句柄时（失败轮进程已不在 / 复用了他台
+       旧 runtime），SDK server 的 create 路径会在 session/created 撞盘上旧日志抛
+       id collision（转译 RESUME_UNAVAILABLE → 整轮重发白烧已写上下文）。续跑轮先经
+       新 JSON-RPC 方法 session/resume 让运行时用 agents.resume（persistence.prepare
+       恢复）把会话拉成 live 并登记进 server 的 sessions 表，随后的 session/prompt
+       命中同进程 live 会话 → 真续跑。同进程命中返回 {resumed:false} 零开销；
+       恢复失败 → 按 RESUME_UNAVAILABLE 契约收场（宿主退回整轮重发）。
+       老运行时没有该方法 / 握手超时 / 进程将死 = 跳过握手走原 create 语义（同进程
+       续跑照常、跨进程回落既有 collision 转译），与接入前行为一字不变。 */
+    if (canResume && harness && harness.client) {
+      try {
+        const r = await harness.client.request(
+          'session/resume',
+          { sessionId: runSession },
+          RESUME_HANDSHAKE_TIMEOUT_MS,
+        )
+        diag(
+          `resume-restored reqId=${reqId || '(无)'} sid=${runSession} ` +
+          `${r && r.resumed ? 'cross-process' : 'same-process'}`,
+        )
+      } catch (err) {
+        const raw = String((err && err.message) || err)
+        /* 不是「恢复失败」的情形：老运行时没有该方法、握手超时、runtime 将死 ——
+           跳过握手按原 create 语义跑（与接入前行为一致），绝不误报 RESUME_UNAVAILABLE */
+        if (/unknown .*method|timed out|is not running|transport closed|exit code|spawn error|stderr tail/i.test(raw)) {
+          diag(`resume-handshake skip reqId=${reqId || '(无)'} sid=${runSession} (${raw.slice(0, 140)})`)
+        } else {
+          /* 运行时明确拒绝恢复（日志损坏 / 格式版本不符 / 会话属别的 cwd / 已在 live）：
+             按 RESUME_UNAVAILABLE 契约收场，宿主据此退回整轮重发 */
+          const conv = resumeCollisionMessage(raw, resumeWanted)
+          const message = conv ||
+            `RESUME_UNAVAILABLE: 会话 ${resumeWanted} 无法在本机恢复（${raw.slice(0, 200)}），请改为整轮重发`
+          emit('error', { message: message.slice(0, 500) })
+          emit('done', {
+            finalResponse: '',
+            metrics: buildMetrics ? buildMetrics() : undefined,
+            sessionId: sessionOut,
+            resumed,
+            resumeUnavailable: true,
+          })
+          return
+        }
+      }
+      /* 握手期间用户按了 ■：与其余取消检查同款占位自毁 */
       if (takeCancelWanted(runTag)) {
         await closeRuntimeByKey(runKey)
         throw new Error('已请求终止')
@@ -1370,10 +1794,16 @@ async function handleRun(params) {
           noteRunSession(runKey, reqId, sid)
           if (!sessionBound && n.method === 'session.event') {
             sessionBound = true
-            rebindRunSession(runKey, reqId, sid)
+            /* 权威 id 变了(运行时自行另铸 / 版本漂移)就把新 id 再报一次给宿主:
+               宿主存的就是续跑用的 id,口径不能停留在已被证伪的旧值上 */
+            const rebound = rebindRunSession(runKey, reqId, sid)
+            if (rebound && rebound !== sessionOut) {
+              sessionOut = rebound
+              emit('session', { sessionId: rebound, resumed })
+            }
           }
         }
-        mapNotification(n, emit)
+        mapNotification(n, emit, { resumed, sid: resumeWanted })
         if (n.method !== 'session.event' || !n.params || !n.params.event) return
         const ev = n.params.event
         const t = ev.time || Date.now()
@@ -1462,9 +1892,35 @@ async function handleRun(params) {
     emit('done', {
       finalResponse: result.finalResponse,
       metrics: buildMetrics(),
+      /* done 也带上本轮权威 session id:宿主据此存档,崩溃/断线后才能点名续跑 */
+      sessionId: sessionOut,
+      resumed,
     })
+    /* harness.run 正常收流但通知里报过错(如 turn/end reason error 的 429/5xx):
+       宿主同样判本轮失败,并会在重发窗口点名续跑 —— 留同样的保活标记 */
+    if (runErrorMsg) failForResume = runErrorMsg
   } catch (err) {
-    const message = String((err && err.message) || err).slice(0, 800)
+    const rawMessage = String((err && err.message) || err)
+    const message = rawMessage.slice(0, 800)
+    /* 续跑轮在 harness.run 期间撞运行时侧 id collision —— 走到这里说明会话/resume 握手
+       未拦截住:老运行时没有该方法而回落原 create 语义,新 runtime 以空 seed create 撞盘上
+       旧日志(真正不可恢复的兜底路径,状态 C 第 3 条;握手阶段的恢复失败已在 run 前收场)。
+       按 RESUME_UNAVAILABLE 契约收场(转译文案 + resumeUnavailable:true),宿主据此
+       退回整轮重发;绝不能原样透传 —— 宿主会把同一个 dead id 连撞 5 次重发预算。 */
+    if (resumed) {
+      const conv = resumeCollisionMessage(rawMessage, resumeWanted)
+      if (conv) {
+        emit('error', { message: conv.slice(0, 500) })
+        emit('done', {
+          finalResponse: '',
+          metrics: buildMetrics ? buildMetrics() : undefined,
+          sessionId: sessionOut,
+          resumed,
+          resumeUnavailable: true,
+        })
+        return
+      }
+    }
     /* 运行时进程已死:清掉池里的僵尸 harness,下次 run 重新 spawn */
     if (
       runKey &&
@@ -1475,6 +1931,7 @@ async function handleRun(params) {
       const dead = runtimes.get(runKey)
       if (dead) {
         runtimes.delete(runKey)
+        resumeCandidates.delete(runKey)
         closeBridge(runKey)
         forgetKey(runKey)
         try {
@@ -1482,8 +1939,20 @@ async function handleRun(params) {
         } catch {}
       }
     }
+    /* 失败轮以可重发错误收尾 → finally 给 runtime 打「续跑候选」保活标记
+       (等待宿主 ~5s 后的续跑轮点名复用同进程;取消 / 配置 / 会话不可续跑等
+       宿主不会重发的报文在 markResumeCandidate 里被滤掉) */
+    failForResume = rawMessage
     emit('error', { message })
-    emit('done', { finalResponse: '', metrics: buildMetrics ? buildMetrics() : undefined })
+    /* 出错收场也要把本轮权威 session id 交出去:宿主正是靠这一轮失败后的 id 决定
+       下轮能否点名续跑(拿不到就退化成整轮重发)。若这一轮在起 runtime 前就炸了,
+       该 id 在磁盘上根本没有会话文件,下一次续跑会被判 RESUME_UNAVAILABLE 自动退回重发 */
+    emit('done', {
+      finalResponse: '',
+      metrics: buildMetrics ? buildMetrics() : undefined,
+      sessionId: sessionOut,
+      resumed,
+    })
   } finally {
     /* 闭回合:先于解除占用推送,插件据此清空进程级 current round,
        之后的迟到 journal 帧就没有本轮的章了。 */
@@ -1495,6 +1964,10 @@ async function handleRun(params) {
       const owns = releaseClaim(runKey, reqId, runTag)
       /* reqId 显式传进去:占用登记刚被清掉,不传就没人知道这些卡属于哪一轮了 */
       if (owns) abortBridgePending(runKey, null, reqId)
+      /* 失败轮收尾:解除占用后打「续跑候选」保活标记(空闲 runtime 才需要保活;
+         有在途 claim 的本就被 keyToReqId 护着,LRU 从不碰)。下一轮正常占用这台时
+         claimRuntime 会摘掉标记,时限到也会自动清,不会永久占着豁免名额 */
+      if (failForResume) markResumeCandidate(runKey, reqId, failForResume)
     }
     if (runTag) {
       activeRunTags.delete(runTag)
@@ -1505,9 +1978,16 @@ async function handleRun(params) {
 }
 
 async function closeRuntimeByKey(k) {
+  /* 续跑候选豁免:保活窗口内不随普通关闭流程回收 —— 失败轮进程要留给宿主
+     重发窗口的续跑轮点名复用(同进程才能 SDK server 进程内命中;换进程 = 续不上
+     → 整轮重发白烧)。时限到 / 被新一轮正常占用后标记清除,豁免自然解除。
+     用户取消路径不受影响:cancelRuntime 关进程前先 clearResumeCandidate 再进来,
+     显式的「终止」永远压过保活窗口。 */
+  if (resumeCandidateOf(k)) return false
   const v = runtimes.get(k)
   if (!v) return false
   runtimes.delete(k)
+  resumeCandidates.delete(k)
   closeBridge(k)
   forgetKey(k)
   try {
@@ -1524,11 +2004,68 @@ async function closeAllRuntimes() {
     jobs.push(v.harness.then((h) => h.close()).catch(() => {}))
   }
   forgetKey(null)
+  /* 全关 = 显式重启/退出:续跑候选保活窗口一并作废(进程都没了,无从保活) */
+  resumeCandidates.clear()
   await Promise.all(jobs)
 }
 
-/* 思考强度:写入运行时 settings 文档(llm-deepseek 段),每请求热重载 */
-const EFFORTS = ['high', 'max']
+/* 思考强度:档位与归一化的唯一真源在 ./reasoning-effort.mjs(纯函数,codex
+   reasoning_effort_for_request 式),gateway 与运行时 mtnode-effort 插件共用。
+   要点回顾:
+   - 可选用档 = low/medium/high/xhigh/max(对齐 pi-ai 能力集;无 off/minimal:
+     off 在 agent 链上的语义是旧档「关思考」→ high,minimal 无消费方)。
+   - 旧档 off/none/无/空 与非法值 → high(兜底默认,与历史 normalizeEffort 一致)。
+   - DeepSeek 官方路由(llm-deepseek 适配器)能力 off/low/high/max → 可选用交集
+     low/high/max,medium/xhigh 按「同侧最近低档」回退(medium→low, xhigh→high);
+     目录/pi-ai 等其余路由按全档,模型级精确能力由运行时插件经 ctx.llm 解析后再夹。
+   - 归一化永不硬失败;档位只在 runtime key 与 env MTNODE_EFFORT 里随 run 走,
+     settings.yaml 的 llm-deepseek.reasoningEffort 只保留兜底默认(见 applySettings)。 */
+
+/* ── 用户工具描述子（工具节点 func call）归一 ───────────────────────────
+ * 宿主每次 run 随参数下发工具清单（画布工具节点 + 库中「随时可调用」），
+ * 网关只做收口：字段白名单 + 上限裁剪（env 块有 ~32KB 总量约束），产出
+ * 稳定的 JSON 供运行时 tools-plugin.mjs 在 spawn 时注册同名函数调用工具。
+ * key = "cn:<nodeId>"（画布）/ "lib:<id>"（工具库）；toolName 由宿主预生成
+ * ASCII 注册名（模型按它调用）；name 是给模型看的人类工具名。 */
+const MAX_RUN_TOOLS = 24
+const MAX_TOOL_DESC = 300
+function normRunTools(tools) {
+  if (!Array.isArray(tools) || !tools.length) return []
+  const out = []
+  const seenName = new Set()
+  const seenKey = new Set()
+  for (const t of tools) {
+    if (!t || typeof t !== 'object') continue
+    if (out.length >= MAX_RUN_TOOLS) break
+    const key = String(t.key || '').trim()
+    const toolName = String(t.toolName || '').trim()
+    if (!key || seenKey.has(key)) continue
+    if (!toolName || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(toolName)) continue
+    if (seenName.has(toolName)) continue
+    const norm = (list) =>
+      Array.isArray(list)
+        ? list
+            .map((p) =>
+              p && typeof p === 'object' && p.name != null
+                ? { name: String(p.name).slice(0, 60), kind: p.kind === 'image' ? 'image' : 'text' }
+                : null,
+            )
+            .filter(Boolean)
+            .slice(0, 16)
+        : []
+    seenKey.add(key)
+    seenName.add(toolName)
+    out.push({
+      key,
+      toolName,
+      name: String(t.name || '').slice(0, 60) || toolName,
+      description: String(t.description || '').slice(0, MAX_TOOL_DESC),
+      inputs: norm(t.inputs),
+      outputs: norm(t.outputs),
+    })
+  }
+  return out
+}
 
 /* 删除 settings.yaml 中的整段顶层键(含其全部缩进子行),保留其余内容 */
 function stripYamlSection(text, key) {
@@ -1636,11 +2173,12 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
     envPatch['MTNODE_KEY_' + (i + 1)] = String(p.apiKey || '')
   })
   if (!home) return { envPatch, changed: false }
-  /* Chat Completions 无「关思考」档；旧 none/off/无 → high */
-  const raw = String(effort || 'high').toLowerCase()
-  const eff = raw === 'none' || raw === '无' || raw === 'off'
-    ? 'high'
-    : EFFORTS.includes(raw) ? raw : 'high'
+  /* settings 的 llm-deepseek.reasoningEffort 只保留兜底默认(DEFAULT_EFFORT = high):
+     思考档已改经 env MTNODE_EFFORT + 运行时 mtnode-effort 插件逐步下发(见上方
+     EFFORTS 注释段)——档位切换不再写 settings、不再触发热重载与多余 450ms 等待,
+     runtime 隔离由 runtime key(含档位)承担。llm-deepseek 适配器省略 reasoningEffort
+     时本身也回退 high,与本默认一致,插件缺席时行为与接入前一字不变。 */
+  const eff = DEFAULT_EFFORT
   /* 权限预设:dsh permission-presets 的 defaultPreset,热重载后对新会话生效 */
   const perm = PERMISSION_PRESETS.includes(permissionPreset) ? permissionPreset : 'mtnode-unattended'
   const persona = String(hostPersona || '').trim()
@@ -1790,6 +2328,9 @@ async function cancelRuntime(workspace, cancelTag) {
     tagToKey.delete(tag)
     let closed = false
     for (const k of Array.from(set)) {
+      /* 用户取消优先于保活窗口:这一轮不要了,续跑候选标记一并摘掉,
+         closeRuntimeByKey 的候选豁免就不会挡住这次关闭 */
+      clearResumeCandidate(k)
       if (await closeRuntimeByKey(k)) closed = true
     }
     return closed
@@ -1797,6 +2338,8 @@ async function cancelRuntime(workspace, cancelTag) {
   let closed = false
   for (const k of Array.from(runtimes.keys())) {
     if (!k.startsWith(String(workspace || '') + '|')) continue
+    /* 同 workspace 兜底全关(旧语义 / 未登记 handle):同样先摘候选标记再关 */
+    clearResumeCandidate(k)
     if (await closeRuntimeByKey(k)) closed = true
   }
   return closed
@@ -2494,6 +3037,19 @@ rl.on('line', (line) => {
             try {
               pending.socket.write(JSON.stringify({
                 t: 'db-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'tool') {
+            /* 用户工具节点 func call 结果：渲染层跑完节点图后回传输出值；
+               失败（err 非空）→ ok:false + error 文本，运行时工具以失败收场，会话不中断 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'tool-result',
                 id: p.id,
                 ok: !err,
                 result: p.result == null ? null : p.result,

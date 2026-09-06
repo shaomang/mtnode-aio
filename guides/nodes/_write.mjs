@@ -64,6 +64,62 @@ const diagrams = {
     arrow(140, 76, 200, 76, CYAN),
     box(200, 50, 140, 52, "图像处理 / 存图", ORNG, FILL_P),
   ].join("\n")),
+  "input_audio": diagram("input_audio", [
+    box(20, 50, 100, 52, "音频输入", CYAN, FILL_D),
+    arrow(120, 76, 178, 76, CYAN),
+    box(178, 50, 150, 52, "该文件的 URL", "#8b97a8", "#12151b"),
+    arrow(328, 60, 380, 44, GRN),
+    arrow(328, 92, 380, 108, GRN),
+    box(380, 24, 120, 40, "H3 参考音频", ORNG, FILL_P),
+    box(380, 90, 120, 40, "保存 · 音频", GRN, "#101610"),
+    `  <text x="250" y="150" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">1 个数据输出端子 = file:/// URL · 可 @引用</text>`,
+  ].join("\n"), 520, 180),
+  "input_video": diagram("input_video", [
+    box(20, 50, 100, 52, "视频输入", CYAN, FILL_D),
+    arrow(120, 76, 178, 76, CYAN),
+    box(178, 50, 150, 52, "该文件的 URL", "#8b97a8", "#12151b"),
+    arrow(328, 60, 380, 44, GRN),
+    arrow(328, 92, 380, 108, GRN),
+    box(380, 24, 120, 40, "H3 参考视频", ORNG, FILL_P),
+    box(380, 90, 120, 40, "保存 · 视频", GRN, "#101610"),
+    `  <text x="250" y="150" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">1 个数据输出端子 = file:/// URL · 可 @引用</text>`,
+  ].join("\n"), 520, 180),
+  "music_gen": diagram("music_gen", [
+    box(20, 36, 90, 40, "提示词", CYAN, FILL_D),
+    box(20, 92, 90, 40, "歌词", CYAN, FILL_D),
+    arrow(110, 56, 156, 66, CYAN),
+    arrow(110, 112, 156, 96, CYAN),
+    box(156, 44, 140, 64, "Minimax Music 3", "#ff8fa3", "#1a1014"),
+    arrow(296, 62, 350, 48, GRN),
+    arrow(296, 96, 350, 116, GOLD),
+    box(350, 28, 130, 40, "音频 · wav", GRN, "#101610"),
+    box(350, 98, 130, 40, "控制下游", GOLD, FILL_C),
+    `  <text x="250" y="152" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">自带输出路径 · 全局仅 1 个音视频任务</text>`,
+  ].join("\n"), 520, 180),
+  "tts_gen": diagram("tts_gen", [
+    box(20, 56, 90, 44, "文本", CYAN, FILL_D),
+    arrow(110, 78, 156, 78, CYAN),
+    box(156, 44, 140, 68, "SoVITS 语音", "#ff8fa3", "#1a1014"),
+    arrow(296, 62, 350, 44, GRN),
+    arrow(296, 96, 350, 112, GOLD),
+    box(350, 24, 130, 40, "语音 · wav", GRN, "#101610"),
+    box(350, 94, 130, 40, "控制下游", GOLD, FILL_C),
+    `  <text x="250" y="152" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">本地 GPT-SoVITS · 端口0=文本 · 端口1=控制</text>`,
+  ].join("\n"), 520, 180),
+  "video_gen": diagram("video_gen", [
+    box(20, 30, 90, 36, "脉冲", GOLD, FILL_C),
+    box(20, 76, 90, 36, "文本", CYAN, FILL_D),
+    box(20, 122, 90, 36, "图像", CYAN, FILL_D),
+    arrow(110, 48, 156, 62),
+    arrow(110, 94, 156, 78, CYAN),
+    arrow(110, 140, 156, 94, CYAN),
+    box(156, 44, 140, 68, "Minimax H3", "#ff8fa3", "#1a1014"),
+    arrow(296, 62, 350, 44, GRN),
+    arrow(296, 96, 350, 112, GOLD),
+    box(350, 24, 130, 40, "视频 · mp4", GRN, "#101610"),
+    box(350, 94, 130, 40, "控制下游", GOLD, FILL_C),
+    `  <text x="250" y="156" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">端口0=控制 · 端口1+=参考图 / 文本 / 音 / 视频</text>`,
+  ].join("\n"), 520, 190),
   "proc_text": diagram("proc_text", [
     box(20, 50, 90, 52, "输入", CYAN, FILL_D),
     arrow(110, 76, 160, 76, CYAN),
@@ -119,11 +175,6 @@ const diagrams = {
     arrow(240, 82, 290, 114),
     box(290, 28, 90, 40, "成功终点", GRN, "#101610"),
     box(290, 96, 90, 40, "失败终点", RED, "#1a1010"),
-  ].join("\n")),
-  "chat": diagram("chat", [
-    box(40, 50, 140, 52, "对话节点", "#7ee8e0", "#101818"),
-    arrow(180, 76, 250, 76, "#7ee8e0"),
-    box(250, 50, 140, 52, "多轮消息", CYAN, FILL_D),
   ].join("\n")),
   "agent_task": diagram("agent_task", [
     box(20, 50, 90, 52, "任务描述", CYAN, FILL_D),
@@ -254,6 +305,101 @@ const guides = {
 - **输入**：一般无
 - **输出**：图像`,
   },
+  input_audio: {
+    title: "音频输入（选择文件 · 输出 URL）",
+    body: `放一段本机音频当**素材**：点「选择音频」，或直接把 mp3 / wav / ogg / flac / m4a / aac 等文件拖到节点上。
+
+## 端子
+- **输入**：默认 1 个（端子存在、也能连线，但内容就是你在本节点选的那个文件，接上游不会产生任何效果）
+- **输出**：1 个数据端子 —— 值是该文件的 \`file:///…\` URL（中文与空格自动百分号编码）
+
+## 怎么用
+- 连进 **Minimax H3** 的参考音频端子：接收端会把 URL 归一回本机绝对路径再交给后端，你不用手动转
+- 连进 **保存** 节点：按音频落盘（复制到你指定的路径）
+- \`@\` 引用：注入到提示词里的那段文本就是这个 URL
+
+## 说明
+- 只记录文件的**原始绝对路径**（不复制进工作流资产，音频可能很大）；文件被移走后要重新选一次
+- 拖错类型（比如视频）会提示，不会改节点内容
+- 要**生成**音频：语音用「音频生成 › SoVITS 语音」，音乐用「音频生成 › Minimax Music 3」`,
+  },
+  input_video: {
+    title: "视频输入（选择文件 · 输出 URL）",
+    body: `放一段本机视频当**素材**：点「选择视频」，或直接把 mp4 / webm / mov / mkv / avi 等文件拖到节点上。
+
+## 端子
+- **输入**：默认 1 个（端子存在、也能连线，但内容就是你在本节点选的那个文件，接上游不会产生任何效果）
+- **输出**：1 个数据端子 —— 值是该文件的 \`file:///…\` URL（中文与空格自动百分号编码）
+
+## 怎么用
+- 连进 **Minimax H3** 的参考视频端子：接收端会把 URL 归一回本机绝对路径再交给后端
+- 连进 **保存** 节点：按视频落盘（复制到你指定的路径）
+- \`@\` 引用：注入到提示词里的那段文本就是这个 URL
+
+## 说明
+- 只记录文件的**原始绝对路径**（不复制进工作流资产，视频可能很大）；文件被移走后要重新选一次
+- 预览走系统播放器内核，编码不支持时只显示提示文字
+- 要**生成**视频：实拍感用「视频生成 › Minimax H3」，动效用「视频生成 › Remotion 视频」`,
+  },
+  music_gen: {
+    title: "Minimax Music 3（音乐生成）",
+    body: `画布右键 → **处理节点 › 音频生成 › Minimax Music 3**。本地 MiniMax Music 3 后端（Gradio）。**每次运行只生成一个音频文件**（\`.wav\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+
+## 端子
+- **输入**：端口 0 = 提示词 · 端口 1 = 歌词 · 端口 2 = 控制输入
+- **输出**：端口 0 = 音频（下游可试听 / 保存）· 端口 1 = 控制输出
+
+## 参数
+- **输出路径**：\`.wav\` 保存位置（相对工作目录 / 超级节点子文件夹）
+- **抽卡次数**：多次尝试（1–10），取其中一次结果
+- **种子**：固定种子可复现；每次抽卡种子 +1
+
+## 注意
+- 全局同一时刻只允许 **1 个音视频任务**（音乐 / 视频互斥），其它任务会排队等待。
+- 每个后端实例全局只有一个，多个音乐节点共享同一后端。
+- 歌词与风格提示词的写法见技能 \`minimax-music-lyrics\` / \`minimax-music-prompt\`。`,
+  },
+  tts_gen: {
+    title: "SoVITS 语音生成（GPT-SoVITS）",
+    body: `画布右键 → **处理节点 › 音频生成 › SoVITS 语音生成**。把文本合成成**语音**：后端是插件「GPT-SoVITS 语音合成」在本机拉起的 OpenAI 兼容服务。**每次运行只生成一个音频文件**（\`.wav\` / \`.mp3\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+
+## 端子
+- **输入**：端口 0 = 待合成文本 · 端口 1 = 控制输入
+- **输出**：端口 0 = 语音音频（下游可试听 / 保存）· 端口 1 = 控制输出
+
+## 参数
+- **输出路径**：音频保存位置（相对工作目录 / 超级节点子文件夹）
+- **音色**：GPT-SoVITS 音色库里的音色名，留空则交给后端默认音色
+- **语速**：0.5 – 2.0（默认 1.0）
+- **输出格式**：\`.wav\` / \`.mp3\`
+- **抽卡次数**：多次尝试（1–10），取其中一次结果
+
+## 注意
+- 后端没装 / 没起时节点会先尝试拉起并等待在线（最长 3 分钟），失败会把可照着做的提示写在节点状态行上；安装与音色准备都在 **插件 › GPT-SoVITS 语音合成** 里完成。
+- 与音乐 / 视频走同一条**串行链**（同一时刻只跑一个生成任务），但 SoVITS 是独立进程、**不占主进程的音视频全局锁**，显存另算。
+- 只要一段文本就能出声：文本可以来自文本输入 / 文本处理节点，也可以 \`@\` 引用。`,
+  },
+  video_gen: {
+    title: "Minimax H3（视频生成）",
+    body: `画布右键 → **处理节点 › 视频生成 › Minimax H3**。本地 MiniMax H3 后端（ComfyUI）。**每次运行只生成一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+
+## 端子
+- **输入**：端口 0 = 控制输入（固定）· 端口 1+ = 数据槽（参考图 / 文本 / 参考音频 / 参考视频）
+- **输出**：端口 0 = 视频（下游可试看）· 端口 1 = 控制输出
+
+## 参数
+- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）
+- **生成模式**：\`fl2va\` = 首末帧（默认）；\`r2v\` = 多参考图
+- **时长**：4–15 秒（默认 5）
+- **分辨率**：auto（按比例默认）/ 480p / 720p / 1080p（显存不足自动降档）
+- **后处理**：4K 超分 + 补帧（默认开；24G 显存建议关以提速）
+- **抽卡次数**：多次尝试（1–10）
+
+## 注意
+- 全局同一时刻只允许 **1 个音视频任务**（音乐 / 视频互斥）。
+- 24G 显存上限会限制分辨率与后处理档位。
+- 参考图 / 参考音频 / 参考视频都可以直接连**图像输入**、**音频输入**、**视频输入**节点：媒体端子给的是 \`file:///…\` URL，本节点会自动归一回本机路径。`,
+  },
   proc_text: {
     title: "文本处理",
     body: `用大模型按提示词处理上游文本。可开「智能助手」走 agent（读文件 / 联网）。
@@ -327,17 +473,6 @@ const guides = {
 ## 运行
 点 ▶ 从内部**起点**发脉冲，到达哪类终点决定任务成功或失败。`,
   },
-  chat: {
-    title: "对话",
-    body: `多轮文本对话。可开智能助手走 agent 会话；历史存在本节点。
-
-## 端子
-- **输入**：无
-- **输出**：对话结果文本（视配置）
-
-## 运行显示
-开了智能助手，**思考与输出分开显示**：气泡上方按发生顺序分段 —— **「◉ 思考 · N 字」** 折叠思考，正文（含中间步骤说的话）以正常字号逐段显示，**🔧 工具**就近插成 chips。`,
-  },
   agent_task: {
     title: "智能任务",
     body: `通用 agent：按任务描述读文件、联网、执行命令，结果回填输出。服务商走 DeepSeek 路由。
@@ -345,6 +480,9 @@ const guides = {
 ## 端子
 - **输入**：文本 / 引用
 - **输出**：任务产物文本
+
+## 会话模式（💬）
+点头部的 **💬** 切成会话模式：微信风格气泡（助手左、用户右），历史随节点保存，多轮追问就在节点里进行。旧的「文本对话」节点已移除，打开旧画布时会自动迁移成这种带会话模式的智能任务节点。
 
 ## 运行显示
 **思考与输出分开显示**：运行时按发生顺序分段 —— **「◉ 思考 · N 字」** 只折叠模型内部推理（N 只数思考的字数），中间步骤说出来的话以正常字号**正文**逐段显示，**🔧 工具**调用就近插在发生位置，错误以 ⚠ 附在正文里。每调用一次工具或进入新一步推理就另起一段；点节点头部的 **「◉ 思考」** 按钮可放大查看（上半思考、下半输出）。
@@ -503,6 +641,86 @@ const en = {
 ## Ports
 - **In**: usually none
 - **Out**: image` },
+  input_audio: { title: "Audio input (pick a file · outputs a URL)", body: `Hold a local audio file as **material**: click “Pick audio”, or drop an mp3 / wav / ogg / flac / m4a / aac file onto the node.
+
+## Ports
+- **In**: 1 by default (the port exists and can be wired, but the content is the file you picked here — an upstream connection has no effect)
+- **Out**: 1 data port — its value is the file's \`file:///…\` URL (CJK and spaces percent-encoded)
+
+## Using it
+- Wire it into a **Minimax H3** reference-audio slot: the receiver turns the URL back into a local absolute path before handing it to the backend
+- Wire it into a **Save** node: written out as audio (copied to your path)
+- \`@\` reference: the text injected into a prompt is that URL
+
+## Notes
+- Stores the file's **original absolute path** only (nothing is copied into the workflow assets, audio can be large). Move the file away and you need to pick it again.
+- Dropping the wrong media type is refused with a hint.
+- To **generate** audio: speech via “Audio gen › SoVITS speech”, music via “Audio gen › Minimax Music 3”.` },
+  input_video: { title: "Video input (pick a file · outputs a URL)", body: `Hold a local video file as **material**: click “Pick video”, or drop an mp4 / webm / mov / mkv / avi file onto the node.
+
+## Ports
+- **In**: 1 by default (the port exists and can be wired, but the content is the file you picked here — an upstream connection has no effect)
+- **Out**: 1 data port — its value is the file's \`file:///…\` URL (CJK and spaces percent-encoded)
+
+## Using it
+- Wire it into a **Minimax H3** reference-video slot: the receiver turns the URL back into a local absolute path before handing it to the backend
+- Wire it into a **Save** node: written out as video (copied to your path)
+- \`@\` reference: the text injected into a prompt is that URL
+
+## Notes
+- Stores the file's **original absolute path** only (nothing is copied into the workflow assets, video can be large). Move the file away and you need to pick it again.
+- Playback uses the built-in player; an unsupported codec shows a hint instead.
+- To **generate** video: live-action style via “Video gen › Minimax H3”, motion graphics via “Video gen › Remotion video”.` },
+  music_gen: { title: "Minimax Music 3 (music generation)", body: `Right-click the canvas → **Process › Audio generation › Minimax Music 3**. Local MiniMax Music 3 backend (Gradio). **Each run produces exactly one audio file** (\`.wav\`) written to the node's own \`outputPath\` — no separate save node needed.
+
+## Ports
+- **Input**: port 0 = prompt · port 1 = lyrics · port 2 = control input
+- **Output**: port 0 = audio (play / save downstream) · port 1 = control output
+
+## Options
+- **Output path**: \`.wav\` destination (relative to workspace / super subfolder)
+- **Attempts**: gacha rolls (1–10); keep one result
+- **Seed**: fixed seed reproduces; each roll bumps the seed by +1
+
+## Notes
+- Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive); other tasks queue.
+- One backend instance per plugin; multiple music nodes share it.
+- Lyrics and style prompt conventions live in the \`minimax-music-lyrics\` / \`minimax-music-prompt\` skills.` },
+  tts_gen: { title: "SoVITS speech (GPT-SoVITS)", body: `Right-click the canvas → **Process › Audio generation › SoVITS speech**. Turns text into **speech**: the backend is the local OpenAI-compatible service started by the “GPT-SoVITS speech” plugin. **Each run produces exactly one audio file** (\`.wav\` / \`.mp3\`) written to the node's own \`outputPath\` — no separate save node needed.
+
+## Ports
+- **Input**: port 0 = text to speak · port 1 = control input
+- **Output**: port 0 = speech audio (play / save downstream) · port 1 = control output
+
+## Options
+- **Output path**: audio destination (relative to workspace / super subfolder)
+- **Voice**: a name from the GPT-SoVITS voice library; empty = whatever the backend defaults to
+- **Speed**: 0.5 – 2.0 (default 1.0)
+- **Format**: \`.wav\` / \`.mp3\`
+- **Attempts**: gacha rolls (1–10); keep one result
+
+## Notes
+- If the backend is missing or stopped the node starts it and waits for it to come online (up to 3 minutes); failures are written on the node's status line as an actionable hint. Installing the backend and preparing voices happens in **Plugins › GPT-SoVITS speech**.
+- Speech runs on the same **serial chain** as music / video (one generation task at a time), but SoVITS is a separate process and does **not** hold the app's audio/video global lock — its VRAM is its own budget.
+- One text is enough: feed port 0 from a text input / text process node, or with an \`@\` reference.` },
+  video_gen: { title: "Minimax H3 (video generation)", body: `Right-click the canvas → **Process › Video generation › Minimax H3**. Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\` — no separate save node needed.
+
+## Ports
+- **Input**: port 0 = control input (fixed) · port 1+ = data slots (reference images / text / reference audio / reference video)
+- **Output**: port 0 = video (preview downstream) · port 1 = control output
+
+## Options
+- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder)
+- **Mode**: \`fl2va\` = first/last frame (default); \`r2v\` = multiple reference images
+- **Duration**: 4–15 s (default 5)
+- **Resolution**: auto (proportional) / 480p / 720p / 1080p (auto-downscaled when VRAM is low)
+- **Post**: 4K upscale + interpolation (on by default; disable on 24G for speed)
+- **Attempts**: gacha rolls (1–10)
+
+## Notes
+- Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive).
+- 24G VRAM caps resolution and post-processing tiers.
+- Reference images / audio / video can come straight from an **image / audio / video input** node: media ports carry a \`file:///…\` URL and this node normalizes it back to a local path.` },
   proc_text: { title: "Text process", body: `LLM processes upstream text from a prompt. Enable assistant mode for agent tools.
 
 ## Ports
@@ -543,15 +761,10 @@ Placing music or video gen also creates a bound save node on the right (fixed of
   task: { title: "Task", body: `A container with its own control graph: start → work / subtasks / judge → success or fail end.
 
 ▶ fires the inner **start** port.` },
-  chat: { title: "Chat", body: `Multi-turn chat. Assistant mode uses an agent session stored on this node.
-
-## Ports
-- **In**: none
-- **Out**: chat text
-
-## While it runs
-With the assistant on, **thinking and output are shown apart**: above each bubble the run renders in chronological segments — **“◉ Thinking · N chars”** collapses reasoning, body text (including what the model says mid-run) shows in normal size, and **🔧 tool** calls sit inline as chips.` },
   agent_task: { title: "Agent task", body: `Agent run: files, web, shell. Output is filled from the run. Tool allowlist is the Approvals preset.
+
+## Chat mode (💬)
+The **💬** button in the node header switches to chat mode: WeChat-style bubbles (assistant left, user right), history saved with the node, follow-ups right on the canvas. The old standalone “Chat” node was removed — opening an older canvas migrates it into an agent task in chat mode.
 
 ## While it runs
 **Thinking and output are shown apart.** The run renders in chronological segments: **“◉ Thinking · N chars”** collapses the model's private reasoning (N counts reasoning only), text the model says mid-run shows as **normal body text**, **🔧 tool** calls sit inline where they happened, errors append as ⚠. Every tool call or new reasoning step starts a fresh segment; the node header's **「◉ Thinking」** button opens the big view (reasoning on top, output below). The output port still hands downstream the full text.` },
@@ -621,17 +834,39 @@ In a task control flow, an incoming pulse waits until the **next** scheduled tim
   mutex: { title: "Mutex", body: `OR join: any input pulse releases the single output. ▶ marks a lane by first / priority / random.` },
 };
 
-const index = {
-  localeDefault: "zh",
-  ids: Object.keys(guides),
-};
+/* 已随发布版同步的节点指南以磁盘 md 为准（正文比这里的内嵌模板新，
+   例如「图像生成」的双通道抠图段、「保存」的超级节点路径段）：
+   再生成时不要把它们覆盖回旧内容。 diagrams 仍会刷新。 */
+const diskOwned = new Set(["proc_image", "save"]);
 
-fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(index, null, 2));
+/* 已移除的节点 kind：清单里不再出现（旧 md 由本次运行后手工删除） */
+const removedKinds = new Set(["chat"]);
+
+const indexFile = path.join(root, "index.json");
+let prevIds = [];
+try {
+  const prev = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+  prevIds = Array.isArray(prev && prev.ids) ? prev.ids : [];
+} catch (_) {}
+
+/* 清单 = 旧清单（保持磁盘顺序，含只手写未进模板的页面）+ 本文件新增页面；
+   丢掉已删除的 kind 与文件已被删掉的条目。 */
+const ids = [];
+for (const id of [...prevIds, ...Object.keys(guides)]) {
+  if (removedKinds.has(id) || ids.indexOf(id) >= 0) continue;
+  if (!fs.existsSync(path.join(root, id + ".md"))) continue;
+  ids.push(id);
+}
+fs.writeFileSync(
+  indexFile,
+  JSON.stringify({ localeDefault: "zh", ids }, null, 2) + "\n",
+);
 
 for (const [id, spec] of Object.entries(guides)) {
+  if (diagrams[id]) fs.writeFileSync(path.join(imgDir, id + ".svg"), diagrams[id]);
+  if (diskOwned.has(id)) continue;
   const md = `# ${spec.title}\n\n![diagram](img/${id}.svg)\n\n${spec.body}\n`;
   fs.writeFileSync(path.join(root, id + ".md"), md);
-  if (diagrams[id]) fs.writeFileSync(path.join(imgDir, id + ".svg"), diagrams[id]);
   const e = en[id];
   if (e) {
     fs.writeFileSync(
@@ -641,4 +876,4 @@ for (const [id, spec] of Object.entries(guides)) {
   }
 }
 
-console.log("wrote", Object.keys(guides).length, "guides");
+console.log("wrote", ids.length, "guides (index ids)");

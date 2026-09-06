@@ -751,18 +751,18 @@ function recordDshMetrics(node, m) {
   renderStatus();
 }
 
-/* 思考强度映射:
-   - 文本节点（非智能）：off/低/中/高 → 依 API 参考 dsh（off ⇒ thinking 关闭）；medium → 标准
-   - 文本智能模式：低/中/高 → dsh 标准/最强（高→最强）
-   - 智能任务 / 会话：标准(high) / 最强(max)
-   - 旧档 none/off/无 → high（兼容已存工作流） */
+/* 思考强度映射（下发网关前的最后归一，词汇与 dsh/gateway/reasoning-effort.mjs 对齐;
+   与 app.js 的 dshEffortOf 同一份实现 —— 本文件在 app.js 之后加载，这份才生效）:
+   - 会话 / 助手 / 智能节点：low/medium/high/xhigh/max 全档原样下发（medium/xhigh 不再拍平）
+   - 旧档 none/off/无/空 与未知值 → high（兜底默认，兼容已存工作流）
+   - 智能文本节点（proc_text agent，自带 无/低/中/高 四档，fromProcText=true）：
+     off → high（agent 链上思考不能关闭）；高 → max（历史口径：文本节点顶档 = dsh 顶档，
+     已存节点语义不变）；低 → low、中 → medium（跟随档位词汇原样） */
 function dshEffortOf(v, fromProcText) {
   let raw = String(v == null || v === "" ? "high" : v).toLowerCase();
   if (raw === "无" || raw === "off" || raw === "none") return "high";
-  if (raw === "max") return "max";
   if (raw === "high") return fromProcText ? "max" : "high";
-  if (raw === "medium" || raw === "low") return "high";
-  return "high";
+  return AGENT_EFFORT_ORDER.includes(raw) ? raw : "high";
 }
 
 /* 中断智能运行:dsh 线协议无逐轮取消,只能关掉该次运行自己的运行时进程。
@@ -1330,20 +1330,68 @@ function tokBadgeTouch(owner, force) {
   }
 }
 
-let _mtnodeSkillIndexCache = { at: 0, text: "" };
+/* 内置技能索引缓存：索引正文来自安装包内的 mtnode-agent-skills/（只有应用更新才会变），
+ * 而每次 IPC 主进程都要 syncMtnodeAgentSkills()（整库 rm + copy + 重建索引），代价极高。
+ * 因此取消 60s TTL，改为**按内容哈希长期缓存**：命中就直接返回，不再走 IPC、不再重复构造；
+ * 只有技能库确实更新时由 mtnodeInternalSkillIndexInvalidate() 显式失效后重读，
+ * 重读若内容一字未改也沿用旧条目。哈希与分节内核同一算法（promptSectionHash · FNV-1a32），
+ * 所以 mtnodeInternalSkillIndexHash() 可直接交给内核做同轮去重。
+ * 索引条目不裁剪、不内联 SKILL.md 全文（全文仍由引擎技能机制自载）。 */
+let _mtnodeSkillIndexCache = { hash: "", text: "", at: 0 };
+let _mtnodeSkillIndexPending = null;
+
+/* 与 app-prompt-sections.js 逐字同算法；内核脚本在本文件之后加载，运行期取不到时本地兜底 */
+function skillIndexContentHash(text) {
+  const s = String(text == null ? "" : text);
+  if (!s) return "";
+  if (typeof promptSectionHash === "function") return String(promptSectionHash(s));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+/* 当前缓存索引块的内容哈希（未缓存 = ""）：供分节内核做同轮去重 */
+function mtnodeInternalSkillIndexHash() {
+  return _mtnodeSkillIndexCache.hash || "";
+}
+
+/* 技能库更新后点名失效（清哈希缓存 + 丢弃在途请求），下一次运行重读 */
+function mtnodeInternalSkillIndexInvalidate() {
+  _mtnodeSkillIndexCache = { hash: "", text: "", at: 0 };
+  _mtnodeSkillIndexPending = null;
+}
 
 async function mtnodeInternalSkillIndexBlock() {
   if (!window.api || !window.api.mtnodeAgentSkillIndex) return "";
-  if (Date.now() - _mtnodeSkillIndexCache.at < 60000 && _mtnodeSkillIndexCache.text) {
+  if (_mtnodeSkillIndexCache.hash && _mtnodeSkillIndexCache.text) {
     return _mtnodeSkillIndexCache.text;
   }
-  try {
-    const r = await window.api.mtnodeAgentSkillIndex();
-    const text = (r && r.ok && (r.compact || r.indexMd)) || "";
-    _mtnodeSkillIndexCache = { at: Date.now(), text: String(text) };
-    return _mtnodeSkillIndexCache.text;
-  } catch {
-    return "";
-  }
+  /* 同轮并发（多会话同时起跑）合并成一次 IPC */
+  if (_mtnodeSkillIndexPending) return _mtnodeSkillIndexPending;
+  const req = (async () => {
+    try {
+      const r = await Promise.resolve().then(() => window.api.mtnodeAgentSkillIndex());
+      const text = String((r && r.ok && (r.compact || r.indexMd)) || "");
+      const hash = skillIndexContentHash(text);
+      if (!hash) return ""; /* 读盘失败 / 空索引：与今天一致，回落空串且不污染缓存 */
+      if (hash === _mtnodeSkillIndexCache.hash) {
+        _mtnodeSkillIndexCache.at = Date.now();
+        return _mtnodeSkillIndexCache.text; /* 内容未变 → 不重复构造 */
+      }
+      _mtnodeSkillIndexCache = { hash, text, at: Date.now() };
+      return text;
+    } catch {
+      return "";
+    }
+  })();
+  _mtnodeSkillIndexPending = req;
+  const clear = () => {
+    if (_mtnodeSkillIndexPending === req) _mtnodeSkillIndexPending = null;
+  };
+  req.then(clear, clear);
+  return req;
 }
 

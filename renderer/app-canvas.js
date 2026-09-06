@@ -1,5 +1,5 @@
 "use strict";
-/* ============ 画布绘制标注（纯展示：文本 / 框体 / 箭头） ============ */
+/* ============ 画布绘制标注（纯展示：仅文本；归类节点请用「组」） ============ */
 
 const MARK_COLORS = [
   "#38d6ff",
@@ -10,10 +10,9 @@ const MARK_COLORS = [
   "#d8dee8",
   "#ff5f56",
 ];
+/* 绘制标注只剩文本一种类型：框体/箭头已移除，需要圈住一组节点时用 wf.groups */
 const MARK_DEFAULTS = {
   text: { w: 200, h: 44, text: "说明文字", color: "#38d6ff", fontSize: 16 },
-  box: { w: 260, h: 160, color: "#ff8f2e", stroke: 2 },
-  arrow: { color: "#5fd68a", stroke: 2, dx: 180, dy: 0 },
 };
 
 function marksOf() {
@@ -26,19 +25,6 @@ function markById(id) {
 }
 function markBounds(m) {
   if (!m) return null;
-  if (m.kind === "arrow") {
-    const x1 = Number(m.x);
-    const y1 = Number(m.y);
-    const x2 = m.x2 != null ? Number(m.x2) : x1 + Number(m.dx || 0);
-    const y2 = m.y2 != null ? Number(m.y2) : y1 + Number(m.dy || 0);
-    if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
-    return {
-      x: Math.min(x1, x2),
-      y: Math.min(y1, y2),
-      w: Math.max(24, Math.abs(x2 - x1)),
-      h: Math.max(24, Math.abs(y2 - y1)),
-    };
-  }
   const x = Number(m.x);
   const y = Number(m.y);
   const w = Number(m.w || 40);
@@ -86,14 +72,6 @@ function addMark(kind, x, y) {
     m.h = d.h;
     m.text = I18n.t(d.text);
     m.fontSize = d.fontSize;
-  } else if (kind === "box") {
-    m.w = d.w;
-    m.h = d.h;
-    m.stroke = d.stroke;
-  } else if (kind === "arrow") {
-    m.x2 = snap(mx + d.dx);
-    m.y2 = snap(my + d.dy);
-    m.stroke = d.stroke;
   }
   marksOf().push(m);
   const mset = ensureSelMarkSet();
@@ -113,8 +91,6 @@ function addMark(kind, x, y) {
 }
 function markKindLabel(kind) {
   if (kind === "text") return I18n.t("文本");
-  if (kind === "box") return I18n.t("框体");
-  if (kind === "arrow") return I18n.t("箭头");
   return kind;
 }
 function deleteMarks(ids, quiet) {
@@ -154,15 +130,16 @@ function normalizeMarkColor(c, fallback) {
   const hit = MARK_COLORS.find((x) => x.toLowerCase() === s.toLowerCase());
   return hit || fallback || "#38d6ff";
 }
-/* agent / 工具创建绘制标注（不弹 toast、不抢选中） */
+/* agent / 工具创建绘制标注（不弹 toast、不抢选中）：仅支持 text */
 function makeMarkFromSpec(spec, warnings) {
   if (!spec || typeof spec !== "object") return null;
   let kind = String(spec.kind || "").trim();
-  if (kind === "frame" || kind === "rect") kind = "box";
   if (kind === "label" || kind === "note") kind = "text";
-  if (kind !== "text" && kind !== "box" && kind !== "arrow") {
+  if (kind !== "text") {
     if (warnings)
-      warnings.push(I18n.t("未知绘制类型（可用 text / box / arrow）：") + kind);
+      warnings.push(
+        I18n.t("绘制标注仅支持 text，归类节点请用「组」：") + kind,
+      );
     return null;
   }
   const d = MARK_DEFAULTS[kind];
@@ -177,37 +154,13 @@ function makeMarkFromSpec(spec, warnings) {
         ? String(spec.parentTaskId)
         : currentTaskFocus(),
   };
-  if (kind === "text") {
-    m.w = Math.max(40, snapDim(Number(spec.w) || d.w, 40));
-    m.h = Math.max(24, snapDim(Number(spec.h) || d.h, 24));
-    m.text = String(spec.text != null ? spec.text : I18n.t(d.text));
-    const fs = Number(spec.fontSize);
-    m.fontSize = Number.isFinite(fs)
-      ? Math.max(10, Math.min(48, Math.round(fs)))
-      : d.fontSize;
-  } else if (kind === "box") {
-    m.w = Math.max(40, snapDim(Number(spec.w) || d.w, 40));
-    m.h = Math.max(40, snapDim(Number(spec.h) || d.h, 40));
-    const st = Number(spec.stroke);
-    m.stroke = Number.isFinite(st)
-      ? Math.max(1, Math.min(8, Math.round(st)))
-      : d.stroke;
-  } else {
-    const x2 =
-      spec.x2 != null
-        ? Number(spec.x2)
-        : m.x + (Number(spec.dx) || d.dx || 180);
-    const y2 =
-      spec.y2 != null
-        ? Number(spec.y2)
-        : m.y + (Number(spec.dy) || d.dy || 0);
-    m.x2 = snap(x2);
-    m.y2 = snap(y2);
-    const st = Number(spec.stroke);
-    m.stroke = Number.isFinite(st)
-      ? Math.max(1, Math.min(8, Math.round(st)))
-      : d.stroke;
-  }
+  m.w = Math.max(40, snapDim(Number(spec.w) || d.w, 40));
+  m.h = Math.max(24, snapDim(Number(spec.h) || d.h, 24));
+  m.text = String(spec.text != null ? spec.text : I18n.t(d.text));
+  const fs = Number(spec.fontSize);
+  m.fontSize = Number.isFinite(fs)
+    ? Math.max(10, Math.min(48, Math.round(fs)))
+    : d.fontSize;
   /* 与 makeNode / addMark 一致：全屏进入超级节点时标注应落在内侧 */
   m.parentSuperId = "";
   const sf = currentSuperFocus();
@@ -227,14 +180,8 @@ function makeMarkFromSpec(spec, warnings) {
       m.parentTaskId = host.parentTaskId || "";
       const lx = snap(Math.max(8, wx - host.x - o.ox - pan.x));
       const ly = snap(Math.max(8, wy - host.y - o.oy - pan.y));
-      const dx = lx - m.x;
-      const dy = ly - m.y;
       m.x = lx;
       m.y = ly;
-      if (m.kind === "arrow") {
-        if (m.x2 != null) m.x2 = snap(Number(m.x2) + dx);
-        if (m.y2 != null) m.y2 = snap(Number(m.y2) + dy);
-      }
     }
   }
   return m;
@@ -255,24 +202,6 @@ function applyMarkPatch(m, patch, warnings) {
         10,
         Math.min(48, Math.round(Number(patch.fontSize))),
       );
-  } else if (m.kind === "box") {
-    if (patch.w != null && Number.isFinite(Number(patch.w)))
-      m.w = Math.max(40, snapDim(Number(patch.w), 40));
-    if (patch.h != null && Number.isFinite(Number(patch.h)))
-      m.h = Math.max(40, snapDim(Number(patch.h), 40));
-    if (patch.stroke != null && Number.isFinite(Number(patch.stroke)))
-      m.stroke = Math.max(1, Math.min(8, Math.round(Number(patch.stroke))));
-  } else if (m.kind === "arrow") {
-    if (patch.x2 != null && Number.isFinite(Number(patch.x2)))
-      m.x2 = snap(Number(patch.x2));
-    if (patch.y2 != null && Number.isFinite(Number(patch.y2)))
-      m.y2 = snap(Number(patch.y2));
-    if (patch.dx != null && Number.isFinite(Number(patch.dx)))
-      m.x2 = snap(m.x + Number(patch.dx));
-    if (patch.dy != null && Number.isFinite(Number(patch.dy)))
-      m.y2 = snap(m.y + Number(patch.dy));
-    if (patch.stroke != null && Number.isFinite(Number(patch.stroke)))
-      m.stroke = Math.max(1, Math.min(8, Math.round(Number(patch.stroke))));
   }
   if (patch.kind != null && String(patch.kind) !== m.kind && warnings)
     warnings.push(I18n.t("绘制类型不可更改：") + m.id);
@@ -351,12 +280,8 @@ function warnBatchCartesianRisk(warnings) {
 }
 
 function bumpMarkSize(m, dir) {
-  if (!m) return;
-  if (m.kind === "text") {
-    m.fontSize = Math.max(10, Math.min(48, (m.fontSize || 16) + dir * 2));
-  } else {
-    m.stroke = Math.max(1, Math.min(8, (m.stroke || 2) + dir));
-  }
+  if (!m || m.kind !== "text") return;
+  m.fontSize = Math.max(10, Math.min(48, (m.fontSize || 16) + dir * 2));
 }
 function selectMark(id, opts) {
   const soft = !!(opts && opts.soft);
@@ -448,7 +373,7 @@ function startMarkDrag(m, ev) {
   for (const id of ids) {
     const mk = markById(id);
     if (!mk) continue;
-    orig[id] = { x: mk.x, y: mk.y, x2: mk.x2, y2: mk.y2 };
+    orig[id] = { x: mk.x, y: mk.y };
   }
   /* 与已选节点一起拖动（框选后的混合选区） */
   const origNodes = {};
@@ -483,22 +408,6 @@ function startMarkResize(m, ev) {
     sy: ev.clientY,
     ow: m.w,
     oh: m.h,
-    moved: false,
-  };
-}
-function startMarkArrowEnd(m, which, ev) {
-  S.preDragSnap = snapshotState();
-  selectMark(m.id, { soft: true });
-  S.drag = {
-    mode: "markarrow",
-    id: m.id,
-    which,
-    sx: ev.clientX,
-    sy: ev.clientY,
-    ox: m.x,
-    oy: m.y,
-    ox2: m.x2,
-    oy2: m.y2,
     moved: false,
   };
 }
@@ -540,14 +449,10 @@ function mkTools(m, el) {
     mkBtn("🎨", I18n.t("切换颜色"), () => cycleMarkColor(m)),
   );
   bar.appendChild(
-    mkBtn("−", m.kind === "text" ? I18n.t("缩小字号") : I18n.t("减细线条"), () =>
-      bumpMarkSize(m, -1),
-    ),
+    mkBtn("−", I18n.t("缩小字号"), () => bumpMarkSize(m, -1)),
   );
   bar.appendChild(
-    mkBtn("+", m.kind === "text" ? I18n.t("放大字号") : I18n.t("加粗线条"), () =>
-      bumpMarkSize(m, 1),
-    ),
+    mkBtn("+", I18n.t("放大字号"), () => bumpMarkSize(m, 1)),
   );
   const col = document.createElement("input");
   col.type = "color";
@@ -583,17 +488,6 @@ function applyMarkStyle(el, m) {
       t.style.color = m.color;
       t.style.fontSize = (m.fontSize || 16) + "px";
     }
-  } else if (m.kind === "box") {
-    el.style.borderColor = m.color;
-    el.style.borderWidth = (m.stroke || 2) + "px";
-  } else if (m.kind === "arrow") {
-    const line = el.querySelector("line");
-    if (line) {
-      line.setAttribute("stroke", m.color);
-      line.setAttribute("stroke-width", String(m.stroke || 2));
-    }
-    const poly = el.querySelector("polygon");
-    if (poly) poly.setAttribute("fill", m.color);
   }
 }
 function markElement(m) {
@@ -603,172 +497,89 @@ function markElement(m) {
   const sel = selected ? " sel" : "";
   el.className = "wf-mark mk-" + m.kind + sel;
   el.dataset.mid = m.id;
-  if (m.kind === "arrow") {
-    const b = markBounds(m) || {
-      x: Number(m.x) || 0,
-      y: Number(m.y) || 0,
-      w: 24,
-      h: 24,
-    };
-    el.style.left = b.x + "px";
-    el.style.top = b.y + "px";
-    el.style.width = b.w + "px";
-    el.style.height = b.h + "px";
-    const x1 = m.x - b.x,
-      y1 = m.y - b.y;
-    const x2 = (m.x2 != null ? m.x2 : m.x) - b.x,
-      y2 = (m.y2 != null ? m.y2 : m.y) - b.y;
-    const svg = document.createElementNS(svgNS, "svg");
-    svg.setAttribute("width", "100%");
-    svg.setAttribute("height", "100%");
-    svg.setAttribute("viewBox", "0 0 " + b.w + " " + b.h);
-    svg.style.overflow = "visible";
-    const ang = Math.atan2(y2 - y1, x2 - x1);
-    const ah = 10 + (m.stroke || 2) * 1.5;
-    const tipX = x2,
-      tipY = y2;
-    const bx = tipX - Math.cos(ang) * ah,
-      by = tipY - Math.sin(ang) * ah;
-    const ox = Math.sin(ang) * (ah * 0.45),
-      oy = -Math.cos(ang) * (ah * 0.45);
-    const line = document.createElementNS(svgNS, "line");
-    line.setAttribute("x1", String(x1));
-    line.setAttribute("y1", String(y1));
-    line.setAttribute("x2", String(bx));
-    line.setAttribute("y2", String(by));
-    line.setAttribute("stroke", m.color || "#5fd68a");
-    line.setAttribute("stroke-width", String(m.stroke || 2));
-    line.setAttribute("stroke-linecap", "round");
-    svg.appendChild(line);
-    const poly = document.createElementNS(svgNS, "polygon");
-    poly.setAttribute(
-      "points",
-      tipX +
-        "," +
-        tipY +
-        " " +
-        (bx + ox) +
-        "," +
-        (by + oy) +
-        " " +
-        (bx - ox) +
-        "," +
-        (by - oy),
-    );
-    poly.setAttribute("fill", m.color || "#5fd68a");
-    svg.appendChild(poly);
-    el.appendChild(svg);
-    const h1 = document.createElement("div");
-    h1.className = "mk-handle mk-h-start";
-    h1.style.left = x1 - 5 + "px";
-    h1.style.top = y1 - 5 + "px";
-    h1.title = I18n.t("拖动箭头起点");
-    h1.addEventListener("mousedown", (ev) => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      startMarkArrowEnd(m, "start", ev);
-    });
-    el.appendChild(h1);
-    const h2 = document.createElement("div");
-    h2.className = "mk-handle mk-h-end";
-    h2.style.left = x2 - 5 + "px";
-    h2.style.top = y2 - 5 + "px";
-    h2.title = I18n.t("拖动箭头终点");
-    h2.addEventListener("mousedown", (ev) => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      startMarkArrowEnd(m, "end", ev);
-    });
-    el.appendChild(h2);
-  } else {
-    el.style.left = m.x + "px";
-    el.style.top = m.y + "px";
-    el.style.width = m.w + "px";
-    el.style.height = m.h + "px";
-    if (m.kind === "box") {
-      el.style.borderColor = m.color;
-      el.style.borderWidth = (m.stroke || 2) + "px";
-    } else if (m.kind === "text") {
-      const t = document.createElement("div");
-      t.className = "mk-text";
-      t.contentEditable = "true";
-      t.spellcheck = false;
-      t.textContent = m.text || "";
-      t.style.color = m.color;
-      t.style.fontSize = (m.fontSize || 16) + "px";
-      t.title = I18n.t("单击编辑文字 · 用 ✥ 拖动移动");
-      let composing = false;
-      t.addEventListener("compositionstart", () => {
-        composing = true;
-      });
-      t.addEventListener("compositionend", () => {
-        composing = false;
-        m.text = t.innerText || t.textContent || "";
-        scheduleSave();
-      });
-      /* 阻止冒泡到画布拖拽；聚焦时清掉节点选中，避免 Delete 误删节点 */
-      t.addEventListener("mousedown", (ev) => {
-        ev.stopPropagation();
-        const multi = ev.ctrlKey || ev.metaKey || ev.shiftKey;
-        if (multi) {
-          const set = ensureSelMarkSet();
-          S.selGroup = null;
-          S.selWire = null;
-          if (set.has(m.id)) {
-            set.delete(m.id);
-            S.selMark = set.size ? [...set][set.size - 1] : null;
-          } else {
-            set.add(m.id);
-            S.selMark = m.id;
-          }
-          syncMarkSelDom();
-          return;
-        }
-        selectMark(m.id, { soft: true });
-      });
-      t.addEventListener("focus", () => {
-        selectMark(m.id, { soft: true });
-      });
-      t.addEventListener("input", () => {
-        if (composing) return;
-        m.text = t.innerText || t.textContent || "";
-        scheduleSave();
-      });
-      t.addEventListener("blur", () => {
-        m.text = (t.innerText || t.textContent || "").replace(/\n$/, "");
-        /* 重绘过程中的 blur（节点被 remove 时触发）不可再改 DOM，否则会抛
-           removeChild / NotFoundError */
-        if (S._renderingCanvas || S._ignoreMarkBlurFlush) {
-          scheduleSave();
-          return;
-        }
-        scheduleSave(true);
-        setTimeout(flushDeferredMarkCanvas, 0);
-      });
-      /* 编辑文字时只拦冒泡，不触发画布快捷键（Delete/Ctrl+Z 等交给原生编辑） */
-      t.addEventListener("keydown", (ev) => ev.stopPropagation());
-      el.appendChild(t);
-      /* 文本专属移动把手，避免只能点文字却拖不动 */
-      const move = document.createElement("div");
-      move.className = "mk-handle mk-h-move";
-      move.title = I18n.t("拖动移动");
-      move.addEventListener("mousedown", (ev) => {
-        ev.stopPropagation();
-        ev.preventDefault();
-        startMarkDrag(m, ev);
-      });
-      el.appendChild(move);
+  el.style.left = m.x + "px";
+  el.style.top = m.y + "px";
+  el.style.width = m.w + "px";
+  el.style.height = m.h + "px";
+  const t = document.createElement("div");
+  t.className = "mk-text";
+  t.contentEditable = "true";
+  t.spellcheck = false;
+  t.textContent = m.text || "";
+  t.style.color = m.color;
+  t.style.fontSize = (m.fontSize || 16) + "px";
+  t.title = I18n.t("单击编辑文字 · 用 ✥ 拖动移动");
+  let composing = false;
+  t.addEventListener("compositionstart", () => {
+    composing = true;
+  });
+  t.addEventListener("compositionend", () => {
+    composing = false;
+    m.text = t.innerText || t.textContent || "";
+    scheduleSave();
+  });
+  /* 阻止冒泡到画布拖拽；聚焦时清掉节点选中，避免 Delete 误删节点 */
+  t.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    const multi = ev.ctrlKey || ev.metaKey || ev.shiftKey;
+    if (multi) {
+      const set = ensureSelMarkSet();
+      S.selGroup = null;
+      S.selWire = null;
+      if (set.has(m.id)) {
+        set.delete(m.id);
+        S.selMark = set.size ? [...set][set.size - 1] : null;
+      } else {
+        set.add(m.id);
+        S.selMark = m.id;
+      }
+      syncMarkSelDom();
+      return;
     }
-    const rz = document.createElement("div");
-    rz.className = "mk-resize";
-    rz.title = I18n.t("拖动调整大小");
-    rz.addEventListener("mousedown", (ev) => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      startMarkResize(m, ev);
-    });
-    el.appendChild(rz);
-  }
+    selectMark(m.id, { soft: true });
+  });
+  t.addEventListener("focus", () => {
+    selectMark(m.id, { soft: true });
+  });
+  t.addEventListener("input", () => {
+    if (composing) return;
+    m.text = t.innerText || t.textContent || "";
+    scheduleSave();
+  });
+  t.addEventListener("blur", () => {
+    m.text = (t.innerText || t.textContent || "").replace(/\n$/, "");
+    /* 重绘过程中的 blur（节点被 remove 时触发）不可再改 DOM，否则会抛
+       removeChild / NotFoundError */
+    if (S._renderingCanvas || S._ignoreMarkBlurFlush) {
+      scheduleSave();
+      return;
+    }
+    scheduleSave(true);
+    setTimeout(flushDeferredMarkCanvas, 0);
+  });
+  /* 编辑文字时只拦冒泡，不触发画布快捷键（Delete/Ctrl+Z 等交给原生编辑） */
+  t.addEventListener("keydown", (ev) => ev.stopPropagation());
+  el.appendChild(t);
+  /* 文本专属移动把手，避免只能点文字却拖不动 */
+  const move = document.createElement("div");
+  move.className = "mk-handle mk-h-move";
+  move.title = I18n.t("拖动移动");
+  move.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startMarkDrag(m, ev);
+  });
+  el.appendChild(move);
+  /* 右下角把手：调整文字标注的宽高 */
+  const rz = document.createElement("div");
+  rz.className = "mk-resize";
+  rz.title = I18n.t("拖动调整大小");
+  rz.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    startMarkResize(m, ev);
+  });
+  el.appendChild(rz);
   mkTools(m, el);
   el.addEventListener("mousedown", (ev) => {
     if (
@@ -874,6 +685,8 @@ function renderCanvas() {
     S._deferCanvasForMarkEdit = true;
     return;
   }
+  /* 节点「设置」跳窗开着且表单结构变了（如 video_gen 换工作流来源）→ 跟着重建 */
+  syncNodeSettingsDialogShape();
   S._renderingCanvas = true;
   S._ignoreMarkBlurFlush = true;
   try {
@@ -977,9 +790,6 @@ function renderCanvas() {
     }
     fillPreviews();
     fillImageMetas();
-    /* 对话节点：每次渲染后自动滚动到最底部（而非回到顶端） */
-    for (const n of S.wf.nodes)
-      if (n.kind === "chat") scrollChatToBottom(n);
     /* 智能任务节点：只读会话历史自动滚动到底部 */
     for (const n of S.wf.nodes)
       if (n.kind === "agent_task") scrollAgentConv(n);
@@ -1097,7 +907,11 @@ function updateWires(touchIds) {
             superInPortIsControl(from, S.drag.fromIndex || 0)))
       )
         tcls += " ctrl";
-      else if (!S.drag.fromInput && isImageWireFrom(from)) tcls += " img";
+      else if (
+        !S.drag.fromInput &&
+        isImageWireFrom(from, S.drag.fromIndex || 0)
+      )
+        tcls += " img";
       t.setAttribute("class", tcls);
       t.style.display = "";
       syncRingFromCore(t);
@@ -1188,18 +1002,10 @@ function statusOf(node) {
   return { cls: "", txt: I18n.t("○ 未处理 · 点击 ▶ 基于提示词+输入处理") };
 }
 
-/* API 展开按钮 + 预览按钮（proc_text / proc_image / chat 共用） */
+/* 预览按钮（proc_text / proc_image / 智能任务 共用）。
+   原来这张排上还有个「API」按钮就地展开 .n-api-panel —— 设置已统一走头部 ⚙ 跳窗，
+   这里只剩 ◈ 预览（查看运行时将发送的完整请求），保持原样。 */
 function apiPreviewButtons(node) {
-  const apiBtn = document.createElement("button");
-  apiBtn.className =
-    "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
-  apiBtn.textContent = "API";
-  apiBtn.title = I18n.t("服务商 / 模型（点击展开选择）");
-  apiBtn.onclick = (ev) => {
-    ev.stopPropagation();
-    S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
-    renderCanvas();
-  };
   const pv = document.createElement("button");
   pv.className = "n-play n-preview";
   pv.textContent = "◈";
@@ -1208,10 +1014,10 @@ function apiPreviewButtons(node) {
     ev.stopPropagation();
     previewNode(node);
   };
-  return [apiBtn, pv];
+  return [pv];
 }
 
-/* 思考强度按钮（proc_text / chat 文本模型共用）：无 / 低 / 中 / 高，点击切换，默认低
+/* 思考强度按钮（proc_text 文本模型）：无 / 低 / 中 / 高，点击切换，默认低
    「无」= 关闭思考（参考 dsh：thinking.type=disabled，不发送 reasoning_effort）；旧 none/minimal 归一为 low */
 const EFFORT_LEVELS = ["off", "low", "medium", "high"];
 const EFFORT_LABELS = { off: "无", low: "低", medium: "中", high: "高" };
@@ -1603,8 +1409,2043 @@ function devFilesPanelEl(node, list) {
   return wrap;
 }
 
+/* ═══════════════════════ 节点「设置」跳窗框架（统一入口 · 登记表 · 摘要行） ═══════════════════════
+ * 立规：节点的**设置**一律在跳窗里改，不再嵌进节点 body —— 卡片就那么宽，参数一多
+ * 就挤成一团、改了也看不见。body 只留「一行只读摘要 + ⚙ 入口」。
+ * 内容型输入不算设置：提示词 / 正文 / 批量条目 / 任务描述 / 判断标准 / 函数 JS 代码
+ * 仍留在 body，那些是节点要写要看的主体。
+ *
+ * 各 kind 的表单靠 NODE_SETTINGS_FORMS 登记（键的口径见 nodeSettingsFormKey）。
+ * ⚙ 只在**已登记**的节点上出现 → 迁移可以一类一类落地，未迁移的 kind 原样不动，
+ * 每一步都能单独回退。
+ *
+ * 登记契约（def）：
+ *   def.summary(node) → string   body 摘要行的只读文本（一行，不换行）
+ *   def.title(node)   → string   窗口标题（默认「设置 · 」+ 节点标题）
+ *   def.build(ctx)                往 ctx.root 里填控件；控件即时写回 node 字段后调 ctx.commit()
+ * ctx：node / root / section() / hint() / field() / append() / commit()
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/* 登记表：key（nodeSettingsFormKey 的返回值）→ def */
+const NODE_SETTINGS_FORMS = {};
+
+/* 当前打开的设置窗（运行期状态：不进画布快照、不进撤销历史） */
+let _nodeSettingsDlg = null;
+
+/* 登记一个设置表单（同键重复登记以最后一次为准，便于分文件覆写） */
+function registerNodeSettingsForm(key, def) {
+  if (!key || !def || typeof def.build !== "function") return;
+  NODE_SETTINGS_FORMS[key] = def;
+}
+
+/* 表单归属键：kind + 变体 —— 工具壳与函数各一站（两者参数表语义相同但表单不同），
+   save 认 save_text / save_image 旧别名；开发 / 数据库 / 普通超级节点不接管
+   （devPath / devModel / Tag / 子文件夹本来就是跳窗，别再叠一个入口）。 */
+function nodeSettingsFormKey(node) {
+  if (!node || !node.kind) return "";
+  if (isFnToolNode(node)) return isToolNode(node) ? "tool" : "function";
+  if (isSaveKind(node.kind)) return "save";
+  if (node.kind === "super") return "";
+  return String(node.kind);
+}
+
+/* 该节点的设置表单定义；未登记 = 本 kind 还没有跳窗（沿用原有呈现） */
+function nodeSettingsFormFor(node) {
+  const key = nodeSettingsFormKey(node);
+  return (key && NODE_SETTINGS_FORMS[key]) || null;
+}
+
+/* def.show(node)：登记了表单但**这个节点本身**没得设（如 task 自带的固定起点 / 终点
+   控制节点）→ 入口与摘要都不出现。判定异常一律当作显示，宁可多给一个入口。 */
+function nodeSettingsFormVisible(node) {
+  const def = nodeSettingsFormFor(node);
+  if (!def) return null;
+  if (typeof def.show === "function") {
+    try {
+      if (!def.show(node)) return null;
+    } catch (_) {
+      /* 判定失败按显示处理 */
+    }
+  }
+  return def;
+}
+
+/* 框架级控件 API：迁移已有面板按这份口径搬，别在表单里自拼样式 */
+function makeNodeSettingsCtx(node, root) {
+  const ctx = {
+    node: node,
+    root: root,
+    /* 小节标题（占满整行） */
+    section(text) {
+      const h = document.createElement("div");
+      h.className = "settings-sec-title nsf-span";
+      h.textContent = String(text || "");
+      ctx.root.appendChild(h);
+      return h;
+    },
+    /* 说明文字（占满整行 · 淡灰） */
+    hint(text) {
+      const d = document.createElement("div");
+      d.className = "settings-hint nsf-span";
+      d.style.lineHeight = "1.6";
+      d.textContent = String(text || "");
+      ctx.root.appendChild(d);
+      return d;
+    },
+    /* 一个字段：标题 + 控件（复用 .n-field）；opts.span = true 占满整行；opts.title 挂提示 */
+    field(labelText, control, opts) {
+      opts = opts || {};
+      const lab = document.createElement("label");
+      lab.className = "n-field" + (opts.span ? " nsf-span" : "");
+      const cap = document.createElement("span");
+      cap.textContent = String(labelText || "");
+      lab.appendChild(cap);
+      if (control) lab.appendChild(control);
+      /* tooltip 两边都挂：老面板里是控件带 title，窗里鼠标停在标题上也要能看到 */
+      if (opts.title) {
+        lab.title = String(opts.title);
+        if (control) control.title = String(opts.title);
+      }
+      ctx.root.appendChild(lab);
+      return lab;
+    },
+    /* 原样塞入元素（默认占满整行；两栏并排传 { half: true }） */
+    append(el, opts) {
+      if (!el) return el;
+      if (!(opts && opts.half) && el.classList) el.classList.add("nsf-span");
+      ctx.root.appendChild(el);
+      return el;
+    },
+    /* 子表单：同一份字段构造挂到指定宿主里（折叠的「高级参数」、自建工作流区等
+       需要自成一块的地方）。commit 仍走主 ctx，落盘口径不分叉。 */
+    sub(host) {
+      const c = makeNodeSettingsCtx(node, host || document.createElement("div"));
+      c.commit = (o) => ctx.commit(o);
+      c.parent = ctx;
+      return c;
+    },
+    /* 控件写回 node 之后的统一收尾：落盘 + 按需（重画端子 / 重跑本表单）。
+       设置项都是即时生效，所以默认只 scheduleSave，不整幅重绘。 */
+    commit(opts) {
+      opts = opts || {};
+      if (opts.history) pushHistory();
+      if (opts.clearDownstream && node) clearDownstream(node.id);
+      scheduleSave();
+      if (opts.rerender) renderCanvas();
+      if (opts.rebuild) renderNodeSettingsForm();
+    },
+  };
+  return ctx;
+}
+
+/* 打开某节点的设置跳窗（宽窗 · 需显式关闭） */
+function openNodeSettingsDialog(node) {
+  if (!node) return;
+  const def = nodeSettingsFormVisible(node);
+  if (!def) {
+    toast(I18n.t("该节点无可设置项"), "warn");
+    return;
+  }
+  let title = "";
+  if (typeof def.title === "function") {
+    try {
+      title = String(def.title(node) || "");
+    } catch (_) {
+      title = "";
+    }
+  }
+  if (!title) title = I18n.t("设置 · ") + (node.title || nodeKindLabel(node));
+  openOverlay(title, { persistent: true });
+  overlayKind = "nodeSettings";
+  const box = document.querySelector("#overlay .overlay-box");
+  if (box) box.classList.add("wide");
+  const host = document.getElementById("ovBody");
+  if (!host) return;
+  host.innerHTML = "";
+  const root = document.createElement("div");
+  root.className = "node-settings-form";
+  host.appendChild(root);
+  _nodeSettingsDlg = {
+    node: node,
+    nodeId: node.id,
+    wfId: S.wf ? S.wf.id : "",
+    root: root,
+    def: def,
+  };
+  renderNodeSettingsForm();
+  const foot = document.getElementById("ovFoot");
+  if (foot) {
+    foot.innerHTML = "";
+    const done = document.createElement("button");
+    done.type = "button";
+    done.className = "mini primary";
+    done.textContent = I18n.t("完成并关闭");
+    done.onclick = () => closeNodeSettingsDialog();
+    foot.appendChild(done);
+  }
+}
+
+/* 重跑当前窗口的表单（结构随 node 字段变了：参数增删 / 端子重排 / 变体切换） */
+function renderNodeSettingsForm() {
+  const d = _nodeSettingsDlg;
+  if (!d || !d.root || !d.def) return;
+  d.shape = nodeSettingsShapeSig(d.node, d.def);
+  while (d.root.firstChild) d.root.removeChild(d.root.firstChild);
+  const ctx = makeNodeSettingsCtx(d.node, d.root);
+  try {
+    d.def.build(ctx);
+  } catch (err) {
+    ctx.hint(I18n.t("设置表单渲染失败：") + String((err && err.message) || err));
+  }
+}
+
+/* 表单「形状签名」：def.signature(node) 可选。有些设置项一改，整张表单的结构就变
+   （video_gen 切到自建 ComfyUI 工作流 → 内置参数整块换成工作流参数表），而这类改动
+   是控件自己的回调里 renderCanvas() 收尾的，轮不到 ctx.commit。所以在每次画布重绘后
+   比对一次签名：变了才重建表单，没变一律不动（免得打断用户正在输入的文本框）。 */
+function nodeSettingsShapeSig(node, def) {
+  if (!def || typeof def.signature !== "function") return "";
+  try {
+    return String(def.signature(node) || "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function syncNodeSettingsDialogShape() {
+  const d = _nodeSettingsDlg;
+  if (!d || !d.def) return;
+  const sig = nodeSettingsShapeSig(d.node, d.def);
+  if (sig === d.shape) return;
+  renderNodeSettingsForm();
+}
+
+/* 关闭设置窗：设置都即时写回了，这里只落盘 + 让 body 摘要行重画。
+   opts.silentRerender = 调用方随后自己整体重绘（切画布 / 撤销）时传 true。
+   opts.skipSave = 连落盘都不要（切画布：这张画布刚 flush 过，或它已被删除——
+   此时再 persist 一次会把已删的画布凭空写回磁盘，见 loadWorkflow 的 skipFlush）。 */
+function closeNodeSettingsDialog(opts) {
+  opts = opts || {};
+  const d = _nodeSettingsDlg;
+  _nodeSettingsDlg = null;
+  if (!d) return false;
+  const ov = document.getElementById("overlay");
+  if (!ov || ov.style.display !== "flex" || overlayKind !== "nodeSettings")
+    return true;
+  if (!opts.skipSave) scheduleSave(true);
+  if (!opts.silentRerender) {
+    try {
+      renderCanvas();
+    } catch (_) {}
+  }
+  closeOverlay();
+  return true;
+}
+
+/* 设置窗当前归属的节点 id（"" = 没开）；供切画布 / 删节点 / 撤销链路收尾判定 */
+function nodeSettingsDialogNodeId() {
+  return _nodeSettingsDlg ? _nodeSettingsDlg.nodeId : "";
+}
+
+/* 蒙层已经被关掉（closeOverlay）或被别的弹窗抢占时作废绑定：只清引用，不落盘不重绘。
+   设置项都是即时写回的，没什么可补救；不清引用则后续 stale 判定会误报「窗口还开着」。 */
+function discardNodeSettingsDialog() {
+  _nodeSettingsDlg = null;
+}
+
+/* 节点集合刚被整体替换（撤销 / 重做 / 切画布）或删了某个节点之后的统一收口。
+   判据是「对象身份」而不是 id：撤销恢复走 snapshotState 的 JSON 深拷贝，画布上会
+   出现一个同 id 的**新对象**，而设置窗绑的还是旧对象——只看 id 会以为一切都好，
+   实际上窗里每次修改都写在一张已脱离画布的节点上，用户看不见也存不进存档。
+   opts.silentRerender = 调用方随后自己 renderCanvas（撤销 / 切画布都是这样）；
+   opts.skipSave = 连落盘都跳过（切画布路径已经 flush 过，或这张画布已被删除）；
+   opts.quiet = 不弹提示（调用方自己有 toast 的场合，如批量删除）。
+   返回值 = 是否真的关掉了窗口。 */
+function closeNodeSettingsDialogIfStale(opts) {
+  opts = opts || {};
+  const d = _nodeSettingsDlg;
+  if (!d) return false;
+  const nodes = (S.wf && Array.isArray(S.wf.nodes) && S.wf.nodes) || [];
+  /* 窗里绑的就是画布上这个对象 → 什么都没变，绝不动它（正输入到一半也不能被重绘打断） */
+  if (nodes.some((n) => n === d.node && n.id === d.nodeId)) return false;
+  const stillThere = nodes.some((n) => n && n.id === d.nodeId);
+  closeNodeSettingsDialog({
+    silentRerender: !!opts.silentRerender,
+    skipSave: !!opts.skipSave,
+  });
+  /* 只是被撤销/重做换掉对象 → 安静关掉；节点真没了 → 明确告诉用户为什么窗不见了 */
+  if (!opts.quiet && !stillThere)
+    toast(I18n.t("该节点已不在当前画布，设置窗口已关闭"), "warn");
+  return true;
+}
+
+/* 一行只读摘要文本（未登记 / 未给 summary → 空串，由调用方决定占位） */
+function nodeSettingsSummaryText(node) {
+  const def = nodeSettingsFormVisible(node);
+  if (!def || typeof def.summary !== "function") return "";
+  try {
+    return String(def.summary(node) || "");
+  } catch (_) {
+    return "";
+  }
+}
+
+/* ⚙ 设置按钮：头部按钮排与 body 摘要行共用同一份构造。
+   挂在头部 → 浏览态（未选中）也照常可点，它属于菜单栏而非 body。 */
+function nodeSettingsGearButton(node, opts) {
+  opts = opts || {};
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className =
+    "n-play n-api-toggle n-settings-btn" + (opts.cls ? " " + opts.cls : "");
+  b.textContent = opts.label || "⚙";
+  b.title = opts.title || I18n.t("设置（点击打开设置窗口修改参数）");
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    openNodeSettingsDialog(node);
+  };
+  return b;
+}
+
+/* body 摘要行：一行只读文本 + ⚙（＋可选动作按钮）。
+   opts：
+     text?    覆盖摘要文本
+     gear?: false 只出文字（浏览态请用这个）
+     cls?     附加类名
+     slots?   [{ id, label, value }] —— 给定了就按片段拼这一行，每段的值是一个带 id 的
+              只读元素。生成 / 保存的运行期回填靠 id 找到它（沿用老控件那批 id：
+              mgpath- / mgseed- / mgdur- / mgrolls-），跳窗里对应的可编辑控件带
+              nodeSettingsCtlId() 前缀，两边由 syncNodeSettingsValue() 一起刷。
+     actions? 跟在 ⚙ 后面的动作按钮元素（浏览 / 位置 / 打开 这类——它们是动作，不是设置）
+   未登记设置表单且没给 text / slots → 返回 null 什么都不画（调用方可零成本沿用老渲染）。 */
+function appendNodeSettingsSummary(node, body, opts) {
+  opts = opts || {};
+  const slots = Array.isArray(opts.slots) ? opts.slots : null;
+  if (opts.text == null && !slots && !nodeSettingsFormVisible(node)) return null;
+  const row = document.createElement("div");
+  row.className = "n-setsum" + (opts.cls ? " " + opts.cls : "");
+  const txt = document.createElement("span");
+  txt.className = "n-setsum-txt";
+  if (opts.id) txt.id = String(opts.id);
+  if (slots) {
+    slots.forEach((s, i) => {
+      if (i) txt.appendChild(document.createTextNode(" · "));
+      if (s && s.label) {
+        const l = document.createElement("span");
+        l.className = "n-setsum-lab";
+        l.textContent = String(s.label) + " ";
+        txt.appendChild(l);
+      }
+      const v = document.createElement("span");
+      v.className = "n-setsum-val";
+      if (s && s.id) v.id = String(s.id);
+      v.textContent = String((s && s.value) == null ? "" : s.value);
+      if (s && s.title) v.title = String(s.title);
+      txt.appendChild(v);
+    });
+    if (!slots.length) txt.textContent = I18n.t("（无设置项）");
+  } else {
+    const s = opts.text != null ? String(opts.text) : nodeSettingsSummaryText(node);
+    txt.textContent = s || I18n.t("（无设置项）");
+  }
+  txt.title = I18n.t("当前设置：") + txt.textContent + "\n" + I18n.t("点 ⚙ 在设置窗口中修改");
+  row.appendChild(txt);
+  if (opts.gear !== false)
+    row.appendChild(nodeSettingsGearButton(node, { cls: "n-setsum-btn" }));
+  if (Array.isArray(opts.actions))
+    for (const a of opts.actions) if (a) row.appendChild(a);
+  if (body) body.appendChild(row);
+  return row;
+}
+
+/* ── 摘要 ⇄ 跳窗控件的共用回填通道 ─────────────────────────────────
+   设置项搬进跳窗后，同一个设置在两处出现：body 里是带老 id 的只读文本（引擎回填、
+   摇数 +1、后端纠正输出文件名都写它），窗里是带 nsf- 前缀 id 的可编辑控件。
+   读写一律走这条通道，别在各处 querySelector 之后自己猜该写 .value 还是 .textContent。 */
+
+/* 跳窗控件 id：前缀 + 老 id 的基名 + 节点 id（与 body 摘要元素天然不同名，不撞 id） */
+function nodeSettingsCtlId(base, nodeId) {
+  return "nsf-" + base + "-" + nodeId;
+}
+
+/* 跳窗里那个控件（窗没开 / 不是这个节点 / 该字段没进窗 → null） */
+function nodeSettingsCtlEl(node, base) {
+  if (!node || !node.id || !base) return null;
+  return document.getElementById(nodeSettingsCtlId(base, node.id));
+}
+
+/* 写一个设置的两面：body 只读摘要（按老 id 找）+ 打开中的跳窗控件。
+   用户正在敲的那个控件绝不覆盖（否则打字会被回填吞掉）。
+   ctlText：两面文本不同形时（摘要写「120s」而数字框只认「120」）单独给控件的值。 */
+function syncNodeSettingsValue(node, base, text, ctlText) {
+  if (!node || !node.id || !base) return;
+  const s = String(text == null ? "" : text);
+  const cs = ctlText == null ? s : String(ctlText);
+  const sum = document.getElementById(base + "-" + node.id);
+  if (sum) {
+    if (sum.tagName === "INPUT" || sum.tagName === "TEXTAREA") {
+      if (document.activeElement !== sum && sum.value !== s) sum.value = s;
+    } else if (sum.textContent !== s) sum.textContent = s;
+  }
+  const ctl = nodeSettingsCtlEl(node, base);
+  if (ctl && (ctl.tagName === "INPUT" || ctl.tagName === "TEXTAREA")) {
+    if (document.activeElement !== ctl && ctl.value !== cs) ctl.value = cs;
+  } else if (ctl && ctl.tagName === "SELECT") {
+    if (document.activeElement !== ctl && ctl.value !== cs) ctl.value = cs;
+  }
+}
+
+/* 读跳窗里控件的当前值（没开窗 → 空串）；用于「引擎起跑前把用户正在敲的值收进 node」 */
+function readNodeSettingsCtl(node, base) {
+  const ctl = nodeSettingsCtlEl(node, base);
+  return ctl && "value" in ctl ? String(ctl.value) : "";
+}
+
+/* 空表单：这个键不对应任何真实 kind（nodeSettingsFormKey 永不返回它），
+   保留它是为了在没有真实登记时也能跑通「开窗 → 填表 → 收尾」这条链，
+   同时给后续登记留一份字段契约范例。 */
+registerNodeSettingsForm("__empty__", {
+  title: (node) => I18n.t("设置 · ") + ((node && node.title) || ""),
+  summary: () => "",
+  build: (ctx) => {
+    ctx.hint(I18n.t("该节点无可设置项。"));
+  },
+});
+
+/* ═══════════════ 已迁移的表单 · API / 生成类节点（proc_text / proc_image / agent_task /
+   music_gen / video_gen / remotion）═══════════════
+   这些 kind 原来是节点里的 .n-api-panel（点「API / 设置」就地展开），字段一律原样
+   搬进跳窗：真源还是 node 上的同一批字段，只是换了个够宽的地方摆。
+   共用控件小工具（外观全部复用 .n-field / .n-api-adv-grid，不再自拼样式）。 */
+
+/* 下拉：items 支持 "值" 或 ["值","标签"]（标签走 I18n）；现值不在表里时补一项保住原值 */
+function nsSelect(ctx, labelText, items, cur, onChange, opts) {
+  opts = opts || {};
+  const el = document.createElement("select");
+  if (opts.id) el.id = String(opts.id);
+  let found = false;
+  for (const item of items) {
+    const v = Array.isArray(item) ? String(item[0]) : String(item);
+    const t = Array.isArray(item) && item[1] != null ? String(item[1]) : v;
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = I18n.t(t);
+    if (v === String(cur == null ? "" : cur)) {
+      o.selected = true;
+      found = true;
+    }
+    el.appendChild(o);
+  }
+  if (!found && cur != null && String(cur) !== "") {
+    const o = document.createElement("option");
+    o.value = String(cur);
+    o.textContent = String(cur) + " " + I18n.t("（当前值）");
+    o.selected = true;
+    el.appendChild(o);
+  }
+  el.addEventListener("change", () => {
+    onChange(el.value);
+    ctx.commit(opts.commit);
+  });
+  return ctx.field(labelText, el, opts);
+}
+
+/* 数字：写回前按 min / max 夹一次（fallback = 空值兜底）；opts.live = 边打字边生效 */
+function nsNumber(ctx, labelText, cur, opts, onChange) {
+  opts = opts || {};
+  const el = document.createElement("input");
+  el.type = "number";
+  if (opts.id) el.id = String(opts.id);
+  if (opts.min != null) el.min = String(opts.min);
+  if (opts.max != null) el.max = String(opts.max);
+  if (opts.step != null) el.step = String(opts.step);
+  el.value = String(cur);
+  const fb = opts.fallback != null ? Number(opts.fallback) : opts.min != null ? Number(opts.min) : 0;
+  const apply = (fromChange) => {
+    let v = Number(el.value);
+    if (!isFinite(v)) {
+      /* 边打字遇到空框 / 半截数字：不写回也不夹值，免得把用户正在敲的内容吞掉 */
+      if (!fromChange) return;
+      v = fb;
+    }
+    if (opts.min != null) v = Math.max(Number(opts.min), v);
+    if (opts.max != null) v = Math.min(Number(opts.max), v);
+    /* 只有 change（失焦 / 回车）才把夹完的值回写进框，与老 body 的数字格同一口径 */
+    if (fromChange) el.value = String(v);
+    onChange(v);
+    ctx.commit(opts.commit);
+  };
+  el.addEventListener("change", () => apply(true));
+  if (opts.live) el.addEventListener("input", () => apply(false));
+  return ctx.field(labelText, el, opts);
+}
+
+/* 勾选框：checkbox 在前的老口径；默认占半栏（一列两个） */
+function nsCheck(ctx, labelText, checked, onChange, opts) {
+  opts = opts || {};
+  const lab = document.createElement("label");
+  lab.className = "n-field";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !!checked;
+  if (opts.title) {
+    cb.title = opts.title;
+    lab.title = opts.title;
+  }
+  cb.addEventListener("change", () => {
+    onChange(!!cb.checked);
+    ctx.commit(opts.commit);
+  });
+  lab.appendChild(cb);
+  lab.appendChild(document.createTextNode(" " + labelText));
+  ctx.root.appendChild(lab);
+  return lab;
+}
+
+/* 文本框：opts.live = 边打字边写回 node（老 body 就是这个口径，路径类字段靠它）；
+   opts.normalize = 只在 change（失焦 / 回车）时做一次归一（补后缀、相对化…）并把结果回写进框；
+   opts.actions = [按钮元素] 与输入框同排（浏览 / 智能填写这类动作）；
+   opts.commitOn = "change"（默认）| "input"。 */
+function nsText(ctx, labelText, cur, opts, onChange) {
+  opts = opts || {};
+  const el = document.createElement("input");
+  el.type = opts.type === "datetime-local" ? "datetime-local" : "text";
+  if (opts.id) el.id = String(opts.id);
+  if (opts.placeholder) el.placeholder = String(opts.placeholder);
+  if (opts.title) el.title = String(opts.title);
+  el.value = String(cur == null ? "" : cur);
+  const norm = (v) =>
+    typeof opts.normalize === "function" ? String(opts.normalize(v)) : String(v);
+  el.addEventListener("change", () => {
+    el.value = norm(el.value);
+    onChange(el.value);
+    ctx.commit(opts.commit);
+  });
+  if (opts.live)
+    el.addEventListener("input", () => {
+      onChange(el.value);
+      if (opts.commitOn === "input") ctx.commit(opts.commit);
+      else scheduleSave();
+    });
+  const lab = document.createElement("label");
+  lab.className = "n-field" + (opts.span ? " nsf-span" : "");
+  const cap = document.createElement("span");
+  cap.textContent = String(labelText || "");
+  lab.appendChild(cap);
+  if (Array.isArray(opts.actions) && opts.actions.length) {
+    const box = document.createElement("span");
+    box.className = "nsf-ctl";
+    box.appendChild(el);
+    for (const a of opts.actions) if (a) box.appendChild(a);
+    lab.appendChild(box);
+  } else {
+    lab.appendChild(el);
+  }
+  ctx.root.appendChild(lab);
+  return lab;
+}
+
+/* 天 / 时 / 分三格（定时器的间隔、延时、步间间隔）：控件本体沿用 app.js 的
+   appendDurationFields（真源一份，不另写夹值口径），这里只负责挂进表单并收尾。
+   opts.allowZero = 允许全 0（ sequencer 的「立即接续」）。 */
+function nsDuration(ctx, labelText, sec, opts, onChange) {
+  opts = opts || {};
+  const host = document.createElement("div");
+  host.className = "nsf-dur";
+  appendDurationFields(
+    host,
+    sec,
+    (next) => {
+      onChange(next);
+      ctx.commit(opts.commit || { history: true, rerender: true });
+    },
+    { allowZero: !!opts.allowZero },
+  );
+  if (labelText) {
+    const lab = ctx.field(labelText, null, opts);
+    lab.appendChild(host);
+    return lab;
+  }
+  return ctx.append(host, opts);
+}
+
+/* 服务商 / 模型：proc_text · remotion 取 text_openai，proc_image 取 image_*
+   （与原 .n-api-panel 的 else 分支同一份逻辑，包括「现服务商不在表里就取第一个」） */
+function nsProviderModelFields(ctx, node) {
+  const want = node.kind === "proc_image" ? null : "text_openai";
+  const provs = (S.config.providers || []).filter((p) =>
+    want ? p.type === want : String(p.type || "").startsWith("image_"),
+  );
+  if (!provs.some((p) => p.id === node.providerId))
+    node.providerId = provs.length ? provs[0].id : "";
+  const provSel = document.createElement("select");
+  {
+    const o0 = document.createElement("option");
+    o0.value = "";
+    o0.textContent = I18n.t("（未选择服务商）");
+    provSel.appendChild(o0);
+    for (const p of provs) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = p.name;
+      if (p.id === node.providerId) o.selected = true;
+      provSel.appendChild(o);
+    }
+  }
+  provSel.value = node.providerId;
+  provSel.addEventListener("change", () => {
+    node.providerId = provSel.value;
+    const prov = provs.find((p) => p.id === node.providerId);
+    node.model =
+      prov && prov.models && prov.models.length ? prov.models[0] : "";
+    /* 换服务商 = 模型表整个换掉：重画端子（外观色）+ 重建本表单 */
+    ctx.commit({ history: true, rerender: true, rebuild: true });
+  });
+  ctx.field(I18n.t("服务商（自动读取全局 API 配置）"), provSel);
+  const prov = provs.find((p) => p.id === node.providerId);
+  const mod = document.createElement("select");
+  {
+    const models = prov && prov.models ? prov.models.slice() : [];
+    const cur = node.model || (prov && prov.models && prov.models[0]) || "";
+    if (cur && !models.includes(cur)) models.unshift(cur);
+    for (const m of models) {
+      const o = document.createElement("option");
+      o.value = m;
+      o.textContent = m;
+      mod.appendChild(o);
+    }
+    mod.value = cur;
+  }
+  mod.addEventListener("change", () => {
+    node.model = mod.value;
+    ctx.commit({ history: true });
+  });
+  ctx.field(I18n.t("模型"), mod);
+}
+
+/* 温度（proc_text / remotion） */
+function nsTemperatureField(ctx, node) {
+  nsNumber(
+    ctx,
+    I18n.t("温度 Temperature（0-2）"),
+    node.temperature == null ? 0.7 : node.temperature,
+    { min: 0, max: 2, step: 0.1, fallback: 0.7, live: true },
+    (v) => {
+      node.temperature = v;
+    },
+  );
+}
+
+/* 一行摘要：服务商 · 模型 ·（尺寸）·（温度） */
+function nsApiSummary(node) {
+  const parts = [];
+  const p = ((S.config && S.config.providers) || []).find(
+    (x) => x.id === node.providerId,
+  );
+  parts.push((p && p.name) || I18n.t("（未选择服务商）"));
+  if (node.model) parts.push(String(node.model));
+  if (node.kind === "proc_image")
+    parts.push(
+      IMAGE_SIZES.includes(node.size) ? node.size : DEFAULT_IMAGE_SIZE,
+    );
+  if (node.temperature != null) parts.push("T=" + node.temperature);
+  return parts.join(" · ");
+}
+
+/* 智能任务四件套：预设 / 供应商 / 模型 / 思考强度
+   （档位真源仍是 app.js 的 AGENT_PRESETS，与「智能会话」同一张表） */
+function nsAgentFields(ctx, node) {
+  const catalog = S.providerCatalog || {
+    deepseek: [
+      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+      { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
+      {
+        id: "deepseek-v4-flash-vision-exp",
+        name: "DeepSeek-V4-Flash-Vision-Exp",
+        input: ["text", "image"],
+      },
+    ],
+    piai: [],
+  };
+  const mtnode = mtnodePiProviders();
+  const modelsFor = (prov) => {
+    if (prov === "deepseek-official") {
+      /* 仅显示已添加的模型:优先用配置的 DeepSeek 服务商模型,否则目录默认 */
+      const dp = dshProvider();
+      if (dp && Array.isArray(dp.models) && dp.models.length)
+        return dp.models.map((m) => ({ id: String(m), name: "" }));
+      return (catalog.deepseek || []).map((m) => ({ id: m.id, name: m.name }));
+    }
+    const mp = mtnode.find((x) => "mtnode_" + x.route === prov);
+    return ((mp && mp.models) || []).map((id) => ({ id, name: "" }));
+  };
+  let curProv =
+    String(node.provider || "").trim() ||
+    agentRouteFromProviderId(node.providerId) ||
+    preferredAgentProviderRoute();
+  const ps = document.createElement("select");
+  for (const p of AGENT_PRESETS) {
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = I18n.t(p.labelKey);
+    if (p.hint) o.title = I18n.t(p.hint);
+    ps.appendChild(o);
+  }
+  ps.value = node.preset || AGENT_PRESET_DEFAULT;
+  ps.addEventListener("change", () => {
+    node.preset = ps.value;
+    ctx.commit();
+  });
+  ctx.field(I18n.t("预设（与智能会话一致）"), ps);
+  const provSel = document.createElement("select");
+  {
+    /* 供应商用各自名称(DeepSeek 官方路由显示为配置的 DeepSeek 服务商名称) */
+    const dp = dshProvider();
+    const o = document.createElement("option");
+    o.value = "deepseek-official";
+    o.textContent = (dp && dp.name) || I18n.t("DeepSeek 官方");
+    provSel.appendChild(o);
+    for (const p of mtnode) {
+      const o2 = document.createElement("option");
+      o2.value = "mtnode_" + p.route;
+      o2.textContent = p.name;
+      provSel.appendChild(o2);
+    }
+  }
+  /* 仅显示已添加的供应商(DeepSeek 官方 + MTNode 服务商) */
+  if (![...provSel.options].some((o) => o.value === curProv)) {
+    curProv =
+      agentRouteFromProviderId(node.providerId) ||
+      preferredAgentProviderRoute();
+  }
+  provSel.value = curProv;
+  provSel.addEventListener("change", () => {
+    node.provider = provSel.value;
+    node.vision = null; /* 更换供应商后重新评估视觉模型 */
+    const first = modelsFor(provSel.value)[0];
+    node.model = first ? first.id : "";
+    ctx.commit({ history: true, rerender: true, rebuild: true });
+  });
+  ctx.field(I18n.t("供应商"), provSel);
+  const mod = document.createElement("select");
+  {
+    const items = modelsFor(curProv);
+    const cur = node.model || (items[0] && items[0].id) || "deepseek-v4-flash";
+    const list = items.slice();
+    if (cur && !list.some((x) => x.id === cur)) list.unshift({ id: cur, name: "" });
+    const vis = new Set(visionModelsForProvider(curProv).map((m) => m.id));
+    for (const m of list) {
+      const o = document.createElement("option");
+      o.value = m.id;
+      o.textContent = modelLabel(m, vis);
+      mod.appendChild(o);
+    }
+    mod.value = cur;
+  }
+  mod.addEventListener("change", () => {
+    node.model = mod.value;
+    node.vision = null; /* 手动换模型后重新评估视觉模型 */
+    ctx.commit({ history: true });
+  });
+  ctx.field(I18n.t("模型"), mod);
+  /* 思考强度只有「标准 / 最强」两档，选哪档就按哪档跑：预设不再压档
+     （历史上思维精简会把 high 降到 low，现已取消），标签与 tooltip 都无需再标「生效档」。 */
+  const eff = document.createElement("select");
+  for (const [v, l] of [["high", I18n.t("标准")], ["max", I18n.t("最强")]]) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = l;
+    eff.appendChild(o);
+  }
+  /* 旧档 off/none → 标准 */
+  eff.value = node.effort === "max" ? "max" : "high";
+  if (node.effort !== eff.value) node.effort = eff.value;
+  eff.addEventListener("change", () => {
+    node.effort = eff.value;
+    ctx.commit();
+  });
+  ctx.field(I18n.t("思考强度（标准 / 最强）"), eff);
+}
+
+/* 一行摘要：预设 · 供应商 · 模型 · 思考档 */
+function nsAgentSummary(node) {
+  const parts = [];
+  const preset = (AGENT_PRESETS || []).find(
+    (x) => x.id === (node.preset || AGENT_PRESET_DEFAULT),
+  );
+  if (preset) parts.push(I18n.t(preset.labelKey));
+  const route =
+    String(node.provider || "").trim() ||
+    agentRouteFromProviderId(node.providerId) ||
+    preferredAgentProviderRoute();
+  if (route === "deepseek-official") {
+    const dp = dshProvider();
+    parts.push((dp && dp.name) || I18n.t("DeepSeek 官方"));
+  } else {
+    const mp = (mtnodePiProviders() || []).find(
+      (x) => "mtnode_" + x.route === route,
+    );
+    parts.push((mp && mp.name) || route);
+  }
+  if (node.model) parts.push(String(node.model));
+  parts.push(node.effort === "max" ? I18n.t("最强") : I18n.t("标准"));
+  return parts.join(" · ");
+}
+
+registerNodeSettingsForm("proc_text", {
+  gearTitle: () => I18n.t("服务商 / 模型 / 温度"),
+  summary: nsApiSummary,
+  build: (ctx) => {
+    nsProviderModelFields(ctx, ctx.node);
+    nsTemperatureField(ctx, ctx.node);
+  },
+});
+
+registerNodeSettingsForm("proc_image", {
+  gearTitle: () => I18n.t("服务商 / 模型 / 尺寸"),
+  summary: nsApiSummary,
+  build: (ctx) => {
+    const node = ctx.node;
+    nsProviderModelFields(ctx, node);
+    /* 尺寸表真源 IMAGE_SIZES（gpt-image-2-vip · auto 或 30 档） */
+    const selS = document.createElement("select");
+    for (const s of IMAGE_SIZES) {
+      const o = document.createElement("option");
+      o.value = s;
+      o.textContent = s;
+      selS.appendChild(o);
+    }
+    selS.value = IMAGE_SIZES.includes(node.size)
+      ? node.size
+      : DEFAULT_IMAGE_SIZE;
+    selS.addEventListener("change", () => {
+      node.size = selS.value;
+      ctx.commit();
+    });
+    ctx.field(
+      I18n.t("尺寸 Size（gpt-image-2-vip · auto 或 30 档）"),
+      selS,
+    );
+  },
+});
+
+registerNodeSettingsForm("agent_task", {
+  gearTitle: () => I18n.t("预设 / 供应商 / 模型 / 思考强度"),
+  summary: nsAgentSummary,
+  build: (ctx) => nsAgentFields(ctx, ctx.node),
+});
+
+/* remotion body 上那行 meta（分辨率 · fps · 时长）：摘要与跳窗字段共用一份口径，
+   窗里改完走 syncNodeSettingsValue 就地改写带 #mgmeta- 的只读文本 */
+function remotionMetaText(node) {
+  return (
+    (node.size || "1280x720") +
+    " · " +
+    (node.fps || 30) +
+    " fps · " +
+    (node.duration || 5) +
+    "s"
+  );
+}
+
+registerNodeSettingsForm("remotion", {
+  gearTitle: () => I18n.t("服务商 / 模型 / 温度 · 分辨率 / fps / 时长"),
+  summary: (node) => nsApiSummary(node) + " · " + remotionMetaText(node),
+  build: (ctx) => {
+    const node = ctx.node;
+    nsProviderModelFields(ctx, node);
+    nsTemperatureField(ctx, node);
+    ctx.section(I18n.t("渲染"));
+    const meta = () =>
+      syncNodeSettingsValue(node, "mgmeta", remotionMetaText(node));
+    nsNumber(
+      ctx,
+      I18n.t("时长（秒，1–60）"),
+      node.duration != null ? node.duration : 5,
+      {
+        min: 1,
+        max: 60,
+        step: 1,
+        fallback: 5,
+        title: I18n.t("时长（秒，1–60）"),
+      },
+      (v) => {
+        node.duration = v;
+        meta();
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("帧率 fps（1–60）"),
+      node.fps != null ? node.fps : 30,
+      {
+        min: 1,
+        max: 60,
+        step: 1,
+        fallback: 30,
+        title: I18n.t("帧率（fps，1–60）"),
+      },
+      (v) => {
+        node.fps = v;
+        meta();
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("分辨率"),
+      REMOTION_SIZES,
+      node.size || "1280x720",
+      (v) => {
+        node.size = v;
+        meta();
+      },
+    );
+  },
+});
+
+registerNodeSettingsForm("music_gen", {
+  gearTitle: () => I18n.t("时长 / 抽卡 / 种子 / 输出路径 / offload"),
+  summary: (node) =>
+    mediaGenParamSummaryText(node) +
+    " · " +
+    (node.offload === false
+      ? I18n.t("offload：关")
+      : I18n.t("offload：开")),
+  build: (ctx) => {
+    const node = ctx.node;
+    nsMediaGenParamFields(ctx, node);
+    nsMediaGenPathField(ctx, node, "audio");
+    ctx.section(I18n.t("显存"));
+    nsCheck(
+      ctx,
+      I18n.t("auto CPU offload（24G 推荐）"),
+      node.offload !== false,
+      (v) => {
+        node.offload = v;
+      },
+    );
+  },
+});
+
+registerNodeSettingsForm("video_gen", {
+  gearTitle: () => I18n.t("模式 / 尺寸 / 采样步数 / 显存优化"),
+  summary: (node) =>
+    isCustomVideoGen(node)
+      ? I18n.t("自建工作流") +
+        " · " +
+        ((node.wfMeta && node.wfMeta.title) ||
+          node.workflowId ||
+          I18n.t("（未选择）"))
+      : String(node.videoMode || "fl2va").toUpperCase() +
+        " · " +
+        (node.ratio || "16:9") +
+        " · " +
+        (node.outputRes || "auto"),
+  /* 换工作流来源 = 整张表单换骨（wfMeta 是异步读回来的），靠签名跟着重建 */
+  signature: (node) =>
+    isCustomVideoGen(node) ? "custom:" + String(node.workflowId || "") : "builtin",
+  build: (ctx) => {
+    const node = ctx.node;
+    /* 自建 ComfyUI 工作流区：这段控件本来就长在 app-nodes.js，按（宿主, 节点, addField）
+       三元组直接挂进跳窗；自成一块，避免它的提示行被网格拆成两栏。 */
+    const wfHost = document.createElement("div");
+    ctx.append(wfHost);
+    const addField = (label, el) => {
+      const f = document.createElement("label");
+      f.className = "n-field";
+      f.appendChild(document.createTextNode(String(label)));
+      f.appendChild(el);
+      wfHost.appendChild(f);
+    };
+    appendVideoGenWorkflowControls(wfHost, node, addField);
+    /* 抽卡次数 / 种子 / 输出路径：自建与内置都要（时长只有内置自己定） */
+    ctx.section(I18n.t("生成参数"));
+    nsMediaGenParamFields(ctx, node);
+    nsMediaGenPathField(ctx, node, "video");
+    /* 自建工作流：时长 / 比例 / 采样 / 后处理全由工作流图自身决定 → 内置参数整块不出现
+       （与 buildVideoGenRunParams 的下发口径一一对应） */
+    if (isCustomVideoGen(node)) return;
+    ctx.section(I18n.t("生成"));
+    nsSelect(
+      ctx,
+      I18n.t("模式"),
+      [["r2v", "R2V 多参考"], ["fl2va", "FL2VA 首末帧"]],
+      node.videoMode || "fl2va",
+      (v) => {
+        node.videoMode = v;
+      },
+      { commit: { rerender: true } },
+    );
+    const mgMeta = () =>
+      syncNodeSettingsValue(
+        node,
+        "mgmeta",
+        (node.videoMode || "fl2va").toUpperCase() +
+          " · " +
+          (node.ratio || "16:9"),
+      );
+    nsSelect(
+      ctx,
+      I18n.t("尺寸比例"),
+      ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+      node.ratio || "16:9",
+      (v) => {
+        node.ratio = v;
+        mgMeta();
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("输出分辨率"),
+      [
+        ["auto", "自动（按比例默认）"],
+        ["480p", "480p（0.4MP 抽卡）"],
+        ["720p", "720p（~0.9MP）"],
+        ["1080p", "1080p（~2MP，24G 慎用）"],
+      ],
+      node.outputRes || "auto",
+      (v) => {
+        node.outputRes = v;
+      },
+      { commit: { rerender: true } },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("采样步数"),
+      node.steps || 20,
+      { min: 1, max: 60, step: 1, fallback: 20 },
+      (v) => {
+        node.steps = v;
+      },
+    );
+    const addOpt = (key, label, title) =>
+      nsCheck(
+        ctx,
+        label,
+        node[key] !== false,
+        (v) => {
+          node[key] = v;
+          if (key === "optSageAttn") node.sageMode = v ? "auto" : "disabled";
+        },
+        { title },
+      );
+    ctx.section(I18n.t("24G 优化（默认开，可关）"));
+    addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
+    addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需安装 sageattention；缺包自动跳过"));
+    addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
+    addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
+    addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
+    ctx.section(I18n.t("4K 超分补帧（默认开，24G 建议关以提速）"));
+    addOpt("postEnabled", I18n.t("4K 超分补帧"), I18n.t("RIFE 补帧 + Real-ESRGAN x4 超分 → 4K（需安装后处理模型）"));
+    addOpt("postInterp", I18n.t("补帧 RIFE"), I18n.t("低分辨率先补帧，再超分；时序更稳更省显存"));
+    nsSelect(
+      ctx,
+      I18n.t("补帧倍数"),
+      [["1", "1x（关）"], ["2", "2x（推荐）"], ["4", "4x"]],
+      String(node.postInterpMultiplier != null ? node.postInterpMultiplier : 2),
+      (v) => {
+        node.postInterpMultiplier = Number(v);
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("超分批量"),
+      node.postPerBatch != null ? node.postPerBatch : 4,
+      { min: 1, max: 16, step: 1, fallback: 4 },
+      (v) => {
+        node.postPerBatch = v;
+      },
+    );
+    ctx.section(I18n.t("采样 / 质量 / 输出"));
+    nsSelect(
+      ctx,
+      I18n.t("采样器"),
+      ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "dpmpp_sde"],
+      node.sampler || "res_multistep",
+      (v) => {
+        node.sampler = v;
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("调度器"),
+      ["simple", "normal", "karras", "exp"],
+      node.scheduler || "simple",
+      (v) => {
+        node.scheduler = v;
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("去噪 denoise"),
+      node.denoise != null ? node.denoise : 1,
+      { min: 0, max: 1, step: 0.01, fallback: 1 },
+      (v) => {
+        node.denoise = v;
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("视频位移 shift"),
+      node.shiftVideo != null ? node.shiftVideo : 12,
+      { min: 0.01, max: 100, step: 0.1, fallback: 12 },
+      (v) => {
+        node.shiftVideo = v;
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("音频位移 shift"),
+      node.shiftAudio != null ? node.shiftAudio : 3,
+      { min: 0.01, max: 100, step: 0.1, fallback: 3 },
+      (v) => {
+        node.shiftAudio = v;
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("参考图尺寸"),
+      [["match", "match（缩放匹配分辨率）"], ["max", "max（2048 短边 · 还原度更高更慢）"]],
+      node.refImageSize || "match",
+      (v) => {
+        node.refImageSize = v;
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("帧率 fps"),
+      node.fps != null ? node.fps : 24,
+      { min: 1, max: 60, step: 1, fallback: 24 },
+      (v) => {
+        node.fps = v;
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("位深"),
+      [["8", "8bit"], ["16", "16bit"]],
+      String(node.bitDepth != null ? node.bitDepth : 8),
+      (v) => {
+        node.bitDepth = Number(v);
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("封装格式"),
+      [["auto", "auto"], ["mp4", "mp4"], ["webm", "webm"]],
+      node.videoFormat || "auto",
+      (v) => {
+        node.videoFormat = v;
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("编解码"),
+      [["auto", "auto"], ["h264", "h264"], ["vp9", "vp9"]],
+      node.videoCodec || "auto",
+      (v) => {
+        node.videoCodec = v;
+      },
+    );
+    /* 高级参数：折叠起来，默认不看（原来就是 details） */
+    const adv = document.createElement("details");
+    adv.className = "n-field";
+    const advSum = document.createElement("summary");
+    advSum.textContent = I18n.t("高级参数");
+    adv.appendChild(advSum);
+    const advBox = document.createElement("div");
+    advBox.className = "n-api-adv-grid";
+    const a = ctx.sub(advBox);
+    a.hint(I18n.t("EasyCache 缓存区间"));
+    nsNumber(a, I18n.t("easyReuse"), node.easyReuse != null ? node.easyReuse : 0.2, { fallback: 0.2, step: 0.01 }, (v) => { node.easyReuse = v; });
+    nsNumber(a, I18n.t("easyStart%"), node.easyStart != null ? node.easyStart : 0.15, { fallback: 0.15, step: 0.01 }, (v) => { node.easyStart = v; });
+    nsNumber(a, I18n.t("easyEnd%"), node.easyEnd != null ? node.easyEnd : 0.95, { fallback: 0.95, step: 0.01 }, (v) => { node.easyEnd = v; });
+    nsNumber(a, I18n.t("LowVRAM head_chunks"), node.lowVramHeadChunks != null ? node.lowVramHeadChunks : 4, { min: 1, fallback: 4, step: 1 }, (v) => { node.lowVramHeadChunks = v; });
+    nsNumber(a, I18n.t("ChunkFFN chunks"), node.chunkFfnChunks != null ? node.chunkFfnChunks : 2, { min: 1, fallback: 2, step: 1 }, (v) => { node.chunkFfnChunks = v; });
+    nsNumber(a, I18n.t("ChunkFFN seq_threshold"), node.chunkFfnSeqThreshold != null ? node.chunkFfnSeqThreshold : 4096, { min: 256, fallback: 4096, step: 1 }, (v) => { node.chunkFfnSeqThreshold = v; });
+    nsCheck(a, I18n.t("Sage 编译（需 Sage 且更慢更占显存）"), !!node.sageCompile, (v) => { node.sageCompile = v; });
+    adv.appendChild(advBox);
+    ctx.append(adv);
+  },
+});
+
+/* ═══════════════ 已迁移的表单 · 函数 / 工具节点（参数即端子）═══════════════
+   这两类的「设置」原来是挂在节点 body 下方就地展开的一整块面板（S.uiOpenNode）：
+   名称 + 描述 + 两套参数列表，每行还带 ● 类型 / ⠿ 把手 / 下拉 / 数组勾选 / ▲▼ / ✕。
+   卡片就那么宽，一行六七个控件挤在一起，改个参数名都要先瞪着找。
+   现在面板本体（buildFnToolSettings 返回的 DOM）**原样复用**，只是宿主从 body
+   换成跳窗 —— 端子重排、增删参数、生成脚手架这些动作一个都没少，地方变宽了。 */
+
+/* 参数表就是这张表单的骨架：任一条目的名称 / 类型 / 数组位变化（含增删与重排）
+   都要重建，才能让用户立刻看到新的端子序号与顺序；其余字段改动不动它。 */
+function nsFnToolSignature(node) {
+  const line = (dir) =>
+    fnToolParamList(node, dir)
+      .map(
+        (p) =>
+          String(p.name || "") +
+          "\u0001" +
+          (String(p.kind || "text") === "image" ? "img" : "text") +
+          "\u0001" +
+          (p.list === true ? "arr" : ""),
+      )
+      .join("\u0002");
+  return (isToolNode(node) ? "tool" : "fn") + "|" + line("in") + "|" + line("out");
+}
+
+/* 面板 DOM 原样搬进跳窗：卡片版式（虚线上边 · 自身内边距 · 限高滚动）交给窗体，
+   其余一律不改 —— ⠿ 拖动 insert、▲▼ 逐格、参数名 / 类型 / 数组勾选、＋添加、
+   脚手架按钮全部照旧。 */
+function nsFnToolBuild(ctx) {
+  const wrap = buildFnToolSettings(ctx.node, isToolNode(ctx.node));
+  wrap.style.borderTop = "none";
+  wrap.style.padding = "0";
+  wrap.style.overflow = "visible";
+  ctx.append(wrap);
+}
+
+/* 函数节点：入参可勾「数组 · 可接多条线」（端子槽位组），工具节点没有这层语义 */
+registerNodeSettingsForm("function", {
+  /* 这两类的「设置」按钮本来就在头部且与「测试」相邻，按原位置就地挂 → 统一 ⚙ 让位 */
+  headerEntry: false,
+  gearLabel: () => I18n.t("设置"),
+  gearTitle: () => I18n.t("函数名 / 描述 / 增删输入输出参数（参数即端子）"),
+  signature: nsFnToolSignature,
+  build: nsFnToolBuild,
+});
+
+/* 工具节点（super + tool 变体）：同一份面板，写的是 toolConfig */
+registerNodeSettingsForm("tool", {
+  headerEntry: false,
+  gearLabel: () => I18n.t("设置"),
+  gearTitle: () => I18n.t("工具名 / 描述 / 增删输入输出参数（参数即端子）"),
+  signature: nsFnToolSignature,
+  build: nsFnToolBuild,
+});
+
+/* ═══════════════ 已迁移的表单 · 其余带参数的节点（save / wait_file / 节拍族 /
+    网络族 / 语音 / 控制）═══════════════
+   这些 kind 的参数原来直接长在 body 上：两三百像素宽的小卡片里塞路径输入框、轮询秒数、
+   路数下拉，字小到要点三下才选得中，改了还容易以为没生效。现在统统进 ⚙ 跳窗，
+   body 只留**一行只读摘要**（＋ 浏览 / 位置 / 打开 / 立即触发 / 清零 这些动作按钮——
+   它们是动作，不是设置，留在手边）。
+   摘要里的值片段沿用老控件的 id（mgpath- / mgseed- / mgdur- / mgrolls- / mgmeta-），
+   引擎运行期回填照旧命中；跳窗里对应的控件走 syncNodeSettingsValue() 同步。 */
+
+/* 相对路径 / 工作目录这套解析口径的说明（save 与 wait_file 共用） */
+function nsPathModeHint(raw, node) {
+  const s = String(raw || "").trim();
+  if (!s) return I18n.t("尚未设置路径。");
+  const r = resolveSavePath(s, node);
+  return r.ok
+    ? I18n.t("实际指向：") + r.path
+    : I18n.t("暂时无法解析（相对路径需要先在顶栏设工作目录）：") + s;
+}
+
+/* ── save：保存路径 + 自动保存 ── */
+function saveSettingsSummary(node) {
+  const raw = String(node.savePath || "").trim();
+  const r = raw ? resolveSavePath(raw, node) : { ok: false };
+  const parts = [];
+  if (isBatch(node))
+    parts.push(
+      node.batchMode === "agg"
+        ? I18n.t("聚合：全部条目合并保存")
+        : I18n.t("批量：按输入节点标题另存"),
+    );
+  parts.push(r.ok ? r.path : raw || I18n.t("（未设置保存路径）"));
+  parts.push(
+    node.auto === false ? I18n.t("自动保存：关") : I18n.t("自动保存：开"),
+  );
+  return parts.join(" · ");
+}
+registerNodeSettingsForm("save", {
+  gearTitle: () => I18n.t("保存路径 / 自动保存"),
+  summary: saveSettingsSummary,
+  /* 输入类型（文本→.yaml / 图像→.png /…）会换掉强制后缀，换掉的是「该写什么路径」 */
+  signature: (node) => "sv:" + saveMediaKind(node),
+  build: (ctx) => {
+    const node = ctx.node;
+    const media = saveMediaKind(node);
+    const ext = saveExtForMedia(media);
+    const extHint =
+      media === "text" ? "*.yaml" : media === "image" ? "*.png" : media === "audio" ? "*.wav" : "*.mp4";
+    const hasWs = !!String(wfWorkspace() || "").trim();
+    ctx.hint(
+      I18n.t("后缀由连进来的数据类型固定为 ") + extHint + I18n.t("，写错会自动纠正。"),
+    );
+    const hintEl = ctx.hint(nsPathModeHint(node.savePath, node));
+    nsText(
+      ctx,
+      I18n.t("保存路径"),
+      node.savePath,
+      {
+        span: true,
+        live: true,
+        placeholder: isBatch(node)
+          ? node.batchMode === "agg"
+            ? I18n.t("聚合：全部条目合并保存为 {路径}") + ext
+            : I18n.t("批量：保存为 {路径}_{输入节点标题}") + ext
+          : hasWs
+            ? I18n.t("相对工作目录或绝对路径（") + extHint + I18n.t("）…")
+            : I18n.t("保存路径（") + extHint + I18n.t("）…"),
+        title: hasWs
+          ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
+          : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .yaml）"),
+        normalize: (v) =>
+          applySuperRelToPath(
+            node,
+            preferRelativeSavePath(forcePathExt(String(v || "").trim(), ext)),
+          ),
+        commit: { history: true, rerender: true },
+      },
+      (v) => {
+        node.savePath = String(v || "").trim();
+        syncGenFilenameFromSave(node);
+        hintEl.textContent = nsPathModeHint(node.savePath, node);
+      },
+    );
+    nsCheck(
+      ctx,
+      I18n.t("输入变化时自动保存"),
+      node.auto !== false,
+      (v) => {
+        node.auto = v;
+      },
+      { title: I18n.t("上游输出更新时自动保存到指定路径") },
+    );
+  },
+});
+
+/* save 的动作按钮（浏览 / 位置 / 打开）：留在 body 摘要行上 */
+function savePathActionButtons(node) {
+  const media = saveMediaKind(node);
+  const ext = saveExtForMedia(media);
+  const btns = [];
+  const br = document.createElement("button");
+  br.className = "mini";
+  br.textContent = I18n.t("浏览");
+  br.onclick = async () => {
+    const ws = String(wfWorkspace() || "").trim();
+    let defaultName = (node.title || "output") + ext;
+    const cur = String(node.savePath || "").trim();
+    if (cur) {
+      const r0 = resolveSavePath(cur, node);
+      defaultName = r0.ok ? r0.path : cur;
+    } else if (ws) {
+      defaultName = joinPath(ws, applySuperRelToPath(node, defaultName));
+    }
+    const filters =
+      media === "text"
+        ? [
+            { name: "YAML", extensions: ["yaml", "yml"] },
+            { name: I18n.t("全部文件"), extensions: ["*"] },
+          ]
+        : media === "image"
+          ? [
+              { name: I18n.t("图像"), extensions: ["png"] },
+              { name: I18n.t("全部文件"), extensions: ["*"] },
+            ]
+          : media === "audio"
+            ? [
+                { name: I18n.t("音频"), extensions: ["wav"] },
+                { name: I18n.t("全部文件"), extensions: ["*"] },
+              ]
+            : [
+                { name: I18n.t("视频"), extensions: ["mp4"] },
+                { name: I18n.t("全部文件"), extensions: ["*"] },
+              ];
+    const title =
+      media === "text"
+        ? I18n.t("选择 YAML 保存位置")
+        : media === "image"
+          ? I18n.t("选择图像保存位置")
+          : media === "audio"
+            ? I18n.t("选择音频保存位置")
+            : I18n.t("选择视频保存位置");
+    const r = await window.api.fileSaveDialog({ title, defaultName, filters });
+    if (r.path) {
+      node.savePath = preferRelativeSavePath(
+        forcePathExt(r.path, saveExtForMedia(saveMediaKind(node))),
+      );
+      syncGenFilenameFromSave(node);
+      scheduleSave();
+      renderCanvas();
+    }
+  };
+  btns.push(br);
+  const hasPreviewTarget =
+    (node.savedPaths && node.savedPaths.length) ||
+    !!String(node.savedPath || "").trim() ||
+    !!String(node.savePath || "").trim();
+  if (hasPreviewTarget) {
+    const op = document.createElement("button");
+    op.className = "mini";
+    op.textContent = I18n.t("位置");
+    op.title = I18n.t("在文件夹中显示已保存文件");
+    op.onclick = async () => {
+      const last =
+        (node.savedPaths && node.savedPaths[node.savedPaths.length - 1]) ||
+        node.savedPath ||
+        "";
+      let show = "";
+      if (last) {
+        show = isAbsPath(last)
+          ? last
+          : resolveSavePath(last || node.savePath, node).path || last;
+      } else {
+        const paths = await resolveSavePreviewPaths(node);
+        show = paths[0] || resolveSavePath(node.savePath, node).path || "";
+      }
+      if (show) window.api.shellShowItem(show);
+    };
+    btns.push(op);
+    if (media === "text") {
+      const openBtn = document.createElement("button");
+      openBtn.className = "mini";
+      openBtn.textContent = I18n.t("打开");
+      openBtn.title = I18n.t("用阅读器打开（Markdown / YAML · 可编辑保存）");
+      openBtn.onclick = async (ev) => {
+        ev.stopPropagation();
+        const last =
+          (node.savedPaths && node.savedPaths[node.savedPaths.length - 1]) ||
+          node.savedPath ||
+          "";
+        let target = "";
+        if (last) {
+          target = isAbsPath(last)
+            ? last
+            : resolveSavePath(last || node.savePath, node).path || last;
+        } else {
+          const paths = await resolveSavePreviewPaths(node);
+          target = paths[0] || resolveSavePath(node.savePath, node).path || "";
+        }
+        if (!target) {
+          toast(I18n.t("文件不存在或无法预览"), "warn");
+          return;
+        }
+        openTextViewer(target);
+      };
+      btns.push(openBtn);
+    }
+  }
+  return btns;
+}
+
+/* ── wait_file：监视路径 + 轮询间隔 ── */
+function waitFileInterval(node) {
+  return Math.max(1, Math.min(60, Math.round(Number(node.waitIntervalSec) || 2)));
+}
+function waitFileSummary(node) {
+  const raw = String(node.waitPath || "").trim();
+  const r = raw ? resolveSavePath(raw, node) : { ok: false };
+  return (
+    (r.ok ? r.path : raw || I18n.t("（未设置监视路径）")) +
+    " · " +
+    I18n.t("轮询 ") +
+    waitFileInterval(node) +
+    I18n.t(" 秒")
+  );
+}
+registerNodeSettingsForm("wait_file", {
+  gearTitle: () => I18n.t("监视路径 / 轮询间隔"),
+  summary: waitFileSummary,
+  build: (ctx) => {
+    const node = ctx.node;
+    const hasWs = !!String(wfWorkspace() || "").trim();
+    const hintEl = ctx.hint(nsPathModeHint(node.waitPath, node));
+    nsText(
+      ctx,
+      I18n.t("监视路径（待生成的文件）"),
+      node.waitPath,
+      {
+        span: true,
+        live: true,
+        placeholder: hasWs
+          ? I18n.t("相对工作目录或绝对路径（待生成的文件）…")
+          : I18n.t("监视路径（绝对路径，或先设工作目录后用相对路径）…"),
+        title: I18n.t("待监视的文件路径"),
+        normalize: (v) =>
+          applySuperRelToPath(node, preferRelativeSavePath(String(v || "").trim())),
+        commit: { history: true, rerender: true },
+      },
+      (v) => {
+        node.waitPath = String(v || "").trim();
+        hintEl.textContent = nsPathModeHint(node.waitPath, node);
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("轮询间隔（秒）"),
+      waitFileInterval(node),
+      {
+        min: 1,
+        max: 60,
+        step: 1,
+        fallback: 2,
+        title: I18n.t("文件未生成时每隔多少秒检查一次（1–60）"),
+      },
+      (v) => {
+        node.waitIntervalSec = v;
+      },
+    );
+  },
+});
+
+/* wait_file 的动作按钮（浏览 / 位置） */
+function waitFileActionButtons(node) {
+  const btns = [];
+  const br = document.createElement("button");
+  br.className = "mini";
+  br.textContent = I18n.t("浏览");
+  br.title = I18n.t("选择已有文件路径（只读选取，不会创建、修改或覆盖任何文件）");
+  br.onclick = async () => {
+    const r = await window.api.fileOpenDialog({
+      title: I18n.t("选择要监视的文件路径"),
+      filters: [{ name: I18n.t("全部文件"), extensions: ["*"] }],
+    });
+    if (r && r.path) {
+      node.waitPath = applySuperRelToPath(
+        node,
+        preferRelativeSavePath(r.path),
+      );
+      scheduleSave();
+      renderCanvas();
+    }
+  };
+  btns.push(br);
+  if (node.waitReady || String(node.waitPath || "").trim()) {
+    const op = document.createElement("button");
+    op.className = "mini";
+    op.textContent = I18n.t("位置");
+    op.title = I18n.t("在文件夹中显示监视路径（若文件尚不存在可能无法定位）");
+    op.onclick = () => {
+      const show = resolveSavePath(node.waitPath, node).path || "";
+      if (show) window.api.shellShowItem(show);
+    };
+    btns.push(op);
+  }
+  return btns;
+}
+
+/* ── 节拍族：路数 / 延时 / 模式 ── */
+function nsIntField(ctx, labelText, cur, min, max, fallback, onChange) {
+  return nsNumber(
+    ctx,
+    labelText,
+    cur,
+    { min, max, step: 1, fallback, commit: { history: true, rerender: true } },
+    onChange,
+  );
+}
+function seqSummary(node) {
+  normalizeSequencerNode(node);
+  return (
+    I18n.t("按序点燃 ") +
+    node.seqOutputs +
+    I18n.t(" 路") +
+    " · " +
+    (node.seqGapSec
+      ? I18n.t("间隔 ") + formatDurationLabel(node.seqGapSec)
+      : I18n.t("无间隔"))
+  );
+}
+function gateSummary(node) {
+  normalizeGateNode(node);
+  return node.gateInputs + I18n.t(" 路 AND");
+}
+function mutexSummary(node) {
+  normalizeMutexNode(node);
+  return (
+    I18n.t("多中选一 · ") +
+    node.mutexInputs +
+    I18n.t(" 路") +
+    " · " +
+    mutexModeLabel(node.mutexMode)
+  );
+}
+registerNodeSettingsForm("timer", {
+  gearTitle: () => I18n.t("模式 / 计划时间 / 间隔 / Cron"),
+  summary: (node) => {
+    normalizeTimerNode(node);
+    const modeLab =
+      node.timerMode === "once"
+        ? I18n.t("一次（计划时间）")
+        : node.timerMode === "cron"
+          ? I18n.t("Cron 表达式")
+          : I18n.t("间隔重复");
+    const when =
+      node.timerMode === "once"
+        ? String(node.timerAt || "").replace("T", " ") || I18n.t("（未填）")
+        : node.timerMode === "cron"
+          ? String(node.timerCron || "")
+          : I18n.t("每隔 ") + formatDurationLabel(node.timerEverySec);
+    return (
+      modeLab +
+      " · " +
+      when +
+      " · " +
+      (node.timerNextAt
+        ? I18n.t("下次 ") + formatTimerWhen(node.timerNextAt)
+        : I18n.t("未武装"))
+    );
+  },
+  /* 模式一改，窗里的字段整块换（计划时间 / 天时分 / Cron 三选一） */
+  signature: (node) => "timer:" + String((node && node.timerMode) || ""),
+  build: (ctx) => {
+    const node = ctx.node;
+    const afterChange = () => {
+      node.timerNextAt = computeTimerNextAt(node, Date.now());
+      refreshTimerStatus(node);
+    };
+    nsSelect(
+      ctx,
+      I18n.t("模式"),
+      [
+        ["once", "一次（计划时间）"],
+        ["interval", "间隔重复"],
+        ["cron", "Cron 表达式"],
+      ],
+      node.timerMode,
+      (v) => {
+        node.timerMode = v;
+        afterChange();
+      },
+      { commit: { history: true, rerender: true, rebuild: true } },
+    );
+    if (node.timerMode === "once") {
+      nsText(
+        ctx,
+        I18n.t("计划时间（系统本地时间）"),
+        String(node.timerAt || "").slice(0, 16),
+        {
+          type: "datetime-local",
+          span: true,
+          title: I18n.t("系统本地时间，到点触发一次后自动解除武装"),
+          commit: { history: true, rerender: true },
+        },
+        (v) => {
+          node.timerAt = v || "";
+          afterChange();
+        },
+      );
+    } else if (node.timerMode === "interval") {
+      nsDuration(
+        ctx,
+        I18n.t("每隔（天 / 时 / 分）"),
+        node.timerEverySec,
+        { span: true },
+        (sec) => {
+          node.timerEverySec = sec;
+          afterChange();
+        },
+      );
+      ctx.hint(I18n.t("当前间隔：") + formatDurationLabel(node.timerEverySec));
+    } else {
+      const smart = document.createElement("button");
+      smart.type = "button";
+      smart.className = "mini primary";
+      smart.textContent = I18n.t("智能填写");
+      smart.title = I18n.t("用自然语言描述计划，由 AI 生成 Cron 表达式");
+      smart.onclick = (ev) => {
+        ev.stopPropagation();
+        smartFillTimerCron(node);
+      };
+      nsText(
+        ctx,
+        I18n.t("Cron 表达式（分 时 日 月 周）"),
+        node.timerCron,
+        {
+          span: true,
+          placeholder: "0 * * * *",
+          title: I18n.t("五段 Cron：分 时 日 月 周（本地时间；周 0/7=周日）"),
+          actions: [smart],
+          normalize: (v) => String(v || "").trim() || "0 * * * *",
+          commit: { history: true, rerender: true },
+        },
+        (v) => {
+          node.timerCron = v;
+          afterChange();
+        },
+      );
+    }
+    ctx.hint(
+      I18n.t("目标 ") +
+        timerOutTargets(node).length +
+        I18n.t(" 个节点 · 头部 ▶ 武装，body 的「立即触发」不等到点直接跑一次"),
+    );
+  },
+});
+registerNodeSettingsForm("delayer", {
+  gearTitle: () => I18n.t("延时时长"),
+  summary: (node) => {
+    normalizeDelayerNode(node);
+    return I18n.t("延时 ") + formatDurationLabel(node.delaySec);
+  },
+  build: (ctx) => {
+    const node = ctx.node;
+    nsDuration(
+      ctx,
+      I18n.t("延时（天 / 时 / 分）"),
+      node.delaySec,
+      { span: true },
+      (sec) => {
+        node.delaySec = sec;
+      },
+    );
+  },
+});
+registerNodeSettingsForm("sequencer", {
+  gearTitle: () => I18n.t("输出路数 / 步间间隔"),
+  summary: seqSummary,
+  build: (ctx) => {
+    const node = ctx.node;
+    nsIntField(
+      ctx,
+      I18n.t("输出路数（2–8）"),
+      node.seqOutputs,
+      2,
+      8,
+      3,
+      (v) => {
+        node.seqOutputs = v;
+      },
+    );
+    nsDuration(
+      ctx,
+      I18n.t("步间间隔（天 / 时 / 分，可全 0）"),
+      node.seqGapSec || 0,
+      { span: true, allowZero: true },
+      (sec) => {
+        node.seqGapSec = Math.max(0, Math.min(DUR_MAX_SEC, sec));
+      },
+    );
+  },
+});
+registerNodeSettingsForm("gate", {
+  gearTitle: () => I18n.t("输入路数"),
+  summary: gateSummary,
+  build: (ctx) => {
+    const node = ctx.node;
+    nsIntField(
+      ctx,
+      I18n.t("输入路数（2–8）"),
+      node.gateInputs,
+      2,
+      8,
+      2,
+      (v) => {
+        node.gateInputs = v;
+      },
+    );
+    ctx.hint(gateProgressLabel(node));
+  },
+});
+registerNodeSettingsForm("splitter", {
+  gearTitle: () => I18n.t("输出路数"),
+  summary: (node) => {
+    normalizeSplitterNode(node);
+    return I18n.t("并行点燃 ") + node.splitOutputs + I18n.t(" 路");
+  },
+  build: (ctx) => {
+    const node = ctx.node;
+    nsIntField(
+      ctx,
+      I18n.t("输出路数（2–8）"),
+      node.splitOutputs,
+      2,
+      8,
+      3,
+      (v) => {
+        node.splitOutputs = v;
+      },
+    );
+  },
+});
+registerNodeSettingsForm("counter", {
+  gearTitle: () => I18n.t("每 N 次放行"),
+  summary: (node) => {
+    normalizeCounterNode(node);
+    return (
+      I18n.t("每 ") +
+      node.counterEvery +
+      I18n.t(" 次放行 · 当前 ") +
+      node.counterCount +
+      "/" +
+      node.counterEvery
+    );
+  },
+  build: (ctx) => {
+    const node = ctx.node;
+    nsIntField(
+      ctx,
+      I18n.t("每 N 次放行（2–99）"),
+      node.counterEvery,
+      2,
+      99,
+      2,
+      (v) => {
+        node.counterEvery = v;
+      },
+    );
+  },
+});
+registerNodeSettingsForm("mutex", {
+  gearTitle: () => I18n.t("输入路数 / 选择模式"),
+  summary: mutexSummary,
+  build: (ctx) => {
+    const node = ctx.node;
+    nsIntField(
+      ctx,
+      I18n.t("输入路数（2–8）"),
+      node.mutexInputs,
+      2,
+      8,
+      2,
+      (v) => {
+        node.mutexInputs = v;
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("选择模式"),
+      [
+        ["first", "先到优先"],
+        ["priority", "端口优先（小号优先）"],
+        ["random", "随机一路"],
+      ],
+      node.mutexMode,
+      (v) => {
+        node.mutexMode = v;
+      },
+      { commit: { history: true, rerender: true } },
+    );
+  },
+});
+
+/* ── 网络族：端口 / 通道 / 协议（字段本体在 app-nodes.js 的 nsNetFields）── */
+registerNodeSettingsForm("net_recv", {
+  gearTitle: () => I18n.t("监听端口 / 通道 / 协议"),
+  summary: (node) => netSettingsSummary(node, false),
+  build: (ctx) => nsNetFields(ctx, ctx.node, false),
+});
+registerNodeSettingsForm("net_send", {
+  gearTitle: () => I18n.t("目标地址 / 端口 / 通道 / 协议"),
+  summary: (node) => netSettingsSummary(node, true),
+  build: (ctx) => nsNetFields(ctx, ctx.node, true),
+});
+
+/* ── control：动作 / 补缺（任务自带的固定起点与终点没有可设项 → 不出现 ⚙）── */
+registerNodeSettingsForm("control", {
+  gearTitle: () => I18n.t("动作 / 补缺 / 固定"),
+  show: (node) => !ctrlRoleOf(node),
+  summary: (node) => {
+    const n = controlTargets(node).length;
+    return (
+      I18n.t(node.ctrlAction === "clear" ? "清空" : "执行") +
+      " · " +
+      I18n.t("已连接 ") +
+      n +
+      I18n.t(" 个节点") +
+      (node.ctrlAction === "clear" || !node.ctrlFillOnly ? "" : " · " + I18n.t("补缺"))
+    );
+  },
+  build: (ctx) => {
+    const node = ctx.node;
+    nsSelect(
+      ctx,
+      I18n.t("动作"),
+      [
+        ["run", "执行"],
+        ["clear", "清空"],
+      ],
+      node.ctrlAction === "clear" ? "clear" : "run",
+      (v) => {
+        node.ctrlAction = v;
+      },
+      { commit: { history: true, rerender: true } },
+    );
+    nsCheck(
+      ctx,
+      I18n.t("补缺：只执行尚无输出的节点"),
+      !!node.ctrlFillOnly,
+      (v) => {
+        node.ctrlFillOnly = v;
+      },
+      {
+        title: I18n.t("开启后点 ▶ 只跑还没有结果的已连接节点，避免重复跑已有输出"),
+        commit: { history: true, rerender: true },
+      },
+    );
+    nsCheck(
+      ctx,
+      I18n.t("固定节点（不可删除）"),
+      !!node.ctrlPinned,
+      (v) => {
+        node.ctrlPinned = v;
+      },
+      { commit: { history: true, rerender: true } },
+    );
+    const tg = controlTargets(node);
+    ctx.hint(
+      (tg.length
+        ? I18n.t("已连接 ") +
+            tg.length +
+            I18n.t(" 个节点：") +
+            tg
+              .slice(0, 8)
+              .map((t) => t.title || nodeKindLabel(t))
+              .join("、") +
+            (tg.length > 8 ? " …" : "")
+        : I18n.t("尚未连接任何目标节点：从右侧端子拉线到要一键运行的节点。")
+      ) + I18n.t("（连线在画布上改，不在这里）"),
+    );
+  },
+});
+
+/* ── tts_gen：音色 / 语速 / 输出格式 / 输出路径 ── */
+function ttsSettingsSummary(node) {
+  return (
+    I18n.t("音色 ") +
+    (String(node.voice || "").trim() || I18n.t("（默认）")) +
+    " · " +
+    I18n.t("语速 ") +
+    ttsSpeedOf(node) +
+    " · " +
+    ttsFormatOf(node)
+  );
+}
+registerNodeSettingsForm("tts_gen", {
+  gearTitle: () => I18n.t("音色 / 语速 / 输出格式 / 输出路径"),
+  summary: ttsSettingsSummary,
+  build: (ctx) => {
+    const node = ctx.node;
+    /* 音色：后端就绪时给下拉（列表随状态刷新），没就绪 / 没装插件时退回手填 */
+    const voiceBox = document.createElement("span");
+    voiceBox.className = "nsf-ctl";
+    const voiceSel = document.createElement("select");
+    voiceSel.id = nodeSettingsCtlId("ttsvoice", node.id);
+    const voiceInp = document.createElement("input");
+    voiceInp.type = "text";
+    voiceInp.id = nodeSettingsCtlId("ttsvoiceinp", node.id);
+    voiceInp.placeholder = I18n.t("音色名（后端未就绪时可手填）");
+    voiceInp.value = String(node.voice || "");
+    voiceSel.style.display = "none";
+    voiceInp.style.display = "none";
+    const paintVoice = (vs) => {
+      if (!voiceSel.isConnected) return;
+      voiceSel.textContent = "";
+      if (vs && vs.length) {
+        const cur = String(node.voice || "").trim();
+        let found = false;
+        for (const v of vs) {
+          const o = document.createElement("option");
+          o.value = v.id;
+          o.textContent = v.name;
+          if (cur && cur === v.id) {
+            o.selected = true;
+            found = true;
+          }
+          voiceSel.appendChild(o);
+        }
+        if (cur && !found) {
+          const o = document.createElement("option");
+          o.value = cur;
+          o.textContent = cur;
+          o.selected = true;
+          voiceSel.appendChild(o);
+        }
+        voiceSel.style.display = "";
+        voiceInp.style.display = "none";
+      } else {
+        voiceSel.style.display = "none";
+        voiceInp.style.display = "";
+        if (document.activeElement !== voiceInp)
+          voiceInp.value = String(node.voice || "");
+      }
+    };
+    const loadVoices = async () => {
+      let vs = [];
+      try {
+        const st = await fetchMediaBackendStatus(node);
+        vs = ttsVoicesFromStatus(st);
+      } catch {
+        vs = [];
+      }
+      paintVoice(vs);
+    };
+    voiceSel.addEventListener("change", () => {
+      node.voice = voiceSel.value;
+      syncNodeSettingsValue(node, "ttsvoice", node.voice || I18n.t("（默认）"));
+      ctx.commit({ history: true });
+    });
+    voiceInp.addEventListener("change", () => {
+      node.voice = String(voiceInp.value || "").trim();
+      syncNodeSettingsValue(node, "ttsvoice", node.voice || I18n.t("（默认）"));
+      ctx.commit({ history: true });
+    });
+    const voiceRef = document.createElement("button");
+    voiceRef.className = "mini";
+    voiceRef.textContent = "↻";
+    voiceRef.title = I18n.t("刷新音色列表");
+    voiceRef.onclick = (ev) => {
+      ev.stopPropagation();
+      loadVoices();
+    };
+    voiceBox.appendChild(voiceSel);
+    voiceBox.appendChild(voiceInp);
+    voiceBox.appendChild(voiceRef);
+    ctx.field(I18n.t("音色"), null, { span: true }).appendChild(voiceBox);
+    /* 已有值先顶上（可能是后端还没起来时手填的），再异步换成真实列表 */
+    paintVoice(
+      String(node.voice || "").trim()
+        ? [{ id: String(node.voice).trim(), name: String(node.voice).trim() }]
+        : [],
+    );
+    loadVoices();
+    nsNumber(
+      ctx,
+      I18n.t("语速（0.5–2.0）"),
+      ttsSpeedOf(node),
+      {
+        min: 0.5,
+        max: 2,
+        step: 0.1,
+        fallback: 1,
+        title: I18n.t("语速倍率（0.5–2.0）"),
+      },
+      (v) => {
+        node.speed = v;
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("输出格式"),
+      [
+        ["wav", "wav"],
+        ["mp3", "mp3"],
+      ],
+      ttsFormatOf(node),
+      (v) => {
+        node.ttsFormat = v;
+        if (String(node.outputPath || "").trim())
+          applyMediaGenConfiguredPath(node, node.outputPath, "audio");
+        syncNodeSettingsValue(
+          node,
+          "mgpath",
+          mediaGenOutputRaw(node) || String(node.outputPath || ""),
+        );
+      },
+      { commit: { history: true, rerender: true } },
+    );
+    nsMediaGenPathField(ctx, node, "audio");
+  },
+});
+
 function nodeElement(node) {
   clampNodeToMinSize(node);
+  /* 函数 / 工具节点：结构归一（幂等）——toolConfig / inputs / outputs 缺省即补 */
+  if (typeof ensureFnToolNodeState === "function") ensureFnToolNodeState(node);
   const el = document.createElement("div");
   /* 智能任务 / 文本智能模式：蓝色外观，与橙色文本处理区分 */
   const kindCls =
@@ -1616,6 +3457,16 @@ function nodeElement(node) {
         ? "ctrl " + nodeKindIconCls(node)
         : KIND_CLS[node.kind] || "proc";
   el.className = "wf-node " + kindCls + (isSel(node.id) ? " sel" : "");
+  /* 工具节点（super + tool:true 变体）：外壳样式类保留（拖放高亮 / 展开壳 / 选中环
+     都挂在 .super 上），另打 .tool-node 标记 —— 收起态用叶子卡片外观（见 canvas.css）。 */
+  if (isToolNode(node)) el.classList.add("tool-node");
+  /* 音频 / 视频输入节点：在输入族（.in）之外追加 .in-media，
+     供「预览框 / 文件名 / 说明」三行排版与「输出 URL」徽标配色取用 */
+  if (node.kind === "input_audio" || node.kind === "input_video")
+    el.classList.add("in-media");
+  /* 素材节点：输入族（.in）底色之外再打 .asset-node，
+     供「条目标题行 / 内容视图 / 同步按钮」这套排版取用（见 canvas.css） */
+  if (node.kind === "asset") el.classList.add("asset-node");
   /* 浏览态标记（未选中的文本 / 图像类节点）：形态同时记在 dataset 上，
      供 applyNodeForm 判断「选中 → 编辑态」时就地重建 body（见 buildBody 入口分流） */
   const _browse = nodeBrowseMode(node);
@@ -1741,6 +3592,16 @@ function nodeElement(node) {
     chip.className = "n-chip on";
     chip.textContent = "BATCH";
     chip.title = I18n.t("合并节点：每个输入 = 批次中的一项，输出为批次");
+    head.appendChild(chip);
+  }
+  if (node.kind === "input_audio" || node.kind === "input_video") {
+    /* 音视频输入：选一个本机文件，输出端子给出该文件的 file:/// URL（可连进媒体参考端子） */
+    const chip = document.createElement("span");
+    chip.className = "n-chip av-chip";
+    chip.textContent = I18n.t("输出 URL");
+    chip.title = I18n.t(
+      "选择并预览本机音视频文件：输出端子给出该文件的 file:/// URL，可连进媒体生成节点的参考端子",
+    );
     head.appendChild(chip);
   }
   if (node.kind === "input_text" || node.kind === "input_image") {
@@ -2071,26 +3932,30 @@ function nodeElement(node) {
       promptSuperSubFolder(node);
     };
     head.appendChild(folder);
-    /* 「描述」小按钮：超级节点 body 已封装为文件夹外观，描述改由此处编辑 */
-    const supNoteTxt = String(node.note || "").trim();
-    const supNoteTip =
-      supNoteTxt && typeof devNoteDisplayText === "function"
-        ? devNoteDisplayText(supNoteTxt)
-        : supNoteTxt;
-    const noteBtn = document.createElement("button");
-    noteBtn.type = "button";
-    noteBtn.className = "n-super-note-btn" + (supNoteTxt ? " on" : "");
-    noteBtn.textContent = I18n.t("描述");
-    /* 两段式概述：tooltip 完整显示功能段 + 实现段（折叠卡上则只显功能段） */
-    noteBtn.title = supNoteTip
-      ? I18n.t("当前描述：") + supNoteTip + "\n" + I18n.t("点击编辑")
-      : I18n.t("填写描述：以小字显示在文件夹标题下方");
-    noteBtn.setAttribute("aria-label", I18n.t("编辑超级节点描述"));
-    noteBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      promptSuperNote(node);
-    };
-    head.appendChild(noteBtn);
+    /* 「描述」小按钮：超级节点 body 已封装为文件夹外观，描述改由此处编辑。
+       工具节点例外：它的描述是 toolConfig.description（「设置」面板编辑 · 同时是 Agent
+       调用契约），收起态也不渲染文件夹卡 → 再挂一个 note 编辑钮只会多出一份没处显示的说明。 */
+    if (!isToolNode(node)) {
+      const supNoteTxt = String(node.note || "").trim();
+      const supNoteTip =
+        supNoteTxt && typeof devNoteDisplayText === "function"
+          ? devNoteDisplayText(supNoteTxt)
+          : supNoteTxt;
+      const noteBtn = document.createElement("button");
+      noteBtn.type = "button";
+      noteBtn.className = "n-super-note-btn" + (supNoteTxt ? " on" : "");
+      noteBtn.textContent = I18n.t("描述");
+      /* 两段式概述：tooltip 完整显示功能段 + 实现段（折叠卡上则只显功能段） */
+      noteBtn.title = supNoteTip
+        ? I18n.t("当前描述：") + supNoteTip + "\n" + I18n.t("点击编辑")
+        : I18n.t("填写描述：以小字显示在文件夹标题下方");
+      noteBtn.setAttribute("aria-label", I18n.t("编辑超级节点描述"));
+      noteBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        promptSuperNote(node);
+      };
+      head.appendChild(noteBtn);
+    }
     const enter = document.createElement("button");
     enter.className = "n-play";
     enter.textContent = "↪";
@@ -2441,17 +4306,7 @@ function nodeElement(node) {
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
-    const setBtn = document.createElement("button");
-    setBtn.className =
-      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
-    setBtn.textContent = I18n.t("设置");
-    setBtn.title = I18n.t("offload 等高级选项");
-    setBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
-      renderCanvas();
-    };
-    head.appendChild(setBtn);
+    /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
     const b = document.createElement("button");
     const pending = isNodePending(node);
     b.className =
@@ -2483,17 +4338,7 @@ function nodeElement(node) {
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
-    const setBtn = document.createElement("button");
-    setBtn.className =
-      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
-    setBtn.textContent = I18n.t("设置");
-    setBtn.title = I18n.t("模式 / 尺寸 / 采样步数");
-    setBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
-      renderCanvas();
-    };
-    head.appendChild(setBtn);
+    /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
     const b = document.createElement("button");
     const pending = isNodePending(node);
     b.className =
@@ -2501,6 +4346,37 @@ function nodeElement(node) {
       (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
     b.textContent = node.running || pending ? "…" : "▶";
     b.title = I18n.t("调用 Minimax H3 后端生成");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消生成请求");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  if (node.kind === "tts_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("语音");
+    chip.title = I18n.t("SoVITS 语音 · GPT-SoVITS 本机后端 · 文本转语音");
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t("调用 GPT-SoVITS 后端合成语音");
     b.onclick = (ev) => {
       ev.stopPropagation();
       playNode(node);
@@ -2533,17 +4409,7 @@ function nodeElement(node) {
       openRemotionSession(node);
     };
     head.appendChild(sessionBtn);
-    const setBtn = document.createElement("button");
-    setBtn.className =
-      "n-play n-api-toggle" + (S.uiOpenNode === node.id ? " on" : "");
-    setBtn.textContent = I18n.t("设置");
-    setBtn.title = I18n.t("服务商 / 模型 / 温度");
-    setBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      S.uiOpenNode = S.uiOpenNode === node.id ? null : node.id;
-      renderCanvas();
-    };
-    head.appendChild(setBtn);
+    /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
     const b = document.createElement("button");
     const pending = isNodePending(node);
     b.className =
@@ -2567,19 +4433,77 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
-  if (node.kind === "chat") {
-    head.append(...apiPreviewButtons(node));
-    head.appendChild(effortButtonEl(node));
-  }
-  if (node.kind === "chat" && node.running) {
-    const stop = document.createElement("button");
-    stop.className = "n-play n-stop";
-    stop.title = I18n.t("停止回复（立即中止模型请求）");
-    stop.onclick = (ev) => {
+  if (isFnToolNode(node)) {
+    const isTool = isToolNode(node);
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = isTool ? I18n.t("工具") : I18n.t("函数");
+    chip.title = isTool
+      ? I18n.t("工具节点：Agent 可调用 · toolConfig 参数即端子（输入 0=控制 · 输出末位=控制）")
+      : I18n.t("函数节点：JS 计算 · 入参对象 input → 返回值（输入 0=控制 · 输出末位=控制）");
+    head.appendChild(chip);
+    /* 「设置」入口：与 ▶/✕ 同一口径的头部按钮，点开跳窗（名称 / 描述 / 增删参数 = 增删端子）。
+       原地点开的是折叠在卡片里的面板 —— 卡片宽度塞不下一整排参数行，改一次要来回滚，
+       现在统一进窗口改（表单见 NODE_SETTINGS_FORMS 的 function / tool 登记）。
+       位置留在「测试」之前，两类节点按钮顺序不变。 */
+    {
+      const sDef = nodeSettingsFormFor(node);
+      const gTitle =
+        (sDef && typeof sDef.gearTitle === "function"
+          ? String(sDef.gearTitle(node) || "")
+          : "") +
+        " · " +
+        I18n.t("点击打开设置窗口");
+      head.appendChild(
+        nodeSettingsGearButton(node, {
+          label:
+            sDef && typeof sDef.gearLabel === "function"
+              ? String(sDef.gearLabel(node))
+              : "⚙",
+          title: gTitle,
+        }),
+      );
+    }
+    /* 「测试」按钮（两类节点共用同一「试跑」台）：独立对话框手写自定义入参跑一次
+       —— 函数节点跑 JS，工具节点跑它的内部子图；与「设置」分开，只读口径：
+       不写节点自身输出、不级联下游、不进撤销历史。 */
+    {
+      const testBtn = document.createElement("button");
+      testBtn.className = "n-play n-api-toggle";
+      testBtn.textContent = I18n.t("测试");
+      testBtn.title = isTool
+        ? I18n.t("测试（用自定义入参试跑内部子图 · 仅测试用，不参与画布运行）")
+        : I18n.t("测试（自定义输入跑一次 JS · 仅测试用，不参与画布运行）");
+      testBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        openNodeTestDialog(node);
+      };
+      head.appendChild(testBtn);
+    }
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = isTool
+      ? I18n.t("运行工具（引擎按 tool 契约执行）")
+      : I18n.t("运行函数：执行 JS 代码");
+    b.onclick = (ev) => {
       ev.stopPropagation();
-      stopNode(node);
+      playNode(node);
     };
-    head.appendChild(stop);
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("停止运行（立即中止）");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
   }
   if (node.kind === "control") {
     const role = ctrlRoleOf(node);
@@ -2712,6 +4636,32 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
+  /* 统一「设置」入口：登记过设置表单的 kind 才亮 ⚙（设置一律走跳窗，body 只留摘要行）。
+     与 ▶/✕ 同一口径挂在头部菜单栏 → 浏览态（未选中）也照样可点。
+     tooltip 用各 kind 自己的说明（def.gearTitle），沿用老「API / 设置」按钮的提示。
+     def.headerEntry === false：这个 kind 在自己的头部区块里就地挂了入口（函数 / 工具
+     节点要保住「设置 · 测试」相邻的原位置），统一入口让位，避免出现两个设置按钮。 */
+  {
+    const sDef = nodeSettingsFormVisible(node);
+    if (sDef && sDef.headerEntry !== false) {
+      let gTitle = "";
+      if (typeof sDef.gearTitle === "function") {
+        try {
+          gTitle = String(sDef.gearTitle(node) || "");
+        } catch (_) {
+          gTitle = "";
+        }
+      }
+      head.appendChild(
+        nodeSettingsGearButton(node, {
+          label: sDef.gearLabel ? String(sDef.gearLabel(node)) : "⚙",
+          title: gTitle
+            ? gTitle + " · " + I18n.t("点击打开设置窗口")
+            : undefined,
+        }),
+      );
+    }
+  }
   if (!isPinnedCtrl(node)) {
   if (node.kind === "global") {
     const tagBtn = document.createElement("button");
@@ -2752,603 +4702,95 @@ function nodeElement(node) {
   }
   el.appendChild(body);
 
-  if (
-    node.kind === "proc_text" ||
-    node.kind === "proc_image" ||
-    node.kind === "chat" ||
-    node.kind === "agent_task" ||
-    node.kind === "music_gen" ||
-    node.kind === "video_gen" ||
-    node.kind === "remotion"
-  ) {
-    const panel = document.createElement("div");
-    panel.className = "n-api-panel";
-    panel.addEventListener("wheel", (ev) => ev.stopPropagation(), { passive: true });
-    if (S.uiOpenNode !== node.id) panel.style.display = "none";
-    const isAgentKind = node.kind === "agent_task";
-    if (node.kind === "music_gen") {
-      const off = document.createElement("input");
-      off.type = "checkbox";
-      off.checked = node.offload !== false;
-      off.addEventListener("change", () => {
-        node.offload = !!off.checked;
-        scheduleSave();
-      });
-      const offLab = document.createElement("label");
-      offLab.className = "n-field";
-      offLab.appendChild(off);
-      offLab.appendChild(document.createTextNode(" " + I18n.t("auto CPU offload（24G 推荐）")));
-      panel.appendChild(offLab);
-    } else if (node.kind === "video_gen") {
-      const addField = (label, el) => {
-        const f = document.createElement("label");
-        f.className = "n-field";
-        f.appendChild(document.createTextNode(label));
-        f.appendChild(el);
-        panel.appendChild(f);
-      };
-      const mode = document.createElement("select");
-      [
-        ["r2v", "R2V 多参考"],
-        ["fl2va", "FL2VA 首末帧"],
-      ].forEach(([v, t]) => {
-        const o = document.createElement("option");
-        o.value = v;
-        o.textContent = I18n.t(t);
-        if ((node.videoMode || "fl2va") === v) o.selected = true;
-        mode.appendChild(o);
-      });
-      mode.addEventListener("change", () => {
-        node.videoMode = mode.value;
-        scheduleSave();
-        renderCanvas();
-      });
-      addField(I18n.t("模式"), mode);
-      const ratio = document.createElement("select");
-      ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"].forEach((v) => {
-        const o = document.createElement("option");
-        o.value = v;
-        o.textContent = v;
-        if ((node.ratio || "16:9") === v) o.selected = true;
-        ratio.appendChild(o);
-      });
-      ratio.addEventListener("change", () => {
-        node.ratio = ratio.value;
-        scheduleSave();
-        const meta = document.querySelector("#mgmeta-" + node.id);
-        if (meta) {
-          meta.textContent =
-            (node.videoMode || "fl2va").toUpperCase() +
-            " · " +
-            (node.ratio || "16:9");
-        }
-      });
-      addField(I18n.t("尺寸比例"), ratio);
-      const resSel = document.createElement("select");
-      [
-        ["auto", I18n.t("自动（按比例默认）")],
-        ["480p", "480p（0.4MP 抽卡）"],
-        ["720p", "720p（~0.9MP）"],
-        ["1080p", "1080p（~2MP，24G 慎用）"],
-      ].forEach(([v, t]) => {
-        const o = document.createElement("option");
-        o.value = v;
-        o.textContent = I18n.t(t);
-        if ((node.outputRes || "auto") === v) o.selected = true;
-        resSel.appendChild(o);
-      });
-      resSel.addEventListener("change", () => {
-        node.outputRes = resSel.value;
-        scheduleSave();
-        renderCanvas();
-      });
-      addField(I18n.t("输出分辨率"), resSel);
-      const steps = document.createElement("input");
-      steps.type = "number";
-      steps.min = "1";
-      steps.max = "60";
-      steps.value = String(node.steps || 20);
-      steps.addEventListener("change", () => {
-        node.steps = Math.max(1, Math.min(60, Number(steps.value) || 20));
-        scheduleSave();
-      });
-      addField(I18n.t("采样步数"), steps);
-      const addOpt = (key, label, title) => {
-        const lab = document.createElement("label");
-        lab.className = "n-field";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = node[key] !== false;
-        cb.title = title || "";
-        cb.addEventListener("change", () => {
-          node[key] = !!cb.checked;
-          if (key === "optSageAttn") node.sageMode = cb.checked ? "auto" : "disabled";
-          scheduleSave();
-        });
-        lab.appendChild(cb);
-        lab.appendChild(document.createTextNode(" " + label));
-        if (title) lab.title = title;
-        panel.appendChild(lab);
-      };
-      const optHint = document.createElement("div");
-      optHint.className = "n-field-hint";
-      optHint.style.cssText = "opacity:0.75;font-size:11px;margin:4px 0 2px;";
-      optHint.textContent = I18n.t("24G 优化（默认开，可关）");
-      panel.appendChild(optHint);
-      const addSel = (label, items, cur, cb) => {
-        const el = document.createElement("select");
-        items.forEach((item) => {
-          const v = Array.isArray(item) ? item[0] : item;
-          const t = Array.isArray(item) ? item[1] : item;
-          const o = document.createElement("option");
-          o.value = v;
-          o.textContent = I18n.t(t != null ? t : v);
-          if (cur === v) o.selected = true;
-          el.appendChild(o);
-        });
-        el.addEventListener("change", () => { cb(el.value); scheduleSave(); });
-        addField(label, el);
-      };
-      const addNum = (label, cur, min, max, step, cb) => {
-        const el = document.createElement("input");
-        el.type = "number";
-        if (min != null) el.min = min;
-        if (max != null) el.max = max;
-        if (step != null) el.step = step;
-        el.value = String(cur);
-        el.addEventListener("change", () => cb(Number(el.value)));
-        addField(label, el);
-      };
-      addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
-      addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需安装 sageattention；缺包自动跳过"));
-      addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
-      addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
-      addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
-      const postHint = document.createElement("div");
-      postHint.className = "n-field-hint";
-      postHint.style.cssText = "opacity:0.75;font-size:11px;margin:4px 0 2px;";
-      postHint.textContent = I18n.t("4K 超分补帧（默认开，24G 建议关以提速）");
-      panel.appendChild(postHint);
-      addOpt("postEnabled", I18n.t("4K 超分补帧"), I18n.t("RIFE 补帧 + Real-ESRGAN x4 超分 → 4K（需安装后处理模型）"));
-      addOpt("postInterp", I18n.t("补帧 RIFE"), I18n.t("低分辨率先补帧，再超分；时序更稳更省显存"));
-      addSel(
-        I18n.t("补帧倍数"),
-        [["1", "1x（关）"], ["2", "2x（推荐）"], ["4", "4x"]],
-        String(node.postInterpMultiplier != null ? node.postInterpMultiplier : 2),
-        (v) => { node.postInterpMultiplier = Number(v); },
-      );
-      addNum(
-        I18n.t("超分批量"),
-        node.postPerBatch != null ? node.postPerBatch : 4,
-        1,
-        16,
-        "1",
-        (v) => { node.postPerBatch = Math.max(1, Math.min(16, isFinite(v) ? v : 4)); },
-      );
-      const h3 = document.createElement("div");
-      h3.className = "n-field-hint";
-      h3.style.cssText = "opacity:0.75;font-size:11px;margin:6px 0 2px;";
-      h3.textContent = I18n.t("采样 / 质量 / 输出");
-      panel.appendChild(h3);
-      addSel(
-        I18n.t("采样器"),
-        ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "dpmpp_sde"],
-        node.sampler || "res_multistep",
-        (v) => { node.sampler = v; },
-      );
-      addSel(
-        I18n.t("调度器"),
-        ["simple", "normal", "karras", "exp"],
-        node.scheduler || "simple",
-        (v) => { node.scheduler = v; },
-      );
-      addNum(
-        I18n.t("去噪 denoise"),
-        node.denoise != null ? node.denoise : 1,
-        0,
-        1,
-        "0.01",
-        (v) => { node.denoise = Math.max(0, Math.min(1, isFinite(v) ? v : 1)); },
-      );
-      addNum(
-        I18n.t("视频位移 shift"),
-        node.shiftVideo != null ? node.shiftVideo : 12,
-        0.01,
-        100,
-        "0.1",
-        (v) => { node.shiftVideo = isFinite(v) ? v : 12; },
-      );
-      addNum(
-        I18n.t("音频位移 shift"),
-        node.shiftAudio != null ? node.shiftAudio : 3,
-        0.01,
-        100,
-        "0.1",
-        (v) => { node.shiftAudio = isFinite(v) ? v : 3; },
-      );
-      addSel(
-        I18n.t("参考图尺寸"),
-        [["match", "match（缩放匹配分辨率）"], ["max", "max（2048 短边 · 还原度更高更慢）"]],
-        (node.refImageSize || "match"),
-        (v) => { node.refImageSize = v; },
-      );
-      addNum(
-        I18n.t("帧率 fps"),
-        node.fps != null ? node.fps : 24,
-        1,
-        60,
-        "1",
-        (v) => { node.fps = Math.max(1, Math.min(60, isFinite(v) ? v : 24)); },
-      );
-      addSel(
-        I18n.t("位深"),
-        [["8", "8bit"], ["16", "16bit"]],
-        String(node.bitDepth != null ? node.bitDepth : 8),
-        (v) => { node.bitDepth = Number(v); },
-      );
-      addSel(
-        I18n.t("封装格式"),
-        [["auto", "auto"], ["mp4", "mp4"], ["webm", "webm"]],
-        (node.videoFormat || "auto"),
-        (v) => { node.videoFormat = v; },
-      );
-      addSel(
-        I18n.t("编解码"),
-        [["auto", "auto"], ["h264", "h264"], ["vp9", "vp9"]],
-        (node.videoCodec || "auto"),
-        (v) => { node.videoCodec = v; },
-      );
-      const adv = document.createElement("details");
-      adv.className = "n-field";
-      const advSum = document.createElement("summary");
-      advSum.textContent = I18n.t("高级参数");
-      adv.appendChild(advSum);
-      const advBox = document.createElement("div");
-      advBox.className = "n-api-adv-grid";
-      const advSpan = document.createElement("div");
-      advSpan.className = "n-api-span-full";
-      advSpan.style.cssText = "font-size:10.5px;color:var(--muted);margin:2px 0;";
-      advSpan.textContent = I18n.t("EasyCache 缓存区间");
-      advBox.appendChild(advSpan);
-      const advNum = (label, cur, cb) => {
-        const el = document.createElement("input");
-        el.type = "number";
-        el.value = String(cur);
-        el.addEventListener("change", () => cb(Number(el.value)));
-        const lab = document.createElement("label");
-        lab.className = "n-field";
-        lab.appendChild(document.createTextNode(label));
-        lab.appendChild(el);
-        advBox.appendChild(lab);
-      };
-      advNum(
-        I18n.t("easyReuse"),
-        node.easyReuse != null ? node.easyReuse : 0.2,
-        (v) => { node.easyReuse = isFinite(v) ? v : 0.2; },
-      );
-      advNum(
-        I18n.t("easyStart%"),
-        node.easyStart != null ? node.easyStart : 0.15,
-        (v) => { node.easyStart = isFinite(v) ? v : 0.15; },
-      );
-      advNum(
-        I18n.t("easyEnd%"),
-        node.easyEnd != null ? node.easyEnd : 0.95,
-        (v) => { node.easyEnd = isFinite(v) ? v : 0.95; },
-      );
-      advNum(
-        I18n.t("LowVRAM head_chunks"),
-        node.lowVramHeadChunks != null ? node.lowVramHeadChunks : 4,
-        (v) => { node.lowVramHeadChunks = Math.max(1, isFinite(v) ? v : 4); },
-      );
-      advNum(
-        I18n.t("ChunkFFN chunks"),
-        node.chunkFfnChunks != null ? node.chunkFfnChunks : 2,
-        (v) => { node.chunkFfnChunks = Math.max(1, isFinite(v) ? v : 2); },
-      );
-      advNum(
-        I18n.t("ChunkFFN seq_threshold"),
-        node.chunkFfnSeqThreshold != null ? node.chunkFfnSeqThreshold : 4096,
-        (v) => { node.chunkFfnSeqThreshold = Math.max(256, isFinite(v) ? v : 4096); },
-      );
-      const sageCompileLab = document.createElement("label");
-      sageCompileLab.className = "n-field";
-      const sageCompile = document.createElement("input");
-      sageCompile.type = "checkbox";
-      sageCompile.checked = !!node.sageCompile;
-      sageCompile.addEventListener("change", () => {
-        node.sageCompile = !!sageCompile.checked;
-        scheduleSave();
-      });
-      sageCompileLab.appendChild(sageCompile);
-      sageCompileLab.appendChild(
-        document.createTextNode(" " + I18n.t("Sage 编译（需 Sage 且更慢更占显存）")),
-      );
-      advBox.appendChild(sageCompileLab);
-      adv.appendChild(advBox);
-      panel.appendChild(adv);
-    } else if (isAgentKind) {
-      /* 智能任务参数面板与「智能会话」完全一致:预设 / 供应商 / 模型 / 思考强度 */
-      const catalog = S.providerCatalog || {
-        deepseek: [
-          { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
-          { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
-          {
-            id: "deepseek-v4-flash-vision-exp",
-            name: "DeepSeek-V4-Flash-Vision-Exp",
-            input: ["text", "image"],
-          },
-        ],
-        piai: [],
-      };
-      const mtnode = mtnodePiProviders();
-      const modelsFor = (prov) => {
-        if (prov === "deepseek-official") {
-          /* 仅显示已添加的模型:优先用配置的 DeepSeek 服务商模型,否则目录默认 */
-          const dp = dshProvider();
-          if (dp && Array.isArray(dp.models) && dp.models.length)
-            return dp.models.map((m) => ({ id: String(m), name: "" }));
-          return (catalog.deepseek || []).map((m) => ({ id: m.id, name: m.name }));
-        }
-        const mp = mtnode.find((x) => "mtnode_" + x.route === prov);
-        return ((mp && mp.models) || []).map((id) => ({ id, name: "" }));
-      };
-      let curProv =
-        String(node.provider || "").trim() ||
-        agentRouteFromProviderId(node.providerId) ||
-        preferredAgentProviderRoute();
-      const f0 = document.createElement("label");
-      f0.className = "n-field";
-      f0.appendChild(document.createTextNode(I18n.t("预设（与智能会话一致）")));
-      const ps = document.createElement("select");
-      for (const [v, l] of [
-        ["standard", I18n.t("标准模式")],
-        ["minimal", I18n.t("极简模式")],
-        ["code", I18n.t("PTC 模式")],
-        ["cordis", I18n.t("创造模式")],
-      ]) {
-        const o = document.createElement("option");
-        o.value = v;
-        o.textContent = l;
-        ps.appendChild(o);
-      }
-      ps.value = node.preset || "standard";
-      ps.addEventListener("change", () => {
-        node.preset = ps.value;
-        scheduleSave();
-      });
-      f0.appendChild(ps);
-      panel.appendChild(f0);
-      const f1 = document.createElement("label");
-      f1.className = "n-field";
-      f1.appendChild(document.createTextNode(I18n.t("供应商")));
-      const provSel = document.createElement("select");
-      /* 供应商用各自名称(DeepSeek 官方路由显示为配置的 DeepSeek 服务商名称) */
-      const dp = dshProvider();
-      {
-        const o = document.createElement("option");
-        o.value = "deepseek-official";
-        o.textContent = (dp && dp.name) || I18n.t("DeepSeek 官方");
-        provSel.appendChild(o);
-      }
-      for (const p of mtnode) {
-        const o = document.createElement("option");
-        o.value = "mtnode_" + p.route;
-        o.textContent = p.name;
-        provSel.appendChild(o);
-      }
-      /* 仅显示已添加的供应商(DeepSeek 官方 + MTNode 服务商) */
-      if (![...provSel.options].some((o) => o.value === curProv)) {
-        curProv =
-          agentRouteFromProviderId(node.providerId) ||
-          preferredAgentProviderRoute();
-      }
-      provSel.value = curProv;
-      provSel.addEventListener("change", () => {
-        pushHistory();
-        node.provider = provSel.value;
-        node.vision = null; /* 更换供应商后重新评估视觉模型 */
-        const first = modelsFor(provSel.value)[0];
-        node.model = first ? first.id : "";
-        scheduleSave();
-        renderCanvas();
-      });
-      f1.appendChild(provSel);
-      panel.appendChild(f1);
-      const f2 = document.createElement("label");
-      f2.className = "n-field";
-      f2.appendChild(document.createTextNode(I18n.t("模型")));
-      const mod = document.createElement("select");
-      {
-        const items = modelsFor(curProv);
-        const cur = node.model || (items[0] && items[0].id) || "deepseek-v4-flash";
-        const list = items.slice();
-        if (cur && !list.some((x) => x.id === cur)) list.unshift({ id: cur, name: "" });
-        const vis = new Set(visionModelsForProvider(curProv).map((m) => m.id));
-        for (const m of list) {
-          const o = document.createElement("option");
-          o.value = m.id;
-          o.textContent = modelLabel(m, vis);
-          mod.appendChild(o);
-        }
-        mod.value = cur;
-      }
-      mod.addEventListener("change", () => {
-        pushHistory();
-        node.model = mod.value;
-        node.vision = null; /* 手动换模型后重新评估视觉模型 */
-        scheduleSave();
-      });
-      f2.appendChild(mod);
-      panel.appendChild(f2);
-      const fe = document.createElement("label");
-      fe.className = "n-field";
-      fe.appendChild(document.createTextNode(I18n.t("思考强度（标准 / 最强）")));
-      const eff = document.createElement("select");
-      for (const [v, l] of [["high", I18n.t("标准")], ["max", I18n.t("最强")]]) {
-        const o = document.createElement("option");
-        o.value = v;
-        o.textContent = l;
-        eff.appendChild(o);
-      }
-      /* 旧档 off/none → 标准 */
-      eff.value = node.effort === "max" ? "max" : "high";
-      if (node.effort !== eff.value) node.effort = eff.value;
-      eff.addEventListener("change", () => {
-        node.effort = eff.value;
-        scheduleSave();
-      });
-      fe.appendChild(eff);
-      panel.appendChild(fe);
-    } else {
-      const f1 = document.createElement("label");
-      f1.className = "n-field";
-      f1.appendChild(document.createTextNode(I18n.t("服务商（自动读取全局 API 配置）")));
-      const provSel = document.createElement("select");
-      const want =
-        node.kind === "proc_text" ||
-        node.kind === "chat" ||
-        node.kind === "remotion"
-          ? "text_openai"
-          : null;
-      const provs = S.config.providers.filter((p) =>
-        want ? p.type === want : p.type.startsWith("image_"),
-      );
-      const o0 = document.createElement("option");
-      o0.value = "";
-      o0.textContent = I18n.t("（未选择服务商）");
-      provSel.appendChild(o0);
-      for (const p of provs) {
-        const o = document.createElement("option");
-        o.value = p.id;
-        o.textContent = p.name;
-        provSel.appendChild(o);
-      }
-      if (!provs.some((p) => p.id === node.providerId))
-        node.providerId = provs.length ? provs[0].id : "";
-      provSel.value = node.providerId;
-      provSel.addEventListener("change", () => {
-        pushHistory();
-        node.providerId = provSel.value;
-        const prov = provs.find((p) => p.id === node.providerId);
-        node.model =
-          prov && prov.models && prov.models.length ? prov.models[0] : "";
-        scheduleSave();
-        renderCanvas();
-      });
-      f1.appendChild(provSel);
-      panel.appendChild(f1);
-      const f2 = document.createElement("label");
-      f2.className = "n-field";
-      f2.appendChild(document.createTextNode(I18n.t("模型")));
-      const mod = document.createElement("select");
-      const prov = provs.find((p) => p.id === node.providerId);
-      {
-        const models = prov && prov.models ? prov.models.slice() : [];
-        const cur = node.model || (prov && prov.models && prov.models[0]) || "";
-        if (cur && !models.includes(cur)) models.unshift(cur);
-        for (const m of models) {
-          const o = document.createElement("option");
-          o.value = m;
-          o.textContent = m;
-          mod.appendChild(o);
-        }
-        mod.value = cur;
-      }
-      mod.addEventListener("change", () => {
-        pushHistory();
-        node.model = mod.value;
-        scheduleSave();
-      });
-      f2.appendChild(mod);
-      panel.appendChild(f2);
-    }
-    if (node.kind === "proc_text" || node.kind === "chat" || node.kind === "remotion") {
-      const f3 = document.createElement("label");
-      f3.className = "n-field";
-      f3.appendChild(document.createTextNode(I18n.t("温度 Temperature（0-2）")));
-      const temp = document.createElement("input");
-      temp.type = "number";
-      temp.step = 0.1;
-      temp.min = 0;
-      temp.max = 2;
-      temp.value = node.temperature == null ? 0.7 : node.temperature;
-      temp.addEventListener("input", () => {
-        node.temperature = Math.max(0, Math.min(2, Number(temp.value) || 0));
-      });
-      f3.appendChild(temp);
-      panel.appendChild(f3);
-    }
-    if (node.kind === "chat") {
-      const f5 = document.createElement("label");
-      f5.className = "n-field";
-      f5.appendChild(document.createTextNode(I18n.t("系统提示词 System Prompt")));
-      const sys = document.createElement("textarea");
-      sys.className = "bentry-text";
-      sys.style.minHeight = "40px";
-      sys.value = node.systemPrompt || "";
-      sys.addEventListener("input", () => {
-        node.systemPrompt = sys.value;
-      });
-      f5.appendChild(sys);
-      panel.appendChild(f5);
-    }
-    if (node.kind === "proc_image") {
-      const f4 = document.createElement("label");
-      f4.className = "n-field";
-      f4.appendChild(
-        document.createTextNode(I18n.t("尺寸 Size（gpt-image-2-vip · auto 或 30 档）")),
-      );
-      const selS = document.createElement("select");
-      for (const s of IMAGE_SIZES) {
-        const o = document.createElement("option");
-        o.value = s;
-        o.textContent = s;
-        selS.appendChild(o);
-      }
-      selS.value = IMAGE_SIZES.includes(node.size)
-        ? node.size
-        : DEFAULT_IMAGE_SIZE;
-      selS.addEventListener("change", () => {
-        node.size = selS.value;
-        scheduleSave();
-      });
-      f4.appendChild(selS);
-      panel.appendChild(f4);
-    }
-    el.appendChild(panel);
-  }
-
   /* 展开超级节点：不创建外侧端子，只保留舞台内侧桥接/汇流端子 */
   if (!superIsOpenShell(node)) {
   const ic = inputCount(node);
+  /* 函数 / 工具节点：输入 0 = 控制入（固定）+ 各输入参数；输出 0..n-1 = 输出参数 + 末位控制出 */
+  const isFnTNode = isFnToolNode(node);
+  /* 素材节点：端子 = 素材库内容条目（第 i 入 ↔ 第 i 出）· 无控制端子。
+     端子标题与类型一律从 assetItems(node) 取，与引擎取数同一份口径。 */
+  const isANode = isAssetNode(node);
+  const aItems = isANode ? assetItems(node) : null;
+  /* 壳层（含工具节点变体）的空闲端子判定只看「外侧输入线」：allWiresTo 会把内侧汇流线
+     （to=宿主）一并算进来 → 工具节点上会误判成已占用。函数节点无内部图，仍按全部入线。 */
   const wiredIn =
     node.kind === "super"
       ? superExternalInWiresAll(node).length
       : allWiresTo(node.id).length;
   for (let i = 0; i < ic; i++) {
     const p = document.createElement("div");
-    const spare = i >= wiredIn;
-    const ctrlIn =
-      node.kind === "super"
+    /* 素材节点的端子号就是条目序号（不连续挂线），空闲与否只能逐号问端子 */
+    const spare = isANode ? !assetInPortOccupied(node, i) : i >= wiredIn;
+    const ctrlIn = isFnTNode
+      ? i === 0
+      : node.kind === "super"
         ? superInPortIsControl(node, i)
         : isControlKind(node) ||
           (node.kind === "net_send" && i >= 1) ||
           (node.kind === "music_gen" && i === 2) ||
+          (node.kind === "tts_gen" && i === 1) ||
           (node.kind === "video_gen" && i === 0) ||
           (node.kind === "remotion" && i === 0);
+    /* 端子数据类型（工具 / 函数节点的数据端子 · 素材节点的条目端子才声明）：
+       图像单独一色（复用 .img），音频 / 视频各一色（.aud / .vid），不再与文本同色 */
+    const inKind = isFnTNode
+      ? fnToolPortKind(node, "in", i)
+      : isANode
+        ? aItems[i].type
+        : null;
     p.className =
-      "port in" + (spare ? " spare" : "") + (ctrlIn ? " ctrl" : "");
+      "port in" +
+      (spare ? " spare" : "") +
+      (ctrlIn ? " ctrl" : "") +
+      (inKind === "image"
+        ? " img"
+        : inKind === "audio"
+          ? " aud"
+          : inKind === "video"
+            ? " vid"
+            : "");
     p.dataset.node = node.id;
     p.dataset.idx = String(i);
     const linkedIn = portLinkedNodes(node, "in", i);
+    /* 数组（批量）入参端子：徽标带「当前挂几条线」（如 参考图 ×3），tooltip 说清 JS 里拿到数组 */
+    const fnInParam =
+      isFnTNode && i > 0
+        ? fnToolParamList(node, "in")[i - 1] || null
+        : null;
+    const fnInIsArr = !!(fnInParam && fnBrowseParamIsArray(fnInParam));
+    const fnInWires = fnInIsArr ? fnToolInPortWireCount(node, i) : 0;
     let inTitle =
       I18n.t("输入端子 ") +
       (i + 1) +
       (i >= wiredIn && !hasFixedInPorts(node)
         ? I18n.t("（空闲，连接后自动新增一个）")
         : "");
-    if (node.kind === "gate")
+    if (isFnTNode) {
+      const pl = fnToolParamList(node, "in");
+      inTitle =
+        i === 0
+          ? I18n.t("控制输入（触发生成 / 运行）")
+          : I18n.t("输入参数 ") +
+            ((pl[i - 1] && pl[i - 1].name) || i) +
+            (inKind === "image"
+              ? I18n.t("（图像）")
+              : I18n.t("（文本）")) +
+            (fnInIsArr
+              ? I18n.t(
+                  " · 数组端子：JS 里拿到数组 · 当前挂 {n} 条线（可接多条）",
+                  { n: fnInWires },
+                )
+              : "");
+    } else if (isANode) {
+      /* 素材节点：端子标题 = 内容条目标题（一眼看得懂这条线喂的是哪份内容） */
+      const it = aItems[i];
+      inTitle =
+        I18n.t("内容端子「") +
+        it.title +
+        "」（" +
+        assetItemTypeLabel(it.type) +
+        I18n.t("）· 与同名输出端子一一对应 · 连入即同步到该条目");
+    } else if (node.kind === "gate")
       inTitle = I18n.t("闸门输入 ") + (i + 1) + I18n.t("（需全部到达）");
     else if (node.kind === "mutex")
       inTitle = I18n.t("互斥输入 ") + (i + 1);
@@ -3356,6 +4798,8 @@ function nodeElement(node) {
       inTitle = I18n.t("控制输入（激活内部起点）");
     else if (node.kind === "music_gen")
       inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : i === 1 ? I18n.t("歌词（含 [Verse]/[Chorus] 等标签）") : I18n.t("控制输入（触发生成）");
+    else if (node.kind === "tts_gen")
+      inTitle = i === 0 ? I18n.t("待合成文本（语音内容）") : I18n.t("控制输入（触发生成）");
     else if (node.kind === "net_send")
       inTitle = i === 0 ? I18n.t("信息输入（要发送的文本）") : I18n.t("控制输入（触发发送）");
     else if (node.kind === "video_gen") {
@@ -3363,7 +4807,11 @@ function nodeElement(node) {
         inTitle = I18n.t("控制输入（触发生成）");
       } else {
         const meta = videoGenSlotMeta(node, i);
-        if (meta.kind === "text") inTitle = I18n.t("提示词");
+        if (meta.kind === "text")
+          inTitle =
+            meta.param && meta.param.label
+              ? String(meta.param.label)
+              : I18n.t("提示词");
         else if (meta.kind === "image") {
           inTitle =
             meta.key === "first"
@@ -3383,12 +4831,84 @@ function nodeElement(node) {
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = (PORT_OFF - PORT_R) + "px";
-    if (node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "remotion" || node.kind === "task") {
+    if (isANode || isFnTNode || node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || node.kind === "remotion" || node.kind === "task") {
       const badge = document.createElement("span");
       badge.className = "port-badge";
-      if (node.kind === "music_gen") {
+      if (isANode) {
+        /* 素材节点输入端子徽标 = 内容条目标题（与 body 里那一行同名，肉眼即可对上） */
+        badge.classList.add("zh-label");
+        badge.textContent = clipStr(aItems[i].title, 8);
+      } else if (isFnTNode) {
+        const pl = fnToolParamList(node, "in");
+        badge.classList.add("zh-label");
+        if (i === 0) badge.textContent = I18n.t("控制");
+        else {
+          const nm = clipStr((pl[i - 1] && pl[i - 1].name) || String(i), 8);
+          /* 数组端子徽标：参数名 + 一条线一个槽（渐进槽位端子组，如 参考图[1][2][3]＋）。
+             引擎仍按「同一个端子号收多条数据线」取数（JS 拿到数组）——这里只改视觉：
+             挂几条线就亮几个槽点，末尾留一个可接新线的空槽；点空槽 = 再拖一条进本端子。 */
+          badge.textContent = nm;
+          if (fnInIsArr) {
+            const slots = document.createElement("span");
+            slots.className = "fn-arr-slots";
+            slots.style.cssText =
+              "display:inline-flex;gap:2px;margin-left:4px;align-items:center;vertical-align:middle";
+            for (let s = 0; s < fnInWires; s++) {
+              const dot = document.createElement("span");
+              dot.className = "fn-arr-slot-dot";
+              /* 每条已挂数据线一个槽：悬停/右键可单独断开这一条（stopPropagation，
+                 不触发端口级的「断全部」）。来源标题能取到就点名。 */
+              let srcTitle = "";
+              const w0 = fnToolInPortWireAt(node, i, s);
+              if (w0) {
+                const src0 = nodeById(w0.from);
+                if (src0) srcTitle = String(src0.title || "");
+              }
+              dot.title =
+                I18n.t("第 {n} 条输入", { n: s + 1 }) +
+                (srcTitle ? I18n.t(" · 来源：") + srcTitle : "") +
+                I18n.t("（右键断开这一条）");
+              dot.addEventListener("contextmenu", (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                pushHistory();
+                if (fnToolInPortWireRemoveAt(node, i, s)) {
+                  clearDownstream(node.id);
+                  scheduleSave(true);
+                  renderCanvas();
+                  renderStatus();
+                  toast(I18n.t("已断开该槽位对应的数据线"), "ok");
+                } else {
+                  toast(I18n.t("该槽位没有连线"), "warn");
+                }
+              });
+              dot.addEventListener("mousedown", (ev) => {
+                ev.stopPropagation();
+                ev.preventDefault();
+                hidePortTip();
+                startWireDrag(node.id, ev, i, { fromInput: true });
+              });
+              slots.appendChild(dot);
+            }
+            const add = document.createElement("span");
+            add.className = "fn-arr-slot-add";
+            add.title = I18n.t("空槽：再拖一条数据线进本端子（可无限接）");
+            add.addEventListener("mousedown", (ev) => {
+              ev.stopPropagation();
+              ev.preventDefault();
+              hidePortTip();
+              startWireDrag(node.id, ev, i, { fromInput: true });
+            });
+            slots.appendChild(add);
+            badge.appendChild(slots);
+          }
+        }
+      } else if (node.kind === "music_gen") {
         badge.classList.add("zh-label");
         badge.textContent = i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制");
+      } else if (node.kind === "tts_gen") {
+        badge.classList.add("zh-label");
+        badge.textContent = i === 0 ? I18n.t("文本") : I18n.t("控制");
       } else if (node.kind === "video_gen") {
         if (i === 0) {
           badge.classList.add("zh-label");
@@ -3454,7 +4974,22 @@ function nodeElement(node) {
   for (let oi = 0; oi < oc; oi++) {
     const p = document.createElement("div");
     let outCls = "port out";
-    if (node.kind === "judge" || node.kind === "task")
+    const outDataN = isFnTNode ? fnToolParamList(node, "out").length : 0;
+    /* 端子数据类型（工具 / 函数节点的数据端子 · 素材节点的条目端子才声明）：
+       图像 / 音频 / 视频各一色，文本沿用默认色 */
+    const outKind = isFnTNode
+      ? fnToolPortKind(node, "out", oi)
+      : isANode
+        ? aItems[oi].type
+        : null;
+    if (isFnTNode) {
+      if (oi >= outDataN) outCls += " ctrl";
+      else if (outKind === "image") outCls += " img";
+    } else if (isANode) {
+      if (outKind === "image") outCls += " img";
+      else if (outKind === "audio") outCls += " aud";
+      else if (outKind === "video") outCls += " vid";
+    } else if (node.kind === "judge" || node.kind === "task")
       outCls += oi === 0 ? " yes" : " no";
     else if (
       isControlKind(node) ||
@@ -3467,7 +5002,17 @@ function nodeElement(node) {
     p.dataset.fromIndex = String(oi);
     const linkedOut = portLinkedNodes(node, "out", oi);
     let outTitle = "";
-    if (node.kind === "judge")
+    if (isFnTNode) {
+      const pl = fnToolParamList(node, "out");
+      outTitle =
+        oi < outDataN
+          ? I18n.t("输出参数 ") +
+            ((pl[oi] && pl[oi].name) || (oi + 1)) +
+            (outKind === "image"
+              ? I18n.t("（图像）")
+              : I18n.t("（文本）"))
+          : I18n.t("控制输出（运行完成后触发下游控制目标）");
+    } else if (node.kind === "judge")
       outTitle = oi === 0 ? I18n.t("是（达成）") : I18n.t("否（未达成）");
     else if (node.kind === "task")
       outTitle =
@@ -3480,8 +5025,20 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
-    else if (node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "remotion")
+    else if (node.kind === "music_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || node.kind === "remotion")
       outTitle = oi === 0 ? I18n.t("输出端子（输出本节点内容）") : I18n.t("控制输出（生成完成后触发下游控制目标）");
+    /* 素材节点：输出端子标题 = 内容条目标题；值按类型给（文本 → 字符串，
+       图像 / 音频 / 视频 → 该条目的 file:/// URL，与 input_audio / video 同一口径） */
+    else if (isANode)
+      outTitle =
+        I18n.t("输出内容「") +
+        aItems[oi].title +
+        "」（" +
+        assetItemTypeLabel(aItems[oi].type) +
+        I18n.t("）· 文本给字符串 · 图像 / 音频 / 视频给 file:/// URL");
+    /* 音频 / 视频输入：唯一的输出端子给的就是这个本机文件的 file:/// URL */
+    else if (node.kind === "input_audio" || node.kind === "input_video")
+      outTitle = I18n.t("输出该文件的 URL（file:///… · 可连进媒体参考端子）");
     else if (isControlKind(node))
       outTitle = I18n.t("输出端子（连接到要控制的节点）");
     else outTitle = I18n.t("输出端子（输出本节点内容）");
@@ -3489,34 +5046,49 @@ function nodeElement(node) {
     p.style.top = outPortY(node, oi, oc) - PORT_R + "px";
     p.style.right = (PORT_OFF - PORT_R) + "px";
     if (
+      isANode ||
+      isFnTNode ||
       node.kind === "sequencer" ||
       node.kind === "splitter" ||
       node.kind === "task" ||
       node.kind === "music_gen" ||
+      node.kind === "tts_gen" ||
       node.kind === "video_gen" ||
       node.kind === "remotion"
     ) {
       const badge = document.createElement("span");
       badge.className =
         "port-badge" +
-        (node.kind === "task" ||
+        (isANode ||
+        isFnTNode ||
+        node.kind === "task" ||
         node.kind === "music_gen" ||
+        node.kind === "tts_gen" ||
         node.kind === "video_gen" ||
         node.kind === "remotion"
           ? " zh-label"
           : "");
-      badge.textContent =
-        node.kind === "task"
-          ? oi === 0
-            ? I18n.t("成功")
-            : I18n.t("失败")
-          : node.kind === "music_gen" ||
-              node.kind === "video_gen" ||
-              node.kind === "remotion"
+      if (isANode) {
+        /* 素材节点输出端子徽标 = 内容条目标题（与左侧输入端子、body 那一行同名） */
+        badge.textContent = clipStr(aItems[oi].title, 8);
+      } else if (isFnTNode) {
+        const pl = fnToolParamList(node, "out");
+        if (oi >= outDataN) badge.textContent = I18n.t("控制");
+        else badge.textContent = clipStr((pl[oi] && pl[oi].name) || String(oi + 1), 8);
+      } else
+        badge.textContent =
+          node.kind === "task"
             ? oi === 0
-              ? I18n.t("内容")
-              : I18n.t("控制")
-            : String(oi + 1);
+              ? I18n.t("成功")
+              : I18n.t("失败")
+            : node.kind === "music_gen" ||
+                node.kind === "tts_gen" ||
+                node.kind === "video_gen" ||
+                node.kind === "remotion"
+              ? oi === 0
+                ? I18n.t("内容")
+                : I18n.t("控制")
+              : String(oi + 1);
       p.appendChild(badge);
     }
     bindPortTip(p, node, "out", oi);
@@ -3601,6 +5173,9 @@ function nodeElement(node) {
       ev.target.closest(".sv-path") ||
       ev.target.closest(".sv-auto") ||
       ev.target.closest(".n-out") ||
+      /* 音视频输入节点的原生播放器（.n-av-el）：放行，否则 preventDefault 会
+         吞掉播放 / 进度条操作，拖节点请抓头部标题栏 */
+      ev.target.closest(".n-av-el") ||
       ev.target.closest(".bentry-title") ||
       ev.target.closest(".bentry-text") ||
       ev.target.closest(".n-title") ||
@@ -3686,6 +5261,17 @@ function nodeElement(node) {
           iconCls: "danger",
           cls: "ctx-danger",
         }),
+      );
+    }
+    /* 函数 / 工具节点：设置（名称 / 描述 / 参数编辑 · 参数即端子）→ 跳窗 */
+    if (isFnToolNode(node)) {
+      items.unshift(
+        ctxAction(
+          I18n.t("设置（参数 / 名称 / 描述）"),
+          () => openNodeSettingsDialog(node),
+          isToolNode(node) ? "tool" : "function",
+          { iconCls: "proc" },
+        ),
       );
     }
     if (node.kind === "super") {
@@ -4046,8 +5632,9 @@ const NODE_BROWSE_KINDS = new Set([
   "proc_text",
   "proc_image",
   "agent_task",
-  "chat",
   "save",
+  /* 函数节点：未选中只读显示代码正文，点选即出可编辑代码块（工具节点是 super 变体，不参与） */
+  "function",
 ]);
 
 /* 浏览态分流用的 kind 键：旧 save_text / save_image 别名归一到 save */
@@ -4214,7 +5801,8 @@ function applyFocusFormAfterRender() {
 /* 只读文本块：语言判定（plain / md / yaml）与 @引用着色都在 app-nodeview.js，
    这里只补 canvas.css 浏览态约定的类：外层 .n-view 负责滚动，内层 .n-view-<lang>
    负责排版（md 再挂 .md，让节点内 Markdown 压缩规则命中）。
-   opts.inner = true：嵌在条目体内，不套 .n-view（避免出现双层滚动）。 */
+   opts.inner = true：嵌在条目体内，不套 .n-view（避免出现双层滚动）。
+   opts.lang = "plain" | "md" | "yaml"：跳过自动判定（代码正文用它锁死 plain）。 */
 function browseTextEl(text, node, opts) {
   if (
     typeof nodeTextViewEl !== "function" ||
@@ -4232,7 +5820,11 @@ function browseTextEl(text, node, opts) {
     return e;
   };
   if (nodeViewIsEmpty(raw)) return emptyEl();
-  const lang = detectViewLang(raw);
+  /* opts.lang 显式指定时以它为准（函数节点代码正文要强制 plain，不能让 JS 被误判成 md / yaml） */
+  const lang =
+    o.lang === "plain" || o.lang === "md" || o.lang === "yaml"
+      ? o.lang
+      : detectViewLang(raw);
   const cls =
     "n-view-" + lang + (lang === "md" ? " md" : "") + (o.inner ? "" : " n-view");
   return nodeTextViewEl(raw, { node: node, lang: lang, class: cls });
@@ -4631,60 +6223,6 @@ NODE_BROWSE_BODY.agent_task = function (node, body) {
   if (typeof scrollAgentConv === "function") scrollAgentConv(node);
 };
 
-/* chat：会话流（.chat-list）就是浏览主体；
-   输入行、智能助手勾选与工作目录行都不渲染
-   （系统提示词在头部「设置」面板里，本就不属于 body） */
-NODE_BROWSE_BODY.chat = function (node, body) {
-  if (typeof dshMsgBlock !== "function") return false;
-  const list = document.createElement("div");
-  list.className = "chat-list";
-  list.addEventListener(
-    "scroll",
-    () => {
-      /* 与编辑态同一个「贴底才跟随」判定；程序滚动不改写用户意图 */
-      if (list._convAutoScroll) return;
-      node._chatNearBottom = isScrollNearBottom(list);
-      node._chatScrollTop = list.scrollTop;
-    },
-    { passive: true },
-  );
-  const msgs = node.messages || [];
-  if (!msgs.length && !node.running) {
-    const hint = document.createElement("div");
-    hint.className = "n-view-empty";
-    hint.textContent = I18n.t("开始对话吧…");
-    list.appendChild(hint);
-  }
-  for (let i = 0; i < msgs.length; i++)
-    list.appendChild(dshMsgBlock(msgs[i], node.id, i));
-  if (node.running) {
-    /* 运行中：流式占位的 id 与编辑态一致，增量文本照常写入 */
-    const row = document.createElement("div");
-    row.className = "dsh-msg dsh-ai";
-    const head = document.createElement("div");
-    head.className = "dsh-msg-head";
-    const role = document.createElement("span");
-    role.className = "dsh-role live";
-    role.textContent = I18n.t("AI · 运行中");
-    head.appendChild(role);
-    row.appendChild(head);
-    const tb = document.createElement("div");
-    tb.className = "dsh-think-live";
-    tb.id = "chat-think-" + node.id;
-    tb.textContent =
-      typeof thinkingTextOf === "function" ? thinkingTextOf(node) || "" : "";
-    row.appendChild(tb);
-    const sb = document.createElement("div");
-    sb.className = "dsh-msg-body dsh-stream";
-    sb.id = "chat-stream-" + node.id;
-    sb.textContent = node._pendingAnswer || "";
-    row.appendChild(sb);
-    list.appendChild(row);
-  }
-  body.appendChild(list);
-  if (typeof scheduleHistoryCollapse === "function") scheduleHistoryCollapse(list);
-};
-
 /* save：路径显示为等宽只读文本（「浏览 / 位置 / 打开」按钮与自动保存勾选不渲染），
    预览区照旧保留（含各媒体类型的填充 id，保存后 fillPreviews 正常回填） */
 NODE_BROWSE_BODY.save = function (node, body) {
@@ -4770,9 +6308,1093 @@ NODE_BROWSE_BODY.save = function (node, body) {
   body.appendChild(prev);
 };
 
+/* 数组（批量）参数：值是一串而不是一个 —— 参数摘要里在名字后标 ×N。
+   参数上可能带的数组标记（array / arr / list / batch / repeat 任一为真，或 kind 含
+   array / list）在这里认一次，别处不再各写各的判定。 */
+function fnBrowseParamIsArray(p) {
+  if (!p) return false;
+  if (p.array || p.arr || p.list || p.batch || p.repeat) return true;
+  return /array|list/i.test(String(p.kind || ""));
+}
+
+/* 某个输入端子当前挂了几条「数据线」—— 数组端子徽标（参考图 ×3）的计数真源。
+   口径与端子占用判定一致：壳层（工具＝超级变体）只数外侧入线，其余数全部非关系线；
+   控制源那条线不算数据（数组端子挂的是数据线）。 */
+function fnToolInPortWireCount(node, idx) {
+  if (!node || !S.wf) return 0;
+  const i = Number(idx) || 0;
+  const wires =
+    node.kind === "super" && typeof superExternalInWiresAll === "function"
+      ? superExternalInWiresAll(node)
+      : (S.wf.wires || []).filter((w) => w && !w.rel && w.to === node.id);
+  let n = 0;
+  for (const w of wires) {
+    if (!w) continue;
+    if ((Number(w.toIndex) || 0) !== i) continue;
+    if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
+    n++;
+  }
+  return n;
+}
+
+/* 数组端子第 k 条数据线（k 从 0 起）：槽位端子组的每个槽 = 一条已挂的数据线。
+   槽序与 fnToolInPortWireCount 同一口径（壳层只数外侧入线；跳过控制源与关系线），
+   顺序按画布连线数组（即接线先后）。k 越界 / 非数组场景返回 null。 */
+function fnToolInPortWireAt(node, idx, k) {
+  if (!node || !S.wf) return null;
+  const i = Number(idx) || 0;
+  const kk = Number(k);
+  const wires =
+    node.kind === "super" && typeof superExternalInWiresAll === "function"
+      ? superExternalInWiresAll(node)
+      : (S.wf.wires || []).filter((w) => w && !w.rel && w.to === node.id);
+  let n = 0;
+  for (const w of wires) {
+    if (!w) continue;
+    if ((Number(w.toIndex) || 0) !== i) continue;
+    if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
+    if (n === kk) return w;
+    n++;
+  }
+  return null;
+}
+
+/* 断开数组端子第 k 条数据线（k 从 0 起）：只移除那一条，其它槽位线原样保留。
+   与 fnToolInPortWireAt 同一取线口径。返回是否真的断了一条。 */
+function fnToolInPortWireRemoveAt(node, idx, k) {
+  if (!node || !S.wf || !Array.isArray(S.wf.wires)) return false;
+  const w = fnToolInPortWireAt(node, idx, k);
+  if (!w) return false;
+  S.wf.wires = S.wf.wires.filter((x) => x !== w);
+  return true;
+}
+
+/* 参数摘要一行（只读）：入参 a、b（图像）、c×N ／ 出参 …，空表显示「—」。
+   与编辑态「设置」面板同一口径（参数名即端子名），这里只是不给改。 */
+function fnBrowseParamLine(label, list) {
+  const el = document.createElement("div");
+  el.className = "n-view-brief";
+  el.style.flex = "none";
+  el.style.minHeight = "0";
+  el.style.fontSize = "11.5px";
+  el.style.lineHeight = "1.45";
+  el.style.opacity = ".8";
+  el.style.whiteSpace = "nowrap";
+  el.style.overflow = "hidden";
+  el.style.textOverflow = "ellipsis";
+  const txt =
+    label +
+    " " +
+    (list.length
+      ? list
+          .map(
+            (p) =>
+              String(p.name || "").trim() +
+              (fnBrowseParamIsArray(p) ? "×N" : "") +
+              (String(p.kind || "text") === "image" ? I18n.t("（图像）") : ""),
+          )
+          .join("、")
+      : "—");
+  el.textContent = txt;
+  el.title = txt;
+  return el;
+}
+
+/* function：未选中只显示内容 —— 函数名 / 描述、入参与出参摘要（数组参数标 ×N）、
+   等宽无行号的代码正文，末尾照旧是状态行与输出摘要。
+   这一层一个交互构件都不挂（代码编辑器、格式化条、「开发」按钮、「设置」面板全在编辑态），
+   点选走既有的板身 mousedown → startNodeDrag：切编辑态后 applyFocusFormAfterRender
+   把光标送进代码 textarea，于是「点进去才出可编辑代码块」成立。
+   注意：浏览态正文一律不得用 .n-text 类 —— 它在节点根 mousedown 的放行名单里，
+   命中就不拖节点、也不触发选中，点选切编辑态这条路会被自己堵死。 */
+NODE_BROWSE_BODY.function = function (node, body) {
+  ensureFnToolNodeState(node);
+  const oneLine = (txt) =>
+    String(txt == null ? "" : txt).replace(/\s+/g, " ").trim();
+  const fname = oneLine(node.fnName);
+  const fdesc = oneLine(node.description);
+  const nameEl = document.createElement("div");
+  nameEl.className = "n-view-brief";
+  nameEl.style.flex = "none";
+  nameEl.style.minHeight = "0";
+  nameEl.style.fontSize = "12.5px";
+  nameEl.style.fontWeight = "600";
+  nameEl.style.lineHeight = "1.45";
+  nameEl.style.whiteSpace = "nowrap";
+  nameEl.style.overflow = "hidden";
+  nameEl.style.textOverflow = "ellipsis";
+  nameEl.textContent = fname || node.title || I18n.t("（未命名函数）");
+  if (fname) nameEl.title = fname;
+  body.appendChild(nameEl);
+  if (fdesc) {
+    const d = document.createElement("div");
+    d.className = "n-view-brief";
+    d.style.flex = "none";
+    d.style.minHeight = "0";
+    d.style.fontSize = "11.5px";
+    d.style.lineHeight = "1.45";
+    d.style.color = "var(--muted)";
+    d.style.whiteSpace = "nowrap";
+    d.style.overflow = "hidden";
+    d.style.textOverflow = "ellipsis";
+    d.textContent = fdesc;
+    d.title = fdesc;
+    body.appendChild(d);
+  }
+  body.appendChild(
+    fnBrowseParamLine(I18n.t("入参"), fnToolParamList(node, "in")),
+  );
+  body.appendChild(
+    fnBrowseParamLine(I18n.t("出参"), fnToolParamList(node, "out")),
+  );
+  /* 代码正文：语言锁 plain（JS 常被自动判定误认成 md / yaml），等宽小字、
+     无行号槽无格式化条；flex:1 吃满剩余高度，超高在 .n-view 这一层自己滚 */
+  const code = browseTextEl(functionCodeOf(node), node, { lang: "plain" });
+  if (!code) return false;
+  code.style.fontFamily = "var(--mono)";
+  code.style.fontSize = "11.5px";
+  code.style.lineHeight = "1.5";
+  body.appendChild(code);
+  /* 状态行与输出摘要：文案与编辑态逐字一致（复用同一批 i18n 键），只读不可点 */
+  const st = document.createElement("div");
+  st.className = "n-status" + (node.running ? " run" : node.error ? " err" : "");
+  st.id = "st-" + node.id;
+  if (node.running) st.textContent = I18n.t("运行中…");
+  else if (node.error) st.textContent = "✕ " + node.error;
+  else if (node.ranAt) st.textContent = I18n.t("已运行 ") + fmtTime(node.ranAt);
+  else st.textContent = I18n.t("待运行 · 编辑 JS · 点头部 ▶ 执行");
+  st.title = st.textContent;
+  body.appendChild(st);
+  const sum = fnToolOutSummaryEl(node);
+  if (sum) body.appendChild(sum);
+};
+
+/* ── 函数 / 工具节点 body（参数即端子 · 设置面板） ────────────────── */
+/* 运行输出摘要：节点 output（文本 / path）压成一行的只读小字 */
+function fnToolOutSummaryEl(node) {
+  const o = node && node.output;
+  if (!o || node.error) return null;
+  const raw =
+    o.text != null ? o.text : o.path ? o.path : o.content != null ? o.content : "";
+  if (!raw) return null;
+  const el = document.createElement("div");
+  el.style.flex = "none";
+  el.style.whiteSpace = "nowrap";
+  el.style.overflow = "hidden";
+  el.style.textOverflow = "ellipsis";
+  el.style.fontSize = "11.5px";
+  el.style.opacity = ".85";
+  /* 输出为图像端子时标明类型（以端子声明为准，其次看实际值），
+     避免那串路径被当成普通文本结果 */
+  const isImgOut =
+    String(o.kind || "") === "image" ||
+    fnToolPortKind(node, "out", 0) === "image";
+  el.textContent =
+    "✓ " +
+    (isImgOut ? I18n.t("（图像）") : "") +
+    clipStr(String(raw).replace(/\s+/g, " ").trim(), 160);
+  el.title = String(raw);
+  /* 引擎按端子声明类型归一值时记下的提示（如「文本端子拿到图像 → 取其路径作文本」）：
+     值没丢，只是换了形状，摘要里点一句，免得用户以为输出被吞了 */
+  const fixes = Array.isArray(node._portKindFix)
+    ? node._portKindFix.filter(Boolean)
+    : [];
+  if (fixes.length) {
+    el.textContent += "  ⚠ " + clipStr(String(fixes[fixes.length - 1]), 40);
+    el.title += "\n" + fixes.join("\n");
+    el.style.color = "#e0a94a";
+  }
+  return el;
+}
+
+/* body 只读摘要行：入参 / 出参一览（顺序 = 端子顺序 · 图像与数组端子标出来）。
+   参数编辑整块搬进「设置」跳窗后，卡片上仍要一眼看清端子契约，所以留这两行。 */
+function fnToolIoSummaryLine(node, dir) {
+  const isIn = dir === "in";
+  const list = fnToolParamList(node, dir);
+  const d = document.createElement("div");
+  d.className = "n-fnio";
+  d.style.flex = "none";
+  d.style.fontSize = "11.5px";
+  d.style.opacity = ".75";
+  d.style.overflow = "hidden";
+  d.style.textOverflow = "ellipsis";
+  d.style.whiteSpace = "nowrap";
+  d.textContent =
+    (isIn ? I18n.t("入参") : I18n.t("出参")) +
+    " " +
+    (list.length
+      ? list
+          .map(
+            (p) =>
+              (p.name || "—") +
+              (String(p.kind || "text") === "image" ? I18n.t("（图像）") : "") +
+              (isIn && p.list === true ? I18n.t("（数组·多条线）") : ""),
+          )
+          .join("、")
+      : "—");
+  d.title = d.textContent;
+  return d;
+}
+
+/* 函数节点脚手架：按当前 inputs / outputs 参数名产出 JS 模板（js-exec 契约：
+   入参对象 input = { 参数名: 值 }，return 的对象键 = 输出参数名）。
+   只由「生成脚手架」按钮触发写入；参数增删不实时改写代码。 */
+const FN_SCAFFOLD_ID_RE = /^[$_\p{L}][$_\p{L}\p{N}]*$/u;
+function fnScaffoldCode(node) {
+  ensureFnToolNodeState(node);
+  const fname = String(node.fnName || node.title || "").trim();
+  const fdesc = String(node.description || "").trim();
+  const ins = fnToolParamList(node, "in");
+  const outs = fnToolParamList(node, "out");
+  const taken = {};
+  /* 参数名 → 可编辑的局部变量名（中文名本身合法；非法字符转 _，重名加后缀） */
+  const toVar = (raw, i, prefix) => {
+    let v = String(raw == null ? "" : raw)
+      .trim()
+      .replace(/[^\p{L}\p{N}_$]+/gu, "_");
+    if (/^[0-9]/u.test(v)) v = "v_" + v;
+    if (!v || /^_+$/.test(v)) v = prefix + (i + 1);
+    const base = v;
+    let k = 2;
+    while (taken[v]) v = base + "_" + k++;
+    taken[v] = true;
+    return v;
+  };
+  const keyOf = (raw, i) => {
+    const nm = String(raw == null ? "" : raw).trim();
+    return FN_SCAFFOLD_ID_RE.test(nm) ? nm : JSON.stringify(nm || "输出 " + (i + 1));
+  };
+  const label = (p, i) =>
+    (p.name || "参数 " + (i + 1)) +
+    (p.kind === "image" ? "（图像" : "（文本") +
+    (fnBrowseParamIsArray(p) ? "数组" : "") +
+    "）";
+  /* 值形状注释：数组端子恒为数组（一条线一个元素 · 没挂线是 []），
+     普通端子一号一值（上游未输出时 undefined）。 */
+  const shapeNote = (p) => {
+    const arr = fnBrowseParamIsArray(p);
+    const img = p.kind === "image";
+    if (arr)
+      return img
+        ? '：数组，逐元素 { kind:"image", path }（一条线一个元素 · 没挂线时是 []）'
+        : "：字符串数组（一条线一个元素 · 没挂线时是 []）";
+    return (img ? '：{ kind:"image", path }' : "：字符串") + "（上游未输出时为 undefined）";
+  };
+  const L = [];
+  L.push("// ── 函数：" + (fname || "（未命名 · 在设置里填函数名）") + " ──");
+  L.push("// 描述：" + (fdesc || "（未填写）"));
+  L.push(
+    "// 入参：" +
+      (ins.length ? ins.map((p, i) => label(p, i)).join("、") : "（无 · 在设置里添加输入参数）"),
+  );
+  L.push(
+    "// 出参：" +
+      (outs.length
+        ? outs.map((p, i) => label(p, i)).join("、")
+        : "（无 · 在设置里添加输出参数）"),
+  );
+  L.push(
+    '// 取参：input["参数名"]（亦可 input.$端子序号）；文本＝字符串，图像＝{ kind:"image", path }',
+  );
+  if (ins.some((p) => fnBrowseParamIsArray(p)))
+    L.push(
+      "// 数组端子（标注「数组」的入参）：可接多条数据线，该参数恒为数组 · 逐元素同一形状 · 没挂线时是 []",
+    );
+  L.push("// 返回：return { 输出参数名: 值 }，键与上面的出参一一对应");
+  L.push("");
+  if (ins.length) {
+    ins.forEach((p, i) => {
+      L.push(
+        "const " +
+          toVar(p.name, i, "arg") +
+          " = input[" +
+          JSON.stringify(String(p.name || "")) +
+          "]; // " +
+          label(p, i) +
+          shapeNote(p),
+      );
+    });
+    L.push("");
+  }
+  L.push("// TODO: 在这里写计算逻辑");
+  L.push("");
+  if (outs.length) {
+    L.push("return {");
+    outs.forEach((p, i) => {
+      L.push("  " + keyOf(p.name, i) + ": undefined, // 输出 " + label(p, i));
+    });
+    L.push("};");
+  } else {
+    L.push("return {}; // 暂无出参：添加输出参数后重新生成脚手架");
+  }
+  return L.join("\n") + "\n";
+}
+
+/* 「设置」跳窗里的参数面板：名称 / 描述 / 增删输入输出参数（参数增删即端子增删）。
+   工具节点写 toolConfig，函数节点写自身字段；两类共用同一份参数模型 [{name, kind}]。
+   面板 DOM 由 NODE_SETTINGS_FORMS 的 function / tool 登记表单挂进跳窗（openNodeSettingsDialog
+   → nsFnToolBuild），节点 body 里不再出现这份面板。 */
+function buildFnToolSettings(node, isTool) {
+  const wrap = document.createElement("div");
+  /* 标记：双击进子画布的判定靠它把「设置面板」整块排除在交互之外（面板里全是输入控件） */
+  wrap.classList.add("fn-tool-settings");
+  wrap.style.display = "flex";
+  wrap.style.flexDirection = "column";
+  wrap.style.gap = "5px";
+  wrap.style.padding = "8px 10px";
+  wrap.style.borderTop = "1px dashed rgba(128,128,128,.4)";
+  wrap.style.overflow = "auto";
+  const field = (labelText) => {
+    const lab = document.createElement("label");
+    lab.style.display = "block";
+    lab.style.fontSize = "11.5px";
+    lab.style.opacity = ".8";
+    const t = document.createElement("span");
+    t.textContent = labelText;
+    lab.appendChild(t);
+    wrap.appendChild(lab);
+    return lab;
+  };
+  const cfg = isTool
+    ? node.toolConfig || {}
+    : { name: node.fnName || "", description: node.description || "" };
+  /* 名称 */
+  const nameRow = field(
+    isTool
+      ? I18n.t("工具名 name（标题默认 = 工具名 · 手动改名后独立）")
+      : I18n.t("函数名 fnName（可选）"),
+  );
+  const nameInp = document.createElement("input");
+  nameInp.type = "text";
+  nameInp.value = cfg.name || "";
+  nameInp.style.width = "100%";
+  nameInp.addEventListener("input", () => {
+    if (isTool) node.toolConfig.name = nameInp.value;
+    else node.fnName = nameInp.value;
+  });
+  nameInp.addEventListener("change", () => {
+    if (isTool) {
+      applyToolConfigName(node, nameInp.value);
+      scheduleSave();
+      renderCanvas();
+    } else scheduleSave();
+  });
+  nameRow.appendChild(nameInp);
+  /* 描述 */
+  const descLab = field(I18n.t("描述 description（给 Agent / 给人看的用途说明）"));
+  const descInp = document.createElement("textarea");
+  descInp.rows = 2;
+  descInp.value = cfg.description || "";
+  descInp.style.width = "100%";
+  descInp.style.fontSize = "12px";
+  descInp.addEventListener("input", () => {
+    if (isTool) node.toolConfig.description = descInp.value;
+    else node.description = descInp.value;
+  });
+  descInp.addEventListener("change", () => scheduleSave());
+  descLab.appendChild(descInp);
+  /* 参数编辑（工具 / 函数共用；改参 = 改端子；输入参数可选 文本 / 图像） */
+  const renderParams = (dir, title) => {
+    const head = document.createElement("div");
+    head.style.fontSize = "11.5px";
+    head.style.opacity = ".8";
+    head.textContent = title;
+    wrap.appendChild(head);
+    const listEl = document.createElement("div");
+    listEl.style.display = "flex";
+    listEl.style.flexDirection = "column";
+    listEl.style.gap = "3px";
+    const list = fnToolParamList(node, dir);
+    const writeArr = (arr) => {
+      const key = dir === "in" ? "inputs" : "outputs";
+      if (isTool) node.toolConfig[key] = arr;
+      else node[key] = arr;
+    };
+    const commit = (changedPorts) => {
+      clearDownstream(node.id);
+      scheduleSave();
+      if (changedPorts) renderCanvas();
+    };
+    /* 参数顺序 = 端子顺序：▲▼ / 拖动 insert 都走同一函数（fnToolMoveParam 改参数表
+       + 按 perm 重映射既有数据线端子号，线跟着参数走、不漂到别的端子）。 */
+    const moveTo = (from, to) => {
+      if (from == null || from === to) return;
+      if (typeof fnToolMoveParam !== "function") return;
+      pushHistory();
+      const changed = fnToolMoveParam(node, dir, from, to);
+      if (changed == null) return;
+      ensureFnToolNodeState(node);
+      commit(true);
+      toast(I18n.t("已调整参数顺序：端子与已连数据线随参数移位"), "ok");
+    };
+    /* 拖拽状态：dragFrom 记录把手拖起时的行号，-1 = 无拖拽 */
+    let dragFrom = -1;
+    const dragCls = (row, i) => row;
+    const clearDragUI = () => {
+      dragFrom = -1;
+      listEl
+        .querySelectorAll(".fn-param-drag-before,.fn-param-drag-after")
+        .forEach((el) =>
+          el.classList.remove("fn-param-drag-before", "fn-param-drag-after"),
+        );
+    };
+    /* 容器级：拖到列表下方空白 = 移到末尾（与 model-order 同口径） */
+    listEl.addEventListener("dragover", (ev) => {
+      if (dragFrom < 0) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+    });
+    listEl.addEventListener("drop", (ev) => {
+      if (dragFrom < 0) return;
+      const rowEl = ev.target && ev.target.closest
+        ? ev.target.closest(".fn-param-row")
+        : null;
+      if (rowEl) return; /* 行内 drop 由各行的处理器负责 */
+      ev.preventDefault();
+      const from = dragFrom;
+      clearDragUI();
+      moveTo(from, list.length - 1);
+    });
+    const paint = () => {
+      listEl.innerHTML = "";
+      for (let i = 0; i < list.length; i++) {
+        const row = document.createElement("div");
+        row.className = "fn-param-row";
+        row.style.display = "flex";
+        row.style.gap = "4px";
+        row.style.alignItems = "center";
+        row.style.padding = "1px 0";
+        /* 行左侧类型标记：与端子同一口径（图像端子单独一色），一眼看清这行是哪类数据 */
+        const isImgP = list[i].kind === "image";
+        const mark = document.createElement("span");
+        mark.className = "fn-p-kind" + (isImgP ? " img" : "");
+        mark.textContent = "●";
+        mark.title =
+          I18n.t("类型") + "：" + (isImgP ? I18n.t("图像") : I18n.t("文本"));
+        row.appendChild(mark);
+        /* 拖动把手：整行排序（▲▼ 也可用；拖动可 insert 到任意位置）。
+           只从把手拖起 —— 输入框里的选字 / 下拉里的操作不会被误判成整行拖拽。 */
+        const grip = document.createElement("span");
+        grip.className = "fn-param-grip";
+        grip.textContent = "⠿";
+        grip.draggable = true;
+        grip.title = I18n.t(
+          "拖动把手调整参数顺序（端子与已连数据线随参数移位 · ▲▼ 可逐格移动）",
+        );
+        grip.addEventListener("dragstart", (ev) => {
+          dragFrom = i;
+          row.classList.add("fn-param-dragging");
+          if (ev.dataTransfer) {
+            ev.dataTransfer.effectAllowed = "move";
+            try {
+              ev.dataTransfer.setData("text/plain", String(i));
+            } catch (e) {}
+          }
+        });
+        grip.addEventListener("dragend", clearDragUI);
+        row.addEventListener("dragover", (ev) => {
+          if (dragFrom < 0 || dragFrom === i) return;
+          ev.preventDefault();
+          ev.dataTransfer.dropEffect = "move";
+          const r = row.getBoundingClientRect();
+          const before = ev.clientY < r.top + r.height / 2;
+          listEl
+            .querySelectorAll(".fn-param-drag-before,.fn-param-drag-after")
+            .forEach((el) =>
+              el.classList.remove(
+                "fn-param-drag-before",
+                "fn-param-drag-after",
+              ),
+            );
+          row.classList.add(before ? "fn-param-drag-before" : "fn-param-drag-after");
+        });
+        row.addEventListener("dragleave", () => {
+          row.classList.remove("fn-param-drag-before", "fn-param-drag-after");
+        });
+        row.addEventListener("drop", (ev) => {
+          if (dragFrom < 0) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const from = dragFrom;
+          const r = row.getBoundingClientRect();
+          const before = ev.clientY < r.top + r.height / 2;
+          clearDragUI();
+          /* 以移动前数组语义计算落点：目标行前半 = 插到它前面，后半 = 插到它后面 */
+          let to = i;
+          if (from < i) to = before ? i - 1 : i;
+          else to = before ? i : i + 1;
+          moveTo(from, to);
+        });
+        row.appendChild(grip);
+        const nm = document.createElement("input");
+        nm.type = "text";
+        nm.value = list[i].name || "";
+        nm.placeholder = I18n.t("参数 ") + (i + 1);
+        nm.style.flex = "1";
+        nm.style.minWidth = "0";
+        nm.style.fontSize = "12px";
+        nm.addEventListener("input", () => {
+          list[i].name = nm.value;
+        });
+        nm.addEventListener("change", () => {
+          ensureFnToolNodeState(node);
+          scheduleSave();
+          renderCanvas();
+        });
+        row.appendChild(nm);
+        /* 数据类型：输入 / 输出参数同一口径（改类型 = 改端子类型 → 重画端子并清下游） */
+        const ks = document.createElement("select");
+        ks.style.fontSize = "12px";
+        for (const [v, t] of [
+          ["text", I18n.t("文本")],
+          ["image", I18n.t("图像")],
+        ]) {
+          const o = document.createElement("option");
+          o.value = v;
+          o.textContent = t;
+          ks.appendChild(o);
+        }
+        ks.value = list[i].kind === "image" ? "image" : "text";
+        ks.title = I18n.t(
+          "该端子的数据类型（文本 / 图像）· 改类型即改端子视觉与下游取数口径",
+        );
+        ks.addEventListener("change", () => {
+          list[i].kind = ks.value;
+          commit(true);
+        });
+        row.appendChild(ks);
+        /* 数组（批量）入参勾选：勾上后这个端子可挂多条数据线，函数体里该参数恒为数组。
+           真源仍是参数上的 list 位（normFnToolEntry 只在输入侧保留它，工具节点没有这层
+           语义 —— 所以「工具节点不显示该勾选」）。改完与改 kind 同一口径：commit(true)
+           ＝清下游 + 重画端子（端子徽标上的挂线条数随之刷新）。 */
+        if (dir === "in" && !isTool) {
+          const al = document.createElement("label");
+          al.style.cssText =
+            "display:flex;align-items:center;gap:3px;flex:none;font-size:11px;opacity:.9;cursor:pointer;white-space:nowrap";
+          al.title = I18n.t(
+            "数组端子：可接多条数据线 · JS 里该参数拿到数组（没挂线时是空数组）",
+          );
+          const ac = document.createElement("input");
+          ac.type = "checkbox";
+          ac.style.flex = "none";
+          ac.checked = list[i].list === true;
+          ac.addEventListener("change", () => {
+            list[i].list = !!ac.checked;
+            commit(true);
+          });
+          const at = document.createElement("span");
+          at.textContent = I18n.t("数组 · 可接多条线");
+          al.append(ac, at);
+          row.appendChild(al);
+        }
+        /* 上移 / 下移（disabled 到边界）：与拖动把手同一 moveTo 路径 */
+        const mkArrow = (up) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "mini";
+          b.textContent = up ? "▲" : "▼";
+          b.style.padding = "0 3px";
+          b.title = I18n.t(
+            up ? "上移（调整端子顺序）" : "下移（调整端子顺序）",
+          );
+          const can = up ? i > 0 : i < list.length - 1;
+          b.disabled = !can;
+          b.onclick = (ev) => {
+            ev.stopPropagation();
+            moveTo(i, up ? i - 1 : i + 1);
+          };
+          return b;
+        };
+        row.appendChild(mkArrow(true));
+        row.appendChild(mkArrow(false));
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "mini";
+        rm.textContent = "✕";
+        rm.title = I18n.t("删除该参数（对应端子一并消失）");
+        rm.onclick = () => {
+          pushHistory();
+          list.splice(i, 1);
+          writeArr(list);
+          commit(true);
+        };
+        row.appendChild(rm);
+        listEl.appendChild(row);
+      }
+    };
+    paint();
+    wrap.appendChild(listEl);
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "mini";
+    add.textContent =
+      "＋ " + (dir === "in" ? I18n.t("添加输入参数") : I18n.t("添加输出参数"));
+    add.onclick = () => {
+      pushHistory();
+      const arr = fnToolParamList(node, dir);
+      arr.push({ name: "", kind: "text" });
+      writeArr(arr);
+      commit(true);
+    };
+    wrap.appendChild(add);
+  };
+  renderParams("in", I18n.t("输入参数（端子 1..n · 端子 0 = 控制入）"));
+  renderParams("out", I18n.t("输出参数（端子 0..n-1 · 末位 = 控制出）"));
+  /* 仅函数节点：按当前入参 / 出参名生成 JS 脚手架。只有点这个按钮才动代码，
+     参数增删不实时改写；已有代码非空时先弹确认（覆盖 / 取消），绝不静默毁掉手写代码。 */
+  if (!isTool) {
+    const scTip = document.createElement("div");
+    scTip.style.fontSize = "11.5px";
+    scTip.style.opacity = ".72";
+    scTip.textContent = I18n.t(
+      "脚手架：按上面的入参 / 出参名生成 JS 模板（只在点击此按钮时写入，不随参数增删自动改写代码）",
+    );
+    wrap.appendChild(scTip);
+    const scBtn = document.createElement("button");
+    scBtn.type = "button";
+    scBtn.className = "mini";
+    scBtn.textContent = "⌗ " + I18n.t("生成脚手架");
+    scBtn.title = I18n.t(
+      "以 input 取入参、末尾 return { 出参名: … }；代码为空直接写入，非空先确认覆盖",
+    );
+    scBtn.onclick = async () => {
+      ensureFnToolNodeState(node);
+      const tpl = fnScaffoldCode(node);
+      if (String(node.jscode || "").trim()) {
+        const ok = await confirmDialog(
+          I18n.t(
+            "当前已有 JS 代码。用脚手架覆盖原有代码？（取消＝保留手写代码）",
+          ),
+          {
+            title: I18n.t("生成脚手架"),
+            okText: I18n.t("覆盖"),
+            cancelText: I18n.t("取消"),
+            danger: true,
+          },
+        );
+        if (!ok) return;
+      }
+      pushHistory();
+      /* 脚手架写入后同样过一遍格式化：模板里的空行 / 缩进与「格式化」按钮同一口径，
+         卡片编辑器里看到的第一眼就是重排好的样子。 */
+      node.jscode = formatJsCode(tpl);
+      scheduleSave();
+      renderCanvas();
+      if (typeof toast === "function") toast(I18n.t("已生成函数脚手架"), "ok");
+    };
+    wrap.appendChild(scBtn);
+  }
+  return wrap;
+}
+
+/* 函数 / 工具节点主 body：状态 + 端子只读摘要 + 主体（工具 name/description / JS 编辑器）。
+   参数编辑不在这里 —— 全部在头部「设置」跳窗里（见 NODE_SETTINGS_FORMS 的 function / tool）。 */
+function buildFnToolBodyMain(node, body, isTool) {
+  const st = document.createElement("div");
+  st.className = "n-status" + (node.running ? " run" : node.error ? " err" : "");
+  if (node.running)
+    st.textContent = isTool ? I18n.t("运行工具中…") : I18n.t("运行中…");
+  else if (node.error) st.textContent = "✕ " + node.error;
+  else if (node.ranAt) st.textContent = I18n.t("已运行 ") + fmtTime(node.ranAt);
+  else
+    st.textContent = isTool
+      ? I18n.t("待运行 · 点头部 ▶ · 头部「设置」窗口里改参数")
+      : I18n.t("待运行 · 编辑 JS · 点头部 ▶ 执行");
+  body.appendChild(st);
+  if (isTool) {
+    const c =
+      node.toolConfig && typeof node.toolConfig === "object"
+        ? node.toolConfig
+        : {};
+    const first = document.createElement("div");
+    first.style.flex = "none";
+    first.style.fontSize = "12px";
+    first.style.overflow = "hidden";
+    first.style.textOverflow = "ellipsis";
+    first.style.whiteSpace = "nowrap";
+    first.textContent =
+      (String(c.name || "").trim() || I18n.t("（未命名工具）")) +
+      (String(c.description || "").trim()
+        ? " · " + String(c.description).replace(/\s+/g, " ").trim()
+        : "");
+    first.title = c.description || c.name || "";
+    body.appendChild(first);
+    /* 端子契约两行（只读）：入参 / 出参 · 与函数节点同一份 helper */
+    body.appendChild(fnToolIoSummaryLine(node, "in"));
+    body.appendChild(fnToolIoSummaryLine(node, "out"));
+  } else {
+    /* 函数节点同样留这两行只读摘要 —— 参数增删 / 排序现在都在「设置」跳窗里做，
+       卡片上得一眼看清「有几个端子、谁是谁、哪个是图像、哪个可挂多条线」。 */
+    body.appendChild(fnToolIoSummaryLine(node, "in"));
+    body.appendChild(fnToolIoSummaryLine(node, "out"));
+    /* 代码工具条（格式化 + 行数 / 光标行提示）排在编辑器上方；先建 bar 再建编辑器，
+       回调里按名字引用 codeEd（回调真正触发时编辑器已经就位）。 */
+    let codeEd = null;
+    /* 撤销快照只能在「首次改动写进 node.jscode 之前」取：onCommit 时新值已经在节点上，
+       那时再 pushHistory() 会把编辑后的状态当成撤销点，undo 就废了。 */
+    let preEditSnap = null;
+
+    const bar = document.createElement("div");
+    bar.className = "fn-code-bar";
+    bar.style.cssText = "display:flex;gap:6px;align-items:center;flex:none";
+    const fmtBtn = document.createElement("button");
+    fmtBtn.type = "button";
+    fmtBtn.className = "mini";
+    fmtBtn.textContent = I18n.t("格式化");
+    fmtBtn.title = I18n.t("按 2 空格缩进就地重排（不改动任何一行的内容）");
+    const stats = document.createElement("span");
+    stats.style.cssText =
+      "margin-left:auto;font-size:11px;opacity:.65;font-family:var(--mono);white-space:nowrap";
+    const syncStats = () => {
+      if (!codeEd) return;
+      const s = codeEd.getStats();
+      stats.textContent = I18n.t("行") + " " + s.caretLine + " / " + s.lines;
+    };
+    fmtBtn.onclick = () => {
+      if (!String(codeEd.getValue() || "").trim()) {
+        toast(I18n.t("代码为空 · 无需格式化"));
+        return;
+      }
+      /* format() 内部：值没变就原样返回 false，既不回调也不产生撤销点 */
+      const changed = codeEd.format();
+      toast(
+        changed ? I18n.t("已格式化") : I18n.t("代码已是格式化后的样子"),
+        changed ? "ok" : undefined,
+      );
+      syncStats();
+    };
+    bar.append(fmtBtn, stats);
+    body.appendChild(bar);
+
+    codeEd = createJsCodeEditor({
+      value: functionCodeOf(node),
+      rows: 10,
+      placeholder: I18n.t(
+        '// 纯 JS 计算：入参对象 input = { 参数名: 值 }，return 即输出\n// 文本参数值为字符串 · 图像参数值为 { kind:"image", path }',
+      ),
+      /* 边写只改内存字段；失焦 / change / 格式化提交时才压撤销点 + 落盘 */
+      onChange: (v) => {
+        if (!preEditSnap) preEditSnap = snapshotState();
+        node.jscode = v;
+        syncStats();
+      },
+      onCommit: (v) => {
+        node.jscode = v;
+        if (preEditSnap) {
+          pushHistory(preEditSnap);
+          preEditSnap = null;
+        }
+        scheduleSave();
+        syncStats();
+      },
+    });
+    /* 板身是 flex 列：代码区吃掉剩余高度（与旧裸 textarea 同一口径，改尺寸由卡片负责） */
+    codeEd.el.style.cssText = "flex:1;min-height:0;width:100%";
+    body.appendChild(codeEd.el);
+    for (const ev of ["keyup", "click", "select", "focus", "blur"])
+      codeEd.ta.addEventListener(ev, syncStats);
+    syncStats();
+  }
+  const sum = fnToolOutSummaryEl(node);
+  if (sum) body.appendChild(sum);
+  /* 函数 / 工具节点下方「开发」：弹窗填本次要改 / 扩展什么 → 确认后新建绑定会话在其中运行。
+     复用开发节点那套按钮样式（.n-dev-info / .n-dev-btns / .n-dev-open），不新增 CSS 规则；
+     函数节点实现（对话框 + 会话创建 + 契约）在 app-tools.js developFunctionNode；
+     工具节点（super+tool 变体）同样支持：developToolNode —— 可改 toolConfig，也可重建内部子图。 */
+  {
+    const devInfo = document.createElement("div");
+    devInfo.className = "n-dev-info";
+    const devRow = document.createElement("div");
+    devRow.className = "n-dev-btns";
+    const devBtn = document.createElement("button");
+    devBtn.type = "button";
+    devBtn.className = "n-dev-open";
+    devBtn.textContent = I18n.t("开发");
+    /* 已绑定的会话数只进悬浮提示（标题保持与开发节点「开发」按钮一致）；
+       读的是「还活着的」会话，节点上留下的 id 尾巴不会把计数顶虚高。 */
+    const devs =
+      (typeof fnDevSessionsOf === "function" && !isTool
+        ? fnDevSessionsOf(node).length
+        : 0) +
+      (typeof toolDevSessionsOf === "function" && isTool
+        ? toolDevSessionsOf(node).length
+        : 0);
+    devBtn.title = isTool
+      ? I18n.t(
+          "弹窗填写本次要改 / 扩展的内容，确认后新建绑定该工具的会话在其中运行（只改这一个工具节点与它的内部子图）",
+        )
+      : I18n.t(
+          "弹窗填写本次要改 / 扩展的内容，确认后新建绑定该函数的会话在其中运行（只改这一个函数节点）",
+        );
+    if (devs)
+      devBtn.title =
+        devBtn.title + I18n.t(" · 已绑定 ") + devs + I18n.t(" 个开发会话");
+    devBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      if (isTool) {
+        if (typeof developToolNode === "function") developToolNode(node);
+        else toast(I18n.t("工具开发会话未就绪（app-tools.js）"), "warn");
+      } else if (typeof developFunctionNode === "function")
+        developFunctionNode(node);
+      else toast(I18n.t("函数开发会话未就绪（app-tools.js）"), "warn");
+    };
+    devRow.appendChild(devBtn);
+    const devHint = document.createElement("span");
+    devHint.style.cssText = "font-size:10.5px;opacity:.6";
+    devHint.textContent = isTool
+      ? I18n.t("用会话改造 / 扩展本工具")
+      : I18n.t("用会话改造 / 扩展本函数");
+    devRow.appendChild(devHint);
+    devInfo.appendChild(devRow);
+    body.appendChild(devInfo);
+  }
+  /* 参数设置面板不再挂进 body：整块搬进「设置」跳窗（NODE_SETTINGS_FORMS 的
+     function / tool 登记），卡片上只留上面的只读摘要行 + 头部「设置」入口。 */
+  /* 收起态工具卡＝叶子外观，拿不到超级节点折叠卡那份 card.ondblclick，
+     「双击进入子画布」这条既有交互在工具节点上整条缺失（只能去点头部 ↪）。
+     这里按同一口径补上：双击板身空白 / 摘要文字即 enterSuper 进入内部画布。
+     交互控件（按钮 · 输入框 · 代码编辑器 · 端子）内的双击一律不算——那是要选词与改值。 */
+  if (isTool) {
+    body.ondblclick = (ev) => {
+      const t = ev.target;
+      if (
+        t &&
+        typeof t.closest === "function" &&
+        /* .fn-tool-settings 如今只存在于「设置」跳窗里（不在板身内），排除项留着不动：
+           万一将来又在卡片里挂面板，这条判定仍然是对的。 */
+        t.closest(
+          "button, input, textarea, select, a, .port, .fn-tool-settings",
+        )
+      )
+        return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      enterSuper(node);
+    };
+    /* 提示与折叠卡一致（设置面板已搬进跳窗，板身空白处不再被它占着） */
+    body.title = I18n.t("双击进入子画布");
+  }
+}
+
+/* ═════ 素材节点 body：内容条目逐条列出（标题 + 该类型的编辑 / 预览视图）═════
+   与端子的对应关系：数组第 i 条 = 第 i 个输入端子 = 第 i 个输出端子。
+   正文一律不落在节点上 —— 读写都走素材库（app-assets.js 的条目视图缓存），
+   所以「改内容＝改库」「删画布不丢」这两条语义天然成立。 */
+function assetItemTextRow(node, it, view) {
+  const ta = document.createElement("textarea");
+  ta.className = "n-text n-asset-text";
+  ta.spellcheck = false;
+  ta.placeholder = I18n.t("在此输入文本内容（直接写进素材库该条目）");
+  ta.value = String(view.text || "");
+  /* 打字只改内存；失焦才写盘 —— 素材库是全应用共享的，不能每个按键落一次盘 */
+  ta.addEventListener("input", () => {
+    if (typeof assetItemViewSet === "function")
+      assetItemViewSet(node.assetId, it.id, { text: ta.value });
+  });
+  ta.addEventListener("blur", (ev) => {
+    ev.stopPropagation();
+    if (typeof assetItemCommitText === "function")
+      assetItemCommitText(node, it);
+  });
+  ta.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  ta.addEventListener("click", (ev) => ev.stopPropagation());
+  return ta;
+}
+function assetItemMediaRow(node, it, view, type) {
+  const box = document.createElement("div");
+  const p = String(view.absPath || "").trim();
+  if (type === "image") {
+    box.className = "n-img n-asset-img";
+    if (p) {
+      const img = document.createElement("img");
+      img.src = window.api.toFileUrl(p);
+      bindImagePreview(img, p, it.title);
+      box.appendChild(img);
+      box.appendChild(makeImageMetaEl(p));
+    } else {
+      const g = document.createElement("div");
+      g.className = "n-av-ghost";
+      g.textContent = view.loading
+        ? I18n.t("读取中…")
+        : I18n.t("（无图像）点击下方按钮选择");
+      box.appendChild(g);
+    }
+  } else {
+    box.className = "n-av n-asset-av";
+    if (p) {
+      const media = document.createElement(
+        type === "video" ? "video" : "audio",
+      );
+      media.controls = true;
+      media.preload = "metadata";
+      media.className = "n-av-el";
+      media.src = fileUrlWithBust(p, p);
+      if (type === "video") media.playsInline = true;
+      const bad = document.createElement("div");
+      bad.className = "n-av-ghost";
+      bad.style.display = "none";
+      bad.textContent = I18n.t("文件不存在或本机播放器无法解码该格式");
+      media.addEventListener("error", () => {
+        media.style.display = "none";
+        bad.style.display = "";
+      });
+      box.appendChild(media);
+      box.appendChild(bad);
+    } else {
+      const g = document.createElement("div");
+      g.className = "n-av-ghost";
+      g.textContent = view.loading
+        ? I18n.t("读取中…")
+        : I18n.t("（无内容）点击下方按钮选择");
+      box.appendChild(g);
+    }
+  }
+  const ops = document.createElement("div");
+  ops.className = "n-img-ops n-asset-ops";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "mini";
+  pick.textContent =
+    (p ? I18n.t("更换") : I18n.t("选择")) + assetItemTypeLabel(type);
+  pick.title = I18n.t(
+    "从本机选一个文件复制进素材库该条目（旧内容先进版本目录，可撤销）",
+  );
+  pick.onclick = (ev) => {
+    ev.stopPropagation();
+    if (typeof assetItemPickFile === "function")
+      assetItemPickFile(node, it, type);
+  };
+  ops.appendChild(pick);
+  if (p) {
+    const show = document.createElement("button");
+    show.type = "button";
+    show.className = "mini";
+    show.textContent = I18n.t("在文件夹中显示");
+    show.title = p;
+    show.onclick = (ev) => {
+      ev.stopPropagation();
+      if (window.api && window.api.shellShowItem) window.api.shellShowItem(p);
+    };
+    ops.appendChild(show);
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "n-asset-media";
+  wrap.appendChild(box);
+  wrap.appendChild(ops);
+  if (p) {
+    const nm = document.createElement("div");
+    nm.className = "n-asset-file";
+    nm.textContent = fileName(p);
+    nm.title = p;
+    wrap.appendChild(nm);
+  }
+  return wrap;
+}
+function assetItemRow(node, it, idx) {
+  const row = document.createElement("div");
+  row.className = "n-asset-item " + it.type;
+  const hd = document.createElement("div");
+  hd.className = "n-asset-hd";
+  const nm = document.createElement("span");
+  nm.className = "n-asset-name";
+  nm.textContent = it.title;
+  nm.title =
+    I18n.t("内容端子 ") +
+    (idx + 1) +
+    " · " +
+    assetItemTypeLabel(it.type) +
+    "\n" +
+    I18n.t("左右两个端子同一条目：连入即写入素材库，输出即读出该条目的内容");
+  const kind = document.createElement("span");
+  kind.className = "n-asset-kind " + it.type;
+  kind.textContent = assetItemTypeLabel(it.type);
+  /* 小同步按钮：该条目的输入端子连入了新内容时点亮，点一下才更换条目内容（可撤销） */
+  const syncOn =
+    typeof assetItemSyncPending === "function" &&
+    assetItemSyncPending(node, idx);
+  const sync = document.createElement("button");
+  sync.type = "button";
+  sync.className = "n-asset-sync" + (syncOn ? " on" : "");
+  sync.textContent = "⟳";
+  sync.title = I18n.t(
+    "同步：把本条目输入端子连入的内容写进素材库（端子无内容时连入即自动同步）",
+  );
+  sync.onclick = (ev) => {
+    ev.stopPropagation();
+    if (typeof assetItemSyncFromPort === "function")
+      assetItemSyncFromPort(node, idx);
+    else toast(I18n.t("端子同步将在下一项任务接入"), "warn");
+  };
+  hd.appendChild(nm);
+  hd.appendChild(kind);
+  hd.appendChild(sync);
+  row.appendChild(hd);
+  const view =
+    (typeof assetItemViewGet === "function" &&
+      assetItemViewGet(node.assetId, it.id)) || { loading: true };
+  const inr = document.createElement("div");
+  inr.className = "n-asset-cell";
+  if (view.missing) {
+    const miss = document.createElement("div");
+    miss.className = "n-av-ghost";
+    miss.textContent = I18n.t("内容文件缺失（素材库里的实体文件不在了）");
+    inr.appendChild(miss);
+  } else if (it.type === "text") {
+    inr.appendChild(assetItemTextRow(node, it, view));
+  } else {
+    inr.appendChild(assetItemMediaRow(node, it, view, it.type));
+  }
+  row.appendChild(inr);
+  return row;
+}
+function buildAssetBody(node, body) {
+  const items = assetItems(node);
+  if (!String(node.assetId || "").trim()) {
+    const hint = document.createElement("div");
+    hint.className = "n-empty";
+    hint.textContent = I18n.t(
+      "未绑定素材：右键本节点选「绑定素材库…」或「上传…」",
+    );
+    body.appendChild(hint);
+    return;
+  }
+  if (!items.length) {
+    const hint = document.createElement("div");
+    hint.className = "n-empty";
+    hint.textContent = I18n.t(
+      "该素材还没有内容：点上方「设置」添加文本 / 图像 / 音频 / 视频",
+    );
+    body.appendChild(hint);
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "n-asset-list";
+  for (let i = 0; i < items.length; i++)
+    list.appendChild(assetItemRow(node, items[i], i));
+  body.appendChild(list);
+  /* 没缓存过的条目：异步向素材库读一次，读齐后合并成一次重画（内容本体永远在库里） */
+  if (typeof assetItemsEnsure === "function") assetItemsEnsure(node);
+}
+
 function buildBody(node, body) {
   /* 浏览态（未选中）优先走只读视图分支；handler 未接管时回落到下方编辑态渲染 */
   if (nodeBrowseMode(node) && buildBrowseBody(node, body)) return;
+  /* 函数节点 / 工具节点（工具＝super + tool:true 变体，判定 isToolNode）：
+     参数即端子 · 收起时是叶子形态。工具壳被用户展开（进入内部子画布）时
+     仍走下方 super 分支，由舞台承载内部图。 */
+  if (node.kind === "function" || (isToolNode(node) && !superIsOpenShell(node))) {
+    ensureFnToolNodeState(node);
+    buildFnToolBodyMain(node, body, node.kind !== "function");
+    return;
+  }
+  /* 素材节点（kind "asset"）：内容条目 = 端子，body 按类型逐条列出全部内容
+     （标题 + 内容视图，竖排 · 可下拉滚动）。编辑 / 浏览走素材库读写（app-assets.js），
+     改的就是库里那份 —— 删掉画布，内容照样留在素材夹里。 */
+  if (node.kind === "asset") {
+    buildAssetBody(node, body);
+    return;
+  }
   if (node.kind === "input_text") {
     if (node.ro) {
       const ta = document.createElement("textarea");
@@ -5001,6 +7623,92 @@ function buildBody(node, body) {
       ops.appendChild(b2);
       body.appendChild(ops);
     }
+  } else if (node.kind === "input_audio" || node.kind === "input_video") {
+    /* 音频 / 视频输入：选择与本机预览。mediaAsset 存原始绝对路径（音视频往往很大，
+       不复制进工作流资产）；输出端子把该文件汇成 file:/// URL 交给下游。 */
+    const isVid = node.kind === "input_video";
+    const wrap = document.createElement("div");
+    wrap.className = "n-av";
+    wrap.title = I18n.t("点击此处可更换文件；也可直接把媒体文件拖到本节点");
+    wrap.onclick = (ev) => {
+      /* 播放器控件本体不触发换文件（点了也没选到空白处） */
+      if (ev.target && ev.target.classList && ev.target.classList.contains("n-av-el"))
+        return;
+      pickMediaForNode(node);
+    };
+    const p = String(node.mediaAsset || "").trim();
+    if (p) {
+      const media = document.createElement(isVid ? "video" : "audio");
+      media.controls = true;
+      media.preload = "metadata";
+      media.className = "n-av-el";
+      media.src = fileUrlWithBust(p, p);
+      if (isVid) media.playsInline = true;
+      const bad = document.createElement("div");
+      bad.className = "n-av-ghost";
+      bad.style.display = "none";
+      bad.textContent = I18n.t("文件不存在或本机播放器无法解码该格式");
+      media.addEventListener("error", () => {
+        media.style.display = "none";
+        bad.style.display = "";
+      });
+      wrap.appendChild(media);
+      wrap.appendChild(bad);
+    } else {
+      const g = document.createElement("div");
+      g.className = "n-av-ghost";
+      g.textContent =
+        (isVid ? I18n.t("未选择视频") : I18n.t("未选择音频")) +
+        "\n" +
+        I18n.t("点击此处选择，或直接把媒体文件拖到本节点");
+      g.style.whiteSpace = "pre-line";
+      wrap.appendChild(g);
+    }
+    body.appendChild(wrap);
+
+    const nameRow = document.createElement("div");
+    nameRow.className = "n-av-name" + (p ? "" : " empty");
+    nameRow.textContent = p
+      ? fileName(p)
+      : isVid
+        ? I18n.t("未绑定视频文件")
+        : I18n.t("未绑定音频文件");
+    if (p) {
+      nameRow.title = p + "\n" + I18n.t("点击在文件夹中显示");
+      nameRow.onclick = () => {
+        if (window.api && window.api.shellShowItem) window.api.shellShowItem(p);
+      };
+    }
+    body.appendChild(nameRow);
+
+    const ops = document.createElement("div");
+    ops.className = "n-img-ops n-av-ops";
+    const b1 = document.createElement("button");
+    b1.className = "mini";
+    b1.textContent = isVid ? I18n.t("选择视频") : I18n.t("选择音频");
+    b1.onclick = () => pickMediaForNode(node);
+    const b2 = document.createElement("button");
+    b2.className = "mini";
+    b2.textContent = I18n.t("清除");
+    b2.onclick = () => {
+      if (!p) return;
+      pushHistory();
+      node.mediaAsset = "";
+      node.sourceName = "";
+      clearDownstream(node.id);
+      scheduleSave();
+      renderCanvas();
+    };
+    ops.appendChild(b1);
+    ops.appendChild(b2);
+    body.appendChild(ops);
+
+    const note = document.createElement("div");
+    note.className = "n-av-note";
+    note.textContent = isVid
+      ? I18n.t("视频输入 · 输出该文件的 URL")
+      : I18n.t("音频输入 · 输出该文件的 URL");
+    body.appendChild(note);
   } else if (node.kind === "input_file") {
     const list = document.createElement("div");
     list.className = "n-bentries db-file-list";
@@ -6013,22 +8721,30 @@ function buildBody(node, body) {
       if (!viewport.querySelector(".wf-node") && !viewport.querySelector(".wf-mark")) {
         const empty = document.createElement("div");
         empty.className = "super-stage-empty";
-        empty.textContent = I18n.t("将节点拖入此处");
+        /* 工具壳层：空画布时点明「端子在左右两侧」，与收起态的参数契约对上 */
+        empty.textContent = isToolNode(node)
+          ? I18n.t("拖入节点，或在此右键新建（左＝参数入 · 右＝参数出）")
+          : I18n.t("将节点拖入此处");
         viewport.appendChild(empty);
       }
       stage.appendChild(viewport);
       const ic = inputCount(node);
       for (let pi = 0; pi < ic; pi++) {
         const p = document.createElement("div");
+        const info = superInnerPortInfo(node, "in", pi);
         p.className =
           "port out super-port super-inner-bridge" +
-          (superInPortIsControl(node, pi) ? " ctrl" : "");
+          (info.ctrl ? " ctrl" : "") +
+          (info.img ? " img" : "");
         p.dataset.node = node.id;
         p.dataset.fromIndex = String(pi);
-        p.title =
-          I18n.t("内侧输入端子 ") +
-          (pi + 1) +
-          I18n.t("（对应外侧输入 · 拖到内部节点 · 右键移除）");
+        p.title = info.title;
+        if (info.badge) {
+          const b = document.createElement("span");
+          b.className = "port-badge zh-label";
+          b.textContent = info.badge;
+          p.appendChild(b);
+        }
         p.style.left = "2px";
         p.style.right = "auto";
         p.style.top = superBridgeLocalY(node, pi) - PORT_R + "px";
@@ -6038,15 +8754,20 @@ function buildBody(node, body) {
       const oc = outputCount(node);
       for (let poi = 0; poi < oc; poi++) {
         const p = document.createElement("div");
+        const info = superInnerPortInfo(node, "out", poi);
         p.className =
           "port in super-port super-inner-sink" +
-          (superOutPortIsControl(node, poi) ? " ctrl" : "");
+          (info.ctrl ? " ctrl" : "") +
+          (info.img ? " img" : "");
         p.dataset.node = node.id;
         p.dataset.idx = String(poi);
-        p.title =
-          I18n.t("内侧输出端子 ") +
-          (poi + 1) +
-          I18n.t("（对应外侧输出 · 从内部节点拖入 · 右键移除）");
+        p.title = info.title;
+        if (info.badge) {
+          const b = document.createElement("span");
+          b.className = "port-badge zh-label";
+          b.textContent = info.badge;
+          p.appendChild(b);
+        }
         p.style.right = "2px";
         p.style.left = "auto";
         p.style.top = superSinkLocalY(node, poi) - PORT_R + "px";
@@ -6087,6 +8808,8 @@ function buildBody(node, body) {
         };
       });
       body.appendChild(stage);
+      /* 展开态同样要能改参数（参数即端子）：原来在舞台下方挂一份设置面板，
+         现在统一走头部「设置」跳窗 —— 舞台不被挤动，内部子节点也不会因开设置而位移。 */
     }
     }
   } else if (node.kind === "judge") {
@@ -6123,249 +8846,11 @@ function buildBody(node, body) {
       err.textContent = "✕ " + node.error;
       body.appendChild(err);
     }
-  } else if (node.kind === "chat") {
-    /* 文本对话节点：dsh 风格透明消息流（角色行 + 思考折叠 + 工具 chips） */
-    const list = document.createElement("div");
-    list.className = "chat-list";
-    list.addEventListener(
-      "scroll",
-      () => {
-        /* 程序滚动（自动跟随 / 还原位置）不改写用户的跟随意图 */
-        if (list._convAutoScroll) return;
-        node._chatNearBottom = isScrollNearBottom(list);
-        node._chatScrollTop = list.scrollTop;
-      },
-      { passive: true },
-    );
-    const msgs = node.messages || [];
-    if (!msgs.length && !node.running) {
-      const hint = document.createElement("div");
-      hint.className = "n-empty";
-      hint.textContent = I18n.t("开始对话吧…");
-      list.appendChild(hint);
-    }
-    for (let i = 0; i < msgs.length; i++) list.appendChild(dshMsgBlock(msgs[i], node.id, i));
-    if (node.running) {
-      const row = document.createElement("div");
-      row.className = "dsh-msg dsh-ai";
-      const head = document.createElement("div");
-      head.className = "dsh-msg-head";
-      const role = document.createElement("span");
-      role.className = "dsh-role live";
-      role.textContent = I18n.t("AI · 运行中");
-      head.appendChild(role);
-      row.appendChild(head);
-      const tb = document.createElement("div");
-      tb.className = "dsh-think-live";
-      tb.id = "chat-think-" + node.id;
-      const thinkTxt = thinkingTextOf(node);
-      tb.textContent = thinkTxt || "";
-      row.appendChild(tb);
-      const sb = document.createElement("div");
-      sb.className = "dsh-msg-body dsh-stream";
-      sb.id = "chat-stream-" + node.id;
-      sb.textContent = node._pendingAnswer || "";
-      row.appendChild(sb);
-      list.appendChild(row);
-    }
-    body.appendChild(list);
-    scheduleHistoryCollapse(list);
-
-    /* 智能助手开关（dsh agent 模式）：关闭 = 原 API 模式（降级路径） */
-    const agRow = document.createElement("div");
-    agRow.className = "chat-agent-row";
-    const agLabel = document.createElement("label");
-    agLabel.className = "mini-toggle";
-    const agCb = document.createElement("input");
-    agCb.type = "checkbox";
-    agCb.checked = !!node.agent;
-    const agSpan = document.createElement("span");
-    agSpan.textContent = I18n.t("智能助手（可读文件 / 联网 / 执行命令）");
-    agLabel.appendChild(agCb);
-    agLabel.appendChild(agSpan);
-    agCb.addEventListener("change", () => {
-      node.agent = agCb.checked;
-      scheduleSave(true);
-      renderCanvas();
-    });
-    agRow.appendChild(agLabel);
-    if (node.agent) {
-      const ws = document.createElement("input");
-      ws.type = "text";
-      ws.className = "agent-ws";
-      const wfWs = wfWorkspace();
-      if (wfWs) {
-        ws.readOnly = true;
-        ws.value = wfWs;
-        ws.title = I18n.t("画布已设置统一工作目录,本节点只读继承");
-        ws.placeholder = "";
-      } else {
-        ws.value = node.agentWorkspace || "";
-        ws.placeholder = I18n.t("工作目录（可留空 = 应用数据目录）…");
-        ws.title = I18n.t("助手可读写此目录下的文件；留空使用应用默认数据目录");
-      }
-      ws.addEventListener("change", () => {
-        node.agentWorkspace = ws.value.trim();
-        scheduleSave(true);
-      });
-      agRow.appendChild(ws);
-      agRow.appendChild(
-        workspaceOpenButton(() =>
-          wfWs ? wfWs : ws.value || node.agentWorkspace || "",
-        ),
-      );
-      if (!wfWs) {
-        agRow.appendChild(
-          workspaceBrowseButton(ws, (p) => {
-            node.agentWorkspace = p;
-            scheduleSave(true);
-          }),
-        );
-      }
-    }
-    body.appendChild(agRow);
-
-    const inputRow = document.createElement("div");
-    inputRow.className = "chat-input-row";
-    const ta = document.createElement("textarea");
-    ta.className = "chat-input";
-    ta.rows = 2;
-    const chatEnterSend =
-      !S.config.dsh || S.config.dsh.chatEnter !== "newline";
-    ta.placeholder = node.agent
-      ? chatEnterSend
-        ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能）")
-        : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；输入 / 呼出技能）")
-      : chatEnterSend
-        ? I18n.t("输入消息…（Enter 发送，Shift+Enter 换行）")
-        : I18n.t("输入消息…（Enter 换行，Ctrl+Enter 发送）");
-    const btn = document.createElement("button");
-    btn.className = "mini primary";
-    btn.textContent = I18n.t("执行");
-    btn.title = chatEnterSend ? I18n.t("发送消息（Enter）") : I18n.t("发送消息（Ctrl+Enter）");
-    const send = () => {
-      const t = ta.value;
-      if (!t.trim()) return;
-      ta.value = "";
-      closeSlashMenu();
-      chatSend(node, t);
-    };
-    if (node.agent) {
-      ta.addEventListener("input", () => slashTick(ta, "node"));
-      ta.addEventListener("compositionend", () => slashTick(ta, "node"));
-    }
-    ta.addEventListener("keydown", (ev) => {
-      if (node.agent && slashKey(ta, ev)) return;
-      if (chatEnterSend) {
-        if (ev.key === "Enter" && !ev.shiftKey) {
-          ev.preventDefault();
-          send();
-        }
-      } else if (ev.key === "Enter" && ev.ctrlKey) {
-        ev.preventDefault();
-        send();
-      }
-    });
-    btn.onclick = send;
-    inputRow.appendChild(ta);
-    inputRow.appendChild(btn);
-    if ((node.messages && node.messages.length) || node.output || node.error) {
-      const clr = document.createElement("button");
-      clr.className = "mini";
-      clr.textContent = I18n.t("清空");
-      clr.title = I18n.t("清空本节点输出与会话（历史 / 工具日志一并重置）");
-      clr.onclick = (ev) => {
-        ev.stopPropagation();
-        if (node.running) {
-          toast(I18n.t("请先终止当前运行"), "warn");
-          return;
-        }
-        clearOutput(node);
-      };
-      inputRow.appendChild(clr);
-    }
-    body.appendChild(inputRow);
   } else if (node.kind === "wait_file") {
-    const pRow = document.createElement("div");
-    pRow.className = "sv-path";
-    const inp = document.createElement("input");
-    inp.type = "text";
-    const hasWs = !!String(wfWorkspace() || "").trim();
-    inp.placeholder = hasWs
-      ? I18n.t("相对工作目录或绝对路径（待生成的文件）…")
-      : I18n.t("监视路径（绝对路径，或先设工作目录后用相对路径）…");
-    inp.value = node.waitPath || "";
-    inp.title = I18n.t("待监视的文件路径");
-    inp.addEventListener("change", () => {
-      node.waitPath = applySuperRelToPath(
-        node,
-        preferRelativeSavePath(inp.value.trim()),
-      );
-      inp.value = node.waitPath;
-      scheduleSave();
+    /* 监视路径 / 轮询间隔是设置 → ⚙ 跳窗；浏览、位置是动作，留在摘要行右边 */
+    appendNodeSettingsSummary(node, body, {
+      actions: waitFileActionButtons(node),
     });
-    inp.addEventListener("input", () => {
-      node.waitPath = inp.value.trim();
-    });
-    const br = document.createElement("button");
-    br.className = "mini";
-    br.textContent = I18n.t("浏览");
-    br.title = I18n.t("选择已有文件路径（只读选取，不会创建、修改或覆盖任何文件）");
-    br.onclick = async () => {
-      const r = await window.api.fileOpenDialog({
-        title: I18n.t("选择要监视的文件路径"),
-        filters: [{ name: I18n.t("全部文件"), extensions: ["*"] }],
-      });
-      if (r && r.path) {
-        node.waitPath = applySuperRelToPath(
-          node,
-          preferRelativeSavePath(r.path),
-        );
-        scheduleSave();
-        renderCanvas();
-      }
-    };
-    pRow.appendChild(inp);
-    pRow.appendChild(br);
-    if (node.waitReady || String(node.waitPath || "").trim()) {
-      const op = document.createElement("button");
-      op.className = "mini";
-      op.textContent = I18n.t("位置");
-      op.title = I18n.t("在文件夹中显示监视路径（若文件尚不存在可能无法定位）");
-      op.onclick = () => {
-        const show = resolveSavePath(node.waitPath, node).path || "";
-        if (show) window.api.shellShowItem(show);
-      };
-      pRow.appendChild(op);
-    }
-    body.appendChild(pRow);
-
-    const intRow = document.createElement("div");
-    intRow.className = "wait-int-row";
-    const intLab = document.createElement("label");
-    intLab.className = "wait-int-lab";
-    intLab.textContent = I18n.t("轮询间隔（秒）");
-    const intInp = document.createElement("input");
-    intInp.type = "number";
-    intInp.min = "1";
-    intInp.max = "60";
-    intInp.step = "1";
-    intInp.value = String(
-      Math.max(1, Math.min(60, Math.round(Number(node.waitIntervalSec) || 2))),
-    );
-    intInp.title = I18n.t("文件未生成时每隔多少秒检查一次（1–60）");
-    intInp.onchange = () => {
-      node.waitIntervalSec = Math.max(
-        1,
-        Math.min(60, Math.round(Number(intInp.value) || 2)),
-      );
-      intInp.value = String(node.waitIntervalSec);
-      scheduleSave();
-    };
-    intLab.appendChild(intInp);
-    intRow.appendChild(intLab);
-    body.appendChild(intRow);
-
     const st = document.createElement("div");
     const ready = !!node.waitReady;
     st.className =
@@ -6386,101 +8871,9 @@ function buildBody(node, body) {
 
   } else if (node.kind === "timer") {
     normalizeTimerNode(node);
-    const modeRow = document.createElement("div");
-    modeRow.className = "wait-int-row";
-    const modeLab = document.createElement("label");
-    modeLab.className = "wait-int-lab";
-    modeLab.textContent = I18n.t("模式");
-    const modeSel = document.createElement("select");
-    for (const [v, lab] of [
-      ["once", I18n.t("一次（计划时间）")],
-      ["interval", I18n.t("间隔重复")],
-      ["cron", I18n.t("Cron 表达式")],
-    ]) {
-      const o = document.createElement("option");
-      o.value = v;
-      o.textContent = lab;
-      if (node.timerMode === v) o.selected = true;
-      modeSel.appendChild(o);
-    }
-    modeSel.onchange = () => {
-      pushHistory();
-      node.timerMode = modeSel.value;
-      node.timerNextAt = computeTimerNextAt(node, Date.now());
-      refreshTimerStatus(node);
-      scheduleSave();
-      renderCanvas();
-    };
-    modeLab.appendChild(modeSel);
-    modeRow.appendChild(modeLab);
-    body.appendChild(modeRow);
-
-    if (node.timerMode === "once") {
-      const row = document.createElement("div");
-      row.className = "sv-path";
-      const inp = document.createElement("input");
-      inp.type = "datetime-local";
-      inp.value = String(node.timerAt || "").slice(0, 16);
-      inp.title = I18n.t("系统本地时间，到点触发一次后自动解除武装");
-      inp.onchange = () => {
-        node.timerAt = inp.value || "";
-        node.timerNextAt = computeTimerNextAt(node, Date.now());
-        refreshTimerStatus(node);
-        scheduleSave();
-        renderCanvas();
-      };
-      row.appendChild(inp);
-      body.appendChild(row);
-    } else if (node.timerMode === "interval") {
-      const lab = document.createElement("div");
-      lab.className = "ap-label";
-      lab.style.cssText = "margin:6px 0 4px;font-size:11px;color:var(--muted)";
-      lab.textContent = I18n.t("每隔（天 / 时 / 分）");
-      body.appendChild(lab);
-      appendDurationFields(body, node.timerEverySec, (sec) => {
-        pushHistory();
-        node.timerEverySec = sec;
-        node.timerNextAt = computeTimerNextAt(node, Date.now());
-        refreshTimerStatus(node);
-        scheduleSave();
-        renderCanvas();
-      });
-      const hint = document.createElement("div");
-      hint.className = "n-status";
-      hint.style.marginTop = "4px";
-      hint.textContent =
-        I18n.t("当前间隔：") + formatDurationLabel(node.timerEverySec);
-      body.appendChild(hint);
-    } else {
-      const row = document.createElement("div");
-      row.className = "sv-path cron-row";
-      const inp = document.createElement("input");
-      inp.type = "text";
-      inp.placeholder = "0 * * * *";
-      inp.value = node.timerCron || "";
-      inp.title = I18n.t("五段 Cron：分 时 日 月 周（本地时间；周 0/7=周日）");
-      inp.onchange = () => {
-        node.timerCron = inp.value.trim() || "0 * * * *";
-        inp.value = node.timerCron;
-        node.timerNextAt = computeTimerNextAt(node, Date.now());
-        refreshTimerStatus(node);
-        scheduleSave();
-        renderCanvas();
-      };
-      row.appendChild(inp);
-      const smart = document.createElement("button");
-      smart.type = "button";
-      smart.className = "mini primary";
-      smart.textContent = I18n.t("智能填写");
-      smart.title = I18n.t("用自然语言描述计划，由 AI 生成 Cron 表达式");
-      smart.onclick = (ev) => {
-        ev.stopPropagation();
-        smartFillTimerCron(node);
-      };
-      row.appendChild(smart);
-      body.appendChild(row);
-    }
-
+    /* 模式 / 计划时间 / 间隔 / Cron 全是设置 → ⚙ 跳窗（「智能填写」跟着 Cron 字段进窗）；
+       body 只留摘要 + 状态 + 立即触发 / 目标数这类动作 */
+    appendNodeSettingsSummary(node, body);
     const st = document.createElement("div");
     st.className =
       "n-status" +
@@ -6514,17 +8907,8 @@ function buildBody(node, body) {
 
   } else if (node.kind === "delayer") {
     normalizeDelayerNode(node);
-    const lab = document.createElement("div");
-    lab.className = "ap-label";
-    lab.style.cssText = "margin:0 0 4px;font-size:11px;color:var(--muted)";
-    lab.textContent = I18n.t("延时（天 / 时 / 分）");
-    body.appendChild(lab);
-    appendDurationFields(body, node.delaySec, (sec) => {
-      pushHistory();
-      node.delaySec = sec;
-      scheduleSave();
-      renderCanvas();
-    });
+    /* 延时时长（天 / 时 / 分）→ ⚙ 跳窗 */
+    appendNodeSettingsSummary(node, body);
     const st = document.createElement("div");
     st.className =
       "n-status" +
@@ -6536,53 +8920,8 @@ function buildBody(node, body) {
     body.appendChild(st);
   } else if (node.kind === "sequencer") {
     normalizeSequencerNode(node);
-    const row = document.createElement("div");
-    row.className = "wait-int-row";
-    const lab = document.createElement("label");
-    lab.className = "wait-int-lab";
-    lab.textContent = I18n.t("输出路数");
-    const inp = document.createElement("input");
-    inp.type = "number";
-    inp.min = "2";
-    inp.max = "8";
-    inp.step = "1";
-    inp.value = String(node.seqOutputs);
-    inp.onchange = () => {
-      pushHistory();
-      node.seqOutputs = Math.max(
-        2,
-        Math.min(8, Math.round(Number(inp.value) || 3)),
-      );
-      inp.value = String(node.seqOutputs);
-      scheduleSave();
-      renderCanvas();
-    };
-    lab.appendChild(inp);
-    row.appendChild(lab);
-    body.appendChild(row);
-    const gapLab = document.createElement("div");
-    gapLab.className = "ap-label";
-    gapLab.style.cssText = "margin:8px 0 4px;font-size:11px;color:var(--muted)";
-    gapLab.textContent = I18n.t("步间间隔（天 / 时 / 分，可全 0）");
-    body.appendChild(gapLab);
-    appendDurationFields(
-      body,
-      node.seqGapSec || 0,
-      (sec) => {
-        pushHistory();
-        node.seqGapSec = Math.max(0, Math.min(DUR_MAX_SEC, sec));
-        scheduleSave();
-        renderCanvas();
-      },
-      { allowZero: true },
-    );
-    const gapHint = document.createElement("div");
-    gapHint.className = "n-status";
-    gapHint.style.marginTop = "4px";
-    gapHint.textContent = node.seqGapSec
-      ? I18n.t("步间间隔：") + formatDurationLabel(node.seqGapSec)
-      : I18n.t("步间间隔：无（立即接续）");
-    body.appendChild(gapHint);
+    /* 输出路数 / 步间间隔 → ⚙ 跳窗（改路数会重画端子，表单里带 rerender） */
+    appendNodeSettingsSummary(node, body);
     const st = document.createElement("div");
     st.className =
       "n-status" +
@@ -6594,30 +8933,8 @@ function buildBody(node, body) {
     body.appendChild(st);
   } else if (node.kind === "gate") {
     normalizeGateNode(node);
-    const row = document.createElement("div");
-    row.className = "wait-int-row";
-    const lab = document.createElement("label");
-    lab.className = "wait-int-lab";
-    lab.textContent = I18n.t("输入路数");
-    const inp = document.createElement("input");
-    inp.type = "number";
-    inp.min = "2";
-    inp.max = "8";
-    inp.step = "1";
-    inp.value = String(node.gateInputs);
-    inp.onchange = () => {
-      pushHistory();
-      node.gateInputs = Math.max(
-        2,
-        Math.min(8, Math.round(Number(inp.value) || 2)),
-      );
-      inp.value = String(node.gateInputs);
-      scheduleSave();
-      renderCanvas();
-    };
-    lab.appendChild(inp);
-    row.appendChild(lab);
-    body.appendChild(row);
+    /* 输入路数 → ⚙ 跳窗；清除到达是动作，留在 body */
+    appendNodeSettingsSummary(node, body);
     const ops = document.createElement("div");
     ops.className = "bentry-ops";
     const reset = document.createElement("button");
@@ -6645,30 +8962,8 @@ function buildBody(node, body) {
     body.appendChild(st);
   } else if (node.kind === "splitter") {
     normalizeSplitterNode(node);
-    const row = document.createElement("div");
-    row.className = "wait-int-row";
-    const lab = document.createElement("label");
-    lab.className = "wait-int-lab";
-    lab.textContent = I18n.t("输出路数");
-    const inp = document.createElement("input");
-    inp.type = "number";
-    inp.min = "2";
-    inp.max = "8";
-    inp.step = "1";
-    inp.value = String(node.splitOutputs);
-    inp.onchange = () => {
-      pushHistory();
-      node.splitOutputs = Math.max(
-        2,
-        Math.min(8, Math.round(Number(inp.value) || 3)),
-      );
-      inp.value = String(node.splitOutputs);
-      scheduleSave();
-      renderCanvas();
-    };
-    lab.appendChild(inp);
-    row.appendChild(lab);
-    body.appendChild(row);
+    /* 输出路数 → ⚙ 跳窗 */
+    appendNodeSettingsSummary(node, body);
     const st = document.createElement("div");
     st.className =
       "n-status" +
@@ -6680,30 +8975,8 @@ function buildBody(node, body) {
     body.appendChild(st);
   } else if (node.kind === "counter") {
     normalizeCounterNode(node);
-    const row = document.createElement("div");
-    row.className = "wait-int-row";
-    const lab = document.createElement("label");
-    lab.className = "wait-int-lab";
-    lab.textContent = I18n.t("每 N 次放行");
-    const inp = document.createElement("input");
-    inp.type = "number";
-    inp.min = "2";
-    inp.max = "99";
-    inp.step = "1";
-    inp.value = String(node.counterEvery);
-    inp.onchange = () => {
-      pushHistory();
-      node.counterEvery = Math.max(
-        2,
-        Math.min(99, Math.round(Number(inp.value) || 2)),
-      );
-      inp.value = String(node.counterEvery);
-      scheduleSave();
-      renderCanvas();
-    };
-    lab.appendChild(inp);
-    row.appendChild(lab);
-    body.appendChild(row);
+    /* 每 N 次放行 → ⚙ 跳窗；清零计数是动作，留在 body */
+    appendNodeSettingsSummary(node, body);
     const ops = document.createElement("div");
     ops.className = "bentry-ops";
     const reset = document.createElement("button");
@@ -6733,56 +9006,8 @@ function buildBody(node, body) {
     body.appendChild(st);
   } else if (node.kind === "mutex") {
     normalizeMutexNode(node);
-    const row = document.createElement("div");
-    row.className = "wait-int-row";
-    const lab = document.createElement("label");
-    lab.className = "wait-int-lab";
-    lab.textContent = I18n.t("输入路数");
-    const inp = document.createElement("input");
-    inp.type = "number";
-    inp.min = "2";
-    inp.max = "8";
-    inp.step = "1";
-    inp.value = String(node.mutexInputs);
-    inp.onchange = () => {
-      pushHistory();
-      node.mutexInputs = Math.max(
-        2,
-        Math.min(8, Math.round(Number(inp.value) || 2)),
-      );
-      inp.value = String(node.mutexInputs);
-      scheduleSave();
-      renderCanvas();
-    };
-    lab.appendChild(inp);
-    row.appendChild(lab);
-    body.appendChild(row);
-    const modeRow = document.createElement("div");
-    modeRow.className = "wait-int-row";
-    const modeLab = document.createElement("label");
-    modeLab.className = "wait-int-lab";
-    modeLab.textContent = I18n.t("选择模式");
-    const modeSel = document.createElement("select");
-    for (const [v, labT] of [
-      ["first", I18n.t("先到优先")],
-      ["priority", I18n.t("端口优先（小号优先）")],
-      ["random", I18n.t("随机一路")],
-    ]) {
-      const o = document.createElement("option");
-      o.value = v;
-      o.textContent = labT;
-      modeSel.appendChild(o);
-    }
-    modeSel.value = node.mutexMode;
-    modeSel.onchange = () => {
-      pushHistory();
-      node.mutexMode = modeSel.value;
-      scheduleSave();
-      renderCanvas();
-    };
-    modeLab.appendChild(modeSel);
-    modeRow.appendChild(modeLab);
-    body.appendChild(modeRow);
+    /* 输入路数 / 选择模式 → ⚙ 跳窗 */
+    appendNodeSettingsSummary(node, body);
     const st = document.createElement("div");
     st.className =
       "n-status" +
@@ -6793,8 +9018,7 @@ function buildBody(node, body) {
       I18n.t("多入选一 · ") + mutexModeLabel(node.mutexMode);
     body.appendChild(st);
   } else if (node.kind === "music_gen") {
-    appendMediaGenParamControls(body, node);
-    appendMediaGenPathControls(body, node, "audio");
+    appendMediaGenSummaryBody(node, body, "audio");
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
@@ -6830,17 +9054,73 @@ function buildBody(node, body) {
       st.textContent = node.error;
       body.appendChild(st);
     }
+  } else if (node.kind === "tts_gen") {
+    /* 未安装警示条（GPT-SoVITS 插件 id = tts-local；安装后 S.plugins 缓存刷新自动消失） */
+    if (!appPluginInstalled("tts-local")) {
+      const warn = document.createElement("div");
+      warn.className = "n-empty n-plugin-warn";
+      warn.textContent = I18n.t("⚠ GPT-SoVITS 插件未安装：请在「插件 · GPT-SoVITS 语音合成」中安装后使用本节点");
+      warn.title = I18n.t("插件 · GPT-SoVITS 语音合成：设置安装目录 → 安装");
+      body.appendChild(warn);
+    }
+    /* 文本来源提示（端子 T） */
+    const srcHint = document.createElement("div");
+    srcHint.className = "n-empty";
+    srcHint.textContent = I18n.t("待合成文本走端子 T（连接上游文本节点）");
+    body.appendChild(srcHint);
+    /* 音色 / 语速 / 输出格式 / 输出路径 → ⚙ 跳窗；body 留一行参数摘要 +
+       一行输出路径（浏览 / 位置 / 打开是动作，留在摘要行上） */
+    appendMediaGenSummaryBody(node, body, "audio");
+    /* 后端面板（◎ 探测 / 状态 / 进度） */
+    appendMediaBackendPanel(body, node);
+    /* 试听播放条 */
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const aud = document.createElement("audio");
+    aud.id = "mgaud-" + node.id;
+    aud.controls = true;
+    aud.preload = "metadata";
+    prev.appendChild(aud);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "mgempty-" + node.id;
+    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "mgname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint =
+        (node.output && (node.output.path || node.output.text)) ||
+        mediaGenOutputRaw(node) ||
+        "";
+      if (hint) nameEl.textContent = fileName(hint);
+    }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
+    /* 状态行：ttsStatus + 进度标记 */
+    if (node.ttsStatus || node.error) {
+      const st = document.createElement("div");
+      st.className =
+        "n-status" +
+        (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+      st.textContent = node.error || node.ttsStatus;
+      body.appendChild(st);
+    }
   } else if (node.kind === "video_gen") {
     const meta = document.createElement("div");
     meta.className = "n-empty";
     meta.id = "mgmeta-" + node.id;
-    meta.textContent =
-      (node.videoMode || "fl2va").toUpperCase() +
-      " · " +
-      (node.ratio || "16:9");
+    meta.textContent = isCustomVideoGen(node)
+      ? I18n.t("自建") + " · " + ((node.wfMeta && node.wfMeta.title) || String(node.workflowId).slice(0, 10))
+      : (node.videoMode || "fl2va").toUpperCase() + " · " + (node.ratio || "16:9");
+    if (isCustomVideoGen(node)) meta.title = I18n.t("自建 ComfyUI 工作流：点 ⚙ 在设置窗口里换工作流 / 改参数映射");
     body.appendChild(meta);
-    appendMediaGenParamControls(body, node);
-    appendMediaGenPathControls(body, node, "video");
+    appendMediaGenSummaryBody(node, body, "video");
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
@@ -6885,100 +9165,12 @@ function buildBody(node, body) {
       warn.title = I18n.t("插件 · Remotion 动效视频：设置安装目录 → 安装（npm install）");
       body.appendChild(warn);
     }
-    const meta = document.createElement("div");
-    meta.className = "n-empty";
-    meta.id = "mgmeta-" + node.id;
-    meta.textContent =
-      (node.size || "1280x720") +
-      " · " +
-      (node.fps || 30) +
-      " fps · " +
-      (node.duration || 5) +
-      "s";
-    body.appendChild(meta);
-    /* 参数行：时长 / fps / 分辨率 */
-    const params = document.createElement("div");
-    params.className = "mg-params";
-    const addParam = (label, el) => {
-      const w = document.createElement("label");
-      w.className = "mg-param";
-      const labEl = document.createElement("span");
-      labEl.textContent = label;
-      w.appendChild(labEl);
-      w.appendChild(el);
-      params.appendChild(w);
-    };
-    const dur = document.createElement("input");
-    dur.type = "number";
-    dur.min = "1";
-    dur.max = "60";
-    dur.step = "1";
-    dur.value = String(node.duration != null ? node.duration : 5);
-    dur.title = I18n.t("时长（秒，1–60）");
-    dur.addEventListener("mousedown", (ev) => ev.stopPropagation());
-    dur.addEventListener("pointerdown", (ev) => ev.stopPropagation());
-    dur.addEventListener("change", () => {
-      node.duration = Math.max(1, Math.min(60, Number(dur.value) || 5));
-      dur.value = String(node.duration);
-      scheduleSave();
-      const metaEl = document.querySelector("#mgmeta-" + node.id);
-      if (metaEl)
-        metaEl.textContent =
-          (node.size || "1280x720") +
-          " · " +
-          (node.fps || 30) +
-          " fps · " +
-          (node.duration || 5) +
-          "s";
+    /* 分辨率 / fps / 时长 → ⚙ 跳窗；这一行 meta 就是设置摘要本身，id 沿用 mgmeta-
+       （老代码按这个 id 就地改写文本，syncNodeSettingsValue 认它） */
+    appendNodeSettingsSummary(node, body, {
+      id: "mgmeta-" + node.id,
+      text: remotionMetaText(node),
     });
-    addParam(I18n.t("时长"), dur);
-    const fps = document.createElement("input");
-    fps.type = "number";
-    fps.min = "1";
-    fps.max = "60";
-    fps.step = "1";
-    fps.value = String(node.fps != null ? node.fps : 30);
-    fps.title = I18n.t("帧率（fps，1–60）");
-    fps.addEventListener("mousedown", (ev) => ev.stopPropagation());
-    fps.addEventListener("pointerdown", (ev) => ev.stopPropagation());
-    fps.addEventListener("change", () => {
-      node.fps = Math.max(1, Math.min(60, Number(fps.value) || 30));
-      fps.value = String(node.fps);
-      scheduleSave();
-      const metaEl = document.querySelector("#mgmeta-" + node.id);
-      if (metaEl)
-        metaEl.textContent =
-          (node.size || "1280x720") +
-          " · " +
-          (node.fps || 30) +
-          " fps · " +
-          (node.duration || 5) +
-          "s";
-    });
-    addParam("fps", fps);
-    const sizeSel = document.createElement("select");
-    for (const s of REMOTION_SIZES) {
-      const o = document.createElement("option");
-      o.value = s;
-      o.textContent = s;
-      if ((node.size || "1280x720") === s) o.selected = true;
-      sizeSel.appendChild(o);
-    }
-    sizeSel.addEventListener("change", () => {
-      node.size = sizeSel.value;
-      scheduleSave();
-      const metaEl = document.querySelector("#mgmeta-" + node.id);
-      if (metaEl)
-        metaEl.textContent =
-          (node.size || "1280x720") +
-          " · " +
-          (node.fps || 30) +
-          " fps · " +
-          (node.duration || 5) +
-          "s";
-    });
-    addParam(I18n.t("分辨率"), sizeSel);
-    body.appendChild(params);
     /* 输出由下游「保存」节点负责（渲染产物在主进程插件安装目录 out/） */
     const outHint = document.createElement("div");
     outHint.className = "sv-note";
@@ -7085,178 +9277,10 @@ function buildBody(node, body) {
     }
   } else if (isSaveNode(node)) {
     const media = saveMediaKind(node);
-    const ext = saveExtForMedia(media);
-    const pRow = document.createElement("div");
-    pRow.className = "sv-path";
-    const inp = document.createElement("input");
-    inp.type = "text";
-    const hasWs = !!String(wfWorkspace() || "").trim();
-    const extHint =
-      media === "text"
-        ? "*.yaml"
-        : media === "image"
-          ? "*.png"
-          : media === "audio"
-            ? "*.wav"
-            : "*.mp4";
-    inp.placeholder = isBatch(node)
-      ? node.batchMode === "agg"
-        ? I18n.t("聚合：全部条目合并保存为 {路径}") + ext
-        : I18n.t("批量：保存为 {路径}_{输入节点标题}") + ext
-      : hasWs
-        ? I18n.t("相对工作目录或绝对路径（") + extHint + I18n.t("）…")
-        : I18n.t("保存路径（") + extHint + I18n.t("）…");
-    inp.value = node.savePath || "";
-    inp.title = hasWs
-      ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
-      : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .yaml）");
-    inp.addEventListener("change", () => {
-      node.savePath = applySuperRelToPath(
-        node,
-        preferRelativeSavePath(
-          forcePathExt(inp.value.trim(), saveExtForMedia(saveMediaKind(node))),
-        ),
-      );
-      inp.value = node.savePath;
-      syncGenFilenameFromSave(node);
-      scheduleSave();
-      renderCanvas();
+    /* 保存路径 / 自动保存 → ⚙ 跳窗；浏览 / 位置 / 打开是动作，留在摘要行右边 */
+    appendNodeSettingsSummary(node, body, {
+      actions: savePathActionButtons(node),
     });
-    inp.addEventListener("input", () => {
-      node.savePath = inp.value.trim();
-    });
-    const br = document.createElement("button");
-    br.className = "mini";
-    br.textContent = I18n.t("浏览");
-    br.onclick = async () => {
-      const ws = String(wfWorkspace() || "").trim();
-      let defaultName = (node.title || "output") + ext;
-      const cur = String(node.savePath || "").trim();
-      if (cur) {
-        const r0 = resolveSavePath(cur, node);
-        defaultName = r0.ok ? r0.path : cur;
-      } else if (ws) {
-        defaultName = joinPath(ws, applySuperRelToPath(node, defaultName));
-      }
-      const filters =
-        media === "text"
-          ? [
-              { name: "YAML", extensions: ["yaml", "yml"] },
-              { name: I18n.t("全部文件"), extensions: ["*"] },
-            ]
-          : media === "image"
-            ? [
-                { name: I18n.t("图像"), extensions: ["png"] },
-                { name: I18n.t("全部文件"), extensions: ["*"] },
-              ]
-            : media === "audio"
-              ? [
-                  { name: I18n.t("音频"), extensions: ["wav"] },
-                  { name: I18n.t("全部文件"), extensions: ["*"] },
-                ]
-              : [
-                  { name: I18n.t("视频"), extensions: ["mp4"] },
-                  { name: I18n.t("全部文件"), extensions: ["*"] },
-                ];
-      const title =
-        media === "text"
-          ? I18n.t("选择 YAML 保存位置")
-          : media === "image"
-            ? I18n.t("选择图像保存位置")
-            : media === "audio"
-              ? I18n.t("选择音频保存位置")
-              : I18n.t("选择视频保存位置");
-      const r = await window.api.fileSaveDialog({
-        title,
-        defaultName,
-        filters,
-      });
-      if (r.path) {
-        node.savePath = preferRelativeSavePath(
-          forcePathExt(r.path, saveExtForMedia(saveMediaKind(node))),
-        );
-        syncGenFilenameFromSave(node);
-        scheduleSave();
-        renderCanvas();
-      }
-    };
-    pRow.appendChild(inp);
-    pRow.appendChild(br);
-    const hasPreviewTarget =
-      (node.savedPaths && node.savedPaths.length) ||
-      !!String(node.savedPath || "").trim() ||
-      !!String(node.savePath || "").trim();
-    if (hasPreviewTarget) {
-      const op = document.createElement("button");
-      op.className = "mini";
-      op.textContent = I18n.t("位置");
-      op.title = I18n.t("在文件夹中显示已保存文件");
-      op.onclick = async () => {
-        const last =
-          (node.savedPaths &&
-            node.savedPaths[node.savedPaths.length - 1]) ||
-          node.savedPath ||
-          "";
-        let show = "";
-        if (last) {
-          show = isAbsPath(last)
-            ? last
-            : resolveSavePath(last || node.savePath, node).path || last;
-        } else {
-          const paths = await resolveSavePreviewPaths(node);
-          show = paths[0] || resolveSavePath(node.savePath, node).path || "";
-        }
-        if (show) window.api.shellShowItem(show);
-      };
-      pRow.appendChild(op);
-      if (media === "text") {
-        const openBtn = document.createElement("button");
-        openBtn.className = "mini";
-        openBtn.textContent = I18n.t("打开");
-        openBtn.title = I18n.t("用阅读器打开（Markdown / YAML · 可编辑保存）");
-        openBtn.onclick = async (ev) => {
-          ev.stopPropagation();
-          const last =
-            (node.savedPaths &&
-              node.savedPaths[node.savedPaths.length - 1]) ||
-            node.savedPath ||
-            "";
-          let target = "";
-          if (last) {
-            target = isAbsPath(last)
-              ? last
-              : resolveSavePath(last || node.savePath, node).path || last;
-          } else {
-            const paths = await resolveSavePreviewPaths(node);
-            target = paths[0] || resolveSavePath(node.savePath, node).path || "";
-          }
-          if (!target) {
-            toast(I18n.t("文件不存在或无法预览"), "warn");
-            return;
-          }
-          openTextViewer(target);
-        };
-        pRow.appendChild(openBtn);
-      }
-    }
-    body.appendChild(pRow);
-
-    {
-      const auto = document.createElement("label");
-      auto.className = "sv-auto";
-      auto.title = I18n.t("上游输出更新时自动保存到指定路径");
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = node.auto !== false;
-      cb.onchange = () => {
-        node.auto = cb.checked;
-        scheduleSave();
-      };
-      auto.appendChild(cb);
-      auto.appendChild(document.createTextNode(I18n.t("输入变化时自动保存")));
-      body.appendChild(auto);
-    }
-
     const prev = document.createElement("div");
     prev.className = "sv-prev";
     if (media === "text") {
@@ -7675,12 +9699,13 @@ async function fillPreviews() {
       const el = document.querySelector((isVid ? "#mgvid-" : "#mgaud-") + n.id);
       const empty = document.querySelector("#mgempty-" + n.id);
       const nameEl = document.querySelector("#mgname-" + n.id);
-      const pathInp = document.querySelector("#mgpath-" + n.id);
       const bust = n.ranAt || 0;
-      if (pathInp && document.activeElement !== pathInp) {
-        const configured = mediaGenOutputRaw(n) || String(n.outputPath || "");
-        if (pathInp.value !== configured) pathInp.value = configured;
-      }
+      /* 配置路径：body 摘要是只读片段，跳窗里可能还开着同一个输入框 → 一起刷 */
+      syncNodeSettingsValue(
+        n,
+        "mgpath",
+        mediaGenOutputRaw(n) || String(n.outputPath || ""),
+      );
       if (el) {
         if (path) {
           el.src = fileUrlWithBust(path, bust + ":" + path);

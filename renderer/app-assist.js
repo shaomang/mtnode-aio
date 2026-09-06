@@ -352,7 +352,7 @@ function persistAssistUi() {
   if (!S.config) return;
   S.config.assistOpen = !!S.assistOpen;
   S.config.assistLive2d = !!S.assistLive2d;
-  S.config.assistPreset = S.assistPreset || "standard";
+  S.config.assistPreset = S.assistPreset || AGENT_PRESET_DEFAULT;
   S.config.assistProvider = S.assistProvider || "deepseek-official";
   S.config.assistModel = S.assistModel || "";
   S.config.assistEffort = S.assistEffort || "high";
@@ -521,6 +521,109 @@ function bindAgentSideResize() {
   );
 }
 
+/* ============ 会话窗滚轮兜底：主会话列两边的空白也能上下滚动会话 ============
+ * 会话列 .agent-list 与输入区 .agent-composer 都是「居中定宽」（max-width:820px + margin auto），
+ * 窗口一宽，两侧就各剩一条不属于任何滚动容器的空白；滚轮落在那里，浏览器从目标往上找不到
+ * 一个可滚的祖先 → 画面纹丝不动（用户体感：会话滚不动，非得把鼠标挪进正文那一窄条）。
+ * 这里在 .agent-main 上兜一层：wheel 冒泡到容器时，若「从事件目标到容器」整条祖先链上没有任何
+ * 元素能沿该方向继续滚，就把这次位移补给会话列。
+ * 三条边界：
+ *   ① 内层真能滚的一律交回原生（消息里的代码块 / 思考折叠、计划清单 .at-list、发送队列、
+ *      会话左栏列表、输入框……），既不双速也不抢滚动条；
+ *   ② 会话列在该方向已经到头就不吞事件（惯性 / 连刷时不至于卡死在半路）；
+ *   ③ 跟随底部（_convStick）与列表内滚轮同口径：上翻立刻脱离跟随，滚回底部恢复跟随。 */
+const AGENT_WHEEL_LINE_PX = 20; /* deltaMode=lines：一行按 20px 折算 */
+const AGENT_WHEEL_MAX_PX = 400; /* 单次位移上限：高刷滚轮 / 触控板一次别跳半屏 */
+/* 这些控件上的滚轮有自己的语义（改文本、翻下拉、展开菜单），一律不去接管 */
+const AGENT_WHEEL_KEEP_SELECTOR =
+  "input, textarea, select, [contenteditable], .agent-menu";
+
+function agentElCanScrollDir(el, dy) {
+  if (!el || el.nodeType !== 1 || !dy) return false;
+  const max = Number(el.scrollHeight || 0) - Number(el.clientHeight || 0);
+  if (!(max > 0)) return false;
+  const cs = typeof getComputedStyle === "function" ? getComputedStyle(el) : null;
+  if (cs) {
+    const oy = String(cs.overflowY || "");
+    const ox = String(cs.overflowX || "");
+    const scrollable =
+      oy === "auto" ||
+      oy === "scroll" ||
+      oy === "overlay" ||
+      /* 只写 overflow-x 时 overflow-y 的「计算值」仍是 visible，但实际会被当作 auto 滚动 */
+      (oy === "visible" &&
+        (ox === "auto" || ox === "scroll" || ox === "overlay"));
+    if (!scrollable) return false;
+  }
+  const top = Number(el.scrollTop) || 0;
+  return dy < 0 ? top > 0 : top < max - 1;
+}
+
+/* 祖先链上第一个能自己消化这次滚轮的容器（走到 host 为止，host 之外不算） */
+function agentWheelNativeOwner(el, host, list, dy) {
+  for (let n = el; n && n !== host; n = n.parentElement) {
+    if (!n || n.nodeType !== 1) continue;
+    /* 落在会话列自己身上（正文、气泡、列表内边距）：原生就会滚它，别再叠一次位移 */
+    if (n === list) return n;
+    if (agentElCanScrollDir(n, dy)) return n;
+  }
+  return null;
+}
+
+function agentWheelPixels(ev, list) {
+  const dy = Number(ev && ev.deltaY) || 0;
+  if (!dy) return 0;
+  const mode = Number(ev.deltaMode) || 0; /* 0=px 1=lines 2=pages */
+  let px = dy;
+  if (mode === 1) px = dy * AGENT_WHEEL_LINE_PX;
+  else if (mode === 2)
+    px = dy * Math.max(80, Number(list && list.clientHeight) || 200);
+  return Math.max(-AGENT_WHEEL_MAX_PX, Math.min(AGENT_WHEEL_MAX_PX, px));
+}
+
+function bindAgentPaneWheelScroll() {
+  const pane = $("#agentPane");
+  const host = (pane && pane.querySelector(".agent-main")) || pane;
+  if (!host || host._agentWheelBound) return;
+  host._agentWheelBound = true;
+  host.addEventListener(
+    "wheel",
+    (ev) => {
+      if (!ev || ev.defaultPrevented) return;
+      /* 缩放（Ctrl+滚轮）与带修饰键的组合键不动 */
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      const dy = Number(ev.deltaY) || 0;
+      if (!dy) return;
+      const t = ev.target;
+      if (!t || t.nodeType !== 1) return;
+      if (typeof t.closest === "function" && t.closest(AGENT_WHEEL_KEEP_SELECTOR))
+        return;
+      const list = $("#agentList");
+      if (!list || (list.style && list.style.display === "none")) return;
+      if (agentWheelNativeOwner(t, host, list, dy)) return; /* ① 交回原生 */
+      if (!agentElCanScrollDir(list, dy)) return; /* ② 到头就别吞事件 */
+      const px = agentWheelPixels(ev, list);
+      if (!px) return;
+      ev.preventDefault();
+      if (typeof bindConvStick === "function") bindConvStick(list);
+      const before = Number(list.scrollTop) || 0;
+      const prevStick = convStickOf(list);
+      if (px < 0) markConvStick(list, false);
+      setConvScrollTop(list, before + px);
+      if (px > 0) {
+        if (isScrollNearBottom(list, CONV_STICK_SLACK)) markConvStick(list, true);
+      } else if (typeof requestAnimationFrame === "function") {
+        /* 与列表内滚轮同款兜底：这一帧其实没动，就不改用户原本的跟随意图 */
+        requestAnimationFrame(() => {
+          if ((Number(list.scrollTop) || 0) === before)
+            markConvStick(list, prevStick);
+        });
+      }
+    },
+    { passive: false },
+  );
+}
+
 function setAssistOpen(on, persist) {
   S.assistOpen = !!on;
   const layout = $("#layout");
@@ -650,6 +753,38 @@ function updateAssistScopeChrome() {
   }
 }
 
+/* 助手栏「预设」下拉的档位清单：吃 app.js 的 AGENT_PRESETS 真源（**表序 = 菜单序，
+   第一档就是默认档**），不再由 index.html 写死一份漏档的旧名单（旧清单只有 4 项、
+   叫「通用助手 / 精简执行 / 代码专家 / Cordis 插件开发」，既没有思维精简，档位名也
+   与别三处不一致）。按「语言 + 档位序列」做指纹：切语言或档位表变动才重建。 */
+function syncAssistPresetOptions(sel) {
+  if (!sel || typeof document === "undefined" || !document.createElement) return;
+  if (
+    typeof AGENT_PRESETS === "undefined" ||
+    !Array.isArray(AGENT_PRESETS) ||
+    !AGENT_PRESETS.length
+  )
+    return;
+  const loc = I18n && I18n.getLocale ? I18n.getLocale() : "";
+  const sig = loc + "|" + AGENT_PRESETS.map((p) => p.id).join(",");
+  if (sel.dataset && sel.dataset.presetSig === sig && sel.options && sel.options.length)
+    return;
+  const keep = sel.value;
+  sel.textContent = "";
+  for (const p of AGENT_PRESETS) {
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = I18n.t(p.labelKey);
+    if (p.hint) o.title = I18n.t(p.hint);
+    sel.appendChild(o);
+  }
+  if (sel.dataset) sel.dataset.presetSig = sig;
+  /* 原来选中的档还在表里就留着（重建后 value 会被清掉，且 minimal 如今是第一档） */
+  if (keep && sel.options && sel.options.length) {
+    for (const o of sel.options) if (o.value === keep) { sel.value = keep; break; }
+  }
+}
+
 function renderAssistPanel(opts) {
   const list = $("#assistList");
   if (!list) return;
@@ -739,12 +874,15 @@ function renderAssistPanel(opts) {
     }
   }
   const presetSel = $("#assistPresetSel");
+  syncAssistPresetOptions(presetSel);
   if (presetSel && document.activeElement !== presetSel)
-    presetSel.value = S.assistPreset || "standard";
+    presetSel.value = S.assistPreset || AGENT_PRESET_DEFAULT;
   const effortSel = $("#assistEffortSel");
   if (effortSel && document.activeElement !== effortSel) {
-    effortSel.value = S.assistEffort === "max" ? "max" : "high";
-    if (S.assistEffort !== effortSel.value) S.assistEffort = effortSel.value;
+    /* 白名单回显：词汇表内档位原样保留（不重置已存档位），未露出 UI 的档位仅显示回落档 */
+    const cur = normalizeAgentEffort(S.assistEffort);
+    effortSel.value = AGENT_EFFORT_UI_ORDER.includes(cur) ? cur : "high";
+    if (S.assistEffort !== cur) S.assistEffort = cur;
   }
   syncAssistWorkspaceChrome();
   fillAssistScopeControl();
@@ -827,11 +965,19 @@ async function assistSend(text) {
   const canvasEditRule = assistAuto
     ? "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；当前「助手改画布」为批准，调用会直接生效。\n"
     : "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。若用户拒绝：用文字说明已完成的文件/步骤与未完成项，不要静默结束。\n";
+  /* ── 规则段的真源分工（本轮去重）──────────────────────────────────────────
+     参数机制（字段 / 枚举 / 端子 / alias）的唯一真源 = mtnode_canvas_get 与
+     mtnode_canvas_edit 的工具描述与参数表；完整操作规范的唯一真源 = 内置技能
+     （mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux /
+     mtnode-media-gen-nodes / mtnode-db-facts）。下面各节只留「每轮都要照做的行为
+     纪律」——同一规则不再抄第二遍，省下的就是每一步都在付的固定 token。 */
   const superConnectRule =
-    "  · 【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动把源节点向上逐层连到其所在超级节点的外部输出端子、把目标节点所在超级节点的外部输入端子逐层桥接到目标节点、并把顶层超级节点之间相连，无需自己手动建桥接线；可一次传多对。\n";
+    "  · 跨超级节点 / 跨层级接线用 mtnode_canvas_edit 的 superConnect（它自动逐层桥接，参数口径见该工具说明），不要自己建桥接线。\n";
   const devNodeRule =
-    "  · 【开发节点 / 功能块】kind \"super\" + dev:true = 开发节点（项目架构的功能块）：note 必须两段（必填 ≤200 字）：【功能】= 面向非技术的设计说明 + 【实现】= 面向技术人员的实现梗概；禁止只写一段，禁止把技术细节写进【功能】段，devPath = 项目根目录（绝对路径，设在顶层块，子块继承），devStatus = pending/wip/done，devKind = module/file/class/interface/enum（外框配色区分）；devColor = 该块自定义外框与运行呼吸灯颜色（#rrggbb，空 = 按元素类型默认）。**功能色卡**：开发节点按「功能分类」统一上色，整张架构图一眼可辨（同一张表也由 mtnode_canvas_get 以 devFuncColors 返回）：core 核心运行时 #6db4ff · canvas 画布与交互 #45cfe6 · ai AI 与 Agent #c792ea · data 数据与存储 #4dd0c4 · media 媒体与本地后端 #ff8fa3 · plugin 插件与生态 #f0c14d · build 构建与诊断 #ff9d5c · test 测试与质量 #a8e05f。新建 devKind=module 的功能块时，系统已按标题与概述关键词自动套好色卡颜色，你一般无需再传 devColor；归类确实不对时，直接用 update 补丁改成色卡里对应分类的那个 hex——**按色卡上色即可，不必先征询用户**，但绝不要自创色值、也不要把功能色卡之外的颜色批量刷到节点上。色卡只作用于 module 功能块（file / class / interface / enum 保留元素类型默认色）；用户可在节点头部颜色小按钮的 HSV 色板里手选颜色，手选过的块视为用户意图，除非用户要求，不要再改它的颜色；devModel(+devProvider) = 该功能块选定的 Agent 模型：本块的「建议」只读调研与「开发 / 细化」绑定会话都走它，**未自行选择的子功能块就近继承上层**（子块自选优先），要全项目统一模型只需在顶层块设一次，传空串 = 跟随默认。devFiles = 该功能块的「核心文件列表」（字符串数组 · 最多 10 条 · 每项是相对项目根 devPath 的文件路径，如 renderer/app-devnode.js）：建块时就顺手填上，且开发 / 细化 / 建议会话收尾必须用 update 补丁把本模块的真实核心文件回写进 devFiles——节点 body 上的「文件」按钮与 canvas_get 都只读这份列表，不填就永远停在自动兜底甚至空表；传空数组 = 清空该表；最外层（项目）开发节点不列核心文件，不要给它传 devFiles（会被拒绝并回报）。开发节点可用 parentSuperId 嵌套（细化按深度：只展开本层，或深度细化到无法再细——一般到文件级；多层梗概经一次确认即可，确认后自顶向下逐层建块）；元素间关系用关系线表达（connect 加 rel:true、可带 relLabel / relArrow，普通直线走线、不参与执行；用户点选某节点时，与该节点相关的关系线会高亮）。每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」）：按钮顺序固定为 开发 → 细化 → 建议 → 问询 → 打开（→ 会话 N）。四者都先弹对话框——「开发」显示模块标题与现状并让用户填写本次开发/迭代内容；「细化」让用户确认是否继续展开子元素、以及细化深度（只展开本层 / 深度细化到无法再细，一般到文件级；无需或无法细化时也要明确告知用户）；「建议」先请用户确认，然后由 AI **只读**调研项目真实代码与该模块的开发进度，给出恰好 4 条下一步方案，用户在同一个对话框里多选、可补充说明，再点该对话框里的「开发」就等于用所选方案 + 补充内容开工；「问询」先请用户确认并填写问题，然后由 AI **只读**回答关于本模块的问题——全程强制只读（网关 read-only 权限档 + 只读系统提示，写文件 / 改画布会被拒绝），不改文件、不改画布，可「返回后台」继续跑、完成后自动弹出。除「建议 / 问询」的只读评估外，用户确认后动作都在一个**新建的绑定会话**里运行（工作区 = 项目根，标题 开发 · 模块名 / 细化 · 模块名），细化时你必须先给出覆盖多层的整棵结构梗概、经用户一次确认后在新会话中自顶向下逐层建块（一次确认即覆盖整个细化深度）。涉及模块取舍 / 技术选型等不确定处务必先询问用户。内置技能 mtnode-dev-architect：扫描已有项目生成架构画布；或新项目先搭架构、用户明确「确认」后再按画布搭建项目。**画布含开发节点时，项目根即 Agent 工作区根**（工作区真源优先级：手填工作目录 > 画布项目根 devPath > 画布工作目录 > 默认目录），所以在建图首轮就把 devPath 写到顶层功能块，之后项目根内的文件（含 AGENTS.md 共识文件）可直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n" +
-    "  · 【执行节点】kind \"execute\" = 执行节点：绑定可执行文件（execPath = 绝对路径，.exe/.bat/.cmd/.lnk 或任何系统可打开的文件），execIcon / execColor 自定义图标与 body 颜色便于快速定位。该节点独立存在、无数据端口，body 内点两次播放键或双击即用系统默认方式启动绑定文件。画布上要「一键启动某个程序 / 脚本 / 文件」时用这种节点。它与开发节点同属一个创建菜单，属于某个功能块时（如该模块的启动脚本）用 parentSuperId 放进该开发节点内部。\n";
+    "  · 【开发节点 / 功能块】要建或改开发节点（kind super + dev:true）时，先用 skill 工具加载内置技能 mtnode-dev-architect 并照它执行。硬底线：note 必须两段（【功能】面向非技术的设计说明 + 【实现】面向技术的实现梗概，合计 ≤200 字，禁止只写一段、禁止把技术细节写进【功能】）；按 DEV 功能色卡上色（新建 module 块已自动套色，归类不对才改正卡值，绝不自创色值；用户在节点头部色板手选过的颜色不要再动）；细化先给出覆盖多层的整棵梗概、经用户一次确认后自顶向下逐层建块（无需或无法细化时如实说明，不要硬建节点）；模块取舍 / 技术选型等不确定处先问用户。\n" +
+    "  · 每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」），四者都先弹对话框：「建议」「问询」是**只读**调研（不改文件、不改画布；「建议」只回恰好 4 条下一步方案供用户多选与补充，同一对话框里的「开发」按钮才按所选方案开工）；「开发」「细化」在用户确认后于该模块绑定的新会话里运行。\n" +
+    "  · 每个功能块收尾都要用 devFiles 补丁回写本模块的真实核心文件（≤10 条 · 相对 devPath · 最外层项目块不填）——节点「文件」按钮只读这份列表，不回填就永远停在自动兜底甚至空表。\n" +
+    "  · 画布含开发节点时，项目根就是 Agent 工作区根（顶层块的 devPath 在建图首轮就写好，之后子块继承）：项目根内的文件（含 AGENTS.md 共识文件）直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n";
   const scopeBlock = scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
@@ -843,37 +989,88 @@ async function assistSend(text) {
       "工具：\n" +
       "- mtnode_canvas_get：读取当前画布 + 全部画布列表\n" +
       "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows；delete_workflow 会弹窗确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n";
-  const systemPrompt =
-    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n" +
-    scopeBlock +
-    canvasEditRule +
-    superConnectRule +
-    devNodeRule +
-    "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用；传 imagePath（绝对路径）+ question。首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大图批量塞进主对话。\n" +
-    "  · 可改节点模型：update/create 传 model；文本/图像/对话节点用 providerId（服务商 id 或唯一名称），智能任务用 provider（deepseek-official 或 mtnode_<id>/名称）。\n" +
-    "  · 图像参考节点 kind 必须是 input_image；用 imagePath（本机绝对路径）写入图片，应用会复制进画布资产，不要让用户再拖拽。\n" +
-    "  · 多图用 batch:true + imagePaths。工具返回的 created[]/updated[]/hasImage/warnings 才是事实依据；未出现在结果里就不要声称已添加。\n" +
-    "  · 文字处理与图生文（多模态识图）尽量隔离：图像 → 专用识图/智能任务节点产出文字，再连到纯文本处理节点；不要把图像直接挂到只需文字推理的节点上，以便文字步骤选用更合适的非视觉模型。\n" +
-    "  · 批次处理时：批量并行（batchMode=batch）尽量不用智能节点（agent_task / 文本智能模式），改用普通 proc_text / proc_image；聚合模式（batchMode=agg）允许使用智能节点。\n" +
-    "  · 【重要】不要给 agent_task 或已开启智能的 proc_text 后面再接保存节点：智能节点本身会写文件，保存节点只会把无关的任务/对话文本落盘。保存节点只接在普通（非智能）proc_text / proc_image 之后。旧版 save_text / save_image 会自动升级为统一保存节点。\n" +
-    "  · 【重要】不要给 music_gen / video_gen 后面再接保存节点：它们在节点内填写 outputPath 直接写出音视频，无配对保存节点。\n" +
-    "  · 【Remotion 视频节点】kind \"remotion\"：仅当已安装「remotion」应用插件时使用（未安装时节点会显示警示条，运行也会被拦）。描述文本来自连线端口1（接文本源，如 input_text）；节点上可设 duration（秒 1–60）、fps（1–60）、remotionSize（1280x720 / 1920x1080 / 720x1280 / 1080x1920 / 1024x1024 / 1080x1080）、providerId + model（生成动效代码的 LLM）。与 music_gen/video_gen 相反：remotion 没有 outputPath，渲染出的 mp4 要由下游「保存」节点落盘（savePath 用 .mp4），所以生成含 remotion 的工作流时，务必在 remotion 后面接一个保存节点。remotion 也可被 control 控制节点直接连线后一键启动重跑。\n" +
-    "  · 【重要·文件交接】尽量不要把智能节点（agent_task / 智能 proc_text）作为数据输入接到其他节点：会话输出噪声大且未必含关键信息。优先让智能节点写出文档/文件，再用 wait_file（waitPath）以控制线连到后续节点阻塞执行；wait_file 无输入端子、不输出任何内容，仅监视文件防止下游提前运行，下游自行按约定路径读文件。\n" +
-    "  · 【极重要·防 N² 爆 token】batchMode=batch 时每次运行只应对「当前这一条」。严禁把整批 N 张图/N 条再全部塞进每一次运行的参考图或提示词（否则 ≈N×N 次调用，巨量浪费）。需要只处理其中一项时，先接「拆分」节点选出单项再连文生图；要一次看全部才用 batchMode=agg。两条批量源不要交叉接到同一文生图。\n" +
-    "  · 文生图（proc_image）每次运行只生成 1 张图，API 不支持一次出多张。prompt 里严禁写「生成多张/几张图」之类要求；需要多图时用：批量 1 条出 1 张、多个文生图节点、或 attempts×N。\n" +
-    "  · 文生图尺寸：create/update 传 size，须为 mtnode_canvas_get 返回的 imageSizes 之一（如 2048x1360 / 1280x1280 / auto）；按横竖构图选择，省略则默认 defaultImageSize。\n" +
-    "  · @引用：连线节点用 @标题；引用全局节点广播时须同时 (1) 在处理节点上设 globalRefs:true，(2) 在 prompt/task 内写 @源标题（缺一不可）——且只有被明文 @ 命中的全局来源才会进入本次输入，未点名的不注入。@Tag标签 引用该标签下全部节点内容（给节点设 tags，见 tagCatalog），UI 中 Tag 为紫色、节点为青色。\n" +
-    "  · 排版建议：创建非平凡工作流时，用 createMarks 画框体/文字分区（编辑区、说明、处理区、输出区）；box 可用 around:[节点alias] 在自动排版后包住节点，并设 label。另加 control 控制节点（ctrlAction=run，ctrlFillOnly=true 时仅补跑无输出节点）方便用户一键重跑或补缺；不要创建 ctrlAction=clear 的「清空」控制节点。控制流不会沿数据线传导：control 必须直接连线到每一个需要一键启动的节点（处理/保存/媒体等）。\n" +
-    "  · 【重要·可操作区靠上】用户需要编辑或操作的节点（输入、可改提示词、控制 ▶ 等）应放在画布偏上方（较小 y），便于观察与操作；处理/保存/说明可放下方或右侧。\n" +
-    "  · 一键排版 / 用户要求整理排版时：先 mtnode_canvas_get 读取节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（美观整洁、可编辑节点靠上、绘制跟着节点走）。禁止调用 layout action；勿增删节点、勿改连线；然后简短确认。\n" +
+  /* ── systemPrompt 分节（见 app-prompt-sections.js）──────────────────────────
+     每段各自独立成节，节序 = 改造前的拼接顺序、节间分隔符传空串 ⇒
+     拼出来的字符串与今天逐字节一致；app_state（当前应用状态 JSON，每轮都变的最大头）
+     单独成节，便于将来按节 diff。skill_index / db_grounding / tool_policy /
+     lang_taste 由 app-db.js 统一追加，此处不重复注入。 */
+  const personaHost =
+    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n";
+  const visionMediaRules =
+    "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用，传 imagePath（绝对路径）+ question；首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大批图片塞进主对话。\n" +
+    "  · 文字处理与图生文（多模态识图）要隔离：先由专用识图 / 智能任务节点把图像转成文字，再让纯文本节点吃那段文字，这样文字步骤能选更合适的非视觉模型。\n" +
+    "  · 图像参考节点用 kind input_image，把本机绝对路径写进 imagePath（应用会复制进画布资产），已知路径就不要让用户再拖拽；多图 batch:true + imagePaths。\n" +
+    "  · 改节点模型：create/update 传 model，文本 / 图像节点配 providerId（服务商 id 或唯一名称），智能任务配 provider（deepseek-official 或 mtnode_<id> / 名称）。\n" +
+    "  · 工具回执（created[] / updated[] / hasImage / warnings）才是事实依据：没出现在回执里的结果，不要向用户声称已完成。\n" +
+    "  · 音 / 视频生成节点（music_gen / tts_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；批次与文生图的防 N² 细则见技能 mtnode-canvas-batch-safety。\n";
+  /* @引用、save / wait_file、端子与批次规则已由 mtnode_canvas_edit 的「硬规则」段与
+     技能 mtnode-canvas-layout-ux 承载；这里只留助手侧的排版动作。 */
+  const layoutRules =
+    "  · 排版：用 createMarks 分区（box + around:[节点alias] + label：编辑区 / 说明 / 处理区 / 输出区），并放 control 控制节点（ctrlAction=run，不要建 clear「清空」；控制流不走数据线，须直连每个该一键重跑的节点）；用户要编辑或点 ▶ 的节点放上方（较小 y），处理 / 保存 / 长说明放下方或右侧。完整规范见技能 mtnode-canvas-layout-ux。\n" +
+    "  · 用户要求整理排版 / 一键排版时：先 mtnode_canvas_get 读节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（整洁、可编辑节点靠上、绘制跟着节点走）；禁止调用 layout action，勿增删节点、勿改连线，然后简短确认。\n";
+  const principleBlock =
     (scopeCurrent
       ? "原则：仅操作当前画布；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n"
-      : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n") +
-    "当前应用状态 JSON：\n" +
-    stateJson;
+      : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n");
+  /* 应用状态 JSON 单独成节：每轮都变的最大头，只有独立出来才谈得上单独 diff */
+  const appStateBlock = "当前应用状态 JSON：\n" + stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   const assistMaxTok = dshRunMaxTokens();
+  /* 三个可见集通道的助手侧取值：助手不锁画布（noCanvas 恒 false）、没有节点也就不可能
+     接入数据库副本（dbGrounded 恒 false）；名单与 dshRunOnce 用同一个 dshHiddenToolsFor
+     算，否则开关一开，分节快照与真实运行签名就长期错开（快照每轮白作废）。 */
+  const assistLean = typeof dshLeanToolsOn === "function" ? dshLeanToolsOn() : false;
+  const assistHide =
+    typeof dshHiddenToolsFor === "function"
+      ? dshHiddenToolsFor({
+          pure: false,
+          dbGrounded: false,
+          lean: assistLean,
+          noCanvas: false,
+        }).join(",")
+      : "";
+  const assistSections = {
+    persona_host: personaHost,
+    scope: scopeBlock,
+    canvas_rules: canvasEditRule,
+    superconnect_rules: superConnectRule,
+    devnode_rules: devNodeRule,
+    vision_media_rules: visionMediaRules,
+    layout_rules: layoutRules,
+    principle: principleBlock,
+    app_state: appStateBlock,
+  };
+  /* 节序（app-prompt-sections.js 规范表）+ join:"" ⇒ 拼出来与改造前的整串逐字节一致 */
+  const systemPrompt =
+    typeof renderSections === "function"
+      ? renderSections("assist", assistSections, {
+          join: "",
+          sig: dshRunSigOf({
+            workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
+            model: S.assistModel || "",
+            provider: S.assistProvider || "deepseek-official",
+            preset: S.assistPreset || AGENT_PRESET_DEFAULT,
+            effort: S.assistEffort || "high",
+            pure: false,
+            lean: typeof dshLeanToolsOn === "function" ? dshLeanToolsOn() : false,
+            noCanvas: false,
+            hide: assistHide,
+            maxTokens: assistMaxTok,
+          }),
+        }).text
+      : /* 内核不在（老沙箱只抠单文件）：按同一节序直接串接，结果与分节渲染一致 */
+        [
+          personaHost,
+          scopeBlock,
+          canvasEditRule,
+          superConnectRule,
+          devNodeRule,
+          visionMediaRules,
+          layoutRules,
+          principleBlock,
+          appStateBlock,
+        ].join("");
   let assistHitMaxTokens = false;
   try {
     const final = await dshRunTask(input, {
@@ -882,7 +1079,7 @@ async function assistSend(text) {
       rollbackAnchor: assistUm,
       rollbackLabel: t.slice(0, 160),
       workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
-      preset: S.assistPreset || "standard",
+      preset: S.assistPreset || AGENT_PRESET_DEFAULT,
       provider: S.assistProvider || "deepseek-official",
       model: S.assistModel || undefined,
       effort: S.assistEffort || "high",
@@ -899,6 +1096,21 @@ async function assistSend(text) {
         }
       },
       onEvent: (type, data) => {
+        /* 出错自动重发（dshRunTask 触发 retry）：看 resumed 决定清不清残文 ——
+           · resumed=true（续写）：新内容接在同一条逻辑轮次后面，已显示的部分正文 /
+             工具列表 / 思考槽一律保留，直接返回；
+           · resumed=false（整轮重发）：清上一轮的部分正文 / 工具 / 思考槽，
+             重发那一轮从零流式不叠字 */
+        if (type === "retry") {
+          if (data && data.resumed) return;
+          S.assistPending = "";
+          S.assistLiveTools = [];
+          if (S.thinking) S.thinking.assist = [""];
+          const el = document.getElementById("assist-stream");
+          if (el) el.textContent = "";
+          renderAssistPanel();
+          return;
+        }
         if (type === "reasoning" && data && data.text) {
           pushThinking("assist", 0, data.text);
           const el = document.getElementById("assist-think");
@@ -1105,7 +1317,7 @@ function agentSessionState() {
       id: uid("as"),
       title: I18n.t("新会话"),
       workspace: "",
-      preset: "standard",
+      preset: AGENT_PRESET_DEFAULT,
       provider: "deepseek-official",
       model: "",
       effort: "high",
@@ -1138,7 +1350,7 @@ async function persistAgentSession() {
     id: s.id,
     title: s.title || I18n.t("新会话"),
     workspace: s.workspace || "",
-    preset: s.preset || "standard",
+    preset: s.preset || AGENT_PRESET_DEFAULT,
     provider: s.provider || "deepseek-official",
     model: s.model || "",
     effort: s.effort || "high",
@@ -1209,7 +1421,7 @@ function newAgentSession() {
     id: uid("as"),
     title: I18n.t("新会话"),
     workspace: cur.workspace || "",
-    preset: cur.preset || "standard",
+    preset: cur.preset || AGENT_PRESET_DEFAULT,
     provider: cur.provider || "deepseek-official",
     model: cur.model || "",
     effort: cur.effort || "high",
@@ -1318,15 +1530,22 @@ function agentModelName(st) {
   return st.model || (ms[0] || "…");
 }
 function agentPresetLabel(id) {
-  const m = { standard: I18n.t("标准模式"), code: I18n.t("PTC 模式"), minimal: I18n.t("极简模式"), cordis: I18n.t("创造模式") };
-  return m[id] || I18n.t("标准模式");
+  /* 档位真源是 app.js 的 AGENT_PRESETS，这里只负责取显示名 */
+  return I18n.t(agentPresetById(id).labelKey);
 }
 function renderAgentComposer() {
   const st = agentSessionState();
   const mv = document.getElementById("agentModelTriggerVal");
+  /* chip 只列「预设 · 模型」：思考强度不再被预设改写（历史上思维精简会自动降为 low），
+     预设是什么档、思考是什么档，进菜单看即可，不必在 chip 上追加「生效档」标注 */
   if (mv)
     mv.textContent =
       (st.pure ? I18n.t("纯净") + " · " : "") + agentPresetLabel(st.preset) + " · " + agentModelName(st);
+  const mt = document.getElementById("agentModelTrigger");
+  if (mt) {
+    mt.dataset.i18nTitle = "预设 / 模型 / 思考强度";
+    mt.title = I18n.t(mt.dataset.i18nTitle);
+  }
   const wv = document.getElementById("agentWsTriggerVal");
   if (wv) {
     /* 芯片显示的是「生效工作区」（手填 > 画布项目根 > 默认）：运行就按它落盘，
@@ -1402,7 +1621,7 @@ function buildAgentModelMenu() {
     ec.innerHTML =
       '<span class="agent-menu-cell-label">' + I18n.t("思考强度") + '</span>' +
       '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
-    ec.querySelector(".agent-menu-cell-value").textContent = st.effort === "max" ? I18n.t("最强") : I18n.t("标准");
+    ec.querySelector(".agent-menu-cell-value").textContent = agentEffortDisplayLabel(st);
     ec.onclick = () => { menu.dataset.pane = "effort"; buildAgentModelMenu(); };
     menu.appendChild(ec);
     return;
@@ -1414,14 +1633,17 @@ function buildAgentModelMenu() {
   bk.onclick = back;
   menu.appendChild(bk);
   if (pane === "preset") {
-    for (const [id, label] of [["standard", I18n.t("标准模式")], ["code", I18n.t("PTC 模式")], ["minimal", I18n.t("极简模式")], ["cordis", I18n.t("创造模式")]]) {
+    /* 用归一后的档位 id 比较：历史会话存的旧 id（sketch）也要能正确打上 ✓ */
+    const curPreset = agentPresetById(st.preset).id;
+    for (const p of AGENT_PRESETS) {
       const opt = document.createElement("button");
-      opt.className = "agent-menu-option" + (st.preset === id ? " selected" : "");
+      opt.className = "agent-menu-option" + (curPreset === p.id ? " selected" : "");
       opt.innerHTML =
         '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
-        '<span class="agent-menu-check">' + (st.preset === id ? "✓" : "") + "</span>";
-      opt.querySelector(".agent-menu-option-name").textContent = label;
-      opt.onclick = () => { st.preset = id; persistAgentSession(); closeAgentMenus(); renderAgentSession(); renderAgentSessionSidebar(); };
+        '<span class="agent-menu-check">' + (curPreset === p.id ? "✓" : "") + "</span>";
+      opt.querySelector(".agent-menu-option-name").textContent = I18n.t(p.labelKey);
+      if (p.hint) opt.title = I18n.t(p.hint);
+      opt.onclick = () => { st.preset = p.id; persistAgentSession(); closeAgentMenus(); renderAgentSession(); renderAgentSessionSidebar(); };
       menu.appendChild(opt);
     }
     return;
@@ -1467,13 +1689,17 @@ function buildAgentModelMenu() {
       menu.appendChild(e);
     }
   } else {
-    for (const [v, l] of [["high", I18n.t("标准")], ["max", I18n.t("最强")]]) {
+    /* 思考强度四档（轻 / 标准 / 强 / 最强）：选哪档就按哪档下发，路由能力不足时网关夹到
+       同侧最近低档并回传 effort 事件（回显 = 下发契约），此处不再拍平。档位真源 =
+       app.js 的 AGENT_EFFORT_UI_ORDER；medium 未露出（默认 deepseek 路由会夹到 low）。 */
+    const cur = normalizeAgentEffort(st.effort);
+    for (const v of AGENT_EFFORT_UI_ORDER) {
       const opt = document.createElement("button");
-      opt.className = "agent-menu-option" + (st.effort === v ? " selected" : "");
+      opt.className = "agent-menu-option" + (cur === v ? " selected" : "");
       opt.innerHTML =
         '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
-        '<span class="agent-menu-check">' + (st.effort === v ? "✓" : "") + "</span>";
-      opt.querySelector(".agent-menu-option-name").textContent = l;
+        '<span class="agent-menu-check">' + (cur === v ? "✓" : "") + "</span>";
+      opt.querySelector(".agent-menu-option-name").textContent = agentEffortLabelOf(v);
       opt.onclick = () => { st.effort = v; persistAgentSession(); closeAgentMenus(); renderAgentSession(); };
       menu.appendChild(opt);
     }
@@ -3134,7 +3360,7 @@ function renderAgentSession(opts) {
       : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；输入 / 呼出技能与命令）");
   }
   const presetSel = $("#agentPresetSel");
-  if (presetSel) presetSel.value = st.preset || "standard";
+  if (presetSel) presetSel.value = st.preset || AGENT_PRESET_DEFAULT;
   const provSel = $("#agentProvSel");
   const modelSel = $("#agentModelSel");
   if (provSel && modelSel) {
@@ -3211,8 +3437,10 @@ function renderAgentSession(opts) {
   }
   const effortSel = $("#agentEffortSel");
   if (effortSel) {
-    effortSel.value = st.effort === "max" ? "max" : "high";
-    if (st.effort !== effortSel.value) st.effort = effortSel.value;
+    /* 白名单回显：词汇表内档位原样保留（不重置已存档位） */
+    const cur = normalizeAgentEffort(st.effort);
+    effortSel.value = AGENT_EFFORT_UI_ORDER.includes(cur) ? cur : "high";
+    if (st.effort !== cur) st.effort = cur;
   }
   const ctx = $("#agentCtx");
   if (ctx) {
@@ -3559,7 +3787,7 @@ async function agentCompactRun(st) {
         /* 与本轮运行同一真源（手填 > 画布项目根 > 默认）：压缩用的引擎目录
            必须与会话运行一致，否则引擎按不同工作区重启、上文的账也分家 */
         workspace: agentRunWorkspace(st),
-        preset: st.preset || "standard",
+        preset: st.preset || AGENT_PRESET_DEFAULT,
         provider: st.provider || "deepseek-official",
         model: st.model || undefined,
         effort: st.effort || "high",
@@ -3950,6 +4178,8 @@ async function agentSessionSend(text, opts) {
   opts = opts || {};
   /* 计划执行器的单轮任务消息：不注入「任务流程」指令、不入「最近一次要求」 */
   const planExecMsg = !!opts._planExec;
+  /* 漏弹自愈轮（app-plan.js planFixDirective）：它自己绝不再触发自愈，防连环重发 */
+  const planFixMsg = !!opts._planFix;
   /* 归属会话：opts.sessionId 有值时严格按 id 取 owner。
      取不到 → 直接结束本轮并提示，**绝不回退到当前活动会话**
      （用户切会话后计划续跑挤进别的会话，就是「计划串台」的直接原因）。
@@ -4089,6 +4319,7 @@ async function agentSessionSend(text, opts) {
   if (!devContractMsg) {
     const um = { role: "user", content: t, at: Date.now() };
     if (planExecMsg) um._src = "plan-exec";
+    else if (opts._planFix) um._src = "plan-fix";
     st.messages.push(um);
     rbAnchor = um;
     if (st.messages.filter((m) => m.role === "user").length === 1) {
@@ -4117,6 +4348,12 @@ async function agentSessionSend(text, opts) {
   st._usageLive = null;
   st._planDelivered = false;
   st._roundOutcome = "ok";
+  /* 计划漏弹自愈的现场：
+     · 用户亲口发起的轮次 → 配额清零（一个用户轮最多自愈 PLAN_FIX_MAX_ROUNDS 次）；
+     · 自愈轮自己 → 只继承计数，绝不重置（否则永远有额度，会来回拉扯）；
+     · 每一轮开跑前都把「待纠错」位清掉，避免上一轮的残留把这一轮也拖去重发。 */
+  if (!planFixMsg) st._planFixRounds = 0;
+  st._planFixAsk = false;
   beginSaveNodeHold();
   if (!S.thinking) S.thinking = {};
   S.thinking["agent:" + st.id] = [""];
@@ -4144,6 +4381,16 @@ async function agentSessionSend(text, opts) {
     )
       flowText = planFlowDirective();
   } catch (_) {}
+  /* 本轮是否真的被要求「按契约输出计划块」——只有这种轮次才做漏弹检测：
+     Skill 轮（flowText 被 skillTaskPrompt 取代）、计划执行轮、沿用现有计划轮
+     （那段指令明令禁止再出计划标记）、以及自愈轮自己，一律不检测。 */
+  const planAskedNew =
+    !skillWrap &&
+    !planExecMsg &&
+    !planFixMsg &&
+    !!flowText &&
+    (typeof planFlowAsksForNewPlan !== "function" ||
+      planFlowAsksForNewPlan(flowText));
   const latest = skillWrap
     ? skillTaskPrompt(skillWrap)
     : flowText
@@ -4167,9 +4414,9 @@ async function agentSessionSend(text, opts) {
         ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
         : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
       "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
-      "【跨超级节点连接】需要把不同超级节点 / 不同层级内的两个节点接通时，用 mtnode_canvas_edit 的 superConnect 参数：superConnect:[{from:\"源节点标题或id\", to:\"目标节点标题或id\"}]。工具会自动逐层连通（源→其超级节点输出端子→顶层→目标超级节点输入端子→目标），无需手动建桥接线。\n" +
-      "【开发节点契约】新建或改动开发节点（kind super + dev:true）时，每个功能块都用 devFiles 补丁维护它的「核心文件列表」（字符串数组 · 最多 10 条 · 每项是相对项目根 devPath 的文件路径）：建块时顺手填，开发 / 细化收尾必须回写本模块的真实核心文件（节点「文件」按钮只读这份列表）；最外层（项目）开发节点不列核心文件，不要给它传 devFiles。\n" +
-      "改画布前先 mtnode_canvas_get；回答简洁（交流语言见文末「语言口味」）。";
+      "改画布纪律：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
+      "要建开发节点、批次 / 文生图链、整理排版或接数据库副本时，先用 skill 工具加载对应内置技能（mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
+      "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
   /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
      会话里只显示用户填写的关键输入；后续追问也持续携带该契约） */
   const devContract = String(st._devContract || "").trim();
@@ -4188,7 +4435,7 @@ async function agentSessionSend(text, opts) {
       planMode,
       /* 生效工作区（st.workspace 手填优先 > 画布项目根 > 默认）：与展示层同源 */
       workspace: agentRunWorkspace(st),
-      preset: st.preset || "standard",
+      preset: st.preset || AGENT_PRESET_DEFAULT,
       provider: (opts.provider || st.provider || "deepseek-official"),
       model: (opts.model || st.model || undefined),
       effort: st.effort || "high",
@@ -4198,6 +4445,24 @@ async function agentSessionSend(text, opts) {
         /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
            重绘/滚动打扰用户正在看的其他会话 */
         const mine = S.agentActiveId === st.id;
+        /* 出错自动重发（dshRunTask 触发 retry）：看 resumed 决定清不清残文 ——
+           · resumed=true（续写）：新内容接在同一条逻辑轮次后面，已显示的部分正文 /
+             工具列表 / 用量与思考槽一律保留，别把已经说出去的话抹掉；
+           · resumed=false（整轮重发）：先清上一轮的部分正文 / 工具 / 用量与思考槽，
+             重发那一轮从零流式不叠字；等待窗口内会话仍算「在跑」 */
+        if (type === "retry") {
+          if (data && data.resumed) return;
+          st._pending = "";
+          st._liveTools = [];
+          st._usageLive = null;
+          if (S.thinking) delete S.thinking["agent:" + st.id];
+          if (mine) {
+            try {
+              renderAgentSession();
+            } catch (_) {}
+          }
+          return;
+        }
         if (type === "reasoning" && data.text) {
           pushThinking("agent:" + st.id, 0, data.text);
           /* 分段模式刷尾部思考段；非分段（节点绑定运行等）退回旧整段更新 */
@@ -4321,7 +4586,9 @@ async function agentSessionSend(text, opts) {
         if (segs && segs.length) msg.segments = segs;
       } catch (_) {}
       st.messages.push(msg);
-      /* 复杂任务计划：agent 本轮输出计划标记 → 弹窗确认（音效 + 可编辑清单） */
+      /* 复杂任务计划：agent 本轮输出计划标记 → 弹窗确认（音效 + 可编辑清单）；
+         解析不出来但正文里有明显计划特征（标记写坏 / 漏闭合 / 裸 JSON）→
+         记一次「漏弹」，本轮收尾时自动回发纠错指令让它重新生成（见下方 finally） */
       try {
         if (
           !planExecMsg &&
@@ -4330,6 +4597,23 @@ async function agentSessionSend(text, opts) {
         ) {
           const pm = planParseFromText(msg.content);
           if (pm) planMaybeOffer(st, pm);
+          else {
+            const miss =
+              typeof planMissedDetection === "function"
+                ? planMissedDetection(msg.content)
+                : "";
+            if (miss && planAskedNew) {
+              st._planFixAsk = true;
+            } else if (miss && planFixMsg) {
+              /* 已经自动纠错过一次还是没弹对：不再追发，交给用户 */
+              try {
+                toast(
+                  I18n.t("计划仍未正确生成：请重新发送你的要求，或手动整理任务清单"),
+                  "warn",
+                );
+              } catch (_) {}
+            }
+          }
         }
       } catch (_) {}
       /* 规划模式跑完：标记「计划待执行」，输入区浮现「▶ 执行计划」 */
@@ -4420,6 +4704,43 @@ async function agentSessionSend(text, opts) {
         typeof planExecContinue === "function"
       )
         planExecContinue(st);
+    } catch (_) {}
+    /* ---------- 计划漏弹自愈（模型生成失误的自动纠错） ----------
+       本轮按要求本该弹「计划确认」，却因为标记写坏 / 漏闭合 / 没包标记而没弹 →
+       自动回发一条纠错指令，让模型按契约重新生成一次。触发条件在这里一次凑齐：
+         · 只认「用户亲口那一轮」（自愈轮与计划执行轮都不参与，结构上不可能连环）；
+         · 本轮正常结束（被终止 / 出错 = 用户已改口，不抢他的下一步）；
+         · 没有排队的用户消息（有就给用户让路，绝不插队）；
+         · 配额 PLAN_FIX_MAX_ROUNDS（默认 1 次，仍失败只提示，见上面的收尾）。
+       必须等 st.running 已经是 false 才发：否则 agentSessionSend 会判成"会话忙"
+       把这条塞进发送队列，用户会看到一条自己没打过的排队消息。 */
+    try {
+      if (st._planFixAsk) {
+        st._planFixAsk = false;
+        const cap =
+          typeof PLAN_FIX_MAX_ROUNDS === "number" ? PLAN_FIX_MAX_ROUNDS : 1;
+        if (
+          !planFixMsg &&
+          !hasQueued &&
+          !holdQueue &&
+          outcome === "ok" &&
+          (Number(st._planFixRounds) || 0) < cap &&
+          /* 会话被用户中途删掉 → 不追发（否则 agentSessionSend 只会回一句
+             「所属会话已不存在，计划已停止」，凭空多出一条看不懂的提示） */
+          (typeof agentSessionById !== "function" || !!agentSessionById(st.id)) &&
+          typeof planFixDirective === "function"
+        ) {
+          st._planFixRounds = (Number(st._planFixRounds) || 0) + 1;
+          try {
+            if (S.agentActiveId === st.id)
+              toast(I18n.t("检测到计划未弹出，已自动要求重新生成一次"), "warn");
+          } catch (_) {}
+          await agentSessionSend(planFixDirective(), {
+            sessionId: st.id,
+            _planFix: true,
+          });
+        }
+      }
     } catch (_) {}
     if (!holdQueue) agentDrainQueue(st);
   }

@@ -9,6 +9,9 @@
     "pack": "electron-packager . MTNodeAIO --platform=win32 --arch=x64 --out=E:/dev/tools/dist --overwrite --electron-version=39.8.10 --executable-name=MTNodeAIO --prune=true --icon=E:/dev/tools/pipeline-console/build/icon.ico --ignore=\"^/smoke\\.js$|^/dist($|/)|^/node_modules/\\.cache($|/)\"",
     "dist": "electron-builder --win --config build.json --publish never",
     "compile": "electron-builder --win --dir --config build.json --publish never",
+    "dist:msix": "node scripts/msix/make-msix.mjs",
+    "dist:msix:sign": "node scripts/msix/make-msix.mjs --selfsign",
+    "dist:msix:test": "node scripts/msix/make-msix.mjs --install-test",
     "deps:usage": "node scripts/app-deps-usage.mjs --report",
     "deps:cap": "node scripts/app-deps-usage.mjs --tree=gateway --capability",
     "deps:check": "node scripts/app-deps-check.mjs",
@@ -21,6 +24,7 @@
     "ext:build": "node ext-repo/build.mjs",
     "ext:sync": "node ext-repo/build.mjs && python ext-repo/upload.py",
     "store:deploy": "python store-saas/upload.py",
+    "deploy:privacy": "python scripts/upload-privacy.py --upload-only && python scripts/upload-privacy.py --patch-only",
     "store:seed-skills": "node store-saas/seed-skills.mjs",
     "store:release-skills": "node tools/release-skills.mjs",
     "build:agent-skills-index": "node tools/build-mtnode-agent-skill-index.js"

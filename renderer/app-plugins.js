@@ -1190,15 +1190,149 @@ async function openAppPluginsDialog() {
   }
 }
 
-/* ============ DSH 插件管理（近全屏独立对话框，避免撑爆设置栏） ============ */
+/* ============ 扩展能力管理（DSH 插件 / 技能 Skills / MCP 服务器 统一对话框）
+   设置里这三类扩展原本各占一块（DSH 插件还内联一长串列表），现整合成一个
+   「扩展能力」界面，一律通过「管理」打开本对话框；DSH 插件只是其中一个分类，
+   技能与 MCP 复用同一套「卡片清单 + 右侧详情」的样式（.dsh-plugin-card /
+   .dsh-plugins-info），让三个分类看起来是同一个东西，而不是各写一遍的面板。
+   宿主改为 #extManagerDlg，并顺带清掉旧版 #dshPluginsDlg，避免改版后残留两个实例。
+   ============ */
 
-const DSH_PLUGINS_UI = {
-  list: [],
-  selectedKey: "",
-  query: "",
-  hintEl: null,
+const EXT_KINDS = [
+  {
+    key: "dsh",
+    zh: "DSH 插件",
+    tab: "DSH",
+    grid: "dshPluginsGrid",
+    empty: "暂无 DSH 插件（点上方「＋ 安装插件」）",
+    install: true,
+    newLabel: "＋ 安装插件",
+  },
+  {
+    key: "skill",
+    zh: "技能 Skills",
+    tab: "Skill",
+    grid: "dshSkillsGrid",
+    empty: "暂无技能（点上方「＋ 创建技能」）",
+    install: false,
+    newLabel: "＋ 创建技能",
+  },
+  {
+    key: "mcp",
+    zh: "MCP 服务器",
+    tab: "MCP",
+    grid: "dshMcpGrid",
+    empty: "暂无 MCP 服务器（点上方「＋ 添加服务器」）",
+    install: false,
+    newLabel: "＋ 添加服务器",
+  },
+];
+
+const EXT_KIND = {};
+for (const k of EXT_KINDS) EXT_KIND[k.key] = k;
+
+const EXT_UI = {
   open: false,
+  kind: "dsh",
+  hintEl: null,
+  loaded: { dsh: false, skill: false, mcp: false },
+  errors: { dsh: "", skill: "", mcp: "" },
+  state: {
+    dsh: { list: [], selectedKey: "", query: "" },
+    skill: { list: [], selectedKey: "", query: "", editor: null },
+    mcp: { list: [], selectedKey: "", query: "", editor: null },
+  },
 };
+
+function extState(kind) {
+  return EXT_UI.state[kind] || EXT_UI.state.dsh;
+}
+
+function extItems(kind) {
+  if (kind === "skill") {
+    return (EXT_UI.state.skill.list || []).filter(
+      (s) => !isInstallOnlySkillName(s && s.name),
+    );
+  }
+  return EXT_UI.state[kind] ? EXT_UI.state[kind].list || [] : [];
+}
+
+function extKeyOf(kind, it) {
+  if (kind === "skill") return String((it && it.name) || "");
+  if (kind === "mcp") return String((it && it.serverName) || "");
+  return dshPluginKey(it);
+}
+
+function extIsOn(kind, it) {
+  return !(it && it.disabled);
+}
+
+function extHay(kind, it) {
+  let parts;
+  if (kind === "skill") parts = [it.name, it.title, it.description];
+  else if (kind === "mcp")
+    parts = [it.serverName, it.transport, it.command, it.url, it.args];
+  else parts = [it.name, it.id, it.title, it.description, it.purpose];
+  return parts.filter(Boolean).join("\n").toLowerCase();
+}
+
+function extFilter(kind) {
+  const st = extState(kind);
+  const q = String(st.query || "").trim().toLowerCase();
+  const list = extItems(kind);
+  return q ? list.filter((it) => extHay(kind, it).includes(q)) : list.slice();
+}
+
+function extCount(kind) {
+  return extItems(kind).length;
+}
+
+function extSelected(kind) {
+  const st = extState(kind);
+  const list = extFilter(kind);
+  if (!list.length) return null;
+  const sel =
+    list.find((it) => extKeyOf(kind, it) === st.selectedKey) || list[0];
+  st.selectedKey = extKeyOf(kind, sel);
+  return sel;
+}
+
+/* ── 设置里的汇总提示 ── */
+
+function extHintText() {
+  const p = EXT_UI.state.dsh.list.length;
+  const m = EXT_UI.state.dsh.list.filter((x) => !x.disabled).length;
+  const zh = !(I18n && I18n.getLocale && I18n.getLocale() === "en");
+  const bits = [
+    I18n.t("DSH 插件 ") +
+      p +
+      (zh ? "（已挂载 " : " (mounted ") +
+      m +
+      (zh ? "）" : ")"),
+    I18n.t("技能 ") + extCount("skill"),
+    I18n.t("MCP ") + extCount("mcp"),
+  ];
+  const errs = EXT_KINDS.filter((k) => EXT_UI.errors[k.key]).map(
+    (k) => k.tab,
+  );
+  let s = bits.join(" · ");
+  if (errs.length)
+    s +=
+      (zh ? I18n.t("（部分列表不可用：") : " (some lists unavailable: ") +
+      errs.join(" / ") +
+      (zh ? "）" : ")");
+  return s;
+}
+
+function paintExtHint() {
+  const hint = EXT_UI.hintEl;
+  if (!hint) return;
+  if (!EXT_UI.loaded.dsh && !EXT_UI.loaded.skill && !EXT_UI.loaded.mcp) {
+    hint.textContent = I18n.t("（读取中…）");
+    return;
+  }
+  hint.textContent = extHintText();
+}
 
 function dshPluginHasCjk(s) {
   return /[\u4e00-\u9fff]/.test(String(s || ""));
@@ -1262,234 +1396,726 @@ function enrichDshPluginCopy(p) {
   return Object.assign({}, p, { title, description, purpose });
 }
 
-function ensureDshPluginsDlg() {
-  let host = document.getElementById("dshPluginsDlg");
+function ensureExtManagerDlg() {
+  const old = document.getElementById("dshPluginsDlg");
+  if (old) old.remove();
+  let host = document.getElementById("extManagerDlg");
   if (host) return host;
   host = document.createElement("div");
-  host.id = "dshPluginsDlg";
-  host.className = "mt-dialog dsh-plugins-dlg";
+  host.id = "extManagerDlg";
+  host.className = "mt-dialog dsh-plugins-dlg ext-manager-dlg";
   host.tabIndex = -1;
   host.innerHTML =
-    '<div class="mt-dialog-box dsh-plugins-box" role="dialog" aria-modal="true">' +
+    '<div class="mt-dialog-box dsh-plugins-box ext-manager-box" role="dialog" aria-modal="true">' +
     '<div class="dsh-plugins-head">' +
-    '<b id="dshPluginsTitle"></b>' +
-    '<input id="dshPluginsSearch" class="dsh-plugin-search" type="text">' +
-    '<button type="button" class="mini node-guide-x" id="dshPluginsClose">✕</button>' +
+    '<b id="extManagerTitle"></b>' +
+    '<div class="dsh-ext-tabs" id="extManagerTabs"></div>' +
+    '<input id="extManagerSearch" class="dsh-plugin-search" type="text">' +
+    '<button type="button" class="mini node-guide-x" id="extManagerClose">✕</button>' +
     "</div>" +
+    '<div class="dsh-ext-toolbar" id="extManagerToolbar"></div>' +
     '<div class="dsh-plugins-main">' +
     '<div class="dsh-plugins-grid" id="dshPluginsGrid"></div>' +
-    '<div class="dsh-plugins-info" id="dshPluginsInfo"></div>' +
+    '<div class="dsh-plugins-grid" id="dshSkillsGrid" style="display:none"></div>' +
+    '<div class="dsh-plugins-grid" id="dshMcpGrid" style="display:none"></div>' +
+    '<div class="dsh-plugins-info" id="extManagerInfo"></div>' +
     "</div></div>";
   document.body.appendChild(host);
-  host.querySelector("#dshPluginsClose").onclick = () => closeDshPluginsDialog();
+  host.querySelector("#extManagerClose").onclick = () => closeExtManagerDialog();
   host.addEventListener("click", (ev) => {
-    if (ev.target === host) closeDshPluginsDialog();
+    if (ev.target === host) closeExtManagerDialog();
   });
   host.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
     const mt = document.getElementById("mtDialog");
     if (mt && mt.classList.contains("on")) return;
     ev.preventDefault();
-    closeDshPluginsDialog();
+    if (extState(EXT_UI.kind).editor) {
+      paintExtManager();
+      return;
+    }
+    closeExtManagerDialog();
   });
-  host.querySelector("#dshPluginsSearch").addEventListener("input", () => {
-    DSH_PLUGINS_UI.query = host.querySelector("#dshPluginsSearch").value || "";
-    renderDshPluginsDialog();
+  host.querySelector("#extManagerSearch").addEventListener("input", (ev) => {
+    extState(EXT_UI.kind).query = ev.target.value || "";
+    paintExtManager();
   });
   return host;
 }
 
-function closeDshPluginsDialog() {
-  const host = document.getElementById("dshPluginsDlg");
+function closeExtManagerDialog() {
+  const host = document.getElementById("extManagerDlg");
   if (host) host.classList.remove("on");
-  DSH_PLUGINS_UI.open = false;
+  EXT_UI.open = false;
 }
 
-function paintDshPluginsChrome() {
-  const host = ensureDshPluginsDlg();
-  const title = host.querySelector("#dshPluginsTitle");
-  const search = host.querySelector("#dshPluginsSearch");
-  const closeBtn = host.querySelector("#dshPluginsClose");
-  if (title) title.textContent = I18n.t("管理 DSH 插件");
-  if (search)
-    search.placeholder = I18n.t("筛选 DSH 插件（按包名 / 行 id / 描述）…");
-  if (closeBtn) closeBtn.title = I18n.t("关闭");
+function paintExtTabs(host) {
+  const tabs = host.querySelector("#extManagerTabs");
+  if (!tabs) return;
+  tabs.innerHTML = "";
+  for (const k of EXT_KINDS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "dsh-ext-tab" + (EXT_UI.kind === k.key ? " on" : "");
+    b.textContent = I18n.t(k.tab) + " " + extCount(k.key);
+    b.title = I18n.t(k.zh);
+    b.onclick = () => {
+      if (EXT_UI.kind === k.key) return;
+      EXT_UI.kind = k.key;
+      paintExtManager();
+    };
+    tabs.appendChild(b);
+  }
 }
 
-function renderDshPluginInfo(p) {
-  const info = document.getElementById("dshPluginsInfo");
+function extInstallSubmit(host) {
+  const inp = host.querySelector("#extManagerInstall");
+  if (!inp) return;
+  const pkg = String(inp.value || "").trim();
+  if (!pkg) return;
+  inp.value = "";
+  extAddPlugin(pkg);
+}
+
+function paintExtToolbar(host) {
+  const bar = host.querySelector("#extManagerToolbar");
+  if (!bar) return;
+  const kind = EXT_UI.kind;
+  const meta = EXT_KIND[kind];
+  bar.innerHTML = "";
+  if (meta.install) {
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.id = "extManagerInstall";
+    inp.className = "dsh-plugin-search dsh-ext-install";
+    inp.placeholder = I18n.t("npm 包名或 GitHub 地址，例如 @scope/pkg");
+    inp.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        extInstallSubmit(host);
+      }
+    });
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mini primary";
+    btn.textContent = I18n.t("＋ 安装插件");
+    btn.onclick = () => extInstallSubmit(host);
+    bar.appendChild(inp);
+    bar.appendChild(btn);
+  } else {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mini primary";
+    btn.textContent = I18n.t(meta.newLabel);
+    btn.onclick = () => {
+      const st = extState(kind);
+      st.editor = { mode: "new", data: null };
+      st.selectedKey = "";
+      paintExtManager();
+    };
+    bar.appendChild(btn);
+  }
+  const spacer = document.createElement("span");
+  spacer.className = "dsh-ext-spacer";
+  bar.appendChild(spacer);
+  const store = document.createElement("button");
+  store.type = "button";
+  store.className = "mini";
+  store.textContent = I18n.t("🌐 在线浏览");
+  store.title = I18n.t("在线浏览:线上目录(插件 / 技能 / MCP),可安装与卸载");
+  store.onclick = () => {
+    closeExtManagerDialog();
+    if (typeof openStoreDialog === "function") openStoreDialog();
+  };
+  bar.appendChild(store);
+  const cnt = document.createElement("span");
+  cnt.className = "dsh-ext-count";
+  cnt.textContent = extCount(kind) + I18n.t(" 项");
+  bar.appendChild(cnt);
+}
+
+function extFieldRow(labelText, el) {
+  const lab = document.createElement("div");
+  lab.className = "dsh-plugin-info-label";
+  lab.textContent = labelText;
+  const wrap = document.createElement("div");
+  wrap.className = "dsh-ext-field";
+  wrap.appendChild(lab);
+  wrap.appendChild(el);
+  return wrap;
+}
+
+function extTextInput(ph, value) {
+  const el = document.createElement("input");
+  el.type = "text";
+  el.placeholder = ph;
+  el.value = value || "";
+  return el;
+}
+
+function extTextArea(ph, value, rows) {
+  const el = document.createElement("textarea");
+  el.rows = rows || 4;
+  el.placeholder = ph;
+  el.value = value || "";
+  return el;
+}
+
+function extSelect(options, value) {
+  const el = document.createElement("select");
+  for (const [v, l] of options) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = I18n.t(l);
+    el.appendChild(o);
+  }
+  el.value = value;
+  return el;
+}
+
+function extErrorText(e) {
+  return String((e && e.message) || e || "");
+}
+
+async function extAddPlugin(pkg) {
+  const host = document.getElementById("extManagerDlg");
+  const cnt = host && host.querySelector(".dsh-ext-count");
+  if (cnt) cnt.textContent = I18n.t("安装中（需要联网，可能需要几分钟）…");
+  try {
+    const rr = await window.api.dshPluginAdd(pkg);
+    if (rr && rr.ok === false) throw new Error(rr.error);
+    toast((rr && rr.message) || I18n.t("DSH 插件已安装：") + pkg, "ok");
+  } catch (e) {
+    toast(I18n.t("安装失败：") + extErrorText(e), "err");
+  }
+  await refreshExtInventory({ quiet: true });
+  paintExtManager();
+}
+
+function renderExtManagerInfo(host) {
+  const info = host.querySelector("#extManagerInfo");
   if (!info) return;
   info.innerHTML = "";
-  if (!p) {
+  const kind = EXT_UI.kind;
+  const st = extState(kind);
+  if (st.editor) {
+    buildExtEditor(info, kind, st);
+    return;
+  }
+  const it = extSelected(kind);
+  if (!it) {
     const em = document.createElement("div");
     em.className = "dsh-plugin-empty";
-    em.textContent = I18n.t("选择左侧插件查看说明");
+    em.textContent =
+      EXT_UI.errors[kind] || I18n.t("选择左侧条目查看说明与管理操作");
     info.appendChild(em);
     return;
   }
+  if (kind === "dsh") renderDshPluginInfo(it, info);
+  else if (kind === "skill") renderExtSkillInfo(it, info);
+  else renderExtMcpInfo(it, info);
+}
+
+function extInfoHead(info, titleText, tags, fullname) {
   const head = document.createElement("div");
   head.className = "dsh-plugin-info-head";
   const title = document.createElement("div");
   title.className = "dsh-plugin-info-title";
-  title.textContent = p.title || dshPluginLabel(p);
+  title.textContent = titleText;
   head.appendChild(title);
-  const tags = document.createElement("div");
-  tags.className = "dsh-plugin-info-tags";
-  const tag = document.createElement("span");
-  tag.className =
-    "dsh-plugin-tag " + (p.core ? "builtin" : p.disabled ? "off" : "on");
-  tag.textContent = p.core
-    ? I18n.t("核心")
-    : p.disabled
-      ? I18n.t("未挂载")
-      : I18n.t("已挂载");
-  tags.appendChild(tag);
-  const src = document.createElement("span");
-  src.className = "dsh-plugin-tag " + (p.source === "config" ? "on" : "builtin");
-  src.textContent =
-    p.source === "config" ? I18n.t("配置目录") : I18n.t("应用内置");
-  tags.appendChild(src);
+  const tw = document.createElement("div");
+  tw.className = "dsh-plugin-info-tags";
+  for (const [cls, text] of tags || []) {
+    const t = document.createElement("span");
+    t.className = "dsh-plugin-tag " + cls;
+    t.textContent = text;
+    tw.appendChild(t);
+  }
+  head.appendChild(tw);
+  info.appendChild(head);
+  if (fullname) {
+    const full = document.createElement("div");
+    full.className = "dsh-plugin-full";
+    full.textContent = fullname;
+    info.appendChild(full);
+  }
+}
+
+function extInfoField(info, label, text) {
+  if (!text) return;
+  const lab = document.createElement("div");
+  lab.className = "dsh-plugin-info-label";
+  lab.textContent = label;
+  info.appendChild(lab);
+  const body = document.createElement("div");
+  body.className = "dsh-plugin-info-text";
+  body.textContent = text;
+  info.appendChild(body);
+}
+
+function extInfoButtons(info, actions) {
+  if (!actions || !actions.length) return;
+  const btns = document.createElement("div");
+  btns.className = "dsh-plugin-btns";
+  for (const [label, cls, fn] of actions) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mini " + (cls || "");
+    b.textContent = I18n.t(label);
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      await fn();
+    };
+    btns.appendChild(b);
+  }
+  info.appendChild(btns);
+}
+
+function extInfoDetails(info, label, text, cls) {
+  const det = document.createElement("details");
+  det.className = cls || "dsh-plugin-yaml";
+  const sum = document.createElement("summary");
+  sum.textContent = label;
+  det.appendChild(sum);
+  const pre = document.createElement("pre");
+  pre.className = "dsh-plugin-detail";
+  pre.textContent = text;
+  det.appendChild(pre);
+  info.appendChild(det);
+}
+
+/* 右侧详情：DSH 插件（沿用原样式与操作） */
+function renderDshPluginInfo(p, info) {
+  extInfoHead(
+    info,
+    p.title || dshPluginLabel(p),
+    [
+      [p.core ? "builtin" : p.disabled ? "off" : "on", p.core ? I18n.t("核心") : p.disabled ? I18n.t("未挂载") : I18n.t("已挂载")],
+      [
+        p.source === "config" ? "on" : "builtin",
+        p.source === "config" ? I18n.t("配置目录") : I18n.t("应用内置"),
+      ],
+    ],
+    p.name,
+  );
   if (p.version) {
-    const ver = document.createElement("span");
+    const ver = document.createElement("div");
     ver.className = "dsh-plugin-info-ver";
     ver.textContent = "v" + p.version;
-    tags.appendChild(ver);
+    info.appendChild(ver);
   }
-  head.appendChild(tags);
-  info.appendChild(head);
-  const full = document.createElement("div");
-  full.className = "dsh-plugin-full";
-  full.textContent = p.name;
-  info.appendChild(full);
-  const addField = (label, text) => {
-    if (!text) return;
-    const lab = document.createElement("div");
-    lab.className = "dsh-plugin-info-label";
-    lab.textContent = label;
-    const body = document.createElement("div");
-    body.className = "dsh-plugin-info-text";
-    body.textContent = text;
-    info.appendChild(lab);
-    info.appendChild(body);
-  };
-  addField(I18n.t("描述"), p.description);
-  addField(I18n.t("用途"), p.purpose);
+  extInfoField(info, I18n.t("描述"), p.description);
+  extInfoField(info, I18n.t("用途"), p.purpose);
   if (!p.description && !p.purpose) {
     const em = document.createElement("div");
     em.className = "dsh-plugin-empty";
     em.textContent = I18n.t("暂无描述");
     info.appendChild(em);
   }
+  const actions = [];
   if (p.toggleable) {
-    const btns = document.createElement("div");
-    btns.className = "dsh-plugin-btns";
-    const tg = document.createElement("button");
-    tg.className = "mini";
-    tg.textContent = p.disabled ? I18n.t("挂载") : I18n.t("取消挂载");
-    tg.onclick = async (ev) => {
-      ev.stopPropagation();
+    actions.push([p.disabled ? "挂载" : "取消挂载", "", async () => {
       try {
-        const rr = await window.api.dshPluginSetEnabled(p.name, !!p.disabled, p.id);
+        const rr = await window.api.dshPluginSetEnabled(
+          p.name,
+          !!p.disabled,
+          p.id,
+        );
         if (rr && rr.ok === false) throw new Error(rr.error);
-        toast((p.disabled ? I18n.t("已挂载 ") : I18n.t("已取消挂载 ")) + p.name, "ok");
+        toast(
+          (p.disabled ? I18n.t("已挂载 ") : I18n.t("已取消挂载 ")) + p.name,
+          "ok",
+        );
       } catch (e) {
-        toast(I18n.t("操作失败：") + (e.message || String(e)), "err");
+        toast(I18n.t("操作失败：") + extErrorText(e), "err");
       }
-      await refreshDshPluginInventory();
-    };
-    btns.appendChild(tg);
-    if (p.removable) {
-      const rm = document.createElement("button");
-      rm.className = "mini";
-      rm.textContent = I18n.t("移除");
-      rm.onclick = async (ev) => {
-        ev.stopPropagation();
-        if (
-          !(await confirmDialog(
-            I18n.t("移除 DSH 插件 ") + p.name + I18n.t("？引擎将自动重启。"),
-            { title: I18n.t("移除插件"), danger: true, okText: I18n.t("移除") },
-          ))
-        )
-          return;
-        try {
-          const rr = await window.api.dshPluginRemove(p.name);
-          if (rr && rr.ok === false) throw new Error(rr.error);
-          toast(I18n.t("已移除 ") + p.name, "ok");
-        } catch (e) {
-          toast(I18n.t("移除失败：") + (e.message || String(e)), "err");
-        }
-        await refreshDshPluginInventory();
-      };
-      btns.appendChild(rm);
-    }
-    info.appendChild(btns);
+      await refreshExtInventory({ kinds: ["dsh"], quiet: true });
+      paintExtManager();
+    }]);
   }
-  if (p.detail) {
-    const det = document.createElement("details");
-    det.className = "dsh-plugin-yaml";
-    const sum = document.createElement("summary");
-    sum.textContent = I18n.t("配置片段");
-    det.appendChild(sum);
-    const pre = document.createElement("pre");
-    pre.className = "dsh-plugin-detail";
-    pre.textContent = p.detail;
-    det.appendChild(pre);
-    info.appendChild(det);
+  if (p.removable) {
+    actions.push(["移除", "danger", async () => {
+      if (
+        !(await confirmDialog(
+          I18n.t("移除 DSH 插件 ") + p.name + I18n.t("？引擎将自动重启。"),
+          { title: I18n.t("移除插件"), danger: true, okText: I18n.t("移除") },
+        ))
+      )
+        return;
+      try {
+        const rr = await window.api.dshPluginRemove(p.name);
+        if (rr && rr.ok === false) throw new Error(rr.error);
+        toast(I18n.t("已移除 ") + p.name, "ok");
+      } catch (e) {
+        toast(I18n.t("移除失败：") + extErrorText(e), "err");
+      }
+      await refreshExtInventory({ kinds: ["dsh"], quiet: true });
+      paintExtManager();
+    }]);
   }
+  extInfoButtons(info, actions);
+  if (p.detail) extInfoDetails(info, I18n.t("配置片段"), p.detail);
 }
 
-function renderDshPluginsDialog() {
-  const grid = document.getElementById("dshPluginsGrid");
+/* 右侧详情：技能 */
+function renderExtSkillInfo(s, info) {
+  extInfoHead(
+    info,
+    s.title || s.name,
+    [
+      [s.builtin ? "builtin" : "on", s.builtin ? I18n.t("内置") : I18n.t("本机")],
+      [
+        s.storeId ? "on" : "builtin",
+        s.storeId ? I18n.t("来自工坊") : I18n.t("本地创建"),
+      ],
+    ],
+    s.name,
+  );
+  if (s.version) {
+    const ver = document.createElement("div");
+    ver.className = "dsh-plugin-info-ver";
+    ver.textContent = "v" + s.version;
+    info.appendChild(ver);
+  }
+  extInfoField(info, I18n.t("描述"), s.description);
+  const body = s._body || "";
+  if (body) {
+    extInfoDetails(
+      info,
+      I18n.t("技能内容 SKILL.md") + "（" + body.length + "）",
+      body,
+      "dsh-plugin-yaml dsh-skill-body",
+    );
+  } else if (s._bodyLoading) {
+    const em = document.createElement("div");
+    em.className = "dsh-plugin-empty";
+    em.textContent = I18n.t("（读取中…）");
+    info.appendChild(em);
+  }
+  if (Array.isArray(s.files) && s.files.length) {
+    extInfoField(
+      info,
+      I18n.t("附带文件"),
+      s.files.map((f) => f.path + " (" + f.bytes + "B)").join("\n"),
+    );
+  }
+  const actions = [];
+  actions.push([s.builtin ? "查看" : "编辑", "", async () => {
+    if (s.builtin) {
+      toast(I18n.t("内置技能只读，不可修改"), "warn");
+    }
+    try {
+      const g = await window.api.skillGet(s.name);
+      if (!g || !g.ok) throw new Error((g && g.error) || I18n.t("未知错误"));
+      s._body = g.body || "";
+      s.files = g.files || [];
+      if (s.builtin) {
+        paintExtManager();
+        return;
+      }
+      extState("skill").editor = { mode: "edit", data: s };
+      paintExtManager();
+    } catch (e) {
+      toast(I18n.t("加载失败：") + extErrorText(e), "err");
+    }
+  }]);
+  if (!s.builtin) {
+    actions.push(["移除", "danger", async () => {
+      if (
+        !(await confirmDialog(I18n.t("移除技能 ") + s.name + I18n.t("？"), {
+          title: I18n.t("移除技能"),
+          danger: true,
+          okText: I18n.t("移除"),
+        }))
+      )
+        return;
+      try {
+        const rr = await window.api.skillRemove(s.name);
+        if (rr && rr.ok === false) throw new Error(rr.error);
+        toast(I18n.t("已移除技能 ") + s.name, "ok");
+      } catch (e) {
+        toast(I18n.t("移除失败：") + extErrorText(e), "err");
+      }
+      extState("skill").selectedKey = "";
+      await refreshExtInventory({ kinds: ["skill"], quiet: true });
+      paintExtManager();
+    }]);
+  }
+  extInfoButtons(info, actions);
+}
+
+/* 右侧详情：MCP 服务器 */
+function renderExtMcpInfo(s, info) {
+  extInfoHead(
+    info,
+    s.serverName,
+    [
+      [s.disabled ? "off" : "on", s.disabled ? I18n.t("已停用") : I18n.t("已启用")],
+      ["builtin", s.transport === "stdio" ? "stdio" : "streamable-http"],
+    ],
+    s.transport === "stdio" ? s.command : s.url,
+  );
+  extInfoField(
+    info,
+    I18n.t("命令 / 参数"),
+    s.transport === "stdio" ? (s.command || "") + " " + (s.args || "") : "",
+  );
+  extInfoField(info, "URL", s.transport === "stdio" ? "" : s.url);
+  extInfoDetails(
+    info,
+    I18n.t("配置片段"),
+    [
+      "serverName: " + s.serverName,
+      "transport: " + s.transport,
+      s.transport === "stdio"
+        ? "command: " + (s.command || "") + "\nargs: " + (s.args || "")
+        : "url: " + (s.url || ""),
+      "disabled: " + (s.disabled ? "true" : "false"),
+    ].join("\n"),
+  );
+  extInfoButtons(info, [
+    [s.disabled ? "启用" : "停用", "", async () => {
+      try {
+        const rr = await window.api.dshMcpSetEnabled(s.serverName, !!s.disabled);
+        if (rr && rr.ok === false) throw new Error(rr.error);
+        toast(
+          (s.disabled ? I18n.t("已启用 ") : I18n.t("已停用 ")) + s.serverName,
+          "ok",
+        );
+      } catch (e) {
+        toast(I18n.t("操作失败：") + extErrorText(e), "err");
+      }
+      await refreshExtInventory({ kinds: ["mcp"], quiet: true });
+      paintExtManager();
+    }],
+    ["移除", "danger", async () => {
+      if (
+        !(await confirmDialog(
+          I18n.t("移除 MCP 服务器 ") + s.serverName + I18n.t("？引擎将自动重启。"),
+          { title: I18n.t("移除 MCP"), danger: true, okText: I18n.t("移除") },
+        ))
+      )
+        return;
+      try {
+        const rr = await window.api.dshMcpRemove(s.serverName);
+        if (rr && rr.ok === false) throw new Error(rr.error);
+        toast(I18n.t("已移除 ") + s.serverName, "ok");
+      } catch (e) {
+        toast(I18n.t("移除失败：") + extErrorText(e), "err");
+      }
+      extState("mcp").selectedKey = "";
+      await refreshExtInventory({ kinds: ["mcp"], quiet: true });
+      paintExtManager();
+    }],
+  ]);
+}
+
+/* 新建 / 编辑表单（技能、MCP），同样开在右侧详情区，保持一个样式 */
+function buildExtEditor(info, kind, st) {
+  const ed = st.editor;
+  const cur = ed.mode === "edit" ? ed.data : null;
+  const title = document.createElement("div");
+  title.className = "dsh-plugin-info-title";
+  title.textContent = I18n.t(
+    kind === "skill"
+      ? cur
+        ? "编辑技能"
+        : "创建技能"
+      : cur
+        ? "MCP 服务器"
+        : "添加 MCP 服务器",
+  );
+  info.appendChild(title);
+  const form = document.createElement("div");
+  form.className = "dsh-skill-form";
+  info.appendChild(form);
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "mini primary";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  cancel.onclick = () => {
+    st.editor = null;
+    paintExtManager();
+  };
+
+  if (kind === "skill") {
+    const nm = extTextInput(
+      I18n.t("技能名（kebab-case，如 pdf-summary）"),
+      cur ? cur.name : "",
+    );
+    if (cur) nm.disabled = true;
+    const desc = extTextInput(
+      I18n.t("一句话描述（模型据此判断何时使用）"),
+      cur ? cur.description || "" : "",
+    );
+    const body = extTextArea(
+      I18n.t("技能内容（Markdown，模型按此执行）…"),
+      cur ? cur._body || "" : "",
+      12,
+    );
+    form.appendChild(extFieldRow(I18n.t("技能名"), nm));
+    form.appendChild(extFieldRow(I18n.t("描述"), desc));
+    form.appendChild(extFieldRow(I18n.t("内容"), body));
+    save.textContent = I18n.t(cur ? "保存本机修改" : "创建技能");
+    save.onclick = async () => {
+      try {
+        const rr = await window.api.skillAdd({
+          name: (cur ? cur.name : nm.value).trim().toLowerCase(),
+          description: desc.value.trim(),
+          body: body.value,
+          overwrite: !!cur,
+          files: cur && Array.isArray(cur.files) ? cur.files : undefined,
+        });
+        if (rr && rr.ok === false) throw new Error(rr.error);
+        toast(
+          cur ? I18n.t("本机技能已保存（未自动同步工坊）") : I18n.t("技能已创建，智能节点可立即使用"),
+          "ok",
+        );
+        st.editor = null;
+        st.selectedKey = (cur ? cur.name : nm.value).trim().toLowerCase();
+      } catch (e) {
+        toast(I18n.t("保存失败：") + extErrorText(e), "err");
+        return;
+      }
+      await refreshExtInventory({ kinds: ["skill"], quiet: true });
+      paintExtManager();
+    };
+  } else {
+    const nm = extTextInput(
+      I18n.t("服务器名（1-32 位字母/数字/_/-）"),
+      cur ? cur.serverName : "",
+    );
+    const tr = extSelect(
+      [
+        ["stdio", "stdio（本地命令）"],
+        ["streamable-http", "streamable-http（远程 URL）"],
+      ],
+      (cur && cur.transport) || "stdio",
+    );
+    const cmd = extTextInput(
+      I18n.t("命令（如 npx.cmd 或 node 完整路径）"),
+      cur ? cur.command || "" : "",
+    );
+    const args = extTextInput(
+      I18n.t("参数（空格分隔，如 -y @modelcontextprotocol/server-filesystem）"),
+      cur ? cur.args || "" : "",
+    );
+    const url = extTextInput("http(s)://host/mcp", cur ? cur.url || "" : "");
+    const syncTransport = () => {
+      const http = tr.value !== "stdio";
+      cmd.style.display = http ? "none" : "";
+      args.style.display = http ? "none" : "";
+      url.style.display = http ? "" : "none";
+    };
+    tr.addEventListener("change", syncTransport);
+    form.appendChild(extFieldRow(I18n.t("服务器名"), nm));
+    form.appendChild(extFieldRow(I18n.t("传输方式"), tr));
+    form.appendChild(extFieldRow(I18n.t("命令"), cmd));
+    form.appendChild(extFieldRow(I18n.t("参数"), args));
+    form.appendChild(extFieldRow("URL", url));
+    syncTransport();
+    save.textContent = I18n.t("添加服务器");
+    save.onclick = async () => {
+      try {
+        const rr = await window.api.dshMcpAdd({
+          serverName: nm.value.trim(),
+          transport: tr.value,
+          command: cmd.value.trim(),
+          args: args.value.trim(),
+          url: url.value.trim(),
+        });
+        if (rr && rr.ok === false) throw new Error(rr.error);
+        toast(I18n.t("MCP 服务器已添加，引擎重启后生效"), "ok");
+        st.editor = null;
+        st.selectedKey = nm.value.trim();
+      } catch (e) {
+        toast(I18n.t("添加失败：") + extErrorText(e), "err");
+        return;
+      }
+      await refreshExtInventory({ kinds: ["mcp"], quiet: true });
+      paintExtManager();
+    };
+  }
+  const btns = document.createElement("div");
+  btns.className = "dsh-plugin-btns";
+  btns.appendChild(save);
+  btns.appendChild(cancel);
+  info.appendChild(btns);
+}
+
+function extCardText(kind, it) {
+  if (kind === "skill") return (it && (it.title || it.name)) || "";
+  if (kind === "mcp") return (it && it.serverName) || "";
+  return (it && (it.title || dshPluginLabel(it))) || "";
+}
+
+function extCardTag(kind, it) {
+  if (kind === "skill")
+    return it.builtin
+      ? [I18n.t("内置"), "builtin"]
+      : [I18n.t("本机"), "on"];
+  if (kind === "mcp")
+    return it.disabled
+      ? [I18n.t("已停用"), "off"]
+      : [I18n.t("已启用"), "on"];
+  return it.core
+    ? [I18n.t("核心"), "builtin"]
+    : it.disabled
+      ? [I18n.t("未挂载"), "off"]
+      : [I18n.t("已挂载"), "on"];
+}
+
+function renderExtGrid(host, kind) {
+  const grid = host.querySelector("#" + EXT_KIND[kind].grid);
   if (!grid) return;
   grid.innerHTML = "";
-  const q = String(DSH_PLUGINS_UI.query || "").trim().toLowerCase();
-  const hay = (p) =>
-    [p.name, p.id, p.title, p.description, p.purpose]
-      .filter(Boolean)
-      .join("\n")
-      .toLowerCase();
-  const list = DSH_PLUGINS_UI.list.filter((p) => !q || hay(p).includes(q));
+  const st = extState(kind);
+  const list = extFilter(kind);
   if (!list.length) {
     const em = document.createElement("div");
     em.className = "dsh-plugin-empty";
-    em.textContent = q
-      ? I18n.t("无匹配 DSH 插件")
-      : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
+    em.textContent = st.query
+      ? I18n.t("无匹配 ") + EXT_KIND[kind].tab
+      : EXT_UI.loaded[kind]
+        ? EXT_UI.errors[kind] || I18n.t(EXT_KIND[kind].empty)
+        : I18n.t("（读取中…）");
     grid.appendChild(em);
-    renderDshPluginInfo(null);
     return;
   }
-  const selected =
-    list.find((p) => dshPluginKey(p) === DSH_PLUGINS_UI.selectedKey) || list[0];
-  DSH_PLUGINS_UI.selectedKey = dshPluginKey(selected);
-  for (const p of list) {
-    const on = dshPluginKey(p) === DSH_PLUGINS_UI.selectedKey;
+  extSelected(kind);
+  for (const it of list) {
+    const on = extKeyOf(kind, it) === st.selectedKey;
     const card = document.createElement("div");
     card.className =
-      "dsh-plugin-card" + (p.disabled ? " off" : "") + (on ? " sel" : "");
+      "dsh-plugin-card" + (extIsOn(kind, it) ? "" : " off") + (on ? " sel" : "");
     card.setAttribute("role", "button");
     card.tabIndex = 0;
     const row = document.createElement("div");
     row.className = "dsh-plugin-card-row";
     const dot = document.createElement("span");
-    dot.className = "dsh-plugin-dot" + (p.disabled ? "" : " on");
-    dot.title = p.disabled ? I18n.t("未挂载") : I18n.t("已挂载");
+    dot.className = "dsh-plugin-dot" + (extIsOn(kind, it) ? " on" : "");
+    dot.title = extIsOn(kind, it) ? I18n.t("已启用") : I18n.t("未启用");
     const nm = document.createElement("span");
     nm.className = "dsh-plugin-name";
-    nm.textContent = p.title || dshPluginLabel(p);
-    nm.title = p.name;
+    nm.textContent = extCardText(kind, it);
+    nm.title =
+      kind === "skill"
+        ? it.description || it.name
+        : kind === "mcp"
+          ? it.command || it.url || it.serverName
+          : it.name;
+    const [tagText, tagCls] = extCardTag(kind, it);
     const tag = document.createElement("span");
-    tag.className =
-      "dsh-plugin-tag " + (p.core ? "builtin" : p.disabled ? "off" : "on");
-    tag.textContent = p.core
-      ? I18n.t("核心")
-      : p.disabled
-        ? I18n.t("未挂载")
-        : I18n.t("已挂载");
+    tag.className = "dsh-plugin-tag " + tagCls;
+    tag.textContent = tagText;
     row.appendChild(dot);
     row.appendChild(nm);
     row.appendChild(tag);
-    if (p.source === "config") {
+    if (kind === "dsh" && it.source === "config") {
       const loc = document.createElement("span");
       loc.className = "dsh-plugin-tag on";
       loc.textContent = I18n.t("配置目录");
@@ -1497,8 +2123,9 @@ function renderDshPluginsDialog() {
     }
     card.appendChild(row);
     const pick = () => {
-      DSH_PLUGINS_UI.selectedKey = dshPluginKey(p);
-      renderDshPluginsDialog();
+      st.selectedKey = extKeyOf(kind, it);
+      st.editor = null;
+      paintExtManager();
     };
     card.onclick = pick;
     card.onkeydown = (ev) => {
@@ -1509,64 +2136,124 @@ function renderDshPluginsDialog() {
     };
     grid.appendChild(card);
   }
-  renderDshPluginInfo(selected);
 }
 
-async function refreshDshPluginInventory(attempt) {
+function paintExtManager() {
+  if (!EXT_UI.open) return;
+  const host = ensureExtManagerDlg();
+  paintExtTabs(host);
+  paintExtToolbar(host);
+  const search = host.querySelector("#extManagerSearch");
+  if (search) {
+    const ph = {
+      dsh: I18n.t("筛选 DSH 插件（按包名 / 行 id / 描述）…"),
+      skill: I18n.t("筛选技能（按技能名 / 描述）…"),
+      mcp: I18n.t("筛选 MCP 服务器（按名称 / 命令 / URL）…"),
+    }[EXT_UI.kind];
+    search.placeholder = ph;
+    if (search.value !== (extState(EXT_UI.kind).query || ""))
+      search.value = extState(EXT_UI.kind).query || "";
+  }
+  for (const k of EXT_KINDS) {
+    const grid = host.querySelector("#" + k.grid);
+    if (grid) grid.style.display = EXT_UI.kind === k.key ? "" : "none";
+  }
+  renderExtGrid(host, EXT_UI.kind);
+  renderExtManagerInfo(host);
+}
+
+/* 三类清单一把抓：任一分类失败不影响其余分类（引擎未连接时插件分类仍会重试） */
+async function fetchExtPlugins(attempt) {
   attempt = attempt || 0;
   let r = null;
   try {
     r = await window.api.dshPluginList();
   } catch (e) {
-    r = { ok: false, error: e.message || String(e) };
+    r = { ok: false, error: extErrorText(e) };
   }
-  const hint = DSH_PLUGINS_UI.hintEl;
   if (!r || r.ok === false || !Array.isArray(r.plugins)) {
     if (attempt < 2) {
-      setTimeout(() => refreshDshPluginInventory(attempt + 1), 1500);
-      return r;
+      await new Promise((res) => setTimeout(res, 1500));
+      return fetchExtPlugins(attempt + 1);
     }
-    DSH_PLUGINS_UI.list = [];
-    if (hint) {
-      hint.textContent =
-        I18n.t("DSH 插件列表不可用（") +
-        ((r && r.error) || I18n.t("引擎未连接")) +
-        I18n.t("）· 重新打开设置重试");
-    }
-    if (DSH_PLUGINS_UI.open) renderDshPluginsDialog();
-    return r;
+    EXT_UI.state.dsh.list = [];
+    EXT_UI.errors.dsh =
+      I18n.t("DSH 插件列表不可用（") +
+      ((r && r.error) || I18n.t("引擎未连接")) +
+      I18n.t("）· 重新打开设置重试");
+    return;
   }
-  DSH_PLUGINS_UI.list = r.plugins.map(enrichDshPluginCopy);
-  const n = DSH_PLUGINS_UI.list.length;
-  const m = DSH_PLUGINS_UI.list.filter((p) => !p.disabled).length;
-  if (hint) {
-    hint.textContent = n
-      ? I18n.t("已安装 {n} 个插件（已挂载 {m}）", { n: n, m: m })
-      : I18n.t("暂无 DSH 插件（在上方输入 npm 包名安装）");
-  }
-  if (DSH_PLUGINS_UI.open) renderDshPluginsDialog();
-  return r;
+  EXT_UI.state.dsh.list = r.plugins.map(enrichDshPluginCopy);
+  EXT_UI.errors.dsh = "";
 }
 
-async function openDshPluginsDialog() {
-  const host = ensureDshPluginsDlg();
-  paintDshPluginsChrome();
-  const search = host.querySelector("#dshPluginsSearch");
-  if (search) search.value = DSH_PLUGINS_UI.query || "";
-  DSH_PLUGINS_UI.open = true;
+async function refreshExtInventory(opts) {
+  opts = opts || {};
+  const want = opts.kinds || ["dsh", "skill", "mcp"];
+  if (!want.length) return;
+  const fetchers = {
+    dsh: fetchExtPlugins,
+    skill: async () => {
+      try {
+        const r = await window.api.skillList();
+        if (r && r.ok === false) throw new Error(r.error);
+        EXT_UI.state.skill.list = (r && r.skills) || [];
+        EXT_UI.errors.skill = "";
+      } catch (e) {
+        EXT_UI.state.skill.list = [];
+        EXT_UI.errors.skill =
+          I18n.t("技能列表不可用（") + extErrorText(e) + I18n.t("）");
+      }
+    },
+    mcp: async () => {
+      try {
+        const r = await window.api.dshMcpList();
+        if (!r || r.ok === false || !Array.isArray(r.servers))
+          throw new Error((r && r.error) || I18n.t("引擎未连接"));
+        EXT_UI.state.mcp.list = r.servers;
+        EXT_UI.errors.mcp = "";
+      } catch (e) {
+        EXT_UI.state.mcp.list = [];
+        EXT_UI.errors.mcp =
+          I18n.t("MCP 列表不可用（") + extErrorText(e) + I18n.t("）");
+      }
+    },
+  };
+  for (const k of want) {
+    EXT_UI.loaded[k] = true;
+    try {
+      await fetchers[k]();
+    } catch (e) {
+      EXT_UI.errors[k] = extErrorText(e);
+    }
+  }
+  paintExtHint();
+  paintExtManager();
+}
+
+async function openExtManagerDialog(kind) {
+  const host = ensureExtManagerDlg();
+  EXT_UI.kind = EXT_KIND[kind] ? kind : "dsh";
+  EXT_UI.state[EXT_UI.kind].query = "";
+  EXT_UI.open = true;
   host.classList.add("on");
   try {
     host.focus();
   } catch (_) {}
-  if (!DSH_PLUGINS_UI.list.length) {
-    const grid = document.getElementById("dshPluginsGrid");
-    if (grid) {
-      grid.innerHTML =
-        '<div class="dsh-plugin-empty">' + I18n.t("（读取中…）") + "</div>";
-    }
-    await refreshDshPluginInventory();
-  } else {
-    renderDshPluginsDialog();
-  }
+  const t = document.getElementById("extManagerTitle");
+  if (t) t.textContent = I18n.t("扩展能力管理");
+  /* 每次点「管理」都重新拉一遍三类清单：引擎可能刚装完插件又重启过 */
+  await refreshExtInventory();
+  paintExtManager();
 }
 
+/* ── 兼容旧命名（设置与助手工具仍在用这些名字）── */
+function openDshPluginsDialog() {
+  return openExtManagerDialog("dsh");
+}
+function closeDshPluginsDialog() {
+  return closeExtManagerDialog();
+}
+function refreshDshPluginInventory() {
+  return refreshExtInventory({ kinds: ["dsh"] });
+}

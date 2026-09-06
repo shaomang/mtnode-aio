@@ -26,6 +26,7 @@
 import { createConnection } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { isToolHidden } from './tool-visibility.mjs'
 
 export const name = 'mtnode-db'
 export const inject = ['tools']
@@ -36,7 +37,7 @@ Available actions (full CRUD over the referenced database(s)):
 - list: schema + all record titles (id | title | kind | file). Use first to see what the database knows.
 - get: full record by id (from list/query results). Returns provenance, sql, and data (the record).
 - query: search records by keywords / question; supports field filters title:xxx file:xxx kind:fact|file|meta. Returns a structured object with provenance (record ids/titles/sources), sql (the actual access statement used), and data (the matched records as a JSON array; each record also carries its database + sql).
-- write: insert or update records (增 / 改). Pass records: [ {id?, title, content, kind?, source?, file?} ]. If id is omitted it is auto-generated (inserts a NEW record); if id matches an existing record it overwrites that record (update). Returns per-database written counts.
+- write: insert or update records (增 / 改). Pass records: [ {id?, title, content, kind?, source?, file?} ]. If id is omitted it is auto-generated (inserts a NEW record); if id matches an existing record it overwrites that record (update). Agent-written rows are tagged source=agent: and survive later compiles. Returns per-database written counts.
 - delete: remove records by id (删). Pass ids: [ ... ] (record ids from provenance). Returns per-database deleted counts.
 - calc: evaluate arithmetic with numbers and + - * / % ( ) only. ALL number/date math must go through calc — never compute in your head.
 
@@ -50,6 +51,12 @@ Discipline (enforced by the host):
 - Prefer query before write: confirm a record id does not already exist before writing a duplicate.`
 
 export function apply(ctx) {
+  /* 按运行裁剪可见工具集：这一轮没接入任何数据库（宿主据此一律回「未接入数据库」）时，
+     网关把 mtnode_db 写进 spawn env MTNODE_HIDE_TOOLS 的隐藏名单（名单真源
+     tool-visibility.mjs，判据在渲染层 dshHiddenToolNames：连线接入的数据库副本 +
+     prompt 里的 !@数据库标题 都没有 → 藏）。整个工具不注册，连桥都不建 ——
+     它 3.5K 字符的定义本来每一步都要随固定前缀重发一遍，而调用必然被宿主拒。 */
+  if (isToolHidden('mtnode_db')) return
   const port = Number(process.env.MTNODE_BRIDGE_PORT || 0)
   let socket = null
   let buf = ''

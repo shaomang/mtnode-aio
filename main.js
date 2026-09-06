@@ -29,6 +29,11 @@ const {
 const path = require("path");
 const fs = require("fs");
 const { launchDetached } = require("./main-exec-launch.js");
+/* 隐藏进程宿主：运行期拉起的外部进程统一隐藏启动 + 按 runId 记账 + 随运行/退出回收 */
+const procHost = require("./main-proc-host.js");
+/* 函数节点运行时：一次运行 = 一个 worker 线程 + 一个 runId
+   （用户 JS 不再在渲染进程主线程同步执行 —— 修复「跑函数节点把 MTNode 锁死」） */
+const { createFnRuntime } = require("./fn-runtime.js");
 const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
@@ -58,6 +63,8 @@ const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
 const { patchProviders } = require("./config-providers.js");
 const { registerRollbackIpc } = require("./rollback-store.js");
+const { registerToolsIpc } = require("./tools-store.js");
+const { registerAssetsIpc } = require("./assets-store.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -1415,6 +1422,127 @@ ipcMain.handle("shell:openPathDetached", async (e, p) => {
 ipcMain.handle("shell:openExternal", (e, url) => {
   if (typeof url === "string" && /^(https?:\/\/|mailto:)/i.test(url))
     shell.openExternal(url);
+});
+
+/* ── 隐藏进程宿主（函数节点等运行期使用；执行节点不走这里，仍按自己的语义开新控制台）──
+   与 shell:openPath / shell:openPathDetached 的区别：
+   1) 一律 windowsHide + 非 detached + 管道 stdio —— 不弹控制台窗口、不共享 MTNode 的 console；
+   2) 进程按 runId 记账，runId 与「函数节点的一次运行」一一对应 —— 运行结束/被停止即整棵进程树回收；
+   3) 主窗销毁与应用退出两条兜底路径同样 killAll()，不留脱离运行的残留进程。 */
+ipcMain.handle("proc:run", async (e, o = {}) => {
+  try {
+    return await procHost.startHidden(
+      {
+        cmd: o.cmd,
+        args: o.args,
+        cwd: o.cwd,
+        env: o.env,
+        runId: o.runId,
+        shell: o.shell,
+        label: o.label,
+        wait: true,
+      },
+      { outputLimit: o.outputLimit },
+    );
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 不等退出：只起进程 + 登记，进程随该 runId 统一回收（运行结束时由 proc:killRun 收走） */
+ipcMain.handle("proc:spawn", async (e, o = {}) => {
+  try {
+    return await procHost.startHidden(
+      {
+        cmd: o.cmd,
+        args: o.args,
+        cwd: o.cwd,
+        env: o.env,
+        runId: o.runId,
+        shell: o.shell,
+        label: o.label,
+        wait: false,
+      },
+      { outputLimit: o.outputLimit },
+    );
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 回收一次运行的全部外部进程（含孙进程）；返回 { killed, pids } */
+ipcMain.handle("proc:killRun", async (e, runId) => {
+  try {
+    return await procHost.killRun(runId);
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+ipcMain.handle("proc:killAll", async () => {
+  try {
+    return await procHost.killAll();
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+/* ── 函数节点运行时（函数节点 JS 的真正执行处）────────────────────────────
+   一次函数节点运行 = 一个 worker 线程 + 一个 runId：
+   1) 用户 JS 在主进程的独立线程里跑 —— 渲染进程主线程不再被同步代码占住，
+      界面照常重绘可点、「运行中」刷得出来，也随时能硬终止；
+   2) 代码里的 mtnode.exec / mtnode.spawn 一律走上面的隐藏进程宿主：隐藏启动、
+      不弹控制台窗口，并绑到本次 runId；
+   3) 运行结束 / 被停止 / 超时：立刻 worker.terminate() + 按 runId 回收整棵进程树，
+      返回结果的 killedProcs 就是本次回收掉的外部进程数
+      —— 节点不在运行态 ⇒ 它绑定的线程与进程不存在。
+   事件帧（log / progress / end）经 fn:event 推回发起的渲染进程。 */
+let fnRuntime = null;
+function fnRuntimeOf() {
+  if (!fnRuntime) fnRuntime = createFnRuntime({ appRoot: __dirname, procHost });
+  return fnRuntime;
+}
+ipcMain.handle("fn:run", async (e, o = {}) => {
+  const runId = String((o && o.runId) || "");
+  const emit =
+    e && e.sender
+      ? (frame) => {
+          try {
+            if (!e.sender.isDestroyed()) e.sender.send("fn:event", frame);
+          } catch {}
+        }
+      : null;
+  try {
+    return await fnRuntimeOf().run(o, emit);
+  } catch (err) {
+    return {
+      ok: false,
+      value: undefined,
+      error: (err && err.message) || String(err),
+      runId,
+      killedProcs: 0,
+      killedPids: [],
+    };
+  }
+});
+/* 停止一次运行：终止线程 + 回收其全部外部进程（返回同一形状的收尾结果） */
+ipcMain.handle("fn:cancel", async (e, o) => {
+  try {
+    return await fnRuntimeOf().cancel(o);
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 观测：当前还有几个函数运行活着（排查「进程是否已回收」用） */
+ipcMain.handle("fn:active", async () => {
+  try {
+    const r = fnRuntimeOf();
+    return { ok: true, count: r.activeCount(), runs: r.listActive() };
+  } catch (err) {
+    return {
+      ok: false,
+      error: (err && err.message) || String(err),
+      count: 0,
+      runs: [],
+    };
+  }
 });
 
 /* 应用内嵌套对话框打开链接/文件（modal + parent），关闭后回到主窗，避免主窗被导航走 */
@@ -3426,6 +3554,12 @@ app.whenReady().then(() => {
     mainWin = null;
     try { shutdownAppPlugins(); } catch {}
   });
+  /* 主窗渲染层没了 → 它发起的运行也不存在了，回收全部宿主外部进程（函数节点绑定进程随之消失） */
+  mainWin.webContents.once("destroyed", () => {
+    /* 渲染层没了 → 活跃函数运行再没人收结果：终止线程 + 回收其进程 */
+    try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
+    procHost.killAll().catch(() => {});
+  });
   registerUpdateIpc(() => mainWin);
   registerPetIpc({
     getDataDir: DATA,
@@ -3471,6 +3605,10 @@ app.whenReady().then(() => {
   });
   /* 回滚存储：内容寻址对象 + 轮次账本 + GC（渲染层无 fs，字节读写只走这里） */
   registerRollbackIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* 工具库：跨画布可复用工具包（<数据目录>/tools/*.json 完整工具包落盘） */
+  registerToolsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* 素材库：独立于画布的文本/图像/音频/视频内容仓库（用户指定根目录，见 assets-store.js） */
+  registerAssetsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });
@@ -3483,6 +3621,10 @@ app.on("window-all-closed", () => {
   /* 退出时关闭 dsh 网关与全部运行时子进程，避免遗留孤儿进程。
    Music3 / H3 后端故意不杀（单例、独立于 MTNode 生命周期）。 */
 app.on("before-quit", () => {
+  /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程 */
+  try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
+  /* 宿主外部进程（函数节点运行期拉起）：退出即全部回收，不留残留进程/控制台 */
+  try { procHost.killAll().catch(() => {}); } catch {}
   try { shutdownPet(); } catch {}
   try { shutdownAppPlugins(); } catch {}
   try { shutdownMusic3UiOnly(); } catch {}
@@ -3493,6 +3635,12 @@ app.on("before-quit", () => {
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }
+});
+/* will-quit 兜底：before-quit 阶段若有运行仍在起进程，这里再收一次 */
+app.on("will-quit", () => {
+  /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程 */
+  try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
+  try { procHost.killAll().catch(() => {}); } catch {}
 });
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

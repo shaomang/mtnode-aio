@@ -6,7 +6,8 @@
  *   nodeTextViewEl(text, opts)         生成只读视图 DOM（浏览态提示词 / 正文用）
  *   highlightAtRefsHtml(html, node)   在已有 HTML 的标签间文本段上包 @标题 / @Tag 高亮
  * 依赖 app.js（先于本文件加载）：escapeHtml / highlightYamlLine / renderMarkdown /
- * refCandidates / refTagCandidates / findCandidateByTitle / tagByAtToken。
+ * refCandidates / refTagCandidates / findCandidateByTitle / tagByAtToken /
+ * escapePromptHl / atRefNames / mapAtMentions（@ 着色与正文切词同源，标题可含空格）。
  */
 
 /* ---------- 判定：行级识别原语（纯函数，便于单测） ---------- */
@@ -162,7 +163,6 @@ function detectViewLang(text) {
 
 /* ---------- @引用着色：只处理 HTML 标签之间的文本段 ---------- */
 
-const AT_REF_RE = /@([^\s@，。；、！？：,!?;:]+)/g;
 const HTML_CHUNK_RE = /(<[^>]*>)|([^<]+)/g;
 
 function nodeViewWrapAtRef(cls, color, tokenHtml) {
@@ -172,8 +172,9 @@ function nodeViewWrapAtRef(cls, color, tokenHtml) {
 }
 
 /* 在「已转义 / 已生成」的 HTML 上补 @标题（青）/ @Tag（紫）高亮。
- * 判定逻辑与 promptRefBackdropHtml 对齐，但输入已是 HTML：不再二次转义，
- * 且绝不改动标签与属性（链接 href 等）。 */
+ * 切词与 promptRefBackdropHtml 同源（atMentionsOf：标题 / 标签带空格也整段识别），
+ * 但输入已是 HTML：不再二次转义，且绝不改动标签与属性（链接 href 等），
+ * 所以候选名一律先过同一套转义口径再比对。 */
 function highlightAtRefsHtml(html, node) {
   const src = String(html == null ? "" : html);
   if (!src || src.indexOf("@") < 0) return src;
@@ -184,13 +185,22 @@ function highlightAtRefsHtml(html, node) {
       ? new Set(refTagCandidates(node) || [])
       : new Set();
   if (!cands.length && !tags.size) return src;
+  const escName = (t) =>
+    typeof escapePromptHl === "function" ? escapePromptHl(t) : String(t || "");
+  const nodeNames = new Set(cands.map((c) => escName(c && c.title)));
+  const tagNames = new Set([...tags].map(escName));
+  const names = atRefNames([...nodeNames, ...tagNames]);
   const markToken = (tokenHtml) =>
-    tokenHtml.replace(AT_REF_RE, (m, tok) => {
-      if (typeof findCandidateByTitle === "function" && findCandidateByTitle(cands, tok))
-        return nodeViewWrapAtRef("at-ref-node", "var(--cyan)", m);
-      const tag = typeof tagByAtToken === "function" ? tagByAtToken(tok) : "";
-      if (tag && tags.has(tag)) return nodeViewWrapAtRef("at-ref-tag", "#e0a0ff", m);
-      return m;
+    mapAtMentions(tokenHtml, names, (h) => {
+      const key = h.name || h.token;
+      const seg = tokenHtml.slice(h.start, h.end);
+      if (nodeNames.has(key))
+        return nodeViewWrapAtRef("at-ref-node", "var(--cyan)", seg);
+      if (tagNames.has(key)) return nodeViewWrapAtRef("at-ref-tag", "#e0a0ff", seg);
+      const tag = typeof tagByAtToken === "function" ? tagByAtToken(key) : "";
+      if (tag && tags.has(tag))
+        return nodeViewWrapAtRef("at-ref-tag", "#e0a0ff", seg);
+      return null;
     });
   return src.replace(HTML_CHUNK_RE, (whole, tag, text) =>
     tag ? tag : markToken(text),

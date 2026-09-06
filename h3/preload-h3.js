@@ -18,6 +18,14 @@ const api = {
   freeDisk: () => ipcRenderer.invoke("h3:freeDisk"),
   setCpuVae: (v) => ipcRenderer.invoke("h3:setCpuVae", v),
   setLaunchOpts: (opts) => ipcRenderer.invoke("h3:setLaunchOpts", opts || {}),
+  wfList: () => ipcRenderer.invoke("h3:wfList"),
+  wfImport: (input) => ipcRenderer.invoke("h3:wfImport", input || {}),
+  wfDelete: (id) => ipcRenderer.invoke("h3:wfDelete", id),
+  wfRename: (id, title) => ipcRenderer.invoke("h3:wfRename", { id, title }),
+  wfExport: (id) => ipcRenderer.invoke("h3:wfExport", id),
+  wfValidate: (id) => ipcRenderer.invoke("h3:wfValidate", id),
+  wfGet: (id) => ipcRenderer.invoke("h3:wfGet", id),
+  wfTemplateExport: (mode) => ipcRenderer.invoke("h3:wfTemplateExport", mode),
   onProgress: (cb) => {
     const handler = (_e, data) => cb && cb(data);
     ipcRenderer.on("h3:progress", handler);

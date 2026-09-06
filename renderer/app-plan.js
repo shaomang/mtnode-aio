@@ -81,6 +81,59 @@ function planParseFromText(text) {
   };
 }
 
+/* ---------- 计划漏弹检测与自愈（模型偶发性生成失误） ----------
+ * 现象：模型这一轮确实想交计划（正文里有计划块标记，或直接把 goal/tasks 的 JSON
+ *   写了出来），但标记被写坏 / 漏了闭合 / 干脆没包 → planParseFromText 返回 null
+ *   → 弹窗根本不出现，用户只看到一段"长得像计划的文字"，流程卡死在这一轮。
+ * 对策：只在本轮真的被要求「按任务流程契约输出计划块」时做一次关键词检测，
+ *   命中就自动回发一条纠错指令，让它照契约再生成一次（一个用户轮次最多一次，
+ *   绝不无限来回；纠错轮自己不再触发自愈，只提示用户）。 */
+const PLAN_FIX_MAX_ROUNDS = 1;
+/* 标记串本身（容忍大小写、连字符被写成 – / — 、标记里插入空白） */
+const PLAN_KEYWORD_MARK = /MTNODE[\s\-–—_]*PLAN/i;
+/* 计划 JSON 的字段特征：goal 与 tasks 两个键同现（普通答复极少同时写出这两个键） */
+const PLAN_KEYWORD_GOAL = /"goal"\s*:/;
+const PLAN_KEYWORD_TASKS = /"tasks"\s*:/;
+
+/* 注入的是哪一段「任务流程」指令：等于 planFlowDirective() 才算「本轮要求交计划块」。
+   沿用/续跑那段明令禁止输出计划标记，那一轮不检测、不自愈。 */
+function planFlowAsksForNewPlan(flowText) {
+  const f = String(flowText || "").trim();
+  if (!f || typeof planFlowDirective !== "function") return false;
+  return f === String(planFlowDirective() || "").trim();
+}
+
+/* 该出计划却没出（漏弹）→ 返回命中的线索名（"mark" | "json"）；
+   解析得到合法计划、或正文没有任何计划特征 → ""（不触发纠错） */
+function planMissedDetection(text) {
+  if (planParseFromText(text)) return "";
+  const s = String(text || "");
+  if (!s.trim()) return "";
+  if (PLAN_KEYWORD_MARK.test(s)) return "mark";
+  if (PLAN_KEYWORD_GOAL.test(s) && PLAN_KEYWORD_TASKS.test(s)) return "json";
+  return "";
+}
+
+/* 自动纠错指令（作为一条用户消息回发给模型；与契约同口径保持中文） */
+function planFixDirective() {
+  return (
+    "【计划未弹出 · 自动纠错】你上一轮的回复里出现了计划内容，但应用没能弹出「计划确认」弹窗" +
+    "（没有解析到合法的 " +
+    PLAN_MARK_START +
+    " … JSON … " +
+    PLAN_MARK_END +
+    " 计划块）。\n" +
+    "本轮唯一要做的事：把那份计划按上面「任务流程」的格式**重新完整输出一次**，要求：\n" +
+    "· 两个标记一字不差（半角连字符 - · 大小写一致 · 标记内部不要插空格 / 换行 / 反引号）；\n" +
+    "· 两个标记之间只放一个合法 JSON 对象：{\"goal\":\"…\",\"excludes\":[…],\"tasks\":[{\"title\":\"…\",\"detail\":\"…\",\"model\":\"\",\"parallel\":\"\"}]}，" +
+    "tasks 至少 1 项、最多 " +
+    PLAN_MAX_TASKS +
+    " 项，字符串里的换行写成 \\n，不要有未转义的引号或尾随逗号；\n" +
+    "· 不要把标记本身放进代码块，也不要只写「见上文」。\n" +
+    "输出计划后立即结束本轮：不要长篇解释失误原因，不要开始实施，不要调用任何工具。"
+  );
+}
+
 /* ---------- 模型分组（复用开发节点的分组函数；拿不到就空） ---------- */
 function planModelGroups() {
   try {
@@ -1184,6 +1237,15 @@ function planLiveFeed(live, type, data) {
       if (live.errors.length > PLAN_LIVE_ERR_MAX)
         live.errors.splice(0, live.errors.length - PLAN_LIVE_ERR_MAX);
       live.state = "error";
+    } else if (type === "retry") {
+      /* 出错自动重发（dshRunTask 触发 retry）：与节点 / 会话侧同一口径，看 resumed
+         决定残文留不留 —— resumed=true 是「续写」，新内容接在同一条逻辑轮次后面，
+         已观测到的正文 / 思考尾部一律保留；只有整轮重发才把尾部清零，
+         否则重发那一轮的字会叠在失败轮后面（工具按 callId 记账，不重复，不清）。 */
+      if (!data.resumed) {
+        live.text = "";
+        live.reasoning = "";
+      }
     } else if (type === "done") {
       live.state = "done";
     } else {
@@ -1807,7 +1869,7 @@ async function planRunParallel(st, tasks) {
     return planDshRunOnce(planTaskMessage(t, 0, n, true), {
       runKey,
       workspace: st.workspace || "",
-      preset: st.preset || "standard",
+      preset: st.preset || AGENT_PRESET_DEFAULT,
       provider: planRouteOfModel(t.model) || st.provider || planDefaultProvider(),
       model: t.model || st.model || undefined,
       effort: st.effort || "high",
@@ -1937,7 +1999,7 @@ async function planNodeExec(node, tasks) {
         return planDshRunOnce(planTaskMessage(t, 0, n, true), {
           runKey: planParRunKey(node && node.id, t, k),
           workspace: node.workspace || "",
-          preset: node.preset || "standard",
+          preset: node.preset || AGENT_PRESET_DEFAULT,
           provider: planRouteOfModel(t.model) || String(node.provider || "").trim() || planDefaultProvider(),
           model: t.model || node.model || undefined,
           effort: node.effort || "high",

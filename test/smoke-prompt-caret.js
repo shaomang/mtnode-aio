@@ -286,6 +286,15 @@ vm.runInContext(
     "tagByAtToken",
     "normalizeTagName",
     "wfTagCatalog",
+    /* promptRefBackdropHtml 现经共享 atMentionsOf 切词（标题 / Tag 可含空格） */
+    "atRefNames",
+    "atRefSpanEnd",
+    "atRefNamesFor",
+    "atMentionsOf",
+    "eachAtMention",
+    "AT_REF_STOP",
+    "AT_REF_EDGE",
+    "AT_REF_WS_TEXT",
   ]),
   sandbox,
   { filename: "prompt-caret-extract.js" },
@@ -460,7 +469,11 @@ for (const f of jsFiles) {
   const src = read("renderer/" + f);
   if (src.indexOf("n-prompt-hl") >= 0 || src.indexOf("n-text-layered") >= 0) hlOwners.push(f);
 }
-eqArr(hlOwners, ["app.js"], "只有 renderer/app.js 涉及这两层（助手侧栏 / 设置 / 批量条目没有被顺手改动）");
+eqArr(
+  hlOwners,
+  ["app-codeedit.js", "app.js"],
+  "这两层编辑器只属于 app.js（节点提示词）与 app-codeedit.js（函数代码，文件头注明沿用同一套已验证镜像方案）；助手侧栏 / 设置 / 批量条目没有被顺手改动",
+);
 for (const f of ["app-assist.js", "app-settings.js", "app-db.js", "app-nodes.js", "app-canvas.js"]) {
   const src = read("renderer/" + f);
   ok(

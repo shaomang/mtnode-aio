@@ -438,13 +438,13 @@ class ProjectTrainBody(BaseModel):
                continue/resume/继续迭代 = 保留断点，在当前轮数上追加
                auto（默认）= 已有模型就继续迭代，没有就全新训练
     reuseData: 默认 True —— 已整理过的音频/文字/特征不重复处理
-    dither:    默认 False —— 对低带宽语料做高频空带填充（缓解电流音的缓解手段）
+    dither:    默认 True，可在面板取消勾选关闭 —— 对低带宽语料做高频空带填充（缓解电流音的缓解手段）
     s1Epochs / s2Epochs: fresh 时为总轮数；continue 时为「追加轮数」
     """
 
     mode: str = "auto"
     reuseData: bool = True
-    dither: bool = False
+    dither: bool = True
     s1Epochs: int | None = None
     s2Epochs: int | None = None
 

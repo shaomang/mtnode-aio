@@ -8,6 +8,10 @@
  *
  * 说明：Windows 下正在运行的 exe 会锁住安装目录，覆盖安装前需短暂退出进程；
  * 对用户表现为「后台静默安装，完成后自动重新打开」。
+ *
+ * 例外：Microsoft Store（MSIX）版禁用应用内自更新 —— 包安装目录（Program Files\WindowsApps\）
+ * 只读，electron-updater 下载 NSIS 包再静默安装必然失败；且商店政策禁止应用自行分发可执行更新。
+ * 该情形由 isStorePackage() 把整条链挡在门外（不加载 electron-updater，statusPayload 报 supported:false）。
  */
 const { app, ipcMain, dialog } = require("electron");
 const path = require("path");
@@ -34,7 +38,27 @@ function send(channel, data) {
   } catch (_) {}
 }
 
+/**
+ * 是否运行在 Microsoft Store / MSIX 包安装目录下。
+ * 例：C:\Program Files\WindowsApps\mt-node.MTNode_1.1.28_x64__8wekyb3d8bbwe\app\MTNode.exe
+ * 该目录只读，应用内自更新（下载 NSIS 包 + 静默安装）不可能成功，且违反商店政策。
+ */
+function isStorePackage() {
+  try {
+    const exe = String(app.getPath("exe") || "");
+    /* 统一分隔符，避免正/反斜杠差异导致漏判 */
+    const low = exe.replace(/[\\/]+/g, "\\").toLowerCase();
+    if (low.includes("\\program files\\windowsapps\\")) return true;
+    /* 商店包被移到非系统盘时前缀会变，但包目录名仍是 WindowsApps */
+    return low.includes("\\windowsapps\\");
+  } catch (_) {
+    return false;
+  }
+}
+
 function canCheckUpdates() {
+  /* Store（MSIX）版：整条自更新链不适用，优先级最高 */
+  if (isStorePackage()) return false;
   if (!app.isPackaged) return false;
   try {
     const exe = app.getPath("exe");
@@ -75,6 +99,8 @@ function bindInstallDirectory() {
 function setupAutoUpdater() {
   if (started) return;
   started = true;
+  /* Store（MSIX）版：不加载 electron-updater、不设更新源，整条自更新链不启动 */
+  if (isStorePackage()) return;
   if (!app.isPackaged && process.env.MTNODE_FORCE_UPDATE !== "1") {
     return;
   }

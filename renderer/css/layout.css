@@ -256,6 +256,17 @@ button:disabled {
   flex: none
 }
 
+/* 顶栏「工具库」＝程序（本应用）自己的图标：位图跟随主题不变色，压到 14px 与线性图标同大小 */
+.topbar .btn-ico .btn-app-ico {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex: none;
+  border-radius: 2px;
+  image-rendering: pixelated;
+  object-fit: contain;
+}
+
 .topbar .btn-ico .btn-ico-txt {
   font-size: 9px;
   font-weight: 700;
@@ -392,6 +403,17 @@ button:disabled {
 
 .topbar .btn-store {
   color: var(--orange)
+}
+
+/* 顶栏「素材库」：与相邻入口（工具库＝程序图标 / 工坊＝橙）区分，走青色 */
+.topbar .btn-assets {
+  color: var(--cyan)
+}
+
+.topbar .btn-assets:hover,
+.topbar .btn-assets.on {
+  border-color: var(--cyan);
+  color: var(--cyan2)
 }
 
 .topbar .btn-store:hover {

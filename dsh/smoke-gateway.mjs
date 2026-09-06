@@ -55,6 +55,16 @@ if (!pluginNames.includes('./canvas-plugin.mjs')) {
   process.exit(1)
 }
 console.log('[2] canvas plugin present')
+// 跨进程真续跑桥（cordis 组合里的本项目插件行）必须真实可加载 —— 加载失败会直接
+// 在 pluginList 缺席，宿主续跑轮就少了一条从盘上恢复会话的路（见 DESIGN.md 三态）。
+const bridgeRows = ((pl.result && pl.result.plugins) || []).filter(
+  (p) => p.name === './plugins/session-resume-server.mjs' || p.id === 'mtnode-session-resume',
+)
+if (!bridgeRows.length) {
+  console.log('[fail] session-resume bridge plugin missing from pluginList')
+  process.exit(1)
+}
+console.log('[2] session-resume bridge plugin present')
 if (pluginNames.includes('./plugins/dsh-super-injector/lib/index.js')) {
   console.log('[fail] injector should not be shipped')
   process.exit(1)

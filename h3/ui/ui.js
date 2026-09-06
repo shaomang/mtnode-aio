@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   const api = window.h3Api;
   if (!api) {
     document.body.textContent = "h3Api missing";
@@ -19,6 +19,38 @@
   const gpuMemTxt = $("gpuMemTxt");
   const gpuUtilTxt = $("gpuUtilTxt");
   const modal = $("modal");
+  const wfModal = $("wfModal");
+
+  /* 弹窗显隐只靠 CSS 类太脆（.modal-bg 样式被误删过一次，两个弹窗直接常驻页面底部，
+     点「取消」只是摘掉一个没人认的 class —— 看起来就是「关不掉的卸载窗口」）。
+     这里同时用 hidden 属性 + 内联 display 兜底：样式表再怎么改都关得掉。 */
+  function openModal(el) {
+    if (!el) return;
+    el.hidden = false;
+    el.classList.add("show");
+    el.style.display = "flex";
+  }
+  function closeModal(el) {
+    if (!el) return;
+    el.classList.remove("show");
+    el.style.display = "none";
+    el.hidden = true;
+  }
+  function modalIsOpen(el) {
+    return !!el && !el.hidden;
+  }
+  /* 兜底关闭通道：Esc 关掉当前开着的弹窗；点遮罩空白处（不是弹窗本体）也关掉 */
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    if (modalIsOpen(wfModal)) closeModal(wfModal);
+    else if (modalIsOpen(modal)) closeModal(modal);
+  });
+  for (const el of [modal, wfModal]) {
+    if (!el) continue;
+    el.addEventListener("pointerdown", (ev) => {
+      if (ev.target === el) closeModal(el);
+    });
+  }
 
   function setBar(el, pct) {
     el.style.width = Math.max(0, Math.min(100, Number(pct) || 0)) + "%";
@@ -39,7 +71,7 @@
     if (proj.hasPost) bits.push("4K后处理✓");
     else if (proj.venv) bits.push("4K后处理待装");
     diskHint.textContent =
-      `建议预留 ≥${st.diskHintGb || 65}GB。` +
+      `建议预留 ≥${st.diskHintGb || 70}GB。` +
       (bits.length ? " 当前：" + bits.join(" · ") : " 尚未检测到完整安装。");
 
     const running = !!st.running || !!st.comfyUp;
@@ -87,8 +119,14 @@
 
   function applyGpu(gpu) {
     if (!gpu) return;
-    gpuMemTxt.textContent = `${gpu.memUsed}/${gpu.memTotal} MiB (${gpu.memPct || 0}%) · ${gpu.name || ""}`;
-    gpuUtilTxt.textContent = `${gpu.util || 0}%`;
+    const fmt = (v, unit) => (v == null || !Number.isFinite(Number(v)) ? "—" : Number(v) + unit);
+    const mem =
+      gpu.memUsed != null || gpu.memTotal != null
+        ? fmt(gpu.memUsed, "") + "/" + fmt(gpu.memTotal, "") + " MiB"
+        : "—";
+    const pct = gpu.memPct == null ? "" : " (" + gpu.memPct + "%)";
+    gpuMemTxt.textContent = mem + pct + (gpu.name ? " · " + gpu.name : "");
+    gpuUtilTxt.textContent = fmt(gpu.util, "%");
     setBar(gpuMemBar, gpu.memPct);
     setBar(gpuUtilBar, gpu.util);
   }
@@ -97,7 +135,7 @@
     const r = await api.pickInstallDir();
     if (r && r.ok) {
       logLine("installDir=" + r.installDir);
-      if (r.project && r.project.ready) logLine("发现已有完整项目，可直接启用服务。");
+      if (r.project && r.project.ready) logLine("发现已有完整项目，可直接点「手动启动」。");
     } else if (r && r.error) {
       logLine("目录无效: " + r.error);
       alert("目录无效：" + r.error + "\n请勿选择磁盘根目录或系统目录。");
@@ -182,12 +220,12 @@
   $("btnForceKill").onclick = async () => {
     if (!api.forceKillBackend) return;
     const ok = confirm(
-      "强制结束后端并释放显存？\n适用于 GPU 跑满却永远不结束的情况。\n之后需重新点「启用服务」。",
+      "强制结束后端并释放显存？\n适用于 GPU 跑满却永远不结束的情况。\n之后需重新点「手动启动」。",
     );
     if (!ok) return;
     logLine("强制释放显存…");
     const r = await api.forceKillBackend();
-    logLine(r && r.ok ? "已结束后端，显存应已释放；请重新启用服务" : "失败: " + ((r && r.error) || ""));
+    logLine(r && r.ok ? "已结束后端，显存应已释放；请重新点「手动启动」" : "失败: " + ((r && r.error) || ""));
     refresh();
   };
 
@@ -205,12 +243,13 @@
       ul.appendChild(li);
     }
     $("delOutput").checked = false;
-    modal.classList.add("show");
+    openModal(modal);
   };
 
-  $("btnCancelUn").onclick = () => modal.classList.remove("show");
+  $("btnCancelUn").onclick = () => closeModal(modal);
   $("btnConfirmUn").onclick = async () => {
-    modal.classList.remove("show");
+    closeModal(modal);
+    $("installStep").textContent = "正在卸载（大目录可能要几分钟）…";
     const r = await api.uninstall({
       confirm: true,
       deleteOutput: !!$("delOutput").checked,
@@ -222,6 +261,234 @@
   $("btnClearLog").onclick = () => {
     consoleEl.textContent = "";
   };
+
+  /* ───── 自建工作流库 ───── */
+  const wfListEl = $("wfList");
+  const wfStatsTxt = $("wfStatsTxt");
+  if (!$("btnWfImport")) logLine("当前版本不支持自建工作流库（缺少控件）");
+
+  function wfValBadge(v) {
+    if (!v || !v.status || v.status === "unchecked")
+      return { cls: "", text: "未校验" };
+    if (v.status === "ok") return { cls: "ok", text: "校验通过" };
+    if (v.status === "missing_nodes") {
+      const m = Array.isArray(v.missing) ? v.missing : [];
+      const names = m.slice(0, 3).map((x) => x.class_type).filter(Boolean).join("、");
+      return {
+        cls: "warn",
+        text: "缺 " + m.length + " 个节点包" + (names ? "（" + names + (m.length > 3 ? "…" : "") + "）" : ""),
+      };
+    }
+    if (v.status === "skipped") return { cls: "", text: "未校验（后端未运行）" };
+    return { cls: "warn", text: (v.error || "校验异常") };
+  }
+
+  function renderWfItem(it) {
+    const box = document.createElement("div");
+    box.className = "wf-item";
+    const head = document.createElement("div");
+    head.className = "head";
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = it.title || "未命名";
+    head.appendChild(title);
+    const fmt = document.createElement("span");
+    fmt.className = "badge";
+    fmt.textContent = it.format === "ui" ? "UI" : "API";
+    fmt.title = it.source && it.source.template ? "内置模板" : "来源：" + ((it.source && it.source.name) || "");
+    if (it.source && it.source.template) fmt.textContent += " 模板";
+    head.appendChild(fmt);
+    const vb = wfValBadge(it.validation);
+    const badge = document.createElement("span");
+    badge.className = "badge " + vb.cls;
+    badge.textContent = vb.text;
+    head.appendChild(badge);
+    const src = document.createElement("span");
+    src.className = "meta";
+    src.style.marginLeft = "auto";
+    src.textContent = "节点 " + (it.nodeCount || 0);
+    head.appendChild(src);
+    box.appendChild(head);
+
+    const outs = Array.isArray(it.outputs) ? it.outputs : [];
+    if (outs.length) {
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent =
+        "输出：" +
+        outs
+          .slice(0, 3)
+          .map((o) => (isVideoClass(o.classType) ? "🎬" : "📄") + " " + (o.classType || "?") + "(@" + o.nodeId + ")")
+          .join("  ") +
+        (outs.length > 3 ? " …" : "");
+      box.appendChild(meta);
+    }
+
+    const ops = document.createElement("div");
+    ops.className = "ops";
+    const mkBtn = (label, fn, cls) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (cls) b.className = cls;
+      b.onclick = async (ev) => {
+        ev.stopPropagation();
+        await fn();
+        refreshWf();
+      };
+      ops.appendChild(b);
+      return b;
+    };
+    mkBtn("重新校验", async () => {
+      const r = await api.wfValidate(it.id);
+      logLine(r && r.message ? "[校验] " + r.message : "[校验] 失败: " + ((r && r.error) || ""));
+    });
+    mkBtn("导出 JSON", () => wfExport(it.id));
+    mkBtn("复制 JSON", async () => {
+      const r = await api.wfExport(it.id);
+      if (!r || !r.ok) {
+        alert("导出失败：" + ((r && r.error) || "未知错误"));
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(r.text);
+        logLine("已复制 " + r.filename + " 到剪贴板");
+      } catch (e) {
+        alert("复制失败：" + String((e && e.message) || e));
+      }
+    });
+    mkBtn("重命名", async () => {
+      const next = prompt("新名称：", it.title || "");
+      if (next == null || !String(next).trim()) return;
+      const r = await api.wfRename(it.id, String(next).trim());
+      if (!r || !r.ok) alert("重命名失败：" + ((r && r.error) || "未知错误"));
+      else logLine("已重命名 → " + (r.title || ""));
+    });
+    mkBtn("删除", async () => {
+      if (!confirm('删除工作流「' + (it.title || "") + '」？此操作不可恢复。')) return;
+      const r = await api.wfDelete(it.id);
+      if (r && r.ok) logLine("已删除 " + (r.title || it.title));
+      else alert("删除失败：" + ((r && r.error) || "未知错误"));
+    }, "danger");
+    box.appendChild(ops);
+    return box;
+  }
+
+  function isVideoClass(cls) {
+    return /(SaveVideo|SaveWebM|SaveMP4|VideoCombine|SaveAnimated|VHS_VideoCombine|SaveVideoFFmpeg|StoreVideo)/i.test(String(cls || ""));
+  }
+
+  async function refreshWf() {
+    try {
+      const r = await api.wfList();
+      if (!r || !r.ok) throw new Error((r && r.error) || "wfList failed");
+      wfStatsTxt.textContent =
+        r.stats ? "· 共 " + r.stats.count + " 条（校验通过 " + r.stats.validated + "，缺节点 " + r.stats.warn + "，未校验 " + r.stats.unchecked + "）" : "";
+      wfListEl.innerHTML = "";
+      const items = Array.isArray(r.items) ? r.items : [];
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "wf-empty";
+        empty.textContent = "还没有自定义工作流。导入 ComfyUI 导出的 JSON，或用「内置图另存」起步。";
+        wfListEl.appendChild(empty);
+        return;
+      }
+      for (const it of items) wfListEl.appendChild(renderWfItem(it));
+    } catch (e) {
+      logLine("[wf] 列表加载失败: " + String((e && e.message) || e));
+    }
+  }
+
+  async function wfImportPayload(payload) {
+    logLine("导入工作流…");
+    const r = await api.wfImport(payload);
+    if (r && r.ok) {
+      logLine(
+        "导入完成：" + (r.summary && r.summary.title) +
+          (r.replaced ? "（已覆盖同名旧版本）" : "") +
+          ((r.warnings && r.warnings.length) ? " · 提示：" + r.warnings.join("；") : ""),
+      );
+    } else {
+      alert("导入失败：" + ((r && r.error) || "未知错误"));
+    }
+    refreshWf();
+  }
+
+  async function wfExport(id) {
+    const r = await api.wfExport(id);
+    if (!r || !r.ok) {
+      alert("导出失败：" + ((r && r.error) || "未知错误"));
+      return;
+    }
+    try {
+      const blob = new Blob([r.text], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = r.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      logLine("已生成导出文件 " + r.filename + "（未弹出保存框可用「复制 JSON」）");
+    } catch (e) {
+      alert("下载失败，请用「复制 JSON」：\n" + String((e && e.message) || e));
+    }
+  }
+
+  if ($("btnWfImport")) {
+    $("btnWfImport").onclick = () => {
+      const fi = $("wfFileInput");
+      fi.value = "";
+      fi.onchange = async () => {
+        const f = fi.files && fi.files[0];
+        if (!f) return;
+        try {
+          await wfImportPayload({ filePath: f.path || f.name, title: "" });
+        } catch (e) {
+          alert("读取文件失败：" + String((e && e.message) || e));
+        }
+      };
+      fi.click();
+    };
+  }
+  if ($("btnWfPaste")) {
+    $("btnWfPaste").onclick = () => {
+      $("wfPasteText").value = "";
+      $("wfPasteTitle").value = "";
+      openModal(wfModal);
+      $("wfPasteText").focus();
+    };
+    $("btnWfPasteCancel").onclick = () => closeModal(wfModal);
+    $("btnWfPasteOk").onclick = async () => {
+      const text = String($("wfPasteText").value || "").trim();
+      if (!text) {
+        alert("请先粘贴 JSON 内容");
+        return;
+      }
+      closeModal(wfModal);
+      await wfImportPayload({ text, title: String($("wfPasteTitle").value || "").trim() });
+    };
+    $("wfPasteText").addEventListener("keydown", (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") $("btnWfPasteOk").click();
+    });
+  }
+  if ($("btnWfTemplate")) {
+    $("btnWfTemplate").onclick = async () => {
+      const doOne = async (mode) => {
+        const label = mode === "r2v" ? "R2V（参考图/视频/音频）" : "FL2VA（首末帧）";
+        if (!confirm("把内置 " + label + " 工作流另存为库里的自定义工作流？\n保存后可自由编辑与复制，内置链本身不受影响。")) return false;
+        const r = await api.wfTemplateExport(mode);
+        if (r && r.ok) {
+          logLine("内置模板已入库：" + ((r.summary && r.summary.title) || ""));
+          refreshWf();
+          return true;
+        }
+        alert("另存失败：" + ((r && r.error) || "未知错误"));
+        return false;
+      };
+      if (await doOne("fl2va")) await doOne("r2v");
+    };
+  }
 
   api.onProgress((ev) => {
     if (!ev) return;
@@ -249,6 +516,7 @@
     if (tail && tail.text) consoleEl.textContent = tail.text;
     consoleEl.scrollTop = consoleEl.scrollHeight;
     await refresh();
+    refreshWf();
     setInterval(refresh, 4000);
   })();
 })();

@@ -522,7 +522,9 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 
 ## 智能任务节点
 
-右键 → 智能节点。提示词就是任务描述，支持 \`@\`、输入 \`/\` 呼出技能、多输入、批量 / 聚合、模型选择、输出浏览。工作目录用文件夹窗口选择。不做「多次尝试」（多步执行，不是并行抽卡）。开启智能模式的文本处理 / 对话节点能力相同。
+右键 → 智能节点。提示词就是任务描述，支持 \`@\`、输入 \`/\` 呼出技能、多输入、批量 / 聚合、模型选择、输出浏览。工作目录用文件夹窗口选择。不做「多次尝试」（多步执行，不是并行抽卡）。开启「🐋 智能」的文本处理节点能力相同。
+
+头部 **💬** 可切成**会话模式**：微信风格多轮气泡（助手左、用户右），历史随节点保存，追问就在节点里进行。独立的「文本对话」节点已移除——旧画布上的对话节点打开时会自动迁移成带会话模式的智能任务节点。
 
 可一键**扩展为智能会话**（节点与会话内容同步）。删除节点时会提示一并删除关联会话。
 
@@ -548,7 +550,7 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 
 运行时按**发生顺序**分段：**「◉ 思考 · N 字」** 是折叠起来的模型内部推理（N 只统计思考字数），正常字号的段落是模型说出来的**正文**（中间步骤说的话也算正文），**🔧 工具**调用就近插在它发生的位置，错误以 ⚠ 附在正文里。每调用一次工具或进入新一步推理就另起一段。
 
-智能任务节点、智能会话、对话节点、右侧全局助手口径一致；节点上的「思考中」大窗上半是思考、下半是输出。输出端子给下游的仍是完整正文，旧会话存档按原样显示。详见 [智能能力是什么](#dsh)。
+智能任务节点（含会话模式）、智能会话、右侧全局助手口径一致；节点上的「思考中」大窗上半是思考、下半是输出。输出端子给下游的仍是完整正文，旧会话存档按原样显示。详见 [智能能力是什么](#dsh)。
 
 ## 让助手搭工作流
 
@@ -560,7 +562,9 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 
 ## Agent task node
 
-Right-click → Agent node. The prompt is the task. Supports \`@\`, type \`/\` for skills, multi-input, batch / aggregate, model picker, browse. Pick the workspace with a folder dialog. No “attempts” (multi-step, not parallel sampling). Text / chat nodes with Agent on have the same capabilities.
+Right-click → Agent node. The prompt is the task. Supports \`@\`, type \`/\` for skills, multi-input, batch / aggregate, model picker, browse. Pick the workspace with a folder dialog. No “attempts” (multi-step, not parallel sampling). Text nodes with 🐋 Agent on have the same capabilities.
+
+The **💬** button in the header switches the node to **chat mode**: WeChat-style multi-turn bubbles (assistant left, user right) with history saved on the node. The standalone Chat node was removed — older canvases migrate their chat nodes into an agent task in chat mode on open.
 
 **Expand to agent session** keeps node and session in sync. Deleting the node can delete the linked session (you are asked).
 
@@ -586,7 +590,7 @@ Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, s
 
 A run renders in **chronological segments**: **“◉ Thinking · N chars”** is the model's collapsed private reasoning (N counts reasoning only), normal-sized paragraphs are what the model **says** (text produced mid-run counts as text too), **🔧 tool** calls sit inline where they happened, and errors append to the body as ⚠. Every tool call or new reasoning step starts a fresh segment.
 
-Agent task nodes, agent sessions, chat nodes and the global assistant all render the same way; the node's Thinking overlay shows reasoning on top and output (the tool trace) below. The output port still hands downstream the full text, and sessions archived earlier render as before. See [What agent mode is](#dsh).
+Agent task nodes (chat mode included), agent sessions and the global assistant all render the same way; the node's Thinking overlay shows reasoning on top and output (the tool trace) below. The output port still hands downstream the full text, and sessions archived earlier render as before. See [What agent mode is](#dsh).
 
 ## Let the assistant build a workflow
 
@@ -722,7 +726,7 @@ Control nodes share a **gold outer ring**; inner color still shows the kind.
 
 接入 DeepSeek Harness（dsh）后，模型不只生成文字，还能**读/写工作目录文件、联网搜索、执行命令、派子代理**。运行时随应用自带，**不用另装 Node**。
 
-需要先配置带 API Key 的**文本服务商**。智能任务、智能会话、对话节点的「智能助手」、文本处理的「🐋 智能」都走这条引擎。
+需要先配置带 API Key 的**文本服务商**。智能任务（含会话模式）、智能会话、文本处理的「🐋 智能」都走这条引擎。
 
 ## 过程可见
 
@@ -738,7 +742,7 @@ Control nodes share a **gold outer ring**; inner color still shows the kind.
 - **正文**：模型真说出来的话，正常字号、Markdown 渲染，一段一块——中间步骤说的话也以正文出现，不会被埋进思考里。
 - **🔧 工具**：调用轨迹就近插在它发生的位置，点开看参数与结果；出错以 **⚠** 附在正文里。
 
-每调用一次工具、或进入新的一步推理（turn / step），都自动另起一段。智能任务节点、智能会话、右侧全局助手、对话节点用的是**同一套分段**；节点上的「思考中」大窗上半是思考、下半是输出（工具调用轨迹）。
+每调用一次工具、或进入新的一步推理（turn / step），都自动另起一段。智能任务节点（含会话模式）、智能会话、右侧全局助手用的是**同一套分段**；节点上的「思考中」大窗上半是思考、下半是输出（工具调用轨迹）。
 
 **下游数据不受影响**：输出端子给下游、以及存进保存节点的，仍是完整正文。旧的会话存档按原样显示。
 
@@ -754,7 +758,7 @@ Control nodes share a **gold outer ring**; inner color still shows the kind.
 
 With DeepSeek Harness (dsh) the model can **read/write the workspace, search the web, run commands, and spawn sub-agents**. The runtime ships with the app—**no extra Node install**.
 
-Configure a **text provider** with an API Key first. Agent task, agent session, chat “Agent”, and text-process **🐋 Agent** all use this engine.
+Configure a **text provider** with an API Key first. Agent task (chat mode included), agent session and text-process **🐋 Agent** all use this engine.
 
 ## Visible process
 
@@ -770,7 +774,7 @@ A run renders as **chronological segments**, each with its own look:
 - **Body text** — what the model actually says, normal size, rendered as Markdown, one block per paragraph. Text produced mid-run shows up as text instead of being buried in the thinking block.
 - **🔧 Tools** — call chips inline where they happened (click for args and result); errors appear in the body as **⚠**.
 
-A new segment starts on every tool call and on every reasoning step (turn / step). Agent task nodes, agent sessions, the global assistant and chat nodes all share this rendering; the node's Thinking overlay keeps reasoning on top and output (the tool trace) below.
+A new segment starts on every tool call and on every reasoning step (turn / step). Agent task nodes (chat mode included), agent sessions and the global assistant all share this rendering; the node's Thinking overlay keeps reasoning on top and output (the tool trace) below.
 
 **Downstream data is unchanged**: the output port and save nodes still receive the full text. Sessions archived before this change render exactly as before.
 
@@ -826,11 +830,13 @@ The model may also **ask the user** mid-task (choices or free text) before conti
 
 ## DSH 插件 / 技能 / MCP
 
-在「设置 · 智能能力」或在线浏览里管理：
+三类扩展已**整合成一个界面**：「设置 · 智能能力 → 扩展能力」只显示一行汇总（各有多少），点 **管理…** 打开统一的「扩展能力管理」对话框；顶部 \`DSH / Skill / MCP\` 三个标签切换分类，左边是卡片清单、右边是详情与操作，三类用的是同一套样式。
 
-- **DSH 插件**：扩展 agent 能力，安装到配置目录（升级后保留）；安装后引擎会重启。
-- **技能 Skills**：Markdown 说明书。智能会话 / 智能任务 / 智能文本 / 智能对话输入 \`/\` 即可选择；运行时会带上该技能全文。
-- **MCP 服务器**：连接后智能节点获得该服务器的工具（stdio 或远程 URL）。
+- **DSH 插件**：扩展 agent 能力，安装到配置目录（升级后保留）；安装后引擎会重启。对话框里直接填 npm 包名 / GitHub 地址安装。
+- **技能 Skills**：Markdown 说明书。「＋ 创建技能」在同一对话框右侧写名称、描述与正文；智能会话 / 智能任务 / 开了「🐋 智能」的文本节点输入 \`/\` 即可选择，运行时带上该技能全文。
+- **MCP 服务器**：「＋ 添加服务器」填名称与 stdio 命令或远程 URL；连接后智能节点获得该服务器的工具。
+
+每个分类顶部都有搜索框，右侧详情里可挂载 / 停用 / 移除；「🌐 在线浏览」仍可去线上目录安装。
 
 官方扩展目录：\`http://mt-agent.com/mtnode/ext/catalog.json\`（在线浏览预置「MTNode 官方」标签；也可「＋ 添加源」自行添加）。本地仓库在 \`ext-repo/\`，用 \`npm run ext:sync\` 同步到云端。
 
@@ -848,11 +854,13 @@ The **plugin list is fetched from the cloud catalog** (\`http://mt-agent.com/mtn
 
 ## DSH plugins / Skills / MCP
 
-Manage under Settings · Agent (or Browse online):
+The three extension kinds now live in **one merged screen**: Settings · Agent shows a single **Extensions** row with counts, and **Manage…** opens one near-fullscreen dialog with \`DSH / Skill / MCP\` tabs — a card list on the left, details and actions on the right, all sharing the same look.
 
-- **DSH plugins**: extend the agent; installed under the config data directory (survive app updates); install restarts the engine.
-- **Skills**: Markdown instructions. Type \`/\` in agent session / agent task / agent text / agent chat to pick one; the skill body is attached at run time.
-- **MCP servers**: tools appear on agent nodes after connect (stdio or remote URL).
+- **DSH plugins**: extend the agent; installed under the config data directory (survive app updates); install restarts the engine. Type an npm package or GitHub URL in the dialog to install.
+- **Skills**: Markdown instructions. **＋ Create skill** opens the same editor pane (name / description / body); type \`/\` in agent session / agent task / text node with 🐋 agent on to pick one; the skill body is attached at run time.l body is attached at run time.
+- **MCP servers**: **＋ Add server** takes a name plus a stdio command or a remote URL; tools appear on agent nodes after connect.
+
+Every tab has its own filter box; mount / disable / remove live in the detail pane. **🌐 Browse online** still installs from the cloud catalog.
 
 Official extension catalog: \`http://mt-agent.com/mtnode/ext/catalog.json\` (Browse online includes the **MTNode official** tab; you can also **+ Add source**). Local repo is \`ext-repo/\`; sync with \`npm run ext:sync\`.
 

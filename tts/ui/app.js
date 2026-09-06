@@ -321,263 +321,6 @@ function mergeLiveModel(entry) {
   renderVoices(state.voices, arr);
 }
 
-/* ---------------- 语种策略（面板「语种」下拉菜单，默认「仅中文」） ----------------
- *
- * 中文句子里突然冒出日语，根因是引擎 text_lang=auto 时用 fast_langdetect 去
- * 猜每个分句的语种，共用汉字没有硬证据，实测约 1/4 纯中文句被猜成 ja 走日语音读。
- * 所以这里选的是**策略**（zh_only / zh_mix / auto_char…），插件内部再翻译成引擎
- * 认识的 all_zh / zh / ja…。默认 zh_only + 锁定：任何调用方（画布节点、
- * /v1/audio/speech、脚本）都只能读中文，带语种参数也会被忽略；含假名/谚文的
- * 文本直接拒绝合成，宁可不发声也不发日语。
- * 策略文件在 安装目录/language.json，由后端自己读写。 */
-
-const LANG_FALLBACK_MODES = [
-  { value: "zh_only", label: "仅中文（默认）", hint: "只说中文：出现日文假名/韩文谚文会直接拒绝合成，绝不会突然冒出日语。" },
-  { value: "zh_mix", label: "中文 + 英文", hint: "中英混合（zh）：英文单词按英文读，其余按中文读。" },
-  { value: "auto_char", label: "自动（按字符构成判定）", hint: "有假名=日文、有谚文=韩文、纯汉字=中文、纯拉丁=英文；不去问引擎的语种识别器。" },
-  { value: "all_zh", label: "纯中文 all_zh", hint: "整段强制中文 G2P，英文也当中文读。" },
-  { value: "ja", label: "日文", hint: "整段按日文读（含拉丁字母时日英混合）。" },
-  { value: "en", label: "英文", hint: "整段按英文读。" },
-  { value: "ko", label: "韩文", hint: "整段按韩文读。" },
-  { value: "yue", label: "粤语", hint: "整段按粤语读。" },
-  { value: "engine_auto", label: "引擎多语种混合（不推荐）", hint: "每个分句交给 fast_langdetect 猜语种；实测约 1/4 纯中文句会被猜成日语。" },
-];
-
-const langUi = {
-  modes: LANG_FALLBACK_MODES,
-  mode: "zh_only",
-  lock: true,
-  fromServer: false,
-  pending: false,
-  pushing: false,
-  renderedKey: "",
-};
-
-function langModeLabel(mode) {
-  const m = langUi.modes.find((x) => x.value === mode);
-  return m ? m.label : mode;
-}
-
-function langModeHint(mode) {
-  const m = langUi.modes.find((x) => x.value === mode);
-  return m ? m.hint || "" : "";
-}
-
-function renderLangModes() {
-  const sel = $("langSelect");
-  if (!sel) return;
-  const cur = sel.value || langUi.mode;
-  /* 状态每 5 秒刷新一次；选项没变就别重建 DOM（正打开的原生下拉列表会被打断）。 */
-  const key = langUi.modes.map((m) => m.value + "\u0000" + m.label).join("\u0001");
-  if (key !== langUi.renderedKey) {
-    sel.innerHTML = "";
-    for (const m of langUi.modes) {
-      const opt = document.createElement("option");
-      opt.value = m.value;
-      opt.textContent = m.label;
-      opt.title = m.hint || "";
-      sel.appendChild(opt);
-    }
-    langUi.renderedKey = key;
-  }
-  if (langUi.modes.some((m) => m.value === cur)) sel.value = cur;
-}
-
-function paintLang() {
-  const sel = $("langSelect");
-  const cb = $("langLock");
-  if (sel && langUi.modes.some((m) => m.value === langUi.mode)) sel.value = langUi.mode;
-  if (cb) cb.checked = !!langUi.lock;
-  const hint = $("langHint");
-  if (!hint) return;
-  let txt = langModeHint(langUi.mode);
-  if (langUi.lock) txt += " 锁定中：外部调用（画布节点 / /v1/audio/speech）带的语种参数会被忽略。";
-  if (langUi.pending) txt = "服务未运行，已暂存；启动后自动写入。" + (txt ? " " + txt : "");
-  else if (!langUi.fromServer) txt += "（服务未运行，显示默认值）";
-  hint.textContent = txt;
-}
-
-async function pushLangPolicy(silent) {
-  const body = { mode: langUi.mode, lock: langUi.lock };
-  langUi.pushing = true;
-  try {
-    const r = await api.apiFetch({
-      path: "/api/lang/policy",
-      method: "POST",
-      body,
-      apiKey: state.apiKey,
-    });
-    if (r && r.ok && r.json && r.json.ok) {
-      langUi.pending = false;
-      langUi.fromServer = true;
-      const pol = r.json.policy || {};
-      if (pol.mode) langUi.mode = pol.mode;
-      langUi.lock = !!pol.lock;
-      if (!silent) logLine("语种已设为「" + langModeLabel(langUi.mode) + "」· " + (langUi.lock ? "锁定（外部不可覆盖）" : "不锁定"));
-      paintLang();
-      return true;
-    }
-    const detail = (r && r.json && r.json.detail) || (r && r.error) || "?";
-    if (!silent) logLine("设置语种失败：" + detail);
-    /* 401 只是 key 还没从 status 拿到；标记暂存，下一轮状态刷新会重试。 */
-    langUi.pending = true;
-    paintLang();
-    return false;
-  } catch (e) {
-    if (!silent) logLine("设置语种异常：" + ((e && e.message) || e));
-    langUi.pending = true;
-    paintLang();
-    return false;
-  } finally {
-    langUi.pushing = false;
-  }
-}
-
-async function loadLangOptions() {
-  try {
-    const r = await api.apiFetch({ path: "/api/languages", method: "GET", apiKey: "" });
-    const j = r && r.ok && r.json;
-    if (!j || !j.ok) return false;
-    if (Array.isArray(j.modes) && j.modes.length) langUi.modes = j.modes;
-    const pol = j.policy || {};
-    if (pol.mode) {
-      langUi.mode = pol.mode;
-      langUi.lock = !!pol.lock;
-      langUi.fromServer = true;
-    }
-    renderLangModes();
-    paintLang();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/* 后端状态里带当前策略；服务刚起来时把面板上暂存的设置补写下去。 */
-function applyServerLangPolicy(pol) {
-  if (!pol || !pol.mode) return;
-  langUi.fromServer = true;
-  if (Array.isArray(pol.modes) && pol.modes.length) langUi.modes = pol.modes;
-  renderLangModes();
-  if (langUi.pending && !langUi.pushing) {
-    /* 用户在服务没起来时改过设置 → 以本地选择为准，别被服务端旧值覆盖掉。 */
-    paintLang();
-    pushLangPolicy(true).then((ok) => {
-      if (ok) logLine("语种已补写：「" + langModeLabel(langUi.mode) + "」· " + (langUi.lock ? "锁定" : "不锁定"));
-    });
-    return;
-  }
-  const changed = pol.mode !== langUi.mode || !!pol.lock !== !!langUi.lock;
-  langUi.mode = pol.mode;
-  langUi.lock = !!pol.lock;
-  if (changed) paintLang();
-}
-
-if ($("langSelect")) {
-  $("langSelect").onchange = () => {
-    langUi.mode = $("langSelect").value || langUi.mode;
-    paintLang();
-    pushLangPolicy(false);
-  };
-}
-if ($("langLock")) {
-  $("langLock").onchange = () => {
-    langUi.lock = !!$("langLock").checked;
-    paintLang();
-    pushLangPolicy(false);
-  };
-}
-
-/* ---------------- 采样步数 sample_steps ----------------
-   存到后端 infer.json，成为整个插件的默认值：面板、画布节点、
-   /v1/audio/speech 之后都按它走（调用方显式带的 ?steps= / X-Sample-Steps 优先）。 */
-const stepsUi = {
-  value: 32,
-  choices: [4, 8, 16, 32, 64, 128],
-  note: "",
-  applies: ["v3", "v4"],
-  fromServer: false,
-  pending: false,
-};
-
-function renderStepsOptions() {
-  const sel = $("stepsSelect");
-  if (!sel) return;
-  const key = stepsUi.choices.join(",");
-  if (sel.dataset.key !== key) {
-    sel.innerHTML = "";
-    for (const v of stepsUi.choices) {
-      const opt = document.createElement("option");
-      opt.value = String(v);
-      opt.textContent = String(v) + (v === 32 ? "（引擎默认）" : v === 128 ? "（最细，最慢）" : "");
-      sel.appendChild(opt);
-    }
-    sel.dataset.key = key;
-  }
-  if (stepsUi.choices.indexOf(stepsUi.value) >= 0) sel.value = String(stepsUi.value);
-}
-
-function paintSteps() {
-  renderStepsOptions();
-  const hint = $("stepsHint");
-  if (!hint) return;
-  let txt = "仅 " + stepsUi.applies.join(" / ") + " 的 s2 使用；v1 / v2 / v2Pro 权重会直接忽略它";
-  if (stepsUi.pending) txt = "服务未运行，已暂存；启动后自动写入。" + txt;
-  else if (!stepsUi.fromServer) txt += "（服务未运行，显示默认值）";
-  hint.textContent = txt;
-}
-
-async function loadStepsSettings() {
-  try {
-    const r = await api.apiFetch({ path: "/api/infer", method: "GET", apiKey: "" });
-    const j = r && r.ok && r.json;
-    if (!j || !j.ok) return false;
-    stepsUi.value = Number(j.sampleSteps) || stepsUi.value;
-    if (Array.isArray(j.choices) && j.choices.length) stepsUi.choices = j.choices.map(Number);
-    if (Array.isArray(j.appliesTo) && j.appliesTo.length) stepsUi.applies = j.appliesTo;
-    stepsUi.note = j.note || "";
-    stepsUi.fromServer = true;
-    paintSteps();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function pushStepsSettings(silent) {
-  stepsUi.pending = true;
-  try {
-    const r = await api.apiFetch({
-      path: "/api/infer",
-      method: "POST",
-      body: { sampleSteps: stepsUi.value },
-      apiKey: state.apiKey,
-    });
-    const j = r && r.ok && r.json;
-    if (j && j.ok) {
-      stepsUi.pending = false;
-      stepsUi.fromServer = true;
-      stepsUi.value = Number((j.settings || {}).sampleSteps) || stepsUi.value;
-      if (!silent) logLine("采样步数已设为 " + stepsUi.value + "（只有 v3 / v4 的 s2 会用它；v1 / v2 / v2Pro 权重不受影响）");
-      paintSteps();
-      return true;
-    }
-    if (!silent) logLine("设置采样步数失败：" + ((j && (j.detail || j.error)) || r && r.error || "?"));
-  } catch (e) {
-    if (!silent) logLine("设置采样步数异常：" + ((e && e.message) || e));
-  }
-  paintSteps();
-  return false;
-}
-
-if ($("stepsSelect")) {
-  $("stepsSelect").onchange = () => {
-    stepsUi.value = Number($("stepsSelect").value) || stepsUi.value;
-    paintSteps();
-    pushStepsSettings(false);
-  };
-}
-
 async function refreshStatus() {
   const st = await api.getStatus();
   $("installDir").textContent = st.installDir || "未选择安装目录";
@@ -618,7 +361,6 @@ async function refreshStatus() {
     $("apiKey").textContent = st.apiStatus.apiKey || "—";
     state.apiKey = st.apiStatus.apiKey || "";
     renderVoices(st.apiStatus.voices, Array.isArray(st.apiStatus.liveVoices) ? st.apiStatus.liveVoices : []);
-    applyServerLangPolicy(st.apiStatus.language && st.apiStatus.language.policy);
   }
 
   if (!(st.installing || state.installRunning)) {
@@ -684,6 +426,8 @@ function renderProjectDetail(p) {
       btn.className = "mini pv";
       btn.textContent = "▶ 预览";
       btn.dataset.file = f.name;
+      // 记下这一行属于哪个项目：切项目瞬间若有旧行残留，点击代理可据此忽略。
+      btn.dataset.project = state.activeProject || "";
       row.appendChild(nm);
       row.appendChild(btn);
       filesEl.appendChild(row);
@@ -696,17 +440,48 @@ function renderProjectDetail(p) {
   wrap.style.display = "flex";
 }
 
+// 切换项目时的即时清理：旧项目的文件行、文字标注、试听音频必须在切项目那一刻消失，
+// 否则残留的旧行会配上新项目的 state.activeProject，导致「拿 B 项目请求 A 文件名」。
+// loading=true 表示马上会有新项目的数据进来，保留详情区并显示「加载中…」占位。
+function clearProjectDetail(loading) {
+  const wrap = $("projectDetail");
+  const filesEl = $("projectFiles");
+  const trTitle = $("transcriptTitle");
+  const trEl = $("projectTranscript");
+  const audio = $("projectAudio");
+  const show = !!loading && !!state.activeProject;
+  if (filesEl) filesEl.innerHTML = show ? '<div class="meta">加载中…</div>' : "";
+  if (trTitle) trTitle.style.display = "none";
+  if (trEl) {
+    trEl.style.display = "none";
+    trEl.textContent = "";
+  }
+  if (audio) {
+    try {
+      audio.pause();
+    } catch (e) {}
+    audio.removeAttribute("src");
+    try {
+      audio.load();
+    } catch (e) {}
+    audio.style.display = "none";
+  }
+  if (wrap) wrap.style.display = show ? "flex" : "none";
+}
+
 async function loadProjectDetail(name) {
   if (!name) {
-    renderProjectDetail(null);
+    clearProjectDetail(false);
     return;
   }
   try {
     const r = await api.projectFiles(name);
+    // 请求期间的过期响应：期间可能又切了一次项目，直接丢弃，不覆盖新项目。
+    if (name !== state.activeProject) return;
     const p = r && r.ok && r.json && r.json.project;
     if (p) renderProjectDetail(p);
   } catch (e) {
-    renderProjectDetail(null);
+    if (name === state.activeProject) renderProjectDetail(null);
   }
 }
 
@@ -736,7 +511,7 @@ function chosenMode() {
 function trainOpts() {
   const mode = chosenMode();
   const o = { mode: mode, reuseData: $("reuseData") ? $("reuseData").checked : true };
-  o.dither = $("ditherFill") ? $("ditherFill").checked : false;
+  o.dither = $("ditherFill") ? $("ditherFill").checked : true;
   const d = modelDefaults();
   const e1 = parseInt($("s1Epochs") ? $("s1Epochs").value : "", 10);
   const e2 = parseInt($("s2Epochs") ? $("s2Epochs").value : "", 10);
@@ -964,6 +739,9 @@ function renderTrainProgress(p) {
 
 function selectProject(name) {
   state.activeProject = name || "";
+  // 先清空旧项目的文件区/试听音频再异步取新数据：避免切项目瞬间出现
+  // 旧文件行 + 新项目名 的错乱（用户误听到上一个项目的内容）。
+  clearProjectDetail(!!name);
   const p = state.projects.find((x) => (x.slug || x.name) === name);
   const meta = $("projectMeta");
   if (!p) {
@@ -1215,24 +993,24 @@ $("btnSynth").onclick = async () => {
   const voice = $("voiceSelect").value || "";
   if (!text) return logLine("请输入文本");
   const live = currentLiveModel();
-  const stepsTxt = " 采样步数=" + (Number(stepsUi.value) || 32);
   if (live) {
     // 试听中间模型：说清楚这次点下去会用哪一轮（服务端按提交时刻取最新）
     const pinned = state.livePinned[live.project];
     logLine(
-      "合成中… voice=" + voice + " 语种=" + langModeLabel(langUi.mode) + (langUi.lock ? "（锁定）" : "") + stepsTxt +
+      "合成中… voice=" + voice +
         " · 中间模型=" + (pinned ? "固定 GPT e" + pinned.gpt + " · SoVITS e" + pinned.s2 : live.label || "最新一轮") +
         (pinned ? "" : "（以提交时盘上最新一轮为准）")
     );
   } else {
-    logLine("合成中… voice=" + (voice || "default") + " 语种=" + langModeLabel(langUi.mode) + (langUi.lock ? "（锁定）" : "") + stepsTxt);
+    logLine("合成中… voice=" + (voice || "default"));
   }
   setBtnWaiting($("btnSynth"), true, "合成", "合成中");
   try {
     const r = await api.apiFetch({
       path: "/api/tts",
       method: "POST",
-      body: { text, voice, speed: 1.0, media_type: "wav", sample_steps: Number(stepsUi.value) || 0 },
+      /* 采样步数不再由面板发送：一律用后端 infer.json 里存的默认值 */
+      body: { text, voice, speed: 1.0, media_type: "wav" },
       apiKey: state.apiKey,
     });
     if (!r.ok || !r.raw) {
@@ -1430,13 +1208,19 @@ if (dropZone && api.filePathFor) {
 $("projectFiles").addEventListener("click", async (ev) => {
   const btn = ev.target && ev.target.closest ? ev.target.closest(".pv") : null;
   if (!btn || !state.activeProject) return;
+  const proj = state.activeProject;
+  const owner = btn.dataset.project || "";
+  // 旧项目残留的行：按钮所属项目与当前 activeProject 不一致 → 忽略这次点击。
+  if (owner && owner !== proj) return;
   const file = btn.dataset.file;
   const audio = $("projectAudio");
   btn.disabled = true;
   btn.textContent = "加载中…";
   setUploadStatus("正在加载音频预览…", undefined);
   try {
-    const r = await api.projectAudio(state.activeProject, file);
+    const r = await api.projectAudio(proj, file);
+    // 请求期间用户已切项目：丢弃这份音频，不去改 #projectAudio / 状态提示。
+    if (proj !== state.activeProject) return;
     if (!r || !r.ok || !r.raw) {
       setUploadStatus("预览失败：" + ((r && (r.json && r.json.detail)) || (r && r.error) || (r && r.raw) || "?"), false);
       return;
@@ -1563,23 +1347,8 @@ if (api.onLogPanelChanged) {
 
 (async () => {
   syncApiPanel();
-  renderLangModes();
-  paintLang();
-  renderStepsOptions();
-  paintSteps();
   loadLivePins();
   const st = await refreshStatus();
-  if (!(await loadLangOptions())) {
-    /* 后端没起来：用内置选项 + 内置默认（仅中文·锁定）显示，
-       用户此时改动的设置在服务就绪后由 applyServerLangPolicy 补写。 */
-    renderLangModes();
-    paintLang();
-  }
-  // 采样步数同理：后端在就用后端存的默认值，不在就先按 32 显示
-  if (!(await loadStepsSettings())) {
-    renderStepsOptions();
-    paintSteps();
-  }
   await loadProjects();
   setInterval(async () => {
     await refreshStatus();

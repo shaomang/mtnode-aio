@@ -31,6 +31,7 @@ const {
   releaseLock,
   busyMessage,
 } = require("../media-gen-global-lock.js");
+const h3wf = require("./h3-workflows.js");
 
 const PLUGIN_ID = "minimax-h3";
 const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
@@ -85,6 +86,7 @@ let getMainWin = null;
 let appRoot = null;
 let getDsh = null;
 let consoleWin = null;
+let loadedUiStamp = ""; /* 管理窗当前已加载的 UI 指纹，变了就该 reload 而不是继续显示旧页面 */
 let installing = false;
 let installCancel = false;
 let gpuTimer = null;
@@ -491,11 +493,85 @@ function copyDirRecursive(src, dest, skipNames) {
   }
 }
 
+/** 递归列出目录里的文件相对路径（统一用 "/" 分隔，便于比较）。 */
+function listRelFiles(dir) {
+  const out = [];
+  let ents = [];
+  try {
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const ent of ents) {
+    const p = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      for (const r of listRelFiles(p)) out.push(ent.name + "/" + r);
+    } else out.push(ent.name);
+  }
+  return out.sort();
+}
+
+/** 运行时 UI 副本的内容指纹（文件名 + 大小 + mtime）。 */
+function uiRuntimeStamp(dir) {
+  try {
+    const parts = listRelFiles(dir).map((rel) => {
+      let size = 0;
+      let mt = 0;
+      try {
+        const s = fs.statSync(join(dir, ...rel.split("/")));
+        size = s.size;
+        mt = Math.round(s.mtimeMs);
+      } catch {}
+      return rel + "|" + size + "|" + mt;
+    });
+    return crypto.createHash("sha1").update(parts.join("\n")).digest("hex").slice(0, 12);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 把随包的 h3/ui 同步到可写数据目录（管理窗实际从这里加载）。
+ * 只在内容真的不同时写盘，并返回 { changed }：openConsoleWindow 靠它决定要不要
+ * reload 一个已经开着的窗口。不刷新就会出现「改了 UI 但界面照旧」——旧页面里弹窗
+ * 样式已坏时，那个卸载确认框就永远关不掉。
+ */
 function ensureUiRuntime() {
   const srcUi = join(__dirname, "ui");
   const destUi = join(h3Root(), "ui");
-  if (!fs.existsSync(srcUi)) return;
-  copyDirRecursive(srcUi, destUi, []);
+  if (!fs.existsSync(srcUi)) return { changed: false, files: 0 };
+  let changed = false;
+  const rels = listRelFiles(srcUi);
+  for (const rel of rels) {
+    const s = join(srcUi, ...rel.split("/"));
+    const d = join(destUi, ...rel.split("/"));
+    let a = null;
+    let b = null;
+    try {
+      a = fs.readFileSync(s);
+    } catch {
+      continue;
+    }
+    try {
+      b = fs.readFileSync(d);
+    } catch {}
+    if (!b || !a.equals(b)) {
+      mk(path.dirname(d));
+      try {
+        fs.copyFileSync(s, d);
+        changed = true;
+      } catch {}
+    }
+  }
+  /* 源码里已经删掉的旧文件也要从副本里清掉，否则残留一份永远加载不到的死页面 */
+  for (const rel of listRelFiles(destUi)) {
+    if (rels.indexOf(rel) >= 0) continue;
+    try {
+      fs.rmSync(join(destUi, ...rel.split("/")), { force: true });
+      changed = true;
+    } catch {}
+  }
+  return { changed, files: rels.length };
 }
 
 function sleep(ms) {
@@ -714,19 +790,42 @@ function queryGpu() {
       { windowsHide: true, timeout: 4000 },
       (err, stdout) => {
         if (err) return resolve(null);
-        const line = String(stdout || "").trim().split(/\r?\n/)[0] || "";
-        const parts = line.split(",").map((s) => s.trim());
-        if (parts.length < 4) return resolve(null);
-        const memUsed = Number(parts[1]);
-        const memTotal = Number(parts[2]);
-        const util = Number(parts[3]);
-        resolve({
-          name: parts[0],
-          memUsed,
-          memTotal,
-          util,
-          memPct: memTotal > 0 ? Math.round((memUsed / memTotal) * 1000) / 10 : 0,
-        });
+        const lines = String(stdout || "")
+          .trim()
+          .split(/\r?\n/)
+          .filter((l) => l.trim() && !/no devices were found/i.test(l));
+        if (!lines.length) return resolve(null);
+        const num = (s) => {
+          const n = Number(String(s == null ? "" : s).trim());
+          return Number.isFinite(n) ? n : null;
+        };
+        const cards = [];
+        for (const line of lines) {
+          const parts = line.split(",").map((s) => s.trim());
+          if (parts.length < 4) continue;
+          const memUsed = num(parts[1]);
+          const memTotal = num(parts[2]);
+          const util = num(parts[3]);
+          /* 显存/利用率取不到（[N/A]、ERR!）时按 null 处理，绝不把 NaN 发给界面 */
+          if (memUsed == null && memTotal == null && util == null) continue;
+          cards.push({
+            index: cards.length,
+            name: parts[0] || "",
+            memUsed,
+            memTotal,
+            util,
+            memPct:
+              memTotal != null && memTotal > 0 && memUsed != null
+                ? Math.round((memUsed / memTotal) * 1000) / 10
+                : null,
+          });
+        }
+        if (!cards.length) return resolve(null);
+        /* 多卡时取占用最高的一张（生成实际发生在那张卡上），并标出是第几号卡 */
+        cards.sort((a, b) => (b.memUsed || 0) - (a.memUsed || 0));
+        const g = cards[0];
+        if (cards.length > 1 && g.name) g.name = g.name + " · GPU" + g.index;
+        resolve(g);
       },
     );
   });
@@ -1928,10 +2027,87 @@ async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
   return mode === "disabled" ? "auto" : mode;
 }
 
+/** 收集一次执行的全部产物（自定义工作流用）：按节点/类别归集，默认取最后一个视频类产物。
+ *  @returns {{meta:Object|null, collected:Array<{nodeId,kind,filename,subfolder,type}>}} */
+function collectJobOutputs(outputs, preferredNodeId) {
+  const found = [];
+  for (const [nid, o] of Object.entries(h3wf.isPlainObject(outputs) ? outputs : {})) {
+    const push = (kind, arr) => {
+      if (!Array.isArray(arr)) return;
+      for (const it of arr) {
+        if (it && typeof it === "object") found.push({ nodeId: String(nid), kind, filename: String(it.filename || ""), subfolder: String(it.subfolder || ""), type: String(it.type || "") });
+      }
+    };
+    push("video", o && o.videos);
+    push("gif", o && o.gifs);
+    push("audio", o && o.audio);
+    const imgs = Array.isArray(o && o.images) ? o.images : [];
+    for (const im of imgs) {
+      if (!im || typeof im !== "object") continue;
+      const fn = String(im.filename || "");
+      let kind = "image";
+      if (/\.(gif)$/i.test(fn)) kind = "gif";
+      else if (/\.(webp)$/i.test(fn)) kind = "webp";
+      else if (/\.(mp4|webm|mov)$/i.test(fn)) kind = "video";
+      found.push({ nodeId: String(nid), kind, filename: fn, subfolder: String(im.subfolder || ""), type: String(im.type || "") });
+    }
+  }
+  if (!found.length) return { meta: null, collected: found };
+  const byId = (kinds) => found.filter((f) => String(f.nodeId) === preferredNodeId && kinds.includes(f.kind));
+  if (preferredNodeId) {
+    const hit = byId(["video"]).length ? byId(["video"]) : byId(["gif", "webp"]).length ? byId(["gif", "webp"]) : byId(["audio", "image"]);
+    if (hit.length) return { meta: hit[0], collected: found };
+  }
+  const videos = found.filter((f) => f.kind === "video");
+  if (videos.length) return { meta: videos[videos.length - 1], collected: found };
+  const gifs = found.filter((f) => f.kind === "gif" || f.kind === "webp");
+  if (gifs.length) return { meta: gifs[gifs.length - 1], collected: found };
+  return { meta: found[found.length - 1], collected: found };
+}
+
+/** 把 /prompt 拒绝响应解析成节点/字段级可读错误。 */
+function parsePromptRejection(postedJson) {
+  const j = h3wf.isPlainObject(postedJson) ? postedJson : {};
+  const out = [];
+  const ne = h3wf.isPlainObject(j.node_errors) ? j.node_errors : {};
+  for (const [nid, rawErr] of Object.entries(ne)) {
+    const e = h3wf.isPlainObject(rawErr) ? rawErr : {};
+    const firstMsg = Array.isArray(e.errors) && e.errors[0] && typeof e.errors[0] === "object"
+      ? String(e.errors[0].message || "")
+      : "";
+    out.push({
+      nodeId: String(nid),
+      classType: String(e.class_type || ""),
+      input: String(e.input || ""),
+      type: String(e.error_type || ""),
+      message: firstMsg || String(e.errors ? JSON.stringify(e.errors).slice(0, 300) : ""),
+    });
+  }
+  if (!out.length) {
+    const em = j.error && typeof j.error === "object" ? String(j.error.message || "") : "";
+    out.push({ nodeId: "", classType: "", input: "", type: "", message: em || String(j.error || "") || "未知错误" });
+  }
+  return out;
+}
+
+function formatPromptRejection(postedJson, workflowTitle) {
+  const list = parsePromptRejection(postedJson);
+  const head = "ComfyUI 拒绝了工作流" + (workflowTitle ? "（" + workflowTitle + "）" : "") + "：";
+  if (!list.length) return head + "无详细信息";
+  const lines = list.map((x) => {
+    const where = [x.nodeId && "节点 " + x.nodeId, x.classType && ("(" + x.classType + ")"), x.input && ("字段 " + x.input), x.type && ("[" + x.type + "]")].filter(Boolean).join(" ");
+    return (where ? where + "：" : "") + (x.message || "未知错误");
+  });
+  return head + "\n" + lines.join("\n");
+}
+
 /** 提交 ComfyUI workflow 并轮询等待完成，返回输出视频 meta（filename/subfolder）。
- *  stage 用于日志与进度文案（"gen" | "post"）。 */
-async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage) {
-  const label = stage === "post" ? "后处理" : "生成";
+ *  stage 用于日志与进度文案（"gen" | "post" | "custom"）。
+ *  opts: { collect:boolean, preferredNodeId:string, workflowTitle:string } —— collect 时返回
+ *  { videoMeta, collected }（收集任意 Save* 产物）；否则保持原行为只返回 videoMeta。 */
+async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, opts) {
+  const options = opts && typeof opts === "object" ? opts : {};
+  const label = stage === "post" ? "后处理" : stage === "custom" ? "自建工作流" : "生成";
   emitProgress({ phase: "generate", nodeId, message: "提交 " + label + "…", pct: 12 });
   appendConsole("comfy prompt submit (" + stage + ")");
   const posted = await httpJson(
@@ -1941,17 +2117,20 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage) {
     60000,
   );
   if (!posted.json || posted.json.error) {
-    throw new Error(
-      (posted.json && posted.json.error && posted.json.error.message) || "prompt_failed",
-    );
+    const err = new Error("comfy_prompt_rejected");
+    err.detail = formatPromptRejection(posted.json, options.workflowTitle);
+    throw err;
   }
   const promptId = posted.json.prompt_id;
   activeGenerate.promptId = promptId;
   appendConsole("prompt_id=" + promptId);
 
+  const collect = !!options.collect;
+  const preferredNodeId = String(options.preferredNodeId || "");
   const wsWatch = openComfyProgressWs(port, clientId, nodeId);
   const deadline = Date.now() + GENERATE_MAX_MS;
   let videoMeta = null;
+  let collected = null;
   try {
     while (Date.now() < deadline) {
       if (activeGenerate && activeGenerate.abort) {
@@ -1985,21 +2164,31 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage) {
         }
         if (st.completed || item.outputs) {
           const outputs = item.outputs || {};
-          for (const o of Object.values(outputs)) {
-            const vids = (o && o.videos) || [];
-            if (vids.length) {
-              videoMeta = vids[0];
+          if (collect) {
+            const r = collectJobOutputs(outputs, preferredNodeId);
+            if (r.meta) {
+              videoMeta = r.meta;
+              collected = r.collected;
               break;
             }
-            const imgs = (o && o.images) || [];
-            const mp4 = imgs.find((x) => x && /\.mp4$/i.test(x.filename || ""));
-            if (mp4) {
-              videoMeta = mp4;
-              break;
+            if (st.completed) throw new Error("no_workflow_output");
+          } else {
+            for (const o of Object.values(outputs)) {
+              const vids = (o && o.videos) || [];
+              if (vids.length) {
+                videoMeta = vids[0];
+                break;
+              }
+              const imgs = (o && o.images) || [];
+              const mp4 = imgs.find((x) => x && /\.mp4$/i.test(x.filename || ""));
+              if (mp4) {
+                videoMeta = mp4;
+                break;
+              }
             }
+            if (videoMeta) break;
+            if (st.completed) throw new Error(stage === "post" ? "no_post_output" : "no_video_output");
           }
-          if (videoMeta) break;
-          if (st.completed) throw new Error(stage === "post" ? "no_post_output" : "no_video_output");
         }
         /* history 中的真实 progress（若有） */
         const msgs = st.messages || [];
@@ -2012,7 +2201,7 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage) {
             emitProgress({
               phase: "generate",
               nodeId,
-              message: (stage === "post" ? "后处理 " : "采样 ") + v + "/" + max,
+              message: (stage === "post" ? "后处理 " : stage === "custom" ? "执行 " : "采样 ") + v + "/" + max,
               pct,
             });
             break;
@@ -2025,7 +2214,7 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage) {
     if (wsWatch) wsWatch.close();
   }
   if (!videoMeta) throw new Error("generate_timeout");
-  return videoMeta;
+  return collect ? { videoMeta, collected } : videoMeta;
 }
 
 /** 释放 ComfyUI 全部模型（阶段间调用，确保前一步的 H3/VAE 完全卸载）。 */
@@ -2102,6 +2291,13 @@ async function generateVideo(params) {
 
     const installDir = cfg.installDir;
     const comfy = comfyDir(installDir);
+
+    /* 自建工作流：workflowId 非空 → 走独立执行分支 runCustomWorkflow。
+     * 内置 FL2VA / R2V 两阶段链（含 4K 超分补帧）一字不动（零回归）。 */
+    if (String(params.workflowId || "").trim()) {
+      return await runCustomWorkflow({ params, port, installDir, comfy });
+    }
+
     const sig = projectSignals(installDir);
     const ratio = params.ratio || "16:9";
     let wh = RATIOS[ratio] || RATIOS["16:9"];
@@ -2279,7 +2475,7 @@ async function generateVideo(params) {
     appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
     return { ok: true, path: outPath, message: "Saved: " + outPath, bytes: sz };
   } catch (e) {
-    const err = String((e && e.message) || e);
+    const err = String((e && (e.detail || e.message)) || e);
     appendConsole("[job] error: " + err);
     clearLock();
     activeGenerate = null;
@@ -2298,6 +2494,204 @@ async function generateVideo(params) {
       appendConsole("[job] free warn: " + String((e && e.message) || e));
     }
   }
+}
+
+/* ───────────── 自建 ComfyUI 工作流（任务 2–4） ───────────── */
+
+/** 库实例：应用内注入 dataDir（与 main.js userData 一致） */
+function workflowStore() {
+  return h3wf.sharedStore(getDataDir());
+}
+
+let _objectInfoCache = { port: 0, data: null, at: 0 };
+/** 拉取 ComfyUI /object_info（2 分钟缓存；后端未启动返回 null 而非失败） */
+async function fetchObjectInfo(port) {
+  const p = Number(port) || DEFAULT_PORT;
+  if (_objectInfoCache.port === p && _objectInfoCache.data && Date.now() - _objectInfoCache.at < 120000) {
+    return _objectInfoCache.data;
+  }
+  let data = null;
+  try {
+    const r = await httpJson("GET", `http://127.0.0.1:${p}/object_info`, null, 30000, { track: false });
+    data = r.json && typeof r.json === "object" && !Array.isArray(r.json) ? r.json : null;
+  } catch (e) {
+    appendConsole("[wf] object_info unavailable: " + String((e && e.message) || e));
+    data = null;
+  }
+  _objectInfoCache = { port: p, data, at: Date.now() };
+  return data;
+}
+
+/** /object_info 节点包校验：缺自定义节点 → 警告但不阻断（写入库条目 validation） */
+async function validateWorkflowRecord(id) {
+  const store = workflowStore();
+  const rec = store.get(String(id || ""));
+  if (!rec) return { ok: false, error: "工作流不存在：" + String(id || "") };
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  const info = await fetchObjectInfo(port);
+  const checkedAt = new Date().toISOString();
+  if (!info) {
+    store.setValidation(rec.id, { status: "skipped", checkedAt, error: "后端未运行，跳过校验" });
+    return { ok: true, status: "skipped", message: "后端未运行，跳过校验（警告不阻断）" };
+  }
+  const graph = rec.graph || {};
+  const missingMap = new Map();
+  for (const [nid, node] of Object.entries(graph)) {
+    const cls = node && node.class_type;
+    if (!cls) continue;
+    if (!info[cls]) {
+      if (!missingMap.has(cls)) missingMap.set(cls, []);
+      missingMap.get(cls).push(String(nid));
+    }
+  }
+  const missing = [...missingMap.entries()].map(([class_type, nodeIds]) => ({ class_type, nodeIds }));
+  const status = missing.length ? "missing_nodes" : "ok";
+  store.setValidation(rec.id, { status, checkedAt, missing });
+  return {
+    ok: true,
+    status,
+    missing,
+    message: missing.length
+      ? "缺 " + missing.length + " 个节点包：" + missing.map((m) => m.class_type).join("、")
+      : "校验通过：全部节点均可识别",
+  };
+}
+
+/** 自建工作流执行分支（generateVideo 分叉入口）。
+ *  单阶段：不追加 4K 超分补帧、不做 24G 钳制、不读 duration/outputRes/post/postEnabled。
+ *  抽卡（attempts）/ 进度 / 取消沿用现有链路（activeGenerate + emitProgress + interruptComfy）。 */
+async function runCustomWorkflow(ctx) {
+  const { params, port, installDir, comfy } = ctx;
+  const nodeId = String(params.nodeId || "");
+  const store = workflowStore();
+  const wfId = String(params.workflowId || "").trim();
+  const rec = store.get(wfId);
+  if (!rec) throw new Error("工作流不存在（id=" + wfId + "）。请先在 H3 管理窗口的「自建工作流」中导入。");
+  const graph = rec.graph || {};
+  const scan = h3wf.scanGraph(graph);
+  const wfTitle = rec.title || wfId;
+
+  emitProgress({ phase: "generate", nodeId, message: "加载自建工作流「" + wfTitle + "」…", pct: 6 });
+
+  /* 输出节点：默认取最后一个视频产物；用户可在映射里指定 customOutputNodeId */
+  const outPick = h3wf.pickOutputNode(scan, String(params.customOutputNodeId || ""));
+
+  /* 参数映射：节点面板存的自定义表优先；为空时回落智能建议映射 */
+  let list = [];
+  if (Array.isArray(params.wfParams) && params.wfParams.length) {
+    const n = h3wf.normalizeParams(params.wfParams, graph);
+    if (n.errors.length) throw new Error("工作流参数表无效：" + n.errors[0]);
+    list = n.params;
+  } else {
+    list = scan.suggested;
+  }
+
+  /* 运行时值：面板填写 / 端口注入的 wfParamValues（text/number 直接下发，素材为绝对路径） */
+  const values = h3wf.isPlainObject(params.wfParamValues) ? params.wfParamValues : {};
+  const seed =
+    params.seed != null && Number.isFinite(Number(params.seed)) ? Number(params.seed) : null;
+
+  /* 素材上传：本机绝对路径 → ComfyUI input 目录文件名 */
+  const uploads = h3wf.collectUploads(values, list);
+  const uploaded = {};
+  for (const u of uploads) {
+    if (!fs.existsSync(u.path)) {
+      throw new Error("素材文件不存在：" + u.path + "（参数 " + u.key + "）");
+    }
+    uploaded[u.key] = await uploadFileToComfy(port, u.path, u.type);
+    appendConsole("[wf] uploaded " + u.key + " (" + u.type + ") → " + uploaded[u.key]);
+  }
+
+  /* 注入：克隆图不改库内原图；种子统一下发到全部被标 seed 字段（含未提升为参数的） */
+  const applied = h3wf.applyMapping(graph, values, list, seed, {
+    uploaded,
+    seedFields: scan.seedFields,
+  });
+  if (applied.errors.length) {
+    throw new Error(
+      "工作流参数注入失败：" +
+        applied.errors
+          .map((e) => (e.key ? "[" + e.key + "]" : "[?]") + " " + e.error)
+          .slice(0, 5)
+          .join("；"),
+    );
+  }
+
+  if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
+  const clientId = crypto.randomUUID();
+  const res = await submitAndWaitComfy(port, clientId, applied.graph, nodeId, "custom", {
+    collect: true,
+    preferredNodeId: outPick.nodeId || "",
+    workflowTitle: wfTitle,
+  });
+  const meta = res && res.videoMeta;
+  if (!meta) {
+    const counts = {};
+    for (const f of (res && res.collected) || []) counts[f.kind] = (counts[f.kind] || 0) + 1;
+    throw new Error(
+      "工作流跑了但没有拿到产物" +
+        (Object.keys(counts).length
+          ? "（收到 " +
+            Object.keys(counts)
+              .map((k) => k + "×" + counts[k])
+              .join("，") +
+            "，但都不是可保存的视频/动图；可直接在 ComfyUI 输出目录找回）"
+          : "（图中没有 Save* 输出节点）"),
+    );
+  }
+
+  /* 产物拷贝：真实扩展名（.mp4/.webp/.gif…），取不到回退 .mp4；重名自动序号 */
+  let outPath = join(comfy, "output", meta.subfolder || "", meta.filename);
+  const exportDir = String(params.outputDir || "").trim();
+  if (exportDir) {
+    const preferred = String(params.filename || "").trim() || meta.filename;
+    outPath = await copyOutputToDir(comfy, meta.filename, meta.subfolder || "", exportDir, preferred);
+  }
+  if (!outPath || !fs.existsSync(outPath)) throw new Error("output_file_missing: " + (outPath || ""));
+  let sz = 0;
+  try {
+    sz = fs.statSync(outPath).size || 0;
+  } catch {}
+  if (sz < 64) throw new Error("output_file_empty_or_too_small: " + outPath);
+
+  emitProgress({ phase: "generate", nodeId, message: "完成", pct: 100, done: true });
+  appendConsole("[job] custom ok path=" + outPath + " bytes=" + sz);
+  return { ok: true, path: outPath, message: "Saved: " + outPath, bytes: sz };
+}
+
+/** 「内置图另存为自定义工作流」：用 buildH3Workflow 生成内置 fl2va / r2v 的 API 图，入库存为模板。 */
+function builtinTemplateGraph(mode) {
+  const m = mode === "r2v" ? "r2v" : "fl2va";
+  const params = {
+    mode: m,
+    prompt: "",
+    width: 1280,
+    height: 704,
+    length: calcLength(5),
+    seed: 0,
+    steps: 20,
+    sampler: "res_multistep",
+    scheduler: "simple",
+    denoise: 1,
+    postEnabled: true,
+    postInterp: true,
+  };
+  return buildH3Workflow(params, {});
+}
+
+async function templateToWorkflow(mode) {
+  const m = mode === "r2v" ? "r2v" : "fl2va";
+  const title = "内置 " + (m === "r2v" ? "R2V" : "FL2VA") + "（模板）";
+  const graph = builtinTemplateGraph(m);
+  return workflowStore().createFromGraph({
+    title,
+    graph,
+    format: "api",
+    sourceName: "builtin:" + m,
+    template: true,
+    overwrite: true,
+  });
 }
 
 async function forceKillBackend(reason) {
@@ -2352,12 +2746,24 @@ function cancelGenerate(nodeId) {
 }
 
 function openConsoleWindow() {
-  ensureUiRuntime();
+  const ui = ensureUiRuntime();
+  const stamp = uiRuntimeStamp(join(h3Root(), "ui"));
   if (consoleWin && !consoleWin.isDestroyed()) {
+    /* 窗口还开着，但磁盘上的界面已经更新过 → 必须 reload 页面。
+       否则用户一直看着旧 HTML/CSS（旧版弹窗样式被删过一次，那个「确认卸载」框就常驻不走了），
+       表现是「改了 UI 没生效」+「弹窗关不掉」。 */
+    let reloaded = false;
+    if (ui.changed || (stamp && loadedUiStamp && stamp !== loadedUiStamp)) {
+      try {
+        consoleWin.webContents.reload();
+        reloaded = true;
+      } catch {}
+    }
+    loadedUiStamp = stamp;
     consoleWin.show();
     consoleWin.focus();
     notifyConsoleChanged(true);
-    return { ok: true, open: true };
+    return { ok: true, open: true, reloaded };
   }
   const entry = uiEntry();
   if (!fs.existsSync(entry)) return { ok: false, error: "ui_missing" };
@@ -2378,14 +2784,16 @@ function openConsoleWindow() {
       preload: join(__dirname, "preload-h3.js"),
     },
   });
+  loadedUiStamp = stamp;
   consoleWin.loadFile(entry);
   consoleWin.on("closed", () => {
     consoleWin = null;
+    loadedUiStamp = "";
     notifyConsoleChanged(false);
   });
   startGpuPolling();
   notifyConsoleChanged(true);
-  return { ok: true, open: true };
+  return { ok: true, open: true, reloaded: false };
 }
 
 function closeConsoleWindow() {
@@ -2509,6 +2917,111 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:uninstall", async (e, opts) => uninstallProject(opts || {}));
   ipcMain.handle("h3:generate", async (e, params) => generateVideo(params || {}));
   ipcMain.handle("h3:cancelGenerate", async (e, nodeId) => cancelGenerate(nodeId));
+  /* 自建工作流库（h3/ui 管理 + 主窗口 video_gen 面板共用） */
+  ipcMain.handle("h3:wfList", async () => {
+    try {
+      return { ok: true, items: workflowStore().listDetailed(), stats: workflowStore().stats() };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("h3:wfImport", async (e, input) => {
+    try {
+      return workflowStore().importWorkflow(input || {});
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("h3:wfDelete", async (e, id) => {
+    try {
+      return workflowStore().remove(String(id || ""));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("h3:wfRename", async (e, opts) => {
+    try {
+      const o = opts || {};
+      return workflowStore().rename(String(o.id || ""), String(o.title || ""));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("h3:wfExport", async (e, id) => {
+    try {
+      return workflowStore().exportText(String(id || ""));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("h3:wfValidate", async (e, id) => {
+    try {
+      return await validateWorkflowRecord(String(id || ""));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("h3:wfGet", async (e, id) => {
+    try {
+      const store = workflowStore();
+      const rec = store.get(String(id || ""));
+      if (!rec) return { ok: false, error: "工作流不存在：" + String(id || "") };
+      const s = store.scan(rec.id);
+      return {
+        ok: true,
+        record: {
+          id: rec.id,
+          title: rec.title,
+          format: rec.format,
+          validation: rec.validation || { status: "unchecked", checkedAt: "" },
+          notes: rec.notes || "",
+          source: rec.source || {},
+        },
+        scan: s ? s.scan : null,
+        suggestedParams: s ? s.suggestedParams : [],
+      };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  /* 画布 video_gen 节点面板用：把节点上已存的「提升为节点参数」表与该图最新扫描合并
+     （保留用户改过的 key / label / type；图上已消失的落点标 stale 不直接删；
+     新扫出的建议参数按落点去重追加）。合并逻辑真源只在 h3-workflows.js，渲染层不复制一份。 */
+  ipcMain.handle("h3:wfSyncParams", async (e, opts) => {
+    try {
+      const o = h3wf.isPlainObject(opts) ? opts : {};
+      const store = workflowStore();
+      const rec = store.get(String(o.id || ""));
+      if (!rec) return { ok: false, error: "工作流不存在：" + String(o.id || "") };
+      const graph = rec.graph || {};
+      const scan = h3wf.scanGraph(graph);
+      const merged = h3wf.syncParamsWithScan(
+        Array.isArray(o.params) ? o.params : [],
+        graph,
+        scan,
+      );
+      return {
+        ok: true,
+        title: rec.title || String(o.id || ""),
+        params: merged.params,
+        added: merged.added,
+        stale: merged.stale,
+        outputs: scan.outputs,
+        seedFields: scan.seedFields,
+        candidates: scan.candidates,
+        validation: rec.validation || { status: "unchecked", checkedAt: "" },
+      };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("h3:wfTemplateExport", async (e, mode) => {
+    try {
+      return await templateToWorkflow(String(mode || "fl2va"));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
   ipcMain.handle("h3:forceKillBackend", async () => forceKillBackend("manual"));
   ipcMain.handle("h3:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("h3:consoleTail", async (e, n) => consoleTail(n));

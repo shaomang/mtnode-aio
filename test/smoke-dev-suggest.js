@@ -221,6 +221,28 @@ function makeSandbox(modelText, runError, holdRun) {
         ? ["deepseek-v4-flash", "deepseek-v4-pro"]
         : ["gpt-5-mini"],
     providerForAgentRoute: (r) => (r === "mtnode_p1" ? { name: "Provider 1" } : null),
+    /* [11] Agent 设定三格：预设档位表是 app.js 真源（AGENT_PRESETS）的最小镜像
+        （**表序 = 界面序 = 默认档优先**：minimal 第一 = 默认档）；思考档不再由预设改写
+        （历史上 lean 会把标准压到 low，现已取消），沙箱里 agentEffortDisplayLabel 只做
+        「名义档 = 生效档」的映射，与真源同口径。AGENT_PRESET_DEFAULT 必须与真源同值，
+        否则被切片求值的运行入口（建议 / 绑定会话）会因引用不到兜底常量而崩。 */
+    AGENT_PRESETS: [
+      { id: "minimal", labelKey: "极简模式", hint: "省事档" },
+      { id: "standard", labelKey: "标准模式", hint: "通用档" },
+      { id: "lean", labelKey: "思维精简", hint: "思考压成符号骨架" },
+      { id: "code", labelKey: "PTC 模式", hint: "工程档" },
+      { id: "cordis", labelKey: "创造模式", hint: "插件开发档" },
+    ],
+    AGENT_PRESET_DEFAULT: "minimal",
+    agentPresetId: (id) => (String(id == null ? "" : id) === "sketch" ? "lean" : String(id == null ? "" : id)),
+    agentPresetById: (id) =>
+      sb.AGENT_PRESETS.filter((p) => p.id === sb.agentPresetId(id))[0] || null,
+    agentEffortDisplayLabel: (st) =>
+      String((st || {}).effort || "") === "max" ? "最强" : "标准",
+    /* [11] 运行入口 ②：切片注入的 createDevSessionForNode 需要的 app.js 侧依赖 */
+    dshWorkspaceOf: () => "E:/dev/tools/pipeline-console",
+    devSessionTitleOf: (n, mode) => "开发·" + ((n && (n.title || n.id)) || "") + "·" + mode,
+    devNodeContractText: () => "【契约】AGENTS.md 共识",
     I18n: { t: (k) => k },
     S: { wf: { nodes } },
     _mtDialogSeq: 0,
@@ -518,7 +540,7 @@ const MODEL_JSON =
   ok(ropts.workspace === "E:/dev/tools/pipeline-console", "调研工作区 = 项目根目录");
   ok(ropts.runKey === "devsuggest:n1", "runKey 绑定节点（停止 / 全部终止可用）");
   ok(ropts.node === undefined, "不传 node：不锁画布作用域、不回写节点");
-  ok(ropts.effort === "high" && ropts.preset === "standard", "用 standard 预设 + 高推理档");
+  ok(ropts.effort === "high" && ropts.preset === "minimal", "三格未选 → 建议走默认档 minimal + 高推理档");
   ok(ropts.systemPrompt.indexOf("禁止") >= 0, "带只读禁令的系统提示");
   ok(sb.__runCalls[0].input.indexOf("聚焦错误处理") >= 0, "关注点进入任务书");
   let b = sb.__host.querySelector("#mtDlgBody");
@@ -725,7 +747,8 @@ const MODEL_JSON =
     "base.css：建议对话框加宽（特异性压过 mt-form-wide）",
   );
   ok(read("dsh/gateway/canvas-plugin.mjs").indexOf("建议 / 开发 / 细化") >= 0, "canvas 工具描述含「建议」");
-  ok(read("dsh/gateway/gateway.mjs").indexOf("each dev node also has a 建议 button") >= 0, "网关人设含「建议」");
+  /* 本轮 Token 去重：开发节点细则从「网关人设」里撤走，人设只指向技能真源（见 docs/prompt-source-of-truth.md） */
+  ok(read("dsh/gateway/gateway.mjs").indexOf("mtnode-dev-architect") >= 0, "网关人设指向 dev-architect 技能（不再抄「建议」细则）");
   ok(
     read("renderer/app-assist.js").indexOf("每个开发节点有「开发」「细化」「建议」「问询」按钮") >= 0,
     "助手系统提示含「建议」",
@@ -919,6 +942,10 @@ const MODEL_JSON =
       };
       s.wsGroupOf = (p) => (p ? "grp/" + String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() : "");
       s.isMediaGenNode = (n) => !!n && (n.kind === "music_gen" || n.kind === "video_gen");
+      /* 取数层切片之外的依赖（工具节点变体判定 · 与 app.js:isToolNode 同口径） */
+      s.isToolNode = (n) =>
+        !!(n && ((n.kind === "super" && !!n.tool && !n.db) || n.kind === "tool"));
+      s.isFunctionNode = (n) => !!(n && n.kind === "function");
       s.findMediaGenNodeById = (id) => {
         const all = (s.S.wf.nodes || []).concat(
           ...Object.keys(s.S.wfBag).map((k) => s.S.wfBag[k].nodes || []),
@@ -1218,8 +1245,8 @@ const MODEL_JSON =
   );
   ok(read("docs/dev-node-design.md").indexOf("HSV") >= 0, "设计文档写明 HSV 色板功能");
 
-  /* ==================== [11] 开发节点 Agent 模型（本块 + 未自选子块共用） ==================== */
-  console.log("\n[11] Agent 模型：devModel 就近继承 + 选择弹层 + 会话 / 调研接线");
+  /* ==================== [11] 开发节点 Agent 设定（模型 / 预设 / 思考强度） ==================== */
+  console.log("\n[11] Agent 设定：devModel · devPreset · devEffort 就近继承 + 三格弹层 + 三处运行入口");
   sb = makeSandbox(MODEL_JSON);
   ok(
     ex(sb, "devAgentRoutes().join(',')") === "deepseek-official,mtnode_p1",
@@ -1315,9 +1342,154 @@ const MODEL_JSON =
   ok(ex(sb, "devAgentModelOf(nodeById('n1')).model") === "deepseek-v4-pro", "清除后退回继承上层选择");
   ex(sb, "nodeById('top').devModel = ''");
   ok(ex(sb, "devAgentModelOf(nodeById('n3'))") === null, "上层也清空 → 整棵树回到跟随默认");
-  /* ---- 「建议」只读调研真的用所选模型 ---- */
+  /* ---- 预设 / 思考强度：同一条就近继承链，三项各自独立生效 ---- */
+  sb = makeSandbox(MODEL_JSON);
+  let st11 = ex(sb, "devAgentSettingsOf(nodeById('n1'))");
+  ok(
+    st11.preset === "" && st11.effort === "" && st11.model === "",
+    "谁都没选 → preset / effort / model 皆空（跟随默认）",
+  );
+  ok(
+    ex(sb, "devPresetOwn(nodeById('plain'))") === "" && ex(sb, "devEffortOwn(nodeById('plain'))") === "",
+    "非开发节点不参与预设 / 思考档继承",
+  );
+  ex(sb, "nodeById('top').devPreset = 'code'; nodeById('top').devEffort = 'max'");
+  st11 = ex(sb, "devAgentSettingsOf(nodeById('n2'))");
+  ok(
+    st11.preset === "code" && st11.presetInherited === true && st11.effort === "max" && st11.effortInherited === true,
+    "子块未自选 → 用上层功能块所选预设与思考档（均标 inherited）",
+  );
+  ok(st11.presetSource.id === "top" && st11.effortSource.id === "top", "两项继承来源各自指向真正做了选择的祖先块");
+  ok(
+    ex(sb, "devPresetDialogText(nodeById('n2'))") === "PTC 模式（继承自「渲染层」）",
+    "预设对话框文案 = 档位名 + 点名继承来源",
+  );
+  ok(
+    ex(sb, "devEffortDialogText(nodeById('n2'))") === "最强（继承自「渲染层」）",
+    "思考档对话框文案点名继承来源",
+  );
+  ex(sb, "nodeById('n2').devPreset = 'lean'");
+  st11 = ex(sb, "devAgentSettingsOf(nodeById('n2'))");
+  ok(st11.preset === "lean" && st11.presetInherited === false, "子块自选预设 → 覆盖上层");
+  ok(
+    st11.effort === "max" && st11.effortInherited === true,
+    "预设自选不牵连思考档：思考仍就近继承上层（三项各自独立）",
+  );
+  ok(ex(sb, "devAgentSettingsOf(nodeById('n3')).preset") === "code", "未自选的兄弟块仍继承上层预设");
+  ex(sb, "nodeById('n2').devPreset = ''");
+  ok(ex(sb, "devAgentSettingsOf(nodeById('n2')).preset") === "code", "清除后退回继承上层预设");
+  /* ---- 取值域：脏值不入库，旧 id 归一 ---- */
+  ex(sb, "nodeById('n2').devPreset = 'not-a-preset'");
+  ok(ex(sb, "devPresetOwn(nodeById('n2'))") === "", "未知预设 id → 丢弃（当没选）");
+  ok(ex(sb, "devAgentSettingsOf(nodeById('n2')).preset") === "code", "脏值不遮蔽上层生效预设");
+  ex(sb, "nodeById('n2').devPreset = 'sketch'");
+  ok(ex(sb, "devPresetOwn(nodeById('n2'))") === "lean", "旧预设 id sketch → 归一为 lean");
+  ex(sb, "nodeById('n2').devPreset = ''");
+  ex(sb, "nodeById('n2').devEffort = 'low'");
+  ok(ex(sb, "devEffortOwn(nodeById('n2'))") === "low", "思考档扩档后 low（界面「轻」）也是功能块可设值：dev 与会话共用同一张档位表");
+  ex(sb, "nodeById('n2').devEffort = 'MAX'");
+  ok(ex(sb, "devEffortOwn(nodeById('n2'))") === "max", "大小写容忍后归一为 max");
+  ex(sb, "nodeById('n2').devEffort = ''");
+  /* ---- 思考档只看设置：预设不再压档，名义档就是生效档 ---- */
+  ex(sb, "nodeById('top').devPreset = 'lean'");
+  ex(sb, "nodeById('n1').devEffort = 'high'");
+  ok(
+    ex(sb, "devEffortDialogText(nodeById('n1'))") === "标准",
+    "思维精简 + 「标准」→ 仍显示「标准」（预设不改写思考档，网关已取消压档）",
+  );
+  ok(
+    ex(sb, "devEffortScopeText(nodeById('n1'))") === "思考强度：标准",
+    "弹层思考格说明：只报所选档位，不再声明被预设降档",
+  );
+  ex(sb, "nodeById('n1').devEffort = 'max'");
+  ok(ex(sb, "devEffortDialogText(nodeById('n1'))") === "最强", "选「最强」→ 显示最强");
+  ex(sb, "nodeById('n1').devEffort = ''; nodeById('top').devEffort = ''");
+  ok(
+    ex(sb, "devEffortDialogText(nodeById('n1'))") === "自动（跟随默认）",
+    "只选了预设、没选思考档（上层也没选）→ 思考档回到「自动（跟随默认）」，预设不代它决定档位",
+  );
+  ex(sb, "nodeById('top').devPreset = ''; nodeById('top').devEffort = ''");
+  ok(ex(sb, "devEffortDialogText(nodeById('n1'))") === "自动（跟随默认）", "预设与思考档都没选 → 思考档回到「自动（跟随默认）」");
+  /* ---- 按钮摘要：模型没选但选了预设 / 思考档也不算 auto ---- */
+  ex(sb, "nodeById('top').devPreset = 'lean'");
+  const pBtn11 = ex(sb, "devModelButtonEl(nodeById('n1'))");
+  ok(pBtn11.className.indexOf("auto") < 0, "只选了预设 / 思考档（未选模型）→ 按钮不再是 auto 态");
+  ok(pBtn11.querySelector(".lbl").textContent.indexOf("思维精简") >= 0, "按钮文字摘要带上预设短名");
+  ok(pBtn11.title.indexOf("Agent 预设：") >= 0, "按钮提示列出 Agent 预设一行");
+  ok(pBtn11.title.indexOf("思考强度：") >= 0, "按钮提示列出思考强度一行");
+  /* ---- 弹层三格：预设 / 模型 / 思考强度 ---- */
+  sb = makeSandbox(MODEL_JSON);
+  ex(sb, "nodeById('top').devPreset = 'code'; nodeById('top').devEffort = 'max'");
+  const tgt3 = sb.__nodes.filter((n) => n.id === "n1")[0];
+  tgt3.getBoundingClientRect = () => ({ left: 20, top: 20, right: 130, bottom: 38 });
+  sb.__anchor = tgt3;
+  ex(sb, "toggleDevModelPicker(nodeById('n1'), __anchor)");
+  const pop3 = ex(sb, "document.getElementById('devModelPop')");
+  const cells11 = pop3.querySelectorAll(".dev-model-cell");
+  ok(cells11.length === 3, "弹层头部为「预设 / 模型 / 思考强度」三格");
+  ok(
+    cells11.map((c) => c.querySelector(".dev-model-cell-label").textContent).join("|") === "预设|模型|思考强度",
+    "三格标签与顺序与会话侧 Agent 菜单一致",
+  );
+  ok(cells11[1].classList.contains("on"), "打开弹层默认落在模型格");
+  ok(
+    cells11[0].querySelector(".dev-model-cell-value").textContent === "PTC 模式 ↩",
+    "预设格回显继承来的生效预设并标 ↩",
+  );
+  ok(
+    cells11[2].querySelector(".dev-model-cell-value").textContent === "最强 ↩",
+    "思考格回显继承来的生效档并标 ↩",
+  );
+  cells11[0].onclick();
+  ok(
+    pop3.querySelectorAll(".dev-model-cell").filter((c) => c.classList.contains("pane-preset") && c.classList.contains("on")).length === 1,
+    "点预设格 → 本格高亮",
+  );
+  ok(
+    pop3.querySelector(".dev-model-scope").textContent.indexOf("继承自「渲染层」") >= 0,
+    "预设格顶部说明点名继承来源",
+  );
+  const popts11 = pop3.querySelector(".dev-model-list").querySelectorAll("button");
+  ok(popts11.length === 6, "预设格列出「跟随默认」+ 全部 5 个预设档位");
+  ok(
+    popts11.map((b) => b.querySelector(".m").textContent).join("|") ===
+      "跟随默认（不指定）|极简模式|标准模式|思维精简|PTC 模式|创造模式",
+    "预设清单顺序 = 档位表顺序，且默认档（极简）排第一",
+  );
+  ok(popts11[0].classList.contains("on"), "本块未自选预设 →「跟随默认（不指定）」打勾");
+  ok(popts11.filter((b) => b.querySelector(".i")).length === 1, "继承来的那一档标「（继承）」");
+  /* 按名字点，不按序号：序号会随档位表重排而漂移（本轮默认档改成极简就是例子） */
+  const pickMinimal = popts11.filter((b) => b.querySelector(".m").textContent === "极简模式")[0];
+  pickMinimal.onclick();
+  ok(tgt3.devPreset === "minimal", "点选预设 → 写入节点 devPreset");
+  ok(!pop3.classList.contains("on"), "选定后收起弹层");
+  ok(ex(sb, "devAgentSettingsOf(nodeById('n2')).preset") === "minimal", "本块选定预设后其子块改继承本块");
+  ex(sb, "toggleDevModelPicker(nodeById('n1'), __anchor)");
+  pop3.querySelectorAll(".dev-model-cell")[2].onclick();
+  const eopts11 = pop3.querySelector(".dev-model-list").querySelectorAll("button");
+  ok(eopts11.length === 4, "思考强度格 = 会话同一张 UI 档表四档（轻 / 标准 / 强 / 最强；medium 合法但不露出）");
+  ok(
+    eopts11.map((b) => b.querySelector(".m").textContent).join("|") === "轻|标准|强|最强",
+    "思考格四档与 app.js 的 AGENT_EFFORT_UI_ORDER 逐值一致（回显 = 下发）",
+  );
+  /* 按名字点，不按序号：序号会随扩档漂移（本文件上方「极简模式」那格同理） */
+  const pickMax = eopts11.filter((b) => b.querySelector(".m").textContent === "最强")[0];
+  ok(!!pickMax, "四档里能按名字找到「最强」（max）");
+  pickMax.onclick();
+  ok(tgt3.devEffort === "max", "点「最强」→ 写入 devEffort");
+  ex(sb, "toggleDevModelPicker(nodeById('n1'), __anchor)");
+  pop3.querySelectorAll(".dev-model-cell")[0].onclick();
+  pop3
+    .querySelector(".dev-model-list")
+    .querySelectorAll("button")[0]
+    .onclick();
+  ok(tgt3.devPreset === "" && tgt3.devEffort === "max", "「跟随默认（不指定）」只清当前这一格（思考档保留）");
+  ok(ex(sb, "devAgentSettingsOf(nodeById('n1')).preset") === "code", "清除预设后退回继承上层预设");
+  ex(sb, "closeDevModelPicker()");
+  /* ---- 运行入口 ①：「建议」只读调研真的用所选模型 / 预设 / 思考档 ---- */
   sb = makeSandbox(MODEL_JSON, null, true);
   ex(sb, "nodeById('top').devModel = 'deepseek-v4-pro'; nodeById('top').devProvider = 'deepseek-official'");
+  ex(sb, "nodeById('top').devPreset = 'code'; nodeById('top').devEffort = 'max'");
   sb.__formResult = { action: "go" };
   const p11 = ex(sb, "suggestDevNode(nodeById('n1'))");
   await drain();
@@ -1326,19 +1498,94 @@ const MODEL_JSON =
     form11.rows.some((x) => x[0] === "Agent 模型" && x[1].indexOf("deepseek-v4-pro") >= 0),
     "「建议」确认框列出 Agent 模型",
   );
+  ok(
+    form11.rows.some((x) => x[0] === "Agent 预设" && x[1] === "PTC 模式（继承自「渲染层」）"),
+    "「建议」确认框列出 Agent 预设（含继承来源）",
+  );
+  ok(
+    form11.rows.some((x) => x[0] === "思考强度" && x[1] === "最强（继承自「渲染层」）"),
+    "「建议」确认框列出思考强度（含继承来源）",
+  );
   ok(sb.__runCalls.length === 1, "确认后开始只读调研");
   ok(sb.__runCalls[0].opts.model === "deepseek-v4-pro", "「建议」调研用上层功能块所选模型");
   ok(sb.__runCalls[0].opts.provider === "deepseek-official", "调研带上对应智能路由");
+  ok(sb.__runCalls[0].opts.preset === "code", "「建议」调研用就近继承来的 Agent 预设");
+  ok(sb.__runCalls[0].opts.effort === "max", "「建议」调研用就近继承来的思考强度");
+  const log11 = sb.__host.querySelector("#mtDlgBody").textContent;
+  ok(log11.indexOf("本轮：") >= 0, "进度日志显示本轮实际使用的 Agent 设定");
   ok(
-    sb.__host.querySelector("#mtDlgBody").textContent.indexOf("本轮模型：") >= 0,
-    "进度日志显示本轮实际使用的模型",
+    log11.indexOf("PTC 模式（继承自「渲染层」）") >= 0 && log11.indexOf("最强") >= 0,
+    "日志逐项点名预设与思考档（含来源块）",
   );
   sb.__resolveRun(MODEL_JSON);
   await drain();
   footBtn(sb.__host, "取消").onclick();
   await p11;
-  /* ---- 接线：会话 / 序列化 / 网关 / 样式 / 文档 ---- */
+  /* ---- 运行入口 ①兜底：三格都没选 → 回落默认档 minimal / high ---- */
+  sb = makeSandbox(MODEL_JSON, null, true);
+  sb.__formResult = { action: "go" };
+  const p11b = ex(sb, "suggestDevNode(nodeById('n1'))");
+  await drain();
+  ok(sb.__runCalls[0].opts.preset === "minimal", "没选预设 → 建议回落默认档 minimal（默认档真源只有一个常量）");
+  ok(sb.__runCalls[0].opts.effort === "high", "没选思考档 → 建议仍用 high");
+  ok(
+    sb.__host.querySelector("#mtDlgBody").textContent.indexOf("本轮：") < 0,
+    "一格都没选 → 日志不输出「本轮：」行（与改动前一致）",
+  );
+  sb.__resolveRun(MODEL_JSON);
+  await drain();
+  footBtn(sb.__host, "取消").onclick();
+  await p11b;
+  /* ---- 运行入口 ②：绑定的「开发 / 细化」会话按解析值下发（切片注入 app.js 真身） ---- */
   const appjs11 = read("renderer/app.js");
+  const csA11 = appjs11.indexOf("function createDevSessionForNode(node, mode, req) {");
+  const csB11 = appjs11.indexOf("/* 从任务书 / 首条 dev-node 消息里取「本次开发需求」行");
+  ok(csA11 > 0 && csB11 > csA11, "[11] 定位 app.js 绑定会话创建源码（createDevSessionForNode）");
+  const sb11c = makeSandbox(MODEL_JSON);
+  vm.runInContext(appjs11.slice(csA11, csB11), sb11c, { filename: "app.js#createDevSessionForNode" });
+  ex(
+    sb11c,
+    "nodeById('top').devModel = 'deepseek-v4-pro'; nodeById('top').devProvider = 'deepseek-official'; nodeById('top').devPreset = 'cordis'; nodeById('top').devEffort = 'max'",
+  );
+  ex(sb11c, "nodeById('n1').devPreset = 'lean'");
+  const sess11 = ex(sb11c, "createDevSessionForNode(nodeById('n2'), 'develop', '把三格接上')");
+  ok(
+    sess11.model === "deepseek-v4-pro" && sess11.provider === "deepseek-official",
+    "绑定会话用就近继承来的模型与智能路由",
+  );
+  ok(sess11.preset === "lean", "本块链上最近的自选预设优先下发（与模型来源无关）");
+  ok(sess11.effort === "max", "思考档仍就近取上层的选择（三项各自独立下发）");
+  ok(ex(sb11c, "createDevSessionForNode(nodeById('sib'), 'refine', '').preset") === "cordis", "兄弟块未自选 → 用上层预设");
+  const sb11d = makeSandbox(MODEL_JSON);
+  vm.runInContext(appjs11.slice(csA11, csB11), sb11d, { filename: "app.js#createDevSessionForNode" });
+  const sess11d = ex(sb11d, "createDevSessionForNode(nodeById('n1'), 'develop', 'x')");
+  ok(
+    sess11d.preset === "minimal" &&
+      sess11d.effort === "high" &&
+      sess11d.model === "" &&
+      sess11d.provider === "deepseek-official",
+    "三格都没选 → 会话回落默认档 minimal / high + 默认路由（默认档唯一真源 AGENT_PRESET_DEFAULT）",
+  );
+  /* ---- 运行入口 ③：问询会话同样按解析值下发 ---- */
+  ok(
+    (appjs11.match(/preset: \(st && st\.preset\) \|\| AGENT_PRESET_DEFAULT/g) || []).length >= 2,
+    "绑定会话与问询会话两处都按解析值下发预设",
+  );
+  ok(
+    (appjs11.match(/effort: \(st && st\.effort\) \|\| "high"/g) || []).length >= 2,
+    "绑定会话与问询会话两处都按解析值下发思考档",
+  );
+  ok(
+    (appjs11.match(/typeof devAgentSettingsOf === "function" \? devAgentSettingsOf\(node\) : null/g) || []).length >=
+      2,
+    "两处会话入口都取就近继承的 Agent 设定（带守卫，模块未加载也不炸）",
+  );
+  ok(
+    read("renderer/app-devnode.js").indexOf("preset: st.preset || AGENT_PRESET_DEFAULT") >= 0 &&
+      read("renderer/app-devnode.js").indexOf('effort: st.effort || "high"') >= 0,
+    "「建议」调研入口同样按解析值下发（带兜底）",
+  );
+  /* ---- 接线：数据字段 / 会话 / 序列化 / 网关 / 样式 / 文档 ---- */
   ok(
     appjs11.indexOf('typeof devAgentModelOf === "function" ? devAgentModelOf(node) : null') >= 0,
     "createDevSessionForNode 取生效模型",
@@ -1353,6 +1600,8 @@ const MODEL_JSON =
     "「开发」与「细化」对话框都列出 Agent 模型",
   );
   ok(appjs11.indexOf('devModel: ""') >= 0, "app.js 超级节点默认 devModel 空串");
+  ok(appjs11.indexOf('devPreset: ""') >= 0, "app.js 超级节点默认 devPreset 空串（跟随默认）");
+  ok(appjs11.indexOf('devEffort: ""') >= 0, "app.js 超级节点默认 devEffort 空串（跟随默认）");
   ok(appjs11.indexOf("S.uiDevModelNode") >= 0, "app.js 全局点击收起模型弹层（点外部）");
   ok(
     appjs11.indexOf('if (ev.key === "Escape" && (S.uiDevColorNode || S.uiDevModelNode))') >= 0,
@@ -1370,15 +1619,37 @@ const MODEL_JSON =
   ok(nodes11.indexOf("patch.devModel") >= 0, "app-nodes 支持 devModel 补丁（Agent 可改模型）");
   ok(nodes11.indexOf("patch.devProvider") >= 0, "app-nodes 支持 devProvider 补丁");
   ok((nodes11.match(/devModel:/g) || []).length >= 2, "devModel 随工作流保存并进画布快照（canvas_get 可见）");
+  ok(nodes11.indexOf("patch.devPreset") >= 0, "app-nodes 支持 devPreset 补丁（Agent 可改预设）");
+  ok(nodes11.indexOf("patch.devEffort") >= 0, "app-nodes 支持 devEffort 补丁（Agent 可改思考档）");
+  ok(
+    nodes11.indexOf("未知 Agent 预设：") >= 0 && nodes11.indexOf("未知思考强度档位：") >= 0,
+    "未知预设 / 思考档补丁被拒并回报（画布上不留不存在的档位）",
+  );
+  ok(
+    (nodes11.match(/devPreset:/g) || []).length >= 2 && (nodes11.match(/devEffort:/g) || []).length >= 2,
+    "devPreset / devEffort 随工作流保存并进画布快照（canvas_get 可见）",
+  );
   const gw11 = read("dsh/gateway/canvas-plugin.mjs");
   ok(
-    (gw11.match(/devModel:/g) || []).length >= 2 && gw11.indexOf("devProvider") >= 0,
-    "网关 schema 暴露 devModel / devProvider（Agent 能设）",
+    (gw11.match(/devModel:/g) || []).length >= 1 && gw11.indexOf("devProvider") >= 0,
+    "网关 schema 暴露 devModel / devProvider（Agent 能设 · create/update 共用同一份属性表，故只出现一次）",
   );
-  ok((gw11.match(/devColor:/g) || []).length >= 2, "网关 schema 暴露 devColor（Agent 能改颜色）");
+  ok((gw11.match(/devColor:/g) || []).length >= 1, "网关 schema 暴露 devColor（Agent 能改颜色）");
   ok(
     gw11.indexOf("dev/devPath/devStatus/devKind/devColor/devModel/devProvider") >= 0,
     "canvas_get 工具描述透出这些字段",
+  );
+  ok(
+    (gw11.match(/devPreset:/g) || []).length >= 1 && (gw11.match(/devEffort:/g) || []).length >= 1,
+    "网关属性表暴露 devPreset / devEffort（Agent 能设 · create / update 同一份表，不再各抄一遍）",
+  );
+  ok(
+    gw11.indexOf("devModel/devProvider/devPreset/devEffort/devFiles") >= 0,
+    "canvas_get 工具描述补齐 devPreset / devEffort",
+  );
+  ok(
+    gw11.indexOf("enum: ['low', 'medium', 'high', 'xhigh', 'max', '']") >= 0,
+    "devEffort 在网关侧就是完整档位词汇表（与会话 / 网关 reasoning-effort 模块同源，空串 = 跟随默认）",
   );
   const cssC11 = read("renderer/css/canvas.css");
   ok(cssC11.indexOf(".n-dev-model") >= 0, "canvas.css：头部模型按钮样式");
@@ -1388,19 +1659,85 @@ const MODEL_JSON =
     cssComp11.indexOf(".dev-model-pop") >= 0 && cssComp11.indexOf(".dev-model-list") >= 0,
     "components.css：模型选择弹层样式",
   );
+  ok(
+    cssComp11.indexOf(".dev-model-cells") >= 0 &&
+      cssComp11.indexOf(".dev-model-cell-label") >= 0 &&
+      cssComp11.indexOf(".dev-model-cell-value") >= 0,
+    "components.css：三格 cell（预设 / 模型 / 思考强度）样式",
+  );
   ok(cssComp11.indexOf("*/.dev-color-pop") < 0, "components.css：色板注释与规则不再粘连");
   const guide11 = read("guides/manual/dev-nodes.md");
-  ok(guide11.indexOf("Agent 模型 devModel") >= 0, "中文手册写明 Agent 模型");
+  ok(guide11.indexOf("Agent 模型 / 预设 / 思考强度") >= 0, "中文手册小节改名为「Agent 模型 / 预设 / 思考强度」");
+  ok(
+    guide11.indexOf("devPreset") >= 0 && guide11.indexOf("devEffort") >= 0 && guide11.indexOf("三格") >= 0,
+    "中文手册写明 devPreset / devEffort 与「预设 / 模型 / 思考强度」三格",
+  );
+  ok(guide11.indexOf("各自") >= 0 || guide11.indexOf("分别") >= 0, "中文手册写明三档分别就近继承");
   ok(guide11.indexOf("devColor") >= 0 && guide11.indexOf("HSV") >= 0, "中文手册写明节点颜色");
-  ok(read("guides/manual/en/dev-nodes.md").indexOf("Agent model devModel") >= 0, "英文手册写明 Agent model");
+  const guideEn11 = read("guides/manual/en/dev-nodes.md");
+  ok(
+    guideEn11.indexOf("Agent model / preset / thinking effort") >= 0 && guideEn11.indexOf("devPreset") >= 0,
+    "英文手册同步 Agent model / preset / thinking effort 小节",
+  );
   const skill11 = read("mtnode-agent-skills/mtnode/dev-architect/SKILL.md");
   ok(skill11.indexOf("就近继承") >= 0, "dev-architect 技能说明模型就近继承");
+  ok(
+    skill11.indexOf("devPreset") >= 0 &&
+      skill11.indexOf("devEffort") >= 0 &&
+      skill11.indexOf("sketch") >= 0 &&
+      skill11.indexOf("各自独立生效") >= 0,
+    "dev-architect 技能补 devPreset / devEffort（旧 id 归一 · 三项各自独立继承）",
+  );
   ok(skill11.indexOf("devColor") >= 0, "dev-architect 技能说明节点颜色");
   ok(read("mtnode-agent-skills/index.json").indexOf("devModel") >= 0, "技能索引已重建并含 devModel");
+  ok(
+    read("mtnode-agent-skills/index.json").indexOf("devPreset") >= 0,
+    "技能索引已重建并含 devPreset（脚本生成，非手改）",
+  );
+  /* 「拷问我」内置技能：必须由脚本重建进索引（生成物，不能手改） */
+  const skillIdx11 = read("mtnode-agent-skills/index.json");
+  ok(skillIdx11.indexOf("mtnode-grill-me") >= 0, "技能索引已收录 mtnode-grill-me");
+  ok(
+    skillIdx11.indexOf('"path": "mtnode/grill-me/SKILL.md"') >= 0 ||
+      skillIdx11.indexOf('"path":"mtnode/grill-me/SKILL.md"') >= 0,
+    "索引指向 mtnode/grill-me/SKILL.md（与同分类内置技能同层级）",
+  );
+  ok(
+    read("mtnode-agent-skills/INDEX.md").indexOf("mtnode-grill-me") >= 0,
+    "INDEX.md 同步列出 mtnode-grill-me",
+  );
+  const grillSkill11 = read("mtnode-agent-skills/mtnode/grill-me/SKILL.md");
+  ok(
+    /^name:\s*mtnode-grill-me\s*$/m.test(grillSkill11),
+    "SKILL.md frontmatter name 为 mtnode-grill-me（匹配索引的命名正则）",
+  );
+  ok(
+    grillSkill11.indexOf("ask_user_question") >= 0 &&
+      grillSkill11.indexOf("询问窗") >= 0 &&
+      grillSkill11.indexOf("（推荐）") >= 0,
+    "拷问技能第一纪律 = 用 ask_user_question 跳出 MTNode 询问窗，推荐项排第一位",
+  );
+  ok(
+    grillSkill11.indexOf("把问题写成回复正文的编号列表") >= 0,
+    "拷问技能明文否定「把问题当聊天正文罗列」（本轮修的 bug）",
+  );
+  ok(
+    grillSkill11.indexOf("兜底") >= 0 && grillSkill11.indexOf("❓") >= 0,
+    "旧的「❓ Q1 + ➡️ 推荐答案」正文模板只作为询问窗被权限关掉时的兜底保留",
+  );
   const chg11 = read("CHANGELOG-v1.1.md");
   ok(
     chg11.indexOf("devModel") >= 0 && chg11.indexOf("就近向上继承") >= 0,
     "版本更新文档写明 Agent 模型与就近继承",
+  );
+  ok(
+    chg11.indexOf("Agent 设定三格化") >= 0 && chg11.indexOf("devPreset") >= 0 && chg11.indexOf("devEffort") >= 0,
+    "版本更新文档记录 Agent 设定三格化（新增 devPreset / devEffort）",
+  );
+  ok(
+    read("dsh/gateway/canvas-plugin.mjs").indexOf("devPreset") >= 0 &&
+      read("dsh/gateway/canvas-plugin.mjs").indexOf("devEffort") >= 0,
+    "devPreset / devEffort 口径的唯一真源 = canvas 工具参数表（助手长文不再抄字段清单）",
   );
   ok(chg11.indexOf("devColor") >= 0, "版本更新文档写明节点自定义颜色");
   const i18n11 = require("../renderer/i18n.js");
@@ -1408,6 +1745,12 @@ const MODEL_JSON =
   ok(i18n11.t("Agent 模型") !== "Agent 模型", "「Agent 模型」有英文词条");
   ok(i18n11.t("跟随默认（不指定）") !== "跟随默认（不指定）", "「跟随默认（不指定）」有英文词条");
   ok(i18n11.t("自动（跟随默认）") !== "自动（跟随默认）", "「自动（跟随默认）」有英文词条");
+  ok(i18n11.t("Agent 设定") !== "Agent 设定", "「Agent 设定」（弹层标题）有英文词条");
+  ok(i18n11.t("Agent 预设") !== "Agent 预设", "「Agent 预设」有英文词条");
+  ok(i18n11.t("（继承）") !== "（继承）", "「（继承）」有英文词条");
+  ok(i18n11.t("思考强度：") !== "思考强度：", "「思考强度：」有英文词条");
+  ok(i18n11.t("本轮：") !== "本轮：", "建议作业日志「本轮：」有英文词条");
+  ok(i18n11.t("未选择：跟随默认思考档（标准）。") !== "未选择：跟随默认思考档（标准）。", "思考格「未选择」说明有英文词条");
   i18n11.setLocale("zh");
 
   /* ==================== [12] 两段式概述（note）全链路 ==================== */
@@ -1466,6 +1809,91 @@ const MODEL_JSON =
       ct12.indexOf("【实现】工程梗概") >= 0,
     "开发任务书收尾要求按两段式规范回写 note",
   );
+  /* 「先拷问需求」开关（node.devGrill · 「开发」框 toggle）：开启 → 任务书多一段拷问契约 */
+  const ctGrill12 = (mode, req) => {
+    if (mode === "unset") ex(ctSb, "delete nodeById('n1').devGrill; true");
+    else ex(ctSb, "nodeById('n1').devGrill = " + mode + "; true");
+    return ex(
+      ctSb,
+      "devNodeContractText(nodeById('n1')" + (req ? ", " + JSON.stringify(req) : "") + ")",
+    );
+  };
+  const ctOn12 = ctGrill12("true", "给下载加超时与重试");
+  const grillLine12 =
+    ctOn12.split("\n").filter((l) => l.indexOf("【拷问模式") === 0)[0] || "";
+  ok(!!grillLine12, "devGrill 为真 → 任务书多出【拷问模式】整段（单段一行）");
+  ok(
+    grillLine12.indexOf("\n") < 0 && ctOn12.indexOf("mtnode-grill-me") >= 0,
+    "拷问段要求先用 skill 工具加载内置技能 mtnode-grill-me",
+  );
+  ok(
+    ctOn12.indexOf("不得修改任何文件") >= 0 &&
+      ctOn12.indexOf("不得改画布") >= 0 &&
+      ctOn12.indexOf("不得回写 note / devStatus / devFiles") >= 0 &&
+      ctOn12.indexOf("不得出实施计划") >= 0,
+    "拷问段逐项禁止：改文件 / 改画布 / 回写 note·devStatus·devFiles / 出计划",
+  );
+  ok(
+    grillLine12.indexOf("ask_user_question") >= 0 &&
+      grillLine12.indexOf("询问窗") >= 0 &&
+      grillLine12.indexOf("一次把整个前沿的全部问题问完") >= 0 &&
+      grillLine12.indexOf("（推荐）") >= 0,
+    "拷问段写明每轮走 ask_user_question 询问窗、一次问完整前沿 + 推荐项排第一",
+  );
+  ok(
+    grillLine12.indexOf("禁止把问题编号列在回复正文里") >= 0 &&
+      grillLine12.indexOf("编号 Q1/Q2") < 0 &&
+      grillLine12.indexOf("➡️") < 0,
+    "拷问段明文否定「把 Q1/Q2 列在回复正文」的旧口径（grill-me 不走 MTNode 询问格式的根因）",
+  );
+  /* 询问窗本身要能承载拷问的答案：每题的推荐理由必须看得见（不再只挂在 title 悬浮） */
+  const ixc12 = read("renderer/app-db.js");
+  const ixcCss12 = read("renderer/css/dsh.css");
+  ok(
+    ixc12.indexOf('txt.className = "ix-opt-label"') >= 0 &&
+      ixc12.indexOf('d.className = "ix-opt-desc"') >= 0 &&
+      ixc12.indexOf("d.textContent = o.description") >= 0,
+    "询问卡选项把 description 渲染成第二行文字（grill-me 的推荐理由在卡片里直接可见）",
+  );
+  ok(
+    ixc12.indexOf("cb.dataset.qid = q.id") >= 0 &&
+      ixc12.indexOf("cb.value = o.label") >= 0,
+    "改成两行结构后勾选框仍是 value=标签 / dataset.qid=题号（回答收集口径不变）",
+  );
+  ok(
+    /\.ix-opt-desc\s*\{[^}]*color:\s*var\(--muted\)/.test(ixcCss12) &&
+      ixcCss12.indexOf(".ix-opt-label") >= 0,
+    "dsh.css 有 .ix-opt-label / .ix-opt-desc 两套样式（第二行淡灰、不抢主标签）",
+  );
+  ok(
+    ctOn12.indexOf("确认无歧义") >= 0,
+    "拷问段要求得到用户明确确认后才开工",
+  );
+  /* 位置：本次开发需求之后、默认回写要求之前 */
+  const iReq12 = ctOn12.indexOf("本次开发需求：");
+  const iGrill12 = ctOn12.indexOf("【拷问模式");
+  const iWrite12 = ctOn12.indexOf("完成后按两段式规范");
+  ok(
+    iReq12 >= 0 && iReq12 < iGrill12 && iGrill12 < iWrite12,
+    "拷问段插在「本次开发需求」之后、回写要求之前",
+  );
+  /* 零回归：未设 / false / 真值但不是 true，任务书都逐字不变 */
+  const ctOff12 = ctGrill12("unset", "给下载加超时与重试");
+  ok(
+    ctGrill12("false", "给下载加超时与重试") === ctOff12 &&
+      ctGrill12("'yes'", "给下载加超时与重试") === ctOff12 &&
+      ctGrill12("1", "给下载加超时与重试") === ctOff12,
+    "devGrill 未设 / false / 非 true 的真值 → 任务书与改前逐字一致",
+  );
+  ok(
+    ctOff12.indexOf("拷问") < 0 && ctOff12.indexOf("grill") < 0,
+    "关闭时任务书里不出现任何拷问字样（不污染未开启的会话）",
+  );
+  ok(
+    ctOn12.split("\n").filter((l) => l.indexOf("【拷问模式") !== 0).join("\n") === ctOff12,
+    "开启版去掉拷问段后与关闭版完全相同（只多这一段）",
+  );
+  ctGrill12("unset");
   const st12 = ex(sb, "devSuggestContextText(nodeById('n1'), '')");
   ok(
     st12.indexOf("模块功能（面向非技术）：") >= 0 &&
@@ -1500,21 +1928,22 @@ const MODEL_JSON =
   /* 四处提示词 / 技能真源：两段式关键词在场，防日后改回单段 */
   const gw12 = read("dsh/gateway/canvas-plugin.mjs");
   ok(
-    gw12.indexOf("TWO sections") >= 0 &&
+    gw12.indexOf("note 两段") >= 0 &&
       gw12.indexOf("【功能】") >= 0 &&
       gw12.indexOf("【实现】") >= 0,
     "网关工具描述：note 必须两段（【功能】+【实现】）",
   );
   ok(
-    (gw12.match(/TWO sections/g) || []).length >= 4,
-    "网关工具描述 4 处（工具概述 / 编辑器描述 / create / update）都保留两段约束",
+    (gw12.match(/两段/g) || []).length >= 2,
+    "网关工具描述两处（EDIT_DESC 硬规则 + note 参数说明）保留两段约束（update 与 create 共用同一份属性表，不再各抄一遍）",
   );
   const gm12 = read("dsh/gateway/gateway.mjs");
+  /* 两段式的真源 = 工具描述（参数机制）+ 助手行为纪律 + 技能；人设档不再抄第三份 */
   ok(
-    gm12.indexOf("TWO sections") >= 0 &&
-      gm12.indexOf("【功能】") >= 0 &&
-      gm12.indexOf("【实现】") >= 0,
-    "Agent 系统提示：开发节点 note 两段式",
+    gm12.indexOf("TWO sections") < 0 &&
+      read("dsh/gateway/canvas-plugin.mjs").indexOf("【功能】") >= 0 &&
+      read("renderer/app-assist.js").indexOf("【功能】") >= 0,
+    "Agent 人设去过重：note 两段式只在工具描述与助手纪律里各一份",
   );
   const as12 = read("renderer/app-assist.js");
   ok(
@@ -2134,12 +2563,83 @@ const MODEL_JSON =
     ok(i18n14.t(k) !== k, "「" + k + "」有英文词条"),
   );
   const hintKeys14 = [
-    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消",
     "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Esc 取消",
     "确认 = 只读评估（工作区 = 项目根目录）· 生成后可多选 / 换一批 · 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 确认 · Esc 取消",
     "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
   ];
   hintKeys14.forEach((k) => ok(i18n14.t(k) !== k, "提示条有英文词条：" + k.slice(0, 14) + "…"));
+  i18n14.setLocale("zh");
+
+  /* ⑧ 「开发」框的「先拷问需求（grill-me）」开关：写 node.devGrill · 重开仍勾着 · 开工后保留 */
+  const sbH14 = mkDlgSandbox();
+  const n14h = sbH14.__nodes.filter((n) => n.id === "n1")[0];
+  const p14h = ex(sbH14, "developDevNode(nodeById('n1'))");
+  await drain();
+  ok(sbH14.__forms.length === 0, "⑧ 用真实 mtDialogForm 渲染（不走 __forms stub）");
+  const grillRow14 = rowFor(bodyOf(sbH14), "先拷问需求（grill-me）");
+  ok(!!grillRow14, "「开发」框出现可点的「先拷问需求（grill-me）」复选行");
+  ok(
+    bodyOf(sbH14).textContent.indexOf("开发前需求确认（可选）") >= 0,
+    "开关上有分组标签「开发前需求确认（可选）」",
+  );
+  const grillDesc14 = grillRow14 && grillRow14.querySelector(".mt-sug-desc");
+  ok(
+    !!grillDesc14 && grillDesc14.textContent.indexOf("mtnode-grill-me") >= 0,
+    "开关下一行说明点名内置技能 mtnode-grill-me（复用 mt-sug-desc 样式）",
+  );
+  const grillCb14 = cbOf(grillRow14 || { childNodes: [] });
+  ok(!!grillCb14 && grillCb14.type === "checkbox", "该行是真 checkbox（不靠 onclick 手搓）");
+  ok(
+    !!grillCb14 && grillCb14.checked === false && !grillRow14.classList.contains("on"),
+    "未设 devGrill 的模块默认不勾、不高亮",
+  );
+  const saves14 = sbH14.__saves;
+  grillCb14.checked = true;
+  grillCb14.onchange();
+  ok(n14h.devGrill === true, "勾一下 → 立刻写 node.devGrill = true（真源在节点，不在文本草稿）");
+  ok(!n14h.devDraft || !n14h.devDraft.dev, "开关不占用 devDraft 草稿槽（提交后不会被清掉）");
+  ok(grillRow14.classList.contains("on"), "勾选后行高亮（.on 与方案清单同款式）");
+  ok(sbH14.__saves > saves14, "开关切换走 scheduleSave（随画布落盘）");
+  footBtn(sbH14.__host, "取消").onclick();
+  await p14h;
+  const p14h2 = ex(sbH14, "developDevNode(nodeById('n1'))");
+  await drain();
+  const grillRow14b = rowFor(bodyOf(sbH14), "先拷问需求（grill-me）");
+  ok(
+    !!grillRow14b && cbOf(grillRow14b).checked === true && grillRow14b.classList.contains("on"),
+    "取消后再次打开「开发」：开关仍勾着（粘在该功能块上）",
+  );
+  listTa(sbH14)[0].value = "本轮加超时与重试";
+  listTa(sbH14)[0].fire("input");
+  footBtn(sbH14.__host, "开始开发").onclick();
+  await p14h2;
+  ok(sbH14.__devCalls.length === 1, "开着开关照常开工（不拦截提交）");
+  ok(n14h.devGrill === true, "点「开始开发」后开关保留（不像草稿那样被清）");
+  const p14h3 = ex(sbH14, "developDevNode(nodeById('n1'))");
+  await drain();
+  const grillRow14c = rowFor(bodyOf(sbH14), "先拷问需求（grill-me）");
+  const grillCb14c = cbOf(grillRow14c);
+  grillCb14c.checked = false;
+  grillCb14c.onchange();
+  ok(n14h.devGrill === false, "再点一次可取消：node.devGrill 落回 false");
+  footBtn(sbH14.__host, "取消").onclick();
+  await p14h3;
+  ok(
+    (appjs14.match(/devGrill/g) || []).length >= 4,
+    "app.js 里 devGrill 是真源（对话框 + 任务书两处以上读写）",
+  );
+  ok(
+    devnode14.indexOf("devGrill") < 0,
+    "「建议 / 细化 / 问询」三框未被改动（开关只加在「开发」框）",
+  );
+  i18n14.setLocale("en");
+  [
+    "开发前需求确认（可选）",
+    "先拷问需求（grill-me）",
+    "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。",
+  ].forEach((k) => ok(i18n14.t(k) !== k, "开关文案有英文词条：" + k.slice(0, 12) + "…"));
+  ok(i18n14.t(grillLine12) !== grillLine12, "任务书【拷问模式】整段有英文词条");
   i18n14.setLocale("zh");
 
     console.log(

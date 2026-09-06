@@ -29,7 +29,8 @@ const S = {
   lastSaved: null,
   refMenu: null,
   slashMenu: null,
-  uiOpenNode: null,
+  /* uiOpenNode 已废除：节点「设置」不再就地展开在 body 里，统一走 ⚙ 跳窗
+     （见 app-canvas.js openNodeSettingsDialog / NODE_SETTINGS_FORMS）。 */
   uiBgRmNode: null,
   undoStack: [],
   redoStack: [],
@@ -83,7 +84,9 @@ const S = {
   assistPending: "",
   assistLiveTools: [],
   assistRunActive: false, /* 全局助手运行中：画布 edit 需用户确认 */
-  assistPreset: "standard",
+  /* 助手预设：空串 = 跟随默认档（AGENT_PRESET_DEFAULT，本对象定义在它之前，不能直引）；
+     开机读配置时（app-boot.js）才填成实际生效的那一档 */
+  assistPreset: "",
   assistProvider: "deepseek-official",
   assistModel: "",
   assistEffort: "high",
@@ -199,6 +202,11 @@ const KIND_CLS = {
   input_text: "in",
   input_image: "in",
   input_file: "in",
+  /* 音频 / 视频输入：与图像输入同族（in 青色描边），nodeElement 再补 .in-media */
+  input_audio: "in",
+  input_video: "in",
+  /* 素材节点（素材库内容打包）：纯内容源，与输入族同族同色；卡片另打 .asset-node */
+  asset: "in",
   db_table: "db-tbl",
   proc_text: "proc",
   proc_image: "proc-img",
@@ -206,7 +214,6 @@ const KIND_CLS = {
   save_text: "sv",
   save_image: "sv",
   task: "task",
-  chat: "proc",
   agent_task: "agent",
   control: "ctrl",
   wait_file: "wait",
@@ -220,11 +227,15 @@ const KIND_CLS = {
   mutex: "mutex",
   global: "global",
   music_gen: "music",
+  /* SoVITS 语音生成：复用 .wf-node.tts 样式族（紫调，与音乐/视频同族不同色） */
+  tts_gen: "tts",
   video_gen: "video",
   remotion: "video",
   net_recv: "net",
   net_send: "net",
   execute: "exec",
+  function: "proc",
+  tool: "proc",
   super: "super",
   super_io: "super-io",
   db_replica: "db",
@@ -241,6 +252,15 @@ const KIND_ICON_SVG = {
   /* 输入 · 文件：文档 + 折角 + 字符行 */
   input_file:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h6.2l2.9 2.9v8a1 1 0 0 1-1 1H4.4a1 1 0 0 1-1-1V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.4 2.8v2.7H12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.4 8.2h5.2M5.4 10.3h5.2M5.4 12.4h3.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 输入 · 音频：喇叭 + 声波（选择本机文件 · 输出 URL） */
+  input_audio:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 6.2h2.1L8.4 3.6v8.8L5.3 9.8H3.2a.7.7 0 0 1-.7-.7V6.9a.7.7 0 0 1 .7-.7z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M10.8 6.1c.8.9.8 3 0 3.9M12.7 4.4c1.5 1.7 1.5 5.5 0 7.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  /* 输入 · 视频：胶片框 + 播放三角（选择本机文件 · 输出 URL） */
+  input_video:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3.6" width="12" height="8.8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2 6.1h12M2 9.9h12" fill="none" stroke="currentColor" stroke-width="1" opacity=".65"/><path d="M6.9 7.1l2.6 1.9-2.6 1.9V7.1z" fill="currentColor"/></svg>',
+  /* 素材节点（素材库打包）：托盘 + 三层内容（文本 / 图像 / 媒体） */
+  asset:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 6.1L8 3l5.8 3.1L8 9.2 2.2 6.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.2 9.1L8 12.2l5.8-3.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity=".85"/><path d="M2.2 11.9L8 15l5.8-3.1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity=".55"/></svg>',
   /* 处理 · 表（建表）：表格框 + 表头行 */
   db_table:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.8" width="11.2" height="10.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M2.4 5.6h11.2M6.6 5.6v7.6M10.8 5.6v7.6" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.2 4.2h1.6M8.4 4.2h1.6" fill="currentColor" stroke-linecap="round"/></svg>',
@@ -274,9 +294,12 @@ const KIND_ICON_SVG = {
   /* 开发节点（功能块）：立方体模块 + 顶面分界线 */
   dev:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.1l5.5 2.95v5.9L8 13.9l-5.5-2.95v-5.9L8 2.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.5 5.05L8 8l5.5-2.95M8 8v5.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".9"/></svg>',
-  /* 对话 */
-  chat:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.5h7.2a1.4 1.4 0 0 1 1.4 1.4v3.4a1.4 1.4 0 0 1-1.4 1.4H7.2L4.6 12V9.7H3.2A1.4 1.4 0 0 1 1.8 8.3V4.9a1.4 1.4 0 0 1 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8.8 4.8h4a1.2 1.2 0 0 1 1.2 1.2v2.6a1.2 1.2 0 0 1-1.2 1.2h-.8V12l-2-1.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>',
+  /* 函数节点：花括号 {} + 行（JS 计算） */
+  function:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.8 2.9h6.4a1 1 0 0 1 1 1v2.2c0 .6-.4 1-1 1-.3 0-.5.2-.5.5v.8c0 .3.2.5.5.5.6 0 1 .4 1 1v2.2a1 1 0 0 1-1 1H4.8a1 1 0 0 1-1-1V9.9c0-.6.4-1 1-1 .3 0 .5-.2.5-.5v-.8c0-.3-.2-.5-.5-.5-.6 0-1-.4-1-1V3.9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.5 5.9h3M6.5 10.1h3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
+  /* 工具节点（super + tool:true · Agent 可调用 · 参数即端子）：开口扳手 */
+  tool:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14.1 5.7a3.4 3.4 0 0 1-5 3.1L3.6 14.3a1.5 1.5 0 0 1-2.1-2.1l5.5-5.5a3.4 3.4 0 0 1 3.1-5L8.3 3.5l1.9 1.9 2.3-2.2c.6.5 1.1 1.1 1.6 1.7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.6 8.6l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>',
   /* 智能任务 */
   agent_task:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.2l1.1 2.4 2.6.3-2 1.8.6 2.6L8 7.9 5.7 9.3l.6-2.6-2-1.8 2.6-.3L8 2.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="12.4" r="1.35" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 9.6v1.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
@@ -330,6 +353,9 @@ const KIND_ICON_SVG = {
   /* 音乐生成 */
   music_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11.2a1.8 1.8 0 1 1-1.6-1.78V4.4l7.2-1.4v6.9a1.8 1.8 0 1 1-1.6-1.78V5.1L6.2 6v5.2z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>',
+  /* SoVITS 语音生成：喇叭 + 声波条（文本转语音） */
+  tts_gen:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.1 6.3h1.9L7.9 3.9v8.2L5 9.7H3.1a.7.7 0 0 1-.7-.7V7a.7.7 0 0 1 .7-.7z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M10.4 6.3v3.4M12.2 4.9v6.2M14 6.9v2.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
   /* 视频生成 */
   video_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/></svg>',
@@ -394,6 +420,8 @@ function nodeKindIconKey(node) {
     if (node.ctrlRole === "endSuccess") return "ctrl_end_ok";
     if (node.ctrlRole === "endFail") return "ctrl_end_fail";
   }
+  /* 工具节点变体（super + tool:true）：扳手图标 */
+  if (node.kind === "super" && node.tool) return "tool";
   return node.kind || "proc_text";
 }
 
@@ -420,6 +448,12 @@ function fillNodeKindIcon(el, node) {
     key = "dev";
     el.classList.add("dev-ico");
     el.classList.remove("db-ico");
+  } else if (node.kind === "super" && node.tool) {
+    /* 工具节点（super + tool:true）：扳手图标 */
+    key = "tool";
+    el.classList.remove("db-ico");
+    el.classList.remove("dev-ico");
+    el.classList.remove("exec-ico");
   } else if (node.kind === "execute") {
     /* 执行节点：启动器图标（橙红） */
     key = "execute";
@@ -479,6 +513,106 @@ const REMOTION_SIZES = [
   "1024x1024",
   "1080x1080",
 ];
+/* Agent 预设（对应 dsh/gateway/gateway.mjs 的 PRESETS）——渲染层唯一真源：
+   会话模型菜单、右侧助手栏「预设」下拉（syncAssistPresetOptions）、智能节点面板「预设」、
+   设置「Agent 预设」下拉、开发节点 🧠 弹层与 agentPresetLabel() 都遍历此表，
+   任何一处自抄一份都会漏档（选不到 / 丢档）。
+   labelKey：菜单与当前档回显用的短名；settingsLabelKey：设置里带括号说明的长名；
+   hint：悬停说明（tooltip）。文本存 i18n key，取用时再 I18n.t（切语言即生效）。
+   node / pure / bongochat 由宿主内部指定，刻意不上 UI 列表；新增可见档位只改这里。
+   **表序 = 菜单与设置下拉的显示序**：默认档排第一（一眼看到的就是出厂那一档）。 */
+const AGENT_PRESETS = [
+  {
+    id: "minimal",
+    labelKey: "极简模式",
+    settingsLabelKey: "极简模式（默认 · 直奔结果，少解释）",
+    hint: "省事档：最少步骤、最少废话，直接给结果",
+  },
+  {
+    id: "standard",
+    labelKey: "标准模式",
+    settingsLabelKey: "标准模式（通用档：画布 / 文件 / 内容任务）",
+    hint: "通用档：画布编排、文件与内容任务兼顾",
+  },
+  {
+    id: "lean",
+    labelKey: "思维精简",
+    settingsLabelKey: "思维精简（思考压成符号骨架：先骨架后干活，最省 token）",
+    hint: "思维精简档：思考压成 GOAL / APPROACH / EDGE 符号骨架；思考强度仍按你的设置走",
+  },
+  {
+    id: "code",
+    labelKey: "PTC 模式",
+    settingsLabelKey: "PTC 模式（写代码 / 改文件 / 跑命令）",
+    hint: "工程档：先读文件再改，改完说明改动与验证方式",
+  },
+  {
+    id: "cordis",
+    labelKey: "创造模式",
+    settingsLabelKey: "创造模式（自定义 Preset）",
+    hint: "Cordis 插件开发档：遵循 Service / ctx.effect / 类型化事件约定",
+  },
+];
+/* 预设档位的兜底 = 默认档（第一档 = minimal 极简）：新会话 / 新智能节点 / 设置缺省
+   与读到未知 id 时全部回落到它。任何一处再写死 "standard" 都会造成第二套默认，
+   一律用这个常量。 */
+const AGENT_PRESET_DEFAULT = "minimal";
+/* 历史 id 兼容：本档原名 sketch（旧中文档位名已随改名废弃），旧会话 / 智能节点存的
+   仍是 sketch。网关侧也有一份同样的归一（gateway.mjs 的 LEGACY_PRESET_IDS），
+   两侧都要认，否则旧值会在界面上静默显示成「标准模式」。 */
+const AGENT_PRESET_LEGACY_IDS = { sketch: "lean" };
+/* Agent 会话 / 助手 / 智能节点的思考强度档（对应 dsh/gateway/reasoning-effort.mjs 的
+   EFFORT_ORDER）——渲染层唯一真源：
+   - AGENT_EFFORT_ORDER：可选用档词汇 low/medium/high/xhigh/max，全档合法（旧 high/max
+     原样合法），旧档（off/none/无/空）与未知值 → high 兜底默认；归一化不迁移不重置
+     已存会话的档位（值在词汇表内一律原样保留）。
+   - AGENT_EFFORT_UI_ORDER：UI 露出档（助手栏下拉 / 会话思考强度菜单），表序 = 菜单序，
+     轻 / 标准 / 强 / 最强。medium 不在露出集：默认 deepseek-official 路由把 medium 按
+     同侧最近低档夹到 low（见 dsh/DESIGN.md「思考强度契约」），露出来会在默认路由静默
+     降档；若能力查证确认有真实可消费 medium 的路由/模型，把 "medium" 插进
+     AGENT_EFFORT_UI_ORDER 即可——词汇表与白名单归一已含 medium，无需再改其它迁移。
+   - AGENT_EFFORT_LABELS：档位短名（zh 文本同时是 i18n key，取用时 I18n.t 即切语言）。 */
+const AGENT_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+const AGENT_EFFORT_UI_ORDER = ["low", "high", "xhigh", "max"];
+const AGENT_EFFORT_LABELS = {
+  low: "轻",
+  medium: "中",
+  high: "标准",
+  xhigh: "强",
+  max: "最强",
+};
+function agentPresetId(id) {
+  const raw = id == null ? "" : String(id);
+  return Object.prototype.hasOwnProperty.call(AGENT_PRESET_LEGACY_IDS, raw)
+    ? AGENT_PRESET_LEGACY_IDS[raw]
+    : raw;
+}
+function agentPresetById(id) {
+  const want = agentPresetId(id);
+  return (
+    AGENT_PRESETS.find((p) => p.id === want) ||
+    AGENT_PRESETS.find((p) => p.id === AGENT_PRESET_DEFAULT) ||
+    AGENT_PRESETS[0]
+  );
+}
+/* ── 思考强度归一与显示名 ─────────────────────────────────────────────
+   会话 / 助手 / 智能节点共用。选哪档就按哪档下发：网关已取消按预设压档
+   （历史上「思维精简」会把「标准」自动降到 low），预设只管思考的表达形式，
+   思考预算由用户设置说了算。路由能力不足时网关把请求夹到同侧最近低档并回传
+   effort 事件（回显 = 下发契约），渲染层不再拍平（medium/xhigh 原样放行）。 */
+/* 白名单归一：词汇表内原样返回（旧值 high/max 原样合法），旧档 / 未知 → high 默认。 */
+function normalizeAgentEffort(v) {
+  const raw = String(v == null ? "" : v).trim().toLowerCase();
+  if (raw === "无") return "high";
+  return AGENT_EFFORT_ORDER.includes(raw) ? raw : "high";
+}
+/* 档位短名（本地化）：词汇表内任一档（含未露出 UI 的 medium）都有可显示名。 */
+function agentEffortLabelOf(v) {
+  return I18n.t(AGENT_EFFORT_LABELS[normalizeAgentEffort(v)] || "标准");
+}
+function agentEffortDisplayLabel(st) {
+  return agentEffortLabelOf((st || {}).effort);
+}
 const NODE_DEFAULTS = {
   input_text: {
     w: 240,
@@ -496,6 +630,39 @@ const NODE_DEFAULTS = {
     sourceName: "",
     batch: false,
     entries: [],
+  },
+  /* 音频 / 视频输入节点：选择本机文件并预览，引用原绝对路径（不复制进资产，
+     音视频可能很大）；不进执行引擎（静态源），但有 1 个数据输出端子 =
+     该文件的 file:/// URL（见 mediaInputValueOf），可连进媒体参考端子、可被 @ 引用。 */
+  input_audio: {
+    w: 300,
+    h: 220,
+    title: "音频",
+    mediaAsset: "",
+    sourceName: "",
+  },
+  input_video: {
+    w: 300,
+    h: 220,
+    title: "视频",
+    mediaAsset: "",
+    sourceName: "",
+  },
+  /* 素材节点（素材库 · 纯内容类节点）：把一堆文本 / 图像 / 音频 / 视频打包成一个可复用
+     的内容源。节点本体只是「绑定」——assetId + 相对素材库根目录的 assetRel（不存绝对路径，
+     换盘后按 id→相对路径重定位），内容实体永远在素材夹里，删画布也不丢。
+     items = 内容条目快照 [{id,title,type}]：端子唯一真源 —— 一个条目 = 一个输入端子 +
+     一个输出端子（第 i 入 ↔ 第 i 出，端子标题即条目标题），无控制端子、不参与控制流。
+     端子数随条目增删 / 重排而变（app-canvas.js buildAssetBody 渲染、app-assets.js 读写库）。 */
+  asset: {
+    w: 300,
+    h: 250,
+    title: "素材",
+    assetId: "",
+    assetRel: "",
+    assetName: "",
+    assetDesc: "",
+    items: [],
   },
   /* 数据库 · 文件节点：批量导入任意文件（复制进数据库子文件夹），供「表」读取 */
   input_file: {
@@ -639,10 +806,21 @@ const NODE_DEFAULTS = {
        路由，由模型自动推断，未选模型时无意义）；子块未选择时继承上层 */
     devModel: "",
     devProvider: "",
+    /* 开发节点 Agent 预设与思考强度（与会话语义同一张表 AGENT_PRESETS）：
+       devPreset = 预设档 id（minimal/standard/lean/code/cordis），devEffort = 思考
+       强度（只认 high / max，预设不再压档——思考预算只由这一项决定）。空串 = 跟随
+       默认（默认档 = AGENT_PRESET_DEFAULT）；子块未选择时与 devModel 一样就近向上继承。 */
+    devPreset: "",
+    devEffort: "",
     /* 开发节点「核心文件列表」：本块最关键的源码文件路径（相对本块项目根，
        分隔符统一 '/'；也容忍绝对路径），最多 DEV_CORE_FILES_MAX 个。
        最外层开发节点（项目节点）不列举。口径见 app-devnode.js 同名小节。 */
     devFiles: [],
+    /* 工具节点变体（tool:true，沿用 db:/dev: 变体模式）：Agent 可调用工具 ·
+       参数即端子。toolConfig = { name, description, inputs:[{name,kind}],
+       outputs:[{name,kind}] }；标题默认 = 工具名，手动改名后 name 独立。 */
+    tool: false,
+    toolConfig: null,
   },
   super_io: {
     w: 132,
@@ -665,20 +843,6 @@ const NODE_DEFAULTS = {
     parentTaskId: "",
     parentSuperId: "",
   },
-  chat: {
-    w: 340,
-    h: 380,
-    title: "对话",
-    providerId: "",
-    model: "",
-    temperature: 0.7,
-    effort: "low",
-    systemPrompt: "",
-    messages: [],
-    agent: false,
-    agentWorkspace: "",
-    running: false,
-  },
   agent_task: {
     w: 380,
     h: 380,
@@ -690,7 +854,9 @@ const NODE_DEFAULTS = {
     workspace: "",
     batchMode: "batch",
     effort: "high",
-    preset: "standard",
+    /* 智能节点默认走默认预设：跑起来时 app-db.js 会把「默认档」换成内部 node 档
+       （办事不改图），所以这里存的是界面档，不是网关档。 */
+    preset: AGENT_PRESET_DEFAULT,
     provider: "",
     agentSessionId: "",
     chatMode: false,
@@ -833,7 +999,8 @@ const NODE_DEFAULTS = {
   music_gen: {
     w: 360,
     h: 300,
-    title: "音乐生成",
+    /* 一级菜单「音频生成」成员：新建节点默认标题用后端名 */
+    title: "Minimax Music 3 节点",
     attempts: 1,
     audioDuration: 60,
     seed: 0,
@@ -848,10 +1015,30 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  /* SoVITS 语音生成（GPT-SoVITS 本机后端 · 文本转语音）：
+     端子与音乐节点同构 —— 输入 端口0=待合成文本 · 端口1=控制输入；
+     输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 music_gen。 */
+  tts_gen: {
+    w: 360,
+    h: 300,
+    /* 一级菜单「音频生成」成员：新建节点默认标题用后端名 */
+    title: "SoVITS 语音节点",
+    attempts: 1,
+    voice: "", /* 音色（GPT-SoVITS 音色库名，空 = 用后端默认） */
+    speed: 1.0, /* 语速倍率（0.5–2.0） */
+    ttsFormat: "wav", /* 输出格式 wav | mp3 */
+    outputPath: "",
+    ttsStatus: "",
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
   video_gen: {
     w: 400,
     h: 340,
-    title: "视频生成",
+    /* 一级菜单「视频生成」成员：新建节点默认标题用后端名 */
+    title: "Minimax H3 节点",
     attempts: 1,
     videoMode: "fl2va",
     videoPortV2: true, /* 端口布局 v2：端口0=控制输入（固定）· 端口1=提示词 · 端口2+=参考（旧档无此标记=旧布局，加载时迁移） */
@@ -886,6 +1073,13 @@ const NODE_DEFAULTS = {
     optChunkFfn: true,
     optVramBarrier: true,
     refImageSize: "match",
+    /* 自建 ComfyUI 工作流（空 workflowId = 内置 FL2VA/R2V 链，零回归） */
+    workflowId: "",
+    wfParams: [],           /* 提升为节点参数的映射表 [{key,label,type,source:{nodeId,field},defaultValue}] */
+    wfPortMap: {},          /* 端口→参数 key：{"1":textParamKey,"2":fileParamKey,…}；空=按类型顺序预填 */
+    wfParamValues: {},      /* 面板直填值 { [paramKey]: value }（素材为绝对路径）*/
+    wfMeta: null,           /* h3WorkflowGet 缓存 {title,validation,suggested,candidates,outputs} */
+    customOutputNodeId: "", /* 可手动指定输出节点 id（空=默认取最后一个视频产物） */
     outputPath: "",
     filename: "",
     boundSaveId: "",
@@ -965,7 +1159,61 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  /* 函数节点：纯 JS 计算（渲染层宽松执行 · 契约见 js-exec.js 与 docs/tool-function-nodes.md）。
+     inputs/outputs = 参数端子列表 [{name, kind}]（kind: text|image，缺省 text）；
+     jscode = 函数体：入参对象 input = { 参数名: 值 }，return 即输出。
+     端子：输入 0 = 控制入（固定）+ 各输入参数；输出 0..n-1 = 各输出参数 + 末位控制出。 */
+  function: {
+    w: 380,
+    h: 240,
+    title: "函数",
+    fnName: "",
+    description: "",
+    jscode: "",
+    inputs: [],
+    outputs: [],
+    fnTestInputs: [],
+    output: null,
+    batchOutputs: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
+  /* 工具节点：创建 kind 写 "tool"，落盘形态＝超级节点变体（kind:"super" + tool:true，
+     见 NODE_FORM_OF_KIND）——由此直接继承超级节点的全部子画布能力（展开壳 / 进入 /
+     拖入收纳 / 内外桥接），不再维护第二套形态。真正的默认值在 NODE_DEFAULTS 之后由
+     超级默认值与本段字段合成。
+     toolConfig = { name, description, inputs:[{name,kind}], outputs:[{name,kind}] }；
+     端子（参数优先 · 与画布连线无关）：输入 0 = 控制入（固定）+ 各输入参数；
+     输出 0..n-1 = 各输出参数 + 末位控制出。 */
+  tool: {
+    w: 320,
+    h: 220,
+    title: "工具",
+    toolConfig: {
+      name: "",
+      description: "",
+      inputs: [],
+      outputs: [],
+    },
+    /* 「试跑」台的输入快照（按输入参数序号存字符串：text = 文本，image = 文件路径）。
+       与函数节点的 fnTestInputs 各自独立，仅测试用 · 不参与画布运行。 */
+    toolTestInputs: [],
+    output: null,
+    batchOutputs: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
 };
+
+/* 工具节点默认值＝超级节点默认值（壳层字段一处不漏：note / expandW·expandH /
+   superOpen / subFolder / innerPanX·innerPanY / db / dbMode / devModel…）叠加
+   tool 专有字段，并钉死变体标记 tool:true。makeNode 把创建 kind "tool" 换算成
+   实际落盘的 kind "super"，判定仍只认 isToolNode()。 */
+NODE_DEFAULTS.tool = Object.assign({}, NODE_DEFAULTS.super, NODE_DEFAULTS.tool, {
+  tool: true,
+});
 
 const TASK_STATUS_LABEL = {
   pending: "待办",
@@ -1055,6 +1303,12 @@ function superChildrenOf(id) {
 }
 function isSuperNode(n) {
   return !!(n && n.kind === "super");
+}
+/* 类超级节点 = 超级节点及其工具节点变体（super + tool:true）：数据 I/O 走同一条
+   「外侧输入 / 内侧汇流」通道。数据解析器里凡按 kind==="super" 区分内外通道的位置，
+   一律用本判定（运行时执行引擎 app-nodes.js 的 runToolNode）。 */
+function isSuperLikeNode(n) {
+  return !!(n && (n.kind === "super" || isToolNode(n)));
 }
 function isSuperIoNode(n) {
   return !!(n && n.kind === "super_io");
@@ -1206,13 +1460,16 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   if (isControlKind(node)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (node.kind === "net_recv") return Number(portIndex || 0) >= 1;
-  /* 音乐 / 视频 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
+  /* 音乐 / 视频 / 语音 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
   if (
     node.kind === "music_gen" ||
+    node.kind === "tts_gen" ||
     node.kind === "video_gen" ||
     node.kind === "remotion"
   )
     return Number(portIndex || 0) >= 1;
+  /* 函数 / 工具节点：输出末位固定为控制出（参数即端子，不随连线推断） */
+  if (isFnToolNode(node)) return fnToolOutPortIsControl(node, portIndex);
   if (node.kind === "super")
     return superOutPortIsControl(node, portIndex, wf, seen);
   return false;
@@ -1225,6 +1482,8 @@ function superInPortIsControl(superNode, portIndex, wf) {
   wf = wf || S.wf;
   if (!superNode || !wf) return false;
   const ti = Number(portIndex || 0);
+  /* 工具节点（super + tool:true）：输入 0 = 控制入，固定不随连线漂移 */
+  if (isToolNode(superNode)) return fnToolInPortIsControl(superNode, ti);
   let hasCtrl = false;
   let hasData = false;
   for (const x of superExternalInWiresAll(superNode, wf)) {
@@ -1244,6 +1503,8 @@ function superOutPortIsControl(superNode, portIndex, wf, seen) {
   wf = wf || S.wf;
   if (!superNode || !wf) return false;
   const fi = Number(portIndex || 0);
+  /* 工具节点：输出末位 = 控制出（参数即端子），不看内部汇流是什么类型 */
+  if (isToolNode(superNode)) return fnToolOutPortIsControl(superNode, fi);
   seen = seen || new Set();
   const key = superNode.id + ":" + fi;
   if (seen.has(key)) return false;
@@ -1410,9 +1671,9 @@ function applyWirePathClass(p, w, from) {
   else if (linkedToSelectedNode(w)) wcls += " linked";
   if (w.rel) wcls += " rel";
   else if (wireFromIsControl(w) || isControlKind(nodeById(w.to))) wcls += " ctrl";
-  else if (isImageWireFrom(from)) wcls += " img";
-  else if (isAudioWireFrom(from)) wcls += " aud";
-  else if (isVideoWireFrom(from)) wcls += " vid";
+  else if (isImageWireFrom(from, w.fromIndex)) wcls += " img";
+  else if (isAudioWireFrom(from, w.fromIndex)) wcls += " aud";
+  else if (isVideoWireFrom(from, w.fromIndex)) wcls += " vid";
   if (isPinnedWire(w)) wcls += " pinned";
   p.setAttribute("class", wcls);
   /* 外圈跟随线芯状态（sel/linked/类型/temp） */
@@ -1632,7 +1893,7 @@ function updateSuperInnerWires(host, touchIds) {
           superInPortIsControl(from, d.fromIndex || 0))
       )
         tcls += " ctrl";
-      else if (from && isImageWireFrom(from)) tcls += " img";
+      else if (from && isImageWireFrom(from, d.fromIndex || 0)) tcls += " img";
       t.setAttribute("class", tcls);
       t.style.display = "";
       syncRingFromCore(t);
@@ -1745,14 +2006,20 @@ function mountSuperFocusPorts(host) {
   const ic = inputCount(host);
   for (let pi = 0; pi < ic; pi++) {
     const p = document.createElement("div");
-    p.className = "port out super-port super-inner-bridge super-focus-port" +
-      (superInPortIsControl(host, pi) ? " ctrl" : "");
+    const info = superInnerPortInfo(host, "in", pi);
+    p.className =
+      "port out super-port super-inner-bridge super-focus-port" +
+      (info.ctrl ? " ctrl" : "") +
+      (info.img ? " img" : "");
     p.dataset.node = host.id;
     p.dataset.fromIndex = String(pi);
-    p.title =
-      I18n.t("内侧输入端子 ") +
-      (pi + 1) +
-      I18n.t("（对应外侧输入 · 拖到内部节点 · 右键移除）");
+    p.title = info.title;
+    if (info.badge) {
+      const b = document.createElement("span");
+      b.className = "port-badge zh-label";
+      b.textContent = info.badge;
+      p.appendChild(b);
+    }
     p.style.top = superInnerPortY(h, pi, ic) - PORT_R + "px";
     bindSuperInnerBridgePort(p, host, pi);
     layer.appendChild(p);
@@ -1760,15 +2027,20 @@ function mountSuperFocusPorts(host) {
   const oc = outputCount(host);
   for (let poi = 0; poi < oc; poi++) {
     const p = document.createElement("div");
+    const info = superInnerPortInfo(host, "out", poi);
     p.className =
       "port in super-port super-inner-sink super-focus-port" +
-      (superOutPortIsControl(host, poi) ? " ctrl" : "");
+      (info.ctrl ? " ctrl" : "") +
+      (info.img ? " img" : "");
     p.dataset.node = host.id;
     p.dataset.idx = String(poi);
-    p.title =
-      I18n.t("内侧输出端子 ") +
-      (poi + 1) +
-      I18n.t("（对应外侧输出 · 从内部节点拖入 · 右键移除）");
+    p.title = info.title;
+    if (info.badge) {
+      const b = document.createElement("span");
+      b.className = "port-badge zh-label";
+      b.textContent = info.badge;
+      p.appendChild(b);
+    }
     p.style.top = superInnerPortY(h, poi, oc) - PORT_R + "px";
     bindSuperInnerSinkPort(p, host, poi);
     layer.appendChild(p);
@@ -2099,6 +2371,7 @@ function rewriteNodePathsForSuperContext(node) {
   }
   if (
     (node.kind === "music_gen" ||
+      node.kind === "tts_gen" ||
       node.kind === "video_gen" ||
       node.kind === "remotion") &&
     String(node.outputPath || "").trim()
@@ -2141,6 +2414,15 @@ function findOpenSuperAtWorld(x, y, exceptIds) {
     }
   }
   return best;
+}
+/** 该世界坐标落点会归属哪个超级壳层（展开壳优先，其次卡片范围）—— makeNode 与
+    子画布右键菜单共用同一判定，保证「菜单里列出的入口」与「实际落点层级」不漂移。
+    工具节点（super + tool:true）同样算壳层。 */
+function superHostAtWorld(x, y) {
+  if (x == null || y == null) return null;
+  return (
+    findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false)
+  );
 }
 function promptSuperSubFolder(node) {
   if (!node || node.kind !== "super") return;
@@ -2370,18 +2652,166 @@ function dirOfPath(p) {
   const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
   return i >= 0 ? s.slice(0, i) : "";
 }
-function inferMediaFromSource(from) {
+/* ── 媒体端子值：路径 ⇄ file:/// URL 的成对换算（音视频节点输出的唯一口径）──
+   对外（画布端子值、@引用、保存与下游展示）给 URL；真正把文件交给后端
+   （H3 参考图/参考视频/参考音频、保存节点复制源）必须先归一回本机绝对路径，
+   否则 fs.existsSync / fileCopyAssetTo 拿到 "file:///E:/…" 一律判为文件不存在。
+   非 URL 的字符串原样返回，所以归一函数可以无脑套在任何取数口上。 */
+function pathFromMediaUrl(u) {
+  const s = String(u || "").trim();
+  if (!s || !/^file:\/\//i.test(s)) return s;
+  let p = "";
+  try {
+    const url = new URL(s);
+    p = decodeURIComponent(url.pathname || "");
+    /* UNC：file://host/share/x → \\host\share\x */
+    if (url.hostname && url.hostname !== "localhost")
+      return "\\\\" + url.hostname + "\\" + p.replace(/^[\\/]+/, "").replace(/\//g, "\\");
+  } catch {
+    p = s.replace(/^file:\/\/+/i, "");
+  }
+  if (/^\/[a-zA-Z]:/.test(p)) p = p.slice(1); /* /E:/a.wav → E:/a.wav */
+  if (/^[a-zA-Z]:/.test(p)) p = p.replace(/\//g, "\\"); /* 仅 Windows 盘符路径才翻斜杠 */
+  return p;
+}
+/** 端子值（或裸字符串）→ 本机绝对路径：path 优先，回落 url / text 里的 file URL。 */
+function pathFromMediaValue(v) {
+  if (!v) return "";
+  if (typeof v === "string") return pathFromMediaUrl(v);
+  const p = String(v.path || "").trim();
+  if (p) return pathFromMediaUrl(p);
+  const u = String(v.url || "").trim();
+  if (u) return pathFromMediaUrl(u);
+  return pathFromMediaUrl(String(v.text || "").trim());
+}
+/* 本机路径 → file:/// URL。渲染层统一走 preload 的 toFileUrl（Node pathToFileURL，
+   中文 / 空格自动百分号编码）；没有桥的环境（测试沙箱）用等价回退，口径不变。 */
+function mediaFileUrlOf(p) {
+  const s = String(p || "").trim();
+  if (!s) return "";
+  if (/^file:\/\//i.test(s)) return s;
+  try {
+    if (typeof window !== "undefined" && window.api && window.api.toFileUrl) {
+      const u = String(window.api.toFileUrl(s) || "");
+      if (u) return u;
+    }
+  } catch {}
+  const abs = s.replace(/\\/g, "/");
+  const body = /^[a-zA-Z]:\//.test(abs) ? abs : abs.replace(/^\/+/, "");
+  /* 按段百分号编码；盘符冒号是合法路径字符，编码后要还原（与 pathToFileURL 同口径） */
+  return (
+    "file:///" +
+    body
+      .split("/")
+      .map((seg) => encodeURIComponent(seg).replace(/%3A/gi, ":"))
+      .join("/")
+  );
+}
+/** 音视频输入节点的端子值：{ kind, path（本机绝对路径）, url, text = url }；未选文件 = 未就绪 → null。 */
+function mediaInputValueOf(node) {
+  const p = String((node && node.mediaAsset) || "").trim();
+  if (!p) return null;
+  const kind = node.kind === "input_video" ? "video" : "audio";
+  const url = mediaFileUrlOf(p);
+  return { kind, path: p, url, text: url };
+}
+/* ═════ 素材节点（kind "asset"）：素材库内容条目 = 该节点的端子 ═════
+   判定与数端子的口径只写在这一处，app-canvas.js（端子 / body）、
+   app-nodes.js（连线校验）一律调过来，不再各写一套。
+   · 节点上只存绑定（assetId + 相对素材库根目录的 assetRel）与条目快照 items；
+   · 一个条目 = 第 i 个输入端子 ↔ 第 i 个输出端子（无控制端子、不参与控制流）；
+   · 端子标题 = 条目标题，端子类型 = 条目类型（text|image|audio|video）。 */
+const ASSET_ITEM_TYPES = { text: 1, image: 1, audio: 1, video: 1 };
+function isAssetNode(n) {
+  return !!(n && n.kind === "asset");
+}
+/** 条目快照（端子唯一真源）：字段缺失就地兜底，不回写节点数据。 */
+function assetItems(n) {
+  const raw = n && Array.isArray(n.items) ? n.items : [];
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    const it = raw[i] || {};
+    out.push({
+      id: String(it.id || ""),
+      title: String(it.title || "").trim() || I18n.t("内容 ") + (i + 1),
+      type: ASSET_ITEM_TYPES[String(it.type)] ? String(it.type) : "text",
+    });
+  }
+  return out;
+}
+/** 素材节点端子号 → 内容类型；非素材节点 / 越界 → null（调用方回落旧口径）。
+    输入与输出同一数法，与工具 / 函数节点的 fnToolPortKind 扮演同一角色。 */
+function assetPortKind(node, dir, idx) {
+  if (!isAssetNode(node)) return null;
+  const items = assetItems(node);
+  const i = Number(idx);
+  if (!isFinite(i) || i < 0 || i >= items.length) return null;
+  return items[i].type;
+}
+/** 端子准入：条目类型必须与来源端子类型一致。写盘按类型落扩展名，
+    混填等于把散文写进 .wav —— 宁可让用户改接，也不静默污染库文件。 */
+function assetPortAccepts(itemType, mediaType) {
+  return !!itemType && itemType === mediaType;
+}
+/** 素材节点第 idx 个条目端子上现有的那条数据线（无则 null）。
+    一个条目只挂一条数据线（不是数组端子），控制线不算占用。 */
+function assetInWireAt(node, idx) {
+  if (!node || !S.wf || !Array.isArray(S.wf.wires)) return null;
+  const i = Number(idx);
+  return (
+    S.wf.wires.find(
+      (w) =>
+        !w.rel &&
+        w.to === node.id &&
+        Number(w.toIndex) === i &&
+        !wireFromIsControl(w),
+    ) || null
+  );
+}
+function assetInPortOccupied(node, idx) {
+  return !!assetInWireAt(node, idx);
+}
+/** 一条来自 (from, fromIndex) 的数据线该落到哪个条目端子：
+    第一个「类型匹配且空闲」的条目，挑不到返回 null（由调用方给点名式错误）。
+    拖线自动落点与 connectError 校验共用这一个函数 —— 校验的端子必须与落地的端子同一个。 */
+function assetFreeInPortIndex(node, from, fromIndex) {
+  if (!isAssetNode(node)) return null;
+  const items = assetItems(node);
+  const want = wireSourceMediaType(from, fromIndex);
+  for (let i = 0; i < items.length; i++) {
+    if (assetInPortOccupied(node, i)) continue;
+    if (assetPortAccepts(items[i].type, want)) return i;
+  }
+  return null;
+}
+/** 条目类型短名（端子 tooltip 与 body 类型徽标共用） */
+function assetItemTypeLabel(type) {
+  const k = ASSET_ITEM_TYPES[String(type)] ? String(type) : "text";
+  return I18n.t(
+    k === "text" ? "文本" : k === "image" ? "图像" : k === "audio" ? "音频" : "视频",
+  );
+}
+/* 来源节点这条线的媒体类型（不含端子声明的那一层，见 wireSourceMediaType）。
+   工具 / 函数节点按真正接出来的那个端子取实际值判断，其余节点仍只看 0 号端子（行为逐字不变）。 */
+function inferMediaFromSource(from, fromIndex) {
   if (!from) return "text";
-  if (from.kind === "music_gen") return "audio";
+  if (from.kind === "music_gen" || from.kind === "tts_gen") return "audio";
   if (from.kind === "video_gen" || from.kind === "remotion") return "video";
   if (from.kind === "input_image" || from.kind === "proc_image") return "image";
+  /* 音视频输入节点：输出的就是这个本机文件（值见 mediaInputValueOf），按文件类型判定 */
+  if (from.kind === "input_audio") return "audio";
+  if (from.kind === "input_video") return "video";
   if (from.kind === "split" || from.kind === "merge") {
     const v = valueForInput(from, 0);
     if (v && v.kind === "image") return "image";
     if (v && v.kind === "audio") return "audio";
     if (v && v.kind === "video") return "video";
   }
-  const v = valueForInput(from, 0);
+  /* 工具 / 函数节点：按真正接出来的那个端子取值；普通节点仍只看 0 号端子 */
+  const v = valueForInput(
+    from,
+    isFnToolNode(from) ? Number(fromIndex || 0) : 0,
+  );
   if (v && v.kind === "image") return "image";
   if (v && v.kind === "audio") return "audio";
   if (v && v.kind === "video") return "video";
@@ -2393,15 +2823,30 @@ function inferMediaFromSource(from) {
   }
   return "text";
 }
-function saveDataSources(node) {
+function saveDataLinks(node) {
   if (!node || !S.wf) return [];
   const out = [];
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
     if (!src || isControlKind(src)) continue;
-    out.push(src);
+    out.push({ src: src, fromIndex: Number(w.fromIndex || 0) });
   }
   return out;
+}
+function saveDataSources(node) {
+  return saveDataLinks(node).map((l) => l.src);
+}
+/** 来源节点「某个输出端子」流向下游的媒体类型（单一真源）。
+    ⓪ 素材节点：条目类型就是该端子的声明类型（text|image|audio|video，不看实际值 ——
+       库里的图像条目即使还没读出内容也仍是图像端子）；
+    ① 工具 / 函数节点：以该端子声明的数据类型为准（参数 kind ∈ text | image，声明优先于实际值，
+       控制端子无声明 → 回落 ②）；② 其余节点 / 未声明时：按节点 kind 与该端子实际值推断。
+    保存节点自动选型、连线校验、连线着色、拖线建节点候选菜单都走这里。 */
+function wireSourceMediaType(node, fromIndex) {
+  if (isAssetNode(node)) return assetPortKind(node, "out", fromIndex) || "text";
+  const declared = fnToolPortKind(node, "out", fromIndex);
+  if (declared) return declared === "image" ? "image" : "text";
+  return inferMediaFromSource(node, fromIndex);
 }
 function saveMediaKind(node) {
   if (!node) return "text";
@@ -2410,9 +2855,9 @@ function saveMediaKind(node) {
     if (g && g.kind === "music_gen") return "audio";
     if (g && (g.kind === "video_gen" || g.kind === "remotion")) return "video";
   }
-  const srcs = saveDataSources(node);
-  if (!srcs.length) {
-    if (!srcs.length && node.legacySaveMedia) return node.legacySaveMedia;
+  const links = saveDataLinks(node);
+  if (!links.length) {
+    if (!links.length && node.legacySaveMedia) return node.legacySaveMedia;
     if (node.kind === "save_image") return "image";
     if (node.kind === "save_text") return "text";
     const p = String(node.savePath || node.savedPath || "");
@@ -2421,8 +2866,8 @@ function saveMediaKind(node) {
     if (/\.mp4$/i.test(p)) return "video";
     return "text";
   }
-  for (const src of srcs) {
-    const m = inferMediaFromSource(src);
+  for (const l of links) {
+    const m = wireSourceMediaType(l.src, l.fromIndex);
     if (m !== "text") return m;
   }
   return "text";
@@ -2462,6 +2907,8 @@ function mediaGenOutputRaw(node) {
   return raw;
 }
 function mediaGenExt(node) {
+  if (node && node.kind === "tts_gen")
+    return String(node.ttsFormat || "").toLowerCase() === "mp3" ? ".mp3" : ".wav";
   return saveExtForMedia(
     node && (node.kind === "video_gen" || node.kind === "remotion")
       ? "video"
@@ -2499,6 +2946,7 @@ function requireMediaGenExport(node, quiet) {
   if (!quiet) toast(msg, "warn");
   if (node) {
     if (node.kind === "music_gen") node.musicStatus = msg;
+    if (node.kind === "tts_gen") node.ttsStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
     if (node.kind === "remotion") node.remotionStatus = msg;
   }
@@ -2707,6 +3155,12 @@ function outputCount(n) {
   if (isSaveNode(n)) return 0;
   if (isExecEnd(n)) return 0;
   if (n.kind === "execute") return 0; /* 执行节点：独立工具 · 无输出 */
+  /* 素材节点：输出端子 = 内容条目（第 i 出 = 第 i 个条目的内容），无控制输出端子 */
+  if (n.kind === "asset") return assetItems(n).length;
+  /* 音频 / 视频输入：各 1 个数据输出端子，值是该本机文件的 file:/// URL（见 mediaInputValueOf） */
+  if (n.kind === "input_audio" || n.kind === "input_video") return 1;
+  /* 函数 / 工具节点：输出 0..n-1 = 各输出参数（数据），末位 = 控制输出（固定 1 控制出） */
+  if (isFnToolNode(n)) return fnToolParamList(n, "out").length + 1;
   if (n.kind === "super") {
     const open = superIsOpenShell(n);
     const ext = superExternalOutWiresAll(n);
@@ -2723,8 +3177,13 @@ function outputCount(n) {
   if (n.kind === "judge" || n.kind === "task") return 2;
   if (n.kind === "net_recv") return 2; /* 端口0=信息输出(数据) · 端口1=控制输出 */
   if (n.kind === "net_send") return 0; /* 发送无输出（末端） */
-  /* 音乐 / 视频 / Remotion：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
-  if (n.kind === "music_gen" || n.kind === "video_gen" || n.kind === "remotion")
+  /* 音乐 / 语音 / 视频 / Remotion：端口0=内容输出(数据) · 端口1=控制输出（完成后触发下游控制目标） */
+  if (
+    n.kind === "music_gen" ||
+    n.kind === "tts_gen" ||
+    n.kind === "video_gen" ||
+    n.kind === "remotion"
+  )
     return 2;
   if (n.kind === "sequencer")
     return Math.max(2, Math.min(8, Math.round(Number(n.seqOutputs) || 3)));
@@ -2971,31 +3430,54 @@ function ensureSuperIoPorts(_superNode, _wf) {
 }
 function externalValueIntoSuper(superNode, index, seen) {
   if (!superNode) return null;
-  const w = superExternalInWires(superNode).find(
-    (x) => Number(x.toIndex) === Number(index),
-  );
-  if (!w) return null;
-  /* consumer 用本超级节点：嵌套时上游若也是超级节点，才能走其外侧输入通道 */
-  return valueForInput(
-    nodeById(w.from),
-    Number(w.fromIndex || 0),
-    superNode,
-    seen,
-  );
+  const i = Number(index) || 0;
+  /* 工具节点被 Agent 工具调用（func call）时：模型入参按端子序号优先注入。
+     node._agentCallArgs = 长度 (入参数+1) 的值数组，索引 0 = 控制入（置 null），
+     参数 i 在索引 i+1（契约见 docs/tool-function-nodes.md §2）；元素为
+     {kind,text|path} 或 null。由渲染层 app-tools.js 在执行前设置、执行后清除，
+     只对本次调用生效，不落盘。 */
+  const callArgs = superNode._agentCallArgs;
+  let value; /* undefined = 注入点没覆盖这个端子，仍走外侧连线取数 */
+  let fromArgs = false;
+  if (callArgs && Array.isArray(callArgs) && i < callArgs.length) {
+    fromArgs = true;
+    value = callArgs[i] === undefined ? null : callArgs[i];
+  }
+  if (value === undefined) {
+    const w = superExternalInWires(superNode).find(
+      (x) => Number(x.toIndex) === Number(index),
+    );
+    if (!w) return normFnToolPortValue(superNode, "in", i, null).value;
+    /* consumer 用本超级节点：嵌套时上游若也是超级节点，才能走其外侧输入通道 */
+    value = valueForInput(
+      nodeById(w.from),
+      Number(w.fromIndex || 0),
+      superNode,
+      seen,
+    );
+  }
+  /* 端子声明类型 ↔ 实际值对齐（唯一归一处 normPortValueByKind）：
+     工具 / 函数节点按本端子声明归一，普通超级节点无声明 → 原样（行为逐字不变）。
+     注入点（Agent func call / 「测试」台）按 loose 口径：参数类型是定义里写明的，
+     字符串一律视作路径；连线取数只认带图像扩展名的路径文本，不把散文臆造成图像。 */
+  return normFnToolPortValue(superNode, "in", i, value, { loose: fromArgs })
+    .value;
 }
 function valueForSuperOutput(superNode, index, seen) {
   if (!superNode) return null;
   const w = superInternalOutFeeds(superNode).find(
     (x) => Number(x.toIndex) === Number(index),
   );
-  if (!w) return null;
-  /* consumer 用汇入子节点，避免把超级节点自身当成 consumer 误走输出通道 */
-  return valueForInput(
-    nodeById(w.from),
-    Number(w.fromIndex || 0),
-    nodeById(w.from),
-    seen,
-  );
+  let v = null;
+  if (w) {
+    /* consumer 用汇入子节点，避免把超级节点自身当成 consumer 误走输出通道 */
+    const ch = nodeById(w.from);
+    v = valueForInput(ch, Number(w.fromIndex || 0), ch, seen);
+  }
+  /* 工具节点的外侧输出端子是壳内实际值的「申报口径」：下游（保存节点 / 函数入参）
+     必须拿到与该端子声明同形状的值，否则声明类型形同虚设。普通超级节点没有端子
+     声明（fnToolPortKind 返回 null）→ 原样返回，取数链路逐字不变。 */
+  return normFnToolPortValue(superNode, "out", index, v).value;
 }
 /** 沿连线取值：源为超级节点时用 fromIndex，并以 consumer 区分内外通道 */
 function valueFromWire(w, consumer, batchIdx, seen) {
@@ -3003,7 +3485,7 @@ function valueFromWire(w, consumer, batchIdx, seen) {
   const src = nodeById(w.from);
   if (!src) return null;
   const idx =
-    src.kind === "super"
+    isSuperLikeNode(src)
       ? Number(w.fromIndex || 0)
       : batchIdx == null
         ? 0
@@ -3011,7 +3493,7 @@ function valueFromWire(w, consumer, batchIdx, seen) {
   return valueForInput(src, idx, consumer || null, seen);
 }
 function superPortIdxFromWire(src, w) {
-  if (!src || src.kind !== "super" || !w) return undefined;
+  if (!src || !isSuperLikeNode(src) || !w) return undefined;
   return Number(w.fromIndex || 0);
 }
 /** 移除超级节点某一内侧端子上的连线（桥接 / 汇流） */
@@ -3686,7 +4168,7 @@ function collectTaskImagePaths(node, spec, idx) {
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
     if (!src) continue;
-    if (src.kind === "super") {
+    if (isSuperLikeNode(src)) {
       const portIdx = Number(w.fromIndex || 0);
       if (perItem) {
         const v = valueForInput(src, portIdx, node);
@@ -4097,18 +4579,17 @@ function recordDshMetrics(node, m) {
   renderStatus();
 }
 
-/* 思考强度映射:
-   - 文本节点（非智能）：off/低/中/高 → 依 API 参考 dsh（off ⇒ thinking 关闭）；medium → 标准
-   - 文本智能模式：低/中/高 → dsh 标准/最强（高→最强）
-   - 智能任务 / 会话：标准(high) / 最强(max)
-   - 旧档 none/off/无 → high（兼容已存工作流） */
+/* 思考强度映射（下发网关前的最后归一，词汇与 dsh/gateway/reasoning-effort.mjs 对齐）:
+   - 会话 / 助手 / 智能节点：low/medium/high/xhigh/max 全档原样下发（medium/xhigh 不再拍平）
+   - 旧档 none/off/无/空 与未知值 → high（兜底默认，兼容已存工作流）
+   - 智能文本节点（proc_text agent，自带 无/低/中/高 四档，fromProcText=true）：
+     off → high（agent 链上思考不能关闭）；高 → max（历史口径：文本节点顶档 = dsh 顶档，
+     已存节点语义不变）；低 → low、中 → medium（跟随档位词汇原样） */
 function dshEffortOf(v, fromProcText) {
   let raw = String(v == null || v === "" ? "high" : v).toLowerCase();
   if (raw === "无" || raw === "off" || raw === "none") return "high";
-  if (raw === "max") return "max";
   if (raw === "high") return fromProcText ? "max" : "high";
-  if (raw === "medium" || raw === "low") return "high";
-  return "high";
+  return AGENT_EFFORT_ORDER.includes(raw) ? raw : "high";
 }
 
 /* 中断智能运行:dsh 线协议无逐轮取消,只能关掉该次运行自己的运行时进程。
@@ -4220,7 +4701,9 @@ function applySnap(s) {
   S.wf.groups = s.groups || [];
   S.wf.marks = Array.isArray(s.marks) ? s.marks : [];
   clearSelection();
-  S.uiOpenNode = null;
+  /* 撤销 / 重做换上来的是一批深拷贝的新对象：设置窗绑的还是旧节点，
+     继续开着就会把修改写进孤儿对象，这里跟着关掉（skipSave —— 本函数末尾自己落盘）。 */
+  closeNodeSettingsDialogIfStale({ silentRerender: true, skipSave: true });
   closeBgRmPop();
   renderCanvas();
   renderStatus();
@@ -4397,11 +4880,15 @@ function hasFixedInPorts(n) {
     (n.kind === "gate" ||
       n.kind === "mutex" ||
       n.kind === "music_gen" ||
+      n.kind === "tts_gen" ||
       n.kind === "video_gen" ||
       n.kind === "remotion" ||
       n.kind === "task" ||
       n.kind === "super" ||
-      n.kind === "net_send")
+      n.kind === "net_send" ||
+      /* 素材节点：端子号 = 内容条目序号，断一条线绝不能把后面的端子号左移（会串条目） */
+      n.kind === "asset" ||
+      isFnToolNode(n))
   );
 }
 function wireFromIsControl(w, wf) {
@@ -4412,14 +4899,17 @@ function wireFromIsControl(w, wf) {
   if (isControlKind(from)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (from.kind === "net_recv" && Number(w.fromIndex || 0) >= 1) return true;
-  /* 音乐 / 视频 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
+  /* 音乐 / 视频 / 语音 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
   if (
     (from.kind === "music_gen" ||
+      from.kind === "tts_gen" ||
       from.kind === "video_gen" ||
       from.kind === "remotion") &&
     Number(w.fromIndex || 0) >= 1
   )
     return true;
+  /* 函数 / 工具节点：输出 0..n-1 = 各输出参数（数据），末位 = 控制输出（端子契约见下） */
+  if (fnToolOutPortIsControl(from, w.fromIndex)) return true;
   const to = nodeByIdIn(w.to, wf);
   if (!to) return false;
   /* 内侧桥接：外侧同号输入若为控制，则内线亦为控制（原数据线随之变控制线） */
@@ -4454,11 +4944,17 @@ function isTextSource(n) {
     n.kind === "agent_task" ||
     n.kind === "merge" ||
     n.kind === "split" ||
-    n.kind === "chat" ||
+    /* 音视频输入：输出的是该文件的 URL，本质就是一段可用的文件地址文本
+       （与 music_gen / video_gen 把产物路径当文本对外同口径），可进文本 / 媒体路径端子 */
+    n.kind === "input_audio" ||
+    n.kind === "input_video" ||
     n.kind === "music_gen" ||
+    n.kind === "tts_gen" ||
     n.kind === "video_gen" ||
     n.kind === "remotion" ||
-    n.kind === "super"
+    n.kind === "super" ||
+    n.kind === "function" ||
+    isToolNode(n)
   );
 }
 function isImageSource(n) {
@@ -4469,21 +4965,453 @@ function isImageSource(n) {
     n.kind === "split"
   );
 }
-/* 连线着色：从图像类节点拉出的数据线（控制线仍用金色） */
-function isImageWireFrom(n) {
-  return !!(
-    n &&
-    (n.kind === "input_image" ||
-      n.kind === "proc_image")
+/* 连线着色：从图像类节点拉出的数据线（控制线仍用金色）。
+   工具 / 函数节点没有「图像类 kind」可看，改按真正接出来的那个端子的声明类型判定；
+   素材节点同理 —— 整节点既可能是文本也可能是图像，只有条目端子说得清（assetPortKind）。
+   其余节点仍只看源节点 kind（行为逐字不变）。 */
+function isImageWireFrom(n, fromIndex) {
+  if (!n) return false;
+  if (isFnToolNode(n) || isAssetNode(n))
+    return wireSourceMediaType(n, fromIndex) === "image";
+  return n.kind === "input_image" || n.kind === "proc_image";
+}
+function isAudioWireFrom(n, fromIndex) {
+  if (!n) return false;
+  if (isFnToolNode(n) || isAssetNode(n))
+    return wireSourceMediaType(n, fromIndex) === "audio";
+  return (
+    n.kind === "music_gen" ||
+    n.kind === "tts_gen" ||
+    n.kind === "input_audio"
   );
 }
-function isAudioWireFrom(n) {
-  return !!(n && n.kind === "music_gen");
-}
-function isVideoWireFrom(n) {
-  return !!(n && (n.kind === "video_gen" || n.kind === "remotion"));
+function isVideoWireFrom(n, fromIndex) {
+  if (!n) return false;
+  if (isFnToolNode(n) || isAssetNode(n))
+    return wireSourceMediaType(n, fromIndex) === "video";
+  return (
+    n.kind === "video_gen" ||
+    n.kind === "remotion" ||
+    n.kind === "input_video"
+  );
 }
 
+/* ── 工具节点 / 函数节点：单一真源判定与参数模型（渲染层全量契约见 docs/tool-function-nodes.md）
+   ① 工具节点 = 超级节点变体 kind super + tool:true（沿用 db:/dev: 变体模式），因此白得
+      超级节点的整套子画布能力（展开壳 / 进入 / 拖入收纳 / 内外桥接 / 尺寸）。引擎按
+      isToolNode() 分发（不再看 kind 字面值）；旧存档的普通 kind "tool" 在加载 / 插入时
+      经 migrateToolNodeToSuperForm() 一次性原地转成该变体（见 migrateWf 与 app-tools.js）。
+      两类形态统一以 toolConfig{name,description,inputs,outputs} 存储，参数增删即端子增删
+      （端子数以参数为准，与画布连线无关），标题默认 = 工具名、手动改名后 name 独立。
+   ② 函数节点 = 普通 kind "function"；字段 fnName/description/jscode/inputs/outputs。
+   两类共享同一份参数条目模型 [{name, kind}]，kind ∈ text | image（缺省 text）。 */
+function isToolNode(n) {
+  return !!(
+    n &&
+    ((n.kind === "super" && !!n.tool && !n.db) || n.kind === "tool")
+  );
+}
+/* 工具节点形态归一（一次性 · 幂等）：旧 kind:"tool" 节点原地转成 super + tool:true 变体。
+   只改「形态字段」：id / 标题 / 坐标 / 尺寸 / toolConfig / toolLibId / 父子归属
+   （parentSuperId 与其内部子节点）一律原样保留，连线两端仍是同一批 id 与端子序号，
+   所以既不需要改写连线，也不会改动画布内容。已是新形态（或不是工具节点）时返回 false。 */
+function migrateToolNodeToSuperForm(n) {
+  if (!n || n.kind !== "tool") return false;
+  n.kind = "super";
+  /* 超级壳层字段以 NODE_DEFAULTS.super 为准补缺（已有值一律保留 → 重复调用无副作用） */
+  for (const [k, v] of Object.entries(NODE_DEFAULTS.super || {})) {
+    if (k === "w" || k === "h" || k === "title") continue;
+    if (n[k] === undefined) n[k] = JSON.parse(JSON.stringify(v));
+  }
+  n.tool = true;
+  return true;
+}
+function isFunctionNode(n) {
+  return !!n && n.kind === "function";
+}
+function isFnToolNode(n) {
+  return isToolNode(n) || isFunctionNode(n);
+}
+/* ── 端子契约（参数优先）：工具 / 函数节点的端子数与性质由 toolConfig 参数钉死，
+   与画布连线无关 —— 输入 0 = 控制入、1..N = 各输入参数；输出 0..M-1 = 各输出参数、
+   M（末位）= 控制出。普通超级节点的端子随连线伸缩、控制性由连线推断（见下方
+   superInPortIsControl / superOutPortIsControl），工具节点必须改按序号固定判定，
+   否则展开子画布后内侧桥接 / 汇流端子的控制色与取数通道会随连线漂移。 */
+function fnToolInPortIsControl(node, i) {
+  return isFnToolNode(node) && Number(i || 0) === 0;
+}
+function fnToolOutPortIsControl(node, i) {
+  if (!isFnToolNode(node)) return false;
+  return Number(i || 0) >= fnToolParamList(node, "out").length;
+}
+/** 某个端子是否已被「外侧输入线」占用（内侧汇流同样 to=宿主，superExternalInWiresAll 已排除） */
+function fnToolInPortOccupied(host, idx) {
+  return superExternalInWiresAll(host).some(
+    (w) => Number(w.toIndex) === idx,
+  );
+}
+/** 某个输出端子是否已被「内侧汇流线」占用 */
+function fnToolOutPortOccupied(host, idx) {
+  return superInternalOutFeedsAll(host).some(
+    (w) => Number(w.toIndex) === idx,
+  );
+}
+/** 固定端子节点的下一个空闲端子；无空闲返回 null。
+    dir = "in"：外侧输入（wantCtrl = 控制线 → 端口0；数据线 → 参数端子 1..N）
+    dir = "out"：内侧汇流到外侧输出（wantCtrl → 末位控制出；数据 → 输出参数 0..M-1） */
+function fnToolFreePortIndex(host, dir, wantCtrl) {
+  if (!host || !isFnToolNode(host)) return null;
+  const nIn = fnToolParamList(host, "in").length;
+  const nOut = fnToolParamList(host, "out").length;
+  if (dir === "in") {
+    if (wantCtrl) return fnToolInPortOccupied(host, 0) ? null : 0;
+    for (let i = 1; i <= nIn; i++) if (!fnToolInPortOccupied(host, i)) return i;
+    return null;
+  }
+  if (wantCtrl)
+    return fnToolOutPortOccupied(host, nOut) ? null : nOut;
+  for (let i = 0; i < nOut; i++) if (!fnToolOutPortOccupied(host, i)) return i;
+  return null;
+}
+/** 子画布内侧端子（桥接 / 汇流）的徽标与提示：工具节点显示参数名 —— 参数名即端子名；
+    普通超级节点仍显示「端子 N」。dir = "in"（外侧输入 → 内侧桥接）/ "out"（内侧汇流 → 外侧输出）。 */
+function superInnerPortInfo(host, dir, i) {
+  const idx = Number(i || 0);
+  const n = idx + 1;
+  const fixed = isFnToolNode(host);
+  const pl = fixed ? fnToolParamList(host, dir) : [];
+  const ctrl = fixed
+    ? dir === "in"
+      ? idx === 0
+      : idx >= pl.length
+    : dir === "in"
+      ? superInPortIsControl(host, idx)
+      : superOutPortIsControl(host, idx);
+  const pname =
+    fixed && !ctrl
+      ? String((pl[dir === "in" ? idx - 1 : idx] || {}).name || "")
+      : "";
+  const base =
+    dir === "in"
+      ? I18n.t("内侧输入端子 ") + n
+      : I18n.t("内侧输出端子 ") + n;
+  /* 工具 / 函数节点的内侧端子同样是「参数即端子」：提示里带上数据类型，
+     控制端子无声明（fnToolPortKind 返回 null）→ 不标注，普通超级节点行为不变 */
+  const pk = fixed && !ctrl ? fnToolPortKind(host, dir, idx) : null;
+  const tail =
+    dir === "in"
+      ? I18n.t("（对应外侧输入 · 拖到内部节点 · 右键移除）")
+      : I18n.t("（对应外侧输出 · 从内部节点拖入 · 右键移除）");
+  return {
+    ctrl: ctrl,
+    img: pk === "image",
+    badge: fixed ? (ctrl ? I18n.t("控制") : clipStr(pname || String(n), 8)) : "",
+    title:
+      base +
+      (pname ? I18n.t(" · 参数：") + pname : "") +
+      (pk === "image" ? I18n.t("（图像）") : pk === "text" ? I18n.t("（文本）") : "") +
+      tail,
+  };
+}
+/* 参数表（只读视图）：dir = "in"（inputs）/ "out"（outputs）；两类都读 inputs/outputs 数组 */
+function fnToolParamList(node, dir) {
+  const key = dir === "in" ? "inputs" : "outputs";
+  if (isFunctionNode(node)) return Array.isArray(node[key]) ? node[key] : [];
+  if (isToolNode(node)) {
+    const c =
+      node.toolConfig && typeof node.toolConfig === "object"
+        ? node.toolConfig
+        : {};
+    return Array.isArray(c[key]) ? c[key] : [];
+  }
+  return [];
+}
+
+/* ── 参数重排（需求：工具 / 函数节点允许调整输入输出参数顺序） ──
+ * 参数即端子：inputs[i] ↔ 外侧输入端子 i+1、outputs[j] ↔ 输出端子 j。
+ * 把某一参数从 from 移到 to（数组下标，to = 移入后的位置；支持上移 / 下移 /
+ * 拖动 insert 整段移位）后，凡指向该节点的数据线要按「参数跟端子走」重映射端子号，
+ * 否则换序只改了名字、线仍连旧端子 —— 语义错位。重映射口径：
+ *   输入方向（dir="in"）：线 to === node.id，数据端子号 ∈ 1..N → 依 perm 重映射；
+ *   输出方向（dir="out"）：线 from === node.id，数据端子号 ∈ 0..M-1 → 依 perm 重映射。
+ * 控制端子（输入 0 / 输出末位）、关系线、与该节点无关的线一律不动；
+ * 超级壳（工具节点变体）内侧桥接 / 汇流线同样按端子号重映射（另一头是否壳内子节点
+ * 不影响「端子号 = 参数位置」的语义）。返回 perm（oldIdx → newIdx）供冒烟断言；
+ * S.wf 缺失（纯数据环境）时仍返回 perm，只是不真正改线。 */
+function fnToolMoveParam(node, dir, from, to) {
+  const list = fnToolParamList(node, dir);
+  const n = list.length;
+  const f = Number(from);
+  const t = Number(to);
+  if (!node || !isFnToolNode(node) || !n) return null;
+  if (!isFinite(f) || f < 0 || f >= n) return null;
+  if (!isFinite(t) || t < 0 || t >= n) return null;
+  if (f === t) return null;
+  /* perm[oldIdx] = newIdx：把旧下标 f 的元素移到新下标 t，中间元素顺移一格 */
+  const perm = [];
+  for (let i = 0; i < n; i++) {
+    if (i === f) perm[i] = t;
+    else if (f < t && i > f && i <= t) perm[i] = i - 1;
+    else if (f > t && i >= t && i < f) perm[i] = i + 1;
+    else perm[i] = i;
+  }
+  /* 真正改参数表 */
+  const item = list.splice(f, 1)[0];
+  list.splice(t, 0, item);
+  fnToolRemapParamWires(node, dir, n, perm);
+  return perm;
+}
+
+/* 参数重排后按 perm（oldIdx → newIdx）重映射节点数据线端子号。
+ * 工具节点 = 超级壳变体，同一节点上有四类线都要按端子号跟参数走：
+ *   ① 外侧输入：w.to === node.id（来源非壳内子节点）→ toIndex ∈ 1..N（dir in）
+ *   ② 内侧桥接：w.from === node.id 且目标是壳内子节点 → fromIndex ∈ 1..N（dir in）
+ *   ③ 外侧输出：w.from === node.id（目标非壳内子节点）→ fromIndex ∈ 0..M-1（dir out）
+ *   ④ 内侧汇流：w.to === node.id 且来源是壳内子节点 → toIndex ∈ 0..M-1（dir out）
+ * 函数节点无壳，只命中 ①③。控制端子（输入 0 / 输出末位）、关系线不参与。
+ * 纯函数：不依赖 UI，S.wf 存在才实际改写线；返回是否改过。 */
+function fnToolRemapParamWires(node, dir, n, perm) {
+  if (!node || !S.wf || !Array.isArray(S.wf.wires)) return false;
+  const wires = S.wf.wires;
+  let changed = false;
+  for (const w of wires) {
+    if (!w || w.rel) continue;
+    const isIn = dir === "in";
+    const from = nodeByIdIn(w.from, S.wf);
+    const to = nodeByIdIn(w.to, S.wf);
+    const fromIsInner = !!(
+      from && isFnToolNode(node) && nodeParentSuperId(from) === node.id
+    );
+    const toIsInner = !!(
+      to && isFnToolNode(node) && nodeParentSuperId(to) === node.id
+    );
+    if (isIn) {
+      /* ① 外侧输入：数据端子号 1..N */
+      if (!fromIsInner && w.to === node.id) {
+        const t = Number(w.toIndex) || 0;
+        if (t < 1 || t > n) continue;
+        const nv = Number(perm[t - 1]) + 1;
+        if (nv !== t) {
+          w.toIndex = nv;
+          changed = true;
+        }
+        continue;
+      }
+      /* ② 内侧桥接（宿主输入端子 → 壳内子节点） */
+      if (toIsInner && w.from === node.id) {
+        const t = Number(w.fromIndex) || 0;
+        if (t < 1 || t > n) continue;
+        const nv = Number(perm[t - 1]) + 1;
+        if (nv !== t) {
+          w.fromIndex = nv;
+          changed = true;
+        }
+        continue;
+      }
+    } else {
+      /* ③ 外侧输出：数据端子号 0..M-1 */
+      if (!toIsInner && w.from === node.id) {
+        const t = Number(w.fromIndex) || 0;
+        if (t < 0 || t >= n) continue;
+        const nv = Number(perm[t]);
+        if (nv !== t) {
+          w.fromIndex = nv;
+          changed = true;
+        }
+        continue;
+      }
+      /* ④ 内侧汇流（壳内子节点 → 宿主输出端子） */
+      if (fromIsInner && w.to === node.id) {
+        const t = Number(w.toIndex) || 0;
+        if (t < 0 || t >= n) continue;
+        const nv = Number(perm[t]);
+        if (nv !== t) {
+          w.toIndex = nv;
+          changed = true;
+        }
+        continue;
+      }
+    }
+  }
+  return changed;
+}
+/** 端子数据类型（单一真源）：dir = "in" / "out"，idx = 端子序号（按端子契约数端子）。
+    工具 / 函数节点的数据端子返回其声明类型 "text" | "image"（条目缺 kind 按 text，与旧画布口径一致）；
+    控制端子（输入 0、输出末位）以及不是这两类节点的端子一律返回 null = 无端子级类型声明，
+    调用方须回落到「按节点 kind / 该端子实际值推断」的旧口径（普通节点行为逐字不变）。 */
+function fnToolPortKind(node, dir, idx) {
+  if (!isFnToolNode(node)) return null;
+  const i = Number(idx || 0);
+  const list = fnToolParamList(node, dir === "in" ? "in" : "out");
+  let e = null;
+  if (dir === "in") {
+    if (i > 0) e = list[i - 1]; /* 输入端子 0 = 控制入 → 无类型声明 */
+  } else if (i < list.length) {
+    e = list[i]; /* 输出端子末位 = 控制出 → 无类型声明 */
+  }
+  if (!e) return null; /* 控制端子 / 越界 */
+  return String(e.kind || "text") === "image" ? "image" : "text";
+}
+/** 端子是否「列表端子」（该端子的值是一组值，供下游逐项展开）—— 连线校验与取值的唯一真源。
+    与 fnToolPortKind 完全同一数端子口径：输入 0 = 控制入、1..N = 各输入参数；
+    输出 0..M-1 = 各输出参数、末位 = 控制出。控制端子 / 越界 / 非工具·函数节点 → false。
+    输出方向恒 false：list 只是输入侧的取值语义，归一时已从输出参数上清掉，这里再挡一道，
+    免得旧数据把「参数即端子」的列表语义曲解到输出方向。 */
+function fnToolPortIsList(node, dir, idx) {
+  if (!isFnToolNode(node) || dir !== "in") return false;
+  const i = Number(idx || 0);
+  if (i <= 0) return false; /* 输入端子 0 = 控制入，无列表语义 */
+  const e = fnToolParamList(node, "in")[i - 1];
+  return !!(e && e.list === true);
+}
+/* 端子值 ↔ 端子声明类型的唯一归一处（只做形状转换，不吞数据）：工具 / 函数节点、
+   Agent func-call、「测试」台注入、超级壳层内外桥接全部复用这一份，不再各写一套。
+   · 声明 image，实际拿到的是路径文本（"E:\a.png" / {kind:"text",text:"E:\a.png"} /
+     {kind:"path",path}）→ 转 {kind:"image",path,text}，下游保存节点与图像端子才认它是图像；
+     opts.loose = true（注入点口径：参数类型是定义里写明的，字符串一律按路径收下）时
+     不检查扩展名，否则只认图像扩展名 —— 不把散文臆造成图像。
+   · 声明 text，实际拿到图像值 → 取其路径作文本（fix = "text"：形状降级，调用方据此
+     在节点摘要提示一句，路径本身不丢）。
+   · 值本身为空、端子无声明（普通节点 / 控制端子 / 旧画布）、音频 / 视频值（参数类型域
+     只有 text|image）一律原样返回：不改既有非工具节点路径，也不吞媒体数据。
+   返回 { value, fix }：fix = "" | "image"（文本→图像，补齐形状）| "text"（图像→文本，降级）。 */
+const FN_TOOL_IMG_EXT_RE = /\.(png|jpe?g|webp|gif|bmp)$/i; /* 与 js-exec mediaKindOfPath / inferMediaFromSource 同一图像扩展名口径 */
+function normPortValueByKind(value, kind, opts) {
+  const res = { value: value, fix: "" };
+  const o = opts || {};
+  if (value == null) return res;
+  if (kind !== "image" && kind !== "text") return res;
+  const obj = typeof value === "object" ? value : null;
+  const vk = obj ? String(obj.kind || "") : "";
+  /* 音视频不在参数类型域内：原样放行，别把媒体压成文本 */
+  if (vk === "audio" || vk === "video") return res;
+  const s = obj
+    ? String(obj.path != null && obj.path !== "" ? obj.path : obj.text != null ? obj.text : "")
+    : String(value);
+  if (kind === "image") {
+    if (vk === "image") return res; /* 已是图像端子值 */
+    const t = s.trim();
+    if (!t) return res;
+    if (!o.loose && !FN_TOOL_IMG_EXT_RE.test(t)) return res;
+    res.value = { kind: "image", path: t, text: t };
+    res.fix = "image";
+    return res;
+  }
+  /* kind === "text" */
+  if (!obj) {
+    /* 裸标量（数字 / 布尔 / 字符串）→ 文本端子值形状 */
+    res.value = { kind: "text", text: String(value) };
+    return res;
+  }
+  if (vk === "image") {
+    res.value = { kind: "text", text: s };
+    res.fix = "text";
+    return res;
+  }
+  return res;
+}
+/** 按「工具 / 函数节点某个端子的声明类型」归一值：无声明（普通节点 / 控制端子 /
+    越界）时原样返回，保证普通链路逐字不变。dir = "in" | "out"，idx = 端子序号。 */
+function normFnToolPortValue(node, dir, idx, value, opts) {
+  const k = fnToolPortKind(node, dir, idx);
+  if (!k) return { value: value, fix: "" };
+  return normPortValueByKind(value, k, opts);
+}
+/* 归一提示：只有「图像值被降级成路径文本」这类用户会察觉的形状变化才记一笔
+   （文本→图像是补齐，不打扰）。transient 字段 _portKindFix = [文案…]，节点摘要读取。 */
+function notePortKindFix(node, dir, idx, fix, name) {
+  if (!node || fix !== "text") return;
+  const pn = String(name || "").trim() || I18n.t("参数 ") + (Number(idx) + 1);
+  const msg = I18n.t("「{p}」是文本端子，收到的图像已按其路径取文本", { p: pn });
+  if (!Array.isArray(node._portKindFix)) node._portKindFix = [];
+  if (node._portKindFix.indexOf(msg) < 0) node._portKindFix.push(msg);
+  while (node._portKindFix.length > 4) node._portKindFix.shift();
+}
+/* 单条参数归一：确保 {name, kind[, list]}，name 空补默认名，kind 只认 text|image（缺省 text）。
+   dir = "in" 时保留 list 布尔（列表入参：一条线喂一组值，供 fnToolPortIsList 判定）；
+   dir = "out"（含省略）时一律清掉 list —— 列表只是输入侧的取值语义，输出方向「参数即端子」
+   的端子表必须与 kind 一一对应，留着它会让输出端子被曲解成可展开的多值端子。 */
+function normFnToolEntry(e, i, dir) {
+  if (e == null || typeof e !== "object") e = {};
+  const name = String(e.name == null ? "" : e.name).trim();
+  let kind = String(e.kind || "text");
+  if (kind !== "image") kind = "text";
+  const p = { name: name, kind: kind };
+  if (dir === "in") p.list = e.list === true || e.list === "true";
+  return p;
+}
+/* 结构归一（幂等）：工具节点补 toolConfig，函数节点补字符串/数组字段；
+   两类节点的参数条目走完全同一口径归一 —— 缺失 name 补「参数 N」占位，kind 只留
+   text|image，list 只在输入侧保留、输出侧清掉（判定真源见 fnToolPortIsList）。 */
+function ensureFnToolNodeState(node) {
+  if (!node) return;
+  if (isFunctionNode(node)) {
+    if (typeof node.fnName !== "string") node.fnName = "";
+    if (typeof node.description !== "string") node.description = "";
+    if (typeof node.jscode !== "string") node.jscode = "";
+    /* 「测试」台输入快照：按输入参数序号存字符串（text 参数 = 文本，image 参数 =
+       文件路径）。仅测试用 · 不参与画布运行；参数增删不清空，重新加回同名参数时
+       旧值仍在（超出参数数的尾巴只是暂存，永不参与取数）。 */
+    if (!Array.isArray(node.fnTestInputs)) node.fnTestInputs = [];
+    if (!Array.isArray(node.inputs)) node.inputs = [];
+    if (!Array.isArray(node.outputs)) node.outputs = [];
+    node.inputs = node.inputs.map((e, i) => {
+      const p = normFnToolEntry(e, i, "in");
+      if (!p.name) p.name = I18n.t("参数 ") + (i + 1);
+      return p;
+    });
+    node.outputs = node.outputs.map((e, i) => {
+      const p = normFnToolEntry(e, i, "out");
+      if (!p.name) p.name = I18n.t("参数 ") + (i + 1);
+      return p;
+    });
+  } else if (isToolNode(node)) {
+    /* 「试跑」台输入快照（与函数节点 fnTestInputs 同机制 · 独立字段）：
+       按输入参数序号存字符串，仅测试用 · 不参与画布运行。 */
+    if (!Array.isArray(node.toolTestInputs)) node.toolTestInputs = [];
+    const c =
+      node.toolConfig && typeof node.toolConfig === "object"
+        ? node.toolConfig
+        : {};
+    if (typeof c.name !== "string") c.name = "";
+    if (typeof c.description !== "string") c.description = "";
+    if (!Array.isArray(c.inputs)) c.inputs = [];
+    if (!Array.isArray(c.outputs)) c.outputs = [];
+    c.inputs = c.inputs.map((e, i) => {
+      const p = normFnToolEntry(e, i, "in");
+      if (!p.name) p.name = I18n.t("参数 ") + (i + 1);
+      return p;
+    });
+    c.outputs = c.outputs.map((e, i) => {
+      const p = normFnToolEntry(e, i, "out");
+      if (!p.name) p.name = I18n.t("参数 ") + (i + 1);
+      return p;
+    });
+    node.toolConfig = c;
+  }
+}
+/* 工具名与标题联动：设置里改 toolConfig.name 时，只要标题还是旧名（或尚未命名时的
+   默认「工具[N]」）就同步改名，否则视为手动改过标题、name 独立。 */
+function applyToolConfigName(node, name) {
+  if (!isToolNode(node)) return;
+  ensureFnToolNodeState(node);
+  const c = node.toolConfig;
+  const old = c.name;
+  const next = String(name == null ? "" : name).trim();
+  c.name = next;
+  if (!next) return;
+  const titleNow = String(node.title || "");
+  const isDefaultTitle = titleNow === old || (!old && /^工具(\s\d+)?$/.test(titleNow));
+  if (isDefaultTitle) {
+    if (titleNow !== next) {
+      const want = uniqueNodeTitle(next, node.id);
+      if (want !== node.title) {
+        node.title = want;
+        toast(I18n.t("已同步标题：") + node.title, "ok");
+      }
+    }
+  }
+}
 function canUseGlobalRefs(node) {
   return !!(
     node &&
@@ -4538,17 +5466,157 @@ function globalRefSources(exceptId) {
   return out;
 }
 
+/* ===== @ 引用切词（标题 / 标签可以含空格的唯一真源）=====
+   节点标题与 Tag 都可能带空格（重名自动编号本身就是「文本节点 2」），而旧写法
+   一律 `/@([^\s@，。；、！？：,!?;:]+)/`「遇空格就断」，于是 @文本节点 2 只切出
+   「文本节点」→ 走前缀兜底时撞上另一个同前缀节点（错误引用），写回整条标题后
+   剩下的「 2」还留在正文里（回显与实发都多出一截残渣）。统一改成 atMentionsOf：
+     1 整名优先：@ 之后能整段等上某个已知候选名（标题 / Tag；名字里的空格在正文里
+       可多可少可省略，但 @ 与首字之间不许插空格）→ 连空格一起消费掉。
+       不含空格的名字要求右邻是分隔符 / 结尾，免得 @图片处理 被切成 @图片。
+     2 半截标题：整名等不上时按旧口径切非空白 token；若它正好是某个候选名的开头，
+       且正文接着把剩下的字也写完了 → 一并消费（不再留残渣）。
+     3 都没命中：保留旧的短 token，交给调用方按「全等 → 去尾标点 → 前缀」判一次，
+       判不中就报未解析。
+   resolveRefs / resolveRefsAgg / 提示词高亮 / 节点浏览态高亮 / 明文 @ 命中判定 /
+   !@数据库 引用全部走这里，避免各处各写一套切词又互相对不上。 */
+const AT_REF_STOP = /[^\s@，。；、！？：,!?;:]/;
+const AT_REF_EDGE = /[\s@，。；、！？：,!?;:()（）"'「」【】]/;
+const AT_REF_WS_TEXT = /[ \t]/;
+
+/* 候选名表：去空去重，长的排前面（「素材 备份」不能输给「素材」） */
+function atRefNames(names) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of Array.isArray(names) ? names : []) {
+    const n = String(raw == null ? "" : raw).trim();
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out.sort((a, b) => b.length - a.length);
+}
+
+/* 某个消费者可用的候选名 = 引用候选标题 + 本画布 Tag 目录 */
+function atRefNamesFor(cands) {
+  const list = [];
+  for (const c of Array.isArray(cands) ? cands : []) list.push(c && c.title);
+  for (const t of wfTagCatalog()) list.push(t);
+  return atRefNames(list);
+}
+
+/* 从 s[from] 起按候选名逐字比对：skip = 正文里已经打出来的非空格字数；
+   名字里的空格在正文里可多可少（lead 为真时才允许开头就空着，用于半截标题续接）。
+   返回消费到的末尾下标，对不上返回 -1。换行永远不参与跳过（引用不跨行）。 */
+function atRefSpanEnd(s, from, name, skip, lead) {
+  const chars = Array.from(String(name || ""));
+  let i = 0;
+  while (i < chars.length && skip > 0) {
+    if (!/\s/.test(chars[i])) skip--;
+    i++;
+  }
+  if (skip > 0) return -1;
+  let p = from;
+  for (; i < chars.length; i++) {
+    if (/\s/.test(chars[i])) continue;
+    if (p > from || lead)
+      while (p < s.length && AT_REF_WS_TEXT.test(s.charAt(p))) p++;
+    if (s.charAt(p) !== chars[i]) return -1;
+    p++;
+  }
+  return p > from ? p : -1;
+}
+
+/* 扫出正文里所有 @ 引用（opts.bang = 只认 !@数据库标题，span 含前面的 !）。
+   返回按出现顺序的 [{ start, end, name, token }]：name = 命中的候选名原文，
+   没命中时为空串、token 退回旧的「到第一个空白 / 标点为止」片段。 */
+function atMentionsOf(text, names, opts) {
+  const s = String(text == null ? "" : text);
+  const out = [];
+  if (s.indexOf("@") < 0) return out;
+  const bang = !!(opts && opts.bang);
+  const list = atRefNames(names).map((n) => ({
+    name: n,
+    hasWs: /\s/.test(n),
+    head: Array.from(n)
+      .filter((ch) => !/\s/.test(ch))
+      .join(""),
+  }));
+  let i = 0;
+  while (i < s.length) {
+    const at = s.indexOf("@", i);
+    if (at < 0) break;
+    if (bang && s.charAt(at - 1) !== "!") {
+      i = at + 1;
+      continue;
+    }
+    const start = bang ? at - 1 : at;
+    const from = at + 1;
+    let hit = null;
+    for (const c of list) {
+      const end = atRefSpanEnd(s, from, c.name, 0, false);
+      if (end < 0) continue;
+      if (!c.hasWs && end < s.length && !AT_REF_EDGE.test(s.charAt(end)))
+        continue;
+      hit = { start, end, name: c.name, token: "" };
+      break;
+    }
+    if (!hit) {
+      let p = from;
+      while (p < s.length && AT_REF_STOP.test(s.charAt(p))) p++;
+      const tok = s.slice(from, p);
+      if (!tok) {
+        i = at + 1;
+        continue;
+      }
+      const tailKey = tok; // 非空白 token，本身不含空格
+      for (const c of list) {
+        if (c.head.length <= tailKey.length || !c.head.startsWith(tailKey))
+          continue;
+        const end = atRefSpanEnd(s, p, c.name, tailKey.length, true);
+        if (end < 0) continue;
+        hit = { start, end, name: c.name, token: "" };
+        break;
+      }
+      if (!hit) hit = { start, end: p, name: "", token: tok };
+    }
+    out.push(hit);
+    i = hit.end;
+  }
+  return out;
+}
+
+/* 逐段走正文：普通文本交 onText（不传 = 原样），每段 @ 引用交 onMention(hit, rawSeg)，
+   其返回值即替换文本（null / undefined = 原样保留那一段）。拼好整串返回。 */
+function eachAtMention(text, names, onText, onMention, opts) {
+  const s = String(text == null ? "" : text);
+  const plain = (seg) => (onText ? String(onText(seg)) : seg);
+  const hits = atMentionsOf(s, names, opts);
+  if (!hits.length) return plain(s);
+  let out = "";
+  let last = 0;
+  for (const h of hits) {
+    if (h.start > last) out += plain(s.slice(last, h.start));
+    const seg = s.slice(h.start, h.end);
+    const rep = onMention ? onMention(h, seg) : seg;
+    out += rep == null ? seg : String(rep);
+    last = h.end;
+  }
+  if (last < s.length) out += plain(s.slice(last));
+  return out;
+}
+
+/* 只要替换逻辑的简写：fn(hit, rawSeg) 返回替换文本，或 null 保留原样 */
+function mapAtMentions(text, names, fn, opts) {
+  return eachAtMention(text, names, null, fn, opts);
+}
+
 /* ===== @ 明文引用命中判定（全局广播注入的唯一门槛）=====
-   与 resolveRefs / resolveRefsAgg / promptRefBackdropHtml 用同一套 token 正则
+   与 resolveRefs / resolveRefsAgg / promptRefBackdropHtml 用同一套切词（atMentionsOf）
    与同一套匹配规则（findCandidateByTitle / tagByAtToken + nodeHasTag），
    保证「提示词里明文 @ 命中的来源」与「实际被解析注入的来源」严格一致。 */
-function atTokensOf(text) {
-  const out = [];
-  const s = String(text == null ? "" : text);
-  const re = /@([^\s@，。；、！？：,!?;:]+)/g;
-  let m;
-  while ((m = re.exec(s))) out.push(m[1]);
-  return out;
+function atTokensOf(text, names) {
+  return atMentionsOf(text, names).map((h) => h.name || h.token);
 }
 
 /* 从候选来源里只保留被明文 @ 命中的：@标题（含 resolveRefs 的「全等 → 去尾标点 → 前缀」三级规则）
@@ -4562,7 +5630,10 @@ function mentionedRefSources(prompt, srcs) {
     list.push(s);
   }
   if (!list.length) return [];
-  const toks = atTokensOf(prompt);
+  const toks = atTokensOf(
+    prompt,
+    atRefNames(list.map((s) => s.title).concat(wfTagCatalog())),
+  );
   if (!toks.length) return [];
   const out = [];
   for (const src of list) {
@@ -4715,10 +5786,9 @@ function globalChipKindCls(n) {
 }
 
 function inputCount(node) {
-  /* chat / 只读 / 需求等待 / 定时 / 起点 / 执行：无输入端子 */
+  /* 只读 / 需求等待 / 定时 / 起点 / 执行：无输入端子 */
   if (
     node.ro ||
-    node.kind === "chat" ||
     node.kind === "wait_file" ||
     node.kind === "timer" ||
     node.kind === "db_replica" ||
@@ -4726,6 +5796,11 @@ function inputCount(node) {
     isExecStart(node)
   )
     return 0;
+  /* 素材节点：输入端子 = 内容条目（第 i 入 ↔ 第 i 出 · 一个条目最多挂一条数据线），
+     没有控制端子 → 与 input_* 同族：只当内容源，不参与控制流。 */
+  if (node.kind === "asset") return assetItems(node).length;
+  /* 函数 / 工具节点：输入 0 = 控制入（固定）+ 各输入参数（参数增删即端子增删） */
+  if (isFnToolNode(node)) return fnToolParamList(node, "in").length + 1;
   if (node.kind === "super") {
     const open = superIsOpenShell(node);
     const ext = superExternalInWiresAll(node);
@@ -4745,6 +5820,7 @@ function inputCount(node) {
   if (node.kind === "mutex")
     return Math.max(2, Math.min(8, Math.round(Number(node.mutexInputs) || 2)));
   if (node.kind === "music_gen") return 3; /* 端口0=提示词 · 端口1=歌词 · 端口2=控制输入 */
+  if (node.kind === "tts_gen") return 2; /* 端口0=待合成文本 · 端口1=控制输入 */
   if (node.kind === "video_gen") return videoGenInputCount(node) + 1; /* 端口0=控制输入（固定）· 端口1+=数据槽 */
   if (node.kind === "remotion") return 2; /* 端口0=控制输入（固定）· 端口1=描述文本输入 */
   if (node.kind === "net_recv") return 0; /* 接收是异步源，无数据输入 */
@@ -4765,6 +5841,48 @@ function videoGenMaxVideos(node) {
 function videoGenMaxAudios(node) {
   return videoGenMode(node) === "r2v" ? 3 : 0;
 }
+/* ───── 自建 ComfyUI 工作流模式：端口布局由 wfParams 驱动 ───── */
+function isCustomVideoGen(node) {
+  return !!(node && String(node.workflowId || "").trim());
+}
+/** 自定义模式素材类参数（按类型顺序映射到文件端口 2+） */
+function videoGenWfFileParams(node) {
+  const list = Array.isArray(node && node.wfParams) ? node.wfParams : [];
+  return list.filter((p) => p && ["image", "video", "audio"].includes(String(p.type || "")));
+}
+/** 自定义模式文本参数（端口1 绑定；无则返回 null） */
+function videoGenWfTextParam(node) {
+  const list = Array.isArray(node && node.wfParams) ? node.wfParams : [];
+  return list.find((p) => p && p.type === "text") || null;
+}
+function customWfInputCount(node) {
+  const files = videoGenWfFileParams(node);
+  const nImg = Math.min(9, files.filter((p) => p.type === "image").length);
+  const nVid = Math.min(3, files.filter((p) => p.type === "video").length);
+  const nAud = Math.min(3, files.filter((p) => p.type === "audio").length);
+  return 1 + nImg + nVid + nAud; /* 端口0=控制 · 端口1=文本 · 端口2+=文件槽 */
+}
+function customWfSlotMeta(node, index) {
+  if (index === 0) return { kind: "ctrl", key: "ctrl", label: "控制" };
+  if (index === 1) {
+    const tp = videoGenWfTextParam(node);
+    return {
+      kind: "text",
+      key: tp ? String(tp.key || "wfText") : "wfText",
+      label: tp ? clipStr(String(tp.label || tp.key), 6) : "提示词",
+      param: tp,
+    };
+  }
+  const files = videoGenWfFileParams(node);
+  const p = files[index - 2];
+  if (!p) return { kind: "text", key: "wfText", label: "提示词", param: null };
+  return {
+    kind: p.type === "image" ? "image" : p.type === "video" ? "video" : "audio",
+    key: String(p.key || "p" + index),
+    label: clipStr(String(p.label || p.key), 6),
+    param: p,
+  };
+}
 function videoGenSlotOccupied(node, index) {
   return (S.wf.wires || []).some(
     (w) => w.to === node.id && Number(w.toIndex) === index && !wireFromIsControl(w),
@@ -4781,6 +5899,7 @@ function videoGenProgressiveCount(occupiedPrefix, max) {
 }
 function videoGenInputCount(node) {
   /* 返回数据槽总数（端口1=提示词 … 末尾=最后一个数据槽）；端口0 固定为控制输入 */
+  if (isCustomVideoGen(node)) return customWfInputCount(node);
   const maxImg = videoGenMaxImages(node);
   const maxVid = videoGenMaxVideos(node);
   const maxAud = videoGenMaxAudios(node);
@@ -4796,6 +5915,7 @@ function videoGenInputCount(node) {
 }
 function videoGenSlotMeta(node, index) {
   /* 端口0 = 控制输入（固定，不随数据槽数变化）；端口1+ = 数据槽 */
+  if (isCustomVideoGen(node)) return customWfSlotMeta(node, index);
   const maxImg = videoGenMaxImages(node);
   const maxVid = videoGenMaxVideos(node);
   if (index === 0) return { kind: "ctrl", key: "ctrl", label: "控制" };
@@ -4825,14 +5945,17 @@ function minWFor(n) {
       return 180;
     case "input_text":
       return 220;
+    case "input_audio":
+    case "input_video":
+      return 260;
     case "proc_text":
     case "proc_image":
       return 360;
     case "agent_task":
       return 380;
-    case "chat":
-      return 300;
     case "music_gen":
+      return 320;
+    case "tts_gen":
       return 320;
     case "video_gen":
       return 340;
@@ -4867,6 +5990,8 @@ function minHFor(n) {
       return 56;
     case "music_gen":
       return 220;
+    case "tts_gen":
+      return 220;
     case "video_gen":
       return 260;
     case "remotion":
@@ -4876,7 +6001,6 @@ function minHFor(n) {
     case "net_send":
       return 140;
     case "agent_task":
-    case "chat":
       return 240;
     case "task":
       return 180;
@@ -4891,6 +6015,9 @@ function minHFor(n) {
       return 120;
     case "input_text":
       return 110;
+    case "input_audio":
+    case "input_video":
+      return 170;
     case "global":
       return 120;
     case "wait_file":
@@ -5002,12 +6129,17 @@ function nodeKindCls(node) {
   if (node.kind === "proc_text" && node.agent) return "agent";
   /* 开发节点（super+dev）：队列行用独立 kind-dev 类（样式 + 标签） */
   if (node.kind === "super" && node.dev && !node.db) return "dev";
+  /* 工具节点是超级变体，但队列 / 端子提示里的配色沿用迁移前的 proc（不当超级节点看） */
+  if (isToolNode(node)) return KIND_CLS.tool || "proc";
   return KIND_CLS[node.kind] || "proc";
 }
 function nodeKindLabel(node) {
   if (!node) return "";
   if (node.kind === "proc_text" && node.agent) return I18n.t("智能");
   if (node.kind === "super" && node.dev && !node.db) return I18n.t("开发");
+  /* 工具 / 函数节点：标签说清自己，不落到 map.super「超级节点」上 */
+  if (isToolNode(node)) return I18n.t("工具");
+  if (isFunctionNode(node)) return I18n.t("函数");
   const map = {
     proc_text: "文本处理",
     proc_image: "图像生成",
@@ -5016,7 +6148,6 @@ function nodeKindLabel(node) {
     save_text: "保存",
     save_image: "保存",
     task: "任务",
-    chat: "对话",
     wait_file: "等待",
     timer: "定时",
     delayer: "延时",
@@ -5030,11 +6161,14 @@ function nodeKindLabel(node) {
     execute: "执行",
     input_text: "文本",
     input_image: "图像",
+    input_audio: "音频",
+    input_video: "视频",
     input_file: "文件",
     db_table: "表",
     global: "全局",
-    music_gen: "音乐生成",
-    video_gen: "视频生成",
+    music_gen: "Minimax Music 3",
+    video_gen: "Minimax H3",
+    tts_gen: "SoVITS 语音",
     remotion: "Remotion 视频",
     net_recv: "接收",
     net_send: "发送",
@@ -5060,20 +6194,26 @@ function nodeKindPurposeKey(node) {
   if (node.kind === "proc_text" && node.agent) {
     return "智能任务（读文件 / 联网 / 执行命令）";
   }
+  if (isToolNode(node)) return "工具节点（参数即端子 · 可展开子画布 · Agent 可调用）";
   if (node.kind === "control") return "";
   const map = {
     input_text: "输入节点（仅输出）",
     input_image: "输入节点（仅输出）",
+    input_audio: "音频输入（输出该文件的 URL）",
+    input_video: "视频输入（输出该文件的 URL）",
+    asset: "素材节点（绑定素材库 · 内容条目即端子）",
     input_file: "文件节点（批量导入任意文件）",
     db_table: "表（读取文件 · agent 建表）",
     proc_text: "文本处理（LLM）",
     proc_image: "图像生成（文生图）",
-    music_gen: "音乐生成（MiniMax Music 3 · 提示词+歌词）",
-    video_gen: "视频生成（MiniMax H3 · 文本/图像/音频/视频）",
+    music_gen: "Minimax Music 3（音乐生成 · 提示词 + 歌词）",
+    video_gen: "Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）",
+    tts_gen: "SoVITS 语音生成（文本转语音 · GPT-SoVITS）",
     remotion: "Remotion 视频（React 动效合成 · 本地渲染 mp4）",
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
     execute: "执行节点（绑定可执行文件 · 一键启动）",
+    function: "函数节点（JS 计算 · 参数即端子）",
     save: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_text: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_image: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
@@ -5082,7 +6222,6 @@ function nodeKindPurposeKey(node) {
     agent_task: "智能任务（读文件 / 联网 / 执行命令）",
     task: "任务（规划 · 可进入分段解决）",
     super: "超级节点（收纳 · 展开子画布）",
-    chat: "文本对话（Chat）",
     wait_file: "需求等待（监视文件）",
     timer: "定时触发器（计划 / Cron）",
     delayer: "延时器（等待后继续）",
@@ -6096,8 +7235,11 @@ async function stopRunQueueItem(it) {
 /* 一键终止：运行中 + 排队中（含隐藏的媒体排队）+ 后端生成任务 + 定时触发 + 全局助手/会话。
    关键：先递增全局终止代号并给每个「有活干」的节点打停止标记，再取消主进程后端任务，
    最后关掉所有轮询；否则「结束所有节点任务」只是把 running 置 false，
-   队列与后端会自己把视频 / 音乐任务重新拉起来。 */
-function stopAllRuns() {
+   队列与后端会自己把视频 / 音乐任务重新拉起来。
+   函数 / 工具节点是例外：它们的执行体在主进程的独立线程里，光打标记停不掉 ——
+   必须按 runId 取消（terminate 线程 + 连进程树回收），所以本函数是 async，
+   等这些取消真的落地之后再刷新界面与 toast（数字要诚实）。 */
+async function stopAllRuns() {
   const { running, waiting } = collectRunQueue();
   const assistOn = !!S.assistRunning;
   /* 「在跑」用展示口径：名下只有计划并行组在跑的会话也算（st.running 是 false），
@@ -6112,7 +7254,8 @@ function stopAllRuns() {
     !waiting.length &&
     !assistOn &&
     !sessRunning.length &&
-    !hasAnyMediaGenActivity()
+    !hasAnyMediaGenActivity() &&
+    !hasAnyComputeExecActivity()
   ) {
     toast(I18n.t("当前没有运行中的任务"), "warn");
     return;
@@ -6126,7 +7269,7 @@ function stopAllRuns() {
   } catch (_) {}
   /* ③ 统一中断 dsh 引擎（智能节点 / 助手 / 会话共用一次） */
   const needDsh =
-    running.some((n) => isDshTask(n) || (n.kind === "chat" && n.agent)) ||
+    running.some((n) => isDshTask(n)) ||
     assistOn ||
     sessRunning.length > 0;
   if (needDsh) {
@@ -6166,8 +7309,17 @@ function stopAllRuns() {
     (n.running ||
       pendingIds.has(n.id) ||
       runIds.has(n.id) ||
-      (S.playLocks && S.playLocks.has(n.id)));
+      (S.playLocks && S.playLocks.has(n.id)) ||
+      /* 计算执行类：线程在主进程里，槽位已占 / 排队中都可能没进上面任何一本台账，
+         这里按活动真源再问一次，别让「全部终止」漏掉一个正在起跑或排队的函数运行 */
+      (isComputeExecKind(n) &&
+        (typeof computeExecNodeActive === "function"
+          ? computeExecNodeActive(n)
+          : typeof fnHasLiveRun === "function" && fnHasLiveRun(n))));
   let nStop = 0;
+  /* 函数 / 工具的取消是异步的（等主进程 terminate 线程 + 回收进程树）：攒起来，
+     ⑦ 统一等完再刷新界面与 toast，数字才诚实 */
+  const fnStops = [];
   /* 逐个工作流就地扫描，不复制大数组（节点再多也只走一遍） */
   const eachKnown = (fn) => {
     if (S.wf && S.wf.nodes) for (const n of S.wf.nodes) fn(n);
@@ -6180,6 +7332,20 @@ function stopAllRuns() {
     if (!isBusy(n)) return;
     if (isMediaGenNode(n)) return; /* 已在 ② 处理（状态文案不同） */
     bumpNodeStop(n);
+    /* 函数 / 工具节点：执行体在主进程的独立线程里，通用「置 running=false」是假停止
+       —— 只打标记 + 按 runId 取消这次运行（terminate 线程、连进程树回收），
+       界面状态与「已手动停止」交给运行体自己的 finally。 */
+    if (isComputeExecKind(n)) {
+      const wasRunning = !!n.running;
+      if (typeof fnCancelRunsOf === "function") {
+        fnStops.push(fnCancelRunsOf(n));
+      } else {
+        n.running = false;
+        n.error = I18n.t("已手动停止");
+      }
+      if (wasRunning) nStop++;
+      return;
+    }
     if (n._abKey) {
       try {
         window.api.apiAbort(n._abKey);
@@ -6224,6 +7390,15 @@ function stopAllRuns() {
     }
     nStop++;
   }
+  /* ⑦ 函数 / 工具节点：等主进程真的 terminate 掉线程、连进程树回收完，
+     再刷新界面与报数 —— 界面变暗的那一刻起，它绑定的线程与进程就一定不在了。 */
+  let nFnProc = 0;
+  if (fnStops.length) {
+    const rs = await Promise.all(
+      fnStops.map((p) => Promise.resolve(p).catch(() => null)),
+    );
+    for (const r of rs) if (r && r.procs) nFnProc += Number(r.procs) || 0;
+  }
   renderCanvas();
   renderStatus();
   updateRunQueuePanel();
@@ -6235,6 +7410,7 @@ function stopAllRuns() {
   if (nMedia) bits.push(nMedia + I18n.t(" 个生成任务"));
   if (nTimer) bits.push(nTimer + I18n.t(" 个定时"));
   if (nDevJob) bits.push(nDevJob + I18n.t(" 个调研"));
+  if (nFnProc) bits.push(I18n.t("回收 ") + nFnProc + I18n.t(" 个进程"));
   if (assistOn) bits.push(I18n.t("全局助手"));
   toast(
     I18n.t("已全部终止") + (bits.length ? "：" + bits.join(" · ") : ""),
@@ -6295,6 +7471,11 @@ function closeOverlay() {
   if (body) body.classList.remove("tpl-store-body", "g-ref-ov");
   document.querySelectorAll("#overlay > .plugin-pop").forEach((el) => el.remove());
   $("#overlay").style.display = "none";
+  /* 设置窗随蒙层一起没了（被别的弹窗抢占、或程序化关窗）：把节点绑定作废。
+     不清的话，撤销 / 删节点链路会拿着一个早已不存在的窗去判断，还可能多弹一次
+     「设置窗口已关闭」的提示。closeNodeSettingsDialog 已自行清引用，这里不会重复。 */
+  if (overlayKind === "nodeSettings" && typeof discardNodeSettingsDialog === "function")
+    discardNodeSettingsDialog();
 }
 
 /* 独立于 #overlay 的深色确认 / 输入框（设置等弹窗打开时也能用，不冲掉内容） */
@@ -7410,6 +8591,53 @@ function extOf(p) {
   const m = /\.([^.\\/]+)$/.exec(String(p));
   return m ? m[0] : "";
 }
+/* 路径扩展名（小写，不含点）；无扩展名返回空串 */
+function fileExtNoDot(p) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(String(p || ""));
+  return m ? m[1].toLowerCase() : "";
+}
+/* 音频 / 视频输入节点与文件对话框共用的扩展名清单（浏览器 <audio>/<video> 可播的优先） */
+const AUDIO_FILE_EXTS = [
+  "mp3", "wav", "ogg", "oga", "m4a", "aac", "flac", "opus", "amr", "aiff", "aif", "weba",
+];
+const VIDEO_FILE_EXTS = [
+  "mp4", "m4v", "webm", "mov", "avi", "mkv", "wmv", "flv", "3gp", "mpg", "mpeg", "ogv",
+];
+/* 该路径按扩展名属于哪种媒体：'audio' | 'video' | '' */
+function mediaKindOfPath(p) {
+  const e = fileExtNoDot(p);
+  if (!e) return "";
+  if (AUDIO_FILE_EXTS.indexOf(e) >= 0) return "audio";
+  if (VIDEO_FILE_EXTS.indexOf(e) >= 0) return "video";
+  return "";
+}
+/* 拖文件进画布时用的图像清单：只列 Chromium <img> 能直接显示的格式
+   （tiff / heic 等不进图像节点，落到「其他」→ 开发文件块，避免建出一个瞎图） */
+const IMAGE_FILE_EXTS = [
+  "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "avif", "apng",
+];
+/* 可当正文读进「文本节点」的扩展名：文档 / 数据 / 代码 / 配置 / 脚本 */
+const TEXT_FILE_EXTS = [
+  "txt", "text", "md", "markdown", "mdx", "rst", "adoc", "log", "json",
+  "json5", "jsonc", "ndjson", "yaml", "yml", "toml", "ini", "cfg", "conf",
+  "properties", "env", "csv", "tsv", "xml", "html", "htm", "css", "scss",
+  "sass", "less", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts",
+  "vue", "svelte", "py", "pyw", "rb", "go", "rs", "java", "kt", "kts",
+  "swift", "c", "h", "cpp", "hpp", "cc", "cs", "php", "lua", "pl", "r",
+  "sql", "sh", "bash", "zsh", "bat", "cmd", "ps1", "nsh", "nsi", "proto",
+  "graphql", "gql", "tpl", "njk", "mustache", "po", "pot", "srt", "vtt",
+];
+/* 外部拖入的文件该建哪种节点：'image' | 'text' | 'audio' | 'video' | 'other'
+   （other = 未知/二进制，一律建成开发节点「文件」块，只留路径引用） */
+function classifyDropFile(p) {
+  const e = fileExtNoDot(p);
+  if (!e) return "other";
+  if (IMAGE_FILE_EXTS.indexOf(e) >= 0) return "image";
+  const m = mediaKindOfPath(p);
+  if (m) return m;
+  if (TEXT_FILE_EXTS.indexOf(e) >= 0) return "text";
+  return "other";
+}
 /* 路径无扩展名时补上 fallback（如 .png），避免批量保存立绘变成无后缀文件 */
 function ensurePathHasExt(p, fallbackExt) {
   const s = String(p || "");
@@ -7484,15 +8712,17 @@ function nodePortHeight(node) {
   return (node && node.h) || 160;
 }
 /* 端子 Y：在“从上至下”的接线排内分布（与插排占满高度一致）。
-   opts: top 内容起点、bottom 底部留白、bandA/bandB 带上下界比例、min 最小 Y。
+   opts: top 内容起点、bottom 底部留白、bandA/bandB 带上下界比例、min 最小 Y、
+   step 相邻端子间距（缺省 = PORT_STEP；超级节点内侧端子排用更宽的呼吸间距）。
    端子从靠近顶端开始、逐次向下排列；端子过多放不下时退回整段可用区内居中，避免溢出节点。 */
 function portBandY(totalH, i, count, opts) {
   const o = opts || {};
+  const step = Number(o.step) > 0 ? Number(o.step) : PORT_STEP;
   const h = Math.max(1, totalH || 1);
   const inner = Math.max(1, h - (o.top || 0) - (o.bottom || 0));
   const bandTop = (o.top || 0) + inner * (o.bandA == null ? 0.18 : o.bandA);
   const bandBot = (o.top || 0) + inner * (o.bandB == null ? 0.82 : o.bandB);
-  const span = Math.max(0, (count || 1) - 1) * PORT_STEP;
+  const span = Math.max(0, (count || 1) - 1) * step;
   let start;
   if (span <= bandBot - bandTop) {
     /* 插槽从靠近顶端开始，逐次向下（不再居中分布） */
@@ -7501,7 +8731,7 @@ function portBandY(totalH, i, count, opts) {
     start = (o.top || 0) + Math.round((inner - span) / 2);
     if (start < (o.top || 0)) start = o.top || 0;
   }
-  return Math.max(o.min || 0, start + i * PORT_STEP);
+  return Math.max(o.min || 0, start + i * step);
 }
 function inPortY(node, i, ic) {
   return portBandY(nodePortHeight(node), i, ic, {
@@ -7516,7 +8746,16 @@ function outPortY(node, i, oc) {
 }
 function superInnerPortY(stageH, i, count) {
   const h = Math.max(120, stageH || 200);
-  return portBandY(h, i, count, { top: 0, bottom: 0, min: 24, bandA: 0, bandB: 1 });
+  /* 起点必须由 top 给，不能只靠 min 兜底（与上面 inPortY / outPortY 的 min == top 同一口径）：
+     bandA=0 时 portBandY 的 start = top，返回 max(min, start + i*step)。旧口径传
+     top:0 + min:24 → 第 1、2、3 个端子全被算成 max(24, 0|12|24)=24，整列压在同一点上。
+     普通超级节点的端子随连线伸缩、往往就 1 个，看不出来；工具节点「参数即端子」两侧各
+     ≥2 个（控制 + 参数），展开壳 / 进入内部画布后内侧输入端子与内侧输出端子各自重合，
+     分不清也点不中。内侧端子排挂在整面子画布的左右缘，间距放宽到 22px（端子命中座
+     高 20px），相邻端子的命中区不再互相压盖。 */
+  return portBandY(h, i, count, {
+    top: 24, bottom: 12, min: 24, bandA: 0, bandB: 1, step: 22,
+  });
 }
 /** 全屏进入态：内侧端子钉在 #canvas 可视区左右边缘（屏幕坐标→舞台坐标） */
 function superFocusBridgePos(host, fromIndex) {
@@ -9567,7 +10806,7 @@ function isBatchInput(n) {
     const src = firstSource(n);
     if (!src) return false;
     /* 继承自超级节点：只看其外侧输入是否批量，避免经内侧汇入再 isBatch(super) 死循环 */
-    if (src.kind === "super") {
+    if (isSuperLikeNode(src)) {
       const link = inboundWire(n);
       const slot = Number((link && link.fromIndex) || 0);
       const ext = superExternalInWires(src).find(
@@ -9596,7 +10835,7 @@ function batchMemo(id, seen) {
   seen[id] = true;
   const n = nodeById(id);
   if (!n) return false;
-  if (n.kind === "super") {
+  if (isSuperLikeNode(n)) {
     /* 仅沿外侧输入传播；内侧汇入可能继承本超级节点，会与 isBatchInput 互相递归 */
     for (const w of superExternalInWires(n)) {
       const src = nodeById(w.from);
@@ -9622,7 +10861,7 @@ function batchMemo(id, seen) {
       src.batchMode === "agg"
     )
       continue; // 聚合模式输出为单个 → 下游不再批量
-    if (src.kind === "super") {
+    if (isSuperLikeNode(src)) {
       if (batchMemo(src.id, seen)) return true;
       continue;
     }
@@ -10179,10 +11418,20 @@ function isRefTextSourceKind(src) {
     (src.kind === "input_text" ||
       src.kind === "proc_text" ||
       src.kind === "agent_task" ||
-      src.kind === "chat" ||
       src.kind === "merge" ||
       src.kind === "split")
   );
+}
+
+/** @ 引用可注入的文字：文本端子取正文；音 / 视频端子取其 `text`
+    （音视频输入节点 = 该文件的 file:/// URL，生成节点 = 产物路径），
+    这样 @音频节点 能把地址写进提示词，图像与无值来源仍走各自的分支。 */
+function refTextFromValue(v) {
+  if (!v) return null;
+  if (v.kind === "text") return v.text == null ? "" : String(v.text);
+  if ((v.kind === "audio" || v.kind === "video") && v.text != null)
+    return String(v.text);
+  return null;
 }
 
 /** @ 引用 / 取值时用的端口条目索引（含超级节点隧穿） */
@@ -10235,21 +11484,9 @@ function refCandidates(node) {
   return out;
 }
 
-/* 对话节点的输出：整个对话记录文本 */
-function chatTranscript(node) {
-  const msgs = node.messages || [];
-  if (!msgs.length) return "";
-  return (
-    "【对话记录】\n\n" +
-    msgs
-      .map((m) => (m.role === "user" ? "**用户**：" : "**AI**：") + m.content)
-      .join("\n\n")
-  );
-}
-
 function valueForInput(src, idx, consumer, seen) {
   if (!src || isControlKind(src)) return null;
-  if (src.kind === "super") {
+  if (isSuperLikeNode(src)) {
     const cons = consumer || null;
     const key =
       "super:" +
@@ -10264,10 +11501,6 @@ function valueForInput(src, idx, consumer, seen) {
     if (cons && nodeParentSuperId(cons) === src.id)
       return externalValueIntoSuper(src, idx, next);
     return valueForSuperOutput(src, idx, next);
-  }
-  if (src.kind === "chat") {
-    const t = chatTranscript(src);
-    return t ? { kind: "text", text: t } : null;
   }
   if (src.kind === "task") {
     const r = selResult(src);
@@ -10329,6 +11562,11 @@ function valueForInput(src, idx, consumer, seen) {
     }
     return src.imageAsset ? { kind: "image", path: src.imageAsset } : null;
   }
+  /* 音频 / 视频输入：静态源，端子值 = 本机文件（path）+ file:/// URL（url / text）。
+     未选文件时返回 null → 端子显示未就绪，下游按「无输入」处理。 */
+  if (src.kind === "input_audio" || src.kind === "input_video") {
+    return mediaInputValueOf(src);
+  }
   if (src.kind === "proc_text" || src.kind === "agent_task") {
     const r = selResult(src);
     /* 聚合模式：下游应取单次结果，勿优先旧的 batchOutputs */
@@ -10348,14 +11586,25 @@ function valueForInput(src, idx, consumer, seen) {
       ? { kind: "text", text: r.output.text }
       : null;
   }
-  if (src.kind === "music_gen") {
+  if (src.kind === "function") {
+    /* 函数节点：多输出分发后按端子取值（引擎把 return 对象按键名写进
+       portOutputs.$<端子序号>）；该端子无值 / 旧存档只有单输出时回落 node.output */
+    const r = selResult(src);
+    const po = (r && r.portOutputs) || null;
+    const key = "$" + (Number(idx) || 0);
+    if (po && Object.prototype.hasOwnProperty.call(po, key))
+      return po[key] || null;
+    return r && r.output ? r.output : null;
+  }
+  if (src.kind === "music_gen" || src.kind === "tts_gen") {
     const r = selResult(src);
     const p =
       (r && r.output && (r.output.path || r.output.text)) ||
       (src.output && (src.output.path || src.output.text)) ||
       "";
     if (!p) return null;
-    return { kind: "audio", path: String(p), text: String(p) };
+    /* 与音视频输入节点同口径：path 供本机后端直接用，url 是对外输出地址 */
+    return { kind: "audio", path: String(p), url: mediaFileUrlOf(p), text: String(p) };
   }
   if (src.kind === "video_gen" || src.kind === "remotion") {
     const r = selResult(src);
@@ -10364,7 +11613,12 @@ function valueForInput(src, idx, consumer, seen) {
       (src.output && (src.output.path || src.output.text)) ||
       "";
     if (!p) return null;
-    return { kind: "video", path: String(p), text: String(p) };
+    return {
+      kind: "video",
+      path: String(p),
+      url: mediaFileUrlOf(p),
+      text: String(p),
+    };
   }
   if (src.kind === "proc_image") {
     const r = selResult(src);
@@ -10393,7 +11647,7 @@ function inboundWire(n) {
 }
 function wireSourceIndex(w, fallbackIdx) {
   const src = w && nodeById(w.from);
-  if (src && src.kind === "super") return Number(w.fromIndex || 0);
+  if (src && isSuperLikeNode(src)) return Number(w.fromIndex || 0);
   return fallbackIdx == null ? 0 : fallbackIdx;
 }
 function inheritedValue(n, idx) {
@@ -10406,7 +11660,7 @@ function inheritedValue(n, idx) {
 /* 聚合模式：取某个源的全部条目（批量源 → 每个条目；普通源 → 单个） */
 function allTextItems(src, consumer, portIdx) {
   if (!src) return [];
-  if (src.kind === "super") {
+  if (isSuperLikeNode(src)) {
     let slot = 0;
     if (portIdx != null && portIdx !== "") slot = Number(portIdx) || 0;
     else if (consumer) {
@@ -10428,10 +11682,6 @@ function allTextItems(src, consumer, portIdx) {
       (x) => Number(x.toIndex) === slot,
     );
     return feed ? allTextItems(nodeById(feed.from), src) : [];
-  }
-  if (src.kind === "chat") {
-    const t = chatTranscript(src);
-    return t ? [{ title: src.title, text: t }] : [];
   }
   if (src.kind === "split") {
     const it = splitSelected(src);
@@ -10479,6 +11729,12 @@ function allTextItems(src, consumer, portIdx) {
       return [{ title: src.title, text: r.output.text }];
     return [];
   }
+  if (src.kind === "function") {
+    const r = selResult(src);
+    if (r && r.output && r.output.kind === "text")
+      return [{ title: src.title, text: r.output.text }];
+    return [];
+  }
   if (src.kind === "task") {
     const r = selResult(src);
     const t =
@@ -10495,7 +11751,7 @@ function allTextItems(src, consumer, portIdx) {
 }
 function allImageItems(src, consumer, portIdx) {
   if (!src) return [];
-  if (src.kind === "super") {
+  if (isSuperLikeNode(src)) {
     let slot = 0;
     if (portIdx != null && portIdx !== "") slot = Number(portIdx) || 0;
     else if (consumer) {
@@ -10574,6 +11830,13 @@ function allImageItems(src, consumer, portIdx) {
       return [{ title: src.title, path: r.output.path }];
     return [];
   }
+  if (src.kind === "function") {
+    /* 函数节点：主输出为图像路径时按图像条目返回 */
+    const r = selResult(src);
+    if (r && r.output && r.output.path && r.output.kind === "image")
+      return [{ title: src.title, path: r.output.path }];
+    return [];
+  }
   return [];
 }
 function dedupeBlockTitles(blocks) {
@@ -10596,7 +11859,7 @@ function itemTitleOf(src, idx, consumer) {
   if (!src) return I18n.t("输入");
   const fallback = src.title || I18n.t("输入");
   const at = Math.min(idx || 0, 999999);
-  if (src.kind === "super") {
+  if (isSuperLikeNode(src)) {
     if (consumer && nodeParentSuperId(consumer) === src.id) {
       const ext = superExternalInWires(src).find(
         (x) => Number(x.toIndex) === at,
@@ -10699,7 +11962,7 @@ function itemTitleOf(src, idx, consumer) {
 /* 用于只读展示的节点值描述：{text} | {image} | {items:[{title,content}]} | {images:[{title,path}]} */
 function displayValueOf(src, consumer) {
   if (!src) return null;
-  if (src.kind === "super") {
+  if (isSuperLikeNode(src)) {
     let idx = 0;
     if (consumer) {
       const link = (S.wf.wires || []).find(
@@ -10715,10 +11978,6 @@ function displayValueOf(src, consumer) {
     if (v.kind === "text") return { text: v.text };
     if (v.kind === "image") return { image: v.path, title: src.title };
     return null;
-  }
-  if (src.kind === "chat") {
-    const t = chatTranscript(src);
-    return t ? { text: t } : null;
   }
   if (src.kind === "task") {
     const r = selResult(src);
@@ -10810,6 +12069,18 @@ function displayValueOf(src, consumer) {
     if (typeof o === "string") return { text: o };
     return null;
   }
+  /* 音视频输入：静态源，对外可读内容 = 该文件的 file:/// URL（与端子值同口径） */
+  if (src.kind === "input_audio" || src.kind === "input_video") {
+    const v = mediaInputValueOf(src);
+    return v ? { text: String(v.text || "") } : null;
+  }
+  if (src.kind === "function") {
+    const r = selResult(src);
+    if (r && r.output && r.output.kind === "text") return { text: r.output.text };
+    if (r && r.output && r.output.kind === "image" && r.output.path)
+      return { image: r.output.path, title: src.title };
+    return null;
+  }
   return null;
 }
 
@@ -10817,7 +12088,7 @@ function inputValuesFor(node, idx) {
   return wiresTo(node.id).map((w) => {
     const src = nodeById(w.from);
     const fromIdx =
-      src && src.kind === "super"
+      src && isSuperLikeNode(src)
         ? Number(w.fromIndex || 0)
         : idx;
     return {
@@ -10946,15 +12217,19 @@ function promptRefBackdropHtml(text, node) {
   const cands = refCandidates(node);
   const tags = new Set(refTagCandidates(node));
   return (
-    escapePromptHl(text).replace(
-      /@([^\s@，。；、！？：,!?;:]+)/g,
-      (m, tok) => {
-        if (findCandidateByTitle(cands, tok))
-          return '<span class="at-ref-node">' + m + "</span>";
-        const tag = tagByAtToken(tok);
-        if (tag && tags.has(tag))
-          return '<span class="at-ref-tag">' + m + "</span>";
-        return m;
+    eachAtMention(
+      text,
+      atRefNamesFor(cands),
+      escapePromptHl,
+      (h, seg) => {
+        const key = h.name || h.token;
+        const tag = tagByAtToken(key);
+        const cls = findCandidateByTitle(cands, key)
+          ? "at-ref-node"
+          : tag && tags.has(tag)
+            ? "at-ref-tag"
+            : "";
+        return cls ? '<span class="' + cls + '">' + escapePromptHl(seg) + "</span>" : null;
       },
     ) + PROMPT_HL_TAIL
   );
@@ -11015,11 +12290,12 @@ function resolveRefs(prompt, node, idx, opts) {
     seen.add(c.id);
     const useIdx = fromIdx != null ? fromIdx : idx;
     const v = valueForInput(c, useIdx, node);
-    if (v && v.kind === "text" && v.text != null)
+    const t = refTextFromValue(v);
+    if (t != null)
       textSources.push({
         id: c.id,
         title: itemTitleOf(c, useIdx, node),
-        text: v.text,
+        text: t,
       });
   };
   const cands = refCandidates(node);
@@ -11038,53 +12314,51 @@ function resolveRefs(prompt, node, idx, opts) {
       addText(src);
     }
   }
-  const out = String(prompt || "").replace(
-    /@([^\s@，。；、！？：,!?;:]+)/g,
-    (m, tok) => {
-      const c = findCandidateByTitle(cands, tok);
-      if (!c) {
-        const tag = tagByAtToken(tok);
-        if (
-          tag &&
-          collectTagRefContent(tag, node, idx, {
-            refImages,
-            textSources,
-            seenTagNodes: seen,
-          })
-        )
-          return "Tag:" + tag;
-        unresolved.add(tok);
-        return m;
-      }
-      const useIdx = refInputIdxFor(node, c, idx);
-      const v = valueForInput(c, useIdx, node);
-      if (v && v.kind === "text") {
-        if (c.kind === "super") {
-          for (const w of wiresTo(node.id)) {
-            if (nodeById(w.from)?.id !== c.id) continue;
-            for (const leaf of refLeafSourcesForWire(w, node)) {
-              if (isRefTextSourceKind(leaf))
-                addText(leaf, refInputIdxFor(node, leaf, idx));
-            }
+  const out = mapAtMentions(prompt, atRefNamesFor(cands), (h, raw) => {
+    const tok = h.name || h.token;
+    const c = findCandidateByTitle(cands, tok);
+    if (!c) {
+      const tag = tagByAtToken(tok);
+      if (
+        tag &&
+        collectTagRefContent(tag, node, idx, {
+          refImages,
+          textSources,
+          seenTagNodes: seen,
+        })
+      )
+        return "Tag:" + tag;
+      unresolved.add(tok);
+      return raw;
+    }
+    const useIdx = refInputIdxFor(node, c, idx);
+    const v = valueForInput(c, useIdx, node);
+    if (refTextFromValue(v) != null) {
+      if (c.kind === "super") {
+        for (const w of wiresTo(node.id)) {
+          if (nodeById(w.from)?.id !== c.id) continue;
+          for (const leaf of refLeafSourcesForWire(w, node)) {
+            if (isRefTextSourceKind(leaf))
+              addText(leaf, refInputIdxFor(node, leaf, idx));
           }
-        } else {
-          addText(c, useIdx);
         }
-        return c.title;
+      } else {
+        addText(c, useIdx);
       }
-      if (v && v.kind === "image") {
-        const path = v.path;
-        let n = refImages.indexOf(path);
-        if (n < 0) {
-          refImages.push(path);
-          n = refImages.length - 1;
-        }
-        /* 图生图 edits 按 multipart 顺序认图，无法靠标题文字定位 → 写成「第 N 张参考图」 */
-        return I18n.t("第{n}张参考图", { n: n + 1 });
+      return c.title;
+    }
+    if (v && v.kind === "image") {
+      const path = v.path;
+      let n = refImages.indexOf(path);
+      if (n < 0) {
+        refImages.push(path);
+        n = refImages.length - 1;
       }
-      return m;
-    },
-  );
+      /* 图生图 edits 按 multipart 顺序认图，无法靠标题文字定位 → 写成「第 N 张参考图」 */
+      return I18n.t("第{n}张参考图", { n: n + 1 });
+    }
+    return raw;
+  });
   return { prompt: out, refImages, unresolved: [...unresolved], textSources };
 }
 
@@ -11184,15 +12458,42 @@ function caretXY(ta, atIdx) {
 
 /* 光标前正在输入的 @token（只打了裸 @ 也算）：@ 前必须是行首或分隔符，
    避免把 xxx@yyy、邮箱之类误判成引用。返回 { start, query } 或 null。
-   start = 「@」在正文里的下标；query = @ 之后已打出的片段，用来筛候选。 */
+   start = 「@」在正文里的下标；query = @ 之后已打出的片段，用来筛候选。
+   names = 本节点可 @ 的候选名（标题 / 标签）。标题里本来就可能带空格（重名自动
+   编号就是「文本节点 2」），所以带空格的这段只要【还是一个候选名的开头】就继续
+   算正在输入（可以边打边筛）；已经打到句子上去就照旧收起菜单。 */
 const REF_SEP = "\\s@，。；、！？：,.!?;:()（）\"'「」【】";
 const REF_TOKEN_RE = new RegExp(
   "(^|[" + REF_SEP + "])@([^" + REF_SEP + "]*)$",
 );
+const REF_SEP_RE = new RegExp("^[" + REF_SEP + "]$");
 
-function refTokenAt(ta) {
+/* 比对输入片段用的归一化：忽略大小写与所有空格（标题里的空格打不打都算同一串） */
+function refNormKey(s) {
+  return String(s == null ? "" : s).toLowerCase().replace(/\s+/g, "");
+}
+
+function refWideTokenAt(before, names) {
+  const list = Array.isArray(names) ? names : [];
+  if (!list.length) return null;
+  const at = before.lastIndexOf("@");
+  if (at < 0) return null;
+  if (at > 0 && !REF_SEP_RE.test(before.charAt(at - 1))) return null;
+  const q = before.slice(at + 1);
+  if (!/[ \t]/.test(q)) return null;
+  const k = refNormKey(q);
+  if (!k) return null;
+  for (const n of list) {
+    if (refNormKey(n).indexOf(k) === 0) return { start: at, query: q };
+  }
+  return null;
+}
+
+function refTokenAt(ta, names) {
   if (!ta) return null;
   const before = String(ta.value || "").slice(0, ta.selectionStart || 0);
+  const wide = refWideTokenAt(before, names);
+  if (wide) return wide;
   const m = REF_TOKEN_RE.exec(before);
   if (!m) return null;
   return { start: m.index + m[1].length, query: m[2] || "" };
@@ -11210,16 +12511,18 @@ function refEntriesHash(entries) {
   return (entries || []).map((e) => refEntryTitle(e)).join("\u0001");
 }
 
-/* 按 @ 后已打出的片段筛候选：标题（或标签名）包含即命中，前缀命中排前面 */
+/* 按 @ 后已打出的片段筛候选：标题（或标签名）包含即命中，前缀命中排前面。
+   比对忽略空格 —— 带空格的标题（「文本节点 2」）少打 / 多打一个空格也筛得出来。 */
 function filterRefEntries(entries, query) {
-  const q = String(query || "").toLowerCase().trim();
+  const q = refNormKey(query);
   if (!q) return entries;
   const pre = [];
   const rest = [];
   for (const e of entries) {
-    const t = refEntryTitle(e).toLowerCase();
-    if (t.indexOf(q) < 0) continue;
-    (t.indexOf(q) === 0 ? pre : rest).push(e);
+    const t = refNormKey(refEntryTitle(e));
+    const hit = t.indexOf(q);
+    if (hit < 0) continue;
+    (hit === 0 ? pre : rest).push(e);
   }
   return pre.concat(rest);
 }
@@ -11352,7 +12655,7 @@ function selectRefEntry(entry, i) {
   const ta = rm.ta;
   const v = String(ta.value || "");
   const caret = ta.selectionStart || 0;
-  const tok = refTokenAt(ta);
+  const tok = refTokenAt(ta, (rm.entries || []).map(refEntryTitle));
   let at;
   if (tok) at = tok.start;
   else {
@@ -11383,26 +12686,25 @@ function selectRef(node, i) {
 }
 
 function refTick(ta, node) {
-  const tok = refTokenAt(ta);
-  /* 光标前没有正在输入的 @token（连裸 @ 都没打）：收起菜单 */
-  if (!tok) {
-    closeRefMenu();
-    return;
-  }
   const isAgg =
     (node.kind === "proc_text" ||
       node.kind === "proc_image" ||
       node.kind === "agent_task") &&
     node.batchMode === "agg" &&
     batchTitles(node);
+  const items = isAgg ? aggCandidates(node) : null;
+  /* 候选名一起交给 refTokenAt：标题 / 标签里带空格也能边打边筛 */
+  const names = items
+    ? items.map((n) => n && n.title)
+    : refMenuEntries(node).map(refEntryTitle);
+  const tok = refTokenAt(ta, names);
+  /* 光标前没有正在输入的 @token（连裸 @ 都没打）：收起菜单 */
+  if (!tok) {
+    closeRefMenu();
+    return;
+  }
   /* 带上已打出的片段：菜单不再「一打字就关掉」，可以边打边筛再回车确认 */
-  showRefMenu(
-    ta,
-    node,
-    isAgg ? aggCandidates(node) : null,
-    tok.query,
-    tok.start,
-  );
+  showRefMenu(ta, node, items, tok.query, tok.start);
 }
 
 /* @ 引用的键盘操作：↑↓ 选条目 · 回车 / Tab 直接确认（不用鼠标点）· Esc 收起。
@@ -11814,7 +13116,7 @@ function startNodeDrag(ev, node, opts) {
     const mk = markById(id);
     if (!mk) continue;
     markIds.push(id);
-    origMarks[id] = { x: mk.x, y: mk.y, x2: mk.x2, y2: mk.y2 };
+    origMarks[id] = { x: mk.x, y: mk.y, w: mk.w, h: mk.h };
   }
   S.drag = {
     mode: "node",
@@ -11875,11 +13177,22 @@ function startWireDrag(fromId, ev, fromIndex, opts) {
     sy: ev.clientY,
     mx: ev.clientX,
     my: ev.clientY,
+    /* 是否真的拖出去过：只在端子上原地点一下不算，避免点输出端子就弹新建菜单 */
+    moved: false,
     superInnerBridge: !!opts.superInnerBridge,
     /* 反向拖线：从输入端开始拖向输出端（fromId 是输入侧节点，fromIndex 是其输入序号） */
     fromInput: !!opts.fromInput,
   };
   updateWires();
+}
+/* 拖线位移阈值（屏幕像素）：超过它才认为用户是「向外拉」而非点端子 */
+const WIRE_DRAG_MOVED_PX = 6;
+function wireDragMoved(d, ev) {
+  return !!(
+    d &&
+    (Math.abs(ev.clientX - d.sx) > WIRE_DRAG_MOVED_PX ||
+      Math.abs(ev.clientY - d.sy) > WIRE_DRAG_MOVED_PX)
+  );
 }
 /** 拖拽中按世界坐标刷新节点 DOM；内部节点提升到主舞台以免被 overflow 裁切 */
 function applyNodeDragVisual(d, dx, dy) {
@@ -11960,24 +13273,15 @@ function groupIsEmpty(g) {
 function pruneEmptyGroups() {
   S.wf.groups = (S.wf.groups || []).filter((g) => !groupIsEmpty(g));
 }
+/* 文字标注的 DOM 位置同步（绘制只剩 text：框体 / 箭头已移除，归类节点请用「组」） */
 function syncMarkDomPos(m) {
   if (!m) return;
   const el = document.querySelector('.wf-mark[data-mid="' + m.id + '"]');
   if (!el) return;
-  if (m.kind === "arrow") {
-    const b = markBounds(m);
-    if (b) {
-      el.style.left = b.x + "px";
-      el.style.top = b.y + "px";
-      el.style.width = b.w + "px";
-      el.style.height = b.h + "px";
-    }
-  } else {
-    el.style.left = m.x + "px";
-    el.style.top = m.y + "px";
-    if (m.w) el.style.width = m.w + "px";
-    if (m.h) el.style.height = m.h + "px";
-  }
+  el.style.left = m.x + "px";
+  el.style.top = m.y + "px";
+  if (m.w) el.style.width = m.w + "px";
+  if (m.h) el.style.height = m.h + "px";
 }
 /* 组边框矩形：仅计入当前画布可见成员，避免其它任务层坐标把外框撑得过大 */
 function groupBounds(g) {
@@ -12017,109 +13321,8 @@ function groupBounds(g) {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 const GROUP_PAD = 16;
-const GROUP_BOX_FIT_PAD = 36;
-/* 框体若远大于组内节点/文字/箭头，收紧到内容占位，避免虚线外框和总览图出现大片空白 */
-function fitGroupBoxesToMembers(g, wf) {
-  if (!g) return false;
-  ensureGroupArrays(g);
-  wf = wf || S.wf;
-  if (!wf) return false;
-  const nodeOf = (id) => (wf.nodes || []).find((n) => n.id === id) || null;
-  const markOf = (id) => (wf.marks || []).find((m) => m.id === id) || null;
-  const boxes = [];
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  let any = false;
-  const include = (x, y, w, h) => {
-    x = Number(x);
-    y = Number(y);
-    w = Number(w);
-    h = Number(h);
-    if (![x, y, w, h].every(Number.isFinite) || w < 0 || h < 0) return;
-    any = true;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + w);
-    maxY = Math.max(maxY, y + h);
-  };
-  const counts = new Map();
-  for (const id of g.nodeIds) {
-    const n = nodeOf(id);
-    if (!n) continue;
-    const s = nodeParentTaskId(n);
-    counts.set(s, (counts.get(s) || 0) + 1);
-  }
-  for (const id of g.markIds) {
-    const m = markOf(id);
-    if (!m) continue;
-    const s = markParentTaskId(m);
-    counts.set(s, (counts.get(s) || 0) + 1);
-  }
-  let scopeId = "";
-  let bestN = -1;
-  for (const [k, v] of counts) {
-    if (v > bestN) {
-      bestN = v;
-      scopeId = k;
-    }
-  }
-  if (bestN < 0) return false;
-  for (const id of g.nodeIds) {
-    const n = nodeOf(id);
-    if (!n || nodeParentTaskId(n) !== scopeId) continue;
-    include(n.x, n.y, n.w, n.h);
-  }
-  for (const id of g.markIds) {
-    const m = markOf(id);
-    if (!m || markParentTaskId(m) !== scopeId) continue;
-    if (m.kind === "box") {
-      boxes.push(m);
-      continue;
-    }
-    const b = markBounds(m);
-    if (b) include(b.x, b.y, b.w, b.h);
-  }
-  if (!any || !boxes.length) return false;
-  const nx = snap(minX - GROUP_BOX_FIT_PAD);
-  const ny = snap(minY - GROUP_BOX_FIT_PAD);
-  const nw = snap(Math.max(40, maxX - minX + GROUP_BOX_FIT_PAD * 2));
-  const nh = snap(Math.max(40, maxY - minY + GROUP_BOX_FIT_PAD * 2));
-  const contentArea = Math.max(1, nw * nh);
-  let changed = false;
-  for (const m of boxes) {
-    const bw = Number(m.w) || 0;
-    const bh = Number(m.h) || 0;
-    const bx = Number(m.x);
-    const by = Number(m.y);
-    const area = Math.max(1, bw * bh);
-    const disjoint =
-      !Number.isFinite(bx) ||
-      !Number.isFinite(by) ||
-      bx + bw < minX - 48 ||
-      by + bh < minY - 48 ||
-      bx > maxX + 48 ||
-      by > maxY + 48;
-    const oversized = bw > nw * 1.35 || bh > nh * 1.35 || area > contentArea * 1.8;
-    if (!disjoint && !oversized) continue;
-    m.x = nx;
-    m.y = ny;
-    m.w = nw;
-    m.h = nh;
-    changed = true;
-  }
-  return changed;
-}
-function fitAllGroupBoxes(wf) {
-  wf = wf || S.wf;
-  if (!wf) return false;
-  let changed = false;
-  for (const g of wf.groups || []) {
-    if (fitGroupBoxesToMembers(g, wf)) changed = true;
-  }
-  return changed;
-}
+/* 组边框由 groupBounds（成员真实几何）+ updateGroupFrames 自动撑合，
+   不再需要「组内框体收紧」一族逻辑（绘制的框体 / 箭头已移除，归类节点只用组）。 */
 /* 同步所有组框的 DOM 位置（节点拖拽 / 缩放后调用） */
 function updateGroupFrames() {
   for (const g of S.wf.groups || []) {
@@ -12256,12 +13459,12 @@ function clampGroupScale(g, sx, sy, orig, origMarks) {
   }
   for (const id of g.markIds) {
     const m = markById(id);
-    if (!m || m.kind === "arrow") continue;
+    if (!m) continue;
     const o = origMarks && origMarks[id];
     const ow = o ? o.w : m.w || 40;
     const oh = o ? o.h : m.h || 40;
     minSx = Math.max(minSx, 40 / ow);
-    minSy = Math.max(minSy, (m.kind === "text" ? 24 : 40) / oh);
+    minSy = Math.max(minSy, 24 / oh);
   }
   sx = Math.max(0.3, Math.min(3, sx));
   sy = Math.max(0.3, Math.min(3, sy));
@@ -12293,13 +13496,8 @@ function scaleGroup(g, sx, sy, ax, ay, orig, origMarks) {
     if (!m || !o) continue;
     m.x = ax + (o.x - ax) * sx;
     m.y = ay + (o.y - ay) * sy;
-    if (m.kind === "arrow") {
-      m.x2 = ax + ((o.x2 != null ? o.x2 : o.x) - ax) * sx;
-      m.y2 = ay + ((o.y2 != null ? o.y2 : o.y) - ay) * sy;
-    } else {
-      m.w = Math.max(m.kind === "text" ? 40 : 40, Math.round((o.w || m.w) * sx));
-      m.h = Math.max(m.kind === "text" ? 24 : 40, Math.round((o.h || m.h) * sy));
-    }
+    m.w = Math.max(40, Math.round((o.w || m.w) * sx));
+    m.h = Math.max(24, Math.round((o.h || m.h) * sy));
     syncMarkDomPos(m);
   }
 }
@@ -12316,15 +13514,7 @@ function startGroupDrag(g, ev) {
   const origMarks = {};
   for (const id of g.markIds) {
     const m = markById(id);
-    if (m)
-      origMarks[id] = {
-        x: m.x,
-        y: m.y,
-        x2: m.x2,
-        y2: m.y2,
-        w: m.w,
-        h: m.h,
-      };
+    if (m) origMarks[id] = { x: m.x, y: m.y, w: m.w, h: m.h };
   }
   S.drag = {
     mode: "group",
@@ -12352,15 +13542,7 @@ function startGroupResize(g, ev, axes) {
   const origMarks = {};
   for (const id of g.markIds) {
     const m = markById(id);
-    if (m)
-      origMarks[id] = {
-        x: m.x,
-        y: m.y,
-        x2: m.x2,
-        y2: m.y2,
-        w: m.w,
-        h: m.h,
-      };
+    if (m) origMarks[id] = { x: m.x, y: m.y, w: m.w, h: m.h };
   }
   S.drag = {
     mode: "groupresize",
@@ -12447,7 +13629,6 @@ function addMembersToGroup(gid, nodes, marks) {
   pushHistory();
   g.nodeIds.push(...addedN);
   g.markIds.push(...addedM);
-  fitGroupBoxesToMembers(g);
   renderCanvas();
   scheduleSave(true);
   renderStatus();
@@ -12584,7 +13765,6 @@ function promptGroupTitle(nodeIds, markIds) {
       markIds: markIds.slice(),
     });
     S.selGroup = S.wf.groups[S.wf.groups.length - 1].id;
-    fitGroupBoxesToMembers(S.wf.groups[S.wf.groups.length - 1]);
     S.sel = null;
     S.selWire = null;
     S.selSet.clear();
@@ -12758,6 +13938,36 @@ async function deleteNodes(ids, quiet) {
     const p = nodeById(n.parentTaskId);
     n.parentTaskId = (p && p.parentTaskId) || "";
   }
+  /* 函数 / 工具节点删除即回收：它们在主进程独立线程里的运行、以及由此拉起的外部进程，
+     不能因为节点对象从画布上消失就变成没人管的孤儿（进程还活着、锁还没释放）。
+     ids 上面已展开成「含全部后代」，所以停外壳就等于连内部图一起停。
+     取消后运行体自己 await 到「已手动停止」并收尾（清 running、释放并发槽位）。 */
+  const delStopped = [];
+  for (const id of ids) {
+    const n = nodeById(id);
+    if (!n) continue;
+    if (
+      isComputeExecKind(n) &&
+      (n.running ||
+        (typeof computeExecNodeActive === "function"
+          ? computeExecNodeActive(n)
+          : typeof fnHasLiveRun === "function" && fnHasLiveRun(n)))
+    ) {
+      bumpNodeStop(n);
+      delStopped.push(n);
+    }
+  }
+  if (delStopped.length) {
+    let procs = 0;
+    const rs = await Promise.all(
+      delStopped.map((n) =>
+        Promise.resolve(fnCancelRunsOf(n)).catch(() => null),
+      ),
+    );
+    for (const r of rs) if (r && r.procs) procs += Number(r.procs) || 0;
+    if (procs && !quiet)
+      toast(I18n.t("已回收 ") + procs + I18n.t(" 个进程"), "warn");
+  }
   /* 内部绘制随超级节点一并移除 */
   const markDel = (S.wf.marks || [])
     .filter((m) => {
@@ -12767,6 +13977,13 @@ async function deleteNodes(ids, quiet) {
     .map((m) => m.id);
   if (markDel.length) deleteMarks(markDel, true);
   S.wf.nodes = S.wf.nodes.filter((n) => !set.has(n.id));
+  /* 删掉的节点里若有设置窗正在绑着的那个：窗必须一起关（它写的是孤儿对象），
+     并明确告知用户窗为什么不见了。后面的 renderCanvas / scheduleSave 由本函数收尾。 */
+  closeNodeSettingsDialogIfStale({
+    silentRerender: true,
+    skipSave: true,
+    quiet: !!quiet,
+  });
   S.wf.wires = S.wf.wires.filter(
     (w) => !set.has(w.from) && !set.has(w.to),
   );
@@ -12846,10 +14063,6 @@ function duplicateMarks(list) {
     const dy = i * grid();
     cp.x = snap((cp.x || 0) + off);
     cp.y = snap((cp.y || 0) + off + dy);
-    if (cp.kind === "arrow") {
-      cp.x2 = snap((cp.x2 != null ? cp.x2 : cp.x) + off);
-      cp.y2 = snap((cp.y2 != null ? cp.y2 : cp.y) + off + dy);
-    }
     cps.push(cp);
   });
   marksOf().push(...cps);
@@ -12897,10 +14110,6 @@ function duplicateSelection() {
       const dy = i * grid();
       cp.x = snap((cp.x || 0) + off);
       cp.y = snap((cp.y || 0) + off + dy);
-      if (cp.kind === "arrow") {
-        cp.x2 = snap((cp.x2 != null ? cp.x2 : cp.x) + off);
-        cp.y2 = snap((cp.y2 != null ? cp.y2 : cp.y) + off + dy);
-      }
       markCps.push(cp);
     });
     S.wf.nodes.push(...nodeCps);
@@ -13243,10 +14452,6 @@ function pasteNodesFromClipboard() {
     cp.id = uid("mk");
     cp.x = snap((cp.x || 0) + dx);
     cp.y = snap((cp.y || 0) + dy);
-    if (cp.kind === "arrow") {
-      cp.x2 = snap((cp.x2 != null ? cp.x2 : cp.x) + dx);
-      cp.y2 = snap((cp.y2 != null ? cp.y2 : cp.y) + dy);
-    }
     /* 标注归属与节点一致：父在粘贴集内指新 id，否则落当前作用域 */
     cp.parentTaskId =
       cp.parentTaskId && idMap.has(cp.parentTaskId)
@@ -13274,10 +14479,6 @@ function pasteNodesFromClipboard() {
       if (cp.parentSuperId !== superFocus) continue;
       cp.x = snap((cp.x || 0) - sfHost.x - o.ox - pan.x);
       cp.y = snap((cp.y || 0) - sfHost.y - o.oy - pan.y);
-      if (cp.kind === "arrow") {
-        cp.x2 = snap((cp.x2 != null ? cp.x2 : cp.x) - sfHost.x - o.ox - pan.x);
-        cp.y2 = snap((cp.y2 != null ? cp.y2 : cp.y) - sfHost.y - o.oy - pan.y);
-      }
     }
   }
   marksOf().push(...mkCps);
@@ -13357,16 +14558,21 @@ function syncGroupBtns() {
 
 /* 左侧栏「当前画布」分类：必须覆盖全部节点类型，否则该类型的节点不出现在列表里。
  * 开发节点 = kind "super" + dev:true（含普通超级节点），单独归类便于定位。 */
+/* 分类归属判定：工具节点的规范形态是超级变体（kind 字面值 "super"），但侧栏仍归
+   「工具节点」分类 ——  kinds 里带 "tool" 的那个分类就是它的归属，不吃 kind 字面值。 */
+function sideCatMatches(n, kinds) {
+  if (isToolNode(n)) return kinds.includes("tool");
+  return kinds.includes(n.kind);
+}
 const SIDE_CATS = [
-  ["输入节点", ["input_text", "input_image", "input_file", "db_table"]],
+  ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "music_gen", "video_gen", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "music_gen", "tts_gen", "video_gen", "remotion"]],
   ["保存节点", ["save"]],
-  ["工具节点", ["split", "merge"]],
+  ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
   ["智能节点", ["agent_task"]],
   ["任务节点", ["task"]],
-  ["对话节点", ["chat"]],
   ["控制节点", ["control", "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex", "judge"]],
   ["执行节点", ["execute"]],
   ["数据库", ["db_replica"]],
@@ -13375,11 +14581,16 @@ const SIDE_CATS = [
 const KIND_TAGS = {
   input_text: "文本",
   input_image: "图像",
+  input_audio: "音频",
+  input_video: "视频",
+  /* 素材节点（素材库内容打包） */
+  asset: "素材",
   input_file: "文件",
   db_table: "表",
   proc_text: "LLM",
   proc_image: "文生图",
   music_gen: "音乐",
+  tts_gen: "语音",
   video_gen: "视频",
   remotion: "视频",
   net_recv: "接收",
@@ -13390,6 +14601,8 @@ const KIND_TAGS = {
   save_image: "保存",
   split: "拆分",
   merge: "合并",
+  function: "函数",
+  tool: "工具",
   global: "全局",
   wait_file: "等待",
   timer: "定时",
@@ -13401,7 +14614,6 @@ const KIND_TAGS = {
   mutex: "互斥",
   agent_task: "智能",
   task: "任务",
-  chat: "对话",
   control: "控制",
   judge: "判断",
   super: "超节点",
@@ -13677,7 +14889,7 @@ function renderSidebar() {
   for (const [cat, kinds] of SIDE_CATS) {
     const items = S.wf.nodes.filter(
       (n) =>
-        kinds.includes(n.kind) &&
+        sideCatMatches(n, kinds) &&
         (f ? true : nodeInCurrentScope(n)),
     );
     if (!items.length) continue;
@@ -13691,11 +14903,14 @@ function renderSidebar() {
       const tag = document.createElement("span");
       tag.className = "side-tag";
       let tagText = KIND_TAGS[n.kind] || n.kind;
-      /* 开发节点（kind=super + dev）标注元素类型，便于与普通超级节点区分 */
+      /* 开发节点（kind=super + dev）标注元素类型，便于与普通超级节点区分；
+         工具节点（kind=super + tool）保持「工具」标注（形态迁移后不再靠 kind 区分）。 */
       if (n.kind === "super" && n.dev) {
         tagText =
           "开发·" +
           I18n.t(DEV_KIND_LABEL[devKindOf(n) || "module"] || "模块");
+      } else if (isToolNode(n)) {
+        tagText = I18n.t(KIND_TAGS.tool);
       } else if (n.kind === "super") {
         tagText = I18n.t(KIND_TAGS.super);
       }
@@ -13912,7 +15127,7 @@ function nodeFindFields(n) {
     });
   if (n.kind === "agent_task" || n.task != null)
     fields.push({ key: "task", get: () => n.task || "", set: (v) => (n.task = v) });
-  if (n.kind === "chat" || n.systemPrompt != null)
+  if (n.systemPrompt != null)
     fields.push({
       key: "systemPrompt",
       get: () => n.systemPrompt || "",
@@ -14273,8 +15488,6 @@ function markSidebarTitle(m) {
     const t = String(m.text || "").replace(/\s+/g, " ").trim();
     return t || I18n.t("说明文字");
   }
-  if (m.kind === "box") return I18n.t("框体");
-  if (m.kind === "arrow") return I18n.t("箭头");
   return markKindLabel(m.kind);
 }
 
@@ -14328,6 +15541,16 @@ function canvasCreateMenuGroups(pt) {
       ],
     ];
   }
+  /* 子画布内（在展开的超级 / 工具壳层里右键，或全屏进入壳层后右键）：这两类节点可以
+     继续往里加 —— 工具内部还能套工具与函数。顶层画布与子画布都列在「工具」一级菜单下
+     （这里就是工具 / 函数节点的创建入口；顶栏「工具库」只管已保存的工具包，不建节点）；
+     开发 / 数据库壳层是架构与事实容器，不列。 */
+  const sfHost = currentSuperFocus()
+    ? nodeById(currentSuperFocus())
+    : superHostAtWorld(pt && pt.x, pt && pt.y);
+  const inFlowShell =
+    !!sfHost && isSuperLikeNode(sfHost) && !sfHost.db && !sfHost.dev;
+  const allowToolMenu = !sfHost || inFlowShell;
   return [
     [
       "",
@@ -14348,6 +15571,19 @@ function canvasCreateMenuGroups(pt) {
         ),
         ctxKindItem("input_image", I18n.t("图像节点"), () =>
           addNode("input_image", pt.x, pt.y),
+        ),
+        /* 音频 / 视频输入：本机媒体文件选择 + 预览，输出端子给该文件的 file:/// URL */
+        ctxKindItem("input_audio", I18n.t("音频节点（选择文件 · 输出 URL）"), () =>
+          addNode("input_audio", pt.x, pt.y),
+        ),
+        ctxKindItem("input_video", I18n.t("视频节点（选择文件 · 输出 URL）"), () =>
+          addNode("input_video", pt.x, pt.y),
+        ),
+        /* 素材节点：从素材库取一个素材打包成内容源（也可建空白壳，再「绑定 / 上传」） */
+        ctxKindItem(
+          "asset",
+          I18n.t("素材节点（绑定素材库 · 内容条目即端子）"),
+          () => addNode("asset", pt.x, pt.y),
         ),
       ],
     ],
@@ -14370,20 +15606,37 @@ function canvasCreateMenuGroups(pt) {
         ctxKindItem("proc_image", I18n.t("图像生成（文生图）"), () =>
           addNode("proc_image", pt.x, pt.y),
         ),
-        ctxKindItem("music_gen", I18n.t("音乐生成（MiniMax Music 3）"), () =>
-          addNode("music_gen", pt.x, pt.y),
-        ),
-        ctxKindItem("video_gen", I18n.t("视频生成（MiniMax H3）"), () =>
-          addNode("video_gen", pt.x, pt.y),
-        ),
-        /* Remotion 插件节点：仅当已安装「remotion」应用插件时显示 */
-        ...(appPluginInstalled("remotion")
-          ? [
-              ctxKindItem("remotion", I18n.t("Remotion 视频（React 动效合成）"), () =>
-                addNode("remotion", pt.x, pt.y),
-              ),
-            ]
-          : []),
+        /* 音频 / 视频生成：各自收进一个一级子菜单，成员按后端命名
+           （菜单只显示括号前的短名，括号内为说明） */
+        ctxSubmenu(I18n.t("视频生成"), "video_gen", "video", [
+          ctxKindItem(
+            "video_gen",
+            I18n.t("Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）"),
+            () => addNode("video_gen", pt.x, pt.y),
+          ),
+          /* Remotion 插件节点：仅当已安装「remotion」应用插件时显示 */
+          ...(appPluginInstalled("remotion")
+            ? [
+                ctxKindItem(
+                  "remotion",
+                  I18n.t("Remotion 视频（React 动效合成）"),
+                  () => addNode("remotion", pt.x, pt.y),
+                ),
+              ]
+            : []),
+        ]),
+        ctxSubmenu(I18n.t("音频生成"), "music_gen", "music", [
+          ctxKindItem(
+            "music_gen",
+            I18n.t("Minimax Music 3（音乐生成 · 提示词 + 歌词）"),
+            () => addNode("music_gen", pt.x, pt.y),
+          ),
+          ctxKindItem(
+            "tts_gen",
+            I18n.t("SoVITS 语音生成（文本转语音 · GPT-SoVITS）"),
+            () => addNode("tts_gen", pt.x, pt.y),
+          ),
+        ]),
       ],
     ],
     [
@@ -14404,6 +15657,34 @@ function canvasCreateMenuGroups(pt) {
         ),
       ],
     ],
+    /* 「工具」一级菜单＝工具节点 / 函数节点的创建入口（顶栏只剩「工具库」管理已保存的包）。
+       子画布内同样列出 → 工具内部可以继续套工具与函数。 */
+    ...(allowToolMenu
+      ? [
+          [
+            "",
+            [
+              ctxSubmenu(
+                I18n.t("工具"),
+                "tool",
+                "proc",
+                [
+                  ctxKindItem(
+                    "tool",
+                    I18n.t("工具（Agent 可调用 · 入参出参端子）"),
+                    () => addNode("tool", pt.x, pt.y),
+                  ),
+                  ctxKindItem(
+                    "function",
+                    I18n.t("函数（JS 计算 · 自定义入参出参）"),
+                    () => addNode("function", pt.x, pt.y),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ]
+      : []),
     [
       I18n.t("任务节点（规划 / 控制流执行）"),
       [
@@ -14412,14 +15693,6 @@ function canvasCreateMenuGroups(pt) {
         ),
         ctxKindItem("super", I18n.t("超级节点（收纳 · 展开子画布）"), () =>
           addNode("super", pt.x, pt.y),
-        ),
-      ],
-    ],
-    [
-      I18n.t("对话节点"),
-      [
-        ctxKindItem("chat", I18n.t("文本对话（Chat）"), () =>
-          addNode("chat", pt.x, pt.y),
         ),
       ],
     ],
@@ -14597,17 +15870,12 @@ function canvasCreateMenuGroups(pt) {
               "mark_text",
               { iconCls: "draw" },
             ),
+            /* 框体与箭头已移除：归类节点改用「组」，在习惯入口上给出替代方案指引 */
             ctxAction(
-              I18n.t("框体"),
-              () => addMark("box", pt.x, pt.y),
-              "mark_box",
-              { iconCls: "draw" },
-            ),
-            ctxAction(
-              I18n.t("箭头"),
-              () => addMark("arrow", pt.x, pt.y),
-              "mark_arrow",
-              { iconCls: "draw" },
+              I18n.t("【废弃】：框改为用「组」（选中节点后按 G）"),
+              null,
+              "menu_ungroup",
+              { iconCls: "group" },
             ),
           ],
         },
@@ -14883,7 +16151,7 @@ function createWfBuildSession() {
     id: uid("as"),
     title: wfBuildSessionTitle(),
     workspace: dshWorkspaceOf(null),
-    preset: "standard",
+    preset: AGENT_PRESET_DEFAULT,
     provider: route || "deepseek-official",
     model:
       typeof preferredAgentModelForRoute === "function"
@@ -15160,10 +16428,6 @@ function bindCanvas() {
           if (!m || !o) continue;
           m.x = snap(o.x + dx);
           m.y = snap(o.y + dy);
-          if (m.kind === "arrow") {
-            m.x2 = snap((o.x2 != null ? o.x2 : o.x) + dx);
-            m.y2 = snap((o.y2 != null ? o.y2 : o.y) + dy);
-          }
           syncMarkDomPos(m);
         }
       }
@@ -15213,10 +16477,6 @@ function bindCanvas() {
         if (!m || !o) continue;
         m.x = snap(o.x + dx);
         m.y = snap(o.y + dy);
-        if (m.kind === "arrow") {
-          m.x2 = snap((o.x2 != null ? o.x2 : o.x) + dx);
-          m.y2 = snap((o.y2 != null ? o.y2 : o.y) + dy);
-        }
         syncMarkDomPos(m);
       }
       updateGroupFrames();
@@ -15355,18 +16615,10 @@ function bindCanvas() {
         if (o) {
           m.x = snap(o.x + mdx);
           m.y = snap(o.y + mdy);
-          if (m.kind === "arrow") {
-            m.x2 = snap((o.x2 != null ? o.x2 : o.x) + mdx);
-            m.y2 = snap((o.y2 != null ? o.y2 : o.y) + mdy);
-          }
         } else {
-          /* 兼容旧单元素拖拽字段 */
+          /* 兼容旧单元素拖拽字段（绘制只剩 text，无箭头端点） */
           m.x = snap(d.ox + mdx);
           m.y = snap(d.oy + mdy);
-          if (m.kind === "arrow") {
-            m.x2 = snap((d.ox2 != null ? d.ox2 : d.ox) + mdx);
-            m.y2 = snap((d.oy2 != null ? d.oy2 : d.oy) + mdy);
-          }
         }
         syncMarkDomPos(m);
       }
@@ -15392,7 +16644,7 @@ function bindCanvas() {
       updateGroupFrames();
     } else if (d.mode === "markresize") {
       const m = markById(d.id);
-      if (!m || m.kind === "arrow") return;
+      if (!m || m.kind !== "text") return;
       const z = S.cam.z > 0 ? S.cam.z : 1;
       m.w = Math.max(40, Math.round(d.ow + (ev.clientX - d.sx) / z));
       m.h = Math.max(24, Math.round(d.oh + (ev.clientY - d.sy) / z));
@@ -15401,21 +16653,10 @@ function bindCanvas() {
         el.style.width = m.w + "px";
         el.style.height = m.h + "px";
       }
-    } else if (d.mode === "markarrow") {
-      const m = markById(d.id);
-      if (!m || m.kind !== "arrow") return;
-      const pt = toStage(ev.clientX, ev.clientY);
-      if (d.which === "start") {
-        m.x = snap(pt.x);
-        m.y = snap(pt.y);
-      } else {
-        m.x2 = snap(pt.x);
-        m.y2 = snap(pt.y);
-      }
-      renderCanvas();
     } else if (d.mode === "wire") {
       d.mx = ev.clientX;
       d.my = ev.clientY;
+      if (!d.moved && wireDragMoved(d, ev)) d.moved = true;
       /* 反向拖线（输入端→输出端）时悬停目标为 .port.out，否则为 .port.in */
       const selCls = d.fromInput ? ".port.out" : ".port.in";
       document
@@ -15441,6 +16682,7 @@ function bindCanvas() {
       const fromIndex = d.fromIndex || 0;
       const fromBridge = !!d.superInnerBridge;
       const fromInput = !!d.fromInput;
+      const movedDrag = !!d.moved;
       S.drag = null;
       updateWires();
       if (fromInput) {
@@ -15494,6 +16736,17 @@ function bindCanvas() {
           } else {
             connect(fromId, toId, Number(port.dataset.idx), fromIndex);
           }
+        } else {
+          /* 没有落在任何输入端子上：向外拉出后松手在画布空白处 → 就地弹出「可连入的节点」菜单，
+             选一个即在该位置建节点并把这条线连进去（判定与 connectError 同一套规则） */
+          maybeOpenWireDropCreateMenu({
+            ev,
+            el,
+            fromId,
+            fromIndex,
+            fromBridge,
+            moved: movedDrag,
+          });
         }
       }
     } else if (d.mode === "box") {
@@ -15590,7 +16843,7 @@ function bindCanvas() {
         S.preDragSnap = null;
       }
       scheduleSave();
-    } else if (d.mode === "mark" || d.mode === "markresize" || d.mode === "markarrow") {
+    } else if (d.mode === "mark" || d.mode === "markresize") {
       S.drag = null;
       if (d.moved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
@@ -15736,8 +16989,44 @@ function bindCanvas() {
       }
       return;
     }
+    /* 音频 / 视频输入节点：拖入同类型媒体文件 → 直接替换引用（原绝对路径） */
+    const mediaTarget = S.wf.nodes.find(
+      (n) =>
+        (n.kind === "input_audio" || n.kind === "input_video") &&
+        pt.x >= n.x &&
+        pt.x <= n.x + n.w &&
+        pt.y >= n.y &&
+        pt.y <= n.y + n.h,
+    );
+    if (mediaTarget) {
+      const want = mediaTarget.kind === "input_video" ? "video" : "audio";
+      let picked = "";
+      for (const f of files) {
+        const p = window.api.getPathForFile(f);
+        if (p && mediaKindOfPath(p) === want) {
+          picked = p;
+          break;
+        }
+      }
+      if (!picked) {
+        toast(
+          want === "video"
+            ? I18n.t("此节点只接收视频文件（mp4 / mov / webm…）")
+            : I18n.t("此节点只接收音频文件（mp3 / wav / ogg…）"),
+          "warn",
+        );
+        return;
+      }
+      pushHistory();
+      setNodeMedia(mediaTarget, picked);
+      renderCanvas();
+      toast(I18n.t("已载入：") + fileName(picked), "ok");
+      return;
+    }
     if (!target) {
-      toast(I18n.t("请将图像文件拖到「图像输入节点」上"), "warn");
+      /* 落点没有可接收文件的节点：不再弹「请拖到图像节点」警告，
+         而是按扩展名逐文件自动建节点（图像 / 文本 / 音频 / 视频 / 其他→开发文件块） */
+      await createNodesFromDroppedFiles(files, pt);
       return;
     }
     if (target.ro) {
@@ -15823,6 +17112,11 @@ function bindCanvas() {
       }
     }
     if (ev.key === "Escape" && closeCanvasFindBar()) {
+      ev.preventDefault();
+      return;
+    }
+    /* Esc 收起画布菜单（右键「新建节点」/ 拖线落点「新建并连入」）：菜单没有焦点，靠 Esc 关掉 */
+    if (ev.key === "Escape" && hideOpenCtx()) {
       ev.preventDefault();
       return;
     }
@@ -16004,15 +17298,8 @@ function bindCanvas() {
         const m = $("#refMenu");
         if (!m.contains(ev.target)) closeSlashMenu();
       }
-      if (S.uiOpenNode) {
-        const el = document.querySelector(
-          '.wf-node[data-nid="' + S.uiOpenNode + '"]',
-        );
-        if (!el || !el.contains(ev.target)) {
-          S.uiOpenNode = null;
-          renderCanvas();
-        }
-      }
+      /* 节点「设置」已改为跳窗（#overlay · persistent），不再有点外部就地收起的内联面板；
+         关窗只走「完成并关闭」/ ✕ / 切画布 / 撤销 / 删节点（见 closeNodeSettingsDialog）。 */
       if (S.uiBgRmNode) {
         const pop = $("#bgRmPop");
         if (pop && pop.classList.contains("on") && !pop.contains(ev.target)) {
@@ -16183,6 +17470,11 @@ function ctxKindItem(kind, label, run, extra) {
   };
 }
 
+/* 一级菜单项（带二级子菜单）：与 ctxKindItem 同族，只是不直接建节点而是展开成员清单 */
+function ctxSubmenu(label, iconKey, iconCls, submenu) {
+  return { label, iconKey, iconCls, submenu };
+}
+
 function ctxAction(label, run, iconKey, extra) {
   extra = extra || {};
   const key = iconKey || extra.iconKey || "";
@@ -16193,6 +17485,181 @@ function ctxAction(label, run, iconKey, extra) {
     iconCls: extra.iconCls || key,
     cls: extra.cls,
   };
+}
+
+/* ============ 拖线落在画布空白处：就地「新建并连入」 ============
+   从输出端子向外拉、松手在画布空白处 → 在松手处弹出「这条线能连进哪些节点」的菜单；
+   选一项即在落点建好该节点，并把这条线连进它的输入端子。
+   「能不能连」不在这里另写一套规则：临时用真实 makeNode 造一个候选节点（落点相同 → 父子层级相同），
+   跑一遍真正的 connectError 判定，规则只有一份真源——端子占用 / 文本图像限制 / 控制线约束都自动跟着变。 */
+/* 候选目标清单：只列「值得在这里新建」的类型（顺序 = 菜单里的优先级）。
+   刻意不收：定时 / 需求等待 / 接收 / 执行（没有输入端子，试连也过不去）；
+   音频 / 视频输入（只是本机媒体文件选择器，不进执行引擎，连进去没有意义）。 */
+const WIRE_DROP_TARGETS = [
+  { kind: "proc_text", g: "处理节点" },
+  { kind: "proc_image", g: "处理节点" },
+  { kind: "music_gen", g: "处理节点" },
+  { kind: "tts_gen", g: "处理节点" },
+  { kind: "video_gen", g: "处理节点" },
+  { kind: "remotion", g: "处理节点", plugin: "remotion" },
+  { kind: "agent_task", g: "智能节点" },
+  { kind: "save", g: "保存节点" },
+  { kind: "tool", g: "工具节点" },
+  { kind: "function", g: "工具节点" },
+  { kind: "task", g: "任务节点" },
+  { kind: "super", g: "任务节点" },
+  { kind: "control", g: "控制节点", label: "执行 / 清空" },
+  { kind: "judge", g: "控制节点" },
+  { kind: "delayer", g: "控制节点" },
+  { kind: "sequencer", g: "控制节点" },
+  { kind: "gate", g: "控制节点" },
+  { kind: "splitter", g: "控制节点" },
+  { kind: "counter", g: "控制节点" },
+  { kind: "mutex", g: "控制节点" },
+  {
+    kind: "control",
+    g: "控制节点",
+    label: "成功终点",
+    titleKey: "成功终点",
+    ctrlRole: "endSuccess",
+  },
+  {
+    kind: "control",
+    g: "控制节点",
+    label: "失败终点",
+    titleKey: "失败终点",
+    ctrlRole: "endFail",
+  },
+  { kind: "split", g: "批次节点" },
+  { kind: "merge", g: "批次节点" },
+  { kind: "net_send", g: "网络节点", net: true },
+  { kind: "global", g: "全局节点" },
+  { kind: "input_text", g: "输入节点" },
+  { kind: "input_image", g: "输入节点" },
+  /* 素材节点：有内容条目时才有输入端子（条目类型决定这条线能不能落），
+     未绑定 / 无条目的候选节点会被真实 connectError 自动挡在菜单外。 */
+  { kind: "asset", g: "输入节点" },
+];
+
+/** 候选项建节点时要带的参数（试连与真正建节点共用同一份，保证判定结果一致） */
+function wireDropExtraOf(spec) {
+  const extra = {};
+  if (spec.ctrlRole) extra.ctrlRole = spec.ctrlRole;
+  if (spec.net) {
+    extra.netChannel = nextNetChannel();
+    extra.netProto = "tcp";
+  }
+  return extra;
+}
+
+/** 菜单项文案：与右键「新建节点」同一批 i18n key（括号说明由 ctx 菜单自动转成 hover 提示） */
+function wireDropLabelOf(spec) {
+  if (spec.label) return I18n.t(spec.label);
+  const purpose = nodeKindPurposeKey({ kind: spec.kind });
+  if (purpose) return I18n.t(purpose);
+  const d = NODE_DEFAULTS[spec.kind];
+  return I18n.t((d && d.title) || "节点");
+}
+
+/** 试连：候选节点临时插入当前工作流跑真实 connectError，判定完立刻摘掉（不渲染 / 不入历史 / 不落盘） */
+function wireDropConnectError(fromNode, spec, extra, worldPt, fromIndex) {
+  const probe = makeNode(spec.kind, worldPt.x, worldPt.y);
+  if (!probe) return I18n.t("未知节点类型");
+  for (const k of Object.keys(extra || {})) probe[k] = extra[k];
+  ensureDefaultSavePath(probe);
+  S.wf.nodes.push(probe);
+  let err = null;
+  try {
+    err = connectError(fromNode.id, probe.id, null, Number(fromIndex || 0));
+  } catch (e) {
+    err = String((e && e.message) || e || "connect check failed");
+  }
+  const i = S.wf.nodes.indexOf(probe);
+  if (i >= 0) S.wf.nodes.splice(i, 1);
+  return err;
+}
+
+/** 组装这条线在落点处能连的节点菜单（分组 + 建节点并连线） */
+function wireDropMenuGroups(fromNode, fromIndex, worldPt) {
+  const out = [];
+  const byTitle = new Map();
+  for (const spec of WIRE_DROP_TARGETS) {
+    if (spec.plugin && !appPluginInstalled(spec.plugin)) continue;
+    const extra = wireDropExtraOf(spec);
+    if (wireDropConnectError(fromNode, spec, extra, worldPt, fromIndex)) continue;
+    const gt = I18n.t(spec.g);
+    let items = byTitle.get(gt);
+    if (!items) {
+      items = [];
+      byTitle.set(gt, items);
+      out.push([gt, items]);
+    }
+    const titleKey = spec.titleKey;
+    items.push(
+      ctxKindItem(
+        spec.kind,
+        wireDropLabelOf(spec),
+        () => {
+          if (!nodeById(fromNode.id)) return;
+          const node = addNode(
+            spec.kind,
+            worldPt.x,
+            worldPt.y,
+            Object.assign({}, extra, titleKey ? { title: I18n.t(titleKey) } : null),
+          );
+          if (!node || !nodeById(node.id)) return;
+          connect(fromNode.id, node.id, null, Number(fromIndex || 0));
+        },
+        { ctrlRole: spec.ctrlRole || "" },
+      ),
+    );
+  }
+  return out;
+}
+
+/** 松手这一下会紧跟着派发 click，而 click 冒泡到 window 上就是 hideCtx ——
+    菜单刚弹出会被立刻关掉。这里吞掉这一次 click，等它过去了再开菜单。 */
+function showCtxAfterMouseClick(clientX, clientY, groups) {
+  let opened = false;
+  const open = () => {
+    if (opened) return;
+    opened = true;
+    window.removeEventListener("click", swallowClick, true);
+    showCtx(clientX, clientY, groups);
+  };
+  function swallowClick(e) {
+    e.stopPropagation();
+    e.preventDefault();
+    open();
+  }
+  window.addEventListener("click", swallowClick, true);
+  /* 没有紧随的 click（例如在窗口外松手）也要开菜单：兜底一个短延时 */
+  setTimeout(open, 160);
+}
+
+/** 松手处算不算「画布空白处」：画布空白与展开壳内的空白算；命中节点卡片、端子或画布外不算 */
+function wireDropLandsOnEmptyCanvas(el) {
+  if (!el || typeof el.closest !== "function") return false;
+  if (!el.closest("#canvas") || el.closest("#ctx")) return false;
+  if (el.closest(".port")) return false;
+  /* 展开的超级节点：壳里每个子节点都是宿主 .wf-node 的后代，宿主卡片本身也在 .super-stage 之外 */
+  if (el.closest(".super-stage-viewport .wf-node")) return false;
+  if (el.closest(".wf-node") && !el.closest(".super-stage")) return false;
+  return true;
+}
+
+/** 拖线松手落在空白处：判定 + 弹出可连入的节点菜单 */
+function maybeOpenWireDropCreateMenu(a) {
+  const ev = a && a.ev;
+  /* 只在原地点一下端子（moved=false）、壳层内侧桥接端子：保持原有行为，不弹菜单 */
+  if (!ev || !a.moved || a.fromBridge) return;
+  if (!wireDropLandsOnEmptyCanvas(a.el)) return;
+  const from = nodeById(a.fromId);
+  if (!from || !hasOutput(from)) return;
+  const worldPt = toStage(ev.clientX, ev.clientY);
+  const groups = wireDropMenuGroups(from, Number(a.fromIndex || 0), worldPt);
+  if (!groups.length) return;
+  showCtxAfterMouseClick(ev.clientX, ev.clientY, groups);
 }
 
 function showCtx(x, y, groups) {
@@ -16236,6 +17703,13 @@ function hideCtx() {
     });
     ctx.style.display = "none";
   }
+}
+/** 画布菜单（右键新建 / 拖线落点新建）当前是否开着：开着就收起并返回 true */
+function hideOpenCtx() {
+  const ctx = $("#ctx");
+  if (!ctx || ctx.style.display === "none" || !ctx.childElementCount) return false;
+  hideCtx();
+  return true;
 }
 
 /* 输出面板图像右键菜单：另存为 */
@@ -16393,11 +17867,7 @@ async function saveImageAs(p) {
 }
 
 function assignDefaultProvider(node) {
-  if (
-    node.kind === "proc_text" ||
-    node.kind === "chat" ||
-    node.kind === "remotion"
-  ) {
+  if (node.kind === "proc_text" || node.kind === "remotion") {
     const prov = (S.config.providers || []).find((p) => p.type === "text_openai");
     if (prov) {
       node.providerId = prov.id;
@@ -16414,11 +17884,24 @@ function assignDefaultProvider(node) {
   }
 }
 
+/* 节点「创建 kind」→「存储形态」换算：工具节点的规范形态是超级节点变体
+   （kind:"super" + tool:true，沿用 db:/dev: 变体模式，契约见 docs/tool-function-nodes.md）。
+   右键「工具」一级菜单、拖线落点候选、工具包快照等入口一律写 "tool"，落盘在此统一换算；
+   判定永远走 isToolNode()，不要再比较 kind === "tool"。 */
+const NODE_FORM_OF_KIND = { tool: "super" };
+
 function makeNode(kind, x, y) {
   if (kind === "save_text" || kind === "save_image") kind = "save";
   const d = NODE_DEFAULTS[kind];
   if (!d) return null;
-  const node = { id: uid("n"), kind, x: snap(x), y: snap(y), w: d.w, h: d.h };
+  const node = {
+    id: uid("n"),
+    kind: NODE_FORM_OF_KIND[kind] || kind,
+    x: snap(x),
+    y: snap(y),
+    w: d.w,
+    h: d.h,
+  };
   for (const [k, v] of Object.entries(d)) {
     if (k === "w" || k === "h") continue;
     node[k] = JSON.parse(JSON.stringify(v));
@@ -16433,7 +17916,7 @@ function makeNode(kind, x, y) {
     node.parentTaskId = sfHost.parentTaskId || "";
   } else {
     /* superFocus 失效（指向已不存在的超级节点）时不挂幽灵父级，退回按坐标找宿主 */
-    const host = findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false);
+    const host = superHostAtWorld(x, y);
     if (host) {
       const o = superInnerOrigin(host);
       const pan = superInnerPan(host);
@@ -16506,6 +17989,199 @@ function addNode(kind, x, y, extra) {
   return node;
 }
 
+/* ============ 拖外部文件进画布空白处：按类型自动建节点 ============
+ * 图像 → input_image（复制进工作流资产）；文本/代码 → input_text（读正文，超大截断）；
+ * 音频 / 视频 → input_audio / input_video（只引用原绝对路径）；
+ * 其他（未知扩展名、二进制、无扩展名）→ 开发节点「文件」块，路径写进概述。
+ * 先把所有磁盘 IO 做完（复制失败 / 读不出来的文件降级成文件块），再一次性建节点：
+ * 一次 pushHistory（一步撤销全部）、网格排布、建完全选、一条汇总 toast。 */
+const DROP_FILE_STEP_X = 340;
+const DROP_FILE_STEP_Y = 250;
+/* 文本节点正文保留上限（字节）：超过只留开头一段并在正文里标注截断 */
+const DROP_TEXT_KEEP_BYTES = 2 * 1024 * 1024;
+/* 超过这个大小干脆不读入：避免把上百 MB 文本经 IPC 灌进渲染层，只留路径提示 */
+const DROP_TEXT_MAX_READ_BYTES = 32 * 1024 * 1024;
+
+/* 拖入文件名 → 节点标题：开发文件块保留扩展名，输入节点用主名（与图像节点口径一致） */
+function dropNodeTitle(p, keepExt) {
+  const name = String(fileName(p) || "").trim() || I18n.t("文件");
+  if (keepExt) return name;
+  return name.replace(/\.[^.]+$/, "").trim() || name;
+}
+
+/* 字节数 → 可读文案（真源是 app-canvas.js 的 formatBytes，它在本文件之后加载，故做存在性兜底） */
+function humanBytes(n) {
+  return typeof formatBytes === "function"
+    ? formatBytes(n)
+    : Math.round(Number(n) || 0) + " B";
+}
+
+/* 拖入的「其他」文件 → 开发节点文件块概述（两段式：【功能】设计说明 + 【实现】路径） */
+function devFileBlockNote(absPath) {
+  return I18n.t(
+    "【功能】外部拖入画布的文件资源：{name}，仅作引用与快速打开，不参与工作流数据流。\n【实现】绝对路径：{path}",
+    { name: fileName(absPath) || I18n.t("文件"), path: absPath },
+  );
+}
+
+/* 读取拖入的文本文件；返回 null = 读不出来（调用方降级成文件块） */
+async function readDroppedTextFile(p, size) {
+  if (size > DROP_TEXT_MAX_READ_BYTES) {
+    return {
+      text: I18n.t("（文件过大，未读入内容 {size}）完整文件见：\n{path}", {
+        size: humanBytes(size),
+        path: p,
+      }),
+      truncated: true,
+    };
+  }
+  const rr = await window.api.fileReadText(p).catch(() => null);
+  if (!rr || !rr.exists) return null;
+  let text = String(rr.content || "");
+  let truncated = false;
+  if (text.length > DROP_TEXT_KEEP_BYTES) {
+    text = text.slice(0, DROP_TEXT_KEEP_BYTES);
+    truncated = true;
+  }
+  if (truncated) {
+    text +=
+      "\n\n" +
+      I18n.t("…（正文超过 {size}，已截断，完整内容见原文件：\n{path}）", {
+        size: humanBytes(DROP_TEXT_KEEP_BYTES),
+        path: p,
+      });
+  }
+  return { text, truncated };
+}
+
+/* files：DataTransfer.files（或同形的 [{path}]）；pt：落点（舞台坐标） */
+async function createNodesFromDroppedFiles(files, pt) {
+  const list = [...(files || [])];
+  const items = [];
+  /* noPath = 连本机路径都取不到（无法登记）；unreadable = 内容/复制失败，已降级成文件块 */
+  let noPath = 0;
+  let unreadable = 0;
+  for (const f of list) {
+    const p =
+      (f && f.path) ||
+      (window.api.getPathForFile ? window.api.getPathForFile(f) : "");
+    if (!p) {
+      noPath++;
+      continue;
+    }
+    items.push({ path: p, kind: classifyDropFile(p), name: fileName(p) });
+  }
+  if (!items.length) {
+    toast(I18n.t("无法读取该文件路径"), "err");
+    return;
+  }
+  /* 先做完磁盘 IO：图像复制进资产、文本读正文；失败的一律降级成开发文件块 */
+  for (const it of items) {
+    if (it.kind === "image") {
+      try {
+        it.copied = await copyImageFromPath(
+          it.path,
+          dropNodeTitle(it.path, false),
+        );
+      } catch (_) {
+        it.copied = null;
+        it.kind = "other";
+        unreadable++;
+      }
+    } else if (it.kind === "text") {
+      const st = await window.api.fileStat(it.path).catch(() => null);
+      it.size = (st && st.size) || 0;
+      const rd = await readDroppedTextFile(it.path, it.size);
+      if (!rd) {
+        it.text = "";
+        it.kind = "other";
+        unreadable++;
+      } else {
+        it.text = rd.text;
+        if (rd.truncated) it.truncated = true;
+      }
+    }
+  }
+  const cols = items.length <= 2 ? items.length : items.length <= 6 ? 3 : 4;
+  const count = { image: 0, text: 0, audio: 0, video: 0, other: 0 };
+  let truncated = 0;
+  pushHistory();
+  const created = [];
+  const originX = (pt && Number(pt.x)) || 0;
+  const originY = (pt && Number(pt.y)) || 0;
+  items.forEach((it, i) => {
+    const x = originX + (i % cols) * DROP_FILE_STEP_X;
+    const y = originY + Math.floor(i / cols) * DROP_FILE_STEP_Y;
+    let node = null;
+    if (it.kind === "image") {
+      node = makeNode("input_image", x, y);
+      if (node) {
+        node.imageAsset = it.copied.path;
+        node.sourceName = it.copied.sourceName;
+        node.title = uniqueNodeTitle(dropNodeTitle(it.path, false));
+        count.image++;
+      }
+    } else if (it.kind === "text") {
+      node = makeNode("input_text", x, y);
+      if (node) {
+        node.text = it.text || "";
+        node.title = uniqueNodeTitle(dropNodeTitle(it.path, false));
+        count.text++;
+        if (it.truncated) truncated++;
+      }
+    } else if (it.kind === "audio" || it.kind === "video") {
+      node = makeNode(it.kind === "video" ? "input_video" : "input_audio", x, y);
+      if (node) {
+        setNodeMedia(node, it.path);
+        node.title = uniqueNodeTitle(dropNodeTitle(it.path, false));
+        count[it.kind]++;
+      }
+    } else {
+      node = makeNode("super", x, y);
+      if (node) {
+        node.dev = true;
+        node.devKind = "file";
+        node.devStatus = "pending";
+        node.devColor = "";
+        node.note = devFileBlockNote(it.path);
+        node.title = uniqueNodeTitle(it.name || dropNodeTitle(it.path, true));
+        count.other++;
+      }
+    }
+    if (!node) return;
+    if (typeof devAutoColorNode === "function") devAutoColorNode(node);
+    ensureDefaultSavePath(node);
+    S.wf.nodes.push(node);
+    created.push(node.id);
+  });
+  if (!created.length) {
+    toast(I18n.t("创建节点失败"), "err");
+    return;
+  }
+  clearSelection();
+  S.selSet = new Set(created);
+  S.sel = created[0];
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  const parts = [];
+  if (count.image) parts.push(I18n.t("图像") + " " + count.image);
+  if (count.text) parts.push(I18n.t("文本") + " " + count.text);
+  if (count.audio) parts.push(I18n.t("音频") + " " + count.audio);
+  if (count.video) parts.push(I18n.t("视频") + " " + count.video);
+  if (count.other) parts.push(I18n.t("文件") + " " + count.other);
+  let msg =
+    I18n.t("已创建 {n} 个节点：", { n: created.length }) + parts.join(" / ");
+  if (truncated)
+    msg += " · " + I18n.t("{n} 个文件过大，正文已截断", { n: truncated });
+  if (unreadable)
+    msg += " · " + I18n.t("{n} 个文件读不出内容，改为文件块", { n: unreadable });
+  if (noPath)
+    msg += " · " + I18n.t("{n} 个文件取不到本机路径，已跳过", { n: noPath });
+  toast(msg, truncated || unreadable || noPath ? "warn" : "ok");
+  return created;
+}
+
 function toggleBatch(node) {
   pushHistory();
   node.batch = !node.batch;
@@ -16537,6 +18213,19 @@ function toggleBatch(node) {
 
 /* 停止运行：立即中止模型请求并回到未处理状态 */
 async function stopNode(node) {
+  /* 函数 / 工具节点（计算执行类）先记账：它（含工具壳内）到底在不在跑 / 在不在排队。
+     下面的 bumpNodeStop 会把排队项就地打掉，之后再问就什么都问不出来了。 */
+  const computeRunning =
+    isComputeExecKind(node) &&
+    (!!node.running ||
+      (typeof fnRunInFlight === "function"
+        ? fnRunInFlight(node)
+        : typeof fnHasLiveRun === "function" && fnHasLiveRun(node)));
+  const computeQueued =
+    isComputeExecKind(node) &&
+    typeof fnRunQueued === "function" &&
+    fnRunQueued(node);
+  const computeBusy = computeRunning || computeQueued;
   /* 作废本节点当前批次（在途 + 排队中的）：之后所有下游驱动一律拦掉 */
   bumpNodeStop(node);
   if (node.kind === "timer") {
@@ -16592,6 +18281,10 @@ async function stopNode(node) {
       return;
     }
     let nStop = 0;
+    /* 块内嵌套的函数 / 工具节点：它们的线程在主进程里，直接置 running=false 是假停止
+       —— 先登记，递归结束后统一按 runId 取消（terminate 线程 + 连进程树回收）。 */
+    const fnInside = [];
+    let nFnProc = 0;
     /* 停一条绑定会话名下的运行一律走 stopSessionRuns：它既作废并取消会话自己那一轮
        （agent:<会话id>），也逐个取消该会话名下的计划并行组 runKey。
        「在不在跑」用展示口径 sessionBusyForUi 判定 —— 并行组在跑时 st.running 是 false，
@@ -16623,12 +18316,26 @@ async function stopNode(node) {
             stopSubtree(c);
             for (const s of devSessionsOf(c)) stopBoundSession(s);
           }
-        } else if (c.running) {
+        } else if (
+          c.running ||
+          (isComputeExecKind(c) &&
+            (typeof computeExecNodeActive === "function"
+              ? computeExecNodeActive(c)
+              : typeof fnHasLiveRun === "function" && fnHasLiveRun(c)))
+        ) {
           bumpNodeStop(c);
           if (c._abKey) {
             try {
               window.api.apiAbort(c._abKey);
             } catch (_) {}
+          }
+          /* 函数 / 工具后代：线程 + 外部进程都由主进程托管，按 runId 真取消，
+             状态（running / 「已手动停止」）交给它自己的运行收尾，这里不抢着写。
+             判定含「只在排队」的那一半 —— 它们还没置 running，但已经占了一个排队位。 */
+          if (isComputeExecKind(c)) {
+            fnInside.push(c);
+            nStop++;
+            continue;
           }
           c._aborted = true;
           c.running = false;
@@ -16639,6 +18346,13 @@ async function stopNode(node) {
     };
     stopSubtree(node);
     for (const s of devSessionsOf(node)) stopBoundSession(s);
+    /* 块内函数 / 工具节点：等线程真的终止、进程树真的回收（界面状态由它们自己的收尾写） */
+    for (const c of fnInside) {
+      try {
+        const r = await fnCancelRunsOf(c);
+        if (r && r.procs) nFnProc += Number(r.procs) || 0;
+      } catch (_) {}
+    }
     node._aborted = true;
     if (node.running) {
       node.running = false;
@@ -16646,9 +18360,12 @@ async function stopNode(node) {
       nStop++;
     }
     toast(
-      nStop > 0
+      (nStop > 0
         ? I18n.t("已停止该功能块的运行任务") + "（" + nStop + "）"
-        : I18n.t("该功能块已无运行任务"),
+        : I18n.t("该功能块已无运行任务")) +
+        (nFnProc
+          ? I18n.t(" · 回收 ") + nFnProc + I18n.t(" 个进程")
+          : ""),
       "warn",
     );
     renderCanvas();
@@ -16672,9 +18389,16 @@ async function stopNode(node) {
     renderCanvas();
     return;
   }
-  if (node.kind === "music_gen" || node.kind === "video_gen" || node.kind === "remotion") {
+  if (
+    node.kind === "music_gen" ||
+    node.kind === "tts_gen" ||
+    node.kind === "video_gen" ||
+    node.kind === "remotion"
+  ) {
     /* 单节点停止也要：关监视器 + 作废排队 + 取消主进程在途任务（释放大锁）。
-       旧实现只把 running 置 false，串行队列 / 后端任务照跑，稍后节点又回到运行队列。 */
+       旧实现只把 running 置 false，串行队列 / 后端任务照跑，稍后节点又回到运行队列。
+       语音（tts_gen）例外于「取消主进程任务」：GPT-SoVITS 无取消接口，靠 bumpNodeStop
+       让在途合成在返回时被作废（不写产物、不驱动下游）。 */
     if (!node.running && !mediaGenWaiters.has(node.id)) return;
     if (mediaGenWaiters.has(node.id)) {
       mediaGenWaiters.delete(node.id);
@@ -16686,6 +18410,7 @@ async function stopNode(node) {
     node.running = false;
     if (wasRunning) mediaGenCancelRemote(node);
     if (node.kind === "music_gen") node.musicStatus = I18n.t("已取消");
+    else if (node.kind === "tts_gen") node.ttsStatus = I18n.t("已取消");
     else if (node.kind === "video_gen") node.videoStatus = I18n.t("已取消");
     else node.remotionStatus = I18n.t("已取消");
     node.error = null;
@@ -16693,14 +18418,54 @@ async function stopNode(node) {
       I18n.t(
         node.kind === "music_gen"
           ? "已取消音乐生成"
-          : node.kind === "video_gen"
-            ? "已取消视频生成"
-            : "已取消 Remotion 渲染",
+          : node.kind === "tts_gen"
+            ? "已取消语音合成"
+            : node.kind === "video_gen"
+              ? "已取消视频生成"
+              : "已取消 Remotion 渲染",
       ),
       "warn",
     );
     renderCanvas();
     updateRunQueuePanel();
+    return;
+  }
+  /* 函数 / 工具节点（计算执行类）：执行体在主进程的独立线程里（根目录 fn-runtime.js），
+     它拉起的外部进程由隐藏宿主按 runId 记账（main-proc-host.js）。
+     通用「直接把 running 置 false」在这里是假停止：界面暗了，线程照跑、进程照活，
+     而且运行体自己的 finally 随后又把状态改回来，两边打架。
+     正确停法：bumpNodeStop（作废本批 + 打掉排队项，上面已做）→ 按 runId 取消这次运行
+     （主进程先 terminate 线程、再 taskkill 连进程树回收）；界面状态与「已手动停止」
+     文案一律交给 runComputeExecNode 的 finally 收尾，本函数只负责「真的把它停掉」
+     并把回收到的进程数告诉用户。工具节点连带停壳内内部图（见 fnCancelRunsOf）。 */
+  if (isComputeExecKind(node)) {
+    if (!computeBusy) return;
+    /* 一律走统一取消入口：它同时负责三件事 —— 取消在途线程（terminate + 连进程树回收）、
+       打掉壳内排队项、给「还没来得及注册句柄」的那一瞬补上待取消标记。
+       只在排队、线程还没起的节点，bumpNodeStop 已把它从「等待中」摘掉并作废
+       （运行体在出队点直接收尾，绝不起了线程再杀） */
+    const r =
+      typeof fnCancelRunsOf === "function"
+        ? await fnCancelRunsOf(node)
+        : { runs: 0, procs: 0 };
+    /* 措辞分四档：只在排队 → 取消排队；真杀掉了线程并回收了进程 → 报进程数；
+       杀掉了线程但没起过进程 → 已停止；这次没问到可取消的线程（还卡在上游补跑 /
+       内部图的模型请求上）→ 只说「已请求停止」，状态由运行体自己的收尾落定，
+       绝不谎报「已经停了」。
+       （不再在这里补 _aborted / running：顶部 bumpNodeStop 已经打过标记，
+       这里再写会和刚起跑的新一次运行抢状态） */
+    let msg;
+    if (!computeRunning && !r.runs && !r.procs)
+      msg = I18n.t("已取消该节点的排队运行");
+    else if (r.procs)
+      msg = I18n.t("已停止并回收 ") + r.procs + I18n.t(" 个进程");
+    else if (r.runs) msg = I18n.t("已停止该节点的运行");
+    else msg = I18n.t("已请求停止运行…");
+    toast(msg, "warn");
+    renderCanvas();
+    renderStatus();
+    updateRunQueuePanel();
+    scheduleSave(true);
     return;
   }
   if (!node.running) return;
@@ -16711,9 +18476,30 @@ async function stopNode(node) {
     return;
   }
   if (node.kind === "task") {
-    abortTaskTree(node);
-    toast(I18n.t("已请求停止任务…"), "warn");
+    /* 任务里的函数 / 工具节点：执行体在主进程独立线程里，只打标记停不掉，
+       abortTaskTree 顺带把「算在跑」的计算执行节点登记出来，这里按 runId 真取消 */
+    const seenFn = new Set();
+    const fnIn = (abortTaskTree(node, []) || []).filter((c) => {
+      if (!c || !c.id || seenFn.has(String(c.id))) return false;
+      seenFn.add(String(c.id));
+      return true;
+    });
+    let nFnProc = 0;
+    for (const c of fnIn) {
+      try {
+        const r = await fnCancelRunsOf(c);
+        if (r && r.procs) nFnProc += Number(r.procs) || 0;
+      } catch (_) {}
+    }
+    toast(
+      I18n.t("已请求停止任务…") +
+        (nFnProc
+          ? I18n.t(" · 回收 ") + nFnProc + I18n.t(" 个进程")
+          : ""),
+      "warn",
+    );
     renderCanvas();
+    updateRunQueuePanel();
     return;
   }
   if (node.kind === "judge") {
@@ -16722,7 +18508,7 @@ async function stopNode(node) {
     renderCanvas();
     return;
   }
-  if (isDshTask(node) || (node.kind === "chat" && node.agent)) {
+  if (isDshTask(node)) {
     /* dsh 线协议无逐轮取消:关掉「这一次运行」自己的运行时进程
        （网关按 cancelTag 精确定位，不再按工作目录整批关，不会波及别的会话） */
     dshCancelActive(node.id);
@@ -16753,199 +18539,6 @@ async function stopNode(node) {
   renderCanvas();
   renderStatus();
   scheduleSave(true);
-}
-
-/* 文本对话节点：发送消息并获取 AI 回复（微信风格对话记录，思考内容灰色流式显示） */
-async function chatSend(node, text) {
-  if (node.running) return;
-  if (node.agent) return chatSendAgent(node, text);
-  const prov = S.config.providers.find((p) => p.id === node.providerId);
-  if (!prov) {
-    toast(I18n.t("未配置服务商（设置 · API/配置）"), "warn");
-    return;
-  }
-  if (!String(prov.apiKey || "").trim()) {
-    toast(I18n.t("该服务商未填写 API Key（设置 · API/配置）"), "warn");
-    return;
-  }
-  if (!Array.isArray(node.messages)) node.messages = [];
-  node.messages.push({ role: "user", content: text.trim(), at: Date.now() });
-  node.running = true;
-  node._abKey = uid("ab");
-  node._aborted = false;
-  node._pendingAnswer = "";
-  if (!S.thinking) S.thinking = {};
-  S.thinking[node.id] = [""]; // 重置思考缓冲
-  renderCanvas();
-  scrollChatToBottom(node, true);
-  const spec = {
-    provider: prov,
-    kind: "text",
-    model: node.model || (prov.models || [])[0] || "",
-    temperature:
-      node.temperature == null
-        ? 0.7
-        : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    effort: normalizeTextEffort(node.effort),
-    prompt: "",
-    texts: [],
-    images: [],
-    chatMessages: [
-      { role: "system", content: node.systemPrompt || "" },
-    ].concat(node.messages),
-    abKey: node._abKey,
-  };
-  try {
-    const r = await apiCallTextStream(
-      spec,
-      (t) => pushThinking(node.id, 0, t),
-      (t) => {
-        node._pendingAnswer = (node._pendingAnswer || "") + t;
-        const el = document.getElementById("chat-stream-" + node.id);
-        if (el) {
-          el.textContent = node._pendingAnswer;
-          const list = document.querySelector(
-            '.wf-node[data-nid="' + node.id + '"] .chat-list',
-          );
-          if (isScrollNearBottom(list))
-            el.scrollIntoView({ block: "nearest" });
-        }
-      },
-    );
-    if (!node._aborted) {
-      const msg = {
-        role: "assistant",
-        content: r.text || node._pendingAnswer || "",
-        at: Date.now(),
-      };
-      const rsn = r.reasoning || thinkingTextOf(node) || "";
-      if (String(rsn).trim()) msg.reasoning = rsn;
-      node.messages.push(msg);
-    }
-  } catch (e) {
-    if (!node._aborted) {
-      node.messages.push({
-        role: "assistant",
-        content: I18n.t("（错误：") + (e.message || String(e)) + "）",
-        at: Date.now(),
-      });
-      toast(I18n.t("对话失败：") + (e.message || String(e)), "err");
-    }
-  } finally {
-    node.running = false;
-    if (S.thinking && S.thinking[node.id]) S.thinking[node.id] = [];
-    renderCanvas();
-    renderStatus();
-    scheduleSave(true);
-    scrollChatToBottom(node);
-  }
-}
-
-/* 对话节点·智能助手模式：任务走 dsh agent 运行时；对话历史由本节点自持
-   （与工作流一起保存），运行时重启也不会丢失。流式思考/正文复用原版 DOM。 */
-async function chatSendAgent(node, text) {
-  const sup = dshSupported();
-  if (!sup.ok) {
-    toast(sup.reason, "warn");
-    return;
-  }
-  if (!Array.isArray(node.messages)) node.messages = [];
-  node.messages.push({ role: "user", content: text.trim(), at: Date.now() });
-  node.running = true;
-  node._pendingAnswer = "";
-  if (!S.thinking) S.thinking = {};
-  S.thinking[node.id] = [""];
-  renderCanvas();
-  scrollChatToBottom(node, true);
-
-  /* 历史串行化（最多 20 条）作为上下文交给助手 */
-  const hist = node.messages
-    .slice(0, -1)
-    .slice(-20)
-    .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
-    .join("\n\n");
-  const skillWrap = await resolveSkillSlash(text, { denyCanvasSkills: true });
-  const latest = skillWrap ? skillTaskPrompt(skillWrap) : text.trim();
-  const input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
-
-  try {
-    const final = await dshRunTask(input, {
-      node,
-      model: node.model || undefined,
-      systemPrompt:
-        (node.systemPrompt || "") +
-        (node.systemPrompt ? "\n" : "") +
-        "回答简洁。用工作区文件交付结果，不要改画布。",
-      onEvent: (type, data) => {
-        /* 对话气泡与节点输出区同一套分段口径：say 段之间保留空行，
-           err 段以「⚠」附在尾部；think 只进思考气泡（#chat-think-*） */
-        const paint = () => {
-          const el = document.getElementById("chat-stream-" + node.id);
-          if (!el) return;
-          el.textContent = traceSayDisplay(node.id, node._pendingAnswer);
-          const list = document.querySelector(
-            '.wf-node[data-nid="' + node.id + '"] .chat-list',
-          );
-          if (isScrollNearBottom(list)) el.scrollIntoView({ block: "nearest" });
-        };
-        if (type === "reasoning" && data.text) {
-          pushThinking(node.id, 0, data.text);
-        } else if (type === "text" && data.text) {
-          node._pendingAnswer = (node._pendingAnswer || "") + data.text;
-          paint();
-        } else if (type === "error" && data && data.message) {
-          if (node._aborted || isCancelishError(data.message)) return;
-          node._pendingAnswer =
-            (node._pendingAnswer || "") + "\n⚠ " + data.message;
-          paint();
-        }
-      },
-      onDone: (d) => {
-        recordDshMetrics(node, d.metrics);
-        if (d.metrics && Array.isArray(d.metrics.tools) && d.metrics.tools.length)
-          node._lastTools = d.metrics.tools;
-      },
-    });
-    const msg = {
-      role: "assistant",
-      content: node._aborted
-        ? stripStreamErrors(node._pendingAnswer) || I18n.t("（已终止）")
-        : final || node._pendingAnswer || I18n.t("（无输出）"),
-      at: Date.now(),
-    };
-    /* 思考与输出分家：reasoning = 按步分段的纯思考（不含「🔧」），正文照常；
-       段快照走统一的落盘限长 / 可还原校验 */
-    const rsn = traceThinkDisplay(node.id, "") || thinkingTextOf(node) || "";
-    if (String(rsn).trim()) msg.reasoning = String(rsn);
-    attachTraceSegments(msg, node.id);
-    if (Array.isArray(node._lastTools) && node._lastTools.length)
-      msg.tools = node._lastTools;
-    delete node._lastTools;
-    node.messages.push(msg);
-  } catch (e) {
-    if (node._aborted || isCancelishError((e && e.message) || e)) {
-      const body = stripStreamErrors(node._pendingAnswer);
-      node.messages.push({
-        role: "assistant",
-        content: body || I18n.t("（已终止）"),
-        at: Date.now(),
-      });
-    } else {
-      node.messages.push({
-        role: "assistant",
-        content: I18n.t("（错误：") + (e.message || String(e)) + "）",
-        at: Date.now(),
-      });
-      toast(I18n.t("智能助手失败：") + (e.message || String(e)), "err");
-    }
-  } finally {
-    node.running = false;
-    if (S.thinking && S.thinking[node.id]) S.thinking[node.id] = [];
-    renderCanvas();
-    renderStatus();
-    scheduleSave(true);
-    scrollChatToBottom(node);
-  }
 }
 
 /* Markdown 渲染（先转义 HTML 防注入，再解析；链接仅允许 http/https/mailto）
@@ -18966,23 +20559,6 @@ function clearStickPos(key) {
   if (key) _stickPos.delete(key);
 }
 
-/* 对话节点：聊天列表滚动到底部（新消息 / 思考流式时保持最新；上翻时不强制） */
-function scrollChatToBottom(node, force) {
-  const list = document.querySelector(
-    '.wf-node[data-nid="' + node.id + '"] .chat-list',
-  );
-  if (!list) return;
-  if (force) {
-    node._chatNearBottom = true;
-    setConvScrollTop(list, list.scrollHeight);
-    return;
-  }
-  if (node._chatNearBottom === false) {
-    if (node._chatScrollTop != null) setConvScrollTop(list, node._chatScrollTop);
-    return;
-  }
-  scrollElToBottomIfStuck(list);
-}
 /* 智能任务节点：会话列表（与智能会话同款：用户输入 + agent 输出 / 思考 / 工具） */
 function agentConvListEl(node) {
   const conv = document.createElement("div");
@@ -19127,20 +20703,6 @@ function refreshThinkingUI(nid) {
     icon.classList.toggle("live", !!has && !!node.running);
     icon.textContent = node.running ? I18n.t("◉ 思考中") : I18n.t("◉ 思考");
   }
-  /* 对话节点：思考内容流式显示（空内容由 CSS :empty 隐藏）
-     气泡自带 max-height 独立滚动条：以前每帧无条件 scrollTop = scrollHeight，
-     用户翻不上去。现在统一走薄封装——贴底才跟随，上翻立刻脱离，滚回底部恢复。 */
-  const chatBubble = document.getElementById("chat-think-" + nid);
-  if (chatBubble) {
-    const t = traceThinkDisplay(nid, thinkingTextOf(node));
-    const bKey = "chat-think-" + nid;
-    chatBubble.textContent = t;
-    /* 节点重绘会换成全新元素（scrollTop 被冲成 0）：把阅读位置与跟随意图搬回来 */
-    if (chatBubble._convStickBound) stickScrollToBottom(chatBubble);
-    else restoreStickPos(chatBubble, bKey);
-    saveStickPos(chatBubble, bKey);
-    scrollChatToBottom(node);
-  }
   if (
     node &&
     node.kind === "agent_task" &&
@@ -19239,7 +20801,7 @@ function showThinking(node) {
   foot.appendChild(copy);
 }
 
-/* 对话节点：点击回复前的「思考内容」按钮 → 弹窗显示该条回复的思考内容 */
+/* 会话模式（agent_task chatMode）：点击回复前的「思考内容」按钮 → 弹窗显示该条回复的思考内容 */
 function showMsgThinking(node, msg) {
   openOverlay(I18n.t("思考内容 · ") + (node ? node.title : I18n.t("对话")));
   const bodyEl = $("#ovBody");
@@ -20960,15 +22522,21 @@ function mergePulseResults(list) {
   return "open";
 }
 
-function abortTaskTree(node) {
-  if (!node) return;
+function abortTaskTree(node, out) {
+  if (!node) return out;
   /* 统一走 bumpNodeStop：整棵子树（含任务内的媒体 / 处理节点）批次作废，
      在途运行体在下一个检查点退出，排队项也不再起跑 */
   bumpNodeStop(node);
-  for (const t of taskChildTasksOf(node.id)) abortTaskTree(t);
+  /* 函数 / 工具节点：线程在主进程里，光打标记停不掉 —— 登记下来交给调用方按 runId
+     真取消（否则「停了任务，任务里的函数线程照跑、外部进程照活」） */
+  if (out && isComputeExecKind(node) && computeExecNodeActive(node))
+    out.push(node);
+  for (const t of taskChildTasksOf(node.id)) abortTaskTree(t, out);
   for (const n of taskChildrenOf(node.id)) {
     if (n.running) bumpNodeStop(n);
+    if (out && isComputeExecKind(n) && computeExecNodeActive(n)) out.push(n);
   }
+  return out;
 }
 
 function askAssistDecomposeTask(node) {
@@ -21253,6 +22821,52 @@ async function pickImage(node) {
   toast(I18n.t("图像已载入输入节点"), "ok");
 }
 
+/* ============ 音频 / 视频输入节点（选本机文件 · 输出该文件的 URL） ============ */
+
+/* 打开系统文件框选一个媒体文件（kind: 'audio' | 'video'）；取消返回 "" */
+async function pickMediaFile(kind) {
+  const isVid = kind === "video";
+  const r = await window.api.fileOpenDialog({
+    title: isVid ? I18n.t("选择视频（输入节点）") : I18n.t("选择音频（输入节点）"),
+    filters: [
+      {
+        name: isVid ? I18n.t("视频") : I18n.t("音频"),
+        extensions: isVid ? VIDEO_FILE_EXTS : AUDIO_FILE_EXTS,
+      },
+      { name: I18n.t("全部文件"), extensions: ["*"] },
+    ],
+  });
+  return (r && r.path) || "";
+}
+
+/* 给音视频输入节点设定文件：直接引用本机绝对路径，不复制进工作流资产。
+   返回 true = 已写入（调用方负责 pushHistory / renderCanvas）。 */
+function setNodeMedia(node, absPath) {
+  if (!node || (node.kind !== "input_audio" && node.kind !== "input_video"))
+    return false;
+  const p = String(absPath || "").trim();
+  if (!p) return false;
+  node.mediaAsset = p;
+  node.sourceName = imageStem(p) || fileName(p);
+  clearDownstream(node.id);
+  scheduleSave();
+  return true;
+}
+
+/* 节点内「选择…」按钮：文件框 → 设定路径 */
+async function pickMediaForNode(node) {
+  const kind = node.kind === "input_video" ? "video" : "audio";
+  const p = await pickMediaFile(kind);
+  if (!p) return;
+  pushHistory();
+  if (!setNodeMedia(node, p)) return;
+  renderCanvas();
+  toast(
+    (kind === "video" ? I18n.t("视频已载入输入节点") : I18n.t("音频已载入输入节点")),
+    "ok",
+  );
+}
+
 /* ============ 实时保存 ============ */
 
 /* ── 已删画布黑名单（防复活 / 防串写）──
@@ -21305,6 +22919,23 @@ function forgetDeletedWf(id, wf) {
         S._deadWfObjs.add(dead);
     } catch (_) {}
   }
+  /* 画布被删除 = 它名下函数 / 工具节点的运行也必须跟着没：对象从袋里摘掉之后再没人
+     能点 ■（连节点都查不到），线程与它拉起的外部进程就成了孤儿。这里就地作废这批
+     批次并按 runId 取消（主进程 terminate 线程 + 连进程树回收）；运行体自己 await 到
+     「已手动停止」收尾。取消是异步的，删除流程不等你 —— 兜底还有 before-quit 的 killAll。 */
+  if (dead && Array.isArray(dead.nodes)) {
+    try {
+      for (const n of dead.nodes) {
+        if (!n || !isComputeExecKind(n)) continue;
+        if (!n.running && !(typeof computeExecNodeActive === "function" ? computeExecNodeActive(n) : fnHasLiveRun(n))) continue;
+        try {
+          bumpNodeStop(n);
+        } catch (_) {}
+      }
+      if (typeof fnCancelRunsOfNodes === "function")
+        Promise.resolve(fnCancelRunsOfNodes(dead.nodes)).catch(() => {});
+    } catch (_) {}
+  }
   /* 250ms 的待保存定时器必须在摘对象之前掐掉，否则它回调时把已删画布写回磁盘 */
   clearTimeout(S.saveTimer);
   S.saving = false;
@@ -21340,7 +22971,15 @@ function rememberWf(wf) {
   S.wfBag[wf.id] = wf;
 }
 function wfHasRunning(wf) {
-  return !!(wf && Array.isArray(wf.nodes) && wf.nodes.some((n) => n.running));
+  if (!wf || !Array.isArray(wf.nodes)) return false;
+  if (wf.nodes.some((n) => n && n.running)) return true;
+  /* 函数 / 工具节点的执行体在主进程的独立线程里：只在排队（还没置 running）也算
+     「这张画布有活」。少了这一半，切回该画布会用磁盘副本换掉节点对象，
+     那次排队 / 在飞的运行就成了看不见、也停不掉的幽灵（线程与进程没人管）。 */
+  return !!(
+    typeof computeExecActivityInWf === "function" &&
+    computeExecActivityInWf(wf)
+  );
 }
 function beginCanvasRun(wf) {
   if (!wf) return;
@@ -21579,6 +23218,84 @@ function flushNow() {
 
 /* ============ 工作流管理 ============ */
 
+/* 「文本对话（chat）」节点已移除 → 旧节点原地迁移为智能任务的会话模式。
+   两者的对话记录结构完全一致（{ role, content, at, reasoning?, tools? }），
+   所以会话内容、标题、位置、尺寸都能原样搬过去；系统提示词折进首条
+   system 消息，服务商 providerId 折成智能体路由。只改这一个节点，不碰连线。 */
+function migrateChatNodeToAgent(n) {
+  const msgs = [];
+  const sys = String(n.systemPrompt || "").trim();
+  if (sys) msgs.push({ role: "system", content: sys, at: Date.now() });
+  for (const m of Array.isArray(n.messages) ? n.messages : []) {
+    if (!m || typeof m !== "object") continue;
+    const role =
+      m.role === "user" ? "user" : m.role === "system" ? "system" : "assistant";
+    const content = String(m.content == null ? "" : m.content);
+    if (role === "system") {
+      /* 旧对话节点只有一条系统提示词的位置：再遇到 system 就并入首条 */
+      const first = msgs.find((x) => x.role === "system");
+      if (first) {
+        first.content = first.content
+          ? first.content + "\n\n" + content
+          : content;
+        continue;
+      }
+    }
+    const copy = { role, content, at: Number(m.at) || Date.now() };
+    if (typeof m.reasoning === "string" && m.reasoning.trim())
+      copy.reasoning = m.reasoning;
+    if (Array.isArray(m.tools) && m.tools.length) copy.tools = m.tools;
+    if (Array.isArray(m.segments) && m.segments.length) copy.segments = m.segments;
+    msgs.push(copy);
+  }
+  /* 「▶ 重跑」的默认输入 = 最近一次用户提问（会话模式会带上全部历史） */
+  let lastAsk = "";
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "user") {
+      lastAsk = msgs[i].content;
+      break;
+    }
+  }
+  n.kind = "agent_task";
+  n.chatMode = true;
+  n.messages = msgs;
+  n.task = String(typeof n.task === "string" && n.task.trim() ? n.task : lastAsk);
+  n.workspace = String(n.agentWorkspace || "");
+  n.convH = 200;
+  n.inputH = 64;
+  n.w = Math.max(380, Number(n.w) || 380);
+  n.effort = normalizeAgentEffort(n.effort);
+  n.preset = n.preset || AGENT_PRESET_DEFAULT;
+  n.batchMode = "batch";
+  n.agentSessionId = "";
+  n.globalRefs = !!n.globalRefs;
+  n.output = null;
+  n.error = null;
+  n.ranAt = 0;
+  n.running = false;
+  /* 对话节点用的是 API 服务商（providerId）：能折成智能体路由就折，
+     否则留空，交给 syncAgentProviderRoute / 播放时回落默认路由 */
+  if (!String(n.provider || "").trim()) {
+    const fromApi =
+      typeof agentRouteFromProviderId === "function" && n.providerId
+        ? agentRouteFromProviderId(n.providerId)
+        : "";
+    n.provider = fromApi || "";
+  }
+  if (!String(n.model || "").trim()) n.model = "";
+  delete n.providerId;
+  delete n.systemPrompt;
+  delete n.temperature;
+  delete n.agent;
+  delete n.agentWorkspace;
+  if (typeof syncAgentProviderRoute === "function") {
+    try {
+      syncAgentProviderRoute(n);
+    } catch (_) {}
+  }
+  return n;
+}
+
 function migrateWf(wf) {
   wf.nodes = wf.nodes || [];
   wf.wires = wf.wires || [];
@@ -21597,26 +23314,36 @@ function migrateWf(wf) {
     }
     wf.tagCatalog = cat;
   }
-  for (const m of wf.marks) {
-    if (!m.id) m.id = uid("mk");
-    if (m.kind !== "text" && m.kind !== "box" && m.kind !== "arrow")
-      m.kind = "box";
-    if (typeof m.x !== "number") m.x = 0;
-    if (typeof m.y !== "number") m.y = 0;
-    if (!m.color) m.color = "#38d6ff";
-    if (m.kind === "text") {
+  /* 绘制只剩 text：框体（box）/ 箭头（arrow）已移除，归类节点请用「组」。
+     老画布一次性迁移：box/arrow 直接丢弃（5 分钟自动备份 save-backups/ 可回找），
+     其余未知类型收敛为 text，并清掉只服务框体/箭头的字段（stroke/x2/y2/dx/dy）；
+     group.markIds 与空组在下方「清理组」段一并处理。 */
+  {
+    const keptMarks = [];
+    const keptMarkIds = new Set();
+    for (const m of wf.marks) {
+      if (!m.id) m.id = uid("mk");
+      if (m.kind === "box" || m.kind === "arrow") continue;
+      if (m.kind !== "text") m.kind = "text";
+      if (typeof m.x !== "number") m.x = 0;
+      if (typeof m.y !== "number") m.y = 0;
+      if (!m.color) m.color = "#38d6ff";
       if (typeof m.text !== "string") m.text = I18n.t("说明文字");
       if (!m.fontSize) m.fontSize = 16;
       if (!m.w) m.w = 200;
       if (!m.h) m.h = 44;
-    } else if (m.kind === "box") {
-      if (!m.w) m.w = 260;
-      if (!m.h) m.h = 160;
-      if (!m.stroke) m.stroke = 2;
-    } else if (m.kind === "arrow") {
-      if (m.x2 == null) m.x2 = m.x + (m.dx || 180);
-      if (m.y2 == null) m.y2 = m.y + (m.dy || 0);
-      if (!m.stroke) m.stroke = 2;
+      delete m.stroke;
+      delete m.x2;
+      delete m.y2;
+      delete m.dx;
+      delete m.dy;
+      keptMarkIds.add(m.id);
+      keptMarks.push(m);
+    }
+    wf.marks = keptMarks;
+    for (const g of wf.groups || []) {
+      if (!Array.isArray(g.markIds)) continue;
+      g.markIds = g.markIds.filter((id) => keptMarkIds.has(id));
     }
   }
   for (const n of wf.nodes) {
@@ -21655,9 +23382,26 @@ function migrateWf(wf) {
       if (!n.legacySaveMedia) n.legacySaveMedia = "image";
       n.kind = "save";
     }
+    /* 「文本对话（chat）」节点已移除：旧画布上的对话节点原地迁移成
+       智能任务节点的「会话模式」（chatMode）——两者消息结构同为
+       { role, content, at }，对话记录、标题、位置与尺寸原样保留，
+       旧画布不报错、会话内容不丢。系统提示词并进首条 system 消息。 */
+    if (n.kind === "chat") migrateChatNodeToAgent(n);
+    /* 工具节点一次性迁移为超级节点变体（kind:"super" + tool:true）：规范形态见
+       docs/tool-function-nodes.md §0。只改形态字段并补齐超级壳层默认值，id / 标题 /
+       位置尺寸 / toolConfig / parentSuperId 与内部子节点关系一律不动，连线两端仍是
+       同一批 id 与端子序号，故无需改写连线。幂等：已是变体时不触发，旧画布反复加载
+       逐字不变（新形态不会再被本分支命中）。 */
+    if (n.kind === "tool") migrateToolNodeToSuperForm(n);
     if (n.kind === "input_text" || n.kind === "input_image") {
       if (n.batch == null) n.batch = false;
       if (!Array.isArray(n.entries)) n.entries = [];
+    }
+    if (n.kind === "input_audio" || n.kind === "input_video") {
+      /* 音视频输入：只记原绝对路径（不复制进资产）· 旧档缺字段时补齐 */
+      if (typeof n.mediaAsset !== "string") n.mediaAsset = "";
+      if (typeof n.sourceName !== "string") n.sourceName = "";
+      n.running = false;
     }
     if (n.kind === "input_image") {
       if (typeof n.sourceName !== "string") n.sourceName = "";
@@ -21687,6 +23431,8 @@ function migrateWf(wf) {
     if (n.kind === "proc_image") {
       normalizeBgRm(n);
     }
+    /* 函数 / 工具节点（含 super + tool:true 变体）：旧画布加载归一 */
+    if (typeof ensureFnToolNodeState === "function") ensureFnToolNodeState(n);
     if (typeof n.parentTaskId !== "string") n.parentTaskId = "";
     if (n.kind === "anim") {
       const gifPath =
@@ -21711,8 +23457,22 @@ function migrateWf(wf) {
       if (n.attempts == null) n.attempts = 1;
       if (n.attemptIdx == null) n.attemptIdx = 0;
     }
-    if (n.kind === "music_gen" || n.kind === "video_gen" || n.kind === "remotion") {
+    if (
+      n.kind === "music_gen" ||
+      n.kind === "tts_gen" ||
+      n.kind === "video_gen" ||
+      n.kind === "remotion"
+    ) {
       if (n.attempts == null) n.attempts = 1;
+    }
+    /* SoVITS 语音节点：字段归一（语速 0.5–2.0，输出格式 wav|mp3） */
+    if (n.kind === "tts_gen") {
+      if (typeof n.voice !== "string") n.voice = "";
+      if (n.ttsFormat !== "mp3") n.ttsFormat = "wav";
+      if (typeof n.ttsStatus !== "string") n.ttsStatus = "";
+      if (typeof n.outputPath !== "string") n.outputPath = "";
+      const sp = Number(n.speed);
+      n.speed = sp > 0 ? Math.max(0.5, Math.min(2, sp)) : 1;
     }
     if (n.kind === "task") {
       normalizeTaskSteps(n);
@@ -21737,12 +23497,11 @@ function migrateWf(wf) {
         n.savedPaths = n.savedPath ? [n.savedPath] : [];
       n.savedPaths = n.savedPaths.filter(Boolean);
     }
-    if (n.kind === "chat") n.effort = normalizeTextEffort(n.effort);
     if (n.kind === "proc_text") {
       if (n.agent) {
-        /* 智能模式走 dsh：标准/最强；旧 off/none → high */
-        const e = String(n.effort || "").toLowerCase();
-        n.effort = e === "max" ? "max" : "high";
+        /* 智能模式走 dsh：档位词汇内原样保留（high/max 原样合法，medium/xhigh/low 不再拍平），
+           旧 off/none → high */
+        n.effort = normalizeAgentEffort(n.effort);
       } else {
         n.effort = normalizeTextEffort(n.effort);
       }
@@ -21751,21 +23510,13 @@ function migrateWf(wf) {
       if (n.agent == null) n.agent = false;
       if (typeof n.agentWorkspace !== "string") n.agentWorkspace = "";
     }
-    if (n.kind === "chat") {
-      if (n.agent == null) n.agent = false;
-      if (typeof n.agentWorkspace !== "string") n.agentWorkspace = "";
-      if (!Array.isArray(n.messages)) n.messages = [];
-    }
     if (n.kind === "agent_task") {
       if (typeof n.task !== "string") n.task = "";
       if (!Array.isArray(n.messages)) n.messages = [];
       if (typeof n.workspace !== "string") n.workspace = "";
       if (n.batchMode !== "agg") n.batchMode = "batch";
-      {
-        const e = String(n.effort || "").toLowerCase();
-        n.effort = e === "max" ? "max" : "high";
-      }
-      if (!n.preset) n.preset = "standard";
+      n.effort = normalizeAgentEffort(n.effort);
+      if (!n.preset) n.preset = AGENT_PRESET_DEFAULT;
       if (typeof n.agentSessionId !== "string") n.agentSessionId = "";
       if (!n.convH || n.convH < 60) n.convH = 140; /* 会话历史框高度 */
       if (!n.inputH || n.inputH < 40) n.inputH = 56; /* 输入框高度 */
@@ -21911,10 +23662,11 @@ function migrateWf(wf) {
     }
     /* 孤儿超级节点引用自愈：父级不存在或不是超级节点时清空，
        避免节点挂到幽灵父级后从层级视图 / 左侧栏中消失（历史数据损坏的降级：
-       节点回到顶层画布，至少可见可操作，不再整体消失） */
+       节点回到顶层画布，至少可见可操作，不再整体消失）。
+       工具节点＝超级节点变体（super + tool:true）：其子节点 parentSuperId 天然合法。 */
     for (const n of wf.nodes) {
       const host = n.parentSuperId ? byId.get(n.parentSuperId) : null;
-      if (n.parentSuperId && (!host || host.kind !== "super")) n.parentSuperId = "";
+      if (n.parentSuperId && (!host || !isSuperLikeNode(host))) n.parentSuperId = "";
     }
     for (const n of wf.nodes) {
       if (n.kind === "task") ensureTaskScaffold(n, wf);
@@ -21975,12 +23727,13 @@ function migrateWf(wf) {
   wf.groups = wf.groups.filter(
     (g) => (g.nodeIds && g.nodeIds.length) || (g.markIds && g.markIds.length),
   );
-  fitAllGroupBoxes(wf);
   return videoPortMigrated; /* true = 发生了视频端口迁移，调用方应立即落盘 */
 }
 
 async function ensureWorkflow() {
-  S.uiOpenNode = null;
+  /* 切画布前先收掉设置窗：skipSave —— 这张画布即将 flush / 或已不属于前台，
+     再 persist 一次可能把刚删掉的画布写回磁盘。 */
+  closeNodeSettingsDialog({ silentRerender: true, skipSave: true });
   closeBgRmPop();
   clearHistory();
   const list = await window.api.wfList();
@@ -22013,11 +23766,13 @@ async function loadWorkflow(id, opts) {
   /* 先落盘当前画布；若有运行中节点则保留内存对象，避免任务结果/会话丢失。
      skipFlush=true：切换前这张画布已被删除（删除后的落点切换），此时任何写盘
      都会把刚删掉的画布凭空复活，绝不能 rememberWf / flushCurrentWf。 */
+  /* 切画布前先收掉设置窗：设置都是即时写回的，skipSave 只跳过关窗那一下多余落盘
+     （紧接着就要 flush，skipFlush 时这张画布甚至已被删除，persist 会把它复活）。 */
+  closeNodeSettingsDialog({ silentRerender: true, skipSave: true });
   if (S.wf && !skipFlush) {
     rememberWf(S.wf);
     await flushCurrentWf();
   }
-  S.uiOpenNode = null;
   closeBgRmPop();
   clearHistory();
   let wf = null;
@@ -22039,7 +23794,12 @@ async function loadWorkflow(id, opts) {
     if (live && wfHasRunning(live)) {
       const byId = new Map((wf.nodes || []).map((n) => [n.id, n]));
       for (const n of live.nodes || []) {
-        if (n.running || (S.nodeWfId && S.nodeWfId[n.id] === id))
+        if (
+          n.running ||
+          (S.nodeWfId && S.nodeWfId[n.id] === id) ||
+          (typeof computeExecNodeActive === "function" &&
+            computeExecNodeActive(n))
+        )
           byId.set(n.id, n);
       }
       wf.nodes = [...byId.values()];
@@ -22371,7 +24131,7 @@ async function forkAgentSession(id) {
     id: uid("as"),
     title: (src.title || I18n.t("新会话")) + I18n.t(" · 分支"),
     workspace: src.workspace || "",
-    preset: src.preset || "standard",
+    preset: src.preset || AGENT_PRESET_DEFAULT,
     provider: src.provider || "deepseek-official",
     model: src.model || "",
     effort: src.effort || "high",
@@ -22408,7 +24168,7 @@ function ensureAgentSessionForNode(node) {
       id: uid("as"),
       title: node.title || I18n.t("智能任务"),
       workspace: node.workspace || dshWorkspaceOf(node),
-      preset: node.preset || "standard",
+      preset: node.preset || AGENT_PRESET_DEFAULT,
       provider: node.provider || "deepseek-official",
       model: node.model || "",
       effort: node.effort || "high",
@@ -22420,7 +24180,7 @@ function ensureAgentSessionForNode(node) {
     list.unshift(sess);
   } else {
     /* 节点参数优先:展开时把节点上的预设/供应商/模型/强度/标题同步到会话 */
-    sess.preset = node.preset || sess.preset || "standard";
+    sess.preset = node.preset || sess.preset || AGENT_PRESET_DEFAULT;
     sess.provider = node.provider || sess.provider || "deepseek-official";
     sess.model = node.model || sess.model || "";
     sess.effort = node.effort || sess.effort || "high";
@@ -22594,6 +24354,16 @@ function devNodeContractText(node, req) {
   );
   const reqText = String(req === undefined || req === null ? "" : req).trim();
   if (reqText) lines.push(I18n.t("本次开发需求：") + reqText);
+  /* 「先拷问需求」开关（node.devGrill · 开发对话框 toggle）：开启时在需求行之后、
+     默认回写要求之前多插一段拷问契约。任务书每轮随系统提示注入（sess._devContract），
+     所以追问轮次同样受约束；关闭时任务书逐字不变（零回归）。 */
+  if (node && node.devGrill === true) {
+    lines.push(
+      I18n.t(
+        "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。",
+      ),
+    );
+  }
   const p = devPathOf(node);
   if (p) lines.push(I18n.t("项目根目录：") + p);
   if (p)
@@ -22669,8 +24439,11 @@ function devSessionsOf(node) {
    devSessionsOf 仍服务「最近一次要求」展示（devLastRequestOf）。 */
 function devSessionTitleOf(node, mode) {
   return (
-    (mode === "refine" ? I18n.t("细化 · ") : I18n.t("开发 · ")) +
-    (node.title || I18n.t("开发节点"))
+    (mode === "refine"
+      ? I18n.t("细化 · ")
+      : mode === "ask"
+        ? I18n.t("问询") + " · "
+        : I18n.t("开发 · ")) + (node.title || I18n.t("开发节点"))
   );
 }
 /* 节点改名 → 其名下的细化 / 开发会话标题跟随（保留各自前缀） */
@@ -22702,15 +24475,19 @@ function createDevSessionForNode(node, mode, req) {
      都没选则保持原有默认（DeepSeek 官方路由 + 引擎默认模型） */
   const eff =
     typeof devAgentModelOf === "function" ? devAgentModelOf(node) : null;
+  /* 预设与思考强度同理：本块或就近上层选过就用它，没选回落默认档（AGENT_PRESET_DEFAULT，即极简）/ high
+     （与改动前逐字一致，老画布行为不变） */
+  const st =
+    typeof devAgentSettingsOf === "function" ? devAgentSettingsOf(node) : null;
   const list = agentSessions();
   const sess = {
     id: uid("as"),
     title: devSessionTitleOf(node, mode),
     workspace: devPathOf(node) || dshWorkspaceOf(node),
-    preset: "standard",
+    preset: (st && st.preset) || AGENT_PRESET_DEFAULT,
     provider: (eff && eff.provider) || "deepseek-official",
     model: (eff && eff.model) || "",
-    effort: "high",
+    effort: (st && st.effort) || "high",
     messages: [],
     archived: false,
     updatedAt: Date.now(),
@@ -22845,8 +24622,48 @@ async function developDevNode(node) {
     /* 边写边留存：取消 / Esc / 被别的事务顶出对话框都不丢，下次打开原样回填 */
     onText: (t) => devDraftSet(node, "dev", t),
     hint: I18n.t(
-      "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
+      "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消",
     ),
+    /* 「先拷问需求」：开关状态真源是 node.devGrill（布尔 · 随画布落盘），不塞进
+       devDraft —— 那是文本草稿、提交后会清掉，而本开关的语义是「这个模块我就是要
+       先被问清再动手」，属于粘在功能块上的偏好。真正生效在 devNodeContractText：
+       开启时任务书里多一段【拷问模式】，要求会话先加载内置技能 mtnode-grill-me
+       按轮问需求，未经用户确认达成共识前不得改任何东西。 */
+    custom: (c) => {
+      const lab = document.createElement("label");
+      lab.className = "mt-form-lab";
+      lab.textContent = I18n.t("开发前需求确认（可选）");
+      c.appendChild(lab);
+      const listEl = document.createElement("div");
+      listEl.className = "mt-sug-opts";
+      const row = document.createElement("label");
+      const on = node.devGrill === true;
+      row.className = "mt-sug-opt" + (on ? " on" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = on;
+      cb.onchange = () => {
+        node.devGrill = !!cb.checked;
+        row.classList.toggle("on", !!cb.checked);
+        scheduleSave();
+      };
+      const txt = document.createElement("div");
+      txt.className = "mt-sug-txt";
+      const tt = document.createElement("b");
+      tt.className = "mt-sug-title";
+      tt.textContent = I18n.t("先拷问需求（grill-me）");
+      txt.appendChild(tt);
+      const dd = document.createElement("div");
+      dd.className = "mt-sug-desc";
+      dd.textContent = I18n.t(
+        "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。",
+      );
+      txt.appendChild(dd);
+      row.appendChild(cb);
+      row.appendChild(txt);
+      listEl.appendChild(row);
+      c.appendChild(listEl);
+    },
     requireText: true,
     actions: [
       { id: "cancel", label: I18n.t("取消") },
@@ -22884,6 +24701,92 @@ async function startDevSessionWithText(node, text) {
     await agentSessionSend("", { _devContract: true });
   } catch (err) {
     toast(I18n.t("开发会话启动失败：") + ((err && err.message) || String(err)), "err");
+  }
+}
+/* ---------- 「问询」= 该功能块的只读会话（与「开发 / 细化」同一套会话机制） ----------
+ * 旧实现把问询跑在弹窗作业上（devAskJobs + #mtDialog 单宿主视图）：视图被顶掉或
+ * 点了「返回后台」之后，结算时没有地方渲染回答，问询就「无法查看」。会话承载后
+ * 问答永久留在会话里，与弹窗活不活着无关。
+ * 与开发会话的两点刻意差别：
+ *   1) 契约是「只读问询任务书」（app-devnode.js devAskContractText），只回答问题，
+ *      不改文件、不改画布、不回写本模块的 note / devStatus / devFiles；
+ *   2) 会话 id 记在 node.devAskSessionId，不进 devSessionIds / agentSessionId ——
+ *      那两处是「最近一次要求」与「会话 N」跳转的口径，混进问询会污染开发语义。
+ * 同一功能块复用同一条问询会话：多轮追问落在同一上下文里。 */
+function devAskSessionOf(node) {
+  if (!node || node.kind !== "super" || !node.dev) return null;
+  const list = typeof agentSessions === "function" ? agentSessions() : [];
+  if (!node.devAskSessionId || !list.length) return null;
+  const sess = list.find((s) => s && s.id === node.devAskSessionId) || null;
+  if (!sess) return null;
+  /* 旧版「问询记录会话」（只补写问答、没有契约）不复用：它只是历史留档 */
+  if (!String(sess._devContract || sess.devContract || "").trim()) return null;
+  return sess;
+}
+async function startDevAskSession(node, question) {
+  const q = String(question || "").trim();
+  if (!node || node.kind !== "super" || !node.dev || !q) return;
+  if (typeof agentSessions !== "function") return;
+  const list = agentSessions();
+  const contract =
+    typeof devAskContractText === "function"
+      ? String(devAskContractText(node) || "").trim()
+      : "";
+  let sess = devAskSessionOf(node);
+  if (sess) {
+    /* 追问：契约按模块最新现状刷新（拿不到任务书就保留原来的），
+       问题作为普通一轮用户消息发进同一会话 */
+    if (contract) sess._devContract = contract;
+    sess.updatedAt = Date.now();
+    S.agentActiveId = sess.id;
+    await persistAgentSession();
+    scheduleSave(true);
+    try {
+      await agentSessionSend(q);
+    } catch (err) {
+      toast(I18n.t("问询会话启动失败：") + ((err && err.message) || String(err)), "err");
+    }
+    return;
+  }
+  const eff =
+    typeof devAgentModelOf === "function" ? devAgentModelOf(node) : null;
+  /* 预设 / 思考强度就近继承本块或上层功能块的选择；未选择回落默认档（AGENT_PRESET_DEFAULT，即极简）/ high */
+  const st =
+    typeof devAgentSettingsOf === "function" ? devAgentSettingsOf(node) : null;
+  sess = {
+    id: uid("as"),
+    title: devSessionTitleOf(node, "ask"),
+    workspace: devPathOf(node) || dshWorkspaceOf(node),
+    preset: (st && st.preset) || AGENT_PRESET_DEFAULT,
+    provider: (eff && eff.provider) || "deepseek-official",
+    model: (eff && eff.model) || "",
+    effort: (st && st.effort) || "high",
+    messages: [],
+    archived: false,
+    updatedAt: Date.now(),
+  };
+  /* 只读问询任务书 = 会话契约：每轮（含追问）随系统提示注入，不占用户消息位 */
+  sess._devContract = contract;
+  /* 首条消息只放用户的问题；_src:"dev-node" 让它走契约发送分支（标题不被首轮文本覆盖） */
+  sess.messages.push({ role: "user", content: q, _src: "dev-node", _nid: node.id });
+  list.unshift(sess);
+  node.devAskSessionId = sess.id;
+  S.agentActiveId = sess.id;
+  await persistAgentSession();
+  scheduleSave(true);
+  renderCanvas();
+  /* 会话已开始运行：左下角运行队列立刻补上这一行（点行即可进会话看回答） */
+  updateRunQueuePanel();
+  toast(
+    I18n.t("已创建问询会话「") +
+      (sess.title || "") +
+      I18n.t("」并在后台只读运行（留在画布 · 回答永久留在该会话里，可随时回看与追问）"),
+    "ok",
+  );
+  try {
+    await agentSessionSend("", { _devContract: true });
+  } catch (err) {
+    toast(I18n.t("问询会话启动失败：") + ((err && err.message) || String(err)), "err");
   }
 }
 function assistantMsgFromNode(node, text) {
@@ -23651,8 +25554,7 @@ function collectInvalidProviderGroups(wf) {
   for (const n of (wf && wf.nodes) || []) {
     const agentish =
       n.kind === "agent_task" ||
-      (n.kind === "proc_text" && n.agent) ||
-      (n.kind === "chat" && n.agent);
+      (n.kind === "proc_text" && n.agent);
     if (agentish) {
       const route = String(n.provider || "deepseek-official").trim() || "deepseek-official";
       if (!agentProviderRouteValid(route)) {
@@ -23676,11 +25578,7 @@ function collectInvalidProviderGroups(wf) {
       }
       continue;
     }
-    if (
-      n.kind !== "proc_text" &&
-      n.kind !== "proc_image" &&
-      n.kind !== "chat"
-    )
+    if (n.kind !== "proc_text" && n.kind !== "proc_image")
       continue;
     const pid = String(n.providerId || "").trim();
     if (!apiProviderValid(pid, n.kind)) {

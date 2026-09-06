@@ -5,14 +5,17 @@
  * 直接显示内容（Markdown / YAML 正确渲染、图像铺满），除节点头部那排小按钮以外没有任何交互。
  * 覆盖：
  *   [1] 形态判定骨架：kind 集合、判定口径、save 旧别名归一、buildBody 入口分流与失败回落
- *   [2] 七个 kind 的浏览态渲染器登记齐全；浏览态分支不构造任何输入控件、不挂点击事件
+ *   [2] 六个 kind 的浏览态渲染器登记齐全（旧 kind chat 已下线，不再列）；浏览态分支不构造任何输入控件、不挂点击事件
  *   [3] 编辑态零回归：buildBody 后半段照旧有 textarea / 输出按钮 / 拖宽条
  *   [4] 选中三路径形态同步：.n-resize 快速路径走 setNodeSelClass；改状态不重绘处补 syncNodeForms
  *   [5] 点选即聚焦：markFormFocusAfterRender → renderCanvas 收尾 applyFocusFormAfterRender 接线
  *   [6] CSS：.wf-node.browse 收紧内边距（且左右仍躲开接线排）+ 只读视图/条目/裸图规则齐全
  *   [7] index.html 脚本顺序：app.js → app-nodeview.js → app-canvas.js
  *   [8] detectViewLang 判定样例（vm 加载纯逻辑）
- *   [9] nodeTextViewEl 三语言渲染 + YAML 无行号 + @引用着色不破坏 HTML */
+ *   [9] nodeTextViewEl 三语言渲染 + YAML 无行号 + @引用着色不破坏 HTML
+ *   [10] 函数节点专项：未选中只显示内容（无输入控件 / 无 onclick / 不用 .n-text 类）·
+ *        点进去才出可编辑代码块（mousedown 放行 → wasBrowse → 编辑态 createJsCodeEditor →
+ *        聚焦选择器命中 js-edit-input · CSS 三层叠放收点击）· 数组入参 ×N 摘要真源 */
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -65,16 +68,22 @@ const funcBody = (src, sig) => blockFrom(src, src.indexOf(sig));
 
 /* 浏览态区块（登记表）与编辑态区块：以 function buildBody 为界 */
 const BROWSE_MARK = "/* ============ 浏览态 body 渲染器（NODE_BROWSE_BODY 登记表） ============";
-const browseRegion = sliceBetween(jsCanvas, BROWSE_MARK, "function buildBody(node, body) {");
+/* 结束锚点 = 紧跟其后的「函数 / 工具节点 body」小节（那里的交互构件不属于浏览态区块） */
+const BROWSE_END = "/* ── 函数 / 工具节点 body（参数即端子 · 设置面板）";
+const browseRegion = sliceBetween(jsCanvas, BROWSE_MARK, BROWSE_END);
 const editRegion = jsCanvas.slice(jsCanvas.indexOf("function buildBody(node, body) {"));
 
+/* 七个参与浏览态的 kind（函数节点本可复用「代码只读视图」，随工具/函数节点上线而登记，
+   故一并列入）。旧 kind chat 已下线（app.js 的 migrateChatNodeToAgent 把老画布的
+   chat 节点就地归一成 agent_task + chatMode），所以这里不再列 chat —— 之前它留在
+   清单里，本测试自「chat 移除」那一轮起就一直红着，与预设档位改动无关。 */
 const KINDS = [
   "input_text",
   "input_image",
   "proc_text",
   "proc_image",
   "agent_task",
-  "chat",
+  "function",
   "save",
 ];
 
@@ -84,6 +93,10 @@ console.log("\n[1] 形态判定骨架：kind 集合与判定口径");
   ok(!!m, "app-canvas.js 声明了 NODE_BROWSE_KINDS 集合");
   const setSrc = m ? m[1] : "";
   for (const k of KINDS) ok(setSrc.includes('"' + k + '"'), "集合含 " + k + "（参与「未选中 = 浏览态」）");
+  /* 旧 kind chat 已从集合里下线（开机加载时 app.js 的 migrateChatNodeToAgent 把老画布的
+     chat 节点就地归一成 agent_task + chatMode）：这里显式锁住「它不再回来」 */
+  ok(!setSrc.includes('"chat"'), "chat 不再参与（该 kind 已下线，老节点开机归一成 agent_task + chatMode）");
+  ok(/function migrateChatNodeToAgent\(/.test(jsApp), "app.js 保留 chat → agent_task 的归一函数（老画布不丢内容）");
   for (const k of ["super", "task", "judge", "control", "timer", "music_gen", "video_gen", "remotion", "net_recv", "net_send", "db_table", "input_file", "execute"])
     ok(!setSrc.includes('"' + k + '"'), k + " 不参与（控制流 / 超级 / 开发 / 媒体 / 网络恒为编辑形态）");
   ok(/function nodeBrowseKind\(n\) \{[\s\S]{0,120}?NODE_BROWSE_KINDS\.has\(nodeBrowseKindKey\(n\)\)/.test(jsCanvas), "nodeBrowseKind 只按 kind 集合判定");
@@ -108,7 +121,7 @@ console.log("\n[1] 形态判定骨架：kind 集合与判定口径");
   ok(jsCanvas.indexOf("const NODE_BROWSE_KINDS") < at && jsCanvas.indexOf(BROWSE_MARK) < at, "kind 集合与浏览态区块都写在 buildBody 之前");
 }
 
-console.log("\n[2] 七个 kind 的浏览态渲染器登记齐全 + 浏览态零交互构件");
+console.log("\n[2] 六个 kind 的浏览态渲染器登记齐全 + 浏览态零交互构件");
 {
   for (const k of KINDS)
     ok(new RegExp("NODE_BROWSE_BODY\\." + k + "\\s*=").test(jsCanvas), "登记了 NODE_BROWSE_BODY." + k);
@@ -123,7 +136,8 @@ console.log("\n[2] 七个 kind 的浏览态渲染器登记齐全 + 浏览态零�
     ok(!/\.onclick\s*=/.test(browseRegion), '浏览态区块不挂 onclick（"点空白换图"那类已撤掉）');
     ok(!/addEventListener\("click"/.test(browseRegion), '浏览态区块不挂 click 监听（只留展示与滚动）');
     ok(!/class(Name)?\s*=\s*["'](n-text|n-bentries|n-out-btns|n-out-resize)["']/.test(browseRegion), "浏览态区块不复用编辑态控件类名");
-    for (const id of ["st-", "dsh-out-stream-", "dsh-out-tools-", "chat-stream-", "chat-think-", "out-img-", "outimg-", "svpre-", "svimg-", "svempty-"])
+    /* 回填 id 族按现源列全（chat 一族随 kind 下线：会话式渲染改用 agent_task 的 dsh-out-* 族） */
+    for (const id of ["st-", "dsh-out-stream-", "dsh-out-tools-", "out-img-", "outimg-", "svpre-", "svimg-", "svempty-", "svthumbs-"])
       ok(browseRegion.includes('"' + id + '" + node.id'), "浏览态沿用同一个回填 id（运行中的流式增量 / fillPreviews 照常命中）：\"" + id + '" + node.id');
     ok(/\.id = "st-" \+ node\.id/.test(browseRegion), "status 行 id 与编辑态完全一致");
     ok(browseRegion.includes("n-img bare"), "图像走 .n-img.bare（铺满、无虚线框）");
@@ -159,8 +173,17 @@ console.log("\n[4] 选中三路径形态同步");
   const bodyOf = funcBody(jsCanvas, "function nodeBodyEl(el)");
   ok(!!bodyOf && bodyOf.includes('":scope > .n-body"'), "只取本节点直属 body（不误伤超级节点内的子节点）");
   const nEl = jsCanvas.indexOf("el.className = \"wf-node \" + kindCls");
-  ok(nEl > 0 && jsCanvas.slice(nEl, nEl + 400).includes('el.classList.add("browse")'), "nodeElement 初绘即打 .browse");
-  ok(nEl > 0 && jsCanvas.slice(nEl, nEl + 400).includes("el.dataset.nodeForm = _browse ? \"browse\" : \"edit\""), "nodeElement 初绘即记形态");
+  /* 断言窗口按「nodeElement 头部 → 开发节点区块之前」切，不按固定字符数掐：
+     音频 / 视频输入的 .in-media 那段注释插在中间，把浏览态标记推过了原来的 400 字窗口，
+     导致本项自那一轮起误报（要锁的是「在函数开头、还没开始拼子元素就把形态打完」）。 */
+  const nStop = nEl > 0 ? jsCanvas.indexOf("/* 开发节点：", nEl) : -1;
+  const nHead = nEl > 0 ? jsCanvas.slice(nEl, nStop > nEl ? nStop : nEl + 1600) : "";
+  ok(
+    nEl > 0 && nStop > nEl,
+    "能按锚点切出 nodeElement 头部区块（className 行 → 开发节点区块之前）",
+  );
+  ok(nHead.includes('el.classList.add("browse")'), "nodeElement 初绘即打 .browse");
+  ok(nHead.includes("el.dataset.nodeForm = _browse ? \"browse\" : \"edit\""), "nodeElement 初绘即记形态");
   const sync = funcBody(jsCanvas, "function syncNodeForms()");
   ok(!!sync && sync.includes("if (!nodeSelState(n)) x.classList.remove(\"sel\")") && sync.includes("applyNodeForm(x, n)"), "syncNodeForms 兜底：没有选中就不可能是编辑态");
   const syncCalls = (jsCanvas.match(/syncNodeForms\(\);/g) || []).length;
@@ -237,6 +260,69 @@ console.log("\n[7] 脚本加载顺序（= 模块分层）");
 }
 
 /* ============ [8][9] vm 加载 app-nodeview.js 跑纯逻辑 ============ */
+/* @引用着色同源切词：从 app.js 抠真实 atMentionsOf 链供 app-nodeview.js 调用 */
+function viewFnBody(src, name) {
+  const pats = [
+    new RegExp("\\n(?:async\\s+)?function " + name + "\\s*\\(", "m"),
+    new RegExp("\\nconst " + name + "\\s*=", "m"),
+  ];
+  let at = -1;
+  for (const p of pats) {
+    const m = src.match(p);
+    if (m) {
+      at = m.index + 1;
+      break;
+    }
+  }
+  if (at < 0) throw new Error("找不到 app.js 顶层函数/常量：" + name);
+  const isFn = /^(async\s+)?function/.test(src.slice(at, at + 14));
+  if (!isFn) {
+    const eol = src.indexOf("\n", at);
+    return src.slice(at, eol + 1);
+  }
+  const i = src.indexOf("{", at);
+  if (i < 0) throw new Error("找不到函数体：" + name);
+  let depth = 0;
+  let inStr = null;
+  for (let j = i; j < src.length; j++) {
+    const c = src[j];
+    const p = src[j - 1];
+    if (inStr) {
+      if (c === inStr && p !== "\\") inStr = null;
+      continue;
+    }
+    if (c === "/" && src[j + 1] === "/") {
+      j = src.indexOf("\n", j) - 1;
+      continue;
+    }
+    if (c === "/" && src[j + 1] === "*") {
+      j = src.indexOf("*/", j) + 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      inStr = c;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (!depth) return src.slice(at, j + 1);
+    }
+  }
+  throw new Error("函数体不完整：" + name);
+}
+const viewExtract = (src, names) => names.map((n) => viewFnBody(src, n)).join("\n");
+const AT_TOKENIZER_SRC = viewExtract(jsApp, [
+  "atRefNames",
+  "atRefSpanEnd",
+  "atMentionsOf",
+  "eachAtMention",
+  "mapAtMentions",
+  "AT_REF_STOP",
+  "AT_REF_EDGE",
+  "AT_REF_WS_TEXT",
+]);
+
 function loadNodeView() {
   const made = [];
   function makeEl(tag) {
@@ -286,6 +372,8 @@ function loadNodeView() {
     console,
   };
   const probe =
+    AT_TOKENIZER_SRC +
+    "\n" +
     jsView +
     "\n;globalThis.__probe = { detectViewLang, analyzeTextView, nodeTextViewEl, highlightAtRefsHtml, nodeViewIsEmpty };";
   vm.runInNewContext(probe, sandbox, { filename: "renderer/app-nodeview.js" });
@@ -372,6 +460,110 @@ console.log("\n[9] nodeTextViewEl：三语言渲染 + YAML 无行号 + @引用�
   ok(/<a href="[^"]*">@Alpha<\/a>/.test(href.replace(/<span[^>]*>/g, "").replace(/<\/span>/g, "")), "@Alpha 只在标签之间的文本段上被包高亮");
   ok(nv.highlightAtRefsHtml("无 @ 的文本", node) === "无 @ 的文本", "没有 @ 时原样返回（零开销）");
   ok(nv.highlightAtRefsHtml("<i>@Alpha</i>", null) === "<i>@Alpha</i>", "无 node（拿不到候选）时不改一个字");
+}
+
+console.log("\n[10] 函数节点：外部只显示内容 · 点进去才出可编辑代码块（本轮 Bug 的两半）");
+{
+  const at = jsCanvas.indexOf("NODE_BROWSE_BODY.function = function (node, body) {");
+  const fnBrowse = at >= 0 ? blockFrom(jsCanvas, at) : null;
+  ok(!!fnBrowse, "能按锚点切出 NODE_BROWSE_BODY.function 的渲染器函数体");
+  ok(
+    !!browseRegion && browseRegion.indexOf("NODE_BROWSE_BODY.function") >= 0,
+    "函数节点渲染器落在「浏览态区块」内（与其余 kind 同一节，注释锚点没漂走）",
+  );
+  if (fnBrowse) {
+    ok(
+      !/createElement\("textarea"\)|createElement\("input"\)|createElement\("button"\)|createElement\("select"\)/.test(
+        fnBrowse,
+      ),
+      "浏览态不构造任何输入控件（代码编辑器 / 格式化条 /「开发」按钮 /「设置」面板全在编辑态）",
+    );
+    ok(
+      !/createJsCodeEditor\(/.test(fnBrowse),
+      "浏览态不提前挂代码编辑器（未选中就没有可编辑块，正是「点进去才显示」这半条）",
+    );
+    ok(
+      !/\.onclick\s*=|addEventListener\("click"/.test(fnBrowse),
+      "浏览态一个点击事件都不挂（点板身即选中节点 → 由既有链路切编辑态）",
+    );
+    ok(
+      !/["']n-text["']|class(Name)?\s*=\s*["'][^"']*\bn-text\b/.test(fnBrowse),
+      "浏览态正文不用 .n-text 类（它在节点根 mousedown 的放行名单里，命中就不拖节点、也选不中）",
+    );
+    ok(
+      /browseTextEl\(functionCodeOf\(node\)/.test(fnBrowse) &&
+        /lang:\s*"plain"/.test(fnBrowse),
+      "代码正文走只读文本视图并强制 plain（JS 不被误判成 md / yaml · 无行号槽）",
+    );
+    ok(
+      /fnBrowseParamLine\(I18n\.t\("入参"/.test(fnBrowse) &&
+        /fnBrowseParamLine\(I18n\.t\("出参"/.test(fnBrowse),
+      "入参与出参摘要在浏览态可见（不必先选中再开「设置」）",
+    );
+    ok(
+      /\.id = "st-" \+ node\.id/.test(fnBrowse),
+      "状态行 id 与编辑态逐字一致（运行中的增量照常回填）",
+    );
+    ok(
+      /fnToolOutSummaryEl\(node\)/.test(fnBrowse),
+      "输出摘要照旧显示（跑完的结果不用选中也看得见）",
+    );
+  }
+  /* 数组（批量）入参在只读摘要里的形状标记：判定真源一份，别处共用 */
+  const pl = funcBody(jsCanvas, "function fnBrowseParamLine(label, list)");
+  ok(!!pl && /fnBrowseParamIsArray\(p\) \? "×N"/.test(pl), "入参摘要里数组参数标 ×N（一端子一组值）");
+  const ai = funcBody(jsCanvas, "function fnBrowseParamIsArray(p)");
+  ok(
+    !!ai && /p\.array \|\| p\.arr \|\| p\.list \|\| p\.batch \|\| p\.repeat/.test(ai),
+    "数组判定真源含 list 位（连线放行 / 端子徽标 / 只读摘要三处共用这一份）",
+  );
+  ok(!!ai && /\/array\|list\/i\.test\(String\(p\.kind/.test(ai), "kind 里含 array|list 也算数组（旧数据兼容）");
+
+  /* —— 点进去才出可编辑代码块：整条链路逐环钉住 —— */
+  const nElAt = jsCanvas.indexOf("function nodeElement(");
+  const mdAt = jsCanvas.indexOf('el.addEventListener("mousedown"', nElAt);
+  const mousedown = blockFrom(jsCanvas, mdAt);
+  ok(
+    !!mousedown && /closest\("\.n-text"\)/.test(mousedown),
+    "节点根 mousedown 只放行 .n-text 等交互控件（浏览态没有它们 → 点击必然走到选中）",
+  );
+  ok(jsApp.includes("const wasBrowse = nodeBrowseMode(node);"), "startNodeDrag 记下「点击前是浏览态」");
+  const fnBody = sliceBetween(
+    jsCanvas,
+    "function buildFnToolBodyMain(node, body, isTool) {",
+    "function buildBody(node, body) {",
+  );
+  ok(!!fnBody && /createJsCodeEditor\(/.test(fnBody), "编辑态仍挂那块真代码编辑器（点进去出现的就是它）");
+  const main = funcBody(jsCanvas, "function nodeMainInputEl(el)");
+  ok(!!main && /textarea\.n-text:not\(\[readonly\]\)/.test(main), "收尾聚焦按 textarea.n-text:not([readonly]) 找主输入框");
+  const jsEdit = read("renderer/app-codeedit.js");
+  ok(
+    /ta\.className = "n-text js-edit-input";/.test(jsEdit),
+    "代码 textarea 的 class 恰好命中上面那个选择器 → 选中节点时光标真落进代码块",
+  );
+  /* CSS 层：收点击的那层在最上面、镜像层不接事件（样式缺失就是本轮「点不动」的真因） */
+  const cssRule = (src, sel) => {
+    const clean = src.replace(/\/\*[\s\S]*?\*\//g, "");
+    const want = sel.replace(/\s+/g, " ").replace(/\s*,\s*/g, ",").trim();
+    const re = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    while ((m = re.exec(clean))) {
+      const s = m[1].replace(/\s+/g, " ").replace(/\s*,\s*/g, ",").trim();
+      if (s === want) return m[2];
+    }
+    return null;
+  };
+  const inputRule = cssRule(css, ".js-edit-input");
+  const mirrorRule = cssRule(css, ".js-edit-hl");
+  ok(!!inputRule && /z-index:\s*1/.test(inputRule), "canvas.css：.js-edit-input 叠在上层（点击落在可编辑的那层）");
+  ok(!!mirrorRule && /pointer-events:\s*none/.test(mirrorRule), "canvas.css：.js-edit-hl 不接事件（镜像层盖不住点击）");
+  const editRule = cssRule(css, ".js-edit");
+  ok(!!editRule && /position:\s*relative/.test(editRule), "canvas.css：.js-edit 是定位参照系（三层叠放的前提）");
+  ok(
+    (css.match(/\.js-edit-input/g) || []).length >= 4 &&
+      (cssLight.match(/body\.theme-light \.js-edit-input/g) || []).length >= 1,
+    "亮色主题同样覆盖了输入层（切主题后代码区仍可见可点）",
+  );
 }
 
 console.log(

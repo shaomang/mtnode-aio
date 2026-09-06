@@ -591,19 +591,16 @@ function openSettingsBody() {
       document.createTextNode(I18n.t("Agent 预设（智能能力的角色与行为风格）")),
     );
     const presetSel = document.createElement("select");
-    const PRESET_OPTIONS = [
-      ["standard", I18n.t("标准模式（默认）")],
-      ["minimal", I18n.t("极简模式（直奔结果，少解释）")],
-      ["code", I18n.t("PTC 模式（写代码 / 改文件 / 跑命令）")],
-      ["cordis", I18n.t("创造模式（自定义 Preset）")],
-    ];
-    for (const [v, l] of PRESET_OPTIONS) {
+    /* 档位真源：app.js 的 AGENT_PRESETS（与智能会话 / 智能节点面板同一张表），
+       这里只用带说明的 settingsLabelKey */
+    for (const p of AGENT_PRESETS) {
       const o = document.createElement("option");
-      o.value = v;
-      o.textContent = l;
+      o.value = p.id;
+      o.textContent = I18n.t(p.settingsLabelKey || p.labelKey);
+      if (p.hint) o.title = I18n.t(p.hint);
       presetSel.appendChild(o);
     }
-    presetSel.value = S.config.dsh.preset || "standard";
+    presetSel.value = S.config.dsh.preset || AGENT_PRESET_DEFAULT;
     presetRow.appendChild(presetSel);
     sec.appendChild(presetRow);
     dshEls.preset = presetSel;
@@ -760,366 +757,69 @@ function openSettingsBody() {
     sec.appendChild(askFileRow);
     dshEls.askSoundFile = askFile;
 
-    /* ── 插件:安装按钮与商店入口在标题行最右,已装列表默认收纳 ── */
-    const plTitle = document.createElement("div");
-    plTitle.className = "settings-sec-title settings-sec-title-row";
-    plTitle.style.marginTop = "8px";
-    const plTitleSpan = document.createElement("span");
-    plTitleSpan.textContent = I18n.t("DSH 插件（扩展 agent 能力；安装到配置目录，升级后保留；安装后自动重启引擎）");
-    plTitle.appendChild(plTitleSpan);
-    const plRow = document.createElement("div");
-    plRow.className = "dsh-btn-row";
-    const plInp = document.createElement("input");
-    plInp.type = "text";
-    plInp.placeholder = I18n.t("npm 包名或 GitHub 地址，例如 @scope/pkg");
-    plInp.style.flex = "1";
-    const plAdd = document.createElement("button");
-    plAdd.className = "mini primary";
-    plAdd.textContent = I18n.t("＋ 安装 DSH 插件");
-    const storeBtn = document.createElement("button");
-    storeBtn.className = "mini";
-    storeBtn.textContent = I18n.t("🌐 在线浏览");
-    storeBtn.title = I18n.t("在线浏览:线上目录(插件 / 技能 / MCP),可安装与卸载");
-    storeBtn.onclick = () => {
-      closeDshPluginsDialog();
+    /* 精简工具负载：本轮运行时干脆不注册「这次用不上」的可选工具（mtnode_app /
+       mtnode_vision），每一次模型调用都少重发约 4.7K 字符的工具定义。默认关 =
+       行为与此前逐字一致。画布智能节点另有一层裁剪（宿主本来就拒收画布工具，
+       其定义一律不发），与本开关无关、始终生效。
+       实测口径与取舍见 docs/codex-agent-benchmark.md「本轮落地：Token 开销」。 */
+    const leanRow = document.createElement("label");
+    leanRow.className = "n-field";
+    leanRow.style.flexDirection = "row";
+    leanRow.style.alignItems = "center";
+    const leanCb = document.createElement("input");
+    leanCb.type = "checkbox";
+    leanCb.checked = S.config.dsh.leanToolPayload === true;
+    leanRow.appendChild(leanCb);
+    leanRow.appendChild(
+      document.createTextNode(
+        I18n.t(
+          "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）",
+        ),
+      ),
+    );
+    sec.appendChild(leanRow);
+    dshEls.leanToolPayload = leanCb;
+
+    /* ── 扩展能力（DSH 插件 / 技能 Skills / MCP 服务器）：设置里只留一个整合界面，
+       真正的清单与增删改全部收进「管理」对话框（样式统一沿用 DSH 插件那套卡片）。── */
+    const extTitle = document.createElement("div");
+    extTitle.className = "settings-sec-title settings-sec-title-row";
+    extTitle.style.marginTop = "8px";
+    const extTitleSpan = document.createElement("span");
+    extTitleSpan.textContent = I18n.t(
+      "扩展能力（DSH 插件 · 技能 Skills · MCP 服务器）",
+    );
+    extTitle.appendChild(extTitleSpan);
+    const extTitleBtns = document.createElement("div");
+    extTitleBtns.className = "dsh-btn-row";
+    const extBrowseBtn = document.createElement("button");
+    extBrowseBtn.className = "mini";
+    extBrowseBtn.textContent = I18n.t("🌐 在线浏览");
+    extBrowseBtn.title = I18n.t(
+      "在线浏览:线上目录(插件 / 技能 / MCP),可安装与卸载",
+    );
+    extBrowseBtn.onclick = () => {
+      closeExtManagerDialog();
       openStoreDialog();
     };
-    plRow.appendChild(plInp);
-    plRow.appendChild(plAdd);
-    plRow.appendChild(storeBtn);
-    plTitle.appendChild(plRow);
-    sec.appendChild(plTitle);
-    const plHintRow = document.createElement("div");
-    plHintRow.className = "dsh-plugin-manage-row";
-    const plHint = document.createElement("div");
-    plHint.className = "dsh-plugin-empty";
-    plHint.textContent = I18n.t("（读取中…）");
-    const plManage = document.createElement("button");
-    plManage.className = "mini primary";
-    plManage.textContent = I18n.t("管理已装插件…");
-    plManage.onclick = () => openDshPluginsDialog();
-    plHintRow.appendChild(plHint);
-    plHintRow.appendChild(plManage);
-    sec.appendChild(plHintRow);
-    DSH_PLUGINS_UI.hintEl = plHint;
-    const refreshPlugins = () => refreshDshPluginInventory();
+    extTitleBtns.appendChild(extBrowseBtn);
+    extTitle.appendChild(extTitleBtns);
+    sec.appendChild(extTitle);
 
-    /* ── 技能 Skills(文件系统技能,$DSH_HOME/skills,安装后智能节点可直接调用) ── */
-    const skTitleRow = document.createElement("div");
-    skTitleRow.className = "settings-sec-title settings-sec-title-row";
-    const skTitleSpan = document.createElement("span");
-    skTitleSpan.textContent = I18n.t("技能 Skills（安装后智能节点可自动发现并使用）");
-    skTitleRow.appendChild(skTitleSpan);
-    const skAdd = document.createElement("button");
-    skAdd.className = "mini primary";
-    skAdd.textContent = I18n.t("＋ 创建技能");
-    skTitleRow.appendChild(skAdd);
-    sec.appendChild(skTitleRow);
-    const skList = document.createElement("div");
-    skList.className = "dsh-plugin-list";
-    skList.textContent = I18n.t("（读取中…）");
-    sec.appendChild(skList);
-    const skForm = document.createElement("div");
-    skForm.className = "dsh-skill-form";
-    const skName = document.createElement("input");
-    skName.type = "text";
-    skName.placeholder = I18n.t("技能名（kebab-case，如 pdf-summary）");
-    const skDesc = document.createElement("input");
-    skDesc.type = "text";
-    skDesc.placeholder = I18n.t("一句话描述（模型据此判断何时使用）");
-    const skBody = document.createElement("textarea");
-    skBody.rows = 3;
-    skBody.placeholder = I18n.t("技能内容（Markdown，模型按此执行）…");
-    skForm.appendChild(skName);
-    skForm.appendChild(skDesc);
-    skForm.appendChild(skBody);
-    sec.appendChild(skForm);
-    const refreshSkills = async () => {
-      try {
-        const r = await window.api.skillList();
-        if (r && r.ok === false) throw new Error(r.error);
-        const skills = (r && r.skills) || [];
-        skList.innerHTML = "";
-        const visible = skills.filter((s) => !isInstallOnlySkillName(s.name));
-        if (!visible.length) {
-          const em = document.createElement("div");
-          em.className = "dsh-plugin-empty";
-          em.textContent = I18n.t("暂无技能（在上方表单创建）");
-          skList.appendChild(em);
-        }
-        for (const s of visible) {
-          const row = document.createElement("div");
-          row.className = "dsh-plugin-row";
-          const nm = document.createElement("span");
-          nm.textContent = (s.title ? s.title + "  " : "") + s.name;
-          nm.title = s.description || s.name;
-          if (s.builtin) {
-            const tag = document.createElement("span");
-            tag.className = "dsh-plugin-tag builtin";
-            tag.textContent = I18n.t("内置");
-            tag.style.marginLeft = "6px";
-            nm.appendChild(tag);
-          }
-          const desc = document.createElement("span");
-          desc.className = "dsh-skill-desc";
-          desc.textContent = s.description || "";
-          desc.title = s.description || "";
-          row.appendChild(nm);
-          row.appendChild(desc);
-          if (s.builtin) {
-            const locked = document.createElement("span");
-            locked.className = "dsh-skill-locked";
-            locked.textContent = I18n.t("不可卸载");
-            locked.title = I18n.t("内置技能不可卸载");
-            row.appendChild(locked);
-          } else {
-            const edit = document.createElement("button");
-            edit.className = "mini";
-            edit.textContent = I18n.t("编辑");
-            edit.onclick = async () => {
-              try {
-                const g = await window.api.skillGet(s.name);
-                if (!g || !g.ok) throw new Error((g && g.error) || I18n.t("未知错误"));
-                skName.value = s.name;
-                skName.disabled = true;
-                skDesc.value = s.description || "";
-                skBody.value = g.body || "";
-                skBody.rows = 12;
-                skAdd.textContent = I18n.t("保存本机修改");
-                skAdd.dataset.editing = s.name;
-                toast(I18n.t("已载入本机技能，修改后点「保存本机修改」"), "ok");
-              } catch (e) {
-                toast(I18n.t("加载失败：") + (e.message || String(e)), "err");
-              }
-            };
-            row.appendChild(edit);
-            const rm = document.createElement("button");
-            rm.className = "mini";
-            rm.textContent = I18n.t("移除");
-            rm.onclick = async () => {
-              if (!(await confirmDialog(I18n.t("移除技能 ") + s.name + I18n.t("？"), { title: I18n.t("移除技能"), danger: true, okText: I18n.t("移除") }))) return;
-              try {
-                const rr = await window.api.skillRemove(s.name);
-                if (rr && rr.ok === false) throw new Error(rr.error);
-                toast(I18n.t("已移除技能 ") + s.name, "ok");
-              } catch (e) {
-                toast(I18n.t("移除失败：") + (e.message || String(e)), "err");
-              }
-              refreshSkills();
-            };
-            row.appendChild(rm);
-          }
-          skList.appendChild(row);
-        }
-      } catch (e) {
-        skList.textContent = I18n.t("技能列表不可用（") + (e.message || String(e)) + "）";
-      }
-    };
-    skAdd.onclick = async () => {
-      try {
-        const editing = skAdd.dataset.editing || "";
-        const rr = await window.api.skillAdd({
-          name: (editing || skName.value).trim(),
-          description: skDesc.value.trim(),
-          body: skBody.value,
-          overwrite: !!editing,
-        });
-        if (rr && rr.ok === false) throw new Error(rr.error);
-        skName.value = "";
-        skName.disabled = false;
-        skDesc.value = "";
-        skBody.value = "";
-        skBody.rows = 3;
-        skAdd.textContent = I18n.t("＋ 创建技能");
-        delete skAdd.dataset.editing;
-        toast(
-          editing
-            ? I18n.t("本机技能已保存（未自动同步工坊）")
-            : I18n.t("技能已创建，智能节点可立即使用"),
-          "ok",
-        );
-      } catch (e) {
-        toast(I18n.t("创建失败：") + (e.message || String(e)), "err");
-      }
-      refreshSkills();
-    };
-
-    /* ── MCP 服务器(每个服务器为 agent 提供 mcp__<名>__<工具> 工具) ── */
-    const mcTitleRow = document.createElement("div");
-    mcTitleRow.className = "settings-sec-title settings-sec-title-row";
-    const mcTitleSpan = document.createElement("span");
-    mcTitleSpan.textContent = I18n.t("MCP 服务器（连接后智能节点自动获得该服务器的工具）");
-    mcTitleRow.appendChild(mcTitleSpan);
-    const mcAdd = document.createElement("button");
-    mcAdd.className = "mini primary";
-    mcAdd.textContent = I18n.t("＋ 添加服务器");
-    mcTitleRow.appendChild(mcAdd);
-    sec.appendChild(mcTitleRow);
-    const mcList = document.createElement("div");
-    mcList.className = "dsh-plugin-list";
-    mcList.textContent = I18n.t("（读取中…）");
-    sec.appendChild(mcList);
-    const mcForm = document.createElement("div");
-    mcForm.className = "dsh-skill-form";
-    const mcName = document.createElement("input");
-    mcName.type = "text";
-    mcName.placeholder = I18n.t("服务器名（1-32 位字母/数字/_/-）");
-    const mcTransport = document.createElement("select");
-    {
-      const o1 = document.createElement("option");
-      o1.value = "stdio";
-      o1.textContent = I18n.t("stdio（本地命令）");
-      const o2 = document.createElement("option");
-      o2.value = "streamable-http";
-      o2.textContent = I18n.t("streamable-http（远程 URL）");
-      mcTransport.appendChild(o1);
-      mcTransport.appendChild(o2);
-    }
-    const mcCommand = document.createElement("input");
-    mcCommand.type = "text";
-    mcCommand.placeholder = I18n.t("命令（如 npx.cmd 或 node 完整路径）");
-    const mcArgs = document.createElement("input");
-    mcArgs.type = "text";
-    mcArgs.placeholder = I18n.t("参数（空格分隔，如 -y @modelcontextprotocol/server-filesystem）");
-    const mcUrl = document.createElement("input");
-    mcUrl.type = "text";
-    mcUrl.placeholder = "http(s)://host/mcp";
-    mcUrl.style.display = "none";
-    mcTransport.addEventListener("change", () => {
-      const http = mcTransport.value !== "stdio";
-      mcCommand.style.display = http ? "none" : "";
-      mcArgs.style.display = http ? "none" : "";
-      mcUrl.style.display = http ? "" : "none";
-    });
-    mcForm.appendChild(mcName);
-    mcForm.appendChild(mcTransport);
-    mcForm.appendChild(mcCommand);
-    mcForm.appendChild(mcArgs);
-    mcForm.appendChild(mcUrl);
-    sec.appendChild(mcForm);
-    const refreshMcp = async (attempt) => {
-      attempt = attempt || 0;
-      let r = null;
-      try {
-        r = await window.api.dshMcpList();
-      } catch (e) {
-        r = { ok: false, error: e.message || String(e) };
-      }
-      if (!r || r.ok === false || !Array.isArray(r.servers)) {
-        if (attempt < 2) {
-          setTimeout(() => refreshMcp(attempt + 1), 1500);
-          return;
-        }
-        mcList.textContent =
-          I18n.t("MCP 列表不可用（") + ((r && r.error) || I18n.t("引擎未连接")) + I18n.t("）· 重新打开设置重试");
-        return;
-      }
-      mcList.innerHTML = "";
-      if (!r.servers.length) {
-        const em = document.createElement("div");
-        em.className = "dsh-plugin-empty";
-        em.textContent = I18n.t("暂无 MCP 服务器（在上方表单添加）");
-        mcList.appendChild(em);
-      }
-      for (const s of r.servers) {
-        const row = document.createElement("div");
-        row.className = "dsh-plugin-row" + (s.disabled ? " off" : "");
-        const nm = document.createElement("span");
-        nm.textContent =
-          s.serverName +
-          (s.disabled ? I18n.t("（已停用）") : "") +
-          " · " +
-          (s.transport === "stdio" ? s.command : s.url);
-        nm.title =
-          "transport: " +
-          s.transport +
-          "\ncommand: " +
-          (s.command || "") +
-          "\nargs: " +
-          (s.args || "") +
-          "\nurl: " +
-          (s.url || "");
-        const btns = document.createElement("div");
-        btns.className = "dsh-plugin-btns";
-        const tg = document.createElement("button");
-        tg.className = "mini";
-        tg.textContent = s.disabled ? I18n.t("启用") : I18n.t("停用");
-        tg.onclick = async () => {
-          try {
-            const rr = await window.api.dshMcpSetEnabled(s.serverName, !!s.disabled);
-            if (rr && rr.ok === false) throw new Error(rr.error);
-            toast((s.disabled ? I18n.t("已启用 ") : I18n.t("已停用 ")) + s.serverName, "ok");
-          } catch (e) {
-            toast(I18n.t("操作失败：") + (e.message || String(e)), "err");
-          }
-          refreshMcp();
-          refreshStatus();
-        };
-        const rm = document.createElement("button");
-        rm.className = "mini";
-        rm.textContent = I18n.t("移除");
-        rm.onclick = async () => {
-          if (!(await confirmDialog(I18n.t("移除 MCP 服务器 ") + s.serverName + I18n.t("？引擎将自动重启。"), { title: I18n.t("移除 MCP"), danger: true, okText: I18n.t("移除") }))) return;
-          try {
-            const rr = await window.api.dshMcpRemove(s.serverName);
-            if (rr && rr.ok === false) throw new Error(rr.error);
-            toast(I18n.t("已移除 ") + s.serverName, "ok");
-          } catch (e) {
-            toast(I18n.t("移除失败：") + (e.message || String(e)), "err");
-          }
-          refreshMcp();
-          refreshStatus();
-        };
-        btns.appendChild(tg);
-        btns.appendChild(rm);
-        row.appendChild(nm);
-        row.appendChild(btns);
-        mcList.appendChild(row);
-      }
-    };
-    mcAdd.onclick = async () => {
-      const transport = mcTransport.value;
-      try {
-        const rr = await window.api.dshMcpAdd({
-          serverName: mcName.value.trim(),
-          transport,
-          command: mcCommand.value.trim(),
-          args: mcArgs.value.trim(),
-          url: mcUrl.value.trim(),
-        });
-        if (rr && rr.ok === false) throw new Error(rr.error);
-        mcName.value = "";
-        mcCommand.value = "";
-        mcArgs.value = "";
-        mcUrl.value = "";
-        toast(I18n.t("MCP 服务器已添加，引擎重启后生效"), "ok");
-      } catch (e) {
-        toast(I18n.t("添加失败：") + (e.message || String(e)), "err");
-      }
-      refreshMcp();
-      refreshStatus();
-    };
-
-    const refreshStatus = async () => {};
-    plAdd.onclick = async () => {
-      const pkg = plInp.value.trim();
-      if (!pkg) return;
-      plInp.value = "";
-      plHint.textContent = I18n.t("安装中（需要联网，可能需要几分钟）…");
-      try {
-        const rr = await window.api.dshPluginAdd(pkg);
-        if (rr && rr.ok === false) throw new Error(rr.error);
-        toast((rr && rr.message) || (I18n.t("DSH 插件已安装：") + pkg), "ok");
-      } catch (e) {
-        toast(I18n.t("安装失败：") + (e.message || String(e)), "err");
-      }
-      refreshPlugins();
-      refreshStatus();
-    };
-    refreshStatus();
-    refreshPlugins();
-    refreshSkills();
-    refreshMcp();
+    const extHintRow = document.createElement("div");
+    extHintRow.className = "dsh-plugin-manage-row";
+    const extHint = document.createElement("div");
+    extHint.className = "dsh-plugin-empty";
+    extHint.textContent = I18n.t("（读取中…）");
+    const extManage = document.createElement("button");
+    extManage.className = "mini primary";
+    extManage.textContent = I18n.t("管理…");
+    extManage.onclick = () => openExtManagerDialog("dsh");
+    extHintRow.appendChild(extHint);
+    extHintRow.appendChild(extManage);
+    sec.appendChild(extHintRow);
+    EXT_UI.hintEl = extHint;
+    refreshExtInventory();
 
     body.appendChild(sec);
   }
@@ -1132,6 +832,9 @@ function openSettingsBody() {
     doneSoundFile: dshEls.doneSoundFile ? dshEls.doneSoundFile.value.trim() : (S.config.dsh && S.config.dsh.doneSoundFile) || "",
     askSound: dshEls.askSound ? dshEls.askSound.checked : (S.config.dsh && S.config.dsh.askSound) !== false,
     askSoundFile: dshEls.askSoundFile ? dshEls.askSoundFile.value.trim() : (S.config.dsh && S.config.dsh.askSoundFile) || "",
+    leanToolPayload: dshEls.leanToolPayload
+      ? !!dshEls.leanToolPayload.checked
+      : !!(S.config.dsh && S.config.dsh.leanToolPayload),
     theme: themeSelEl ? themeSelEl.value : (S.config.dsh && S.config.dsh.theme) || "industrial",
   });
 
@@ -1187,7 +890,7 @@ function openSettingsBody() {
         enabled: true,
         nodePath: "",
         model: "",
-        preset: "standard",
+        preset: AGENT_PRESET_DEFAULT,
         chatEnter: "send",
         permissionPreset: "mtnode-unattended",
         doneSound: true,
@@ -2499,12 +2202,44 @@ function provCard(prov, i, list) {
   );
   const orderBox = document.createElement("div");
   orderBox.className = "model-order";
+  /* 拖动整行调整优先级：dragFrom 记录本次拖拽的源下标，-1 = 无拖拽。
+     orderBox 级监听只挂一次（拖到列表底部空白处 = 移到末尾），行级监听每次重绘重建 */
+  let dragFrom = -1;
+  const clearDragUI = () => {
+    dragFrom = -1;
+    orderBox
+      .querySelectorAll(".mo-dragging,.mo-drop-before,.mo-drop-after")
+      .forEach((el) =>
+        el.classList.remove("mo-dragging", "mo-drop-before", "mo-drop-after"),
+      );
+  };
+  orderBox.addEventListener("dragover", (ev) => {
+    if (dragFrom < 0) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+  });
+  orderBox.addEventListener("drop", (ev) => {
+    if (dragFrom < 0) return;
+    const rowEl = ev.target && ev.target.closest
+      ? ev.target.closest(".model-order-row")
+      : null;
+    if (rowEl) return; /* 行内 drop 由各行的处理器负责 */
+    ev.preventDefault();
+    const from = dragFrom;
+    clearDragUI();
+    const arr = prov.models;
+    if (from >= 0 && from < arr.length) {
+      arr.push(arr.splice(from, 1)[0]);
+      paintModels();
+    }
+  });
   const paintModels = () => {
     if (!Array.isArray(prov.models)) prov.models = [];
     orderBox.innerHTML = "";
     prov.models.forEach((mid, mi) => {
       const row = document.createElement("div");
       row.className = "model-order-row";
+      row.draggable = true;
       const idxEl = document.createElement("span");
       idxEl.className = "mo-idx";
       idxEl.textContent = String(mi + 1);
@@ -2514,7 +2249,7 @@ function provCard(prov, i, list) {
       name.title =
         mi === 0
           ? I18n.t("当前优先使用") + " · " + mid
-          : I18n.t("点击上下箭头调整优先级");
+          : I18n.t("拖动或点击箭头调整优先级");
       const up = document.createElement("button");
       up.type = "button";
       up.className = "mini";
@@ -2555,11 +2290,71 @@ function provCard(prov, i, list) {
         prov.models.splice(mi, 1);
         paintModels();
       };
+      const grip = document.createElement("span");
+      grip.className = "mo-grip";
+      grip.textContent = "⠿";
+      grip.title = I18n.t("拖动或点击箭头调整优先级");
+      row.appendChild(grip);
       row.appendChild(idxEl);
       row.appendChild(name);
       row.appendChild(up);
       row.appendChild(down);
       row.appendChild(rm);
+      /* 拖动整行排序：从行身（含行名 / 抓手）拖起；按下按钮不算拖拽 */
+      row.addEventListener("dragstart", (ev) => {
+        if (ev.target && ev.target.closest && ev.target.closest("button")) {
+          ev.preventDefault();
+          return;
+        }
+        dragFrom = mi;
+        row.classList.add("mo-dragging");
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = "move";
+          try {
+            ev.dataTransfer.setData("text/plain", String(mi));
+          } catch (e) {
+            /* 个别平台不允许 setData 时仍可拖动，忽略 */
+          }
+        }
+      });
+      row.addEventListener("dragover", (ev) => {
+        if (dragFrom < 0 || dragFrom === mi) return;
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "move";
+        const r = row.getBoundingClientRect();
+        const before = ev.clientY < r.top + r.height / 2;
+        orderBox
+          .querySelectorAll(".mo-drop-before,.mo-drop-after")
+          .forEach((el) =>
+            el.classList.remove("mo-drop-before", "mo-drop-after"),
+          );
+        row.classList.add(before ? "mo-drop-before" : "mo-drop-after");
+      });
+      row.addEventListener("dragleave", () => {
+        row.classList.remove("mo-drop-before", "mo-drop-after");
+      });
+      row.addEventListener("drop", (ev) => {
+        if (dragFrom < 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const from = dragFrom;
+        const arr = prov.models;
+        if (from === mi || from < 0 || from >= arr.length || mi >= arr.length) {
+          clearDragUI();
+          return;
+        }
+        const r = row.getBoundingClientRect();
+        const before = ev.clientY < r.top + r.height / 2;
+        /* 以移动前数组语义计算落点：目标行前半 = 插到它前面，后半 = 插到它后面 */
+        let to = mi;
+        if (from < mi) to = before ? mi - 1 : mi;
+        else to = before ? mi : mi + 1;
+        clearDragUI();
+        const item = arr.splice(from, 1)[0];
+        arr.splice(to, 0, item);
+        paintModels();
+      });
+      row.addEventListener("dragend", () => clearDragUI());
       orderBox.appendChild(row);
     });
     if (!prov.models.length) {

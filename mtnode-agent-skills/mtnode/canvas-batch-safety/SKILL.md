@@ -28,6 +28,7 @@ description: MTNode 画布 batchMode=batch 时每次运行只能处理单条输�
 
 - **不要**给 `agent_task` 或 `proc_text(agent:true)` 后接 `save_*`：智能节点自己写文件，保存节点只会落无关对话文本
 - `music_gen` / `video_gen` 在节点内 `outputPath` 直接写音视频，**无**配对保存节点
+- **逐条批量（`batchMode=batch`）优先用普通 `proc_text` / `proc_image`**：智能节点每条都会带一份会话噪声，长批量链又贵又慢；要一次看全部再用 `batchMode=agg`，聚合模式才适合智能节点
 
 ## 文件交接
 

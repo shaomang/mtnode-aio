@@ -4,7 +4,7 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   if (root) root.I18n = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  var ZH_EXTRA = {"help.html":"\r\n  <div class=\"help-body\">\r\n\r\n  <h3>① 节点类型</h3>\r\n  <p>在画布<b>空白处右键</b>弹出菜单添加节点，位置自动吸附网格（默认 24px，可在设置中调整）。共有 4 类节点：</p>\r\n  <ul>\r\n    <li><b>输入节点</b>：文本 / 图像。内容就地编辑或拖入文件，实时保存；可自由缩放、点击标题重命名。</li>\r\n    <li><b>处理节点</b>：文本 LLM / 图像生成。连接输入后点击 ▶ 运行，结果在节点右侧展开。</li>\r\n    <li><b>保存节点</b>：将输出保存为 <code>.yaml</code> 文本或图像文件，支持自动保存。</li>\r\n    <li><b>任务节点</b>：把复杂需求拆成内部任务图。每个任务固定有起点、成功终点、失败终点；▶ 从起点沿控制流跑到终点决定成功或失败。可用判断节点（是/否）分流。父任务上以格子展示子任务。</li>\r\n  </ul>\r\n\r\n  <h3>② 连线与继承</h3>\r\n  <ul>\r\n    <li><b>连线</b>：从输出端子拖到输入端子；输入端子默认 1 个，连上一个后自动新增（垂直居中分布）。</li>\r\n    <li><b>输入继承</b>：输入节点一旦连线，内容变为<b>只读并自动继承输入内容</b>；断开连接即恢复可编辑。</li>\r\n    <li><b>自动递归执行</b>：输入包含未处理的上游节点时，运行会自动执行上游直至就绪，再处理当前节点。处理节点完成后会继续执行下游；若下游已有输出，会询问覆盖或不继续。</li>\r\n  </ul>\r\n\r\n  <h3>③ 批量处理</h3>\r\n  <ul>\r\n    <li><b>开启</b>：输入节点右上角「批量」按钮。文本节点通过 ＋ 添加条目 / 导入 / 粘贴 YAML（field=标题，内容=内容）；图像节点可多选或拖入多张。</li>\r\n    <li><b>模式切换</b>：处理节点头部「批量 / 聚合」——批量 = 逐条运行、输出批量结果；聚合 = 所有条目合并为一次运行、输出单个结果。</li>\r\n    <li><b>拆分 / 合并</b>：拆分节点从批次中实时抽取单项；合并节点多输入汇成批次，下游自动批量处理。</li>\r\n    <li><b>命名</b>：批量链上保存节点按 <code>{文件名}_{输入节点标题}</code> 自动命名输出。</li>\r\n  </ul>\r\n\r\n  <h3>④ @ 引用</h3>\r\n  <p>在提示词中输入 <code>@</code> 弹出<b>已连接节点</b>下拉菜单（↑↓ 选择、Enter 确认，未连接的节点不允许引用）。运行时所有输入内容放入 <code>【背景信息】</code>（每条以 <code>### 标题</code> 开头），提示词放入 <code>【内容】</code>；<code>@标题</code> 会去掉 @ 并指向对应背景条目。图像节点引用以<b>参考图像</b>方式传入。</p>\r\n\r\n  <h3>⑤ 运行与预览</h3>\r\n  <ul>\r\n    <li><b>运行</b>：点击节点上的 ▶，自动递归执行上游并处理当前节点；完成后自动执行下游（下游已有内容时询问覆盖或不继续）。</li>\r\n    <li><b>预览</b>：◈ 按钮在运行前查看将要发送的完整请求。</li>\r\n    <li><b>参数</b>：右上角「API」按钮展开服务商 / 模型 / 温度 / 尺寸选择；「多次尝试」可自动重试。</li>\r\n    <li><b>浏览</b>：输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>\r\n    <li><b>清空</b>：输出面板头部「清空」移除输出，回到未处理状态。</li>\r\n  </ul>\r\n\r\n  <h3>⑥ 保存与存档</h3>\r\n  <ul>\r\n    <li><b>自动保存</b>：任何编辑数百毫秒内自动写入本地磁盘，启动时自动恢复上次现场。</li>\r\n    <li><b>立即保存 / 存档位置</b>：顶栏「立即保存」手动写盘；「存档位置」直接打开画布保存文件夹（<code>save/</code>，每个工作流一个 JSON 文件）。</li>\r\n    <li><b>工作流管理</b>：顶栏可新建 / 切换 / 删除画布（默认画布 <code>default</code>，删除后自动重建）。</li>\r\n    <li><b>保存节点</b>：文本保存每个输入对应 YAML 一项（键为批量条目 field）；聚合模式全部条目合并为一个文件保存。</li>\r\n  </ul>\r\n\r\n  <h3>⑦ 服务商配置</h3>\r\n  <p>在「设置 · API/配置」中统一管理服务商：默认内置文本与图像两类服务商（可选用 DeepSeek 或 GPT Image 2），也可按「类型」下拉添加兼容接口的自定义服务商。填写后所有模型节点自动读取，API Key 仅保存在本机。</p>\r\n\r\n  <h3>⑧ 其他节点</h3>\r\n  <ul>\r\n    <li><b>对话节点</b>：微信风格聊天气泡（AI 白左 · 用户绿右），支持系统提示词，对话记录随工作流保存，输出端子输出整个对话记录。</li>\r\n    <li><b>文件参考</b>：文本节点右上角 📄 小按钮可导入 txt / md / json / yaml / csv / log 等文件内容（超过 500KB 拒绝导入），不占用节点空间。</li>\r\n    <li><b>控制节点</b>：头部小按钮切换「清空 / 执行」，把控制节点连到目标（或把目标连入控制节点），点击 ▶ 对所有已连接节点同时执行该操作。控制连线为金色，不作为数据输入。</li>\r\n  </ul>\r\n\r\n  <h3>⑨ 快捷键</h3>\r\n  <p><code>Ctrl+Z</code> 撤销 · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> 重做 · <code>Ctrl+C</code> 复制选中节点 · <code>Delete</code> 删除选中节点 / 连线 / 组 · <code>G</code> 把选中节点组成组 / 解散选中组 · <code>Esc</code> 取消选择 · 点击节点标题就地重命名 · <code>⤢ 居中</code> 缩放定位全部节点。</p>\r\n\r\n  <h3>⑩ 框选与组</h3>\r\n  <ul>\r\n    <li><b>框选</b>：按住 <code>Ctrl + 左键</code> 拖拽画布空白处（或开启顶栏「▭ 框选」模式后直接左键拖拽），松开后框内节点全部选中，可整体移动 / 删除 / 复制。</li>\r\n    <li><b>组</b>：选中多个节点后按 <code>G</code> 或点「◫ 组」→ 输入标题创建组；组为虚线圆角边框，可整体拖动、边缘/角落把手<b>横竖分别缩放</b>（成员达到最小尺寸后整体停止缩放，内部比例不变）、✕ 或右键删除；再次点击「组」按钮 / 按 <code>G</code> 解散组（节点保留）。</li>\r\n    <li><b>边栏</b>：工具栏左侧「☰」打开节点树状列表，顶部输入框可按标题筛选，点击条目画布自动居中定位到该节点。</li>\r\n    <li><b>输出浏览</b>：处理节点输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>\r\n    <li><b>对话思考</b>：对话节点支持服务商 / 模型选择与请求预览；模型思考时灰色内容流式显示在「输入中」位置，回复完成后在回答前方出现「思考内容」按钮，点击可查看本条思考全文。</li>\r\n  </ul>\r\n\r\n  <h3>⑪ 智能能力（可读文件 / 联网 / 执行命令）</h3>\r\n  <p>接入 DeepSeek Harness 后，模型从「只会生成文字」升级为「会办事」：能<b>读取 / 写入电脑上的文件、联网搜索、执行命令</b>，多步完成后给出结果。运行环境随应用自带（与主程序同版本 Node），引擎随应用启动，<b>无需安装任何东西</b>。启用位置：设置 · API/配置 → <b>「智能能力（DeepSeek Harness / dsh）」</b>；需先配置好带 API Key 的<b>文本服务商</b>（DeepSeek 或其他兼容服务商均可，节点 / 会话上可切换供应商与模型）。</p>\r\n  <ul>\r\n    <li><b>原来只能聊天</b> → 对话节点勾选<b>「智能助手」</b>后，直接说「把 E:\\\\素材 下的 txt 汇总成大纲存成文件」，它会自己去读、去写；工作目录点「浏览」用文件夹窗口选择。</li>\r\n    <li><b>原来只能处理粘贴进来的内容</b> → 文本处理节点点头部 <b>🐋 智能</b>按钮后，提示词成为任务（可写「联网查最新数据再总结」）。</li>\r\n    <li><b>新增「智能任务」节点</b>（右键画布 → 智能节点）：与文本处理节点功能对齐——支持 <b>@ 引用 / 多输入 / 批量 / 聚合 / 模型选择 / 输出浏览</b>，工作目录用文件夹窗口选择；仅移除「多次尝试」（智能任务多步执行，不做并行抽卡）。</li>\r\n    <li><b>让助手搭工作流</b>：在智能任务或智能会话里说「实现 xxx 的工作流」，模型会在当前画布上<b>创建节点、改标题、连线、写入 @引用</b>，并自动从左到右排版（不重叠）。例如「实现物品配置的工作流」会搭出「需求 → 生成配置 → 保存到配置表」管道，你可继续改提示词与保存路径后点 ▶ 运行。</li>\r\n  </ul>\r\n  <p><b>过程可见</b>：运行中显示「◉ 思考中」，点击可实时查看模型思考与<b>工具调用（🔧）</b>；对话节点的智能回复逐字流式显示。<b>降级保底</b>：关闭各节点智能开关（或设置中关闭总开关），全部回到原有行为。<b>注意</b>：智能模式按「任务完成」计费，一次任务可能多次调用模型；写文件前请确认工作目录正确。</p>\r\n  <p>设置 · 智能能力区块还提供：<b>Agent 预设</b>（通用助手 / 精简执行 / 代码专家 / Cordis 插件开发助手）、<b>对话发送行为</b>（Enter 发送或 Enter 换行）、<b>DSH 插件</b>（dsh 风格可搜索卡片清单，安装 / 启停 / 移除）、<b>技能 Skills</b>（创建即用，智能节点自动发现）、<b>MCP 服务器</b>（连接后智能节点自动获得其工具）。</p>\r\n\r\n  </div>"};
+  var ZH_EXTRA = {"help.html":"\r\n  <div class=\"help-body\">\r\n\r\n  <h3>① 节点类型</h3>\r\n  <p>在画布<b>空白处右键</b>弹出菜单添加节点，位置自动吸附网格（默认 24px，可在设置中调整）。共有 4 类节点：</p>\r\n  <ul>\r\n    <li><b>输入节点</b>：文本 / 图像 / 音频 / 视频。内容就地编辑或拖入文件，实时保存；可自由缩放、点击标题重命名。音频 / 视频输入选一个本机文件后可<b>预览</b>，并输出该文件的 <code>file:///</code> URL（可连进 Minimax H3 的参考端子或保存节点）。</li>\r\n    <li><b>处理节点</b>：文本 LLM / 图像生成。连接输入后点击 ▶ 运行，结果在节点右侧展开。</li>\r\n    <li><b>保存节点</b>：将输出保存为 <code>.yaml</code> 文本或图像文件，支持自动保存。</li>\r\n    <li><b>任务节点</b>：把复杂需求拆成内部任务图。每个任务固定有起点、成功终点、失败终点；▶ 从起点沿控制流跑到终点决定成功或失败。可用判断节点（是/否）分流。父任务上以格子展示子任务。</li>\r\n  </ul>\r\n\r\n  <h3>② 连线与继承</h3>\r\n  <ul>\r\n    <li><b>连线</b>：从输出端子拖到输入端子；输入端子默认 1 个，连上一个后自动新增（垂直居中分布）。</li>\r\n    <li><b>输入继承</b>：输入节点一旦连线，内容变为<b>只读并自动继承输入内容</b>；断开连接即恢复可编辑。</li>\r\n    <li><b>自动递归执行</b>：输入包含未处理的上游节点时，运行会自动执行上游直至就绪，再处理当前节点。处理节点完成后会继续执行下游；若下游已有输出，会询问覆盖或不继续。</li>\r\n  </ul>\r\n\r\n  <h3>③ 批量处理</h3>\r\n  <ul>\r\n    <li><b>开启</b>：输入节点右上角「批量」按钮。文本节点通过 ＋ 添加条目 / 导入 / 粘贴 YAML（field=标题，内容=内容）；图像节点可多选或拖入多张。</li>\r\n    <li><b>模式切换</b>：处理节点头部「批量 / 聚合」——批量 = 逐条运行、输出批量结果；聚合 = 所有条目合并为一次运行、输出单个结果。</li>\r\n    <li><b>拆分 / 合并</b>：拆分节点从批次中实时抽取单项；合并节点多输入汇成批次，下游自动批量处理。</li>\r\n    <li><b>命名</b>：批量链上保存节点按 <code>{文件名}_{输入节点标题}</code> 自动命名输出。</li>\r\n  </ul>\r\n\r\n  <h3>④ @ 引用</h3>\r\n  <p>在提示词中输入 <code>@</code> 弹出<b>已连接节点</b>下拉菜单（↑↓ 选择、Enter 确认，未连接的节点不允许引用）。运行时所有输入内容放入 <code>【背景信息】</code>（每条以 <code>### 标题</code> 开头），提示词放入 <code>【内容】</code>；<code>@标题</code> 会去掉 @ 并指向对应背景条目。图像节点引用以<b>参考图像</b>方式传入。</p>\r\n\r\n  <h3>⑤ 运行与预览</h3>\r\n  <ul>\r\n    <li><b>运行</b>：点击节点上的 ▶，自动递归执行上游并处理当前节点；完成后自动执行下游（下游已有内容时询问覆盖或不继续）。</li>\r\n    <li><b>预览</b>：◈ 按钮在运行前查看将要发送的完整请求。</li>\r\n    <li><b>参数</b>：右上角「API」按钮展开服务商 / 模型 / 温度 / 尺寸选择；「多次尝试」可自动重试。</li>\r\n    <li><b>浏览</b>：输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>\r\n    <li><b>清空</b>：输出面板头部「清空」移除输出，回到未处理状态。</li>\r\n  </ul>\r\n\r\n  <h3>⑥ 保存与存档</h3>\r\n  <ul>\r\n    <li><b>自动保存</b>：任何编辑数百毫秒内自动写入本地磁盘，启动时自动恢复上次现场。</li>\r\n    <li><b>立即保存 / 存档位置</b>：顶栏「立即保存」手动写盘；「存档位置」直接打开画布保存文件夹（<code>save/</code>，每个工作流一个 JSON 文件）。</li>\r\n    <li><b>工作流管理</b>：顶栏可新建 / 切换 / 删除画布（默认画布 <code>default</code>，删除后自动重建）。</li>\r\n    <li><b>保存节点</b>：文本保存每个输入对应 YAML 一项（键为批量条目 field）；聚合模式全部条目合并为一个文件保存。</li>\r\n  </ul>\r\n\r\n  <h3>⑦ 服务商配置</h3>\r\n  <p>在「设置 · API/配置」中统一管理服务商：默认内置文本与图像两类服务商（可选用 DeepSeek 或 GPT Image 2），也可按「类型」下拉添加兼容接口的自定义服务商。填写后所有模型节点自动读取，API Key 仅保存在本机。</p>\r\n\r\n  <h3>⑧ 其他节点</h3>\r\n  <ul>\r\n    <li><b>会话模式（💬）</b>：智能任务节点头部点 <b>💬</b> 即变微信风格聊天气泡（AI 白左 · 用户绿右），多轮对话随节点保存；模型思考时灰色内容流式显示在「输入中」位置，回复完成后在回答前方出现「思考内容」按钮，点击可查看本条思考全文。原独立的<b>「文本对话」节点已移除</b>，旧画布上的对话节点打开时会自动迁移成这种节点。</li>\r\n    <li><b>文件参考</b>：文本节点右上角 📄 小按钮可导入 txt / md / json / yaml / csv / log 等文件内容（超过 500KB 拒绝导入），不占用节点空间。</li>\r\n    <li><b>控制节点</b>：头部小按钮切换「清空 / 执行」，把控制节点连到目标（或把目标连入控制节点），点击 ▶ 对所有已连接节点同时执行该操作。控制连线为金色，不作为数据输入。</li>\r\n  </ul>\r\n\r\n  <h3>⑨ 快捷键</h3>\r\n  <p><code>Ctrl+Z</code> 撤销 · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> 重做 · <code>Ctrl+C</code> 复制选中节点 · <code>Delete</code> 删除选中节点 / 连线 / 组 · <code>G</code> 把选中节点组成组 / 解散选中组 · <code>Esc</code> 取消选择 · 点击节点标题就地重命名 · <code>⤢ 居中</code> 缩放定位全部节点。</p>\r\n\r\n  <h3>⑩ 框选与组</h3>\r\n  <ul>\r\n    <li><b>框选</b>：按住 <code>Ctrl + 左键</code> 拖拽画布空白处（或开启顶栏「▭ 框选」模式后直接左键拖拽），松开后框内节点全部选中，可整体移动 / 删除 / 复制。</li>\r\n    <li><b>组</b>：选中多个节点后按 <code>G</code> 或点「◫ 组」→ 输入标题创建组；组为虚线圆角边框，可整体拖动、边缘/角落把手<b>横竖分别缩放</b>（成员达到最小尺寸后整体停止缩放，内部比例不变）、✕ 或右键删除；再次点击「组」按钮 / 按 <code>G</code> 解散组（节点保留）。</li>\r\n    <li><b>边栏</b>：工具栏左侧「☰」打开节点树状列表，顶部输入框可按标题筛选，点击条目画布自动居中定位到该节点。</li>\r\n    <li><b>输出浏览</b>：处理节点输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>\r\n    <li><b>会话模式的思考</b>：智能任务的会话模式支持服务商 / 模型选择与请求预览；模型思考时灰色内容流式显示在「输入中」位置，回复完成后在回答前方出现「思考内容」按钮，点击可查看本条思考全文。</li>\r\n  </ul>\r\n\r\n  <h3>⑪ 智能能力（可读文件 / 联网 / 执行命令）</h3>\r\n  <p>接入 DeepSeek Harness 后，模型从「只会生成文字」升级为「会办事」：能<b>读取 / 写入电脑上的文件、联网搜索、执行命令</b>，多步完成后给出结果。运行环境随应用自带（与主程序同版本 Node），引擎随应用启动，<b>无需安装任何东西</b>。启用位置：设置 · API/配置 → <b>「智能能力（DeepSeek Harness / dsh）」</b>；需先配置好带 API Key 的<b>文本服务商</b>（DeepSeek 或其他兼容服务商均可，节点 / 会话上可切换供应商与模型）。</p>\r\n  <ul>\r\n    <li><b>原来只能聊天</b> → <b>智能任务</b>节点（或开了 <b>🐋 智能</b> 的文本节点）里直接说「把 E:\\\\素材 下的 txt 汇总成大纲存成文件」，它会自己去读、去写；工作目录点「浏览」用文件夹窗口选择。</li>\r\n    <li><b>原来只能处理粘贴进来的内容</b> → 文本处理节点点头部 <b>🐋 智能</b>按钮后，提示词成为任务（可写「联网查最新数据再总结」）。</li>\r\n    <li><b>新增「智能任务」节点</b>（右键画布 → 智能节点）：与文本处理节点功能对齐——支持 <b>@ 引用 / 多输入 / 批量 / 聚合 / 模型选择 / 输出浏览</b>，工作目录用文件夹窗口选择；仅移除「多次尝试」（智能任务多步执行，不做并行抽卡）。</li>\r\n    <li><b>让助手搭工作流</b>：在智能任务或智能会话里说「实现 xxx 的工作流」，模型会在当前画布上<b>创建节点、改标题、连线、写入 @引用</b>，并自动从左到右排版（不重叠）。例如「实现物品配置的工作流」会搭出「需求 → 生成配置 → 保存到配置表」管道，你可继续改提示词与保存路径后点 ▶ 运行。</li>\r\n  </ul>\r\n  <p><b>过程可见</b>：运行中显示「◉ 思考中」，点击可实时查看模型思考与<b>工具调用（🔧）</b>；智能节点的回复逐字流式显示。<b>降级保底</b>：关闭各节点智能开关（或设置中关闭总开关），全部回到原有行为。<b>注意</b>：智能模式按「任务完成」计费，一次任务可能多次调用模型；写文件前请确认工作目录正确。</p>\r\n  <p>设置 · 智能能力区块还提供：<b>Agent 预设</b>（通用助手 / 精简执行 / 代码专家 / Cordis 插件开发助手）、<b>对话发送行为</b>（Enter 发送或 Enter 换行）、<b>DSH 插件</b>（dsh 风格可搜索卡片清单，安装 / 启停 / 移除）、<b>技能 Skills</b>（创建即用，智能节点自动发现）、<b>MCP 服务器</b>（连接后智能节点自动获得其工具）。</p>\r\n\r\n  </div>"};
   var EN = {
     /* ── 全部终止 / 媒体生成排队 ── */
     "已终止（排队中的生成任务已取消）": "Cancelled (queued generation dropped)",
@@ -101,6 +101,10 @@
     "会话正在运行中": "This session is already running",
     "用户取消了该计划，未执行任何改动。": "The plan was cancelled; nothing was changed.",
     "（计划已取消，未执行任何改动）": "(Plan cancelled — no changes made)",
+    "检测到计划未弹出，已自动要求重新生成一次":
+      "Plan dialog didn't pop up — asked the model to regenerate it once",
+    "计划仍未正确生成：请重新发送你的要求，或手动整理任务清单":
+      "The plan still isn't valid: resend your request, or edit the task list manually",
     "【执行已确认计划 · 并行任务】": "[Execute confirmed plan · parallel task]",
     "【执行已确认计划 · 任务 ": "[Execute confirmed plan · task ",
     "】": "]",
@@ -153,6 +157,7 @@
     "？": "?",
     "步": "step",
     "低": "Low",
+    "轻": "Light",
     "高": "High",
     "你": "You",
     "图": "Img",
@@ -321,6 +326,11 @@
     "绑定保存节点不能改接其他来源": "Bound save node cannot be rewired",
     "该连线已固定，无法删除": "This wire is pinned and cannot be deleted",
     "图像 / 音频 / 视频保存仅接受 1 个输入": "Image / audio / video save accepts only 1 input",
+    "图像保存需要图像来源": "Image save needs an image source",
+    "该保存节点当前按文本保存，不能混接媒体":
+      "This save node currently stores text, so media inputs cannot be mixed in",
+    "该保存节点按图像保存，只接受图像端子：请改接图像来源，或把保存路径改成 .yaml 用文本保存":
+      "This save node stores images, so only an image port may feed it: connect an image source port, or change the save path to .yaml to save text",
     "已保存音频 → ": "Saved audio → ",
     "已保存视频 → ": "Saved video → ",
     "选择音频保存位置": "Choose audio save location",
@@ -332,14 +342,27 @@
     "保存中…": "Saving…",
     "查看说明": "View help",
     "处理节点": "Process Node",
-    "代码专家": "Code expert",
+    /* 拖线落点「新建并连入」菜单与右键新建菜单共用的一批分类 / 节点文案 */
+    "批次节点": "Batch Node",
+    "未知节点类型": "Unknown node type",
+    "文本处理（LLM）": "Text processing (LLM)",
+    "图像生成（文生图）": "Image generation (text-to-image)",
+    "拆分（批次 → 单项只读节点）": "Split (batch → per-item read-only nodes)",
+    "合并（多节点 → 批次）": "Merge (multiple nodes → batch)",
+    "保存（按输入自判文本 / 图像 / 音频 / 视频）":
+      "Save (auto-detect text / image / audio / video from input)",
+    "Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）":
+      "Minimax H3 (video · text / image / audio / video)",
+    "智能任务（读文件 / 联网 / 执行命令）":
+      "Agent task (read files / network / run commands)",
+    "网络 · 发送（把通道文本推送到远端）":
+      "Network · Send (push channel text to a remote)",
     "待保存…": "Unsaved…",
     "导出画布": "Export canvas",
     "导出会话": "Export session",
     "导入画布": "Import canvas",
     "调用失败": "Call failed",
     "动画节点": "Anim Node",
-    "对话节点": "Chat Node",
     "服务商 ": "Providers ",
     "服务商：": "Provider: ",
     "复制请求": "Copy request",
@@ -354,7 +377,6 @@
     "后台任务": "Background task",
     "画布名称": "Canvas name",
     "缓存命中": "Cache hit",
-    "精简执行": "Concise",
     "历史会话": "Session history",
     "连线操作": "Wire actions",
     "另存为…": "Save as…",
@@ -376,7 +398,6 @@
     "输出图像": "Output image",
     "输入节点": "Input Node",
     "输入图像": "Input image",
-    "通用助手": "General assistant",
     "图像操作": "Image actions",
     "图像生成": "Image generation",
     "未知错误": "Unknown error",
@@ -428,6 +449,13 @@
     "已手动终止": "Stopped manually",
     "运行长时间无响应，已自动终止": "Run timed out (no response), auto-stopped",
     "交互等待超时，已自动终止": "Interaction wait timed out, auto-stopped",
+    "本轮出错，": "Error this round — auto-retry in ",
+    " 秒后从中断处继续（第 ": " s, continuing from where it stopped (attempt ",
+    " 秒后整轮重发（第 ": " s, resending the whole round (attempt ",
+    " 次）· 不跳到下一个任务 · ": ") · not skipping to the next task · ",
+    " 次）· 已写内容不重烧 · ": ") · already-written content is not re-burned · ",
+    " 次）· 运行配置已变化，无法从中断处续跑 · ":
+      ") · run config changed, cannot resume from the break · ",
     "[图像] ": "[Image] ",
     "＋ 添加源": "+ Add source",
     "◉ 处理中": "◉ Processing",
@@ -698,7 +726,6 @@
     "输出 token": "Output token",
     "输入 token": "Input token",
     "思考强度：当前「": "Thinking effort: currently \"",
-    "通用助手（默认）": "General assistant (Default)",
     "推理 token": "Reasoning token",
     "拖拽调整上下高度": "Drag to adjust height",
     "未知服务商类型：": "Unknown provider type: ",
@@ -822,7 +849,6 @@
     "Base64 解码失败": "Base64 decode failed",
     "Base64 内容为空": "Base64 content is empty",
     "Base64 已生成（": "Base64 generated (",
-    "Cordis 插件开发": "Cordis plugin development",
     "DeepSeek 官方": "DeepSeek Official",
     "OUTPUT · 批量": "OUTPUT · Batch",
     "stdio（本地命令）": "stdio (local command)",
@@ -855,7 +881,6 @@
     "（等待上游输出…）内容只读": "(Waiting for upstream output…) content is read-only",
     "（等待上游输出中）内容只读": "(Waiting for upstream output) content is read-only",
     "✕ 删除组（连同内部节点）": "✕ Delete group (including inner nodes)",
-    "💬 文本对话（Chat）": "💬 Text chat (Chat)",
     "保存路径（*.yaml）…": "Save path (*.yaml)…",
     "标题不唯一，请改用 id：": "Title is not unique, use id instead: ",
     "拆分出的只读节点，不可修改": "Split-out read-only node, cannot be edited",
@@ -877,14 +902,12 @@
     "暂无技能（在上方表单创建）": "No skills yet (create with the form above)",
     "粘贴 Base64 内容…": "Paste Base64 content…",
     "API Key（隐藏显示）": "API Key (hidden)",
-    "Cordis 插件开发助手": "Cordis plugin development assistant",
     " 个，切换即加载并加入标签）": " total; switching loads it and adds a tab)",
     "（空闲，连接后自动新增一个）": "(Idle; a new one is added automatically after connecting)",
     "⧉ 合并（多节点 → 批次）": "⧉ Merge (multiple nodes → batch)",
     "拆分出的只读节点（不可编辑）": "Split-out read-only node (not editable)",
     "复制选中节点（Ctrl+C）": "Copy selected nodes (Ctrl+C)",
     "画布包含无法序列化的数据：": "Canvas contains data that cannot be serialized: ",
-    "精简执行（直奔结果，少解释）": "Concise (go straight to the result, less explanation)",
     "留空 = 应用默认数据目录…": "Leave empty = app default data directory…",
     "停止回复（立即中止模型请求）": "Stop reply (abort the model request immediately)",
     "停止运行（立即中止模型请求）": "Stop run (abort the model request immediately)",
@@ -1028,7 +1051,6 @@
     "URL 需以 http(s):// 开头": "URL must start with http(s)://",
     "○ 等待输入（每个输入 = 批次中的一项）": "○ Waiting for input (each input = one item in the batch)",
     "标题（YAML 字段名 / 输出文件后缀）": "Title (YAML field name / output filename suffix)",
-    "代码专家（写代码 / 改文件 / 跑命令）": "Code expert (write code / edit files / run commands)",
     "点击查看模型思考与工具调用过程（流式显示）": "Click to view model thinking and tool calls (streamed)",
     "服务器名（1-32 位字母/数字/_/-）": "Server name (1-32 letters/digits/_/-)",
     "尚无智能运行统计（运行智能任务后在此显示）": "No agent run stats yet (shown here after an agent task runs)",
@@ -1137,6 +1159,8 @@
     "例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图": "e.g. Cyberpunk city at night… type @ to reference connected nodes/reference images",
     "描述任务…（Enter 换行，Ctrl+Enter 发送）": "Describe the task… (Enter newline, Ctrl+Enter send)",
     "任务完成音效（仅当智能任务运行超过 5 分钟后完成时触发）": "Task completion sound (only when an agent task finishes after running more than 5 minutes)",
+    /* 设置 · 智能能力：精简工具负载（工具可见集裁剪，见 docs/codex-agent-benchmark.md） */
+    "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）": "Lean tool payload (do not register optional tools such as app control / vision subagent; about 4.7K fewer characters per step; takes effect on the next run)",
     "输入消息…（Enter 换行，Ctrl+Enter 发送）": "Enter a message… (Enter newline, Ctrl+Enter send)",
     "以下为模型运行时的思考内容（仅保留在内存中，不写入存档）。": "Thinking content during the model run (kept in memory only; not written to the archive).",
     "由拆分节点生成的只读节点：标题为原批次项名，内容为该项内容": "Read-only node created by a Split node: title is the original batch item name, content is that item",
@@ -1283,7 +1307,7 @@
     "命令:/new 新会话 · /compact 压缩上文 · /plan 规划 · /rename 改名 · /export 导出 · /permissions 权限预设 · /help": "Commands: /new new session · /compact compact · /plan plan · /rename rename · /export export · /permissions permissions · /help",
     " · 第{turn}轮第{step}步": " · turn {turn} step {step}",
     "移除在线源「{name}」？": "Remove online source \"{name}\"?",
-    "help.html": "  <div class=\"help-body\">\n\n  <h3>1. Node types</h3>\n  <p>Right-click <b>empty canvas</b> to add a node. Positions snap to the grid (default 24px, adjustable in Settings). There are 4 families:</p>\n  <ul>\n    <li><b>Input nodes</b>: text / image. Edit in place or drop files; saved live. Resize freely; click the title to rename.</li>\n    <li><b>Process nodes</b>: text LLM / image generation. Connect inputs, click ▶ to run; results expand on the right.</li>\n    <li><b>Save nodes</b>: write output as <code>.yaml</code> text or image files, with optional auto-save.</li>\n    <li><b>Task nodes</b>: a task graph with a pinned start and success/fail ends; ▶ fires start and status depends on which end is reached. A judge node branches yes/no. Sub-tasks show as a grid on the parent.</li>\n  </ul>\n\n  <h3>2. Wires and inheritance</h3>\n  <ul>\n    <li><b>Wires</b>: drag from an output port to an input port. Nodes start with 1 input; a new port appears after each connection (vertically centered).</li>\n    <li><b>Input inheritance</b>: once an input node is wired, its content becomes <b>read-only and inherits the upstream value</b>; disconnect to edit again.</li>\n    <li><b>Auto recursive run</b>: if inputs include unprocessed upstream nodes, run executes upstream until ready, then the current node. After a process node finishes, downstream runs automatically; if those nodes already have output, you can overwrite or stop.</li>\n  </ul>\n\n  <h3>3. Batch processing</h3>\n  <ul>\n    <li><b>Enable</b>: the “Batch” button on input nodes. Text nodes: ＋ add entries / import / paste YAML (field = title, body = content). Image nodes: multi-select or drop several files.</li>\n    <li><b>Mode</b>: process-node header “Batch / Aggregate” — Batch = one run per item; Aggregate = all items in one run, single output.</li>\n    <li><b>Split / Merge</b>: Split extracts one item from a batch in real time; Merge gathers inputs into a batch so downstream runs in batch.</li>\n    <li><b>Naming</b>: save nodes on a batch chain auto-name files as <code>{filename}_{input node title}</code>.</li>\n  </ul>\n\n  <h3>4. @ references</h3>\n  <p>Type <code>@</code> in a prompt to open a dropdown of <b>connected nodes</b> (↑↓ to select, Enter to confirm; unconnected nodes cannot be referenced). At run time all inputs go into <code>【背景信息】</code> (each block starts with <code>### title</code>) and the prompt goes into <code>【内容】</code>; <code>@title</code> drops the @ and points at that background block. Image-node refs are passed as <b>reference images</b>.</p>\n\n  <h3>5. Run and preview</h3>\n  <ul>\n    <li><b>Run</b>: click ▶ on a node to recursively run upstream and then the node; when it finishes, downstream runs automatically (if they already have output, choose overwrite or stop).</li>\n    <li><b>Preview</b>: the ◈ button shows the full request before sending.</li>\n    <li><b>Params</b>: the “API” button picks provider / model / temperature / size; “Attempts” can retry automatically.</li>\n    <li><b>Browse</b>: the output header “Browse” opens a large viewer (text / image / all batch items) with one-click copy.</li>\n    <li><b>Clear</b>: the output header “Clear” removes output and returns to the unprocessed state.</li>\n  </ul>\n\n  <h3>6. Save and archives</h3>\n  <ul>\n    <li><b>Auto-save</b>: edits are written to local disk within a few hundred milliseconds; the last session is restored on startup.</li>\n    <li><b>Save now / archive folder</b>: toolbar “Save now” writes immediately; “Archive folder” opens the workflow save directory (<code>save/</code>, one JSON per workflow).</li>\n    <li><b>Workflows</b>: the toolbar can create / switch / delete workflows (default id <code>default</code>, recreated after delete).</li>\n    <li><b>Save nodes</b>: text save writes one YAML field per input (key = batch field); aggregate mode merges all items into one file.</li>\n  </ul>\n\n  <h3>7. Providers</h3>\n  <p>Manage providers in “Settings · API/Config”. Built-in text and image providers (DeepSeek or GPT Image 2) plus custom compatible APIs via the Type dropdown. Model nodes read this config automatically; API keys stay on this machine only.</p>\n\n  <h3>8. Other nodes</h3>\n  <ul>\n    <li><b>Chat node</b>: WeChat-style bubbles (AI white-left · user green-right), system prompt, history saved with the workflow; the output port emits the full transcript.</li>\n    <li><b>File reference</b>: the 📄 button on a text node imports txt / md / json / yaml / csv / log (rejected over 500KB) without using node space.</li>\n    <li><b>Control node</b>: header buttons switch Clear / Run; wire the control node to targets (or wire targets into it), then ▶ applies that action to all connected nodes at once. Control wires are gold and are not data inputs.</li>\n  </ul>\n\n  <h3>9. Shortcuts</h3>\n  <p><code>Ctrl+Z</code> undo · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> redo · <code>Ctrl+C</code> duplicate selected nodes · <code>Delete</code> delete selected nodes / wires / groups · <code>G</code> group selected nodes / ungroup · <code>Esc</code> clear selection · click a node title to rename · <code>⤢ Fit</code> zoom to all nodes.</p>\n\n  <h3>10. Box-select and groups</h3>\n  <ul>\n    <li><b>Box-select</b>: hold <code>Ctrl + left click</code> and drag on empty canvas (or enable toolbar “▭ Box” and drag with left click). Nodes inside the box are selected for move / delete / duplicate.</li>\n    <li><b>Group</b>: select nodes, then <code>G</code> or “◫ Group”, enter a title. Dashed rounded frame; drag as a whole; edge/corner handles <b>scale X and Y independently</b> (stops when a member hits min size); ✕ or right-click to delete; click Group / press <code>G</code> again to ungroup (nodes remain).</li>\n    <li><b>Sidebar</b>: toolbar “☰” opens the node tree; filter by title; click an item to center it on the canvas.</li>\n    <li><b>Output browse</b>: process output header “Browse” opens a large viewer with copy.</li>\n    <li><b>Chat thinking</b>: chat nodes support provider / model / preview; thinking streams in gray at the “typing” slot; after the reply, a “Thinking” button shows that turn’s full reasoning.</li>\n  </ul>\n\n  <h3>11. Agent capability (read files / search / run commands)</h3>\n  <p>With DeepSeek Harness the model can <b>read / write files, search the web, and run commands</b>, then return a result. The runtime ships with the app (same Node version); the engine starts with the app — <b>nothing extra to install</b>. Enable it in Settings · API/Config → <b>“Agent (DeepSeek Harness / dsh)”</b>. Configure a <b>text provider</b> with an API key first (DeepSeek or any compatible provider; switch provider/model per node or session).</p>\n  <ul>\n    <li><b>From chat-only</b> → enable <b>“Agent”</b> on a chat node and say “summarize every txt under E:\\\\assets into an outline file”; it will read and write. Pick the workspace with “Browse”.</li>\n    <li><b>From pasted content only</b> → turn on <b>🐋 Agent</b> on a text-process node so the prompt becomes a task (e.g. “search the web for the latest data and summarize”).</li>\n    <li><b>Agent Task node</b> (right-click → Agent node): aligned with text-process — <b>@ refs / multi-input / batch / aggregate / model / browse</b>, folder picker for workspace; no “attempts” (multi-step agent runs, not parallel sampling).</li>\n    <li><b>Let the assistant build a workflow</b>: in an agent task or agent session, say “build a workflow for xxx”. The model <b>creates nodes, renames them, wires them, and writes @refs</b>, laid out left-to-right. Example: an item-config pipeline “requirements → generate config → save to table” that you can edit and ▶ run.</li>\n  </ul>\n  <p><b>Visible process</b>: running shows “◉ Thinking”; click to watch reasoning and <b>tool calls (🔧)</b>; agent chat replies stream live. <b>Fallback</b>: turn off per-node agent switches (or the global switch) to restore original behavior. <b>Note</b>: agent mode is billed per completed task and may call the model several times; confirm the workspace before writing files.</p>\n  <p>The Agent settings block also has: <b>Agent presets</b> (General / Concise / Code expert / Cordis plugin helper), <b>chat send keys</b> (Enter to send or Enter for newline), <b>DSH plugins</b> (searchable cards, install / enable / remove), <b>Skills</b> (create and use immediately), <b>MCP servers</b> (tools become available to agent nodes).</p>\n\n  </div>\n",
+    "help.html": "  <div class=\"help-body\">\n\n  <h3>1. Node types</h3>\n  <p>Right-click <b>empty canvas</b> to add a node. Positions snap to the grid (default 24px, adjustable in Settings). There are 4 families:</p>\n  <ul>\n    <li><b>Input nodes</b>: text / image / audio / video. Edit in place or drop files; saved live. Resize freely; click the title to rename. Audio and video inputs pick a local file to <b>preview</b> and output its <code>file:///</code> URL, which can feed a Minimax H3 reference slot or a save node.</li>\n    <li><b>Process nodes</b>: text LLM / image generation. Connect inputs, click ▶ to run; results expand on the right.</li>\n    <li><b>Save nodes</b>: write output as <code>.yaml</code> text or image files, with optional auto-save.</li>\n    <li><b>Task nodes</b>: a task graph with a pinned start and success/fail ends; ▶ fires start and status depends on which end is reached. A judge node branches yes/no. Sub-tasks show as a grid on the parent.</li>\n  </ul>\n\n  <h3>2. Wires and inheritance</h3>\n  <ul>\n    <li><b>Wires</b>: drag from an output port to an input port. Nodes start with 1 input; a new port appears after each connection (vertically centered).</li>\n    <li><b>Input inheritance</b>: once an input node is wired, its content becomes <b>read-only and inherits the upstream value</b>; disconnect to edit again.</li>\n    <li><b>Auto recursive run</b>: if inputs include unprocessed upstream nodes, run executes upstream until ready, then the current node. After a process node finishes, downstream runs automatically; if those nodes already have output, you can overwrite or stop.</li>\n  </ul>\n\n  <h3>3. Batch processing</h3>\n  <ul>\n    <li><b>Enable</b>: the “Batch” button on input nodes. Text nodes: ＋ add entries / import / paste YAML (field = title, body = content). Image nodes: multi-select or drop several files.</li>\n    <li><b>Mode</b>: process-node header “Batch / Aggregate” — Batch = one run per item; Aggregate = all items in one run, single output.</li>\n    <li><b>Split / Merge</b>: Split extracts one item from a batch in real time; Merge gathers inputs into a batch so downstream runs in batch.</li>\n    <li><b>Naming</b>: save nodes on a batch chain auto-name files as <code>{filename}_{input node title}</code>.</li>\n  </ul>\n\n  <h3>4. @ references</h3>\n  <p>Type <code>@</code> in a prompt to open a dropdown of <b>connected nodes</b> (↑↓ to select, Enter to confirm; unconnected nodes cannot be referenced). At run time all inputs go into <code>【背景信息】</code> (each block starts with <code>### title</code>) and the prompt goes into <code>【内容】</code>; <code>@title</code> drops the @ and points at that background block. Image-node refs are passed as <b>reference images</b>.</p>\n\n  <h3>5. Run and preview</h3>\n  <ul>\n    <li><b>Run</b>: click ▶ on a node to recursively run upstream and then the node; when it finishes, downstream runs automatically (if they already have output, choose overwrite or stop).</li>\n    <li><b>Preview</b>: the ◈ button shows the full request before sending.</li>\n    <li><b>Params</b>: the “API” button picks provider / model / temperature / size; “Attempts” can retry automatically.</li>\n    <li><b>Browse</b>: the output header “Browse” opens a large viewer (text / image / all batch items) with one-click copy.</li>\n    <li><b>Clear</b>: the output header “Clear” removes output and returns to the unprocessed state.</li>\n  </ul>\n\n  <h3>6. Save and archives</h3>\n  <ul>\n    <li><b>Auto-save</b>: edits are written to local disk within a few hundred milliseconds; the last session is restored on startup.</li>\n    <li><b>Save now / archive folder</b>: toolbar “Save now” writes immediately; “Archive folder” opens the workflow save directory (<code>save/</code>, one JSON per workflow).</li>\n    <li><b>Workflows</b>: the toolbar can create / switch / delete workflows (default id <code>default</code>, recreated after delete).</li>\n    <li><b>Save nodes</b>: text save writes one YAML field per input (key = batch field); aggregate mode merges all items into one file.</li>\n  </ul>\n\n  <h3>7. Providers</h3>\n  <p>Manage providers in “Settings · API/Config”. Built-in text and image providers (DeepSeek or GPT Image 2) plus custom compatible APIs via the Type dropdown. Model nodes read this config automatically; API keys stay on this machine only.</p>\n\n  <h3>8. Other nodes</h3>\n  <ul>\n    <li><b>Chat mode (💬)</b>: click 💬 in an <b>Agent task</b> node header for WeChat-style bubbles (AI white-left · user green-right); the multi-turn history is saved with the node. The old standalone <b>Chat node was removed</b> — chat nodes on older canvases migrate into an agent task in chat mode on open.</li>\n    <li><b>File reference</b>: the 📄 button on a text node imports txt / md / json / yaml / csv / log (rejected over 500KB) without using node space.</li>\n    <li><b>Control node</b>: header buttons switch Clear / Run; wire the control node to targets (or wire targets into it), then ▶ applies that action to all connected nodes at once. Control wires are gold and are not data inputs.</li>\n  </ul>\n\n  <h3>9. Shortcuts</h3>\n  <p><code>Ctrl+Z</code> undo · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> redo · <code>Ctrl+C</code> duplicate selected nodes · <code>Delete</code> delete selected nodes / wires / groups · <code>G</code> group selected nodes / ungroup · <code>Esc</code> clear selection · click a node title to rename · <code>⤢ Fit</code> zoom to all nodes.</p>\n\n  <h3>10. Box-select and groups</h3>\n  <ul>\n    <li><b>Box-select</b>: hold <code>Ctrl + left click</code> and drag on empty canvas (or enable toolbar “▭ Box” and drag with left click). Nodes inside the box are selected for move / delete / duplicate.</li>\n    <li><b>Group</b>: select nodes, then <code>G</code> or “◫ Group”, enter a title. Dashed rounded frame; drag as a whole; edge/corner handles <b>scale X and Y independently</b> (stops when a member hits min size); ✕ or right-click to delete; click Group / press <code>G</code> again to ungroup (nodes remain).</li>\n    <li><b>Sidebar</b>: toolbar “☰” opens the node tree; filter by title; click an item to center it on the canvas.</li>\n    <li><b>Output browse</b>: process output header “Browse” opens a large viewer with copy.</li>\n    <li><b>Chat-mode thinking</b>: agent-task chat mode supports provider / model / request preview; thinking streams in gray at the “typing” slot; after the reply, a “Thinking” button shows that turn’s full reasoning.</li>\n  </ul>\n\n  <h3>11. Agent capability (read files / search / run commands)</h3>\n  <p>With DeepSeek Harness the model can <b>read / write files, search the web, and run commands</b>, then return a result. The runtime ships with the app (same Node version); the engine starts with the app — <b>nothing extra to install</b>. Enable it in Settings · API/Config → <b>“Agent (DeepSeek Harness / dsh)”</b>. Configure a <b>text provider</b> with an API key first (DeepSeek or any compatible provider; switch provider/model per node or session).</p>\n  <ul>\n    <li><b>From chat-only</b> → use an <b>Agent task</b> node (or 🐋 Agent on a text node) and say “summarize every txt under E:\\\\assets into an outline file”; it will read and write. Pick the workspace with “Browse”.</li>\n    <li><b>From pasted content only</b> → turn on <b>🐋 Agent</b> on a text-process node so the prompt becomes a task (e.g. “search the web for the latest data and summarize”).</li>\n    <li><b>Agent Task node</b> (right-click → Agent node): aligned with text-process — <b>@ refs / multi-input / batch / aggregate / model / browse</b>, folder picker for workspace; no “attempts” (multi-step agent runs, not parallel sampling).</li>\n    <li><b>Let the assistant build a workflow</b>: in an agent task or agent session, say “build a workflow for xxx”. The model <b>creates nodes, renames them, wires them, and writes @refs</b>, laid out left-to-right. Example: an item-config pipeline “requirements → generate config → save to table” that you can edit and ▶ run.</li>\n  </ul>\n  <p><b>Visible process</b>: running shows “◉ Thinking”; click to watch reasoning and <b>tool calls (🔧)</b>; agent replies stream live. <b>Fallback</b>: turn off per-node agent switches (or the global switch) to restore original behavior. <b>Note</b>: agent mode is billed per completed task and may call the model several times; confirm the workspace before writing files.</p>\n  <p>The Agent settings block also has: <b>Agent presets</b> (General / Concise / Code expert / Cordis plugin helper), <b>chat send keys</b> (Enter to send or Enter for newline), <b>DSH plugins</b> (searchable cards, install / enable / remove), <b>Skills</b> (create and use immediately), <b>MCP servers</b> (tools become available to agent nodes).</p>\n\n  </div>\n",
     "工作流编排": "Canvas",
     "画布": "Canvas",
     "智能会话": "Agent session",
@@ -1808,6 +1832,85 @@
       "Sequential generations (1–10); multiple runs save as _01, _02 …",
     "在文件夹中显示已生成文件": "Show generated file in folder",
     "用系统默认应用打开": "Open with default app",
+    /* ── H3 自建 ComfyUI 工作流（video_gen 节点面板 · 库/扫描/注入真源在主进程）── */
+    "内置 H3 链（首末帧 / 多参考）": "Built-in H3 chain (first/last frame · multi-ref)",
+    "自建 ComfyUI 工作流": "Custom ComfyUI workflow",
+    "自建": "Custom",
+    "工作流来源": "Workflow source",
+    "自建工作流库为空 · 请先在 H3 管理窗口导入":
+      "The custom workflow library is empty — import one in the H3 manager first",
+    "视频生成后端未就绪，无法读取自建工作流库": "Video backend not ready — cannot read the custom workflow library",
+    "（库为空）": "(library empty)",
+    "（库中已无此工作流）": "(no longer in the library)",
+    "重新读取工作流（与库内最新图同步参数表）":
+      "Re-read the workflow (sync the parameter table with the stored graph)",
+    "管理": "Manage",
+    "打开 H3 管理窗口 · 导入 / 删除自建工作流": "Open the H3 manager · import / delete custom workflows",
+    "正在读取工作流参数…": "Reading workflow parameters…",
+    "API 格式": "API format",
+    "校验按后端 /object_info 比对节点包（后端未运行时跳过，不阻断生成）":
+      "Validation diffs node classes against the backend /object_info (skipped while the backend is down; never blocks generation)",
+    "校验节点包": "Validate nodes",
+    "正在按后端 /object_info 校验…": "Validating against the backend /object_info…",
+    "校验失败：": "Validation failed: ",
+    "校验通过": "Validated",
+    "缺节点包": "Missing node packs",
+    "跳过校验（后端未运行）": "Skipped (backend not running)",
+    "未校验": "Not validated",
+    "自动（最后一个视频产物）": "Auto (last video artifact)",
+    "多个输出节点时指定取哪一个作为本节点的视频产物":
+      "When the graph has several output nodes, choose which artifact this node returns",
+    "该工作流没有 Save* 输出节点，生成可能拿不到产物":
+      "This workflow has no Save* output node — the run may return no artifact",
+    "输出节点": "Output node",
+    "提升为节点参数": "Promoted to node inputs",
+    "每项在节点上占一个端子（端口 1 = 文本 · 端口 2+ = 素材）；未提升的字段沿用工作流里的默认值。":
+      "Each entry takes one input port (port 1 = text · port 2+ = media); fields you do not promote keep the values baked into the workflow.",
+    "当前没有提升任何参数：全部沿用工作流默认值（可只跑固定图）。":
+      "Nothing promoted yet: every field keeps the workflow default (fine for a fixed graph).",
+    "（选择要提升的参数…）": "(pick a parameter to promote…)",
+    "提升": "Promote",
+    "恢复建议映射": "Restore suggested mapping",
+    "丢掉本节点上的改动，按工作流扫描结果重建参数表": "Discard local edits and rebuild the table from the workflow scan",
+    "读取工作流失败：": "Failed to read the workflow: ",
+    "读取工作流失败": "Failed to read the workflow",
+    "刷新工作流失败：": "Failed to refresh the workflow: ",
+    " 个参数落点已失效（图里改了）": " parameter target(s) vanished (the graph changed)",
+    "已同步：新增 ": "Synced: added ",
+    " 个建议参数": " suggested parameter(s)",
+    "工作流已是最新": "Workflow is up to date",
+    "参数类型决定它在节点上占用哪种端子": "The type decides which kind of input port it takes",
+    "端子与面板上显示的名称": "Name shown on the port badge and in this panel",
+    "端子 ": "Port ",
+    "直填": "manual",
+    "该参数由节点第 ": "Fed by node port ",
+    " 号数据端子注入（端子优先于直填）": " (a wired port overrides the manual value)",
+    "超出端子数（图 / 视频 / 音频上限 9 / 3 / 3）：只能用下方直填值":
+      "Beyond the port budget (image / video / audio caps are 9 / 3 / 3): use the manual value below",
+    "上移（调整端子顺序）": "Move up (reorder ports)",
+    "下移（调整端子顺序）": "Move down (reorder ports)",
+    "取消提升此参数": "Un-promote this parameter",
+    "节点 ": "node ",
+    "落点已失效": "target vanished",
+    "当前工作流图里已找不到这个落点（图被改过）：点 ↻ 刷新或移除该参数":
+      "This target no longer exists in the stored graph (it was edited): hit ↻ to refresh, or remove the parameter",
+    "注入位置：该节点的该字段": "Injected into this field of that node",
+    "种子由上方「种子 / 摇数」统一下发": "the seed is driven by the Seed / Reroll control above",
+    "留空 = 用工作流默认值 ": "Blank = workflow default ",
+    "留空 = 用工作流默认值": "Blank = workflow default",
+    "端口没接数据时用这里的值": "Used when no wire feeds this port",
+    "选择素材文件": "Choose media file",
+    "素材文件": "Media file",
+    "（生成时自动上传到 ComfyUI）": "(uploaded to ComfyUI when the node runs)",
+    "自建工作流：时长 / 分辨率 / 后处理由工作流图自身决定":
+      "Custom workflow: duration / resolution / post-processing come from the graph itself",
+    "自建 ComfyUI 工作流：点 ⚙ 在设置窗口里换工作流 / 改参数映射":
+      "Custom ComfyUI workflow: click ⚙ to switch workflows or edit the parameter mapping in the settings window",
+    "尺寸比例": "Aspect ratio",
+    "自动（按比例默认）": "Auto (by aspect ratio)",
+    "输出分辨率": "Output resolution",
+    "采样步数": "Sampling steps",
+    "24G 优化（默认开，可关）": "24G optimisations (on by default, can turn off)",
     "天": "d",
     "时": "h",
     "分": "m",
@@ -1965,6 +2068,12 @@
     "搜索与抓取网页": "Search and fetch web pages",
     "子代理任务": "Subagent tasks",
     "派生子任务": "Spawn sub-tasks",
+    "目标与任务清单": "Goals & task list",
+    "跨轮续跑目标 + Todo 清单": "Cross-run goals + Todo list",
+    "后台命令与子代理的收流 / 终止": "Collect output from / kill background jobs & subagents",
+    "目标与任务清单": "Goals & task lists",
+    "跨轮续跑目标 + Todo 清单": "Cross-run goals + Todo list",
+    "后台命令与子代理的收流 / 终止": "Collect output from / kill background jobs & subagents",
     "向用户提问": "Ask the user",
     "ask 交互": "ask interaction",
     "识图": "Vision",
@@ -2047,7 +2156,7 @@
       "Always allow is remembered; Allow once lasts this session. Images go to your configured vision model. Adjust anytime via Approvals (top-right).",
     "模型列表（从上到下为使用优先级）": "Models (top = highest priority)",
     "当前优先使用": "Preferred now",
-    "点击上下箭头调整优先级": "Use arrows to change priority",
+    "拖动或点击箭头调整优先级": "Drag the row, or use the arrows, to change priority",
     "提高优先级": "Higher priority",
     "降低优先级": "Lower priority",
     "移除该模型": "Remove model",
@@ -2584,6 +2693,45 @@
     "已取消挂载 ": "Unmounted ",
     "移除 DSH 插件 ": "Remove DSH plugin ",
     "DSH 插件已安装：": "DSH plugin installed: ",
+    /* ── 扩展能力整合界面（设置 · 扩展能力 + 统一管理对话框）── */
+    "扩展能力（DSH 插件 · 技能 Skills · MCP 服务器）":
+      "Extensions (DSH plugins · Skills · MCP servers)",
+    "管理…": "Manage…",
+    "扩展能力管理": "Manage extensions",
+    "技能 Skills": "Skills",
+    "筛选技能（按技能名 / 描述）…":
+      "Filter skills (by name / description)…",
+    "筛选 MCP 服务器（按名称 / 命令 / URL）…":
+      "Filter MCP servers (by name / command / URL)…",
+    "本机": "Local",
+    "来自工坊": "From workshop",
+    "本地创建": "Created locally",
+    "技能内容 SKILL.md": "SKILL.md",
+    "附带文件": "Bundled files",
+    "查看": "View",
+    "编辑技能": "Edit skill",
+    "创建技能": "Create skill",
+    "技能名": "Skill name",
+    "传输方式": "Transport",
+    "命令": "Command",
+    "命令 / 参数": "Command / args",
+    "添加 MCP 服务器": "Add MCP server",
+    "（已挂载 ": " (mounted ",
+    "（部分列表不可用：": " (some lists unavailable: ",
+    "内置技能只读，不可修改": "Built-in skills are read-only",
+    "选择左侧条目查看说明与管理操作":
+      "Select an item on the left to view details and manage it",
+    "无匹配 ": "No match for ",
+    "暂无 DSH 插件（点上方「＋ 安装插件」）":
+      "No DSH plugins yet (click “+ Install plugin” above)",
+    "暂无技能（点上方「＋ 创建技能」）":
+      "No skills yet (click “+ Create skill” above)",
+    "暂无 MCP 服务器（点上方「＋ 添加服务器」）":
+      "No MCP servers yet (click “+ Add server” above)",
+    "DSH 插件 ": "DSH plugins ",
+    "技能 ": "Skills ",
+    "MCP ": "MCP ",
+    "）· 重新打开设置重试": ") · reopen settings to retry",
     '<div class="dsh-plugin-empty">DSH 插件列表不可用（':
       '<div class="dsh-plugin-empty">DSH plugin list unavailable (',
     "透明置顶桌宠：键鼠联动、窗口穿透、托盘菜单、自定义形象导入。默认安装包不包含本组件。":
@@ -2958,9 +3106,79 @@
     "小说写作": "Novel writing",
     "文本生成": "Text generation",
     "视频生成": "Video generation",
-    "音乐生成（MiniMax Music 3）": "Music generation (MiniMax Music 3)",
-    "音乐生成（MiniMax Music 3 · 提示词+歌词）":
-      "Music generation (MiniMax Music 3 · prompt + lyrics)",
+    "音频生成": "Audio generation",
+    /* 一级子菜单「视频生成 / 音频生成」成员名与新建节点默认标题（后端名） */
+    "Minimax H3": "Minimax H3",
+    "Minimax Music 3": "Minimax Music 3",
+    "Minimax H3 节点": "Minimax H3 Node",
+    "Minimax Music 3 节点": "Minimax Music 3 Node",
+    "Minimax Music 3（音乐生成 · 提示词 + 歌词）":
+      "Minimax Music 3 (music · prompt + lyrics)",
+    /* 一级子菜单「音频生成」成员：SoVITS 语音生成（GPT-SoVITS 本机后端） */
+    "SoVITS 语音": "SoVITS voice",
+    "SoVITS 语音生成（文本转语音 · GPT-SoVITS）":
+      "SoVITS speech (text-to-speech · GPT-SoVITS)",
+    /* tts_gen 类型骨架：侧栏标注、新建默认标题与端子口径 */
+    "SoVITS 语音节点": "SoVITS Voice Node",
+    "语音": "Voice",
+    "待合成文本（语音内容）": "Text to synthesize (speech content)",
+    "语音生成节点需要文本来源（待合成文本）":
+      "Speech generation node needs a text source (text to synthesize)",
+    "语音生成节点控制输入端子为端口 1":
+      "Speech generation node's control input is port 1",
+    /* tts_gen 节点体 UI（音色 / 语速 / 格式 / 路径 / 试听 / 状态） */
+    "SoVITS 语音 · GPT-SoVITS 本机后端 · 文本转语音":
+      "SoVITS voice · GPT-SoVITS local backend · text-to-speech",
+    "调用 GPT-SoVITS 后端合成语音":
+      "Synthesize speech with the GPT-SoVITS backend",
+    "打开 GPT-SoVITS 控制台": "Open GPT-SoVITS console",
+    "打开 H3 控制台日志": "Open H3 console log",
+    "打开 Music 3 控制台日志": "Open Music 3 console log",
+    "⚠ GPT-SoVITS 插件未安装：请在「插件 · GPT-SoVITS 语音合成」中安装后使用本节点":
+      "⚠ GPT-SoVITS plugin not installed: install it in Plugins · GPT-SoVITS Speech Synthesis before using this node",
+    "插件 · GPT-SoVITS 语音合成：设置安装目录 → 安装":
+      "Plugins · GPT-SoVITS Speech Synthesis: set install folder → Install",
+    "待合成文本走端子 T（连接上游文本节点）":
+      "Text to synthesize comes in on port T (connect an upstream text node)",
+    "音色": "Voice",
+    "音色名（后端未就绪时可手填）":
+      "Voice id (type it manually when the backend is down)",
+    "刷新音色列表": "Refresh voice list",
+    "语速": "Speed",
+    "语速倍率（0.5–2.0）": "Speed rate (0.5–2.0)",
+    "输出格式": "Output format",
+    /* SoVITS 语音生成 · 执行链（GPT-SoVITS 插件） */
+    "语音合成插件未就绪": "Speech synthesis plugin not ready",
+    "请连接文本来源（待合成文本 · 端子 T）":
+      "Connect a text source (text to synthesize · port T)",
+    "启动后端并合成…": "Starting backend and synthesizing…",
+    "语音合成中…": "Synthesizing speech…",
+    "语音已生成：": "Speech saved: ",
+    "已取消语音合成": "Speech synthesis cancelled",
+    "待合成文本为空": "Text to synthesize is empty",
+    "未设置输出路径": "No output path set",
+    "合成失败": "Synthesis failed",
+    "GPT-SoVITS 服务密钥缺失（请先在「插件 · GPT-SoVITS 语音合成」启动一次后端）":
+      "GPT-SoVITS service key missing (start the backend once in Plugins · GPT-SoVITS Speech Synthesis)",
+    "后端返回空音频（请检查该音色的参考音频）":
+      "Backend returned empty audio (check this voice's reference clip)",
+    "GPT-SoVITS 后端尚未安装（请在「插件 · GPT-SoVITS 语音合成」中安装）":
+      "GPT-SoVITS backend is not installed (install it in Plugins · GPT-SoVITS Speech Synthesis)",
+    "GPT-SoVITS 后端缺少 Python 环境（请在「插件 · GPT-SoVITS 语音合成」中重新安装）":
+      "GPT-SoVITS backend has no Python environment (reinstall it in Plugins · GPT-SoVITS Speech Synthesis)",
+    "GPT-SoVITS 后端安装目录未设置或不合法（请在「插件」中重新选择目录）":
+      "GPT-SoVITS backend install folder is unset or invalid (choose it again in Plugins)",
+    "GPT-SoVITS 后端未能在规定时间内就绪（可打开插件控制台查看启动日志）":
+      "GPT-SoVITS backend did not come up in time (open the plugin console for the startup log)",
+    "后端没有可用音色（请先在插件里添加参考音频音色）":
+      "No voice available on the backend (add a reference-audio voice in Plugins first)",
+    "音色不存在（请重新选择音色）": "Voice not found (pick the voice again)",
+    "语种被后端策略拒绝（请在插件里调整语种策略或换文本）":
+      "Language rejected by the backend policy (adjust the language policy in Plugins or change the text)",
+    "音频写盘失败（请检查输出路径是否可写）":
+      "Failed to write the audio file (check whether the output path is writable)",
+    "无法连接 GPT-SoVITS 后端（后端可能已退出，请重新执行本节点）":
+      "Cannot reach the GPT-SoVITS backend (it may have exited — run this node again)",
     "提示词（Structured Caption）": "Prompt (Structured Caption)",
     "歌词（含 [Verse]/[Chorus] 等标签）": "Lyrics (with [Verse]/[Chorus] tags)",
     "请连接提示词输入（端子 P）": "Connect a prompt input (port P)",
@@ -3296,8 +3514,14 @@
     "例如：补该模块的错误处理与日志；按现有风格新增 XX 接口；重构某文件但不改变对外 API…":
       "e.g. add error handling and logging to this module; add an XX API in the existing style; refactor a file without changing its public API…",
     "请填写本次希望开发或迭代的内容": "Please describe what to develop or iterate this round",
-    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
-      "Confirm = runs in the background in a new session (workspace = project root · titled Dev · module name · status becomes in progress · you stay on the canvas) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · Ctrl+Enter submits · Esc cancels",
+    "开发前需求确认（可选）": "Pre-development requirement check (optional)",
+    "先拷问需求（grill-me）": "Grill me on the requirements first (grill-me)",
+    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = runs in the background in a new session (workspace = project root · titled Dev · module name · status becomes in progress · you stay on the canvas) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · the “grill me first” switch below stays on this module block (still there next time you open it) · Ctrl+Enter submits · Esc cancels",
+    "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。":
+      "On = this dev session first uses the built-in skill mtnode-grill-me to interrogate the requirements round by round, and only starts work once you confirm the shared understanding.",
+    "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。":
+      "【Grill mode · ask this round, build nothing】This module block has “grill me first” switched on: load the built-in skill mtnode-grill-me with the skill tool and follow it strictly — map this request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, putting that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description); never list numbered questions in the reply body and make the user type answers into the input box. Look facts up yourself with read-only tools instead of asking the user about the environment. This round you must not modify any file, touch the canvas, write back note / devStatus / devFiles, produce an implementation plan or start work; recompute the frontier from each answer and continue round by round until it is empty, then use one final question dialog to get the user's explicit “no ambiguity — go ahead” before implementing, and at the end write back the overview (note), status (devStatus) and this module's core file list (devFiles) as this task brief requires.",
     "开始开发": "Start developing",
     /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */
     "已恢复上次未提交的内容": "Your unsent text from last time was restored",
@@ -3381,7 +3605,7 @@
     "Agent 模型：": "Agent model: ",
     "自动": "Auto",
     "自动（跟随默认）": "Auto (follow default)",
-    "本轮模型：": "This round's model: ",
+    "本轮：": "This round: ",
     "（继承自「": " (inherited from ",
     "」：": ": ",
     "」）": ")",
@@ -3642,6 +3866,21 @@
     "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
       "Confirm = read-only answer (workspace = project root · forced read-only: no file or canvas changes) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · Ctrl+Enter submits · Esc cancels",
     "开始问询": "Start ask",
+    /* ===== 开发节点：问询会话化（问答留在只读会话里，可回看可追问） ===== */
+    "工作方式：用户每提出一个问题，先只读调研项目里的真实代码与该模块的开发进度，再直接给出回答。":
+      "How it works: for every question, the AI first reads the real project code and this module's progress read-only, then answers directly.",
+    "本会话不做任何修改：不改文件、不改画布、不回写节点概述与开发状态；要动手请让用户点该功能块的「开发」按钮。":
+      "This session changes nothing: no files, no canvas, no rewriting the block's summary or dev status — to implement something, have the user click this module's \"Dev\" button.",
+    "会话里的每一个问题都要回答；与本模块无关的请求，礼貌说明本会话只负责该模块的问询。":
+      "Answer every question in the session; for requests unrelated to this module, politely explain that this session only covers asking about this module.",
+    "【只读问询任务书】": "[Read-only ask brief]",
+    "问询会话": "Ask session",
+    "沿用该功能块已有的只读会话 · 追问接在同一上下文里":
+      "Reuses this module's existing read-only session — follow-ups continue in the same context",
+    "确认后：AI 先只读调研项目里的真实代码与该模块的开发进度（不改文件、不动画布），然后直接回答你的问题。回答留在该模块的只读会话里，随时可回看、可接着追问。":
+      "After you confirm: the AI first reads the real code and this module's progress read-only (no file or canvas changes), then answers directly. The answer stays in this module's read-only session — revisit it and keep asking anytime.",
+    "确认 = 新建 / 接入该模块的只读问询会话（工作区 = 项目根目录 · 不改文件、不改画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = open or join this module's read-only ask session (workspace = project root · no file or canvas changes) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · Ctrl+Enter submits · Esc cancels",
     /* ===== 执行节点（绑定可执行文件 · 一键启动） ===== */
     "执行节点（绑定可执行文件 · 一键启动）":
       "Execute node (bind an executable · one-click launch)",
@@ -3765,6 +4004,10 @@
       "4. All numeric/date math must use mtnode_db calc — never mental arithmetic.",
     "5. 数据库未记载但任务需要的推断，必须明确标注「此为推断，数据库未记载」。":
       '5. Inferences not covered by the database must be labelled "inference — not in the database".',
+    /* 动作与字段口径的真源是 mtnode_db 的工具描述（dsh/gateway/db-plugin.mjs），
+       注记里不再抄一份 write / delete / 返回结构的说明。 */
+    "6. 各动作与记录字段的口径以 mtnode_db 工具说明为准（list / get / query / write / delete / calc）；写 / 删之前先 query 确认，避免重复记录。":
+      "6. Actions and record fields follow the mtnode_db tool description (list / get / query / write / delete / calc); query first before writing or deleting, so no duplicate records.",
     /* ===== 数据库节点（SQLite/FTS5 · 增量 · 调试控制台） ===== */
     "切换数据库形态：内嵌查询 / calc / 检查更新等调试工具":
       "Switch to database console: query / calc / dirty-check debugging tools",
@@ -4063,6 +4306,697 @@
       "The canvas was copied to the trash folder, but the source is locked and could not be removed — close whatever holds it and retry: ",
     "移入回收站失败，画布未删除：":
       "Moving to the trash folder failed, canvas not deleted: ",
+  });
+
+  /* ── 音频 / 视频输入节点（选择文件 · 输出该文件的 URL） ── */
+  Object.assign(EN, {
+    视频: "Video",
+    "音频节点（选择文件 · 输出 URL）": "Audio node (pick a file · outputs its URL)",
+    "视频节点（选择文件 · 输出 URL）": "Video node (pick a file · outputs its URL)",
+    "音频输入（输出该文件的 URL）": "Audio input (outputs the file's URL)",
+    "视频输入（输出该文件的 URL）": "Video input (outputs the file's URL)",
+    "选择音频（输入节点）": "Choose audio (input node)",
+    "选择视频（输入节点）": "Choose video (input node)",
+    选择音频: "Choose audio",
+    选择视频: "Choose video",
+    未选择音频: "No audio selected",
+    未选择视频: "No video selected",
+    "点击此处选择，或直接把媒体文件拖到本节点":
+      "Click here to choose, or drop a media file onto this node",
+    "未绑定音频文件": "no audio file bound",
+    "未绑定视频文件": "no video file bound",
+    点击在文件夹中显示: "click to reveal in folder",
+    "文件不存在或本机播放器无法解码该格式":
+      "File is missing, or the local player cannot decode this format",
+    "点击此处可更换文件；也可直接把媒体文件拖到本节点":
+      "Click here to change the file; you can also drop a media file onto this node",
+    "输出 URL": "outputs a URL",
+    "输出该文件的 URL": "outputs this file's URL",
+    "音频输入 · 输出该文件的 URL": "Audio input · outputs the file's URL",
+    "视频输入 · 输出该文件的 URL": "Video input · outputs the file's URL",
+    "输出该文件的 URL（file:///… · 可连进媒体参考端子）":
+      "Outputs this file's URL (file:///… · wire it into a media reference slot)",
+    "选择并预览本机音视频文件：输出端子给出该文件的 file:/// URL，可连进媒体生成节点的参考端子":
+      "Chooses and previews a local audio/video file: its output port gives the file's file:/// URL, wire it into a media-generation reference slot",
+    "音频已载入输入节点": "Audio loaded into the input node",
+    "视频已载入输入节点": "Video loaded into the input node",
+    "此节点只接收音频文件（mp3 / wav / ogg…）":
+      "This node only accepts audio files (mp3 / wav / ogg…)",
+    "此节点只接收视频文件（mp4 / mov / webm…）":
+      "This node only accepts video files (mp4 / mov / webm…)",
+    "已载入：": "Loaded: ",
+  });
+
+  /* 拖外部文件进画布自动建节点（app.js createNodesFromDroppedFiles 与分类 helper） */
+  Object.assign(EN, {
+    "【功能】外部拖入画布的文件资源：{name}，仅作引用与快速打开，不参与工作流数据流。\n【实现】绝对路径：{path}":
+      "【功能】External file dropped onto the canvas: {name}. Reference and quick-open only — it takes no part in the workflow data flow.\n【实现】Absolute path: {path}",
+    "（文件过大，未读入内容 {size}）完整文件见：\n{path}":
+      "(File too large to load — {size} skipped.) Full file at:\n{path}",
+    "…（正文超过 {size}，已截断，完整内容见原文件：\n{path}）":
+      "… (text exceeds {size} and was truncated; the full content is in the original file:\n{path})",
+    "已创建 {n} 个节点：": "Created {n} node(s): ",
+    "{n} 个文件过大，正文已截断": "{n} file(s) were too large — text truncated",
+    "{n} 个文件读不出内容，改为文件块":
+      "{n} file(s) could not be read — kept as file blocks",
+    "{n} 个文件取不到本机路径，已跳过":
+      "{n} file(s) had no local path — skipped",
+    创建节点失败: "Failed to create node",
+  });
+  /* ── 思维精简预设（内部 id 由 sketch 改名为 lean）──────────────────────────
+     思考档不再由预设压制：网关已取消按预设压档（旧的 PRESET_EFFORT_CAPS），界面只有
+     「标准 / 最强」两档，选什么就按什么跑，所以当年那套「生效档位」文案（chip 后缀 /
+     cell tooltip / 弹层标注）连同词条一并删掉，不留死 key。
+     档位名与 hint 的唯一真源是 app.js 的 AGENT_PRESETS 表，这里只负责翻译。 */
+  Object.assign(EN, {
+    "预设 / 模型 / 思考强度": "Preset / Model / Thinking effort",
+    /* 旧四档（标准 / PTC / 极简 / 创造）的档位名与说明此前一直没有英文词条——预设菜单与
+       设置页都直接 t() 这些串，缺词条时英文界面会漏出中文，本轮一并补齐。 */
+    "标准模式": "Standard mode",
+    "标准模式（通用档：画布 / 文件 / 内容任务）":
+      "Standard mode (general: canvas / file / content tasks)",
+    "通用档：画布编排、文件与内容任务兼顾":
+      "General preset: canvas orchestration plus file and content tasks, with fuller explanations",
+    "PTC 模式": "PTC mode",
+    "PTC 模式（写代码 / 改文件 / 跑命令）": "PTC mode (write code / edit files / run commands)",
+    "工程档：先读文件再改，改完说明改动与验证方式":
+      "Engineering preset: read before editing, then report what changed and how it was verified",
+    "极简模式": "Minimal mode",
+    "极简模式（默认 · 直奔结果，少解释）":
+      "Minimal mode (default — straight to the result, less explaining)",
+    "省事档：最少步骤、最少废话，直接给结果":
+      "Effort-saving preset: the fewest steps, no filler, just the result",
+    "创造模式": "Creative mode",
+    "创造模式（自定义 Preset）": "Creative mode (custom preset)",
+    "Cordis 插件开发档：遵循 Service / ctx.effect / 类型化事件约定":
+      "Cordis plugin-development preset: follows the Service / ctx.effect / typed-event conventions",
+    "思维精简": "Lean Thinking",
+    "思维精简（思考压成符号骨架：先骨架后干活，最省 token）":
+      "Lean Thinking (thinking compressed into a symbolic skeleton: sketch it first, then work — the cheapest on tokens)",
+    "思维精简档：思考压成 GOAL / APPROACH / EDGE 符号骨架；思考强度仍按你的设置走":
+      "Lean Thinking preset: thinking is compressed into a GOAL / APPROACH / EDGE symbolic skeleton; the thinking level still follows your own setting",
+  });
+  /* ── 开发节点「Agent 设定」三格弹层（预设 / 模型 / 思考强度 + 就近继承回显）──── */
+  Object.assign(EN, {
+    "Agent 设定": "Agent settings",
+    "Agent 预设": "Agent preset",
+    "Agent 预设：": "Agent preset: ",
+    "思考强度：": "Thinking effort: ",
+    "未选择：本功能块与子功能块的「建议 / 开发 / 细化」跟随默认预设。":
+      "Not set: this block and its child blocks follow the default preset for Suggest / Develop / Refine.",
+    "未选择：跟随默认思考档（标准）。":
+      "Not set: follows the default thinking effort (Standard).",
+    "不指定：本功能块与未自行选择的子功能块跟随默认预设。":
+      "Unset: this block and child blocks without their own pick follow the default preset.",
+    "（继承）": " (inherited)",
+    "最强：推理预算最高（更慢、更费 token），不受任何预设影响":
+      "Max: the highest reasoning budget (slower, more tokens) — unaffected by any preset",
+    "清除本功能块「": "Clear this block's ",
+    "」这一格的选择，退回跟随默认（或继承上层）。":
+      " pick and fall back to the default (or inherit from the parent block).",
+    "标": "Std",
+    /* 「强」是共享思考档词汇（AGENT_EFFORT_LABELS）里 xhigh 档的短名（会话 / 助手思考
+       强度菜单的「强」档），不再只指开发节点 max 的旧短标：英文按词汇表译为 X-High。 */
+    "强": "X-High",
+    /* ── 工具 / 函数节点（T1 渲染层）── 全文案随 T5 统一补，这里先落英文档 */
+    "函数": "Function",
+    "函数节点（JS 计算 · 参数即端子）": "Function node (JS compute · params as ports)",
+    "函数名 fnName（可选）": "Function name fnName (optional)",
+    "工具": "Tool",
+    "工具节点（参数即端子 · 可展开子画布 · Agent 可调用）":
+      "Tool node (params as ports · expandable sub-canvas · agent-callable)",
+    "工具名 name（标题默认 = 工具名 · 手动改名后独立）":
+      "Tool name (title defaults to the tool name · stays independent after you rename the title)",
+    "描述 description（给 Agent / 给人看的用途说明）":
+      "Description (what it does / when to use, for the agent and humans)",
+    "输入参数（端子 1..n · 端子 0 = 控制入）":
+      "Input params (ports 1..n · port 0 = control in)",
+    "输出参数（端子 0..n-1 · 末位 = 控制出）":
+      "Output params (ports 0..n-1 · last = control out)",
+    "添加输入参数": "Add input param",
+    "添加输出参数": "Add output param",
+    "删除该参数（对应端子一并消失）": "Delete this param (its port disappears too)",
+    "（图像）": " (image)",
+    "（文本）": " (text)",
+    "该端子的数据类型（文本 / 图像）· 改类型即改端子视觉与下游取数口径":
+      "Data type of this port (text / image) · changing it restyles the port and resets downstream",
+    /* 数组（批量）入参：一个端子可挂多条数据线 · JS 里该参数拿到数组
+       （app-canvas.js 设置面板勾选 / 端子徽标 · app-tools.js 测试台多行输入） */
+    "数组 · 可接多条线": "Array · accepts several wires",
+    "数组端子：可接多条数据线 · JS 里该参数拿到数组（没挂线时是空数组）":
+      "Array port: it may take several data wires · in JS this param is an array (empty array when nothing is wired)",
+    " · 数组端子：JS 里拿到数组 · 当前挂 {n} 条线（可接多条）":
+      " · array port: you get an array in JS · {n} wire(s) attached (several allowed)",
+    " · 数组端子（JS 里拿到数组 · 一行一条）":
+      " · array port (an array in JS · one value per row)",
+    "图像文件路径（一行一条 · 留空的行不注入）":
+      "Image file path (one per row · blank rows are not injected)",
+    "数组元素（一行一条 · 留空的行不注入）":
+      "Array item (one per row · blank rows are not injected)",
+    "删除这一条（数组元素的行）": "Remove this row (one array item)",
+    "添加一条": "Add a row",
+    "当前注入 ": "Injecting ",
+    " 条（数组端子 · JS 里拿到数组）":
+      " item(s) now (array port · you get an array in JS)",
+    "运行工具中…": "Running tool…",
+    "运行工具（引擎按 tool 契约执行）": "Run tool (engine executes per the tool contract)",
+    "运行函数：执行 JS 代码": "Run function: execute the JS code",
+    "待运行 · 点头部 ▶ · 「设置」编辑参数": "Ready · ▶ to run · edit params in Settings",
+    "待运行 · 编辑 JS · 点头部 ▶ 执行": "Ready · edit JS · ▶ to run",
+    "入参": "Inputs",
+    "出参": "Outputs",
+    "（未命名工具）": "(unnamed tool)",
+    "设置（参数 / 名称 / 描述）": "Settings (params / name / description)",
+    "设置（名称 / 描述 / 增删输入输出参数）":
+      "Settings (name / description / add or remove input-output params)",
+    "已同步标题：": "Title synced: ",
+    "控制输入（触发生成 / 运行）": "Control in (trigger run)",
+    "输入参数 ": "Input param ",
+    "输出参数 ": "Output param ",
+    "控制输出（运行完成后触发下游控制目标）":
+      "Control out (fires downstream control targets after run)",
+    "工具节点：Agent 可调用 · toolConfig 参数即端子（输入 0=控制 · 输出末位=控制）":
+      "Tool node: agent-callable · toolConfig params are the ports (input 0 = control · output last = control)",
+    "函数节点：JS 计算 · 入参对象 input → 返回值（输入 0=控制 · 输出末位=控制）":
+      "Function node: JS compute · input object → return value (input 0 = control · output last = control)",
+    "// 纯 JS 计算：入参对象 input = { 参数名: 值 }，return 即输出\n// 文本参数值为字符串 · 图像参数值为 { kind:\"image\", path }":
+      "// Pure JS compute: input = { paramName: value }, return the result\n// Text params are strings · image params are { kind:\"image\", path }",
+    /* ── 顶栏「工具库」工具库（app-tools.js · tools-store.js）── */
+    "工具库": "Tool library",
+    "从当前画布保存：": "Save from the current canvas:",
+    "保存到工具库": "Save to library",
+    "工具库不可用（本机存储接口未就绪）": "Tool library unavailable (local storage API not ready)",
+    "当前画布没有工具节点": "No tool nodes on the current canvas",
+    "当前画布没有可保存的工具节点": "No tool node to save on the current canvas",
+    "已保存到工具库：": "Saved to tool library: ",
+    "工具名（将用作标题与 Agent 调用名）：": "Tool name (used as title and agent call name):",
+    "保存工具到工具库": "Save tool to library",
+    "保存": "Save",
+    "无法生成工具包（节点结构异常）": "Cannot build the tool package (bad node structure)",
+    "工具库中已有同名工具「{name}」：覆盖保存？":
+      "A tool named \"{name}\" already exists — overwrite it?",
+    "覆盖工具": "Overwrite tool",
+    "覆盖保存": "Overwrite & save",
+    "保存失败：": "Save failed: ",
+    "保存失败": "Save failed",
+    "请先打开一个画布": "Open a canvas first",
+    "工具包为空，无法插入": "Tool package is empty — cannot insert",
+    "已插入工具：": "Inserted tool: ",
+    "入 ": "In: ",
+    "出 ": "Out: ",
+    "内部 ": "inner ",
+    " 节点 / ": " nodes / ",
+    " 连线": " wires",
+    "工具库为空：把画布中的工具节点保存到这里（上方下拉选择），即可在任意画布插入复用。":
+      "The library is empty: save a tool node from the canvas (pick it in the dropdown above) and insert it into any canvas later.",
+    "会话随时可调用": "Callable by sessions anytime",
+    "开：Agent 会话随时可调用该工具；关：仅插入画布后运行（默认关）":
+      "On: agent sessions may call this tool anytime; off: it runs only after being inserted into a canvas (default off)",
+    "已开启随时可调用：": "Always-callable ON: ",
+    "已关闭随时可调用：": "Always-callable OFF: ",
+    "插入": "Insert",
+    "把该工具插入当前画布（可重复插入）":
+      "Insert this tool into the current canvas (may insert repeatedly)",
+    "新工具名：": "New tool name:",
+    "改名工具": "Rename tool",
+    "已改名：": "Renamed: ",
+    "改名失败：": "Rename failed: ",
+    "改名失败": "Rename failed",
+    "从工具库删除「{name}」？（不影响已插入画布的副本）":
+      "Delete \"{name}\" from the library? (copies already inserted in canvases are not affected)",
+    "删除工具": "Delete tool",
+    "已删除工具：": "Deleted tool: ",
+    "删除失败：": "Delete failed: ",
+    "删除失败": "Delete failed",
+    /* ── 工具库开放函数节点（保存 / 插入 / 清单两类徽标 · app-tools.js）── */
+    "把选中的工具 / 函数节点保存到工具库":
+      "Save the selected tool / function node to the library",
+    "可保存：工具节点（带内部子图）/ 函数节点（单节点 JS 计算）":
+      "Savable: tool nodes (with their inner graph) / function nodes (single-node JS compute)",
+    "函数名（保存进工具库用 · 清单靠它辨认）：":
+      "Function name (used when saving into the library · the list shows it):",
+    "保存函数到工具库": "Save function to library",
+    "当前画布没有工具 / 函数节点": "No tool / function nodes on the current canvas",
+    "当前画布没有可保存的工具 / 函数节点":
+      "No tool / function node to save on the current canvas",
+    "【工具】": "[Tool] ",
+    "【函数】": "[Function] ",
+    "（未命名函数）": "(unnamed function)",
+    "工具库中已有同名条目「{name}」：覆盖保存？":
+      "A library entry named \"{name}\" already exists — overwrite it?",
+    "函数节点包（JS 计算 · 单节点）":
+      "Function node package (JS compute · single node)",
+    "工具节点包（超级节点变体 · 带内部子图）":
+      "Tool node package (super-node variant · with its inner graph)",
+    "单节点（JS 计算）": "single node (JS compute)",
+    "已插入函数：": "Inserted function: ",
+    "新函数名：": "New function name:",
+    "改名函数": "Rename function",
+    "工具库为空：把画布中的工具节点 / 函数节点保存到这里（上方下拉选择），即可在任意画布插入复用。":
+      "The library is empty: save a tool / function node from the canvas (pick it in the dropdown above) and insert it into any canvas later.",
+    /* Agent 改画布时对工具 / 函数节点字段的校验回报（app-nodes.js applyNodePatch） */
+    "需是参数数组（每项 {name, kind, list}）：":
+      "must be a param array (each {name, kind, list}): ",
+    "toolConfig 仅适用于工具节点": "toolConfig only applies to tool nodes",
+    "toolConfig 需是对象：{ name, description, inputs, outputs }":
+      "toolConfig must be an object: { name, description, inputs, outputs }",
+    "jscode 仅适用于函数节点": "jscode only applies to function nodes",
+    "toolConfig / fnName / jscode 仅适用于工具 / 函数节点":
+      "toolConfig / fnName / jscode only apply to tool / function nodes",
+  });
+  /* ── 工具 / 函数节点 + 工具库 + func call 链路 —— 双语文案补全 ──
+     菜单 / 设置面板 / 工具库对话框 / 随时可调用开关 /
+     运行桥与主进程 tools-store.js 校验文案（T1 已在上面落了英文档占位，
+     这里补齐运行期真正用到的其余词条）。 */
+  Object.assign(EN, {
+    /* 顶栏「工具库」按钮与工具库对话框（app-tools.js · app-boot.js btnTools 接线）
+       —— 只管本机已保存的工具包 / 函数包；两类节点的创建入口在画布右键菜单「工具」下 */
+    "工具库：打开本机已保存的工具 / 函数，插入到任意画布复用（新建这两类节点：画布空白处右键 → 工具）":
+      "Tool library: open the tool / function packages saved on this machine and insert them into any canvas (to create these two node types: right-click the canvas → Tools)",
+    /* 新建节点菜单（app.js canvasCreateMenuGroups · 「工具」一级菜单） */
+    "工具（Agent 可调用 · 入参出参端子）":
+      "Tool (agent-callable · input/output param ports)",
+    "函数（JS 计算 · 自定义入参出参）":
+      "Function (JS compute · custom input/output params)",
+    /* 参数 / 来源标注 / 兜底名（app.js · app-canvas.js · tools-store.js） */
+    "参数 ": "Param ",
+    "未命名工具": "Unnamed tool",
+    /* func call 运行桥（app-tools.js · app-nodes.js） */
+    "工具节点不存在或已移除": "Tool node no longer exists or was removed",
+    "工具「{name}」正在运行，请稍后再调用":
+      "Tool \"{name}\" is running — try again shortly",
+    "工具节点执行引擎未就绪": "Tool-node execution engine is not ready",
+    "工具执行失败：": "Tool run failed: ",
+    "工具包不可用或已删除：": "Tool package unavailable or deleted: ",
+    "工具包不可用（无法实例化）：": "Tool package cannot be instantiated: ",
+    "工具节点不在当前画布（可能已被删除），无法调用：":
+      "Tool node is not on the current canvas (it may have been deleted) — cannot call: ",
+    "工具「{name}」不可用（不在本次运行的可用清单中）":
+      "Tool \"{name}\" is unavailable (not in this run's callable list)",
+    "工具节点内部没有可执行的节点":
+      "This tool node has no runnable inner nodes",
+    "函数节点执行器未加载（js-exec.js）":
+      "Function-node executor not loaded (js-exec.js)",
+    "函数节点：请先填写 JS 代码": "Function node: write the JS code first",
+    "函数节点执行失败：": "Function run failed: ",
+    "函数节点完成": "Function run finished",
+    /* 主进程 tools-store.js 校验 / 状态文案 */
+    "工具库存储未初始化（缺少数据目录）":
+      "Tool library storage is not initialized (no data directory)",
+    "非法工具 id": "Invalid tool id",
+    "工具不存在": "Tool does not exist",
+    "工具包格式错误": "Malformed tool package",
+    "工具名不能为空": "Tool name cannot be empty",
+    /* 工具节点＝超级变体的端子契约（app.js · app-nodes.js · app-canvas.js）
+       —— 参数即端子：输入 0=控制 · 1..N=入参；输出 0..M-1=出参 · 末位=控制 */
+    " · 参数：": " · param: ",
+    "拖入节点，或在此右键新建（左＝参数入 · 右＝参数出）":
+      "Drag nodes in, or right-click here to create (left = param inputs · right = param outputs)",
+    "没有空闲的输入参数端子": "No free input parameter port",
+    "没有空闲的输入参数端子（请在工具设置里增加入参）":
+      "No free input parameter port (add an input param in the tool settings)",
+    "没有空闲的输出参数端子（请在工具设置里增加出参）":
+      "No free output parameter port (add an output param in the tool settings)",
+    "控制信号只能连到控制输入端子（端口 0）":
+      "Control signals may only connect to the control input port (port 0)",
+    "端口 0 是控制输入端子（不接受数据连线）":
+      "Port 0 is the control input — data wires are not accepted",
+    /* 连线校验 · 端子类型匹配（app-nodes.js · connectError）：参数 kind 就是端子的准入类型 */
+    "该工具节点的「设置」": "this tool node's Settings",
+    "该函数节点的「设置」": "this function node's Settings",
+    "「{p}」是图像参数，只接受图像来源：请把来源节点的图像输出端子连到它，或在{n}里把「{p}」改成文本参数":
+      "“{p}” is an image parameter — only image wires may connect to it: run the source node's image output port into it, or change “{p}” to a text param in {n}",
+    "「{p}」是文本参数，不接受图像来源：请在{n}里把「{p}」改成图像参数，或改接来源节点的文本输出端子":
+      "“{p}” is a text parameter — image wires are not accepted: change “{p}” to an image param in {n}, or run the source node's text output port instead",
+    /* 引擎按端子声明类型归一值（app.js normPortValueByKind · 节点摘要提示） */
+    "「{p}」是文本端子，收到的图像已按其路径取文本":
+      "“{p}” is a text port — the image it received was kept as its path text",
+    /* 通用「试跑」台（app-tools.js · 工具节点复用函数节点的测试台） */
+    "「测试」仅用于工具 / 函数节点": "“Test” is only for tool / function nodes",
+    "工具节点试跑 · ": "Tool node trial run · ",
+    "仅测试用，不参与画布运行：测试入参只注入本次执行，工具自身的输出与下游节点保持不变（不进撤销历史）。":
+      "Test only — it does not take part in canvas runs: the test inputs are injected just for this execution, the tool's own outputs and its downstream nodes stay untouched (nothing enters the undo history).",
+    "试跑会真实执行内部子图（{n} 个内部节点 · 可能产生真实 API 调用），只把结果读回这里，不改工具自身输出。":
+      "A trial run really executes the inner graph ({n} inner nodes · may make real API calls); the results are only read back here, the tool's own outputs stay untouched.",
+    "该工具内部还没有节点：先展开 / 进入子画布将参数接成处理图，再回来试跑。":
+      "This tool has no inner nodes yet: expand or enter its sub-canvas, wire the params into a processing graph, then come back for a trial run.",
+    "（内侧无节点汇入该输出端子）": "(no inner node feeds this output port)",
+    "（无输出参数 · 在「设置」里添加）": "(no output params · add them in Settings)",
+    "▶ 试跑工具": "▶ Trial-run tool",
+    "试跑中…": "Trial running…",
+    "工具试跑执行器未就绪（app-tools.js）": "Tool trial-run executor is not ready (app-tools.js)",
+    "测试不改画布：工具自身的输出与下游取值仍是上次画布 ▶ 的结果。":
+      "Testing leaves the canvas alone: the tool's own output and what downstream reads are still from the last ▶ on the canvas.",
+    "测试（用自定义入参试跑内部子图 · 仅测试用，不参与画布运行）":
+      "Test (trial-run the inner graph with custom inputs · test only, not part of canvas runs)",
+  });
+  /* ── 函数节点：JS 代码编辑器 / 脚手架 /「测试」台 /「开发」对话框 / 会话契约 —— 双语文案补全
+     （app-canvas.js 节点卡片与设置面板 · app-tools.js 测试台与开发弹窗 · app-nodes.js 运行摘要 ·
+      app.js 绑定会话注入的契约句子）。中文为真源，英文为译文。 */
+  Object.assign(EN, {
+    /* JS 代码编辑器工具条（app-canvas.js 节点卡片 · app-tools.js 测试台 · 同一 createJsCodeEditor） */
+    "格式化": "Format",
+    "按 2 空格缩进就地重排（不改动任何一行的内容）":
+      "Re-indent in place with 2-space indents (never touching any line's content)",
+    "已格式化": "Formatted",
+    "代码已是格式化后的样子": "The code is already formatted",
+    "代码为空 · 无需格式化": "Empty code — nothing to format",
+    "行": "Ln",
+    "JS 代码": "JS code",
+    "与节点卡片同一编辑器 · 改动即时写回 node.jscode":
+      "The same editor as on the node card · edits write straight back to node.jscode",
+    /* 函数 / 工具卡片状态行与按钮 title（app-canvas.js） */
+    "运行中…": "Running…",
+    "已运行 ": "Ran ",
+    "测试": "Test",
+    "测试（自定义输入跑一次 JS · 仅测试用，不参与画布运行）":
+      "Test (run the JS once with custom inputs · test only, not part of canvas runs)",
+    "双击进入子画布": "Double-click to enter the sub-canvas",
+    /* JS 脚手架（app-canvas.js 函数节点「设置」面板） */
+    "生成脚手架": "Generate scaffold",
+    "脚手架：按上面的入参 / 出参名生成 JS 模板（只在点击此按钮时写入，不随参数增删自动改写代码）":
+      "Scaffold: build a JS template from the input / output param names above (written only when you click this button — adding or removing params never rewrites your code)",
+    "以 input 取入参、末尾 return { 出参名: … }；代码为空直接写入，非空先确认覆盖":
+      "Takes inputs through input and ends with return { outputName: … }; empty code is written straight in, non-empty code asks for confirmation first",
+    "当前已有 JS 代码。用脚手架覆盖原有代码？（取消＝保留手写代码）":
+      "There is already JS code here. Overwrite it with the scaffold? (Cancel = keep your own code)",
+    "已生成函数脚手架": "Function scaffold generated",
+    /* 函数节点「测试」台（app-tools.js openNodeTestDialog · 与工具节点试跑共用同一对话框骨架） */
+    "函数节点测试 · ": "Function node test · ",
+    "仅测试用，不参与画布运行：测试入参只注入本次执行，不写节点输出、不级联下游、不进撤销历史。":
+      "Test only — it does not take part in canvas runs: the test inputs are injected just for this execution, the node's outputs are not written, nothing cascades downstream and nothing enters the undo history.",
+    "JS 代码（return 的键 = 输出参数名 → 分发到各输出端子）":
+      "JS code (the keys you return = output param names → dispatched to each output port)",
+    "// 在此编写函数体：input = { 参数名: 值 }，return { 输出参数名: 值 }":
+      "// Write the function body here: input = { paramName: value }, return { outputParamName: value }",
+    "（无输入参数 · 在「设置」里添加）": "(no input params · add them in Settings)",
+    "图像文件路径（留空 = 不注入该参数）": "Image file path (blank = this param is not injected)",
+    "测试文本（留空 = 不注入该参数）": "Test text (blank = this param is not injected)",
+    "输出端子": "Output ports",
+    "（尚未运行测试）": "(no test run yet)",
+    "错误：": "Error: ",
+    "主输出（无出参）": "Main output (no output params)",
+    "（return 未含该键 · 未分发）": "(this key is not in the return · not dispatched)",
+    "▶ 运行测试": "▶ Run test",
+    "测试不改画布：节点输出与下游取值仍是上次画布 ▶ 的结果。":
+      "Testing leaves the canvas alone: this node's output and what downstream reads are still from the last ▶ on the canvas.",
+    "测试执行器未就绪（app-nodes.js）": "Test executor is not ready (app-nodes.js)",
+    "测试完成": "Test finished",
+    "测试失败：": "Test failed: ",
+    "工具正在运行，请稍后再试": "The tool is running — try again shortly",
+    /* 函数节点运行摘要（app-nodes.js） */
+    "函数节点完成 · 分发 ": "Function run finished · dispatched to ",
+    " 个输出端子": " output ports",
+    /* 函数节点「开发」对话框（app-tools.js developFunctionNode · 与开发节点「开发」同一套弹窗） */
+    "未命名函数": "Untitled function",
+    "函数名": "Function name",
+    "节点标题": "Node title",
+    "入参端子": "Input ports",
+    "端子 0 = 控制入": "port 0 = control in",
+    "出参端子": "Output ports",
+    "末位 = 控制出": "the last one = control out",
+    "会话工作区": "Session workspace",
+    "请说明本次要修改或扩展这个函数的哪些行为；确认后将新建一个绑定该函数的会话并在其中运行。":
+      "Describe which behaviour of this function to change or extend this round; confirming opens a new session bound to this function and runs it there.",
+    "该函数还没有 JS 代码：会话会按现有入出参从零写出函数体。":
+      "This function has no JS code yet: the session will write the body from scratch from the current input / output params.",
+    "本次希望修改 / 扩展的内容": "What to change / extend this round",
+    "例如：入参 text 去掉首尾空白再按标点分句；新增一个 image 入参并把路径原样透传到出参；出错时不要抛异常，改为 return { error }…":
+      "e.g. trim the text input then split it on punctuation; add an image input and pass its path straight through to an output; on error don't throw — return { error } instead…",
+    "请填写本次希望修改或扩展的内容":
+      "Please describe what to change or extend this round",
+    "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「开发 · 函数名」· 只改这一个函数节点 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = runs in the background in a new session (workspace = the canvas folder · titled Dev · function name · it touches this one function node only · you stay on the canvas) · cancelling or stepping away keeps this text — reopen this box and continue where you left off · Ctrl+Enter submits · Esc cancels",
+    "已创建函数开发会话「": "Function dev session created: ",
+    /* 函数节点卡片「开发」按钮（app-canvas.js · 与开发节点按钮同款样式） */
+    "弹窗填写本次要改 / 扩展的内容，确认后新建绑定该函数的会话在其中运行（只改这一个函数节点）":
+      "A dialog collects what to change / extend this round; after you confirm, a new session bound to this function runs it (touching this one function node only)",
+    " · 已绑定 ": " · bound: ",
+    " 个开发会话": " dev sessions",
+    "用会话改造 / 扩展本函数": "Rework / extend this function in a session",
+    "函数开发会话未就绪（app-tools.js）":
+      "Function dev session is not ready (app-tools.js)",
+    /* 函数开发任务书 = 绑定会话契约（app-tools.js fnDevContractText · 每轮随系统提示注入） */
+    "【函数开发任务书】": "[Function dev brief]",
+    "函数节点": "Function node",
+    " · 标题：": " · title: ",
+    "节点描述：": "Node description: ",
+    "入参端子（端子 0 = 控制入，1..N = 各入参，标注 ×N = 列表端子）：":
+      "Input ports (port 0 = control in, 1..N = the input params; ×N marks an array port): ",
+    "入参端子（端子 0 = 控制入，1..N = 各入参）：":
+      "Input ports (port 0 = control in, 1..N = the input params): ",
+    "出参端子（0..M-1 = 各出参，末位 = 控制出）：":
+      "Output ports (0..M-1 = the output params, the last one = control out): ",
+    "JS 代码：共 ": "JS code: ",
+    " 行（真实内容以 mtnode_canvas_get 读到的为准）":
+      " lines (the real content is whatever mtnode_canvas_get reads)",
+    "本会话由该函数节点的「开发」按钮新建，只负责这一个函数；请以画布上该节点的真实配置为准，不要臆测，也不要顺手扩展无关功能。":
+      "This session was created by this function node's Dev button and covers this one function only; rely on the node's real configuration on the canvas — never guess, and do not opportunistically extend anything unrelated.",
+    "改动边界（必须严格遵守）：① 先用 mtnode_canvas_get 读该节点现状（detail:\"full\"、ids:[本节点标题]），再只用 mtnode_canvas_edit 的 update 补丁本节点的 jscode / inputs / outputs / description（必要时 setTitle 同步函数名）；② 不得新建、删除或改动画布上的任何其它节点，也不得增删连线；③「参数即端子」——改 inputs / outputs 参数表就是改端子，端子数一变已连的线就可能改指别的端子，因此只要动了参数表，就必须在回复里明确提醒用户回画布复核该节点的连线。":
+      "Change boundary (strictly required): ① first read this node's current state with mtnode_canvas_get (detail:\"full\", ids:[this node's title]), then only patch this node's jscode / inputs / outputs / description through mtnode_canvas_edit's update (with setTitle as well when the function name needs syncing); ② never create, delete or move any other node on the canvas, and never add or remove wires; ③ params are ports — editing the inputs / outputs table edits the ports, and once the port count changes an existing wire may point at a different param, so whenever you touch the param table you must explicitly remind the user to re-check this node's wires on the canvas.",
+    "本节点标题（mtnode_canvas_get 的 ids 与 update 的定位就用它）：":
+      "This node's title (use it to target ids and update in mtnode_canvas_get): ",
+    "执行契约：jscode 里 input = { 参数名: 值 }（文本参数值为字符串 · 图像参数值为 { kind:\"image\", path } · 标 ×N 的列表端子值恒为数组，即使只连了一条线也是数组，用 for / map 逐项处理，别当单值用），return { 输出参数名: 值 } 按参数名分发到各输出端子（输出端子一律单值，要返回多个值请返回数组给下游标 ×N 的列表入参端子）；保持 2 空格缩进的整洁排版（画布上的代码编辑器带高亮与格式化）。":
+      "Execution contract: in jscode, input = { paramName: value } (a text param's value is a string · an image param's value is { kind:\"image\", path } · an ×N array port's value is always an array — even with a single wire in, so loop / map over it instead of treating it as one value), and return { outputParamName: value } is dispatched to each output port by name (output ports are strictly single-valued — to hand several values downstream, return an array aimed at a downstream ×N array input port); keep tidy 2-space indentation (the code editor on the canvas has highlighting and formatting).",
+    "需求不明确时先问用户再动手；改完用一句话汇报改了什么（是否动了参数表）。":
+      "If the requirement is unclear, ask the user before touching anything; when done, report in one sentence what changed (and whether you touched the param table).",
+    "本次开发需求已在任务书中一次性完整给出：请按此执行，不要分两次会话输入重复提交（重复输入会造成上下文割裂与重复开工）。":
+      "This round's requirements are already given in full inside the brief: execute them as stated and do not re-submit them through a second session message (duplicate input splits the context and restarts work).",
+    "本会话是代码开发工作：不要调用 mtnode-dev-architect 技能（该技能仅用于在 MTNode 画布上构建开发节点架构，开发 / 细化绑定会话不需要它）。":
+      "This session is code development work: do not invoke the mtnode-dev-architect skill (that skill only builds dev-node architecture on the MTNode canvas; dev / refinement bound sessions do not need it).",
+    /* 工具节点「开发」= 绑定该工具的会话（app-tools.js toolDev* · 与函数节点同一机制，
+       作用域 = 本工具节点 + 内部子图；可改 toolConfig 参数 / 描述 / 重建内部子图） */
+    "工具开发会话未就绪（app-tools.js）": "Tool dev session is not ready (app-tools.js)",
+    "弹窗填写本次要改 / 扩展的内容，确认后新建绑定该工具的会话在其中运行（只改这一个工具节点与它的内部子图）":
+      "A dialog collects what to change / extend this round; after you confirm, a new session bound to this tool runs it (touching this one tool node and its inner sub-graph only)",
+    "用会话改造 / 扩展本工具": "Rework / extend this tool in a session",
+    "【工具开发任务书】": "[Tool dev brief]",
+    "工具描述（toolConfig.description · 给 Agent 看的用途说明）：":
+      "Tool description (toolConfig.description · the purpose note shown to agents): ",
+    "内部子图：": "Inner sub-graph: ",
+    "内部子图": "Inner sub-graph",
+    "（工具的行为 = 它的内部子图：点 ▶ 或 Agent 调用时按拓扑执行）":
+      "(a tool's behavior IS its inner sub-graph: ▶ or an agent call executes it topologically)",
+    "（尚无内部节点：会话会按入出参从零搭建内部子图）":
+      "(no inner nodes yet: the session will build the inner sub-graph from scratch against the in/out params)",
+    " 个内部节点 / ": " inner node(s) / ",
+    " 条内部连线": " inner wire(s)",
+    "工具名": "Tool name",
+    "本会话由该工具节点的「开发」按钮新建，只负责这一个工具节点（含其内部子图）；请以画布上该节点与内部子图的真实配置为准，不要臆测，也不要顺手扩展无关功能。":
+      "This session was created by this tool node's Dev button and covers this one tool node (including its inner sub-graph) only; rely on the node's and the sub-graph's real configuration on the canvas — never guess, and do not opportunistically extend anything unrelated.",
+    "改动边界（必须严格遵守）：① 先用 mtnode_canvas_get 读该工具节点现状（detail:\"full\"、ids:[本节点标题]；内部子图节点会随画布快照返回），再动手；② 对工具定义用 mtnode_canvas_edit 的 update 补丁本工具节点的 toolConfig（name / description / inputs / outputs，必要时 setTitle 同步工具名）；调整工具行为则在**本工具内部**新建 / 删除 / 改动节点并连线（这些子节点 parentSuperId = 本工具 id，本会话创建的子节点也必须挂在它下面）；③ 不得新建、删除或改动任何其它画布节点，也不得增删本工具内外部之外的连线；④「参数即端子」——改 toolConfig 的 inputs / outputs 参数表就是改端子，端子数一变已连的线就可能改指别的端子，因此只要动了参数表，就必须在回复里明确提醒用户回画布复核该节点的连线。":
+      "Change boundary (strictly required): ① first read this tool node's current state with mtnode_canvas_get (detail:\"full\", ids:[this node's title]; the inner sub-graph nodes come back with the canvas snapshot), then start editing; ② for the tool definition, patch this tool node's toolConfig (name / description / inputs / outputs) with mtnode_canvas_edit's update (add setTitle to sync the tool name when needed); to change behavior, create / delete / modify nodes and wires **inside this tool** (those child nodes have parentSuperId = this tool's id, and any node you create must also hang under it); ③ never create, delete or modify any other canvas node, and never add/remove wires outside this tool; ④ params are ports — editing the toolConfig inputs / outputs table edits the ports, and once the port count changes an existing wire may point at a different param, so whenever you touch the param table you must explicitly remind the user to re-check this node's wires on the canvas.",
+    "运行语义：工具节点 = super + tool:true 变体，Agent 调用 / 画布 ▶ 执行的都是它的内部子图（先补跑上游，再按拓扑执行内部节点），内部没有可执行节点会报「工具节点内部没有可执行的节点」。内部子图里想放什么就放什么（文本处理 / 智能任务 / 函数 / 保存等），输出要接回本工具的外侧输出端子（内侧汇流），入参由外侧输入端子（参数即端子）注入。":
+      "Runtime semantics: a tool node is a super + tool:true variant — both agent calls and canvas ▶ execute its inner sub-graph (upstream first, then inner nodes topologically); with no runnable inner node it errors with “the tool node has no runnable node inside”. Put whatever you like inside (text processing / agent task / function / save…); feed outputs back to the tool's outer output ports (inner confluence) — inputs come from the outer input ports (params are ports).",
+    "请说明本次要修改或扩展这个工具的哪些行为；确认后将新建一个绑定该工具的会话并在其中运行（可改 toolConfig 参数 / 描述，也可重建内部子图）。":
+      "Describe what behavior to change or extend on this tool; on confirm, a new session bound to this tool runs it (you may change toolConfig params / description, or rebuild the inner sub-graph).",
+    "该工具的行为 = 它的内部子图：会话可以按现有入出参从零搭建内部子图，也可以只调参数 / 描述不改内部图。":
+      "A tool's behavior is its inner sub-graph: the session can build one from scratch against the current in/out params, or you can just adjust params / description without touching the inner graph.",
+    "例如：把内部子图换成先提取关键词再查库的两段流程；新增一个 image 入参并透传到内部函数节点；出错时返回错误文本而不是抛异常…":
+      "e.g. rebuild the inner sub-graph into a two-stage flow (extract keywords, then query); add an image input and pass it through to an inner function node; return an error text instead of throwing…",
+    "确认 = 新会话后台运行（工作区 = 画布目录 · 标题「开发 · 工具名」· 只改这一个工具节点与它的内部子图 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消":
+      "Confirm = a new session runs in the background (workspace = canvas folder · title “Dev · tool name” · only this tool node and its inner sub-graph · stay on the canvas) · Cancel / escape keeps your draft for next time · Ctrl+Enter submits · Esc cancels",
+    "已创建工具开发会话「": "Created tool dev session “",
+    "已调整参数顺序：端子与已连数据线随参数移位":
+      "Param order updated: ports and connected wires moved with the param",
+    "拖动把手调整参数顺序（端子与已连数据线随参数移位 · ▲▼ 可逐格移动）":
+      "Drag the handle to reorder params (ports and wired data follow the param · ▲▼ move one step)",
+    "第 {n} 条输入": "input {n}",
+    " · 来源：": " · source: ",
+    "（右键断开这一条）": " (right-click to disconnect this one)",
+    "空槽：再拖一条数据线进本端子（可无限接）":
+      "Empty slot: drag another data wire into this port (no limit)",
+    "已断开该槽位对应的数据线": "Disconnected the wire of that slot",
+    "该槽位没有连线": "That slot has no wire",
+    /* ── 函数 / 工具节点修复：独立线程执行 + 运行队列 + 停止即回收 —— 新文案英文档
+       （app.js stopNode / stopAllRuns / 删除节点回收 toast · app-nodes.js 收尾与并发闸 ·
+        renderer/js-exec.js 异步执行器错误兜底。中文为真源，英文为译文。） */
+    "已取消该节点的排队运行": "Cancelled this node's queued run",
+    "已停止并回收 ": "Stopped and reclaimed ",
+    " 个进程": " process(es)",
+    "已停止该节点的运行": "Stopped this node's run",
+    "已请求停止运行…": "Stop requested…",
+    "已回收 ": "Reclaimed ",
+    "回收 ": "reclaimed ",
+    " · 回收 ": " · reclaimed ",
+    "执行失败": "Execution failed",
+    "函数运行没有返回结果（主进程 fn:run）":
+      "Function run returned no result (main-process fn:run)",
+    "函数运行时未就绪（主进程未暴露 fn:run）——请重启 MTNode 后再试":
+      "Function runtime not ready (fn:run not exposed by the main process) — restart MTNode and try again",
+    "函数运行时未就绪（主进程未暴露 fn:cancel）":
+      "Function runtime not ready (fn:cancel not exposed by the main process)",
+    "缺少 runId": "runId is missing",
+    "代码为空": "The code is empty",
+  });
+  /* ── 素材库（顶栏按钮 · renderer/app-assets.js 左右栏对话框 · assets-store.js 主进程）──
+     中文为真源，以下为英文档译文。 */
+  Object.assign(EN, {
+    /* 顶栏入口 */
+    "素材库": "Asset library",
+    "素材库：跨画布的本机素材仓库，按分类打包文本 / 图像 / 音频 / 视频；素材节点引用库内容，删掉画布素材仍在":
+      "Asset library: a cross-canvas content vault on this machine — pack text / image / audio / video into categories; asset nodes reference the library, so content survives deleting the canvas",
+    "素材库不可用（本机存储接口未就绪）":
+      "Asset library unavailable (local storage bridge not ready)",
+    /* 首次引导 · 根目录 */
+    "读取素材库位置失败：": "Failed to read the asset-library location: ",
+    "素材库还没有指定保存位置。\n\n下一步请选择一个文件夹作为素材库根目录（项目目录）。根目录之后不建议改动：更换后内容会重新扫描，已绑定的素材节点需要手动重新绑定。":
+      "The asset library has no save location yet.\n\nIn the next step, pick a folder to serve as the library root (project folder). Changing it later is not recommended: a new root triggers a rescan and bound asset nodes must be rebound by hand.",
+    "指定素材库根目录": "Set the asset-library root",
+    "暂不设置": "Not now",
+    "选择素材库根目录（项目目录）": "Choose the asset-library root (project folder)",
+    "未选择文件夹，素材库暂不打开": "No folder chosen — the asset library stays closed",
+    "设置素材库根目录失败：": "Failed to set the asset-library root: ",
+    "素材库根目录：": "Asset-library root: ",
+    "更换素材库根目录会导致内容重新扫描：\n\n· 新目录里没有的素材，其节点会变成「素材失联」（节点保留，可手动重新绑定）\n· 旧目录里的文件不会被删除，改回原目录即可再次识别\n\n确定更换？":
+      "Changing the asset-library root rescans everything:\n\n· assets missing from the new folder turn into “asset unavailable” nodes (nodes are kept and can be rebound by hand)\n· nothing in the old folder is deleted — switch back and it is recognised again\n\nChange it?",
+    "更换素材库根目录": "Change the asset-library root",
+    "选择新目录": "Choose a new folder",
+    "选择新的素材库根目录": "Choose the new asset-library root",
+    "已更换素材库根目录并重新扫描：": "Asset-library root changed and rescanned: ",
+    "扫描素材库失败：": "Failed to scan the asset library: ",
+    "素材库根目录（在资源管理器里也可直接整理）":
+      "Asset-library root (you may also tidy it directly in the file manager)",
+    "更改根目录…": "Change root…",
+    "更换后内容会重新扫描，失联的素材节点需手动重新绑定":
+      "Changing it rescans the library; unavailable asset nodes need a manual rebind",
+    "重新扫描素材库目录": "Rescan the asset-library folder",
+    /* 左栏 · 分类 */
+    "分类": "Categories",
+    "分类 ": "Categories: ",
+    "新建文件夹": "New folder",
+    "在当前选中的分类下新建文件夹（右键分类可重命名 / 删除）":
+      "Create a folder under the selected category (right-click a category to rename / delete)",
+    "全部素材（根目录）": "All assets (root)",
+    "根目录": "Root",
+    "还没有分类：点上方「＋ 新建文件夹」，或直接在资源管理器里建目录。":
+      "No categories yet: click “＋ New folder” above, or create folders directly in the file manager.",
+    "在此新建子文件夹": "New subfolder here",
+    "新建文件夹（分类）名称：": "Name of the new folder (category):",
+    "新建分类 · {where}": "New category · {where}",
+    "新建文件夹失败：": "Failed to create the folder: ",
+    "已新建分类：": "Category created: ",
+    "新的文件夹名称：": "New folder name:",
+    "重命名分类": "Rename category",
+    "重命名「{name}」…": "Rename “{name}”…",
+    "重命名失败：": "Rename failed: ",
+    "已重命名为：": "Renamed to: ",
+    "删除「{name}」": "Delete “{name}”",
+    "该分类（含子分类）下还有 {n} 个素材：请先移走或删除其中的素材。":
+      "This category (including subcategories) still holds {n} asset(s): move or delete them first.",
+    "删除空分类「{name}」？\n\n文件夹会移进素材库根目录的 .trash（不会真的删掉），在资源管理器里可手工找回。":
+      "Delete the empty category “{name}”?\n\nThe folder goes into <root>/.trash (nothing is really deleted) and can be restored by hand in the file manager.",
+    "删除分类": "Delete category",
+    "已删除分类（进回收站）：": "Category deleted (moved to trash): ",
+    "在资源管理器中打开": "Open in file manager",
+    "打不开该目录": "Cannot open that folder",
+    /* 右栏 · 素材卡片 */
+    "当前位置：": "Current location: ",
+    "素材": "Asset",
+    "素材 ": "Assets: ",
+    "新建素材": "New asset",
+    "在当前分类下新建一个素材": "Create an asset in the current category",
+    "上传为新素材": "Upload as new asset",
+    "选择一个本机文件夹 → 按文件类型自动变成当前分类下的新素材（内容复制入库）":
+      "Pick a local folder → it becomes a new asset in the current category, files mapped by type (contents copied into the library)",
+    "显示名称": "Display name",
+    "例如：主角人设 / 片头音乐": "e.g. Protagonist profile / Opening music",
+    "描述": "Description",
+    "新建素材 · {where}": "New asset · {where}",
+    "请填写显示名称": "Please fill in a display name",
+    "新建素材失败：": "Failed to create the asset: ",
+    "已新建素材：": "Asset created: ",
+    "（暂无内容）": "(no content yet)",
+    "选择要上传为素材的文件夹": "Choose the folder to upload as an asset",
+    "上传失败：": "Upload failed: ",
+    "已上传为素材：{name}（内容 {n} 条）": "Uploaded as asset “{name}” ({n} item(s))",
+    "已上传为素材：{name}（内容 {n} 条 · 跳过 {s} 个不支持的文件）":
+      "Uploaded as asset “{name}” ({n} item(s), {s} unsupported file(s) skipped)",
+    "删除素材（移进素材库回收站，不实删）":
+      "Delete the asset (moved to the library trash, not really deleted)",
+    "删除素材「{name}」？\n\n整个素材文件夹会移进素材库根目录的 .trash（不实删）。已插入画布的「素材」节点会显示为「素材失联」，节点本身保留。":
+      "Delete the asset “{name}”?\n\nIts whole folder moves into <root>/.trash (nothing is really deleted). “Asset” nodes already on a canvas will show “asset unavailable”, but the nodes themselves stay.",
+    "删除素材": "Delete asset",
+    "已删除素材（进回收站）：": "Asset deleted (moved to trash): ",
+    "素材文件夹名（资源管理器里看到的名字）：":
+      "Asset folder name (what the file manager shows):",
+    "重命名素材文件夹": "Rename asset folder",
+    "已重命名文件夹：": "Folder renamed: ",
+    "移动素材到分类": "Move asset to category",
+    "移动到分类…": "Move to category…",
+    "移动": "Move",
+    "目标分类": "Target category",
+    "移动失败：": "Move failed: ",
+    "已移动到：": "Moved to: ",
+    "该分类下还没有素材：可先在素材库里「新建素材」或「上传为新素材」，再回来绑定。":
+      "No assets in this category yet: use “New asset” or “Upload as new asset” first, then come back to bind one.",
+    "这里还是空的。点上方「新建素材」建一个空素材，或「上传为新素材」把本机一个文件夹整体收进库里。":
+      "Nothing here yet. Click “New asset” above for an empty one, or “Upload as new asset” to bring a whole local folder into the library.",
+    "该分类本身没有素材，内容在子分类里（左侧选择子分类查看）。":
+      "This category holds no assets of its own — its content lives in subcategories (pick one on the left).",
+    "文件夹：": "Folder: ",
+    /* 卡片动作 · 绑定 · 插入（「设置」「删除」「取消」等通用词已有译文，不再重复） */
+    "绑定素材库内容": "Bind library content",
+    "绑定这个素材": "Bind this asset",
+    "用该素材绑定当前节点": "Bind the current node to this asset",
+    "设置…": "Settings…",
+    "改显示名称 / 描述，管理内容条目（每条＝节点的一对端子）":
+      "Edit display name / description and manage content items (each item = one port pair on the node)",
+    "素材设置界面尚未就绪": "Asset settings are not ready yet",
+    "插入到画布": "Insert into canvas",
+    "在当前画布创建一个绑定该素材的「素材」节点（库内容不变）":
+      "Create an “Asset” node bound to this asset on the current canvas (library content untouched)",
+    "重新命名（文件夹）": "Rename (folder)",
+    "素材节点尚未就绪": "Asset nodes are not ready yet",
+    "请先打开一个画布": "Open a canvas first",
+    "插入失败：无法创建素材节点": "Insert failed: cannot create the asset node",
+    "已插入素材：": "Asset inserted: ",
+    "删除的内容进根目录 .trash（不实删）":
+      "Deleted content goes into <root>/.trash (nothing is really deleted)",
+    /* ── 素材节点（kind asset）：内容条目即端子 · body 内容列表 ── */
+    "视频": "Video",
+    "无效的输入端子": "Invalid input port",
+    "内容 ": "Item ",
+    "内容端子 ": "Content port ",
+    "内容端子「": "Content port “",
+    "输出内容「": "Outputs content “",
+    "更换": "Replace",
+    "读取中…": "Loading…",
+    "素材节点（绑定素材库 · 内容条目即端子）":
+      "Asset node (binds the library · content items are the ports)",
+    "）· 与同名输出端子一一对应 · 连入即同步到该条目":
+      "” · pairs 1:1 with the output port of the same name · wiring in syncs into that item",
+    "）· 文本给字符串 · 图像 / 音频 / 视频给 file:/// URL":
+      "” · text yields a string · image / audio / video yield a file:/// URL",
+    "左右两个端子同一条目：连入即写入素材库，输出即读出该条目的内容":
+      "Both ports are the same item: wiring in writes into the library, the output reads that item back",
+    "同步：把本条目输入端子连入的内容写进素材库（端子无内容时连入即自动同步）":
+      "Sync: write what this item’s input port carries into the library (an empty item syncs automatically on connect)",
+    "端子同步将在下一项任务接入": "Port sync lands in the next task",
+    "内容文件缺失（素材库里的实体文件不在了）":
+      "Content file is missing (the physical file is gone from the asset library)",
+    "在此输入文本内容（直接写进素材库该条目）":
+      "Type text here (written straight into this library item)",
+    "（无图像）点击下方按钮选择": "No image — pick one with the button below",
+    "（无内容）点击下方按钮选择": "No content — pick a file with the button below",
+    "从本机选一个文件复制进素材库该条目（旧内容先进版本目录，可撤销）":
+      "Pick a local file and copy it into this library item (the old one goes to the versions folder first · undoable)",
+    "未绑定素材：右键本节点选「绑定素材库…」或「上传…」":
+      "Not bound to an asset: right-click this node and choose “Bind library content…” or “Upload…”",
+    "该素材还没有内容：点上方「设置」添加文本 / 图像 / 音频 / 视频":
+      "This asset has no content yet: open Settings above to add text / image / audio / video items",
+    "写入素材库失败：": "Failed to write into the asset library: ",
+    "已保存到素材库：": "Saved to the library: ",
+    "已更换内容：": "Content replaced: ",
+    "素材节点是内容来源，不接受控制连线（▶ 请连真正要执行的节点）":
+      "An asset node is a content source and takes no control wire (point ▶ at nodes that actually run)",
+    "该素材还没有内容条目：请先在素材库为它添加内容":
+      "This asset has no content items yet: add some in the asset library first",
+    "没有与这条线类型匹配的空闲内容端子":
+      "No free content port matches this wire’s type",
+    "该内容端子已被占用": "That content port is already taken",
+    "「{t}」端子是{w}内容，只接受{w}来源（当前是 {g}）：请改接同类来源，或在素材设置里换一个端子":
+      "The “{t}” port holds {w} content and only accepts a {w} source (this one is {g}): rewire a matching source, or pick another port in the asset settings",
   });
 
   var locale = "zh";

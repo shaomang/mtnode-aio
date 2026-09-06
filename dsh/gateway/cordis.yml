@@ -7,6 +7,15 @@
   config:
     maxTokensAsSuccess: true
 
+# 跨进程真续跑（session/resume 桥）：给 SDK server 装一枚可选 JSON-RPC 方法
+# session/resume —— 网关在续跑轮真实 prompt 前调用它，把盘上旧会话恢复成 live
+# （agents.resume = persistence.prepare 语义）再追加：失败轮进程已不在也能真续跑，
+# 不整轮重发白烧。全新会话从不调用该方法 → 上游 create 路径一字不改（降级保底）；
+# 老运行时没有该方法 = 网关回退旧 create 语义（同进程续跑照常 / 跨进程回落既有
+# collision → RESUME_UNAVAILABLE 转译）。见 dsh/DESIGN.md「断点续跑契约」。
+- id: mtnode-session-resume
+  name: './plugins/session-resume-server.mjs'
+
 - id: timer
   name: '@deepseek-ai/cordis-plugin-timer'
 
@@ -74,6 +83,25 @@
 - id: mtnode-db
   name: './db-plugin.mjs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+# MTNode 用户工具节点:把画布中的工具节点 / 库中「随时可调用」的工具注册成
+# 会话可见的函数调用工具(func call)。描述子由宿主在每次 run 前经
+# MTNODE_TOOLS_JSON 注入(指纹进 runtime key,工具集变化即冷起新运行时);
+# 模型发起调用 → 桥帧回宿主执行节点内部图 → 结果回传(失败回错误文本)。
+- id: mtnode-tools
+  name: './tools-plugin.mjs'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+# 按运行裁剪可见工具集：引擎自带工具（目标 / 任务清单 / 子代理 / 后台任务 / 提问）注册在
+# @deepseek-ai 的包里，我们改不到注册，就在 agent 创建窗口用 ctx.tools.restrict({deny})
+# 把它们从可见集摘掉（被摘掉的工具整份 schema 不再进请求）。名单 = spawn 时注入的
+# MTNODE_HIDE_TOOLS（逗号分隔规范名，同时进 runtime key 的 hx: 指纹 → 一台运行时一个
+# 形状，绝不在轮内改可见集）。名单为空 / env 缺席 = 不注册任何监听，行为与未接入时
+# 一字不差。MTNode 自有工具的不注册在 canvas-plugin / db-plugin 的注册口，判定的名单
+# 真源是 dsh/gateway/tool-visibility.mjs。契约见 dsh/DESIGN.md「按运行裁剪可见工具集」。
+- id: mtnode-tool-visibility
+  name: './plugins/tool-restrict-plugin.mjs'
+  disabled: !!js process.env.MTNODE_PURE === '1'
 
 - id: agent
   name: '@deepseek-ai/dsh-agent'
@@ -313,7 +341,7 @@
 - id: spill-policy
   name: '@deepseek-ai/dsh-spill-policy'
   config:
-    maxInlineBytes: 50000
+    maxInlineBytes: 12000
 
 - id: session-checkpoint-policy
   name: '@deepseek-ai/dsh-session-checkpoint-policy'
@@ -321,9 +349,9 @@
 - id: tool-result-pruner
   name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
   config:
-    thresholdChars: 8192
-    headChars: 4096
-    tailChars: 1024
+    thresholdChars: 4096
+    headChars: 1536
+    tailChars: 512
 
 - id: tool-todo
   name: '@deepseek-ai/dsh-tool-todo'
@@ -449,6 +477,22 @@
     apiKeyEnv: DEEPSEEK_API_KEY
     baseUrlEnv: DEEPSEEK_BASE_URL
     thinking: enabled
+
+# 思考强度按 run 下发（mtnode-effort）：gateway 把每轮生效档（经 reasoning-effort.mjs
+# 按路由能力表归一）经 env MTNODE_EFFORT 注入运行时，本插件在 agent/request waterfall
+# 上把档位提案进模型请求（deepseek-official 按 off/low/high/max；pi-ai 目录/手写路由
+# 经 ctx.llm 解析精确模型能力后夹紧，拿不到能力 = 不下发）。env 缺席 = 插件 no-op。
+- id: mtnode-effort
+  name: './plugins/effort-plugin.mjs'
+
+# 历史思考回放裁剪（mtnode-reasoning-replay-trim）：在 llm/stream 瀑布上把除最后一条
+# assistant 消息外的 reasoning 块换成一枚极短占位块，只改发出去的请求副本 —— 会话日志、
+# UI 回显与耐久推导一律不动。思考模式每步把上一步思考原文重发一遍（实测单会话思考文本
+# 最高 309KB，重思考步每步多带 10–15K token），这里把这笔钱省掉。开关是 gateway 在 spawn
+# 时注入的 env MTNODE_TRIM_REASONING（值 = 生效的最小思考字数；缺席 / 0 / 非法 = 插件整体
+# no-op，行为与未接入时一字不变）。契约见 dsh/DESIGN.md「历史思考回放裁剪契约」。
+- id: mtnode-reasoning-replay-trim
+  name: './plugins/reasoning-replay-trim-plugin.mjs'
 
 # ── user plugins (managed from MTNode settings) ──
 # router-standard（实验性路由预设）：默认不加载；需要时可在设置中挂载，也可完整卸载。

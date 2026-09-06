@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; connect-src 'self'"><!-- 'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
 <title>MTNode AI编排器</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -100,6 +100,14 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.6v2.2H4.4A1.4 1.4 0 0 0 3 6.2v1.6h2.2v2.4H3v1.6A1.4 1.4 0 0 0 4.4 13.2h1.8v2.2h2.4v-2.2h1.6A1.4 1.4 0 0 0 11.6 11.8V10.2H9.4V7.8h2.2V6.2A1.4 1.4 0 0 0 10.2 4.8H8.6V2.6H6.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
       <span class="btn-ico-txt" data-i18n="插件">插件</span>
     </button>
+    <button type="button" id="btnTools" class="corner mini btn-ico btn-tools" data-i18n-title="工具库：打开本机已保存的工具 / 函数，插入到任意画布复用（新建这两类节点：画布空白处右键 → 工具）" data-tip="工具库：打开本机已保存的工具 / 函数，插入到任意画布复用（新建这两类节点：画布空白处右键 → 工具）" aria-label="工具库">
+      <img class="btn-app-ico" src="app-icon.png" alt="" aria-hidden="true">
+      <span class="btn-ico-txt" data-i18n="工具库">工具库</span>
+    </button>
+    <button type="button" id="btnAssets" class="corner mini btn-ico btn-assets" data-i18n-title="素材库：跨画布的本机素材仓库，按分类打包文本 / 图像 / 音频 / 视频；素材节点引用库内容，删掉画布素材仍在" data-tip="素材库：跨画布的本机素材仓库，按分类打包文本 / 图像 / 音频 / 视频；素材节点引用库内容，删掉画布素材仍在" aria-label="素材库">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4l5.4 2.8L8 8 2.6 5.2 8 2.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M2.6 8.2L8 11l5.4-2.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.6 11L8 13.8 13.4 11" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/></svg>
+      <span class="btn-ico-txt" data-i18n="素材库">素材库</span>
+    </button>
     <button id="btnStore" class="corner mini btn-ico btn-store" data-i18n-title="创意工坊：浏览 / 下载公开模板与 Skill，登录后可上传与管理自己的条目" data-tip="创意工坊：浏览 / 下载公开模板与 Skill，登录后可上传与管理自己的条目" aria-label="工坊">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 6.2L4 3.2h8l1.4 3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M3 6.2h10v6.2c0 .6-.5 1.1-1.1 1.1H4.1c-.6 0-1.1-.5-1.1-1.1V6.2z" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.2 9.2h3.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
       <span class="btn-ico-txt" data-i18n="工坊">工坊</span>
@@ -171,6 +179,9 @@
               <button type="button" class="agent-chip run-plan" id="agentRunPlanBtn" hidden data-i18n-title="关闭规划模式并按上一条计划开始实施" title="关闭规划模式并按上一条计划开始实施"><span data-i18n="▶ 执行计划">▶ 执行计划</span></button>
               <button type="button" class="agent-chip" id="agentCompactBtn" data-i18n-title="压缩上下文" title="压缩上下文"><span data-i18n="压缩">压缩</span></button>
               <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span><span class="agent-tool-val" id="agentToolsTriggerVal"></span></button>
+              <!-- 会话不再显示「本画布 / 工具库可调用工具」清单 chip：清单每轮重收集，
+                   展示它要额外打 IPC（toolsList 读盘）且对用户没有决策价值；
+                   工具照常随 run 下发给模型 func call（见 app-db.js → agentUserToolsSnapshot）。 -->
               <button type="button" class="agent-chip" id="agentPureTrigger" data-i18n-title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token" title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token"><span data-i18n="纯净模式">纯净模式</span></button>
             </div>
             <div class="agent-composer-card">
@@ -197,12 +208,9 @@
     </div>
     <div class="assist-ctrl" id="assistCtrl">
       <label class="assist-ctrl-item"><span data-i18n="预设">预设</span>
-        <select id="assistPresetSel">
-          <option value="standard" data-i18n="通用助手">通用助手</option>
-          <option value="minimal" data-i18n="精简执行">精简执行</option>
-          <option value="code" data-i18n="代码专家">代码专家</option>
-          <option value="cordis" data-i18n="Cordis 插件开发">Cordis 插件开发</option>
-        </select>
+        <!-- 档位清单不在此写死：由 app-assist.js 按 app.js 的 AGENT_PRESETS 真源生成
+             （表序 = 菜单序，第一档即默认档），避免这里自成一份漏档的旧名单。 -->
+        <select id="assistPresetSel"></select>
       </label>
       <label class="assist-ctrl-item"><span data-i18n="供应商">供应商</span>
         <select id="assistProvSel"></select>
@@ -211,8 +219,13 @@
         <select id="assistModelSel"></select>
       </label>
       <label class="assist-ctrl-item"><span data-i18n="思考强度">思考强度</span>
+        <!-- 档位 = app.js 的 AGENT_EFFORT_UI_ORDER（轻/标准/强/最强）：
+             medium 未露出（默认 deepseek 路由会把它夹到 low 静默降档）；
+             词汇表与迁移白名单已含 medium，能力查证确认可真实消费后再露出即可。 -->
         <select id="assistEffortSel">
+          <option value="low" data-i18n="轻">轻</option>
           <option value="high" data-i18n="标准">标准</option>
+          <option value="xhigh" data-i18n="强">强</option>
           <option value="max" data-i18n="最强">最强</option>
         </select>
       </label>
@@ -227,6 +240,7 @@
       <button id="assistWsOpen" class="mini btn-sq" type="button" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
       <button id="assistWsBrowse" class="mini btn-sq ws-browse" type="button" data-i18n-title="设置项目目的地文件夹" title="设置项目目的地文件夹" aria-label="设置项目目的地文件夹"></button>
     </div>
+    <!-- 「可调用工具」一行随会话侧 chip 一并撤下（助手与会话同一口径） -->
     <div class="assist-live2d" id="assistLive2d" hidden>
       <div class="assist-live2d-slot" id="assistLive2dSlot">
         <div class="assist-live2d-ph">
@@ -284,15 +298,20 @@
 <script src="i18n.js"></script>
 <script src="dsh-plugin-copy.js"></script>
 <script src="app.js"></script>
+<script src="app-codeedit.js"></script>
 <script src="app-devnode.js"></script>
 <script src="app-agent.js"></script>
+<script src="app-prompt-sections.js"></script>
 <script src="app-db.js"></script>
 <script src="app-nodeview.js"></script>
 <script src="app-canvas.js"></script>
+<script src="js-exec.js"></script>
 <script src="app-nodes.js"></script>
 <script src="app-rollback.js"></script>
 <script src="app-store.js"></script>
 <script src="app-plugins.js"></script>
+<script src="app-tools.js"></script>
+<script src="app-assets.js"></script>
 <script src="app-settings.js"></script>
 <script src="app-assist.js"></script>
 <script src="app-plan.js"></script>

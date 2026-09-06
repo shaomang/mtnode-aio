@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>隐私政策 · MTNode AI 编排器</title>
+<meta name="description" content="MTNode（mtnode-aio）隐私政策：工作流、配置与 API Key 只存本机 %APPDATA%\pipeline-console；应用不内置遥测、埋点与广告 SDK；说明与 AI 服务商 API、mt-agent.com 各项服务之间的数据传输、服务器日志、保留期限与删除方式。">
+<meta name="robots" content="index, follow">
+<style>
+:root{
+  --bg:#0d1016; --bg2:#12161f; --panel:#161b25; --panel2:#1b2230;
+  --bd:#2a3342; --bd2:#39465c; --ink:#d8dee8; --muted:#7f8a9c;
+  --orange:#ff8f2e; --orange2:#ffb066; --cyan:#38d6ff; --cyan2:#7ce8ff;
+  --green:#5fd68a; --red:#ff5f56; --code:#0c0f15;
+  --mono:'Consolas','Cascadia Code','JetBrains Mono',monospace;
+  --sans:'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.8}
+::selection{background:rgba(255,143,46,.35)}
+a{color:var(--cyan);text-decoration:none}
+a:hover{color:#fff;text-decoration:underline}
+.wrap{max-width:980px;margin:0 auto;padding:0 20px}
+.topbar{
+  position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;
+  padding:10px 20px;background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border-bottom:3px solid var(--bd);
+}
+.logo{display:flex;align-items:center;gap:10px;flex:none}
+.logo-mark{
+  width:28px;height:28px;position:relative;flex:none;
+  background:linear-gradient(135deg,var(--panel2),#0f1320);
+  border:2px solid var(--orange);
+}
+.logo-mark::before,.logo-mark::after{content:"";position:absolute;background:var(--cyan);width:5px;height:5px}
+.logo-mark::before{top:3px;left:3px}
+.logo-mark::after{bottom:3px;right:3px}
+.logo-txt{font-weight:800;letter-spacing:2px;font-size:15px;color:var(--orange);line-height:1.15}
+.logo-sub{display:block;font-size:9px;letter-spacing:2px;color:var(--muted);font-weight:400}
+.nav{display:flex;flex-wrap:wrap;gap:4px 14px;flex:1;justify-content:flex-end}
+.nav a{color:var(--muted);font-size:12px;letter-spacing:1px;font-weight:600}
+.nav a:hover{color:var(--orange2);text-decoration:none}
+
+section{padding:8px 0 6px}
+h1{font-size:30px;font-weight:800;letter-spacing:4px;margin:26px 0 8px}
+h1 b{color:var(--orange)}
+h2{font-size:17px;letter-spacing:3px;margin:28px 0 12px;color:var(--ink)}
+h2::before{content:"■ ";color:var(--orange);font-size:12px;vertical-align:1px}
+h3{font-size:14px;letter-spacing:1px;margin:16px 0 6px;color:var(--orange2)}
+p{margin:8px 0;color:var(--ink)}
+.muted{color:var(--muted);font-size:13px}
+code{font-family:var(--mono);font-size:12px;background:rgba(0,0,0,.45);border:1px solid var(--bd);border-radius:3px;padding:1px 6px;color:var(--cyan2);word-break:break-all}
+ul{margin:8px 0 8px 22px;color:var(--ink)}
+li{margin:5px 0}
+b.hl{color:var(--orange2)}
+.lead{font-size:15px;max-width:820px}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 6px}
+.pill{
+  font-size:11px;letter-spacing:1px;color:var(--cyan2);font-family:var(--mono);
+  border:1px solid var(--bd2);border-radius:3px;padding:2px 9px;background:rgba(0,0,0,.25);
+}
+.pill.accent{border-color:var(--orange);color:var(--orange2)}
+
+.tl{width:100%;border-collapse:collapse;margin:12px 0 6px;font-size:13px}
+.tl th,.tl td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top;line-height:1.7}
+.tl th{background:var(--panel2);color:var(--orange2);letter-spacing:1px;font-weight:700;white-space:nowrap}
+.tl td:first-child{color:var(--ink);font-weight:600;width:170px}
+.tl tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:12px 0 8px}
+.card{border:1px solid var(--bd);border-radius:5px;padding:14px 16px;background:var(--panel)}
+.card h3{margin:0 0 6px;font-size:13.5px;letter-spacing:1px;color:var(--ink)}
+.card h3 b{color:var(--orange)}
+.card p{margin:4px 0 0;font-size:13px;color:var(--muted)}
+
+.note{
+  border:1.5px solid var(--orange);border-radius:6px;padding:16px 20px;margin:18px 0 10px;
+  background:linear-gradient(180deg,#221a12,#171310);box-shadow:0 8px 30px rgba(0,0,0,.4);
+}
+.note h3{margin:0 0 6px;color:var(--orange2);font-size:14px;letter-spacing:2px}
+.note p{font-size:13.5px;margin:6px 0}
+.note.warn{border-color:var(--bd2);background:linear-gradient(180deg,var(--panel),var(--bg2))}
+.note.warn h3{color:var(--cyan2)}
+
+footer{
+  margin-top:44px;padding:16px 20px;background:var(--panel2);border-top:3px solid var(--bd);
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  font-size:11.5px;letter-spacing:1px;color:var(--muted);font-family:var(--mono);
+}
+footer .spacer{flex:1}
+footer a.author{color:var(--cyan);font-weight:700;border:1px solid var(--bd2);border-radius:3px;padding:1px 8px}
+footer a.author:hover{color:#fff;border-color:var(--cyan)}
+
+@media (max-width:760px){
+  .nav{display:none}
+  .grid{grid-template-columns:1fr}
+  h1{font-size:24px;letter-spacing:2px}
+  .tl td:first-child{width:auto}
+  .note{padding:14px}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">
+    <span class="logo-mark"></span>
+    <span class="logo-txt">MTNode<span class="logo-sub">PRIVACY POLICY</span></span>
+  </div>
+  <nav class="nav">
+    <a href="#scope">适用范围</a>
+    <a href="#local">本机数据</a>
+    <a href="#provider">服务商 API</a>
+    <a href="#server">mt-agent.com</a>
+    <a href="#delete">保留与删除</a>
+    <a href="#contact">联系我们</a>
+    <a href="../">下载页</a>
+  </nav>
+</header>
+
+<main class="wrap">
+<section class="hero">
+  <h1>MTNode <b>隐私政策</b></h1>
+  <p class="lead">本页面说明 MTNode AI 编排器（下称「本应用」）及其配套在线服务在你的电脑上、以及在网络传输中会处理哪些信息、为什么处理、保留多久、以及如何删除。全文只用日常语言，不含法律黑话；每一条「收集 / 不收集 / 传输 / 保留」的表述都以本项目的源码与服务器实测记录为依据。</p>
+  <div class="pills">
+    <span class="pill accent">生效日期：2026-09-04</span>
+    <span class="pill">政策版本 v1.0</span>
+    <span class="pill">无遥测 · 无埋点 · 无广告</span>
+    <span class="pill">API Key 只存本机</span>
+    <span class="pill">MIT 开源</span>
+  </div>
+</section>
+
+<section id="scope">
+  <h2>1. 适用范围与生效日期</h2>
+  <p>本政策适用于：① 本应用的 Windows 桌面端（下载页提供的 NSIS 安装包，以及 Microsoft Store 的 MSIX 版本）；② 由本项目运营的配套在线服务 <code>mt-agent.com</code>，包括应用内自动更新、应用插件目录、扩展目录（插件 / 技能 / MCP）、创意工坊（模板与技能分享）、讨论区、桌宠与本地后端的安装包下发；③ 本隐私政策页面本身。</p>
+  <p>本政策<b class="hl">不适用</b>于：你在「设置 · 服务商」里自行配置并自行计费付费的第三方 AI 服务商 API、你自行添加的 MCP 服务器、以及安装本地后端时下载依赖与模型所来自的第三方站点（PyPI 镜像、ModelScope、Hugging Face 及其镜像、npm registry、GitHub、阿里云 OSS 等）。这些对象各自的隐私条款由它们自己发布和约束，请一并阅读。</p>
+  <p>本政策自 <b class="hl">2026-09-04</b> 起生效。继续版本更新后继续使用本应用，即表示你接受当时生效的最新版本；重大变更会在下方第 14 节登记。</p>
+</section>
+
+<section id="summary">
+  <h2>2. 一句话结论</h2>
+  <div class="note">
+    <h3>结论</h3>
+    <p>本应用<b class="hl">不需要注册账号</b>就能使用（账号只在「创意工坊」上传/点赞和「讨论区」发帖时才需要，属于可选项）；应用内<b class="hl">不内置遥测、埋点、广告 SDK 或第三方统计脚本</b>；你的画布、素材、配置与 API Key <b class="hl">全部留在本机</b>；只有在你自己点击「运行」的时候，提示词与输入内容才会发往<b class="hl">你自己配置</b>的模型服务商。</p>
+  </div>
+  <p>同时有三点必须如实说明，它们与「不收集」并不矛盾，但确实涉及你的数据或本机权限：</p>
+  <ul>
+    <li>运行节点、发起对话、检查更新、浏览商店与安装后端，都会向对应服务器发出网络请求；<code>mt-agent.com</code> 的 Web 服务会记录访问日志（含 IP 与 User-Agent）。</li>
+    <li><code>mt-agent.com</code> 当前仅提供 <b class="hl">HTTP（80 端口）</b>访问，未启用 HTTPS。对第三方服务商的访问是否加密，由你配置的地址决定（内置的 DeepSeek 官方端点默认为 <code>https://api.deepseek.com</code>）。</li>
+    <li>Agent 网关按授权可以在<b class="hl">本机读写文件、执行命令</b>（第 8 节）。这是应用的核心功能，不是信息收集，但它会让被读到的文件内容进入你选择的模型服务商的请求里。</li>
+  </ul>
+</section>
+
+<section id="local">
+  <h2>3. 我们处理哪些数据：留在本机的部分</h2>
+  <p>本应用的所有用户数据都写在 Electron 的用户数据目录下，默认是 <code>%APPDATA%\pipeline-console\</code>（应用数据在其下的 <code>pipeline-console\</code> 子目录）。你可以在「设置」里改「配置数据目录」，此时只有指针文件 <code>data-root.json</code> 留在原处。这些数据<b class="hl">不会</b>被自动上传到任何服务器。</p>
+  <table class="tl">
+    <tr><th>内容</th><th>是什么 / 在哪里</th></tr>
+    <tr><td>工作流与素材</td><td>画布 JSON（<code>save/&lt;id&gt;.json</code>：节点提示词、输入文本、参数、@引用）与拖入图片的原文件副本（<code>assets/&lt;工作流id&gt;/</code>）。</td></tr>
+    <tr><td>快照与回收站</td><td>定时快照 <code>save-backups/</code>（每 5 分钟一次、仅在源文件变化时复制，每条工作流保留最近 72 份，约 6 小时）；删除画布时整体搬入 <code>trash/</code>。</td></tr>
+    <tr><td>配置与 API Key</td><td><code>config.json</code> 保存服务商列表、<b class="hl">API Key（明文存在本机文件里）</b>、创意工坊登录令牌、在线源列表、语言与主题等；每次改动服务商配置前会先写一份历史副本到 <code>config-backups/</code>（最近 30 份）。<b class="hl">API Key 只保存在这台电脑上</b>，仅随请求发往你为它配置的那家服务商，绝不上传到 <code>mt-agent.com</code>。</td></tr>
+    <tr><td>事实库</td><td>数据库超级节点的记录（SQLite + FTS5），来自你在画布建表与录入的事实条目及其引用的本机文件路径。</td></tr>
+    <tr><td>Agent 会话与回滚</td><td><code>dsh-home/sessions/</code>（对话正文与工具调用结果的 JSONL）、<code>dsh-home/rollback/</code>（Agent 改写文件前的原内容副本）、<code>dsh-home/attachments/</code>（带图会话的图像附件）。其中可能包含 Agent 读到的本机文件内容片段。</td></tr>
+    <tr><td>引擎设置</td><td><code>dsh-home/settings.yaml</code>：服务商路由名、<code>baseURL</code>、思考档、权限预设等；密钥<b class="hl">只写环境变量名</b>（如 <code>MTNODE_KEY_1</code>），运行时经进程环境变量注入，不写密钥值。</td></tr>
+    <tr><td>匿名标识文件</td><td><code>dsh-home/.anonymous-user-id</code>：首次模型请求前由本机生成的随机 UUID v4（一行裸值）。它不含姓名、邮箱或任何硬件信息，<b class="hl">不由服务器下发</b>，本项目也无法用它关联到自然人。唯一用途见第 4 节。</td></tr>
+    <tr><td>插件与缓存</td><td>已安装的应用插件及其自存数据 <code>app-plugins/</code>；讨论区消息与图片缓存 <code>forum/</code>；创意工坊预览图与模板包缓存 <code>store-cache/</code>。</td></tr>
+    <tr><td>日志</td><td><code>error.log</code>、<code>logs/error.log</code>（4MB 滚动）、<code>dsh.log</code>；详见第 9 节。</td></tr>
+    <tr><td>运行环境自带存储</td><td>Electron / Chromium 自行维护的 <code>Cache</code>、<code>Local Storage</code>、<code>IndexedDB</code>、<code>Preferences</code> 等渲染缓存与网络状态文件，位于同一数据根目录。</td></tr>
+    <tr><td>本地后端与模型</td><td>Music3 / H3 / TTS / llama / Remotion 等后端的模型权重与 Python/Node 依赖，落在数据目录下的同名子目录以及你选择的安装目录。<b class="hl">这些文件不含你的用户数据</b>。</td></tr>
+  </table>
+  <p class="muted">以下信息我们<b class="hl">不采集</b>：不申请摄像头、麦克风、屏幕与地理位置权限；不读取网卡 MAC、主机名、硬件序列号、Windows 账户名或 <code>MachineGuid</code> 等设备标识；不加载任何第三方 CDN、字体或统计脚本；不内置遥测与埋点上报（框架自带的 OTLP 遥测组件在安装包内已被摘除且未挂载）。</p>
+</section>
+
+<section id="provider">
+  <h2>4. 我们处理哪些数据：发往 AI 服务商 API 的部分</h2>
+  <p>运行文本 / 图像 / 智能节点或发起助手对话时，本应用会把该次请求所需的内容发送给<b class="hl">你在「设置 · 服务商」里自行配置、自行向服务商计费付费</b>的接口地址（内置默认为 <code>https://api.deepseek.com</code>）。请求一律由主进程或网关子进程发出，界面页面本身无法直连外网。发送内容包含：</p>
+  <ul>
+    <li>你写的提示词与系统 / 人设提示；被 @引用进这次请求的节点正文；用户上传并被引用进节点的图像内容。</li>
+    <li>Agent 会话中，被授权读取的本机文件内容与命令输出，会作为工具结果回流进下一轮模型请求。</li>
+    <li>请求头 <code>User-Agent: deepseek-harness/&lt;版本&gt;</code>：框架强制发送的应用归因标识，不含个人信息。</li>
+    <li>走 DeepSeek 官方路由时另附 HTTP 头 <code>x-deepseek-harness-user-id</code>（即本机生成的随机匿名 UUID，见第 3 节），有会话时另发 <code>x-deepseek-harness-session-id</code>。两者只出现在请求头里，不写进请求正文，模型不可见。</li>
+    <li>联网搜索的查询词：搜索提供方固定为 DeepSeek 官方，只认你自己的 DeepSeek Key。</li>
+    <li>你自行添加的 MCP 服务器：stdio 型为本机进程；remote 型会按你填写的任意 URL 连接，工具调用的入参出参会发往该地址。</li>
+  </ul>
+  <p class="muted">换句话说：内容流向哪家服务商、按什么条款处理，完全由你在设置里配置什么地址、用什么 Key 决定。我们不提供中转，也不替你保存这些请求的副本（第 3 节的本机会话记录除外）。</p>
+</section>
+
+<section id="server">
+  <h2>5. 访问 mt-agent.com 的用途与数据</h2>
+  <p>以下是本应用会向本项目自有服务器发请求的全部场景。请求都<b class="hl">由你的动作触发</b>（打开面板、点检查更新、点安装、发帖、上传），并携带固定的应用标识 UA（如 <code>MTNodeAIO/1.1</code>），<b class="hl">不附带姓名、邮箱、设备号或画布内容</b>；例外在本表内注明。</p>
+  <table class="tl">
+    <tr><th>用途</th><th>地址与发送内容</th></tr>
+    <tr><td>应用内自动更新</td><td><code>http://mt-agent.com/mtnode/updates</code> —— 仅对 <code>latest.yml</code> 等元数据与差分包的 GET 请求。打包版启动 8 秒后检查一次，此后每 6 小时一次，以及你手动点「检查更新」。<b class="hl">Microsoft Store（MSIX）版整条更新链关闭</b>，不加载更新器、不设更新源。</td></tr>
+    <tr><td>应用插件目录</td><td><code>/mtnode/plugins/catalog.json</code> 及目录内的 zip：GET 列表与下载包，无用户数据。</td></tr>
+    <tr><td>扩展目录（插件 / 技能 / MCP 官方源）</td><td><code>/mtnode/ext/catalog.json</code> 及其 <code>.tgz</code> 资产：GET 请求，无用户数据。</td></tr>
+    <tr><td>本地后端与桌宠安装包</td><td><code>/mtnode/music3</code>、<code>/mtnode/h3</code>、<code>/mtnode/pet</code>：GET 清单与包文件，在你点安装或检查后端更新时发生。</td></tr>
+    <tr><td>创意工坊（商店）API</td><td><code>http://mt-agent.com/mtnode/store-api</code>，详见第 6 节。</td></tr>
+    <tr><td>「在线浏览」取回</td><td>你在画布 / 设置里填写的任意 http(s) 地址，由主进程代取，携带固定应用 UA。</td></tr>
+  </table>
+  <h3>服务器侧的访问日志</h3>
+  <p><code>mt-agent.com</code> 的 nginx 对<b class="hl">所有</b>请求开启访问日志（默认 combined 格式，没有任何路径关闭日志）。记录的字段为：<b class="hl">客户端 IP</b>、时间戳、完整请求行（方法 + 含查询串的路径）、状态码、响应字节、<code>Referer</code>、<b class="hl">User-Agent</b>；反代到商店服务的路由另外把 <code>X-Real-IP</code> / <code>X-Forwarded-For</code> 传给后端。日志按天轮转并压缩，保留约 14 天后自动删除。</p>
+  <p>商店服务自身<b class="hl">没有逐请求日志</b>，只输出启动行与保存失败记录；其数据文件里<b class="hl">不存在邮箱、电话、IP 字段</b>（IP 只出现在上述 nginx 访问日志中）。</p>
+  <p>当下载 / 更新请求未被本机路由命中时，会转发到阿里云 OSS（<code>mtnode-download.oss-cn-beijing.aliyuncs.com</code>）；OSS 侧日志由阿里云按其条款记录，不在本项目控制范围内。</p>
+  <div class="note warn">
+    <h3>关于传输加密</h3>
+    <p>本项目的云服务器当前<b class="hl">只监听 80 端口（明文 HTTP），未配置 443 与证书</b>。因此访问更新源、商店、讨论区与下载包时，请求内容在网络上是明文可达的。请勿在商店注册时复用你在别处使用过的密码。第三方服务商是否走 HTTPS 由你配置的地址决定。</p>
+  </div>
+</section>
+
+<section id="store">
+  <h2>6. 创意工坊与讨论区：主动上传即公开内容</h2>
+  <p>使用本应用不需要任何账号；只有「创意工坊」的上传 / 点赞与「讨论区」的发帖需要账号，且完全可选。</p>
+  <ul>
+    <li><b class="hl">注册只要三样</b>：用户名（3–24 位字母数字下划线）、密码（6–72 位，服务端以 scrypt + 随机盐哈希存储，<b class="hl">不留明文</b>）、昵称（1–32 位）。<b class="hl">不采集邮箱与手机号</b>。登录令牌保存在本机 <code>config.json</code>，后续请求以 <code>Authorization: Bearer &lt;token&gt;</code> 携带。</li>
+    <li><b class="hl">上传的模板与预览图是公开内容</b>：当你把画布（<code>.mtnodes</code>）或技能（<code>SKILL.md</code> 及附件）上传到创意工坊，其标题、描述、标签、预览图与画布正文会向所有用户展示，可被下载。上传前应用会<b class="hl">主动清空其中的本机工作目录字段</b>（工作流与节点里的工作区路径置空）以避免泄漏本地路径；但<b class="hl">画布正文本身（你写的提示词、参数、素材副本）会按你的意愿公开</b>。请在上传前自行检查，不要上传包含私密内容、密钥或内部资料的画布。</li>
+    <li><b class="hl">可自行请求删除</b>：模板与技能可由作者本人（或管理员）在商店里删除 —— 删除记录会同时清掉点赞关系、文件与预览图；下载计数随之消失。若你在应用内找不到入口，或希望删除账号、昵称与其他公开内容，请按第 15 节联系我们提出请求（服务端目前<b class="hl">没有自助注销接口</b>，需人工执行）。</li>
+    <li><b class="hl">讨论区</b>：发帖内容为房间（general / bug / improve）、消息文本（≤2000 字）与可选图片（本机先压缩到最长边 ≤1080px、JPEG ≤3MB 再上传）；读取时附带客户端时区偏移 <code>tzOffset</code>（分钟数，仅用于按天分桶显示）。消息保留 30 天后自动过期（连带删除其图片）；单条消息目前没有自助删除入口，可按第 15 节请求删除。</li>
+  </ul>
+</section>
+
+<section id="backend">
+  <h2>7. 本地后端：安装会下载依赖与模型</h2>
+  <p>音乐、视频、语音与本地大模型等后端（Music3 / H3 / GPT-SoVITS / llama.cpp / Remotion）需要你主动点「安装」。安装过程会从第三方站点下载 Python / Node 依赖与模型权重，这些请求会带上你的客户端 IP 与 UA；下载到的内容不含你的任何数据，其使用与隐私约束由对应第三方条款管辖：</p>
+  <ul>
+    <li>依赖包：PyPI 国内镜像（清华 / 阿里云）、<code>download.pytorch.org</code>、<code>mirrors.aliyun.com/pytorch-wheels</code>、npm registry、以及你安装 DSH 插件 / Remotion 时涉及的 GitHub 仓库地址。</li>
+    <li>模型权重：ModelScope（魔搭）<code>modelscope.cn</code>、镜像站 <code>hf-mirror.com</code>，必要时 <code>huggingface.co</code>。</li>
+    <li>在「扩展能力管理」里在线浏览插件 / 技能 / MCP 时，还会向默认在线源 <code>registry.npmmirror.com</code> 与 <code>data.jsdelivr.com</code> 发检索请求，其中<b class="hl">包含你在搜索框输入的关键词</b>。</li>
+  </ul>
+  <p class="muted">这些在线源可以在设置里增删；不使用「安装」与「在线浏览」，就不会发生上述请求。</p>
+</section>
+
+<section id="agent">
+  <h2>8. Agent 网关：在本机读写文件、执行命令（属功能，不属收集）</h2>
+  <p>本应用的智能节点与助手可以在授权范围内<b class="hl">读取和写入本机文件、执行命令</b>。这件事必须讲清楚三点：</p>
+  <ul>
+    <li><b class="hl">它是功能，不是信息收集。</b>Agent 改文件前会把原内容副本写进本机回滚目录（<code>dsh-home/rollback/</code>），命令输出与会话正文也只写本机（<code>dsh-home/sessions/</code>）。</li>
+    <li><b class="hl">授权由 Agent 预设决定。</b>权限预设可在设置里选择，默认运行在无人值守预设；「纯净模式」会剥掉全部提示与工具、只保留联网搜索。工具是否可读写文件 / 跑命令，取决于你选的预设与具体批准。</li>
+    <li><b class="hl">数据流向见第 4 节。</b>Agent 读到的文件内容会作为工具结果发往你为该会话选定的模型服务商 —— 请不要在包含机密文件的目录下授予文件与命令权限。</li>
+  </ul>
+  <p>另外两处同类「本机功能，但值得你知道」的：</p>
+  <ul>
+    <li><b class="hl">桌宠插件的全局输入监听</b>：启用桌宠时它会注册系统级键盘与鼠标钩子，但只把<b class="hl">按键名与鼠标坐标</b>发给桌宠自己的窗口做动画反应，全部留在本机进程内，<b class="hl">不写盘、不出网</b>；不需要时停用或卸载该插件即可。</li>
+    <li><b class="hl">「网络接收」节点监听 <code>0.0.0.0</code></b>：运行该节点会在你填写的端口（TCP / UDP）上监听本机全部网卡，局域网内的其他设备可以连入并推送数据。这是你自己开设的数据入口，收发内容<b class="hl">不经过任何服务器</b>；不用的时候请停止运行该节点。</li>
+  </ul>
+</section>
+
+<section id="crash">
+  <h2>9. 崩溃与诊断报告：只写本机，需你手动导出</h2>
+  <p>出现异常时，本应用把错误栈与环境信息追加写入本机日志（<code>logs/error.log</code> 等）与崩溃报告目录（<code>logs/crash-reports/</code>，保留最近 30 份）。环境块包含版本号、Electron / Chrome / Node 版本、平台与系统版本、架构、界面语言、可执行文件路径、数据目录与工作目录。这些信息<b class="hl">永不自动上传</b>：崩溃弹窗只提供「导出诊断日志…／打开日志文件夹／关闭」三个本机动作。</p>
+  <p>只有在你主动点击「导出诊断日志」、并在另存为对话框里选定路径之后（默认落在桌面），才会生成一个 <code>MTNode-diagnostic-*.txt</code> 文件；它由日志尾部与环境块拼成，文件头部两行显式声明 <code>note: API keys and secrets are NOT included.</code> —— 即不收集 API Key 与密钥。<b class="hl">这份文件在你自己转发给别人之前，始终只在你电脑上。</b></p>
+  <p class="muted">请注意一个边界：日志尾部是<b class="hl">你自己产生的文本片段</b>（工作流正文、报错消息、命令行输出），而环境块里的路径可能带 Windows 用户名。若你把导出的诊断文件提交给 GitHub Issue 或发给他人，这些信息就会随你的人工动作离开本机 —— 提交前请自行检查并删去不想公开的内容。</p>
+</section>
+
+<section id="cookie">
+  <h2>10. Cookie 与同类技术</h2>
+  <p><b class="hl">本应用不使用 Cookie。</b>它是桌面程序，不通过 Cookie 或同类技术（如本地共享对象、像素追踪）识别用户或投放广告；界面不加载任何第三方脚本与外链资源，网络请求由主进程发出。创意工坊的登录状态依靠保存在本机 <code>config.json</code> 里的 Bearer 令牌（见第 6 节），不是 Cookie。本隐私政策页面是纯静态单文件，不含脚本、不含统计代码，也不向浏览器写入 Cookie。</p>
+  <p class="muted">唯一与浏览器存储相关的部分，是 Electron / Chromium 运行时自行维护的本机渲染缓存（见第 3 节表格里的「运行环境自带存储」一行），它们不离开这台电脑。</p>
+</section>
+
+<section id="share">
+  <h2>11. 不出售、不共享</h2>
+  <p>我们<b class="hl">不向任何第三方出售或共享你的个人信息</b>。本项目的自有服务器与随包代码中不存在把用户数据转给第三方的通路。除以下两类外，不存在任何自动转发：</p>
+  <ul>
+    <li>第 4 节所列<b class="hl">由你自己选择并计费的服务商</b>，以及<b class="hl">你自己配置的地址</b>（含 MCP、在线浏览目标、依赖与模型的下载源）。</li>
+    <li>你在创意工坊 / 讨论区<b class="hl">主动公开投稿</b>的内容 —— 一经发布即对所有用户可见。</li>
+  </ul>
+  <p>在法律要求的情形下（司法机关或行政机关依法定程序提出的要求、或为应对涉及本项目的诉讼与争议所必需的披露），我们可能披露必要范围的信息；届时会在法律允许的范围内告知你。这是本节唯一的一般性例外。</p>
+</section>
+
+<section id="delete">
+  <h2>12. 数据保留与删除</h2>
+  <h3>本机侧：删除目录即可彻底清除</h3>
+  <p>退出应用后，删除数据根目录 <code>%APPDATA%\pipeline-console\</code>（或你在设置里改指的目录），即一次性清除全部工作流、素材、快照与回收站、配置与 API Key、事实库、Agent 会话记录与回滚副本、日志与缓存。<b class="hl">Microsoft Store（MSIX）版同样适用本方式</b>：本项目没有额外把用户数据写进注册表或其他系统位置。你也可以在应用内按需删除单条工作流（进回收站）、清空某个插件的 <code>app-plugins/&lt;插件id&gt;/</code> 数据，或只删 <code>config.json</code> 里的 Key 字段。</p>
+  <h3>服务器侧（mt-agent.com）</h3>
+  <table class="tl">
+    <tr><th>数据</th><th>保留期</th><th>删除方式</th></tr>
+    <tr><td>账号（用户名 / 昵称 / 口令哈希与盐）</td><td>直到被删除（服务端无到期自动清理）</td><td><b class="hl">无自助注销入口</b>：服务端仅提供注册 / 登录 / 改密 / 登出 / 个人信息 / 我的模板，无账号删除端点 —— 请按第 15 节提出请求，由开发者人工删除。</td></tr>
+    <tr><td>登录令牌</td><td>30 天；同账号再次登录会作废此前的会话</td><td>过期自动失效；「退出登录」（<code>/api/logout</code>）即时删除该令牌。</td></tr>
+    <tr><td>已上传的模板 / 技能（文件、预览图、元数据）</td><td>直到被删除</td><td>作者本人或管理员删除条目：同时删除记录、点赞关系、包文件与预览图。</td></tr>
+    <tr><td>讨论区消息与图片</td><td><b class="hl">30 天</b>自动过期</td><td>服务端在读写前清理超期消息并删除其图片文件；单条消息的自助删除入口目前没有，可向我们请求。</td></tr>
+    <tr><td>nginx 访问日志（含 IP / UA / 请求路径）</td><td>约 14 天（按天轮转 + 保留 14 份 + 压缩）</td><td>到期自动删除，无需申请。</td></tr>
+    <tr><td>下载计数等统计</td><td>与所属模板同寿命</td><td>随模板删除。</td></tr>
+  </table>
+</section>
+
+<section id="minors">
+  <h2>13. 未成年人</h2>
+  <p>本应用是面向<b class="hl">成人与专业用户</b>的工作流编排与内容生产工具，不提供面向未成年人的功能，也没有年龄验证机制。我们不以未成年人作为目标受众，也不会在知情情况下收集未成年人的个人信息。未成年人使用需在监护人指导下进行；如果你认为我们在知情情况下收集了未成年人的信息，请按第 15 节联系我们，我们会核实并删除。</p>
+</section>
+
+<section id="changes">
+  <h2>14. 政策变更与版本记录</h2>
+  <p>当本应用的出网行为、服务器保留策略或权限模型发生变化时，我们会先更新内部事实清单，再更新本页，并在此登记版本与变更要点。继续使用新版本应用即视为接受生效中的新版本政策；变更幅度较大时，我们会在下载页与应用内一并提示。</p>
+  <table class="tl">
+    <tr><th>版本</th><th>日期</th><th>变更</th></tr>
+    <tr><td>v1.0</td><td>2026-09-04</td><td>首次发布中文隐私政策页。</td></tr>
+  </table>
+</section>
+
+<section id="contact">
+  <h2>15. 联系方式</h2>
+  <p>关于本政策的疑问、行使删除请求（注销账号、删除公开投稿、删除单条讨论区消息）、或希望我们澄清某条数据处理，请通过<b class="hl">唯一公开渠道</b>联系我们：</p>
+  <p><a href="https://github.com/shaomang/mtnode-aio/issues" target="_blank" rel="noopener">GitHub Issues · shaomang/mtnode-aio</a></p>
+  <p class="muted">本项目未发布任何邮箱地址，也不通过邮件处理请求 —— 请直接在 Issue 中说明你使用的版本号与具体诉求。为保护你的隐私，提交时请不要粘贴完整的诊断日志或画布文件，除非你确认其中不含敏感内容。</p>
+</section>
+
+<p class="muted" style="margin:26px 0 0">本页为中文原版。若你阅读的是译文，请以语义一致为准理解本政策；英文版见 <a href="./en/">English Privacy Policy</a>。</p>
+</main>
+
+<footer>
+  <span>MTNode AI 编排器 · 隐私政策 · v1.0 / 2026-09-04</span>
+  <span class="spacer"></span>
+  <a class="author" href="./en/">English</a>
+  <a class="author" href="../">下载页</a>
+  <a class="author" href="https://github.com/shaomang/mtnode-aio/issues">GitHub Issues</a>
+</footer>
+
+</body>
+</html>

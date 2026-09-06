@@ -11,6 +11,7 @@ For large graphs, pack clusters with [Super nodes](#super-nodes), or select node
 ## Ports and wires
 
 - Drag **output** (right) to **input** (left). Loops are rejected.
+- **Release on empty canvas = create and connect in place.** Drag out from an output port and let go over blank canvas (also inside an expanded super node): a menu opens at that spot listing only the node types this wire can really connect into (an image wire will not offer text-only nodes such as Minimax Music 3). Pick one — the node is created there and wired into its input. `Esc` or a click elsewhere cancels; dropping onto another node's card does not open the menu.
 - **Port text always sits outside the node**: input-side labels (`P` / `L`, gate numbers, `Control`…) to the left, output-side labels (`Content` / `Control`, numbers…) to the right, on the same line as their port — ports are only 12 px apart, so text above a port would hide its neighbours.
 - Nodes start with one input; a new idle port often appears after you connect.
 - **Control wires are gold**—pulses only (timer, gate, run/clear), not data.
