@@ -156,7 +156,10 @@
   name: '@deepseek-ai/dsh-sandbox-local'
   config:
     # win32 console-flash workaround: noop runner (see gateway.mjs applySandboxWorkaround)
-    runnerCommand: ["C:\\nvm4w\\nodejs\\node.exe", "E:\\dev\\tools\\pipeline-console\\dsh\\gateway\\noop-runner.cjs"]
+    # Placeholder values only — at first launch on win32 the gateway rewrites this
+    # block to [process.execPath, <gateway dir>/noop-runner.cjs] (applySandboxWorkaround).
+    # Keeping a neutral placeholder avoids shipping developer-machine paths in the repo.
+    runnerCommand: ["node.exe", "./noop-runner.cjs"]
     runnerFailureSignatures: ['noop-runner:']
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
