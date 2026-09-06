@@ -234,6 +234,7 @@ const catalog = {
       title: { zh: "节点", en: "Nodes" },
       pages: [
         { id: "io-proc", title: { zh: "输入 / 处理 / 保存", en: "Input / process / save" } },
+        { id: "asset-library", title: { zh: "素材库与素材节点", en: "Asset library & asset nodes" } },
         { id: "task-chat", title: { zh: "任务与对话", en: "Tasks and chat" } },
         { id: "agent-nodes", title: { zh: "智能任务与智能会话", en: "Agent task & session" } },
         { id: "node-guide", title: { zh: "节点指南", en: "Node guides" } },
@@ -544,7 +545,13 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 
 ## 智能会话
 
-顶栏切换到「智能会话」：多会话、按工作目录分组、归档、分支、斜杠命令（输入 \`/\` 呼出技能与 \`/new\` \`/compact\` \`/plan\` \`/help\` 等）。除读写文件、联网、命令外，还可以查看并修改当前画布。
+顶栏切换到「智能会话」：多会话、按工作目录分组、归档、分支、斜杠命令（输入 \`/\` 呼出技能与 \`/new\` \`/compact\` \`/plan\` \`/help\` 等）。除读写文件、联网、命令外，还可以查看并修改**本会话所属的那张画布**。
+
+### 会话属于哪张画布
+
+会话在**建立的那一刻**就认下一张画布：你当时正看着哪张，它日后就读写哪张；在开发节点上点「开发 / 细化 / 问询」建的会话，所属画布就是那个功能块所在的画布。之后**你可以随意切去其他画布继续干活**，会话本轮的读写图、工作目录、数据库接地全部精准落在它自己那张图上，**不会串到你此刻正看着的画布**，也不会误改、误删你正在编辑的那张。侧栏每条会话标题下的 ▣ 与悬浮说明写的就是它的所属画布（该画布已删除会标出来）。
+
+会话**不跨画布**读写：要参考或切换其他画布，用画布右侧的**全局助手**（✦），并把它的「工作范围」切到「全局」。
 
 ## 运行中：思考与输出分开显示
 
@@ -554,7 +561,7 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 
 ## 让助手搭工作流
 
-在**智能会话**或全局助手里说「实现 xxx 的工作流」，模型会在当前画布**创建节点、改标题、连线、写 @引用**并自动排版。你再改提示词与保存路径后点 ▶。画布上的智能节点不会改图。
+在**智能会话**或全局助手里说「实现 xxx 的工作流」，模型会在**它自己那张画布**上**创建节点、改标题、连线、写 @引用**并自动排版（会话 = 所属画布；右侧助手 = 你正看着的这张）。你再改提示词与保存路径后点 ▶。画布上的智能节点不会改图。
 
 全局助手（画布右侧 ✦）也能看状态、搭图，但改画布会先确认。**文档答疑助手不会改画布。**
 `,
@@ -584,7 +591,13 @@ An agent node **cannot** read or edit the canvas, change workflows, or create ta
 
 ## Agent session
 
-Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type \`/\` for skills and \`/new\` \`/compact\` \`/plan\` \`/help\`). Besides files / network / commands, it can inspect and edit the current canvas.
+Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type \`/\` for skills and \`/new\` \`/compact\` \`/plan\` \`/help\`). Besides files / network / commands, it can inspect and edit **the canvas the session belongs to**.
+
+### Which canvas does a session belong to?
+
+A session adopts its canvas **the moment it is created**: whichever canvas you are looking at then, and for sessions started from a dev node's 开发 / 细化 / 问询 button, the canvas that feature block lives on. From then on **you are free to switch to other canvases and keep working** — that session's graph reads/writes, working directory and database grounding all land precisely on **its own** canvas, never on the one now on your screen, so it can't overwrite or delete what you are editing. The ▣ under each session title (and its tooltip) shows which canvas it owns (marked as deleted if that canvas is gone).
+
+Sessions do **not** reach across canvases: to look at or switch between several, use the **global assistant** (✦) right of the canvas with its **work scope set to global**.
 
 ## While it runs: thinking and output are separate
 
@@ -594,7 +607,7 @@ Agent task nodes (chat mode included), agent sessions and the global assistant a
 
 ## Let the assistant build a workflow
 
-In **Agent session** or the global assistant, say “build a workflow for xxx”. The model **creates nodes, titles, wires, @refs** and lays them out. Then you edit prompts/paths and ▶. Canvas agent nodes will not change the graph.
+In **Agent session** or the global assistant, say “build a workflow for xxx”. The model **creates nodes, titles, wires, @refs** and lays them out **on its own canvas** (a session: the canvas it belongs to; the ✦ assistant: the one you are looking at). Then you edit prompts/paths and ▶. Canvas agent nodes will not change the graph.
 
 The global assistant (✦) can inspect and edit the graph with confirmation. **The docs Q&A assistant never edits the canvas.**
 `,
@@ -879,7 +892,7 @@ Search, install, enable, or remove from Settings cards.
 
 勾选 **支持视觉** 后，图像才能作为多模态输入。DeepSeek 官方不支持识图，请换支持视觉的服务商。
 
-温度、思考强度（低 / 中 / 高）、图像尺寸在节点 API 面板覆盖全局默认。
+温度、思考强度（低 / 中 / 高）、图像尺寸在节点头部 **⚙ 设置** 弹出的设置窗口里覆盖全局默认。
 
 > API Key 仅存本机，不会随工作流上传。创意工坊上传的是你选择的模板文件，不含 Key。
 `,
@@ -894,7 +907,7 @@ Open **Settings · API/Config → Model services**:
 
 Enable **Vision** so images become multimodal. DeepSeek Official has no vision—use another provider.
 
-Temperature, thinking effort (low / mid / high), and image size override defaults on the node API panel.
+Temperature, thinking effort (low / mid / high), and image size override the global defaults in the settings window opened by **⚙ Settings** in the node header.
 
 > API keys stay on this machine and are not exported with workflows. Workshop uploads are the template files you pick, without keys.
 `,
@@ -938,6 +951,7 @@ for (const id of [
   "workspace",
   "faq",
   "io-proc",
+  "asset-library",
   "node-guide",
   "plugins-skills",
   "dev-nodes",

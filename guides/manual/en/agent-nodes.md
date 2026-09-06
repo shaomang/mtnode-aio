@@ -24,7 +24,13 @@ An agent node **cannot** read or edit the canvas, change workflows, or create ta
 
 ## Agent session
 
-Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type `/` for skills and `/new` `/compact` `/plan` `/help`). Besides files / network / commands, it can inspect and edit the current canvas.
+Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, slash commands (type `/` for skills and `/new` `/compact` `/plan` `/help`). Besides files / network / commands, it can inspect and edit **the canvas the session belongs to**.
+
+### Which canvas does a session belong to?
+
+A session adopts its canvas **the moment it is created**: whichever canvas you are looking at then, and for sessions started from a dev node's 开发 / 细化 / 问询 button, the canvas that feature block lives on. From then on **you are free to switch to other canvases and keep working** — that session's graph reads/writes, working directory and database grounding all land precisely on **its own** canvas, never on the one now on your screen, so it can't overwrite or delete what you are editing. The ▣ under each session title (and its tooltip) shows which canvas it owns (marked as deleted if that canvas is gone).
+
+Sessions do **not** reach across canvases: to look at or switch between several, use the **global assistant** (✦) right of the canvas with its **work scope set to global**.
 
 ## While it runs: thinking and output are separate
 
@@ -34,6 +40,6 @@ Agent task nodes (chat mode included), agent sessions and the global assistant a
 
 ## Let the assistant build a workflow
 
-In **Agent session** or the global assistant, say “build a workflow for xxx”. The model **creates nodes, titles, wires, @refs** and lays them out. Then you edit prompts/paths and ▶. Canvas agent nodes will not change the graph.
+In **Agent session** or the global assistant, say “build a workflow for xxx”. The model **creates nodes, titles, wires, @refs** and lays them out **on its own canvas** (a session: the canvas it belongs to; the ✦ assistant: the one you are looking at). Then you edit prompts/paths and ▶. Canvas agent nodes will not change the graph.
 
 The global assistant (✦) can inspect and edit the graph with confirmation. **The docs Q&A assistant never edits the canvas.**

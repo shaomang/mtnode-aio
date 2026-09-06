@@ -611,6 +611,13 @@
     " 个月前": " mo ago",
     " 年前": " yr ago",
     "最后对话：": "Last message: ",
+    "\n所属画布: ": "\nOwning canvas: ",
+    /* 会话侧栏行内元信息「▣ 所属画布」与两处悬浮说明（app-assist.js）：
+       用户切去别的画布干活时，一眼看出这条会话改的是哪张图 */
+    "所属画布：": "Owning canvas: ",
+    "会话只读写它所属的这张画布；你切到别的画布干活不会串图":
+      "This session only reads and writes the canvas it belongs to; switching to another canvas will not mix them up",
+    "（已删除）": " (deleted)",
     "拖拽调整会话列表宽度": "Drag to resize the session list",
     "尚无对话": "No messages yet",
     "已添加节点：": "Added node: ",
@@ -932,6 +939,14 @@
     "画布已删除，已重建默认画布": "Canvas deleted; default canvas recreated",
     "画布已删除": "Canvas deleted",
     "画布已删除：": "Canvas deleted: ",
+    /* 会话「所属画布」被删后开轮的明确错误（app.js wfOfCanvasIdForRun）：
+       绝不静默漂到用户此刻正开着的另一张画布上 */
+    "本会话所属画布已被删除": "This session's own canvas has been deleted",
+    "本会话所属画布已被删除：": "This session's own canvas has been deleted: ",
+    /* 前台视图动作（选中 / 撤销 / 重做）在本会话所属画布不在前台时明确拒绝，
+       绝不替用户改动他正看着的那张图（app-nodes.js applyAppOp） */
+    "该操作只作用于屏幕上正显示的画布：本会话所属画布当前不在前台，为避免改到你正在编辑的另一张图，已拒绝执行。":
+      "This action only applies to the canvas shown on screen: this session's own canvas is not in the foreground, so it was refused to keep the other canvas you are editing untouched.",
     "会话列表边栏（按工作目录归类）": "Session list sidebar (grouped by working directory)",
     "技能已创建，智能节点可立即使用": "Skill created; agent nodes can use it immediately",
     "聚合：保存为 {路径}.png": "Aggregate: save as {path}.png",
@@ -948,7 +963,6 @@
     "处理节点（提示词 + Play）": "Process Node (prompt + Play)",
     "点击选择图像\n或拖拽文件到此节点": "Click to choose an image\nor drag a file onto this node",
     "发送消息（Ctrl+Enter）": "Send message (Ctrl+Enter)",
-    "服务商 / 模型（点击展开选择）": "Provider / Model (click to expand)",
     "归档该会话(收起到底部已归档区)": "Archive this session (collapse into the archived section at the bottom)",
     "聚合输出：全部条目合并为一个文件": "Aggregate output: merge all entries into one file",
     "框选模式已开启：左键拖拽框选节点": "Marquee mode on: drag with left button to select nodes",
@@ -2561,12 +2575,12 @@
       "Current canvas only; graph edits or deleting this canvas ask for confirm",
     "该操作允许助手参考其他画布内容，当画布较多时可能导致速度较慢。确定切换为「全局」？":
       "This allows the assistant to reference other canvases; many canvases may slow it down. Switch to Global?",
-    "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。":
-      "Work scope is Current canvas; other canvases are blocked. Switch scope to Global and try again.",
-    "智能任务仅能访问当前画布，无法读取或操作其他画布。":
-      "Agent tasks can only access the current canvas; other canvases are blocked.",
-    "工作范围=当前画布：不得读取或操作其他画布内容。":
-      "Work scope=current canvas: do not read or modify other canvases.",
+    "助手的工作范围是「仅当前画布」：本轮只能操作它绑定的那张画布，无法访问其他画布。请将工作范围改为「全局」后再试。":
+      "Assistant scope is Current canvas: this turn may only touch the canvas it is bound to. Switch scope to Global and try again.",
+    "本会话只能访问它所属的画布，无法读取或操作其他画布。":
+      "This session can only access the canvas it belongs to; other canvases are blocked.",
+    "工作范围=本会话所属画布：不得读取或操作其他画布内容。":
+      "Work scope = the canvas this session belongs to: do not read or modify other canvases.",
     "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。":
       "Scope is this canvas. I can view/edit the current canvas nodes and settings.\nTry \"summarize the canvas\" or \"build a xxx workflow\".\nGraph edits ask for confirm; switch work scope to Global to reference other canvases.",
     "跟随当前画布工作目录": "Follows this canvas working directory",
@@ -4901,7 +4915,6 @@
       "Pick a local folder → it becomes a new asset in the current category, files mapped by type (contents copied into the library)",
     "显示名称": "Display name",
     "例如：主角人设 / 片头音乐": "e.g. Protagonist profile / Opening music",
-    "描述": "Description",
     "新建素材 · {where}": "New asset · {where}",
     "请填写显示名称": "Please fill in a display name",
     "新建素材失败：": "Failed to create the asset: ",
@@ -4948,7 +4961,6 @@
       "Create an “Asset” node bound to this asset on the current canvas (library content untouched)",
     "重新命名（文件夹）": "Rename (folder)",
     "素材节点尚未就绪": "Asset nodes are not ready yet",
-    "请先打开一个画布": "Open a canvas first",
     "插入失败：无法创建素材节点": "Insert failed: cannot create the asset node",
     "已插入素材：": "Asset inserted: ",
     "删除的内容进根目录 .trash（不实删）":
@@ -4970,9 +4982,6 @@
       "” · text yields a string · image / audio / video yield a file:/// URL",
     "左右两个端子同一条目：连入即写入素材库，输出即读出该条目的内容":
       "Both ports are the same item: wiring in writes into the library, the output reads that item back",
-    "同步：把本条目输入端子连入的内容写进素材库（端子无内容时连入即自动同步）":
-      "Sync: write what this item’s input port carries into the library (an empty item syncs automatically on connect)",
-    "端子同步将在下一项任务接入": "Port sync lands in the next task",
     "内容文件缺失（素材库里的实体文件不在了）":
       "Content file is missing (the physical file is gone from the asset library)",
     "在此输入文本内容（直接写进素材库该条目）":
@@ -4981,8 +4990,6 @@
     "（无内容）点击下方按钮选择": "No content — pick a file with the button below",
     "从本机选一个文件复制进素材库该条目（旧内容先进版本目录，可撤销）":
       "Pick a local file and copy it into this library item (the old one goes to the versions folder first · undoable)",
-    "未绑定素材：右键本节点选「绑定素材库…」或「上传…」":
-      "Not bound to an asset: right-click this node and choose “Bind library content…” or “Upload…”",
     "该素材还没有内容：点上方「设置」添加文本 / 图像 / 音频 / 视频":
       "This asset has no content yet: open Settings above to add text / image / audio / video items",
     "写入素材库失败：": "Failed to write into the asset library: ",
@@ -4997,6 +5004,372 @@
     "该内容端子已被占用": "That content port is already taken",
     "「{t}」端子是{w}内容，只接受{w}来源（当前是 {g}）：请改接同类来源，或在素材设置里换一个端子":
       "The “{t}” port holds {w} content and only accepts a {w} source (this one is {g}): rewire a matching source, or pick another port in the asset settings",
+  });
+  /* ── 素材库 · 素材节点的绑定 / 上传 / 失联（renderer/app-assets.js · app-canvas.js）── */
+  Object.assign(EN, {
+    /* 节点 body：未绑定 / 失联两块引导 */
+    "未绑定素材": "Not bound to an asset",
+    "绑定＝引用素材库里已有的素材；上传＝把本机一个文件夹整体收进素材库并绑定。内容永远存在素材库里，删掉画布也不会丢。":
+      "Bind references an asset already in the library; Upload takes a local folder into the library and binds it. Content lives in the library — deleting the canvas never loses it.",
+    "素材失联": "Asset out of reach",
+    "素材库里找不到这个素材了（可能已被删除，或素材库根目录换过）。端子与标题保持原样，重新指定根目录或重新绑定即可接上。":
+      "The library no longer has this asset (deleted, or the root folder changed). Ports and titles stay exactly as they were — set the root back or rebind to reconnect.",
+    "素材库根目录还没有指定：指定后这里会自动接上。":
+      "No asset-library root set yet — once you do, this reconnects by itself.",
+    "重新绑定…": "Rebind…",
+    "绑定…": "Bind…",
+    "上传…": "Upload…",
+    "重新扫描": "Rescan",
+    "打开素材库": "Open asset library",
+    "打开素材库，选一个已有素材绑定到本节点（端子按标题保号）":
+      "Open the library and pick an existing asset to bind (ports keep their numbers by title)",
+    "选本机一个文件夹 → 整体收进素材库成为新素材 → 自动绑定本节点":
+      "Pick a local folder → it becomes a new asset in the library → this node binds to it",
+    "在资源管理器里找回素材夹 / 换回原根目录后，点这里重新识别":
+      "After you restore the asset folder in Explorer (or switch the root back), rescan here",
+    "打开素材库对话框（左分类 · 右素材 · 可更改根目录）":
+      "Open the asset-library dialog (categories left · assets right · root changeable)",
+    "改显示名称 / 描述，并添加内容条目（每条＝一对端子）":
+      "Edit display name / description and add content items (each item = one pair of ports)",
+    "内容暂不可读：素材失联，重新绑定或找回素材夹后自动恢复":
+      "Content unavailable while the asset is out of reach — it comes back after rebinding or restoring the folder",
+    /* 头部徽标与 ⚙ */
+    "失联": "Lost",
+    "还没有绑定素材：在下方点「绑定…」或「上传…」":
+      "No asset bound yet: use “Bind…” or “Upload…” below",
+    "素材失联：素材库里找不到它了（端子与连线仍按原样保留）":
+      "Asset out of reach: the library can’t find it (ports and wires kept as they were)",
+    "素材：": "Asset: ",
+    "库内路径：": "Library path: ",
+    "内容条目：": "Content items: ",
+    "设置（显示名称 / 描述 / 内容条目 · 改的就是素材库里那一份）":
+      "Settings (display name / description / content items — edits the copy in the library)",
+    /* 右键菜单 */
+    "重新绑定素材库…（选一个素材接上 · 连线按标题保留）":
+      "Rebind library asset… (pick an asset · wires follow titles)",
+    "绑定素材库…（引用库里已有素材）": "Bind library asset… (reference something already in the library)",
+    "上传…（选本机一个文件夹收进素材库并绑定）":
+      "Upload… (take a local folder into the library and bind it)",
+    "设置（名称 / 描述 / 内容）": "Settings (name / description / content)",
+    "换绑到别的素材…（端子按标题保号）":
+      "Rebind to another asset… (ports keep their numbers by title)",
+    /* 绑定 / 上传动作回执 */
+    "已绑定素材：": "Asset bound: ",
+    "已绑定素材：{name}（还没有内容，点节点上的「设置」添加）":
+      "Asset bound: {name} (no content yet — open “Settings” on the node to add some)",
+    "已重新绑定：{name} · {n} 条对不上标题的连线已断开（Ctrl+Z 可撤销）":
+      "Rebound: {name} · {n} wires whose titles no longer match were cut (Ctrl+Z undoes it)",
+    "素材库里的内容条目变了：{n} 条对不上标题的连线已断开（可撤销）":
+      "The asset’s content items changed in the library: {n} wires with no matching title were cut (undoable)",
+    "选择要上传的文件夹（其中的文本 / 图像 / 音频 / 视频会成为素材内容）":
+      "Choose the folder to upload (its text / image / audio / video files become the asset’s content)",
+    "未选择文件夹，取消上传": "No folder chosen — upload cancelled",
+    "已上传到素材库，但绑定节点失败": "Uploaded into the library, but binding the node failed",
+    "其中 {n} 个文件类型素材库不收，已跳过": "{n} file(s) of unsupported types were skipped",
+    "素材库根目录还没指定：先指定位置，或重新绑定到别处的素材":
+      "No asset-library root yet: set one first, or rebind to an asset elsewhere",
+    "该素材在素材库里找不到了：选一个素材重新绑定（连线按标题保留）":
+      "This asset is no longer in the library: pick one to rebind (wires follow titles)",
+    "还没有绑定素材，没有可打开的文件夹": "Nothing is bound yet — there is no folder to open",
+    "素材已失联：在素材库里找不到对应文件夹":
+      "Asset out of reach: no matching folder found in the library",
+    "先绑定素材库内容，再设置它": "Bind the asset first, then edit its settings",
+    "素材已失联，先重新绑定才能设置":
+      "The asset is out of reach — rebind it before changing settings",
+    "素材库界面未就绪（app-assets.js）": "Asset library UI not ready (app-assets.js)",
+    "已重新扫描素材库": "Asset library rescanned",
+    "重新扫描素材库失败": "Failed to rescan the asset library",
+  });
+
+  /* ── 素材库 · 素材设置对话框（renderer/app-assets.js · openAssetSettings）──
+     条目 CRUD 与「条目即端子」的文案；中文为真源，以下为英文译文。 */
+  Object.assign(EN, {
+    "读取失败": "read failed",
+    "素材设置": "Asset settings",
+    "正在读取素材库…": "Reading the asset library…",
+    "该素材已不在素材库里（可能被删除或换了根目录），素材设置已关闭":
+      "This asset is no longer in the library (deleted, or the root folder changed) — asset settings closed",
+    "素材设置（绑定选择中）": "Asset settings (while binding)",
+    "素材文件夹（资源管理器里也能直接整理）":
+      "Asset folder (you can also tidy it up in the file explorer)",
+    "打开这个素材在素材库里的文件夹": "Open this asset's folder in the library",
+    "重新扫描素材库，取库里此刻的内容":
+      "Rescan the library and pick up what is on disk right now",
+    "这个素材装的是什么（只给人看，不影响端子）":
+      "What this asset holds (for humans only; does not affect ports)",
+    "内容条目＝节点上的一对端子：这里的标题就是端子名，这里的顺序就是端子顺序。改动直接写进素材库，画布上所有绑定该素材的节点一起跟着变。":
+      "A content item IS a pair of ports on the node: its title here is the port label, its order here is the port order. Edits go straight into the library, and every node bound to this asset follows.",
+    "＋ 文本": "＋ Text",
+    "＋ 图像": "＋ Image",
+    "＋ 音频": "＋ Audio",
+    "＋ 视频": "＋ Video",
+    "新建一条空的文本内容（库内落一个 .txt）":
+      "Create an empty text item (a .txt inside the library)",
+    "从本机选图像文件复制入库（可多选）":
+      "Pick image files on this machine and copy them into the library (multi-select)",
+    "从本机选音频文件复制入库（可多选）":
+      "Pick audio files on this machine and copy them into the library (multi-select)",
+    "从本机选视频文件复制入库（可多选）":
+      "Pick video files on this machine and copy them into the library (multi-select)",
+    "还没有内容：点上方「＋ 文本」建一条文本，或「＋ 图像 / 音频 / 视频」从本机选文件入库。":
+      "No content yet: press ＋ Text above to create a text item, or ＋ Image / Audio / Video to import local files.",
+    "拖动把手调整内容顺序（端子与已连数据线随内容移位 · ▲▼ 可逐格移动）":
+      "Drag the handle to reorder items (ports and their wires move with them · ▲▼ move one step)",
+    "上移一条内容（端子序号一并跟着走）":
+      "Move this item up (its port index moves with it)",
+    "下移一条内容（端子序号一并跟着走）":
+      "Move this item down (its port index moves with it)",
+    "端子名（会显示在节点左右两端的端子上）":
+      "Port label (shown on both sides of the node)",
+    "类型在建立时定下（要换类型请新建一条并删掉这条）":
+      "The type is fixed at creation (to change it, add a new item and delete this one)",
+    "第 {n} 个输入端子 ↔ 第 {n} 个输出端子": "Input port {n} ↔ output port {n}",
+    "连入即写库（空则自动同步，已有内容则点端子上的 ⟳ 更换），输出即读出该条内容":
+      "Wiring into it writes to the library (empty syncs automatically; otherwise press ⟳ on the port), reading out yields this item's content",
+    "（还没有内容）": "(no content yet)",
+    "库里的实体文件不在了：换一份内容即可恢复":
+      "The file is gone from the library: pick new content to restore it",
+    "编辑文本": "Edit text",
+    "更换文件": "Replace file",
+    "打开正文编辑框（写进素材库该条目的 .txt）":
+      "Open the body editor (written into this item's .txt in the library)",
+    "从本机选一个文件复制进来顶掉旧内容（旧内容进版本目录）":
+      "Pick a local file to copy in over the old one (the old one goes to the versions folder)",
+    "删除这条内容（端子一并消失 · 实体文件进回收站）":
+      "Delete this item (its ports disappear · the file goes to the trash)",
+    "保存素材资料失败：": "Failed to save the asset details: ",
+    "已保存素材资料": "Asset details saved",
+    "改内容标题失败：": "Failed to rename the content item: ",
+    "已改端子名：{old} → {now}": "Port renamed: {old} → {now}",
+    "调整内容顺序失败：": "Failed to reorder content: ",
+    "已调整内容顺序：端子与已连数据线随内容移位":
+      "Content reordered: ports and their wires moved with the items",
+    "删除内容「{name}」？\n\n· 节点上这一对端子会消失，挂在它上面的连线一并断开（Ctrl+Z 可复原节点与连线）\n· 实体文件移进素材库根目录的 .trash（不会真的删掉）\n\n要恢复文件请从资源管理器里找回。":
+      "Delete the content item “{name}”?\n\n· The pair of ports on the node disappears and any wire on them is cut (Ctrl+Z restores the node and the wires)\n· The file moves into the library root's .trash (nothing is really deleted)\n\nTo get the file back, restore it from the file explorer.",
+    "删除内容": "Delete content",
+    "删除内容失败：": "Failed to delete the content item: ",
+    "已删除内容：{name}（端子与连线可撤销 · 文件进回收站）":
+      "Content deleted: {name} (ports and wires undoable · file moved to the trash)",
+    "添加文本内容": "Add text content",
+    "标题（＝端子名）": "Title (= port label)",
+    "正文": "Body",
+    "添加内容失败：": "Failed to add content: ",
+    "已添加内容：{name}（末尾多出一对端子）":
+      "Content added: {name} (a new pair of ports at the end)",
+    "选择要添加的": "Pick the ",
+    "文件（可多选）": " files to add (multi-select)",
+    "已添加 {n} 条内容": "Added {n} content item(s)",
+    "已添加 {n} 条内容（{s} 个文件类型素材库不收，已跳过）":
+      "Added {n} content item(s) ({s} file type(s) the library does not accept were skipped)",
+    "编辑文本内容 · {name}": "Edit text content · {name}",
+    "保存到素材库": "Save to library",
+    "写进素材库该条目的 .txt（旧内容先进版本目录 · 可撤销）":
+      "Written into this item's .txt in the library (the old one goes to the versions folder first · undoable)",
+  });
+
+  /* ── 节点「设置」统一跳窗（NODE_SETTINGS_FORMS · 摘要行 · 节拍 / 网络 / 媒体参数）──
+     设置从节点 body 搬进 ⚙ 跳窗后新出现的文案；中文为真源，以下为英文译文。 */
+  Object.assign(EN, {
+    /* 窗口骨架：标题 / 收尾 / 兜底提示 */
+    "设置 · ": "Settings · ",
+    "完成并关闭": "Done & close",
+    "该节点无可设置项": "This node has nothing to configure",
+    "该节点无可设置项。": "This node has nothing to configure.",
+    "（无设置项）": "(nothing to configure)",
+    "设置表单渲染失败：": "Failed to render the settings form: ",
+    "该节点已不在当前画布，设置窗口已关闭":
+      "This node is no longer on the current canvas — the settings window was closed",
+    "当前设置：": "Current settings: ",
+    "点 ⚙ 在设置窗口中修改": "click ⚙ to change it in the settings window",
+    "（当前值）": "(current value)",
+
+    /* ⚙ 入口 tooltip（原「API / 设置」折叠按钮 → 一律开窗） */
+    "点击打开设置窗口": "click to open the settings window",
+    "设置（点击打开设置窗口修改参数）":
+      "Settings (click to open the settings window and edit parameters)",
+
+    /* 摘要行：各 kind「窗里能改什么」的一句话 */
+    "服务商 / 模型 / 尺寸": "Provider / model / size",
+    "服务商 / 模型 / 温度 · 分辨率 / fps / 时长":
+      "Provider / model / temperature · resolution / fps / duration",
+    "预设 / 供应商 / 模型 / 思考强度": "Preset / provider / model / thinking effort",
+    "时长 / 抽卡 / 种子 / 输出路径 / offload":
+      "Duration / rolls / seed / output path / offload",
+    "模式 / 尺寸 / 采样步数 / 显存优化": "Mode / size / sampling steps / VRAM options",
+    "函数名 / 描述 / 增删输入输出参数（参数即端子）":
+      "Function name / description / add & remove input and output params (a param is a port)",
+    "工具名 / 描述 / 增删输入输出参数（参数即端子）":
+      "Tool name / description / add & remove input and output params (a param is a port)",
+    "保存路径 / 自动保存": "Save path / auto-save",
+    "监视路径 / 轮询间隔": "Watched path / poll interval",
+    "模式 / 计划时间 / 间隔 / Cron": "Mode / scheduled time / interval / Cron",
+    "输出路数 / 步间间隔": "Output count / gap between steps",
+    "输入路数 / 选择模式": "Input count / pick mode",
+    "监听端口 / 通道 / 协议": "Listen port / channel / protocol",
+    "目标地址 / 端口 / 通道 / 协议": "Target address / port / channel / protocol",
+    "动作 / 补缺 / 固定": "Action / fill gaps / pinned",
+    "音色 / 语速 / 输出格式 / 输出路径": "Voice / speed / output format / output path",
+
+    /* 生成类窗内小节与选项（含从内联 .n-api-panel 搬进来的档位） */
+    "渲染": "Render",
+    "生成": "Generate",
+    "生成参数": "Generation parameters",
+    "高级参数": "Advanced parameters",
+    "自建工作流": "Custom workflow",
+    "（未选择）": "(none selected)",
+    "显存": "VRAM",
+    "offload：关": "offload: off",
+    "offload：开": "offload: on",
+    "R2V 多参考": "R2V · multiple references",
+    "FL2VA 首末帧": "FL2VA · first / last frame",
+    "480p（0.4MP 抽卡）": "480p (0.4MP — gacha rolls)",
+    "1080p（~2MP，24G 慎用）": "1080p (~2MP — heavy on 24G)",
+    "帧率 fps（1–60）": "Frame rate fps (1–60)",
+    "帧率 fps": "Frame rate fps",
+    "1x（关）": "1x (off)",
+    "2x（推荐）": "2x (recommended)",
+    "match（缩放匹配分辨率）": "match (scale to the output resolution)",
+    "max（2048 短边 · 还原度更高更慢）":
+      "max (2048 short edge — closer to source, slower)",
+    "原生步跳过缓存 · 约 1.4–2×": "Skips native steps via cache · about 1.4–2×",
+    "需安装 sageattention；缺包自动跳过": "Needs sageattention installed; skipped when missing",
+    "按 head 分块降峰值显存": "Chunks per head to lower peak VRAM",
+    "FFN 分块降峰值显存": "Chunks the FFN to lower peak VRAM",
+    "采样后 unload，避免双 VAE 解码 OOM":
+      "Unloads after sampling so two VAE decodes don't OOM",
+    "VAE 前卸模型": "Unload the model before VAE",
+    "4K 超分补帧（默认开，24G 建议关以提速）":
+      "4K upscale & frame interpolation (on by default; turn off on 24G for speed)",
+    "4K 超分补帧": "4K upscale & interpolation",
+    "RIFE 补帧 + Real-ESRGAN x4 超分 → 4K（需安装后处理模型）":
+      "RIFE interpolation + Real-ESRGAN x4 upscale → 4K (needs the post-processing models)",
+    "补帧 RIFE": "Interpolate first (RIFE)",
+    "低分辨率先补帧，再超分；时序更稳更省显存":
+      "Interpolate at low resolution, then upscale — steadier in time, lighter on VRAM",
+    "补帧倍数": "Interpolation multiplier",
+    "超分批量": "Upscale batch size",
+    "采样 / 质量 / 输出": "Sampling / quality / output",
+    "采样器": "Sampler",
+    "调度器": "Scheduler",
+    "去噪 denoise": "Denoise strength",
+    "视频位移 shift": "Video shift",
+    "音频位移 shift": "Audio shift",
+    "参考图尺寸": "Reference image size",
+    "位深": "Bit depth",
+    "封装格式": "Container format",
+    "编解码": "Codec",
+    "EasyCache 缓存区间": "EasyCache step range",
+    "Sage 编译（需 Sage 且更慢更占显存）":
+      "Sage compile (needs Sage; slower and uses more VRAM)",
+    "取消生成请求": "Cancel the generation request",
+    "停止运行（立即中止）": "Stop the run (abort immediately)",
+    "待运行 · 点头部 ▶ · 头部「设置」窗口里改参数":
+      "Queued · press ▶ in the header · edit parameters in the “Settings” window",
+    "（数组·多条线）": "(array · one wire per item)",
+
+    /* save */
+    "尚未设置路径。": "No path set yet.",
+    "实际指向：": "Actually resolves to: ",
+    "暂时无法解析（相对路径需要先在顶栏设工作目录）：":
+      "Cannot resolve yet (a relative path needs a workspace folder in the top bar first): ",
+    "聚合：全部条目合并保存": "Aggregate: all items saved together",
+    "批量：按输入节点标题另存": "Batch: saved per input-node title",
+    "（未设置保存路径）": "(no save path set)",
+    "自动保存：开": "Auto-save: on",
+    "自动保存：关": "Auto-save: off",
+    "保存路径": "Save path",
+    "后缀由连进来的数据类型固定为 ": "The extension is fixed by the wired data type to ",
+    "，写错会自动纠正。": " — wrong spellings are corrected automatically.",
+    "聚合：全部条目合并保存为 {路径}": "Aggregate: save every item together as {path}",
+    "批量：保存为 {路径}_{输入节点标题}": "Batch: save as {path}_{input node title}",
+    "相对工作目录或绝对路径（": "Relative to the workspace folder or absolute (",
+    "保存路径（": "Save path (",
+    "）…": ")…",
+    "有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。":
+      "With a workspace folder you may use a relative path; changing that folder moves everything into the new one. Absolute paths work too. The extension is fixed by the input type.",
+    "输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .yaml）":
+      "Output file path (image .png / audio .wav / video .mp4 / text .yaml)",
+
+    /* wait_file */
+    "（未设置监视路径）": "(no watched path set)",
+    "监视路径（待生成的文件）": "Watched path (the file to wait for)",
+    "轮询 ": "Polling every ",
+
+    /* 节拍族 */
+    " 路": " channel(s)",
+    " 路 AND": "-channel AND",
+    "多中选一 · ": "One of many · ",
+    "间隔 ": "gap ",
+    "无间隔": "no gap",
+    "（未填）": "(empty)",
+    "每隔 ": "every ",
+    "下次 ": "next ",
+    "计划时间（系统本地时间）": "Scheduled time (system local time)",
+    "Cron 表达式（分 时 日 月 周）": "Cron expression (minute hour day month weekday)",
+    " 个节点 · 头部 ▶ 武装，body 的「立即触发」不等到点直接跑一次":
+      " node(s) · arm it with ▶ in the header; “Trigger now” in the body fires once without waiting",
+    "延时时长": "Delay length",
+    "延时 ": "Delays ",
+    "输出路数（2–8）": "Output count (2–8)",
+    "输入路数（2–8）": "Input count (2–8)",
+    "每 ": "Every ",
+    " 次放行 · 当前 ": " hit(s) before passing · now ",
+    "每 N 次放行（2–99）": "Pass every N hits (2–99)",
+
+    /* control */
+    "动作": "Action",
+    "补缺：只执行尚无输出的节点": "Fill gaps: only run nodes that have no output yet",
+    "开启后点 ▶ 只跑还没有结果的已连接节点，避免重复跑已有输出":
+      "When on, ▶ runs only the connected nodes that still have no result, so existing output isn't repeated",
+    "固定节点（不可删除）": "Pinned node (cannot be deleted)",
+    " 个节点：": " node(s): ",
+    "尚未连接任何目标节点：从右侧端子拉线到要一键运行的节点。":
+      "No target node wired yet: drag from the right-hand port to the node ▶ should run.",
+    "（连线在画布上改，不在这里）": "(wires are changed on the canvas, not here)",
+
+    /* 网络族 */
+    "目标地址": "Target address",
+    "对端地址：本机默认 127.0.0.1，可填远程 IP":
+      "Peer address: 127.0.0.1 by default on this machine, remote IPs allowed",
+    "监听端口": "Listen port",
+    "目标端口": "Target port",
+    "（0 = 用全局端口 ": " (0 = use the global port ",
+    "节点端口；0=用全局设置端口（当前 ":
+      "Node port; 0 = the port from global settings (currently ",
+    "通道号（16bit）": "Channel number (16-bit)",
+    "通道号（16bit 整数，0–65535）": "Channel number (16-bit integer, 0–65535)",
+    "协议": "Protocol",
+    "未监听 · 点击「开始监听」": "Not listening · press “Start listening”",
+    "▶ 开始监听": "▶ Start listening",
+    "■ 停止监听": "■ Stop listening",
+    "已停止监听": "Stopped listening",
+    "用 netdebug 调试本通道（预填协议/端口/通道，以客户端发送测试帧）":
+      "Debug this channel in netdebug (protocol / port / channel prefilled, it sends a test frame as a client)",
+    "启动时自动监听": "Listen automatically at startup",
+    "勾选后，打开 MTNode 或切换到本画布时自动进入监听状态":
+      "When checked, opening MTNode or switching to this canvas starts listening on its own",
+    "端口": "Port",
+    "全局 ": "global ",
+    "通道": "Channel",
+    "自动监听": "Auto-listen",
+    "开": "on",
+    "关": "off",
+
+    /* 媒体生成（tts / music / video / remotion）参数与摘要 */
+    "音色 ": "Voice ",
+    "语速 ": "Speed ",
+    "语速（0.5–2.0）": "Speed (0.5–2.0)",
+    "时长（秒）": "Duration (seconds)",
+    "时长 ": "Duration ",
+    "摇数（每次执行种子 +1）": "Reroll (seed +1 on every run)",
+    "抽卡": "Rolls",
+    "抽卡 ": "Rolls ",
+    "种子 ": "Seed ",
+    "格式": "Format",
+    "工作流": "Workflow",
+    "输出路径": "Output path",
+    "输出文件路径；相对路径需先设顶栏工作目录。后缀由输出类型固定（语音跟随所选输出格式）。":
+      "Output file path; a relative path needs a workspace folder in the top bar first. The extension is fixed by the output type (audio follows the chosen format).",
   });
 
   var locale = "zh";
@@ -5104,6 +5477,55 @@
     });
   }
 
+  /* ── 素材库 T6：端子连入同步 ＋ 库内容随撤销回滚（中英成对） ── */
+  Object.assign(EN, {
+    "素材库不可用": "asset library is not available",
+    "素材或条目不存在": "asset or content entry not found",
+    "素材库正在回滚，请稍等一下再撤销 / 重做":
+      "The asset library is still rolling back — please wait a moment before undoing / redoing",
+    " · 素材库内容已回滚（{n} 项）":
+      " · asset library rolled back ({n} item(s))",
+    " · 素材库有 {n} 项没能回滚":
+      " · {n} asset library item(s) could not be rolled back",
+    "（旧内容仍在该素材的 .versions 目录里）":
+      " (the previous copy is still in that asset's .versions folder)",
+    "这个端子目前没有连入内容": "this port has nothing wired into it right now",
+    "已同步到素材库：": "Synced into the asset library: ",
+    "（Ctrl+Z 可撤销）": " (Ctrl+Z to undo)",
+    "同步失败：": "Sync failed: ",
+    "素材库：{n} 条原本没有内容的条目已自动同步（Ctrl+Z 可撤销）":
+      "Asset library: {n} empty content entry(s) were synced automatically (Ctrl+Z to undo)",
+    "这个端子连入了新内容，与素材库里那份不同 · 点 ⟳ 才更换（Ctrl+Z 可撤销）":
+      "This port carries new content that differs from the library copy — click ⟳ to replace it (Ctrl+Z to undo)",
+    "同步：把本条目输入端子连入的内容写进素材库（端子无内容时运行到这一步会自动同步）":
+      "Sync: write whatever is wired into this entry's input port into the asset library (empty entries sync automatically when the step runs)",
+  });
+
+  /* ── 素材库 T7：主进程侧（assets-store.js）错误串 ──
+     这些串由 registerAssetsIpc 收到的 t() 翻译后回传，渲染层原样进 toast（例如
+     「删除失败：…」），所以英文界面必须有译文 —— 与 tools-store.js 同一惯例。 */
+  Object.assign(EN, {
+    "素材库存储未初始化（缺少数据目录）":
+      "asset storage is not initialized (no data directory)",
+    "尚未指定素材库根目录": "no asset library root folder has been chosen yet",
+    "请选择素材库根目录": "choose the asset library root folder",
+    "素材库根目录必须是绝对路径": "the asset library root must be an absolute path",
+    "该路径不是文件夹": "that path is not a folder",
+    "请选择一个存在的文件夹": "choose a folder that exists",
+    "非法路径": "illegal path",
+    "非法路径（越出素材库根目录）": "illegal path (escapes the asset library root)",
+    "缺少路径": "missing path",
+    "名称不能为空": "the name cannot be empty",
+    "文件夹名称不能为空": "the folder name cannot be empty",
+    "目录不存在": "that folder does not exist",
+    "素材不存在": "asset not found",
+    "内容条目不存在": "content entry not found",
+    "内容文件缺失": "the content file is missing",
+    "历史版本不存在": "that history version does not exist",
+    "源文件不存在": "the source file does not exist",
+    "没有内容可写入": "there is nothing to write",
+    "写入失败": "write failed",
+  });
   function listJoin(arr) {
     return (arr || []).join(locale === "en" ? ", " : "、");
   }

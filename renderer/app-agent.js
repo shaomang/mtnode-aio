@@ -905,20 +905,34 @@ function assistTokOwner() {
     S._assistTokOwner.tokenReport = S.assistTokenReport || null;
   return S._assistTokOwner;
 }
+/* 本轮运行归属的「会话」（只认会话，不含全局助手与裸节点运行）：
+   · runKey = agent:<会话id>          → 该会话（会话自己发起的一轮）
+   · runKey = planpar:<归属>:<步序号> → 归属是会话时 = 该会话：计划的并行子任务不另起炉灶，
+     它继承 owner 会话的一切（含「所属画布」与工作区口径）
+   · 节点运行且节点绑了会话（node.agentSessionId）→ 该会话
+   取不到返回 null。tokOwnerForRun 与本函数同一口径 —— Token 台账归属与画布归属
+   绝不分叉成两套判定。 */
+function agentSessionOfRun(opts) {
+  const byId = (id) => {
+    const sid = String(id || "").trim();
+    if (!sid) return null;
+    const list = typeof agentSessions === "function" ? agentSessions() : [];
+    return list.find((s) => s && s.id === sid) || null;
+  };
+  const key = String((opts && opts.runKey) || "");
+  if (key.indexOf("agent:") === 0) return byId(key.slice("agent:".length));
+  if (key.indexOf("planpar:") === 0)
+    return byId(key.slice("planpar:".length).split(":")[0]);
+  const node = opts && opts.node;
+  if (node && node.agentSessionId) return byId(node.agentSessionId);
+  return null;
+}
 /* 一次运行归属谁：会话 agent:<id> → 该会话；节点运行 → 节点绑定的会话（无则挂节点）；助手 → 伪会话 */
 function tokOwnerForRun(opts) {
-  const key = String((opts && opts.runKey) || "");
-  if (key.indexOf("agent:") === 0) {
-    const id = key.slice(6);
-    return agentSessions().find((s) => s.id === id) || null;
-  }
-  const node = opts && opts.node;
-  if (node && node.agentSessionId) {
-    const s = agentSessions().find((x) => x.id === node.agentSessionId);
-    if (s) return s;
-  }
-  if (key === "assist") return assistTokOwner();
-  return node || null;
+  const sess = agentSessionOfRun(opts);
+  if (sess) return sess;
+  if (String((opts && opts.runKey) || "") === "assist") return assistTokOwner();
+  return (opts && opts.node) || null;
 }
 function tokOwnerId(owner) {
   return String((owner && owner.id) || "run").replace(/[^A-Za-z0-9_-]/g, "_");

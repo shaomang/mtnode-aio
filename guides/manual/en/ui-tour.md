@@ -9,7 +9,7 @@
   - **Hide wires** is a toggle: click once to fade every wire (including relationship lines) to 95% transparency so you can read the layout alone; click again to restore. Purely visual — it never touches canvas data or the undo stack; a wire you are dragging and wires linked to the selected node still light up.
 - **Settings · API/Config**: providers, agent engine, theme, grid.
 - **New / workflow list / Rename / Export / Workshop / Import / Delete**
-- Top-right: **Docs** (this manual), **Plugins**, **Approvals**, language — the language you pick is also the agent's *taste*: it converses in it and answers in it; **Update** highlights when a new version exists.
+- Top-right: **Docs** (this manual), **Asset library** (a local content vault shared across canvases — see [Asset library & asset nodes](#asset-library)), **Plugins**, **Approvals**, language — the language you pick is also the agent's *taste*: it converses in it and answers in it; **Update** highlights when a new version exists.
 
 ## Canvas
 

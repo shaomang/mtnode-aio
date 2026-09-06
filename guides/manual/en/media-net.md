@@ -29,10 +29,10 @@ Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file**
 
 ### Custom ComfyUI workflow
 
-Open the node settings panel → set **Workflow source** to **Custom ComfyUI workflow** to run a graph you built in ComfyUI yourself (not just the two built-in chains):
+Click **⚙ Settings** in the node header → set **Workflow source** to **Custom ComfyUI workflow** to run a graph you built in ComfyUI yourself (not just the two built-in chains):
 
 - Workflows are imported in the **H3 manager window · custom workflow library** (drop a file or paste JSON; both API and UI formats are accepted) and stored machine-wide, shared by every canvas
-- Fields **promoted to node parameters** become node ports (port 1 = text · port 2+ = media); you can also type values in the panel — a wired port beats the manual value, and with neither the workflow's stored value is kept
+- Fields **promoted to node parameters** become node ports (port 1 = text · port 2+ = media); you can also type values in the settings window — a wired port beats the manual value, and with neither the workflow's stored value is kept
 - With several `Save*` outputs you pick which artifact the node returns; ↻ re-syncs the parameter table with the stored graph; **Validate nodes** checks custom node packs against the backend `/object_info` (skipped when the backend is down — never blocks a run)
 - In custom mode the built-in duration / resolution / sampler / upscale options no longer apply (the graph decides); rolls, seed, progress, cancel and the global media lock keep working
 

@@ -1663,8 +1663,8 @@ function discardNodeSettingsDialog() {
    返回值 = 是否真的关掉了窗口。 */
 function closeNodeSettingsDialogIfStale(opts) {
   opts = opts || {};
+  if (!nodeSettingsDialogNodeId()) return false;
   const d = _nodeSettingsDlg;
-  if (!d) return false;
   const nodes = (S.wf && Array.isArray(S.wf.nodes) && S.wf.nodes) || [];
   /* 窗里绑的就是画布上这个对象 → 什么都没变，绝不动它（正输入到一半也不能被重绘打断） */
   if (nodes.some((n) => n === d.node && n.id === d.nodeId)) return false;
@@ -4636,6 +4636,44 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
+  /* 素材节点：头部一颗「素材」徽标（未绑定 / 失联时一眼看得出来）＋ ⚙ 设置入口。
+     素材的设置对着素材库改（显示名 / 描述 / 内容条目），不是画布字段表单，
+     所以刻意不走 NODE_SETTINGS_FORMS 那套跳窗框架，避免两套设置口径。 */
+  if (node.kind === "asset") {
+    const aBound = String(node.assetId || "").trim();
+    const aLost = !!aBound && typeof assetNodeIsLost === "function" && assetNodeIsLost(node);
+    const chip = document.createElement("span");
+    chip.className =
+      "n-chip" + (aBound && !aLost ? " on" : "") + (aLost ? " fail" : "");
+    chip.textContent = aLost ? I18n.t("失联") : I18n.t("素材");
+    chip.title = !aBound
+      ? I18n.t("还没有绑定素材：在下方点「绑定…」或「上传…」")
+      : aLost
+        ? I18n.t("素材失联：素材库里找不到它了（端子与连线仍按原样保留）")
+        : I18n.t("素材：") +
+          (node.assetName || "") +
+          "\n" +
+          I18n.t("库内路径：") +
+          (node.assetRel || "") +
+          "\n" +
+          I18n.t("内容条目：") +
+          assetItems(node).length;
+    head.appendChild(chip);
+    const g = document.createElement("button");
+    g.type = "button";
+    g.className = "n-play n-api-toggle n-settings-btn";
+    g.textContent = "⚙";
+    g.title = I18n.t(
+      "设置（显示名称 / 描述 / 内容条目 · 改的就是素材库里那一份）",
+    );
+    g.onclick = (ev) => {
+      ev.stopPropagation();
+      if (typeof assetNodeOpenSettings === "function")
+        assetNodeOpenSettings(node);
+      else toast(I18n.t("素材库界面未就绪（app-assets.js）"), "warn");
+    };
+    head.appendChild(g);
+  }
   /* 统一「设置」入口：登记过设置表单的 kind 才亮 ⚙（设置一律走跳窗，body 只留摘要行）。
      与 ▶/✕ 同一口径挂在头部菜单栏 → 浏览态（未选中）也照样可点。
      tooltip 用各 kind 自己的说明（def.gearTitle），沿用老「API / 设置」按钮的提示。
@@ -5273,6 +5311,50 @@ function nodeElement(node) {
           { iconCls: "proc" },
         ),
       );
+    }
+    /* 素材节点：绑定 / 上传 / 设置都是对着素材库的动作（实现在 app-assets.js）。
+       括号里的说明按全局口径写进 label（悬停展开），失联时「重新绑定」排最前。 */
+    if (node.kind === "asset") {
+      const aId = String(node.assetId || "").trim();
+      const aLost =
+        !!aId && typeof assetNodeIsLost === "function" && assetNodeIsLost(node);
+      const act = (label, fnKey) =>
+        ctxAction(
+          label,
+          () =>
+            typeof window[fnKey] === "function"
+              ? window[fnKey](node)
+              : toast(I18n.t("素材库界面未就绪（app-assets.js）"), "warn"),
+          "folder",
+          { iconCls: "proc" },
+        );
+      const head = [];
+      if (aLost)
+        head.push(
+          act(
+            I18n.t("重新绑定素材库…（选一个素材接上 · 连线按标题保留）"),
+            "assetNodeRebind",
+          ),
+        );
+      if (!aId)
+        head.push(
+          act(I18n.t("绑定素材库…（引用库里已有素材）"), "assetNodeBind"),
+          act(
+            I18n.t("上传…（选本机一个文件夹收进素材库并绑定）"),
+            "assetNodeUpload",
+          ),
+        );
+      if (aId && !aLost)
+        head.push(
+          act(
+            I18n.t("设置（名称 / 描述 / 内容）"),
+            "assetNodeOpenSettings",
+          ),
+          act(I18n.t("换绑到别的素材…（端子按标题保号）"), "assetNodeBind"),
+          act(I18n.t("在文件夹中显示"), "assetNodeReveal"),
+        );
+      head.push(act(I18n.t("打开素材库"), "assetNodeOpenLib"));
+      items.unshift(...head);
     }
     if (node.kind === "super") {
       items.unshift(
@@ -7291,9 +7373,9 @@ function assetItemMediaRow(node, it, view, type) {
   }
   return wrap;
 }
-function assetItemRow(node, it, idx) {
+function assetItemRow(node, it, idx, lost) {
   const row = document.createElement("div");
-  row.className = "n-asset-item " + it.type;
+  row.className = "n-asset-item " + it.type + (lost ? " lost" : "");
   const hd = document.createElement("div");
   hd.className = "n-asset-hd";
   const nm = document.createElement("span");
@@ -7309,33 +7391,48 @@ function assetItemRow(node, it, idx) {
   const kind = document.createElement("span");
   kind.className = "n-asset-kind " + it.type;
   kind.textContent = assetItemTypeLabel(it.type);
-  /* 小同步按钮：该条目的输入端子连入了新内容时点亮，点一下才更换条目内容（可撤销） */
-  const syncOn =
-    typeof assetItemSyncPending === "function" &&
-    assetItemSyncPending(node, idx);
-  const sync = document.createElement("button");
-  sync.type = "button";
-  sync.className = "n-asset-sync" + (syncOn ? " on" : "");
-  sync.textContent = "⟳";
-  sync.title = I18n.t(
-    "同步：把本条目输入端子连入的内容写进素材库（端子无内容时连入即自动同步）",
-  );
-  sync.onclick = (ev) => {
-    ev.stopPropagation();
-    if (typeof assetItemSyncFromPort === "function")
-      assetItemSyncFromPort(node, idx);
-    else toast(I18n.t("端子同步将在下一项任务接入"), "warn");
-  };
+  /* 小同步按钮：该条目的输入端子连入了新内容时点亮，点一下才更换条目内容（可撤销）。
+     失联时不挂 —— 写入的目标（库里那份素材）此刻根本不存在。 */
+  const sync = lost
+    ? null
+    : document.createElement("button");
+  if (sync) {
+    const pend =
+      typeof assetItemSyncPending === "function" &&
+      assetItemSyncPending(node, idx);
+    sync.type = "button";
+    sync.className = "n-asset-sync" + (pend ? " on" : "");
+    sync.textContent = "⟳";
+    sync.title = pend
+      ? I18n.t(
+          "这个端子连入了新内容，与素材库里那份不同 · 点 ⟳ 才更换（Ctrl+Z 可撤销）",
+        )
+      : I18n.t(
+          "同步：把本条目输入端子连入的内容写进素材库（端子无内容时运行到这一步会自动同步）",
+        );
+    sync.onclick = (ev) => {
+      ev.stopPropagation();
+      if (typeof assetItemSyncFromPort === "function")
+        assetItemSyncFromPort(node, idx);
+    };
+  }
   hd.appendChild(nm);
   hd.appendChild(kind);
-  hd.appendChild(sync);
+  if (sync) hd.appendChild(sync);
   row.appendChild(hd);
-  const view =
-    (typeof assetItemViewGet === "function" &&
-      assetItemViewGet(node.assetId, it.id)) || { loading: true };
+  const view = lost
+    ? null
+    : (typeof assetItemViewGet === "function" &&
+        assetItemViewGet(node.assetId, it.id)) || { loading: true };
   const inr = document.createElement("div");
   inr.className = "n-asset-cell";
-  if (view.missing) {
+  if (lost) {
+    /* 失联：只留标题与类型（端子还在原位），不显示编辑入口，也不逐条向库发读取请求 */
+    const g = document.createElement("div");
+    g.className = "n-av-ghost";
+    g.textContent = I18n.t("内容暂不可读：素材失联，重新绑定或找回素材夹后自动恢复");
+    inr.appendChild(g);
+  } else if (view.missing) {
     const miss = document.createElement("div");
     miss.className = "n-av-ghost";
     miss.textContent = I18n.t("内容文件缺失（素材库里的实体文件不在了）");
@@ -7350,14 +7447,43 @@ function assetItemRow(node, it, idx) {
 }
 function buildAssetBody(node, body) {
   const items = assetItems(node);
-  if (!String(node.assetId || "").trim()) {
-    const hint = document.createElement("div");
-    hint.className = "n-empty";
-    hint.textContent = I18n.t(
-      "未绑定素材：右键本节点选「绑定素材库…」或「上传…」",
+  const bound = String(node.assetId || "").trim();
+  /* 画布上有绑定节点、而本会话还没校验过素材库 → 后台静默扫一次。
+     不阻塞这次绘制：扫完要改的东西由 assetLinkSyncNodes 合并成一次重画。 */
+  if (bound && typeof assetLinkCheckSoon === "function") assetLinkCheckSoon();
+  const lost = !!(
+    bound &&
+    typeof assetNodeIsLost === "function" &&
+    assetNodeIsLost(node)
+  );
+  /* 未绑定：body 就是两个入口 —— 绑定（引用库里已有素材）/ 上传（本机文件夹收进库） */
+  if (!bound) {
+    body.appendChild(
+      assetBindBox(
+        node,
+        I18n.t("未绑定素材"),
+        I18n.t(
+          "绑定＝引用素材库里已有的素材；上传＝把本机一个文件夹整体收进素材库并绑定。内容永远存在素材库里，删掉画布也不会丢。",
+        ),
+        false,
+      ),
     );
-    body.appendChild(hint);
     return;
+  }
+  /* 失联：库里按 id 找不到这份素材了（被删 / 换了根目录）。节点与端子快照一律保留 ——
+     清空 items 会让端子数漂移，用户的连线就被甩到别的条目上去了。 */
+  if (lost) {
+    body.appendChild(
+      assetBindBox(
+        node,
+        I18n.t("素材失联"),
+        assetNoRootTip() ||
+          I18n.t(
+            "素材库里找不到这个素材了（可能已被删除，或素材库根目录换过）。端子与标题保持原样，重新指定根目录或重新绑定即可接上。",
+          ),
+        true,
+      ),
+    );
   }
   if (!items.length) {
     const hint = document.createElement("div");
@@ -7366,15 +7492,108 @@ function buildAssetBody(node, body) {
       "该素材还没有内容：点上方「设置」添加文本 / 图像 / 音频 / 视频",
     );
     body.appendChild(hint);
+    if (!lost) {
+      const ops = document.createElement("div");
+      ops.className = "n-asset-bindops";
+      ops.appendChild(
+        assetBindBtn(
+          I18n.t("设置…"),
+          () =>
+            typeof assetNodeOpenSettings === "function"
+              ? assetNodeOpenSettings(node)
+              : toast(I18n.t("素材库界面未就绪（app-assets.js）"), "warn"),
+          "primary",
+          I18n.t("改显示名称 / 描述，并添加内容条目（每条＝一对端子）"),
+        ),
+      );
+      body.appendChild(ops);
+    }
     return;
   }
   const list = document.createElement("div");
   list.className = "n-asset-list";
   for (let i = 0; i < items.length; i++)
-    list.appendChild(assetItemRow(node, items[i], i));
+    list.appendChild(assetItemRow(node, items[i], i, lost));
   body.appendChild(list);
-  /* 没缓存过的条目：异步向素材库读一次，读齐后合并成一次重画（内容本体永远在库里） */
-  if (typeof assetItemsEnsure === "function") assetItemsEnsure(node);
+  /* 没缓存过的条目：异步向素材库读一次，读齐后合并成一次重画（内容本体永远在库里）。
+     失联时不发这些请求 —— 库里没有这个素材，逐条读只会拿回一排失败。 */
+  if (!lost && typeof assetItemsEnsure === "function") assetItemsEnsure(node);
+}
+/** 「未指定根目录」单独一句话：失联但原因是库还没指定，别让用户以为素材被删了 */
+function assetNoRootTip() {
+  return typeof assetLibNoRoot === "function" && assetLibNoRoot()
+    ? I18n.t("素材库根目录还没有指定：指定后这里会自动接上。")
+    : "";
+}
+/** 未绑定 / 失联两块共用的引导框：一句为什么 + 一排入口按钮 */
+function assetBindBox(node, title, tip, lost) {
+  const box = document.createElement("div");
+  box.className = "n-asset-bind" + (lost ? " lost" : "");
+  const h = document.createElement("b");
+  h.textContent = title;
+  const p = document.createElement("div");
+  p.className = "n-asset-bindtip";
+  p.textContent = tip;
+  const ops = document.createElement("div");
+  ops.className = "n-asset-bindops";
+  ops.appendChild(
+    assetBindBtn(
+      lost ? I18n.t("重新绑定…") : I18n.t("绑定…"),
+      () =>
+        typeof assetNodeBind === "function"
+          ? assetNodeBind(node)
+          : toast(I18n.t("素材库界面未就绪（app-assets.js）"), "warn"),
+      "primary",
+      I18n.t("打开素材库，选一个已有素材绑定到本节点（端子按标题保号）"),
+    ),
+  );
+  ops.appendChild(
+    assetBindBtn(
+      I18n.t("上传…"),
+      () =>
+        typeof assetNodeUpload === "function"
+          ? assetNodeUpload(node)
+          : toast(I18n.t("素材库界面未就绪（app-assets.js）"), "warn"),
+      null,
+      I18n.t("选本机一个文件夹 → 整体收进素材库成为新素材 → 自动绑定本节点"),
+    ),
+  );
+  if (lost && typeof assetNodeRescanNow === "function")
+    ops.appendChild(
+      assetBindBtn(
+        I18n.t("重新扫描"),
+        () => assetNodeRescanNow(),
+        null,
+        I18n.t("在资源管理器里找回素材夹 / 换回原根目录后，点这里重新识别"),
+      ),
+    );
+  ops.appendChild(
+    assetBindBtn(
+      I18n.t("打开素材库"),
+      () =>
+        typeof assetNodeOpenLib === "function"
+          ? assetNodeOpenLib(node)
+          : toast(I18n.t("素材库界面未就绪（app-assets.js）"), "warn"),
+      null,
+      I18n.t("打开素材库对话框（左分类 · 右素材 · 可更改根目录）"),
+    ),
+  );
+  box.append(h, p, ops);
+  return box;
+}
+function assetBindBtn(label, run, cls, title) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mini" + (cls ? " " + cls : "");
+  b.textContent = label;
+  if (title) b.title = title;
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    try {
+      run();
+    } catch (_) {}
+  };
+  return b;
 }
 
 function buildBody(node, body) {

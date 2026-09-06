@@ -9,6 +9,8 @@ Right-click the canvas → **Process › Audio generation › SoVITS speech**. T
 - **Output**: port 0 = speech audio (play / save downstream) · port 1 = control output
 
 ## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
 - **Output path**: audio destination (relative to workspace / super subfolder)
 - **Voice**: a name from the GPT-SoVITS voice library; empty = whatever the backend defaults to
 - **Speed**: 0.5 – 2.0 (default 1.0)

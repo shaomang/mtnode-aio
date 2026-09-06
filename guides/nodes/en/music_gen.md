@@ -9,6 +9,8 @@ Right-click the canvas → **Process › Audio generation › Minimax Music 3**.
 - **Output**: port 0 = audio (play / save downstream) · port 1 = control output
 
 ## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
 - **Output path**: `.wav` destination (relative to workspace / super subfolder)
 - **Attempts**: gacha rolls (1–10); keep one result
 - **Seed**: fixed seed reproduces; each roll bumps the seed by +1

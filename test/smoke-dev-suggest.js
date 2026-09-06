@@ -241,10 +241,13 @@ function makeSandbox(modelText, runError, holdRun) {
       String((st || {}).effort || "") === "max" ? "最强" : "标准",
     /* [11] 运行入口 ②：切片注入的 createDevSessionForNode 需要的 app.js 侧依赖 */
     dshWorkspaceOf: () => "E:/dev/tools/pipeline-console",
+    /* 会话「所属画布」绑定（真身在 app-assist.js，按 app.js ownerWfOfNode 判归属）：
+       沙箱里的节点全活在同一张画布上，所以固定返回那张图的 id */
+    canvasWfIdForNode: () => sb.S.wf.id,
     devSessionTitleOf: (n, mode) => "开发·" + ((n && (n.title || n.id)) || "") + "·" + mode,
     devNodeContractText: () => "【契约】AGENTS.md 共识",
     I18n: { t: (k) => k },
-    S: { wf: { nodes } },
+    S: { wf: { id: "smoke-wf", nodes } },
     _mtDialogSeq: 0,
     ensureMtDialog: () => host,
     closeMtDialog: () => {

@@ -1586,6 +1586,8 @@ function createFnDevSessionForNode(node, req) {
     title:
       I18n.t("开发 · ") + (fnDevNameOf(node) || I18n.t("未命名函数")),
     workspace: dshWorkspaceOf(node) || "",
+    /* 函数开发会话：所属画布 = 该函数节点所在画布 */
+    canvasWfId: canvasWfIdForNode(node),
     preset: (cur && cur.preset) || AGENT_PRESET_DEFAULT,
     provider: (cur && cur.provider) || "deepseek-official",
     model: (cur && cur.model) || "",
@@ -1873,6 +1875,8 @@ function createToolDevSessionForNode(node, req) {
     title:
       I18n.t("开发 · ") + (toolDevNameOf(node) || I18n.t("未命名工具")),
     workspace: dshWorkspaceOf(node) || "",
+    /* 工具开发会话：所属画布 = 该工具节点所在画布 */
+    canvasWfId: canvasWfIdForNode(node),
     preset: (cur && cur.preset) || AGENT_PRESET_DEFAULT,
     provider: (cur && cur.provider) || "deepseek-official",
     model: (cur && cur.model) || "",

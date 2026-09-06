@@ -178,36 +178,49 @@ function canvasWorkspaceDir() {
   }
 }
 
-/* 当前画布的项目根。单一真源 = app.js 的 devProjectRootOf()（顶层开发块优先、
+/* 画布的项目根。单一真源 = app.js 的 devProjectRootOf()（顶层开发块优先、
    devPath 就近继承、多根先归并共同祖先，归并不了才标歧义并取文档序第一个）；
    这里只把它整理成 { path, roots, ambiguous, hasDevNodes } 供运行与显示共用。
+   可选 wf = 按「那张画布」解析（会话所属画布不是用户此刻看到的画布时用）：留空仍指前台。
    宿主尚未加载该函数时（独立沙箱）退回本地最小扫描，逻辑保持一致。 */
-function canvasProjectRoot() {
-  const nodes = S.wf && Array.isArray(S.wf.nodes) ? S.wf.nodes : [];
+function canvasProjectRoot(wf) {
+  const canvas = wf || S.wf;
+  const nodes = canvas && Array.isArray(canvas.nodes) ? canvas.nodes : [];
   const isDev = (n) => !!(n && n.kind === "super" && n.dev && !n.db);
   const devs = nodes.filter(isDev);
   const empty = { path: "", roots: [], ambiguous: false, hasDevNodes: !!devs.length };
   try {
     if (typeof devProjectRootOf === "function") {
-      /* 先调用再读标记：devProjectRootOf 每次刷新 S.devProjectRootAmbiguous */
-      const p = String(devProjectRootOf() || "").trim();
+      /* 先调用再读标记：devProjectRootOf 每次刷新 S.devProjectRootAmbiguous（只刷前台） */
+      const p = String(devProjectRootOf(canvas) || "").trim();
       return {
         path: p,
         roots: p ? [p] : [],
-        ambiguous: !!S.devProjectRootAmbiguous,
+        ambiguous: canvas === S.wf ? !!S.devProjectRootAmbiguous : false,
         hasDevNodes: !!devs.length,
       };
     }
     if (!devs.length || typeof devPathOf !== "function") return empty;
-    const byId = typeof nodeById === "function" ? nodeById : () => null;
-    const parentOf = (n) => (n && n.parentSuperId ? byId(n.parentSuperId) : null);
+    const parentOf = (n) => {
+      if (!n || !n.parentSuperId) return null;
+      /* 指定了画布就在该画布的节点表里找父级，否则走前台口径 */
+      if (canvas && Array.isArray(canvas.nodes))
+        return canvas.nodes.find((x) => x && x.id === n.parentSuperId) || null;
+      return typeof nodeById === "function" ? nodeById(n.parentSuperId) : null;
+    };
+    /* 就近取根：给了具体画布就走同一套继承逻辑的「指定画布」版（devPathOfIn），
+       宿主没提供该函数时逐字走前台口径 */
+    const pathOf = (n) =>
+      canvas && typeof devPathOfIn === "function"
+        ? devPathOfIn(n, canvas)
+        : devPathOf(n);
     /* 顶层功能块（祖先链上没有别的开发块）优先，其次任意开发块 */
     const tops = devs.filter((n) => {
       let cur = parentOf(n);
       let guard = 0;
       while (cur && guard++ < 64) {
         if (isDev(cur)) return false;
-        cur = cur.parentSuperId ? byId(cur.parentSuperId) : null;
+        cur = parentOf(cur);
       }
       return true;
     });
@@ -216,8 +229,8 @@ function canvasProjectRoot() {
       const s = String(p || "").trim();
       if (s && roots.indexOf(s) < 0) roots.push(s);
     };
-    for (const n of tops) add(devPathOf(n));
-    if (!roots.length) for (const n of devs) add(devPathOf(n));
+    for (const n of tops) add(pathOf(n));
+    if (!roots.length) for (const n of devs) add(pathOf(n));
     return {
       path: roots[0] || "",
       roots,
@@ -284,11 +297,20 @@ function assistDisplayWorkspace() {
 }
 
 /* 会话运行 / 上文压缩的生效工作区（唯一真源）：
-   st.workspace 手填优先 > 画布项目根 > 应用默认目录，不再各处自写 || 兜底 */
+   st.workspace 手填优先 > 所属画布项目根 > 应用默认目录，不再各处自写 || 兜底。
+   「所属画布」= 会话自己那张图（canvasWfId），不是用户此刻看到的图：会话跑着的时候用户
+   切去别的画布干活，工作目录不能跟着漂。所属画布还没加载进内存时（重启后直接聊老会话）
+   退回前台画布口径解析，开轮解析到画布对象后下一轮即归位。 */
+function sessionCanvasWf(st) {
+  const id = st && st.canvasWfId;
+  if (!id || typeof canvasWfByIdLoaded !== "function") return null;
+  return canvasWfByIdLoaded(id);
+}
+
 function agentWorkspaceInfo(st) {
   const manual = String((st && st.workspace) || "").trim();
   if (manual) return { path: manual, source: "manual", root: null };
-  const root = canvasProjectRoot();
+  const root = canvasProjectRoot(sessionCanvasWf(st));
   if (root.path) return { path: root.path, source: "project", root };
   const fb = String(S.dshWorkspaceFallback || "").trim();
   if (fb) return { path: fb, source: "default", root };
@@ -304,15 +326,48 @@ function sessionWorkspaceShown(st) {
   return agentRunWorkspace(st);
 }
 
-/* 悬浮说明整行：生效目录 + 它从哪儿来（手填 / 项目根 / 默认） */
+/* 悬浮说明整行：生效目录 + 它从哪儿来（手填 / 项目根 / 默认）+ 所属画布 */
 function sessionWorkspaceTooltipLine(st) {
   const info = agentWorkspaceInfo(st);
   return (
     I18n.t("\n工作目录: ") +
     (info.path || I18n.t("（默认）")) +
     "\n" +
-    workspaceInfoNote(info)
+    workspaceInfoNote(info) +
+    sessionCanvasTooltipLine(st)
   );
+}
+
+/* ── 会话 UI 上的「所属画布」（任务：用户切走画布后一眼看出这条会话改的是哪张图）──
+   名字解析走 app.js 的 wfNameOfId（同步、不读盘：内存活对象 → 标签条快照 → 已删标记 →
+   短 id）。没绑定（老会话，开轮时才补绑）就是空串，宁可不显示也不瞎写一张图。 */
+function sessionCanvasName(st) {
+  const id = st && st.canvasWfId;
+  if (!id || typeof wfNameOfId !== "function") return "";
+  return String(wfNameOfId(id) || "").trim();
+}
+function sessionCanvasTooltipLine(st) {
+  const nm = sessionCanvasName(st);
+  return nm ? I18n.t("\n所属画布: ") + nm : "";
+}
+/* 节点绑定会话的标题形如「开发 · 模块名」（细化 / 问询 / 建议同理，函数与工具开发会话也用它）。
+   两种口径都认：会话契约字段（开发 / 细化 / 问询 必有）与标题前缀（建议记录会话只有标题）。
+   前缀词表按当前 UI 语言 + 中文原文 + 英文原词三份取，界面切语言不会误判成普通会话。 */
+function sessionIsDevBoundTitle(st) {
+  if (!st) return false;
+  if (st._devContract || st.devContract) return true;
+  const t = String(st.title || "");
+  if (t.indexOf("·") < 0) return false;
+  const norm = (s) =>
+    String(s || "")
+      .replace(/\s+/g, "")
+      .toLowerCase();
+  const head = norm(t.split("·")[0]);
+  if (!head) return false;
+  for (const w of ["开发", "细化", "问询", "建议", "Dev", "Refine", "Ask", "Suggest"]) {
+    if (head === norm(w) || head === norm(I18n.t(w))) return true;
+  }
+  return false;
 }
 
 function syncAssistWorkspaceChrome() {
@@ -1240,9 +1295,38 @@ function assistStop() {
 
 /* ============ 智能会话画布(全屏 agent 会话,等于常驻的智能任务) ============ */
 
+/* ── 会话「所属画布」(canvasWfId) ──
+   会话过去每轮都现取用户此刻看到的画布（S.wf），用户一切去别的画布干活，会话就漂到
+   那张图上去了。现在会话在「新建那一刻」就绑定一张所属画布，之后它的画布读写、工作区、
+   数据库接地都精准落在所属画布上，与前台切到哪张图无关。
+   这里只负责产出与规范化绑定值；开轮时按这个 id 解析回画布对象（app-db.js dshRunTask 的 boundWf）。 */
+function currentVisibleWfId() {
+  const w =
+    typeof currentVisibleWf === "function"
+      ? currentVisibleWf()
+      : typeof S !== "undefined"
+        ? S.wf
+        : null;
+  return w && w.id ? String(w.id) : "";
+}
+/* 节点绑定会话（开发 / 细化 / 问询 / 工具·函数开发 / 智能任务）绑节点所属画布；
+   解析不到就退回用户此刻看到的画布，绝不留空。 */
+function canvasWfIdForNode(node) {
+  try {
+    if (node && typeof ownerWfOfNode === "function") {
+      const w = ownerWfOfNode(node);
+      if (w && w.id) return String(w.id);
+    }
+  } catch (_) {}
+  return currentVisibleWfId();
+}
 /* 会话列表:全部持久化于 config.agentSessions,活动会话由 agentActiveId 指定 */
 function agentSessions() {
   if (!Array.isArray(S.agentSessions)) S.agentSessions = [];
+  /* 所属画布水合：历史存档没有 canvasWfId → 规范成空串（表示「未绑定」）。
+     开轮时按当时画布补绑一次并落盘，见 app-db.js dshRunTask 的 boundWf 解析。 */
+  for (const s of S.agentSessions)
+    if (s && typeof s.canvasWfId !== "string") s.canvasWfId = "";
   /* 从配置载回的会话做一次水合（planDelivered / plan → 运行时字段）；
      水合过就有 _planHydrated 标记，后续调用只是几次属性读，开销可忽略。 */
   if (typeof planHydrateSession === "function")
@@ -1317,6 +1401,8 @@ function agentSessionState() {
       id: uid("as"),
       title: I18n.t("新会话"),
       workspace: "",
+      /* 所属画布：新建那一刻用户看到的画布（用户一切画布，会话不跟着漂） */
+      canvasWfId: currentVisibleWfId(),
       preset: AGENT_PRESET_DEFAULT,
       provider: "deepseek-official",
       model: "",
@@ -1350,6 +1436,8 @@ async function persistAgentSession() {
     id: s.id,
     title: s.title || I18n.t("新会话"),
     workspace: s.workspace || "",
+    /* 所属画布 id：随会话落盘，重启后仍归它自己那张图 */
+    canvasWfId: s.canvasWfId || "",
     preset: s.preset || AGENT_PRESET_DEFAULT,
     provider: s.provider || "deepseek-official",
     model: s.model || "",
@@ -1421,6 +1509,8 @@ function newAgentSession() {
     id: uid("as"),
     title: I18n.t("新会话"),
     workspace: cur.workspace || "",
+    /* 手动「新会话」= 用户此刻正在看的这张图 */
+    canvasWfId: currentVisibleWfId(),
     preset: cur.preset || AGENT_PRESET_DEFAULT,
     provider: cur.provider || "deepseek-official",
     model: cur.model || "",
@@ -1552,11 +1642,17 @@ function renderAgentComposer() {
        不能只回显 st.workspace，否则用户会以为还在默认目录里写文件 */
     const shownWs = sessionWorkspaceShown(st);
     wv.textContent = shownWs ? wsGroupOf(shownWs) : I18n.t("选择工作区");
+    /* 工作目录是「按所属画布的项目根」解析出来的，所以同一颗芯片必须同时说清
+       归属是哪张图：否则用户切走画布后会看到目录没变、却不知道它跟着谁（以为串图）。 */
+    const canvasShown = sessionCanvasName(st);
     const tip =
       I18n.t("生效工作目录：") +
       (shownWs || I18n.t("（默认）")) +
       "\n" +
       workspaceInfoNote(agentWorkspaceInfo(st)) +
+      (canvasShown
+        ? "\n" + I18n.t("所属画布：") + canvasShown
+        : "") +
       "\n" +
       I18n.t("点击可改选其它目录（手填优先于画布项目根）");
     wv.title = tip;
@@ -3619,6 +3715,22 @@ function renderAgentSessionSidebar() {
     nm.className = "side-sess-name";
     nm.textContent = s.title || I18n.t("新会话");
     nm.title = s.title + sessionWorkspaceTooltipLine(s);
+    /* 行内元信息「▣ 所属画布名」：用户切去别的画布干活时，光扫一眼会话列表就知道
+       这条会话改的是哪张图 —— 不会再冒出「它怎么改到别的画布去了」这种新困惑。
+       开发 / 细化 / 问询 / 建议这类节点绑定会话标题已写着「开发 · 模块名」，
+       行内不再追加（两行元信息挤在一起，噪声盖过信息），归属仍留在悬浮说明里。 */
+    const canvasShown = sessionIsDevBoundTitle(s) ? "" : sessionCanvasName(s);
+    let wfEl = null;
+    if (canvasShown) {
+      wfEl = document.createElement("span");
+      wfEl.className = "side-sess-wf";
+      wfEl.textContent = "▣ " + canvasShown;
+      wfEl.title =
+        I18n.t("所属画布：") +
+        canvasShown +
+        "\n" +
+        I18n.t("会话只读写它所属的这张画布；你切到别的画布干活不会串图");
+    }
     /* 运行状态指示:转圈动效 + 「运行中」(仅运行中的会话显示) */
     const stt = document.createElement("span");
     stt.className = "side-sess-status";
@@ -3678,6 +3790,7 @@ function renderAgentSessionSidebar() {
       : I18n.t("尚无对话");
     row.appendChild(stt);
     row.appendChild(nm);
+    if (wfEl) row.appendChild(wfEl);
     row.appendChild(tm);
     row.appendChild(btns);
     row.onclick = async () => {
@@ -4408,8 +4521,9 @@ async function agentSessionSend(text, opts) {
   const pureMode = !!st.pure;
   let systemPrompt = pureMode
     ? ""
-    : "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改当前画布（节点、连线、排版等）。\n" +
-      "你仅能访问当前画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
+    : "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改本会话所属的画布（节点、连线、排版等）。\n" +
+      "你只能访问本会话所属的那张画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
+      "该画布在会话建立时就已绑定：用户在你运行中途切去其他画布干活，你本轮的读写仍然精准落在自己那张图上，不会串到他正看着的那张。\n" +
       (!!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove)
         ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
         : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +

@@ -1757,7 +1757,12 @@ function dshRunRetryable(msg) {
   if (!s.trim()) return false;
   if (typeof isCancelishError === "function" && isCancelishError(s)) return false;
   if (
-    /未配置|API Key|任务内容为空|工作范围为「当前画布」|智能能力未启用/.test(s)
+    /* 范围被拒（助手「仅当前画布」/ 会话所属画布）与所属画布已删都是「重发也不会有别的
+       结果」：判据串与 app-nodes.js 的 scopeBlocked、app.js 的 sessionWfDeletedError 同源。
+       「工作范围为「当前画布」」一条留给工作区那层的范围受限文案。 */
+    /未配置|API Key|任务内容为空|工作范围为「当前画布」|工作范围是「仅当前画布」|无法访问其他画布|无法读取或操作其他画布|本会话所属画布已被删除|智能能力未启用/.test(
+      s,
+    )
   )
     return false;
   return true;
@@ -1948,6 +1953,34 @@ function dshRunTask(input, opts) {
   });
 }
 
+/* ── 本轮运行的「绑定画布」：会话所属画布，不是用户此刻看到的画布 ──
+   过去这里每轮现取 S.wf：用户在会话跑着的时候切去别的画布干活，会话的画布读写、
+   工作区、数据库接地就整轮漂到那张图上（本轮改动全落错地方）。现在归属真源只有一个：
+   会话创建时绑下的 canvasWfId（app-assist.js），按 id 解析回画布对象见 app.js
+   wfOfCanvasIdForRun（前台 → 内存袋 → 读盘，画布已删直接抛明确错，绝不漂）。
+   解析不到归属的三类运行照旧跟着用户看到的画布：全局助手（范围另由 applyAssistScope
+   决定）、裸节点运行（节点本就活在前台画布上）、以及没有 canvasWfId 的老会话 ——
+   后者在本轮就地补绑一次并落盘，从下一轮起它就是稳定真源。 */
+async function dshResolveRunBoundWf(opts) {
+  const sess =
+    typeof agentSessionOfRun === "function" ? agentSessionOfRun(opts) : null;
+  const id = String((opts && opts.canvasWfId) || (sess && sess.canvasWfId) || "").trim();
+  const cur =
+    (typeof currentVisibleWf === "function" ? currentVisibleWf() : null) || S.wf || null;
+  if (!id) {
+    if (sess && cur && cur.id) {
+      try {
+        sess.canvasWfId = String(cur.id);
+        if (typeof persistAgentSession === "function")
+          Promise.resolve(persistAgentSession()).catch(() => {});
+      } catch (_) {}
+    }
+    return cur;
+  }
+  if (typeof wfOfCanvasIdForRun !== "function") return cur;
+  return await wfOfCanvasIdForRun(id);
+}
+
 /* 单次运行（一次请求 = 一轮）：组装 runParams、挂取消句柄、收流式事件 */
 function dshRunOnce(input, opts) {
   opts = opts || {};
@@ -1978,13 +2011,22 @@ function dshRunOnce(input, opts) {
   const webSearchApiKey =
     String((dsProv && dsProv.apiKey) || "").trim() ||
     (provider === "deepseek-official" ? String(apiKey || "").trim() : "");
+  /* 本轮绑定画布（= 会话「所属画布」）：解析可能要读盘，故在第一个 then 里定下来，
+     之后工作区、工具快照、数据库接地、画布事件路由全用它，绝不再现取 S.wf。 */
+  let boundWf = null;
+  /* 工作区按绑定画布解析（优先级一字不改：手填 > 该画布项目根 > 该画布目录 > 默认目录） */
+  const wsOfRun = (node) =>
+    typeof dshWorkspaceOfWf === "function"
+      ? dshWorkspaceOfWf(node, boundWf)
+      : dshWorkspaceOf(node);
   return Promise.resolve()
     .then(async () => {
-      let ws = String(opts.workspace || dshWorkspaceOf(opts.node) || "").trim();
+      boundWf = await dshResolveRunBoundWf(opts);
+      let ws = String(opts.workspace || wsOfRun(opts.node) || "").trim();
       if (ws && typeof pathIsExistingDir === "function") {
         if (!(await pathIsExistingDir(ws))) {
           await wipeMatchingWorkspaces(ws);
-          ws = String(dshWorkspaceOf(opts.node) || "").trim();
+          ws = String(wsOfRun(opts.node) || "").trim();
           if (ws && !(await pathIsExistingDir(ws))) ws = "";
           toast(I18n.t("工作目录无效，已改用默认目录"), "warn");
         }
@@ -1992,6 +2034,10 @@ function dshRunOnce(input, opts) {
       return ws || S.dshWorkspaceFallback || "";
     })
     .then(async (workspace) => {
+  /* 本轮绑定画布 = 会话「所属画布」（上一个 then 里按 canvasWfId 解析，可能要读盘）；
+     解析不到对象才退回用户此刻看到的画布。此后工作区、工具快照、数据库接地、
+     beginCanvasRun 与画布事件路由全用这一个对象 —— 用户中途切画布，本轮不漂。 */
+  if (!boundWf) boundWf = currentVisibleWf() || S.wf;
   const indexBlock = await mtnodeInternalSkillIndexBlock();
   const nodeLock = isCanvasScopedAgentNode(opts.node);
   /* 纯净模式（会话输入区「纯净模式」按钮）：整段 system prompt 置空，
@@ -2009,7 +2055,7 @@ function dshRunOnce(input, opts) {
   /* 数据库接地注记：非空 = 本轮真接入了数据库副本（连线进来的副本 + prompt 里的
      !@数据库标题）。先算出来，两处共用同一判据 —— 注记与 mtnode_db 的存在性必须
      同进同退，绝不允许「提示词说接了库、工具却不在」或反过来。 */
-  const dbGrounding = pureOn ? "" : agentDbGroundingNote(opts.node, S.wf);
+  const dbGrounding = pureOn ? "" : agentDbGroundingNote(opts.node, boundWf);
   /* 第三个闸：按名字的隐藏名单（见 dshHiddenToolsFor） */
   const hideToolsOn = dshHiddenToolsFor({
     pure: pureOn,
@@ -2017,12 +2063,13 @@ function dshRunOnce(input, opts) {
     lean: leanOn,
     noCanvas: noCanvasOn,
   });
-  /* 用户工具描述子（func call 单一真源，见 app-tools.js）：当前画布的工具节点 +
-     工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
-     纯净模式只留联网搜索）。 */
+  /* 用户工具描述子（func call 单一真源，见 app-tools.js）：本轮绑定画布（= 会话所属画布）
+     上的工具节点 + 工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
+     纯净模式只留联网搜索）。用 boundWf 而不是 S.wf：画布看着 A、工具与库接地按 B 的
+     串台从此不可能 —— 描述子来自哪张图，tool-run 帧就只在那张图上找执行目标。 */
   const agentTools = pureOn
     ? { descs: [], byKey: {} }
-    : await agentUserToolsSnapshot(S.wf);
+    : await agentUserToolsSnapshot(boundWf);
   /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist)。
      systemPrompt 分节快照也以它为主键，故提前到 runParams 之前定型（取值口径一字未改）。 */
   const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
@@ -2235,8 +2282,9 @@ function dshRunOnce(input, opts) {
   if (opts.node && isAgentSuperPerm(opts.node) && opts.node.agentPermOutside === "ask") {
     if (S._agentPermSessionPaths) delete S._agentPermSessionPaths[opts.node.id];
   }
-  /* 绑定本次运行的画布：后续 canvas 事件写入该 wf，切画布也不会串到别的画布 */
-  const boundWf = S.wf;
+  /* 绑定本次运行的画布 = 上面解析出的会话所属画布：beginCanvasRun / endCanvasRun 继续成对
+     （栈顶供「有画布写入在飞」判定与既有 canvas 事件路由用），用户中途切去别的画布干活
+     也不会把本轮归属换成另一张图。 */
   beginCanvasRun(boundWf);
   const scopeLock = nodeLock;
   if (scopeLock) S._canvasNodeAgentDepth = (S._canvasNodeAgentDepth || 0) + 1;
@@ -2400,11 +2448,15 @@ function dshRunOnce(input, opts) {
           }
           if (msg.type === "canvas") {
             /* 把这一轮的 runKey 与帧上的 sessionId 透传给宿主：确认框据此登记归属，
-               本轮结束 / 被终止时才能自动撤框（见 app-nodes.js canvasConfirm*） */
+               本轮结束 / 被终止时才能自动撤框（见 app-nodes.js canvasConfirm*）。
+               wf = 本轮绑定画布（= 会话「所属画布」）：画布写与应用写一律按它路由，
+               不再依赖运行栈栈顶 —— 用户切去别的画布干活时，会话的改动仍精准命中
+               它自己那张图，也绝不会顺手写进用户正开着的前台画布。 */
             handleCanvasEvent(msg.data || {}, {
               planMode: !!opts.planMode,
               runKey,
               sessionId: (msg.data && msg.data.sessionId) || "",
+              wf: boundWf,
             });
             return;
           }
@@ -2414,11 +2466,12 @@ function dshRunOnce(input, opts) {
           }
           if (msg.type === "tool-run") {
             /* 工具节点 func call：宿主执行节点内部图并回执结果；任何失败都以
-               错误文本回执（会话不中断），见 app-tools.js handleToolRunEvent */
+               错误文本回执（会话不中断），见 app-tools.js handleToolRunEvent。
+               执行目标按本轮绑定画布找（描述子就是从那张图收集的），不看 S.wf。 */
             try {
               handleToolRunEvent(msg.data || {}, {
                 runKey,
-                wf: S.wf,
+                wf: boundWf,
                 toolDescs: (S._runToolDescs && S._runToolDescs[runKey]) || {},
               });
             } catch (_) {}

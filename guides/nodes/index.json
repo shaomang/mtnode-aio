@@ -5,6 +5,7 @@
     "input_image",
     "input_audio",
     "input_video",
+    "asset",
     "input_file",
     "db_table",
     "db_replica",

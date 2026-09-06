@@ -8,6 +8,7 @@
 - **Image**: click or drop a file.
 - **Audio / video**: click or drop a local media file; the node previews it and outputs that file’s `file:///` URL (wireable into media reference slots, a save node, or `@`-referenced).
 - **File node / Table** (inside a database super): batch import arbitrary files and agent-built tables, see [Database nodes](#database-nodes).
+- **Asset**: the content does not live on this canvas but in the **asset library** (a local vault shared across canvases — deleting the canvas loses nothing); one content item = one pair of ports, see [Asset library & asset nodes](#asset-library).
 
 ## Process
 

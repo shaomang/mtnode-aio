@@ -1103,11 +1103,14 @@ function planBuildSteps(tasks) {
 /* opts.onEvent：把 reasoning / text / tool / tool-result / usage / error 事件透出来，
    否则并行组跑起来全程静默（计划面板里只有一个静态「◐ 执行中」）。
    opts.runKey：必须可预测（见 planParRunKey），随机 uid 会让外部无人持有句柄 →
-   既取消不了也记不了账；缺省才退回随机键（兼容老调用点）。 */
+   既取消不了也记不了账；缺省才退回随机键（兼容老调用点）。
+   opts.canvasWfId：发起它的会话「所属画布」。子任务不另起归属：它就该落在 owner 会话
+   那张图上（用户此刻看到的可能是另一张画布）；没显式给时宿主按 runKey 反查同一归属。 */
 function planDshRunOnce(input, opts) {
   opts = opts || {};
   return dshRunTask(input, {
     runKey: String(opts.runKey || "planpar:" + uid("p")),
+    canvasWfId: String(opts.canvasWfId || ""),
     workspace: opts.workspace,
     preset: opts.preset,
     provider: opts.provider,
@@ -1868,6 +1871,8 @@ async function planRunParallel(st, tasks) {
     t._live = planLiveInit();
     return planDshRunOnce(planTaskMessage(t, 0, n, true), {
       runKey,
+      /* 继承 owner 会话的所属画布：子任务写的文件与画布都跟着那条会话，不看前台切到哪张图 */
+      canvasWfId: st.canvasWfId || "",
       workspace: st.workspace || "",
       preset: st.preset || AGENT_PRESET_DEFAULT,
       provider: planRouteOfModel(t.model) || st.provider || planDefaultProvider(),

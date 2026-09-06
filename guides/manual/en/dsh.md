@@ -28,7 +28,7 @@ A new segment starts on every tool call and on every reasoning step (turn / step
 
 ## Agent presets: pick a voice
 
-A preset decides which role and style the agent works in. Pick it in four places: the **model menu → Preset** of agent sessions, the **Preset** dropdown in the right-hand assistant bar, the **Preset** dropdown in an agent node's parameter panel, and **Settings → agent capabilities → Agent preset** (the dev-node 🧠 popover reads the same ladder). Five are offered — **the order below is the order in the menus, and the first row is the default**:
+A preset decides which role and style the agent works in. Pick it in four places: the **model menu → Preset** of agent sessions, the **Preset** dropdown in the right-hand assistant bar, the **Preset** dropdown in an agent node's **⚙ Settings** window, and **Settings → agent capabilities → Agent preset** (the dev-node 🧠 popover reads the same ladder). Five are offered — **the order below is the order in the menus, and the first row is the default**:
 
 | Preset | What it's for |
 | --- | --- |

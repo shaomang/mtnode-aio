@@ -9,6 +9,6 @@ Open **Settings · API/Config → Model services**:
 
 Enable **Vision** so images become multimodal. DeepSeek Official has no vision—use another provider.
 
-Temperature, thinking effort (low / mid / high), and image size override defaults on the node API panel.
+Temperature, thinking effort (low / mid / high), and image size override the global defaults in the settings window opened by **⚙ Settings** in the node header.
 
 > API keys stay on this machine and are not exported with workflows. Workshop uploads are the template files you pick, without keys.

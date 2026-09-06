@@ -496,6 +496,8 @@ contextBridge.exposeInMainWorld('api', {
   assetsItemRead: (id, itemId, version) => ipcRenderer.invoke('assets:itemRead', { id, itemId, version }),
   assetsItemUpdateText: (id, itemId, content, title) => ipcRenderer.invoke('assets:itemUpdateText', { id, itemId, content, title }),
   assetsItemUpdateBytes: (id, itemId, arg) => ipcRenderer.invoke('assets:itemUpdateBytes', Object.assign({ id, itemId }, arg || {})),
+  /* 连入的这份与库里那份是否同一个（主进程按字节比）：素材节点端子同步提示的唯一判据 */
+  assetsItemSame: (id, itemId, arg) => ipcRenderer.invoke('assets:itemSame', Object.assign({ id, itemId }, arg || {})),
   assetsItemRemove: (id, itemId) => ipcRenderer.invoke('assets:itemRemove', { id, itemId }),
   assetsImportDir: (arg) => ipcRenderer.invoke('assets:importDir', arg),
   assetsImportFiles: (id, paths) => ipcRenderer.invoke('assets:importFiles', { id, paths }),

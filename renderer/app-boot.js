@@ -431,10 +431,13 @@ async function init() {
      旧档/非法值 → high 兜底默认 */
   S.agentSessions = S.config.agentSessions.map((s) => {
     const sess = Object.assign(
-      { title: I18n.t("新会话"), preset: AGENT_PRESET_DEFAULT, model: "", effort: "high", draft: "", archived: false, updatedAt: 0 },
+      { title: I18n.t("新会话"), canvasWfId: "", preset: AGENT_PRESET_DEFAULT, model: "", effort: "high", draft: "", archived: false, updatedAt: 0 },
       s,
     );
     sess.effort = normalizeAgentEffort(sess.effort);
+    /* 所属画布 id：带回来就是带回来（旧存档没有 → 空串，开轮时补绑一次） */
+    sess.canvasWfId =
+      typeof sess.canvasWfId === "string" ? sess.canvasWfId : "";
     return sess;
   });
   S.agentActiveId = S.config.agentActiveId || "";

@@ -915,6 +915,8 @@ function devSuggestRecordSessionOf(node) {
       workspace:
         devPathOf(node) ||
         (typeof dshWorkspaceOf === "function" ? dshWorkspaceOf(node) : ""),
+      /* 建议记录会话：所属画布 = 该功能块所在画布 */
+      canvasWfId: canvasWfIdForNode(node),
       preset: AGENT_PRESET_DEFAULT,
       provider: "deepseek-official",
       model: "",

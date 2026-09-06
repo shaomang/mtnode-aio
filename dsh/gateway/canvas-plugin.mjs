@@ -117,7 +117,7 @@ const GET_DESC =
   '- bodies: false — drop body text at any detail (lengths stay); true forces inclusion.\n' +
   '- bodyLimit: N — truncate each body value to N chars (textLen stays true length).\n' +
   '- sections: ["nodes","marks","wires","groups","taskTree","superTree","tagCatalog","workflows","selection"] — restrict these heavy top-level blocks to the listed ones (default: all). Small context (workflow/view/cam/imageSizes/kinds/markColors/devFuncColors/taskFocus/superFocus/assistScope/scopeNote) is always included.\n' +
-  'When the run is locked to the current canvas (agent session / assistant "current" scope), workflows lists ONLY this canvas — you cannot see or open others. Always call this before editing; 建图 / 连线 / 排版的硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在 mtnode_canvas_edit 的说明里，不在此重复。'
+  'When the run is locked to its own canvas（会话所属画布：agent session / assistant "current" scope）, workflows lists ONLY that canvas — you cannot see or open others. 绑定在会话建立时就定下：用户中途切去别的画布干活，本会话读写的仍是它自己那张图。Always call this before editing; 建图 / 连线 / 排版的硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在 mtnode_canvas_edit 的说明里，不在此重复。'
 
 const KIND_GUIDE =
   'create.kind 速查：输入 input_text / input_image / input_audio / input_video / input_file（媒体输入由用户自己选文件，数据端子值 = file:/// URL，可直接连给需要媒体参考的端子）· 处理 proc_text / proc_image / agent_task（智能节点）/ db_table · 生成 music_gen / tts_gen / video_gen / remotion · 保存 save（旧别名 save_text / save_image）· 批次 split / merge · 控制 control / judge / task · 节拍等待 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute（执行节点绑 execPath，无数据端子）· 计算 tool / function（参数即端子）。'
@@ -125,10 +125,10 @@ const KIND_GUIDE =
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
 Available actions:
-- status / list_workflows: inspect app + workflow catalog. When locked to the current canvas (agent_task nodes, agent session, assistant "current" scope), the catalog contains ONLY that canvas — other workflows are omitted.
-- rename_workflow: rename the current (or specified) workflow — other canvases are rejected when locked
-- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only.
-- undo / redo: undo or redo the last canvas edit
+- status / list_workflows: inspect app + workflow catalog. When the run is locked to its own canvas（会话所属画布：agent_task nodes, agent session, assistant "current" scope）, the catalog contains ONLY that canvas — other workflows are omitted.
+- rename_workflow: rename the canvas this run belongs to (or a specified workflow) — other canvases are rejected when locked
+- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background.
+- undo / redo: undo or redo the last canvas edit — same foreground-only rule (the undo stack belongs to the canvas you see).
 - list_dsh_plugins: list DSH agent plugins (id, package name, enabled/disabled, core/user). Does not restart the engine.
 
 Needs user confirmation (UI will prompt; may be rejected):
@@ -137,7 +137,7 @@ Needs user confirmation (UI will prompt; may be rejected):
 - remove_dsh_plugin: remove a user-installed DSH plugin. Pass pkg (package name). Bundled suites can only be unmounted via set_dsh_plugin.
 - set_dsh_plugin: mount or unmount a non-core plugin. Pass pkg and enabled (boolean); optional id when multiple rows share a name.
 
-For creating/editing/wiring/removing NODES or canvas drawings (marks) on the current canvas, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
+For creating/editing/wiring/removing NODES or canvas drawings (marks) on the canvas this run belongs to（会话所属画布，不是用户此刻看到的这张）, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
 const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图。标题必须唯一；alias 只在本调用内有效（connect / update / refs 用它），不是画布 id。返回只给「计数 + 别名 / 标题 + warnings」的改动回执，不回整图快照——要看改完的样子再用 mtnode_canvas_get（detail:"minimal" 或 ids:[...]）。
 
@@ -610,7 +610,8 @@ export function apply(ctx) {
       },
       workflow: {
         type: 'string',
-        description: 'For rename/delete: workflow id or exact name.',
+        description:
+          'For rename/delete: workflow id or exact name — when the run is locked to its own canvas（会话所属画布）, that canvas is the only valid target.',
       },
       name: {
         type: 'string',

@@ -960,7 +960,10 @@ function isCascadeWalkKind(n) {
     (n.kind === "split" ||
       n.kind === "merge" ||
       n.kind === "input_text" ||
-      n.kind === "input_image")
+      n.kind === "input_image" ||
+      /* 素材节点＝静态内容源：与输入族一样「只穿过不执行」
+         （它没有执行体，内容恒在素材库里；穿过它才能让它下游的节点被级联收进来） */
+      n.kind === "asset")
   );
 }
 
@@ -1130,6 +1133,16 @@ async function playNode(node, quiet, opts) {
   if (!(opts && opts.batchDriven)) S._lastStopAllAt = 0;
   try {
     const cascadeAfter = await playNodeBody(node, quiet, opts || {});
+    /* 本节点刚产出的值若有一条线直接喂进素材节点的端子：这一刻才做同步检查
+       （库里那条空着 → 自动写进去；已有内容且不同 → 只点亮 ⟳ 等用户点）。
+       不放 playNodeBody 里 —— 要等本节点真的有了新输出，检查才有意义。 */
+    if (typeof assetSyncConsumers === "function") {
+      try {
+        await assetSyncConsumers(node);
+      } catch (e) {
+        /* 素材库写挂了不影响本轮执行结果 */
+      }
+    }
     if (cascadeAfter && cascadeAfter.length && nodePlaySucceeded(node)) {
       try {
         await runDownstreamCascade(cascadeAfter);
@@ -4807,6 +4820,16 @@ async function playNodeBody(node, quiet, opts) {
     return;
   }
   opts = opts || {};
+  /* 素材节点是静态源、不执行，但它给出去的值要先「备齐」：
+     库里那一份正文只存在异步读回来的缓存里，而取值（valueForInput）是同步的。
+     顺带在这里做端子同步检查 —— 该条没内容就把连入的写进库，已有内容且不同只点亮 ⟳。 */
+  if (typeof assetPrepareForRun === "function") {
+    try {
+      await assetPrepareForRun(node);
+    } catch (e) {
+      /* 素材库读挂了不能把整轮执行带崩：端子按「无输入」处理 */
+    }
+  }
   const cascadePlan = await decideCascadeAfterPlay(node, quiet, opts);
   /* quiet：不弹 toast / 不加 pending；ensureUpstream：仍补跑未处理的上游（控制/级联调度用） */
   const ensureUpstream = !quiet || !!opts.ensureUpstream;
@@ -8680,7 +8703,8 @@ function planModeSystemNote() {
   ].join("\n");
 }
 
-/* 禁止跨画布：智能任务/会话始终锁定；全局助手仅在「当前画布」范围时锁定 */
+/* 禁止跨画布：智能任务/会话始终锁定在它「所属的那张画布」（= 本轮绑定画布，
+   不是用户此刻看到的画布）；全局助手仅在「仅当前画布」范围时锁定。 */
 function restrictOtherCanvases() {
   if ((S._canvasNodeAgentDepth || 0) > 0) return true;
   if (anyAgentSessionRunning()) return true;
@@ -8701,8 +8725,11 @@ function applyAssistScopeToSnapshot(snap, opts) {
       ? "current"
       : "global";
   if (!locked) return snap;
-  /* 以运行绑定画布为准（用户切走可见画布时仍锁在任务所在画布） */
-  const cur = canvasTargetWf() || S.wf;
+  /* 锁定的那一张 = 本轮绑定画布（会话「所属画布」）：opts.wf 由画布事件显式交进来，
+     用户切走前台画布时它仍是会话自己那张。没有 opts.wf 的只剩助手侧的提示词快照
+     （助手没有归属会话，锁定的就是用户正看着的那张）—— 两种情况都不看运行栈栈顶：
+     并行跑着别的会话时栈顶是谁纯看时序，拿它当范围会把别人的画布说成自己的。 */
+  const cur = (opts && opts.wf) || currentVisibleWf() || S.wf;
   snap.workflows = cur
     ? [
         {
@@ -8714,12 +8741,12 @@ function applyAssistScopeToSnapshot(snap, opts) {
       ]
     : [];
   snap.scopeNote = I18n.t(
-    "工作范围=当前画布：不得读取或操作其他画布内容。",
+    "工作范围=本会话所属画布：不得读取或操作其他画布内容。",
   );
   return snap;
 }
 
-async function canvasSnapshotFull(opts) {
+async function canvasSnapshotFull(opts, scopeOpts) {
   const snap = canvasSnapshot(opts || {});
   let workflows = [];
   try {
@@ -8738,7 +8765,7 @@ async function canvasSnapshotFull(opts) {
   }));
   snap.assistOpen = !!S.assistOpen;
   snap.sidebarOpen = !!S.sidebarOpen && S.view !== "agent";
-  applyAssistScopeToSnapshot(snap);
+  applyAssistScopeToSnapshot(snap, scopeOpts || {});
   applySnapshotSectionFilter(snap, (opts || {}).sections);
   return snap;
 }
@@ -8794,10 +8821,13 @@ async function createWorkflowNamed(name) {
   return { id, name: S.wf.name };
 }
 
-async function renameWorkflowByRef(workflow, name) {
+async function renameWorkflowByRef(workflow, name, opts) {
   const nm = String(name || "").trim();
   if (!nm) throw new Error(I18n.t("请填写画布名称"));
-  let id = S.wf && S.wf.id;
+  /* 「没指定画布时改哪一张」= 本轮绑定画布（会话「所属画布」），由调用方显式交进来；
+     不再现取 S.wf —— 后台换画布上下文里 S.wf 虽然通常就是它，但本地直调路径不保证。 */
+  const bound = (opts && opts.wf) || S.wf;
+  let id = bound && bound.id;
   if (workflow) {
     const w = await resolveWorkflowRef(workflow);
     id = w.id;
@@ -8805,12 +8835,22 @@ async function renameWorkflowByRef(workflow, name) {
   if (!id) throw new Error(I18n.t("当前没有打开的画布"));
   /* 已删画布（黑名单）不允许再改名：这里的 wfSave 会凭空复活一个空壳画布 */
   if (wfIsDeleted(id))
-    throw new Error(deletedWfError({ id, name: S.wf && S.wf.id === id ? S.wf.name : "" }));
-  if (S.wf && S.wf.id === id) {
-    S.wf.name = nm;
-    scheduleSave(true);
+    throw new Error(deletedWfError({ id, name: bound && bound.id === id ? bound.name : "" }));
+  if (bound && String(bound.id) === String(id)) {
+    /* 改的就是本轮那张图：直接写内存对象。落盘按「它是不是用户正看着的画布」分流 ——
+       是 → 原路 scheduleSave + renderAll；不是（会话跑在后台画布上）→ 走 persistWf
+       按它自己的 id 落盘，绝不把后台内容写进前台画布，也不重绘用户正在干的活。 */
+    bound.name = nm;
     trackWorkflow(id, nm);
-    renderAll();
+    /* S._canvasEditVisible === false = 正改的不是用户看着的那张（与 applyCanvasEdit
+       收尾落盘用的是同一个判据） */
+    if (bound === currentVisibleWf() && S._canvasEditVisible !== false) {
+      scheduleSave(true);
+      renderAll();
+    } else {
+      persistWf(bound);
+      await refreshWfSelect();
+    }
   } else {
     const r = await window.api.wfLoad(id);
     if (!r.ok) throw new Error(r.error || I18n.t("打开失败"));
@@ -8827,9 +8867,10 @@ async function renameWorkflowByRef(workflow, name) {
 
 /* ── 删除画布的目标解析（确认框与执行体共用同一口径）─────────────────────
    杜绝「弹窗显示 A、实际删掉 B」：
-   - 受限范围（智能任务 / 会话锁画布）：无 ref 时只能删本会话绑定的画布
-     （S.canvasRunWf，退一步用「用户可见的前台画布」），有 ref 也必须就是它。
-     绝不兜底 S.wf —— 后台换画布编辑（runAgainstWf）在飞时 S.wf 是别人的画布。
+   - 受限范围（智能任务 / 会话锁画布）：无 ref 时只能删本会话「所属画布」
+     （opts.wf = 本轮绑定画布，调用方显式交进来；没有才退回栈顶 / 前台画布），
+     有 ref 也必须就是它。绝不兜底 S.wf —— 后台换画布编辑（runAgainstWf）在飞时
+     S.wf 是别人的画布。
    - 全局范围：必须显式给出 workflow，缺失直接报错要求指定，不再默认「删当前」。
    返回磁盘上的真实目标 { id, name, nodes }（wfList 口径，与主进程校验同源）。 */
 async function resolveDeleteWfTarget(params, opts) {
@@ -8838,7 +8879,10 @@ async function resolveDeleteWfTarget(params, opts) {
   const restricted = assistRestrictOtherCanvases();
   let bound = null;
   if (restricted) {
+    /* 首选调用方显式交进来的本轮绑定画布（会话「所属画布」）：并行跑多条会话时
+       运行栈栈顶是谁纯看时序，退一步才用它，再退才是用户正看着的前台画布。 */
     bound =
+      (opts && opts.wf && opts.wf.id ? opts.wf : null) ||
       (S.canvasRunWf && S.canvasRunWf.id ? S.canvasRunWf : null) ||
       currentVisibleWf();
     if (!bound || !bound.id) throw new Error(I18n.t("当前会话没有绑定画布，无法删除"));
@@ -8855,7 +8899,7 @@ async function resolveDeleteWfTarget(params, opts) {
   if (restricted && String(w.id) !== String(bound.id))
     throw new Error(
       (opts && opts.scopeBlocked) ||
-        I18n.t("智能任务仅能访问当前画布，无法读取或操作其他画布。"),
+        I18n.t("本会话只能访问它所属的画布，无法读取或操作其他画布。"),
     );
   /* 已在黑名单里的画布（本轮删除成功后 agent 又调一次）：明确报错 */
   if (wfIsDeleted(w.id)) throw new Error(deletedWfError(w));
@@ -8933,7 +8977,10 @@ async function deleteWorkflowByRef(workflow, opts) {
   const i = list.findIndex((t) => t.id === w.id);
   if (i >= 0) list.splice(i, 1);
   const fg = currentVisibleWf();
-  if ((S.wf && S.wf.id === w.id) || (fg && fg.id === w.id)) {
+  /* 只有「用户正看着的那张被删了」才需要替他挑落点：会话在后台删掉自己的所属画布时
+     用户正在别的画布上干活，绝不抢切他的视图（此刻 S.wf 可能已被 runAgainstWf 换成
+     后台那一张，不能拿它当判据）。 */
+  if (fg && String(fg.id) === String(w.id)) {
     let landed = false;
     if (land.exists) {
       /* 切到落点走真实加载（workspace 等字段随磁盘数据回来），skipFlush 防复活 */
@@ -8957,7 +9004,9 @@ async function deleteWorkflowByRef(workflow, opts) {
     toast(I18n.t("已删除画布：") + (w.name || w.id), "ok");
   }
   await window.api.configSave(S.config);
-  renderAll();
+  /* 同理：在后台画布上下文里 renderAll 会把「用户没在看的那一张」（甚至就是刚删掉
+     的那一张）画到用户眼前。非前台一律只刷新画布标签 / 下拉，不动画面。 */
+  if (S._canvasEditVisible !== false) renderAll();
   await refreshWfSelect();
   return {
     ok: true,
@@ -8970,11 +9019,15 @@ async function deleteWorkflowByRef(workflow, opts) {
   };
 }
 
-async function applyAppOp(params) {
+async function applyAppOp(params, runWf) {
   params = params || {};
   const action = String(params.action || "").trim();
   const warnings = [];
   if (!action) throw new Error(I18n.t("缺少 action"));
+  /* 本轮绑定画布（= 会话「所属画布」，由 handleCanvasEvent 经 runCtx 交进来）。
+     所有「哪张图」的判断都以它为准：状态快照、改名、删除目标一律精准命中所属画布，
+     同时绝不因为用户切到别的画布干活就误改 / 误删他正开着的那张。 */
+  const boundWf = runWf || canvasTargetWf() || S.wf;
   if (action === "delete_workflow") await ensureAgentTool("app_delete");
   else if (
     action === "list_dsh_plugins" ||
@@ -8997,10 +9050,10 @@ async function applyAppOp(params) {
   }
   const scopeBlocked = S.assistRunActive && assistScopeIsCurrent()
     ? I18n.t(
-        "当前工作范围为「当前画布」，无法访问其他画布。请将工作范围改为「全局」后再试。",
+        "助手的工作范围是「仅当前画布」：本轮只能操作它绑定的那张画布，无法访问其他画布。请将工作范围改为「全局」后再试。",
       )
     : I18n.t(
-        "智能任务仅能访问当前画布，无法读取或操作其他画布。",
+        "本会话只能访问它所属的画布，无法读取或操作其他画布。",
       );
 
   if (
@@ -9014,7 +9067,10 @@ async function applyAppOp(params) {
   }
 
   if (action === "status" || action === "list_workflows") {
-    return Object.assign({ ok: true, action }, await canvasSnapshotFull());
+    return Object.assign(
+      { ok: true, action },
+      await canvasSnapshotFull({}, { wf: boundWf }),
+    );
   }
 
   if (action === "list_dsh_plugins") {
@@ -9094,15 +9150,15 @@ async function applyAppOp(params) {
 
   if (action === "rename_workflow") {
     if (assistRestrictOtherCanvases()) {
-      const bound = canvasTargetWf() || S.wf;
       const ref = String(params.workflow || params.id || "").trim();
-      if (ref && bound && ref !== bound.id && ref !== bound.name)
+      if (ref && boundWf && ref !== boundWf.id && ref !== boundWf.name)
         throw new Error(scopeBlocked);
-      /* 无 ref 时改绑定画布，避免用户已切走可见画布时误改别的 */
-      if (!ref && bound) {
+      /* 无 ref 时改本会话所属画布（用户已切走可见画布也不会改到别的） */
+      if (!ref && boundWf) {
         const renamed = await renameWorkflowByRef(
-          bound.id,
+          boundWf.id,
           params.name || params.setName || params.title,
+          { wf: boundWf },
         );
         return { ok: true, action, renamed };
       }
@@ -9110,16 +9166,17 @@ async function applyAppOp(params) {
     const renamed = await renameWorkflowByRef(
       params.workflow || params.id || "",
       params.name || params.setName || params.title,
+      { wf: boundWf },
     );
     return { ok: true, action, renamed };
   }
 
   if (action === "delete_workflow") {
     /* 收紧删除入口：目标一律经 resolveDeleteWfTarget 锁定 ——
-       受限范围只允许删本会话绑定的画布（不兜底 S.wf），全局范围必须显式
-       指定 workflow。与确认框（summarizeAppOp）共用同一解析，弹窗期间目标
-       变了就中止；主进程再按 id + 名称双重校验，拒绝原因原样回传。 */
-    const t = await resolveDeleteWfTarget(params, { scopeBlocked });
+       受限范围只允许删本会话「所属画布」（不兜底 S.wf），全局范围必须显式
+       指定 workflow。与确认框（summarizeAppOp）共用同一解析（同一绑定画布口径），
+       弹窗期间目标变了就中止；主进程再按 id + 名称双重校验，拒绝原因原样回传。 */
+    const t = await resolveDeleteWfTarget(params, { scopeBlocked, wf: boundWf });
     const stamp = takeAppOpConfirmStamp(params);
     if (stamp && String(stamp.id) !== String(t.id))
       throw new Error(
@@ -9133,7 +9190,26 @@ async function applyAppOp(params) {
       expectId: t.id,
       expectName: t.name,
     });
-    return Object.assign({ ok: true, action }, deleted, await canvasSnapshotFull());
+    /* 会话把自己的所属画布删了 → boundWf 已成墓碑：收尾快照按「删除后落在哪张图」
+       报回去（换到那张图的上下文里取），别把已删画布继续当成工作范围。 */
+    const afterWf = wfWriteBlocked(boundWf)
+      ? currentVisibleWf() || S.wf
+      : boundWf;
+    const snap = await runAgainstWf(afterWf, () =>
+      canvasSnapshotFull({}, { wf: afterWf }),
+    );
+    return Object.assign({ ok: true, action }, deleted, snap);
+  }
+
+  /* 前台视图动作（选中态 / 撤销栈 / 重绘）改的是「用户屏幕上正显示的那一张」：
+     本轮绑定画布不在前台时明确拒绝，绝不替用户把他正在干活的画布选中项换掉、
+     更不替他把那一张图的改动撤销掉。 */
+  if (action === "select_nodes" || action === "undo" || action === "redo") {
+    const fg = currentVisibleWf();
+    if (!boundWf || !fg || String(boundWf.id) !== String(fg.id))
+      throw new Error(I18n.t(
+        "该操作只作用于屏幕上正显示的画布：本会话所属画布当前不在前台，为避免改到你正在编辑的另一张图，已拒绝执行。",
+      ));
   }
 
   if (action === "select_nodes") {
@@ -10450,16 +10526,17 @@ async function applyVisionInspect(params) {
   };
 }
 
-async function summarizeAppOp(params) {
+async function summarizeAppOp(params, runWf) {
   params = params || {};
   if (params.action === "delete_workflow") {
-    /* 与执行体同一口径解析删除目标，把 id + 节点数 + 名称摊给用户看，
-       并把解析结果登记成「确认戳」供 applyAppOp 复核（防弹窗期间目标漂移）。
-       解析失败时不猜测目标，直接把原因显示出来（执行端还会再校验一次）。 */
+    /* 与执行体同一口径解析删除目标（同一「本轮绑定画布」，不是用户此刻看到的画布），
+       把 id + 节点数 + 名称摊给用户看，并把解析结果登记成「确认戳」供 applyAppOp
+       复核（防弹窗期间目标漂移）。解析失败时不猜测目标，直接把原因显示出来
+       （执行端还会再校验一次）。 */
     let t = null;
     let fail = "";
     try {
-      t = await resolveDeleteWfTarget(params);
+      t = await resolveDeleteWfTarget(params, { wf: runWf || null });
     } catch (e) {
       fail = (e && e.message) || String(e);
     }
@@ -10685,10 +10762,12 @@ function confirmAssistCanvasEdit(params, owner) {
   });
 }
 
-async function confirmAssistAppOp(params, owner) {
+async function confirmAssistAppOp(params, owner, runWf) {
   /* 摘要需要读一次画布列表才能显示真实 id / 节点数，故为异步；
-     调用方以 Promise 方式消费（.then / .catch），行为不变。 */
-  const info = await summarizeAppOp(params);
+     调用方以 Promise 方式消费（.then / .catch），行为不变。
+     runWf = 本轮绑定画布：删除目标在弹窗里就按「会话所属画布」解析，
+     与执行端（applyAppOp）同一口径，杜绝「显示 A、实际删 B」。 */
+  const info = await summarizeAppOp(params, runWf);
   const fromSession = canvasConfirmFromAgentSession();
   info.summary =
     (fromSession
@@ -10701,13 +10780,15 @@ async function confirmAssistAppOp(params, owner) {
 }
 
 async function applyCanvasOp(op, params, runCtx) {
+  /* 本轮绑定画布（会话「所属画布」）：应用级操作的目标解析只认它，不认栈顶。 */
+  const boundWf = (runCtx && runCtx.wf) || null;
   if (
     isCanvasNodeAgentRun() &&
     (op === "get" || op === "edit" || op === "app")
   ) {
     throw new Error(canvasDeniedForAgentNodeError());
   }
-  if (op === "app") return applyAppOp(params || {});
+  if (op === "app") return applyAppOp(params || {}, boundWf);
   if (op === "vision") {
     return await applyVisionInspect(params || {});
   }
@@ -10717,7 +10798,10 @@ async function applyCanvasOp(op, params, runCtx) {
   if (wfWriteBlocked(S.wf)) throw new Error(deletedWfError(S.wf));
   if (op === "get") {
     await ensureAgentTool("canvas_read");
-    return Object.assign({ ok: true }, await canvasSnapshotFull(params || {}));
+    return Object.assign(
+      { ok: true },
+      await canvasSnapshotFull(params || {}, { wf: boundWf }),
+    );
   }
   if (op === "edit") return await applyCanvasEdit(params || {}, runCtx || null);
   throw new Error(I18n.t("未知画布操作：") + op);
@@ -10727,6 +10811,9 @@ function handleCanvasEvent(data, runCtx) {
   const id = data && data.id;
   if (!id) return;
   runCtx = runCtx || {};
+  /* 本轮绑定画布（= 发起这一帧的会话「所属画布」，见 app-db.js dshRunTask）：
+     它是这一帧唯一的写入目标；没有它（渲染层本地直调 / 老版调用）才退回栈顶口径。 */
+  const boundWf = runCtx.wf || null;
   /* 归属：这一帧由哪一轮（runKey）发起、盖的是哪个 session 章（sessionId）。
      dshRunTask 会把两者透传进来；网关已按 sessionId 拦掉不属于本轮的帧，这里
      的 runKey 只用于本地判活与自毁，不重复裁决放行。 */
@@ -10780,11 +10867,16 @@ function handleCanvasEvent(data, runCtx) {
     try {
       let result;
       const opName = data.op || "get";
-      if (opName === "app" || opName === "vision") {
-        /* 应用级 / 识图：不绑定运行时画布袋 */
+      if (opName === "vision") {
+        /* 识图只读本机图片文件，与画布无关：不进画布上下文 */
         result = await applyCanvasOp(opName, data.params || {}, runCtx);
       } else {
-        const target = canvasTargetWf();
+        /* 目标 = 本轮绑定画布（会话「所属画布」，dshRunTask 随 runCtx 交进来）。
+           应用级 op 现在也进 runAgainstWf：status / list_workflows 的快照、rename、
+           delete 的目标全在那张图的上下文里解析，用户切走前台画布也改不到别的图。
+           并行跑多条会话时运行栈栈顶是谁纯看时序，所以只在 runCtx 没带 wf 的本地
+           调用路径上才退回旧口径。 */
+        const target = boundWf || canvasTargetWf();
         result = await runAgainstWf(target, () =>
           applyCanvasOp(opName, data.params || {}, runCtx),
         );
@@ -10799,7 +10891,7 @@ function handleCanvasEvent(data, runCtx) {
   if (canvasOpNeedsConfirm(op, data.params || {})) {
     const ask =
       op === "app"
-        ? confirmAssistAppOp(data.params || {}, frameOwner)
+        ? confirmAssistAppOp(data.params || {}, frameOwner, boundWf)
         : confirmAssistCanvasEdit(data.params || {}, frameOwner);
     ask
       .then((ans) => {
@@ -12912,9 +13004,14 @@ function rbNamedFromParams(params, aliasMap, markAliasMap) {
 async function applyCanvasEdit(params, ctx) {
   params = params || {};
   /* 二次防线：这是真正改图并落盘的入口，绑定画布若已被删除就直接抛错，
-     绝不再往内存 / 磁盘写（applyCanvasOp 已拦一次，这里防别的调用路径）。 */
+     绝不再往内存 / 磁盘写（applyCanvasOp 已拦一次，这里防别的调用路径）。
+     进函数第一行就把「本次编辑动的是哪张画布」钉成对象：调用方（handleCanvasEvent）
+     已用 runAgainstWf 把 S.wf 换成本轮所属画布，所以此刻的 S.wf 就是写入目标。
+     收尾落盘按这个对象自己的 id 写 —— 编辑途中的 await（图片资产拷贝）里用户可能
+     切了画布，届时 S.wf 已是另一张图，再按 S.wf 存就是「存了别人的、丢了自己的」。 */
   if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
-  if (wfWriteBlocked(S.wf)) throw new Error(deletedWfError(S.wf));
+  const editWf = S.wf;
+  if (wfWriteBlocked(editWf)) throw new Error(deletedWfError(editWf));
   const warnings = [];
   const created = [];
   const updated = [];
@@ -13242,6 +13339,13 @@ async function applyCanvasEdit(params, ctx) {
     for (const n of created) {
       if (set.has(n.id)) aliasMap.delete(n.id);
     }
+    /* Agent 侧删节点绕过了 deleteNodes：设置窗若绑在被删节点上同样必须关掉
+       （quiet —— 这条路径的反馈走 warnings 回执，不弹用户提示；本函数随后自己重绘落盘）。 */
+    closeNodeSettingsDialogIfStale({
+      silentRerender: true,
+      skipSave: true,
+      quiet: true,
+    });
   }
 
   const createdLive = created.filter((n) => nodeById(n.id));
@@ -13506,14 +13610,17 @@ async function applyCanvasEdit(params, ctx) {
     }
   }
 
-  if (S._canvasEditVisible !== false) {
+  /* 收尾落盘：只有「这张就是用户正看着的画布」才重绘 + 走前台保存通道；
+     否则（会话所属画布在后台 / 用户中途切走了）不碰他的画面，直接按对象自己的 id
+     落盘 —— persistWf 用 wf.id 写 wfSave，写谁就是谁，绝不会串到前台那张图上。 */
+  if (editWf === currentVisibleWf() && S._canvasEditVisible !== false) {
     renderCanvas();
     /* 不平移/缩放用户视角：节点在世界坐标中更新，相机保持不动 */
     renderStatus();
     if (typeof renderSidebar === "function" && S.sidebarOpen) renderSidebar();
     scheduleSave(true);
   } else {
-    persistWf(S.wf);
+    persistWf(editWf);
   }
 
   const bits = [];

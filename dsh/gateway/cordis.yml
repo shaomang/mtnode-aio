@@ -156,7 +156,9 @@
   name: '@deepseek-ai/dsh-sandbox-local'
   config:
     # win32 console-flash workaround: noop runner (see gateway.mjs applySandboxWorkaround)
-    runnerCommand: ["C:\\nvm4w\\nodejs\\node.exe", "E:\\dev\\tools\\pipeline-console\\dsh\\gateway\\noop-runner.cjs"]
+    # 占位值(可执行名 + 同目录相对路径)，不含任何开发机路径;win32 首次启动时
+    # applySandboxWorkaround 会把整段改写为 [process.execPath, <gateway 目录>/noop-runner.cjs]。
+    runnerCommand: ["node.exe", "./noop-runner.cjs"]
     runnerFailureSignatures: ['noop-runner:']
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'

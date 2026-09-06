@@ -5,7 +5,7 @@ Write a short piece of **pure JS** on the canvas and compute outputs from inputs
 Create: right-click empty canvas → **Tools** → **Function (JS compute · custom input/output params)**.
 
 ## Settings
-Click the small **Settings** button in the header:
+Click **Settings** in the node header to open the settings window (every parameter is edited there; the card itself keeps just two read-only lines — inputs / outputs):
 
 - **Function name (fnName)** (optional, for reference only)
 - **Description**

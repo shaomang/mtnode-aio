@@ -350,6 +350,8 @@ const guides = {
 - **输出**：端口 0 = 音频（下游可试听 / 保存）· 端口 1 = 控制输出
 
 ## 参数
+点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
+
 - **输出路径**：\`.wav\` 保存位置（相对工作目录 / 超级节点子文件夹）
 - **抽卡次数**：多次尝试（1–10），取其中一次结果
 - **种子**：固定种子可复现；每次抽卡种子 +1
@@ -368,6 +370,8 @@ const guides = {
 - **输出**：端口 0 = 语音音频（下游可试听 / 保存）· 端口 1 = 控制输出
 
 ## 参数
+点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
+
 - **输出路径**：音频保存位置（相对工作目录 / 超级节点子文件夹）
 - **音色**：GPT-SoVITS 音色库里的音色名，留空则交给后端默认音色
 - **语速**：0.5 – 2.0（默认 1.0）
@@ -388,12 +392,26 @@ const guides = {
 - **输出**：端口 0 = 视频（下游可试看）· 端口 1 = 控制输出
 
 ## 参数
+点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
+
 - **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）
 - **生成模式**：\`fl2va\` = 首末帧（默认）；\`r2v\` = 多参考图
 - **时长**：4–15 秒（默认 5）
 - **分辨率**：auto（按比例默认）/ 480p / 720p / 1080p（显存不足自动降档）
 - **后处理**：4K 超分 + 补帧（默认开；24G 显存建议关以提速）
 - **抽卡次数**：多次尝试（1–10）
+
+## 自建 ComfyUI 工作流（可选）
+
+节点默认走内置 H3 链（首末帧 / 多参考）。想跑**自己搭的 ComfyUI 图**：点节点头部 **⚙ 设置** 打开设置窗口 → 「工作流来源」选 **自建 ComfyUI 工作流**。
+
+- **库**：工作流存在本机全局库（\`<数据目录>/h3-workflows/\`），在 **H3 管理窗口 · 自建工作流库** 里导入（拖 JSON 文件 / 粘贴 JSON），ComfyUI 的 **API 格式**与 **UI 格式**都能识别（UI 格式自动转 API 格式，自动丢掉 Reroute / Note / 常量原语等前端节点）。「管理」按钮直接打开那个窗口。
+- **端子**：图里被「提升为节点参数」的字段会在设置窗口里各占一个参数——**端口 1 = 文本 · 端口 2+ = 素材（图 / 视频 / 音频）**，顺序就是参数表顺序，可用 ▲▼ 调整。默认参数表取扫描建议（提示词 / LoadImage / 种子…），可增删改名。
+- **直填值**：每个参数都可在设置窗口里直接填值；**端子接了数据时端子优先**，端子没接才用直填值，都没有就沿用工作流 JSON 里的原值。素材填本机绝对路径，生成时自动上传到 ComfyUI。
+- **输出节点**：图里有多个 \`Save*\` 时指定取哪一个当本节点的产物；留空 = 最后一个视频产物。
+- **失效与校验**：↻ 会把参数表与库里最新的图重新同步（图上改掉的落点标「落点已失效」，不静默删）；「校验节点包」按后端 \`/object_info\` 比对自定义节点是否装了（后端没运行则跳过，**不阻断生成**）。
+- 种子沿用节点上的 **种子 / 摇数**：一次执行把该种子统一下发到图里**所有** \`seed\` / \`noise_seed\` 类字段。
+- 自建模式下 **时长 / 分辨率 / 采样 / 4K 超分补帧等内置参数一律失效**（由工作流图自己决定，设置窗口里也不再出现这些项），也不做 24G 钳制；抽卡、进度、取消、输出路径与全局互斥照常。
 
 ## 注意
 - 全局同一时刻只允许 **1 个音视频任务**（音乐 / 视频互斥）。
@@ -407,6 +425,9 @@ const guides = {
 ## 端子
 - **输入**：文本（可多路 / @引用）
 - **输出**：处理后的文本
+
+## 设置
+**服务商 / 模型 / 温度**都在节点头部 **⚙ 设置** 打开的设置窗口里改（◈ 预览看的是运行时真正发出去的请求）；节点卡片上只显示一行当前摘要。提示词属于内容，仍写在节点里。
 
 ## 运行显示
 开了「智能助手」后，**思考与输出分开显示**：思考折叠成 **「◉ 思考 · N 字」** 段（N 只数思考的字数），模型说出来的话以正常字号逐段显示，**🔧 工具**调用就近插在发生位置。输出端子给下游的仍是完整正文。
@@ -481,6 +502,9 @@ const guides = {
 - **输入**：文本 / 引用
 - **输出**：任务产物文本
 
+## 设置
+**预设 / 供应商 / 模型 / 思考强度**都在节点头部 **⚙ 设置** 打开的设置窗口里改（预设与「智能会话」同一张表）；节点卡片上只显示一行当前摘要。任务描述属于内容，仍写在节点里。
+
 ## 会话模式（💬）
 点头部的 **💬** 切成会话模式：微信风格气泡（助手左、用户右），历史随节点保存，多轮追问就在节点里进行。旧的「文本对话」节点已移除，打开旧画布时会自动迁移成这种带会话模式的智能任务节点。
 
@@ -493,6 +517,9 @@ const guides = {
   control: {
     title: "执行 / 清空",
     body: `批控节点。把要操作的节点连到本节点（连出或连入均可），点 ▶ 一次执行或清空。
+
+## 设置
+**动作（执行 / 清空）、「补缺」与「固定节点」**在节点头部 **⚙ 设置** 打开的设置窗口里改；要改「管哪些节点」仍在画布上连线，设置窗口里只列清单。
 
 ## 端子
 - **输入 / 输出**：控制（双向都算目标）
@@ -540,6 +567,9 @@ const guides = {
     title: "需求等待",
     body: `监视一个文件路径。文件尚未生成时挡住后续；就绪后放行。不输出文件内容，下游自己读约定路径。
 
+## 设置
+**监视路径与轮询间隔**在节点头部 **⚙ 设置** 打开的设置窗口里改；「浏览 / 位置」是动作按钮，仍留在节点上。
+
 ## 端子
 - **输入**：无
 - **输出**：控制（连到下游，避免下游提前跑）`,
@@ -552,7 +582,7 @@ const guides = {
 
 节点上的 **▶** 不是立刻跑下游，而是**打开闹钟**：
 
-1. 先选好模式和时间。
+1. 先在节点头部 **⚙ 设置** 打开的设置窗口里选好模式和时间（模式 / 计划时间 / 间隔 / Cron 全在那里改）。
 2. 点 **▶**：开始盯着时钟，等到设定时刻才触发。
 3. 点 **■ / 停止**：取消等待，闹钟关掉。
 
@@ -573,6 +603,9 @@ const guides = {
     title: "延时器",
     body: `控制脉冲到达后等待设定时长（天 / 时 / 分），再沿输出继续。
 
+## 设置
+**延时时长**在节点头部 **⚙ 设置** 打开的设置窗口里改；节点上只显示一行当前摘要。
+
 ## 端子
 - **输入**：控制
 - **输出**：控制
@@ -583,6 +616,9 @@ const guides = {
     title: "序列器",
     body: `一路入、多路出。脉冲到达后**按顺序**点燃输出 1…N，可设步间间隔（全 0 则立即接续）。
 
+## 设置
+**输出路数与步间间隔**在节点头部 **⚙ 设置** 打开的设置窗口里改；节点上只显示一行当前摘要。
+
 ## 端子
 - **输入**：控制
 - **输出**：2–8 路（带编号）`,
@@ -590,6 +626,9 @@ const guides = {
   gate: {
     title: "闸门",
     body: `多路输入 **AND**：按配置的输入路数，**每一口**都要收到脉冲才放行一次，然后清零到达标记。未接线的口也会挡住放行。
+
+## 设置
+**输入路数**在节点头部 **⚙ 设置** 打开的设置窗口里改；节点上只显示一行当前摘要，「清除到达」是动作按钮留在节点上。
 
 ## 端子
 - **输入**：2–8 路（编号固定，断开不会挤位）
@@ -601,6 +640,9 @@ const guides = {
     title: "分发",
     body: `一路入、多路出。脉冲到达后**同时**点亮全部输出（序列器的并行版）。
 
+## 设置
+**输出路数**在节点头部 **⚙ 设置** 打开的设置窗口里改；节点上只显示一行当前摘要。
+
 ## 端子
 - **输入**：控制
 - **输出**：2–8 路`,
@@ -608,6 +650,9 @@ const guides = {
   counter: {
     title: "计数",
     body: `每收到 N 次控制脉冲，放行一次并清零计数。
+
+## 设置
+**N（每几次放行）**在节点头部 **⚙ 设置** 打开的设置窗口里改；节点上只显示一行当前摘要，「清零计数」是动作按钮留在节点上。
 
 ## 端子
 - **输入**：控制
@@ -618,6 +663,9 @@ const guides = {
   mutex: {
     title: "互斥",
     body: `多路输入 **OR**：任一输入脉冲即沿输出放行（先到即触发）。
+
+## 设置
+**输入路数与择一模式**在节点头部 **⚙ 设置** 打开的设置窗口里改；节点上只显示一行当前摘要。
 
 ## 选择模式（▶ 试跑时标记）
 - **先到优先**
@@ -678,6 +726,8 @@ const en = {
 - **Output**: port 0 = audio (play / save downstream) · port 1 = control output
 
 ## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
 - **Output path**: \`.wav\` destination (relative to workspace / super subfolder)
 - **Attempts**: gacha rolls (1–10); keep one result
 - **Seed**: fixed seed reproduces; each roll bumps the seed by +1
@@ -693,6 +743,8 @@ const en = {
 - **Output**: port 0 = speech audio (play / save downstream) · port 1 = control output
 
 ## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
 - **Output path**: audio destination (relative to workspace / super subfolder)
 - **Voice**: a name from the GPT-SoVITS voice library; empty = whatever the backend defaults to
 - **Speed**: 0.5 – 2.0 (default 1.0)
@@ -710,12 +762,26 @@ const en = {
 - **Output**: port 0 = video (preview downstream) · port 1 = control output
 
 ## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
 - **Output path**: \`.mp4\` destination (relative to workspace / super subfolder)
 - **Mode**: \`fl2va\` = first/last frame (default); \`r2v\` = multiple reference images
 - **Duration**: 4–15 s (default 5)
 - **Resolution**: auto (proportional) / 480p / 720p / 1080p (auto-downscaled when VRAM is low)
 - **Post**: 4K upscale + interpolation (on by default; disable on 24G for speed)
 - **Attempts**: gacha rolls (1–10)
+
+## Custom ComfyUI workflow (optional)
+
+By default the node runs the built-in H3 chain (first/last frame or multi-reference). To run **a graph you built yourself**: click **⚙ Settings** in the node header → set **Workflow source** to **Custom ComfyUI workflow**.
+
+- **Library**: workflows live in a machine-wide library (\`<data dir>/h3-workflows/\`), imported in the **H3 manager window · custom workflow library** (drop a JSON file / paste JSON). Both the ComfyUI **API format** and the **UI format** are detected (UI graphs are converted, front-end-only nodes such as Reroute / Note / primitives are dropped). The **Manage** button opens that window.
+- **Ports**: every field you promote to a node parameter takes one input port — **port 1 = text · port 2+ = media (image / video / audio)** — in parameter-table order (▲▼ reorders), all listed in the settings window. The initial table comes from the graph scan (prompt / LoadImage / seed…) and is fully editable.
+- **Manual values**: each parameter also accepts a literal value in the settings window; **a wired port wins over the manual value**, and if neither is given the value stored in the workflow JSON is kept. Media values are absolute local paths, uploaded to ComfyUI at run time.
+- **Output node**: when the graph has several \`Save*\` nodes, pick which artifact this node returns (blank = last video output).
+- **Refresh & validation**: ↻ re-syncs the parameter table with the stored graph (targets that vanished are flagged, never silently deleted); **Validate nodes** diffs node classes against the backend \`/object_info\` (skipped while the backend is down — it never blocks generation).
+- The node's **Seed / Reroll** control drives seeding: one run writes that seed into **every** \`seed\` / \`noise_seed\`-style field in the graph.
+- In custom mode the built-in **duration / resolution / sampler / 4K post** options no longer apply — the graph decides them and the settings window stops showing them; no 24G clamping happens either. Rolls, progress, cancel, output path and the global media lock stay as they are.
 
 ## Notes
 - Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive).
@@ -726,6 +792,9 @@ const en = {
 ## Ports
 - **In**: text (multi / @refs)
 - **Out**: text
+
+## Settings
+**Provider / model / temperature** are changed in the settings window opened by **⚙ Settings** in the node header (◈ previews the exact request that will be sent); the card itself shows a one-line summary. The prompt is content, so it stays in the node.
 
 ## While it runs
 With the assistant on, **thinking and output are shown apart**: reasoning collapses into **“◉ Thinking · N chars”** blocks (N counts reasoning only), what the model says appears as normal body text, and **🔧 tool** calls sit inline where they happened. The output port still hands downstream the full text.` },
@@ -763,12 +832,18 @@ Placing music or video gen also creates a bound save node on the right (fixed of
 ▶ fires the inner **start** port.` },
   agent_task: { title: "Agent task", body: `Agent run: files, web, shell. Output is filled from the run. Tool allowlist is the Approvals preset.
 
+## Settings
+**Preset / provider / model / thinking effort** are changed in the settings window opened by **⚙ Settings** in the node header (the preset list is the same one the agent chat uses); the card itself shows a one-line summary. The task text is content, so it stays in the node.
+
 ## Chat mode (💬)
 The **💬** button in the node header switches to chat mode: WeChat-style bubbles (assistant left, user right), history saved with the node, follow-ups right on the canvas. The old standalone “Chat” node was removed — opening an older canvas migrates it into an agent task in chat mode.
 
 ## While it runs
 **Thinking and output are shown apart.** The run renders in chronological segments: **“◉ Thinking · N chars”** collapses the model's private reasoning (N counts reasoning only), text the model says mid-run shows as **normal body text**, **🔧 tool** calls sit inline where they happened, errors append as ⚠. Every tool call or new reasoning step starts a fresh segment; the node header's **「◉ Thinking」** button opens the big view (reasoning on top, output below). The output port still hands downstream the full text.` },
-  control: { title: "Run / Clear", body: `Batch control. Wire targets in or out, then ▶ to run or clear them. Fill-only skips nodes that already have output.` },
+  control: { title: "Run / Clear", body: `Batch control. Wire targets in or out, then ▶ to run or clear them. Fill-only skips nodes that already have output.
+
+## Settings
+**The action (run / clear), “fill gaps” and “pinned”** are edited in the settings window opened by **⚙ Settings** in the node header; which nodes it governs is still changed by wiring on the canvas — the window just lists them.` },
   "ctrl-start": { title: "Start", body: `Fixed task entry. Task ▶ pulses from here. Cannot delete.
 
 ## Ports
@@ -791,6 +866,9 @@ The **💬** button in the node header switches to chat mode: WeChat-style bubbl
 - **Out bottom**: no` },
   wait_file: { title: "Wait for file", body: `Watch a path. Blocks until the file exists, then releases. Does not emit file contents.
 
+## Settings
+The **watched path and poll interval** are edited in the settings window opened by **⚙ Settings** in the node header; Browse / Reveal stay on the node — they are actions, not settings.
+
 ## Ports
 - **In**: none
 - **Out**: control` },
@@ -800,7 +878,7 @@ The **💬** button in the node header switches to chat mode: WeChat-style bubbl
 
 The node’s **▶** does **not** run targets immediately. It **starts the alarm**:
 
-1. Pick a mode and time.
+1. Pick the mode and time in the settings window opened by **⚙ Settings** in the node header (mode / scheduled time / interval / Cron all live there).
 2. Click **▶** to watch the clock until the next due time.
 3. Click **stop** to cancel waiting.
 
@@ -818,20 +896,38 @@ The status line shows the next fire time. **Fire now** sends one pulse immediate
 In a task control flow, an incoming pulse waits until the **next** scheduled time, then continues downstream.` },
   delayer: { title: "Delayer", body: `Wait the configured duration after a pulse, then continue.
 
+## Settings
+**The delay length** is edited in the settings window opened by **⚙ Settings** in the node header; the node keeps a one-line summary.
+
 ## Ports
 - **In / Out**: control` },
   sequencer: { title: "Sequencer", body: `One in, many outs. Fires lanes **in order**, optional gap.
+
+## Settings
+**Output count and the gap between steps** are edited in the settings window opened by **⚙ Settings** in the node header; the node keeps a one-line summary.
 
 ## Ports
 - **Out**: 2–8 numbered` },
   gate: { title: "Gate", body: `AND join: every **configured** input port must receive a pulse (unwired ports still block). Then fires once and resets.
 
+## Settings
+**Input count** is edited in the settings window opened by **⚙ Settings** in the node header; the node keeps a one-line summary, and “Clear arrivals” stays on the node as an action.
+
 ▶ force-releases.` },
-  splitter: { title: "Splitter", body: `One in, many outs. Fires all lanes **in parallel**.` },
+  splitter: { title: "Splitter", body: `One in, many outs. Fires all lanes **in parallel**.
+
+## Settings
+**Output count** is edited in the settings window opened by **⚙ Settings** in the node header; the node keeps a one-line summary.` },
   counter: { title: "Counter", body: `Release once every N pulses, then reset.
 
+## Settings
+**N (hits before passing)** is edited in the settings window opened by **⚙ Settings** in the node header; the node keeps showing a one-line summary, and “Reset count” stays on the node as an action.
+
 ▶ counts once.` },
-  mutex: { title: "Mutex", body: `OR join: any input pulse releases the single output. ▶ marks a lane by first / priority / random.` },
+  mutex: { title: "Mutex", body: `OR join: any input pulse releases the single output. ▶ marks a lane by first / priority / random.
+
+## Settings
+**Input count and the pick mode** are edited in the settings window opened by **⚙ Settings** in the node header; the node keeps a one-line summary.` },
 };
 
 /* 已随发布版同步的节点指南以磁盘 md 为准（正文比这里的内嵌模板新，

@@ -8,7 +8,7 @@ At the scheduled **local time**, send a “you may start” pulse to whatever is
 
 The node’s **▶** does **not** run targets immediately. It **starts the alarm**:
 
-1. Pick a mode and time.
+1. Pick the mode and time in the settings window opened by **⚙ Settings** in the node header (mode / scheduled time / interval / Cron all live there).
 2. Click **▶** to watch the clock until the next due time.
 3. Click **stop** to cancel waiting.
 

@@ -453,6 +453,10 @@ body.theme-light .side-sess-time {
   color: var(--muted);
   opacity: .9;
 }
+body.theme-light .side-sess-wf {
+  color: var(--muted);
+  opacity: .9;
+}
 body.theme-light .side-sess-btn {
   background: var(--bg2);
   border: 1px solid var(--bd2);

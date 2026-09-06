@@ -6,6 +6,9 @@ Pushes the data input text to a target `host:port` channel (TCP / UDP). Terminal
 - **Input**: port 0 = data (text to send) · port 1 = control input (trigger)
 - **Output**: none
 
+## Settings
+Target address / port / channel / protocol are all edited in the settings window opened by **⚙ Settings** in the node header; “Send / Clear / netdebug” stay on the node as actions, and the node shows just a one-line summary of the current settings.
+
 ## Options
 - **Protocol**: TCP / UDP
 - **Channel**: multiplexed per channel id (0–65535) on one port; a `net_recv` on the same channel receives it

@@ -2011,6 +2011,42 @@
    .asset-node 由 nodeElement 打在输入族（.in）底色之上，只用来收本族排版。 */
 .wf-node.asset-node .n-body { gap: 4px; }
 
+/* 未绑定 / 素材失联的引导块：一句「为什么」＋一排入口（绑定 · 上传 · 重新扫描 · 打开素材库） */
+.n-asset-bind {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px;
+  border: 1px dashed var(--bd2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .02);
+}
+
+.n-asset-bind > b {
+  font-size: 11.5px;
+  color: var(--cyan);
+}
+
+.n-asset-bind.lost {
+  border-color: rgba(255, 178, 102, .55);
+  background: rgba(255, 178, 102, .07);
+}
+
+.n-asset-bind.lost > b { color: var(--warn); }
+
+.n-asset-bindtip {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.n-asset-bindops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
 .n-asset-list {
   flex: 1;
   min-height: 0;
@@ -2031,6 +2067,12 @@
   border: 1px solid var(--bd2);
   border-radius: 4px;
   background: rgba(255, 255, 255, .02);
+}
+
+/* 失联：端子还在原位，只是内容读不到 → 整条压暗，别让人以为还能编辑 */
+.n-asset-item.lost {
+  opacity: .62;
+  border-style: dashed;
 }
 
 .n-asset-hd {

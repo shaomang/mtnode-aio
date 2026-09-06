@@ -7,7 +7,7 @@ A tool node is a **super-like container**: the processing it runs is its **inner
 Create: right-click empty canvas → **Tools** → **Tool (agent-callable · input/output param ports)**.
 
 ## Settings (params are ports)
-Click the small **Settings** button in the header:
+Click **Settings** in the node header to open the settings window (every parameter is edited there; the tool card itself keeps just the name / description and two read-only lines — inputs / outputs):
 
 - **Tool name (name)**: also the call name the agent uses. The title follows the tool name by default; once you rename the title manually, the two stay independent.
 - **Description**: say clearly *what it does / when to use / watch out for* — the agent decides whether to call this tool based on it.

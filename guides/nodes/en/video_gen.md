@@ -9,6 +9,8 @@ Right-click the canvas → **Process › Video generation › Minimax H3**. Loca
 - **Output**: port 0 = video (preview downstream) · port 1 = control output
 
 ## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
 - **Output path**: `.mp4` destination (relative to workspace / super subfolder)
 - **Mode**: `fl2va` = first/last frame (default); `r2v` = multiple reference images
 - **Duration**: 4–15 s (default 5)
@@ -18,15 +20,15 @@ Right-click the canvas → **Process › Video generation › Minimax H3**. Loca
 
 ## Custom ComfyUI workflow (optional)
 
-By default the node runs the built-in H3 chain. To run **a graph you built yourself**: open the node settings panel → set **Workflow source** to **Custom ComfyUI workflow**.
+By default the node runs the built-in H3 chain (first/last frame or multi-reference). To run **a graph you built yourself**: click **⚙ Settings** in the node header → set **Workflow source** to **Custom ComfyUI workflow**.
 
 - **Library**: workflows live in a machine-wide library (`<data dir>/h3-workflows/`), imported in the **H3 manager window · custom workflow library** (drop a JSON file / paste JSON). Both the ComfyUI **API format** and the **UI format** are detected (UI graphs are converted, front-end-only nodes such as Reroute / Note / primitives are dropped). The **Manage** button opens that window.
-- **Ports**: every field you promote to a node parameter takes one input port — **port 1 = text · port 2+ = media (image / video / audio)** — in parameter-table order (▲▼ reorders). The initial table comes from the graph scan (prompt / LoadImage / seed…) and is fully editable.
-- **Manual values**: each parameter also accepts a literal value in the panel; **a wired port wins over the manual value**, and if neither is given the value stored in the workflow JSON is kept. Media values are absolute local paths, uploaded to ComfyUI at run time.
+- **Ports**: every field you promote to a node parameter takes one input port — **port 1 = text · port 2+ = media (image / video / audio)** — in parameter-table order (▲▼ reorders), all listed in the settings window. The initial table comes from the graph scan (prompt / LoadImage / seed…) and is fully editable.
+- **Manual values**: each parameter also accepts a literal value in the settings window; **a wired port wins over the manual value**, and if neither is given the value stored in the workflow JSON is kept. Media values are absolute local paths, uploaded to ComfyUI at run time.
 - **Output node**: when the graph has several `Save*` nodes, pick which artifact this node returns (blank = last video output).
 - **Refresh & validation**: ↻ re-syncs the parameter table with the stored graph (targets that vanished are flagged, never silently deleted); **Validate nodes** diffs node classes against the backend `/object_info` (skipped while the backend is down — it never blocks generation).
 - The node's **Seed / Reroll** control drives seeding: one run writes that seed into **every** `seed` / `noise_seed`-style field in the graph.
-- In custom mode the built-in **duration / resolution / sampler / 4K post** options no longer apply (the graph decides them) and no 24G clamping happens; rolls, progress, cancel, output path and the global media lock stay as they are.
+- In custom mode the built-in **duration / resolution / sampler / 4K post** options no longer apply — the graph decides them and the settings window stops showing them; no 24G clamping happens either. Rolls, progress, cancel, output path and the global media lock stay as they are.
 
 ## Notes
 - Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive).

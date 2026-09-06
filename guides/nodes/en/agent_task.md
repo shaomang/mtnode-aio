@@ -4,6 +4,9 @@
 
 Agent run: files, web, shell. Output is filled from the run. Tool allowlist is the Approvals preset.
 
+## Settings
+**Preset / provider / model / thinking effort** are changed in the settings window opened by **⚙ Settings** in the node header (the preset list is the same one the agent chat uses); the card itself shows a one-line summary. The task text is content, so it stays in the node.
+
 ## Chat mode (💬)
 The **💬** button in the node header switches to chat mode: WeChat-style bubbles (assistant left, user right), history saved with the node, follow-ups right on the canvas. The old standalone “Chat” node was removed — opening an older canvas migrates it into an agent task in chat mode.
 

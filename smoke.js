@@ -236,14 +236,16 @@ mockServer.listen(0, '127.0.0.1', () => {
       ensureDefaultProviders();
       const t1 = S.config.providers.find((p) => p.type === 'text_openai');
       const i1 = S.config.providers.find((p) => p.type.startsWith('image_'));
-      log('first text provider=' + t1.id + ':' + t1.name + ' models=' + t1.models.join(','));
-      log('first image provider=' + i1.id + ':' + i1.name + ' models=' + i1.models.join(',') + ' baseUrlEmpty=' + (i1.baseUrl === ''));
+      log('first text provider=' + (t1 ? t1.id + ':' + t1.name + ' models=' + (t1.models || []).join(',') : '(本机 config 无文本服务商)'));
+      log('first image provider=' + (i1 ? i1.id + ':' + i1.name + ' models=' + (i1.models || []).join(',') + ' baseUrlEmpty=' + (i1.baseUrl === '') : '(本机 config 无图像服务商)'));
       log('stability/mj no-key kept (no auto-remove)=' + S.config.providers.some((p) => p.id === 'stability' || p.id === 'mj'));
 
       // —— 请求预览 ——
       const n2b = S.wf.nodes.find((x) => x.kind === 'proc_text');
+      /* 节点原来指的可能是本机配置里已不存在的服务商：回落第一个文本服务商再预览 */
+      if (!S.config.providers.some((p) => p.id === n2b.providerId)) n2b.providerId = t1 && t1.id;
       const prov = S.config.providers.find((p) => p.id === n2b.providerId);
-      n2b.providerId = prov.id; n2b.model = 'deepseek-v4-flash';
+      n2b.model = 'deepseek-v4-flash';
       prov.apiKey = 'sk-test-123';
       const spec0 = buildSpec(n2b, prov, 0);
       log('spec temperature=' + spec0.temperature);
@@ -251,13 +253,19 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('preview ok=' + pv.ok + ' url=' + (pv.request && pv.request.url) + ' method=' + (pv.request && pv.request.method));
       log('preview body model=' + (pv.request && pv.request.body.model) + ' temp=' + (pv.request && pv.request.body.temperature) + ' hasAuth=' + ((pv.request.headers.Authorization || '').indexOf('Bearer sk-test') === 0));
 
-      // —— 批量按钮在头部 + API toggle 面板 ——
+      // —— 批量按钮在头部 + 「设置」走 ⚙ 跳窗（body 里不再内联展开参数面板）——
       renderCanvas();
       log('batch toggle btn=' + (document.querySelectorAll('.n-batch-toggle').length > 0));
-      S.uiOpenNode = n2b.id;
-      renderCanvas();
-      const panel = document.querySelector('.n-api-panel');
-      log('api panel open=' + (panel && panel.style.display !== 'none') + ' hasSelect=' + (panel && !!panel.querySelector('select')) + ' hasModel=' + (panel && !!panel.querySelector('input[type=text]')));
+      log('no inline api panel=' + (document.querySelectorAll('.n-api-panel').length === 0));
+      const cardN = document.querySelector('.wf-node[data-nid="' + n2b.id + '"]');
+      log('header gear present=' + !!(cardN && cardN.querySelector('.n-settings-btn')));
+      log('proc_text body has no setting inputs=' + !!(cardN && cardN.querySelectorAll('.n-body input, .n-body select').length === 0));
+      openNodeSettingsDialog(n2b);
+      const sdlg = document.querySelector('#ovBody .node-settings-form');
+      log('settings dialog open=' + (!!sdlg && document.querySelector('#overlay').style.display === 'flex') + ' hasSelect=' + !!(sdlg && sdlg.querySelector('select')) + ' hasInput=' + !!(sdlg && sdlg.querySelector('input')));
+      log('settings dialog wide persistent=' + (document.querySelector('#overlay .overlay-box').classList.contains('wide') && overlayPersistent));
+      closeNodeSettingsDialog();
+      log('settings dialog closed=' + (document.querySelector('#overlay').style.display !== 'flex'));
 
       // —— 设置栏 persistent（点击外部不关闭） ——
       openSettings();

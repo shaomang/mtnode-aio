@@ -24,8 +24,13 @@
  *
  * 安全垫（都不实删）：
  *   覆盖写盘  → 旧文件先进 <素材夹>/.versions/，同一 itemId 只留最近 5 份（撤销要能回滚）
+ *              旧文件是 0 字节（这一项本来还没内容）时不留版本，回写 prevEmpty 由渲染层
+ *              把撤销解释成「清回空」
  *   删除任何东西 → 先进 <root>/.trash/<时间戳>__<名字>/，用户在资源管理器里可手工找回
  *   任何 rel 入参 → 逐段净化 + 前缀校验，绝不允许逃出根目录
+ *
+ * 内容是否「变了」由 assets:itemSame 在主进程按字节判定（画布里的图与库里的图路径
+ * 永远不同，只有内容比得上才叫同一个）—— 素材节点端子的同步提示靠它，不靠猜路径。
  *
  * 渲染层没有 fs：扫描 / 建夹 / 改名 / 删除 / 素材与条目 CRUD / 导入 全部经这里的
  * IPC（preload 白名单桥 api.assets*，方法名与 tools* 同风格）。原子写沿用
@@ -595,7 +600,13 @@ function registerAssetsIpc(opts) {
         return { ok: false, error: t("目录不存在") };
       const base = safeName(arg && arg.name, "");
       if (!base) return badArg(t("名称不能为空"));
-      const parentAbs = relToAbs(root, (arg && arg.toCatRel) || (rel.indexOf("/") < 0 ? "" : rel.slice(0, rel.lastIndexOf("/"))));
+      /* toCatRel 是「移动到哪个分类」，空串 ＝ 移到根目录，必须与「没传这个参数」（只改名）
+         区分开：用 || 兜底会把移到根目录当成没移，界面点「移动到根目录」静默不生效。 */
+      const toCat = arg && typeof arg.toCatRel === "string" ? arg.toCatRel : null;
+      const parentAbs = relToAbs(
+        root,
+        toCat !== null ? toCat : rel.indexOf("/") < 0 ? "" : rel.slice(0, rel.lastIndexOf("/")),
+      );
       fs.mkdirSync(parentAbs, { recursive: true });
       const dest = path.join(parentAbs, uniqueName(parentAbs, base, ""));
       if (path.resolve(dest) === path.resolve(abs)) return { ok: true, rel: rel, name: base };
@@ -639,7 +650,9 @@ function registerAssetsIpc(opts) {
     }
   });
 
-  /* 改显示名 / 描述；带 items:[{id,title}] 时只同步标题（端子名即条目标题） */
+  /* 改显示名 / 描述；带 items:[{id,title}] 时同步标题与**顺序**（端子名即条目标题、
+     端子序号即条目序号 —— 素材设置里改的名与拖好的序都要落盘，否则下次扫描全被冲掉）。
+     只在 items 里出现的条目排前面，没点到的按原相对顺序跟在后面：传子集也绝不丢条目。 */
   ipcMain.handle("assets:saveMeta", (e, arg) => {
     try {
       const root = rootPath().root;
@@ -654,16 +667,22 @@ function registerAssetsIpc(opts) {
       if (typeof arg.desc === "string") meta.desc = arg.desc;
       if (Array.isArray(arg.items)) {
         const items = normItems(meta.items);
-        const titles = new Map();
+        const byId = new Map(items.map((it) => [it.id, it]));
+        const order = [];
+        const seen = new Set();
         for (const e2 of arg.items) {
-          if (e2 && ITEM_ID_RE.test(String(e2.id || "")))
-            titles.set(String(e2.id), String(e2.title == null ? "" : e2.title).trim());
+          if (!e2 || !ITEM_ID_RE.test(String(e2.id || ""))) continue;
+          const id = String(e2.id);
+          if (!byId.has(id) || seen.has(id)) continue; // 未知 id / 重复 id：不参与排序
+          seen.add(id);
+          order.push(id);
+          const title = String(e2.title == null ? "" : e2.title).trim();
+          if (title) byId.get(id).title = title;
         }
-        for (const it of items) {
-          if (titles.has(it.id))
-            it.title = titles.get(it.id) || it.title || t("内容");
-        }
-        meta.items = items;
+        const next = order.map((id) => byId.get(id));
+        const placed = new Set(order);
+        for (const it of items) if (!placed.has(it.id)) next.push(it);
+        meta.items = next;
       }
       writeMarker(found.dir, meta);
       return { ok: true, asset: assetSummary(root, found.dir, found.rel, meta) };
@@ -753,7 +772,34 @@ function registerAssetsIpc(opts) {
     const oldName = String(it.file || "").split("/").pop();
     const prevAbs = oldName ? path.join(itemsDir, oldName) : "";
     const hadFile = !!prevAbs && fs.existsSync(prevAbs) && fs.statSync(prevAbs).isFile();
-    const prevVersion = hadFile ? stashVersion(found.dir, itemId, prevAbs) : "";
+    /* 0 字节 ＝ 这一项还没有内容（新建的空文本条目尤其常见）。
+       往空条目里写第一份内容不算「覆盖」：不留版本（撤销＝清回空，见 prevEmpty），
+       否则每填一条素材都会往 .versions/ 塞一个空文件，把真正有价值的历史挤掉。 */
+    let hadContent = false;
+    try {
+      hadContent = hadFile && (fs.statSync(prevAbs).size || 0) > 0;
+    } catch {
+      hadContent = false;
+    }
+    /* 自指保护：源文件就是这一条此刻那份 —— 什么都不做。
+       不拦的话：旧文件先被搬进 .versions/，再复制时「源文件不存在」，
+       条目反而凭空空掉（用户在文件选择框里挑了素材库自己那份）。 */
+    const srcAbs =
+      arg && typeof arg.srcPath === "string" && arg.srcPath.trim()
+        ? path.resolve(String(arg.srcPath).trim())
+        : "";
+    if (srcAbs && hadFile && srcAbs === path.resolve(prevAbs)) {
+      return {
+        ok: true,
+        noop: true, // 渲染层据此不记撤销账（什么都没变）
+        item: it,
+        prevVersion: "",
+        prevEmpty: false,
+        asset: assetSummary(root, found.dir, found.rel, found.meta),
+      };
+    }
+    const prevVersion = hadContent ? stashVersion(found.dir, itemId, prevAbs) : "";
+    /* 位置参数仍传旧路径：文本走就地改写，扩展名与文件名不因此漂移 */
     const nextAbs = writeFn(itemsDir, it, hadFile ? prevAbs : "", prevAbs || "");
     if (!nextAbs || !fs.existsSync(nextAbs)) throw new Error(t("写入失败"));
     it.file = ITEMS_DIR + "/" + path.basename(nextAbs);
@@ -766,7 +812,11 @@ function registerAssetsIpc(opts) {
     return {
       ok: true,
       item: it,
+      /* prevVersion ＝ 覆盖前那份文件的绝对路径（已被搬进 .versions/）；
+         prevEmpty ＝ 覆盖前这一项本来就是空的。渲染层把两者记进撤销快照，
+         undo 时：有路径 → 从 .versions/ 复制回来；只有 prevEmpty → 清回空。 */
       prevVersion: prevVersion,
+      prevEmpty: !hadContent,
       asset: assetSummary(root, found.dir, found.rel, found.meta),
     };
   }
@@ -785,6 +835,7 @@ function registerAssetsIpc(opts) {
   });
 
   /* 媒体覆盖：srcPath（本机文件，复制入库）优先，其次 base64；
+     empty:true = 清回空（撤销「端子无内容 → 自动同步」那一步的落点）；
      扩展名跟随新内容，旧文件已进 .versions/ 不丢 */
   ipcMain.handle("assets:itemUpdateBytes", (e, arg) => {
     try {
@@ -794,7 +845,9 @@ function registerAssetsIpc(opts) {
           ? extOf(srcPath, it.type)
           : path.extname(wantAbs) || EXT_OF_TYPE[it.type] || ".bin";
         const nextAbs = path.join(itemsDir, uniqueItemFile(itemsDir, it.id, ext, null));
-        if (srcPath) {
+        if (arg && arg.empty === true && !srcPath && !(arg && arg.base64)) {
+          fs.writeFileSync(nextAbs, "");
+        } else if (srcPath) {
           if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile())
             throw new Error(t("源文件不存在"));
           fs.copyFileSync(srcPath, nextAbs);
@@ -831,6 +884,56 @@ function registerAssetsIpc(opts) {
       found.meta.items = items;
       writeMarker(found.dir, found.meta);
       return { ok: true, removed: it, trash: trash, asset: assetSummary(root, found.dir, found.rel, found.meta) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  /* 「连进来的这份，跟库里这份是不是同一个」—— 端子同步提示的唯一判据。
+     不靠路径猜：画布那张图与库里那张图路径永远不同，只有字节说得清。
+     文本走 utf8 字节；srcPath 先比大小再比内容（超过 SAME_FULL_READ 的大文件只比
+     大小 —— 为一个提示把 2GB 视频整读进内存不值当，宁可少提示一次）。 */
+  const SAME_FULL_READ = 64 * 1024 * 1024;
+  ipcMain.handle("assets:itemSame", (e, arg) => {
+    try {
+      const root = rootPath().root;
+      const found = findAssetDir(root, String((arg && arg.id) || ""));
+      if (!found) return { ok: false, error: t("素材不存在") };
+      const it = normItems(found.meta.items).find(
+        (x) => x.id === String((arg && arg.itemId) || ""),
+      );
+      if (!it) return { ok: false, error: t("内容条目不存在") };
+      const cur = it.file ? path.join(found.dir, it.file.split("/").join(path.sep)) : "";
+      let curSt = null;
+      try {
+        curSt = cur && fs.statSync(cur).isFile() ? fs.statSync(cur) : null;
+      } catch (_) {
+        curSt = null;
+      }
+      const srcPath = String((arg && arg.srcPath) || "").trim();
+      let wantBuf = null;
+      let wantSize = -1;
+      if (typeof (arg && arg.content) === "string") {
+        wantBuf = Buffer.from(arg.content, "utf8");
+        wantSize = wantBuf.length;
+      } else {
+        if (!srcPath || !fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile())
+          return { ok: true, same: false, bytes: 0, empty: true };
+        wantSize = fs.statSync(srcPath).size;
+      }
+      if (!curSt) return { ok: true, same: false, bytes: 0, empty: true };
+      if (wantSize !== curSt.size) return { ok: true, same: false, bytes: curSt.size };
+      if (!wantSize) return { ok: true, same: true, bytes: 0, empty: true };
+      if (!wantBuf) {
+        if (wantSize > SAME_FULL_READ)
+          return { ok: true, same: true, bytes: curSt.size };
+        wantBuf = fs.readFileSync(srcPath);
+      }
+      return {
+        ok: true,
+        same: Buffer.compare(wantBuf, fs.readFileSync(cur)) === 0,
+        bytes: curSt.size,
+      };
     } catch (err) {
       return fail(err);
     }

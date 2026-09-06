@@ -97,6 +97,13 @@
           }
         },
         {
+          "id": "asset-library",
+          "title": {
+            "zh": "素材库与素材节点",
+            "en": "Asset library & asset nodes"
+          }
+        },
+        {
           "id": "task-chat",
           "title": {
             "zh": "任务与对话",

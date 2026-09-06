@@ -4,6 +4,9 @@
 
 Generate an image from a prompt. Accepts text or image input. Supports size and transparent background.
 
+## Settings
+**Provider / model / size** are edited in the settings window opened by **⚙ Settings** in the node header, and they apply immediately; the card itself keeps a one-line summary (provider / model / size). The header **◈** is the preview of the exact request that will be sent — a separate thing from the settings window. The prompt is content, so it stays in the node.
+
 ## Transparent background (two-pass difference matting)
 The **transparent toggle** in the title bar (small checkerboard chip) is off by default.
 

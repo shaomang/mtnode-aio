@@ -2062,6 +2062,25 @@ button.mini.btn-sq.tpl-ico {
   display: none
 }
 
+/* 行内元信息「▣ 所属画布」：会话归属哪张图，用户切走画布后也能一眼对上。
+   比标题更弱一档（小字 + 低对比 + 限宽省略），悬停时让位给操作按钮（与时间同处理）。 */
+.side-sess-wf {
+  flex: none;
+  max-width: 42%;
+  min-width: 0;
+  font-size: 10px;
+  color: rgb(129, 133, 140);
+  opacity: .8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: .2px
+}
+
+.side-sess:hover .side-sess-wf {
+  display: none
+}
+
 .side-sess-btn {
   font-size: 10px;
   padding: 1px 7px;

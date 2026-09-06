@@ -2791,6 +2791,268 @@ function assetItemTypeLabel(type) {
     k === "text" ? "文本" : k === "image" ? "图像" : k === "audio" ? "音频" : "视频",
   );
 }
+/** 条目集合签名：判断「端子集」有没有变（id + 标题 + 类型，顺序也算） */
+function assetSigOfItems(items) {
+  return (items || [])
+    .map((it) => String(it.id || "") + "\u0000" + it.title + "\u0000" + it.type)
+    .join("\u0001");
+}
+/** 新旧条目集的端子映射：perm[旧序号] = 新序号，-1 = 新条目集里已经没有这一项。
+    两趟配对，先认身份再认名字：
+      ① item id 相同 —— 库里改名 / 重排，身份没变，线跟着条目走（改名不甩线）；
+      ② 标题相同 —— 重绑成另一个素材，只有名字对得上的条目保留连线。
+    同名重复条目按出现顺序一一对应，不会两条线挤到同一个端子上。 */
+function assetItemPerm(oldItems, newItems) {
+  const used = new Set();
+  const perm = new Array((oldItems || []).length).fill(-1);
+  const byId = new Map();
+  (newItems || []).forEach((it, i) => {
+    if (it.id && !byId.has(String(it.id))) byId.set(String(it.id), i);
+  });
+  (oldItems || []).forEach((it, i) => {
+    if (!it.id) return;
+    const j = byId.get(String(it.id));
+    if (j != null && !used.has(j)) {
+      perm[i] = j;
+      used.add(j);
+    }
+  });
+  const byTitle = new Map();
+  (newItems || []).forEach((it, i) => {
+    if (used.has(i)) return;
+    const k = String(it.title || "").trim().toLowerCase();
+    if (!byTitle.has(k)) byTitle.set(k, []);
+    byTitle.get(k).push(i);
+  });
+  (oldItems || []).forEach((it, i) => {
+    if (perm[i] >= 0) return;
+    const q = byTitle.get(String(it.title || "").trim().toLowerCase());
+    if (!q || !q.length) return;
+    perm[i] = q.shift();
+    used.add(perm[i]);
+  });
+  return perm;
+}
+/** 端子号随条目变了 → 该节点两侧的数据线按 perm 一起搬；perm[i] = -1 的线断开。
+    关系线（不占端子）与别的节点的线一律不动。返回 {moved, dropped}。
+    调用方负责先 pushHistory —— 断线是可撤销的，不是静默丢数据。 */
+function assetRemapItemWires(node, perm) {
+  const res = { moved: 0, dropped: 0 };
+  if (!node || !S.wf || !Array.isArray(S.wf.wires)) return res;
+  const keep = [];
+  for (const w of S.wf.wires) {
+    if (!w || w.rel) {
+      keep.push(w);
+      continue;
+    }
+    let drop = false;
+    if (w.from === node.id) {
+      const i = Number(w.fromIndex || 0);
+      const j = perm[i];
+      if (j == null || j < 0) drop = true;
+      else if (j !== i) {
+        w.fromIndex = j;
+        res.moved++;
+      }
+    }
+    if (!drop && w.to === node.id) {
+      const i = Number(w.toIndex || 0);
+      const j = perm[i];
+      if (j == null || j < 0) drop = true;
+      else if (j !== i) {
+        w.toIndex = j;
+        res.moved++;
+      }
+    }
+    if (drop) res.dropped++;
+    else keep.push(w);
+  }
+  S.wf.wires = keep;
+  return res;
+}
+/** 条目重排的 perm 口径：与 fnToolMoveParam 里那段循环逐字同一套数法
+    （perm[旧序号] = 新序号：把 from 移到 to，中间元素顺移一格；原地 / 越界 → null）。
+    素材侧只此一个数法，不另发明一套 —— 库里的新条目顺序 = 这个 perm 作用在旧顺序上，
+    画布一侧再由 assetItemPerm（先认 id）得到同一个 perm 去搬端子号与连线。 */
+function assetMovePerm(n, from, to) {
+  const N = Number(n);
+  const f = Number(from);
+  const t = Number(to);
+  if (!isFinite(N) || N <= 0) return null;
+  if (!isFinite(f) || f < 0 || f >= N) return null;
+  if (!isFinite(t) || t < 0 || t >= N) return null;
+  if (f === t) return null;
+  const perm = [];
+  for (let i = 0; i < N; i++) {
+    if (i === f) perm[i] = t;
+    else if (f < t && i > f && i <= t) perm[i] = i - 1;
+    else if (f > t && i >= t && i < f) perm[i] = i + 1;
+    else perm[i] = i;
+  }
+  return perm;
+}
+/** 按同一 perm 把条目数组搬成新顺序：返回 { list, perm }，位置非法返回 null。 */
+function assetMoveItem(list, from, to) {
+  const arr = Array.isArray(list) ? list : [];
+  const perm = assetMovePerm(arr.length, from, to);
+  if (!perm) return null;
+  const out = new Array(arr.length);
+  for (let i = 0; i < arr.length; i++) out[perm[i]] = arr[i];
+  return { list: out, perm: perm };
+}
+/** 绑定 / 重绑的唯一写入口：把素材库摘要写进节点。内容实体永远在库，节点上只有
+    assetId + 相对根目录的 assetRel + 端子快照 items（不存绝对路径 → 换盘后按 id 重定位）。
+    端子号按 assetItemPerm 保号，对不上的连线断开。调用方一律先 pushHistory。
+    参数不合法返回 null（不碰节点）。 */
+function assetBindNode(node, summary) {
+  if (!isAssetNode(node) || !summary || !String(summary.id || "").trim())
+    return null;
+  const oldItems = assetItems(node);
+  const oldAssetId = String(node.assetId || "");
+  node.assetId = String(summary.id);
+  node.assetRel = String(summary.rel || "");
+  node.assetName = String(summary.displayName || summary.folder || "");
+  node.assetDesc = String(summary.desc || "");
+  /* 快照走 assetItems 同一份归一（空标题→「内容 N」、野类型→text）：
+     库里读回来的形状与节点上存的形状从此只有这一个口径 */
+  node.items = assetItems(summary).map((it) => ({
+    id: it.id,
+    title: it.title,
+    type: it.type,
+  }));
+  const r = assetRemapItemWires(node, assetItemPerm(oldItems, assetItems(node)));
+  r.oldAssetId = oldAssetId;
+  return r;
+}
+/* ── 素材节点取值（引擎侧唯一入口）─────────────────────────────────────
+ * 内容实体恒在素材库，节点上只有绑定（assetId / assetRel）与条目快照，所以端子值
+ * 只有两个来源：① 素材库最近一次扫描的摘要（每条带 absPath / bytes / missing ——
+ * 媒体端子不必逐条读盘就有值）；② 渲染层向库发过一次读取后缓存下来的正文
+ * （文本条目只能靠它，app-assets.js · ASSET_ITEM_VIEW）。
+ * 输出形状与既有静态源逐字同口径：文本 → {kind:"text",text}；
+ * 图像 / 音频 / 视频 → {kind,path,url,text=url}（与 mediaInputValueOf 同一形状，
+ * 下游 proc_image / video_gen / music_gen 的媒体端子直接可用）。 */
+/** 条目在库摘要里的那一项（没扫过 / 库里没这条 → null） */
+function assetItemSummary(node, itemId) {
+  if (!node || !itemId) return null;
+  if (typeof assetSummaryById !== "function") return null;
+  const a = assetSummaryById(node.assetId);
+  if (!a || !Array.isArray(a.items)) return null;
+  for (const it of a.items)
+    if (it && String(it.id) === String(itemId)) return it;
+  return null;
+}
+/** 条目实体文件的绝对路径（缓存优先，其次库摘要）；库里没有 / 文件缺失 → "" */
+function assetItemAbsPath(node, it) {
+  if (!node || !it) return "";
+  const cached =
+    typeof assetItemViewGet === "function" &&
+    assetItemViewGet(node.assetId, it.id);
+  if (cached && !cached.missing && String(cached.absPath || ""))
+    return String(cached.absPath);
+  const s = assetItemSummary(node, it.id);
+  if (!s || s.missing) return "";
+  return String(s.absPath || "");
+}
+/** 素材节点第 idx 个输出端子的值。库里内容还没读到时返回 null（＝端子未就绪，
+ *  下游按「无输入」处理），同时把读取发出去 —— 到货后 body 会自己重画。 */
+function assetItemValueOf(node, idx) {
+  if (!isAssetNode(node)) return null;
+  const items = assetItems(node);
+  const i = Number(idx);
+  if (!isFinite(i) || i < 0 || i >= items.length) return null;
+  const it = items[i];
+  if (!String(node.assetId || "").trim() || !it.id) return null;
+  if (typeof assetNodeIsLost === "function" && assetNodeIsLost(node)) return null;
+  const sum = assetItemSummary(node, it.id);
+  if (it.type === "text") {
+    const cached =
+      typeof assetItemViewGet === "function" &&
+      assetItemViewGet(node.assetId, it.id);
+    /* 只认库里那份（savedText）：body 里正在输入还没失焦的草稿不算内容 */
+    if (cached && typeof cached.savedText === "string")
+      return { kind: "text", text: cached.savedText };
+    if (typeof assetItemViewLoad === "function")
+      assetItemViewLoad(node.assetId, it.id);
+    /* 库里明确是 0 字节 ＝ 这条确实还没内容：给空串，别报「未就绪」 */
+    if (sum && !sum.missing && !Number(sum.bytes))
+      return { kind: "text", text: "" };
+    return null;
+  }
+  const p = assetItemAbsPath(node, it);
+  if (!p) {
+    if (typeof assetItemViewLoad === "function")
+      assetItemViewLoad(node.assetId, it.id);
+    return null;
+  }
+  const url = mediaFileUrlOf(p);
+  return { kind: it.type, path: p, url: url, text: url };
+}
+/** 本机文件路径 / file:/// URL 两种写法都收（图像端子存绝对路径，音视频端子存 URL） */
+function assetLocalPathOfValue(v) {
+  if (!v) return "";
+  const raw =
+    String(v.path || "").trim() ||
+    (typeof v.text === "string" && /^file:\/\//i.test(v.text)
+      ? String(v.text).trim()
+      : "");
+  if (!raw) return "";
+  if (/^file:\/\//i.test(raw)) return fileUrlToPath(raw);
+  if (typeof isAbsPath === "function" && isAbsPath(raw)) return raw;
+  if (typeof absImagePathOf === "function") return absImagePathOf(raw);
+  return raw;
+}
+/** 素材节点第 idx 个输入端子「连进来」的值，归一成写库用的形状：
+ *  文本 → {kind:"text",text}；媒体 → {kind:<条目类型>,path:<本机绝对路径>}。
+ *  没连线 / 上游此刻没值 → null（同步与提示都以此为准，不猜）。 */
+function assetPortInboundValue(node, idx) {
+  const items = assetItems(node);
+  const i = Number(idx);
+  if (!isAssetNode(node) || !isFinite(i) || i < 0 || i >= items.length)
+    return null;
+  const w = assetInWireAt(node, i);
+  if (!w) return null;
+  const src = nodeById(w.from);
+  if (!src) return null;
+  const v = valueForInput(src, Number(w.fromIndex || 0), node);
+  if (!v) return null;
+  const type = items[i].type;
+  if (type === "text") {
+    if (v.kind === "text") return { kind: "text", text: String(v.text || "") };
+    const p = assetLocalPathOfValue(v);
+    return p ? { kind: "text", text: p } : null;
+  }
+  const p = assetLocalPathOfValue(v);
+  return p ? { kind: type, path: p } : null;
+}
+/** 素材节点对外可读内容（@引用 / 下游预览口径）：一条 = 一条内容。
+ *  只有一条时摊平成 {text} / {image}，多条按类型分组，与合并节点同一形状。 */
+function assetDisplayValueOf(node) {
+  const items = assetItems(node);
+  const texts = [];
+  const images = [];
+  let one = null;
+  let got = 0;
+  for (let i = 0; i < items.length; i++) {
+    const v = assetItemValueOf(node, i);
+    if (!v) continue;
+    got++;
+    one = { it: items[i], v: v };
+    if (v.kind === "text")
+      texts.push({ title: items[i].title, content: String(v.text || "") });
+    else if (v.kind === "image")
+      images.push({ title: items[i].title, path: v.path });
+    else texts.push({ title: items[i].title, content: String(v.url || v.text || "") });
+  }
+  if (!got) return null;
+  if (items.length === 1 && one)
+    return one.v.kind === "image"
+      ? { image: one.v.path, title: one.it.title }
+      : { text: String(one.v.text || "") };
+  if (texts.length && images.length) return { items: texts, images: images };
+  if (texts.length) return { items: texts };
+  return { images: images };
+}
 /* 来源节点这条线的媒体类型（不含端子声明的那一层，见 wireSourceMediaType）。
    工具 / 函数节点按真正接出来的那个端子取实际值判断，其余节点仍只看 0 号端子（行为逐字不变）。 */
 function inferMediaFromSource(from, fromIndex) {
@@ -4667,6 +4929,12 @@ function snapshotState() {
       wires: S.wf.wires,
       groups: S.wf.groups,
       marks: S.wf.marks || [],
+      /* 素材库文件在画布快照之外，这一格撤销「顺带要回滚哪些库内容」记在这里：
+         [{assetId,itemId,type,title,prevFile,prevEmpty}]（prevFile ＝ .versions/ 里那份
+         旧文件的绝对路径，"" ＝ 改之前本来就是空的）。写库动作先 pushHistory 拿到
+         快照对象，再往它的 assetEdits 上追加（见 app-assets.js · assetRecordEdit）。
+         不记这一笔的话「撤销」只回滚画布，磁盘上库里那份内容仍是被改过的状态。 */
+      assetEdits: [],
     }),
   );
 }
@@ -4709,23 +4977,59 @@ function applySnap(s) {
   renderStatus();
   scheduleSave(true);
 }
-function undo() {
-  if (!S.undoStack.length) {
-    toast(I18n.t("没有可撤销的操作"), "warn");
+/** 撤销 / 重做走同一台机器：把目标那格快照换到画布上，再按它记的 assetEdits
+ *  回滚素材库文件；回滚本身又会产出一批「旧的现在态」，反向记到对面那一格上，
+ *  于是 redo 能原样再贴回去 —— 不需要在写库时提前留副本。
+ *  纯画布那一大类撤销（assetEdits 为空）行为与从前逐字相同。 */
+async function stepHistory(kind) {
+  const from = kind === "undo" ? S.undoStack : S.redoStack;
+  const to = kind === "undo" ? S.redoStack : S.undoStack;
+  if (!from.length) {
+    toast(kind === "undo" ? I18n.t("没有可撤销的操作") : I18n.t("没有可重做的操作"), "warn");
     return;
   }
-  S.redoStack.push(snapshotState());
-  applySnap(S.undoStack.pop());
-  toast(I18n.t("已撤销"), "ok");
+  const s = from[from.length - 1];
+  const edits = s && Array.isArray(s.assetEdits) ? s.assetEdits.slice() : [];
+  if (edits.length && typeof assetRollbackBusy === "function" && assetRollbackBusy()) {
+    toast(I18n.t("素材库正在回滚，请稍等一下再撤销 / 重做"), "warn");
+    return;
+  }
+  const cur = snapshotState();
+  from.pop();
+  to.push(cur);
+  applySnap(s);
+  if (!edits.length) {
+    toast(kind === "undo" ? I18n.t("已撤销") : I18n.t("已重做"), "ok");
+    return;
+  }
+  /* applySnap 已经落盘过一次画布；库回滚是异步的，完成后要按新库内容重画节点 body */
+  let r = { done: 0, failed: edits.length };
+  try {
+    if (typeof assetRollbackEdits === "function")
+      r = (await assetRollbackEdits(edits, cur)) || r;
+  } catch (e) {
+    r = { done: 0, failed: edits.length };
+  }
+  const what = kind === "undo" ? I18n.t("已撤销") : I18n.t("已重做");
+  if (!r || !r.failed)
+    toast(
+      what +
+        I18n.t(" · 素材库内容已回滚（{n} 项）", { n: (r && r.done) || 0 }),
+      "ok",
+    );
+  else
+    toast(
+      what +
+        I18n.t(" · 素材库有 {n} 项没能回滚", { n: r.failed }) +
+        I18n.t("（旧内容仍在该素材的 .versions 目录里）"),
+      "warn",
+    );
+}
+function undo() {
+  stepHistory("undo");
 }
 function redo() {
-  if (!S.redoStack.length) {
-    toast(I18n.t("没有可重做的操作"), "warn");
-    return;
-  }
-  S.undoStack.push(snapshotState());
-  applySnap(S.redoStack.pop());
-  toast(I18n.t("已重做"), "ok");
+  stepHistory("redo");
 }
 function clearHistory() {
   S.undoStack = [];
@@ -7471,11 +7775,10 @@ function closeOverlay() {
   if (body) body.classList.remove("tpl-store-body", "g-ref-ov");
   document.querySelectorAll("#overlay > .plugin-pop").forEach((el) => el.remove());
   $("#overlay").style.display = "none";
-  /* 设置窗随蒙层一起没了（被别的弹窗抢占、或程序化关窗）：把节点绑定作废。
-     不清的话，撤销 / 删节点链路会拿着一个早已不存在的窗去判断，还可能多弹一次
-     「设置窗口已关闭」的提示。closeNodeSettingsDialog 已自行清引用，这里不会重复。 */
-  if (overlayKind === "nodeSettings" && typeof discardNodeSettingsDialog === "function")
-    discardNodeSettingsDialog();
+  /* 蒙层没了 = 设置窗也没了（#overlay 全应用独一份，不能叠窗）：把节点绑定作废。
+     不清的话，撤销 / 切画布链路会拿着一个早已不在屏上的窗去判断，还会误弹一次
+     「设置窗口已关闭」。closeNodeSettingsDialog 自己先清了引用，这里不会重复做事。 */
+  if (typeof discardNodeSettingsDialog === "function") discardNodeSettingsDialog();
 }
 
 /* 独立于 #overlay 的深色确认 / 输入框（设置等弹窗打开时也能用，不冲掉内容） */
@@ -11567,6 +11870,9 @@ function valueForInput(src, idx, consumer, seen) {
   if (src.kind === "input_audio" || src.kind === "input_video") {
     return mediaInputValueOf(src);
   }
+  /* 素材节点：同样是静态源，只是「一个端子 = 素材库里的一条内容」——
+     第 idx 出 ↔ 第 idx 条，值按条目类型给（见 assetItemValueOf）。 */
+  if (src.kind === "asset") return assetItemValueOf(src, idx);
   if (src.kind === "proc_text" || src.kind === "agent_task") {
     const r = selResult(src);
     /* 聚合模式：下游应取单次结果，勿优先旧的 batchOutputs */
@@ -12074,6 +12380,8 @@ function displayValueOf(src, consumer) {
     const v = mediaInputValueOf(src);
     return v ? { text: String(v.text || "") } : null;
   }
+  /* 素材节点：逐条内容对外可读（单条摊平成 {text}/{image}，多条按类型分组） */
+  if (src.kind === "asset") return assetDisplayValueOf(src);
   if (src.kind === "function") {
     const r = selResult(src);
     if (r && r.output && r.output.kind === "text") return { text: r.output.text };
@@ -15579,7 +15887,13 @@ function canvasCreateMenuGroups(pt) {
         ctxKindItem("input_video", I18n.t("视频节点（选择文件 · 输出 URL）"), () =>
           addNode("input_video", pt.x, pt.y),
         ),
-        /* 素材节点：从素材库取一个素材打包成内容源（也可建空白壳，再「绑定 / 上传」） */
+      ],
+    ],
+    [
+      /* 素材节点单列一组：这一组标题写的是「仅输出」，而素材每条内容都有一对端子
+         （输入端子用来把新内容连进库），放进来会自相矛盾。 */
+      I18n.t("素材节点（绑定素材库 · 内容条目即端子）"),
+      [
         ctxKindItem(
           "asset",
           I18n.t("素材节点（绑定素材库 · 内容条目即端子）"),
@@ -16151,6 +16465,8 @@ function createWfBuildSession() {
     id: uid("as"),
     title: wfBuildSessionTitle(),
     workspace: dshWorkspaceOf(null),
+    /* 所属画布 = 发起构建时用户看到的那张图（此后不随切画布漂移） */
+    canvasWfId: currentVisibleWfId(),
     preset: AGENT_PRESET_DEFAULT,
     provider: route || "deepseek-official",
     model:
@@ -23004,6 +23320,18 @@ function endCanvasRun(wf) {
 function canvasTargetWf() {
   return S.canvasRunWf || S.wf;
 }
+/* 该画布此刻是否正被某一轮在飞运行当「所属画布」绑着写：beginCanvasRun 进栈、
+   endCanvasRun 出栈（会话轮 / 智能节点轮 / 规划并行子任务都经这一对），栈里出现它的 id
+   就说明「这张图有人在写，内存袋里那份才是最新」。切回该画布时据此复用袋中对象，
+   不重新读盘 —— 见 loadWorkflow。 */
+function wfInCanvasRun(id) {
+  const key = String(id == null ? "" : id);
+  if (!key) return false;
+  const st = Array.isArray(S.canvasRunStack) ? S.canvasRunStack : [];
+  if (st.some((w) => w && String(w.id) === key)) return true;
+  const cur = S.canvasRunWf;
+  return !!(cur && String(cur.id) === key);
+}
 /* ── 前台画布唯一真源（可判定锁）──
    currentVisibleWf() 永远返回用户界面上「当前画布」那个对象：后台换画布编辑
    （runAgainstWf 临时把 S.wf 换成别的画布）不会污染它，删除 / 定位目标的入口都读这里。 */
@@ -23019,6 +23347,109 @@ function setForegroundWf(wf) {
 /* 是否正有画布写入在飞（前台或后台换画布）：>0 期间 S.wf 未必是用户看到的画布 */
 function bgCanvasWriteActive() {
   return (S._bgCanvasDepth || 0) > 0;
+}
+/* ── 会话「所属画布」→ 画布对象（一轮开轮绑定的唯一解析入口，app-db.js 用）──
+   会话跑着的时候用户切去别的画布干活是常态，所以「本轮写哪张图」不看 S.wf 现在是谁、
+   也不看运行栈栈顶，只按会话登记 stable 的 canvasWfId 去找：
+   ① 前台画布就是它（绝大多数轮次；顺带覆盖后台换画布编辑在飞、S.wf 恰好指着它的情况）；
+   ② 内存袋 S.wfBag 里有活对象 → 用它（可能正被另一条会话写，绝不重新读盘换对象）；
+   ③ 都没有 → 从磁盘 wfLoad 一份并 rememberWf 入袋，后续 persistWf / ownerWfOfNode 才认它。
+   命中已删黑名单 / 对象墓碑，或磁盘上根本读不出来 → 抛「本会话所属画布已被删除」：
+   宁可这一轮明确失败，也绝不把会话的改动静默写进用户此刻正开着的另一张图。 */
+function sessionWfDeletedError(wf) {
+  const key = String((wf && (wf.id || wf.name)) || "").trim();
+  const black = key ? wfBlacklist()[key] : null;
+  const nm = String((wf && wf.name) || (black && black.name) || "").trim();
+  return new Error(
+    nm
+      ? I18n.t("本会话所属画布已被删除：") + nm
+      : I18n.t("本会话所属画布已被删除"),
+  );
+}
+async function wfOfCanvasIdForRun(id) {
+  const key = String(id || "").trim();
+  if (!key) return null;
+  /* 命中就是它：先验活性（墓碑 / 黑名单都算死），死了直接抛，绝不退到前台画布 */
+  const alive = (w) => {
+    if (!w || String(w.id) !== key) return null;
+    if (wfWriteBlocked(w)) throw sessionWfDeletedError(w);
+    return w;
+  };
+  const hit =
+    alive(currentVisibleWf()) ||
+    alive(S.wf) ||
+    alive(S.wfBag && S.wfBag[key]) ||
+    null;
+  if (hit) return hit;
+  if (wfIsDeleted(key)) throw sessionWfDeletedError({ id: key });
+  let r = null;
+  try {
+    r = await window.api.wfLoad(key);
+  } catch (_) {
+    r = null;
+  }
+  if (!r || !r.ok || !r.data) throw sessionWfDeletedError({ id: key });
+  const wf = r.data;
+  /* 磁盘上读得出来 = 这张画布是活的（例如删掉后又同名重建），解禁黑名单再入袋 */
+  reviveWf(key);
+  wf.id = key;
+  if (wfWriteBlocked(wf)) throw sessionWfDeletedError(wf);
+  rememberWf(wf);
+  return wf;
+}
+/* 「所属画布」的同步读法（给工作区解析、侧栏显示这类不能等 IO 的入口用）：
+   只看内存里已有的对象（前台 / 袋），没加载就是 null —— 由调用方决定退回什么口径。
+   与 wfOfCanvasIdForRun 的区别只有「不读盘、不抛错」，判定顺序保持一致。 */
+function canvasWfByIdLoaded(id) {
+  const key = String(id || "").trim();
+  if (!key) return null;
+  const fg = currentVisibleWf();
+  if (fg && String(fg.id) === key && !wfWriteBlocked(fg)) return fg;
+  if (S.wf && String(S.wf.id) === key && !wfWriteBlocked(S.wf)) return S.wf;
+  const bag = S.wfBag && S.wfBag[key];
+  if (bag && String(bag.id) === key && !wfWriteBlocked(bag)) return bag;
+  return null;
+}
+/* 「所属画布」的显示名（同步版，给会话侧栏行与工作目录悬浮说明用）：
+   一次渲染几十行，绝不为取名字去读盘。取名顺序 = 内存里的活对象 → 已删标记（直说它没了，
+   不留一个「看着还在」的名字）→ 顶部标签条 visitedWorkflows 的 {id,name} 快照
+   （用户看过这张图就会在里面）→ 短 id。
+   画布没加载又不在标签条里时显示短 id 而不是瞎猜一个名字。 */
+function wfNameOfId(id) {
+  const key = String(id || "").trim();
+  if (!key) return "";
+  const wf = typeof canvasWfByIdLoaded === "function" ? canvasWfByIdLoaded(key) : null;
+  if (wf) return String(wf.name || wf.id || key);
+  /* 已删判据放在标签条之前：那张图的标签可能还没被用户关掉，
+     侧栏里不能出现一个「看着还在」的画布名（下面会明说它已没了）。 */
+  if (typeof wfIsDeleted === "function" && wfIsDeleted(key)) {
+    const dead = String((wfBlacklist()[key] || {}).name || "");
+    const nm = dead && dead !== key ? dead : I18n.t("画布");
+    return nm + I18n.t("（已删除）");
+  }
+  const tabs =
+    S && S.config && Array.isArray(S.config.visitedWorkflows)
+      ? S.config.visitedWorkflows
+      : [];
+  for (const t of tabs) {
+    if (t && String(t.id) === key && t.name) return String(t.name);
+  }
+  return key.length > 10 ? key.slice(0, 10) + "…" : key;
+}
+/* 一轮运行的生效工作区（dshWorkspaceOf 的「所属画布」版）：优先级一字不改 ——
+   节点 / 会话手填 > 该画布项目根（开发块 devPath）> 该画布统一目录 > 应用默认目录。
+   唯一区别是「该画布」= 本轮绑定（会话所属）的那张图，而不是用户此刻看到的图：
+   会话运行中用户切去别的画布干活，工作目录不能跟着漂（漂了产物就落错项目）。
+   绑定的就是前台画布时逐字等价于 dshWorkspaceOf，零回归。 */
+function dshWorkspaceOfWf(node, wf) {
+  const manual = node && (node.agentWorkspace || node.workspace);
+  if (manual) return manual;
+  /* 绑定的就是眼下挂着的画布对象 → 逐字走老路（连歧义标记的刷新口径都不变） */
+  if (!wf || wf === S.wf) return dshWorkspaceOf(node);
+  const projRoot = devProjectRootOf(wf);
+  if (projRoot) return projRoot;
+  if (wf.workspace) return wf.workspace;
+  return S.dshWorkspaceFallback || "";
 }
 /* 编辑锁外壳：进入 +1、收尾 -1（成功 / 失败 / 异常都减，且只减一次），
    让 await 期间 currentVisibleWf() 与 persist() 的归属判定始终可依赖。 */
@@ -23065,8 +23496,11 @@ function runAgainstWfInner(wf, fn) {
   /* 换到后台画布时禁止 renderCanvas；换回前台画布（嵌套调用）才允许刷新 */
   S._canvasEditVisible = target === fg;
   const restore = () => {
-    /* 期间用户切了画布（loadWorkflow 改了 S.wf）就别把手换回去，避免覆盖新画布 */
-    if (S.wf === target) S.wf = prev;
+    /* 期间用户切了画布（loadWorkflow 改了 S.wf）就别把手换回去，避免覆盖新画布。
+       反向也一样：期间用户切「到」了这张正在被后台编辑的画布（loadWorkflow 复用了
+       袋中同一个对象，见 wfInCanvasRun），此刻 S.wf === target 指的是用户正看着的图，
+       换回 prev 会让前台视图的上下文指向另一张画布 —— 保持不动。 */
+    if (S.wf === target && currentVisibleWf() !== target) S.wf = prev;
     /* 还有外层后台编辑在飞行时保持「非可见」，不让内层收尾把画布闪出来 */
     const outerInFlight = (S._bgCanvasDepth || 0) > 1;
     S._canvasEditVisible = !outerInFlight && S.wf === currentVisibleWf();
@@ -23433,6 +23867,17 @@ function migrateWf(wf) {
     }
     /* 函数 / 工具节点（含 super + tool:true 变体）：旧画布加载归一 */
     if (typeof ensureFnToolNodeState === "function") ensureFnToolNodeState(n);
+    /* 素材节点：绑定字段归一。assetLost 是运行期判定结果（库里还有没有这个素材），
+       加载时先抹掉，等 app-assets.js 静默扫描重新给 —— 旧画布不该带着上次退出时的
+       「失联」标记误导用户。 */
+    if (n.kind === "asset") {
+      if (typeof n.assetId !== "string") n.assetId = "";
+      if (typeof n.assetRel !== "string") n.assetRel = "";
+      if (typeof n.assetName !== "string") n.assetName = "";
+      if (typeof n.assetDesc !== "string") n.assetDesc = "";
+      if (!Array.isArray(n.items)) n.items = [];
+      delete n.assetLost;
+    }
     if (typeof n.parentTaskId !== "string") n.parentTaskId = "";
     if (n.kind === "anim") {
       const gifPath =
@@ -23763,12 +24208,12 @@ async function ensureWorkflow() {
 async function loadWorkflow(id, opts) {
   const skipFlush = !!(opts && opts.skipFlush);
   if (S.wf && S.wf.id === id) return;
-  /* 先落盘当前画布；若有运行中节点则保留内存对象，避免任务结果/会话丢失。
-     skipFlush=true：切换前这张画布已被删除（删除后的落点切换），此时任何写盘
-     都会把刚删掉的画布凭空复活，绝不能 rememberWf / flushCurrentWf。 */
   /* 切画布前先收掉设置窗：设置都是即时写回的，skipSave 只跳过关窗那一下多余落盘
      （紧接着就要 flush，skipFlush 时这张画布甚至已被删除，persist 会把它复活）。 */
   closeNodeSettingsDialog({ silentRerender: true, skipSave: true });
+  /* 先落盘当前画布；若有运行中节点则保留内存对象，避免任务结果/会话丢失。
+     skipFlush=true：切换前这张画布已被删除（删除后的落点切换），此时任何写盘
+     都会把刚删掉的画布凭空复活，绝不能 rememberWf / flushCurrentWf。 */
   if (S.wf && !skipFlush) {
     rememberWf(S.wf);
     await flushCurrentWf();
@@ -23776,8 +24221,15 @@ async function loadWorkflow(id, opts) {
   closeBgRmPop();
   clearHistory();
   let wf = null;
-  if (S.wfBag[id] && wfHasRunning(S.wfBag[id])) {
-    wf = S.wfBag[id];
+  /* 袋里那份能不能顶掉磁盘副本：两种情况必须复用内存对象，否则整份读盘覆盖 =
+     丢掉内存里已经写进去的改动，而且用户下一次编辑落盘会把这些改动彻底冲没。
+     ① 该画布有节点在跑 / 在排队（老判据：换对象会把在飞运行变成看不见、停不掉的幽灵）；
+     ② 该画布正被某条在飞会话轮当「所属画布」绑着写（本轮需求：用户切去别的画布干活是常态，
+        会话在后台往自己那张图写节点；此刻切回来必须看到 agent 刚写的那份，
+        而不是开轮之前的旧副本 —— 旧副本一旦成为前台，随后的保存就把它盖回磁盘）。 */
+  const bagWf = S.wfBag[id];
+  if (bagWf && (wfHasRunning(bagWf) || wfInCanvasRun(id))) {
+    wf = bagWf;
   } else {
     const r = await window.api.wfLoad(id);
     if (!r.ok) {
@@ -23881,7 +24333,10 @@ async function refreshWfSelect() {
     o.textContent = w.name + "（" + w.nodes + I18n.t(" 节点）");
     sel.appendChild(o);
   }
-  sel.value = S.wf ? S.wf.id : "";
+  /* 选中的那一项必须是「用户正看着的画布」：后台换画布编辑（runAgainstWf）在飞时
+     S.wf 是别人的画布，直接拿它当值会把下拉框 / 标签高亮跳到用户没在看的那一张。 */
+  const shown = (typeof currentVisibleWf === "function" ? currentVisibleWf() : null) || S.wf;
+  sel.value = shown ? shown.id : "";
   sel.title = I18n.t("打开画布（共 ") + list.length + I18n.t(" 个，切换即加载并加入标签）");
   renderWfTabs();
 }
@@ -24131,6 +24586,8 @@ async function forkAgentSession(id) {
     id: uid("as"),
     title: (src.title || I18n.t("新会话")) + I18n.t(" · 分支"),
     workspace: src.workspace || "",
+    /* 分支继承源会话的所属画布（源没有就按当前画布补绑），不改判到别的图 */
+    canvasWfId: src.canvasWfId || currentVisibleWfId(),
     preset: src.preset || AGENT_PRESET_DEFAULT,
     provider: src.provider || "deepseek-official",
     model: src.model || "",
@@ -24168,6 +24625,8 @@ function ensureAgentSessionForNode(node) {
       id: uid("as"),
       title: node.title || I18n.t("智能任务"),
       workspace: node.workspace || dshWorkspaceOf(node),
+      /* 节点绑定会话：所属画布 = 该节点所在的画布 */
+      canvasWfId: canvasWfIdForNode(node),
       preset: node.preset || AGENT_PRESET_DEFAULT,
       provider: node.provider || "deepseek-official",
       model: node.model || "",
@@ -24237,6 +24696,26 @@ function devPathOf(node) {
   }
   return "";
 }
+/* ── 同一套「就近继承」逻辑的指定画布版 ──
+   会话在自己所属的后台画布上跑时，解析项目根不能再看前台 S.wf（那会把用户此刻开着的
+   另一张图的目录当成本轮工作区）。取父节点同理：给了 wf 就在该画布节点表里找。
+   不传 wf 的调用点逐字走上面的老路（nodeById = 前台口径），零回归。 */
+function devParentOf(node, wf) {
+  if (!node || !node.parentSuperId) return null;
+  if (wf && Array.isArray(wf.nodes))
+    return wf.nodes.find((n) => n && n.id === node.parentSuperId) || null;
+  return nodeById(node.parentSuperId);
+}
+function devPathOfIn(node, wf) {
+  let cur = node;
+  let guard = 0;
+  while (cur && guard++ < 64) {
+    const p = String(cur.devPath || "").trim();
+    if (p) return p;
+    cur = cur.parentSuperId ? devParentOf(cur, wf) : null;
+  }
+  return "";
+}
 /* 开发节点块判定（单一真源）：super + dev:true，数据库超级节点（db:true）不算。
    devProjectRootOf 与「核心文件列表」（app-devnode.js 的 devCoreFilesOf）共用此口径。 */
 function devIsDevBlock(node) {
@@ -24245,13 +24724,13 @@ function devIsDevBlock(node) {
 /* 顶层开发块 = 项目节点：祖先链上再没有别的开发块（父级是普通超级节点仍算顶层）。
    走链思路与 app-devnode.js 的 devAncestorChain 一致，这里只做存在性判定；
    「核心文件列表最外层不列举」也用它，两处永不分叉。 */
-function devIsTopBlock(node) {
+function devIsTopBlock(node, wf) {
   if (!devIsDevBlock(node)) return false;
-  let cur = node.parentSuperId ? nodeById(node.parentSuperId) : null;
+  let cur = node.parentSuperId ? devParentOf(node, wf) : null;
   let guard = 0;
   while (cur && guard++ < 64) {
     if (devIsDevBlock(cur)) return false;
-    cur = cur.parentSuperId ? nodeById(cur.parentSuperId) : null;
+    cur = cur.parentSuperId ? devParentOf(cur, wf) : null;
   }
   return true;
 }
@@ -24260,10 +24739,14 @@ function devIsTopBlock(node) {
    多块解析出多个不同根时：若存在共同祖先目录就用祖先（一个根覆盖全部），
    否则取文档序第一个，并置 S.devProjectRootAmbiguous = true 供 UI 提示。
    歧义标记在每次调用本函数时刷新（无开发块 / 单根时为 false），UI 读取前先调用一次。
-   本结果由 dshWorkspaceOf 并入工作区解析优先级（app.js / app-agent.js 两份逐字同步）。 */
-function devProjectRootOf() {
-  S.devProjectRootAmbiguous = false;
-  if (!S.wf) return "";
+   本结果由 dshWorkspaceOf 并入工作区解析优先级（app.js / app-agent.js 两份逐字同步）。
+   可选 wf = 按「那张画布」解析（会话所属画布不是前台时用，见 dshWorkspaceOfWf）；
+   只解析非前台画布时不碰 S.devProjectRootAmbiguous —— 那是界面提示前台画布用的。 */
+function devProjectRootOf(wf) {
+  const canvas = wf || S.wf;
+  const live = !wf || wf === S.wf;
+  if (live) S.devProjectRootAmbiguous = false;
+  if (!canvas) return "";
   const clean = (raw) => String(raw || "").trim().replace(/[\\/]+$/, "");
   const fwd = (p) => {
     const s = String(p).replace(/\\/g, "/");
@@ -24278,14 +24761,14 @@ function devProjectRootOf() {
   };
   /* 判定统一走共用函数 devIsDevBlock / devIsTopBlock（与本函数同一节，切片可独立运行） */
   const isDevBlock = devIsDevBlock;
-  const isTopDevBlock = devIsTopBlock;
-  const devBlocks = (S.wf.nodes || []).filter(isDevBlock);
+  const isTopDevBlock = (n) => devIsTopBlock(n, canvas);
+  const devBlocks = (canvas.nodes || []).filter(isDevBlock);
   if (!devBlocks.length) return "";
   const rootsIn = (list) => {
     const out = [];
     const seen = new Set();
     for (const n of list) {
-      const p = clean(devPathOf(n));
+      const p = clean(devPathOfIn(n, canvas));
       if (!p || !isAbsPath(p)) continue;
       const k = keyOf(p);
       if (seen.has(k)) continue;
@@ -24328,7 +24811,7 @@ function devProjectRootOf() {
     }
   }
   if (common) return common;
-  S.devProjectRootAmbiguous = true;
+  if (live) S.devProjectRootAmbiguous = true;
   return roots[0];
 }
 /* 开发任务书：节点概述 + 项目根 + 上层模块 + 本次开发需求（注入会话的契约消息） */
@@ -24484,6 +24967,8 @@ function createDevSessionForNode(node, mode, req) {
     id: uid("as"),
     title: devSessionTitleOf(node, mode),
     workspace: devPathOf(node) || dshWorkspaceOf(node),
+    /* 开发 / 细化绑定会话：所属画布 = 该功能块所在画布（不是开轮时用户看到的画布） */
+    canvasWfId: canvasWfIdForNode(node),
     preset: (st && st.preset) || AGENT_PRESET_DEFAULT,
     provider: (eff && eff.provider) || "deepseek-official",
     model: (eff && eff.model) || "",
@@ -24757,6 +25242,8 @@ async function startDevAskSession(node, question) {
     id: uid("as"),
     title: devSessionTitleOf(node, "ask"),
     workspace: devPathOf(node) || dshWorkspaceOf(node),
+    /* 问询会话同样归属该功能块所在画布 */
+    canvasWfId: canvasWfIdForNode(node),
     preset: (st && st.preset) || AGENT_PRESET_DEFAULT,
     provider: (eff && eff.provider) || "deepseek-official",
     model: (eff && eff.model) || "",

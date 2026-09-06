@@ -12,12 +12,15 @@
  *   左＝分类菜单（只显示名称、无图标；新建 / 重命名 / 删除文件夹，右键菜单）
  *   右＝所选分类下的素材卡片（显示名 / 描述 / 内容数 · 设置 / 插入到画布 / 删除，
  *       右键「移动到分类」）+ 工具条（新建素材 · 上传为新素材 · 刷新 · 更改根目录）
+ * 以及「素材设置」框（openAssetSettings）：改显示名 / 描述，内容条目的增删改与重排 ——
+ * 条目就是素材节点的一对端子，标题即端子名、顺序即端子序，全部先落库再回贴到画布节点，
+ * 所以改名与拖序都不会把已连的数据线甩到别的条目上（口径见 app.js · assetItemPerm）。
  * 首次使用（assetRoot 未配置）先走引导：确认 → 选文件夹 → assets:setRoot；
  * 取消则本次不开库。每次开框都先 scan（用户在资源管理器里的改动即刻可见）。
  *
  * 对话框是独立元素 #assetsDlg（仿 #extManagerDlg，不复用 #overlay）：素材设置、
  * 绑定选择都要在它上面叠二级框，复用 #overlay 会互相冲掉内容。层级：
- *   #assetsDlg 2350  <  本文件的二级表单框 2380  <  #mtDialog（确认 / 输入）2400。
+ *   #assetsDlg 2350  <  #assetSetDlg 2370  <  二级表单框 2380  <  #mtDialog 2400。
  * 同一份左右栏渲染在 mode:"pick" 下即「绑定素材」选择器（openAssetPicker），
  * 供素材节点复用，不再抄第二份目录树。
  *
@@ -33,6 +36,8 @@ const ASSET_LIB = {
   selCat: "", // 当前选中分类 rel（"" ＝ 根目录）
   onPick: null, // pick 模式回调：选中一个素材
   busy: false, // 一次只跑一个写盘动作，避免连点错位
+  scanned: false, // 本次会话是否成功扫过（失联判定的前提，没扫过不下结论）
+  noRoot: false, // 扫过但根目录还没指定
 };
 
 const ASSET_TYPE_KEYS = { text: 1, image: 1, audio: 1, video: 1 };
@@ -155,8 +160,11 @@ async function assetChangeRoot() {
       return false;
     }
     ASSET_LIB.root = r.path || p;
-    ASSET_LIB.scan = (r && r.scan) || { tree: [], categories: [], assets: [] };
+    /* setRoot 顺手带回新目录的扫描结果：走同一份落库口径（含 scanned 标记），
+       再对一遍画布上的素材节点 —— 换了根目录，失联 / 接上的此刻就重判 */
+    assetApplyScan({ root: r.path || p, scan: r.scan, configured: true });
     ASSET_LIB.selCat = "";
+    assetLinkSyncNodes();
     toast(I18n.t("已更换素材库根目录并重新扫描：") + ASSET_LIB.root, "ok");
     return true;
   } finally {
@@ -164,26 +172,151 @@ async function assetChangeRoot() {
   }
 }
 
-/* 一次遍历拿分类树 + 素材摘要（开框即重扫：资源管理器里的手改也能认出来） */
+/* 一次遍历拿分类树 + 素材摘要（开框即重扫：资源管理器里的手改也能认出来）。
+   开着的素材设置框跟着重画 —— 素材在别处被删 / 根目录换了，它会自己收掉并说明。 */
 async function assetRescan() {
-  try {
-    const r = await window.api.assetsScan();
-    if (!r || !r.ok) {
-      if (r && r.needRoot) {
-        const p = await assetEnsureRoot();
-        if (!p) return false;
-        return assetRescan();
-      }
-      toast(I18n.t("扫描素材库失败：") + ((r && r.error) || ""), "err");
-      return false;
+  const r = await assetScanCall();
+  if (r == null) return false;
+  if (!r.ok) {
+    if (r.needRoot) {
+      const p = await assetEnsureRoot();
+      if (!p) return false;
+      return assetRescan();
     }
-    ASSET_LIB.root = r.root || ASSET_LIB.root;
-    ASSET_LIB.scan = r.scan || { tree: [], categories: [], assets: [] };
-    return true;
-  } catch (e) {
-    toast(I18n.t("扫描素材库失败：") + ((e && e.message) || e), "err");
+    toast(I18n.t("扫描素材库失败：") + ((r && r.error) || ""), "err");
     return false;
   }
+  assetApplyScan(r);
+  assetLinkSyncNodes();
+  if (assetSettingsOpen()) paintAssetSettings();
+  return true;
+}
+
+function assetScanCall() {
+  return window.api
+    .assetsScan()
+    .then((r) => r)
+    .catch((e) => {
+      return { ok: false, error: String((e && e.message) || e) };
+    });
+}
+/** 扫描结果落进界面状态（唯一入口：开框、刷新、静默校验都走这里） */
+function assetApplyScan(r) {
+  ASSET_LIB.root = String((r && r.root) || ASSET_LIB.root || "");
+  ASSET_LIB.scan =
+    (r && r.scan) || { tree: [], categories: [], assets: [] };
+  ASSET_LIB.scanned = true;
+  ASSET_LIB.noRoot = !(r && r.configured);
+}
+
+/* ════════════ 节点绑定 ↔ 素材库：失联判定与自动跟随 ════════════
+   素材节点上只有 assetId + 相对路径；「库里还有没有这个素材」必须扫过一次才知道。
+   · 静默校验：画布里出现已绑定的素材节点、而本会话还没扫过 → 后台扫一次，
+     不弹框、不阻塞绘制，扫完按需重画（判定不出一律当作「没失联」，宁可不显示占位
+     也不要在读不到目录时误伤正常素材）。
+   · 找到素材：清失联标记；条目集与库不一致（在库里加/删/改/重排过内容）就把快照
+     同步过来，端子号按标题保号（assetItemPerm）—— 库是事实源，节点跟着走。
+   · 找不到：只打标记，items 快照与连线原样保留，body 给「素材失联」占位 +「重新绑定」，
+     任何情况下都不删用户的节点。
+   node.assetLost 只是「上次同步的判定结果」，用来做这一步的变化检测（要不要重画）；
+   界面显示一律走实时派生的 assetNodeIsLost —— 载入时 migrateWf 抹掉这个字段，
+   绝不让上一轮的判定跨会话变成事实。 */
+let _assetLinkVerify = null;
+/** 素材库里按 id 取摘要（没扫过 / 找不到 → null） */
+function assetSummaryById(id) {
+  const list = ASSET_LIB.scan && ASSET_LIB.scan.assets;
+  if (!id || !Array.isArray(list)) return null;
+  const k = String(id);
+  for (const a of list) if (a && String(a.id) === k) return a;
+  return null;
+}
+/** 只读判定：绑定过 + 扫过一次 + 库里没有 ＝ 失联 */
+function assetNodeIsLost(node) {
+  if (!isAssetNode(node)) return false;
+  const id = String(node.assetId || "").trim();
+  if (!id || !ASSET_LIB.scanned) return false;
+  return !assetSummaryById(id);
+}
+/** 把当前画布的素材节点与扫描结果对一遍（改了什么就重画什么） */
+function assetLinkSyncNodes() {
+  if (!S.wf || !Array.isArray(S.wf.nodes)) return 0;
+  let changed = 0;
+  for (const n of S.wf.nodes) {
+    if (!isAssetNode(n)) continue;
+    const id = String(n.assetId || "").trim();
+    if (!id) continue;
+    const sum = assetSummaryById(id);
+    if (!sum) {
+      if (!n.assetLost) {
+        n.assetLost = true;
+        changed++;
+      }
+      continue;
+    }
+    if (n.assetLost) {
+      delete n.assetLost;
+      changed++;
+    }
+    if (assetApplySummaryToNodes(sum)) changed++;
+  }
+  if (changed) assetViewRerenderSoon();
+  return changed;
+}
+/** 后台静默校验（同一时刻只飞一次） */
+function assetLinkVerify(force) {
+  if (!assetsApiOk()) return Promise.resolve(false);
+  if (ASSET_LIB.scanned && !force) return Promise.resolve(true);
+  if (_assetLinkVerify) return _assetLinkVerify;
+  _assetLinkVerify = (async () => {
+    try {
+      const g = await window.api.assetsGetRoot();
+      if (!g || !g.ok) return false; // 连状态都读不到 → 不做任何判定
+      if (!g.configured) {
+        ASSET_LIB.root = "";
+        ASSET_LIB.scan = { tree: [], categories: [], assets: [] };
+        ASSET_LIB.scanned = true;
+        ASSET_LIB.noRoot = true;
+        assetLinkSyncNodes();
+        return true;
+      }
+      ASSET_LIB.root = String(g.path || "");
+      const r = await assetScanCall();
+      if (!r || !r.ok) return false; // 扫描失败同样不下「失联」结论
+      assetApplyScan(r);
+      assetLinkSyncNodes();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  })();
+  const p = _assetLinkVerify;
+  p.then(
+    () => {
+      _assetLinkVerify = null;
+    },
+    () => {
+      _assetLinkVerify = null;
+    },
+  );
+  return p;
+}
+/** body 渲染时调用：本会话还没校验过、画布上确实有绑定节点 → 补一次静默校验。
+    _assetLinkAutoTried＝整个会话只自动试一次：根目录插在坏掉的 U 盘上时，
+    扫描会一直失败；不加这道闸，每次 renderCanvas（hover / 拖动都算）都会重扫一遍目录。 */
+let _assetLinkAutoTried = false;
+function assetLinkCheckSoon() {
+  if (ASSET_LIB.scanned || _assetLinkVerify || _assetLinkAutoTried) return;
+  if (!assetsApiOk()) return;
+  const nodes = (S.wf && S.wf.nodes) || [];
+  let has = false;
+  for (const n of nodes)
+    if (isAssetNode(n) && String(n.assetId || "").trim()) {
+      has = true;
+      break;
+    }
+  if (!has) return;
+  _assetLinkAutoTried = true;
+  assetLinkVerify(false);
 }
 
 /* ── 二级表单框（新建素材 / 移动到分类） ─────────────────────────────
@@ -199,6 +332,8 @@ function assetFormDialog(opts) {
     host.id = "assetFormDlg";
     host.className = "mt-dialog on asset-form-dlg";
     const box = assetEl("div", "mt-dialog-box asset-form-box");
+    /* wide ＝ 正文编辑那一类：框拉宽、正文框吃满高度（长文本不能只在 440px 里挤） */
+    if (opts.wide) box.classList.add("asset-form-box-wide");
     box.setAttribute("role", "dialog");
     box.setAttribute("aria-modal", "true");
     const head = assetEl("div", "mt-dialog-head");
@@ -245,8 +380,12 @@ function assetFormDialog(opts) {
     };
     const collect = () => {
       const out = {};
-      for (const k of Object.keys(controls))
-        out[k] = String(controls[k].value == null ? "" : controls[k].value).trim();
+      for (const k of Object.keys(controls)) {
+        const raw =
+          controls[k].value == null ? "" : String(controls[k].value);
+        /* raw 字段（正文编辑）不 trim：文本素材尾随换行也是内容 */
+        out[k] = (opts.rawKeys || []).indexOf(k) >= 0 ? raw : raw.trim();
+      }
       return out;
     };
     const cancel = assetBtn(I18n.t("取消"), null, null);
@@ -369,6 +508,11 @@ function ensureAssetsDlg() {
     if (document.getElementById("assetFormDlg")) return;
     if (document.querySelector(".asset-lib-menu")) {
       assetCloseMenu();
+      return;
+    }
+    /* 素材设置框压在上面的话，Esc 先收它（本框留着） */
+    if (assetSettingsOpen()) {
+      closeAssetSettings();
       return;
     }
     ev.preventDefault();
@@ -1008,22 +1152,212 @@ function assetInsertToCanvas(a) {
   const p = assetSpawnPoint();
   const node = addNode("asset", p.x, p.y, {
     title: a.displayName || a.folder || I18n.t("素材"),
-    assetId: String(a.id || ""),
-    assetRel: String(a.rel || ""),
-    assetName: String(a.displayName || a.folder || ""),
-    assetDesc: String(a.desc || ""),
-    items: (a.items || []).map((it) => ({
-      id: String(it.id || ""),
-      title: String(it.title || ""),
-      type: ASSET_TYPE_KEYS[it.type] ? it.type : "text",
-    })),
   });
   if (!node) {
     toast(I18n.t("插入失败：无法创建素材节点"), "err");
     return null;
   }
+  /* 绑定只有一个口径（assetApplyBinding）；addNode 已经压过撤销栈，这里不再压第二次
+     —— 新建素材节点在撤销里应当就是一步。 */
+  assetApplyBinding(node, a, { history: false, quiet: true });
   toast(I18n.t("已插入素材：") + (a.displayName || a.folder || ""), "ok");
   return node;
+}
+
+/* ════════════ 素材节点侧：绑定 / 上传 / 失联重绑 / 设置入口 ════════════
+   节点上只有 assetId + 相对路径 + 端子快照，内容实体永远在素材夹里：
+   · 绑定 ＝ 在素材库左右栏（同一份渲染 · pick 模式）里挑一个素材；
+   · 上传 ＝ 选本机一个文件夹 → 复制入库成为新素材 → 自动绑到本节点；
+   · 失联（库里找不到这个素材）＝ 节点与端子快照全部保留，只给占位与「重新绑定」；
+   · 重绑到别的素材时端子号按标题保号，对不上标题的连线断开 —— 都在一步撤销里。
+   任何路径都不会删用户的节点。 */
+
+/** 绑定 / 重绑的统一落地：写绑定 → 清旧素材缓存 → 刷下游 → 落盘重画。
+    opts.history＝先压撤销栈（默认 true；刚 addNode 出来的节点传 false）；
+    opts.quiet＝不弹 toast（「插入到画布」那一路自己报一句）。返回 false＝参数不合法。 */
+function assetApplyBinding(node, summary, opts) {
+  opts = opts || {};
+  if (!isAssetNode(node) || !summary || !String(summary.id || "").trim())
+    return false;
+  const oldId = String(node.assetId || "");
+  if (opts.history !== false) pushHistory();
+  const r = assetBindNode(node, summary);
+  delete node.assetLost; // 刚定位到的素材，先把失联标记摘掉
+  /* 缓存整份作废：旧素材的视图没用了，新素材的视图也可能是在别处留下的旧值，
+     让 body 重新向库读一次，节点上显示的永远是库里此刻的内容 */
+  if (oldId && oldId !== String(summary.id)) assetItemsViewInvalidateAll(oldId);
+  assetItemsViewInvalidateAll(summary.id);
+  if (typeof clearDownstream === "function") clearDownstream(node.id);
+  if (typeof scheduleSave === "function") scheduleSave(true);
+  if (typeof renderCanvas === "function") renderCanvas();
+  else assetViewRerenderSoon();
+  if (typeof renderStatus === "function") renderStatus();
+  if (!opts.quiet) {
+    const nm = String(summary.displayName || summary.folder || "");
+    const n = assetItems(node).length;
+    if (!n)
+      toast(
+        I18n.t("已绑定素材：{name}（还没有内容，点节点上的「设置」添加）", {
+          name: nm,
+        }),
+        "warn",
+      );
+    else if (r && r.dropped)
+      toast(
+        I18n.t(
+          "已重新绑定：{name} · {n} 条对不上标题的连线已断开（Ctrl+Z 可撤销）",
+          { name: nm, n: r.dropped },
+        ),
+        "ok",
+      );
+    else toast(I18n.t("已绑定素材：") + nm, "ok");
+  }
+  return true;
+}
+
+/** 上传落点：优先放回节点原来那个素材所在的分类（失联重传时挨着放），
+    其次用素材库里上次选中的分类，都没有则落根目录。 */
+function assetUploadCat(node) {
+  const rel = String((node && node.assetRel) || "");
+  const own = rel.indexOf("/") < 0 ? "" : rel.slice(0, rel.lastIndexOf("/"));
+  if (own && assetCatExists(own)) return own;
+  const sel = String(ASSET_LIB.selCat || "");
+  return assetCatExists(sel) ? sel : "";
+}
+
+/** 「绑定…」：打开素材库选择器（与顶栏素材库同一份左右栏），选中即绑 */
+function assetNodeBind(node) {
+  if (!isAssetNode(node)) return;
+  openAssetPicker({ onPick: (a) => assetApplyBinding(node, a) });
+}
+
+/** 「上传…」：选本机文件夹 → importDir 复制入库 → 自动绑定本节点 */
+async function assetNodeUpload(node) {
+  if (!isAssetNode(node)) return;
+  if (!assetsApiOk()) {
+    toast(I18n.t("素材库不可用（本机存储接口未就绪）"), "err");
+    return;
+  }
+  if (ASSET_LIB.busy) return;
+  const root = await assetEnsureRoot();
+  if (!root) return;
+  const picked = await window.api.fileOpenDialog({
+    title: I18n.t(
+      "选择要上传的文件夹（其中的文本 / 图像 / 音频 / 视频会成为素材内容）",
+    ),
+    directory: true,
+  });
+  const src = picked && picked.path;
+  if (!src) {
+    toast(I18n.t("未选择文件夹，取消上传"), "warn");
+    return;
+  }
+  ASSET_LIB.busy = true;
+  try {
+    /* 先扫一次：确认落点分类还在（资源管理器里可能已被删），顺带刷新失联判定 */
+    if (!(await assetRescan())) return;
+    const catRel = assetUploadCat(node);
+    const r = await window.api.assetsImportDir({ srcPath: src, catRel: catRel });
+    if (!r || !r.ok) {
+      toast(I18n.t("上传失败：") + ((r && r.error) || ""), "err");
+      return;
+    }
+    await assetRescan();
+    if (!assetApplyBinding(node, r.asset)) {
+      toast(I18n.t("已上传到素材库，但绑定节点失败"), "err");
+      return;
+    }
+    const skip = Number(r.skipped) || 0;
+    if (skip)
+      toast(I18n.t("其中 {n} 个文件类型素材库不收，已跳过", { n: skip }), "warn");
+  } finally {
+    ASSET_LIB.busy = false;
+  }
+}
+
+/** 根目录还没指定（供 app-canvas.js 的失联文案用） */
+function assetLibNoRoot() {
+  return !!ASSET_LIB.noRoot;
+}
+/** 「重新扫描」：找回素材夹 / 换回原根目录后，让画布上的失联节点立刻重新判定 */
+function assetNodeRescanNow() {
+  if (!assetsApiOk()) {
+    toast(I18n.t("素材库不可用（本机存储接口未就绪）"), "err");
+    return;
+  }
+  if (ASSET_LIB.busy) return;
+  ASSET_LIB.busy = true;
+  assetLinkVerify(true)
+    .then((ok) => {
+      if (!ok) {
+        toast(I18n.t("重新扫描素材库失败"), "err");
+        return;
+      }
+      assetViewRerenderSoon();
+      toast(I18n.t("已重新扫描素材库"), "ok");
+    })
+    .finally(() => {
+      ASSET_LIB.busy = false;
+    });
+}
+/** 「重新绑定…」：与绑定同一条路，只是先说清楚为什么 */
+function assetNodeRebind(node) {
+  if (!isAssetNode(node)) return;
+  if (ASSET_LIB.noRoot)
+    toast(
+      I18n.t("素材库根目录还没指定：先指定位置，或重新绑定到别处的素材"),
+      "warn",
+    );
+  else
+    toast(
+      I18n.t("该素材在素材库里找不到了：选一个素材重新绑定（连线按标题保留）"),
+      "warn",
+    );
+  assetNodeBind(node);
+}
+
+/** 失联时直接去库里处理（更改根目录 / 找回文件夹都在库里） */
+function assetNodeOpenLib() {
+  openAssetsLibrary();
+}
+
+/** 在资源管理器里显示这个素材夹（没扫过先补一次静默扫描） */
+async function assetNodeReveal(node) {
+  if (!isAssetNode(node)) return;
+  const id = String(node.assetId || "").trim();
+  if (!id) {
+    toast(I18n.t("还没有绑定素材，没有可打开的文件夹"), "warn");
+    return;
+  }
+  if (!ASSET_LIB.scanned) await assetLinkVerify(false);
+  const sum = assetSummaryById(id);
+  if (!sum) {
+    toast(I18n.t("素材已失联：在素材库里找不到对应文件夹"), "warn");
+    return;
+  }
+  const abs = ASSET_LIB.root + "/" + String(sum.rel || "");
+  const r = await window.api.shellShowItem(abs);
+  if (r && !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || ""), "err");
+}
+
+/** 节点头 ⚙ / 右键「设置」：素材设置框（显示名 / 描述 / 内容条目都在库里维护） */
+async function assetNodeOpenSettings(node) {
+  if (!isAssetNode(node)) return;
+  const id = String(node.assetId || "").trim();
+  if (!id) {
+    toast(I18n.t("先绑定素材库内容，再设置它"), "warn");
+    assetNodeBind(node);
+    return;
+  }
+  if (!ASSET_LIB.scanned) await assetLinkVerify(false);
+  const sum = assetSummaryById(id);
+  if (!sum) {
+    toast(I18n.t("素材已失联，先重新绑定才能设置"), "warn");
+    assetNodeBind(node);
+    return;
+  }
+  /* 对着「库里哪份素材」改已经定好了；设置框就落在本文件（openAssetSettings） */
+  openAssetSettings(sum);
 }
 
 /* ════════════ 素材内容条目的「视图缓存」（素材节点 body 的取数口）════════════
@@ -1034,6 +1368,9 @@ function assetInsertToCanvas(a) {
    库端覆盖前会把旧文件收进 .versions/，撤销回滚由「执行取数」那一步接上。 */
 const ASSET_ITEM_VIEW = new Map();
 const ASSET_ITEM_BUSY = new Set();
+/* 在飞的读取按 key 存一份 promise：执行前要「读齐再取值」的调用方（素材端子同步）
+   靠它 await，body 渲染仍然只发不等。 */
+const ASSET_ITEM_LOAD = new Map();
 let _assetViewRerender = 0;
 
 function assetViewKey(aid, iid) {
@@ -1065,6 +1402,21 @@ function assetItemsViewInvalidateAll(aid) {
   for (const k of Array.from(ASSET_ITEM_BUSY))
     if (k.indexOf(pre) === 0) ASSET_ITEM_BUSY.delete(k);
 }
+/** 库同步后只清「库里已经没有的条目」的缓存：还留着的路径 / 字节继续用，
+    正在输入但没提交的文本不会被这次同步打断。 */
+function assetItemsViewPrune(summary) {
+  if (!summary || !summary.id) return;
+  const keep = new Set((summary.items || []).map((it) => String(it.id || "")));
+  const pre = String(summary.id) + "|";
+  for (const k of Array.from(ASSET_ITEM_VIEW.keys())) {
+    if (k.indexOf(pre) !== 0) continue;
+    if (!keep.has(k.slice(pre.length))) ASSET_ITEM_VIEW.delete(k);
+  }
+  for (const k of Array.from(ASSET_ITEM_BUSY)) {
+    if (k.indexOf(pre) !== 0) continue;
+    if (!keep.has(k.slice(pre.length))) ASSET_ITEM_BUSY.delete(k);
+  }
+}
 /** 多条读取同时到货时，合并成一次重画 */
 function assetViewRerenderSoon() {
   if (_assetViewRerender) return;
@@ -1076,11 +1428,12 @@ function assetViewRerenderSoon() {
 /** 单条目的异步读取（同一 key 只飞一次） */
 function assetItemViewLoad(aid, iid) {
   const k = assetViewKey(aid, iid);
-  if (!aid || !iid) return;
-  if (ASSET_ITEM_VIEW.has(k) || ASSET_ITEM_BUSY.has(k)) return;
+  if (!aid || !iid) return Promise.resolve();
+  if (ASSET_ITEM_LOAD.has(k)) return ASSET_ITEM_LOAD.get(k);
+  if (ASSET_ITEM_VIEW.has(k) || ASSET_ITEM_BUSY.has(k)) return Promise.resolve();
   ASSET_ITEM_BUSY.add(k);
   assetItemViewSet(aid, iid, { loading: true });
-  window.api
+  const p = window.api
     .assetsItemRead(aid, iid)
     .then((r) => {
       if (!r || !r.ok) {
@@ -1103,6 +1456,7 @@ function assetItemViewLoad(aid, iid) {
         savedText: libText,
         absPath: r.absPath || "",
         bytes: Number(r.bytes) || 0,
+        type: r.type || "",
       });
     })
     .catch((e) => {
@@ -1114,8 +1468,17 @@ function assetItemViewLoad(aid, iid) {
     })
     .finally(() => {
       ASSET_ITEM_BUSY.delete(k);
+      ASSET_ITEM_LOAD.delete(k);
       assetViewRerenderSoon();
     });
+  ASSET_ITEM_LOAD.set(k, p);
+  return p;
+}
+/** 等到该条目的库内容就位（已经在飞的那次也会等到，不重复发请求） */
+function assetItemViewLoaded(aid, iid) {
+  if (!aid || !iid) return Promise.resolve();
+  if (ASSET_ITEM_LOAD.has(aid + "|" + iid)) return ASSET_ITEM_LOAD.get(aid + "|" + iid);
+  return assetItemViewLoad(aid, iid);
 }
 /** body 渲染完调用：把该节点还没读到内容的条目补齐 */
 function assetItemsEnsure(node) {
@@ -1127,99 +1490,1150 @@ function assetItemsEnsure(node) {
   }
 }
 /** 库摘要（assets:scan / itemAdd 返回的 asset）→ 刷新所有绑定该素材的节点端子快照。
-    端子序号按标题尽量保号：改名不甩线，增删条目才改端子数。 */
+    端子唯一口径就是 assetBindNode：先 pushHistory 再改，端子号按标题保号，
+    对不上标题的连线断开（一步撤销可复原）。库里只是改了显示名 / 描述时不动端子。 */
 function assetApplySummaryToNodes(summary) {
   if (!summary || !summary.id || !S.wf || !Array.isArray(S.wf.nodes)) return 0;
-  const items = (summary.items || []).map((it) => ({
-    id: String(it.id || ""),
-    title: String(it.title || ""),
-    type: ASSET_TYPE_KEYS[it.type] ? it.type : "text",
-  }));
-  let n = 0;
+  const nextSig = assetSigOfItems(assetItems(summary));
+  const name = String(summary.displayName || summary.folder || "");
+  const rel = String(summary.rel || "");
+  const desc = String(summary.desc || "");
+  const hit = [];
   for (const node of S.wf.nodes) {
-    if (!isAssetNode(node) || node.assetId !== summary.id) continue;
-    node.items = items.map((it) => Object.assign({}, it));
-    node.assetName = String(summary.displayName || summary.folder || node.assetName || "");
-    node.assetRel = String(summary.rel || node.assetRel || "");
-    n++;
+    if (!isAssetNode(node) || String(node.assetId) !== String(summary.id))
+      continue;
+    if (
+      assetSigOfItems(assetItems(node)) !== nextSig ||
+      String(node.assetRel || "") !== rel ||
+      String(node.assetName || "") !== name ||
+      String(node.assetDesc || "") !== desc
+    )
+      hit.push(node);
   }
-  if (n) {
-    if (typeof clearDownstream === "function")
-      for (const node of S.wf.nodes)
-        if (isAssetNode(node) && node.assetId === summary.id)
-          clearDownstream(node.id);
-    if (typeof scheduleSave === "function") scheduleSave();
+  if (!hit.length) return 0;
+  pushHistory();
+  let dropped = 0;
+  for (const node of hit) {
+    const r = assetBindNode(node, summary);
+    if (r) dropped += Number(r.dropped) || 0;
+    /* 端子集变了才需要重画：清掉这一批节点的缓存视图（本地未提交的 dirty 文本除外，
+       读取时自会保留），并按库里的新条目集重新向库取内容 */
+    assetItemsViewPrune(summary);
   }
-  return n;
+  for (const node of hit)
+    if (typeof clearDownstream === "function") clearDownstream(node.id);
+  if (typeof scheduleSave === "function") scheduleSave();
+  assetViewRerenderSoon();
+  if (dropped)
+    toast(
+      I18n.t("素材库里的内容条目变了：{n} 条对不上标题的连线已断开（可撤销）", {
+        n: dropped,
+      }),
+      "warn",
+    );
+  return hit.length;
 }
-/** 文本条目：失焦提交写盘（内容没变就不碰库） */
-function assetItemCommitText(node, it) {
-  if (!node || !it || !String(it.id || "").trim()) return;
-  if (!String(node.assetId || "").trim()) return;
+/** 文本条目：失焦提交写盘（内容没变就不碰库）。
+ *  与端子同步、设置框编辑走同一条 assetWriteItem：先压撤销快照、记下库里旧文件，
+ *  Ctrl+Z 才会把库也一起滚回去（只回滚画布等于「撤销后数据仍被改」）。 */
+async function assetItemCommitText(node, it) {
+  if (!node || !it || !String(it.id || "").trim()) return false;
+  if (!String(node.assetId || "").trim()) return false;
   const view = assetItemViewGet(node.assetId, it.id);
-  if (!view || !view.dirty) return;
+  if (!view || !view.dirty) return false;
   const text = String(view.text || "");
-  window.api
-    .assetsItemUpdateText(node.assetId, it.id, text)
-    .then((r) => {
-      if (!r || !r.ok) {
-        toast(
-          I18n.t("写入素材库失败：") + ((r && r.error) || I18n.t("未知错误")),
-          "err",
-        );
-        return;
-      }
-      assetItemViewSet(node.assetId, it.id, {
-        savedText: text,
-        dirty: false,
-        bytes: (r.item && Number(r.item.bytes)) || view.bytes || 0,
-        missing: false,
-      });
-      assetApplySummaryToNodes(r.asset);
-      toast(I18n.t("已保存到素材库：") + (it.title || ""), "ok");
-      if (typeof renderStatus === "function") renderStatus();
-    })
-    .catch((e) => {
-      toast(I18n.t("写入素材库失败：") + String((e && e.message) || e), "err");
-    });
+  const r = await assetWriteItem(
+    node.assetId,
+    it.id,
+    { content: text },
+    {
+      type: "text",
+      title: it.title,
+      msg: I18n.t("已保存到素材库：") + (it.title || ""),
+    },
+  );
+  if (!r.ok) {
+    toast(I18n.t("写入素材库失败：") + (r.error || I18n.t("未知错误")), "err");
+    return false;
+  }
+  if (typeof renderStatus === "function") renderStatus();
+  return true;
 }
 const ASSET_PICK_FILTERS = {
   image: { name: "图像", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] },
   audio: { name: "音频", extensions: ["wav", "mp3", "flac", "ogg", "m4a"] },
   video: { name: "视频", extensions: ["mp4", "webm", "mov", "mkv", "avi"] },
 };
-/** 图像 / 音频 / 视频条目：浏览（选择本机文件）→ 复制入库并顶掉旧内容 */
+/** 图像 / 音频 / 视频条目：浏览（选择本机文件）→ 复制入库并顶掉旧内容。
+    节点 body 与素材设置框共用这一条路（前者只有 node，后者只有 assetId）。 */
 function assetItemPickFile(node, it, type) {
-  if (!node || !it || !String(it.id || "").trim()) return;
-  if (!String(node.assetId || "").trim()) return;
+  if (!node || !it) return;
+  assetItemReplaceFile(String(node.assetId || ""), String(it.id || ""), it.title, type);
+}
+async function assetItemReplaceFile(aid, itemId, label, type) {
+  aid = String(aid || "").trim();
+  itemId = String(itemId || "").trim();
+  if (!aid || !itemId) return false;
   const f = ASSET_PICK_FILTERS[type] || ASSET_PICK_FILTERS.image;
-  window.api
-    .fileOpenDialog({
+  let picked = null;
+  try {
+    picked = await window.api.fileOpenDialog({
       title: I18n.t("选择") + assetItemTypeLabel(type) + I18n.t("文件"),
       filters: [f],
       multi: false,
-    })
-    .then((r) => {
-      const p = r && r.paths && r.paths.length ? r.paths[0] : (r && r.path) || "";
-      if (!p) return null;
-      return window.api.assetsItemUpdateBytes(node.assetId, it.id, { srcPath: p });
-    })
-    .then((r) => {
-      if (r == null) return;
-      if (!r.ok) {
-        toast(
-          I18n.t("写入素材库失败：") + ((r && r.error) || I18n.t("未知错误")),
-          "err",
-        );
-        return;
-      }
-      /* 换了文件扩展名也可能变（items/<id>.png → <id>.jpg）：丢掉缓存重读一次 */
-      assetItemViewInvalidate(node.assetId, it.id);
-      assetApplySummaryToNodes(r.asset);
-      assetViewRerenderSoon();
-      toast(I18n.t("已更换内容：") + (it.title || ""), "ok");
-    })
-    .catch((e) => {
-      toast(I18n.t("写入素材库失败：") + String((e && e.message) || e), "err");
     });
+  } catch (e) {
+    return false;
+  }
+  const p =
+    picked && picked.paths && picked.paths.length
+      ? picked.paths[0]
+      : (picked && picked.path) || "";
+  if (!p) return false;
+  const r = await assetWriteItem(aid, itemId, { srcPath: p }, {
+    type: type,
+    title: label,
+    msg: I18n.t("已更换内容：") + (label || "") + I18n.t("（Ctrl+Z 可撤销）"),
+  });
+  if (!r.ok)
+    toast(I18n.t("写入素材库失败：") + (r.error || I18n.t("未知错误")), "err");
+  return !!r.ok;
+}
+
+/* ════════════ 内容写库：撤销记账 · 端子同步 · 库回滚 ════════════
+ * 画布快照（snapshotState）只装 nodes/wires/groups/marks，素材库文件在快照之外；
+ * 于是「撤销只回滚画布、库里那份仍是被改过的」等于用户数据丢了。这一节把两侧对齐：
+ *   ① 写库前 assetHistorySlot() 压一格画布快照，并把这一格的对象拿在手上；
+ *   ② 主进程每次覆盖写都回传 prevVersion（旧文件已被搬进 <素材夹>/.versions/ 的绝对路径）
+ *      与 prevEmpty（覆盖前这一项本来就是 0 字节）；
+ *   ③ assetRecordEdit 把它们记进那一格的 assetEdits；
+ *   ④ undo()/redo()（app.js · stepHistory）换完画布后调 assetRollbackEdits，
+ *      按 prevFile 复制回去（空则清回空），并把它自己产生的「旧的现在态」
+ *      记到对面那一格上 —— 所以 redo 也能原样贴回来，不需要提前留副本。
+ * 端子同步（无内容自动同步；已有内容要点 ⟳ 才更换）的唯一判据是主进程按字节比的
+ * assets:itemSame —— 画布那张图与库里那张图路径永远不同，猜路径必然常亮。 */
+const ASSET_SYNC_PENDING = new Map(); // aid|iid → 连入的写库形状（⟳ 亮着的依据）
+let _assetRollbackBusy = false;
+function assetRollbackBusy() {
+  return !!_assetRollbackBusy;
+}
+
+/** 压一格「操作前」画布快照，并把真正进栈的那个对象交回来。
+ *  pushHistory 有闸（后台写非当前画布 / _skipCanvasHistory）：没压进去就返回 null，
+ *  这次写库不记账 —— 旧内容仍在 .versions/ 里，只是撤销不回滚库。 */
+function assetHistorySlot() {
+  if (typeof snapshotState !== "function" || typeof pushHistory !== "function")
+    return null;
+  const snap = snapshotState();
+  pushHistory(snap);
+  const st = (S && S.undoStack) || [];
+  return st.length && st[st.length - 1] === snap ? snap : null;
+}
+
+/** 把「这次覆盖前库里那份文件」记到某一格快照上（见文件头第 ②③ 步） */
+function assetRecordEdit(snap, e) {
+  if (!snap || !Array.isArray(snap.assetEdits) || !e) return false;
+  const aid = String(e.assetId || "");
+  const iid = String(e.itemId || "");
+  if (!aid || !iid) return false;
+  snap.assetEdits.push({
+    assetId: aid,
+    itemId: iid,
+    type: String(e.type || "text"),
+    title: String(e.title || ""),
+    /* prevFile ＝ .versions/ 里那份旧文件的绝对路径；"" ＝ 改之前本来就是空的 */
+    prevFile: String(e.prevFile || ""),
+    prevEmpty: e.prevEmpty !== false,
+  });
+  return true;
+}
+
+/** 内容写库的唯一出口（body 编辑、设置框、端子同步都走这里）。
+ *  payload：{content:"…"} | {srcPath:"…"} | {base64:"…"} | {empty:true}
+ *  opts：{type,title,light,msg,kind} —— light ＝ 只丢缓存不整框重画（批量同步用） */
+async function assetWriteItem(aid, itemId, payload, opts) {
+  opts = opts || {};
+  aid = String(aid || "").trim();
+  itemId = String(itemId || "").trim();
+  if (!aid || !itemId) return { ok: false, error: I18n.t("素材或条目不存在") };
+  if (!assetsApiOk()) return { ok: false, error: I18n.t("素材库不可用") };
+  const slot = assetHistorySlot();
+  let r = null;
+  try {
+    r =
+      typeof payload.content === "string"
+        ? await window.api.assetsItemUpdateText(aid, itemId, payload.content)
+        : await window.api.assetsItemUpdateBytes(aid, itemId, payload || {});
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+  if (!r || !r.ok)
+    return { ok: false, error: (r && r.error) || I18n.t("未知错误") };
+  /* noop ＝ 主进程判定「源就是这一条此刻那份」，什么都没变：不记撤销账，
+     并且把刚才为这次写库压的空快照退回去（否则白占一格 Ctrl+Z） */
+  if (r.noop) {
+    const st = (S && S.undoStack) || [];
+    if (slot && st.length && st[st.length - 1] === slot) st.pop();
+    return { ok: true, item: r.item, asset: r.asset, noop: true };
+  }
+  assetRecordEdit(slot, {
+    assetId: aid,
+    itemId: itemId,
+    type: opts.type || (r.item && r.item.type) || "text",
+    title: opts.title || (r.item && r.item.title) || "",
+    prevFile: r.prevVersion || "",
+    prevEmpty: r.prevEmpty !== false,
+  });
+  /* 落盘后库里那份就是新的：缓存必须作废，body 才会重新向库读一次 */
+  assetItemViewInvalidate(aid, itemId);
+  ASSET_SYNC_PENDING.delete(assetViewKey(aid, itemId));
+  if (opts.light) {
+    if (typeof scheduleSave === "function") scheduleSave();
+    assetViewRerenderSoon();
+  } else await assetAfterLibWrite(r.asset, opts.msg, opts.kind);
+  return {
+    ok: true,
+    item: r.item,
+    asset: r.asset,
+    prevFile: r.prevVersion || "",
+    prevEmpty: r.prevEmpty !== false,
+  };
+}
+
+/** 该条目端子上此刻有没有「连进来了但库里还没有」的新内容（决定 ⟳ 亮不亮） */
+function assetItemSyncPending(node, idx) {
+  if (!node || !isAssetNode(node)) return false;
+  const it = assetItems(node)[Number(idx)];
+  if (!it || !it.id || !String(node.assetId || "").trim()) return false;
+  return ASSET_SYNC_PENDING.has(assetViewKey(node.assetId, it.id));
+}
+/** 亮着的那份是什么（tooltip 用；没有则 null） */
+function assetItemSyncValue(node, idx) {
+  const it = node ? assetItems(node)[Number(idx)] : null;
+  if (!it || !it.id) return null;
+  return ASSET_SYNC_PENDING.get(assetViewKey(node.assetId, it.id)) || null;
+}
+/** 一个条目端子的同步检查，返回 "wrote"（空条目已自动写库）/ "pending"（⟳ 亮起）/
+ *  "same"（连入的就是库里这份）/ "none"（没连线或没值）。
+ *  需求口径：无内容 → 自动同步；已有内容 → 只点亮 ⟳，等用户点一下才更换（可撤销）。
+ *  写进去的永远是「库里这一条此刻没有的那份」：同一条线反复跑不会反复写盘。 */
+async function assetSyncCheckPort(node, idx) {
+  if (!isAssetNode(node)) return "none";
+  const items = assetItems(node);
+  const i = Number(idx);
+  const it = items[i];
+  const aid = String(node.assetId || "").trim();
+  if (!it || !it.id || !aid) return "none";
+  if (typeof assetNodeIsLost === "function" && assetNodeIsLost(node)) return "none";
+  const key = assetViewKey(aid, it.id);
+  const inb =
+    typeof assetPortInboundValue === "function"
+      ? assetPortInboundValue(node, i)
+      : null;
+  const emptyIn =
+    !inb ||
+    (inb.kind === "text"
+      ? !String(inb.text || "").trim()
+      : !String(inb.path || "").trim());
+  if (emptyIn) {
+    ASSET_SYNC_PENDING.delete(key);
+    return "none";
+  }
+  const payload =
+    it.type === "text"
+      ? { content: String(inb.text || "") }
+      : { srcPath: String(inb.path || "") };
+  /* 「库里这一条此刻有没有内容、是不是就是连进来的这份」一律问主进程按字节判。
+     不拿扫描摘要 / 视图缓存里的 bytes 猜：那两者都可能滞后（light 写盘只丢缓存、不重扫），
+     凭滞后值判空会让同一条线每轮运行都重写一次盘，并每次往 .versions 塞一份重复历史。 */
+  let cmp = null;
+  try {
+    cmp = await window.api.assetsItemSame(aid, it.id, payload);
+  } catch (_) {
+    cmp = null;
+  }
+  if (!cmp || !cmp.ok) return "none"; // 素材 / 条目此刻找不到：不亮也不硬写
+  if (Number(cmp.bytes) <= 0) {
+    const r = await assetWriteItem(aid, it.id, payload, {
+      type: it.type,
+      title: it.title,
+      light: true,
+    });
+    return r && r.ok ? "wrote" : "none";
+  }
+  if (cmp.same) {
+    ASSET_SYNC_PENDING.delete(key);
+    return "same";
+  }
+  ASSET_SYNC_PENDING.set(key, inb);
+  return "pending";
+}
+/** 点 ⟳：把这一条输入端子连入的内容换进素材库（写盘前旧内容进 .versions，可撤销） */
+async function assetItemSyncFromPort(node, idx) {
+  const items = assetItems(node);
+  const i = Number(idx);
+  const it = items[i];
+  const aid = String((node && node.assetId) || "").trim();
+  if (!it || !it.id || !aid) return;
+  let inb = ASSET_SYNC_PENDING.get(assetViewKey(aid, it.id));
+  /* 没跑过一轮（内存里没记下这份值）也允许直接点：当场按端子连线取一次值 */
+  if (!inb && typeof assetPortInboundValue === "function")
+    inb = assetPortInboundValue(node, i);
+  if (!inb) {
+    toast(I18n.t("这个端子目前没有连入内容"), "warn");
+    return;
+  }
+  const r = await assetWriteItem(
+    aid,
+    it.id,
+    it.type === "text"
+      ? { content: String(inb.text || "") }
+      : { srcPath: String(inb.path || "") },
+    {
+      type: it.type,
+      title: it.title,
+      msg: I18n.t("已同步到素材库：") + it.title + I18n.t("（Ctrl+Z 可撤销）"),
+    },
+  );
+  if (!r.ok)
+    toast(I18n.t("同步失败：") + (r.error || I18n.t("未知错误")), "err");
+}
+/** 执行前把这条链要用到的素材内容读齐，并做一次端子同步检查。
+ *  「读齐」是必须的：valueForInput 是同步取值，库里那份正文得先在缓存里。 */
+async function assetRunPrepare(node) {
+  if (!isAssetNode(node) || !String(node.assetId || "").trim()) return false;
+  if (!assetsApiOk()) return false;
+  await assetLinkVerify(false); // 失联判定的前提：至少扫过一次
+  if (typeof assetNodeIsLost === "function" && assetNodeIsLost(node)) return false;
+  const aid = String(node.assetId);
+  const items = assetItems(node);
+  await Promise.all(
+    items.map((it) => (it.id ? assetItemViewLoaded(aid, it.id) : null)),
+  );
+  let wrote = 0;
+  let pend = 0;
+  for (let i = 0; i < items.length; i++) {
+    const s = await assetSyncCheckPort(node, i);
+    if (s === "wrote") wrote++;
+    else if (s === "pending") pend++;
+  }
+  if (wrote) await assetRescan();
+  if (wrote || pend) {
+    if (typeof clearDownstream === "function") clearDownstream(node.id);
+    assetViewRerenderSoon();
+  }
+  if (wrote) assetToastAutoSync(wrote);
+  return true;
+}
+/** 引擎在 playNodeBody 里调用：本节点自身 + 喂给它的那些素材节点先备好 */
+async function assetPrepareForRun(node) {
+  if (!node || !S.wf) return;
+  const jobs = [];
+  if (isAssetNode(node)) jobs.push(assetRunPrepare(node));
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (isAssetNode(src)) jobs.push(assetRunPrepare(src));
+  }
+  if (jobs.length) await Promise.all(jobs);
+}
+/** 引擎在 playNode 末尾调用：本节点刚产出的值若直接喂进某个素材端子，同步检查一遍 */
+async function assetSyncConsumers(node) {
+  if (!node || !S.wf || !Array.isArray(S.wf.wires)) return;
+  const jobs = [];
+  for (const w of S.wf.wires) {
+    if (!w || w.rel || w.from !== node.id) continue;
+    if (typeof wireFromIsControl === "function" && wireFromIsControl(w)) continue;
+    const to = nodeById(w.to);
+    if (!isAssetNode(to) || !String(to.assetId || "").trim()) continue;
+    if (typeof assetNodeIsLost === "function" && assetNodeIsLost(to)) continue;
+    jobs.push(
+      (async () => {
+        const i = Number(w.toIndex || 0);
+        const items = assetItems(to);
+        if (!items[i]) return null;
+        await assetItemViewLoaded(to.assetId, items[i].id);
+        const s = await assetSyncCheckPort(to, i);
+        return s === "wrote" ? to : null;
+      })(),
+    );
+  }
+  if (!jobs.length) return;
+  const wrote = (await Promise.all(jobs)).filter(Boolean);
+  if (!wrote.length) {
+    assetViewRerenderSoon();
+    return;
+  }
+  await assetRescan();
+  for (const to of wrote)
+    if (typeof clearDownstream === "function") clearDownstream(to.id);
+  assetToastAutoSync(wrote.length);
+}
+function assetToastAutoSync(n) {
+  toast(
+    I18n.t("素材库：{n} 条原本没有内容的条目已自动同步（Ctrl+Z 可撤销）", {
+      n: n,
+    }),
+    "ok",
+  );
+}
+/** 按快照上记的那笔账，把库里这一条还原成改之前的样子 */
+function assetRestoreEdit(e) {
+  const aid = String((e && e.assetId) || "");
+  const iid = String((e && e.itemId) || "");
+  if (!aid || !iid || !assetsApiOk()) return Promise.resolve({ ok: false });
+  const abs = String((e && e.prevFile) || "");
+  /* 有旧文件 → 从 .versions/ 复制回来（扩展名跟着旧文件走）；
+     没有 → 这一条改之前就是空的，清回空（撤销「自动同步」那一步的落点） */
+  if (abs) return window.api.assetsItemUpdateBytes(aid, iid, { srcPath: abs });
+  if (String((e && e.type) || "") === "text")
+    return window.api.assetsItemUpdateText(aid, iid, "");
+  return window.api.assetsItemUpdateBytes(aid, iid, { empty: true });
+}
+/** 撤销 / 重做的库侧：倒序回滚这批改动，并把回滚自身产生的「旧的现在态」
+ *  记到 targetSnap（对面那一格）上，于是反方向也能原样走回来。 */
+async function assetRollbackEdits(edits, targetSnap) {
+  const list = (edits || []).filter((e) => e && e.assetId && e.itemId);
+  if (!list.length) return { done: 0, failed: 0 };
+  _assetRollbackBusy = true;
+  let done = 0;
+  let failed = 0;
+  const touched = new Set();
+  try {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const e = list[i];
+      let r = null;
+      try {
+        r = await assetRestoreEdit(e);
+      } catch (_) {
+        r = null;
+      }
+      if (!r || !r.ok) {
+        failed++;
+        continue;
+      }
+      done++;
+      touched.add(String(e.assetId));
+      assetItemViewInvalidate(String(e.assetId), String(e.itemId));
+      assetRecordEdit(targetSnap, {
+        assetId: e.assetId,
+        itemId: e.itemId,
+        type: (r.item && r.item.type) || e.type,
+        title: e.title,
+        prevFile: r.prevVersion || "",
+        prevEmpty: r.prevEmpty !== false,
+      });
+    }
+    await assetRescan();
+    for (const aid of touched) assetItemsViewInvalidateAll(aid);
+    if (assetLibOpen()) paintAssetLib();
+    if (assetSettingsOpen()) paintAssetSettings();
+    assetViewRerenderSoon();
+    if (typeof scheduleSave === "function") scheduleSave();
+  } finally {
+    _assetRollbackBusy = false;
+  }
+  return { done: done, failed: failed };
+}
+
+/* ════════════════ 素材设置对话框：显示名 / 描述 ＋ 内容条目 CRUD ════════════════
+ * 一张表管住「库里那份素材」与「画布上的端子」，写入永远只有一个方向：
+ *   ① 先写库（api.assets*）；② 拿库回来的新摘要贴到画布上绑定该素材的每个节点
+ *   （assetApplySummaryToNodes → assetBindNode → assetItemPerm → assetRemapItemWires）。
+ * 于是端子天然跟着条目走：
+ *   · 改标题 → 端子 title 变、序号不变（id 认得出＝同一条目，线不甩）；
+ *   · 增条目 → 末尾多一对端子；
+ *   · 删条目 → 只断这一对的连线、后面的端子号顺移，整步进撤销栈（Ctrl+Z 复原节点与线）；
+ *   · 重排 → perm 口径与 app.js · fnToolMoveParam 逐字一致（把 from 移到 to、中间顺移一格），
+ *     不另发明一套数法；条目顺序落盘后，别的画布下次打开 / 刷新按库为准。
+ * 画布快照管不到库文件，库那侧的安全垫在 T1：覆盖进 .versions/、删除进 .trash/。 */
+const ASSET_SET = {
+  open: false,
+  id: "", // 正在设置的素材 id（真源在库里，这里只记身份）
+  dragFrom: -1, // 行拖动的源行号，-1 = 无拖拽
+};
+
+function assetSettingsOpen() {
+  return !!ASSET_SET.open;
+}
+/** 当前设置对象：一律现从扫描结果里取（库为真源），取不到＝素材没了 */
+function assetSettingsAsset() {
+  return ASSET_SET.id ? assetSummaryById(ASSET_SET.id) : null;
+}
+/** 设置框正在改的那份摘要（打开时若还没扫过库，先补一次静默扫描） */
+async function openAssetSettings(ref) {
+  const id = String((ref && ref.id) || "").trim();
+  if (!id) return;
+  if (!assetsApiOk()) {
+    toast(I18n.t("素材库不可用（本机存储接口未就绪）"), "err");
+    return;
+  }
+  ASSET_SET.open = true;
+  ASSET_SET.id = id;
+  const host = ensureAssetSetDlg();
+  host.classList.add("on");
+  /* 焦点收进本框：Esc 归最上面这张框（否则会落到下面的素材库框上） */
+  try {
+    host.focus();
+  } catch (_) {}
+  paintAssetSettings();
+  if (!ASSET_LIB.scanned) {
+    await assetLinkVerify(false);
+    if (ASSET_SET.open) paintAssetSettings();
+  }
+}
+
+function closeAssetSettings() {
+  ASSET_SET.open = false;
+  ASSET_SET.id = "";
+  ASSET_SET.dragFrom = -1;
+  const host = document.getElementById("assetSetDlg");
+  if (host) host.classList.remove("on");
+}
+
+function ensureAssetSetDlg() {
+  let host = document.getElementById("assetSetDlg");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "assetSetDlg";
+  host.className = "mt-dialog asset-set-dlg";
+  host.tabIndex = -1;
+  host.innerHTML =
+    '<div class="mt-dialog-box asset-set-box" role="dialog" aria-modal="true">' +
+    '<div class="asset-lib-head">' +
+    '<b id="assetSetTitle"></b>' +
+    '<span class="asset-lib-rootpath" id="assetSetRel"></span>' +
+    '<span class="asset-lib-spacer"></span>' +
+    '<button type="button" class="mini" id="assetSetRevealBtn"></button>' +
+    '<button type="button" class="mini" id="assetSetRefreshBtn"></button>' +
+    '<button type="button" class="mini node-guide-x" id="assetSetClose">✕</button>' +
+    "</div>" +
+    '<div class="asset-set-body" id="assetSetBody"></div>' +
+    '<div class="asset-lib-foot" id="assetSetFoot"></div>' +
+    "</div>";
+  document.body.appendChild(host);
+  host.querySelector("#assetSetClose").onclick = () => closeAssetSettings();
+  host.querySelector("#assetSetRevealBtn").onclick = () => assetSetReveal();
+  host.querySelector("#assetSetRefreshBtn").onclick = () => assetSetRefresh();
+  host.addEventListener("click", (ev) => {
+    if (ev.target === host) closeAssetSettings();
+  });
+  host.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    /* 压在上面的确认框 / 表单框先收 Esc（它们各自处理），这里不抢 */
+    const up = document.getElementById("mtDialog");
+    if (up && up.classList.contains("on")) return;
+    if (document.getElementById("assetFormDlg")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeAssetSettings();
+  });
+  return host;
+}
+
+/** 一次库写入的统一收尾：新摘要 → 画布节点（含 pushHistory 与端子重映射）→ 重扫 → 重画。
+    msg 为成功后的一句回执（不传则不提示）。
+    重画不能只挂在 assetApplySummaryToNodes 上：它按「端子集签名」判定，只改正文 / 换文件
+    时条目集没变 → 它会提前返回，body 里那条缓存就永远停在旧内容上。 */
+async function assetAfterLibWrite(summary, msg, kind) {
+  if (summary && summary.id) assetApplySummaryToNodes(summary);
+  await assetRescan();
+  if (S.wf) scheduleSave();
+  if (assetLibOpen()) paintAssetLib();
+  if (assetSettingsOpen()) paintAssetSettings();
+  assetViewRerenderSoon();
+  if (msg) toast(msg, kind || "ok");
+  return true;
+}
+
+/* 忙闸门：同一时刻只允许一个写库动作在飞（与素材库主框共用一把锁） */
+async function assetSetBusyRun(fn) {
+  if (ASSET_LIB.busy) return false;
+  ASSET_LIB.busy = true;
+  try {
+    return await fn();
+  } finally {
+    ASSET_LIB.busy = false;
+  }
+}
+
+function assetSetReveal() {
+  const a = assetSettingsAsset();
+  if (!a || !ASSET_LIB.root) {
+    toast(I18n.t("素材已失联：在素材库里找不到对应文件夹"), "warn");
+    return;
+  }
+  window.api.shellShowItem(ASSET_LIB.root + "/" + String(a.rel || ""));
+}
+
+async function assetSetRefresh() {
+  await assetRescan();
+  if (assetLibOpen()) paintAssetLib();
+  if (ASSET_SET.open) paintAssetSettings();
+}
+
+/* ── 条目行：库摘要 items 的展示形状（标题 / 类型口径与端子完全同一份） ── */
+function assetSetRows(a) {
+  const norm = assetItems(a || {});
+  const raw = {};
+  for (const it of (a && a.items) || []) if (it) raw[String(it.id)] = it;
+  return norm.map((it, i) => {
+    const o = raw[it.id] || {};
+    return {
+      id: it.id,
+      title: it.title,
+      type: it.type,
+      idx: i,
+      file: String(o.file || ""),
+      absPath: String(o.absPath || ""),
+      bytes: Number(o.bytes) || 0,
+      missing: !!o.missing,
+    };
+  });
+}
+
+function paintAssetSettings() {
+  const host = ensureAssetSetDlg();
+  const a = assetSettingsAsset();
+  if (!a) {
+    /* 还没扫过库：此刻「找不到」并不说明素材没了，先给等待态，别误报成被关闭 */
+    if (!ASSET_LIB.scanned) {
+      host.classList.add("on");
+      host.querySelector("#assetSetTitle").textContent = I18n.t("素材设置");
+      host.querySelector("#assetSetRel").textContent = "";
+      const wait = host.querySelector("#assetSetBody");
+      wait.innerHTML = "";
+      wait.appendChild(
+        assetEl("div", "asset-lib-empty", I18n.t("正在读取素材库…")),
+      );
+      host.querySelector("#assetSetFoot").innerHTML = "";
+      return;
+    }
+    /* 素材在别处被删了 / 换了根目录：设置框没有可改的对象，直接收掉并说明 */
+    const b = host.querySelector("#assetSetTitle");
+    if (b) b.textContent = I18n.t("素材设置");
+    if (ASSET_SET.open) {
+      ASSET_SET.open = false;
+      ASSET_SET.id = "";
+      host.classList.remove("on");
+      toast(
+        I18n.t("该素材已不在素材库里（可能被删除或换了根目录），素材设置已关闭"),
+        "warn",
+      );
+    }
+    return;
+  }
+  ASSET_SET.open = true;
+  const pick = ASSET_LIB.mode === "pick";
+  host.querySelector("#assetSetTitle").textContent = pick
+    ? I18n.t("素材设置（绑定选择中）")
+    : I18n.t("素材设置");
+  const rel = host.querySelector("#assetSetRel");
+  rel.textContent = a.rel || "";
+  rel.title = I18n.t("素材文件夹（资源管理器里也能直接整理）") + "\n" + ASSET_LIB.root;
+  const rv = host.querySelector("#assetSetRevealBtn");
+  rv.textContent = I18n.t("在文件夹中显示");
+  rv.title = I18n.t("打开这个素材在素材库里的文件夹");
+  const rb = host.querySelector("#assetSetRefreshBtn");
+  rb.textContent = I18n.t("刷新");
+  rb.title = I18n.t("重新扫描素材库，取库里此刻的内容");
+  paintAssetSetBody(host.querySelector("#assetSetBody"), a);
+  paintAssetSetFoot(host.querySelector("#assetSetFoot"), a);
+}
+
+function paintAssetSetBody(box, a) {
+  box.innerHTML = "";
+  /* ── 资料区：显示名 / 描述（改动失焦即写库） ── */
+  const meta = assetEl("div", "asset-set-meta");
+  const nmLab = assetEl("label", null, I18n.t("显示名称"));
+  const nm = document.createElement("input");
+  nm.type = "text";
+  nm.className = "asset-form-input";
+  nm.value = String(a.displayName || a.folder || "");
+  nm.placeholder = I18n.t("例如：主角人设 / 片头音乐");
+  const dsLab = assetEl("label", null, I18n.t("描述"));
+  const ds = document.createElement("textarea");
+  ds.className = "asset-form-input";
+  ds.rows = 2;
+  ds.value = String(a.desc || "");
+  ds.placeholder = I18n.t("这个素材装的是什么（只给人看，不影响端子）");
+  /* 资料改动＝失焦即写库（与节点「设置」跳窗里的字段同一口径） */
+  nm.addEventListener("change", () => assetSetSaveMeta(nm.value, ds.value));
+  ds.addEventListener("change", () => assetSetSaveMeta(nm.value, ds.value));
+  /* 单行框里 Enter ＝ 提交（走 change 同一条路）；多行描述里 Enter 是换行 */
+  nm.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      nm.blur();
+    }
+  });
+  const row1 = assetEl("div", "asset-set-mrow");
+  row1.append(nmLab, nm);
+  const row2 = assetEl("div", "asset-set-mrow");
+  row2.append(dsLab, ds);
+  meta.append(row1, row2);
+  box.appendChild(meta);
+  box.appendChild(
+    assetEl(
+      "div",
+      "asset-set-tip",
+      I18n.t(
+        "内容条目＝节点上的一对端子：这里的标题就是端子名，这里的顺序就是端子顺序。改动直接写进素材库，画布上所有绑定该素材的节点一起跟着变。",
+      ),
+    ),
+  );
+  /* ── 条目工具条 ── */
+  const bar = assetEl("div", "asset-set-bar");
+  bar.appendChild(assetEl("b", null, I18n.t("内容")));
+  bar.appendChild(assetEl("span", "asset-lib-spacer"));
+  const addMap = [
+    ["text", I18n.t("＋ 文本"), I18n.t("新建一条空的文本内容（库内落一个 .txt）")],
+    ["image", I18n.t("＋ 图像"), I18n.t("从本机选图像文件复制入库（可多选）")],
+    ["audio", I18n.t("＋ 音频"), I18n.t("从本机选音频文件复制入库（可多选）")],
+    ["video", I18n.t("＋ 视频"), I18n.t("从本机选视频文件复制入库（可多选）")],
+  ];
+  for (const [type, label, tip] of addMap) {
+    const b = assetBtn(label, type === "text" ? "primary" : null, tip);
+    b.onclick = () => (type === "text" ? assetSetAddText() : assetSetAddMedia(type));
+    bar.appendChild(b);
+  }
+  box.appendChild(bar);
+  /* ── 条目列表（⠿ 拖动 insert ＋ ▲▼ 逐格；顺序即端子顺序） ── */
+  const rows = assetSetRows(a);
+  const list = assetEl("div", "asset-set-rows");
+  list.id = "assetSetRows";
+  if (!rows.length) {
+    list.appendChild(
+      assetEl(
+        "div",
+        "asset-lib-empty",
+        I18n.t(
+          "还没有内容：点上方「＋ 文本」建一条文本，或「＋ 图像 / 音频 / 视频」从本机选文件入库。",
+        ),
+      ),
+    );
+  }
+  for (let i = 0; i < rows.length; i++) list.appendChild(assetSetRow(rows[i], i, rows.length));
+  box.appendChild(list);
+  /* 容器级拖放：拖到列表下方空白 = 移到末尾（与参数面板同一口径） */
+  list.addEventListener("dragover", (ev) => {
+    if (ASSET_SET.dragFrom < 0) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+  });
+  list.addEventListener("drop", (ev) => {
+    if (ASSET_SET.dragFrom < 0) return;
+    const rowEl =
+      ev.target && ev.target.closest ? ev.target.closest(".asset-set-row") : null;
+    if (rowEl) return; // 行内落点由该行处理
+    ev.preventDefault();
+    const from = ASSET_SET.dragFrom;
+    assetSetClearDrag(list);
+    assetSetMoveItem(from, rows.length - 1);
+  });
+}
+
+function assetSetClearDrag(list) {
+  ASSET_SET.dragFrom = -1;
+  const box = list || document.getElementById("assetSetRows");
+  if (!box) return;
+  box
+    .querySelectorAll(".asset-set-dragging,.asset-set-drop-before,.asset-set-drop-after")
+    .forEach((el) =>
+      el.classList.remove(
+        "asset-set-dragging",
+        "asset-set-drop-before",
+        "asset-set-drop-after",
+      ),
+    );
+}
+
+function assetSetRow(r, i, n) {
+  const row = assetEl("div", "asset-set-row");
+  row.dataset.i = String(i);
+  /* ⠿ 把手：只从把手拖起（标题输入框里的选字不会被误判成整行拖拽） */
+  const grip = assetEl("span", "asset-set-grip", "⠿");
+  grip.draggable = true;
+  grip.title = I18n.t(
+    "拖动把手调整内容顺序（端子与已连数据线随内容移位 · ▲▼ 可逐格移动）",
+  );
+  grip.addEventListener("dragstart", (ev) => {
+    ASSET_SET.dragFrom = i;
+    row.classList.add("asset-set-dragging");
+    if (ev.dataTransfer) {
+      ev.dataTransfer.effectAllowed = "move";
+      try {
+        ev.dataTransfer.setData("text/plain", String(i));
+      } catch (_) {}
+    }
+  });
+  grip.addEventListener("dragend", () => {
+    /* drop 已经清过拖拽态并触发重画；只有「拖到一半松手 / 落点无效」才需要自己复位 */
+    const cancelled = ASSET_SET.dragFrom >= 0;
+    assetSetClearDrag(row.parentElement);
+    if (cancelled && ASSET_SET.open) paintAssetSettings();
+  });
+  row.addEventListener("dragover", (ev) => {
+    if (ASSET_SET.dragFrom < 0 || ASSET_SET.dragFrom === i) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    const list = row.parentElement;
+    if (list)
+      list
+        .querySelectorAll(".asset-set-drop-before,.asset-set-drop-after")
+        .forEach((el) =>
+          el.classList.remove("asset-set-drop-before", "asset-set-drop-after"),
+        );
+    const rect = row.getBoundingClientRect();
+    row.classList.add(
+      ev.clientY < rect.top + rect.height / 2
+        ? "asset-set-drop-before"
+        : "asset-set-drop-after",
+    );
+  });
+  row.addEventListener("dragleave", () =>
+    row.classList.remove("asset-set-drop-before", "asset-set-drop-after"),
+  );
+  row.addEventListener("drop", (ev) => {
+    if (ASSET_SET.dragFrom < 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const from = ASSET_SET.dragFrom;
+    const rect = row.getBoundingClientRect();
+    const before = ev.clientY < rect.top + rect.height / 2;
+    const list = row.parentElement;
+    assetSetClearDrag(list);
+    /* 落点按移动前的行号算：前半＝插到它前面，后半＝插到它后面 */
+    let to = i;
+    if (from < i) to = before ? i - 1 : i;
+    else to = before ? i : i + 1;
+    assetSetMoveItem(from, to);
+  });
+  row.appendChild(grip);
+  const mkArrow = (up) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mini";
+    b.textContent = up ? "▲" : "▼";
+    b.title = up
+      ? I18n.t("上移一条内容（端子序号一并跟着走）")
+      : I18n.t("下移一条内容（端子序号一并跟着走）");
+    b.disabled = up ? i <= 0 : i >= n - 1;
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      assetSetMoveItem(i, up ? i - 1 : i + 1);
+    };
+    return b;
+  };
+  row.appendChild(mkArrow(true));
+  row.appendChild(mkArrow(false));
+  const title = document.createElement("input");
+  title.type = "text";
+  title.className = "asset-set-title";
+  title.value = r.title;
+  title.placeholder = I18n.t("内容 ") + (i + 1);
+  title.title = I18n.t("端子名（会显示在节点左右两端的端子上）");
+  title.addEventListener("change", () => assetSetSetTitle(r, title.value));
+  title.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      title.blur();
+    }
+  });
+  row.appendChild(title);
+  const kind = assetEl("span", "asset-set-kind " + r.type, assetItemTypeLabel(r.type));
+  kind.title =
+    I18n.t("类型") +
+    "：" +
+    assetItemTypeLabel(r.type) +
+    "\n" +
+    I18n.t("类型在建立时定下（要换类型请新建一条并删掉这条）");
+  row.appendChild(kind);
+  const idx = assetEl("span", "asset-set-idx", "⇄ " + (i + 1));
+  idx.title =
+    I18n.t("第 {n} 个输入端子 ↔ 第 {n} 个输出端子", { n: i + 1 }) +
+    "\n" +
+    I18n.t("连入即写库（空则自动同步，已有内容则点端子上的 ⟳ 更换），输出即读出该条内容");
+  row.appendChild(idx);
+  const file = document.createElement("button");
+  file.type = "button";
+  file.className =
+    "asset-set-file" + (r.missing ? " miss" : "") + (r.absPath ? "" : " none");
+  file.textContent = r.file
+    ? fileName(r.file) + (r.bytes ? " · " + humanBytes(r.bytes) : "")
+    : I18n.t("（还没有内容）");
+  file.title = r.missing
+    ? I18n.t("库里的实体文件不在了：换一份内容即可恢复") + "\n" + r.absPath
+    : r.absPath || I18n.t("库内路径：") + (r.file || "");
+  file.onclick = () => {
+    if (!r.absPath) return;
+    window.api.shellShowItem(r.absPath);
+  };
+  row.appendChild(file);
+  const ed = assetBtn(
+    r.type === "text" ? I18n.t("编辑文本") : I18n.t("更换文件"),
+    null,
+    r.type === "text"
+      ? I18n.t("打开正文编辑框（写进素材库该条目的 .txt）")
+      : I18n.t("从本机选一个文件复制进来顶掉旧内容（旧内容进版本目录）"),
+  );
+  ed.onclick = () =>
+    r.type === "text"
+      ? assetSetEditText(r)
+      : assetItemReplaceFile(ASSET_SET.id, r.id, r.title, r.type);
+  row.appendChild(ed);
+  const rm = assetBtn("✕", "danger", I18n.t("删除这条内容（端子一并消失 · 实体文件进回收站）"));
+  rm.onclick = () => assetSetRemoveItem(r);
+  row.appendChild(rm);
+  return row;
+}
+
+/* ── 写库动作 ─────────────────────────────────────────────────────── */
+/** 把当前条目列表按 ids 顺序写成 items:[{id,title}]（同时改标题与顺序） */
+function assetSetMetaArg(a, order, titles) {
+  return {
+    id: a.id,
+    items: order.map((it) => ({
+      id: it.id,
+      title: String((titles && titles[it.id] != null ? titles[it.id] : it.title) || "").trim(),
+    })),
+  };
+}
+
+async function assetSetSaveMeta(displayName, desc) {
+  const a = assetSettingsAsset();
+  if (!a) return;
+  const dn = String(displayName == null ? "" : displayName).trim();
+  const ds = String(desc == null ? "" : desc).trim();
+  if (dn === String(a.displayName || "") && ds === String(a.desc || "")) return;
+  await assetSetBusyRun(async () => {
+    const r = await window.api.assetsSaveMeta({
+      id: a.id,
+      displayName: dn,
+      desc: ds,
+    });
+    if (!r || !r.ok) {
+      toast(I18n.t("保存素材资料失败：") + ((r && r.error) || ""), "err");
+      return;
+    }
+    /* 只改名字与描述：端子集没动，节点上的 assetName / assetDesc 由快照同步刷新 */
+    await assetAfterLibWrite(r.asset, I18n.t("已保存素材资料"), "ok");
+  });
+}
+
+async function assetSetSetTitle(r, value) {
+  const a = assetSettingsAsset();
+  if (!a) return;
+  const nv = String(value == null ? "" : value).trim();
+  if (!nv || nv === r.title) {
+    paintAssetSettings();
+    return;
+  }
+  const rows = assetSetRows(a);
+  const titles = {};
+  for (const x of rows) titles[x.id] = x.id === r.id ? nv : x.title;
+  await assetSetBusyRun(async () => {
+    const res = await window.api.assetsSaveMeta(
+      assetSetMetaArg(a, rows, titles),
+    );
+    if (!res || !res.ok) {
+      toast(I18n.t("改内容标题失败：") + ((res && res.error) || ""), "err");
+      return;
+    }
+    await assetAfterLibWrite(
+      res.asset,
+      I18n.t("已改端子名：{old} → {now}", { old: r.title, now: nv }),
+      "ok",
+    );
+  });
+}
+
+/** 重排：条目顺序走 app.js · assetMoveItem（perm 口径与 fnToolMoveParam 逐字一致：
+    把 from 移到 to、中间顺移一格），顺序写进库 → 每个绑定节点的端子号按条目 id 保号
+    重映射（线跟着内容走，不漂到别的条目上）。 */
+async function assetSetMoveItem(from, to) {
+  const a = assetSettingsAsset();
+  if (!a) return;
+  if (typeof assetMoveItem !== "function") return;
+  const rows = assetSetRows(a);
+  const mv = assetMoveItem(rows, from, to);
+  if (!mv) return; // 原地 / 越界：不动库也不动线（与 fnToolMoveParam 同一拒绝口径）
+  const next = mv.list;
+  await assetSetBusyRun(async () => {
+    const r = await window.api.assetsSaveMeta(assetSetMetaArg(a, next));
+    if (!r || !r.ok) {
+      toast(I18n.t("调整内容顺序失败：") + ((r && r.error) || ""), "err");
+      return;
+    }
+    await assetAfterLibWrite(
+      r.asset,
+      I18n.t("已调整内容顺序：端子与已连数据线随内容移位"),
+      "ok",
+    );
+  });
+}
+
+async function assetSetRemoveItem(r) {
+  const a = assetSettingsAsset();
+  if (!a) return;
+  const sure = await confirmDialog(
+    I18n.t(
+      "删除内容「{name}」？\n\n· 节点上这一对端子会消失，挂在它上面的连线一并断开（Ctrl+Z 可复原节点与连线）\n· 实体文件移进素材库根目录的 .trash（不会真的删掉）\n\n要恢复文件请从资源管理器里找回。",
+      { name: r.title },
+    ),
+    { title: I18n.t("删除内容"), danger: true, okText: I18n.t("删除") },
+  );
+  if (!sure) return;
+  await assetSetBusyRun(async () => {
+    const res = await window.api.assetsItemRemove(a.id, r.id);
+    if (!res || !res.ok) {
+      toast(I18n.t("删除内容失败：") + ((res && res.error) || ""), "err");
+      return;
+    }
+    assetItemViewInvalidate(a.id, r.id);
+    await assetAfterLibWrite(
+      res.asset,
+      I18n.t("已删除内容：{name}（端子与连线可撤销 · 文件进回收站）", {
+        name: r.title,
+      }),
+      "ok",
+    );
+  });
+}
+
+async function assetSetAddText() {
+  const a = assetSettingsAsset();
+  if (!a) return;
+  const rows = assetSetRows(a);
+  const v = await assetFormDialog({
+    title: I18n.t("添加文本内容"),
+    okText: I18n.t("添加"),
+    wide: true,
+    rawKeys: ["text"],
+    fields: [
+      {
+        key: "title",
+        label: I18n.t("标题（＝端子名）"),
+        placeholder: I18n.t("内容 ") + (rows.length + 1),
+      },
+      { key: "text", label: I18n.t("正文"), multiline: true, rows: 12 },
+    ],
+  });
+  if (!v) return;
+  await assetSetBusyRun(async () => {
+    const r = await window.api.assetsItemAdd({
+      id: a.id,
+      type: "text",
+      title: v.title || "",
+      content: v.text || "",
+    });
+    if (!r || !r.ok) {
+      toast(I18n.t("添加内容失败：") + ((r && r.error) || ""), "err");
+      return;
+    }
+    await assetAfterLibWrite(
+      r.asset,
+      I18n.t("已添加内容：{name}（末尾多出一对端子）", {
+        name: (r.item && r.item.title) || v.title || "",
+      }),
+      "ok",
+    );
+  });
+}
+
+async function assetSetAddMedia(type) {
+  const a = assetSettingsAsset();
+  if (!a) return;
+  const f = ASSET_PICK_FILTERS[type] || ASSET_PICK_FILTERS.image;
+  const picked = await window.api.fileOpenDialog({
+    title: I18n.t("选择要添加的") + assetItemTypeLabel(type) + I18n.t("文件（可多选）"),
+    filters: [f],
+    multi: true,
+  });
+  const paths = (picked && picked.paths) || [];
+  if (!paths.length && picked && picked.path) paths.push(picked.path);
+  if (!paths.length) return;
+  await assetSetBusyRun(async () => {
+    const r = await window.api.assetsImportFiles(a.id, paths);
+    if (!r || !r.ok) {
+      toast(I18n.t("添加内容失败：") + ((r && r.error) || ""), "err");
+      return;
+    }
+    const added = Number((r.items && r.items.length) || 0);
+    const skip = Number((r.skipped && r.skipped.length) || 0);
+    await assetAfterLibWrite(
+      r.asset,
+      skip
+        ? I18n.t("已添加 {n} 条内容（{s} 个文件类型素材库不收，已跳过）", {
+            n: added,
+            s: skip,
+          })
+        : I18n.t("已添加 {n} 条内容", { n: added }),
+      added ? "ok" : "warn",
+    );
+  });
+}
+
+async function assetSetEditText(r) {
+  const a = assetSettingsAsset();
+  if (!a) return;
+  let cur = "";
+  try {
+    const rd = await window.api.assetsItemRead(a.id, r.id);
+    if (rd && rd.ok) cur = String(rd.text || "");
+    else if (rd && rd.error) cur = "";
+  } catch (_) {
+    cur = "";
+  }
+  const v = await assetFormDialog({
+    title: I18n.t("编辑文本内容 · {name}", { name: r.title }),
+    okText: I18n.t("保存到素材库"),
+    wide: true,
+    rawKeys: ["text"],
+    fields: [
+      { key: "title", label: I18n.t("标题（＝端子名）"), value: r.title },
+      {
+        key: "text",
+        label: I18n.t("正文"),
+        multiline: true,
+        rows: 16,
+        value: cur,
+        hint: I18n.t("写进素材库该条目的 .txt（旧内容先进版本目录 · 可撤销）"),
+      },
+    ],
+  });
+  if (!v) return;
+  await assetSetBusyRun(async () => {
+    /* 正文走 assetWriteItem：与端子同步同一条路（撤销快照 + 库里旧文件一起记账） */
+    const r1 = await assetWriteItem(a.id, r.id, { content: v.text }, {
+      type: "text",
+      title: r.title,
+      msg: I18n.t("已保存到素材库：") + (v.title || r.title),
+    });
+    if (!r1.ok) {
+      toast(I18n.t("写入素材库失败：") + (r1.error || ""), "err");
+      return;
+    }
+    /* 标题（＝端子名）单独一步：改标题要顺带同步所有绑定节点的端子快照 */
+    const nt = String(v.title || "").trim();
+    if (nt && nt !== String(r.title || "").trim()) await assetSetSetTitle(r, nt);
+  });
+}
+
+function paintAssetSetFoot(foot, a) {
+  foot.innerHTML = "";
+  foot.appendChild(
+    assetEl(
+      "span",
+      "asset-lib-fact",
+      I18n.t("内容 ") +
+        assetSetRows(a).length +
+        " · " +
+        assetItemsSummary(a) +
+        (a.desc ? " · " + a.desc : ""),
+    ),
+  );
+  foot.appendChild(assetEl("span", "asset-lib-spacer"));
+  const cl = assetBtn(I18n.t("关闭"), null, null);
+  cl.onclick = () => closeAssetSettings();
+  foot.appendChild(cl);
 }
