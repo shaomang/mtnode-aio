@@ -338,6 +338,15 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     );
   }
   spec.abKey = node._abKey || "";
+  /* 画幅锁定「与首参考图保持一致长宽比」：发请求前把首参考图换成补边副本、
+     并把请求尺寸钉到目标画幅；出图后由 finishProcImageOutput 按同一矩形裁回。
+     聚合运行没有条目标题，故 itemTitle 用 typeof 兜底（单次 / 聚合两条路径共用这段）。 */
+  if (node.kind === "proc_image")
+    await applyRatioLockToSpec(node, spec, {
+      write: true,
+      itemTitle: typeof itemTitle === "string" ? itemTitle : "",
+      attemptT: attemptT || 0,
+    });
   if (node.kind === "proc_text") ensureVision(prov, spec.images);
   if (node.kind === "proc_text") {
     const r = await apiCallTextStream(spec, (t) =>
@@ -354,7 +363,7 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     rr.base64,
     rr.ext || "png",
   );
-  /* 透明背景开启时：这里会在内部自动补生成严格对齐的黑底第 2 通道并差分抠图（用户无感知） */
+  /* 透明背景开启时：这里把第 1 通道（纯黑基准）原图当唯一参考图，内部补发第 2 通道（纯白复刻）并差分抠图（用户无感知） */
   const path = await finishProcImageOutput(node, spec, res.path, itemTitle, attemptT);
   return { kind: "image", path };
 }
@@ -549,6 +558,15 @@ async function runOnceAgg(node, prov, attemptT) {
     );
   }
   spec.abKey = node._abKey || "";
+  /* 画幅锁定「与首参考图保持一致长宽比」：发请求前把首参考图换成补边副本、
+     并把请求尺寸钉到目标画幅；出图后由 finishProcImageOutput 按同一矩形裁回。
+     聚合运行没有条目标题，故 itemTitle 用 typeof 兜底（单次 / 聚合两条路径共用这段）。 */
+  if (node.kind === "proc_image")
+    await applyRatioLockToSpec(node, spec, {
+      write: true,
+      itemTitle: typeof itemTitle === "string" ? itemTitle : "",
+      attemptT: attemptT || 0,
+    });
   if (node.kind === "proc_text") ensureVision(prov, spec.images);
   if (node.kind === "proc_text") {
     const r = await apiCallTextStream(spec, (t) =>
@@ -646,6 +664,11 @@ async function previewNode(node) {
     return;
   }
   const spec = buildSpec(node, prov, 0);
+  /* 画幅锁定：预览也要看到「真正会发出去的尺寸 + 补边注入段」。
+     write:false 只算几何、不落补边副本（预览不该往素材库塞中间图）。 */
+  let rlPlan = null;
+  if (node.kind === "proc_image" && node.ratioLockOn)
+    rlPlan = await applyRatioLockToSpec(node, spec, { write: false });
   const r = await window.api.apiPreview(spec);
   if (!r.ok) {
     toast(I18n.t("预览失败：") + r.error, "err");
@@ -666,12 +689,47 @@ async function previewNode(node) {
     txt = "⚠ " + I18n.t(VISION_HINT) + I18n.t("\n（以下请求将忽略图像输入）\n\n") + txt;
   }
   if (node.kind === "proc_image" && node.bgRmOn) {
-    /* 透明背景：让「其实要出两张图」在预览里就看得见 */
+    /* 透明背景：让「其实要出两张图」与「本服务商能否严格锚定第 2 通道」在预览里就看得见 */
     txt =
       "⚠ " +
-      I18n.t(
-        "透明背景（双通道差分抠图）已开启：以下是第 1 通道（纯白背景）请求。运行时会自动补发第 2 通道（完全一致、严格对齐的纯黑背景）并差分出 Alpha —— 共 2 次生成，约 2 倍 Token。\n\n",
-      ) +
+      (matteAnchorSupport(prov)
+        ? I18n.t(
+            "透明背景（双通道差分抠图）已开启：以下是第 1 通道（纯黑背景 · 唯一基准）请求。运行时会把那张原图当唯一参考图，自动补发第 2 通道（严格复刻、只换纯白背景）并差分出 Alpha —— 共 2 次生成，约 2 倍 Token。\n\n",
+          )
+        : I18n.t(
+            "透明背景（双通道差分抠图）已开启，但本服务商无法严格锚定第 2 通道（接口收不到第 1 通道原图）：运行时将跳过抠图，只交付第 1 通道（纯黑背景）这一张，不会另画一张凑数。\n\n",
+          )) +
+      txt;
+  }
+  if (node.kind === "proc_image" && node.ratioLockOn) {
+    /* 画幅锁定：预览里直接给出「补边到哪个画幅、裁回哪个矩形」，
+       上面这份请求的 size 已经是目标画幅（补边副本运行时才落盘） */
+    txt =
+      "⚠ " +
+      (rlPlan
+        ? I18n.t("画幅锁定（与首参考图保持一致长宽比）已开启：首参考图 ") +
+          rlPlan.refW +
+          "×" +
+          rlPlan.refH +
+          I18n.t(
+            " 会被复制并补边到 ") +
+          rlPlan.genW +
+          "×" +
+          rlPlan.genH +
+          I18n.t(" 画幅（主体落在居中矩形 ") +
+          rlPlan.x +
+          "," +
+          rlPlan.y +
+          " · " +
+          rlPlan.w +
+          "×" +
+          rlPlan.h +
+          I18n.t(
+            "）后再发请求，出图按该矩形裁回 → 最终长宽比 = 参考图长宽比。下方 image 里列的仍是原始参考图路径，运行时会换成补边副本。\n\n",
+          )
+        : I18n.t(
+            "画幅锁定（与首参考图保持一致长宽比）已开启，但本次没有可补边的首参考图（未连入图像输入）：运行时按原尺寸直接生成，不做补边与裁回。\n\n",
+          )) +
       txt;
   }
   const pre = document.createElement("pre");
@@ -3954,13 +4012,22 @@ function resolveVideoOutputDir(node) {
 }
 
 /** 组装 h3Generate 参数：内置模式原样下发（零回归）；自建工作流模式走精简对象
- *  （时长 / 分辨率 / 后处理等内置专属字段一概不下发）。 */
+ *  （时长 / 分辨率 / 后处理等内置专属字段一概不下发）。
+ *
+ *  ⚠ 下发 id 口径（宿主 h3/main-h3.js 的 resolveCustomWorkflowId 与之成对，改一处必改另一处）：
+ *   · customWorkflowId —— 节点上选的 **H3 自建工作流库 id**，空 = 内置 FL2VA / R2V 链。
+ *     宿主只认这个键分叉。
+ *   · canvasWorkflowId —— 当前**画布** id，仅进全局媒体互斥锁做归因 / 展示，永不参与分叉。
+ *   早先两者挤在同一个 `workflowId` 键上：内置链把画布 id（形如 wf_mtjt9bmr）发了过去，
+ *   宿主见非空即判自建，于是内置视频生成必报「工作流不存在（id=wf_…）」。 */
 function buildVideoGenRunParams(node, ctx) {
   const exp = ctx.exp || {};
+  const canvasId = (S.wf && S.wf.id) || "";
   if (isCustomVideoGen(node)) {
     return {
       nodeId: ctx.nodeId,
-      workflowId: String(node.workflowId || "").trim(),
+      customWorkflowId: String(node.workflowId || "").trim(),
+      canvasWorkflowId: canvasId,
       wfParams: Array.isArray(node.wfParams) ? node.wfParams : [],
       wfParamValues: collectVideoGenWfValues(node),
       customOutputNodeId: String(node.customOutputNodeId || ""),
@@ -3971,7 +4038,8 @@ function buildVideoGenRunParams(node, ctx) {
   }
   return {
     nodeId: ctx.nodeId,
-    workflowId: (S.wf && S.wf.id) || "",
+    customWorkflowId: "",
+    canvasWorkflowId: canvasId,
     mode: ctx.mode,
     prompt: ctx.prompt,
     firstImage: ctx.firstImage || "",
@@ -9771,6 +9839,9 @@ function agentToolPolicySystemNote(opts) {
     return "";
   }
   const nodeLock = !!(opts && opts.nodeLock);
+  /* 无读画布档位（Gate A：开发绑定会话）：宿主本轮没注册 mtnode_canvas_get / mtnode_app，
+     口径必须同步说一句，否则模型会照着「先读画布」的旧纪律去调不存在的工具。 */
+  const noCanvasRead = !!(opts && opts.noCanvasRead);
   const p = agentToolActivePreset();
   const allow = (p && p.allow) || defaultToolAllow();
   const denied = [];
@@ -9794,6 +9865,10 @@ function agentToolPolicySystemNote(opts) {
       "本次运行为智能节点：即使审批预设允许，也不可使用读取画布、节点与连线、控制类节点、绘图、排版与成组、应用操作、删除画布。",
     );
   }
+  if (noCanvasRead)
+    s += I18n.t(
+      "本轮不注册读画布与应用工具（mtnode_canvas_get / mtnode_app 调用即失败）：画布现状以宿主给的契约为准，改画布只在收尾用 mtnode_canvas_edit 按节点 id 点名本节点。",
+    );
   if (!denied.length && !asking.length) {
     if (!nodeLock)
       s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
@@ -9986,16 +10061,8 @@ function openApprovalsPanel() {
     pan.id = "approvalsPanel";
     pan.className = "approvals-panel";
     document.body.appendChild(pan);
-    document.addEventListener(
-      "mousedown",
-      (ev) => {
-        if (!pan.classList.contains("on")) return;
-        if (pan.contains(ev.target)) return;
-        if (ev.target.closest && ev.target.closest("#btnApprovals")) return;
-        closeApprovalsPanel();
-      },
-      true,
-    );
+    /* persistent：这块面板里全是下拉与开关，点外部不再自动收起（关它只走顶栏同一个按钮
+       toggleApprovalsPanel）—— 弹窗 persistent 是全应用原则，见 AGENTS.md */
   }
   if (!S.config.dsh) S.config.dsh = {};
   ensureAgentToolPresets();

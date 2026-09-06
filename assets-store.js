@@ -72,6 +72,28 @@ const EXT_TYPE = (() => {
 })();
 /* 文本条目在库内的落盘扩展名（与 EXT_TYPE 口径一致：文本一律 .txt） */
 const EXT_OF_TYPE = { text: ".txt", image: ".png", audio: ".wav", video: ".mp4" };
+/* 上传进来的文本先整读成 utf8 再落成 .txt：库内文本条目恒为 .txt（扩展名不跟着源文件漂，
+   与 itemAdd / itemUpdateText 同一口径）。上限是必须的 —— 撤销回滚要把整份内容在内存里
+   搬来搬去，让用户把一个几百 MB 的日志当「文本」塞进库会把主进程拖死。 */
+const TEXT_IMPORT_MAX = 16 * 1024 * 1024;
+
+function statTextSrc(abs) {
+  let st = null;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    st = null;
+  }
+  if (!st || !st.isFile()) throw new Error(t("源文件不存在"));
+  if (st.size > TEXT_IMPORT_MAX)
+    throw new Error(t("文本文件过大（素材库的文本条目上限 16MB）"));
+  return st;
+}
+/** 上传进来的本机文本：先验存在与体积（statTextSrc），再整读 utf8 —— 文本条目恒落 .txt */
+function readTextSrc(abs) {
+  statTextSrc(abs);
+  return String(fs.readFileSync(abs, "utf8") || "");
+}
 
 let getDataDir = () => "";
 let t = (s) => String(s == null ? "" : s);
@@ -484,7 +506,7 @@ function addItemEntry(root, found, arg) {
       arg && typeof arg.content === "string"
         ? arg.content
         : srcPath
-          ? String(fs.readFileSync(srcPath, "utf8") || "")
+          ? readTextSrc(srcPath)
           : "";
     fs.writeFileSync(abs, text, "utf8");
     file = ITEMS_DIR + "/" + path.basename(abs);
@@ -757,8 +779,10 @@ function registerAssetsIpc(opts) {
     }
   });
 
-  /* 覆盖写：旧文件先进 .versions/（撤销要能真回滚库文件） */
-  function replaceItemFile(arg, writeFn) {
+  /* 覆盖写：旧文件先进 .versions/（撤销要能真回滚库文件）。
+     preCheck 在「动库里任何东西之前」跑一遍：文本上传用它挡超大 / 不存在的源文件 ——
+     先搬走旧正文再抛错，会留下一个文件缺失的条目，用户看到的是素材凭空坏了。 */
+  function replaceItemFile(arg, writeFn, preCheck) {
     const root = ensureRoot();
     const found = findAssetDir(root, String((arg && arg.id) || ""));
     if (!found) return { ok: false, error: t("素材不存在") };
@@ -766,6 +790,7 @@ function registerAssetsIpc(opts) {
     const itemId = String((arg && arg.itemId) || "");
     const it = items.find((i) => i.id === itemId);
     if (!it) return { ok: false, error: t("内容条目不存在") };
+    if (preCheck) preCheck(it);
     const itemsDir = path.join(found.dir, ITEMS_DIR);
     fs.mkdirSync(itemsDir, { recursive: true });
     /* 条目没有落过盘（历史脏数据）时不能把 items/ 本身当旧文件搬进 .versions/ */
@@ -834,13 +859,28 @@ function registerAssetsIpc(opts) {
     }
   });
 
-  /* 媒体覆盖：srcPath（本机文件，复制入库）优先，其次 base64；
-     empty:true = 清回空（撤销「端子无内容 → 自动同步」那一步的落点）；
-     扩展名跟随新内容，旧文件已进 .versions/ 不丢 */
+  /* 媒体 / 文本覆盖：srcPath（本机文件）优先，其次 base64；
+     empty:true = 清回空（撤销「端子无内容 → 自动同步」那一步的落点）。
+     文本条目走 readTextSrc → 就地写 .txt（与 itemUpdateText 同一口径，源文件叫什么
+     扩展名都不跟着漂）；媒体条目扩展名跟随新内容，旧文件已进 .versions/ 不丢 */
   ipcMain.handle("assets:itemUpdateBytes", (e, arg) => {
     try {
       return replaceItemFile(arg, (itemsDir, it, prevAbs, wantAbs) => {
         const srcPath = String((arg && arg.srcPath) || "").trim();
+        if (it.type === "text") {
+          const abs =
+            prevAbs && fs.existsSync(prevAbs)
+              ? prevAbs
+              : path.join(itemsDir, uniqueItemFile(itemsDir, it.id, ".txt", null));
+          let text = null;
+          if (srcPath) text = readTextSrc(srcPath);
+          else if (arg && arg.base64)
+            text = Buffer.from(String(arg.base64), "base64").toString("utf8");
+          else if (arg && arg.empty === true) text = "";
+          else throw new Error(t("没有内容可写入"));
+          fs.writeFileSync(abs, text, "utf8");
+          return abs;
+        }
         const ext = srcPath
           ? extOf(srcPath, it.type)
           : path.extname(wantAbs) || EXT_OF_TYPE[it.type] || ".bin";
@@ -860,14 +900,18 @@ function registerAssetsIpc(opts) {
           } catch {}
         }
         return nextAbs;
+      }, (it) => {
+        /* 动库里任何东西之前先验一遍要上传的文本（不存在 / 超过 16MB 直接拒）：
+           先搬走旧正文再抛错，条目会凭空空掉文件（旧那份只在 .versions 里躺着）。 */
+        const src = String((arg && arg.srcPath) || "").trim();
+        if (it.type === "text" && src) statTextSrc(src);
       });
     } catch (err) {
       return fail(err);
     }
   });
 
-  /* 删除条目：实体文件进 .trash（端子序号收缩与断线由渲染层负责） */
-  ipcMain.handle("assets:itemRemove", (e, arg) => {
+  /* 删除条目：实体文件进 .trash（端子序号收缩与断线由渲染层负责） */  ipcMain.handle("assets:itemRemove", (e, arg) => {
     try {
       const root = rootPath().root;
       const found = findAssetDir(root, String((arg && arg.id) || ""));

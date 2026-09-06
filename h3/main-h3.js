@@ -2229,14 +2229,74 @@ async function comfyFreeModels(port) {
   await sleep(1500);
 }
 
+/** h3:generate 的路由判定 —— 「这个任务走不走自建工作流分支」的唯一真源。
+ *  自建 = params.customWorkflowId（H3 工作流库 id，由 video_gen 节点选择）；
+ *  内置 FL2VA / R2V 链下发时带的是 **画布** id（params.canvasWorkflowId），
+ *  它跟库 id 曾经挤在同一个 workflowId 键上，见非空即分叉 → 内置任务必报
+ *  「工作流不存在（id=wf_…）」。现在只认 customWorkflowId；
+ *  兜底：老载荷只带 workflowId 时，必须它在本机库里真存在才算自建（画布 id 不可能命中）。 */
+function resolveCustomWorkflowId(params) {
+  const o = params && typeof params === "object" ? params : {};
+  const direct = String(o.customWorkflowId || "").trim();
+  if (direct) return direct;
+  const legacy = String(o.workflowId || "").trim();
+  if (!legacy) return "";
+  try {
+    return workflowStore().get(legacy) ? legacy : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 库里查不到该 id 时的人话报错：区分「没选 / 选了但库里已经没有了」，并给出现有可选项。 */
+function customWorkflowMissingMessage(wfId) {
+  const id = String(wfId || "").trim();
+  if (!id) return "未选择自建工作流（id 为空），请在 video_gen 节点设置窗里重新选择。";
+  let titles = [];
+  try {
+    titles = workflowStore()
+      .list()
+      .map((it) => String((it && it.title) || ""))
+      .filter(Boolean);
+  } catch {}
+  return (
+    "自建工作流不存在（id=" +
+    id +
+    "）：该条目不在本机 H3 工作流库里（可能已在管理窗口删除，或换了机器）。" +
+    "请在 video_gen 节点设置窗的「自建 ComfyUI 工作流」里重新选择" +
+    (titles.length
+      ? "（库内现有：" + titles.slice(0, 6).join("、") + (titles.length > 6 ? " …" : "") + "）"
+      : "，或先到 H3 管理窗口的「自建工作流」导入。")
+  );
+}
+
 async function generateVideo(params) {
   params = params || {};
   const nodeId = String(params.nodeId || "");
   if (!nodeId) return { ok: false, error: "missing_node_id" };
 
+  /* 自建库 id 与画布 id 各走各的键（见 resolveCustomWorkflowId 注释） */
+  const customWfId = resolveCustomWorkflowId(params);
+
+  /* 自建 id 在库里已经不存在 → 就地拒绝：不白等 ComfyUI 启动（分钟级），也不白占全局媒体锁 */
+  if (customWfId) {
+    let known = true;
+    try {
+      known = !!workflowStore().get(customWfId);
+    } catch {
+      known = true; /* 库读取出错交给执行分支报真实原因，别在这里误判 */
+    }
+    if (!known) {
+      const msg = customWorkflowMissingMessage(customWfId);
+      appendConsole("[job] reject: " + msg);
+      emitProgress({ phase: "generate", nodeId, message: msg, error: true, pct: 0 });
+      return { ok: false, error: "custom_workflow_missing", message: msg };
+    }
+  }
+
   const acq = tryAcquireLock({
     nodeId,
-    workflowId: params.workflowId || "",
+    workflowId: String(params.canvasWorkflowId || "").trim() || customWfId,
     kind: "video_gen",
   });
   if (!acq.ok) {
@@ -2292,10 +2352,10 @@ async function generateVideo(params) {
     const installDir = cfg.installDir;
     const comfy = comfyDir(installDir);
 
-    /* 自建工作流：workflowId 非空 → 走独立执行分支 runCustomWorkflow。
+    /* 自建工作流：customWorkflowId（H3 库 id）非空 → 走独立执行分支 runCustomWorkflow。
      * 内置 FL2VA / R2V 两阶段链（含 4K 超分补帧）一字不动（零回归）。 */
-    if (String(params.workflowId || "").trim()) {
-      return await runCustomWorkflow({ params, port, installDir, comfy });
+    if (customWfId) {
+      return await runCustomWorkflow({ params, port, installDir, comfy, wfId: customWfId });
     }
 
     const sig = projectSignals(installDir);
@@ -2565,9 +2625,9 @@ async function runCustomWorkflow(ctx) {
   const { params, port, installDir, comfy } = ctx;
   const nodeId = String(params.nodeId || "");
   const store = workflowStore();
-  const wfId = String(params.workflowId || "").trim();
+  const wfId = String(ctx.wfId || resolveCustomWorkflowId(params) || "").trim();
   const rec = store.get(wfId);
-  if (!rec) throw new Error("工作流不存在（id=" + wfId + "）。请先在 H3 管理窗口的「自建工作流」中导入。");
+  if (!rec) throw new Error(customWorkflowMissingMessage(wfId));
   const graph = rec.graph || {};
   const scan = h3wf.scanGraph(graph);
   const wfTitle = rec.title || wfId;

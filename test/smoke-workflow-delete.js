@@ -382,6 +382,12 @@ function loadRendererGuards() {
     toast: noop,
     renderCanvas: noop,
     renderStatus: noop,
+    /* 画布视图记忆（切 Tab 回到离开时那一层）在 setForegroundWf / forgetDeletedWf 里各有一个
+       入口：本测试测的是「删一张不伤别的」与前台归属，位置那套由 test/smoke-wf-view-memory.js
+       真跑，这里桩掉，免得两套用例互相绑死。 */
+    rememberWfView: noop,
+    applyWfView: noop,
+    forgetWfView: noop,
     renderSidebar: noop,
     renderAgentSession: noop,
     autoSaveSaves: noop,

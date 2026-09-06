@@ -369,6 +369,29 @@ function assetFormDialog(opts) {
       if (f.placeholder) inp.placeholder = f.placeholder;
       controls[f.key] = inp;
       row.append(lab, inp);
+      /* 字段级动作按钮（文本正文的「上传文件…」就走这里）：动作只读写表单值，
+         不提交表单 —— 载入后用户可以继续手改，再点「添加 / 保存到素材库」。 */
+      if (Array.isArray(f.actions) && f.actions.length) {
+        const acts = assetEl("div", "asset-form-actions");
+        for (const act of f.actions) {
+          const b = assetBtn(act.label, null, act.title || null);
+          b.onclick = () => {
+            const ctx = {
+              get: (k) => (controls[k] ? String(controls[k].value || "") : ""),
+              set: (k, v) => {
+                if (controls[k]) controls[k].value = String(v == null ? "" : v);
+              },
+            };
+            try {
+              act.run(ctx);
+            } catch (e) {
+              toast(String((e && e.message) || e), "err");
+            }
+          };
+          acts.appendChild(b);
+        }
+        row.appendChild(acts);
+      }
       body.appendChild(row);
     }
     const finish = (val) => {
@@ -411,9 +434,7 @@ function assetFormDialog(opts) {
     foot.append(cancel, ok);
     box.append(head, body, foot);
     host.appendChild(box);
-    host.addEventListener("click", (ev) => {
-      if (ev.target === host) finish(null);
-    });
+    /* persistent：表单里全是未提交的输入，点蒙层（host 空白）不关，只走「取消 / 确定」/ Esc */
     document.addEventListener("keydown", onKey, true);
     document.body.appendChild(host);
     setTimeout(() => {
@@ -497,9 +518,7 @@ function ensureAssetsDlg() {
     "</div>";
   document.body.appendChild(host);
   host.querySelector("#assetLibClose").onclick = () => closeAssetLib();
-  host.addEventListener("click", (ev) => {
-    if (ev.target === host) closeAssetLib();
-  });
+  /* persistent：素材库带搜索与编辑，点 host 空白不关窗，只走 ✕ / Esc */
   host.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
     /* 二级框 / 确认框开着时 Esc 先归它们（#mtDialog 与二级框各自处理） */
@@ -1559,16 +1578,77 @@ async function assetItemCommitText(node, it) {
   if (typeof renderStatus === "function") renderStatus();
   return true;
 }
+/* 文件选择框的扩展名白名单：文本这一族与主进程 EXT_TYPE（assets-store.js）同一份口径，
+   两边不一致会出现「选得到、入库被判成不支持」的孤儿文件。 */
+const ASSET_TEXT_EXTS = [
+  "txt", "md", "markdown", "json", "jsonc", "yaml", "yml", "csv", "tsv", "xml", "html",
+  "htm", "css", "js", "mjs", "cjs", "ts", "tsx", "jsx", "py", "lua", "sh", "bat", "ps1",
+  "ini", "log", "srt", "ass", "lrc",
+];
 const ASSET_PICK_FILTERS = {
+  text: { name: "文本", extensions: ASSET_TEXT_EXTS },
   image: { name: "图像", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] },
   audio: { name: "音频", extensions: ["wav", "mp3", "flac", "ogg", "m4a"] },
   video: { name: "视频", extensions: ["mp4", "webm", "mov", "mkv", "avi"] },
 };
 /** 图像 / 音频 / 视频条目：浏览（选择本机文件）→ 复制入库并顶掉旧内容。
+    文本条目同一条路：主进程按 utf8 读进来、恒落 .txt（见 assets-store.js readTextSrc）。
     节点 body 与素材设置框共用这一条路（前者只有 node，后者只有 assetId）。 */
 function assetItemPickFile(node, it, type) {
   if (!node || !it) return;
   assetItemReplaceFile(String(node.assetId || ""), String(it.id || ""), it.title, type);
+}
+/** 从本机挑一个文本文件、把正文读进内存（表单里「上传文件…」用：填进正文框，
+    用户仍可接着改，点「添加 / 保存」才写库）。读不到（二进制 / 编码异常）就报一句。 */
+async function assetPickLocalText() {
+  let picked = null;
+  try {
+    picked = await window.api.fileOpenDialog({
+      title: I18n.t("选择要上传的文本文件"),
+      filters: [ASSET_PICK_FILTERS.text],
+      multi: false,
+    });
+  } catch (e) {
+    return null;
+  }
+  const p =
+    picked && picked.paths && picked.paths.length
+      ? picked.paths[0]
+      : (picked && picked.path) || "";
+  if (!p) return null;
+  let rd = null;
+  try {
+    rd = await window.api.fileReadText(p);
+  } catch (_) {
+    rd = null;
+  }
+  if (!rd || !rd.exists) {
+    toast(I18n.t("读不到这个文件的文本内容：请改选 .txt / .md 这类纯文本文件"), "err");
+    return null;
+  }
+  return { path: p, content: String(rd.content || "") };
+}
+/** 表单字段动作：选本机文本文件 → 灌进正文框（标题为空时顺手取文件名，去掉扩展名） */
+async function assetFormLoadText(ctx) {
+  const hit = await assetPickLocalText();
+  if (!hit) return;
+  ctx.set("text", hit.content);
+  if (!String(ctx.get("title") || "").trim())
+    ctx.set("title", String(fileName(hit.path) || "").replace(/\.[^.]+$/, ""));
+  toast(
+    I18n.t("已载入本机文本：{name}（可继续编辑，点确定才写进素材库）", {
+      name: fileName(hit.path),
+    }),
+    "ok",
+  );
+}
+/** 表单里正文字段共用的一颗「上传文件…」按钮 */
+function assetTextUploadFieldAction() {
+  return {
+    label: I18n.t("上传文件…"),
+    title: I18n.t("从本机选一个文本文件（.txt / .md / .json …）把正文读进来，不用手打"),
+    run: (ctx) => assetFormLoadText(ctx),
+  };
 }
 async function assetItemReplaceFile(aid, itemId, label, type) {
   aid = String(aid || "").trim();
@@ -2014,9 +2094,7 @@ function ensureAssetSetDlg() {
   host.querySelector("#assetSetClose").onclick = () => closeAssetSettings();
   host.querySelector("#assetSetRevealBtn").onclick = () => assetSetReveal();
   host.querySelector("#assetSetRefreshBtn").onclick = () => assetSetRefresh();
-  host.addEventListener("click", (ev) => {
-    if (ev.target === host) closeAssetSettings();
-  });
+  /* persistent：素材库设置窗，点蒙层不关，只走 ✕ / Esc */
   host.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
     /* 压在上面的确认框 / 表单框先收 Esc（它们各自处理），这里不抢 */
@@ -2186,14 +2264,15 @@ function paintAssetSetBody(box, a) {
   bar.appendChild(assetEl("b", null, I18n.t("内容")));
   bar.appendChild(assetEl("span", "asset-lib-spacer"));
   const addMap = [
-    ["text", I18n.t("＋ 文本"), I18n.t("新建一条空的文本内容（库内落一个 .txt）")],
     ["image", I18n.t("＋ 图像"), I18n.t("从本机选图像文件复制入库（可多选）")],
     ["audio", I18n.t("＋ 音频"), I18n.t("从本机选音频文件复制入库（可多选）")],
     ["video", I18n.t("＋ 视频"), I18n.t("从本机选视频文件复制入库（可多选）")],
   ];
+  /* 文本：上传本机文本文件（可多选）或手写一条空正文，两条路并列 —— 不再只有「手动编辑」 */
+  assetSetAddTextBtn(bar);
   for (const [type, label, tip] of addMap) {
-    const b = assetBtn(label, type === "text" ? "primary" : null, tip);
-    b.onclick = () => (type === "text" ? assetSetAddText() : assetSetAddMedia(type));
+    const b = assetBtn(label, null, tip);
+    b.onclick = () => assetSetAddMedia(type);
     bar.appendChild(b);
   }
   box.appendChild(bar);
@@ -2207,7 +2286,7 @@ function paintAssetSetBody(box, a) {
         "div",
         "asset-lib-empty",
         I18n.t(
-          "还没有内容：点上方「＋ 文本」建一条文本，或「＋ 图像 / 音频 / 视频」从本机选文件入库。",
+          "还没有内容：点上方「＋ 文本」上传本机文本文件（或手写一条空正文），或「＋ 图像 / 音频 / 视频」从本机选文件入库。",
         ),
       ),
     );
@@ -2381,6 +2460,18 @@ function assetSetRow(r, i, n) {
       ? assetSetEditText(r)
       : assetItemReplaceFile(ASSET_SET.id, r.id, r.title, r.type);
   row.appendChild(ed);
+  if (r.type === "text") {
+    /* 文本条目也能直接吃本机文件：与图像 / 音频 / 视频同一颗「更换文件」入口，
+       只是主进程按 utf8 收下、恒落 .txt（旧正文进版本目录 · 可撤销） */
+    const up = assetBtn(
+      I18n.t("上传文件"),
+      null,
+      I18n.t("从本机选一个文本文件（.txt / .md / .json …）顶掉这条正文（旧内容进版本目录）"),
+    );
+    up.onclick = () =>
+      assetItemReplaceFile(ASSET_SET.id, r.id, r.title, "text");
+    row.appendChild(up);
+  }
   const rm = assetBtn("✕", "danger", I18n.t("删除这条内容（端子一并消失 · 实体文件进回收站）"));
   rm.onclick = () => assetSetRemoveItem(r);
   row.appendChild(rm);
@@ -2500,6 +2591,34 @@ async function assetSetRemoveItem(r) {
   });
 }
 
+/* 「＋ 文本」：上传本机文本文件 与 手写正文 是并列的两条路（多选的走上传，
+   每个文件一条内容；单个想再改改的走表单）。与「＋ 图像 / 音频 / 视频」同一手感。 */
+function assetSetAddTextBtn(host) {
+  const b = assetBtn(
+    I18n.t("＋ 文本"),
+    "primary",
+    I18n.t("新建文本内容：可从本机上传文本文件（可多选），也可手写一条空的正文"),
+  );
+  b.onclick = () => {
+    const r = b.getBoundingClientRect();
+    assetMenu(Math.max(6, r.left), r.bottom + 4, [
+      {
+        label: I18n.t("上传本机文本文件…（可多选）"),
+        title: I18n.t("选一个 / 多个文本文件复制进素材库，每个文件一条内容"),
+        run: () => assetSetAddMedia("text"),
+      },
+      {
+        label: I18n.t("手写一条空正文…"),
+        title: I18n.t(
+          "新建一条空白的文本内容（库内落一个 .txt），在表单里写或再上传文件",
+        ),
+        run: () => assetSetAddText(),
+      },
+    ]);
+  };
+  host.appendChild(b);
+}
+
 async function assetSetAddText() {
   const a = assetSettingsAsset();
   if (!a) return;
@@ -2515,7 +2634,13 @@ async function assetSetAddText() {
         label: I18n.t("标题（＝端子名）"),
         placeholder: I18n.t("内容 ") + (rows.length + 1),
       },
-      { key: "text", label: I18n.t("正文"), multiline: true, rows: 12 },
+      {
+        key: "text",
+        label: I18n.t("正文（可留空，用下方「上传文件…」从本机导入）"),
+        multiline: true,
+        rows: 12,
+        actions: [assetTextUploadFieldAction()],
+      },
     ],
   });
   if (!v) return;
@@ -2593,11 +2718,12 @@ async function assetSetEditText(r) {
       { key: "title", label: I18n.t("标题（＝端子名）"), value: r.title },
       {
         key: "text",
-        label: I18n.t("正文"),
+        label: I18n.t("正文（可留空，用下方「上传文件…」从本机导入）"),
         multiline: true,
         rows: 16,
         value: cur,
         hint: I18n.t("写进素材库该条目的 .txt（旧内容先进版本目录 · 可撤销）"),
+        actions: [assetTextUploadFieldAction()],
       },
     ],
   });

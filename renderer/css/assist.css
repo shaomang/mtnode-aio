@@ -180,6 +180,21 @@
   border-color: var(--cyan)
 }
 
+/* 「与画布无关」开关（助手侧）：开启态用紫色描边 + 底色，与会话侧 chip 同一含义。
+   flex:none ⇒ 宽度跟着译文走，工作范围下拉仍占满剩余空间。 */
+.assist-canvasfree-btn {
+  flex: none;
+  white-space: nowrap;
+  font-size: 10.5px;
+  padding: 3px 6px;
+}
+
+.assist-canvasfree-btn.on {
+  border-color: #c792ea;
+  color: #d0a6ff;
+  background: rgba(199, 146, 234, .12);
+}
+
 .assist-live2d {
   flex: none;
   height: 168px;

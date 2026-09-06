@@ -397,14 +397,15 @@ ok(
   "注释与样式表里不再残留「直角走线」的描述",
 );
 
-/* ---- 端子文字：一律放到节点外侧（输入左 / 输出右），不许再压住上下相邻端子 ---- */
+/* ---- 端子徽标：接线排「输入 / 输出」文字已删除 · 徽标写全名 · 节点高亮时看完整 ---- */
 const badgeRule = (css.match(/\.port-badge\s*\{[^}]*\}/) || [""])[0];
 const badgeZhRule = (css.match(/\.port-badge\.zh-label\s*\{[^}]*\}/) || [""])[0];
-/* 注意：^ 锚定行首，否则会命中 .wf-node.exec .n-port-label 这类派生选择器 */
-const portLabelRule = (css.match(/^\.n-port-label\s*\{[^}]*\}/m) || [""])[0];
+const pbNameRule = (css.match(/\.port-badge \.pb-name\s*\{[^}]*\}/) || [""])[0];
+const lightCss = read("renderer/css/theme-light.css");
+const execCss = (css.match(/\.wf-node\.exec[^{]*\{[^}]*\}/g) || []).join("\n");
 ok(
   /\.wf-node\s*\{[^}]*overflow:\s*clip;[^}]*overflow-clip-margin:\s*44px/.test(css),
-  "CSS：节点板允许端子文字溢出到外侧（overflow:clip + 44px 通道，其余仍裁剪）",
+  "CSS：节点板允许端子徽标溢出到外侧（overflow:clip + 44px 通道，其余仍裁剪）",
 );
 ok(
   badgeRule.indexOf("top: 50%") >= 0 &&
@@ -412,21 +413,64 @@ ok(
     !/top:\s*-/.test(badgeZhRule) &&
     /\.port\.in>\.port-badge\s*\{[^}]*right:\s*100%/.test(css) &&
     /\.port\.out>\.port-badge\s*\{[^}]*left:\s*100%/.test(css),
-  "CSS：端子文字与端子同一水平线 · 输入出左 / 输出出右（不再放端子上方挡相邻端子）",
+  "CSS：端子徽标与端子同一水平线 · 输入出左 / 输出出右（不放端子上方挡相邻端子）",
 );
 ok(
-  /\.n-port-label\s*\{[^}]*left:\s*-5px/.test(css) &&
-    /transform:\s*translateX\(-100%\)/.test(portLabelRule) &&
-    /\.n-port-label\.n-pl-out\s*\{[^}]*right:\s*-5px[^}]*translateX\(100%\)/.test(css),
-  "CSS：接线排「输入 / 输出」文字贴到节点外侧（左 / 右）",
+  css.indexOf("n-port-label") < 0 &&
+    lightCss.indexOf("n-port-label") < 0 &&
+    canvasSrc.indexOf("n-port-label") < 0 &&
+    canvasSrc.indexOf('I18n.t("输入")') < 0 &&
+    canvasSrc.indexOf('I18n.t("输出")') < 0,
+  "端子排不再创建「输入 / 输出」板外文字（DOM 与样式一并清除，含浅色主题）",
 );
 ok(
-  /if \(inputCount\(node\) > 0\)[\s\S]{0,300}"n-port-label n-pl-in"/.test(canvasSrc) &&
-    /if \(outputCount\(node\) > 0\)[\s\S]{0,300}"n-port-label n-pl-out"/.test(canvasSrc) &&
-    canvasSrc.indexOf("stage.appendChild(labIn)") < 0 &&
-    css.indexOf(".super-stage>.n-port-label") < 0,
-  "DOM：该侧无端子就不出文字；子画布内那份端子文字已删（会被 overflow:hidden 裁掉）",
+  pbNameRule.indexOf("overflow: hidden") >= 0 &&
+    pbNameRule.indexOf("text-overflow: ellipsis") >= 0 &&
+    /max-width:\s*3\d+px/.test(pbNameRule),
+  "CSS：徽标正文（.pb-name）平时收 max-width 出省略号 —— 不再被 44px 通道硬裁半个字",
 );
+ok(
+  /\.wf-node\.sel,\s*\.wf-node:hover\s*\{[^}]*overflow-clip-margin:\s*400px/.test(css) &&
+    /\.wf-node\.sel \.port-badge \.pb-name,\s*\.wf-node:hover \.port-badge \.pb-name\s*\{[^}]*max-width:\s*340px/.test(css),
+  "CSS：节点高亮（选中 / 悬停）时放开裁切 → 完整端子名称可见且不被截断",
+);
+ok(
+  (canvasSrc.match(/setPortBadgeName\(/g) || []).length >= 15 &&
+    canvasSrc.indexOf("clipStr(aItems") < 0 &&
+    canvasSrc.indexOf("clipStr((pl[") < 0 &&
+    appSrc.indexOf("clipStr(pname") < 0,
+  "DOM：外侧与内侧端子徽标一律写完整名称（徽标处不再有 clipStr 切字）",
+);
+ok(
+  execCss.indexOf("n-port-label") < 0,
+  "执行节点那条「隐藏小标签」的规则随文字一起删除",
+);
+/* 真跑徽标正文：DOM 里落的就是完整名称（切字交给 CSS），且名称单独包一层 .pb-name，
+   数组端子的槽位点仍挂在徽标本体上 —— 不会被这层裁切吃掉。 */
+{
+  const mkEl = (tag) => {
+    const el = { tagName: tag, className: "", textContent: "", children: [] };
+    el.appendChild = (c) => el.children.push(c);
+    return el;
+  };
+  const pbCtx = vm.createContext({ document: { createElement: mkEl } });
+  vm.runInContext(extract(canvasSrc, ["setPortBadgeName"]), pbCtx);
+  const long = "reference_image_paths_01";
+  const badge = mkEl("span");
+  pbCtx.setPortBadgeName(badge, long);
+  ok(
+    badge.children.length === 1 &&
+      badge.children[0].className === "pb-name" &&
+      badge.children[0].textContent === long,
+    "真跑：徽标正文 = 完整端子名（不切字 · 单独包 .pb-name 供 CSS 裁切）",
+  );
+  const empty = mkEl("span");
+  pbCtx.setPortBadgeName(empty, null);
+  ok(
+    empty.children.length === 1 && empty.children[0].textContent === "",
+    "真跑：名称为空也不抛错（给一个空的 .pb-name）",
+  );
+}
 
 /* ===================== [1] 排版用边 ===================== */
 console.log("\n[1] layoutEdgeSets：定向与破环");

@@ -1086,9 +1086,8 @@ async function openAppPluginsDialog() {
   const grid = document.createElement("div");
   grid.className = "plugin-grid";
   wrap.appendChild(grid);
-  wrap.addEventListener("click", (e) => {
-    if (e.target === wrap || e.target === grid) closePluginPop(wrap, pop);
-  });
+  /* 插件详情面板（role=dialog）persistent：点它周围的空白不再收起，
+     关它只走「再点一次这张卡片」与「简介」那条显式切换路径 —— 见 AGENTS.md */
   const overlayEl = $("#overlay");
   overlayEl.querySelectorAll(":scope > .plugin-pop").forEach((el) => el.remove());
   overlayEl.appendChild(pop);
@@ -1422,9 +1421,7 @@ function ensureExtManagerDlg() {
     "</div></div>";
   document.body.appendChild(host);
   host.querySelector("#extManagerClose").onclick = () => closeExtManagerDialog();
-  host.addEventListener("click", (ev) => {
-    if (ev.target === host) closeExtManagerDialog();
-  });
+  /* persistent：扩展能力管理里有搜索框与编辑中的表单，点蒙层不关窗，只走 ✕ / Esc */
   host.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
     const mt = document.getElementById("mtDialog");

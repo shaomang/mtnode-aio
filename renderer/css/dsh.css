@@ -781,7 +781,13 @@ button.mini.btn-sq.tpl-ico {
   background: #0a0d12;
 }
 
-/* 工作流内图像点击预览 */
+/* 工作流内图像点击预览（灯箱）
+   预览一律显示**原图**：图片元素按「原生像素 × 缩放系数」直接参与布局，缩放改的是
+   CSS 宽高（不是把一张已经缩过的位图再 transform 拉大），所以任何一档缩放都是浏览器
+   从原文件重新采样。旧版把图锁在 960px 的框里 + image-rendering: pixelated（最近邻），
+   一张 2048 宽的成图被最近邻抽点 → 边缘全是锯齿（aliasing），而且永远看不到原图。
+   现在：灯箱铺满窗口、缩放走高质量双线性（.img-lb-img 上显式 auto，压掉从 .checker
+   继承来的 pixelated）、点图片逐级放大、滚轮缩放、放大后可拖动平移。 */
 .img-previewable {
   cursor: zoom-in
 }
@@ -791,19 +797,22 @@ button.mini.btn-sq.tpl-ico {
   position: fixed;
   inset: 0;
   z-index: 1400;
-  background: rgba(6, 8, 12, .78);
+  background: rgba(6, 8, 12, .86);
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 6px;
 }
 
 .img-lightbox.on {
   display: flex
 }
 
+/* 灯箱基本铺满窗口：上下只留 6px 边距 + 一条头一条脚，剩下的全是图片可用区，
+   所以「适应窗口」那一档的图片高度 ≈ 窗口高度（打开就看到整图，不用先滚再缩）。
+   宽高上限只用于挡住 4K 以上超大屏把框拉得过宽，正常屏幕永不触顶。 */
 .img-lb-box {
-  width: min(960px, 96vw);
-  max-height: 92vh;
+  width: min(99vw, 4200px);
+  height: min(97vh, 4200px);
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, var(--panel2), var(--panel));
@@ -833,26 +842,55 @@ button.mini.btn-sq.tpl-ico {
 }
 
 .img-lb-body {
+  position: relative;
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
+  display: block;
+  background: #0a0d12;
+  touch-action: none;
 }
 
+/* image-rendering: auto 就是 aliasing 的正解：.checker 上那条 pixelated 是可继承属性，
+   不在图身上显式写回 auto，缩小就仍按最近邻抽点（2048 → ~900 直接出锯齿）。
+   宽高由 JS 按「原生像素 × 缩放系数」写成 px，所以每一档都是从原文件重新采样。 */
 .img-lb-img {
-  max-width: 100%;
-  max-height: min(78vh, 720px);
-  object-fit: contain;
-  display: block;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  transform: translate(-50%, -50%);
+  image-rendering: auto;
   border: 1px solid var(--bd);
   background: #0a0d12;
-  image-rendering: pixelated;
+  cursor: zoom-in;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.img-lb-body.pannable .img-lb-img {
+  cursor: grab
+}
+
+.img-lb-body.panning,
+.img-lb-body.panning .img-lb-img {
+  cursor: grabbing
+}
+
+.img-lb-zoom {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .img-lb-ph {
+  position: absolute;
+  inset: 0;
   min-height: 160px;
   display: flex;
   align-items: center;
@@ -868,6 +906,13 @@ button.mini.btn-sq.tpl-ico {
   gap: 8px;
   padding: 8px 12px;
   border-top: 1px solid var(--bd);
+  flex: none;
+}
+
+.img-lb-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex: none;
 }
 

@@ -438,6 +438,11 @@ async function init() {
     /* 所属画布 id：带回来就是带回来（旧存档没有 → 空串，开轮时补绑一次） */
     sess.canvasWfId =
       typeof sess.canvasWfId === "string" ? sess.canvasWfId : "";
+    /* 开发绑定会话「不读画布」标记：重启后必须还是它自己那一份，否则可见集漂移
+       （网关 hx: 指纹变化 → 换 runtime 冷起）。旧存档无此位 → false = 照常读画布。 */
+    sess.noCanvasRead = !!sess.noCanvasRead;
+    /* 「与画布无关」（Gate B）同样必须载回原值：丢了这一位 = 可见集漂移 → 换 runtime */
+    sess.canvasFree = !!sess.canvasFree;
     return sess;
   });
   S.agentActiveId = S.config.agentActiveId || "";
@@ -450,6 +455,8 @@ async function init() {
   S.assistEffort = normalizeAgentEffort(S.config.assistEffort || "high");
   S.assistWorkspace = S.config.assistWorkspace || "";
   S.assistScope = S.config.assistScope === "global" ? "global" : "current";
+  /* 助手侧「与画布无关」（Gate B）：全局偏好，与会话级同名开关各存各的 */
+  S.assistCanvasFree = !!S.config.assistCanvasFree;
   S.assistW = clampAssistW(S.config.assistW || 320);
   S.agentSideW = clampAgentSideW(S.config.agentSideW || AGENT_SIDE_W_MIN);
   /* 会话「计划」清单最小高度：默认即最小，把手可继续向上拖高（全局偏好，启动先夹一次） */
@@ -559,17 +566,9 @@ async function init() {
     renderStatus();
     renderWfTabs();
   });
-  $("#overlay").addEventListener("mousedown", (ev) => {
-    _overlayBgPointerDown = ev.target && ev.target.id === "overlay";
-  });
-  $("#overlay").addEventListener("click", (ev) => {
-    if (!ev.target || ev.target.id !== "overlay") return;
-    /* 必须在蒙层上按下再抬起：弹窗内拖选 / 拖动修改松手到蒙层外不会关 */
-    if (!_overlayBgPointerDown) return;
-    _overlayBgPointerDown = false;
-    if (overlayShouldStayOpen()) return;
-    closeOverlay();
-  });
+  /* 弹窗一律 persistent：点蒙层（弹窗外部）**不**关闭，只走「取消 / 完成并关闭」/ ✕ / Esc。
+     以前在蒙层上点一下就关，用户在窗里改了一半的输入会凭空丢掉；这条已升级为全应用
+     开发原则（见 AGENTS.md「协作约定」），所以这里不再挂任何点外部收起的监听。 */
   /* 打字时不保存：仅当焦点移出输入控件后才落盘（避免保存触发重渲染导致失焦） */
   document.addEventListener("focusout", (ev) => {
     const t = ev.target;
@@ -679,6 +678,19 @@ async function init() {
       puret.onclick = () => {
         const st = agentSessionState();
         st.pure = !st.pure;
+        persistAgentSession();
+        renderAgentComposer();
+        if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
+      };
+    /* 与画布无关（Gate B）：会话级「本轮不碰画布」声明。与纯净模式不同一档 ——
+       纯净把整段 system prompt 与运行时上下文都撤了；这一档只撤画布工具与画布快照，
+       人设、技能索引、语言口味照常。开关状态随会话持久化（见 persistAgentSession）。
+       代价写在 tooltip 里：开着它就改不了画布，要改图得先关掉再重跑。 */
+    const cft = $("#agentCanvasFreeTrigger");
+    if (cft)
+      cft.onclick = () => {
+        const st = agentSessionState();
+        st.canvasFree = !st.canvasFree;
         persistAgentSession();
         renderAgentComposer();
         if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
@@ -862,6 +874,22 @@ async function init() {
         updateAssistScopeChrome();
         fillAssistScopeControl();
         syncAssistWorkspaceChrome();
+        renderAssistPanel();
+      };
+    }
+    /* 助手「与画布无关」开关（Gate B 助手侧）：切档即落盘并重绘状态；
+       运行中不改判（本轮可见集已经定了，改档下一轮才生效）。 */
+    const cfBtn = $("#assistCanvasFreeBtn");
+    if (cfBtn && !cfBtn._bound) {
+      cfBtn._bound = true;
+      cfBtn.onclick = () => {
+        if (S.assistRunning) {
+          toast(I18n.t("请先终止当前运行"), "warn");
+          return;
+        }
+        S.assistCanvasFree = !S.assistCanvasFree;
+        persistAssistUi();
+        updateAssistCanvasFreeChrome();
         renderAssistPanel();
       };
     }

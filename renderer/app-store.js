@@ -380,9 +380,7 @@ function openTplSubOverlay(title) {
       '<div class="tpl-sub-body" id="tplSubBody"></div></div>';
     document.body.appendChild(el);
     el.querySelector("#tplSubClose").onclick = closeTplSubOverlay;
-    el.addEventListener("click", (ev) => {
-      if (ev.target === el) closeTplSubOverlay();
-    });
+    /* persistent：二级预览浮层点蒙层不关，只走 ✕ / Esc（关上级商店窗时一并收掉） */
   }
   el.querySelector("#tplSubTitle").textContent = title || "";
   el.querySelector("#tplSubBody").innerHTML = "";

@@ -6,6 +6,15 @@ Toolbar **New / switch / rename / delete**. The default workflow id is `default`
 
 Additionally, every 5 minutes each workflow is snapshotted into a separate `save-backups/` folder in the app data directory (unchanged content is skipped; the latest 72 copies per workflow are kept). Settings → **Canvas backup** opens that folder to recover an older version.
 
+## Switching tabs: you land where you left off
+
+Switching canvas back and forth with the tab bar keeps **each canvas's own view**:
+
+- **Whatever layer you were drilling into comes back**: working inside a super / tool node's sub-canvas, or inside a task's inner graph, then hopping to another canvas and switching back — you are still in that layer (the breadcrumb and *← Back* keep working). You are no longer thrown back to the root canvas to dig through the shell again. Brand-new or imported canvases always start at the root.
+- **Pan and zoom are remembered per canvas too**: coming back, the camera sits where you left it instead of inheriting the other canvas's offsets.
+- **This memory lives in the session only** — it is never written to disk, so after a restart you start at the root canvas. The camera changes every frame; persisting it would turn panning into disk I/O.
+- **If that layer got deleted while you were away**, the app steps back layer by layer to the nearest parent that still exists, and only falls back to the root canvas when nothing is left — it never parks you on a vanished level showing a blank canvas.
+
 ## Deleting a canvas: this one only
 
 Deleting a canvas affects **that canvas and nothing else** — other canvases, including the default one, stay untouched.

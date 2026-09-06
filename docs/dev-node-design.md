@@ -253,12 +253,12 @@
 
 ### 开发节点自定义颜色（HSV 色板）
 
-每个开发节点（`super + dev:true`）的节点头部菜单栏在元素类型徽章旁多了一个**颜色小按钮**（圆点 = 当前色），点击展开 **HSV 色板弹出层**（`#devColorPop`，fixed 定位跟随按钮，点外部 / Esc 收起）：
+每个开发节点（`super + dev:true`）的节点头部菜单栏在元素类型徽章旁多了一个**颜色小按钮**（圆点 = 当前色），点击展开 **HSV 色板弹出层**（`#devColorPop`，fixed 定位跟随按钮；面板 persistent：**点外部不收起**，只走「完成」/ ✕ / Esc / 再点一次按钮，画布平移缩放后自动跟回按钮）：
 
 - **选色**：`S × V` 方块（横向饱和度、纵向明度）＋ 色相条，拖动即时生效；也可直接输入 `#rrggbb`（回车应用）；
 - **数据**：写节点 `devColor`（小写 hex，随工作流 JSON 保存；`mtnode_canvas_get` 序列化透出、`mtnode_canvas_edit` 支持补丁）；
 - **渲染**（`renderer/app-canvas.js` `nodeElement` + `renderer/css/canvas.css`）：设了 `devColor` 的节点加 `.dev-custom-color` 并注入 `--dev-color`（外框色）与 `--dev-glow`（运行呼吸灯 RGB 三元组），覆盖元素类型的默认配色；清空（「恢复元素类型默认色」）即回到类型配色；
-- **实现**（`renderer/app-devnode.js`）：`devColorOf` / `devShownColor` / `hexToRgbTriplet`（hex→`r, g, b`）与 HSV↔RGB/HEX 转换（`hsvToRgb` / `rgbToHsv` / `hsvToHex` / `hexToHsv`）；`devColorButtonEl` 造按钮、`devColorSyncAll` 在拖动中就地刷新节点 DOM 与按钮圆点（不整板重绘，色板不被打断）；`S.uiDevColorNode` 由 `app.js` 的全局 mousedown 接管「点外部收起」。
+- **实现**（`renderer/app-devnode.js`）：`devColorOf` / `devShownColor` / `hexToRgbTriplet`（hex→`r, g, b`）与 HSV↔RGB/HEX 转换（`hsvToRgb` / `rgbToHsv` / `hsvToHex` / `hexToHsv`）；`devColorButtonEl` 造按钮、`devColorSyncAll` 在拖动中就地刷新节点 DOM 与按钮圆点（不整板重绘，色板不被打断）；色板与其余节点参数面板一律 persistent（`renderer/app.js` 的 `closeNodePopsExcept` 负责互斥、`nodePopAnchor` + `applyTransform → repositionNodePops` 负责跟画布与「宿主节点没了就收」，**没有**「点外部收起」那条路径）。
 - **色板里另有一行「功能色卡」快捷色块**（见下一小节）：手选 HSV / Hex 与点功能色卡写的是同一个 `devColor`，两者等价、互相覆盖。
 
 ### 功能色卡（按功能分类给功能块上色）
@@ -332,13 +332,13 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 
 ### 开发节点 Agent 模型（🧠 按钮 + 就近继承）
 
-同一个菜单栏区域在颜色按钮旁再加一个 **Agent 模型小按钮**（`🧠` + 当前生效模型名，未选 = 「自动」灰态，继承 = 虚线并点名来源功能块），点击展开 **模型选择弹出层**（`#devModelPop`，fixed 跟随按钮，点外部 / 再点按钮 / ✕ / Esc 收起）：
+同一个菜单栏区域在颜色按钮旁再加一个 **Agent 模型小按钮**（`🧠` + 当前生效模型名，未选 = 「自动」灰态，继承 = 虚线并点名来源功能块），点击展开 **模型选择弹出层**（`#devModelPop`，fixed 跟随按钮；与色板同为 persistent 面板：再点按钮 / ✕ / Esc 收起，点外部不再收起）：
 
 - **可选清单**：按**智能路由分组**（`agentRouteOptions()` = DeepSeek 官方 + 已配置的其它服务商），组名取服务商显示名，组内列 `agentModelsForRoute(route)` 的模型；当前项打勾；一个模型都没有时提示先去「设置 → 模型服务」添加；
 - **数据**：写节点 `devModel`（模型 id）+ `devProvider`（路由），随工作流 JSON 保存、`mtnode_canvas_get` 透出、`mtnode_canvas_edit` 可补丁（Agent 侧 schema 一并暴露 `devColor` / `devModel` / `devProvider`，因此助手能按用户要求改色、改模型）；
 - **就近继承**：`devAgentModelOf(node)` 先看本块 `devModel`，为空则沿 `parentSuperId` 向上找**第一个已选模型的祖先块**（`inherited: true` + `source` 指向它），因此「整个项目统一用某个模型」只需在顶层功能块设一次，而任何子块单独选过即以子块为准；数据库超级节点（`db`）与普通节点不参与；
 - **作用范围**：①「建议 / 问询」的只读调研把 `provider/model` 传给 `dshRunTask`（并在进度日志首行写明「本轮模型：服务商 · 模型（继承自「×」）」）；②「开发 / 细化」新建的绑定会话直接以所选路由与模型开局（`createDevSessionForNode`）；③四个确认对话框（建议 / 开发 / 细化 / 问询）都多出「Agent 模型」一行（折叠卡 body 不再常驻生效模型行，生效模型看头部 🧠 按钮）。取消选择 = 「跟随默认（不指定）」，回到引擎默认路由与默认模型；
-- **实现**（`renderer/app-devnode.js`）：`devAgentRoutes` / `devAgentRouteName` / `devAgentModelGroups` / `devModelFitsRoute` / `devRouteOfModel`（路由与模型互校，路由失效或不匹配时**以模型为准**反查路由）→ `devModelOwn` / `devAgentModelOf` / `devAgentModelText` / `devModelScopeText` / `devModelDialogText` → `devModelButtonEl` / `devModelButtonRefresh`（不整盘重绘也能就地刷新按钮）→ `devModelPopEl` / `renderDevModelPop` / `openDevModelPop` / `applyDevModelChoice` / `toggleDevModelPicker`；`applyDevModelChoice` 先 `pushHistory()`（可撤销）再 `scheduleSave(true)`，`S.uiDevModelNode` 交给 `app.js` 的全局 mousedown 做「点外部收起」，全局 keydown 里 Esc 同时收起色板与模型弹层（Hex 输入框聚焦时也生效）。
+- **实现**（`renderer/app-devnode.js`）：`devAgentRoutes` / `devAgentRouteName` / `devAgentModelGroups` / `devModelFitsRoute` / `devRouteOfModel`（路由与模型互校，路由失效或不匹配时**以模型为准**反查路由）→ `devModelOwn` / `devAgentModelOf` / `devAgentModelText` / `devModelScopeText` / `devModelDialogText` → `devModelButtonEl` / `devModelButtonRefresh`（不整盘重绘也能就地刷新按钮）→ `devModelPopEl` / `renderDevModelPop` / `openDevModelPop` / `applyDevModelChoice` / `toggleDevModelPicker`；`applyDevModelChoice` 先 `pushHistory()`（可撤销）再 `scheduleSave(true)`，`S.uiDevModelNode` 只用来记住「哪块正在选」：面板 persistent（**不再**由 `app.js` 的全局 mousedown 点外部收起），互斥收起走 `closeNodePopsExcept`、跟画布走 `repositionNodePops`，全局 keydown 里 Esc 同时收起色板与模型弹层（Hex 输入框聚焦时也生效）。
 
 ### 核心文件列表（`devFiles` · 「文件 N」按钮）
 
@@ -395,9 +395,10 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 现在按「所在一侧」出板：
 
 - `.port.in > .port-badge` → `right:100%; margin-right:8px`（文字在节点左外），`.port.out > .port-badge` → `left:100%`（右外）；`top:50%` + `translateY(-50%)` 与端子同一水平线，超节点内侧端子（桥在左 / 汇在右，类名与所在侧相反）另有对应规则；
-- `输入` / `输出` 由 `.n-port-label.n-pl-in/.n-pl-out` 用 `left:-5px` / `right:-5px` + `translateX(∓100%)` 贴到板外，展开壳层改为与**内侧第一孔同一行**（`top:50px`）；这一侧没有端子（保存 / 全局 / 发送 / 执行 / 起点…）时 `nodeElement()` 干脆不创建该侧文字；
-- 展开壳层的子画布 `.super-stage` 有 `overflow:hidden`，文字放进去会被裁掉，所以端子排文字**只由卡片自己绘制**（原来在 stage 里再建一份的做法已删除）；
-- 为此把 `.wf-node` 从 `overflow:hidden` 改为 `overflow:clip; overflow-clip-margin:44px`：仍保留圆角裁剪、`.n-body` 也各有 `overflow:hidden`，只给板外文字留一条 44px 通道（除端子文字外，节点内没有任何元素会超出外框；最长的是 3 个汉字的 `提示词` ≈ 26px）；
+- `输入` / `输出` 这一对插排小标题（`.n-port-label.n-pl-in/.n-pl-out`）**已整体删除**：左右谁进谁出，端子上的参数名徽标本身就说清了，那两行字只会占掉板外空间并与最上面一行的徽标打架。`nodeElement()` 不再创建它，`canvas.css` / `theme-light.css` 里相应规则一并移除（回归口径见 `test/smoke-rel-layout.js`）；
+- 展开壳层的子画布 `.super-stage` 有 `overflow:hidden`，所以内侧端子的徽标一律**朝内侧出字**（`app-canvas.js` 的 stage 端子与 `app.js` 的全屏端子浮层同一口径）；
+- 徽标正文一律写**完整名称**（`setPortBadgeName()`，不再 `clipStr(name,8)`）；裁切只在 CSS 一层做：`.port-badge .pb-name` 平时 `max-width:34px` + `text-overflow:ellipsis`（与 44px 通道匹配，绝不硬裁半个字），**节点高亮（`.wf-node.sel` / `:hover`）时 `max-width:340px` 且把 `overflow-clip-margin` 放开到 400px** → 完整端子名称可见、不被节点板裁掉。数组端子的槽位点（`.fn-arr-slots`）留在徽标本体里，不参与这层裁切；
+- `.wf-node` 从 `overflow:hidden` 改为 `overflow:clip; overflow-clip-margin:44px`：仍保留圆角裁剪、`.n-body` 也各有 `overflow:hidden`，只给板外徽标留一条 44px 通道（除端子徽标外，节点内没有任何元素会超出外框；高亮时按上一条临时放宽）；
 - 文字落在画布背景上，故加描边保证可读；浅色主题在 `theme-light.css` 里把黑影换成白晕，颜色改用 `var(--cyan2)` / `var(--green)`（随主题变）。
 
 ## 8. 会话内「计划」：归属绑定与失效（`renderer/app-plan.js`）

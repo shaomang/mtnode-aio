@@ -771,6 +771,16 @@ function dshEffortOf(v, fromProcText) {
 function dshCancelActive(runKey) {
   const map = (S && S._runCancels) || {};
   const keys = runKey ? [String(runKey)] : Object.keys(map);
+  /* 判死这一轮：盖终止代号（自增），重发闸据此一次都不重发 —— 需求「停止应当立即停止，
+     而不是进入 5 次重试」。为什么不能只靠删句柄：句柄是本轮运行自己登记的，
+     本轮还没起 runtime（正在异步装配）或被 finish 抢先删掉时，删句柄这条信号就丢了；
+     不带 runKey 的「全部终止」更要盖全局 '*'，连还没占上句柄的在途轮一并判死。
+     （真源判据与消费方见 app-db.js dshStopMark / dshRunTask。） */
+  if (typeof dshStopMark === "function") {
+    try {
+      dshStopMark(runKey ? String(runKey) : "");
+    } catch (_) {}
+  }
   const list = [];
   for (const k of keys) {
     const h = map[k];
@@ -786,7 +796,7 @@ function dshCancelActive(runKey) {
 }
 
 function isCancelishError(msg) {
-  return /中止|取消|cancel|abort|aborted|已终止|已手动停止|已请求终止|已请求中断/i.test(
+  return /中止|取消|cancel|abort|aborted|已终止|已手动停止|已请求终止|已请求中断|手动终止|自动终止/i.test(
     String(msg || ""),
   );
 }
@@ -1350,9 +1360,53 @@ function tokBadgeTouch(owner, force) {
  * 只有技能库确实更新时由 mtnodeInternalSkillIndexInvalidate() 显式失效后重读，
  * 重读若内容一字未改也沿用旧条目。哈希与分节内核同一算法（promptSectionHash · FNV-1a32），
  * 所以 mtnodeInternalSkillIndexHash() 可直接交给内核做同轮去重。
- * 索引条目不裁剪、不内联 SKILL.md 全文（全文仍由引擎技能机制自载）。 */
+ * 索引条目按档位裁剪（见 MTNODE_SKILL_CANVAS_ONLY），但不内联 SKILL.md 全文
+ * （全文仍由引擎技能机制自载）。 */
 let _mtnodeSkillIndexCache = { hash: "", text: "", at: 0 };
 let _mtnodeSkillIndexPending = null;
+/* 裁剪档变体：按「整档文本的哈希」缓存（源哈希变了才重算），两份变体互不干扰 */
+let _mtnodeSkillIndexTrimCache = { src: "", hash: "", text: "", at: 0 };
+/* 档位名：无读画布档（开发绑定会话 / 「与画布无关」会话） */
+const MTNODE_SKILL_INDEX_TRIM = "noCanvas";
+/* 该档位要裁掉的内置技能：条目全是「怎么在画布上建块 / 排版 / 接线 / 生成」的操作规范。
+   本轮没有读画布工具，留着只会诱导模型去调不存在的工具，还白占前缀。
+   与画布无关的条目（数据库事实 mtnode-db-facts、需求拷问 mtnode-grill-me 等）照常下发。 */
+const MTNODE_SKILL_CANVAS_ONLY = [
+  "mtnode-canvas-batch-safety",
+  "mtnode-canvas-layout-ux",
+  "mtnode-dev-architect",
+  "mtnode-media-gen-nodes",
+];
+
+/* 从紧凑索引里摘掉画布类技能行；整类目被摘空 → 连类目标题一起丢 */
+function mtnodeSkillIndexTrimmed(text) {
+  const src = String(text == null ? "" : text);
+  if (!src) return "";
+  const isHead = (l) => /^\[[^\]]*\]\s*$/.test(l);
+  const isSkill = (l) => /^\s*-\s*[^|]+\|/.test(l);
+  const skillName = (l) => String(l).replace(/^\s*-\s*/, "").split("|")[0].trim();
+  const cut = (l) => MTNODE_SKILL_CANVAS_ONLY.indexOf(skillName(l)) >= 0;
+  const out = [];
+  let buf = null;
+  const flush = () => {
+    if (!buf) return;
+    const kept = buf.lines.filter((l) => !(isSkill(l) && cut(l)));
+    if (kept.some((l) => isSkill(l))) out.push(buf.head);
+    for (const l of kept) out.push(l);
+    buf = null;
+  };
+  for (const l of src.split(/\r?\n/)) {
+    if (isHead(l)) {
+      flush();
+      buf = { head: l, lines: [] };
+      continue;
+    }
+    if (buf) buf.lines.push(l);
+    else out.push(l);
+  }
+  flush();
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 /* 与 app-prompt-sections.js 逐字同算法；内核脚本在本文件之后加载，运行期取不到时本地兜底 */
 function skillIndexContentHash(text) {
@@ -1367,7 +1421,8 @@ function skillIndexContentHash(text) {
   return h.toString(16);
 }
 
-/* 当前缓存索引块的内容哈希（未缓存 = ""）：供分节内核做同轮去重 */
+/* 整档索引的内容哈希（未缓存 = ""）：供分节内核做同轮去重。
+   裁剪变体另有一份哈希（_mtnodeSkillIndexTrimCache.hash），本轮实际下发哪一份由调用点档位决定。 */
 function mtnodeInternalSkillIndexHash() {
   return _mtnodeSkillIndexCache.hash || "";
 }
@@ -1375,13 +1430,15 @@ function mtnodeInternalSkillIndexHash() {
 /* 技能库更新后点名失效（清哈希缓存 + 丢弃在途请求），下一次运行重读 */
 function mtnodeInternalSkillIndexInvalidate() {
   _mtnodeSkillIndexCache = { hash: "", text: "", at: 0 };
+  _mtnodeSkillIndexTrimCache = { src: "", hash: "", text: "", at: 0 };
   _mtnodeSkillIndexPending = null;
 }
 
-async function mtnodeInternalSkillIndexBlock() {
-  if (!window.api || !window.api.mtnodeAgentSkillIndex) return "";
+/* 整份索引（IPC 只在此处发生一次，命中缓存不再走主进程） */
+function mtnodeInternalSkillIndexFull() {
+  if (!window.api || !window.api.mtnodeAgentSkillIndex) return Promise.resolve("");
   if (_mtnodeSkillIndexCache.hash && _mtnodeSkillIndexCache.text) {
-    return _mtnodeSkillIndexCache.text;
+    return Promise.resolve(_mtnodeSkillIndexCache.text);
   }
   /* 同轮并发（多会话同时起跑）合并成一次 IPC */
   if (_mtnodeSkillIndexPending) return _mtnodeSkillIndexPending;
@@ -1407,5 +1464,30 @@ async function mtnodeInternalSkillIndexBlock() {
   };
   req.then(clear, clear);
   return req;
+}
+
+/* 注入系统提示的技能索引块。tier = "noCanvas" 时下发裁掉画布类条目的变体
+   （无读画布档位：开发绑定会话 / 「与画布无关」会话），默认整份。
+   裁剪变体是纯字符串派生，不再走第二次 IPC；按「源哈希 → 变体」长期缓存，
+   同一份技能库两种档位各自只构造一次，且同档位每轮字节一致（不破提示缓存）。 */
+async function mtnodeInternalSkillIndexBlock(tier) {
+  const full = await mtnodeInternalSkillIndexFull();
+  if (!full) return "";
+  if (tier !== MTNODE_SKILL_INDEX_TRIM) return full;
+  if (
+    _mtnodeSkillIndexTrimCache.src === _mtnodeSkillIndexCache.hash &&
+    _mtnodeSkillIndexTrimCache.text
+  ) {
+    _mtnodeSkillIndexTrimCache.at = Date.now();
+    return _mtnodeSkillIndexTrimCache.text;
+  }
+  const text = mtnodeSkillIndexTrimmed(full);
+  _mtnodeSkillIndexTrimCache = {
+    src: _mtnodeSkillIndexCache.hash,
+    hash: skillIndexContentHash(text),
+    text,
+    at: Date.now(),
+  };
+  return text;
 }
 

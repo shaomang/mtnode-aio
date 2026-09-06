@@ -756,10 +756,10 @@
   border: 1px solid var(--bd2);
   background: linear-gradient(180deg, #1a2229, #131a20);
   user-select: none;
-  /* 端子文字一律画到节点外侧（输入在左 / 输出在右），因此需要允许溢出外框。
+  /* 端子徽标（参数名 / 条目标题）一律画到节点外侧（输入在左 / 输出在右），因此需要允许溢出外框。
      overflow:clip + overflow-clip-margin 仍然裁掉圆角外的内容、.n-body 也有自己的
-     overflow:hidden，只是给「板外文字」留出 44px 通道——除端子标签外，节点内没有任何
-     元素会超出外框（接线排 ::before/::after 内嵌在左右内缘，缩放把手也是内嵌的）。 */
+     overflow:hidden，只是给「板外徽标」留出 44px 通道（高亮时放开，见 .port-badge .pb-name）
+     ——除端子徽标外，节点内没有任何元素会超出外框（接线排 ::before/::after 内嵌在左右内缘，缩放把手也是内嵌的）。 */
   overflow: clip;
   overflow-clip-margin: 44px;
   z-index: 2;
@@ -1910,8 +1910,6 @@
   box-shadow: inset 0 -1px 0 rgba(255, 158, 100, .22);
 }
 .wf-node.exec .exec-ico { color: #ff9e64; }
-/* 执行节点无数据端口：隐藏端子排小标签，保持 body 干净 */
-.wf-node.exec .n-port-label { display: none; }
 
 /* body 底色：--exec-color 由 JS 注入（用户自选），默认青灰 */
 .wf-node.exec .n-body {
@@ -2138,6 +2136,16 @@
   min-height: 54px;
   max-height: 120px;
   font-size: 11.5px;
+}
+
+/* 文本条目竖排：正文框 +（有内容时的库内文件名）+ 操作排（选择 / 更换文本 · 在文件夹中显示）
+   —— 与图像 / 音频 / 视频那一条完全同一形状，文本不再只有「手打」这一条路 */
+.n-asset-textwrap {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .n-asset-img { flex: none; max-height: 118px; }
@@ -5167,41 +5175,32 @@
   box-shadow: 0 0 6px rgba(255, 143, 46, .9)
 }
 
-/* ===== 接线排文字（输入 / 输出）：贴到节点板「外侧」——输入在左缘外、输出在右缘外。   放在插排内侧时它会压住最上面的端子（插排只有 16px 宽，端子又从上往下排），
-   出板后与整排端子不再有任何遮挡关系。 */
-.n-port-label {
-  position: absolute;
-  top: 30px;
-  left: -5px;
-  right: auto;
-  width: auto;
-  font-size: 8px;
-  line-height: 1;
+/* ===== 端子徽标正文（参数名 / 素材条目标题 / 序号）：完整名称的显示口径 ══════════
+   端子排不再有「输入 / 输出」那一对板外文字（谁进谁出，看端子上的名字就够，
+   那两行字只占掉板外最值钱的空间，还会和最上面一行的端子徽标打架）。
+   徽标正文一律写全名（DOM 里不切字），截断只在这一层做：
+   · 平时 .pb-name 收 max-width → 出省略号，且连同节点板 44px 溢出通道，绝不硬裁半个字；
+   · 节点高亮（选中 / 鼠标移入）时放开宽度 + 把溢出通道放大到 400px → 完整端子名称可见、不被截断；
+   · 名称单独包 <i class="pb-name">，数组端子的槽位点（.fn-arr-slots）留在徽标本体里，不参与裁切。 */
+.port-badge .pb-name {
+  display: inline-block;
   font-style: normal;
-  letter-spacing: .3px;
-  text-align: right;
-  color: var(--cyan2);
-  opacity: .78;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .9), 0 0 4px rgba(0, 0, 0, .65);
-  pointer-events: none;
-  z-index: 2;
+  max-width: 34px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  /* 只占一行，且整块移到左缘之外 */
-  transform: translateX(-100%);
+  vertical-align: bottom;
 }
 
-.n-port-label.n-pl-out {
-  left: auto;
-  right: -5px;
-  text-align: left;
-  color: var(--green);
-  transform: translateX(100%)
+/* 高亮：放开裁切（选择器同时覆盖外侧端子与展开壳层内侧端子） */
+.wf-node.sel,
+.wf-node:hover {
+  overflow-clip-margin: 400px;
 }
 
-/* 展开的超级节点：卡片外侧端子不存在，端子排是子画布的左右缘，
-   内侧第一孔约在板顶下方 54px → 文字与那一行对齐（卡片本身可溢出 44px） */
-.wf-node.super.super-open>.n-port-label {
-  top: 50px
+.wf-node.sel .port-badge .pb-name,
+.wf-node:hover .port-badge .pb-name {
+  max-width: 340px;
 }
 
 /* 端子连接提示（可移入点击定位） */

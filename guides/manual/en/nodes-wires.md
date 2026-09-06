@@ -12,7 +12,8 @@ For large graphs, pack clusters with [Super nodes](#super-nodes), or select node
 
 - Drag **output** (right) to **input** (left). Loops are rejected.
 - **Release on empty canvas = create and connect in place.** Drag out from an output port and let go over blank canvas (also inside an expanded super node): a menu opens at that spot listing only the node types this wire can really connect into (an image wire will not offer text-only nodes such as Minimax Music 3). Pick one — the node is created there and wired into its input. `Esc` or a click elsewhere cancels; dropping onto another node's card does not open the menu.
-- **Port text always sits outside the node**: input-side labels (`P` / `L`, gate numbers, `Control`…) to the left, output-side labels (`Content` / `Control`, numbers…) to the right, on the same line as their port — ports are only 12 px apart, so text above a port would hide its neighbours.
+- **Port text always sits outside the node**: input side to the left, output side to the right, on the same line as its port — ports are only 12 px apart, so text above a port would hide its neighbours. The port strip no longer carries extra **"Input / Output" captions**: the name on each port already says which way the data goes.
+- **Long names are shortened by width until you highlight the node**: hover over a node (or select it) and the full text shows. Names are kept in full in the DOM (tool / function param names, asset entry titles), so a highlighted port is never chopped mid-character.
 - Nodes start with one input; a new idle port often appears after you connect.
 - **Control wires are gold**—pulses only (timer, gate, run/clear), not data.
 - **Global node** takes inputs only. Text-process / image-process / agent-task / judge nodes **click the top-left type icon** to subscribe (icon turns rainbow). Dragging the icon moves the node and does not toggle.

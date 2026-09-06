@@ -3442,6 +3442,18 @@ registerNodeSettingsForm("tts_gen", {
   },
 });
 
+/* 端子徽标正文：一律写「完整名称」，绝不在这里切字（原来 clipStr(name,8) 把参数名 /
+   素材条目标题切成「referenc…」，再被节点板 44px 溢出通道硬裁半截，看着像坏了）。
+   截断交给 CSS：.port-badge .pb-name 平时按 max-width 出省略号，节点高亮
+   （选中 / 悬停）时放开 → 完整端子名称一眼可见，且同时放开溢出通道，绝不再被裁。
+   名称单独包一层 <i>，数组端子的槽位点（.fn-arr-slots）留在徽标本体里，不参与裁切。 */
+function setPortBadgeName(badge, text) {
+  const s = document.createElement("i");
+  s.className = "pb-name";
+  s.textContent = String(text == null ? "" : text);
+  badge.appendChild(s);
+}
+
 function nodeElement(node) {
   clampNodeToMinSize(node);
   /* 函数 / 工具节点：结构归一（幂等）——toolConfig / inputs / outputs 缺省即补 */
@@ -3518,22 +3530,9 @@ function nodeElement(node) {
      接线排 CSS 已固定为从上至下占满（菜单条下方 28px 起到底部），无需 JS 注入带位置 */
   el.style.setProperty("--nw", _nsz.w + "px");
   el.style.setProperty("--nh", _nsz.h + "px");
-  /* 接线排文字（输入 / 输出）：一律放到节点「外侧」——输入贴左缘外、输出贴右缘外，
-     与端子同一水平线；不再占用 16px 插排宽度 → 绝不遮挡上下相邻端子。
-     某一侧没有端子时不创建该侧文字（保存 / 全局 / 发送 / 执行等）。
-     展开的超级节点也用卡片这一份文字（子画布端子排与它同侧同行）。 */
-  if (inputCount(node) > 0) {
-    const labIn = document.createElement("i");
-    labIn.className = "n-port-label n-pl-in";
-    labIn.textContent = I18n.t("输入");
-    el.appendChild(labIn);
-  }
-  if (outputCount(node) > 0) {
-    const labOut = document.createElement("i");
-    labOut.className = "n-port-label n-pl-out";
-    labOut.textContent = I18n.t("输出");
-    el.appendChild(labOut);
-  }
+  /* 端子排不再有「输入 / 输出」这一对板外文字（需求：删掉）：
+     左右哪一侧是进、哪一侧是出，看端子上的参数名徽标本身就够清楚了，
+     那两行字只会占掉板外侧最值钱的空间，还会与最上面一行的端子徽标打架。 */
   if (superIsOpenShell(node))
     el.classList.add("super-open");
 
@@ -3721,6 +3720,8 @@ function nodeElement(node) {
     head.append(...apiPreviewButtons(node));
     if (node.kind === "proc_image") {
       head.appendChild(bgRmButtonEl(node));
+      /* 画幅锁定：菜单栏小按钮，与首参考图保持一致长宽比（补边生图 → 出图裁回） */
+      head.appendChild(ratioLockButtonEl(node));
     }
     if (node.kind === "proc_text") {
       /* 智能模式开关：提示词成为任务，agent 可读文件/联网/执行命令 */
@@ -4875,17 +4876,16 @@ function nodeElement(node) {
       if (isANode) {
         /* 素材节点输入端子徽标 = 内容条目标题（与 body 里那一行同名，肉眼即可对上） */
         badge.classList.add("zh-label");
-        badge.textContent = clipStr(aItems[i].title, 8);
+        setPortBadgeName(badge, aItems[i].title);
       } else if (isFnTNode) {
         const pl = fnToolParamList(node, "in");
         badge.classList.add("zh-label");
-        if (i === 0) badge.textContent = I18n.t("控制");
+        if (i === 0) setPortBadgeName(badge, I18n.t("控制"));
         else {
-          const nm = clipStr((pl[i - 1] && pl[i - 1].name) || String(i), 8);
           /* 数组端子徽标：参数名 + 一条线一个槽（渐进槽位端子组，如 参考图[1][2][3]＋）。
              引擎仍按「同一个端子号收多条数据线」取数（JS 拿到数组）——这里只改视觉：
              挂几条线就亮几个槽点，末尾留一个可接新线的空槽；点空槽 = 再拖一条进本端子。 */
-          badge.textContent = nm;
+          setPortBadgeName(badge, (pl[i - 1] && pl[i - 1].name) || String(i));
           if (fnInIsArr) {
             const slots = document.createElement("span");
             slots.className = "fn-arr-slots";
@@ -4943,31 +4943,31 @@ function nodeElement(node) {
         }
       } else if (node.kind === "music_gen") {
         badge.classList.add("zh-label");
-        badge.textContent = i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制");
+        setPortBadgeName(badge, i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制"));
       } else if (node.kind === "tts_gen") {
         badge.classList.add("zh-label");
-        badge.textContent = i === 0 ? I18n.t("文本") : I18n.t("控制");
+        setPortBadgeName(badge, i === 0 ? I18n.t("文本") : I18n.t("控制"));
       } else if (node.kind === "video_gen") {
         if (i === 0) {
           badge.classList.add("zh-label");
-          badge.textContent = I18n.t("控制");
+          setPortBadgeName(badge, I18n.t("控制"));
         } else {
           const meta = videoGenSlotMeta(node, i);
           if (meta.kind === "text") {
             badge.classList.add("zh-label");
-            badge.textContent = I18n.t("提示词");
+            setPortBadgeName(badge, I18n.t("提示词"));
           } else {
-            badge.textContent = meta.label;
+            setPortBadgeName(badge, meta.label);
           }
         }
       } else if (node.kind === "remotion") {
         badge.classList.add("zh-label");
-        badge.textContent = i === 0 ? I18n.t("控制") : I18n.t("描述");
+        setPortBadgeName(badge, i === 0 ? I18n.t("控制") : I18n.t("描述"));
       } else if (node.kind === "task") {
         badge.classList.add("zh-label");
-        badge.textContent = I18n.t("控制");
+        setPortBadgeName(badge, I18n.t("控制"));
       } else {
-        badge.textContent = String(i + 1);
+        setPortBadgeName(badge, String(i + 1));
       }
       p.appendChild(badge);
     }
@@ -5108,13 +5108,14 @@ function nodeElement(node) {
           : "");
       if (isANode) {
         /* 素材节点输出端子徽标 = 内容条目标题（与左侧输入端子、body 那一行同名） */
-        badge.textContent = clipStr(aItems[oi].title, 8);
+        setPortBadgeName(badge, aItems[oi].title);
       } else if (isFnTNode) {
         const pl = fnToolParamList(node, "out");
-        if (oi >= outDataN) badge.textContent = I18n.t("控制");
-        else badge.textContent = clipStr((pl[oi] && pl[oi].name) || String(oi + 1), 8);
+        if (oi >= outDataN) setPortBadgeName(badge, I18n.t("控制"));
+        else setPortBadgeName(badge, (pl[oi] && pl[oi].name) || String(oi + 1));
       } else
-        badge.textContent =
+        setPortBadgeName(
+          badge,
           node.kind === "task"
             ? oi === 0
               ? I18n.t("成功")
@@ -5126,7 +5127,8 @@ function nodeElement(node) {
               ? oi === 0
                 ? I18n.t("内容")
                 : I18n.t("控制")
-              : String(oi + 1);
+              : String(oi + 1),
+        );
       p.appendChild(badge);
     }
     bindPortTip(p, node, "out", oi);
@@ -7263,6 +7265,47 @@ function buildFnToolBodyMain(node, body, isTool) {
    与端子的对应关系：数组第 i 条 = 第 i 个输入端子 = 第 i 个输出端子。
    正文一律不落在节点上 —— 读写都走素材库（app-assets.js 的条目视图缓存），
    所以「改内容＝改库」「删画布不丢」这两条语义天然成立。 */
+/** 条目行下方的操作排（四种类型共用）：从本机上传一个文件顶掉这条内容 +
+ *  在文件夹中显示。文本条目同样吃得下上传 —— 主进程按 utf8 收下、恒落 .txt
+ *  （见 assets-store.js · readTextSrc），所以「文本只能手打」从来不是设计。
+ *  旧内容先进 .versions/，Ctrl+Z 连库一起回滚。 */
+function assetItemOps(node, it, view, type) {
+  const p = String(view.absPath || "").trim();
+  const ops = document.createElement("div");
+  ops.className = "n-img-ops n-asset-ops";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "mini";
+  pick.textContent =
+    (p ? I18n.t("更换") : I18n.t("选择")) + assetItemTypeLabel(type);
+  pick.title =
+    type === "text"
+      ? I18n.t(
+          "从本机选一个文本文件（.txt / .md / .json …）导入这条正文（旧内容先进版本目录，可撤销）",
+        )
+      : I18n.t(
+          "从本机选一个文件复制进素材库该条目（旧内容先进版本目录，可撤销）",
+        );
+  pick.onclick = (ev) => {
+    ev.stopPropagation();
+    if (typeof assetItemPickFile === "function")
+      assetItemPickFile(node, it, type);
+  };
+  ops.appendChild(pick);
+  if (p) {
+    const show = document.createElement("button");
+    show.type = "button";
+    show.className = "mini";
+    show.textContent = I18n.t("在文件夹中显示");
+    show.title = p;
+    show.onclick = (ev) => {
+      ev.stopPropagation();
+      if (window.api && window.api.shellShowItem) window.api.shellShowItem(p);
+    };
+    ops.appendChild(show);
+  }
+  return ops;
+}
 function assetItemTextRow(node, it, view) {
   const ta = document.createElement("textarea");
   ta.className = "n-text n-asset-text";
@@ -7281,7 +7324,20 @@ function assetItemTextRow(node, it, view) {
   });
   ta.addEventListener("mousedown", (ev) => ev.stopPropagation());
   ta.addEventListener("click", (ev) => ev.stopPropagation());
-  return ta;
+  const wrap = document.createElement("div");
+  wrap.className = "n-asset-textwrap";
+  wrap.appendChild(ta);
+  const p = String(view.absPath || "").trim();
+  if (p) {
+    /* 有内容时把库内那份文件名标出来：与媒体条目同一眼「这条正文是哪份文件」 */
+    const nm = document.createElement("div");
+    nm.className = "n-asset-file";
+    nm.textContent = fileName(p);
+    nm.title = p;
+    wrap.appendChild(nm);
+  }
+  wrap.appendChild(assetItemOps(node, it, view, "text"));
+  return wrap;
 }
 function assetItemMediaRow(node, it, view, type) {
   const box = document.createElement("div");
@@ -7332,38 +7388,10 @@ function assetItemMediaRow(node, it, view, type) {
       box.appendChild(g);
     }
   }
-  const ops = document.createElement("div");
-  ops.className = "n-img-ops n-asset-ops";
-  const pick = document.createElement("button");
-  pick.type = "button";
-  pick.className = "mini";
-  pick.textContent =
-    (p ? I18n.t("更换") : I18n.t("选择")) + assetItemTypeLabel(type);
-  pick.title = I18n.t(
-    "从本机选一个文件复制进素材库该条目（旧内容先进版本目录，可撤销）",
-  );
-  pick.onclick = (ev) => {
-    ev.stopPropagation();
-    if (typeof assetItemPickFile === "function")
-      assetItemPickFile(node, it, type);
-  };
-  ops.appendChild(pick);
-  if (p) {
-    const show = document.createElement("button");
-    show.type = "button";
-    show.className = "mini";
-    show.textContent = I18n.t("在文件夹中显示");
-    show.title = p;
-    show.onclick = (ev) => {
-      ev.stopPropagation();
-      if (window.api && window.api.shellShowItem) window.api.shellShowItem(p);
-    };
-    ops.appendChild(show);
-  }
   const wrap = document.createElement("div");
   wrap.className = "n-asset-media";
   wrap.appendChild(box);
-  wrap.appendChild(ops);
+  wrap.appendChild(assetItemOps(node, it, view, type));
   if (p) {
     const nm = document.createElement("div");
     nm.className = "n-asset-file";
@@ -8961,7 +8989,7 @@ function buildBody(node, body) {
         if (info.badge) {
           const b = document.createElement("span");
           b.className = "port-badge zh-label";
-          b.textContent = info.badge;
+          setPortBadgeName(b, info.badge);
           p.appendChild(b);
         }
         p.style.left = "2px";
@@ -8984,7 +9012,7 @@ function buildBody(node, body) {
         if (info.badge) {
           const b = document.createElement("span");
           b.className = "port-badge zh-label";
-          b.textContent = info.badge;
+          setPortBadgeName(b, info.badge);
           p.appendChild(b);
         }
         p.style.right = "2px";
@@ -8993,8 +9021,8 @@ function buildBody(node, body) {
         bindSuperInnerSinkPort(p, node, poi);
         stage.appendChild(p);
       }
-      /* 端子排文字（输入 / 输出）由卡片自己绘制：子画布 overflow:hidden 会把它裁掉，
-         放不到端子排外侧 → 这里不再重复创建。 */
+      /* 端子排文字（输入 / 输出）已整体废除：子画布这里从来不需要那一份
+         （舞台 overflow:hidden 会把它裁掉），现在连卡片外侧的那一份也不再创建。 */
       stage.addEventListener("contextmenu", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();

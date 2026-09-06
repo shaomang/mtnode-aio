@@ -1124,6 +1124,12 @@ ipcMain.handle("net:open-debug", (e, o = {}) => {
 const REF_IMAGE_MAX_DIM = 1080;
 /* 发往 API 的参考图（vision / 图生图 edits）同样上限 1080p */
 const API_REF_IMAGE_MAX_DIM = 1080;
+/* 透明图差分抠图的锚定参考图（第 1 通道基准）：**不缩放**原尺寸下发。
+   压到 1080 再要求模型按 2048 输出，等于让它把整张图放大重绘 —— 主体尺度必漂，
+   两通道差分就在不一致处给出中间 Alpha，画面上是一整片虚影。
+   只有体积大到可能撑爆接口时才兜底压一档，且像素上限仍远高于普通参考图。 */
+const API_MATTE_REF_MAX_DIM = 2048;
+const API_MATTE_REF_NATIVE_MAX_BYTES = 20 * 1024 * 1024;
 
 /* 等比缩小图像缓冲；无法解码或已达标时原样返回。
    重编码：jpg/jpeg → JPEG(85)，其余超限时 → PNG。 */
@@ -2676,11 +2682,59 @@ function normB64(v) {
   return v;
 }
 
-/* 读取参考图并缩放到不超过 API_REF_IMAGE_MAX_DIM（等比）后再发 API。无法解码或已达标时原样返回。 */
-function shrinkImageForApi(p) {
+/* 读取参考图并缩放到不超过 API_REF_IMAGE_MAX_DIM（等比）后再发 API。无法解码或已达标时原样返回。
+   native=true：透明图差分抠图的锚定参考图（第 1 通道基准），按原尺寸下发，
+   仅在体积超过上限时兜底压到 API_MATTE_REF_MAX_DIM。 */
+function shrinkImageForApi(p, native) {
   const raw = fs.readFileSync(p);
   const ext = String(path.extname(p)).slice(1).toLowerCase() || "png";
-  return shrinkImageBuffer(raw, ext, API_REF_IMAGE_MAX_DIM);
+  if (native && raw.length <= API_MATTE_REF_NATIVE_MAX_BYTES)
+    return { buf: raw, ext };
+  return shrinkImageBuffer(
+    raw,
+    ext,
+    native ? API_MATTE_REF_MAX_DIM : API_REF_IMAGE_MAX_DIM,
+  );
+}
+
+/* 本地图像文件的实际像素尺寸（读不出 / 解不开返回 null，不抛错） */
+function imagePixelDims(p) {
+  try {
+    if (!p || !fs.existsSync(p)) return null;
+    const img = nativeImage.createFromPath(String(p));
+    if (!img || img.isEmpty()) return null;
+    const { width, height } = img.getSize();
+    return width > 0 && height > 0 ? { w: width, h: height } : null;
+  } catch {
+    return null;
+  }
+}
+
+/* 把「第 1 通道实际返回的像素尺寸」钉成 size 档位：两通道同宽同高是差分的前提。
+   auto（以及接口偷偷换了分辨率的情况）会让两通道各自挑尺寸，
+   下游对齐只能把图非等比铺满 → 又糊又错位。先要精确命中档位，否则取
+   「长宽比最接近、其次面积最接近」的档位（长宽比权重高于面积权重）。 */
+function gptImageSizeForDims(w, h) {
+  if (!(w > 0 && h > 0)) return "";
+  const tiers = GPT_IMAGE_SIZES.filter((s) => s !== "auto");
+  const exact = w + "x" + h;
+  if (tiers.includes(exact)) return exact;
+  let best = "";
+  let bestScore = Infinity;
+  for (const s of tiers) {
+    const m = /^(\d+)x(\d+)$/.exec(s);
+    if (!m) continue;
+    const tw = Number(m[1]);
+    const th = Number(m[2]);
+    const score =
+      Math.abs(Math.log(tw / th / (w / h))) * 10 +
+      Math.abs(Math.log((tw * th) / (w * h)));
+    if (score < bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  }
+  return best;
 }
 
 /* 文本模型思考强度 → Chat Completions 字段（映射方式参考 dsh-llm-deepseek）：
@@ -2706,7 +2760,10 @@ function applyTextThinkingEffort(body, effort) {
   else body.reasoning_effort = "high";
 }
 
-/* 构建完整请求描述（预览与真实调用共用，保证一致） */
+/* 构建完整请求描述（预览与真实调用共用，保证一致）
+   matteAnchor：透明图差分抠图的**第 2 通道**（images[0] / refImage 就是第 1 通道基准图）。
+   该通路两条口径：① 参考图不缩放、原尺寸下发；② size 钉成基准图实际像素对应的档位，
+   保证两通道同宽同高（差分不接受「非等比铺满」）。 */
 function buildRequestSpec(
   provider,
   kind,
@@ -2719,6 +2776,7 @@ function buildRequestSpec(
   size,
   chatMessages,
   effort,
+  matteAnchor,
 ) {
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const auth = {
@@ -2767,7 +2825,16 @@ function buildRequestSpec(
     };
   }
   if (provider.type === "image_openai") {
-    const sz = GPT_IMAGE_SIZES.includes(size) ? size : "2048x1360";
+    let sz = GPT_IMAGE_SIZES.includes(size) ? size : "2048x1360";
+    /* 差分抠图第 2 通道：size 以第 1 通道基准图的**实际像素**为准。
+       auto 是合法档位且会被原样复制进第 2 请求 —— 两通道各自挑分辨率，
+       下游只能非等比铺满对齐；接口偷改分辨率时同理。 */
+    const anchored = !!matteAnchor && !!(images && images.length);
+    if (anchored) {
+      const d = imagePixelDims(images[0]);
+      const pin = d ? gptImageSizeForDims(d.w, d.h) : "";
+      if (pin) sz = pin;
+    }
     if (images && images.length) {
       /* 带参考图：/images/edits multipart，多图按顺序 = prompt 中的图1/图2/… */
       return {
@@ -2782,6 +2849,8 @@ function buildRequestSpec(
             image: images.slice(),
           },
         },
+        /* multipart 里的参考图不缩放（见 sendMultipart） */
+        nativeRefImage: anchored,
       };
     }
     /* 文生图：/images/generations，不支持 n/quality/aspect_ratio */
@@ -2809,6 +2878,9 @@ function buildRequestSpec(
         Accept: "application/json",
       },
       body: { __multipart: form },
+      /* 抠图第 2 通道：core 的 image 字段就是第 1 通道基准图，原尺寸下发。
+         两通道走同一份 aspect_ratio（固定 1:1）→ 出图必然同宽同高，无需另钉档位。 */
+      nativeRefImage: !!matteAnchor && !!refImage,
     };
   }
   if (provider.type === "image_mj") {
@@ -2823,20 +2895,28 @@ function buildRequestSpec(
 }
 
 /* multipart 表单请求：image 字段支持字符串（单张）或数组（多张参考图，顺序=图1/图2/…）
-   timeoutMs 传 0 = 不设时限（生图走这条） */
-async function sendMultipart(url, headers, form, timeoutMs = 180000, reqKey) {
+   timeoutMs 传 0 = 不设时限（生图走这条）
+   nativeRefImage：参考图不缩放原尺寸下发（透明图差分抠图的锚定通路，见 buildRequestSpec） */
+async function sendMultipart(
+  url,
+  headers,
+  form,
+  timeoutMs = 180000,
+  reqKey,
+  nativeRefImage,
+) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(form || {})) {
     if (Array.isArray(v)) {
       let i = 1;
       for (const p of v) {
         if (!p) continue;
-        const { buf, ext } = shrinkImageForApi(p);
+        const { buf, ext } = shrinkImageForApi(p, nativeRefImage);
         fd.append(k, new Blob([buf]), "ref" + i + "." + ext);
         i++;
       }
     } else if (k === "image" && typeof v === "string" && v) {
-      const { buf, ext } = shrinkImageForApi(v);
+      const { buf, ext } = shrinkImageForApi(v, nativeRefImage);
       fd.append("image", new Blob([buf]), "ref." + ext);
     } else {
       fd.append(k, v);
@@ -2871,6 +2951,7 @@ async function apiCall({
   chatMessages,
   effort,
   abKey,
+  matteAnchor,
 }) {
   checkProvider(provider);
   const req = buildRequestSpec(
@@ -2885,6 +2966,8 @@ async function apiCall({
     size,
     chatMessages,
     effort,
+    /* 抠图第 2 通道口径（参考图原尺寸下发 + size 钉死）由 spec 上的标记带入 */
+    matteAnchor,
   );
 
   if (kind === "text" || provider.type === "image_mj") {
@@ -2953,6 +3036,7 @@ async function apiCall({
         req.body.__multipart,
         0,
         abKey,
+        req.nativeRefImage,
       ));
     } else {
       /* 文生图 /images/generations：同样不设超时上限 */
@@ -2981,6 +3065,7 @@ async function apiCall({
       req.body.__multipart,
       0,
       abKey,
+      req.nativeRefImage,
     );
     if (status >= 400) throw new Error(apiErr(status, j, text));
     const b64 = normB64(
@@ -3235,6 +3320,7 @@ ipcMain.handle("api:preview", async (e, spec) => {
       spec.size,
       spec.chatMessages,
       spec.effort,
+      spec.matteAnchor,
     );
     const readable = JSON.parse(
       JSON.stringify(req.body, (k, v) => {

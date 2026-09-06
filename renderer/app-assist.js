@@ -1,20 +1,29 @@
 "use strict";
 /* ============ 右侧全局 AI 助手 ============ */
 
-async function assistAppSnapshot() {
+/* 助手每轮的「当前应用状态」快照。
+   opts.canvasFree = 用户声明本轮与画布无关（Gate B）：整张画布干脆不取 ——
+   canvasSnapshotFull（含 wfList 的 IPC 与 nodes/wires/marks/groups 序列化）连同
+   selection / cam / imageSizes / markColors / devFuncColors 一起跳过，只剩轻量应用摘要
+   （计数照给，画布正文不给）。判据与 noCanvas 整档闸同源：那一档下 get / edit / app
+   三件套根本没注册，快照再发出去也没有任何工具能消费它。 */
+async function assistAppSnapshot(opts) {
+  const canvasFree = !!(opts && opts.canvasFree);
   const sel = currentSelection().map((n) => ({
     id: n.id,
     kind: n.kind,
     title: n.title,
   }));
   const scopeCurrent = assistScopeIsCurrent();
-  let full;
-  try {
-    full = await canvasSnapshotFull();
-  } catch {
-    full = canvasSnapshot();
+  let full = null;
+  if (!canvasFree) {
+    try {
+      full = await canvasSnapshotFull();
+    } catch {
+      full = canvasSnapshot();
+    }
+    applyAssistScopeToSnapshot(full, { restrict: scopeCurrent });
   }
-  applyAssistScopeToSnapshot(full, { restrict: scopeCurrent });
   const safeApp =
     "mtnode_app:status|list_workflows|rename_workflow|select_nodes|undo|redo" +
     (agentToolAllowed("app_dsh_plugins") ? "|list_dsh_plugins" : "");
@@ -24,31 +33,16 @@ async function assistAppSnapshot() {
       ? "mtnode_app:install_dsh_plugin|remove_dsh_plugin|set_dsh_plugin"
       : null,
   ].filter(Boolean);
-  return {
+  /* 无画布档的画布计数直接取自内存对象（不序列化任何节点正文） */
+  const lwf = S.wf || {};
+  const base = {
     view: S.view,
     locale: I18n.getLocale(),
     sidebarOpen: !!S.sidebarOpen && S.view !== "agent",
     assistOpen: !!S.assistOpen,
     assistScope: scopeCurrent ? "current" : "global",
-    cam: full.cam || null,
-    workflow: full.workflow,
-    workflows: full.workflows || [],
-    scopeNote: full.scopeNote || "",
-    nodeCount: (full.nodes || []).length,
-    wireCount: (full.wires || []).length,
-    groupCount: (full.groups || []).length,
-    selection: sel,
-    nodes: full.nodes,
-    wires: full.wires,
-    groups: full.groups,
-    marks: full.marks || [],
-    markColors: full.markColors || MARK_COLORS.slice(),
-    /* 开发节点功能色卡：与 canvas_get 同一张表（真源 = app-devnode.js DEV_FUNC_COLORS） */
-    devFuncColors:
-      full.devFuncColors ||
-      (typeof devFuncColorCatalog === "function" ? devFuncColorCatalog() : []),
-    imageSizes: full.imageSizes || IMAGE_SIZES.slice(),
-    defaultImageSize: full.defaultImageSize || DEFAULT_IMAGE_SIZE,
+    /* 明写在快照里：模型看到这一位就不会再尝试画布操作（人设也同步说了） */
+    canvasFree: canvasFree,
     providers: ((S.config && S.config.providers) || []).map((p) => ({
       id: p.id,
       name: p.name,
@@ -84,6 +78,17 @@ async function assistAppSnapshot() {
         agentToolAllowed("canvas_draw") ||
         agentToolAllowed("canvas_layout") ||
         agentToolAllowed("canvas_super");
+      /* 与画布无关：画布 / 应用工具本轮不存在，safe / confirm 一律清空
+         （留着就是让模型去撞没注册的工具）；拒绝项照实列出，口径不变。 */
+      if (canvasFree)
+        return {
+          safe: [],
+          confirm: [],
+          denied: agentToolCatalog()
+            .flatMap((c) => c.items)
+            .filter((it) => !agentToolAllowed(it.key))
+            .map((it) => it.key),
+        };
       return {
         safe: [
           agentToolAllowed("canvas_read") ? "mtnode_canvas_get" : null,
@@ -104,6 +109,40 @@ async function assistAppSnapshot() {
       };
     })(),
   };
+  if (canvasFree) {
+    /* 轻量摘要：只给「有哪张图、多大」这一级信息，正文一个字节都不发 */
+    base.workflow = {
+      id: lwf.id,
+      name: lwf.name,
+      nodeCount: (lwf.nodes || []).length,
+      workspace: lwf.workspace || "",
+    };
+    base.nodeCount = (lwf.nodes || []).length;
+    base.wireCount = (lwf.wires || []).length;
+    base.groupCount = (lwf.groups || []).length;
+    return base;
+  }
+  return Object.assign(base, {
+    cam: full.cam || null,
+    workflow: full.workflow,
+    workflows: full.workflows || [],
+    scopeNote: full.scopeNote || "",
+    nodeCount: (full.nodes || []).length,
+    wireCount: (full.wires || []).length,
+    groupCount: (full.groups || []).length,
+    selection: sel,
+    nodes: full.nodes,
+    wires: full.wires,
+    groups: full.groups,
+    marks: full.marks || [],
+    markColors: full.markColors || MARK_COLORS.slice(),
+    /* 开发节点功能色卡：与 canvas_get 同一张表（真源 = app-devnode.js DEV_FUNC_COLORS） */
+    devFuncColors:
+      full.devFuncColors ||
+      (typeof devFuncColorCatalog === "function" ? devFuncColorCatalog() : []),
+    imageSizes: full.imageSizes || IMAGE_SIZES.slice(),
+    defaultImageSize: full.defaultImageSize || DEFAULT_IMAGE_SIZE,
+  });
 }
 
 function summarizeCanvasEdit(params) {
@@ -414,6 +453,8 @@ function persistAssistUi() {
   S.config.assistWorkspace = S.assistWorkspace || "";
   S.config.assistScope =
     S.assistScope === "global" ? "global" : "current";
+  /* 与画布无关（Gate B · 助手侧）：全局偏好，与 assistScope 同级落盘 */
+  S.config.assistCanvasFree = !!S.assistCanvasFree;
   S.config.assistW = clampAssistW(S.assistW || 320);
   S.config.assistMessages = (S.assistMessages || []).slice(-80).map((m) => {
     const o = {
@@ -808,6 +849,19 @@ function updateAssistScopeChrome() {
   }
 }
 
+/* 「与画布无关」开关的回显（Gate B · 助手侧）：开启态高亮 + tooltip 说清代价。
+   标题走 dataset.i18nTitle，切语言时 I18n.apply 会重刷，不会退回旧文案。 */
+function updateAssistCanvasFreeChrome() {
+  const btn = document.getElementById("assistCanvasFreeBtn");
+  if (!btn) return;
+  const on = !!S.assistCanvasFree;
+  btn.classList.toggle("on", on);
+  btn.dataset.i18nTitle = on
+    ? "与画布无关：开启中，点击关闭（助手本轮不注册任何画布与应用工具）"
+    : "与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它";
+  btn.title = I18n.t(btn.dataset.i18nTitle);
+}
+
 /* 助手栏「预设」下拉的档位清单：吃 app.js 的 AGENT_PRESETS 真源（**表序 = 菜单序，
    第一档就是默认档**），不再由 index.html 写死一份漏档的旧名单（旧清单只有 4 项、
    叫「通用助手 / 精简执行 / 代码专家 / Cordis 插件开发」，既没有思维精简，档位名也
@@ -850,7 +904,11 @@ function renderAssistPanel(opts) {
   if (!msgs.length && !S.assistRunning) {
     const empty = document.createElement("div");
     empty.className = "assist-empty";
-        empty.textContent = scopeCurrent
+        empty.textContent = S.assistCanvasFree
+      ? I18n.t(
+          "本助手已声明「与画布无关」：本轮不注册任何画布工具，也不读画布，只读写文件 / 联网 / 执行命令。\n要总结或搭建工作流，请先关掉「与画布无关」。",
+        )
+      : scopeCurrent
       ? I18n.t(
           "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
         )
@@ -942,6 +1000,7 @@ function renderAssistPanel(opts) {
   syncAssistWorkspaceChrome();
   fillAssistScopeControl();
   updateAssistScopeChrome();
+  updateAssistCanvasFreeChrome();
   fillAssistModelControls();
   restoreConvStick(list, stickCap);
   if (typeof requestAnimationFrame === "function") {
@@ -1000,7 +1059,14 @@ async function assistSend(text) {
   renderAssistPanel({ forceStick: true });
   updateRunQueuePanel();
 
-  const stateJson = JSON.stringify(await assistAppSnapshot(), null, 2);
+  /* 与画布无关（Gate B · 助手侧）：本轮不注册画布三件套，也不取整张画布快照。
+     判据在这里定一次，往下（快照 / 分节 / 隐藏名单 / 签名 / run 参数）全用同一个值。 */
+  const assistCanvasFree = !!S.assistCanvasFree;
+  const stateJson = JSON.stringify(
+    await assistAppSnapshot({ canvasFree: assistCanvasFree }),
+    null,
+    2,
+  );
   /* 已回滚轮次的消息不进上下文（rbActiveMessages 只在真有标记时才复制数组） */
   const assistHist =
     typeof rbActiveMessages === "function" ? rbActiveMessages(S.assistMessages) : S.assistMessages;
@@ -1017,7 +1083,12 @@ async function assistSend(text) {
     S.config.dsh &&
     S.config.dsh.assistAutoApprove
   );
-  const canvasEditRule = assistAuto
+  /* 「与画布无关」档下这些讲画布 / 应用工具的规则段整段置空（buildSections 丢空节），
+     人设与工作范围换成无画布版 —— 裁掉工具就必须同时裁掉「去用这些工具」的指令，
+     否则模型会照着旧纪律撞不存在的工具、白烧一整步。 */
+  const canvasEditRule = assistCanvasFree
+    ? ""
+    : assistAuto
     ? "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；当前「助手改画布」为批准，调用会直接生效。\n"
     : "- mtnode_canvas_edit：创建/修改/连线/删除节点等图编辑；会弹窗请用户确认（请等待确认结果，勿臆造成功）。若用户拒绝：用文字说明已完成的文件/步骤与未完成项，不要静默结束。\n";
   /* ── 规则段的真源分工（本轮去重）──────────────────────────────────────────
@@ -1026,14 +1097,19 @@ async function assistSend(text) {
      （mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux /
      mtnode-media-gen-nodes / mtnode-db-facts）。下面各节只留「每轮都要照做的行为
      纪律」——同一规则不再抄第二遍，省下的就是每一步都在付的固定 token。 */
-  const superConnectRule =
-    "  · 跨超级节点 / 跨层级接线用 mtnode_canvas_edit 的 superConnect（它自动逐层桥接，参数口径见该工具说明），不要自己建桥接线。\n";
-  const devNodeRule =
+  const superConnectRule = assistCanvasFree
+    ? ""
+    : "  · 跨超级节点 / 跨层级接线用 mtnode_canvas_edit 的 superConnect（它自动逐层桥接，参数口径见该工具说明），不要自己建桥接线。\n";
+  const devNodeRule = assistCanvasFree
+    ? ""
+    :
     "  · 【开发节点 / 功能块】要建或改开发节点（kind super + dev:true）时，先用 skill 工具加载内置技能 mtnode-dev-architect 并照它执行。硬底线：note 必须两段（【功能】面向非技术的设计说明 + 【实现】面向技术的实现梗概，合计 ≤200 字，禁止只写一段、禁止把技术细节写进【功能】）；按 DEV 功能色卡上色（新建 module 块已自动套色，归类不对才改正卡值，绝不自创色值；用户在节点头部色板手选过的颜色不要再动）；细化先给出覆盖多层的整棵梗概、经用户一次确认后自顶向下逐层建块（无需或无法细化时如实说明，不要硬建节点）；模块取舍 / 技术选型等不确定处先问用户。\n" +
     "  · 每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」），四者都先弹对话框：「建议」「问询」是**只读**调研（不改文件、不改画布；「建议」只回恰好 4 条下一步方案供用户多选与补充，同一对话框里的「开发」按钮才按所选方案开工）；「开发」「细化」在用户确认后于该模块绑定的新会话里运行。\n" +
     "  · 每个功能块收尾都要用 devFiles 补丁回写本模块的真实核心文件（≤10 条 · 相对 devPath · 最外层项目块不填）——节点「文件」按钮只读这份列表，不回填就永远停在自动兜底甚至空表。\n" +
     "  · 画布含开发节点时，项目根就是 Agent 工作区根（顶层块的 devPath 在建图首轮就写好，之后子块继承）：项目根内的文件（含 AGENTS.md 共识文件）直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n";
-  const scopeBlock = scopeCurrent
+  const scopeBlock = assistCanvasFree
+    ? "工作范围：与画布无关 —— 本轮不注册 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app，也不读取任何画布内容。\n工具：只剩文件读写、联网搜索与命令执行（外加识图子代理，视工具许可而定）。\n"
+    : scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
       "」。list_workflows / canvas_get 只会看到本画布。\n" +
@@ -1049,10 +1125,13 @@ async function assistSend(text) {
      拼出来的字符串与今天逐字节一致；app_state（当前应用状态 JSON，每轮都变的最大头）
      单独成节，便于将来按节 diff。skill_index / db_grounding / tool_policy /
      lang_taste 由 app-db.js 统一追加，此处不重复注入。 */
-  const personaHost =
-    "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n";
-  const visionMediaRules =
-    "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用，传 imagePath（绝对路径）+ question；首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大批图片塞进主对话。\n" +
+  const personaHost = assistCanvasFree
+    ? "你是 MTNode AI编排器的全局助手，位于界面右侧栏。本档已声明「与画布无关」：不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令。\n本轮不要承诺任何画布改动，也不要臆造节点或画布现状；确实需要改画布时，请让用户先关掉助手栏的「与画布无关」再重跑。\n"
+    : "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n";
+  const visionMediaRules = assistCanvasFree
+    ? /* 无画布档：整段画布 / 节点口径撤掉，只留「回执即事实」这条通用纪律 */
+      "- 工具回执里没有的结果，不要向用户声称已完成。\n"
+    : "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用，传 imagePath（绝对路径）+ question；首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大批图片塞进主对话。\n" +
     "  · 文字处理与图生文（多模态识图）要隔离：先由专用识图 / 智能任务节点把图像转成文字，再让纯文本节点吃那段文字，这样文字步骤能选更合适的非视觉模型。\n" +
     "  · 图像参考节点用 kind input_image，把本机绝对路径写进 imagePath（应用会复制进画布资产），已知路径就不要让用户再拖拽；多图 batch:true + imagePaths。\n" +
     "  · 改节点模型：create/update 传 model，文本 / 图像节点配 providerId（服务商 id 或唯一名称），智能任务配 provider（deepseek-official 或 mtnode_<id> / 名称）。\n" +
@@ -1060,21 +1139,24 @@ async function assistSend(text) {
     "  · 音 / 视频生成节点（music_gen / tts_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；批次与文生图的防 N² 细则见技能 mtnode-canvas-batch-safety。\n";
   /* @引用、save / wait_file、端子与批次规则已由 mtnode_canvas_edit 的「硬规则」段与
      技能 mtnode-canvas-layout-ux 承载；这里只留助手侧的排版动作。 */
-  const layoutRules =
-    "  · 排版：用 createMarks 分区（box + around:[节点alias] + label：编辑区 / 说明 / 处理区 / 输出区），并放 control 控制节点（ctrlAction=run，不要建 clear「清空」；控制流不走数据线，须直连每个该一键重跑的节点）；用户要编辑或点 ▶ 的节点放上方（较小 y），处理 / 保存 / 长说明放下方或右侧。完整规范见技能 mtnode-canvas-layout-ux。\n" +
+  const layoutRules = assistCanvasFree
+    ? ""
+    : "  · 排版：用 createMarks 分区（box + around:[节点alias] + label：编辑区 / 说明 / 处理区 / 输出区），并放 control 控制节点（ctrlAction=run，不要建 clear「清空」；控制流不走数据线，须直连每个该一键重跑的节点）；用户要编辑或点 ▶ 的节点放上方（较小 y），处理 / 保存 / 长说明放下方或右侧。完整规范见技能 mtnode-canvas-layout-ux。\n" +
     "  · 用户要求整理排版 / 一键排版时：先 mtnode_canvas_get 读节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（整洁、可编辑节点靠上、绘制跟着节点走）；禁止调用 layout action，勿增删节点、勿改连线，然后简短确认。\n";
-  const principleBlock =
-    (scopeCurrent
-      ? "原则：仅操作当前画布；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n"
-      : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n");
+  const principleBlock = assistCanvasFree
+    ? "原则：本轮与画布无关 —— 不读写画布、不承诺任何节点改动，只完成任务本身；不要编造不存在的节点或画布。回答简洁（交流语言见文末语言口味）。\n"
+    : scopeCurrent
+    ? "原则：仅操作当前画布；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n"
+    : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n";
   /* 应用状态 JSON 单独成节：每轮都变的最大头，只有独立出来才谈得上单独 diff */
   const appStateBlock = "当前应用状态 JSON：\n" + stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   const assistMaxTok = dshRunMaxTokens();
-  /* 三个可见集通道的助手侧取值：助手不锁画布（noCanvas 恒 false）、没有节点也就不可能
-     接入数据库副本（dbGrounded 恒 false）；名单与 dshRunOnce 用同一个 dshHiddenToolsFor
-     算，否则开关一开，分节快照与真实运行签名就长期错开（快照每轮白作废）。 */
+  /* 三个可见集通道的助手侧取值：助手没有节点也就不可能接入数据库副本（dbGrounded 恒 false）；
+     noCanvas = 用户勾了「与画布无关」（Gate B 助手侧），与会话侧 st.canvasFree 同一个整档闸。
+     名单与 dshRunOnce 用同一个 dshHiddenToolsFor 算，否则开关一开，分节快照与真实运行
+     签名就长期错开（快照每轮白作废）。 */
   const assistLean = typeof dshLeanToolsOn === "function" ? dshLeanToolsOn() : false;
   const assistHide =
     typeof dshHiddenToolsFor === "function"
@@ -1082,9 +1164,11 @@ async function assistSend(text) {
           pure: false,
           dbGrounded: false,
           lean: assistLean,
-          noCanvas: false,
+          noCanvas: assistCanvasFree,
         }).join(",")
       : "";
+  /* 无画布档下画布规则段全为空串：buildSections 丢空节，fallback 的 join("") 同样不占位，
+     两条路径拼出来的结果一致。 */
   const assistSections = {
     persona_host: personaHost,
     scope: scopeBlock,
@@ -1109,7 +1193,7 @@ async function assistSend(text) {
             effort: S.assistEffort || "high",
             pure: false,
             lean: typeof dshLeanToolsOn === "function" ? dshLeanToolsOn() : false,
-            noCanvas: false,
+            noCanvas: assistCanvasFree,
             hide: assistHide,
             maxTokens: assistMaxTok,
           }),
@@ -1139,6 +1223,9 @@ async function assistSend(text) {
       model: S.assistModel || undefined,
       effort: S.assistEffort || "high",
       systemPrompt,
+      /* Gate B（助手侧）：与画布无关 → 走 MTNODE_NO_CANVAS 整档闸，画布三件套
+         （get / edit / app 合计约 26.0K 字符/步）整个不注册；快照也已换成轻量摘要。 */
+      noCanvas: assistCanvasFree,
       onDone: (d) => {
         const m = d && d.metrics;
         if (m) {
@@ -1443,6 +1530,13 @@ async function persistAgentSession() {
     model: s.model || "",
     effort: s.effort || "high",
     pure: !!s.pure,
+    /* 开发绑定会话「不读画布」标记：必须随会话落盘 —— 重启后若丢了这一位，本轮可见集
+       就与那份 session 的历史前缀不一致（网关 hx: 指纹变了 → 换 runtime 冷起 → 续跑
+       撞 id 只能整轮重发），所以它与 pure 同级持久化。 */
+    noCanvasRead: !!s.noCanvasRead,
+    /* 「与画布无关」开关同样随会话落盘：丢了这一位，重启后可见集就与那份 session
+       的历史前缀不一致（网关 nc: / hx: 指纹变化 → 换 runtime 冷起）。 */
+    canvasFree: !!s.canvasFree,
     draft: s._draft || "",
     /* 整对象落盘（含 reasoning / tools / segments）；segments 再限一次长：
        每段 ≤8000 字、总 ≤40 段，控制 messages.slice(-100) 的存档体积 */
@@ -1515,6 +1609,10 @@ function newAgentSession() {
     provider: cur.provider || "deepseek-official",
     model: cur.model || "",
     effort: cur.effort || "high",
+    /* 手动新建的会话照常读画布：「不读画布」是开发绑定会话专属（createDevSessionForNode 置位） */
+    noCanvasRead: false,
+    /* 「与画布无关」是用户手动声明档：新建会话默认关（照常读画布） */
+    canvasFree: false,
     messages: [],
     archived: false,
     updatedAt: Date.now(),
@@ -1679,6 +1777,15 @@ function renderAgentComposer() {
       ? "纯净模式：开启中，点击关闭"
       : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token";
     put.title = I18n.t(put.dataset.i18nTitle);
+  }
+  /* 与画布无关 chip（Gate B）：开启态高亮 + tooltip 说清代价（改画布要先关掉） */
+  const cft = document.getElementById("agentCanvasFreeTrigger");
+  if (cft) {
+    cft.classList.toggle("on", !!st.canvasFree);
+    cft.dataset.i18nTitle = st.canvasFree
+      ? "与画布无关：开启中，点击关闭（本会话不注册任何画布与应用工具）"
+      : "与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它";
+    cft.title = I18n.t(cft.dataset.i18nTitle);
   }
   /* 计划已产出且未在运行 → 浮现「▶ 执行计划」 */
   const rp = document.getElementById("agentRunPlanBtn");
@@ -4519,18 +4626,54 @@ async function agentSessionSend(text, opts) {
      网关强制空预设文本，引擎侧 pure-prompt 插件按 MTNODE_PURE 移除人设段。
      开发任务书契约同样不再注入（纯净模式由用户显式开启，接受该取舍）。 */
   const pureMode = !!st.pure;
-  let systemPrompt = pureMode
+  /* 人设的画布档位（与工具注册同一判据，真源见 app-db.js dshRunOnce）：
+     · ""       全量 —— get / edit / app 三件套都在，照旧要求先读图再动手
+     · "noRead" 开发绑定会话（st.noCanvasRead · Gate A）—— 本轮不注册 mtnode_canvas_get
+                与 mtnode_app，只留收尾用的 mtnode_canvas_edit
+     · "none"   用户声明「与画布无关」（st.canvasFree · Gate B）—— 三件套全不注册
+   裁掉工具就必须同时裁掉「动手前先 mtnode_canvas_get 看清现状」这句指令和画布类技能名
+   （同档位的技能索引也已经裁了），否则模型会去调不存在的工具、白白浪费一整步。 */
+  const canvasPersona = pureMode
     ? ""
-    : "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改本会话所属的画布（节点、连线、排版等）。\n" +
-      "你只能访问本会话所属的那张画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
-      "该画布在会话建立时就已绑定：用户在你运行中途切去其他画布干活，你本轮的读写仍然精准落在自己那张图上，不会串到他正看着的那张。\n" +
-      (!!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove)
-        ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
-        : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
-      "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
-      "改画布纪律：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
-      "要建开发节点、批次 / 文生图链、整理排版或接数据库副本时，先用 skill 工具加载对应内置技能（mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
-      "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
+    : st.canvasFree
+      ? "none"
+      : st.noCanvasRead
+        ? "noRead"
+        : "";
+  const assistAutoApprove = !!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove);
+  let systemPrompt = "";
+  if (!pureMode) {
+    if (canvasPersona === "none") {
+      systemPrompt =
+        "你是 MTNode 里的通用会话助手。本会话已声明「与画布无关」：不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令。\n" +
+        "本轮不要承诺任何画布改动，也不要臆造节点或画布现状；确实需要改画布时，请让用户先关掉输入区的「与画布无关」开关再重跑。\n" +
+        "内置技能以文末索引为准（本档位不含画布类技能）；工具回执里没有的结果不要声称已完成。\n" +
+        "回答简洁（交流语言见文末「语言口味」）。";
+    } else if (canvasPersona === "noRead") {
+      systemPrompt =
+        "你是 MTNode 画布上的智能会话助手，但本会话不读取画布。可读写文件、联网、执行命令；改画布只用 mtnode_canvas_edit（节点字段、连线、排版），本轮不注册 mtnode_canvas_get 与 mtnode_app。\n" +
+        "画布现状一律以【开发任务书】为准；要改哪个节点，用任务书给出的「本节点 id」在 mtnode_canvas_edit 的 update 里按 id 定位，不要为了看现状去读整张图。\n" +
+        "你只能改本会话所属的那张画布：它在会话建立时就已绑定，用户中途切去其他画布干活，你本轮的读写仍精准落在自己那张图上，不会串到他正看着的那张。\n" +
+        (assistAutoApprove
+          ? "「助手改画布」为批准：mtnode_canvas_edit 直接生效。画布修改只限收尾回写本节点（note / devStatus / devFiles），不要顺手改别的节点。\n"
+          : "mtnode_canvas_edit 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，立即停止改画布。\n") +
+        "改画布纪律：节点字段、端子与 alias 的口径以 mtnode_canvas_edit 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
+        "内置技能以文末索引为准（本档位不含画布类技能）；工具回执里没有的结果不要声称已完成。\n" +
+        "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
+    } else {
+      systemPrompt =
+        "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改本会话所属的画布（节点、连线、排版等）。\n" +
+        "你只能访问本会话所属的那张画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
+        "该画布在会话建立时就已绑定：用户在你运行中途切去其他画布干活，你本轮的读写仍然精准落在自己那张图上，不会串到他正看着的那张。\n" +
+        (assistAutoApprove
+          ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
+          : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
+        "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
+        "改画布纪律：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
+        "要建开发节点、批次 / 文生图链、整理排版或接数据库副本时，先用 skill 工具加载对应内置技能（mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
+        "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
+    }
+  }
   /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
      会话里只显示用户填写的关键输入；后续追问也持续携带该契约） */
   const devContract = String(st._devContract || "").trim();
@@ -4555,6 +4698,14 @@ async function agentSessionSend(text, opts) {
       effort: st.effort || "high",
       systemPrompt,
       pure: pureMode,
+      /* Gate A：开发绑定会话不注册读画布工具（判据与落盘同源，见 createDevSessionForNode）。
+         dshRunTask 的 baseOpts 原样透传到 dshRunOnce，这一位随每次开轮重新生效，
+         轮内不变 → 同一档每步前缀一致。 */
+      noCanvasRead: !!st.noCanvasRead,
+      /* Gate B：用户声明「与画布无关」→ 走 MTNODE_NO_CANVAS 整档闸（canvas_get / edit /
+         app 三件套整个不注册，约 26.0K 字符/步）。人设同步换成无画布版（见上方
+         canvasPersona === "none" 分支），两侧判据同源于 st.canvasFree。 */
+      noCanvas: !!st.canvasFree,
       onEvent: (type, data) => {
         /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
            重绘/滚动打扰用户正在看的其他会话 */

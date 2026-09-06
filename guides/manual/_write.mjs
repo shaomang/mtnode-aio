@@ -553,6 +553,12 @@ Set a path, then ▶ writes YAML or an image. Optional auto-save on input change
 
 会话**不跨画布**读写：要参考或切换其他画布，用画布右侧的**全局助手**（✦），并把它的「工作范围」切到「全局」。
 
+### 「与画布无关」开关
+
+会话输入区下方的 **与画布无关** 小按钮（画布右侧助手栏顶部还有一个同名开关，管助手自己）是**由你手动声明**的一档：开启后这一轮**不注册任何画布与应用工具**——\`mtnode_canvas_get\` / \`mtnode_canvas_edit\` / \`mtnode_app\` 都不存在，也**不再注入整张画布快照**，只剩文件读写 / 联网 / 命令（识图仍按工具许可开放）。画布类任务用不上它的时候，它把每一步重发的前缀削掉一大截，**长会话明显省 token**。代价是它从此**真的看不见画布**：**要让它总结或搭建工作流，先把这个开关关掉再重跑**；开着时它会直接回你「需要改画布请先关掉」，不会假装改过图。这个开关随会话落盘、分支会话沿用，与「纯净模式」不是同一档。
+
+开发节点「开发 / 细化」建的**绑定会话**则是**宿主自动判定**的另一档：它**不读画布**（\`mtnode_canvas_get\` 与 \`mtnode_app\` 不注册，画布现状一律以开发任务书为准），但 \`mtnode_canvas_edit\` **保留**——任务书自带**本节点的 id**，收尾时按这个 id 点名回写本节点的概述 / 状态 / 核心文件列表，**不必为了拿 id 先读一遍整张图**。详见 [开发节点](#dev-nodes)。
+
 ## 运行中：思考与输出分开显示
 
 运行时按**发生顺序**分段：**「◉ 思考 · N 字」** 是折叠起来的模型内部推理（N 只统计思考字数），正常字号的段落是模型说出来的**正文**（中间步骤说的话也算正文），**🔧 工具**调用就近插在它发生的位置，错误以 ⚠ 附在正文里。每调用一次工具或进入新一步推理就另起一段。
@@ -598,6 +604,12 @@ Top bar **Agent session**: many sessions, grouped by workspace, archive, fork, s
 A session adopts its canvas **the moment it is created**: whichever canvas you are looking at then, and for sessions started from a dev node's 开发 / 细化 / 问询 button, the canvas that feature block lives on. From then on **you are free to switch to other canvases and keep working** — that session's graph reads/writes, working directory and database grounding all land precisely on **its own** canvas, never on the one now on your screen, so it can't overwrite or delete what you are editing. The ▣ under each session title (and its tooltip) shows which canvas it owns (marked as deleted if that canvas is gone).
 
 Sessions do **not** reach across canvases: to look at or switch between several, use the **global assistant** (✦) right of the canvas with its **work scope set to global**.
+
+### The “Canvas-free” switch
+
+The **Canvas-free** chip under the session's input box (the ✦ assistant panel has its own copy of the same switch, for the assistant) is a tier **you declare by hand**: while it's on, that run registers **no canvas and no app tools** — \`mtnode_canvas_get\` / \`mtnode_canvas_edit\` / \`mtnode_app\` do not exist — and **the full canvas snapshot is no longer injected**, leaving only files / web / commands (vision still follows the tool permission). When a conversation has nothing to do with the graph, that strips a large slice off the prefix every step re-sends, so **long sessions cost noticeably fewer tokens**. The price is that it is genuinely **blind to the canvas**: **to get a workflow summarised or built, turn the switch off and run again** — while it's on the assistant just tells you to turn it off rather than pretending to edit the graph. The setting is stored with the session, a fork inherits it, and it is not the same tier as 纯净模式 (pure mode).
+
+Sessions started from a dev node's 开发 / 细化 (Develop / Refine) button are a **host-decided** tier instead: they **don't read the canvas** (\`mtnode_canvas_get\` and \`mtnode_app\` are not registered — the canvas state is whatever the dev task brief says), but \`mtnode_canvas_edit\` **stays available**, because the brief carries **this node's id**: the session writes back this one node's overview / status / core file list by that id, **without pulling the whole graph just to find its own id**. See [Dev nodes](#dev-nodes).
 
 ## While it runs: thinking and output are separate
 

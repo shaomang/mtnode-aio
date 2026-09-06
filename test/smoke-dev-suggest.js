@@ -1235,7 +1235,7 @@ const MODEL_JSON =
   ok(nodes10.indexOf("patch.devColor") >= 0, "app-nodes 支持 devColor 补丁（Agent 可改颜色）");
   const appjs10 = read("renderer/app.js");
   ok(appjs10.indexOf("devColor: \"\"") >= 0, "app.js 超级节点默认 devColor 空串");
-  ok(appjs10.indexOf("S.uiDevColorNode") >= 0, "app.js 全局点击关闭 HSV 色板（点外部收起）");
+  ok(appjs10.indexOf("S.uiDevColorNode") >= 0, "app.js 记着正在选色的功能块（色板 persistent：点外部不收，关它只走 ✕ / 完成 / 再点按钮 / Esc）");
   const cssC10 = read("renderer/css/canvas.css");
   ok(cssC10.indexOf(".n-dev-color") >= 0, "canvas.css：菜单栏颜色按钮样式");
   ok(cssC10.indexOf(".dev-custom-color") >= 0, "canvas.css：自定义外框色样式");
@@ -1311,7 +1311,7 @@ const MODEL_JSON =
   ok(typeof ex(sb, "closeDevModelPicker") === "function", "弹层有显式收起入口（Esc 走它）");
   ok(!!pop, "点击按钮后创建模型弹层（#devModelPop）");
   ok(pop.classList.contains("on"), "弹层展开");
-  ok(sb.S.uiDevModelNode === "n1", "记录正在选择的功能块（再点按钮 / 点外部收起）");
+  ok(sb.S.uiDevModelNode === "n1", "记录正在选择的功能块（再点按钮 / Esc / 开别的面板互斥收起）");
   ok(
     pop.querySelector(".dev-model-scope").textContent.indexOf("继承自「渲染层」") >= 0,
     "弹层顶部说明当前生效模型与其来源",
@@ -1605,7 +1605,7 @@ const MODEL_JSON =
   ok(appjs11.indexOf('devModel: ""') >= 0, "app.js 超级节点默认 devModel 空串");
   ok(appjs11.indexOf('devPreset: ""') >= 0, "app.js 超级节点默认 devPreset 空串（跟随默认）");
   ok(appjs11.indexOf('devEffort: ""') >= 0, "app.js 超级节点默认 devEffort 空串（跟随默认）");
-  ok(appjs11.indexOf("S.uiDevModelNode") >= 0, "app.js 全局点击收起模型弹层（点外部）");
+  ok(appjs11.indexOf("S.uiDevModelNode") >= 0, "app.js 记着正在选设定的功能块（模型弹层 persistent：点外部不收，关它只走 ✕ / 再点按钮 / Esc）");
   ok(
     appjs11.indexOf('if (ev.key === "Escape" && (S.uiDevColorNode || S.uiDevModelNode))') >= 0,
     "app.js：Esc 同时收起色板与模型弹层",

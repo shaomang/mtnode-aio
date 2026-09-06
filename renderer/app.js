@@ -32,6 +32,8 @@ const S = {
   /* uiOpenNode 已废除：节点「设置」不再就地展开在 body 里，统一走 ⚙ 跳窗
      （见 app-canvas.js openNodeSettingsDialog / NODE_SETTINGS_FORMS）。 */
   uiBgRmNode: null,
+  /* 画幅锁定（与首参考图同长宽比）参数面板当前挂在哪颗按钮上 */
+  uiRatioLockNode: null,
   undoStack: [],
   redoStack: [],
   preDragSnap: null,
@@ -108,6 +110,10 @@ const S = {
   /* 超级节点内部：只显示 parentSuperId === superFocus 的节点 */
   superFocus: "",
   superStack: [],
+  /* 画布视图记忆（内存 · 按画布 id）：切走的画布记下「钻在哪一层 + 相机看到哪」，
+     切回来原位恢复 —— 避免每次 Tab 返回都被打回根画布。交接点只有 setForegroundWf
+     一处（后台换画布编辑 runAgainstWf 不经这里，不会串到用户没在看的图）。 */
+  wfViews: {},
   /* 画布查找 / 替换（Ctrl+F / Ctrl+G，仅当前工作流） */
   findBar: {
     open: false,
@@ -719,10 +725,20 @@ const NODE_DEFAULTS = {
     /* 透明背景 = 双通道差分抠图：tol 噪点地板 / soft 边缘羽化 / align 第 2 通道自动对齐
        bgRmKey 是旧「色键抠图」遗留字段，现已不再参与算法，仅保留以兼容旧画布 */
     bgRmKey: "#FF00FF",
-    bgRmTol: 24,
+    bgRmTol: 10,
     bgRmSoft: 32,
     bgRmAlign: true,
     bgRmPairs: [],
+    /* 与首参考图保持一致长宽比（画幅锁定）：先把首参考图补边到目标画幅再生图，
+       出图后按同一矩形裁回 —— 输出长宽比 = 首参考图长宽比。
+       mode auto=自动挑最贴近参考图的档位 / size=跟随节点「尺寸」所选长宽比；
+       padFill=补边怎么填（edge 边缘延展 / mirror 镜像 / white / black / custom）；
+       exact=出图后再缩放回参考图的原始像素尺寸（默认关，保留生图分辨率） */
+    ratioLockOn: false,
+    ratioLockMode: "auto",
+    ratioPadFill: "edge",
+    ratioPadColor: "#FFFFFF",
+    ratioLockExact: false,
     globalRefs: false,
     output: null,
     batchOutputs: null,
@@ -2784,6 +2800,31 @@ function assetFreeInPortIndex(node, from, fromIndex) {
   }
   return null;
 }
+/** 素材类静态源的唯一判定：这类节点「输出端子号 = 内容条目号」，
+ *  一条线接住哪个端子，取的就是那一条内容 —— 绝不能拿批量条目下标当条目号。
+ *  引用链路（候选闸门 / 取值下标 / 背景块标题 / 条目展开）一律问这里，
+ *  不再各处各写一份 kind 白名单（素材接进处理节点却「无法被引用」的根因就是各层各判各的）。
+ *  超级节点另有内外隧穿口径，不并到这一判定里。 */
+function isItemPortSource(n) {
+  return isAssetNode(n);
+}
+/** 素材节点接进某个消费者的全部输出端子号（= 条目序号，按出现顺序去重；控制线不算）。
+ *  @ 一个素材节点 = 把它接进本节点的每条内容都带上，而不是只带第一条。
+ *  没接线（如走全局广播）返回空数组 → 调用方回落单一取值下标。 */
+function assetWiredPortIndexes(consumer, srcId) {
+  const out = [];
+  if (!consumer || !srcId || !S.wf || !Array.isArray(S.wf.wires)) return out;
+  const seen = new Set();
+  for (const w of S.wf.wires) {
+    if (w.rel || w.from !== srcId || w.to !== consumer.id) continue;
+    if (wireFromIsControl(w)) continue;
+    const i = Number(w.fromIndex || 0);
+    if (seen.has(i)) continue;
+    seen.add(i);
+    out.push(i);
+  }
+  return out.sort((a, b) => a - b);
+}
 /** 条目类型短名（端子 tooltip 与 body 类型徽标共用） */
 function assetItemTypeLabel(type) {
   const k = ASSET_ITEM_TYPES[String(type)] ? String(type) : "text";
@@ -2987,6 +3028,23 @@ function assetItemValueOf(node, idx) {
   }
   const url = mediaFileUrlOf(p);
   return { kind: it.type, path: p, url: url, text: url };
+}
+/** 素材节点对外可读的条目列表（@ 引用 / Tag / 聚合模式 / 合并节点共用一份口径）：
+ *  pick(值, 条目) 决定收哪几条 —— 文本侧收「能读成文字」（文本正文、音视频 file:/// URL），
+ *  图像侧收 {title,path}。portIdx 给了就只那一条（按连线端子取值），
+ *  没给就把全部条目摊平（「取该源全部条目」口径，与合并 / 批量节点一致）。 */
+function assetRefItems(node, portIdx, pick) {
+  const items = assetItems(node);
+  const one = portIdx == null || portIdx === "" ? null : Number(portIdx) || 0;
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    if (one != null && one !== i) continue;
+    const v = assetItemValueOf(node, i);
+    if (!v) continue;
+    const r = pick ? pick(v, items[i]) : null;
+    if (r) out.push(r);
+  }
+  return out;
 }
 /** 本机文件路径 / file:/// URL 两种写法都收（图像端子存绝对路径，音视频端子存 URL） */
 function assetLocalPathOfValue(v) {
@@ -3741,21 +3799,27 @@ function valueForSuperOutput(superNode, index, seen) {
      声明（fnToolPortKind 返回 null）→ 原样返回，取数链路逐字不变。 */
   return normFnToolPortValue(superNode, "out", index, v).value;
 }
-/** 沿连线取值：源为超级节点时用 fromIndex，并以 consumer 区分内外通道 */
+/** 沿连线取值：源为超级节点 / 素材节点时用该线真正接住的输出端子号，
+ *  并以 consumer 区分内外通道；其余节点仍按批量条目下标（行为逐字不变） */
 function valueFromWire(w, consumer, batchIdx, seen) {
   if (!w) return null;
   const src = nodeById(w.from);
   if (!src) return null;
   const idx =
-    isSuperLikeNode(src)
+    isSuperLikeNode(src) || isItemPortSource(src)
       ? Number(w.fromIndex || 0)
       : batchIdx == null
         ? 0
         : batchIdx;
   return valueForInput(src, idx, consumer || null, seen);
 }
+/** 这条线在源节点上选中的端子号：超级节点取外侧端子，素材节点取内容条目端子
+ *  （两者都是「端子号 = 那一条内容」，合并节点 / 聚合模式 / 聚合保存 / 智能节点图像
+ *   全靠这一个函数落到正确的条目上）；其余节点没有端子级条目概念 → undefined。 */
 function superPortIdxFromWire(src, w) {
-  if (!src || !isSuperLikeNode(src) || !w) return undefined;
+  if (!src || !w) return undefined;
+  if (isItemPortSource(src)) return Number(w.fromIndex || 0);
+  if (!isSuperLikeNode(src)) return undefined;
   return Number(w.fromIndex || 0);
 }
 /** 移除超级节点某一内侧端子上的连线（桥接 / 汇流） */
@@ -4860,6 +4924,15 @@ function dshEffortOf(v, fromProcText) {
 function dshCancelActive(runKey) {
   const map = (S && S._runCancels) || {};
   const keys = runKey ? [String(runKey)] : Object.keys(map);
+  /* 判死这一轮：盖终止代号（自增），重发闸据此一次都不重发（真源见 app-db.js
+     dshStopMark / dshRunTask）—— 需求「停止模型或会话时应当立即停止，而不是进入 5 次重试」。
+     不带 runKey 的「全部终止」盖全局 '*'，连还没占上取消句柄的在途轮一并判死。
+     与 app-agent.js 里那份同名实现保持一致（那份在 app.js 之后加载，实际生效的是它）。 */
+  if (typeof dshStopMark === "function") {
+    try {
+      dshStopMark(runKey ? String(runKey) : "");
+    } catch (_) {}
+  }
   const list = [];
   for (const k of keys) {
     const h = map[k];
@@ -4875,7 +4948,7 @@ function dshCancelActive(runKey) {
 }
 
 function isCancelishError(msg) {
-  return /中止|取消|cancel|abort|aborted|已终止|已手动停止|已请求终止|已请求中断/i.test(
+  return /中止|取消|cancel|abort|aborted|已终止|已手动停止|已请求终止|已请求中断|手动终止|自动终止/i.test(
     String(msg || ""),
   );
 }
@@ -4972,7 +5045,7 @@ function applySnap(s) {
   /* 撤销 / 重做换上来的是一批深拷贝的新对象：设置窗绑的还是旧节点，
      继续开着就会把修改写进孤儿对象，这里跟着关掉（skipSave —— 本函数末尾自己落盘）。 */
   closeNodeSettingsDialogIfStale({ silentRerender: true, skipSave: true });
-  closeBgRmPop();
+  closeAllNodePops();
   renderCanvas();
   renderStatus();
   scheduleSave(true);
@@ -5409,7 +5482,8 @@ function superInnerPortInfo(host, dir, i) {
   return {
     ctrl: ctrl,
     img: pk === "image",
-    badge: fixed ? (ctrl ? I18n.t("控制") : clipStr(pname || String(n), 8)) : "",
+    /* 徽标给完整参数名：原来的 clipStr(…,8) 会把名字切一半（截断交给 CSS .port-badge .pb-name，节点高亮时放开显示全名） */
+    badge: fixed ? (ctrl ? I18n.t("控制") : pname || String(n)) : "",
     title:
       base +
       (pname ? I18n.t(" · 参数：") + pname : "") +
@@ -5751,7 +5825,12 @@ function toggleNodeGlobalRefs(node) {
 }
 
 function isRefableSource(n) {
-  return !!(n && (isTextSource(n) || isImageSource(n)));
+  if (!n) return false;
+  /* 素材节点：整节点没有单一媒体类型（条目端子各是各的类型），所以进不了
+     isTextSource / isImageSource 那两张 kind 表 —— 但它的每一条内容确实可引用，
+     取值按端子走 valueForInput 的 asset 分支。没有条目就没有可引用的东西。 */
+  if (isItemPortSource(n)) return assetItems(n).length > 0;
+  return !!(isTextSource(n) || isImageSource(n));
 }
 
 function globalRefSources(exceptId) {
@@ -7722,15 +7801,14 @@ async function stopAllRuns() {
   );
 }
 
+/* 弹窗 persistent 是全应用铁律（AGENTS.md「协作约定」）：点蒙层 / 点外部一律不关窗。
+   overlayPersistent 仍保留给调用方表达意图（设置窗等），并供冒烟断言读取。 */
 let overlayPersistent = false;
 let overlayKind = "";
-/* 仅当 mousedown 落在蒙层本身时才允许 click 关闭，避免在弹窗内拖选文字松手到蒙层误关 */
-let _overlayBgPointerDown = false;
 function openOverlay(title, opts) {
   opts = opts || {};
   overlayPersistent = !!opts.persistent;
   overlayKind = "";
-  _overlayBgPointerDown = false;
   S.thinkOpen = null; // 打开新弹窗时结束上一弹窗的思考流式更新
   const box = $("#overlay .overlay-box");
   if (box) {
@@ -7749,20 +7827,10 @@ function openOverlay(title, opts) {
   $("#ovFoot").innerHTML = "";
   $("#overlay").style.display = "flex";
 }
-/* 带可编辑输入控件的弹窗视为需显式关闭（与 overlayPersistent 等效） */
-function overlayHasEditableFields() {
-  const root = document.getElementById("overlay");
-  if (!root || root.style.display !== "flex") return false;
-  return !!root.querySelector(
-    'textarea, select, input[type="text"], input[type="number"], input[type="password"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], input[type="file"], input:not([type]), [contenteditable="true"]',
-  );
-}
-function overlayShouldStayOpen() {
-  return overlayPersistent || overlayHasEditableFields();
-}
+/* 弹窗关闭只走显式路径：窗内「取消 / 完成并关闭」按钮、✕、Esc、切画布 / 撤销 / 删节点。
+   任何「点外部 / 点蒙层自动收起」的实现都属于违规（见 AGENTS.md「协作约定」）。 */
 function closeOverlay() {
   S.thinkOpen = null;
-  _overlayBgPointerDown = false;
   closeTplSubOverlay();
   const box = $("#overlay .overlay-box");
   if (box) {
@@ -8414,13 +8482,11 @@ function ensureAppDocsDlg() {
     "</div></aside></div></div>";
   document.body.appendChild(host);
   host.querySelector("#appDocsClose").onclick = () => closeAppDocs();
+  /* 手册窗 persistent：点外部 / 点蒙层不关（只走 ✕ / Esc） */
   host.querySelector("#appDocsAskBtn").onclick = () =>
     setDocsAskOpen(!APP_DOCS.askOpen);
   host.querySelector("#appDocsAskHide").onclick = () => setDocsAskOpen(false);
   host.querySelector("#appDocsAskSend").onclick = () => sendDocsAsk();
-  host.addEventListener("click", (ev) => {
-    if (ev.target === host) closeAppDocs();
-  });
   const filter = host.querySelector("#appDocsFilter");
   filter.addEventListener("input", () => {
     APP_DOCS.filter = filter.value || "";
@@ -10676,6 +10742,8 @@ function applyTransform() {
   clampCam();
   st.style.transform = `translate(${S.cam.x}px, ${S.cam.y}px) scale(${S.cam.z})`;
   syncCanvasGrid();
+  /* 节点上的 persistent 参数面板不会点外部收起，画布一动就得自己跟回它的按钮 */
+  repositionNodePops();
 }
 
 /* 相机变换合并到下一帧，避免平移/缩放时 mousemove/wheel 触发多次强制布局 */
@@ -11716,6 +11784,9 @@ function refLeafSourcesForWire(w, consumer) {
 }
 
 function isRefTextSourceKind(src) {
+  /* 素材节点：只要有一个非图像条目就可能有文字可注入（图像端子仍走参考图分支） */
+  if (isItemPortSource(src))
+    return assetItems(src).some((it) => it.type !== "image");
   return !!(
     src &&
     (src.kind === "input_text" ||
@@ -11737,9 +11808,19 @@ function refTextFromValue(v) {
   return null;
 }
 
-/** @ 引用 / 取值时用的端口条目索引（含超级节点隧穿） */
-function refInputIdxFor(node, src, batchIdx) {
+/** @ 引用 / 取值时用的端口条目索引（含超级节点隧穿）
+ *  viaWire：调用方已知是哪条线时传进来 —— 同一个素材节点可以有几条内容分别接进
+ *  同一个消费者，端子号必须逐条线算，不能一律回落到「第一条匹配线」。 */
+function refInputIdxFor(node, src, batchIdx, viaWire) {
   if (!src) return batchIdx == null ? 0 : batchIdx;
+  /* 素材节点：端子号 = 内容条目号（批量下标跟它不是一个维度） */
+  if (isItemPortSource(src)) {
+    if (viaWire && viaWire.from === src.id) return Number(viaWire.fromIndex || 0);
+    for (const w of wiresTo(node.id)) {
+      if (nodeById(w.from)?.id === src.id) return Number(w.fromIndex || 0);
+    }
+    return batchIdx == null ? 0 : batchIdx;
+  }
   for (const w of wiresTo(node.id)) {
     const from = nodeById(w.from);
     if (!from) continue;
@@ -11953,7 +12034,9 @@ function inboundWire(n) {
 }
 function wireSourceIndex(w, fallbackIdx) {
   const src = w && nodeById(w.from);
-  if (src && isSuperLikeNode(src)) return Number(w.fromIndex || 0);
+  /* 素材节点的端子号 = 内容条目号：继承链穿过它时也要按端子号取那一条 */
+  if (src && (isSuperLikeNode(src) || isItemPortSource(src)))
+    return Number(w.fromIndex || 0);
   return fallbackIdx == null ? 0 : fallbackIdx;
 }
 function inheritedValue(n, idx) {
@@ -11989,6 +12072,14 @@ function allTextItems(src, consumer, portIdx) {
     );
     return feed ? allTextItems(nodeById(feed.from), src) : [];
   }
+  /* 素材节点：一条内容 = 一个条目端子。文本给正文、音频 / 视频给 file:/// URL
+     （与 assetItemValueOf / refTextFromValue 对外同一口径），图像不在此列。
+     缺了这一支，聚合模式与 @Tag 引用就永远看不到素材里的东西。 */
+  if (isItemPortSource(src))
+    return assetRefItems(src, portIdx, (v, it) => {
+      const t = refTextFromValue(v);
+      return t == null ? null : { title: it.title, text: t };
+    });
   if (src.kind === "split") {
     const it = splitSelected(src);
     return it && it.value.kind === "text"
@@ -12080,6 +12171,11 @@ function allImageItems(src, consumer, portIdx) {
     );
     return feed ? allImageItems(nodeById(feed.from), src) : [];
   }
+  /* 素材节点：图像条目 = 该条目的本机文件（与 allTextItems 同一份端子口径） */
+  if (isItemPortSource(src))
+    return assetRefItems(src, portIdx, (v, it) =>
+      v.kind === "image" && v.path ? { title: it.title, path: v.path } : null,
+    );
   if (src.kind === "split") {
     const it = splitSelected(src);
     return it && it.value.kind === "image"
@@ -12187,6 +12283,13 @@ function itemTitleOf(src, idx, consumer) {
         );
     }
     return fallback;
+  }
+  /* 素材节点：idx = 内容条目端子号，标题就是端子徽标上那一条的名字
+     （背景块与画布端子同名，用户才认得出喂进来的是哪一条内容） */
+  if (isItemPortSource(src)) {
+    const aitems = assetItems(src);
+    const ait = aitems[Math.min(at, aitems.length - 1)];
+    return (ait && ait.title) || fallback;
   }
   if (src.kind === "split") {
     const it = splitSelected(src);
@@ -12395,8 +12498,9 @@ function displayValueOf(src, consumer) {
 function inputValuesFor(node, idx) {
   return wiresTo(node.id).map((w) => {
     const src = nodeById(w.from);
+    /* 超级节点与素材节点：该线接住的端子号 = 条目号（拿批量下标去取会串到别的条目） */
     const fromIdx =
-      src && isSuperLikeNode(src)
+      src && (isSuperLikeNode(src) || isItemPortSource(src))
         ? Number(w.fromIndex || 0)
         : idx;
     return {
@@ -12593,10 +12697,20 @@ function resolveRefs(prompt, node, idx, opts) {
   /* !@数据库标题 引用：先替换为可读指针（并收集引用库供 dbNodesForRun/接地用） */
   const bang = resolveDbBangRefs(prompt, node);
   prompt = bang.prompt;
-  const addText = (c, fromIdx) => {
-    if (!c || seen.has(c.id)) return;
+  /* 注入防重：普通来源按「节点」计一次；素材节点一个端子一条内容，
+     必须按「节点 + 端子号」计，否则同一素材接进来的第二、三条会被第一条吃掉。
+     Tag 引用仍按「节点」防重（已按连线注入过的源不再整个贴一遍）。 */
+  const markSeen = (c, i) => {
+    const key = isItemPortSource(c) ? c.id + "\u0000" + i : c.id;
+    if (seen.has(key)) return false;
+    seen.add(key);
     seen.add(c.id);
+    return true;
+  };
+  const addText = (c, fromIdx) => {
+    if (!c) return;
     const useIdx = fromIdx != null ? fromIdx : idx;
+    if (!markSeen(c, useIdx)) return;
     const v = valueForInput(c, useIdx, node);
     const t = refTextFromValue(v);
     if (t != null)
@@ -12613,7 +12727,7 @@ function resolveRefs(prompt, node, idx, opts) {
       for (const src of refLeafSourcesForWire(w, node)) {
         wiredLeaves.add(src.id);
         if (isRefTextSourceKind(src))
-          addText(src, refInputIdxFor(node, src, idx));
+          addText(src, refInputIdxFor(node, src, idx, w));
       }
     }
     /* 全局广播只注入被明文 @ 命中的来源（未 @ 的全局源不进背景信息） */
@@ -12640,32 +12754,43 @@ function resolveRefs(prompt, node, idx, opts) {
       return raw;
     }
     const useIdx = refInputIdxFor(node, c, idx);
-    const v = valueForInput(c, useIdx, node);
-    if (refTextFromValue(v) != null) {
-      if (c.kind === "super") {
-        for (const w of wiresTo(node.id)) {
-          if (nodeById(w.from)?.id !== c.id) continue;
-          for (const leaf of refLeafSourcesForWire(w, node)) {
-            if (isRefTextSourceKind(leaf))
-              addText(leaf, refInputIdxFor(node, leaf, idx));
+    /* 素材节点：@它 = 把它接进本节点的每一个内容端子都带上（端子号 = 条目号）；
+       其余来源端口列表恒为 1 项 → 与旧行为逐字一致。 */
+    let ports = isItemPortSource(c) ? assetWiredPortIndexes(node, c.id) : [];
+    /* 走全局广播进来的素材没有「这条线接哪个端子」可言 → 与 @Tag 同口径：整份内容全带上 */
+    if (!ports.length && isItemPortSource(c))
+      ports = assetItems(c).map((_, i) => i);
+    if (!ports.length) ports.push(useIdx);
+    let gotText = false;
+    let imgRef = "";
+    for (const pi of ports) {
+      const v = valueForInput(c, pi, node);
+      if (refTextFromValue(v) != null) {
+        gotText = true;
+        if (c.kind === "super") {
+          for (const w of wiresTo(node.id)) {
+            if (nodeById(w.from)?.id !== c.id) continue;
+            for (const leaf of refLeafSourcesForWire(w, node)) {
+              if (isRefTextSourceKind(leaf))
+                addText(leaf, refInputIdxFor(node, leaf, idx, w));
+            }
           }
+        } else {
+          addText(c, pi);
         }
-      } else {
-        addText(c, useIdx);
+      } else if (v && v.kind === "image") {
+        const path = v.path;
+        let n = refImages.indexOf(path);
+        if (n < 0) {
+          refImages.push(path);
+          n = refImages.length - 1;
+        }
+        /* 图生图 edits 按 multipart 顺序认图，无法靠标题文字定位 → 写成「第 N 张参考图」 */
+        if (!imgRef) imgRef = I18n.t("第{n}张参考图", { n: n + 1 });
       }
-      return c.title;
     }
-    if (v && v.kind === "image") {
-      const path = v.path;
-      let n = refImages.indexOf(path);
-      if (n < 0) {
-        refImages.push(path);
-        n = refImages.length - 1;
-      }
-      /* 图生图 edits 按 multipart 顺序认图，无法靠标题文字定位 → 写成「第 N 张参考图」 */
-      return I18n.t("第{n}张参考图", { n: n + 1 });
-    }
-    return raw;
+    if (gotText) return c.title;
+    return imgRef || raw;
   });
   return { prompt: out, refImages, unresolved: [...unresolved], textSources };
 }
@@ -12895,8 +13020,12 @@ function showRefMenu(ta, node, items, query, at) {
       nm.textContent = e.tag;
     } else {
       const n = e.node;
-      const imgKind =
-        n.kind === "image" || n.kind === "input_image" || n.kind === "proc_image";
+      /* 素材节点：整节点没有单一媒体类型，按第一个内容条目的类型上标识
+         （图像素材给 I，文本 / 音频 / 视频素材给 T —— 后者对外确实是可读文字 / 地址） */
+      const aFirst = isItemPortSource(n) ? (assetItems(n)[0] || {}).type : "";
+      const imgKind = aFirst
+        ? aFirst === "image"
+        : n.kind === "image" || n.kind === "input_image" || n.kind === "proc_image";
       tagEl.className = "ref-tag " + (imgKind ? "img" : "text");
       tagEl.textContent = imgKind ? "I" : "T";
       nm.textContent = n.title;
@@ -17616,33 +17745,12 @@ function bindCanvas() {
       }
       /* 节点「设置」已改为跳窗（#overlay · persistent），不再有点外部就地收起的内联面板；
          关窗只走「完成并关闭」/ ✕ / 切画布 / 撤销 / 删节点（见 closeNodeSettingsDialog）。 */
-      if (S.uiBgRmNode) {
-        const pop = $("#bgRmPop");
-        if (pop && pop.classList.contains("on") && !pop.contains(ev.target)) {
-          const btn = document.querySelector(
-            '.wf-node[data-nid="' + S.uiBgRmNode + '"] .n-bgrm-btn',
-          );
-          if (!btn || !btn.contains(ev.target)) closeBgRmPop();
-        }
-      }
-      if (S.uiDevModelNode) {
-        const pop = $("#devModelPop");
-        if (pop && pop.classList.contains("on") && !pop.contains(ev.target)) {
-          const btn = document.querySelector(
-            '.wf-node[data-nid="' + S.uiDevModelNode + '"] .n-dev-model',
-          );
-          if (!btn || !btn.contains(ev.target)) closeDevModelPicker();
-        }
-      }
-      if (S.uiDevColorNode) {
-        const pop = $("#devColorPop");
-        if (pop && pop.classList.contains("on") && !pop.contains(ev.target)) {
-          const btn = document.querySelector(
-            '.wf-node[data-nid="' + S.uiDevColorNode + '"] .n-dev-color',
-          );
-          if (!btn || !btn.contains(ev.target)) closeDevColorPicker();
-        }
-      }
+      /* 节点上的参数面板（抠图 bgRmPop / 画幅锁定 ratioLockPop / Agent 设定 devModelPop /
+         外框色 devColorPop）同样一律 persistent：这里**不再**按「点外部」收起 ——
+         面板里有勾选、档位、颜色输入，点空白看一眼画布就把改到一半的参数丢掉是最伤的。
+         关闭只走面板 ✕ / 完成、再点一次触发它的那个按钮，以及开另一个面板时的互斥收起
+         （closeNodePopsExcept）；画布平移 / 缩放后由 repositionNodePops() 把面板跟回按钮。
+         上面两个仍是菜单（@ 引用候选 / 斜杠命令候选）：不是对话框，点外部即收没错。 */
     },
     true,
   );
@@ -18059,14 +18167,221 @@ function bindImgSaveAs(img) {
   });
 }
 
-/* 工作流内图像预览弹窗（点击缩略图） */
+/* 工作流内图像预览弹窗（点击缩略图）
+ * 口径：预览一律显示**原图**。<img> 的 CSS 宽高 = 原生像素 × 缩放倍率（缩放改的是布局
+ * 尺寸，不是把一张已经缩过的位图再 transform 拉大），配合 .img-lb-img 的
+ * image-rendering:auto，任何一档缩放都是浏览器从原文件重新采样 → 缩小不锯齿、放大不糊。
+ * 交互：打开即「适应窗口」（整图完整可见、高度撑满灯箱；小图不放大到失真，封顶 1:1）；
+ * 滚轮以指针为心缩放（必须 { passive:false } + preventDefault，否则滚轮被当成页面滚动吞掉，
+ * 这就是「点开预览后滚轮缩放没反应」的根因）；点图逐级放大 / Shift+点缩小；放大后按住拖动平移；
+ * 底栏 － / 百分比 / ＋ / 适应窗口 / 1:1。
+ * 缩放几何全在 lb* 这几个纯函数里（body._lbView 是唯一状态袋），便于冒烟真跑。 */
+const LB_ZMIN = 0.05;
+const LB_ZMAX = 24;
+/* 点击逐级放大的档位（适应窗口那一档在运行时插进这个梯子里） */
+const LB_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, LB_ZMAX];
+
+/** 适应档倍率：整图塞进可用区，且不超过原生像素（放大只糊不增信息） */
+function lbFitScale(nat, avail) {
+  if (!nat || !nat.w || !nat.h || !avail || !avail.w || !avail.h) return 1;
+  return Math.min(1, avail.w / nat.w, avail.h / nat.h);
+}
+/** 梯子：适应档 + 固定档，去重升序；up=true 取严格大于当前档的下一档 */
+function lbStepScale(v, up) {
+  const set = [];
+  for (const s of [v.fit].concat(LB_STEPS)) {
+    if (s > LB_ZMIN && !set.some((x) => Math.abs(x - s) < 1e-6)) set.push(s);
+  }
+  set.sort((a, b) => a - b);
+  const s = v.scale;
+  if (up) {
+    for (const x of set) if (x > s * 1.02) return x;
+    return set[set.length - 1];
+  }
+  for (let i = set.length - 1; i >= 0; i--) if (set[i] < s * 0.98) return set[i];
+  return set[0];
+}
+/** 把倍率换成 s2，并让「指针相对灯箱中心的那一点」缩放前后停在原地（px/py = 0 → 居中缩放） */
+function lbZoomTo(v, want, px, py) {
+  const s2 = Math.min(LB_ZMAX, Math.max(LB_ZMIN, want));
+  if (!(s2 > 0) || !isFinite(s2)) return;
+  const k = s2 / (v.scale || 1);
+  const fx = px || 0;
+  const fy = py || 0;
+  v.ox = fx - (fx - v.ox) * k;
+  v.oy = fy - (fy - v.oy) * k;
+  v.scale = s2;
+}
+/** 平移夹住：比可用区大的方向最多推到边（不留空白缝），比可用区小的方向锁死在中间 */
+function lbClampPan(v, w, h, avail) {
+  const mx = Math.max(0, (w - avail.w) / 2);
+  const my = Math.max(0, (h - avail.h) / 2);
+  v.ox = Math.min(mx, Math.max(-mx, v.ox || 0));
+  v.oy = Math.min(my, Math.max(-my, v.oy || 0));
+  return { canPan: w > avail.w + 1 || h > avail.h + 1 };
+}
+function lbAvail(body) {
+  const r = body.getBoundingClientRect();
+  return {
+    w: Math.max(1, Math.floor(r.width)),
+    h: Math.max(1, Math.floor(r.height)),
+  };
+}
+/** 状态 → DOM：写图片宽高（原生像素 × 倍率）、平移量、pannable 光标、底栏百分比 */
+function lbApplyView(body) {
+  const v = body._lbView;
+  if (!v || !v.img || !v.nat || !v.nat.w || !v.nat.h) return;
+  const avail = lbAvail(body);
+  v.fit = lbFitScale(v.nat, avail);
+  /* 用户没自己缩过 → 始终跟着窗口重适应（窗口拉大拉小都不用重新点适应） */
+  if (!v.userZoomed) {
+    v.scale = v.fit;
+    v.ox = 0;
+    v.oy = 0;
+  }
+  const w = Math.max(1, Math.round(v.nat.w * v.scale));
+  const h = Math.max(1, Math.round(v.nat.h * v.scale));
+  v.img.style.width = w + "px";
+  v.img.style.height = h + "px";
+  const pan = lbClampPan(v, w, h, avail);
+  v.img.style.transform =
+    "translate(-50%,-50%) translate(" +
+    v.ox.toFixed(1) +
+    "px," +
+    v.oy.toFixed(1) +
+    "px)";
+  body.classList.toggle("pannable", !!pan.canPan);
+  const z = document.getElementById("imgLbZoom");
+  if (z) z.textContent = Math.round(v.scale * 100) + "%";
+  return pan;
+}
+function lbSetZoom(body, want, px, py, markUser) {
+  const v = body._lbView;
+  if (!v) return;
+  lbZoomTo(v, want, px, py);
+  if (markUser) v.userZoomed = true;
+  lbApplyView(body);
+}
+function lbStepZoom(body, up) {
+  const v = body._lbView;
+  if (!v) return;
+  lbSetZoom(body, lbStepScale(v, up), 0, 0, true);
+}
+function lbFitView(body) {
+  const v = body._lbView;
+  if (!v) return;
+  v.userZoomed = false;
+  v.ox = 0;
+  v.oy = 0;
+  lbApplyView(body);
+}
 function closeImageLightbox() {
   const el = $("#imgLightbox");
   if (el) {
     el.classList.remove("on");
     const body = el.querySelector("#imgLbBody");
-    if (body) body.innerHTML = "";
+    if (body) {
+      body._lbView = null;
+      body.innerHTML = "";
+    }
   }
+}
+/* 灯箱交互：滚轮以指针为心缩放 · 点图逐级放大（Shift+点缩小）· 放大后按住拖动平移。
+ * 监听一律挂在 body（#imgLbBody）上，且只注册一次：换图只是换 body._lbView.img。
+ * 关键：wheel 必须 { passive:false } 才拦得住默认滚动 —— 用 passive:true（或不传，
+ * 由浏览器按 passve 默认）注册时 preventDefault 是空操作，滚轮被当成页面滚动吞掉，
+ * 表现就是「点开预览图后滚缩放完全没反应」。 */
+function bindImageLightbox(el, body) {
+  body.addEventListener(
+    "wheel",
+    (ev) => {
+      const v = body._lbView;
+      if (!v || !v.nat || !v.nat.w) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      /* 兼容三种 deltaMode（像素 / 行 / 页）：先折成像素，再按指数倍率缩放，
+         这样触控板细滚与鼠标一格 100 都手感一致 */
+      const unit = ev.deltaMode === 1 ? 33 : ev.deltaMode === 2 ? 300 : 1;
+      const dy = (ev.deltaY || 0) * unit;
+      if (!dy) return;
+      const r = body.getBoundingClientRect();
+      lbSetZoom(
+        body,
+        v.scale * Math.exp(-dy * 0.0022),
+        ev.clientX - (r.left + r.width / 2),
+        ev.clientY - (r.top + r.height / 2),
+        true,
+      );
+    },
+    { passive: false },
+  );
+  body.addEventListener("pointerdown", (ev) => {
+    const v = body._lbView;
+    if (!v || ev.button !== 0 || ev.target !== v.img) return;
+    if (!body.classList.contains("pannable")) return;
+    ev.preventDefault();
+    v.pan = {
+      id: ev.pointerId,
+      x: ev.clientX,
+      y: ev.clientY,
+      ox: v.ox,
+      oy: v.oy,
+      moved: 0,
+    };
+    body.classList.add("panning");
+    if (body.setPointerCapture) {
+      try {
+        body.setPointerCapture(ev.pointerId);
+      } catch {}
+    }
+  });
+  body.addEventListener("pointermove", (ev) => {
+    const v = body._lbView;
+    if (!v || !v.pan || (v.pan.id != null && ev.pointerId !== v.pan.id)) return;
+    const dx = ev.clientX - v.pan.x;
+    const dy = ev.clientY - v.pan.y;
+    v.pan.moved = Math.max(v.pan.moved, Math.abs(dx) + Math.abs(dy));
+    v.userZoomed = true;
+    v.ox = v.pan.ox + dx;
+    v.oy = v.pan.oy + dy;
+    lbApplyView(body);
+  });
+  const endPan = (ev) => {
+    const v = body._lbView;
+    if (!v || !v.pan) return;
+    if (v.pan.moved > 4) v.dragged = true; /* 刚拖完的这一下不算「点击放大」 */
+    if (body.releasePointerCapture && ev && ev.pointerId != null) {
+      try {
+        body.releasePointerCapture(ev.pointerId);
+      } catch {}
+    }
+    v.pan = null;
+    body.classList.remove("panning");
+  };
+  body.addEventListener("pointerup", endPan);
+  body.addEventListener("pointercancel", endPan);
+  body.addEventListener("click", (ev) => {
+    const v = body._lbView;
+    if (!v || !v.nat || !v.nat.w || ev.target !== v.img) return;
+    ev.preventDefault();
+    ev.stopPropagation(); /* 别让「点外部关灯箱」把这一下当成背景点击 */
+    if (v.dragged) {
+      v.dragged = false;
+      return;
+    }
+    const r = body.getBoundingClientRect();
+    lbSetZoom(
+      body,
+      lbStepScale(v, !ev.shiftKey),
+      ev.clientX - (r.left + r.width / 2),
+      ev.clientY - (r.top + r.height / 2),
+      true,
+    );
+  });
+  window.addEventListener("resize", () => {
+    if (!el.classList.contains("on")) return;
+    lbApplyView(body); /* 没手动缩过 → 跟着新窗口尺寸重新适应 */
+  });
 }
 function openImageLightbox(path, title) {
   const p = String(path || "").trim();
@@ -18095,17 +18410,43 @@ function openImageLightbox(path, title) {
         closeImageLightbox();
       }
     });
+    bindImageLightbox(el, el.querySelector("#imgLbBody"));
   }
   const name = title || fileName(p) || I18n.t("预览图像");
   el.querySelector("#imgLbTitle").textContent = name;
   const body = el.querySelector("#imgLbBody");
   body.innerHTML = "";
   body.classList.add("checker");
+  const tip = I18n.t("滚轮缩放 · 点击放大 · 放大后可拖动平移");
   const img = document.createElement("img");
   img.className = "img-lb-img";
   img.alt = name;
-  img.src = fileUrlWithBust(p, Date.now());
+  img.title = tip;
+  /* 状态袋：img / 原生尺寸 / 适应档 / 当前倍率 / 平移量 / 是否用户手动缩过 */
+  const view = {
+    img,
+    nat: { w: 0, h: 0 },
+    fit: 1,
+    scale: 1,
+    ox: 0,
+    oy: 0,
+    userZoomed: false,
+    dragged: false,
+    pan: null,
+  };
+  body._lbView = view;
+  const ready = () => {
+    if (body._lbView !== view) return;
+    view.nat = { w: img.naturalWidth || 0, h: img.naturalHeight || 0 };
+    if (!view.nat.w || !view.nat.h) return;
+    view.userZoomed = false;
+    view.ox = 0;
+    view.oy = 0;
+    lbApplyView(body); /* ← 打开就按可用高度适应，整图完整可见 */
+  };
+  img.onload = ready;
   img.onerror = () => {
+    body._lbView = null;
     body.innerHTML = "";
     body.classList.remove("checker");
     const g = document.createElement("div");
@@ -18114,8 +18455,36 @@ function openImageLightbox(path, title) {
     body.appendChild(g);
   };
   body.appendChild(img);
+  img.src = fileUrlWithBust(p, Date.now());
+  if (img.complete) ready();
   const foot = el.querySelector("#imgLbFoot");
   foot.innerHTML = "";
+  const tools = document.createElement("div");
+  tools.className = "img-lb-tools";
+  const tool = (txt, hint, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mini";
+    b.textContent = txt;
+    b.title = I18n.t(hint);
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      fn();
+    };
+    tools.appendChild(b);
+    return b;
+  };
+  tool("－", "缩小", () => lbStepZoom(body, false));
+  const zlabel = document.createElement("span");
+  zlabel.className = "img-lb-zoom";
+  zlabel.id = "imgLbZoom";
+  zlabel.title = tip;
+  zlabel.textContent = "—";
+  tools.appendChild(zlabel);
+  tool("＋", "放大", () => lbStepZoom(body, true));
+  tool(I18n.t("适应窗口"), "整图适应窗口", () => lbFitView(body));
+  tool("1:1", "原始大小", () => lbSetZoom(body, 1, 0, 0, true));
+  foot.appendChild(tools);
   const pathHint = document.createElement("span");
   pathHint.className = "img-lb-path";
   pathHint.textContent = p;
@@ -18124,7 +18493,10 @@ function openImageLightbox(path, title) {
   const saveBtn = document.createElement("button");
   saveBtn.className = "mini";
   saveBtn.textContent = I18n.t("另存为…");
-  saveBtn.onclick = () => saveImageAs(p);
+  saveBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    saveImageAs(p);
+  };
   foot.appendChild(saveBtn);
   const closeBtn = document.createElement("button");
   closeBtn.className = "mini primary";
@@ -18132,6 +18504,7 @@ function openImageLightbox(path, title) {
   closeBtn.onclick = closeImageLightbox;
   foot.appendChild(closeBtn);
   el.classList.add("on");
+  lbApplyView(body);
 }
 
 /* 绑定缩略图点击 → 大图预览；path 可写在 dataset.path，便于后续刷新 src */
@@ -19121,9 +19494,7 @@ function ensureYamlViewer() {
   const close = () => closeYamlViewer();
   host.querySelector("#yamlViewerCloseBtn").onclick = close;
   host.querySelector("#yamlViewerClose2").onclick = close;
-  host.addEventListener("click", (ev) => {
-    if (ev.target === host) close();
-  });
+  /* persistent：这是能编辑 YAML 的对话框，点外部 / 点蒙层不关（✕ / Esc 才关） */
   document.addEventListener("keydown", (ev) => {
     if (!host.classList.contains("on")) return;
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S")) {
@@ -19493,9 +19864,7 @@ function ensureMdViewer() {
   const close = () => closeMdViewer();
   host.querySelector("#mdViewerCloseBtn").onclick = close;
   host.querySelector("#mdViewerClose2").onclick = close;
-  host.addEventListener("click", (ev) => {
-    if (ev.target === host) close();
-  });
+  /* persistent：可编辑的 Markdown 阅读器，点外部 / 点蒙层不关（✕ / Esc 才关） */
   document.addEventListener("keydown", (ev) => {
     if (!host.classList.contains("on")) return;
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S")) {
@@ -19919,13 +20288,22 @@ function parseHexColor(h) {
 }
 
 /* 图像生成 · 透明背景（双通道差分抠图 Two-Pass Difference Matting）
-   第 1 次生成纯白背景，随后自动生成严格对齐的纯黑背景第 2 通道，两图差分出真实 Alpha。
-   成像模型：A = F·α + 255·(1-α)（白底）  B = F·α（黑底）
-   ⇒ α = (255 - A + B) / 255    F = (A + B - 255·(1-α)) / (2α)                       */
+   第 1 次生成纯黑背景 —— 它是唯一基准；第 2 次把那张原图当唯一参考图下发，只把背景换成纯白，
+   两图逐像素差分出真实 Alpha。顺序与「第 2 通道必须锚定第 1 通道」是硬约束：两张各自独立生成的图
+   必然整体错位，差分结果就是一层半透明虚影。
+   成像模型（wBg / bBg = 两张图**实测**的背景电平，见 matteBgLevels；不再是硬编码的 255 / 0）：
+     A = F·α + wBg·(1-α)（白底 · 第 2 通道）   B = F·α + bBg·(1-α)（黑底 · 第 1 通道基准）
+     ⇒ α = (bgRange - A + B) / bgRange，bgRange = wBg - bBg
+     ⇒ F = (B - bBg·(1-α)) / α（第 1 通道权威）；与 (A - wBg·(1-α)) / α 吻合时取两者均值压噪
+   背景电平为什么必须实测：模型并不听话，交回来的是 250 / 8 这类「伪黑白」。
+   硬编码 255 / 0 会让一片干净的背景被算出 α ≈ bBg/255 的常数透明度 —— 画面上就是
+   罩住整幅图的薄雾，也就是用户看到的「较大虚影」。                              */
 /* 双通道差分抠图的算法参数：
    bgRmTol  = 噪点地板（0-128，越大越敢把半透明像素判成完全透明，用于压掉生图噪声/边缘灰雾）
+              背景电平实测归一化之后，干净背景的 α 已经是 0，地板只需盖住真实噪声：
+              默认由 24 降到 10（地板 ≈ 0.039），再大的地板会吃掉烟 / 玻璃 / 发丝这类真半透明
    bgRmSoft = 边缘羽化（0-128，只糊 Alpha 通道，不动颜色，让抠图边缘更自然）
-   bgRmAlign= 自动对齐修正（默认开：把第 2 通道按前景包围盒对齐到第 1 通道）
+   bgRmAlign= 自动对齐修正（默认开：按前景包围盒与边缘吻合度把两通道对齐）
    bgRmKey  = 旧「色键抠图」遗留字段，保留读写仅为兼容旧画布，本算法不再使用 */
 function normalizeBgRm(node) {
   if (!node || node.kind !== "proc_image") return;
@@ -19933,7 +20311,7 @@ function normalizeBgRm(node) {
   if (!parseHexColor(node.bgRmKey)) node.bgRmKey = "#FF00FF";
   else node.bgRmKey = "#" + node.bgRmKey.trim().replace(/^#/, "").toUpperCase();
   const tol = Number(node.bgRmTol);
-  node.bgRmTol = Number.isFinite(tol) ? Math.max(0, Math.min(128, Math.round(tol))) : 24;
+  node.bgRmTol = Number.isFinite(tol) ? Math.max(0, Math.min(128, Math.round(tol))) : 10;
   const soft = Number(node.bgRmSoft);
   node.bgRmSoft = Number.isFinite(soft)
     ? Math.max(0, Math.min(128, Math.round(soft)))
@@ -19951,36 +20329,46 @@ function stripMatteBlocks(prompt) {
 function matteBlock(text) {
   return MATTE_BLOCK_HEAD + "\n" + text + "\n" + MATTE_BLOCK_TAIL;
 }
-/* 第 1 通道：纯白背景 */
+/* 工序（顺序不可颠倒）：
+   第 1 通道 = 纯黑背景，自由生成，是整套抠图的唯一基准（也是最终前景色的权威）；
+   第 2 通道 = 纯白背景，以第 1 通道原图为**唯一**参考图，只换背景色；
+   两图逐像素差分出 Alpha。
+   以前反过来（白底当基准、黑底补发）时，第 2 通道经常拿不到第 1 张而退化成「重新文生图」，
+   两张各自独立的图必然整体错位，差分在两图不一致处给出中间 Alpha —— 画面上就是满屏虚影。 */
+/* 第 1 通道：纯黑背景（基准） */
 function bgRmPromptSuffix(node) {
   if (!node || node.kind !== "proc_image" || !node.bgRmOn) return "";
   normalizeBgRm(node);
   return matteBlock(
     I18n.t(
-      "【透明背景 · 双通道差分抠图｜第 1 通道：纯白背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯白 #FFFFFF：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节。",
+      "【透明背景 · 双通道差分抠图｜第 1 通道（基准）：纯黑背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯黑 #000000：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。这一张是本次抠图的唯一基准：随后会严格复刻它、只替换背景色来求 Alpha，因此请按最终成品的标准画好主体。",
     ),
   );
 }
-/* 第 2 通道：纯黑背景（anchor=true 时把第 1 通道作为参考图下发，要求逐像素复刻只换背景） */
-function bgRmSecondSuffix(node, anchor) {
+/* 第 2 通道：纯白背景。只有「能把第 1 通道当参考图下发」的通路才允许发这一张
+   （见 matteAnchorSupport）；不存在「锚不上就另画一张」的分支 —— 那种退化正是虚影的来源。 */
+function bgRmSecondSuffix(node) {
   if (!node || node.kind !== "proc_image" || !node.bgRmOn) return "";
   normalizeBgRm(node);
   return matteBlock(
-    anchor
-      ? I18n.t(
-          "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把参考图的背景整体替换为完全均匀的纯黑 #000000：无渐变、无纹理、无光晕、无投影。除背景颜色以外，画面的一切内容必须与参考图逐像素完全一致——主体的位置、大小、比例、朝向、姿态、轮廓、颜色、纹理、细节、光照、构图与画幅都不得有任何变化；不要重绘主体，不要移动，不要缩放，不要裁切，不要加边框。",
-        )
-      : I18n.t(
-          "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯黑 #000000：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节；本通道必须与第 1 通道完全对齐。",
-        ),
+    I18n.t(
+      "【透明背景 · 双通道差分抠图｜第 2 通道：纯白背景】请把参考图的背景整体替换为完全均匀的纯白 #FFFFFF：无渐变、无纹理、无光晕、无投影。参考图是本次任务的唯一基准，除背景颜色以外，画面的一切内容必须与它逐像素完全一致——主体的位置、大小、比例、朝向、姿态、轮廓、颜色、纹理、细节、光照、构图与画幅都不得有任何变化；不要重绘主体，不要移动，不要缩放，不要裁切，不要加边框。",
+    ),
   );
+}
+/* 生图服务商里能「把第 1 通道原图发给模型」的通路：
+   image_openai → /images/edits 的 multipart image[]；image_stability → core 的 image 字段。
+   其余（image_mj 等自定义接口，请求体里只有 prompt）收不到任何图，无法严格锚定第 2 通道。 */
+function matteAnchorSupport(provider) {
+  const t = (provider && provider.type) || "";
+  return t === "image_openai" || t === "image_stability";
 }
 function withBgRmPrompt(node, prompt) {
   return String(prompt || "") + bgRmPromptSuffix(node);
 }
-/* 由第 1 通道请求规格派生第 2 通道请求：剥掉白底注入段，换上黑底注入段 */
-function bgRmSecondPrompt(node, prompt, anchor) {
-  return stripMatteBlocks(prompt) + bgRmSecondSuffix(node, anchor);
+/* 由第 1 通道请求规格派生第 2 通道请求：剥掉黑底注入段，换上白底注入段 */
+function bgRmSecondPrompt(node, prompt) {
+  return stripMatteBlocks(prompt) + bgRmSecondSuffix(node);
 }
 function loadImageFromUrl(url) {
   return new Promise((resolve, reject) => {
@@ -20005,7 +20393,55 @@ async function readImageRGBA(path) {
   ctx.drawImage(img, 0, 0, w, h);
   return { img, c, ctx, id: ctx.getImageData(0, 0, w, h), w, h };
 }
-/* 前景包围盒：与背景色（纯白 / 纯黑）足够不同的像素才算主体 */
+/* 前景包围盒：与「实测背景色」足够不同的像素才算主体 */
+const MATTE_BBOX_THR = 40;
+/* 两通道前景色分歧超过这个电平（0-255），就认定该像素两次生成没对上，只认基准那一张 */
+const MATTE_COLOR_DISAGREE = 40;
+/* 半透明像素离实心主体的最大容忍距离（切比雪夫像素数）；再远就是重影，直接归零。
+   实际阈值 = 该值 + 2 × 羽化半径（羽化会把边缘往外抹开一圈） */
+const MATTE_PRUNE_GROW = 3;
+/* 一条通道里「中位数背景色」怎么量出来的：
+   生图提示词硬性要求主体四周留一圈空白边距，所以四边那一圈几乎必然是背景。
+   取中位数而不是均值：个别边的噪点 / 投影拽不动它。 */
+function matteMedian8(vals) {
+  if (!vals || !vals.length) return 0;
+  vals.sort((x, y) => x - y);
+  return vals[vals.length >> 1];
+}
+function matteBorderMedian(id, w, h) {
+  if (!id || !id.data || !(w > 0) || !(h > 0)) return null;
+  const d = id.data;
+  const t = Math.max(1, Math.min(8, Math.round(Math.min(w, h) * 0.02)));
+  const rs = [], gs = [], bs = [];
+  for (let y = 0; y < h; y++) {
+    const rowEdge = y < t || y >= h - t;
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      if (!rowEdge && x >= t && x < w - t) continue;
+      const i = (row + x) << 2;
+      rs.push(d[i]);
+      gs.push(d[i + 1]);
+      bs.push(d[i + 2]);
+    }
+  }
+  return [matteMedian8(rs), matteMedian8(gs), matteMedian8(bs)];
+}
+/* 实测两通道的背景电平 → { w: 白底, b: 黑底, rng: 差分可用量程 }
+   测出来的东西不可信时（四边根本不是背景 / 两张背景一个色）退回理想值 255 / 0：
+   宁可沿用旧口径，也不拿一个可疑测量去把误差放大到整幅画。 */
+function matteBgLevels(aId, bId) {
+  const ideal = { w: [255, 255, 255], b: [0, 0, 0], rng: [255, 255, 255] };
+  const aw = aId && aId.width, ah = aId && aId.height;
+  const bw = (bId && bId.width) || aw, bh = (bId && bId.height) || ah;
+  const wm = matteBorderMedian(aId, aw, ah);
+  const bm = matteBorderMedian(bId, bw, bh);
+  if (!wm || !bm) return ideal;
+  const luma = (v) => (v[0] * 299 + v[1] * 587 + v[2] * 114) / 1000;
+  if (luma(wm) < 140 || luma(bm) > 115) return ideal;
+  const rng = [wm[0] - bm[0], wm[1] - bm[1], wm[2] - bm[2]];
+  if (Math.min(rng[0], rng[1], rng[2]) < 48) return ideal;
+  return { w: wm, b: bm, rng };
+}
 function matteFgBBox(id, w, h, bg, thr) {
   const d = id.data;
   let x0 = w,
@@ -20035,28 +20471,39 @@ function matteFgBBox(id, w, h, bg, thr) {
   if (n < Math.max(8, w * h * 0.0015) || bw < 4 || bh < 4) return null;
   return { x: x0, y: y0, w: bw, h: bh, n };
 }
-/* Alpha 逐通道估计：α = (255 - 白底值 + 黑底值) / 255 */
-function matteAlphaOf(ar, ag, ab, br, bg, bb) {
-  let r = (255 - ar + br) / 255;
-  let g = (255 - ag + bg) / 255;
-  let b = (255 - ab + bb) / 255;
-  r = r < 0 ? 0 : r > 1 ? 1 : r;
-  g = g < 0 ? 0 : g > 1 ? 1 : g;
-  b = b < 0 ? 0 : b > 1 ? 1 : b;
-  return (r + g + b) / 3;
+/* Alpha 逐通道估计：α = (bgRange - 白底值 + 黑底值) / bgRange，bgRange = 白底背景 - 黑底背景
+   （lv 省略即理想背景 255 / 0，退化成旧口径 α = (255 - A + B) / 255） */
+function matteAlphaOf(ar, ag, ab, br, bg, bb, lv) {
+  const r = lv && lv.rng ? lv.rng : null;
+  const r0 = r && r[0] > 0 ? r[0] : 255;
+  const r1 = r && r[1] > 0 ? r[1] : 255;
+  const r2 = r && r[2] > 0 ? r[2] : 255;
+  let r_ = (r0 - ar + br) / r0;
+  let g_ = (r1 - ag + bg) / r1;
+  let b_ = (r2 - ab + bb) / r2;
+  r_ = r_ < 0 ? 0 : r_ > 1 ? 1 : r_;
+  g_ = g_ < 0 ? 0 : g_ > 1 ? 1 : g_;
+  b_ = b_ < 0 ? 0 : b_ > 1 ? 1 : b_;
+  return (r_ + g_ + b_) / 3;
 }
-/* 对齐质量评分：过渡带上「三通道 Alpha 是否互相吻合」，越吻合说明两通道对得越准 */
-function matteShiftScore(a, b, w, h, dx, dy) {
+/* 对齐质量评分：过渡带上「三通道 Alpha 是否互相吻合」，越吻合说明两通道对得越准。
+   roi / stride 是给全分辨率精修用的：整幅 2048×1360 每档都全扫太慢，把取样框在主体附近即可。 */
+function matteShiftScore(a, b, w, h, dx, dy, lv, roi, stride) {
   let sum = 0,
     cnt = 0;
+  const st = stride > 0 ? stride : 3;
+  const rg = lv && lv.rng ? lv.rng : null;
+  const r0 = rg && rg[0] > 0 ? rg[0] : 255;
+  const r1 = rg && rg[1] > 0 ? rg[1] : 255;
+  const r2 = rg && rg[2] > 0 ? rg[2] : 255;
   /* 取 B 的 (x+dx, y+dy) 与 A 的 (x,y) 比对：源坐标必须留在画面内，否则会跨行取样 */
-  const x0 = dx < 0 ? -dx : 0;
-  const x1 = w - (dx > 0 ? dx : 0);
-  const y0 = dy < 0 ? -dy : 0;
-  const y1 = h - (dy > 0 ? dy : 0);
-  for (let y = y0; y < y1; y += 3) {
+  const x0 = Math.max(roi ? roi.x0 : 0, dx < 0 ? -dx : 0);
+  const x1 = Math.min(roi ? roi.x1 : w, w - (dx > 0 ? dx : 0));
+  const y0 = Math.max(roi ? roi.y0 : 0, dy < 0 ? -dy : 0);
+  const y1 = Math.min(roi ? roi.y1 : h, h - (dy > 0 ? dy : 0));
+  for (let y = y0; y < y1; y += st) {
     const row = y * w;
-    for (let x = x0; x < x1; x += 3) {
+    for (let x = x0; x < x1; x += st) {
       const i = (row + x) << 2;
       const j = ((y + dy) * w + (x + dx)) << 2;
       const al = matteAlphaOf(
@@ -20066,13 +20513,14 @@ function matteShiftScore(a, b, w, h, dx, dy) {
         b[j],
         b[j + 1],
         b[j + 2],
+        lv,
       );
       if (al < 0.08 || al > 0.92) continue; // 只看边缘过渡像素
-      let r = (255 - a[i] + b[j]) / 255;
-      let g = (255 - a[i + 1] + b[j + 1]) / 255;
-      let bl = (255 - a[i + 2] + b[j + 2]) / 255;
-      const mx = r > g ? (r > bl ? r : bl) : g > bl ? g : bl;
-      const mn = r < g ? (r < bl ? r : bl) : g < bl ? g : bl;
+      const p = (r0 - a[i] + b[j]) / r0;
+      const q = (r1 - a[i + 1] + b[j + 1]) / r1;
+      const s = (r2 - a[i + 2] + b[j + 2]) / r2;
+      const mx = p > q ? (p > s ? p : s) : q > s ? q : s;
+      const mn = p < q ? (p < s ? p : s) : q < s ? q : s;
       sum += mx - mn;
       cnt++;
     }
@@ -20087,60 +20535,133 @@ function downscaleRGBA(src, sw, sh, scale) {
   ctx.drawImage(src, 0, 0, w, h);
   return { id: ctx.getImageData(0, 0, w, h), w, h };
 }
-/* 把第 2 通道（黑底）对齐到第 1 通道（白底）：前景包围盒仿射 + 小范围平移搜索 */
-function alignMatteSecond(aFull, bFull, node) {
+/* 对齐两通道（a = 白底 · 第 2 通道，b = 黑底 · 第 1 通道基准）：把 b 贴到 a 上，返回与 a 同尺寸的 b。
+   三步：① 等比仿射（以基准包围盒为准，中心对齐，绝不再非等比拉伸）
+        ② 半分辨率粗搜整数偏移 ③ 全分辨率围绕粗解 ±2px 精修一档
+   差分只有两通道真重合才干净：偏 1~2px，边缘一整圈都会被算成半透明 = 描了一圈重影。 */
+function alignMatteSecond(aFull, bFull, node, lv) {
   const w = aFull.w,
     h = aFull.h;
   const sameSize = bFull.w === w && bFull.h === h;
   const { c, ctx } = makeRgbaCanvas(w, h);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  const bbA = matteFgBBox(aFull.id, w, h, [255, 255, 255], 40);
-  const bbB = matteFgBBox(bFull.id, bFull.w, bFull.h, [0, 0, 0], 40);
-  let sx = 1,
-    sy = 1,
-    tx = 0,
-    ty = 0;
+  const bbA = matteFgBBox(
+    aFull.id,
+    w,
+    h,
+    (lv && lv.w) || [255, 255, 255],
+    MATTE_BBOX_THR,
+  );
+  const bbB = matteFgBBox(
+    bFull.id,
+    bFull.w,
+    bFull.h,
+    (lv && lv.b) || [0, 0, 0],
+    MATTE_BBOX_THR,
+  );
+  let s = 1,
+    ox = 0,
+    oy = 0;
   if (!sameSize) {
-    /* 尺寸不一致（服务商按宽高比取整等）：等比铺满到第 1 通道尺寸，不再做仿射 */
-    ctx.drawImage(bFull.c, 0, 0, w, h);
-    return ctx.getImageData(0, 0, w, h);
-  }
-  if (node.bgRmAlign && bbA && bbB) {
-    /* 前景包围盒对齐：把第 2 通道的主体框映射到第 1 通道的主体框上 */
-    sx = Math.max(0.5, Math.min(2, bbA.w / bbB.w));
-    sy = Math.max(0.5, Math.min(2, bbA.h / bbB.h));
-    tx = bbA.x - bbB.x * sx;
-    ty = bbA.y - bbB.y * sy;
+    /* 出图尺寸不一致（服务商按自己的档位取整等）：只能**等比**缩进 a 的画幅并居中。
+       旧口径是 drawImage(b, 0, 0, w, h) 非等比铺满，还直接跳过一切微调 —— 主体尺度被硬拉歪，
+       又糊又错位。第 2 通道尺寸已在主进程钉死，走到这里属于兜底。 */
+    s = Math.min(w / bFull.w, h / bFull.h);
+    ox = (w - bFull.w * s) / 2;
+    oy = (h - bFull.h * s) / 2;
+  } else if (node.bgRmAlign && bbA && bbB) {
+    /* 只取一个等比系数。旧代码 sx / sy 各按两通道的包围盒独立拉伸，可「主体框」本来就不是
+       同一个东西（白底通道里主体的浅色部分被判成背景，黑底通道里深色部分被判成背景），
+       两轴独立拉伸等于把图拉歪。两框长宽比差得远说明第 2 张是重画的，缩放救不了 → 不缩放。 */
+    const rx = bbA.w / bbB.w,
+      ry = bbA.h / bbB.h;
+    s =
+      Math.abs(rx - ry) > 0.08
+        ? 1
+        : Math.max(0.9, Math.min(1.1, Math.sqrt(rx * ry)));
+    /* 包围盒**中心**对齐：左上角最容易被一圈噪点 / 地面投影拽偏 */
+    ox = bbA.x + bbA.w / 2 - s * (bbB.x + bbB.w / 2);
+    oy = bbA.y + bbA.h / 2 - s * (bbB.y + bbB.h / 2);
   }
   ctx.save();
-  ctx.setTransform(sx, 0, 0, sy, tx, ty);
+  ctx.setTransform(s, 0, 0, s, ox, oy);
   ctx.drawImage(bFull.c, 0, 0);
   ctx.restore();
   const placed = ctx.getImageData(0, 0, w, h);
   if (!node.bgRmAlign) return placed;
-  /* 平移微调：在半分辨率上找最吻合的整数偏移，再映射回全分辨率 */
+  /* ② 粗搜：半分辨率上找整数偏移（省掉数倍像素遍历） */
   const sa = downscaleRGBA(aFull.c, w, h, 0.5);
   const sb = downscaleRGBA(c, w, h, 0.5);
   const range = 6;
   let bestDx = 0,
     bestDy = 0,
-    best = matteShiftScore(sa.id.data, sb.id.data, sa.w, sa.h, 0, 0);
+    best = matteShiftScore(sa.id.data, sb.id.data, sa.w, sa.h, 0, 0, lv);
   if (!Number.isFinite(best)) return placed;
   for (let dy = -range; dy <= range; dy++) {
     for (let dx = -range; dx <= range; dx++) {
       if (!dx && !dy) continue;
-      const s = matteShiftScore(sa.id.data, sb.id.data, sa.w, sa.h, dx, dy);
-      if (s < best) {
-        best = s;
+      const sc = matteShiftScore(sa.id.data, sb.id.data, sa.w, sa.h, dx, dy, lv);
+      if (sc < best) {
+        best = sc;
         bestDx = dx;
         bestDy = dy;
       }
     }
   }
-  if (!bestDx && !bestDy) return placed;
+  /* ③ 精修：全分辨率上围绕粗解再走一档，把半分辨率步长（=2px）漏掉的奇数偏移找回来。
+     评分里的 dx 含义是「placed 相对 a 的位移」，所以落地必须画在**反方向**。
+     （旧代码写成 drawImage(c, +bestDx*2, +bestDy*2)：符号反了，等于把已经偏的图再朝反方向
+      推一倍，越对越歪 —— 当时只回归了评分、没回归落地方向，所以一直没被发现。） */
+  let fx = bestDx * 2,
+    fy = bestDy * 2;
+  /* 精修的取样范围框在主体附近（外扩一档最大位移）；两通道尺寸不一致时基准框在别人的
+     像素空间里，不能拿来当 a 空间的范围，只认 bbA */
+  const ref = bbA || (sameSize ? bbB : null);
+  const pad = range * 2 + 8;
+  const roi = ref
+    ? {
+        x0: Math.max(0, ref.x - pad),
+        y0: Math.max(0, ref.y - pad),
+        x1: Math.min(w, ref.x + ref.w + pad),
+        y1: Math.min(h, ref.y + ref.h + pad),
+      }
+    : null;
+  const area = roi ? (roi.x1 - roi.x0) * (roi.y1 - roi.y0) : w * h;
+  const stride = area > 900000 ? 3 : 2;
+  const ad = aFull.id.data,
+    pd = placed.data;
+  let fbest = matteShiftScore(ad, pd, w, h, fx, fy, lv, roi, stride);
+  if (Number.isFinite(fbest)) {
+    let bx = fx,
+      by = fy;
+    for (let ky = -2; ky <= 2; ky++) {
+      for (let kx = -2; kx <= 2; kx++) {
+        if (!kx && !ky) continue;
+        const sc = matteShiftScore(
+          ad,
+          pd,
+          w,
+          h,
+          fx + kx,
+          fy + ky,
+          lv,
+          roi,
+          stride,
+        );
+        if (sc < fbest) {
+          fbest = sc;
+          bx = fx + kx;
+          by = fy + ky;
+        }
+      }
+    }
+    fx = bx;
+    fy = by;
+  }
+  if (!fx && !fy) return placed;
   const c2 = makeRgbaCanvas(w, h);
-  c2.ctx.drawImage(c, bestDx * 2, bestDy * 2);
+  c2.ctx.drawImage(c, -fx, -fy);
   return c2.ctx.getImageData(0, 0, w, h);
 }
 /* Alpha 通道单独羽化（只糊透明度，不动颜色） */
@@ -20177,28 +20698,112 @@ function featherMatteAlpha(out, w, h, radius) {
     }
   }
 }
-/* 核心：两通道差分 → 透明 PNG 像素 */
-function differenceMattePixels(aId, bId, node) {
+/* 残余重影清理：半透明像素只允许出现在「实心主体」（α ≥ 0.5）外扩 grow 像素的范围内。
+   两次生成即便严格锚定，也总有局部对不上的地方（模型自作主张改了一小块、边缘多画了几根发丝），
+   差分会在那儿给出中间 Alpha —— 落在主体外就是一粒粒碎影、一片薄雾，离主体远就直接归零。
+   距离用切比雪夫距离变换（前向 / 后向各一遍扫描，权重全 1）算，O(N)，不做连通块标记。
+   只清「中间 Alpha」：完全实心的像素哪怕真是一颗独立飘着的图钉也不动。 */
+function mattePruneStrayAlpha(out, w, h, grow) {
+  const n = w * h;
+  const BIG = 0x7fff;
+  const dist = new Int32Array(n);
+  let nCore = 0;
+  for (let p = 0; p < n; p++) {
+    if (out[(p << 2) + 3] >= 128) {
+      dist[p] = 0;
+      nCore++;
+    } else dist[p] = BIG;
+  }
+  /* 一个实心像素都没有 = 这两张根本没有可锚定的主体。此时全清零只会输出一张空图，
+     宁可交给噪点地板处理，也不在这里把成品悄悄变没。 */
+  if (!nCore) return 0;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const p = row + x;
+      if (dist[p] === 0) continue;
+      let d = dist[p];
+      if (y > 0) {
+        if (x > 0 && dist[p - w - 1] + 1 < d) d = dist[p - w - 1] + 1;
+        if (dist[p - w] + 1 < d) d = dist[p - w] + 1;
+        if (x + 1 < w && dist[p - w + 1] + 1 < d) d = dist[p - w + 1] + 1;
+      }
+      if (x > 0 && dist[p - 1] + 1 < d) d = dist[p - 1] + 1;
+      dist[p] = d;
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    const row = y * w;
+    for (let x = w - 1; x >= 0; x--) {
+      const p = row + x;
+      if (dist[p] === 0) continue;
+      let d = dist[p];
+      if (y + 1 < h) {
+        if (x > 0 && dist[p + w - 1] + 1 < d) d = dist[p + w - 1] + 1;
+        if (dist[p + w] + 1 < d) d = dist[p + w] + 1;
+        if (x + 1 < w && dist[p + w + 1] + 1 < d) d = dist[p + w + 1] + 1;
+      }
+      if (x + 1 < w && dist[p + 1] + 1 < d) d = dist[p + 1] + 1;
+      dist[p] = d;
+    }
+  }
+  let removed = 0;
+  for (let p = 0; p < n; p++) {
+    const al = out[(p << 2) + 3];
+    if (!al || al >= 255 || dist[p] <= grow) continue;
+    out[p << 2] = 0;
+    out[(p << 2) + 1] = 0;
+    out[(p << 2) + 2] = 0;
+    out[(p << 2) + 3] = 0;
+    removed++;
+  }
+  return removed;
+}
+/* 核心：两通道差分 → 透明 PNG 像素（a = 白底 · 第 2 通道，b = 对齐后的黑底 · 第 1 通道基准）
+   lv = 实测背景电平（省略则就地量一次）。流水线顺序固定：
+   α 归一化 → 噪点地板 → 前景色（分歧处认基准）→ 清残余重影 → 羽化。
+   清理必须排在羽化之前：只有这里的几何还是准的。 */
+function differenceMattePixels(aId, bId, node, lv) {
   normalizeBgRm(node);
   const a = aId.data,
     b = bId.data;
   const out = new Uint8ClampedArray(a.length);
+  const lvv = lv || matteBgLevels(aId, bId);
+  const wBg = lvv.w,
+    bBg = lvv.b;
   const floor = (node.bgRmTol / 128) * 0.5;
   for (let i = 0; i < a.length; i += 4) {
     const ar = a[i], ag = a[i + 1], ab = a[i + 2];
     const br = b[i], bg = b[i + 1], bb = b[i + 2];
-    let al = matteAlphaOf(ar, ag, ab, br, bg, bb);
+    let al = matteAlphaOf(ar, ag, ab, br, bg, bb, lvv);
     if (floor > 0) al = al <= floor ? 0 : (al - floor) / (1 - floor);
     if (al > 0.985) al = 1;
     if (al <= 0) {
       out[i + 3] = 0;
       continue;
     }
-    /* 直出非预乘色：取白底/黑底两条估计的均值再除以 α，噪声最低 */
+    /* 两条互相独立的前景色估计（未除 α，各自 = α·F）：白底那条 wr/wg/wb、基准那条 kr/kg/kb */
+    const q = 1 - al;
+    const wr = ar - q * wBg[0],
+      wg = ag - q * wBg[1],
+      wb = ab - q * wBg[2];
+    const kr = br - q * bBg[0],
+      kg = bg - q * bBg[1],
+      kb = bb - q * bBg[2];
+    /* 前景色以第 1 通道（基准）为权威：两通道对不上的地方（第 2 张局部被重画 / 还差几个像素）
+       要是照旧取均值，等于把两张不同的图各画半张 —— 那圈半明半暗的重影就是这么来的。
+       实心区（α≥0.98）也一律只认基准，白底那张再怎么说都可能把白边拽进来。
+       只有两通道确实吻合时才取均值：两路独立估计平均，噪声最低。 */
+    const dd = Math.max(
+      Math.abs(wr - kr),
+      Math.abs(wg - kg),
+      Math.abs(wb - kb),
+    );
+    const avg = al < 0.98 && dd <= MATTE_COLOR_DISAGREE;
     const inv = 1 / al;
-    const pr = (ar - 255 * (1 - al) + br) * 0.5 * inv;
-    const pg = (ag - 255 * (1 - al) + bg) * 0.5 * inv;
-    const pb = (ab - 255 * (1 - al) + bb) * 0.5 * inv;
+    const pr = (avg ? (wr + kr) * 0.5 : kr) * inv;
+    const pg = (avg ? (wg + kg) * 0.5 : kg) * inv;
+    const pb = (avg ? (wb + kb) * 0.5 : kb) * inv;
     out[i] = pr < 0 ? 0 : pr > 255 ? 255 : pr;
     out[i + 1] = pg < 0 ? 0 : pg > 255 ? 255 : pg;
     out[i + 2] = pb < 0 ? 0 : pb > 255 ? 255 : pb;
@@ -20206,23 +20811,31 @@ function differenceMattePixels(aId, bId, node) {
   }
   const w = aId.width,
     h = aId.height;
-  featherMatteAlpha(out, w, h, Math.max(0, Math.min(4, Math.round(node.bgRmSoft / 32))));
+  const radius = Math.max(0, Math.min(4, Math.round(node.bgRmSoft / 32)));
+  mattePruneStrayAlpha(out, w, h, MATTE_PRUNE_GROW + 2 * radius);
+  featherMatteAlpha(out, w, h, radius);
   const { c, ctx } = makeRgbaCanvas(w, h);
   ctx.putImageData(new ImageData(out, w, h), 0, 0);
   return c;
 }
+/* 两通道 → 透明 PNG：whitePath = 第 2 通道（白底复刻），blackPath = 第 1 通道（纯黑基准）。
+   差分公式 α = (bgRange − 白 + 黑)/bgRange，故白底当 a、黑底当 b 传下去。 */
 async function differenceMatteAssetPath(node, whitePath, blackPath, outName) {
   const a = await readImageRGBA(whitePath);
   const b = await readImageRGBA(blackPath);
-  const aligned = alignMatteSecond(a, b, node);
-  const canvas = differenceMattePixels(a.id, aligned, node);
+  /* 背景电平只量一次，对齐评分与差分共用：两处口径必须一致，否则「对齐认为最吻合」
+     和「差分认为最干净」会互相打架 */
+  const lv = matteBgLevels(a.id, b.id);
+  const aligned = alignMatteSecond(a, b, node, lv);
+  const canvas = differenceMattePixels(a.id, aligned, node, lv);
   const b64 = canvas.toDataURL("image/png").split(",")[1];
   const res = await window.api.assetWriteBase64(S.wf.id, outName, b64, "png");
   if (!res || !res.ok || !res.path)
     throw new Error((res && res.error) || I18n.t("透明背景写入失败"));
   return res.path;
 }
-/* 记录两通道配对（白底 / 黑底 / 透明结果），改参数后可「立即重算」而不必再次消耗 Token */
+/* 记录两通道配对（黑底基准 / 白底复刻 / 透明结果），改参数后可「立即重算」而不必再次消耗 Token。
+   字段名 white / black 沿用旧存档口径：white = 第 2 通道，black = 第 1 通道基准。 */
 function rememberMattePair(node, whitePath, blackPath, outPath) {
   if (!Array.isArray(node.bgRmPairs)) node.bgRmPairs = [];
   node.bgRmPairs = node.bgRmPairs.filter(
@@ -20231,24 +20844,33 @@ function rememberMattePair(node, whitePath, blackPath, outPath) {
   node.bgRmPairs.push({ white: whitePath, black: blackPath, out: outPath });
   if (node.bgRmPairs.length > 12) node.bgRmPairs.shift();
 }
-/* 第 2 通道请求：OpenAI 兼容生图带上白底那张当参考图（edits），对齐度远高于重新文生图 */
-async function runBgRmSecondPass(node, spec, whitePath, itemTitle, attemptT) {
-  const ptype = (spec.provider && spec.provider.type) || "";
-  const anchor = ptype === "image_openai" && !!whitePath;
-  const base = Array.isArray(spec.images) ? spec.images.slice() : [];
+/* 第 2 通道请求：把第 1 通道（纯黑基准）当**唯一**参考图下发，要求逐像素复刻只换背景色。
+   用户的原参考图一律不再混进来 —— edits 同时收到两张语义冲突的图时，模型会照原参考图重画，
+   第 2 通道就跟基准对不上了。锚定不了的直接抛错（上层退回单张交付并提示），绝不另画一张。 */
+async function runBgRmSecondPass(node, spec, basePath, itemTitle, attemptT) {
+  if (!matteAnchorSupport(spec.provider))
+    throw new Error(
+      I18n.t("本服务商无法严格锚定第 2 通道（接口收不到第 1 通道原图）"),
+    );
+  if (!basePath) throw new Error(I18n.t("缺少第 1 通道基准图，无法生成第 2 通道"));
   const spec2 = Object.assign({}, spec, {
-    prompt: bgRmSecondPrompt(node, spec.prompt, anchor),
-    images: anchor ? base.concat([whitePath]) : base,
+    prompt: bgRmSecondPrompt(node, spec.prompt),
+    /* 基准图是这一趟**唯一**的图像输入（用户原参考图不再混进来） */
+    images: [basePath],
+    refImage: basePath,
+    /* 主进程口径标记（buildRequestSpec / sendMultipart）：
+       ① 这张基准图按原尺寸下发，不走 1080 参考图缩放（压小再让模型放大 = 尺度必漂）；
+       ② size 钉成基准图实际像素对应的档位，保证两通道同宽同高。 */
+    matteAnchor: true,
   });
-  if (anchor) spec2.refImage = spec2.images[0] || "";
   const rr = await window.api.apiCall(spec2);
   if (node._aborted) throw new Error(I18n.t("已手动停止"));
   if (!rr || !rr.ok)
-    throw new Error((rr && rr.error) || I18n.t("第 2 通道（纯黑背景）调用失败"));
+    throw new Error((rr && rr.error) || I18n.t("第 2 通道（纯白背景）调用失败"));
   if (!rr.base64) throw new Error(I18n.t("第 2 通道响应无图像数据"));
   const res = await window.api.assetWriteBase64(
     S.wf.id,
-    assetName(node, itemTitle, attemptT, "matteB"),
+    assetName(node, itemTitle, attemptT, "matteW"),
     rr.base64,
     rr.ext || "png",
   );
@@ -20256,42 +20878,57 @@ async function runBgRmSecondPass(node, spec, whitePath, itemTitle, attemptT) {
     throw new Error((res && res.error) || I18n.t("第 2 通道写入失败"));
   return res.path;
 }
-/* 图像生成节点出图后的收尾：透明背景开启时内部自动补第 2 通道并抠图。
-   对用户全程无感知 —— 正常输入提示词即可，失败时退回白底原图并提示原因。 */
+/* 图像生成节点出图后的收尾：① 透明背景开启时内部自动补第 2 通道并抠图；
+   ② 画幅锁定开启时按补边矩形把图裁回首参考图的比例。
+   对用户全程无感知 —— 正常输入提示词即可，任一步失败都退回上一步的图并提示原因。
+   顺序不能反：抠图必须在补边那一版画幅上做，裁回要落在最终那张图上。 */
 async function finishProcImageOutput(node, spec, path, itemTitle, attemptT) {
   if (!node || node.kind !== "proc_image" || !path) return path;
   normalizeBgRm(node);
-  if (!node.bgRmOn) return path;
-  if (node._aborted) throw new Error(I18n.t("已手动停止"));
-  const t0 = Date.now();
-  try {
-    const blackPath = await runBgRmSecondPass(node, spec, path, itemTitle, attemptT);
-    const out = await differenceMatteAssetPath(
-      node,
-      path,
-      blackPath,
-      assetName(node, itemTitle, attemptT, "alpha"),
-    );
-    rememberMattePair(node, path, blackPath, out);
-    scheduleSave(true);
-    /* 只在单张出图时提示，批量 × 多次尝试时不打扰（每条都弹一次会变成刷屏） */
-    const single = !node.batchOutputs && (typeof attemptCount !== "function" || attemptCount(node) <= 1);
-    if (single)
+  let out = path;
+  if (node.bgRmOn) {
+    if (node._aborted) throw new Error(I18n.t("已手动停止"));
+    const t0 = Date.now();
+    /* path 就是第 1 通道（纯黑基准）；锚定不了的服务商从一开始就不该花第二次 Token，
+       这里只交付基准图并说明原因（旧逻辑会退化成独立重画一张，两张必然错位 → 虚影） */
+    if (!matteAnchorSupport(spec.provider)) {
       toast(
-        I18n.t("透明背景完成（双通道差分抠图，耗时 ") +
-          Math.max(1, Math.round((Date.now() - t0) / 1000)) +
-          I18n.t(" 秒）"),
-        "ok",
+        I18n.t("透明背景已跳过：") +
+          I18n.t("本服务商无法严格锚定第 2 通道（接口收不到第 1 通道原图）") +
+          I18n.t("，本次只交付第 1 通道（纯黑背景）原图。可改用 OpenAI 兼容 / Stability 生图，或关掉透明背景。"),
+        "warn",
       );
-    return out;
-  } catch (e) {
-    if (node._aborted) throw e;
-    toast(
-      I18n.t("透明背景抠图未完成，已交付白底原图：") + (e.message || e),
-      "warn",
-    );
-    return path;
+    } else {
+      try {
+        const whitePath = await runBgRmSecondPass(node, spec, path, itemTitle, attemptT);
+        out = await differenceMatteAssetPath(
+          node,
+          whitePath,
+          path,
+          assetName(node, itemTitle, attemptT, "alpha"),
+        );
+        rememberMattePair(node, whitePath, path, out);
+        scheduleSave(true);
+        /* 只在单张出图时提示，批量 × 多次尝试时不打扰（每条都弹一次会变成刷屏） */
+        const single = !node.batchOutputs && (typeof attemptCount !== "function" || attemptCount(node) <= 1);
+        if (single)
+          toast(
+            I18n.t("透明背景完成（双通道差分抠图，耗时 ") +
+              Math.max(1, Math.round((Date.now() - t0) / 1000)) +
+              I18n.t(" 秒）"),
+            "ok",
+          );
+      } catch (e) {
+        if (node._aborted) throw e;
+        toast(
+          I18n.t("透明背景抠图未完成，已交付第 1 通道（纯黑背景）原图：") + (e.message || e),
+          "warn",
+        );
+        out = path;
+      }
+    }
   }
+  return cropRatioLockOutput(node, spec, out, itemTitle, attemptT);
 }
 async function reprocessProcImageBgRm(node) {
   if (!node || node.kind !== "proc_image") return 0;
@@ -20346,6 +20983,73 @@ async function reprocessProcImageBgRm(node) {
     toast(I18n.t("已按新参数重算 ") + done + I18n.t(" 张透明背景图像"), "ok");
   return done;
 }
+/* ══ 节点头部小按钮的 fixed 弹层：落位 / 互斥 / 跟画布走 ══════════════════
+   这些面板（抠图、画幅锁定、Agent 设定、外框色）都不再「点外部收起」（弹窗
+   persistent 是全应用原则，见 AGENTS.md「协作约定」）。代价是要自己管两件事：
+     ① 互斥 —— 同一时刻只允许一块浮层在屏上，否则点开的两块会叠在一起；
+     ② 跟随 —— 画布平移 / 缩放后面板必须跟回它的按钮，按钮没了（删节点 / 切画布 /
+        撤销换对象）就把这块没有主人的浮层收掉。
+   落位口径挂在元素上（_popSel / _popOpt），由 applyTransform → repositionNodePops 复用。 */
+function placeNodePop(el, anchorEl, opt) {
+  opt = opt || {};
+  const r = (anchorEl || document.body).getBoundingClientRect();
+  const pad = 8;
+  const w = opt.w || el.offsetWidth || 300;
+  const h = el.offsetHeight || opt.h || 320;
+  let left = r.left;
+  let top = r.bottom + 6;
+  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+  if (left < pad) left = pad;
+  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
+  el.style.left = left + "px";
+  el.style.top = top + "px";
+}
+/* 记住这块浮层属于哪个按钮（选择器 + 节点 id），供 repositionNodePops 找回锚点 */
+function nodePopAnchor(el, selector, opt, nid) {
+  el._popSel = selector || "";
+  el._popOpt = opt || {};
+  el._popNode = nid || "";
+}
+function closeNodePopById(id) {
+  if (id === "bgRmPop") closeBgRmPop();
+  else if (id === "ratioLockPop" && typeof closeRatioLockPop === "function")
+    closeRatioLockPop();
+  else if (id === "devModelPop" && typeof closeDevModelPicker === "function")
+    closeDevModelPicker();
+  else if (id === "devColorPop" && typeof closeDevColorPicker === "function")
+    closeDevColorPicker();
+}
+/* keep = "bgRm" | "ratioLock" | "devModel" | "devColor" | ""（全收） */
+function closeNodePopsExcept(keep) {
+  const pairs = [
+    ["bgRm", "bgRmPop", closeBgRmPop],
+    ["ratioLock", "ratioLockPop", closeRatioLockPop],
+    ["devModel", "devModelPop", closeDevModelPicker],
+    ["devColor", "devColorPop", closeDevColorPicker],
+  ];
+  for (const [name, id, fn] of pairs) {
+    if (name === keep) continue;
+    if (typeof fn === "function") fn();
+    else closeNodePopById(id);
+  }
+}
+function closeAllNodePops() {
+  closeNodePopsExcept("");
+}
+function repositionNodePops() {
+  for (const id of ["bgRmPop", "ratioLockPop", "devModelPop", "devColorPop"]) {
+    const el = document.getElementById(id);
+    if (!el || !el.classList || !el.classList.contains("on")) continue;
+    /* 宿主节点已不在画布上（删节点 / 撤销换对象 / 切画布）→ 收掉这块无主浮层。
+       只是暂时没挂载（嵌在展开的超级节点壳里、切到别的视图）→ 原地不动，等它回来。 */
+    if (el._popNode && typeof nodeById === "function" && !nodeById(el._popNode)) {
+      closeNodePopById(id);
+      continue;
+    }
+    const btn = el._popSel ? document.querySelector(el._popSel) : null;
+    if (btn) placeNodePop(el, btn, el._popOpt);
+  }
+}
 function closeBgRmPop() {
   S.uiBgRmNode = null;
   const el = $("#bgRmPop");
@@ -20354,18 +21058,20 @@ function closeBgRmPop() {
 /* Hover 提示：开关两态各一条，把「2 张图 / 2 倍 Token」的代价说在前面 */
 function bgRmTipOn() {
   return I18n.t(
-    "透明背景 · 双通道差分抠图：已开启\n\n开启后本节点生成的图像会自动变为透明背景（带 Alpha 的 PNG）。\n算法：第 1 次生成纯白背景，随后自动补生成一张完全一致、严格对齐的纯黑背景图，两图逐像素差分出真实 Alpha（半透明边缘也能保留）。\n\n⚠ 整个过程在内部完成，你只需正常写提示词；但每次出图实际要生成 2 张，Token 与耗时约为 2 倍，请慎用。\n\n单击 = 关闭 · 右键 = 调整抠图参数",
+    "透明背景 · 双通道差分抠图：已开启\n\n开启后本节点生成的图像会自动变为透明背景（带 Alpha 的 PNG）。\n算法：第 1 次生成纯黑背景，作为整套抠图的唯一基准；随后自动补生成一张以它为唯一参考图、严格对齐的纯白背景图，两图逐像素差分出真实 Alpha（半透明边缘也能保留）。\n\n⚠ 整个过程在内部完成，你只需正常写提示词；但每次出图实际要生成 2 张，Token 与耗时约为 2 倍，请慎用。\n⚠ 只有能把基准图当参考图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图；其余自动跳过并提示，不会退化成另画一张（两张独立生成的图必然错位，结果就是满屏虚影）。\n\n单击 = 关闭 · 右键 = 调整抠图参数",
   );
 }
 function bgRmTipOff() {
   return I18n.t(
-    "透明背景 · 双通道差分抠图：已关闭（单击开启）\n\n开启后生成的图像会变为透明背景：先出纯白背景，再自动出严格对齐的纯黑背景，两图差分抠出 Alpha。\n\n⚠ 需要生成 2 次图像，因此耗费 2 倍 Token，请慎用。\n\n右键 = 调整抠图参数",
+    "透明背景 · 双通道差分抠图：已关闭（单击开启）\n\n开启后生成的图像会变为透明背景：先出纯黑背景作为基准，再自动出以它为唯一参考图、严格对齐的纯白背景，两图差分抠出 Alpha。\n\n⚠ 需要生成 2 次图像，因此耗费 2 倍 Token，请慎用。\n⚠ 需要服务商能把基准图当参考图下发（OpenAI 兼容 / Stability 生图），否则自动跳过抠图。\n\n右键 = 调整抠图参数",
   );
 }
 /* 抠图参数面板：开关已上移到节点头部 Toggle，这里只放算法微调（右键 Toggle 打开） */
 function openBgRmPop(node, anchorEl) {
   if (!node || node.kind !== "proc_image") return;
   normalizeBgRm(node);
+  /* persistent 面板之间互斥：开这块就把别块收掉（点外部收起已整体废除） */
+  closeNodePopsExcept("bgRm");
   S.uiBgRmNode = node.id;
   let el = $("#bgRmPop");
   if (!el) {
@@ -20392,7 +21098,7 @@ function openBgRmPop(node, anchorEl) {
     "透明背景 · 双通道差分抠图",
   );
   el.querySelector('[data-f="on"]').nextElementSibling.textContent = I18n.t(
-    "启用（自动生成白底 + 黑底两张图后差分抠图，2 倍 Token）",
+    "启用（自动生成黑底基准 + 白底复刻两张图后差分抠图，2 倍 Token）",
   );
   el.querySelector('[data-f="align"]').nextElementSibling.textContent = I18n.t(
     "自动对齐修正（按前景包围盒与边缘吻合度对齐第 2 通道）",
@@ -20404,7 +21110,7 @@ function openBgRmPop(node, anchorEl) {
     "边缘羽化（只平滑 Alpha 通道，0-128）",
   );
   el.querySelector('[data-f="hint"]').textContent = I18n.t(
-    "第 1 通道注入纯白背景要求，第 2 通道自动注入完全一致的纯黑背景要求（OpenAI 兼容生图会把第 1 张当参考图下发，对齐度更高），两图按 α=(255-白+黑)/255 逐像素求出 Alpha。提示词正文由你正常书写，注入段不会显示在你的输入里。",
+    "第 1 通道（基准）注入纯黑背景要求；第 2 通道把第 1 张原图当唯一参考图下发，注入完全一致的纯白背景要求，两图按 α=(bgRange-白+黑)/bgRange 逐像素求出 Alpha —— bgRange 是两张图实际测到的背景色差（模型交的常常是 250 / 8 这种伪黑白，按理想 255 / 0 硬算就会给整幅画蒙上一层薄雾）。只有能把基准图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图，其余自动跳过并提示。提示词正文由你正常书写，注入段不会显示在你的输入里。",
   );
   el.querySelector('[data-act="apply"]').textContent = I18n.t(
     "用已存的两通道重算抠图",
@@ -20460,18 +21166,14 @@ function openBgRmPop(node, anchorEl) {
     }
   };
 
-  const r = (anchorEl || document.body).getBoundingClientRect();
   el.classList.add("on");
-  const pad = 8;
-  let left = r.left;
-  let top = r.bottom + 6;
-  const w = 300;
-  const h = el.offsetHeight || 320;
-  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
-  if (left < pad) left = pad;
-  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
-  el.style.left = left + "px";
-  el.style.top = top + "px";
+  nodePopAnchor(
+    el,
+    '.wf-node[data-nid="' + node.id + '"] .n-bgrm-btn',
+    { w: 300, h: 320 },
+    node.id,
+  );
+  placeNodePop(el, anchorEl || document.body, el._popOpt);
 }
 /* 节点头部的「透明背景」Toggle：
    关 = 灰白格图标；开 = 图标内容隐去，整颗按钮只剩一圈旋转的彩虹边缘动效 */
@@ -20497,7 +21199,7 @@ function bgRmButtonEl(node) {
     toast(
       node.bgRmOn
         ? I18n.t(
-            "透明背景已开启：每次生成会出 2 张图（白底 + 对齐的黑底），Token 与耗时约 2 倍",
+            "透明背景已开启：每次生成会出 2 张图（纯黑基准 + 严格对齐的纯白复刻），Token 与耗时约 2 倍",
           )
         : I18n.t("透明背景已关闭"),
       node.bgRmOn ? "warn" : "ok",
@@ -20511,6 +21213,544 @@ function bgRmButtonEl(node) {
       return;
     }
     openBgRmPop(node, btn);
+  };
+  return btn;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   图像生成 · 画幅锁定（与首参考图保持一致长宽比）
+   生图接口只认固定的几十档「宽x高」，参考图的实际比例多半不在其中：直接发过去
+   要么被拉伸，要么模型自作主张重构图，换完背景就对不上原图。
+   三步（对用户无感知）：
+     ① 复制首参考图，等比缩放居中贴进目标画幅，四周补边（边缘延展 / 镜像 / 纯色）；
+     ② 用补边后的副本发请求 —— 模型看到的是完整画幅，补边圈自由延展，主体不动；
+     ③ 出图后按同一矩形把补边裁掉 → 输出长宽比严格等于首参考图。
+   与「透明背景」互不干扰：注入段各用一套 ASCII 标记，双通道换色时补边段原样保留。
+   ══════════════════════════════════════════════════════════════════════ */
+/* 补边说明段：ASCII 标记包裹，中英文界面下都能精确剥离，不与抠图段互相污染 */
+const PAD_BLOCK_HEAD = "\n\n[[MTNODE-PAD-LOCK]]";
+const PAD_BLOCK_TAIL = "[[/MTNODE-PAD-LOCK]]";
+const PAD_BLOCK_RE = /\n\n\[\[MTNODE-PAD-LOCK\]\][\s\S]*?\[\[\/MTNODE-PAD-LOCK\]\]/g;
+function stripPadBlocks(prompt) {
+  return String(prompt || "").replace(PAD_BLOCK_RE, "");
+}
+function padLockBlock(text) {
+  return PAD_BLOCK_HEAD + "\n" + text + "\n" + PAD_BLOCK_TAIL;
+}
+/* 画幅锁定参数归一：mode auto=自动挑最贴近参考图的档位（补边最少），
+   size=尊重节点「尺寸」里选的长宽比；padFill=补边怎么填；exact=出图缩放回原像素尺寸 */
+function normalizeRatioLock(node) {
+  if (!node || node.kind !== "proc_image") return;
+  if (node.ratioLockOn == null) node.ratioLockOn = false;
+  if (node.ratioLockMode !== "size") node.ratioLockMode = "auto";
+  if (
+    ["edge", "mirror", "white", "black", "custom"].indexOf(node.ratioPadFill) < 0
+  )
+    node.ratioPadFill = "edge";
+  if (!parseHexColor(node.ratioPadColor)) node.ratioPadColor = "#FFFFFF";
+  else
+    node.ratioPadColor =
+      "#" + node.ratioPadColor.trim().replace(/^#/, "").toUpperCase();
+  if (node.ratioLockExact == null) node.ratioLockExact = false;
+}
+function ratioPadColorOf(node) {
+  normalizeRatioLock(node);
+  const c = parseHexColor(node.ratioPadColor) || { r: 255, g: 255, b: 255 };
+  return (
+    "rgb(" +
+    (c.r < 0 ? 0 : c.r > 255 ? 255 : c.r) +
+    "," +
+    (c.g < 0 ? 0 : c.g > 255 ? 255 : c.g) +
+    "," +
+    (c.b < 0 ? 0 : c.b > 255 ? 255 : c.b) +
+    ")"
+  );
+}
+/* "2048x1360" / "2048×1360" → {w,h}；auto 与非法值 → null */
+function parseSizeWH(s) {
+  const m = String(s || "")
+    .trim()
+    .match(/^(\d+)\s*[x×]\s*(\d+)$/i);
+  if (!m) return null;
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  return w > 0 && h > 0 ? { w: w, h: h } : null;
+}
+/* 目标画幅选档：size 档 = 用节点所选尺寸（选了 auto 则退回自动贴合）；
+   auto 档 = 在 IMAGE_SIZES 里挑长宽比最接近参考图的那一档（对数距离，横竖同权），
+   同样接近时取面积大的（补边不变、有效像素更多） */
+function pickRatioGenSize(refW, refH, mode, chosen) {
+  if (!(refW > 0 && refH > 0)) return null;
+  const fixed = parseSizeWH(chosen);
+  if (mode === "size" && fixed)
+    return { size: String(chosen).trim(), w: fixed.w, h: fixed.h, drift: 0 };
+  const R = refW / refH;
+  let best = null;
+  for (const s of IMAGE_SIZES) {
+    const d = parseSizeWH(s);
+    if (!d) continue;
+    const drift = Math.abs(Math.log(d.w / d.h / R));
+    if (
+      !best ||
+      drift < best.drift - 1e-9 ||
+      (Math.abs(drift - best.drift) <= 1e-9 && d.w * d.h > best.w * best.h)
+    )
+      best = { size: s, w: d.w, h: d.h, drift: drift };
+  }
+  return best;
+}
+/* ① 补边几何：参考图等比「装进」目标画幅（contain）后居中，得到不被裁的内框矩形。
+   已经铺满（同比例）→ null，调用方据此跳过补边与裁剪，不产生多余文件 */
+function ratioPadRect(refW, refH, genW, genH) {
+  if (!(refW > 0 && refH > 0 && genW > 0 && genH > 0)) return null;
+  const scale = Math.min(genW / refW, genH / refH);
+  const w = Math.floor(refW * scale);
+  const h = Math.floor(refH * scale);
+  if (w < 1 || h < 1 || w > genW || h > genH) return null;
+  if (w === genW && h === genH) return null;
+  return {
+    refW: refW,
+    refH: refH,
+    genW: genW,
+    genH: genH,
+    x: Math.round((genW - w) / 2),
+    y: Math.round((genH - h) / 2),
+    w: w,
+    h: h,
+  };
+}
+/* ③ 裁回几何：把内框按比例映射到**实际出图**尺寸（服务商可能按自己的规则取整，
+   所以只按相对位置映射，不假设出图就等于请求尺寸），再在里面取
+   「长宽比 = 参考图比例」的最大整数矩形并居中 —— 输出的比例误差只剩地板取整的亚像素级 */
+function ratioCropRect(plan, outW, outH) {
+  if (!plan || !(outW > 0 && outH > 0)) return null;
+  const R = plan.refW / plan.refH;
+  if (!(R > 0) || !isFinite(R)) return null;
+  const sx = outW / plan.genW;
+  const sy = outH / plan.genH;
+  const x0 = Math.ceil(plan.x * sx);
+  const y0 = Math.ceil(plan.y * sy);
+  const x1 = Math.floor((plan.x + plan.w) * sx);
+  const y1 = Math.floor((plan.y + plan.h) * sy);
+  const availW = x1 - x0;
+  const availH = y1 - y0;
+  if (availW < 1 || availH < 1) return null;
+  let w, h;
+  if (availW / availH > R) {
+    h = availH;
+    w = Math.floor(h * R);
+    if (w > availW) {
+      w = availW;
+      h = Math.floor(w / R);
+    }
+  } else {
+    w = availW;
+    h = Math.floor(w / R);
+    if (h > availH) {
+      h = availH;
+      w = Math.floor(h * R);
+    }
+  }
+  if (w < 1 || h < 1) return null;
+  return {
+    x: x0 + Math.round((availW - w) / 2),
+    y: y0 + Math.round((availH - h) / 2),
+    w: w,
+    h: h,
+    skip: availW === outW && availH === outH && w === outW && h === outH,
+  };
+}
+/* 给模型看的补边说明：只有真补了边才注入，且明确「四周是可延展的缓冲区」 */
+function ratioPadPrompt(node, plan) {
+  normalizeRatioLock(node);
+  if (!plan) return "";
+  return padLockBlock(
+    I18n.t(
+      "【画幅锁定 · 补边生成】第 1 张参考图已被复制并补边到 {genW}×{genH} 画幅：真实内容只在居中矩形 x={x} y={y} 宽 {w} 高 {h} 之内，四周那一圈是程序补出来的填充区，不属于原图。请把填充区当作可自由延展的缓冲区，用与画面一致的风格、透视与光照自然填满，不要在里面留下边框、色带、渐变条、水印或第二个主体。除填充区外，主体的位置、大小、比例与构图必须与参考图保持一致：不得移动、缩放、裁切或重绘主体。出图后程序会按上面这个矩形自动裁回，最终长宽比为 {refW}:{refH}（与首参考图完全一致），所以主体不得超出或贴住该矩形的边缘。",
+      {
+        genW: plan.genW,
+        genH: plan.genH,
+        x: plan.x,
+        y: plan.y,
+        w: plan.w,
+        h: plan.h,
+        refW: plan.refW,
+        refH: plan.refH,
+      },
+    ),
+  );
+}
+/* 补边填充色：white/black/custom 是纯色档，edge/mirror 的兜底色用黑 */
+function ratioPadFillColor(fill, node) {
+  if (fill === "white") return "#FFFFFF";
+  if (fill === "black") return "#000000";
+  if (fill === "custom") return ratioPadColorOf(node);
+  return "#000000";
+}
+/* 补边填充：
+   纯色档 → 整幅铺纯色后清晰画内框，四周就是干净的色带（不再叠拉伸底）；
+   edge / mirror → 先整幅拉伸铺一层兜底（保证四角不留空洞），再用延展 /
+   镜像覆盖四条边，最后清晰画出内框。 */
+function paintPaddedRef(ctx, src, plan, fill, color) {
+  const W = plan.genW;
+  const H = plan.genH;
+  const solid =
+    fill === "white" || fill === "black" || fill === "custom";
+  ctx.save();
+  ctx.fillStyle = color || "#000000";
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  if (!solid) {
+    ctx.drawImage(src.c, 0, 0, src.w, src.h, 0, 0, W, H);
+    if (fill === "mirror") paintPadMirror(ctx, src, plan);
+    else paintPadEdge(ctx, src, plan);
+  }
+  ctx.drawImage(src.c, 0, 0, src.w, src.h, plan.x, plan.y, plan.w, plan.h);
+}
+/* 边缘延展：把最外一圈像素沿四个方向拉出去填充满填充区（生图模型最不容易读出错） */
+function paintPadEdge(ctx, src, plan) {
+  const sw = src.w;
+  const sh = src.h;
+  const W = plan.genW;
+  const H = plan.genH;
+  if (plan.x > 0)
+    ctx.drawImage(src.c, 0, 0, 1, sh, 0, plan.y, plan.x, plan.h);
+  const rw = W - plan.x - plan.w;
+  if (rw > 0)
+    ctx.drawImage(src.c, sw - 1, 0, 1, sh, plan.x + plan.w, plan.y, rw, plan.h);
+  if (plan.y > 0)
+    ctx.drawImage(src.c, 0, 0, sw, 1, plan.x, 0, plan.w, plan.y);
+  const bh = H - plan.y - plan.h;
+  if (bh > 0)
+    ctx.drawImage(src.c, 0, sh - 1, sw, 1, plan.x, plan.y + plan.h, plan.w, bh);
+}
+/* 镜像延展：四周贴一圈翻转副本，纹理 / 渐变类参考图接缝更自然 */
+function paintPadMirror(ctx, src, plan) {
+  const W = plan.genW;
+  const H = plan.genH;
+  const cx = plan.x + plan.w / 2;
+  const cy = plan.y + plan.h / 2;
+  const kx = Math.ceil(Math.max(plan.x, W - plan.x - plan.w) / plan.w);
+  const ky = Math.ceil(Math.max(plan.y, H - plan.y - plan.h) / plan.h);
+  for (let i = -kx; i <= kx; i++) {
+    for (let j = -ky; j <= ky; j++) {
+      if (!i && !j) continue;
+      ctx.save();
+      ctx.translate(cx + i * plan.w, cy + j * plan.h);
+      ctx.scale(i % 2 === 0 ? 1 : -1, j % 2 === 0 ? 1 : -1);
+      ctx.drawImage(src.c, 0, 0, src.w, src.h, -plan.w / 2, -plan.h / 2, plan.w, plan.h);
+      ctx.restore();
+    }
+  }
+}
+/* ① 落盘补边副本（原图只读不改；命名走 assetName，与抠图中间图同一套路） */
+async function writePaddedRefAsset(node, refPath, plan, outName) {
+  const src = await readImageRGBA(refPath);
+  const { c, ctx } = makeRgbaCanvas(plan.genW, plan.genH);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  normalizeRatioLock(node);
+  const fill = node.ratioPadFill;
+  paintPaddedRef(
+    ctx,
+    src,
+    plan,
+    fill,
+    ratioPadFillColor(fill, node),
+  );
+  const b64 = c.toDataURL("image/png").split(",")[1];
+  const res = await window.api.assetWriteBase64(S.wf.id, outName, b64, "png");
+  if (!res || !res.ok || !res.path)
+    throw new Error((res && res.error) || I18n.t("补边参考图写入失败"));
+  return res.path;
+}
+/* 运行前置：把首参考图换成补边副本，并把实际请求尺寸钉到目标画幅。
+   opts.write=false 用于「请求预览」：只算几何、改尺寸与注入段，不落盘不传副本。
+   计划挂在 spec._ratioLock 上（只活在本次运行内，不进画布存档），出图后据此裁回。 */
+async function applyRatioLockToSpec(node, spec, opts) {
+  opts = opts || {};
+  if (!node || node.kind !== "proc_image" || !spec) return null;
+  normalizeRatioLock(node);
+  if (!node.ratioLockOn) return null;
+  const list = Array.isArray(spec.images) ? spec.images : [];
+  const raw = String(list[0] || "").trim();
+  if (!raw) {
+    if (opts.notify)
+      toast(I18n.t("画幅锁定需要至少一张参考图：本次按原设置生成"), "warn");
+    return null;
+  }
+  const refPath = /^file:\/\//i.test(raw) ? fileUrlToPath(raw) : raw;
+  let src;
+  try {
+    src = await readImageRGBA(refPath);
+  } catch (e) {
+    if (opts.notify)
+      toast(
+        I18n.t("画幅锁定跳过：读不到首参考图（") + (e.message || e) + I18n.t("）"),
+        "warn",
+      );
+    return null;
+  }
+  const pick = pickRatioGenSize(
+    src.w,
+    src.h,
+    node.ratioLockMode,
+    spec.size || node.size,
+  );
+  if (!pick) return null;
+  const plan = ratioPadRect(src.w, src.h, pick.w, pick.h);
+  spec._ratioLock = null;
+  if (!plan) {
+    /* 参考图比例正好等于某一档画幅：不用补边，只把 auto 钉成具体档位 */
+    if (pick.size && pick.size !== spec.size) spec.size = pick.size;
+    return null;
+  }
+  spec.size = pick.size;
+  spec.prompt = stripPadBlocks(spec.prompt) + ratioPadPrompt(node, plan);
+  if (!opts.write) return plan;
+  const padded = await writePaddedRefAsset(
+    node,
+    refPath,
+    plan,
+    assetName(node, opts.itemTitle || "", opts.attemptT || 0, "pad"),
+  );
+  const imgs = list.slice();
+  imgs[0] = padded;
+  spec.images = imgs;
+  if (spec.refImage) spec.refImage = padded;
+  spec._ratioLock = plan;
+  return plan;
+}
+/* ③ 出图收尾：按补边矩形把生成图裁回参考图的长宽比。
+   失败一律退回未裁的整幅图并提示，绝不因为「裁不回去」把已经花钱出的图丢掉。 */
+async function cropRatioLockOutput(node, spec, path, itemTitle, attemptT) {
+  const plan = spec && spec._ratioLock;
+  if (!node || node.kind !== "proc_image" || !plan || !path) return path;
+  normalizeRatioLock(node);
+  let out = path;
+  let r = null;
+  try {
+    const src = await readImageRGBA(path);
+    r = ratioCropRect(plan, src.w, src.h);
+    if (!r || r.skip) return path;
+    let { c, ctx } = makeRgbaCanvas(r.w, r.h);
+    ctx.drawImage(src.c, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+    if (node.ratioLockExact && (r.w !== plan.refW || r.h !== plan.refH)) {
+      const back = makeRgbaCanvas(plan.refW, plan.refH);
+      back.ctx.imageSmoothingEnabled = true;
+      back.ctx.imageSmoothingQuality = "high";
+      back.ctx.drawImage(c, 0, 0, r.w, r.h, 0, 0, plan.refW, plan.refH);
+      c = back.c;
+      ctx = back.ctx;
+    }
+    const b64 = c.toDataURL("image/png").split(",")[1];
+    const res = await window.api.assetWriteBase64(
+      S.wf.id,
+      assetName(node, itemTitle || "", attemptT || 0, "ratio"),
+      b64,
+      "png",
+    );
+    if (!res || !res.ok || !res.path)
+      throw new Error((res && res.error) || I18n.t("裁回图像写入失败"));
+    out = res.path;
+  } catch (e) {
+    if (node._aborted) throw e;
+    toast(I18n.t("按参考图比例裁回未完成，已交付整幅原图：") + (e.message || e), "warn");
+    return path;
+  }
+  /* 只在单张出图时提示，批量 × 多次尝试时不刷屏 */
+  const single =
+    !node.batchOutputs &&
+    (typeof attemptCount !== "function" || attemptCount(node) <= 1);
+  if (single)
+    toast(
+      I18n.t("已按首参考图裁回画幅：输出 ") +
+        (node.ratioLockExact ? plan.refW + "×" + plan.refH : r.w + "×" + r.h) +
+        I18n.t("（长宽比 ") +
+        plan.refW +
+        ":" +
+        plan.refH +
+        "）",
+      "ok",
+    );
+  return out;
+}
+function ratioLockTipOn() {
+  return I18n.t(
+    "与首参考图保持一致长宽比：已开启\n\n开启后每次生成自动做三件事（你照常写提示词即可）：\n① 复制第 1 张参考图，等比缩放居中贴进目标画幅，四周补边（默认边缘延展）；\n② 用补边后的副本发请求，补边圈交给模型自然延展；\n③ 出图后按同一矩形把补边裁掉 —— 输出的长宽比与首参考图完全一致。\n\n适合换背景 / 局部重绘 / 保持原构图：主体不会被拉伸或重新构图。\n⚠ 必须连入至少一张参考图，纯文生图时无效。\n\n单击 = 关闭 · 右键 = 补边参数",
+  );
+}
+function ratioLockTipOff() {
+  return I18n.t(
+    "与首参考图保持一致长宽比：已关闭（单击开启）\n\n开启后：先把第 1 张参考图补边到目标画幅再去生图，出图后再按补边量裁回，输出长宽比 = 首参考图长宽比。\n\n适合换背景等「要和原图对得齐」的活儿。\n⚠ 需要连入参考图；不额外增加出图次数。\n\n右键 = 补边参数",
+  );
+}
+function closeRatioLockPop() {
+  S.uiRatioLockNode = null;
+  const el = $("#ratioLockPop");
+  if (el) el.classList.remove("on");
+}
+/* 补边参数面板（右键开关打开）：档位口径 / 填充方式 / 是否还原原图像素尺寸 */
+function openRatioLockPop(node, anchorEl) {
+  if (!node || node.kind !== "proc_image") return;
+  normalizeRatioLock(node);
+  /* persistent 面板之间互斥：开这块就把别块收掉（点外部收起已整体废除） */
+  closeNodePopsExcept("ratioLock");
+  S.uiRatioLockNode = node.id;
+  let el = $("#ratioLockPop");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "ratioLockPop";
+    el.className = "ratio-lock-pop";
+    el.innerHTML =
+      '<div class="bg-rm-head"><b></b><button type="button" class="mini" data-act="close">✕</button></div>' +
+      '<label class="bg-rm-row"><input type="checkbox" data-f="on"/> <span></span></label>' +
+      '<label class="bg-rm-row"><input type="checkbox" data-f="exact"/> <span></span></label>' +
+      '<label class="bg-rm-field"><span data-l="mode"></span><select data-f="mode"></select></label>' +
+      '<label class="bg-rm-field"><span data-l="fill"></span><select data-f="fill"></select></label>' +
+      '<label class="bg-rm-field" data-f="colorrow"><span data-l="color"></span>' +
+      '<input type="text" data-f="color" maxlength="7" placeholder="#FFFFFF"/></label>' +
+      '<p class="bg-rm-hint" data-f="hint"></p>';
+    document.body.appendChild(el);
+    el.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    el.querySelector('[data-act="close"]').onclick = () => closeRatioLockPop();
+  }
+  const selText = (sel, pairs) => {
+    sel.innerHTML = "";
+    for (const p of pairs) {
+      const o = document.createElement("option");
+      o.value = p[0];
+      o.textContent = p[1];
+      sel.appendChild(o);
+    }
+  };
+  el.querySelector(".bg-rm-head b").textContent = I18n.t(
+    "与首参考图保持一致长宽比 · 补边参数",
+  );
+  el.querySelector('[data-f="on"]').nextElementSibling.textContent = I18n.t(
+    "启用（补边生图 → 出图裁回，不多花一次出图）",
+  );
+  el.querySelector('[data-f="exact"]').nextElementSibling.textContent = I18n.t(
+    "输出还原为参考图的原始像素尺寸（默认保留生图分辨率，只保证长宽比一致）",
+  );
+  el.querySelector('[data-l="mode"]').textContent = I18n.t(
+    "目标画幅（补边补到哪一档）",
+  );
+  selText(el.querySelector('[data-f="mode"]'), [
+    ["auto", I18n.t("自动：挑最贴近参考图比例的档位（补边最少 · 推荐）")],
+    ["size", I18n.t("跟随节点「尺寸」所选的长宽比")],
+  ]);
+  el.querySelector('[data-l="fill"]').textContent = I18n.t("补边填充方式");
+  selText(el.querySelector('[data-f="fill"]'), [
+    ["edge", I18n.t("边缘延展（最外一圈像素拉出去，通用）")],
+    ["mirror", I18n.t("镜像翻转（纹理 / 渐变更自然）")],
+    ["white", I18n.t("纯白 #FFFFFF")],
+    ["black", I18n.t("纯黑 #000000")],
+    ["custom", I18n.t("自定义颜色")],
+  ]);
+  el.querySelector('[data-l="color"]').textContent = I18n.t(
+    "自定义补边颜色（#RRGGBB）",
+  );
+  el.querySelector('[data-f="hint"]').textContent = I18n.t(
+    "补边只发生在发给模型的那份副本上：你的参考图文件本身不会被改写。出图后程序按同一矩形裁回，因此四周的补边区不会出现在成果里 —— 提示词照常写「换背景 / 改材质」等内容即可。",
+  );
+  const onBox = el.querySelector('[data-f="on"]');
+  const exactBox = el.querySelector('[data-f="exact"]');
+  const modeSel = el.querySelector('[data-f="mode"]');
+  const fillSel = el.querySelector('[data-f="fill"]');
+  const colorIn = el.querySelector('[data-f="color"]');
+  const colorRow = el.querySelector('[data-f="colorrow"]');
+  const syncFromNode = () => {
+    normalizeRatioLock(node);
+    onBox.checked = !!node.ratioLockOn;
+    exactBox.checked = !!node.ratioLockExact;
+    modeSel.value = node.ratioLockMode;
+    fillSel.value = node.ratioPadFill;
+    colorIn.value = node.ratioPadColor;
+    colorRow.style.display = node.ratioPadFill === "custom" ? "" : "none";
+  };
+  syncFromNode();
+  onBox.onchange = () => {
+    pushHistory();
+    node.ratioLockOn = !!onBox.checked;
+    scheduleSave();
+    renderCanvas();
+    const btn = document.querySelector(
+      '.wf-node[data-nid="' + node.id + '"] .n-rl-btn',
+    );
+    openRatioLockPop(node, btn);
+  };
+  exactBox.onchange = () => {
+    pushHistory();
+    node.ratioLockExact = !!exactBox.checked;
+    scheduleSave();
+  };
+  modeSel.onchange = () => {
+    pushHistory();
+    node.ratioLockMode = modeSel.value === "size" ? "size" : "auto";
+    scheduleSave();
+  };
+  fillSel.onchange = () => {
+    pushHistory();
+    node.ratioPadFill = fillSel.value;
+    normalizeRatioLock(node);
+    scheduleSave();
+    syncFromNode();
+  };
+  colorIn.onchange = () => {
+    pushHistory();
+    node.ratioPadColor = colorIn.value;
+    normalizeRatioLock(node);
+    colorIn.value = node.ratioPadColor;
+    scheduleSave();
+  };
+  el.classList.add("on");
+  nodePopAnchor(
+    el,
+    '.wf-node[data-nid="' + node.id + '"] .n-rl-btn',
+    { w: 300, h: 340 },
+    node.id,
+  );
+  placeNodePop(el, anchorEl || document.body, el._popOpt);
+}
+/* 节点头部的「画幅锁定」Toggle：单击开关，右键开补边参数（不额外花出图次数） */
+function ratioLockButtonEl(node) {
+  normalizeRatioLock(node);
+  const on = !!node.ratioLockOn;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "n-play n-rl-btn" + (on ? " on" : "");
+  btn.setAttribute("role", "switch");
+  btn.setAttribute("aria-checked", on ? "true" : "false");
+  btn.setAttribute("aria-label", I18n.t("与首参考图保持一致长宽比"));
+  btn.dataset.on = on ? "1" : "0";
+  btn.innerHTML =
+    '<span class="n-rl-ico" aria-hidden="true"><i></i></span>';
+  btn.title = on ? ratioLockTipOn() : ratioLockTipOff();
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    closeRatioLockPop();
+    pushHistory();
+    node.ratioLockOn = !node.ratioLockOn;
+    scheduleSave(true);
+    renderCanvas();
+    toast(
+      node.ratioLockOn
+        ? I18n.t(
+            "画幅锁定已开启：发图前先补边、出图后按同一矩形裁回，输出长宽比 = 首参考图",
+          )
+        : I18n.t("画幅锁定已关闭"),
+      "ok",
+    );
+  };
+  btn.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (S.uiRatioLockNode === node.id) {
+      closeRatioLockPop();
+      return;
+    }
+    openRatioLockPop(node, btn);
   };
   return btn;
 }
@@ -23256,6 +24496,8 @@ function forgetDeletedWf(id, wf) {
   clearTimeout(S.saveTimer);
   S.saving = false;
   if (S.wfBag) delete S.wfBag[key];
+  /* 视图记忆一并丢掉：id 可能被同名新建的画布复用，别把旧位置喂给新画布 */
+  forgetWfView(key);
   /* 运行绑定栈：按 id 与对象身份双口径剔除，别把幽灵留在栈顶当写入目标 */
   if (Array.isArray(S.canvasRunStack)) {
     S.canvasRunStack = S.canvasRunStack.filter(
@@ -23340,9 +24582,87 @@ function currentVisibleWf() {
 }
 /* 用户可见的画布切换（打开 / 新建 / 导入 / 删除后重建）唯一经此赋值 */
 function setForegroundWf(wf) {
+  /* 视图交接：先把「用户正看着的那张图在哪一层、相机停在哪」按 id 存进记忆袋，
+     再换对象、再套用它自己那份记忆 —— 切 Tab 回来即回到离开时的那一块，而不是
+     站在根画布的陌生位置。capture 必须赶在赋值之前：此刻 S.superFocus / S.cam
+     还属于走掉的那一张。没有记忆的画布（本会话第一次打开 / 新建 / 导入）= 停在
+     根画布、相机不动（顺带堵掉老漏洞：新建画布不再带着上一张的 focus 变成白屏）。
+     交接只认「换的是另一张图」：事后重指前台真源（app-nodes.js 删除落点，S.wf 被
+     后台编辑临时换走后又指回来）时对象没变，不该把用户正看着的视图抖一下；
+     但赋值本身照旧要做 —— 前台真源必须落定。 */
+  const switching = S._fgWf !== wf;
+  if (switching) rememberWfView(S._fgWf);
   S._fgWf = wf;
   S.wf = wf;
+  if (switching) applyWfView(wf);
   return wf;
+}
+/* ── 画布视图记忆（切 Tab 不弹回根画布）──
+   用户眼里的「在这张画布的哪里」由三样拼成：① 任务子画布焦点（S.taskFocus + 返回栈）、
+   ② 超级节点 focus 子画布（S.superFocus + 返回栈）、③ 相机 S.cam（平移 + 缩放）。
+   过去 ①② 是全局一份、切画布时被 loadWorkflow 一句 resetTaskFocus() 清空，③ 又是
+   跨画布共享 —— 从壳里钻出来切去看别的画布，回来就站在根画布的陌生位置，得重新钻一遍。
+   返回栈原样存一份只当「由深到浅的候选层」用：恢复时仍由 setTaskFocus / setSuperFocus
+   按节点身上的 parentTaskId / parentSuperId 现算真正的祖先链，被删掉的层级一律不认。
+   只存内存不落盘：相机随平移每帧都在变，写盘等于把平移手感变成磁盘 I/O。 */
+function rememberWfView(wf) {
+  const key = wf && wf.id != null ? String(wf.id) : "";
+  if (!key) return;
+  /* 已删画布不再记：它再也回不来，留条记忆只是给同名重建后的新画布喂旧位置 */
+  if (wfWriteBlocked(wf)) return;
+  const cam = S.cam || {};
+  S.wfViews[key] = {
+    taskFocus: S.taskFocus || "",
+    taskStack: (S.taskStack || []).slice(),
+    superFocus: S.superFocus || "",
+    superStack: (S.superStack || []).slice(),
+    cam: {
+      x: Number(cam.x) || 0,
+      y: Number(cam.y) || 0,
+      z: Number(cam.z) > 0 && isFinite(Number(cam.z)) ? Number(cam.z) : 1,
+    },
+  };
+}
+/* 焦点目标可能已被会话 / 用户删掉或搬走（壳没了、任务被删）：按记录的栈由深到浅
+   退到第一个还在这张画布里、kind 也对的层。宁可一层层退，也不把不存在的 id 当 focus
+   —— 那会让 visibleWfNodes() 整个空掉，用户看到的是白屏，比回根画布糟得多。 */
+function aliveWfFocus(wf, stack, deep, kind) {
+  /* 记录的栈是「浅 → 深」，候选顺序要反过来：先试最深那一层，退不动了才一层层向上 */
+  const ids = [deep].concat((stack || []).slice().reverse());
+  const seen = new Set();
+  for (const id of ids) {
+    const k = String(id || "");
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    const n = nodeByIdIn(k, wf);
+    if (n && n.kind === kind) return k;
+  }
+  return "";
+}
+/* 把这张画布自己的那份记忆套回全局视图。交接只认 setForegroundWf 这一个入口，
+   所以「没有记忆」也必须有落点：停在根画布、相机沿用现值（与原行为逐字一致，
+   不额外居中 —— 切一下 Tab 画面自己跳走，是会被当成第二个 bug 的）。 */
+function applyWfView(wf) {
+  const key = wf && wf.id != null ? String(wf.id) : "";
+  const v = key ? S.wfViews[key] : null;
+  /* 两个 setter 各自负责重建自己的返回栈（按 parentTaskId / parentSuperId 现算祖先链）
+     并收掉选择集；render:false 把重绘留给调用方紧接着的那一次 renderAll。 */
+  setTaskFocus(v ? aliveWfFocus(wf, v.taskStack, v.taskFocus, "task") : "", {
+    render: false,
+  });
+  setSuperFocus(v ? aliveWfFocus(wf, v.superStack, v.superFocus, "super") : "", {
+    render: false,
+  });
+  if (v && v.cam) {
+    S.cam.x = v.cam.x;
+    S.cam.y = v.cam.y;
+    S.cam.z = v.cam.z;
+  }
+}
+/* 画布删除：连带丢掉它的视图记忆（id 可能被同名画布复用） */
+function forgetWfView(id) {
+  const key = String(id == null ? "" : id);
+  if (key && S.wfViews) delete S.wfViews[key];
 }
 /* 是否正有画布写入在飞（前台或后台换画布）：>0 期间 S.wf 未必是用户看到的画布 */
 function bgCanvasWriteActive() {
@@ -23864,6 +25184,7 @@ function migrateWf(wf) {
     }
     if (n.kind === "proc_image") {
       normalizeBgRm(n);
+      normalizeRatioLock(n);
     }
     /* 函数 / 工具节点（含 super + tool:true 变体）：旧画布加载归一 */
     if (typeof ensureFnToolNodeState === "function") ensureFnToolNodeState(n);
@@ -24179,7 +25500,7 @@ async function ensureWorkflow() {
   /* 切画布前先收掉设置窗：skipSave —— 这张画布即将 flush / 或已不属于前台，
      再 persist 一次可能把刚删掉的画布写回磁盘。 */
   closeNodeSettingsDialog({ silentRerender: true, skipSave: true });
-  closeBgRmPop();
+  closeAllNodePops();
   clearHistory();
   const list = await window.api.wfList();
   let id = S.config.activeWorkflowId;
@@ -24195,9 +25516,10 @@ async function ensureWorkflow() {
     S.wf = r.ok ? r.data : { id, name: id, nodes: [], wires: [], groups: [], marks: [] };
   }
   S.wf.id = id;
-  setForegroundWf(S.wf); /* 用户可见的画布切换：登记前台真源 */
+  setForegroundWf(S.wf); /* 用户可见的画布切换：登记前台真源（焦点归零也在这里做） */
   if (migrateWf(S.wf)) scheduleSave(true); /* 视频端口迁移：立即落盘打标 */
-  resetTaskFocus();
+  /* 原先这里补了一句 resetTaskFocus()：上面那次前台切换已经把任务 / 超级节点焦点归零
+     （视图记忆只活在本次运行内，开机一定是空袋 → 交接即「回根画布」），再来一次纯属重复。 */
   rememberWf(S.wf);
   S.config.activeWorkflowId = id;
   await sanitizeWfEnvironment({ quiet: false });
@@ -24218,7 +25540,7 @@ async function loadWorkflow(id, opts) {
     rememberWf(S.wf);
     await flushCurrentWf();
   }
-  closeBgRmPop();
+  closeAllNodePops();
   clearHistory();
   let wf = null;
   /* 袋里那份能不能顶掉磁盘副本：两种情况必须复用内存对象，否则整份读盘覆盖 =
@@ -24259,9 +25581,12 @@ async function loadWorkflow(id, opts) {
       wf.groups = live.groups || wf.groups;
     }
   }
-  setForegroundWf(wf); /* 用户可见的画布切换：_fgWf 与 S.wf 同步换 */
+  setForegroundWf(wf); /* 用户可见的画布切换：_fgWf 与 S.wf 同步换（顺带把视图交接：
+                         存走掉那张的「层 + 相机」、套回这张的 —— 见 applyWfView） */
   rememberWf(wf);
-  resetTaskFocus();
+  /* 这里过去是一句 resetTaskFocus()：把任务 focus / 超级节点 focus 一把清成根画布，
+     于是「在壳里干活 → 切去看别的画布 → 切回来」每次都被打回根画布重新钻壳。
+     焦点归零与恢复现在统一由 setForegroundWf → applyWfView 按画布 id 处理。 */
   if (S._pendingVideoPortMigrateSave) {
     S._pendingVideoPortMigrateSave = false;
     scheduleSave(true); /* 视频端口迁移：立即落盘打标 */
@@ -24593,6 +25918,10 @@ async function forkAgentSession(id) {
     model: src.model || "",
     effort: src.effort || "high",
     pure: !!src.pure,
+    /* 开发绑定会话的「不读画布」标记同样继承：分支出来的会话仍要收尾改同一个节点 */
+    noCanvasRead: !!src.noCanvasRead,
+    /* 「与画布无关」是用户对着这条会话声明的，分支后仍成立 → 一并继承 */
+    canvasFree: !!src.canvasFree,
     messages: cloneMsgs(src.messages),
     planNext: !!src.planNext,
     forkedFrom: src.id,
@@ -24814,9 +26143,14 @@ function devProjectRootOf(wf) {
   if (live) S.devProjectRootAmbiguous = true;
   return roots[0];
 }
-/* 开发任务书：节点概述 + 项目根 + 上层模块 + 本次开发需求（注入会话的契约消息） */
-function devNodeContractText(node, req) {
+/* 开发任务书：节点概述 + 项目根 + 上层模块 + 本次开发需求（注入会话的契约消息）
+   opts.noCanvasRead = 无读画布档位（Gate A：「开发」绑定会话）：本轮不注册
+   mtnode_canvas_get / mtnode_app，所以契约必须自带定位锚点（本节点 id），
+   并明说「不用读图」——否则模型会照着旧口径先读整张图，既白花一次调用，
+   又会因工具不存在而反复试错。 */
+function devNodeContractText(node, req, opts) {
   const lines = [];
+  const noRead = !!(opts && opts.noCanvasRead);
   const dk = devKindOf(node) || "module";
   lines.push(
     I18n.t("【开发任务书】") +
@@ -24826,6 +26160,20 @@ function devNodeContractText(node, req) {
       I18n.t(DEV_KIND_LABEL[dk] || "模块") +
       "）",
   );
+  if (noRead) {
+    lines.push(
+      I18n.t("本节点 id：") +
+        (node.id || "") +
+        I18n.t(
+          "（收尾回写概述 / 状态 / 核心文件列表时，用 mtnode_canvas_edit 的 update 按这个 id 定位，不要为了拿 id 去读画布）",
+        ),
+    );
+    lines.push(
+      I18n.t(
+        "本会话不读取画布：mtnode_canvas_get 与 mtnode_app 本轮未注册，画布现状一律以本任务书为准；只在收尾时改本节点这一个对象。",
+      ),
+    );
+  }
   const noteParts = devNoteParts(node && node.note);
   lines.push(
     I18n.t("模块功能（面向非技术）：") +
@@ -24973,13 +26321,20 @@ function createDevSessionForNode(node, mode, req) {
     provider: (eff && eff.provider) || "deepseek-official",
     model: (eff && eff.model) || "",
     effort: (st && st.effort) || "high",
+    /* Gate A：「开发」绑定会话不读画布 —— 本轮不注册 mtnode_canvas_get / mtnode_app
+       （整张图的快照 + 两份工具定义合计约 10.0K 字符/步）。改代码靠的是项目根真实文件，
+       读图对它没有信息量；mtnode_canvas_edit 保留（收尾要回写 note / devStatus / devFiles）。
+       「细化 / 问询」要在图上建块与调研架构，照旧可读，故只在 mode === "dev" 时置位。 */
+    noCanvasRead: mode === "dev",
     messages: [],
     archived: false,
     updatedAt: Date.now(),
   };
   /* 任务书整份写入会话契约 _devContract（发送时注入系统提示，见 agentSessionSend）：
      不占用户消息位 —— 会话里只显示用户填写的关键输入（本次开发需求 / 细化范围） */
-  sess._devContract = devNodeContractText(node, req);
+  sess._devContract = devNodeContractText(node, req, {
+    noCanvasRead: sess.noCanvasRead === true,
+  });
   const reqText = String(req === undefined || req === null ? "" : req).trim();
   sess.messages.unshift({
     role: "user",

@@ -1253,6 +1253,12 @@
     "纯净": "Pure",
     "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this session no longer reads/writes files or edits the canvas; saves tokens",
     "纯净模式：开启中，点击关闭": "Pure mode: ON — click to turn off",
+    "与画布无关": "Canvas-free",
+    "与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它": "Canvas-free: this session registers no canvas or app tools (no canvas read / graph edit / app actions), saving tokens; turn it off first when you do need canvas edits",
+    "与画布无关：开启中，点击关闭（本会话不注册任何画布与应用工具）": "Canvas-free: ON — click to turn off (this session registers no canvas or app tools)",
+    "与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它": "Canvas-free: the assistant registers no canvas or app tools and no longer injects the full canvas snapshot, saving tokens; turn it off first when you do need canvas edits",
+    "与画布无关：开启中，点击关闭（助手本轮不注册任何画布与应用工具）": "Canvas-free: ON — click to turn off (the assistant registers no canvas or app tools)",
+    "本助手已声明「与画布无关」：本轮不注册任何画布工具，也不读画布，只读写文件 / 联网 / 执行命令。\n要总结或搭建工作流，请先关掉「与画布无关」。": "This assistant is declared canvas-free: no canvas tools are registered and the canvas is not read — it only reads/writes files, searches the web and runs commands.\nTurn \"Canvas-free\" off first if you want a canvas summary or a workflow built.",
     "插件:https://registry.npmmirror.com/-/v1/search?text=xxx\n技能/MCP:https://data.jsdelivr.com/v1/package/gh/用户/仓库@main": "Plugins: https://registry.npmmirror.com/-/v1/search?text=xxx\nSkills/MCP: https://data.jsdelivr.com/v1/package/gh/user/repo@main",
     "MTNode 目录：http://mt-agent.com/mtnode/ext/catalog.json": "MTNode catalog: http://mt-agent.com/mtnode/ext/catalog.json",
     "插件源返回 npm search 格式；技能源每个子目录含 SKILL.md；MCP 源子目录作为服务器(经 npx @modelcontextprotocol/server-<名> 安装)。": "Plugin sources return npm search format; each skill-source subdirectory contains SKILL.md; MCP source subdirectories are servers (installed via npx @modelcontextprotocol/server-<name>).",
@@ -1706,6 +1712,14 @@
     "在途生成": "Generation in flight",
     "节点预览": "Node preview",
     "点击查看大图": "Click to view full image",
+    /* 图像预览灯箱：默认整图适应窗口高度，滚轮缩放 / 点击放大 / 拖动平移 */
+    "缩小": "Zoom out",
+    "放大": "Zoom in",
+    "适应窗口": "Fit",
+    "整图适应窗口": "Fit the whole image to the window",
+    "原始大小": "Actual size (1:1)",
+    "滚轮缩放 · 点击放大 · 放大后可拖动平移":
+      "Wheel to zoom · click to zoom in (Shift+click out) · drag to pan once zoomed",
     "加载中…": "Loading…",
     "加载模板中…": "Loading template…",
     "已从本地缓存导入": "Imported from local cache",
@@ -2213,16 +2227,16 @@
     "透明背景": "Transparent background",
     "透明背景 · 双通道差分抠图": "Transparent bg · two-pass difference matting",
     "背景移除": "Background remove",
-    "启用（自动生成白底 + 黑底两张图后差分抠图，2 倍 Token）":
-      "Enable (auto-generate white + black passes, then difference-matte them; 2× tokens)",
+    "启用（自动生成黑底基准 + 白底复刻两张图后差分抠图，2 倍 Token）":
+      "Enable (auto-generate the pure-black baseline pass + the white replica pass, then difference-matte them; 2× tokens)",
     "自动对齐修正（按前景包围盒与边缘吻合度对齐第 2 通道）":
       "Auto alignment fix (match pass 2 to pass 1 by foreground box and edge agreement)",
     "噪点地板（越低越保留半透明，越高越敢判为全透明，0-128）":
       "Noise floor (lower keeps more semi-transparency, higher punches to fully clear, 0–128)",
     "边缘羽化（只平滑 Alpha 通道，0-128）":
       "Edge feather (smooths the alpha channel only, 0–128)",
-    "第 1 通道注入纯白背景要求，第 2 通道自动注入完全一致的纯黑背景要求（OpenAI 兼容生图会把第 1 张当参考图下发，对齐度更高），两图按 α=(255-白+黑)/255 逐像素求出 Alpha。提示词正文由你正常书写，注入段不会显示在你的输入里。":
-      "Pass 1 injects a pure-white background request; pass 2 automatically injects the identical request with a pure-black background (OpenAI-compatible image APIs also receive pass 1 as a reference for tighter alignment). Alpha is solved per pixel as α=(255−white+black)/255. Your own prompt stays untouched — the injected block is appended separately.",
+    "第 1 通道（基准）注入纯黑背景要求；第 2 通道把第 1 张原图当唯一参考图下发，注入完全一致的纯白背景要求，两图按 α=(bgRange-白+黑)/bgRange 逐像素求出 Alpha —— bgRange 是两张图实际测到的背景色差（模型交的常常是 250 / 8 这种伪黑白，按理想 255 / 0 硬算就会给整幅画蒙上一层薄雾）。只有能把基准图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图，其余自动跳过并提示。提示词正文由你正常书写，注入段不会显示在你的输入里。":
+      "Pass 1 (the baseline) injects a pure-black background request; pass 2 receives that exact image as its only reference and injects the identical request with a pure-white background. Alpha is solved per pixel as α=(bgRange−white+black)/bgRange, where bgRange is the background level actually measured on the two images (models usually deliver a fake 250/8 rather than a perfect 255/0 — hard-coding the ideal value fogs the whole picture). Only providers that can send the baseline image as a reference (OpenAI-compatible / Stability) get matted — the rest are skipped with a notice. Your own prompt stays untouched; the injected block is appended separately.",
     "用已存的两通道重算抠图": "Re-matte from the stored two passes",
     "请先开启透明背景": "Turn on transparent background first",
     "没有可复用的两通道记录：请点 ▶ 重新生成一次":
@@ -2231,28 +2245,83 @@
     "已按新参数重算 ": "Re-matted ",
     " 张透明背景图像": " transparent image(s) with the new settings",
     "透明背景写入失败": "Failed to write matted image",
-    "第 2 通道（纯黑背景）调用失败": "Pass 2 (pure black background) call failed",
+    "第 2 通道（纯白背景）调用失败": "Pass 2 (pure white background) call failed",
     "第 2 通道响应无图像数据": "Pass 2 response has no image data",
     "第 2 通道写入失败": "Failed to write pass 2 image",
+    "缺少第 1 通道基准图，无法生成第 2 通道": "Missing the pass-1 baseline image, cannot generate pass 2",
+    "本服务商无法严格锚定第 2 通道（接口收不到第 1 通道原图）":
+      "This provider cannot strictly anchor pass 2 (its API receives no image from pass 1)",
+    "透明背景已跳过：": "Transparent background skipped: ",
+    "，本次只交付第 1 通道（纯黑背景）原图。可改用 OpenAI 兼容 / Stability 生图，或关掉透明背景。":
+      " — delivering only pass 1 (pure black background) this time. Switch to an OpenAI-compatible / Stability image provider, or turn transparent background off.",
     "透明背景完成（双通道差分抠图，耗时 ": "Transparent background done (two-pass matting, ",
     " 秒）": " s)",
-    "透明背景抠图未完成，已交付白底原图：":
-      "Transparent matting incomplete; delivering the white-background image: ",
-    "透明背景已开启：每次生成会出 2 张图（白底 + 对齐的黑底），Token 与耗时约 2 倍":
-      "Transparent background on: every run now generates 2 images (white + aligned black), about 2× tokens and time",
+    "透明背景抠图未完成，已交付第 1 通道（纯黑背景）原图：":
+      "Transparent matting incomplete; delivering the pass-1 (pure black background) image: ",
+    "透明背景已开启：每次生成会出 2 张图（纯黑基准 + 严格对齐的纯白复刻），Token 与耗时约 2 倍":
+      "Transparent background on: every run now generates 2 images (pure-black baseline + strictly aligned white replica), about 2× tokens and time",
     "透明背景已关闭": "Transparent background off",
-    "透明背景（双通道差分抠图）已开启：以下是第 1 通道（纯白背景）请求。运行时会自动补发第 2 通道（完全一致、严格对齐的纯黑背景）并差分出 Alpha —— 共 2 次生成，约 2 倍 Token。\n\n":
-      "Transparent background (two-pass difference matting) is on: below is pass 1 (pure white). Running it will automatically send pass 2 (identical, strictly aligned pure black) and difference-matte the alpha — 2 generations, about 2× tokens.\n\n",
-    "【透明背景 · 双通道差分抠图｜第 1 通道：纯白背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯白 #FFFFFF：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节。":
-      "[Transparent background · two-pass difference matting | Pass 1: pure white] Paint every area outside the subject (sky, ground, shadows, environment) as perfectly uniform pure white #FFFFFF: no gradient, texture, shading, reflection, vignette or cast shadow. Keep the subject complete and crisp with clean edges, centred and stable, with empty margin on all sides and nothing touching the frame edge. Change nothing about the subject's shape, colours or detail.",
-    "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把参考图的背景整体替换为完全均匀的纯黑 #000000：无渐变、无纹理、无光晕、无投影。除背景颜色以外，画面的一切内容必须与参考图逐像素完全一致——主体的位置、大小、比例、朝向、姿态、轮廓、颜色、纹理、细节、光照、构图与画幅都不得有任何变化；不要重绘主体，不要移动，不要缩放，不要裁切，不要加边框。":
-      "[Transparent background · two-pass difference matting | Pass 2: pure black] Replace the reference image's background entirely with perfectly uniform pure black #000000: no gradient, texture, glow or cast shadow. Apart from the background colour, every pixel must match the reference exactly — subject position, size, scale, orientation, pose, silhouette, colours, texture, detail, lighting, composition and canvas bounds must not change at all. Do not repaint, move, scale, crop or add a border.",
-    "【透明背景 · 双通道差分抠图｜第 2 通道：纯黑背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯黑 #000000：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。除背景外，不要改变主体的造型、颜色与细节；本通道必须与第 1 通道完全对齐。":
-      "[Transparent background · two-pass difference matting | Pass 2: pure black] Paint every area outside the subject (sky, ground, shadows, environment) as perfectly uniform pure black #000000: no gradient, texture, shading, reflection, vignette or cast shadow. Keep the subject complete and crisp with clean edges, centred and stable, with empty margin on all sides and nothing touching the frame edge. Change nothing about the subject's shape, colours or detail; this pass must align pixel-perfectly with pass 1.",
-    "透明背景 · 双通道差分抠图：已开启\n\n开启后本节点生成的图像会自动变为透明背景（带 Alpha 的 PNG）。\n算法：第 1 次生成纯白背景，随后自动补生成一张完全一致、严格对齐的纯黑背景图，两图逐像素差分出真实 Alpha（半透明边缘也能保留）。\n\n⚠ 整个过程在内部完成，你只需正常写提示词；但每次出图实际要生成 2 张，Token 与耗时约为 2 倍，请慎用。\n\n单击 = 关闭 · 右键 = 调整抠图参数":
-      "Transparent background · two-pass difference matting: ON\n\nGenerated images automatically come out with a transparent background (PNG with alpha).\nHow: pass 1 renders on pure white, then an identical, strictly aligned pass 2 renders on pure black, and the two are differenced into real alpha per pixel (semi-transparent edges survive).\n\n⚠ This all happens internally — just write your prompt as usual; but every output costs 2 generations, so tokens and wait are roughly 2×. Use with care.\n\nClick = off · right-click = matte settings",
-    "透明背景 · 双通道差分抠图：已关闭（单击开启）\n\n开启后生成的图像会变为透明背景：先出纯白背景，再自动出严格对齐的纯黑背景，两图差分抠出 Alpha。\n\n⚠ 需要生成 2 次图像，因此耗费 2 倍 Token，请慎用。\n\n右键 = 调整抠图参数":
-      "Transparent background · two-pass difference matting: OFF (click to turn on)\n\nWhen on, output comes with a transparent background: first a pure-white pass, then a strictly aligned pure-black pass, differenced into an alpha matte.\n\n⚠ It generates the image twice, so it costs 2× tokens — use with care.\n\nRight-click = matte settings",
+    "透明背景（双通道差分抠图）已开启：以下是第 1 通道（纯黑背景 · 唯一基准）请求。运行时会把那张原图当唯一参考图，自动补发第 2 通道（严格复刻、只换纯白背景）并差分出 Alpha —— 共 2 次生成，约 2 倍 Token。\n\n":
+      "Transparent background (two-pass difference matting) is on: below is pass 1 (pure black · the sole baseline). At run time that exact image is sent as the only reference, so pass 2 (an identical replica on pure white) is auto-generated and differenced into alpha — 2 generations, about 2× tokens.\n\n",
+    "透明背景（双通道差分抠图）已开启，但本服务商无法严格锚定第 2 通道（接口收不到第 1 通道原图）：运行时将跳过抠图，只交付第 1 通道（纯黑背景）这一张，不会另画一张凑数。\n\n":
+      "Transparent background (two-pass difference matting) is on, but this provider cannot strictly anchor pass 2 (its API receives no image from pass 1): matting will be skipped at run time and only pass 1 (pure black background) is delivered — no second image will be painted from scratch.\n\n",
+    "【透明背景 · 双通道差分抠图｜第 1 通道（基准）：纯黑背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯黑 #000000：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。这一张是本次抠图的唯一基准：随后会严格复刻它、只替换背景色来求 Alpha，因此请按最终成品的标准画好主体。":
+      "[Transparent background · two-pass difference matting | Pass 1 (baseline): pure black] Paint every area outside the subject (sky, ground, shadows, environment) as perfectly uniform pure black #000000: no gradient, texture, shading, reflection, vignette or cast shadow. Keep the subject complete and crisp with clean edges, centred and stable, with empty margin on all sides and nothing touching the frame edge. This image is the sole baseline for the matte — a second pass will replicate it pixel-for-pixel and only swap the background colour, so draw the subject to final quality.",
+    "【透明背景 · 双通道差分抠图｜第 2 通道：纯白背景】请把参考图的背景整体替换为完全均匀的纯白 #FFFFFF：无渐变、无纹理、无光晕、无投影。参考图是本次任务的唯一基准，除背景颜色以外，画面的一切内容必须与它逐像素完全一致——主体的位置、大小、比例、朝向、姿态、轮廓、颜色、纹理、细节、光照、构图与画幅都不得有任何变化；不要重绘主体，不要移动，不要缩放，不要裁切，不要加边框。":
+      "[Transparent background · two-pass difference matting | Pass 2: pure white] Replace the reference image's background entirely with perfectly uniform pure white #FFFFFF: no gradient, texture, glow or cast shadow. The reference is the sole baseline for this job: apart from the background colour, every pixel must match it exactly — subject position, size, scale, orientation, pose, silhouette, colours, texture, detail, lighting, composition and canvas bounds must not change at all. Do not repaint, move, scale, crop or add a border.",
+    "透明背景 · 双通道差分抠图：已开启\n\n开启后本节点生成的图像会自动变为透明背景（带 Alpha 的 PNG）。\n算法：第 1 次生成纯黑背景，作为整套抠图的唯一基准；随后自动补生成一张以它为唯一参考图、严格对齐的纯白背景图，两图逐像素差分出真实 Alpha（半透明边缘也能保留）。\n\n⚠ 整个过程在内部完成，你只需正常写提示词；但每次出图实际要生成 2 张，Token 与耗时约为 2 倍，请慎用。\n⚠ 只有能把基准图当参考图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图；其余自动跳过并提示，不会退化成另画一张（两张独立生成的图必然错位，结果就是满屏虚影）。\n\n单击 = 关闭 · 右键 = 调整抠图参数":
+      "Transparent background · two-pass difference matting: ON\n\nGenerated images automatically come out with a transparent background (PNG with alpha).\nHow: pass 1 renders on pure black and becomes the sole baseline; pass 2 then receives exactly that image as its only reference and renders an identical, strictly aligned pure-white version, and the two are differenced into real alpha per pixel (semi-transparent edges survive).\n\n⚠ This all happens internally — just write your prompt as usual; but every output costs 2 generations, so tokens and wait are roughly 2×. Use with care.\n⚠ Only providers that can receive the baseline as a reference (OpenAI-compatible / Stability) get matted; the rest are skipped with a notice instead of falling back to a second fresh render (two independent images never line up — that is what produced the ghosting).\n\nClick = off · right-click = matte settings",
+    "透明背景 · 双通道差分抠图：已关闭（单击开启）\n\n开启后生成的图像会变为透明背景：先出纯黑背景作为基准，再自动出以它为唯一参考图、严格对齐的纯白背景，两图差分抠出 Alpha。\n\n⚠ 需要生成 2 次图像，因此耗费 2 倍 Token，请慎用。\n⚠ 需要服务商能把基准图当参考图下发（OpenAI 兼容 / Stability 生图），否则自动跳过抠图。\n\n右键 = 调整抠图参数":
+      "Transparent background · two-pass difference matting: OFF (click to turn on)\n\nWhen on, output comes with a transparent background: pass 1 renders on pure black as the baseline, then pass 2 renders a strictly aligned pure-white replica that receives exactly that baseline as its only reference, and the two are differenced into an alpha matte.\n\n⚠ It generates the image twice, so it costs 2× tokens — use with care.\n⚠ Requires a provider that can take the baseline as a reference image (OpenAI-compatible / Stability); otherwise matting is skipped.\n\nRight-click = matte settings",
+    /* ── 图像生成 · 画幅锁定（与首参考图保持一致长宽比：补边生图 → 出图裁回）── */
+    "与首参考图保持一致长宽比": "Match the first reference's aspect ratio",
+    "与首参考图保持一致长宽比 · 补边参数":
+      "Match first reference's ratio · padding settings",
+    "画幅锁定已关闭": "Aspect lock off",
+    "画幅锁定已开启：发图前先补边、出图后按同一矩形裁回，输出长宽比 = 首参考图":
+      "Aspect lock on: the reference is padded before the request and the result is cropped back to the same rectangle — output ratio = first reference",
+    "启用（补边生图 → 出图裁回，不多花一次出图）":
+      "Enable (pad → generate → crop back; no extra generation)",
+    "输出还原为参考图的原始像素尺寸（默认保留生图分辨率，只保证长宽比一致）":
+      "Resize the output back to the reference's exact pixel size (by default the generation resolution is kept and only the aspect ratio matches)",
+    "目标画幅（补边补到哪一档）": "Target canvas (which size to pad into)",
+    "自动：挑最贴近参考图比例的档位（补边最少 · 推荐）":
+      "Auto: pick the size closest to the reference's ratio (least padding · recommended)",
+    "跟随节点「尺寸」所选的长宽比": "Follow the ratio chosen in the node's Size field",
+    "补边填充方式": "Padding fill",
+    "边缘延展（最外一圈像素拉出去，通用）":
+      "Edge extend (stretch the outermost pixel row/column; general purpose)",
+    "镜像翻转（纹理 / 渐变更自然）": "Mirror (smoother for textures and gradients)",
+    "纯白 #FFFFFF": "Pure white #FFFFFF",
+    "纯黑 #000000": "Pure black #000000",
+    "自定义颜色": "Custom colour",
+    "自定义补边颜色（#RRGGBB）": "Custom padding colour (#RRGGBB)",
+    "补边只发生在发给模型的那份副本上：你的参考图文件本身不会被改写。出图后程序按同一矩形裁回，因此四周的补边区不会出现在成果里 —— 提示词照常写「换背景 / 改材质」等内容即可。":
+      "Padding only happens on the copy sent to the model — your reference file is never rewritten. The program crops the same rectangle back out of the result, so the fill never shows up in the output. Just write your normal prompt (change the background, repaint a region, …).",
+    "补边参考图写入失败": "Failed to write the padded reference image",
+    "裁回图像写入失败": "Failed to write the cropped-back image",
+    "画幅锁定需要至少一张参考图：本次按原设置生成":
+      "Aspect lock needs at least one reference image: generating with the original settings this time",
+    "画幅锁定跳过：读不到首参考图（":
+      "Aspect lock skipped: cannot read the first reference image (",
+    "按参考图比例裁回未完成，已交付整幅原图：":
+      "Crop-back to the reference ratio failed; delivering the full image: ",
+    "已按首参考图裁回画幅：输出 ": "Cropped back to the first reference's frame: output ",
+    "（长宽比 ": " (aspect ratio ",
+    "【画幅锁定 · 补边生成】第 1 张参考图已被复制并补边到 {genW}×{genH} 画幅：真实内容只在居中矩形 x={x} y={y} 宽 {w} 高 {h} 之内，四周那一圈是程序补出来的填充区，不属于原图。请把填充区当作可自由延展的缓冲区，用与画面一致的风格、透视与光照自然填满，不要在里面留下边框、色带、渐变条、水印或第二个主体。除填充区外，主体的位置、大小、比例与构图必须与参考图保持一致：不得移动、缩放、裁切或重绘主体。出图后程序会按上面这个矩形自动裁回，最终长宽比为 {refW}:{refH}（与首参考图完全一致），所以主体不得超出或贴住该矩形的边缘。":
+      "[Aspect lock · padded generation] Reference image #1 has been copied and padded into a {genW}×{genH} canvas: the real content lies only inside the centred rectangle x={x} y={y} width {w} height {h}; the ring around it is program-made fill, not part of the original. Treat that fill as a free extension buffer — continue the image's own style, perspective and lighting, and leave no border, colour band, gradient strip, watermark or second subject inside it. Apart from the fill, the subject's position, size, scale and composition must match the reference exactly: do not move, scale, crop or repaint it. After generation the program crops back to that rectangle, so the final aspect ratio is {refW}:{refH} — identical to the first reference — and the subject must not cross or touch the rectangle's edge.",
+    "与首参考图保持一致长宽比：已开启\n\n开启后每次生成自动做三件事（你照常写提示词即可）：\n① 复制第 1 张参考图，等比缩放居中贴进目标画幅，四周补边（默认边缘延展）；\n② 用补边后的副本发请求，补边圈交给模型自然延展；\n③ 出图后按同一矩形把补边裁掉 —— 输出的长宽比与首参考图完全一致。\n\n适合换背景 / 局部重绘 / 保持原构图：主体不会被拉伸或重新构图。\n⚠ 必须连入至少一张参考图，纯文生图时无效。\n\n单击 = 关闭 · 右键 = 补边参数":
+      "Match the first reference's aspect ratio: ON\n\nEvery generation then does three things automatically (just write your prompt as usual):\n① copy reference image #1, scale it to fit, centre it in the target canvas and pad the four sides (edge-extend by default);\n② send the padded copy so the model sees a complete canvas and freely extends the padding;\n③ crop the result back with the same rectangle — the output's aspect ratio matches reference #1 exactly.\n\nMade for background swaps, local repaints and keeping the original framing: the subject is never stretched or recomposed.\n⚠ Requires at least one reference image; useless for pure text-to-image.\n\nClick = off · right-click = padding settings",
+    "与首参考图保持一致长宽比：已关闭（单击开启）\n\n开启后：先把第 1 张参考图补边到目标画幅再去生图，出图后再按补边量裁回，输出长宽比 = 首参考图长宽比。\n\n适合换背景等「要和原图对得齐」的活儿。\n⚠ 需要连入参考图；不额外增加出图次数。\n\n右键 = 补边参数":
+      "Match the first reference's aspect ratio: OFF (click to turn on)\n\nWhen on: reference image #1 is padded into the target canvas before the request, and the result is cropped back by that same padding — output ratio = the first reference's ratio.\n\nHandy for background swaps and any job that has to line up with the original.\n⚠ Needs a connected reference image; costs no extra generation.\n\nRight-click = padding settings",
+    "画幅锁定（与首参考图保持一致长宽比）已开启：首参考图 ":
+      "Aspect lock (match the first reference's aspect ratio) is on: the first reference ",
+    " 会被复制并补边到 ": " will be copied and padded into a ",
+    " 画幅（主体落在居中矩形 ": " canvas (the subject lands inside the centred rectangle ",
+    "）后再发请求，出图按该矩形裁回 → 最终长宽比 = 参考图长宽比。下方 image 里列的仍是原始参考图路径，运行时会换成补边副本。\n\n":
+      ") before the request goes out, and the result is cropped back to that rectangle → final ratio = the reference's ratio. The image path listed below is still the original file; at run time the padded copy is uploaded instead.\n\n",
+    "画幅锁定（与首参考图保持一致长宽比）已开启，但本次没有可补边的首参考图（未连入图像输入）：运行时按原尺寸直接生成，不做补边与裁回。\n\n":
+      "Aspect lock (match the first reference's aspect ratio) is on, but there is no first reference to pad this time (no image input connected): the run generates at the original size, with no padding and no crop-back.\n\n",
     "无法读取图像": "Cannot read image",
     "文生图每次只生成 1 张：请改写 prompt 为单张描述；多图请用批量条目 / 多个节点 / attempts×N":
       "Image gen produces 1 image per run: rewrite the prompt for a single image; for many images use batch items / multiple nodes / attempts×N",
@@ -4778,6 +4847,14 @@
       "This round's requirements are already given in full inside the brief: execute them as stated and do not re-submit them through a second session message (duplicate input splits the context and restarts work).",
     "本会话是代码开发工作：不要调用 mtnode-dev-architect 技能（该技能仅用于在 MTNode 画布上构建开发节点架构，开发 / 细化绑定会话不需要它）。":
       "This session is code development work: do not invoke the mtnode-dev-architect skill (that skill only builds dev-node architecture on the MTNode canvas; dev / refinement bound sessions do not need it).",
+    /* ===== Gate A：开发绑定会话不读画布（本节点 id 锚点 + 无读画布口径） ===== */
+    "本节点 id：": "This node's id: ",
+    "（收尾回写概述 / 状态 / 核心文件列表时，用 mtnode_canvas_edit 的 update 按这个 id 定位，不要为了拿 id 去读画布）":
+      "(when writing back the overview / status / core-file list at the end, target this id in mtnode_canvas_edit's update — never read the canvas just to get an id)",
+    "本会话不读取画布：mtnode_canvas_get 与 mtnode_app 本轮未注册，画布现状一律以本任务书为准；只在收尾时改本节点这一个对象。":
+      "This session does not read the canvas: mtnode_canvas_get and mtnode_app are not registered this round, so canvas state always comes from this brief; touch only this one node, and only at the end.",
+    "本轮不注册读画布与应用工具（mtnode_canvas_get / mtnode_app 调用即失败）：画布现状以宿主给的契约为准，改画布只在收尾用 mtnode_canvas_edit 按节点 id 点名本节点。":
+      "The canvas-reading and app tools are not registered this round (a call to mtnode_canvas_get / mtnode_app fails outright): canvas state comes from the contract the host gave you, and any canvas edit happens only at the end, naming this node by id through mtnode_canvas_edit.",
     /* 工具节点「开发」= 绑定该工具的会话（app-tools.js toolDev* · 与函数节点同一机制，
        作用域 = 本工具节点 + 内部子图；可改 toolConfig 参数 / 描述 / 重建内部子图） */
     "工具开发会话未就绪（app-tools.js）": "Tool dev session is not ready (app-tools.js)",
@@ -5103,16 +5180,14 @@
     "＋ 图像": "＋ Image",
     "＋ 音频": "＋ Audio",
     "＋ 视频": "＋ Video",
-    "新建一条空的文本内容（库内落一个 .txt）":
-      "Create an empty text item (a .txt inside the library)",
     "从本机选图像文件复制入库（可多选）":
       "Pick image files on this machine and copy them into the library (multi-select)",
     "从本机选音频文件复制入库（可多选）":
       "Pick audio files on this machine and copy them into the library (multi-select)",
     "从本机选视频文件复制入库（可多选）":
       "Pick video files on this machine and copy them into the library (multi-select)",
-    "还没有内容：点上方「＋ 文本」建一条文本，或「＋ 图像 / 音频 / 视频」从本机选文件入库。":
-      "No content yet: press ＋ Text above to create a text item, or ＋ Image / Audio / Video to import local files.",
+    "还没有内容：点上方「＋ 文本」上传本机文本文件（或手写一条空正文），或「＋ 图像 / 音频 / 视频」从本机选文件入库。":
+      "No content yet: press ＋ Text above to upload local text files (or start an empty body), or ＋ Image / Audio / Video to import those.",
     "拖动把手调整内容顺序（端子与已连数据线随内容移位 · ▲▼ 可逐格移动）":
       "Drag the handle to reorder items (ports and their wires move with them · ▲▼ move one step)",
     "上移一条内容（端子序号一并跟着走）":
@@ -5165,6 +5240,32 @@
     "保存到素材库": "Save to library",
     "写进素材库该条目的 .txt（旧内容先进版本目录 · 可撤销）":
       "Written into this item's .txt in the library (the old one goes to the versions folder first · undoable)",
+    /* ── 文本条目也能「上传文件」：＋文本 的两条路 / 表单里的上传 / 条目行上传 ── */
+    "新建文本内容：可从本机上传文本文件（可多选），也可手写一条空的正文":
+      "New text content: upload text files from this machine (multi-select), or start an empty body and type it",
+    "上传本机文本文件…（可多选）": "Upload local text files… (multi-select)",
+    "选一个 / 多个文本文件复制进素材库，每个文件一条内容":
+      "Pick one or more text files to copy into the library — each file becomes one content item",
+    "手写一条空正文…": "Write an empty body by hand…",
+    "新建一条空白的文本内容（库内落一个 .txt），在表单里写或再上传文件":
+      "Create a blank text item (a .txt inside the library); type in the form or upload a file there",
+    "正文（可留空，用下方「上传文件…」从本机导入）":
+      "Body (can stay empty — use “Upload file…” below to import from this machine)",
+    "上传文件…": "Upload file…",
+    "上传文件": "Upload file",
+    "从本机选一个文本文件（.txt / .md / .json …）把正文读进来，不用手打":
+      "Pick a local text file (.txt / .md / .json …) and read its body in — no need to type it",
+    "选择要上传的文本文件": "Choose the text file to upload",
+    "读不到这个文件的文本内容：请改选 .txt / .md 这类纯文本文件":
+      "Could not read this file as text: please pick a plain-text file such as .txt / .md",
+    "已载入本机文本：{name}（可继续编辑，点确定才写进素材库）":
+      "Loaded local text: {name} (keep editing if you like — it reaches the library only when you confirm)",
+    "从本机选一个文本文件（.txt / .md / .json …）顶掉这条正文（旧内容进版本目录）":
+      "Pick a local text file (.txt / .md / .json …) to replace this body (the old one goes to the versions folder)",
+    "从本机选一个文本文件（.txt / .md / .json …）导入这条正文（旧内容先进版本目录，可撤销）":
+      "Pick a local text file (.txt / .md / .json …) to import into this body (the old one goes to the versions folder first · undoable)",
+    "文本文件过大（素材库的文本条目上限 16MB）":
+      "the text file is too large (the asset library caps a text item at 16 MB)",
   });
 
   /* ── 节点「设置」统一跳窗（NODE_SETTINGS_FORMS · 摘要行 · 节拍 / 网络 / 媒体参数）──

@@ -223,6 +223,12 @@ const APP_FNS = [
   "isTextSource",
   "isImageSource",
   "isRefableSource",
+  /* 引用闸门先问「是不是条目型静态源」（素材节点接进下游也可被引用）：
+     真源判定与条目快照一起抽真实实现，不在测试里另写一份 */
+  "isItemPortSource",
+  "isAssetNode",
+  "ASSET_ITEM_TYPES",
+  "assetItems",
   "normalizeTagName",
   "wfTagCatalog",
   "normalizeNodeTags",
@@ -280,7 +286,9 @@ const F = new Proxy(
   },
 );
 console.log("\n[ex] 源码抽取自检");
-const missing = APP_FNS.filter((nm) => typeof G(nm) !== "function");
+const missing = APP_FNS.filter(
+  (nm) => nm !== "ASSET_ITEM_TYPES" && typeof G(nm) !== "function",
+);
 eqArr(missing, [], "APP_FNS 全部从 app.js 抽到真实实现（无同名替身遮蔽）");
 ok(
   APP_FNS.concat(["isAutoProcKind", "buildSpec", "procSourcesOf", "procPromptForRun"]).every(

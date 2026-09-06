@@ -183,6 +183,9 @@
                    展示它要额外打 IPC（toolsList 读盘）且对用户没有决策价值；
                    工具照常随 run 下发给模型 func call（见 app-db.js → agentUserToolsSnapshot）。 -->
               <button type="button" class="agent-chip" id="agentPureTrigger" data-i18n-title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token" title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token"><span data-i18n="纯净模式">纯净模式</span></button>
+              <!-- 与画布无关（Gate B）：会话级声明，走 app-db.js 的 MTNODE_NO_CANVAS 整档闸 ——
+                   读图 / 改图 / 应用操作三件套整个不注册（每步省约 26K 字符），纯省 token 开关。 -->
+              <button type="button" class="agent-chip" id="agentCanvasFreeTrigger" data-i18n-title="与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它" title="与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它"><span data-i18n="与画布无关">与画布无关</span></button>
             </div>
             <div class="agent-composer-card">
               <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
@@ -233,6 +236,9 @@
     <div class="assist-ws-line">
       <span class="assist-ws-label" data-i18n="工作范围">工作范围</span>
       <select id="assistScopeSel" class="assist-scope-sel" data-i18n-title="限制助手可访问的画布范围" title="限制助手可访问的画布范围"></select>
+      <!-- 与画布无关（Gate B 助手侧）：开启后本轮不注册画布三件套，也不取整张画布快照
+           （app_state 只留轻量应用摘要）。开关状态高亮，口径与会话侧同名 chip 一致。 -->
+      <button type="button" id="assistCanvasFreeBtn" class="mini assist-canvasfree-btn" data-i18n="与画布无关" data-i18n-title="与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它" title="与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它">与画布无关</button>
     </div>
     <div class="assist-ws-line">
       <span class="assist-ws-label" data-i18n="工作目录">工作目录</span>

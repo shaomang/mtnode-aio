@@ -37,4 +37,8 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.1.28 — Electron 39 桌面端 
 - **扩展能力（DSH 插件 / 技能 Skills / MCP）统一在 `app-plugins.js` 的「扩展能力管理」对话框（`EXT_UI` + `#extManagerDlg`）里维护**：`app-settings.js` 只放「扩展能力」汇总小节与「管理…」入口，不要再往设置里加内联清单或表单；新增分类请扩 `EXT_KINDS`（复用卡片/详情样式，CSS 前缀 `.dsh-plugin-* / .dsh-ext-*` 在 `css/dsh.css`）。
 - 版本发布走 `scripts/` 的 stage/upload/patch-nginx 发布链，不要在别处自创发布流程。
 - 应用内手册由 `guides/manual/` 维护，节点指南在 `guides/nodes/`；新增节点类型必须补指南。
+- **对话框 / 参数面板一律 persistent（禁止「点外部 / 点蒙层自动关闭」）**：任何带输入或设置项的浮层都不得挂「点外部即关」的监听——用户点空白看一眼画布，就把改到一半的参数丢掉，是最伤的交互。适用面：`#overlay` 弹窗（节点设置窗、设置、扩展能力管理、素材库 / 素材设置 / 素材表单、模板商店二级浮层、YAML / Markdown 编辑器、手册窗）、节点头部的参数面板（`#bgRmPop` 抠图、`#ratioLockPop` 画幅锁定、`#devModelPop` Agent 设定、`#devColorPop` 外框色）、顶栏面板（如「审批与权限」`#approvalsPanel`）。关闭只允许走显式路径：窗内「取消 / 完成并关闭 / 确定」按钮、面板 ✕、Esc、以及再点一次触发它的那个开关。
+  - 去掉点外部收起后必须自己补上两件事，否则会留下叠在一起或飘在别处的浮层：**互斥**（开新面板时收掉旧面板，节点级面板统一走 `app.js` 的 `closeNodePopsExcept(keep)`）、**跟随与回收**（`nodePopAnchor(el, 锚点选择器, 尺寸, 节点 id)` 登记归属，`applyTransform → repositionNodePops()` 在平移 / 缩放后把面板贴回它的按钮——锚点这一帧没挂载（嵌在展开的壳层里）就原地不动，宿主节点已从 `S.wf` 消失（删节点 / 切画布 / 撤销换对象）才收掉；`closeAllNodePops()` 挂在切画布与撤销路径上）。
+  - **不算对话框、保留点外部即收的只有两类**：瞬时菜单（右键菜单 `#ctx`、`@` 引用与 `/` 斜杠候选、输入框下拉、素材库小右键菜单）与图片预览灯箱（`#imgLb`）——它们没有待保存的输入。新写浮层前先按「有没有未提交的输入 / 设置」归类。
+  - 回归口径由 `test/smoke-dialog-persistence.js` 钉住：扫描 `renderer/*.js`，出现「对话框宿主上的 `ev.target === host` 式关闭」「对话框开着的 `document/window` 级 outside 关闭监听」即判失败。
 - **提示词单一真源**（详见 `docs/prompt-source-of-truth.md`）：画布 / 数据库节点的**参数机制**只写在 `dsh/gateway/canvas-plugin.mjs`、`db-plugin.mjs` 的工具描述与参数表里；**完整操作规范**只写在 `mtnode-agent-skills/mtnode/*/SKILL.md`；渲染层 `app-assist.js` / `app-db.js` 的系统提示与 `gateway.mjs` 的 `PRESETS` 只留**行为纪律**（确认口径、只读范围、工作区、回执即事实），不再抄字段清单、色卡 hex、端子序号。加新规则先判归属那一层，只落一处，其它层最多一句指向。

@@ -1680,13 +1680,19 @@ const DSH_TOOLS_DROPPED_BY_NO_CANVAS = [
   "mtnode_canvas_edit",
   "mtnode_app",
 ];
+/* 开发绑定会话（Gate A）只裁「读图」这一半：mtnode_canvas_get 的整张快照与 mtnode_app
+   的画布目录对它没有信息量（改代码读的是项目根真实文件），而 mtnode_canvas_edit 必须留着
+   —— 收尾要按契约回写本节点的 note / devStatus / devFiles。合计约 10.0K 字符/步不再重发。 */
+const DSH_TOOLS_DROPPED_BY_NO_READ = ["mtnode_canvas_get", "mtnode_app"];
 
 /* 按运行要隐藏的工具名（第三个闸：随 run 参数 hideTools 下发网关 → runtime key 的
    hx: 指纹 + spawn env MTNODE_HIDE_TOOLS → 注册口不注册 / mtnode-tool-visibility 插件
-   在 agent 作用域 ctx.tools.restrict({deny}) 摘除）。判据全部来自「这一轮宿主会不会
-   直接拒绝这个调用」：
+   在 agent 作用域 ctx.tools.restrict({deny}) 摘除）。判据主要来自「这一轮宿主会不会
+   直接拒绝这个调用」，另加一条纯省 token 的（第三个点）：
    · Agent 工具许可预设里被拒到点上的类别（映射真源 app-nodes.js agentDeniedToolNames）；
-   · 本轮没接入任何数据库副本 → mtnode_db（未接入时宿主一律回「当前任务未接入数据库」）。
+   · 本轮没接入任何数据库副本 → mtnode_db（未接入时宿主一律回「当前任务未接入数据库」）；
+   · 开发绑定会话（noCanvasRead）→ 读画布两件套：宿主允许它读图，但开发改的是项目根
+     里的真实文件，整张画布快照对这个会话没有信息量（收尾只回写自己那一个节点）。
    输出排序去重：同一档每轮逐字相同，runtime key 才稳定，同档会话共享一台运行时、
    每一步前缀一致 —— 轮内改可见集是从第一个变化的 schema 起整段缓存失效，赔得更多。 */
 function dshHiddenToolsFor(o) {
@@ -1700,6 +1706,10 @@ function dshHiddenToolsFor(o) {
   }
   names = Array.from(names || []);
   if (!o.dbGrounded) names.push("mtnode_db");
+  /* 开发绑定会话（noCanvasRead）：读画布两件套点名进名单。走的是「按名字」这条通道
+     （不是 MTNODE_NO_CANVAS 整档闸），因为那闸连 mtnode_canvas_edit 一起裁 —— 收尾回写
+     就没了。若 lean / noCanvas 已经把这些名字裁掉，下面 covered 判据让它不重复出现。 */
+  if (o.noCanvasRead) for (const n of DSH_TOOLS_DROPPED_BY_NO_READ) names.push(n);
   const covered = {};
   if (o.lean) for (const n of DSH_TOOLS_DROPPED_BY_LEAN) covered[n] = 1;
   if (o.noCanvas) for (const n of DSH_TOOLS_DROPPED_BY_NO_CANVAS) covered[n] = 1;
@@ -1751,11 +1761,16 @@ function dshResumableSession(runKey) {
   return sess;
 }
 
-/* 重发判据：取消类与配置类不重发，其余（429 / RATE_LIMIT / 5xx / 网络 / 引擎掉线）都重发 */
+/* 重发判据：取消 / 终止类与配置类不重发，其余（429 / RATE_LIMIT / 5xx / 网络 / 引擎掉线）都重发 */
 function dshRunRetryable(msg) {
   const s = String(msg || "");
   if (!s.trim()) return false;
   if (typeof isCancelishError === "function" && isCancelishError(s)) return false;
+  /* 「已手动终止」「运行长时间无响应，已自动终止」这类宿主自己收尾的报文：
+     词表里的整词（已终止 / 已请求终止）都不含它们 —— 旧判据把它们当「引擎掉线」
+     重烧 5 轮，用户明明按了停止。终止 / 中止 一律判死（只在本闸内收，
+     不去动那个被界面多处复用的显示判据 isCancelishError）。 */
+  if (/终止|中止/.test(s)) return false;
   if (
     /* 范围被拒（助手「仅当前画布」/ 会话所属画布）与所属画布已删都是「重发也不会有别的
        结果」：判据串与 app-nodes.js 的 scopeBlocked、app.js 的 sessionWfDeletedError 同源。
@@ -1771,6 +1786,40 @@ function dshRunRetryable(msg) {
 /* 与 dshRunOnce 同一口径算出取消句柄键（会话 agent:<id> / 节点 node.id / 助手 assist） */
 function dshRunKeyOf(opts) {
   return String(opts.runKey || (opts.node && opts.node.id) || "default");
+}
+
+/* ── 终止戳：这一轮是不是被「判死」了（重发闸唯一的判据） ──
+   写入方 = 所有终止入口共用的 dshCancelActive（app.js / app-agent.js 两份同名实现，
+   会话 ■ / 节点 ■ / 全部终止 / 运行队列行 / 提问卡「稍后·中断」/ 看门狗静默超时都走它）；
+   消费方 = 下面 dshRunTask 的重发闸。
+   为什么必须有一枚戳、不能只看报错文案：用户按停止 → 网关关掉这一轮的运行时进程 →
+   回给宿主的多半是工程报文（"Harness runtime closed" / "runtime is not running" /
+   "transport closed" / 进程退出码），一个「取消 / 终止」字样都没有 —— 旧判据把它们
+   当「引擎掉线」，于是「按了停止反而进入 5 秒 × 5 次重发」，钱照烧、界面照动。
+   记的是**单调递增代号**而不是时间戳：不依赖时钟粒度；比较口径 = 「本轮起跑之后代号
+   有没有变过」，所以「先停止、再发新消息」的下一轮不会被上一轮的停止误判死。
+   不带 runKey 的「全部终止」盖全局 '*'：连还没占上取消句柄（正在异步起 runtime）的
+   在途轮也一并判死。静默超时的自动终止同样判死 —— 30 分钟无响应再重烧 5 轮
+   （每轮上限又是 30 分钟）不叫恢复，叫拖死界面。 */
+function dshStopMark(runKey) {
+  if (typeof S === "undefined" || !S) return 0;
+  S._runStop = S._runStop || {};
+  const seq = (Number(S._runStopSeq) || 0) + 1;
+  S._runStopSeq = seq;
+  const k = String(runKey == null ? "" : runKey).trim();
+  S._runStop[k || "*"] = seq;
+  return seq;
+}
+/* 这一轮当前的终止代号：自身键与全局 '*' 取大（'*' = 有人喊过「全部终止」） */
+function dshStopSeqOf(runKey) {
+  const m = (S && S._runStop) || {};
+  const a = Number(m[runKey]) || 0;
+  const b = Number(m["*"]) || 0;
+  return a > b ? a : b;
+}
+/* 本轮起跑（base = 起跑时读到的代号）之后是否被判过死 */
+function dshStopStamped(runKey, base) {
+  return dshStopSeqOf(runKey) > (Number(base) || 0);
 }
 
 /* 续跑不可用的原因（消费方据此给 toast 措辞；返回 null = 本轮可续跑）：
@@ -1814,18 +1863,33 @@ function dshRetryResumed(opts, msg, runKey) {
 
 /* 重发等待窗口：先占一个「本轮仍在途」的取消句柄，用户此刻按 ■ 也能立刻打断
    （dshCancelActive 删掉句柄 = 用户不要这一轮了 → 不再重发）。
-   句柄已被别的新一轮接管时同样不重发，绝不与新一轮抢同一个 runKey。 */
+   句柄已被别的新一轮接管时同样不重发，绝不与新一轮抢同一个 runKey。
+   等待不是「睡满 N 秒再醒」：旧实现只在 setTimeout 到点时看一眼，用户按了停止也要
+   把剩下的秒数等完（停止最慢 5 秒才生效）。现在每 ~100ms 醒一次，句柄一没就立刻收尾。 */
 function dshRetryWait(runKey, delayMs) {
   S._runCancels = S._runCancels || {};
   if (S._runCancels[runKey]) return Promise.resolve(false);
   const ticket = { cancelTag: runKey, workspace: "", _retryWait: true };
   S._runCancels[runKey] = ticket;
+  const total = Math.max(0, Number(delayMs) || 0);
+  const startedAt = Date.now();
   return new Promise((resolve) => {
-    setTimeout(() => {
+    const tick = () => {
       const cur = S._runCancels && S._runCancels[runKey];
-      if (cur === ticket) delete S._runCancels[runKey];
-      resolve(cur === ticket);
-    }, delayMs);
+      /* 句柄被删（用户按 ■ / 看门狗判死）或被新一轮接管 → 这一轮不再重发 */
+      if (cur !== ticket) {
+        resolve(false);
+        return;
+      }
+      const left = total - (Date.now() - startedAt);
+      if (left <= 0) {
+        delete S._runCancels[runKey];
+        resolve(true);
+        return;
+      }
+      setTimeout(tick, Math.min(100, left));
+    };
+    tick();
   });
 }
 
@@ -1834,6 +1898,9 @@ function dshRetryWait(runKey, delayMs) {
 function dshRunTask(input, opts) {
   opts = opts || {};
   const runKey = dshRunKeyOf(opts);
+  /* 起跑时读到的终止代号：重发闸拿它比对，判「这一轮是不是在跑的中途被 ■ 停掉了」。
+     真源 = dshStopMark（所有终止入口共用的 dshCancelActive 负责盖）。 */
+  const stopBase = dshStopSeqOf(runKey);
   let tries = 0;
   /* 已累计正文：包一层 onEvent 把各轮的 text 增量攒下来 —— 续跑那一轮拿它当
      seedText，所以 dshRunOnce 返回的仍是「前半 + 续写后半」的整轮完整正文 */
@@ -1888,6 +1955,16 @@ function dshRunTask(input, opts) {
       const msg = (err && err.message) || String(err || "");
       const node = opts.node;
       if (node && node._aborted) throw err;
+      /* 本轮已被判死（有人调了 dshCancelActive：■ 停止 / 全部终止 / 中断任务 /
+         看门狗静默超时）→ 立即收口，一次都不重发，也不走下面「不可续跑 → 整轮重发」
+         那条快速通道。需求口径：「停止模型或会话时，应当立即停止，而不是进入 5 次重试」。
+         终止时刻与本轮重叠时（如 429 之后已进入 5 秒窗口）多半就是这条路径 ——
+         网关把运行时关掉后回来的工程报文（"Harness runtime closed" 等）不含取消字样，
+         只有这枚戳认得它。保留原始报错当收尾文案更有信息量，但它必须先是取消类文案。 */
+      if (dshStopStamped(runKey, stopBase))
+        throw isCancelishError(msg) || /终止|中止/.test(msg)
+          ? err
+          : new Error(I18n.t("已手动终止"));
       /* 续跑点名的会话在本机不可续跑：立刻用原始 input 整轮重发，不消耗 5 次
          重发预算 —— 它只是续不上，不是又失败了一次（见上方续跑闸注释）。
          识别口径两类：网关固定的 RESUME_UNAVAILABLE 前缀（盘上无日志 / 运行时握手
@@ -1984,6 +2061,11 @@ async function dshResolveRunBoundWf(opts) {
 /* 单次运行（一次请求 = 一轮）：组装 runParams、挂取消句柄、收流式事件 */
 function dshRunOnce(input, opts) {
   opts = opts || {};
+  /* 终止代号基线：装配这一段是异步的（工作目录探测 / 分节快照 / 工具快照都要读盘），
+     期间用户完全可能已经按了 ■ —— 那一刻取消句柄还没登记，dshCancelActive 抓不到这一轮
+     （网关侧另有 wantCancelTag 兜「已发到网关」的早到取消，宿主这段空白只能自己判）。
+     所以到真要发请求之前用终止戳补判一次：被判死就一个 token 都不烧。 */
+  const stopBase = dshStopSeqOf(dshRunKeyOf(opts));
   const sup = dshSupported();
   if (!sup.ok) return Promise.reject(new Error(sup.reason));
   const d = (S.config && S.config.dsh) || {};
@@ -2038,7 +2120,6 @@ function dshRunOnce(input, opts) {
      解析不到对象才退回用户此刻看到的画布。此后工作区、工具快照、数据库接地、
      beginCanvasRun 与画布事件路由全用这一个对象 —— 用户中途切画布，本轮不漂。 */
   if (!boundWf) boundWf = currentVisibleWf() || S.wf;
-  const indexBlock = await mtnodeInternalSkillIndexBlock();
   const nodeLock = isCanvasScopedAgentNode(opts.node);
   /* 纯净模式（会话输入区「纯净模式」按钮）：整段 system prompt 置空，
      不含技能索引 / 数据库接地 / 工具策略 / 语言口味 —— 模型输入 = 纯粹的用户输入。
@@ -2046,12 +2127,32 @@ function dshRunOnce(input, opts) {
   const pureOn = !!opts.pure;
   /* 按运行裁剪可见工具集（下发网关 → spawn env → canvas-plugin 的 register()）：
      · leanOn = 设置「精简工具负载」：整个不注册 mtnode_app / mtnode_vision；
-     · noCanvasOn = 画布智能节点（nodeLock）：宿主对 get / edit / app 帧一律直接拒绝，
-       那约 25.6K 字符的画布工具定义干脆不发（每步约省 7K token），
-       mtnode_vision 仍保留（智能节点人设明确允许它识图）。
+     · noCanvasOn = 画布智能节点（nodeLock）**或**用户声明「与画布无关」（opts.noCanvas）：
+       宿主对 get / edit / app 帧一律用不上，那约 25,993 字符的画布工具定义干脆不发
+       （每步约省 7K token），mtnode_vision 仍保留（智能节点人设明确允许它识图）。
+       第二条来源：会话输入区「与画布无关」chip 与助手栏同名开关（Gate B），
+       由调用方经 opts.noCanvas 传进来（app-assist.js agentSessionSend / assistSend）。
      两者都改 runtime key 与固定前缀形状 → 一并进 runSig（见 dshRunSigOf）。 */
   const leanOn = dshLeanToolsOn() && !pureOn;
-  const noCanvasOn = nodeLock && !pureOn;
+  /* 用户声明档（与 nodeLock 区分开：nodeLock 的人设与技能索引口径本轮照旧不改） */
+  const canvasFreeOn = !!opts.noCanvas && !pureOn;
+  const noCanvasOn = (nodeLock || canvasFreeOn) && !pureOn;
+  /* 读图裁剪（只点名「读画布」两件套，不裁改图）：开发绑定会话由宿主打标 noCanvasRead（真源
+     app.js createDevSessionForNode：mode === "dev" 时置位、随会话落盘），经
+     agentSessionSend → dshRunTask 的 baseOpts 原样透到这里。它不动上面两个整档标记，
+     只往 hideTools 名单里点名 mtnode_canvas_get / mtnode_app（约 10.0K 字符/步），
+     mtnode_canvas_edit 留着 —— 收尾要按契约回写本节点的 note / devStatus / devFiles。
+     可见集变化已经由 hideTools 进 runSig 的 hide: 与网关 hx: 指纹，不必另加签名成分。
+     整档闸已生效时（canvasFreeOn）这一位无需再点名：三件套本来就不注册。 */
+  const noReadOn = !!opts.noCanvasRead && !pureOn && !canvasFreeOn;
+  /* 技能索引档位：无读画布的那几轮（Gate A 开发绑定会话、Gate B 用户声明「与画布无关」）
+     不下发画布类技能条目 —— 条目指向的操作规范本轮执行不了，留着只是白占前缀 + 诱导模型
+     去调不存在的工具。档位名真源 = app-agent.js MTNODE_SKILL_INDEX_TRIM（这里写字面量，
+     免得测试沙箱缺这个跨文件常量）。nodeLock（画布智能节点）本轮不改（它的人设另有出处，
+     行为照旧）。 */
+  const indexBlock = await mtnodeInternalSkillIndexBlock(
+    noReadOn || canvasFreeOn ? "noCanvas" : "",
+  );
   /* 数据库接地注记：非空 = 本轮真接入了数据库副本（连线进来的副本 + prompt 里的
      !@数据库标题）。先算出来，两处共用同一判据 —— 注记与 mtnode_db 的存在性必须
      同进同退，绝不允许「提示词说接了库、工具却不在」或反过来。 */
@@ -2062,6 +2163,7 @@ function dshRunOnce(input, opts) {
     dbGrounded: !!String(dbGrounding || "").trim(),
     lean: leanOn,
     noCanvas: noCanvasOn,
+    noCanvasRead: noReadOn,
   });
   /* 用户工具描述子（func call 单一真源，见 app-tools.js）：本轮绑定画布（= 会话所属画布）
      上的工具节点 + 工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
@@ -2167,7 +2269,13 @@ function dshRunOnce(input, opts) {
         },
         {
           id: PROMPT_SECTION_IDS.tool_policy,
-          text: agentToolPolicySystemNote({ nodeLock }),
+          /* 「本轮不注册读画布工具」那句只在 Gate A 单独生效时说：一旦走整档闸
+             （用户声明与画布无关 / 画布智能节点），连 mtnode_canvas_edit 都没注册，
+             那句「收尾用 edit 改本节点」就成了假指令 —— 此时改由人设说明整档口径。 */
+          text: agentToolPolicySystemNote({
+            nodeLock,
+            noCanvasRead: noReadOn && !noCanvasOn,
+          }),
         },
         {
           id: PROMPT_SECTION_IDS.node_capability,
@@ -2250,6 +2358,13 @@ function dshRunOnce(input, opts) {
      runKey 已在组装 runParams 之前定型（会话 = agent:<id> / 节点 = node.id / 助手 = assist），
      这里只读不算，一次 run 定一次归属，后续推卡片直接复用。 */
   const ixSrc = dshIxSrcOf(opts, runKey);
+  /* 起轮前的最后一道闸：装配这一大段（读盘 / 分节 / 工具快照）跑完，用户早就按过 ■ 了
+     → 一个请求都不发。取消句柄此刻还没登记，网关侧的早到取消（wantCancelTag）只覆盖
+     已送达网关的轮次，这段空白只能靠终止戳自己判。 */
+  if (dshStopStamped(runKey, stopBase)) {
+    if (S._runToolDescs) delete S._runToolDescs[runKey];
+    return Promise.reject(new Error(I18n.t("已手动终止")));
+  }
   /* 网关凭 cancelTag 精确关闭「这一次运行」自己的运行时进程。
      dsh 线协议没有逐轮取消，过去只能按工作目录整批关 → 停一个会话会把同目录的
      其它会话（含全局助手）一起打断。 */
@@ -2323,6 +2438,9 @@ function dshRunOnce(input, opts) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let seenError = "";
+    /* 取消句柄消失的那一刻（0 = 句柄还在）：终止兜底从这一刻起算宽限，
+       不看 lastActivity —— 见下方 watchdog 注释 */
+    let cancelSeenAt = 0;
     /* SDK finalResponse 只含最后一条 assistant 正文;累计全部 text-delta 才是完整输出。
        续跑那一轮从已累计的半截正文起步（seedText），返回值才是整轮完整正文 */
     let accText = String(opts.seedText || "");
@@ -2388,11 +2506,15 @@ function dshRunOnce(input, opts) {
       const idle = Date.now() - lastActivity;
       if (!h || (h && h._runInst !== runInst)) {
         /* 条目被 dshCancelActive 删除 = 用户请求终止；或已被同 runKey 的新一轮覆盖。
-           网关若迟迟不响应取消，在这里兜底收尾，避免「终止无反应 → running 残留 → UI 卡死」 */
-        if (idle >= DSH_CANCEL_GRACE_MS)
+           兜底收尾按「句柄消失多久」起算（cancelSeenAt），不看 lastActivity：本轮被判死之后
+           网关若还在吐帧，idle 会被这些帧一路刷新，旧口径下「已请求终止」可以永远不落地
+           （停止不生效、running 一直挂着、这一轮还占着重发判定）。 */
+        if (!cancelSeenAt) cancelSeenAt = Date.now();
+        if (Date.now() - cancelSeenAt >= DSH_CANCEL_GRACE_MS)
           finish(false, new Error(I18n.t("已手动终止")));
         return;
       }
+      cancelSeenAt = 0;
       /* 模型等待用户回答（提问 / 审批）时没有任何事件，属合法静默：给一个更长的上限，
          引擎若在等待中挂起，也不能无限卡死 UI。
          只数本 runKey 的卡片：全局条数会把「别的会话正挂着提问」算进本轮静默，

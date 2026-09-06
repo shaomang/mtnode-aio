@@ -1108,6 +1108,109 @@
   padding: 8px 10px 0
 }
 
+/* ===== 图像生成 · 画幅锁定 Toggle（与首参考图保持一致长宽比）=====
+   关 = 虚线画幅里嵌一块实色小图（「参考图装进更大的目标画幅」）；
+   开 = 外框转绿色实线并加辉光，一眼看出这台节点会先补边、出图后再裁回。
+   单击切开关，右键开补边参数面板（不额外增加出图次数）。 */
+.n-rl-btn {
+  position: relative;
+  width: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: rgba(154, 160, 168, .08);
+  cursor: pointer;
+}
+
+.n-rl-btn:hover {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(95, 214, 138, .12)
+}
+
+.n-rl-ico {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 12px;
+  border: 1px dashed rgba(255, 255, 255, .38);
+  border-radius: 2px;
+}
+
+.n-rl-ico i {
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: .5;
+}
+
+.n-rl-btn.on {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(95, 214, 138, .16);
+  box-shadow: 0 0 7px rgba(95, 214, 138, .42)
+}
+
+.n-rl-btn.on .n-rl-ico {
+  border-style: solid;
+  border-color: var(--green)
+}
+
+.n-rl-btn.on .n-rl-ico i {
+  opacity: .85
+}
+
+.n-rl-btn.on:hover {
+  filter: brightness(1.18)
+}
+
+/* 亮色主题下白虚线看不见：改用深色描边 */
+body.theme-light .n-rl-ico {
+  border-color: rgba(30, 34, 43, .42)
+}
+
+/* 补边参数面板：容器自己定宽，行 / 字段 / 提示复用 .bg-rm-* 那一套，只换功能色 */
+.ratio-lock-pop {
+  display: none;
+  position: fixed;
+  z-index: 1500;
+  width: 300px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+  padding: 0 0 10px;
+}
+
+.ratio-lock-pop.on {
+  display: block
+}
+
+.ratio-lock-pop .bg-rm-head b {
+  color: var(--green)
+}
+
+.ratio-lock-pop .bg-rm-row input {
+  accent-color: var(--green)
+}
+
+.bg-rm-field select {
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+}
+
+.bg-rm-field select:focus {
+  border-color: var(--orange)
+}
+
 /* ===== 开发节点 HSV 色板弹出层 ===== */
 .dev-color-pop {
   display: none;
@@ -2917,6 +3020,13 @@
   letter-spacing: 1px;
   color: var(--muted);
   font-weight: 700;
+}
+
+/* 字段级动作排（文本正文的「上传文件…」）：贴在输入框下面，不参与提交 */
+.asset-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .asset-form-input {

@@ -2875,24 +2875,19 @@ function renderDevColorCanvases(el) {
 
 /* 打开色板：fixed 定位到按钮下方（贴边防溢出） */
 function openDevColorPop(node, anchor) {
+  /* persistent 面板互斥：开这块收掉别块（点外部收起已整体废除，见 AGENTS.md） */
+  if (typeof closeNodePopsExcept === "function") closeNodePopsExcept("devColor");
   _devColorNode = node;
   const el = devColorPopEl();
   el.querySelector(".dev-color-head b").textContent = I18n.t("节点颜色");
   el.querySelector('[data-act="reset"]').textContent = I18n.t("恢复元素类型默认色");
   el.querySelector('[data-act="done"]').textContent = I18n.t("完成");
   el.classList.add("on");
-  const r = anchor.getBoundingClientRect();
-  const pad = 8;
-  /* 弹层尺寸实测（新增功能色卡快捷行后高度变大；兜底值同步上调） */
-  const w = el.offsetWidth || 200;
-  let left = r.left;
-  let top = r.bottom + 6;
-  const h = el.offsetHeight || 386;
-  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
-  if (left < pad) left = pad;
-  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
-  el.style.left = left + "px";
-  el.style.top = top + "px";
+  if (typeof nodePopAnchor === "function")
+    nodePopAnchor(el, '.wf-node[data-nid="' + node.id + '"] .n-dev-color', {
+      h: 386,
+    });
+  if (typeof placeNodePop === "function") placeNodePop(el, anchor, el._popOpt);
   syncDevColorFields();
   devColorButtonRefresh(node);
 }
@@ -3658,22 +3653,21 @@ function applyDevModelChoice(node, route, model) {
 
 /* 打开弹层：fixed 定位到按钮下方（贴边防溢出） */
 function openDevModelPop(node, anchor) {
+  /* persistent 面板互斥：开这块收掉别块（点外部收起已整体废除，见 AGENTS.md） */
+  if (typeof closeNodePopsExcept === "function") closeNodePopsExcept("devModel");
   _devModelNode = node;
   _devModelPane = "model"; /* 每次打开都落在最常用的模型格 */
   const el = devModelPopEl();
   el.classList.add("on");
   renderDevModelPop();
-  const r = anchor.getBoundingClientRect();
-  const pad = 8;
-  const w = el.offsetWidth || 240;
-  let left = r.left;
-  let top = r.bottom + 6;
-  const h = el.offsetHeight || 320;
-  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
-  if (left < pad) left = pad;
-  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
-  el.style.left = left + "px";
-  el.style.top = top + "px";
+  if (typeof nodePopAnchor === "function")
+    nodePopAnchor(
+      el,
+      '.wf-node[data-nid="' + node.id + '"] .n-dev-model',
+      { h: 320 },
+      node.id,
+    );
+  if (typeof placeNodePop === "function") placeNodePop(el, anchor, el._popOpt);
 }
 
 function closeDevModelPicker() {
