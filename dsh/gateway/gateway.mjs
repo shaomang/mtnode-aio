@@ -1430,7 +1430,14 @@ function mapNotification(n, emit, resumeCtx) {
         return
       }
       case 'session/title':
-        if (ev.data && ev.data.title) emit('title', { title: ev.data.title })
+        if (ev.data && ev.data.title) {
+          /* 透传来源种类：渲染层需区分引擎 5 词回落(fallback) 与 LLM 真实主题(user/provider)，
+             避免回落先占住 titleAuto 锁死真实主题。旧版渲染层忽略 source 字段、向后兼容。 */
+          emit('title', {
+            title: ev.data.title,
+            source: (ev.data.source && ev.data.source.kind) || '',
+          })
+        }
         return
       case 'turn/end':
         if (ev.data && ev.data.reason && ev.data.reason.kind === 'error') {

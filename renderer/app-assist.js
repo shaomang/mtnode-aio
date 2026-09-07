@@ -391,22 +391,97 @@ function sessionCanvasTooltipLine(st) {
 }
 /* 节点绑定会话的标题形如「开发 · 模块名」（细化 / 问询 / 建议同理，函数与工具开发会话也用它）。
    两种口径都认：会话契约字段（开发 / 细化 / 问询 必有）与标题前缀（建议记录会话只有标题）。
-   前缀词表按当前 UI 语言 + 中文原文 + 英文原词三份取，界面切语言不会误判成普通会话。 */
+   前缀词表 SESSION_BOUND_TITLE_WORDS 按当前 UI 语言 + 中文原文 + 英文原词三份取，
+   判据（sessionIsDevBoundTitle）与自动命名（sessionDevTitlePrefix）共用同一份。 */
+const SESSION_BOUND_TITLE_WORDS = ["开发", "细化", "问询", "建议", "Dev", "Refine", "Ask", "Suggest"];
+const sessionWordNorm = (s) =>
+  String(s || "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
 function sessionIsDevBoundTitle(st) {
   if (!st) return false;
   if (st._devContract || st.devContract) return true;
   const t = String(st.title || "");
   if (t.indexOf("·") < 0) return false;
-  const norm = (s) =>
-    String(s || "")
-      .replace(/\s+/g, "")
-      .toLowerCase();
-  const head = norm(t.split("·")[0]);
+  const head = sessionWordNorm(t.split("·")[0]);
   if (!head) return false;
-  for (const w of ["开发", "细化", "问询", "建议", "Dev", "Refine", "Ask", "Suggest"]) {
-    if (head === norm(w) || head === norm(I18n.t(w))) return true;
+  for (const w of SESSION_BOUND_TITLE_WORDS) {
+    if (head === sessionWordNorm(w) || head === sessionWordNorm(I18n.t(w))) return true;
   }
   return false;
+}
+/* 绑定会话标题的「<前缀词> · 」那一段（原样保留，含当前语言的字面）。
+   侧栏 ▣ 行的取舍（sessionIsDevBoundTitle）与 /rename 的映射都靠这个形状，
+   所以自动命名只替换后半的「模块名」，前缀一个字符都不动。非绑定会话返回 ""。 */
+function sessionDevTitlePrefix(st) {
+  const t = String((st && st.title) || "");
+  if (t.indexOf("·") < 0) return "";
+  const head = t.split("·")[0];
+  const h = sessionWordNorm(head);
+  if (!h) return "";
+  for (const w of SESSION_BOUND_TITLE_WORDS) {
+    if (h === sessionWordNorm(w) || h === sessionWordNorm(I18n.t(w)))
+      return head.trim() + " · ";
+  }
+  return "";
+}
+
+/* 自动短标题的清洗：引擎给的是 LLM 生成的一小段文本，可能带换行 / 引号 / 句号，
+   侧栏一行放不下也不能带控制字符。返回 ""=放弃这次命名。 */
+const SESSION_AUTO_TITLE_MAX = 24;
+function autoSessionTitleOf(raw) {
+  let s = String(raw == null ? "" : raw)
+    /* 控制字符（含换行 / 制表）压成空格，整条收成单行 */
+    .replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  /* 去首尾成对包裹符与尾部句读（模型爱写「标题。」或 "标题"） */
+  s = s
+    .replace(/^[“”"'‘’「『《【〈]+/, "")
+    .replace(/[”"'’」』》】〉]+$/, "")
+    .replace(/[。．.、，,；;：:\s]+$/, "")
+    .trim();
+  if (!s) return "";
+  /* 按码点截断（emoji / 代理对算一个可见字符），超出补省略号 */
+  const chars = Array.from(s);
+  if (chars.length > SESSION_AUTO_TITLE_MAX)
+    s = chars.slice(0, SESSION_AUTO_TITLE_MAX).join("") + "…";
+  return s;
+}
+/* 消费引擎的 session-title 事件（网关 → {type:"title",data:{title,source}}）：
+   会话执行任务时，把左侧栏那条标题换成这一轮内容的主题。
+   三道闸：· 一次性武装（st._autoTitleRound，发送时按 titleAuto/titleLocked 置一次）
+             —— 只要还没真正命名过一次就保持放行，round-1 迟到的 title
+              （含刚过 done、下一轮发送前到达的）与后续轮的首个主题都能落地；
+           · 用户手改过的标题永不被覆盖（st.titleLocked，在飞事件迟到也一样）；
+           · 清洗后为空 → 保留原回落（首条消息前 24 字）。
+   按来源分流：provider/user 命中写 st.title / st.titleAuto 并关闭武装位（provider 锁最终主题、
+   user 视同 titleLocked 永不让位）；fallback／缺省仅占位不锁位；同值直接返回（幂等，不重绘不落盘）。 */
+function applyAutoSessionTitle(st, raw, srcKind) {
+  if (!st || st.titleLocked || !st._autoTitleRound) return false;
+  const theme = autoSessionTitleOf(raw);
+  if (!theme) return false;
+  const next = sessionDevTitlePrefix(st) + theme;
+  if (next === st.title) return false;
+  if (srcKind === "provider" || srcKind === "user") {
+    /* 引擎 LLM 真实主题(provider) / 用户改名(user)：最终定名，上锁并关闭武装位 */
+    st.title = next;
+    st.titleAuto = true;
+    st._autoTitleRound = false;
+    if (srcKind === "user") st.titleLocked = true;
+  } else {
+    /* 引擎 5 词回落(fallback) / 缺省：仅占位，仅当当前无标题时写一次，决不锁位 */
+    if (st.title) return false;
+    st.title = next;
+  }
+  try {
+    if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+  } catch (_) {}
+  try {
+    if (typeof persistAgentSession === "function")
+      Promise.resolve(persistAgentSession()).catch(() => {});
+  } catch (_) {}
+  return true;
 }
 
 function syncAssistWorkspaceChrome() {
@@ -1414,6 +1489,13 @@ function agentSessions() {
      开轮时按当时画布补绑一次并落盘，见 app-db.js dshRunTask 的 boundWf 解析。 */
   for (const s of S.agentSessions)
     if (s && typeof s.canvasWfId !== "string") s.canvasWfId = "";
+  /* 标题标记水合：titleAuto（被引擎首轮自动命名过）/ titleLocked（用户手改过）
+     归一成布尔 —— 老存档没这两位就是 false，不报错也不给旧会话凭空上锁。 */
+  for (const s of S.agentSessions)
+    if (s) {
+      s.titleAuto = !!s.titleAuto;
+      s.titleLocked = !!s.titleLocked;
+    }
   /* 从配置载回的会话做一次水合（planDelivered / plan → 运行时字段）；
      水合过就有 _planHydrated 标记，后续调用只是几次属性读，开销可忽略。 */
   if (typeof planHydrateSession === "function")
@@ -1522,6 +1604,10 @@ async function persistAgentSession() {
   S.config.agentSessions = list.map((s) => ({
     id: s.id,
     title: s.title || I18n.t("新会话"),
+    /* 标题真源标记：titleAuto = 这条已被引擎首轮自动命名（节点改名不再刷回模块名）；
+       titleLocked = 用户亲口改过名（自动命名永久让位）。落盘并在水合时归一成布尔。 */
+    titleAuto: !!s.titleAuto,
+    titleLocked: !!s.titleLocked,
     workspace: s.workspace || "",
     /* 所属画布 id：随会话落盘，重启后仍归它自己那张图 */
     canvasWfId: s.canvasWfId || "",
@@ -3709,6 +3795,9 @@ function startSessionTitleEdit(s, nameEl) {
     const v = input.value.trim();
     if (save && v && v !== s.title) {
       s.title = v;
+      /* 用户亲口改的名 = 标题真源：钉住它，引擎的自动命名（含在飞迟到的事件）不再覆盖 */
+      s.titleLocked = true;
+      s.titleAuto = false;
       s.updatedAt = Date.now();
       /* 标题映射:会话名称 → 关联 agent_task / 开发节点标题(双向,后写优先) */
       const wfs = [S.wf, ...Object.values(S.wfBag || {})];
@@ -4460,6 +4549,9 @@ async function agentSessionSend(text, opts) {
         return;
       }
       st.title = arg.slice(0, 40);
+      /* 与侧栏改名同一位锁：/rename 也是用户亲口命名，自动命名此后一律让位 */
+      st.titleLocked = true;
+      st.titleAuto = false;
       /* 标题映射:会话名称 → 关联智能任务 / 开发节点标题 */
       if (S.wf) {
         const devTitle = st.title.replace(/^(开发|Dev)\s*·\s*/i, "").trim();
@@ -4543,7 +4635,9 @@ async function agentSessionSend(text, opts) {
     st.messages.push(um);
     rbAnchor = um;
     if (st.messages.filter((m) => m.role === "user").length === 1) {
-      st.title = t.slice(0, 24) + (t.length > 24 ? "…" : "");
+      /* 回落命名（首条消息前 24 字）同样不得覆盖用户亲口改的名 */
+      if (!st.titleLocked)
+        st.title = t.slice(0, 24) + (t.length > 24 ? "…" : "");
     }
   } else {
     /* 开发 / 细化绑定会话：开轮锚点就是那条任务书消息 */
@@ -4552,6 +4646,12 @@ async function agentSessionSend(text, opts) {
         (m) => m && m.role === "user" && m._src === "dev-node",
       ) || null;
   }
+  /* 引擎自动命名（title 事件）是「一次性武装」闸位：只要这条会话还没被引擎真正
+     命名过一次（!titleAuto）且用户没亲口改名（!titleLocked），就保持放行 ——
+     不再像以前那样每次发送按用户消息数 ≤1 重置、只认本轮窗口。这样 round-1
+     迟到的 title（含刚过 done、下一轮发送前到达的）以及后续轮才到的首个主题
+     都能落地；真正应用过一次（titleAuto=true）或用户手改后，此位才让位。 */
+  st._autoTitleRound = !st.titleAuto && !st.titleLocked;
   st.updatedAt = Date.now();
   if (st.messages.length > 100) st.messages.splice(0, st.messages.length - 100);
   /* 新的一轮开始:显示窗口回到默认最近 10 轮,更早的可从最前端重新载入 */
@@ -4629,7 +4729,8 @@ async function agentSessionSend(text, opts) {
   /* 人设的画布档位（与工具注册同一判据，真源见 app-db.js dshRunOnce）：
      · ""       全量 —— get / edit / app 三件套都在，照旧要求先读图再动手
      · "noRead" 开发绑定会话（st.noCanvasRead · Gate A）—— 本轮不注册 mtnode_canvas_get
-                与 mtnode_app，只留收尾用的 mtnode_canvas_edit
+                与 mtnode_app；人设要求不读也不改画布，收尾不写回任何节点字段
+                （mtnode_canvas_edit 照常注册但不用于回写）
      · "none"   用户声明「与画布无关」（st.canvasFree · Gate B）—— 三件套全不注册
    裁掉工具就必须同时裁掉「动手前先 mtnode_canvas_get 看清现状」这句指令和画布类技能名
    （同档位的技能索引也已经裁了），否则模型会去调不存在的工具、白白浪费一整步。 */
@@ -4651,13 +4752,9 @@ async function agentSessionSend(text, opts) {
         "回答简洁（交流语言见文末「语言口味」）。";
     } else if (canvasPersona === "noRead") {
       systemPrompt =
-        "你是 MTNode 画布上的智能会话助手，但本会话不读取画布。可读写文件、联网、执行命令；改画布只用 mtnode_canvas_edit（节点字段、连线、排版），本轮不注册 mtnode_canvas_get 与 mtnode_app。\n" +
-        "画布现状一律以【开发任务书】为准；要改哪个节点，用任务书给出的「本节点 id」在 mtnode_canvas_edit 的 update 里按 id 定位，不要为了看现状去读整张图。\n" +
-        "你只能改本会话所属的那张画布：它在会话建立时就已绑定，用户中途切去其他画布干活，你本轮的读写仍精准落在自己那张图上，不会串到他正看着的那张。\n" +
-        (assistAutoApprove
-          ? "「助手改画布」为批准：mtnode_canvas_edit 直接生效。画布修改只限收尾回写本节点（note / devStatus / devFiles），不要顺手改别的节点。\n"
-          : "mtnode_canvas_edit 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，立即停止改画布。\n") +
-        "改画布纪律：节点字段、端子与 alias 的口径以 mtnode_canvas_edit 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
+        "你是 MTNode 画布上绑定的开发会话助手，但本会话不读取也不修改画布。可读写文件、联网、执行命令；本轮不注册 mtnode_canvas_get 与 mtnode_app。\n" +
+        "画布现状一律以【开发任务书】为准；本会话执行期间与收尾都不得改动画布上任何内容 —— 不改任何节点的 title / note / devStatus / devFiles，也不动连线或排版。\n" +
+        "本会话服务的是左侧栏中属于它的那条会话：任务完成时该会话标题会随首轮主题在左侧栏自动更新（由应用处理，你无需也无权去改画布）。\n" +
         "内置技能以文末索引为准（本档位不含画布类技能）；工具回执里没有的结果不要声称已完成。\n" +
         "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     } else {
@@ -4726,6 +4823,13 @@ async function agentSessionSend(text, opts) {
               renderAgentSession();
             } catch (_) {}
           }
+          return;
+        }
+        /* 引擎的会话短标题（dsh session-title / first-prompt 提供者）：本轮第一次执行任务
+           时按内容主题更新左侧栏这条会话的名字。事件可能在开轮回落标题（首条消息前 24 字）
+           之后才到，那时它覆盖回落 —— 闸位与手改锁定见 applyAutoSessionTitle。 */
+        if (type === "title") {
+          applyAutoSessionTitle(st, (data && data.title) || "", (data && data.source) || "");
           return;
         }
         if (type === "reasoning" && data.text) {

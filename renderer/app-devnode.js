@@ -723,7 +723,7 @@ function devSuggestBriefText(node, sug, pickedIds, supplement) {
   );
   lines.push(
     I18n.t(
-      "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），用一句话汇报改了什么。",
+      "本会话是「开发」绑定会话（不读也不改画布）：执行期间与收尾都不得修改画布上任何内容 —— 不改该功能块节点的 title / note / devStatus / devFiles，也不动其它节点或连线；任务完成后在会话里用一句话汇报改了什么。",
     ),
   );
   return lines.join("\n");

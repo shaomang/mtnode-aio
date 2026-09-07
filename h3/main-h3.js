@@ -11,6 +11,7 @@ const {
   dialog,
   screen,
   app,
+  shell,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -21,6 +22,7 @@ const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const {
   verGt,
   verMax,
+  fetchBuffer,
   fetchRemoteManifest,
   downloadRuntimeTo,
 } = require("../plugins/runtime-feed.js");
@@ -38,6 +40,12 @@ const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
 const DEFAULT_PORT = 8188;
 const DISK_HINT_GB = 70;
 const GENERATE_MAX_MS = 60 * 60 * 1000;
+
+/* 管理窗 Console 停靠面板：宽 360（与 h3/ui/index.html 的 .console-pane 成对）。
+   窗口原本 420 宽，撑开后 780；收回去时主列必须回到原位，所以最小宽度钉 420。 */
+const CONSOLE_PANE_W = 360;
+const CONSOLE_PANE_MAX_W = 900;
+const CONSOLE_WIN_MIN_W = 420;
 
 const MODELS = {
   fl2va: "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
@@ -87,6 +95,11 @@ let appRoot = null;
 let getDsh = null;
 let consoleWin = null;
 let loadedUiStamp = ""; /* 管理窗当前已加载的 UI 指纹，变了就该 reload 而不是继续显示旧页面 */
+/** Console 停靠面板：consolePaneW = 页面报来的面板宽度（0 = 收起），
+ *  consolePaneApplied = 宿主真的往左撑开了多少像素（可能被屏幕边缘钳小）。
+ *  收起时按 applied 还回去，窗口才不会走偏。 */
+let consolePaneW = 0;
+let consolePaneApplied = 0;
 let installing = false;
 let installCancel = false;
 let gpuTimer = null;
@@ -877,12 +890,15 @@ async function statusForUi() {
     diskHintGb: DISK_HINT_GB,
     installDir: cfg.installDir || "",
     project: sig,
+    /* Sage 加速自检结果（读缓存；过期只后台补探，不堵状态刷新）：管理窗据此提示点「Sage 加速」 */
+    sage: readSageProbe(cfg.installDir),
     installed: !!(installedMeta && installedMeta.ok) || sig.ready,
     installing,
     running: backendRunning() || comfyUp,
     comfyUp,
     consoleOpen: !!(consoleWin && !consoleWin.isDestroyed()),
     port,
+    comfyUrl: comfyUiUrl(port),
     lock,
     gpu,
     wantRunning: !!cfg.wantRunning,
@@ -1091,6 +1107,7 @@ async function agentInstallByAgent(opts) {
       `2) 建立【隔离】ComfyUI venv（禁止 --system-site-packages）并在 venv 内安装 CUDA torch + 依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1 / repair_torch_kitchen.ps1）\n` +
       `3) 下载/就绪模型权重（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1；修复且模型已齐则跳过）\n` +
       `4) 冒烟：venv python 下 torch.cuda + import comfy_kitchen；确认 torch.__file__ 在 ComfyUI\\venv 内\n` +
+      `5) 注意力加速（「安装」必须覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— 口径见 skill「可选依赖」一节（PyPI 上只有老的 sageattention 1.0.6，2.x 走 woct0rdho/SageAttention 的 release wheel，文件名里的 cuNNN / torchX 必须对上本机 CUDA 大版本与 torch 版本）。装完用 venv python 跑 import triton + import sageattention 自检。**这一步装不上不算失败**：跳过即可，画布生成会自动退回非 Sage 链（只是慢 1.5-2×）。已探测到可用则勿重复装。\n` +
       `不要启动 ComfyUI。不要删除用户 output/。\n` +
       `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path> torch_file=<path>。\n` +
       `失败则 ${resultMarker} 写 ok=false 与 reason=...`;
@@ -1185,6 +1202,8 @@ async function agentInstallByAgent(opts) {
         pct: 100,
       });
       appendConsole("[agent-install] success");
+      invalidateSageProbe();
+      ensureSageProbe(installDir);
       return {
         ok: true,
         installDir,
@@ -1615,6 +1634,8 @@ async function uninstallProject(opts) {
     if (fs.existsSync(installedMetaPath())) fs.unlinkSync(installedMetaPath());
   } catch {}
   appendConsole("uninstall done; installDir retained: " + root);
+  /* venv 已经没了：Sage 自检缓存必须一起作废，否则管理窗还会挂着「已装」十秒到十分钟 */
+  invalidateSageProbe();
   return { ok: true, deleted, errors, installDir: root };
 }
 
@@ -1997,9 +2018,226 @@ function isSageDisabledMode(mode) {
   return /^(disabled|off|none|false|0)?$/i.test(String(mode == null ? "disabled" : mode).trim());
 }
 
-/** 缺 sageattention 时强制 disabled，避免 PathchSageAttentionKJ 必炸。
- *  检测结果缓存 10 分钟（import 探测较慢，避免每次生成都跑）。 */
-let _sageCheckCache = { at: 0, ok: false, known: false };
+/* ── Sage Attention（注意力加速）自检与补装 ────────────────────────────────
+ * 为什么判据不是 `import sageattention` 一条就够（原来只判这一条）：
+ *   · sageattention 的 core 在 **import 期**就 `from .triton.… import …` 拉 Triton kernel；
+ *     Windows 上 PyPI 没有 `triton`（Linux-only），只装 sageattention 不装 triton-windows
+ *     一样 import 失败 —— 两个包必须成对。
+ *   · sm89（4090）走的是预编译 CUDA 内核 `_qattn_sm89`；架构不在内核白名单里等于没加速。
+ *   · 判错的代价很大：工作流里挂了 PathchSageAttentionKJ 而包实际不可用时，ComfyUI 在
+ *     /prompt 校验阶段就炸（invalid prompt: prompt_outputs_failed_validation），整次生成白跑。
+ * 所以一次 python 探测同时报出 py / torch / cuda / sm / triton / sage 六项事实，
+ * 结果缓存 10 分钟（import torch 要几秒，状态刷新每 4 秒一次，绝不能每次都探）。 */
+const SAGE_PROBE_TTL_MS = 10 * 60 * 1000;
+const SAGE_SUPPORTED_SM = ["sm75", "sm80", "sm86", "sm87", "sm89", "sm90", "sm100", "sm120", "sm121"];
+const SAGE_RELEASE_API = "https://api.github.com/repos/woct0rdho/SageAttention/releases?per_page=30";
+const SAGE_RELEASE_PAGE = "https://github.com/woct0rdho/SageAttention/releases";
+/** 文件名事实：sageattention-2.2.0+cu130torch2.9.1.post6-cp310-abi3-win_amd64.whl
+ *  （cuNNN = CUDA 13 与 12 不通用；abi3 = Python 稳定 ABI，cpX-abi3 支持 python >= X） */
+const SAGE_WHEEL_RE =
+  /^sageattention-(\d+\.\d+(?:\.\d+)?)\+cu(\d+)torch(\d+)\.(\d+)(?:\.(\d+))?(andhigher)?(?:\.post(\d+))?-(cp\d+)-(abi3|cp\d+)-win_amd64\.whl$/;
+/** triton 与 torch 的配套（torch 自带哪个 triton，Windows 就得装对应大版本的 triton-windows） */
+const TORCH_TRITON = { "2.5": "3.1", "2.6": "3.2", "2.7": "3.3", "2.8": "3.4", "2.9": "3.5", "2.10": "3.6" };
+
+const SAGE_PROBE_PY = [
+  "import json, sys",
+  "o = {'py': '%d.%d' % sys.version_info[:2], 'torch': '', 'cuda': '', 'sm': '', 'triton': '', 'sage': '', 'why': ''}",
+  "ws = []",
+  "try:",
+  "    import torch",
+  "    o['torch'] = str(torch.__version__)",
+  "    o['cuda'] = str(torch.version.cuda or '')",
+  "    if torch.cuda.is_available():",
+  "        o['sm'] = 'sm%d%d' % torch.cuda.get_device_capability(0)",
+  "except Exception as e:",
+  "    ws.append('torch:' + type(e).__name__)",
+  "try:",
+  "    import triton",
+  "    o['triton'] = str(getattr(triton, '__version__', '') or 'yes')",
+  "except Exception as e:",
+  "    ws.append('triton:' + type(e).__name__)",
+  "try:",
+  "    import sageattention",
+  "    o['sage'] = str(getattr(sageattention, '__version__', ''))",
+  "    if not o['sage'] or o['sage'] == 'unknown':",
+  "        from importlib.metadata import version as _v",
+  "        o['sage'] = str(_v('sageattention'))",
+  "except Exception as e:",
+  "    ws.append('sage:' + type(e).__name__)",
+  "o['archOk'] = (not o['sm']) or (o['sm'] in " + JSON.stringify(SAGE_SUPPORTED_SM) + ")",
+  "if not o['archOk']:",
+  "    ws.append('arch:' + o['sm'])",
+  "o['why'] = ','.join(ws)",
+  "o['ok'] = bool(o['triton'] and o['sage'] and o['archOk'])",
+  "print(json.dumps(o))",
+].join("\n");
+
+/** 小尺寸真跑一次 kernel：能 import 不等于能算（缺对应架构的 .pyd 时是调用期才炸）。 */
+const SAGE_SMOKE_PY = [
+  "import json",
+  "r = {'ok': False, 'why': ''}",
+  "try:",
+  "    import torch",
+  "    from sageattention import sageattn",
+  "    if not torch.cuda.is_available():",
+  "        r = {'ok': False, 'why': 'no_gpu'}",
+  "    else:",
+  "        q = torch.randn(1, 2, 128, 64, device='cuda', dtype=torch.float16)",
+  "        o = sageattn(q, q, q, tensor_layout='NHD')",
+  "        torch.cuda.synchronize()",
+  "        r = {'ok': bool(torch.isfinite(o.float()).all().item()), 'why': '' if bool(torch.isfinite(o.float()).all().item()) else 'nonfinite'}",
+  "except Exception as e:",
+  "    r = {'ok': False, 'why': type(e).__name__ + ': ' + str(e)[:180]}",
+  "print(json.dumps(r))",
+].join("\n");
+
+function vparts(s) {
+  const m = String(s || "").match(/(\d+)\.(\d+)(?:\.(\d+))?/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3] || 0)] : [];
+}
+function vcmp(a, b) {
+  a = a || [];
+  b = b || [];
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/** 从 GitHub release 资产里挑「与本 venv 配套」的那枚 wheel：
+ *  CUDA 大版本必须一致，Python 走 abi3 下限 / 精确 tag，torch 精确同 minor 优先于 andhigher。 */
+function pickSageWheel(releases, want) {
+  const w = want || {};
+  const wt = w.torch && w.torch.length ? w.torch : [];
+  const out = [];
+  for (const rel of Array.isArray(releases) ? releases : []) {
+    for (const a of (rel && Array.isArray(rel.assets) ? rel.assets : [])) {
+      const file = String((a && a.name) || "");
+      const m = SAGE_WHEEL_RE.exec(file);
+      if (!m) continue;
+      const abi3 = m[9] === "abi3";
+      /* "cp310" → minor 10，"cp39" → minor 9：Python 版本 tag 是 cp + 去点的版本号 */
+      const cpMinor = Number(String(m[8]).slice(3));
+      if (abi3 ? cpMinor > w.pyMinor : cpMinor !== w.pyMinor) continue;
+      const cu = Number(m[2]);
+      /* 轮子名里是三位数 CUDA（cu128 / cu130）→ 大版本 = 去掉末位 minor：130 → 13、128 → 12 */
+      if (w.cudaMajor && Math.floor(cu / 10) !== w.cudaMajor) continue;
+      const base = [Number(m[3]), Number(m[4]), Number(m[5] || 0)];
+      const andHigher = !!m[6];
+      let score;
+      if (andHigher) {
+        if (wt.length && vcmp(wt, base) < 0) continue;
+        score = 1;
+      } else {
+        if (wt.length && (wt[0] !== base[0] || wt[1] !== base[1])) continue;
+        score = 2;
+      }
+      out.push({
+        file,
+        url: String(a.browser_download_url || ""),
+        pkgVer: m[1],
+        cu: "cu" + cu,
+        torchRaw: m[3] + "." + m[4] + (m[5] ? "." + m[5] : "") + (andHigher ? "andhigher" : ""),
+        post: Number(m[7] || 0),
+        abi3,
+        score,
+        release: String((rel && rel.tag_name) || ""),
+      });
+    }
+  }
+  out.sort((x, y) =>
+    vcmp(vparts(y.pkgVer), vparts(x.pkgVer)) ||
+    y.score - x.score ||
+    y.post - x.post ||
+    String(y.release).localeCompare(String(x.release)),
+  );
+  return out[0] || null;
+}
+
+function tritonWindowsSpec(torchParts) {
+  const key = (torchParts && torchParts.length ? torchParts[0] + "." + torchParts[1] : "") || "";
+  const t = TORCH_TRITON[key];
+  return t ? "triton-windows==" + t + ".*" : "triton-windows";
+}
+
+let _sageProbe = null;
+let _sageProbeRun = null;
+let _sageProbeDir = "";
+
+function invalidateSageProbe() {
+  _sageProbe = null;
+}
+/** 缓存必须绑定安装目录：换目录 = 换 venv，旧目录「已装齐」的结论对新目录一律不成立。 */
+function sageProbeFresh(dir) {
+  return !!(_sageProbe && _sageProbeDir === String(dir || "") && Date.now() - _sageProbe.at < SAGE_PROBE_TTL_MS);
+}
+function parseSageProbe(out, code) {
+  const lines = String(out || "").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const L = lines[i].trim();
+    if (!L.startsWith("{")) continue;
+    try {
+      const j = JSON.parse(L);
+      return Object.assign({ probed: true, ok: false, why: "" }, j);
+    } catch {}
+  }
+  return {
+    probed: true,
+    ok: false,
+    why: "probe_failed(" + (code == null ? "?" : code) + "): " + String(out || "").slice(-160).replace(/\r?\n/g, " "),
+  };
+}
+/** 跑一次真探测并写缓存（探完广播，管理窗自己刷新）。 */
+async function runSageProbe(installDir) {
+  const py = comfyVenvPython(installDir);
+  let value;
+  if (!py) value = { probed: true, ok: false, why: "no_venv" };
+  else {
+    const r = await runVenvPy(py, SAGE_PROBE_PY);
+    value = parseSageProbe(r.out, r.code);
+  }
+  _sageProbe = { at: Date.now(), value };
+  _sageProbeDir = String(installDir || "");
+  broadcast("h3:sageChanged", value);
+  return value;
+}
+/** 状态读的是缓存；过期就后台补一次，绝不把 4 秒一次的状态刷新堵在 python import 上。 */
+function ensureSageProbe(installDir) {
+  if (sageProbeFresh(installDir)) return Promise.resolve(_sageProbe.value);
+  if (_sageProbeRun) return _sageProbeRun;
+  _sageProbeRun = runSageProbe(installDir).finally(() => {
+    _sageProbeRun = null;
+  });
+  return _sageProbeRun;
+}
+function readSageProbe(installDir) {
+  if (!sageProbeFresh(installDir)) ensureSageProbe(installDir);
+  return _sageProbe ? _sageProbe.value : { probed: false, ok: false, why: "checking" };
+}
+
+/** 缺包时给用户的口径：既说清后果（自动跳过 Sage，不是报错），也给出点哪儿能修好。
+ *  why 由探测脚本按 torch / triton / sage / arch 逐项拼出来 —— 报准那一项，用户才知道补什么。 */
+function sageMissingHint(probe) {
+  const why = probe && probe.why ? String(probe.why) : "";
+  if (/^arch:/.test(why)) return "（本机 GPU " + why.slice(5) + " 不在 Sage 支持列表，这一档优化跳过）";
+  if (/no_venv/.test(why)) return "（venv 还没装好：先点「安装」）";
+  if (/^probe_failed/.test(why)) return "（自检没跑通：" + why.slice(0, 120) + "）";
+  let need = "加速包";
+  const miss = [];
+  if (/triton/.test(why)) miss.push("triton-windows");
+  if (/sage/.test(why)) miss.push("sageattention");
+  if (miss.length) need = miss.join(" + ");
+  else if (/torch/.test(why)) need = "torch 环境";
+  return (
+    "（缺 " +
+    need +
+    "）Windows 上需 triton-windows + 匹配本机 torch/CUDA 的 sageattention 预编译 wheel，" +
+    "在 H3 插件窗点「Sage 加速」可一键补装"
+  );
+}
+
+/** 缺 sageattention 时强制 disabled，避免 PathchSageAttentionKJ 必炸。 */
 async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
   if (optSageAttn === false) return "disabled";
   const mode =
@@ -2010,21 +2248,193 @@ async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
     appendConsole("[generate] no venv → sageMode=disabled");
     return "disabled";
   }
-  if (Date.now() - _sageCheckCache.at < 600000 && _sageCheckCache.known) {
-    if (!_sageCheckCache.ok) appendConsole("[generate] sageattention missing → sageMode=disabled");
-    return _sageCheckCache.ok ? mode : "disabled";
-  }
-  const check = await runVenvPy(py, "import sageattention");
-  _sageCheckCache = { at: Date.now(), ok: check.code === 0, known: true };
-  if (check.code !== 0) {
+  const probe = await ensureSageProbe(installDir);
+  if (!probe || !probe.ok) {
     appendConsole(
       "[generate] sageattention missing → sageMode=disabled (was " +
         mode +
-        ")。安装匹配 torch/CUDA 的 sageattention wheel 可提速约 1.5-2×",
+        ")。" +
+        sageMissingHint(probe) +
+        "，装好可提速约 1.5-2×",
     );
     return "disabled";
   }
   return mode === "disabled" ? "auto" : mode;
+}
+
+function runVenvPip(py, args, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const env = Object.assign({}, process.env, { PIP_DISABLE_PIP_VERSION_CHECK: "1" });
+    if (process.env.MT_H3_PIP_INDEX) env.PIP_INDEX_URL = process.env.MT_H3_PIP_INDEX;
+    else if (!env.PIP_INDEX_URL) env.PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple";
+    const full = ["-m", "pip", "install", "--isolated", ...args];
+    appendConsole("$ venv pip install --isolated " + args.join(" "));
+    const child = spawn(py, full, { windowsHide: true, env });
+    let out = "";
+    const onData = (d) => {
+      const s = d.toString();
+      out += s;
+      for (const line of s.split(/\r?\n/)) {
+        const t = line.trim();
+        if (t) appendConsole("[pip] " + t);
+      }
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("error", (e) => resolve({ code: 1, out: out + "\n" + String((e && e.message) || e) }));
+    child.on("close", (c) => resolve({ code: c || 0, out }));
+  });
+}
+
+function pipFailTail(out) {
+  const lines = String(out || "").split(/\r?\n/).filter((l) => l.trim());
+  return lines.slice(-4).join(" / ").slice(-400);
+}
+
+/** 一键补装注意力加速：triton-windows + 与本 venv 配套的 sageattention 预编译 wheel，
+ *  装完立刻按生成期的同一口径自检。走的是 pip 直装（几秒），不占 Agent 轮次；
+ *  失败时把原因与「自我修复」这条兜底路一起回给界面。 */
+async function installSageAttention(opts) {
+  opts = opts || {};
+  if (installing) return { ok: false, error: "busy", message: "已有安装 / 修复任务在跑，先等它结束。" };
+  const cfg = loadConfig();
+  const safe = isSafeInstallDir(cfg.installDir);
+  if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
+  const installDir = safe.path;
+  const py = comfyVenvPython(installDir);
+  if (!py) {
+    return { ok: false, error: "no_venv", message: "还没有 ComfyUI venv：请先点「安装」装好后端，再补加速包。" };
+  }
+  if (backendRunning()) {
+    return {
+      ok: false,
+      error: "backend_running",
+      message: "后端正在运行，往用着的 venv 里写包不安全：请先点「手动停止」再补装。",
+    };
+  }
+  const say = (message, pct) =>
+    emitProgress({ phase: "install", step: "sage", stepLabel: "补装 Sage 加速", message, pct });
+  const bump = () => {
+    if (installCancel) throw new Error("cancelled");
+  };
+  installing = true;
+  installCancel = false;
+  try {
+    say("读取 venv 里的 torch / CUDA / Python…", 6);
+    invalidateSageProbe();
+    const before = await ensureSageProbe(installDir);
+    if (before && before.ok && !opts.force) {
+      return {
+        ok: true,
+        already: true,
+        sage: before,
+        message: "Sage 加速已就绪（sageattention " + before.sage + " · triton " + before.triton + " · " + (before.sm || "?") + "），无需补装。",
+      };
+    }
+    bump();
+    const want = {
+      pyMinor: Number(String((before && before.py) || "").split(".")[1]) || 10,
+      torch: vparts(before && before.torch),
+      cudaMajor: Number(String((before && before.cuda) || "").split(".")[0]) || 0,
+    };
+    if (want.torch.length < 2) {
+      throw new Error(
+        "venv 里 import torch 失败（" + ((before && before.why) || "unknown") + "）：请先点「自我修复」修好环境再补加速包。",
+      );
+    }
+    /* 1) triton：sageattention 的量化 kernel 是 Triton 写的，Windows 上没有它 import 就失败 */
+    if (before && before.triton) {
+      say("triton " + before.triton + " 已在，跳过", 26);
+    } else {
+      const spec = tritonWindowsSpec(want.torch);
+      say("pip install " + spec + " …", 26);
+      let r = await runVenvPip(py, [spec]);
+      if (r.code !== 0 && spec !== "triton-windows") {
+        appendConsole("[sage] pinned triton-windows failed → retry latest");
+        r = await runVenvPip(py, ["triton-windows"]);
+      }
+      if (r.code !== 0) throw new Error("triton-windows 安装失败：" + pipFailTail(r.out));
+    }
+    bump();
+    /* 2) sageattention：PyPI 上只有老的 1.0.6（v1 且要现编译），2.x 走预编译 wheel */
+    say("查 " + SAGE_RELEASE_PAGE + " 上匹配的 wheel…", 40);
+    let picked = null;
+    try {
+      const rel = JSON.parse((await fetchBuffer(SAGE_RELEASE_API, null, 25000)).toString("utf8"));
+      picked = pickSageWheel(rel, want);
+    } catch (e) {
+      appendConsole("[sage] release lookup failed: " + String((e && e.message) || e));
+    }
+    if (!picked) {
+      throw new Error(
+        "没找到匹配 Python 3." + want.pyMinor + " / torch " + want.torch.join(".") + " / CUDA " +
+          (want.cudaMajor || "?") + " 的 sageattention 预编译 wheel（GitHub 不通或本机版本组合没出轮子）。" +
+          "可点「自我修复」让 Agent 代装，或手动下载 " + SAGE_RELEASE_PAGE,
+      );
+    }
+    say("下载 " + picked.file + " …", 48);
+    const buf = await fetchBuffer(
+      picked.url,
+      (p) => {
+        if (!p || !p.total) return;
+        emitProgress({
+          phase: "install",
+          step: "sage",
+          stepLabel: "补装 Sage 加速",
+          message: "下载 " + picked.file,
+          pct: 48 + Math.min(28, Math.round((p.got / p.total) * 28)),
+        });
+      },
+      600000,
+    );
+    bump();
+    const tmpDir = join(app.getPath("temp"), "mtnode-h3-sage");
+    mk(tmpDir);
+    const wheelPath = join(tmpDir, picked.file);
+    fs.writeFileSync(wheelPath, buf);
+    say("pip 安装 sageattention " + picked.pkgVer + "（" + picked.cu + " · torch" + picked.torchRaw + "）…", 80);
+    const r2 = await runVenvPip(py, ["--no-deps", "--force-reinstall", wheelPath]);
+    if (r2.code !== 0) throw new Error("sageattention 安装失败：" + pipFailTail(r2.out));
+    /* 3) 自检：先按生成期同一口径探一遍，再真跑一次小 kernel（能 import ≠ 能算） */
+    say("自检：import + 小尺寸 kernel 试跑…", 92);
+    invalidateSageProbe();
+    const after = await ensureSageProbe(installDir);
+    if (!after || !after.ok) {
+      throw new Error("装完自检仍不可用：" + ((after && after.why) || "probe_failed"));
+    }
+    const sm = await runVenvPy(py, SAGE_SMOKE_PY);
+    const smoke = parseSageProbe(sm.out, sm.code);
+    if (!smoke.ok) appendConsole("[sage] kernel smoke warn: " + smoke.why + "（import 正常；生成时若报错请点「自我修复」）");
+    appendConsole(
+      "[sage] ready: sageattention " + after.sage + " + triton " + after.triton + " @ " + (after.sm || "?"),
+    );
+    emitProgress({
+      phase: "install",
+      step: "done",
+      stepLabel: "补装 Sage 加速",
+      message: "Sage 加速已就绪" + (smoke.ok ? "（kernel 试跑通过）" : "（kernel 试跑有警告，见 Console）"),
+      pct: 100,
+    });
+    return {
+      ok: true,
+      sage: after,
+      kernelOk: !!smoke.ok,
+      wheel: picked.file,
+      message:
+        "Sage 加速已装好：sageattention " + after.sage + " · triton " + after.triton + " · " + (after.sm || "?") +
+        (smoke.ok ? " · kernel 试跑通过" : ""),
+    };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    appendConsole("[sage] install failed: " + msg);
+    emitProgress({ phase: "install", step: "error", stepLabel: "补装 Sage 加速", message: msg, pct: 0, error: true });
+    return { ok: false, error: msg === "cancelled" ? "cancelled" : "sage_install_failed", message: msg };
+  } finally {
+    installing = false;
+    invalidateSageProbe();
+    ensureSageProbe(installDir);
+  }
 }
 
 /** 收集一次执行的全部产物（自定义工作流用）：按节点/类别归集，默认取最后一个视频类产物。
@@ -2805,6 +3215,369 @@ function cancelGenerate(nodeId) {
   return { ok: true, forceKillScheduled: true };
 }
 
+/** Console 停靠面板开合时的窗口边界（纯函数，可单测）。
+ *  delta > 0 = 往左撑开 delta 像素（右边缘不动 → 主列看着一点没挪）；delta < 0 = 收回。
+ *  左边贴到屏幕边缘时改往右长（还是放不下才让主列变窄），总宽永不低于 minW。 */
+function paneShiftBounds(b, wa, delta, minW) {
+  const floor = Math.max(1, Number(minW) || 1);
+  let x = b.x - delta;
+  let width = b.width + delta;
+  if (width < floor) {
+    x -= floor - width;
+    width = floor;
+  }
+  const minX = wa.x;
+  const maxRight = wa.x + wa.width;
+  if (x < minX) {
+    /* 左边放不下：x 锁到工作区左缘，能往右长多少就往右长（主列才不会被吃掉） */
+    x = minX;
+    width = Math.min(Math.max(floor, b.width + delta), Math.max(floor, maxRight - minX));
+  }
+  if (x + width > maxRight) width = Math.max(floor, maxRight - x);
+  return {
+    x: Math.round(x),
+    y: Math.round(b.y),
+    width: Math.round(width),
+    height: Math.round(b.height),
+  };
+}
+
+/** h3:setConsolePane：页面左侧那块 Console 面板开 / 关时，宿主把窗口按同宽度往左挪，
+ *  于是面板看着「钉」在窗口左边、与窗口等高，而右侧主列一格都没动。
+ *  记两个数：want（面板要的宽度）与 applied（真撑开了多少，可能被屏幕边缘钳小）；
+ *  收起时按 applied 还回去 → 往返恒等，且同状态重复下发零位移（界面会因 reload 重报）。 */
+function setConsolePane(opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const win = consoleWin && !consoleWin.isDestroyed() ? consoleWin : null;
+  if (!win) return { ok: false, error: "no_window" };
+  const width = Math.max(
+    CONSOLE_PANE_W,
+    Math.min(CONSOLE_PANE_MAX_W, Number(o.width) || CONSOLE_PANE_W),
+  );
+  const open = !!o.open;
+  const want = open ? width : 0;
+  if (want === consolePaneW) {
+    return {
+      ok: true,
+      open,
+      paneWidth: consolePaneW,
+      applied: consolePaneApplied,
+      width: win.getBounds().width,
+    };
+  }
+  const b0 = win.getBounds();
+  const delta = want > consolePaneW ? want - consolePaneW : -consolePaneApplied;
+  let b = b0;
+  try {
+    if (win.isMaximized()) {
+      win.unmaximize();
+      b = win.getBounds();
+    }
+  } catch {}
+  const wa = screen.getDisplayMatching(b).workArea;
+  const next = paneShiftBounds(b, wa, delta, CONSOLE_WIN_MIN_W);
+  try {
+    win.setBounds(next);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+  consolePaneW = want;
+  consolePaneApplied = Math.max(0, next.width - b.width);
+  return { ok: true, open, paneWidth: consolePaneW, applied: consolePaneApplied, bounds: next };
+}
+
+/** ComfyUI 编辑界面地址（后端只监听 127.0.0.1，同机浏览器直接打开即可）。 */
+function comfyUiUrl(port) {
+  return `http://127.0.0.1:${Number(port) || DEFAULT_PORT}/`;
+}
+
+/** 一键在浏览器打开 ComfyUI 编辑界面。
+ *  默认只探活不启动（用户可能只是想看一眼图）；opts.start = true 才拉起后端再打开。
+ *  startBackend 自身已等 HTTP 就绪，所以这里不再补轮询。 */
+async function openComfyUiInBrowser(opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  let p = port;
+  if (o.start) {
+    const r = await startBackend();
+    if (!r || !r.ok) {
+      const err = String((r && (r.error || r.message)) || "backend_start_failed");
+      appendConsole("[comfy-ui] start failed: " + err);
+      return { ok: false, error: "start_failed", message: err, url: comfyUiUrl(port) };
+    }
+    p = Number(r.port) || port;
+  } else if (!(await probeComfy(port))) {
+    return { ok: false, error: "backend_not_running", url: comfyUiUrl(port) };
+  }
+  const url = comfyUiUrl(p);
+  try {
+    await shell.openExternal(url);
+    appendConsole("[comfy-ui] opened " + url);
+    return { ok: true, url, started: !!o.start };
+  } catch (e) {
+    const err = String((e && e.message) || e);
+    appendConsole("[comfy-ui] openExternal failed: " + err);
+    return { ok: false, error: err, url };
+  }
+}
+
+/* ───────────── 「打开该模板进 ComfyUI 编辑」：管理窗内嵌编辑器视图（宿主侧） ───────────── */
+
+/* 编辑器视图的最小可用尺寸：ComfyUI 画布比插件面板吃面积，420 宽的窗看着就是块砖。 */
+const WF_EDITOR_MIN_W = 1120;
+const WF_EDITOR_MIN_H = 760;
+
+/* 进入编辑器视图前的窗口边界（null = 当前不在编辑器视图）；关闭时原样还回去。 */
+let wfEditorSnapshot = null;
+/* 编辑器视图状态：真源只在宿主。渲染层那块 persistent 浮层（内嵌 iframe）只是这份状态的容器，
+   只能由用户点浮层上的「✕ / 关闭」显式关掉 —— 一律不做「点外部即关」。 */
+let wfEditorView = { open: false, url: "", id: "", title: "", file: "", loaded: false, error: "", hint: "" };
+
+/** ComfyUI 的用户工作流目录（<ComfyUI>/user/default/workflows）；没装 / 没设目录返回 ""。
+ *  先看后端 pid 记的 installDir（可能是复用的外部实例），再回落到配置里的安装目录。 */
+function comfyUserWorkflowsDir() {
+  const cfg = loadConfig();
+  const meta = loadPidMeta();
+  for (const raw of [meta && meta.installDir, cfg.installDir]) {
+    const comfy = comfyDir(String(raw || "").trim());
+    if (comfy && fs.existsSync(comfy)) return join(comfy, "user", "default", "workflows");
+  }
+  return "";
+}
+
+/** 编辑器视图展开后的窗口边界（纯函数，可单测）：已够大就一点不动，不够才长。
+ *  右边缘当锚点往左长、顶边不动往下长，并钳进工作区 —— 绝不越屏，也不吃掉主列的位置。 */
+function wfEditorGrowBounds(b, wa, minW, minH) {
+  const wantW = Math.max(b.width, Math.min(Number(minW) || 0, Math.max(1, wa.width)));
+  const wantH = Math.max(b.height, Math.min(Number(minH) || 0, Math.max(1, wa.height)));
+  const maxRight = wa.x + wa.width;
+  /* 以右边缘为锚点往左长（看着就是「往左吃掉主列」，主列一点没动）；
+     左边贴着屏幕放不下时，就贴着左缘往右长 —— 原窗口那块可见区域一定保住。 */
+  let x = b.x + b.width - wantW;
+  if (x < wa.x) x = wa.x;
+  let width = Math.min(b.x + b.width, maxRight) - x;
+  if (width < wantW) width = Math.min(wantW, maxRight - x);
+  width = Math.max(1, width);
+  const height = Math.max(1, Math.min(wantH, wa.y + wa.height - b.y));
+  return {
+    x: Math.round(x),
+    y: Math.round(b.y),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
+}
+
+function pushWfEditorView() {
+  if (!(consoleWin && !consoleWin.isDestroyed())) return;
+  try {
+    consoleWin.webContents.send("h3:wfEditorViewChanged", Object.assign({}, wfEditorView));
+  } catch {}
+}
+
+function setWfEditorView(patch) {
+  wfEditorView = Object.assign({}, wfEditorView, patch || {});
+  pushWfEditorView();
+  return Object.assign({}, wfEditorView);
+}
+
+/** 管理窗切进「工作流编辑器」视图：先把窗口撑到能看画布的尺寸（快照旧边界），再把状态推给页面。 */
+function enterWfEditorView(url, info) {
+  if (!(consoleWin && !consoleWin.isDestroyed())) openConsoleWindow();
+  if (!(consoleWin && !consoleWin.isDestroyed())) return { ok: false, error: "no_window" };
+  const win = consoleWin;
+  if (!wfEditorSnapshot) {
+    try {
+      wfEditorSnapshot = win.getBounds();
+    } catch {
+      wfEditorSnapshot = null;
+    }
+  }
+  if (wfEditorSnapshot) {
+    const b = win.getBounds();
+    const wa = screen.getDisplayMatching(b).workArea;
+    const next = wfEditorGrowBounds(b, wa, WF_EDITOR_MIN_W, WF_EDITOR_MIN_H);
+    if (next.width !== b.width || next.height !== b.height) {
+      try {
+        if (win.isMaximized()) win.unmaximize();
+      } catch {}
+      try {
+        win.setBounds(next);
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    }
+  }
+  setWfEditorView(
+    Object.assign(
+      { open: true, url: String(url || ""), loaded: false, error: "", hint: "" },
+      info || {},
+    ),
+  );
+  return { ok: true, open: true };
+}
+
+/** 退出编辑器视图：状态先收（页面撤浮层），再把窗口边界还回进入前的样子。 */
+function exitWfEditorView() {
+  const snap = wfEditorSnapshot;
+  wfEditorSnapshot = null;
+  setWfEditorView({
+    open: false,
+    url: "",
+    id: "",
+    title: "",
+    file: "",
+    loaded: false,
+    error: "",
+    hint: "",
+  });
+  if (snap && consoleWin && !consoleWin.isDestroyed()) {
+    try {
+      consoleWin.setBounds(snap);
+    } catch {}
+  }
+  return { ok: true, open: false };
+}
+
+/** 在内嵌的 ComfyUI frame 里执行脚本。跨源 iframe 页面自己碰不到，只有主进程能按 frame 打；
+ *  刚挂上的 iframe url 还是 about:blank，所以这里轮询到「命中 ComfyUI 源且脚本没抛异常」。 */
+async function runInComfyFrame(port, script, opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  if (!(consoleWin && !consoleWin.isDestroyed())) return { ok: false, error: "no_window" };
+  const origin = "http://127.0.0.1:" + (Number(port) || DEFAULT_PORT);
+  const deadline = Date.now() + (Number(o.timeoutMs) || 20000);
+  let lastErr = "frame_not_found";
+  while (Date.now() < deadline) {
+    let frame = null;
+    try {
+      const list = (consoleWin.webContents.mainFrame && consoleWin.webContents.mainFrame.framesInSubtree) || [];
+      for (const f of list) {
+        try {
+          if (f && !f.isDestroyed() && String(f.url || "").indexOf(origin) === 0) {
+            frame = f;
+            break;
+          }
+        } catch {}
+      }
+    } catch {
+      lastErr = "frame_scan_failed";
+    }
+    if (frame) {
+      try {
+        const r = await frame.executeJavaScript(script, true);
+        return r && typeof r === "object" ? r : { ok: !!r };
+      } catch (e) {
+        lastErr = String((e && e.message) || e);
+      }
+    }
+    await sleep(400);
+  }
+  return { ok: false, error: "frame_timeout", message: lastErr };
+}
+
+/** 生成「把一条 UI 工作流载入 ComfyUI 编辑器」的页面内脚本。
+ *  只调前端自己的 window.app.loadGraphData（前端自己加载模板用的同一个入口），
+ *  不碰 ComfyUI 安装目录里的任何产物，也不写回 h3-workflows 库。
+ *  JSON 文本以字符串字面量下发、页面内再 JSON.parse，避免把内容当代码执行。 */
+function comfyLoadScript(uiText, waitMs) {
+  const lit = JSON.stringify(String(uiText || ""));
+  const budget = Math.max(5000, Number(waitMs) || 90000);
+  return (
+    "(async () => {" +
+    "let doc = null;" +
+    "try { doc = JSON.parse(" +
+    lit +
+    "); } catch (e) { return { ok:false, error:'bad_payload', message:String((e&&e.message)||e) }; }" +
+    "const until = Date.now() + " +
+    budget +
+    ";" +
+    "const nap = (ms) => new Promise((r) => setTimeout(r, ms));" +
+    "while (Date.now() < until) {" +
+    "const app = window.app;" +
+    "if (app && typeof app.loadGraphData === 'function') {" +
+    "try { await app.loadGraphData(doc, true, true, null, {}); return { ok:true, nodes:(doc.nodes||[]).length };" +
+    "} catch (e) { return { ok:false, error:'load_failed', message:String((e&&e.message)||e) }; }" +
+    "}" +
+    "await nap(250);" +
+    "}" +
+    "return { ok:false, error:'frontend_not_ready' };" +
+    "})()"
+  );
+}
+
+/** 「打开」这条模板进 ComfyUI 编辑：确保后端在跑 → 库里的模板落成 UI 工作流文件 →
+ *  管理窗切到内嵌编辑器视图 → 驱动前端载入这一条。
+ *  全程单向（库 → ComfyUI 现场）：任何一步都不把 ComfyUI 里的编辑结果写回库，
+ *  收回来的唯一入口仍是既有的「导入 JSON」。 */
+async function openWorkflowInComfyEditor(opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  const store = workflowStore();
+  const rec = store.get(String(o.id || ""));
+  if (!rec) return { ok: false, error: "工作流不存在：" + String(o.id || ""), url: comfyUiUrl(port) };
+
+  const ui = h3wf.recordToUiWorkflowText(rec);
+  if (!ui || !ui.ok) return { ok: false, error: (ui && ui.error) || "模板转换失败", url: comfyUiUrl(port) };
+
+  let p = port;
+  if (o.start) {
+    const r = await startBackend();
+    if (!r || !r.ok) {
+      const err = String((r && (r.error || r.message)) || "backend_start_failed");
+      appendConsole("[wf-editor] start failed: " + err);
+      return { ok: false, error: "start_failed", message: err, url: comfyUiUrl(port) };
+    }
+    p = Number(r.port) || port;
+  } else if (!(await probeComfy(port))) {
+    return { ok: false, error: "backend_not_running", url: comfyUiUrl(port) };
+  }
+  const editorUrl = comfyUiUrl(p);
+
+  /* 1) 先把这条模板写成 ComfyUI 用户工作流目录里的 UI 文件：前端「Workflow › Open」能列出来，
+        注入失败时用户也能手动选它。写不进（没装 / 目录不可写）不阻断下面的注入。 */
+  let file = "";
+  const dir = comfyUserWorkflowsDir();
+  if (dir) {
+    const ex = store.exportComfyUiFile(rec.id, dir);
+    if (ex && ex.ok) file = String(ex.filename || "");
+    else appendConsole("[wf-editor] export warn: " + ((ex && ex.error) || "unknown"));
+  } else {
+    appendConsole("[wf-editor] export skip: 找不到 ComfyUI 用户工作流目录");
+  }
+
+  /* 2) 管理窗切进编辑器视图（浮层 persistent：只有显式关闭才收，宿主任何路径都不替用户关它） */
+  const enter = enterWfEditorView(editorUrl, { id: rec.id, title: rec.title || "", file: file });
+  if (!enter.ok) return { ok: false, error: enter.error, url: editorUrl };
+
+  /* 3) 驱动内嵌前端载入这一条模板；打不开就退回「自己在工作流列表里选这个文件」 */
+  const inj = await runInComfyFrame(p, comfyLoadScript(ui.text, 90000), { timeoutMs: 20000 });
+  const loaded = !!(inj && inj.ok);
+  const hint = loaded
+    ? ""
+    : "ComfyUI 编辑器已打开，但这条模板没能自动载入。请在 ComfyUI 里点 Workflow › Open" +
+      (file ? "，选「" + file + "」" : "（工作流目录里对应的同名文件）") +
+      "。编辑结果不会写回插件库，收回库里的唯一入口仍是「导入 JSON」。";
+  setWfEditorView({
+    loaded,
+    hint,
+    error: loaded ? "" : String((inj && (inj.message || inj.error)) || ""),
+  });
+  appendConsole(
+    "[wf-editor] " + rec.title + " → " + editorUrl + (loaded ? " loaded✓" : " load✗ " + hint)
+  );
+  return {
+    ok: true,
+    url: editorUrl,
+    id: rec.id,
+    title: rec.title || "",
+    file,
+    loaded,
+    hint,
+    error: loaded ? "" : String((inj && (inj.error || inj.message)) || "load_failed"),
+  };
+}
+
 function openConsoleWindow() {
   const ui = ensureUiRuntime();
   const stamp = uiRuntimeStamp(join(h3Root(), "ui"));
@@ -2834,6 +3607,7 @@ function openConsoleWindow() {
     height: 640,
     x: Math.min(wa.x + wa.width - 440, wa.x + wa.width - 100),
     y: wa.y + 40,
+    minWidth: CONSOLE_WIN_MIN_W,
     frame: true,
     show: true,
     title: "Minimax H3 · 插件测试中",
@@ -2842,13 +3616,27 @@ function openConsoleWindow() {
       nodeIntegration: false,
       sandbox: false,
       preload: join(__dirname, "preload-h3.js"),
+      /* 本页是 file://，而「工作流编辑器」视图要内嵌本机 http://127.0.0.1:<port>（ComfyUI）。
+         file 页面拉不安全子帧属于 mixed content，Chromium 默认会拦 —— 这里显式放行。
+         只影响这个本机插件小窗，可加载来源固定是回环地址上的 ComfyUI，不外扩。 */
+      allowRunningInsecureContent: true,
     },
   });
   loadedUiStamp = stamp;
+  consolePaneW = 0; /* 新窗口 = 面板收起，位移记账必须跟着归零 */
+  consolePaneApplied = 0;
   consoleWin.loadFile(entry);
+  /* 页面（含界面更新导致的 reload）一装载完就把编辑器视图状态补推一次：
+     浮层的真源在宿主，页面重建后必须能原地恢复成「编辑器还开着」。 */
+  consoleWin.webContents.on("did-finish-load", () => pushWfEditorView());
   consoleWin.on("closed", () => {
     consoleWin = null;
     loadedUiStamp = "";
+    consolePaneW = 0;
+    consolePaneApplied = 0;
+    /* 窗口没了 = 编辑器视图随之消失；边界快照与状态一起清掉，下次开窗不会还挂着旧快照 */
+    wfEditorSnapshot = null;
+    wfEditorView = { open: false, url: "", id: "", title: "", file: "", loaded: false, error: "", hint: "" };
     notifyConsoleChanged(false);
   });
   startGpuPolling();
@@ -2861,6 +3649,7 @@ function closeConsoleWindow() {
     if (consoleWin && !consoleWin.isDestroyed()) consoleWin.close();
   } catch {}
   consoleWin = null;
+  consolePaneW = 0;
   notifyConsoleChanged(false);
   return { ok: true, open: false };
 }
@@ -2967,6 +3756,8 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:install", async (e, opts) => installProject(opts || {}));
   ipcMain.handle("h3:agentRecoverInstall", async (e, opts) => agentRecoverInstall(opts || {}));
   ipcMain.handle("h3:selfRepair", async (e, opts) => selfRepairFromConsole(opts || {}));
+  /* 补装注意力加速（triton-windows + 匹配的 sageattention 预编译 wheel），装完按生成期同一口径自检 */
+  ipcMain.handle("h3:installSage", async (e, opts) => installSageAttention(opts || {}));
   ipcMain.handle("h3:cancelInstall", async () => {
     installCancel = true;
     return { ok: true };
@@ -3082,9 +3873,26 @@ function registerH3Ipc(opts) {
       return { ok: false, error: String((e && e.message) || e) };
     }
   });
+  /* 「打开该模板进 ComfyUI 编辑」：管理窗内嵌编辑器视图 + 把这一条模板载入进去。
+     只出不进 —— 编辑结果一律不写回库，收回库里唯一入口仍是「导入 JSON」。 */
+  ipcMain.handle("h3:wfOpenInEditor", async (e, opts) => {
+    try {
+      return await openWorkflowInComfyEditor(opts || {});
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
+  /* 编辑器视图当前状态（页面 reload 后自己恢复浮层用；状态变化另有 h3:wfEditorViewChanged 推送） */
+  ipcMain.handle("h3:wfEditorGetView", async () => ({ ok: true, view: Object.assign({}, wfEditorView) }));
+  /* 显式关闭编辑器视图（浮层上的 ✕）：宿主不做「点外部即关」 */
+  ipcMain.handle("h3:wfEditorClose", async () => exitWfEditorView());
   ipcMain.handle("h3:forceKillBackend", async () => forceKillBackend("manual"));
   ipcMain.handle("h3:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("h3:consoleTail", async (e, n) => consoleTail(n));
+  /* 管理窗左侧 Console 停靠面板：页面报来开合与宽度，宿主把窗口往左撑 / 收 */
+  ipcMain.handle("h3:setConsolePane", async (e, opts) => setConsolePane(opts || {}));
+  /* 右上角「ComfyUI」：一键在浏览器打开工作流编辑界面（start=true 时先拉起后端） */
+  ipcMain.handle("h3:openComfyUI", async (e, opts) => openComfyUiInBrowser(opts || {}));
   ipcMain.handle("h3:open", async () => openConsoleWindow());
   ipcMain.handle("h3:close", async () => closeConsoleWindow());
   ipcMain.handle("h3:removePluginMeta", async () => removePluginMetaOnly());

@@ -15,6 +15,10 @@
       <span class="logo-txt"><span data-i18n="MTNode AI编排器">MTNode AI编排器</span><span class="logo-sub" id="logoSub"></span></span>
     </div>
     <div class="tb-end">
+      <button type="button" id="btnPuzzle" class="corner mini btn-stack btn-puzzle" data-i18n-title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" aria-label="益智小游戏">
+        <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5V4.6h3.1V2.4h2.8v2.2h3.1v3.1h-1.6a1.4 1.4 0 0 0 0 2.8h1.6v1.2H9.4v1.8H6.6V12.5H3.5z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
+        <span class="btn-stack-txt" data-i18n="游戏">游戏</span>
+      </button>
       <button type="button" id="btnDocs" class="corner mini btn-stack btn-docs" data-i18n-title="使用手册：界面说明与常见问题" title="使用手册：界面说明与常见问题">
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h7.4A1.4 1.4 0 0 1 12.2 4v9.2H4.6A1.2 1.2 0 0 1 3.4 12V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M12.2 13.2h.8V4.4A1.4 1.4 0 0 0 11.6 3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M5.6 5.2h4.2M5.6 7.4h4.2M5.6 9.6h2.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>
         <span class="btn-stack-txt" data-i18n="文档">文档</span>
@@ -277,8 +281,6 @@
   <span id="statCounts">— 节点 · — 连线</span>
   <span id="statProviders">服务商 0</span>
   <span id="statGrid">网格 24px</span>
-  <span id="statDsh" class="dsh-stat" data-i18n-title="最近一次智能运行的统计" title="最近一次智能运行的统计"></span>
-  <span id="statSession" class="dsh-stat" data-i18n-title="当前会话本轮 token 消耗（运行会话后显示）" title="当前会话本轮 token 消耗（运行会话后显示）"></span>
   <span class="spacer"></span>
   <span id="statZoom">100%</span>
   <span id="saveState">就绪</span>
@@ -322,5 +324,8 @@
 <script src="app-assist.js"></script>
 <script src="app-plan.js"></script>
 <script src="app-boot.js"></script>
+<script src="app-puzzle.js"></script>
+<script src="app-puzzle-games.js"></script>
+<script src="app-review.js"></script>
 </body>
 </html>

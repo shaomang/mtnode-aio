@@ -2431,7 +2431,7 @@ registerNodeSettingsForm("video_gen", {
       );
     ctx.section(I18n.t("24G 优化（默认开，可关）"));
     addOpt("optEasyCache", I18n.t("EasyCache"), I18n.t("原生步跳过缓存 · 约 1.4–2×"));
-    addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需安装 sageattention；缺包自动跳过"));
+    addOpt("optSageAttn", I18n.t("Sage Attention"), I18n.t("需 triton-windows + sageattention；缺包自动跳过（H3 插件窗可一键补装）"));
     addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
     addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
     addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
@@ -2662,14 +2662,14 @@ function saveSettingsSummary(node) {
 registerNodeSettingsForm("save", {
   gearTitle: () => I18n.t("保存路径 / 自动保存"),
   summary: saveSettingsSummary,
-  /* 输入类型（文本→.yaml / 图像→.png /…）会换掉强制后缀，换掉的是「该写什么路径」 */
+  /* 输入类型（文本→.md / 图像→.png /…）会换掉强制后缀，换掉的是「该写什么路径」 */
   signature: (node) => "sv:" + saveMediaKind(node),
   build: (ctx) => {
     const node = ctx.node;
     const media = saveMediaKind(node);
     const ext = saveExtForMedia(media);
     const extHint =
-      media === "text" ? "*.yaml" : media === "image" ? "*.png" : media === "audio" ? "*.wav" : "*.mp4";
+      media === "text" ? "*.md" : media === "image" ? "*.png" : media === "audio" ? "*.wav" : "*.mp4";
     const hasWs = !!String(wfWorkspace() || "").trim();
     ctx.hint(
       I18n.t("后缀由连进来的数据类型固定为 ") + extHint + I18n.t("，写错会自动纠正。"),
@@ -2691,7 +2691,7 @@ registerNodeSettingsForm("save", {
             : I18n.t("保存路径（") + extHint + I18n.t("）…"),
         title: hasWs
           ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
-          : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .yaml）"),
+          : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .md）"),
         normalize: (v) =>
           applySuperRelToPath(
             node,
@@ -7624,6 +7624,24 @@ function assetBindBtn(label, run, cls, title) {
   return b;
 }
 
+/* 审阅入口按钮（普通 proc_text 节点 · 置于输出按钮组内、与 复制/清空/浏览 并列 · 橙色文字）。
+   独立类名，不依赖 n-play 头栏按钮的 26px 定宽，保证文案完整显示。 */
+function procReviewOpenEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "proc-review-open";
+  b.textContent = "✎ " + I18n.t("审阅");
+  b.title = I18n.t(
+    "对本节点输出做所见即所得全文/局部批注，并让 AI 依据批注逐轮修订出新版本（可回看 / 回滚）。",
+  );
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openTextReview(node);
+  };
+  return b;
+}
+
 function buildBody(node, body) {
   /* 浏览态（未选中）优先走只读视图分支；handler 未接管时回落到下方编辑态渲染 */
   if (nodeBrowseMode(node) && buildBrowseBody(node, body)) return;
@@ -8065,13 +8083,15 @@ function buildBody(node, body) {
     const f3 = document.createElement("label");
     f3.className = "n-field n-prompt";
     if (node.kind !== "agent_task") {
-      f3.appendChild(
-        document.createTextNode(
-          node.agent
-            ? I18n.t("任务（输入 / 呼出技能 · @ 引用输入节点）")
-            : I18n.t("提示词 Prompt（@ 引用输入节点 · 输入内容自动附加）"),
-        ),
-      );
+      const hdr = document.createElement("div");
+      hdr.className = "n-prompt-hdr";
+      const lab = document.createElement("span");
+      lab.className = "n-prompt-lab";
+      lab.textContent = node.agent
+        ? I18n.t("任务（输入 / 呼出技能 · @ 引用输入节点）")
+        : I18n.t("提示词 Prompt（@ 引用输入节点 · 输入内容自动附加）");
+      hdr.appendChild(lab);
+      f3.appendChild(hdr);
     }
     const ta = document.createElement("textarea");
     ta.className = "n-text";
@@ -8290,6 +8310,9 @@ function buildBody(node, body) {
         clearOutput(node),
       );
       mkOutBtn(I18n.t("浏览"), I18n.t("弹窗大窗显示本节点输出内容"), () => browseOutput(node));
+      /* 审阅入口：普通（非智能）文本处理节点 → 与 复制/清空/浏览 并列 · 橙色 */
+      if (node.kind === "proc_text" && !node.agent && typeof procReviewOpenEl === "function")
+        ob.appendChild(procReviewOpenEl(node));
       oh.appendChild(ob);
       out.appendChild(oh);
       if (nA > 1) out.appendChild(attemptTabsEl(node));

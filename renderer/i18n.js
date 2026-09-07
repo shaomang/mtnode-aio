@@ -6,6 +6,38 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   var ZH_EXTRA = {"help.html":"\r\n  <div class=\"help-body\">\r\n\r\n  <h3>① 节点类型</h3>\r\n  <p>在画布<b>空白处右键</b>弹出菜单添加节点，位置自动吸附网格（默认 24px，可在设置中调整）。共有 4 类节点：</p>\r\n  <ul>\r\n    <li><b>输入节点</b>：文本 / 图像 / 音频 / 视频。内容就地编辑或拖入文件，实时保存；可自由缩放、点击标题重命名。音频 / 视频输入选一个本机文件后可<b>预览</b>，并输出该文件的 <code>file:///</code> URL（可连进 Minimax H3 的参考端子或保存节点）。</li>\r\n    <li><b>处理节点</b>：文本 LLM / 图像生成。连接输入后点击 ▶ 运行，结果在节点右侧展开。</li>\r\n    <li><b>保存节点</b>：将输出保存为 <code>.yaml</code> 文本或图像文件，支持自动保存。</li>\r\n    <li><b>任务节点</b>：把复杂需求拆成内部任务图。每个任务固定有起点、成功终点、失败终点；▶ 从起点沿控制流跑到终点决定成功或失败。可用判断节点（是/否）分流。父任务上以格子展示子任务。</li>\r\n  </ul>\r\n\r\n  <h3>② 连线与继承</h3>\r\n  <ul>\r\n    <li><b>连线</b>：从输出端子拖到输入端子；输入端子默认 1 个，连上一个后自动新增（垂直居中分布）。</li>\r\n    <li><b>输入继承</b>：输入节点一旦连线，内容变为<b>只读并自动继承输入内容</b>；断开连接即恢复可编辑。</li>\r\n    <li><b>自动递归执行</b>：输入包含未处理的上游节点时，运行会自动执行上游直至就绪，再处理当前节点。处理节点完成后会继续执行下游；若下游已有输出，会询问覆盖或不继续。</li>\r\n  </ul>\r\n\r\n  <h3>③ 批量处理</h3>\r\n  <ul>\r\n    <li><b>开启</b>：输入节点右上角「批量」按钮。文本节点通过 ＋ 添加条目 / 导入 / 粘贴 YAML（field=标题，内容=内容）；图像节点可多选或拖入多张。</li>\r\n    <li><b>模式切换</b>：处理节点头部「批量 / 聚合」——批量 = 逐条运行、输出批量结果；聚合 = 所有条目合并为一次运行、输出单个结果。</li>\r\n    <li><b>拆分 / 合并</b>：拆分节点从批次中实时抽取单项；合并节点多输入汇成批次，下游自动批量处理。</li>\r\n    <li><b>命名</b>：批量链上保存节点按 <code>{文件名}_{输入节点标题}</code> 自动命名输出。</li>\r\n  </ul>\r\n\r\n  <h3>④ @ 引用</h3>\r\n  <p>在提示词中输入 <code>@</code> 弹出<b>已连接节点</b>下拉菜单（↑↓ 选择、Enter 确认，未连接的节点不允许引用）。运行时所有输入内容放入 <code>【背景信息】</code>（每条以 <code>### 标题</code> 开头），提示词放入 <code>【内容】</code>；<code>@标题</code> 会去掉 @ 并指向对应背景条目。图像节点引用以<b>参考图像</b>方式传入。</p>\r\n\r\n  <h3>⑤ 运行与预览</h3>\r\n  <ul>\r\n    <li><b>运行</b>：点击节点上的 ▶，自动递归执行上游并处理当前节点；完成后自动执行下游（下游已有内容时询问覆盖或不继续）。</li>\r\n    <li><b>预览</b>：◈ 按钮在运行前查看将要发送的完整请求。</li>\r\n    <li><b>参数</b>：右上角「API」按钮展开服务商 / 模型 / 温度 / 尺寸选择；「多次尝试」可自动重试。</li>\r\n    <li><b>浏览</b>：输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>\r\n    <li><b>清空</b>：输出面板头部「清空」移除输出，回到未处理状态。</li>\r\n  </ul>\r\n\r\n  <h3>⑥ 保存与存档</h3>\r\n  <ul>\r\n    <li><b>自动保存</b>：任何编辑数百毫秒内自动写入本地磁盘，启动时自动恢复上次现场。</li>\r\n    <li><b>立即保存 / 存档位置</b>：顶栏「立即保存」手动写盘；「存档位置」直接打开画布保存文件夹（<code>save/</code>，每个工作流一个 JSON 文件）。</li>\r\n    <li><b>工作流管理</b>：顶栏可新建 / 切换 / 删除画布（默认画布 <code>default</code>，删除后自动重建）。</li>\r\n    <li><b>保存节点</b>：文本保存每个输入对应 YAML 一项（键为批量条目 field）；聚合模式全部条目合并为一个文件保存。</li>\r\n  </ul>\r\n\r\n  <h3>⑦ 服务商配置</h3>\r\n  <p>在「设置 · API/配置」中统一管理服务商：默认内置文本与图像两类服务商（可选用 DeepSeek 或 GPT Image 2），也可按「类型」下拉添加兼容接口的自定义服务商。填写后所有模型节点自动读取，API Key 仅保存在本机。</p>\r\n\r\n  <h3>⑧ 其他节点</h3>\r\n  <ul>\r\n    <li><b>会话模式（💬）</b>：智能任务节点头部点 <b>💬</b> 即变微信风格聊天气泡（AI 白左 · 用户绿右），多轮对话随节点保存；模型思考时灰色内容流式显示在「输入中」位置，回复完成后在回答前方出现「思考内容」按钮，点击可查看本条思考全文。原独立的<b>「文本对话」节点已移除</b>，旧画布上的对话节点打开时会自动迁移成这种节点。</li>\r\n    <li><b>文件参考</b>：文本节点右上角 📄 小按钮可导入 txt / md / json / yaml / csv / log 等文件内容（超过 500KB 拒绝导入），不占用节点空间。</li>\r\n    <li><b>控制节点</b>：头部小按钮切换「清空 / 执行」，把控制节点连到目标（或把目标连入控制节点），点击 ▶ 对所有已连接节点同时执行该操作。控制连线为金色，不作为数据输入。</li>\r\n  </ul>\r\n\r\n  <h3>⑨ 快捷键</h3>\r\n  <p><code>Ctrl+Z</code> 撤销 · <code>Ctrl+Y</code> / <code>Ctrl+Shift+Z</code> 重做 · <code>Ctrl+C</code> 复制选中节点 · <code>Delete</code> 删除选中节点 / 连线 / 组 · <code>G</code> 把选中节点组成组 / 解散选中组 · <code>Esc</code> 取消选择 · 点击节点标题就地重命名 · <code>⤢ 居中</code> 缩放定位全部节点。</p>\r\n\r\n  <h3>⑩ 框选与组</h3>\r\n  <ul>\r\n    <li><b>框选</b>：按住 <code>Ctrl + 左键</code> 拖拽画布空白处（或开启顶栏「▭ 框选」模式后直接左键拖拽），松开后框内节点全部选中，可整体移动 / 删除 / 复制。</li>\r\n    <li><b>组</b>：选中多个节点后按 <code>G</code> 或点「◫ 组」→ 输入标题创建组；组为虚线圆角边框，可整体拖动、边缘/角落把手<b>横竖分别缩放</b>（成员达到最小尺寸后整体停止缩放，内部比例不变）、✕ 或右键删除；再次点击「组」按钮 / 按 <code>G</code> 解散组（节点保留）。</li>\r\n    <li><b>边栏</b>：工具栏左侧「☰」打开节点树状列表，顶部输入框可按标题筛选，点击条目画布自动居中定位到该节点。</li>\r\n    <li><b>输出浏览</b>：处理节点输出面板头部「浏览」弹窗大窗显示完整输出（文本 / 图像 / 批量全部条目），可一键复制文本。</li>\r\n    <li><b>会话模式的思考</b>：智能任务的会话模式支持服务商 / 模型选择与请求预览；模型思考时灰色内容流式显示在「输入中」位置，回复完成后在回答前方出现「思考内容」按钮，点击可查看本条思考全文。</li>\r\n  </ul>\r\n\r\n  <h3>⑪ 智能能力（可读文件 / 联网 / 执行命令）</h3>\r\n  <p>接入 DeepSeek Harness 后，模型从「只会生成文字」升级为「会办事」：能<b>读取 / 写入电脑上的文件、联网搜索、执行命令</b>，多步完成后给出结果。运行环境随应用自带（与主程序同版本 Node），引擎随应用启动，<b>无需安装任何东西</b>。启用位置：设置 · API/配置 → <b>「智能能力（DeepSeek Harness / dsh）」</b>；需先配置好带 API Key 的<b>文本服务商</b>（DeepSeek 或其他兼容服务商均可，节点 / 会话上可切换供应商与模型）。</p>\r\n  <ul>\r\n    <li><b>原来只能聊天</b> → <b>智能任务</b>节点（或开了 <b>🐋 智能</b> 的文本节点）里直接说「把 E:\\\\素材 下的 txt 汇总成大纲存成文件」，它会自己去读、去写；工作目录点「浏览」用文件夹窗口选择。</li>\r\n    <li><b>原来只能处理粘贴进来的内容</b> → 文本处理节点点头部 <b>🐋 智能</b>按钮后，提示词成为任务（可写「联网查最新数据再总结」）。</li>\r\n    <li><b>新增「智能任务」节点</b>（右键画布 → 智能节点）：与文本处理节点功能对齐——支持 <b>@ 引用 / 多输入 / 批量 / 聚合 / 模型选择 / 输出浏览</b>，工作目录用文件夹窗口选择；仅移除「多次尝试」（智能任务多步执行，不做并行抽卡）。</li>\r\n    <li><b>让助手搭工作流</b>：在智能任务或智能会话里说「实现 xxx 的工作流」，模型会在当前画布上<b>创建节点、改标题、连线、写入 @引用</b>，并自动从左到右排版（不重叠）。例如「实现物品配置的工作流」会搭出「需求 → 生成配置 → 保存到配置表」管道，你可继续改提示词与保存路径后点 ▶ 运行。</li>\r\n  </ul>\r\n  <p><b>过程可见</b>：运行中显示「◉ 思考中」，点击可实时查看模型思考与<b>工具调用（🔧）</b>；智能节点的回复逐字流式显示。<b>降级保底</b>：关闭各节点智能开关（或设置中关闭总开关），全部回到原有行为。<b>注意</b>：智能模式按「任务完成」计费，一次任务可能多次调用模型；写文件前请确认工作目录正确。</p>\r\n  <p>设置 · 智能能力区块还提供：<b>Agent 预设</b>（通用助手 / 精简执行 / 代码专家 / Cordis 插件开发助手）、<b>对话发送行为</b>（Enter 发送或 Enter 换行）、<b>DSH 插件</b>（dsh 风格可搜索卡片清单，安装 / 启停 / 移除）、<b>技能 Skills</b>（创建即用，智能节点自动发现）、<b>MCP 服务器</b>（连接后智能节点自动获得其工具）。</p>\r\n\r\n  </div>"};
   var EN = {
+    /* ── 审阅（富文本 Markdown 审阅 / 批注修订） ── */
+    "审阅": "AI Review",
+    "让 AI 依据批注修订": "Ask AI to revise from annotations",
+    "采用当前版并写回节点": "Apply this version back to node",
+    "回滚到此版": "Roll back to this version",
+    "已回滚作废（仅可回看）": "Discarded by rollback (view only)",
+    "作废版本 · 仅可回看": "Discarded version · view only",
+    "已绑定局部批注": "Local annotation attached",
+    "已生成修订版，可继续批注下一轮": "New revision generated — annotate the next round",
+    "修订失败：": "Revision failed: ",
+    "全文批注": "Full-text annotation",
+    "局部": "Local",
+    "局部批注": "Local annotation",
+    "原文 / 全文批注": "Full",
+    "输入批注内容…": "Type your annotation…",
+    "批注内容": "Annotation content",
+    "添加批注": "Add annotation",
+    "对整个文档附加一条批注": "Attach a note to the whole document",
+    "在正文中拖选文字可添加局部批注": "Drag to select text to attach a local note",
+    "局部批注已开启，拖选正文即可添加": "Local annotation is on — drag to select text to attach",
+    "插入链接": "Insert link",
+    "回滚版本": "Roll back version",
+    "绑定批注": "Attach",
+    "历史全部批注": "All annotations across rounds",
+    "当前全文": "Current full text",
+    "已写回节点文本，请重新运行下游使其重算": "Written back to the node — re-run downstream to recompute",
+    "字数：": "Chars: ",
+    "字符（不含空白）": "Non-whitespace chars",
+    "该编辑操作在当前浏览器不受支持": "This editing action is not supported in your browser",
+    "请先等该节点运行完成再审阅": "Wait for the node to finish running before reviewing",
+    "该节点还没有文本输出，请先运行一次再审阅": "No text output yet — run the node once first",
+    "锚点文字已变更，批注可能失效": "Anchor text changed — annotation may be stale",
     /* ── 全部终止 / 媒体生成排队 ── */
     "已终止（排队中的生成任务已取消）": "Cancelled (queued generation dropped)",
     "已终止（后端生成任务已取消）": "Cancelled (backend generation stopped)",
@@ -888,7 +920,7 @@
     "（等待上游输出…）内容只读": "(Waiting for upstream output…) content is read-only",
     "（等待上游输出中）内容只读": "(Waiting for upstream output) content is read-only",
     "✕ 删除组（连同内部节点）": "✕ Delete group (including inner nodes)",
-    "保存路径（*.yaml）…": "Save path (*.yaml)…",
+    "保存路径（*.md）…": "Save path (*.md)…",
     "标题不唯一，请改用 id：": "Title is not unique, use id instead: ",
     "拆分出的只读节点，不可修改": "Split-out read-only node, cannot be edited",
     "拆分节点仅接受 1 个输入": "Split node accepts only 1 input",
@@ -1441,7 +1473,7 @@
     "设置后,本画布智能节点与保存节点的相对路径都相对该目录;改目录即可统一切换落盘位置;留空则各节点单独设置": "Once set, agent nodes and relative save paths use this directory; change it to redirect all saves; leave empty for per-node settings",
     "有工作目录时可用相对路径（如 output.yaml）；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。": "With a working directory set, use a relative path (e.g. output.yaml); changing the toolbar workspace redirects all saves. Absolute paths are also allowed.",
     "相对工作目录或绝对路径（*.png / *.jpg）…": "Relative to working directory or absolute path (*.png / *.jpg)…",
-    "相对工作目录或绝对路径（*.yaml）…": "Relative to working directory or absolute path (*.yaml)…",
+    "相对工作目录或绝对路径（*.md）…": "Relative to working directory or absolute path (*.md)…",
     "相对路径需要先设置工作目录（顶栏），或改用绝对路径": "Relative paths need a working directory (toolbar), or use an absolute path"
   };
   Object.assign(EN, {
@@ -1618,6 +1650,7 @@
     "点赞": "Like",
     "已点赞": "Liked",
     "编辑": "Edit",
+    "源码": "Source",
     "确认删除": "Confirm delete",
     "标题": "Title",
     "功能描述": "Description",
@@ -3802,10 +3835,12 @@
       "Implementation rules: follow the real code under the project root; if an option conflicts with reality, explain the trade-off before editing; verify each finished item (build / run / test / read-only command).",
     "完成后更新画布上该开发节点的概述（note）与状态（devStatus），并用一句话汇报改了什么。":
       "When done, update this dev node's overview (note) and status (devStatus) on the canvas and report in one sentence what changed.",
-    "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），用一句话汇报改了什么。":
-      "When done, rewrite this dev node's overview (note) in the two-section spec (【功能】 non-technical description + 【实现】 implementation outline), update its status (devStatus), and report in one sentence what changed.",
+    "本会话是「开发」绑定会话（不读也不改画布）：执行期间与收尾都不得修改画布上任何内容 —— 不改该功能块节点的 title / note / devStatus / devFiles，也不动其它节点或连线；任务完成后在会话里用一句话汇报改了什么。":
+      "This session is a dev-bound session (it neither reads nor edits the canvas): during execution or when finishing it must not modify anything on the canvas — it does not change this module block node's title / note / devStatus / devFiles, nor any other node or wire; when done, report in the session in one sentence what you changed.",
     "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），同时用 mtnode_canvas_edit 的 devFiles 补丁回写本模块的核心文件列表（最多 10 条 · 每项是相对项目根的文件路径 · 最外层项目节点不填），用一句话向用户汇报改了什么。":
       "When done, rewrite this dev node's overview (note) in the two-section spec (【功能】 non-technical description + 【实现】 implementation outline), update its status (devStatus), and also patch this module's core file list back through mtnode_canvas_edit's devFiles (up to 10 entries · each a path relative to the project root · the outermost project block stays empty), then report in one sentence what changed.",
+    "本会话执行期间与收尾都不得修改画布上的任何节点：不改本功能块的 title / note，不动 devStatus / devFiles，也不改其它节点或画布内容，画布一律原样保留。唯一允许更新的是本会话自身在左侧栏的标题（随首轮主题自动命名）。任务完成后，用一句话向用户汇报改了什么。":
+      "This session must NOT modify any node on the canvas during execution or when finishing: do not change this module block's title / note, do not touch its devStatus / devFiles, and do not alter any other node or canvas content — the canvas stays exactly as it is. The only thing allowed to update is this session's own title in the left sidebar (auto-named from the first-round topic). When done, report in one sentence what you changed.",
     /* ===== 建议调研：可离开 + 完成跳窗（后台作业 devSuggestJobs / sug 运行态） ===== */
     "「": "\"",
     "」的调研已完成，但该功能块已不在当前画布，结果未写入。":
@@ -4849,12 +4884,12 @@
       "This session is code development work: do not invoke the mtnode-dev-architect skill (that skill only builds dev-node architecture on the MTNode canvas; dev / refinement bound sessions do not need it).",
     /* ===== Gate A：开发绑定会话不读画布（本节点 id 锚点 + 无读画布口径） ===== */
     "本节点 id：": "This node's id: ",
-    "（收尾回写概述 / 状态 / 核心文件列表时，用 mtnode_canvas_edit 的 update 按这个 id 定位，不要为了拿 id 去读画布）":
-      "(when writing back the overview / status / core-file list at the end, target this id in mtnode_canvas_edit's update — never read the canvas just to get an id)",
-    "本会话不读取画布：mtnode_canvas_get 与 mtnode_app 本轮未注册，画布现状一律以本任务书为准；只在收尾时改本节点这一个对象。":
-      "This session does not read the canvas: mtnode_canvas_get and mtnode_app are not registered this round, so canvas state always comes from this brief; touch only this one node, and only at the end.",
-    "本轮不注册读画布与应用工具（mtnode_canvas_get / mtnode_app 调用即失败）：画布现状以宿主给的契约为准，改画布只在收尾用 mtnode_canvas_edit 按节点 id 点名本节点。":
-      "The canvas-reading and app tools are not registered this round (a call to mtnode_canvas_get / mtnode_app fails outright): canvas state comes from the contract the host gave you, and any canvas edit happens only at the end, naming this node by id through mtnode_canvas_edit.",
+    "（本节点 id 仅供回复 / 文档中指认本模块；本会话不得用它修改画布上任何节点）":
+      "(this node id is only for naming this module in replies / documents; this session must not use it to modify any node on the canvas)",
+    "本会话不读取画布：mtnode_canvas_get 与 mtnode_app 本轮未注册，画布现状一律以本任务书为准；本会话执行期间与收尾都不得修改画布上的任何节点。":
+      "This session does not read the canvas: mtnode_canvas_get and mtnode_app are not registered this round, so canvas state always comes from this brief; this session must not modify any node on the canvas during execution or when finishing.",
+    "本轮不注册读画布与应用工具（mtnode_canvas_get / mtnode_app 调用即失败）：画布现状以宿主给的契约为准；本会话不改画布 —— 执行与收尾都不回写本节点的 title / note / devStatus / devFiles，也不改其它任何节点、连线或画布内容。":
+      "The canvas-reading and app tools are not registered this round (a call to mtnode_canvas_get / mtnode_app fails outright): canvas state comes from the contract the host gave you; this session does not edit the canvas — during execution or when finishing, it never writes back this node's title / note / devStatus / devFiles, and it changes no other node, wire, or canvas content.",
     /* 工具节点「开发」= 绑定该工具的会话（app-tools.js toolDev* · 与函数节点同一机制，
        作用域 = 本工具节点 + 内部子图；可改 toolConfig 参数 / 描述 / 重建内部子图） */
     "工具开发会话未就绪（app-tools.js）": "Tool dev session is not ready (app-tools.js)",
@@ -5333,7 +5368,8 @@
     "max（2048 短边 · 还原度更高更慢）":
       "max (2048 short edge — closer to source, slower)",
     "原生步跳过缓存 · 约 1.4–2×": "Skips native steps via cache · about 1.4–2×",
-    "需安装 sageattention；缺包自动跳过": "Needs sageattention installed; skipped when missing",
+    "需 triton-windows + sageattention；缺包自动跳过（H3 插件窗可一键补装）":
+      "Needs triton-windows + sageattention; skipped automatically when missing (one-click install in the H3 plugin window)",
     "按 head 分块降峰值显存": "Chunks per head to lower peak VRAM",
     "FFN 分块降峰值显存": "Chunks the FFN to lower peak VRAM",
     "采样后 unload，避免双 VAE 解码 OOM":
@@ -5388,8 +5424,8 @@
     "）…": ")…",
     "有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。":
       "With a workspace folder you may use a relative path; changing that folder moves everything into the new one. Absolute paths work too. The extension is fixed by the input type.",
-    "输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .yaml）":
-      "Output file path (image .png / audio .wav / video .mp4 / text .yaml)",
+    "输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .md）":
+      "Output file path (image .png / audio .wav / video .mp4 / text .md)",
 
     /* wait_file */
     "（未设置监视路径）": "(no watched path set)",
@@ -5627,6 +5663,35 @@
     "没有内容可写入": "there is nothing to write",
     "写入失败": "write failed",
   });
+
+  /* ── Puzzle 益智小游戏（app-puzzle.js 框架与顶栏入口共用 UI 词条）── */
+  Object.assign(EN, {
+    "游戏": "Game",
+    "益智小游戏：等待 AI 工作时玩几款小游戏打发时间":
+      "Puzzle games: play a few quick minigames while you wait for the AI",
+    "益智小游戏": "Puzzle Games",
+    "选择一款小游戏打发时间": "Pick a minigame to pass the time",
+    "难度": "Level",
+    "目标": "Goal",
+    "已答": "Done",
+    "得分": "Score",
+    "连击": "Combo",
+    "计时": "Time",
+    "结束": "End",
+    "关闭": "Close",
+    "返回列表": "All games",
+    "A · 计算 / 逻辑": "A · Arithmetic / Logic",
+    "B · 记忆 / 注意": "B · Memory / Attention",
+    "C · 知觉 / 空间": "C · Perception / Space",
+    "难度 {l} / 5": "Level {l} / 5",
+    "未实现 · 玩法将在后续接入": "Not implemented yet · coming soon",
+    "已全部接入玩法": "All games wired up",
+    "开始": "Play",
+    "没有可玩的小游戏": "Nothing to play yet",
+    "本轮结束": "Round over",
+    "再来一局": "Play again",
+  });
+
   function listJoin(arr) {
     return (arr || []).join(locale === "en" ? ", " : "、");
   }

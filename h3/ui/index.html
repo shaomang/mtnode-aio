@@ -23,8 +23,39 @@
       font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
       height: 100%;
     }
-    .wrap { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; overflow-y: auto; overflow-x: hidden; }
+    /* 整体一行两列：左侧 Console 停靠面板（默认收起） + 右侧原主列。
+       面板与窗口等高；宿主按面板宽度把窗口往左撑开 → 主列看着一点没动。 */
+    body { display: flex; align-items: stretch; overflow: hidden; }
+    .wrap { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; overflow-y: auto; overflow-x: hidden; }
     h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    /* 右上角常驻按钮条：Console 面板开关 + 一键打开 ComfyUI 编辑界面。
+       用 sticky 贴在主列滚动容器顶部：fixed 会盖住标题与提示条，sticky 自己占一行、滚到哪儿都在。 */
+    .topbtns {
+      position: sticky; top: 0; z-index: 30;
+      display: flex; justify-content: flex-end; align-items: center; gap: 6px;
+      margin: -12px -12px -10px; padding: 10px 12px 12px;
+      background: var(--bg);
+    }
+    .topbtns button { padding: 4px 9px; font-size: 12px; border-radius: 7px; background: #1c2230; }
+    .topbtns button.on { background: #243552; border-color: #3a5f9a; color: #dbe9ff; }
+    .topbtns .pane-title { margin-right: auto; align-self: center; }
+    /* 左侧 Console 面板：只做一件事 —— 显示 console 内容 */
+    .console-pane {
+      flex: 0 0 auto; width: 360px; height: 100%; padding: 10px; gap: 8px;
+      display: flex; flex-direction: column; order: -1;
+      background: #0b0e13; border-right: 1px solid var(--border);
+    }
+    .console-pane[hidden] { display: none !important; }
+    .pane-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .pane-title { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .pane-ops { margin-left: auto; display: flex; gap: 6px; }
+    .pane-ops button { padding: 3px 8px; font-size: 12px; }
+    .cbadge {
+      display: inline-block; min-width: 15px; padding: 0 4px; margin-left: 5px;
+      border-radius: 999px; background: #8a6a1a; color: #fff3d0;
+      font-size: 10px; line-height: 15px; text-align: center;
+    }
+    .cbadge[hidden] { display: none !important; }
     .sub { color: var(--muted); font-size: 12px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     button {
@@ -57,7 +88,7 @@
     .bar.util > i { background: linear-gradient(90deg, #b8860b, #f0b429); }
     .meta { color: var(--muted); font-size: 12px; }
     #console {
-      flex: 1; min-height: 160px; overflow: auto; white-space: pre-wrap;
+      flex: 1 1 auto; min-height: 0; overflow: auto; white-space: pre-wrap;
       font: 11px/1.4 ui-monospace, Consolas, monospace;
       background: #0c0f14; border: 1px solid var(--border); border-radius: 8px;
       padding: 8px; color: #c5d0e6;
@@ -111,10 +142,48 @@
     }
     .wf-empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
     #wfModal .modal { width: min(520px, 94vw); }
+    /* 「工作流编辑器」视图：整窗盖住主列，内嵌本机 ComfyUI（宿主放行 file:// 页内的 http 子帧）。
+       persistent 浮层：只有浮层上那个 ✕ 能关，一律不挂「点外部 / 失焦即关」。 */
+    .wf-editor {
+      position: fixed; inset: 0; z-index: 40; background: var(--bg);
+      display: flex; flex-direction: column;
+    }
+    .wf-editor[hidden] { display: none !important; }
+    .wf-editor .ed-head {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 8px 10px; background: var(--panel); border-bottom: 1px solid var(--border);
+    }
+    .wf-editor .ed-title { font-weight: 600; word-break: break-all; }
+    .wf-editor .ed-head button { margin-left: auto; padding: 4px 9px; font-size: 12px; }
+    .wf-editor .ed-note {
+      flex: 0 0 auto; padding: 7px 10px; background: #2a2414;
+      border-bottom: 1px solid #6b5418; color: #f0d27a; font-size: 12px; line-height: 1.45;
+    }
+    .wf-editor .ed-note[hidden] { display: none !important; }
+    .wf-editor iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #0b0e13; }
   </style>
 </head>
 <body>
+  <!-- 左侧 Console 停靠面板：与窗口等高、钉在窗口左边，只放 console 内容。
+       宿主（h3/main-h3.js 的 setConsolePane）按本面板的实际宽度把窗口往左撑开。 -->
+  <aside class="console-pane" id="consolePane" hidden>
+    <div class="pane-head">
+      <span class="pane-title">后端 Console</span>
+      <div class="pane-ops">
+        <button id="btnClearLog" type="button" title="清空当前视图（磁盘上的 console.log 不动）">清空视图</button>
+        <button id="btnClosePane" type="button" title="收起面板（窗口恢复原宽）">✕</button>
+      </div>
+    </div>
+    <div id="console"></div>
+  </aside>
+
   <div class="wrap">
+    <!-- 右上角常驻按钮条：Console 面板开关 + 一键打开 ComfyUI 编辑界面（sticky 吸顶，滚到哪儿都在） -->
+    <div class="topbtns">
+      <span class="pane-title" id="comfyHint" title="ComfyUI 后端地址">:8188</span>
+      <button id="btnConsolePane" type="button" title="在窗口左侧展开 / 收起 Console 面板（窗口往左变宽，主界面一格不动）">Console<span class="cbadge" id="cbadge" hidden>0</span></button>
+      <button id="btnOpenComfy" type="button" title="用浏览器打开 ComfyUI 工作流编辑界面（后端没跑时会先问你是否启动）">ComfyUI 编辑界面</button>
+    </div>
     <div class="notice">
       <b>插件测试中</b> · 画布节点执行时会<strong>自动启动后端 → 生成 → 确认文件 → 关闭后端</strong>，无需手动启停。卡死时可点「强制释放显存」。安装复杂，可能会失败。
     </div>
@@ -133,11 +202,13 @@
       <div class="row">
         <button class="primary" id="btnInstall">安装</button>
         <button id="btnSelfRepair" title="读取最近 console 日志，由 Agent 对症修复">自我修复</button>
+        <button id="btnSage" title="自检注意力加速包（triton-windows + 与本 venv 配套的 sageattention 预编译 wheel）：未装就一键补装。缺包不影响出片，只是慢约 1.5-2×">Sage 加速</button>
         <button id="btnStart" title="调试用；正常请从画布节点执行">手动启动</button>
         <button id="btnStop" title="调试用">手动停止</button>
         <button class="danger" id="btnForceKill" title="卡死时用：杀后端释放显存">强制释放显存</button>
         <button class="danger" id="btnUninstall">卸载</button>
       </div>
+      <div class="meta" id="sageInfo"></div>
       <div class="meta" id="installStep">—</div>
       <div class="bar" id="installBar"><i></i></div>
       <div class="meta" id="subStep"></div>
@@ -161,7 +232,8 @@
         </div>
       </div>
       <div class="meta" style="color:var(--muted)">
-        画布 video_gen 节点选「自建工作流」即可使用；参数映射在节点面板里编辑。格式自动识别：API 格式（{节点id:{class_type,inputs}}）或 UI 格式（nodes/links）。
+        画布 video_gen 节点选「自建工作流」即可使用；参数映射在节点面板里编辑。格式自动识别：API 格式（{节点id:{class_type,inputs}}）或 UI 格式（nodes/links）。<br />
+        「打开」= 在本窗口内嵌的 ComfyUI 里编辑这一条：<strong>不会覆盖库里这条模板</strong>，改完想收回库只能「导出 JSON → 导入 JSON」（导入是唯一入口）。
       </div>
       <div id="wfList" style="display:flex; flex-direction:column; gap:6px; max-height:300px; overflow:auto"></div>
     </div>
@@ -173,14 +245,6 @@
       <label class="meta"><input type="checkbox" id="optFp16" checked /> --fp16-intermediates</label>
       <label class="meta"><input type="checkbox" id="optExpand" checked /> expandable_segments（防碎片 OOM）</label>
       <div class="meta" id="launchOptsNote"></div>
-    </div>
-
-    <div class="card" style="flex:1; min-height:0">
-      <div class="row">
-        <div class="meta">后端 Console</div>
-        <button id="btnClearLog" style="margin-left:auto;padding:4px 8px">清空视图</button>
-      </div>
-      <div id="console"></div>
     </div>
   </div>
 
@@ -213,6 +277,19 @@
   </div>
 
   <input type="file" id="wfFileInput" accept=".json,application/json" style="display:none" />
+
+  <!-- 「工作流编辑器」视图：把自建工作流库里的某条模板打开进内嵌 ComfyUI 编辑，
+       状态真源在宿主（h3:wfOpenInEditor / h3:wfEditorViewChanged），页面只当容器。
+       关浮层时不摘 iframe 的 src：用户正在 ComfyUI 里编辑的图不能被我们刷没。 -->
+  <div class="wf-editor" id="wfEditor" hidden>
+    <div class="ed-head">
+      <span class="ed-title" id="wfEditorTitle">工作流编辑器</span>
+      <span class="sub" id="wfEditorSrc"></span>
+      <button id="btnWfEditorClose" type="button" title="关闭编辑器视图并恢复窗口原尺寸（ComfyUI 里的编辑不会写回插件库；收回库只能「导入 JSON」）">✕ 关闭</button>
+    </div>
+    <div class="ed-note" id="wfEditorNote" hidden></div>
+    <iframe id="wfEditorFrame" title="ComfyUI 工作流编辑器"></iframe>
+  </div>
 
   <script src="ui.js"></script>
 </body>

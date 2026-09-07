@@ -77,7 +77,10 @@ ok(
   /* 纯净模式（pureOn）把 systemPrompt 变成了三元式：口味在「非纯净」那条数组里即可 */
   /systemPrompt:\s*(?:pureOn[\s\S]{0,40}\?:?\s*)?\[[\s\S]{0,700}?agentLangTasteNote\(\),[\s\S]{0,120}?\]/.test(
     db,
-  ) || /systemPrompt:[\s\S]{0,160}?\[[\s\S]{0,700}?agentLangTasteNote\(\),/.test(db),
+  ) ||
+    /systemPrompt:[\s\S]{0,160}?\[[\s\S]{0,700}?agentLangTasteNote\(\),/.test(db) ||
+    /* 分节改版后口味是 promptSections 的末位一节（由 renderSections 汇进 systemPrompt），不再是裸数组元素 */
+    /PROMPT_SECTION_IDS\.lang_taste, text: agentLangTasteNote\(\)/.test(db),
   "dshRunTask 组装 systemPrompt 时带上语言口味（会话 / 节点 / 助手 / 计划 / 开发节点全覆盖）",
 );
 ok(

@@ -406,6 +406,7 @@ const guides = {
 节点默认走内置 H3 链（首末帧 / 多参考）。想跑**自己搭的 ComfyUI 图**：点节点头部 **⚙ 设置** 打开设置窗口 → 「工作流来源」选 **自建 ComfyUI 工作流**。
 
 - **库**：工作流存在本机全局库（\`<数据目录>/h3-workflows/\`），在 **H3 管理窗口 · 自建工作流库** 里导入（拖 JSON 文件 / 粘贴 JSON），ComfyUI 的 **API 格式**与 **UI 格式**都能识别（UI 格式自动转 API 格式，自动丢掉 Reroute / Note / 常量原语等前端节点）。「管理」按钮直接打开那个窗口。
+- **打开**：库里每条模板右侧都有「打开」，点一下就在**内嵌的 ComfyUI 编辑器**里编辑这一条（后端没跑会先问一句再拉起）。这只是「拿出去改」，**不会覆盖库里的模板**——改完想回到库里 / 上画布，仍然只有 ComfyUI 里「导出 (API)」→ 回管理窗口「导入 JSON」这一条路。
 - **端子**：图里被「提升为节点参数」的字段会在设置窗口里各占一个参数——**端口 1 = 文本 · 端口 2+ = 素材（图 / 视频 / 音频）**，顺序就是参数表顺序，可用 ▲▼ 调整。默认参数表取扫描建议（提示词 / LoadImage / 种子…），可增删改名。
 - **直填值**：每个参数都可在设置窗口里直接填值；**端子接了数据时端子优先**，端子没接才用直填值，都没有就沿用工作流 JSON 里的原值。素材填本机绝对路径，生成时自动上传到 ComfyUI。
 - **输出节点**：图里有多个 \`Save*\` 时指定取哪一个当本节点的产物；留空 = 最后一个视频产物。
@@ -776,6 +777,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 By default the node runs the built-in H3 chain (first/last frame or multi-reference). To run **a graph you built yourself**: click **⚙ Settings** in the node header → set **Workflow source** to **Custom ComfyUI workflow**.
 
 - **Library**: workflows live in a machine-wide library (\`<data dir>/h3-workflows/\`), imported in the **H3 manager window · custom workflow library** (drop a JSON file / paste JSON). Both the ComfyUI **API format** and the **UI format** are detected (UI graphs are converted, front-end-only nodes such as Reroute / Note / primitives are dropped). The **Manage** button opens that window.
+- **Open**: every library entry carries an **Open** action — it edits *that one workflow* inside an **embedded ComfyUI editor** (if the backend is down it asks before starting it). This only hands the graph out for editing and **never overwrites the library entry** — getting your edits back into the library (and onto the canvas) still has exactly one route: ComfyUI's **Export (API)** → **Import JSON** in the manager window.
 - **Ports**: every field you promote to a node parameter takes one input port — **port 1 = text · port 2+ = media (image / video / audio)** — in parameter-table order (▲▼ reorders), all listed in the settings window. The initial table comes from the graph scan (prompt / LoadImage / seed…) and is fully editable.
 - **Manual values**: each parameter also accepts a literal value in the settings window; **a wired port wins over the manual value**, and if neither is given the value stored in the workflow JSON is kept. Media values are absolute local paths, uploaded to ComfyUI at run time.
 - **Output node**: when the graph has several \`Save*\` nodes, pick which artifact this node returns (blank = last video output).
@@ -786,7 +788,8 @@ By default the node runs the built-in H3 chain (first/last frame or multi-refere
 ## Notes
 - Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive).
 - 24G VRAM caps resolution and post-processing tiers.
-- Reference images / audio / video can come straight from an **image / audio / video input** node: media ports carry a \`file:///…\` URL and this node normalizes it back to a local path.` },
+- Reference images / audio / video can come straight from an **image / audio / video input** node: media ports carry a \`file:///…\` URL and this node normalizes it back to a local path.
+- **Sage Attention** (optional speed tier, about 1.5–2×) needs \`triton-windows\` *and* a prebuilt \`sageattention\` wheel matching this venv — one without the other counts as missing. **Nothing breaks when they are absent**: the plugin probes the venv before every run and simply leaves the Sage node out (just slower). Probe and install are one click in the **H3 plugin window → the \`Sage 加速\` button** (it picks the wheel for your Python / torch / CUDA and re-verifies right after).` },
   proc_text: { title: "Text process", body: `LLM processes upstream text from a prompt. Enable assistant mode for agent tools.
 
 ## Ports

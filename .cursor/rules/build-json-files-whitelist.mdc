@@ -1,0 +1,27 @@
+﻿---
+description: Root main-process modules must be listed in build.json files whitelist or packaged app Cannot find module
+globs: build.json,main.js,*-store.js,*-lib.js,preload.js
+alwaysApply: true
+---
+
+# Packaging whitelist (`build.json` → `files`)
+
+`build.json` `files` is an **explicit allowlist**. Root-level modules required by `main.js` (or other packaged files) are **not** auto-included.
+
+## When this applies
+
+- Adding a new root file such as `foo-store.js`, `foo-lib.js`
+- Changing `main.js` / `preload.js` to `require("./something.js")`
+- Splitting logic out of an existing root module into a new file
+
+## Required checklist
+
+1. Create / edit the source file as usual.
+2. Add the exact path to `build.json` → `files` (same style as `db-store.js`, `assets-store.js`, `media-gen-global-lock.js`).
+3. Run `scripts\agent-rebuild.cmd` so `dist\win-unpacked` picks it up.
+4. If you see `Cannot find module './xxx.js'` only in the packaged app (not `electron .`), the file is almost always missing from this whitelist.
+
+## Do not
+
+- Assume "it's next to main.js so packaging will include it"
+- Only update `dist/` by hand — afterPack / compile regenerates from the whitelist

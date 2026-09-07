@@ -1574,7 +1574,7 @@ function traceFeedEvent(runKey, type, d) {
 /* ---------- 出错自动重发（宿主侧最外层重试 · 需求「429 不要跳过下一个任务」） ----------
  * 网关一次 error = 整轮失败。旧行为：会话落一条「（错误：…）」就完事，计划执行器
  * 把这一项记为 failed 并**直接接着跑下一项** —— 用户看到的是「429 一响，任务全跳过」。
- * 现在在最外面补一道闸：一次运行失败 → 等 5 秒 → **原样重发这一轮**（同 input、同 runKey、
+ * 现在在最外面补一道闸：一次运行失败 → 等一会儿 → **原样重发这一轮**（同 input、同 runKey、
  * 同轨迹口径；重发那一轮开头 traceReset 会把上一轮的部分正文与 ⚠ 错误行一起清掉），
  * 最多 DSH_RETRY_MAX 次。等待窗口里这一轮仍算「在跑」：计划不会往下走、用户新消息
  * 照旧进发送队列、左下角运行队列仍然挂着这条会话 —— 正是「不跳过，等一会儿重发」。
@@ -1601,7 +1601,13 @@ function traceFeedEvent(runKey, type, d) {
  *     时同样整轮重发，且这一次不计入 DSH_RETRY_MAX 预算 —— 它只是续不上，不是又
  *     失败了一次。（续跑三态：同进程复用 / 跨进程盘上恢复 / 整轮重发兜底，见
  *     dsh/DESIGN.md「断点续跑契约」。） */
-const DSH_RETRY_DELAY_MS = 5000; /* 需求指定：等 5 秒后重新发送 */
+const DSH_RETRY_FIRST_DELAY_MS = 30000; /* 需求指定：首次错误（如 429）等 30 秒后重新发送 */
+const DSH_RETRY_AGAIN_DELAY_MS = 60000; /* 需求指定：第二次起每次等 1 分钟再重新发送 */
+/* 重发前的等待窗口随重试次数递增：第 1 次错等 30 秒（给限流 / 瞬时故障缓一缓），
+   第 2 次起等 1 分钟（连续失败说明上游吃紧，留更长间隔）。tryIndex 为当前第几次重发（1 起）。 */
+function dshRetryDelayMs(tryIndex) {
+  return tryIndex <= 1 ? DSH_RETRY_FIRST_DELAY_MS : DSH_RETRY_AGAIN_DELAY_MS;
+}
 const DSH_RETRY_MAX = 5; /* 上限：持续限流也不能无限占着这一轮 */
 const DSH_RESUME_UNAVAILABLE = /^RESUME_UNAVAILABLE\b/; /* 网关固定的「不可续跑」标记 */
 
@@ -1681,8 +1687,9 @@ const DSH_TOOLS_DROPPED_BY_NO_CANVAS = [
   "mtnode_app",
 ];
 /* 开发绑定会话（Gate A）只裁「读图」这一半：mtnode_canvas_get 的整张快照与 mtnode_app
-   的画布目录对它没有信息量（改代码读的是项目根真实文件），而 mtnode_canvas_edit 必须留着
-   —— 收尾要按契约回写本节点的 note / devStatus / devFiles。合计约 10.0K 字符/步不再重发。 */
+   的画布目录对它没有信息量（改代码读的是项目根真实文件）。本会话不读也不改画布 —— 不再
+   按收尾回写本节点的 note / devStatus / devFiles（见 app-assist.js noRead 人设与任务书）；
+   mtnode_canvas_edit 仅保留（不用于回写）。合计约 10.0K 字符/步不再重发。 */
 const DSH_TOOLS_DROPPED_BY_NO_READ = ["mtnode_canvas_get", "mtnode_app"];
 
 /* 按运行要隐藏的工具名（第三个闸：随 run 参数 hideTools 下发网关 → runtime key 的
@@ -1691,8 +1698,8 @@ const DSH_TOOLS_DROPPED_BY_NO_READ = ["mtnode_canvas_get", "mtnode_app"];
    直接拒绝这个调用」，另加一条纯省 token 的（第三个点）：
    · Agent 工具许可预设里被拒到点上的类别（映射真源 app-nodes.js agentDeniedToolNames）；
    · 本轮没接入任何数据库副本 → mtnode_db（未接入时宿主一律回「当前任务未接入数据库」）；
-   · 开发绑定会话（noCanvasRead）→ 读画布两件套：宿主允许它读图，但开发改的是项目根
-     里的真实文件，整张画布快照对这个会话没有信息量（收尾只回写自己那一个节点）。
+   · 开发绑定会话（noCanvasRead）→ 读画布两件套：它本就不读也不改画布，开发改的是项目根
+     里的真实文件，整张画布快照对这个会话没有信息量（收尾不回写任何节点）。
    输出排序去重：同一档每轮逐字相同，runtime key 才稳定，同档会话共享一台运行时、
    每一步前缀一致 —— 轮内改可见集是从第一个变化的 schema 起整段缓存失效，赔得更多。 */
 function dshHiddenToolsFor(o) {
@@ -1707,8 +1714,9 @@ function dshHiddenToolsFor(o) {
   names = Array.from(names || []);
   if (!o.dbGrounded) names.push("mtnode_db");
   /* 开发绑定会话（noCanvasRead）：读画布两件套点名进名单。走的是「按名字」这条通道
-     （不是 MTNODE_NO_CANVAS 整档闸），因为那闸连 mtnode_canvas_edit 一起裁 —— 收尾回写
-     就没了。若 lean / noCanvas 已经把这些名字裁掉，下面 covered 判据让它不重复出现。 */
+     （不是 MTNODE_NO_CANVAS 整档闸，后者连 mtnode_canvas_edit 一起裁）；本会话不改画布，
+     但 mtnode_canvas_edit 仍保留，故不整档裁。若 lean / noCanvas 已经把这些名字裁掉，
+     下面 covered 判据让它不重复出现。 */
   if (o.noCanvasRead) for (const n of DSH_TOOLS_DROPPED_BY_NO_READ) names.push(n);
   const covered = {};
   if (o.lean) for (const n of DSH_TOOLS_DROPPED_BY_LEAN) covered[n] = 1;
@@ -1893,7 +1901,7 @@ function dshRetryWait(runKey, delayMs) {
   });
 }
 
-/* 一次智能运行的唯一入口：失败自动等 5 秒重发（见上），真正发请求的是 dshRunOnce。
+/* 一次智能运行的唯一入口：失败自动等一会儿（首错 30s、第 2 次起 60s）再重发（见上），真正发请求的是 dshRunOnce。
    重发的新默认是「优先续跑」：拿得到本轮会话就发续跑指令接着写，续不上才整轮重发。 */
 function dshRunTask(input, opts) {
   opts = opts || {};
@@ -1958,7 +1966,7 @@ function dshRunTask(input, opts) {
       /* 本轮已被判死（有人调了 dshCancelActive：■ 停止 / 全部终止 / 中断任务 /
          看门狗静默超时）→ 立即收口，一次都不重发，也不走下面「不可续跑 → 整轮重发」
          那条快速通道。需求口径：「停止模型或会话时，应当立即停止，而不是进入 5 次重试」。
-         终止时刻与本轮重叠时（如 429 之后已进入 5 秒窗口）多半就是这条路径 ——
+         终止时刻与本轮重叠时（如 429 之后已进入等待窗口）多半就是这条路径 ——
          网关把运行时关掉后回来的工程报文（"Harness runtime closed" 等）不含取消字样，
          只有这枚戳认得它。保留原始报错当收尾文案更有信息量，但它必须先是取消类文案。 */
       if (dshStopStamped(runKey, stopBase))
@@ -1986,6 +1994,7 @@ function dshRunTask(input, opts) {
       }
       if (tries >= DSH_RETRY_MAX || !dshRunRetryable(msg)) throw err;
       tries++;
+      const delayMs = dshRetryDelayMs(tries); /* 首错 30s，第 2 次起 60s */
       const brief = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
       /* 优先续跑的三条件：本轮登记过会话且配置指纹没变（dshResumableSession，
          指纹含网关 runtimeKey 同源成分：apiKey / baseUrl / webSearchKey / persona /
@@ -1996,11 +2005,11 @@ function dshRunTask(input, opts) {
       const next = sess && carried.length > 0 ? { sid: sess.sid, err: msg } : null;
       const resumeBlocked = dshResumeBlockReason(runKey, carried.length);
       const chars = next ? carried.length : 0;
-      notifyRetry(next ? { resumeSession: next.sid } : baseOpts, msg, DSH_RETRY_DELAY_MS, chars);
+      notifyRetry(next ? { resumeSession: next.sid } : baseOpts, msg, delayMs, chars);
       try {
         toast(
           I18n.t("本轮出错，") +
-            Math.round(DSH_RETRY_DELAY_MS / 1000) +
+            Math.round(delayMs / 1000) +
             (next
               ? I18n.t(" 秒后从中断处继续（第 ")
               : I18n.t(" 秒后整轮重发（第 ")) +
@@ -2018,7 +2027,7 @@ function dshRunTask(input, opts) {
           "warn",
         );
       } catch (_) {}
-      const go = await dshRetryWait(runKey, DSH_RETRY_DELAY_MS);
+      const go = await dshRetryWait(runKey, delayMs);
       if (!go) throw new Error(I18n.t("已手动终止"));
       return attempt(next);
     });

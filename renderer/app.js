@@ -2645,13 +2645,13 @@ function isPinnedWire(w) {
   return !!(w && w.pinned);
 }
 const BOUND_SAVE_GAP = 48;
-const SAVE_EXT = { text: ".yaml", image: ".png", audio: ".wav", video: ".mp4" };
+const SAVE_EXT = { text: ".md", image: ".png", audio: ".wav", video: ".mp4" };
 function saveExtForMedia(media) {
   return SAVE_EXT[media] || SAVE_EXT.text;
 }
 function forcePathExt(p, ext) {
   const s = String(p || "").trim();
-  let e = String(ext || "").trim() || ".yaml";
+  let e = String(ext || "").trim() || ".md";
   if (!e.startsWith(".")) e = "." + e;
   if (!s) return e;
   const cur = extOf(s);
@@ -3110,6 +3110,19 @@ function assetDisplayValueOf(node) {
   if (texts.length && images.length) return { items: texts, images: images };
   if (texts.length) return { items: texts };
   return { images: images };
+}
+/* 素材节点「某一个内容端子」的对外可读展示（只读继承 / 单端子下游用）：
+ * 形状与 assetDisplayValueOf 的单条目折叠一致 —— 图像给 {image,title}，
+ * 文本 / 音频 / 视频给 {text}（媒体给 file:/// URL）。与 assetItemValueOf / valueForInput
+ * 同取第 portIdx 个条目；库里该条还读不到 → null（调用方回落整份 / 空展示）。
+ * 与 assetDisplayValueOf 的区别：只读「这一个端子」，绝不把素材整份条目列表摊开。 */
+function assetDisplayValueOfPort(node, portIdx) {
+  const it = assetItems(node || {})[Number(portIdx)];
+  if (!it) return null;
+  const v = assetItemValueOf(node, Number(portIdx));
+  if (!v) return null;
+  if (v.kind === "image") return { image: v.path, title: it.title };
+  return { text: String(v.text != null ? v.text : v.url || "") };
 }
 /* 来源节点这条线的媒体类型（不含端子声明的那一层，见 wireSourceMediaType）。
    工具 / 函数节点按真正接出来的那个端子取实际值判断，其余节点仍只看 0 号端子（行为逐字不变）。 */
@@ -11854,16 +11867,56 @@ function refCandidates(node) {
   /* 已连接输入 + 全局节点广播的来源（处理节点可 @ 引用） */
   const out = [];
   const seen = new Set();
-  const push = (n) => {
+  const nodeTitles = new Set();
+  const pushNode = (n) => {
     if (!n || seen.has(n.id) || !isRefableSource(n)) return;
     seen.add(n.id);
+    if (n.title) nodeTitles.add(n.title);
     out.push(n);
   };
   for (const w of wiresTo(node.id)) {
-    for (const n of refSourcesForWire(w, node)) push(n);
+    for (const n of refSourcesForWire(w, node)) pushNode(n);
   }
   if (usesGlobalRefs(node)) {
-    for (const n of globalRefSources(node.id)) push(n);
+    for (const n of globalRefSources(node.id)) pushNode(n);
+  }
+  /* 素材节点：除整节点候选（@素材标题 = 把接进本节点的内容端子全带）外，再把它的
+     内容摊成「单条候选」（@条目标题 = 只取那一个内容端子 / 条目）。轻量对象
+     只承载 title / type / parent / itemIdx，命中后的注入 / 高亮语义由解析层决定。
+     引用边界：某条输出端子已直连进本节点时，只摊「连进来的端子」对应的条目 ——
+     未连线端子的内容绝不能被 @ 到（否则只接一个端子却能引用整份素材）。只有经全局
+     广播进来（无直连端子可言）的素材才维持全部分摊，与解析层「@素材标题 全带」口径一致。
+     两条纪律：整节点永远排在它的条目之前；条目标题若与任何整节点标题重复则不再投放
+     —— 保证「@整节点标题」在同名时仍命中节点本身、不会错指到某一条内容。跨节点 /
+     同节点内同名条目只投放首个（后续同名一律跳过，避免命中歧义）。 */
+  const wiredPortsBySrc = new Map();
+  for (const w of wiresTo(node.id)) {
+    if (w.rel || wireFromIsControl(w)) continue;
+    const from = nodeById(w.from);
+    if (!from || !isItemPortSource(from)) continue;
+    let set = wiredPortsBySrc.get(from.id);
+    if (!set) wiredPortsBySrc.set(from.id, (set = new Set()));
+    set.add(Number(w.fromIndex || 0));
+  }
+  const itemTitles = new Set();
+  const base = out.slice();
+  for (const n of base) {
+    if (!isItemPortSource(n)) continue;
+    const items = assetItems(n);
+    const wired = wiredPortsBySrc.get(n.id);
+    for (let i = 0; i < items.length; i++) {
+      if (wired && wired.size && !wired.has(i)) continue;
+      const t = items[i].title;
+      if (nodeTitles.has(t) || itemTitles.has(t)) continue;
+      itemTitles.add(t);
+      out.push({
+        __assetItem: true,
+        title: t,
+        type: items[i].type,
+        parent: n,
+        itemIdx: i,
+      });
+    }
   }
   return out;
 }
@@ -12093,7 +12146,14 @@ function allTextItems(src, consumer, portIdx) {
   if (src.kind === "input_text") {
     if (inputInherited(src)) {
       const w = inboundWire(src);
-      const inner = allTextItems(w ? nodeById(w.from) : null, src);
+      /* 上游是素材节点：入线只连「那一个端子」= 那一条内容，绝不能把它整份摊开
+         （传给端子号，素材才只给这一端子；非素材上游不受影响） */
+      const up = w ? nodeById(w.from) : null;
+      const inner = allTextItems(
+        up,
+        src,
+        up && isItemPortSource(up) ? Number((w && w.fromIndex) || 0) : null,
+      );
       if (inner.length > 1) return inner; // 继承批量 → 全部条目
       if (inner.length === 1 && !src.yamlOff) {
         const es = parseSimpleYaml(inner[0].text); // 继承文本符合 YAML → 解析为条目
@@ -12189,7 +12249,13 @@ function allImageItems(src, consumer, portIdx) {
   if (src.kind === "input_image") {
     if (inputInherited(src)) {
       const w = inboundWire(src);
-      const inner = allImageItems(w ? nodeById(w.from) : null, src);
+      /* 上游是素材节点：入线只连「那一个端子」，只给那一条图像，绝不整份摊开 */
+      const up = w ? nodeById(w.from) : null;
+      const inner = allImageItems(
+        up,
+        src,
+        up && isItemPortSource(up) ? Number((w && w.fromIndex) || 0) : null,
+      );
       if (inner.length > 1) return inner;
       if (inner.length === 1)
         return [
@@ -12483,8 +12549,25 @@ function displayValueOf(src, consumer) {
     const v = mediaInputValueOf(src);
     return v ? { text: String(v.text || "") } : null;
   }
-  /* 素材节点：逐条内容对外可读（单条摊平成 {text}/{image}，多条按类型分组） */
-  if (src.kind === "asset") return assetDisplayValueOf(src);
+  /* 素材节点：逐条内容对外可读（单条摊平成 {text}/{image}，多条按类型分组）。
+     若素材是直接连线给 consumer 的（输入节点继承 / 单槽下游），只读那根线所连的
+     「那一个端子」—— 绝不因没带端子号就把整份条目列表摊开。与 super 分支同口径。 */
+  if (src.kind === "asset") {
+    if (consumer) {
+      const link = (S.wf.wires || []).find(
+        (x) =>
+          !x.rel &&
+          !x.ctrl &&
+          x.from === src.id &&
+          x.to === consumer.id,
+      );
+      if (link) {
+        const one = assetDisplayValueOfPort(src, Number(link.fromIndex || 0));
+        if (one) return one;
+      }
+    }
+    return assetDisplayValueOf(src);
+  }
   if (src.kind === "function") {
     const r = selResult(src);
     if (r && r.output && r.output.kind === "text") return { text: r.output.text };
@@ -12751,6 +12834,28 @@ function resolveRefs(prompt, node, idx, opts) {
       )
         return "Tag:" + tag;
       unresolved.add(tok);
+      return raw;
+    }
+    /* 素材「单条内容」候选（@条目标题，见 refCandidates 摊条目）：只取那一个内容
+       端子 / 条目，而非把整节点接进来的内容全带。文本条目 → addText 进背景；图像条目
+       → 参考图（图生图按 multipart 顺序认图 → 写成「第 N 张」）；音视频条目 → 其 file:///
+       URL（refTextFromValue 对 audio/video 取 .text）。背景块标题走 itemTitleOf = 该条目标题。
+       @素材标题（整节点名，__assetItem 为空）仍走下方 assetWiredPortIndexes 全带，向后兼容。 */
+    if (c.__assetItem && c.itemIdx != null) {
+      const iv = valueForInput(c.parent, c.itemIdx, node);
+      if (refTextFromValue(iv) != null) {
+        addText(c.parent, c.itemIdx);
+        return c.title;
+      }
+      if (iv && iv.kind === "image") {
+        const p = iv.path;
+        let n = refImages.indexOf(p);
+        if (n < 0) {
+          refImages.push(p);
+          n = refImages.length - 1;
+        }
+        return I18n.t("第{n}张参考图", { n: n + 1 });
+      }
       return raw;
     }
     const useIdx = refInputIdxFor(node, c, idx);
@@ -13020,11 +13125,16 @@ function showRefMenu(ta, node, items, query, at) {
       nm.textContent = e.tag;
     } else {
       const n = e.node;
-      /* 素材节点：整节点没有单一媒体类型，按第一个内容条目的类型上标识
+      /* 素材单条内容候选直接按该条目类型上标识（refCandidates 摊出的轻量候选带 type）；
+         整素材节点没有单一媒体类型，按第一个内容条目的类型上标识
          （图像素材给 I，文本 / 音频 / 视频素材给 T —— 后者对外确实是可读文字 / 地址） */
-      const aFirst = isItemPortSource(n) ? (assetItems(n)[0] || {}).type : "";
-      const imgKind = aFirst
-        ? aFirst === "image"
+      const aType = n && n.__assetItem
+        ? n.type
+        : isItemPortSource(n)
+          ? (assetItems(n)[0] || {}).type || ""
+          : "";
+      const imgKind = aType
+        ? aType === "image"
         : n.kind === "image" || n.kind === "input_image" || n.kind === "proc_image";
       tagEl.className = "ref-tag " + (imgKind ? "img" : "text");
       tagEl.textContent = imgKind ? "I" : "T";
@@ -26165,12 +26275,12 @@ function devNodeContractText(node, req, opts) {
       I18n.t("本节点 id：") +
         (node.id || "") +
         I18n.t(
-          "（收尾回写概述 / 状态 / 核心文件列表时，用 mtnode_canvas_edit 的 update 按这个 id 定位，不要为了拿 id 去读画布）",
+          "（本节点 id 仅供回复 / 文档中指认本模块；本会话不得用它修改画布上任何节点）",
         ),
     );
     lines.push(
       I18n.t(
-        "本会话不读取画布：mtnode_canvas_get 与 mtnode_app 本轮未注册，画布现状一律以本任务书为准；只在收尾时改本节点这一个对象。",
+        "本会话不读取画布：mtnode_canvas_get 与 mtnode_app 本轮未注册，画布现状一律以本任务书为准；本会话执行期间与收尾都不得修改画布上的任何节点。",
       ),
     );
   }
@@ -26232,10 +26342,17 @@ function devNodeContractText(node, req, opts) {
       "本会话由该功能块的「开发 / 细化」对话框新建，只负责该模块；请以项目根目录内的真实代码为准，不要臆测。",
     ),
   );
+  /* 完成收尾要求：按会话档位区分 —— noCanvasRead（「开发」绑定会话，Gate A）不读也不改画布，
+     只允许会话自身标题在左侧栏随首轮主题更新；可读画布的「细化 / 问询」（Gate B）才在建块 / 调研后
+     按两段式规范回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。 */
   lines.push(
-    I18n.t(
-      "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），同时用 mtnode_canvas_edit 的 devFiles 补丁回写本模块的核心文件列表（最多 10 条 · 每项是相对项目根的文件路径 · 最外层项目节点不填），用一句话向用户汇报改了什么。",
-    ),
+    noRead
+      ? I18n.t(
+          "本会话执行期间与收尾都不得修改画布上的任何节点：不改本功能块的 title / note，不动 devStatus / devFiles，也不改其它节点或画布内容，画布一律原样保留。唯一允许更新的是本会话自身在左侧栏的标题（随首轮主题自动命名）。任务完成后，用一句话向用户汇报改了什么。",
+        )
+      : I18n.t(
+          "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），同时用 mtnode_canvas_edit 的 devFiles 补丁回写本模块的核心文件列表（最多 10 条 · 每项是相对项目根的文件路径 · 最外层项目节点不填），用一句话向用户汇报改了什么。",
+        ),
   );
   lines.push(
     I18n.t(
@@ -26277,7 +26394,10 @@ function devSessionTitleOf(node, mode) {
         : I18n.t("开发 · ")) + (node.title || I18n.t("开发节点"))
   );
 }
-/* 节点改名 → 其名下的细化 / 开发会话标题跟随（保留各自前缀） */
+/* 节点改名 → 其名下的细化 / 开发会话标题跟随（保留各自前缀）。
+   只跟随「后半那段还是模块名」的会话：被首轮自动命名（titleAuto）换成内容主题、
+   或用户亲口改过名（titleLocked）钉住的，标题真源已经换了，再刷回模块名
+   就是两条真源互相打脸 —— 一律跳过。 */
 function syncDevSessionTitles(node) {
   if (!node) return;
   const ids = devSessionIdsOf(node);
@@ -26285,6 +26405,7 @@ function syncDevSessionTitles(node) {
   let touched = false;
   for (const s of agentSessions()) {
     if (ids.indexOf(s.id) < 0) continue;
+    if (s.titleLocked || s.titleAuto) continue;
     const m = String(s.title || "").match(/^(细化|开发|Refine|Dev)\s*·\s*/i);
     const want =
       (m ? m[0] : I18n.t("开发 · ")) + (node.title || I18n.t("开发节点"));
@@ -26323,7 +26444,8 @@ function createDevSessionForNode(node, mode, req) {
     effort: (st && st.effort) || "high",
     /* Gate A：「开发」绑定会话不读画布 —— 本轮不注册 mtnode_canvas_get / mtnode_app
        （整张图的快照 + 两份工具定义合计约 10.0K 字符/步）。改代码靠的是项目根真实文件，
-       读图对它没有信息量；mtnode_canvas_edit 保留（收尾要回写 note / devStatus / devFiles）。
+       读图对它没有信息量；mtnode_canvas_edit 照常注册，但本会话不改画布 —— 执行与收尾都不回写
+       note / devStatus / devFiles（见 devNodeContractText 的完成收尾要求）。
        「细化 / 问询」要在图上建块与调研架构，照旧可读，故只在 mode === "dev" 时置位。 */
     noCanvasRead: mode === "dev",
     messages: [],

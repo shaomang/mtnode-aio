@@ -27,6 +27,13 @@ Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file**
 - Modes: `fl2va` first/last frame (default) / `r2v` multiple references
 - Options: duration 4–15 s, resolution (auto / 480p / 720p / 1080p, auto-downscale on low VRAM), 4K upscale + interpolation (disable on 24G), attempts
 
+### H3 manager window (two buttons, top right)
+
+Open it from **Top bar › Plugins › Minimax H3**; **two buttons sit at the top right** of the window:
+
+- **Console**: the log no longer lives in a card at the bottom. One click docks a full-height panel on the **left side** of the window that shows nothing but the backend log (raw install / generation / error output). The window grows to the left, so the main column never moves — it reads like an extra docked window. When it's collapsed the button carries an **unread count**, cleared on reopen; the open/closed state is remembered for the next time. Inside: **Clear view** (screen only — the on-disk `console.log` is untouched) and ✕ (collapse).
+- **ComfyUI editor**: opens the ComfyUI workflow editor in your browser in one click (the address sits left of the button as `●/○ ComfyUI :8188`, ● = backend up). If the backend isn't running it asks whether to start it first, then opens; a failed start is reported in the Console instead of handing you a dead link. After editing a graph, use ComfyUI's **Export (API)** and bring it back via **Import JSON**.
+
 ### Custom ComfyUI workflow
 
 Click **⚙ Settings** in the node header → set **Workflow source** to **Custom ComfyUI workflow** to run a graph you built in ComfyUI yourself (not just the two built-in chains):

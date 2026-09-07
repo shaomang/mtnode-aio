@@ -2508,15 +2508,6 @@ function renderStatus() {
     st.textContent = I18n.t("就绪");
     st.className = "";
   }
-  const dshEl = $("#statDsh");
-  if (dshEl) {
-    const txt = S.lastDshMetrics ? fmtDshMetrics(S.lastDshMetrics) : "";
-    dshEl.textContent = txt;
-    dshEl.title = txt
-      ? txt
-      : I18n.t("尚无智能运行统计（运行智能任务后在此显示）");
-  }
-  renderSessionFooterStat();
   updateRunQueuePanel();
 }
 function renderAll() {

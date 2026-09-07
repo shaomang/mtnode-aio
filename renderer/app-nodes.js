@@ -8402,6 +8402,8 @@ function canvasSnapshot(opts) {
             ? n.size
             : DEFAULT_IMAGE_SIZE
           : undefined,
+      bgRmOn:
+        n.kind === "proc_image" ? !!n.bgRmOn : undefined,
       hasImage:
         n.kind === "input_image"
           ? !!(
@@ -9867,12 +9869,12 @@ function agentToolPolicySystemNote(opts) {
   }
   if (noCanvasRead)
     s += I18n.t(
-      "本轮不注册读画布与应用工具（mtnode_canvas_get / mtnode_app 调用即失败）：画布现状以宿主给的契约为准，改画布只在收尾用 mtnode_canvas_edit 按节点 id 点名本节点。",
+      "本轮不注册读画布与应用工具（mtnode_canvas_get / mtnode_app 调用即失败）：画布现状以宿主给的契约为准；本会话不改画布 —— 执行与收尾都不回写本节点的 title / note / devStatus / devFiles，也不改其它任何节点、连线或画布内容。",
     );
   if (!denied.length && !asking.length) {
     if (!nodeLock)
       s += I18n.t("当前预设允许全部已列出的工具类别（与产品默认能力一致）。");
-    if (assistAuto)
+    if (assistAuto && !noCanvasRead)
       s += I18n.t(
         "助手改画布已批准：mtnode_canvas_edit / 超级节点等画布修改直接生效，无需再等确认。",
       );
@@ -12532,6 +12534,8 @@ function applyNodePatch(node, patch, warnings) {
           "…",
       );
   }
+  if (typeof patch.bgRmOn === "boolean" && node.kind === "proc_image")
+    node.bgRmOn = patch.bgRmOn;
   if (typeof patch.x === "number" && isFinite(patch.x)) node.x = snap(patch.x);
   if (typeof patch.y === "number" && isFinite(patch.y)) node.y = snap(patch.y);
   if (typeof patch.w === "number" && isFinite(patch.w))

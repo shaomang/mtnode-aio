@@ -140,9 +140,41 @@ python main.py --listen 127.0.0.1 --port 8188
 - 生产常用：约 0.6–0.8MP（如 1056×608）；原生 ~1MP 更吃显存/时间（插件默认 1344×768）
 - `<24GB`：降到 ~0.3–0.5MP、≤5s；`≥48GB`：可放宽。时长越长 token 越多，越易 OOM——优先开 LowVRAM / ChunkFFN / VRAM Barrier
 
-### 可选依赖
+### 可选依赖：Sage Attention（注意力加速 · 约 1.5–2× 提速）
 
-- Windows：`triton-windows` + 匹配 torch/CUDA 的 `sageattention` wheel（装不上则禁用 Sage，其它优化仍有效）。**必须与 torch 版本（cu130）匹配。**
+Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 期**就 `from .triton.…` 拉 Triton kernel，而 PyPI 的 `triton` 只有 Linux 轮子 —— 只装 sageattention 不装 triton-windows，`import sageattention` 一样失败。
+
+1. `triton-windows`（PyPI 有；大版本跟着 torch 自带 triton 走：torch 2.6→3.2 / 2.7→3.3 / 2.8→3.4 / **2.9→3.5** / 2.10→3.6）
+
+   ```powershell
+   & "ComfyUI\venv\Scripts\python.exe" -m pip install --isolated "triton-windows==3.5.*"
+   ```
+
+2. `sageattention` 2.x **预编译 wheel**：PyPI 上只有老的 1.0.6（v1，且要现场编译），2.x 只能从 <https://github.com/woct0rdho/SageAttention/releases> 按本机组合挑轮子。文件名三段都要对上：
+   - `cuNNN`：**CUDA 大版本**必须一致（cu130 与 cu128 不通用）
+   - `torchX.Y[.Z][andhigher]`：优先精确同 minor；其次 `andhigher` 且 ≤ 本机 torch
+   - `cpX-abi3`：稳定 ABI，支持 Python ≥ X（本机 3.10 → `cp39-abi3` / `cp310-abi3` 可用；老的非 abi3 轮子 `cpNN-cpNN` 必须精确同 minor）
+
+   例（实测组合 Python 3.10.16 + torch 2.9.1+cu130 + RTX 4090/sm89）：`sageattention-2.2.0+cu130torch2.9.1.post6-cp310-abi3-win_amd64.whl`
+
+   ```powershell
+   & "ComfyUI\venv\Scripts\python.exe" -m pip install --isolated --no-deps --force-reinstall "<下载好的 .whl>"
+   ```
+
+3. 自检（**装完必做**，MTNode 的 H3 插件按同一口径判定）：
+
+   ```powershell
+   & "ComfyUI\venv\Scripts\python.exe" -c "import triton, sageattention, torch; print('triton', triton.__version__, 'sm', 'sm%d%d' % torch.cuda.get_device_capability(0))"
+   ```
+
+   再小跑一次 kernel（能 import ≠ 能算：缺对应架构的 `_qattn_sm89.pyd` 时是调用期才炸）：
+
+   ```powershell
+   & "ComfyUI\venv\Scripts\python.exe" -c "import torch; from sageattention import sageattn; q=torch.randn(1,2,128,64,device='cuda',dtype=torch.float16); o=sageattn(q,q,q,tensor_layout='NHD'); torch.cuda.synchronize(); print('sage ok', bool(torch.isfinite(o.float()).all().item()))"
+   ```
+
+- **装不上就跳过，不判失败**：MTNode 每次生成前自检，缺包自动不带 `PathchSageAttentionKJ`（只慢一点，不影响出片）。判错反而更糟——包在但不可用时，KJNodes 那个节点会直接把 `/prompt` 打到 `prompt_outputs_failed_validation`。
+- 画质提示：`auto` 在 sm89 走 `sageattn_qk_int8_pv_fp8_cuda(pv_accum_dtype="fp32+fp16")`。个别模型（Wan / Qwen-Image 一类）中间值会量化溢出出黑图/噪点；真遇到就把 Sage 关掉（其它优化仍然有效）。
 
 ## 冒烟与健康检查（步骤 7 必做）
 
@@ -159,9 +191,12 @@ python main.py --listen 127.0.0.1 --port 8188
 
 ## 已知故障摘要
 
-### sageattention 缺失
+### sageattention 缺失（最常见的「不是故障」）
 
-日志：`No module named 'sageattention'`。装匹配 wheel，或关闭 Sage（保留其它优化）。
+日志：`No module named 'sageattention'`；MTNode 插件 Console：`sageattention missing → sageMode=disabled`。
+含义：**没装加速包，生成会自动跳过 Sage 这一档优化**（EasyCache / LowVRAM / ChunkFFN / VRAM Barrier 照常，只是慢约 1.5–2×），不是报错，别为此重装环境。
+要提速按「可选依赖：Sage Attention」一节成对装 `triton-windows` + 匹配的 `sageattention` 预编译 wheel；MTNode 侧用户可在 H3 插件窗点「Sage 加速」一键补装（宿主自己挑轮子并在装完自检）。
+判据必须同时看 triton 与 sageattention：只装其中一个，`import sageattention` 照样失败。
 
 ### torch<cu130 卡死（最常见）
 

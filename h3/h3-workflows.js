@@ -294,6 +294,22 @@ function sanitizeForFs(text, fallback) {
   return s || String(fallback || "wf");
 }
 
+/**
+ * ComfyUI 用户工作流目录里的落盘文件名（不含扩展名）。
+ * 这里**不能**用 sanitizeForFs：它会小写并把所有非 ASCII 剥掉，中文标题会被整条洗成 fallback（= id），
+ * 而宿主给用户的回退提示是「在 ComfyUI 里 Workflow › Open 选这个文件名」——一个看不懂的 id 等于没提示。
+ * 所以只去掉文件系统真正不接受的字符，中文 / 空格 / 括号一律照原样留着。
+ */
+function comfyWorkflowFileName(title, fallback) {
+  const s = String(title || "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[.\s]+$/, "")
+    .trim()
+    .slice(0, 80);
+  return s || String(fallback || "workflow");
+}
+
 function assertSafeId(id) {
   const s = String(id || "");
   if (!/^[A-Za-z0-9._\-]{1,80}$/.test(s) || s === "." || s === ".." || s.includes("..")) {
@@ -587,6 +603,219 @@ function uiToApiGraph(doc) {
   }
   return { graph, format: "ui", warnings, droppedUiOnly };
 }
+
+/* ───────────── ②b 反向：API 图 → ComfyUI UI 格式（供「在 ComfyUI 里打开模板编辑」导出）───────────── */
+
+/**
+ * 依赖层序（API 图里谁被谁连），供 UI 节点排布时做从左到右的伪布局。
+ * 只求稳定可读，不追求完美拓扑。
+ */
+function apiTopoLayers(graph) {
+  const ids = Object.keys(graph);
+  const indeg = new Map();
+  const outAdj = new Map();
+  for (const id of ids) indeg.set(id, 0);
+  for (const [id, node] of Object.entries(graph)) {
+    const inputs = isPlainObject(node && node.inputs) ? node.inputs : {};
+    const deps = [];
+    for (const v of Object.values(inputs)) {
+      if (isLink(v) && Object.prototype.hasOwnProperty.call(graph, String(v[0]))) deps.push(String(v[0]));
+    }
+    outAdj.set(id, deps);
+    for (const d of new Set(deps)) indeg.set(d, (indeg.get(d) || 0) + 1);
+  }
+  const queue = ids.filter((k) => (indeg.get(k) || 0) === 0).sort();
+  const layer = new Map();
+  let processed = 0;
+  while (queue.length) {
+    const cur = queue.shift();
+    if (layer.has(cur)) continue;
+    // 该层 = 所有入度为 0（或本轮已清空依赖）的节点
+    const frontier = [cur];
+    while (frontier.length) {
+      const n = frontier.shift();
+      if (layer.has(n)) continue;
+      layer.set(n, processed);
+      processed++;
+      for (const dep of outAdj.get(n) || []) {
+        if (indeg.has(dep)) indeg.set(dep, (indeg.get(dep) || 0) - 1);
+        if ((indeg.get(dep) || 0) <= 0 && !layer.has(dep)) frontier.push(dep);
+      }
+    }
+  }
+  return layer;
+}
+
+function defaultUISize(type) {
+  const t = String(type || "");
+  if (/SaveVideo|SaveImage|SaveAudio|VideoCombine/i.test(t)) return [280, 110];
+  if (/MiniMaxH3/i.test(t)) return [300, 140];
+  if (/Loader|LoadVideo|LoadImage/i.test(t)) return [260, 110];
+  return [240, 100];
+}
+
+/**
+ * API 图（{节点id:{class_type,inputs}}）→ ComfyUI UI 格式（{nodes:[],links:[]}）。
+ * 反方向由 uiToApiGraph 处理；本函数保证：uiToApiGraph(本函数产出的 doc) 能无损还原回原 API 图
+ * （widget 值靠 widget.name 与 widgets_values 同序对齐，连线靠 links + node.inputs[].link 还原，
+ * 与库处理 ComfyUI 导出的 UI 文件同一套口径）。
+ * @param {Object} graph API 格式图
+ * @returns {{nodes:Array, links:Array, idMap:Object, warnings:string[]}}
+ */
+function apiToUiGraph(graph) {
+  const warnings = [];
+  if (!isPlainObject(graph)) throw new Error("工作流图不是对象结构。");
+  const shape = validateApiGraphShape(graph);
+  if (!shape.ok) throw new Error("API 图校验未通过：" + shape.errors.slice(0, 3).join("；"));
+  const ids = Object.keys(graph);
+  if (!ids.length) throw new Error("API 图里没有任何节点。");
+  const layer = apiTopoLayers(graph);
+
+  // 建立 apiKey -> UI 数字 id
+  const usedNumeric = new Set();
+  const idOf = new Map();
+  const sorted = [...ids].sort(
+    (a, b) => (layer.get(a) ?? 0) - (layer.get(b) ?? 0) || Number(a) - Number(b) || String(a).localeCompare(String(b)),
+  );
+  for (const key of sorted) {
+    let id;
+    if (/^\d+$/.test(String(key)) && !usedNumeric.has(String(key))) {
+      id = Number(key);
+    } else {
+      id = sorted.length + 1;
+      while (usedNumeric.has(String(id))) id++;
+    }
+    usedNumeric.add(String(id));
+    idOf.set(key, id);
+  }
+
+  const byId = new Map(); // apiKey -> UI node
+  const uiNodes = []; // apiKey -> node, 保持 sorted 序
+  const linkCounter = { n: 1 };
+  const links = [];
+  const idOfNode = new Map(); // UI id -> apiKey
+
+  // 第一遍：建全部节点骨架（不含连线 / 输出），并把需要连线的输入槽记下来
+  const linkTargets = new Map(); // apiKey -> [{field, fromSlot, srcKey}]
+  for (const key of sorted) {
+    const apiNode = graph[key];
+    const cls = String(apiNode.class_type || "");
+    const inputs = isPlainObject(apiNode.inputs) ? apiNode.inputs : {};
+    const uiId = idOf.get(key);
+    const scalarFields = [];
+    const linkFields = [];
+    for (const [field, v] of Object.entries(inputs)) {
+      if (isLink(v)) {
+        const srcKey = String(v[0]);
+        if (!idOf.has(srcKey)) {
+          warnings.push("节点 " + key + " 的输入「" + field + "」连向不存在的节点 " + srcKey + "，该线丢弃。");
+          continue;
+        }
+        linkFields.push({ field, srcKey, fromSlot: Number(v[1]) || 0 });
+      } else {
+        scalarFields.push({ field, value: v });
+      }
+    }
+    const node = {
+      id: uiId,
+      type: cls,
+      pos: [0, 0],
+      size: defaultUISize(cls),
+      flags: {},
+      order: 0,
+      mode: 0,
+      inputs: [],
+      outputs: [],
+      properties: { "Node name for S&R": cls },
+      widgets_values: scalarFields.map((s) => s.value),
+    };
+    const normTitle = normalizeTitle(apiNode._meta && apiNode._meta.title);
+    if (normTitle) node.title = normTitle;
+    // 输入槽顺序：先全部连线槽（稍后填 link id），再接 widget 槽（ComfyUI 会把两类各自渲染）
+    for (const lf of linkFields) node.inputs.push({ name: lf.field, link: 0 });
+    for (const sf of scalarFields) node.inputs.push({ name: sf.field, widget: { name: sf.field } });
+    byId.set(key, node);
+    uiNodes.push({ key, node });
+    idOfNode.set(uiId, key);
+    if (linkFields.length) linkTargets.set(key, linkFields);
+  }
+
+  // 第二遍：建连线并把 link id 填回目标输入槽
+  const outRefs = new Map(); // UI id -> Set(被引用输出槽号)
+  for (const key of sorted) {
+    const uiNode = byId.get(key);
+    const uiId = idOf.get(key);
+    const fields = linkTargets.get(key);
+    if (!fields) continue;
+    let linkInputIdx = 0;
+    for (const lf of fields) {
+      const linkId = linkCounter.n++;
+      const srcUiId = idOf.get(lf.srcKey);
+      // 找到目标节点里属于连线输入的第 linkInputIdx 个槽
+      let slotPos = -1;
+      for (let i = 0, seen = -1; i < uiNode.inputs.length; i++) {
+        if (uiNode.inputs[i].widget) continue;
+        seen++;
+        if (seen === linkInputIdx) {
+          slotPos = i;
+          break;
+        }
+      }
+      uiNode.inputs[slotPos].link = linkId;
+      const targetSlot = slotPos;
+      links.push([linkId, srcUiId, lf.fromSlot, uiId, targetSlot, "*"]);
+      if (!outRefs.has(srcUiId)) outRefs.set(srcUiId, new Set());
+      outRefs.get(srcUiId).add(Number(lf.fromSlot) || 0);
+      linkInputIdx++;
+    }
+  }
+
+  // 第三遍：输出槽 —— 依据被下游连过的 outSlot 补齐占位（前端按 type 还原真实类型），并回填 links
+  for (const key of sorted) {
+    const node = byId.get(key);
+    const refs = outRefs.get(node.id);
+    if (refs && refs.size) {
+      const maxOut = Math.max(...refs);
+      for (let o = 0; o <= maxOut; o++) {
+        node.outputs.push({ name: "OUT" + o, type: "*", links: [] });
+      }
+      for (const l of links) {
+        if (l[1] === node.id && node.outputs[l[2]]) node.outputs[l[2]].links.push(l[0]);
+      }
+    }
+  }
+
+  // 排布：同一依赖层放同一纵列，层内纵向错开，简单网格
+  const colWidth = 340;
+  const rowHeight = 170;
+  const colCounter = new Map();
+  for (const { key, node } of uiNodes) {
+    const lyr = layer.get(key) ?? 0;
+    const row = colCounter.get(lyr) || 0;
+    colCounter.set(lyr, row + 1);
+    node.pos = [lyr * colWidth + 40, row * rowHeight + 40];
+    node.order = row;
+  }
+
+  const idMap = Object.fromEntries([...idOf.entries()].map(([k, v]) => [k, String(v)]));
+  return { nodes: uiNodes.map((u) => u.node), links, idMap, warnings };
+}
+
+/**
+ * 把一条库记录导出成 ComfyUI 可载入的 UI 格式工作流 JSON 文本。
+ * @param {Object} rec H3WorkflowStore.get(id) 的完整记录（含 API graph）
+ * @returns {{ok:boolean, text?:string, error?:string, warnings?:string[]}}
+ */
+function recordToUiWorkflowText(rec) {
+  if (!isPlainObject(rec) || !isPlainObject(rec.graph)) return { ok: false, error: "记录缺失或没有 API 图。" };
+  try {
+    const conv = apiToUiGraph(rec.graph);
+    return { ok: true, text: JSON.stringify({ nodes: conv.nodes, links: conv.links }, null, 2), warnings: conv.warnings };
+  } catch (e) {
+    return { ok: false, error: readableError(e) };
+  }
+}
+
 
 /** API graph 结构自检（不查 class_type 是否存在于后端，那由 /object_info 校验负责） */
 function validateApiGraphShape(graph) {
@@ -1412,6 +1641,33 @@ class H3WorkflowStore {
     }
   }
 
+  /**
+   * 把某条记录导出为 ComfyUI 可载入的 UI 格式工作流文件（{nodes,links}）到目标目录。
+   * 纯 Node：只写外部目录，绝不写回库 / registry（唯一收回路径是导入 JSON）。
+   * @param {string} id 库条目 id
+   * @param {string} dir 目标目录（ComfyUI 用户工作流目录等）
+   * @returns {{ok:boolean, path?:string, filename?:string, warnings?:string[], error?:string}}
+   */
+  exportComfyUiFile(id, dir) {
+    const safeArg = assertSafeIdSafeArg(id);
+    if (!safeArg.ok) return { ok: false, error: safeArg.error };
+    const rec = this.get(safeArg.id);
+    if (!rec) return { ok: false, error: "工作流不存在：" + safeArg.id };
+    if (!normalizeTitle(dir)) return { ok: false, error: "目标目录为空。" };
+    const r = recordToUiWorkflowText(rec);
+    if (!r.ok) return { ok: false, error: r.error };
+    try {
+      const destDir = path.resolve(String(dir));
+      fs.mkdirSync(destDir, { recursive: true });
+      const filename = comfyWorkflowFileName(rec.title, rec.id) + ".json";
+      const dest = path.join(destDir, filename);
+      fs.writeFileSync(dest, r.text, "utf8");
+      return { ok: true, path: dest, filename, warnings: r.warnings || [] };
+    } catch (e) {
+      return { ok: false, error: readableError(e) };
+    }
+  }
+
   /** 克隆一条（「从内置模板另存为」用） */
   duplicate(id, nextTitle) {
     const safeArg = assertSafeIdSafeArg(id);
@@ -1528,6 +1784,8 @@ module.exports = {
   looksLikeUiGraph,
   detectFormat,
   uiToApiGraph,
+  apiToUiGraph,
+  recordToUiWorkflowText,
   normalizeGraph,
   validateApiGraphShape,
   parseImportText,
@@ -1558,5 +1816,6 @@ module.exports = {
   summarizeRecord,
   fmtBytes,
   sanitizeForFs,
+  comfyWorkflowFileName,
   stableHash,
 };

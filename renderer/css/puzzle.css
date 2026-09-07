@@ -1,0 +1,976 @@
+/* ==========================================================================
+   Puzzle 益智小游戏（renderer/app-puzzle.js + app-puzzle-games.js）
+   顶栏入口 + 全屏宿主（persistent：只走标题栏 ✕ / Esc / 返回列表 关闭，不点外部即关）
+   + 游戏列表 grid + 单局 HUD。配色沿用全局变量（--panel/--bd2/--orange…），
+   亮色主题经变量自动适配。作用域统一加 .pz- 前缀，避免与既有模块冲突。
+   ========================================================================== */
+
+/* ---- 顶栏入口按钮（第一行 .tb-end · 与 btnDocs 同列） ------------------ */
+/* 临时隐藏按钮：不再显示在顶栏，仅用快捷键 Ctrl+Alt+G 呼出。
+   逻辑仍走 bindButton → Puzzle.open；如需恢复，删除下面这一行即可。 */
+.topbar #btnPuzzle { display: none; }
+
+.topbar .btn-puzzle {
+  color: #e6b45a; /* 专属琥珀金：区别于 工具库紫 / 素材库青 / 讨论蓝 / 工坊橙 */
+}
+
+.topbar .btn-puzzle:hover,
+.topbar .btn-puzzle.on {
+  border-color: #e6b45a;
+  color: #ffd98a;
+}
+
+/* ---- 全屏宿主（复用 .mt-dialog 蒙层排版，独占更高层级） ----------------- */
+.pz-dlg {
+  z-index: 2470;
+  padding: 12px;
+}
+
+.pz-dlg .pz-box {
+  width: min(1200px, 97vw);
+  height: min(96vh, 980px);
+  max-height: 96vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-top: 3px solid #e6b45a;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .6);
+}
+
+/* 标题栏 */
+.pz-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 2px solid var(--bd);
+  flex: none;
+}
+
+.pz-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #e6b45a;
+  font-weight: 800;
+  letter-spacing: 1px;
+  font-size: 13px;
+}
+
+.pz-head-title .pz-ico {
+  width: 15px;
+  height: 15px;
+  display: block;
+  color: #e6b45a;
+}
+
+.pz-head-sub {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: .4px;
+}
+
+.pz-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.pz-head-actions .mini {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pz-x {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+
+/* ---- 主体滚动区 / 视图 ------------------------------------------------ */
+.pz-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+/* 分组标题条 */
+.pz-group-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid #e6b45a;
+  color: var(--orange2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.pz-group-title small {
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: .4px;
+  font-size: 10.5px;
+}
+
+/* ---- 游戏列表 grid ------------------------------------------------ */
+.pz-grid-wrap {
+  padding: 14px 16px 22px;
+}
+
+.pz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
+.pz-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 3px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .15s, transform .05s;
+  min-width: 0;
+}
+
+.pz-card:hover {
+  border-color: #e6b45a;
+}
+
+.pz-card:active {
+  transform: translateY(1px);
+}
+
+.pz-card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 每款游戏一张 SVG 图标（44pt 见方） */
+.pz-card-ico {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .18);
+  color: var(--pz-c, #e6b45a);
+}
+
+.pz-card-ico svg {
+  width: 34px;
+  height: 34px;
+  display: block;
+}
+
+.pz-card-code {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.pz-card-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.pz-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pz-chip {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  padding: 1px 5px;
+  border: 1px solid var(--bd2);
+  border-radius: 2px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pz-chip.type {
+  color: #7ce8ff;
+  border-color: rgba(56, 214, 255, .45);
+}
+
+.pz-chip.group {
+  color: #ffb066;
+  border-color: rgba(255, 143, 46, .4);
+}
+
+.pz-chip.diff {
+  color: #9be38a;
+  border-color: rgba(95, 214, 138, .4);
+}
+
+.pz-card-rule {
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  min-height: 32px;
+}
+
+.pz-card-play {
+  margin-top: auto;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: #e6b45a;
+  text-align: right;
+}
+
+/* ---- 单局视图：顶部 HUD -------------------------------------------- */
+.pz-play-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.pz-hud {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border-bottom: 2px solid var(--bd);
+  flex: none;
+  background: rgba(0, 0, 0, .12);
+}
+
+.pz-hud-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.pz-hud-label {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.pz-hud-value {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--orange2);
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.pz-hud-value.dim {
+  color: var(--ink);
+}
+
+.pz-hud-spacer {
+  flex: 1 1 auto;
+}
+
+.pz-diff-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pz-diff-picker .pz-diff-lbl {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.pz-diff-btn {
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  font-size: 11px;
+  font-family: var(--mono);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  border-color: var(--bd2);
+}
+
+.pz-diff-btn.on {
+  border-color: #e6b45a;
+  color: #ffd98a;
+  background: rgba(230, 180, 90, .12);
+}
+
+.pz-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+/* 未实现占位（后续任务逐款接入真实玩法） */
+.pz-placeholder {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 1px;
+  line-height: 2;
+}
+
+.pz-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 0;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+/* ==========================================================================
+   玩法区（A 组即时作答 · mg01 ~ mg04）
+   ========================================================================== */
+.pz-game {
+  width: min(620px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+  text-align: center;
+}
+
+.pz-prompt {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  color: var(--ink);
+}
+
+.pz-prompt .big {
+  font-family: var(--mono);
+  font-size: 24px;
+  color: var(--orange2);
+}
+
+.pz-sub {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .5px;
+}
+
+/* 倒计时条 */
+.pz-qtime {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .25);
+  overflow: hidden;
+}
+
+.pz-qtime > i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #e6b45a, #ffd98a);
+  transform-origin: left;
+}
+
+.pz-qtime.low > i {
+  background: #ff5f5f;
+}
+
+/* 选项按钮 */
+.pz-opts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.pz-opt {
+  min-width: 92px;
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: border-color .12s, background .12s, transform .06s;
+  line-height: 1.1;
+}
+
+.pz-opt:hover {
+  border-color: #e6b45a;
+}
+
+.pz-opt:active {
+  transform: translateY(1px);
+}
+
+.pz-opt.correct {
+  border-color: #9be38a;
+  color: #b8f0a6;
+  background: rgba(95, 214, 138, .16);
+}
+
+.pz-opt.wrong {
+  border-color: #ff5f5f;
+  color: #ff9a8a;
+  background: rgba(255, 95, 95, .14);
+  animation: pz-shake .3s;
+}
+
+.pz-opt.dim {
+  opacity: .5;
+}
+
+@keyframes pz-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-5px); }
+  40% { transform: translateX(5px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
+/* ---- MG-01 拖拽加法 ---- */
+.mg-bank {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  min-height: 58px;
+}
+
+.mg-bubble {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: #10222e;
+  background: radial-gradient(circle at 32% 28%, #ffe9b8, #e6b45a 70%);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, .35), inset 0 1px 2px rgba(255, 255, 255, .6);
+  cursor: grab;
+  user-select: none;
+  transition: transform .12s, opacity .12s, box-shadow .12s;
+}
+
+.mg-bubble.used {
+  opacity: .3;
+  box-shadow: none;
+  cursor: default;
+  transform: scale(.9);
+}
+
+.mg-bubble.grabbing {
+  cursor: grabbing;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .5);
+  transform: scale(1.08);
+}
+
+.mg-ghost {
+  position: absolute;
+  z-index: 50;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: #10222e;
+  background: radial-gradient(circle at 32% 28%, #ffe9b8, #e6b45a 70%);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .5);
+  pointer-events: none;
+  user-select: none;
+}
+
+.mg-slot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  min-height: 58px;
+  padding: 4px 8px;
+  border: 2px dashed var(--bd2);
+  border-radius: 6px;
+  width: 100%;
+}
+
+.mg-slot.on-drag {
+  border-color: #e6b45a;
+  background: rgba(230, 180, 90, .06);
+}
+
+.mg-slot.bad {
+  border-color: #ff5f5f;
+  background: rgba(255, 95, 95, .1);
+  animation: pz-shake .3s;
+}
+
+.mg-slot.good {
+  border-color: #9be38a;
+  background: rgba(95, 214, 138, .12);
+}
+
+.mg-cell {
+  width: 54px;
+  height: 54px;
+  border-radius: 6px;
+  border: 1px dashed var(--bd2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.mg-cell.filled {
+  border-color: #e6b45a;
+  border-style: solid;
+  cursor: pointer;
+}
+
+.mg-cell.filled:hover {
+  border-color: #ffd98a;
+}
+
+/* ---- MG-02 / MG-04 算式与序列展示 ---- */
+.mg-qcard {
+  font-family: var(--mono);
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--orange2);
+  letter-spacing: 2px;
+  padding: 8px 6px;
+  min-height: 54px;
+  text-align: center;
+}
+
+.mg-qcard.seq {
+  font-size: 22px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+
+.mg-qcard.seq .q {
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 5px 7px;
+}
+
+.mg-qcard.seq .qm {
+  color: #e6b45a;
+  border-color: #e6b45a;
+  background: rgba(230, 180, 90, .1);
+}
+
+/* ---- MG-03 大小预测 ---- */
+.mg-cur {
+  font-family: var(--mono);
+  font-size: 72px;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.05;
+}
+
+.mg-hint {
+  font-size: 13px;
+  color: var(--orange2);
+  letter-spacing: 2px;
+  margin-top: 2px;
+}
+
+.pz-opt.wide {
+  min-width: 128px;
+}
+
+/* ---- 结算 / 结束面板 ---- */
+.pz-over {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 60;
+  text-align: center;
+}
+
+.pz-over .big {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--orange2);
+}
+
+.pz-over .stat {
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: .5px;
+  line-height: 1.9;
+}
+
+.pz-over .minirow {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.pz-over .minirow .mini {
+  padding: 6px 14px;
+  font-size: 12px;
+}
+
+/* ================= B 组 · 记忆 / 注意 / 抑制 ================= */
+
+/* ---- MG-05 天气序列记忆（几何+色块，语义中性） ---- */
+.mg-wrow {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+  min-height: 76px;
+  width: 100%;
+}
+.mg-wmask {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  border-radius: 8px;
+  z-index: 20;
+}
+.mg-wslot {
+  width: 60px;
+  height: 72px;
+  border-radius: 8px;
+  border: 1px dashed var(--bd2);
+  background: var(--panel2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color .1s, background .1s;
+}
+.mg-wslot.pop {
+  border-style: solid;
+  border-color: #e6b45a;
+  animation: pz-wpop .25s;
+}
+.mg-wslot svg { width: 44px; height: 44px; }
+@keyframes pz-wpop {
+  0% { transform: scale(.6); }
+  60% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+.mg-wask {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--orange2);
+  margin: 2px 0 10px;
+}
+.mg-wask b { color: #fff; }
+/* 天气四选项用色块按钮，更大命中区 */
+.pz-opt.wglyph {
+  min-width: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  padding: 10px;
+  line-height: 1;
+}
+.pz-opt.wglyph svg { width: 40px; height: 40px; }
+
+/* ---- MG-06 顺序点数字（舒尔特表） ---- */
+.mg-schulte {
+  display: grid;
+  gap: 8px;
+  justify-content: center;
+  margin: 6px auto;
+}
+.mg-num {
+  width: 62px;
+  height: 62px;
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--ink);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  transition: transform .06s, border-color .1s, opacity .1s;
+}
+.mg-num:hover { border-color: #e6b45a; }
+.mg-num.done {
+  opacity: .32;
+  border-color: var(--bd2);
+  background: var(--panel);
+  cursor: default;
+  color: var(--muted);
+}
+.mg-num.badflash { animation: pz-shake .3s; border-color: #ff5f5f; }
+
+/* ---- MG-07 数字顺背 / 倒背 ---- */
+.mg-seqlbl { font-size: 13px; color: var(--muted); margin-top: 2px; letter-spacing: 1px; }
+.mg-big {
+  font-family: var(--mono);
+  font-size: 96px;
+  font-weight: 800;
+  color: var(--orange2);
+  height: 130px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 6px;
+}
+.mg-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 64px);
+  gap: 8px;
+  justify-content: center;
+  margin-top: 6px;
+}
+.mg-key { width: 64px; height: 54px; border-radius: 8px; font-size: 22px; font-weight: 700;
+  font-family: var(--mono); color: var(--ink); background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2); cursor: pointer; }
+.mg-key:hover { border-color: #e6b45a; }
+.mg-key:disabled { opacity: .3; cursor: default; }
+.mg-dots { display: flex; gap: 8px; justify-content: center; min-height: 26px; margin: 6px 0 2px; }
+.mg-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bd2); }
+.mg-dot.on { background: #e6b45a; border-color: #e6b45a; }
+
+/* ---- MG-08 翻牌配对 ---- */
+.mc-board { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.mc-grid { display: grid; gap: 10px; justify-content: center; }
+.mc-card {
+  width: 74px; height: 92px; perspective: 600px; cursor: pointer; position: relative;
+}
+.mc-card > div {
+  position: absolute; inset: 0; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  backface-visibility: hidden; transition: transform .18s ease;
+  border: 2px solid var(--bd2);
+}
+.mc-back { background: linear-gradient(180deg, #2b4256, #1f3346); border-color: #e6b45a; }
+.mc-back svg { width: 26px; height: 26px; opacity: .85; }
+.mc-face { background: linear-gradient(180deg, var(--panel2), var(--panel)); transform: rotateY(180deg); }
+.mc-face svg { width: 40px; height: 40px; }
+.mc-card.open > .mc-back { transform: rotateY(180deg); }
+.mc-card.open > .mc-face { transform: rotateY(0); }
+.mc-card.matched { opacity: .35; cursor: default; pointer-events: none; }
+.mc-card.matched > .mc-face { border-color: #9be38a; }
+.mc-card.wrong { animation: pz-shake .3s; }
+.mc-card.wrong > .mc-face, .mc-card.wrong > .mc-back { border-color: #ff5f5f; }
+.mc-stat { font-size: 12px; color: var(--muted); letter-spacing: .5px; }
+
+/* =====================================================================
+   C 组 · 抑制/知觉：MG-09 Stroop · MG-10 Go/No-Go · MG-11 Quick Eye ·
+                MG-12 Odd One Out · MG-13 Counting
+   ===================================================================== */
+/* 口径横幅（Stroop 顶部持续显示当前问法） */
+.mg-modechip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 20px;
+  background: rgba(127, 224, 168, .16);
+  border: 1px solid #7fe0a8; color: #7fe0a8;
+  font-size: 12px; font-weight: 600; letter-spacing: .5px;
+  margin-bottom: 6px;
+}
+/* Stroop 主刺激词 */
+.st-word {
+  font-family: var(--mono); font-size: 92px; font-weight: 900;
+  line-height: 1.1; text-align: center; margin: 6px 0 16px;
+  text-transform: uppercase; user-select: none;
+}
+/* Go/No-Go 刺激区 */
+.gng-stage {
+  width: 300px; height: 300px; margin: 6px auto 10px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; background: rgba(127, 232, 255, .06);
+  border: 1px dashed var(--bd2);
+}
+.gng-stage svg { width: 150px; height: 150px; }
+.gng-lock { border-color: #ff5f5f; }
+.gng-lock svg { animation: pz-shake .3s; }
+/* Quick Eye 网格 */
+.qe-grid {
+  display: grid; gap: 10px; justify-content: center;
+  margin: 6px auto;
+}
+.qe-cell {
+  position: relative; cursor: pointer; border-radius: 10px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color .1s, transform .06s;
+  overflow: hidden;
+}
+.qe-cell:hover { border-color: #e6b45a; }
+.qe-cell:active { transform: scale(.97); }
+.qe-cell svg { width: 70%; height: 70%; }
+.qe-cell.flash { animation: pz-shake .3s; border-color: #ff5f5f; }
+.qe-cell.hit { border-color: #9be38a; }
+/* Odd One Out 行 */
+.ooo-row {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 14px;
+  margin: 8px auto;
+}
+.ooo-cell {
+  cursor: pointer; border-radius: 10px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  padding: 10px; display: flex; align-items: center; justify-content: center;
+  transition: border-color .1s, transform .06s;
+}
+.ooo-cell:hover { border-color: #e6b45a; }
+.ooo-cell:active { transform: translateY(1px); }
+.ooo-cell svg { width: 52px; height: 52px; }
+.ooo-cell.flash { animation: pz-shake .3s; border-color: #ff5f5f; }
+.ooo-cell.hit { border-color: #9be38a; }
+/* Counting 收集区 */
+.cnt-grid {
+  display: grid; gap: 8px; justify-content: center;
+  margin: 6px auto 12px;
+}
+.cnt-item { display: flex; align-items: center; justify-content: center; }
+.cnt-item svg { width: 44px; height: 44px; }
+.cnt-q {
+  font-family: var(--mono); font-size: 22px; font-weight: 700;
+  text-align: center; color: var(--ink); margin: 6px 0 2px;
+}
+.cnt-qline {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+}
+.cnt-qline span { font-size: 18px; }
+.cnt-qline svg { width: 30px; height: 30px; }
+.cnt-color { display: inline-block; width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); }
+.st-swatch { border-radius: 50%; border-width: 3px; flex: none; }
+
+/* =====================================================================
+   D 组 · 空间 / 规划：MG-14 俯视图 · MG-15 立方展开 · MG-16 齿轮 ·
+                 MG-17 六边形连锁
+   ===================================================================== */
+/* MG-14 俯视图：左侧等轴雕塑 + 右侧 2x2 俯视候选小棋盘 */
+.bv-wrap { display: flex; gap: 26px; align-items: center; justify-content: center; flex-wrap: wrap; margin: 6px auto; }
+.bv-iso { background: linear-gradient(180deg, rgba(155,227,138,.08), transparent); border: 1px dashed var(--bd2); border-radius: 12px; padding: 6px; }
+.bv-iso svg { width: 300px; height: 300px; }
+.bv-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.bv-opt {
+  cursor: pointer; background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2); border-radius: 10px; padding: 8px;
+  display: flex; align-items: center; justify-content: center;
+}
+.bv-opt:hover { border-color: #9be38a; }
+.bv-opt:active { transform: scale(.97); }
+.bv-opt.hit { border-color: #9be38a; box-shadow: 0 0 0 2px rgba(155,227,138,.35); }
+.bv-opt.flash { border-color: #ff5f5f; animation: pz-shake .3s; }
+.bv-opt.faded { opacity: .35; pointer-events: none; }
+.bvboard { display: grid; gap: 2px; }
+.bvc { width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--bd2); background: transparent; }
+.bvc.on { background: #9be38a; border-color: #9be38a; }
+
+/* MG-15 立方展开：左侧目标立方（三面各带一个标记）+ 右侧候选展开网 */
+.cn-wrap { display: flex; gap: 26px; align-items: center; justify-content: center; flex-wrap: wrap; margin: 6px auto; }
+.cn-iso { border: 1px dashed var(--bd2); border-radius: 12px; padding: 6px; background: rgba(155,227,138,.06); }
+.cn-iso svg { width: 210px; height: 210px; }
+.cn-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cn-opt {
+  cursor: pointer; background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2); border-radius: 10px; padding: 8px;
+}
+.cn-opt:hover { border-color: #9be38a; }
+.cn-opt.hit { border-color: #9be38a; }
+.cn-opt.flash { border-color: #ff5f5f; animation: pz-shake .3s; }
+.cn-opt.faded { opacity: .35; pointer-events: none; }
+.cnnet { display: grid; gap: 3px; width: max-content; margin: auto; }
+.cntile { width: 40px; height: 40px; border: 2px solid var(--bd2); border-radius: 4px; background: var(--panel2); }
+.cntile.empty { border-color: transparent; background: transparent; }
+.cntile .glyph { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.cntile .glyph svg { width: 26px; height: 26px; }
+
+/* MG-16 齿轮：左侧传动链示意（SVG）+ 候选齿轮按钮 */
+.gr-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.gr-train { width: 100%; text-align: center; }
+.gr-train svg { width: min(540px, 90%); height: 190px; }
+.gr-ask { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--ink); margin: 4px 0 10px; }
+.gr-opts { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+.gr-opt {
+  cursor: pointer; background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2); border-radius: 12px; padding: 8px 16px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.gr-opt:hover { border-color: #e6b45a; }
+.gr-opt svg { width: 74px; height: 74px; }
+.gr-opt .lbl { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+.gr-opt.hit { border-color: #9be38a; }
+.gr-opt.flash { border-color: #ff5f5f; animation: pz-shake .3s; }
+.gr-opt.faded { opacity: .35; pointer-events: none; }
+
+/* MG-17 六边形连锁：六边形网格 + 重置按钮 */
+.hx-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.hx-stage { text-align: center; }
+.hx-stage svg { width: min(480px, 92%); height: 440px; }
+.pz-minirow { display: flex; gap: 10px; justify-content: center; margin-top: 4px; }
+.pz-mini {
+  cursor: pointer; background: rgba(155,227,138,.14); color: #9be38a;
+  border: 1px solid #9be38a; border-radius: 14px; padding: 4px 14px; font-size: 12px;
+}
+.pz-mini:hover { background: rgba(155,227,138,.26); }
