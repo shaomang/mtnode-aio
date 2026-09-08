@@ -3858,35 +3858,89 @@ button.mini.btn-sq.tpl-ico {
   flex-basis: 100%
 }
 
+/* ── 工具按钮后方的文件名（app-fileview.js 的 dshToolFileBadges）──
+   位置在 summary 里、但在那颗 .dsh-tool-chip 药丸「外面」，且只显文字、不给外框：
+   读=青 / 改=橙 / 目录=灰，与 .dsh-tool-chip 同一字号同一 mono，
+   一行读下来就是「🔧 read  b.js」——一眼看出这步碰了哪个文件，点文件名开只读查看面板。
+   会话 / 助手 / 节点绑定会话 / 计划面板 live 共用这一段样式，不再各写一份。 */
+.dsh-tool-file {
+  flex: none;
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  line-height: 1.5;
+  color: var(--cyan2);
+  cursor: pointer;
+}
+
+/* 唯一的可点提示：下划线（没有外框可 hover 了） */
+.dsh-tool-file:hover {
+  text-decoration: underline
+}
+
+/* 读 = 默认那身青色；这一条只为把「m-read」写成显式真源，与 m-write / m-dir 对称 */
+.dsh-tool-file.m-read {
+  color: var(--cyan2)
+}
+
+.dsh-tool-file.m-write {
+  color: #ffc38a
+}
+
+.dsh-tool-file.m-dir {
+  color: var(--muted)
+}
+
+/* 收成 +N 的那一枚：中性灰，点了就地展开余下的文件名 */
+.dsh-tool-file.fv-more {
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+/* 亮色主题的改色统一在 css/theme-light.css（与 .fp-* 同一归属）；这里只留暗色真源 */
+
+/* 计划面板 live 行：与 .ap-tool-n 同色同字号，清单窄，别把结果摘要挤没 */
+.ap-live-tools .dsh-tool-file {
+  max-width: 108px;
+}
+
+/* summary = 一整行的点击区：药丸（.dsh-tool-chip）+ 后面的文件名，放不下就换行 */
 .dsh-tool summary {
   list-style: none;
   cursor: pointer;
-  display: inline-flex
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap
 }
 
 .dsh-tool summary::-webkit-details-marker {
   display: none
 }
 
-.dsh-tool summary:hover {
-  background: rgba(56, 214, 255, .14)
+/* 悬停与展开态只涂那颗按钮本身：文件名跟在后面点它开的是另一个面板，
+   把整行都涂成「可点」会误导成「文件名也属于这个按钮」。 */
+.dsh-tool-chip:hover {
+  background: rgba(56, 214, 255, .24)
 }
 
-.dsh-tool[open] summary {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  background: rgba(56, 214, 255, .14)
+.dsh-tool[open] .dsh-tool-chip {
+  background: rgba(56, 214, 255, .24)
 }
 
-.dsh-tool.err summary {
+.dsh-tool.err .dsh-tool-chip {
   border-color: var(--red);
   color: var(--red)
 }
 
+/* 药丸不再与参数框黏合成一格（药丸只到工具名那么宽），所以参数框自带顶边并留一条缝 */
 .dsh-tool-body {
   border: 1px solid var(--bd2);
-  border-top: none;
-  border-radius: 0 0 3px 3px;
+  border-radius: 3px;
+  margin-top: 3px;
   background: var(--code);
   padding: 6px 8px;
   display: flex;

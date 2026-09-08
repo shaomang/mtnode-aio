@@ -307,6 +307,9 @@
 <script src="dsh-plugin-copy.js"></script>
 <script src="app.js"></script>
 <script src="app-codeedit.js"></script>
+<!-- 会话工具条的文件引用识别 + 右侧文件查看面板（纯函数段不碰 DOM，可被 test/ 切片真跑；
+     高亮优先复用上面 app-codeedit.js 的词法，所以必须排在它之后、用它的 app-assist.js 之前） -->
+<script src="app-fileview.js"></script>
 <script src="app-devnode.js"></script>
 <script src="app-agent.js"></script>
 <script src="app-prompt-sections.js"></script>

@@ -8,3 +8,6 @@
 @import url("./css/theme-light.css");
 @import url("./css/puzzle.css");
 @import url("./css/review.css");
+/* 文件查看面板（会话工具条上的文件名 → 右侧只读预览）；
+   亮色覆盖走 body.theme-light .fp-* 的更高优先级，放最后即可。 */
+@import url("./css/fileview.css");

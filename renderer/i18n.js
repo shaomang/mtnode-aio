@@ -38,6 +38,53 @@
     "请先等该节点运行完成再审阅": "Wait for the node to finish running before reviewing",
     "该节点还没有文本输出，请先运行一次再审阅": "No text output yet — run the node once first",
     "锚点文字已变更，批注可能失效": "Anchor text changed — annotation may be stale",
+    /* ── 文件查看：工具条文件徽标 + 右侧只读预览面板（app-fileview.js） ── */
+    "文件查看": "File viewer",
+    "读": "Read",
+    "改": "Write",
+    "折行": "Wrap",
+    "不换行": "No wrap",
+    "复制内容": "Copy content",
+    "复制路径": "Copy path",
+    "在资源管理器中显示": "Show in Explorer",
+    "重新加载": "Reload",
+    "拖拽左边缘调整宽度": "Drag the left edge to resize",
+    "已复制文件内容": "File content copied",
+    "已复制文件路径": "File path copied",
+    "没有可复制的内容": "Nothing to copy",
+    "没有可预览的内容": "Nothing to preview",
+    "无法定位该文件的完整路径，只给你看文件名":
+      "Cannot resolve the full path of this file — showing the name only",
+    "这个会话还没解析出工作目录，只给你看文件名":
+      "No workspace resolved for this session — showing the name only",
+    " 个文件，点击展开": " more files — click to expand",
+    "当前环境读不到文件": "Files cannot be read in this environment",
+    "文件是空的": "The file is empty",
+    "文件过大（": "File too large (",
+    "），预览上限 ": "), preview limit ",
+    "；请用「在资源管理器中显示」交给外部编辑器":
+      "; use \"Show in Explorer\" to hand it to an external editor",
+    "只显示前 ": "Showing only the first ",
+    "（共 ": " (of ",
+    "文件较大，已关闭语法着色只出纯文本":
+      "Large file — syntax coloring off, plain text only",
+    "这看起来是个二进制文件，没有做预览": "This looks like a binary file — no preview",
+    "文件不存在或读不到（可能已被删除 / 改名）":
+      "File missing or unreadable (maybe deleted / renamed)",
+    "这个文件现在还不存在（工具可能还没写完，或写的是别的路径）":
+      "This file does not exist yet (the tool may not have written it, or wrote another path)",
+    "图片显示不出来（格式不支持或文件读不到）":
+      "Image cannot be shown (unsupported format or unreadable file)",
+    "读目录失败：": "Failed to read the directory: ",
+    "目录里没有文件（空目录，或只有被忽略的隐藏 / 重型目录）":
+      "No files in this directory (empty, or only ignored hidden / heavy directories)",
+    "个条目": " entries",
+    "过滤条目…": "Filter entries…",
+    "没有匹配的条目": "No matching entries",
+    "还有 ": "Plus ",
+    " 条没列出，继续输入可过滤": " more not listed — keep typing to filter",
+    "递归列表：只列文件，已跳过隐藏项与 node_modules / .git":
+      "Recursive listing: files only, hidden items and node_modules / .git skipped",
     /* ── 全部终止 / 媒体生成排队 ── */
     "已终止（排队中的生成任务已取消）": "Cancelled (queued generation dropped)",
     "已终止（后端生成任务已取消）": "Cancelled (backend generation stopped)",

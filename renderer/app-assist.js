@@ -2412,8 +2412,23 @@ function dshToolDetailsEl(t, live, nodeId) {
     (nodeId || "") + ":" + (t.callId || t.name || "") + (t.at ? ":" + t.at : "");
   if (openKey && S.openDshTools && S.openDshTools[openKey]) det.open = true;
   const sum = document.createElement("summary");
-  sum.className = "dsh-tool-chip";
-  sum.textContent = (live ? "◌ " : "🔧 ") + t.name;
+  sum.className = "dsh-tool-sum";
+  /* 那颗青色药丸 = 「工具按钮」本身，只包工具名。
+     文件名不塞进药丸里（药丸一撑大就像「工具叫 read/x.js」），而是跟在按钮后方，
+     且只是文字、不带外框 —— 一眼读成「🔧 read  b.js」，参考 Cursor 那一行。 */
+  const chip = document.createElement("span");
+  chip.className = "dsh-tool-chip";
+  chip.textContent = (live ? "◌ " : "🔧 ") + t.name;
+  sum.appendChild(chip);
+  /* 徽标本体与点击全在 app-fileview.js，与计划面板 planLiveBlock 同源：
+     不展开参数也能看出这步动了哪个文件，点文件名 = 右侧滑出只读查看面板；
+     点击在徽标里 preventDefault + stopPropagation，不会连带展开 / 收起详情。 */
+  if (typeof dshToolFileBadges === "function") {
+    try {
+      const badges = dshToolFileBadges(t, nodeId);
+      if (badges) sum.appendChild(badges);
+    } catch (_) {}
+  }
   sum.title =
     I18n.t("点击展开参数与结果") +
     (t.turn ? I18n.t(" · 第{turn}轮第{step}步", { turn: t.turn, step: t.step }) : "") +
@@ -2715,7 +2730,9 @@ function applyHistoryCollapse(list) {
     const isLast = i === rows.length - 1;
     const isPrevOfLive = !isLast && liveLast && i === rows.length - 2;
     const key = el.dataset.histKey || "";
-    if (isLast || isPrevOfLive) {
+    /* 用户输入行一般不长、且是会话里最该一眼看全的内容：一律不折叠、始终全显 */
+    const isUser = el.classList.contains("dsh-user");
+    if (isLast || isPrevOfLive || isUser) {
       el.classList.remove("hist-expanded");
       el.removeAttribute("title");
       return;

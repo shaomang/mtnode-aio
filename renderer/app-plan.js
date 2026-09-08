@@ -2791,7 +2791,7 @@ function planLiveErrText(live, max) {
   return s.length > m ? s.slice(0, m) + "…" : s;
 }
 /* 详情里的流式转写区：工具调用列表 + 正文尾部（自身是滚动容器，贴底才跟随） */
-function planLiveBlock(live) {
+function planLiveBlock(live, ownerId) {
   const box = planPanelEl("div", "ap-live");
   box.setAttribute("data-live-state", String(live.state || "running"));
   const tools = Array.isArray(live.tools) ? live.tools.filter(Boolean) : [];
@@ -2811,6 +2811,14 @@ function planLiveBlock(live) {
       const cls = t.state === "error" ? "st-err" : t.state === "done" ? "st-ok" : "st-run";
       const it = planPanelEl("div", "ap-tool " + cls);
       it.appendChild(planPanelEl("b", "ap-tool-n", "🔧 " + (t.name || "?")));
+      /* 同一份文件徽标（app-fileview.js）：这份 args 是截断过的字符串，
+         正好看 toolFileRefs 的正则兜底；ownerId = 这条计划所属会话，基准目录同源。 */
+      if (typeof dshToolFileBadges === "function") {
+        try {
+          const badges = dshToolFileBadges(t, ownerId);
+          if (badges) it.appendChild(badges);
+        } catch (_) {}
+      }
       it.appendChild(
         planPanelEl(
           "i",
@@ -3046,7 +3054,8 @@ function renderAgentPlanPanel(st) {
     }
     /* ② 流式转写区：挂在详情块下方（自己就是滚动容器，不与 .ap-detail 套娃） */
     if (st._planOpen === i && live) {
-      liveEl = planLiveBlock(live);
+      /* 第二参 = 所属会话 id：徽标要靠它现推生效工作区（agentRunWorkspace） */
+      liveEl = planLiveBlock(live, st && st.id);
       ul.appendChild(liveEl);
     }
   });

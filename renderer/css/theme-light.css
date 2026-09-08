@@ -647,8 +647,8 @@ body.theme-light .wf-node.browse:hover .n-view::-webkit-scrollbar-thumb:hover {
 }
 
 /* ── 工具调用块 / 思考块 ── */
-body.theme-light .dsh-tool summary:hover,
-body.theme-light .dsh-tool[open] summary {
+body.theme-light .dsh-tool-chip:hover,
+body.theme-light .dsh-tool[open] .dsh-tool-chip {
   background: rgba(32, 104, 184, .12);
 }
 body.theme-light .dsh-tool-body pre {
@@ -1002,4 +1002,41 @@ body.theme-light .js-edit-input::selection {
   background: rgba(32, 104, 184, .22);
   color: transparent;
   -webkit-text-fill-color: transparent;
+}
+
+/* ── 文件查看面板（css/fileview.css）：白底上换掉暗色投影与半透明色块 ── */
+body.theme-light .fp-box {
+  box-shadow: -10px 0 28px rgba(30, 40, 60, .14);
+}
+body.theme-light .fp-btn.on,
+body.theme-light .fp-rchip.cur {
+  /* 暗色那层 .12 青色底在白底上偏脏，压深一档再降透明 */
+  background: rgba(32, 104, 184, .12);
+}
+body.theme-light .fp-note {
+  background: rgba(217, 102, 10, .1);
+  color: #8a4a05;
+}
+body.theme-light .fp-l.cur {
+  background: rgba(32, 104, 184, .13);
+  box-shadow: inset 2px 0 0 var(--cyan);
+}
+body.theme-light .fp-dir-row:hover {
+  background: var(--panel2);
+}
+body.theme-light .fp-img {
+  border-color: var(--bd);
+}
+
+/* ── 工具按钮后方的文件名（css/dsh.css 的 .dsh-tool-file）：只显文字，白底上换成深字 ── */
+body.theme-light .dsh-tool-file,
+body.theme-light .dsh-tool-file.m-read {
+  color: #0e6f92;
+}
+body.theme-light .dsh-tool-file.m-write {
+  color: #a1560d;
+}
+body.theme-light .dsh-tool-file.m-dir,
+body.theme-light .dsh-tool-file.fv-more {
+  color: var(--muted);
 }
