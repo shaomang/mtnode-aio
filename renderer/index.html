@@ -379,6 +379,9 @@
 <script src="app-db.js"></script>
 <script src="app-nodeview.js"></script>
 <script src="app-canvas.js"></script>
+<!-- 图像生成 · 蒙版局部重绘编辑器（自包含：window.openMaskEditor / maskButtonEl）。
+     放在 app-canvas.js 之后：节点头部按钮在 renderCanvas 里按调用期取它。 -->
+<script src="app-mask.js"></script>
 <script src="js-exec.js"></script>
 <script src="app-nodes.js"></script>
 <script src="app-rollback.js"></script>

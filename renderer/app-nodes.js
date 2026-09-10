@@ -2,6 +2,9 @@
 /* ============ 处理（Play / 批量） ============ */
 
 function buildSpec(node, prov, idx) {
+  /* 图像参数（quality / background / 蒙版）先归一，旧画布缺字段也拿得到确定值 */
+  if (node.kind === "proc_image" && typeof normalizeImgParams === "function")
+    normalizeImgParams(node);
   const ins = inputValuesFor(node, idx);
   const images = [];
   const imageSources = [];
@@ -62,7 +65,12 @@ function buildSpec(node, prov, idx) {
           ? node.size
           : DEFAULT_IMAGE_SIZE
         : "",
-    prompt: withBgRmPrompt(node, assemblePrompt(refs.prompt, sources)),
+    /* gpt-image-2 直传参数（见 main.js buildRequestSpec）：空值 = 不传，服务商默认 auto；
+       maskPath 为空 = 不做局部重绘（mask 必须与原图同尺寸、只对第 1 张 image 生效） */
+    quality: node.kind === "proc_image" ? node.imgQuality || "" : undefined,
+    background: node.kind === "proc_image" ? node.imgBackground || "" : undefined,
+    maskPath: node.kind === "proc_image" && maskActive(node) ? node.maskPath : "",
+    prompt: withImageParamsPrompt(node, assemblePrompt(refs.prompt, sources)),
     texts: [],
     images: mergedImages,
     refImage: mergedImages[0] || "",
@@ -338,10 +346,13 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     );
   }
   spec.abKey = node._abKey || "";
+  /* 蒙版局部重绘：前置校验（服务商 / 原图），并在开启时让位画幅锁定（见 app.js 同名函数） */
+  if (node.kind === "proc_image")
+    ensureMaskPrereqs(node, prov, typeof idx === "number" ? idx : 0);
   /* 画幅锁定「与首参考图保持一致长宽比」：发请求前把首参考图换成补边副本、
      并把请求尺寸钉到目标画幅；出图后由 finishProcImageOutput 按同一矩形裁回。
      聚合运行没有条目标题，故 itemTitle 用 typeof 兜底（单次 / 聚合两条路径共用这段）。 */
-  if (node.kind === "proc_image")
+  if (node.kind === "proc_image" && !maskActive(node))
     await applyRatioLockToSpec(node, spec, {
       write: true,
       itemTitle: typeof itemTitle === "string" ? itemTitle : "",
@@ -427,6 +438,8 @@ function resolveRefsAgg(prompt, node) {
 
 /* 聚合模式：所有条目的内容合并为一次请求（每条目作为独立输入块） */
 function buildSpecAgg(node, prov) {
+  if (node.kind === "proc_image" && typeof normalizeImgParams === "function")
+    normalizeImgParams(node);
   const images = [];
   const textBlocks = [];
   for (const w of wiresTo(node.id)) {
@@ -501,7 +514,11 @@ function buildSpecAgg(node, prov) {
           ? node.size
           : DEFAULT_IMAGE_SIZE
         : "",
-    prompt: withBgRmPrompt(node, prompt),
+    /* gpt-image-2 直传参数：见 buildSpec 的同一段说明 */
+    quality: node.kind === "proc_image" ? node.imgQuality || "" : undefined,
+    background: node.kind === "proc_image" ? node.imgBackground || "" : undefined,
+    maskPath: node.kind === "proc_image" && maskActive(node) ? node.maskPath : "",
+    prompt: withImageParamsPrompt(node, prompt),
     texts: [],
     images: mergedImages,
     refImage: mergedImages[0] || "",
@@ -558,10 +575,13 @@ async function runOnceAgg(node, prov, attemptT) {
     );
   }
   spec.abKey = node._abKey || "";
+  /* 蒙版局部重绘：前置校验（服务商 / 原图），并在开启时让位画幅锁定（见 app.js 同名函数） */
+  if (node.kind === "proc_image")
+    ensureMaskPrereqs(node, prov, typeof idx === "number" ? idx : 0);
   /* 画幅锁定「与首参考图保持一致长宽比」：发请求前把首参考图换成补边副本、
      并把请求尺寸钉到目标画幅；出图后由 finishProcImageOutput 按同一矩形裁回。
      聚合运行没有条目标题，故 itemTitle 用 typeof 兜底（单次 / 聚合两条路径共用这段）。 */
-  if (node.kind === "proc_image")
+  if (node.kind === "proc_image" && !maskActive(node))
     await applyRatioLockToSpec(node, spec, {
       write: true,
       itemTitle: typeof itemTitle === "string" ? itemTitle : "",
@@ -667,7 +687,7 @@ async function previewNode(node) {
   /* 画幅锁定：预览也要看到「真正会发出去的尺寸 + 补边注入段」。
      write:false 只算几何、不落补边副本（预览不该往素材库塞中间图）。 */
   let rlPlan = null;
-  if (node.kind === "proc_image" && node.ratioLockOn)
+  if (node.kind === "proc_image" && node.ratioLockOn && !maskActive(node))
     rlPlan = await applyRatioLockToSpec(node, spec, { write: false });
   const r = await window.api.apiPreview(spec);
   if (!r.ok) {
@@ -680,7 +700,31 @@ async function previewNode(node) {
   let txt = q.method + "  " + q.url + "\n\nHeaders:\n";
   for (const [k, v] of Object.entries(q.headers))
     txt += "  " + k + ": " + v + "\n";
-  txt += "\nBody:\n" + JSON.stringify(q.body, null, 2);
+  if (q.multipart && q.multipart.length) {
+    /* multipart（/images/edits 等）：这就是**真正下发的输入** —— main 侧列出的是
+       sendMultipart 实际拼出的分片（同一份 multipartParts 实现、同一文件名、同一份字节）。
+       以前这里打印内部的 { __multipart: {…} } 伪 JSON：里面的 image / mask 只是本地路径数组，
+       与线上字段名、文件名、字节都对不上，会被误读成「路径不对 / 蒙版没传」。 */
+    txt +=
+      "\n" +
+      I18n.t("Body（multipart/form-data · 下面就是真正下发的表单字段 · boundary 由传输层自动生成）：") +
+      "\n";
+    for (const p of q.multipart) {
+      if (p.value !== undefined) {
+        txt += "  " + p.name + " = " + JSON.stringify(p.value) + "\n";
+        continue;
+      }
+      let line = "  " + p.name + " = " + I18n.t("文件");
+      if (p.filename) line += " " + p.filename;
+      if (p.dims) line += " · " + p.dims.w + "×" + p.dims.h + " " + I18n.t("像素");
+      if (p.bytes != null) line += " · " + fmtBytes(p.bytes);
+      line += " · " + p.path;
+      if (p.error) line += " · " + I18n.t("读取失败") + "：" + p.error;
+      txt += line + "\n";
+    }
+  } else {
+    txt += "\nBody:\n" + JSON.stringify(q.body, null, 2);
+  }
   if (
     node.kind === "proc_text" &&
     spec.images.length &&
@@ -688,7 +732,7 @@ async function previewNode(node) {
   ) {
     txt = "⚠ " + I18n.t(VISION_HINT) + I18n.t("\n（以下请求将忽略图像输入）\n\n") + txt;
   }
-  if (node.kind === "proc_image" && node.bgRmOn) {
+  if (node.kind === "proc_image" && node.bgRmOn && !imgAlphaBgOn(node)) {
     /* 透明背景：让「其实要出两张图」与「本服务商能否严格锚定第 2 通道」在预览里就看得见 */
     txt =
       "⚠ " +
@@ -701,7 +745,34 @@ async function previewNode(node) {
           )) +
       txt;
   }
-  if (node.kind === "proc_image" && node.ratioLockOn) {
+  if (node.kind === "proc_image" && imgAlphaBgOn(node)) {
+    /* 背景选了「透明」：接口直出 Alpha，提示词也会自动补一段「背景必须真透明」 */
+    txt =
+      "⚠ " +
+      I18n.t(
+        "背景已设为「透明」：请求带 background=transparent（强制 output_format=png），接口直出带 Alpha 通道的 PNG。提示词末尾已自动追加「背景必须是真透明通道」的要求，差分透明算法按钮已禁用（接口已经给透明了，不必再花 2 倍 Token）。注意这是「重绘去背」，不是精确抠像；要像素级抠图请把背景改回默认再用差分抠图。\n\n",
+      ) +
+      txt;
+  }
+  if (node.kind === "proc_image" && maskActive(node)) {
+    /* 蒙版局部重绘：让「只重绘涂抹区」「蒙版压过了画幅锁定」在预览里就看得见 */
+    txt =
+      "⚠ " +
+      I18n.t(
+        "蒙版局部重绘已开启：请求里带 mask（透明区域 = 允许模型重绘，不透明区域 = 尽量保留原图），只对第 1 张 image 生效；蒙版与原图同尺寸原样下发。请把提示词写成「仅修改蒙版透明区域……其他区域保持不变」。\n",
+      ) +
+      I18n.t(
+        "本次请求的 size 跟着首张参考图的像素尺寸走（节点自己选的尺寸不生效）：服务端按 size 出图，size 一旦与蒙版像素不一致就会先重排输入图，蒙版立刻错位、整张主体被重绘。预览里的 image / mask 就是实际下发的路径本身，没有包装。\n",
+      ) +
+      (node.ratioLockOn
+        ? I18n.t(
+            "本次以蒙版为准：画幅锁定已跳过（补边会改写第 1 张参考图，蒙版就与原图错位了）。\n",
+          )
+        : "") +
+      "\n" +
+      txt;
+  }
+  if (node.kind === "proc_image" && node.ratioLockOn && !maskActive(node)) {
     /* 画幅锁定：预览里直接给出「补边到哪个画幅、裁回哪个矩形」，
        上面这份请求的 size 已经是目标画幅（补边副本运行时才落盘） */
     txt =
@@ -7215,7 +7286,12 @@ function browseOutput(node) {
           row.appendChild(md);
         } else {
           const img = document.createElement("img");
-          img.className = "browse-img" + (node.bgRmOn ? " bg-rm-preview" : "");
+          img.className =
+        "browse-img" +
+        (node.bgRmOn ||
+        (typeof imgAlphaBgOn === "function" && imgAlphaBgOn(node))
+          ? " bg-rm-preview"
+          : "");
           img.src = window.api.toFileUrl(x.output.path);
           bindImagePreview(img, x.output.path, x.title || I18n.t("输出图像"));
           bindImgSaveAs(img);
@@ -7237,7 +7313,12 @@ function browseOutput(node) {
       content.appendChild(md);
     } else {
       const img = document.createElement("img");
-      img.className = "browse-img" + (node.bgRmOn ? " bg-rm-preview" : "");
+      img.className =
+        "browse-img" +
+        (node.bgRmOn ||
+        (typeof imgAlphaBgOn === "function" && imgAlphaBgOn(node))
+          ? " bg-rm-preview"
+          : "");
       img.src = window.api.toFileUrl(r.output.path);
       bindImagePreview(
         img,
@@ -8404,6 +8485,11 @@ function canvasSnapshot(opts) {
           : undefined,
       bgRmOn:
         n.kind === "proc_image" ? !!n.bgRmOn : undefined,
+      imgQuality:
+        n.kind === "proc_image" ? String(n.imgQuality || "") : undefined,
+      imgBackground:
+        n.kind === "proc_image" ? String(n.imgBackground || "") : undefined,
+      maskOn: n.kind === "proc_image" ? !!n.maskOn : undefined,
       hasImage:
         n.kind === "input_image"
           ? !!(
@@ -12597,6 +12683,33 @@ function applyNodePatch(node, patch, warnings) {
   }
   if (typeof patch.bgRmOn === "boolean" && node.kind === "proc_image")
     node.bgRmOn = patch.bgRmOn;
+  /* gpt-image-2 直传参数：非法值丢弃并告警，别把脏枚举发给接口 */
+  if (patch.imgQuality != null && node.kind === "proc_image") {
+    const q = String(patch.imgQuality).trim().toLowerCase();
+    if (IMG_QUALITY_VALUES.includes(q)) node.imgQuality = q;
+    else if (warnings)
+      warnings.push(
+        I18n.t("无效的 quality（须为 low/medium/high/xhigh/max/auto 或空）：") + q,
+      );
+  }
+  if (patch.imgBackground != null && node.kind === "proc_image") {
+    const b = String(patch.imgBackground).trim().toLowerCase();
+    if (IMG_BACKGROUND_VALUES.includes(b)) {
+      node.imgBackground = b;
+      normalizeImgParams(node);
+    } else if (warnings)
+      warnings.push(
+        I18n.t("无效的 background（须为 transparent/opaque/auto 或空）：") + b,
+      );
+  }
+  if (typeof patch.maskOn === "boolean" && node.kind === "proc_image") {
+    if (!patch.maskOn) node.maskOn = false;
+    else if (node.maskPath) node.maskOn = true;
+    else if (warnings)
+      warnings.push(
+        I18n.t("蒙版尚未创建：请先在节点头部打开蒙版编辑器涂抹要重绘的区域"),
+      );
+  }
   if (typeof patch.x === "number" && isFinite(patch.x)) node.x = snap(patch.x);
   if (typeof patch.y === "number" && isFinite(patch.y)) node.y = snap(patch.y);
   if (typeof patch.w === "number" && isFinite(patch.w))

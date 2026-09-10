@@ -11,7 +11,9 @@
  *
  * 例外：Microsoft Store（MSIX）版禁用应用内自更新 —— 包安装目录（Program Files\WindowsApps\）
  * 只读，electron-updater 下载 NSIS 包再静默安装必然失败；且商店政策禁止应用自行分发可执行更新。
- * 该情形由 isStorePackage() 把整条链挡在门外（不加载 electron-updater，statusPayload 报 supported:false）。
+ * 该情形由 isStorePackage() 把整条链挡在门外：不加载 electron-updater、不设更新源、不起后台定时检查、
+ * 四个 IPC 入口（status / check / download / install / confirmAndStart）一律短路返回 store_package，
+ * statusPayload 报 supported:false + store:true；渲染层据 store 隐藏顶栏更新入口并提示走商店更新。
  */
 const { app, ipcMain, dialog } = require("electron");
 const path = require("path");
@@ -39,12 +41,23 @@ function send(channel, data) {
 }
 
 /**
- * 是否运行在 Microsoft Store / MSIX 包安装目录下。
+ * 是否运行在 Microsoft Store / MSIX（AppX）包内。
  * 例：C:\Program Files\WindowsApps\mt-node.MTNode_1.1.28_x64__8wekyb3d8bbwe\app\MTNode.exe
  * 该目录只读，应用内自更新（下载 NSIS 包 + 静默安装）不可能成功，且违反商店政策。
+ *
+ * 三条判据取「或」，因为任何一条都可能单独失效：
+ *   ① process.windowsStore —— Electron 官方标志，MSIX/AppX 容器内为 true；
+ *   ② 容器注入的 APPX_/MSIX_ 环境变量 —— 与安装位置无关，侧载 / 改盘符也命中；
+ *   ③ exe 路径落在 WindowsApps 下 —— 旧口径兜底。
+ * 只要命中一条即判为商店包，整条自更新链不再启用。
  */
 function isStorePackage() {
   try {
+    if (process.windowsStore === true) return true;
+    const env = process.env || {};
+    for (const k of Object.keys(env)) {
+      if (k.startsWith("APPX_PACKAGE_") || k.startsWith("MSIX_PACKAGE_")) return true;
+    }
     const exe = String(app.getPath("exe") || "");
     /* 统一分隔符，避免正/反斜杠差异导致漏判 */
     const low = exe.replace(/[\\/]+/g, "\\").toLowerCase();
@@ -54,6 +67,11 @@ function isStorePackage() {
   } catch (_) {
     return false;
   }
+}
+
+/** 商店包统一的拒绝回执（渲染层据 store 字段给出「请在商店更新」的明示，而不是静默无反应） */
+function storeBlocked() {
+  return { ok: false, error: "store_package", store: true };
 }
 
 function canCheckUpdates() {
@@ -71,9 +89,13 @@ function canCheckUpdates() {
 }
 
 function statusPayload() {
+  const store = isStorePackage();
   return {
     ok: true,
-    supported: canCheckUpdates() && !!autoUpdater,
+    /* MSIX / 商店包：内部更新在设计上不启用，渲染层据此隐藏入口并提示走商店 */
+    store,
+    reason: store ? "store_package" : "",
+    supported: !store && canCheckUpdates() && !!autoUpdater,
     available: !!(latestInfo && latestInfo.version),
     version: (latestInfo && latestInfo.version) || "",
     releaseDate: (latestInfo && latestInfo.releaseDate) || "",
@@ -180,6 +202,8 @@ function setupAutoUpdater() {
 }
 
 async function checkForUpdates(quiet) {
+  /* Store（MSIX）版：连检查都不发起（不发 update:error，避免误报「更新失败」） */
+  if (isStorePackage()) return statusPayload();
   setupAutoUpdater();
   if (!autoUpdater) {
     const r = statusPayload();
@@ -205,6 +229,7 @@ async function checkForUpdates(quiet) {
 }
 
 async function downloadUpdate() {
+  if (isStorePackage()) return storeBlocked();
   setupAutoUpdater();
   if (!autoUpdater || !latestInfo) {
     return { ok: false, error: lastError || "no update available" };
@@ -228,6 +253,8 @@ async function downloadUpdate() {
 }
 
 function quitAndInstall() {
+  /* Store（MSIX）版：绝不执行静默安装（包目录只读，且违反商店政策） */
+  if (isStorePackage()) return storeBlocked();
   setupAutoUpdater();
   if (!autoUpdater || !downloaded) {
     return { ok: false, error: "update not downloaded" };
@@ -293,6 +320,7 @@ function registerUpdateIpc(getWin) {
   });
   ipcMain.handle("update:install", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
+    if (isStorePackage()) return storeBlocked();
     if (!downloaded) {
       return { ok: false, error: "update not downloaded" };
     }
@@ -300,6 +328,8 @@ function registerUpdateIpc(getWin) {
   });
   ipcMain.handle("update:confirmAndStart", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
+    /* Store（MSIX）版：不弹任何对话框、不下发任何检查/下载，直接回执让渲染层提示走商店 */
+    if (isStorePackage()) return storeBlocked();
     const win = mainWinRef;
     const st = statusPayload();
 
@@ -361,6 +391,8 @@ function I18nSafe(s) {
 
 function startBackgroundCheck(getWin) {
   mainWinRef = typeof getWin === "function" ? getWin() : getWin;
+  /* Store（MSIX）版：不装更新源、不起后台定时检查（内部更新整条链不启用） */
+  if (isStorePackage()) return;
   if (!app.isPackaged && process.env.MTNODE_FORCE_UPDATE !== "1") return;
   setupAutoUpdater();
   if (!autoUpdater) return;
@@ -375,5 +407,8 @@ function startBackgroundCheck(getWin) {
 module.exports = {
   registerUpdateIpc,
   startBackgroundCheck,
+  /* 只读判据导出：供其它主进程模块 / 冒烟测试复用「是否商店包」的同一口径 */
+  isStorePackage,
+  statusPayload,
   UPDATE_FEED,
 };

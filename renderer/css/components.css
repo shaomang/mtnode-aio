@@ -276,6 +276,56 @@
   background: rgba(255, 143, 46, .05);
 }
 
+/* 提供商配置（设置最前面）：两列网格，每格只显示服务商名称（标题），
+   点击该格弹出该服务商的具体配置对话框（.prov-cfg-box） */
+.prov-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.prov-tile {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  text-align: left;
+  letter-spacing: 0;
+  font-size: 12.5px;
+  border-width: 1px;
+  border-radius: 5px;
+}
+
+/* 第一格 = 当前优先使用的服务商（顺序即优先级，不额外加文字） */
+.prov-tile.pri {
+  border-color: var(--cyan);
+}
+
+.prov-tile-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-tiles .settings-hint {
+  grid-column: 1 / -1;
+}
+
+/* 服务商配置对话框宿主（#provCfgDlg）：宽身，装得下三列字段 + 模型优先级列表 */
+.mt-dialog-box.prov-cfg-box {
+  width: min(780px, 96vw);
+  max-height: min(88vh, 760px);
+}
+
+.prov-cfg-box .prov-card {
+  margin-bottom: 0;
+}
+
 .prov-card {
   border: 1px solid var(--bd2);
   border-radius: 5px;
@@ -1022,6 +1072,23 @@
 /* 开启态再叠一层彩虹辉光，让「这一张图会出两次」在远处也看得出来 */
 .n-matte-toggle.on {
   box-shadow: 0 0 7px rgba(138, 107, 255, .5), 0 0 3px rgba(74, 214, 255, .55)
+}
+
+/* 禁用态：背景已选「透明」（接口直出 Alpha），差分抠图没必要再跑 —— 按钮置灰不可点，
+   且不再有彩虹动效，避免和「已开启」混淆 */
+.n-bgrm-btn.off,
+.n-bgrm-btn.off:hover {
+  color: var(--muted);
+  border-color: var(--bd);
+  background: rgba(154, 160, 168, .05);
+  animation: none;
+  filter: none;
+  cursor: not-allowed;
+}
+
+.n-bgrm-btn.off .n-bgrm-ico {
+  display: block;
+  opacity: .45;
 }
 
 .n-bgrm-btn.on:hover {

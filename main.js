@@ -3555,6 +3555,78 @@ function applyTextThinkingEffort(body, effort) {
   else body.reasoning_effort = "high";
 }
 
+/* ── gpt-image-2 图像参数：quality / background / mask（蒙版局部重绘）────────
+   quality    只接受官方六个枚举值。旧版 DALL·E 的 standard / hd 不要传：不同渠道下
+              有时 400（invalid_value）、有时被静默忽略按 auto 计费（费用不可控）。
+   background transparent / opaque / auto；传 transparent 时 output_format 必须是
+              png（配 jpeg 会 400）。编辑接口的透明是「重绘去背」，不是精确抠像。
+   mask       仅对第 1 张 image 生效，须与原图同尺寸、带 alpha 通道的 PNG（<4MB）。
+              语义：**透明区域 = 允许模型编辑**，不透明区域 = 尽量保留原图。
+   参考：https://docs.apiyi.com/api-capabilities/gpt-image-2/image-edit
+        https://docs.apiyi.com/api-capabilities/gpt-image-2/mask-editing           */
+const GPT_IMAGE_QUALITIES = ["low", "medium", "high", "xhigh", "max", "auto"];
+const GPT_IMAGE_BACKGROUNDS = ["transparent", "opaque", "auto"];
+function apiQualityOf(v) {
+  const s = String(v == null ? "" : v)
+    .trim()
+    .toLowerCase();
+  return GPT_IMAGE_QUALITIES.includes(s) ? s : "";
+}
+function apiBackgroundOf(v) {
+  const s = String(v == null ? "" : v)
+    .trim()
+    .toLowerCase();
+  return GPT_IMAGE_BACKGROUNDS.includes(s) ? s : "";
+}
+/* 蒙版与原图必须同尺寸：走同一个 shrinkImageForApi 口径（同 maxDim、同源尺寸 ⇒ 同缩放比），
+   否则压过的原图配未压的蒙版会被接口判为尺寸不符。 */
+function apiMaskPathOf(v) {
+  const s = String(v == null ? "" : v).trim();
+  return s && fs.existsSync(s) ? s : "";
+}
+/* gpt-image-2 自定义尺寸约束：宽高都是 16 的倍数、最长边 ≤ 3840、长宽比 ≤ 3:1、
+   总像素 655,360–8,294,400（见上文参考文档「尺寸参数」）。 */
+function gptImageSizeOk(w, h) {
+  if (!(w > 0 && h > 0)) return false;
+  if (w % 16 || h % 16) return false;
+  if (Math.max(w, h) > 3840) return false;
+  if (Math.max(w, h) / Math.min(w, h) > 3) return false;
+  const px = w * h;
+  return px >= 655360 && px <= 8294400;
+}
+/* 参考图「实际下发」的像素尺寸：native 通路原尺寸下发，只有超过体积上限才按上限等比缩小
+   （与 shrinkImageForApi 同一口径）；读不出尺寸返回 null。 */
+function apiSentImageDims(p, native) {
+  const d = imagePixelDims(p);
+  if (!d) return null;
+  if (native) {
+    /* 与 shrinkImageForApi 同口径：体积没超上限就是原尺寸原样下发（不缩放）。
+       量不出体积（stat 失败）也按原尺寸算 —— 读不出文件时真正的读盘那步会直接报错。 */
+    let bytes = 0;
+    try {
+      bytes = fs.statSync(p).size;
+    } catch {
+      return d;
+    }
+    if (bytes <= API_MATTE_REF_NATIVE_MAX_BYTES) return d;
+  }
+  const maxDim = native ? API_MATTE_REF_MAX_DIM : API_REF_IMAGE_MAX_DIM;
+  if (!(d.w > maxDim || d.h > maxDim)) return d;
+  const s = Math.min(maxDim / d.w, maxDim / d.h);
+  return { w: Math.max(1, Math.round(d.w * s)), h: Math.max(1, Math.round(d.h * s)) };
+}
+/* 带蒙版时的 size：**必须等于蒙版 / 原图的像素尺寸**。
+   服务端是按 size 出图的：size 一旦与原图像素不同，它会先把输入图重排缩放再编辑，
+   蒙版按原图像素画出来的空间对应关系就失效了 —— 实测表现为整张主体被重绘、蒙版形同没开
+   （原图 1280×848 + 蒙版 1280×848 + size=1280x544：蒙版内/外主体的改动量一样大）。
+   命中自定义尺寸约束就按原图像素原样出图；命中不了（或读不出尺寸）退回 auto，
+   让接口按输入图决定画幅，宁可不要「非等比铺满」也比蒙版错位强。 */
+function apiMaskSizeFor(p) {
+  const d = apiSentImageDims(p, true);
+  if (!d) return "auto";
+  return gptImageSizeOk(d.w, d.h) ? d.w + "x" + d.h : "auto";
+}
+
 /* 构建完整请求描述（预览与真实调用共用，保证一致）
    matteAnchor：透明图差分抠图的**第 2 通道**（images[0] / refImage 就是第 1 通道基准图）。
    该通路两条口径：① 参考图不缩放、原尺寸下发；② size 钉成基准图实际像素对应的档位，
@@ -3572,6 +3644,7 @@ function buildRequestSpec(
   chatMessages,
   effort,
   matteAnchor,
+  imgOpts,
 ) {
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const auth = {
@@ -3630,35 +3703,52 @@ function buildRequestSpec(
       const pin = d ? gptImageSizeForDims(d.w, d.h) : "";
       if (pin) sz = pin;
     }
+    /* 质量 / 背景：只在节点显式选过时才下发（空 = 不传，交给服务商默认 auto） */
+    const quality = apiQualityOf(imgOpts && imgOpts.quality);
+    const background = apiBackgroundOf(imgOpts && imgOpts.background);
+    /* 蒙版局部重绘：必须先有原图（mask 只对第一张 image 生效） */
+    const mask =
+      images && images.length ? apiMaskPathOf(imgOpts && imgOpts.maskPath) : "";
+    /* 带蒙版：size 跟着蒙版 / 原图的像素尺寸走，否则服务端重排输入图会让蒙版错位（见 apiMaskSizeFor） */
+    if (mask) sz = apiMaskSizeFor(images[0]);
     if (images && images.length) {
       /* 带参考图：/images/edits multipart，多图按顺序 = prompt 中的图1/图2/… */
+      const form = {
+        model: model || "gpt-image-2-vip",
+        prompt,
+        size: sz,
+        image: images.slice(),
+      };
+      if (quality) form.quality = quality;
+      if (background) form.background = background;
+      /* background=transparent 必须配 png（服务端收到 jpeg 会 400） */
+      if (background === "transparent") form.output_format = "png";
+      if (mask) form.mask = mask;
       return {
         method: "POST",
         url: base + "/images/edits",
         headers: { Authorization: auth.Authorization },
-        body: {
-          __multipart: {
-            model: model || "gpt-image-2-vip",
-            prompt,
-            size: sz,
-            image: images.slice(),
-          },
-        },
-        /* multipart 里的参考图不缩放（见 sendMultipart） */
-        nativeRefImage: anchored,
+        body: { __multipart: form },
+        /* multipart 里的参考图不缩放（见 sendMultipart）。
+           带蒙版时**必须**原尺寸：蒙版按原图像素画，原图被缩过就与原图对不上。 */
+        nativeRefImage: anchored || !!mask,
       };
     }
-    /* 文生图：/images/generations，不支持 n/quality/aspect_ratio */
+    /* 文生图：/images/generations */
+    const gen = {
+      model: model || "gpt-image-2-vip",
+      prompt,
+      size: sz,
+      response_format: "b64_json",
+    };
+    if (quality) gen.quality = quality;
+    if (background) gen.background = background;
+    if (background === "transparent") gen.output_format = "png";
     return {
       method: "POST",
       url: base + "/images/generations",
       headers: auth,
-      body: {
-        model: model || "gpt-image-2-vip",
-        prompt,
-        size: sz,
-        response_format: "b64_json",
-      },
+      body: gen,
     };
   }
   if (provider.type === "image_stability") {
@@ -3689,6 +3779,68 @@ function buildRequestSpec(
   throw new Error(I18n.t("未知服务商类型：") + provider.type);
 }
 
+/* 已下发字节的真实像素尺寸（预览里用它显示「真正发出去的那份有多大」，读不出返回 null） */
+function bufferPixelDims(buf) {
+  try {
+    const img = nativeImage.createFromBuffer(buf);
+    if (!img || img.isEmpty()) return null;
+    const { width, height } = img.getSize();
+    return width > 0 && height > 0 ? { w: width, h: height } : null;
+  } catch {
+    return null;
+  }
+}
+
+/* multipart 表单 → 逐字段的分片列表。**sendMultipart（真正发请求）与 api:preview（请求预览）
+   共用同一份实现**：预览里看到的就是真正下发的输入 —— 同一字段顺序、同一文件名、同一份字节。
+   每片：{ name, buf, filename, path }（文件字段）或 { name, value }（普通字段）。
+   soft=true（预览用）：文件读不出时不抛错，退化成 { name, path, error }，别让整个预览报错。 */
+function multipartParts(form, nativeRefImage, soft) {
+  const parts = [];
+  const readFile = (p) => {
+    try {
+      return shrinkImageForApi(p, nativeRefImage);
+    } catch (e) {
+      if (!soft) throw e;
+      return { error: e && e.message ? e.message : String(e) };
+    }
+  };
+  for (const [k, v] of Object.entries(form || {})) {
+    if (Array.isArray(v)) {
+      let i = 1;
+      for (const p of v) {
+        if (!p) continue;
+        const r = readFile(p);
+        if (r.error) parts.push({ name: k, path: String(p), error: r.error });
+        else
+          parts.push({
+            name: k,
+            buf: r.buf,
+            filename: "ref" + i + "." + r.ext,
+            path: String(p),
+          });
+        i++;
+      }
+      continue;
+    }
+    if ((k === "image" || k === "mask") && typeof v === "string" && v) {
+      /* 蒙版与参考图走同一缩放口径（同 maxDim、同源尺寸 ⇒ 同缩放比），保证与原图同尺寸 */
+      const r = readFile(v);
+      if (r.error) parts.push({ name: k, path: v, error: r.error });
+      else
+        parts.push({
+          name: k,
+          buf: r.buf,
+          filename: (k === "mask" ? "mask." : "ref.") + r.ext,
+          path: v,
+        });
+      continue;
+    }
+    parts.push({ name: k, value: String(v) });
+  }
+  return parts;
+}
+
 /* multipart 表单请求：image 字段支持字符串（单张）或数组（多张参考图，顺序=图1/图2/…）
    timeoutMs 传 0 = 不设时限（生图走这条）
    nativeRefImage：参考图不缩放原尺寸下发（透明图差分抠图的锚定通路，见 buildRequestSpec） */
@@ -3701,21 +3853,9 @@ async function sendMultipart(
   nativeRefImage,
 ) {
   const fd = new FormData();
-  for (const [k, v] of Object.entries(form || {})) {
-    if (Array.isArray(v)) {
-      let i = 1;
-      for (const p of v) {
-        if (!p) continue;
-        const { buf, ext } = shrinkImageForApi(p, nativeRefImage);
-        fd.append(k, new Blob([buf]), "ref" + i + "." + ext);
-        i++;
-      }
-    } else if (k === "image" && typeof v === "string" && v) {
-      const { buf, ext } = shrinkImageForApi(v, nativeRefImage);
-      fd.append("image", new Blob([buf]), "ref." + ext);
-    } else {
-      fd.append(k, v);
-    }
+  for (const part of multipartParts(form, nativeRefImage)) {
+    if (part.buf) fd.append(part.name, new Blob([part.buf]), part.filename);
+    else fd.append(part.name, part.value);
   }
   return fetchJson(
     url,
@@ -3747,6 +3887,9 @@ async function apiCall({
   effort,
   abKey,
   matteAnchor,
+  quality,
+  background,
+  maskPath,
 }) {
   checkProvider(provider);
   const req = buildRequestSpec(
@@ -3763,6 +3906,8 @@ async function apiCall({
     effort,
     /* 抠图第 2 通道口径（参考图原尺寸下发 + size 钉死）由 spec 上的标记带入 */
     matteAnchor,
+    /* gpt-image-2 图像参数：quality / background / mask 蒙版局部重绘 */
+    { quality, background, maskPath },
   );
 
   if (kind === "text" || provider.type === "image_mj") {
@@ -4160,23 +4305,43 @@ ipcMain.handle("api:preview", async (e, spec) => {
       spec.chatMessages,
       spec.effort,
       spec.matteAnchor,
+      {
+        quality: spec.quality,
+        background: spec.background,
+        maskPath: spec.maskPath,
+      },
     );
-    const readable = JSON.parse(
-      JSON.stringify(req.body, (k, v) => {
-        if (k === "image" && Array.isArray(v))
-          return v.map((x) => I18n.t("<参考图: ") + x + ">");
-        if (k === "image" && typeof v === "string" && v && !v.startsWith("<"))
-          return I18n.t("<参考图: ") + v + ">";
-        return v;
-      }),
-    );
+    /* 预览 = **真正下发的输入**：
+       - JSON 请求（文本 / 文生图 / MJ）照实回显 body。
+       - multipart 请求（/images/edits、Stability）不回显内部的 { __multipart: {…} }：
+         那份伪 JSON 里的 image / mask 只是本地路径数组，与线上的字段名、文件名、字节都对不上，
+         用户会据此误判「路径不对 / 蒙版没传」。改为把 sendMultipart 真正会拼出的分片逐条列出 ——
+         同一份 multipartParts 实现、同一字段顺序、同一文件名、同一份字节（含实际像素尺寸）。
+       路径仍是纯路径：不再给 image / mask 套「参考图 / 蒙版」这类可读标签前缀。 */
+    const mp = req.body && req.body.__multipart ? req.body.__multipart : null;
+    const multipart = mp
+      ? multipartParts(mp, !!req.nativeRefImage, true).map((p) =>
+          p.buf
+            ? {
+                name: p.name,
+                filename: p.filename,
+                bytes: p.buf.length,
+                dims: bufferPixelDims(p.buf),
+                path: p.path,
+              }
+            : p.error
+              ? { name: p.name, path: p.path, error: p.error }
+              : { name: p.name, value: p.value },
+        )
+      : null;
     return {
       ok: true,
       request: {
         method: req.method,
         url: req.url,
         headers: req.headers,
-        body: readable,
+        multipart,
+        body: mp ? null : JSON.parse(JSON.stringify(req.body)),
       },
     };
   } catch (err) {

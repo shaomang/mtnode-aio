@@ -113,6 +113,12 @@ const __FAKES__ = [
   "superOutPortIsControl",
   "superPortIdxFromWire",
   "withBgRmPrompt",
+  /* 图像参数与蒙版（quality / background / 蒙版局部重绘）：都不参与本判定，整组替掉。
+     buildSpec 现在经 withImageParamsPrompt 收尾并在带蒙版时才写 maskPath。 */
+  "withImageParamsPrompt",
+  "normalizeImgParams",
+  "maskActive",
+  "imgAlphaBgOn",
   "normalizeTextEffort",
   "IMAGE_SIZES",
   "DEFAULT_IMAGE_SIZE",
@@ -186,6 +192,10 @@ const sandbox = {
   superOutPortIsControl: () => false,
   superPortIdxFromWire: (src, w) => Number((w || {}).fromIndex || 0),
   withBgRmPrompt: (n, p) => p,
+  withImageParamsPrompt: (n, p) => p,
+  normalizeImgParams: () => {},
+  maskActive: () => false,
+  imgAlphaBgOn: () => false,
   normalizeTextEffort: (v) => v || "low",
   IMAGE_SIZES: ["2048x1360", "1280x1280", "auto"],
   DEFAULT_IMAGE_SIZE: "auto",

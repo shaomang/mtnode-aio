@@ -615,6 +615,63 @@ near(sumOut9, tt9.outputTokens, "逐轮 byModel 输出之和 = 合计输出");
 near(tt9.rounds, 2, "合计轮数口径不变（原有字段）");
 near(tt9.totalTokens, tt9.billedInput + tt9.outputTokens, "合计总量口径不变");
 
+/* 9b-0. 跨峰谷：累计桶时刻跟到最近一次入账，合计费用 = 逐轮费用之和（含在途轮）
+ * 老 bug：累计桶 at 只在首次合并写入 → 整段会话都按首轮时刻计价，
+ * 「合计」与「按轮次」逐轮各自时刻计价分裂，空闲半价时能差到 2 倍。 */
+const crossRound = (t0, billed, out) => ({
+  turns: 1, steps: 1, llmMs: 2000, toolMs: 0, wallMs: 2000,
+  startedAt: t0, endedAt: t0,
+  models: [
+    {
+      provider: "deepseek", model: "deepseek-v4-pro",
+      inputTokens: billed, outputTokens: out, calls: 1,
+      cacheReadTokens: 0, cacheWriteTokens: 0, llmMs: 2000, toolMs: 0,
+    },
+  ],
+});
+const cr = { id: "as11", title: "cross", messages: [] };
+const roundByTitle = (owner, title) =>
+  ctx.tokViewRounds(owner).find((x) => (x.title || "") === title) || null;
+const roundCostOf = (owner, title) => {
+  const rec = roundByTitle(owner, title);
+  return rec ? ctx.tokRoundCost(owner, rec) : null;
+};
+ctx.tokMergeRun(cr, crossRound(T_PEAK, 1e6, 0), { runKey: "agent:as11", title: "高峰轮" });
+near(
+  ctx.costOfOwner(cr).amount, 9.0,
+  "首轮（高峰）合计费用 = 全价 ¥9",
+);
+ctx.tokMergeRun(cr, crossRound(T_OFF, 1e6, 0), { runKey: "agent:as11", title: "空闲轮" });
+near(
+  roundCostOf(cr, "高峰轮").amount, 9.0,
+  "逐轮：高峰轮全价 ¥9",
+);
+near(
+  roundCostOf(cr, "空闲轮").amount, 4.5,
+  "逐轮：空闲轮半价 ¥4.5",
+);
+near(
+  cr.tokenReport.byModel["deepseek|deepseek-v4-pro"].at, T_OFF,
+  "累计桶时刻跟到最近一次入账（不再是首轮时刻）",
+);
+near(
+  ctx.tokCostOf(cr).amount, 13.5,
+  "跨峰谷后合计费用 = 逐轮之和 ¥13.5（两处口径一致，不再差 2 倍）",
+);
+/* 同一份台账：UI 的「合计」行 / 摘要费用 与「按轮次」逐轮之和必须一致 */
+const ttSum = ctx.tokViewRounds(cr).reduce((s, rec) => {
+  const c = ctx.tokRoundCost(cr, rec);
+  return s + (c ? c.amount : 0);
+}, 0);
+near(ctx.tokCostOf(cr).amount, ttSum, "合计费用 = 逐轮费用之和（合计行不再与轮次表打架）");
+ok(
+  ctx.tokBadgeSummary(cr.tokenReport, ctx.tokViewTotals(cr), false, cr).indexOf("¥13.5") >= 0,
+  "折叠态摘要费用也走同一口径（¥13.5）",
+);
+/* 在途轮：在途桶带记账时刻，避免在途段按陈旧时刻计价 */const liveBucketOwner = { id: "as12", title: "live-bucket", messages: [] };
+ctx.tokLiveAdd(liveBucketOwner, { provider: "deepseek", model: "deepseek-v4-pro", inputTokens: 1e6, outputTokens: 0 }, { runKey: "agent:as12" });
+near(liveBucketOwner._tokLive["deepseek|deepseek-v4-pro"].at > 0, true, "在途桶带记账时刻（用于峰谷判定）");
+
 /* 9b. 幂等：同 rid 重复收尾（429 重发 / 重复 done）不重复计轮 */
 const rid1 = rd.tokenReport.roundList[0].rid;
 ctx.tokMergeRun(rd, roundMetrics("deepseek-v4-pro", 100, 10, 1, 2, T0), {

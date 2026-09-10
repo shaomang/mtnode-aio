@@ -2044,10 +2044,20 @@ function nsApiSummary(node) {
   );
   parts.push((p && p.name) || I18n.t("（未选择服务商）"));
   if (node.model) parts.push(String(node.model));
-  if (node.kind === "proc_image")
+  if (node.kind === "proc_image") {
     parts.push(
       IMAGE_SIZES.includes(node.size) ? node.size : DEFAULT_IMAGE_SIZE,
     );
+    /* 只报「显式设置过」的接口参数，默认档不占摘要行 */
+    if (node.imgQuality) parts.push("Q=" + node.imgQuality);
+    if (node.imgBackground)
+      parts.push(
+        node.imgBackground === "transparent"
+          ? I18n.t("透明背景")
+          : node.imgBackground,
+      );
+    if (node.maskOn) parts.push(I18n.t("蒙版重绘"));
+  }
   if (node.temperature != null) parts.push("T=" + node.temperature);
   return parts.join(" · ");
 }
@@ -2202,7 +2212,7 @@ registerNodeSettingsForm("proc_text", {
 });
 
 registerNodeSettingsForm("proc_image", {
-  gearTitle: () => I18n.t("服务商 / 模型 / 尺寸"),
+  gearTitle: () => I18n.t("服务商 / 模型 / 尺寸 / 质量 / 背景"),
   summary: nsApiSummary,
   build: (ctx) => {
     const node = ctx.node;
@@ -2225,6 +2235,62 @@ registerNodeSettingsForm("proc_image", {
     ctx.field(
       I18n.t("尺寸 Size（gpt-image-2-vip · auto 或 30 档）"),
       selS,
+    );
+    /* ── gpt-image-2 直传参数：quality / background（见 docs.apiyi.com gpt-image-2 参考）──
+       quality 只认官方六个枚举值（旧版 DALL·E 的 standard / hd 会被渠道静默忽略或 400）；
+       background 选「透明」时接口直出带 Alpha 的 PNG，提示词会自动补「背景透明」要求，
+       同时差分透明算法（双通道抠图）按钮被禁用 —— 已经透明了没必要再花 2 倍 Token。 */
+    if (typeof normalizeImgParams === "function") normalizeImgParams(node);
+    const selQ = document.createElement("select");
+    for (const [v, label] of [
+      ["", I18n.t("默认（不传 · 服务商按 auto）")],
+      ["auto", "auto"],
+      ["low", "low"],
+      ["medium", "medium"],
+      ["high", "high"],
+      ["xhigh", "xhigh"],
+      ["max", "max"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = label;
+      selQ.appendChild(o);
+    }
+    selQ.value = node.imgQuality || "";
+    selQ.addEventListener("change", () => {
+      node.imgQuality = selQ.value;
+      ctx.commit();
+    });
+    ctx.field(I18n.t("质量 Quality（low/medium/high/xhigh/max/auto）"), selQ);
+    const selB = document.createElement("select");
+    for (const [v, label] of [
+      ["", I18n.t("默认（不传 · 服务商按 auto）")],
+      ["auto", "auto"],
+      ["opaque", I18n.t("不透明 opaque")],
+      ["transparent", I18n.t("透明 transparent（直出 Alpha PNG）")],
+    ]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = label;
+      selB.appendChild(o);
+    }
+    selB.value = node.imgBackground || "";
+    selB.addEventListener("change", () => {
+      node.imgBackground = selB.value;
+      /* 选「透明」= 直出 Alpha：顺手关掉差分抠图（其按钮同时被禁用） */
+      if (typeof normalizeImgParams === "function") normalizeImgParams(node);
+      ctx.commit({ rerender: true });
+    });
+    ctx.field(I18n.t("背景 Background"), selB);
+    ctx.hint(
+      I18n.t(
+        "背景选「透明」时，运行会在提示词末尾自动补上「背景必须为真透明通道」的要求，并禁用头部的差分透明算法按钮（接口已直出 Alpha，双通道抠图纯属多花 2 倍 Token）。注意编辑接口的透明是「重绘去背」，不是精确抠像。",
+      ),
+    );
+    ctx.hint(
+      I18n.t(
+        "蒙版局部重绘：节点头部的蒙版小按钮，单击开 / 关（首次开启会打开蒙版编辑器），右键随时重新编辑。编辑器里用透明绿涂抹要重绘的区域，程序把它转成「透明=可编辑」的 Alpha 蒙版，与原图、提示词一起发给 gpt-image-2。",
+      ),
     );
   },
 });
@@ -3722,6 +3788,10 @@ function nodeElement(node) {
       head.appendChild(bgRmButtonEl(node));
       /* 画幅锁定：菜单栏小按钮，与首参考图保持一致长宽比（补边生图 → 出图裁回） */
       head.appendChild(ratioLockButtonEl(node));
+      /* 蒙版局部重绘：单击开 / 关（首次开启先开编辑器画蒙版），右键打开蒙版编辑器。
+         编辑器在 renderer/app-mask.js（自包含），按调用期取 window.maskButtonEl。 */
+      if (typeof window.maskButtonEl === "function")
+        head.appendChild(window.maskButtonEl(node));
     }
     if (node.kind === "proc_text") {
       /* 智能模式开关：提示词成为任务，agent 可读文件/联网/执行命令 */

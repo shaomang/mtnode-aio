@@ -524,7 +524,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('img gen preview=' + (pvG.request.url.indexOf('/images/generations') >= 0) + ' size=' + pvG.request.body.size + ' noN=' + (pvG.request.body.n === undefined) + ' model=' + pvG.request.body.model);
       ispec.images = ['C:/fake/ref1.png', 'C:/fake/ref2.png'];
       const pvE = await window.api.apiPreview(ispec);
-      log('img edit preview=' + (pvE.request.url.indexOf('/images/edits') >= 0) + ' multipart=' + JSON.stringify(pvE.request.body).includes('__multipart') + ' refs=' + (pvE.request.body.__multipart.image.length === 2));
+      log('img edit preview=' + (pvE.request.url.indexOf('/images/edits') >= 0) + ' multipart=' + Array.isArray(pvE.request.multipart) + ' imageFields=' + pvE.request.multipart.filter((p) => p.name === 'image').length + ' noFakeBody=' + (pvE.request.body === null));
 
       // —— zoom 坐标映射诊断（连线末端是否在鼠标上） ——
       S.cam = { x: 200, y: 150, z: 1.7 };

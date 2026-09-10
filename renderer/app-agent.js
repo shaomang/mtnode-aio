@@ -887,7 +887,7 @@ function tokBucketNew(provider, model) {
     steps: 0,
     llmMs: 0,
     toolMs: 0,
-    at: 0, /* 该桶首次记账时刻：费用按此判峰谷（app-cost.js），老台账为 0 */
+    at: 0, /* 该桶最近一次记账时刻：费用按此判峰谷（app-cost.js），老台账为 0 */
   };
   for (const f of TOK_FIELDS) b[f] = 0;
   for (const f of TOK_SUM_FIELDS) b[f] = 0;
@@ -979,7 +979,7 @@ function tokLiveAdd(owner, data, opts) {
   for (const f of TOK_FIELDS) b[f] = tokNum(b[f]) + tokNum(data[f]);
   for (const f of TOK_SUM_FIELDS) b[f] = tokNum(b[f]) + tokNum(data[f]);
   b.calls++;
-  if (!b.at) b.at = Date.now(); /* 在途桶也带时刻：费用按它判峰谷 */
+  if (!b.at) b.at = Date.now(); /* 在途桶带时刻：费用按它判峰谷（老台账无时刻） */
   /* 在途轮次：按 runKey 分开存放，避免计划并行子任务共用同一 owner 时互相串味 */
   const runKey = String((opts && opts.runKey) || (data && data.runKey) || "default");
   const rounds = (owner._tokLiveRound = owner._tokLiveRound || {});
@@ -1023,7 +1023,11 @@ function tokMergeRun(owner, metrics, opts) {
     b.steps += tokNum(m.steps);
     b.llmMs += tokNum(m.llmMs);
     b.toolMs += tokNum(m.toolMs);
-    if (!b.at) b.at = endedAt; /* 首次入账时刻 → 费用按此判峰谷（app-cost.js） */
+    /* 记账时刻跟到最近一次入账：峰谷判定用「最近时刻」而非首轮时刻。
+     * 老写法只在首次写入（!b.at），一旦会话跨了峰谷时段，累计桶会把所有轮的
+     * token 都按首轮时刻计价，与「按轮次」逐轮按各自时刻计价的口径分裂 ——
+     * 合计与逐轮之和能差到 2 倍（空闲半价）。这里始终跟新，两处口径对齐。 */
+    if (endedAt > 0) b.at = endedAt;
     sumLlm += tokNum(m.llmMs);
     sumTool += tokNum(m.toolMs);
   }
@@ -1091,7 +1095,7 @@ function tokRoundRec(owner, metrics, opts) {
     b.steps += tokNum(m.steps);
     b.llmMs += tokNum(m.llmMs);
     b.toolMs += tokNum(m.toolMs);
-    if (!b.at) b.at = endedAt; /* 该轮首次入账时刻 → 费用按此判峰谷 */
+    if (!b.at) b.at = endedAt; /* 该轮首次入账时刻 → 费用按此判峰谷（轮内同一时刻，无需跟新） */
     sumLlm += tokNum(m.llmMs);
     sumTool += tokNum(m.toolMs);
   }
@@ -1287,28 +1291,34 @@ function tokRoundPerfBucket(rec) {
 function tokRoundPerfLine(rec) {
   return tokPerfLine(tokRoundPerfBucket(rec));
 }
-/* 一轮的费用：该轮各模型桶按该轮记账时刻（endedAt → at → 宿主 lastAt）判峰谷，
- * 与 tokCostOfBucket / tokCostOf 同一口径；非官方路由 / 未知单价 → null（UI 显示 —） */
+/* 一轮的费用：该轮各模型桶按该轮自身记账时刻（endedAt → at）判峰谷，
+ * 与合计（tokCostOf）同源；非官方路由 / 未知单价 → null（UI 显示 —）。
+ * 注意不要再退到宿主台账 lastAt：那是整段会话的最近时刻，会把某一轮的峰谷判错。 */
 function tokRoundCost(owner, rec) {
   if (typeof costOfBucket !== "function") return null;
   const bm = rec && rec.byModel && typeof rec.byModel === "object" ? rec.byModel : {};
-  const at =
-    tokNum(rec && rec.endedAt) || tokNum(rec && rec.at) ||
-    tokNum(owner && owner.tokenReport && owner.tokenReport.lastAt);
-  let amount = 0;
-  let currency = "";
+  const at = tokNum(rec && rec.endedAt) || tokNum(rec && rec.at);
+  const acc = { amount: 0, currency: "" };
   let any = false;
   for (const k of Object.keys(bm)) {
-    const b = bm[k] || {};
-    let c = null;
-    try { c = costOfBucket(b.provider, b.model, b, at); } catch {}
-    if (c && Number.isFinite(Number(c.amount))) {
-      amount += Number(c.amount);
-      currency = c.currency || currency;
-      any = true;
-    }
+    const before = acc.amount;
+    tokCostAdd(acc, bm[k] || {}, at);
+    if (acc.amount !== before) any = true;
   }
-  return any ? { currency: currency || "CNY", amount: amount } : null;
+  return any ? { currency: acc.currency || "CNY", amount: acc.amount } : null;
+}
+/* 一轮的计费用量合计（只判「逐轮之和」是否完整覆盖累计台账，不参与计价） */
+function tokRoundUsage(rec) {
+  const u = { billed: 0, output: 0, reads: 0, writes: 0 };
+  const bm = rec && rec.byModel && typeof rec.byModel === "object" ? rec.byModel : {};
+  for (const k of Object.keys(bm)) {
+    const b = bm[k] || {};
+    u.billed += tokNum(b.inputTokens) + tokNum(b.cacheReadTokens) + tokNum(b.cacheWriteTokens);
+    u.output += tokNum(b.outputTokens);
+    u.reads += tokNum(b.cacheReadTokens);
+    u.writes += tokNum(b.cacheWriteTokens);
+  }
+  return u;
 }
 /* 轮次标题展示值：没标题 → 「未命名轮次」（超长由 CSS 省略号截断，title 属性给全称） */
 function tokRoundTitle(rec) {
@@ -1470,22 +1480,111 @@ function fmtDurLong(ms) {
 /* ── 费用 / 余额（DeepSeek 官方计价）──────────────────────────────
  * 单价与余额接口都在 renderer/app-cost.js 里。本文件对它们**只做可选调用**：
  * 每个入口都带 typeof 守卫，模块没加载 / 非官方路由 / 未知单价时，行为与
- * 今天完全一致（旧 smoke 断言不会因本改动而变）。 */
-function tokCostOf(owner) {
+ * 今天完全一致（旧 smoke 断言不会因本改动而变）。
+ * 会话合计走 tokCostReduce（逐轮之和 + 未覆盖尾段），保证与「按轮次」一致。 */
+/* 一个逐模型桶在给定时刻的费用，累加进 acc（空时刻 = 该桶不带记账时刻 → 不计价）。
+ * 峰谷（app-cost.js 的空闲半价）只认一个时刻，所以「这一刻」必须一路传到底：
+ * 逐轮传该轮 endedAt，合计尾段传累计桶自己的 at。 */
+function tokCostAdd(acc, b, at) {
+  if (typeof costOfBucket !== "function") return acc;
+  const t = tokNum(at) || tokNum(b && b.at);
+  if (!(t > 0)) return acc;
+  let c = null;
+  try { c = costOfBucket(b && b.provider, b && b.model, b, t); } catch {}
+  if (!c || !Number.isFinite(Number(c.amount))) return acc;
+  acc.amount += Number(c.amount);
+  if (!acc.currency) acc.currency = c.currency || "CNY";
+  return acc;
+}
+/* 逐模型桶汇总费用（按各桶自己的 at 判峰谷）。仅用于老台账 / 未覆盖尾段；
+ * 会话合计的常规路径是 tokCostReduce（逐轮之和），两者口径不同、不要混用。 */
+function tokCostFallback(owner) {
   try {
     if (typeof costOfOwner === "function") return costOfOwner(owner);
   } catch {}
   return null;
 }
-/* 单桶费用：老台账（桶里没 at）用宿主台账 lastAt 兜底判峰谷，与合计口径一致 */
-function tokCostOfBucket(b, owner) {
+function tokCostOf(owner) {
   try {
-    if (typeof costOfBucket === "function") {
-      const rep = (owner && owner.tokenReport) || null;
-      return costOfBucket(b && b.provider, b && b.model, b, (rep && Number(rep.lastAt)) || 0);
-    }
+    return tokCostReduce(owner);
   } catch {}
-  return null;
+  return tokCostFallback(owner);
+}
+/* 会话合计费用（只读展示；与「按轮次」逐轮费用同源，保证合计 = 逐轮之和）：
+ *   · 已入账轮 + 在途轮 → 逐轮按各自时刻计价求和（各轮峰谷互不串味）
+ *   · 老台账 / 逐轮没覆盖到的尾段 → 剩下的量按累计桶自己的时刻补一段
+ * 这样「合计」与「按轮次」两处口径不再分裂（旧写法两处能差到 2 倍）。 */
+function tokCostReduce(owner) {
+  if (!owner) return null;
+  const rounds = tokViewRounds(owner);
+  let amount = 0;
+  let currency = "";
+  let any = false;
+  const covered = { billed: 0, output: 0, reads: 0, writes: 0 };
+  for (const rec of rounds) {
+    const c = tokRoundCost(owner, rec);
+    if (c && Number.isFinite(Number(c.amount))) {
+      amount += Number(c.amount);
+      if (!currency) currency = c.currency || "CNY";
+      any = true;
+    }
+    const u = tokRoundUsage(rec);
+    covered.billed += u.billed;
+    covered.output += u.output;
+    covered.reads += u.reads;
+    covered.writes += u.writes;
+  }
+  /* 尾段：累计台账里没被任何一轮记到的量（老台账没有 roundList；轮次被清过也会走到这里） */
+  const models = tokViewModels(owner);
+  const rep = (owner && owner.tokenReport) || null;
+  let tbilled = 0, toutput = 0, treads = 0, twrites = 0;
+  for (const b of models) {
+    tbilled += tokNum(b.inputTokens) + tokNum(b.cacheReadTokens) + tokNum(b.cacheWriteTokens);
+    toutput += tokNum(b.outputTokens);
+    treads += tokNum(b.cacheReadTokens);
+    twrites += tokNum(b.cacheWriteTokens);
+  }
+  const restBilled = Math.max(0, tbilled - covered.billed);
+  const restOut = Math.max(0, toutput - covered.output);
+  if (restBilled > 0 || restOut > 0) {
+    const restM = {
+      billed: restBilled, output: restOut,
+      reads: Math.max(0, treads - covered.reads),
+      writes: Math.max(0, twrites - covered.writes),
+    };
+    const repAt = tokNum(rep && rep.lastAt) || 0;
+    for (const b of models) {
+      const at = tokNum(b.at) || repAt;
+      if (!(at > 0)) continue;
+      const share = tbilled + toutput > 0
+        ? (tokNum(b.inputTokens) + tokNum(b.cacheReadTokens) + tokNum(b.cacheWriteTokens) + tokNum(b.outputTokens)) /
+          (tbilled + toutput)
+        : 0;
+      if (!(share > 0)) continue;
+      const before = amount;
+      const acc = { amount: 0, currency: "" };
+      tokCostAdd(acc, {
+        provider: b.provider, model: b.model,
+        inputTokens: restM.billed * share,
+        cacheReadTokens: restM.reads * share,
+        cacheWriteTokens: restM.writes * share,
+        outputTokens: restM.output * share,
+      }, at);
+      amount += acc.amount;
+      if (acc.currency && !currency) currency = acc.currency;
+      if (amount !== before) any = true;
+    }
+  }
+  return any ? { currency: currency || "CNY", amount: amount } : null;
+}
+/* 单桶费用：桶自带 at 优先；老台账（桶无 at）用宿主台账 lastAt 兜底判峰谷 */
+function tokCostOfBucket(b, owner) {
+  if (typeof costOfBucket !== "function") return null;
+  const bb = b || {};
+  const t = tokNum(bb.at) || tokNum(owner && owner.tokenReport && owner.tokenReport.lastAt);
+  let c = null;
+  try { c = costOfBucket(bb.provider, bb.model, bb, t); } catch {}
+  return c;
 }
 function tokMoney(c) {
   if (!c) return "—";

@@ -59,8 +59,9 @@ If the download fails, check the network first and then **click Update once more
 The **single source of truth** for the version number is the `version` file in the project root (`x.y.z`) together with the `version` field in `package.json`. **Do not edit either by hand**; always use:
 
 ```
-node version.js        read the current version, sync it to package.json and print the version number
-node version.js bump   add 1 to the last digit, write it back to the version file, sync package.json and print the new version number
+node version.js              read the current version, sync it to package.json and print the version number
+node version.js bump         add 1 to the last digit (e.g. 1.2.11 → 1.2.12), write it back to the version file, sync package.json and print the new version number
+node version.js bump-major   add 1 to the middle digit and reset the last to 0 (e.g. 1.2.11 → 1.3.0) for a major release; same as npm run version:major
 ```
 
 A real release is produced by a single `npm run release`, which emits both the NSIS installer and the Store (MSIX) package, and **the two packages must carry the same version number**.

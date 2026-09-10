@@ -138,10 +138,21 @@ function paintLangBtn() {
 /* ── 内置版本更新：有新版本时顶栏高光「更新」── */
 let _updateOff = null;
 let _updateInfo = null;
+/* Microsoft Store（MSIX）版：主进程已整条禁用内部更新，这里记住后强制隐藏入口，
+   连 available 事件也不点亮按钮 —— 避免留下一个「点了没反应」的更新入口 */
+let _updateStore = false;
 function paintUpdateBtn(st) {
   const btn = $("#btnUpdate");
   const bar = $(".topbar");
   if (!btn) return;
+  if (st && st.store) _updateStore = true;
+  if (_updateStore) {
+    btn.hidden = true;
+    btn.setAttribute("aria-hidden", "true");
+    btn.classList.remove("show", "busy", "ready");
+    if (bar) bar.classList.remove("has-update");
+    return;
+  }
   const avail = !!(st && (st.available || st.readyToRestart) && (st.version || st.readyToRestart));
   const ready = !!(st && st.readyToRestart);
   const busy = !!(st && st.downloading);
@@ -186,8 +197,29 @@ function bindUpdateUi() {
   }
   btn.onclick = async () => {
     if (btn.classList.contains("busy")) return;
+    /* MSIX / 商店版：内部更新不可用，明确告知走商店更新 */
+    if (_updateStore) {
+      toast(
+        I18n.t(
+          "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新",
+        ),
+        "ok",
+      );
+      return;
+    }
     try {
       const r = await window.api.updateConfirmAndStart();
+      if (r && r.store) {
+        _updateStore = true;
+        paintUpdateBtn({ store: true });
+        toast(
+          I18n.t(
+            "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新",
+          ),
+          "ok",
+        );
+        return;
+      }
       if (r && r.cancelled) return;
       if (r && r.ok === false) {
         toast(

@@ -43,6 +43,58 @@ function openSettingsBody() {
   const body = $("#ovBody");
   let enterSelEl = null;
 
+  /* 很少用的小节（网络 / 配置数据目录 / 画布备份 / 错误与崩溃日志）统一沉到最下方：
+     这里先登记，函数末尾按 tailOrder 补挂，避免它们在正文里抢占视线。 */
+  const tailSecs = { net: null, data: null, backup: null, logs: null };
+  const tailOrder = ["data", "backup", "net", "logs"];
+
+  /* ── 提供商配置（模型服务）：设置项最前面 ──
+     两列网格，每格只显示服务商名称（标题）；点击该格弹出对话框做具体配置
+     （类型 / Base URL / API Key / 模型等）。网格顺序 = 服务商使用优先级。 */
+  {
+    const provSec = document.createElement("div");
+    provSec.className = "settings-sec settings-sec-lead";
+
+    const provTitleRow = document.createElement("div");
+    provTitleRow.className = "settings-sec-title settings-sec-title-row";
+    const provTitleSpan = document.createElement("span");
+    provTitleSpan.textContent = I18n.t("提供商配置");
+    const provHint = document.createElement("span");
+    provHint.className = "settings-hint";
+    provHint.style.cssText = "margin:0 0 0 10px; padding:2px 8px; border:0; display:inline";
+    provHint.textContent = I18n.t(
+      "（点击任一格配置该服务商；网格顺序即使用优先级，越靠前越优先）",
+    );
+    provTitleRow.appendChild(provTitleSpan);
+    provTitleRow.appendChild(provHint);
+    const add = document.createElement("button");
+    add.className = "mini";
+    add.textContent = I18n.t("＋ 添加服务商");
+    add.title = I18n.t("从服务商目录选择或手动配置");
+    add.onclick = () => addProviderDialog();
+    provTitleRow.appendChild(add);
+    provSec.appendChild(provTitleRow);
+
+    const grid = document.createElement("div");
+    grid.className = "prov-tiles";
+    const paintTiles = () => {
+      grid.innerHTML = "";
+      S.config.providers.forEach((p, i) => grid.appendChild(provTile(p, i)));
+      if (!S.config.providers.length) {
+        const empty = document.createElement("div");
+        empty.className = "settings-hint";
+        empty.style.margin = "0";
+        empty.textContent = I18n.t("暂无服务商，点右上「＋ 添加服务商」新建");
+        grid.appendChild(empty);
+      }
+    };
+    /* 配置对话框关窗后回刷网格（改过名称 / 删过服务商都在这里体现） */
+    settingsProvTilesRepaint = paintTiles;
+    paintTiles();
+    provSec.appendChild(grid);
+    body.appendChild(provSec);
+  }
+
   const snapRow = document.createElement("label");
   snapRow.className = "n-field";
   snapRow.style.flexDirection = "row";
@@ -133,7 +185,8 @@ function openSettingsBody() {
       "网络节点各有独立端口：接收节点默认监听 40999，发送节点默认目标 41000，均可在节点体上单独修改；此处仅作为节点留空(0)时的回退默认。通道号(16bit)在端口内做逻辑分流。",
     );
     sec.appendChild(hint);
-    body.appendChild(sec);
+    /* 很少用 → 沉到设置最下方（见函数末尾统一补挂） */
+    tailSecs.net = sec;
   }
 
   /* ── 配置数据目录（API Key / 工作流等；更改后需重启）── */
@@ -326,7 +379,8 @@ function openSettingsBody() {
     btnRow.appendChild(resetBtn);
     btnRow.appendChild(openBtn);
     sec.appendChild(btnRow);
-    body.appendChild(sec);
+    /* 很少用 → 沉到设置最下方（见函数末尾统一补挂） */
+    tailSecs.data = sec;
   }
 
   /* ── 画布备份（每 5 分钟自动快照到独立备份文件夹）── */
@@ -397,7 +451,8 @@ function openSettingsBody() {
       }
     };
     refreshBak();
-    body.appendChild(sec);
+    /* 很少用 → 沉到设置最下方（见函数末尾统一补挂） */
+    tailSecs.backup = sec;
   }
 
   /* ── 错误与崩溃日志（自动保存，可导出提交给开发者）── */
@@ -509,7 +564,8 @@ function openSettingsBody() {
     btnRow.appendChild(exportBtn);
     btnRow.appendChild(openLogsBtn);
     sec.appendChild(btnRow);
-    body.appendChild(sec);
+    /* 很少用 → 沉到设置最下方（见函数末尾统一补挂） */
+    tailSecs.logs = sec;
   }
 
   /* ── 智能能力（dsh）区块 ── */
@@ -823,6 +879,12 @@ function openSettingsBody() {
 
     body.appendChild(sec);
   }
+
+  /* 很少用的小节沉底：配置数据目录 → 画布备份 → 网络 → 错误与崩溃日志 */
+  for (const k of tailOrder) {
+    if (tailSecs[k]) body.appendChild(tailSecs[k]);
+  }
+
   dshEls.collect = () => ({
     model: dshEls.model.value.trim(),
     preset: dshEls.preset.value,
@@ -838,29 +900,7 @@ function openSettingsBody() {
     theme: themeSelEl ? themeSelEl.value : (S.config.dsh && S.config.dsh.theme) || "industrial",
   });
 
-  /* ── 模型服务:标题 + 添加服务商按钮同行 ── */
-  const provTitleRow = document.createElement("div");
-  provTitleRow.className = "settings-sec-title settings-sec-title-row";
-  const provTitleSpan = document.createElement("span");
-  provTitleSpan.textContent = I18n.t("模型服务");
-  const provHint = document.createElement("span");
-  provHint.className = "settings-hint";
-  provHint.style.cssText = "margin:0 0 0 10px; padding:2px 8px; border:0; display:inline";
-  provHint.textContent = I18n.t("（供应商与模型均可排序，越靠前优先级越高）");
-  provTitleRow.appendChild(provTitleSpan);
-  provTitleRow.appendChild(provHint);
-  const add = document.createElement("button");
-  add.className = "mini";
-  add.textContent = I18n.t("＋ 添加服务商");
-  add.title = I18n.t("从服务商目录选择或手动配置");
-  add.onclick = () => addProviderDialog();
-  provTitleRow.appendChild(add);
-  body.appendChild(provTitleRow);
-
-  const list = document.createElement("div");
-  list.style.marginTop = "10px";
-  S.config.providers.forEach((p, i) => list.appendChild(provCard(p, i, list)));
-  body.appendChild(list);
+  /* 提供商配置（模型服务）已挪到函数开头（设置项最前面），这里不再重复渲染 */
 
   const foot = $("#ovFoot");
   const save = document.createElement("button");
@@ -1424,7 +1464,12 @@ function addProviderDialog() {
   const cancel = document.createElement("button");
   cancel.className = "mini";
   cancel.textContent = "取消";
-  cancel.onclick = closeOverlay;
+  /* 本对话框是从设置页的「＋ 添加服务商」进来的（#overlay 独一份，会把设置页顶掉）：
+     取消要回到设置页，不能一关就把整个设置窗也带走 */
+  cancel.onclick = () => {
+    closeOverlay();
+    openSettings();
+  };
   const ok = document.createElement("button");
   ok.className = "mini primary";
   ok.textContent = "添加";
@@ -2027,14 +2072,105 @@ async function validateProviderApiKey(prov, btn) {
   }
 }
 
-function provCard(prov, i, list) {
+/* 提供商网格的回刷句柄：设置窗重开时重绑，配置对话框关窗时回刷一次 */
+let settingsProvTilesRepaint = null;
+function repaintSettingsProvTiles() {
+  if (typeof settingsProvTilesRepaint === "function") {
+    try {
+      settingsProvTilesRepaint();
+    } catch {}
+  }
+}
+
+/* 提供商网格里的一格：只显示标题（服务商名称），点击弹出该服务商的配置对话框 */
+function provTile(prov, i) {
+  const tile = document.createElement("button");
+  tile.type = "button";
+  tile.className = "prov-tile" + (i === 0 ? " pri" : "");
+  tile.title =
+    (i === 0 ? I18n.t("当前优先使用") + " · " : "") + I18n.t("点击配置该服务商");
+  const name = document.createElement("span");
+  name.className = "prov-tile-name";
+  name.textContent = prov.name || I18n.t("（未命名）");
+  tile.appendChild(name);
+  tile.onclick = () => openProviderConfigDialog(prov);
+  return tile;
+}
+
+/* 服务商具体配置对话框：独立宿主 #provCfgDlg（.mt-dialog，层级高于 #overlay）。
+   #overlay 全应用独一份、不能叠窗，所以这里不用 openOverlay——设置窗原样留在
+   下面，用户改到一半的其它设置项（网格间距 / 主题 / 智能能力）不会被冲掉。
+   persistent：点蒙层 / 点外部一律不关，关窗只走窗内「完成」或 Esc。 */
+function ensureProvCfgDlg() {
+  let host = document.getElementById("provCfgDlg");
+  if (host) return host;
+  host = document.createElement("div");
+  host.id = "provCfgDlg";
+  host.className = "mt-dialog prov-cfg-dlg";
+  host.tabIndex = -1;
+  host.innerHTML =
+    '<div class="mt-dialog-box prov-cfg-box" role="dialog" aria-modal="true">' +
+    '<div class="mt-dialog-head"><b id="provCfgTitle"></b></div>' +
+    '<div class="mt-dialog-body" id="provCfgBody"></div>' +
+    '<div class="mt-dialog-foot" id="provCfgFoot"></div>' +
+    "</div>";
+  document.body.appendChild(host);
+  host.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    closeProvCfgDlg();
+  });
+  return host;
+}
+
+function closeProvCfgDlg() {
+  const host = document.getElementById("provCfgDlg");
+  if (host) host.classList.remove("on");
+  repaintSettingsProvTiles();
+}
+
+function openProviderConfigDialog(prov) {
+  const host = ensureProvCfgDlg();
+  const titleEl = host.querySelector("#provCfgTitle");
+  const bodyEl = host.querySelector("#provCfgBody");
+  const footEl = host.querySelector("#provCfgFoot");
+  /* 每次重画都按「服务商对象」重算下标：窗口开着时也能删 / 调优先级 */
+  let alive = true;
+  const paint = () => {
+    const i = S.config.providers.indexOf(prov);
+    if (i < 0) {
+      /* 已被删除：直接收窗（关窗路径里会回刷网格）；别再把自己显示回来 */
+      alive = false;
+      closeProvCfgDlg();
+      return;
+    }
+    titleEl.textContent =
+      I18n.t("服务商配置") + " · " + (prov.name || I18n.t("（未命名）"));
+    bodyEl.innerHTML = "";
+    bodyEl.appendChild(provCard(prov, i, paint));
+    footEl.innerHTML = "";
+    const done = document.createElement("button");
+    done.type = "button";
+    done.className = "mini primary";
+    done.textContent = I18n.t("完成");
+    done.onclick = () => closeProvCfgDlg();
+    footEl.appendChild(done);
+  };
+  paint();
+  if (!alive) return;
+  host.classList.add("on");
+  try {
+    host.focus();
+  } catch {}
+}
+
+function provCard(prov, i, onChange) {
   const card = document.createElement("div");
   card.className = "prov-card";
-  /* 列表就地重建：增/删/排序/改类型只刷新服务商卡片，不整页重开设置，
-     也避免 openSettings() 重读磁盘把未保存的改动吞掉 */
+  /* 类型改 / 排序 / 删除后就地重建这张卡（配置对话框内 = 重画该服务商），
+     不整页重开设置，也避免 openSettings() 重读磁盘把未保存的改动吞掉 */
   const rerender = () => {
-    list.innerHTML = "";
-    S.config.providers.forEach((p, j) => list.appendChild(provCard(p, j, list)));
+    if (typeof onChange === "function") onChange();
   };
   const head = document.createElement("div");
   head.className = "prov-head";

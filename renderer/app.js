@@ -739,6 +739,17 @@ const NODE_DEFAULTS = {
     ratioPadFill: "edge",
     ratioPadColor: "#FFFFFF",
     ratioLockExact: false,
+    /* gpt-image-2 直传参数（空 = 不传，服务商默认 auto）：
+       imgQuality = low/medium/high/xhigh/max/auto；imgBackground = transparent/opaque/auto。
+       background=transparent 时提示词自动补「背景透明」要求，并禁用差分抠图按钮。 */
+    imgQuality: "",
+    imgBackground: "",
+    /* 蒙版局部重绘：maskOn 开关 + maskPath 为编辑器导出的 Alpha 蒙版（透明区=重绘区），
+       maskBrush/maskFeather 是编辑器里上次用的笔刷尺寸与羽化半径 */
+    maskOn: false,
+    maskPath: "",
+    maskBrush: 60,
+    maskFeather: 0,
     globalRefs: false,
     output: null,
     batchOutputs: null,
@@ -20603,8 +20614,7 @@ function matteBlock(text) {
    两张各自独立的图必然整体错位，差分在两图不一致处给出中间 Alpha —— 画面上就是满屏虚影。 */
 /* 第 1 通道：纯黑背景（基准） */
 function bgRmPromptSuffix(node) {
-  if (!node || node.kind !== "proc_image" || !node.bgRmOn) return "";
-  normalizeBgRm(node);
+  if (!bgRmActive(node)) return "";
   return matteBlock(
     I18n.t(
       "【透明背景 · 双通道差分抠图｜第 1 通道（基准）：纯黑背景】请把画面中除主体以外的全部背景区域（含天空、地面、投影、环境细节）绘制成完全均匀的纯黑 #000000：无渐变、无纹理、无阴影、无反射、无暗角、无地面投影。主体保持完整清晰，边缘锐利干净，构图居中稳定、四周留出一圈空白边距，主体不得触碰或超出画面边缘。这一张是本次抠图的唯一基准：随后会严格复刻它、只替换背景色来求 Alpha，因此请按最终成品的标准画好主体。",
@@ -20614,8 +20624,7 @@ function bgRmPromptSuffix(node) {
 /* 第 2 通道：纯白背景。只有「能把第 1 通道当参考图下发」的通路才允许发这一张
    （见 matteAnchorSupport）；不存在「锚不上就另画一张」的分支 —— 那种退化正是虚影的来源。 */
 function bgRmSecondSuffix(node) {
-  if (!node || node.kind !== "proc_image" || !node.bgRmOn) return "";
-  normalizeBgRm(node);
+  if (!bgRmActive(node)) return "";
   return matteBlock(
     I18n.t(
       "【透明背景 · 双通道差分抠图｜第 2 通道：纯白背景】请把参考图的背景整体替换为完全均匀的纯白 #FFFFFF：无渐变、无纹理、无光晕、无投影。参考图是本次任务的唯一基准，除背景颜色以外，画面的一切内容必须与它逐像素完全一致——主体的位置、大小、比例、朝向、姿态、轮廓、颜色、纹理、细节、光照、构图与画幅都不得有任何变化；不要重绘主体，不要移动，不要缩放，不要裁切，不要加边框。",
@@ -20636,6 +20645,132 @@ function withBgRmPrompt(node, prompt) {
 function bgRmSecondPrompt(node, prompt) {
   return stripMatteBlocks(prompt) + bgRmSecondSuffix(node);
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   图像生成 · 接口参数（quality / background）与「蒙版局部重绘」
+   gpt-image-2 的两个直传参数：quality（low…max / auto）与 background（transparent /
+   opaque / auto）。在节点设置窗口里选，未选 = 不传，交给服务商默认 auto。
+     · background=transparent：接口直接给真透明通道 PNG（编辑接口是「重绘去背」，
+       不是精确抠像）。所以 ① 提示词末尾自动注入「背景必须真透明」的要求；
+       ② 差分透明算法（双通道抠图）被禁用并关掉 —— 已经透明了，没必要再花 2 倍 Token。
+     · mask（蒙版局部重绘）：上传 原图 + 蒙版 + 提示词。蒙版按 **Alpha 通道**生效：
+       透明区域 = 允许模型编辑，不透明区域 = 尽量保留原图（引导式编辑，不是像素级硬限制）。
+       编辑器里用透明绿涂抹要改的区域，导出时把涂抹区抠成透明、其余填满不透明，
+       因此用户不必理解 Alpha 语义。
+   参考：https://docs.apiyi.com/api-capabilities/gpt-image-2/image-edit
+        https://docs.apiyi.com/api-capabilities/gpt-image-2/mask-editing          */
+const IMG_QUALITY_VALUES = ["", "auto", "low", "medium", "high", "xhigh", "max"];
+const IMG_BACKGROUND_VALUES = ["", "auto", "opaque", "transparent"];
+/* 透明背景直出注入段：ASCII 标记包裹，中英文界面下都能精确剥离，不污染用户正文 */
+const ALPHA_BG_BLOCK_HEAD = "\n\n[[MTNODE-ALPHA-BG]]";
+const ALPHA_BG_BLOCK_TAIL = "[[/MTNODE-ALPHA-BG]]";
+const ALPHA_BG_BLOCK_RE =
+  /\n\n\[\[MTNODE-ALPHA-BG\]\][\s\S]*?\[\[\/MTNODE-ALPHA-BG\]\]/g;
+function stripAlphaBgBlocks(prompt) {
+  return String(prompt || "").replace(ALPHA_BG_BLOCK_RE, "");
+}
+/* 节点字段归一（每次读取前调用，旧画布缺字段自动补齐） */
+function normalizeImgParams(node) {
+  if (!node || node.kind !== "proc_image") return;
+  const q = String(node.imgQuality == null ? "" : node.imgQuality)
+    .trim()
+    .toLowerCase();
+  node.imgQuality = IMG_QUALITY_VALUES.includes(q) ? q : "";
+  const b = String(node.imgBackground == null ? "" : node.imgBackground)
+    .trim()
+    .toLowerCase();
+  node.imgBackground = IMG_BACKGROUND_VALUES.includes(b) ? b : "";
+  if (node.maskOn == null) node.maskOn = false;
+  if (typeof node.maskPath !== "string") node.maskPath = "";
+  const br = Number(node.maskBrush);
+  node.maskBrush = Number.isFinite(br)
+    ? Math.max(4, Math.min(400, Math.round(br)))
+    : 60;
+  const fe = Number(node.maskFeather);
+  node.maskFeather = Number.isFinite(fe)
+    ? Math.max(0, Math.min(64, Math.round(fe)))
+    : 0;
+  /* 透明背景直出 Alpha：差分抠图没有存在意义，顺手关掉（按钮也一并禁用） */
+  if (node.imgBackground === "transparent" && node.bgRmOn) node.bgRmOn = false;
+}
+/* 背景透明（接口直出 Alpha）是否开启 */
+function imgAlphaBgOn(node) {
+  if (!node || node.kind !== "proc_image") return false;
+  normalizeImgParams(node);
+  return node.imgBackground === "transparent";
+}
+/* 差分透明算法是否真的在跑：背景选透明时它被禁用（没必要再花 2 倍 Token） */
+function bgRmActive(node) {
+  if (!node || node.kind !== "proc_image") return false;
+  normalizeBgRm(node);
+  normalizeImgParams(node);
+  return !!node.bgRmOn && node.imgBackground !== "transparent";
+}
+/* 蒙版局部重绘是否生效（开关开着且已画出蒙版） */
+function maskActive(node) {
+  if (!node || node.kind !== "proc_image") return false;
+  normalizeImgParams(node);
+  return !!node.maskOn && !!node.maskPath;
+}
+/* 透明背景要求注入段 */
+function alphaBgPromptSuffix(node) {
+  if (!imgAlphaBgOn(node)) return "";
+  return (
+    ALPHA_BG_BLOCK_HEAD +
+    "\n" +
+    I18n.t(
+      "【透明背景 · 直出 Alpha】请把主体以外的全部背景生成为真正的透明通道（PNG Alpha）：不要任何底色、不要棋盘格、不要白边或黑边、不要地面投影与光晕；主体边缘干净利落、不留背景残渣。不要把「透明」画成灰色或白色背景，也不要用纯色填充去模拟透明。",
+    ) +
+    "\n" +
+    ALPHA_BG_BLOCK_TAIL
+  );
+}
+/* 图像生成节点的提示词收尾：透明背景要求 + 差分抠图注入段（互斥，不会同时出现） */
+function withImageParamsPrompt(node, prompt) {
+  return String(prompt || "") + alphaBgPromptSuffix(node) + bgRmPromptSuffix(node);
+}
+/* 蒙版背景 = 首张输入图像（与请求里 image[0] 对应：mask 只对第 1 张 image 生效） */
+function maskSourceImagePath(node, idx) {
+  try {
+    for (const it of inputValuesFor(node, idx || 0)) {
+      const v = it && it.value;
+      if (v && v.kind === "image" && v.path) return v.path;
+    }
+  } catch (e) {
+    /* 读不出（节点已删 / 画布未就绪）：当作没有可用背景图 */
+  }
+  return "";
+}
+/* 蒙版局部重绘的运行前置校验：① 服务商必须是 OpenAI 兼容图像（gpt-image-2 的
+   /images/edits 才有 mask 字段）；② 必须有原图（mask 只对第 1 张 image 生效）。
+   同时处理「与画幅锁定互斥」：补边会改写第 1 张参考图，蒙版是按原图画的对不上，
+   所以蒙版开启时画幅锁定让位（预览里会写明）。 */
+let _maskPadWarnAt = 0;
+function ensureMaskPrereqs(node, prov, idx) {
+  if (!node || node.kind !== "proc_image" || !maskActive(node)) return;
+  if (!prov || prov.type !== "image_openai")
+    throw new Error(
+      I18n.t(
+        "蒙版局部重绘只支持 OpenAI 兼容的图像服务商（gpt-image-2 的 /images/edits）：当前服务商类型为 ",
+      ) + String((prov && prov.type) || I18n.t("未知")),
+    );
+  if (!maskSourceImagePath(node, idx))
+    throw new Error(
+      I18n.t(
+        "蒙版局部重绘需要至少一张图像输入：请把要重绘的底图接到本节点（首张图即蒙版背景，蒙版按它的原尺寸绘制）",
+      ),
+    );
+  if (node.ratioLockOn && Date.now() - _maskPadWarnAt > 4000) {
+    _maskPadWarnAt = Date.now();
+    toast(
+      I18n.t(
+        "本次以蒙版局部重绘为准：画幅锁定已跳过（补边会改写第 1 张参考图，蒙版就与原图错位了）。如需补边请先关掉蒙版。",
+      ),
+      "warn",
+    );
+  }
+}
+
 function loadImageFromUrl(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -21128,6 +21263,11 @@ async function runBgRmSecondPass(node, spec, basePath, itemTitle, attemptT) {
        ① 这张基准图按原尺寸下发，不走 1080 参考图缩放（压小再让模型放大 = 尺度必漂）；
        ② size 钉成基准图实际像素对应的档位，保证两通道同宽同高。 */
     matteAnchor: true,
+    /* 第 2 通道只做「严格复刻 + 换纯白背景」，因此：
+       · 不带蒙版（蒙版只对用户那张原图有意义，套在复刻上会限制白色背景的重绘范围）；
+       · 不带 background（这一张必须是**不透明**的纯白底，才差分得出 Alpha） */
+    maskPath: "",
+    background: "",
   });
   const rr = await window.api.apiCall(spec2);
   if (node._aborted) throw new Error(I18n.t("已手动停止"));
@@ -21152,7 +21292,7 @@ async function finishProcImageOutput(node, spec, path, itemTitle, attemptT) {
   if (!node || node.kind !== "proc_image" || !path) return path;
   normalizeBgRm(node);
   let out = path;
-  if (node.bgRmOn) {
+  if (bgRmActive(node)) {
     if (node._aborted) throw new Error(I18n.t("已手动停止"));
     const t0 = Date.now();
     /* path 就是第 1 通道（纯黑基准）；锚定不了的服务商从一开始就不该花第二次 Token，
@@ -21199,7 +21339,7 @@ async function finishProcImageOutput(node, spec, path, itemTitle, attemptT) {
 async function reprocessProcImageBgRm(node) {
   if (!node || node.kind !== "proc_image") return 0;
   normalizeBgRm(node);
-  if (!node.bgRmOn) {
+  if (!bgRmActive(node)) {
     toast(I18n.t("请先开启透明背景"), "warn");
     return 0;
   }
@@ -21442,18 +21582,38 @@ function openBgRmPop(node, anchorEl) {
   placeNodePop(el, anchorEl || document.body, el._popOpt);
 }
 /* 节点头部的「透明背景」Toggle：
-   关 = 灰白格图标；开 = 图标内容隐去，整颗按钮只剩一圈旋转的彩虹边缘动效 */
+   关 = 灰白格图标；开 = 图标内容隐去，整颗按钮只剩一圈旋转的彩虹边缘动效。
+   background 选了「透明」时禁用：接口已直出 Alpha，双通道差分纯属浪费（2 倍 Token）。 */
 function bgRmButtonEl(node) {
   normalizeBgRm(node);
-  const on = !!node.bgRmOn;
+  normalizeImgParams(node);
+  const locked = node.imgBackground === "transparent";
+  const on = !locked && !!node.bgRmOn;
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "n-play n-bgrm-btn n-matte-toggle" + (on ? " on" : "");
+  btn.className =
+    "n-play n-bgrm-btn n-matte-toggle" + (on ? " on" : "") + (locked ? " off" : "");
   btn.setAttribute("role", "switch");
   btn.setAttribute("aria-checked", on ? "true" : "false");
   btn.setAttribute("aria-label", I18n.t("透明背景"));
   btn.dataset.on = on ? "1" : "0";
   btn.innerHTML = '<span class="n-bgrm-ico" aria-hidden="true"></span>';
+  if (locked) {
+    /* 背景已选「透明」：禁用（不自动关掉用户的其它设置，只在需要时提示怎么恢复） */
+    btn.disabled = true;
+    btn.title = I18n.t(
+      "差分透明算法已禁用：背景已设为「透明」，接口会直出带 Alpha 的 PNG，不必再花 2 倍 Token 做双通道差分。\n如需差分抠图，请把「背景」改回「默认」或「不透明」。",
+    );
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      toast(btn.title, "warn");
+    };
+    btn.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    return btn;
+  }
   btn.title = on ? bgRmTipOn() : bgRmTipOff();
   btn.onclick = (ev) => {
     ev.stopPropagation();
@@ -25456,6 +25616,7 @@ function migrateWf(wf) {
     if (n.kind === "proc_image") {
       normalizeBgRm(n);
       normalizeRatioLock(n);
+      normalizeImgParams(n);
     }
     /* 函数 / 工具节点（含 super + tool:true 变体）：旧画布加载归一 */
     if (typeof ensureFnToolNodeState === "function") ensureFnToolNodeState(n);

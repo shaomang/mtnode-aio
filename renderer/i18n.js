@@ -1062,6 +1062,13 @@
     "另存为…": "Save as…",
     "没有改动": "No changes",
     "模型服务": "Model services",
+    "提供商配置": "Providers",
+    "（点击任一格配置该服务商；网格顺序即使用优先级，越靠前越优先）":
+      "(Click a tile to configure that provider; grid order is the priority order — earlier wins)",
+    "服务商配置": "Provider settings",
+    "点击配置该服务商": "Click to configure this provider",
+    "暂无服务商，点右上「＋ 添加服务商」新建":
+      "No providers yet — use \"+ Add provider\" at the top right",
     "模型列表": "Model list",
     "默认目录": "Default directory",
     "切割列数": "Grid columns",
@@ -1241,7 +1248,6 @@
     "＋ 添加图像": "+ Add image",
     "＋ 图像节点": "+ Image Node",
     "＋ 文本节点": "+ Text Node",
-    "<参考图: ": "<Ref image: ",
     "✓ 已合并 ": "✓ Merged ",
     "✓ 已连入 ": "✓ Wired in ",
     "✕ 删除连线": "✕ Delete wire",
@@ -2465,6 +2471,8 @@
     "已选择稍后；退出应用时将后台静默安装并自动重新打开":
       "Will silently install and reopen when you quit the app",
     "更新失败：": "Update failed: ",
+    "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新":
+      "The Microsoft Store (MSIX) build does not support in-app updates — get updates from the Microsoft Store",
     "发现新版本，点击下载并安装": "New version available — click to download & install",
     "发现新版本，点击下载更新": "New version available — click to download",
     "立即重启安装": "Restart & install now",
@@ -2961,6 +2969,74 @@
       "Transparent background · two-pass difference matting: ON\n\nGenerated images automatically come out with a transparent background (PNG with alpha).\nHow: pass 1 renders on pure black and becomes the sole baseline; pass 2 then receives exactly that image as its only reference and renders an identical, strictly aligned pure-white version, and the two are differenced into real alpha per pixel (semi-transparent edges survive).\n\n⚠ This all happens internally — just write your prompt as usual; but every output costs 2 generations, so tokens and wait are roughly 2×. Use with care.\n⚠ Only providers that can receive the baseline as a reference (OpenAI-compatible / Stability) get matted; the rest are skipped with a notice instead of falling back to a second fresh render (two independent images never line up — that is what produced the ghosting).\n\nClick = off · right-click = matte settings",
     "透明背景 · 双通道差分抠图：已关闭（单击开启）\n\n开启后生成的图像会变为透明背景：先出纯黑背景作为基准，再自动出以它为唯一参考图、严格对齐的纯白背景，两图差分抠出 Alpha。\n\n⚠ 需要生成 2 次图像，因此耗费 2 倍 Token，请慎用。\n⚠ 需要服务商能把基准图当参考图下发（OpenAI 兼容 / Stability 生图），否则自动跳过抠图。\n\n右键 = 调整抠图参数":
       "Transparent background · two-pass difference matting: OFF (click to turn on)\n\nWhen on, output comes with a transparent background: pass 1 renders on pure black as the baseline, then pass 2 renders a strictly aligned pure-white replica that receives exactly that baseline as its only reference, and the two are differenced into an alpha matte.\n\n⚠ It generates the image twice, so it costs 2× tokens — use with care.\n⚠ Requires a provider that can take the baseline as a reference image (OpenAI-compatible / Stability); otherwise matting is skipped.\n\nRight-click = matte settings",
+    /* ── 图像生成 · quality / background / 蒙版局部重绘（app.js · app-mask.js ·
+          app-canvas.js · app-nodes.js）── */
+    "服务商 / 模型 / 尺寸 / 质量 / 背景": "Provider / model / size / quality / background",
+    "质量 Quality（low/medium/high/xhigh/max/auto）":
+      "Quality (low/medium/high/xhigh/max/auto)",
+    "背景 Background": "Background",
+    "默认（不传 · 服务商按 auto）": "Default (not sent · provider uses auto)",
+    "不透明 opaque": "Opaque",
+    "透明 transparent（直出 Alpha PNG）": "Transparent (direct alpha PNG)",
+    "蒙版重绘": "Mask inpaint",
+    "背景选「透明」时，运行会在提示词末尾自动补上「背景必须为真透明通道」的要求，并禁用头部的差分透明算法按钮（接口已直出 Alpha，双通道抠图纯属多花 2 倍 Token）。注意编辑接口的透明是「重绘去背」，不是精确抠像。":
+      "With background = transparent, the run appends a “the background must be a real alpha channel” requirement to the prompt and disables the two-pass difference matting button (the API already returns alpha, so diff matting would just cost 2× tokens for nothing). Note: the edit endpoint’s transparency is “repaint and cut out”, not precise matting.",
+    "蒙版局部重绘：节点头部的蒙版小按钮，单击开 / 关（首次开启会打开蒙版编辑器），右键随时重新编辑。编辑器里用透明绿涂抹要重绘的区域，程序把它转成「透明=可编辑」的 Alpha 蒙版，与原图、提示词一起发给 gpt-image-2。":
+      "Masked inpainting: the mask button in the node header. Click to toggle on/off (the first time it opens the mask editor); right-click re-opens the editor. Paint the region to repaint in transparent green; the app turns it into an alpha mask where “transparent = editable” and sends it with the image and prompt to gpt-image-2.",
+    "【透明背景 · 直出 Alpha】请把主体以外的全部背景生成为真正的透明通道（PNG Alpha）：不要任何底色、不要棋盘格、不要白边或黑边、不要地面投影与光晕；主体边缘干净利落、不留背景残渣。不要把「透明」画成灰色或白色背景，也不要用纯色填充去模拟透明。":
+      "[Transparent background · direct alpha] Render everything outside the subject as a real transparent channel (PNG alpha): no base color, no checkerboard, no white or black fringes, no ground shadow, no glow; the subject edges must be clean with no background residue. Do not paint “transparency” as a grey or white background, and do not simulate it with a flat fill.",
+    "差分透明算法已禁用：背景已设为「透明」，接口会直出带 Alpha 的 PNG，不必再花 2 倍 Token 做双通道差分。\n如需差分抠图，请把「背景」改回「默认」或「不透明」。":
+      "Difference matting is disabled: background is set to “transparent”, so the API returns an alpha PNG directly — no need to spend 2× tokens on two-pass diffing.\nTo use diff matting, set Background back to “default” or “opaque”.",
+    "蒙版局部重绘只支持 OpenAI 兼容的图像服务商（gpt-image-2 的 /images/edits）：当前服务商类型为 ":
+      "Masked inpainting only supports OpenAI-compatible image providers (gpt-image-2 /images/edits): the current provider type is ",
+    "蒙版局部重绘需要至少一张图像输入：请把要重绘的底图接到本节点（首张图即蒙版背景，蒙版按它的原尺寸绘制）":
+      "Masked inpainting needs at least one image input: connect the image to be repainted to this node (the first image is the mask background, and the mask is painted at its full size).",
+    "本次以蒙版局部重绘为准：画幅锁定已跳过（补边会改写第 1 张参考图，蒙版就与原图错位了）。如需补边请先关掉蒙版。":
+      "Masked inpainting takes precedence this run: aspect-ratio lock was skipped (padding rewrites the first reference image and the mask would no longer line up). Turn the mask off first if you need padding.",
+    "蒙版局部重绘": "Masked inpainting",
+    "在首张参考图上涂抹要重绘的区域": "Paint the region to repaint on the first reference image",
+    "画笔": "Brush",
+    "方形": "Rectangle",
+    "圆形": "Ellipse",
+    "画笔尺寸": "Brush size",
+    "羽化半径": "Feather radius",
+    "确定并启用": "Apply and enable",
+    "这个节点还没有可用的图像输入：请先连入一张图像（首张图会作为蒙版背景），再打开本编辑器。":
+      "This node has no usable image input yet: connect an image first (the first image becomes the mask background), then open this editor.",
+    "怎么操作：左键涂抹 = 标记「要重绘」的区域；按住右键涂抹 = 擦除标记。画笔尺寸与羽化半径在左侧工具栏调；方形 / 圆形可按住左键拖出一块区域（按住右键拖 = 从标记里减去）。\n它如何影响图像：确定后，程序把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2——涂抹过（透明绿）的区域才会被重绘，没涂到的区域尽量保留原图。因此提示词只写「要改成什么」即可，例如「把涂抹区域里的水杯换成一束白色郁金香，其他区域保持不变，保持原有光线与视角」。\n注意：这是引导式编辑，不是逐像素的硬限制——蒙版边缘附近仍可能有细微变化；把标记比目标物体稍微放大一圈（覆盖边缘 / 阴影）效果更稳。":
+      "How to use: left-drag to paint the region to repaint; right-drag to erase the paint. Brush size and feather radius are in the left toolbar; rectangle/ellipse let you drag out an area with the left button (right-drag subtracts from the mask).\nHow it affects the image: the app sends image + mask + prompt to gpt-image-2 — only the painted (transparent green) region is repainted, while the rest is kept as close to the original as possible. So write only what should change, e.g. “replace the cup inside the masked area with a bunch of white tulips, keeping everything else, the lighting and the camera angle unchanged”.\nNote: this is guided editing, not a hard per-pixel limit — pixels near the mask edge may still shift slightly; painting a little beyond the target (covering edges and shadows) gives steadier results.",
+    "请先在图上涂抹要重绘的区域，再点「确定并启用」":
+      "Paint the region to repaint first, then click “Apply and enable”.",
+    "蒙版保存失败：": "Failed to save the mask: ",
+    "蒙版已保存并启用：运行时只重绘涂抹过的区域（未涂抹处尽量保持原图）":
+      "Mask saved and enabled: only the painted region will be repainted (everything else stays as close to the original as possible).",
+    "蒙版局部重绘：已开启\n\n上传原图 + 蒙版 + 提示词，只重绘蒙版里涂抹过的区域：\n· 涂抹过（透明绿）的区域 = 交给模型重绘；\n· 没涂到的区域 = 尽量保持原图不变。\n· 出图画幅 = 首张参考图的像素尺寸（节点自己选的 size 不生效，否则服务端重排输入图会让蒙版错位）。\n\n单击 = 开 / 关 · 右键 = 打开蒙版编辑器":
+      "Masked inpainting: on\n\nImage + mask + prompt are sent together, and only the painted region is repainted:\n· painted (transparent green) area = handed to the model for repainting;\n· unpainted area = kept as close to the original as possible.\n· Output canvas = the first reference image's pixel size (the node's own size setting is ignored, otherwise the service would re-lay the input image and the mask would no longer line up).\n\nClick = on/off · right-click = open the mask editor",
+    "蒙版局部重绘：已关闭（单击开启）\n\n开启后可在首张参考图上涂抹要改的区域，运行时把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2，只重绘涂抹过的区域；未涂抹处尽量保持不变。\n\n⚠ 需要有至少一张图像输入（首张图作为蒙版背景），且服务商为 OpenAI 兼容图像服务商。\n\n右键 = 打开蒙版编辑器":
+      "Masked inpainting: off (click to enable)\n\nOnce enabled you can paint the region to change on the first reference image; at run time image + mask + prompt are sent to gpt-image-2 and only the painted region is repainted.\n\n⚠ Requires at least one image input (the first becomes the mask background) and an OpenAI-compatible image provider.\n\nRight-click = open the mask editor",
+    "蒙版需要有背景图：请先把一张图像输入连进本节点（首张图会作为蒙版背景）":
+      "A mask needs a background image: connect an image input to this node first (the first image becomes the mask background).",
+    "蒙版背景读取失败：": "Failed to read the mask background: ",
+    "蒙版局部重绘已关闭": "Masked inpainting disabled",
+    "蒙版局部重绘已开启：只重绘涂抹过的区域": "Masked inpainting enabled: only the painted region is repainted",
+    "蒙版尚未创建：请先在节点头部打开蒙版编辑器涂抹要重绘的区域":
+      "No mask yet: open the mask editor from the node header and paint the region to repaint.",
+    "无效的 quality（须为 low/medium/high/xhigh/max/auto 或空）：":
+      "Invalid quality (must be low/medium/high/xhigh/max/auto or empty): ",
+    "无效的 background（须为 transparent/opaque/auto 或空）：":
+      "Invalid background (must be transparent/opaque/auto or empty): ",
+    "背景已设为「透明」：请求带 background=transparent（强制 output_format=png），接口直出带 Alpha 通道的 PNG。提示词末尾已自动追加「背景必须是真透明通道」的要求，差分透明算法按钮已禁用（接口已经给透明了，不必再花 2 倍 Token）。注意这是「重绘去背」，不是精确抠像；要像素级抠图请把背景改回默认再用差分抠图。\n\n":
+      "Background is set to “transparent”: the request carries background=transparent (forcing output_format=png) and the API returns an alpha-channel PNG. A “background must be a real transparent channel” requirement is appended to the prompt, and the difference-matting button is disabled (the API already gives transparency; no need to spend 2× tokens). Note this is “repaint and cut out”, not precise matting — for pixel-level cut-outs set Background back to default and use difference matting.\n\n",
+    "蒙版局部重绘已开启：请求里带 mask（透明区域 = 允许模型重绘，不透明区域 = 尽量保留原图），只对第 1 张 image 生效；蒙版与原图同尺寸原样下发。请把提示词写成「仅修改蒙版透明区域……其他区域保持不变」。\n":
+      "Masked inpainting is enabled: the request carries a mask (transparent area = the model may repaint it; opaque area = keep as close to the original as possible), applied to the first image only; the mask is sent at the image’s native size. Write the prompt as “modify only the transparent area of the mask … keep everything else unchanged”.\n",
+    "本次以蒙版为准：画幅锁定已跳过（补边会改写第 1 张参考图，蒙版就与原图错位了）。\n":
+      "The mask takes precedence: aspect-ratio lock was skipped (padding rewrites the first reference image and the mask would no longer line up).\n",
+    "本次请求的 size 跟着首张参考图的像素尺寸走（节点自己选的尺寸不生效）：服务端按 size 出图，size 一旦与蒙版像素不一致就会先重排输入图，蒙版立刻错位、整张主体被重绘。预览里的 image / mask 就是实际下发的路径本身，没有包装。\n":
+      "This request's size follows the first reference image's pixel size (the node's own size setting is ignored): the service renders at size, and any mismatch with the mask's pixels makes it re-lay the input image first, which instantly misaligns the mask and repaints the whole subject. The image / mask entries shown in the preview are the actual paths being sent, unwrapped.\n",
+    /* ── 请求预览 · multipart：列的是真正下发的表单字段（不再回显内部 __multipart 伪 JSON）── */
+    "Body（multipart/form-data · 下面就是真正下发的表单字段 · boundary 由传输层自动生成）：":
+      "Body (multipart/form-data · the fields below are exactly what gets sent · the boundary is generated by the transport layer):",
+    "像素": "px",
     /* ── 图像生成 · 画幅锁定（与首参考图保持一致长宽比：补边生图 → 出图裁回）── */
     "与首参考图保持一致长宽比": "Match the first reference's aspect ratio",
     "与首参考图保持一致长宽比 · 补边参数":

@@ -59,8 +59,9 @@ MTNode 内置应用内更新（基于 electron-updater + NSIS blockmap 的**差�
 版本号的**唯一真源**是项目根目录的 `version` 文件（`x.y.z`）与 `package.json` 的 `version` 字段。**不要手改这两处**，统一用：
 
 ```
-node version.js        读取当前版本并同步到 package.json，输出版本号
-node version.js bump   末位 +1，写回 version 文件并同步 package.json，输出新版本号
+node version.js              读取当前版本并同步到 package.json，输出版本号
+node version.js bump         末位 +1（如 1.2.11 → 1.2.12），写回 version 文件并同步 package.json，输出新版本号
+node version.js bump-major   第二位 +1 且末位归零（如 1.2.11 → 1.3.0），大版本升级用；等价于 npm run version:major
 ```
 
 一次正式发版由 `npm run release` 同时产出 NSIS 安装包与 Store（MSIX）包，**两包版本号必须一致**。

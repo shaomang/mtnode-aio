@@ -9,11 +9,7 @@
 - **节点指南**（节点右键「节点指南」，源码在 [`guides/nodes/`](guides/nodes/)）
 - **变更记录**：[`CHANGELOG-v1.1.md`](CHANGELOG-v1.1.md)
 
-## 我想……
-
-按你想完成的事找入口，具体步骤都在应用内手册里（右上角「文档」，也可直接读 Markdown）。
-
-手册共 7 章（上手 / 画布与节点 / 做一条工作流 / AI 干活 / 素材与记录 / 设置与维护 / 参考），下表按章给你最常走的入口；完整目录见 [`index.json`](guides/manual/index.json)。
+## Quick start
 
 | 我想…… | 去哪里 |
 | --- | --- |
