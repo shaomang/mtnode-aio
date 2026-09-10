@@ -4,6 +4,9 @@ SRC=/tmp/mtnode-store-upload
 mkdir -p /opt/mtnode-store/data/files /opt/mtnode-store/data/skills /opt/mtnode-store/data/previews /opt/mtnode-store/data/forum-images
 mkdir -p /var/www/mtnode/plugins
 install -m 644 "$SRC/server.mjs" /opt/mtnode-store/server.mjs
+install -m 644 "$SRC/sms-provider.mjs" /opt/mtnode-store/sms-provider.mjs
+install -m 644 "$SRC/account-store.mjs" /opt/mtnode-store/account-store.mjs
+install -m 644 "$SRC/migrate-accounts.mjs" /opt/mtnode-store/migrate-accounts.mjs
 install -m 644 "$SRC/package.json" /opt/mtnode-store/package.json
 install -m 644 "$SRC/mtnode-store.service" /etc/systemd/system/mtnode-store.service
 if [ -f "$SRC/seed-skills.mjs" ]; then

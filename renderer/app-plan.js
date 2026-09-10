@@ -1116,6 +1116,8 @@ function planDshRunOnce(input, opts) {
     provider: opts.provider,
     model: opts.model,
     effort: opts.effort,
+    /* Token 台账逐轮明细的标题：计划任务标题优先（否则回落输入文本前 24 字） */
+    tokTitle: opts.tokTitle || undefined,
     onEvent: typeof opts.onEvent === "function" ? opts.onEvent : undefined,
     systemPrompt:
       "回答简洁。你是异步并行子任务（subagent），只做本任务并用工作区文件交付结果，不要做计划外的事。",
@@ -1825,6 +1827,8 @@ function planExecContinue(st) {
       planRunId: pe.runId,
       provider: planRouteOfModel(t.model) || undefined,
       model: t.model || undefined,
+      /* Token 台账逐轮明细的标题：计划任务标题优先（输入是任务书块，别拿它当标题） */
+      tokTitle: (t && t.title) || "",
     });
   } else {
     for (const t of step.tasks) if (t) t.status = "active";
@@ -1871,6 +1875,8 @@ async function planRunParallel(st, tasks) {
     t._live = planLiveInit();
     return planDshRunOnce(planTaskMessage(t, 0, n, true), {
       runKey,
+      /* 逐轮明细标题：计划任务标题优先 */
+      tokTitle: (t && t.title) || "",
       /* 继承 owner 会话的所属画布：子任务写的文件与画布都跟着那条会话，不看前台切到哪张图 */
       canvasWfId: st.canvasWfId || "",
       workspace: st.workspace || "",

@@ -1,24 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 430 188" width="430" height="188">
-  <rect width="430" height="188" fill="#0d1016"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 190" width="580" height="190">
+  <rect width="580" height="190" fill="#0d1016"/>
   <defs>
-    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
-    </marker>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
   </defs>
-  <rect x="16" y="28" width="90" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="61" y="50" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入 1</text>
-  <rect x="16" y="78" width="90" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="61" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入 2</text>
-  <rect x="16" y="128" width="90" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="61" y="150" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入 3</text>
-  <line x1="106" y1="46" x2="150" y2="88" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <line x1="106" y1="96" x2="150" y2="96" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <line x1="106" y1="146" x2="150" y2="104" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <rect x="150" y="74" width="100" height="44" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
-  <text x="200" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">闸门 AND</text>
-  <line x1="250" y1="96" x2="296" y2="96" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <rect x="296" y="74" width="100" height="44" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
-  <text x="346" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">下游</text>
-  <text x="215" y="176" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">闸门按配置的输入路数等待；未接线的端口也会挡住</text>
+  <rect x="20" y="60" width="120" height="48" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="80" y="88" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">来源节点</text>
+  <line x1="140" y1="84" x2="190" y2="84" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
+  <rect x="190" y="60" width="110" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="245" y="88" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">global</text>
+  <line x1="300" y1="84" x2="360" y2="46" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <line x1="300" y1="84" x2="360" y2="90" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <line x1="300" y1="84" x2="360" y2="134" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <rect x="360" y="26" width="190" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="455" y="50" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">消费 A（globalRefs + @来源）</text>
+  <rect x="360" y="70" width="190" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="455" y="94" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">消费 B（globalRefs + @来源）</text>
+  <rect x="360" y="114" width="190" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="455" y="138" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">消费 C（globalRefs + @来源）</text>
+  <text x="290" y="178" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">global 只连入：源 → global → 多个消费节点；消费端还要开 globalRefs 并写 @源标题</text>
 </svg>

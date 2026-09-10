@@ -307,11 +307,9 @@ function applyLocale(locale, persist) {
 
 async function init() {
   S.config = await window.api.configLoad();
-  if (window.api && window.api.onForumAuthChanged) {
-    window.api.onForumAuthChanged((auth) => {
-      if (S.config) S.config.storeAuth = auth || null;
-    });
-  }
+  /* 旧版把商店 / 论坛会话存在 S.config.storeAuth 里，现已统一到主进程 auth-store
+     （启动时一次性迁移，见 main.js migrateLegacyStoreAuth）；这里只清掉内存残留。 */
+  if (S.config) S.config.storeAuth = null;
   if (window.api && window.api.onLlamaProviderSynced) {
     window.api.onLlamaProviderSynced(async () => {
       if (!S.config) return;
@@ -404,10 +402,15 @@ async function init() {
   const legacyMt = Number(S.config.dsh.maxTokens);
   if (legacyMt === 49152 || legacyMt === 98304) S.config.dsh.maxTokens = 0;
   ensureAgentToolPresets();
+  /* 专家团配置缺省合并 + 迁移（旧配置无 team 键即初始化，幂等；schema / 默认
+     toolAllow 表的唯一真源在 renderer/app-team.js，见该文件头注释）。
+     启动路径只做内存合并，不落盘 —— 下一次正常保存配置时一并写入。 */
+  if (window.MTNodeTeam) window.MTNodeTeam.ensure(S.config);
   /* 已访问画布(画布 Tab 条),持久化于配置 */
   if (!Array.isArray(S.config.visitedWorkflows)) S.config.visitedWorkflows = [];
   if (!Array.isArray(S.config.onlineRepos)) S.config.onlineRepos = [];
-  if (!S.config.storeAuth || typeof S.config.storeAuth !== "object") S.config.storeAuth = null;
+  /* 旧版商店 / 论坛会话字段已废弃（统一走主进程 auth-store）。 */
+  S.config.storeAuth = null;
   /* 会话列表迁移:旧版单会话(agentSession)→ 多会话数组 */
   if (!Array.isArray(S.config.agentSessions)) {
     const legacy = S.config.agentSession;
@@ -502,11 +505,6 @@ async function init() {
     $("#btnForum").onclick = async () => {
       const r = await window.api.forumOpen();
       if (r && r.ok) return;
-      if (r && r.error === "not_installed") {
-        toast(I18n.t("请先下载安装讨论区"), "warn");
-        openAppPluginsDialog();
-        return;
-      }
       toast(I18n.t("打开失败：") + pluginErrText(r && r.error), "err");
     };
   }
@@ -529,6 +527,7 @@ async function init() {
   $("#authorLink").onclick = openAuthorPopup;
   $("#btnToolWf").onclick = () => setView("workflow");
   $("#btnToolAgent").onclick = () => setView("agent");
+  if ($("#btnTeam")) $("#btnTeam").onclick = () => setView("team");
   $("#wfSelect").onchange = (ev) => {
     if (ev.target.value) loadWorkflow(ev.target.value);
   };
@@ -706,16 +705,10 @@ async function init() {
           renderAgentSessionSidebar();
         });
       };
-    const pt = $("#agentPlanToggle");
-    if (pt)
-      pt.onclick = () => {
-        const st = agentSessionState();
-        setPlanMode(st, !st.planNext);
-      };
+    /* 「规划 / 压缩」chip 已按需求从输入区移除：规划模式与压缩上文只保留 /plan、/compact
+       斜杠命令入口（见 app-assist.js），这里不再绑定按钮。 */
     const rpb = $("#agentRunPlanBtn");
     if (rpb) rpb.onclick = () => agentExecutePlan();
-    const cb = $("#agentCompactBtn");
-    if (cb) cb.onclick = () => agentCompact();
     document.addEventListener("mousedown", (ev) => {
       if (!ev.target.closest(".agent-composer")) closeAgentMenus();
     });
@@ -961,8 +954,9 @@ async function init() {
   /* 视图与左侧栏互斥：先落 body 类，让 CSS 硬闸从首帧起生效 */
   const bootView = (S.config && S.config.view) || "workflow";
   document.body.classList.toggle("view-agent", bootView === "agent");
-  document.body.classList.toggle("view-workflow", bootView !== "agent");
-  if (bootView === "agent") setView("agent");
+  document.body.classList.toggle("view-team", bootView === "team");
+  document.body.classList.toggle("view-workflow", bootView === "workflow");
+  if (bootView === "agent" || bootView === "team") setView(bootView);
   else if (typeof applySidebarVisibility === "function") applySidebarVisibility();
   applyTheme((S.config && S.config.theme) || "dsh");
   ensureTimerScheduler();

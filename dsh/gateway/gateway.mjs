@@ -1739,12 +1739,18 @@ async function handleRun(params) {
           provider: curProvider, model: curModel,
           inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
           reasoningTokens: 0, calls: 0, steps: 0, llmMs: 0, toolMs: 0,
+          /* 逐模型性能样本(additive:老消费方忽略即可)—— TTFT 累计与样本数、
+             本次调用的计费输入(算预处理吞吐)、扣除 TTFT 后的纯生成时间 */
+          ttftMs: 0, ttftSamples: 0, prefillTokens: 0, genMs: 0,
         }
         byModel.set(key, b)
       }
       return b
     }
     let stepStart = 0
+    /* 本步首 Token 延迟:在首个增量处采样,等到该次调用的 usage 到达时
+       一并记进「同一次调用所属」的模型桶(与 llmMs 同桶,数额不会错配) */
+    let stepTtft = 0
     let firstSeen = false
     let toolStart = 0
     let toolBucket = null
@@ -1775,11 +1781,14 @@ async function handleRun(params) {
         wallMs: stats.wallMs,
         startedAt: stats.startedAt,
         endedAt: stats.endedAt,
-        /* 逐模型:每个 provider|model 各自的 token 与时间,报告 Badge 展开按行显示 */
+        /* 逐模型:每个 provider|model 各自的 token 与时间,报告 Badge 展开按行显示。
+           性能字段为 additive:ttftAvgMs 由 ttftMs/ttftSamples 得出;端到端与吞吐
+           由既有 llmMs / calls / outputTokens / genMs 推出(不新增冗余口径) */
         models: [...byModel.values()].map((b) => {
           const bIn = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens
           return Object.assign({}, b, {
             cacheHitPct: bIn > 0 ? (b.cacheReadTokens / bIn) * 100 : 0,
+            ttftAvgMs: b.ttftSamples > 0 ? b.ttftMs / b.ttftSamples : 0,
           })
         }),
       }
@@ -1822,6 +1831,7 @@ async function handleRun(params) {
           case 'step/start':
             stats.steps++
             stepStart = t
+            stepTtft = 0
             firstSeen = false
             modelBucket().steps++
             break
@@ -1830,6 +1840,7 @@ async function handleRun(params) {
             if (!c) break
             if (!firstSeen && (c.type === 'reasoning-delta' || c.type === 'text-delta') && stepStart) {
               stats.firstTokenMs.push(t - stepStart)
+              stepTtft = t - stepStart
               firstSeen = true
             }
             if (c.type === 'usage' && c.usage) {
@@ -1855,7 +1866,18 @@ async function handleRun(params) {
               const stepMs = stepStart ? t - stepStart : 0
               stats.llmMs += stepMs
               bucket.llmMs += stepMs
+              /* 逐模型性能:TTFT 累计(本步采样值)+ 本次调用的预处理量(计费输入),
+                 genMs = 本次 LLM 用时扣掉首 Token 等待 = 纯生成时间 */
+              const ttft = stepTtft
+              if (ttft > 0) {
+                bucket.ttftMs += ttft
+                bucket.ttftSamples++
+              }
+              bucket.prefillTokens +=
+                u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens
+              bucket.genMs += Math.max(0, stepMs - ttft)
               stepStart = 0
+              stepTtft = 0
               /* 逐次调用用量带模型归属下发:会话末尾的累计报告 Badge 靠它实时增长 */
               emit('usage', Object.assign({}, u, {
                 provider: bucket.provider,

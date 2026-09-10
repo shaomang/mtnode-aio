@@ -9089,7 +9089,7 @@ async function deleteWorkflowByRef(workflow, opts) {
   };
 }
 
-async function applyAppOp(params, runWf) {
+async function applyAppOp(params, runWf, runKey) {
   params = params || {};
   const action = String(params.action || "").trim();
   const warnings = [];
@@ -9098,14 +9098,14 @@ async function applyAppOp(params, runWf) {
      所有「哪张图」的判断都以它为准：状态快照、改名、删除目标一律精准命中所属画布，
      同时绝不因为用户切到别的画布干活就误改 / 误删他正开着的那张。 */
   const boundWf = runWf || canvasTargetWf() || S.wf;
-  if (action === "delete_workflow") await ensureAgentTool("app_delete");
+  if (action === "delete_workflow") await ensureAgentTool("app_delete", undefined, runKey);
   else if (
     action === "list_dsh_plugins" ||
     action === "install_dsh_plugin" ||
     action === "remove_dsh_plugin" ||
     action === "set_dsh_plugin"
   ) {
-    await ensureAgentTool("app_dsh_plugins");
+    await ensureAgentTool("app_dsh_plugins", undefined, runKey);
   } else if (
     action === "status" ||
     action === "list_workflows" ||
@@ -9114,9 +9114,9 @@ async function applyAppOp(params, runWf) {
     action === "undo" ||
     action === "redo"
   ) {
-    await ensureAgentTool("app_ops");
+    await ensureAgentTool("app_ops", undefined, runKey);
     if (action === "status" || action === "list_workflows")
-      await ensureAgentTool("canvas_read");
+      await ensureAgentTool("canvas_read", undefined, runKey);
   }
   const scopeBlocked = S.assistRunActive && assistScopeIsCurrent()
     ? I18n.t(
@@ -9634,27 +9634,78 @@ function agentToolActivePreset() {
   );
 }
 
-function agentToolMode(key) {
+/* ── 按运行的工具许可（runKey 作用域）──
+   某些运行自带一份工具许可，覆盖全局「Agent 工具许可」预设（且**只在这一轮生效**）：
+   S._runToolPolicy[runKey] = { allow: { 类别key: allow|ask|deny } }。
+   用途 = 「一人公司」的专家：每位专家自带 perm.toolAllow（读 / 写文件与联网放行、
+   命令询问、画布与应用类禁止），随本轮 dshRunTask 的 opts.toolPolicy 装进来。runKey 隔离保证
+   群聊逐位跑（team:<chatId>:<expertId>）互不串味；同一 runKey 下一次运行没带策略就
+   删除旧策略 → 缺省一律回退全局预设，现有「审批」面板的行为逐字不变。 */
+function runToolPolicyStore() {
+  if (!S._runToolPolicy || typeof S._runToolPolicy !== "object")
+    S._runToolPolicy = {};
+  return S._runToolPolicy;
+}
+
+/* 安装本轮策略；policy 为空 / 非法 = 清掉该 runKey 的旧策略（回退全局预设）。 */
+function setRunToolPolicy(runKey, policy) {
+  const k = String(runKey || "").trim();
+  if (!k) return null;
+  const store = runToolPolicyStore();
+  const raw =
+    policy && typeof policy === "object" && policy.allow && typeof policy.allow === "object"
+      ? policy.allow
+      : policy;
+  if (!raw || typeof raw !== "object") {
+    delete store[k];
+    return null;
+  }
+  store[k] = { allow: normalizeToolAllowMap(raw) };
+  return store[k];
+}
+
+function clearRunToolPolicy(runKey) {
+  const k = String(runKey || "").trim();
+  if (k) delete runToolPolicyStore()[k];
+}
+
+function runToolPolicyOf(runKey) {
+  const k = String(runKey || "").trim();
+  if (!k) return null;
+  const store = S && S._runToolPolicy;
+  return (store && store[k]) || null;
+}
+
+/* runKey 给了就优先读运行态策略（含显式 deny），没给 / 没装策略就回退全局预设。 */
+function agentToolMode(key, runKey) {
+  const rp = runToolPolicyOf(runKey);
+  if (rp && rp.allow && rp.allow[key] !== undefined)
+    return normalizeToolMode(rp.allow[key]);
   const p = agentToolActivePreset();
   if (!p || !p.allow || p.allow[key] === undefined) return "allow";
   return normalizeToolMode(p.allow[key]);
 }
 
-function agentToolAllowed(key) {
-  return agentToolMode(key) !== "deny";
+function agentToolAllowed(key, runKey) {
+  return agentToolMode(key, runKey) !== "deny";
 }
 
-function agentToolDeniedError(key, detail) {
+function agentToolDeniedError(key, detail, runKey) {
+  const scoped = !!runToolPolicyOf(runKey);
   return new Error(
-    I18n.t("当前工具预设不允许：") +
+    I18n.t(scoped ? "本轮角色权限不允许：" : "当前工具预设不允许：") +
       agentToolItemLabel(key) +
       (detail ? "（" + detail + "）" : "") +
-      I18n.t("。请在右上角「审批」中调整 Agent 工具许可。"),
+      I18n.t(
+        scoped
+          ? "。请在团队面板调整该专家的工具许可。"
+          : "。请在右上角「审批」中调整 Agent 工具许可。",
+      ),
   );
 }
 
-function assertAgentTool(key, detail) {
-  if (!agentToolAllowed(key)) throw agentToolDeniedError(key, detail);
+function assertAgentTool(key, detail, runKey) {
+  if (!agentToolAllowed(key, runKey)) throw agentToolDeniedError(key, detail, runKey);
 }
 
 /* ── 按运行裁剪可见工具集：类别 → 工具名（本文件是这条映射的唯一真源）──
@@ -9677,13 +9728,15 @@ const AGENT_TOOL_DENY_ALL_OF = {
  * 只做形状明确的翻译：一个许可项 = 一个工具；或「这一类子权限全拒」= 该类唯一的入口工具。
  * fs_read / fs_write / shell / web 刻意不翻译 —— 那四项由 dsh 沙箱与审批档管辖，把 read
  * 藏掉会让「读过的文件才能写」这条观察策略变成模型永远满足不了的条件，反而更费 token。
+ * @param {string} [runKey] 本轮运行键：给了就按该轮的工具许可（专家 perm.toolAllow）算，
+ *   缺省回退全局预设。
  * @returns {string[]} 未排序的工具名（网关负责去重排序）
  */
-function agentDeniedToolNames() {
+function agentDeniedToolNames(runKey) {
   const denied = [];
   for (const cat of agentToolCatalog()) {
     for (const it of cat.items) {
-      if (agentToolMode(it.key) === "deny") denied.push(it.key);
+      if (agentToolMode(it.key, runKey) === "deny") denied.push(it.key);
     }
   }
   if (!denied.length) return [];
@@ -9704,9 +9757,9 @@ function agentDeniedToolNames() {
   return out;
 }
 
-async function ensureAgentTool(key, detail) {
-  const mode = agentToolMode(key);
-  if (mode === "deny") throw agentToolDeniedError(key, detail);
+async function ensureAgentTool(key, detail, runKey) {
+  const mode = agentToolMode(key, runKey);
+  if (mode === "deny") throw agentToolDeniedError(key, detail, runKey);
   if (mode !== "ask") return;
   if (canvasToolAskBypassed(key)) return;
   const ok = await confirmDialog(
@@ -9719,7 +9772,7 @@ async function ensureAgentTool(key, detail) {
       cancelText: I18n.t("拒绝"),
     },
   );
-  if (!ok) throw agentToolDeniedError(key, detail || I18n.t("用户拒绝"));
+  if (!ok) throw agentToolDeniedError(key, detail || I18n.t("用户拒绝"), runKey);
 }
 
 function normalizeCanvasCreateKind(kind) {
@@ -9826,12 +9879,12 @@ function collectCanvasEditToolKeys(params) {
   return keys;
 }
 
-function assertCanvasEditTools(params) {
-  for (const key of collectCanvasEditToolKeys(params)) assertAgentTool(key);
+function assertCanvasEditTools(params, runKey) {
+  for (const key of collectCanvasEditToolKeys(params)) assertAgentTool(key, undefined, runKey);
 }
 
-async function ensureCanvasEditTools(params) {
-  for (const key of collectCanvasEditToolKeys(params)) await ensureAgentTool(key);
+async function ensureCanvasEditTools(params, runKey) {
+  for (const key of collectCanvasEditToolKeys(params)) await ensureAgentTool(key, undefined, runKey);
 }
 
 function agentToolPolicySystemNote(opts) {
@@ -9844,8 +9897,11 @@ function agentToolPolicySystemNote(opts) {
   /* 无读画布档位（Gate A：开发绑定会话）：宿主本轮没注册 mtnode_canvas_get / mtnode_app，
      口径必须同步说一句，否则模型会照着「先读画布」的旧纪律去调不存在的工具。 */
   const noCanvasRead = !!(opts && opts.noCanvasRead);
+  /* 按运行的工具许可（专家运行）：有运行态策略时这一节必须照它说，否则人设里
+     「写文件放行 / 画布禁止」与实际下发的可见工具集互相打脸。 */
+  const runPolicy = runToolPolicyOf(opts && opts.runKey);
   const p = agentToolActivePreset();
-  const allow = (p && p.allow) || defaultToolAllow();
+  const allow = (runPolicy && runPolicy.allow) || (p && p.allow) || defaultToolAllow();
   const denied = [];
   const asking = [];
   for (const cat of agentToolCatalog()) {
@@ -9855,13 +9911,15 @@ function agentToolPolicySystemNote(opts) {
       else if (mode === "ask") asking.push(it.label + " (" + it.key + ")");
     }
   }
-  const name = (p && p.name) || I18n.t("默认（当前能力）");
+  const name = runPolicy
+    ? I18n.t("本轮角色权限")
+    : (p && p.name) || I18n.t("默认（当前能力）");
   let s =
     I18n.t("【Agent 工具许可】当前预设「") +
     name +
     I18n.t("」。");
   const assistAuto =
-    !!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove);
+    !runPolicy && !!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove);
   if (nodeLock) {
     s += I18n.t(
       "本次运行为智能节点：即使审批预设允许，也不可使用读取画布、节点与连线、控制类节点、绘图、排版与成组、应用操作、删除画布。",
@@ -10474,14 +10532,14 @@ function visionCallLooksRetryable(err) {
   );
 }
 
-async function applyVisionInspect(params) {
+async function applyVisionInspect(params, runKey) {
   params = params || {};
   const imagePath = String(params.imagePath || "").trim();
   const question = String(params.question || "").trim();
   if (!imagePath) return { ok: false, error: I18n.t("缺少 imagePath") };
   if (!question) return { ok: false, error: I18n.t("缺少 question") };
   try {
-    await ensureAgentTool("vision");
+    await ensureAgentTool("vision", undefined, runKey);
   } catch (e) {
     return {
       ok: false,
@@ -10851,22 +10909,25 @@ async function confirmAssistAppOp(params, owner, runWf) {
 async function applyCanvasOp(op, params, runCtx) {
   /* 本轮绑定画布（会话「所属画布」）：应用级操作的目标解析只认它，不认栈顶。 */
   const boundWf = (runCtx && runCtx.wf) || null;
+  /* 本轮运行键：按运行的工具许可（专家自带 perm.toolAllow）以它为作用域，
+     缺省（老会话 / 裸节点 / 助手）无策略 → 回退全局预设，行为不变。 */
+  const runKey = (runCtx && runCtx.runKey) || "";
   if (
     isCanvasNodeAgentRun() &&
     (op === "get" || op === "edit" || op === "app")
   ) {
     throw new Error(canvasDeniedForAgentNodeError());
   }
-  if (op === "app") return applyAppOp(params || {}, boundWf);
+  if (op === "app") return applyAppOp(params || {}, boundWf, runKey);
   if (op === "vision") {
-    return await applyVisionInspect(params || {});
+    return await applyVisionInspect(params || {}, runKey);
   }
   if (!S.wf) throw new Error(I18n.t("当前没有打开的画布"));
   /* 绑定的画布已被删除（黑名单 / 对象墓碑）：明确报「画布已删除」，
      不再静默改内存 + 落盘 —— 那会把用户刚删掉的画布凭空复活。 */
   if (wfWriteBlocked(S.wf)) throw new Error(deletedWfError(S.wf));
   if (op === "get") {
-    await ensureAgentTool("canvas_read");
+    await ensureAgentTool("canvas_read", undefined, runKey);
     return Object.assign(
       { ok: true },
       await canvasSnapshotFull(params || {}, { wf: boundWf }),
@@ -13137,7 +13198,7 @@ async function applyCanvasEdit(params, ctx) {
     return Object.assign({ ok: true, message: I18n.t("没有改动"), warnings }, canvasSnapshot());
   }
 
-  await ensureCanvasEditTools(params);
+  await ensureCanvasEditTools(params, ctx && ctx.runKey);
 
   /* 回滚·画布路：改动前先取整画布快照（本轮没开账就直接 null，零开销）。
      与 pushHistory 的撤销栈是两回事：那是给用户手动撤销用的整栈，

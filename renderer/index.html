@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; connect-src 'self'"><!-- 'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; frame-src https://open.weixin.qq.com http://mt-agent.com https://mt-agent.com; connect-src 'self'"><!-- frame-src：微信扫码登录把开放平台 qrconnect 页内嵌在登录对话框里（app-auth.js 的 authQrFrame），
+     扫码确认后该页会自己跳到服务端回调域（默认 http://mt-agent.com，见 main.js 的 MTNODE_STORE_URL），两处都要放行。
+     'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
 <title>MTNode AI编排器</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -23,9 +25,19 @@
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h7.4A1.4 1.4 0 0 1 12.2 4v9.2H4.6A1.2 1.2 0 0 1 3.4 12V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M12.2 13.2h.8V4.4A1.4 1.4 0 0 0 11.6 3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M5.6 5.2h4.2M5.6 7.4h4.2M5.6 9.6h2.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>
         <span class="btn-stack-txt" data-i18n="文档">文档</span>
       </button>
+      <button type="button" id="btnForum" class="corner mini btn-stack btn-forum" data-i18n-title="MTNode 讨论区：与创意工坊同一账户，登录后聊天并同步近 3 天消息" title="MTNode 讨论区：与创意工坊同一账户，登录后聊天并同步近 3 天消息" aria-label="讨论">
+        <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.4h7.2c.8 0 1.4.6 1.4 1.4v4c0 .8-.6 1.4-1.4 1.4H7.2L4.6 12.6V10.2H3.2c-.8 0-1.4-.6-1.4-1.4v-4c0-.8.6-1.4 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.4 6.8h3.4c.6 0 1.1.5 1.1 1.1v3.2c0 .6-.5 1.1-1.1 1.1h-.8v1.6L10.4 12.2H9.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>
+        <span class="btn-stack-txt" data-i18n="讨论">讨论</span>
+      </button>
       <button type="button" id="btnApprovals" class="corner mini btn-stack btn-approvals" data-i18n-title="审批与权限：权限预设 / 工具许可 / 识图许可，可随时调整" title="审批与权限：权限预设 / 工具许可 / 识图许可，可随时调整">
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4l5.2 2.2v3.6c0 3.2-2.2 5.2-5.2 6.2-3-1-5.2-3-5.2-6.2V4.6L8 2.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5.6 8.1l1.7 1.7 3.2-3.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="btn-stack-txt" data-i18n="审批">审批</span>
+      </button>
+      <!-- 顶栏账户入口已启用：当前开「微信扫码登录 / 绑定微信」与「账号密码登录」，
+           手机验证码登录 / 绑定手机暂时隐藏；开放哪几种方式由 renderer/app-auth.js 的
+           METHOD_ON 单一真源决定（全关时 init 会把 hidden 设回来） -->
+      <button type="button" id="btnAccount" class="corner mini btn-stack btn-account" data-i18n-title="账户：登录 / 绑定 / 退出" title="账户：登录 / 绑定 / 退出" aria-label="账户">
+        <span class="btn-stack-txt" id="acctName" data-i18n="登录">登录</span>
       </button>
       <button type="button" id="btnUpdate" class="corner mini btn-update" hidden aria-hidden="true" data-i18n-title="发现新版本，点击下载更新" title="发现新版本，点击下载更新">
         <svg class="btn-update-ico" viewBox="0 0 16 16" aria-hidden="true">
@@ -45,8 +57,22 @@
     </div>
   </div>
   <div class="tb-row tb-row-2 actions">
-    <button id="btnToolWf" class="corner on tb-view" data-i18n="画布" data-i18n-title="AI 画布编排：画布式节点编排" title="AI 画布编排：画布式节点编排">画布</button>
-    <button id="btnToolAgent" class="corner tb-view" data-i18n="会话" data-i18n-title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）" title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）">会话</button>
+    <!-- 画布 / 会话 / 专家团：与顶栏其它入口同风格「图标在上 · 文字在下」。
+         文字必须留在 span[data-i18n] 上，不能挂在 button[data-i18n] —— I18n.applyDom 对
+         [data-i18n] 是 el.textContent = t(key)，挂按钮上会在切语言时把图标一起抹掉。
+         图标 14px 比两字标题（25px）窄，所以按钮外框尺寸不变（高度仍 32px、内边距不变）。 -->
+    <button id="btnToolWf" class="corner on tb-view" data-i18n-title="AI 画布编排：画布式节点编排" title="AI 画布编排：画布式节点编排">
+      <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.9" y="2.4" width="4.8" height="3.8" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.3" y="9.8" width="4.8" height="3.8" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.7 4.3h3.1a1.5 1.5 0 0 1 1.5 1.5v3.9" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="tb-view-txt" data-i18n="画布">画布</span>
+    </button>
+    <button id="btnToolAgent" class="corner tb-view" data-i18n-title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）" title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）">
+      <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 3.6h9.2c.9 0 1.6.7 1.6 1.6v4.4c0 .9-.7 1.6-1.6 1.6H7.6l-2.9 2.3V11.2H3.4c-.9 0-1.6-.7-1.6-1.6V5.2c0-.9.7-1.6 1.6-1.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8 5.4l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6-1.6-.7 1.6-.7z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>
+      <span class="tb-view-txt" data-i18n="会话">会话</span>
+    </button>
+    <button id="btnTeam" class="corner tb-view" data-i18n-title="专家团：按画布管理专家，与专家对话" title="专家团：按画布管理专家，与专家对话">
+      <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.8" cy="5.4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M1.9 13.2c0-2.2 1.7-3.8 3.9-3.8s3.9 1.6 3.9 3.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M10.8 3.6a2.2 2.2 0 0 1 0 4.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M11.5 9.7c1.6.5 2.6 1.8 2.6 3.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
+      <span class="tb-view-txt" data-i18n="专家团">专家团</span>
+    </button>
     <span class="sep"></span>
     <button id="btnUndo" class="corner mini btn-ico" data-i18n-title="撤销（Ctrl+Z）" data-tip="撤销（Ctrl+Z）" aria-label="撤销">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 6.2h6.2a3.4 3.4 0 1 1 0 6.8H7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.6 3.6L3 6.2l2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -116,10 +142,6 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 6.2L4 3.2h8l1.4 3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M3 6.2h10v6.2c0 .6-.5 1.1-1.1 1.1H4.1c-.6 0-1.1-.5-1.1-1.1V6.2z" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.2 9.2h3.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
       <span class="btn-ico-txt" data-i18n="工坊">工坊</span>
     </button>
-    <button id="btnForum" class="corner mini btn-ico btn-forum" data-i18n-title="MTNode 讨论区：与创意工坊同一账户，登录后聊天并同步近 3 天消息" data-tip="MTNode 讨论区：与创意工坊同一账户，登录后聊天并同步近 3 天消息" aria-label="讨论">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.4h7.2c.8 0 1.4.6 1.4 1.4v4c0 .8-.6 1.4-1.4 1.4H7.2L4.6 12.6V10.2H3.2c-.8 0-1.4-.6-1.4-1.4v-4c0-.8.6-1.4 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.4 6.8h3.4c.6 0 1.1.5 1.1 1.1v3.2c0 .6-.5 1.1-1.1 1.1h-.8v1.6L10.4 12.2H9.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>
-      <span class="btn-ico-txt" data-i18n="讨论">讨论</span>
-    </button>
     <span class="sep"></span>
     <button id="btnSettings" class="corner mini btn-ico btn-settings" data-i18n-title="APIs/Config 全局配置：API Key 与接口地址，所有模型节点自动读取" data-tip="APIs/Config 全局配置：API Key 与接口地址，所有模型节点自动读取" aria-label="设置">
       <svg class="btn-settings-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.4 2.6h3.2l.4 1.5 1.4.8 1.5-.3 1.6 2.8-1.1 1.1v1.6l1.1 1.1-1.6 2.8-1.5-.3-1.4.8-.4 1.5H6.4l-.4-1.5-1.4-.8-1.5.3L1.5 10.2l1.1-1.1V7.5L1.5 6.4l1.6-2.8 1.5.3 1.4-.8.4-1.5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
@@ -179,9 +201,9 @@
                 <span class="agent-chip-icon">⚙</span><span class="agent-tool-val" id="agentModelTriggerVal">标准模式</span>
               </button>
               <button type="button" class="agent-chip" id="agentCmdTrigger" data-i18n-title="技能" title="技能"><span data-i18n="技能">技能</span></button>
-              <button type="button" class="agent-chip" id="agentPlanToggle" data-i18n-title="规划模式：本轮只出计划，不做改动" title="规划模式：本轮只出计划，不做改动"><span data-i18n="规划">规划</span></button>
+              <!-- 会话不再有「规划 / 压缩」chip：规划模式与压缩上文仍可手敲 /plan、/compact
+                   （见 app-assist.js 斜杠命令），按钮入口按需求移除。 -->
               <button type="button" class="agent-chip run-plan" id="agentRunPlanBtn" hidden data-i18n-title="关闭规划模式并按上一条计划开始实施" title="关闭规划模式并按上一条计划开始实施"><span data-i18n="▶ 执行计划">▶ 执行计划</span></button>
-              <button type="button" class="agent-chip" id="agentCompactBtn" data-i18n-title="压缩上下文" title="压缩上下文"><span data-i18n="压缩">压缩</span></button>
               <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span><span class="agent-tool-val" id="agentToolsTriggerVal"></span></button>
               <!-- 会话不再显示「本画布 / 工具库可调用工具」清单 chip：清单每轮重收集，
                    展示它要额外打 IPC（toolsList 读盘）且对用户没有决策价值；
@@ -200,6 +222,44 @@
             <div class="agent-menu" id="agentModelMenu" hidden></div>
             <div class="agent-menu" id="agentCmdMenu" hidden></div>
             <div class="agent-menu agent-tools-menu" id="agentToolsMenu" hidden></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="team-pane" id="teamPane" style="display:none">
+      <aside class="team-side">
+        <div class="team-side-head">
+          <!-- 标题 = 当前画布名（renderTeamPane 每次进视图刷新，不再写死「AI团队」）；
+               右侧「复制」把当前画布团队增量复制到其他画布。 -->
+          <span class="team-side-logo" id="teamSideLogo"></span>
+          <button type="button" id="teamCopyBtn" class="team-side-copy" data-i18n-title="复制团队到其他画布" title="复制团队到其他画布" aria-label="复制团队到其他画布"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"/></svg></button>
+          <!-- 不再有「＋ 新会话」按钮：新建单聊收口到左栏角色行右侧的「＋」（见 app-teamview.js）。 -->
+        </div>
+        <div class="team-side-scroll">
+          <section class="team-sec">
+            <div class="team-sec-head">
+              <span data-i18n="专家">专家</span>
+              <button type="button" id="teamAddExpert" class="team-sec-add" data-i18n-title="新建专家" title="新建专家">＋</button>
+            </div>
+            <div class="team-sec-list" id="teamExpertList"></div>
+          </section>
+          <section class="team-sec">
+            <div class="team-sec-head">
+              <span data-i18n="会话">会话</span>
+              <button type="button" id="teamNewGroup" class="team-sec-add" data-i18n-title="新建群聊（圆桌：多位专家依次发言）" title="新建群聊（圆桌：多位专家依次发言）">👥</button>
+            </div>
+            <div class="team-sec-list" id="teamChatList"></div>
+          </section>
+        </div>
+      </aside>
+      <div class="team-main">
+        <div class="team-main-head" id="teamMainHead"></div>
+        <div class="team-expert-card" id="teamExpertCard" hidden></div>
+        <div class="team-main-body">
+          <div class="team-chat-list" id="teamChatListMsgs"></div>
+          <div class="team-chat-input">
+            <textarea id="teamChatInput" class="chat-input" rows="2" data-i18n-placeholder="给专家发消息…（Enter 发送，Shift+Enter 换行）" placeholder="给专家发消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <button type="button" id="teamChatSend" class="team-chat-send" data-i18n="发送">发送</button>
           </div>
         </div>
       </div>
@@ -311,6 +371,9 @@
      高亮优先复用上面 app-codeedit.js 的词法，所以必须排在它之后、用它的 app-assist.js 之前） -->
 <script src="app-fileview.js"></script>
 <script src="app-devnode.js"></script>
+<!-- DeepSeek 单价与费用估算 + 官方余额查询（纯函数段可被 test/ 切片真跑）；
+     排在 app-agent.js 之前；运行时才调用它的 tokViewModels / dshProvider -->
+<script src="app-cost.js"></script>
 <script src="app-agent.js"></script>
 <script src="app-prompt-sections.js"></script>
 <script src="app-db.js"></script>
@@ -325,10 +388,26 @@
 <script src="app-assets.js"></script>
 <script src="app-settings.js"></script>
 <script src="app-assist.js"></script>
+<!-- 专家团图标目录（16×16 空心线条 SVG，唯一真源）；早于 app-team.js，归一化要用它 -->
+<script src="app-team-icons.js"></script>
+<!-- 专家团（团队）数据模型与配置存储；早于 app-boot.js，启动时由 boot 做缺省合并 -->
+<script src="app-team.js"></script>
+<!-- 招聘流程（手动模板 + 对话框自动生成）；只读 app-team.js 的 getter、只走它的 mutator，
+     自动招聘复用 app-db.js 的 dshRunTask（runKey 固定 team:recruit） -->
+<script src="app-team-recruit.js"></script>
+<!-- 一人公司视图（团队）：项目 / 专家 / 会话三段列表 + 专家聊天区；
+     只读 app-team.js 的 getter、只走它的 mutator，气泡与流式复用 app-assist.js 的 .dsh-msg 写法 -->
+<script src="app-teamview.js"></script>
 <script src="app-plan.js"></script>
+<!-- 统一账户客户端模块（自包含；IPC 契约见文件头注释）——放在 boot 之前，
+     顶栏 #btnAccount 已在上方 DOM 里，init 直接接管点击 -->
+<script src="app-auth.js"></script>
 <script src="app-boot.js"></script>
 <script src="app-puzzle.js"></script>
 <script src="app-puzzle-games.js"></script>
 <script src="app-review.js"></script>
+<!-- 团队事实库（左栏专家列表末尾的入口）：路径解析 / 读写 / 建库；
+     放在 app-review.js 之后，审阅对话框打开事实库时按调用期取 window.MTNodeFactLib -->
+<script src="app-factlib.js"></script>
 </body>
 </html>

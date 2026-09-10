@@ -11,3 +11,7 @@
 /* 文件查看面板（会话工具条上的文件名 → 右侧只读预览）；
    亮色覆盖走 body.theme-light .fp-* 的更高优先级，放最后即可。 */
 @import url("./css/fileview.css");
+/* 统一账户：顶栏入口 / 账户菜单 / 登录与绑定对话框（renderer/app-auth.js） */
+@import url("./css/auth.css");
+/* 专家团：团队面板 / 项目分组 / 专家编辑 / 招募 / 对话（renderer/app-team.js） */
+@import url("./css/team.css");

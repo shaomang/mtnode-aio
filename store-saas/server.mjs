@@ -10,6 +10,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { sendSmsCode, smsProviderStatus, SMS_CODE_TTL_MS } from "./sms-provider.mjs";
+import { createAccountStore } from "./account-store.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
@@ -18,6 +20,9 @@ const SKILL_DIR = path.join(DATA_DIR, "skills");
 const PREV_DIR = path.join(DATA_DIR, "previews");
 const FORUM_IMG_DIR = path.join(DATA_DIR, "forum-images");
 const DB_PATH = path.join(DATA_DIR, "db.json");
+// 账户存储抽象层：users / sessions / identities 三个键经 account-store 读写
+// （默认 json 后端仍落 DATA_DIR/db.json，或由 MTNODE_ACCOUNT_STORE 切到 aliyun-tablestore）。
+const accountStore = createAccountStore({ dataDir: DATA_DIR, dbPath: DB_PATH });
 const FORUM_TTL_MS = 30 * 24 * 3600 * 1000;
 const FORUM_ROOMS = new Set(["general", "bug", "improve"]);
 const MAX_FORUM_TEXT = 2000;
@@ -33,6 +38,13 @@ const MAX_SKILL_FILE = 200 * 1024;
 const MAX_SKILL_EXTRA_FILES = 32;
 const MAX_PREVIEW = 500 * 1024;
 const SESSION_MS = 30 * 24 * 3600 * 1000;
+// 短信频控口径见 docs/auth-design.md 第 8 节（服务端内存态，重启清零）。
+const SMS_COOLDOWN_MS = 60 * 1000; // 单号 60 秒冷却
+const SMS_DAILY_MAX = 10; // 单号每日上限
+const SMS_IP_HOURLY_MAX = 30; // 单 IP 每小时上限
+const SMS_MAX_ATTEMPTS = 5; // 验证码失败累计锁定
+const SMS_LOCK_MS = 15 * 60 * 1000; // 锁定后冷却时长
+const SMS_LOGIN_IP_HOURLY_MAX = 30; // 登录接口单 IP 每小时上限
 const MAGIC = Buffer.from("MTNODES", "ascii");
 const ADMIN_USERS = new Set(
   String(process.env.MTNODE_STORE_ADMINS || "ms2308")
@@ -40,6 +52,13 @@ const ADMIN_USERS = new Set(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
 );
+// 微信开放平台「网站应用」扫码登录凭据（未配置时相关接口统一返回 WECHAT_UNAVAILABLE）。
+const WECHAT_APPID = String(process.env.MTNODE_WECHAT_APPID || "").trim();
+const WECHAT_SECRET = String(process.env.MTNODE_WECHAT_SECRET || "").trim();
+const WECHAT_REDIRECT = String(process.env.MTNODE_WECHAT_REDIRECT || "").trim();
+const WECHAT_DEVICE_MS = 5 * 60 * 1000; // device_code 有效期 5 分钟
+const WECHAT_TICKET_MS = 5 * 60 * 1000; // 一次性 ticket 有效期 5 分钟
+const WECHAT_POLL_INTERVAL = 2; // 客户端轮询间隔（秒）
 
 function mkdirp(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -53,6 +72,7 @@ function emptyDb() {
   return {
     users: [],
     sessions: [],
+    identities: [],
     templates: [],
     skills: [],
     likes: [],
@@ -67,6 +87,7 @@ function loadDb() {
     const d = JSON.parse(raw);
     if (!Array.isArray(d.users)) d.users = [];
     if (!Array.isArray(d.sessions)) d.sessions = [];
+    if (!Array.isArray(d.identities)) d.identities = [];
     if (!Array.isArray(d.templates)) d.templates = [];
     if (!Array.isArray(d.skills)) d.skills = [];
     if (!Array.isArray(d.likes)) d.likes = [];
@@ -92,6 +113,9 @@ function saveDb() {
   return saving;
 }
 
+// 启动即从账户存储把 users / sessions / identities 载入内存缓存（见 bootstrapAccountStore）。
+await bootstrapAccountStore();
+
 function uid(prefix) {
   return prefix + crypto.randomBytes(8).toString("hex");
 }
@@ -112,11 +136,125 @@ function isAdmin(u) {
   return !!(u && ADMIN_USERS.has(String(u.username || "").toLowerCase()));
 }
 
+/* ---------- 统一账户层：手机号规范化 / 掩码 / 身份唯一索引 ---------- */
+
+// 手机号规范化：去掉空格、连字符、括号与 +86 / 0086 / 86 前缀，统一存 "+86" + 11 位。
+// 非法号码返回 ""。
+function normalizePhone(raw) {
+  let s = String(raw || "").replace(/[\s\-()]/g, "");
+  if (!s) return "";
+  if (s.startsWith("+")) s = s.slice(1);
+  else if (s.startsWith("0086")) s = s.slice(4);
+  else if (s.startsWith("86") && s.length > 11) s = s.slice(2);
+  if (!/^1[3-9]\d{9}$/.test(s)) return "";
+  return "+86" + s;
+}
+
+function maskPhone(p) {
+  const m = /^\+86(\d{11})$/.exec(String(p || ""));
+  if (!m) return "";
+  return "+86 " + m[1].slice(0, 3) + "****" + m[1].slice(7);
+}
+
+function identityKey(kind, value) {
+  return String(kind || "") + ":" + String(value || "");
+}
+
+function identityEntry(kind, value) {
+  const k = identityKey(kind, value);
+  return (db.identities || []).find((x) => identityKey(x.kind, x.value) === k) || null;
+}
+
+// 按身份取用户（kind: username / phone / wechat_unionid）
+function identityGet(kind, value) {
+  const e = identityEntry(kind, value);
+  if (!e) return null;
+  return db.users.find((u) => u.id === e.userId) || null;
+}
+
+// 认领一个身份；已被他人占用返回 false，本人重复认领视为成功。
+async function identityClaim(kind, value, userId) {
+  const v = String(value || "");
+  if (!v) return false;
+  const ok = await accountStore.claimIdentity(kind, v, userId);
+  if (!ok) return false;
+  const k = identityKey(kind, v);
+  if (!db.identities.some((x) => identityKey(x.kind, x.value) === k)) {
+    db.identities.push({ kind, value: v, userId, createdAt: now() });
+  }
+  return true;
+}
+
+async function identityRelease(kind, value, userId) {
+  await accountStore.releaseIdentity(kind, value, userId);
+  const k = identityKey(kind, value);
+  db.identities = (db.identities || []).filter(
+    (x) => !(identityKey(x.kind, x.value) === k && (!userId || x.userId === userId)),
+  );
+}
+
+// 从 users 重建身份唯一索引（老库升级 / 索引缺失时调用）。
+function rebuildIdentities() {
+  const seen = new Set();
+  const out = [];
+  const push = (kind, value, userId, at) => {
+    const v = String(value || "");
+    if (!v) return;
+    const k = identityKey(kind, v);
+    if (seen.has(k)) {
+      console.warn("[store] duplicate identity skipped:", k);
+      return;
+    }
+    seen.add(k);
+    out.push({ kind, value: v, userId, createdAt: at || now() });
+  };
+  for (const u of db.users) {
+    push("username", String(u.username || "").toLowerCase(), u.id, u.createdAt);
+    push("phone", u.phone, u.id, u.phoneVerifiedAt);
+    push("wechat_unionid", u.wechatUnionId, u.id, u.wechatBoundAt);
+  }
+  return out;
+}
+
+async function ensureIdentityIndex() {
+  const next = rebuildIdentities();
+  const cur = Array.isArray(db.identities) ? db.identities : [];
+  const same =
+    cur.length === next.length &&
+    next.every((e, i) => {
+      const c = cur[i];
+      return c && c.kind === e.kind && c.value === e.value && c.userId === e.userId;
+    });
+  if (!same) {
+    await accountStore.replaceIdentities(next);
+    db.identities = next;
+  }
+}
+
+// 启动时把账户三件套载入内存缓存：之后读走缓存（登录校验等热路径不打云库），
+// 写走 account-store 落库成功后再同步缓存（见 applyUserPatch / issueSession / identity*）。
+async function bootstrapAccountStore() {
+  await accountStore.ready();
+  db.users = await accountStore.listUsers();
+  db.sessions = await accountStore.listSessions();
+  db.identities = await accountStore.listIdentities();
+  await ensureIdentityIndex();
+}
+
 function publicUser(u) {
   return {
     id: u.id,
     username: u.username,
     nickname: u.nickname,
+    avatar: u.avatar || "",
+    phone: u.phone ? maskPhone(u.phone) : "",
+    phoneVerified: !!u.phoneVerifiedAt,
+    hasPassword: !!u.pass,
+    bindings: {
+      phone: !!u.phone,
+      wechat: !!u.wechatUnionId,
+      password: !!u.pass,
+    },
     downloadsReceived: u.downloadsReceived || 0,
     likesReceived: u.likesReceived || 0,
     createdAt: u.createdAt,
@@ -219,11 +357,37 @@ function findUserByName(name) {
   return db.users.find((u) => u.username.toLowerCase() === n);
 }
 
-function issueSession(u) {
+async function issueSession(u) {
   const token = crypto.randomBytes(24).toString("hex");
-  db.sessions = db.sessions.filter((s) => s.expiresAt > now() && s.userId !== u.id);
-  db.sessions.push({ tokenHash: hashToken(token), userId: u.id, expiresAt: now() + SESSION_MS });
+  const t = now();
+  if (db.sessions.some((s) => s.expiresAt <= t)) await accountStore.pruneSessions(t);
+  // 多端并存：登录不再删除同一用户的其它会话（旧设备保持在线），登出只删当前 token。
+  const session = await accountStore.createSession({
+    tokenHash: hashToken(token),
+    userId: u.id,
+    expiresAt: t + SESSION_MS,
+  });
+  db.sessions = db.sessions.filter((s) => s.expiresAt > t);
+  db.sessions.push(session);
   return token;
+}
+
+// 滑动续期：任一鉴权请求命中会话就把有效期推到 now + SESSION_MS，实现「登录后持续有效，
+// 除非主动登出」。仅当剩余不足一半才写库，避免每个请求都打一次云库；写库失败只记日志，
+// 内存已续期（本次请求照常放行），下次请求会重试写穿。
+async function touchSession(sess, t) {
+  if (sess.expiresAt - t >= SESSION_MS / 2) return;
+  const next = t + SESSION_MS;
+  sess.expiresAt = next;
+  try {
+    await accountStore.updateSession({
+      tokenHash: sess.tokenHash,
+      userId: sess.userId,
+      expiresAt: next,
+    });
+  } catch (e) {
+    console.warn("[mtnode-store] session renew failed: " + ((e && e.message) || e));
+  }
 }
 
 function validPassword(password) {
@@ -231,13 +395,494 @@ function validPassword(password) {
   return s.length >= 6 && s.length <= 72;
 }
 
-function authUser(req) {
+// 昵称规范：去控制字符 + 去首尾空白，长度 1-32 才合法（否则返回空串，由调用方决定报错或回退）。
+function normalizeNickname(raw) {
+  const s = String(raw == null ? "" : raw)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
+  return s.length >= 1 && s.length <= 32 ? s : "";
+}
+
+// 新建账号：短信/微信登录自动建号共用。username 为内部占位名（不可作为登录方式）。
+async function createUser(fields) {
+  const u = await accountStore.createUser(fields);
+  db.users.push(u);
+  return u;
+}
+
+// 用户字段写穿：先落 account-store，成功后同步内存缓存；返回落库后的用户（失败为 null）。
+async function applyUserPatch(id, patch) {
+  const next = await accountStore.updateUser(id, patch);
+  if (next) {
+    const i = db.users.findIndex((x) => x.id === id);
+    if (i >= 0) db.users[i] = next;
+    else db.users.push(next);
+  }
+  return next;
+}
+
+/* ---------- 统一账户层：登录 / 二次验证 / 绑定 ---------- */
+
+// 密码登录：仅对已设置密码的老账号有效（新注册已停用）。
+function accountLoginPassword(username, password) {
+  const u = findUserByName(username);
+  if (!u || !u.pass) return null;
+  if (hashPass(password, u.salt) !== u.pass) return null;
+  return u;
+}
+
+// 二次验证：优先账号密码；无密码或未带密码时用短信验证码（手机号场景）。
+function checkSecondFactor(user, b) {
+  const password = String((b && b.password) || "");
+  if (password) {
+    if (user.pass && hashPass(password, user.salt) === user.pass) return { ok: true };
+    return { ok: false, status: 403, code: "SECOND_FACTOR_FAILED", error: "二次验证失败" };
+  }
+  const code = String((b && b.code) || "");
+  if (code && user.phone) {
+    const r = verifySmsCode(user.phone, code, "verify");
+    if (r.ok) return { ok: true };
+    return { ok: false, status: r.status || 400, code: r.code, error: r.error };
+  }
+  return {
+    ok: false,
+    status: 400,
+    code: "SECOND_FACTOR_REQUIRED",
+    error: "需要二次验证（账号密码或短信验证码）",
+  };
+}
+
+// 绑定场景的二次验证：账号已设密码时必须再验密码（绑定手机号/微信时目标身份归属另由 code/ticket 证明）。
+function requirePasswordIfSet(user, b) {
+  if (!user.pass) return { ok: true };
+  const password = String((b && b.password) || "");
+  if (!password) {
+    return { ok: false, status: 400, code: "SECOND_FACTOR_REQUIRED", error: "需要账号密码二次验证" };
+  }
+  if (hashPass(password, user.salt) !== user.pass) {
+    return { ok: false, status: 403, code: "SECOND_FACTOR_FAILED", error: "二次验证失败" };
+  }
+  return { ok: true };
+}
+
+/* ---------- 短信验证码（发送频控 + 存储 + 校验即焚） ---------- */
+
+// 内存态：单进程、零依赖，重启清零（与频控口径一致）。
+const smsCodes = new Map(); // phone -> { salt, hash, expiresAt, attempts, scene, sentAt }
+const smsPhoneSends = new Map(); // phone -> [ts]（冷却 / 日上限）
+const smsIpSends = new Map(); // ip -> [ts]（每小时上限）
+const smsLocks = new Map(); // phone -> 锁定截止时间戳
+const smsLoginIp = new Map(); // ip -> [ts]（登录接口频控）
+// 每进程随机密钥：验证码只以 HMAC-SHA256 形式驻留内存，不落明文、不写库。
+const SMS_HASH_KEY = crypto.randomBytes(32);
+
+function hashSmsCode(salt, code) {
+  return crypto.createHmac("sha256", SMS_HASH_KEY).update(String(salt) + ":" + String(code)).digest();
+}
+
+function clientIp(req) {
+  const xf = String(req.headers["x-forwarded-for"] || "");
+  const first = xf.split(",")[0].trim();
+  if (first) return first;
+  const real = String(req.headers["x-real-ip"] || "").trim();
+  if (real) return real;
+  return (req.socket && req.socket.remoteAddress) || "unknown";
+}
+
+function startOfDay(t) {
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function pruneSmsMap(map, winMs, t) {
+  if (map.size < 500) return;
+  for (const [k, arr] of map) {
+    const keep = arr.filter((x) => t - x < winMs);
+    if (keep.length) map.set(k, keep);
+    else map.delete(k);
+  }
+}
+
+// 发送前置频控：单号冷却 → 单号日上限 → 单 IP 每小时上限。
+function smsSendGate(phone, ip) {
+  const t = now();
+  const lock = smsLocks.get(phone) || 0;
+  if (lock > t) return { ok: false, retryAfter: Math.max(1, Math.ceil((lock - t) / 1000)) };
+
+  const phoneArr = (smsPhoneSends.get(phone) || []).filter((x) => t - x < 24 * 3600 * 1000);
+  const last = phoneArr.length ? phoneArr[phoneArr.length - 1] : 0;
+  if (last && t - last < SMS_COOLDOWN_MS) {
+    return { ok: false, retryAfter: Math.ceil((SMS_COOLDOWN_MS - (t - last)) / 1000) };
+  }
+  const dayStart = startOfDay(t);
+  if (phoneArr.filter((x) => x >= dayStart).length >= SMS_DAILY_MAX) {
+    return { ok: false, retryAfter: Math.ceil((dayStart + 24 * 3600 * 1000 - t) / 1000) };
+  }
+  const ipArr = (smsIpSends.get(ip) || []).filter((x) => t - x < 3600 * 1000);
+  if (ipArr.length >= SMS_IP_HOURLY_MAX) {
+    return { ok: false, retryAfter: Math.ceil((ipArr[0] + 3600 * 1000 - t) / 1000) };
+  }
+  return { ok: true, phoneArr, ipArr };
+}
+
+function smsSendCommit(phone, ip, phoneArr, ipArr) {
+  const t = now();
+  phoneArr.push(t);
+  ipArr.push(t);
+  smsPhoneSends.set(phone, phoneArr);
+  smsIpSends.set(ip, ipArr);
+  pruneSmsMap(smsPhoneSends, 24 * 3600 * 1000, t);
+  pruneSmsMap(smsIpSends, 3600 * 1000, t);
+}
+
+// 登录接口单 IP 频控（防撞码）。
+function smsLoginGate(ip) {
+  const t = now();
+  const arr = (smsLoginIp.get(ip) || []).filter((x) => t - x < 3600 * 1000);
+  if (arr.length >= SMS_LOGIN_IP_HOURLY_MAX) {
+    return { ok: false, retryAfter: Math.ceil((arr[0] + 3600 * 1000 - t) / 1000) };
+  }
+  return { ok: true, arr };
+}
+
+function smsLoginCommit(ip, arr) {
+  const t = now();
+  arr.push(t);
+  smsLoginIp.set(ip, arr);
+  pruneSmsMap(smsLoginIp, 3600 * 1000, t);
+}
+
+// 验证码校验：常量时间比较、一次有效、校验即焚、失败累计 5 次锁定。
+// scene 仅用于发送时选模板，验证只认号码（同一号码的验证码证明的是号码归属）。
+function verifySmsCode(phone, code, _scene) {
+  const t = now();
+  const lock = smsLocks.get(phone) || 0;
+  if (lock > t) {
+    return { ok: false, status: 429, code: "RATE_LIMITED", error: "验证码校验失败次数过多，请稍后再试" };
+  }
+  const e = smsCodes.get(phone);
+  if (!e || e.expiresAt <= t) {
+    smsCodes.delete(phone);
+    return { ok: false, status: 400, code: "CODE_EXPIRED", error: "验证码已过期，请重新获取" };
+  }
+  const s = String(code || "").trim();
+  const h = hashSmsCode(e.salt, s);
+  const same = /^\d{6}$/.test(s) && h.length === e.hash.length && crypto.timingSafeEqual(h, e.hash);
+  if (!same) {
+    e.attempts += 1;
+    if (e.attempts >= SMS_MAX_ATTEMPTS) {
+      smsCodes.delete(phone);
+      smsLocks.set(phone, t + SMS_LOCK_MS);
+      return { ok: false, status: 429, code: "RATE_LIMITED", error: "验证码校验失败次数过多，请稍后再试" };
+    }
+    return { ok: false, status: 400, code: "CODE_INVALID", error: "验证码错误" };
+  }
+  smsCodes.delete(phone); // 校验即焚，不复用
+  smsLocks.delete(phone);
+  return { ok: true };
+}
+
+/* ---------- 微信扫码登录（设备码轮询） ---------- */
+
+// 内存态：单进程、零依赖，重启清零（与频控口径一致）。
+const wechatDevices = new Map(); // deviceCode -> { state, createdAt, expiresAt, ticket, bindUserId }
+const wechatStates = new Map(); // state -> deviceCode（一次性，防 CSRF）
+const wechatTickets = new Map(); // ticket -> { unionid, openid, nickname, userId, bindUserId, createdAt, expiresAt, used }
+
+function wechatConfigured() {
+  return !!(WECHAT_APPID && WECHAT_SECRET && WECHAT_REDIRECT);
+}
+
+function pruneWechat() {
+  const t = now();
+  for (const [k, v] of wechatDevices) {
+    if (v.expiresAt <= t) {
+      if (v.state) wechatStates.delete(v.state);
+      wechatDevices.delete(k);
+    }
+  }
+  for (const [k, v] of wechatTickets) {
+    if (v.expiresAt <= t) wechatTickets.delete(k);
+  }
+  for (const [s, dc] of wechatStates) {
+    if (!wechatDevices.has(dc)) wechatStates.delete(s);
+  }
+}
+
+function consumeWechatTicket(ticket) {
+  const k = String(ticket || "").trim();
+  if (!k) return null;
+  const t = wechatTickets.get(k);
+  if (!t || t.used || t.expiresAt <= now()) return null;
+  t.used = true;
+  return t;
+}
+
+function peekWechatTicket(ticket) {
+  const k = String(ticket || "").trim();
+  if (!k) return null;
+  const t = wechatTickets.get(k);
+  if (!t || t.used || t.expiresAt <= now()) return null;
+  return t;
+}
+
+// 微信一次性 ticket 校验：供 /api/auth/bind（kind=wechat）消费，一次性、5 分钟过期。
+function verifyWechatTicket(ticket) {
+  if (!wechatConfigured()) {
+    return { ok: false, status: 503, code: "WECHAT_UNAVAILABLE", error: "微信登录未配置" };
+  }
+  pruneWechat();
+  const t = consumeWechatTicket(ticket);
+  if (!t) {
+    return { ok: false, status: 400, code: "WECHAT_INVALID", error: "微信凭据无效或已过期" };
+  }
+  return { ok: true, unionid: t.unionid, openid: t.openid, nickname: t.nickname };
+}
+
+// 按 unionid 定位账号；不存在则建号并认领身份（unionid 为账号合并唯一键）。
+async function ensureWechatUser(unionid, openid, nickname) {
+  let u = identityGet("wechat_unionid", unionid);
+  if (u) {
+    if (openid && u.wechatOpenId !== openid) {
+      u = await applyUserPatch(u.id, { wechatOpenId: openid });
+    }
+    return { user: u, created: false };
+  }
+  // 默认昵称：微信昵称优先，否则「微信用户」+4 位随机；统一收敛到 1-32 位合法值。
+  const nick = normalizeNickname(String(nickname || "").slice(0, 32));
+  u = await createUser({
+    nickname: nick || "微信用户" + crypto.randomBytes(2).toString("hex"),
+    wechatOpenId: openid || "",
+    wechatUnionId: unionid,
+    wechatBoundAt: now(),
+  });
+  await identityClaim("wechat_unionid", unionid, u.id);
+  return { user: u, created: true };
+}
+
+// 把微信身份认领到既有账号（扫码即绑定，免二次验证）。返回落库后的用户；失败为 null。
+async function bindWechatToUser(userId, unionid, openid, nickname) {
+  const local = db.users.find((x) => x.id === userId) || null;
+  if (!local) return null;
+  if (local.wechatUnionId && local.wechatUnionId !== unionid) {
+    // 该账号已绑另一个微信：先释放旧身份，维持「一账号一微信」索引一致。
+    await identityRelease("wechat_unionid", local.wechatUnionId, local.id);
+  }
+  if (!(await identityClaim("wechat_unionid", unionid, local.id))) return null;
+  const patch = { wechatUnionId: unionid, wechatBoundAt: now() };
+  if (openid) patch.wechatOpenId = openid;
+  const nick = normalizeNickname(String(nickname || "").slice(0, 32));
+  if (nick && !local.nickname) patch.nickname = nick;
+  return (await applyUserPatch(local.id, patch)) || local;
+}
+
+// 冲突时对外暴露的账号信息（不泄漏完整手机号 / 密码哈希）。
+function wechatOwnerPublic(owner) {
+  return {
+    nickname: owner && owner.nickname ? owner.nickname : "",
+    maskedPhone: owner && owner.phone ? maskPhone(owner.phone) : "",
+    hasPhone: !!(owner && owner.phone),
+    hasPassword: !!(owner && owner.pass),
+  };
+}
+
+// 「可合并的临时账号」判定：微信扫码自动建号产生的一次性账号——
+// 无手机号、无密码，且除本次 unionid 外没有真实登录身份。
+// username 只是内部占位名（无密码即无用户名登录能力），不视为真实身份；
+// 其它 kind 的身份（例如已绑的另一个微信）一律视为真实身份，不可合并。
+function isMergeableWechatTempUser(owner, unionid) {
+  if (!owner) return false;
+  if (owner.phone || owner.pass) return false;
+  const placeholder = String(owner.username || "").toLowerCase();
+  const uin = String(unionid || "");
+  for (const e of db.identities || []) {
+    if (e.userId !== owner.id) continue;
+    const kind = String(e.kind || "");
+    if (kind === "wechat_unionid") {
+      if (String(e.value || "") !== uin) return false;
+      continue;
+    }
+    if (kind === "phone") return false;
+    if (kind === "username") {
+      if (String(e.value || "").toLowerCase() !== placeholder) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// 微信归属统一解析：把 unionid 归到当前账号 userId，必要时合并「可合并的临时账号」。
+// 返回 {ok:true, merged, mergedFrom?, user} 或 {ok:false, conflict:true, owner:{…}}；
+// 正常账号已占用该微信时绝不静默换号（一律 conflict）。
+async function resolveWechatOwner({ userId, unionid, openid, nickname }) {
+  const targetId = String(userId || "").trim();
+  const uin = String(unionid || "").trim();
+  if (!targetId || !uin) {
+    return { ok: false, conflict: false, code: "WECHAT_INVALID", error: "微信凭据无效" };
+  }
+  const me = db.users.find((u) => u.id === targetId) || null;
+  if (!me) {
+    return { ok: false, conflict: false, code: "ACCOUNT_NOT_FOUND", error: "账号不存在" };
+  }
+
+  // 落库：把微信身份写进当前账号（unionid + openid + 绑定时间；空昵称时补微信昵称）。
+  const stampUser = async () => {
+    const patch = { wechatUnionId: uin, wechatBoundAt: now() };
+    if (openid) patch.wechatOpenId = String(openid);
+    const nick = normalizeNickname(String(nickname || "").slice(0, 32));
+    if (nick && !me.nickname) patch.nickname = nick;
+    return (await applyUserPatch(me.id, patch)) || me;
+  };
+
+  // 该账号此前绑了另一个微信：先释放旧身份，维持「一账号一微信」索引一致。
+  if (me.wechatUnionId && me.wechatUnionId !== uin) {
+    await identityRelease("wechat_unionid", me.wechatUnionId, me.id);
+  }
+
+  const owner = identityGet("wechat_unionid", uin);
+
+  // ① 无人占用：直接认领给当前账号。
+  if (!owner) {
+    if (!(await identityClaim("wechat_unionid", uin, me.id))) {
+      const again = identityGet("wechat_unionid", uin);
+      if (again && again.id !== me.id) {
+        return { ok: false, conflict: true, owner: wechatOwnerPublic(again) };
+      }
+      if (!again) return { ok: false, conflict: false, code: "WECHAT_BIND_FAILED", error: "微信绑定失败" };
+    }
+    const user = await stampUser();
+    return { ok: true, merged: false, user };
+  }
+
+  // ② 已属于当前账号：直接成功。
+  if (owner.id === me.id) {
+    const user = await stampUser();
+    return { ok: true, merged: false, user };
+  }
+
+  // ③ 属于可合并的临时账号：事务式合并（身份转移 → 素材改挂 → 清会话 → 删临时号）。
+  if (isMergeableWechatTempUser(owner, uin)) {
+    const mergedFrom = { id: owner.id, nickname: owner.nickname || "" };
+    await identityRelease("wechat_unionid", uin, owner.id);
+    if (!(await identityClaim("wechat_unionid", uin, me.id))) {
+      await identityClaim("wechat_unionid", uin, owner.id); // 回滚：身份还给临时账号
+      return { ok: false, conflict: true, owner: wechatOwnerPublic(owner) };
+    }
+    try {
+      for (const t of db.templates || []) {
+        if (t.userId === owner.id) t.userId = me.id;
+      }
+      await accountStore.deleteSessionsByUser(owner.id);
+      db.sessions = (db.sessions || []).filter((s) => s.userId !== owner.id);
+      await accountStore.deleteUser(owner.id);
+      db.users = (db.users || []).filter((u) => u.id !== owner.id);
+    } catch (e) {
+      // 改写失败：回滚身份归属，避免微信落在半合并状态。
+      await identityRelease("wechat_unionid", uin, me.id);
+      await identityClaim("wechat_unionid", uin, owner.id);
+      throw e;
+    }
+    const user = await stampUser();
+    return { ok: true, merged: true, mergedFrom, user };
+  }
+
+  // ④ 属于正常账号：冲突，绝不静默换号。
+  return { ok: false, conflict: true, owner: wechatOwnerPublic(owner) };
+}
+
+async function wechatFetchJson(target, timeoutMs) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs || 8000);
+  try {
+    const r = await fetch(target, { signal: ctl.signal });
+    const text = await r.text();
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+    return { status: r.status, data, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 用授权 code 换 access_token / openid / unionid，并尽力取昵称。
+async function wechatExchangeCode(code) {
+  const u = new URL("https://api.weixin.qq.com/sns/oauth2/access_token");
+  u.searchParams.set("appid", WECHAT_APPID);
+  u.searchParams.set("secret", WECHAT_SECRET);
+  u.searchParams.set("code", code);
+  u.searchParams.set("grant_type", "authorization_code");
+  const r = await wechatFetchJson(u.toString());
+  const d = (r.data && typeof r.data === "object") ? r.data : {};
+  if (!d.access_token || !d.openid) {
+    return { ok: false, error: d.errmsg || "微信授权失败" };
+  }
+  let nickname = "";
+  try {
+    const iu = new URL("https://api.weixin.qq.com/sns/userinfo");
+    iu.searchParams.set("access_token", d.access_token);
+    iu.searchParams.set("openid", d.openid);
+    iu.searchParams.set("lang", "zh_CN");
+    const ir = await wechatFetchJson(iu.toString());
+    const info = (ir.data && typeof ir.data === "object") ? ir.data : {};
+    if (info.nickname) nickname = String(info.nickname).slice(0, 32);
+    if (!d.unionid && info.unionid) d.unionid = info.unionid;
+  } catch {
+    // 昵称/unionid 为可选补充，失败不阻断
+  }
+  return { ok: true, openid: String(d.openid), unionid: String(d.unionid || ""), nickname };
+}
+
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[c]));
+}
+
+// 回调由微信服务器/手机浏览器打开，返回可读 HTML 而非 JSON。
+function sendWechatHtml(res, status, message) {
+  const body =
+    "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+    "<title>MTNode 微信登录</title></head>" +
+    "<body style=\"margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;" +
+    "font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:#0f1115;color:#e6e8ee\">" +
+    "<div style=\"text-align:center;padding:24px\">" +
+    "<h2 style=\"font-size:18px;font-weight:600;margin:0 0 8px\">" + escapeHtml(message) + "</h2>" +
+    "<p style=\"margin:0;color:#8b93a7;font-size:13px\">可关闭本页，返回 MTNode 应用继续操作。</p>" +
+    "</div></body></html>";
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    "Cache-Control": "no-store",
+  });
+  res.end(body);
+}
+
+// 已登录账号可移除的凭据数量（用于「至少保留一种登录方式」校验）。
+function credentialCount(u) {
+  return [!!u.pass, !!u.phone, !!u.wechatUnionId].filter(Boolean).length;
+}
+
+async function authUser(req) {
   const h = req.headers.authorization || "";
   const m = /^Bearer\s+(\S+)/i.exec(h);
   if (!m) return null;
   const th = hashToken(m[1]);
-  const sess = db.sessions.find((s) => s.tokenHash === th && s.expiresAt > now());
+  const t = now();
+  const sess = db.sessions.find((s) => s.tokenHash === th && s.expiresAt > t);
   if (!sess) return null;
+  await touchSession(sess, t);
   return db.users.find((u) => u.id === sess.userId) || null;
 }
 
@@ -726,7 +1371,7 @@ async function handle(req, res) {
   const url = new URL(req.url || "/", "http://local");
   const p = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method || "GET";
-  const user = authUser(req);
+  const user = await authUser(req);
 
   const jsonBody = async () => {
     const raw = await readBody(req);
@@ -750,46 +1395,22 @@ async function handle(req, res) {
   }
 
   if (method === "POST" && p === "/api/register") {
-    const b = await jsonBody();
-    const username = String(b.username || "").trim();
-    const password = String(b.password || "");
-    const nickname = String(b.nickname || "").trim();
-    if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) {
-      return send(res, 400, { ok: false, error: "用户名为 3-24 位字母、数字或下划线" });
-    }
-    if (password.length < 6 || password.length > 72) {
-      return send(res, 400, { ok: false, error: "密码长度为 6-72 位" });
-    }
-    if (!nickname || nickname.length > 32) {
-      return send(res, 400, { ok: false, error: "昵称长度为 1-32 位" });
-    }
-    if (findUserByName(username)) {
-      return send(res, 409, { ok: false, error: "用户名已被占用" });
-    }
-    const salt = crypto.randomBytes(16).toString("hex");
-    const u = {
-      id: uid("u_"),
-      username,
-      nickname,
-      salt,
-      pass: hashPass(password, salt),
-      createdAt: now(),
-      downloadsReceived: 0,
-      likesReceived: 0,
-    };
-    db.users.push(u);
-    const token = issueSession(u);
-    await saveDb();
-    return send(res, 200, { ok: true, token, user: publicUser(u) });
+    // 旧式用户名/密码注册已停用：新账号一律走手机验证码或微信登录（见 docs/auth-design.md）。
+    // 老账号仍可用 /api/login 登录，登录后通过 /api/auth/bind 补齐手机号/微信。
+    return send(res, 410, {
+      ok: false,
+      code: "REGISTER_DISABLED",
+      error: "用户名密码注册已停用，请使用手机验证码或微信登录",
+    });
   }
 
   if (method === "POST" && p === "/api/login") {
     const b = await jsonBody();
-    const u = findUserByName(b.username);
-    if (!u || hashPass(b.password, u.salt) !== u.pass) {
-      return send(res, 401, { ok: false, error: "用户名或密码错误" });
+    const u = accountLoginPassword(b.username, b.password);
+    if (!u) {
+      return send(res, 401, { ok: false, code: "BAD_CREDENTIALS", error: "用户名或密码错误" });
     }
-    const token = issueSession(u);
+    const token = await issueSession(u);
     await saveDb();
     return send(res, 200, { ok: true, token, user: publicUser(u) });
   }
@@ -808,12 +1429,15 @@ async function handle(req, res) {
     if (oldPassword === newPassword) {
       return send(res, 400, { ok: false, error: "新密码不能与旧密码相同" });
     }
-    u.salt = crypto.randomBytes(16).toString("hex");
-    u.pass = hashPass(newPassword, u.salt);
-    u.passwordChangedAt = now();
-    const token = issueSession(u);
+    const salt = crypto.randomBytes(16).toString("hex");
+    const updated = await applyUserPatch(u.id, {
+      salt,
+      pass: hashPass(newPassword, salt),
+      passwordChangedAt: now(),
+    });
+    const token = await issueSession(updated || u);
     await saveDb();
-    return send(res, 200, { ok: true, token, user: publicUser(u) });
+    return send(res, 200, { ok: true, token, user: publicUser(updated || u) });
   }
 
   if (method === "POST" && p === "/api/logout") {
@@ -821,15 +1445,438 @@ async function handle(req, res) {
     const m = /^Bearer\s+(\S+)/i.exec(h);
     if (m) {
       const th = hashToken(m[1]);
+      await accountStore.deleteSession(th);
       db.sessions = db.sessions.filter((s) => s.tokenHash !== th);
       await saveDb();
     }
-    return send(res, 200, { ok: true });
+    return send(res, 200, { ok: true, code: "OK" });
   }
 
   if (method === "GET" && p === "/api/me") {
-    if (!user) return send(res, 401, { ok: false, error: "未登录" });
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
     return send(res, 200, { ok: true, user: publicUser(user) });
+  }
+
+  // 修改昵称（登录态）：去控制字符 + 首尾空白，1-32 位（见 docs/auth-design.md）。
+  if (method === "PATCH" && p === "/api/me") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const nickname = normalizeNickname(b.nickname);
+    if (!nickname) {
+      return send(res, 400, { ok: false, code: "INVALID_NICKNAME", error: "昵称长度需 1-32 位" });
+    }
+    const updated = await applyUserPatch(user.id, { nickname });
+    if (!updated) {
+      return send(res, 500, { ok: false, code: "UPDATE_FAILED", error: "昵称更新失败" });
+    }
+    await saveDb();
+    return send(res, 200, { ok: true, user: publicUser(updated) });
+  }
+
+  // —— 短信验证码（见 docs/auth-design.md 5.7 / 5.8 / 8）——
+  if (method === "POST" && p === "/api/auth/sms/send") {
+    const b = await jsonBody();
+    const phone = normalizePhone(b.phone);
+    if (!phone) {
+      return send(res, 400, { ok: false, code: "INVALID_PHONE", error: "手机号格式无效" });
+    }
+    const scene = String(b.scene || "login").trim().toLowerCase() === "bind" ? "bind" : "login";
+    const st = smsProviderStatus();
+    if (!st.configured) {
+      return send(res, 503, { ok: false, code: "SMS_UNAVAILABLE", error: "短信服务未配置" });
+    }
+    const ip = clientIp(req);
+    const gate = smsSendGate(phone, ip);
+    if (!gate.ok) {
+      return send(res, 429, {
+        ok: false,
+        code: "RATE_LIMITED",
+        error: "请求过于频繁，请稍后再试",
+        retryAfter: gate.retryAfter,
+      });
+    }
+    // 先占频控额度再发：发送失败也计入（防刷）。
+    smsSendCommit(phone, ip, gate.phoneArr, gate.ipArr);
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+    const salt = crypto.randomBytes(8).toString("hex");
+    smsCodes.set(phone, {
+      salt,
+      hash: hashSmsCode(salt, code),
+      expiresAt: now() + SMS_CODE_TTL_MS,
+      attempts: 0,
+      scene,
+      sentAt: now(),
+    });
+    smsLocks.delete(phone);
+    const r = await sendSmsCode({ phone, code, scene });
+    if (!r.ok) {
+      smsCodes.delete(phone); // 未送达即作废，避免留下无人知晓的验证码
+      return send(res, r.status || 503, {
+        ok: false,
+        code: r.code || "SMS_UNAVAILABLE",
+        error: r.error || "短信发送失败，请稍后重试",
+      });
+    }
+    return send(res, 200, {
+      ok: true,
+      expiresIn: Math.round(SMS_CODE_TTL_MS / 1000),
+      cooldown: Math.round(SMS_COOLDOWN_MS / 1000),
+    });
+  }
+
+  if (method === "POST" && p === "/api/auth/sms/login") {
+    const b = await jsonBody();
+    const phone = normalizePhone(b.phone);
+    if (!phone) {
+      return send(res, 400, { ok: false, code: "INVALID_PHONE", error: "手机号格式无效" });
+    }
+    const ip = clientIp(req);
+    const gate = smsLoginGate(ip);
+    if (!gate.ok) {
+      return send(res, 429, {
+        ok: false,
+        code: "RATE_LIMITED",
+        error: "请求过于频繁，请稍后再试",
+        retryAfter: gate.retryAfter,
+      });
+    }
+    smsLoginCommit(ip, gate.arr);
+    const v = verifySmsCode(phone, b.code, "login");
+    if (!v.ok) return send(res, v.status || 400, { ok: false, code: v.code, error: v.error });
+
+    // 号码未注册则自动建号；已注册直接登录（同一账号同一时刻仅一个有效 token）。
+    let u = identityGet("phone", phone);
+    let created = false;
+    if (!u) {
+      u = await createUser({
+        nickname: "手机用户" + phone.slice(-4),
+        phone,
+        phoneVerifiedAt: now(),
+      });
+      created = true;
+      if (!(await identityClaim("phone", phone, u.id))) {
+        // 极端并发：号码已被其它账号认领，回退为登录既有账号。
+        await accountStore.deleteUser(u.id);
+        db.users = db.users.filter((x) => x.id !== u.id);
+        u = identityGet("phone", phone);
+        created = false;
+      }
+    }
+    if (!u) {
+      return send(res, 500, { ok: false, code: "SERVER_ERROR", error: "账号创建失败，请稍后重试" });
+    }
+    const token = await issueSession(u);
+    await saveDb();
+    return send(res, 200, { ok: true, token, user: publicUser(u), created });
+  }
+
+  // —— 微信扫码登录（设备码轮询，见 docs/auth-design.md 5.9）——
+  if (method === "POST" && p === "/api/auth/wechat/start") {
+    if (!wechatConfigured()) {
+      return send(res, 503, { ok: false, code: "WECHAT_UNAVAILABLE", error: "微信登录未配置" });
+    }
+    pruneWechat();
+    const deviceCode = crypto.randomBytes(16).toString("hex");
+    const state = crypto.randomBytes(16).toString("hex");
+    wechatDevices.set(deviceCode, {
+      state,
+      createdAt: now(),
+      expiresAt: now() + WECHAT_DEVICE_MS,
+      ticket: "",
+      bindUserId: user ? user.id : "",
+    });
+    wechatStates.set(state, deviceCode);
+    const authUrl =
+      "https://open.weixin.qq.com/connect/qrconnect?appid=" + encodeURIComponent(WECHAT_APPID) +
+      "&redirect_uri=" + encodeURIComponent(WECHAT_REDIRECT) +
+      "&response_type=code&scope=snsapi_login" +
+      "&state=" + encodeURIComponent(state) +
+      "#wechat_redirect";
+    return send(res, 200, {
+      ok: true,
+      deviceCode,
+      device_code: deviceCode,
+      authUrl,
+      expiresIn: Math.floor(WECHAT_DEVICE_MS / 1000),
+      interval: WECHAT_POLL_INTERVAL,
+    });
+  }
+
+  if (method === "GET" && p === "/api/auth/wechat/callback") {
+    if (!wechatConfigured()) {
+      return sendWechatHtml(res, 503, "微信登录未配置");
+    }
+    pruneWechat();
+    const state = String(url.searchParams.get("state") || "");
+    const code = String(url.searchParams.get("code") || "");
+    const deviceCode = state ? wechatStates.get(state) : "";
+    const dev = deviceCode ? wechatDevices.get(deviceCode) : null;
+    if (!dev || dev.expiresAt <= now()) {
+      return sendWechatHtml(res, 400, "登录已过期，请重新扫码");
+    }
+    // state 一次性：无论后续成败都作废，防重放 / CSRF。
+    wechatStates.delete(state);
+    if (!code) {
+      return sendWechatHtml(res, 400, "已取消授权");
+    }
+    let ex;
+    try {
+      ex = await wechatExchangeCode(code);
+    } catch (e) {
+      return sendWechatHtml(res, 502, "微信服务暂时不可用：" + (e && e.message ? e.message : e));
+    }
+    if (!ex.ok) {
+      return sendWechatHtml(res, 400, "微信授权失败：" + ex.error);
+    }
+    if (!ex.unionid) {
+      return sendWechatHtml(res, 400, "微信未返回 unionid，无法登录（请在开放平台绑定应用）");
+    }
+    // 扫码成功只换一次性 ticket；账号归属与 token 一律由 /poll 统一处理
+    // （已绑微信 → 登录该账号；本机已登录 → 绑定到本机账号；否则新建账号），全程免二次验证。
+    const ticket = crypto.randomBytes(24).toString("hex");
+    wechatTickets.set(ticket, {
+      unionid: ex.unionid,
+      openid: ex.openid,
+      nickname: ex.nickname || "",
+      bindUserId: dev.bindUserId || "",
+      createdAt: now(),
+      expiresAt: now() + WECHAT_TICKET_MS,
+      used: false,
+    });
+    dev.ticket = ticket;
+    dev.state = "";
+    return sendWechatHtml(res, 200, "扫码成功，请返回 MTNode 完成登录");
+  }
+
+  if (method === "POST" && p === "/api/auth/wechat/poll") {
+    if (!wechatConfigured()) {
+      return send(res, 503, { ok: false, code: "WECHAT_UNAVAILABLE", error: "微信登录未配置" });
+    }
+    pruneWechat();
+    const b = await jsonBody();
+    const deviceCode = String(b.deviceCode || b.device_code || "").trim();
+    if (!deviceCode) {
+      return send(res, 400, { ok: false, code: "CODE_EXPIRED", error: "缺少 deviceCode" });
+    }
+    const dev = wechatDevices.get(deviceCode);
+    if (!dev || dev.expiresAt <= now()) {
+      wechatDevices.delete(deviceCode);
+      return send(res, 400, { ok: false, code: "CODE_EXPIRED", error: "二维码已过期，请重新扫码" });
+    }
+    if (!dev.ticket) {
+      return send(res, 200, { ok: true, status: "pending" });
+    }
+    const t = peekWechatTicket(dev.ticket);
+    if (!t) {
+      wechatDevices.delete(deviceCode);
+      return send(res, 400, { ok: false, code: "CODE_EXPIRED", error: "二维码已过期，请重新扫码" });
+    }
+    // 扫码即登录并绑定：无论本机是否已登录，一律在此解析账号并签发同一套 Bearer token（免二次验证）。
+    // 绑定意图（发起扫码时本机已登录，dev.bindUserId 存在）：走统一归属解析，
+    //   —— 无人占用 / 已是本账号 → 绑定到本账号；可合并临时账号 → 合并；正常账号已占用 → 409。
+    // 登录意图（无 bindUserId）：① 该微信已绑某账号 → 登录该账号；② 否则新建账号（默认昵称）。
+    consumeWechatTicket(dev.ticket);
+    wechatDevices.delete(deviceCode);
+    let created = false;
+    let bound = false;
+    if (t.bindUserId) {
+      const r = await resolveWechatOwner({
+        userId: t.bindUserId,
+        unionid: t.unionid,
+        openid: t.openid,
+        nickname: t.nickname,
+      });
+      if (!r.ok) {
+        if (r.conflict) {
+          return send(res, 409, {
+            ok: false,
+            code: "WECHAT_OWNED_BY_OTHER",
+            error: "该微信已绑定到其它账号",
+            owner: r.owner,
+          });
+        }
+        return send(res, r.status || 400, {
+          ok: false,
+          code: r.code || "WECHAT_BIND_FAILED",
+          error: r.error || "微信绑定失败",
+        });
+      }
+      const token = await issueSession(r.user);
+      await saveDb();
+      return send(res, 200, {
+        ok: true,
+        status: "done",
+        token,
+        user: publicUser(r.user),
+        bound: true,
+        merged: !!r.merged,
+        mergedFrom: r.mergedFrom || null,
+      });
+    }
+    let u = identityGet("wechat_unionid", t.unionid);
+    if (!u) {
+      const r = await ensureWechatUser(t.unionid, t.openid, t.nickname);
+      u = r.user;
+      created = r.created;
+    } else if (t.openid && u.wechatOpenId !== t.openid) {
+      u = (await applyUserPatch(u.id, { wechatOpenId: t.openid })) || u;
+    }
+    const token = await issueSession(u);
+    await saveDb();
+    return send(res, 200, {
+      ok: true,
+      status: "done",
+      token,
+      user: publicUser(u),
+      created,
+      bound,
+    });
+  }
+
+  if (method === "POST" && p === "/api/auth/bind") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const kind = String(b.kind || "").trim().toLowerCase();
+
+    if (kind === "phone") {
+      const phone = normalizePhone(b.phone);
+      if (!phone) {
+        return send(res, 400, { ok: false, code: "INVALID_PHONE", error: "手机号格式无效" });
+      }
+      if (user.phone === phone) {
+        return send(res, 200, { ok: true, user: publicUser(user) });
+      }
+      if (user.phone) {
+        return send(res, 409, {
+          ok: false,
+          code: "PHONE_ALREADY_BOUND",
+          error: "已绑定其它手机号，请先解绑",
+        });
+      }
+      const owner = identityGet("phone", phone);
+      if (owner && owner.id !== user.id) {
+        return send(res, 409, { ok: false, code: "PHONE_IN_USE", error: "该手机号已被其它账号绑定" });
+      }
+      const v = verifySmsCode(phone, b.code, "bind");
+      if (!v.ok) return send(res, v.status || 400, { ok: false, code: v.code, error: v.error });
+      const sf = requirePasswordIfSet(user, b);
+      if (!sf.ok) return send(res, sf.status, { ok: false, code: sf.code, error: sf.error });
+      if (!(await identityClaim("phone", phone, user.id))) {
+        return send(res, 409, { ok: false, code: "PHONE_IN_USE", error: "该手机号已被其它账号绑定" });
+      }
+      const updated = await applyUserPatch(user.id, { phone, phoneVerifiedAt: now() });
+      await saveDb();
+      return send(res, 200, { ok: true, user: publicUser(updated || user) });
+    }
+
+    if (kind === "wechat") {
+      if (user.wechatUnionId) {
+        return send(res, 409, {
+          ok: false,
+          code: "WECHAT_ALREADY_BOUND",
+          error: "已绑定微信，请先解绑",
+        });
+      }
+      const v = verifyWechatTicket(b.ticket);
+      if (!v.ok) return send(res, v.status || 400, { ok: false, code: v.code, error: v.error });
+      const unionid = String(v.unionid || "").trim();
+      const openid = String(v.openid || "").trim();
+      if (!unionid) {
+        return send(res, 400, { ok: false, code: "WECHAT_INVALID", error: "微信凭据无效" });
+      }
+      // 扫码即绑定，免账号密码二次验证（ticket 已由微信授权证明身份归属）；
+      // 归属解析与 /poll 绑定意图复用同一函数（兼容旧客户端）：可合并临时账号即合并，
+      // 正常账号已占用则 409 WECHAT_OWNED_BY_OTHER，绝不静默换号。
+      const r = await resolveWechatOwner({
+        userId: user.id,
+        unionid,
+        openid,
+        nickname: v.nickname,
+      });
+      if (!r.ok) {
+        if (r.conflict) {
+          return send(res, 409, {
+            ok: false,
+            code: "WECHAT_OWNED_BY_OTHER",
+            error: "该微信已绑定到其它账号",
+            owner: r.owner,
+          });
+        }
+        return send(res, r.status || 400, {
+          ok: false,
+          code: r.code || "WECHAT_BIND_FAILED",
+          error: r.error || "微信绑定失败",
+        });
+      }
+      await saveDb();
+      return send(res, 200, {
+        ok: true,
+        user: publicUser(r.user),
+        merged: !!r.merged,
+        mergedFrom: r.mergedFrom || null,
+      });
+    }
+
+    if (kind === "password") {
+      if (user.pass) {
+        return send(res, 409, {
+          ok: false,
+          code: "PASSWORD_ALREADY_SET",
+          error: "已设置密码，请使用修改密码",
+        });
+      }
+      const newPassword = String(b.newPassword || "");
+      if (!validPassword(newPassword)) {
+        return send(res, 400, { ok: false, code: "INVALID_PASSWORD", error: "密码长度为 6-72 位" });
+      }
+      const sf = checkSecondFactor(user, b);
+      if (!sf.ok) return send(res, sf.status, { ok: false, code: sf.code, error: sf.error });
+      const salt = crypto.randomBytes(16).toString("hex");
+      const updated = await applyUserPatch(user.id, {
+        salt,
+        pass: hashPass(newPassword, salt),
+        passwordChangedAt: now(),
+      });
+      await saveDb();
+      return send(res, 200, { ok: true, user: publicUser(updated || user) });
+    }
+
+    return send(res, 400, { ok: false, code: "UNKNOWN_KIND", error: "不支持的绑定类型" });
+  }
+
+  if (method === "POST" && p === "/api/auth/unbind") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const kind = String(b.kind || "").trim().toLowerCase();
+    if (!["phone", "wechat", "password"].includes(kind)) {
+      return send(res, 400, { ok: false, code: "UNKNOWN_KIND", error: "不支持的解绑类型" });
+    }
+    const sf = checkSecondFactor(user, b);
+    if (!sf.ok) return send(res, sf.status, { ok: false, code: sf.code, error: sf.error });
+    if (credentialCount(user) <= 1) {
+      return send(res, 409, {
+        ok: false,
+        code: "LAST_CREDENTIAL",
+        error: "至少需保留一种登录方式",
+      });
+    }
+    let updated = user;
+    if (kind === "phone") {
+      if (!user.phone) return send(res, 409, { ok: false, code: "NOT_BOUND", error: "未绑定手机号" });
+      await identityRelease("phone", user.phone, user.id);
+      updated = await applyUserPatch(user.id, { phone: "", phoneVerifiedAt: 0 });
+    } else if (kind === "wechat") {
+      if (!user.wechatUnionId) {
+        return send(res, 409, { ok: false, code: "NOT_BOUND", error: "未绑定微信" });
+      }
+      await identityRelease("wechat_unionid", user.wechatUnionId, user.id);
+      updated = await applyUserPatch(user.id, { wechatUnionId: "", wechatOpenId: "", wechatBoundAt: 0 });
+    } else {
+      if (!user.pass) return send(res, 409, { ok: false, code: "NOT_BOUND", error: "未设置密码" });
+      updated = await applyUserPatch(user.id, { pass: "", salt: "", passwordChangedAt: 0 });
+    }
+    await saveDb();
+    return send(res, 200, { ok: true, user: publicUser(updated || user) });
   }
 
   if (method === "GET" && p === "/api/me/templates") {
@@ -892,7 +1939,7 @@ async function handle(req, res) {
     if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
     t.downloads = (t.downloads || 0) + 1;
     const owner = db.users.find((u) => u.id === t.userId);
-    if (owner) owner.downloadsReceived = (owner.downloadsReceived || 0) + 1;
+    if (owner) await applyUserPatch(owner.id, { downloadsReceived: (owner.downloadsReceived || 0) + 1 });
     await saveDb();
     const buf = fs.readFileSync(fp);
     if (url.searchParams.get("format") === "raw") {
@@ -1035,8 +2082,10 @@ async function handle(req, res) {
       return send(res, 403, { ok: false, error: "只能删除自己的模板" });
     }
     const owner = db.users.find((u) => u.id === t.userId) || user;
-    owner.downloadsReceived = Math.max(0, (owner.downloadsReceived || 0) - (t.downloads || 0));
-    owner.likesReceived = Math.max(0, (owner.likesReceived || 0) - (t.likes || 0));
+    await applyUserPatch(owner.id, {
+      downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (t.downloads || 0)),
+      likesReceived: Math.max(0, (owner.likesReceived || 0) - (t.likes || 0)),
+    });
     db.likes = db.likes.filter((l) => l.templateId !== t.id);
     db.templates.splice(idx, 1);
     try { fs.unlinkSync(path.join(FILE_DIR, t.id + ".mtnodes")); } catch {}
@@ -1054,11 +2103,11 @@ async function handle(req, res) {
     if (hit) {
       db.likes = db.likes.filter((l) => !(l.userId === user.id && l.templateId === t.id));
       t.likes = Math.max(0, (t.likes || 0) - 1);
-      if (owner) owner.likesReceived = Math.max(0, (owner.likesReceived || 0) - 1);
+      if (owner) await applyUserPatch(owner.id, { likesReceived: Math.max(0, (owner.likesReceived || 0) - 1) });
     } else {
       db.likes.push({ userId: user.id, templateId: t.id, at: now() });
       t.likes = (t.likes || 0) + 1;
-      if (owner) owner.likesReceived = (owner.likesReceived || 0) + 1;
+      if (owner) await applyUserPatch(owner.id, { likesReceived: (owner.likesReceived || 0) + 1 });
     }
     await saveDb();
     return send(res, 200, { ok: true, item: publicTemplate(t, user) });
@@ -1124,7 +2173,7 @@ async function handle(req, res) {
     if (!pack) return send(res, 404, { ok: false, error: "文件缺失" });
     t.downloads = (t.downloads || 0) + 1;
     const owner = db.users.find((u) => u.id === t.userId);
-    if (owner) owner.downloadsReceived = (owner.downloadsReceived || 0) + 1;
+    if (owner) await applyUserPatch(owner.id, { downloadsReceived: (owner.downloadsReceived || 0) + 1 });
     const listed = listSkillBundleFiles(t.id);
     t.files = listed.files;
     t.bytes = listed.bytes;
@@ -1371,8 +2420,10 @@ async function handle(req, res) {
       return send(res, 403, { ok: false, error: "只能删除自己的技能" });
     }
     const owner = db.users.find((u) => u.id === t.userId) || user;
-    owner.downloadsReceived = Math.max(0, (owner.downloadsReceived || 0) - (t.downloads || 0));
-    owner.likesReceived = Math.max(0, (owner.likesReceived || 0) - (t.likes || 0));
+    await applyUserPatch(owner.id, {
+      downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (t.downloads || 0)),
+      likesReceived: Math.max(0, (owner.likesReceived || 0) - (t.likes || 0)),
+    });
     db.skillLikes = db.skillLikes.filter((l) => l.skillId !== t.id);
     db.skills.splice(idx, 1);
     clearSkillFile(t.id);
@@ -1390,11 +2441,11 @@ async function handle(req, res) {
     if (hit) {
       db.skillLikes = db.skillLikes.filter((l) => !(l.userId === user.id && l.skillId === t.id));
       t.likes = Math.max(0, (t.likes || 0) - 1);
-      if (owner) owner.likesReceived = Math.max(0, (owner.likesReceived || 0) - 1);
+      if (owner) await applyUserPatch(owner.id, { likesReceived: Math.max(0, (owner.likesReceived || 0) - 1) });
     } else {
       db.skillLikes.push({ userId: user.id, skillId: t.id, at: now() });
       t.likes = (t.likes || 0) + 1;
-      if (owner) owner.likesReceived = (owner.likesReceived || 0) + 1;
+      if (owner) await applyUserPatch(owner.id, { likesReceived: (owner.likesReceived || 0) + 1 });
     }
     await saveDb();
     return send(res, 200, { ok: true, item: publicSkill(t, user) });
@@ -1513,4 +2564,18 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log("[mtnode-store] http://" + HOST + ":" + PORT);
+  const acct = accountStore.describe();
+  console.log(
+    "[mtnode-store] account store: " +
+      acct.backend +
+      (acct.backend === "json" ? " (" + acct.dbPath + ")" : " (" + acct.endpoint + ")") +
+      " · users=" + db.users.length + " sessions=" + db.sessions.length + " identities=" + db.identities.length,
+  );
+  const sms = smsProviderStatus();
+  console.log(
+    "[mtnode-store] sms provider: " +
+      sms.id +
+      (sms.dev ? "（开发模式：验证码只打日志，生产必须配置 MTNODE_SMS_PROVIDER 与 MTNODE_SMS_* 凭据）" : "") +
+      (sms.configured ? "" : " [未配置，缺少 " + (sms.missing || []).join(" / ") + "，短信接口返回 503 SMS_UNAVAILABLE]"),
+  );
 });

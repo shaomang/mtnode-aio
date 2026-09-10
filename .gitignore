@@ -28,3 +28,13 @@ test/
 .deploy-tts/
 
 .commandcode/
+
+# ===== 证书 / 私钥（本机 SSL 落地材料，一律不入库）=====
+# 阿里云 CAS 证书包（.pem/.key/.csr 等）只放本机，不进公开仓库（origin: mtnode-aio）
+ssl/
+*.pem
+*.key
+*.crt
+*.csr
+*.pfx
+*.p12

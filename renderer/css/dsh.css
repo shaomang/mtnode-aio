@@ -4389,3 +4389,250 @@ button.mini.btn-sq.tpl-ico {
   margin: 10px 8px 4px
 }
 
+/* ── 会话统计 · 费用与余额（app-cost.js / app-agent.js / app.js） ──
+   仅 DeepSeek 官方路由出现；沿用既有 CSS 变量，不改上面任何既有类。 */
+.tok-badge-table td.tok-badge-cost {
+  color: var(--green)
+}
+
+.tok-badge-table tr.tok-badge-total td.tok-badge-cost {
+  color: var(--green);
+  font-weight: 600
+}
+
+/* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ──
+   模型明细行可点击 → 打开性能弹窗；只新增类，复用上面 .tok-badge-table 体系。 */
+.tok-badge-table tr.tok-model-row {
+  cursor: pointer
+}
+
+.tok-badge-table tr.tok-model-row:hover td {
+  background: var(--code)
+}
+
+.tok-badge-table tr.tok-model-row:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: -1px
+}
+
+/* 行尾提示符 ›：提示该行可点开看性能（末列为费用 / 工具列） */
+.tok-badge-table tr.tok-model-row td:last-child::after {
+  content: "›";
+  margin-left: 5px;
+  color: var(--muted);
+  opacity: .55
+}
+
+.tok-badge-table tr.tok-model-row:hover td:last-child::after,
+.tok-badge-table tr.tok-model-row:focus-visible td:last-child::after {
+  color: var(--cyan);
+  opacity: 1
+}
+
+/* 性能弹窗：键列弱化、值列加重右对齐（字体与分隔线沿用 .tok-badge-table） */
+.model-perf-table {
+  display: table;
+  width: 100%;
+  margin-bottom: 8px
+}
+
+.model-perf-table td:first-child {
+  color: var(--muted)
+}
+
+.model-perf-table td:last-child {
+  font-weight: 600
+}
+
+.model-perf-note {
+  display: block;
+  line-height: 1.6;
+  margin-top: 2px
+}
+
+/* ── 会话统计 · 按会话轮次的细分统计（app-agent.js） ──
+   合计 / 按模型两层原样不动，本区只新增类；沿用 .tok-badge-table 与既有主题变量。 */
+.tok-sec-head {
+  margin: 7px 0 3px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500
+}
+
+/* 标题列：超长省略号截断（全称在 title 属性里） */
+.tok-badge-table.tok-round-table td.tok-round-title {
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.tok-round-title-txt {
+  display: inline-block;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom
+}
+
+/* 标题来源标记：计划任务 / 用户输入 */
+.tok-round-tag {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap
+}
+
+.tok-round-tag-plan {
+  color: var(--cyan);
+  border-color: var(--cyan)
+}
+
+/* 在途轮次「运行中」胶囊 */
+.tok-round-live-tag {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--code);
+  color: var(--cyan);
+  font-size: 10px;
+  white-space: nowrap
+}
+
+.tok-badge-table tr.tok-round-row {
+  cursor: pointer
+}
+
+.tok-badge-table tr.tok-round-row:hover td {
+  background: var(--code)
+}
+
+.tok-badge-table tr.tok-round-row:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: -1px
+}
+
+.tok-badge-table tr.tok-round-row.tok-round-live td:first-child {
+  color: var(--cyan)
+}
+
+/* 行尾提示符 ›：提示该行可点开看该轮性能（末列为性能摘要） */
+.tok-badge-table tr.tok-round-row td:last-child::after {
+  content: "›";
+  margin-left: 5px;
+  color: var(--muted);
+  opacity: .55
+}
+
+.tok-badge-table tr.tok-round-row:hover td:last-child::after,
+.tok-badge-table tr.tok-round-row:focus-visible td:last-child::after {
+  color: var(--cyan);
+  opacity: 1
+}
+
+.tok-round-perf {
+  color: var(--muted)
+}
+
+/* 「显示更多 / 收起」小按钮 */
+.tok-round-more {
+  margin-top: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer
+}
+
+.tok-round-more:hover {
+  color: var(--cyan);
+  border-color: var(--cyan)
+}
+
+.tok-badge-sum .tok-badge-bal {
+  flex: none;
+  margin-left: 6px
+}
+
+.tok-badge-bal {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap
+}
+
+.ds-bal-chip,
+.ds-bal-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap
+}
+
+.ds-bal-line {
+  margin-top: 5px;
+  flex-wrap: wrap
+}
+
+.ds-bal-label {
+  color: var(--muted)
+}
+
+.ds-bal-amount {
+  color: var(--green);
+  font-weight: 600
+}
+
+.ds-bal-sub {
+  color: var(--muted)
+}
+
+.ds-bal-time {
+  color: var(--muted);
+  font-size: 10px
+}
+
+.ds-bal-refresh {
+  flex: none;
+  padding: 0 5px;
+  line-height: 16px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  cursor: pointer
+}
+
+.ds-bal-refresh:hover {
+  color: var(--ink)
+}
+
+.ds-bal-chip.err .ds-bal-amount,
+.ds-bal-line.err .ds-bal-amount {
+  color: var(--orange)
+}
+
+.ds-bal-chip.loading .ds-bal-amount,
+.ds-bal-line.loading .ds-bal-amount {
+  color: var(--muted)
+}
+
+.metrics-cost-line.tok-badge-cost {
+  margin-top: 6px;
+  color: var(--green);
+  font-weight: 600
+}
+

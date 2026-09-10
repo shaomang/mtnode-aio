@@ -56,6 +56,18 @@ function defaultCatalogPath() {
   return join(__dirname, "catalog.default.json");
 }
 
+/* 原生内置窗口插件：不依赖云端目录 / 下载安装，直接以应用内目录为根装载。
+   讨论区（forum）＝内置组件，entry 固定 chat.html，窗口参数用内置常量。
+   preload 仍统一走 plugins/preload-window.js（forum/preload-forum.js 由 chat.html 侧使用）。 */
+const BUILTIN_WINDOW_PLUGINS = {
+  forum: {
+    dir: () => join(__dirname, "..", "forum"),
+    entry: "chat.html",
+    title: "MTNode 讨论区",
+    window: { width: 380, height: 520, frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true },
+  },
+};
+
 function readJson(p, fb) {
   try {
     return JSON.parse(fs.readFileSync(p, "utf8"));
@@ -253,7 +265,6 @@ function normalizePlugin(raw) {
   if (!ID_OK.test(id)) return null;
   if (raw.enabled === false || raw.hidden === true) return null;
   let kind = String(raw.kind || "").trim().toLowerCase();
-  if (id === "forum" && (kind === "builtin" || (!kind && raw.handler === "forum"))) kind = "window";
   if (!kind && raw.handler === "pet") kind = "pet";
   if (!kind && raw.handler === "music3") kind = "music3";
   if (!kind && raw.handler === "h3") kind = "h3";
@@ -643,21 +654,35 @@ function openWindowPlugin(id) {
     notifyPluginWindowChanged(id, true);
     return { ok: true, open: true };
   }
-  const meta = readJson(installedMetaPath(id), null);
-  if (!meta) return { ok: false, error: "not_installed" };
-  const entry = safeEntry(meta.entry || "index.html");
-  if (!entry) return { ok: false, error: "bad_entry" };
-  const html = join(runtimeDir(id), ...entry.split("/"));
-  if (!fs.existsSync(html)) return { ok: false, error: "missing_entry" };
-  const spec = findCatalogPlugin(id);
-  const winSpec = (spec && spec.window) || {
-    width: 380,
-    height: 520,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-  };
+  const builtin = BUILTIN_WINDOW_PLUGINS[id];
+  let html = "";
+  let winSpec = null;
+  let winTitle = id;
+  if (builtin) {
+    /* 内置组件：以应用内目录为根，无需 installedMetaPath；缺文件时返回明确错误 */
+    const entry = safeEntry(builtin.entry) || "chat.html";
+    html = join(builtin.dir(), ...entry.split("/"));
+    if (!fs.existsSync(html)) return { ok: false, error: "builtin_missing" };
+    winSpec = builtin.window;
+    winTitle = builtin.title || id;
+  } else {
+    const meta = readJson(installedMetaPath(id), null);
+    if (!meta) return { ok: false, error: "not_installed" };
+    const entry = safeEntry(meta.entry || "index.html");
+    if (!entry) return { ok: false, error: "bad_entry" };
+    html = join(runtimeDir(id), ...entry.split("/"));
+    if (!fs.existsSync(html)) return { ok: false, error: "missing_entry" };
+    const spec = findCatalogPlugin(id);
+    winSpec = (spec && spec.window) || {
+      width: 380,
+      height: 520,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+    };
+    winTitle = (spec && spec.title && spec.title.zh) || id;
+  }
   const pos = pluginRightBounds(winSpec.width, winSpec.height);
   const w = new BrowserWindow({
     width: pos.width,
@@ -674,7 +699,7 @@ function openWindowPlugin(id) {
     skipTaskbar: !!winSpec.skipTaskbar,
     resizable: true,
     show: false,
-    title: (spec && spec.title && spec.title.zh) || id,
+    title: winTitle,
     webPreferences: {
       preload: join(__dirname, "preload-window.js"),
       additionalArguments: ["--mtnode-plugin-id=" + id],

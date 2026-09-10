@@ -94,6 +94,41 @@
 }
 .review-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
+/* 事实库审阅头部：库名 + 服务商 / 模型 / 温度（写回 fact 记录） */
+.review-settings {
+  flex: none;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--bd2);
+  font-size: 11.5px;
+}
+.review-settings[hidden] { display: none; }
+.rv-set-lib {
+  color: var(--cyan);
+  font-weight: 600;
+  max-width: 40%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rv-set-field {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.rv-set-field select,
+.rv-set-temp {
+  border: 1px solid var(--bd2);
+  background: var(--panel2);
+  color: var(--ink);
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 2px 5px;
+  max-width: 200px;
+}
+.rv-set-temp { width: 62px; }
+.rv-set-field select:focus,
+.rv-set-temp:focus { outline: none; border-color: var(--cyan); }
+
 .rv-btn {
   border: 1px solid var(--bd2);
   background: var(--panel2);
@@ -148,6 +183,30 @@
   border-color: var(--orange);
   color: var(--orange);
   box-shadow: 0 0 0 1px var(--orange) inset;
+}
+
+/* 插图 / 插表格小对话框（mtDialogForm 的 custom 区） */
+.rv-pick-btns { display: flex; flex-direction: column; gap: 8px; }
+.rv-img-pick {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  text-align: left; cursor: pointer;
+  border: 1px solid var(--bd2); background: var(--panel2);
+  color: var(--ink); border-radius: 6px; padding: 9px 12px;
+}
+.rv-img-pick b { font-size: 13px; }
+.rv-img-pick span { font-size: 11px; color: var(--muted); }
+.rv-img-pick:hover {
+  border-color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, var(--panel2));
+}
+.rv-num-field {
+  display: flex; align-items: center; gap: 10px; font-size: 12px;
+}
+.rv-num-field span { flex: 0 0 48px; color: var(--muted); }
+.rv-num-field input {
+  width: 88px; height: 28px; padding: 0 8px;
+  border: 1px solid var(--bd2); border-radius: 4px;
+  background: var(--panel2); color: var(--ink); font-size: 12px;
 }
 
 /* 主体：编辑器 + 右侧批注栏 */
@@ -243,7 +302,22 @@
 }
 .review-editor code, .rv-preview code { font-family: ui-monospace, Consolas, monospace; }
 .review-editor a, .rv-preview a { color: var(--cyan); }
-.review-editor img, .rv-preview img { max-width: 100%; }
+/* 富文本内插图：受控尺寸（不撑破正文，也不糊）+ 点击选中态。
+   选中态由 app-review.js 在富文本编辑区点中图片时加 .rv-img-sel（只保留一张）。 */
+.review-editor img,
+.rv-preview img {
+  max-width: 100%;
+  max-height: 420px;
+  height: auto;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+  vertical-align: top;
+}
+.review-editor img.rv-img-sel {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cyan) 45%, transparent);
+}
 .review-editor table, .rv-preview table { border-collapse: collapse; margin: .4em 0; }
 .review-editor th, .review-editor td, .rv-preview th, .rv-preview td {
   border: 1px solid var(--bd2); padding: 3px 9px;

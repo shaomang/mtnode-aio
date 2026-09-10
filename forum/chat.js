@@ -26,10 +26,8 @@
   const authPass = document.getElementById("authPass");
   const authPassNew = document.getElementById("authPassNew");
   const authPassNew2 = document.getElementById("authPassNew2");
-  const authNick = document.getElementById("authNick");
   const authGo = document.getElementById("authGo");
   const modeLogin = document.getElementById("modeLogin");
-  const modeReg = document.getElementById("modeReg");
   const modePass = document.getElementById("modePass");
   const findbar = document.getElementById("findbar");
   const findInput = document.getElementById("findInput");
@@ -126,10 +124,21 @@
     return d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate() + " " + hm;
   }
   function myId() {
-    return auth && (auth.userId || (auth.user && auth.user.id)) || "";
+    return (auth && auth.userId) || "";
   }
-  function token() {
-    return (auth && auth.token) || "";
+  /* 统一账户：登录态来自主进程 auth-store（与顶栏 / 创意工坊同源），
+     token 不下发渲染层；store:request 未显式传 token 时自动带上主进程会话。 */
+  function signedIn() {
+    return !!auth;
+  }
+  async function refreshAuth() {
+    const st = await api.authGetState();
+    const u = (st && st.user) || null;
+    auth = u
+      ? { userId: u.id, username: u.username || "", nickname: u.nickname || "" }
+      : null;
+    setLoggedIn(!!auth);
+    return auth;
   }
 
   function roomLatestAt(roomId) {
@@ -201,26 +210,20 @@
   }
 
   function setAuthMode(mode) {
-    authMode = mode === "register" ? "register" : mode === "passwd" ? "passwd" : "login";
+    authMode = mode === "passwd" ? "passwd" : "login";
     modeLogin.classList.toggle("on", authMode === "login");
-    modeReg.classList.toggle("on", authMode === "register");
     modePass.classList.toggle("on", authMode === "passwd");
-    authNick.hidden = authMode !== "register";
     authPassNew.hidden = authMode !== "passwd";
     authPassNew2.hidden = authMode !== "passwd";
     authPass.placeholder = authMode === "passwd"
       ? t("旧密码", "Current password")
       : t("密码（6-72 位）", "Password (6-72 characters)");
-    authGo.textContent = authMode === "register"
-      ? t("注册", "Register")
-      : authMode === "passwd"
-        ? t("修改密码", "Change password")
-        : t("登录", "Sign in");
-    document.getElementById("authTitle").textContent = authMode === "register"
-      ? t("注册账户", "Create account")
-      : authMode === "passwd"
-        ? t("修改密码", "Change password")
-        : t("登录后即可发言", "Sign in to chat");
+    authGo.textContent = authMode === "passwd"
+      ? t("修改密码", "Change password")
+      : t("登录", "Sign in");
+    document.getElementById("authTitle").textContent = authMode === "passwd"
+      ? t("修改密码", "Change password")
+      : t("登录后即可发言", "Sign in to chat");
   }
 
   function applyLocale() {
@@ -242,13 +245,11 @@
     authPass.placeholder = t("密码（6-72 位）", "Password (6-72 characters)");
     authPassNew.placeholder = t("新密码（6-72 位）", "New password (6-72 characters)");
     authPassNew2.placeholder = t("再次输入新密码", "Confirm new password");
-    authNick.placeholder = t("昵称（1-32 位）", "Nickname (1-32 characters)");
     findInput.placeholder = t("查找…", "Find…");
     findPrev.title = t("上一处", "Previous");
     findNext.title = t("下一处", "Next");
     findClose.title = t("关闭", "Close");
     modeLogin.textContent = t("登录", "Sign in");
-    modeReg.textContent = t("注册", "Register");
     modePass.textContent = t("修改密码", "Change password");
     setAuthMode(authMode);
     paintTabs();
@@ -306,11 +307,10 @@
       imgUrl[id] = cached.dataUrl;
       return cached.dataUrl;
     }
-    if (!token()) return "";
+    if (!signedIn()) return "";
     const r = await api.storeRequest({
       method: "GET",
       path: "/api/forum/images/" + encodeURIComponent(id),
-      token: token(),
     });
     if (r && r.ok && r.base64) {
       await api.cacheImage(id, r.base64);
@@ -559,7 +559,7 @@
   }
 
   async function syncDays(id) {
-    if (!token()) return;
+    if (!signedIn()) return;
     const before = hotFromTs();
     const r = await api.storeRequest({
       method: "GET",
@@ -570,7 +570,6 @@
         encodeURIComponent(String(before)) +
         "&tzOffset=" +
         encodeURIComponent(String(new Date().getTimezoneOffset())),
-      token: token(),
     });
     if (r && r.status === 401) {
       await signedOut();
@@ -591,7 +590,6 @@
         encodeURIComponent(String(archiveFrom)) +
         "&to=" +
         encodeURIComponent(String(before - 1)),
-      token: token(),
     });
     if (r2 && r2.status === 401) {
       await signedOut();
@@ -603,7 +601,7 @@
   }
 
   async function expandDay(dayKey) {
-    if (!token() || !dayKey) return;
+    if (!signedIn() || !dayKey) return;
     const key = room + ":" + dayKey;
     if (dayLoading[key] || (expandedDays[room] && expandedDays[room][dayKey])) return;
     dayLoading[key] = true;
@@ -624,7 +622,6 @@
         encodeURIComponent(String(range.from)) +
         "&to=" +
         encodeURIComponent(String(range.to)),
-      token: token(),
     });
     dayLoading[key] = false;
     if (r && r.status === 401) {
@@ -645,7 +642,7 @@
   }
 
   async function syncRoom(id) {
-    if (!token()) return;
+    if (!signedIn()) return;
     const from = hotFromTs();
     const since = roomLatestAt(id);
     const r = await api.storeRequest({
@@ -659,7 +656,6 @@
         "&tzOffset=" +
         encodeURIComponent(String(new Date().getTimezoneOffset())) +
         (since ? "&since=" + encodeURIComponent(String(since)) : ""),
-      token: token(),
     });
     if (r && r.status === 401) {
       await signedOut();
@@ -686,7 +682,7 @@
   }
 
   async function syncAllRooms() {
-    if (!token()) return;
+    if (!signedIn()) return;
     for (const r of ROOMS) {
       await syncRoom(r.id);
     }
@@ -705,8 +701,11 @@
   }
 
   async function signedOut() {
+    /* 401 / 退出：清掉主进程统一账户的本机凭据，避免继续用失效 token 重试。 */
+    try {
+      await api.authLogout();
+    } catch (_) {}
     auth = null;
-    await api.setAuth(null);
     setLoggedIn(false);
     setAuthMode("login");
   }
@@ -720,12 +719,7 @@
 
   async function doAuth() {
     authErr.textContent = "";
-    let path = "/api/login";
-    let payload = { username: authUser.value.trim(), password: authPass.value };
-    if (authMode === "register") {
-      path = "/api/register";
-      payload.nickname = authNick.value.trim();
-    } else if (authMode === "passwd") {
+    if (authMode === "passwd") {
       const oldPassword = authPass.value;
       const newPassword = authPassNew.value;
       if (newPassword !== authPassNew2.value) {
@@ -736,27 +730,31 @@
         authErr.textContent = t("新密码不能与旧密码相同", "New password must differ from the current one");
         return;
       }
-      path = "/api/change-password";
-      payload = { username: authUser.value.trim(), oldPassword, newPassword };
+      /* 旧账号改密：会话统一由主进程保管（/api/change-password 会换发新 token）。 */
+      const r = await api.authChangePassword({
+        username: authUser.value.trim(),
+        oldPassword,
+        newPassword,
+      });
+      if (!r || !r.ok) {
+        authErr.textContent = (r && r.error) || apiErr(r);
+        return;
+      }
+    } else {
+      const r = await api.authLoginPassword({
+        username: authUser.value.trim(),
+        password: authPass.value,
+      });
+      if (!r || !r.ok) {
+        authErr.textContent = (r && r.error) || apiErr(r);
+        return;
+      }
     }
-    const r = await api.storeRequest({ method: "POST", path, json: payload });
-    if (!r || !r.ok || !r.data || !r.data.token) {
-      authErr.textContent = apiErr(r);
-      return;
-    }
-    const u = r.data.user || {};
-    auth = {
-      token: r.data.token,
-      userId: u.id,
-      username: u.username,
-      nickname: u.nickname,
-    };
-    await api.setAuth(auth);
     authPass.value = "";
     authPassNew.value = "";
     authPassNew2.value = "";
     setAuthMode("login");
-    setLoggedIn(true);
+    await refreshAuth();
     await syncAllRooms();
     markRoomRead(room);
     paintTabs();
@@ -764,9 +762,6 @@
   }
 
   async function logout() {
-    if (token()) {
-      await api.storeRequest({ method: "POST", path: "/api/logout", json: {}, token: token() });
-    }
     await signedOut();
   }
 
@@ -791,7 +786,7 @@
   }
 
   async function send() {
-    if (busy || !token()) return;
+    if (busy || !signedIn()) return;
     const text = String(input.value || "").trim();
     if (!text && !pendingImage) return;
     busy = true;
@@ -802,7 +797,6 @@
       method: "POST",
       path: "/api/forum/messages",
       json: payload,
-      token: token(),
     });
     busy = false;
     btnSend.disabled = false;
@@ -854,34 +848,36 @@
         store.lastRead[r.id] = latest || Date.now();
       }
     });
-    auth = (st && st.auth) || null;
-    setLoggedIn(!!token());
+    await refreshAuth();
     render({ forceBottom: true });
     paintTabs();
-    if (token()) {
-      const me = await api.storeRequest({ method: "GET", path: "/api/me", token: token() });
-      if (me && me.status === 401) await signedOut();
-      else if (me && me.ok && me.data && me.data.user) {
-        auth = Object.assign({}, auth, {
-          userId: me.data.user.id,
-          username: me.data.user.username,
-          nickname: me.data.user.nickname,
-        });
-        await api.setAuth(auth);
-        whoEl.textContent = " · " + displayName(auth);
-      }
+    if (signedIn()) {
+      const me = await api.authMe();
+      if (me && (me.code === "UNAUTHORIZED" || me.status === 401)) await signedOut();
+      else if (me && me.ok) await refreshAuth();
       await syncAllRooms();
       markRoomRead(room);
       paintTabs();
       scrollToLatest();
     }
+    /* 顶栏 / 创意工坊登录、登出后，讨论区跟随同一账户（登录态来自主进程 auth-store）。 */
+    if (api && typeof api.onAuthChanged === "function") {
+      api.onAuthChanged(async () => {
+        const was = signedIn();
+        await refreshAuth();
+        if (signedIn() === was) return;
+        if (signedIn()) {
+          await syncAllRooms();
+          markRoomRead(room);
+        }
+        paintTabs();
+        scrollToLatest();
+      });
+    }
     pollTimer = setInterval(async () => {
-      if (!token()) {
-        const st = await api.getAuth();
-        if (st && st.auth && st.auth.token) {
-          auth = st.auth;
-          locale = st.locale === "en" ? "en" : locale;
-          setLoggedIn(true);
+      if (!signedIn()) {
+        await refreshAuth();
+        if (signedIn()) {
           await syncAllRooms();
           markRoomRead(room);
           paintTabs();
@@ -908,10 +904,9 @@
   };
   pendingClear.onclick = () => showPending(null);
   modeLogin.onclick = () => setAuthMode("login");
-  modeReg.onclick = () => setAuthMode("register");
   modePass.onclick = () => setAuthMode("passwd");
   authGo.onclick = doAuth;
-  [authPass, authPassNew, authPassNew2, authNick].forEach((el) => {
+  [authPass, authPassNew, authPassNew2].forEach((el) => {
     el.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") doAuth();
     });
@@ -961,7 +956,7 @@
     api.onShown(() => scrollToLatest());
   }
   document.addEventListener("paste", async (ev) => {
-    if (!token()) return;
+    if (!signedIn()) return;
     const items = ev.clipboardData && ev.clipboardData.items;
     if (!items) return;
     for (const it of items) {

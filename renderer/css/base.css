@@ -1357,6 +1357,38 @@ body.plan-resizing * {
   margin-top: 5px;
 }
 
+/* ── 构建工作流 · Agent 设定（模型 / 模式 / 思考强度）：三格等宽，窄窗自动换行 ── */
+.wfb-agent {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.wfb-agent-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.wfb-agent-lab {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.wfb-agent-sel {
+  width: 100%;
+  margin-top: 0;
+  padding: 6px 8px;
+}
+
+.wfb-agent-hint {
+  grid-column: 1 / -1;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
 .mt-dialog-foot {
   padding: 10px 14px;
   border-top: 2px solid var(--bd);

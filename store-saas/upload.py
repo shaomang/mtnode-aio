@@ -17,6 +17,9 @@ REMOTE_TMP = "/tmp/mtnode-store-upload"
 DEFAULT_SFTP = Path(r"E:\dev\mt-ai-router\.vscode\sftp.json")
 UPLOAD_FILES = (
     "server.mjs",
+    "sms-provider.mjs",
+    "account-store.mjs",
+    "migrate-accounts.mjs",
     "package.json",
     "mtnode-store.service",
     "deploy.sh",

@@ -7828,11 +7828,18 @@ function openOverlay(title, opts) {
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
+    box.classList.remove("author-box");
+    /* 每个弹窗都从样式表默认尺寸重新开始：作者小窗等曾用内联 cssText 改过这个
+       共享的 .overlay-box，残留的 width/max-height 会被下一个窗（如设置）继承，
+       变得又窄又高、超出视口后底部的关闭按钮够不着（见 openAuthorPopup） */
+    box.style.cssText = "";
     /* 上一个宿主确认框的归属标识必须随弹窗一起作废：残留会让确认框自毁时
        把「正在显示的别的弹窗」误认成自己而 closeOverlay（见 app-nodes.js
        confirmAssistAction 的 overlayIsMine） */
     if (box.dataset.ixConfirmId) delete box.dataset.ixConfirmId;
   }
+  /* 内联居中同理：作者窗曾写死 alignItems，清掉让后续弹窗走样式表 */
+  $("#overlay").style.alignItems = "";
   const ovBody = $("#ovBody");
   if (ovBody) ovBody.classList.remove("tpl-store-body", "g-ref-ov");
   $("#ovTitle").textContent = title;
@@ -7850,8 +7857,11 @@ function closeOverlay() {
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
+    box.classList.remove("author-box");
+    box.style.cssText = "";
     if (box.dataset.ixConfirmId) delete box.dataset.ixConfirmId;
   }
+  $("#overlay").style.alignItems = "";
   const body = $("#ovBody");
   if (body) body.classList.remove("tpl-store-body", "g-ref-ov");
   document.querySelectorAll("#overlay > .plugin-pop").forEach((el) => el.remove());
@@ -16528,7 +16538,135 @@ async function collectWorkflowBuildSkills() {
   return { build, all };
 }
 
-/** 对话框内容：工具单选列表 + 「仅显示生成类」开关 + 要求输入框（写入 ref） */
+/* ---------- 构建会话的 Agent 设定：模型 / 模式（预设）/ 思考强度 ----------
+   与开发节点（devModel / devPreset / devEffort）同一套真源与语义：
+   模型走 devAgentModelGroups() 的「路由|模型 id」，模式走 AGENT_PRESETS，
+   思考强度走 AGENT_EFFORT_UI_ORDER；三项各自独立，空 = 跟随当前默认。
+   选择存在画布上（wf.wfBuildAgent），重开本对话框沿用上次的选择。 */
+
+/** 归一：脏值（服务商被删 / 档位已废）一律当未选，绝不把不存在的模型带进会话 */
+function wfBuildAgentNormalize(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const preset =
+    typeof devPresetKnown === "function"
+      ? devPresetKnown(r.preset)
+      : String(r.preset || "").trim();
+  const effort =
+    typeof devEffortKnown === "function"
+      ? devEffortKnown(r.effort)
+      : String(r.effort || "").trim();
+  return {
+    provider: String(r.provider || "").trim(),
+    model: String(r.model || "").trim(),
+    preset: preset || "",
+    effort: effort || "",
+  };
+}
+
+/** 对话框里的三格选择器：模型（按服务商分组）/ 模式 / 思考强度（改选即写回 state.agent） */
+function wfBuildAgentPicker(host, state) {
+  const a = state.agent;
+  const lab = document.createElement("div");
+  lab.className = "wfb-lab";
+  lab.textContent = I18n.t("Agent 设定（模型 / 模式 / 思考强度）");
+  host.appendChild(lab);
+  const grid = document.createElement("div");
+  grid.className = "wfb-agent";
+  host.appendChild(grid);
+  const addOpt = (sel, value, text, tip) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    if (tip) o.title = tip;
+    sel.appendChild(o);
+    return o;
+  };
+  const cell = (label, sel) => {
+    const w = document.createElement("div");
+    w.className = "wfb-agent-cell";
+    const l = document.createElement("span");
+    l.className = "wfb-agent-lab";
+    l.textContent = label;
+    sel.className = "mt-form-input wfb-agent-sel";
+    w.appendChild(l);
+    w.appendChild(sel);
+    grid.appendChild(w);
+  };
+  /* 模型格：值 = 路由|模型 id（路由与模型必须成对，换模型即换路由） */
+  const modSel = document.createElement("select");
+  addOpt(modSel, "", I18n.t("跟随默认（不指定）"));
+  let anyModel = 0;
+  const groups =
+    typeof devAgentModelGroups === "function" ? devAgentModelGroups() || [] : [];
+  for (const g of groups) {
+    const models = g.models || [];
+    if (!models.length) continue;
+    const og = document.createElement("optgroup");
+    og.label = g.name || g.id;
+    for (const m of models) {
+      addOpt(og, g.id + "|" + m, String(m));
+      anyModel++;
+    }
+    modSel.appendChild(og);
+  }
+  const curKey = a.provider && a.model ? a.provider + "|" + a.model : "";
+  modSel.value = curKey;
+  if (modSel.value !== curKey) modSel.value = ""; /* 已不在清单里（服务商被删）→ 跟随默认 */
+  modSel.onchange = () => {
+    const v = String(modSel.value || "");
+    if (!v) {
+      a.provider = "";
+      a.model = "";
+      return;
+    }
+    const at = v.indexOf("|");
+    a.provider = v.slice(0, at);
+    a.model = v.slice(at + 1);
+  };
+  cell(I18n.t("模型"), modSel);
+  if (!anyModel) {
+    const hint = document.createElement("div");
+    hint.className = "wfb-agent-hint";
+    hint.textContent = I18n.t(
+      "暂无可用模型：请先在 设置 → 模型服务 中添加服务商与模型。",
+    );
+    grid.appendChild(hint);
+  }
+  /* 模式格：档位真源 AGENT_PRESETS（与会话 / 开发节点同一张表），不另抄一份 */
+  const preSel = document.createElement("select");
+  addOpt(preSel, "", I18n.t("跟随默认（不指定）"));
+  for (const p of (typeof AGENT_PRESETS !== "undefined" && AGENT_PRESETS) || [])
+    addOpt(preSel, p.id, I18n.t(p.labelKey), p.hint ? I18n.t(p.hint) : "");
+  preSel.value = a.preset || "";
+  preSel.onchange = () => {
+    a.preset = String(preSel.value || "");
+  };
+  cell(I18n.t("模式"), preSel);
+  /* 思考强度格：真源 AGENT_EFFORT_UI_ORDER（轻 / 标准 / 强 / 最强） */
+  const effSel = document.createElement("select");
+  addOpt(effSel, "", I18n.t("跟随默认（不指定）"));
+  const order =
+    (typeof AGENT_EFFORT_UI_ORDER !== "undefined" && AGENT_EFFORT_UI_ORDER) ||
+    ["low", "high", "xhigh", "max"];
+  const effLabels =
+    (typeof AGENT_EFFORT_LABELS !== "undefined" && AGENT_EFFORT_LABELS) || {};
+  for (const v of order) {
+    let label = "";
+    if (typeof agentEffortLabelOf === "function") {
+      try {
+        label = String(agentEffortLabelOf(v) || "");
+      } catch (_) {}
+    }
+    addOpt(effSel, v, label || I18n.t(effLabels[v] || "标准"));
+  }
+  effSel.value = a.effort || "";
+  effSel.onchange = () => {
+    a.effort = String(effSel.value || "");
+  };
+  cell(I18n.t("思考强度"), effSel);
+}
+
+/** 对话框内容：工具单选列表 + Agent 设定 + 「仅显示生成类」开关 + 要求输入框（写入 ref） */
 function buildWorkflowToolPicker(host, groups, ref, state) {
   const lab = (text) => {
     const d = document.createElement("div");
@@ -16544,6 +16682,9 @@ function buildWorkflowToolPicker(host, groups, ref, state) {
   const footRow = document.createElement("div");
   footRow.className = "wfb-foot";
   host.appendChild(footRow);
+  /* Agent 设定（模型 / 模式 / 思考强度）：与开发节点同一套真源与语义，
+     用户没选 = 跟随当前默认（构建会话里仍可随时切换） */
+  wfBuildAgentPicker(host, state);
   lab(I18n.t("构建要求"));
   const ta = document.createElement("textarea");
   ta.className = "mt-form-input wfb-req";
@@ -16692,27 +16833,31 @@ function runningWfBuildSession() {
   );
 }
 
-/* 每次发起构建都新建会话运行：上下文干净（首轮 = 任务书），工作区 = 画布统一目录，
-   provider / model 跟随当前默认智能路由（与开发节点绑定会话同一套做法） */
-function createWfBuildSession() {
+/* 每次发起构建都新建会话运行：上下文干净（首轮 = 任务书），工作区 = 画布统一目录。
+   Agent 设定 = 用户在「构建工作流」对话框里选的模型 / 模式 / 思考强度（与开发节点同一套
+   语义：空 = 跟随当前默认智能路由 / 默认预设 / 标准档），未选时回落原来的默认口径。 */
+function createWfBuildSession(agent) {
   if (!S.wf) return null;
+  const a = wfBuildAgentNormalize(agent);
   const route =
-    typeof preferredAgentProviderRoute === "function"
+    a.provider ||
+    (typeof preferredAgentProviderRoute === "function"
       ? preferredAgentProviderRoute()
-      : "deepseek-official";
+      : "deepseek-official");
   const sess = {
     id: uid("as"),
     title: wfBuildSessionTitle(),
     workspace: dshWorkspaceOf(null),
     /* 所属画布 = 发起构建时用户看到的那张图（此后不随切画布漂移） */
     canvasWfId: currentVisibleWfId(),
-    preset: AGENT_PRESET_DEFAULT,
+    preset: a.preset || AGENT_PRESET_DEFAULT,
     provider: route || "deepseek-official",
     model:
-      typeof preferredAgentModelForRoute === "function"
+      a.model ||
+      (typeof preferredAgentModelForRoute === "function"
         ? preferredAgentModelForRoute(route) || ""
-        : "",
-    effort: "high",
+        : ""),
+    effort: a.effort || "high",
     messages: [],
     archived: false,
     updatedAt: Date.now(),
@@ -16755,6 +16900,10 @@ async function promptBuildWorkflow(pt, retryState) {
       (groups.build.length ? groups.build[0].name : groups.all[0].name),
     req: (retryState && retryState.req) || "",
     onlyBuild: groups.build.length ? true : false,
+    /* Agent 设定（模型 / 模式 / 思考强度）：沿用上次为该画布选的值，未选 = 跟随默认 */
+    agent: wfBuildAgentNormalize(
+      (retryState && retryState.agent) || (S.wf && S.wf.wfBuildAgent),
+    ),
   };
   const ref = {};
   const res = await mtDialogForm({
@@ -16780,7 +16929,7 @@ async function promptBuildWorkflow(pt, retryState) {
   const req = String((ref.ta && ref.ta.value) || "").trim();
   if (!req) {
     toast(I18n.t("请先填写构建要求"), "warn");
-    await promptBuildWorkflow(pt, { chosen: skill.name, req: "" });
+    await promptBuildWorkflow(pt, { chosen: skill.name, req: "", agent: state.agent });
     return;
   }
   /* 先确认技能正文真取到了：内置技能（skillList 探测不到）读不到就直接中止，绝不静默丢技能 */
@@ -16801,7 +16950,14 @@ async function promptBuildWorkflow(pt, retryState) {
     );
     return;
   }
-  const sess = createWfBuildSession();
+  /* 用户选定的 Agent 设定随画布落盘：下次为同一画布发起构建沿用同一套。
+     三项都没选（跟随默认）就不写字段，别让画布 JSON 多一个空对象。 */
+  const agentSel = wfBuildAgentNormalize(state.agent);
+  if (agentSel.provider || agentSel.model || agentSel.preset || agentSel.effort)
+    S.wf.wfBuildAgent = agentSel;
+  else delete S.wf.wfBuildAgent;
+  scheduleSave();
+  const sess = createWfBuildSession(state.agent);
   if (!sess) return;
   S.agentActiveId = sess.id;
   await persistAgentSession();
@@ -24705,6 +24861,11 @@ function setForegroundWf(wf) {
   S._fgWf = wf;
   S.wf = wf;
   if (switching) applyWfView(wf);
+  /* 团队恒绑定当前画布：前台画布一落定就立刻换团队（标题 + 内容），并撤掉
+     loadWorkflow 期间盖上的加载屏 —— 否则面板还停在走掉那张画布上（串线），
+     见 app-teamview.js 的 teamViewOnCanvasSwitch / teamViewBeginCanvasSwitch。 */
+  if (switching && typeof teamViewOnCanvasSwitch === "function")
+    teamViewOnCanvasSwitch();
   return wf;
 }
 /* ── 画布视图记忆（切 Tab 不弹回根画布）──
@@ -25640,6 +25801,10 @@ async function ensureWorkflow() {
 async function loadWorkflow(id, opts) {
   const skipFlush = !!(opts && opts.skipFlush);
   if (S.wf && S.wf.id === id) return;
+  /* 团队视图：切换一开始就盖上加载屏（内容仍属走掉那张画布 → 串线风险），
+     等新画布对象落定由 setForegroundWf → teamViewOnCanvasSwitch 重渲染 + 撤屏。 */
+  if (typeof teamViewBeginCanvasSwitch === "function")
+    teamViewBeginCanvasSwitch(id);
   /* 切画布前先收掉设置窗：设置都是即时写回的，skipSave 只跳过关窗那一下多余落盘
      （紧接着就要 flush，skipFlush 时这张画布甚至已被删除，persist 会把它复活）。 */
   closeNodeSettingsDialog({ silentRerender: true, skipSave: true });
@@ -25665,6 +25830,9 @@ async function loadWorkflow(id, opts) {
   } else {
     const r = await window.api.wfLoad(id);
     if (!r.ok) {
+      /* 没切过去：撤掉团队加载屏，按当前（仍是原来那张）画布重画。 */
+      if (typeof teamViewCancelCanvasSwitch === "function")
+        teamViewCancelCanvasSwitch();
       toast(I18n.t("打开失败：") + r.error, "err");
       return;
     }
@@ -25822,23 +25990,10 @@ function renderWfWorkspace() {
     syncAssistWorkspaceChrome();
   });
   const openBtn = workspaceOpenButton(() => inp.value || wfWorkspace());
-  const cl = document.createElement("button");
-  cl.className = "mini btn-sq";
-  cl.textContent = "×";
-  cl.title = I18n.t("清除统一目录,恢复各节点单独设置");
-  cl.onclick = () => {
-    if (!S.wf) return;
-    S.wf.workspace = "";
-    scheduleSave(true);
-    renderCanvas();
-    renderWfWorkspace();
-    syncAssistWorkspaceChrome();
-  };
   box.appendChild(lab);
   box.appendChild(inp);
   box.appendChild(openBtn);
   box.appendChild(br);
-  box.appendChild(cl);
 }
 
 function renameWorkflowDialog() {
@@ -25931,16 +26086,35 @@ function openMetricsDistribution(metrics) {
       I18n.t("调用"),
       "LLM",
       I18n.t("工具"),
+      I18n.t("费用"),
     ]) {
       const th = document.createElement("th");
       th.textContent = h;
       head.appendChild(th);
     }
     mt.appendChild(head);
+    let runCost = null;
     for (const b of metrics.models) {
       const billed =
         (b.inputTokens || 0) + (b.cacheReadTokens || 0) + (b.cacheWriteTokens || 0);
       const tr = document.createElement("tr");
+      /* 行可点：下钻该模型的性能指标（TTFT / 吞吐 / 端到端 / Prefill）。
+         本次运行桶没有宿主台账，用本轮 endedAt 判峰谷与单桶费用口径一致 */
+      if (typeof openModelPerfDialog === "function") {
+        tr.className = "tok-model-row";
+        tr.setAttribute("role", "button");
+        tr.tabIndex = 0;
+        tr.title = I18n.t("点击查看性能指标");
+        const openPerf = () =>
+          openModelPerfDialog(null, b, { atFallback: metrics.endedAt || metrics.startedAt || 0 });
+        tr.addEventListener("click", openPerf);
+        tr.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+            ev.preventDefault();
+            openPerf();
+          }
+        });
+      }
       const name = document.createElement("td");
       name.textContent = b.model || "?";
       const prov = document.createElement("span");
@@ -25948,6 +26122,14 @@ function openMetricsDistribution(metrics) {
       prov.textContent = b.provider || "";
       name.appendChild(prov);
       tr.appendChild(name);
+      /* DeepSeek 官方单价计价（app-cost.js 未加载时整列退化为 —）；
+         第 4 参传本轮时刻：metrics 桶没有自身 at，用它判峰谷（空闲半价） */
+      let bc = null;
+      try {
+        if (typeof costOfBucket === "function")
+          bc = costOfBucket(b.provider, b.model, b, metrics.endedAt || metrics.startedAt || 0);
+      } catch {}
+      if (bc) runCost = { currency: bc.currency, amount: (runCost ? runCost.amount : 0) + bc.amount };
       const cells = [
         fmtTok(billed),
         fmtTok(b.cacheReadTokens || 0),
@@ -25957,15 +26139,37 @@ function openMetricsDistribution(metrics) {
         String(b.calls || 0),
         fmtDurLong(b.llmMs || 0),
         fmtDurLong(b.toolMs || 0),
+        bc && typeof fmtMoney === "function" ? fmtMoney(bc.amount, bc.currency) : "—",
       ];
-      for (const c of cells) {
+      for (let i = 0; i < cells.length; i++) {
         const td = document.createElement("td");
-        td.textContent = c;
+        td.textContent = cells[i];
+        if (i === cells.length - 1) td.className = "tok-badge-cost";
         tr.appendChild(td);
       }
       mt.appendChild(tr);
     }
     body.appendChild(mt);
+    /* 本次费用（表前）+ 账户余额（表后）：仅 DeepSeek 官方路由有值，余额取 app-cost.js 缓存 */
+    if (runCost) {
+      const c = document.createElement("div");
+      c.className = "tok-badge-meta metrics-cost-line tok-badge-cost";
+      c.textContent =
+        I18n.t("本次费用") +
+        ": ≈" +
+        (typeof fmtMoney === "function" ? fmtMoney(runCost.amount, runCost.currency) : "—");
+      body.insertBefore(c, mt);
+    }
+    if (typeof balanceLine === "function") {
+      let bl = null;
+      try {
+        bl = balanceLine();
+      } catch {}
+      if (bl) {
+        bl.classList.add("tok-badge-bal");
+        body.appendChild(bl);
+      }
+    }
   }
   if (metrics.tools && metrics.tools.length) {
     const t = document.createElement("div");

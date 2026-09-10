@@ -1,26 +1,67 @@
 # Input / process / save
 
-![Flow](img/io-proc.svg)
+> In one sentence: wire the smallest chain — input node → process node → save node — and produce your first file on disk.
 
-## Input
+![Data flow](img/mtnode-flow-01-flow.svg)
+*Figure 1: the input → process → save data flow; data ports carry content, control wires only trigger.*
 
-- **Text**: edit in place; 📄 imports txt / md / json / yaml (rejected over 500KB).
-- **Image**: click or drop a file.
-- **Audio / video**: click or drop a local media file; the node previews it and outputs that file’s `file:///` URL (wireable into media reference slots, a save node, or `@`-referenced).
-- **File node / Table** (inside a database super): batch import arbitrary files and agent-built tables, see [Database nodes](#database-nodes).
-- **Asset**: the content does not live on this canvas but in the **asset library** (a local vault shared across canvases — deleting the canvas loses nothing); one content item = one pair of ports, see [Asset library & asset nodes](#asset-library).
+## Goal
 
-## Process
+After this page you can lay out all three steps on the canvas — text / image / audio-video in, an LLM or an image generation out, written into a file — and you know each input kind's real capacity limits plus the save node's rules for writing to disk. How to tune parameters and how to preview a request is the next page.
 
-- **Text**: prompt + inputs → LLM. **🐋 Agent** turns it into a task ([Agent task](#agent-nodes)).
-- **Image generation**: text-to-image; reference images use edit APIs. Vision needs “Vision” enabled (DeepSeek Official has no vision). The **transparent toggle** in the title bar (click to toggle; when on it becomes a spinning rainbow edge) runs **two-pass difference matting**: pass 1 renders a **pure-black baseline** that becomes the matte's **sole reference**, pass 2 then receives exactly that baseline as its **only reference image** (sent at native size, never downscaled) and renders a **strict replica on pure white**, and the two are differenced per pixel against the measured background level into a real alpha channel — the output is a transparent PNG. It stays invisible to you, but every run generates twice (≈2× tokens); only providers that can take the baseline as a reference (OpenAI-compatible / Stability) get matted, the rest are **skipped explicitly with a notice** and deliver pass 1 (pure black) alone rather than painting a second image from scratch. Right-click the toggle for matte settings; see [Node guide](#node-guide).
-- **Audio generation / Video generation** (two first-level submenus): **Minimax Music 3** for music, **SoVITS speech** for text-to-speech (GPT-SoVITS), **Minimax H3** and **Remotion video** for video — all local backends with their own output paths, see [Music, video, network and execute nodes](#media-net).
-- **Anim**: slice an image on a grid into a GIF; chroma key optional.
+## Before you start
 
-**▶ run · ◈ preview · API** for provider / model / temperature / size. **Attempts** (1–10) run in parallel; square tabs pick which result downstream sees. When a process node finishes, downstream runs automatically; if they already have output, choose overwrite or stop.
+- At least one **text provider** with an API key (text processing) and / or an **image provider** (image generation) — see [Providers & API](#providers).
+- If you want the save node to use a relative path, give this canvas a **workspace** first — see [Workspace & archives](#workspace).
+- Know that **right-clicking empty canvas** is the way to add nodes — see [Nodes, wires, @ refs](#nodes-wires).
 
-Output **Browse / Copy / Clear** opens a large viewer or resets.
+## Steps
 
-## Save
+### 1. Add an input node and put the content in
 
-Set a path, then ▶ writes YAML or an image. Optional auto-save on input change. Relative paths need a workspace; see [Workspace](#workspace).
+1. **Right-click empty canvas** → **Input node** → text / image / audio / video; pick one.
+2. **Fill it in place**: a text node takes typing straight in the card; click **📄** to import `txt` / `md` / `json` / `yaml`. An image node takes a click to choose, or drop a file onto it.
+3. **Remember the real capacity limits**: a single text item over **2 MB** is **truncated, keeping the head**; over **32 MB** it is **not read in** and only the file path stays on the node. Dropping a file and importing via 📄 share the same rule (the old claim of "rejected over 500KB" was wrong).
+4. **Audio / video**: pick one local media file and the node previews it in place; its output value is that file's `file:///` URL, which can go straight into a reference port, into a save node, and can be picked up by `@Title`. The receiving side normalizes the URL back to a local absolute path for you — no manual conversion.
+5. **To reuse content across canvases**, don't copy-paste: use an asset node instead (deleting a canvas never loses the asset library) — see [Asset library](#asset-library).
+
+### 2. Add a process node and wire it up
+
+1. **Right-click** → **Process node** → **Text processing** or **Image generation**.
+2. **Feed it the input**: drag a wire from the input node's output port to the process node's input port. Text processing eats text; image generation eats a prompt, and if you want a reference image add a second image wire — that is **image-to-image**.
+3. **Write the prompt**: state what you want inside the node; `@Title` pulls in an upstream node's content.
+4. **Text processing can switch on 🐋 Agent**: the prompt then becomes a task, and the model can read files / go online / run commands before delivering — see [Agent task & session](#agent-nodes).
+5. **Click ▶ Run**: when processing finishes the downstream nodes run automatically; if a downstream node already has content, you are asked whether to **overwrite** or **not continue**.
+
+### 3. Add a save node to write to disk
+
+1. **Right-click** → **Save node**, wired to the process node's data output. Do **not** put a save node after an agent node, or after text processing with 🐋 Agent switched on — those write files themselves.
+2. **Fill in the save path**: a relative path works when the canvas has a workspace, otherwise give an absolute path.
+3. **Check the extension**: the save node is typed by **the port the wire actually comes out of** — text → `.md` by default (YAML content also lands as `.md`), image → `.png`, audio → `.wav`, video → `.mp4`; a wire dragged out of an image port flips the save node to image saving automatically.
+4. **Tick "auto-save on input change" if you want it**: once on, every upstream change writes once; on a batch chain that is one file per item, with the name appended as `{filename}_{input node title}` — see [Batch, split, merge](#batch).
+5. **Click ▶ to write out**; the artifact lands at the path you gave.
+
+## Result
+
+- The canvas holds a chain you can re-run as often as you like: change the input → ▶ → a new result → written into the file automatically or by hand.
+- The save node remembers the path of its most recent write, and the saved file is visible on the node.
+- Every later page builds on this three-step chain: tuning parameters is [Parameters & runs](#params-runs), running many items is [Batch, split, merge](#batch), and audio/video output is [Music / speech / video](#media-gen).
+
+## Common mistakes
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| ▶ says no provider configured / no model available | No provider with an API key | Add one in Settings → Model services and fill in the key — see [Providers & API](#providers) |
+| The imported text stops after the opening | The single item is over 2 MB and was truncated, keeping the head | Split it into several items / go through batch, or read it from the file instead |
+| After importing, the node holds only a path and no text | The file is over 32 MB, so it is not read in | Shrink the file, or process it in a way that can read from a path |
+| Save reports "path cannot be resolved" | A relative path, but the canvas has no workspace | Give the canvas a workspace, or switch to an absolute path |
+| The save lands as `.md`, not `.yaml` | `.md` simply is the default extension for a text save | Check the source port type; if you need YAML, let the `.md` file carry YAML content |
+| Text processing says it cannot read images | An image wired into a text provider with no vision | Tick "Vision" on that provider, or switch to a multimodal model |
+
+## Next
+
+- [Parameters & runs](#params-runs)
+- [Batch, split, merge](#batch)
+- [Music / speech / video](#media-gen)
+- [Global node](#global-broadcast)
+- [Save, import/export, workshop](#workflows)

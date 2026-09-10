@@ -178,10 +178,20 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   storageOpen: () => ipcRenderer.invoke('storage:open'),
   dataGetRoot: () => ipcRenderer.invoke('data:getRoot'),
+  /* 应用目录（app.getAppPath() / exe 目录）：事实库路径守卫用，库绝不允许落在应用目录内 */
+  appDirs: () => ipcRenderer.invoke('app:dirs'),
   dataSetRoot: (opts) => ipcRenderer.invoke('data:setRoot', opts || {}),
   dataOpenRoot: () => ipcRenderer.invoke('data:openRoot'),
   appRelaunch: () => ipcRenderer.invoke('app:relaunch'),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:readText'),
+  /* 事实库插图：剪贴板/截图取图 + 复制进 assets 目录 + 删无引用图片（主进程校验目录白名单） */
+  clipboardReadImage: () => ipcRenderer.invoke('clipboard:readImage'),
+  factSaveImage: (opts) => ipcRenderer.invoke('fact:saveImage', opts || {}),
+  factDeleteImages: (paths) => ipcRenderer.invoke('fact:deleteImages', { paths: paths || [] }),
+  /* 事实库单篇文档的重命名 / 删除：入参 opts = { file, name? }（file = 该文档 <doc>.md 绝对路径）。
+     主进程校验路径，只动这一篇的 md + sidecar；库内其它文档与共享 assets/ 不受影响。 */
+  factRenameLibrary: (opts) => ipcRenderer.invoke('fact:renameLibrary', opts || {}),
+  factRemoveLibrary: (opts) => ipcRenderer.invoke('fact:removeLibrary', opts || {}),
   netFetch: (url) => ipcRenderer.invoke('net:fetch', url),
   storeRequest: (opts) => ipcRenderer.invoke('store:request', opts),
   storePickMtNodes: () => ipcRenderer.invoke('store:pickMtNodes'),
@@ -192,6 +202,28 @@ contextBridge.exposeInMainWorld('api', {
   storeCachePut: (opts) => ipcRenderer.invoke('store:cachePut', opts),
   storeCacheDelete: (id) => ipcRenderer.invoke('store:cacheDelete', id),
   storeCacheHas: (id) => ipcRenderer.invoke('store:cacheHas', id),
+  /* 账户与登录：token 由主进程 auth-store 持有，渲染层只拿账号摘要（不暴露任意 URL 请求） */
+  authState: () => ipcRenderer.invoke('auth:state'),
+  authLoginPassword: (opts) => ipcRenderer.invoke('auth:loginPassword', opts || {}),
+  authChangePassword: (opts) => ipcRenderer.invoke('auth:changePassword', opts || {}),
+  authSmsSend: (opts) => ipcRenderer.invoke('auth:smsSend', opts || {}),
+  authSmsLogin: (opts) => ipcRenderer.invoke('auth:smsLogin', opts || {}),
+  authWechatStart: (opts) => ipcRenderer.invoke('auth:wechatStart', opts || {}),
+  authWechatPoll: (opts) => ipcRenderer.invoke('auth:wechatPoll', opts || {}),
+  authWechatLocal: () => ipcRenderer.invoke('auth:wechatLocal'),
+  authWechatLaunch: () => ipcRenderer.invoke('auth:wechatLaunch'),
+  authMe: () => ipcRenderer.invoke('auth:me'),
+  authSetNickname: (opts) => ipcRenderer.invoke('auth:setNickname', opts || {}),
+  authBind: (opts) => ipcRenderer.invoke('auth:bind', opts || {}),
+  authUnbind: (opts) => ipcRenderer.invoke('auth:unbind', opts || {}),
+  authLogout: () => ipcRenderer.invoke('auth:logout'),
+  onAuthChanged: (cb) => {
+    const handler = (_e, state) => {
+      try { cb(state); } catch (_) {}
+    };
+    ipcRenderer.on('auth:changed', handler);
+    return () => ipcRenderer.removeListener('auth:changed', handler);
+  },
   forumOpen: () => ipcRenderer.invoke('forum:open'),
   appPluginsCatalog: () => ipcRenderer.invoke('appPlugins:catalog'),
   appPluginsIcon: (name) => ipcRenderer.invoke('appPlugins:icon', name),
@@ -413,6 +445,7 @@ contextBridge.exposeInMainWorld('api', {
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),
   apiPreview: (spec) => ipcRenderer.invoke('api:preview', spec),
   apiValidateKey: (provider) => ipcRenderer.invoke('api:validateKey', provider),
+  apiDeepseekBalance: (provider) => ipcRenderer.invoke('api:deepseekBalance', provider),
 
   /* 流式调用：回调接收 {type:'reasoning'|'delta'|'done'|'error', text?, error?}；
      done/error 后自动移除监听。返回 invoke 的 Promise（{ok}）。 */

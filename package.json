@@ -1,7 +1,7 @@
 {
   "name": "mtnode-ai-orchestrator",
   "productName": "MTNode AI编排器",
-  "version": "1.2.9",
+  "version": "1.2.10",
   "description": "MTNode AI编排器（MTNode AI Orchestrator）— AI 工作流编排",
   "main": "main.js",
   "scripts": {
@@ -12,6 +12,8 @@
     "dist:msix": "node scripts/msix/make-msix.mjs",
     "dist:msix:sign": "node scripts/msix/make-msix.mjs --selfsign",
     "dist:msix:test": "node scripts/msix/make-msix.mjs --install-test",
+    "release": "node scripts/release.mjs",
+    "release:store": "node scripts/release.mjs --store-only",
     "deps:usage": "node scripts/app-deps-usage.mjs --report",
     "deps:cap": "node scripts/app-deps-usage.mjs --tree=gateway --capability",
     "deps:check": "node scripts/app-deps-check.mjs",
@@ -25,6 +27,7 @@
     "ext:sync": "node ext-repo/build.mjs && python ext-repo/upload.py",
     "store:deploy": "python store-saas/upload.py",
     "deploy:privacy": "python scripts/upload-privacy.py --upload-only && python scripts/upload-privacy.py --patch-only",
+    "deploy:ssl": "python scripts/deploy-ssl.py",
     "store:seed-skills": "node store-saas/seed-skills.mjs",
     "store:release-skills": "node tools/release-skills.mjs",
     "build:agent-skills-index": "node tools/build-mtnode-agent-skill-index.js"

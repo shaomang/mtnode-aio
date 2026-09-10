@@ -3,6 +3,7 @@
 > 状态：v1 设计 · 2026-08
 > 参考：[tt-a1i/archify](https://github.com/tt-a1i/archify)（Agent 扫描代码库产出可核验架构图的 Skill）。
 > 与 archify 的本质区别：archify 一次性产出静态架构图；MTNode 的「开发」节点是**活的、可剥洋葱的项目架构画布**——先大颗粒、逐层细化，每个功能块的「开发 / 细化」都先弹对话框确认、再在新建会话中运行，最终可按画布反向搭建项目。
+> 应用内手册：`guides/manual/dev-nodes.md`（英文 `guides/manual/en/dev-nodes.md`，目录见 `guides/manual/index.json`）。
 
 ---
 
@@ -13,7 +14,7 @@
 | **开发节点（Dev Node）** | 项目中的一个功能块/模块。形态上是带 `dev: true` 标志的超级节点（`kind: "super"`），可嵌套子开发节点。 |
 | **概述（note）** | 开发节点的 `note` 字段：**两段式**说明该模块——`【功能】`（面向非技术的设计描述）+ `【实现】`（面向技术人员的实现梗概）。折叠卡直接可见功能段，完整两段 `mtnode_canvas_get` 天然返回，供 Agent 快速定位。书写规范见 §6。 |
 | **关系线（rel）** | 元素之间的 UML 风格连线：**普通直线**走向、可双向/单向/无箭头、线上可带文字（点选节点时该节点的关系线高亮）（如「调用」「实现」）。**只表达关系，不承载数据、不参与执行**；开发节点架构图中优先使用它（数据流管线仍用普通连线）。 |
-| **开发会话** | 每次点击「开发 / 细化」并在对话框确认后**新建**一个 Agent 会话来运行：标题「开发 · <节点标题>」/「细化 · <节点标题>」，工作区 = 项目根目录，首条消息为该模块的开发任务书。节点通过 `agentSessionId`（最近一次）+ `devSessionIds`（历史）关联，可用「会话 N」按钮回到最近一次。**「建议 / 问询」不建会话**：它们是只读调研运行（后台作业，见 §4）。 |
+| **开发会话** | 每次点击「开发 / 细化」并在对话框确认后**新建**一个智能会话来运行：标题「开发 · <节点标题>」/「细化 · <节点标题>」，工作区 = 项目根目录，首条消息为该模块的开发任务书。节点通过 `agentSessionId`（最近一次）+ `devSessionIds`（历史）关联，可用「会话 N」按钮回到最近一次。**「建议 / 问询」不建会话**：它们是只读调研运行（后台作业，见 §4）。 |
 | **剥洋葱（按深度）** | 搭建策略：先建顶层大块（如 前端/后端/数据层），确认后再向下细分子块。**「细化」的口径是深度，不是本层展开多少个子块**：默认「深度细化到无法再细」——拆出的每个子块继续判断能否再拆，一路下钻（模块 → 文件 → 类 / 接口 / 枚举），产物为**多层功能块树**；也可选「只展开本层」，之后到各子块上分别点「细化」。细化对话框里同时给出当前子树的深度统计行。 |
 
 命名说明：需求原文为「功能块」。最终采用「开发节点」——与功能入口「开发」按钮一致，且避免与超级节点既有概念混淆；节点徽章显示「开发」。
@@ -45,7 +46,9 @@
 | `devSessionIds` | string[] | 该功能块名下的历史会话 id（每次「开发 / 细化」新建一个，最新在前，上限 24） |
 | `devKind` | `module` \| `file` \| `class` \| `interface` \| `enum` | 元素类型（外框配色：绿 / 蓝 / 橙 / 紫 / 粉） |
 | `devColor` | string | 外框颜色（`#rrggbb`，小写存储；空串 = 按元素类型默认色；可经 `mtnode_canvas_edit` 补丁设置）。用户手选色与**功能色卡自动上色**都写这一个字段——自动上色只在创建时写一次，之后仍可被手选覆盖或清空（见 §6「功能色卡」） |
-| `devModel` | string | 该功能块选定的 **Agent 模型 id**（空串 = 未选择，跟随默认）。本块的「建议 / 问询」只读调研与「开发 / 细化」绑定会话都使用它；**未自行选择的子功能块就近向上继承**，子块自选则以子块为准 |
+| `devPreset` | string | 该功能块的 **Agent 预设**档（`AGENT_PRESETS` id：极简（默认）/ 标准 / 思维精简 / PTC 模式 / 创造；空串 = 跟随默认）。本块的「建议 / 问询」只读调研与「开发 / 细化」绑定会话都按它下达；**未自行选择的子功能块就近向上继承**，子块自选则以子块为准（旧名 `sketch` 自动认成 思维精简） |
+| `devModel` | string | 该功能块选定的 **Agent 模型 id**（空串 = 未选择，跟随默认）。与 `devPreset` / `devEffort` **三档各自就近向上继承、互不牵连**；子块自选则以子块为准 |
+| `devEffort` | string | **思考强度**档（`low` / `medium` / `high` / `xhigh` / `max`；空串 = 跟随默认）。弹层露出四档：轻 / 标准（默认）/ 强 / 最强；**思考档只看设置**，预设不再改写它 |
 | `devProvider` | string | `devModel` 对应的**智能路由**（`deepseek-official` / `mtnode_<id>` / 服务商名）。可由模型反查自动纠正，未选模型时无意义 |
 | `devFiles` | string[] | **核心文件列表**：本功能块最关键的源码文件，**最多 10 条**，以 `/` 分隔、**相对本块项目根（`devPath`）**（落在项目根内的绝对路径会被折成相对路径，根外绝对路径原样保留）。空 / 未填 = 折叠卡按兜底规则自动收集；**最外层（项目）开发块不列举**（读恒为空、写被拒绝）。详见下文「核心文件列表」 |
 
@@ -55,7 +58,7 @@
 
 通用对话框：`mtDialogForm()`（`app.js`，复用 `#mtDialog` 深色对话框宿主）——信息区（键值行 / 概述块 / 子元素清单）+ 可选输入区 + 多按钮；`requireText` 时输入为空不关闭并内联提示；Esc 取消、Ctrl+Enter 提交。
 
-- 渲染位置：节点头部菜单栏**只保留元素类型徽章 + 颜色 / 模型小按钮**；「开发 / 细化 / 建议 / 问询 / 文件 N / 会话 N」等动作按钮全部放在折叠卡 body 下方按钮组（**顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 文件 N（核心文件列表）→ 会话 N**）。body **保持精简**：只含按钮组 +（展开时）核心文件列表 + 上次建议摘要 + 在途调研状态行——项目根目录、状态字样（「已完成」等）、生效模型行一律不再常驻 body（避免无用信息占用空间）：路径与状态在「开发 / 细化 / 建议 / 问询」四个确认对话框展示，生效模型看头部 🧠 按钮（含悬浮提示）。右键菜单提供同动作。
+- 渲染位置：节点头部菜单栏**只保留元素类型徽章 + 颜色 / Agent 设定小按钮**；「开发 / 细化 / 建议 / 问询 / 文件 N / 会话 N」等动作按钮全部放在折叠卡 body 下方按钮组（**顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 文件 N（核心文件列表）→ 会话 N**）。body **保持精简**：只含按钮组 +（展开时）核心文件列表 + 上次建议摘要 + 在途调研状态行——项目根目录、状态字样（「已完成」等）、生效模型行一律不再常驻 body（避免无用信息占用空间）：路径与状态在「开发 / 细化 / 建议 / 问询」四个确认对话框展示，生效的预设 / 模型 / 思考强度看头部 🧠 按钮（含悬浮提示）。右键菜单提供同动作。
 - **文件节点「打开」** `openDevFileNode(node)`（`renderer/app-devnode.js`）：`devKind = file` 的节点在下方按钮组多一个「打开」按钮。路径约定——文件节点标题 = 相对项目根（`devPath`）的路径（如 `renderer/app.js`），也支持绝对路径；标题不像路径时退回打开项目根目录；文件不存在或未设 `devPath` 时 toast 提示。**Markdown / YAML 文件改走应用内阅读器**（查看 / 编辑 / 保存，见「阅读器」小节）；标题为 `agent.md` 时自动回退打开既有 `AGENTS.md`。
 - **「建议」`suggestDevNode(node)`**（`renderer/app-devnode.js`）—— 让用户不必自己想「下一步做什么」：
   1. **先确认**：`mtDialogForm` 展示现状（元素类型 / 开发状态 / 项目根 / 下层元素数 / 历史会话数 / 上次建议时间）并说明接下来的动作；可选填**本轮关注点**；未设 `devPath` 时给黄条提醒。按钮：「取消」／（有缓存时）「查看上次建议」／**「确认生成建议」**；
@@ -216,7 +219,7 @@
 
 ```
 【功能】一款给非程序员用的可视化 AI 工作流桌面应用：在画布上把「输入 → 处理 → 输出」连起来，点一下就能批量跑图片、文本与音视频生成。
-【实现】对应目录：pipeline-console/。Electron（main/preload/renderer）+ dsh 网关（Node），二者经 IPC 通信；渲染层管画布与交互，网关管 Agent 会话与工具。
+【实现】对应目录：pipeline-console/。Electron（main/preload/renderer）+ dsh 网关（Node），二者经 IPC 通信；渲染层管画布与交互，网关管智能会话与工具。
 ```
 
 ### 6.7 反例
@@ -243,7 +246,7 @@
 
 ### 配套的执行节点（启动器）
 
-`execute` 节点在创建菜单里**归入「开发节点」二级菜单**（模块 / 文件 / 类 / 接口 / 枚举 → 执行），因为它的用途就是给项目或某个功能块配一个一键启动器：
+`execute` 节点在创建菜单里**归入「开发节点（项目架构 · 功能块）」二级菜单**（模块 / 文件 / 类 / 接口 / 枚举 → 执行），因为它的用途就是给项目或某个功能块配一个一键启动器：
 
 - 右键功能块 → 「在内部新建执行节点（启动器）」→ 直接在该块内部创建 `execute` 子节点（`parentSuperId` = 该块）并立刻弹出文件绑定对话框；
 - 展开壳层内直接右键空白添加，或在顶层添加后拖入壳层，同样成为该块的子节点；
@@ -297,7 +300,7 @@
 创建时调用 `devAutoColorNode(node)`，把推断出的功能色**写入** `node.devColor`（返回实际写入的 hex，未上色返回空串）：
 
 - Agent 侧：`mtnode_canvas_edit` create → `applyCanvasEdit`（`renderer/app-nodes.js`），**必须在 `title` / `note` 定稿之后**调用（归类靠这两项推断）；
-- 手工侧：右键「开发节点 · 功能块」等 `addNode` 入口（`renderer/app.js`），`extra` 里显式给了 `devColor` 时优先、不覆盖。
+- 手工侧：右键「开发节点（项目架构 · 功能块）」等 `addNode` 入口（`renderer/app.js`），`extra` 里显式给了 `devColor` 时优先、不覆盖。
 
 生效条件（全满足才上色）：是 `dev` 超级节点且非 `db` + `devKind = module` + `devColor` 为空。
 
@@ -330,15 +333,17 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 
 `devColor` 对 `mtnode_canvas_get` / `mtnode_canvas_edit` 一贯可读可写，因此助手可按用户要求「按功能色卡给这几块上色」直接补丁对应 hex。改色纪律不变：**先征询用户、勿擅自统一改色**；新增或调整分类、色值、关键词时，必须同一轮内改完 `DEV_FUNC_COLORS` + 色板 UI + 本小节 + 中英文手册色值表（三者数值必须与常量一致）。
 
-### 开发节点 Agent 模型（🧠 按钮 + 就近继承）
+### 开发节点 Agent 设定（🧠 按钮 · 预设 / 模型 / 思考强度 + 就近继承）
 
-同一个菜单栏区域在颜色按钮旁再加一个 **Agent 模型小按钮**（`🧠` + 当前生效模型名，未选 = 「自动」灰态，继承 = 虚线并点名来源功能块），点击展开 **模型选择弹出层**（`#devModelPop`，fixed 跟随按钮；与色板同为 persistent 面板：再点按钮 / ✕ / Esc 收起，点外部不再收起）：
+同一个菜单栏区域在颜色按钮旁再加一个 **Agent 设定小按钮**（`🧠` + 当前生效值摘要，三格全未指定 = 「自动」灰态，继承 = 虚线并点名来源功能块），点击展开 **Agent 设定弹出层**（`#devModelPop`，顶部**三格并列——预设 / 模型 / 思考强度**，与智能会话里的 Agent 菜单同一张档位表；fixed 跟随按钮；与色板同为 persistent 面板：再点按钮 / ✕ / Esc 收起，点外部不再收起）：
 
-- **可选清单**：按**智能路由分组**（`agentRouteOptions()` = DeepSeek 官方 + 已配置的其它服务商），组名取服务商显示名，组内列 `agentModelsForRoute(route)` 的模型；当前项打勾；一个模型都没有时提示先去「设置 → 模型服务」添加；
-- **数据**：写节点 `devModel`（模型 id）+ `devProvider`（路由），随工作流 JSON 保存、`mtnode_canvas_get` 透出、`mtnode_canvas_edit` 可补丁（Agent 侧 schema 一并暴露 `devColor` / `devModel` / `devProvider`，因此助手能按用户要求改色、改模型）；
-- **就近继承**：`devAgentModelOf(node)` 先看本块 `devModel`，为空则沿 `parentSuperId` 向上找**第一个已选模型的祖先块**（`inherited: true` + `source` 指向它），因此「整个项目统一用某个模型」只需在顶层功能块设一次，而任何子块单独选过即以子块为准；数据库超级节点（`db`）与普通节点不参与；
-- **作用范围**：①「建议 / 问询」的只读调研把 `provider/model` 传给 `dshRunTask`（并在进度日志首行写明「本轮模型：服务商 · 模型（继承自「×」）」）；②「开发 / 细化」新建的绑定会话直接以所选路由与模型开局（`createDevSessionForNode`）；③四个确认对话框（建议 / 开发 / 细化 / 问询）都多出「Agent 模型」一行（折叠卡 body 不再常驻生效模型行，生效模型看头部 🧠 按钮）。取消选择 = 「跟随默认（不指定）」，回到引擎默认路由与默认模型；
-- **实现**（`renderer/app-devnode.js`）：`devAgentRoutes` / `devAgentRouteName` / `devAgentModelGroups` / `devModelFitsRoute` / `devRouteOfModel`（路由与模型互校，路由失效或不匹配时**以模型为准**反查路由）→ `devModelOwn` / `devAgentModelOf` / `devAgentModelText` / `devModelScopeText` / `devModelDialogText` → `devModelButtonEl` / `devModelButtonRefresh`（不整盘重绘也能就地刷新按钮）→ `devModelPopEl` / `renderDevModelPop` / `openDevModelPop` / `applyDevModelChoice` / `toggleDevModelPicker`；`applyDevModelChoice` 先 `pushHistory()`（可撤销）再 `scheduleSave(true)`，`S.uiDevModelNode` 只用来记住「哪块正在选」：面板 persistent（**不再**由 `app.js` 的全局 mousedown 点外部收起），互斥收起走 `closeNodePopsExcept`、跟画布走 `repositionNodePops`，全局 keydown 里 Esc 同时收起色板与模型弹层（Hex 输入框聚焦时也生效）。
+- **预设 `devPreset`**：`AGENT_PRESETS` 的档位——极简（默认）/ 标准 / 思维精简 / PTC 模式 / 创造；清单顺序即档位表顺序，悬停有说明（旧名 `sketch` 自动认成 思维精简）；
+- **模型 `devModel`（+`devProvider`）**：按**智能路由分组**（`agentRouteOptions()` = DeepSeek 官方 + 已配置的其它服务商），组名取服务商显示名，组内列 `agentModelsForRoute(route)` 的模型；当前项打勾；一个模型都没有时提示先去「设置 · 模型服务」添加；
+- **思考强度 `devEffort`**：`low`=轻 / `medium`=中 / `high`=标准（默认）/ `xhigh`=强 / `max`=最强；弹层露出**四档：轻 / 标准 / 强 / 最强**（`medium` 是合法词汇，但默认 DeepSeek 路由会把它夹到 `low`，故不在 UI 露出）。**思考档只看设置**，预设不再改写它（早先「思维精简」把标准压到 low 的口径已取消），路由能力不足时网关夹到同侧最近低档并回显「所选档 → 实际生效档」；
+- **数据**：写节点 `devModel`（模型 id）+ `devProvider`（路由）+ `devPreset` + `devEffort`，随工作流 JSON 保存、`mtnode_canvas_get` 透出、`mtnode_canvas_edit` 可补丁（Agent 侧 schema 一并暴露 `devColor` / `devModel` / `devProvider` / `devPreset` / `devEffort`，因此助手能按用户要求改色、改模型与两项档位；未知预设 id 会被拒绝并回报，`devEffort` 集合外值一律丢弃并回报，传空串 = 清除回跟随默认）；
+- **就近继承**：模型 / 预设 / 思考强度**三档各自**沿 `parentSuperId` 向上找**第一个已选该档的祖先块**（`inherited: true` + `source` 指向它），互不牵连——可以在顶层块一次统一整棵树的模型与预设，再单独给某个子块换思考档；任何子块单独选过即以子块为准。数据库超级节点（`db`）与普通节点不参与；
+- **作用范围**：①「建议 / 问询」的只读调研把 `provider/model/preset/effort` 传给 `dshRunTask`（并在进度日志首行写明「本轮模型：服务商 · 模型（继承自「×」）」）；②「开发 / 细化」新建的绑定会话直接以所选三项开局（`createDevSessionForNode`）；③四个确认对话框（建议 / 开发 / 细化 / 问询）都多出「Agent 设定」一行（折叠卡 body 不再常驻生效模型行，生效值看头部 🧠 按钮）。三格各自的「跟随默认（不指定）」只退这一格，可撤销；
+- **实现**（`renderer/app-devnode.js`）：`devAgentRoutes` / `devAgentRouteName` / `devAgentModelGroups` / `devModelFitsRoute` / `devRouteOfModel`（路由与模型互校，路由失效或不匹配时**以模型为准**反查路由）→ `devModelOwn` / `devAgentModelOf` / `devAgentModelText` / `devModelScopeText` / `devModelDialogText` → `devModelButtonEl` / `devModelButtonRefresh`（不整盘重绘也能就地刷新按钮）→ `devModelPopEl` / `renderDevModelPop` / `openDevModelPop` / `applyDevModelChoice` / `toggleDevModelPicker`；`applyDevModelChoice` 先 `pushHistory()`（可撤销）再 `scheduleSave(true)`，`S.uiDevModelNode` 只用来记住「哪块正在选」：面板 persistent（**不再**由 `app.js` 的全局 mousedown 点外部收起），互斥收起走 `closeNodePopsExcept`、跟画布走 `repositionNodePops`，全局 keydown 里 Esc 同时收起色板与 Agent 设定弹层（Hex 输入框聚焦时也生效）。
 
 ### 核心文件列表（`devFiles` · 「文件 N」按钮）
 
@@ -441,7 +446,7 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 
 - **旧版应用**（无 dev 字段）：Skill 降级为普通 `super` + `note` 建图，流程仍可用，仅无元素类型配色、「开发 / 细化」按钮与对话框、关系线；
 - **新版应用**：识别 `dev` / `devKind` 字段后自动获得完整体验；
-- 不涉及任务执行引擎改动；开发 / 细化会话即标准 Agent 会话（每次动作新建一个）。
+- 不涉及任务执行引擎改动；开发 / 细化会话即标准智能会话（每次动作新建一个）。
 
 ## 10. 交付与后续
 

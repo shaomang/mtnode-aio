@@ -8,6 +8,11 @@ WorkingDirectory=/opt/mtnode-store
 Environment=PORT=8787
 Environment=HOST=127.0.0.1
 Environment=DATA_DIR=/opt/mtnode-store/data
+# 短信 / 微信等服务商凭据只进本机环境文件（600 权限，不入库、不提交）。
+# 账户存储后端 MTNODE_ACCOUNT_STORE（json 默认 / aliyun-tablestore）与
+# Tablestore 连接参数 MTNODE_OTS_* 也从该环境文件注入。
+# 前缀 "-" = 文件不存在时也允许启动，避免首次部署失败。
+EnvironmentFile=-/etc/mtnode-store.env
 ExecStart=/usr/bin/node /opt/mtnode-store/server.mjs
 Restart=always
 RestartSec=2

@@ -1365,8 +1365,11 @@ function agentDbGroundingNote(node, wf) {
    一次 run 一条轨迹，挂在 S.runTrace[runKey]。runKey 与取消句柄同键：
    节点 = node.id、会话 = agent:<id>、全局助手 = assist。
    段模型 items: [{ k:'think'|'say'|'tool'|'err', text, step, callId }]
-     · reasoning → think 段：同一步内连续追加，跨 turn/step 或工具调用后另起一段
-     · text      → say 段 ：收到 say-end（正文块收尾）或 turn/step 边界即封口
+     · reasoning → think 段：按「够长才收口」合并 —— 同一条流的增量原样相接，跨
+       step / 跨工具用换行；没写够阈值就保持开放继续吸碎片，写够了才在本流的工具 /
+       换 step 处收口（保留「思考 → 工具 → 思考」的交替）。同一轮里并发到达的其它流
+       （子代理 / 续跑轮）的正文 / 工具不参与本流收口，否则每来一块就断一段
+     · text      → say 段 ：收到 say-end（正文块收尾）或本流开口即封口
      · tool      → 只挂 callId，不再往思考文本里混「🔧 工具名」
      · error     → err 段
    切段依据是网关新字段 turn/step 与 say-end 事件；老网关不给这些字段时统一按
@@ -1390,9 +1393,14 @@ function traceReset(runKey) {
     items: [],
     turn: 0,
     step: 0,
-    /* 当前开放段所属的 `${turn}:${step}` 与两类可续写的段标记 */
+    /* 当前开放段所属的 `${turn}:${step}`、正在增长的思考段下标、按「流键」记的工具
+       调用计数（判「思考增量是否还是同一条流」）与可续写正文标记。
+       流键 = 网关给的会话 id（e.sid，并发子代理 / 续跑轮会各带各的），老网关没有就
+       退化成 `turn:step`。同一轮里并发流的事件会交错到达，靠它区分，避免别的流的
+       正文 / 工具把这条流的思考段切碎。 */
     _seg: "0:0",
-    _openThink: false,
+    _thinkIdx: -1,
+    _toolSeq: Object.create(null),
     _openSay: false,
     _calls: Object.create(null),
   };
@@ -1403,6 +1411,70 @@ function traceOf(runKey) {
   S.runTrace = S.runTrace || {};
   const k = traceRunKey(runKey);
   return S.runTrace[k] || traceReset(k);
+}
+/* 思考碎片阈值：模型逐步思考时每步只吐十几 / 几十个字。规则是「够长才收口」——
+   一段思考写到本阈值，遇到工具调用 / 换 step 就封口，时间线保留「思考 → 工具 →
+   思考」的交替；没写够就保持开放，让后续 step 的思考继续并进来，避免攒出成排
+   「◉ 思考 · 8 字」的小块。只为减少 DOM 段数与整表重绘，不改变文本内容。 */
+const THINK_TINY_CHARS = 64;
+/* 把思考增量并进当前段：同一条思考流的增量原样相接（reasoning-delta 是逐块增量，
+   插任何字符都会把字词拆开）；跨 step / 跨工具 = 另一段思考，用换行分隔。
+   接缝任一侧已有空白则不重复插换行，避免出现双换行。 */
+function joinThinkText(prev, body, sameStream) {
+  const a = String(prev == null ? "" : prev);
+  const b = String(body == null ? "" : body);
+  if (!a) return b;
+  if (!b) return a;
+  if (sameStream) return a + b;
+  if (/\s$/.test(a) || /^\s/.test(b)) return a + b;
+  return a + "\n" + b;
+}
+/* 流键：区分同一轮里并发到达的事件流（网关带会话 id 时按会话分，老网关退化成
+   按 `turn:step` 分）。思考增量、工具调用计数都按它记账。 */
+function traceStreamKey(e, turn, step) {
+  const sid = e && e.sid != null ? String(e.sid) : "";
+  return sid ? "s:" + sid : turn + ":" + step;
+}
+/* 某条流上已发生过的工具调用次数（判「思考增量还是不是同一条流」） */
+function traceToolSeq(tr, key) {
+  return (tr && tr._toolSeq && Number(tr._toolSeq[key])) || 0;
+}
+/* 当前仍开放的思考段（下标由 tracePush 维护） */
+function traceThinkOpenItem(tr) {
+  if (!tr || !tr.items || tr._thinkIdx < 0) return null;
+  const it = tr.items[tr._thinkIdx];
+  return it && it.k === "think" && it.open === true ? it : null;
+}
+/* 这个事件是否属于「当前开放思考段」那条流：决定它能不能收口该段。
+   有会话 id 就按 id 判；没有就只认同一步的事件 —— 这样另一条并发流（子代理 /
+   续跑轮）的正文 / 工具不会把这条流的思考段切成一堆几个字的小块。 */
+function traceThinkEventSameStream(tr, e, turn, step) {
+  const it = traceThinkOpenItem(tr);
+  if (!it || it.turn !== turn) return false;
+  const sid = e && e.sid != null ? String(e.sid) : "";
+  if (it.sid || sid) return (it.sid || "") === sid;
+  return it.step === step;
+}
+/* 边界（工具调用 / 换 step）处收口当前思考段：只有已经写够阈值才收口 —— 够长的
+   思考本就该与工具调用交替成块；没写够就保持开放，让后续 step 的思考继续并进来
+   （否则每步十几字的碎片会散成几十个块）。返回是否收口。 */
+function traceThinkCloseIfBig(tr) {
+  if (!tr || !tr.items) return false;
+  const idx = tr._thinkIdx;
+  const it = idx >= 0 ? tr.items[idx] : null;
+  if (!it || it.k !== "think") return false;
+  if (String(it.text || "").length < THINK_TINY_CHARS) return false;
+  traceCloseThink(tr);
+  return true;
+}
+/* 收口当前开放的思考段：清掉「仍在流式增长」标记（渲染层据此认流式尾段），
+   turn 切换、同一条流开口说话 / 报错、以及写够阈值后过边界（traceThinkCloseIfBig）
+   时调用，下一段思考另起一段。 */
+function traceCloseThink(tr) {
+  if (!tr) return;
+  const idx = tr._thinkIdx;
+  if (idx >= 0 && tr.items && tr.items[idx]) tr.items[idx].open = false;
+  tr._thinkIdx = -1;
 }
 /* 追加一条轨迹事件。kind = think | say | tool | err；say-end / turn / step 只封口不成段 */
 function tracePush(runKey, kind, txt, ev) {
@@ -1415,21 +1487,25 @@ function tracePush(runKey, kind, txt, ev) {
   }
   if (kind === "turn" || kind === "step") {
     /* 边界事件在老网关 / session-event 透传里可能不带 turn/step 数字：
-       这里只负责封口，真正的数字由随后第一个增量事件带进来 */
-    if (kind === "turn") tr.turn = traceNum(e.turn, tr.turn);
-    else tr.step = traceNum(e.step, tr.step);
-    tr._openThink = false;
+       这里只负责封口，真正的数字由随后第一个增量事件带进来。
+       换 turn 一律收口思考段；同轮内的 step 边界不在这里收口 —— 交给增量事件
+       按「同一条流」判定（见 traceThinkEventSameStream），否则另一条并发流换 step
+       也会把这条流的思考段切碎。 */
+    if (kind === "turn") {
+      tr.turn = traceNum(e.turn, tr.turn);
+      traceCloseThink(tr);
+    } else tr.step = traceNum(e.step, tr.step);
     tr._openSay = false;
     return null;
   }
   const turn = traceNum(e.turn, tr.turn);
   const step = traceNum(e.step, tr.step);
+  if (turn !== tr.turn) traceCloseThink(tr);
   tr.turn = turn;
   tr.step = step;
   const seg = turn + ":" + step;
   if (seg !== tr._seg) {
     tr._seg = seg;
-    tr._openThink = false;
     tr._openSay = false;
   }
   const items = tr.items;
@@ -1438,37 +1514,88 @@ function tracePush(runKey, kind, txt, ev) {
   if (kind === "tool") {
     if (callId && tr._calls[callId]) return null;
     if (callId) tr._calls[callId] = 1;
+    const tKey = traceStreamKey(e, turn, step);
+    tr._toolSeq[tKey] = traceToolSeq(tr, tKey) + 1;
+    /* 够长的思考在「本流」的工具调用处收口 → 保留「思考 → 工具 → 思考」的交替
+       时间线；过短的保持开放，本流下一步的思考继续并回来（见 traceThinkCloseIfBig）。
+       另一条并发流的工具调用不碰这条流的思考段。 */
+    if (traceThinkEventSameStream(tr, e, turn, step)) traceThinkCloseIfBig(tr);
     const it = { k: "tool", text: "", step, callId };
     items.push(it);
-    /* 一次工具调用把正在续写的段落截断：之后的思考 / 正文另起一段 */
-    tr._openThink = false;
+    /* 工具调用截断的是「正文」续写：思考段的开合交给上面的收口判定。 */
     tr._openSay = false;
     return it;
   }
   if (kind === "err") {
     const msg = String(txt || "");
     if (!msg) return null;
+    if (traceThinkEventSameStream(tr, e, turn, step)) traceCloseThink(tr);
     if (last && last.k === "err" && last.step === step) {
       last.text += (last.text ? "\n" : "") + msg;
       return last;
     }
     const it = { k: "err", text: msg, step, callId };
     items.push(it);
-    tr._openThink = false;
     tr._openSay = false;
     return it;
   }
   if (kind !== "think" && kind !== "say") return null;
   const body = String(txt || "");
   if (!body) return null;
-  const flag = kind === "think" ? "_openThink" : "_openSay";
-  if (tr[flag] && last && last.k === kind) {
+  if (kind === "think") {
+    /* 只并进「当前仍开放」的思考段（下标由 traceThinkCloseIfBig 维护）：段一收口，
+       下一段思考就另起一块 —— 于是「思考 → 工具 → 思考」的交替得以保留，而没写够
+       阈值的小段会一直开放、把后续 step 的碎片吸进来，不会散成几十个小块。
+       并发流（子代理 / 续跑轮）交错到达时也并进同一段：老网关不给会话 id 就分不清
+       哪条流，宁可并在一起，也绝不能每来一个碎片就断一段 —— 那正是「思考被拆成几个
+       字」的成因。段上记着自己的 turn/step/sid 与工具计数，供收口 / 分隔判定。 */
+    const sid = e.sid != null ? String(e.sid) : "";
+    let it = traceThinkOpenItem(tr);
+    /* 同一条流换 step = 另一段推理：已经写够的收口，让它与后续工具 / 思考交替；
+       还没写够的保持开放，继续并进来（防碎片）。 */
+    if (it && it.step !== step && (it.sid || "") === sid && traceThinkCloseIfBig(tr))
+      it = null;
+    if (it) {
+      /* 同一条思考流的增量：还在同一 turn+step、且自上次追加以来这条流没发生过工具
+         调用。这种必须原样相接 —— reasoning-delta 是逐块增量，插空格会把「字与词」
+         拆开（正是「字符间被插入空格」的成因）；跨 step / 跨工具才是另一段思考，
+         换行分隔。 */
+      const seq = traceToolSeq(tr, traceStreamKey(e, turn, step));
+      const sameStream =
+        it.step === step &&
+        (it.sid || "") === sid &&
+        (Number(it.toolSeq) || 0) === seq;
+      it.text = joinThinkText(it.text, body, sameStream);
+      it.step = step;
+      it.toolSeq = seq;
+      return it;
+    }
+    const nit = {
+      k: "think",
+      text: body,
+      step,
+      turn,
+      callId: "",
+      open: true,
+      sid,
+      toolSeq: traceToolSeq(tr, traceStreamKey(e, turn, step)),
+    };
+    items.push(nit);
+    tr._thinkIdx = items.length - 1;
+    return nit;
+  }
+  /* 正文段：同一条流开口（真的写了非空白字符）= 该流思考收口，之后的思考另起一段。
+     纯空白增量（适配器在思考之间夹的换行）不算开口，不打断当前思考段；另一条并发流
+     的正文（step 不同 / 会话 id 不同）同样不打断 —— 那正是「思考被拆成几个字」的成因。 */
+  if (String(body).trim() && traceThinkEventSameStream(tr, e, turn, step))
+    traceCloseThink(tr);
+  if (tr._openSay && last && last.k === "say") {
     last.text += body;
     return last;
   }
-  const it = { k: kind, text: body, step, callId: "" };
+  const it = { k: "say", text: body, step, callId: "" };
   items.push(it);
-  tr[flag] = true;
+  tr._openSay = true;
   return it;
 }
 /* 某一类轨迹的全文（think / say / err）：段与段之间空一行，便于按步折叠展示 */
@@ -1509,7 +1636,8 @@ function stripToolLines(t) {
 }
 /* 分段快照：think / say / err 带正文，tool 只留 callId 与 step（工具明细在 m.tools）。
    随助手消息存档，重绘后仍能按同一步序还原「思考 · 正文 · 工具」的交替。
-   总量设闸，避免超长输出把存档撑爆。 */
+   只有 say / err 过限长闸；think 整段照收 —— 需求「一轮结束后不要自动隐藏或删除
+   思考」，裁剪 / 丢弃思考段就是思考从会话里消失。 */
 const TRACE_SEG_MAX_CHARS = 60000;
 function traceSegmentsOf(runKey) {
   const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
@@ -1522,12 +1650,15 @@ function traceSegmentsOf(runKey) {
       continue;
     }
     let text = String(it.text || "");
-    if (!text || budget <= 0) continue;
-    if (text.length > budget) {
-      text = text.slice(0, budget);
-      budget = 0;
-    } else {
-      budget -= text.length;
+    if (!text) continue;
+    if (it.k !== "think") {
+      if (budget <= 0) continue;
+      if (text.length > budget) {
+        text = text.slice(0, budget);
+        budget = 0;
+      } else {
+        budget -= text.length;
+      }
     }
     out.push({ k: it.k, step: it.step, text });
   }
@@ -1697,6 +1828,8 @@ const DSH_TOOLS_DROPPED_BY_NO_READ = ["mtnode_canvas_get", "mtnode_app"];
    在 agent 作用域 ctx.tools.restrict({deny}) 摘除）。判据主要来自「这一轮宿主会不会
    直接拒绝这个调用」，另加一条纯省 token 的（第三个点）：
    · Agent 工具许可预设里被拒到点上的类别（映射真源 app-nodes.js agentDeniedToolNames）；
+     带 o.runKey 时按**该轮**的工具许可算（「一人公司」专家自带 perm.toolAllow），
+     不带就按全局预设 —— 助手 / 老会话 / 裸节点行为一字不变；
    · 本轮没接入任何数据库副本 → mtnode_db（未接入时宿主一律回「当前任务未接入数据库」）；
    · 开发绑定会话（noCanvasRead）→ 读画布两件套：它本就不读也不改画布，开发改的是项目根
      里的真实文件，整张画布快照对这个会话没有信息量（收尾不回写任何节点）。
@@ -1707,7 +1840,9 @@ function dshHiddenToolsFor(o) {
   let names = [];
   try {
     names =
-      typeof agentDeniedToolNames === "function" ? agentDeniedToolNames() : [];
+      typeof agentDeniedToolNames === "function"
+        ? agentDeniedToolNames(o.runKey)
+        : [];
   } catch (_) {
     names = [];
   }
@@ -1906,6 +2041,16 @@ function dshRetryWait(runKey, delayMs) {
 function dshRunTask(input, opts) {
   opts = opts || {};
   const runKey = dshRunKeyOf(opts);
+  /* 本轮 Token 台账的「会话轮次」归属键与标题（additive，只影响轮次明细，不动合计口径）：
+     tokRoundKey 缺省 = runKey（agent:<会话id> / 节点 id / assist / default）；
+     标题优先调用方给的计划任务标题（tokTitle），否则由输入文本前 24 字回落
+     （清洗口径见 app-agent.js tokRoundTitleOf）；都没有时留空，展示层回落「未命名轮次」。
+     在这里算一次并随 baseOpts 透传，重发（续跑 / 整轮）不会换标题。 */
+  const tokRoundKey = String(opts.tokRoundKey || runKey || "default");
+  const tokTitleInfo =
+    typeof tokRoundTitleOf === "function"
+      ? tokRoundTitleOf(input, { tokTitle: opts.tokTitle })
+      : { title: String(opts.tokTitle || "").trim(), from: opts.tokTitle ? "plan" : "" };
   /* 起跑时读到的终止代号：重发闸拿它比对，判「这一轮是不是在跑的中途被 ■ 停掉了」。
      真源 = dshStopMark（所有终止入口共用的 dshCancelActive 负责盖）。 */
   const stopBase = dshStopSeqOf(runKey);
@@ -1915,6 +2060,9 @@ function dshRunTask(input, opts) {
   let carried = "";
   const userOnEvent = typeof opts.onEvent === "function" ? opts.onEvent : null;
   const baseOpts = Object.assign({}, opts, {
+    tokRoundKey: tokRoundKey,
+    tokTitle: tokTitleInfo.title,
+    tokTitleFrom: tokTitleInfo.from,
     onEvent: (type, data) => {
       if (type === "text" && data && data.text) carried += String(data.text);
       if (userOnEvent) {
@@ -2067,9 +2215,120 @@ async function dshResolveRunBoundWf(opts) {
   return await wfOfCanvasIdForRun(id);
 }
 
+/* ── 按运行的写根（runKey 作用域）──
+   某些运行自带一份「可写目录」：团队专家要就地维护「团队事实库」，而库目录常在会话工作区
+   之外（库目录由用户选定的项目文件夹根 / 画布工作区决定），写入会触发 dsh
+   沙箱升权审批。expertRunParams 把库目录 / 共享图片目录随 opts.writeRoots 下发，这里按
+   runKey 装好；审批帧里抽出的路径全部落在写根内时，宿主直接回 allowed-once，专家逐次
+   建档不再弹窗。与按运行的工具许可同口径：下一轮没带 writeRoots 即清掉该键，缺省一字不变。 */
+function setRunWriteRoots(runKey, roots) {
+  const k = String(runKey || "").trim();
+  if (!k) return [];
+  const uniq = [
+    ...new Set(
+      (Array.isArray(roots) ? roots : []).map((p) => normFsPath(p)).filter(Boolean),
+    ),
+  ];
+  if (!uniq.length) {
+    if (S._runWriteRoots) delete S._runWriteRoots[k];
+    return [];
+  }
+  S._runWriteRoots = S._runWriteRoots || {};
+  S._runWriteRoots[k] = uniq;
+  return uniq;
+}
+function runWriteRootsOf(runKey) {
+  const k = String(runKey || "").trim();
+  const store = S && S._runWriteRoots;
+  return (k && store && store[k]) || [];
+}
+
+/* 从一次工具调用的入参里抽出目标路径（绝对化）：只认路径类键与绝对路径字面量，
+   `content` / `justification` 这类正文与说明一律不取。相对路径按本轮工作区解析 ——
+   write / edit 的 file_path 常见是相对路径。 */
+function collectRunWritePaths(argsRaw, workspace) {
+  const out = [];
+  let obj = null;
+  if (typeof argsRaw === "string") {
+    try {
+      obj = JSON.parse(argsRaw);
+    } catch (_) {
+      obj = null;
+    }
+  } else if (argsRaw && typeof argsRaw === "object") obj = argsRaw;
+  if (!obj || typeof obj !== "object") return out;
+  const ws = normFsPath(workspace);
+  const isAbs = (s) => /^[a-zA-Z]:\\|^\\\\/.test(s);
+  const walk = (v, key) => {
+    if (v == null) return;
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (!s) return;
+      const k = String(key || "").toLowerCase();
+      if (!/path|file|dir|folder|target|dest/.test(k) && !isAbs(s)) return;
+      out.push(isAbs(s) ? normFsPath(s) : normFsPath((ws ? ws + "\\" : "") + s));
+      return;
+    }
+    if (Array.isArray(v)) {
+      v.forEach((x, i) => walk(x, key || i));
+      return;
+    }
+    if (typeof v === "object") {
+      for (const [k, val] of Object.entries(v)) walk(val, k);
+    }
+  };
+  walk(obj, "");
+  return out;
+}
+
+/* 审批帧是否属于「本轮写根内的沙箱升权」：是则宿主直接放行（allowed-once），不弹卡片。
+   只在能确证「至少抽到一个路径、且全部路径都在写根内」时放行 —— 抽不到路径 / 任一
+   路径在写根外都照旧走人工审批。专家许可显式拒绝写文件（fs_write=deny）时也不放行。
+   callArgs = 本轮 callId → 工具入参（dshRunOnce 在 tool 帧上现采），用于拿到 file_path。 */
+function autoApproveRunWrite(data, runKey, workspace, callArgs) {
+  const roots = runWriteRootsOf(runKey);
+  if (!roots.length) return false;
+  if (!data || !data.id) return false;
+  const reason = String(data.reason || "");
+  /* 只接沙箱升权请求；其它审批（工具许可、危险操作）照旧交用户 */
+  if (reason.indexOf("escalate sandbox to ") !== 0) return false;
+  if (typeof agentToolMode === "function" && agentToolMode("fs_write", runKey) === "deny")
+    return false;
+  const args = (data && data.callId && callArgs && callArgs[data.callId]) || "";
+  const paths = [
+    ...new Set(
+      extractPathsFromText(reason)
+        .map(normFsPath)
+        .concat(collectRunWritePaths(args, workspace))
+        .filter(Boolean),
+    ),
+  ];
+  if (!paths.length) return false;
+  if (!paths.every((p) => pathAllowedByList(p, roots))) return false;
+  try {
+    window.api
+      .dshInteract({ kind: "approval", id: data && data.id, outcome: "allowed-once" })
+      .catch(() => {});
+  } catch (_) {}
+  return true;
+}
+
 /* 单次运行（一次请求 = 一轮）：组装 runParams、挂取消句柄、收流式事件 */
 function dshRunOnce(input, opts) {
   opts = opts || {};
+  /* 按运行的工具许可（app-nodes.js 的 S._runToolPolicy）：本轮 opts 带了 toolPolicy /
+     toolAllow 就装进该 runKey 的作用域，没带就清掉同键旧策略 → 缺省回退全局预设。
+     必须在这里（hideTools 名单与工具许可提示词之前）同步装好，本轮 canvas / app / vision
+     的 ensureAgentTool 与 dshHiddenToolsFor 才看得到这份策略。runKey 隔离保证群聊里
+     每位专家各跑一轮互不串味；「一人公司」专家即经 expertRunParams 传入 perm.toolAllow。 */
+  if (typeof setRunToolPolicy === "function")
+    setRunToolPolicy(
+      dshRunKeyOf(opts),
+      opts.toolPolicy || opts.toolAllow || null,
+    );
+  /* 按运行的写根（见上方 setRunWriteRoots）：本轮带了 writeRoots 就装进该 runKey，
+     没带即清掉同键旧值 —— 审批自动放行只在本轮生效，不跨轮残留。 */
+  setRunWriteRoots(dshRunKeyOf(opts), opts.writeRoots || null);
   /* 终止代号基线：装配这一段是异步的（工作目录探测 / 分节快照 / 工具快照都要读盘），
      期间用户完全可能已经按了 ■ —— 那一刻取消句柄还没登记，dshCancelActive 抓不到这一轮
      （网关侧另有 wantCancelTag 兜「已发到网关」的早到取消，宿主这段空白只能自己判）。
@@ -2166,13 +2425,19 @@ function dshRunOnce(input, opts) {
      !@数据库标题）。先算出来，两处共用同一判据 —— 注记与 mtnode_db 的存在性必须
      同进同退，绝不允许「提示词说接了库、工具却不在」或反过来。 */
   const dbGrounding = pureOn ? "" : agentDbGroundingNote(opts.node, boundWf);
-  /* 第三个闸：按名字的隐藏名单（见 dshHiddenToolsFor） */
+  /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist)。
+     systemPrompt 分节快照也以它为主键。**提前到这里**：按运行的工具许可（hideTools 名单、
+     工具许可提示词、canvas/app/vision 的 ensureAgentTool）都以它为作用域，必须先定型。 */
+  const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
+  /* 第三个闸：按名字的隐藏名单（见 dshHiddenToolsFor）：按本轮 runKey 的策略生成，
+     专家运行因此能整档摘掉画布 / 应用 / 识图类工具（每步约省 26K 字符）。 */
   const hideToolsOn = dshHiddenToolsFor({
     pure: pureOn,
     dbGrounded: !!String(dbGrounding || "").trim(),
     lean: leanOn,
     noCanvas: noCanvasOn,
     noCanvasRead: noReadOn,
+    runKey,
   });
   /* 用户工具描述子（func call 单一真源，见 app-tools.js）：本轮绑定画布（= 会话所属画布）
      上的工具节点 + 工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
@@ -2181,9 +2446,6 @@ function dshRunOnce(input, opts) {
   const agentTools = pureOn
     ? { descs: [], byKey: {} }
     : await agentUserToolsSnapshot(boundWf);
-  /* 并行运行:取消句柄按 runKey 隔离(会话=agent:<id>,节点=node.id,助手=assist)。
-     systemPrompt 分节快照也以它为主键，故提前到 runParams 之前定型（取值口径一字未改）。 */
-  const runKey = String(opts.runKey || (opts.node && opts.node.id) || "default");
   /* 分节装配要先有配置指纹（快照的准入条件），而 dshRunSigOf 先读基础七项
      （workspace/model/provider/preset/effort/pure/maxTokens）再读网关 runtimeKey
      同源成分 —— 先把它们全定成局部量，探针与 runParams 共用同一份取值：
@@ -2284,6 +2546,7 @@ function dshRunOnce(input, opts) {
           text: agentToolPolicySystemNote({
             nodeLock,
             noCanvasRead: noReadOn && !noCanvasOn,
+            runKey,
           }),
         },
         {
@@ -2399,6 +2662,8 @@ function dshRunOnce(input, opts) {
   /* 本次运行的 Token 台账归属：会话 / 绑定节点的会话 / 全局助手 */
   const tokOwner =
     typeof tokOwnerForRun === "function" ? tokOwnerForRun(opts) : null;
+  /* 轮次归属键（dshRunTask 算好随 opts 透传）：缺省回落 runKey，只用于逐轮明细 */
+  const tokRoundKey = String(opts.tokRoundKey || runKey || "default");
   const t0 = Date.now();
   /* 交互面板:仅首个 run 清空,后续 run 保留其他会话/节点在途的提问与审批 */
   if (!(S._runCount || 0)) ixReset();
@@ -2453,6 +2718,9 @@ function dshRunOnce(input, opts) {
     /* SDK finalResponse 只含最后一条 assistant 正文;累计全部 text-delta 才是完整输出。
        续跑那一轮从已累计的半截正文起步（seedText），返回值才是整轮完整正文 */
     let accText = String(opts.seedText || "");
+    /* 本轮 callId → 工具入参（tool 帧现采）：沙箱升权审批帧只带 justification，
+       目标路径得从这次调用的 file_path 里取，见 autoApproveRunWrite。 */
+    const runCallArgs = Object.create(null);
     /* 看门狗：网关 / 运行时卡住（harness.run 不返回、不发 done）时保证本轮一定收尾，
        渲染层绝不永久等待 —— 否则 assistRunning / st.running 残留 true，新消息全被丢弃，
        AI 回复永不追加，列表最底层永远停在旧会话内容（全局助手卡死 Bug 的根因）。
@@ -2623,6 +2891,9 @@ function dshRunOnce(input, opts) {
               );
               return;
             }
+            /* 本轮写根内的沙箱升权（团队专家维护事实库）：直接放行，不弹卡片 */
+            if (autoApproveRunWrite(msg.data || {}, runKey, workspace, runCallArgs))
+              return;
             ixPush("approval", msg.data || {}, runKey, ixSrc);
             return;
           }
@@ -2639,9 +2910,17 @@ function dshRunOnce(input, opts) {
               canvasConfirmDrop(dropId);
             return;
           }
-          /* Token 消耗实时入账（按模型），会话末尾的报告 Badge 靠它增长 */
+          /* Token 消耗实时入账（按模型），会话末尾的报告 Badge 靠它增长；
+             第三参带上本轮轮次归属与标题（在途轮次，收尾时转成正式明细） */
           if (msg.type === "usage" && tokOwner && typeof tokLiveAdd === "function") {
-            try { tokLiveAdd(tokOwner, msg.data || {}); } catch {}
+            try {
+              tokLiveAdd(tokOwner, msg.data || {}, {
+                runKey: tokRoundKey,
+                title: opts.tokTitle,
+                titleFrom: opts.tokTitleFrom,
+                startedAt: t0,
+              });
+            } catch {}
           }
           if (msg.type === "text" && msg.data && msg.data.text)
             accText += msg.data.text;
@@ -2681,6 +2960,8 @@ function dshRunOnce(input, opts) {
           }
           /* 按步切段的运行轨迹：所有 run（节点 / 会话 / 助手）都在此统一采集，
              再交给各自的 onEvent 做界面刷新 */
+          if (msg.type === "tool" && msg.data && msg.data.callId)
+            runCallArgs[msg.data.callId] = msg.data.args || "";
           try { traceFeedEvent(runKey, msg.type, msg.data || {}); } catch {}
           if (opts.onEvent) {
             try { opts.onEvent(msg.type, msg.data || {}); } catch {}
@@ -2689,9 +2970,16 @@ function dshRunOnce(input, opts) {
             /* 完成音效:仅当任务实际运行超过 5 分钟 */
             if (Date.now() - t0 >= 300000) playTaskDoneSound();
             const data = msg.data || {};
-            /* 一轮结束：把本次用量按模型并进所属会话的累计台账 */
+            /* 一轮结束：把本次用量按模型并进所属会话的累计台账（并落一条逐轮明细） */
             if (tokOwner && typeof tokMergeRun === "function") {
-              try { tokMergeRun(tokOwner, data.metrics, { startedAt: t0 }); } catch {}
+              try {
+                tokMergeRun(tokOwner, data.metrics, {
+                  startedAt: t0,
+                  runKey: tokRoundKey,
+                  title: opts.tokTitle,
+                  titleFrom: opts.tokTitleFrom,
+                });
+              } catch {}
             }
             if (opts.onDone) {
               try { opts.onDone(data); } catch {}

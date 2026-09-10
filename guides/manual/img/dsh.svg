@@ -1,24 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 176" width="460" height="176">
-  <rect width="460" height="176" fill="#0d1016"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" width="600" height="200">
+  <rect width="600" height="200" fill="#0d1016"/>
   <defs>
-    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
-    </marker>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
   </defs>
-  <rect x="20" y="58" width="120" height="48" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
-  <text x="80" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">智能任务</text>
-  <line x1="140" y1="82" x2="186" y2="82" stroke="#ff8f2e" stroke-width="1.8" marker-end="url(#arr)"/>
-  <rect x="186" y="20" width="100" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="236" y="42" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">读文件</text>
-  <rect x="186" y="64" width="100" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="236" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">联网</text>
-  <rect x="186" y="108" width="100" height="36" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
-  <text x="236" y="130" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">命令</text>
-  <line x1="286" y1="38" x2="332" y2="70" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <line x1="286" y1="82" x2="332" y2="82" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <line x1="286" y1="126" x2="332" y2="94" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <rect x="332" y="58" width="110" height="48" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
-  <text x="387" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">完成结果</text>
-  <text x="230" y="164" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">智能能力：读文件 / 联网 / 执行命令后给出结果</text>
+  <rect x="20" y="66" width="120" height="48" rx="6" fill="#161020" stroke="#c792ea" stroke-width="1.6"/>
+  <text x="80" y="94" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">智能节点 / 会话</text>
+  <line x1="140" y1="90" x2="190" y2="90" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
+  <rect x="190" y="26" width="110" height="32" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="245" y="46" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">读 / 写文件</text>
+  <rect x="190" y="66" width="110" height="32" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="245" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">联网搜索</text>
+  <rect x="190" y="106" width="110" height="32" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="245" y="126" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">执行命令</text>
+  <rect x="310" y="26" width="110" height="32" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="365" y="46" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">子代理</text>
+  <rect x="310" y="66" width="110" height="32" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="365" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">技能 / MCP</text>
+  <rect x="310" y="106" width="110" height="32" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="365" y="126" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">识图 vision</text>
+  <line x1="420" y1="90" x2="470" y2="90" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <rect x="470" y="66" width="110" height="48" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="525" y="94" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">工作区结果</text>
+  <text x="20" y="168" fill="#ff6b6b" font-size="11" font-family="Segoe UI,sans-serif">硬边界：不读画布、不建节点与连线、不改工作流（要搭图用智能会话或右侧 ✦ 助手）</text>
+  <text x="300" y="188" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">智能体在工作区里干活：读/写文件 · 联网 · 命令 · 子代理 · 技能 / MCP · 识图；不改画布</text>
 </svg>

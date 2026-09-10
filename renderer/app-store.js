@@ -1,6 +1,8 @@
 "use strict";
 /* ============ 模板商店 ============ */
 const TPL_PREV_CACHE = new Map();
+/* 商店用户区对统一账户的订阅句柄（每次开商店重新订阅，避免叠加）。 */
+let tplAuthUnsub = null;
 const TPL_ST = {
   kind: "templates", /* templates | skills */
   tab: "browse",
@@ -34,13 +36,61 @@ function tplApiBase() {
   return tplIsSkill() ? "/api/skills" : "/api/templates";
 }
 
-function tplAuth() {
-  return (S.config && S.config.storeAuth) || null;
+/* 统一账户：登录态唯一来源 = window.MTNodeAuth（token 由主进程 safeStorage 保管，
+   渲染层不缓存、不落 config.json）。这里只把账户快照适配成商店旧字段名。
+   旧版 S.config.storeAuth 由主进程启动时一次性迁入统一存储，见 main.js migrateLegacyStoreAuth。 */
+function tplAuthSnap() {
+  const A = window.MTNodeAuth;
+  if (!A || typeof A.state !== "function") return null;
+  const s = A.state();
+  return s && s.signedIn && s.user ? s : null;
 }
+function tplAuth() {
+  const s = tplAuthSnap();
+  if (!s) return null;
+  const u = s.user || {};
+  return {
+    userId: u.id || u.userId || "",
+    username: u.username || "",
+    nickname: u.nickname || u.username || "",
+    avatar: u.avatar || "",
+    phone: s.phone || u.phone || "",
+    likesReceived: u.likesReceived || 0,
+    downloadsReceived: u.downloadsReceived || 0,
+    isAdmin: !!u.isAdmin,
+  };
+}
+/* 兼容旧调用：null = 清登录态（401 / 退出），对象 = 重新向主进程取最新账号。 */
 function setTplAuth(a) {
-  if (!S.config) return;
-  S.config.storeAuth = a || null;
-  window.api.configSave(S.config).catch(() => {});
+  const A = window.MTNodeAuth;
+  if (!A) return;
+  if (!a) {
+    if (typeof A.logout === "function") A.logout().catch(() => {});
+    return;
+  }
+  if (typeof A.refresh === "function") A.refresh().catch(() => {});
+}
+/* 打开顶栏同一套登录 / 注册对话框；登录成功后执行 after。 */
+let tplAuthWaitOff = null;
+function openUnifiedAuth(after) {
+  const A = window.MTNodeAuth;
+  if (!A || typeof A.open !== "function") {
+    toast(I18n.t("登录服务未就绪"), "err");
+    return;
+  }
+  if (tplAuthWaitOff) {
+    tplAuthWaitOff();
+    tplAuthWaitOff = null;
+  }
+  if (typeof A.onChange === "function" && typeof after === "function") {
+    tplAuthWaitOff = A.onChange(() => {
+      if (!tplAuth()) return;
+      if (tplAuthWaitOff) tplAuthWaitOff();
+      tplAuthWaitOff = null;
+      after();
+    });
+  }
+  A.open();
 }
 const TPL_MAX_BYTES = 10 * 1024 * 1024;
 const SKILL_MAX_BYTES = 200 * 1024;
@@ -71,14 +121,9 @@ function tplErr(r) {
   return "HTTP " + (r.status || "");
 }
 async function tplApi(method, path, json) {
-  const auth = tplAuth();
-  const r = await window.api.storeRequest({
-    method,
-    path,
-    json,
-    token: (auth && auth.token) || "",
-  });
-  if (r && r.status === 401 && auth) setTplAuth(null);
+  /* 不再显式传 token：主进程 store:request 自动带上统一账户的会话。 */
+  const r = await window.api.storeRequest({ method, path, json });
+  if (r && r.status === 401 && tplAuth()) setTplAuth(null);
   return r;
 }
 async function tplPreviewSrc(id, size) {
@@ -619,6 +664,19 @@ async function openTemplateStore() {
   body.appendChild(pane);
   foot.appendChild(mkMiniBtn(I18n.t("关闭"), closeOverlay, true));
 
+  /* 统一账户：顶栏登录 / 登出 / 绑定后，商店用户区立即跟随同一账号。
+     只重画用户区（不整页重画），避免与 refreshMe → refresh → onChange 形成回环。 */
+  if (window.MTNodeAuth && typeof window.MTNodeAuth.onChange === "function") {
+    if (tplAuthUnsub) tplAuthUnsub();
+    tplAuthUnsub = window.MTNodeAuth.onChange(() => {
+      if (overlayKind !== "tplstore") return;
+      paintUser();
+    });
+  }
+  if (window.MTNodeAuth && typeof window.MTNodeAuth.refresh === "function") {
+    window.MTNodeAuth.refresh().catch(() => {});
+  }
+
   function markTabs() {
     kindTpl.classList.toggle("on", !tplIsSkill());
     kindSkill.classList.toggle("on", tplIsSkill());
@@ -631,11 +689,7 @@ async function openTemplateStore() {
     const a = tplAuth();
     if (!a) {
       userEl.textContent = I18n.t("未登录");
-      const loginBtn = mkMiniBtn(I18n.t("登录"), () => {
-        TPL_ST.tab = "upload";
-        TPL_ST.authMode = "login";
-        paint();
-      });
+      const loginBtn = mkMiniBtn(I18n.t("登录 / 注册"), () => openUnifiedAuth(paint));
       userEl.appendChild(document.createTextNode("  "));
       userEl.appendChild(loginBtn);
       return;
@@ -660,148 +714,45 @@ async function openTemplateStore() {
     userEl.appendChild(st);
     userEl.appendChild(
       mkMiniBtn(I18n.t("退出"), async () => {
-        await tplApi("POST", "/api/logout", {});
-        setTplAuth(null);
+        await setTplAuth(null);
         toast(I18n.t("已退出"), "ok");
         paint();
       }),
     );
   }
   async function refreshMe() {
-    const a = tplAuth();
-    if (!a) return;
-    const r = await tplApi("GET", "/api/me");
-    if (r && r.ok && r.data && r.data.user) {
-      setTplAuth({
-        token: a.token,
-        userId: r.data.user.id,
-        username: r.data.user.username,
-        nickname: r.data.user.nickname,
-        likesReceived: r.data.user.likesReceived || 0,
-        downloadsReceived: r.data.user.downloadsReceived || 0,
-        isAdmin: !!r.data.user.isAdmin,
-      });
+    if (!tplAuth()) return;
+    /* 账号摘要以主进程 auth-store 为唯一真源：先刷新 /api/me，再取统一快照。 */
+    if (window.api && typeof window.api.authMe === "function") {
+      await window.api.authMe().catch(() => {});
+    } else {
+      await tplApi("GET", "/api/me");
     }
+    const A = window.MTNodeAuth;
+    if (A && typeof A.refresh === "function") await A.refresh().catch(() => {});
   }
 
   function paintAuthForm(host, after) {
+    /* 旧注册接口已停用（410 REGISTER_DISABLED）：商店不再自建账号表单，
+       登录 / 注册 / 绑定统一走顶栏同一套 MTNodeAuth 对话框。 */
     const wrap = document.createElement("div");
     wrap.className = "tpl-auth";
     wrap.appendChild(hintEl(I18n.t("上传需要登录")));
-    const mode = TPL_ST.authMode === "register"
-      ? "register"
-      : TPL_ST.authMode === "passwd"
-        ? "passwd"
-        : "login";
-    const modeRow = document.createElement("div");
-    modeRow.className = "dsh-btn-row";
-    const loginMode = mkMiniBtn(I18n.t("登录"), () => {
-      TPL_ST.authMode = "login";
-      paint();
-    });
-    const regMode = mkMiniBtn(I18n.t("注册"), () => {
-      TPL_ST.authMode = "register";
-      paint();
-    });
-    const passMode = mkMiniBtn(I18n.t("修改密码"), () => {
-      TPL_ST.authMode = "passwd";
-      paint();
-    });
-    loginMode.classList.toggle("on", mode === "login");
-    regMode.classList.toggle("on", mode === "register");
-    passMode.classList.toggle("on", mode === "passwd");
-    modeRow.appendChild(loginMode);
-    modeRow.appendChild(regMode);
-    modeRow.appendChild(passMode);
-    wrap.appendChild(modeRow);
-    const user = document.createElement("input");
-    user.type = "text";
-    user.placeholder = I18n.t("用户名（3-24 位字母、数字或下划线）");
-    wrap.appendChild(user);
-    const pass = document.createElement("input");
-    pass.type = "password";
-    pass.placeholder = mode === "passwd"
-      ? I18n.t("旧密码")
-      : I18n.t("密码（6-72 位）");
-    wrap.appendChild(pass);
-    let nick = null;
-    let passNew = null;
-    let passNew2 = null;
-    if (mode === "register") {
-      nick = document.createElement("input");
-      nick.type = "text";
-      nick.placeholder = I18n.t("昵称（1-32 位）");
-      wrap.appendChild(nick);
-    } else if (mode === "passwd") {
-      passNew = document.createElement("input");
-      passNew.type = "password";
-      passNew.placeholder = I18n.t("新密码（6-72 位）");
-      passNew2 = document.createElement("input");
-      passNew2.type = "password";
-      passNew2.placeholder = I18n.t("再次输入新密码");
-      wrap.appendChild(passNew);
-      wrap.appendChild(passNew2);
-    }
-    const applyAuth = (r, okMsg) => {
-      if (!r || !r.ok || !r.data || !r.data.token) {
-        toast(tplErr(r), "err");
-        return false;
-      }
-      const u = r.data.user || {};
-      setTplAuth({
-        token: r.data.token,
-        userId: u.id,
-        username: u.username,
-        nickname: u.nickname,
-        likesReceived: u.likesReceived || 0,
-        downloadsReceived: u.downloadsReceived || 0,
-        isAdmin: !!u.isAdmin,
-      });
-      toast(okMsg, "ok");
-      return true;
-    };
+    wrap.appendChild(
+      hintEl(
+        I18n.t(
+          "商店与讨论区共用同一 MTNode 账户：手机验证码 / 微信扫码登录，旧账号可用密码登录后补绑。",
+        ),
+      ),
+    );
     wrap.appendChild(
       mkMiniBtn(
-        mode === "register"
-          ? I18n.t("注册")
-          : mode === "passwd"
-            ? I18n.t("修改密码")
-            : I18n.t("登录"),
-        async () => {
-          if (mode === "passwd") {
-            const oldPassword = pass.value;
-            const newPassword = passNew.value;
-            if (newPassword !== passNew2.value) {
-              toast(I18n.t("两次输入的新密码不一致"), "err");
-              return;
-            }
-            if (oldPassword === newPassword) {
-              toast(I18n.t("新密码不能与旧密码相同"), "err");
-              return;
-            }
-            const r = await tplApi("POST", "/api/change-password", {
-              username: user.value.trim(),
-              oldPassword,
-              newPassword,
-            });
-            if (!applyAuth(r, I18n.t("密码已修改"))) return;
-          } else {
-            const path = mode === "register" ? "/api/register" : "/api/login";
-            const payload = { username: user.value.trim(), password: pass.value };
-            if (nick) payload.nickname = nick.value.trim();
-            const r = await tplApi("POST", path, payload);
-            if (
-              !applyAuth(
-                r,
-                mode === "register" ? I18n.t("注册成功") : I18n.t("登录成功"),
-              )
-            )
-              return;
-          }
-          TPL_ST.authMode = "login";
-          if (after) after();
-          else paint();
-        },
+        I18n.t("登录 / 注册"),
+        () =>
+          openUnifiedAuth(() => {
+            if (typeof after === "function") after();
+            else paint();
+          }),
         true,
       ),
     );
@@ -2155,16 +2106,7 @@ async function openTemplateStore() {
       return;
     }
     if (r.data.user) {
-      const a = tplAuth();
-      setTplAuth({
-        token: a.token,
-        userId: r.data.user.id,
-        username: r.data.user.username,
-        nickname: r.data.user.nickname,
-        likesReceived: r.data.user.likesReceived || 0,
-        downloadsReceived: r.data.user.downloadsReceived || 0,
-        isAdmin: !!r.data.user.isAdmin,
-      });
+      await refreshMe();
       paintUser();
     }
     const u = r.data.user || {};

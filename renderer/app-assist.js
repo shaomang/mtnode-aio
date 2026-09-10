@@ -1847,14 +1847,6 @@ function renderAgentComposer() {
       wt.title = tip;
     }
   }
-  const pt = document.getElementById("agentPlanToggle");
-  if (pt) {
-    pt.classList.toggle("on", !!st.planNext);
-    pt.dataset.i18nTitle = st.planNext
-      ? "规划模式：开启中，点击关闭"
-      : "规划模式：本轮只出计划，不做改动";
-    pt.title = I18n.t(pt.dataset.i18nTitle);
-  }
   /* 纯净模式 chip：开启态高亮 + tooltip 切换（说明同按钮标题） */
   const put = document.getElementById("agentPureTrigger");
   if (put) {
@@ -2292,18 +2284,24 @@ function setView(view) {
   S.view = view;
   const wf = $("#btnToolWf");
   const ag = $("#btnToolAgent");
+  const tm = $("#btnTeam");
   if (wf) wf.classList.toggle("on", view === "workflow");
   if (ag) ag.classList.toggle("on", view === "agent");
+  if (tm) tm.classList.toggle("on", view === "team");
   const wrap = $("#wfWrap");
   const pane = $("#agentPane");
+  const team = $("#teamPane");
   if (wrap) wrap.style.display = view === "workflow" ? "" : "none";
   if (pane) pane.style.display = view === "agent" ? "" : "none";
-  /* 视图互斥：画布视图与智能会话视图各有自己的左侧栏，彼此不得出现。
-     - 画布视图：可用 #sidebar（节点/绘图/超级节点列表），会话列表不可展开
+  if (team) team.style.display = view === "team" ? "" : "none";
+  /* 视图互斥：画布 / 智能会话 / 团队各有自己的左侧栏，彼此不得出现。
+     - 画布视图：可用 #sidebar（节点/绘图/超级节点列表），会话与团队列表不可展开
      - 会话视图：自带 .agent-side（会话列表），画布 #sidebar 强制收起
+     - 团队视图：自带 .team-side（项目 / 专家 / 会话三段列表），画布 #sidebar 强制收起
      统一由 applySidebarVisibility() 收口 + body.view-* 类做 CSS 硬闸。 */
   document.body.classList.toggle("view-agent", view === "agent");
-  document.body.classList.toggle("view-workflow", view !== "agent");
+  document.body.classList.toggle("view-team", view === "team");
+  document.body.classList.toggle("view-workflow", view === "workflow");
   if (typeof applySidebarVisibility === "function") applySidebarVisibility();
   S.config.view = view;
   window.api.configSave(S.config).catch(() => {});
@@ -2314,6 +2312,11 @@ function setView(view) {
     renderAgentSession();
     const inp = $("#agentInput");
     if (inp) inp.focus();
+  } else if (view === "team") {
+    /* 团队视图同样收掉右侧全局助手栏：右栏留给专家聊天区（不持久化） */
+    setAssistOpen(false, false);
+    closeCanvasFindBar();
+    if (typeof renderTeamPane === "function") renderTeamPane();
   } else {
     renderCanvas();
   }
@@ -2927,20 +2930,44 @@ function agentChatSegItems(st) {
   if (!S._runCancels || !S._runCancels[rk]) return null;
   return agentTraceItems(rk);
 }
-/* 收尾 / 落盘共用：总段数 ≤40（超了保留最近的），单段 ≤8000 字加省略号。
-   say / err 段被裁剪后正文拼接不再等于 content，历史渲染自动退回旧版，不丢字。 */
+/* 总段数超上限时的取舍：先丢工具段，再丢正文段，思考 / 错误段最后才动。
+   工具段在渲染侧本就有 m.tools 的 chips 兜底；正文丢了还能从 m.content 补回来；
+   而 think 段丢了就是真的回不来 —— 需求「一轮结束后不要自动隐藏或删除思考」，
+   旧口径「只保留最后 N 段」会先把它顶掉，表现就是「一轮跑完，思考从会话里消失」。
+   顺序原样保持。 */
+function agentSegsTrimCap(segList, cap) {
+  if (!Array.isArray(segList) || segList.length <= cap) return segList;
+  const vital = segList.filter((s) => s && (s.k === "think" || s.k === "err"));
+  if (vital.length >= cap) return vital.slice(vital.length - cap);
+  const keep = new Set(vital);
+  let room = cap - keep.size;
+  const says = segList.filter((s) => s && s.k === "say");
+  for (let i = says.length - 1; i >= 0 && room > 0; i--) {
+    keep.add(says[i]);
+    room--;
+  }
+  for (let i = segList.length - 1; i >= 0 && room > 0; i--) {
+    const s = segList[i];
+    if (s && s.k === "tool") {
+      keep.add(s);
+      room--;
+    }
+  }
+  return segList.filter((s) => s && keep.has(s));
+}
+/* 收尾 / 落盘共用：总段数 ≤40（超了先丢工具段，见 agentSegsTrimCap），
+   say / err 单段 ≤8000 字加省略号；think 整段不裁剪 —— 需求「一轮结束后不要自动
+   隐藏或删除思考」，截断思考等于把它从会话里抹掉。say / err 段被裁剪后正文拼接
+   不再等于 content，历史渲染自动退回旧版，不丢字。 */
 function agentSegsForDisk(segList) {
   if (!Array.isArray(segList) || !segList.length) return null;
-  const arr =
-    segList.length > AGENT_SEG_MAX
-      ? segList.slice(segList.length - AGENT_SEG_MAX)
-      : segList;
+  const arr = agentSegsTrimCap(segList, AGENT_SEG_MAX);
   const out = [];
   for (const s of arr) {
     if (!s || !s.k) continue;
     let text = String(s.text || "");
     if (s.k === "tool") text = "";
-    if (text.length > AGENT_SEG_TEXT_MAX)
+    if (s.k !== "think" && text.length > AGENT_SEG_TEXT_MAX)
       text = text.slice(0, AGENT_SEG_TEXT_MAX) + "…";
     const o = { k: s.k, text, step: s.step != null ? s.step : null };
     if (s.callId) o.callId = s.callId;
@@ -2968,6 +2995,31 @@ function dshMsgSegsViewable(m) {
   const rebuilt = body && eTxt ? body + "\n\n" + eTxt : body || eTxt;
   return String(m.content || "") === rebuilt;
 }
+/* 一轮收尾：把运行中「已展开」的思考块状态带到刚落盘的历史消息上。
+   live 段的展开键是 segthink:<会话 id>:<轨迹段序>，历史是 segthink:<会话 id>:<消息序>:<段序>，
+   两者不同 —— 不搬一次，用户正展开的思考会在重绘后自动缩回（看起来像被藏起来）。
+   think 段不丢不裁（见 agentSegsTrimCap / agentSegsForDisk），第 k 个 think 段一一对应。 */
+function agentCarryThinkOpenState(st, msg, runKey) {
+  if (!st || !msg || !Array.isArray(msg.segments) || !S.openDshTools) return;
+  const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
+  const items = tr && Array.isArray(tr.items) ? tr.items : null;
+  if (!items || !items.length) return;
+  const openFlags = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (!it || it.k !== "think") continue;
+    openFlags.push(!!S.openDshTools["segthink:" + (st.id || "") + ":" + i]);
+  }
+  if (!openFlags.some(Boolean)) return;
+  const msgIdx = (st.messages || []).length - 1;
+  let k = 0;
+  msg.segments.forEach((seg, n) => {
+    if (!seg || seg.k !== "think") return;
+    if (openFlags[k++])
+      S.openDshTools["segthink:" + (st.id || "agent") + ":" + msgIdx + ":" + n] = true;
+  });
+}
+
 /* 历史消息的一段 → DOM。工具段按 callId / step 从 m.tools 池里取对应条目，
    取走的从池里移除，剩余（没匹配到的）由调用方补一行 chips 兜底。 */
 function dshHistSegEl(seg, pool, nodeId, idx, n) {
@@ -3039,16 +3091,21 @@ function dshHistSegEl(seg, pool, nodeId, idx, n) {
 function agentLiveSegsEl(row, st, live, items) {
   const tools = Array.isArray(st._liveTools) ? st._liveTools : [];
   const nodeId = live ? live.id : st.id;
+  /* 正在增长的思考段未必是尾段：agent 每步「思考 → 工具」，思考段后面还会挂
+     tool 段，所以按 tracePush 打的 open 标记认它，而不是认 items 末尾。 */
+  const anyOpenThink = items.some((x) => x && x.k === "think" && x.open === true);
   for (let i = 0; i < items.length; i++) {
     const seg = items[i];
     if (!seg) continue;
-    const streaming = i === items.length - 1;
+    const isLast = i === items.length - 1;
+    const streaming =
+      seg.k === "think" ? seg.open === true || (isLast && !anyOpenThink) : isLast;
     if (seg.k === "think") {
       const txt = String(seg.text || "");
       if (!txt) continue;
       const det = document.createElement("details");
       det.className = "dsh-seg dsh-seg-think";
-      /* 尾段（仍在增长的思考段）挂上旧 id + 段序：重绘前的
+      /* 仍在增长的思考段挂上旧 id + 段序：重绘前的
          rememberAgentThinkScroll 与就地更新都按这两个信息找到它 */
       if (streaming) {
         det.id = "agent-think";
@@ -3148,14 +3205,30 @@ function updateAgentLiveThink(st) {
       updateAgentThinkEl(st, null);
       return;
     }
-    const seg = agentLiveSegTail(items, document.getElementById("agent-think"), "think");
-    if (!seg) {
+    /* 定位正在增长的思考段：优先 tracePush 标了 open 的那段（可跨 tool 段），
+       没有标记时退回旧口径（尾段）。DOM 元素对不上段序 → 整表重绘一次。 */
+    let idx = -1;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it && it.k === "think" && it.open === true) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) idx = items.length - 1;
+    const seg = items[idx];
+    const det = document.getElementById("agent-think");
+    if (
+      !seg ||
+      seg.k !== "think" ||
+      !det ||
+      Number(det.dataset.segIdx) !== idx
+    ) {
       try {
         renderAgentSession();
       } catch (_) {}
       return;
     }
-    const det = document.getElementById("agent-think");
     const txt = String(seg.text || "");
     const sum = det && det.querySelector("summary");
     if (sum)
@@ -4075,7 +4148,7 @@ function startAgentSideTimeTicker() {
     } catch (_) {}
   }, 30000);
 }
-/* /compact 与「压缩」按钮共用：空会话 / 运行中 / 压缩进行中均有明确提示，并防重入 */
+/* /compact 命令入口（会话输入区的「压缩」按钮已按需求移除）：空会话 / 运行中 / 压缩进行中均有明确提示，并防重入 */
 async function agentCompact() {
   const st = agentSessionState();
   if (!st.messages.length) {
@@ -4130,7 +4203,7 @@ async function agentCompactRun(st) {
   await persistAgentSession();
   renderAgentSession();
 }
-/* 规划模式开关（会话「规划」按钮与 /plan 共用），文案口径保持一致 */
+/* 规划模式开关（/plan 命令入口，会话「规划」按钮已按需求移除），文案口径保持一致 */
 async function setPlanMode(st, on) {
   st.planNext = !!on;
   if (!st.planNext) st._planDelivered = false;
@@ -4800,6 +4873,9 @@ async function agentSessionSend(text, opts) {
   try {
     const final = await dshRunTask(input, {
       runKey: "agent:" + st.id,
+      /* Token 台账逐轮明细的标题：调用方（如计划执行器）给的计划任务标题优先，
+         缺省由 dshRunTask 用输入文本前 24 字回落 */
+      tokTitle: opts.tokTitle || undefined,
       /* 本轮开轮消息 + 摘要：回滚账本把稳定 rid 盖在这条消息上，并按会话建目录 */
       rollbackAnchor: rbAnchor,
       rollbackLabel: t.slice(0, 160),
@@ -4972,6 +5048,11 @@ async function agentSessionSend(text, opts) {
         if (segs && segs.length) msg.segments = segs;
       } catch (_) {}
       st.messages.push(msg);
+      /* 运行中展开的思考块，落到历史消息后要保持展开 —— 否则一轮结束就「自动藏起来」
+         （live 与历史用不同的展开键，重绘即缩回）。 */
+      try {
+        agentCarryThinkOpenState(st, msg, rk);
+      } catch (_) {}
       /* 复杂任务计划：agent 本轮输出计划标记 → 弹窗确认（音效 + 可编辑清单）；
          解析不出来但正文里有明显计划特征（标记写坏 / 漏闭合 / 裸 JSON）→
          记一次「漏弹」，本轮收尾时自动回发纠错指令让它重新生成（见下方 finally） */

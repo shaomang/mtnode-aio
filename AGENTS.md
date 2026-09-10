@@ -1,6 +1,6 @@
 # AGENTS.md
 
-MTNode AI编排器（mtnode-ai-orchestrator）v1.1.28 — Electron 39 桌面端 AI 工作流编排器。MIT 开源，用户数据全部留在本机 `%APPDATA%\pipeline-console`。本文件是所有开发 / 细化 / 建议会话共享的核心共识：**新文件按「目录约定」放置，「不要修改」清单内路径一律不改**。Agent 工作区 = 项目根目录。
+MTNode AI编排器（mtnode-ai-orchestrator）v1.1.28 — Electron 39 桌面端 AI 工作流编排器。MIT 开源，用户数据全部留在本机 `%APPDATA%\pipeline-console`，**任何数据都不允许保存在应用文件夹**（`app.getAppPath()` / exe 同目录；升级 / 卸载会带走或覆盖）。本文件是所有开发 / 细化 / 建议会话共享的核心共识：**新文件按「目录约定」放置，「不要修改」清单内路径一律不改**。Agent 工作区 = 项目根目录。
 
 ## 目录约定
 
@@ -15,7 +15,7 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.1.28 — Electron 39 桌面端 
 - **技能**：`skills/`（本地后端安装类技能）；`mtnode-agent-skills/mtnode/`（画布/数据库/开发架构等内置技能，索引由 `tools/build-mtnode-agent-skill-index.js` 生成）；`ext-repo/skills/` 为云发版技能。
 - **文档**：`docs/`（设计文档）；`guides/manual/`（应用内手册，`index.json` 为目录）；`guides/nodes/`（节点指南 Markdown）。
 - **测试**：`test/`、`smoke.js`（require ./main.js）、`dsh/smoke-*.mjs`。
-- **构建发布·更新·诊断**：`scripts/`、`build.json`、`installer.nsh`、`updater.js`、`crash-report.js`、`version.js`；Microsoft Store 的 MSIX 打包链在 `scripts/msix/`（`msix.config.json` 身份配置 + `make-msix.mjs` 主脚本 + `make-assets.mjs` 磁贴资产，`npm run dist:msix`，手册 `docs/msix-store-publish.md`，与 NSIS 发布链并行）。
+- **构建发布·更新·诊断**：`scripts/`、`build.json`、`installer.nsh`、`updater.js`、`crash-report.js`、`version.js`；Microsoft Store 的 MSIX 打包链在 `scripts/msix/`（`msix.config.json` 身份配置 + `make-msix.mjs` 主脚本 + `make-assets.mjs` 磁贴资产，手册 `docs/msix-store-publish.md`）。**一次发版用 `npm run release`（`scripts/release.mjs`）同时出 NSIS 安装包与 Store（MSIX）包，两包版本号必须一致**（`--dry-run` 可干跑校验版本与步骤）；只出 Store 包用 `npm run release:store`，单跑 MSIX 用 `npm run dist:msix`；MSIX 只能人工拖进 Partner Center 上传框，本链不做自动上传。
 - **诊断脚本（只读 · 零依赖 · 手动跑）**：`scripts/audit-token-usage.mjs` 解本机 `<userData>\pipeline-console\dsh-home\sessions\*\<sid>\session.jsonl[.zstd]`，按会话给出固定前缀（system 与逐个工具的字符数）、每步 prompt 与其增量、各工具返回体积（次数/均值/最大）、思考文本量、缓存命中率与 top-N 排行；调工具负载 / 返回预算 / 思考回放类优化前后各跑一次即可量化收益（`--help` 读口径）。
 
 ## 不要修改
@@ -35,7 +35,8 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.1.28 — Electron 39 桌面端 
 - **根目录主进程新模块必须进 `build.json` `files`**：否则打包后 `Cannot find module './xxx.js'`（已发生过 `assets-store.js` 遗漏）。
 - 新增渲染层能力按 `renderer/index.html` 的脚本加载顺序（= 模块分层）放置，样式进 `renderer/css/` 对应文件。
 - **扩展能力（DSH 插件 / 技能 Skills / MCP）统一在 `app-plugins.js` 的「扩展能力管理」对话框（`EXT_UI` + `#extManagerDlg`）里维护**：`app-settings.js` 只放「扩展能力」汇总小节与「管理…」入口，不要再往设置里加内联清单或表单；新增分类请扩 `EXT_KINDS`（复用卡片/详情样式，CSS 前缀 `.dsh-plugin-* / .dsh-ext-*` 在 `css/dsh.css`）。
-- 版本发布走 `scripts/` 的 stage/upload/patch-nginx 发布链，不要在别处自创发布流程。
+- 版本发布走 `scripts/` 的 stage/upload/patch-nginx 发布链，不要在别处自创发布流程；**一次发版必须同时出 NSIS 与 Store（MSIX）包，两包版本号必须一致**（入口 `npm run release`，只出 Store 包 `npm run release:store`，见 `docs/msix-store-publish.md`）。
+- **数据不落应用文件夹**：数据目录、事实库、素材库、`save` / 日志等一切用户数据只写 `%APPDATA%`（默认 `%APPDATA%\pipeline-console`）或用户选定的项目文件夹；解析结果等于或位于 `app.getAppPath()` / exe 同目录之下一律拒绝。启动时 `main.js` 的 `auditAppDirData()` 做只读体检，命中即记日志并弹窗报警；开发态（未打包）打印一次结论。对应口径见 `docs/fact-library.md` §一 / §六。
 - 应用内手册由 `guides/manual/` 维护，节点指南在 `guides/nodes/`；新增节点类型必须补指南。
 - **对话框 / 参数面板一律 persistent（禁止「点外部 / 点蒙层自动关闭」）**：任何带输入或设置项的浮层都不得挂「点外部即关」的监听——用户点空白看一眼画布，就把改到一半的参数丢掉，是最伤的交互。适用面：`#overlay` 弹窗（节点设置窗、设置、扩展能力管理、素材库 / 素材设置 / 素材表单、模板商店二级浮层、YAML / Markdown 编辑器、手册窗）、节点头部的参数面板（`#bgRmPop` 抠图、`#ratioLockPop` 画幅锁定、`#devModelPop` Agent 设定、`#devColorPop` 外框色）、顶栏面板（如「审批与权限」`#approvalsPanel`）。关闭只允许走显式路径：窗内「取消 / 完成并关闭 / 确定」按钮、面板 ✕、Esc、以及再点一次触发它的那个开关。
   - 去掉点外部收起后必须自己补上两件事，否则会留下叠在一起或飘在别处的浮层：**互斥**（开新面板时收掉旧面板，节点级面板统一走 `app.js` 的 `closeNodePopsExcept(keep)`）、**跟随与回收**（`nodePopAnchor(el, 锚点选择器, 尺寸, 节点 id)` 登记归属，`applyTransform → repositionNodePops()` 在平移 / 缩放后把面板贴回它的按钮——锚点这一帧没挂载（嵌在展开的壳层里）就原地不动，宿主节点已从 `S.wf` 消失（删节点 / 切画布 / 撤销换对象）才收掉；`closeAllNodePops()` 挂在切画布与撤销路径上）。

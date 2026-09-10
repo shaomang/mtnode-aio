@@ -2432,11 +2432,11 @@ function openHelp() {
 /* 作者弹窗：居中小窗口，显示 @ms2308 与 B 站主页超链接 */
 function openAuthorPopup() {
   openOverlay("");
-  $("#overlay").style.alignItems = "center";
+  /* 尺寸 / 顶边色只走 .overlay-box.author-box 这个类：以前这里内联 cssText 改的是
+     全应用共享的 .overlay-box，关窗后残留的 width/max-height 会被下一个弹窗
+     （设置等）继承，变得又窄又高、超出视口后底部的关闭按钮够不着。 */
   const box = $("#overlay .overlay-box");
-  if (box)
-    box.style.cssText =
-      "width:min(340px,92%);max-height:none;border-top:3px solid var(--cyan)";
+  if (box) box.classList.add("author-box");
   const body = $("#ovBody");
   const pop = document.createElement("div");
   pop.className = "author-pop";

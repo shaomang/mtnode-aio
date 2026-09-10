@@ -223,13 +223,36 @@ button:disabled {
   box-sizing: border-box;
   height: 32px;
   padding: 0 10px;
-  font-size: 12px;
+  /* 画布 / 会话 / 团队：加上 14px 图标后文字显得偏重，字号 12px → 11px 略收。
+     掉下来的 1px/字由 .tb-view-txt 的 0 1px 内边距补回（两字正好抵消 2px），
+     外框尺寸仍与加图标前完全一致（高度 32px、padding 0 10px 不变）。 */
+  font-size: 11px;
   letter-spacing: .5px;
   font-weight: 700;
   min-width: 0;
   display: inline-flex;
+  /* 画布 / 会话 / 团队：图标在上、文字在下（与顶栏其它入口按钮同风格）。
+     图标 14px 窄于两字标题，宽度由文字决定 → 外框尺寸与加图标前完全一致。 */
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 1px;
+  line-height: 1;
+}
+
+/* 画布 / 会话 / 团队 的线性图标：尺寸口径对齐第二排 .btn-ico 的 svg（14px） */
+.topbar .tb-view svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex: none
+}
+
+/* 画布 / 会话 / 团队 的文案：字号收到 11px 后左右各补 1px 内边距，
+   把两字标题少掉的 2px 补回去，按钮外框宽度保持不变 */
+.topbar .tb-view .tb-view-txt {
+  line-height: 1;
+  padding: 0 1px
 }
 
 .topbar .btn-ico {
@@ -423,13 +446,15 @@ button:disabled {
   color: var(--orange2)
 }
 
+/* 顶栏「讨论」：原生内置入口，走中性/白色（与文档 / 审批同风格），不再是专属蓝 */
 .topbar .btn-forum {
-  color: #4d8cff
+  color: var(--ink)
 }
 
-.topbar .btn-forum:hover {
-  border-color: #4d8cff;
-  color: #7eb0ff
+.topbar .btn-forum:hover,
+.topbar .btn-forum.on {
+  border-color: var(--orange);
+  color: var(--orange2)
 }
 
 .btn-update {
@@ -534,6 +559,24 @@ button:disabled {
 .btn-docs.on {
   color: var(--orange2);
   border-color: var(--orange)
+}
+
+/* 右上角「文档 / 讨论 / 审批」：尺寸统一到第二排的图标按钮（.btn-ico 的 36×32、
+   14px 图标 + 9px 文字），此前走 .btn-stack 的 46px → 同风格却比第二排宽 10px。
+   只作用于这三个；账户入口（.btn-account）有自己的宽度规则，保持不动。 */
+.topbar .btn-docs,
+.topbar .btn-forum,
+.topbar .btn-approvals {
+  width: auto;
+  min-width: 36px;
+  padding: 2px 4px 1px;
+}
+
+.topbar .btn-docs .btn-stack-ico,
+.topbar .btn-forum .btn-stack-ico,
+.topbar .btn-approvals .btn-stack-ico {
+  width: 14px;
+  height: 14px
 }
 
 .plugin-grid-wrap {
@@ -1063,18 +1106,594 @@ button:disabled {
   }
 }
 
-/* ===== 视图左侧栏互斥（画布 ↔ 智能会话） =====
+/* ===== 视图左侧栏互斥（画布 ↔ 智能会话 ↔ 团队） =====
    画布视图只允许画布边栏（节点 / 绘图 / 超级节点），
-   会话视图只允许会话列表（.agent-side）。
-   这里做 CSS 硬闸：即使有代码误加 sidebar-open / 误显 agentPane 也不会串场。 */
+   会话视图只允许会话列表（.agent-side），团队视图只允许团队三段列表（.team-side）。
+   这里做 CSS 硬闸：即使有代码误加 sidebar-open / 误显 agentPane / teamPane 也不会串场。 */
 body.view-agent .layout > .sidebar {
+  display: none !important;
+}
+
+body.view-team .layout > .sidebar {
   display: none !important;
 }
 
 body.view-workflow #agentPane,
 body.view-workflow .agent-pane,
-body.view-workflow .agent-side {
+body.view-workflow .agent-side,
+body.view-workflow #teamPane,
+body.view-workflow .team-pane {
   display: none !important;
+}
+
+body.view-agent #teamPane,
+body.view-agent .team-pane {
+  display: none !important;
+}
+
+body.view-team #agentPane,
+body.view-team .agent-pane,
+body.view-team .agent-side {
+  display: none !important;
+}
+
+/* ===== 一人公司（团队）视图：左栏「项目 / 专家 / 会话」三段列表 + 右栏聊天 ===== */
+.team-pane {
+  position: relative; /* 切画布加载屏（.team-pane-loading）以此为定位上下文 */
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* 切画布加载屏：团队恒绑定当前画布，切换途中先盖住整块面板（并吃掉点击），
+   避免用户在旧画布的团队上继续操作（串线）。由 app-teamview.js 加 / 去 .on。 */
+.team-pane-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.team-pane-loading.on {
+  display: flex;
+}
+
+.team-pane-loading-spin {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--cyan) 22%, transparent);
+  border-top-color: var(--cyan);
+  animation: team-pane-loading-spin 0.8s linear infinite;
+}
+
+@keyframes team-pane-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.team-pane-loading-title {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.team-pane-loading-name {
+  max-width: 320px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-side {
+  flex: none;
+  width: 232px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--bd);
+}
+
+.team-side-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.team-side-logo {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cyan2);
+  letter-spacing: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 标题右侧「复制」icon 按钮：把当前画布团队增量复制到其他画布。 */
+.team-side-copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.team-side-copy:hover {
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 12%, transparent);
+}
+
+.team-side-copy svg {
+  display: block;
+}
+
+/* 复制团队到其他画布（标题右侧「复制」按钮 → persistent mt-dialog） */
+.mt-dialog-box.team-copy-box {
+  width: min(440px, 94vw);
+}
+
+.team-copy-body .mt-dialog-msg {
+  margin: 0 0 12px;
+}
+
+.team-copy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-copy-label {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.team-copy-sel {
+  flex: 1;
+  min-width: 0;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.team-copy-hint {
+  margin-top: 8px;
+  min-height: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 左栏角色行右侧的「＋」＝为这位角色新建一段单聊。
+   顶部原来的「＋ 新会话」按钮已移除（标题右侧只留「复制」）。 */
+.team-side-add-chat {
+  margin-left: auto;
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.team-side-add-chat:hover {
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 14%, transparent);
+}
+
+.team-side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px 12px;
+}
+
+.team-sec + .team-sec {
+  margin-top: 10px;
+}
+
+.team-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.team-sec-add {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.team-sec-add:hover {
+  color: var(--cyan);
+}
+
+.team-sec-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.team-side-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.team-side-item:hover {
+  background: var(--panel2);
+}
+
+.team-side-item.on {
+  background: color-mix(in srgb, var(--cyan) 14%, var(--panel2));
+  border-color: color-mix(in srgb, var(--cyan) 35%, var(--bd));
+}
+
+.team-side-item .team-side-glyph {
+  flex: none;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.team-side-item .team-side-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-side-item .team-side-sub {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-side-empty {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ===== 画布锚点列表（团队视图左栏第一段：一位专家团队挂在一张画布上） =====
+   当前画布高亮用主题色，右侧角标显示该锚点下的专家数。
+   配色只取 base.css 变量，暗色 / 工业 / 亮色三套主题自动跟随。 */
+.team-anchor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.team-anchor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.team-anchor-row:hover {
+  background: var(--panel2);
+}
+
+/* 当前画布 */
+.team-anchor-row.on {
+  background: color-mix(in srgb, var(--cyan) 14%, var(--panel2));
+  border-color: color-mix(in srgb, var(--cyan) 35%, var(--bd));
+}
+
+.team-anchor-glyph {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  color: var(--muted);
+}
+
+.team-anchor-glyph svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.team-anchor-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 专家数角标 */
+.team-anchor-count {
+  flex: none;
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--bd2);
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.team-anchor-row.on .team-anchor-count {
+  color: var(--cyan2);
+  border-color: color-mix(in srgb, var(--cyan) 45%, var(--bd2));
+}
+
+.team-anchor-del {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.team-anchor-del:hover {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
+
+.team-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.team-main-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--panel);
+}
+
+.team-main-head .team-main-id {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.team-main-head .team-main-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-main-head .team-main-role {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-main-head .team-spacer {
+  flex: 1;
+}
+
+.team-main-head select {
+  background: var(--bg2);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  max-width: 190px;
+}
+
+.team-main-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== 专家卡折叠区（右栏头部下方 · 可编辑） =====
+   默认收起；展开后内容复用招聘页的专家卡渲染，折叠头带「✎ 编辑」入口
+   （走招聘对话框编辑模式，保存写回原专家）。 */
+.team-expert-card {
+  flex: none;
+  border-bottom: 1px solid var(--bd);
+  background: var(--panel);
+}
+
+.team-card-fold {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.team-card-fold:hover {
+  color: var(--ink);
+  background: var(--panel2);
+}
+
+.team-card-fold .team-card-title {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.team-card-fold .team-card-hint {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 折叠头「✎ 编辑」：次要按钮口径（尺寸 / 圆角 / 悬停态沿用折叠头本身，不引入新色卡）。
+   flex: none 保证窄宽度下不被 hint 挤压，nowrap 折叠头整体不换行错位。 */
+.team-card-fold .team-card-edit {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.team-card-fold .team-card-edit:hover {
+  color: var(--ink);
+  border-color: var(--bd2);
+  background: var(--panel2);
+}
+
+.team-card-body {
+  max-height: 42vh;
+  overflow: auto;
+  padding: 2px 14px 10px;
+}
+
+/* 比 css/team.css 的 .team-chat-list 高一档（后者按卡片式聊天给 4px 内边距，
+   这里承载 .dsh-msg 消息流，需要更宽松的阅读边距） */
+.team-main .team-chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+}
+
+.team-chat-empty {
+  padding: 24px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.team-chat-input {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px 14px;
+  border-top: 1px solid var(--bd);
+  background: var(--panel);
+}
+
+.team-chat-input textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 200px;
+  resize: vertical;
+}
+
+.team-chat-send {
+  flex: none;
+  border: 1px solid var(--bd2);
+  background: var(--panel2);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.team-chat-send:hover {
+  border-color: var(--cyan);
+}
+
+.team-chat-send.danger {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--bd2));
+  color: var(--red);
+}
+
+.team-chat-send:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .sidebar-search {

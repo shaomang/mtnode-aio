@@ -25,6 +25,7 @@ const {
   Menu,
   nativeImage,
   screen,
+  safeStorage,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -65,6 +66,8 @@ const { patchProviders } = require("./config-providers.js");
 const { registerRollbackIpc } = require("./rollback-store.js");
 const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
+/* 本机微信 PC 版检测 / 启动：纯主进程、零新依赖，不做注入与本地数据读取 */
+const wechatPc = require("./wechat-pc.js");
 let dshAdapter = null;
 function dshConfig() {
   const cfg = readJson(join(DATA(), "config.json"), {});
@@ -1425,6 +1428,9 @@ ipcMain.handle("shell:openPathDetached", async (e, p) => {
     return { ok: false, error: (err && err.message) || String(err) };
   }
 });
+/* 用系统默认浏览器打开外部链接（shell.openExternal → 系统默认浏览器），
+   这里只做协议白名单（http/https/mailto），不加域名白名单、不做额外拦截；
+   微信登录地址的域名口径（https + open.weixin.qq.com）在微信登录入口单独校验。 */
 ipcMain.handle("shell:openExternal", (e, url) => {
   if (typeof url === "string" && /^(https?:\/\/|mailto:)/i.test(url))
     shell.openExternal(url);
@@ -2034,6 +2040,350 @@ ipcMain.handle("clipboard:writeText", (e, text) => {
   }
 });
 
+/* ---------------- 团队事实库：插图与无引用图片回收 ----------------
+   事实库正文是磁盘上的 Markdown，插图复制进它的 assets 目录、正文用相对路径引用。
+   fact:saveImage 支持「本机文件路径」或「base64（剪贴板 / 截图）」，文件名做安全化 + 唯一化；
+   被写过的目录登记进白名单（持久化到 userData），fact:deleteImages 只删白名单目录内的文件，
+   渲染层即使传入任意路径也删不掉目录外的东西（防越权）。 */
+/* 应用目录（asar 根 + 安装目录）：事实库**绝不允许**落在这里 —— 升级 / 卸载会带走或覆盖。
+   app.getAppPath() = 打包态的 resources/app.asar（开发态 = 项目根）；
+   path.dirname(app.getPath("exe")) = 安装目录（NSIS 卸载会清空）。两者都交给渲染层做同口径守卫。 */
+const APP_DIRS = (() => {
+  const out = [];
+  const push = (p) => {
+    try {
+      const a = path.resolve(String(p || ""));
+      if (a && !out.includes(a)) out.push(a);
+    } catch {}
+  };
+  try { push(app.getAppPath()); } catch {}
+  try { push(path.dirname(app.getPath("exe"))); } catch {}
+  return out;
+})();
+/* 目标路径是否位于应用目录内（本目录或它的子路径）；Windows 大小写不敏感。 */
+function isInsideAppDir(p) {
+  const target = path.resolve(String(p || ""));
+  if (!target) return false;
+  const cmp = process.platform === "win32" ? (s) => s.toLowerCase() : (s) => s;
+  const t = cmp(target);
+  return APP_DIRS.some((d) => {
+    const base = cmp(d);
+    return !!base && (t === base || t.startsWith(base + path.sep));
+  });
+}
+
+/* ---------------- 应用目录零数据：启动体检（只读） ----------------
+   「任何数据都不允许保存在应用文件夹」。启动时体检一次：数据目录、事实库、
+   save / save-backups、日志、素材库等解析结果若**等于或位于** app.getAppPath()
+   （打包后 = resources/app.asar，开发态 = 项目根）或 exe 同目录之下，就记日志并
+   弹窗报警 —— 绝不静默写入，也绝不自动搬迁（数据搬家必须由用户显式执行）。 */
+function appDirDataCandidates() {
+  const out = [];
+  const add = (label, p) => {
+    const s = String(p || "").trim();
+    if (s && path.isAbsolute(s)) out.push({ label: label, path: path.resolve(s) });
+  };
+  let dataRoot = "";
+  try { dataRoot = DATA(); } catch {}
+  if (dataRoot) {
+    add("数据目录", dataRoot);
+    const subs = [
+      ["工作流存档 save", "save"],
+      ["画布备份 save-backups", "save-backups"],
+      ["画布图像/媒体资产 assets", "assets"],
+      ["日志 logs", "logs"],
+      ["崩溃报告 logs/crash-reports", path.join("logs", "crash-reports")],
+      ["回收站 trash", "trash"],
+      ["讨论区缓存 forum", "forum"],
+      ["工坊缓存 store-cache", "store-cache"],
+      ["工作流 workflows", "workflows"],
+      ["dsh 工作区 dsh-workspace", "dsh-workspace"],
+      ["运行日志 dsh.log", "dsh.log"],
+      ["错误日志 error.log", "error.log"],
+    ];
+    for (const [label, sub] of subs) add(label, path.join(dataRoot, sub));
+  }
+  let cfg = {};
+  try { cfg = readJson(path.join(dataRoot || "", "config.json"), {}) || {}; } catch {}
+  /* 素材库：config.assetRoot，未配置时回落数据目录下 asset-lib */
+  try {
+    const ar = typeof cfg.assetRoot === "string" ? cfg.assetRoot.trim() : "";
+    add("素材库", ar || (dataRoot ? path.join(dataRoot, "asset-lib") : ""));
+  } catch {}
+  /* 团队事实库：每画布的 fact.dir / fact.assetsDir */
+  try {
+    const cans = cfg.team && Array.isArray(cfg.team.canvases) ? cfg.team.canvases : [];
+    for (const c of cans) {
+      const f = (c && c.fact) || {};
+      const id = (c && c.id) || "?";
+      add("团队事实库(" + id + ")", f.dir);
+      add("团队事实库插图(" + id + ")", f.assetsDir);
+    }
+  } catch {}
+  return out;
+}
+
+function auditAppDirData() {
+  const hits = appDirDataCandidates().filter((x) => isInsideAppDir(x.path));
+  if (!app.isPackaged) {
+    console.log(
+      "[appdir-audit] 开发态体检：数据目录 " + DATA() + "，" +
+        (hits.length
+          ? "发现 " + hits.length + " 处数据落在应用目录内（见下方告警）"
+          : "未发现数据落在应用目录内"),
+    );
+  }
+  if (!hits.length) return;
+  const items = hits.map((h) => "· " + h.label + "\n    " + h.path).join("\n");
+  const detail =
+    "下列数据保存在应用文件夹内，升级 / 卸载会带走或覆盖它们：\n\n" +
+    items +
+    "\n\n请把这些数据移到项目文件夹（如 <项目文件夹>\\团队事实库），改完后重启应用。";
+  console.warn("[appdir-audit] 检测到 " + hits.length + " 处数据位于应用目录内：");
+  for (const h of hits) console.warn("[appdir-audit]   " + h.label + " → " + h.path);
+  /* 记日志：仅当数据目录本身不在应用目录内才写，避免体检自己又往应用目录写数据 */
+  try {
+    if (!isInsideAppDir(DATA())) {
+      const d = path.join(DATA(), "logs");
+      fs.mkdirSync(d, { recursive: true });
+      fs.appendFileSync(
+        path.join(d, "error.log"),
+        "[" + new Date().toISOString() + "] [appdir-audit] " +
+          hits.map((h) => h.label + "=" + h.path).join(" | ") + "\n",
+      );
+    }
+  } catch {}
+  try {
+    const opts = {
+      type: "warning",
+      title: "数据保存在应用文件夹内",
+      message: "检测到 " + hits.length + " 处数据位于应用文件夹内",
+      detail: detail,
+      buttons: ["知道了"],
+    };
+    const parent = mainWin && !mainWin.isDestroyed() ? mainWin : null;
+    const p = parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts);
+    Promise.resolve(p).catch(() => {});
+  } catch {}
+}
+
+const FACT_DIRS_FILE = path.join(APP_DATA_ROOT, "fact-asset-dirs.json");
+function factLoadAssetDirs() {
+  try {
+    const j = JSON.parse(fs.readFileSync(FACT_DIRS_FILE, "utf8"));
+    return new Set(
+      (Array.isArray(j) ? j : [])
+        .map((x) => String(x || "").trim())
+        .filter((x) => x && path.isAbsolute(x))
+        .map((x) => path.resolve(x)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+const FACT_ASSET_DIRS = factLoadAssetDirs();
+function factRememberDir(dir) {
+  const d = path.resolve(dir);
+  if (FACT_ASSET_DIRS.has(d)) return;
+  FACT_ASSET_DIRS.add(d);
+  try {
+    writeJson(FACT_DIRS_FILE, Array.from(FACT_ASSET_DIRS));
+  } catch {}
+}
+/* base64 可能带 data URL 前缀（data:image/png;base64,...），统一剥掉。 */
+function factStripDataUrl(s) {
+  const t = String(s || "");
+  const i = t.indexOf("base64,");
+  return i >= 0 ? t.slice(i + 7) : t;
+}
+function factExtOf(o, srcPath) {
+  let ext = String((o && o.ext) || "").trim().toLowerCase();
+  if (ext && ext[0] !== ".") ext = "." + ext;
+  if (!/^\.[a-z0-9]{1,5}$/.test(ext)) ext = "";
+  if (!ext) {
+    const m = /^data:image\/([a-z0-9.+-]+)/i.exec(String((o && o.base64) || ""));
+    if (m) ext = "." + m[1].toLowerCase().replace(/^jpeg$/, "jpg");
+  }
+  if (!ext && srcPath) ext = path.extname(String(srcPath)).toLowerCase();
+  if (!/^\.[a-z0-9]{1,5}$/.test(ext)) ext = ".png";
+  return ext;
+}
+function factSafeBase(name) {
+  const s = path
+    .basename(String(name || ""))
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+    .replace(/[.\s]+$/, "")
+    .trim();
+  return s || "image";
+}
+function factUniquePath(dir, base, ext) {
+  let p = path.join(dir, base + ext);
+  let i = 1;
+  while (fs.existsSync(p) && i <= 9999) {
+    p = path.join(dir, base + "-" + i + ext);
+    i += 1;
+  }
+  if (fs.existsSync(p))
+    p = path.join(dir, base + "-" + Date.now().toString(36) + ext);
+  return p;
+}
+
+/* 剪贴板 / 截图取图 → PNG base64（渲染层再决定落盘位置）。 */
+ipcMain.handle("clipboard:readImage", () => {
+  try {
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return { ok: false, empty: true };
+    const size = img.getSize();
+    return {
+      ok: true,
+      base64: img.toPNG().toString("base64"),
+      width: (size && size.width) || 0,
+      height: (size && size.height) || 0,
+    };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle("fact:saveImage", (e, opts) => {
+  try {
+    const o = opts && typeof opts === "object" ? opts : {};
+    const dirRaw = String(o.dir || "").trim();
+    if (!dirRaw || !path.isAbsolute(dirRaw))
+      return { ok: false, error: I18n.t("未选择") };
+    const dir = path.resolve(dirRaw);
+    if (dir === path.parse(dir).root) return { ok: false, error: I18n.t("非法路径") };
+    const srcPath = String(o.srcPath || "").trim();
+    if (!srcPath && !String(o.base64 || "").trim())
+      return { ok: false, error: I18n.t("未选择") };
+    mk(dir);
+    const dest = factUniquePath(dir, factSafeBase(o.name || "image"), factExtOf(o, srcPath));
+    if (srcPath) fs.copyFileSync(srcPath, dest);
+    else fs.writeFileSync(dest, Buffer.from(factStripDataUrl(o.base64), "base64"));
+    factRememberDir(dir);
+    return { ok: true, path: dest, name: path.basename(dest), dir };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/* 只删白名单（事实库 assets）目录内的文件；目录外的路径一律 skipped，不落手。 */
+ipcMain.handle("fact:deleteImages", (e, opts) => {
+  const list = Array.isArray(opts && opts.paths) ? opts.paths : [];
+  const removed = [];
+  const skipped = [];
+  const failed = [];
+  for (const raw of list) {
+    try {
+      const s = String(raw || "").trim();
+      if (!s) continue;
+      const abs = path.resolve(s);
+      if (!FACT_ASSET_DIRS.has(path.dirname(abs))) {
+        skipped.push(abs);
+        continue;
+      }
+      if (fs.existsSync(abs) && fs.statSync(abs).isFile()) fs.unlinkSync(abs);
+      removed.push(abs);
+    } catch {
+      failed.push(String(raw || ""));
+    }
+  }
+  return { ok: true, removed, skipped, failed };
+});
+
+/* 事实库重命名 / 删除：**按单篇文档**作用（<doc>.md 正文 + <doc>.review.json sidecar），
+   同一库目录内的其它文档与共享 assets/ 不受影响。路径守卫与 fact:deleteImages 同源：
+   只认绝对路径、非磁盘根，且目录必须长得像事实库（名为「团队事实库」或已登记进
+   FACT_ASSET_DIRS），**且不在应用目录内**，防越权动任意文件、也防库落在会被升级覆盖的地方。
+   注：旧口径里的 `facts/<id>/`（应用数据目录回退）已取消，不再算合法库目录。 */
+function factLibDirOf(file) {
+  const f = path.resolve(String(file || "").trim());
+  if (!f || f === path.parse(f).root) return "";
+  if (path.extname(f).toLowerCase() !== ".md") return "";
+  const dir = path.dirname(f);
+  if (!path.isAbsolute(dir) || dir === path.parse(dir).root) return "";
+  if (isInsideAppDir(dir)) return "";
+  const base = path.basename(dir);
+  if (
+    base === "团队事实库" ||
+    FACT_ASSET_DIRS.has(dir) ||
+    FACT_ASSET_DIRS.has(path.join(dir, "assets"))
+  )
+    return dir;
+  return "";
+}
+
+/* 重命名单篇文档：只改这一篇的 <doc>.md 与 <doc>.review.json，库内其它文档与 assets/ 不动。 */
+ipcMain.handle("fact:renameLibrary", (e, opts) => {
+  try {
+    const o = opts && typeof opts === "object" ? opts : {};
+    const dir = factLibDirOf(o.file);
+    if (!dir) return { ok: false, error: I18n.t("非法路径") };
+    const name = factSafeBase(o.name || "");
+    if (!name) return { ok: false, error: I18n.t("未选择") };
+    const oldFile = path.resolve(String(o.file));
+    const newFile = path.join(dir, name + ".md");
+    const oldBase = path.basename(oldFile, path.extname(oldFile));
+    const oldRv = path.join(dir, oldBase + ".review.json");
+    const newRv = path.join(dir, name + ".review.json");
+    const key = (p) => (process.platform === "win32" ? p.toLowerCase() : p);
+    /* 目标名与源文件不同时，先确认没被库内其它文档占用（md 或 sidecar 都算），
+       绝不覆盖别的文档；仅改大小写视为同一文件，照常执行。 */
+    if (key(newFile) !== key(oldFile)) {
+      if (fs.existsSync(newFile) || fs.existsSync(newRv))
+        return { ok: false, error: I18n.t("同名文件已存在") };
+    }
+    if (newFile !== oldFile) fs.renameSync(oldFile, newFile);
+    if (key(oldRv) !== key(newRv) && fs.existsSync(oldRv)) fs.renameSync(oldRv, newRv);
+    return { ok: true, file: newFile, name };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/* 删单篇文档：只删这一篇的 md + sidecar；共享 assets/ 与空目录仅当库内再无其它文档时回收。 */
+ipcMain.handle("fact:removeLibrary", (e, opts) => {
+  try {
+    const o = opts && typeof opts === "object" ? opts : {};
+    const dir = factLibDirOf(o.file);
+    if (!dir) return { ok: false, error: I18n.t("非法路径") };
+    const removed = [];
+    const file = path.resolve(String(o.file));
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file);
+      removed.push(file);
+    }
+    const rv = path.join(dir, path.basename(file, path.extname(file)) + ".review.json");
+    if (fs.existsSync(rv)) {
+      fs.unlinkSync(rv);
+      removed.push(rv);
+    }
+    /* 库内还有别的文档（.md / .review.json）→ 保留共享 assets/ 与目录，绝不误删。 */
+    let others = [];
+    try {
+      others = fs.readdirSync(dir).filter((n) => {
+        const low = String(n).toLowerCase();
+        return low.endsWith(".md") || low.endsWith(".review.json");
+      });
+    } catch {
+      others = [];
+    }
+    if (!others.length) {
+      const assets = path.join(dir, "assets");
+      if (fs.existsSync(assets) && fs.statSync(assets).isDirectory()) {
+        fs.rmSync(assets, { recursive: true, force: true });
+        removed.push(assets);
+      }
+      try {
+        if (!fs.readdirSync(dir).length) fs.rmdirSync(dir);
+      } catch {}
+    }
+    return { ok: true, removed };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 /* 在线浏览:主进程代取远程内容(无 CORS/CSP 限制;渲染层 connect-src 保持 'self') */
 ipcMain.handle("net:fetch", async (e, url) => {
   if (typeof url !== "string" || !/^https?:\/\//.test(url)) {
@@ -2053,9 +2403,56 @@ ipcMain.handle("net:fetch", async (e, url) => {
 
 /* 模板商店 SaaS（经本机 nginx /mtnode/store-api 反代到 127.0.0.1:8787） */
 const STORE_BASE =
-  process.env.MTNODE_STORE_URL || "http://mt-agent.com/mtnode/store-api";
+  process.env.MTNODE_STORE_URL || "https://www.mt-agent.com/mtnode/store-api";
 
-ipcMain.handle("store:request", async (e, opts) => {
+/* 账户凭据本机存储：safeStorage 加密后原子写入 %APPDATA%\pipeline-console，
+   不可用时降级明文并告警；token 只留主进程，绝不回传渲染层。 */
+const { createAuthStore } = require("./auth-store.js");
+const authStore = createAuthStore({
+  dataDir: APP_DATA_ROOT,
+  safeStorage,
+  onWarn: (msg) => errLog("[auth] " + msg),
+});
+
+function notifyAuthChanged() {
+  const st = authStore.state();
+  for (const w of BrowserWindow.getAllWindows()) {
+    try {
+      if (!w.isDestroyed()) w.webContents.send("auth:changed", st);
+    } catch {}
+  }
+}
+
+/* 一次性迁移：旧版把商店 / 论坛会话存在 config.json 的 storeAuth 里（含明文 token），
+   现在统一由 auth-store 保管。首次读到旧值即迁入并清空旧字段，避免两份 token 打架。 */
+function migrateLegacyStoreAuth() {
+  try {
+    const fp = join(DATA(), "config.json");
+    const cfg = readJson(fp, {}) || {};
+    const old = cfg.storeAuth;
+    if (!old || !old.token) return;
+    if (!authStore.load()) {
+      authStore.save({
+        token: String(old.token),
+        user: {
+          id: old.userId || (old.user && old.user.id) || "",
+          username: old.username || "",
+          nickname: old.nickname || old.username || "",
+          likesReceived: Number(old.likesReceived || 0) || 0,
+          downloadsReceived: Number(old.downloadsReceived || 0) || 0,
+          isAdmin: !!old.isAdmin,
+        },
+      });
+    }
+    delete cfg.storeAuth;
+    writeJson(fp, cfg);
+    notifyAuthChanged();
+  } catch (err) {
+    errLog("[auth] storeAuth 迁移失败：" + String((err && err.message) || err));
+  }
+}
+
+async function storeRequest(opts) {
   try {
     const o = opts || {};
     const p = String(o.path || "");
@@ -2065,18 +2462,53 @@ ipcMain.handle("store:request", async (e, opts) => {
       Accept: "*/*",
       "User-Agent": "MTNodeAIO/1.1",
     };
-    if (o.token) headers.Authorization = "Bearer " + String(o.token);
+    /* 渲染层不再接触 token：未显式传 token 时用主进程保存的会话。
+       anon / noAuth：显式匿名请求，跳过本机会话 token（如微信登录 start，
+       带 token 会被服务端当成「绑定」意图）。 */
+    const anon = !!(o.anon || o.noAuth);
+    let token = o.token ? String(o.token) : "";
+    if (!token && !anon) {
+      const cur = authStore.load();
+      if (cur) token = cur.token;
+    }
+    if (token) headers.Authorization = "Bearer " + token;
     let body;
     if (o.json != null) {
       headers["Content-Type"] = "application/json";
       body = JSON.stringify(o.json);
     }
-    const res = await fetch(STORE_BASE + p, {
-      method,
-      headers,
-      body,
-      signal: AbortSignal.timeout(120000),
-    });
+    /* 手动跟随重定向（redirect:"manual"）：API 客户端语义要求原样保留
+       method / headers / body，而 undici 默认跟随会把 301/302/303 的 POST
+       降级成 GET —— nginx 上线 SSL 后 http→https 301，服务端就只剩 GET
+       路由缺失，返回 404 not found（短信/密码登录、auth:bind/unbind、
+       论坛发帖等所有 POST 全部受影响）。 */
+    let url = STORE_BASE + p;
+    let res;
+    for (let hop = 0; hop <= 3; hop++) {
+      res = await fetch(url, {
+        method,
+        headers,
+        body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(120000),
+      });
+      const st = res.status;
+      if (st !== 301 && st !== 302 && st !== 303 && st !== 307 && st !== 308) break;
+      if (hop === 3) return { ok: false, error: I18n.t("重定向次数过多") };
+      const loc = String(res.headers.get("location") || "");
+      if (!loc) return { ok: false, error: "HTTP " + st };
+      try {
+        if (res.body) await res.body.cancel();
+      } catch {}
+      let next = "";
+      try {
+        next = new URL(loc, url).href;
+      } catch {
+        return { ok: false, error: I18n.t("非法 URL") };
+      }
+      if (!/^https?:\/\//i.test(next)) return { ok: false, error: I18n.t("非法 URL") };
+      url = next;
+    }
     const ct = String(res.headers.get("content-type") || "");
     if (ct.includes("application/json")) {
       const data = await res.json();
@@ -2093,6 +2525,296 @@ ipcMain.handle("store:request", async (e, opts) => {
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
+}
+
+ipcMain.handle("store:request", (e, opts) => storeRequest(opts));
+
+/* ---------------- 账户与登录（契约见 docs/auth-design.md，接口全部走 storeRequest） ---------------- */
+
+function authFail(r, fallback) {
+  const d = (r && r.data) || {};
+  const out = {
+    ok: false,
+    status: Number((r && r.status) || 0) || 0,
+    code: String(d.code || (r && r.code) || ""),
+    error: String(d.error || (r && r.error) || fallback || I18n.t("网络请求失败")),
+  };
+  /* 冲突透传：身份已被其它账号占用（409 WECHAT_OWNED_BY_OTHER 等）时，服务端随
+     data.owner 给出占用账号摘要，渲染层据此给出可操作选择，不能被只取 code/error 吞掉。 */
+  if (d.owner != null) out.owner = d.owner;
+  return out;
+}
+
+/* 登录成功后只回账号摘要；token 落 auth-store，不经过渲染层。 */
+function authOkWithToken(d) {
+  const saved = authStore.save({ token: d.token, user: d.user });
+  notifyAuthChanged();
+  return {
+    ok: true,
+    user: authStore.sanitizeUser(d.user),
+    created: !!d.created,
+    encryption: saved.encryption || "plain",
+    warning: saved.warning || "",
+  };
+}
+
+ipcMain.handle("auth:state", () => authStore.state());
+
+/* 旧账号密码登录 / 改密：接口沿用 /api/login 与 /api/change-password，
+   但换发的 token 由主进程落 auth-store，渲染层（商店 / 论坛）只拿账号摘要。 */
+ipcMain.handle("auth:loginPassword", async (e, payload) => {
+  const b = payload || {};
+  const r = await storeRequest({
+    method: "POST",
+    path: "/api/login",
+    json: {
+      username: String(b.username || "").trim(),
+      password: String(b.password || ""),
+    },
+  });
+  if (!r || !r.ok) return authFail(r, I18n.t("登录失败"));
+  const d = r.data || {};
+  if (!d.token) return { ok: false, code: "", error: I18n.t("登录响应缺少凭据") };
+  return authOkWithToken(d);
+});
+
+ipcMain.handle("auth:changePassword", async (e, payload) => {
+  const b = payload || {};
+  const r = await storeRequest({
+    method: "POST",
+    path: "/api/change-password",
+    json: {
+      username: String(b.username || "").trim(),
+      oldPassword: String(b.oldPassword || ""),
+      newPassword: String(b.newPassword || ""),
+    },
+  });
+  if (!r || !r.ok) return authFail(r, I18n.t("修改密码失败"));
+  const d = r.data || {};
+  if (!d.token) return { ok: false, code: "", error: I18n.t("登录响应缺少凭据") };
+  return authOkWithToken(d);
+});
+
+ipcMain.handle("auth:smsSend", async (e, payload) => {
+  const b = payload || {};
+  const r = await storeRequest({
+    method: "POST",
+    path: "/api/auth/sms/send",
+    json: {
+      phone: String(b.phone || "").trim(),
+      scene: b.scene === "bind" ? "bind" : "login",
+    },
+  });
+  if (!r || !r.ok) return authFail(r, I18n.t("验证码发送失败"));
+  const d = r.data || {};
+  return {
+    ok: true,
+    expiresIn: Number(d.expiresIn || 300) || 300,
+    cooldown: Number(d.cooldown || 60) || 60,
+  };
+});
+
+ipcMain.handle("auth:smsLogin", async (e, payload) => {
+  const b = payload || {};
+  const r = await storeRequest({
+    method: "POST",
+    path: "/api/auth/sms/login",
+    json: { phone: String(b.phone || "").trim(), code: String(b.code || "").trim() },
+  });
+  if (!r || !r.ok) return authFail(r, I18n.t("登录失败"));
+  const d = r.data || {};
+  if (!d.token) return { ok: false, code: "", error: I18n.t("登录响应缺少凭据") };
+  return authOkWithToken(d);
+});
+
+ipcMain.handle("auth:wechatStart", async (e, payload) => {
+  /* scene=bind（当前账号绑定微信）：必须带上本机会话 token，服务端据此把
+     bindUserId 写进 device，扫码后 poll 才会「绑定到当前账号」并回 user。
+     登录场景必须匿名：带 token 会被服务端当成「绑定」意图（绑定走 auth:bind + ticket）。
+     且 STORE_BASE 必须直达 https，避免 http→https 301 被客户端降级成 GET。 */
+  const b = payload || {};
+  const bind = String(b.scene || "") === "bind";
+  const r = await storeRequest({ method: "POST", path: "/api/auth/wechat/start", anon: !bind });
+  if (!r || !r.ok) return authFail(r, I18n.t("微信登录不可用"));
+  const d = r.data || {};
+  return {
+    ok: true,
+    deviceCode: String(d.deviceCode || d.device_code || ""),
+    authUrl: String(d.authUrl || ""),
+    expiresIn: Number(d.expiresIn || 300) || 300,
+    interval: Number(d.interval || 2) || 2,
+  };
+});
+
+ipcMain.handle("auth:wechatPoll", async (e, payload) => {
+  const b = payload || {};
+  const r = await storeRequest({
+    method: "POST",
+    path: "/api/auth/wechat/poll",
+    json: { deviceCode: String(b.deviceCode || b.device_code || "").trim() },
+  });
+  if (!r || !r.ok) return authFail(r, I18n.t("微信登录失败"));
+  const d = r.data || {};
+  const status = String(d.status || "");
+  if (status !== "done") return { ok: true, status: status || "pending" };
+  /* ① 新版形状：服务端在 poll 内直接签发 token → 落本机会话，token 只留主进程，
+     渲染层只拿账号摘要（不再回传 token）。 */
+  if (d.token) {
+    const okd = authOkWithToken(d);
+    return {
+      ok: true,
+      status: "done",
+      user: okd.user,
+      bound: !!d.bound,
+      created: okd.created,
+      encryption: okd.encryption,
+      warning: okd.warning,
+      /* 服务端在合并账号时回传 merged / mergedFrom（合并了哪些身份），渲染层据此提示用户。 */
+      merged: !!d.merged,
+      mergedFrom: d.mergedFrom != null ? d.mergedFrom : null,
+    };
+  }
+  /* ② 旧版形状：done 但无 token，只给了 ticket / bind 标记 → 用本机会话 token 走
+     /api/auth/bind 完成绑定（会话 token 不变，仅更新账号摘要）。 */
+  if (d.ticket || d.bind) {
+    const rb = await storeRequest({
+      method: "POST",
+      path: "/api/auth/bind",
+      json: { kind: "wechat", ticket: d.ticket ? String(d.ticket) : "" },
+    });
+    if (!rb || !rb.ok) return authFail(rb, I18n.t("微信登录失败"));
+    const bd = rb.data || {};
+    authStore.updateUser(bd.user);
+    notifyAuthChanged();
+    return {
+      ok: true,
+      status: "done",
+      user: authStore.sanitizeUser(bd.user),
+      bound: true,
+      created: !!bd.created,
+    };
+  }
+  /* ③ 两者皆无：既没签发凭据也没给 ticket —— 显式报错，避免渲染层静默当成成功。 */
+  return {
+    ok: false,
+    code: "WECHAT_NO_CREDENTIAL",
+    error: I18n.t("微信登录未返回凭据"),
+  };
+});
+
+/* 本机微信 PC 版：检测安装 / 启动或置前（不做注入、不读本地数据、不联网） */
+ipcMain.handle("auth:wechatLocal", async () => {
+  try {
+    return await wechatPc.detect();
+  } catch (e) {
+    return {
+      installed: false,
+      exe: "",
+      kind: "",
+      version: "",
+      running: false,
+      error: String((e && e.message) || e || ""),
+    };
+  }
+});
+
+ipcMain.handle("auth:wechatLaunch", async () => {
+  try {
+    return await wechatPc.launch();
+  } catch (e) {
+    return {
+      ok: false,
+      launched: false,
+      foreground: false,
+      exe: "",
+      error: String((e && e.message) || e || ""),
+    };
+  }
+});
+
+ipcMain.handle("auth:me", async () => {
+  const cur = authStore.load();
+  if (!cur) return { ok: false, code: "UNAUTHORIZED", error: I18n.t("未登录") };
+  const r = await storeRequest({ method: "GET", path: "/api/me" });
+  if (!r || !r.ok) {
+    if (Number((r && r.status) || 0) === 401) {
+      authStore.clear();
+      notifyAuthChanged();
+    }
+    return authFail(r, I18n.t("获取账号信息失败"));
+  }
+  const d = r.data || {};
+  authStore.updateUser(d.user);
+  return { ok: true, user: authStore.sanitizeUser(d.user) };
+});
+
+ipcMain.handle("auth:setNickname", async (e, payload) => {
+  const b = payload || {};
+  const cur = authStore.load();
+  if (!cur) return { ok: false, code: "UNAUTHORIZED", error: I18n.t("未登录") };
+  const r = await storeRequest({
+    method: "PATCH",
+    path: "/api/me",
+    json: { nickname: String(b.nickname != null ? b.nickname : "") },
+  });
+  if (!r || !r.ok) {
+    if (Number((r && r.status) || 0) === 401) {
+      authStore.clear();
+      notifyAuthChanged();
+    }
+    return authFail(r, I18n.t("修改昵称失败"));
+  }
+  const d = r.data || {};
+  authStore.updateUser(d.user);
+  notifyAuthChanged();
+  return { ok: true, user: authStore.sanitizeUser(d.user) };
+});
+
+ipcMain.handle("auth:bind", async (e, payload) => {
+  const b = payload || {};
+  const kind = String(b.kind || "").trim().toLowerCase();
+  if (!["phone", "wechat", "password"].includes(kind)) {
+    return { ok: false, code: "UNKNOWN_KIND", error: I18n.t("不支持的绑定类型") };
+  }
+  const json = { kind };
+  if (b.phone != null) json.phone = String(b.phone).trim();
+  if (b.code != null) json.code = String(b.code).trim();
+  if (b.password != null) json.password = String(b.password);
+  if (b.newPassword != null) json.newPassword = String(b.newPassword);
+  if (b.ticket != null) json.ticket = String(b.ticket).trim();
+  const r = await storeRequest({ method: "POST", path: "/api/auth/bind", json });
+  if (!r || !r.ok) return authFail(r, I18n.t("绑定失败"));
+  const d = r.data || {};
+  authStore.updateUser(d.user);
+  notifyAuthChanged();
+  return { ok: true, user: authStore.sanitizeUser(d.user) };
+});
+
+ipcMain.handle("auth:unbind", async (e, payload) => {
+  const b = payload || {};
+  const kind = String(b.kind || "").trim().toLowerCase();
+  if (!["phone", "wechat", "password"].includes(kind)) {
+    return { ok: false, code: "UNKNOWN_KIND", error: I18n.t("不支持的解绑类型") };
+  }
+  const json = { kind };
+  if (b.password != null) json.password = String(b.password);
+  if (b.code != null) json.code = String(b.code).trim();
+  const r = await storeRequest({ method: "POST", path: "/api/auth/unbind", json });
+  if (!r || !r.ok) return authFail(r, I18n.t("解绑失败"));
+  const d = r.data || {};
+  authStore.updateUser(d.user);
+  notifyAuthChanged();
+  return { ok: true, user: authStore.sanitizeUser(d.user) };
+});
+
+ipcMain.handle("auth:logout", async () => {
+  /* 无 token 也幂等成功；无论服务端结果如何都清掉本机凭据。 */
+  try {
+    await storeRequest({ method: "POST", path: "/api/logout" });
+  } catch {}
+  authStore.clear();
+  notifyAuthChanged();
+  return { ok: true };
 });
 
 ipcMain.handle("store:pickMtNodes", async () => {
@@ -2371,6 +3093,21 @@ function writeDataRootPointer(dataPath) {
   }
   writeJson(DATA_ROOT_POINTER, { path: dataPath });
 }
+
+/* 应用目录（渲染层事实库守卫用）：app.getAppPath() 与 exe 所在目录。
+   渲染层解析事实库路径后用它与主进程 factLibDirOf 做**同口径**拒绝判定。 */
+ipcMain.handle("app:dirs", () => {
+  try {
+    return {
+      ok: true,
+      appPath: APP_DIRS[0] || "",
+      exeDir: APP_DIRS[1] || "",
+      dirs: APP_DIRS.slice(),
+    };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
 
 /* 配置数据目录（config.json / API Key / 工作流等）；更改后需重启 */
 ipcMain.handle("data:getRoot", () => {
@@ -3126,6 +3863,50 @@ ipcMain.handle("api:validateKey", async (e, provider) => {
   }
 });
 
+/* DeepSeek 余额查询：只读账户信息，不产生 Token 消耗 */
+async function fetchDeepseekBalance(provider) {
+  const p = provider || {};
+  const base = String(p.baseUrl || "https://api.deepseek.com").trim().replace(/\/+$/, "");
+  const apiKey = String(p.apiKey || "").trim();
+  if (!apiKey) return { ok: false, error: I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）") };
+  if (!base) return { ok: false, error: I18n.t("未配置接口地址（设置 · API/配置）") };
+  const headers = {
+    Authorization: "Bearer " + apiKey,
+    Accept: "application/json",
+  };
+  const { status, j, text } = await fetchJson(
+    base + "/user/balance",
+    { method: "GET", headers },
+    15000,
+  );
+  if (status === 401 || status === 403) {
+    return { ok: false, error: I18n.t("API Key 验证失败") };
+  }
+  if (status >= 400) {
+    return { ok: false, error: apiErr(status, j, text) };
+  }
+  /* 原样透传官方字段（snake_case）。渲染层 app-cost.js 的 balanceNorm 认的就是这份
+     契约；此前这里自造 camelCase（isAvailable / balances / totalBalance），渲染层
+     解析不到 balance_infos，于是每次都显示「查询失败」。 */
+  const infos = (j && Array.isArray(j.balance_infos)) ? j.balance_infos : [];
+  return {
+    ok: true,
+    is_available: !!(j && j.is_available),
+    balance_infos: infos,
+  };
+}
+
+ipcMain.handle("api:deepseekBalance", async (e, provider) => {
+  try {
+    return await fetchDeepseekBalance(provider || {});
+  } catch (err) {
+    return {
+      ok: false,
+      error: (err && err.message) || String(err),
+    };
+  }
+});
+
 ipcMain.handle("api:call", async (e, spec) => {
   try {
     return await apiCall(spec);
@@ -3467,22 +4248,19 @@ ipcMain.handle("forum:close", (e) => {
   return { ok: true };
 });
 ipcMain.handle("forum:getAuth", () => {
+  /* 登录态统一来自 auth-store（与顶栏 / 商店同源）；config.storeAuth 已废弃。 */
   const cfg = readJson(join(DATA(), "config.json"), {}) || {};
+  const st = authStore.state();
   return {
     ok: true,
-    auth: cfg.storeAuth || null,
+    signedIn: !!st.loggedIn,
+    user: st.user || null,
     locale: cfg.locale === "en" ? "en" : "zh",
   };
 });
-ipcMain.handle("forum:setAuth", (e, auth) => {
-  const fp = join(DATA(), "config.json");
-  const cfg = readJson(fp, {}) || {};
-  cfg.storeAuth = auth || null;
-  writeJson(fp, cfg);
-  if (mainWin && !mainWin.isDestroyed()) {
-    mainWin.webContents.send("forum:authChanged", cfg.storeAuth);
-  }
-  return { ok: true };
+ipcMain.handle("forum:setAuth", () => {
+  /* 兼容旧调用：会话不再写 config.json（避免两份 token 打架），登录态走 auth:* 通道。 */
+  return { ok: true, deprecated: true };
 });
 ipcMain.handle("forum:localLoad", () => {
   try {
@@ -3586,6 +4364,7 @@ app.whenReady().then(() => {
   /* 隐藏原生窗口菜单栏（File/Edit/View/Window/Help），按键快捷方式由渲染层自行处理 */
   Menu.setApplicationMenu(null);
   migrateLegacyWorkflows();
+  migrateLegacyStoreAuth();
   /* 画布备份：启动片刻后先做一次基线（无改动的后续 tick 自动跳过），之后每 5 分钟一次 */
   setTimeout(workflowBackupTick, 5000);
   setInterval(workflowBackupTick, WF_BACKUP_MS);
@@ -3610,6 +4389,8 @@ app.whenReady().then(() => {
     },
   });
   mainWin.loadFile(join(__dirname, "renderer", "index.html"));
+  /* 应用目录零数据：启动只读体检（违规即记日志 + 弹窗报警，不静默写入） */
+  try { auditAppDirData(); } catch (err) { console.warn("[appdir-audit] 体检失败：" + ((err && err.message) || err)); }
   /* 禁止主窗被链接导航走；改为嵌套 modal 对话框打开 */
   mainWin.webContents.on("will-navigate", (ev, url) => {
     const cur = mainWin.webContents.getURL();

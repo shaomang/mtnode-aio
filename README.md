@@ -1,60 +1,58 @@
 # MTNode AI编排器
 
-将复杂 AI 工作流收束于一张可视化画布的桌面工具：文本 / 图像输入、LLM 文本处理、图像生成、音乐 / 视频生成、批量处理、拆分合并、任务规划、AI 对话、网络通道、本地后端插件，皆以节点自由编排。
+把复杂 AI 工作流收束到一张可视化画布上的 Windows 桌面工具：文本 / 图像输入、LLM 文本处理与图像生成、音乐 / 视频生成、批量处理、任务控制流、AI Agent 会话，都以节点自由编排。
 
-**永久免费开源**：MTNode 永久免费，源码开放（MIT License），随版本提供源码包下载，无任何收费或订阅；工作流可导出为 `.mtnodes` 包无损分享或整体开源。
-
-## 下载与主页
+**永久免费开源**（MIT License）：无收费、无订阅，随版本提供源码包；工作流可导出为 `.mtnodes` 包无损分享。当前版本 **1.2.9**。
 
 - **下载页面**：[http://mt-agent.com/mtnode](http://mt-agent.com/mtnode)（Windows 安装包与源码包）
-- **云端插件 / 扩展目录**：`http://mt-agent.com/mtnode/plugins/catalog.json`、`/ext/catalog.json`
+- **应用内手册**（右上角「文档」，源码在 [`guides/manual/`](guides/manual/)，目录见 [`index.json`](guides/manual/index.json)）
+- **节点指南**（节点右键「节点指南」，源码在 [`guides/nodes/`](guides/nodes/)）
+- **变更记录**：[`CHANGELOG-v1.1.md`](CHANGELOG-v1.1.md)
 
-## 功能特性
+## 我想……
 
-### 节点体系
+按你想完成的事找入口，具体步骤都在应用内手册里（右上角「文档」，也可直接读 Markdown）。
 
-- **输入节点**：文本就地编辑、实时保存；图像点击选择或直接拖入文件；连线后自动继承输入内容，识别 YAML 自动转为批量节点。数据库超级节点内部另有**文件节点**（批量导入任意文件）与**表节点**（Agent 抽元数据 → 确认表单 → SQLite / FTS5 建表）。
-- **处理节点**：文本 LLM 与图像生成；提示词内输入 `@` 引用已连接节点（`@Tag` 引用标签分组）；带参考图自动走图生图接口。可开「🐋 智能」变成 Agent 任务。
-- **音乐 / 视频生成节点**：MiniMax Music 3（Gradio）与 MiniMax H3（ComfyUI）本地后端；每次运行产出一个 `.wav` / `.mp4`，写入节点自带输出路径；支持抽卡次数、种子、分辨率 / 后处理档位；全局同一时刻仅 1 个音视频任务互斥。
-- **保存节点**：输出保存为 `.yaml` 文本或图像文件，支持自动保存；批量链上按 `{文件名}_{输入节点标题}` 自动命名。媒体生成节点自带输出路径，无需再挂保存。
-- **批量 / 拆分 / 合并**：批量按条目并行运行（每条目一次）或聚合合并为一次；拆分节点实时抽取批次单项，合并节点多输入汇成批次。
-- **任务节点**：内部是控制流图（固定起点 → 工作/子任务/判断 → 成功或失败终点）。▶ 点燃起点，是否到达终点及到达哪一类终点决定状态；父任务以格子展示子任务。
-- **超级节点**：收纳相关节点为子图；可展开壳层或 ↪ 进入完整内部画布；边端子隧穿数据；子文件夹约束内部相对路径；边栏树状列表快速进入。两种特殊形态见下。
-- **开发节点**（超级节点 `dev:true`）：软件项目架构画布——模块（绿）→ 文件（蓝）→ 类 / 接口 / 枚举（橙 / 紫 / 粉），绑定项目根目录 `devPath`；头部「建议 / 开发 / 细化」三个按钮（均先弹对话框确认）：**建议** = AI 只读调研项目代码与该模块进度后给出恰好 4 条下一步方案（可多选 + 补充说明，同一对话框点「开发」即按所选开工）；**开发** = 在新建绑定会话（工作区 = 项目根）里实现；**细化** = 按**深度**展开（默认逐层下钻到无法再细、一般到文件级，也可只展开本层），先报多层规划树、经确认才逐层建子节点，产物为多层功能块树。元素间用**关系线**（rel，普通直线、可带标签与箭头；点选节点时相关线高亮、其余淡出）表达依赖 / 调用。
-- **数据库节点**（超级节点 `db:true`，设置开启「测试版本」后可用）：事实收纳 → 头部 ⚙ 编译 → 生成**数据库副本**；智能节点接入副本（连线或 prompt 写 `!@数据库标题`）后用 `mtnode_db` 工具查询，强制事实纪律（断言带 `[记录id · 标题]` 溯源、查不到答「数据库中没有该信息」、数字走 calc）。
-- **执行节点**：绑定 `.exe` / `.bat` / `.cmd` / `.lnk` 或任意系统可打开文件，双击节点（或连点两下播放键）一键启动；可设图标与主题色便于定位。
-- **网络节点**：`net_recv` 监听 `host:port` 通道异步转发文本；`net_send` 推送数据到目标通道；TCP / UDP、通道号多路复用、逐节点主机端口，全局默认端口在设置 · 网络。
-- **全局节点**：只连入、不连出，把文本 / 图像源广播给多个消费者；消费者需开启引用（globalRefs）并在提示词写 `@源标题`。
-- **对话节点**：微信风格聊天气泡，对话记录随工作流保存，可输出整个对话记录；可开「智能助手」走 Agent 引擎。
-- **控制节点**：右键「控制节点」二级菜单：执行/清空、需求等待、定时触发器（一次 / 间隔 / Cron）、延时器、序列器、闸门、分发、计数、互斥、判断（是/否）、成功/失败终点。任意节点右键「节点指南」打开 Markdown 图示说明（文件在 `guides/nodes/`）。画布上控制类节点统一金色外圈。起点由任务自动创建，不出现在菜单中。
+手册共 7 章（上手 / 画布与节点 / 做一条工作流 / AI 干活 / 素材与记录 / 设置与维护 / 参考），下表按章给你最常走的入口；完整目录见 [`index.json`](guides/manual/index.json)。
 
-### 智能能力（DeepSeek Harness）
+| 我想…… | 去哪里 |
+| --- | --- |
+| 装好并跑起来 | 从[下载页面](http://mt-agent.com/mtnode)取安装包；首启向导见 [`first-run.md`](guides/manual/first-run.md) · [`overview.md`](guides/manual/overview.md) |
+| 看懂界面与快捷键 | [`ui-tour.md`](guides/manual/ui-tour.md) · [`shortcuts.md`](guides/manual/shortcuts.md) |
+| 配服务商与 API Key | [`providers.md`](guides/manual/providers.md)（Key 只存本机） |
+| 用节点和连线搭一条流水线 | [`nodes-wires.md`](guides/manual/nodes-wires.md) · [`io-proc.md`](guides/manual/io-proc.md) |
+| 调参数、运行与排查一次运行 | [`params-runs.md`](guides/manual/params-runs.md) |
+| 批量生产、拆分合并、批量落盘 | [`batch.md`](guides/manual/batch.md) |
+| 理清执行顺序：任务、判断、定时与路由 | [`control-flow.md`](guides/manual/control-flow.md) |
+| 找节点、总览画布、框选与排版 | [`canvas-tools.md`](guides/manual/canvas-tools.md) · [`marks-groups.md`](guides/manual/marks-groups.md) |
+| 收纳复杂子图 | [`super-nodes.md`](guides/manual/super-nodes.md) |
+| 复用工具、跑纯计算函数 | [`tools-functions.md`](guides/manual/tools-functions.md) |
+| 让多个节点共享同一份输入 | [`global-broadcast.md`](guides/manual/global-broadcast.md) |
+| 生成音乐 / 视频 / 语音 | [`media-gen.md`](guides/manual/media-gen.md)（本地后端安装见 [`plugins-skills.md`](guides/manual/plugins-skills.md)） |
+| 接网络端口、拉起本机程序 | [`media-net.md`](guides/manual/media-net.md) |
+| 保存、导入导出、上架创意工坊 | [`workflows.md`](guides/manual/workflows.md) |
+| 让 AI 帮我搭 / 改工作流，或用 Agent 干活 | [`agent-nodes.md`](guides/manual/agent-nodes.md) · [`dsh.md`](guides/manual/dsh.md) |
+| 管权限与审批 | [`approvals.md`](guides/manual/approvals.md) |
+| 装插件、技能与 MCP | [`plugins-skills.md`](guides/manual/plugins-skills.md) |
+| 按模块搭建软件项目架构（开发节点） | [`dev-nodes.md`](guides/manual/dev-nodes.md) |
+| 让回答有据可查（数据库节点） | [`database-nodes.md`](guides/manual/database-nodes.md) · [`fact-library.md`](guides/manual/fact-library.md) |
+| 让多个 AI 角色协作 | [`one-person-company.md`](guides/manual/one-person-company.md) |
+| 管理素材 | [`asset-library.md`](guides/manual/asset-library.md) |
+| 编辑 Markdown / 代码，写批注让 AI 修订 | [`editors.md`](guides/manual/editors.md) · [`ai-review.md`](guides/manual/ai-review.md) |
+| 管工作目录与存档 / 撤销回滚 | [`workspace.md`](guides/manual/workspace.md) · [`rollback.md`](guides/manual/rollback.md) |
+| 改设置、登录账号、更新与排错 | [`settings.md`](guides/manual/settings.md) · [`account.md`](guides/manual/account.md) · [`update.md`](guides/manual/update.md) · [`troubleshoot.md`](guides/manual/troubleshoot.md) |
+| 遇到问题 / 查英文原词 | [`faq.md`](guides/manual/faq.md) · [`glossary.md`](guides/manual/glossary.md) |
+| 所有节点的逐项说明 | [`node-guide.md`](guides/manual/node-guide.md) · [`guides/nodes/`](guides/nodes/)（右键节点「节点指南」） |
 
-- **智能 Agent 能力（1.1.0 起，DeepSeek Harness 植入）**：智能任务节点与「智能会话」由 Agent 引擎驱动——模型可读文件、联网搜索、执行命令、调用子代理与后台任务后完成任务；支持提问（ask_user）、权限审批、斜杠命令、权限预设、dsh 风格指标统计与会话管理。
-- **智能助手改画布**：全局助手 / 智能会话可在当前画布上创建并排版节点（改标题、连线、@引用），按指示搭出可再编辑、可再运行的工作流；也可驱动**开发节点**按「建议 → 确认 → 开发」的流程推进软件项目。
-- **智能节点接入数据库**：连入数据库副本后自动注入事实纪律，一切回答以 `mtnode_db` 查询为准，不凭记忆补全。
-- Agent 会话沿用 dsh 的透明消息流，思考过程与工具调用轨迹逐条可查，**一切日志与操作可追溯**。
+## 安装
 
-### 生态与体验
+从[下载页面](http://mt-agent.com/mtnode)获取 Windows 安装包，一键安装后启动。应用自带更新：有新版本时右上角出现「更新」，确认后差分下载、静默安装并自动重启。
 
-- **多服务商 API**：统一配置服务商与模型（DeepSeek 官方 / MTNode 自配 / pi-ai 目录），API Key 仅存本机；支持视觉模型路由。
-- **应用插件（右上角「插件」）**：列表从云端目录更新，离线用缓存 / 内置列表，云端缺项自动合并随包内置插件。内置：本地 TTS（GPT-SoVITS 语音合成，含训练 / 试听 / 语种策略）、本地大模型（Llama.cpp）、MiniMax Music 3 / MiniMax H3 后端、讨论区、桌宠 BongoChat。
-- **DSH 插件 / 技能 / MCP**：扩展 agent 能力；技能在会话 / 智能节点输入 `/` 选择；MCP 服务器（stdio / HTTP）接入后提供工具。
-- **创意工坊**：顶栏「导出」右侧进入公开创意工坊；模板 / Skill 按标签浏览搜索下载，上传需注册登录，官方 Skill 由账号 `ms2308` 维护。
-- **内置更新**：有新版本时右上角高光「更新」；确认后差分下载（blockmap 只拉变更），静默安装并自动重启。发布说明见 [`scripts/UPDATES.md`](scripts/UPDATES.md)。
-- **工作流管理**：本地 JSON 自动保存，启动自动恢复现场；支持撤销 / 重做 / 复制节点、多标签页。
-- **自动递归执行**：输入含未处理的上游节点时自动递归执行直至就绪。
-- **工作流导入 / 导出**：一键导出整张画布为 `.mtnodes` 工作流包（含节点、连线、提示词与输入），或复制为 Base64 分享；导入端一键还原、跨机器无损迁移。
-
-## 使用流程
-
-1. **安装启动**：从[下载页面](http://mt-agent.com/mtnode)获取安装包，一键安装后启动。
-2. **配置服务商**：在「设置 · API/配置」填写服务商与 API Key。
-3. **编排节点**：右键画布添加节点，拖线连接，提示词内输入 `@` 引用上游，点击运行。
-4. **批量与保存**：开启批量逐条生产或聚合合并，YAML / 图像自动命名落盘。
-5. **进阶**：任务节点做控制流规划；超级节点收纳子图；开发节点搭软件项目架构；数据库节点做有据可查的查询；右上角「文档」随时查阅本手册。
+首次启动后到「设置 · API/配置」填写服务商与 API Key 即可开始编排。
 
 ## 从源码运行
+
+需要 Node.js 与 npm，然后：
 
 ```bash
 npm install
@@ -64,64 +62,28 @@ npm start
 ## 构建与发布
 
 ```bash
-npm run compile     # 只编译 dist/win-unpacked（不打安装包）
-npm run dist        # electron-builder 构建安装包（需要 node_modules 完整依赖）
+npm run compile       # 只编译 dist/win-unpacked（不打安装包）
+npm run dist          # electron-builder 构建 NSIS 安装包（需要 node_modules 完整依赖）
+npm run release       # 发版主链：一次同时出 NSIS 安装包 + Microsoft Store（MSIX）包
+npm run release:store # 只出 Store 包（跳过 NSIS 打包与 stage-updates）
 ```
 
-版本号由源码目录 `version` 文件管理（格式 `x.y.z`），每次构建末位 +1。构建 / 发布细节与更新器说明见 [`scripts/UPDATES.md`](scripts/UPDATES.md)。
-
-## 应用内文档
-
-- **手册**（右上角「文档」）：`guides/manual/`（`index.json` 为目录，`en/` 为英文版，`img/` 为图示；用 `node guides/manual/_write.mjs` 可重新生成）。
-- **节点指南**（节点右键「节点指南」）：`guides/nodes/`（`index.json` 为清单，`en/` 为英文版）。
-- **设计文档**：`docs/`（开发节点设计 `docs/dev-node-design.md`、网络节点指南 `docs/网络节点使用指南.md`）。
-- **插件文档**：各本地后端插件包自带 README（本地 TTS `tts-pack/README.md`、本地大模型 `llama-pack/README.md`、MiniMax Music 3 `music3-pack/README.md`、MiniMax H3 `h3-pack/README.md`、桌宠 `pet-pack/README.md`）。
-- 变更记录：`CHANGELOG-v1.1.md`。
+- **发版必须同时出两包，且两包版本号必须一致**：`npm run release`（[`scripts/release.mjs`](scripts/release.mjs)）先校验根 `version` 文件与 `package.json` / `dist/latest.yml` 版本一致（不一致直接报错退出），再依次跑 `npm run dist`、`make-msix.mjs --skip-build`（复用同一份 `win-unpacked`）、`stage-updates.mjs`，最后把 `.msix` 另存到 `dist\msix-publish\` 并打印 Partner Center 上传指引；MSIX 只能人工拖进上传框。
+- 单跑 MSIX 用 `npm run dist:msix`；Store 链细节见 [`docs/msix-store-publish.md`](docs/msix-store-publish.md)。
+- 版本号唯一真源是根目录 `version` 文件（格式 `x.y.z`），统一用 `node version.js bump` 递增，不要手改 `version` / `package.json`。
+- 构建、发布与更新器细节见 [`scripts/UPDATES.md`](scripts/UPDATES.md)。
 
 ## 数据与隐私
 
-所有工作流数据保存在本机（`%APPDATA%\pipeline-console\pipeline-console\save\`），不默认上传任何服务器；仅在你主动运行节点时，将提示词与输入内容发送至你配置的服务商 API。使用「创意工坊」上传时，会将你选择的 `.mtnodes` 模板与预览图发至工坊服务器（`mt-agent.com`），下载为公开拉取。
+所有工作流数据保存在本机（`%APPDATA%\pipeline-console\pipeline-console\save\`），不默认上传任何服务器；仅在你主动运行节点时，才把提示词与输入内容发送至你配置的服务商 API。使用「创意工坊」上传时，会将你选择的 `.mtnodes` 模板与预览图发至工坊服务器（`mt-agent.com`），下载为公开拉取。
 
-- **隐私政策（线上）**：[http://mt-agent.com/mtnode/privacy/](http://mt-agent.com/mtnode/privacy/)（简体中文原版）· [英文版](http://mt-agent.com/mtnode/privacy/en/) · 联系渠道为 [GitHub Issues](https://github.com/shaomang/mtnode-aio/issues)（本项目不发布邮箱）
-- 政策正文源文件在 `web/privacy/`（部署到 `/var/www/mtnode/privacy/`），事实依据是 `docs/privacy-data-inventory.md`；该 URL 的唯一真源写法登记在 `docs/msix-store-publish.md` §3。
+- **隐私政策（线上）**：[简体中文](http://mt-agent.com/mtnode/privacy/) · [English](http://mt-agent.com/mtnode/privacy/en/)
+- 政策正文源文件在 [`web/privacy/`](web/privacy/)，事实依据是 [`docs/privacy-data-inventory.md`](docs/privacy-data-inventory.md)；线上 URL 的唯一真源写法登记在 [`docs/msix-store-publish.md`](docs/msix-store-publish.md) §3。
+- 联系渠道为 [GitHub Issues](https://github.com/shaomang/mtnode-aio/issues)（本项目不发布邮箱）。
 
 ## 版本更新
 
-### 1.1.28（当前版本）
-
-- **开发节点「建议」按钮**：与「开发 / 细化」同族；点击后确认对话框 → AI **只读**调研项目真实代码与该模块开发进度 → 返回**恰好 4 条**下一步方案 → 同一对话框内多选 + 补充说明 → 点「开发」即按所选方案在新建绑定会话中开工；结果缓存（查看上次建议不重跑、「换一批」才重跑）。冒烟测试 142 项全绿。
-- **数据库节点**（设置 · 测试版本开启后可用）：数据库超级节点收纳事实（文件节点批量导入 + 表节点 Agent 建表），⚙ 编译生成数据库副本，智能节点用 `mtnode_db` 查询并遵守事实纪律。
-- **执行节点**：绑定 `.exe` / `.bat` / 任意文件，双击一键启动，自定义图标与颜色。
-- **音乐 / 视频生成节点**：MiniMax Music 3 与 MiniMax H3 本地后端，自带输出路径，全局音视频任务互斥。
-- **网络节点**：`net_recv` / `net_send`（TCP / UDP · 通道复用 · 逐节点端口）。
-- **全局节点**：广播文本 / 图像源，`globalRefs` + `@源标题` 双条件引用。
-- **控制节点增强**：定时触发器支持一次 / 间隔 / Cron；序列器、闸门、分发、计数、互斥、判断、需求等待齐全。
-- **插件目录本地合并**：云端目录缺项时随包内置插件（TTS / Llama / Music3 / H3 / 桌宠 / 讨论区）自动补回；插件图标支持自定义。
-
-### 1.1.25（超级节点与画布收纳）
-
-- **超级节点**：收纳子图、展开壳层编辑、↪ 进入完整内部画布、可嵌套、边端子数据隧穿、子文件夹相对路径、边栏树状快速进入；一键排版可询问是否同时整理超级节点内部。
-
-### 1.1.1（视觉模型、AI 搭工作流与在线扩展商店）
-
-- 图像输入 + 视觉模型决策；AI 助手可直接创建 / 排版画布节点；在线扩展商店（插件 / 技能 / MCP）；自定义任务完成音效；添加服务商目录模式；API Key 安全显示。
-
-### 1.1.0（大版本更新：植入 DeepSeek Harness 获取 Agent 能力）
-
-- **Agent 引擎**：模型可读文件 / 联网搜索 / 执行命令 / 调用子代理与后台任务，完成任务后返回结果；引擎网关随应用启动（解耦设计，见 `dsh/DESIGN.md`）。
-- **智能任务节点 / 智能会话**：参数面板（预设 / 供应商 / 模型 / 思考强度）一致；多会话管理（分组 / 归档 / 分支）；透明消息流与运行统计；模型提问（ask_user）与权限审批（approval）；斜杠命令（`/new` `/compact` `/plan` `/rename` `/export` `/permissions` `/help`）。
-- **权限预设**：无人值守（默认）/ 工作区读写·逐项审批 / 只读·逐项审批 / 完全放行，沙箱 + 审批策略热切换；右上角「审批」按类别开关工具许可。
-- **多服务商目录**：DeepSeek 官方 + MTNode 自配 + pi-ai 目录统一选择；智能能力任意带 Key 的 OpenAI 兼容文本服务商可用。
-- **扩展商店 / 插件 / 技能 / MCP**、10 款主题色、任务完成音效、会话管理（分支 / 归档 / 删除）。
-
-### 1.0.x 回顾
-
-- **1.0.26**：引入 DeepSeek Harness（dsh）智能引擎：智能任务节点 / 智能模式 / 插件管理。
-- **1.0.27**：智能任务节点全面对齐文本处理节点；Node 运行时随包内置，零配置。
-- **1.0.28**：工作流多标签页；Agent 预设 / 对话发送行为配置；插件启停。
-- **1.0.15~23**：思考强度（effort）、组横竖缩放、节点输出大窗浏览、对话思考流式显示、拖拽框选、节点组、节点列表面板等 QoL。
-
-完整变更记录见 [`CHANGELOG-v1.1.md`](CHANGELOG-v1.1.md)。
+完整变更记录见 [`CHANGELOG-v1.1.md`](CHANGELOG-v1.1.md)；应用内「设置 · 版本更新」页（[`guides/manual/update.md`](guides/manual/update.md)）说明更新流程。
 
 ## 许可证
 

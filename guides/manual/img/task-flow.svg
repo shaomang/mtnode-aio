@@ -1,22 +1,43 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 170" width="420" height="170">
-  <rect width="420" height="170" fill="#0d1016"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 230" width="620" height="230">
+  <rect width="620" height="230" fill="#0d1016"/>
   <defs>
-    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
-    </marker>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
   </defs>
-  <rect x="24" y="62" width="88" height="40" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
-  <text x="68" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">起点</text>
-  <line x1="112" y1="82" x2="150" y2="82" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <rect x="150" y="62" width="100" height="40" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
-  <text x="200" y="86" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">工作步骤</text>
-  <line x1="250" y1="82" x2="288" y2="82" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
-  <rect x="288" y="30" width="92" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
-  <text x="334" y="54" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">成功终点</text>
-  <rect x="288" y="94" width="92" height="40" rx="6" fill="#1a1010" stroke="#ff6b6b" stroke-width="1.6"/>
-  <text x="334" y="118" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">失败终点</text>
-  <line x1="250" y1="74" x2="288" y2="50" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arr)"/>
-  <line x1="250" y1="90" x2="288" y2="114" stroke="#ff6b6b" stroke-width="1.8" marker-end="url(#arr)"/>
-  <text x="210" y="158" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">▶ 点燃起点；到达哪一类终点决定任务成败</text>
+  <rect x="16" y="30" width="90" height="40" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="61" y="54" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">起点</text>
+  <line x1="106" y1="50" x2="150" y2="50" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <rect x="150" y="30" width="110" height="40" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="205" y="54" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">工作步骤</text>
+  <line x1="260" y1="50" x2="304" y2="50" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <polygon points="364,18 424,50 364,82 304,50" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="364" y="54" text-anchor="middle" fill="#e8eef6" font-size="11" font-family="Segoe UI,sans-serif">判断</text>
+  <line x1="424" y1="38" x2="470" y2="24" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arr-green)"/>
+  <rect x="470" y="8" width="130" height="34" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="535" y="29" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">成功终点</text>
+  <line x1="424" y1="62" x2="470" y2="84" stroke="#ff6b6b" stroke-width="1.8" marker-end="url(#arr-red)"/>
+  <rect x="470" y="66" width="130" height="34" rx="6" fill="#1a1010" stroke="#ff6b6b" stroke-width="1.6"/>
+  <text x="535" y="87" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">失败终点</text>
+  <line x1="16" y1="112" x2="604" y2="112" stroke="#2a3140" stroke-width="1.8"/>
+  <rect x="16" y="126" width="96" height="36" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="64" y="148" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">定时 / 延时</text>
+  <rect x="120" y="126" width="86" height="36" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="163" y="148" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">等待文件</text>
+  <rect x="214" y="126" width="86" height="36" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="257" y="148" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">序列器</text>
+  <rect x="308" y="126" width="86" height="36" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="351" y="148" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">闸门 AND</text>
+  <rect x="402" y="126" width="86" height="36" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="445" y="148" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">分发</text>
+  <rect x="496" y="126" width="56" height="36" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="524" y="148" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">计数</text>
+  <rect x="560" y="126" width="44" height="36" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="582" y="148" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">互斥</text>
+  <text x="16" y="186" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">▶ 从起点沿控制线推进；到达成功终点即成功，走到失败终点或跑不动则失败</text>
+  <text x="310" y="218" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">任务自带起点 / 成功终点 / 失败终点；判断只有 YES 与 NO 两个输出；控制节点统一金色外圈</text>
 </svg>

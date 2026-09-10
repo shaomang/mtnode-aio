@@ -1,72 +1,75 @@
-# Music, video, network and execute nodes
+# Network & launch
 
-Right-click the canvas → **Process** holds two first-level submenus: **Video generation** (Minimax H3, Remotion video) and **Audio generation** (Minimax Music 3, SoVITS speech).
+> In one sentence: carry text between two machines or two canvases with net_recv / net_send, and start a local program from the canvas with one click via the execute node.
 
-## Audio generation › Minimax Music 3 (music)
+![Network nodes](img/mtnode-flow-09-flow.svg)
+*Figure 1: net_send and net_recv talk to each other over the same channel number.*
 
-Local MiniMax Music 3 backend (Gradio). **Each run produces exactly one audio file** (`.wav`) written to the node’s own **output path** — no save node needed.
+## Goal
 
-- Ports: 0 = prompt · 1 = lyrics · 2 = control input
-- Options: output path, attempts (1–10), seed (bumped by +1 each roll)
-- Note: only **1 audio/video task** globally at a time (music and video are mutually exclusive); others queue
+After this page you can set up a cross-machine / cross-canvas text channel (TCP / UDP), and make the execute node a "one-click launch" button on the canvas.
 
-## Audio generation › SoVITS speech (text to speech)
+## Before you start
 
-Local GPT-SoVITS backend started by the “GPT-SoVITS speech” plugin (an OpenAI-compatible service). **Each run produces exactly one audio file** (`.wav` / `.mp3`), again written to the node’s own **output path**.
+- Knowing that `net_recv` / `net_send` live under **Other nodes** in the right-click menu, and **Execute** lives under **Dev node** — see [Nodes, wires, @ refs](#nodes-wires).
+- For cross-machine transfer, both machines must be reachable from each other and the firewall must let the port through.
+- To launch a project script from the canvas, the script file must already exist on this machine.
 
-- Ports: in 0 = text to speak · in 1 = control input; out 0 = audio · out 1 = control
-- Options: output path, voice (empty = the backend default), speed (0.5–2.0), format (wav / mp3), attempts
-- When the backend is missing or stopped the node starts it before synthesizing; installing it and preparing voices happens in the **Plugins** panel
-- Speech shares the same **serial chain** as music / video (one generation task at a time), but SoVITS is a separate process and does **not** hold the app’s audio/video global lock
+## Steps
 
-## Video generation › Minimax H3 (video)
+### 1. Place the network nodes
 
-Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file** (`.mp4`) written to the node’s own **output path**.
+1. **Right-click empty canvas** → **Other nodes** → **net_recv (receive)** or **net_send (send)**.
+2. **Put one on each machine**: one receives, one sends; the same works between two canvases on one machine.
 
-- Ports: 0 = control input · 1+ = data slots (reference images / text / reference audio / reference video)
-- Modes: `fl2va` first/last frame (default) / `r2v` multiple references
-- Options: duration 4–15 s, resolution (auto / 480p / 720p / 1080p, auto-downscale on low VRAM), 4K upscale + interpolation (disable on 24G), attempts
+### 2. Line up the channel
 
-### H3 manager window (two buttons, top right)
+1. **Pick the protocol**: TCP or UDP — both ends must match.
+2. **Set address and port**: fill in `host:port`; a port of **0** means use the **default port from global settings** (receive 40999 / send 41000, changeable in Settings · Network), and you can also override it per node.
+3. **Pick a channel number**: the same port is multiplexed by **channel number (0–65535)**; send and receive that use the **same channel talk to each other**, and different channels never interfere.
 
-Open it from **Top bar › Plugins › Minimax H3**; **two buttons sit at the top right** of the window:
+### 3. Wire the receiving end
 
-- **Console**: the log no longer lives in a card at the bottom. One click docks a full-height panel on the **left side** of the window that shows nothing but the backend log (raw install / generation / error output). The window grows to the left, so the main column never moves — it reads like an extra docked window. When it's collapsed the button carries an **unread count**, cleared on reopen; the open/closed state is remembered for the next time. Inside: **Clear view** (screen only — the on-disk `console.log` is untouched) and ✕ (collapse).
-- **ComfyUI editor**: opens the ComfyUI workflow editor in your browser in one click (the address sits left of the button as `●/○ ComfyUI :8188`, ● = backend up). If the backend isn't running it asks whether to start it first, then opens; a failed start is reported in the Console instead of handing you a dead link. After editing a graph, use ComfyUI's **Export (API)** and bring it back via **Import JSON**.
+1. `net_recv` listens on `host:port` and **forwards received text downstream asynchronously**: port 0 = data, port 1 = control.
+2. It **listens automatically** by default; for manual control, turn off "listen on start" and trigger it from a control wire.
 
-### Custom ComfyUI workflow
+### 4. Wire the sending end
 
-Click **⚙ Settings** in the node header → set **Workflow source** to **Custom ComfyUI workflow** to run a graph you built in ComfyUI yourself (not just the two built-in chains):
+1. `net_send` pushes the text on its data input port to the target `host:port`: port 0 = data, port 1 = control trigger.
+2. It is a **terminal node**: all it does is send the content out, and it passes no data further downstream.
 
-- Workflows are imported in the **H3 manager window · custom workflow library** (drop a file or paste JSON; both API and UI formats are accepted) and stored machine-wide, shared by every canvas
-- Fields **promoted to node parameters** become node ports (port 1 = text · port 2+ = media); you can also type values in the settings window — a wired port beats the manual value, and with neither the workflow's stored value is kept
-- With several `Save*` outputs you pick which artifact the node returns; ↻ re-syncs the parameter table with the stored graph; **Validate nodes** checks custom node packs against the backend `/object_info` (skipped when the backend is down — never blocks a run)
-- In custom mode the built-in duration / resolution / sampler / upscale options no longer apply (the graph decides); rolls, seed, progress, cancel and the global media lock keep working
+### 5. Place an execute node
 
-## Video generation › Remotion video (motion graphics)
+1. **Right-click** → **Dev node (project architecture · feature block)** → **Execute**.
+2. **Bind a file**: `.exe` / `.bat` / `.cmd` / `.lnk`, or anything the system can open.
+3. **Double-click the node to run it** (or click the play button twice) and it starts through the **operating system's default handler**; the execute node has **no data ports** and takes no data wires.
+4. **Set an icon and theme colour** so the launch entry is easy to spot next to an architecture diagram.
 
-React motion graphics rendered locally to mp4. This one has **no** output path of its own — a downstream **Save** node writes the file. The entry is hidden from the menu while the Remotion plugin is not installed.
+![Execute node](img/mtnode-flow-10-flow.svg)
+*Figure 2: the execute node binds .exe / .bat / .cmd / .lnk, starts on double-click, and has no data ports.*
 
-## Audio / video input nodes (output a file URL)
+> 💡 Tip: The media generation nodes (music / speech / video) have moved to [Music / speech / video](#media-gen) — this page covers only networking and launching.
 
-The **Audio node** and **Video node** under input nodes each have a single data output port whose value is a `file:///…` URL of the local file you picked: wire it straight into a Minimax H3 reference-audio / reference-video slot, into a **Save** node, or `@`-reference it. Receiving ports normalize the URL back to a local absolute path for you.
+## Result
 
-## Network · receive / send (net_recv / net_send)
+- ▶ on one machine triggers a send, and the receiving node on the other machine gets the text on the same channel and carries on running downstream.
+- The canvas gains a program entry that starts on double-click, handy next to a dev node's project architecture.
+- Channel, port and protocol can all be overridden per node, and one port can carry several mutually independent channels in parallel.
 
-Cross-canvas / cross-machine text channels, TCP / UDP:
+## Common mistakes
 
-- **Receive**: listens on a `host:port` channel and asynchronously forwards received text (port 0 = data, port 1 = control); auto-listen by default.
-- **Send**: pushes the data input text to a target `host:port` (port 0 = data, port 1 = control trigger); terminal node.
-- **Channel**: multiplexed per channel id (0–65535) on one port; send and receive on the same channel talk to each other.
-- Default ports in **Settings · Network** (receive 40999 / send 41000), overridable per node.
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The receiver never gets a message | Protocol / port / channel number differ between the two ends | Align proto + port + channel item by item; with port 0 the defaults in Settings · Network apply |
+| Clicking send does nothing | The control port was never triggered | Trigger net_send's control port with a control wire or ▶ |
+| It reports the port is in use | The target port is already listened on by another process | Change the port, or change the default ports in Settings · Network |
+| Double-clicking the execute node does not launch | The bound path is stale, or the file is not a type the system can open | Pick the bound file again and make sure the extension is within `.exe / .bat / .cmd / .lnk` |
+| You want to take data out of the execute node | The execute node has no data ports | Carry the data flow with network or save nodes; the execute node only launches |
+| You cannot find the media generation nodes on this page | Media generation moved onto its own page | Go to [Music / speech / video](#media-gen) |
 
-## Execute node (one-click launch)
+## Next
 
-Bind `.exe` / `.bat` / `.cmd` / `.lnk` or any system-openable file; **double-click the node** (or click the play button twice) to launch via the OS default handler. Optional icon and theme color for quick spotting. No data ports.
-
-Create: right-click empty canvas → **Dev node (project architecture · feature block)** → **Execute** — keep a project's launcher next to its architecture.
-
-## Tips
-
-- Music / speech / video nodes carry their own output paths — do **not** add a save node after them; Remotion is the opposite, its file lands via a downstream save node.
-- See the right-click **Node guide** of each kind for exact ports.
+- [Control flow & judges](#control-flow)
+- [Music / speech / video](#media-gen)
+- [Node guide index](#node-guide)
+- [Settings](#settings)

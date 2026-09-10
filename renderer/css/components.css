@@ -116,6 +116,8 @@
   align-items: center;
   justify-content: center;
   padding: 30px;
+  /* 兜底：万一某个窗的内容高过视口，蒙层可滚动，底部按钮不会被裁到屏幕外 */
+  overflow: auto;
 }
 
 .overlay-box {
@@ -126,6 +128,15 @@
   max-height: 100%;
   display: flex;
   flex-direction: column;
+  /* 与 #overlay 的 overflow:auto 配合：装得下就居中，装不下从顶部开始可滚动 */
+  margin: auto;
+}
+
+/* 作者小窗：窄身 + 青色顶边。尺寸只走这个类，绝不内联改共享的 .overlay-box
+   （内联残留会让下一个弹窗继承窄宽 / 无高度上限，超出视口就关不掉） */
+.overlay-box.author-box {
+  width: min(340px, 92%);
+  border-top: 3px solid var(--cyan);
 }
 
 /* 输出浏览大窗 */
