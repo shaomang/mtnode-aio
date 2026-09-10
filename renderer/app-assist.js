@@ -484,6 +484,71 @@ function applyAutoSessionTitle(st, raw, srcKind) {
   return true;
 }
 
+/* ============ 绑定会话的「主题」标题 ============
+   开发 / 细化绑定会话创建时标题固定是「开发 · 模块名」。产品承诺「跑起来后标题随
+   这一轮的主题更新」，靠的是引擎的 session-title LLM：它只把**首条用户消息**喂给
+   辅助模型，而 dsh/gateway/cordis.yml 里 maxInputBytes=4096 是硬闸 —— MTNode 的首条
+   用户消息却是「【系统设定】+ 整份人设 / 任务书 + 【内容】」，动辄十几 KB，一律超限。
+   provider 抛错后只剩引擎 5 词回落（fallback），渲染层又只在标题为空时才接受回落
+   （见 applyAutoSessionTitle）—— 于是标题永远停在「开发 · 模块名」。
+   这里按首条关键输入（本次开发需求 / 细化范围）自己补一个主题，口径与普通会话的
+   24 字回落一致；刻意**不置 titleAuto** —— 引擎主题若真到达，仍可覆盖它。 */
+const SESSION_TOPIC_MAX = 24;
+function sessionTopicOfText(raw) {
+  let s = String(raw == null ? "" : raw)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return "";
+  /* 旧形态绑定会话的首条消息是整份任务书（新版才只放用户关键输入）：
+     把「【开发任务书】…」截成标题毫无意义，直接放弃这次改名 */
+  if (s.indexOf(I18n.t("【开发任务书】")) === 0 || s.indexOf("【开发任务书】") === 0) return "";
+  const heads = [
+    I18n.t("本次开发需求："),
+    "本次开发需求：",
+    I18n.t("用户指定的细化范围："),
+    "用户指定的细化范围：",
+  ];
+  for (const p of heads)
+    if (p && s.indexOf(p) === 0) {
+      s = s.slice(p.length).trim();
+      break;
+    }
+  /* 「细化该功能块」只是动作、没有主题信息：宁可保留模块名，也不改成一个废话标题 */
+  if (!s || s === I18n.t("细化该功能块")) return "";
+  return s.slice(0, SESSION_TOPIC_MAX) + (s.length > SESSION_TOPIC_MAX ? "…" : "");
+}
+/* 绑定会话的主题候选：先看首条 dev-node 消息（新版只放用户关键输入），
+   看不出信息（如细化会话的「细化该功能块」）再看任务书契约里的细化范围行。
+   两处都取不到 = 返回 ""，调用方保持模块名不动。 */
+function sessionTopicOfBoundSession(st) {
+  const msgs = Array.isArray(st && st.messages) ? st.messages : [];
+  const first = msgs.find((m) => m && m.role === "user" && m._src === "dev-node");
+  const fromMsg = sessionTopicOfText(first && first.content);
+  if (fromMsg) return fromMsg;
+  const contract = String((st && st._devContract) || "");
+  for (const p of [I18n.t("用户指定的细化范围："), "用户指定的细化范围："]) {
+    const at = contract.indexOf(p);
+    if (at < 0) continue;
+    const topic = sessionTopicOfText(contract.slice(at + p.length).split("\n")[0]);
+    if (topic) return topic;
+  }
+  return "";
+}
+/* 把绑定会话的标题换成「<前缀> · <主题>」：只动「开发 · 」后面那段，前缀原样保留。
+   用户手改过（titleLocked）或引擎已定名（titleAuto）的会话一律不碰。
+   返回是否改了标题。 */
+function retitleBoundSessionByTopic(st) {
+  if (!st || st.titleLocked || st.titleAuto) return false;
+  const prefix = sessionDevTitlePrefix(st);
+  if (!prefix) return false;
+  const topic = sessionTopicOfBoundSession(st);
+  if (!topic) return false;
+  const next = prefix + topic;
+  if (next === st.title) return false;
+  st.title = next;
+  return true;
+}
+
 function syncAssistWorkspaceChrome() {
   const ws = $("#assistWsInput");
   const br = $("#assistWsBrowse");
@@ -1745,41 +1810,84 @@ async function archiveAgentSession(id, archived) {
   renderAgentSession();
 }
 
-/* 直接删除会话(提示确认,不归档):记录不可恢复,关联节点保留并断开会话关联 */
-async function deleteAgentSession(id) {
-  const list = agentSessions();
-  const s = list.find((x) => x.id === id);
-  if (!s) return;
-  if (
-    !(await confirmDialog(
-      I18n.t("删除会话「") + (s.title || I18n.t("新会话")) + I18n.t("」？\n\n该操作不可撤销，会话记录将全部丢失。关联的智能任务节点会保留（断开会话关联）。"),
-      { title: I18n.t("删除会话"), danger: true, okText: I18n.t("删除") },
-    ))
-  )
-    return;
-  list.splice(list.indexOf(s), 1);
-  if (S.wf) {
-    for (const n of S.wf.nodes) {
-      if (
-        (n.kind === "agent_task" || (n.kind === "super" && n.dev)) &&
-        n.agentSessionId === id
-      )
-        n.agentSessionId = "";
-      if (n.kind === "super" && n.dev && Array.isArray(n.devSessionIds)) {
-        const k = n.devSessionIds.indexOf(id);
-        if (k >= 0) n.devSessionIds.splice(k, 1);
-      }
+/* ============ 会话删除 ============
+   行内「删除」不再弹确认框：点一下按钮变成高亮的「确认」并开始呼吸，再点一下才真删；
+   鼠标移开按钮即恢复成「删除」（见 renderAgentSessionSidebar 的行按钮）。
+   删除仍是不可撤销的危险动作，两次点击之间必须有一次真实的用户意图 ——
+   比「弹窗 + 点确定」少一步，又比单击即删安全得多。 */
+/* 一个会话算不算「在跑」：与列表行的「运行中」同一口径
+   （sessionBusyForUi：自己那一轮 ∪ 名下计划并行组），删除前据此先兜底终止它。 */
+function agentSessionBusy(s) {
+  if (!s) return false;
+  if (typeof sessionBusyForUi === "function") return !!sessionBusyForUi(s);
+  if (typeof sessionIsRunning === "function") return !!sessionIsRunning(s);
+  return !!s.running;
+}
+/* 摘掉画布上指向这些会话的关联：开发块除 agentSessionId 外还有一份 devSessionIds，
+   得一并摘。返回受影响的节点数（便于调用方汇报，当前单条删除只关心副作用）。 */
+function detachSessionsFromNodes(ids) {
+  const set = new Set(ids || []);
+  if (!S.wf || !set.size) return 0;
+  let n = 0;
+  for (const node of S.wf.nodes) {
+    if (node.kind !== "agent_task" && !(node.kind === "super" && node.dev)) continue;
+    let hit = false;
+    if (set.has(node.agentSessionId)) {
+      node.agentSessionId = "";
+      hit = true;
     }
+    if (node.kind === "super" && node.dev && Array.isArray(node.devSessionIds)) {
+      for (let i = node.devSessionIds.length - 1; i >= 0; i--)
+        if (set.has(node.devSessionIds[i])) {
+          node.devSessionIds.splice(i, 1);
+          hit = true;
+        }
+    }
+    if (hit) n++;
+  }
+  if (n) {
     scheduleSave(true);
     renderCanvas();
   }
+  return n;
+}
+/* 删一条会话的内核：摘节点关联 → 从列表摘掉 → 落盘 → 重绘。 */
+async function deleteAgentSessionCore(id) {
+  const list = agentSessions();
+  const at = list.findIndex((x) => x && x.id === id);
+  if (at < 0) return -1;
+  detachSessionsFromNodes([id]);
+  list.splice(at, 1);
   if (S.agentActiveId === id) S.agentActiveId = (list[0] && list[0].id) || "";
   await persistAgentSession();
   renderAgentSessionSidebar();
   renderAgentSession();
+  return at;
+}
+/* 删除前终止该会话的轮次：与「单条 ■ / 全部终止」同一口径（stopSessionRuns
+   既取消自己那一轮，也逐个取消计划并行组的 runKey），否则删掉的会话还在后台跑。
+   本函数只在用户已确认删除后调用，绝不静默打断。 */
+function stopSessionForDelete(id) {
+  try {
+    if (typeof stopSessionRuns !== "function") return;
+    const st = typeof agentSessionById === "function" ? agentSessionById(id) : null;
+    if (!st) return;
+    if (typeof sessionIsRunning === "function" && !sessionIsRunning(st)) return;
+    stopSessionRuns(st, true);
+  } catch (_) {}
+}
+/* 真删一条会话（不归档、不可恢复）：清节点引用 → 落盘 → 重绘；
+   确认由行内「删除 → 确认」两次点击完成，这里只负责删。
+   关联的智能任务节点保留，只断开与它的会话关联。 */
+async function deleteAgentSession(id) {
+  const list = agentSessions();
+  const s = list.find((x) => x.id === id);
+  if (!s) return;
+  /* 用户已点第二下 = 明确诉求：在跑的会话先兜底终止再删，绝不静默打断 */
+  if (agentSessionBusy(s)) stopSessionForDelete(id);
+  await deleteAgentSessionCore(id);
   toast(I18n.t("会话已删除：") + (s.title || I18n.t("新会话")), "ok");
 }
-
 /* ===================== dsh web composer（模型 / 命令 / 工作区 下拉） ===================== */
 function closeAgentMenus() {
   ["agentModelMenu", "agentCmdMenu", "agentToolsMenu"].forEach((id) => {
@@ -3994,9 +4102,7 @@ function renderAgentSessionSidebar() {
         : !!(s && s.running));
     const row = document.createElement("div");
     row.className =
-      "side-sess" +
-      (s.id === active ? " active" : "") +
-      (busy ? " running" : "");
+      "side-sess" + (s.id === active ? " active" : "") + (busy ? " running" : "");
     const nm = document.createElement("span");
     nm.className = "side-sess-name";
     nm.textContent = s.title || I18n.t("新会话");
@@ -4052,13 +4158,35 @@ function renderAgentSessionSidebar() {
       ev.stopPropagation();
       await archiveAgentSession(s.id, !isArchived);
     };
+    /* 删除按钮：不再弹确认框，改成「两下确认」——
+       第一下按钮变成高亮的「确认」并呼吸（armed），第二下才真删；
+       鼠标一移开（mouseleave）立刻收回确认态。这样误点一下不会删掉会话，
+       也不会有弹窗挡在脸上。 */
     const dl = document.createElement("button");
     dl.className = "side-sess-btn danger";
-    dl.textContent = I18n.t("删除");
-    dl.title = I18n.t("直接删除该会话(提示确认,不可撤销)");
+    const dlIdle = () => {
+      dl.classList.remove("confirm");
+      dl.textContent = I18n.t("删除");
+      dl.title = I18n.t("删除该会话（点两下确认，不可撤销）");
+    };
+    let armed = false;
+    dlIdle();
     dl.onclick = async (ev) => {
       ev.stopPropagation();
+      if (!armed) {
+        armed = true;
+        dl.classList.add("confirm");
+        dl.textContent = I18n.t("确认");
+        dl.title = I18n.t("再点一下即删除该会话，记录不可恢复");
+        return;
+      }
+      armed = false;
       await deleteAgentSession(s.id);
+    };
+    dl.onmouseleave = () => {
+      if (!armed) return;
+      armed = false;
+      dlIdle();
     };
     btns.appendChild(rn);
     btns.appendChild(fk);
@@ -4715,8 +4843,7 @@ async function agentSessionSend(text, opts) {
         planStalePendingOffers(st, "userRound");
     } catch (_) {}
   }
-  /* 合并模式不追加消息：任务书消息（_src:"dev-node"）已在会话里，直接发它；
-     标题也保持 createDevSessionForNode 设定的「开发 · 模块名」不被任务书覆盖 */
+  /* 合并模式不追加消息：任务书消息（_src:"dev-node"）已在会话里，直接发它 */
   let rbAnchor = null;
   if (!devContractMsg) {
     const um = { role: "user", content: t, at: Date.now() };
@@ -4735,6 +4862,11 @@ async function agentSessionSend(text, opts) {
       (st.messages || []).find(
         (m) => m && m.role === "user" && m._src === "dev-node",
       ) || null;
+    /* 绑定会话同样要随主题改名：引擎那条 LLM 主题因首条用户消息超 maxInputBytes
+       到不了（见 retitleBoundSessionByTopic 注释），所以这里按关键输入自己补一个 ——
+       只换「开发 · 」后面的模块名，前缀一个字符不动；用户手改过（titleLocked）或
+       引擎已定名（titleAuto）的会话不碰。 */
+    retitleBoundSessionByTopic(st);
   }
   /* 引擎自动命名（title 事件）是「一次性武装」闸位：只要这条会话还没被引擎真正
      命名过一次（!titleAuto）且用户没亲口改名（!titleLocked），就保持放行 ——

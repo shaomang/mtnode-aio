@@ -511,11 +511,26 @@
       "Delete the fact library \"{name}\"? Its body, annotations and images will be deleted permanently.",
     "已删除事实库": "Fact library deleted",
     "事实库创建失败": "Failed to create the fact library",
-    /* 事实库落点：项目文件夹根（S.config.projectsRoot）+ 应用目录守卫（app-factlib.js / main.js） */
-    "选择项目文件夹根目录（团队事实库将建在此目录下的「团队事实库」文件夹里）":
-      "Choose the project folder root (the team fact library will be created in a \"团队事实库\" folder under it)",
-    "项目文件夹根目录": "Project folder root",
+    /* 事实库落点：画布文件夹（app-team.js factWorkspace）+ 应用目录 / 项目源码目录守卫（app-factlib.js / main.js） */
+    "选择画布文件夹（团队事实库将建在此目录下的「团队事实库」文件夹里）":
+      "Choose the canvas folder (the team fact library will be created in a \"团队事实库\" folder under it)",
+    "画布文件夹": "Canvas folder",
     "事实库目录不能落在应用目录内": "The fact library folder cannot live inside the application directory",
+    "事实库目录不能落在项目源码目录内（应放在画布文件夹）":
+      "The fact library folder cannot live inside the project source folder — it belongs in the canvas folder",
+    /* 历史错位修复：库落在应用文件夹 / 项目源码目录 → 用户确认后迁回画布文件夹（app-factlib.js relocateLibrary / main.js fact:relocateLibrary） */
+    "事实库当前位于应用文件夹内，应用升级或卸载会丢失。":
+      "The fact library currently sits inside the application folder and would be lost on upgrade or uninstall.",
+    "事实库当前位于项目源码目录内（旧版跟着画布项目根走的落点）。":
+      "The fact library currently sits inside the project source folder (an old location that followed the canvas project root).",
+    "是否迁移到画布文件夹？": " Move it to the canvas folder?",
+    "移动事实库": "Move fact library",
+    "迁移": "Move",
+    "保持不动": "Keep it where it is",
+    "事实库迁移失败": "Failed to move the fact library",
+    "事实库已迁移到画布工作目录": "Fact library moved to the canvas working directory",
+    "事实库已改用画布文件夹中已有的库":
+      "The fact library now uses the existing one in the canvas folder",
     "当前没有画布，无法创建事实库": "No canvas is open — cannot create a fact library",
     "审阅模块未就绪，无法打开事实库":
       "Review module is not ready — cannot open the fact library",
@@ -1038,10 +1053,10 @@
     "显示更多": "Show more",
     "该轮性能": "This round's performance",
     "点击查看该轮性能": "Click to view this round's performance",
+    "点击展开按轮次统计": "Click to expand round-by-round stats",
+    "点击收起按轮次统计": "Click to collapse round-by-round stats",
     "口径：轮次 = 一次运行的入账（标题优先取计划任务标题，否则取用户输入前 24 字）；实测＝网关逐次采样的累计值直接得出；推算＝缺纯生成时间 / Prefill 计数时用 LLM 用时、计费输入近似（标「(推算)」）；—＝无样本（老台账或该轮未采到首 Token 延迟）。":
       "How to read: a round = one run's accounting entry (title prefers the plan task title, otherwise the first 24 characters of the user input); measured = derived directly from the cumulative per-call samples the gateway collects; estimated = approximated from LLM time / billed input when pure generation time or Prefill counts are missing (marked \"(estimated)\"); — = no samples (old ledger, or no TTFT captured for this round).",
-    "口径：实测＝网关逐次采样的累计值直接得出；推算＝缺纯生成时间 / Prefill 计数时用 LLM 用时、计费输入近似（标「(推算)」）；—＝无样本（老台账或该模型未采到首 Token 延迟）。":
-      "How to read: measured = derived directly from the cumulative per-call samples the gateway collects; estimated = approximated from LLM time / billed input when pure generation time or Prefill counts are missing (marked \"(estimated)\"); — = no samples (old ledger, or no TTFT captured for this model).",
     "历史会话": "Session history",
     "连线操作": "Wire actions",
     "另存为…": "Save as…",
@@ -1738,6 +1753,9 @@
     "」· 点击切换（无 / 低 / 中 / 高）": "\" · Click to cycle (Off / Low / Medium / High)",
     "本次智能运行的统计（与 dsh 客户端一致）": "Stats for this agent run (same as the dsh client)",
     "复制该会话为新会话(参考 dsh fork)": "Duplicate this session as a new one (like dsh fork)",
+    /* ── 会话行内删除（app-assist.js · 两下确认 + 悬停恢复） ── */
+    "删除该会话（点两下确认，不可撤销）": "Delete this session (click twice to confirm; cannot be undone)",
+    "再点一下即删除该会话，记录不可恢复": "Click once more to delete this session; the record cannot be recovered",
     "运行中的会话不能分支，请等待完成或先终止": "Cannot fork a running session; wait for it to finish or stop it first",
     "已有其他会话在运行，请等待其完成或先终止": "Another session is running; wait for it to finish or stop it first",
     "技能内容（Markdown，模型按此执行）…": "Skill content (Markdown; the model follows this)…",
@@ -6289,6 +6307,9 @@
     "该路径不是文件夹": "that path is not a folder",
     "请选择一个存在的文件夹": "choose a folder that exists",
     "非法路径": "illegal path",
+    "路径不存在": "that path does not exist",
+    "同名文件已存在": "a file with the same name already exists",
+    "复制校验不一致，事实库未迁移": "copy verification failed — the fact library was not moved",
     "非法路径（越出素材库根目录）": "illegal path (escapes the asset library root)",
     "缺少路径": "missing path",
     "名称不能为空": "the name cannot be empty",

@@ -2384,6 +2384,64 @@ ipcMain.handle("fact:removeLibrary", (e, opts) => {
   }
 });
 
+/* 整库搬迁（历史错位修复）：把整个「团队事实库」目录从 from 搬到 to —— 用于把旧版跟着
+   开发画布项目根、误建在应用文件夹里的库迁回画布文件夹（渲染层 relocateLibrary 发起，用户已确认）。
+   守卫与建库同口径但**方向相反**：from 只认「目录名 = 团队事实库」的绝对路径（它可能正位于
+   应用目录内 —— 那正是要搬出去的原因，所以这里不做应用目录拒绝）；to 必须同名、绝对、
+   **不在应用目录内**、且**不存在**（不合并、不覆盖，避免误伤别的库）。
+   优先 rename（原子零拷贝）；跨卷 EXDEV 退化 copy + 指纹校验通过后再删源。 */
+ipcMain.handle("fact:relocateLibrary", (e, opts) => {
+  try {
+    const o = opts && typeof opts === "object" ? opts : {};
+    const fromRaw = String(o.from || "").trim();
+    const toRaw = String(o.to || "").trim();
+    if (!fromRaw || !toRaw) return { ok: false, error: I18n.t("未选择") };
+    if (!path.isAbsolute(fromRaw) || !path.isAbsolute(toRaw))
+      return { ok: false, error: I18n.t("请选择绝对路径") };
+    const from = path.resolve(fromRaw);
+    const to = path.resolve(toRaw);
+    if (from === path.parse(from).root || to === path.parse(to).root)
+      return { ok: false, error: I18n.t("非法路径") };
+    if (path.basename(from) !== "团队事实库" || path.basename(to) !== "团队事实库")
+      return { ok: false, error: I18n.t("非法路径") };
+    if (!fs.existsSync(from) || !fs.statSync(from).isDirectory())
+      return { ok: false, error: I18n.t("路径不存在") };
+    if (isInsideAppDir(to))
+      return { ok: false, error: I18n.t("事实库目录不能落在应用目录内") };
+    if (from === to) return { ok: true, moved: false };
+    if (fs.existsSync(to)) return { ok: false, error: I18n.t("同名文件已存在") };
+    mk(path.dirname(to));
+    try {
+      fs.renameSync(from, to);
+    } catch (err) {
+      if (!err || err.code !== "EXDEV")
+        return { ok: false, error: String((err && err.message) || err) };
+      const before = diskFootprint(from);
+      fs.cpSync(from, to, { recursive: true, dereference: true });
+      const after = diskFootprint(to);
+      if (before.files !== after.files || before.bytes !== after.bytes)
+        return { ok: false, copied: true, error: I18n.t("复制校验不一致，事实库未迁移") };
+      try {
+        fs.rmSync(from, { recursive: true, force: true });
+      } catch (err2) {
+        return {
+          ok: true,
+          moved: true,
+          sourceKept: true,
+          error: String((err2 && err2.message) || err2),
+        };
+      }
+    }
+    /* 新库的 assets 目录进白名单：迁完即可继续插图 / 跑孤立图片回收。 */
+    try {
+      factRememberDir(path.join(to, "assets"));
+    } catch {}
+    return { ok: true, moved: true, from, to };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 /* 在线浏览:主进程代取远程内容(无 CORS/CSP 限制;渲染层 connect-src 保持 'self') */
 ipcMain.handle("net:fetch", async (e, url) => {
   if (typeof url !== "string" || !/^https?:\/\//.test(url)) {

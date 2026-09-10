@@ -532,8 +532,8 @@ ok(!!kv["预处理吞吐 (Prefill)"], "弹窗列出预处理吞吐：" + kv["预
 ok(kv["TTFT 样本数"] === "3" && kv["调用次数"] === "4", "弹窗列出样本数与调用次数");
 ok(!!kv["费用"] && /¥/.test(kv["费用"]), "弹窗列出费用：" + kv["费用"]);
 ok(
-  !!ovBody.children[1] && /model-perf-note/.test(ovBody.children[1].className),
-  "弹窗带口径脚注（实测 / 推算 / —）",
+  !ovBody.children.some((c) => /model-perf-note/.test((c && c.className) || "")),
+  "弹窗不再显示口径脚注（按需求移除）",
 );
 ok(ovFoot.children.length > 0, "弹窗带关闭按钮");
 

@@ -4071,6 +4071,29 @@ button.mini.btn-sq.tpl-ico {
   color: var(--red)
 }
 
+/* 行内「删除」的二次确认态：第一下点完变成高亮的「确认」并呼吸，第二下才真删；
+   鼠标移开由 JS 收回（app-assist.js 的 dlIdle / mouseleave）。
+   必须排在 .danger:hover 之后 —— 同一特异性下后写的规则才盖得住 hover 的红描边。 */
+.side-sess-btn.danger.confirm,
+.side-sess-btn.danger.confirm:hover {
+  color: #fff;
+  background: #d9534f;
+  border-color: #ff8a80;
+  font-weight: 600;
+  animation: side-sess-del-breathe 1.05s ease-in-out infinite
+}
+
+@keyframes side-sess-del-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(232, 122, 122, .5);
+    filter: brightness(1)
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(232, 122, 122, .14), 0 0 9px 2px rgba(232, 122, 122, .5);
+    filter: brightness(1.28)
+  }
+}
+
 .dsh-msg-body {
   font-size: 12.5px;
   line-height: 1.75;
@@ -4475,84 +4498,37 @@ button.mini.btn-sq.tpl-ico {
   vertical-align: bottom
 }
 
-/* 标题来源标记：计划任务 / 用户输入 */
-.tok-round-tag {
-  margin-left: 5px;
-  padding: 0 4px;
-  border: 1px solid var(--bd);
-  border-radius: 3px;
-  color: var(--muted);
-  font-size: 10px;
-  white-space: nowrap
-}
-
-.tok-round-tag-plan {
-  color: var(--cyan);
-  border-color: var(--cyan)
-}
-
-/* 在途轮次「运行中」胶囊 */
-.tok-round-live-tag {
-  margin-left: 5px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--code);
-  color: var(--cyan);
-  font-size: 10px;
-  white-space: nowrap
-}
-
-.tok-badge-table tr.tok-round-row {
-  cursor: pointer
-}
-
-.tok-badge-table tr.tok-round-row:hover td {
-  background: var(--code)
-}
-
-.tok-badge-table tr.tok-round-row:focus-visible {
-  outline: 1px solid var(--cyan);
-  outline-offset: -1px
-}
-
-.tok-badge-table tr.tok-round-row.tok-round-live td:first-child {
-  color: var(--cyan)
-}
-
-/* 行尾提示符 ›：提示该行可点开看该轮性能（末列为性能摘要） */
-.tok-badge-table tr.tok-round-row td:last-child::after {
-  content: "›";
-  margin-left: 5px;
-  color: var(--muted);
-  opacity: .55
-}
-
-.tok-badge-table tr.tok-round-row:hover td:last-child::after,
-.tok-badge-table tr.tok-round-row:focus-visible td:last-child::after {
-  color: var(--cyan);
-  opacity: 1
-}
-
-.tok-round-perf {
-  color: var(--muted)
-}
-
-/* 「显示更多 / 收起」小按钮 */
-.tok-round-more {
-  margin-top: 5px;
-  padding: 2px 8px;
-  border: 1px solid var(--bd);
-  border-radius: 3px;
+/* 按轮次开关：挂在 .tok-badge-meta 同一行，无边框透明按钮（点击展开 / 收起轮次表） */
+.tok-badge-meta .tok-round-toggle {
+  padding: 0;
+  border: none;
   background: transparent;
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
+  line-height: inherit;
   cursor: pointer
 }
 
-.tok-round-more:hover {
-  color: var(--cyan);
-  border-color: var(--cyan)
+.tok-badge-meta .tok-round-toggle:hover,
+.tok-badge-meta .tok-round-toggle:focus-visible {
+  color: var(--cyan)
+}
+
+/* 四周指示符：折叠 ▸ / 展开 ▾ */
+.tok-badge-meta .tok-round-toggle::after {
+  content: "▸";
+  margin-left: 4px
+}
+
+.tok-badge-meta .tok-round-toggle.open::after,
+.tok-badge-meta .tok-round-toggle[aria-expanded="true"]::after {
+  content: "▾"
+}
+
+/* 展开后的轮次列表（表格沿用 .tok-badge-table，只留外边距） */
+.tok-round-list {
+  margin: 5px 0 2px
 }
 
 .tok-badge-sum .tok-badge-bal {

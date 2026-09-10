@@ -408,6 +408,16 @@ body.theme-light .agent-side-new:hover {
   border-color: var(--bd2);
 }
 
+/* ── 会话行「删除」的二次确认态（浅色主题）──
+   深色主题的红底白字在浅色下同样可读，这里只把底色压深一档；
+   呼吸光环沿用同一份 @keyframes（红光在亮底上也看得清），不重复定义动画。 */
+body.theme-light .side-sess-btn.danger.confirm,
+body.theme-light .side-sess-btn.danger.confirm:hover {
+  color: #fff;
+  background: #c0392b;
+  border-color: #e57373;
+}
+
 body.theme-light .agent-side-search input {
   background: var(--bg2);
   color: var(--ink);

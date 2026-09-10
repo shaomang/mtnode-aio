@@ -192,6 +192,9 @@ contextBridge.exposeInMainWorld('api', {
      主进程校验路径，只动这一篇的 md + sidecar；库内其它文档与共享 assets/ 不受影响。 */
   factRenameLibrary: (opts) => ipcRenderer.invoke('fact:renameLibrary', opts || {}),
   factRemoveLibrary: (opts) => ipcRenderer.invoke('fact:removeLibrary', opts || {}),
+  /* 整库搬迁（历史错位修复）：opts = { from, to }（两边都是「团队事实库」目录的绝对路径）。
+     主进程把 from 整个搬到 to（rename / 跨卷 copy + 校验），用于把误建在应用文件夹里的库迁回画布文件夹。 */
+  factRelocateLibrary: (opts) => ipcRenderer.invoke('fact:relocateLibrary', opts || {}),
   netFetch: (url) => ipcRenderer.invoke('net:fetch', url),
   storeRequest: (opts) => ipcRenderer.invoke('store:request', opts),
   storePickMtNodes: () => ipcRenderer.invoke('store:pickMtNodes'),
