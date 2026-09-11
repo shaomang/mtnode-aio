@@ -605,6 +605,8 @@
       "Cannot resolve the full path of this file — showing the name only",
     "这个会话还没解析出工作目录，只给你看文件名":
       "No workspace resolved for this session — showing the name only",
+    "找不到这个文件（不在当前工作目录里）":
+      "File not found (it is not in the current working directory)",
     " 个文件，点击展开": " more files — click to expand",
     "当前环境读不到文件": "Files cannot be read in this environment",
     "文件是空的": "The file is empty",
@@ -633,6 +635,22 @@
     " 条没列出，继续输入可过滤": " more not listed — keep typing to filter",
     "递归列表：只列文件，已跳过隐藏项与 node_modules / .git":
       "Recursive listing: files only, hidden items and node_modules / .git skipped",
+    /* 面板里的编辑态（app-fileview.js：进编辑 → 改 → 保存 / 撤销重做；未保存先问一句） */
+    "未保存的修改": "Unsaved changes",
+    "放弃改动": "Discard changes",
+    "有未保存的修改，换文件会丢弃这些改动。":
+      "This file has unsaved changes — switching files discards them.",
+    "有未保存的修改，重新加载会丢弃这些改动。":
+      "This file has unsaved changes — reloading discards them.",
+    "有未保存的修改，关闭面板会丢弃这些改动。":
+      "This file has unsaved changes — closing the panel discards them.",
+    "有未保存的修改，退出编辑会丢弃这些改动。":
+      "This file has unsaved changes — leaving edit mode discards them.",
+    "文件已被修改": "File changed on disk",
+    "这个文件在打开后被别的程序改过，保存会覆盖对方的改动。":
+      "This file changed on disk after it was opened — saving overwrites those changes.",
+    "仍然覆盖": "Overwrite anyway",
+    "当前环境写不了文件": "Files cannot be written in this environment",
     /* ── 全部终止 / 媒体生成排队 ── */
     "已终止（排队中的生成任务已取消）": "Cancelled (queued generation dropped)",
     "已终止（后端生成任务已取消）": "Cancelled (backend generation stopped)",
@@ -1111,6 +1129,7 @@
     "暂无节点": "No nodes yet",
     "暂无条目": "No entries yet",
     "展开分类": "Expand category",
+    "收起分类": "Collapse category",
     "折叠分类": "Collapse category",
     "智能节点": "Agent Node",
     "智能任务": "Agent task",
@@ -1529,6 +1548,7 @@
     "已保存 YAML → ": "Saved YAML → ",
     "已关闭:下一轮直接执行": "Off: execute directly next round",
     "引用输入节点（@标题）": "Reference input nodes (@title)",
+    " · 素材按内容条目标题引用": " · assets are referenced by entry title",
     "↑↓ 选择 · 回车确认 · Esc 取消":
       "↑↓ select · Enter confirm · Esc close",
     "全局来源需明文 @ 才注入（@标题）":
@@ -5743,10 +5763,11 @@
     "删除「{name}」": "Delete “{name}”",
     "该分类（含子分类）下还有 {n} 个素材：请先移走或删除其中的素材。":
       "This category (including subcategories) still holds {n} asset(s): move or delete them first.",
-    "删除空分类「{name}」？\n\n文件夹会移进素材库根目录的 .trash（不会真的删掉），在资源管理器里可手工找回。":
-      "Delete the empty category “{name}”?\n\nThe folder goes into <root>/.trash (nothing is really deleted) and can be restored by hand in the file manager.",
+    "删除空分类「{name}」？\n\n文件夹会删进系统回收站（可在资源管理器里还原）。":
+      "Delete the empty category “{name}”?\n\nThe folder is deleted into the system recycle bin (you can restore it in the file manager).",
     "删除分类": "Delete category",
-    "已删除分类（进回收站）：": "Category deleted (moved to trash): ",
+    "已删除分类（进系统回收站）：":
+      "Category deleted (moved to the system recycle bin): ",
     "在资源管理器中打开": "Open in file manager",
     "打不开该目录": "Cannot open that folder",
     /* 右栏 · 素材卡片 */
@@ -5770,12 +5791,13 @@
     "已上传为素材：{name}（内容 {n} 条）": "Uploaded as asset “{name}” ({n} item(s))",
     "已上传为素材：{name}（内容 {n} 条 · 跳过 {s} 个不支持的文件）":
       "Uploaded as asset “{name}” ({n} item(s), {s} unsupported file(s) skipped)",
-    "删除素材（移进素材库回收站，不实删）":
-      "Delete the asset (moved to the library trash, not really deleted)",
-    "删除素材「{name}」？\n\n整个素材文件夹会移进素材库根目录的 .trash（不实删）。已插入画布的「素材」节点会显示为「素材失联」，节点本身保留。":
-      "Delete the asset “{name}”?\n\nIts whole folder moves into <root>/.trash (nothing is really deleted). “Asset” nodes already on a canvas will show “asset unavailable”, but the nodes themselves stay.",
+    "删除素材（删进系统回收站，可在资源管理器里还原）":
+      "Delete the asset (deleted into the system recycle bin, restorable in the file manager)",
+    "删除素材「{name}」？\n\n素材文件夹会删进系统回收站（可在资源管理器里还原）。已插入画布的「素材」节点会显示为「素材失联」，节点本身保留。":
+      "Delete the asset “{name}”?\n\nIts whole folder is deleted into the system recycle bin (you can restore it in the file manager). “Asset” nodes already on a canvas will show “asset unavailable”, but the nodes themselves stay.",
     "删除素材": "Delete asset",
-    "已删除素材（进回收站）：": "Asset deleted (moved to trash): ",
+    "已删除素材（进系统回收站）：":
+      "Asset deleted (moved to the system recycle bin): ",
     "素材文件夹名（资源管理器里看到的名字）：":
       "Asset folder name (what the file manager shows):",
     "重命名素材文件夹": "Rename asset folder",
@@ -5804,12 +5826,16 @@
     "插入到画布": "Insert into canvas",
     "在当前画布创建一个绑定该素材的「素材」节点（库内容不变）":
       "Create an “Asset” node bound to this asset on the current canvas (library content untouched)",
+    "复制到画布": "Copy to canvas",
+    "打开文件夹": "Open folder",
+    "在文件资源管理器中打开这个素材的文件夹":
+      "Open this asset's folder in the file manager",
+    "素材内容": "Asset content",
+    "点击查看内容（可编辑 / 更换）": "Click to view the content (editable / replaceable)",
     "重新命名（文件夹）": "Rename (folder)",
     "素材节点尚未就绪": "Asset nodes are not ready yet",
     "插入失败：无法创建素材节点": "Insert failed: cannot create the asset node",
     "已插入素材：": "Asset inserted: ",
-    "删除的内容进根目录 .trash（不实删）":
-      "Deleted content goes into <root>/.trash (nothing is really deleted)",
     /* ── 素材节点（kind asset）：内容条目即端子 · body 内容列表 ── */
     "视频": "Video",
     "无效的输入端子": "Invalid input port",
@@ -5987,12 +6013,12 @@
     "调整内容顺序失败：": "Failed to reorder content: ",
     "已调整内容顺序：端子与已连数据线随内容移位":
       "Content reordered: ports and their wires moved with the items",
-    "删除内容「{name}」？\n\n· 节点上这一对端子会消失，挂在它上面的连线一并断开（Ctrl+Z 可复原节点与连线）\n· 实体文件移进素材库根目录的 .trash（不会真的删掉）\n\n要恢复文件请从资源管理器里找回。":
-      "Delete the content item “{name}”?\n\n· The pair of ports on the node disappears and any wire on them is cut (Ctrl+Z restores the node and the wires)\n· The file moves into the library root's .trash (nothing is really deleted)\n\nTo get the file back, restore it from the file explorer.",
+    "删除内容「{name}」？\n\n· 节点上这一对端子会消失，挂在它上面的连线一并断开（Ctrl+Z 可复原节点与连线）\n· 实体文件删进系统回收站（可在资源管理器里还原）":
+      "Delete the content item “{name}”?\n\n· The pair of ports on the node disappears and any wire on them is cut (Ctrl+Z restores the node and the wires)\n· The file is deleted into the system recycle bin (you can restore it in the file manager)",
     "删除内容": "Delete content",
     "删除内容失败：": "Failed to delete the content item: ",
-    "已删除内容：{name}（端子与连线可撤销 · 文件进回收站）":
-      "Content deleted: {name} (ports and wires undoable · file moved to the trash)",
+    "已删除内容：{name}（端子与连线可撤销 · 文件进系统回收站）":
+      "Content deleted: {name} (ports and wires undoable · file moved to the system recycle bin)",
     "添加文本内容": "Add text content",
     "标题（＝端子名）": "Title (= port label)",
     "正文": "Body",
@@ -6545,6 +6571,60 @@
     "获取账号信息失败": "Failed to fetch account information",
     "绑定失败": "Binding failed",
     "解绑失败": "Unbinding failed",
+    /* ── 画布左栏「文件」页（renderer/app-sidebar-files.js） ── */
+    "粘贴": "Paste",
+    "剪切": "Cut",
+    "搜索文件…": "Search files…",
+    "文件页显示的目录（按画布记忆）": "Folder shown in the Files tab (remembered per canvas)",
+    "按类型筛选": "Filter by type",
+    "媒体": "Media",
+    "刷新文件树": "Refresh the file tree",
+    "把剪贴板里的文件粘贴到当前选中文件夹":
+      "Paste the clipboard files into the selected folder",
+    "（未设置）": "(not set)",
+    "项目根：": "Project root: ",
+    "自定义：": "Custom: ",
+    "浏览…": "Browse…",
+    "尚未设置工作目录：请在上方选择画布工作目录、项目根，或「浏览…」选一个文件夹":
+      "No working directory yet: pick the canvas working directory or a project root above, or choose a folder via “Browse…”",
+    "在右侧文件面板中预览": "Preview in the file panel on the right",
+    "搜索：": "Search: ",
+    "没有匹配的文件": "No matching files",
+    "结果过多，只显示前 ": "Too many results — showing the first ",
+    " 条": " items",
+    "读取中…": "Loading…",
+    "目录不存在或不可读：": "Folder missing or unreadable: ",
+    "这个目录是空的": "This folder is empty",
+    "复制完整路径": "Copy full path",
+    "已复制路径": "Path copied",
+    "已复制 ": "Copied ",
+    "已剪切 ": "Cut ",
+    " 项": " item(s)",
+    "重命名失败：": "Rename failed: ",
+    "已重命名：": "Renamed: ",
+    "目标文件夹不存在：": "The target folder does not exist: ",
+    "粘贴失败：": "Paste failed: ",
+    "已粘贴 ": "Pasted ",
+    "确定删除「{name}」？它会移入系统回收站。":
+      "Delete “{name}”? It will be moved to the system recycle bin.",
+    "确定删除选中的 {n} 项？它们会移入系统回收站。":
+      "Delete the {n} selected item(s)? They will be moved to the system recycle bin.",
+    "删除失败（未删除，可能该位置不支持回收站）：":
+      "Delete failed (nothing was deleted — this location may not support the recycle bin): ",
+    "已删除 ": "Deleted ",
+    " 项（在系统回收站）": " item(s) (in the system recycle bin)",
+    "这里没有可建节点的文件": "There are no files here to turn into nodes",
+    "拖入画布": "Drop onto the canvas",
+    "创建节点": "Create nodes",
+    "无法预览该文件": "Cannot preview this file",
+    "将创建 {n} 个节点：": "Will create {n} node(s): ",
+    "；另有 {d} 个文件夹，只取第一层共 {n} 个文件（不递归）":
+      "; {d} folder(s) detected — only their top-level {n} file(s) are used (no recursion)",
+    "{summary}？创建后可 Ctrl+Z 一次撤销。":
+      "{summary}? You can undo the whole batch with Ctrl+Z.",
+    "文件名不能为空": "The file name cannot be empty",
+    "文件名不能包含路径分隔符": "The file name cannot contain a path separator",
+    "不能改动应用目录本身": "The application folder itself cannot be modified",
   });
 
   function listJoin(arr) {

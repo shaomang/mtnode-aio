@@ -3424,6 +3424,279 @@ textarea.asset-form-input {
   cursor: default;
 }
 
+/* ===== 素材树：分类展开箭头 + 素材行（紧随 .asset-lib-* 段落） =====
+ * 与上方素材库同一套观感：配色 / 圆角只取现有变量（--ink / --muted / --bd / --bd2 / --cyan / --cyan2 / --code），
+ * 高亮底色沿用分类行的青系 rgba(56, 214, 255, …)。 */
+
+/* 分类前的展开箭头：固定宽，点击不冒泡到行选中（由 JS 在 caret 上 stopPropagation） */
+.asset-lib-caret {
+  flex: none;
+  width: 12px;
+  min-width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  transition: transform .12s ease, color .12s ease;
+}
+
+.asset-lib-caret:hover {
+  color: var(--cyan2);
+}
+
+.asset-lib-caret.on {
+  transform: rotate(90deg);
+  color: var(--cyan2);
+}
+
+/* 无子分类：占位不可点，保持名称左对齐 */
+.asset-lib-caret.leaf {
+  visibility: hidden;
+  cursor: default;
+}
+
+/* 素材行（左栏树里的非分类条目）：缩进 = 分类深度 + 1（--asset-depth，缺省 1） */
+.asset-lib-assetrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  padding-left: calc(8px + (var(--asset-depth, 1)) * 13px);
+  font-size: 11.5px;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+  border-left: 2px solid transparent;
+}
+
+.asset-lib-assetrow:hover {
+  background: rgba(56, 214, 255, .07);
+}
+
+.asset-lib-assetrow.on {
+  background: rgba(56, 214, 255, .12);
+  border-left-color: var(--cyan);
+  color: var(--cyan2);
+  font-weight: 700;
+}
+
+.asset-lib-assetrow .asset-lib-catname {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 右侧内容数 chip：与分类行 chip 同一观感 */
+.asset-lib-assetrow .asset-lib-catchip {
+  margin-left: auto;
+}
+
+.asset-lib-assetrow.on .asset-lib-catchip {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+}
+
+/* ===== 素材详情：头部（左标题 + 副标题 · 右动作行） ===== */
+.asset-detail-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--bd);
+}
+
+.asset-detail-titlewrap {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.asset-detail-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--cyan2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-detail-sub {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右侧动作行：沿用 .mini 与 .primary / .danger 观感，只负责排布 */
+.asset-detail-acts {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.asset-detail-acts .mini {
+  flex: none;
+}
+
+/* ===== 素材详情：正文列表 ===== */
+.asset-detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* 一行 = 一条内容；窄宽度下允许换行，不溢出 */
+.asset-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--bd2);
+  border-left: 2px solid var(--cyan);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .18);
+}
+
+.asset-detail-row:hover {
+  border-left-color: var(--orange);
+  background: rgba(255, 143, 46, .05);
+}
+
+/* 行内标题输入框（与设置框里的标题框同一观感） */
+.asset-detail-row input[type="text"],
+.asset-detail-row .asset-detail-tin,
+.asset-detail-row .asset-set-title {
+  flex: 1 1 150px;
+  min-width: 90px;
+  max-width: 100%;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 7px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.asset-detail-row input[type="text"]:focus,
+.asset-detail-row .asset-detail-tin:focus,
+.asset-detail-row .asset-set-title:focus {
+  border-color: var(--cyan);
+}
+
+/* 类型 chip */
+.asset-detail-row .asset-detail-kind,
+.asset-detail-row .asset-set-kind {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 1.6;
+  padding: 0 5px;
+  border-radius: 2px;
+  color: var(--cyan);
+  background: rgba(56, 214, 255, .12);
+}
+
+/* 文件按钮（沿用设置框里文件按钮的观感，超长省略） */
+.asset-detail-row .asset-detail-file,
+.asset-detail-row .asset-set-file {
+  flex: none;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  border-bottom: 1px dashed var(--bd2);
+  border-radius: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.asset-detail-row .asset-detail-file:hover,
+.asset-detail-row .asset-set-file:hover {
+  color: var(--cyan2);
+}
+
+/* 右侧按钮组：靠右、窄宽度随行换行 */
+.asset-detail-row .asset-detail-rowacts {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.asset-detail-row .asset-detail-rowacts .mini {
+  flex: none;
+  padding: 1px 4px;
+}
+
+/* ===== 素材详情：撑满右栏 ===== */
+/* 详情态切掉卡片网格，让详情独占右栏（卡片态继续用上面的网格规则） */
+.asset-lib-cards.is-detail {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+/* 详情根：占满右栏高度，纵向排布（头部固定 + 正文滚动） */
+.asset-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 正文列表与行：宽度随父级撑满（宽栏下自然铺开） */
+.asset-detail-rows,
+.asset-detail-row {
+  width: 100%;
+}
+
+/* 行内标题输入框：宽栏下按剩余空间铺开（动作组仍靠右 margin-left:auto） */
+.asset-detail-row input[type="text"],
+.asset-detail-row .asset-detail-tin,
+.asset-detail-row .asset-set-title {
+  flex: 1 1 auto;
+}
+
+/* 关系行：与副标题同观感（mono / 10.5px / muted / 省略号） */
+.asset-detail-rel {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ===== 滚动条 ===== */
 ::-webkit-scrollbar {
   width: 10px;

@@ -13,7 +13,8 @@
  *   [3] @Tag —— 命中来源身上真实存在的 Tag 才注入；未登记进目录的 Tag 不算命中
  *   [4] 图像处理节点 —— 全局参考图仅在 @ 时进 spec.images（走真实 buildSpec）；直连线不受影响、不重复塞图
  *   [5] 判断节点 —— 开彩虹 + 明文 @ 双条件（走真实 playJudgeNode，抓发给模型的 prompt）
- *   [6] 六个注入点的接线与文案（源码静态核对：该过滤的过滤，该列全部的仍列全部） */
+ *   [6] 六个注入点的接线与文案（源码静态核对：该过滤的过滤，该列全部的仍列全部）
+ *   [7] 素材节点（kind "asset"）—— 广播命中按「内容条目标题」，@素材节点标题不再命中 */
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -256,6 +257,9 @@ const APP_FNS = [
   "usesGlobalRefs",
   "globalRefSources",
   "atTokensOf",
+  /* 命中判定与候选层同源的唯一真源：素材来源按「内容条目标题」判定，其余按节点标题
+     （task 2 起 mentionedRefSources 经它取可 @ 标题 —— 不抽它就会 ReferenceError） */
+  "refTitlesOfSource",
   "mentionedRefSources",
   "globalRefSourcesForRun",
   /* 引用解析与背景拼装 */
@@ -608,6 +612,51 @@ async function main() {
     guideEn.indexOf("image process") >= 0 &&
       /only global sources you actually/.test(guideEn),
     "节点指南（英）与中文版措辞对齐",
+  );
+
+  /* ===== [7] 素材节点（kind "asset"）：全局广播按「内容条目标题」判定 =====
+     素材节点本身不再是 @ 候选（refCandidates 只摊各端子内容条目），所以广播命中
+     同样必须按内容条目标题 —— @素材节点标题 既不命中也不注入。 */
+  console.log("\n[7] 素材来源：@ 命中按内容条目标题，@素材节点标题不再命中");
+  fixture();
+  S.wf.nodes.push({
+    id: "sAsset",
+    kind: "asset",
+    title: "角色素材",
+    assetId: "ast1",
+    items: [
+      { id: "i1", title: "人物设定", type: "text" },
+      { id: "i2", title: "立绘", type: "image" },
+    ],
+  });
+  S.wf.wires.push({ id: "wAsset", from: "sAsset", to: "gAll", toIndex: 5, fromIndex: 0 });
+  eqNum(F.globalRefSources("cText").length, 6, "素材节点仍进全局广播候选（@ 菜单列全部来源）");
+  eqNum(
+    gate("cText", "把 @角色素材 改写成三句话").length,
+    0,
+    "@素材节点标题 不再是命中口径 → 全局注入集合为空",
+  );
+  eqStr(
+    idsOf(gate("cText", "把 @人物设定 改写成三句话")),
+    "sAsset",
+    "@内容条目标题（文本）命中该素材来源",
+  );
+  eqStr(
+    idsOf(gate("cText", "把 @立绘 画出来")),
+    "sAsset",
+    "@素材的其它内容条目标题（图像）同样命中",
+  );
+  node("cText").prompt = "把 @角色素材 改写成三句话";
+  const r7 = bgOf("cText");
+  eqNum(r7.refs.unresolved.length, 1, "@素材节点标题 未解析（正文里被点名）");
+  ok(r7.bg.indexOf("【背景信息】") < 0, "不命中 → 素材一个字也不进背景信息");
+  node("cText").prompt = "把 @人物设定 改写成三句话";
+  const r7b = bgOf("cText");
+  eqNum(r7b.refs.unresolved.length, 0, "@内容条目标题 正常解析（不报未解析引用）");
+  eqStr(
+    r7b.refs.textSources.map((s) => s.id).join(","),
+    "sAsset",
+    "命中的素材来源完成注入（背景块按条目走）",
   );
 }
 

@@ -17,3 +17,6 @@
 @import url("./css/auth.css");
 /* 专家团：团队面板 / 项目分组 / 专家编辑 / 招募 / 对话（renderer/app-team.js） */
 @import url("./css/team.css");
+/* 画布左侧边栏「文件」页：Tabs / 目录选择器 / VSCode 式文件树 / 右键菜单
+   （renderer/app-sidebar-files.js）；亮色覆盖在文件末尾的 body.theme-light 段。 */
+@import url("./css/sidebar-files.css");

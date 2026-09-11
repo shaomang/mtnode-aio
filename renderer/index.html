@@ -152,10 +152,28 @@
 
 <div class="layout" id="layout">
   <aside class="sidebar" id="sidebar">
+    <!-- 顶部 Tabs：节点（默认）/ 文件（VSCode explorer 式文件树，见 renderer/app-sidebar-files.js） -->
+    <div class="side-tabs" id="sideTabs" role="tablist">
+      <button type="button" class="side-tab on" id="sideTabNodes" role="tab" data-i18n="节点">节点</button>
+      <button type="button" class="side-tab" id="sideTabFiles" role="tab" data-i18n="文件">文件</button>
+    </div>
     <div class="sidebar-search">
       <input id="sideFilter" type="text" data-i18n-placeholder="筛选节点、绘图或超级节点…" placeholder="筛选节点、绘图或超级节点…">
     </div>
     <div class="sidebar-tree" id="sideTree"></div>
+    <div class="side-files" id="sideFiles">
+      <div class="side-files-root">
+        <select id="sideFilesRoot" data-i18n-title="文件页显示的目录（按画布记忆）" title="文件页显示的目录（按画布记忆）"></select>
+        <button type="button" class="side-ico-btn" id="sideFilesOpen" data-i18n-title="在资源管理器中打开该文件夹" title="在资源管理器中打开该文件夹">📂</button>
+      </div>
+      <div class="side-files-tools">
+        <input id="sideFilesSearch" type="text" data-i18n-placeholder="搜索文件…" placeholder="搜索文件…">
+        <select id="sideFilesType" data-i18n-title="按类型筛选" title="按类型筛选"></select>
+        <button type="button" class="side-ico-btn" id="sideFilesRefresh" data-i18n-title="刷新文件树" title="刷新文件树">↻</button>
+        <button type="button" class="side-ico-btn side-txt-btn" id="sideFilesPaste" data-i18n="粘贴" data-i18n-title="把剪贴板里的文件粘贴到当前选中文件夹" title="把剪贴板里的文件粘贴到当前选中文件夹">粘贴</button>
+      </div>
+      <div class="side-files-tree" id="sideFilesTree"></div>
+    </div>
   </aside>
   <section class="pane">
     <div class="wf-wrap" id="wfWrap">
@@ -412,5 +430,10 @@
 <!-- 团队事实库（左栏专家列表末尾的入口）：路径解析 / 读写 / 建库；
      放在 app-review.js 之后，审阅对话框打开事实库时按调用期取 window.MTNodeFactLib -->
 <script src="app-factlib.js"></script>
+<!-- 画布左侧边栏「文件」页（VSCode explorer 式文件树 / 预览 / 重命名·复制·剪切·删除 / 拖入画布）：
+     自包含（renderer/app-sidebar-files.js + css/sidebar-files.css）。必须排在 app.js 之后——
+     它包装 renderSidebar，并在调用期取 openFilePeek（app-fileview.js）与
+     createNodesFromDroppedFiles / confirmDialog / toast（app.js）。 -->
+<script src="app-sidebar-files.js"></script>
 </body>
 </html>

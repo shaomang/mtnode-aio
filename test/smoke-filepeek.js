@@ -8,7 +8,11 @@
  *   renderer/app-fileview.js   toolFileRefs / toolFileRefsAbs / resolveToolPath /
  *                              fileviewLangOf / fileviewHighlight / fileviewBaseName（纯函数直接真跑）
  *                              dshToolFileBadges / fvBadgeEl（假 DOM 真跑：徽标、+N、点击）
- *                              ensureFilePeek / openFilePeek / closeFilePeek / 拖宽 / 三种视图（假 DOM 真跑）
+ *                              ensureFilePeek / openFilePeek / closeFilePeek / 拖宽 / 各种视图（假 DOM 真跑）
+ *                              编辑态：进编辑 / 撤销重做 / 保存 / 未保存改动先确认（假 DOM 真跑）
+ *                              编辑态的三层视图：行号槽 + 高亮镜像层 + 透明输入框（与只读代码视图同源）
+ *   renderer/app.js            linkifyEscapedText（抠出真函数体真跑：会话正文里的相对文件路径
+ *                              做成 data-mt-open="relpath"，点开走 openFilePeek 那条出口）
  *   renderer/app-assist.js     dshToolDetailsEl（抠出真函数体，在挂好 fileview 的上下文里真跑）
  *   renderer/app-plan.js       planLiveBlock / planPanelEl（同上，钉「🔧 名称」那行也挂徽标）
  *   renderer/app-codeedit.js   jsHighlightHtml（js / ts / json 的高亮必须与它同源，不是第二份词法）
@@ -33,6 +37,11 @@
  *       读不到各态 · 最近文件横条 · ✕ 与 Esc 两条显式关闭 · 左缘拖宽落 localStorage）
  *       + persistent 硬断言：整轮跑完，document / window 上出现的监听类型只能是拖拽与 resize，
  *       绝不允许 click / mousedown / pointerdown / blur 这类「点外部即关」
+ *   [4b] 编辑态：文本文件才给「编辑」入口（截断 / 图片 / 目录不给）· 编辑框里就是磁盘那份正文 ·
+ *       连打合并的撤销栈（Ctrl+Z / Ctrl+Y / 两个按钮）· Ctrl+S 走 fileWriteText 真落盘 ·
+ *       改过之后换文件 / 重读 / 收起面板 / 退出编辑一律先问一句「放弃改动」（确认框 stub）
+ *   [4c] 会话正文里的相对文件路径：认得出（多扩展名 / 中文标点后 / 反引号里）· 不误伤（单文件名 /
+ *       比值 / 认不出的扩展名 / URL 里的路径）· 点开落到右侧查看面板（真源补全 + stat 确认）
  *   [5] 接线与样式链：脚本注册顺序 · style.css @import · build.json 通配 ·
  *       运行时真实吐出的每个 class 在 CSS 里有规则（且 CSS 里没有 JS 从不用的死规则）· i18n
  * ============================================================ */
@@ -346,6 +355,10 @@ function loadFileview(opts) {
   const o = opts || {};
   const dom = makeDom(o);
   const toasts = [];
+  /* 应用内确认框的桩：只记「问了什么 / 按钮叫什么」，答案由用例用 setConfirmYes 指定。
+     编辑态的「未保存先问一句」全靠它，真实现（app.js confirmDialog）不在这一片里。 */
+  const confirms = [];
+  let confirmYes = !!o.confirmYes;
   const I18n = require(path.join(__dirname, "..", "renderer", "i18n.js"));
   const sandbox = {
     console,
@@ -373,6 +386,10 @@ function loadFileview(opts) {
     navigator: { clipboard: { writeText: () => Promise.resolve() } },
     I18n,
     toast: (m, k) => toasts.push([String(m), k]),
+    confirmDialog: (msg, o2) => {
+      confirms.push([String(msg), o2 || {}]);
+      return Promise.resolve(confirmYes);
+    },
   };
   vm.createContext(sandbox);
   if (o.withCodeedit) vm.runInContext(read("renderer/app-codeedit.js"), sandbox);
@@ -403,7 +420,17 @@ function loadFileview(opts) {
       sandbox,
     );
   const EV = (expr) => vm.runInContext(expr, sandbox);
-  return { EV, sandbox, dom, toasts, I18n };
+  return {
+    EV,
+    sandbox,
+    dom,
+    toasts,
+    I18n,
+    confirms,
+    setConfirmYes: (v) => {
+      confirmYes = !!v;
+    },
+  };
 }
 
 const FV = loadFileview({}); /* [1][2] 用：纯函数段，压根不需要 DOM */
@@ -830,18 +857,30 @@ console.log("\n[4] openFilePeek / closeFilePeek：假 DOM 真跑 + persistent �
 const FILES = {
   "E:\\ws\\src\\a.js": { size: 260, content: "const a = 1;\nfunction f(){ return a + 2; }\n// 尾行\n" },
   "E:\\ws\\src\\big.js": { size: 9 * 1024 * 1024, content: "x".repeat(9 * 1024 * 1024) },
+  /* 被 1 MB 那道闸截掉一截：正文不是全文 → 不许进编辑态（保存回去会抹掉后半截） */
+  "E:\\ws\\src\\cut.js": { size: 1800 * 601, content: ("y".repeat(600) + "\n").repeat(1800) },
   "E:\\ws\\src\\gone.js": null,
+  /* 打开之后磁盘被别人改过的场景：mtime 从 1000 变 2000（见 MTIME） */
+  "E:\\ws\\src\\watch.js": { size: 20, content: "let w = 1;\n" },
   "E:\\ws\\docs\\note.md": { size: 40, content: "# 标题\n\n正文 **粗** <b>x</b>\n" },
   "E:\\ws\\assets\\p.png": { size: 900, binary: true },
 };
+/* fileWriteText 的桩：真写盘不可能，但「写哪个路径、写什么正文」必须逐字记下来 */
+const WROTE = [];
+/* fileStat 的 mtime：默认 0（= 不认识），watch.js 给一个初值，用例中途改大 → 模拟别处写盘 */
+const MTIME = { "E:\\ws\\src\\watch.js": 1000 };
 const PV = loadFileview({
   sessionId: "pv",
   sessionWs: "E:\\ws",
   localStorage: { filePeekSize: JSON.stringify({ w: 700, wrap: false }) },
   api: {
     fileIsDir: (p) => Promise.resolve(String(p).slice(-3) === "src"),
-    fileStat: (p) => Promise.resolve(FILES[p] ? { ok: true, size: FILES[p].size } : { ok: false, error: "ENOENT" }),
+    fileStat: (p) => Promise.resolve(FILES[p] ? { ok: true, size: FILES[p].size, mtime: MTIME[p] || 0 } : { ok: false, error: "ENOENT" }),
     fileReadText: (p) => Promise.resolve(FILES[p] && !FILES[p].binary ? { exists: true, content: FILES[p].content } : { exists: false }),
+    fileWriteText: (p, c) => {
+      WROTE.push([String(p), String(c)]);
+      return Promise.resolve({ ok: true });
+    },
     assetMeta: () => Promise.resolve({ ok: true, bytes: 900, width: 512, height: 256 }),
     fileListDir: () => Promise.resolve({ ok: true, list: [{ rel: "src/a.js", size: 260 }, { rel: "src/deep/nested.js", size: 90 }, { rel: "docs/note.md", size: 40 }] }),
     shellShowItem: () => Promise.resolve(true),
@@ -894,10 +933,11 @@ const host = () => PV.EV("document.getElementById('filePeek')");
   ok(PV.EV("JSON.stringify(FV_PEEK)") !== "null", "面板运行态就位（版本与内容都在模块内，随节点无关）");
   const mdbtn = PV.EV("document.getElementById('filePeek').querySelector('#fpMdBtn')");
   EQS(mdbtn.hidden, false, "md 文件出「源码 / 渲染」切换按钮");
+  ok(!!one(host().querySelector("#fpScroll"), "fp-md"), "md 默认可渲染：打开即渲染视图（不是源码，复用应用内阅读器版式）");
+  EQS(PV.EV("document.getElementById('filePeek').querySelector('#fpMdBtn').textContent"), "源码", "默认渲染下按钮提示切到「源码」");
   PV.EV("document.getElementById('filePeek').querySelector('#fpMdBtn').fire('click')");
-  ok(!!one(host().querySelector("#fpScroll"), "fp-md"), "切「渲染」走 md 视图（复用应用内阅读器版式）");
-  PV.EV("document.getElementById('filePeek').querySelector('#fpMdBtn').fire('click')");
-  ok(!one(host().querySelector("#fpScroll"), "fp-md"), "切回「源码」仍是行号 + 高亮");
+  ok(!one(host().querySelector("#fpScroll"), "fp-md"), "点「源码」切回行号 + 高亮");
+  EQS(PV.EV("document.getElementById('filePeek').querySelector('#fpMdBtn').textContent"), "渲染", "源码视图下按钮提示切回「渲染」");
   EQS(PV.EV("document.getElementById('filePeek').querySelector('#fpWrapBtn').hidden"), false, "md 源码视图还是代码视图：折行按钮留着");
 
   PV.EV("openFilePeek('E:\\\\ws\\\\src\\\\big.js',{mode:'read'})");
@@ -979,6 +1019,203 @@ const host = () => PV.EV("document.getElementById('filePeek')");
   EQS(winTypes.join(","), "resize", "window 上只有 resize（跟随顶栏 / 状态栏重算边界），没有任何点外部关闭监听");
   PV.dom.doc.fire("click", { target: PV.dom.doc.body });
   ok(PV.EV("filePeekIsOpen()") === true, "开着面板时补一发 document click 也没被关掉（persistent）");
+
+  /* ═══════════════ [4b] 编辑态：编辑 / 撤销重做 / 保存 / 未保存先问一句 ═══════════════ */
+  console.log("\n[4b] 编辑态：只有文本文件能进 · 撤销重做 · Ctrl+S 落盘 · 未保存改动先确认");
+  const tick = (n) => {
+    let p = Promise.resolve();
+    for (let i = 0; i < (n || 4); i++) p = p.then(() => new Promise((r) => setImmediate(r)));
+    return p;
+  };
+  const q = (id) => PV.EV("document.getElementById('filePeek').querySelector('#" + id + "')");
+  const scrollerEl = () => PV.EV("document.getElementById('filePeek').querySelector('#fpScroll')");
+  const BASE = "const a = 1;\nfunction f(){ return a + 2; }\n// 尾行\n";
+  const EDITED = "const a = 1;\n// 改过\n";
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  PV.EV("openFilePeek('E:\\\\ws\\\\src\\\\a.js',{mode:'read',line:2})");
+  await tick(4);
+  EQS(q("fpEditBtn").hidden, false, "文本文件头部给「编辑」入口");
+  EQS(q("fpEditBtn").textContent, "编辑", "只读态这颗按钮写「编辑」");
+  ok(q("fpSaveBtn").hidden === true && q("fpUndoBtn").hidden === true && q("fpRedoBtn").hidden === true, "只读态不摆保存 / 撤销 / 重做（不留按了没反应的按钮）");
+  q("fpEditBtn").fire("click");
+  const ta = one(scrollerEl(), "fp-editor");
+  ok(!!ta && scrollerEl().__cls.has("fp-vedit"), "点「编辑」→ 编辑视图：输入框 + 行号槽 + 高亮镜像层（与只读代码视图同一套样式，不再一进编辑就丢着色）");
+  const mirror = one(scrollerEl(), "fp-mirror");
+  ok(!!mirror && mirror.__cls.has("fp-code"), "编辑态有高亮镜像层 .fp-code.fp-mirror（复用只读代码层的字体 / 内边距 / 配色，不另起一份样式）");
+  ok(!!one(scrollerEl(), "fp-gutter"), "编辑态保留行号槽（同一个 .fp-gutter，不是只读才有）");
+  ok(!!one(scrollerEl(), "fp-edcols"), "输入框与镜像层装在同一个 .fp-edcols 里（position:absolute; inset:0 → 两层同盒，度量才不会错位）");
+  ok(/<span class="fp-l">/.test(mirror.innerHTML) && /class="jsl-/.test(mirror.innerHTML), "镜像层一行一块 + 真着色（js 词法吐出 .jsl-* token）");
+  EQS(one(scrollerEl(), "fp-gutter").textContent, "1\n2\n3\n4", "行号槽行数与正文逐行同数");
+  EQS(ta.value, BASE, "编辑框里就是磁盘上那份正文（未经任何改写）");
+  EQS(q("fpEditBtn").textContent, "取消", "编辑态里这颗按钮变成「取消」（退出编辑的唯一入口）");
+  EQS(q("fpMdBtn").hidden, true, "编辑态收起「源码 / 渲染」切换（正在改的就是源码）");
+  EQS(q("fpWrapBtn").hidden, false, "编辑态留着「折行」（长行不给硬折，按偏好来）");
+  EQS(WROTE.length, 0, "进编辑本身不写盘（写盘只发生在「保存」）");
+
+  /* —— 撤销 / 重做：自己那叠快照 + 连打合并 —— */
+  ta.value = EDITED;
+  ta.fire("input");
+  ok(host().__cls.has("fp-dirty") && q("fpName").textContent === "a.js •", "一改就标未保存（文件名挂点 + 头部描边）");
+  EQS(q("fpSaveBtn").disabled, false, "有改动时「保存」可点");
+  EQS(q("fpUndoBtn").disabled, false, "有改动时「撤销」可点");
+  /* 重画是节流的（每敲一个字都重扫全文太亏）：等一小会儿，镜像层必须跟上刚敲的正文 */
+  await sleep(160);
+  ok(mirror.innerHTML.indexOf("改过") >= 0 && /class="jsl-/.test(mirror.innerHTML), "打字后镜像层跟着重画（新敲进去的那行照样带 .jsl-* 着色）");
+  const undone = ta.fire("keydown", { key: "z", ctrlKey: true });
+  ok(undone.__pd > 0, "Ctrl+Z 由面板自己接管（preventDefault，不让浏览器原生栈来抢）");
+  EQS(ta.value, BASE, "Ctrl+Z 撤销回原样");
+  ok(mirror.innerHTML.indexOf("改过") < 0 && mirror.innerHTML.indexOf("function") >= 0, "撤销同时立刻重画镜像层（不留上一版的旧高亮）");
+  EQS(q("fpUndoBtn").disabled, true, "撤销到底：按钮变灰（不是点了没反应）");
+  EQS(q("fpSaveBtn").disabled, true, "回到原样 = 没有未保存改动，保存置灰");
+  EQS(q("fpRedoBtn").disabled, false, "重做栈里有东西：重做可点");
+  ta.fire("keydown", { key: "y", ctrlKey: true });
+  EQS(ta.value, EDITED, "Ctrl+Y 也能重做（与按钮同一份实现）");
+  q("fpUndoBtn").fire("click");
+  EQS(ta.value, BASE, "「撤销」按钮与 Ctrl+Z 同一份实现");
+  q("fpRedoBtn").fire("click");
+  EQS(ta.value, EDITED, "「重做」按钮与 Ctrl+Y 同一份实现");
+  EQS(q("fpRedoBtn").disabled, true, "重做到底后按钮变灰");
+
+  /* —— 编辑态里的两个顺手动作：折行落到编辑框、Esc 只退出编辑不收面板 —— */
+  q("fpWrapBtn").fire("click");
+  EQS(ta.getAttribute("wrap"), "soft", "编辑态点「折行」→ 落到编辑框上（不是重画一遍把光标弹回文首）");
+  ok(ta.__cls.has("fp-edwrap"), "折行同时挂上 .fp-edwrap（CSS 那条软折规则）");
+  q("fpWrapBtn").fire("click");
+  EQS(ta.getAttribute("wrap"), "off", "再点一次切回不折行（横向滚动，长行不被硬折）");
+
+  /* —— 保存：走 fileWriteText —— */
+  ta.fire("keydown", { key: "s", ctrlKey: true });
+  await tick(6);
+  EQS(JSON.stringify(WROTE.slice(-1)), JSON.stringify([["E:\\ws\\src\\a.js", EDITED]]), "Ctrl+S 走 fileWriteText 真落盘（路径 + 正文都对）");
+  EQS(PV.toasts.slice(-1)[0][0], "已保存", "保存成功给一句反馈");
+  ok(!host().__cls.has("fp-dirty") && q("fpName").textContent === "a.js", "保存后未保存标记撤掉（点与描边都收）");
+  EQS(PV.EV("FV_PEEK.raw"), EDITED, "面板的正文基准换成刚保存的那一份（复制 / 重做都以它为准）");
+
+  /* —— 未保存改动：退出编辑 / 换文件 / 收起面板前都要先问一句 —— */
+  ta.value = "改了一半";
+  ta.fire("input");
+  PV.setConfirmYes(false);
+  q("fpEditBtn").fire("click");
+  await tick(2);
+  EQS(PV.confirms.slice(-1)[0][0], "有未保存的修改，退出编辑会丢弃这些改动。", "「取消」前先问一句（走应用内确认框，不是原生 alert）");
+  EQS(PV.confirms.slice(-1)[0][1].okText, "放弃改动", "确认框主按钮写「放弃改动」");
+  EQS(PV.confirms.slice(-1)[0][1].danger, true, "丢弃改动是危险动作：主按钮按 danger 画");
+  ok(PV.EV("FV_PEEK.editing") === true, "用户没确认 → 留在编辑态，字一个不丢");
+  /* 同一次「没确认」里再补一刀：Esc 在编辑框里也只走「退出编辑」，不收面板 */
+  const escEv = ta.fire("keydown", { key: "Escape" });
+  ok(escEv.__sp > 0 && PV.EV("filePeekIsOpen()") === true, "编辑框里的 Esc 被拦下（stopPropagation）：不会顺手把整个面板关掉");
+  EQS(PV.confirms.slice(-1)[0][0], "有未保存的修改，退出编辑会丢弃这些改动。", "Esc 问的还是「退出编辑会丢弃」这一句");
+  await tick(2);
+  ok(PV.EV("FV_PEEK.editing") === true, "Esc 没确认 → 同样留在编辑态");
+  PV.setConfirmYes(true);
+  q("fpEditBtn").fire("click");
+  await tick(2);
+  ok(PV.EV("FV_PEEK.editing") === false && !!one(scrollerEl(), "fp-code"), "确认放弃 → 退回只读代码视图");
+  EQS(PV.EV("FV_PEEK.raw"), EDITED, "放弃的是编辑框里的改动：正文仍是保存过的那一份");
+
+  /* —— 换文件：脏就先确认，确认后才真切 —— */
+  PV.EV("openFilePeek('E:\\\\ws\\\\docs\\\\note.md',{mode:'read'})");
+  await tick(4);
+  q("fpEditBtn").fire("click");
+  ok(!!one(scrollerEl(), "fp-editor"), "md 也能编辑（改的就是源码；退出后回渲染视图）");
+  const noteTa = one(scrollerEl(), "fp-editor");
+  noteTa.value = "# 标题\n改过的正文\n";
+  noteTa.fire("input");
+  EQS(PV.EV("openFilePeek('E:\\\\ws\\\\src\\\\a.js',{mode:'read'})"), true, "换文件时还有未保存改动：请求受理（返回 true）但先弹确认，不直接丢字");
+  EQS(PV.confirms.slice(-1)[0][0], "有未保存的修改，换文件会丢弃这些改动。", "换文件前问的是「换文件会丢弃」这一句");
+  EQS(PV.EV("FV_PEEK.path"), "E:\\ws\\docs\\note.md", "没确认之前还停在原文件上");
+  await tick(6);
+  EQS(PV.EV("FV_PEEK.path"), "E:\\ws\\src\\a.js", "确认放弃后才真的切过去");
+  ok(PV.EV("FV_PEEK.editing") === false, "换过来的新文件是只读态（不继承上一个文件的编辑态）");
+
+  /* —— 收起面板：脏就先确认 —— */
+  q("fpEditBtn").fire("click");
+  const ta2 = one(scrollerEl(), "fp-editor");
+  ta2.value = "又改了一半";
+  ta2.fire("input");
+  PV.setConfirmYes(false);
+  q("fpCloseBtn").fire("click");
+  await tick(2);
+  EQS(PV.confirms.slice(-1)[0][0], "有未保存的修改，关闭面板会丢弃这些改动。", "✕ 收起前先问一句");
+  ok(PV.EV("filePeekIsOpen()") === true, "没确认 → 面板不收（字还在编辑框里）");
+  PV.setConfirmYes(true);
+  q("fpCloseBtn").fire("click");
+  await tick(2);
+  ok(PV.EV("filePeekIsOpen()") === false, "确认放弃后才收起");
+
+  /* —— 打开之后磁盘被别人改过：保存前先问一句，默认不覆盖 —— */
+  PV.EV("openFilePeek('E:\\\\ws\\\\src\\\\watch.js',{mode:'read'})");
+  await tick(4);
+  q("fpEditBtn").fire("click");
+  const wta = one(scrollerEl(), "fp-editor");
+  wta.value = "let w = 2;\n";
+  wta.fire("input");
+  MTIME["E:\\ws\\src\\watch.js"] = 2000; /* 别处（另一个编辑器 / 正在跑的 Agent）写过了 */
+  const wroteBefore = WROTE.length;
+  PV.setConfirmYes(false);
+  q("fpSaveBtn").fire("click");
+  await tick(6);
+  EQS(PV.confirms.slice(-1)[0][0], "这个文件在打开后被别的程序改过，保存会覆盖对方的改动。", "打开后 mtime 变了：保存前先问一句，不默默覆盖别人的改动");
+  EQS(WROTE.length, wroteBefore, "用户没同意覆盖 → 一个字节都没写");
+  ok(PV.EV("FV_PEEK.editing") === true && PV.EV("FV_PEEK.dirty") === true, "被拦下后仍留在编辑态，改动还在（不是丢弃）");
+  PV.setConfirmYes(true);
+  q("fpSaveBtn").fire("click");
+  await tick(6);
+  EQS(WROTE.length, wroteBefore + 1, "同意覆盖后才真的写盘");
+
+  /* —— 哪些文件不给编辑入口 —— */
+  PV.EV("openFilePeek('E:\\\\ws\\\\src\\\\cut.js',{mode:'read'})");
+  await tick(4);
+  EQS(q("fpEditBtn").hidden, true, "被体积闸截过一截的文件不给编辑（那份正文不是全文，存回去会抹掉后半截）");
+  ok(PV.EV("FV_PEEK.editable") === false && /只显示前/.test(PV.EV("FV_PEEK.note")), "同时用提示条说清「只显示前 1 MB」");
+  PV.EV("openFilePeek('E:\\\\ws\\\\assets\\\\p.png',{mode:'read'})");
+  await tick(4);
+  EQS(q("fpEditBtn").hidden, true, "图片没有编辑入口（编辑只给文本）");
+  PV.EV("openFilePeek('E:\\\\ws\\\\src',{mode:'dir'})");
+  await tick(4);
+  EQS(q("fpEditBtn").hidden, true, "目录视图没有编辑入口");
+  EQS(WROTE.length, 2, "整轮只有两次写盘，都是显式点了「保存」（进编辑 / 切视图 / 浏览 / 被拦下的那次都不写）");
+
+  /* ═══════════════ [4c] 会话正文里的相对文件路径 → 点开就是右侧查看面板 ═══════════════ */
+  console.log("\n[4c] 会话正文里的相对文件路径：识别 · 不误伤 · 点开走查看面板");
+  {
+    const APP = read("renderer/app.js");
+    const box = { I18n: { t: (s) => s }, JSON, RegExp, String, Object, Array, Set, Map, console };
+    vm.createContext(box);
+    const extM = APP.match(/const MT_RELPATH_EXT =[\s\S]*?;\n/);
+    ok(!!extM, "app.js 里有 MT_RELPATH_EXT 扩展名白名单（不是随手一个 \\.[a-z]+$ 就认）");
+    vm.runInContext(extM[0], box);
+    /* 这两个函数体里有正则字面量（含字符类里的 } ），fnBody 的花括号配平会被它骗到，
+       所以按「行首 } 收尾」整段取（app.js 里这两个顶层函数就是这么排的）。 */
+    const fnRaw = (name) => {
+      const m = APP.match(new RegExp("\\nfunction " + name + "[\\s\\S]*?\\n\\}\\n"));
+      if (!m) throw new Error("找不到函数：" + name);
+      return m[0];
+    };
+    vm.runInContext(fnRaw("stripLinkTrailPunct"), box);
+    vm.runInContext(fnRaw("linkifyEscapedText"), box);
+    const L = (s) => vm.runInContext("linkifyEscapedText(" + JSON.stringify(s) + ")", box);
+    const A = (raw) => '<a class="mt-link" href="' + raw + '" data-mt-open="relpath"';
+    HAS(L("改动文件：renderer/app-fileview.js（新）"), A("renderer/app-fileview.js"), "正文里的 renderer/app-fileview.js 变成可点链接（data-mt-open=relpath）");
+    HAS(L("见 dsh/DESIGN.md。"), A("dsh/DESIGN.md"), "句末带中文句号的相对路径照样认得出（尾标点不吞进路径）");
+    HAS(L("看 src/main.rs，再看 a/b.cpp"), A("src/main.rs"), "多种扩展名都认（不止 .js / .md）");
+    HAS(L("看 src/main.rs，再看 a/b.cpp"), A("a/b.cpp"), "同一条正文里的多个路径各成一条链接");
+    HAS(L("`renderer/app-fileview.js` 反引号里"), A("renderer/app-fileview.js"), "markdown 行内码里的路径也认（粘贴给用户的路径多半在反引号里）");
+    EQS(L("app.js 单说一个文件名").indexOf("<a "), -1, "没有目录层的 app.js 不做链接（普通词不该被点满屏）");
+    EQS(L("比值 3/4 与 a/b.unknownext").indexOf("<a "), -1, "认不出的扩展名不做链接（白名单说了算）");
+    EQS(L("https://github.com/a/b.js").indexOf(A("a/b.js")), -1, "URL 里的路径不被切出来当相对路径");
+    EQS(L("目录 renderer/css 与 src/").indexOf("<a "), -1, "目录（没有扩展名）不做链接");
+    HAS(L("E:\\dev\\x\\renderer\\app.js"), 'data-mt-open="path"', "绝对路径仍走原来那一支（相对路径这一支不抢它的活）");
+    HAS(APP, 'if (kind === "relpath")', "openContentRef 里真有 relpath 分支");
+    HAS(APP, 'openFilePeek(abs, { mode: "read" })', "relpath 点开的就是右侧「文件查看」面板（与工具条文件名同一个出口）");
+    ok(
+      /function resolveChatRelPath[\s\S]{0,600}?api\.fileStat/.test(APP) &&
+      /function chatRelPathBases[\s\S]{0,700}?sfDevRoots/.test(APP),
+      "相对路径按真源补全（左栏文件页根 / 画布工作目录 / 开发节点项目根），并 stat 确认文件真在才开",
+    );
+    HAS(APP, "找不到这个文件（不在当前工作目录里）", "一个基准都找不到时给一句提示，不猜目录、不乱开");
+  }
 
   /* ═══════════════ [5] 接线与样式链 ═══════════════ */
   console.log("\n[5] 脚本注册顺序 · style.css @import · CSS 规则对账 · build.json 通配 · i18n");

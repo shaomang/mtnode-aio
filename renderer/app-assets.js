@@ -9,9 +9,11 @@
  * 库还在，库里改了所有引用它的画布重开即生效。
  *
  * 本文件负责顶栏入口与「素材库」主对话框（左右栏）：
- *   左＝分类菜单（只显示名称、无图标；新建 / 重命名 / 删除文件夹，右键菜单）
- *   右＝所选分类下的素材卡片（显示名 / 描述 / 内容数 · 设置 / 插入到画布 / 删除，
- *       右键「移动到分类」）+ 工具条（新建素材 · 上传为新素材 · 刷新 · 更改根目录）
+ *   左＝分类 + 素材一体树（分类行可展开 ▸/▾，展开后列出该类下的素材；点素材＝右栏看它）
+ *   右＝所选素材的内容详情（顶部四项动作：设置 / 复制到画布 / 删除 / 打开文件夹，正文＝
+ *       可编辑标题、可换文件、可编辑正文、可增删与拖动排序的内容条目）；
+ *       没选素材时＝该分类下的素材卡片（设置 / 插入到画布 / 删除 + 右键「移动到分类」）
+ *       ＋ 工具条（新建素材 · 上传为新素材 · 刷新 · 更改根目录）
  * 以及「素材设置」框（openAssetSettings）：改显示名 / 描述，内容条目的增删改与重排 ——
  * 条目就是素材节点的一对端子，标题即端子名、顺序即端子序，全部先落库再回贴到画布节点，
  * 所以改名与拖序都不会把已连的数据线甩到别的条目上（口径见 app.js · assetItemPerm）。
@@ -34,6 +36,9 @@ const ASSET_LIB = {
   root: "",
   scan: { tree: [], categories: [], assets: [] },
   selCat: "", // 当前选中分类 rel（"" ＝ 根目录）
+  selAssetId: "", // 当前选中的素材 id（"" ＝ 未选素材，右栏回落分类卡片）
+  expanded: {}, // 左树已展开的分类 rel（对象当集合用；不引 Set，免得混进快照）
+  dragFrom: -1, // 右栏详情条目行的拖动源行号（与设置框的 ASSET_SET.dragFrom 各管一摊）
   onPick: null, // pick 模式回调：选中一个素材
   busy: false, // 一次只跑一个写盘动作，避免连点错位
   scanned: false, // 本次会话是否成功扫过（失联判定的前提，没扫过不下结论）
@@ -571,6 +576,10 @@ async function openAssetsLibrary() {
   ASSET_LIB.mode = "manage";
   ASSET_LIB.onPick = null;
   if (!assetCatExists(ASSET_LIB.selCat)) ASSET_LIB.selCat = "";
+  /* 左树默认展开：当前分类 ＋ 所选素材所在分类（选中素材时一眼看见它在哪一层） */
+  ASSET_LIB.expanded[String(ASSET_LIB.selCat || "")] = true;
+  const selA = ASSET_LIB.selAssetId ? assetSummaryById(ASSET_LIB.selAssetId) : null;
+  if (selA) ASSET_LIB.expanded[String(selA.catRel || "")] = true;
   ASSET_LIB.open = true;
   ensureAssetsDlg().classList.add("on");
   paintAssetLib();
@@ -589,6 +598,10 @@ async function openAssetPicker(opts) {
   ASSET_LIB.mode = "pick";
   ASSET_LIB.onPick = typeof opts.onPick === "function" ? opts.onPick : null;
   if (!assetCatExists(ASSET_LIB.selCat)) ASSET_LIB.selCat = "";
+  /* 选择器永远从分类卡片视图开始：详情页那四项动作里没有「绑定」（绑定只从卡片 / 左树点）
+     —— 留着上一次的 selAssetId 会开出一个没有绑定入口的页面 */
+  ASSET_LIB.selAssetId = "";
+  ASSET_LIB.expanded[String(ASSET_LIB.selCat || "")] = true;
   ASSET_LIB.open = true;
   ensureAssetsDlg().classList.add("on");
   paintAssetLib();
@@ -639,10 +652,29 @@ function paintAssetLib() {
   newCat.onclick = () => assetMakeCategory(ASSET_LIB.selCat);
   paintAssetTree(host.querySelector("#assetLibTree"));
   paintAssetToolbar(host.querySelector("#assetLibToolbar"));
-  paintAssetCards(host.querySelector("#assetLibCards"));
+  /* 右栏：选中了素材 → 它的内容详情；否则维持分类卡片视图。
+     pick 模式（绑定选择器）永远走卡片 —— 详情页的动作里没有「绑定」。 */
+  const cardsHost = host.querySelector("#assetLibCards");
+  const sel =
+    ASSET_LIB.mode === "manage" && ASSET_LIB.selAssetId
+      ? assetSummaryById(ASSET_LIB.selAssetId)
+      : null;
+  /* 详情态给 #assetLibCards 加 is-detail：切掉卡片网格（含 minmax(258px) 那一列），
+     让详情独占右栏宽度；回到卡片视图时移除该类，网格规则照旧生效。 */
+  if (sel) {
+    cardsHost.classList.add("is-detail");
+    paintAssetDetail(cardsHost, sel);
+  } else {
+    cardsHost.classList.remove("is-detail");
+    if (ASSET_LIB.selAssetId) ASSET_LIB.selAssetId = ""; // 素材没了（被删 / 换了根目录）→ 回落卡片
+    paintAssetCards(cardsHost);
+  }
   paintAssetFoot(host.querySelector("#assetLibFoot"));
 }
 
+/* 左树：分类行（可展开 ▸/▾）＋ 展开后挂在它下面的素材行（一体树）。
+   分类层级仍按 rel 逐段排序后扁平列出（与原有口径一致，不依赖后端返回序）；
+   展开态记在 ASSET_LIB.expanded。点分类＝选中该分类（右栏卡片），点素材＝选中它（右栏内容详情）。 */
 function paintAssetTree(host) {
   host.innerHTML = "";
   const cats = (ASSET_LIB.scan.categories || []).slice();
@@ -658,15 +690,57 @@ function paintAssetTree(host) {
     }
     return 0;
   });
+  const isOpen = (rel) => !!ASSET_LIB.expanded[String(rel || "")];
+  /* 素材行（挂在展开的分类下面）：点它＝右栏看这份素材的内容 */
+  const assetRowOf = (a, depth) => {
+    const on = String(ASSET_LIB.selAssetId || "") === String(a.id || "");
+    const row = assetEl("div", "asset-lib-assetrow" + (on ? " on" : ""));
+    row.style.paddingLeft = 8 + depth * 14 + "px";
+    row.appendChild(
+      assetEl("span", "asset-lib-assetname", a.displayName || a.folder || ""),
+    );
+    row.appendChild(
+      assetEl("span", "asset-lib-catchip", String(Number(a.itemCount) || 0)),
+    );
+    row.title =
+      assetItemsSummary(a) +
+      "\n" +
+      I18n.t("文件夹：") +
+      (a.rel || "") +
+      "\n" +
+      I18n.t("点击查看内容（可编辑 / 更换）");
+    row.onclick = () => {
+      /* 选择器里点素材＝直接绑定（与卡片上「绑定这个素材」同一结果） */
+      if (ASSET_LIB.mode === "pick") return assetPickAndBind(a);
+      ASSET_LIB.selAssetId = String(a.id || "");
+      ASSET_LIB.selCat = String(a.catRel || "");
+      ASSET_LIB.expanded[String(a.catRel || "")] = true;
+      paintAssetLib();
+    };
+    return row;
+  };
   const rowOf = (rel, name, depth, count) => {
-    const on = String(ASSET_LIB.selCat || "") === String(rel || "");
+    const on =
+      String(ASSET_LIB.selCat || "") === String(rel || "") && !ASSET_LIB.selAssetId;
     const row = assetEl("div", "asset-lib-catrow" + (on ? " on" : ""));
     row.style.paddingLeft = 8 + depth * 14 + "px";
+    /* ▸/▾ 只管展开 / 收起，不冒泡到「选中这个分类」 */
+    const caret = assetEl("span", "asset-lib-caret", isOpen(rel) ? "▾" : "▸");
+    caret.title = isOpen(rel) ? I18n.t("收起分类") : I18n.t("展开分类");
+    caret.onclick = (ev) => {
+      ev.stopPropagation();
+      if (isOpen(rel)) delete ASSET_LIB.expanded[String(rel || "")];
+      else ASSET_LIB.expanded[String(rel || "")] = true;
+      paintAssetLib();
+    };
+    row.appendChild(caret);
     row.appendChild(assetEl("span", "asset-lib-catname", name));
     row.appendChild(assetEl("span", "asset-lib-catchip", String(count)));
     row.title = assetCatLabel(rel);
     row.onclick = () => {
       ASSET_LIB.selCat = rel;
+      ASSET_LIB.selAssetId = "";
+      ASSET_LIB.expanded[String(rel || "")] = true; // 点分类顺手展开，直接看见里面的素材
       paintAssetLib();
     };
     row.oncontextmenu = (ev) => {
@@ -676,13 +750,19 @@ function paintAssetTree(host) {
     };
     return row;
   };
+  /* 一个分类块 = 分类行 ＋（展开时）它下面的素材行 */
+  const block = (rel, name, depth, count) => {
+    host.appendChild(rowOf(rel, name, depth, count));
+    if (!isOpen(rel)) return;
+    for (const a of assetsInCat(rel)) host.appendChild(assetRowOf(a, depth + 1));
+  };
   const rootCount = (ASSET_LIB.scan.assets || []).filter(
     (a) => !String(a.catRel || ""),
   ).length;
-  host.appendChild(rowOf("", I18n.t("全部素材（根目录）"), 0, rootCount));
+  block("", I18n.t("全部素材（根目录）"), 0, rootCount);
   for (const c of cats) {
     const depth = String(c.rel || "").split("/").length - 1;
-    host.appendChild(rowOf(c.rel, c.name, depth, Number(c.assetCount) || 0));
+    block(c.rel, c.name, depth, Number(c.assetCount) || 0);
   }
   if (!cats.length) {
     const tip = assetEl(
@@ -691,6 +771,17 @@ function paintAssetTree(host) {
       I18n.t("还没有分类：点上方「＋ 新建文件夹」，或直接在资源管理器里建目录。"),
     );
     host.appendChild(tip);
+  }
+}
+
+/* pick 模式（素材节点「绑定」选择器）：选中一个素材即回调并收框 */
+function assetPickAndBind(a) {
+  const cb = ASSET_LIB.onPick;
+  closeAssetLib();
+  if (cb) {
+    try {
+      cb(a);
+    } catch (_) {}
   }
 }
 
@@ -788,15 +879,7 @@ function assetCard(a, pick) {
   const acts = assetEl("div", "asset-lib-cardacts");
   if (pick) {
     const b = assetBtn(I18n.t("绑定这个素材"), "primary", I18n.t("用该素材绑定当前节点"));
-    b.onclick = () => {
-      const cb = ASSET_LIB.onPick;
-      closeAssetLib();
-      if (cb) {
-        try {
-          cb(a);
-        } catch (_) {}
-      }
-    };
+    b.onclick = () => assetPickAndBind(a);
     card.appendChild(acts.appendChild(b));
     card.ondblclick = () => b.click();
     return card;
@@ -816,7 +899,7 @@ function assetCard(a, pick) {
     I18n.t("在当前画布创建一个绑定该素材的「素材」节点（库内容不变）"),
   );
   ins.onclick = () => assetInsertToCanvas(a);
-  const del = assetBtn(I18n.t("删除"), "danger", I18n.t("删除素材（移进素材库回收站，不实删）"));
+  const del = assetBtn(I18n.t("删除"), "danger", I18n.t("删除素材（删进系统回收站，可在资源管理器里还原）"));
   del.onclick = () => assetDeleteAsset(a);
   acts.append(st, ins, del);
   card.appendChild(acts);
@@ -834,6 +917,97 @@ function assetCard(a, pick) {
   return card;
 }
 
+/* 右栏 · 选中素材的内容详情：
+   顶部四项动作（设置 / 复制到画布 / 删除 / 打开文件夹，与卡片上那几项同一份实现）；
+   正文＝内容条目列表（标题可改、可换文件、可编辑正文、可增删与拖动排序），
+   写入一律走与「素材设置」同一份写库路径（assets* IPC），只是编辑目标换成这份素材。 */
+function paintAssetDetail(host, a) {
+  host.innerHTML = "";
+  const wrap = assetEl("div", "asset-detail");
+  const head = assetEl("div", "asset-detail-head");
+  /* 头部左列：标题 / 副标题 / 文件夹行 —— class 取 components.css 里真实存在的那几个
+     （.asset-detail-titlewrap / .asset-detail-title / .asset-detail-sub / .asset-detail-rel） */
+  const titleWrap = assetEl("div", "asset-detail-titlewrap");
+  titleWrap.appendChild(
+    assetEl("b", "asset-detail-title", a.displayName || a.folder || ""),
+  );
+  titleWrap.appendChild(
+    assetEl(
+      "div",
+      "asset-detail-sub",
+      assetItemsSummary(a) + (a.desc ? "　" + a.desc : ""),
+    ),
+  );
+  const relLine = assetEl(
+    "div",
+    "asset-detail-rel",
+    I18n.t("文件夹：") + (a.rel || ""),
+  );
+  relLine.title = String(ASSET_LIB.root || "") + "/" + String(a.rel || "");
+  titleWrap.appendChild(relLine);
+  const acts = assetEl("div", "asset-detail-acts");
+  const st = assetBtn(
+    I18n.t("设置"),
+    null,
+    I18n.t("改显示名称 / 描述，管理内容条目（每条＝节点的一对端子）"),
+  );
+  st.onclick = () => {
+    if (typeof openAssetSettings === "function") openAssetSettings(a);
+    else toast(I18n.t("素材设置界面尚未就绪"), "warn");
+  };
+  const ins = assetBtn(
+    I18n.t("复制到画布"),
+    "primary",
+    I18n.t("在当前画布创建一个绑定该素材的「素材」节点（库内容不变）"),
+  );
+  ins.onclick = () => assetInsertToCanvas(a);
+  const del = assetBtn(
+    I18n.t("删除"),
+    "danger",
+    I18n.t("删除素材（删进系统回收站，可在资源管理器里还原）"),
+  );
+  del.onclick = () => assetDeleteAsset(a);
+  const open = assetBtn(
+    I18n.t("打开文件夹"),
+    null,
+    I18n.t("在文件资源管理器中打开这个素材的文件夹"),
+  );
+  open.onclick = () => assetOpenPath(a.rel);
+  acts.append(st, ins, del, open);
+  head.append(titleWrap, acts);
+  wrap.appendChild(head);
+
+  /* 正文：条目工具条 ＋ 条目列表（行渲染与写库都与「素材设置」共用，只是带上本素材） */
+  const body = assetEl("div", "asset-detail-body");
+  body.appendChild(assetAddItemBar(a));
+  const rows = assetSetRows(a);
+  const list = assetEl("div", "asset-set-rows asset-detail-rows");
+  if (!rows.length) {
+    list.appendChild(
+      assetEl(
+        "div",
+        "asset-lib-empty",
+        I18n.t(
+          "这个素材还没有内容：点上方「＋ 文本 / ＋ 图像 / ＋ 音频 / ＋ 视频」添加（标题＝节点上的端子名，顺序＝端子顺序）。",
+        ),
+      ),
+    );
+  } else {
+    const ctx = { asset: a, holder: ASSET_LIB, repaint: () => paintAssetLib() };
+    for (let i = 0; i < rows.length; i++)
+      list.appendChild(assetSetRow(rows[i], i, rows.length, ctx));
+  }
+  body.appendChild(list);
+  /* 容器空白处落点＝移到末尾（与素材设置框同一口径） */
+  assetWireListDrop(
+    list,
+    ASSET_LIB,
+    (from, to) => assetSetMoveItem(from, to, a),
+  );
+  wrap.appendChild(body);
+  host.appendChild(wrap);
+}
+
 function paintAssetFoot(host) {
   host.innerHTML = "";
   const cats = (ASSET_LIB.scan.categories || []).length;
@@ -842,13 +1016,7 @@ function paintAssetFoot(host) {
     assetEl(
       "span",
       "asset-lib-fact",
-      I18n.t("分类 ") +
-        cats +
-        " · " +
-        I18n.t("素材 ") +
-        assets +
-        " · " +
-        I18n.t("删除的内容进根目录 .trash（不实删）"),
+      I18n.t("分类 ") + cats + " · " + I18n.t("素材 ") + assets,
     ),
   );
   host.appendChild(assetEl("span", "asset-lib-spacer"));
@@ -950,7 +1118,7 @@ async function assetRemoveCategory(rel, name) {
     return;
   }
   const sure = await confirmDialog(
-    I18n.t("删除空分类「{name}」？\n\n文件夹会移进素材库根目录的 .trash（不会真的删掉），在资源管理器里可手工找回。", {
+    I18n.t("删除空分类「{name}」？\n\n文件夹会删进系统回收站（可在资源管理器里还原）。", {
       name: name,
     }),
     { title: I18n.t("删除分类"), danger: true, okText: I18n.t("删除") },
@@ -966,7 +1134,7 @@ async function assetRemoveCategory(rel, name) {
     await assetRescan();
     if (ASSET_LIB.selCat === rel) ASSET_LIB.selCat = "";
     paintAssetLib();
-    toast(I18n.t("已删除分类（进回收站）：") + name, "ok");
+    toast(I18n.t("已删除分类（进系统回收站）：") + name, "ok");
   } finally {
     ASSET_LIB.busy = false;
   }
@@ -1061,7 +1229,7 @@ async function assetUploadAsAsset() {
 async function assetDeleteAsset(a) {
   const sure = await confirmDialog(
     I18n.t(
-      "删除素材「{name}」？\n\n整个素材文件夹会移进素材库根目录的 .trash（不实删）。已插入画布的「素材」节点会显示为「素材失联」，节点本身保留。",
+      "删除素材「{name}」？\n\n素材文件夹会删进系统回收站（可在资源管理器里还原）。已插入画布的「素材」节点会显示为「素材失联」，节点本身保留。",
       { name: a.displayName || a.folder },
     ),
     { title: I18n.t("删除素材"), danger: true, okText: I18n.t("删除") },
@@ -1076,7 +1244,7 @@ async function assetDeleteAsset(a) {
     }
     await assetRescan();
     paintAssetLib();
-    toast(I18n.t("已删除素材（进回收站）：") + (a.displayName || a.folder), "ok");
+    toast(I18n.t("已删除素材（进系统回收站）：") + (a.displayName || a.folder), "ok");
   } finally {
     ASSET_LIB.busy = false;
   }
@@ -2039,6 +2207,29 @@ function assetSettingsOpen() {
 function assetSettingsAsset() {
   return ASSET_SET.id ? assetSummaryById(ASSET_SET.id) : null;
 }
+
+/* ── 编辑目标：设置框与素材库右栏详情共用同一套写库动作，只有「改的是哪份素材」不同 ──
+   assetEditAssetId(a) ＝ 本次写库该带的素材 id；assetEditAssetFor(a) ＝ 本次编辑目标的完整摘要
+   （右栏详情传所选素材 a；设置框不传 → 回落 ASSET_SET 的素材）。 */
+function assetEditAssetId(a) {
+  const id = a && a.id ? a.id : ASSET_SET.id;
+  return String(id || "").trim();
+}
+function assetEditAssetFor(a) {
+  const id = a && a.id ? String(a.id) : String(ASSET_SET.id || "");
+  if (!id) return null; // 没有编辑目标：右栏详情与设置框都不该有可改的行
+  /* 库为真源：能按 id 取到就用扫描结果里此刻那份，取不到才回落到调用方给的快照 */
+  return assetSummaryById(id) || (a && a.id ? a : null);
+}
+/** 一次库写入的统一收尾（设置框与右栏详情共用）：
+    a ＝ 本次编辑目标，summary ＝ 库回来的新摘要；走与 assetAfterLibWrite 同一条路
+    （同步绑定节点的端子快照 → 重扫 → 重画素材库 / 设置框 / 画布 → 回执）。 */
+async function assetEditAfterWrite(a, summary, msg, kind) {
+  const target = assetEditAssetFor(a);
+  /* 写完把目标所在分类留在展开态：左树里刚动过的素材别因为重画而缩回去 */
+  if (target && target.id) ASSET_LIB.expanded[String(target.catRel || "")] = true;
+  return assetAfterLibWrite(summary, msg, kind);
+}
 /** 设置框正在改的那份摘要（打开时若还没扫过库，先补一次静默扫描） */
 async function openAssetSettings(ref) {
   const id = String((ref && ref.id) || "").trim();
@@ -2259,24 +2450,9 @@ function paintAssetSetBody(box, a) {
       ),
     ),
   );
-  /* ── 条目工具条 ── */
-  const bar = assetEl("div", "asset-set-bar");
-  bar.appendChild(assetEl("b", null, I18n.t("内容")));
-  bar.appendChild(assetEl("span", "asset-lib-spacer"));
-  const addMap = [
-    ["image", I18n.t("＋ 图像"), I18n.t("从本机选图像文件复制入库（可多选）")],
-    ["audio", I18n.t("＋ 音频"), I18n.t("从本机选音频文件复制入库（可多选）")],
-    ["video", I18n.t("＋ 视频"), I18n.t("从本机选视频文件复制入库（可多选）")],
-  ];
-  /* 文本：上传本机文本文件（可多选）或手写一条空正文，两条路并列 —— 不再只有「手动编辑」 */
-  assetSetAddTextBtn(bar);
-  for (const [type, label, tip] of addMap) {
-    const b = assetBtn(label, null, tip);
-    b.onclick = () => assetSetAddMedia(type);
-    bar.appendChild(b);
-  }
-  box.appendChild(bar);
-  /* ── 条目列表（⠿ 拖动 insert ＋ ▲▼ 逐格；顺序即端子顺序） ── */
+  /* ── 条目工具条（与素材库右栏详情共用同一份：assetAddItemBar） ── */
+  box.appendChild(assetAddItemBar(a));
+  /* ── 条目列表（⠿ 拖动 ＋ ▲▼ 逐格；顺序即端子顺序） ── */
   const rows = assetSetRows(a);
   const list = assetEl("div", "asset-set-rows");
   list.id = "assetSetRows";
@@ -2291,52 +2467,50 @@ function paintAssetSetBody(box, a) {
       ),
     );
   }
-  for (let i = 0; i < rows.length; i++) list.appendChild(assetSetRow(rows[i], i, rows.length));
+  const ctx = { asset: a, holder: ASSET_SET, repaint: () => paintAssetSettings() };
+  for (let i = 0; i < rows.length; i++)
+    list.appendChild(assetSetRow(rows[i], i, rows.length, ctx));
   box.appendChild(list);
   /* 容器级拖放：拖到列表下方空白 = 移到末尾（与参数面板同一口径） */
-  list.addEventListener("dragover", (ev) => {
-    if (ASSET_SET.dragFrom < 0) return;
-    ev.preventDefault();
-    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-  });
-  list.addEventListener("drop", (ev) => {
-    if (ASSET_SET.dragFrom < 0) return;
-    const rowEl =
-      ev.target && ev.target.closest ? ev.target.closest(".asset-set-row") : null;
-    if (rowEl) return; // 行内落点由该行处理
-    ev.preventDefault();
-    const from = ASSET_SET.dragFrom;
-    assetSetClearDrag(list);
-    assetSetMoveItem(from, rows.length - 1);
-  });
+  assetWireListDrop(
+    list,
+    ASSET_SET,
+    (from, to) => assetSetMoveItem(from, to, a),
+  );
 }
 
-function assetSetClearDrag(list) {
-  ASSET_SET.dragFrom = -1;
-  const box = list || document.getElementById("assetSetRows");
-  if (!box) return;
-  box
-    .querySelectorAll(".asset-set-dragging,.asset-set-drop-before,.asset-set-drop-after")
-    .forEach((el) =>
-      el.classList.remove(
-        "asset-set-dragging",
-        "asset-set-drop-before",
-        "asset-set-drop-after",
-      ),
-    );
+/* 「内容」条目工具条：＋ 文本（上传 / 手写）/ ＋ 图像 / ＋ 音频 / ＋ 视频
+   —— 素材设置框与素材库右栏详情两处共用；a ＝ 本次编辑的素材（不传 → 设置框那份）。 */
+function assetAddItemBar(a) {
+  const bar = assetEl("div", "asset-set-bar");
+  bar.appendChild(assetEl("b", null, I18n.t("内容")));
+  bar.appendChild(assetEl("span", "asset-lib-spacer"));
+  /* 文本：上传本机文本文件（可多选）或手写一条空正文，两条路并列 —— 不再只有「手动编辑」 */
+  assetSetAddTextBtn(bar, a);
+  const addMap = [
+    ["image", I18n.t("＋ 图像"), I18n.t("从本机选图像文件复制入库（可多选）")],
+    ["audio", I18n.t("＋ 音频"), I18n.t("从本机选音频文件复制入库（可多选）")],
+    ["video", I18n.t("＋ 视频"), I18n.t("从本机选视频文件复制入库（可多选）")],
+  ];
+  for (const [type, label, tip] of addMap) {
+    const b = assetBtn(label, null, tip);
+    b.onclick = () => assetSetAddMedia(type, a);
+    bar.appendChild(b);
+  }
+  return bar;
 }
 
-function assetSetRow(r, i, n) {
-  const row = assetEl("div", "asset-set-row");
-  row.dataset.i = String(i);
-  /* ⠿ 把手：只从把手拖起（标题输入框里的选字不会被误判成整行拖拽） */
+/* ── 条目行的 ⠿ 拖动 + 落点高亮：设置框与右栏详情共用同一套手感 ──
+   holder ＝ 拖拽状态宿主（ASSET_SET / ASSET_LIB，各有 dragFrom）；move(from,to) ＝ 落库重排；
+   repaint ＝ 「拖到一半松手 / 落点无效」时复位列表。返回的把手由调用方插进行里。 */
+function assetWireRowDrag(row, i, holder, repaint, move) {
   const grip = assetEl("span", "asset-set-grip", "⠿");
   grip.draggable = true;
   grip.title = I18n.t(
     "拖动把手调整内容顺序（端子与已连数据线随内容移位 · ▲▼ 可逐格移动）",
   );
   grip.addEventListener("dragstart", (ev) => {
-    ASSET_SET.dragFrom = i;
+    holder.dragFrom = i;
     row.classList.add("asset-set-dragging");
     if (ev.dataTransfer) {
       ev.dataTransfer.effectAllowed = "move";
@@ -2347,12 +2521,12 @@ function assetSetRow(r, i, n) {
   });
   grip.addEventListener("dragend", () => {
     /* drop 已经清过拖拽态并触发重画；只有「拖到一半松手 / 落点无效」才需要自己复位 */
-    const cancelled = ASSET_SET.dragFrom >= 0;
-    assetSetClearDrag(row.parentElement);
-    if (cancelled && ASSET_SET.open) paintAssetSettings();
+    const cancelled = holder.dragFrom >= 0;
+    assetClearRowDrag(row.parentElement, holder);
+    if (cancelled) repaint();
   });
   row.addEventListener("dragover", (ev) => {
-    if (ASSET_SET.dragFrom < 0 || ASSET_SET.dragFrom === i) return;
+    if (holder.dragFrom < 0 || holder.dragFrom === i) return;
     ev.preventDefault();
     if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
     const list = row.parentElement;
@@ -2373,21 +2547,75 @@ function assetSetRow(r, i, n) {
     row.classList.remove("asset-set-drop-before", "asset-set-drop-after"),
   );
   row.addEventListener("drop", (ev) => {
-    if (ASSET_SET.dragFrom < 0) return;
+    if (holder.dragFrom < 0) return;
     ev.preventDefault();
     ev.stopPropagation();
-    const from = ASSET_SET.dragFrom;
+    const from = holder.dragFrom;
     const rect = row.getBoundingClientRect();
     const before = ev.clientY < rect.top + rect.height / 2;
     const list = row.parentElement;
-    assetSetClearDrag(list);
+    assetClearRowDrag(list, holder);
     /* 落点按移动前的行号算：前半＝插到它前面，后半＝插到它后面 */
     let to = i;
     if (from < i) to = before ? i - 1 : i;
     else to = before ? i : i + 1;
-    assetSetMoveItem(from, to);
+    move(from, to);
   });
-  row.appendChild(grip);
+  return grip;
+}
+
+/* 容器级落点：拖到列表空白 = 移到末尾（两个列表同一口径） */
+function assetWireListDrop(list, holder, move) {
+  list.addEventListener("dragover", (ev) => {
+    if (holder.dragFrom < 0) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+  });
+  list.addEventListener("drop", (ev) => {
+    if (holder.dragFrom < 0) return;
+    const rowEl =
+      ev.target && ev.target.closest ? ev.target.closest(".asset-set-row") : null;
+    if (rowEl) return; // 行内落点由该行处理
+    ev.preventDefault();
+    const from = holder.dragFrom;
+    const n = list.querySelectorAll(".asset-set-row").length;
+    assetClearRowDrag(list, holder);
+    move(from, n - 1);
+  });
+}
+
+/* 清拖拽态：复位宿主记的行号，并摘掉行的拖动 / 落点视觉态 */
+function assetClearRowDrag(list, holder) {
+  holder.dragFrom = -1;
+  if (!list) return;
+  list
+    .querySelectorAll(".asset-set-dragging,.asset-set-drop-before,.asset-set-drop-after")
+    .forEach((el) =>
+      el.classList.remove(
+        "asset-set-dragging",
+        "asset-set-drop-before",
+        "asset-set-drop-after",
+      ),
+    );
+}
+
+/** 条目行：素材设置框与素材库右栏详情共用（ctx.asset ＝ 本次编辑的素材；
+    ctx.holder ＝ 该列表的拖拽状态宿主；ctx.repaint ＝ 拖拽作废后重画该列表）。
+    不传 ctx ＝ 素材设置框（编辑目标回落 ASSET_SET 的素材）。 */
+function assetSetRow(r, i, n, ctx) {
+  ctx = ctx || { asset: null, holder: ASSET_SET, repaint: () => paintAssetSettings() };
+  const row = assetEl("div", "asset-set-row");
+  row.dataset.i = String(i);
+  /* ⠿ 把手：只从把手拖起（标题输入框里的选字不会被误判成整行拖拽） */
+  row.appendChild(
+    assetWireRowDrag(
+      row,
+      i,
+      ctx.holder,
+      ctx.repaint,
+      (from, to) => assetSetMoveItem(from, to, ctx.asset),
+    ),
+  );
   const mkArrow = (up) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -2399,7 +2627,7 @@ function assetSetRow(r, i, n) {
     b.disabled = up ? i <= 0 : i >= n - 1;
     b.onclick = (ev) => {
       ev.stopPropagation();
-      assetSetMoveItem(i, up ? i - 1 : i + 1);
+      assetSetMoveItem(i, up ? i - 1 : i + 1, ctx.asset);
     };
     return b;
   };
@@ -2411,7 +2639,7 @@ function assetSetRow(r, i, n) {
   title.value = r.title;
   title.placeholder = I18n.t("内容 ") + (i + 1);
   title.title = I18n.t("端子名（会显示在节点左右两端的端子上）");
-  title.addEventListener("change", () => assetSetSetTitle(r, title.value));
+  title.addEventListener("change", () => assetSetSetTitle(r, title.value, ctx.asset));
   title.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
       ev.preventDefault();
@@ -2457,9 +2685,22 @@ function assetSetRow(r, i, n) {
   );
   ed.onclick = () =>
     r.type === "text"
-      ? assetSetEditText(r)
-      : assetItemReplaceFile(ASSET_SET.id, r.id, r.title, r.type);
+      ? assetSetEditText(r, ctx.asset)
+      : assetItemReplaceFile(assetEditAssetId(ctx.asset), r.id, r.title, r.type);
   row.appendChild(ed);
+  /* 图像与文字：除「更换文件 / 编辑文本」外，还能直接预览内容本身
+     —— 一行只有一个文件名，看不到图也看不到正文（预览只读，不改库） */
+  if (r.type === "image" || r.type === "text") {
+    const pv = assetBtn(
+      I18n.t("预览"),
+      null,
+      r.type === "image"
+        ? I18n.t("预览这条图像内容（框内看图 · 只读，换图走「更换文件」）")
+        : I18n.t("只读预览这条正文（要看全 / 临时看一眼用，改内容走「编辑文本」）"),
+    );
+    pv.onclick = () => assetPreviewItem(r, ctx.asset);
+    row.appendChild(pv);
+  }
   if (r.type === "text") {
     /* 文本条目也能直接吃本机文件：与图像 / 音频 / 视频同一颗「更换文件」入口，
        只是主进程按 utf8 收下、恒落 .txt（旧正文进版本目录 · 可撤销） */
@@ -2469,11 +2710,11 @@ function assetSetRow(r, i, n) {
       I18n.t("从本机选一个文本文件（.txt / .md / .json …）顶掉这条正文（旧内容进版本目录）"),
     );
     up.onclick = () =>
-      assetItemReplaceFile(ASSET_SET.id, r.id, r.title, "text");
+      assetItemReplaceFile(assetEditAssetId(ctx.asset), r.id, r.title, "text");
     row.appendChild(up);
   }
   const rm = assetBtn("✕", "danger", I18n.t("删除这条内容（端子一并消失 · 实体文件进回收站）"));
-  rm.onclick = () => assetSetRemoveItem(r);
+  rm.onclick = () => assetSetRemoveItem(r, ctx.asset);
   row.appendChild(rm);
   return row;
 }
@@ -2511,12 +2752,14 @@ async function assetSetSaveMeta(displayName, desc) {
   });
 }
 
-async function assetSetSetTitle(r, value) {
-  const a = assetSettingsAsset();
+async function assetSetSetTitle(r, value, a) {
+  a = assetEditAssetFor(a);
   if (!a) return;
   const nv = String(value == null ? "" : value).trim();
   if (!nv || nv === r.title) {
-    paintAssetSettings();
+    /* 无效输入 / 没改：把两个可能开着的列表都还原（设置框 · 右栏详情） */
+    if (assetSettingsOpen()) paintAssetSettings();
+    if (assetLibOpen()) paintAssetLib();
     return;
   }
   const rows = assetSetRows(a);
@@ -2530,7 +2773,8 @@ async function assetSetSetTitle(r, value) {
       toast(I18n.t("改内容标题失败：") + ((res && res.error) || ""), "err");
       return;
     }
-    await assetAfterLibWrite(
+    await assetEditAfterWrite(
+      a,
       res.asset,
       I18n.t("已改端子名：{old} → {now}", { old: r.title, now: nv }),
       "ok",
@@ -2540,9 +2784,9 @@ async function assetSetSetTitle(r, value) {
 
 /** 重排：条目顺序走 app.js · assetMoveItem（perm 口径与 fnToolMoveParam 逐字一致：
     把 from 移到 to、中间顺移一格），顺序写进库 → 每个绑定节点的端子号按条目 id 保号
-    重映射（线跟着内容走，不漂到别的条目上）。 */
-async function assetSetMoveItem(from, to) {
-  const a = assetSettingsAsset();
+    重映射（线跟着内容走，不漂到别的条目上）。a ＝ 本次编辑的素材（不传＝设置框那份）。 */
+async function assetSetMoveItem(from, to, a) {
+  a = assetEditAssetFor(a);
   if (!a) return;
   if (typeof assetMoveItem !== "function") return;
   const rows = assetSetRows(a);
@@ -2555,7 +2799,8 @@ async function assetSetMoveItem(from, to) {
       toast(I18n.t("调整内容顺序失败：") + ((r && r.error) || ""), "err");
       return;
     }
-    await assetAfterLibWrite(
+    await assetEditAfterWrite(
+      a,
       r.asset,
       I18n.t("已调整内容顺序：端子与已连数据线随内容移位"),
       "ok",
@@ -2563,12 +2808,12 @@ async function assetSetMoveItem(from, to) {
   });
 }
 
-async function assetSetRemoveItem(r) {
-  const a = assetSettingsAsset();
+async function assetSetRemoveItem(r, a) {
+  a = assetEditAssetFor(a);
   if (!a) return;
   const sure = await confirmDialog(
     I18n.t(
-      "删除内容「{name}」？\n\n· 节点上这一对端子会消失，挂在它上面的连线一并断开（Ctrl+Z 可复原节点与连线）\n· 实体文件移进素材库根目录的 .trash（不会真的删掉）\n\n要恢复文件请从资源管理器里找回。",
+      "删除内容「{name}」？\n\n· 节点上这一对端子会消失，挂在它上面的连线一并断开（Ctrl+Z 可复原节点与连线）\n· 实体文件删进系统回收站（可在资源管理器里还原）",
       { name: r.title },
     ),
     { title: I18n.t("删除内容"), danger: true, okText: I18n.t("删除") },
@@ -2581,9 +2826,10 @@ async function assetSetRemoveItem(r) {
       return;
     }
     assetItemViewInvalidate(a.id, r.id);
-    await assetAfterLibWrite(
+    await assetEditAfterWrite(
+      a,
       res.asset,
-      I18n.t("已删除内容：{name}（端子与连线可撤销 · 文件进回收站）", {
+      I18n.t("已删除内容：{name}（端子与连线可撤销 · 文件进系统回收站）", {
         name: r.title,
       }),
       "ok",
@@ -2592,8 +2838,9 @@ async function assetSetRemoveItem(r) {
 }
 
 /* 「＋ 文本」：上传本机文本文件 与 手写正文 是并列的两条路（多选的走上传，
-   每个文件一条内容；单个想再改改的走表单）。与「＋ 图像 / 音频 / 视频」同一手感。 */
-function assetSetAddTextBtn(host) {
+   每个文件一条内容；单个想再改改的走表单）。与「＋ 图像 / 音频 / 视频」同一手感。
+   host ＝ 工具条，a ＝ 本次编辑的素材（不传＝设置框那份）。 */
+function assetSetAddTextBtn(host, a) {
   const b = assetBtn(
     I18n.t("＋ 文本"),
     "primary",
@@ -2605,22 +2852,22 @@ function assetSetAddTextBtn(host) {
       {
         label: I18n.t("上传本机文本文件…（可多选）"),
         title: I18n.t("选一个 / 多个文本文件复制进素材库，每个文件一条内容"),
-        run: () => assetSetAddMedia("text"),
+        run: () => assetSetAddMedia("text", a),
       },
       {
         label: I18n.t("手写一条空正文…"),
         title: I18n.t(
           "新建一条空白的文本内容（库内落一个 .txt），在表单里写或再上传文件",
         ),
-        run: () => assetSetAddText(),
+        run: () => assetSetAddText(a),
       },
     ]);
   };
   host.appendChild(b);
 }
 
-async function assetSetAddText() {
-  const a = assetSettingsAsset();
+async function assetSetAddText(a) {
+  a = assetEditAssetFor(a);
   if (!a) return;
   const rows = assetSetRows(a);
   const v = await assetFormDialog({
@@ -2655,7 +2902,8 @@ async function assetSetAddText() {
       toast(I18n.t("添加内容失败：") + ((r && r.error) || ""), "err");
       return;
     }
-    await assetAfterLibWrite(
+    await assetEditAfterWrite(
+      a,
       r.asset,
       I18n.t("已添加内容：{name}（末尾多出一对端子）", {
         name: (r.item && r.item.title) || v.title || "",
@@ -2665,8 +2913,8 @@ async function assetSetAddText() {
   });
 }
 
-async function assetSetAddMedia(type) {
-  const a = assetSettingsAsset();
+async function assetSetAddMedia(type, a) {
+  a = assetEditAssetFor(a);
   if (!a) return;
   const f = ASSET_PICK_FILTERS[type] || ASSET_PICK_FILTERS.image;
   const picked = await window.api.fileOpenDialog({
@@ -2685,7 +2933,8 @@ async function assetSetAddMedia(type) {
     }
     const added = Number((r.items && r.items.length) || 0);
     const skip = Number((r.skipped && r.skipped.length) || 0);
-    await assetAfterLibWrite(
+    await assetEditAfterWrite(
+      a,
       r.asset,
       skip
         ? I18n.t("已添加 {n} 条内容（{s} 个文件类型素材库不收，已跳过）", {
@@ -2698,8 +2947,101 @@ async function assetSetAddMedia(type) {
   });
 }
 
-async function assetSetEditText(r) {
-  const a = assetSettingsAsset();
+/* 条目预览：图像与文本都读库内实体，只读展示（改内容走「更换文件 / 编辑文本」）。
+   不走 app.js 的图片灯箱：灯箱 z-index 1400 低于素材库框（2350），在库里点开会压在框底下；
+   这里用自己的 .mt-dialog 层（2400），与库 / 设置框同族但更高。 */
+async function assetPreviewItem(r, a) {
+  a = assetEditAssetFor(a);
+  if (!a || !r) return;
+  if (!r.absPath) {
+    toast(I18n.t("这条内容还没有实体文件"), "warn");
+    return;
+  }
+  if (r.type === "image") {
+    assetShowPreviewBox(r.title || fileName(r.absPath), r.absPath, null);
+    return;
+  }
+  if (r.type !== "text") {
+    window.api.shellShowItem(r.absPath);
+    return;
+  }
+  let cur = "";
+  try {
+    const rd = await window.api.assetsItemRead(a.id, r.id);
+    if (rd && rd.ok) cur = String(rd.text || "");
+    else if (rd && rd.error) {
+      toast(I18n.t("读取失败：") + rd.error, "err");
+      return;
+    }
+  } catch (_) {}
+  assetShowPreviewBox(r.title || "", null, cur);
+}
+
+/* 只读预览框：图（imgPath）或文本（text）二选一。
+   persistent（点蒙层不关），Esc 只收这一层（capture ＋ stopPropagation，与 assetFormDialog
+   同一口径，不会顺手把底下的素材库 / 设置框也关掉）。 */
+function assetShowPreviewBox(title, imgPath, text) {
+  const old = document.getElementById("assetPreviewDlg");
+  if (old) old.remove();
+  const host = document.createElement("div");
+  host.id = "assetPreviewDlg";
+  host.className = "mt-dialog on";
+  const box = assetEl("div", "mt-dialog-box asset-form-box asset-form-box-wide");
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  const head = assetEl("div", "mt-dialog-head");
+  head.appendChild(
+    assetEl(
+      "b",
+      null,
+      imgPath
+        ? I18n.t("预览图像内容 · {name}", { name: title })
+        : I18n.t("预览文本内容 · {name}", { name: title }),
+    ),
+  );
+  const body = assetEl("div", "mt-dialog-body asset-form-body");
+  if (imgPath) {
+    const img = document.createElement("img");
+    img.alt = title;
+    img.src = window.api.toFileUrl(imgPath);
+    img.title = imgPath;
+    img.style.display = "block";
+    img.style.maxWidth = "100%";
+    img.style.maxHeight = "60vh";
+    img.style.margin = "0 auto";
+    img.style.objectFit = "contain";
+    body.appendChild(img);
+  } else {
+    const ta = document.createElement("textarea");
+    ta.className = "asset-form-input";
+    ta.rows = 16;
+    ta.readOnly = true;
+    ta.spellcheck = false;
+    ta.value = String(text == null ? "" : text);
+    body.appendChild(ta);
+  }
+  const foot = assetEl("div", "mt-dialog-foot asset-form-foot");
+  const onKey = (ev) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    close();
+  };
+  const close = () => {
+    document.removeEventListener("keydown", onKey, true);
+    host.remove();
+  };
+  const cl = assetBtn(I18n.t("关闭"), null, null);
+  cl.onclick = close;
+  foot.appendChild(cl);
+  box.append(head, body, foot);
+  host.appendChild(box);
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(host);
+}
+
+async function assetSetEditText(r, a) {
+  a = assetEditAssetFor(a);
   if (!a) return;
   let cur = "";
   try {
@@ -2741,7 +3083,7 @@ async function assetSetEditText(r) {
     }
     /* 标题（＝端子名）单独一步：改标题要顺带同步所有绑定节点的端子快照 */
     const nt = String(v.title || "").trim();
-    if (nt && nt !== String(r.title || "").trim()) await assetSetSetTitle(r, nt);
+    if (nt && nt !== String(r.title || "").trim()) await assetSetSetTitle(r, nt, a);
   });
 }
 

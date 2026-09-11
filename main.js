@@ -1358,6 +1358,142 @@ ipcMain.handle("file:listDir", (e, p) => {
     return { ok: false, error: (err && err.message) || String(err) };
   }
 });
+/* ── 左侧边栏「文件」页（renderer/app-sidebar-files.js）的文件系统能力 ──
+   与 file:listDir（数据库编译用的递归索引）刻意分开：这里只读**一层**，且不跳过隐藏项
+   —— 隐藏文件的显示与折叠交给渲染层。写操作只服务用户在文件页里的显式动作，
+   删除一律走系统回收站（shell.trashItem），不做物理删除。 */
+const APP_ROOT_DIR = path.resolve(__dirname);
+/* 目标就是应用根目录、或是它的上级目录时拒绝（误删 / 误改名安装目录不可恢复）；
+   应用目录**里面**的普通文件不在此列 —— 用户完全可以把工作目录设成项目根。 */
+function sfAppRootGuard(p) {
+  const abs = path.resolve(String(p || ""));
+  if (!abs) return false;
+  if (abs === APP_ROOT_DIR) return true;
+  const rel = path.relative(abs, APP_ROOT_DIR);
+  return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+function sfNeedPath(p) {
+  const s = String(p || "").trim();
+  if (!s) return "";
+  return path.resolve(s);
+}
+/* 目录一层列举：{name, isDir, size, mtime, hidden}（不排序，排序在渲染层） */
+ipcMain.handle("file:readDir", (e, p) => {
+  try {
+    const dir = sfNeedPath(p);
+    if (!dir) return { ok: true, exists: false, entries: [] };
+    let ents;
+    try {
+      ents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return { ok: true, exists: false, entries: [] };
+    }
+    const entries = [];
+    for (const ent of ents) {
+      let isDir = false;
+      let size = 0;
+      let mtime = 0;
+      try {
+        const st = fs.statSync(join(dir, ent.name));
+        isDir = st.isDirectory();
+        size = isDir ? 0 : st.size;
+        mtime = Math.floor(st.mtimeMs);
+      } catch {
+        isDir = ent.isDirectory();
+      }
+      entries.push({
+        name: ent.name,
+        isDir,
+        size,
+        mtime,
+        hidden: ent.name.startsWith("."),
+      });
+    }
+    return { ok: true, exists: true, entries };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 重命名：path = 原绝对路径，name = 新文件名（同目录内改名，不含路径分隔符） */
+ipcMain.handle("file:rename", async (e, { path: p, name }) => {
+  try {
+    const src = sfNeedPath(p);
+    const to = String(name || "").trim();
+    if (!src) return { ok: false, error: I18n.t("未选择") };
+    if (!to) return { ok: false, error: I18n.t("文件名不能为空") };
+    if (/[\\/]/.test(to) || to === "." || to === "..")
+      return { ok: false, error: I18n.t("文件名不能包含路径分隔符") };
+    const dest = join(path.dirname(src), to);
+    if (path.resolve(dest) === src) return { ok: true, path: dest, unchanged: true };
+    if (sfAppRootGuard(src) || sfAppRootGuard(dest))
+      return { ok: false, error: I18n.t("不能改动应用目录本身") };
+    if (fs.existsSync(dest)) return { ok: false, error: I18n.t("同名文件已存在") };
+    await fs.promises.rename(src, dest);
+    return { ok: true, path: dest };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 复制：文件 copyFile，目录递归 cp（dest 是完整目标路径） */
+ipcMain.handle("file:copy", async (e, { src, dest }) => {
+  try {
+    const from = sfNeedPath(src);
+    const to = sfNeedPath(dest);
+    if (!from || !to) return { ok: false, error: I18n.t("未选择") };
+    if (sfAppRootGuard(to)) return { ok: false, error: I18n.t("不能改动应用目录本身") };
+    if (fs.existsSync(to)) return { ok: false, error: I18n.t("同名文件已存在") };
+    mk(path.dirname(to));
+    const st = fs.statSync(from);
+    if (st.isDirectory()) await fs.promises.cp(from, to, { recursive: true });
+    else await fs.promises.copyFile(from, to);
+    return { ok: true, path: to };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 移动 / 剪切粘贴：先 rename，跨卷（EXDEV / EPERM）退化为 copy + 校验 + 删源 */
+ipcMain.handle("file:move", async (e, { src, dest }) => {
+  try {
+    const from = sfNeedPath(src);
+    const to = sfNeedPath(dest);
+    if (!from || !to) return { ok: false, error: I18n.t("未选择") };
+    if (from === to) return { ok: true, path: to, unchanged: true };
+    if (sfAppRootGuard(from) || sfAppRootGuard(to))
+      return { ok: false, error: I18n.t("不能改动应用目录本身") };
+    if (fs.existsSync(to)) return { ok: false, error: I18n.t("同名文件已存在") };
+    mk(path.dirname(to));
+    try {
+      await fs.promises.rename(from, to);
+      return { ok: true, path: to };
+    } catch (_) {
+      const st = fs.statSync(from);
+      if (st.isDirectory()) {
+        await fs.promises.cp(from, to, { recursive: true });
+        await fs.promises.rm(from, { recursive: true, force: true });
+      } else {
+        await fs.promises.copyFile(from, to);
+        await fs.promises.rm(from, { force: true });
+      }
+      return { ok: true, path: to };
+    }
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+/* 删除：一律进系统回收站；不支持回收站的位置（网络盘 / 特殊卷）直接报错，
+   由渲染层提示并中止 —— 绝不静默物理删除。 */
+ipcMain.handle("file:trash", async (e, p) => {
+  try {
+    const abs = sfNeedPath(p);
+    if (!abs) return { ok: false, error: I18n.t("未选择") };
+    if (sfAppRootGuard(abs)) return { ok: false, error: I18n.t("不能改动应用目录本身") };
+    if (!fs.existsSync(abs)) return { ok: false, error: I18n.t("路径不存在") };
+    await shell.trashItem(abs);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
 ipcMain.handle(
   "file:saveDialog",
   async (e, { title, defaultName, filters }) => {

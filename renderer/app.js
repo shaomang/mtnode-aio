@@ -6026,6 +6026,14 @@ function atTokensOf(text, names) {
   return atMentionsOf(text, names).map((h) => h.name || h.token);
 }
 
+/* 某个来源的「可 @ 标题」：与 refCandidates 同源 —— 素材来源（isItemPortSource）
+   不投整节点候选，只有内容条目标题可引；其余来源就是节点标题。 */
+function refTitlesOfSource(s) {
+  return isItemPortSource(s)
+    ? assetItems(s).map((it) => it.title)
+    : [s && s.title];
+}
+
 /* 从候选来源里只保留被明文 @ 命中的：@标题（含 resolveRefs 的「全等 → 去尾标点 → 前缀」三级规则）
    或 @Tag（该来源确实带这个 Tag）。返回顺序与入参一致，去重。 */
 function mentionedRefSources(prompt, srcs) {
@@ -6037,16 +6045,18 @@ function mentionedRefSources(prompt, srcs) {
     list.push(s);
   }
   if (!list.length) return [];
-  const toks = atTokensOf(
-    prompt,
-    atRefNames(list.map((s) => s.title).concat(wfTagCatalog())),
-  );
+  const names = [];
+  for (const s of list) names.push(...refTitlesOfSource(s));
+  const toks = atTokensOf(prompt, atRefNames(names.concat(wfTagCatalog())));
   if (!toks.length) return [];
   const out = [];
   for (const src of list) {
+    /* 命中判定与切词名集合同源：素材按内容条目标题，而非素材节点标题 ——
+       否则会出现「全局注入认 @素材甲、解析层不认」的错位。 */
+    const cands = refTitlesOfSource(src).map((title) => ({ title }));
     let hit = false;
     for (const tok of toks) {
-      if (findCandidateByTitle([src], tok)) {
+      if (findCandidateByTitle(cands, tok)) {
         hit = true;
         break;
       }
@@ -11889,9 +11899,16 @@ function refCandidates(node) {
   const out = [];
   const seen = new Set();
   const nodeTitles = new Set();
+  /* 素材节点（isItemPortSource）一律不再作为「整节点候选」投放，只把它摊成单条内容
+     候选（见下）；这里先把它们收起来，稍后统一摊条目。 */
+  const assetSources = [];
   const pushNode = (n) => {
     if (!n || seen.has(n.id) || !isRefableSource(n)) return;
     seen.add(n.id);
+    if (isItemPortSource(n)) {
+      assetSources.push(n);
+      return;
+    }
     if (n.title) nodeTitles.add(n.title);
     out.push(n);
   };
@@ -11901,15 +11918,16 @@ function refCandidates(node) {
   if (usesGlobalRefs(node)) {
     for (const n of globalRefSources(node.id)) pushNode(n);
   }
-  /* 素材节点：除整节点候选（@素材标题 = 把接进本节点的内容端子全带）外，再把它的
-     内容摊成「单条候选」（@条目标题 = 只取那一个内容端子 / 条目）。轻量对象
-     只承载 title / type / parent / itemIdx，命中后的注入 / 高亮语义由解析层决定。
+  /* 素材节点：不投整节点候选，只把它的内容摊成「单条候选」（@条目标题 = 只取那一个
+     内容端子 / 条目）。轻量对象只承载 title / type / parent / itemIdx，命中后的注入 /
+     高亮语义由解析层决定。
      引用边界：某条输出端子已直连进本节点时，只摊「连进来的端子」对应的条目 ——
      未连线端子的内容绝不能被 @ 到（否则只接一个端子却能引用整份素材）。只有经全局
      广播进来（无直连端子可言）的素材才维持全部分摊，与解析层「@素材标题 全带」口径一致。
-     两条纪律：整节点永远排在它的条目之前；条目标题若与任何整节点标题重复则不再投放
-     —— 保证「@整节点标题」在同名时仍命中节点本身、不会错指到某一条内容。跨节点 /
-     同节点内同名条目只投放首个（后续同名一律跳过，避免命中歧义）。 */
+     两条纪律：非素材节点候选恒排在全部条目候选之前（素材节点自己不再占位）；nodeTitles
+     只收集真正投放的非素材节点标题，所以条目标题与素材节点同名时照样能投放，只有与
+     真正投放的节点标题重复才跳过。跨节点 / 同节点内同名条目只投放首个（后续同名一律
+     跳过，避免命中歧义）。 */
   const wiredPortsBySrc = new Map();
   for (const w of wiresTo(node.id)) {
     if (w.rel || wireFromIsControl(w)) continue;
@@ -11920,9 +11938,7 @@ function refCandidates(node) {
     set.add(Number(w.fromIndex || 0));
   }
   const itemTitles = new Set();
-  const base = out.slice();
-  for (const n of base) {
-    if (!isItemPortSource(n)) continue;
+  for (const n of assetSources) {
     const items = assetItems(n);
     const wired = wiredPortsBySrc.get(n.id);
     for (let i = 0; i < items.length; i++) {
@@ -12861,7 +12877,8 @@ function resolveRefs(prompt, node, idx, opts) {
        端子 / 条目，而非把整节点接进来的内容全带。文本条目 → addText 进背景；图像条目
        → 参考图（图生图按 multipart 顺序认图 → 写成「第 N 张」）；音视频条目 → 其 file:///
        URL（refTextFromValue 对 audio/video 取 .text）。背景块标题走 itemTitleOf = 该条目标题。
-       @素材标题（整节点名，__assetItem 为空）仍走下方 assetWiredPortIndexes 全带，向后兼容。 */
+       素材节点本身不再是候选（见 refCandidates），所以 @素材标题 既不命中也不注入，
+       按未解析原样保留（unresolved 点名）。 */
     if (c.__assetItem && c.itemIdx != null) {
       const iv = valueForInput(c.parent, c.itemIdx, node);
       if (refTextFromValue(iv) != null) {
@@ -12879,44 +12896,34 @@ function resolveRefs(prompt, node, idx, opts) {
       }
       return raw;
     }
+    /* 非素材来源：端口列表恒为 1 项（useIdx）→ 与旧行为逐字一致。 */
     const useIdx = refInputIdxFor(node, c, idx);
-    /* 素材节点：@它 = 把它接进本节点的每一个内容端子都带上（端子号 = 条目号）；
-       其余来源端口列表恒为 1 项 → 与旧行为逐字一致。 */
-    let ports = isItemPortSource(c) ? assetWiredPortIndexes(node, c.id) : [];
-    /* 走全局广播进来的素材没有「这条线接哪个端子」可言 → 与 @Tag 同口径：整份内容全带上 */
-    if (!ports.length && isItemPortSource(c))
-      ports = assetItems(c).map((_, i) => i);
-    if (!ports.length) ports.push(useIdx);
-    let gotText = false;
-    let imgRef = "";
-    for (const pi of ports) {
-      const v = valueForInput(c, pi, node);
-      if (refTextFromValue(v) != null) {
-        gotText = true;
-        if (c.kind === "super") {
-          for (const w of wiresTo(node.id)) {
-            if (nodeById(w.from)?.id !== c.id) continue;
-            for (const leaf of refLeafSourcesForWire(w, node)) {
-              if (isRefTextSourceKind(leaf))
-                addText(leaf, refInputIdxFor(node, leaf, idx, w));
-            }
+    const v = valueForInput(c, useIdx, node);
+    if (refTextFromValue(v) != null) {
+      if (c.kind === "super") {
+        for (const w of wiresTo(node.id)) {
+          if (nodeById(w.from)?.id !== c.id) continue;
+          for (const leaf of refLeafSourcesForWire(w, node)) {
+            if (isRefTextSourceKind(leaf))
+              addText(leaf, refInputIdxFor(node, leaf, idx, w));
           }
-        } else {
-          addText(c, pi);
         }
-      } else if (v && v.kind === "image") {
-        const path = v.path;
-        let n = refImages.indexOf(path);
-        if (n < 0) {
-          refImages.push(path);
-          n = refImages.length - 1;
-        }
-        /* 图生图 edits 按 multipart 顺序认图，无法靠标题文字定位 → 写成「第 N 张参考图」 */
-        if (!imgRef) imgRef = I18n.t("第{n}张参考图", { n: n + 1 });
+      } else {
+        addText(c, useIdx);
       }
+      return c.title;
     }
-    if (gotText) return c.title;
-    return imgRef || raw;
+    if (v && v.kind === "image") {
+      const path = v.path;
+      let n = refImages.indexOf(path);
+      if (n < 0) {
+        refImages.push(path);
+        n = refImages.length - 1;
+      }
+      /* 图生图 edits 按 multipart 顺序认图，无法靠标题文字定位 → 写成「第 N 张参考图」 */
+      return I18n.t("第{n}张参考图", { n: n + 1 });
+    }
+    return raw;
   });
   return { prompt: out, refImages, unresolved: [...unresolved], textSources };
 }
@@ -13114,10 +13121,15 @@ function showRefMenu(ta, node, items, query, at) {
   const head = document.createElement("div");
   head.className = "ref-head";
   const hasTags = entries.some((e) => e.kind === "tag");
+  /* 候选里出现「素材单条内容」时在菜单头部补一句口径：这类候选是 @内容条目标题，
+     不是 @素材节点标题（@素材标题 = 带上接进来的整份内容）。 */
+  const hasAssetItems = entries.some(
+    (e) => e.kind === "node" && e.node && e.node.__assetItem,
+  );
   const headT = document.createElement("span");
   headT.className = "ref-head-t";
   headT.textContent =
-    node && node.batchMode === "agg"
+    (node && node.batchMode === "agg"
       ? I18n.t("引用聚合条目（@条目标题）")
       : usesGlobalRefs(node) && globalRefSources(node.id).length
         ? hasTags
@@ -13125,7 +13137,8 @@ function showRefMenu(ta, node, items, query, at) {
           : I18n.t("全局来源需明文 @ 才注入（@标题）")
         : hasTags
           ? I18n.t("引用输入节点（@标题）或 Tag（@标签 · 紫色）")
-          : I18n.t("引用输入节点（@标题）");
+          : I18n.t("引用输入节点（@标题）")) +
+    (hasAssetItems ? I18n.t(" · 素材按内容条目标题引用") : "");
   const headK = document.createElement("span");
   headK.className = "ref-keys";
   headK.textContent = I18n.t("↑↓ 选择 · 回车确认 · Esc 取消");
@@ -13147,13 +13160,8 @@ function showRefMenu(ta, node, items, query, at) {
     } else {
       const n = e.node;
       /* 素材单条内容候选直接按该条目类型上标识（refCandidates 摊出的轻量候选带 type）；
-         整素材节点没有单一媒体类型，按第一个内容条目的类型上标识
-         （图像素材给 I，文本 / 音频 / 视频素材给 T —— 后者对外确实是可读文字 / 地址） */
-      const aType = n && n.__assetItem
-        ? n.type
-        : isItemPortSource(n)
-          ? (assetItems(n)[0] || {}).type || ""
-          : "";
+         非素材节点候选按节点自身类型上标识（图像类节点给 I，其余文本给 T）。 */
+      const aType = n && n.__assetItem ? n.type : "";
       const imgKind = aType
         ? aType === "image"
         : n.kind === "image" || n.kind === "input_image" || n.kind === "proc_image";
@@ -17621,9 +17629,19 @@ function bindCanvas() {
   canvas.addEventListener("dragover", (ev) => ev.preventDefault());
   canvas.addEventListener("drop", async (ev) => {
     ev.preventDefault();
+    const pt = toStage(ev.clientX, ev.clientY);
+    /* 左侧文件页拖来的条目（内部拖拽，不在 dataTransfer.files 里）：
+       先弹窗确认，确认后按扩展名建节点（文件夹只取第一层、不递归，整批记一步可 Ctrl+Z 撤销）。 */
+    const sidebarPaths =
+      typeof sidebarFilesDropPayload === "function"
+        ? sidebarFilesDropPayload(ev.dataTransfer)
+        : [];
+    if (sidebarPaths.length) {
+      await sidebarFilesDropToCanvas(sidebarPaths, pt);
+      return;
+    }
     const files = [...(ev.dataTransfer.files || [])];
     if (!files.length) return;
-    const pt = toStage(ev.clientX, ev.clientY);
     /* 数据库超级节点：拖入文件 → 复制到子文件夹（入库待编译） */
     const dbTarget = S.wf.nodes.find(
       (n) => {
@@ -19533,26 +19551,35 @@ function stripLinkTrailPunct(s) {
   );
 }
 
-/* 在已转义的纯文本片段中识别 URL / 本地路径，包成可点击链接 */
+/* 会话正文里的「相对文件路径」（renderer/app-fileview.js、dsh/DESIGN.md 这种）才做成链接：
+   必须带一层以上目录 + 认得出的扩展名。两条都满足才认 —— 正文里光溜溜的 "app.js" 或
+   "main" 太容易和普通词撞上，宁可不做，也不把满屏普通词变成链接。 */
+const MT_RELPATH_EXT =
+  /\.(?:js|mjs|cjs|jsx|ts|tsx|json|jsonc|md|markdown|txt|log|csv|tsv|ya?ml|toml|ini|cfg|conf|css|scss|less|sass|html?|xhtml|xml|svg|vue|svelte|astro|py|rb|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|ps1|bat|cmd|lua|sql|dart|swift|m|mm|r|pl|ex|exs|erl|hs|clj|scala|groovy|gradle|properties|patch|diff|png|jpe?g|gif|webp|bmp|ico|avif|tiff?|mp3|wav|ogg|flac|m4a|mp4|webm|mov|mkv|avi|pdf)$/i;
+
+/* 在已转义的纯文本片段中识别 URL / 本地路径 / 相对文件路径，包成可点击链接 */
 function linkifyEscapedText(text) {
   const src = String(text || "");
   if (!src) return src;
   const re =
-    /https?:\/\/[^\s<&]+|file:\/\/\/?[^\s<&]+|(?:[A-Za-z]:(?:\\|\/)|\\\\[^\\\s<&]+)[^\s<&|?*]+/g;
+    /https?:\/\/[^\s<&]+|file:\/\/\/?[^\s<&]+|(?:[A-Za-z]:(?:\\|\/)|\\\\[^\\\s<&]+)[^\s<&|?*]+|(?<![\w.@~+$\-\\/])((?:[\w.@~+$-]+[\\/])+[\w.@~+$-]+\.[A-Za-z]\w{0,7})/g;
   let out = "";
   let last = 0;
   let m;
   while ((m = re.exec(src))) {
     let raw = m[0];
+    /* 第 1 组有值 = 命中的是相对文件路径那一支（前面几支不带捕获组） */
+    const rel = m[1] !== undefined;
     const cleaned = stripLinkTrailPunct(raw);
     const trail = cleaned.length < raw.length ? raw.slice(cleaned.length) : "";
     raw = cleaned;
     if (!raw) continue;
+    if (rel && !MT_RELPATH_EXT.test(raw)) continue;
     const isUrl = /^https?:\/\//i.test(raw);
     const isFileUrl = /^file:/i.test(raw);
     if (!isUrl && !isFileUrl && raw.length < 4) continue;
     out += src.slice(last, m.index);
-    const kind = isUrl ? "url" : isFileUrl ? "file" : "path";
+    const kind = isUrl ? "url" : isFileUrl ? "file" : rel ? "relpath" : "path";
     out +=
       '<a class="mt-link" href="' +
       raw +
@@ -20439,9 +20466,61 @@ async function openTextViewer(filePath) {
   return openYamlViewer(resolved);
 }
 
+/* 会话正文里那条相对路径（renderer/app-fileview.js 这种）该落到哪个目录：
+   按优先级取三个真源 —— 左栏「文件」页当前根（SF.root）→ 画布工作目录 → 画布上开发节点的项目根。
+   绝不自己拼一个默认目录出来。 */
+function chatRelPathBases() {
+  const out = [];
+  const push = (p) => {
+    const s = String(p == null ? "" : p).trim().replace(/[\\/]+$/, "");
+    if (s && out.indexOf(s) < 0) out.push(s);
+  };
+  try {
+    if (typeof SF !== "undefined" && SF && SF.root) push(SF.root);
+  } catch (_) {}
+  try {
+    if (typeof wfWorkspace === "function") push(wfWorkspace());
+  } catch (_) {}
+  try {
+    if (typeof sfDevRoots === "function") for (const p of sfDevRoots()) push(p);
+  } catch (_) {}
+  return out;
+}
+
+/* 相对路径 → 绝对路径：只在候选基准里找一个「真有这个文件」的。
+   都找不到就返回 ""（调用方给一句提示），不猜、不乱开一个不存在的路径。 */
+async function resolveChatRelPath(rel) {
+  const api = window.api || {};
+  if (!api.fileStat) return "";
+  for (const base of chatRelPathBases()) {
+    const abs = typeof resolveToolPath === "function" ? resolveToolPath(rel, base) : "";
+    if (!abs) continue;
+    try {
+      const st = await api.fileStat(abs);
+      if (st && st.ok) return abs;
+    } catch (_) {}
+  }
+  return "";
+}
+
 async function openContentRef(href, kind) {
   const raw = htmlUnescape(String(href || "").trim());
   if (!raw) return;
+  /* 会话正文里的相对文件路径：定位到真文件后走右侧「文件查看」面板（与工具条上的文件名同一个出口） */
+  if (kind === "relpath") {
+    const abs = await resolveChatRelPath(raw);
+    if (!abs) {
+      toast(I18n.t("找不到这个文件（不在当前工作目录里）"), "warn");
+      return;
+    }
+    /* 面板没装载时也不落到下面那支去 —— 相对路径交给外部程序是打不开的，宁可什么都不做 */
+    if (typeof openFilePeek !== "function") {
+      toast(I18n.t("无法定位该文件的完整路径，只给你看文件名"), "warn");
+      return;
+    }
+    openFilePeek(abs, { mode: "read" });
+    return;
+  }
   if (kind === "url" || /^https?:\/\//i.test(raw)) {
     if (!/^https?:\/\//i.test(raw)) {
       toast(I18n.t("已阻止不安全链接"), "warn");

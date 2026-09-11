@@ -26,7 +26,8 @@
  *   覆盖写盘  → 旧文件先进 <素材夹>/.versions/，同一 itemId 只留最近 5 份（撤销要能回滚）
  *              旧文件是 0 字节（这一项本来还没内容）时不留版本，回写 prevEmpty 由渲染层
  *              把撤销解释成「清回空」
- *   删除任何东西 → 先进 <root>/.trash/<时间戳>__<名字>/，用户在资源管理器里可手工找回
+ *   删除任何东西 → 优先交给系统回收站（shell.trashItem，Windows 下可在资源管理器「还原」）；
+ *              shell 不可用或抛错时回退到 <root>/.trash/<时间戳>__<名字>/，两种方式都不实删
  *   任何 rel 入参 → 逐段净化 + 前缀校验，绝不允许逃出根目录
  *
  * 内容是否「变了」由 assets:itemSame 在主进程按字节判定（画布里的图与库里的图路径
@@ -40,7 +41,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { ipcMain } = require("electron");
+const { ipcMain, shell } = require("electron");
 const { readJson, writeJson } = require("./config-providers.js");
 
 const SCHEMA = 1;
@@ -212,8 +213,20 @@ function uniqueItemFile(itemsDir, itemId, ext, taken) {
 
 /* ---------------- 回收站 / 版本 ---------------- */
 
-function moveToTrash(root, abs, label) {
+/* 搬进回收站（绝不实删）：优先 await shell.trashItem(abs) 走系统回收站，用户可在资源管理器
+ * 「还原」；shell 不可用或抛错时回退到库内 <root>/.trash/<时间戳>__<名字>（rename，失败再
+ * 退回复制 + 删除）。返回回退落下时的 .trash 绝对路径；走系统回收站时返回空串
+ * （渲染层只用 res.asset / res.removed，不依赖该路径，这里保持一致的空值语义即可）。 */
+async function moveToTrash(root, abs, label) {
   if (!fs.existsSync(abs)) return "";
+  if (shell && typeof shell.trashItem === "function") {
+    try {
+      await shell.trashItem(path.resolve(abs));
+      return "";
+    } catch {
+      /* 没装 / 被平台拒绝：继续往下走库内 .trash 回退 */
+    }
+  }
   const td = path.join(root, TRASH_DIR);
   fs.mkdirSync(td, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -641,15 +654,16 @@ function registerAssetsIpc(opts) {
     }
   });
 
-  /* 删除分类 / 素材：一律搬进 <root>/.trash，绝不实删 */
-  ipcMain.handle("assets:remove", (e, arg) => {
+  /* 删除分类 / 素材：优先进系统回收站，不可用时回退 <root>/.trash，绝不实删
+     （返回的 trash 字段只在回退到库内 .trash 时是路径，系统回收站时为空串） */
+  ipcMain.handle("assets:remove", async (e, arg) => {
     try {
       const root = rootPath().root;
       const rel = String((arg && arg.rel) || "");
       if (!rel) return badArg(t("缺少路径"));
       const abs = relToAbs(root, rel);
       if (!fs.existsSync(abs)) return { ok: false, error: t("目录不存在") };
-      const dest = moveToTrash(root, abs, path.basename(abs));
+      const dest = await moveToTrash(root, abs, path.basename(abs));
       return { ok: true, trash: dest };
     } catch (err) {
       return fail(err);
@@ -713,13 +727,13 @@ function registerAssetsIpc(opts) {
     }
   });
 
-  ipcMain.handle("assets:delete", (e, arg) => {
+  ipcMain.handle("assets:delete", async (e, arg) => {
     try {
       const root = rootPath().root;
       const id = String((typeof arg === "string" ? arg : (arg && arg.id)) || "");
       const found = findAssetDir(root, id);
       if (!found) return { ok: false, error: t("素材不存在") };
-      const dest = moveToTrash(root, found.dir, found.meta.displayName || path.basename(found.dir));
+      const dest = await moveToTrash(root, found.dir, found.meta.displayName || path.basename(found.dir));
       return { ok: true, trash: dest, rel: found.rel };
     } catch (err) {
       return fail(err);
@@ -911,7 +925,8 @@ function registerAssetsIpc(opts) {
     }
   });
 
-  /* 删除条目：实体文件进 .trash（端子序号收缩与断线由渲染层负责） */  ipcMain.handle("assets:itemRemove", (e, arg) => {
+  /* 删除条目：实体文件优先进系统回收站，不可用时回退 .trash（端子序号收缩与断线由渲染层负责） */
+  ipcMain.handle("assets:itemRemove", async (e, arg) => {
     try {
       const root = rootPath().root;
       const found = findAssetDir(root, String((arg && arg.id) || ""));
@@ -923,7 +938,7 @@ function registerAssetsIpc(opts) {
       const it = items[i];
       const abs = it.file ? path.join(found.dir, it.file.split("/").join(path.sep)) : "";
       let trash = "";
-      if (abs && fs.existsSync(abs)) trash = moveToTrash(root, abs, path.basename(abs));
+      if (abs && fs.existsSync(abs)) trash = await moveToTrash(root, abs, path.basename(abs));
       items.splice(i, 1);
       found.meta.items = items;
       writeMarker(found.dir, found.meta);

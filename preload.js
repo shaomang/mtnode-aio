@@ -79,6 +79,12 @@ contextBridge.exposeInMainWorld('api', {
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),
   fileStat: (p) => ipcRenderer.invoke('file:stat', p),
   fileListDir: (p) => ipcRenderer.invoke('file:listDir', p),
+  /* 左侧边栏「文件」页：一层列举 + 重命名 / 复制 / 移动 / 删除（删除走系统回收站） */
+  fileReadDir: (p) => ipcRenderer.invoke('file:readDir', p),
+  fileRename: (p, name) => ipcRenderer.invoke('file:rename', { path: p, name }),
+  fileCopy: (src, dest) => ipcRenderer.invoke('file:copy', { src, dest }),
+  fileMove: (src, dest) => ipcRenderer.invoke('file:move', { src, dest }),
+  fileTrash: (p) => ipcRenderer.invoke('file:trash', p),
   dbCompile: (dir, records) => ipcRenderer.invoke('db:compile', { dir, records }),
   dbList: (dir) => ipcRenderer.invoke('db:list', { dir }),
   dbQuery: (dir, q, limit) => ipcRenderer.invoke('db:query', { dir, q, limit }),
