@@ -110,6 +110,23 @@ function openSettingsBody() {
   snapRow.appendChild(snapInp);
   body.appendChild(snapRow);
 
+  /* 节点「?」说明按钮：每个节点头部那颗小问号，点击弹出最简语言的功能说明；
+     这里可以整体隐藏，默认打开（见 renderer/app-nodehelp.js 的 nodeHelpEnabled） */
+  const helpRow = document.createElement("label");
+  helpRow.className = "n-field";
+  helpRow.style.flexDirection = "row";
+  helpRow.style.alignItems = "center";
+  const helpCb = document.createElement("input");
+  helpCb.type = "checkbox";
+  helpCb.checked = !(S.config && S.config.showNodeHelp === false);
+  helpRow.appendChild(helpCb);
+  helpRow.appendChild(
+    document.createTextNode(
+      I18n.t("节点「?」说明按钮（点击查看该节点是做什么的；取消勾选则隐藏，默认打开）"),
+    ),
+  );
+  body.appendChild(helpRow);
+
   /* 对话发送行为(迁移自 dsh 的 Enter 行为设置) */
   const enterRow = document.createElement("label");
   enterRow.className = "n-field";
@@ -909,6 +926,8 @@ function openSettingsBody() {
   save.onclick = async () => {
     const snap = Math.max(4, Math.min(64, Number(snapInp.value) || 24));
     S.config.snap = snap;
+    /* 节点「?」说明按钮开关（默认打开；renderCanvas 后即时生效） */
+    S.config.showNodeHelp = !!helpCb.checked;
 
     if (netPortInp) S.config.netPort = Math.max(1, Math.min(65535, Number(netPortInp.value) || NET_DEFAULT_PORT));
     for (const p of S.config.providers) {
@@ -1447,15 +1466,31 @@ function addProviderDialog() {
   const updateInfo = () => {
     const p = catalogAddableProviders().find((x) => x.id === provSel.value);
     nameInp.value = p ? p.name : "";
-    infoRow.textContent = p
-      ? I18n.t("已载入 ") +
-        p.models.length +
-        I18n.t(" 个模型 · 接口地址 ") +
-        (p.baseUrl || I18n.t("（待定）")) +
-        I18n.t(" · API 类型 ") +
-        p.api +
-        I18n.t("。保存后自动生成模型列表。")
-      : "";
+    if (!p) {
+      infoRow.textContent = "";
+      return;
+    }
+    /* 目录里同一服务商可能同时有文本模型与图像模型（如 openai 兼容网关）：
+       保存时会按模型形态拆成「文本服务商 + 图像服务商」两条，各自类型正确，
+       文本 / 图像节点才都选得到。 */
+    const kinds = (p.models || []).map((m) => inferModelKind(m.id));
+    const nImg = kinds.filter((k) => k === "image").length;
+    const kindTxt =
+      nImg && nImg < kinds.length
+        ? I18n.t("（文本 + 图像混挂，保存时自动拆成两条服务商）")
+        : nImg
+          ? I18n.t("（图像模型）")
+          : I18n.t("（文本模型）");
+    infoRow.textContent =
+      I18n.t("已载入 ") +
+      p.models.length +
+      I18n.t(" 个模型") +
+      kindTxt +
+      I18n.t(" · 接口地址 ") +
+      (p.baseUrl || I18n.t("（待定）")) +
+      I18n.t(" · API 类型 ") +
+      p.api +
+      I18n.t("。保存后自动生成模型列表。");
   };
   provSel.addEventListener("change", updateInfo);
   ensureProviderCatalog().then(renderCatalog).catch(renderCatalog);
@@ -1489,18 +1524,44 @@ function addProviderDialog() {
         toast("请填写 API Key", "warn");
         return;
       }
-      prov = {
+      /* 按模型形态拆分：目录里若混挂文本与图像模型，落成两条服务商
+         （同名加「· 图像」后缀），各自的 type 与节点侧选择保持一致。 */
+      const baseName = (nameInp.value || p.name).trim() || p.id;
+      const all = p.models.map((m) => m.id);
+      const textModels = all.filter((m) => inferModelKind(m) !== "image");
+      const imageModels = all.filter((m) => inferModelKind(m) === "image");
+      const mk = (models, type, name, source) => ({
         id: uid("p"),
-        name: (nameInp.value || p.name).trim() || p.id,
-        type: "text_openai",
+        name,
+        type,
         baseUrl: p.baseUrl || "",
         api: p.api || "openai-completions",
-        source: p.id,
+        source,
         apiKey: keyInp.value.trim(),
-        models: p.models.map((m) => m.id),
+        models,
         vision: false,
-      };
-    } else {
+      });
+      const added = [];
+      if (textModels.length)
+        added.push(mk(textModels, providerTypeForKind("text_openai", "text"), baseName, p.id));
+      if (imageModels.length)
+        added.push(
+          mk(
+            imageModels,
+            providerTypeForKind("text_openai", "image"),
+            textModels.length ? baseName + " · " + I18n.t("图像") : baseName,
+            /* 拆出第二条时 source 带后缀，避免下次导入被当成同一条合并 */
+            textModels.length ? p.id + ":image" : p.id,
+          ),
+        );
+      if (!added.length) added.push(mk(all, "text_openai", baseName, p.id));
+      for (const a of added) S.config.providers.push(a);
+      closeOverlay();
+      openSettings();
+      toast(I18n.t("服务商已添加：") + added.map((a) => a.name).join(" / "), "ok");
+      return;
+    }
+    {
       if (!mNameInp.value.trim()) {
         toast(I18n.t("请填写服务商名称"), "warn");
         return;
@@ -1514,6 +1575,19 @@ function addProviderDialog() {
         models: mModelsInp.value.split(",").map((m) => m.trim()).filter(Boolean),
         vision: false,
       };
+      /* 手动配置时用户可能把类型选错（最典型：OpenAI 兼容端点配了文本类型，
+         模型却是 gpt-image-*）。类型与模型形态不符就按模型纠正，并说明原因。 */
+      const k = defaultKindOfProvider(S.config, prov);
+      const want = providerTypeForKind(prov.type, k);
+      if (want !== prov.type) {
+        prov.type = want;
+        toast(
+          I18n.t("按模型自动识别为") +
+            I18n.t(k === "image" ? "图像服务商" : "文本服务商") +
+            I18n.t("，类型已相应设置（可在列表里逐模型调整）"),
+          "warn",
+        );
+      }
     }
     S.config.providers.push(prov);
     closeOverlay();
@@ -2267,6 +2341,41 @@ function provCard(prov, i, onChange) {
   };
   mkField(I18n.t("类型"), typeSel);
 
+  /* 形态（文本 / 图像）：在类型旁把「这个服务商算哪一类」说清楚 ——
+     过去只有类型名（text_openai / image_openai …），同一个 OpenAI 兼容端点既挂
+     文本模型又挂图像模型时分不清，图像节点还会因此选不到这家。形态由模型列表
+     逐个识别（见 renderer/app-model-kind.js），配错的一键纠回。 */
+  const kinds = providerKinds(S.config, prov);
+  const kindHint =
+    kinds.length > 1
+      ? I18n.t("文本 + 图像（同一端点混合，按模型区分）")
+      : kinds[0] === "image"
+        ? I18n.t("图像生成")
+        : I18n.t("文本");
+  const kindWrap = document.createElement("div");
+  kindWrap.className = "pf-kind";
+  const kindTag = document.createElement("span");
+  kindTag.className = "pk-badge pk-" + (kinds.length > 1 ? "mix" : kinds[0]);
+  kindTag.textContent = kindHint;
+  kindWrap.appendChild(kindTag);
+  const wantType = providerTypeForKind(prov.type, kinds[0]);
+  if (wantType !== prov.type) {
+    const fix = document.createElement("button");
+    fix.type = "button";
+    fix.className = "mini";
+    fix.textContent = I18n.t("按模型纠正类型");
+    fix.title = I18n.t(
+      "服务商类型与模型形态不符：按模型列表把类型改为对应的文本 / 图像类型，改完图像或文本节点即可选到这些模型",
+    );
+    fix.onclick = (ev) => {
+      ev.preventDefault();
+      prov.type = wantType;
+      rerender();
+    };
+    kindWrap.appendChild(fix);
+  }
+  mkField(I18n.t("形态"), kindWrap, true);
+
   const nameInp = document.createElement("input");
   nameInp.type = "text";
   nameInp.value = prov.name || "";
@@ -2386,6 +2495,43 @@ function provCard(prov, i, onChange) {
         mi === 0
           ? I18n.t("当前优先使用") + " · " + mid
           : I18n.t("拖动或点击箭头调整优先级");
+      /* 形态徽标：点一下在「文本 / 图像」间切换（写进 config.modelKinds 覆盖自动识别）。
+         徽标文字 = 当前形态；手工指定的与自动识别的差别写在 tooltip 里。 */
+      const kindBtn = document.createElement("button");
+      kindBtn.type = "button";
+      kindBtn.className = "pk-badge pk-btn pk-" + modelKindOf(S.config, prov.id, mid);
+      const isOverride = !!modelKindOverride(S.config, prov.id, mid);
+      kindBtn.textContent =
+        modelKindOf(S.config, prov.id, mid) === "image"
+          ? I18n.t("图像")
+          : I18n.t("文本");
+      kindBtn.title = isOverride
+        ? I18n.t("已手工指定为") +
+          I18n.t(modelKindOf(S.config, prov.id, mid) === "image" ? "图像" : "文本") +
+          " · " +
+          I18n.t("点击切回自动识别")
+        : I18n.t("自动识别为") +
+          I18n.t(modelKindOf(S.config, prov.id, mid) === "image" ? "图像模型" : "文本模型") +
+          " · " +
+          I18n.t("点击改为另一种（并记住）");
+      kindBtn.onclick = (ev) => {
+        ev.preventDefault();
+        const cur = modelKindOf(S.config, prov.id, mid);
+        const next = cur === "image" ? "text" : "image";
+        if (isOverride && next === inferModelKind(mid)) {
+          /* 切回自动识别：删掉这条覆盖 */
+          const per = (S.config.modelKinds || {})[prov.id] || {};
+          delete per[mid];
+          if (!Object.keys(per).length) delete S.config.modelKinds[prov.id];
+          else S.config.modelKinds[prov.id] = per;
+        } else {
+          if (!S.config.modelKinds) S.config.modelKinds = {};
+          if (!S.config.modelKinds[prov.id]) S.config.modelKinds[prov.id] = {};
+          S.config.modelKinds[prov.id][mid] = next;
+        }
+        /* 整卡片重画：形态提示行与「按模型纠正类型」按钮都跟着新形态走 */
+        rerender();
+      };
       const up = document.createElement("button");
       up.type = "button";
       up.className = "mini";
@@ -2433,6 +2579,7 @@ function provCard(prov, i, onChange) {
       row.appendChild(grip);
       row.appendChild(idxEl);
       row.appendChild(name);
+      row.appendChild(kindBtn);
       row.appendChild(up);
       row.appendChild(down);
       row.appendChild(rm);
@@ -2537,9 +2684,48 @@ function provCard(prov, i, onChange) {
   addRow.appendChild(addInp);
   addRow.appendChild(addBtn);
   modelField.appendChild(addRow);
+  /* 一键识别：按模型 id 家族特征词把每个模型标成文本 / 图像（清掉手工覆盖，
+     回到纯自动识别）。徽标仍可逐个手改。 */
+  const kindRow = document.createElement("div");
+  kindRow.className = "mo-kind-hint";
+  const detectBtn = document.createElement("button");
+  detectBtn.type = "button";
+  detectBtn.className = "mini";
+  detectBtn.textContent = I18n.t("自动识别模型类型");
+  detectBtn.title = I18n.t(
+    "按模型 id 识别每个模型是文本模型还是图像生成模型，结果决定它在文本 / 图像节点与保存对话框里是否可选",
+  );
+  detectBtn.onclick = (ev) => {
+    ev.preventDefault();
+    const nImg = (prov.models || []).filter(
+      (m) => inferModelKind(m) === "image",
+    ).length;
+    if (S.config.modelKinds) delete S.config.modelKinds[prov.id];
+    paintModels();
+    toast(
+      I18n.t("已识别 ") +
+        (prov.models || []).length +
+        I18n.t(" 个模型 · 图像 ") +
+        nImg +
+        I18n.t(" · 文本 ") +
+        ((prov.models || []).length - nImg),
+      "ok",
+    );
+  };
+  kindRow.appendChild(detectBtn);
+  const kindNote = document.createElement("span");
+  kindNote.className = "settings-hint";
+  kindNote.style.margin = "0";
+  kindNote.textContent = I18n.t(
+    "徽标 = 模型类型（点一下可改）；同一端点混挂文本与图像模型时会自动区分",
+  );
+  kindRow.appendChild(kindNote);
+  modelField.appendChild(kindRow);
   gridEl.appendChild(modelField);
 
-  if (prov.type === "text_openai") {
+  /* 视觉开关：只要这家有文本模型就显示（混合端点也常靠它走图生文，
+     以前只认 type === text_openai，配成 image_* 的混合端点就没法勾） */
+  if (providerHasKind(S.config, prov, "text")) {
     const inline = document.createElement("label");
     inline.className = "pf pf-inline";
     const cb = document.createElement("input");

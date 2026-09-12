@@ -18,6 +18,7 @@
     "save",
     "save_text",
     "save_image",
+    "save_pdf",
     "split",
     "merge",
     "global",

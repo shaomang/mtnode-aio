@@ -291,7 +291,9 @@ function createDshAdapter(opts) {
 
     _parseSkillMeta(text) {
       const meta = { title: '', description: '', version: '', name: '' }
-      const raw = String(text || '')
+      /* 归一换行：CRLF 的 SKILL.md 会让下面 `(.*)$` 的行匹配整行失败（`.` 不匹配 \r），
+         导致 name / title / description 全部读空 —— 同步按目录名装技能，名字就错了。 */
+      const raw = String(text || '').replace(/\r\n?/g, '\n')
       const fm = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/)
       const body = fm ? fm[2] || '' : raw
       if (fm) {

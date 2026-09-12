@@ -10,6 +10,8 @@
 
 - **mtnode-canvas-batch-safety** — 画布批量与文生图防 N²：MTNode 画布 batchMode=batch 时每次运行只能处理单条输入，禁止把整批 N 条重复塞进每次运行；文生图 proc_image 每次只出 1 张。Use when designing batch workflows, proc_image, split nodes, or user reports duplicate API calls / token explosion.
   - 文件：`mtnode/canvas-batch-safety/SKILL.md`
+- **mtnode-canvas-edit-rules** — 画布编辑硬规则：MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速查、task 三端、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则。Use when creating, wiring, batching or laying out canvas nodes, or when a wire/tool receipt looks wrong. 这些规则不写在 mtnode_canvas_edit 描述里，按需加载本技能。
+  - 文件：`mtnode/canvas-edit-rules/SKILL.md`
 - **mtnode-canvas-layout-ux** — 画布排版与可操作区：MTNode 画布节点排版：可编辑/控制节点靠上（小 y），处理与保存靠下或右侧；createMarks 分区、control 一键重跑；禁止 agent 调用 layout action。Use when auto-layout, createMarks, control nodes, or improving canvas UX for the user.
   - 文件：`mtnode/canvas-layout-ux/SKILL.md`
 - **mtnode-db-facts** — 数据库事实查询纪律：任务接入数据库副本节点（db_replica）时的强制事实纪律：一切事实走 mtnode_db 工具（list/query/get/calc）、断言必须带 [记录id · 标题] 引用、查不到就说「数据库中没有该信息」、数字走 calc、禁止用记忆补全。Use when the task is wired to a database replica or asks about stored facts.

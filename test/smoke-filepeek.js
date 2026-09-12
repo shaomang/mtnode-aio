@@ -31,8 +31,12 @@
  *       js/ts/json 与 jsHighlightHtml 同源 · yaml 委托 · 各语言 token class 命中 · 未知语言只转义
  *   [3] 徽标：真跑 dshToolFileBadges（三源推工作区 / 颜色档 / title / 点击 preventDefault ·
  *       stopPropagation 且把 {mode,line,count} 原样交给面板 / +N 就地展开 / 无基准只提示不开面板 /
- *       确实经过 toolFileRefs / 工作区缓存不重复打真源）+ dshToolDetailsEl 与 planLiveBlock
- *       两个渲染出口真跑挂上徽标（一处改动即全覆盖会话 / 助手 / 节点 / 计划面板）
+ *       确实经过 toolFileRefs / 工作区缓存不重复打真源）+ 工具名后面的那行摘要（dshToolHintEl：
+ *       逐字判 shell / grep·glob 工具 / 多行压一行 / 超过 100 字即截断（显示与 title 同一档）/ hover 先给 description 再给正文 /
+ *       非 shell · 非检索与截断 JSON 串不挂空壳 / 入参对象与 JSON 串两条路；
+ *       grep 另钉「黄路径（在最前）· 绿目标 · 灰参数（参数名转 i18n，include → 包括）」· 路径只显这一处
+ *       （同路径不再重复挂徽标）· 复杂值与表外参数名兜底；glob 与 grep 同源同分色，只把目标那段叫「通配」）+ dshToolDetailsEl 与
+ *       planLiveBlock 两个渲染出口真跑挂上徽标与摘要（一处改动即全覆盖会话 / 助手 / 节点 / 计划面板）
  *   [4] 面板：假 DOM 真跑 openFilePeek（行号槽 + 高亮层 · 折行 · 跳行标记 · 目录 / 图片 / 过大 /
  *       读不到各态 · 最近文件横条 · ✕ 与 Esc 两条显式关闭 · 左缘拖宽落 localStorage）
  *       + persistent 硬断言：整轮跑完，document / window 上出现的监听类型只能是拖拽与 resize，
@@ -740,7 +744,15 @@ BAD.EV(
   "globalThis.__trf=0; (function(){ var o=toolFileRefs; toolFileRefs=function(t){ globalThis.__trf++; return o(t); }; })(); " +
     "globalThis.__peek=[]; (function(){ var o=toggleFilePeek; toggleFilePeek=function(p,q){ globalThis.__peek.push([p,q]); return o(p,q); }; })();",
 );
-const badges = (t, owner) => BAD.EV("dshToolFileBadges(" + JSON.stringify(t) + "," + JSON.stringify(owner) + ")");
+const badges = (t, owner, skip) =>
+  BAD.EV(
+    "dshToolFileBadges(" +
+      JSON.stringify(t) +
+      "," +
+      JSON.stringify(owner) +
+      (skip === undefined ? "" : "," + JSON.stringify(skip)) +
+      ")",
+  );
 const kids = (f) => (f ? f.children : []);
 const clsTxt = (f) => kids(f).map((c) => c.className.replace("dsh-tool-file", "").trim() + ":" + c.textContent).join(" ");
 
@@ -805,6 +817,36 @@ const OUT = loadFileview({
 OUT.EV(
   fnBody(ASSIST, "dshToolDetailsEl") +
     "\n" +
+    fnBody(ASSIST, "dshIsShellTool") +
+    "\n" +
+    fnBody(ASSIST, "dshToolArgsObj") +
+    "\n" +
+    fnBody(ASSIST, "dshToolCmdInfo") +
+    "\n" +
+    fnBody(ASSIST, "dshToolCmdEl") +
+    "\n" +
+    fnBody(ASSIST, "dshIsGrepTool") +
+    "\n" +
+    fnBody(ASSIST, "dshIsGlobTool") +
+    "\n" +
+    fnBody(ASSIST, "dshIsSearchTool") +
+    "\n" +
+    fnBody(ASSIST, "dshGrepLiveStash") +
+    "\n" +
+    fnBody(ASSIST, "dshOneLine") +
+    "\n" +
+    fnBody(ASSIST, "dshGrepArgLabel") +
+    "\n" +
+    fnBody(ASSIST, "dshToolGrepInfo") +
+    "\n" +
+    fnBody(ASSIST, "dshClampSegs") +
+    "\n" +
+    fnBody(ASSIST, "dshToolGrepEl") +
+    "\n" +
+    fnBody(ASSIST, "dshToolHintEl") +
+    "\n" +
+    fnBody(ASSIST, "dshToolHintSkipPath") +
+    "\nconst DSH_TOOL_CMD_MAX = 100;\n" +
     fnBody(PLAN, "planPanelEl") +
     "\n" +
     fnBody(PLAN, "planLiveBlock") +
@@ -828,8 +870,228 @@ OUT.EV(
   EQS(det.open, false, "点徽标没把 details 展开（preventDefault 生效）");
   const det2 = OUT.EV("dshToolDetailsEl({name:'pwsh',args:{workdir:'E:/x',command:'ls'},callId:'c2'},true,'s9')");
   const sum2 = det2.children.find((c) => c.tagName === "summary");
-  EQS(sum2.children.map((c) => c.textContent).join(" "), "◌ pwsh", "非文件工具：那一行只有「◌ 工具名」那颗按钮，不多挂任何东西");
-  ok(sum2.children.length === 1 && sum2.children[0].className === "dsh-tool-chip", "非文件工具时 summary 里只剩那颗按钮本身");
+  EQS(sum2.children.map((c) => c.textContent).join(" "), "◌ pwsh ls", "pwsh：工具名后面直接跟命令正文，不再只有那颗按钮");
+  ok(sum2.children[1].className === "dsh-tool-cmd", "命令正文是独立的 .dsh-tool-cmd（挂在药丸外面，绿色那一档）");
+  /* —— shell 命令：折行 / 截断 / hover 描述 / 非 shell 不挂 —— */
+  {
+    const d = OUT.EV(
+      "dshToolDetailsEl({name:'pwsh',args:{command:'Get-ChildItem\\n  -Recurse\\t-Path src',description:'列出 src 下所有文件'},callId:'c3'},false,'s9')",
+    );
+    const s = d.children.find((c) => c.tagName === "summary");
+    const c = s.children[1];
+    EQS(c.textContent, "Get-ChildItem -Recurse -Path src", "多行 / 制表符压成一行（换行脚本不会把工具条撑成多行）");
+    EQS(c.title, "列出 src 下所有文件\nGet-ChildItem -Recurse -Path src", "hover 先给模型写的 description，再给完整命令");
+    const long = OUT.EV(
+      "dshToolDetailsEl({name:'bash',args:{command:'echo ' + 'x'.repeat(400)},callId:'c4'},false,'s9')",
+    );
+    const lsum = long.children.find((c) => c.tagName === "summary");
+    const lc = lsum.children[1];
+    EQS(lc.textContent.length, 101, "命令超过 100 字即截断：400 字命令只留 100 字 + 一枚省略号");
+    ok(/…$/.test(lc.textContent), "截断处带省略号（一眼看出还有下文）");
+    EQS(lc.title.length, 100, "title 同档：hover 也只给这 100 字，不把整页正文塞进一个节点");
+    EQS(lc.title, "echo " + "x".repeat(95), "没有 description 时 hover 只给这截断后的命令");
+    const huge = OUT.EV(
+      "dshToolDetailsEl({name:'bash',args:{command:'echo ' + 'y'.repeat(2500)},callId:'c8'},false,'s9')",
+    );
+    const hc = huge.children.find((c) => c.tagName === "summary").children[1];
+    EQS(hc.textContent.length, 101, "再长的命令（2500 字）也只到 100 字 + 省略号，上限不再随长度浮动");
+    ok(/…$/.test(hc.textContent), "兜底截断处同样带省略号");
+    EQS(hc.title.length, 100, "更长的命令 title 也只留 100 字（与显示同一档上限）");
+    const nb = OUT.EV(
+      "dshToolDetailsEl({name:'read',args:{file_path:'a.js',command:'not a shell'},callId:'c5'},false,'s9')",
+    );
+    const nbSum = nb.children.find((c) => c.tagName === "summary");
+    ok(!nbSum.children.some((x) => x.__cls.has("dsh-tool-cmd")), "非 shell 工具即使入参里有 command 也不挂命令正文（read 仍只有徽标）");
+    const js = OUT.EV(
+      "dshToolDetailsEl({name:'pwsh',args:'{\"command\":\"dir E:/x\"}',callId:'c6'},false,'s9')",
+    );
+    const jsSum = js.children.find((c) => c.tagName === "summary");
+    EQS(jsSum.children[1].textContent, "dir E:/x", "入参是 JSON 串（旧路径）也能抽出命令");
+    const bad = OUT.EV(
+      "dshToolDetailsEl({name:'pwsh',args:'{\"command\":\"dir E:/p/live…',callId:'c7'},false,'s9')",
+    );
+    const badSum = bad.children.find((c) => c.tagName === "summary");
+    ok(!badSum.children.some((x) => x.__cls.has("dsh-tool-cmd")), "被截断的 JSON 串 parse 不到 → 不挂空壳（宁可不显也不显错）");
+    EQS(OUT.EV("dshToolCmdInfo({name:'execute',args:{command:'x'}})"), null, "工具名逐字判：execute / read 这类不当 shell 处理");
+    EQS(OUT.EV("dshToolCmdInfo({name:'pwsh',args:{workdir:'E:/x'}})"), null, "只有 workdir 没有 command → null");
+  }
+  /* —— grep：黄色路径在前 + 绿色目标在后 + 其余参数转 i18n + 同一档截断 —— */
+  {
+    EQS(OUT.EV("dshGrepArgLabel('include')"), "包括", "include → 包括（需求里点名的那条）");
+    EQS(OUT.EV("dshGrepArgLabel('whatever')"), "", "表外的参数名返回空串 → 调用方按原名原样显示（不编标签）");
+    EQS(OUT.EV("dshToolGrepInfo({name:'pwsh',args:{pattern:'x'}})"), null, "工具名逐字判：pwsh 不当检索处理");
+    EQS(OUT.EV("dshToolGrepInfo({name:'grep',args:{include:'*.js'}})"), null, "既没目标也没路径 → null（不挂空壳）");
+    const g = OUT.EV(
+      "dshToolDetailsEl({name:'grep',args:{pattern:'dshToolCmdEl',path:'renderer/app-assist.js',include:'*.js'},callId:'g1'},false,'s9')",
+    );
+    const gsum = g.children.find((c) => c.tagName === "summary");
+    const gc = gsum.children[1];
+    EQS(gc.className, "dsh-tool-cmd dsh-tool-grep", "grep 的摘要也挂在药丸外面，几何沿用 .dsh-tool-cmd（加 .dsh-tool-grep 分色）");
+    EQS(
+      textOf(gc),
+      "路径 renderer/app-assist.js · 匹配 dshToolCmdEl · 包括 *.js",
+      "路径排在最前（先定位置），命令（搜索目标）跟在后面，其余参数最后",
+    );
+    EQS(
+      gc.children.map((c) => c.className).join(" "),
+      "dsh-tool-grep-k dsh-tool-grep-path dsh-tool-grep-k dsh-tool-grep-pat dsh-tool-grep-opt",
+      "分段成 span：标签 / 路径 / 标签 / 目标 / 其余参数（各段独立上色）",
+    );
+    EQS(gc.children[1].textContent, " renderer/app-assist.js", "路径段在最前面（黄 = 这一段是「在哪搜」）");
+    EQS(gc.children[3].textContent, " dshToolCmdEl", "目标段跟在路径后面（绿 = 这一步到底在找什么）");
+    EQS(gc.children[4].textContent, " · 包括 *.js", "其余参数排在最后，参数名已转词条");
+    EQS(gc.title, "路径 renderer/app-assist.js · 匹配 dshToolCmdEl · 包括 *.js", "没有 description 时 hover 只给未截断的完整一行");
+    EQS(gc.getAttribute("data-tool-path"), "renderer/app-assist.js", "路径段落在元素上留一份原样路径（调用方据此跳过同路径徽标）");
+    ok(
+      !gsum.children.some((x) => x.__cls.has("dsh-tool-file")),
+      "同一路径不再在后面挂第二枚徽标（「路径出现了两次」= 摘要 + 徽标各画了一遍）",
+    );
+    const gd = OUT.EV(
+      "dshToolDetailsEl({name:'grep',args:{pattern:'foo',include:'*.js',description:'看看谁引用了它'},callId:'g2'},false,'s9')",
+    );
+    const gdc = gd.children.find((c) => c.tagName === "summary").children[1];
+    EQS(textOf(gdc), "匹配 foo · 包括 *.js", "没有 path 就不显路径那段（少一段就是少一段，不留空标签）");
+    EQS(gdc.title, "看看谁引用了它\n匹配 foo · 包括 *.js", "hover 先给模型写的 description，再给完整一行");
+    EQS(gdc.getAttribute("data-tool-path"), null, "没有路径就不留 marker（别的工具照旧挂徽标）");
+    const gp = OUT.EV("dshToolDetailsEl({name:'grep',args:{pattern:'only'},callId:'g3'},false,'s9')");
+    const gpc = gp.children.find((c) => c.tagName === "summary").children[1];
+    EQS(textOf(gpc), "匹配 only", "只有目标时就是「匹配 xxx」");
+    const gu = OUT.EV("dshToolDetailsEl({name:'grep',args:{pattern:'x','-i':true,nested:{a:1}},callId:'g4'},false,'s9')");
+    const guc = gu.children.find((c) => c.tagName === "summary").children[1];
+    EQS(textOf(guc), "匹配 x · -i", "表外的参数名按原名显示；复杂值（对象）不塞进这一行");
+    const gl = OUT.EV(
+      "dshToolDetailsEl({name:'grep',args:{pattern:'p'.repeat(400),path:'src/a.js'},callId:'g5'},false,'s9')",
+    );
+    const glc = gl.children.find((c) => c.tagName === "summary").children[1];
+    EQS(
+      textOf(glc),
+      "路径 src/a.js · 匹配 " + "p".repeat(82) + "…",
+      "超长检索摘要同一档 100 字：路径与标签先占位，剩下的留给目标并截断收尾",
+    );
+    ok(/…$/.test(textOf(glc)), "截断的那一段带省略号（是目标那段被砍，不是整行没了）");
+    EQS(textOf(glc).length, 100, "摘要正文不超过 100 字（与命令行同一档上限）");
+    ok(
+      glc.title === "路径 src/a.js · 匹配 " + "p".repeat(83) && glc.title.length === 100,
+      "title 同档 100 字（hover 也只给这截断后的一行，不塞整页正文）",
+    );
+    const gr = OUT.EV(
+      "dshToolDetailsEl({name:'read',args:{pattern:'x',include:'*.js'},callId:'g6'},false,'s9')",
+    );
+    ok(
+      !gr.children.find((c) => c.tagName === "summary").children.some((x) => x.__cls.has("dsh-tool-grep")),
+      "非检索工具即使入参里有 pattern 也不挂检索摘要（read 仍只有徽标）",
+    );
+    const gjs = OUT.EV(
+      "dshToolDetailsEl({name:'grep',args:'{\"pattern\":\"dir E:/x\",\"include\":\"*.md\"}',callId:'g7'},false,'s9')",
+    );
+    EQS(
+      textOf(gjs.children.find((c) => c.tagName === "summary").children[1]),
+      "匹配 dir E:/x · 包括 *.md",
+      "入参是 JSON 串（旧路径）也认",
+    );
+    /* 只有目标、没有路径时不误判：徽标该挂还挂（跳过只针对摘要里那一条路径） */
+    const gb = OUT.EV(
+      "dshToolDetailsEl({name:'grep',args:{pattern:'foo'},callId:'g9'},false,'s9')",
+    );
+    EQS(
+      OUT.EV("dshToolHintSkipPath(dshToolHintEl({name:'grep',args:{pattern:'foo'}}))"),
+      null,
+      "没路径 → 不返回跳过名单（不误伤别人的徽标）",
+    );
+    EQS(
+      JSON.stringify(OUT.EV("dshToolHintSkipPath(dshToolHintEl({name:'grep',args:{pattern:'foo',path:'src/a.js'}}))")),
+      JSON.stringify(["src/a.js"]),
+      "有路径 → 原样给一份跳过名单（交给 dshToolFileBadges 过滤）",
+    );
+    ok(!gb.children.find((c) => c.tagName === "summary").children.some((x) => x.__cls.has("dsh-tool-file")),
+      "只有 pattern 的 grep 本来也没有徽标（pattern 不是路径）");
+    EQS(
+      clsTxt(badges({ name: "grep", args: { pattern: "foo", path: "src/a.js" } }, "assist", null)),
+      "m-dir:a.js",
+      "不带跳过名单时 grep 的 path 仍给徽标（跳过是调用方按需传的，不是把 grep 一刀切）",
+    );
+    EQS(
+      JSON.stringify(badges({ name: "grep", args: { pattern: "foo", path: "E:\\dev\\assist\\src\\a.js" } }, "assist", ["e:/dev/assist/src/a.js/"])),
+      "null",
+      "跳过名单大小写 / 斜杠方向 / 结尾斜杠归一后命中 → 同一路径不再挂第二枚（全被跳掉时返回 null）",
+    );
+    /* en 口径：参数名词条整体切换（界面语言跟着走，不是写死的中文） */
+    OUT.I18n.setLocale("en");
+    const gen = OUT.EV("dshToolDetailsEl({name:'grep',args:{pattern:'foo',path:'src/a.js',include:'*.js'},callId:'g8'},false,'s9')");
+    EQS(
+      textOf(gen.children.find((c) => c.tagName === "summary").children[1]),
+      "Path src/a.js · Match foo · Include *.js",
+      "英文界面下三个标签都走 i18n 词条、顺序同样是路径在前，不漏中文",
+    );
+    OUT.I18n.setLocale("zh");
+    EQS(
+      JSON.stringify(OUT.EV("dshGrepLiveStash({pattern:'a',path:'b',include:'c',file_text:'x'.repeat(50)})")),
+      '{"pattern":"a","path":"b","include":"c"}',
+      "计划面板搬运只留 grep 的字符串参数（不把 write 的整篇正文搬进 live）",
+    );
+    EQS(OUT.EV("dshGrepLiveStash({file_text:'x'})"), null, "抽不出检索参数 → null（不往 live 记录上挂空对象）");
+    /* —— glob（文件名检索）：与 grep 共用同一行读法，绿色那段换叫「通配」 —— */
+    EQS(OUT.EV("dshIsGlobTool('glob')"), true, "glob 逐字认（网关给小写 glob）");
+    EQS(OUT.EV("dshIsGlobTool('Glob')"), true, "大小写不敏感（与 shell / grep 同口径）");
+    EQS(OUT.EV("dshIsGlobTool('globall')"), false, "前缀相似的 globall 不算（同样不做前缀匹配）");
+    EQS(OUT.EV("dshIsSearchTool('glob')"), true, "glob 与 grep 同属「检索」这一档（一并走同一行渲染）");
+    EQS(OUT.EV("dshToolGrepInfo({name:'read',args:{pattern:'*.js'}})"), null, "read 不算检索工具（入参里有 pattern 也不挂）");
+    const gob = OUT.EV(
+      "dshToolDetailsEl({name:'glob',args:{pattern:'**/*.js',path:'renderer',description:'找找入口'},callId:'b1'},false,'s9')",
+    );
+    const gobsum = gob.children.find((c) => c.tagName === "summary");
+    const gobc = gobsum.children[1];
+    EQS(
+      gobc.className,
+      "dsh-tool-cmd dsh-tool-grep dsh-tool-glob",
+      "glob 走同一份摘要：几何与分色沿用 grep 那三条，另加一枚记号 class",
+    );
+    EQS(textOf(gobc), "路径 renderer · 通配 **/*.js", "glob 同样是「黄色路径在前 · 绿色目标在后」，目标那段叫「通配」");
+    EQS(gobc.getAttribute("data-tool-kind"), "glob", "glob 在元素上留一份记号（与 grep 分得开）");
+    EQS(gobc.getAttribute("data-tool-path"), "renderer", "同一路径也留给调用方跳过徽标");
+    EQS(gobc.title, "找找入口\n路径 renderer · 通配 **/*.js", "hover 同样先给模型写的 description，再给完整一行");
+    ok(
+      !gobsum.children.some((x) => x.__cls.has("dsh-tool-file")),
+      "glob 的路径也只显这一处（后面不再重复挂同一路径的徽标）",
+    );
+    EQS(
+      JSON.stringify(OUT.EV("dshToolHintSkipPath(dshToolHintEl({name:'glob',args:{pattern:'*.js',path:'src'}}))")),
+      JSON.stringify(["src"]),
+      "glob 的路径同样进跳过名单（与 grep 一个口径）",
+    );
+    const gob2 = OUT.EV("dshToolDetailsEl({name:'glob',args:{pattern:'*.md'},callId:'b2'},false,'s9')");
+    EQS(
+      textOf(gob2.children.find((c) => c.tagName === "summary").children[1]),
+      "通配 *.md",
+      "只有模式没有路径时就是「通配 xxx」（少一段就是少一段，不留空标签）",
+    );
+    EQS(
+      textOf(
+        OUT.EV("dshToolDetailsEl({name:'glob',args:'{\"pattern\":\"*.ts\",\"path\":\"src\"}',callId:'b3'},false,'s9')").children.find(
+          (c) => c.tagName === "summary",
+        ).children[1],
+      ),
+      "路径 src · 通配 *.ts",
+      "glob 的入参是 JSON 串（旧路径）也认",
+    );
+    EQS(
+      OUT.EV("dshToolGrepInfo({name:'glob',args:{include:'*.js'}})"),
+      null,
+      "glob 同样：既没模式也没路径 → null（不挂空壳）",
+    );
+    OUT.I18n.setLocale("en");
+    EQS(
+      textOf(
+        OUT.EV("dshToolDetailsEl({name:'glob',args:{pattern:'**/*.md',path:'guides'},callId:'b4'},false,'s9')").children.find(
+          (c) => c.tagName === "summary",
+        ).children[1],
+      ),
+      "Path guides · Glob **/*.md",
+      "英文界面下 glob 两个标签都走 i18n 词条（通配 → Glob），不漏中文",
+    );
+    OUT.I18n.setLocale("zh");
+  }
+  ok(sum2.children.length === 2 && sum2.children[0].className === "dsh-tool-chip", "非文件工具：按钮 + 命令正文，不多挂别的（没有文件徽标）");
   HAS(ASSIST, 'if (typeof dshToolFileBadges === "function")', "出口先探测符号（分块加载 / 切片跑测时不抛）");
   HAS(ASSIST, 'sum.className = "dsh-tool-sum"', "summary 不再是药丸本身（外框让给里面那颗按钮，两者不再同义）");
   HAS(ASSIST, "sum.appendChild(chip)", "按钮先挂上，文件名随后挂在它后面");
@@ -850,6 +1112,45 @@ OUT.EV(
   it.children[1].fire("click");
   EQS(JSON.stringify(OUT.EV("__peek2[__peek2.length-1]")), JSON.stringify(["E:\\p\\live.js", { mode: "read" }]), "计划面板的基准 = 所属会话（agentRunWorkspace 真源）");
   HAS(PLAN, "planLiveBlock(live, st && st.id)", "调用点把所属会话 id 传进去（基准不靠猜）");
+  /* 计划面板行里的 shell 命令 / grep 摘要：args 早被截断 / 对象型入参只是 "[object Object]"，
+     内容必须靠 planLiveFeed 原样搬过来的 cmd / desc / gargs 字段（同一份 dshToolHintEl 渲染） */
+  HAS(PLAN, "cmd: a && typeof a.command === \"string\" ? a.command : \"\"", "planLiveFeed 从入参对象里原样留一份 command（截断的 args 串后面取不到）");
+  HAS(PLAN, "desc: a && typeof a.description === \"string\" ? a.description : \"\"", "description 同样留一份（hover 要显的就是它）");
+  HAS(PLAN, "gargs: typeof dshGrepLiveStash === \"function\" ? dshGrepLiveStash(a) : null,", "grep / glob 的目标 / 路径 / 参数也原样留一份（只留字符串参数，不搬整篇正文）");
+  HAS(ASSIST, "function dshGrepLiveStash(a) {", "搬运函数与渲染口径同在 app-assist.js（一处改全覆盖）");
+  HAS(PLAN, "hintEl = dshToolHintEl(t);", "计划面板与工具条同一份渲染出口（不各写一份）");
+  HAS(PLAN, "dshToolHintSkipPath(hintEl)", "计划面板也按摘要里的黄色路径跳过重复徽标（两处出口口径一致）");
+  const box2 = OUT.EV(
+    "planLiveBlock({state:'running',text:'正文',tools:[{name:'pwsh',state:'running',cmd:'dir E:/x',desc:'列目录',args:'[object Object]'}]},'s9')",
+  );
+  const it2 = box2.children.filter((c) => c.__cls.has("ap-live-tools"))[0].children.find((c) => c.__cls.has("ap-tool"));
+  EQS(it2.children[1].className, "dsh-tool-cmd", "计划面板行里也跟上命令正文（同一个 .dsh-tool-cmd）");
+  EQS(it2.children[1].textContent, "dir E:/x", "命令正文取自 planLiveFeed 留的那份原文");
+  EQS(it2.children[1].title, "列目录\ndir E:/x", "计划面板的 hover 同样先给描述再给全文");
+  const box3 = OUT.EV(
+    "planLiveBlock({state:'running',text:'正文',tools:[{name:'grep',state:'running',gargs:{pattern:'foo',path:'src/a.js',include:'*.js'},args:'{\"pattern\":\"foo\",\"path…'}]},'s9')",
+  );
+  const it3 = box3.children.filter((c) => c.__cls.has("ap-live-tools"))[0].children.find((c) => c.__cls.has("ap-tool"));
+  EQS(it3.children[1].className, "dsh-tool-cmd dsh-tool-grep", "计划面板行里的 grep 摘要走同一个出口（窄清单靠 CSS 再收窄）");
+  EQS(
+    textOf(it3.children[1]),
+    "路径 src/a.js · 匹配 foo · 包括 *.js",
+    "截断的 args 串 parse 不到 → 用 gargs 那份原文渲染（路径在前），信息不丢",
+  );
+  const box4 = OUT.EV(
+    "planLiveBlock({state:'running',text:'正文',tools:[{name:'glob',state:'running',gargs:{pattern:'**/*.md',path:'guides'},args:'{\"pattern\":\"**/*…'}]},'s9')",
+  );
+  const it4 = box4.children.filter((c) => c.__cls.has("ap-live-tools"))[0].children.find((c) => c.__cls.has("ap-tool"));
+  EQS(it4.children[1].className, "dsh-tool-cmd dsh-tool-grep dsh-tool-glob", "计划面板行里的 glob 摘要走同一个出口（几何 / 分色 / 截断全沿用）");
+  EQS(
+    textOf(it4.children[1]),
+    "路径 guides · 通配 **/*.md",
+    "glob 的目标那段在计划面板里也叫「通配」（与工具条一字不差）",
+  );
+  ok(
+    !it4.children.some((c) => c.__cls.has("dsh-tool-file")),
+    "计划面板里 glob 的同一路径同样不重复挂徽标（跳过名单两条出口一致）",
+  );
 }
 
 /* ═══════════════ [4] 右侧文件查看面板（假 DOM 真跑） ═══════════════ */
@@ -1251,7 +1552,7 @@ const host = () => PV.EV("document.getElementById('filePeek')");
     const assistCss = () => ASSISTCSS;
     const ASSISTCSS = read("renderer/css/assist.css");
     const interesting = Array.from(new Set(emitted)).filter(
-      (c) => /^(fp-|jsl-|dsh-tool-file|fv-more|ap-|md-viewer-doc)/.test(c),
+      (c) => /^(fp-|jsl-|dsh-tool-file|dsh-tool-cmd|dsh-tool-grep|fv-more|ap-|md-viewer-doc)/.test(c),
     );
     ok(interesting.length >= 40, "收集到运行时真实使用的 class 共 " + interesting.length + " 个");
     const missing = interesting.filter((c) => !inCss(c));
@@ -1276,7 +1577,8 @@ const host = () => PV.EV("document.getElementById('filePeek')");
       ok(new RegExp("body\\.theme-light \\.dsh-tool-file\\." + m).test(LIGHT) || m === "m-read", "亮色主题覆盖到 ." + m);
     }
     ok(/\.dsh-tool-file\.fv-more/.test(DSHCSS), "收成 +N 那枚有独立中性色（不与读档混淆）");
-    ok(/\.dsh-tool summary\s*\{[^}]*align-items:\s*center/s.test(DSHCSS) && /\.dsh-tool summary\s*\{[^}]*flex-wrap:\s*wrap/s.test(DSHCSS), "summary 排版：按钮与后面的文件名垂直居中 + 放不下就换行（不撑破工具条）");
+    ok(/\.dsh-tool summary\s*\{[^}]*align-items:\s*center/s.test(DSHCSS) && /\.dsh-tool summary\s*\{[^}]*flex-wrap:\s*nowrap/s.test(DSHCSS), "summary 排版：按钮与后面的文件名垂直居中 + 永远单行（nowrap，命令再长也不折到第二行）");
+    ok(/\.dsh-tool summary\s*\{[^}]*overflow:\s*hidden/s.test(DSHCSS) && /\.dsh-tool summary\s*\{[^}]*min-width:\s*0/s.test(DSHCSS), "summary 兜住不让字符出界（overflow:hidden）且允许收缩（min-width:0）");
     /* 文件名只是文字、且在工具按钮外面 —— 这两条都是用户明确要的，别再改回「带框的徽标塞进药丸」 */
     ok(!/\.dsh-tool-file\s*\{[^}]*border/s.test(DSHCSS) && !/\.dsh-tool-file\s*\{[^}]*background/s.test(DSHCSS), "文件名不给外框也不给底色（只是文字，边框底色属于那颗工具按钮）");
     ok(/\.dsh-tool-file:hover\s*\{[^}]*text-decoration:\s*underline/s.test(DSHCSS), "没有外框之后，可点的提示改成 hover 下划线");
@@ -1284,6 +1586,37 @@ const host = () => PV.EV("document.getElementById('filePeek')");
     ok(/\.dsh-tool\[open\] \.dsh-tool-chip/.test(DSHCSS) && /\.dsh-tool\.err \.dsh-tool-chip/.test(DSHCSS), "展开态 / 出错红都跟着那颗按钮（文件名不跟着变红）");
     ok(/\.dsh-tool-body\s*\{[^}]*border:\s*1px solid var\(--bd2\)/s.test(DSHCSS) && /\.dsh-tool-body\s*\{[^}]*margin-top:/s.test(DSHCSS), "参数框自带顶边并与按钮留缝（按钮不再与它黏合成一格）");
     ok(/body\.theme-light \.dsh-tool-chip:hover/.test(LIGHT), "亮色主题的悬停 / 展开态跟着改成那颗按钮");
+    /* shell 命令正文：绿色 + 硬限制 100 字（JS 侧就截断），CSS 再用 nowrap/ellipsis 兜一层 */
+    ok(/\.dsh-tool-cmd\s*\{[^}]*color:\s*var\(--green\)/s.test(DSHCSS), "命令正文是绿色（与青色工具药丸一眼分家）");
+    ok(/\.dsh-tool-cmd\s*\{[^}]*white-space:\s*nowrap/s.test(DSHCSS) && /\.dsh-tool-cmd\s*\{[^}]*text-overflow:\s*ellipsis/s.test(DSHCSS) && /\.dsh-tool-cmd\s*\{[^}]*overflow:\s*hidden/s.test(DSHCSS), "一行放不下才收尾（nowrap + ellipsis + overflow:hidden）");
+    ok(/\.dsh-tool-cmd\s*\{[^}]*max-width:\s*100%/s.test(DSHCSS), "宽度上限 100%（不超过所在行）");
+    ok(!/\.dsh-tool-cmd\s*\{[^}]*min\(360px/s.test(DSHCSS), "旧的 360px 上限已撤（那档会让短命令也被提前截断）");
+    ok(/\.dsh-tool-cmd\s*\{[^}]*min-width:\s*0/s.test(DSHCSS), "min-width:0 让这一行缩得下来（否则 flex 不肯收缩，整条推到下一行）");
+    ok(/\.dsh-tool-cmd\s*\{[^}]*flex:\s*1 1 auto/s.test(DSHCSS), "吸走这一行的剩余宽度（放不下时自己收缩到省略号，绝不折行）；后面的文件徽标 flex:none 不被压");
+    /* 容器侧的两条死规则：details 本身不许被命令撑宽（否则照样出界），药丸不许被压成两行 */
+    ok(/\.dsh-tool\s*\{[^}]*min-width:\s*0/s.test(DSHCSS) && /\.dsh-tool\s*\{[^}]*overflow:\s*hidden/s.test(DSHCSS), "工具块自己 min-width:0 + overflow:hidden（右串命令撑不破容器、顶不出界）");
+    ok(/\.dsh-tool-chip\s*\{[^}]*flex:\s*none/s.test(DSHCSS) && /\.dsh-tool-chip\s*\{[^}]*white-space:\s*nowrap/s.test(DSHCSS), "工具药丸固定宽度且不换行（容器一窄也不会被压成「🔧 / pwsh」两行）");
+    ok(/\.ap-live-tools \.dsh-tool-cmd\s*\{[^}]*max-width/s.test(DSHCSS), "计划面板窄清单里仍另收一档（不挤掉状态与结果摘要）");
+    ok(!/\.dsh-tool-cmd/.test(LIGHT), "亮色主题不用另写一条：命令正文取的是 var(--green)，随 base.css 的 body.theme-light 自动换色");
+    /* grep 检索摘要：黄路径（在前）/ 绿目标 / 灰参数（参数名已转词条） */
+    ok(/\.dsh-tool-grep-pat\s*\{[^}]*color:\s*var\(--green\)/s.test(DSHCSS), "搜索目标用绿色（与命令行正文同一档绿）");
+    ok(/\.dsh-tool-grep-path\s*\{[^}]*color:\s*var\(--yellow\)/s.test(DSHCSS), "目标路径用黄色（排在前面那一段，与文件徽标的青分家）");
+    ok(/\.dsh-tool-grep-opt\s*\{[^}]*color:\s*var\(--muted\)/s.test(DSHCSS), "其余参数是中性灰（不抢目标的绿）");
+    ok(/\.dsh-tool-grep\s*\{[^}]*color:/s.test(DSHCSS), "容器兜一档中性色（没上色的段落不继承 .dsh-tool-cmd 的绿）");
+    ok(/\.dsh-tool-grep-k\s*\{[^}]*color:/s.test(DSHCSS), "参数名标签有独立规则（同一档灰）");
+    ok(/\.dsh-tool-glob\s*\{[^}]*color:/s.test(DSHCSS), "glob 也有一条行本身的规则（分色完全沿用 .dsh-tool-grep-* 那三条，不另造一套）");
+    ok(!/\.dsh-tool-grep/.test(LIGHT), "亮色主题不另写：四段取的都是主题变量，随 base.css 自动换色");
+    /* --yellow 是新变量：三个主题块都得给值，否则亮色 / 工业主题里那一段直接没颜色 */
+    {
+      const BASE = read("renderer/css/base.css");
+      const blocks = BASE.split(/^\}/m);
+      const rootBlock = blocks.find((b) => /^:root\s*\{/m.test(b)) || "";
+      const indBlock = blocks.find((b) => /body\.theme-industrial\s*\{/.test(b)) || "";
+      const lightBlock = blocks.find((b) => /body\.theme-light\s*\{/.test(b)) || "";
+      ok(/--yellow\s*:/.test(rootBlock), "base.css 的 :root 定义了 --yellow（grep 路径那段黄色的唯一真源）");
+      ok(/--yellow\s*:/.test(indBlock), "工业主题也给了 --yellow（换主题不会把这段颜色丢掉）");
+      ok(/--yellow\s*:/.test(lightBlock), "亮色主题也给了 --yellow（浅底上用深黄，白底看得清）");
+    }
     ok(!/body\.theme-light \.dsh-tool-file[^{]*\{[^}]*(?:border|background)/s.test(LIGHT), "亮色主题下文件名同样只有文字色（没把边框底色补回来）");
     ok(/\.fp-scroll\.fp-wrap \.fp-gutter/.test(FVCSS), "折行时收起行号槽（换行后行号对不上，宁可不显）");
     /* 行号「显示不完全」的两个真凶：stretch 把槽裁成一屏高 + 固定宽度截掉多位行号 */
@@ -1343,6 +1676,23 @@ const host = () => PV.EV("document.getElementById('filePeek')");
     }
     ok(clash.length === 0, "本轮词条若撞上表里已有的键，英文值必须一致（不一致 = 后写的悄悄覆盖前一条）");
     clash.forEach((c) => console.log("  CLASH " + c));
+    /* grep 检索摘要的参数名词条：真源在 app-assist.js 的 dshGrepArgLabel，逐条查英文表 */
+    {
+      const body = fnBody(ASSIST, "dshGrepArgLabel");
+      const used = Array.from(
+        new Set(Array.from(body.matchAll(/I18n\.t\("([^"]+)"\)/g)).map((m) => m[1])),
+      );
+      ok(used.length >= 10, "从 dshGrepArgLabel 真源码里抠到 " + used.length + " 个参数名词条");
+      ok(used.indexOf("包括") >= 0 && used.indexOf("排除") >= 0, "「包括 / 排除」在表里（include / exclude 档）");
+      I18N.setLocale("en");
+      const miss2 = used.filter((k) => {
+        const v = I18N.t(k);
+        return !v || v === k;
+      });
+      I18N.setLocale("zh");
+      ok(miss2.length === 0, "每个参数名词条都有英文译文（英文界面不漏中文）");
+      miss2.forEach((k) => console.log("  MISS  " + k));
+    }
     I18N.setLocale("zh");
     EQS(I18N.t("文件查看"), "文件查看", "zh 口径原样返回中文真源");
   }

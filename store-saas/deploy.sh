@@ -30,5 +30,5 @@ sleep 0.8
 echo "local: $(curl -sS http://127.0.0.1:8787/api/health)"
 echo "proxy: $(curl -sS -H 'Host: mt-agent.com' http://127.0.0.1/mtnode/store-api/api/health)"
 echo "plugins: $(curl -sS -o /tmp/plugins-cat.json -w '%{http_code}' -H 'Host: mt-agent.com' http://127.0.0.1/mtnode/plugins/catalog.json)"
-echo "forum: $(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: mt-agent.com' http://127.0.0.1/mtnode/store-api/api/forum/messages?room=general)"
+echo "forum: $(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: mt-agent.com' http://127.0.0.1/mtnode/store-api/api/forum/topics)"
 systemctl is-active mtnode-store

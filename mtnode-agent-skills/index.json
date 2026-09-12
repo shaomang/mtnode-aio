@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-09-06T02:00:58.426Z",
+  "updatedAt": "2026-09-11T15:00:25.778Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -14,6 +14,14 @@
           "title": "画布批量与文生图防 N²",
           "description": "MTNode 画布 batchMode=batch 时每次运行只能处理单条输入，禁止把整批 N 条重复塞进每次运行；文生图 proc_image 每次只出 1 张。Use when designing batch workflows, proc_image, split nodes, or user reports duplicate API calls / token explosion.",
           "path": "mtnode/canvas-batch-safety/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "canvas-edit-rules",
+          "name": "mtnode-canvas-edit-rules",
+          "title": "画布编辑硬规则",
+          "description": "MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速查、task 三端、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则。Use when creating, wiring, batching or laying out canvas nodes, or when a wire/tool receipt looks wrong. 这些规则不写在 mtnode_canvas_edit 描述里，按需加载本技能。",
+          "path": "mtnode/canvas-edit-rules/SKILL.md",
           "version": ""
         },
         {

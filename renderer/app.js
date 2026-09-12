@@ -44,6 +44,10 @@ const S = {
   thinking: {},
   thinkOpen: null,
   openDshTools: {},
+  /* 会话「思考」翻译（不持久化）：S.thinkTrans[<会话/节点 id> + ":" + 段序] =
+     { status:"pending"|"done"|"error", text|error, sig }。
+     按段缓存：同一段点过一次就复用，重绘 / 切会话回来仍显示译文（右侧小按钮 → 译文）。 */
+  thinkTrans: {},
   /* 工作流对象袋：切画布时保留仍有运行中节点的 wf，避免内容丢失 / 串画布 */
   wfBag: {},
   /* 智能运行画布编辑绑定栈（canvas 事件写入对应 wf，而非当前展示的 S.wf） */
@@ -114,15 +118,6 @@ const S = {
      切回来原位恢复 —— 避免每次 Tab 返回都被打回根画布。交接点只有 setForegroundWf
      一处（后台换画布编辑 runAgainstWf 不经这里，不会串到用户没在看的图）。 */
   wfViews: {},
-  /* 画布查找 / 替换（Ctrl+F / Ctrl+G，仅当前工作流） */
-  findBar: {
-    open: false,
-    replaceMode: false,
-    query: "",
-    replace: "",
-    matches: [],
-    idx: -1,
-  },
   /* 应用插件目录缓存（appPluginsCatalog 快照）：菜单项可见性 / 节点未安装警示条用。
      启动时与插件对话框增删后刷新（refreshAppPluginsCache）。 */
   plugins: [],
@@ -219,6 +214,8 @@ const KIND_CLS = {
   save: "sv",
   save_text: "sv",
   save_image: "sv",
+  /* PDF 生成：与保存节点同配色（sv）—— 它就是把文本落盘成文件的保存族节点 */
+  save_pdf: "sv",
   task: "task",
   agent_task: "agent",
   control: "ctrl",
@@ -283,6 +280,9 @@ const KIND_ICON_SVG = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.5 4.2h1.8M5.5 6h2.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
   save_image:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.2 7.2L8 10l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="10.2" y="3" width="3.2" height="2.6" rx=".4" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
+  /* PDF 生成：文档纸 + 折角 + 导出箭头（与保存族同色） */
+  save_pdf:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.6h5.2L12 5.6V13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.1 2.9V5.5H11.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 7.3v3.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M6.5 9.4L8 10.9l1.5-1.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   /* 任务 · 规划步骤 */
   task:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="11.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M4.6 6.1l1.5 1.5 3.4-3.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 10.6h6.8M4.6 12.4h4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
@@ -569,18 +569,26 @@ const AGENT_PRESET_DEFAULT = "minimal";
 const AGENT_PRESET_LEGACY_IDS = { sketch: "lean" };
 /* Agent 会话 / 助手 / 智能节点的思考强度档（对应 dsh/gateway/reasoning-effort.mjs 的
    EFFORT_ORDER）——渲染层唯一真源：
-   - AGENT_EFFORT_ORDER：可选用档词汇 low/medium/high/xhigh/max，全档合法（旧 high/max
-     原样合法），旧档（off/none/无/空）与未知值 → high 兜底默认；归一化不迁移不重置
-     已存会话的档位（值在词汇表内一律原样保留）。
-   - AGENT_EFFORT_UI_ORDER：UI 露出档（助手栏下拉 / 会话思考强度菜单），表序 = 菜单序，
-     轻 / 标准 / 强 / 最强。medium 不在露出集：默认 deepseek-official 路由把 medium 按
-     同侧最近低档夹到 low（见 dsh/DESIGN.md「思考强度契约」），露出来会在默认路由静默
-     降档；若能力查证确认有真实可消费 medium 的路由/模型，把 "medium" 插进
-     AGENT_EFFORT_UI_ORDER 即可——词汇表与白名单归一已含 medium，无需再改其它迁移。
-   - AGENT_EFFORT_LABELS：档位短名（zh 文本同时是 i18n key，取用时 I18n.t 即切语言）。 */
+   - AGENT_EFFORT_ORDER：可选用档词汇 low/medium/high/xhigh/max（与网关口白逐值一致，
+     含未露出 UI 的 medium），也是「开发节点」的落盘白名单（`devEffortKnown` 只认这五个：
+     agent 链上不能让功能块把思考关掉，proc_text 非智能节点另有自己的 off/低/中/高 循环）。
+   - AGENT_EFFORT_UI_ORDER：会话 / 助手（含「构建工作流」Agent 设定、工具 · 函数节点
+     「AI 调用」、专家团档位）的露出档，表序 = 菜单序 = 由弱到强：无 / 轻 / 标准 / 强 / 最强。
+     「无」= off = 关闭思考（网关 reasoning-effort.mjs 的 off 档，deepseek-official 路由
+     能力表含 off，直达 llm-deepseek 的 thinking.type=disabled）；归一化不迁移不重置
+     已存会话的档位（值在露出集或词汇表内一律原样保留）。medium 不在露出集：默认
+     deepseek-official 路由把 medium 按同侧最近低档夹到 low（见 dsh/DESIGN.md「思考强度
+     契约」），露出来会在默认路由静默降档；若能力查证确认有真实可消费 medium 的路由 / 模型，
+     把 "medium" 插进 AGENT_EFFORT_UI_ORDER 即可——词汇表与白名单归一已含 medium。
+   - AGENT_EFFORT_DEV_ORDER：开发节点（功能块）「Agent 设定」弹层的思考强度格 ——
+     不含「无」（`devEffort` 白名单 = AGENT_EFFORT_ORDER，选得到的档才落得下盘）。
+   - AGENT_EFFORT_LABELS：档位短名（zh 文本同时是 i18n key，取用时 I18n.t 即切语言；
+     未露出 UI 的 medium 也有短名）。 */
 const AGENT_EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
-const AGENT_EFFORT_UI_ORDER = ["low", "high", "xhigh", "max"];
+const AGENT_EFFORT_UI_ORDER = ["off", "low", "high", "xhigh", "max"];
+const AGENT_EFFORT_DEV_ORDER = ["low", "high", "xhigh", "max"];
 const AGENT_EFFORT_LABELS = {
+  off: "无",
   low: "轻",
   medium: "中",
   high: "标准",
@@ -606,10 +614,11 @@ function agentPresetById(id) {
    （历史上「思维精简」会把「标准」自动降到 low），预设只管思考的表达形式，
    思考预算由用户设置说了算。路由能力不足时网关把请求夹到同侧最近低档并回传
    effort 事件（回显 = 下发契约），渲染层不再拍平（medium/xhigh 原样放行）。 */
-/* 白名单归一：词汇表内原样返回（旧值 high/max 原样合法），旧档 / 未知 → high 默认。 */
+/* 白名单归一：可选用档原样返回；off / none / 无 → off（会话 / 助手的「无」= 关闭思考，
+   与网关口白同判）；空串与未知值 → high 默认。 */
 function normalizeAgentEffort(v) {
   const raw = String(v == null ? "" : v).trim().toLowerCase();
-  if (raw === "无") return "high";
+  if (raw === "off" || raw === "none" || raw === "无") return "off";
   return AGENT_EFFORT_ORDER.includes(raw) ? raw : "high";
 }
 /* 档位短名（本地化）：词汇表内任一档（含未露出 UI 的 medium）都有可显示名。 */
@@ -768,6 +777,19 @@ const NODE_DEFAULTS = {
     savedPaths: [],
     savedAt: 0,
     boundFromId: "",
+    /* 图像输出（尺寸 / 裁剪 / 格式 / 质量）：真源与归一在 renderer/app-imageout.js，
+       缺省 = 原样复制 + 跟随后缀，与没有这批字段的老存档完全一致 */
+    oopMode: "orig",
+    oopCrop: "none",
+    oopFormat: "png",
+    oopScale: 100,
+    oopWidth: 0,
+    oopHeight: 0,
+    oopCropX: 0,
+    oopCropY: 0,
+    oopCropW: 0,
+    oopCropH: 0,
+    oopQuality: 0.92,
   },
   /* 旧工作流别名：hydrate 会迁成 save */
   save_text: {
@@ -793,6 +815,30 @@ const NODE_DEFAULTS = {
     savedPaths: [],
     savedAt: 0,
     boundFromId: "",
+  },
+  /* PDF 生成（保存族变体）：接文本输入，把内容排版成 .pdf 落盘。
+     排版本体在主进程 pdf-write.js（隐藏窗口 + printToPDF），公式走 renderer/math-render.js
+     同一份渲染器（KaTeX 离线内置，缺 KaTeX 时回退子集）→ PDF 里的公式与画布预览长得一样。
+     字段 pdfPageSize / pdfLandscape / pdfMargin / pdfFontScale / pdfPageNumbers / pdfTitle
+     就是「版面」设定（真源在 app-canvas.js 的 save_pdf 设置表单，取值口径见 pdf-write.js）。
+     auto:false —— 只有「点 ▶ 才生成」一种口径：接线 / 上游更新都不自动落盘
+     （autoSaveSaves 里对 save_pdf 直接跳过，见 app-nodes.js）。 */
+  save_pdf: {
+    w: 320,
+    h: 250,
+    title: "PDF生成",
+    savePath: "",
+    auto: false,
+    batchMode: "batch",
+    pdfPageSize: "A4",
+    pdfLandscape: false,
+    pdfMargin: "normal",
+    pdfFontScale: "m",
+    pdfPageNumbers: true,
+    pdfTitle: "",
+    savedPath: "",
+    savedPaths: [],
+    savedAt: 0,
   },
   split: { w: 260, h: 190, title: "拆分" },
   merge: { w: 230, h: 150, title: "合并" },
@@ -843,6 +889,15 @@ const NODE_DEFAULTS = {
        分隔符统一 '/'；也容忍绝对路径），最多 DEV_CORE_FILES_MAX 个。
        最外层开发节点（项目节点）不列举。口径见 app-devnode.js 同名小节。 */
     devFiles: [],
+    /* 「AI 调用」设定（工具节点 / 开发节点共用同一组字段；函数节点见 function 段）：
+       aiModel 空 = 未选择、跟随默认；aiProvider 为智能路由 id（由模型自动推断）；
+       aiPreset = 预设档 id（AGENT_PRESETS）；aiEffort = 思考强度档位词汇表内值。
+       工具节点上选中后＝其内部子图 AI 节点的默认；内部节点自己选过则以内部为准
+       （按 nodeParentSuperId 就近向上找最近的工具节点）。口径见 app-aicall.js。 */
+    aiModel: "",
+    aiProvider: "",
+    aiPreset: "",
+    aiEffort: "",
     /* 工具节点变体（tool:true，沿用 db:/dev: 变体模式）：Agent 可调用工具 ·
        参数即端子。toolConfig = { name, description, inputs:[{name,kind}],
        outputs:[{name,kind}] }；标题默认 = 工具名，手动改名后 name 独立。 */
@@ -1200,6 +1255,13 @@ const NODE_DEFAULTS = {
     inputs: [],
     outputs: [],
     fnTestInputs: [],
+    /* 「AI 调用」设定：与工具 / 开发节点同一组字段（见 super 段注释）。
+       函数节点自己需要借助 AI 时（jscode 里 await mtnode.ai(...)）就用这一套；
+       创建时按当前默认路由 / 默认预设补种，改选后立即生效。 */
+    aiModel: "",
+    aiProvider: "",
+    aiPreset: "",
+    aiEffort: "",
     output: null,
     batchOutputs: null,
     error: null,
@@ -2647,7 +2709,12 @@ function isPinnedCtrl(n) {
   return !!(n && n.kind === "control" && n.ctrlPinned);
 }
 function isSaveKind(kind) {
-  return kind === "save" || kind === "save_text" || kind === "save_image";
+  return (
+    kind === "save" ||
+    kind === "save_text" ||
+    kind === "save_image" ||
+    kind === "save_pdf"
+  );
 }
 function isSaveNode(n) {
   return !!(n && isSaveKind(n.kind));
@@ -2656,7 +2723,7 @@ function isPinnedWire(w) {
   return !!(w && w.pinned);
 }
 const BOUND_SAVE_GAP = 48;
-const SAVE_EXT = { text: ".md", image: ".png", audio: ".wav", video: ".mp4" };
+const SAVE_EXT = { text: ".md", image: ".png", audio: ".wav", video: ".mp4", pdf: ".pdf" };
 function saveExtForMedia(media) {
   return SAVE_EXT[media] || SAVE_EXT.text;
 }
@@ -2672,7 +2739,7 @@ function forcePathExt(p, ext) {
 function stemOfFilename(name) {
   return String(name || "")
     .trim()
-    .replace(/\.(ya?ml|png|jpe?g|webp|gif|wav|flac|mp3|mp4|webm|mov)$/i, "");
+    .replace(/\.(ya?ml|png|jpe?g|webp|gif|wav|flac|mp3|mp4|webm|mov|pdf)$/i, "");
 }
 function dirOfPath(p) {
   const s = String(p || "");
@@ -3194,6 +3261,9 @@ function wireSourceMediaType(node, fromIndex) {
 }
 function saveMediaKind(node) {
   if (!node) return "text";
+  /* PDF 生成节点：输入永远是文本，落盘格式永远是 .pdf（不看输入媒体类型，
+     所以要在按输入判型之前先定死） */
+  if (node.kind === "save_pdf") return "pdf";
   if (node.boundFromId) {
     const g = nodeById(node.boundFromId);
     if (g && g.kind === "music_gen") return "audio";
@@ -3226,8 +3296,71 @@ function mediaGenOfBoundSave(sv) {
   const n = nodeById(sv.boundFromId);
   return isMediaGenNode(n) ? n : null;
 }
+/** 保存节点的输入内容类型是否已经「定下来」——只有定了才决定后缀。
+    定了 = 接了数据线（按端子类型判型） / 绑定了媒体生成节点 / 遗留的类型化别名
+          / 路径上已经写了可辨认的后缀（那是用户自己定的）。
+    没定（刚建出来、还没连输入）→ 文件名保持原样，不擅自补后缀。 */
+function saveMediaCertain(node) {
+  if (!node) return false;
+  /* PDF 生成：输入是文本、落盘是 .pdf，两样都定死了 */
+  if (node.kind === "save_pdf") return true;
+  if (node.boundFromId) {
+    const g = nodeById(node.boundFromId);
+    if (g && (isMediaGenNode(g) || g.kind === "music_gen")) return true;
+  }
+  if (node.legacySaveMedia) return true;
+  if (node.kind === "save_text" || node.kind === "save_image") return true;
+  if (saveDataLinks(node).length > 0) return true;
+  const p = String(node.savePath || node.savedPath || "").trim();
+  return /\.(ya?ml|md|markdown|txt|png|jpe?g|webp|bmp|gif|wav|flac|mp3|mp4|webm|mov)$/i.test(p);
+}
+/** 节点卡「文件名」的读写口径（单一真源）：
+    读 = savePath 的文件名部分去掉后缀（默认不带后缀）；写 = 只换文件名，目录沿用原路径。
+    写入不补后缀 —— 后缀由输入内容类型在落盘时决定（见 saveFilenameExtOf / forcePathExt）。 */
+function saveFilenameOf(node) {
+  const raw = String((node && node.savePath) || "").trim();
+  if (!raw) return "";
+  return stemOfFilename(fileName(raw.replace(/\\/g, "/")));
+}
+/** 该节点已定型的后缀（输入类型未定 → 空串，界面显示「后缀待定」）。 */
+function saveFilenameExtOf(node) {
+  if (!isSaveNode(node) || !saveMediaCertain(node)) return "";
+  const media = saveMediaKind(node);
+  if (media === "image" && typeof saveImageExtFor === "function")
+    return saveImageExtFor(node);
+  return saveExtForMedia(media);
+}
+/** 文件名清洗：只挡非法字符，保留空格与中文，首尾的点 / 空白去掉。
+    （非法字符表写成字符串常量，不在正则字面量里塞引号 —— 冒烟脚本按括号扫函数体，
+    正则里的引号会被误当字符串起始，导致相邻函数被一起吞进切片。） */
+const SAVE_NAME_BAD_CHARS = "\\/:*?\"<>|";
+function saveFilenameSanitize(name) {
+  let out = "";
+  for (const ch of String(name || "")) {
+    if (ch.codePointAt(0) < 32) continue;
+    out += SAVE_NAME_BAD_CHARS.indexOf(ch) >= 0 ? "_" : ch;
+  }
+  return out.replace(/^[.\s]+|[.\s]+$/, "");
+}
+function saveFilenameSet(node, name) {
+  if (!isSaveNode(node)) return;
+  const raw = String(node.savePath || "").trim().replace(/\\/g, "/");
+  const dir = dirOfPath(raw);
+  const stem = saveFilenameSanitize(name);
+  const next = stem ? (dir ? dir + "/" + stem : stem) : "";
+  node.savePath = applySuperRelToPath(node, preferRelativeSavePath(next));
+}
+/** 展示 / 落盘用的路径：输入类型已定 → 补上决定好的后缀；未定 → 原样（不猜后缀）。 */
+function savePathDisplay(node) {
+  const raw = String((node && node.savePath) || "").trim();
+  if (!raw) return "";
+  const ext = saveFilenameExtOf(node);
+  return ext ? forcePathExt(raw, ext) : raw;
+}
 function applySavePathExt(node) {
   if (!isSaveNode(node)) return;
+  /* 输入类型还没定 → 后缀也不定：保持用户写的原样，绝不猜一个后缀贴上去 */
+  if (!saveMediaCertain(node)) return;
   const ext = saveExtForMedia(saveMediaKind(node));
   const raw = String(node.savePath || "").trim();
   if (!raw) return;
@@ -4784,9 +4917,12 @@ function ensureDefaultSavePath(node) {
     applySavePathExt(node);
     return;
   }
+  /* PDF 生成不预填路径：它的默认名 = **输入节点**的标题，而且接上之前根本取不到那个名字
+     （见 saveDestBaseAbs / pdfDefaultNameOf）。预填成「PDF生成.pdf」反而盖住正确默认名。 */
+  if (node.kind === "save_pdf") return;
   if (!String(wfWorkspace() || "").trim() && !mediaGenOfBoundSave(node)) return;
-  const ext = saveExtForMedia(saveMediaKind(node));
-  const base = safeFile(node.title || "output") + ext;
+  /* 默认文件名不带后缀：后缀等输入内容类型定下来再决定（未定就写原样，落盘前不猜） */
+  const base = safeFile(node.title || "output");
   node.savePath = applySuperRelToPath(node, base);
 }
 function savePathResolveError(code) {
@@ -4930,14 +5066,15 @@ function recordDshMetrics(node, m) {
 }
 
 /* 思考强度映射（下发网关前的最后归一，词汇与 dsh/gateway/reasoning-effort.mjs 对齐）:
-   - 会话 / 助手 / 智能节点：low/medium/high/xhigh/max 全档原样下发（medium/xhigh 不再拍平）
-   - 旧档 none/off/无/空 与未知值 → high（兜底默认，兼容已存工作流）
-   - 智能文本节点（proc_text agent，自带 无/低/中/高 四档，fromProcText=true）：
-     off → high（agent 链上思考不能关闭）；高 → max（历史口径：文本节点顶档 = dsh 顶档，
-     已存节点语义不变）；低 → low、中 → medium（跟随档位词汇原样） */
+   - 会话 / 助手 / 智能节点：off/low/medium/high/xhigh/max 全档原样下发（off = 「无」＝
+     关闭思考；medium/xhigh 不再拍平）
+   - 空串 / none 与未知值 → high（兜底默认，兼容已存工作流）
+   - 智能文本节点（proc_text agent，自带 无/低/中/高/最强 五档，fromProcText=true）：
+     off（无）→ high（agent 链上思考不能关闭）；高 → max（历史口径：文本节点顶档 = dsh 顶档，
+     已存节点语义不变）；低 → low、中 → medium、最强 → max（跟随档位词汇原样） */
 function dshEffortOf(v, fromProcText) {
   let raw = String(v == null || v === "" ? "high" : v).toLowerCase();
-  if (raw === "无" || raw === "off" || raw === "none") return "high";
+  if (raw === "off" || raw === "none" || raw === "无") return fromProcText ? "high" : "off";
   if (raw === "high") return fromProcText ? "max" : "high";
   return AGENT_EFFORT_ORDER.includes(raw) ? raw : "high";
 }
@@ -5056,6 +5193,34 @@ function blurMarkEditing() {
       ae.blur();
     } catch (_) {}
   }
+}
+/* 画布上「绘制文字」（.mk-text）编辑中，点其它任何位置都必须先退出编辑态。
+   为什么不能指望浏览器自己移走焦点：画布空白、节点、组、端子与各类拖拽手柄的
+   mousedown 普遍 preventDefault（各自为了阻止原生拖选 / 保住拖拽），preventDefault
+   会连「焦点转移」一起挡掉 —— contentEditable 便一直握着 document.activeElement；
+   而 renderCanvas 在 isMarkTextEditing() 为真时又把重绘 defer 掉，于是点哪儿都退不出
+   编辑态、被推迟的重绘也永远补不上（选中态 / 文本 DOM 停在编辑形态）。
+   这里在 document 捕获阶段显式补一次 blur（早于任何 preventDefault 生效），
+   只放行「点在正在编辑的那枚绘制自身内部」——移动 / 缩放手柄、工具条、颜色选择器。
+   blur 处理器负责落盘正文并兑现之前被 defer 的重绘。返回是否真的收起了编辑态，
+   便于回归测试直接跑这段判据。 */
+function markTextBlurOnOutsidePointer(ev) {
+  const ae = document.activeElement;
+  if (
+    !ae ||
+    !ae.isContentEditable ||
+    !ae.classList ||
+    typeof ae.classList.contains !== "function" ||
+    !ae.classList.contains("mk-text")
+  )
+    return false;
+  const owner = typeof ae.closest === "function" ? ae.closest(".wf-mark") : null;
+  const t = ev && ev.target;
+  if (owner && t && t.nodeType === 1 && owner.contains(t)) return false;
+  try {
+    ae.blur();
+  } catch (_) {}
+  return true;
 }
 function applySnap(s) {
   /* 撤销/重做必须立刻重绘绘制层，不可被文字编辑 defer 挡住 */
@@ -5757,6 +5922,7 @@ function ensureFnToolNodeState(node) {
     if (!Array.isArray(node.fnTestInputs)) node.fnTestInputs = [];
     if (!Array.isArray(node.inputs)) node.inputs = [];
     if (!Array.isArray(node.outputs)) node.outputs = [];
+    if (typeof ensureAiCallState === "function") ensureAiCallState(node);
     node.inputs = node.inputs.map((e, i) => {
       const p = normFnToolEntry(e, i, "in");
       if (!p.name) p.name = I18n.t("参数 ") + (i + 1);
@@ -5771,6 +5937,7 @@ function ensureFnToolNodeState(node) {
     /* 「试跑」台输入快照（与函数节点 fnTestInputs 同机制 · 独立字段）：
        按输入参数序号存字符串，仅测试用 · 不参与画布运行。 */
     if (!Array.isArray(node.toolTestInputs)) node.toolTestInputs = [];
+    if (typeof ensureAiCallState === "function") ensureAiCallState(node);
     const c =
       node.toolConfig && typeof node.toolConfig === "object"
         ? node.toolConfig
@@ -6320,6 +6487,11 @@ function videoGenInputCount(node) {
   const maxImg = videoGenMaxImages(node);
   const maxVid = videoGenMaxVideos(node);
   const maxAud = videoGenMaxAudios(node);
+  /* R2V：参考图 / 视频 / 音频三组端子一次排全（图 2..10 · 视频 11..13 · 音频 14..16）。
+     端子号就是三组下标，与后端 ref_image_0..8 / ref_video_0..2 / ref_audio_0..2 一一对应。
+     若按「占用数渐进展开」只露前缀，排在最后的音频端子要等 9 张参考图 + 3 段参考视频
+     全接满才露头（等于永远用不上）。自建工作流模式同样一次排全。 */
+  if (videoGenMode(node) === "r2v") return 1 + maxImg + maxVid + maxAud;
   const imgN =
     videoGenMode(node) === "fl2va"
       ? maxImg
@@ -6389,6 +6561,7 @@ function minWFor(n) {
     case "save":
     case "save_text":
     case "save_image":
+    case "save_pdf":
       return 280;
     case "judge":
       return 260;
@@ -6427,6 +6600,7 @@ function minHFor(n) {
     case "save":
     case "save_text":
     case "save_image":
+    case "save_pdf":
       return 160;
     case "input_image":
       return 120;
@@ -6634,6 +6808,7 @@ function nodeKindPurposeKey(node) {
     save: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_text: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
     save_image: "保存（按输入自判文本 / 图像 / 音频 / 视频）",
+    save_pdf: "PDF生成（文本排版成 PDF · 支持公式）",
     split: "拆分（批次 → 单项只读节点）",
     merge: "合并（多节点 → 批次）",
     agent_task: "智能任务（读文件 / 联网 / 执行命令）",
@@ -7839,13 +8014,194 @@ async function stopAllRuns() {
    overlayPersistent 仍保留给调用方表达意图（设置窗等），并供冒烟断言读取。 */
 let overlayPersistent = false;
 let overlayKind = "";
+/* 是否允许这只窗最小化到状态栏（openOverlay 的 opts.min === false 可关掉；默认允许） */
+let overlayMinimizable = true;
+
+/* ═══════════════ 弹窗最小化到状态栏（Footer） ═══════════════
+   最小化 = 把整只 .overlay-box 原样搬进隐藏的 #ovPark 停放（搬走前摘掉 ovTitle /
+   ovBody / ovFoot 三个 id，避免与当前窗撞号），状态栏那一排留一枚「画布 tab 同款」
+   页签；点页签再原样搬回来 —— DOM 与窗内状态都不重建，改到一半的输入不会丢。
+   同一时刻只有一只窗挂在 #overlay 上：要恢复另一只时先把当前这只同样停放下去（无损换位）。 */
+const OV_MIN_MS = 180; /* 与 css/components.css 的 ovMinOut / ovMinIn 时长一致 */
+/* 结构须与 index.html 里 #overlay 的初始窗壳一致（加元素两边都要改） */
+const OV_SHELL_HTML =
+  '<div class="overlay-head"><b id="ovTitle"></b>' +
+  '<button type="button" class="ov-min-btn" title="' +
+  I18n.t("最小化到状态栏") +
+  '" aria-label="' +
+  I18n.t("最小化到状态栏") +
+  '"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
+  '<path fill="currentColor" d="M5 11h14v2H5z"/></svg></button></div>' +
+  '<div class="overlay-body" id="ovBody"></div>' +
+  '<div class="overlay-foot" id="ovFoot"></div>';
+let _ovMinSeq = 0;
+const _ovMinList = []; /* [{ id, title, box, chip }] 已最小化的窗（页签顺序即最小化顺序） */
+
+/** 当前挂在 #overlay 上的窗壳（被最小化搬走后为 null） */
+function ovShellBox() {
+  const ov = document.getElementById("overlay");
+  return ov ? ov.querySelector(":scope > .overlay-box") : null;
+}
+/** 取当前窗壳；上一只被最小化搬走了就照 OV_SHELL_HTML 补一只（#ovBody / #ovFoot 永远可用） */
+function ovShellEnsure() {
+  const ov = document.getElementById("overlay");
+  if (!ov) return null;
+  let box = ov.querySelector(":scope > .overlay-box");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "overlay-box";
+    box.innerHTML = OV_SHELL_HTML;
+    ov.appendChild(box);
+  }
+  const minBtn = box.querySelector(".ov-min-btn");
+  if (minBtn && !minBtn.dataset.wired) {
+    minBtn.dataset.wired = "1";
+    minBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ovMinimizeActive();
+    });
+  }
+  return box;
+}
+/** 停放时摘 id、回来时挂回：全应用的 #ovTitle / #ovBody / #ovFoot 只认当前这只窗 */
+function ovShellIds(box, on) {
+  if (!box) return;
+  [
+    [".overlay-head b", "ovTitle"],
+    [".overlay-body", "ovBody"],
+    [".overlay-foot", "ovFoot"],
+  ].forEach((p) => {
+    const el = box.querySelector(p[0]);
+    if (!el) return;
+    if (on) el.id = p[1];
+    else el.removeAttribute("id");
+  });
+}
+/** 开新窗时撤销还没跑完的最小化动画（否则 180ms 后会把刚填好的窗搬走） */
+function ovMinCancel(box) {
+  if (!box) return;
+  delete box.dataset.ovMinPending;
+  box.classList.remove("ov-min-out");
+}
+function ovMinBar() {
+  let bar = document.getElementById("ovMinBar");
+  if (bar) return bar;
+  const foot = document.querySelector("footer.statusbar");
+  if (!foot) return null;
+  bar = document.createElement("div");
+  bar.id = "ovMinBar";
+  bar.className = "ov-minbar";
+  bar.hidden = true;
+  foot.insertBefore(bar, foot.firstChild);
+  return bar;
+}
+function ovMinPark() {
+  let park = document.getElementById("ovPark");
+  if (!park) {
+    park = document.createElement("div");
+    park.id = "ovPark";
+    park.hidden = true;
+    park.setAttribute("aria-hidden", "true");
+    document.body.appendChild(park);
+  }
+  return park;
+}
+function ovMinSyncBar() {
+  const bar = document.getElementById("ovMinBar");
+  if (bar) bar.hidden = !bar.children.length;
+}
+/** 最小化当前窗（缓进缓出：动画走完再搬走；instant = 立即停放，用于恢复时的无损换位） */
+function ovMinimizeActive(instant) {
+  const box = ovShellBox();
+  if (!box || box.dataset.ovMinPending === "1" || box.classList.contains("ov-min-out"))
+    return false;
+  const titleEl = box.querySelector(".overlay-head b");
+  const title = (titleEl && titleEl.textContent) || I18n.t("窗口");
+  const ov = document.getElementById("overlay");
+  const finish = () => {
+    if (box.dataset.ovMinPending !== "1") return; /* 其间被新窗抢占 / 已取消 */
+    delete box.dataset.ovMinPending;
+    box.classList.remove("ov-min-out");
+    ovShellIds(box, false);
+    ovMinPark().appendChild(box);
+    if (ov) {
+      ov.style.pointerEvents = "";
+      ov.style.display = "none";
+    }
+    const rec = { id: "ovmin" + ++_ovMinSeq, title, box, chip: null };
+    _ovMinList.push(rec);
+    const bar = ovMinBar();
+    if (bar) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "ov-min-tab";
+      chip.title = I18n.t("点击恢复到对话窗") + " · " + title;
+      const name = document.createElement("span");
+      name.className = "ov-min-tab-name";
+      name.textContent = title;
+      chip.appendChild(name);
+      chip.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ovMinRestore(rec);
+      });
+      bar.appendChild(chip);
+      bar.hidden = false;
+      rec.chip = chip;
+    }
+  };
+  box.dataset.ovMinPending = "1";
+  if (instant) {
+    finish();
+    return true;
+  }
+  box.classList.add("ov-min-out");
+  if (ov) ov.style.pointerEvents = "none";
+  setTimeout(finish, OV_MIN_MS);
+  return true;
+}
+/** 点状态栏页签：把它原样搬回 #overlay（当前正开着的另一只先无损停放下去） */
+function ovMinRestore(rec) {
+  if (!rec || !rec.box || !rec.box.parentNode) return;
+  const active = ovShellBox();
+  if (active && active !== rec.box) ovMinimizeActive(true);
+  const box = rec.box;
+  if (rec.chip && rec.chip.parentNode) rec.chip.parentNode.removeChild(rec.chip);
+  const i = _ovMinList.indexOf(rec);
+  if (i >= 0) _ovMinList.splice(i, 1);
+  const ov = document.getElementById("overlay");
+  if (!ov) return;
+  ov.appendChild(box);
+  ovShellIds(box, true);
+  const titleEl = box.querySelector(".overlay-head b");
+  if (titleEl) titleEl.textContent = rec.title;
+  box.classList.add("ov-min-in");
+  setTimeout(() => box.classList.remove("ov-min-in"), OV_MIN_MS + 40);
+  ov.style.pointerEvents = "";
+  ov.style.alignItems = "";
+  ov.style.display = "flex";
+  ovMinSyncBar();
+}
+/** 上下文整块换掉（切画布等）时丢弃全部最小化窗：DOM 与页签一起清，不留指向旧对象的窗 */
+function ovMinDropAll() {
+  _ovMinList.length = 0;
+  const park = document.getElementById("ovPark");
+  if (park) park.innerHTML = "";
+  const bar = document.getElementById("ovMinBar");
+  if (bar) {
+    bar.innerHTML = "";
+    bar.hidden = true;
+  }
+}
+
 function openOverlay(title, opts) {
   opts = opts || {};
   overlayPersistent = !!opts.persistent;
+  overlayMinimizable = opts.min !== false;
   overlayKind = "";
   S.thinkOpen = null; // 打开新弹窗时结束上一弹窗的思考流式更新
-  const box = $("#overlay .overlay-box");
+  const box = ovShellEnsure();
   if (box) {
+    ovMinCancel(box);
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
@@ -7858,6 +8214,8 @@ function openOverlay(title, opts) {
        把「正在显示的别的弹窗」误认成自己而 closeOverlay（见 app-nodes.js
        confirmAssistAction 的 overlayIsMine） */
     if (box.dataset.ixConfirmId) delete box.dataset.ixConfirmId;
+    const minBtn = box.querySelector(".ov-min-btn");
+    if (minBtn) minBtn.hidden = !overlayMinimizable;
   }
   /* 内联居中同理：作者窗曾写死 alignItems，清掉让后续弹窗走样式表 */
   $("#overlay").style.alignItems = "";
@@ -7866,6 +8224,7 @@ function openOverlay(title, opts) {
   $("#ovTitle").textContent = title;
   $("#ovBody").innerHTML = "";
   $("#ovFoot").innerHTML = "";
+  $("#overlay").style.pointerEvents = "";
   $("#overlay").style.display = "flex";
 }
 /* 弹窗关闭只走显式路径：窗内「取消 / 完成并关闭」按钮、✕、Esc、切画布 / 撤销 / 删节点。
@@ -7873,8 +8232,9 @@ function openOverlay(title, opts) {
 function closeOverlay() {
   S.thinkOpen = null;
   closeTplSubOverlay();
-  const box = $("#overlay .overlay-box");
+  const box = ovShellBox();
   if (box) {
+    ovMinCancel(box);
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
@@ -7883,6 +8243,7 @@ function closeOverlay() {
     if (box.dataset.ixConfirmId) delete box.dataset.ixConfirmId;
   }
   $("#overlay").style.alignItems = "";
+  $("#overlay").style.pointerEvents = "";
   const body = $("#ovBody");
   if (body) body.classList.remove("tpl-store-body", "g-ref-ov");
   document.querySelectorAll("#overlay > .plugin-pop").forEach((el) => el.remove());
@@ -9029,7 +9390,8 @@ function mediaKindOfPath(p) {
 const IMAGE_FILE_EXTS = [
   "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "avif", "apng",
 ];
-/* 可当正文读进「文本节点」的扩展名：文档 / 数据 / 代码 / 配置 / 脚本 */
+/* 可当正文读进「文本节点」的扩展名：文档 / 数据 / 代码 / 配置 / 脚本
+   （pdf 也在内：拖入后建「文本节点」，正文由 renderer/pdf-markdown.js 解析出的 Markdown 填充） */
 const TEXT_FILE_EXTS = [
   "txt", "text", "md", "markdown", "mdx", "rst", "adoc", "log", "json",
   "json5", "jsonc", "ndjson", "yaml", "yml", "toml", "ini", "cfg", "conf",
@@ -9039,6 +9401,7 @@ const TEXT_FILE_EXTS = [
   "swift", "c", "h", "cpp", "hpp", "cc", "cs", "php", "lua", "pl", "r",
   "sql", "sh", "bash", "zsh", "bat", "cmd", "ps1", "nsh", "nsi", "proto",
   "graphql", "gql", "tpl", "njk", "mustache", "po", "pot", "srt", "vtt",
+  "pdf",
 ];
 /* 外部拖入的文件该建哪种节点：'image' | 'text' | 'audio' | 'video' | 'other'
    （other = 未知/二进制，一律建成开发节点「文件」块，只留路径引用） */
@@ -12162,6 +12525,13 @@ function allTextItems(src, consumer, portIdx) {
     );
     return feed ? allTextItems(nodeById(feed.from), src) : [];
   }
+  /* 本地语音转写（Qwen3-ASR）：音频来源若已有转写文本，就用「音频转写 · 标题」块代替
+     原来那条 file:/// URL（见 renderer/app-asr.js · asrTextItemsOf）。只在消费者是文字
+     处理节点、且确实有转写时接管；没有转写返回 null，下面各分支行为逐字不变。 */
+  if (typeof asrTextItemsOf === "function") {
+    const asrItems = asrTextItemsOf(src, consumer, portIdx);
+    if (asrItems && asrItems.length) return asrItems;
+  }
   /* 素材节点：一条内容 = 一个条目端子。文本给正文、音频 / 视频给 file:/// URL
      （与 assetItemValueOf / refTextFromValue 对外同一口径），图像不在此列。
      缺了这一支，聚合模式与 @Tag 引用就永远看不到素材里的东西。 */
@@ -12832,6 +13202,15 @@ function resolveRefs(prompt, node, idx, opts) {
     const useIdx = fromIdx != null ? fromIdx : idx;
     if (!markSeen(c, useIdx)) return;
     const v = valueForInput(c, useIdx, node);
+    /* 音频来源（input_audio / 素材音频条目 / 语音与音乐产物 / 工具与函数节点的音频端子）：
+       有转写文本就用转写文本当背景块，没有才退回原口径（取 file:/// URL 或产物路径）。 */
+    if (typeof asrTranscriptBlockFor === "function") {
+      const at = asrTranscriptBlockFor(node, c, useIdx);
+      if (at) {
+        textSources.push({ id: c.id, title: at.title, text: at.text });
+        return;
+      }
+    }
     const t = refTextFromValue(v);
     if (t != null)
       textSources.push({
@@ -12846,7 +13225,13 @@ function resolveRefs(prompt, node, idx, opts) {
     for (const w of wiresTo(node.id)) {
       for (const src of refLeafSourcesForWire(w, node)) {
         wiredLeaves.add(src.id);
-        if (isRefTextSourceKind(src))
+        if (
+          isRefTextSourceKind(src) ||
+          /* 音频来源：只有「确有转写文本」才自动进背景块（没有转写时维持旧行为 ——
+             音频线不往提示词里塞 file:/// URL，见 renderer/app-asr.js） */
+          (typeof asrTranscriptBlockFor === "function" &&
+            !!asrTranscriptBlockFor(node, src, refInputIdxFor(node, src, idx, w)))
+        )
           addText(src, refInputIdxFor(node, src, idx, w));
       }
     }
@@ -12941,6 +13326,66 @@ function mergeImagePaths(primary, secondary) {
     }
   }
   return out;
+}
+
+/* 本节点本次运行真正会下发的图像序列（顺序 = 请求里的 image[]，「第 1 张」即 image[0]）。
+   口径与 buildSpec / buildSpecAgg 完全一致：连线输入图 + 未连线的全局广播图，
+   再与 @ 引用图按「@ 引用优先」合并（mergeImagePaths）。
+   · buildSpec / buildSpecAgg 把已经收好的连线+广播图用 imagesIn 传进来，省一次遍历；
+   · 蒙版编辑器与前置校验不传 imagesIn，按同一份定义现收（agg=true 走聚合口径的条目）；
+   · refs 可传已算好的 resolveRefs / resolveRefsAgg 结果复用，否则就地解析。 */
+function runImagePaths(node, idx, refs, imagesIn, agg) {
+  if (!node) return [];
+  const images = Array.isArray(imagesIn) ? imagesIn.slice() : [];
+  let runPrompt = "";
+  try {
+    if (typeof procPromptForRun === "function") runPrompt = procPromptForRun(node);
+  } catch (e) {
+    runPrompt = "";
+  }
+  if (!Array.isArray(imagesIn)) {
+    try {
+      const wiredFrom = new Set(wiresTo(node.id).map((w) => w.from));
+      if (agg) {
+        for (const w of wiresTo(node.id)) {
+          const src = nodeById(w.from);
+          if (!src) continue;
+          const portIdx = superPortIdxFromWire(src, w);
+          for (const it of allImageItems(src, node, portIdx))
+            if (it && it.path) images.push(it.path);
+        }
+        for (const src of globalRefSourcesForRun(node, runPrompt)) {
+          if (wiredFrom.has(src.id)) continue;
+          for (const it of allImageItems(src))
+            if (it && it.path) images.push(it.path);
+        }
+      } else {
+        for (const it of inputValuesFor(node, idx)) {
+          const v = it && it.value;
+          if (v && v.kind === "image" && v.path) images.push(v.path);
+        }
+        for (const src of globalRefSourcesForRun(node, runPrompt)) {
+          if (wiredFrom.has(src.id)) continue;
+          const v = valueForInput(src, idx);
+          if (v && v.kind === "image" && v.path) images.push(v.path);
+        }
+      }
+    } catch (e) {
+      /* 画布未就绪 / 节点已删：当作没有连线图，仍尝试用 @ 引用图 */
+    }
+  }
+  let refImages = refs && Array.isArray(refs.refImages) ? refs.refImages : null;
+  if (!refImages) {
+    try {
+      const r = agg
+        ? resolveRefsAgg(runPrompt, node)
+        : resolveRefs(runPrompt, node, idx);
+      refImages = (r && r.refImages) || [];
+    } catch (e) {
+      refImages = [];
+    }
+  }
+  return mergeImagePaths(refImages, images);
 }
 
 /* 将输入文字与 prompt 组合：背景信息（### 标题 + 内容） + 【内容】prompt */
@@ -15144,7 +15589,7 @@ const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_file", "db_table"]],
   ["全局节点", ["global"]],
   ["处理节点", ["proc_text", "proc_image", "music_gen", "tts_gen", "video_gen", "remotion"]],
-  ["保存节点", ["save"]],
+  ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
   ["智能节点", ["agent_task"]],
@@ -15175,6 +15620,7 @@ const KIND_TAGS = {
   save: "保存",
   save_text: "保存",
   save_image: "保存",
+  save_pdf: "PDF",
   split: "拆分",
   merge: "合并",
   function: "函数",
@@ -15654,410 +16100,6 @@ function focusNode(id) {
   renderStatus();
 }
 
-/* ── 画布查找 / 替换（标题 + 可编辑内容，仅当前画布） ── */
-
-function escapeRegExp(s) {
-  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function replaceAllInString(hay, find, repl) {
-  if (!find) return String(hay == null ? "" : hay);
-  return String(hay == null ? "" : hay).replace(
-    new RegExp(escapeRegExp(find), "gi"),
-    () => String(repl == null ? "" : repl),
-  );
-}
-
-function stringContainsQuery(hay, q) {
-  if (!q) return false;
-  return String(hay == null ? "" : hay)
-    .toLowerCase()
-    .includes(String(q).toLowerCase());
-}
-
-function nodeOutputSearchText(n) {
-  const o = n && n.output;
-  if (o == null) return "";
-  if (typeof o === "string") return o;
-  if (typeof o.text === "string") return o.text;
-  if (o.kind === "text" && typeof o.text === "string") return o.text;
-  return "";
-}
-
-/* 可搜索 / 可替换的字段（标题 + 内容） */
-function nodeFindFields(n) {
-  if (!n) return [];
-  const fields = [{ key: "title", get: () => n.title || "", set: (v) => (n.title = v) }];
-  if (n.kind === "input_text" || n.text != null)
-    fields.push({ key: "text", get: () => n.text || "", set: (v) => (n.text = v) });
-  if (
-    n.kind === "proc_text" ||
-    n.kind === "proc_image" ||
-    n.kind === "judge" ||
-    n.prompt != null
-  )
-    fields.push({
-      key: "prompt",
-      get: () => n.prompt || "",
-      set: (v) => (n.prompt = v),
-    });
-  if (n.kind === "agent_task" || n.task != null)
-    fields.push({ key: "task", get: () => n.task || "", set: (v) => (n.task = v) });
-  if (n.systemPrompt != null)
-    fields.push({
-      key: "systemPrompt",
-      get: () => n.systemPrompt || "",
-      set: (v) => (n.systemPrompt = v),
-    });
-  if (n.kind === "task" || n.goal != null)
-    fields.push({ key: "goal", get: () => n.goal || "", set: (v) => (n.goal = v) });
-  if (isSaveNode(n) || n.savePath != null)
-    fields.push({
-      key: "savePath",
-      get: () => n.savePath || "",
-      set: (v) => (n.savePath = v),
-    });
-  if (n.kind === "wait_file" || n.waitPath != null)
-    fields.push({
-      key: "waitPath",
-      get: () => n.waitPath || "",
-      set: (v) => (n.waitPath = v),
-    });
-  if (Array.isArray(n.steps)) {
-    n.steps.forEach((step, i) => {
-      if (!step || typeof step !== "object") return;
-      fields.push({
-        key: "steps." + i + ".title",
-        get: () => step.title || "",
-        set: (v) => {
-          step.title = v;
-        },
-      });
-    });
-  }
-  if (Array.isArray(n.messages)) {
-    n.messages.forEach((msg, i) => {
-      if (!msg || typeof msg !== "object") return;
-      fields.push({
-        key: "messages." + i + ".content",
-        get: () => msg.content || "",
-        set: (v) => {
-          msg.content = v;
-        },
-      });
-    });
-  }
-  const out = nodeOutputSearchText(n);
-  if (out) {
-    fields.push({
-      key: "output",
-      get: () => nodeOutputSearchText(n),
-      set: (v) => {
-        if (n.output && typeof n.output === "object") n.output.text = v;
-        else n.output = { kind: "text", text: v };
-      },
-    });
-  }
-  return fields;
-}
-
-function nodeMatchesFindQuery(n, q) {
-  if (!n || !q) return false;
-  return nodeFindFields(n).some((f) => stringContainsQuery(f.get(), q));
-}
-
-function uniqueTitleExcept(wf, desired, exceptId) {
-  const base = String(desired || I18n.t("节点")).trim() || I18n.t("节点");
-  const taken = new Set(
-    ((wf && wf.nodes) || [])
-      .filter((n) => n && n.id !== exceptId)
-      .map((n) => n.title),
-  );
-  if (!taken.has(base)) return base;
-  let i = 2;
-  while (taken.has(base + " " + i)) i++;
-  return base + " " + i;
-}
-
-function replaceInNodeFields(n, find, repl) {
-  if (!n || !find) return false;
-  let changed = false;
-  for (const f of nodeFindFields(n)) {
-    const before = f.get();
-    const after = replaceAllInString(before, find, repl);
-    if (after === before) continue;
-    if (f.key === "title")
-      f.set(uniqueTitleExcept(S.wf, after, n.id));
-    else f.set(after);
-    changed = true;
-  }
-  return changed;
-}
-
-function collectCanvasFindMatches(q) {
-  const query = String(q || "").trim();
-  if (!query || !S.wf || !Array.isArray(S.wf.nodes)) return [];
-  return S.wf.nodes.filter((n) => nodeMatchesFindQuery(n, query)).map((n) => n.id);
-}
-
-function isCanvasFindBarTarget(el) {
-  const bar = document.getElementById("canvasFindBar");
-  return !!(bar && el && bar.contains(el));
-}
-
-function ensureCanvasFindBar() {
-  const canvas = $("#canvas");
-  if (!canvas) return null;
-  let bar = document.getElementById("canvasFindBar");
-  if (bar) return bar;
-  bar = document.createElement("div");
-  bar.id = "canvasFindBar";
-  bar.className = "canvas-find-bar";
-  bar.hidden = true;
-  bar.innerHTML =
-    '<input id="canvasFindQ" type="text" class="canvas-find-q" autocomplete="off" spellcheck="false" />' +
-    '<span id="canvasFindCount" class="canvas-find-count">0/0</span>' +
-    '<button type="button" id="canvasFindPrev" class="mini btn-sq" title="">↑</button>' +
-    '<button type="button" id="canvasFindNext" class="mini btn-sq" title="">↓</button>' +
-    '<div id="canvasFindReplRow" class="canvas-find-repl-row" hidden>' +
-    '<input id="canvasFindRepl" type="text" class="canvas-find-repl" autocomplete="off" spellcheck="false" />' +
-    '<button type="button" id="canvasFindReplace" class="mini"></button>' +
-    '<button type="button" id="canvasFindReplaceAll" class="mini"></button>' +
-    "</div>" +
-    '<button type="button" id="canvasFindClose" class="mini btn-sq">✕</button>';
-  canvas.appendChild(bar);
-
-  const q = bar.querySelector("#canvasFindQ");
-  const repl = bar.querySelector("#canvasFindRepl");
-  const paintLabels = () => {
-    q.placeholder = I18n.t("查找节点（标题 / 内容）…");
-    repl.placeholder = I18n.t("替换为…");
-    bar.querySelector("#canvasFindPrev").title = I18n.t("上一个（Shift+Enter）");
-    bar.querySelector("#canvasFindNext").title = I18n.t("下一个（Enter）");
-    bar.querySelector("#canvasFindReplace").textContent = I18n.t("替换");
-    bar.querySelector("#canvasFindReplaceAll").textContent = I18n.t("全部替换");
-    bar.querySelector("#canvasFindClose").title = I18n.t("关闭（Esc）");
-  };
-  paintLabels();
-  bar._paintLabels = paintLabels;
-
-  const syncQuery = () => {
-    S.findBar.query = q.value;
-    canvasFindRefresh({ keepIdx: true, focus: false });
-  };
-  q.addEventListener("input", syncQuery);
-  repl.addEventListener("input", () => {
-    S.findBar.replace = repl.value;
-  });
-  q.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (ev.shiftKey) canvasFindPrev();
-      else canvasFindNext();
-    } else if (ev.key === "Escape") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      closeCanvasFindBar();
-    }
-  });
-  repl.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      canvasFindReplaceOne();
-    } else if (ev.key === "Escape") {
-      ev.preventDefault();
-      ev.stopPropagation();
-      closeCanvasFindBar();
-    }
-  });
-  bar.querySelector("#canvasFindPrev").onclick = () => canvasFindPrev();
-  bar.querySelector("#canvasFindNext").onclick = () => canvasFindNext();
-  bar.querySelector("#canvasFindReplace").onclick = () => canvasFindReplaceOne();
-  bar.querySelector("#canvasFindReplaceAll").onclick = () => canvasFindReplaceAll();
-  bar.querySelector("#canvasFindClose").onclick = () => closeCanvasFindBar();
-  bar.addEventListener("mousedown", (ev) => ev.stopPropagation());
-  return bar;
-}
-
-function paintCanvasFindCount() {
-  const el = document.getElementById("canvasFindCount");
-  if (!el || !S.findBar) return;
-  const n = (S.findBar.matches || []).length;
-  const i = S.findBar.idx;
-  el.textContent = n ? i + 1 + "/" + n : "0/0";
-}
-
-function canvasFindRefresh(opts) {
-  opts = opts || {};
-  if (!S.findBar) return;
-  const prevId =
-    S.findBar.idx >= 0 && S.findBar.matches
-      ? S.findBar.matches[S.findBar.idx]
-      : null;
-  const q = String(
-    opts.query != null ? opts.query : S.findBar.query || "",
-  ).trim();
-  S.findBar.query = q;
-  S.findBar.matches = collectCanvasFindMatches(q);
-  if (!q) {
-    S.findBar.idx = -1;
-  } else if (opts.keepIdx && prevId) {
-    const j = S.findBar.matches.indexOf(prevId);
-    S.findBar.idx = j >= 0 ? j : S.findBar.matches.length ? 0 : -1;
-  } else if (S.findBar.matches.length) {
-    S.findBar.idx = 0;
-  } else {
-    S.findBar.idx = -1;
-  }
-  paintCanvasFindCount();
-  if (opts.focus !== false && S.findBar.idx >= 0)
-    focusNode(S.findBar.matches[S.findBar.idx]);
-}
-
-function openCanvasFindBar(opts) {
-  opts = opts || {};
-  if (S.view && S.view !== "workflow") setView("workflow");
-  const bar = ensureCanvasFindBar();
-  if (!bar || !S.findBar) return;
-  if (typeof bar._paintLabels === "function") bar._paintLabels();
-  S.findBar.open = true;
-  S.findBar.replaceMode = !!opts.replace;
-  bar.hidden = false;
-  const row = bar.querySelector("#canvasFindReplRow");
-  if (row) row.hidden = !S.findBar.replaceMode;
-  const q = bar.querySelector("#canvasFindQ");
-  const repl = bar.querySelector("#canvasFindRepl");
-  if (q) {
-    q.value = S.findBar.query || "";
-    q.focus();
-    q.select();
-  }
-  if (repl) repl.value = S.findBar.replace || "";
-  canvasFindRefresh({
-    keepIdx: true,
-    focus: !!(S.findBar.query && S.findBar.query.trim()),
-  });
-}
-
-function closeCanvasFindBar() {
-  if (!S.findBar) return false;
-  if (!S.findBar.open) return false;
-  S.findBar.open = false;
-  const bar = document.getElementById("canvasFindBar");
-  if (bar) bar.hidden = true;
-  return true;
-}
-
-function canvasFindGoto(delta) {
-  if (!S.findBar) return;
-  const qEl = document.getElementById("canvasFindQ");
-  if (qEl) S.findBar.query = qEl.value;
-  canvasFindRefresh({ keepIdx: true, focus: false });
-  const list = S.findBar.matches || [];
-  if (!list.length) {
-    paintCanvasFindCount();
-    toast(I18n.t("未找到匹配的节点"), "warn");
-    return;
-  }
-  let i = S.findBar.idx;
-  if (i < 0) i = delta > 0 ? 0 : list.length - 1;
-  else if (S.sel !== list[i]) {
-    /* 已有匹配但尚未选中：先落到当前项，不跳下一项 */
-    paintCanvasFindCount();
-    focusNode(list[i]);
-    return;
-  } else {
-    i = (i + delta + list.length) % list.length;
-  }
-  S.findBar.idx = i;
-  paintCanvasFindCount();
-  focusNode(list[i]);
-}
-
-function canvasFindNext() {
-  canvasFindGoto(1);
-}
-function canvasFindPrev() {
-  canvasFindGoto(-1);
-}
-
-function canvasFindReplaceOne() {
-  if (!S.findBar || !S.wf) return;
-  const qEl = document.getElementById("canvasFindQ");
-  const rEl = document.getElementById("canvasFindRepl");
-  const find = String((qEl && qEl.value) || S.findBar.query || "").trim();
-  const repl = rEl ? rEl.value : S.findBar.replace || "";
-  S.findBar.query = find;
-  S.findBar.replace = repl;
-  if (!find) {
-    toast(I18n.t("请输入要查找的文本"), "warn");
-    return;
-  }
-  canvasFindRefresh({ keepIdx: true, focus: false });
-  if (!S.findBar.matches.length || S.findBar.idx < 0) {
-    toast(I18n.t("未找到匹配的节点"), "warn");
-    return;
-  }
-  const id = S.findBar.matches[S.findBar.idx];
-  const n = nodeById(id);
-  if (!n || !nodeMatchesFindQuery(n, find)) {
-    canvasFindNext();
-    return;
-  }
-  pushHistory();
-  replaceInNodeFields(n, find, repl);
-  scheduleSave();
-  canvasFindRefresh({ keepIdx: false, focus: false });
-  const j = S.findBar.matches.indexOf(id);
-  if (j >= 0) {
-    S.findBar.idx = j;
-    focusNode(id);
-  } else if (S.findBar.matches.length) {
-    S.findBar.idx = Math.min(S.findBar.idx, S.findBar.matches.length - 1);
-    if (S.findBar.idx < 0) S.findBar.idx = 0;
-    focusNode(S.findBar.matches[S.findBar.idx]);
-  } else {
-    S.findBar.idx = -1;
-    renderCanvas();
-    renderStatus();
-  }
-  paintCanvasFindCount();
-}
-
-function canvasFindReplaceAll() {
-  if (!S.findBar || !S.wf) return;
-  const qEl = document.getElementById("canvasFindQ");
-  const rEl = document.getElementById("canvasFindRepl");
-  const find = String((qEl && qEl.value) || S.findBar.query || "").trim();
-  const repl = rEl ? rEl.value : S.findBar.replace || "";
-  S.findBar.query = find;
-  S.findBar.replace = repl;
-  if (!find) {
-    toast(I18n.t("请输入要查找的文本"), "warn");
-    return;
-  }
-  const ids = collectCanvasFindMatches(find);
-  if (!ids.length) {
-    toast(I18n.t("未找到匹配的节点"), "warn");
-    return;
-  }
-  pushHistory();
-  let count = 0;
-  for (const id of ids) {
-    const n = nodeById(id);
-    if (n && replaceInNodeFields(n, find, repl)) count++;
-  }
-  scheduleSave();
-  S.findBar.matches = [];
-  S.findBar.idx = -1;
-  paintCanvasFindCount();
-  renderCanvas();
-  renderStatus();
-  toast(I18n.t("已替换 ") + count + I18n.t(" 个节点"), "ok");
-}
-
 function markSidebarTitle(m) {
   if (!m) return I18n.t("（未命名）");
   if (m.kind === "text") {
@@ -16182,9 +16224,18 @@ function canvasCreateMenuGroups(pt) {
     [
       I18n.t("处理节点（提示词 + Play）"),
       [
-        ctxKindItem("proc_text", I18n.t("文本处理（LLM）"), () =>
-          addNode("proc_text", pt.x, pt.y),
-        ),
+        /* 文本生成：文字这一族收成「鼠标悬停展开」的二级菜单（写法与下面的
+           视频生成 / 音频生成 同族），文本处理（LLM）与二级节点 PDF生成 都在里面，
+           不再各占一条平铺的一级菜单项。 */
+        ctxSubmenu(I18n.t("文本生成"), "proc_text", "proc", [
+          ctxKindItem("proc_text", I18n.t("文本处理（LLM）"), () =>
+            addNode("proc_text", pt.x, pt.y),
+          ),
+          /* 二级节点：PDF 生成 —— 把上游文本排版成 PDF 落盘（保存节点配色 / 保存族执行口径） */
+          ctxKindItem("save_pdf", I18n.t("PDF生成（文本排版成 PDF · 支持公式）"), () =>
+            addNode("save_pdf", pt.x, pt.y),
+          ),
+        ]),
         ctxKindItem("proc_image", I18n.t("图像生成（文生图）"), () =>
           addNode("proc_image", pt.x, pt.y),
         ),
@@ -16661,7 +16712,7 @@ function wfBuildAgentPicker(host, state) {
     a.preset = String(preSel.value || "");
   };
   cell(I18n.t("模式"), preSel);
-  /* 思考强度格：真源 AGENT_EFFORT_UI_ORDER（轻 / 标准 / 强 / 最强） */
+  /* 思考强度格：真源 AGENT_EFFORT_UI_ORDER（无 / 轻 / 标准 / 强 / 最强） */
   const effSel = document.createElement("select");
   addOpt(effSel, "", I18n.t("跟随默认（不指定）"));
   const order =
@@ -17015,6 +17066,11 @@ async function promptBuildWorkflow(pt, retryState) {
 
 function bindCanvas() {
   const canvas = $("#canvas");
+  /* 绘制文字编辑中，点画布任何其它位置（空白 / 节点 / 组 / 手柄 / 工具条）都要先退出编辑态：
+     这些地方的 mousedown 大多 preventDefault，浏览器不会移走焦点，contentEditable 会一直
+     握着 activeElement，而重绘又被 isMarkTextEditing() defer 掉 —— 点哪儿都 unfocus 不了。
+     捕获阶段统一补一次 blur（见 markTextBlurOnOutsidePointer）。 */
+  document.addEventListener("mousedown", markTextBlurOnOutsidePointer, true);
   /* 捕获阶段监听：即使鼠标在节点 / 组内部（其冒泡阶段可能 stopPropagation 或拦截事件），
      中键平移也能优先接管，避免节点过大挡住画布时无法拖动 */
   canvas.addEventListener(
@@ -17833,26 +17889,25 @@ function bindCanvas() {
       tag === "select" ||
       !!ev.target.isContentEditable;
     const docsHost = document.getElementById("appDocsDlg");
+    const mod = ev.ctrlKey || ev.metaKey;
+    const key = (ev.key || "").toLowerCase();
+    /* Ctrl+F：任何视图呼出全局搜索浮层（画布 / 会话 / 专家团 / 素材 / 工具技能模板文档）。
+       排在各浮层早退分支之前 —— 手册阅读器 / 弹窗开着时也要能呼出（它是跨区域的）。
+       焦点在可编辑区（输入框 / textarea / contenteditable）时不拦截，让位给编辑器自带查找；
+       浮层的 Esc 关闭由它自己的监听处理（见 renderer/app-search.js）。 */
+    if (mod && key === "f" && !ev.altKey && !ev.shiftKey) {
+      if (!inField && typeof openGlobalSearch === "function") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openGlobalSearch();
+        return;
+      }
+    }
     if (docsHost && docsHost.classList.contains("on")) {
       if (ev.key === "Escape") {
         ev.preventDefault();
         appDocsOnEscape();
       }
-      return;
-    }
-    const mod = ev.ctrlKey || ev.metaKey;
-    const key = (ev.key || "").toLowerCase();
-    /* Ctrl+F / Ctrl+G：当前画布查找 / 替换（输入框内也拦截，避免落到浏览器查找） */
-    if (mod && (key === "f" || key === "g") && !ev.altKey) {
-      if (S.view === "workflow" || S.view === "agent") {
-        if (S.view === "agent") setView("workflow");
-        ev.preventDefault();
-        openCanvasFindBar({ replace: key === "g" });
-        return;
-      }
-    }
-    if (ev.key === "Escape" && closeCanvasFindBar()) {
-      ev.preventDefault();
       return;
     }
     /* Esc 收起画布菜单（右键「新建节点」/ 拖线落点「新建并连入」）：菜单没有焦点，靠 Esc 关掉 */
@@ -17869,8 +17924,6 @@ function bindCanvas() {
         closeDevColorPicker();
       return;
     }
-    /* 查找栏内：不触发画布 Delete / G 等快捷键 */
-    if (isCanvasFindBarTarget(ev.target)) return;
     /* 节点 / 绘制文字等输入中：不触发任何画布快捷键。
        @ 引用菜单由输入框自己的 keydown 调 refKey 处理——这里不能再调一次，
        否则一次上下键会被消费两遍（跳两格）。 */
@@ -18223,6 +18276,7 @@ const WIRE_DROP_TARGETS = [
   { kind: "remotion", g: "处理节点", plugin: "remotion" },
   { kind: "agent_task", g: "智能节点" },
   { kind: "save", g: "保存节点" },
+  { kind: "save_pdf", g: "保存节点" },
   { kind: "tool", g: "工具节点" },
   { kind: "function", g: "工具节点" },
   { kind: "task", g: "任务节点" },
@@ -18852,18 +18906,16 @@ async function saveImageAs(p) {
 
 function assignDefaultProvider(node) {
   if (node.kind === "proc_text" || node.kind === "remotion") {
-    const prov = (S.config.providers || []).find((p) => p.type === "text_openai");
+    const prov = apiProvidersForKind("proc_text")[0];
     if (prov) {
       node.providerId = prov.id;
-      node.model = (prov.models || [])[0] || "";
+      node.model = modelsOfKind(S.config, prov, "text")[0] || "";
     }
   } else if (node.kind === "proc_image") {
-    const prov = (S.config.providers || []).find((p) =>
-      String(p.type || "").startsWith("image_"),
-    );
+    const prov = apiProvidersForKind("proc_image")[0];
     if (prov) {
       node.providerId = prov.id;
-      node.model = (prov.models || [])[0] || "";
+      node.model = modelsOfKind(S.config, prov, "image")[0] || "";
     }
   }
 }
@@ -18892,6 +18944,9 @@ function makeNode(kind, x, y) {
   }
   assignDefaultProvider(node);
   if (node.kind === "agent_task") syncAgentProviderRoute(node);
+  /* 工具 / 函数节点：「AI 调用」设定按当前默认路由 / 默认预设补种（见 app-aicall.js）；
+     开发节点不补种（空 = 跟随默认，与既有语义一致）。 */
+  if (typeof aiCallSeedDefaults === "function") aiCallSeedDefaults(node);
   node.parentTaskId = currentTaskFocus();
   const sf = currentSuperFocus();
   const sfHost = sf ? nodeById(sf) : null;
@@ -19075,14 +19130,26 @@ async function createNodesFromDroppedFiles(files, pt) {
     } else if (it.kind === "text") {
       const st = await window.api.fileStat(it.path).catch(() => null);
       it.size = (st && st.size) || 0;
-      const rd = await readDroppedTextFile(it.path, it.size);
-      if (!rd) {
-        it.text = "";
-        it.kind = "other";
-        unreadable++;
+      /* PDF 不走「按文本读」（直接读会拿到二进制噪声）：先跑一次结构化解析，
+         没有文本层（扫描件）就等节点建好后逐页识图，见 renderer/pdf-markdown.js */
+      if (typeof pdfIsPdfPath === "function" && pdfIsPdfPath(it.path)) {
+        it.isPdf = true;
+        const md =
+          typeof pdfStructuredMarkdown === "function"
+            ? await pdfStructuredMarkdown(it.path)
+            : null;
+        it.text = md && md.ok ? String(md.markdown || "") : "";
+        it.needsVision = !it.text;
       } else {
-        it.text = rd.text;
-        if (rd.truncated) it.truncated = true;
+        const rd = await readDroppedTextFile(it.path, it.size);
+        if (!rd) {
+          it.text = "";
+          it.kind = "other";
+          unreadable++;
+        } else {
+          it.text = rd.text;
+          if (rd.truncated) it.truncated = true;
+        }
       }
     }
   }
@@ -19112,6 +19179,7 @@ async function createNodesFromDroppedFiles(files, pt) {
         node.title = uniqueNodeTitle(dropNodeTitle(it.path, false));
         count.text++;
         if (it.truncated) truncated++;
+        it.nodeId = node.id;
       }
     } else if (it.kind === "audio" || it.kind === "video") {
       node = makeNode(it.kind === "video" ? "input_video" : "input_audio", x, y);
@@ -19148,6 +19216,18 @@ async function createNodesFromDroppedFiles(files, pt) {
   renderCanvas();
   scheduleSave(true);
   renderStatus();
+  /* 拖入的 PDF 没有文本层（扫描件）：建好节点后逐页识图，结果落进这个文本节点 */
+  let pdfVision = 0;
+  let pdfFailed = 0;
+  for (const it of items) {
+    if (!it.isPdf || !it.needsVision || !it.nodeId) continue;
+    if (typeof openPdfParse !== "function") break;
+    const node = S.wf.nodes.find((n) => n.id === it.nodeId);
+    if (!node) continue;
+    const r = await openPdfParse(it.path, { node: node, visionOnly: true });
+    if (r && r.ok) pdfVision++;
+    else pdfFailed++;
+  }
   const parts = [];
   if (count.image) parts.push(I18n.t("图像") + " " + count.image);
   if (count.text) parts.push(I18n.t("文本") + " " + count.text);
@@ -19160,9 +19240,13 @@ async function createNodesFromDroppedFiles(files, pt) {
     msg += " · " + I18n.t("{n} 个文件过大，正文已截断", { n: truncated });
   if (unreadable)
     msg += " · " + I18n.t("{n} 个文件读不出内容，改为文件块", { n: unreadable });
+  if (pdfVision)
+    msg += " · " + I18n.t("{n} 个 PDF 无文本层，已逐页识图", { n: pdfVision });
+  if (pdfFailed)
+    msg += " · " + I18n.t("{n} 个 PDF 解析失败（详见弹窗提示）", { n: pdfFailed });
   if (noPath)
     msg += " · " + I18n.t("{n} 个文件取不到本机路径，已跳过", { n: noPath });
-  toast(msg, truncated || unreadable || noPath ? "warn" : "ok");
+  toast(msg, truncated || unreadable || noPath || pdfFailed ? "warn" : "ok");
   return created;
 }
 
@@ -20617,13 +20701,30 @@ function bindOpenableContentClicks() {
   );
 }
 
+/* Markdown → HTML（全站预览唯一入口：文件预览 / 节点输出 / 会话正文 / 手册 / 搜索…）。
+ * 公式：先交给 renderer/math-render.js 把 `$…$` / `$$…$$` / `\(…\)` / `\[…\]` 抽成
+ * PUA 占位符，再照旧转义 + marked 解析，最后把占位符换回排版结果 —— 与审阅层同源，
+ * 且不破坏既有「先转义再解析」的 HTML 注入防护（LaTeX 原文由 latexToHtml 自己转义）。 */
 function renderMarkdown(text) {
+  const raw = text == null ? "" : String(text);
   const esc = escapeHtml(text);
   let html = "";
   try {
-    html = window.marked
-      ? marked.parse(esc, { gfm: true, breaks: true })
-      : "<pre>" + esc + "</pre>";
+    const M = window.MTMathRender;
+    if (M && typeof M.splitMath === "function" && typeof M.latexToHtml === "function" && window.marked) {
+      const r = M.splitMath(raw);
+      html = marked.parse(escapeHtml(r.md), { gfm: true, breaks: true });
+      if (r.items && r.items.length) {
+        html = html.replace(M.TOKEN_RE, (m, idx) => {
+          const it = r.items[Number(idx)];
+          return it ? M.latexToHtml(it.tex, { display: it.display, delim: it.delim }) : "";
+        });
+      }
+    } else {
+      html = window.marked
+        ? marked.parse(esc, { gfm: true, breaks: true })
+        : "<pre>" + esc + "</pre>";
+    }
   } catch {
     html = "<pre>" + esc + "</pre>";
   }
@@ -20748,6 +20849,15 @@ const ALPHA_BG_BLOCK_RE =
 function stripAlphaBgBlocks(prompt) {
   return String(prompt || "").replace(ALPHA_BG_BLOCK_RE, "");
 }
+/* 蒙版局部重绘注入段：同样用 ASCII 标记包裹，中英文界面下都能精确剥离、不污染用户正文。
+   官方（gpt-image-2 · mask editing）明确：mask 只是**引导式**编辑，蒙版外像素仍会漂移，
+   提示词里写清「只改透明区域 + 必须保持不变 + 融合要求」能显著提高蒙版命中率。 */
+const MASK_BLOCK_HEAD = "\n\n[[MTNODE-MASK]]";
+const MASK_BLOCK_TAIL = "[[/MTNODE-MASK]]";
+const MASK_BLOCK_RE = /\n\n\[\[MTNODE-MASK\]\][\s\S]*?\[\[\/MTNODE-MASK\]\]/g;
+function stripMaskBlocks(prompt) {
+  return String(prompt || "").replace(MASK_BLOCK_RE, "");
+}
 /* 节点字段归一（每次读取前调用，旧画布缺字段自动补齐） */
 function normalizeImgParams(node) {
   if (!node || node.kind !== "proc_image") return;
@@ -20804,21 +20914,43 @@ function alphaBgPromptSuffix(node) {
     ALPHA_BG_BLOCK_TAIL
   );
 }
-/* 图像生成节点的提示词收尾：透明背景要求 + 差分抠图注入段（互斥，不会同时出现） */
-function withImageParamsPrompt(node, prompt) {
-  return String(prompt || "") + alphaBgPromptSuffix(node) + bgRmPromptSuffix(node);
+/* 蒙版局部重绘要求注入段（官方生产模板四段：仅编辑蒙版透明区域 / 编辑任务 /
+   必须保持 / 融合要求）。仅在 maskActive(node) 时追加；marker 保证可精确剥离。 */
+function maskPromptSuffix(node) {
+  if (!maskActive(node)) return "";
+  return (
+    MASK_BLOCK_HEAD +
+    "\n" +
+    I18n.t(
+      "【蒙版局部重绘 · 只编辑蒙版透明区域】本次请求带有蒙版（mask），蒙版的透明区域就是唯一允许编辑的区域，不透明区域不在本次编辑范围内。\n" +
+        "1）编辑任务：只把蒙版透明区域内的内容按下面的用户要求修改（把透明区域内的对象改为 / 替换为 / 生成为用户提示词所描述的内容），透明区域之外一律不动。\n" +
+        "2）必须保持：蒙版不透明区域内的构图、相机视角与透视、物体位置与大小、轮廓与边缘、光线方向与色温、景深与虚化、整体色调、材质细节与真实摄影质感完全不变；不裁切、不缩放、不旋转、不平移、不加边框、不重新排版画面。\n" +
+        "3）融合要求：新内容自然位于原来的位置，其阴影、反射、遮挡与接触关系必须符合现场光照与透视，边缘过渡干净自然，不新增任何其他物体，不出现蒙版边界痕迹、色块或接缝。\n" +
+        "除蒙版透明区域内的上述修改外，输出图像必须与输入图像逐像素一致。",
+    ) +
+    "\n" +
+    MASK_BLOCK_TAIL
+  );
 }
-/* 蒙版背景 = 首张输入图像（与请求里 image[0] 对应：mask 只对第 1 张 image 生效） */
-function maskSourceImagePath(node, idx) {
+/* 图像生成节点的提示词收尾：透明背景要求 + 差分抠图注入段 + 蒙版重绘要求（互斥场景不会重复） */
+function withImageParamsPrompt(node, prompt) {
+  return (
+    String(prompt || "") +
+    alphaBgPromptSuffix(node) +
+    bgRmPromptSuffix(node) +
+    maskPromptSuffix(node)
+  );
+}
+/* 蒙版底图 = 本次运行实际下发的第 1 张图（image[0]，@ 引用优先，再补连线图）。
+   必须与 buildSpec 的 mergedImages[0] 同源：蒙版只对第 1 张 image 生效，编辑器按哪张图
+   画的蒙版，请求里的 image[0] 就必须是哪张（曾只取连线图 → @ 引用图像节点时二者不同源，
+   蒙版错位/失效）。编辑器背景、前置校验、imageSpec 三处统一走 runImagePaths。 */
+function maskBaseImagePath(node, idx) {
   try {
-    for (const it of inputValuesFor(node, idx || 0)) {
-      const v = it && it.value;
-      if (v && v.kind === "image" && v.path) return v.path;
-    }
+    return runImagePaths(node, typeof idx === "number" ? idx : 0)[0] || "";
   } catch (e) {
-    /* 读不出（节点已删 / 画布未就绪）：当作没有可用背景图 */
+    return "";
   }
-  return "";
 }
 /* 蒙版局部重绘的运行前置校验：① 服务商必须是 OpenAI 兼容图像（gpt-image-2 的
    /images/edits 才有 mask 字段）；② 必须有原图（mask 只对第 1 张 image 生效）。
@@ -20833,10 +20965,10 @@ function ensureMaskPrereqs(node, prov, idx) {
         "蒙版局部重绘只支持 OpenAI 兼容的图像服务商（gpt-image-2 的 /images/edits）：当前服务商类型为 ",
       ) + String((prov && prov.type) || I18n.t("未知")),
     );
-  if (!maskSourceImagePath(node, idx))
+  if (!maskBaseImagePath(node, idx))
     throw new Error(
       I18n.t(
-        "蒙版局部重绘需要至少一张图像输入：请把要重绘的底图接到本节点（首张图即蒙版背景，蒙版按它的原尺寸绘制）",
+        "蒙版局部重绘需要至少一张图像输入：请把要重绘的底图接到本节点，或在提示词里 @ 引用图像节点（实际下发的第 1 张图即蒙版背景，蒙版按它的原尺寸绘制）",
       ),
     );
   if (node.ratioLockOn && Date.now() - _maskPadWarnAt > 4000) {
@@ -21364,9 +21496,11 @@ async function runBgRmSecondPass(node, spec, basePath, itemTitle, attemptT) {
   return res.path;
 }
 /* 图像生成节点出图后的收尾：① 透明背景开启时内部自动补第 2 通道并抠图；
-   ② 画幅锁定开启时按补边矩形把图裁回首参考图的比例。
+   ② 画幅锁定开启时按补边矩形把图裁回首参考图的比例；
+   ③ 蒙版局部重绘开启时按 mask alpha 做「蒙版外像素回贴」（见 maskRestickOutput）。
    对用户全程无感知 —— 正常输入提示词即可，任一步失败都退回上一步的图并提示原因。
-   顺序不能反：抠图必须在补边那一版画幅上做，裁回要落在最终那张图上。 */
+   顺序不能反：抠图必须在补边那一版画幅上做，裁回要落在最终那张图上，
+   蒙版回贴必须落在最终交付的那张图上（抠图 / 裁回之后）。 */
 async function finishProcImageOutput(node, spec, path, itemTitle, attemptT) {
   if (!node || node.kind !== "proc_image" || !path) return path;
   normalizeBgRm(node);
@@ -21413,7 +21547,156 @@ async function finishProcImageOutput(node, spec, path, itemTitle, attemptT) {
       }
     }
   }
-  return cropRatioLockOutput(node, spec, out, itemTitle, attemptT);
+  out = await cropRatioLockOutput(node, spec, out, itemTitle, attemptT);
+  return maskRestickOutput(node, spec, out, itemTitle, attemptT);
+}
+/* ══ 蒙版外像素回贴（让蒙版硬生效）══════════════════════════════════════
+   官方口径：mask 只是「引导式编辑」，蒙版外像素仍会漂移；官方给的后处理就是
+   「生成后按 mask alpha 把蒙版外像素换回原图」。这里照此实现：
+     ① 蒙版透明区（alpha < 128）= 唯一可编辑区，先做二值化；
+     ② 对可编辑区做 2px 腐蚀 —— 把边界那一圈还给原图，消掉生成留下的蒙版边界光晕；
+     ③ 对腐蚀结果做 3×3 轻微羽化 —— 只糊这一圈，可编辑区内部仍是纯生成像素；
+     ④ 其余像素一律逐像素取底图原图 —— 「蒙版画的区域之外保持原图」不再靠模型自觉。
+   顺序：必须排在抠图 / 画幅锁定之后（此处的 path 已是最终交付版）。
+   任一步失败（读图 / 尺寸异常）都退回未经回贴的图并 toast 说明，绝不静默产错图。 */
+const MASK_RESTICK_THR = 128;
+const MASK_RESTICK_ERODE = 2;
+/* 取某张 RGBA ImageData 的 alpha 通道为单字节平面 */
+function maskAlphaPlaneOf(id, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let i = 0, p = 3; i < out.length; i++, p += 4) out[i] = id.data[p];
+  return out;
+}
+/* 二值形态学的方形腐蚀 / 膨胀（半径 r = 切比雪夫距离），两趟一维极值实现。
+   wantMin = true → 腐蚀（255 区域收缩，用于把可编辑区边缘还给原图） */
+function boxExtremum(src, w, h, r, wantMin) {
+  const seed = wantMin ? 255 : 0;
+  const pick = wantMin ? Math.min : Math.max;
+  const tmp = new Uint8Array(w * h);
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let v = seed;
+      const x0 = Math.max(0, x - r);
+      const x1 = Math.min(w - 1, x + r);
+      for (let xx = x0; xx <= x1; xx++) v = pick(v, src[row + xx]);
+      tmp[row + x] = v;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      let v = seed;
+      const y0 = Math.max(0, y - r);
+      const y1 = Math.min(h - 1, y + r);
+      for (let yy = y0; yy <= y1; yy++) v = pick(v, tmp[yy * w + x]);
+      out[y * w + x] = v;
+    }
+  }
+  return out;
+}
+/* 3×3 均值模糊（只用于可编辑区边缘的一圈羽化） */
+function boxBlurPlane(src, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      let n = 0;
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(w - 1, x + 1);
+      const y0 = Math.max(0, y - 1);
+      const y1 = Math.min(h - 1, y + 1);
+      for (let yy = y0; yy <= y1; yy++)
+        for (let xx = x0; xx <= x1; xx++) {
+          sum += src[yy * w + xx];
+          n++;
+        }
+      out[y * w + x] = Math.round(sum / Math.max(1, n));
+    }
+  }
+  return out;
+}
+function countNonZero(plane) {
+  let n = 0;
+  for (let i = 0; i < plane.length; i++) if (plane[i]) n++;
+  return n;
+}
+async function maskRestickOutput(node, spec, path, itemTitle, attemptT) {
+  if (!node || node.kind !== "proc_image" || !path) return path;
+  normalizeImgParams(node);
+  if (!maskActive(node)) return path;
+  const maskPath = String((spec && spec.maskPath) || node.maskPath || "").trim();
+  const basePath = String(
+    (spec && Array.isArray(spec.images) && spec.images[0]) || maskBaseImagePath(node) || "",
+  ).trim();
+  if (!maskPath || !basePath) return path;
+  const localOf = (p) => (/^file:\/\//i.test(p) ? fileUrlToPath(p) : p);
+  try {
+    const gen = await readImageRGBA(path);
+    const w = gen.w;
+    const h = gen.h;
+    const mask = await readImageRGBA(localOf(maskPath));
+    /* 蒙版按结果尺寸最近邻重采样（保证与结果逐像素对齐；尺寸一致时是原样） */
+    const mq = makeRgbaCanvas(w, h);
+    mq.ctx.imageSmoothingEnabled = false;
+    mq.ctx.drawImage(mask.c, 0, 0, mask.w, mask.h, 0, 0, w, h);
+    const alphaPlane = maskAlphaPlaneOf(mq.ctx.getImageData(0, 0, w, h), w, h);
+    /* ① 二值化：透明 = 可编辑 = 255 */
+    let edit = new Uint8Array(w * h);
+    for (let i = 0; i < edit.length; i++) edit[i] = alphaPlane[i] < MASK_RESTICK_THR ? 255 : 0;
+    if (!countNonZero(edit)) return path; /* 蒙版全不透明 = 没有可编辑区，不替换任何像素 */
+    /* ② 腐蚀：边界还给原图，去光晕；可编辑区太小时逐步减小半径，避免被腐蚀干净 */
+    let eroded = boxExtremum(edit, w, h, MASK_RESTICK_ERODE, true);
+    if (!countNonZero(eroded)) eroded = boxExtremum(edit, w, h, 1, true);
+    if (!countNonZero(eroded)) eroded = edit;
+    /* ③ 轻微羽化（只在可编辑区边缘那一圈生效） */
+    const weight = boxBlurPlane(eroded, w, h);
+    /* ④ 底图缩到结果尺寸后逐像素回贴：weight 255 = 生成像素，0 = 原图原样 */
+    const bq = makeRgbaCanvas(w, h);
+    bq.ctx.imageSmoothingEnabled = true;
+    bq.ctx.imageSmoothingQuality = "high";
+    const base = await readImageRGBA(localOf(basePath));
+    bq.ctx.drawImage(base.c, 0, 0, base.w, base.h, 0, 0, w, h);
+    const baseId = bq.ctx.getImageData(0, 0, w, h);
+    const outId = gen.ctx.getImageData(0, 0, w, h);
+    const od = outId.data;
+    const bd = baseId.data;
+    let touched = 0;
+    for (let i = 0, p = 0; i < weight.length; i++, p += 4) {
+      const a = weight[i] / 255;
+      if (a >= 1) continue; /* 可编辑区内部：纯生成像素 */
+      const k = 1 - a;
+      od[p] = Math.round(od[p] * a + bd[p] * k);
+      od[p + 1] = Math.round(od[p + 1] * a + bd[p + 1] * k);
+      od[p + 2] = Math.round(od[p + 2] * a + bd[p + 2] * k);
+      od[p + 3] = Math.round(od[p + 3] * a + bd[p + 3] * k);
+      touched++;
+    }
+    if (!touched) return path;
+    gen.ctx.putImageData(outId, 0, 0);
+    const b64 = gen.c.toDataURL("image/png").split(",")[1];
+    const res = await window.api.assetWriteBase64(
+      S.wf.id,
+      assetName(node, itemTitle || "", attemptT || 0, "mask"),
+      b64,
+      "png",
+    );
+    if (!res || !res.ok || !res.path)
+      throw new Error((res && res.error) || I18n.t("蒙版回贴图像写入失败"));
+    const single =
+      !node.batchOutputs &&
+      (typeof attemptCount !== "function" || attemptCount(node) <= 1);
+    if (single)
+      toast(
+        I18n.t("蒙版已硬生效：蒙版外像素已按原图回贴（仅蒙版透明区内为生成结果）"),
+        "ok",
+      );
+    return res.path;
+  } catch (e) {
+    if (node._aborted) throw e;
+    toast(I18n.t("蒙版外像素回贴未完成，已交付未回贴的生成图：") + (e.message || e), "warn");
+    return path;
+  }
 }
 async function reprocessProcImageBgRm(node) {
   if (!node || node.kind !== "proc_image") return 0;
@@ -21501,16 +21784,25 @@ function closeNodePopById(id) {
     closeRatioLockPop();
   else if (id === "devModelPop" && typeof closeDevModelPicker === "function")
     closeDevModelPicker();
+  else if (id === "aiCallPop" && typeof closeAiCallPicker === "function")
+    closeAiCallPicker();
   else if (id === "devColorPop" && typeof closeDevColorPicker === "function")
     closeDevColorPicker();
+  /* 保存节点的「图像输出」面板在 renderer/app-imageout.js（晚于本文件加载，
+     按调用期取函数；脚本没接上时这里静默跳过，不影响别的面板） */
+  else if (id === "imgOutPop" && typeof window.closeImgOutPop === "function")
+    window.closeImgOutPop();
 }
-/* keep = "bgRm" | "ratioLock" | "devModel" | "devColor" | ""（全收） */
+/* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "devColor" | "imgOut" | ""（全收） */
 function closeNodePopsExcept(keep) {
   const pairs = [
     ["bgRm", "bgRmPop", closeBgRmPop],
     ["ratioLock", "ratioLockPop", closeRatioLockPop],
     ["devModel", "devModelPop", closeDevModelPicker],
+    /* AI 调用弹层（工具 / 函数节点）在 renderer/app-aicall.js，晚于本文件加载 */
+    ["aiCall", "aiCallPop", null],
     ["devColor", "devColorPop", closeDevColorPicker],
+    ["imgOut", "imgOutPop", null],
   ];
   for (const [name, id, fn] of pairs) {
     if (name === keep) continue;
@@ -21522,7 +21814,17 @@ function closeAllNodePops() {
   closeNodePopsExcept("");
 }
 function repositionNodePops() {
-  for (const id of ["bgRmPop", "ratioLockPop", "devModelPop", "devColorPop"]) {
+  /* 节点「?」说明小窗是瞬态 tooltip：平移 / 缩放后不再贴着按钮，直接收掉
+     （自包含模块 renderer/app-nodehelp.js，晚于本文件加载，按调用期取） */
+  if (typeof window.hideNodeHelpTip === "function") window.hideNodeHelpTip();
+  for (const id of [
+    "bgRmPop",
+    "ratioLockPop",
+    "devModelPop",
+    "aiCallPop",
+    "devColorPop",
+    "imgOutPop",
+  ]) {
     const el = document.getElementById(id);
     if (!el || !el.classList || !el.classList.contains("on")) continue;
     /* 宿主节点已不在画布上（删节点 / 撤销换对象 / 切画布）→ 收掉这块无主浮层。
@@ -22396,9 +22698,41 @@ function convStickOf(el) {
 function markConvStick(el, v) {
   if (el) el._convStick = !!v;
 }
+/* 尺寸变化补滚（会话消息区 / 助手栏 / 节点内联会话共用）：
+   底栏面板（计划 / 任务清单 / 发送队列）出现、变高或收起，左右分栏拖动、窗口缩放，
+   都会让消息区变矮 —— 此刻 scrollTop 一个字节都没动，内容底部却已经被挤到可视区之外，
+   用户体感正是「AI 最终回复未在最底部，要手动往下滚才能看完」。
+   补滚只对本来就在「跟随底部」的列表生效（_convStick 由用户自己的滚动决定），
+   用户上翻过的一律原地不动；也不与程序滚动抢：_convAutoScroll 期间不介入。
+   观察的只是元素自己的盒子，写 scrollTop 不改盒子尺寸，不会自激成环。 */
+function bindConvResizeRepin(el) {
+  if (!el || el._convRepinBound) return el;
+  el._convRepinBound = true;
+  if (typeof ResizeObserver !== "function") return el;
+  try {
+    /* 首次回调 = 初始尺寸（元素刚挂上来的那一帧），那一刻的滚动位置由各自的
+       渲染路径负责（restoreConvStick / restoreStickPos / scrollAgentConv），
+       这里不介入 —— 否则内联会话 / 思考块重绘后的「用户上翻位置」会被拽到底。 */
+    let first = true;
+    const ro = new ResizeObserver(() => {
+      if (first) {
+        first = false;
+        return;
+      }
+      if (el._convAutoScroll) return;
+      if (!convStickOf(el)) return;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) return;
+      setConvScrollTop(el, el.scrollHeight);
+    });
+    ro.observe(el);
+    el._convRepinRo = ro;
+  } catch (_) {}
+  return el;
+}
 function bindConvStick(el) {
   if (!el || el._convStickBound) return el;
   el._convStickBound = true;
+  bindConvResizeRepin(el);
   /* _convStick 只由「用户自己的滚动」决定：undefined = 还没表过态 → 默认跟随。
      不能按当前几何初始化：节点内联会话每次重绘都是新元素（scrollTop=0），
      一初始化成 false 就再也不会跟到底了。 */
@@ -22692,7 +23026,9 @@ function agentConvListEl(node) {
       const owner = tokOwnerForRun({ node, runKey: node.id });
       const badge = owner && tokBadgeEl(owner);
       if (badge) {
-        badge.style.margin = "6px 6px 2px";
+        /* 末位外边距归零：报告被 CSS 钉在消息区底部（.agent-conv > .tok-badge sticky），
+           留缝会让滚动内容从 Badge 底下露出来 */
+        badge.style.margin = "6px 6px 0";
         conv.appendChild(badge);
       }
     } catch {}
@@ -24000,6 +24336,82 @@ async function pulseGate(node, task, seen, toIndex) {
   }
 }
 
+/* ── 控制线到达闸门：与任务脉冲同口径的「多路 AND」 ──────────────────────
+   runControlledNode（控制节点 ▶ / 序列器 / 分发器 / 媒体节点控制输出 / 定时器）
+   是「控制线」那一套调度：它原本把闸门当普通目标直接 playGateNode = 强制放行，
+   于是**上游只来了第一路信号就自动放闸**（多路 AND 语义被整条绕开）。
+   这里改成：每次到达只记在该输入口上，**所有输入口都到齐才放行**；放行走控制线
+   下游调度（runTimerTargets），与用户按 ▶ 的「强制放行」严格区分。
+   落点端口来源：调用方传进来的 toIndex（控制线目标口）→ 上游节点的连线 → 空位兜底。 */
+function controlGateArrivalKeysFor(node, viaIndexes, sourceId) {
+  normalizeGateNode(node);
+  const keys = gateConnectedKeys(node);
+  const raw = [];
+  const addRaw = (v) => {
+    if (v != null && isFinite(Number(v))) raw.push(Number(v));
+  };
+  if (Array.isArray(viaIndexes)) viaIndexes.forEach(addRaw);
+  else addRaw(viaIndexes);
+  if (!raw.length && sourceId) {
+    for (const w of allWiresTo(node.id))
+      if (w.from === sourceId) addRaw(w.toIndex);
+  }
+  if (!raw.length) {
+    /* 推不出落点（例如控制节点被反向连线列成目标）：算一路到达，取最靠前的空位 */
+    const free = keys.find((k) => !node.gateArrived[k]);
+    return free == null ? { keys: [], off: false } : { keys: [free], off: false };
+  }
+  const hit = [...new Set(raw.map((v) => String(v)))].filter((k) =>
+    keys.includes(k),
+  );
+  return { keys: hit, off: hit.length === 0 };
+}
+
+/* 控制线驱动闸门：只记到达；全部到达才放行（▶ 强制放行仍走 playGateNode）。 */
+async function pulseGateByControl(node, seen, viaIndexes, sourceId) {
+  normalizeGateNode(node);
+  const needed = gateConnectedKeys(node);
+  if (!node.gateArrived || typeof node.gateArrived !== "object")
+    node.gateArrived = {};
+  const arrived = controlGateArrivalKeysFor(node, viaIndexes, sourceId);
+  node.error = null;
+  if (arrived.off) {
+    node.gateStatus = I18n.t("脉冲未落在配置输入口内");
+    renderCanvas();
+    return "open";
+  }
+  for (const k of arrived.keys) node.gateArrived[k] = true;
+  const got = needed.filter((k) => node.gateArrived[k]).length;
+  const wired = new Set(allWiresTo(node.id).map((w) => String(w.toIndex)));
+  const unwired = needed.filter((k) => !wired.has(k)).length;
+  node.gateStatus =
+    I18n.t("已到 ") +
+    got +
+    "/" +
+    needed.length +
+    (unwired
+      ? I18n.t(" · 尚有 ") + unwired + I18n.t(" 路未接线")
+      : "");
+  renderCanvas();
+  /* 上游没到齐：停在闸门前等下一路（绝不提前放闸） */
+  if (!needed.every((k) => node.gateArrived[k])) return "open";
+  if (node._gateFiring) return "open";
+  node._gateFiring = true;
+  node.gateArrived = {};
+  node.running = true;
+  node.gateStatus = I18n.t("闸门已放行");
+  try {
+    await runTimerTargets(node, true);
+    node.ranAt = Date.now();
+    return "open";
+  } finally {
+    node.running = false;
+    node._gateFiring = false;
+    renderCanvas();
+    scheduleSave(true);
+  }
+}
+
 async function playGateNode(node, quiet) {
   if (!node || node.kind !== "gate") return;
   normalizeGateNode(node);
@@ -24302,15 +24714,14 @@ function addInnerTask(parent) {
 
 function pickTextProviderForJudge(node) {
   const list = (S.config && S.config.providers) || [];
+  const hasText = (p) => providerHasKind(S.config, p, "text");
   if (node && node.providerId) {
-    const hit = list.find(
-      (p) => p.id === node.providerId && p.type === "text_openai",
-    );
+    const hit = list.find((p) => p.id === node.providerId && hasText(p));
     if (hit && String(hit.apiKey || "").trim()) return hit;
   }
-  return list.find(
-    (p) => p.type === "text_openai" && String(p.apiKey || "").trim(),
-  ) || null;
+  return (
+    list.find((p) => hasText(p) && String(p.apiKey || "").trim()) || null
+  );
 }
 
 function parseJudgeYesNo(text) {
@@ -24746,7 +25157,7 @@ async function fireTaskControlOutputs(node, seen) {
     if (nodeParentTaskId(next) === node.id) continue;
     if (!canControlRun(next)) continue;
     try {
-      await runControlledNode(next, seen);
+      await runControlledNode(next, seen, Number(w.toIndex || 0), node.id);
     } catch (e) {
       if (next) next.error = (e && e.message) || String(e);
     }
@@ -24759,6 +25170,7 @@ async function importFileToText(node, pathOverride) {
     const r = await window.api.fileOpenDialog({
       title: I18n.t("选择文本文件（文件参考）"),
       filters: [
+        { name: I18n.t("PDF（解析为 Markdown）"), extensions: ["pdf"] },
         {
           name: I18n.t("文本"),
           extensions: [
@@ -24784,6 +25196,16 @@ async function importFileToText(node, pathOverride) {
     });
     if (!r.path) return;
     p = r.path;
+  }
+  /* PDF：走解析编排（结构化 → 无文本层则逐页识图），结果落进本节点正文
+     （见 renderer/pdf-markdown.js；失败给可读错误，不写进二进制噪声） */
+  if (
+    typeof pdfIsPdfPath === "function" &&
+    pdfIsPdfPath(p) &&
+    typeof openPdfParse === "function"
+  ) {
+    await openPdfParse(p, { node: node });
+    return;
   }
   const rd = await window.api.fileReadText(p);
   if (!rd.exists) {
@@ -25699,6 +26121,10 @@ function migrateWf(wf) {
     }
     /* 函数 / 工具节点（含 super + tool:true 变体）：旧画布加载归一 */
     if (typeof ensureFnToolNodeState === "function") ensureFnToolNodeState(n);
+    /* 开发节点：同一组「AI 调用」字段补齐（旧画布的开发节点只有 devModel/devProvider…，
+       这里只补空字段，不动既有选择；两者本就同一套语义，见 app-devnode.js） */
+    if (n.kind === "super" && n.dev && typeof ensureDevAiCallState === "function")
+      ensureDevAiCallState(n);
     /* 素材节点：绑定字段归一。assetLost 是运行期判定结果（库里还有没有这个素材），
        加载时先抹掉，等 app-assets.js 静默扫描重新给 —— 旧画布不该带着上次退出时的
        「失联」标记误导用户。 */
@@ -26012,6 +26438,7 @@ async function ensureWorkflow() {
      再 persist 一次可能把刚删掉的画布写回磁盘。 */
   closeNodeSettingsDialog({ silentRerender: true, skipSave: true });
   closeAllNodePops();
+  ovMinDropAll(); /* 最小化到状态栏的窗也随旧画布作废，别让它指着一个已经换掉的上下文 */
   clearHistory();
   const list = await window.api.wfList();
   let id = S.config.activeWorkflowId;
@@ -26056,6 +26483,7 @@ async function loadWorkflow(id, opts) {
     await flushCurrentWf();
   }
   closeAllNodePops();
+  ovMinDropAll(); /* 同上：最小化窗跟随旧上下文一起作废 */
   clearHistory();
   let wf = null;
   /* 袋里那份能不能顶掉磁盘副本：两种情况必须复用内存对象，否则整份读盘覆盖 =
@@ -26109,7 +26537,6 @@ async function loadWorkflow(id, opts) {
     S._pendingVideoPortMigrateSave = false;
     scheduleSave(true); /* 视频端口迁移：立即落盘打标 */
   }
-  if (S.findBar && S.findBar.open) canvasFindRefresh({ keepIdx: false, focus: false });
   S.config.activeWorkflowId = id;
   await sanitizeWfEnvironment({ quiet: false });
   await window.api.configSave(S.config);
@@ -26369,7 +26796,12 @@ function openMetricsDistribution(metrics) {
         if (typeof costOfBucket === "function")
           bc = costOfBucket(b.provider, b.model, b, metrics.endedAt || metrics.startedAt || 0);
       } catch {}
-      if (bc) runCost = { currency: bc.currency, amount: (runCost ? runCost.amount : 0) + bc.amount };
+      if (bc)
+        runCost = {
+          currency: bc.currency,
+          amount: (runCost ? runCost.amount : 0) + bc.amount,
+          estimated: !!(runCost && runCost.estimated) || !!bc.estimated,
+        };
       const cells = [
         fmtTok(billed),
         fmtTok(b.cacheReadTokens || 0),
@@ -26379,7 +26811,9 @@ function openMetricsDistribution(metrics) {
         String(b.calls || 0),
         fmtDurLong(b.llmMs || 0),
         fmtDurLong(b.toolMs || 0),
-        bc && typeof fmtMoney === "function" ? fmtMoney(bc.amount, bc.currency) : "—",
+        bc && typeof fmtMoney === "function"
+          ? fmtMoney(bc.amount, bc.currency) + (bc.estimated ? "*" : "")
+          : "—",
       ];
       for (let i = 0; i < cells.length; i++) {
         const td = document.createElement("td");
@@ -26397,7 +26831,11 @@ function openMetricsDistribution(metrics) {
       c.textContent =
         I18n.t("本次费用") +
         ": ≈" +
-        (typeof fmtMoney === "function" ? fmtMoney(runCost.amount, runCost.currency) : "—");
+        (typeof fmtMoney === "function" ? fmtMoney(runCost.amount, runCost.currency) : "—") +
+        (runCost.estimated ? "*" : "");
+      /* 「？」口径入口：为什么这里的估算会高于实际消费（app-cost.js costHelpEl） */
+      const why = typeof costHelpEl === "function" ? costHelpEl() : null;
+      if (why) c.appendChild(why);
       body.insertBefore(c, mt);
     }
     if (typeof balanceLine === "function") {
@@ -27922,11 +28360,14 @@ async function sanitizeInvalidWorkspaces(opts) {
   return cleared.length;
 }
 
+/* 某形态（文本 / 图像）可用的服务商：不再只看服务商级 type ——
+   同一 OpenAI 兼容端点常把文本与图像模型挂在一起，只看 type 会让图像节点
+   漏掉配成 text_openai 的那家。判定统一走 app-model-kind.js。
+   （remotion 与 proc_text 一样要文本模型） */
 function apiProvidersForKind(kind) {
   const list = (S.config && S.config.providers) || [];
-  if (kind === "proc_image" || kind === "image")
-    return list.filter((p) => String(p.type || "").startsWith("image_"));
-  return list.filter((p) => p.type === "text_openai");
+  const want = kind === "proc_image" || kind === "image" ? "image" : "text";
+  return list.filter((p) => providerHasKind(S.config, p, want));
 }
 
 function agentProviderRouteValid(route) {
@@ -27944,8 +28385,8 @@ function agentProviderRouteValid(route) {
 function apiProviderValid(providerId, kind) {
   const p = (S.config.providers || []).find((x) => x.id === providerId);
   if (!p) return false;
-  if (kind === "proc_image") return String(p.type || "").startsWith("image_");
-  return p.type === "text_openai";
+  const want = kind === "proc_image" ? "image" : "text";
+  return providerHasKind(S.config, p, want);
 }
 
 /* 按「无效服务商键」分组：每组稍后单独弹窗批量替换 */
@@ -27999,7 +28440,9 @@ function collectInvalidProviderGroups(wf) {
       }, n);
     } else {
       const p = (S.config.providers || []).find((x) => x.id === pid);
-      const models = ((p && p.models) || []).map(String);
+      /* 模型可用性按形态判：只有该服务商里属于本节点形态的模型才算有效
+         （同一端点混挂文本 / 图像时，选错形态的模型以前查不出来）。 */
+      const models = modelsOfKind(S.config, p, n.kind === "proc_image" ? "image" : "text").map(String);
       if (n.model && models.length && !models.includes(String(n.model))) {
         bump("api-model:" + pid + ":" + n.model, {
           mode: "api",

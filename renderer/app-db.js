@@ -538,6 +538,24 @@ function dbFileRowEl(node, f) {
     scheduleSave();
     renderCanvas();
   });
+  /* PDF：行上直接给「解析为 Markdown」入口（结构化 → 无文本层则逐页识图，见 pdf-markdown.js）。
+     **原样保留这一行的 binary 记录**：解析产物只写成源文件同目录的 <同名>.md 并交给 Markdown 编辑器，
+     不改 f.type / 不换引用，文件节点连给「表」的还是那份原始文件。 */
+  const isPdf = /\.pdf$/i.test(String(f.name || f.path || ""));
+  if (isPdf && typeof openPdfParse === "function") {
+    const parseBtn = document.createElement("button");
+    parseBtn.className = "mini";
+    parseBtn.textContent = I18n.t("解析为 Markdown");
+    parseBtn.title = I18n.t(
+      "抽取 PDF 文本层转 Markdown；扫描件无文本层时逐页识图（公式还原为 LaTeX）。原文件记录不变。",
+    );
+    parseBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openPdfParse(f.path, {});
+    });
+    row.append(ico, nm, sz, tp, parseBtn, del);
+    return row;
+  }
   row.append(ico, nm, sz, tp, del);
   return row;
 }
@@ -2258,7 +2276,10 @@ function collectRunWritePaths(argsRaw, workspace) {
   } else if (argsRaw && typeof argsRaw === "object") obj = argsRaw;
   if (!obj || typeof obj !== "object") return out;
   const ws = normFsPath(workspace);
-  const isAbs = (s) => /^[a-zA-Z]:\\|^\\\\/.test(s);
+  /* 绝对路径判据：两种分隔符都认（`E:/x` 与 `E:\x` 都算绝对）。只认反斜杠时，
+     正斜杠的绝对路径会被当成相对路径而拼上本轮工作区，拼出来一个不存在的路径
+     → 路径不在写根内 → 写入拿不到自动放行。 */
+  const isAbs = (s) => /^[a-zA-Z]:[\\/]|^[\\/]{2}/.test(s);
   const walk = (v, key) => {
     if (v == null) return;
     if (typeof v === "string") {
@@ -2295,12 +2316,16 @@ function autoApproveRunWrite(data, runKey, workspace, callArgs) {
   if (typeof agentToolMode === "function" && agentToolMode("fs_write", runKey) === "deny")
     return false;
   const args = (data && data.callId && callArgs && callArgs[data.callId]) || "";
+  /* 优先以「这次调用自己的目标路径」（入参里的 file_path 等）作判据：升权理由
+     （justification）是模型自由文本，里面常顺带提到别的路径（读过的文件、工作区、
+     资料目录），把它和入参混成一个集合做 every 判定，会把一次完全正当的库内写入
+     否掉 —— 专家于是每次都被弹审批卡。入参拿不到路径时才退回理由文本里的路径。 */
+  const argPaths = collectRunWritePaths(args, workspace);
   const paths = [
     ...new Set(
-      extractPathsFromText(reason)
-        .map(normFsPath)
-        .concat(collectRunWritePaths(args, workspace))
-        .filter(Boolean),
+      (argPaths.length ? argPaths : extractPathsFromText(reason).map(normFsPath)).filter(
+        Boolean,
+      ),
     ),
   ];
   if (!paths.length) return false;
@@ -3477,7 +3502,15 @@ function ixAnswerQuestion(it) {
         selected.push(inp.value);
       }
     }
-    answers.push({ id: q.id, selected, ...(custom ? { custom } : {}) });
+    /* 手填优先：用户在「其他（自定义回答）」里写了字 = 他自己给了这一题的答案，
+       此时必须把手填值当作被选中的选项回传（selected = [手填值]），不能把
+       旁边残留的勾选项一起带上 —— 模型见 selected 里已有选项就会照它作答，
+       表现正是「决定手填、答案却仍落在别的选项上」。 */
+    answers.push({
+      id: q.id,
+      selected: custom ? [custom] : selected,
+      ...(custom ? { custom } : {}),
+    });
   }
   window.api
     .dshInteract({ kind: "question", id: it.data.id, answers })
@@ -3676,6 +3709,8 @@ function renderIxPanel() {
           card.appendChild(det);
         }
         const opts = q.options || [];
+        /* 手填与选项互斥要用到本题全部选项输入框 */
+        const optInputs = [];
         if (opts.length) {
           const ol = document.createElement("div");
           ol.className = "ix-opts";
@@ -3703,6 +3738,7 @@ function renderIxPanel() {
             lab.appendChild(cb);
             lab.appendChild(txt);
             ol.appendChild(lab);
+            optInputs.push(cb);
           }
           card.appendChild(ol);
         }
@@ -3711,6 +3747,18 @@ function renderIxPanel() {
         custom.className = "ix-custom";
         custom.placeholder = I18n.t("其他（自定义回答，选填）");
         custom.dataset.qid = q.id;
+        /* 手填与选项互斥：这一格是「其他（自定义回答）」而不是补充说明，
+           两边同时留值会让提交带着「别的选项」一起走（模型因此不认手填值）。
+           开始手填就撤掉已勾选项；改点选项就清掉手填文字，最终只留一种意图。 */
+        custom.addEventListener("input", () => {
+          if (!custom.value.trim()) return;
+          for (const c of optInputs) c.checked = false;
+        });
+        for (const c of optInputs) {
+          c.addEventListener("change", () => {
+            if (c.checked) custom.value = "";
+          });
+        }
         card.appendChild(custom);
       }
       const row = document.createElement("div");
@@ -3808,8 +3856,11 @@ function pathUnderRoot(target, root) {
 function extractPathsFromText(text) {
   const s = String(text || "");
   const out = [];
+  /* 盘符后的分隔符两种写法都认（`E:\…` 与 `E:/…`）：模型与工具入参里
+     正斜杠写法很常见，只认反斜杠会把「本轮写根内的合法写入」漏判成写根外，
+     专家于是拿不到自动放行（见 autoApproveRunWrite）。 */
   const re =
-    /(?:[a-zA-Z]:\\|\\\\[^\\\s"'<>|]+)[^\s"'<>|]*/g;
+    /(?:[a-zA-Z]:[\\/]|\\\\[^\\\s"'<>|]+)[^\s"'<>|]*/g;
   let m;
   while ((m = re.exec(s))) {
     let p = m[0].replace(/[),.;]+$/, "");

@@ -5,14 +5,14 @@
 Right-click the canvas → **Process › Video generation › Minimax H3**. Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file** (`.mp4`) written to the node's own `outputPath` — no separate save node needed.
 
 ## Ports
-- **Input**: port 0 = control input (fixed) · port 1+ = data slots (reference images / text / reference audio / reference video)
+- **Input**: port 0 = control input (fixed) · port 1 = prompt · **R2V** mode: ports 2–10 = reference images I1–I9, ports 11–13 = reference videos V1–V3, ports 14–16 = reference audios A1–A3 (all three groups exposed at once; port numbers match the backend's `ref_image_0..8` / `ref_video_0..2` / `ref_audio_0..2`) · **FL2VA** mode: ports 2–3 = first frame F / last frame L
 - **Output**: port 0 = video (preview downstream) · port 1 = control output
 
 ## Options
 Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
 
 - **Output path**: `.mp4` destination (relative to workspace / super subfolder)
-- **Mode**: `fl2va` = first/last frame (default); `r2v` = multiple reference images
+- **Mode**: `fl2va` = first/last frame (default); `r2v` = multiple references (images / videos / audio)
 - **Duration**: 4–15 s (default 5)
 - **Resolution**: auto (proportional) / 480p / 720p / 1080p (auto-downscaled when VRAM is low)
 - **Post**: 4K upscale + interpolation (on by default; disable on 24G for speed)

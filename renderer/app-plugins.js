@@ -10,7 +10,9 @@ const PLUGIN_ACT_SVG = {
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4v7.2M5.4 7.4L8 10.2 10.6 7.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.4 12.8h9.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
   update:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v8.2M8 9.7l-2.6-2.6M8 9.7l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 11.5v1.2c0 .7.6 1.3 1.3 1.3h8.4c.7 0 1.3-.6 1.3-1.3v-1.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>',
-  trash: KIND_ICON_SVG.menu_delete,
+  /* 设置 / 状态入口（ASR 卡片用；此前缺失 → 按钮渲染成空白方块）= 齿轮 */
+  gear:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 1.3v1.9M8 12.8v1.9M1.3 8h1.9M12.8 8h1.9M3.3 3.3l1.3 1.3M11.4 11.4l1.3 1.3M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
 };
 function pluginIconName(item) {
   const raw = String((item && item.icon) || (item && item.id ? item.id + ".png" : "")).replace(/\\/g, "/");
@@ -343,12 +345,6 @@ async function refreshPetPluginCard(root) {
         refreshPetPluginCard(root);
       });
     }
-    addBtn("trash", I18n.t("卸载"), async () => {
-      if (!(await confirmDialog(I18n.t("卸载桌宠？将删除已下载的运行时文件。"), { title: I18n.t("卸载桌宠"), danger: true, okText: I18n.t("卸载") }))) return;
-      await window.api.petUninstall();
-      toast(I18n.t("桌宠已卸载"), "ok");
-      refreshPetPluginCard(root);
-    }, { danger: true });
   }
   const extras = root.querySelector("[data-pet-extras]");
   if (extras) {
@@ -407,18 +403,6 @@ async function refreshMusic3PluginCard(root) {
       { disabled: !!st.updating || !!st.installing },
     );
   }
-  addBtn("trash", I18n.t("移除入口"), async () => {
-    if (
-      !(await confirmDialog(
-        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
-        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
-      ))
-    )
-      return;
-    if (window.api.music3RemovePluginMeta) await window.api.music3RemovePluginMeta();
-    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
-    refreshMusic3PluginCard(root);
-  }, { danger: true });
   if (prog && (st.installing || st.updating)) {
     prog.style.display = "block";
     if (progTxt) {
@@ -507,18 +491,6 @@ async function refreshH3PluginCard(root) {
       { disabled: !!st.updating || !!st.installing },
     );
   }
-  addBtn("trash", I18n.t("移除入口"), async () => {
-    if (
-      !(await confirmDialog(
-        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
-        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
-      ))
-    )
-      return;
-    if (window.api.h3RemovePluginMeta) await window.api.h3RemovePluginMeta();
-    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
-    refreshH3PluginCard(root);
-  }, { danger: true });
   if (prog && (st.installing || st.updating)) {
     prog.style.display = "block";
     if (progTxt) {
@@ -559,7 +531,7 @@ function bindH3Progress(host) {
 
 /* ── Remotion 动效视频（应用插件 kind remotion） ──
    安装流程在插件控制台窗内完成（设置目录 → 复制 remotion-pack → npm install），
-   卡片只做状态展示与入口：未安装 → 「打开控制台安装」；已安装 → 运行/停止控制台 + 移除入口。 */
+   卡片只做状态展示与入口：未安装 → 「打开控制台安装」；已安装 → 运行/停止控制台。 */
 async function refreshRemotionPluginCard(root) {
   if (!root || !window.api || !window.api.remotionStatus) return;
   const st = await window.api.remotionStatus();
@@ -597,19 +569,6 @@ async function refreshRemotionPluginCard(root) {
     } else {
       addBtn("play", I18n.t("运行"), openConsole, { primary: true });
     }
-    addBtn("trash", I18n.t("移除入口"), async () => {
-      if (
-        !(await confirmDialog(
-          I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
-          { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
-        ))
-      )
-        return;
-      if (window.api.remotionRemovePluginMeta) await window.api.remotionRemovePluginMeta();
-      toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
-      refreshRemotionPluginCard(root);
-      if (typeof refreshAppPluginsCache === "function") refreshAppPluginsCache();
-    }, { danger: true });
   }
   if (st.installed && st.installDir) {
     const dirHint = document.createElement("div");
@@ -683,18 +642,6 @@ async function refreshLlamaPluginCard(root) {
       refreshLlamaPluginCard(root);
     }, { primary: true });
   }
-  addBtn("trash", I18n.t("移除入口"), async () => {
-    if (
-      !(await confirmDialog(
-        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
-        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
-      ))
-    )
-      return;
-    if (window.api.llamaRemovePluginMeta) await window.api.llamaRemovePluginMeta();
-    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
-    refreshLlamaPluginCard(root);
-  }, { danger: true });
   if (prog && st.installing) {
     prog.style.display = "block";
     if (progTxt) {
@@ -756,18 +703,6 @@ async function refreshTtsPluginCard(root) {
       refreshTtsPluginCard(root);
     }, { primary: true });
   }
-  addBtn("trash", I18n.t("移除入口"), async () => {
-    if (
-      !(await confirmDialog(
-        I18n.t("仅移除插件入口与控制台缓存，不会删除你设置的安装目录中的项目与模型。"),
-        { title: I18n.t("移除插件入口"), danger: false, okText: I18n.t("移除") },
-      ))
-    )
-      return;
-    if (window.api.ttsRemovePluginMeta) await window.api.ttsRemovePluginMeta();
-    toast(I18n.t("已移除入口；安装目录项目已保留"), "ok");
-    refreshTtsPluginCard(root);
-  }, { danger: true });
   if (prog && st.installing) {
     prog.style.display = "block";
     if (progTxt) {
@@ -805,6 +740,90 @@ function bindTtsProgress(host) {
     }
   });
 }
+/* ---- 本地语音转写（Qwen3-ASR）：插件卡片状态 + 控制台入口（renderer/app-asr.js 主实现）
+   卡片动作只有「开始 / 关闭」两态：开始 = 打开控制台窗口（未安装时控制台本身就是安装入口），
+   关闭 = 关控制台窗口；不再有「删除 / 卸载 / 移除入口」，后端启停与安装在控制台里做。
+   注：此前「打开控制台 / 状态与设置」用的是 gear 图标，而 PLUGIN_ACT_SVG 没有 gear，
+   按钮会渲染成没有任何图标的空方块（用户看到的“按钮出错”）——gear 已补齐。 */
+async function refreshAsrPluginCard(root) {
+  if (!root || !window.api || !window.api.asrStatus) return;
+  const st = await window.api.asrStatus();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: true });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  /* 开始 / 关闭：一律作用于插件控制台窗口（asr:open / asr:close），不打开设置弹窗 */
+  const openConsole = async () => {
+    const r = window.api.asrOpen ? await window.api.asrOpen() : { ok: false, error: "no_api" };
+    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+    refreshAsrPluginCard(root);
+  };
+  const closeConsole = async () => {
+    if (window.api.asrClose) await window.api.asrClose();
+    refreshAsrPluginCard(root);
+  };
+  if (st.consoleOpen) {
+    addBtn("stop", I18n.t("关闭控制台"), closeConsole, { primary: true });
+  } else {
+    addBtn("play", I18n.t("打开控制台"), openConsole, { primary: true });
+  }
+  /* 老版本装好的（或补装失败的）缺便携 ffmpeg：卡片上直接给「补装」入口，不必先开控制台 */
+  if (st.installed && st.ffmpeg && !st.ffmpeg.ok) {
+    addBtn("download", I18n.t("补装 ffmpeg"), async () => {
+      const r = window.api.asrInstallFfmpeg ? await window.api.asrInstallFfmpeg({ force: true }) : { ok: false };
+      toast(r && r.ok ? I18n.t("ffmpeg 已就位") : I18n.t("ffmpeg 补装失败，请在控制台重试"), r && r.ok ? "ok" : "warn");
+      refreshAsrPluginCard(root);
+    });
+  }
+  /* 状态与设置：无 N 卡时先说明不可用（仍可在控制台里查看与强制 CPU） */
+  if (!st.supported) {
+    addBtn("gear", I18n.t("本机无 N 卡 · 查看"), () => asrOpenInstallDialog({}), { primary: true });
+  } else {
+    addBtn("gear", I18n.t("状态与设置"), () => asrOpenInstallDialog({}));
+  }
+  if (prog && st.installing) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = I18n.t("安装中…");
+    }
+  }
+}
+function bindAsrProgress(host) {
+  if (!window.api || !window.api.onAsrProgress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onAsrProgress((data) => {
+    if (!data || (data.id && data.id !== "asr-local")) return;
+    if (data.phase !== "install") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshAsrPluginCard(host);
+      }, 600);
+    }
+  });
+}
+
 function pluginLoc(p, key) {
   const v = p && p[key];
   if (v && typeof v === "object") {
@@ -936,29 +955,6 @@ async function refreshWindowPluginCard(host, item) {
       refreshWindowPluginCard(host, next || st);
     });
   }
-  addBtn("trash", I18n.t("卸载"), async () => {
-    if (
-      !(await confirmDialog(I18n.t("卸载该插件？将删除已下载的运行时文件。"), {
-        title: I18n.t("卸载插件"),
-        danger: true,
-        okText: I18n.t("卸载"),
-      }))
-    )
-      return;
-    await window.api.appPluginsUninstall(st.id);
-    toast(I18n.t("插件已卸载"), "ok");
-    const cat = await window.api.appPluginsCatalog();
-    const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
-    if (!next) {
-      const wrap = host.closest(".plugin-grid-wrap");
-      const pop = wrap && wrap.querySelector(".plugin-pop");
-      if (wrap) closePluginPop(wrap, pop);
-      host.remove();
-    } else {
-      host._pluginItem = next;
-      refreshWindowPluginCard(host, next);
-    }
-  }, { danger: true });
 }
 function mkPluginCardShell(item) {
   const card = document.createElement("div");
@@ -1075,6 +1071,20 @@ async function openAppPluginsDialog() {
             compatible: true,
             installed: true,
           },
+          {
+            id: "asr-local",
+            kind: "asr",
+            handler: "asr",
+            icon: "asr-local.png",
+            version: "1.0.0",
+            title: { zh: "本地语音转写（Qwen3-ASR）", en: "Local Speech-to-Text (Qwen3-ASR)" },
+            subtitle: {
+              zh: I18n.t("基于 ModelScope Qwen3-ASR-0.6B 的本地语音转文字：音频接到文字处理节点即自动转写并注入提示词；指定目录安装（需 NVIDIA 显卡）、热词表、转写结果可编辑与缓存。后端静默运行、随 MTNode 退出而结束。"),
+              en: "Local speech-to-text with Qwen3-ASR-0.6B: audio wired into a text node is transcribed into the prompt. Silent backend, exits with MTNode.",
+            },
+            compatible: true,
+            installed: true,
+          },
         ]
   ).filter((p) => p && p.id !== "forum");
 
@@ -1155,6 +1165,13 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onLlamaConsoleChanged(() => refreshLlamaPluginCard(card)));
       }
       refreshLlamaPluginCard(card);
+    } else if (item.kind === "asr" || item.handler === "asr") {
+      const off = bindAsrProgress(card);
+      if (off) offs.push(off);
+      if (window.api && window.api.onAsrConsoleChanged) {
+        offs.push(window.api.onAsrConsoleChanged(() => refreshAsrPluginCard(card)));
+      }
+      refreshAsrPluginCard(card);
     } else if (item.kind === "tts" || item.handler === "tts") {
       const off = bindTtsProgress(card);
       if (off) offs.push(off);

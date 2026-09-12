@@ -50,7 +50,7 @@ export function apply(ctx) {
 /* 把 env 目标档夹到精确模型能力:DeepSeek 官方固定;其余尽力经 ctx.llm 解析。 */
 async function supportedEffortFor(ctx, provider, model, want) {
   if (provider === 'deepseek-official') {
-    /* llm-deepseek 适配器能力 off/low/high/max;off 不可选(旧档语义→high) */
+    /* llm-deepseek 适配器能力 off/low/high/max;off = 会话「思考强度 · 无」，命中即关思考 */
     return effortForModelEfforts(want, ['off', 'low', 'high', 'max'])
   }
   try {

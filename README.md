@@ -11,34 +11,29 @@
 
 ## Quick start
 
+应用内置一张「快速开始」画布，按十个分区把从配置到出片的流程依次摆开：**准备工** · **内容生成** · **全局助手与工作流** · **开发节点** · **会话** · **工具 / 函数节点** · **素材库** · **专家团** · **社区** · **其他**。每个分区只需要改输入、点该区的 ▶ 一键重跑。
+
 | 我想…… | 去哪里 |
 | --- | --- |
-| 装好并跑起来 | 从[下载页面](http://mt-agent.com/mtnode)取安装包；首启向导见 [`first-run.md`](guides/manual/first-run.md) · [`overview.md`](guides/manual/overview.md) |
-| 看懂界面与快捷键 | [`ui-tour.md`](guides/manual/ui-tour.md) · [`shortcuts.md`](guides/manual/shortcuts.md) |
-| 配服务商与 API Key | [`providers.md`](guides/manual/providers.md)（Key 只存本机） |
-| 用节点和连线搭一条流水线 | [`nodes-wires.md`](guides/manual/nodes-wires.md) · [`io-proc.md`](guides/manual/io-proc.md) |
-| 调参数、运行与排查一次运行 | [`params-runs.md`](guides/manual/params-runs.md) |
-| 批量生产、拆分合并、批量落盘 | [`batch.md`](guides/manual/batch.md) |
-| 理清执行顺序：任务、判断、定时与路由 | [`control-flow.md`](guides/manual/control-flow.md) |
-| 找节点、总览画布、框选与排版 | [`canvas-tools.md`](guides/manual/canvas-tools.md) · [`marks-groups.md`](guides/manual/marks-groups.md) |
-| 收纳复杂子图 | [`super-nodes.md`](guides/manual/super-nodes.md) |
-| 复用工具、跑纯计算函数 | [`tools-functions.md`](guides/manual/tools-functions.md) |
-| 让多个节点共享同一份输入 | [`global-broadcast.md`](guides/manual/global-broadcast.md) |
-| 生成音乐 / 视频 / 语音 | [`media-gen.md`](guides/manual/media-gen.md)（本地后端安装见 [`plugins-skills.md`](guides/manual/plugins-skills.md)） |
-| 接网络端口、拉起本机程序 | [`media-net.md`](guides/manual/media-net.md) |
-| 保存、导入导出、上架创意工坊 | [`workflows.md`](guides/manual/workflows.md) |
-| 让 AI 帮我搭 / 改工作流，或用 Agent 干活 | [`agent-nodes.md`](guides/manual/agent-nodes.md) · [`dsh.md`](guides/manual/dsh.md) |
+| 拿到 API Key 并填进 MTNode | [`providers.md`](guides/manual/providers.md)（Key 只存本机） |
+| 搭一条「输入 → 处理 → 保存」的流水线 | [`io-proc.md`](guides/manual/io-proc.md) |
+| 出音乐 / 语音 / 视频 | [`media-gen.md`](guides/manual/media-gen.md) |
+| 让 AI 审阅、批注并修订文本 | [`ai-review.md`](guides/manual/ai-review.md) |
+| 改图与蒙版局部重绘 | [`image-edit.md`](guides/manual/image-edit.md) |
+| 一句话让助手搭一条工作流 | [`quick-build.md`](guides/manual/quick-build.md) |
+| 看画布里的五条示例链、一键重跑 | [`workflows.md`](guides/manual/workflows.md) |
+| 加节点、连线与 @ 引用 | [`nodes-wires.md`](guides/manual/nodes-wires.md) |
+| 框选、分组、分区与排版 | [`marks-groups.md`](guides/manual/marks-groups.md) |
+| 撤销、重做与回滚 | [`rollback.md`](guides/manual/rollback.md) |
+| 把逻辑固化成工具节点 / 函数节点 | [`tools-functions.md`](guides/manual/tools-functions.md) |
+| 管理素材库 | [`asset-library.md`](guides/manual/asset-library.md) |
+| 让 Agent 干活：智能任务与智能会话 | [`agent-nodes.md`](guides/manual/agent-nodes.md) · [`dsh.md`](guides/manual/dsh.md) |
 | 管权限与审批 | [`approvals.md`](guides/manual/approvals.md) |
-| 装插件、技能与 MCP | [`plugins-skills.md`](guides/manual/plugins-skills.md) |
-| 按模块搭建软件项目架构（开发节点） | [`dev-nodes.md`](guides/manual/dev-nodes.md) |
-| 让回答有据可查（数据库节点） | [`database-nodes.md`](guides/manual/database-nodes.md) · [`fact-library.md`](guides/manual/fact-library.md) |
-| 让多个 AI 角色协作 | [`one-person-company.md`](guides/manual/one-person-company.md) |
-| 管理素材 | [`asset-library.md`](guides/manual/asset-library.md) |
-| 编辑 Markdown / 代码，写批注让 AI 修订 | [`editors.md`](guides/manual/editors.md) · [`ai-review.md`](guides/manual/ai-review.md) |
-| 管工作目录与存档 / 撤销回滚 | [`workspace.md`](guides/manual/workspace.md) · [`rollback.md`](guides/manual/rollback.md) |
-| 改设置、登录账号、更新与排错 | [`settings.md`](guides/manual/settings.md) · [`account.md`](guides/manual/account.md) · [`update.md`](guides/manual/update.md) · [`troubleshoot.md`](guides/manual/troubleshoot.md) |
-| 遇到问题 / 查英文原词 | [`faq.md`](guides/manual/faq.md) · [`glossary.md`](guides/manual/glossary.md) |
-| 所有节点的逐项说明 | [`node-guide.md`](guides/manual/node-guide.md) · [`guides/nodes/`](guides/nodes/)（右键节点「节点指南」） |
+| 按模块搭建软件项目（开发节点） | [`dev-nodes.md`](guides/manual/dev-nodes.md) |
+| 让多个 AI 角色协作（专家团） | [`one-person-company.md`](guides/manual/one-person-company.md) |
+| 逛创意工坊、去讨论区提问 | [`community.md`](guides/manual/community.md) |
+| 查英文原词 / 遇到问题 | [`glossary.md`](guides/manual/glossary.md) · [`faq.md`](guides/manual/faq.md) |
+| 所有节点的逐项说明 | [`guides/nodes/`](guides/nodes/)（右键节点「节点指南」） |
 
 ## 安装
 

@@ -23,12 +23,19 @@ const DB_PATH = path.join(DATA_DIR, "db.json");
 // 账户存储抽象层：users / sessions / identities 三个键经 account-store 读写
 // （默认 json 后端仍落 DATA_DIR/db.json，或由 MTNODE_ACCOUNT_STORE 切到 aliyun-tablestore）。
 const accountStore = createAccountStore({ dataDir: DATA_DIR, dbPath: DB_PATH });
-const FORUM_TTL_MS = 30 * 24 * 3600 * 1000;
-const FORUM_ROOMS = new Set(["general", "bug", "improve"]);
-const MAX_FORUM_TEXT = 2000;
+// 论坛（长期保留，无 30 天过期；话题/回复分开限流）
+const FORUM_STATUSES = new Set(["general", "help", "suggest", "bug", "solved"]);
+const MAX_FORUM_TITLE = 120;
+const MAX_FORUM_CONTENT = 20000;
+const MAX_FORUM_REPLY = 8000;
+const MAX_FORUM_IMAGES = 6;
 const MAX_FORUM_IMAGE = 3 * 1024 * 1024;
-const FORUM_RATE_MAX = 12;
+const MAX_FORUM_IMAGE_EDGE = 1080;
+const FORUM_RATE_TOPIC_MAX = 3;
+const FORUM_RATE_REPLY_MAX = 10;
+const FORUM_RATE_IMAGE_MAX = 30;
 const FORUM_RATE_WIN_MS = 60 * 1000;
+const FORUM_PAGE_SIZE_MAX = 100;
 const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || "127.0.0.1";
 const MAX_BODY = 40 * 1024 * 1024;
@@ -77,9 +84,14 @@ function emptyDb() {
     skills: [],
     likes: [],
     skillLikes: [],
-    forumMessages: [],
+    forumTopics: [],
+    forumReplies: [],
   };
 }
+
+// 旧结构（forumMessages 按房间分桶 + 30 天 TTL）不再兼容：
+// 首次读到遗留字段即清空该字段与 forum-images 目录，随后照常保存新结构。
+let legacyForumSeen = false;
 
 function loadDb() {
   try {
@@ -92,7 +104,12 @@ function loadDb() {
     if (!Array.isArray(d.skills)) d.skills = [];
     if (!Array.isArray(d.likes)) d.likes = [];
     if (!Array.isArray(d.skillLikes)) d.skillLikes = [];
-    if (!Array.isArray(d.forumMessages)) d.forumMessages = [];
+    if ("forumMessages" in d) {
+      legacyForumSeen = true;
+      delete d.forumMessages;
+    }
+    if (!Array.isArray(d.forumTopics)) d.forumTopics = [];
+    if (!Array.isArray(d.forumReplies)) d.forumReplies = [];
     return d;
   } catch {
     return emptyDb();
@@ -112,6 +129,21 @@ function saveDb() {
   });
   return saving;
 }
+
+// 首次读到旧结构：清空遗留字段（loadDb 已删）与 forum-images 目录里的旧图，并立即落盘。
+function purgeLegacyForum() {
+  if (!legacyForumSeen) return;
+  legacyForumSeen = false;
+  if (!(db.forumTopics || []).length) {
+    try {
+      for (const f of fs.readdirSync(FORUM_IMG_DIR)) {
+        try { fs.unlinkSync(path.join(FORUM_IMG_DIR, f)); } catch {}
+      }
+    } catch {}
+  }
+  saveDb();
+}
+purgeLegacyForum();
 
 // 启动即从账户存储把 users / sessions / identities 载入内存缓存（见 bootstrapAccountStore）。
 await bootstrapAccountStore();
@@ -1235,6 +1267,41 @@ function requireFields(obj, keys) {
   }
 }
 
+// 只读图片头拿宽高（png / jpeg / webp），拿不到就返回 null（放行，交给 3MB 体积上限兜底）。
+function imageEdge(buf, kind) {
+  try {
+    if (kind === "png") return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
+    if (kind === "webp") {
+      const fourcc = buf.toString("ascii", 12, 16);
+      if (fourcc === "VP8X") return [1 + buf.readUIntLE(24, 3), 1 + buf.readUIntLE(27, 3)];
+      if (fourcc === "VP8L") {
+        const bits = buf.readUInt32LE(21);
+        return [(bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1];
+      }
+      if (fourcc === "VP8 ") return [buf.readUInt16LE(26) & 0x3fff, buf.readUInt16LE(28) & 0x3fff];
+      return null;
+    }
+    if (kind === "jpg") {
+      let i = 2;
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) { i += 1; continue; }
+        const marker = buf[i + 1];
+        if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; }
+        const len = buf.readUInt16BE(i + 2);
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return [buf.readUInt16BE(i + 7), buf.readUInt16BE(i + 5)];
+        }
+        i += 2 + len;
+      }
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+// 论坛图片校验：png/jpeg/webp、≤3MB、最大边 ≤1080（沿用原前台压缩口径）。
 function decodeForumImage(b64) {
   if (b64 == null || b64 === "") return null;
   let s = String(b64).trim();
@@ -1247,7 +1314,23 @@ function decodeForumImage(b64) {
   const jpg = buf[0] === 0xff && buf[1] === 0xd8;
   const webp = buf[0] === 0x52 && buf[8] === 0x57;
   if (!png && !jpg && !webp) throw new Error("image must be png/jpeg/webp");
+  const edge = imageEdge(buf, png ? "png" : webp ? "webp" : "jpg");
+  if (edge && Math.max(edge[0], edge[1]) > MAX_FORUM_IMAGE_EDGE) {
+    throw new Error("image edge too large");
+  }
   return { buf, ext: png ? "png" : webp ? "webp" : "jpg" };
+}
+
+// 把请求里的 imageBase64[] 落盘，返回图片 id 数组（单话题/单回复最多 6 张）。
+function collectForumImages(raw) {
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  if (list.length > MAX_FORUM_IMAGES) throw new Error("图片最多 " + MAX_FORUM_IMAGES + " 张");
+  const ids = [];
+  for (const one of list) {
+    const img = decodeForumImage(one);
+    if (img) ids.push(writeForumImage(uid("img_"), img));
+  }
+  return ids;
 }
 
 function forumImagePath(id) {
@@ -1267,87 +1350,75 @@ function writeForumImage(id, img) {
     if (p !== dest) try { fs.unlinkSync(p); } catch {}
   }
   fs.writeFileSync(dest, img.buf);
+  return id;
 }
 
-function unlinkForumImage(id) {
-  if (!id) return;
-  for (const ext of ["jpg", "jpeg", "png", "webp"]) {
-    try { fs.unlinkSync(path.join(FORUM_IMG_DIR, id + "." + ext)); } catch {}
-  }
-}
-
-function pruneForum() {
-  const cut = now() - FORUM_TTL_MS;
-  const src = Array.isArray(db.forumMessages) ? db.forumMessages : [];
-  const keep = [];
-  let dropped = 0;
-  for (const m of src) {
-    if (m && m.createdAt >= cut) keep.push(m);
-    else {
-      dropped += 1;
-      if (m && m.imageId) unlinkForumImage(m.imageId);
-    }
-  }
-  if (dropped) {
-    db.forumMessages = keep;
-    saveDb();
-  } else {
-    db.forumMessages = src;
-  }
-}
-
-function forumDayKey(ts, tzOffsetMin) {
-  const localMs = Number(ts || 0) - Number(tzOffsetMin || 0) * 60 * 1000;
-  const d = new Date(localMs);
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return y + "-" + m + "-" + day;
-}
-
-function forumDaysBefore(room, before, tzOffsetMin, cut) {
-  const map = new Map();
-  const beforeTs = Number(before) || 0;
-  const cutTs = Number(cut) || 0;
-  for (const m of db.forumMessages || []) {
-    if (!m || m.room !== room) continue;
-    if (m.createdAt < cutTs || m.createdAt >= beforeTs) continue;
-    const day = forumDayKey(m.createdAt, tzOffsetMin);
-    const cur = map.get(day) || { day, count: 0, from: m.createdAt, to: m.createdAt };
-    cur.count += 1;
-    if (m.createdAt < cur.from) cur.from = m.createdAt;
-    if (m.createdAt > cur.to) cur.to = m.createdAt;
-    map.set(day, cur);
-  }
-  return [...map.values()].sort((a, b) => String(a.day).localeCompare(String(b.day)));
-}
-
-function publicForumMsg(m) {
-  const u = db.users.find((x) => x.id === m.userId);
+function forumAuthor(userId) {
+  const u = db.users.find((x) => x.id === userId);
   return {
-    id: m.id,
-    room: m.room,
-    text: m.text || "",
-    imageId: m.imageId || "",
-    createdAt: m.createdAt,
-    user: {
-      id: m.userId,
-      username: (u && u.username) || "",
-      nickname: (u && u.nickname) || "",
-    },
+    id: userId,
+    username: (u && u.username) || "",
+    nickname: (u && u.nickname) || "",
   };
 }
 
-const forumPostTimes = new Map();
-function forumRateOk(userId) {
+// 列表投影：只有标题与元数据，绝不带正文（懒加载关键）。
+function publicForumTopicSummary(t) {
+  return {
+    id: t.id,
+    title: t.title || "",
+    status: t.status,
+    imageIds: Array.isArray(t.imageIds) ? t.imageIds : [],
+    replyCount: t.replyCount || 0,
+    userId: t.userId,
+    author: forumAuthor(t.userId),
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    lastReplyAt: t.lastReplyAt || t.createdAt,
+  };
+}
+
+function publicForumTopic(t, viewer) {
+  return Object.assign(publicForumTopicSummary(t), {
+    content: t.content || "",
+    mine: !!(viewer && viewer.id === t.userId),
+  });
+}
+
+function publicForumReply(r) {
+  return {
+    id: r.id,
+    topicId: r.topicId,
+    content: r.content || "",
+    imageIds: Array.isArray(r.imageIds) ? r.imageIds : [],
+    userId: r.userId,
+    author: forumAuthor(r.userId),
+    createdAt: r.createdAt,
+  };
+}
+
+function forumPageArgs(url, pageKey, sizeKey) {
+  const pageSizeRaw = Number(url.searchParams.get(sizeKey) || 20) || 20;
+  const pageRaw = Number(url.searchParams.get(pageKey) || 1) || 1;
+  const pageSize = Math.min(FORUM_PAGE_SIZE_MAX, Math.max(1, Math.floor(pageSizeRaw)));
+  const page = Math.max(1, Math.floor(pageRaw));
+  return { page, pageSize, skip: (page - 1) * pageSize };
+}
+
+// 发帖 / 回复分开计数（同一账号，各自窗口内独立上限）。
+const forumRateBuckets = { topic: new Map(), reply: new Map(), image: new Map() };
+function forumRateOk(kind, userId) {
+  const bucket = forumRateBuckets[kind] || forumRateBuckets.reply;
+  const max =
+    kind === "topic" ? FORUM_RATE_TOPIC_MAX : kind === "image" ? FORUM_RATE_IMAGE_MAX : FORUM_RATE_REPLY_MAX;
   const t = now();
-  const arr = (forumPostTimes.get(userId) || []).filter((x) => t - x < FORUM_RATE_WIN_MS);
-  if (arr.length >= FORUM_RATE_MAX) {
-    forumPostTimes.set(userId, arr);
+  const arr = (bucket.get(userId) || []).filter((x) => t - x < FORUM_RATE_WIN_MS);
+  if (arr.length >= max) {
+    bucket.set(userId, arr);
     return false;
   }
   arr.push(t);
-  forumPostTimes.set(userId, arr);
+  bucket.set(userId, arr);
   return true;
 }
 
@@ -2451,101 +2522,165 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, item: publicSkill(t, user) });
   }
 
-  if (method === "GET" && p === "/api/forum/messages") {
-    if (!user) return send(res, 401, { ok: false, error: "未登录" });
-    pruneForum();
-    const room = String(url.searchParams.get("room") || "general");
-    if (!FORUM_ROOMS.has(room)) {
-      return send(res, 400, { ok: false, error: "未知讨论区" });
+  // —— 论坛（长期保留）——
+  // 列表：免登录，只回标题与元数据（不含正文），支持 q/status/sort/page/pageSize。
+  if (method === "GET" && p === "/api/forum/topics") {
+    const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const status = String(url.searchParams.get("status") || "").trim().toLowerCase();
+    if (status && !FORUM_STATUSES.has(status)) {
+      return send(res, 400, { ok: false, error: "未知状态" });
     }
-    const cut = now() - FORUM_TTL_MS;
-    const since = Number(url.searchParams.get("since") || 0) || 0;
-    const fromRaw = Number(url.searchParams.get("from") || 0) || 0;
-    const toRaw = Number(url.searchParams.get("to") || 0) || 0;
-    const from = Math.max(cut, fromRaw || cut);
-    const to = toRaw > 0 ? toRaw : now() + 1000;
-    const includeDays = String(url.searchParams.get("includeDays") || "") === "1";
-    const tzOffset = Number(url.searchParams.get("tzOffset") || 0) || 0;
-    const items = (db.forumMessages || [])
-      .filter(
-        (m) =>
-          m.room === room &&
-          m.createdAt >= cut &&
-          m.createdAt >= from &&
-          m.createdAt <= to &&
-          m.createdAt > since,
-      )
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .map(publicForumMsg);
-    const payload = { ok: true, room, items, from, to, since: cut, ttlMs: FORUM_TTL_MS };
-    if (includeDays) {
-      payload.days = forumDaysBefore(room, from, tzOffset, cut);
-    }
-    return send(res, 200, payload);
+    const sort = String(url.searchParams.get("sort") || "new").trim().toLowerCase() === "active" ? "active" : "new";
+    const { page, pageSize, skip } = forumPageArgs(url, "page", "pageSize");
+    const list = (db.forumTopics || []).filter((t) => {
+      if (!t) return false;
+      if (status && t.status !== status) return false;
+      if (q) {
+        const hit = String(t.title || "").toLowerCase().includes(q) || String(t.content || "").toLowerCase().includes(q);
+        if (!hit) return false;
+      }
+      return true;
+    });
+    list.sort(
+      sort === "active"
+        ? (a, b) => (b.lastReplyAt || b.createdAt || 0) - (a.lastReplyAt || a.createdAt || 0)
+        : (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+    );
+    const items = list.slice(skip, skip + pageSize).map(publicForumTopicSummary);
+    return send(res, 200, { ok: true, sort, page, pageSize, total: list.length, items });
   }
 
-  if (method === "GET" && p === "/api/forum/days") {
-    if (!user) return send(res, 401, { ok: false, error: "未登录" });
-    pruneForum();
-    const room = String(url.searchParams.get("room") || "general");
-    if (!FORUM_ROOMS.has(room)) {
-      return send(res, 400, { ok: false, error: "未知讨论区" });
-    }
-    const cut = now() - FORUM_TTL_MS;
-    const beforeRaw = Number(url.searchParams.get("before") || 0) || 0;
-    const before = beforeRaw > 0 ? beforeRaw : now();
-    const tzOffset = Number(url.searchParams.get("tzOffset") || 0) || 0;
-    const days = forumDaysBefore(room, before, tzOffset, cut);
-    return send(res, 200, { ok: true, room, before, days, ttlMs: FORUM_TTL_MS });
+  // 详情：免登录，正文 + 回复分页（replyPage / replyPageSize）。
+  if (method === "GET" && p === "/api/forum/topic") {
+    const id = String(url.searchParams.get("id") || "").trim();
+    const t = (db.forumTopics || []).find((x) => x.id === id);
+    if (!t) return send(res, 404, { ok: false, error: "话题不存在" });
+    const { page, pageSize, skip } = forumPageArgs(url, "replyPage", "replyPageSize");
+    const all = (db.forumReplies || [])
+      .filter((r) => r && r.topicId === t.id)
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const replies = all.slice(skip, skip + pageSize).map(publicForumReply);
+    return send(res, 200, {
+      ok: true,
+      topic: publicForumTopic(t, user),
+      replies: { page, pageSize, total: all.length, items: replies },
+    });
   }
 
-  if (method === "POST" && p === "/api/forum/messages") {
-    if (!user) return send(res, 401, { ok: false, error: "未登录" });
-    if (!forumRateOk(user.id)) {
-      return send(res, 429, { ok: false, error: "发送过于频繁，请稍后再试" });
+  // 发帖：需登录。
+  if (method === "POST" && p === "/api/forum/topics") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    if (!forumRateOk("topic", user.id)) {
+      return send(res, 429, { ok: false, code: "RATE_LIMITED", error: "发帖过于频繁，请稍后再试" });
     }
-    pruneForum();
     const b = await jsonBody();
-    const room = String(b.room || "").trim();
-    if (!FORUM_ROOMS.has(room)) {
-      return send(res, 400, { ok: false, error: "未知讨论区" });
+    const title = String(b.title || "").trim();
+    const content = String(b.content || "").trim();
+    if (!title) return send(res, 400, { ok: false, error: "请填写标题" });
+    if (title.length > MAX_FORUM_TITLE) {
+      return send(res, 400, { ok: false, error: "标题不能超过 " + MAX_FORUM_TITLE + " 字" });
     }
-    const text = String(b.text || "").trim();
-    if (text.length > MAX_FORUM_TEXT) {
-      return send(res, 400, { ok: false, error: "消息不能超过 2000 字" });
+    if (!content) return send(res, 400, { ok: false, error: "请填写正文" });
+    if (content.length > MAX_FORUM_CONTENT) {
+      return send(res, 400, { ok: false, error: "正文不能超过 " + MAX_FORUM_CONTENT + " 字符" });
     }
-    let imageId = "";
-    if (b.imageBase64) {
-      let img;
-      try {
-        img = decodeForumImage(b.imageBase64);
-      } catch (e) {
-        return send(res, 400, { ok: false, error: "图片无效：" + e.message });
-      }
-      if (img) {
-        imageId = uid("img_");
-        writeForumImage(imageId, img);
-      }
+    const status = String(b.status || "general").trim().toLowerCase();
+    if (!FORUM_STATUSES.has(status)) return send(res, 400, { ok: false, error: "未知状态" });
+    let imageIds;
+    try {
+      imageIds = collectForumImages(b.imageBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "图片无效：" + e.message });
     }
-    if (!text && !imageId) {
-      return send(res, 400, { ok: false, error: "请填写文字或选择图片" });
-    }
-    const msg = {
-      id: uid("fm_"),
-      room,
+    const at = now();
+    const topic = {
+      id: uid("ft_"),
+      title,
+      content,
+      status,
+      imageIds,
       userId: user.id,
-      text,
-      imageId,
-      createdAt: now(),
+      createdAt: at,
+      updatedAt: at,
+      replyCount: 0,
+      lastReplyAt: 0,
     };
-    db.forumMessages.push(msg);
+    db.forumTopics.push(topic);
     await saveDb();
-    return send(res, 200, { ok: true, item: publicForumMsg(msg) });
+    return send(res, 200, { ok: true, item: publicForumTopic(topic, user) });
   }
 
+  // 回复：需登录，写回话题的 replyCount / lastReplyAt。
+  if (method === "POST" && p === "/api/forum/replies") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    if (!forumRateOk("reply", user.id)) {
+      return send(res, 429, { ok: false, code: "RATE_LIMITED", error: "回复过于频繁，请稍后再试" });
+    }
+    const b = await jsonBody();
+    const topicId = String(b.topicId || "").trim();
+    const t = (db.forumTopics || []).find((x) => x.id === topicId);
+    if (!t) return send(res, 404, { ok: false, error: "话题不存在" });
+    const content = String(b.content || "").trim();
+    if (!content) return send(res, 400, { ok: false, error: "请填写回复内容" });
+    if (content.length > MAX_FORUM_REPLY) {
+      return send(res, 400, { ok: false, error: "回复不能超过 " + MAX_FORUM_REPLY + " 字符" });
+    }
+    let imageIds;
+    try {
+      imageIds = collectForumImages(b.imageBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "图片无效：" + e.message });
+    }
+    const at = now();
+    const reply = { id: uid("fr_"), topicId, content, imageIds, userId: user.id, createdAt: at };
+    db.forumReplies.push(reply);
+    t.replyCount = (t.replyCount || 0) + 1;
+    t.lastReplyAt = at;
+    t.updatedAt = at;
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicForumReply(reply) });
+  }
+
+  // 改状态：需登录，仅话题作者可改（含标记「已解决」）。
+  if (method === "PATCH" && p === "/api/forum/topic") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const id = String(b.id || "").trim();
+    const t = (db.forumTopics || []).find((x) => x.id === id);
+    if (!t) return send(res, 404, { ok: false, error: "话题不存在" });
+    if (t.userId !== user.id) {
+      return send(res, 403, { ok: false, error: "只能修改自己的话题" });
+    }
+    const status = String(b.status || "").trim().toLowerCase();
+    if (!FORUM_STATUSES.has(status)) return send(res, 400, { ok: false, error: "未知状态" });
+    t.status = status;
+    t.updatedAt = now();
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicForumTopic(t, user) });
+  }
+
+  // 图片上传：需登录（编辑期先传图拿 imageId，正文再写 ![](forum:<imageId>)）。
+  if (method === "POST" && p === "/api/forum/images") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    if (!forumRateOk("image", user.id)) {
+      return send(res, 429, { ok: false, code: "RATE_LIMITED", error: "上传过于频繁，请稍后再试" });
+    }
+    const b = await jsonBody();
+    const raw = b.base64 != null ? b.base64 : b.imageBase64 != null ? b.imageBase64 : b.data;
+    let img;
+    try {
+      img = decodeForumImage(raw);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "图片无效：" + e.message });
+    }
+    if (!img) return send(res, 400, { ok: false, error: "图片为空" });
+    const imageId = writeForumImage(uid("img_"), img);
+    return send(res, 200, { ok: true, imageId });
+  }
+
+  // 论坛图片：免登录（否则未登录看不到图）。
   const forumImgR = /^\/api\/forum\/images\/([^/]+)$/.exec(p);
   if (forumImgR && method === "GET") {
-    if (!user) return send(res, 401, { ok: false, error: "未登录" });
     const fp = forumImagePath(forumImgR[1]);
     if (!fp) return send(res, 404, { ok: false, error: "图片不存在" });
     const buf = fs.readFileSync(fp);

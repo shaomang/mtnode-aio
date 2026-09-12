@@ -1,54 +1,84 @@
 # Providers & API
 
-> One-sentence goal: make the nodes on your canvas actually able to call a model — add a text provider with an API key, and add a separate provider for image / vision capability.
+> One-sentence goal: get an API key that starts with `sk-` and enter it into MTNode — first understand what an API key is, sign up with one of the four Chinese providers, go through an aggregator when you need foreign models or image generation, and finally get the key and enter it in three steps.
 
-![Key to model list](img/mtnode-start-02-ui.svg)
-*Figure 1: add a provider from the catalog → enter the API key → the model list and API base URL load automatically → nodes pick it up automatically*
+![From sign-up to entering it in MTNode](img/mtnode-start-01-ui.svg)
 
-![Model list loads after entering the key](img/mtnode-start-02-demo.svg)
-*Figure 2 (looping animation, about 5 seconds): paste the key → the model list is fetched automatically; for the static fallback see `img/mtnode-start-02-demo-static.svg`*
+*Figure: the three steps to get an API key and enter it into MTNode*
 
-## Goal
+## What an API key is (the membership card for AI)
 
-Once configured, processing nodes, agent-task nodes, agent sessions and the global assistant all take their provider and model from the global configuration; the **⚙ Settings** button on a node header lets you change one step to a different model.
+### What an API key is, and why you need one for AI services
 
-## Before you start
+An API key is best understood as a "membership card you paid for" with an AI model provider.
 
-- An API key for an OpenAI-compatible provider (for example the providers in the catalog, such as DeepSeek Official or pi-ai).
-- If you want image generation or image understanding, prepare an additional provider that **supports images / supports vision** — **DeepSeek Official cannot read images**.
+- You register an account on the provider's website and top up credit, and the platform gives you a string (usually shaped like `sk-xxxxxxxxxxxxxxxx`) — that string is the API key.
+- Enter that string into MTNode's settings (or into any caller) and you can call that provider's models: every use is billed by usage against your balance.
+- So it is essentially the credential for "your account + your money", as sensitive as a bank account number plus password. Once it leaks (posted in a group chat, screenshotted and sent to someone, written into a public repository, uploaded to a third-party site), anyone can spend your balance on model calls.
 
-## Steps
+### Safety rules
 
-1. **Open the provider settings**: click **Settings · Model services (设置 · 模型服务)** in the top bar.
-2. **Add from the catalog** (recommended): pick a provider in the catalog → enter the **API key** → the model list and API base URL load automatically.
-3. **Or configure manually**: choose **Manual (手动)**, then enter the OpenAI-compatible **Base URL (接口地址)** and the model names, separated by English commas.
-4. **Tick "Supports vision" where you need it**: only with this ticked can images be sent to the model as multimodal input; without it, images are only handled as reference images or attachments.
-5. **Order the models by priority**: drag the model list in the settings to reorder it; the model dropdown on nodes is shown in that order.
-6. **Verify on a node**: click **⚙ Settings** on any text processing node's header and confirm the provider and model you just configured can be selected.
-7. **Keep the key safe**: **the API key is stored on this machine only** — it is not exported with a workflow and not uploaded with a Creative Workshop entry.
+1. Never give the full key to anyone, never screenshot it, never paste it into a chat window, never write it into a public repository.
+2. Only create and copy keys on the provider's official pages; never buy "shared keys / top-up keys" of unknown origin.
+3. If you suspect a leak: delete the old key in the provider's console right away and create a new one — doing so is completely free.
+4. Most platforms let you set a usage cap or a low-balance alert on the key so it cannot be drained.
 
-> ⚠️ Danger: never write an API key into a prompt, into a save node's output, or into a canvas title — workflow export (`.mtnodes`) and workshop upload carry those texts along with them.
+## The four major Chinese providers + sign-up URLs
 
-> 💡 Tip: text, image generation and image understanding can be **three different providers**: use a cheap, fast one for batches and the strongest one for agent tasks; they do not interfere with each other.
+### Mainstream Chinese model providers (pick one of the four)
 
-## Result
+1. DeepSeek (深度求索)
+   Sign-up URL: https://platform.deepseek.com/
+2. Qwen / Tongyi (通义千问, Alibaba Cloud Bailian)
+   Sign-up URL: https://bailian.console.aliyun.com/
+3. GLM / BigModel (智谱)
+   Sign-up URL: https://bigmodel.cn/
+4. Kimi (月之暗面 Moonshot)
+   Sign-up URL: https://platform.moonshot.cn/
 
-The settings show the provider cards and their model lists; every processing node's **⚙ Settings** dialog can select those models; and ▶ runs no longer report "no provider configured / missing key".
+### Current advice
 
-## Common mistakes
+At this stage DeepSeek alone is enough: extremely good value, very fast, first tier for Chinese and code, a low sign-up barrier, and the least hassle for a beginner. The other three are worth registering and keeping as a backup, to top up only when you actually need them — the package deals they run from time to time are good value too.
 
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| The model list is empty | Invalid key, a wrong Base URL, or the provider has no model-listing endpoint | Check the key and Base URL, then enter the model names manually |
-| ▶ fails with an authentication error | The key expired / the quota ran out / whitespace came along when pasting | Paste the key again and make sure there is no leading or trailing whitespace |
-| You send an image and the model says it cannot read it | That provider has no "Supports vision" tick, or it has no vision capability at all | Switch to a vision-capable provider, or configure a separate image-understanding provider |
-| A newly added provider is not selectable on a node | The node saved an older configuration | Reopen the node's **⚙ Settings** and select it again |
-| You changed settings but a running node did not change | Parameters are not re-read during a run | Wait for this run to finish, then run it again |
-| A template downloaded from the workshop reports a missing provider | The template references a provider you have not configured | Replace it with your own provider in bulk as prompted |
-| Requests occasionally time out | Provider rate limiting or network jitter | Agent runs resend automatically; for ordinary nodes just run it once more |
+### The general flow
 
-## Next
+Register an account (phone number / email) → verify identity and top up (most platforms give new users free credit, so you can try for free first) → open the "API Keys" page → create a key → copy it and save it immediately.
 
-- [Your first flow](#first-run)
-- [Parameters & runs](#params-runs)
-- [Settings](#settings)
+Note: a key is usually shown in full only once, at creation time; close the page and you can never see it again — you can only create a new one.
+
+## Foreign models / GPT image generation: the API易 aggregator
+
+### What to do when you need foreign models or GPT image generation models
+
+Connecting directly to foreign model APIs from mainland China is usually inconvenient — especially for GPT-series image generation models. An aggregator such as API易 solves this.
+
+Sign-up URL: https://api.apiyi.com/
+
+### Notes
+
+- API易 is recommended mainly for image generation; calling a foreign flagship model (for example GPT-6 or Fable 5) is very expensive, and you are free to choose another aggregator of the same kind.
+- What an aggregator does: with one account, one key and one OpenAI-compatible endpoint it forwards your calls to many models, so you do not have to solve network access yourself.
+- How to use it in MTNode: open the "Model services (模型服务)" settings → add a provider → follow API易's official docs to enter the Base URL (the endpoint, for example https://api.apiyi.com/v1) and the API key you just got → the corresponding foreign / image models become selectable (for example gpt-image-2.5-all).
+
+### Reminders
+
+- An aggregator is also pay-as-you-go: watch your balance and usage cap, and the key must never be shared.
+- "Image models" need a provider of their own, with the type set to "图像 OpenAI兼容" (Image · OpenAI-compatible).
+
+## Get the key and enter it into MTNode in three steps
+
+### Configure MTNode
+
+Step 1 · Register: open any of the sign-up URLs above (for example DeepSeek: https://platform.deepseek.com/) and register and sign in with a phone number or email.
+
+Step 2 · Top up / claim credit: a small top-up is fine to start (for example 10 CNY to test the water).
+
+Step 3 · Create and save the key: open the "API Keys" page → click "Create / New" → copy the string that starts with sk- → paste it into a local notepad or password manager first.
+
+### Enter the key into MTNode
+
+Open the app's "Settings → Model services (设置 → 模型服务)" → pick or add a provider (Deepseek Official) → paste the API key into the key box → save. After that you can pick that provider's models on a node and use them.
+
+### One last reminder
+
+This key is your bank account number plus password: never share it, and if you suspect a leak, delete and recreate it in the provider's console right away.

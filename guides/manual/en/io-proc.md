@@ -1,67 +1,69 @@
 # Input / process / save
 
-> In one sentence: wire the smallest chain — input node → process node → save node — and produce your first file on disk.
+> In one sentence: the ① text and ② image generation groups — each with a node description and ways to use it — with their output landing on disk through a Save node.
 
-![Data flow](img/mtnode-flow-01-flow.svg)
-*Figure 1: the input → process → save data flow; data ports carry content, control wires only trigger.*
+![Input → process → save](img/mtnode-flow-01-ui.svg)
 
-## Goal
+*Figure: input → process → save, then re-run the whole chain with one ▶ on a control node.*
 
-After this page you can lay out all three steps on the canvas — text / image / audio-video in, an LLM or an image generation out, written into a file — and you know each input kind's real capacity limits plus the save node's rules for writing to disk. How to tune parameters and how to preview a request is the next page.
+## Text generation · node description
 
-## Before you start
+### What it is
 
-- At least one **text provider** with an API key (text processing) and / or an **image provider** (image generation) — see [Providers & API](#providers).
-- If you want the save node to use a relative path, give this canvas a **workspace** first — see [Workspace & archives](#workspace).
-- Know that **right-clicking empty canvas** is the way to add nodes — see [Nodes, wires, @ refs](#nodes-wires).
+Text processing is the most-used generation node on the canvas: it hands upstream text (a prompt, an article, table content) to a large model and outputs new text.
 
-## Steps
+### The two modes
 
-### 1. Add an input node and put the content in
+- **Ordinary mode (default)**: one request, one result — stable and cheap, and the result can go straight into a "Save text" node.
+- **Agent mode**: treat the node as a small agent that can read files, write files and complete a task in several steps; because it reads and writes by itself, there is normally no need to hang a "Save" node after it.
 
-1. **Right-click empty canvas** → **Input node** → text / image / audio / video; pick one.
-2. **Fill it in place**: a text node takes typing straight in the card; click **📄** to import `txt` / `md` / `json` / `yaml`. An image node takes a click to choose, or drop a file onto it.
-3. **Remember the real capacity limits**: a single text item over **2 MB** is **truncated, keeping the head**; over **32 MB** it is **not read in** and only the file path stays on the node. Dropping a file and importing via 📄 share the same rule (the old claim of "rejected over 500KB" was wrong).
-4. **Audio / video**: pick one local media file and the node previews it in place; its output value is that file's `file:///` URL, which can go straight into a reference port, into a save node, and can be picked up by `@Title`. The receiving side normalizes the URL back to a local absolute path for you — no manual conversion.
-5. **To reuse content across canvases**, don't copy-paste: use an asset node instead (deleting a canvas never loses the asset library) — see [Asset library](#asset-library).
+### Key parameters
 
-### 2. Add a process node and wire it up
+- **Prompt**: say clearly "what to do + what to output"; `@Node title` pulls in the content wired in upstream.
+- Clicking the settings above switches the model, and the **thinking effort** button above changes the length of the model's chain of thought. A longer chain of thought generally means higher output quality but a larger token bill; in practice low or high is enough.
+- **Provider / model**: a flash-class model is enough for most jobs; long-context reasoning and complex extraction deserve something stronger.
 
-1. **Right-click** → **Process node** → **Text processing** or **Image generation**.
-2. **Feed it the input**: drag a wire from the input node's output port to the process node's input port. Text processing eats text; image generation eats a prompt, and if you want a reference image add a second image wire — that is **image-to-image**.
-3. **Write the prompt**: state what you want inside the node; `@Title` pulls in an upstream node's content.
-4. **Text processing can switch on 🐋 Agent**: the prompt then becomes a task, and the model can read files / go online / run commands before delivering — see [Agent task & session](#agent-nodes).
-5. **Click ▶ Run**: when processing finishes the downstream nodes run automatically; if a downstream node already has content, you are asked whether to **overwrite** or **not continue**.
+### Suggestions
 
-### 3. Add a save node to write to disk
+- For general AI question answering or problem solving, go straight to the free DeepSeek web page: https://chat.deepseek.com . Simple text generation through the API is usually very cheap too — a few cents at most.
+- The more specific the prompt, the steadier the result: give a role, a task, a format and a length limit rather than "write me something".
 
-1. **Right-click** → **Save node**, wired to the process node's data output. Do **not** put a save node after an agent node, or after text processing with 🐋 Agent switched on — those write files themselves.
-2. **Fill in the save path**: a relative path works when the canvas has a workspace, otherwise give an absolute path.
-3. **Check the extension**: the save node is typed by **the port the wire actually comes out of** — text → `.md` by default (YAML content also lands as `.md`), image → `.png`, audio → `.wav`, video → `.mp4`; a wire dragged out of an image port flips the save node to image saving automatically.
-4. **Tick "auto-save on input change" if you want it**: once on, every upstream change writes once; on a batch chain that is one file per item, with the name appended as `{filename}_{input node title}` — see [Batch, split, merge](#batch).
-5. **Click ▶ to write out**; the artifact lands at the path you gave.
+## Text generation · ways to use it
 
-## Result
+- **Use 1 · polish and rewrite**: wire a source text upstream → prompt "polish the text below into a spoken-word script, keep every fact: @source" → feed the output into "Save text".
+- **Use 2 · translate**: prompt "translate @Chinese into English; output the translation only, no commentary", and store the result as `.txt` / `.yaml`.
+- **Use 3 · structured extraction**: prompt "extract people, places and times from @body and output YAML" → the output can be parsed directly downstream.
+- **Use 4 · template-constrained output**: put a JSON / YAML / Markdown template in the prompt and let the model fill it in, ready for programmatic use.
+- **Use 5 · agent mode (click the whale icon to switch it on)**: switch it on when you need research, several files read, or a full document written; the product is normally a file.
 
-- The canvas holds a chain you can re-run as often as you like: change the input → ▶ → a new result → written into the file automatically or by hand.
-- The save node remembers the path of its most recent write, and the saved file is visible on the node.
-- Every later page builds on this three-step chain: tuning parameters is [Parameters & runs](#params-runs), running many items is [Batch, split, merge](#batch), and audio/video output is [Music / speech / video](#media-gen).
+Click the green triangle (play) button to run the node.
 
-## Common mistakes
+## Image generation · node description
 
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| ▶ says no provider configured / no model available | No provider with an API key | Add one in Settings → Model services and fill in the key — see [Providers & API](#providers) |
-| The imported text stops after the opening | The single item is over 2 MB and was truncated, keeping the head | Split it into several items / go through batch, or read it from the file instead |
-| After importing, the node holds only a path and no text | The file is over 32 MB, so it is not read in | Shrink the file, or process it in a way that can read from a path |
-| Save reports "path cannot be resolved" | A relative path, but the canvas has no workspace | Give the canvas a workspace, or switch to an absolute path |
-| The save lands as `.md`, not `.yaml` | `.md` simply is the default extension for a text save | Check the source port type; if you need YAML, let the `.md` file carry YAML content |
-| Text processing says it cannot read images | An image wired into a text provider with no vision | Tick "Vision" on that provider, or switch to a multimodal model |
+### What it is
 
-## Next
+The image generation node both makes and edits images: text-to-image, image-to-image, masked inpainting and transparent-background output all happen on the same node.
 
-- [Parameters & runs](#params-runs)
-- [Batch, split, merge](#batch)
-- [Music / speech / video](#media-gen)
-- [Global node](#global-broadcast)
-- [Save, import/export, workshop](#workflows)
+### The single most important rule
+
+Each run produces exactly 1 image. For 10 images prepare 10 input items (batch 1:1), place several image generation nodes, or raise **Attempts** for more rolls; never write "generate several images" in the prompt.
+
+### Key parameters
+
+- **Size**: pick from the sizes the canvas offers — portrait `848x1280` / character art, square `1280x1280`, landscape `1280x848` / cover, high definition `2048x1360`.
+- **Quality**: default (not sent) / auto / low / medium / high / xhigh / max; use low for style drafts and high or above for finals.
+- **Background**: default (not sent) / auto / opaque / transparent (a PNG with a real alpha channel straight out).
+- **Provider**: it must be a provider of the "Image, OpenAI-compatible" type (GPT Image 2, for example); a text provider cannot produce images.
+
+### Prompt structure
+
+Subject + appearance detail + action and expression + environment + lighting + lens + art style + quality words.
+
+## Image generation · ways to use it
+
+- **Use 1 · text-to-image**: wire a prompt in upstream → wire the output into "Save image", which stores it as `.png` automatically.
+- **Use 2 · image-to-image**: wire a reference image (an image input node, or a picture just generated upstream) into its image port and write "keep the subject and composition, replace the background with…" in the prompt.
+- **Use 3 · masked inpainting**: turn on the "Mask" switch in the node header and paint the area to repaint by hand in the mask editor (transparent = repainted); it only affects the first reference image, and the size for that run follows the reference image.
+- **Use 4 · transparent-background output**: for stickers / icons / sprites / cut-out character art: turn on the header button "Transparent background (two-pass difference matting)" (it first renders a black-background baseline and then differences out a PNG with an alpha channel, at roughly 2× the cost), or set Background to "transparent".
+- **Use 5 · batch image production**: select several images at once in an image input node and switch on batch mode, switch on batch mode on the image generation node too and it runs item by item, 1 item = 1 image, wired into "Save image" to land the batch on disk.
+- **Use 6 · iterating in rounds**: repeated image-to-image plus inpainting on the same picture, improving it step by step, is more controllable than one enormous prompt.

@@ -14,6 +14,8 @@
   --cyan2: #7ce8ff;
   --green: #5fd68a;
   --red: #ff5f56;
+  /* 黄 = 「落在哪儿」（grep 的目标路径、dsh.css 的 .dsh-tool-grep-path）：与青（读）/ 橙（改）/ 绿（跑）一眼分家 */
+  --yellow: #ffd166;
   --code: #1b1b1c;
   --mono: 'Cascadia Code', 'Consolas', 'JetBrains Mono', monospace;
   --sans: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
@@ -35,6 +37,7 @@ body.theme-industrial {
   --cyan2: #7ce8ff;
   --green: #5fd68a;
   --red: #ff5f56;
+  --yellow: #ffd166;
   --code: #0c0f15;
 }
 
@@ -54,6 +57,7 @@ body.theme-light {
   --cyan2: #15508f;
   --green: #1a8a4a;
   --red: #cf2a1e;
+  --yellow: #9a6b00;
   --code: #f6f8fa;
 }
 

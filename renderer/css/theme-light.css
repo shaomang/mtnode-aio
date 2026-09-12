@@ -368,14 +368,6 @@ body.theme-light .port-badge {
 /* ── 网络 / 调试等深色浮层：改浅 ── */
 /* （.n-api-panel 节点内联设置面板已废除 —— 设置统一走 #overlay 跳窗，浅色随 overlay 现成规则） */
 
-/* 画布顶端查找条、菜单等灰黑底改为浅灰，保证文字可读 */
-body.theme-light .canvas-find-bar input,
-body.theme-light .canvas-find-bar {
-  background: var(--panel);
-  color: var(--ink);
-  border-color: var(--bd2);
-}
-
 /* ══════════════════════════════════════════════════════════════
    Light 主题：会话 / 智能聊天 覆盖层
    agent 视图大量使用硬编码暗色，必须逐一改为浅色保证可读。
@@ -489,6 +481,9 @@ body.theme-light .agent-load-earlier button:hover {
   border-color: var(--cyan);
   background: var(--bd);
 }
+body.theme-light .dsh-live-cut {
+  color: var(--muted);
+}
 
 /* ── 会话空状态 / 工作目录 ── */
 body.theme-light .agent-empty {
@@ -572,6 +567,24 @@ body.theme-light .dsh-seg-tool {
   color: var(--cyan2);
   background: rgba(32, 104, 184, .07);
   border-left-color: var(--cyan);
+}
+/* 「思考」翻译：译文行淡青底 + 浅色下正文用正文色（深色下为 --ink） */
+body.theme-light .dsh-seg-xlate {
+  color: var(--ink);
+  background: rgba(32, 104, 184, .06);
+  border-left-color: var(--cyan);
+}
+body.theme-light .dsh-xlate-tag {
+  color: var(--cyan);
+}
+body.theme-light .dsh-seg-xlate pre {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  color: var(--ink);
+}
+body.theme-light button.dsh-think-xlate {
+  color: var(--muted);
+  border-color: var(--bd);
 }
 body.theme-light .agent-list .dsh-seg-think {
   color: var(--muted);

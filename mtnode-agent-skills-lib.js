@@ -29,7 +29,11 @@ function readJson(p, fb) {
 
 function parseSkillMeta(text) {
   const meta = { name: "", title: "", description: "", version: "" };
-  const raw = String(text || "");
+  /* 先归一换行：SKILL.md 若被 Windows 编辑器存成 CRLF，行尾的 \r 会让
+     /^key:\s*(.*)$/ 里的 `.` 吃不掉它（`.` 不匹配 \r），整行匹配失败 →
+     front matter 全部读空 → name 退回目录名（如 dev-architect 而不是
+     mtnode-dev-architect），同步时就会把技能装到错名字下并删掉正确命名的目录。 */
+  const raw = String(text || "").replace(/\r\n?/g, "\n");
   const fm = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
   const body = fm ? fm[2] || "" : raw;
   if (fm) {
@@ -212,11 +216,13 @@ function syncMtnodeAgentSkills(dshHome, appRoot) {
   if (!fs.existsSync(src)) return { ok: false, error: "bundled library missing: " + src };
   rmDirSafe(dest);
   copyDir(src, dest);
-  let index = readIndexAt(dest);
-  if (!fs.existsSync(path.join(dest, "index.json"))) {
-    index = buildIndexFromTree(dest);
-    writeIndexArtifacts(dest, index);
-  }
+  /* 索引一律按**落盘后的技能树**重建，不信任随包携带的 index.json：
+     它可能被手工改过 / 忘了跑 tools/build-mtnode-agent-skill-index.js，
+     而下面的安装目录名取自索引条目 name —— 索引里 name 写错（如少了 mtnode- 前缀）
+     就会把技能装到错名字下，并把原本正确命名的 .mtnode-internal 目录当「已下线」清掉，
+     表现就是内置技能凭空消失。以 SKILL.md front matter 的 name 为准才不会丢。 */
+  const index = buildIndexFromTree(dest);
+  writeIndexArtifacts(dest, index);
   const skillsRoot = path.join(dshHome, "skills");
   fs.mkdirSync(skillsRoot, { recursive: true });
   const keepNames = new Set(flattenIndex(index).map((s) => s.name));

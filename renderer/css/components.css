@@ -201,6 +201,134 @@
   color: var(--cyan)
 }
 
+/* 最小化到状态栏：标题右侧的方形小按钮（点它把整只窗搬到 Footer 页签） */
+.overlay-head .ov-min-btn {
+  margin-left: auto;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.overlay-head .ov-min-btn:hover {
+  color: var(--cyan2);
+  border-color: var(--bd2);
+  background: rgba(56, 214, 255, .08)
+}
+
+.overlay-head .ov-min-btn[hidden] {
+  display: none
+}
+
+/* 缓进缓出：最小化时窗壳缩一下淡出，恢复时反过来（时长与 app.js 的 OV_MIN_MS 一致） */
+.overlay-box.ov-min-out {
+  animation: ovMinOut .18s ease-in-out forwards
+}
+
+.overlay-box.ov-min-in {
+  animation: ovMinIn .18s ease-in-out
+}
+
+@keyframes ovMinOut {
+  from {
+    opacity: 1;
+    transform: scale(1)
+  }
+  to {
+    opacity: 0;
+    transform: scale(.96)
+  }
+}
+
+@keyframes ovMinIn {
+  from {
+    opacity: 0;
+    transform: scale(.96)
+  }
+  to {
+    opacity: 1;
+    transform: scale(1)
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-box.ov-min-out,
+  .overlay-box.ov-min-in {
+    animation: none
+  }
+}
+
+/* 状态栏上的最小化页签：外观与画布 tabs（.wf-tab）一致，点它把窗原样搬回来 */
+.ov-minbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 46vw;
+  overflow: hidden;
+}
+
+.ov-minbar[hidden] {
+  display: none !important
+}
+
+.ov-min-tab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  min-width: 0;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  background: rgba(0, 0, 0, .28);
+  border: 1px solid var(--bd2);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  user-select: none;
+  font-family: var(--mono);
+  letter-spacing: 1px;
+  animation: ovTabIn .18s ease-in-out;
+}
+
+.ov-min-tab:hover {
+  color: var(--ink);
+  background: rgba(56, 214, 255, .06);
+  border-color: var(--bd)
+}
+
+.ov-min-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+@keyframes ovTabIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px)
+  }
+  to {
+    opacity: 1;
+    transform: none
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ov-min-tab {
+    animation: none
+  }
+}
+
 .overlay-body {
   flex: 1;
   overflow-y: auto;
@@ -513,6 +641,62 @@
   padding: 2px 6px;
   font-size: 11px;
   letter-spacing: 0
+}
+
+/* ── 模型形态徽标（文本 / 图像）：设置 · 模型服务里逐个模型标注形态，
+      点一下即可手改（写进 config.modelKinds，覆盖自动识别） ── */
+.pk-badge {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid var(--bd2);
+  color: var(--muted);
+  background: transparent;
+  white-space: nowrap;
+}
+
+.pk-badge.pk-text {
+  color: var(--cyan2);
+  border-color: var(--cyan2)
+}
+
+.pk-badge.pk-image {
+  color: #c792ea;
+  border-color: #c792ea
+}
+
+.pk-badge.pk-mix {
+  color: #e5a15a;
+  border-color: #e5a15a
+}
+
+button.pk-badge.pk-btn {
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 0
+}
+
+button.pk-badge.pk-btn:hover {
+  background: rgba(255, 255, 255, .06)
+}
+
+/* 服务商「形态」一行：徽标 + 可选的「按模型纠正类型」按钮 */
+.pf-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap
+}
+
+/* 模型列表下方的识别提示行 */
+.mo-kind-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap
 }
 
 .model-order-add {
@@ -1289,6 +1473,129 @@ body.theme-light .n-rl-ico {
   border-color: var(--orange)
 }
 
+/* ===== 保存节点 ·「图像输出」面板（尺寸 / 裁剪 / 格式 / 质量）=====
+   容器与 .ratio-lock-pop 同宽同位，行 / 字段 / 提示复用 .bg-rm-* 那一套；
+   需要并排两三个数字格（宽×高、x/y/宽/高、质量滑块+读数）才另起 .iop-* 。 */
+.img-out-pop {
+  display: none;
+  position: fixed;
+  z-index: 1500;
+  width: 330px;
+  max-height: 82vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .55);
+  padding: 0 0 10px;
+}
+
+/* 面板可滚：头部（标题 + ✕）钉在顶上，滚到中间也能直接关掉 */
+.img-out-pop .bg-rm-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel2);
+}
+
+.img-out-pop.on {
+  display: block
+}
+
+.img-out-pop .bg-rm-head b {
+  color: var(--cyan2)
+}
+
+.img-out-pop .bg-rm-row input {
+  accent-color: var(--cyan2)
+}
+
+/* 并排数字格 / 滑块行：等宽铺满，窄数字不换行 */
+.iop-pair {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.iop-pair input[type="number"] {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.iop-pair i {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+
+.iop-pair input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--cyan2);
+}
+
+.iop-pair output {
+  flex: 0 0 38px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--ink);
+}
+
+/* 预览：黑底托图，尺寸 / 格式 / 质量一句话回显 */
+.iop-preview {
+  margin: 8px 10px 0;
+  text-align: center;
+}
+
+.iop-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 180px;
+  margin: 0 auto;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background: repeating-conic-gradient(#2a2e36 0% 25%, #22252c 0% 50%) 50% / 16px 16px;
+}
+
+.iop-preview img:not([src]) {
+  display: none
+}
+
+.iop-preview p {
+  margin: 5px 0 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* 节点头部「图像输出」按钮：改过设定时常亮（自带青系功能色） */
+.n-imgout-btn {
+  width: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: rgba(154, 160, 168, .08);
+  cursor: pointer;
+}
+
+.n-imgout-btn:hover {
+  border-color: var(--cyan2);
+  color: var(--cyan2);
+  background: color-mix(in srgb, var(--cyan) 14%, transparent)
+}
+
+.n-imgout-btn.on {
+  border-color: var(--cyan2);
+  color: var(--cyan2);
+  background: color-mix(in srgb, var(--cyan) 18%, transparent);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--cyan) 45%, transparent)
+}
+
+.n-imgout-btn.on:hover {
+  filter: brightness(1.18)
+}
+
 /* ===== 开发节点 HSV 色板弹出层 ===== */
 .dev-color-pop {
   display: none;
@@ -1655,7 +1962,7 @@ body.theme-light .n-rl-ico {
   background: rgba(56, 214, 255, .15)
 }
 
-/* 思考强度按钮（对话节点：无 / 低 / 中 / 高） */
+/* 思考强度按钮（对话节点：无 / 低 / 中 / 高 / 最强） */
 .n-effort {
   width: auto;
   padding: 0 5px;
@@ -1817,6 +2124,11 @@ body.theme-light .n-rl-ico {
 
 .node-settings-form .nsf-span {
   grid-column: 1 / -1
+}
+
+/* 音频节点设置里的波形预听（renderer/app-audioview.js 的 .n-wave）：占满整行 */
+.node-settings-form .n-wave {
+  margin-top: 2px;
 }
 
 .node-settings-form .n-field {
@@ -2925,6 +3237,57 @@ body.theme-light .n-rl-ico {
   border-color: var(--cyan);
 }
 
+/* 素材包类型徽标：一眼看出这包是文本 / 图像 / 音频 / 视频 / 混合 / 空
+   （左树素材行、素材卡片、详情头共用 .asset-lib-kindchip，颜色与 .asset-set-kind 同族） */
+.asset-lib-kindchip {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 1.6;
+  padding: 0 5px;
+  border-radius: 2px;
+  white-space: nowrap;
+  color: var(--cyan);
+  background: rgba(56, 214, 255, .12);
+}
+
+.asset-lib-kindchip.image {
+  color: #ff8ab8;
+  background: rgba(255, 94, 168, .14);
+}
+
+.asset-lib-kindchip.audio {
+  color: #7ab4ff;
+  background: rgba(106, 166, 255, .14);
+}
+
+.asset-lib-kindchip.video {
+  color: #6fe0bb;
+  background: rgba(94, 200, 168, .14);
+}
+
+.asset-lib-kindchip.mixed {
+  color: #ffb454;
+  background: rgba(255, 143, 46, .14);
+}
+
+.asset-lib-kindchip.empty {
+  color: var(--muted);
+  background: rgba(255, 255, 255, .05);
+}
+
+/* 左树素材行：名称吃满剩余宽度并省略，徽标与内容数一起贴在右侧 */
+.asset-lib-assetrow .asset-lib-assetname {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-lib-assetrow .asset-lib-kindchip {
+  margin-left: auto;
+}
+
 .asset-lib-treepi {
   padding: 10px 10px 0;
   font-size: 11px;
@@ -3222,6 +3585,47 @@ textarea.asset-form-input {
   flex: none;
 }
 
+/* 拖放落点反馈（与 .asset-set-grip / .asset-set-drop-before 同族手感）：
+   素材库左树、右栏卡片区与素材设置框的条目区在拖拽经过时都用这一套。
+   .asset-drop-hot = 当前落点（虚线描边 + 高亮底色，用 outline 不占布局）；
+   .asset-drop-zone = 可接收落点的整块提示（虚框 + 居中说明文字）。 */
+.asset-drop-hot {
+  outline: 1px dashed var(--cyan);
+  outline-offset: -2px;
+  background: rgba(56, 214, 255, .12);
+}
+
+.asset-drop-hot.asset-lib-catrow,
+.asset-drop-hot.asset-lib-assetrow {
+  border-left-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+.asset-drop-zone {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 68px;
+  padding: 14px 12px;
+  border: 1px dashed var(--bd2);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .18);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.75;
+  text-align: center;
+  transition: border-color .12s, color .12s, background .12s;
+}
+
+.asset-drop-zone.asset-drop-hot {
+  outline: none;
+  border-style: dashed;
+  border-color: var(--cyan);
+  color: var(--cyan2);
+  background: rgba(56, 214, 255, .1);
+}
+
 /* 条目列表：一行＝一条内容＝节点上的一对同名端子 */
 .asset-set-rows {
   flex: none;
@@ -3516,6 +3920,19 @@ textarea.asset-form-input {
   min-width: 0;
 }
 
+/* 标题行：素材名 + 类型徽标（文本 / 图像 / 音频 / 视频 / 混合）同一行 */
+.asset-detail-titlerow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.asset-detail-titlerow .asset-detail-title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .asset-detail-title {
   font-size: 13px;
   font-weight: 800;
@@ -3695,6 +4112,172 @@ textarea.asset-form-input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ===== 音频波形预览器（renderer/app-audioview.js + .n-wave*）=====
+   音频节点（音频输入 / 保存音频 / 音乐生成 / 语音合成 / 素材音频条目）统一用它：
+   方角外框 + 自绘波形 + 点/拖波形定位试听。刻意不用原生 <audio controls>——
+   原生控件是圆角胶囊、无法加波形；隐藏 <audio> 只当播放引擎。 */
+.n-wave {
+  --wave-dim: rgba(127, 138, 156, .55);
+  --wave-hot: var(--green);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 5px;
+  box-sizing: border-box;
+  /* 方角：整只播放器（含悬停态）一律 0 圆角，不做胶囊 */
+  border: 1px solid var(--bd2);
+  border-radius: 0;
+  background: var(--code);
+}
+
+.n-wave-row {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  height: 44px;
+  min-height: 30px;
+}
+
+/* 方形播放按钮：方角 + 线性图标，与节点其它头部按钮同一形状语言 */
+.n-wave-btn {
+  flex: none;
+  width: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bd2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.n-wave-btn:hover {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.n-wave-btn.on {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.n-wave-btn svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+/* 波形区：canvas 铺满，提示层居中叠在上面 */
+.n-wave-box {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--bd);
+  border-radius: 0;
+  background: var(--bg2);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.n-wave-box:hover {
+  border-color: var(--bd2);
+}
+
+.n-wave-cv {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.n-wave-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* 波形不可用（读取中 / 过大 / 解不开）：进度条变细，提示文字有地方落 */
+.n-wave-box.flat .n-wave-ghost {
+  align-items: flex-start;
+  padding-top: 3px;
+}
+
+.n-wave-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.n-wave-cur {
+  color: var(--ink);
+}
+
+.n-wave-dur {
+  flex: none;
+}
+
+.n-wave-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  opacity: .85;
+}
+
+/* 音频输入节点：波形填满 .n-av 预览框，方角（覆盖 .n-av-el 的 2px 圆角） */
+.wf-node.in-media .n-wave {
+  flex: none;
+  max-height: 100%;
+  margin: 0;
+  border-color: var(--bd);
+}
+
+.wf-node.in-media .n-wave,
+.wf-node.in-media .n-wave-box {
+  border-radius: 0;
+}
+
+/* 保存节点预览框 / 媒体生成节点试听条 */
+.sv-prev .n-wave {
+  margin: 4px;
+  width: calc(100% - 8px);
+}
+
+.sv-prev.mg-prev .n-wave {
+  margin: 0;
+  width: 100%;
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0;
+}
+
+/* 素材库音频条目：方块预览 */
+.n-asset-av .n-wave {
+  min-height: 44px;
 }
 
 /* ===== 滚动条 ===== */

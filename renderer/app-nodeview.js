@@ -209,6 +209,34 @@ function highlightAtRefsHtml(html, node) {
 
 /* ---------- 只读视图 DOM ---------- */
 
+/* 超长文本的轻量渲染阈值。
+ * 画布上可能有几十个文本节点，每个都整篇转 Markdown / 逐行着色 / 逐段找 @引用，
+ * 一次重绘就是几十万字符的字符串与 DOM 工作 —— 这就是「超长文本 → 画布卡顿」的来源。
+ * 实测：28000 字符的 Markdown 节点 → 3 万个 DOM 节点、整幅重绘 ~375ms；
+ * 同一个节点改走轻量路径后只剩十几个 DOM 节点。
+ * 阈值定在「一屏读得完」的规模：超过后浏览态只出「整块纯文本 + 字符数」这一种最便宜的形态，
+ * 一次 textContent，不做语言判定、不做 @ 着色、不建块级 DOM。
+ * 完整内容不丢：节点头部 👁 预览窗会以全量渲染显示（app-textpreview.js），
+ * 输出面板正文也走同一条护栏（browseOutTextView 不经过这里）。 */
+const NODE_VIEW_LONG_CHARS = 6000;
+const NODE_VIEW_LONG_LINES = 240;
+
+/* 超长文本是否走轻量路径：空串 / 短文本一律 false（零行为变化）。
+ * opts.full = true（预览窗）时永远 false —— 那里就是要看完整渲染。 */
+function nodeViewIsLong(raw, opts) {
+  if (opts && opts.full) return false;
+  const s = String(raw == null ? "" : raw);
+  if (s.length > NODE_VIEW_LONG_CHARS) return true;
+  if (s.length <= NODE_VIEW_LONG_LINES) return false;
+  /* 行数靠数的，不做全文切词：只在「长到可能是行数超限」时才数一次换行。
+     比较对象是换行符个数：N 个换行 = N+1 行，所以到阈值即判长。 */
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) === 10 && ++n >= NODE_VIEW_LONG_LINES) return true;
+  }
+  return false;
+}
+
 function nodeViewIsEmpty(text) {
   return !String(text == null ? "" : text).trim();
 }
@@ -222,8 +250,39 @@ function nodeViewEmptyEl() {
   return el;
 }
 
+/* 超长文本的轻量视图：整块纯文本（保留换行与缩进）+ 右上角字符数小字。
+ * 没有 @ 着色 —— 逐段扫描几十万字符本身就是卡顿源，且这种体量已经不是「读提示词」。 */
+function nodeViewLongEl(raw, opts) {
+  const o = opts || {};
+  const text = String(raw == null ? "" : raw);
+  const box = document.createElement("div");
+  box.className = "ntv-long" + (o.class ? " " + o.class : "");
+  const body = document.createElement("div");
+  body.className = "ntv-plain ntv-long-body";
+  body.style.whiteSpace = "pre-wrap";
+  body.style.overflowWrap = "anywhere";
+  body.textContent = text;
+  box.appendChild(body);
+  const meta = document.createElement("div");
+  meta.className = "ntv-long-meta";
+  /* 头部有 👁 预览全文的节点才提示「点上方看全文」，免得指向一枚不存在的按钮 */
+  const canPeek =
+    !!o.node &&
+    (o.node.kind === "input_text" ||
+      o.node.kind === "proc_text" ||
+      o.node.kind === "proc_image" ||
+      o.node.kind === "agent_task");
+  meta.textContent =
+    (typeof I18n !== "undefined"
+      ? I18n.t("超大文本 · 轻量显示 · {n} 字符", { n: text.length }) +
+        (canPeek ? I18n.t(" · 点上方 👁 看全文") : "")
+      : text.length + " chars");
+  box.appendChild(meta);
+  return box;
+}
+
 /* opts: { lang?: "yaml"|"md"|"plain"（显式覆盖自动判定）, node?: 消费者节点（@引用判定用）,
-          class?: 附加类名 } */
+          class?: 附加类名, full?: true（预览窗：无条件完整渲染） } */
 function nodeTextViewEl(text, opts) {
   const o = opts || {};
   const raw = String(text == null ? "" : text);
@@ -233,6 +292,15 @@ function nodeTextViewEl(text, opts) {
   if (nodeViewIsEmpty(raw)) {
     wrap.dataset.viewLang = "plain";
     wrap.appendChild(nodeViewEmptyEl());
+    return wrap;
+  }
+
+  /* 超长文本走轻量路径（整块纯文本），语言/着色/wrap 语义都跳过 */
+  if (nodeViewIsLong(raw, o)) {
+    wrap.dataset.viewLang = "plain";
+    wrap.dataset.long = "1";
+    wrap.classList.add("ntv-long-wrap");
+    wrap.appendChild(nodeViewLongEl(raw, o));
     return wrap;
   }
 

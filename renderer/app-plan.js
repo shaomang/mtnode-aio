@@ -1208,12 +1208,21 @@ function planLiveFeed(live, type, data) {
       live.reasoning = planLiveTail(live.reasoning, data.text, PLAN_LIVE_TEXT_MAX);
     } else if (type === "tool" && data.name) {
       const args = String(data.args || "");
+      /* pwsh / bash 的命令与 grep / glob 的检索目标先原样抽出来存着：args 这份会被截断 / 对
+         对象型入参只是 "[object Object]"，渲染时再从串里取就来不及了。
+         真正的展示口径（只认 shell / grep / glob、折行、截断、hover）统一在 app-assist.js
+         的 dshToolHintEl，这里只做搬运。 */
+      const a = data.args && typeof data.args === "object" ? data.args : null;
       live.tools.push({
         callId: data.callId,
         turn: data.turn,
         step: data.step,
         name: String(data.name),
         args: args.length > PLAN_LIVE_ARG_MAX ? args.slice(0, PLAN_LIVE_ARG_MAX) + "…" : args,
+        cmd: a && typeof a.command === "string" ? a.command : "",
+        desc: a && typeof a.description === "string" ? a.description : "",
+        /* grep / glob 的目标 / 路径 / 其余参数（只留字符串参数，别把 write 的整篇正文搬过来） */
+        gargs: typeof dshGrepLiveStash === "function" ? dshGrepLiveStash(a) : null,
         state: "running",
         result: "",
         error: null,
@@ -2817,11 +2826,25 @@ function planLiveBlock(live, ownerId) {
       const cls = t.state === "error" ? "st-err" : t.state === "done" ? "st-ok" : "st-run";
       const it = planPanelEl("div", "ap-tool " + cls);
       it.appendChild(planPanelEl("b", "ap-tool-n", "🔧 " + (t.name || "?")));
+      /* pwsh / bash 跟命令正文（绿色）、grep / glob 跟「路径 … · 目标 … · 参数」（同一份
+         dshToolHintEl）；详情面板窄，CSS 里 .ap-live-tools .dsh-tool-cmd 另给了更小的 max-width。 */
+      let hintEl = null;
+      if (typeof dshToolHintEl === "function") {
+        try {
+          hintEl = dshToolHintEl(t);
+          if (hintEl) it.appendChild(hintEl);
+        } catch (_) {}
+      }
       /* 同一份文件徽标（app-fileview.js）：这份 args 是截断过的字符串，
-         正好看 toolFileRefs 的正则兜底；ownerId = 这条计划所属会话，基准目录同源。 */
+         正好看 toolFileRefs 的正则兜底；ownerId = 这条计划所属会话，基准目录同源。
+         grep / glob 的黄色路径已经在上面那一行里了 → 同一路径不重复挂徽标。 */
       if (typeof dshToolFileBadges === "function") {
         try {
-          const badges = dshToolFileBadges(t, ownerId);
+          const badges = dshToolFileBadges(
+            t,
+            ownerId,
+            typeof dshToolHintSkipPath === "function" ? dshToolHintSkipPath(hintEl) : null,
+          );
           if (badges) it.appendChild(badges);
         } catch (_) {}
       }

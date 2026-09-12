@@ -2015,6 +2015,13 @@ button.mini.btn-sq.tpl-ico {
   background: rgb(44, 50, 66);
 }
 
+/* 运行中那一轮被条目封顶折叠的更早条目提示（本轮收尾后随消息进历史，可从最前端展开） */
+.dsh-live-cut {
+  color: rgb(147, 155, 167);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
 /* 会话侧边栏(按项目目录归类 + 归档) —— dsh web rail 会话项 */
 .side-group {
   font-size: 11px;
@@ -3789,6 +3796,134 @@ button.mini.btn-sq.tpl-ico {
   word-break: break-all;
 }
 
+/* ── 「思考」翻译（折叠条最右侧小按钮 + 译文行）─────────────────────
+   结构：.dsh-seg-think-wrap（一段思考整体）
+           ├─ details.dsh-seg-think / details.dsh-think（折叠条 + 思考正文）
+           │    └─ summary.dsh-think-bar（一整行：文字 span.dsh-think-sum-txt + 按钮）
+           └─ .dsh-seg-xlate（译文行，点了才有）
+   按钮就在思考折叠条那一行的最右端（不另起一行）：折叠收起时按钮与译文也都还在，
+   不用展开就能点、就能看译文。 */
+.dsh-seg-think>summary.dsh-think-bar,
+.dsh-think summary.dsh-think-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dsh-think-sum-txt {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右端对齐：前面的文字撑满剩余宽度，按钮自然落到最右 */
+button.dsh-think-xlate {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--bd2);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: .8;
+}
+
+button.dsh-think-xlate:hover {
+  opacity: 1;
+  color: var(--ink);
+  border-color: var(--bd2);
+}
+
+button.dsh-think-xlate.on {
+  color: var(--cyan2);
+  border-color: currentColor;
+  opacity: 1;
+}
+
+button.dsh-think-xlate:disabled {
+  cursor: progress;
+  opacity: .6;
+}
+
+/* 译文行：青调（一眼区别于灰调思考原文），与思考正文同款限高自滚 */
+.dsh-seg-xlate {
+  margin: 2px 0 0;
+  padding: 3px 8px 4px;
+  border-left: 2px solid var(--cyan);
+  background: rgba(56, 214, 255, .045);
+  border-radius: 0 3px 3px 0;
+  color: var(--cyan2);
+  font-size: 11.5px;
+  line-height: 1.7;
+  min-width: 0;
+}
+
+.dsh-xlate-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .4px;
+  opacity: .85;
+}
+
+.dsh-xlate-tag {
+  color: var(--cyan2)
+}
+
+.dsh-xlate-model {
+  color: var(--muted);
+  font-size: 9.5px;
+  opacity: .8;
+}
+
+.dsh-xlate-err {
+  color: var(--red);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+button.dsh-xlate-copy {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid var(--bd2);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+button.dsh-xlate-copy:hover {
+  color: var(--ink)
+}
+
+.dsh-seg-xlate pre {
+  margin: 3px 0 0;
+  padding: 6px 8px;
+  max-height: 220px;
+  overflow: auto;
+  background: rgba(0, 0, 0, .22);
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 工具段：青调等宽小字 + 左侧青轨，紧凑一行一条 */
 .dsh-seg-tool {
   color: var(--cyan2);
@@ -3850,7 +3985,26 @@ button.mini.btn-sq.tpl-ico {
   gap: 4px
 }
 
+/* 时间线上没配到段、被兜底渲染的工具 chips（见 app-assist.js dshMsgBlock）：
+   挂在消息正文最前面，与后面第一段之间留出与 .dsh-seg 同档的间距 ——
+   它们绝不追加在尾部，免得压在 AI 最终回复下面。 */
+.dsh-msg-segs>.dsh-tools-head {
+  margin-bottom: 4px
+}
+
+.dsh-tool {
+  flex-basis: 100%;
+  /* 死规则：这一块绝不比它的容器更宽 —— 少了 min-width:0，flex 子项的自动最小尺寸会取
+     「命令正文的完整宽度」，于是右边那串命令撑破容器 / 顶出界；overflow:hidden 兜住余量。 */
+  min-width: 0;
+  overflow: hidden
+}
+
+/* 药丸（工具名）是固定不可压的那一档：flex:none + nowrap，
+   否则容器一窄它自己会被压成两行（「🔧 / pwsh」），看着像按钮变成了两行。 */
 .dsh-tool-chip {
+  flex: none;
+  white-space: nowrap;
   font-size: 9.5px;
   color: var(--cyan2);
   border: 1px solid var(--cyan);
@@ -3861,8 +4015,59 @@ button.mini.btn-sq.tpl-ico {
   letter-spacing: .5px;
 }
 
-.dsh-tool {
-  flex-basis: 100%
+/* shell 工具（pwsh / bash）按钮后面那句命令正文（app-assist.js 的 dshToolCmdEl）
+   与药丸同一字号同一 mono，但在药丸「外面」、绿色（与读=青 / 改=橙一眼分家）：
+   一行读下来就是「🔧 pwsh  Get-ChildItem -Recurse …」——不展开参数也知道这步在跑什么。
+   截断 = JS 侧硬限制：命令超过 100 字（app-assist.js 的 DSH_TOOL_CMD_MAX）就在源码里截断收尾，
+   这里再用 nowrap + ellipsis 兜一层 —— 就算还有余量也只在行内省略号收尾。
+   flex:1 1 auto + min-width:0 = 吸走这一行剩余宽度并允许收缩：绝不折到第二行、也不让字符出界。
+   全文与 description 都在元素 title 里，hover 即见。 */
+.dsh-tool-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  line-height: 1.5;
+  color: var(--green);
+  opacity: .92;
+}
+
+/* grep（内容检索）/ glob（文件名检索）按钮后面那一行「在哪儿找 · 找什么 · 怎么找」
+   （app-assist.js 的 dshToolGrepEl，两者共用同一份渲染）：
+   几何完全沿用上面的 .dsh-tool-cmd（一行 / 按整行宽度 ellipsis 截断 / 宽度上限就是所在行），
+   这里只按段分色：黄 = 目标路径（先定位置，且与文件徽标的青分家：这段是检索范围，不是「读了某个文件」）、
+   绿 = 检索目标（grep 是匹配的正文、glob 是通配的文件，这一步到底在找什么）、
+   灰 = 其余参数（参数名已转 i18n 词条，如 include → 包括）。
+   路径只显这一次：同一路径的文件徽标由 dshToolHintSkipPath 跳过，不再在后面重复一枚。
+   容器那一档灰兜住没上色的段落，免得继承 .dsh-tool-cmd 的绿色，看着像「整行都是目标」。 */
+.dsh-tool-grep {
+  color: var(--muted);
+}
+
+/* glob 与 grep 共用上面那套分色（黄路径 / 绿目标 / 灰参数）：这一条只是给行本身留个可挂钩的记号
+   （app-assist.js 命中 glob 时挂 .dsh-tool-glob + data-tool-kind="glob"），本身不改颜色。 */
+.dsh-tool-glob {
+  color: var(--muted);
+}
+
+.dsh-tool-grep-k {
+  color: var(--muted);
+}
+
+.dsh-tool-grep-pat {
+  color: var(--green);
+}
+
+.dsh-tool-grep-path {
+  color: var(--yellow);
+}
+
+.dsh-tool-grep-opt {
+  color: var(--muted);
 }
 
 /* ── 工具按钮后方的文件名（app-fileview.js 的 dshToolFileBadges）──
@@ -3914,14 +4119,26 @@ button.mini.btn-sq.tpl-ico {
   max-width: 108px;
 }
 
-/* summary = 一整行的点击区：药丸（.dsh-tool-chip）+ 后面的文件名，放不下就换行 */
+/* 同一条命令正文进了窄清单也要收窄：计划面板一行里还有状态与结果摘要 */
+.ap-live-tools .dsh-tool-cmd {
+  max-width: min(140px, 100%);
+}
+
+/* summary = 一整行的点击区：药丸（.dsh-tool-chip）+ 后面的文件名（+ 命令正文 / 检索摘要）。
+   死规则：nowrap —— 这一行永远只有一行，命令 / 摘要再长也只在行内省略号收尾，绝不被折到第二行、
+   也绝不会把字符顶出容器（原来 flex-wrap:wrap 会把放不下的整块折下去，就是「出现第二行」的根因）。
+   配合 min-width:0 让这一行真的缩得下来（否则 flex 子项不肯收缩，仍会撑破）。
+   命令 / 摘要是 flex:1 1 auto 吸收剩余宽度，文件徽标 flex:none 不被压。 */
 .dsh-tool summary {
   list-style: none;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap
+  flex-wrap: nowrap;
+  overflow: hidden;
+  min-width: 0;
+  max-width: 100%
 }
 
 .dsh-tool summary::-webkit-details-marker {
@@ -4365,7 +4582,10 @@ button.mini.btn-sq.tpl-ico {
 .tok-badge-body {
   border-top: 1px solid var(--bd);
   padding: 6px 9px 8px;
-  overflow-x: auto
+  /* 纵向也滚：报告本身被钉在会话底部（见下方 sticky 规则），
+     展开态若不封顶会高过整个消息区、上沿反而看不到 */
+  overflow: auto;
+  max-height: min(42vh, 360px)
 }
 
 .tok-badge-table {
@@ -4419,6 +4639,23 @@ button.mini.btn-sq.tpl-ico {
   margin: 10px 8px 4px
 }
 
+/* ── Token 报告钉在会话底部（用户报障：长会话里必须一路拖到底才看得见）──
+   会话 / 助手 / 节点内会话的消息区（.agent-list / .assist-list / .agent-conv /
+   .chat-list）都是 flex 列滚动容器，报告 Badge 又恒挂在末位子元素上，所以
+   sticky 一贴即可：向上翻历史时它停在可视区下沿，不复位、不遮挡当前回复。
+   只加定位与吸附阴影，Badge 自身的折叠 / 展开 / 复制逻辑一行未动。 */
+.agent-list > .tok-badge,
+.assist-list > .tok-badge,
+.agent-conv > .tok-badge,
+.chat-list > .tok-badge {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  /* 贴到底：末位外边距会让滚动内容从缝里露出来 */
+  margin-bottom: 0;
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, .22)
+}
+
 /* ── 会话统计 · 费用与余额（app-cost.js / app-agent.js / app.js） ──
    仅 DeepSeek 官方路由出现；沿用既有 CSS 变量，不改上面任何既有类。 */
 .tok-badge-table td.tok-badge-cost {
@@ -4428,6 +4665,49 @@ button.mini.btn-sq.tpl-ico {
 .tok-badge-table tr.tok-badge-total td.tok-badge-cost {
   color: var(--green);
   font-weight: 600
+}
+
+/* 「合计计费」旁的口径说明入口（app-cost.js costHelpEl）：
+   小圆形 ? ，hover 出 tooltip、点击开完整口径弹窗；只新增类，不动既有格子样式。
+   金额行末的 * = 单价是兜底估的（价格表里没有的模型按 flash 价），说明里第 3 条讲它。 */
+.tok-cost-help {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  cursor: help;
+  vertical-align: middle
+}
+
+.tok-cost-help:hover,
+.tok-cost-help:focus-visible {
+  color: var(--ink);
+  border-color: var(--ink);
+  outline: none
+}
+
+.tok-cost-why {
+  max-width: 720px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink)
+}
+
+.tok-cost-why-line {
+  margin: 0 0 8px
+}
+
+.tok-cost-why-foot {
+  color: var(--muted)
 }
 
 /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ──

@@ -20,3 +20,9 @@
 /* 画布左侧边栏「文件」页：Tabs / 目录选择器 / VSCode 式文件树 / 右键菜单
    （renderer/app-sidebar-files.js）；亮色覆盖在文件末尾的 body.theme-light 段。 */
 @import url("./css/sidebar-files.css");
+/* 本地语音转写（Qwen3-ASR）：节点内转写区块 + 安装/状态弹窗（renderer/app-asr.js） */
+@import url("./css/asr.css");
+/* 全局搜索浮层（Ctrl+F · renderer/app-search.js + css/search.css） */
+@import url("./css/search.css");
+/* 文本预览窗：节点头部 👁 打开的只读大窗（renderer/app-textpreview.js）；亮色覆盖在文件末尾 */
+@import url("./css/textpreview.css");

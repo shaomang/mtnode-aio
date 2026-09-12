@@ -1,16 +1,16 @@
 "use strict";
-/* 开发节点「建议」按钮 —— 冒烟测试（纯 Node + 迷你 DOM，不依赖 Electron）
+/* 开发节点「建议」（只读调研 · 右键菜单入口） —— 冒烟测试（纯 Node + 迷你 DOM，不依赖 Electron）
  *   node test/smoke-dev-suggest.js
  * 覆盖：
  *   [1] 建议契约解析（JSON / 代码块 / 键名带空格 / 编号列表兜底 / 脏数据拒绝 / 缓存读写）
  *   [2] 喂给 AI 的「当前开发进度」上下文与只读纪律提示
  *   [3] 勾选结果 → 开发任务正文
  *   [3.1] AGENTS.md 共识文件（任务书 / 技能 / 文档接线）
- *   [4] 「建议」按钮全流程：确认框 → 只读调研（进度态）→ 4 条方案多选 + 补充 → 就地「开发」
+ *   [4] 「建议」全流程：确认框 → 只读调研（进度态）→ 4 条方案多选 + 补充 → 就地「开发」
  *   [5] 已有缓存：查看上次建议（不重跑模型）·「换一批」重新评估
  *   [6] 键盘：数字键多选 · Ctrl+Enter 开发 · Esc 返回（调研后台继续、不中断）
  *   [7] 异常：模型报错 / 不按契约返回 / 用户取消 / 误调非开发节点
- *   [8] 接线：脚本引入 · 两处「建议」按钮 + 文件「打开」 · 样式 · 工具描述与技能 · 英文词条 */
+ *   [8] 接线：脚本引入 · 卡片不再有「建议 / 问询」按钮（建议只留右键菜单）+ 文件「打开」 · 样式 · 工具描述与技能 · 英文词条 */
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -513,6 +513,30 @@ const MODEL_JSON =
   ok(read("docs/dev-node-design.md").indexOf("AGENTS.md") >= 0, "设计文档写明 AGENTS.md 共识文件");
   ok(read("guides/manual/dev-nodes.md").indexOf("AGENTS.md") >= 0, "中文手册写明 AGENTS.md");
   ok(read("guides/manual/en/dev-nodes.md").indexOf("AGENTS.md") >= 0, "英文手册写明 AGENTS.md");
+  /* 索引名必须来自 SKILL.md front matter：SKILL.md 存成 CRLF 时 front matter 会整行读空，
+     name 退回目录名（dev-architect），同步就按错名字装技能、并把正确命名的
+     mtnode-dev-architect 目录当已下线删掉 ——「构建工作流」里生成程序架构的技能凭空消失。 */
+  const skillLib = require("../mtnode-agent-skills-lib.js");
+  const skillFlat = (JSON.parse(read("mtnode-agent-skills/index.json")).categories || []).flatMap(
+    (c) => c.skills || [],
+  );
+  ok(
+    skillFlat.some((s) => s.name === "mtnode-dev-architect"),
+    "技能索引含 mtnode-dev-architect（构建工作流的开发架构技能按此名装载）",
+  );
+  ok(
+    skillFlat.every((s) => {
+      const fm = (read("mtnode-agent-skills/" + s.path).match(/^name:[ \t]*(.+)$/m) || [])[1] || "";
+      return fm.trim() === s.name;
+    }),
+    "技能索引条目名 = SKILL.md front matter name（不再退回目录名）",
+  );
+  ok(
+    skillLib.parseSkillMeta(
+      "---\r\nname: mtnode-dev-architect\r\ntitle: 开发节点架构师\r\ndescription: 测试\r\n---\r\n\r\n# 标题\r\n",
+    ).name === "mtnode-dev-architect",
+    "CRLF 的 front matter 也能读出 name",
+  );
   ok(read("CHANGELOG-v1.1.md").indexOf("AGENTS.md") >= 0, "版本文档记录 AGENTS.md");
 
   /* ==================== [4] 全流程 ==================== */
@@ -702,9 +726,11 @@ const MODEL_JSON =
   );
   const canvas = read("renderer/app-canvas.js");
   ok(canvas.indexOf("n-chip n-chip-suggest") < 0, "菜单栏不再有「建议」chip（动作按钮移出节点头部）");
-  ok(canvas.indexOf('className = "n-dev-suggest"') >= 0, "折叠卡 body 有「建议」按钮");
+  ok(canvas.indexOf('className = "n-dev-suggest"') < 0, "折叠卡 body 不再有「建议」按钮");
+  ok(canvas.indexOf('className = "n-dev-ask"') < 0, "折叠卡 body 不再有「问询」按钮");
   ok(canvas.indexOf('I18n.t("建议（让 AI 评估下一步该实现什么…）")') >= 0, "右键菜单有「建议」项");
-  ok(canvas.split("suggestDevNode(node)").length - 1 === 2, "两处入口接到 suggestDevNode()（折叠卡按钮 + 右键菜单）");
+  ok(canvas.split("suggestDevNode(node)").length - 1 === 1, "唯一入口接到 suggestDevNode()（右键菜单）");
+  ok(canvas.indexOf("askDevNode(node)") < 0, "卡片「问询」入口已移除（无 askDevNode 调用）");
   ok(canvas.indexOf("openDevFileNode(node)") >= 0, "文件节点下方按钮组接入「打开」openDevFileNode()");
   ok(canvas.indexOf("n-dev-sugnote") >= 0, "折叠卡显示上次建议摘要");
   ok(canvas.indexOf("devSuggestOf(node)") >= 0, "摘要读取节点缓存");
@@ -739,7 +765,8 @@ const MODEL_JSON =
   const cssC = read("renderer/css/canvas.css");
   const cssB = read("renderer/css/base.css");
   ok(cssC.indexOf(".n-chip.n-chip-suggest") < 0, "canvas.css：头部 chip 样式已随菜单栏按钮移除");
-  ok(cssC.indexOf(".n-dev-info .n-dev-suggest") >= 0, "canvas.css：body 按钮样式");
+  ok(cssC.indexOf(".n-dev-info .n-dev-suggest") < 0, "canvas.css：已移除的「建议」按钮样式已清理");
+  ok(cssC.indexOf(".n-dev-info .n-dev-ask") < 0, "canvas.css：已移除的「问询」按钮样式已清理");
   ok(cssC.indexOf(".n-dev-info .n-dev-file-open") >= 0, "canvas.css：文件节点「打开」按钮样式");
   ok(cssC.indexOf(".n-dev-info .n-dev-sugnote") >= 0, "canvas.css：上次建议摘要样式");
   ok(cssB.indexOf(".mt-sug-opts") >= 0 && cssB.indexOf(".mt-sug-opt.on") >= 0, "base.css：多选清单样式");
@@ -753,8 +780,9 @@ const MODEL_JSON =
   /* 本轮 Token 去重：开发节点细则从「网关人设」里撤走，人设只指向技能真源（见 docs/prompt-source-of-truth.md） */
   ok(read("dsh/gateway/gateway.mjs").indexOf("mtnode-dev-architect") >= 0, "网关人设指向 dev-architect 技能（不再抄「建议」细则）");
   ok(
-    read("renderer/app-assist.js").indexOf("每个开发节点有「开发」「细化」「建议」「问询」按钮") >= 0,
-    "助手系统提示含「建议」",
+    read("renderer/app-assist.js").indexOf("每个开发节点的折叠卡有「开发」「细化」按钮") >= 0 &&
+      read("renderer/app-assist.js").indexOf("「问询」") < 0,
+    "助手系统提示已同步卡片按钮现状（无「问询」按钮）",
   );
   const skill = read("mtnode-agent-skills/mtnode/dev-architect/SKILL.md");
   ok(skill.indexOf("- **「建议」按钮**") >= 0, "dev-architect 技能说明「建议」按钮");
@@ -1639,16 +1667,17 @@ const MODEL_JSON =
   );
   ok((gw11.match(/devColor:/g) || []).length >= 1, "网关 schema 暴露 devColor（Agent 能改颜色）");
   ok(
-    gw11.indexOf("dev/devPath/devStatus/devKind/devColor/devModel/devProvider") >= 0,
-    "canvas_get 工具描述透出这些字段",
+    gw11.indexOf("all per-kind config fields (provider / model / size / savePath") >= 0 &&
+      ["devKind", "devColor", "devModel", "devProvider"].every((f) => nodes11.indexOf("\n      " + f + ":") >= 0),
+    "canvas_get 描述不再抄字段清单（每轮重发）；这些字段由 detail:\"standard\" 档如实回读，产出侧真源在 renderer/app-nodes.js",
   );
   ok(
     (gw11.match(/devPreset:/g) || []).length >= 1 && (gw11.match(/devEffort:/g) || []).length >= 1,
     "网关属性表暴露 devPreset / devEffort（Agent 能设 · create / update 同一份表，不再各抄一遍）",
   );
   ok(
-    gw11.indexOf("devModel/devProvider/devPreset/devEffort/devFiles") >= 0,
-    "canvas_get 工具描述补齐 devPreset / devEffort",
+    ["devPreset", "devEffort", "devFiles"].every((f) => nodes11.indexOf("\n      " + f + ":") >= 0),
+    "canvas_get 快照回读 devPreset / devEffort / devFiles（描述里不抄字段清单，看产出侧）",
   );
   ok(
     gw11.indexOf("enum: ['low', 'medium', 'high', 'xhigh', 'max', '']") >= 0,
@@ -1869,6 +1898,12 @@ const MODEL_JSON =
     "dsh.css 有 .ix-opt-label / .ix-opt-desc 两套样式（第二行淡灰、不抢主标签）",
   );
   ok(
+    ixc12.indexOf("selected: custom ? [custom] : selected") >= 0 &&
+      ixc12.indexOf("for (const c of optInputs) c.checked = false;") >= 0 &&
+      ixc12.indexOf('if (c.checked) custom.value = "";') >= 0,
+    "手填即该题被选中的选项：提交时 selected=[手填值]，且手填与勾选项互斥（用户决定手填后答案不再落回别的选项）",
+  );
+  ok(
     ctOn12.indexOf("确认无歧义") >= 0,
     "拷问段要求得到用户明确确认后才开工",
   );
@@ -1931,14 +1966,15 @@ const MODEL_JSON =
   /* 四处提示词 / 技能真源：两段式关键词在场，防日后改回单段 */
   const gw12 = read("dsh/gateway/canvas-plugin.mjs");
   ok(
-    gw12.indexOf("note 两段") >= 0 &&
+    gw12.indexOf("两段") >= 0 &&
       gw12.indexOf("【功能】") >= 0 &&
       gw12.indexOf("【实现】") >= 0,
     "网关工具描述：note 必须两段（【功能】+【实现】）",
   );
   ok(
-    (gw12.match(/两段/g) || []).length >= 2,
-    "网关工具描述两处（EDIT_DESC 硬规则 + note 参数说明）保留两段约束（update 与 create 共用同一份属性表，不再各抄一遍）",
+    (gw12.match(/两段/g) || []).length >= 1 &&
+      read("mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md").indexOf("note 两段") >= 0,
+    "note 两段约束留在 note 参数说明一处；完整开发节点规范（原 EDIT_DESC 硬规则）已迁到按需技能 mtnode-canvas-edit-rules",
   );
   const gm12 = read("dsh/gateway/gateway.mjs");
   /* 两段式的真源 = 工具描述（参数机制）+ 助手行为纪律 + 技能；人设档不再抄第三份 */

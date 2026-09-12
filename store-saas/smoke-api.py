@@ -100,9 +100,50 @@ chg2 = call("POST", "/api/change-password", {
 })
 token = chg2["token"]
 
-fm = call("POST", "/api/forum/messages", {"room": "general", "text": "smoke hello"}, token=token)["item"]
-assert fm.get("text") == "smoke hello"
-lst = call("GET", "/api/forum/messages?room=general", token=token)
-assert any(x.get("id") == fm["id"] for x in lst.get("items") or [])
-call("POST", "/api/forum/messages", {"room": "nope", "text": "x"}, token=token, expect=False)
+# —— 论坛：免登录列表 / 未登录发帖 401 / 建话题 / 回复 / 状态筛选 / 关键词搜索 / 带图 ——
+# 1x1 PNG（合法图片头，便于服务端校验最大边）
+png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+anon = call("POST", "/api/forum/topics", {"title": "anon", "content": "anon"}, expect=False)
+assert not anon.get("ok")
+
+# 编辑器上传：未登录 401；登录后拿 imageId，再免登录取图
+anon_img = call("POST", "/api/forum/images", {"base64": png_b64, "mime": "image/png"}, expect=False)
+assert not anon_img.get("ok")
+up = call("POST", "/api/forum/images", {"base64": png_b64, "mime": "image/png"}, token=token)
+assert up.get("imageId"), up
+call("GET", "/api/forum/images/" + up["imageId"])
+
+topic = call("POST", "/api/forum/topics", {
+    "title": "smoke topic 论坛",
+    "content": "# smoke\n\nhello forum markdown",
+    "status": "help",
+    "imageBase64": [png_b64],
+}, token=token)["item"]
+topic_id = topic["id"]
+assert topic.get("status") == "help"
+assert len(topic.get("imageIds") or []) == 1
+
+open_lst = call("GET", "/api/forum/topics")
+assert any(x.get("id") == topic_id for x in open_lst.get("items") or [])
+assert all("content" not in x for x in open_lst.get("items") or [])
+
+det = call("GET", "/api/forum/topic?id=" + topic_id)
+assert det["topic"]["content"].startswith("# smoke")
+assert det["replies"]["page"] == 1 and det["replies"]["total"] == 0
+
+rep = call("POST", "/api/forum/replies", {"topicId": topic_id, "content": "first reply"}, token=token)["item"]
+assert rep["topicId"] == topic_id
+det2 = call("GET", "/api/forum/topic?id=" + topic_id + "&replyPage=1&replyPageSize=10")
+assert any(r.get("id") == rep["id"] for r in det2["replies"]["items"])
+assert det2["topic"]["replyCount"] == 1
+
+flt = call("GET", "/api/forum/topics?status=help")
+assert any(x.get("id") == topic_id for x in flt.get("items") or [])
+sea = call("GET", "/api/forum/topics?q=markdown&sort=active")
+assert any(x.get("id") == topic_id for x in sea.get("items") or [])
+
+solved = call("PATCH", "/api/forum/topic", {"id": topic_id, "status": "solved"}, token=token)["item"]
+assert solved["status"] == "solved"
+call("GET", "/api/forum/images/" + topic["imageIds"][0])
 print("SMOKE_OK")

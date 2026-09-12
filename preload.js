@@ -78,7 +78,16 @@ contextBridge.exposeInMainWorld('api', {
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),
   fileStat: (p) => ipcRenderer.invoke('file:stat', p),
+  /* 音频字节（波形预览器取峰值用，见 renderer/app-audioview.js）：只读，超上限只回体积 */
+  fileReadAudio: (p, maxBytes) => ipcRenderer.invoke('file:readAudio', p, maxBytes),
   fileListDir: (p) => ipcRenderer.invoke('file:listDir', p),
+  /* PDF 解析（见 main.js pdf:probe / pdf:parse）：入参为路径字符串或 { path } / { bytes } / { base64 } / { data:[…] }，
+     只在主进程抽取文本后回传，绝不落盘；info 轻量探测，parse 出 markdown / pages / formulas / warning */
+  filePdfInfo: (arg) => ipcRenderer.invoke('pdf:probe', arg),
+  fileParsePdf: (arg) => ipcRenderer.invoke('pdf:parse', arg),
+  /* 文本 → PDF（见 main.js pdf:writeText / pdf-write.js）：Markdown 渲染 + 公式排版 +
+     分页打印，落盘到 outPath；入参见 pdf-write.js writeTextPdf */
+  fileWritePdf: (arg) => ipcRenderer.invoke('pdf:writeText', arg),
   /* 左侧边栏「文件」页：一层列举 + 重命名 / 复制 / 移动 / 删除（删除走系统回收站） */
   fileReadDir: (p) => ipcRenderer.invoke('file:readDir', p),
   fileRename: (p, name) => ipcRenderer.invoke('file:rename', { path: p, name }),
@@ -194,9 +203,11 @@ contextBridge.exposeInMainWorld('api', {
   clipboardReadImage: () => ipcRenderer.invoke('clipboard:readImage'),
   factSaveImage: (opts) => ipcRenderer.invoke('fact:saveImage', opts || {}),
   factDeleteImages: (paths) => ipcRenderer.invoke('fact:deleteImages', { paths: paths || [] }),
-  /* 事实库单篇文档的重命名 / 删除：入参 opts = { file, name? }（file = 该文档 <doc>.md 绝对路径）。
+  /* 事实库单篇文档的重命名：入参 opts = { file, name? }（file = 该文档 <doc>.md 绝对路径）。
      主进程校验路径，只动这一篇的 md + sidecar；库内其它文档与共享 assets/ 不受影响。 */
   factRenameLibrary: (opts) => ipcRenderer.invoke('fact:renameLibrary', opts || {}),
+  /* 事实库删除（**进系统回收站**，不物理删除）：opts = { file }（单篇 <doc>.md）或 { dir }（整个「团队事实库」目录）。
+     单篇只搬这一篇的 md + sidecar；删掉库内最后一篇时整库目录（含共享 assets/）一起进回收站。 */
   factRemoveLibrary: (opts) => ipcRenderer.invoke('fact:removeLibrary', opts || {}),
   /* 整库搬迁（历史错位修复）：opts = { from, to }（两边都是「团队事实库」目录的绝对路径）。
      主进程把 from 整个搬到 to（rename / 跨卷 copy + 校验），用于把误建在应用文件夹里的库迁回画布文件夹。 */
@@ -428,8 +439,44 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('tts:providerSynced', handler);
     return () => ipcRenderer.removeListener('tts:providerSynced', handler);
   },
-  remotionStatus: () => ipcRenderer.invoke('remotion:getStatus'),
-  remotionInstall: (opts) => ipcRenderer.invoke('remotion:install', opts || {}),
+  /* ── 本地语音转写（Qwen3-ASR）：静默起停 + 转写缓存，见 asr/main-asr.js ── */
+  asrStatus: () => ipcRenderer.invoke('asr:getStatus'),
+  asrEnsureReady: (opts) => ipcRenderer.invoke('asr:ensureReady', opts || {}),
+  asrStart: (opts) => ipcRenderer.invoke('asr:start', opts || {}),
+  asrStop: () => ipcRenderer.invoke('asr:stop'),
+  asrTranscribe: (opts) => ipcRenderer.invoke('asr:transcribe', opts || {}),
+  asrCacheGet: (opts) => ipcRenderer.invoke('asr:cacheGet', opts || {}),
+  asrCacheSet: (opts) => ipcRenderer.invoke('asr:cacheSet', opts || {}),
+  asrCacheClear: (opts) => ipcRenderer.invoke('asr:cacheClear', opts || {}),
+  asrInstall: (opts) => ipcRenderer.invoke('asr:install', opts || {}),
+  asrInstallFfmpeg: (opts) => ipcRenderer.invoke('asr:installFfmpeg', opts || {}),
+  asrOpen: () => ipcRenderer.invoke('asr:open'),
+  asrClose: () => ipcRenderer.invoke('asr:close'),
+  asrAgentInstall: (opts) => ipcRenderer.invoke('asr:agentInstall', opts || {}),
+  asrAgentRecoverInstall: (opts) => ipcRenderer.invoke('asr:agentRecoverInstall', opts || {}),
+  asrCancelInstall: () => ipcRenderer.invoke('asr:cancelInstall'),
+  asrPickInstallDir: () => ipcRenderer.invoke('asr:pickInstallDir'),
+  asrPickModelDir: () => ipcRenderer.invoke('asr:pickModelDir'),
+  asrSetInstallDir: (dir) => ipcRenderer.invoke('asr:setInstallDir', dir),
+  asrSetConfig: (patch) => ipcRenderer.invoke('asr:setConfig', patch || {}),
+  asrGpuProbe: () => ipcRenderer.invoke('asr:gpuProbe'),
+  asrConsoleTail: (n) => ipcRenderer.invoke('asr:consoleTail', n),
+  onAsrProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('asr:progress', handler);
+    return () => ipcRenderer.removeListener('asr:progress', handler);
+  },
+  onAsrConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('asr:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('asr:consoleChanged', handler);
+  },
+
+  remotionStatus: () => ipcRenderer.invoke('remotion:getStatus'),  remotionInstall: (opts) => ipcRenderer.invoke('remotion:install', opts || {}),
   remotionOpen: () => ipcRenderer.invoke('remotion:open'),
   remotionClose: () => ipcRenderer.invoke('remotion:close'),
   remotionGenerate: (params) => ipcRenderer.invoke('remotion:render', params || {}),
@@ -541,6 +588,8 @@ contextBridge.exposeInMainWorld('api', {
   /* 连入的这份与库里那份是否同一个（主进程按字节比）：素材节点端子同步提示的唯一判据 */
   assetsItemSame: (id, itemId, arg) => ipcRenderer.invoke('assets:itemSame', Object.assign({ id, itemId }, arg || {})),
   assetsItemRemove: (id, itemId) => ipcRenderer.invoke('assets:itemRemove', { id, itemId }),
+  /* 拖入路径判定：返回 {ok, kind:'file'|'dir'|'', name, exists}（只读） */
+  assetsPathKind: (p) => ipcRenderer.invoke('assets:pathKind', p),
   assetsImportDir: (arg) => ipcRenderer.invoke('assets:importDir', arg),
   assetsImportFiles: (id, paths) => ipcRenderer.invoke('assets:importFiles', { id, paths }),
 });

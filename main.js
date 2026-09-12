@@ -62,7 +62,11 @@ const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lo
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
+/* 本地语音转写（Qwen3-ASR）：唯一一个「随 MTNode 退出而结束」的本地后端 */
+const { registerAsrIpc, shutdownAsr } = require("./asr/main-asr.js");
 const { patchProviders } = require("./config-providers.js");
+/* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
+const pdfWrite = require("./pdf-write.js");
 const { registerRollbackIpc } = require("./rollback-store.js");
 const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
@@ -114,6 +118,10 @@ function dsh() {
         try {
           const { onTtsDshEvent } = require("./tts/main-tts.js");
           if (typeof onTtsDshEvent === "function") onTtsDshEvent(ev);
+        } catch {}
+        try {
+          const { onAsrDshEvent } = require("./asr/main-asr.js");
+          if (typeof onAsrDshEvent === "function") onAsrDshEvent(ev);
         } catch {}
       },
     });
@@ -1318,6 +1326,788 @@ ipcMain.handle("file:stat", (e, p) => {
     return { ok: false, error: I18n.t("路径不存在") };
   }
 });
+/* 音频字节（音频波形预览器读波形用：renderer/app-audioview.js 解码取峰值）。
+   只读用户本地音频文件，上限 maxBytes（默认 64MB，超过只回体积不读字节，
+   避免把几百 MB 的音频灌进渲染层）；不写任何文件。 */
+ipcMain.handle("file:readAudio", (e, p, maxBytes) => {
+  const src = String(p || "");
+  if (!src) return { ok: false, error: I18n.t("未选择") };
+  let st;
+  try {
+    st = fs.statSync(src);
+  } catch {
+    return { ok: false, error: I18n.t("路径不存在") };
+  }
+  if (!st.isFile()) return { ok: false, error: I18n.t("路径不存在") };
+  const cap = Math.max(1024 * 1024, Math.min(1024 * 1024 * 1024, Number(maxBytes) || 67108864));
+  const sizeHuman =
+    st.size >= 1024 * 1024
+      ? (st.size / (1024 * 1024)).toFixed(1) + " MB"
+      : Math.max(1, Math.round(st.size / 1024)) + " KB";
+  if (st.size > cap) return { ok: true, tooBig: true, bytes: null, size: st.size, sizeHuman };
+  try {
+    return {
+      ok: true,
+      bytes: fs.readFileSync(src),
+      size: st.size,
+      sizeHuman,
+      mtime: Math.floor(st.mtimeMs),
+    };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+/* ═══════════ PDF 解析（pdf:probe / pdf:parse）═══════════════════════════
+   零依赖：只用 Node 内置 zlib 解 FlateDecode 流 + 自写内容流文本抽取
+   （Tj / TJ / Td / TD / Tm / T* / ' / "），字体优先走 ToUnicode CMap 还原
+   Unicode，无 CMap 时按 UTF-16BE / Latin-1 兜底。只读用户本机文件或传入
+   字节；解析结果仅回传渲染层，绝不落盘（数据不落应用文件夹口径）。 */
+const PDF_MAX_BYTES = 128 * 1024 * 1024;
+
+/* pdf:parse / pdf:probe 入参归一：路径字符串 / Buffer / ArrayBuffer / TypedArray /
+   { path } / { bytes } / { base64 } / { data:[…] } / data:application/pdf;base64,… */
+function pdfSourceBuffer(arg) {
+  if (arg == null) return { error: { code: "no_source", message: I18n.t("未提供 PDF 路径或字节") } };
+  if (typeof arg === "string") {
+    const p = arg.trim();
+    if (!p) return { error: { code: "no_source", message: I18n.t("未提供 PDF 路径或字节") } };
+    if (/^data:application\/pdf;base64,/i.test(p)) {
+      return { buf: Buffer.from(p.replace(/^[^,]*,/, ""), "base64") };
+    }
+    return { path: p };
+  }
+  if (Buffer.isBuffer(arg)) return { buf: arg };
+  if (arg instanceof ArrayBuffer) return { buf: Buffer.from(arg) };
+  if (ArrayBuffer.isView(arg)) return { buf: Buffer.from(arg.buffer, arg.byteOffset, arg.byteLength) };
+  if (typeof arg === "object") {
+    if (typeof arg.path === "string" && arg.path.trim()) return { path: arg.path.trim() };
+    if (typeof arg.base64 === "string" && arg.base64) {
+      return { buf: Buffer.from(arg.base64.replace(/^[^,]*,/, ""), "base64") };
+    }
+    if (arg.bytes != null) return pdfSourceBuffer(arg.bytes);
+    if (Array.isArray(arg.data)) return { buf: Buffer.from(arg.data) };
+    if (arg.data != null) return pdfSourceBuffer(arg.data);
+  }
+  return { error: { code: "bad_source", message: I18n.t("无法识别的 PDF 输入（需要路径或字节）") } };
+}
+
+function pdfLoadBuffer(arg) {
+  const s = pdfSourceBuffer(arg);
+  if (s.error) return { error: s.error };
+  if (s.buf) {
+    if (!s.buf.length) return { error: { code: "empty", message: I18n.t("PDF 字节为空") } };
+    if (s.buf.length > PDF_MAX_BYTES) {
+      return { error: { code: "too_large", message: I18n.t("PDF 过大（上限 128MB）") } };
+    }
+    return { buf: s.buf };
+  }
+  const p = s.path;
+  let st;
+  try {
+    st = fs.statSync(p);
+  } catch {
+    return { error: { code: "not_found", message: I18n.t("文件不存在：") + p } };
+  }
+  if (!st.isFile()) return { error: { code: "not_found", message: I18n.t("不是文件：") + p } };
+  if (st.size > PDF_MAX_BYTES) {
+    return { error: { code: "too_large", message: I18n.t("PDF 过大（上限 128MB）") } };
+  }
+  try {
+    return { buf: fs.readFileSync(p) };
+  } catch (err) {
+    return { error: { code: "read_failed", message: String((err && err.message) || err) } };
+  }
+}
+
+/* CMap 目标字串：4 的倍数字节按 UTF-16BE 解读，否则按单字节 */
+function pdfCMapUnicode(hex) {
+  const h = String(hex || "").replace(/[^0-9A-Fa-f]/g, "");
+  if (!h) return "";
+  if (h.length % 4 === 0) {
+    let out = "";
+    for (let i = 0; i < h.length; i += 4) out += String.fromCharCode(parseInt(h.slice(i, i + 4), 16));
+    return out.replace(/^\uFEFF/, "");
+  }
+  let out = "";
+  for (let i = 0; i + 1 < h.length; i += 2) out += String.fromCharCode(parseInt(h.slice(i, i + 2), 16));
+  return out;
+}
+
+/* ToUnicode CMap → { map: Map<hexCode,string>, twoByte: boolean } */
+function pdfParseToUnicode(data) {
+  const s = Buffer.isBuffer(data) ? data.toString("latin1") : String(data || "");
+  const map = new Map();
+  let twoByte = false;
+  let m;
+  const cs = /begincodespacerange([\s\S]*?)endcodespacerange/g;
+  while ((m = cs.exec(s))) {
+    const r = /<([0-9A-Fa-f]+)>/g;
+    let a;
+    while ((a = r.exec(m[1]))) if (a[1].length > 2) twoByte = true;
+  }
+  const bc = /beginbfchar([\s\S]*?)endbfchar/g;
+  while ((m = bc.exec(s))) {
+    const r = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]*)>/g;
+    let a;
+    while ((a = r.exec(m[1]))) {
+      if (a[1].length > 2) twoByte = true;
+      map.set(a[1].toUpperCase(), pdfCMapUnicode(a[2]));
+    }
+  }
+  const br = /beginbfrange([\s\S]*?)endbfrange/g;
+  while ((m = br.exec(s))) {
+    const r = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(<[0-9A-Fa-f]*>|\[[^\]]*\])/g;
+    let a;
+    while ((a = r.exec(m[1]))) {
+      const width = a[1].length;
+      const lo = parseInt(a[1], 16);
+      const hi = parseInt(a[2], 16);
+      if (width > 2) twoByte = true;
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi < lo || hi - lo > 65535) continue;
+      const key = (n) => n.toString(16).toUpperCase().padStart(width, "0");
+      if (a[3][0] === "[") {
+        const items = a[3].match(/<[0-9A-Fa-f]*>/g) || [];
+        for (let i = 0; i < items.length && lo + i <= hi; i++) {
+          map.set(key(lo + i), pdfCMapUnicode(items[i].slice(1, -1)));
+        }
+      } else {
+        const baseHex = a[3].slice(1, -1);
+        const base = parseInt(baseHex, 16);
+        for (let i = 0; lo + i <= hi; i++) {
+          map.set(key(lo + i), pdfCMapUnicode((base + i).toString(16).toUpperCase().padStart(baseHex.length, "0")));
+        }
+      }
+    }
+  }
+  return { map, twoByte };
+}
+
+/* 字串字节 → 文本：有 CMap 按 CMap 查表，否则 UTF-16BE 启发式 / Latin-1 */
+function pdfDecodeBytes(buf, cmapInfo) {
+  if (!buf || !buf.length) return "";
+  if (cmapInfo && cmapInfo.map && cmapInfo.map.size) {
+    let out = "";
+    if (cmapInfo.twoByte) {
+      for (let i = 0; i + 1 < buf.length; i += 2) {
+        const k = buf.readUInt16BE(i).toString(16).toUpperCase().padStart(4, "0");
+        if (cmapInfo.map.has(k)) out += cmapInfo.map.get(k);
+      }
+    } else {
+      for (let i = 0; i < buf.length; i++) {
+        const k = buf[i].toString(16).toUpperCase().padStart(2, "0");
+        if (cmapInfo.map.has(k)) out += cmapInfo.map.get(k);
+      }
+    }
+    return out;
+  }
+  if (buf.length >= 2 && buf.length % 2 === 0) {
+    let zeros = 0;
+    for (let i = 0; i < buf.length; i += 2) if (buf[i] === 0) zeros++;
+    if (zeros >= buf.length / 4) {
+      let out = "";
+      for (let i = 0; i + 1 < buf.length; i += 2) out += String.fromCharCode(buf.readUInt16BE(i));
+      return out.replace(/\u0000/g, "");
+    }
+  }
+  let out = "";
+  for (const b of buf) out += b === 9 || b === 10 || b === 13 || (b >= 32 && b !== 127) ? String.fromCharCode(b) : "";
+  return out;
+}
+
+/* 单条流解码：FlateDecode / ASCIIHexDecode / RunLengthDecode，其它过滤器跳过并告警 */
+function pdfInflateStream(dict, raw, warnings) {
+  const fm = String(dict || "").match(/\/Filter\s*(\[[^\]]*\]|\/[A-Za-z0-9]+)/);
+  const filters = fm ? (fm[1].match(/\/([A-Za-z0-9]+)/g) || []).map((x) => x.slice(1)) : [];
+  let data = raw;
+  for (const name of filters) {
+    try {
+      if (name === "FlateDecode" || name === "Fl") {
+        data = zlib.inflateSync(data);
+      } else if (name === "ASCIIHexDecode" || name === "AHx") {
+        const h = data.toString("latin1").replace(/[^0-9A-Fa-f]/g, "");
+        data = Buffer.from(h.length % 2 ? h + "0" : h, "hex");
+      } else if (name === "RunLengthDecode" || name === "RL") {
+        const src = data;
+        const out = [];
+        for (let i = 0; i < src.length; ) {
+          const l = src[i++];
+          if (l === 128) break;
+          if (l < 128) {
+            for (let k = 0; k <= l && i < src.length; k++) out.push(src[i++]);
+          } else {
+            const b = src[i++];
+            for (let k = 0; k < 257 - l; k++) out.push(b);
+          }
+        }
+        data = Buffer.from(out);
+      } else {
+        if (warnings && !warnings.some((w) => w.includes(name))) {
+          warnings.push(I18n.t("不支持的流过滤器 {f}，已跳过部分内容").replace("{f}", name));
+        }
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return data;
+}
+
+/* 扫描顶层对象：num → { num, dict, raw, data }（流按需解压） */
+function pdfScanObjects(buf) {
+  const s = buf.toString("latin1");
+  const objs = new Map();
+  const re = /(\d+)\s+(\d+)\s+obj\b/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const prev = m.index === 0 ? "\n" : s[m.index - 1];
+    if (prev !== "\n" && prev !== "\r" && prev !== " ") continue;
+    const num = Number(m[1]);
+    const start = m.index + m[0].length;
+    let endobj = s.indexOf("endobj", start);
+    if (endobj === -1) endobj = s.length;
+    const body = s.slice(start, endobj);
+    const sm = body.match(/stream(\r\n|\r|\n)/);
+    if (sm) {
+      const dataStart = start + sm.index + sm[0].length;
+      let dataEnd = s.indexOf("endstream", dataStart);
+      if (dataEnd === -1) dataEnd = s.length;
+      let rawEnd = dataEnd;
+      if (s[rawEnd - 2] === "\r" && s[rawEnd - 1] === "\n") rawEnd -= 2;
+      else if (s[rawEnd - 1] === "\n" || s[rawEnd - 1] === "\r") rawEnd -= 1;
+      objs.set(num, { num, dict: body.slice(0, sm.index), raw: buf.subarray(dataStart, Math.max(dataStart, rawEnd)), data: null, decoded: false });
+    } else {
+      objs.set(num, { num, dict: body, raw: null, data: null, decoded: false });
+    }
+    re.lastIndex = endobj;
+  }
+  return objs;
+}
+
+function pdfObjData(o, warnings) {
+  if (!o) return null;
+  if (o.decoded) return o.data;
+  o.decoded = true;
+  o.data = o.raw ? pdfInflateStream(o.dict, o.raw, warnings) : null;
+  return o.data;
+}
+
+/* /Type /ObjStm 里打包的对象展开成普通对象（页面对象常被压缩在这里） */
+function pdfExpandObjectStreams(objs, warnings) {
+  for (const o of Array.from(objs.values())) {
+    if (!/\/Type\s*\/ObjStm/.test(o.dict || "")) continue;
+    const data = pdfObjData(o, warnings);
+    if (!data) continue;
+    const head = data.toString("latin1", 0, Math.min(data.length, 256)).match(/^\s*(\d+)\s+(\d+)/);
+    if (!head) continue;
+    const count = Number(head[1]);
+    const first = Number(head[2]);
+    if (!(first > 0) || first > data.length) continue;
+    const header = data.toString("latin1", 0, Math.min(data.length, first));
+    const pairs = (header.match(/(\d+)\s+(\d+)/g) || []).map((x) => x.match(/(\d+)\s+(\d+)/).slice(1).map(Number));
+    for (let i = 0; i < pairs.length && i < count; i++) {
+      const onum = pairs[i][0];
+      const off = pairs[i][1];
+      const nextOff = i + 1 < pairs.length ? pairs[i + 1][1] : data.length - first;
+      const txt = data.toString("latin1", first + off, Math.max(first + off, Math.min(data.length, first + nextOff)));
+      if (!objs.has(onum)) objs.set(onum, { num: onum, dict: txt, raw: null, data: null, decoded: true, inline: true });
+    }
+  }
+}
+
+function pdfMatchDictEnd(s, start) {
+  let depth = 0;
+  for (let i = start; i + 1 < s.length; i++) {
+    if (s[i] === "<" && s[i + 1] === "<") {
+      depth++;
+      i++;
+    } else if (s[i] === ">" && s[i + 1] === ">") {
+      depth--;
+      i++;
+      if (depth <= 0) return i + 1;
+    }
+  }
+  return s.length;
+}
+
+/* 页面资源字典文本（内联或引用），用于取 /Font */
+function pdfResourcesText(objs, pageDict) {
+  const ref = String(pageDict || "").match(/\/Resources\s+(\d+)\s+\d+\s+R/);
+  if (ref) {
+    const o = objs.get(Number(ref[1]));
+    if (o) return o.dict || "";
+  }
+  const at = String(pageDict || "").indexOf("/Resources");
+  if (at === -1) return "";
+  const open = String(pageDict).indexOf("<<", at);
+  if (open === -1 || open - at > 16) return "";
+  const end = pdfMatchDictEnd(String(pageDict), open);
+  return String(pageDict).slice(open, end);
+}
+
+/* 资源 /Font << /F1 7 0 R … >> → Map<资源名, 字体对象号> */
+function pdfFontEntries(objs, resText) {
+  const out = new Map();
+  let block = null;
+  const inline = String(resText || "").match(/\/Font\s*<<([\s\S]*?)>>/);
+  if (inline) {
+    block = inline[1];
+  } else {
+    const ref = String(resText || "").match(/\/Font\s+(\d+)\s+\d+\s+R/);
+    if (ref) {
+      const o = objs.get(Number(ref[1]));
+      if (o) block = o.dict || "";
+    }
+  }
+  if (!block) return out;
+  const re = /\/([^\s/<>\[\](){}%]+)\s+(\d+)\s+\d+\s+R/g;
+  let m;
+  while ((m = re.exec(block))) out.set(m[1], Number(m[2]));
+  return out;
+}
+
+/* 走 /Root → /Pages → /Kids 还原页序；失败则按对象号取 /Type /Page */
+function pdfCollectPages(objs, src) {
+  const pages = [];
+  const seen = new Set();
+  const typeOf = (o) => ((o && String(o.dict || "").match(/\/Type\s*\/(\w+)/)) || [])[1] || "";
+  const walk = (num, depth, inherited) => {
+    if (depth > 64 || seen.has(num)) return;
+    seen.add(num);
+    const o = objs.get(num);
+    if (!o) return;
+    const t = typeOf(o);
+    const dict = String(o.dict || "");
+    const ownRes = /\/Resources\s/.test(dict) ? pdfResourcesText(objs, dict) : inherited;
+    if (t === "Pages") {
+      const kids = dict.match(/\/Kids\s*\[([\s\S]*?)\]/);
+      const nums = kids ? (kids[1].match(/(\d+)\s+\d+\s+R/g) || []).map((x) => Number(x.match(/(\d+)/)[1])) : [];
+      for (const k of nums) walk(k, depth + 1, ownRes);
+      return;
+    }
+    if (t === "Page") pages.push({ o, resText: ownRes });
+  };
+  const rootRe = /\/Root\s+(\d+)\s+\d+\s+R/g;
+  let rm;
+  let rootNum = null;
+  while ((rm = rootRe.exec(src))) rootNum = Number(rm[1]);
+  if (rootNum != null) {
+    const root = objs.get(rootNum);
+    const pr = root && String(root.dict || "").match(/\/Pages\s+(\d+)\s+\d+\s+R/);
+    if (pr) walk(Number(pr[1]), 0, "");
+  }
+  if (!pages.length) {
+    for (const o of Array.from(objs.values()).sort((a, b) => a.num - b.num)) {
+      if (typeOf(o) === "Page") pages.push({ o, resText: String(o.dict || "") });
+    }
+  }
+  return pages;
+}
+
+/* 内容流文本抽取：Tj / TJ / Td / TD / Tm / T* / ' / " */
+function pdfContentToText(data, cmapResolver) {
+  const s = Buffer.isBuffer(data) ? data.toString("latin1") : String(data || "");
+  const lines = [];
+  let line = "";
+  let cmap = null;
+  const stack = [];
+  const flush = () => {
+    lines.push(line.replace(/\s+$/, ""));
+    line = "";
+  };
+  const show = (buf) => {
+    if (buf && buf.length) line += pdfDecodeBytes(buf, cmap);
+  };
+  const space = () => {
+    if (line && !/\s$/.test(line)) line += " ";
+  };
+  const handle = (op) => {
+    switch (op) {
+      case "Tf":
+        cmap = cmapResolver ? cmapResolver(stack[stack.length - 2]) : null;
+        break;
+      case "Tj":
+        show(stack[stack.length - 1]);
+        break;
+      case "TJ": {
+        const arr = stack[stack.length - 1];
+        if (Array.isArray(arr)) {
+          for (const it of arr) {
+            if (Buffer.isBuffer(it)) show(it);
+            else if (typeof it === "number" && it < -120) space();
+          }
+        }
+        break;
+      }
+      case "'":
+      case "\"":
+        flush();
+        show(stack[stack.length - 1]);
+        break;
+      case "Td":
+      case "TD": {
+        const ty = Number(stack[stack.length - 1]) || 0;
+        const tx = Number(stack[stack.length - 2]) || 0;
+        if (ty !== 0) {
+          if (line) flush();
+        } else if (tx > 0) space();
+        break;
+      }
+      case "Tm":
+      case "T*":
+        if (line) flush();
+        break;
+      case "ET":
+      case "BT":
+        if (line) flush();
+        break;
+      default:
+        break;
+    }
+    stack.length = 0;
+  };
+  const readLiteral = (i) => {
+    i++;
+    const bytes = [];
+    let depth = 1;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === "\\") {
+        const n = s[i + 1];
+        i += 2;
+        if (n === "n") bytes.push(10);
+        else if (n === "r") bytes.push(13);
+        else if (n === "t") bytes.push(9);
+        else if (n === "b") bytes.push(8);
+        else if (n === "f") bytes.push(12);
+        else if (n === "\n") continue;
+        else if (n === "\r") {
+          if (s[i] === "\n") i++;
+        } else if (n >= "0" && n <= "7") {
+          let oct = n;
+          while (oct.length < 3 && s[i] >= "0" && s[i] <= "7") oct += s[i++];
+          bytes.push(parseInt(oct, 8) & 0xff);
+        } else if (n != null) bytes.push(n.charCodeAt(0) & 0xff);
+        continue;
+      }
+      if (c === "(") {
+        depth++;
+        bytes.push(40);
+        i++;
+        continue;
+      }
+      if (c === ")") {
+        depth--;
+        i++;
+        if (!depth) break;
+        bytes.push(41);
+        continue;
+      }
+      bytes.push(c.charCodeAt(0) & 0xff);
+      i++;
+    }
+    return { buf: Buffer.from(bytes), next: i };
+  };
+  const readHex = (i) => {
+    i++;
+    let h = "";
+    while (i < s.length && s[i] !== ">") {
+      if (/[0-9A-Fa-f]/.test(s[i])) h += s[i];
+      i++;
+    }
+    if (s[i] === ">") i++;
+    if (h.length % 2) h += "0";
+    return { buf: Buffer.from(h, "hex"), next: i };
+  };
+  const readArray = (i) => {
+    i++;
+    const items = [];
+    while (i < s.length && s[i] !== "]") {
+      const c = s[i];
+      if (/\s/.test(c)) {
+        i++;
+      } else if (c === "(") {
+        const r = readLiteral(i);
+        items.push(r.buf);
+        i = r.next;
+      } else if (c === "<" && s[i + 1] !== "<") {
+        const r = readHex(i);
+        items.push(r.buf);
+        i = r.next;
+      } else if (c === "<") {
+        i = pdfMatchDictEnd(s, i);
+      } else if (/[+\-.0-9]/.test(c)) {
+        const m = /^[+\-]?(?:\d+\.?\d*|\.\d+)/.exec(s.slice(i, i + 32));
+        if (!m) {
+          i++;
+        } else {
+          items.push(Number(m[0]));
+          i += m[0].length;
+        }
+      } else {
+        i++;
+      }
+    }
+    return { items, next: i + 1 };
+  };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "%") {
+      while (i < s.length && s[i] !== "\n" && s[i] !== "\r") i++;
+    } else if (/\s/.test(c)) {
+      i++;
+    } else if (c === "(") {
+      const r = readLiteral(i);
+      stack.push(r.buf);
+      i = r.next;
+    } else if (c === "<" && s[i + 1] !== "<") {
+      const r = readHex(i);
+      stack.push(r.buf);
+      i = r.next;
+    } else if (c === "<") {
+      i = pdfMatchDictEnd(s, i);
+    } else if (c === "[") {
+      const r = readArray(i);
+      stack.push(r.items);
+      i = r.next;
+    } else if (c === "]" || c === "}" || c === "{") {
+      i++;
+    } else if (c === "/") {
+      const m = /^\/([^\s/<>\[\](){}%]*)/.exec(s.slice(i, i + 256));
+      stack.push(m ? m[1] : "");
+      i += m ? m[0].length : 1;
+    } else if (/[+\-.\d]/.test(c)) {
+      const m = /^[+\-]?(?:\d+\.?\d*|\.\d+)/.exec(s.slice(i, i + 32));
+      if (!m) {
+        i++;
+      } else {
+        stack.push(Number(m[0]));
+        i += m[0].length;
+      }
+    } else if (c === "'" || c === "\"") {
+      handle(c);
+      i++;
+    } else if (/[A-Za-z]/.test(c)) {
+      const m = /^[A-Za-z][A-Za-z0-9*]*/.exec(s.slice(i, i + 32));
+      const op = m ? m[0] : c;
+      i += op.length;
+      if (op === "BI") {
+        const ei = s.indexOf("EI", i);
+        i = ei === -1 ? s.length : ei + 2;
+      } else {
+        handle(op);
+      }
+    } else {
+      i++;
+    }
+  }
+  if (line) flush();
+  return lines.join("\n");
+}
+
+function pdfCleanText(raw) {
+  return String(raw || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u0000/g, "")
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/* 公式片段识别：只做「疑似公式」标注（PDF 公式多为排版图形，无法直接转 LaTeX） */
+function pdfExtractFormulas(pageTexts) {
+  const out = [];
+  const seen = new Set();
+  for (const page of pageTexts) {
+    for (const raw of String(page || "").split(/\n+/)) {
+      const t = raw.trim();
+      if (!t || t.length > 200) continue;
+      const digits = (t.match(/\d/g) || []).length;
+      const syms = (t.match(/[=+\-*/^_∫∑∏√≤≥≠±∞π]/g) || []).length;
+      const mathUni = /[\u2200-\u22FF\u2A00-\u2AFF]/.test(t);
+      const tex = /\\[a-zA-Z]{2,}|\^\{|_\{/.test(t);
+      if (!((syms >= 2 && digits >= 1) || mathUni || tex)) continue;
+      const key = t.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(t);
+      if (out.length >= 100) return out;
+    }
+  }
+  return out;
+}
+
+/* 轻量探测：是否为可解析 PDF（不解压流，只判头 / 加密 / 页数 / 内容流） */
+function pdfProbeBuffer(buf) {
+  const head = buf.toString("latin1", 0, Math.min(buf.length, 8192));
+  if (!/%PDF-\d\.\d/.test(head)) {
+    return { ok: true, isPdf: false, parseable: false, pages: 0, encrypted: false, warning: I18n.t("不是 PDF 文件（缺少 %PDF- 文件头）") };
+  }
+  const tail = buf.toString("latin1", Math.max(0, buf.length - 16384));
+  const encrypted = /\/Encrypt\b/.test(tail) || /\/Encrypt\b/.test(head);
+  const s = buf.toString("latin1");
+  let pages = (s.match(/\/Type\s*\/Page(?![sA-Za-z])/g) || []).length;
+  if (!pages) {
+    const cm = s.match(/\/Type\s*\/Pages[\s\S]{0,4000}?\/Count\s+(\d+)/);
+    if (cm) pages = Number(cm[1]) || 0;
+  }
+  const hasStream = /\bstream\r?\n/.test(s);
+  let warning = "";
+  if (encrypted) warning = I18n.t("PDF 已加密，无法解析文本");
+  else if (!hasStream) warning = I18n.t("PDF 内没有可解析的内容流");
+  return { ok: true, isPdf: true, parseable: !encrypted && hasStream, pages, encrypted, warning };
+}
+
+/* 完整解析：字节 → { ok, markdown, pages, formulas, warning } 或 { ok:false, error } */
+function pdfParseBuffer(buf) {
+  const head = buf.toString("latin1", 0, Math.min(buf.length, 8192));
+  if (!/%PDF-\d\.\d/.test(head)) {
+    return { ok: false, error: { code: "not_pdf", message: I18n.t("不是可解析的 PDF（缺少 %PDF- 文件头）") } };
+  }
+  const tail = buf.toString("latin1", Math.max(0, buf.length - 16384));
+  if (/\/Encrypt\b/.test(tail) || /\/Encrypt\b/.test(head)) {
+    return { ok: false, error: { code: "encrypted", message: I18n.t("PDF 已加密，无法解析文本") } };
+  }
+  const src = buf.toString("latin1");
+  const warnings = [];
+  const objs = pdfScanObjects(buf);
+  pdfExpandObjectStreams(objs, warnings);
+
+  const cmapCache = new Map();
+  let globalCmap = null;
+  let globalCmapSet = false;
+  const cmapForFont = (num) => {
+    if (cmapCache.has(num)) return cmapCache.get(num);
+    let info = null;
+    const o = objs.get(num);
+    if (o) {
+      const tu = String(o.dict || "").match(/\/ToUnicode\s+(\d+)\s+\d+\s+R/);
+      if (tu) {
+        const to = objs.get(Number(tu[1]));
+        if (to) {
+          const d = pdfObjData(to, warnings);
+          if (d) info = pdfParseToUnicode(d);
+        }
+      }
+    }
+    cmapCache.set(num, info);
+    if (info && !globalCmapSet) {
+      globalCmapSet = true;
+      globalCmap = info;
+    }
+    return info;
+  };
+  const fallbackCmap = () => {
+    if (!globalCmapSet) {
+      for (const o of Array.from(objs.values()).sort((a, b) => a.num - b.num)) {
+        if (/\/ToUnicode\s+\d+\s+\d+\s+R/.test(String(o.dict || ""))) {
+          cmapForFont(o.num);
+          break;
+        }
+      }
+    }
+    return globalCmap;
+  };
+
+  let pageItems = pdfCollectPages(objs, src).map((p) => ({
+    resText: p.resText,
+    contents: (() => {
+      const cm = String(p.o.dict || "").match(/\/Contents\s*(\[[\s\S]*?\]|\d+\s+\d+\s+R)/);
+      if (!cm) return [];
+      if (cm[1][0] === "[") return (cm[1].match(/(\d+)\s+\d+\s+R/g) || []).map((x) => Number(x.match(/(\d+)/)[1]));
+      return [Number(cm[1].match(/(\d+)/)[1])];
+    })(),
+  }));
+
+  if (!pageItems.length) {
+    /* 兜底：把含文本算子的内容流按对象号顺序当页处理 */
+    for (const o of Array.from(objs.values()).sort((a, b) => a.num - b.num)) {
+      if (!o.raw) continue;
+      const d = pdfObjData(o, warnings);
+      if (!d) continue;
+      const headText = d.toString("latin1", 0, Math.min(d.length, 200000));
+      if (/\bBT\b/.test(headText) && /\b(Tj|TJ)\b/.test(headText)) {
+        pageItems.push({ resText: "", contents: [o.num], direct: d });
+      }
+    }
+    if (!pageItems.length) {
+      return { ok: true, markdown: "", pages: 0, formulas: [], warning: I18n.t("未提取到文本层（可能是扫描件或图片版 PDF）") };
+    }
+  }
+
+  const pageTexts = [];
+  let emptyPages = 0;
+  for (const page of pageItems) {
+    const fontEntries = pdfFontEntries(objs, page.resText);
+    const resolver = (name) => (name && fontEntries.has(name) ? cmapForFont(fontEntries.get(name)) || fallbackCmap() : fallbackCmap());
+    let text;
+    if (page.direct) {
+      text = pdfContentToText(page.direct, resolver);
+    } else {
+      const parts = [];
+      for (const n of page.contents) {
+        const o = objs.get(n);
+        if (!o) continue;
+        const d = pdfObjData(o, warnings);
+        if (d) parts.push(d);
+      }
+      text = pdfContentToText(parts.length ? Buffer.concat(parts) : Buffer.alloc(0), resolver);
+    }
+    const clean = pdfCleanText(text);
+    if (!clean) emptyPages++;
+    pageTexts.push(clean);
+  }
+
+  const markdown = pageTexts.filter((t) => t).join("\n\n---\n\n").trim();
+  const formulas = pdfExtractFormulas(pageTexts);
+  if (emptyPages) warnings.push(I18n.t("{n} 页无可提取文本（可能是扫描件）").replace("{n}", String(emptyPages)));
+  if (!globalCmapSet) warnings.push(I18n.t("字体缺少 ToUnicode 映射，文本可能缺失或乱码"));
+  if (formulas.length) warnings.push(I18n.t("检测到 {n} 处疑似公式：PDF 公式多为排版图形，无法自动转为 LaTeX").replace("{n}", String(formulas.length)));
+  if (!markdown.trim() && !warnings.length) warnings.push(I18n.t("未提取到文本层（可能是扫描件或图片版 PDF）"));
+
+  return {
+    ok: true,
+    markdown,
+    pages: pageItems.length,
+    formulas,
+    warning: warnings.length ? warnings.join("；") : "",
+  };
+}
+
+/* pdf:probe：是否为可解析 PDF（轻量，不解压内容流） */
+ipcMain.handle("pdf:probe", (e, arg) => {
+  const r = pdfLoadBuffer(arg);
+  if (r.error) {
+    return { ok: false, isPdf: false, parseable: false, pages: 0, encrypted: false, warning: r.error.message, error: r.error };
+  }
+  try {
+    return pdfProbeBuffer(r.buf);
+  } catch (err) {
+    return { ok: false, isPdf: true, parseable: false, pages: 0, encrypted: false, warning: String((err && err.message) || err), error: { code: "corrupt", message: String((err && err.message) || err) } };
+  }
+});
+/* pdf:parse：路径 / 字节 → { ok, markdown, pages, formulas, warning }（只回传，不落盘） */
+ipcMain.handle("pdf:parse", (e, arg) => {
+  const r = pdfLoadBuffer(arg);
+  if (r.error) return { ok: false, error: r.error };
+  try {
+    return pdfParseBuffer(r.buf);
+  } catch (err) {
+    return { ok: false, error: { code: "parse_failed", message: String((err && err.message) || err) } };
+  }
+});
+/* pdf:writeText：文本 / Markdown → PDF 落盘（隐藏窗口 + printToPDF，含公式与分页排版，
+   内核见 pdf-write.js；渲染层由「PDF生成」节点经 preload.fileWritePdf 调用） */
+ipcMain.handle("pdf:writeText", async (e, arg) => {
+  try {
+    return await pdfWrite.writeTextPdf(arg || {});
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
 /* 目录列举（数据库节点编译索引）：递归返回文件 {name, rel, isDir, size, mtime}，跳过隐藏与重型目录 */
 ipcMain.handle("file:listDir", (e, p) => {
   try {
@@ -1644,8 +2434,73 @@ ipcMain.handle("proc:killAll", async () => {
    事件帧（log / progress / end）经 fn:event 推回发起的渲染进程。 */
 let fnRuntime = null;
 function fnRuntimeOf() {
-  if (!fnRuntime) fnRuntime = createFnRuntime({ appRoot: __dirname, procHost });
+  if (!fnRuntime)
+    fnRuntime = createFnRuntime({
+      appRoot: __dirname,
+      procHost,
+      /* 函数节点的「AI 调用」后端：mtnode.ai(...) 走这里真正发一次文本请求。
+         spec = { provider, model, prompt, system, temperature, effort, images, … }
+         （provider 是渲染层按节点「AI 调用」选定路由解析出的服务商配置，
+          含 baseUrl / apiKey / type；调用级显式传的 provider / model 只覆盖这一次）。 */
+      aiCall: (spec) => fnAiCall(spec),
+    });
   return fnRuntime;
+}
+/* 函数节点 jscode 里 mtnode.ai(...) 的执行体：只走文本 chat 通路，不落盘、不级联。
+   成功 → { ok:true, text, reasoning, provider, model }；失败 → { ok:false, error, … }（不抛）。 */
+async function fnAiCall(spec) {
+  const p = spec && typeof spec === "object" ? spec : {};
+  const prov = p.provider && typeof p.provider === "object" ? p.provider : null;
+  const model = String(p.model || "").trim();
+  const providerRoute = String(p.providerRoute || p.route || "").trim();
+  const out = { provider: prov ? prov.name || prov.id || "" : providerRoute, model };
+  if (!prov) {
+    out.ok = false;
+    out.error =
+      "mtnode.ai：本次运行的「AI 调用」没有可用的服务商配置 —— 请在节点「AI 调用」里重新选一次模型（或在 设置 · 模型服务 里确认该服务商已填 API Key）";
+    return out;
+  }
+  if (!model) {
+    out.ok = false;
+    out.error = "mtnode.ai：缺少模型（在节点「AI 调用」里选一个）";
+    return out;
+  }
+  const prompt = String(p.prompt == null ? "" : p.prompt);
+  const system = String(p.system == null ? "" : p.system).trim();
+  const chatMessages = [];
+  if (system) chatMessages.push({ role: "system", content: system });
+  chatMessages.push({ role: "user", content: prompt });
+  /* 「AI 调用」的思考档是 dsh 档位词汇（low/medium/high/xhigh/max），
+     文本 chat 通路只认 off/low/medium/high（见 app-canvas.js normalizeTextEffort）：
+     在这里收一次口，保证「选强 / 最强」时按高档下发而不是被丢弃。 */
+  const effortOf = (v) => {
+    const s = String(v || "").trim().toLowerCase();
+    if (s === "xhigh" || s === "max") return "high";
+    if (s === "low" || s === "medium" || s === "high" || s === "off") return s;
+    return "";
+  };
+  try {
+    const r = await apiCall({
+      provider: prov,
+      kind: "text",
+      model,
+      prompt,
+      chatMessages,
+      temperature:
+        p.temperature == null ? undefined : Number(p.temperature),
+      /* 思考强度：与文本节点同一套词汇（off / low / medium / high） */
+      effort: effortOf(p.effort) || undefined,
+      images: Array.isArray(p.images) ? p.images : undefined,
+    });
+    out.ok = r && r.ok !== false;
+    out.text = (r && r.text) || "";
+    if (!out.ok) out.error = (r && r.error) || "调用失败";
+    return out;
+  } catch (err) {
+    out.ok = false;
+    out.error = (err && err.message) || String(err);
+    return out;
+  }
 }
 ipcMain.handle("fn:run", async (e, o = {}) => {
   const runId = String((o && o.runId) || "");
@@ -2432,12 +3287,10 @@ ipcMain.handle("fact:deleteImages", (e, opts) => {
    只认绝对路径、非磁盘根，且目录必须长得像事实库（名为「团队事实库」或已登记进
    FACT_ASSET_DIRS），**且不在应用目录内**，防越权动任意文件、也防库落在会被升级覆盖的地方。
    注：旧口径里的 `facts/<id>/`（应用数据目录回退）已取消，不再算合法库目录。 */
-function factLibDirOf(file) {
-  const f = path.resolve(String(file || "").trim());
-  if (!f || f === path.parse(f).root) return "";
-  if (path.extname(f).toLowerCase() !== ".md") return "";
-  const dir = path.dirname(f);
-  if (!path.isAbsolute(dir) || dir === path.parse(dir).root) return "";
+function factLibDirGuard(dirRaw) {
+  const dir = path.resolve(String(dirRaw || "").trim());
+  if (!dir || dir === path.parse(dir).root) return "";
+  if (!path.isAbsolute(dir)) return "";
   if (isInsideAppDir(dir)) return "";
   const base = path.basename(dir);
   if (
@@ -2447,6 +3300,12 @@ function factLibDirOf(file) {
   )
     return dir;
   return "";
+}
+function factLibDirOf(file) {
+  const f = path.resolve(String(file || "").trim());
+  if (!f || f === path.parse(f).root) return "";
+  if (path.extname(f).toLowerCase() !== ".md") return "";
+  return factLibDirGuard(path.dirname(f));
 }
 
 /* 重命名单篇文档：只改这一篇的 <doc>.md 与 <doc>.review.json，库内其它文档与 assets/ 不动。 */
@@ -2477,42 +3336,52 @@ ipcMain.handle("fact:renameLibrary", (e, opts) => {
   }
 });
 
-/* 删单篇文档：只删这一篇的 md + sidecar；共享 assets/ 与空目录仅当库内再无其它文档时回收。 */
-ipcMain.handle("fact:removeLibrary", (e, opts) => {
+/* 删单篇文档 / 整库：**一律进系统回收站（shell.trashItem），不做物理删除**
+   （用户可在资源管理器里还原；不支持回收站的位置直接报错，绝不静默硬删）。
+   两种入参形态：
+     · { file }  —— 删这一篇的 md + sidecar；库内还有别的文档时只搬这两件，
+        删完就空了则把整个库目录（含共享 assets/）一起搬进回收站；
+     · { dir }   —— 删整库：整个「团队事实库」目录搬进回收站。
+   路径守卫见 factLibDirGuard / factLibDirOf（防越权动应用目录以外的任意文件）。 */
+ipcMain.handle("fact:removeLibrary", async (e, opts) => {
   try {
     const o = opts && typeof opts === "object" ? opts : {};
+    /* —— 整库删除 —— */
+    if (o.dir) {
+      const dir = factLibDirGuard(o.dir);
+      if (!dir) return { ok: false, error: I18n.t("非法路径") };
+      if (!fs.existsSync(dir)) return { ok: true, removed: [] };
+      await shell.trashItem(dir);
+      return { ok: true, removed: [dir] };
+    }
     const dir = factLibDirOf(o.file);
     if (!dir) return { ok: false, error: I18n.t("非法路径") };
-    const removed = [];
     const file = path.resolve(String(o.file));
-    if (fs.existsSync(file)) {
-      fs.unlinkSync(file);
-      removed.push(file);
-    }
     const rv = path.join(dir, path.basename(file, path.extname(file)) + ".review.json");
-    if (fs.existsSync(rv)) {
-      fs.unlinkSync(rv);
-      removed.push(rv);
-    }
-    /* 库内还有别的文档（.md / .review.json）→ 保留共享 assets/ 与目录，绝不误删。 */
+    /* 库内还有别的文档（.md / .review.json）→ 只搬这一篇，共享 assets/ 与其它文档原样保留。 */
     let others = [];
     try {
       others = fs.readdirSync(dir).filter((n) => {
         const low = String(n).toLowerCase();
-        return low.endsWith(".md") || low.endsWith(".review.json");
+        if (!(low.endsWith(".md") || low.endsWith(".review.json"))) return false;
+        const abs = path.join(dir, n);
+        return abs !== file && abs !== rv;
       });
     } catch {
       others = [];
     }
+    const targets = [];
     if (!others.length) {
-      const assets = path.join(dir, "assets");
-      if (fs.existsSync(assets) && fs.statSync(assets).isDirectory()) {
-        fs.rmSync(assets, { recursive: true, force: true });
-        removed.push(assets);
-      }
-      try {
-        if (!fs.readdirSync(dir).length) fs.rmdirSync(dir);
-      } catch {}
+      /* 最后一篇：整库（正文 / 批注 / assets）一起进回收站。 */
+      if (fs.existsSync(dir)) targets.push(dir);
+    } else {
+      if (fs.existsSync(file)) targets.push(file);
+      if (fs.existsSync(rv)) targets.push(rv);
+    }
+    const removed = [];
+    for (const t of targets) {
+      await shell.trashItem(t);
+      removed.push(t);
     }
     return { ok: true, removed };
   } catch (err) {
@@ -3714,8 +4583,8 @@ function apiBackgroundOf(v) {
     .toLowerCase();
   return GPT_IMAGE_BACKGROUNDS.includes(s) ? s : "";
 }
-/* 蒙版与原图必须同尺寸：走同一个 shrinkImageForApi 口径（同 maxDim、同源尺寸 ⇒ 同缩放比），
-   否则压过的原图配未压的蒙版会被接口判为尺寸不符。 */
+/* 蒙版路径校验（只认存在的文件）。蒙版与原图的尺寸归一不在这一步做：
+   下发前由 multipartParts 按 image[0] 的归一尺寸重采样 + 重编码 RGBA PNG（见 normalizeMaskRgba）。 */
 function apiMaskPathOf(v) {
   const s = String(v == null ? "" : v).trim();
   return s && fs.existsSync(s) ? s : "";
@@ -3751,14 +4620,179 @@ function apiSentImageDims(p, native) {
   const s = Math.min(maxDim / d.w, maxDim / d.h);
   return { w: Math.max(1, Math.round(d.w * s)), h: Math.max(1, Math.round(d.h * s)) };
 }
-/* 带蒙版时的 size：**必须等于蒙版 / 原图的像素尺寸**。
+/* ── 蒙版通路：下发前把 image[0] 与 mask 归一（像素 + RGBA PNG 口径）────────
+   接口侧两条硬口径：① 原图与蒙版必须同尺寸 —— 差 1 像素即报错或错位；
+   ② gpt-image-2 的 size / 输入图受「16 倍数、最长边 ≤3840、长宽比 ≤3:1、
+   总像素 655,360–8,294,400」约束，原图不达标时服务端会自己重排输入图，
+   蒙版按原图像素描出来的空间对应关系随之失效（表现为整张被重绘、蒙版形同没开）。
+   所以带蒙版时：先把 image[0] 归一成合法尺寸，再把蒙版按最近邻重采样到同尺寸，
+   两者一起重编码成 RGBA PNG 下发，size 再钉成归一后的像素（见 apiMaskSizeFor）。
+   ⚠ nativeImage 的 toBitmap / createFromBitmap 在同一平台上互为逆运算（Windows 两端
+   通道顺序一致）；蒙版语义只看 alpha 通道，通道序即便有差异也不影响「透明区=可编辑」。 */
+
+/* gpt-image-2 自定义尺寸约束内最接近 w×h 的档位：16 倍数 / 最长边 ≤3840 / 长宽比 ≤3:1 /
+   总像素 655,360–8,294,400。原图不达标时服务端会自己重排输入图，蒙版随之错位，
+   所以带蒙版时必须由我们把 image[0] 与 mask 一起改到某个合法尺寸。
+   做法是遍历所有合法的 16 倍数尺寸（每档长边 240 个候选），按「长宽比偏差权重远高于面积偏差」
+   挑最近的 —— 比先缩放再取整稳：取整会把已经贴边的长宽比顶出 3:1
+   （5000×1000 → 3024×1008 就是这种），直接被 gptImageSizeOk 判死。
+   找不到合法候选返回 null（调用方退回原尺寸 / auto，不硬改）。 */
+const gptMaskDimCache = new Map();
+function gptImageLegalDims(w, h) {
+  if (!(w > 0 && h > 0)) return null;
+  if (gptImageSizeOk(w, h)) return { w, h };
+  const key = w + "x" + h;
+  if (gptMaskDimCache.has(key)) return gptMaskDimCache.get(key);
+  const areaMin = 655360;
+  const areaMax = 8294400;
+  const maxSide = 3840;
+  const r16 = (v) => {
+    const n = Math.round(v / 16) * 16;
+    return n >= 16 ? n : 0;
+  };
+  const best = { cost: Infinity, dims: null };
+  const consider = (cw, ch) => {
+    if (!gptImageSizeOk(cw, ch)) return;
+    /* 长宽比偏差优先（×100），面积偏差只作同比例下的次级判据 */
+    const dw = Math.abs(Math.log(cw / ch / (w / h)));
+    const da = Math.abs(Math.log((cw * ch) / (w * h)));
+    const cost = dw * 100 + da;
+    if (cost < best.cost) {
+      best.cost = cost;
+      best.dims = { w: cw, h: ch };
+    }
+  };
+  for (let cw = 16; cw <= maxSide; cw += 16) {
+    /* 保持原图长宽比的候选；w*1.1892≈w*2^0.25 是「往上对齐一档」的补偿 */
+    for (const target of [w, w * 1.1892]) {
+      const ch = r16((cw * h) / target);
+      if (ch && ch <= maxSide) consider(cw, ch);
+    }
+    /* 贴着 3:1 与总像素上下限的候选：极端宽高比时唯一能命中的就是这几档 */
+    const hRatio = r16(cw / 3);
+    if (hRatio) consider(cw, hRatio);
+    const hAreaMin = r16(areaMin / cw);
+    if (hAreaMin) consider(cw, hAreaMin);
+    const hAreaMax = r16(areaMax / cw);
+    if (hAreaMax) consider(cw, hAreaMax);
+  }
+  const dims = best.dims || null;
+  gptMaskDimCache.set(key, dims);
+  return dims;
+}
+
+/* 带蒙版时 image[0] 的**下发尺寸**：始终先算归一尺寸（读不出尺寸退回 null）。 */
+function apiSentImageDimsMask(p) {
+  const d = imagePixelDims(p);
+  if (!d) return null;
+  return gptImageLegalDims(d.w, d.h) || d;
+}
+
+/* 蒙版最近邻重采样到 tw×th。官方要求原图与蒙版同尺寸（差 1 像素即报错 / 错位）：
+   蒙版是「透明 / 不透明」二值语义，这里一律最近邻（不做插值，避免边界被糊成半透明）。 */
+function nearestResizeRgba(src, sw, sh, tw, th) {
+  const out = Buffer.alloc(tw * th * 4);
+  const st = sw * 4;
+  const dt = tw * 4;
+  for (let y = 0; y < th; y++) {
+    const sy = Math.min(sh - 1, Math.floor((y * sh) / th));
+    for (let x = 0; x < tw; x++) {
+      const sx = Math.min(sw - 1, Math.floor((x * sw) / tw));
+      out[dt * y + x * 4] = src[st * sy + sx * 4];
+      out[dt * y + x * 4 + 1] = src[st * sy + sx * 4 + 1];
+      out[dt * y + x * 4 + 2] = src[st * sy + sx * 4 + 2];
+      out[dt * y + x * 4 + 3] = src[st * sy + sx * 4 + 3];
+    }
+  }
+  return out;
+}
+
+/* 归一后的 image[0] 字节：解码 →（必要时最近邻缩到 w×h）→ 重编码 RGBA PNG。
+   源图本来就是同尺寸 PNG 时返回 null（无需重编码，直接原样下发）。 */
+function normalizeImageRgba(srcPath, w, h) {
+  const d = imagePixelDims(srcPath);
+  if (!d) return null;
+  if (d.w === w && d.h === h && /\.png$/i.test(String(srcPath))) return null;
+  let raw;
+  try {
+    raw = fs.readFileSync(srcPath);
+  } catch {
+    return null;
+  }
+  let img;
+  try {
+    img = nativeImage.createFromBuffer(raw);
+  } catch {
+    return null;
+  }
+  if (!img || img.isEmpty()) return null;
+  let bmp;
+  try {
+    bmp = img.toBitmap();
+  } catch {
+    return null;
+  }
+  if (!bmp || bmp.length !== d.w * d.h * 4) return null;
+  if (d.w !== w || d.h !== h) bmp = nearestResizeRgba(bmp, d.w, d.h, w, h);
+  try {
+    const out = nativeImage.createFromBitmap(bmp, { width: w, height: h }).toPNG();
+    return out && out.length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/* 归一后的蒙版字节：与 image[0] 的归一尺寸 w×h 同一份口径（尺寸不等按最近邻重采样），
+   重编码 RGBA PNG。解不开 / 尺寸对不上返回 null（调用方回退，不静默产错图）。 */
+function normalizeMaskRgba(srcPath, w, h) {
+  let raw;
+  try {
+    raw = fs.readFileSync(srcPath);
+  } catch {
+    return null;
+  }
+  let img;
+  try {
+    img = nativeImage.createFromBuffer(raw);
+  } catch {
+    return null;
+  }
+  if (!img || img.isEmpty()) return null;
+  const sz = img.getSize();
+  const sw = sz.width || 0;
+  const sh = sz.height || 0;
+  if (!(sw > 0 && sh > 0)) return null;
+  let bmp;
+  try {
+    bmp = img.toBitmap();
+  } catch {
+    return null;
+  }
+  if (!bmp || bmp.length !== sw * sh * 4) return null;
+  if (sw !== w || sh !== h) bmp = nearestResizeRgba(bmp, sw, sh, w, h);
+  try {
+    const out = nativeImage.createFromBitmap(bmp, { width: w, height: h }).toPNG();
+    return out && out.length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/* 带蒙版时的 size：**必须等于归一后 image[0] 的像素尺寸**。
    服务端是按 size 出图的：size 一旦与原图像素不同，它会先把输入图重排缩放再编辑，
    蒙版按原图像素画出来的空间对应关系就失效了 —— 实测表现为整张主体被重绘、蒙版形同没开
    （原图 1280×848 + 蒙版 1280×848 + size=1280x544：蒙版内/外主体的改动量一样大）。
-   命中自定义尺寸约束就按原图像素原样出图；命中不了（或读不出尺寸）退回 auto，
-   让接口按输入图决定画幅，宁可不要「非等比铺满」也比蒙版错位强。 */
+   归一尺寸本身就是合法尺寸（见 gptImageLegalDims），所以这里不再退回 auto：
+   宁可不要「非等比铺满」，也不要蒙版错位。读不出尺寸（null）才退回 auto。 */
 function apiMaskSizeFor(p) {
-  const d = apiSentImageDims(p, true);
+  let path = "";
+  try {
+    path = p && typeof p === "object" ? String(p.path || "") : String(p == null ? "" : p);
+  } catch {
+    path = "";
+  }
+  if (!path) return "auto";
+  const d = apiSentImageDimsMask(path);
   if (!d) return "auto";
   return gptImageSizeOk(d.w, d.h) ? d.w + "x" + d.h : "auto";
 }
@@ -3781,6 +4815,7 @@ function buildRequestSpec(
   effort,
   matteAnchor,
   imgOpts,
+  maxTokens,
 ) {
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const auth = {
@@ -3819,6 +4854,12 @@ function buildRequestSpec(
       messages,
       temperature: temperature == null ? 0.7 : temperature,
     };
+    /* 可选输出上限（翻译等长文改写请求用）：只在调用方显式给值时下发，
+       且夹在合理区间，避免小值把译文截半句、大值把费用顶飞。 */
+    const cap = Number(maxTokens);
+    if (Number.isFinite(cap) && cap > 0) {
+      body.max_tokens = Math.max(256, Math.min(32768, Math.round(cap)));
+    }
     /* DeepSeek V4：thinking 默认开启，附带 reasoning_effort */
     applyTextThinkingEffort(body, effort);
     return {
@@ -3843,10 +4884,17 @@ function buildRequestSpec(
     const quality = apiQualityOf(imgOpts && imgOpts.quality);
     const background = apiBackgroundOf(imgOpts && imgOpts.background);
     /* 蒙版局部重绘：必须先有原图（mask 只对第一张 image 生效） */
-    const mask =
+    const maskPath =
       images && images.length ? apiMaskPathOf(imgOpts && imgOpts.maskPath) : "";
-    /* 带蒙版：size 跟着蒙版 / 原图的像素尺寸走，否则服务端重排输入图会让蒙版错位（见 apiMaskSizeFor） */
-    if (mask) sz = apiMaskSizeFor(images[0]);
+    /* 带蒙版：先把 image[0] 与 mask 归一（合法尺寸 + RGBA PNG），size 钉成归一后的像素，
+       否则服务端会重排输入图，蒙版错位（见 gptImageLegalDims / apiMaskSizeFor） */
+    let mask = "";
+    if (maskPath) {
+      sz = apiMaskSizeFor(maskPath);
+      /* mask 在 multipart 里以对象下发（path = 蒙版文件，base = 第 1 张图）：
+         multipartParts 据此把两者一起归一，保证「预览 = 真正下发」 */
+      mask = { path: maskPath, base: images[0] };
+    }
     if (images && images.length) {
       /* 带参考图：/images/edits multipart，多图按顺序 = prompt 中的图1/图2/… */
       const form = {
@@ -3930,9 +4978,16 @@ function bufferPixelDims(buf) {
 /* multipart 表单 → 逐字段的分片列表。**sendMultipart（真正发请求）与 api:preview（请求预览）
    共用同一份实现**：预览里看到的就是真正下发的输入 —— 同一字段顺序、同一文件名、同一份字节。
    每片：{ name, buf, filename, path }（文件字段）或 { name, value }（普通字段）。
-   soft=true（预览用）：文件读不出时不抛错，退化成 { name, path, error }，别让整个预览报错。 */
+   soft=true（预览用）：文件读不出时不抛错，退化成 { name, path, error }，别让整个预览报错。
+   带蒙版（form.mask 是对象 { path, base }）时走蒙版分支：image[0] 与 mask 一起归一
+   （同尺寸 + RGBA PNG），保证接口要求的「原图与蒙版同尺寸」不靠运气。 */
 function multipartParts(form, nativeRefImage, soft) {
   const parts = [];
+  const maskOpt =
+    form && form.mask && typeof form.mask === "object" ? form.mask : null;
+  const maskPaths = new Set();
+  if (maskOpt && maskOpt.path) maskPaths.add(String(maskOpt.path));
+  if (maskOpt && maskOpt.base) maskPaths.add(String(maskOpt.base));
   const readFile = (p) => {
     try {
       return shrinkImageForApi(p, nativeRefImage);
@@ -3941,11 +4996,38 @@ function multipartParts(form, nativeRefImage, soft) {
       return { error: e && e.message ? e.message : String(e) };
     }
   };
+  /* 蒙版通路下「第 1 张图」的归一字节：尺寸 = 与 size 同一份口径（apiSentImageDimsMask），
+     字节 = RGBA PNG。归一失败（解不开 / 尺寸读不出）返回 null，调用方退回原有缩放口径，
+     绝不静默产错图。 */
+  const imageNormOf = (p) => {
+    const d = apiSentImageDimsMask(p);
+    if (!d || !(d.w > 0 && d.h > 0)) return null;
+    const buf = normalizeImageRgba(p, d.w, d.h);
+    return buf ? { buf, w: d.w, h: d.h } : null;
+  };
   for (const [k, v] of Object.entries(form || {})) {
     if (Array.isArray(v)) {
       let i = 1;
+      let baseImage = null;
+      let baseNormErr = "";
       for (const p of v) {
         if (!p) continue;
+        /* 第 1 张图在蒙版通路下归一：尺寸与 size 同源，且与下面的 mask 同尺寸 */
+        if (i === 1 && maskPaths.has(String(p))) {
+          const n = imageNormOf(p);
+          if (n) {
+            parts.push({
+              name: k,
+              buf: n.buf,
+              filename: "ref" + i + ".png",
+              path: String(p),
+            });
+            baseImage = { w: n.w, h: n.h };
+            i++;
+            continue;
+          }
+          baseNormErr = I18n.t("蒙版归一失败：无法解码第 1 张参考图");
+        }
         const r = readFile(p);
         if (r.error) parts.push({ name: k, path: String(p), error: r.error });
         else
@@ -3957,6 +5039,43 @@ function multipartParts(form, nativeRefImage, soft) {
           });
         i++;
       }
+      if (baseImage) form.__maskBaseDims = baseImage;
+      if (baseNormErr) {
+        if (!soft) throw new Error(baseNormErr);
+        parts.push({
+          name: k,
+          path: String((form.image && form.image[0]) || ""),
+          error: baseNormErr,
+        });
+      }
+      continue;
+    }
+    if (k === "mask" && maskOpt) {
+      /* 蒙版：按 base 的归一尺寸最近邻重采样 + 重编码 RGBA PNG，与 image[0] 严格同尺寸 */
+      const bd = form.__maskBaseDims || null;
+      let buf = null;
+      let err = "";
+      if (!bd) {
+        err = I18n.t("蒙版归一失败：读不出第 1 张图的尺寸");
+      } else {
+        try {
+          buf = normalizeMaskRgba(maskOpt.path, bd.w, bd.h);
+        } catch {
+          buf = null;
+        }
+        if (!buf) err = I18n.t("蒙版归一失败：无法解码蒙版或尺寸不匹配");
+      }
+      if (err) {
+        if (!soft) throw new Error(err);
+        parts.push({ name: k, path: String(maskOpt.path), error: err });
+      }
+      else
+        parts.push({
+          name: k,
+          buf,
+          filename: "mask.png",
+          path: String(maskOpt.path),
+        });
       continue;
     }
     if ((k === "image" || k === "mask") && typeof v === "string" && v) {
@@ -4403,6 +5522,9 @@ ipcMain.handle("api:callStream", async (e, spec) => {
       spec.size,
       spec.chatMessages,
       spec.effort,
+      undefined,
+      undefined,
+      spec.maxTokens,
     );
     if (spec.abKey) req.abKey = spec.abKey;
     const { text, reasoning } = await streamTextChat(req, emit);
@@ -4621,50 +5743,103 @@ ipcMain.handle("forum:setAuth", () => {
   /* 兼容旧调用：会话不再写 config.json（避免两份 token 打架），登录态走 auth:* 通道。 */
   return { ok: true, deprecated: true };
 });
+/* 论坛本地缓存结构：{ topics:[仅元数据], details:{[topicId]:{...}}, ui:{status,sort,q,lastReadAt} }。
+   旧版三房间（rooms{general,bug,improve}）文件视为过期缓存，读到即忽略并覆盖为新结构。 */
+const FORUM_TOPICS_MAX = 500;
+const FORUM_DETAILS_MAX = 200;
+const FORUM_TEXT_MAX = 20000;
+const FORUM_IMG_CACHE_MAX = 200;
+const FORUM_META_TEXT_MAX = 300;
+const FORUM_BODY_KEYS = ["text", "body", "content", "html", "messages", "posts", "replies"];
+
+function forumLocalDefault() {
+  return { topics: [], details: {}, ui: { status: "", sort: "", q: "", lastReadAt: 0 } };
+}
+function forumTopicMeta(t) {
+  if (!t || typeof t !== "object") return null;
+  const id = String(t.id || t.topicId || "");
+  if (!id) return null;
+  const meta = { id };
+  for (const k of Object.keys(t)) {
+    if (k === "id" || FORUM_BODY_KEYS.includes(k)) continue;
+    const v = t[k];
+    if (v === undefined || typeof v === "function") continue;
+    meta[k] = typeof v === "string" ? v.slice(0, FORUM_META_TEXT_MAX) : v;
+  }
+  return meta;
+}
+function forumDetailObj(d) {
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  try {
+    const out = JSON.parse(JSON.stringify(d, (k, v) =>
+      typeof v === "string" && v.length > FORUM_TEXT_MAX ? v.slice(0, FORUM_TEXT_MAX) : v));
+    return out && typeof out === "object" && !Array.isArray(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+function forumNormalizeLocal(data) {
+  const out = forumLocalDefault();
+  const src = data && typeof data === "object" ? data : {};
+  const topics = Array.isArray(src.topics) ? src.topics : [];
+  out.topics = topics.map(forumTopicMeta).filter(Boolean).slice(0, FORUM_TOPICS_MAX);
+  const details = src.details && typeof src.details === "object" ? src.details : {};
+  for (const key of Object.keys(details)) {
+    const d = forumDetailObj(details[key]);
+    if (d) out.details[String(key)] = d;
+  }
+  const ui = src.ui && typeof src.ui === "object" ? src.ui : {};
+  out.ui = {
+    status: String(ui.status || "").slice(0, 32),
+    sort: String(ui.sort || "").slice(0, 32),
+    q: String(ui.q || "").slice(0, 200),
+    lastReadAt: Number(ui.lastReadAt || 0) || 0,
+  };
+  return out;
+}
+function forumPruneImageCache() {
+  /* 图片缓存按 imageId 存 forum/img/*.jpg；只保留最近 FORUM_IMG_CACHE_MAX 张（按 mtime） */
+  try {
+    const dir = join(forumDir(), "img");
+    if (!fs.existsSync(dir)) return;
+    const files = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.jpg$/i.test(name)) continue;
+      const fp = join(dir, name);
+      let mtime = 0;
+      try { mtime = fs.statSync(fp).mtimeMs || 0; } catch {}
+      files.push({ fp, mtime });
+    }
+    if (files.length <= FORUM_IMG_CACHE_MAX) return;
+    files.sort((a, b) => b.mtime - a.mtime);
+    for (const f of files.slice(FORUM_IMG_CACHE_MAX)) {
+      try { fs.unlinkSync(f.fp); } catch {}
+    }
+  } catch {}
+}
 ipcMain.handle("forum:localLoad", () => {
   try {
-    const data = readJson(forumLocalPath(), { rooms: { general: [], bug: [], improve: [] } });
-    const rooms = (data && data.rooms) || {};
-    const lastRead = (data && data.lastRead) || {};
-    const out = {
-      rooms: { general: [], bug: [], improve: [] },
-      lastRead: { general: 0, bug: 0, improve: 0 },
-    };
-    for (const key of ["general", "bug", "improve"]) {
-      const arr = Array.isArray(rooms[key]) ? rooms[key] : [];
-      out.rooms[key] = arr.slice(-500);
-      out.lastRead[key] = Number(lastRead[key] || 0) || 0;
+    const p = forumLocalPath();
+    const data = readJson(p, null);
+    /* 旧结构（带 rooms）或损坏文件：忽略内容并覆盖为新结构 */
+    const isCurrent = data && typeof data === "object" && Array.isArray(data.topics) && !data.rooms;
+    if (!isCurrent) {
+      const empty = forumLocalDefault();
+      try { writeJson(p, empty); } catch {}
+      return { ok: true, data: empty };
     }
-    return { ok: true, data: out };
+    return { ok: true, data: forumNormalizeLocal(data) };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
 ipcMain.handle("forum:localSave", (e, data) => {
   try {
-    const rooms = (data && data.rooms) || {};
-    const lastRead = (data && data.lastRead) || {};
-    const clean = {
-      rooms: { general: [], bug: [], improve: [] },
-      lastRead: { general: 0, bug: 0, improve: 0 },
-    };
-    for (const key of ["general", "bug", "improve"]) {
-      const arr = Array.isArray(rooms[key]) ? rooms[key] : [];
-      clean.rooms[key] = arr.slice(-500).map((m) => ({
-        id: String((m && m.id) || ""),
-        room: key,
-        text: String((m && m.text) || "").slice(0, 2000),
-        imageId: String((m && m.imageId) || ""),
-        createdAt: Number((m && m.createdAt) || 0) || 0,
-        user: m && m.user
-          ? {
-              id: String(m.user.id || ""),
-              username: String(m.user.username || "").slice(0, 32),
-              nickname: String(m.user.nickname || "").slice(0, 32),
-            }
-          : { id: "", username: "", nickname: "" },
-      })).filter((m) => m.id);
-      clean.lastRead[key] = Number(lastRead[key] || 0) || 0;
+    const clean = forumNormalizeLocal(data);
+    const ids = Object.keys(clean.details);
+    if (ids.length > FORUM_DETAILS_MAX) {
+      const keep = new Set(ids.slice(-FORUM_DETAILS_MAX));
+      for (const k of ids) if (!keep.has(k)) delete clean.details[k];
     }
     writeJson(forumLocalPath(), clean);
     return { ok: true };
@@ -4678,6 +5853,7 @@ ipcMain.handle("forum:cacheImage", (e, opts) => {
     const b64 = String((opts && opts.base64) || "");
     if (!id || !b64) return { ok: false };
     fs.writeFileSync(forumCachePath(id), Buffer.from(b64, "base64"));
+    forumPruneImageCache();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
@@ -4829,6 +6005,13 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
+  /* 本地语音转写后端：静默起停、随 MTNode 退出而结束（见 asr/main-asr.js 头部注释） */
+  registerAsrIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+  });
   /* 回滚存储：内容寻址对象 + 轮次账本 + GC（渲染层无 fs，字节读写只走这里） */
   registerRollbackIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 工具库：跨画布可复用工具包（<数据目录>/tools/*.json 完整工具包落盘） */
@@ -4858,6 +6041,8 @@ app.on("before-quit", () => {
   try { shutdownLlamaUiOnly(); } catch {}
   try { shutdownTtsUiOnly(); } catch {}
   try { shutdownRemotionUiOnly(); } catch {}
+  /* 语音转写后端随 MTNode 退出而结束（与上面几个「故意不杀」的后端不同） */
+  try { shutdownAsr(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }
@@ -4867,6 +6052,8 @@ app.on("will-quit", () => {
   /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程 */
   try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
   try { procHost.killAll().catch(() => {}); } catch {}
+  /* 语音转写后端再收一次（before-quit 的结束是异步的，这里兜底） */
+  try { shutdownAsr(); } catch {}
 });
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

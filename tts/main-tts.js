@@ -16,6 +16,7 @@ const {
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
+const crypto = require("crypto");
 const { spawn, execFile } = require("child_process");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const { mergeManagedProvider } = require("../config-providers.js");
@@ -182,6 +183,50 @@ function syncPackToInstall(installDir) {
   const root = String(installDir || "").trim();
   if (!root || !fs.existsSync(pack)) return;
   copyDirRecursive(pack, root, [".venv", "engine", "voices"]);
+}
+
+/* ---- 插件代码指纹：随 MTNode 升级，tts-pack/app/*.py 会变，但**已在运行的管理服务
+   仍是旧代码**（detached 进程，跨 MTNode 重启存活）。不识别这种情况，用户升级后
+   照旧带着旧 bug 跑（画布语音节点 400 就是靠改 app/tts.py 修的）。这里按
+   「app/** + manifest.json」算一枚指纹，部署成功后落盘，下次 startBackend 比对。 ---- */
+function deployedCodePath() {
+  return join(ttsRoot(), "deployed-code.json");
+}
+function packFingerprint() {
+  try {
+    const pack = bundledPackRoot();
+    const rels = [];
+    const walk = (dir, rel) => {
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (ent.name === "__pycache__" || ent.name === ".venv") continue;
+        const r = rel ? rel + "/" + ent.name : ent.name;
+        if (ent.isDirectory()) walk(join(dir, ent.name), r);
+        else rels.push(r);
+      }
+    };
+    walk(join(pack, "app"), "app");
+    if (fs.existsSync(join(pack, "manifest.json"))) rels.push("manifest.json");
+    if (!rels.length) return "";
+    const h = crypto.createHash("sha1");
+    for (const r of rels.sort()) {
+      h.update(r);
+      h.update(fs.readFileSync(join(pack, r.split("/").join(path.sep))));
+    }
+    return h.digest("hex");
+  } catch {
+    return "";
+  }
+}
+function saveDeployedCode(fp) {
+  if (!fp) return;
+  try {
+    writeJson(deployedCodePath(), { code: fp, at: Date.now() });
+  } catch {}
+}
+/* 有训练任务在跑时绝不重启后端（训练是按小时算的）：宁可在控制台留一句待办提示。 */
+function trainingBusyFromStatus(st) {
+  const ps = (st && st.projects) || [];
+  return ps.some((p) => p && p.running);
 }
 
 function appendConsole(line) {
@@ -618,15 +663,37 @@ async function startBackend() {
   if (!sig.ready) return { ok: false, error: "not_installed" };
 
   const port = Number(cfg.port) || DEFAULT_PORT;
+  /* 指纹要在 syncPackToInstall 之前算（sync 会把新代码盖到安装目录，之后就分不出新旧了） */
+  const packFp = packFingerprint();
+  const deployedFp = String((readJson(deployedCodePath(), {}) || {}).code || "");
   if (await probeApi(port)) {
     syncPackToInstall(installDir);
-    const livePid = await findListeningPid(port);
-    if (livePid) savePidMeta({ pid: livePid, port, startedAt: Date.now(), installDir, reused: true });
-    appendConsole("manager already up on :" + port + (livePid ? (" pid=" + livePid) : ""));
-    spawnTrayProcess();
-    saveConfig({ wantRunning: true });
-    startProviderSync();
-    return { ok: true, reused: true, port, pid: livePid || undefined };
+    /* 管理服务在跑但代码不是这一版的：空闲就重启换成新代码，训练中留提示等下一轮。
+       没有指纹（首次带本机制的版本）也按「可能是旧的」处理 —— 顶多多重启一次。 */
+    let codeSynced = !packFp || deployedFp === packFp;
+    if (!codeSynced) {
+      const st0 = await fetchApiStatus();
+      if (trainingBusyFromStatus(st0)) {
+        appendConsole(
+          "[pack] 插件代码已更新，但有训练任务在跑：本次不重启后端；训练结束后请「关闭控制台 / 停止后端 → 开始」以启用新代码",
+        );
+      } else {
+        appendConsole("[pack] 插件代码已更新，重启后端以启用（" + (deployedFp || "首次") + " → " + packFp.slice(0, 8) + "）");
+        const stopped = await stopBackend();
+        codeSynced = !!(stopped && stopped.stopped);
+      }
+    }
+    /* 重启后（或本来就在跑）仍然在线 → 走「复用」分支 */
+    if (await probeApi(port)) {
+      const livePid = await findListeningPid(port);
+      if (livePid) savePidMeta({ pid: livePid, port, startedAt: Date.now(), installDir, reused: true });
+      if (codeSynced && packFp) saveDeployedCode(packFp);
+      appendConsole("manager already up on :" + port + (livePid ? (" pid=" + livePid) : ""));
+      spawnTrayProcess();
+      saveConfig({ wantRunning: true });
+      startProviderSync();
+      return { ok: true, reused: true, port, pid: livePid || undefined };
+    }
   }
 
   const meta = loadPidMeta();
@@ -677,6 +744,7 @@ async function startBackend() {
   while (Date.now() < deadline) {
     if (await probeApi(port)) {
       appendConsole("manager ready :" + port);
+      saveDeployedCode(packFp);
       spawnTrayProcess();
       startProviderSync();
       return { ok: true, pid: child.pid, port };

@@ -2,7 +2,7 @@
 
 An **asset** is one folder in the **asset library** — a bundle of text / image / audio / video content kept on this machine, outside of any canvas. On the canvas, **one content item = one pair of ports**: wire into the left port to write that item, read the right port to get it.
 
-Content lives in the library, the node only holds the *binding* — so **editing content edits the library copy** (every canvas referencing it follows), and **deleting the canvas or the node never loses the content**.
+Content lives in the library, the node only holds the *binding* — so **editing content edits the library copy** (every canvas referencing it follows), and **deleting the canvas or the node never loses the content**. Wiring a wire into a port **never writes the library by itself**: to write back, click **Overwrite** on the item and confirm the second prompt (below).
 
 Create: right-click an empty canvas → **Input nodes** → **Asset node (binds the library · content items are the ports)**; or open the top-bar **Asset library** and click **Insert into canvas** on an asset card.
 
@@ -11,7 +11,7 @@ Create: right-click an empty canvas → **Input nodes** → **Asset node (binds 
 | State | When | What the node offers |
 |-------|------|----------------------|
 | **Not bound** | a freshly created shell | “Bind…” reference an asset already in the library · “Upload…” take a local folder into the library and bind it · “Open asset library” |
-| **Bound** | bound and found in the library | browse each item, edit in place, ⟳ sync (below) |
+| **Bound** | bound and found in the library | browse each item, edit in place, click **Overwrite** to write it back, ⚙ settings |
 | **Asset out of reach** | the asset was deleted in the library, or the **library root folder changed** | ports and wires are **kept exactly as they were** (nothing cleared, no wire renumbering): “Rebind…”, “Rescan”, “Open asset library”. Restore the folder or switch the root back and it reconnects |
 
 **The app never deletes your node on its own** — “out of reach” only pauses display and reads/writes.
@@ -46,13 +46,16 @@ The body lists items **in order, one row each** (title + type chip + content vie
 - Every row has “Show in folder” to jump straight to the physical file.
 - No items yet: the “Settings…” button in the body opens the dialog where you add some.
 
-## ⟳ Sync: store canvas output back into the library
+## Overwrite: wiring in never writes the library
 
-Wire some node’s output into an item’s **input port** and that item becomes “produced by this canvas”:
+Wire some node’s output into an item’s **input port** and all it does is tell the app *what content this port now carries*. Both cases are a **hint only** — nothing is written automatically:
 
-1. The library item **has no content yet** → running this step **writes it into the library automatically** (a toast reports how many; Ctrl+Z undoes it).
-2. The item **already has content** that **differs** from what’s wired in → the **⟳ lights up** next to that item’s title, and **only a click replaces it**. No click, nothing changes (one accidental run can’t wipe a picture you kept for weeks).
-3. What’s wired in is **byte-identical** to the library copy → no light, no re-write (running the same wire repeatedly never touches the library).
+1. The library item **has no content yet** → that item’s **Overwrite** button lights up (there is something that could be written here); **running the step does not write it**, the library item stays empty until you click **Overwrite** and confirm.
+2. The item **already has content** that **differs** from what’s wired in → the **Overwrite** button lights up (byte-wise comparison in the main process).
+
+Once lit, click **Overwrite** on the item → a second confirmation appears (naming the item, noting the previous copy goes to history and Ctrl+Z undoes it) → only then is the library written. **Cancelling changes nothing** — no write, no undo entry.
+
+In other words: **a wire never touches the library copy**. Writing back has exactly two entry points — edit in place (committed on blur), or click **Overwrite** and confirm. One accidental run can’t wipe a picture you kept for weeks.
 
 “Same or not” is decided **byte-wise in the main process**, never by path — the canvas copy and the library copy always have different paths.
 
@@ -79,7 +82,7 @@ Click **⚙** in the node header (or right-click → Settings) to open **Asset s
 
 - Top-bar **Asset library**: categories on the left (= folders; “＋ New folder”, right-click to rename / delete / open in Explorer), asset cards on the right (**Settings · Insert into canvas · Delete · right-click Move to category**), toolbar **New asset · Upload as new asset · Reload**, and the root folder shown in the header with **Change root…**.
 - The first time you use it you must **pick the asset-library root (project folder)**. Changing it afterwards is not recommended: a new root **triggers a rescan**, assets missing from the new folder become “out of reach” nodes that need a manual rebind (nothing in the old folder is deleted — switch back and they are recognised again).
-- Nothing is ever really deleted: categories, assets and content files move into `<root>/.trash/` and can be restored in Explorer.
+- Nothing is ever really deleted: categories, assets and content files move into `<root>/.trash/` and can be restored in Explorer. **A category deletes whether or not it is empty**: right-clicking it removes the whole folder (subcategories, assets and any files you dropped in go to the recycle bin together), and the confirmation first counts the assets, content items and subcategories inside — nodes referencing them become “asset out of reach”, with nodes and wires kept.
 - An asset is simply a folder carrying the `.mtnode-asset.json` marker — you may tidy categories in Explorer directly (just keep the marker file, don’t rename it).
 
 ## Referencing asset content in a prompt
@@ -106,10 +109,10 @@ Click **⚙** in the node header (or right-click → Settings) to open **Asset s
 |---|---|
 | “The asset library has no save location yet” | Top bar **Asset library** → follow the prompt and pick a root folder |
 | Node shows **asset out of reach** | The asset was deleted in the library or the root changed: restore the folder / switch back and hit **Rescan**, or **Rebind…** to another asset |
-| **⟳ never lights up** | What is wired in is byte-identical to the library copy, or the library item is empty (it auto-syncs when you run), or that port has no wire right now |
+| **Overwrite never lights up** | What is wired in is byte-identical to the library copy, or that port has no wire right now. An empty library item does **not** auto-sync — as soon as the port carries content that differs from the library, **Overwrite** lights up |
 | A connection is refused (“accepts only ×× sources”) | Port type ≠ source type: connect a source of the same kind, or swap in a matching content item in Settings |
 | `@` in a processing node does not offer the asset | The `@` list only shows **connected** sources: wire a content port of that asset into the node first (or feed it into a global node with global references on) |
-| The content is missing from 【背景信息】 | The library item is not readable yet: the node shows “asset out of reach”, the item is empty, or the text you are typing has not been committed (leave the field, or press ⟳) |
+| The content is missing from 【背景信息】 | The library item is not readable yet: the node shows “asset out of reach”, the item is empty, or the text you are typing has not been committed (leave the field, or click **Overwrite** and confirm) |
 | Undo did not restore the library file | That write could not park its previous copy in `.versions` (file locked, …); fetch it from that asset’s `.versions` folder by hand |
 
 ## Related reading

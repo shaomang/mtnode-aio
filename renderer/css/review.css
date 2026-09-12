@@ -402,3 +402,176 @@
 }
 .rv-note-btns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
 .rv-note-btns .rv-btn { font-size: 11px; padding: 2px 8px; }
+
+/* ===== LaTeX 公式排版（renderer/math-render.js 渲染） =====
+   两条路径共用同一包裹层 .rv-math：
+   - KaTeX 路径（katex.min.css 自带 .katex / .katex-display 全套排版）：这里只保留包裹层
+     规则——颜色跟随 currentColor（暗色主题下不反色错乱）、显示公式块级居中 + 超宽横向滚动
+     （长公式可滚动，不撑破节点卡）。字号 / margin / 上下标位置一律交给 KaTeX 自己的样式表，
+     本文件不再叠加，免得重复 margin、字号与上下标错位。
+   - 回退路径（自研 CSS 字形，renderer 在根节点上加 .rv-legacy）：下方
+     `.rv-math.rv-legacy .rv-m*` 系列规则只在回退结果上生效。
+   LaTeX 原文在 data-rv-tex 上，序列化回 Markdown 由 app-review.js 还原
+   （见 inlineToMd / walkBlocks）。 */
+.rv-math { color: inherit; }               /* 字形跟随主题文本色（两条路径共用） */
+.rv-math .katex { color: inherit; }        /* KaTeX 路径：暗色主题不反色、不写死黑字 */
+.rv-math-display {                         /* 显示公式：独占一行居中，超宽横向滚动 */
+  display: block;
+  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+/* ── 回退路径：自研字形排版，只在 .rv-legacy 上生效 ─────────────────────── */
+.rv-math.rv-legacy {
+  display: inline-block;
+  vertical-align: baseline;
+  line-height: 1.18;
+  white-space: nowrap;
+  font-family: "Cambria Math", "Latin Modern Math", "STIX Two Math", Cambria, Georgia, "Times New Roman", serif;
+}
+.rv-math.rv-legacy.rv-math-display {
+  display: block;
+  margin: .55em 0;
+  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.review-editor .rv-math, .rv-preview .rv-math { cursor: default; }
+.review-editor .rv-math[contenteditable="false"] {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--cyan) 7%, transparent);
+}
+.review-editor .rv-math[contenteditable="false"]:hover {
+  background: color-mix(in srgb, var(--cyan) 15%, transparent);
+}
+.rv-math.rv-legacy .rv-mi { font-style: italic; }
+.rv-math.rv-legacy .rv-mn { font-style: normal; }
+.rv-math.rv-legacy .rv-mo { font-style: normal; padding: 0 .12em; }
+.rv-math.rv-legacy .rv-mop { font-style: normal; padding: 0 .1em; }
+.rv-math.rv-legacy .rv-mcmd { font-style: normal; color: var(--muted); }
+.rv-math.rv-legacy .rv-mtext { font-style: normal; font-family: inherit; }
+.rv-math.rv-legacy .rv-mrm { font-style: normal; }
+.rv-math.rv-legacy .rv-mbf { font-weight: 700; font-style: normal; }
+.rv-math.rv-legacy .rv-mtt {
+  font-family: ui-monospace, Consolas, monospace;
+  font-style: normal;
+  font-size: .94em;
+}
+.rv-math.rv-legacy .rv-msp { display: inline-block; }
+.rv-math.rv-legacy .rv-mgap { display: inline-block; width: .5em; }
+.rv-math.rv-legacy .rv-mbreak { display: block; height: 0; }
+/* 大算符（∑ ∫ ∏ ⋃ …） */
+.rv-math.rv-legacy .rv-mbig {
+  font-style: normal;
+  font-size: 1.42em;
+  line-height: .9;
+  vertical-align: -.24em;
+  padding: 0 .06em;
+}
+/* 定界符 */
+.rv-math.rv-legacy .rv-mdelim { font-style: normal; padding: 0 .04em; }
+.rv-math.rv-legacy .rv-mdelim-big { font-size: 1.5em; line-height: 1; vertical-align: -.18em; }
+/* 分式：上下叠放 + 中线 */
+.rv-math.rv-legacy .rv-mfrac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  vertical-align: -.46em;
+  margin: 0 .16em;
+  font-size: .98em;
+}
+.rv-math.rv-legacy .rv-mnum {
+  display: block;
+  padding: 0 .22em .04em;
+  border-bottom: 1px solid currentColor;
+}
+.rv-math.rv-legacy .rv-mden { display: block; padding: .04em .22em 0; }
+/* 二项式系数：复用分式叠放骨架但不画分数线 */
+.rv-math.rv-legacy .rv-mbinom { display: inline-flex; align-items: center; }
+.rv-math.rv-legacy .rv-mbinom-f { vertical-align: middle; margin: 0 .02em; }
+.rv-math.rv-legacy .rv-mbinom-f .rv-mnum { border-bottom: none; padding: 0 .2em; }
+/* 根号：被开方式上方一条横线 */
+.rv-math.rv-legacy .rv-msqrt { display: inline-flex; align-items: flex-start; }
+.rv-math.rv-legacy .rv-msqrt-idx { font-size: .62em; line-height: 1; margin-right: -.1em; }
+.rv-math.rv-legacy .rv-msqrt-sign { font-style: normal; line-height: 1; }
+.rv-math.rv-legacy .rv-msqrt-body {
+  border-top: 1px solid currentColor;
+  padding: .04em .16em 0 .06em;
+  margin-top: .1em;
+}
+/* 上下标：右侧一列的 sup / sub */
+.rv-math.rv-legacy .rv-mscript { display: inline-flex; align-items: center; }
+.rv-math.rv-legacy .rv-mscripts {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  font-size: .72em;
+  line-height: 1.06;
+  margin-left: .07em;
+  text-align: left;
+}
+.rv-math.rv-legacy .rv-msup, .rv-math.rv-legacy .rv-msub { display: block; }
+/* 只有一个上标 / 只有一个下标时，把它挪到该去的位置：上下标容器是竖排 flex 居中，
+   单个上标会被居中成「普通小字」，看起来就不像指数（$x^2$ / $a_1$ 都要看得出高低）。
+   上下标都在时不动 —— 那样居中竖排本来就是对的。 */
+.rv-math.rv-legacy .rv-mscripts > .rv-msup:only-child { transform: translateY(-.46em); }
+.rv-math.rv-legacy .rv-mscripts > .rv-msub:only-child { transform: translateY(.34em); }
+/* 矩阵 / align / cases：表格布局，自动按列对齐 */
+.rv-math.rv-legacy .rv-menv { display: inline-flex; align-items: center; vertical-align: middle; }
+.rv-math.rv-legacy .rv-mtable {
+  display: inline-table;
+  vertical-align: middle;
+  border-collapse: separate;
+  border-spacing: .42em .14em;
+}
+.rv-math.rv-legacy .rv-mrow { display: table-row; }
+.rv-math.rv-legacy .rv-mcell { display: table-cell; text-align: center; }
+.rv-math.rv-legacy .rv-mcell-l { text-align: left; }
+.rv-math.rv-legacy.rv-mcases .rv-mtable { text-align: left; }
+/* 重音（\hat \bar \vec \tilde…）：标记一行 + 内容一行，居中竖排 */
+.rv-math.rv-legacy .rv-macc {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+}
+.rv-math.rv-legacy .rv-macc-m { font-size: .62em; line-height: 1; font-style: normal; }
+.rv-math.rv-legacy .rv-macc-b { line-height: 1; }
+/* \overline / \underline：横线用 text-decoration 画，内容照常排版 */
+.rv-math.rv-legacy .rv-mover { text-decoration: overline; }
+.rv-math.rv-legacy .rv-munder { text-decoration: underline; }
+/* \substack：大算符下标里的多行限界，逐行居中堆叠 */
+.rv-math.rv-legacy .rv-mstack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  font-size: .85em;
+  line-height: 1.15;
+}
+.rv-math.rv-legacy .rv-mstack-r { display: block; white-space: nowrap; }
+/* \xrightarrow[下]{上}：标注压箭头上方，下标注在下方 */
+.rv-math.rv-legacy .rv-marrow {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+}
+.rv-math.rv-legacy .rv-marrow-t {
+  font-size: .6em;
+  line-height: 1.05;
+  font-style: normal;
+  white-space: nowrap;
+}
+.rv-math.rv-legacy .rv-marrow-a { line-height: 1; }
+/* \tag{4.1}：公式编号贴右，不挤乱公式主体 */
+.rv-math.rv-legacy .rv-mtag {
+  float: right;
+  margin-left: 1.2em;
+  font-size: .82em;
+  font-style: normal;
+  opacity: .72;
+}
+

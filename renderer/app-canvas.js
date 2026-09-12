@@ -1002,6 +1002,37 @@ function statusOf(node) {
   return { cls: "", txt: I18n.t("○ 未处理 · 点击 ▶ 基于提示词+输入处理") };
 }
 
+/* 文本预览按钮（节点头部 👁）：打开只读大窗完整读一遍节点文本
+   （renderer/app-textpreview.js 的 openTextPreview）。只读、不改节点、不触发运行；
+   没有可预览文本的节点不显示这枚按钮（点了只会弹「还没有可预览的文本」）。 */
+function textPreviewButtonEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-textpeek";
+  b.textContent = "👁";
+  b.title = I18n.t("预览全文：在只读大窗里完整阅读本节点文本（可复制，不改内容）");
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof openTextPreview !== "function") {
+      toast(I18n.t("文本预览窗未就绪"), "warn");
+      return;
+    }
+    /* 普通（非智能）文本处理节点：预览**输出**（结果正文）；
+       其余文本节点的正文就在 node.text（输入内容）上。 */
+    const isProc = node.kind === "proc_text" || node.kind === "proc_image";
+    if (isProc) {
+      const o = node.output;
+      if (o && o.kind === "text" && String(o.text || "").trim()) {
+        openTextPreview({ text: o.text, node: node, title: node.title || "" });
+        return;
+      }
+    }
+    openTextPreview({ text: node.text, node: node, title: node.title || "" });
+  };
+  return b;
+}
+
 /* 预览按钮（proc_text / proc_image / 智能任务 共用）。
    原来这张排上还有个「API」按钮就地展开 .n-api-panel —— 设置已统一走头部 ⚙ 跳窗，
    这里只剩 ◈ 预览（查看运行时将发送的完整请求），保持原样。 */
@@ -1017,14 +1048,23 @@ function apiPreviewButtons(node) {
   return [pv];
 }
 
-/* 思考强度按钮（proc_text 文本模型）：无 / 低 / 中 / 高，点击切换，默认低
-   「无」= 关闭思考（参考 dsh：thinking.type=disabled，不发送 reasoning_effort）；旧 none/minimal 归一为 low */
-const EFFORT_LEVELS = ["off", "low", "medium", "high"];
-const EFFORT_LABELS = { off: "无", low: "低", medium: "中", high: "高" };
+/* 思考强度按钮（proc_text 文本模型）：无 / 低 / 中 / 高 / 最强，点击切换，默认低
+   「无」= 关闭思考（参考 dsh：thinking.type=disabled，不发送 reasoning_effort）；旧 none/minimal 归一为 low。
+   「最强」(max) 直接进按钮环 → main.js applyTextThinkingEffort 原样下发 reasoning_effort=max；
+   xhigh 不露出（默认路由会把它夹到 high，露出即静默降档），但归一成 high 而不是掉到 low。 */
+const EFFORT_LEVELS = ["off", "low", "medium", "high", "max"];
+const EFFORT_LABELS = {
+  off: "无",
+  low: "低",
+  medium: "中",
+  high: "高",
+  max: "最强",
+};
 function normalizeTextEffort(v) {
   const raw = String(v == null ? "" : v).trim().toLowerCase();
   if (raw === "无") return "off";
   if (raw === "none" || raw === "minimal") return "low";
+  if (raw === "xhigh") return "high";
   return EFFORT_LEVELS.includes(raw) ? raw : "low";
 }
 function effortButtonEl(node) {
@@ -1038,7 +1078,7 @@ function effortButtonEl(node) {
     effortBtn.title =
       I18n.t("思考强度：当前「") +
       I18n.t(EFFORT_LABELS[cur]) +
-      I18n.t("」· 点击切换（无 / 低 / 中 / 高）");
+      I18n.t("」· 点击切换（无 / 低 / 中 / 高 / 最强）");
   };
   paintEffort();
   effortBtn.onclick = (ev) => {
@@ -1444,6 +1484,9 @@ function registerNodeSettingsForm(key, def) {
 function nodeSettingsFormKey(node) {
   if (!node || !node.kind) return "";
   if (isFnToolNode(node)) return isToolNode(node) ? "tool" : "function";
+  /* PDF 生成虽属保存族（配色与执行口径同 save），但设置项是「版面 + 路径」，
+     与 save 的「按输入自定后缀」不是一套表单，故单独登记 */
+  if (node.kind === "save_pdf") return "save_pdf";
   if (isSaveKind(node.kind)) return "save";
   if (node.kind === "super") return "";
   return String(node.kind);
@@ -1597,6 +1640,12 @@ function renderNodeSettingsForm() {
   } catch (err) {
     ctx.hint(I18n.t("设置表单渲染失败：") + String((err && err.message) || err));
   }
+  /* 音频节点（保存音频 / 音乐生成 / 语音合成）：表单里补一只方角波形预览器，
+     试听与节点 body 里那只同源同行为 */
+  try {
+    const media = isSaveNode(d.node) ? saveMediaKind(d.node) : "audio";
+    if (isSaveNode(d.node) || isMediaGenNode(d.node)) ensureNodeSettingsWave(d.node, d.root, media);
+  } catch (_) {}
 }
 
 /* 表单「形状签名」：def.signature(node) 可选。有些设置项一改，整张表单的结构就变
@@ -1801,6 +1850,33 @@ function readNodeSettingsCtl(node, base) {
   return ctl && "value" in ctl ? String(ctl.value) : "";
 }
 
+/* 节点「设置」跳窗里的音频预听：跳窗打开（每次重建表单）时补一只方角波形预览器
+   （见 renderer/app-audioview.js），路径与参数摘要同步走同一份 node 字段。
+   幂等：同一节点只建一只；找得到输出路径输入框就插在它后面，否则追加到表单末尾。
+   media 传当前要预听的内容类型（"audio" 才建；视频仍用原生播放器）。 */
+function ensureNodeSettingsWave(node, root, media) {
+  if (!node || !node.id || media !== "audio") return;
+  if (!root || typeof wavePreviewCreate !== "function") return;
+  const id = "svaud-" + node.id;
+  let el = document.getElementById(id);
+  if (!el) {
+    el = wavePreviewCreate(id);
+    el.classList.add("nsf-span");
+  } else if (el.parentElement !== root) {
+    root.appendChild(el);
+  }
+  const cell =
+    document.getElementById("mgpath-" + node.id) ||
+    document.getElementById("svpath-" + node.id);
+  if (cell && cell.parentElement === root) root.insertBefore(el, cell.nextSibling);
+  if (el.dataset.path !== String(node.savedPath || "")) {
+    const p = String(node.savedPath || "");
+    if (p) el.dataset.path = p;
+    else delete el.dataset.path;
+    if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(el, p, node.savedAt || "");
+  }
+}
+
 /* 空表单：这个键不对应任何真实 kind（nodeSettingsFormKey 永不返回它），
    保留它是为了在没有真实登记时也能跑通「开窗 → 填表 → 收尾」这条链，
    同时给后续登记留一份字段契约范例。 */
@@ -1969,15 +2045,23 @@ function nsDuration(ctx, labelText, sec, opts, onChange) {
   return ctx.append(host, opts);
 }
 
-/* 服务商 / 模型：proc_text · remotion 取 text_openai，proc_image 取 image_*
-   （与原 .n-api-panel 的 else 分支同一份逻辑，包括「现服务商不在表里就取第一个」） */
+/* 服务商 / 模型：proc_text · remotion 要文本模型，proc_image 要图像生成模型。
+   「谁算文本服务商 / 谁算图像服务商」不再只看服务商级 type —— 同一 OpenAI 兼容
+   端点常把两类模型挂在一起，只看 type 会让图像节点漏掉配成文本的那家。
+   判定统一走 renderer/app-model-kind.js 的 providerHasKind / modelsOfKind：
+     · 服务商下拉 = 含该形态模型的服务商；
+     · 模型下拉 = 该服务商里属于该形态的模型（选不到反形态的模型）。 */
 function nsProviderModelFields(ctx, node) {
-  const want = node.kind === "proc_image" ? null : "text_openai";
-  const provs = (S.config.providers || []).filter((p) =>
-    want ? p.type === want : String(p.type || "").startsWith("image_"),
-  );
-  if (!provs.some((p) => p.id === node.providerId))
+  const kind = modelKindForNode(node);
+  const allProvs = S.config.providers || [];
+  const hasKind = (p) => providerHasKind(S.config, p, kind);
+  const provs = allProvs.filter(hasKind);
+  const switchedAway = !provs.some((p) => p.id === node.providerId);
+  if (switchedAway) {
+    /* 现服务商一个该形态的模型都没有（老画布 / 配置改过）：退回第一家可用服务商，
+       下面补一行提示说明原服务商为什么不在表里 —— 不静默换掉用户看不见。 */
     node.providerId = provs.length ? provs[0].id : "";
+  }
   const provSel = document.createElement("select");
   {
     const o0 = document.createElement("option");
@@ -1987,7 +2071,11 @@ function nsProviderModelFields(ctx, node) {
     for (const p of provs) {
       const o = document.createElement("option");
       o.value = p.id;
-      o.textContent = p.name;
+      o.textContent =
+        p.name +
+        (providerKinds(S.config, p).length > 1
+          ? " · " + I18n.t(kind === "image" ? "图像模型" : "文本模型")
+          : "");
       if (p.id === node.providerId) o.selected = true;
       provSel.appendChild(o);
     }
@@ -1996,22 +2084,34 @@ function nsProviderModelFields(ctx, node) {
   provSel.addEventListener("change", () => {
     node.providerId = provSel.value;
     const prov = provs.find((p) => p.id === node.providerId);
-    node.model =
-      prov && prov.models && prov.models.length ? prov.models[0] : "";
+    const ms = modelsOfKind(S.config, prov, kind);
+    node.model = ms.length ? ms[0] : "";
     /* 换服务商 = 模型表整个换掉：重画端子（外观色）+ 重建本表单 */
     ctx.commit({ history: true, rerender: true, rebuild: true });
   });
   ctx.field(I18n.t("服务商（自动读取全局 API 配置）"), provSel);
+  if (switchedAway) {
+    /* 原服务商被换掉一定有原因，必须写出来：用户看到的服务商变了却不知道为什么，
+       会以为画布被改坏了。这里说明「它没有该形态的模型」并指向设置页。 */
+    ctx.hint(
+      I18n.t("原服务商没有") +
+        I18n.t(kind === "image" ? "图像生成模型" : "文本模型") +
+        I18n.t("，已切到可选的服务商；可在设置 · 模型服务里为它补模型或改模型类型。"),
+    );
+  }
   const prov = provs.find((p) => p.id === node.providerId);
   const mod = document.createElement("select");
   {
-    const models = prov && prov.models ? prov.models.slice() : [];
-    const cur = node.model || (prov && prov.models && prov.models[0]) || "";
+    /* 只列该形态的模型；节点现存模型若不是这个形态（老画布 / 手工改过配置）
+       也补进列表并标注，保住原值不静默改掉，用户看得见原因。 */
+    const models = modelsOfKind(S.config, prov, kind);
+    const cur = node.model || models[0] || "";
     if (cur && !models.includes(cur)) models.unshift(cur);
     for (const m of models) {
       const o = document.createElement("option");
       o.value = m;
-      o.textContent = m;
+      o.textContent =
+        m + (modelKindOf(S.config, prov && prov.id, m) === kind ? "" : " " + I18n.t("（形态不符）"));
       mod.appendChild(o);
     }
     mod.value = cur;
@@ -2020,7 +2120,10 @@ function nsProviderModelFields(ctx, node) {
     node.model = mod.value;
     ctx.commit({ history: true });
   });
-  ctx.field(I18n.t("模型"), mod);
+  ctx.field(
+    I18n.t(kind === "image" ? "模型（图像生成）" : "模型（文本）"),
+    mod,
+  );
 }
 
 /* 温度（proc_text / remotion） */
@@ -2709,9 +2812,28 @@ function nsPathModeHint(raw, node) {
 }
 
 /* ── save：保存路径 + 自动保存 ── */
-function saveSettingsSummary(node) {
+/* 图像输出摘要（尺寸 / 裁剪 / 格式 / 质量）：解析到实际落盘路径，让「后缀被换掉」一眼可见 */
+function saveImageOutLine(node) {
+  const ext =
+    typeof saveImageExtFor === "function"
+      ? saveImageExtFor(node)
+      : saveExtForMedia("image");
   const raw = String(node.savePath || "").trim();
-  const r = raw ? resolveSavePath(raw, node) : { ok: false };
+  let line = "";
+  if (raw) {
+    const r = resolveSavePath(raw, node);
+    line = I18n.t("实际落盘：") + forcePathExt(r.ok ? r.path : raw, ext);
+  } else {
+    line = I18n.t("尚未设置保存路径（后缀 ") + ext + I18n.t("）");
+  }
+  const sum =
+    typeof imageOutSummary === "function" ? imageOutSummary(node) : "";
+  return sum ? line + " · " + sum : line;
+}
+function saveSettingsSummary(node) {
+  /* 展示用「实际落盘路径」：输入类型已定就补上决定好的后缀；未定则原样（不猜后缀） */
+  const shown = typeof savePathDisplay === "function" ? savePathDisplay(node) : String(node.savePath || "").trim();
+  const r = shown ? resolveSavePath(shown, node) : { ok: false };
   const parts = [];
   if (isBatch(node))
     parts.push(
@@ -2719,17 +2841,97 @@ function saveSettingsSummary(node) {
         ? I18n.t("聚合：全部条目合并保存")
         : I18n.t("批量：按输入节点标题另存"),
     );
-  parts.push(r.ok ? r.path : raw || I18n.t("（未设置保存路径）"));
+  parts.push(r.ok ? r.path : shown || I18n.t("（未设置保存路径）"));
   parts.push(
     node.auto === false ? I18n.t("自动保存：关") : I18n.t("自动保存：开"),
   );
+  if (saveMediaKind(node) === "image" && typeof imageOutSummary === "function") {
+    const sum = imageOutSummary(node);
+    if (sum) parts.push(sum);
+  }
   return parts.join(" · ");
+}
+
+/* save：节点卡上直接改「文件名」（不必开 ⚙ 跳窗、也不必先选目录）。
+   输入框里只有主名、默认不带后缀 —— 后缀由输入内容类型决定：已定型的以只读小片
+   贴在右边（.md / .png / .wav / .mp4），还没连输入就显示「后缀待定」，落盘前不猜。
+   只改文件名，目录沿用原 savePath；失焦 / 回车提交，Esc 撤销。 */
+function saveNameFieldRow(node) {
+  const row = document.createElement("div");
+  row.className = "n-field sv-name";
+  const lab = document.createElement("span");
+  lab.className = "sv-name-lab";
+  lab.textContent = I18n.t("文件名");
+  const box = document.createElement("div");
+  box.className = "sv-name-box";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "sv-name-inp";
+  input.value = saveFilenameOf(node);
+  /* PDF 生成的默认名 = 输入节点的标题：留空时把那个名字显示成占位，用户一眼知道会叫什么 */
+  const defaultInpName =
+    (node.kind === "save_pdf" && typeof pdfDefaultNameOf === "function" && pdfDefaultNameOf(node)) ||
+    saveFilenameSanitize(node.title || "");
+  input.placeholder = defaultInpName || "output";
+  input.title =
+    node.kind === "save_pdf"
+      ? I18n.t(
+          "直接在这里改输出文件名，不必打开 ⚙；留空则默认用输入节点的标题命名，落盘时自动补 .pdf。",
+        )
+      : I18n.t(
+          "直接在这里改输出文件名，不必打开 ⚙；文件名默认不带后缀，输入类型确定后自动补 .md / .png / .wav / .mp4。",
+        );
+  const extEl = document.createElement("span");
+  extEl.className = "sv-name-ext";
+  const paintExt = () => {
+    const e = saveFilenameExtOf(node);
+    extEl.textContent = e || I18n.t("后缀待定");
+    extEl.classList.toggle("pending", !e);
+    extEl.title = e
+      ? I18n.t("输入类型已确定，落盘时补此后缀")
+      : I18n.t("还没连上输入，内容类型未定，暂不决定后缀");
+  };
+  paintExt();
+  let committed = String(input.value || "");
+  const commit = () => {
+    const v = String(input.value || "").trim();
+    if (v === committed) return;
+    committed = v;
+    pushHistory();
+    saveFilenameSet(node, v);
+    input.value = saveFilenameOf(node);
+    paintExt();
+    if (typeof syncNodeSettingsValue === "function")
+      syncNodeSettingsValue(node, "savePath", node.savePath);
+    scheduleSave();
+    renderCanvas();
+  };
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      input.blur();
+    } else if (ev.key === "Escape") {
+      input.value = committed;
+      input.blur();
+    }
+  });
+  input.addEventListener("blur", commit);
+  box.appendChild(input);
+  box.appendChild(extEl);
+  row.appendChild(lab);
+  row.appendChild(box);
+  return row;
 }
 registerNodeSettingsForm("save", {
   gearTitle: () => I18n.t("保存路径 / 自动保存"),
   summary: saveSettingsSummary,
-  /* 输入类型（文本→.md / 图像→.png /…）会换掉强制后缀，换掉的是「该写什么路径」 */
-  signature: (node) => "sv:" + saveMediaKind(node),
+  /* 输入类型（文本→.md / 图像→.png /…）会换掉强制后缀，换掉的是「该写什么路径」；
+     图像输出改了格式 / 尺寸时同样要换掉占位与提示，所以一起进签名 */
+  signature: (node) =>
+    "sv:" +
+    saveMediaKind(node) +
+    (typeof imageOutSummary === "function" ? ":" + imageOutSummary(node) : ""),
   build: (ctx) => {
     const node = ctx.node;
     const media = saveMediaKind(node);
@@ -2738,7 +2940,11 @@ registerNodeSettingsForm("save", {
       media === "text" ? "*.md" : media === "image" ? "*.png" : media === "audio" ? "*.wav" : "*.mp4";
     const hasWs = !!String(wfWorkspace() || "").trim();
     ctx.hint(
-      I18n.t("后缀由连进来的数据类型固定为 ") + extHint + I18n.t("，写错会自动纠正。"),
+      saveMediaCertain(node)
+        ? I18n.t("后缀由连进来的数据类型固定为 ") + extHint + I18n.t("，写错会自动纠正。")
+        : I18n.t("还没连上输入，内容类型未定：先写文件名（可不带后缀），落盘时按输入类型补 ") +
+            extHint +
+            I18n.t("。"),
     );
     const hintEl = ctx.hint(nsPathModeHint(node.savePath, node));
     nsText(
@@ -2748,6 +2954,7 @@ registerNodeSettingsForm("save", {
       {
         span: true,
         live: true,
+        id: nodeSettingsCtlId("savePath", node.id),
         placeholder: isBatch(node)
           ? node.batchMode === "agg"
             ? I18n.t("聚合：全部条目合并保存为 {路径}") + ext
@@ -2758,11 +2965,12 @@ registerNodeSettingsForm("save", {
         title: hasWs
           ? I18n.t("有工作目录时可用相对路径；改顶栏工作目录后统一落盘到新目录。也可填绝对路径。后缀由输入类型固定。")
           : I18n.t("输出文件路径（图像 .png / 音频 .wav / 视频 .mp4 / 文本 .md）"),
-        normalize: (v) =>
-          applySuperRelToPath(
-            node,
-            preferRelativeSavePath(forcePathExt(String(v || "").trim(), ext)),
-          ),
+        normalize: (v) => {
+          const s = String(v || "").trim();
+          /* 输入类型未定 → 不补后缀（与节点卡上的「文件名」同一口径） */
+          const next = saveMediaCertain(node) ? forcePathExt(s, ext) : s;
+          return applySuperRelToPath(node, preferRelativeSavePath(next));
+        },
         commit: { history: true, rerender: true },
       },
       (v) => {
@@ -2780,20 +2988,272 @@ registerNodeSettingsForm("save", {
       },
       { title: I18n.t("上游输出更新时自动保存到指定路径") },
     );
+    /* 图像保存：多一行「图像输出」设定（尺寸 / 裁剪 / 格式 / 质量）。
+       控件本体在节点头部按钮的面板里（renderer/app-imageout.js），这里给出口与摘要。 */
+    if (media === "image" && typeof window.openImageOutPop === "function") {
+      const line = ctx.hint(saveImageOutLine(node));
+      const box = document.createElement("div");
+      box.className = "nsf-ctl";
+      const ob = document.createElement("button");
+      ob.type = "button";
+      ob.className = "mini";
+      ob.textContent = I18n.t("图像输出设定…");
+      ob.title = I18n.t(
+        "尺寸（等比例缩放 / 自定义像素）、裁剪（从中间裁 / 指定矩形）、格式（png / jpg / webp / bmp）、有损压缩质量",
+      );
+      ob.onclick = () => {
+        const anchor = document.querySelector(
+          '.wf-node[data-nid="' + node.id + '"] .n-imgout-btn',
+        );
+        window.openImageOutPop(node, anchor || ob);
+        line.textContent = saveImageOutLine(node);
+      };
+      box.appendChild(ob);
+      const rb = document.createElement("button");
+      rb.type = "button";
+      rb.className = "mini";
+      rb.textContent = I18n.t("恢复默认");
+      rb.title = I18n.t("恢复为「原样 + PNG」：与改动前的保存行为一致");
+      rb.onclick = () => {
+        if (typeof normalizeImageOut === "function") normalizeImageOut(node);
+        node.oopMode = "orig";
+        node.oopCrop = "none";
+        node.oopFormat = "png";
+        node.oopScale = 100;
+        node.oopWidth = 0;
+        node.oopHeight = 0;
+        node.oopCropX = 0;
+        node.oopCropY = 0;
+        node.oopCropW = 0;
+        node.oopCropH = 0;
+        line.textContent = saveImageOutLine(node);
+        ctx.commit({ history: true, rerender: true });
+      };
+      box.appendChild(rb);
+      ctx.field(I18n.t("图像输出（尺寸 / 裁剪 / 格式 / 质量）"), box, {
+        span: true,
+        title: I18n.t(
+          "默认「原样 + PNG」与改动前的保存行为完全一致；改设定后每个保存文件都会套用。",
+        ),
+      });
+    }
+  },
+});
+
+/* ── PDF 生成（保存族 · 文本 → PDF）────────────────────────────────────────
+   版面选项的「键」与主进程 pdf-write.js 的 PDF_PAGE_SIZES / PDF_MARGINS /
+   PDF_FONT_SCALES 一一对应（那边是排版与分页的执行真源，这里只负责让人选；
+   两边一致由 test/smoke-pdf-gen.js 钉住）。 */
+const PDF_PAGE_SIZE_ITEMS = [
+  ["A4", "A4"],
+  ["A3", "A3"],
+  ["A5", "A5"],
+  ["Letter", "Letter"],
+  ["Legal", "Legal"],
+];
+const PDF_MARGIN_ITEMS = [
+  ["none", "无"],
+  ["narrow", "窄"],
+  ["normal", "标准"],
+  ["wide", "宽"],
+];
+const PDF_FONT_SCALE_ITEMS = [
+  ["s", "小"],
+  ["m", "中"],
+  ["l", "大"],
+];
+function pdfPageSizeLabel(v) {
+  const hit = PDF_PAGE_SIZE_ITEMS.find((x) => x[0] === String(v || ""));
+  return I18n.t((hit && hit[1]) || "A4");
+}
+function pdfMarginLabel(v) {
+  const hit = PDF_MARGIN_ITEMS.find((x) => x[0] === String(v || ""));
+  return I18n.t((hit && hit[1]) || "标准");
+}
+function pdfFontScaleLabel(v) {
+  const hit = PDF_FONT_SCALE_ITEMS.find((x) => x[0] === String(v || ""));
+  return I18n.t((hit && hit[1]) || "中");
+}
+/** PDF 生成节点的默认文件名 = **输入节点**的标题（不是本节点标题）。
+    只有「恰好一条数据输入」时才取它的名字：多路输入合并成一份 PDF 时没有唯一来源，
+    退回空串由调用方用本节点标题兜底。
+    读取期算，不写进节点 —— 上游改名后文件名跟着变，不必手动同步。 */
+function pdfDefaultNameOf(node) {
+  if (!node || node.kind !== "save_pdf") return "";
+  const srcs = [];
+  const seen = new Set();
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src || isControlKind(src) || seen.has(src.id)) continue;
+    seen.add(src.id);
+    srcs.push(src);
+  }
+  if (srcs.length !== 1) return "";
+  const t = String(
+    (typeof itemTitleOf === "function" && itemTitleOf(srcs[0], 0, node)) ||
+      srcs[0].title ||
+      "",
+  ).trim();
+  return t;
+}
+/** 版面摘要（设置窗摘要行 / 节点卡上的说明行共用） */
+function pdfLayoutSummary(node) {
+  return (
+    pdfPageSizeLabel(node && node.pdfPageSize) +
+    " · " +
+    I18n.t(node && node.pdfLandscape ? "横向" : "纵向") +
+    " · " +
+    I18n.t("边距") +
+    pdfMarginLabel(node && node.pdfMargin) +
+    " · " +
+    I18n.t("字号") +
+    pdfFontScaleLabel(node && node.pdfFontScale) +
+    (node && node.pdfPageNumbers === false ? "" : " · " + I18n.t("页码"))
+  );
+}
+function savePdfSettingsSummary(node) {
+  const raw = String((node && node.savePath) || "").trim();
+  const r = raw ? resolveSavePath(raw, node) : { ok: false };
+  /* 没配路径时的实际落盘名 = 输入节点的标题（见 pdfDefaultNameOf），摘要照实说 */
+  const defName =
+    typeof pdfDefaultNameOf === "function" ? pdfDefaultNameOf(node) : "";
+  const dest = r.ok
+    ? r.path
+    : raw || (defName ? defName + ".pdf" : I18n.t("（未设置保存路径）"));
+  return dest + " · " + pdfLayoutSummary(node);
+}
+registerNodeSettingsForm("save_pdf", {
+  gearTitle: () => I18n.t("保存路径 / PDF 版面"),
+  summary: savePdfSettingsSummary,
+  build: (ctx) => {
+    const node = ctx.node;
+    const hasWs = !!String(wfWorkspace() || "").trim();
+    ctx.hint(
+      I18n.t(
+        "接进来的文本按 Markdown 排版成 PDF：标题 / 列表 / 表格 / 代码块 / 图片都渲染，$…$ 与 $$…$$ 公式排成排版结果（与画布预览同一套公式渲染器）。",
+      ),
+    );
+    ctx.hint(I18n.t("PDF 只在点节点上的 ▶（或控制节点指挥）时生成，接线与上游更新不会自动落盘。"));
+    const hintEl = ctx.hint(nsPathModeHint(node.savePath, node));
+    nsText(
+      ctx,
+      I18n.t("保存路径"),
+      node.savePath,
+      {
+        span: true,
+        live: true,
+        id: nodeSettingsCtlId("savePath", node.id),
+        placeholder: isBatch(node)
+          ? node.batchMode === "agg"
+            ? I18n.t("聚合：全部条目合并为一个 PDF（{路径}.pdf）")
+            : I18n.t("批量：保存为 {路径}_{输入节点标题}.pdf")
+          : hasWs
+            ? I18n.t("留空 = 用输入节点标题（相对工作目录或绝对路径 *.pdf）…")
+            : I18n.t("留空 = 用输入节点标题（*.pdf）…"),
+        title: I18n.t(
+          "输出 PDF 路径。留空则默认用输入节点的标题命名；有工作目录时可用相对路径；后缀固定 .pdf，写错会自动纠正。",
+        ),
+        normalize: (v) =>
+          applySuperRelToPath(
+            node,
+            preferRelativeSavePath(forcePathExt(String(v || "").trim(), ".pdf")),
+          ),
+        commit: { history: true, rerender: true },
+      },
+      (v) => {
+        node.savePath = String(v || "").trim();
+        hintEl.textContent = nsPathModeHint(node.savePath, node);
+      },
+    );
+    /* 「输入变化时自动保存」这一栏对 PDF 生成不再成立（它只在点 ▶ 时生成），已移除；
+       其余保存节点的自动保存开关不受影响（见 app-nodes.js 的 autoSaveSaves）。 */
+    ctx.section(I18n.t("PDF 版面"));
+    nsSelect(
+      ctx,
+      I18n.t("页面尺寸"),
+      PDF_PAGE_SIZE_ITEMS,
+      node.pdfPageSize || "A4",
+      (v) => {
+        node.pdfPageSize = v;
+      },
+      { commit: { history: true, rerender: true } },
+    );
+    nsCheck(
+      ctx,
+      I18n.t("横向"),
+      !!node.pdfLandscape,
+      (v) => {
+        node.pdfLandscape = !!v;
+      },
+      { title: I18n.t("横向纸张（宽表格 / 宽公式更合适）"), commit: { history: true, rerender: true } },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("页边距"),
+      PDF_MARGIN_ITEMS,
+      node.pdfMargin || "normal",
+      (v) => {
+        node.pdfMargin = v;
+      },
+      { commit: { history: true, rerender: true } },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("正文字号"),
+      PDF_FONT_SCALE_ITEMS,
+      node.pdfFontScale || "m",
+      (v) => {
+        node.pdfFontScale = v;
+      },
+      { commit: { history: true, rerender: true } },
+    );
+    nsCheck(
+      ctx,
+      I18n.t("显示页码"),
+      node.pdfPageNumbers !== false,
+      (v) => {
+        node.pdfPageNumbers = !!v;
+      },
+      { title: I18n.t("页脚居中显示「当前页 / 总页数」"), commit: { history: true, rerender: true } },
+    );
+    nsText(
+      ctx,
+      I18n.t("文档标题"),
+      node.pdfTitle,
+      {
+        span: true,
+        live: true,
+        placeholder: node.title || "PDF生成",
+        title: I18n.t(
+          "可留空；填了就在正文顶部加一行居中大标题（PDF 属性里的标题也用节点标题）",
+        ),
+        commitOn: "input",
+        commit: { history: true, rerender: true },
+      },
+      (v) => {
+        node.pdfTitle = String(v || "");
+      },
+    );
+    ctx.hint(I18n.t("当前版面：") + pdfLayoutSummary(node));
   },
 });
 
 /* save 的动作按钮（浏览 / 位置 / 打开）：留在 body 摘要行上 */
 function savePathActionButtons(node) {
   const media = saveMediaKind(node);
-  const ext = saveExtForMedia(media);
   const btns = [];
   const br = document.createElement("button");
   br.className = "mini";
   br.textContent = I18n.t("浏览");
   br.onclick = async () => {
     const ws = String(wfWorkspace() || "").trim();
-    let defaultName = (node.title || "output") + ext;
+    /* 预填名也遵守「后缀待定」口径：输入类型未定就不给文件名挂后缀。
+       PDF 生成另按自己的命名口径：默认名 = 输入节点的标题（见 pdfDefaultNameOf）。 */
+    const defStem =
+      (media === "pdf" && typeof pdfDefaultNameOf === "function" && pdfDefaultNameOf(node)) ||
+      node.title ||
+      "output";
+    let defaultName = defStem + (saveFilenameExtOf(node) || "");
     const cur = String(node.savePath || "").trim();
     if (cur) {
       const r0 = resolveSavePath(cur, node);
@@ -2817,10 +3277,15 @@ function savePathActionButtons(node) {
                 { name: I18n.t("音频"), extensions: ["wav"] },
                 { name: I18n.t("全部文件"), extensions: ["*"] },
               ]
-            : [
-                { name: I18n.t("视频"), extensions: ["mp4"] },
-                { name: I18n.t("全部文件"), extensions: ["*"] },
-              ];
+            : media === "pdf"
+              ? [
+                  { name: "PDF", extensions: ["pdf"] },
+                  { name: I18n.t("全部文件"), extensions: ["*"] },
+                ]
+              : [
+                  { name: I18n.t("视频"), extensions: ["mp4"] },
+                  { name: I18n.t("全部文件"), extensions: ["*"] },
+                ];
     const title =
       media === "text"
         ? I18n.t("选择 YAML 保存位置")
@@ -2828,11 +3293,15 @@ function savePathActionButtons(node) {
           ? I18n.t("选择图像保存位置")
           : media === "audio"
             ? I18n.t("选择音频保存位置")
-            : I18n.t("选择视频保存位置");
+            : media === "pdf"
+              ? I18n.t("选择 PDF 保存位置")
+              : I18n.t("选择视频保存位置");
     const r = await window.api.fileSaveDialog({ title, defaultName, filters });
     if (r.path) {
+      /* 用户手选的路径：输入类型已定才补后缀，未定则保持原样（与其他入口同一口径） */
+      const pickedExt = saveFilenameExtOf(node);
       node.savePath = preferRelativeSavePath(
-        forcePathExt(r.path, saveExtForMedia(saveMediaKind(node))),
+        pickedExt ? forcePathExt(r.path, pickedExt) : r.path,
       );
       syncGenFilenameFromSave(node);
       scheduleSave();
@@ -2866,13 +3335,21 @@ function savePathActionButtons(node) {
       if (show) window.api.shellShowItem(show);
     };
     btns.push(op);
-    if (media === "text") {
+    if (media === "text" || media === "pdf") {
       const openBtn = document.createElement("button");
       openBtn.className = "mini";
       openBtn.textContent = I18n.t("打开");
-      openBtn.title = I18n.t("用阅读器打开（Markdown / YAML · 可编辑保存）");
+      openBtn.title =
+        media === "pdf"
+          ? I18n.t("用系统默认 PDF 阅读器打开")
+          : I18n.t("用阅读器打开（Markdown / YAML · 可编辑保存）");
       openBtn.onclick = async (ev) => {
         ev.stopPropagation();
+        /* PDF 交给系统默认阅读器（路径解析与提示同头部按钮，口径只留一处） */
+        if (media === "pdf") {
+          await openPdfSaveTarget(node);
+          return;
+        }
         const last =
           (node.savedPaths && node.savedPaths[node.savedPaths.length - 1]) ||
           node.savedPath ||
@@ -2896,6 +3373,55 @@ function savePathActionButtons(node) {
     }
   }
   return btns;
+}
+
+/* ── PDF 生成节点：预览态只列文件名 + 节点上方「打开」小按钮 ──
+   预览（浏览）态不渲染预览图（PDF 当不了图片显示，留着只会是一块空图），
+   只列一行文件名；打开动作收进节点头部的小按钮 —— 浏览态只有头部那排按钮
+   带 onclick（见 NODE_BROWSE_BODY 口径），所以这枚按钮必须留在头部。 */
+
+/* 预览里显示的文件名：已生成用实际文件名，未生成给一句提示。 */
+function savePdfNameText(node) {
+  return node && node.savedPath
+    ? fileName(node.savedPath)
+    : I18n.t("尚未生成（点击 ▶ 生成 PDF）");
+}
+
+/* 打开已生成的 PDF（系统默认阅读器）：本次已保存的文件优先，
+   否则看配置路径上是否已有文件；都没有只给提示，不误开不存在的文件。 */
+async function openPdfSaveTarget(node) {
+  const last =
+    (node.savedPaths && node.savedPaths[node.savedPaths.length - 1]) ||
+    node.savedPath ||
+    "";
+  let target = "";
+  if (last) {
+    target = isAbsPath(last)
+      ? last
+      : resolveSavePath(last || node.savePath, node).path || last;
+  } else {
+    const paths = await resolveSavePreviewPaths(node);
+    target = paths[0] || resolveSavePath(node.savePath, node).path || "";
+  }
+  if (!target) {
+    toast(I18n.t("尚未生成 PDF：点节点上的 ▶ 生成"), "warn");
+    return;
+  }
+  window.api.shellOpenPath(target);
+}
+
+/* PDF 生成节点头部的「打开」小按钮（节点上方）：预览 / 编辑态都在。 */
+function savePdfOpenButtonEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-pdf-open";
+  b.textContent = I18n.t("打开");
+  b.title = I18n.t("打开 PDF：用系统默认阅读器打开已生成的 PDF");
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    openPdfSaveTarget(node);
+  };
+  return b;
 }
 
 /* ── wait_file：监视路径 + 轮询间隔 ── */
@@ -3778,12 +4304,25 @@ function nodeElement(node) {
     };
     head.appendChild(modeBtn);
   }
+  /* 👁 预览全文（文本节点）：input_text 是画布上最长正文最常待的地方，
+     浏览态又按护栏把超长正文降级成轻量纯文本 —— 只有预览窗能完整读一遍，
+     所以这枚按钮不能只挂在处理节点上。空节点不摆空按钮。 */
+  if (
+    node.kind === "input_text" &&
+    typeof textPreviewOf === "function" &&
+    String(textPreviewOf(node) || "").trim()
+  )
+    head.appendChild(textPreviewButtonEl(node));
   if (
     node.kind === "proc_text" ||
     node.kind === "proc_image" ||
     node.kind === "agent_task"
   ) {
     head.append(...apiPreviewButtons(node));
+    /* 👁 预览全文：只在该节点真有可预览文本时出现（空节点不摆空按钮）。
+       文本预览窗未加载（异常环境）时不摆按钮，绝不让重绘链断在这里。 */
+    if (typeof textPreviewOf === "function" && String(textPreviewOf(node) || "").trim())
+      head.appendChild(textPreviewButtonEl(node));
     if (node.kind === "proc_image") {
       head.appendChild(bgRmButtonEl(node));
       /* 画幅锁定：菜单栏小按钮，与首参考图保持一致长宽比（补边生图 → 出图裁回） */
@@ -4170,6 +4709,16 @@ function nodeElement(node) {
       saveNodeAction(node);
     };
     head.appendChild(b);
+    /* 图像输出设定（尺寸 / 裁剪 / 格式 / 质量）：仅当这个保存节点按图像保存时出现。
+       面板与编码在 renderer/app-imageout.js（自包含），这里只按调用期取它的按钮。 */
+    if (
+      saveMediaKind(node) === "image" &&
+      typeof window.imageOutButtonEl === "function"
+    )
+      head.appendChild(window.imageOutButtonEl(node));
+    /* PDF 生成：节点上方（头部）给一枚「打开」小按钮。预览态不渲染可点的预览块，
+       打开动作只能留在头部这排按钮上。 */
+    if (saveMediaKind(node) === "pdf") head.appendChild(savePdfOpenButtonEl(node));
   }
   if (node.kind === "wait_file") {
     const b = document.createElement("button");
@@ -4513,6 +5062,10 @@ function nodeElement(node) {
       ? I18n.t("工具节点：Agent 可调用 · toolConfig 参数即端子（输入 0=控制 · 输出末位=控制）")
       : I18n.t("函数节点：JS 计算 · 入参对象 input → 返回值（输入 0=控制 · 输出末位=控制）");
     head.appendChild(chip);
+    /* 「AI 调用」设定（模型 / 预设 / 思考强度）：与开发节点头部同款小按钮、同一弹层
+       （renderer/app-aicall.js）。选中的模型 = 本节点需要借助 AI 时用的模型；工具节点
+       下发给内部子图的 AI 节点（内部自己选过的不动），函数节点给 jscode 的 mtnode.ai。 */
+    if (typeof aiCallButtonEl === "function") head.appendChild(aiCallButtonEl(node));
     /* 「设置」入口：与 ▶/✕ 同一口径的头部按钮，点开跳窗（名称 / 描述 / 增删参数 = 增删端子）。
        原地点开的是折叠在卡片里的面板 —— 卡片宽度塞不下一整排参数行，改一次要来回滚，
        现在统一进窗口改（表单见 NODE_SETTINGS_FORMS 的 function / tool 登记）。
@@ -4786,6 +5339,13 @@ function nodeElement(node) {
       openGlobalTagDialog(node);
     };
     head.appendChild(tagBtn);
+  }
+  /* 节点「?」说明按钮（自包含模块 renderer/app-nodehelp.js）：
+     每个节点头部固定一颗，点击弹出最简语言的说明小窗；设置里可隐藏（默认打开）。
+     放在 ✕ 删除键左边：位置全节点一致、最好找，也不会误点删除。 */
+  if (typeof window.nodeHelpButtonEl === "function") {
+    const hb = window.nodeHelpButtonEl(node);
+    if (hb) head.appendChild(hb);
   }
   const del = document.createElement("button");
   del.className = "n-play n-del";
@@ -5283,9 +5843,10 @@ function nodeElement(node) {
       ev.target.closest(".sv-path") ||
       ev.target.closest(".sv-auto") ||
       ev.target.closest(".n-out") ||
-      /* 音视频输入节点的原生播放器（.n-av-el）：放行，否则 preventDefault 会
-         吞掉播放 / 进度条操作，拖节点请抓头部标题栏 */
+      /* 音视频输入节点的播放器（.n-av-el，音频那支是方角波形预览器 .n-wave）：
+         放行，否则 preventDefault 会吞掉播放 / 进度条操作，拖节点请抓头部标题栏 */
       ev.target.closest(".n-av-el") ||
+      ev.target.closest(".n-wave") ||
       ev.target.closest(".bentry-title") ||
       ev.target.closest(".bentry-text") ||
       ev.target.closest(".n-title") ||
@@ -5832,7 +6393,136 @@ function buildBrowseBody(node, body) {
   if (!ok) {
     while (body.firstChild) body.removeChild(body.firstChild);
   }
+  /* 浏览态滚轮兜底：节点没被选中（预览形态）时，指针落在节点内的空白 / 状态行 / 非滚动块上
+     滚轮也要能继续浏览后续内容 —— 见 bindNodeBrowseWheel。 */
+  try {
+    bindNodeBrowseWheel(body);
+  } catch (_) {}
   return ok;
+}
+
+/* ===== 浏览态（未选中 / 预览形态）滚轮兜底 =====
+   把「指针在节点上，却落在一块既不滚、也不在可滚容器里」的滚轮，补给节点的主滚动区
+   （最大的 .n-view 文本 / 条目视图，找不到就退回该节点里最大的可滚元素）。
+   为什么要兜这一层：文本节点在预览形态下，.n-view 自己是滚动主体，指针一旦落到
+   它外面（body 内边距、status 行、OUTPUT 标题行、窄边）滚轮就什么也不做 ——
+   用户在那里滚等于「卡住」，而这恰恰是移动鼠标时最容易经过的位置。
+   已有滚动容器（.n-view / .n-out / 展开的代码块）自己滚得动时一律不接管，避免双速。 */
+function nodeBrowseScrollTarget(body) {
+  const views = body.querySelectorAll(".n-view");
+  let best = null;
+  let bestH = 0;
+  for (const v of views) {
+    if (!v.scrollHeight || v.scrollHeight <= v.clientHeight + 2) continue;
+    if (v.clientHeight < 48) continue;
+    const h = v.scrollHeight;
+    if (h > bestH) {
+      bestH = h;
+      best = v;
+    }
+  }
+  if (best) return best;
+  for (const c of body.querySelectorAll("*")) {
+    if (c.clientHeight < 48) continue;
+    if (!elScrollableY(c)) continue;
+    if (c.scrollHeight > bestH) {
+      bestH = c.scrollHeight;
+      best = c;
+    }
+  }
+  return best;
+}
+function elScrollableY(el) {
+  if (!el) return false;
+  let oy = "";
+  try {
+    const cs = window.getComputedStyle(el);
+    oy = cs && cs.overflowY ? cs.overflowY : "";
+  } catch (_) {}
+  if (!oy) oy = el.style && el.style.overflowY ? el.style.overflowY : "";
+  if (oy === "hidden" || oy === "clip") return false;
+  return !!(el.scrollHeight && el.scrollHeight > el.clientHeight + 1);
+}
+/* 指针已经落在一个真能滚的容器里 → 交回原生（绝不叠加成双速）。 */
+function browseWheelNativeOwner(ev, body) {
+  const t = ev.target;
+  if (!t || typeof t.closest !== "function") return null;
+  let oy = "";
+  try {
+    const cs = window.getComputedStyle(t);
+    oy = cs && cs.overflowY ? cs.overflowY : "";
+  } catch (_) {}
+  const own = (el) => {
+    if (!el || el === body) return false;
+    if (oy && oy !== "hidden" && oy !== "clip" && oy !== "visible")
+      return elScrollableY(el);
+    return false;
+  };
+  if (own(t)) return t;
+  const hit = t.closest(
+    ".n-view, .n-out, .n-bout-list, .n-view-entries, .js-edit, .dsh-tools, textarea, pre",
+  );
+  if (hit && hit !== body) return own(hit) ? hit : null;
+  return null;
+}
+function raWheelPixels(ev, ref) {
+  const d = Number(ev && ev.deltaY) || 0;
+  const mode = Number(ev && ev.deltaMode) || 0;
+  const unit = mode === 1 ? 20 : mode === 2 ? (ref && ref.clientHeight) || 200 : 1;
+  let px = d * unit;
+  const max = 160;
+  if (px > max) px = max;
+  if (px < -max) px = -max;
+  return px;
+}
+/* 滚轮路由器（document 捕获阶段，全局只装一次）。
+   为什么不能「建 body 时挂到节点上」：nodeElement 里是**先** buildBody(node, body)、
+   **后**才 el.appendChild(body)（见 nodeElement 末尾），所以建 body 那一刻
+   body.closest(".wf-node") 是 null —— 早退之后这枚监听就再没装上过，
+   表现就是「预览形态下滚轮什么也不做」（节点上连 dataset 也不会留痕）。
+   改成全局捕获：
+     · 与建 DOM 的时序无关，形态切换 / body 重建都不会失效；
+     · 覆盖整个节点（含头部空白 / 状态行 / 内边距），
+       指针落在节点任何非交互位置滚一下都能继续浏览正文；
+     · 按钮 / 输入框 / 端子 / 缩放把手 / 超级节点展开舞台 / 图片灯箱一律不接管。
+   捕获阶段先于画布自己的 wheel（#canvas 冒泡）执行，本层决定要不要吞掉事件。 */
+let browseWheelRouterOn = false;
+function bindNodeBrowseWheel(_body) {
+  if (browseWheelRouterOn || typeof document === "undefined") return;
+  browseWheelRouterOn = true;
+  document.addEventListener("wheel", browseWheelRoute, {
+    passive: false,
+    capture: true,
+  });
+}
+function browseWheelRoute(ev) {
+  const t = ev.target;
+  if (!t || typeof t.closest !== "function") return;
+  const host = t.closest(".wf-node");
+  /* 只在浏览形态（未选中）接管：编辑态一个字的滚动都不抢 */
+  if (!host || !host.classList.contains("browse")) return;
+  if (
+    t.closest(
+      "button, input, select, textarea, .port, .n-resize, .super-stage, #imgLb, #overlay",
+    )
+  )
+    return;
+  /* 现查 body：形态切换会重建 .n-body，闭包里的旧节点可能已脱离文档 */
+  const b = host.querySelector(":scope > .n-body");
+  if (!b) return;
+  const owner = browseWheelNativeOwner(ev, b);
+  const target = owner || nodeBrowseScrollTarget(b);
+  if (!target) return;
+  const px = raWheelPixels(ev, target);
+  if (!px) return;
+  const before = target.scrollTop;
+  const max = Math.max(0, target.scrollHeight - target.clientHeight);
+  const next = Math.max(0, Math.min(max, before + px));
+  /* 到头不吞事件；指针本来就压在能滚的容器上时也交回原生（不叠加成双速） */
+  if (next === before) return;
+  if (owner) return;
+  ev.preventDefault();
+  target.scrollTop = next;
 }
 
 /* 节点自身的 body（不含嵌套壳里的子节点 body） */
@@ -6210,10 +6900,7 @@ function browseProcOutEl(node) {
     });
     out.appendChild(list);
   } else if (r.output && r.output.kind === "text") {
-    const md = document.createElement("div");
-    md.className = "md";
-    md.innerHTML = renderMarkdown(r.output.text);
-    out.appendChild(md);
+    out.appendChild(browseOutTextView(r.output.text));
   } else if (r.output && r.output.kind === "image") {
     const img = document.createElement("img");
     img.id = "out-img-" + node.id;
@@ -6230,6 +6917,34 @@ function browseProcOutEl(node) {
     out.appendChild(e);
   }
   return out;
+}
+
+/* 输出正文（浏览态）：短输出照旧 Markdown 渲染；
+   超长输出降级成「整块纯文本 + 一行字符数」——一次 renderMarkdown 就能把几万字符
+   摊成几万个 DOM 节点，而画布每次重绘都要重建一遍，这就是「超长文本 → 画布卡顿」
+   的主因。完整内容看节点头部 👁 预览窗（app-textpreview.js，full 渲染不降级）。 */
+function browseOutTextView(text) {
+  const txt = String(text == null ? "" : text);
+  if (typeof nodeViewIsLong === "function" && nodeViewIsLong(txt)) {
+    const box = document.createElement("div");
+    box.className = "n-out-long";
+    const body = document.createElement("div");
+    body.className = "n-out-long-body";
+    body.textContent = txt;
+    box.appendChild(body);
+    const meta = document.createElement("div");
+    meta.className = "n-out-long-meta";
+    meta.textContent = I18n.t(
+      "超大输出 · 轻量显示 · {n} 字符 · 点上方 👁 预览全文",
+      { n: txt.length },
+    );
+    box.appendChild(meta);
+    return box;
+  }
+  const md = document.createElement("div");
+  md.className = "md";
+  md.innerHTML = renderMarkdown(txt);
+  return md;
 }
 
 /* input_text：单条 → 只读文本视图；批量 / YAML 条目 / 继承只读 → 紧凑条目列表 */
@@ -6385,10 +7100,14 @@ NODE_BROWSE_BODY.save = function (node, body) {
   pRow.className = "sv-path";
   pRow.style.alignItems = "flex-start";
   pRow.appendChild(
-    browseBriefEl(node.savePath, node, {
-      mono: true,
-      empty: I18n.t("（空）"),
-    }),
+    browseBriefEl(
+      typeof savePathDisplay === "function" ? savePathDisplay(node) : node.savePath,
+      node,
+      {
+        mono: true,
+        empty: I18n.t("（空）"),
+      },
+    ),
   );
   body.appendChild(pRow);
 
@@ -6406,10 +7125,23 @@ NODE_BROWSE_BODY.save = function (node, body) {
     pre.id = "svpre-" + node.id;
     pre.textContent = I18n.t("尚未保存");
     prev.appendChild(pre);
+  } else if (media === "pdf") {
+    /* PDF：预览态不渲染预览图 —— PDF 当不了图片显示，保留 <img> 只会是一块空图；
+       这里只列一行文件名。打开动作在节点头部的「打开」小按钮上（浏览态唯一可点处）。 */
+    const nm = document.createElement("div");
+    nm.className = "sv-pdf-file" + (node.savedPath ? "" : " is-empty");
+    nm.id = "svpdfname-" + node.id;
+    nm.textContent = savePdfNameText(node);
+    nm.title = node.savedPath || "";
+    prev.appendChild(nm);
   } else if (media === "audio" || media === "video") {
-    const el = document.createElement(media === "audio" ? "audio" : "video");
+    /* 音频用方角波形预览器（点波形试听），视频仍用原生播放器 */
+    const el =
+      media === "audio"
+        ? wavePreviewCreate("svaud-" + node.id)
+        : document.createElement("video");
     el.id = (media === "audio" ? "svaud-" : "svvid-") + node.id;
-    el.controls = true;
+    if (media === "video") el.controls = true;
     el.preload = "metadata";
     if (node.savedPath) el.dataset.path = node.savedPath;
     prev.appendChild(el);
@@ -7294,6 +8026,14 @@ function buildFnToolBodyMain(node, body, isTool) {
       else toast(I18n.t("函数开发会话未就绪（app-tools.js）"), "warn");
     };
     devRow.appendChild(devBtn);
+    /* 「AI 调用」面板入口：与头部小按钮同一弹层（app-aicall.js），板身上也放一枚，
+       函数 / 工具节点不选中也能改模型 / 预设 / 思考强度。 */
+    if (
+      typeof aiCallTarget === "function" &&
+      typeof aiCallBodyButtonEl === "function" &&
+      aiCallTarget(node)
+    )
+      devRow.appendChild(aiCallBodyButtonEl(node));
     const devHint = document.createElement("span");
     devHint.style.cssText = "font-size:10.5px;opacity:.6";
     devHint.textContent = isTool
@@ -7431,14 +8171,19 @@ function assetItemMediaRow(node, it, view, type) {
   } else {
     box.className = "n-av n-asset-av";
     if (p) {
-      const media = document.createElement(
-        type === "video" ? "video" : "audio",
-      );
-      media.controls = true;
+      /* 音频条目也走方角波形预览器（css 的 .n-asset-av .n-wave 就是给它用的）；
+         视频仍用原生播放器。 */
+      const isVid = type === "video";
+      const media = isVid ? document.createElement("video") : wavePreviewCreate("");
       media.preload = "metadata";
-      media.className = "n-av-el";
-      media.src = fileUrlWithBust(p, p);
-      if (type === "video") media.playsInline = true;
+      media.classList.add("n-av-el");
+      if (isVid) {
+        media.controls = true;
+        media.playsInline = true;
+        media.src = fileUrlWithBust(p, p);
+      } else if (typeof wavePreviewSetSource === "function") {
+        wavePreviewSetSource(media, p, p);
+      }
       const bad = document.createElement("div");
       bad.className = "n-av-ghost";
       bad.style.display = "none";
@@ -7485,11 +8230,12 @@ function assetItemRow(node, it, idx, lost) {
     " · " +
     assetItemTypeLabel(it.type) +
     "\n" +
-    I18n.t("左右两个端子同一条目：连入即写入素材库，输出即读出该条目的内容");
+    I18n.t("左右两个端子同一条目：输出即读出该条目的内容，连入只做检查，点「覆盖」才写入素材库");
   const kind = document.createElement("span");
   kind.className = "n-asset-kind " + it.type;
   kind.textContent = assetItemTypeLabel(it.type);
-  /* 小同步按钮：该条目的输入端子连入了新内容时点亮，点一下才更换条目内容（可撤销）。
+  /* 「覆盖」按钮：该条目的输入端子连入了与素材库不同的内容时点亮可用，
+     点一下才把该端子连入的内容覆盖进素材库（写前二次确认，可 Ctrl+Z 撤销）。
      失联时不挂 —— 写入的目标（库里那份素材）此刻根本不存在。 */
   const sync = lost
     ? null
@@ -7500,14 +8246,13 @@ function assetItemRow(node, it, idx, lost) {
       assetItemSyncPending(node, idx);
     sync.type = "button";
     sync.className = "n-asset-sync" + (pend ? " on" : "");
-    sync.textContent = "⟳";
+    sync.textContent = I18n.t("覆盖");
+    sync.disabled = !pend;
     sync.title = pend
       ? I18n.t(
-          "这个端子连入了新内容，与素材库里那份不同 · 点 ⟳ 才更换（Ctrl+Z 可撤销）",
+          "把该端子连入的内容覆盖进素材库（写前会再确认一次，可 Ctrl+Z 撤销）",
         )
-      : I18n.t(
-          "同步：把本条目输入端子连入的内容写进素材库（端子无内容时运行到这一步会自动同步）",
-        );
+      : I18n.t("该端子连入的内容与素材库一致，无需覆盖");
     sync.onclick = (ev) => {
       ev.stopPropagation();
       if (typeof assetItemSyncFromPort === "function")
@@ -7973,11 +8718,18 @@ function buildBody(node, body) {
     };
     const p = String(node.mediaAsset || "").trim();
     if (p) {
-      const media = document.createElement(isVid ? "video" : "audio");
-      media.controls = true;
+      /* 音频：方角波形预览器（点波形任意位置试听）；视频：原生播放器。
+         两者的 .n-av-el 类都保留 —— 节点点击换文件与拖拽放行都认这个类。 */
+      const media = isVid
+        ? document.createElement("video")
+        : wavePreviewCreate("");
+      if (isVid) media.controls = true;
       media.preload = "metadata";
-      media.className = "n-av-el";
-      media.src = fileUrlWithBust(p, p);
+      /* 音频预览器外壳是 <div>：只补类名，不能整块覆盖 className（会丢掉 .n-wave），
+         音源也不走 .src 属性而是 wavePreviewSetSource。 */
+      media.classList.add("n-av-el");
+      if (isVid) media.src = fileUrlWithBust(p, p);
+      else if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(media, p, p);
       if (isVid) media.playsInline = true;
       const bad = document.createElement("div");
       bad.className = "n-av-ghost";
@@ -8481,6 +9233,13 @@ function buildBody(node, body) {
       node.w = Math.max(node.w, procMinNodeW(node.outW));
     }
     body.appendChild(row);
+    /* 本地语音转写（Qwen3-ASR）：节点接了音频就补一块「转写文本（可编辑）+ 热词 +
+       重新转写」（renderer/app-asr.js · asrAppendNodeBody）；没接音频不占版面。 */
+    if (typeof asrAppendNodeBody === "function") {
+      try {
+        asrAppendNodeBody(node, body);
+      } catch (e) {}
+    }
   } else if (node.kind === "split") {
     const items = splitItems(node);
     const selIdx =
@@ -8847,8 +9606,9 @@ function buildBody(node, body) {
       }
       /* 开发节点：body 保持精简——只放动作按钮组与上次建议摘要。
          项目根目录 / 状态字样 / 生效模型行不再常驻 body（避免无用信息占用空间）：
-         路径与状态见「建议 / 开发 / 细化 / 问询」对话框，生效模型见头部 🧠 按钮悬浮提示。
-         按钮顺序：开发 → 细化 → 建议 → 问询 → 打开（文件节点）→ 文件 N（核心文件 · 顶层块不插入）→ 会话 N（有历史时）。 */
+         路径与状态见「开发 / 细化」对话框，生效模型见头部 🧠 按钮悬浮提示。
+         按钮顺序：开发 → 细化 → 打开（文件节点）→ 文件 N（核心文件 · 顶层块不插入）→ 会话 N（有历史时）。
+         「建议」「问询」两个卡片按钮已移除：建议只留右键菜单入口，问询不再有 UI 入口。 */
       if (node.dev && !node.db) {
         const devBar = document.createElement("div");
         devBar.className = "n-dev-info";
@@ -8883,33 +9643,7 @@ function buildBody(node, body) {
           };
           btnRow.appendChild(rbtn);
         }
-        /* ③ 建议：AI 只读调研后给出 4 条下一步方案（可多选 + 补充 + 就地开发） */
-        const sbtn = document.createElement("button");
-        sbtn.type = "button";
-        sbtn.className = "n-dev-suggest";
-        sbtn.textContent = I18n.t("建议");
-        sbtn.title = I18n.t(
-          "建议：弹窗确认后由 AI 依据项目真实代码与开发进度评估下一步（给出 4 条方案 · 可多选 + 补充 · 选完可就地开发）",
-        );
-        sbtn.onclick = (ev) => {
-          ev.stopPropagation();
-          suggestDevNode(node);
-        };
-        btnRow.appendChild(sbtn);
-        /* ④ 问询：AI 只读回答关于本模块的问题（不改文件、不改画布） */
-        const abtn = document.createElement("button");
-        abtn.type = "button";
-        abtn.className = "n-dev-ask";
-        abtn.textContent = I18n.t("问询");
-        abtn.title = I18n.t(
-          "问询：弹窗确认后由 AI 只读回答关于本模块的问题（不改文件、不改画布）",
-        );
-        abtn.onclick = (ev) => {
-          ev.stopPropagation();
-          askDevNode(node);
-        };
-        btnRow.appendChild(abtn);
-        /* ⑤ 文件节点：打开源码文件（标题 = 相对项目根 devPath 的路径，或绝对路径） */
+        /* ③ 文件节点：打开源码文件（标题 = 相对项目根 devPath 的路径，或绝对路径） */
         if (dk === "file") {
           const obtn = document.createElement("button");
           obtn.type = "button";
@@ -8924,7 +9658,7 @@ function buildBody(node, body) {
           };
           btnRow.appendChild(obtn);
         }
-        /* ⑥ 核心文件列表：顶层（项目）块不列举 → 不插入按钮；
+        /* ④ 核心文件列表：顶层（项目）块不列举 → 不插入按钮；
            其余块在「打开」之后、「会话 N」之前插入「文件 N」（0 条只显示「文件」）。 */
         const showFiles = devCoreFilesButtonVisible(node);
         const devFiles = showFiles ? devCoreFilesShown(node) : [];
@@ -8966,7 +9700,8 @@ function buildBody(node, body) {
           devBar.appendChild(line);
         }
         /* 在途 / 已就绪的建议调研：折叠卡给出一行可见、可点的状态（用户「返回」到
-           后台后，这是离开对话框期间唯一的可见入口）。点击打开对应形态的对话框：
+           后台后，这是离开对话框期间唯一的可见入口；入口已收进右键菜单，卡片上不再
+           有「建议」按钮）。点击打开对应形态的对话框：
            调研中 = 进度视图（可再「返回」或「停止生成」）；已就绪 = 方案清单
            （不重跑模型，可直接多选 + 补充 + 就地开发）。作业状态一变会走
            devSuggestQueueSync 重绘画布，这一行随之实时刷新。 */
@@ -8983,7 +9718,7 @@ function buildBody(node, body) {
           sline.className =
             "n-dev-sugstate" + (sugJob.running ? " running" : " ready");
           sline.textContent = sugJob.running
-            ? I18n.t("⏳ AI 调研中 · 点「建议」看进度")
+            ? I18n.t("⏳ AI 调研中 · 点此看进度")
             : I18n.t("💡 建议已就绪（未查看）");
           sline.title = sugJob.running
             ? I18n.t("点击打开调研进度：可「返回」继续后台跑，或「停止生成」")
@@ -8994,29 +9729,7 @@ function buildBody(node, body) {
           };
           devBar.appendChild(sline);
         }
-        /* 在途 / 已就绪的问询：折叠卡同款可点状态行（问询中 = 琥珀色 · 已就绪 = 绿色） */
-        const askJob =
-          typeof devAskJobOf === "function" ? devAskJobOf(node) : null;
-        if (askJob && (askJob.running || (askJob.phase === "ready" && !askJob.viewed))) {
-          const aline = document.createElement("button");
-          aline.type = "button";
-          aline.className =
-            "n-dev-sugstate" + (askJob.running ? " running" : " ready");
-          aline.textContent = askJob.running
-            ? I18n.t("💬 AI 回答中 · 点「问询」看进度")
-            : I18n.t("💬 问询已就绪（未查看）");
-          aline.title = askJob.running
-            ? I18n.t("点击打开问询进度：可「返回」继续后台跑，或「停止生成」")
-            : I18n.t("点击查看 AI 给出的回答（问询只读 · 不改任何文件）");
-          aline.onclick = (ev) => {
-            ev.stopPropagation();
-            if (typeof devAskShowJob === "function") {
-              const j = typeof devAskJobOf === "function" ? devAskJobOf(node) : null;
-              if (j) devAskShowJob(j);
-            }
-          };
-          devBar.appendChild(aline);
-        }
+        /* 问询只读调研的入口（卡片「问询」按钮）已移除，这里不再有对应的状态行 */
         const sessN = devSessionsOf(node).length;
         if (sessN > 0) {
           const hbtn = document.createElement("button");
@@ -9362,10 +10075,7 @@ function buildBody(node, body) {
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    const aud = document.createElement("audio");
-    aud.id = "mgaud-" + node.id;
-    aud.controls = true;
-    aud.preload = "metadata";
+    const aud = wavePreviewCreate("mgaud-" + node.id);
     prev.appendChild(aud);
     const empty = document.createElement("div");
     empty.className = "sv-empty";
@@ -9416,10 +10126,7 @@ function buildBody(node, body) {
     /* 试听播放条 */
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    const aud = document.createElement("audio");
-    aud.id = "mgaud-" + node.id;
-    aud.controls = true;
-    aud.preload = "metadata";
+    const aud = wavePreviewCreate("mgaud-" + node.id);
     prev.appendChild(aud);
     const empty = document.createElement("div");
     empty.className = "sv-empty";
@@ -9617,10 +10324,19 @@ function buildBody(node, body) {
     }
   } else if (isSaveNode(node)) {
     const media = saveMediaKind(node);
-    /* 保存路径 / 自动保存 → ⚙ 跳窗；浏览 / 位置 / 打开是动作，留在摘要行右边 */
+    /* 文件名直接在卡片上改（不必开 ⚙）；路径 / 自动保存仍在 ⚙ 里，浏览 / 位置 / 打开留在摘要行右边 */
+    body.appendChild(saveNameFieldRow(node));
     appendNodeSettingsSummary(node, body, {
       actions: savePathActionButtons(node),
     });
+    /* 图像保存且改过输出设定：在摘要下补一行实际落盘路径（后缀可能已被格式换掉） */
+    if (media === "image" && typeof imageOutActive === "function" && imageOutActive(node)) {
+      const note = document.createElement("div");
+      note.className = "sv-note";
+      note.textContent = saveImageOutLine(node);
+      note.title = note.textContent;
+      body.appendChild(note);
+    }
     const prev = document.createElement("div");
     prev.className = "sv-prev";
     if (media === "text") {
@@ -9645,11 +10361,32 @@ function buildBody(node, body) {
         openTextViewer(target);
       });
       prev.appendChild(pre);
+    } else if (media === "pdf") {
+      /* PDF：不预览页面，整块 body 就是一枚「打开该 PDF」的大按钮——
+         铺满预览区的 PDF 图标 + 文件名，点一下交系统默认应用打开。
+         未生成时按钮为禁用态（点击给提示），不会误开一个不存在的文件。 */
+      const dm = document.createElement("button");
+      dm.type = "button";
+      dm.className = "sv-pdf" + (node.savedPath ? "" : " is-empty");
+      dm.id = "svpdf-" + node.id;
+      const ico = document.createElement("span");
+      ico.className = "sv-pdf-ico";
+      ico.innerHTML = KIND_ICON_SVG.input_file;
+      const cap = document.createElement("span");
+      cap.className = "sv-pdf-name";
+      cap.textContent = savePdfNameText(node);
+      dm.title = node.savedPath
+        ? I18n.t("点击用系统默认应用打开：") + node.savedPath
+        : I18n.t("还没有生成 PDF——点节点上的 ▶ 生成");
+      dm.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        await openPdfSaveTarget(node);
+      });
+      dm.appendChild(ico);
+      dm.appendChild(cap);
+      prev.appendChild(dm);
     } else if (media === "audio") {
-      const aud = document.createElement("audio");
-      aud.id = "svaud-" + node.id;
-      aud.controls = true;
-      aud.preload = "metadata";
+      const aud = wavePreviewCreate("svaud-" + node.id);
       if (node.savedPath) aud.dataset.path = node.savedPath;
       prev.appendChild(aud);
       if (!node.savedPath) {
@@ -9978,6 +10715,15 @@ async function fillPreviews() {
           pre.textContent = I18n.t("尚未保存（指定路径后点击 ▶）");
           pre.style.color = "";
         }
+      }
+    }
+    if (isSaveNode(n) && saveMediaKind(n) === "pdf") {
+      /* 预览态只列一行文件名：保存后文件名可能变（默认名 / 唯一化重命名），就地刷新 */
+      const nm = document.querySelector("#svpdfname-" + n.id);
+      if (nm) {
+        nm.textContent = savePdfNameText(n);
+        nm.title = n.savedPath || "";
+        nm.classList.toggle("is-empty", !n.savedPath);
       }
     }
     if (isSaveNode(n) && saveMediaKind(n) === "image") {

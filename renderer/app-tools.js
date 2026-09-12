@@ -374,6 +374,8 @@ function toolsLibRow(tool, host) {
   /* 清单区分两类条目：工具包＝橙徽「工具」，函数包＝紫徽「函数」（kind 由 toolEntryKind 判定） */
   const isFn = toolEntryKind(tool) === "function";
   const row = document.createElement("div");
+  /* 全局搜索（Ctrl+F）点「工具库」结果时靠它把行滚进视野并闪一下 */
+  if (tool && tool.id) row.dataset.toolId = String(tool.id);
   row.style.cssText =
     "display:flex;align-items:center;gap:10px;border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--code)";
   const info = document.createElement("div");

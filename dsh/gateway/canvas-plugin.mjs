@@ -29,7 +29,7 @@ export const inject = ['tools']
 
 const KINDS = [
   'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'tts_gen', 'video_gen', 'remotion',
-  'save', 'save_text', 'save_image', 'split', 'merge', 'global', 'wait_file', 'timer',
+  'save', 'save_text', 'save_image', 'save_pdf', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
   'agent_task', 'task', 'super', 'db_replica',
   'control', 'judge', 'net_recv', 'net_send', 'execute',
@@ -85,42 +85,22 @@ const NODE_LOCK_DROP_CANVAS = new Set([
 const leanToolsOn = () => envFlagOn(LEAN_ENV)
 const noCanvasToolsOn = () => envFlagOn(NO_CANVAS_ENV)
 
-// 开发节点「功能色卡」(functional color card): one frame colour per functional
-// category, so a project canvas can be read by colour. The single source of
-// truth is DEV_FUNC_COLORS in renderer/app-devnode.js, which the renderer
-// exposes to agents as the `devFuncColors` list in every mtnode_canvas_get
-// payload. The string below is a HARD-COPY of those key / zh / en / hex values
-// used only for tool-description text (the gateway process cannot import
-// renderer code) — the smoke test asserts the two stay identical, so if you
-// edit the card, edit BOTH.
-const DEV_FUNC_COLORS_TABLE =
-  'core 核心运行时 / Core runtime #6db4ff · canvas 画布与交互 / Canvas & interaction #45cfe6 · ' +
-  'ai AI 与 Agent / AI & agents #c792ea · data 数据与存储 / Data & storage #4dd0c4 · ' +
-  'media 媒体与本地后端 / Media & local backends #ff8fa3 · plugin 插件与生态 / Plugins & ecosystem #f0c14d · ' +
-  'build 构建与诊断 / Build & diagnostics #ff9d5c · test 测试与质量 / Tests & quality #a8e05f'
-
-// Same card, terse (key=hex only) — for the per-field descriptions.
-const DEV_FUNC_COLORS_SHORT =
-  'core=#6db4ff canvas=#45cfe6 ai=#c792ea data=#4dd0c4 media=#ff8fa3 plugin=#f0c14d build=#ff9d5c test=#a8e05f'
-
+/* GET_DESC 只写「这张工具给什么 + 三档颗粒度各给什么 + 一句话指向技能」。
+   每个参数的取法（ids / scope / sections / bodies / bodyLimit）唯一真源是下面的 parameters
+   表，此处不再抄第二份；节点级字段清单同样不抄 —— 它是按 kind 生成的，抄在这里既每轮重发
+   又会随实现漂移（旧版那句「默认就带 prompt/task/goal」早就与实现相反了）。
+   开发节点「功能色卡」也不在描述里硬拷一份：它是 detail:"standard" 返回的 devFuncColors
+   列表（真源 renderer/app-devnode.js 的 DEV_FUNC_COLORS），要建开发块时按需取。 */
 const GET_DESC =
   NODE_LOCK +
-  'Read the CURRENT MTNode canvas PLUS app context: workflow name, every VISIBLE node in the current task/super scope (id, kind, title, position, tags, prompt/text/task/goal/steps/parentTaskId/parentSuperId/note/expandW/expandH/savePath/waitPath/waitIntervalSec, timerMode/timerAt/timerEverySec/timerCron/timerArmed/timerNextAt, providerId/provider/model, globalRefs, size/bgRmOn/imgQuality/imgBackground/maskOn for proc_image, ctrlAction/ctrlRole for control, judgeResult; db/dbCount for DATABASE super nodes, dev/devPath/devStatus/devKind/devColor/devModel/devProvider/devPreset/devEffort/devFiles (+devFilesAuto when the list is only the automatic fallback) for DEV super nodes, dbNodeId/dbName/compiledAt for db_replica, execPath/execIcon/execColor for execute nodes, tool + toolConfig{name,description,inputs,outputs} for 工具 nodes, and fnName/description/jscode/jscodeLen/inputs/outputs for 函数 nodes — for both of those the params ARE the ports, and every input param carries kind (text | image) plus the list flag — their semantics live in the mtnode_canvas_edit param table, and the declared type is what decides wire compatibility, port/wire colouring and downstream auto-selection (e.g. a save node flipping to .png)), taskFocus, superFocus, taskTree, superTree (all super nodes), tagCatalog, marks, wires (each: from/to titles, and for UML-style relationship wires rel:true + relLabel + relArrow), groups, camera, UI view, imageSizes, markColors, devFuncColors (the DEV 功能色卡 / functional colour card), and workflows. Node body fields (input_text.text, prompt, task, goal) are NOT included by default: detail defaults to "standard", which reports only *Len character counts for them — pass detail:"full" (ideally together with ids:[...]) when you truly need complete text; bodyLimit then truncates whatever bodies you asked for.\n\n' +
-  'DEV 功能色卡 (functional colour card for dev nodes — also returned as the devFuncColors list [{key,zh,en,hex}]): ' +
-  DEV_FUNC_COLORS_TABLE +
-  '. New dev blocks are auto-coloured from this card at creation (title + note keyword match), so a devKind=module block normally needs no devColor from you; when you DO set it, pick the card entry matching the block\'s function — no need to ask the user before colouring (the card is the default), and the user can override any colour later with the HSV swatch button in the node header. file / class / interface / enum keep their element-type colour (the card does not apply to them).\n\n' +
-  'GRANULARITY (use it to save tokens — every node\'s full config is expensive; the result also carries a sizeHint line telling you how many characters this call cost):\n' +
-  '- detail "minimal": per node only id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags. Fastest orientation.\n' +
-  '- detail "standard" (DEFAULT): minimal + all config fields (provider/model/size/savePath/waitPath/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only (textLen/promptLen/taskLen/goalLen/jscodeLen), NO body text.\n' +
-  '- detail "full": everything, including full body text, rows, files, steps. You must ask for it explicitly — best with ids:["标题A"] so only the nodes you actually need come back heavy.\n' +
-  '- ids: [nodeIdOrTitle…] — return ONLY those nodes (wires restricted to them). Use it to fetch one node\'s full config cheaply (e.g. ids:["标题A"] + detail:"full").\n' +
-  '- bodies: false — drop body text at any detail (lengths stay); true forces inclusion.\n' +
-  '- bodyLimit: N — truncate each body value to N chars (textLen stays true length).\n' +
-  '- sections: ["nodes","marks","wires","groups","taskTree","superTree","tagCatalog","workflows","selection"] — restrict these heavy top-level blocks to the listed ones (default: all). Small context (workflow/view/cam/imageSizes/kinds/markColors/devFuncColors/taskFocus/superFocus/assistScope/scopeNote) is always included.\n' +
-  'When the run is locked to its own canvas（会话所属画布：agent session / assistant "current" scope）, workflows lists ONLY that canvas — you cannot see or open others. 绑定在会话建立时就定下：用户中途切去别的画布干活，本会话读写的仍是它自己那张图。Always call this before editing; 建图 / 连线 / 排版的硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在 mtnode_canvas_edit 的说明里，不在此重复。'
-
-const KIND_GUIDE =
-  'create.kind 速查：输入 input_text / input_image / input_audio / input_video / input_file（媒体输入由用户自己选文件，数据端子值 = file:/// URL，可直接连给需要媒体参考的端子）· 处理 proc_text / proc_image / agent_task（智能节点）/ db_table · 生成 music_gen / tts_gen / video_gen / remotion · 保存 save（旧别名 save_text / save_image）· 批次 split / merge · 控制 control / judge / task · 节拍等待 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute（执行节点绑 execPath，无数据端子）· 计算 tool / function（参数即端子）。'
+  'Read the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\n' +
+  'DEFAULTS TO THE CHEAPEST FORM — detail "minimal": one index line per node, only title / note / kind (标题 / 描述 / 类别), with workflow identity and scopeInfo; no config fields, no bodies, and no wire / mark / group / tree block. Ask for more only when the task needs it:\n' +
+  '- "standard": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps), body *lengths* (no body text) and the build references (kinds, imageSizes, defaultImageSize, markColors, devFuncColors 功能色卡, cam / view).\n' +
+  '- "full": everything incl. body text (input_text.text, prompt, task, goal, jscode), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n' +
+  '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of the heavy blocks (nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认，不必为接线读整图配置）。\n' +
+  '- ports (standard / full): fixed-port nodes (proc_image / tts_gen / video_gen / remotion / judge / tool·function / super boundary) carry ports:[{dir,index,name,kind,connectedTo}] — read the wiring targets before connecting instead of reading a connect error.\n' +
+  'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its own character cost.\n\n' +
+  'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas — you cannot see or open others. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
@@ -139,24 +119,25 @@ Needs user confirmation (UI will prompt; may be rejected):
 
 For creating/editing/wiring/removing NODES or canvas drawings (marks) on the canvas this run belongs to（会话所属画布，不是用户此刻看到的这张）, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).`
 
-const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图。标题必须唯一；alias 只在本调用内有效（connect / update / refs 用它），不是画布 id。返回只给「计数 + 别名 / 标题 + warnings」的改动回执，不回整图快照——要看改完的样子再用 mtnode_canvas_get（detail:"minimal" 或 ids:[...]）。
+/* 工具描述只留「卡口」：kind 枚举、端子语义一句话、5 条不变量 + 一句指向技能。
+   完整硬规则（task 三端、super 边界、tool/function 参数即端子、@引用三条件、
+   save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则）已迁到
+   按需技能 mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md —— 工具描述每轮都随
+   历史重发，长规则只有「建图 / 连线 / 批量 / 媒体」时才需要，命中再加载即可。 */
+const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。返回是自足的改动回执：计数 + 每个 created / updated 的 x/y/w/h 与端口占用摘要 + warnings，不必再回读画布（detail:"diff" 只要明细）；确要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。
 
-${KIND_GUIDE}
+create.kind 枚举见 schema：输入 input_*（媒体输入由用户自己选文件）· 处理 proc_text / proc_image / agent_task / db_table · 生成 music_gen / tts_gen / video_gen / remotion · 保存 save · 批次 split / merge · 控制 control / judge / task · 节拍 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute · 计算 tool / function。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
 
-硬规则（误接线主要来源）：
-- task 自带固定 start / endSuccess / endFail（勿删）：活儿非平凡先建 task 当计划，实现用 parentTaskId 放进去，控制线必须从 start 走到成功或失败终点；judge 只有两个输出：fromIndex 0 = YES、1 = NO。
-- super 用 parentSuperId 打包（需 canvas_super）：对外只暴露边界输入/输出端子，连线要从 super 的输入端子进子节点、再由子节点连回它的输出端子；跨 super / 跨层级接通用 superConnect。
-- tool / function 节点：参数表就是端子表——输入端子 0 = 控制入、1..N = 按顺序的各入参；输出端子 0..M-1 = 各出参、末位 = 控制出。fromIndex / toIndex 必须按这份表来数（目标的 toIndex 0 = 控制入）；数组端子看参数的 list 说明；传 inputs / outputs = 整体替换该表，删参数会让已连的端子改指别的参数，改完提醒用户复核连线。
-- @引用：连线源在 prompt/task 里写 @标题；引用全局广播须同时 (1) 源接进 kind "global"、(2) 消费节点 globalRefs:true、(3) prompt/task 里 @源标题——只有被明文 @ 命中的才注入；@标签名 注入带该标签的全部节点内容。为节点写 prompt/task 而要用画布上别的节点的内容时，一律写 @标题（连线源），不要把那个节点的正文复制粘贴进 prompt——粘贴的正文不会随上游重跑更新，@引用才会。素材节点（素材输入节点）本身不是 @ 候选：不写素材节点标题，写它的内容条目标题（＝端子名）只引那一条，且只有已连线接进本节点的端子条目可引。
-- 智能节点（agent_task、开了 agent 的 proc_text）自己会写文件：其后绝不接 save（会把会话噪声落盘），也别当数据输入连给别人——让它写文档，再用 wait_file 以控制线挡住下游（它无输入端子、不输出值，别往它连线），后续节点自己读约定路径。
-- save 只接在普通（非智能）proc_text / proc_image 之后；music_gen / tts_gen / video_gen 由节点自己的 outputPath 直接写出音/视频，不配 save；remotion 例外：无 outputPath，mp4 由下游 save 落盘（.mp4 结尾）。
-- proc_image 每次运行只出 1 张图：要多图就一条批量项出一张、或用多个 proc_image 节点、或 attempts N。
-- proc_image（图像处理/生成）节点可开透明背景：用户要透明底成品（贴纸 / 图标 / 精灵 / 立绘 / 抠好的主体）时，把该 proc_image 节点的 bgRmOn 置 true 即可——正常写主体提示词，内部先出纯黑基准、再严格复刻纯白并差分出 Alpha（带透明 PNG）；约 2 倍 Token，且只有能把基准图当参考图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图，其余自动跳过。不需要透明底或换回单张就置 false。
-- batchMode "batch" = 每条一次运行、每次只看该条：严禁把整批 N 条又全部塞进每次运行（≈N² 次调用）；只处理其中一项先接 split，要一次看全部才用 "agg"。逐条批量优先普通 proc_text / proc_image（智能节点只用于 agg）。细则见技能 mtnode-canvas-batch-safety。
-- 数据库：super + db:true 存事实、用户编译（⚙）产出 db_replica；接到副本的智能节点一切事实走 mtnode_db（纪律见该工具说明与技能 mtnode-db-facts），禁止凭记忆。
-- 开发节点（super + dev:true）：note 两段 ≤200 字（【功能】非技术设计 + 【实现】技术梗概）、devPath = 项目根、parentSuperId 逐层嵌套按深度细化、元素间关系用 rel:true 关系线表达、按 DEV 功能色卡上色；建块与细化完整规范见技能 mtnode-dev-architect。
-- 排版：用户要编辑或点 ▶ 的节点放上方（较小 y）。完整规范（createMarks box + around 分区、control 直连每个该一键重跑的节点且控制流不走数据线、不要建 "clear"）见技能 mtnode-canvas-layout-ux。
-- 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。`
+端子预检：canvas_get（detail "standard" / "full"）对端子数固定的节点直接回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看它；connect 失败时 warnings 会带候选端子清单与正确接法建议（如单数据端子已被占 → 用 super 汇聚或拆节点），save 的路径后缀按输入类型强制（.md / .yaml / .png / .wav / .mp4）并回 warning，不必等服务商报错。
+
+不变量（违反即接线错）：
+- 标题必须唯一。
+- 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 以控制线挡下游。
+- proc_image 每次运行只出 1 张图（多图 = 1:1 批量项 / 多个 proc_image 节点 / attempts N）。
+- batchMode "batch" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；要一次看全部用 "agg"。
+- 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。
+
+完整硬规则只写在技能 mtnode-canvas-edit-rules（save 与 wait_file、批次与文生图、task 三端、@引用三条件、数据库 / 开发节点 / 排版 / scope 细则都在那里）：建图 / 连线 / 批量 / 媒体前先用 skill 工具加载它。`
 
 /* 绘制（mark）字段表：createMarks 用这份表；updateMarks 与旧别名 marks 只指回它，不重复序列化。
    around 的旧别名 nodes 仍被渲染层接受，但不再写进 schema。 */
@@ -235,7 +216,8 @@ const NODE_PROPS = {
   steps: { type: 'array', items: { type: 'string' }, description: 'task：有序子步骤标题。' },
   parentTaskId: { type: 'string', description: '放进某 task 内部（id / alias / 标题）；父 task 要先在同一次调用里建。' },
   parentSuperId: { type: 'string', description: '放进某 super 内部（id / alias / 标题）；需 canvas_super。' },
-  note: { type: 'string', description: 'super 卡片说明（开发节点必须【功能】+【实现】两段）。' },
+  scope: { type: 'string', description: '局部画布：本次调用只在这一颗超级 · 开发节点内部（id 或唯一标题；"global" = 整图）。界外节点跳过 + warnings。' },
+  scopeDepth: { type: 'string', enum: ['direct', 'all'], description: '"direct" = 那颗壳 + 直接子节点（默认）· "all" = 整棵子树。' },  note: { type: 'string', description: 'super 卡片说明（开发节点必须【功能】+【实现】两段）。' },
   expandW: { type: 'number', description: 'super 展开态宽度。' },
   expandH: { type: 'number', description: 'super 展开态高度。' },
   subFolder: { type: 'string', description: 'super 下相对工作目录的子目录（内部节点相对路径默认落这里）。' },
@@ -272,7 +254,7 @@ const NODE_PROPS = {
   inputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '函数节点输入端子表（工具节点用 toolConfig.inputs）；改表即改端子。' },
   outputs: { type: 'array', items: PARAM_ENTRY_SPEC, description: '函数节点输出端子表（工具节点用 toolConfig.outputs）；末位控制出不在表内。' },
   agent: { type: 'boolean', description: 'proc_text：开启智能模式。' },
-  bgRmOn: { type: 'boolean', description: 'proc_image 透明背景（抠图出带 Alpha 的 PNG）：true = 内部先出纯黑基准、再以它为唯一参考图严格复刻纯白并逐像素差分出 Alpha；约 2 倍 Token，且只有能把基准图当参考图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图，其余自动跳过。false / 省略 = 正常单张出图。' },
+  bgRmOn: { type: 'boolean', description: 'proc_image 透明背景（抠图出带 Alpha 的 PNG）：内部先出纯黑基准、再以它为参考图复刻纯白并逐像素差分出 Alpha；约 2 倍 Token，仅支持把基准图当参考图下发的服务商才会抠图。false / 省略 = 正常单张出图。' },
   globalRefs: { type: 'boolean', description: '允许 @引用全局广播（还要在 prompt/task 写明 @标题）。' },
   auto: { type: 'boolean', description: 'save：上游运行即自动保存。' },
   batch: { type: 'boolean', description: 'input_*：开启批量项。' },
@@ -281,16 +263,16 @@ const NODE_PROPS = {
   provider: { type: 'string', description: '智能节点路由：deepseek-official / mtnode_<id> / 服务商名。' },
   model: { type: 'string', description: '本节点模型 id（运行中的别改）。' },
   size: { type: 'string', description: 'proc_image 尺寸，须是 canvas_get 的 imageSizes 之一（如 "2048x1360" / "auto"）。' },
-  imgQuality: { type: 'string', enum: ['', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'proc_image 的 quality 直传参数（gpt-image-2）：low/medium/high/xhigh/max/auto；空 = 不传（服务商按 auto）；旧版 DALL·E 的 standard / hd 不要传。' },
-  imgBackground: { type: 'string', enum: ['', 'auto', 'opaque', 'transparent'], description: 'proc_image 的 background 直传参数（gpt-image-2）：transparent 直出带 Alpha 的 PNG（自动补「背景透明」提示词并禁用差分抠图 bgRmOn）；opaque；空 = 不传。' },
-  maskOn: { type: 'boolean', description: 'proc_image 蒙版局部重绘（透明区 = 重绘，只对第 1 张 image 生效）：开启前须由用户在节点头部蒙版编辑器涂抹出 maskPath（Agent 不能代画）；需图像输入 + OpenAI 兼容图像服务商；与 ratioLockOn 同时开以蒙版为准；带蒙版时请求的 size 钉成首张参考图的像素尺寸，节点自己选的 size 这一轮不生效（size 与蒙版像素不一致会被服务端重排输入图，蒙版即失效）。' },
+  imgQuality: { type: 'string', enum: ['', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'proc_image 的 quality 直传参数：low/medium/high/xhigh/max；空 = 不传（服务商按 auto）；旧版 DALL·E 的 standard / hd 不要传。' },
+  imgBackground: { type: 'string', enum: ['', 'auto', 'opaque', 'transparent'], description: 'proc_image 的 background 直传参数：transparent 直出带 Alpha 的 PNG（自动补「背景透明」提示词并禁用差分抠图 bgRmOn）；opaque；空 = 不传。' },
+  maskOn: { type: 'boolean', description: 'proc_image 蒙版局部重绘（透明区 = 重绘，只对第 1 张 image 生效）：maskPath 须由用户在节点头部蒙版编辑器涂抹（Agent 不能代画）；需图像输入 + OpenAI 兼容图像服务商；与 ratioLockOn 同时开以蒙版为准；带蒙版时请求的 size 钉成首张参考图的像素尺寸，节点自己选的 size 这一轮不生效。' },
   remotionSize: { type: 'string', description: 'remotion 分辨率（宽x高）。' },
   fps: { type: 'number', description: 'remotion 帧率 1–60。' },
   attempts: { type: 'number', description: '抽卡次数 1–10（生成类节点）。' },
   outputPath: { type: 'string', description: 'video_gen / music_gen / tts_gen 输出路径（.mp4 / .wav / .mp3）。' },
   voice: { type: 'string', description: 'tts_gen 音色（留空 = 默认，勿编造）。' },
   speed: { type: 'number', description: 'tts_gen 语速 0.5–2.0。' },
-  videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: 'video_gen：fl2va 首末帧（默认）/ r2v 多参考图。' },
+  videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: 'video_gen：fl2va 首末帧（默认）/ r2v 多参考（端子：1 提示词 · 2–10 参考图 I1–I9 · 11–13 参考视频 V1–V3 · 14–16 参考音频 A1–A3）。' },
   duration: { type: 'number', description: '时长秒：video_gen 4–15，remotion 1–60。' },
   outputRes: { type: 'string', enum: ['auto', '480p', '720p', '1080p'] },
   postEnabled: { type: 'boolean', description: 'video_gen 超分补帧后处理（24G 建议关）。' },
@@ -365,10 +347,13 @@ function jsonResult(value) {
   return [{ type: 'text', text: JSON.stringify(value) }]
 }
 
-/* 返回体积收紧：canvas_get 默认档位（渲染层的缺省是 full，整图正文一灌就是几万字符，
-   并且会长期常驻历史）；这里在网关侧把缺省改成 standard —— 配置字段齐全、正文只给
-   *Len，模型要看全文必须显式传 detail:"full"（配合 ids / sections 收窄）。 */
-const DEFAULT_GET_DETAIL = 'standard'
+/* 返回体积收紧：canvas_get 默认档位从 standard 再降到 minimal —— 缺省只回「节点索引」：
+   每节点只有 标题 / 描述(note) / 类别(kind)，重型块只留 nodes（marks / wires / groups /
+   taskTree / superTree / tagCatalog / workflows / selection 一概不带），静态词表与视角
+   （kinds / imageSizes / markColors / devFuncColors / cam / view）也不带。要配置字段显式传
+   detail:"standard"（配置齐全 + 正文只给 *Len + 建图参考表），要看全文再显式 detail:"full"
+   （配合 ids / sections 收窄）。默认给索引，等于一次读图不再把整图配置灌进长期历史。 */
+const DEFAULT_GET_DETAIL = 'minimal'
 
 /* 在返回体里带一句体积提示：让模型知道这次读了多少字符、怎么读更省。 */
 function withGetHint(value, detail) {
@@ -378,8 +363,8 @@ function withGetHint(value, detail) {
   return Object.assign({}, value, {
     sizeHint:
       '本次返回 ' + chars + ' 字符 / ' + nodes + ' 个节点（detail=' + detail +
-      '，正文默认省略，只有 *Len）。要全文就显式传 detail:"full" 并用 ids:[...] 收窄到那几个节点；' +
-      '只要结构用 detail:"minimal" + sections:["nodes","wires"]。',
+      '，默认 minimal 是纯节点索引：每节点只给 标题 / 描述 / 类别，配置、正文与连线 / 绘制 / 分组 / 树一律不给；要配置用 detail:"standard"，要全文用 detail:"full" + ids:[...] 收窄，' +
+      '只用连线用 sections:["nodes","wires"]）。',
   })
 }
 
@@ -388,9 +373,30 @@ function clipLabel(s, n) {
   return str.length > n ? str.slice(0, n) + '…' : str
 }
 
+/* 回执自足：每条 created / updated 带上位置、尺寸与端口占用摘要（端子 index/name/kind/已连数），
+   模型改完不必再 canvas_get 回读才知道长什么样、哪个端子空着。 */
+function editNodeReceipt(n, withAlias) {
+  if (!n || typeof n !== 'object') return n
+  const ref =
+    (withAlias && n.alias ? n.alias + '=' : '') +
+    clipLabel(n.title || n.id || '', 60) + '(' + clipLabel(n.kind || '', 24) + ')'
+  return {
+    ref,
+    id: n.id,
+    title: clipLabel(n.title || '', 60),
+    kind: n.kind,
+    x: n.x,
+    y: n.y,
+    w: n.w,
+    h: n.h,
+    ports: n.ports,
+  }
+}
+
 /* canvas_edit 成功时渲染层会回一整份 canvasSnapshot（含全部节点正文），历史里最占体积。
-   这里只留「计数 + 别名/标题」的改动回执，需要看画布再走 mtnode_canvas_get。 */
-function editSummary(value) {
+   这里只留「改动回执」，需要看画布再走 mtnode_canvas_get。
+   detail:"diff" = 只回本次 created/updated/connected/removed 明细，不回计数摘要与提示。 */
+function editSummary(value, detail) {
   if (!value || typeof value !== 'object') return value
   const list = (v) => (Array.isArray(v) ? v : [])
   const created = list(value.created)
@@ -400,6 +406,20 @@ function editSummary(value) {
   const createdMarks = list(value.createdMarks)
   const updatedMarks = list(value.updatedMarks)
   const removedMarks = list(value.removedMarks)
+  const createdReceipt = created.map((n) => editNodeReceipt(n, true))
+  const updatedReceipt = updated.map((n) => editNodeReceipt(n, false))
+  const connectedReceipt = connected.map((w) => clipLabel((w && (w.fromTitle || w.from)) || '', 60) + '→' + clipLabel((w && (w.toTitle || w.to)) || '', 60))
+  const removedReceipt = removed.map((id) => clipLabel(id, 60))
+  if (detail === 'diff') {
+    return {
+      ok: value.ok !== false,
+      created: createdReceipt,
+      updated: updatedReceipt,
+      connected: connectedReceipt,
+      removed: removedReceipt,
+      warnings: list(value.warnings),
+    }
+  }
   const out = {
     ok: value.ok !== false,
     counts: {
@@ -413,18 +433,16 @@ function editSummary(value) {
       grouped: value.grouped ? 1 : 0,
     },
     /* alias 只在本调用内有效，下一轮定位靠标题 / id，故两个都给出 */
-    created: created.map((n) =>
-      (n && n.alias ? n.alias + '=' : '') + clipLabel((n && (n.title || n.id)) || '', 60) +
-      '(' + clipLabel((n && n.kind) || '', 24) + ')'),
-    updated: updated.map((n) => clipLabel((n && (n.title || n.id)) || '', 60) + '(' + clipLabel((n && n.kind) || '', 24) + ')'),
-    connected: connected.map((w) => clipLabel((w && (w.fromTitle || w.from)) || '', 60) + '→' + clipLabel((w && (w.toTitle || w.to)) || '', 60)),
-    removed: removed.map((id) => clipLabel(id, 60)),
+    created: createdReceipt,
+    updated: updatedReceipt,
+    connected: connectedReceipt,
+    removed: removedReceipt,
     marks: createdMarks.concat(updatedMarks).map((m) =>
       (m && m.alias ? m.alias + '=' : '') + clipLabel((m && m.kind) || 'mark', 12) +
       (m && m.text ? ':' + clipLabel(m.text, 40) : '')),
     removedMarks: removedMarks.map((id) => clipLabel(id, 60)),
     warnings: list(value.warnings),
-    hint: '整图快照已省略（只回计数与别名 / 标题）；需要复核排版与连线用 mtnode_canvas_get（detail:"minimal" 或 ids:[...]）。',
+    hint: '整图快照已省略（回执已含位置 / 尺寸与端口占用，无需回读）；确要复核别的节点用 mtnode_canvas_get（detail:"minimal" 或 ids:[...]）。',
   }
   if (value.message) out.message = clipLabel(value.message, 80)
   if (value.grouped) out.grouped = clipLabel(value.grouped.title || value.grouped.id || '', 60)
@@ -437,6 +455,9 @@ export function apply(ctx) {
   let buf = ''
   /** @type {Map<string, {resolve:(v:any)=>void, reject:(e:Error)=>void}>} */
   const pending = new Map()
+  /* canvas_get 内容哈希缓存：哈希（渲染层给的结构哈希）+ 本次请求参数 都相同 = 同一份
+     结果已经进过历史，直接回「无变化」短回执，不再重发整图。首读照常回全量。 */
+  const getSeen = new Map()
 
   const send = (obj) => {
     if (socket && !socket.destroyed) {
@@ -542,13 +563,24 @@ export function apply(ctx) {
         type: 'string',
         enum: ['minimal', 'standard', 'full'],
         description:
-          'Node field granularity. DEFAULT (when omitted) = "standard". minimal = id/kind/title/x/y/w/h/running/parentTaskId/parentSuperId/taskStatus/tags only (fastest orientation). standard = minimal + all config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text. full = everything incl. full text bodies (input_text.text, prompt, task, goal), rows, files, steps — you must ask for it explicitly, ideally with ids:[...] so only the nodes you need come back heavy.',
+          'Node field granularity. DEFAULT (when omitted) = "minimal": per node only title / note / kind (标题 / 描述 / 类别) — no id, no position, no status, no config fields, no bodies, and no heavy block (marks / wires / groups / trees) either. standard = minimal + all per-kind config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text, and the build references (kinds, imageSizes, defaultImageSize, markColors, devFuncColors, cam/view). full = everything incl. full text bodies (input_text.text, prompt, task, goal, jscode), rows, files, steps — you must ask for it explicitly, ideally with ids:[...] so only the nodes you need come back heavy.',
       },
       ids: {
         type: 'array',
         items: { type: 'string' },
         description:
           'Return ONLY these nodes (match by node id or unique title). Wires are restricted to the selected nodes. Use with detail:"full" to fetch a single node\'s complete config cheaply.',
+      },
+      scope: {
+        type: 'string',
+        description:
+          'Read ONLY the inside of this super / dev / db node (id or unique title). "global" = whole canvas. Inspect one shell without pulling the whole graph into context.',
+      },
+      scopeDepth: {
+        type: 'string',
+        enum: ['direct', 'all'],
+        description:
+          'With scope: "direct" = that shell plus its direct children (default) · "all" = the whole subtree underneath it.',
       },
       bodies: {
         type: 'boolean',
@@ -564,7 +596,7 @@ export function apply(ctx) {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Restrict heavy top-level blocks to the given list: nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection (default: all). Small context (workflow, view, cam, imageSizes, kinds, markColors, devFuncColors, taskFocus/superFocus, assistScope, scopeNote) is always included.',
+          'Whitelist of the heavy top-level blocks: nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection. At detail "minimal" ONLY nodes is returned unless you name others here（只查连线就用 ["nodes","wires"]）; at "standard" / "full" the default is all of them and this list narrows it. The small envelope (workflow, scopeInfo, assistScope / scopeNote) is always included.',
       },
     },
     timeoutMs: 15000,
@@ -578,6 +610,20 @@ export function apply(ctx) {
         a.detail = DEFAULT_GET_DETAIL
       }
       const value = await rpc('get', a, exec)
+      const hash = value && typeof value.contentHash === 'string' ? value.contentHash : ''
+      if (hash) {
+        const key = hash + '|' + JSON.stringify(a)
+        if (getSeen.has(key)) {
+          return jsonResult({
+            ok: true,
+            unchanged: true,
+            contentHash: hash,
+            sizeHint: '画布结构自上次读取以来无变化，本次 0 个节点重发（约 90 字符，同一份结果已在本会话历史里）。要节点正文用 ids:[...] + detail:"full"。',
+          })
+        }
+        if (getSeen.size > 200) getSeen.clear()
+        getSeen.set(key, true)
+      }
       return withGetHint(value, a.detail)
     },
   }))
@@ -723,6 +769,12 @@ export function apply(ctx) {
         type: 'string',
         description: '改当前画布标签名（可选）。',
       },
+      detail: {
+        type: 'string',
+        enum: ['summary', 'diff'],
+        description:
+          '回执口径：summary（默认）= 计数摘要 + created/updated 明细（含 x/y/w/h 与端口占用）；diff = 只回本次 created/updated/connected/removed 明细，不回计数摘要。回执已自足，无需回读画布。',
+      },
     },
     timeoutMs: 300000,
     output: {
@@ -730,7 +782,8 @@ export function apply(ctx) {
       render: (_args, value) => jsonResult(value),
     },
     async execute(args, exec) {
-      return editSummary(await rpc('edit', args || {}, exec))
+      const a = args || {}
+      return editSummary(await rpc('edit', a, exec), a.detail)
     },
   }))
 

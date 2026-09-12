@@ -143,7 +143,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
   <h2>2. 一句话结论</h2>
   <div class="note">
     <h3>结论</h3>
-    <p>本应用<b class="hl">不需要注册账号</b>就能使用（账号只在「创意工坊」上传/点赞和「讨论区」发帖时才需要，属于可选项）；应用内<b class="hl">不内置遥测、埋点、广告 SDK 或第三方统计脚本</b>；你的画布、素材、配置与 API Key <b class="hl">全部留在本机</b>；只有在你自己点击「运行」的时候，提示词与输入内容才会发往<b class="hl">你自己配置</b>的模型服务商。</p>
+    <p>本应用<b class="hl">不需要注册账号</b>就能使用（账号只在「创意工坊」上传/点赞和「讨论区」发话题/回复时才需要，属于可选项）；应用内<b class="hl">不内置遥测、埋点、广告 SDK 或第三方统计脚本</b>；你的画布、素材、配置与 API Key <b class="hl">全部留在本机</b>；只有在你自己点击「运行」的时候，提示词与输入内容才会发往<b class="hl">你自己配置</b>的模型服务商。</p>
   </div>
   <p>同时有三点必须如实说明，它们与「不收集」并不矛盾，但确实涉及你的数据或本机权限：</p>
   <ul>
@@ -165,7 +165,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
     <tr><td>Agent 会话与回滚</td><td><code>dsh-home/sessions/</code>（对话正文与工具调用结果的 JSONL）、<code>dsh-home/rollback/</code>（Agent 改写文件前的原内容副本）、<code>dsh-home/attachments/</code>（带图会话的图像附件）。其中可能包含 Agent 读到的本机文件内容片段。</td></tr>
     <tr><td>引擎设置</td><td><code>dsh-home/settings.yaml</code>：服务商路由名、<code>baseURL</code>、思考档、权限预设等；密钥<b class="hl">只写环境变量名</b>（如 <code>MTNODE_KEY_1</code>），运行时经进程环境变量注入，不写密钥值。</td></tr>
     <tr><td>匿名标识文件</td><td><code>dsh-home/.anonymous-user-id</code>：首次模型请求前由本机生成的随机 UUID v4（一行裸值）。它不含姓名、邮箱或任何硬件信息，<b class="hl">不由服务器下发</b>，本项目也无法用它关联到自然人。唯一用途见第 4 节。</td></tr>
-    <tr><td>插件与缓存</td><td>已安装的应用插件及其自存数据 <code>app-plugins/</code>；讨论区消息与图片缓存 <code>forum/</code>；创意工坊预览图与模板包缓存 <code>store-cache/</code>。</td></tr>
+    <tr><td>插件与缓存</td><td>已安装的应用插件及其自存数据 <code>app-plugins/</code>；讨论区话题与图片缓存 <code>forum/</code>；创意工坊预览图与模板包缓存 <code>store-cache/</code>。</td></tr>
     <tr><td>日志</td><td><code>error.log</code>、<code>logs/error.log</code>（4MB 滚动）、<code>dsh.log</code>；详见第 9 节。</td></tr>
     <tr><td>运行环境自带存储</td><td>Electron / Chromium 自行维护的 <code>Cache</code>、<code>Local Storage</code>、<code>IndexedDB</code>、<code>Preferences</code> 等渲染缓存与网络状态文件，位于同一数据根目录。</td></tr>
     <tr><td>本地后端与模型</td><td>Music3 / H3 / TTS / llama / Remotion 等后端的模型权重与 Python/Node 依赖，落在数据目录下的同名子目录以及你选择的安装目录。<b class="hl">这些文件不含你的用户数据</b>。</td></tr>
@@ -189,7 +189,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
 
 <section id="server">
   <h2>5. 访问 mt-agent.com 的用途与数据</h2>
-  <p>以下是本应用会向本项目自有服务器发请求的全部场景。请求都<b class="hl">由你的动作触发</b>（打开面板、点检查更新、点安装、发帖、上传），并携带固定的应用标识 UA（如 <code>MTNodeAIO/1.1</code>），<b class="hl">不附带姓名、邮箱、设备号或画布内容</b>；例外在本表内注明。</p>
+  <p>以下是本应用会向本项目自有服务器发请求的全部场景。请求都<b class="hl">由你的动作触发</b>（打开面板、点检查更新、点安装、发话题 / 回复、上传），并携带固定的应用标识 UA（如 <code>MTNodeAIO/1.1</code>），<b class="hl">不附带姓名、邮箱、设备号或画布内容</b>；例外在本表内注明。</p>
   <table class="tl">
     <tr><th>用途</th><th>地址与发送内容</th></tr>
     <tr><td>应用内自动更新</td><td><code>http://mt-agent.com/mtnode/updates</code> —— 仅对 <code>latest.yml</code> 等元数据与差分包的 GET 请求。打包版启动 8 秒后检查一次，此后每 6 小时一次，以及你手动点「检查更新」。<b class="hl">Microsoft Store（MSIX）版整条更新链关闭</b>，不加载更新器、不设更新源。</td></tr>
@@ -211,12 +211,12 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
 
 <section id="store">
   <h2>6. 创意工坊与讨论区：主动上传即公开内容</h2>
-  <p>使用本应用不需要任何账号；只有「创意工坊」的上传 / 点赞与「讨论区」的发帖需要账号，且完全可选。</p>
+  <p>使用本应用不需要任何账号；只有「创意工坊」的上传 / 点赞与「讨论区」的发话题 / 回复需要账号，且完全可选；讨论区<b class="hl">无需登录即可浏览</b>话题与回复。</p>
   <ul>
     <li><b class="hl">注册只要三样</b>：用户名（3–24 位字母数字下划线）、密码（6–72 位，服务端以 scrypt + 随机盐哈希存储，<b class="hl">不留明文</b>）、昵称（1–32 位）。<b class="hl">不采集邮箱与手机号</b>。登录令牌保存在本机 <code>config.json</code>，后续请求以 <code>Authorization: Bearer &lt;token&gt;</code> 携带。</li>
     <li><b class="hl">上传的模板与预览图是公开内容</b>：当你把画布（<code>.mtnodes</code>）或技能（<code>SKILL.md</code> 及附件）上传到创意工坊，其标题、描述、标签、预览图与画布正文会向所有用户展示，可被下载。上传前应用会<b class="hl">主动清空其中的本机工作目录字段</b>（工作流与节点里的工作区路径置空）以避免泄漏本地路径；但<b class="hl">画布正文本身（你写的提示词、参数、素材副本）会按你的意愿公开</b>。请在上传前自行检查，不要上传包含私密内容、密钥或内部资料的画布。</li>
     <li><b class="hl">可自行请求删除</b>：模板与技能可由作者本人（或管理员）在商店里删除 —— 删除记录会同时清掉点赞关系、文件与预览图；下载计数随之消失。若你在应用内找不到入口，或希望删除账号、昵称与其他公开内容，请按第 15 节联系我们提出请求（服务端目前<b class="hl">没有自助注销接口</b>，需人工执行）。</li>
-    <li><b class="hl">讨论区</b>：发帖内容为房间（general / bug / improve）、消息文本（≤2000 字）与可选图片（本机先压缩到最长边 ≤1080px、JPEG ≤3MB 再上传）；读取时附带客户端时区偏移 <code>tzOffset</code>（分钟数，仅用于按天分桶显示）。消息保留 30 天后自动过期（连带删除其图片）；单条消息目前没有自助删除入口，可按第 15 节请求删除。</li>
+    <li><b class="hl">讨论区</b>：免登录即可浏览话题、状态与回复；登录后可发话题、回复与修改状态。话题内容为标题、正文（≤2000 字）、可选图片（本机先压缩到最长边 ≤1080px、JPEG ≤3MB 再上传）与状态；读取时附带客户端时区偏移 <code>tzOffset</code>（分钟数，仅用于按天分桶显示）。话题<b class="hl">长期保留</b>、不会自动过期；你随时可按第 15 节请求删除自己发布的话题或回复。</li>
   </ul>
 </section>
 
@@ -279,7 +279,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
     <tr><td>账号（用户名 / 昵称 / 口令哈希与盐）</td><td>直到被删除（服务端无到期自动清理）</td><td><b class="hl">无自助注销入口</b>：服务端仅提供注册 / 登录 / 改密 / 登出 / 个人信息 / 我的模板，无账号删除端点 —— 请按第 15 节提出请求，由开发者人工删除。</td></tr>
     <tr><td>登录令牌</td><td>30 天；同账号再次登录会作废此前的会话</td><td>过期自动失效；「退出登录」（<code>/api/logout</code>）即时删除该令牌。</td></tr>
     <tr><td>已上传的模板 / 技能（文件、预览图、元数据）</td><td>直到被删除</td><td>作者本人或管理员删除条目：同时删除记录、点赞关系、包文件与预览图。</td></tr>
-    <tr><td>讨论区消息与图片</td><td><b class="hl">30 天</b>自动过期</td><td>服务端在读写前清理超期消息并删除其图片文件；单条消息的自助删除入口目前没有，可向我们请求。</td></tr>
+    <tr><td>讨论区话题、回复与图片</td><td><b class="hl">长期保留</b>（服务端不自动过期）</td><td>可按第 15 节请求删除所发布的话题与回复（删除话题时连带其回复与图片）。</td></tr>
     <tr><td>nginx 访问日志（含 IP / UA / 请求路径）</td><td>约 14 天（按天轮转 + 保留 14 份 + 压缩）</td><td>到期自动删除，无需申请。</td></tr>
     <tr><td>下载计数等统计</td><td>与所属模板同寿命</td><td>随模板删除。</td></tr>
   </table>
@@ -301,7 +301,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
 
 <section id="contact">
   <h2>15. 联系方式</h2>
-  <p>关于本政策的疑问、行使删除请求（注销账号、删除公开投稿、删除单条讨论区消息）、或希望我们澄清某条数据处理，请通过<b class="hl">唯一公开渠道</b>联系我们：</p>
+  <p>关于本政策的疑问、行使删除请求（注销账号、删除公开投稿、删除讨论区话题 / 回复）、或希望我们澄清某条数据处理，请通过<b class="hl">唯一公开渠道</b>联系我们：</p>
   <p><a href="https://github.com/shaomang/mtnode-aio/issues" target="_blank" rel="noopener">GitHub Issues · shaomang/mtnode-aio</a></p>
   <p class="muted">本项目未发布任何邮箱地址，也不通过邮件处理请求 —— 请直接在 Issue 中说明你使用的版本号与具体诉求。为保护你的隐私，提交时请不要粘贴完整的诊断日志或画布文件，除非你确认其中不含敏感内容。</p>
 </section>

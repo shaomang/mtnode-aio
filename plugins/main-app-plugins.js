@@ -14,7 +14,7 @@ const zlib = require("zlib");
 
 const PLUGIN_FEED =
   process.env.MTNODE_PLUGIN_URL || "http://mt-agent.com/mtnode/plugins";
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "h3", "llama", "tts", "remotion"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "h3", "llama", "tts", "remotion", "asr"]);
 const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 80 * 1024 * 1024;
@@ -64,7 +64,16 @@ const BUILTIN_WINDOW_PLUGINS = {
     dir: () => join(__dirname, "..", "forum"),
     entry: "chat.html",
     title: "MTNode 讨论区",
-    window: { width: 380, height: 520, frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true },
+    window: {
+      width: 1040,
+      height: 760,
+      minWidth: 560,
+      minHeight: 460,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+    },
   },
 };
 
@@ -271,6 +280,7 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "llama") kind = "llama";
   if (!kind && raw.handler === "tts") kind = "tts";
   if (!kind && raw.handler === "remotion") kind = "remotion";
+  if (!kind && raw.handler === "asr") kind = "asr";
   const iconName = safeIconName(raw.icon) || (id + ".png");
   const known = KNOWN_KINDS.has(kind);
   const win = (raw.window && typeof raw.window === "object") ? raw.window : {};
@@ -279,7 +289,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "tts" ? "tts" : kind === "remotion" ? "remotion" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "tts" ? "tts" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -360,8 +370,8 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion") {
-      /* 版本/可更新状态由 music3/h3/llama/remotion 主进程 status 异步判定；此处仅占位 */
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr") {
+      /* 版本/可更新状态由 music3/h3/llama/tts/remotion/asr 主进程 status 异步判定；此处仅占位 */
       out.push(Object.assign({}, p, {
         installed: true,
         installedVersion: p.version || "",
@@ -458,7 +468,7 @@ async function loadCatalog() {
     for (const p of fallback.plugins || []) {
       if (!p || !p.id || have.has(p.id)) continue;
       // Keep built-in handlers (pet/music3) visible even if remote catalog omits them
-      if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "pet" || p.handler === "pet") {
+      if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "pet" || p.handler === "pet") {
         list.push(p);
         have.add(p.id);
       }
@@ -689,8 +699,8 @@ function openWindowPlugin(id) {
     height: pos.height,
     x: pos.x,
     y: pos.y,
-    minWidth: 280,
-    minHeight: 320,
+    minWidth: Number(winSpec.minWidth) > 0 ? Number(winSpec.minWidth) : 280,
+    minHeight: Number(winSpec.minHeight) > 0 ? Number(winSpec.minHeight) : 320,
     frame: !!winSpec.frame,
     transparent: !!winSpec.transparent,
     backgroundColor: winSpec.transparent ? "#00000000" : "#0d1016",

@@ -178,70 +178,6 @@
   cursor: grab;
 }
 
-/* 画布顶端查找 / 替换条（Ctrl+F / Ctrl+G） */
-.canvas-find-bar {
-  position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 45;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  max-width: min(720px, calc(100% - 24px));
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: rgba(16, 22, 30, .94);
-  border: 1px solid var(--bd2);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
-  backdrop-filter: blur(8px);
-  pointer-events: auto;
-  cursor: default;
-}
-
-.canvas-find-bar[hidden] {
-  display: none !important
-}
-
-.canvas-find-bar input.canvas-find-q,
-.canvas-find-bar input.canvas-find-repl {
-  width: 180px;
-  max-width: 36vw;
-  background: var(--code);
-  color: var(--ink);
-  border: 1px solid var(--bd2);
-  border-radius: 3px;
-  padding: 4px 8px;
-  font-size: 12px;
-  outline: none;
-  font-family: inherit;
-}
-
-.canvas-find-bar input.canvas-find-q:focus,
-.canvas-find-bar input.canvas-find-repl:focus {
-  border-color: var(--cyan)
-}
-
-.canvas-find-count {
-  min-width: 3.2em;
-  text-align: center;
-  font-size: 11px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: .02em;
-}
-
-.canvas-find-repl-row {
-  display: flex;
-  align-items: center;
-  gap: 6px
-}
-
-.canvas-find-repl-row[hidden] {
-  display: none !important
-}
-
 .fn-canvas .mk-text,
 .fn-canvas .mk-text * {
   user-select: text !important;
@@ -1299,40 +1235,6 @@
   background: rgba(255, 255, 255, .06);
 }
 
-/* 建议按钮（AI 评估下一步）：折叠卡 body 按钮 */
-.n-dev-info .n-dev-suggest {
-  padding: 2px 10px;
-  font-size: 10.5px;
-  color: #cba6ff;
-  background: transparent;
-  border: 1px solid rgba(203, 166, 255, .45);
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.n-dev-info .n-dev-suggest:hover {
-  color: #150a26;
-  background: #cba6ff;
-  border-color: #cba6ff;
-}
-
-/* 问询按钮（AI 只读回答模块问题）：折叠卡 body 按钮 */
-.n-dev-info .n-dev-ask {
-  padding: 2px 10px;
-  font-size: 10.5px;
-  color: #4dd0c4;
-  background: transparent;
-  border: 1px solid rgba(77, 208, 196, .45);
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.n-dev-info .n-dev-ask:hover {
-  color: #06110f;
-  background: #4dd0c4;
-  border-color: #4dd0c4;
-}
-
 /* 文件节点「打开」按钮（打开源码文件） */
 .n-dev-info .n-dev-file-open {
   padding: 2px 10px;
@@ -1755,6 +1657,53 @@
   color: #a8c4da;
 }
 
+/* 菜单栏「AI 调用」小按钮（工具节点 / 函数节点）：与开发节点的 Agent 设定按钮同款视觉，
+   类名独立（.n-ai-call）—— 两块弹层互斥但 DOM 标记各管各的。见 renderer/app-aicall.js */
+.n-ai-call {
+  flex: none;
+  max-width: 112px;
+  height: 18px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  line-height: 1;
+  color: #8fd8ff;
+  background: rgba(56, 214, 255, .07);
+  border: 1px solid rgba(56, 214, 255, .34);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.n-ai-call:hover {
+  border-color: rgba(56, 214, 255, .7);
+  color: #e6f7ff;
+}
+
+.n-ai-call .ico {
+  flex: none;
+  font-size: 10px;
+}
+
+.n-ai-call .lbl {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.n-ai-call.auto {
+  color: var(--muted);
+  background: rgba(255, 255, 255, .04);
+  border-color: var(--bd2);
+}
+
+.n-ai-call.inherited {
+  border-style: dashed;
+  color: #a8c4da;
+}
+
 /* ---- 开发节点运行中：呼吸灯边框 + 头部运行徽标 ----
    JS 依据 devNodeRunningState() 给元素加 .dev-running（self / desc / sess 任一），
    边框颜色与光晕按元素类型取 --dev-glow（RGB 三元组）。 */
@@ -2105,14 +2054,17 @@
 .n-asset-kind.audio { color: #7ab4ff; background: rgba(106, 166, 255, .14); }
 .n-asset-kind.video { color: #6fe0bb; background: rgba(94, 200, 168, .14); }
 
-/* 小同步按钮：默认淡、条目端子有新内容时点亮（.on）—— 点击才更换库内容 */
+/* 「覆盖」按钮：默认淡且不可点（端子内容与库里一致），
+   端子连入了不同内容时点亮可用（.on）—— 点击才把该内容覆盖进库。 */
 .n-asset-sync {
   flex: none;
-  width: 18px;
+  width: auto;
+  min-width: 30px;
   height: 18px;
-  padding: 0;
-  font-size: 12px;
+  padding: 0 6px;
+  font-size: 10px;
   line-height: 1;
+  white-space: nowrap;
   color: var(--muted);
   border: 1px solid var(--bd2);
   border-radius: 3px;
@@ -2120,7 +2072,8 @@
   cursor: pointer;
 }
 
-.n-asset-sync:hover { color: var(--ink); border-color: var(--cyan); }
+.n-asset-sync:disabled { opacity: .45; cursor: default; }
+.n-asset-sync:not(:disabled):hover { color: var(--ink); border-color: var(--cyan); }
 
 .n-asset-sync.on {
   color: #0d1117;
@@ -3867,6 +3820,66 @@
   display: none !important
 }
 
+/* 节点「?」说明按钮：方形、全节点位置一致（在 ✕ 左边），点击弹出说明小窗 */
+.n-play.n-help-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--cyan2, #7fd4e8);
+  background: rgba(56, 214, 255, .08);
+}
+
+.n-play.n-help-btn:hover {
+  color: var(--cyan, #38d6ff);
+  border-color: var(--cyan, #38d6ff);
+  background: rgba(56, 214, 255, .2)
+}
+
+/* 说明小窗：body 级 fixed，鼠标移开 1 秒后由 JS 收起（见 renderer/app-nodehelp.js） */
+.node-help-tip {
+  position: fixed;
+  z-index: 10055;
+  max-width: min(300px, calc(100vw - 16px));
+  padding: 8px 10px 6px;
+  border-radius: 5px;
+  color: var(--ink);
+  background: var(--panel, #1c242c);
+  border: 1px solid var(--bd2, #3a4652);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .5);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.node-help-tip[hidden] {
+  display: none !important
+}
+
+.node-help-tip .node-help-tip-title {
+  font-weight: 700;
+  color: var(--cyan2, #7fd4e8);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-help-tip .node-help-tip-body {
+  color: var(--ink);
+}
+
+.node-help-tip .node-help-tip-foot {
+  margin-top: 5px;
+  padding-top: 4px;
+  border-top: 1px solid var(--bd2, #3a4652);
+  font-size: 10px;
+  color: var(--muted, #8b93a3);
+}
+
 .in .n-title {
   color: var(--cyan)
 }
@@ -4582,6 +4595,67 @@
   border-color: var(--green)
 }
 
+/* ===== save 节点卡上的「文件名」直改行（不必开 ⚙ 跳窗）=====
+   输入框只放主名（默认不带后缀），决定好的后缀以只读小片贴在右边；
+   还没连输入 → 小片显示「后缀待定」，落盘前不猜后缀。 */
+.sv-name {
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px
+}
+
+.sv-name-lab {
+  flex: none;
+  opacity: .62
+}
+
+.sv-name-box {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background: var(--code);
+  overflow: hidden
+}
+
+.sv-name .sv-name-box:focus-within {
+  border-color: var(--green)
+}
+
+.sv-name .sv-name-inp {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--cyan2);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 6px;
+  outline: none
+}
+
+.sv-name .sv-name-ext {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  border-left: 1px solid var(--bd2);
+  white-space: nowrap
+}
+
+.sv-name .sv-name-ext.pending {
+  opacity: .6;
+  font-style: italic
+}
+
 .mg-path-field {
   margin: 4px 0 2px;
   gap: 3px
@@ -4788,6 +4862,98 @@
   object-fit: contain;
   image-rendering: pixelated;
   margin: auto
+}
+
+/* PDF 生成节点：预览区不给预览，整块 body 就是一枚「打开 PDF」的大按钮
+   （图标铺满 + 文件名；未生成时禁用态） */
+.sv-prev .sv-pdf {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px;
+  color: var(--red, #e06c75);
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+  overflow: hidden
+}
+
+.sv-prev .sv-pdf .sv-pdf-ico {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--red, #e06c75);
+  opacity: .92;
+  transition: opacity .12s
+}
+
+.sv-prev .sv-pdf .sv-pdf-ico svg {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 1/1
+}
+
+.sv-prev .sv-pdf .sv-pdf-name {
+  flex: none;
+  max-width: 100%;
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-align: center;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.sv-prev .sv-pdf:hover {
+  background: rgba(224, 108, 117, .10)
+}
+
+.sv-prev .sv-pdf:hover .sv-pdf-ico {
+  opacity: 1
+}
+
+/* 未生成：禁用态（点了只给提示，不打开不存在的文件） */
+.sv-prev .sv-pdf.is-empty {
+  cursor: default;
+  opacity: .55
+}
+
+.sv-prev .sv-pdf.is-empty:hover {
+  background: transparent
+}
+
+/* PDF 生成节点（浏览 / 预览态）：不显示预览图，只列一行文件名；
+   打开动作在节点头部的「打开」小按钮上。未生成时为弱化的提示行。 */
+.sv-prev .sv-pdf-file {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--muted);
+  word-break: break-all;
+  overflow: hidden
+}
+
+.sv-prev .sv-pdf-file.is-empty {
+  opacity: .7
 }
 
 .sv-prev audio,
@@ -5524,6 +5690,18 @@
   scrollbar-color: transparent transparent
 }
 
+/* 纯文本 / Markdown / YAML 只读视图（含超长文本的轻量视图）：
+   **填满 body 剩余高度**（flex:1 + min-height:0）——这正是「没 focus 时滚轮能滚后续内容」
+   的前提：内容超出板身时滚动主体就是这块 .n-view 自身，而不是被内容撑高后无处可滚。
+   内容不足一屏也不留空档（body 固定高，flex:1 只补剩余空间）。
+   图像视图（.n-img.bare）不在此列：它要按 object-fit 缩到板身里，走下面的自带规则。 */
+.wf-node.browse .n-view.n-view-md,
+.wf-node.browse .n-view.n-view-yaml,
+.wf-node.browse .n-view.n-view-plain {
+  flex: 1 1 auto;
+  min-height: 0
+}
+
 /* 滚动只发生在 .n-view 一层：内部块不再各自滚，避免双层滚动条 */
 .wf-node.browse .n-view>* {
   flex: none;
@@ -5569,17 +5747,75 @@
   word-break: break-word
 }
 
-/* 节点内 Markdown：压缩排版（标题收到 13–15px、列表与表格小字、代码不换行溢出裁掉） */
+/* 超长文本的轻量视图（app-nodeview.js 的 nodeViewLongEl）：
+   整块纯文本 + 一行字符数小字，不做 Markdown / YAML 结构渲染、不做 @引用着色。
+   这是「超长文本 → 画布卡顿」的护栏：一次 innerHTML 而不是几十万个节点。
+   完整渲染看节点头部 👁 预览窗（app-textpreview.js）。 */
+.wf-node.browse .n-view .ntv-long {
+  display: flex;
+  flex-direction: column;
+  gap: 4px
+}
+
+.wf-node.browse .n-view .ntv-long-body {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink)
+}
+
+.wf-node.browse .n-view .ntv-long-meta {
+  flex: none;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: var(--muted)
+}
+
+/* 超长输出正文的轻量显示（app-canvas.js 的 browseOutTextView）：
+   OUTPUT 面板里不做整篇 Markdown 结构渲染，只出整块纯文本 + 一行字符数。
+   完整内容看节点头部 👁 预览窗。 */
+.wf-node.browse .n-out-long {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0
+}
+
+.wf-node.browse .n-out-long-body {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text
+}
+
+.wf-node.browse .n-out-long-meta {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted)
+}
+
 .wf-node.browse .n-view-md {
   font-size: 13px;
   line-height: 1.6;
   color: var(--ink)
 }
 
+/* 节点内 Markdown：压缩排版（标题收到 13–15px、列表与表格小字、代码不换行溢出裁掉）。
+   注意 .n-view.md 就是滚动主体本身（app-nodeview.js 给 Markdown 正文的容器同时挂
+   .md 与 .n-view）：这里若对它放开 overflow（同特异性、后写胜），会把
+   .n-view 的 overflow-y:auto 顶成 visible —— 元素不再是滚动容器，scrollTop 设不进去，
+   正文被 .n-body 的 overflow:hidden 裁掉却无处可滚，表现就是「预览形态滚轮完全没反应」。
+   所以只对**内层** .md 正文放开溢出。 */
 .wf-node.browse .md {
   font-size: 13px;
   line-height: 1.6;
-  color: var(--ink);
+  color: var(--ink)
+}
+
+.wf-node.browse .md:not(.n-view) {
   overflow: visible
 }
 

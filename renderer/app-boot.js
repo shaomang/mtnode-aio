@@ -313,8 +313,8 @@ function applyLocale(locale, persist) {
   if ($("#approvalsPanel") && $("#approvalsPanel").classList.contains("on"))
     openApprovalsPanel();
   applyLogoSub();
-  const findBar = document.getElementById("canvasFindBar");
-  if (findBar && typeof findBar._paintLabels === "function") findBar._paintLabels();
+  /* 全局搜索浮层（Ctrl+F）：切语言时重绘占位符与提示文案 */
+  if (typeof globalSearchRepaint === "function") globalSearchRepaint();
   const overlayOpen = $("#overlay") && $("#overlay").style.display === "flex";
   const reopenSettings = overlayKind === "settings" && overlayOpen;
   const reopenTpl = overlayKind === "tplstore" && overlayOpen;
@@ -582,6 +582,11 @@ async function init() {
   if (btnAutoLayout) btnAutoLayout.onclick = () => oneClickAutoLayout();
   const btnHideWires = $("#btnHideWires");
   if (btnHideWires) btnHideWires.onclick = () => toggleHideWires();
+  /* 「查找」按钮：与 Ctrl+F 同一入口（顶栏「排版」与「隐藏线」之间） */
+  const btnFind = $("#btnFind");
+  if (btnFind) btnFind.onclick = () => {
+    if (typeof openGlobalSearch === "function") openGlobalSearch();
+  };
   /* 「隐藏线」记住上次状态（跨重启的视觉偏好，不入画布数据） */
   try {
     S.hideWires = localStorage.getItem(HIDE_WIRES_LS) === "1";

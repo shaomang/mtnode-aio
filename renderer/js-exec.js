@@ -155,6 +155,9 @@
           timeoutMs: opts.timeoutMs,
           cwd: opts.cwd,
           env: opts.env,
+          /* 「AI 调用」设定：{ providerRoute, providerName, provider, model, preset, effort }
+             （节点上选中的模型；mtnode.ai(...) 用它真正发请求，见 fn-runtime.js） */
+          ai: opts.ai && typeof opts.ai === "object" ? opts.ai : undefined,
         }),
       );
     } catch (e) {

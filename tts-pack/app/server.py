@@ -257,7 +257,11 @@ async def save_infer_settings(
 
 
 def _raise_tts_error(r: dict) -> None:
-    """把 synthesize() 的失败转成 HTTP 错误：语种拒绝/中间模型还没练出来=400，其它=500。"""
+    """把 synthesize() 的失败转成 HTTP 错误：调用方给错参数/格式=400，其它=500。
+
+    引擎（api_v2）的 400 响应体现在会被 tts.synthesize 读出（errorCode=engine_http_400、
+    engineStatus=400），这里是**同一个调用方错误**，必须原样回 400 —— 回 500 会让
+    OpenAI 兼容客户端把它当服务端故障重试，而重试永远不会成功（例如输出格式不支持）。"""
     err = str(r.get("error") or "tts_failed")
     code = str(r.get("errorCode") or "")
     if code == "lang_denied":
@@ -268,6 +272,10 @@ def _raise_tts_error(r: dict) -> None:
         )
     if code == "live_model_unready":
         raise HTTPException(status_code=400, detail=err, headers={"X-TTS-Live-Error": "unready"})
+    if code in ("missing_ffmpeg", "transcode_failed", "unsupported_media_type"):
+        raise HTTPException(status_code=400, detail=err)
+    if int(r.get("engineStatus") or 0) in (400, 413, 415, 422):
+        raise HTTPException(status_code=400, detail=err)
     raise HTTPException(status_code=500, detail=err)
 
 

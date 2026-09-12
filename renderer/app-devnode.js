@@ -3053,7 +3053,8 @@ function devPresetOwn(node) {
 
 /* 思考强度：只认档位词汇表内值（AGENT_EFFORT_ORDER = low/medium/high/xhigh/max，与会话
    同一张思考档表，见 app.js；medium 也是合法词汇，只是不露出 UI），其余值（off/none/
-   无/空 与未知）一律不记录。默认档 = high（标准），网关对不支持的路由做同侧最近低档夹紧。 */
+   无/空 与未知）一律不记录 —— agent 链上思考不能关，开发块不接受「无」。默认档 = high
+   （标准），网关对不支持的路由做同侧最近低档夹紧。 */
 function devEffortKnown(v) {
   const s = String(v == null ? "" : v)
     .trim()
@@ -3126,12 +3127,13 @@ function devPresetShortName(id) {
   return cut.trim() || t;
 }
 
-/* 思考强度短标（按钮用，与会话语义同源）：low → 轻、medium → 中、high（含未选默认）
+/* 思考强度短标（按钮用，与会话语义同源）：off → 无、low → 轻、medium → 中、high（含未选默认）
    → 标、xhigh → 强、max → 最强。词条复用时注意「强」现在是共享档位表里 xhigh 档的
    短名（不再只指 max 的旧短标），max 用「最强」。 */
 function devEffortShortTag(st) {
   const s = st || {};
   const e = String(s.effort || "").trim().toLowerCase();
+  if (e === "off") return I18n.t("无");
   if (e === "low") return I18n.t("轻");
   if (e === "medium") return I18n.t("中");
   if (e === "xhigh") return I18n.t("强");
@@ -3499,16 +3501,15 @@ function devRenderPresetPane(list, node) {
   }
 }
 
-/* 思考强度格：与会话思考档菜单同一张表 —— 遍历 app.js 的 AGENT_EFFORT_UI_ORDER
-   （低=轻 / high=标准 / xhigh=强 / max=最强；medium 是合法词汇但不露出：默认
-   deepseek-official 路由会把 medium 按同侧最近低档夹到 low，露出会在默认路由静默降档）。
-   预设不再压档（历史上思维精简会把标准降到 low），选项名就是实际下发的那一档。 */
+/* 思考强度格：档位 = app.js 的 AGENT_EFFORT_DEV_ORDER（低=轻 / high=标准 / xhigh=强 /
+   max=最强；medium 是合法词汇但不露出：默认 deepseek-official 路由会把 medium 按同侧最近
+   低档夹到 low，露出会在默认路由静默降档）。本格不含会话侧的「无」（开发块不能关思考：
+   devEffort 白名单不含 off，选了也落不下盘）。预设不再压档（历史上思维精简会把标准降到
+   low），选项名就是实际下发的那一档。 */
 function devRenderEffortPane(list, node) {
   const own = devEffortOwn(node);
-  const uiOrder =
-    typeof AGENT_EFFORT_UI_ORDER !== "undefined" && Array.isArray(AGENT_EFFORT_UI_ORDER)
-      ? AGENT_EFFORT_UI_ORDER
-      : ["low", "high", "xhigh", "max"];
+  /* 开发块露出档：AGENT_EFFORT_DEV_ORDER（不含 off）；恒有内联兜底，便于单测切片求值 */
+  const uiOrder = ["low", "high", "xhigh", "max"];
   const labels = { low: "轻", high: "标准", xhigh: "强", max: "最强" };
   const maxTip = I18n.t("最强：推理预算最高（更慢、更费 token），不受任何预设影响");
   for (const v of uiOrder) {

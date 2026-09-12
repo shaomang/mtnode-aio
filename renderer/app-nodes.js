@@ -46,7 +46,8 @@ function buildSpec(node, prov, idx) {
     node.kind === "proc_image"
       ? refs.textSources || []
       : (refs.textSources || []).concat(imageSources);
-  const mergedImages = mergeImagePaths(refs.refImages, images);
+  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含连线图 + 广播图 */
+  const mergedImages = runImagePaths(node, idx, refs, images);
   return {
     provider: prov,
     kind:
@@ -56,7 +57,7 @@ function buildSpec(node, prov, idx) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：文本节点下发 off/低/中/高（off ⇒ thinking 关闭），旧 none → low */
+    /* 思考强度：文本节点下发 off/低/中/高/最强（off ⇒ thinking 关闭），旧 none → low */
     effort:
       node.kind === "proc_text" ? normalizeTextEffort(node.effort) : undefined,
     size:
@@ -235,10 +236,17 @@ async function runDshOnce(node, spec, attemptT, images) {
     node._planFlowDone = true;
     planFlowInjected = true;
   }
-  const input =
+  let input =
     useHist && hist
       ? hist + "\n\n用户(最新)：" + latest
       : spec.prompt;
+  /* 音频转写素材（本地语音转写 · Qwen3-ASR）：会话模式走「历史 + 最新一句」，
+     spec.prompt 里的【背景信息】块不会进 input —— 这里单独补一段转写文本，
+     保证「音频接进文字节点就有文字」在两种模式下都成立（见 renderer/app-asr.js）。 */
+  if (useHist && hist && typeof asrTaskAppendText === "function") {
+    const _asrTaskText = asrTaskAppendText(node);
+    if (_asrTaskText) input = input + "\n\n" + _asrTaskText;
+  }
   const runOpts = {
     node,
     model: spec.vm || node.model || undefined,
@@ -495,7 +503,8 @@ function buildSpecAgg(node, prov) {
       "\n\n【内容】\n" +
       refs.prompt
     : refs.prompt;
-  const mergedImages = mergeImagePaths(refs.refImages, images);
+  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含各条目图 + 广播图 */
+  const mergedImages = runImagePaths(node, undefined, refs, images, true);
   return {
     provider: prov,
     kind:
@@ -505,7 +514,7 @@ function buildSpecAgg(node, prov) {
       node.temperature == null
         ? 0.7
         : Math.max(0, Math.min(2, Number(node.temperature) || 0)),
-    /* 思考强度：文本节点下发 off/低/中/高（off ⇒ thinking 关闭），旧 none → low */
+    /* 思考强度：文本节点下发 off/低/中/高/最强（off ⇒ thinking 关闭），旧 none → low */
     effort:
       node.kind === "proc_text" ? normalizeTextEffort(node.effort) : undefined,
     size:
@@ -1489,7 +1498,8 @@ async function fireControlOutgoing(node, outIdx, seen) {
     if (!next || s2.has(next.id)) continue;
     if (!canControlRun(next)) continue;
     try {
-      await runControlledNode(next, s2);
+      /* 落点端口（目标输入口）一起传下去：闸门要按口记到达才谈得上「全部到齐」 */
+      await runControlledNode(next, s2, Number(w.toIndex || 0), node.id);
     } catch (e) {
       if (next) next.error = (e && e.message) || String(e);
     }
@@ -3610,7 +3620,9 @@ function ttsFormatOf(node) {
 }
 
 /* 后端 / HTTP 错误 → 一句能照着做的中文提示；认不出的原样回显便于排查。
-   主进程把 HTTP 错误体整段塞进 error（FastAPI 形如 {"detail":"voice_not_found"}）。 */
+   主进程把 HTTP 错误体整段塞进 error（FastAPI 形如 {"detail":"voice_not_found"}）。
+   引擎（api_v2）的 400/500 响应体现在会被后端读出 {"message":…,"Exception":…} 再转发，
+   所以这里补上这些「真原因」的译法 —— 否则用户只看到一句 HTTP Error 400: Bad Request。 */
 function ttsErrorText(raw) {
   let s = String(raw || "").trim();
   if (s.startsWith("{")) {
@@ -3639,10 +3651,21 @@ function ttsErrorText(raw) {
     voice_not_found: T("音色不存在（请重新选择音色）"),
     lang_denied: T("语种被后端策略拒绝（请在插件里调整语种策略或换文本）"),
     write_failed: T("音频写盘失败（请检查输出路径是否可写）"),
+    /* 引擎侧真原因（api_v2 的 400/500） */
+    media_type: T("后端不支持该输出格式（请打开插件控制台更新语音后端）"),
+    missing_ffmpeg: T("本机缺少 ffmpeg，无法把音频转成 mp3 / flac（请改用 wav 输出，或重新安装语音后端）"),
+    transcode_failed: T("音频转码失败（请改用 wav 输出，或重新安装语音后端）"),
+    ref_audio_path: T("音色缺少参考音频（请在插件里重新添加该音色的参考音频）"),
+    text_lang: T("后端语种参数无效（请在插件里调整语种策略）"),
+    prompt_lang: T("后端参考文本语种无效（请在插件里重新添加该音色）"),
+    text_split_method: T("后端不接受该文本切分方式（请更新语音后端）"),
   };
   const key = s.split(/[:\s]+/)[0].toLowerCase();
   if (exact[s.toLowerCase()]) return exact[s.toLowerCase()];
   if (exact[key]) return exact[key] + (s.length > key.length ? "：" + s.slice(key.length + 1) : "");
+  /* 后端只回了裸 HTTP 码（老后端把引擎响应体吃掉了）：至少说清是「后端返回」而不是网络故障 */
+  const httpM = s.match(/^HTTP Error (\d{3})/i);
+  if (httpM) return T("后端返回 HTTP 错误：") + httpM[1] + T("（请打开插件控制台查看日志；若为 400，多为输出格式不被后端支持）");
   if (/econnrefused|enotfound|fetch failed|socket hang up|timed?\s*out|network/i.test(s))
     return T("无法连接 GPT-SoVITS 后端（后端可能已退出，请重新执行本节点）");
   return s || T("合成失败");
@@ -4969,6 +4992,12 @@ async function playNodeBody(node, quiet, opts) {
       /* 素材库读挂了不能把整轮执行带崩：端子按「无输入」处理 */
     }
   }
+  /* 本地语音转写（Qwen3-ASR）：文字节点接了音频 → 先把音频转成文字再往下走。
+     缺后端 / 无 N 卡 / 转写失败一律拦下本轮（不静默把音频当没输入），原因写在节点上。 */
+  if (typeof asrPrepareForRun === "function") {
+    const ar = await asrPrepareForRun(node);
+    if (ar && ar.ok === false) return;
+  }
   const cascadePlan = await decideCascadeAfterPlay(node, quiet, opts);
   /* quiet：不弹 toast / 不加 pending；ensureUpstream：仍补跑未处理的上游（控制/级联调度用） */
   const ensureUpstream = !quiet || !!opts.ensureUpstream;
@@ -5025,6 +5054,37 @@ async function playNodeBody(node, quiet, opts) {
     }
   }
   let prov = S.config.providers.find((p) => p.id === node.providerId);
+  /* ── 模型形态兜底（非智能节点）──
+     服务商级 type 决定请求形态，节点选的模型才是「真正要干什么」。老画布、
+     手工改过的配置、导入的画布都可能出现两者不符（最典型：OpenAI 兼容端点配成
+     text_openai，模型却是 gpt-image-*）—— 以前图像节点在这里抛「未知服务商类型」
+     或干脆选不到那家服务商。这里按**本次要用的那个模型的形态**把服务商 type
+     纠到正确形态；形态一致时一字不动。只纠类型，不在这里换服务商。 */
+  if (
+    !isDshTask(node) &&
+    (node.kind === "proc_text" || node.kind === "proc_image") &&
+    prov
+  ) {
+    const wantKind = node.kind === "proc_image" ? "image" : "text";
+    const modelId = node.model || (prov.models || [])[0] || "";
+    /* 只在本节点该用的形态上纠偏：模型形态与节点不符是另一种错（交回给用户），
+       不拿它去改服务商类型。 */
+    const fix =
+      modelKindOf(S.config, prov.id, modelId) === wantKind
+        ? correctedTypeForModel(S.config, prov, modelId)
+        : "";
+    if (fix) {
+      prov.type = fix;
+      scheduleSave(true);
+      if (!quiet)
+        toast(
+          I18n.t("服务商类型与所选模型不符，已按模型纠正为") +
+            I18n.t(prov.type === "image_openai" ? "图像服务商" : "文本服务商") +
+            I18n.t("（设置 · 模型服务里可核对）"),
+          "warn",
+        );
+    }
+  }
   if (isDshTask(node)) {
     /* 智能模式按节点所选路由校验（DeepSeek 官方或全局其它文本服务商） */
     const sup = dshSupported();
@@ -5881,6 +5941,23 @@ async function fnCancelRunsOfNodes(nodes) {
   return sum;
 }
 
+/* 函数节点「AI 调用」设定 → 主进程线程能用的形状（renderer/app-aicall.js 解析生效值）：
+   { providerRoute, providerName, provider(配置对象，含 baseUrl/apiKey), model, preset, effort }。
+   没选过模型 → null（mtnode.ai 会明确报「还没选定 AI 调用模型」，不会静默空跑）。 */
+function functionAiSpec(node) {
+  if (!node || typeof aiRunSpecFor !== "function") return null;
+  const s = aiRunSpecFor(node);
+  if (!s || !s.model) return null;
+  return {
+    providerRoute: s.provider,
+    providerName: s.providerName || s.provider,
+    provider: s.providerConfig || null,
+    model: s.model,
+    preset: s.preset || "",
+    effort: s.effort || "",
+  };
+}
+
 async function runFunctionNode(node, quiet, opts) {
   return runComputeExecNode(node, quiet, opts, async (n, q) => {
     const engine = window.mtnodeJsExec;
@@ -5900,6 +5977,9 @@ async function runFunctionNode(node, quiet, opts) {
       res = await engine.run(code, input, {
         runId: fnRunId(n, "run"),
         onCancel: (cancelRun) => fnSetCancel(n, cancelRun),
+        /* 「AI 调用」设定（模型 / 预设 / 思考强度）：交给 jscode 里的
+           await mtnode.ai(...) 用；没选过模型就是 null，mtnode.ai 会给明确报错。 */
+        ai: functionAiSpec(n),
       });
     } finally {
       fnSetCancel(n, null);
@@ -5957,6 +6037,8 @@ async function testFunctionNode(node, args) {
   try {
     res = await engine.run(code, functionInputObject(node), {
       runId: fnRunId(node, "test"),
+      /* 「测试」台同样带上「AI 调用」设定：试跑里 await mtnode.ai(...) 也能真发请求 */
+      ai: functionAiSpec(node),
     });
   } catch (e) {
     res = { ok: false, error: (e && e.message) || String(e) };
@@ -5998,6 +6080,20 @@ async function runToolNode(node, quiet, opts) {
       n.error = I18n.t("工具节点内部没有可执行的节点");
       if (!q) toast(I18n.t("工具节点内部没有可执行的节点"), "warn");
       return;
+    }
+    /* 「AI 调用」设定下发：本工具节点选中的模型 / 预设 / 思考强度 = 内部子图 AI 节点的
+       默认；内部节点自己选过（providerId / provider / model 任一非空）的一律不动
+       —— 就近优先，与开发节点同口径。见 renderer/app-aicall.js。 */
+    if (typeof aiApplyToSelf === "function") aiApplyToSelf(n);
+    if (typeof aiApplyToToolRun === "function") {
+      const touched = aiApplyToToolRun(n);
+      if (touched.length && !q)
+        toast(
+          I18n.t("已按本工具节点的「AI 调用」设定运行内部 ") +
+            touched.length +
+            I18n.t(" 个 AI 节点"),
+          "ok",
+        );
     }
     const seen = new Set();
     await runControlRunnableQueue(null, runnable, seen, (c) =>
@@ -6055,8 +6151,10 @@ function absSaveDest(node, quiet) {
 
 /* 聚合保存：所有条目合并为一个 YAML（键 = 条目 field，不用节点标题） */
 async function saveTextAgg(node, quiet) {
-  const dest = absSaveDest(node, quiet);
-  if (!dest) return false;
+  const destRaw = absSaveDest(node, quiet);
+  if (!destRaw) return false;
+  /* 保存路径默认不带后缀 → 落盘这一刻才按已确定的输入类型补后缀（纯文本 = .md） */
+  const dest = forcePathExt(destRaw, saveExtForMedia("text"));
   const entries = [];
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
@@ -6094,8 +6192,8 @@ async function saveTextAgg(node, quiet) {
 async function saveTextOnce(node, quiet) {
   const titles = batchTitles(node);
   if (titles && node.batchMode === "agg") return saveTextAgg(node, quiet);
-  const destBase = absSaveDest(node, quiet);
-  if (!destBase) return false;
+  const destBase0 = absSaveDest(node, quiet);
+  if (!destBase0) return false;
   if (titles) {
     const paths = [];
     for (let idx = 0; idx < titles.length; idx++) {
@@ -6113,7 +6211,7 @@ async function saveTextOnce(node, quiet) {
           });
       }
       if (!entries.length) continue;
-      const p = batchOutPath(destBase, titles[idx], ".yaml");
+      const p = batchOutPath(destBase0, titles[idx], ".yaml");
       const r = await window.api.fileWriteText(p, yamlSaveBody(entries));
       if (!r.ok) {
         if (!quiet) toast(I18n.t("保存失败：") + p, "err");
@@ -6126,7 +6224,7 @@ async function saveTextOnce(node, quiet) {
       return false;
     }
     node.savedPaths = paths;
-    node.savedPath = destBase;
+    node.savedPath = destBase0;
     node.savedAt = Date.now();
     if (!quiet)
       toast(
@@ -6139,6 +6237,8 @@ async function saveTextOnce(node, quiet) {
       );
     return true;
   }
+  /* 保存路径默认不带后缀 → 落盘这一刻才按已确定的输入类型补后缀（纯文本 = .md） */
+  const destBase = forcePathExt(destBase0, saveExtForMedia("text"));
   const entries = [];
   let missing = false;
   for (const w of wiresTo(node.id)) {
@@ -6173,6 +6273,188 @@ async function saveTextOnce(node, quiet) {
   return true;
 }
 
+/* ── PDF 生成（文本 → PDF 落盘）───────────────────────────────────────────
+   取数与文本保存完全同源（allTextItems / valueForInput / batchTitles），差别只在落盘那一步：
+   不写 .md，而是把整理好的 Markdown 交主进程 pdf:writeText（隐藏窗口 + printToPDF，
+   公式走 renderer/math-render.js 同一套渲染器，见 pdf-write.js）。
+   批量（batch）= 每个条目一份 PDF；聚合（agg）= 全部条目合成一份（条目名当小标题）。 */
+function pdfEntryText(entry) {
+  const body = String((entry && entry.text) || "");
+  const title = String((entry && entry.title) || "").trim();
+  return title ? "## " + title + "\n\n" + body : body;
+}
+/** 一份 PDF 的正文：单条目直接用原文；多条目按「小标题 + 分隔线」拼（聚合模式） */
+function pdfDocTextOf(entries) {
+  if (!entries || !entries.length) return "";
+  if (entries.length === 1) return String(entries[0].text || "");
+  return entries.map(pdfEntryText).join("\n\n---\n\n");
+}
+/** 图片相对路径的基准目录：优先画布工作目录，其次输出文件所在目录 */
+function pdfBaseDirOf(dest) {
+  const ws = String(wfWorkspace() || "").trim();
+  if (ws) return ws;
+  return dirOfPath(String(dest || ""));
+}
+async function savePdfToDest(node, destBase, text) {
+  const outPath = forcePathExt(destBase, saveExtForMedia("pdf"));
+  if (!window.api || typeof window.api.fileWritePdf !== "function")
+    return { ok: false, path: outPath, error: I18n.t("当前版本没有 PDF 生成通道（缺少 pdf:writeText）") };
+  const r = await window.api.fileWritePdf({
+    text: String(text || ""),
+    outPath: outPath,
+    title: String(node.title || "PDF"),
+    docTitle: String(node.pdfTitle || ""),
+    baseDir: pdfBaseDirOf(outPath),
+    pageSize: node.pdfPageSize || "A4",
+    landscape: !!node.pdfLandscape,
+    margin: node.pdfMargin || "normal",
+    fontScale: node.pdfFontScale || "m",
+    pageNumbers: node.pdfPageNumbers !== false,
+  });
+  return {
+    ok: !!(r && r.ok),
+    path: (r && r.path) || outPath,
+    error: (r && r.error) || "",
+  };
+}
+/** 本节点配置的保存路径（相对路径按工作目录 / 超节点子目录展开）；没配且是 PDF 生成时，
+    默认名 = 输入节点的标题（pdfDefaultNameOf，见 app-canvas.js）——「接上就能出 PDF」，
+    文件名与输入节点同名，不必先手动起名。 */
+function saveDestBaseAbs(node) {
+  const r = resolveSavePath(node && node.savePath, node);
+  if (r.ok) return r.path;
+  if (!node || node.kind !== "save_pdf") return "";
+  const name = typeof pdfDefaultNameOf === "function" ? pdfDefaultNameOf(node) : "";
+  const base = String(wfWorkspace() || "").trim();
+  const rel = safeFile(name || node.title || "output");
+  if (base) return joinPath(base, applySuperRelToPath(node, rel));
+  if (isAbsPath(rel)) return rel;
+  return "";
+}
+async function savePdfOnce(node, quiet) {
+  const destBaseRaw = saveDestBaseAbs(node);
+  if (!destBaseRaw) {
+    if (!quiet) toast(I18n.t("请先指定保存路径（可用「浏览」选择）"), "warn");
+    return false;
+  }
+  const destBase = forcePathExt(destBaseRaw, saveExtForMedia("pdf"));
+  const titles = batchTitles(node);
+  const jobs = [];
+  if (titles && node.batchMode === "agg") {
+    const entries = [];
+    for (const w of wiresTo(node.id)) {
+      const src = nodeById(w.from);
+      if (!src || isControlKind(src)) continue;
+      const items = allTextItems(src, node, superPortIdxFromWire(src, w));
+      if (items.length) {
+        for (const it of items) entries.push({ title: it.title, text: it.text });
+      } else {
+        const v = valueFromWire(w, node, 0);
+        if (v && v.kind === "text") entries.push({ title: "", text: v.text });
+      }
+    }
+    if (!entries.length) {
+      if (!quiet) toast(I18n.t("没有可生成 PDF 的文本输入"), "warn");
+      return false;
+    }
+    jobs.push({ dest: destBase, text: pdfDocTextOf(entries) });
+  } else if (titles) {
+    for (let idx = 0; idx < titles.length; idx++) {
+      const entries = [];
+      for (const w of wiresTo(node.id)) {
+        const src = nodeById(w.from);
+        if (!src || isControlKind(src)) continue;
+        const fromIdx = src.kind === "super" ? Number(w.fromIndex || 0) : idx;
+        const v = valueForInput(src, fromIdx, node);
+        if (v && v.kind === "text")
+          entries.push({ title: itemTitleOf(src, fromIdx, node), text: v.text });
+      }
+      if (!entries.length) continue;
+      jobs.push({
+        dest: batchOutPath(destBase, titles[idx], ".pdf"),
+        text: pdfDocTextOf(entries),
+      });
+    }
+    if (!jobs.length) {
+      if (!quiet) toast(I18n.t("没有可生成 PDF 的文本输入"), "warn");
+      return false;
+    }
+  } else {
+    const entries = [];
+    let missing = false;
+    for (const w of wiresTo(node.id)) {
+      const src = nodeById(w.from);
+      if (!src || isControlKind(src)) continue;
+      const fromIdx = src.kind === "super" ? Number(w.fromIndex || 0) : 0;
+      const v = valueForInput(src, fromIdx, node);
+      if (!v || v.kind !== "text") {
+        missing = true;
+        continue;
+      }
+      entries.push({ title: itemTitleOf(src, fromIdx, node), text: v.text });
+    }
+    if (!entries.length) {
+      if (!quiet) toast(I18n.t("没有可生成 PDF 的文本输入"), "warn");
+      return false;
+    }
+    if (missing && !quiet) toast(I18n.t("部分输入节点尚无文本输出，已跳过"), "warn");
+    jobs.push({ dest: destBase, text: pdfDocTextOf(entries) });
+  }
+  const paths = [];
+  let lastErr = "";
+  for (const job of jobs) {
+    const r = await savePdfToDest(node, job.dest, job.text);
+    if (!r.ok) {
+      lastErr = r.error || "";
+      if (!quiet) toast(I18n.t("PDF 生成失败：") + (lastErr || fileName(r.path)), "err");
+      continue;
+    }
+    paths.push(r.path);
+  }
+  if (!paths.length) return false;
+  node.savedPaths = paths;
+  node.savedPath = paths[0];
+  node.savedAt = Date.now();
+  if (!quiet)
+    toast(
+      paths.length > 1
+        ? I18n.t("已生成 ") + paths.length + I18n.t(" 个 PDF → ") + fileName(paths[0]) + " …"
+        : I18n.t("已生成 PDF → ") + paths[0],
+      "ok",
+    );
+  return true;
+}
+
+/* 图像落盘：先按节点「图像输出」设定（尺寸 / 裁剪 / 格式 / 质量）重编码，
+   默认档（原样 + PNG）与旧的「原样复制」完全等价；重编码失败退回原样复制，
+   绝不让用户因为多试了一个格式就丢掉这次保存。
+   返回 { ok, path, outExt }（outExt = 实际落盘后缀，调用方据此纠正目标路径）。 */
+async function saveImageToDest(node, srcPath, destBase) {
+  const defExt = saveExtForMedia("image");
+  let outExt =
+    typeof saveImageExtFor === "function" ? saveImageExtFor(node) : defExt;
+  let src = srcPath;
+  let enc = null;
+  if (typeof prepareSaveImage === "function" && typeof imageOutActive === "function") {
+    if (imageOutActive(node) || outExt !== defExt) {
+      try {
+        enc = await prepareSaveImage(node, srcPath);
+      } catch (e) {
+        enc = { ok: false, error: (e && e.message) || String(e) };
+      }
+      if (enc && enc.ok) {
+        src = enc.path;
+        outExt = enc.ext || outExt;
+      } else {
+        outExt = defExt;
+      }
+    }
+  }
+  const dest = forcePathExt(destBase, outExt);
+  const r = await window.api.fileCopyAssetTo(src, dest);
+  return { ok: !!(r && r.ok), path: dest, outExt, encErr: enc && !enc.ok ? enc.error : "" };
+}
+
 /* 聚合保存（图像）：所有条目合并取第一张写入单文件 */
 async function saveImageAgg(node, quiet) {
   const dest0 = absSaveDest(node, quiet);
@@ -6187,9 +6469,9 @@ async function saveImageAgg(node, quiet) {
     if (!quiet) toast(I18n.t("图像保存节点需要一个图像输入"), "warn");
     return false;
   }
-  const dest = forcePathExt(dest0, ".png");
-  const r = await window.api.fileCopyAssetTo(paths[0], dest);
-  if (!r.ok) {
+  const saved = await saveImageToDest(node, paths[0], dest0);
+  const dest = saved.path;
+  if (!saved.ok) {
     if (!quiet) toast(I18n.t("保存失败"), "err");
     return false;
   }
@@ -6211,13 +6493,16 @@ async function saveImageOnce(node, quiet) {
       const ins = inputValuesFor(node, idx);
       const v = ins[0] && ins[0].value;
       if (!v || v.kind !== "image") continue;
-      const p = batchOutPath(destBase0, titles[idx], ".png");
-      const r = await window.api.fileCopyAssetTo(v.path, p);
-      if (!r.ok) {
-        if (!quiet) toast(I18n.t("保存失败：") + p, "err");
+      const saved = await saveImageToDest(
+        node,
+        v.path,
+        batchOutPath(destBase0, titles[idx], ".png"),
+      );
+      if (!saved.ok) {
+        if (!quiet) toast(I18n.t("保存失败：") + saved.path, "err");
         continue;
       }
-      paths.push(p);
+      paths.push(saved.path);
     }
     if (!paths.length) {
       if (!quiet) toast(I18n.t("图像保存节点需要一个图像输入"), "warn");
@@ -6238,12 +6523,14 @@ async function saveImageOnce(node, quiet) {
     if (!quiet) toast(I18n.t("图像保存节点需要一个图像输入"), "warn");
     return false;
   }
-  const destBase = forcePathExt(destBase0, ".png");
-  const r = await window.api.fileCopyAssetTo(ins[0].value.path, destBase);
-  if (!r.ok) {
+  const saved = await saveImageToDest(node, ins[0].value.path, destBase0);
+  const destBase = saved.path;
+  if (!saved.ok) {
     if (!quiet) toast(I18n.t("保存失败"), "err");
     return false;
   }
+  if (saved.encErr && !quiet)
+    toast(I18n.t("图像输出设定未能应用（已按原样复制）：") + saved.encErr, "warn");
   node.savedPath = destBase;
   node.savedPaths = [destBase];
   node.savedAt = Date.now();
@@ -6321,6 +6608,7 @@ async function saveNodeOnce(node, quiet, opts) {
     return false;
   }
   const media = saveMediaKind(node);
+  if (media === "pdf") return savePdfOnce(node, quiet);
   if (media === "text") return saveTextOnce(node, quiet);
   if (media === "image") return saveImageOnce(node, quiet);
   return saveMediaFileOnce(node, quiet, media);
@@ -6329,7 +6617,14 @@ async function saveNodeOnce(node, quiet, opts) {
 async function saveNodeAction(node) {
   beginNodeRun(node);
   /* 保存节点独立于会话/智能助手：手动 ▶ 直接保存来自输入的内容 */
-  if (!String(node.savePath || "").trim()) {
+  /* PDF 生成没配路径时默认写「输入节点标题.pdf」（saveDestBaseAbs 兜底），
+     其余保存节点仍需显式路径 */
+  if (node.kind === "save_pdf") {
+    if (!saveDestBaseAbs(node)) {
+      toast(I18n.t("请先指定保存路径（可用「浏览」选择）"), "warn");
+      return;
+    }
+  } else if (!String(node.savePath || "").trim()) {
     toast(I18n.t("请先指定保存路径（可用「浏览」选择）"), "warn");
     return;
   }
@@ -6380,6 +6675,9 @@ async function autoSaveSaves(forceWired, skipIds) {
   const skip = skipIds || S._cascadeSkipSaveIds;
   for (const n of S.wf.nodes) {
     if (!isSaveNode(n)) continue;
+    /* PDF 生成不入自动保存闸：它只在用户按 ▶（或控制节点指挥）时生成，
+       接线 / 上游更新都不自动落盘（需求：连上必须点运行才生成）。 */
+    if (n.kind === "save_pdf") continue;
     if (skip && skip.has(n.id)) continue;
     if (!n.savePath) continue;
     const wired = wiresTo(n.id).some((w) => {
@@ -6618,7 +6916,19 @@ function controlRunOrder(nodes) {
  * 例如 wait_file 与无关并行分支同属「第 0 层」时，等待文件不会挡住另一支已就绪节点。
  */
 async function runControlRunnableQueue(controlNode, runnable, seen, runOne) {
-  const exec = runOne || ((n) => runControlledNode(n, seen));
+  /* 控制线到达目标的落点端口：闸门要多路 AND，必须知道这次信号落在哪个输入口上 */
+  const viaOf = (n) => {
+    if (!controlNode || !controlNode.id || !n || !S.wf) return null;
+    const idx = [];
+    for (const w of S.wf.wires || []) {
+      if (w.rel || w.from !== controlNode.id || w.to !== n.id) continue;
+      idx.push(Number(w.toIndex || 0));
+    }
+    return idx.length ? idx : null;
+  };
+  const exec =
+    runOne ||
+    ((n) => runControlledNode(n, seen, viaOf(n), controlNode && controlNode.id));
   const { list, indeg, adj, byId } = controlRunDepGraph(runnable);
   if (!list.length) return;
   const scheduledIds = new Set(list.map((n) => n.id));
@@ -6756,7 +7066,7 @@ function applyClearOutput(node) {
   return true;
 }
 
-async function runControlledNode(n, seen) {
+async function runControlledNode(n, seen, viaIndexes, sourceId) {
   if (!n || seen.has(n.id)) return;
   if (n.kind === "control") return playControlNode(n, seen);
   seen.add(n.id);
@@ -6767,7 +7077,9 @@ async function runControlledNode(n, seen) {
   if (n.kind === "timer") return playTimerNode(n, true);
   if (n.kind === "delayer") return playDelayerNode(n, true);
   if (n.kind === "sequencer") return playSequencerNode(n, true);
-  if (n.kind === "gate") return playGateNode(n, true);
+  /* 闸门不是「跑一次」而是「多路 AND 到达」：控制线驱动只记到达，绝不在这儿强制放闸
+     （上游只来一路就放闸 = bug；详情见 app.js pulseGateByControl） */
+  if (n.kind === "gate") return pulseGateByControl(n, seen, viaIndexes, sourceId);
   if (n.kind === "splitter") return playSplitterNode(n, true);
   if (n.kind === "counter") return playCounterNode(n, true);
   if (n.kind === "mutex") return playMutexNode(n, true);
@@ -7872,6 +8184,60 @@ function connectError(fromId, toId, toIndex, fromIndex) {
   return null;
 }
 
+/* 连线预检建议（connectError 判负后的结构化补充，只读、绝不改判定）：
+   给出目标节点的候选端子清单与「正确接法」建议，让一次往返就能改对。
+   典型场景：单数据端子的媒体节点（video_gen / tts_gen / remotion）那个端子已被占，
+   点名占用者并建议「用 super 汇聚或拆节点」，而不是只回一句「已被占用」。 */
+const SINGLE_DATA_IN_KINDS = [
+  "video_gen", "tts_gen", "remotion", "music_gen", "proc_image",
+];
+function connectPortAdvice(fromId, toId, toIndex, fromIndex, err) {
+  /* 只对「端子 / 占用 / 类型」类错误给候选清单：回路、跨壳违规这些与端口无关，
+     补一堆端子反而干扰判断。 */
+  if (
+    !err ||
+    !/输入端子|端子需要|参数|控制输入|不接受输入|空闲|无效的输入/.test(String(err))
+  )
+    return null;
+  const from = nodeById(fromId),
+    to = nodeById(toId);
+  if (!from || !to) return null;
+  if (to.kind === "wait_file" || to.kind === "timer" || to.ro) return null;
+  const ins = nodePortList(to, "in");
+  if (!ins.length) return null;
+  const data = ins.filter((p) => p.kind !== "control");
+  const free = data.filter((p) => !p.connectedTo);
+  const label = (p) => "端口" + p.index + "「" + p.name + "」(" + p.kind + ")";
+  const parts = [];
+  let occupant = null;
+  if (toIndex != null) {
+    const hit = ins.filter((p) => p.index === Number(toIndex))[0];
+    if (hit && hit.connectedTo && hit.connectedTo.length) occupant = hit;
+  } else if (data.length && !free.length) {
+    occupant = data[0];
+  }
+  if (occupant && occupant.connectedTo && occupant.connectedTo.length) {
+    const names = occupant.connectedTo
+      .map((l) => l.node)
+      .filter(Boolean)
+      .join("、");
+    parts.push(
+      "端口" + occupant.index + "「" + occupant.name + "」已被" +
+        (names || "上游") + "占用",
+    );
+  }
+  if (free.length) {
+    parts.push("可用数据端子：" + free.map(label).join("、"));
+  } else if (data.length) {
+    parts.push("已无空闲数据端子");
+    if (SINGLE_DATA_IN_KINDS.indexOf(to.kind) >= 0 || data.length === 1)
+      parts.push("多输入请用 super 汇聚或拆节点");
+  } else {
+    parts.push("该节点没有数据输入端子（控制线走端口 0）");
+  }
+  return { ports: ins, free, suggestion: parts.join("；") };
+}
+
 /* 视频 / 音乐节点：找下一个空闲数据槽（跳过控制槽与已占槽）；无则 null。
    from 存在时按来源类型优先匹配：文本源 → 提示词槽；图像源 → 参考图槽。
    fromIndex：来源真正接出来的那个端子 —— 工具 / 函数节点必须按端子判定类型，
@@ -7911,6 +8277,15 @@ function nextFreeMediaDataSlot(node, from, fromIndex) {
     for (let i = 2; i <= videoGenInputCount(node); i++)
       if (!occupied(i)) return i;
     return null;
+  }
+  /* 音频 / 视频源：优先落同类型的参考槽（A# / V#）——否则它算「文本路径来源」，
+     会被下面那条规则挤进提示词槽（端口1），H3 的参考音频 / 参考视频端子形同虚设 */
+  const fromMedia = wireSourceMediaType(from, fromIndex);
+  if (fromMedia === "audio" || fromMedia === "video") {
+    for (let i = 2; i <= videoGenInputCount(node); i++) {
+      if (occupied(i)) continue;
+      if (videoGenSlotMeta(node, i).kind === fromMedia) return i;
+    }
   }
   /* 文本源：优先提示词槽（端口1），其次任意空闲数据槽（video/audio 槽也接受文本路径） */
   if (!occupied(1)) return 1;
@@ -7989,12 +8364,20 @@ function addWire(fromId, toId, toIndex, opts) {
     from &&
     !isControlKind(from)
   ) {
-    to.auto = true;
+    /* PDF 生成只有「点 ▶ 才生成」一种口径：接线不打开自动保存、不因此落盘 */
+    if (to.kind !== "save_pdf") to.auto = true;
     applySavePathExt(to);
   }
   if (to && to.kind === "global" && from && !isControlKind(from)) {
     const filters = normalizeGlobalTagFilter(to);
     if (filters.length) stampTagsOntoGlobalWired(to, filters);
+  }
+  /* 本地语音转写（Qwen3-ASR）：把音频接到文字处理节点 → 首次弹一次安装窗
+     （每个画布只弹一次；拒绝后靠节点上的「一键安装」与运行时的拦截，见 app-asr.js） */
+  if (to && from && typeof asrMaybePromptOnWire === "function") {
+    try {
+      asrMaybePromptOnWire(fromId, toId);
+    } catch (e) {}
   }
 }
 
@@ -8223,29 +8606,47 @@ function clipStr(s, n) {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
-/* canvas_get / 助手快照：节点正文一律全文，不做字数或 token 截断 */
+/* canvas_get：节点正文一律全文，不做字数或 token 截断（正文是模型显式 detail:"full"
+   要来的）。助手每轮快照不同：它只给节点计数与选中 / 焦点，连节点索引都不带
+   （见 app-assist.js assistAppSnapshot），列表 / 结构 / 正文一律由模型按需现拉。 */
 function snapTextField(raw) {
   const s = String(raw == null ? "" : raw);
   return { text: s, textLen: s.length };
 }
 
 /* canvas_get 颗粒度：
-   detail   = 节点字段档位：minimal（仅 id/kind/title/位置/状态/层级/tags）| standard（+全部配置字段与正文长度，不含正文）| full（全部，默认）
+   detail   = 节点字段档位：minimal（缺省。每节点仅 标题/描述(note)/类别(kind)，且重型块只留
+              nodes）| standard（+全部配置字段与正文长度，不含正文，+ 建图参考表）| full（全部）
    ids      = 只返回这些节点（按 id 或唯一标题匹配），wires 随之收窄
+   scope    = 只读某一颗超级 / 开发节点内部（id / 唯一标题；"global" = 整图；缺省 = 跟着用户当前所在的壳）
+   scopeDepth = direct（只给直接子节点 · 默认）| all（给整棵子树）
    bodies   = 是否返回正文全文（text/prompt/task/goal）；缺省：full 时为 true，其余为 false
    bodyLimit= 正文按 N 字符截断（0=不限）；*Len 始终为真实长度
-   sections = 重型块白名单（nodes/marks/wires/groups/taskTree/superTree/tagCatalog/workflows/selection），
-              在 canvasSnapshotFull 末尾过滤；小上下文（workflow/view/cam/imageSizes/kinds/markColors/devFuncColors/
-              taskFocus/superFocus/assistScope/scopeNote）恒保留 */
-const NODE_MINIMAL_KEYS = [
-  "id", "kind", "title", "x", "y", "w", "h", "running",
-  "parentTaskId", "parentSuperId", "taskStatus", "tags",
-];
+   sections = 重型块白名单（nodes/marks/wires/groups/taskTree/superTree/tagCatalog/workflows/selection）。
+              minimal 档缺省只留 nodes，点名哪块才带哪块；standard / full 档缺省全给、这份名单做收窄。
+              恒保留的只有极小信封：workflow / scopeInfo / assistScope · scopeNote。 */
+/* minimal = 最小信息量：每节点只给 标题(title) / 描述(note) / 类别(kind)。
+   id、坐标、尺寸、运行态、层级归属、tags 一律不带 —— 节点按标题 / ids 定位，
+   要看结构（位置 / 连线 / 层级）显式用 standard / full。 */
+const NODE_MINIMAL_KEYS = ["title", "note", "kind"];
 /* jscode（函数节点函数体）与 prompt / task 同属正文：bodies:false 时只留 *Len，bodyLimit 生效 */
 const NODE_BODY_KEYS = ["text", "prompt", "task", "goal", "jscode"];
 const SNAPSHOT_HEAVY_SECTIONS = [
   "nodes", "marks", "wires", "groups", "taskTree", "superTree",
   "tagCatalog", "workflows", "selection",
+];
+/* ── minimal 档 = 纯粹的「节点索引」───────────────────────────────────────────
+   模型缺省读图（网关 DEFAULT_GET_DETAIL="minimal"）只该拿到「这张图上有哪些节点」，
+   而不是一份整图配置。所以除了每节点裁到 标题/描述/类别，重型块也只留 nodes ——
+   marks / wires / groups / taskTree / superTree / tagCatalog / workflows / selection
+   一律不带（要哪块就 sections 显式点名，例如只查连线 sections:["nodes","wires"]）。 */
+const MINIMAL_SNAPSHOT_SECTIONS = ["nodes"];
+/* 这些「恒带小上下文」在 minimal 档同样要摘：静态词表（kinds 全量节点模板、色卡）与
+   视角信息（cam / view / imageSizes / 焦点）都是「要动手建图 / 看配置」时才用得上，
+   节点索引里没有任何一条引用它们，却每份都跟着重发。要它们显式 detail:"standard"。 */
+const MINIMAL_SNAPSHOT_DROP = [
+  "view", "cam", "imageSizes", "defaultImageSize", "kinds",
+  "taskFocus", "superFocus", "markColors", "devFuncColors",
 ];
 
 function normalizeSnapshotOpts(opts) {
@@ -8261,7 +8662,194 @@ function normalizeSnapshotOpts(opts) {
     Array.isArray(opts.ids) && opts.ids.length
       ? opts.ids.map((x) => (x == null ? "" : String(x))).filter(Boolean)
       : null;
-  return { detail, wantBodies, bodyLimit, onlyIds: ids };
+  const scope = opts.scope == null ? "" : String(opts.scope).trim();
+  const scopeDepth = opts.scopeDepth === "all" ? "all" : "direct";
+  return { detail, wantBodies, bodyLimit, onlyIds: ids, scope, scopeDepth };
+}
+
+/* ==================== 局部画布（scope）：只读 / 只改一颗壳内部 ====================
+   需求：查看与编辑工具要能「只钻进某一颗超级 / 开发节点」（而不是每次灌整张图），
+   省时间与 token。两条入口：
+     · 显式 —— scope:"标题或 id" + scopeDepth:"direct"|"all"；
+     · 屏幕 —— 缺省跟着用户当前停留的那一层（用户点进壳里时可见集本就是那一层，快照不再
+       把整图灌进去；scopeInfo 会点名这颗壳，Agent 可照抄标题显式传 scope）。
+   显式 scope 一旦给了，它就是这次调用要看的「那一层」，不再被 S.superFocus 二次砍小。
+   本段是只读侧（canvasSnapshot），写入侧的越界防护在 applyCanvasEdit 的 scope 闸。 */
+
+/* scope 令牌 → 那颗壳；"global" / "" 解析为 null（= 整图），非 super 的令牌返回
+   { bad:true, token } 由调用方警告。首尾一层引号顺手剥掉：模型偶尔把 id 写成 "\"abc\""。 */
+function resolveScopeHost(token) {
+  let raw = String(token == null ? "" : token).trim();
+  if (/^".*"$/.test(raw) || /^'.*'$/.test(raw)) raw = raw.slice(1, -1).trim();
+  if (!raw || raw === "global" || raw === "all" || raw === "*") return null;
+  const n = typeof nodeById === "function" ? nodeById(raw) : null;
+  if (!n) return { bad: true, token: raw };
+  if (n.kind !== "super") return { bad: true, token: raw, notSuper: true };
+  return n;
+}
+
+/* 从 startId 沿 parentSuperId 向上收集祖先（不含自己），带环保护 */
+function superAncestorIdsOf(startId) {
+  const out = [];
+  const seen = new Set();
+  const all = (S.wf && S.wf.nodes) || [];
+  let sid = startId;
+  while (sid && !seen.has(sid)) {
+    seen.add(sid);
+    const host = all.filter((x) => x.id === sid)[0];
+    if (!host || host.kind !== "super") break;
+    const up = String(host.parentSuperId || "");
+    if (!up) break;
+    out.push(up);
+    sid = up;
+  }
+  return out;
+}
+
+/* host 的子树节点（不含 host 自己；含 super_io 端口节点 —— 局部视图里端子要看得见） */
+function superSubtreeIds(host) {
+  const all = (S.wf && S.wf.nodes) || [];
+  const out = new Set();
+  if (!host) return out;
+  const queue = [host.id];
+  const seen = new Set([host.id]);
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const n of all) {
+      if (!n || seen.has(n.id)) continue;
+      if (String(n.parentSuperId || "") !== cur) continue;
+      seen.add(n.id);
+      out.add(n.id);
+      queue.push(n.id);
+    }
+  }
+  return out;
+}
+
+/* scope 命中判定（= applyCanvasEdit 写入闸与快照只读闸共用的真源）：
+   allowed = "both"（壳里 + 嵌套子块）| "self"（只那颗壳自己）。
+   · 壳里任何一颗（直接子节点）都算 allowed；
+   · 嵌套更深的子块，其祖先链上每一颗都必须 allowed —— 库里还有别的壳把节点围住时，
+     围住它的那颗壳本身不在范围内，就不算命中（scope 是硬边界，不是"沾亲就放行"）。 */
+function nodeInSuperScope(n, host, allowed) {
+  if (!n || !host || !allowed) return false;
+  if (n.id === host.id) return true;
+  const chain = superAncestorIdsOf(n.id);
+  if (!chain.length) return false;
+  for (const id of chain) {
+    if (!allowed.has(id)) return false;
+  }
+  return true;
+}
+
+/* 显式 x/y 是否落在这颗壳的范围内（shell 展开态按绘制尺寸，收起态按存储尺寸）：
+   只有「给了坐标、又没点名归属」的新节点才拿它做界外判定；壳内坐标可以是嵌套子块的
+   世界坐标（画布内是相对的，展开壳里子块的坐标落在壳的绘制框内），故留 2 倍余量。 */
+function pointInScopeHost(host, x, y) {
+  if (!host) return false;
+  const size =
+    typeof superDisplaySize === "function"
+      ? superDisplaySize(host)
+      : { w: host.w || 280, h: host.h || 200 };
+  const pad = 160;
+  return (
+    Number(x) >= host.x - pad &&
+    Number(x) <= host.x + size.w + pad &&
+    Number(y) >= host.y - pad &&
+    Number(y) <= host.y + size.h + pad
+  );
+}
+
+/* 局部只读的允许集：host 自己 + 直接子节点（+ 递归子块，scopeDepth="all" 时） */
+function scopedNodeIdSet(host, depth) {
+  const out = new Set();
+  if (!host) return out;
+  out.add(host.id);
+  const all = (S.wf && S.wf.nodes) || [];
+  for (const n of all) {
+    if (n && String(n.parentSuperId || "") === host.id) out.add(n.id);
+  }
+  if (depth === "all") {
+    for (const id of superSubtreeIds(host)) out.add(id);
+  }
+  return out;
+}
+
+/* 局部视图的可见判据（与「用户点进壳里」的所见同一语义，但按本次 scope 的层级算）：
+   壳里 = 壳自己 + 它的直接子节点（+ scopeDepth="all" 时叠上整棵子树）。
+   刻意不看 S.superFocus / 展开态：scope 一旦被显式指定，它就是这次调用要看的「那一层」，
+   用户此刻停在哪颗壳里不该再把返回集砍小（否则 scope:"开发壳" 只回得回一个 file 块）。 */
+function nodeInSnapshotScope(n, host, depth) {
+  if (!n || !host) return false;
+  if (n.id === host.id) return true;
+  if (String(n.parentSuperId || "") === host.id) return true;
+  return depth === "all" && superSubtreeIds(host).has(n.id);
+}
+
+/* 快照 / 视图层口径：算出本次要收窄到哪颗壳。
+   opts.scope 显式给了就认它（"global" = 整图）；没给就跟着用户当前停留的壳。 */
+function snapshotScopeOf(opts) {
+  opts = opts || {};
+  const raw = opts.scope == null ? "" : String(opts.scope).trim();
+  if (raw) {
+    if (raw === "global" || raw === "all" || raw === "*")
+      return { host: null, origin: "global", bad: null };
+    const resolved = resolveScopeHost(raw);
+    if (resolved && resolved.bad)
+      return { host: null, origin: "global", bad: resolved };
+    return {
+      host: resolved,
+      origin: "explicit",
+      depth: opts.scopeDepth === "all" ? "all" : "direct",
+      bad: null,
+    };
+  }
+  const focus =
+    typeof currentSuperFocus === "function" ? currentSuperFocus() : S.superFocus || "";
+  if (focus) {
+    const host = typeof nodeById === "function" ? nodeById(focus) : null;
+    if (host && host.kind === "super")
+      return { host, origin: "screen", depth: "direct", bad: null };
+  }
+  return { host: null, origin: "global", bad: null };
+}
+
+function scopeInfoBlock(sc, hostsAll) {
+  if (!sc) return undefined;
+  const host = sc.host;
+  const focusHost =
+    !host && typeof currentSuperFocus === "function" && currentSuperFocus()
+      ? nodeById(currentSuperFocus())
+      : null;
+  const info = {
+    mode: host ? "subtree" : "global",
+    origin: sc.origin,
+    depth: host ? sc.depth : undefined,
+    hostId: host ? host.id : undefined,
+    hostTitle: host ? host.title : undefined,
+    hostKind: host ? (host.dev ? "dev" : host.db ? "db" : "super") : undefined,
+  };
+  if (!host) {
+    /* 用户此刻停在某颗壳里：不自动收窄（别的消费者还要整图），只提醒可以显式传 scope */
+    if (focusHost && focusHost.kind === "super") {
+      info.hint = I18n.t(
+        "用户当前正停在这颗壳里：{title}（id {id}）。只看 / 只改它内部请传 scope 用这颗壳的标题或 id，配 scopeDepth 决定一层还是整棵 —— 避免整图灌进来浪费 token。",
+        { title: focusHost.title, id: focusHost.id },
+      );
+    }
+    return info;
+  }
+  if (sc.origin === "screen") {
+    info.note = I18n.t("当前可见 = 用户正停在的这颗壳内部。");
+  } else {
+    info.note = I18n.t("范围 = 这一颗壳内部：界外节点未返回。");
+    const above = superAncestorIdsOf(host.id)
+      .map((id) => (hostsAll || []).filter((x) => x.id === id)[0])
+      .filter(Boolean)
+      .map((x) => ({ id: x.id, title: x.title }));
+    if (above.length) info.above = above;
+  }
+  return info;
 }
 
 function nodeInFilter(n, o) {
@@ -8305,6 +8893,83 @@ function applySnapshotSectionFilter(snap, sections) {
   return snap;
 }
 
+/* minimal 档裁剪：重型块只留 MINIMAL_SNAPSHOT_SECTIONS（nodes），恒带小上下文里再摘掉
+   静态词表与视角（MINIMAL_SNAPSHOT_DROP）。sections 是「白名单」语义 —— 显式点名哪块就
+   放行哪块（sections:["nodes","wires"] 仍能便宜地只查连线），缺省则只剩节点索引。
+   保留：workflow（这是哪张图）/ scopeInfo（这次看到的是整图还是某颗壳内部）/
+   assistScope · scopeNote（跨画布锁定的安全口径）。 */
+function pruneMinimalSnapshot(snap, opts) {
+  if (!snap || typeof snap !== "object") return snap;
+  const keep = new Set(MINIMAL_SNAPSHOT_SECTIONS);
+  const asked =
+    opts && Array.isArray(opts.sections) ? opts.sections : [];
+  for (const s of asked) keep.add(String(s));
+  for (const k of SNAPSHOT_HEAVY_SECTIONS) {
+    if (!keep.has(k)) delete snap[k];
+  }
+  for (const k of MINIMAL_SNAPSHOT_DROP) delete snap[k];
+  return snap;
+}
+
+/* 这次调用是否要带上某一个重型块：非 minimal 档恒要（除非 sections 另行收窄），
+   minimal 档只有 sections 显式点名才要。canvasSnapshotFull 与 canvasSnapshot 共用。 */
+function snapshotWantsSection(o, opts, key) {
+  if (!o || o.detail !== "minimal") return true;
+  const asked = opts && Array.isArray(opts.sections) ? opts.sections : [];
+  return asked.map((s) => String(s)).indexOf(key) >= 0;
+}
+
+/* ── 端子表（快照 / 回执 / 连线预检共用同一份推导）─────────────────────────────
+   数量 inputCount / outputCount、名称 editPortNameOf、类型 editPortKindOf（工具 /
+   函数节点按参数表）、占用按 S.wf.wires —— 与连线校验 connectError 同一套原语，
+   这里只做搬运，不另立第二份端子口径。 */
+function nodePortList(node, dir) {
+  if (!node || !S.wf) return [];
+  const isFnT = isFnToolNode(node);
+  const count = dir === "in" ? inputCount(node) : outputCount(node);
+  const wires = S.wf.wires || [];
+  const out = [];
+  for (let i = 0; i < Math.max(0, count); i++) {
+    const links = [];
+    for (const w of wires) {
+      if (w.rel) continue;
+      if (dir === "in") {
+        if (w.to !== node.id || Number(w.toIndex || 0) !== i) continue;
+        const other = nodeById(w.from);
+        links.push({ node: other ? other.title : "", port: Number(w.fromIndex || 0) });
+      } else {
+        if (w.from !== node.id || Number(w.fromIndex || 0) !== i) continue;
+        const other = nodeById(w.to);
+        links.push({ node: other ? other.title : "", port: Number(w.toIndex || 0) });
+      }
+    }
+    out.push({
+      dir,
+      index: i,
+      name: editPortNameOf(node, dir, i, isFnT),
+      kind: editPortKindOf(node, dir, i, isFnT),
+      connectedTo: links.length ? links : null,
+    });
+  }
+  return out;
+}
+
+/* 端子数固定的节点：快照（standard / full）里直接暴露端口表，让模型接线前就看得见
+   「几号端子、什么类型、被谁占了」，不必等 connect 报错再改 —— 运行期才发现端子冲突
+   是实测里最贵的一类往返。minimal 档不带（app_state 每轮重发，必须最轻）。 */
+const SNAPSHOT_PORT_KINDS = [
+  "proc_image", "tts_gen", "video_gen", "remotion", "judge", "super",
+];
+function snapshotHasFixedPorts(node) {
+  if (!node) return false;
+  if (isFnToolNode(node)) return true;
+  return SNAPSHOT_PORT_KINDS.indexOf(node.kind) >= 0;
+}
+function snapshotPortsOf(node) {
+  if (!snapshotHasFixedPorts(node)) return undefined;
+  return nodePortList(node, "in").concat(nodePortList(node, "out"));
+}
+
 /* Agent 侧透出「功能色卡」：唯一真源是 app-devnode.js 的 DEV_FUNC_COLORS 常量，
    这里只搬运 key / zh / en / hex（keywords 属内部推断细节，不塞进快照浪费 token）。
    mtnode_canvas_get 与助手快照都通过 devFuncColors 字段读到同一张表。 */
@@ -8326,17 +8991,36 @@ function devFuncColorCatalog() {
 function canvasSnapshot(opts) {
   const o = normalizeSnapshotOpts(opts);
   const wf = S.wf || { id: "", name: "", nodes: [], wires: [], groups: [], marks: [] };
-  const scopeNodes = (wf.nodes || [])
-    .filter(
-      (n) => !isSuperIoNode(n) && nodeInCurrentScope(n),
-    )
+  const allNodes = wf.nodes || [];
+  /* 局部画布（scope）：只返回某颗超级 / 开发节点里的内容；scopeInfo 恒保留，
+     模型永远知道自己看到的是整图还是某一颗壳内部。 */
+  const sc = snapshotScopeOf(o);
+  const inScope = sc.host ? scopedNodeIdSet(sc.host, sc.depth) : null;
+  const scopeHit = (n) => !inScope || (n && inScope.has(n.id));
+  /* 局部视图里一条线 / 一个任务是否算「在壳里」：显式 scope 按 scope 层级，
+     否则按当前屏幕那一层（原口径）。标注另有 mark 版判据（看 parentSuperId）。 */
+  const viewHit = (n) =>
+    sc.host
+      ? nodeInSnapshotScope(n, sc.host, sc.depth)
+      : nodeInCurrentScope(n);
+  const markViewHit = (m) =>
+    sc.host
+      ? !!(m && (m.parentSuperId || "") === sc.host.id)
+      : markInCurrentScope(m);
+  const scopeNodes = allNodes
+    .filter((n) => !isSuperIoNode(n))
+    .filter((n) => (sc.host ? nodeInSnapshotScope(n, sc.host, sc.depth) : nodeInCurrentScope(n)))
+    .filter((n) => scopeHit(n))
     .filter((n) => nodeInFilter(n, o));
+  /* 实际会返回的节点 id（scope + 屏幕层 + ids 三层过滤后的结果）：scopeNestedIn 用得到 */
+  const returnedNodeIds = new Set(scopeNodes.map((n) => n.id));
   const selNodeIds = o.onlyIds ? new Set(scopeNodes.map((n) => n.id)) : null;
-  return {
+  const ancestorsOfScope = sc.host ? superAncestorIdsOf(sc.host.id) : [];
+  const snap = {
     workflow: {
       id: wf.id,
       name: wf.name,
-      nodeCount: (wf.nodes || []).length,
+      nodeCount: allNodes.length,
       workspace: wf.workspace || "",
     },
     view: S.view || "workflow",
@@ -8353,8 +9037,8 @@ function canvasSnapshot(opts) {
     })),
     taskFocus: currentTaskFocus() || undefined,
     superFocus: currentSuperFocus() || undefined,
-    taskTree: (wf.nodes || [])
-      .filter((n) => n.kind === "task")
+    taskTree: allNodes
+      .filter((n) => n.kind === "task" && viewHit(n) && scopeHit(n))
       .map((n) => ({
         id: n.id,
         title: n.title,
@@ -8362,11 +9046,18 @@ function canvasSnapshot(opts) {
         goal: clipStr(n.goal, 160),
         status: n.taskStatus || "pending",
         steps: (n.steps || []).map((s) => (s && s.title) || ""),
-        childCount: (wf.nodes || []).filter((x) => x.parentTaskId === n.id)
+        childCount: allNodes.filter((x) => x.parentTaskId === n.id)
           .length,
       })),
-    superTree: (wf.nodes || [])
+    superTree: allNodes
       .filter((n) => n.kind === "super")
+      .filter(
+        (n) =>
+          !inScope ||
+          n.id === sc.host.id ||
+          ancestorsOfScope.includes(n.id) ||
+          inScope.has(n.id),
+      )
       .map((n) => ({
         id: n.id,
         title: n.title,
@@ -8393,7 +9084,7 @@ function canvasSnapshot(opts) {
         devEffort: n.dev
           ? String(n.devEffort || "").trim() || undefined
           : undefined,
-        childCount: (wf.nodes || []).filter(
+        childCount: allNodes.filter(
           (x) => nodeParentSuperId(x) === n.id && !isSuperIoNode(x),
         ).length,
         note: clipStr(n.note, 120),
@@ -8528,6 +9219,15 @@ function canvasSnapshot(opts) {
       judgeResult: n.kind === "judge" ? n.judgeResult || undefined : undefined,
       parentTaskId: n.parentTaskId || undefined,
       parentSuperId: n.parentSuperId || undefined,
+      /* 局部视图（scope）里嵌套更深的子块：它的直接宿主可能被 ids 等再收窄掉，
+         这里补一句「谁真正围住它」，避免模型按缺省值误判层级 */
+      scopeNestedIn:
+        inScope &&
+        sc.host &&
+        n.parentSuperId &&
+        !returnedNodeIds.has(n.parentSuperId)
+          ? n.parentSuperId
+          : undefined,
       note: n.kind === "super" ? n.note || undefined : undefined,
       expandW: n.kind === "super" ? n.expandW || undefined : undefined,
       expandH: n.kind === "super" ? n.expandH || undefined : undefined,
@@ -8729,10 +9429,18 @@ function canvasSnapshot(opts) {
           : undefined,
       taskStatus: n.kind === "task" ? n.taskStatus || "pending" : undefined,
       };
+      /* 端子数固定的节点（proc_image / tts_gen / video_gen / remotion / judge /
+         工具 · 函数 / super 边界）：standard 与 full 档直接带端口表（index / name /
+         kind / connectedTo），模型接线前就看得见占用情况；minimal 档不带。 */
+      if (o.detail !== "minimal" && snapshotHasFixedPorts(n)) {
+        const ports = snapshotPortsOf(n);
+        if (ports && ports.length) node.ports = ports;
+      }
       return pruneNodeSnap(node, o);
     }),
     marks: (wf.marks || [])
-      .filter((m) => markInCurrentScope(m))
+      .filter((m) => markViewHit(m))
+      .filter((m) => !inScope || inScope.has(String(m.parentSuperId || "")))
       .map((m) => ({
       id: m.id,
       kind: m.kind,
@@ -8755,7 +9463,8 @@ function canvasSnapshot(opts) {
       .filter((w) => {
         const a = nodeById(w.from);
         const b = nodeById(w.to);
-        if (!a || !b || !nodeInCurrentScope(a) || !nodeInCurrentScope(b)) return false;
+        if (!a || !b || !viewHit(a) || !viewHit(b)) return false;
+        if (inScope && (!inScope.has(a.id) || !inScope.has(b.id))) return false;
         if (selNodeIds && (!selNodeIds.has(a.id) || !selNodeIds.has(b.id))) return false;
         return true;
       })
@@ -8773,13 +9482,24 @@ function canvasSnapshot(opts) {
         relArrow: w.rel ? relArrowOf(w) : undefined,
       };
     }),
-    groups: (wf.groups || []).map((g) => ({
+    groups: (wf.groups || [])
+      .filter(
+        (g) =>
+          !inScope ||
+          (g.nodeIds || []).length === 0 ||
+          (g.nodeIds || []).every((id) => inScope.has(id)),
+      )
+      .map((g) => ({
       id: g.id,
       title: g.title,
       nodeIds: (g.nodeIds || []).slice(),
       markIds: (g.markIds || []).slice(),
     })),
+    /* 局部画布（scope）：恒保留 —— 模型永远知道自己看到的是整图还是某一颗壳内部，
+       以及怎么切回整图（scope:"global"）或换一颗壳（scope:"标题"）。 */
+    scopeInfo: scopeInfoBlock(sc, allNodes),
   };
+  return o.detail === "minimal" ? pruneMinimalSnapshot(snap, opts) : snap;
 }
 
 function assistScopeIsCurrent() {
@@ -8902,27 +9622,76 @@ function applyAssistScopeToSnapshot(snap, opts) {
   return snap;
 }
 
+/* 结构内容哈希（FNV-1a）：只覆盖会随编辑变化的「结构块」—— nodes / wires / groups /
+   marks / taskTree / superTree，刻意剔除 cam / view / selection / assistOpen /
+   sidebarOpen 等易变项。网关按会话记住上次的哈希：同一份结构重复 canvas_get 时直接回
+   「无变化」短回执，不再把整图重发（哈希真源只在渲染层，网关只透传）。 */
+function snapshotContentHashOf(snap) {
+  if (!snap || typeof snap !== "object") return "";
+  let src = "";
+  try {
+    src = JSON.stringify({
+      nodes: snap.nodes || null,
+      wires: snap.wires || null,
+      groups: snap.groups || null,
+      marks: snap.marks || null,
+      taskTree: snap.taskTree || null,
+      superTree: snap.superTree || null,
+    });
+  } catch {
+    return "";
+  }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < src.length; i++) {
+    h ^= src.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return "fnv1a-" + h.toString(16).padStart(8, "0") + "-" + src.length.toString(16);
+}
+
+/* 全量快照（含 wfList IPC）。opts 直通 canvasSnapshot 的档位：canvas_get 用 detail 按需取
+   （网关缺省 = minimal）；助手每轮注入的快照不再走这里 —— assistAppSnapshot
+   （app-assist.js）只给计数与选中 / 焦点，节点列表与正文一律由模型按需现拉。 */
 async function canvasSnapshotFull(opts, scopeOpts) {
+  const o = normalizeSnapshotOpts(opts || {});
   const snap = canvasSnapshot(opts || {});
+  const minimal = o.detail === "minimal";
+  const want = (k) => snapshotWantsSection(o, opts || {}, k);
   let workflows = [];
   try {
     workflows = await window.api.wfList();
   } catch {}
-  snap.workflows = (workflows || []).map((w) => ({
-    id: w.id,
-    name: w.name,
-    nodes: w.nodes,
-    active: !!(S.wf && S.wf.id === w.id),
-  }));
-  snap.selection = currentSelection().map((n) => ({
-    id: n.id,
-    kind: n.kind,
-    title: n.title,
-  }));
-  snap.assistOpen = !!S.assistOpen;
-  snap.sidebarOpen = !!S.sidebarOpen && S.view !== "agent";
+  /* minimal 档（缺省）连「全部画布列表 / 选中 / 助手面板开关」都不带：那是看配置时才要的
+     上下文，节点索引里用不上。sections 显式点名 workflows / selection 仍会带上。 */
+  if (want("workflows")) {
+    snap.workflows = (workflows || []).map((w) => ({
+      id: w.id,
+      name: w.name,
+      nodes: w.nodes,
+      active: !!(S.wf && S.wf.id === w.id),
+    }));
+  } else {
+    delete snap.workflows;
+  }
+  if (want("selection")) {
+    snap.selection = currentSelection().map((n) => ({
+      id: n.id,
+      kind: n.kind,
+      title: n.title,
+    }));
+  } else {
+    delete snap.selection;
+  }
+  if (!minimal) {
+    snap.assistOpen = !!S.assistOpen;
+    snap.sidebarOpen = !!S.sidebarOpen && S.view !== "agent";
+  }
   applyAssistScopeToSnapshot(snap, scopeOpts || {});
+  /* 锁定本画布时 applyAssistScopeToSnapshot 会回写 workflows（= 本图一行）；minimal 档下
+     它仍能在 scopeNote 里说明「工作范围 = 本会话所属画布」，不必再带一份画布列表。 */
+  if (minimal && !want("workflows")) delete snap.workflows;
   applySnapshotSectionFilter(snap, (opts || {}).sections);
+  snap.contentHash = snapshotContentHashOf(snap);
   return snap;
 }
 
@@ -9723,8 +10492,9 @@ function agentToolActivePreset() {
 /* ── 按运行的工具许可（runKey 作用域）──
    某些运行自带一份工具许可，覆盖全局「Agent 工具许可」预设（且**只在这一轮生效**）：
    S._runToolPolicy[runKey] = { allow: { 类别key: allow|ask|deny } }。
-   用途 = 「一人公司」的专家：每位专家自带 perm.toolAllow（读 / 写文件与联网放行、
-   命令询问、画布与应用类禁止），随本轮 dshRunTask 的 opts.toolPolicy 装进来。runKey 隔离保证
+   用途 = 「一人公司」的专家：每位专家自带 perm.toolAllow（读 / 写文件、联网与读画布放行、
+   画布改动与应用操作逐次询问、命令询问，删除画布 / 插件 / 子代理 / 目标 / 作业 / 识图禁止），
+   随本轮 dshRunTask 的 opts.toolPolicy 装进来。runKey 隔离保证
    群聊逐位跑（team:<chatId>:<expertId>）互不串味；同一 runKey 下一次运行没带策略就
    删除旧策略 → 缺省一律回退全局预设，现有「审批」面板的行为逐字不变。 */
 function runToolPolicyStore() {
@@ -10575,7 +11345,9 @@ function resolveVisionInspectRoutes(preferredModel) {
     else preferred.push(item);
   };
   for (const p of S.config.providers || []) {
-    if (p.type !== "text_openai") continue;
+    /* 文本服务商（配成 text_openai，或同一端点里含文本模型的混合配置）：
+       识图候选只从它们的文本模型里挑，图像生成模型不参与 */
+    if (!providerHasKind(S.config, p, "text")) continue;
     if (!String(p.apiKey || "").trim() || !String(p.baseUrl || "").trim()) continue;
     const softHost = providerHostBlocksVision(p);
     const route = "mtnode_" + p.id;
@@ -10584,7 +11356,8 @@ function resolveVisionInspectRoutes(preferredModel) {
       /* 目录已声明 image 的模型可直连，不因 deepseek 主机名降级 */
       for (const m of vis) push(p, m.id, m.name || m.id, false);
     } else if (p.vision && Array.isArray(p.models) && p.models.length) {
-      for (const id of p.models) push(p, String(id), String(id), softHost || true);
+      for (const id of modelsOfKind(S.config, p, "text"))
+        push(p, String(id), String(id), softHost || true);
     }
   }
   let cands = preferred.concat(fallback);
@@ -12304,6 +13077,31 @@ function warnIfProcImageMultiPrompt(node, warnings) {
   );
 }
 
+/* save 路径后缀预检：后缀的媒体类别与「输入类型定下来的类别」不符时，当场指出并按
+   输入类型强制 —— 不再等服务商报错才发现把散文写进了 .wav。
+   文本允许 .md / .yaml（.yaml 批量引擎仍在），其余按 .png / .wav / .mp4。 */
+function saveMediaClassOfExt(p) {
+  const e = extOf(String(p || ""));
+  if (!e) return "";
+  if (/^\.(md|markdown|ya?ml|txt)$/i.test(e)) return "text";
+  if (/^\.pdf$/i.test(e)) return "pdf";
+  if (/^\.(png|jpe?g|webp|bmp|gif)$/i.test(e)) return "image";
+  if (/^\.(wav|flac|mp3)$/i.test(e)) return "audio";
+  if (/^\.(mp4|webm|mov)$/i.test(e)) return "video";
+  return "";
+}
+function savePathExtWarning(node, rawPath) {
+  if (!node || !String(rawPath || "").trim()) return "";
+  if (!saveMediaCertain(node)) return "";
+  const media = saveMediaKind(node);
+  const cls = saveMediaClassOfExt(rawPath);
+  if (!cls || cls === media) return "";
+  return (
+    I18n.t("保存路径后缀与输入类型不符，已按输入类型强制") +
+    "：" + rawPath + " → " + forcePathExt(rawPath, saveExtForMedia(media))
+  );
+}
+
 function applyNodePatch(node, patch, warnings) {
   if (!patch || !node) return;
   if (patch.setTitle)
@@ -12437,15 +13235,11 @@ function applyNodePatch(node, patch, warnings) {
     }
     if (patch.devEffort != null) {
       const v = String(patch.devEffort).trim().toLowerCase();
+      /* 开发块的思考档白名单 = low/high/xhigh/max（不含 off）：agent 链上思考不能关，
+         「无」在这里一律当未知档丢弃并回报（与 devEffortKnown 同集合，
+         app.js 的 AGENT_EFFORT_ORDER 也不含 off）。 */
       const known =
-        typeof AGENT_EFFORT_ORDER !== "undefined" &&
-        Array.isArray(AGENT_EFFORT_ORDER)
-          ? AGENT_EFFORT_ORDER.indexOf(v) >= 0
-          : v === "low" ||
-            v === "medium" ||
-            v === "high" ||
-            v === "xhigh" ||
-            v === "max";
+        v === "low" || v === "medium" || v === "high" || v === "xhigh" || v === "max";
       if (!v) node.devEffort = "";
       else if (known) node.devEffort = v;
       else warnings.push(I18n.t("未知思考强度档位：") + v);
@@ -12513,8 +13307,12 @@ function applyNodePatch(node, patch, warnings) {
     }
   }
   if (patch.savePath != null && isSaveNode(node)) {
-    node.savePath = preferRelativeSavePath(String(patch.savePath));
+    const rawPath = preferRelativeSavePath(String(patch.savePath));
+    /* 后缀预检在强制之前算：拿到的是用户 / 模型写的原始后缀，才能点名错在哪 */
+    const extWarn = savePathExtWarning(node, rawPath);
+    node.savePath = rawPath;
     applySavePathExt(node);
+    if (extWarn && warnings) warnings.push(extWarn + "（" + (node.title || node.id) + "）");
   }
   if (patch.waitPath != null && node.kind === "wait_file")
     node.waitPath = applySuperRelToPath(
@@ -12915,14 +13713,19 @@ function applyNodePatch(node, patch, warnings) {
   applyNodeModelPatch(node, patch, warnings);
 }
 
-/* 解析配置里的 API 服务商：id 或唯一名称 */
+/* 解析配置里的 API 服务商：id 或唯一名称（按节点形态选服务商，
+   形态判定统一走 app-model-kind.js：同一端点混挂两类模型也能选到） */
 function resolveApiProviderRef(token, kind, warnings) {
   const s = String(token || "").trim();
   if (!s) return null;
-  const list = (S.config.providers || []).filter((p) => {
-    if (kind === "proc_image") return String(p.type || "").startsWith("image_");
-    return p.type === "text_openai";
-  });
+  const list =
+    typeof apiProvidersForKind === "function"
+      ? apiProvidersForKind(kind)
+      : (S.config.providers || []).filter((p) => {
+          if (kind === "proc_image")
+            return String(p.type || "").startsWith("image_");
+          return p.type === "text_openai";
+        });
   const byId = list.find((p) => p.id === s);
   if (byId) return byId;
   const hits = list.filter((p) => p.name === s);
@@ -13246,6 +14049,181 @@ function rbNamedFromParams(params, aliasMap, markAliasMap) {
   return named;
 }
 
+/* canvas_edit 回执的「端口占用摘要」：模型改完不必回读就知道每个端子叫什么、收什么、
+   挂了几条线。端子**数量**复用既有推导（inputCount / outputCount），**名称**与画布端子
+   徽标同一套口径（app-canvas.js renderPorts），**类型**在工具 / 函数节点上复用
+   fnToolPortKind —— 不另造第二份端子真源。类型取值：control / text / image / audio /
+   video / any（any = 由连线决定的数据端子）。 */
+function editPortNameOf(node, dir, i, isFnT) {
+  const k = node.kind;
+  if (isFnT) {
+    if (dir === "in") {
+      if (i === 0) return I18n.t("控制");
+      const p = fnToolParamList(node, "in")[i - 1];
+      return String((p && p.name) || "").trim() || I18n.t("参数 ") + i;
+    }
+    const outs = fnToolParamList(node, "out");
+    if (i >= outs.length) return I18n.t("控制");
+    return String((outs[i] && outs[i].name) || "").trim() || I18n.t("参数 ") + (i + 1);
+  }
+  if (dir === "in") {
+    if (k === "music_gen")
+      return i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制");
+    if (k === "tts_gen") return i === 0 ? I18n.t("文本") : I18n.t("控制");
+    if (k === "video_gen") return i === 0 ? I18n.t("控制") : I18n.t("提示词 / 参考");
+    if (k === "remotion") return i === 0 ? I18n.t("控制") : I18n.t("描述");
+    if (k === "gate") return I18n.t("闸门输入 ") + (i + 1);
+    if (k === "mutex") return I18n.t("互斥输入 ") + (i + 1);
+    if (k === "task") return I18n.t("控制");
+    if (k === "net_send") return i === 0 ? I18n.t("信息") : I18n.t("控制");
+    return I18n.t("输入端子 ") + (i + 1);
+  }
+  if (k === "task") return i === 0 ? I18n.t("成功") : I18n.t("失败");
+  if (
+    k === "music_gen" ||
+    k === "tts_gen" ||
+    k === "video_gen" ||
+    k === "remotion"
+  )
+    return i === 0 ? I18n.t("内容") : I18n.t("控制");
+  if (k === "judge") return i === 0 ? "YES" : "NO";
+  if (k === "net_recv") return i === 0 ? I18n.t("信息") : I18n.t("控制");
+  return I18n.t("输出端子 ") + (i + 1);
+}
+
+function editPortKindOf(node, dir, i, isFnT) {
+  const k = node.kind;
+  if (isFnT) {
+    if (dir === "in")
+      return i === 0 ? "control" : fnToolPortKind(node, "in", i) || "any";
+    return i >= fnToolParamList(node, "out").length
+      ? "control"
+      : fnToolPortKind(node, "out", i) || "any";
+  }
+  if (dir === "in") {
+    if (k === "net_send") return i === 1 ? "control" : "text";
+    if (k === "music_gen") return i === 2 ? "control" : "text";
+    if (k === "tts_gen") return i === 1 ? "control" : "text";
+    if (k === "video_gen") return i === 0 ? "control" : "any";
+    if (k === "remotion") return i === 0 ? "control" : "text";
+    if (k === "task") return "control";
+    if (isControlKind(node)) return "control";
+    if (k === "proc_image") return i === 0 ? "text" : "image";
+    return "any";
+  }
+  if (k === "task" || k === "judge") return "control";
+  if (k === "net_recv") return i === 0 ? "text" : "control";
+  if (k === "music_gen" || k === "tts_gen") return i === 0 ? "audio" : "control";
+  if (k === "video_gen" || k === "remotion") return i === 0 ? "video" : "control";
+  if (isControlKind(node)) return "control";
+  if (k === "proc_image" || k === "input_image") return "image";
+  if (k === "input_audio") return "audio";
+  if (k === "input_video") return "video";
+  return "any";
+}
+
+function editNodePortSummary(node) {
+  if (!node) return undefined;
+  const strip = (p) => ({
+    i: p.index,
+    name: p.name,
+    kind: p.kind,
+    n: (p.connectedTo || []).length,
+  });
+  return {
+    in: nodePortList(node, "in").map(strip),
+    out: nodePortList(node, "out").map(strip),
+  };
+}
+
+/* ── edit 收尾一次性静态校验 ──────────────────────────────────────────
+   把「错了 → 报错 → 再改」压成一轮往返：本笔编辑写完盘前，把触碰到的节点 / 连线
+   统一过一遍静态检查，warnings 合并进同一份回执。判定全部复用既有真源
+   （connectError / warnBatchCartesianRisk / warnIfProcImageMultiPrompt /
+   saveMediaKind / saveMediaCertain / saveMediaClassOfExt），只追加提示，
+   不阻断已接受的编辑、不改任何节点、不另立第二套规则。 */
+function isSmartAgentNode(n) {
+  return !!(n && (n.kind === "agent_task" || (n.kind === "proc_text" && n.agent)));
+}
+
+/* 已存在连线的合法性：把该线临时摘出后跑真正的 connectError（唯一判定真源），
+   判完 finally 原样放回 —— 不改画布状态、不新增第二套连线规则。 */
+function wireStaticError(w) {
+  if (!w || w.rel || !S.wf) return "";
+  const wires = S.wf.wires || [];
+  const i = wires.indexOf(w);
+  if (i < 0) return "";
+  wires.splice(i, 1);
+  try {
+    return connectError(w.from, w.to, w.toIndex, w.fromIndex) || "";
+  } finally {
+    wires.splice(i, 0, w);
+  }
+}
+
+/* touchedIds = 本笔编辑触碰过的节点 id（只报自己动过的东西，不翻旧账） */
+function collectEditStaticWarnings(touchedIds, warnings) {
+  if (!warnings || !S.wf) return;
+  const touched = touchedIds instanceof Set ? touchedIds : new Set(touchedIds || []);
+  const seen = new Set();
+  const push = (msg) => {
+    const s = String(msg == null ? "" : msg).trim();
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    warnings.push(s);
+  };
+  const label = (n) => (n && (n.title || n.kind)) || "";
+  /* ② 批量 N² 全量注入（既有真源，画布级；原行为：每次 edit 收尾都跑一次） */
+  if (typeof warnBatchCartesianRisk === "function") warnBatchCartesianRisk(warnings);
+  if (!touched.size) return;
+  for (const n of S.wf.nodes || []) {
+    if (!touched.has(n.id)) continue;
+    /* ③ proc_image 被要求多图（既有真源） */
+    warnIfProcImageMultiPrompt(n, { push });
+    if (!isSaveNode(n)) continue;
+    /* ④ save 误接智能节点：agent_task / 开了 agent 的 proc_text 自己会写文件，
+          其后接 save 会把会话噪声落盘 */
+    for (const src of saveDataSources(n)) {
+      if (isSmartAgentNode(src)) {
+        push(
+          I18n.t(
+            "保存节点不能接智能处理节点（智能节点自己会写文件，其后接 save 会把会话内容落盘）",
+          ) +
+            "：" +
+            label(n) +
+            " ← " +
+            label(src),
+        );
+      }
+    }
+    /* ⑤ 保存路径后缀须与输入类型一致（输入类型已定才判，未定不猜后缀） */
+    const raw = String(n.savePath || "").trim();
+    if (raw && saveMediaCertain(n)) {
+      const media = saveMediaKind(n);
+      const cls = saveMediaClassOfExt(raw);
+      if (cls && cls !== media) {
+        push(
+          I18n.t("保存路径后缀与输入类型不符") +
+            "：" +
+            raw +
+            " → " +
+            forcePathExt(raw, saveExtForMedia(media)) +
+            "（" +
+            label(n) +
+            "）",
+        );
+      }
+    }
+  }
+  /* ① 连线合法性 · 端子类型匹配：只看本笔触碰到的线 */
+  for (const w of (S.wf.wires || []).slice()) {
+    if (!touched.has(w.from) && !touched.has(w.to)) continue;
+    const err = wireStaticError(w);
+    if (!err) continue;
+    push(label(nodeById(w.from)) + " → " + label(nodeById(w.to)) + "：" + err);
+  }
+}
+
 async function applyCanvasEdit(params, ctx) {
   params = params || {};
   /* 二次防线：这是真正改图并落盘的入口，绑定画布若已被删除就直接抛错，
@@ -13293,6 +14271,60 @@ async function applyCanvasEdit(params, ctx) {
      null.push 崩溃根因已修，大调用现在可安全完整执行。 */
   const doLayout =
     params.layout === true || (params.layout !== false && creates.length > 0);
+
+  /* ── 局部画布（scope）：写入侧的越界闸 ──────────────────────────────
+     需求：编辑工具要能「只改某一颗超级 / 开发节点内部」。传了 scope 就把这次调用
+     钉在那颗壳的子树里：界外节点一律不碰（跳过 + warnings 逐条说明），
+     新节点缺 parentSuperId 时默认落进这颗壳，免得建完飘在根画布上。
+     两种口径（与只读侧 scopedNodeIdSet 同一真源）：
+       · scopeScope  = 那颗壳 + 它的直接子节点（+ scopeDepth:"all" 时的整棵子树）
+         —— 这次调用允许触碰的节点；
+       · nodeScopeScope = 同上再放宽一层：嵌套更深的子块只要祖先链都在
+         nodeScopeScope 里就放行（编辑子块内容时用它）。 */
+  const editScopeHost = resolveScopeHost(params.scope);
+  const editScope =
+    editScopeHost && !editScopeHost.bad
+      ? { host: editScopeHost, short: params.scopeDepth === "all" ? "all" : "direct" }
+      : null;
+  if (editScopeHost && editScopeHost.bad) {
+    warnings.push(
+      I18n.t("无效的 scope（要给超级 / 开发节点的 id 或唯一标题）：") +
+        editScopeHost.token,
+    );
+  }
+  const editAllowed = editScope
+    ? editScope.short === "all"
+      ? scopedNodeIdSet(editScope.host, "all")
+      : scopedNodeIdSet(editScope.host, "direct")
+    : null;
+  const nodeScopeAllowed = editScope
+    ? scopedNodeIdSet(editScope.host, "all")
+    : null;
+  const outOfEditScope = (n) => !!(editAllowed && !editAllowed.has(n.id));
+  const outOfNodeScope = (n) => !!(nodeScopeAllowed && !nodeScopeAllowed.has(n.id));
+  /* 绘制（mark）只在 scope 那颗壳里可改；根画布上的绘制（parentSuperId 为空）也算界外 */
+  const outOfMarkScope = (m) =>
+    !!(editAllowed && !editAllowed.has(String((m && m.parentSuperId) || "")));
+  const scopeSkip = (what) =>
+    warnings.push(
+      I18n.t("scope 界外已跳过：") +
+        what +
+        I18n.t("（本次只改 ") +
+        (editScope.host.title || editScope.host.id) +
+        I18n.t("）"),
+    );
+  const scopeExtra = editScope
+    ? {
+        scopeInfo: {
+          mode: "subtree",
+          origin: "explicit",
+          depth: editScope.short,
+          hostId: editScope.host.id,
+          hostTitle: editScope.host.title,
+          note: I18n.t("本次编辑被限定在这一颗壳内部：界外节点未改动。"),
+        },
+      }
+    : {};
 
   if (
     !creates.length &&
@@ -13367,6 +14399,18 @@ async function applyCanvasEdit(params, ctx) {
       hasXY ? spec.x : placeX,
       hasXY ? spec.y : placeY,
     );
+    /* 局部画布：scope 界外的锚点（x/y 落在壳外面）不建 —— 建了也只会飘在根画布上。
+       给了 parentSuperId / packIntoSuper 的（含 alias 指向本次新建的壳）按后面的归属闸走。 */
+    if (
+      editScope &&
+      hasXY &&
+      !pointInScopeHost(editScope.host, spec.x, spec.y) &&
+      spec.parentSuperId == null &&
+      spec.packIntoSuper == null
+    ) {
+      scopeSkip(I18n.t("新节点 ") + alias);
+      continue;
+    }
     const wantTitle = String(spec.title || NODE_DEFAULTS[kind].title || alias);
     node.title = uniqueNodeTitle(wantTitle);
     applyNodePatch(node, spec, warnings);
@@ -13408,13 +14452,29 @@ async function applyCanvasEdit(params, ctx) {
   /* 收纳进超级节点：与 parentTaskId 一样，须在整批 create 入 aliasMap 后再解析 alias/title */
   const applyParentSuper = (node, raw, warningsArr) => {
     if (!node) return;
+    /* 局部画布（scope）：界外节点不收纳 —— 收纳会把界外节点拖进这颗壳，等于改到界外 */
+    if (editScope && node.id !== editScope.host.id && outOfNodeScope(node)) {
+      scopeSkip(node.title || node.id);
+      return;
+    }
     const token = String(raw == null ? "" : raw).trim();
     if (!token) {
+      /* scope 生效且没点名父壳 → 默认落进 scope 这颗壳（用户语义就是"在这颗壳里编辑"） */
+      if (editScope && node.id !== editScope.host.id) {
+        node.parentSuperId = editScope.host.id;
+        node.parentTaskId = editScope.host.parentTaskId || node.parentTaskId || "";
+        rewriteNodePathsForSuperContext(node);
+        return;
+      }
       node.parentSuperId = "";
       return;
     }
     const p = resolveCanvasRef(token, aliasMap, warningsArr);
     if (p && p.kind === "super" && canMoveNodeIntoSuper(p, node)) {
+      if (editScope && !editAllowed.has(p.id)) {
+        scopeSkip(p.title || p.id);
+        return;
+      }
       node.parentSuperId = p.id;
       node.parentTaskId = p.parentTaskId || node.parentTaskId || "";
       rewriteNodePathsForSuperContext(node);
@@ -13436,6 +14496,11 @@ async function applyCanvasEdit(params, ctx) {
     const token = (spec && (spec.id || spec.alias || spec.title)) || "";
     const node = resolveCanvasRef(token, aliasMap, warnings);
     if (!node) continue;
+    /* 局部画布：scope 界外的节点一律不碰（跳过而不是整体报错 —— 一批里其余照做） */
+    if (outOfEditScope(node)) {
+      scopeSkip(node.title || node.id);
+      continue;
+    }
     if (running.has(node.id) && spec.setTitle) {
       warnings.push(I18n.t("运行中的节点未改标题：") + node.title);
       spec = Object.assign({}, spec, { setTitle: undefined });
@@ -13461,6 +14526,12 @@ async function applyCanvasEdit(params, ctx) {
       id: node.id,
       title: node.title,
       kind: node.kind,
+      /* 回执自足：带上位置 / 尺寸与端口占用摘要，模型改完不必再 canvas_get 回读 */
+      x: Math.round(Number(node.x) || 0),
+      y: Math.round(Number(node.y) || 0),
+      w: Math.round(Number(node.w) || 0),
+      h: Math.round(Number(node.h) || 0),
+      ports: editNodePortSummary(node),
       hasImage: nodeHasImage(node),
       providerId: node.providerId || undefined,
       provider: node.provider || undefined,
@@ -13500,6 +14571,10 @@ async function applyCanvasEdit(params, ctx) {
     const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
     if (!a || !b) continue;
+    if (outOfEditScope(a) || outOfEditScope(b)) {
+      scopeSkip((a.title || a.id) + " → " + (b.title || b.id));
+      continue;
+    }
     const before = S.wf.wires.length;
     S.wf.wires = S.wf.wires.filter(
       (w) =>
@@ -13516,6 +14591,10 @@ async function applyCanvasEdit(params, ctx) {
     const a = resolveCanvasRef(pair && pair.from, aliasMap, warnings);
     const b = resolveCanvasRef(pair && pair.to, aliasMap, warnings);
     if (!a || !b) continue;
+    if (outOfEditScope(a) || outOfEditScope(b)) {
+      scopeSkip((a.title || a.id) + " → " + (b.title || b.id));
+      continue;
+    }
     if (pair && pair.rel) {
       /* 关系线：仅表示关系，不走数据流校验 */
       const err = relConnectError(a.id, b.id);
@@ -13532,22 +14611,47 @@ async function applyCanvasEdit(params, ctx) {
     }
     const err = connectError(a.id, b.id, null, pair.fromIndex || 0);
     if (err) {
-      warnings.push(a.title + " → " + b.title + "：" + err);
+      /* 端口 / 接法预检：把候选端子清单与正确接法一并回给模型，
+         省掉「报错 → 再读图 → 再改」的往返。 */
+      const adv = connectPortAdvice(a.id, b.id, null, pair.fromIndex || 0, err);
+      warnings.push(
+        a.title + " → " + b.title + "：" + err +
+          (adv && adv.suggestion ? " · " + adv.suggestion : ""),
+      );
       continue;
     }
     addWire(a.id, b.id, null, { fromIndex: pair.fromIndex || 0 });
     connected.push({ from: a.id, to: b.id, fromTitle: a.title, toTitle: b.title });
   }
 
-  /* 跨超级节点连接：任意层级 / 任意超级节点内的两个节点自动贯通 */
+  /* 跨超级节点连接：任意层级 / 任意超级节点内的两个节点自动贯通。
+     局部画布（scope）：界外的对先剔掉再交给它，避免"顺手"连到壳外面去。 */
   const superPairs = Array.isArray(params.superConnect) ? params.superConnect : [];
   if (superPairs.length) {
-    applySuperConnect(superPairs, { aliasMap, warnings, connected });
+    const usePairs = editScope
+      ? superPairs.filter((p) => {
+          const a = resolveCanvasRef(p && p.from, aliasMap, warnings);
+          const b = resolveCanvasRef(p && p.to, aliasMap, warnings);
+          if (!a || !b) return false;
+          if (outOfEditScope(a) || outOfEditScope(b)) {
+            scopeSkip((a.title || a.id) + " → " + (b.title || b.id));
+            return false;
+          }
+          return true;
+        })
+      : superPairs;
+    if (usePairs.length) {
+      applySuperConnect(usePairs, { aliasMap, warnings, connected });
+    }
   }
 
   for (const token of removes) {
     const node = resolveCanvasRef(token, aliasMap, warnings);
     if (!node) continue;
+    if (outOfEditScope(node)) {
+      scopeSkip(node.title || node.id);
+      continue;
+    }
     if (running.has(node.id)) {
       warnings.push(I18n.t("不能删除正在运行的节点：") + node.title);
       continue;
@@ -13595,12 +14699,13 @@ async function applyCanvasEdit(params, ctx) {
 
   const createdLive = created.filter((n) => nodeById(n.id));
   if (doLayout) {
-    const targets =
+    const targets = (
       createdLive.length && params.layout !== true
         ? createdLive
         : createdLive.length
           ? createdLive
-          : (S.wf.nodes || []).filter((n) => !running.has(n.id));
+          : (S.wf.nodes || []).filter((n) => !running.has(n.id))
+    ).filter((n) => !editScope || editAllowed.has(n.id));
     /* 分「所属层级」各自排版：壳层内子节点用的是舞台局部坐标，
        与顶层画布坐标不是同一个空间，混在一起排会排飞（开发节点架构图就踩过） */
     const groups = new Map();
@@ -13672,11 +14777,17 @@ async function applyCanvasEdit(params, ctx) {
     if (!m) return;
     const token = String(raw == null ? "" : raw).trim();
     if (!token) {
-      m.parentSuperId = "";
+      /* scope 生效且没点名归属 → 绘制也落进这颗壳（与节点同口径） */
+      if (editScope) m.parentSuperId = editScope.host.id;
+      else m.parentSuperId = "";
       return;
     }
     const p = resolveCanvasRef(token, aliasMap, warningsArr);
     if (p && p.kind === "super") {
+      if (editScope && !editAllowed.has(p.id)) {
+        scopeSkip(p.title || p.id);
+        return;
+      }
       m.parentSuperId = p.id;
       m.parentTaskId = p.parentTaskId || m.parentTaskId || "";
     } else if (token && warningsArr) {
@@ -13745,6 +14856,10 @@ async function applyCanvasEdit(params, ctx) {
     const token = (raw && (raw.id || raw.alias || raw.title || raw.text)) || "";
     const m = resolveMarkRef(token, markAliasMap, warnings);
     if (!m) continue;
+    if (outOfMarkScope(m)) {
+      scopeSkip(m.kind + " " + (m.text || m.id));
+      continue;
+    }
     let patch = raw;
     if (raw.around || raw.nodes || raw.wrap) {
       patch = applyAroundToSpec(
@@ -13767,7 +14882,12 @@ async function applyCanvasEdit(params, ctx) {
     const delIds = [];
     for (const token of removeMarksList) {
       const m = resolveMarkRef(token, markAliasMap, warnings);
-      if (m) delIds.push(m.id);
+      if (!m) continue;
+      if (outOfMarkScope(m)) {
+        scopeSkip(m.kind + " " + (m.text || m.id));
+        continue;
+      }
+      delIds.push(m.id);
     }
     if (delIds.length) {
       const set = new Set(delIds);
@@ -13817,6 +14937,16 @@ async function applyCanvasEdit(params, ctx) {
     }
     nodeIds = nodeIds.filter((id, i) => nodeIds.indexOf(id) === i);
     markIds = markIds.filter((id, i) => markIds.indexOf(id) === i);
+    /* scope 生效：组只能收纳壳内成员（成组会把成员一起搬动 / 缩放，界外成员一并被挪） */
+    if (editScope) {
+      const beforeN = nodeIds.length;
+      nodeIds = nodeIds.filter((id) => editAllowed.has(id));
+      if (nodeIds.length !== beforeN) scopeSkip(I18n.t("组"));
+      markIds = markIds.filter((id) => {
+        const m = marksOf().filter((x) => x.id === id)[0];
+        return m && !outOfMarkScope(m);
+      });
+    }
     if (nodeIds.length || markIds.length) {
       grouped = {
         id: uid("g"),
@@ -13877,7 +15007,17 @@ async function applyCanvasEdit(params, ctx) {
   if (doLayout) bits.push(I18n.t("已排版"));
   if (bits.length) toast(I18n.t("智能助手已更新画布：") + bits.join(" · "), "ok");
 
-  warnBatchCartesianRisk(warnings);
+  /* edit 收尾一次性静态校验：本笔触碰到的节点 / 连线统一过一遍，
+     warnings 合并进本轮回执（旧口径的批量 N² 检查也并入这一趟）。 */
+  const touchedIds = new Set();
+  for (const n of createdLive) touchedIds.add(n.id);
+  for (const u of updated) if (u && u.id) touchedIds.add(u.id);
+  for (const c of connected) {
+    if (c && c.from) touchedIds.add(c.from);
+    if (c && c.to) touchedIds.add(c.to);
+  }
+  if (grouped) for (const id of grouped.nodeIds || []) touchedIds.add(id);
+  collectEditStaticWarnings(touchedIds, warnings);
 
   /* 回滚·画布路：改动后收口 —— 前后整快照入库 + touched 只认本轮触碰的实体。
      自动排版顺带挪动的【别人】的节点刻意不进 touched（快照备注里记 layoutMoved /
@@ -13895,6 +15035,9 @@ async function applyCanvasEdit(params, ctx) {
         title: n.title,
         x: n.x,
         y: n.y,
+        w: n.w,
+        h: n.h,
+        ports: editNodePortSummary(n),
         hasImage: nodeHasImage(n),
         size:
           n.kind === "proc_image"
@@ -13923,7 +15066,8 @@ async function applyCanvasEdit(params, ctx) {
         : undefined,
       warnings,
     },
-    canvasSnapshot(),
+    scopeExtra,
+    canvasSnapshot({ scope: params.scope, scopeDepth: params.scopeDepth }),
   );
 }
 

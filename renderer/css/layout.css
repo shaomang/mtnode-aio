@@ -238,6 +238,8 @@ button:disabled {
   justify-content: center;
   gap: 1px;
   line-height: 1;
+  /* 与第二排 .btn-ico 同款：hover 提示（data-tip）以按钮为定位锚点 */
+  position: relative;
 }
 
 /* 画布 / 会话 / 团队 的线性图标：尺寸口径对齐第二排 .btn-ico 的 svg（14px） */
@@ -295,8 +297,10 @@ button:disabled {
   opacity: .92;
 }
 
-/* 纯 icon 按钮：hover 立刻显示完整标题（不用原生 title 延迟） */
-.topbar .btn-ico[data-tip]::after {
+/* 顶栏入口（纯 icon 按钮 .btn-ico / 三颗视图按钮 .tb-view）：hover 立刻显示完整标题
+   （不用原生 title 延迟），标题末尾由 i18n.applyDom 追加「 · 快捷键 X」 */
+.topbar .btn-ico[data-tip]::after,
+.topbar .tb-view[data-tip]::after {
   content: attr(data-tip);
   position: absolute;
   left: 50%;
@@ -323,7 +327,9 @@ button:disabled {
 }
 
 .topbar .btn-ico[data-tip]:hover::after,
-.topbar .btn-ico[data-tip]:focus-visible::after {
+.topbar .btn-ico[data-tip]:focus-visible::after,
+.topbar .tb-view[data-tip]:hover::after,
+.topbar .tb-view[data-tip]:focus-visible::after {
   opacity: 1;
   visibility: visible;
 }

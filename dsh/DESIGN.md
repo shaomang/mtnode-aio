@@ -176,17 +176,19 @@ journal 帧(契约)`)、`session-event`(其余会话事件全量透传)、`usage
 > `dsh/gateway/reasoning-effort.mjs`(纯函数模块,gateway 与运行时插件共用,禁止 import
 > dsh / pi-ai 运行时包)。本节锁契约,不锁实现;要改档位语义先改那个模块再改这里。
 
-- **档位词汇(可选用档)**:`low / medium / high / xhigh / max`(对齐 pi-ai 能力集
-  `@earendil-works/pi-ai` 的 `EXTENDED_THINKING_LEVELS` 的可选用子集)。`off` / `minimal`
-  不入选:`off` 在 agent 链上的语义是旧档「关思考」→ `high`(proc_text 非智能节点另有
-  自己的 off/低/中/高 循环,不经网关);`minimal` 无消费方。openai 专有的
-  `ultra / persistent / service_tiers` 不在范围。
-- **旧档兼容**:宿主传来的 `off / none / 无 / 空` 与非法值一律归一为 `high`(兜底默认,
-  与历史行为一致);`effort` 参数缺省 = `high`。
+- **档位词汇(可选用档)**:`off / low / medium / high / xhigh / max`(对齐 pi-ai 能力集
+  `@earendil-works/pi-ai` 的 `EXTENDED_THINKING_LEVELS` 的可选用子集)。`off` = 会话 / 助手
+  「思考强度 · 无」= **关闭思考**(llm-deepseek 适配器的 `thinking.type=disabled`);它是
+  「关档」不是预算档 —— 只在明确选了 `off` 时下发,不支持 `off` 的路由退回最近正档,绝不把
+  `off` 当成最小档参与同侧回退。`minimal` 无消费方,不入选(proc_text 非智能节点另有自己的
+  off/低/中/高 循环,不经网关)。openai 专有的 `ultra / persistent / service_tiers` 不在范围。
+- **旧档兼容**:宿主传来的 `none / 无` 一律归一到 `off`(与用户点「无」同判);空串与非法值
+  归一为 `high`(兜底默认,与历史行为一致);`effort` 参数缺省 = `high`。
 - **路由能力表**:`deepseek-official`(llm-deepseek 适配器)能力 `off/low/high/max`,
-  可选用交集 `low/high/max` —— `medium`、`xhigh` 请求按「同侧最近低档」回退
-  (`medium→low`,`xhigh→high`);目录/pi-ai 等其余路由按全档,模型级精确能力由运行时
-  按 `ctx.llm` 解析后夹紧(见下)。归一化**永不硬失败**:不支持 → 最近低档 → `high` 兜底。
+  可选用交集 `off/low/high/max` —— `off` 原样下发(关思考),`medium`、`xhigh` 请求按
+  「同侧最近低档」回退(`medium→low`,`xhigh→high`);目录/pi-ai 等其余路由按全档,模型级
+  精确能力由运行时按 `ctx.llm` 解析后夹紧(见下)。归一化**永不硬失败**:不支持 → 最近低档
+  → `high` 兜底。
 - **按 run 下发(三条通道,同一个 `runEffort`)**:网关每轮 run 先定 `route`
   (`routeOfProvider`),经 `effortForRoute(effort, route)` 得生效档,然后
   ① settings.yaml 的 `llm-deepseek.reasoningEffort` **只写兜底默认 `high`**(档位切换

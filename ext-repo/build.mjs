@@ -38,7 +38,10 @@ function readJson(p, fb) {
 }
 function parseSkillMeta(text) {
   const meta = { name: "", title: "", description: "" };
-  const fm = String(text || "").match(/^---\s*\n([\s\S]*?)\n---/);
+  /* 归一换行：CRLF 的 SKILL.md 会让 `(.*)$` 的行匹配整行失败（`.` 不匹配 \r），
+     扩展目录里的 name / description 就会变空。 */
+  const src = String(text || "").replace(/\r\n?/g, "\n");
+  const fm = src.match(/^---\s*\n([\s\S]*?)\n---/);
   if (!fm) return meta;
   for (const line of fm[1].split("\n")) {
     const m = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);

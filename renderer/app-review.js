@@ -31,8 +31,9 @@
  *   8) 确认最终版后写回该节点作为新的文本内容。
  *
  * 依赖（均在同画布运行期全局可用）：nodeById / S / scheduleSave / renderCanvas / toast /
- * I18n / window.marked / apiCallTextStream / pushHistory / clearDownstream /
- * procPromptOf 等。本文件在 index.html 里最后加载，故引用只发生在函数调用期。
+ * I18n / window.marked / window.MTMathRender（renderer/math-render.js，公式渲染）/
+ * apiCallTextStream / pushHistory / clearDownstream / procPromptOf 等。本文件在 index.html
+ * 里最后加载，故引用只发生在函数调用期。
  */
 
 /* ---------- 会话状态（内存）与持久结构（node.review / 事实库 sidecar） ---------- */
@@ -327,6 +328,12 @@ function ensureReviewDlg() {
 
 function openReviewDlg() {
   const h = ensureReviewDlg();
+  /* 同级浮层互斥：本窗与文本预览窗（app-textpreview.js）叠在一起时只留一个 */
+  if (typeof closeTextPreview === "function") {
+    try {
+      closeTextPreview();
+    } catch (_) {}
+  }
   h.classList.add("on");
   document.body.classList.add("review-lock");
   h.querySelector("#reviewBox").focus();
@@ -699,6 +706,9 @@ function renderToolbar(h, cur) {
   mk("code", "{;}", I18n.t("代码块"));
   mk("image", "🖼", I18n.t("插入图片"));
   mk("table", "▦", I18n.t("插入表格"));
+  /* 公式录入：$ 行内 / $$ 显示（LaTeX 子集，渲染见 renderer/math-render.js） */
+  mk("mathInline", "$", I18n.t("插入行内公式"), "<i>$</i>");
+  mk("mathDisplay", "$$", I18n.t("插入显示公式"), "<i>$$</i>");
   tb.appendChild(sep());
   const u = document.createElement("button");
   u.type = "button";
@@ -853,7 +863,8 @@ function _visVer() {
   return n.review.versions[_rv.verIdx] || null;
 }
 function markedPreviewHtml(raw) {
-  return mdToRichHtml(raw);
+  /* 只读预览与富文本编辑同源：都走 rvMarkdownHtml（含公式渲染） */
+  return rvMarkdownHtml(raw);
 }
 function commitEditorToDoc() {
   if (!_rv.target) return;
@@ -891,17 +902,38 @@ function reAnchorNotesAfterEdit() {
 
 /* ---------- 富文本 ↔ Markdown ---------- */
 
-function mdToRichHtml(raw) {
+/* Markdown → HTML 的唯一入口（富文本编辑 / 只读预览 / 公式渲染共用）。
+ * 公式交给 renderer/math-render.js：先把 `$…$` / `$$…$$` / `\(…\)` / `\[…\]` 抽成
+ * 占位符，再用 marked 解析整篇，最后换回渲染结果 —— 结构与公式位置不变，且原始
+ * LaTeX 留在 data-rv-tex / data-rv-delim 上，序列化回 Markdown 时按原写法还原
+ * （AI 修订取文 / 回写不破坏公式，也不改写用户用的是哪种定界符）。 */
+function rvMarkdownHtml(raw) {
   const s = String(raw || "");
   if (!s.trim()) return "<p><br></p>";
+  const parse = (md) => {
+    if (window.marked && window.marked.parse)
+      return window.marked.parse(md, { gfm: true, breaks: true });
+    return "";
+  };
   let html = "";
-  try {
-    if (window.marked && window.marked.parse) {
-      html = window.marked.parse(s, { gfm: true, breaks: true });
+  const M = window.MTMathRender;
+  if (M && typeof M.mdToHtml === "function") {
+    try {
+      html = M.mdToHtml(s, parse);
+    } catch (_) {
+      html = "";
     }
-  } catch (_) {}
+  }
+  if (!html) {
+    try {
+      html = parse(s);
+    } catch (_) {}
+  }
   if (!html) html = "<p>" + escH(s) + "</p>";
   return rvRewriteImgSrc(html);
+}
+function mdToRichHtml(raw) {
+  return rvMarkdownHtml(raw);
 }
 function escH(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -1006,11 +1038,90 @@ function richToMarkdown(root) {
   return md.trim() + (md.trim() ? "\n" : "");
 }
 
+/* ── 公式（math-render.js 渲染出的根节点）：序列化回 Markdown 源码 ──
+   富文本里的公式只读作展示（contenteditable=false），LaTeX 原文在 data-rv-tex 上；
+   这里按它还原成 `$tex$` / `$$tex$$`，保证「让 AI 依据批注修订」的取文与回写、
+   以及事实库 md 正文里的公式一字不改。 */
+function rvMathElOf(node) {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+  return node.getAttribute && node.getAttribute("data-rv-tex") != null ? node : null;
+}
+function rvMathTexOf(el) {
+  try {
+    return el.getAttribute("data-rv-tex") || "";
+  } catch (_) {
+    return "";
+  }
+}
+function rvMathIsDisplay(el) {
+  try {
+    return el.getAttribute("data-rv-display") === "1";
+  } catch (_) {
+    return false;
+  }
+}
+/* 原定界符：`$` / `$$` / `\(` / `\[`（math-render.js 写在 data-rv-delim 上）。
+   用户源码怎么写就怎么还回去，回写不擅自把 `\[…\]` 改成 `$$…$$`。 */
+function rvMathDelimOf(el) {
+  try {
+    const d = el.getAttribute("data-rv-delim");
+    if (d === "\\(" || d === "\\[" || d === "$$" || d === "$") return d;
+  } catch (_) {}
+  return rvMathIsDisplay(el) ? "$$" : "$";
+}
+/* 公式的 Markdown 源码片段（行内与块级共用一份口径） */
+function rvMathMdOf(el) {
+  const tex = rvMathTexOf(el);
+  if (!tex) return "";
+  const d = rvMathDelimOf(el);
+  if (d === "\\(") return "\\(" + tex + "\\)";
+  if (d === "\\[") return "\\[" + tex + "\\]";
+  if (d === "$$") return "$$" + tex + "$$";
+  return "$" + tex + "$";
+}
+/* 块级输出：显示公式独占 `$$` / `\[` 行；行内公式一行 `$tex$` / `\(tex\)` */
+function pushMathMd(el, parts) {
+  const tex = rvMathTexOf(el);
+  if (!tex) return;
+  const d = rvMathDelimOf(el);
+  if (d === "$$") {
+    parts.push("$$");
+    parts.push(tex);
+    parts.push("$$");
+  } else if (d === "\\[") {
+    parts.push("\\[");
+    parts.push(tex);
+    parts.push("\\]");
+  } else if (d === "\\(") {
+    parts.push("\\(" + tex + "\\)");
+  } else {
+    parts.push("$" + tex + "$");
+  }
+}
+/* 该块是否「只装了一个公式」（用于把显示公式还原成独立 $$ 块） */
+function rvOnlyMathChild(el) {
+  let found = null;
+  for (const c of el.childNodes) {
+    if (c.nodeType === Node.TEXT_NODE) {
+      if (c.textContent && c.textContent.trim()) return null;
+      continue;
+    }
+    if (c.nodeType !== Node.ELEMENT_NODE) continue;
+    if (c.tagName && c.tagName.toLowerCase() === "br") continue;
+    const m = rvMathElOf(c);
+    if (!m || found) return null;
+    found = m;
+  }
+  return found;
+}
+
 function inlineToMd(node) {
   /* 输出某文本/行内元素在「行内上下文」中的 markdown 片段 */
   if (!node) return "";
   if (node.nodeType === Node.TEXT_NODE) return node.textContent;
   if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const math = rvMathElOf(node);
+  if (math) return rvMathMdOf(math);
   const tag = node.tagName.toLowerCase();
   let inner = "";
   for (const c of node.childNodes) inner += inlineToMd(c);
@@ -1052,11 +1163,22 @@ function walkBlocks(node, parts, depth) {
   for (const child of node.childNodes) {
     if (child.nodeType === Node.ELEMENT_NODE) {
       const tag = child.tagName.toLowerCase();
+      /* 直接挂在编辑区根节点下的公式（工具栏插入 / 独立 $$ 块） */
+      if (rvMathElOf(child)) {
+        pushMathMd(child, parts);
+        continue;
+      }
       if (tag === "br") {
         parts.push("");
         continue;
       }
       if (tag === "div" || tag === "p") {
+        /* 只装一个公式的段落：还原成独立的 `$$` 块（不塞进行内） */
+        const only = rvOnlyMathChild(child);
+        if (only) {
+          pushMathMd(only, parts);
+          continue;
+        }
         if (child.childNodes.length === 1 && child.firstChild.nodeType === Node.ELEMENT_NODE &&
           child.firstChild.tagName && ["UL", "OL", "TABLE", "PRE", "BLOCKQUOTE"].indexOf(child.firstChild.tagName.toUpperCase()) >= 0) {
           walkBlocks(child, parts, depth);
@@ -1219,6 +1341,18 @@ function applyToolbarToSource(action, ta) {
         rvInsertSourceText(ta, (needNl ? "\n\n" : "") + md + "\n");
       });
       break;
+    case "mathInline":
+    case "mathDisplay": {
+      const display = action === "mathDisplay";
+      reviewMathDialog(display).then((tex) => {
+        if (!tex) return;
+        rvInsertSourceText(
+          ta,
+          display ? "\n$$\n" + tex + "\n$$\n" : "$" + tex + "$",
+        );
+      });
+      break;
+    }
     case "hr":
       if (ta.value && !ta.value.endsWith("\n")) ta.value += "\n";
       ta.value += "\n---\n\n";
@@ -1391,6 +1525,17 @@ function applyToolbarToRich(action, ed) {
           _rv.dirty = true;
           commitEditorToDoc();
           renderFootbarBox();
+        });
+        return true;
+      }
+      case "mathInline":
+      case "mathDisplay": {
+        const display = action === "mathDisplay";
+        const range = rvRangeIn(ed);
+        reviewMathDialog(display).then((tex) => {
+          if (!tex) return;
+          rvRestoreRange(range, ed);
+          rvInsertMathRich(tex, display);
         });
         return true;
       }
@@ -1617,6 +1762,72 @@ function reviewTableDialog() {
       fin(null);
     }
   });
+}
+
+/* 小对话框：LaTeX 公式录入（$ 行内 / $$ 显示）。
+ * 返回去首尾空白的 LaTeX 源码；取消 / Esc 返回空串。
+ * 录入的公式在富文本里立刻渲染（math-render.js），但 LaTeX 原文存进节点
+ * data-rv-tex，序列化回 Markdown 仍是 `$…$` / `$$…$$`。 */
+function reviewMathDialog(display) {
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (v) => {
+      if (done) return;
+      done = true;
+      resolve(v);
+    };
+    try {
+      mtDialogForm({
+        title: I18n.t(display ? "插入显示公式" : "插入行内公式"),
+        msg: I18n.t(
+          "输入 LaTeX 公式，支持上下标、分式、根号、希腊字母、矩阵与 \\text",
+        ),
+        textarea: {
+          label: I18n.t("公式（LaTeX）"),
+          rows: 3,
+          placeholder: display ? "\\frac{a}{b} = c" : "x^2 + y^2 = r^2",
+        },
+        actions: [
+          { id: "cancel", label: I18n.t("取消") },
+          { id: "ok", label: I18n.t("插入公式"), primary: true },
+        ],
+      }).then(
+        (res) =>
+          fin(
+            res && res.action === "ok"
+              ? String(res.text || "").replace(/\r/g, "").trim()
+              : "",
+          ),
+        () => fin(""),
+      );
+    } catch (_) {
+      fin("");
+    }
+  });
+}
+
+/* 富文本插入公式：直接用 math-render.js 渲染成只读节点（原始 LaTeX 在 data-rv-tex）。 */
+function rvInsertMathRich(tex, display) {
+  const ed = document.querySelector(".review-editor .rv-rich");
+  if (!ed || !tex) return;
+  const M = window.MTMathRender;
+  const html =
+    M && typeof M.latexToHtml === "function"
+      ? M.latexToHtml(tex, { display: !!display })
+      : /* 渲染器整个缺失时的兜底：纯文本回退，同样带 rv-legacy 标记走自研字形排版 */
+        '<span class="rv-math rv-legacy" data-rv-tex="' +
+        escAttr(tex) +
+        '" data-rv-display="' +
+        (display ? "1" : "0") +
+        '">' +
+        escH(tex) +
+        "</span>";
+  if (!html) return;
+  insertRichNode(document.createRange().createContextualFragment(html));
+  _rv.dirty = true;
+  commitEditorToDoc();
+  renderFootbarBox();
+  toast(I18n.t("公式已插入"), "ok");
 }
 
 function rvBaseName(p) {

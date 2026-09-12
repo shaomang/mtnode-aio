@@ -87,6 +87,23 @@
       }
     },
     {
+      "id": "asr-local",
+      "kind": "asr",
+      "handler": "asr",
+      "order": 65,
+      "version": "1.0.0",
+      "minAppVersion": "1.1.28",
+      "icon": "asr-local.png",
+      "title": {
+        "zh": "本地语音转写（Qwen3-ASR）",
+        "en": "Local Speech-to-Text (Qwen3-ASR)"
+      },
+      "subtitle": {
+        "zh": "基于 ModelScope Qwen3-ASR-0.6B 的本地语音转文字：把音频输入接到文字处理节点即自动转写并注入提示词；指定目录安装（需 NVIDIA 显卡）、CUDA torch、fsmn-vad 长音频分段、热词表、转写结果可编辑与缓存。插件控制台可安装 / 重新安装 / 补装 ffmpeg、查看日志与设置。后端静默运行、随 MTNode 退出而结束。",
+        "en": "Local speech-to-text with ModelScope Qwen3-ASR-0.6B: wire an audio input into a text node and it is transcribed into the prompt automatically. Custom install dir (needs an NVIDIA GPU), CUDA torch, fsmn-vad chunking, hotwords, editable & cached transcripts. The plugin console can install / reinstall / repair ffmpeg, show logs and settings. The backend runs silently and exits with MTNode."
+      }
+    },
+    {
       "id": "remotion",
       "kind": "remotion",
       "handler": "remotion",

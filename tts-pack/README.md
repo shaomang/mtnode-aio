@@ -74,6 +74,17 @@ curl -X POST "http://127.0.0.1:8770/v1/audio/speech?steps=64" -H "Authorization:
 
 `POST /api/voices/add`（multipart：`file`=wav、`name`、`prompt_text`、`lang`）添加音色。
 
+### 输出格式（`response_format` / `media_type`）
+
+推理引擎（api_v2 的 `/tts`）的 `media_type` **白名单只有 `wav` / `raw` / `ogg` / `aac`**，
+别的值会被引擎直接 `400 media_type: mp3 is not supported`。所以插件在这里收敛：
+`wav`（默认）、`ogg`、`aac` 直接向引擎要；`mp3` / `flac`（以及 `mpeg` / `mp4` / `mpga`
+这些别名）先要 `wav`，再用本机 `ffmpeg` 转码后返回（`PATH` → 引擎目录 → 安装根）。
+找不到 `ffmpeg` 时返回 `400 missing_ffmpeg` 并说明改用 wav，不做静默降级——
+否则用户拿到的是 `.mp3` 扩展名的 wav 文件。画布「SoVITS 语音」节点的「输出格式」
+（wav / mp3）走的就是这条链。引擎自己的 400/500 响应体现在会被读出
+（`{"message":…,"Exception":…}`）再转发，节点上不再是干巴巴的一句 `HTTP Error 400`。
+
 ## 语种（面板「语种」下拉菜单）
 
 中文句子里突然冒出日语，根因不是模型：`text_lang="auto"` 时引擎会把每个分句交给

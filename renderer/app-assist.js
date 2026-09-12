@@ -1,12 +1,15 @@
 "use strict";
 /* ============ 右侧全局 AI 助手 ============ */
 
-/* 助手每轮的「当前应用状态」快照。
-   opts.canvasFree = 用户声明本轮与画布无关（Gate B）：整张画布干脆不取 ——
-   canvasSnapshotFull（含 wfList 的 IPC 与 nodes/wires/marks/groups 序列化）连同
-   selection / cam / imageSizes / markColors / devFuncColors 一起跳过，只剩轻量应用摘要
-   （计数照给，画布正文不给）。判据与 noCanvas 整档闸同源：那一档下 get / edit / app
-   三件套根本没注册，快照再发出去也没有任何工具能消费它。 */
+/* 助手每轮的「当前应用状态」快照 —— 只给计数 + 选中 / 焦点。
+   它是每轮都注入、且与任务无关的固定开销，所以这里连「节点索引」都不带：画布信息只有
+   节点数 / 连线数 / 分组数 + selection（id/kind/title 最小描述）+ taskFocus / superFocus。
+   节点列表、结构、连线与正文一律由模型按需用 mtnode_canvas_get 现拉（列表 / 结构走
+   detail:"minimal" + sections，正文走 ids:[…] + detail:"full"）——「画布多大」与
+   「每轮成本」由此解耦：62 个节点的索引不再随系统提示每轮重发。
+   opts.canvasFree = 用户声明本轮与画布无关（Gate B）：连选中 / 焦点也不给，只剩计数与
+   本画布身份。判据与 noCanvas 整档闸同源：那一档下 get / edit / app 三件套根本没注册，
+   快照再发出去也没有任何工具能消费它。 */
 async function assistAppSnapshot(opts) {
   const canvasFree = !!(opts && opts.canvasFree);
   const sel = currentSelection().map((n) => ({
@@ -15,15 +18,6 @@ async function assistAppSnapshot(opts) {
     title: n.title,
   }));
   const scopeCurrent = assistScopeIsCurrent();
-  let full = null;
-  if (!canvasFree) {
-    try {
-      full = await canvasSnapshotFull();
-    } catch {
-      full = canvasSnapshot();
-    }
-    applyAssistScopeToSnapshot(full, { restrict: scopeCurrent });
-  }
   const safeApp =
     "mtnode_app:status|list_workflows|rename_workflow|select_nodes|undo|redo" +
     (agentToolAllowed("app_dsh_plugins") ? "|list_dsh_plugins" : "");
@@ -33,7 +27,7 @@ async function assistAppSnapshot(opts) {
       ? "mtnode_app:install_dsh_plugin|remove_dsh_plugin|set_dsh_plugin"
       : null,
   ].filter(Boolean);
-  /* 无画布档的画布计数直接取自内存对象（不序列化任何节点正文） */
+  /* 画布计数直接取自内存对象：不调 canvasSnapshotFull、不序列化任何节点 */
   const lwf = S.wf || {};
   const base = {
     view: S.view,
@@ -109,39 +103,26 @@ async function assistAppSnapshot(opts) {
       };
     })(),
   };
-  if (canvasFree) {
-    /* 轻量摘要：只给「有哪张图、多大」这一级信息，正文一个字节都不发 */
-    base.workflow = {
+  /* 画布摘要：只到「有哪张图、多大」这一级 —— 节点列表一个字段都不发。
+     非 canvas-free 轮额外带上选中与焦点（仍是 id 量级）；canvas-free 轮整块不给。 */
+  const canvasSummary = {
+    workflow: {
       id: lwf.id,
       name: lwf.name,
       nodeCount: (lwf.nodes || []).length,
       workspace: lwf.workspace || "",
-    };
-    base.nodeCount = (lwf.nodes || []).length;
-    base.wireCount = (lwf.wires || []).length;
-    base.groupCount = (lwf.groups || []).length;
-    return base;
-  }
-  return Object.assign(base, {
-    cam: full.cam || null,
-    workflow: full.workflow,
-    workflows: full.workflows || [],
-    scopeNote: full.scopeNote || "",
-    nodeCount: (full.nodes || []).length,
-    wireCount: (full.wires || []).length,
-    groupCount: (full.groups || []).length,
+    },
+    nodeCount: (lwf.nodes || []).length,
+    wireCount: (lwf.wires || []).length,
+    groupCount: (lwf.groups || []).length,
+  };
+  if (canvasFree) return Object.assign(base, canvasSummary);
+  return Object.assign(base, canvasSummary, {
     selection: sel,
-    nodes: full.nodes,
-    wires: full.wires,
-    groups: full.groups,
-    marks: full.marks || [],
-    markColors: full.markColors || MARK_COLORS.slice(),
-    /* 开发节点功能色卡：与 canvas_get 同一张表（真源 = app-devnode.js DEV_FUNC_COLORS） */
-    devFuncColors:
-      full.devFuncColors ||
-      (typeof devFuncColorCatalog === "function" ? devFuncColorCatalog() : []),
-    imageSizes: full.imageSizes || IMAGE_SIZES.slice(),
-    defaultImageSize: full.defaultImageSize || DEFAULT_IMAGE_SIZE,
+    taskFocus:
+      (typeof currentTaskFocus === "function" ? currentTaskFocus() : S.taskFocus) || "",
+    superFocus:
+      (typeof currentSuperFocus === "function" ? currentSuperFocus() : S.superFocus) || "",
   });
 }
 
@@ -1202,10 +1183,9 @@ async function assistSend(text) {
   /* 与画布无关（Gate B · 助手侧）：本轮不注册画布三件套，也不取整张画布快照。
      判据在这里定一次，往下（快照 / 分节 / 隐藏名单 / 签名 / run 参数）全用同一个值。 */
   const assistCanvasFree = !!S.assistCanvasFree;
+  /* 不缩进序列化：这份快照每轮原样重发，缩进（null, 2）纯属白送的空格 token */
   const stateJson = JSON.stringify(
     await assistAppSnapshot({ canvasFree: assistCanvasFree }),
-    null,
-    2,
   );
   /* 已回滚轮次的消息不进上下文（rbActiveMessages 只在真有标记时才复制数组） */
   const assistHist =
@@ -1234,9 +1214,9 @@ async function assistSend(text) {
   /* ── 规则段的真源分工（本轮去重）──────────────────────────────────────────
      参数机制（字段 / 枚举 / 端子 / alias）的唯一真源 = mtnode_canvas_get 与
      mtnode_canvas_edit 的工具描述与参数表；完整操作规范的唯一真源 = 内置技能
-     （mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux /
-     mtnode-media-gen-nodes / mtnode-db-facts）。下面各节只留「每轮都要照做的行为
-     纪律」——同一规则不再抄第二遍，省下的就是每一步都在付的固定 token。 */
+     （mtnode-dev-architect / mtnode-canvas-edit-rules / mtnode-canvas-batch-safety /
+     mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）。下面各节只留
+     「每轮都要照做的行为纪律」——同一规则不再抄第二遍，省下的就是每一步都在付的固定 token。 */
   const superConnectRule = assistCanvasFree
     ? ""
     : "  · 跨超级节点 / 跨层级接线用 mtnode_canvas_edit 的 superConnect（它自动逐层桥接，参数口径见该工具说明），不要自己建桥接线。\n";
@@ -1244,7 +1224,7 @@ async function assistSend(text) {
     ? ""
     :
     "  · 【开发节点 / 功能块】要建或改开发节点（kind super + dev:true）时，先用 skill 工具加载内置技能 mtnode-dev-architect 并照它执行。硬底线：note 必须两段（【功能】面向非技术的设计说明 + 【实现】面向技术的实现梗概，合计 ≤200 字，禁止只写一段、禁止把技术细节写进【功能】）；按 DEV 功能色卡上色（新建 module 块已自动套色，归类不对才改正卡值，绝不自创色值；用户在节点头部色板手选过的颜色不要再动）；细化先给出覆盖多层的整棵梗概、经用户一次确认后自顶向下逐层建块（无需或无法细化时如实说明，不要硬建节点）；模块取舍 / 技术选型等不确定处先问用户。\n" +
-    "  · 每个开发节点有「开发」「细化」「建议」「问询」按钮（文件节点另有「打开」），四者都先弹对话框：「建议」「问询」是**只读**调研（不改文件、不改画布；「建议」只回恰好 4 条下一步方案供用户多选与补充，同一对话框里的「开发」按钮才按所选方案开工）；「开发」「细化」在用户确认后于该模块绑定的新会话里运行。\n" +
+    "  · 每个开发节点的折叠卡有「开发」「细化」按钮（文件节点另有「打开」），两者都先弹对话框、用户确认后于该模块绑定的新会话里运行；「建议」（只读调研：不改文件、不改画布，只回恰好 4 条下一步方案供用户多选与补充，同一对话框里的「开发」按钮才按所选方案开工）已从卡片按钮收起，只在节点右键菜单里。\n" +
     "  · 每个功能块收尾都要用 devFiles 补丁回写本模块的真实核心文件（≤10 条 · 相对 devPath · 最外层项目块不填）——节点「文件」按钮只读这份列表，不回填就永远停在自动兜底甚至空表。\n" +
     "  · 画布含开发节点时，项目根就是 Agent 工作区根（顶层块的 devPath 在建图首轮就写好，之后子块继承）：项目根内的文件（含 AGENTS.md 共识文件）直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n";
   const scopeBlock = assistCanvasFree
@@ -1254,11 +1234,11 @@ async function assistSend(text) {
       wfName +
       "」。list_workflows / canvas_get 只会看到本画布。\n" +
       "工具：\n" +
-      "- mtnode_canvas_get：读取当前画布\n" +
+      "- mtnode_canvas_get：读取当前画布（默认 minimal，只回节点索引；要读某节点正文用 ids:[标题或 id] + detail:\"full\"，看连线 / 结构用 sections 收窄）\n" +
       "- mtnode_app：rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）；delete_workflow 仅可删本画布且需确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n"
     : "工作范围：全局。可参考全部画布列表。\n" +
       "工具：\n" +
-      "- mtnode_canvas_get：读取当前画布 + 全部画布列表\n" +
+      "- mtnode_canvas_get：读取当前画布 + 全部画布列表（默认 minimal，只回节点索引；要读某节点正文用 ids:[标题或 id] + detail:\"full\"，看连线 / 结构用 sections 收窄）\n" +
       "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows；delete_workflow 会弹窗确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n";
   /* ── systemPrompt 分节（见 app-prompt-sections.js）──────────────────────────
      每段各自独立成节，节序 = 改造前的拼接顺序、节间分隔符传空串 ⇒
@@ -1276,9 +1256,9 @@ async function assistSend(text) {
     "  · 图像参考节点用 kind input_image，把本机绝对路径写进 imagePath（应用会复制进画布资产），已知路径就不要让用户再拖拽；多图 batch:true + imagePaths。\n" +
     "  · 改节点模型：create/update 传 model，文本 / 图像节点配 providerId（服务商 id 或唯一名称），智能任务配 provider（deepseek-official 或 mtnode_<id> / 名称）。\n" +
     "  · 工具回执（created[] / updated[] / hasImage / warnings）才是事实依据：没出现在回执里的结果，不要向用户声称已完成。\n" +
-    "  · 音 / 视频生成节点（music_gen / tts_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；批次与文生图的防 N² 细则见技能 mtnode-canvas-batch-safety。\n";
-  /* @引用、save / wait_file、端子与批次规则已由 mtnode_canvas_edit 的「硬规则」段与
-     技能 mtnode-canvas-layout-ux 承载；这里只留助手侧的排版动作。 */
+    "  · 音 / 视频生成节点（music_gen / tts_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；批次与文生图的防 N² 细则见技能 mtnode-canvas-edit-rules（细则再进 mtnode-canvas-batch-safety）。\n";
+  /* @引用、save / wait_file、端子与批次规则已由技能 mtnode-canvas-edit-rules 承载
+     （mtnode_canvas_edit 只留卡口与一句指向）；这里只留助手侧的排版动作。 */
   const layoutRules = assistCanvasFree
     ? ""
     : "  · 排版：用 createMarks 分区（box + around:[节点alias] + label：编辑区 / 说明 / 处理区 / 输出区），并放 control 控制节点（ctrlAction=run，不要建 clear「清空」；控制流不走数据线，须直连每个该一键重跑的节点）；用户要编辑或点 ▶ 的节点放上方（较小 y），处理 / 保存 / 长说明放下方或右侧。完整规范见技能 mtnode-canvas-layout-ux。\n" +
@@ -1286,10 +1266,17 @@ async function assistSend(text) {
   const principleBlock = assistCanvasFree
     ? "原则：本轮与画布无关 —— 不读写画布、不承诺任何节点改动，只完成任务本身；不要编造不存在的节点或画布。回答简洁（交流语言见文末语言口味）。\n"
     : scopeCurrent
-    ? "原则：仅操作当前画布；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n"
-    : "原则：可参考其他画布列表；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n";
-  /* 应用状态 JSON 单独成节：每轮都变的最大头，只有独立出来才谈得上单独 diff */
-  const appStateBlock = "当前应用状态 JSON：\n" + stateJson;
+    ? "原则：仅操作当前画布；app_state 只给计数与选中 / 焦点，节点列表与正文一律按需 mtnode_canvas_get 现拉，不得凭标题编造节点内容；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n" +
+      "纪律：长正文一条都不进主上下文 —— 节点之间只写 @标题 引用，禁止把上游节点正文粘贴进 prompt/task（@引用口径见技能 mtnode-canvas-edit-rules）；长文案 / 长说明交给 agent_task 或 input_text 节点落文件，你只报路径；建图时不要贴成品正文当示例，只写一句形态描述。收尾克制：只报改了什么、产物路径、需用户操作的 1–2 处，不复述画布全表。建图—自查—排版这类多轮工作放进子代理上下文，主对话只收最终回执。\n"
+    : "原则：可参考其他画布列表；app_state 只给计数与选中 / 焦点，节点列表与正文一律按需 mtnode_canvas_get 现拉，不得凭标题编造节点内容；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n" +
+      "纪律：长正文一条都不进主上下文 —— 节点之间只写 @标题 引用，禁止把上游节点正文粘贴进 prompt/task（@引用口径见技能 mtnode-canvas-edit-rules）；长文案 / 长说明交给 agent_task 或 input_text 节点落文件，你只报路径；建图时不要贴成品正文当示例，只写一句形态描述。收尾克制：只报改了什么、产物路径、需用户操作的 1–2 处，不复述画布全表。建图—自查—排版这类多轮工作放进子代理上下文，主对话只收最终回执。\n";
+  /* 应用状态 JSON 单独成节：每轮都变的最大头，只有独立出来才谈得上单独 diff。
+     快照只给计数与选中 / 焦点、连节点索引都不带，这条纪律跟 app_state 贴在一起，模型
+     才不会以为快照里就有节点或正文而编造内容（字段真源仍在网关工具描述里）。 */
+  const appStateHeads = assistCanvasFree
+    ? ""
+    : "本轮 app_state 只给节点计数与选中 / 焦点，不含节点索引、更不含正文：要看节点列表用 mtnode_canvas_get 缺省档（detail:\"minimal\"，每节点只给标题 / 描述(note) / 类别）；要看连线 / 绘制 / 分组 / 树再加 sections，要看配置用 detail:\"standard\"，要看某节点正文 / 提示词用 ids:[标题或 id] + detail:\"full\"。快照里没有的一律不要编造。\n";
+  const appStateBlock = appStateHeads + "当前应用状态 JSON：\n" + stateJson;
   const latest = skillWrap ? skillTaskPrompt(skillWrap) : t;
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   const assistMaxTok = dshRunMaxTokens();
@@ -1690,7 +1677,8 @@ async function persistAgentSession() {
     canvasFree: !!s.canvasFree,
     draft: s._draft || "",
     /* 整对象落盘（含 reasoning / tools / segments）；segments 再限一次长：
-       每段 ≤8000 字、总 ≤40 段，控制 messages.slice(-100) 的存档体积 */
+       只夹单段字数（段一条不丢，见 agentSegsForDisk），控制 messages.slice(-100)
+       的存档体积 —— 段一丢，工具 chip 就会从时间线掉到消息尾部压住最终回复 */
     messages: (s.messages || []).slice(-100).map((m) => {
       if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
       try {
@@ -2078,9 +2066,10 @@ function buildAgentModelMenu() {
       menu.appendChild(e);
     }
   } else {
-    /* 思考强度四档（轻 / 标准 / 强 / 最强）：选哪档就按哪档下发，路由能力不足时网关夹到
+    /* 思考强度五档（无 / 轻 / 标准 / 强 / 最强）：选哪档就按哪档下发，路由能力不足时网关夹到
        同侧最近低档并回传 effort 事件（回显 = 下发契约），此处不再拍平。档位真源 =
-       app.js 的 AGENT_EFFORT_UI_ORDER；medium 未露出（默认 deepseek 路由会夹到 low）。 */
+       app.js 的 AGENT_EFFORT_UI_ORDER；「无」= off = 关闭思考；medium 未露出（默认 deepseek
+       路由会夹到 low）。 */
     const cur = normalizeAgentEffort(st.effort);
     for (const v of AGENT_EFFORT_UI_ORDER) {
       const opt = document.createElement("button");
@@ -2109,6 +2098,7 @@ const SKILL_MENU_TAX = {
   "generate-task": ["workflow", "画布搭建"],
   "decompose-novel-plot": ["workflow", "画布搭建"],
   "mtnode-canvas-batch-safety": ["workflow", "画布规范"],
+  "mtnode-canvas-edit-rules": ["workflow", "画布规范"],
   "mtnode-canvas-layout-ux": ["workflow", "画布规范"],
   "mtnode-db-facts": ["workflow", "画布规范"],
   "mtnode-media-gen-nodes": ["workflow", "画布规范"],
@@ -2416,14 +2406,13 @@ function setView(view) {
   if (view === "agent") {
     /* 打开会话时自动隐藏右侧全局助手栏（不持久化：回到画布仍按用户偏好） */
     setAssistOpen(false, false);
-    closeCanvasFindBar();
+    /* 全局搜索浮层（Ctrl+F）不随视图切换关闭：它跨区域搜索，切视图正是它的用途之一 */
     renderAgentSession();
     const inp = $("#agentInput");
     if (inp) inp.focus();
   } else if (view === "team") {
     /* 团队视图同样收掉右侧全局助手栏：右栏留给专家聊天区（不持久化） */
     setAssistOpen(false, false);
-    closeCanvasFindBar();
     if (typeof renderTeamPane === "function") renderTeamPane();
   } else {
     renderCanvas();
@@ -2516,6 +2505,233 @@ function toolResultText(t) {
   return parts.join("\n\n").trim();
 }
 
+/* ── 工具按钮后面那截「这一步到底干了什么」──
+ * 会话 / 助手 / 节点绑定会话 / 团队会话 / 计划面板共用同一份（统一出口 dshToolHintEl）：
+ *   · shell 工具（pwsh / bash…）→ 命令正文，绿色；
+ *   · grep / glob（检索）→「路径 <位置（黄）> · 目标 <绿> · 其余参数（灰，参数名转词条）」。
+ * 抽不出（read / edit 这类）就返回 null，调用方什么都不挂。 */
+function dshIsShellTool(name) {
+  return /^(pwsh|powershell|bash|shell|sh|zsh|cmd)(\.exe)?$/.test(
+    String(name || "").trim().toLowerCase(),
+  );
+}
+/* 检索工具：网关可能给 grep / Grep / rg。逐字判，不做前缀匹配（不把「grepall」这类当检索） */
+function dshIsGrepTool(name) {
+  return /^(grep|rg|ripgrep)(\.exe)?$/.test(String(name || "").trim().toLowerCase());
+}
+/* 文件名检索：glob。同样逐字判（不把「globall」这类当它） */
+function dshIsGlobTool(name) {
+  return /^glob(\.exe)?$/.test(String(name || "").trim().toLowerCase());
+}
+/* grep / glob 都是「在一堆文件里找东西」，共用同一行「在哪找 · 找什么 · 怎么找」的读法 */
+function dshIsSearchTool(name) {
+  return dshIsGrepTool(name) || dshIsGlobTool(name);
+}
+function dshToolArgsObj(t) {
+  let a = t && t.args;
+  if (typeof a === "string") {
+    const s = a.trim();
+    if (s.charAt(0) !== "{") return null;
+    try {
+      a = JSON.parse(s);
+    } catch (_) {
+      return null;
+    }
+  }
+  return a && typeof a === "object" ? a : null;
+}
+/* 显示的截断长度 = 100 字：命令正文一超过 100 字就由 JS 直接截断收尾（不再等 CSS 按行宽算），
+   保证工具条那一行绝不出现第二行、也绝不把字符顶出容器；100 字以内的短命令原样整条显示。
+   与 title 同一档（hover 全文也只留这 100 字），别把整页正文塞进一个 DOM 节点 / title 属性。
+   grep / glob 的检索摘要共用这一档预算（dshClampSegs 逐段砍）。 */
+const DSH_TOOL_CMD_MAX = 100;
+function dshToolCmdInfo(t) {
+  if (!t || !dshIsShellTool(t.name)) return null;
+  let cmd = typeof t.cmd === "string" ? t.cmd : "";
+  let desc = typeof t.desc === "string" ? t.desc : "";
+  if (!cmd || !desc) {
+    const a = dshToolArgsObj(t);
+    if (a) {
+      if (!cmd && typeof a.command === "string") cmd = a.command;
+      if (!desc && typeof a.description === "string") desc = a.description;
+    }
+  }
+  cmd = String(cmd).replace(/\s+/g, " ").trim();
+  desc = String(desc).replace(/\s+/g, " ").trim();
+  if (!cmd) return null;
+  return { cmd, desc };
+}
+function dshToolCmdEl(t) {
+  const info = dshToolCmdInfo(t);
+  if (!info) return null;
+  const el = document.createElement("span");
+  el.className = "dsh-tool-cmd";
+  el.textContent =
+    info.cmd.length > DSH_TOOL_CMD_MAX
+      ? info.cmd.slice(0, DSH_TOOL_CMD_MAX) + "…"
+      : info.cmd;
+  /* hover 先给 description（模型写的「这条命令干什么」，存在才有），再给完整命令 */
+  el.title = (info.desc ? info.desc + "\n" : "") + info.cmd.slice(0, DSH_TOOL_CMD_MAX);
+  return el;
+}
+
+/* 计划面板专用搬运：live 记录里那份 args 串会被截断，先把检索工具（grep / glob）的字符串参数原样留一份。
+   只留 pattern / path / include 三个真实存在的参数（别把 write 的整篇正文搬进 live 缓冲）。 */
+function dshGrepLiveStash(a) {
+  if (!a || typeof a !== "object") return null;
+  const out = {};
+  for (const k of ["pattern", "path", "include"]) {
+    if (typeof a[k] === "string" && a[k]) out[k] = a[k];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/* 入参里的换行 / 制表符压成一行（换行脚本不能把工具条撑成多行） */
+function dshOneLine(s) {
+  return String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+}
+
+/* grep 入参名 → 中文词条（en 界面由 i18n.js 的英文表接手）；表外的键返回 ""，
+   调用方按原名原样显示 —— 宁可露出 include，也不自己编一个看不懂的标签。 */
+function dshGrepArgLabel(key) {
+  switch (String(key || "")) {
+    case "include":
+      return I18n.t("包括");
+    case "exclude":
+      return I18n.t("排除");
+    case "glob":
+      return I18n.t("通配");
+    case "type":
+      return I18n.t("类型");
+    case "output_mode":
+      return I18n.t("输出模式");
+    case "multiline":
+      return I18n.t("多行");
+    case "ignore_case":
+      return I18n.t("忽略大小写");
+    case "head_limit":
+      return I18n.t("条数上限");
+    case "offset":
+      return I18n.t("偏移");
+    case "context":
+      return I18n.t("上下文");
+    default:
+      return "";
+  }
+}
+
+/* grep / glob 一行读成「在哪找 · 找什么 · 怎么找」：
+ *   · 目标路径（path）黄色、排在最前 = 先定位置（黄 ≠ 文件徽标的青：这段是检索范围，不是「读了某个文件」）；
+ *   · 检索目标（pattern）绿色排在路径后面（= 这条检索命令真正要干的活：grep 是「匹配什么正文」，
+ *     glob 是「通配哪些文件」），后面不再重复出现路径；
+ *   · 其余参数（include 这类）参数名转 i18n 词条，值原样，顺序排在最后；
+ *   · 入参可能是对象（网关原样下发）或 JSON 串（计划面板那份被截断过，parse 不到）；
+ *     计划面板另有 planLiveFeed 原样留的一份 gargs，两条路都收。
+ * 路径在这一行里只出现这一次：同一路径的文件徽标由调用方按 info.path 跳过（dshToolHintSkipPath）。 */
+function dshToolGrepInfo(t) {
+  if (!t || !dshIsSearchTool(t.name)) return null;
+  const isGlob = dshIsGlobTool(t.name);
+  const a =
+    dshToolArgsObj(t) || (t.gargs && typeof t.gargs === "object" ? t.gargs : null) || {};
+  const pat = dshOneLine(a.pattern);
+  const path = dshOneLine(a.path);
+  const opts = [];
+  for (const k of Object.keys(a)) {
+    if (k === "pattern" || k === "path" || k === "description") continue;
+    const v = a[k];
+    if (v === true) {
+      opts.push(dshGrepArgLabel(k) || k);
+      continue;
+    }
+    if (v === false || v == null || v === "") continue;
+    /* 复杂值（数组 / 对象）不塞进这一行：宁可少显一个，也不显 "[object Object]" */
+    if (typeof v !== "string" && typeof v !== "number") continue;
+    opts.push((dshGrepArgLabel(k) || k) + " " + dshOneLine(v));
+  }
+  const segs = [];
+  if (path) segs.push({ label: I18n.t("路径"), value: path, cls: "dsh-tool-grep-path" });
+  /* glob 的 pattern 是「通配哪些文件」，grep 的是「匹配什么正文」—— 同一个字段，两种称呼 */
+  if (pat)
+    segs.push({
+      label: I18n.t(isGlob ? "通配" : "匹配"),
+      value: pat,
+      cls: "dsh-tool-grep-pat",
+    });
+  if (opts.length) segs.push({ label: "", value: opts.join(" · "), cls: "dsh-tool-grep-opt" });
+  /* 没目标也没路径 = 这一行读不出「在找什么 / 在哪找」，只剩参数没有意义 → 不挂 */
+  if (!pat && !path) return null;
+  return {
+    segs,
+    path,
+    glob: isGlob,
+    desc: dshOneLine(a.description),
+    line: segs.map((s) => (s.label ? s.label + " " + s.value : s.value)).join(" · "),
+  };
+}
+
+/* 按总字数预算逐段截断（与 shell 命令同一档 DSH_TOOL_CMD_MAX，也就是「整行」——
+   平时根本不到这一档，只有超长正文才需要这道兜底）：
+   靠前的段优先，被截断的那一段带省略号；CSS 再按真实行宽 max-width + ellipsis 收一层。 */
+function dshClampSegs(segs, max) {
+  const out = [];
+  let left = max;
+  for (const s of segs) {
+    if (left <= 0) break;
+    const text = String(s.text == null ? "" : s.text);
+    if (!text) continue;
+    if (text.length <= left) {
+      out.push({ cls: s.cls, text: text });
+      left -= text.length;
+      continue;
+    }
+    out.push({ cls: s.cls, text: text.slice(0, Math.max(1, left - 1)) + "…" });
+    left = 0;
+  }
+  return out;
+}
+
+function dshToolGrepEl(t) {
+  const info = dshToolGrepInfo(t);
+  if (!info) return null;
+  const el = document.createElement("span");
+  /* 几何沿用 .dsh-tool-cmd（一行 / 截断 / 宽度上限 / 计划面板收窄那一档），
+     颜色分档交给 .dsh-tool-grep-* 三条 —— glob 与 grep 同一套分色（路径黄 / 目标绿 / 参数灰） */
+  el.className = "dsh-tool-cmd dsh-tool-grep" + (info.glob ? " dsh-tool-glob" : "");
+  /* 这一行已经把目标路径写在最前面了：把原样路径挂到 dataset，调用方据此跳过
+     同一路径的文件徽标 —— 同行里同一个路径不再出现第二次（路径只显这一处，黄色）。 */
+  if (info.path) el.setAttribute("data-tool-path", info.path);
+  if (info.glob) el.setAttribute("data-tool-kind", "glob");
+  const flat = [];
+  info.segs.forEach((s, i) => {
+    const pre = i ? " · " : "";
+    if (s.label) flat.push({ cls: "dsh-tool-grep-k", text: pre + s.label });
+    flat.push({ cls: s.cls, text: (s.label ? " " : pre) + s.value });
+  });
+  for (const p of dshClampSegs(flat, DSH_TOOL_CMD_MAX)) {
+    const sp = document.createElement("span");
+    sp.className = p.cls;
+    sp.textContent = p.text;
+    el.appendChild(sp);
+  }
+  /* hover：先给模型写的 description（这一步在干什么，存在才有），再给未截断的完整一行
+     （与命令行正文同一档：title 上限就是那个兜底常量，纯粹是别把整页正文塞进一个属性里） */
+  el.title = (info.desc ? info.desc + "\n" : "") + info.line.slice(0, DSH_TOOL_CMD_MAX);
+  return el;
+}
+
+/* 统一出口：shell 命令正文 / grep · glob 检索摘要，都没有就 null */
+function dshToolHintEl(t) {
+  return dshToolCmdEl(t) || dshToolGrepEl(t);
+}
+
+/* 摘要里已经带着的路径（grep / glob 那一行最前面那段黄色路径）→ 交给 dshToolFileBadges 跳过，
+   同一个路径不在后面再挂一枚徽标（「路径出现了两次」就是把这两处都画了出来）。 */
+function dshToolHintSkipPath(hintEl) {
+  if (!hintEl || !hintEl.getAttribute) return null;
+  const p = hintEl.getAttribute("data-tool-path");
+  return p ? [p] : null;
+}
+
 function dshToolDetailsEl(t, live, nodeId) {
   const det = document.createElement("details");
   det.className = "dsh-tool" + (t.error ? " err" : "");
@@ -2531,12 +2747,17 @@ function dshToolDetailsEl(t, live, nodeId) {
   chip.className = "dsh-tool-chip";
   chip.textContent = (live ? "◌ " : "🔧 ") + t.name;
   sum.appendChild(chip);
+  /* pwsh / bash：按钮后面直接跟命令正文（绿色，长命令截断）；grep / glob：跟「路径 … · 目标 … · 参数」。
+     一眼读出「这步在跑哪条命令 / 找什么」，不用先展开参数。抽不出就不挂。 */
+  const cmdEl = dshToolHintEl(t);
+  if (cmdEl) sum.appendChild(cmdEl);
   /* 徽标本体与点击全在 app-fileview.js，与计划面板 planLiveBlock 同源：
      不展开参数也能看出这步动了哪个文件，点文件名 = 右侧滑出只读查看面板；
-     点击在徽标里 preventDefault + stopPropagation，不会连带展开 / 收起详情。 */
+     点击在徽标里 preventDefault + stopPropagation，不会连带展开 / 收起详情。
+     grep / glob 那一行已经带了目标路径（最前的黄色那段）→ 同一路径不再重复挂徽标。 */
   if (typeof dshToolFileBadges === "function") {
     try {
-      const badges = dshToolFileBadges(t, nodeId);
+      const badges = dshToolFileBadges(t, nodeId, dshToolHintSkipPath(cmdEl));
       if (badges) sum.appendChild(badges);
     } catch (_) {}
   }
@@ -3023,7 +3244,6 @@ function sessionLastAt(s) {
    tool / err，按 turn/step 与 say-end 切段）。会话视图的 live 行按段序渲染；
    轮次收尾转成 msg.segments（限长）随消息持久化，历史消息按段重绘。 */
 const AGENT_SEG_TEXT_MAX = 8000; // 落盘单段上限（字）
-const AGENT_SEG_MAX = 40; // 落盘总段数上限
 function agentTraceItems(runKey) {
   const k =
     typeof traceRunKey === "function" ? traceRunKey(runKey) : String(runKey);
@@ -3038,40 +3258,23 @@ function agentChatSegItems(st) {
   if (!S._runCancels || !S._runCancels[rk]) return null;
   return agentTraceItems(rk);
 }
-/* 总段数超上限时的取舍：先丢工具段，再丢正文段，思考 / 错误段最后才动。
-   工具段在渲染侧本就有 m.tools 的 chips 兜底；正文丢了还能从 m.content 补回来；
-   而 think 段丢了就是真的回不来 —— 需求「一轮结束后不要自动隐藏或删除思考」，
-   旧口径「只保留最后 N 段」会先把它顶掉，表现就是「一轮跑完，思考从会话里消失」。
-   顺序原样保持。 */
-function agentSegsTrimCap(segList, cap) {
-  if (!Array.isArray(segList) || segList.length <= cap) return segList;
-  const vital = segList.filter((s) => s && (s.k === "think" || s.k === "err"));
-  if (vital.length >= cap) return vital.slice(vital.length - cap);
-  const keep = new Set(vital);
-  let room = cap - keep.size;
-  const says = segList.filter((s) => s && s.k === "say");
-  for (let i = says.length - 1; i >= 0 && room > 0; i--) {
-    keep.add(says[i]);
-    room--;
-  }
-  for (let i = segList.length - 1; i >= 0 && room > 0; i--) {
-    const s = segList[i];
-    if (s && s.k === "tool") {
-      keep.add(s);
-      room--;
-    }
-  }
-  return segList.filter((s) => s && keep.has(s));
-}
-/* 收尾 / 落盘共用：总段数 ≤40（超了先丢工具段，见 agentSegsTrimCap），
-   say / err 单段 ≤8000 字加省略号；think 整段不裁剪 —— 需求「一轮结束后不要自动
-   隐藏或删除思考」，截断思考等于把它从会话里抹掉。say / err 段被裁剪后正文拼接
-   不再等于 content，历史渲染自动退回旧版，不丢字。 */
+/* 段数取舍：think / say / err / tool 一律不裁 —— 只夹单段字数（见 agentSegsForDisk）。
+   为什么连工具段也不裁（旧口径 = 最多留最近 40 条工具段，其余由「尾部兜底 chips」补）：
+     · think：需求「一轮结束后不要自动隐藏或删除思考」——思考段被顶掉就等于思考从会话里消失；
+     · say：它们是本条消息的正文。say 段一丢，按段重建出来的正文就不再等于 m.content，
+       dshMsgSegsViewable 判「不能按段渲染」，整条消息整块退回旧渲染（长任务常有上百个
+       think 段，旧口径一超 40 段就先「只留 think」，say 全被甩掉 → 必然踩中）；
+     · tool：工具明细虽完整存在 m.tools 里，但段一裁，那颗 chip 就再也配不到自己的时间线
+       位置，只能作为兜底 chips 挂在消息**尾部** —— 于是长任务（工具 >40 次）的最终回复
+       下方压着一堆旧工具调用，用户看到的就是「AI 最终回复未在最底部」。而且被裁的段照样
+       要建一颗 chip 出来，裁段并没有省下任何渲染，只把顺序搞乱了 —— 一律保留。 */
+/* 收尾 / 落盘共用：只夹单段字数（think 整段不裁 —— 需求「一轮结束后不要自动隐藏或删除
+   思考」）；过长的 say / err 单段截到 AGENT_SEG_TEXT_MAX 加省略号（此时正文拼接不再等于
+   content，历史渲染自动退回旧版，不丢字）。 */
 function agentSegsForDisk(segList) {
   if (!Array.isArray(segList) || !segList.length) return null;
-  const arr = agentSegsTrimCap(segList, AGENT_SEG_MAX);
   const out = [];
-  for (const s of arr) {
+  for (const s of segList) {
     if (!s || !s.k) continue;
     let text = String(s.text || "");
     if (s.k === "tool") text = "";
@@ -3106,7 +3309,7 @@ function dshMsgSegsViewable(m) {
 /* 一轮收尾：把运行中「已展开」的思考块状态带到刚落盘的历史消息上。
    live 段的展开键是 segthink:<会话 id>:<轨迹段序>，历史是 segthink:<会话 id>:<消息序>:<段序>，
    两者不同 —— 不搬一次，用户正展开的思考会在重绘后自动缩回（看起来像被藏起来）。
-   think 段不丢不裁（见 agentSegsTrimCap / agentSegsForDisk），第 k 个 think 段一一对应。 */
+   think 段不丢不裁（见 agentSegsForDisk），第 k 个 think 段一一对应。 */
 function agentCarryThinkOpenState(st, msg, runKey) {
   if (!st || !msg || !Array.isArray(msg.segments) || !S.openDshTools) return;
   const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
@@ -3128,8 +3331,397 @@ function agentCarryThinkOpenState(st, msg, runKey) {
   });
 }
 
+/* ==================== 「思考」翻译（右侧小按钮） ====================
+   需求：会话里的每一段「思考」旁边给一个小按钮，点了就把这段思考翻译出来给用户看。
+   口径（三条，缺一不可）：
+     · 默认模型：路由取「默认智能路由」（preferredAgentProviderRoute），
+       模型优先该路由下的 flash 档（如 deepseek-v4-flash），该档不可用时退回默认模型；
+     · 无思考：spec.effort = "off" ⇒ main.js applyTextThinkingEffort 下发
+       thinking:{type:"disabled"}，翻译请求不带推理，快且省；
+     · 译文校验 + 逐档重试：实测 flash 会原样复述英文原文或只回「以下是翻译：」，
+       这类返回一律不通过（dshXlateLooksTranslated），按「同模型常规提示词 → 同模型
+       强化提示词 → 该路由更强模型」逐档重试，全失败才判 error（绝不当成功缓存）；
+     · 按段缓存（S.thinkTrans），同一段只翻一次，命中即显示译文，可重复点开看。
+   思考段有两种渲染（历史消息 dshHistSegEl / 运行中 agentLiveSegsEl）与两种形态
+   （按段的时间线 seg、无段时的整段 m.reasoning），所以按钮 + 译文行拆成
+   两个 builder（dshThinkTranslateBtn / dshThinkTranslateRow），三处渲染共用一份状态；
+   按钮由 dshThinkTranslateAppend 塞进折叠条 <summary> 的最右端（不另起一行），
+   折叠条文案是其中的 span.dsh-think-sum-txt，刷新字数只改这层。 */
+function dshThinkTransKey(scopeId, segKey) {
+  return String(scopeId || "") + ":" + String(segKey == null ? "" : segKey);
+}
+function dshThinkTransItem(scopeId, segKey) {
+  const store = S.thinkTrans || (S.thinkTrans = {});
+  return store[dshThinkTransKey(scopeId, segKey)] || null;
+}
+/* 翻译专用模型：默认路由下优先 flash（无思考 + 快），否则跟随默认模型 */
+function dshTranslateModel() {
+  let route = "";
+  try {
+    route =
+      typeof preferredAgentProviderRoute === "function"
+        ? String(preferredAgentProviderRoute() || "")
+        : "";
+  } catch (_) {}
+  if (!route) {
+    try {
+      route =
+        typeof defaultAgentProviderRoute === "function"
+          ? String(defaultAgentProviderRoute() || "")
+          : "";
+    } catch (_) {}
+  }
+  if (!route) route = "deepseek-official";
+  let models = [];
+  try {
+    models =
+      typeof agentModelsForRoute === "function"
+        ? agentModelsForRoute(route) || []
+        : [];
+  } catch (_) {
+    models = [];
+  }
+  const flash = models.find((m) => /flash/i.test(String(m || "")));
+  if (flash) return { route, model: String(flash) };
+  let model = "";
+  try {
+    model =
+      typeof preferredAgentModelForRoute === "function"
+        ? String(preferredAgentModelForRoute(route) || "")
+        : "";
+  } catch (_) {}
+  return { route, model: model || String(models[0] || "") };
+}
+function dshTranslateProvider(route) {
+  try {
+    if (typeof providerForAgentRoute === "function") {
+      const p = providerForAgentRoute(route);
+      if (p && String(p.apiKey || "").trim()) return p;
+    }
+  } catch (_) {}
+  return null;
+}
+/* 翻译候选链：同一条思考按「便宜优先」逐档重试。
+   实测（DeepSeek 官方 deepseek-v4-flash / v4-pro · thinking disabled）会**原样复述英文原文**
+   或只输出「以下是对这段思考的翻译：」这类元话术 —— 旧实现把这种返回也当成功缓存，
+   于是用户看到「译文」还是英文。对策：提示词收紧 + 译文校验 + 逐档重试（模型升档），
+   全部候选都拿不到像样译文才判失败（错误行里可点「重试翻译」）。 */
+function dshTranslateCandidates(route, model) {
+  const out = [];
+  const push = (m, strict) => {
+    const mm = String(m || "").trim();
+    if (!mm) return;
+    if (out.some((c) => c.model === mm && c.strict === strict)) return;
+    out.push({ model: mm, strict: !!strict });
+  };
+  /* ① 首选：默认路由下的 flash 档（快 + 无思考）· 常规提示词 */
+  push(model, false);
+  /* ② 同模型 + 强化提示词（补「你是翻译引擎 / 不要分析任务」的卡口） */
+  push(model, true);
+  /* ③ 升档：该路由的默认（更强）模型 · 强化提示词 */
+  let strong = "";
+  try {
+    strong =
+      typeof preferredAgentModelForRoute === "function"
+        ? String(preferredAgentModelForRoute(route) || "")
+        : "";
+  } catch (_) {}
+  if (strong && strong !== String(model || "").trim()) push(strong, true);
+  return out;
+}
+/* 输出疑似「复述原文 / 元话术」而非译文时判不通过。
+   实测口径：
+     · 输出没有中文，且原文以中文为主 ⇒ 这是「中文→英文」的译文，通过；
+     · 输出没有中文，原文也以英文为主 ⇒ 模型原样吐回英文（复述），不通过；
+     · 原文以英文为主时，译文前 400 字英文占比 ≥ 80% ⇒ 仍是复述；
+     · 开头就是「以下是这段思考的翻译：」式元话术（回的是任务分析不是译文）⇒ 不通过；
+     · 前 400 字与原文逐字相同且原文以英文为主 ⇒ 复述，不通过。 */
+function dshXlateLooksTranslated(src, out) {
+  const text = String(out || "").trim();
+  if (!text) return false;
+  const isCjk = (s) => (String(s || "").match(/[\u4e00-\u9fff]/g) || []).length;
+  const isLat = (s) => (String(s || "").match(/[A-Za-z]/g) || []).length;
+  const srcCjk = isCjk(src);
+  const srcLatin = isLat(src);
+  const srcMostlyCjk = srcCjk > srcLatin;
+  if (!/[\u4e00-\u9fff]/.test(text)) return srcMostlyCjk;
+  if (srcMostlyCjk) return true; /* 目标是英文译文，有内容即算通过 */
+  const head = text.slice(0, 400);
+  const cjk = isCjk(head);
+  const latin = isLat(head);
+  const latinRatio = latin / (latin + cjk + 1);
+  if (latin > 0 && latinRatio >= 0.8) return false;
+  /* 元话术抬头：「以下是……翻译：」这类开头说明模型在描述任务而不是翻译 */
+  if (
+    /^(以下|下面是|这是|这里是|如下)/.test(text.slice(0, 60)) &&
+    /(翻译|译文|translation)/i.test(text.slice(0, 60)) &&
+    text.slice(0, 60).includes("：")
+  ) {
+    return false;
+  }
+  /* 近乎逐字复述原文（前 400 字去空白后完全一致）⇒ 若原文以英文为主即复述 */
+  const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+  const srcHead = norm(String(src || "").slice(0, 400));
+  const outHead = norm(text.slice(0, 400));
+  if (srcHead && outHead && outHead === srcHead && !srcMostlyCjk) return false;
+  return true;
+}
+/* 译文行：有译文（或错误）就挂在该思考块下方，点按钮后可反复看，不必再等一次请求 */
+function dshThinkTranslateRow(scopeId, segKey) {
+  const it = dshThinkTransItem(scopeId, segKey);
+  if (!it) return null;
+  const row = document.createElement("div");
+  row.className = "dsh-seg dsh-seg-xlate";
+  row.dataset.xlateKey = dshThinkTransKey(scopeId, segKey);
+  row.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  const head = document.createElement("div");
+  head.className = "dsh-xlate-head";
+  const tag = document.createElement("span");
+  tag.className = "dsh-xlate-tag";
+  if (it.status === "error") {
+    tag.textContent = I18n.t("⚠ 翻译失败");
+    head.appendChild(tag);
+    const msg = document.createElement("span");
+    msg.className = "dsh-xlate-err";
+    msg.textContent = String(it.error || "");
+    head.appendChild(msg);
+  } else {
+    tag.textContent = I18n.t("译文");
+    if (it.model) {
+      const md = document.createElement("span");
+      md.className = "dsh-xlate-model";
+      md.textContent = String(it.model);
+      head.appendChild(tag);
+      head.appendChild(md);
+    } else {
+      head.appendChild(tag);
+    }
+    const cp = document.createElement("button");
+    cp.type = "button";
+    cp.className = "dsh-xlate-copy";
+    cp.textContent = I18n.t("复制");
+    cp.title = I18n.t("复制译文到剪贴板");
+    cp.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const done = () => {
+        cp.textContent = I18n.t("已复制");
+        setTimeout(() => {
+          cp.textContent = I18n.t("复制");
+        }, 1200);
+      };
+      dshClipboardWrite(String(it.text || ""))
+        .then((r) => {
+          if (r && r.ok === false) toast(I18n.t("复制失败"), "err");
+          else done();
+        })
+        .catch(() => toast(I18n.t("复制失败"), "err"));
+    });
+    head.appendChild(cp);
+  }
+  row.appendChild(head);
+  if (it.status !== "error") {
+    const pre = document.createElement("pre");
+    pre.innerHTML = plainTextToLinkHtml(String(it.text || ""));
+    row.appendChild(pre);
+  }
+  return row;
+}
+/* 替换某一思考块下方的译文行（就地刷新，避免整表重绘丢失滚动位置） */
+function dshThinkTranslatePaint(det, scopeId, segKey) {
+  const row = det.parentNode ? det.nextElementSibling : null;
+  const fresh = dshThinkTranslateRow(scopeId, segKey);
+  if (row && row.classList && row.classList.contains("dsh-seg-xlate")) {
+    if (fresh) row.replaceWith(fresh);
+    else row.remove();
+    return;
+  }
+  if (fresh) det.insertAdjacentElement("afterend", fresh);
+}
+/* 单段翻译送入的最大字符数：思考落盘上限是 12000（与 app-boot 的 reasoning 截断同口径），
+   超了只翻前 12000 字并注明截断 —— 避免一段超长推理把翻译请求顶成巨量 token。 */
+const DSH_XLATE_MAX = 12000;
+async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
+  const store = S.thinkTrans || (S.thinkTrans = {});
+  const key = dshThinkTransKey(scopeId, segKey);
+  const det = btn.parentNode;
+  const paint = (it) => {
+    if (!det || !det.parentNode) return;
+    dshThinkTranslatePaint(det, scopeId, segKey);
+    btn.disabled = it.status === "pending";
+    btn.textContent =
+      it.status === "pending"
+        ? I18n.t("翻译中…")
+        : it.status === "error"
+          ? I18n.t("重试翻译")
+          : I18n.t("翻译");
+    btn.classList.toggle("on", it.status === "done");
+    btn.title =
+      it.status === "error"
+        ? String(it.error || I18n.t("翻译失败"))
+        : I18n.t("用默认模型（优先 flash · 无思考）翻译这段思考");
+  };
+  if (!String(text || "").trim()) return;
+  const cached = store[key];
+  if (cached && cached.status === "done") {
+    if (!det || !det.parentNode) return;
+    dshThinkTranslatePaint(det, scopeId, segKey);
+    return;
+  }
+  const pick = dshTranslateModel();
+  const prov = dshTranslateProvider(pick.route);
+  if (!prov) {
+    toast(
+      I18n.t("未找到可用文本服务商（请在设置 · API/配置中配置并填写 API Key）"),
+      "err",
+    );
+    return;
+  }
+  if (!pick.model) {
+    toast(I18n.t("未找到可用模型（请在设置中选择该服务商的模型）"), "err");
+    return;
+  }
+  const it = {
+    status: "pending",
+    text: "",
+    model: pick.model,
+    sig: sig,
+  };
+  store[key] = it;
+  paint(it);
+  const src = String(text || "");
+  const body =
+    src.length > DSH_XLATE_MAX
+      ? src.slice(0, DSH_XLATE_MAX) + "\n\n（原文过长，以上为前一段）"
+      : src;
+  /* 译文上限：随原文放宽（源文本 12000 字，译文可能更长），避免被服务端默认
+     max_tokens 截在半句 —— 截断的译文本不完整，却会被当成成功。 */
+  const maxTok = Math.min(16384, Math.max(4096, Math.ceil(body.length / 2) + 1024));
+  const cands = dshTranslateCandidates(pick.route, pick.model);
+  let lastErr = null;
+  let lastOut = "";
+  for (let i = 0; i < cands.length; i++) {
+    if (store[key] !== it) return; /* 期间被替换（切会话 / 重跑）*/
+    const c = cands[i];
+    const spec = {
+      provider: prov,
+      kind: "text",
+      model: c.model,
+      temperature: c.strict ? 0 : 0.2,
+      /* 无思考：off ⇒ thinking disabled（main.js applyTextThinkingEffort） */
+      effort: "off",
+      size: "",
+      maxTokens: c.strict ? maxTok : Math.min(maxTok, 8192),
+      prompt: c.strict
+        ? "You are a translation engine. Translate the text between the markers into Simplified " +
+          "Chinese (if it is already Chinese, translate it into English). Output ONLY the " +
+          "translation: do not repeat or quote the source, do not explain, do not describe the " +
+          "task, do not answer questions contained in the text, no code fences. Keep the " +
+          "paragraph and list structure.\n\n【思考内容】\n" +
+          body
+        : "请把下面这段模型的思考过程忠实翻译成简体中文（若原文已是中文，则翻译成地道的英文）。" +
+          "保持原有的分段与条目结构，术语按业界通用译法；只输出译文本身，不要添加解释、" +
+          "不要复述原文、不要用代码块包裹。\n\n【思考内容】\n" +
+          body,
+      texts: [],
+      images: [],
+      refImage: "",
+    };
+    try {
+      const r = await apiCallTextStream(spec, null, null);
+      const out = String((r && r.text) || "").trim();
+      if (!out) throw new Error(I18n.t("模型未返回译文"));
+      /* 校验：模型常常把英文原文原样吐回来（或只回「以下是翻译：」）——
+         这种必须重试，绝不能当成功缓存，否则用户看到「译文」仍是英文。 */
+      if (!dshXlateLooksTranslated(src, out)) {
+        lastOut = out;
+        lastErr = new Error(I18n.t("翻译质量校验未通过（模型仍在输出原文）"));
+        continue;
+      }
+      if (store[key] === it) {
+        it.status = "done";
+        it.text = out;
+        it.ts = Date.now();
+        it.model =
+          String(c.model || "") + (i > 0 ? "（第 " + (i + 1) + " 次尝试）" : "");
+      }
+      break;
+    } catch (e) {
+      lastErr = e;
+      /* 用户主动取消 / 请求被中止：不再往下试，直接落 error */
+      const em = String((e && e.message) || e || "");
+      if (/abort|cancel|取消|已终止/i.test(em)) break;
+    }
+  }
+  if (store[key] === it && it.status !== "done") {
+    it.status = "error";
+    it.error =
+      (lastErr && lastErr.message ? lastErr.message : String(lastErr || I18n.t("翻译失败"))) +
+      (lastOut ? "｜模型仍返回原文，已重试 " + cands.length + " 次" : "");
+  }
+  if (store[key] === it) paint(it);
+}
+/* 思考段右侧小按钮。stopPropagation 必须齐：summary 内的点击会开合 details，
+   键盘 Enter / Space 也会触发 toggle，所以 keydown 一并拦掉。 */
+function dshThinkTranslateBtn(text, scopeId, segKey, sig) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "dsh-think-xlate";
+  const it = dshThinkTransItem(scopeId, segKey);
+  b.textContent = it && it.status === "pending" ? I18n.t("翻译中…") : I18n.t("翻译");
+  if (it && it.status === "pending") b.disabled = true;
+  if (it && it.status === "done") b.classList.add("on");
+  b.title =
+    it && it.status === "error"
+      ? String(it.error || I18n.t("翻译失败"))
+      : I18n.t("用默认模型（优先 flash · 无思考）翻译这段思考");
+  b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  b.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (it && it.status === "pending") return;
+    dshTranslateThinking(b, scopeId, segKey, String(text || ""), sig);
+  });
+  b.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+  });
+  return b;
+}
+/* 思考块 + 折叠条【最右侧】一颗翻译小按钮 + 译文行。
+   按钮直接挂在 <summary> 里（不另起一行）：折叠条本身就是一整行，按钮整行右端对齐；
+   summary 变 flex、文案单独套 span（更新字数时只改这个 span，不会把按钮冲掉）。
+   点按钮靠 dshThinkTranslateBtn 里的 stopPropagation 拦掉 toggle，不会顺带开合思考。 */
+function dshThinkTranslateAppend(row, det, sum, text, scopeId, segKey, sig) {
+  row.appendChild(det);
+  if (sum) {
+    sum.classList.add("dsh-think-bar");
+    sum.dataset.xlateBtnKey = dshThinkTransKey(scopeId, segKey);
+    sum.appendChild(
+      dshThinkTranslateBtn(String(text || ""), scopeId, segKey, sig),
+    );
+  }
+  const r = dshThinkTranslateRow(scopeId, segKey);
+  if (r) row.appendChild(r);
+}
+
 /* 历史消息的一段 → DOM。工具段按 callId / step 从 m.tools 池里取对应条目，
    取走的从池里移除，剩余（没匹配到的）由调用方补一行 chips 兜底。 */
+/* 工具段 ↔ m.tools 的配对口径：历史段渲染与「被窗口裁掉的段对账」共用这一处，
+   否则两处口径一歪，被裁的段对应的工具会又从兜底 chips 里冒出来一次。 */
+function dshSegToolAt(pool, seg) {
+  if (!Array.isArray(pool) || !seg || seg.k !== "tool") return -1;
+  for (let i = 0; i < pool.length; i++) {
+    const t = pool[i];
+    if (!t) continue;
+    if (seg.callId) {
+      if (String(t.callId) === String(seg.callId)) return i;
+    } else if (seg.step != null && t.step === seg.step) return i;
+  }
+  return -1;
+}
 function dshHistSegEl(seg, pool, nodeId, idx, n) {
   if (!seg || !seg.k) return null;
   if (seg.k === "think") {
@@ -3148,13 +3740,21 @@ function dshHistSegEl(seg, pool, nodeId, idx, n) {
       else delete S.openDshTools[oKey];
     });
     const sum = document.createElement("summary");
-    sum.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+    /* 折叠条文案单独套一层 span：翻译按钮要坐在同一行最右侧，运行时刷新字数只改这层 */
+    const sumTxt = document.createElement("span");
+    sumTxt.className = "dsh-think-sum-txt";
+    sumTxt.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
     sum.title = I18n.t("点击展开 / 收起模型思考过程");
+    sum.appendChild(sumTxt);
     const pre = document.createElement("pre");
     pre.innerHTML = plainTextToLinkHtml(txt);
     det.appendChild(sum);
     det.appendChild(pre);
-    return det;
+    /* 思考块 + 折叠条最右侧「翻译」小按钮 + 译文行（一个整体，一次插进时间线） */
+    const wrap = document.createElement("div");
+    wrap.className = "dsh-seg dsh-seg-think-wrap";
+    dshThinkTranslateAppend(wrap, det, sum, txt, nodeId, oKey, txt);
+    return wrap;
   }
   if (seg.k === "say" || seg.k === "err") {
     let txt = String(seg.text || "");
@@ -3169,20 +3769,7 @@ function dshHistSegEl(seg, pool, nodeId, idx, n) {
     return d;
   }
   if (seg.k === "tool") {
-    let at = -1;
-    for (let i = 0; i < pool.length; i++) {
-      const t = pool[i];
-      if (!t) continue;
-      if (seg.callId) {
-        if (String(t.callId) === String(seg.callId)) {
-          at = i;
-          break;
-        }
-      } else if (seg.step != null && t.step === seg.step) {
-        at = i;
-        break;
-      }
-    }
+    const at = dshSegToolAt(pool, seg);
     if (at < 0) return null;
     const t = pool.splice(at, 1)[0];
     const wrap = document.createElement("div");
@@ -3202,7 +3789,18 @@ function agentLiveSegsEl(row, st, live, items) {
   /* 正在增长的思考段未必是尾段：agent 每步「思考 → 工具」，思考段后面还会挂
      tool 段，所以按 tracePush 打的 open 标记认它，而不是认 items 末尾。 */
   const anyOpenThink = items.some((x) => x && x.k === "think" && x.open === true);
-  for (let i = 0; i < items.length; i++) {
+  /* 运行中的这一轮同样封顶：一轮里思考 / 工具段动辄上百，全量重绘就是卡死的直接来源。
+     只从最近 AGENT_MAX_VISIBLE_ITEMS 条起渲染（这一轮还没落成历史消息，不参与最前端的
+     「显示更早内容」；收尾后它的段随消息进历史，届时可在列表最前端展开）。
+     索引一律用 items 里的绝对序号：流式就地更新按 dataset.segIdx 找尾段，不能错位。 */
+  const off = Math.max(0, items.length - AGENT_MAX_VISIBLE_ITEMS);
+  if (off > 0) {
+    const cut = document.createElement("div");
+    cut.className = "dsh-seg dsh-live-cut";
+    cut.textContent = I18n.t("已折叠更早的运行条目：{n}", { n: off });
+    row.appendChild(cut);
+  }
+  for (let i = off; i < items.length; i++) {
     const seg = items[i];
     if (!seg) continue;
     const isLast = i === items.length - 1;
@@ -3221,8 +3819,11 @@ function agentLiveSegsEl(row, st, live, items) {
       }
       const oKey = "segthink:" + (st.id || "") + ":" + i;
       const sum = document.createElement("summary");
-      sum.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+      const sumTxt = document.createElement("span");
+      sumTxt.className = "dsh-think-sum-txt";
+      sumTxt.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
       sum.title = I18n.t("点击展开 / 收起模型思考过程");
+      sum.appendChild(sumTxt);
       const pre = document.createElement("pre");
       if (streaming) {
         pre.id = "agent-think-body";
@@ -3252,7 +3853,15 @@ function agentLiveSegsEl(row, st, live, items) {
           });
         else det._progToggle = false;
       }
-      row.appendChild(det);
+      /* 已经定稿的思考段：块 + 折叠条最右侧「翻译」小按钮 + 译文行。
+         正在增长的那段先不挂按钮 —— 译文要对整段思考负责，翻译一段还会继续变长的
+         文字，用户下次重绘就会看到译文与原文对不上；等这段定稿（后一步的思考段或
+         本轮收尾重绘）按钮自动出现。按钮在折叠条里，收起时按钮与译文都还在。 */
+      const box = document.createElement("div");
+      box.className = "dsh-seg dsh-seg-think-wrap";
+      if (streaming) box.appendChild(det);
+      else dshThinkTranslateAppend(box, det, sum, txt, st.id, oKey, txt);
+      row.appendChild(box);
     } else if (seg.k === "say" || seg.k === "err") {
       const d = document.createElement("div");
       d.className = "dsh-seg dsh-seg-say";
@@ -3339,8 +3948,14 @@ function updateAgentLiveThink(st) {
     }
     const txt = String(seg.text || "");
     const sum = det && det.querySelector("summary");
-    if (sum)
-      sum.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+    /* 只改折叠条里的文案 span：整条 textContent 会被冲掉（那里面还有翻译按钮） */
+    if (sum) {
+      const sumTxt =
+        sum.querySelector(".dsh-think-sum-txt") || sum.firstElementChild;
+      const label = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+      if (sumTxt && sumTxt.tagName !== "BUTTON") sumTxt.textContent = label;
+      else sum.textContent = label;
+    }
     if (det && det.open) {
       const pre = document.getElementById("agent-think-body");
       if (pre) {
@@ -3395,6 +4010,8 @@ function dshMsgBlock(m, nodeId, idx, opts) {
   role.className = "dsh-role";
   role.textContent = m.role === "user" ? I18n.t("你") : "AI";
   head.appendChild(role);
+  /* 旧渲染（无分段轨迹）的思考块：head 之后单独一行，见下方 row.appendChild */
+  let thinkBoxEl = null;
   if (
     m.role === "assistant" &&
     !segsView &&
@@ -3413,32 +4030,63 @@ function dshMsgBlock(m, nodeId, idx, opts) {
       else delete S.openDshTools[rKey];
     });
     const sum = document.createElement("summary");
-    sum.textContent = I18n.t("思考过程 · ") + String(m.reasoning).length + I18n.t(" 字");
+    const sumTxt = document.createElement("span");
+    sumTxt.className = "dsh-think-sum-txt";
+    sumTxt.textContent =
+      I18n.t("思考过程 · ") + String(m.reasoning).length + I18n.t(" 字");
     sum.title = I18n.t("点击展开 / 收起模型思考过程");
+    sum.appendChild(sumTxt);
     const pre = document.createElement("pre");
     pre.innerHTML = plainTextToLinkHtml(m.reasoning);
     det.appendChild(sum);
     det.appendChild(pre);
-    head.appendChild(det);
+    /* 思考块 + 折叠条最右侧「翻译」小按钮 + 译文行（无分段轨迹的老消息也能翻）。
+       不塞进 .dsh-msg-head（那是一行 flex role + 折叠条），改挂在 head 之后 */
+    const thinkBox = document.createElement("div");
+    thinkBox.className = "dsh-seg dsh-seg-think-wrap dsh-think-head";
+    dshThinkTranslateAppend(
+      thinkBox,
+      det,
+      sum,
+      m.reasoning,
+      nodeId,
+      rKey,
+      m.reasoning,
+    );
+    thinkBoxEl = thinkBox;
   }
   /* 用户消息的复制按钮留在头部；AI 回复的复制按钮放在尾部与时间同行（仅复制该条回复） */
   if (m.role === "user") head.appendChild(dshCopyBtn(m, "dsh-msg-copy"));
   row.appendChild(head);
+  if (thinkBoxEl) row.appendChild(thinkBoxEl);
   if (segsView) {
     /* 时间线：思考 / 正文 / 工具按段序就近插入（工具段从 m.tools 里取对应条目） */
     const body = document.createElement("div");
     body.className = "dsh-msg-body dsh-msg-segs";
     const pool = Array.isArray(m.tools) ? m.tools.slice() : [];
-    m.segments.forEach((seg, n) => {
-      const el = dshHistSegEl(seg, pool, nodeId, idx, n);
+    /* 被「显示更早内容」挡在窗口外的段：它们的工具先照同一口径认掉（不渲染），
+       否则这些工具会作为兜底 chips 又冒出来一次 —— 等于藏起来的条目漏了头 */
+    const from = Math.max(
+      0,
+      Math.min(Number(opts && opts.segFrom) || 0, m.segments.length),
+    );
+    for (let n = 0; n < from; n++) {
+      const at = dshSegToolAt(pool, m.segments[n]);
+      if (at >= 0) pool.splice(at, 1);
+    }
+    for (let n = from; n < m.segments.length; n++) {
+      const el = dshHistSegEl(m.segments[n], pool, nodeId, idx, n);
       if (el) body.appendChild(el);
-    });
+    }
+    /* 时间线上没配到段、剩下的工具（重发 / 老数据等边角）挂消息**最前面**，
+       绝不追加到时间线尾部：追加在尾部 = 工具 chips 压在最终回复下方，用户第一眼
+       看到的就是「AI 最终回复未在最底部」（而且这些多是最早发生的调用，放前面才对）。 */
     if (pool.length) {
       const chips = document.createElement("div");
-      chips.className = "dsh-tools";
+      chips.className = "dsh-tools dsh-tools-head";
       for (const t of pool)
         chips.appendChild(dshToolDetailsEl(t, false, nodeId));
-      body.appendChild(chips);
+      body.insertBefore(chips, body.firstChild);
     }
     row.appendChild(body);
   } else {
@@ -3646,20 +4294,65 @@ async function rbAskRollback(m, nodeId) {
   }
 }
 
-/* ── 会话消息显示轮数:默认最多 10 轮(一轮=一条用户消息),更早的可从最前端逐步载入 ── */
-const AGENT_MAX_VISIBLE_ROUNDS = 10;
-const AGENT_LOAD_MORE_ROUNDS = 10;
-function agentRoundSlice(st) {
-  const msgs = Array.isArray(st.messages) ? st.messages : [];
-  const userIdx = [];
-  for (let i = 0; i < msgs.length; i++)
-    if (msgs[i] && msgs[i].role === "user") userIdx.push(i);
-  const totalRounds = userIdx.length;
-  let vis = Number(st._visRounds);
-  if (!Number.isFinite(vis) || vis < 1) vis = AGENT_MAX_VISIBLE_ROUNDS;
-  let start = 0;
-  if (totalRounds > vis) start = userIdx[totalRounds - vis];
-  return { msgs, start, totalRounds, vis: Math.min(vis, Math.max(totalRounds, 1)) };
+/* ── 会话条目窗口：每个会话最多同时渲染 AGENT_MAX_VISIBLE_ITEMS 条，更早的靠手动
+      「显示更早内容」展开（+AGENT_LOAD_MORE_ITEMS / 次）────────────────────
+   为什么按「条目」而不按「轮」：一轮任务可能吐出上百个思考 / 工具段（长任务里很常见），
+   整表重绘时每个段都是一次 DOM 构建（思考段还带 markdown / 译文），内容或思考一多就把
+   窗口卡死 —— 而按轮算时这些段全都算在「最近 10 轮」里，一轮就能塞满整张列表。
+   条目口径 = 真正落进 DOM 的时间线块：
+     · 能按段渲染的消息（dshMsgSegsViewable）→ 每个段一条（思考 / 正文 / 工具）；
+     · 其余消息（用户消息、退回整条渲染的老消息）→ 整条算一条。
+   只影响渲染，不动 st.messages 本身：上下文、存档、回滚口径一个字节都不变。 */
+const AGENT_MAX_VISIBLE_ITEMS = 200;
+const AGENT_LOAD_MORE_ITEMS = 200;
+function agentEntryCount(m) {
+  if (
+    m &&
+    m.role === "assistant" &&
+    typeof dshMsgSegsViewable === "function" &&
+    dshMsgSegsViewable(m)
+  )
+    return Math.max(1, m.segments.length);
+  return 1;
+}
+/* 从尾部往前凑条目预算：返回可见起点 start、以及起点那条消息要跳过的前置条目数 skip。
+   只有能按段裁的消息才可能被裁（留下尾部段，head 照常渲染）；装不下整条的普通消息
+   直接不进窗口，交给最前端的「显示更早内容」。 */
+function agentEntrySlice(st) {
+  const msgs = Array.isArray(st && st.messages) ? st.messages : [];
+  const costs = msgs.map(agentEntryCount);
+  let total = 0;
+  for (const c of costs) total += c;
+  let budget = Number(st && st._visItems);
+  if (!Number.isFinite(budget) || budget < 1) budget = AGENT_MAX_VISIBLE_ITEMS;
+  if (budget > total) budget = total;
+  let acc = 0;
+  let start = msgs.length;
+  let skip = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const room = budget - acc;
+    if (costs[i] > room) {
+      /* 预算在同一段里用完：能按段裁就把这条消息的尾部段留在窗口里 */
+      if (room > 0 && dshMsgSegsViewable(msgs[i])) {
+        start = i;
+        skip = costs[i] - room;
+        acc = budget;
+      }
+      break;
+    }
+    acc += costs[i];
+    start = i;
+  }
+  return { msgs, start, skip, total, shown: acc, vis: budget };
+}
+/* 让第 idx 条消息（含其后全部条目）落进窗口所需的最小预算：全局搜索跳转旧消息时用 */
+function agentEntryBudgetFrom(st, idx) {
+  const msgs = Array.isArray(st && st.messages) ? st.messages : [];
+  if (!msgs.length) return AGENT_MAX_VISIBLE_ITEMS;
+  const at = Math.max(0, Math.min(Number(idx) || 0, msgs.length - 1));
+  let n = 0;
+  for (let i = at; i < msgs.length; i++) n += agentEntryCount(msgs[i]);
+  return Math.max(1, n);
 }
 /* 写剪贴板：navigator.clipboard 优先，回退 preload 桥（失败 reject） */
 function dshClipboardWrite(txt) {
@@ -3695,21 +4388,20 @@ function renderAgentSession(opts) {
     hint.textContent = I18n.t("选择一个工作区开始，直接描述你要完成的任务。");
     list.appendChild(hint);
   }
-  /* 最多显示最近 10 轮(一轮=一条用户消息),更早的在列表最前端提供「载入」按钮 */
-  const slice = agentRoundSlice(st);
-  if (slice.start > 0) {
+  /* 最多渲染最近 AGENT_MAX_VISIBLE_ITEMS 条(消息 + 段),更早的在列表最前端手动展开 */
+  const slice = agentEntrySlice(st);
+  const hiddenEntries = Math.max(0, slice.total - slice.shown);
+  if (hiddenEntries > 0) {
     const loadRow = document.createElement("div");
     loadRow.className = "agent-load-earlier";
     const btn = document.createElement("button");
-    const older = Math.min(AGENT_LOAD_MORE_ROUNDS, slice.totalRounds - slice.vis);
-    btn.textContent =
-      I18n.t("载入更早的 ") + older + I18n.t(" 轮对话（共 ") + slice.totalRounds + I18n.t(" 轮）");
-    btn.title = I18n.t("在列表最前端载入更早的对话");
+    btn.textContent = I18n.t("显示更早内容（已折叠 {n} 条）", { n: hiddenEntries });
+    btn.title = I18n.t("每个会话最多同时渲染 200 条，点击展开更早的 200 条");
     btn.addEventListener("click", () => {
       const l = $("#agentList");
       const prevScroll = l ? l.scrollTop : 0;
       const prevH = l ? l.scrollHeight : 0;
-      st._visRounds = slice.vis + AGENT_LOAD_MORE_ROUNDS;
+      st._visItems = slice.vis + AGENT_LOAD_MORE_ITEMS;
       renderAgentSession();
       const l2 = $("#agentList");
       if (l2 && prevH > 0) setConvScrollTop(l2, prevScroll + (l2.scrollHeight - prevH));
@@ -3728,6 +4420,8 @@ function renderAgentSession(opts) {
             !m._rolledBack &&
             typeof rbHasMsgRound === "function" &&
             rbHasMsgRound(m),
+          /* 窗口起点那条消息若被裁过段：前面的段不进 DOM（它们的工具也已对账掉） */
+          segFrom: i === slice.start ? slice.skip : 0,
         }),
       );
     } catch (e) {
@@ -4876,8 +5570,8 @@ async function agentSessionSend(text, opts) {
   st._autoTitleRound = !st.titleAuto && !st.titleLocked;
   st.updatedAt = Date.now();
   if (st.messages.length > 100) st.messages.splice(0, st.messages.length - 100);
-  /* 新的一轮开始:显示窗口回到默认最近 10 轮,更早的可从最前端重新载入 */
-  st._visRounds = undefined;
+  /* 新的一轮开始：显示窗口回到默认最近 200 条，更早的可从最前端重新「显示更早内容」 */
+  st._visItems = undefined;
   st.running = true;
   st._pending = "";
   st._liveTools = [];
@@ -4989,8 +5683,8 @@ async function agentSessionSend(text, opts) {
           : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
         "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
         "改画布纪律：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
-        "引用画布内容纪律：为某个节点写 prompt/task 而要用画布上别的节点的内容时，一律在 prompt/task 里写 @标题（连线源；全局广播须同时满足三条件），不要把那个节点的正文复制粘贴进去；素材节点本身不是 @ 候选，写 @内容条目标题只引那一条、且只有已连线接进本节点的端子可引；@引用的字段与语法以 mtnode_canvas_edit 的工具说明为唯一真源。\n" +
-        "要建开发节点、批次 / 文生图链、整理排版或接数据库副本时，先用 skill 工具加载对应内置技能（mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
+        "引用画布内容纪律：为某个节点写 prompt/task 而要用画布上别的节点的内容时，一律在 prompt/task 里写 @标题（连线源；全局广播须同时满足三条件），不要把那个节点的正文复制粘贴进去；素材节点本身不是 @ 候选，写 @内容条目标题只引那一条、且只有已连线接进本节点的端子可引；@引用的三条件与语法见技能 mtnode-canvas-edit-rules。\n" +
+        "要建开发节点、批次 / 文生图链、连线 / 建图、整理排版或接数据库副本时，先用 skill 工具加载对应内置技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
         "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     }
   }

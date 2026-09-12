@@ -189,6 +189,20 @@ function buildMtnodeBridge(deps = {}) {
   const runId = String(deps.runId == null ? "" : deps.runId);
   const fsx = deps.fs || fs;
   const pathx = deps.path || path;
+  /* 「AI 调用」设定（节点上选中的模型 / 服务商 / 预设 / 思考强度）。
+     传函数（getter）时按调用期读 —— start 帧可能晚于建桥到达。 */
+  const aiGet =
+    typeof deps.ai === "function"
+      ? deps.ai
+      : () => (deps.ai && typeof deps.ai === "object" ? deps.ai : null);
+  const aiCfgOf = () => {
+    try {
+      const v = aiGet();
+      return v && typeof v === "object" ? v : null;
+    } catch (_) {
+      return null;
+    }
+  };
 
   const bridge = {
     /* 本次运行的归属号：外部进程都记在它名下，运行一结束即整棵回收 */
@@ -243,6 +257,62 @@ function buildMtnodeBridge(deps = {}) {
         return false;
       }
     },
+    /* ── 「AI 调用」：用本节点选中的模型真正发一次请求 ──────────────
+       用法（函数体是 async，可直接 await）：
+         const r = await mtnode.ai("把下面这段总结成三条要点：\n" + input.文本);
+         if (r.ok) return r.text;            // r.text / r.reasoning / r.model / r.provider
+         throw new Error(r.error);
+       参数：mtnode.ai(prompt[, opts]) 或 mtnode.ai({ prompt, images, temperature, system, provider, model, effort })。
+       opts 里显式传的 provider / model / effort 只覆盖这一次调用；不传就用节点上
+       「AI 调用」按钮选定的那一套。返回 { ok, text, reasoning?, error?, provider, model }，
+       不抛异常（失败看 ok === false 与 error），需要抛错就自己 throw。
+       摘要用 mtnode.aiConfig（只读，可能是 null）。 */
+    ai: (a, b) => {
+      const cfg = aiCfgOf();
+      let payload = {};
+      if (typeof a === "string") payload.prompt = a;
+      else if (a && typeof a === "object") payload = Object.assign({}, a);
+      if (b && typeof b === "object") payload = Object.assign(payload, b);
+      if (payload && typeof payload.prompt !== "string")
+        payload.prompt = payload.prompt == null ? "" : String(payload.prompt);
+      if (!payload.prompt && !(payload.images && payload.images.length))
+        return Promise.resolve({
+          ok: false,
+          error: "mtnode.ai：缺少 prompt",
+          provider: cfg ? cfg.provider || "" : "",
+          model: cfg ? cfg.model || "" : "",
+        });
+      return call("ai", payload)
+        .then((r) => r || { ok: false, error: "mtnode.ai：调用没有返回结果" })
+        .catch((e) => ({
+          ok: false,
+          error: (e && e.message) || String(e),
+          provider: cfg ? cfg.provider || "" : "",
+          model: cfg ? cfg.model || "" : "",
+        }));
+    },
+    /* 本节点「AI 调用」选定的模型 / 预设 / 思考强度的只读摘要（调用期读，start 帧后才有值） */
+    aiConfig: new Proxy(
+      {},
+      {
+        get(_t, key) {
+          const cfg = aiCfgOf();
+          if (!cfg) return key === "model" || key === "provider" ? "" : undefined;
+          if (key === "provider")
+            return cfg.providerRoute || cfg.provider || "";
+          if (key === "providerId")
+            return cfg.provider && cfg.provider.id ? cfg.provider.id : "";
+          if (key === "providerName") return cfg.providerName || "";
+          if (key === "model") return cfg.model || "";
+          if (key === "preset") return cfg.preset || "";
+          if (key === "effort") return cfg.effort || "";
+          return undefined;
+        },
+        has() {
+          return true;
+        },
+      },
+    ),
     readText: (p) => fsx.readFileSync(String(p == null ? "" : p), "utf8"),
     writeText: (p, text) => {
       const file = String(p == null ? "" : p);
@@ -390,6 +460,7 @@ function startWorker() {
   let callSeq = 0;
   const pending = new Map();
   let runId = "";
+  let aiSpec = null;
   const send = (m) => {
     try {
       port.postMessage(m);
@@ -405,6 +476,8 @@ function startWorker() {
     call,
     post: (m) => send(Object.assign({ runId }, m)),
     runId,
+    /* aiConfig 只读摘要按调用期读；真正的模型随 start 帧的 ai 字段落进 aiSpec */
+    ai: () => aiSpec,
   });
 
   port.on("message", async (msg) => {
@@ -412,6 +485,7 @@ function startWorker() {
     if (msg.type === "start" && msg.runId) {
       runId = String(msg.runId);
       mtnode.runId = runId;
+      aiSpec = msg.ai && typeof msg.ai === "object" ? msg.ai : null;
       const restore = withConsoleCapture((m) =>
         send(Object.assign({ runId }, m)),
       );
@@ -503,6 +577,10 @@ function createFnRuntime(deps = {}) {
   const setTimeoutFn = deps.setTimeoutFn || setTimeout;
   const clearTimeoutFn = deps.clearTimeoutFn || clearTimeout;
   const nowFn = deps.now || (() => Date.now());
+  /* 可选的「AI 调用」后端（main.js 注入）：o.ai = 本次运行选中的模型 / 服务商。
+     函数节点的 mtnode.ai(...) 走这里真正发请求；没注入或没选模型时，
+     mtnode.ai() 返回明确错误，而不是静默为空。 */
+  const aiCallFn = typeof deps.aiCall === "function" ? deps.aiCall : null;
 
   /* runId -> state */
   const runs = new Map();
@@ -649,6 +727,27 @@ function createFnRuntime(deps = {}) {
             : [],
       };
     }
+    /* 「AI 调用」桥：函数节点 jscode 里 await mtnode.ai(...) 走这里。
+       st.ai 是节点上「AI 调用」选定的模型 / 服务商（由渲染层解析后随 fn:run 传入），
+       调用级可不传 provider / model 覆盖，传了就只覆盖这一次。 */
+    if (action === "ai") {
+      if (!aiCallFn)
+        return {
+          ok: false,
+          error: "mtnode.ai：函数节点的 AI 调用后端未接线（主进程未注入 fnRuntime.aiCall）",
+        };
+      const ai = st.ai && typeof st.ai === "object" ? st.ai : null;
+      if (!ai || !String(ai.model || "").trim())
+        return {
+          ok: false,
+          error:
+            "mtnode.ai：本函数节点还没选定「AI 调用」模型 —— 点头部（或板身）的「AI 调用」按钮选一个模型后再试",
+        };
+      const spec = Object.assign({}, ai, p || {});
+      if (!String(spec.model || "").trim()) spec.model = ai.model;
+      if (!spec.provider && ai.provider) spec.provider = ai.provider;
+      return await aiCallFn(spec, st);
+    }
     return { ok: false, error: "未知的 mtnode 桥调用：" + (action || "(空)") };
   }
 
@@ -725,6 +824,7 @@ function createFnRuntime(deps = {}) {
           runId: st.runId,
           code: st.code,
           input: st.input,
+          ai: st.ai,
         });
       } catch (e) {
         finish(st, { ok: false, error: errText(e) });
@@ -808,6 +908,8 @@ function createFnRuntime(deps = {}) {
       input,
       cwd: String(o.cwd == null ? "" : o.cwd),
       env: o.env && typeof o.env === "object" ? o.env : null,
+      /* 「AI 调用」设定（模型 / 服务商 / 预设 / 思考强度；渲染层解析后传入） */
+      ai: o.ai && typeof o.ai === "object" ? o.ai : null,
       emit: typeof emit === "function" ? emit : null,
       spawned: new Map(),
       done: new Map(),

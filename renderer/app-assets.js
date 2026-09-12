@@ -62,18 +62,52 @@ function assetTypeLabel(type) {
 
 /* 素材的内容类型摘要：「文本 2 · 图像 1」（按类型固定顺序，零个不显示） */
 function assetItemsSummary(a) {
-  const items = (a && a.items) || [];
-  if (!items.length) return I18n.t("（暂无内容）");
+  const n = assetTypeCounts(a);
+  const bits = [];
+  for (const k of ASSET_TYPE_ORDER) {
+    if (n[k]) bits.push(assetTypeLabel(k) + " " + n[k]);
+  }
+  return bits.length ? bits.join(" · ") : I18n.t("（暂无内容）");
+}
+
+/* ── 素材包「是什么」：文本 / 图像 / 音频 / 视频 / 混合 / 空 ──────────────
+   用户挑素材时最想先知道「这一包里装的是文本还是图，还是混在一起」。
+   判定只有这一份（左树素材行、素材卡片、详情头共用），不在各处各算一套。 */
+const ASSET_TYPE_ORDER = ["text", "image", "audio", "video"];
+
+/* 条目类型计数：非法 type 归 text（与主进程 normItems / 节点快照同一口径） */
+function assetTypeCounts(a) {
   const n = { text: 0, image: 0, audio: 0, video: 0 };
-  for (const it of items) {
+  for (const it of (a && a.items) || []) {
     const k = ASSET_TYPE_KEYS[it.type] ? it.type : "text";
     n[k]++;
   }
-  const bits = [];
-  for (const k of ["text", "image", "audio", "video"]) {
-    if (n[k]) bits.push(assetTypeLabel(k) + " " + n[k]);
-  }
-  return bits.join(" · ");
+  return n;
+}
+
+/* 归一成一个「包类型」：empty（没内容）/ 单一类型 / mixed（两种以上混装） */
+function assetKindOf(a) {
+  const n = assetTypeCounts(a);
+  const kinds = ASSET_TYPE_ORDER.filter((k) => n[k] > 0);
+  if (!kinds.length) return "empty";
+  if (kinds.length > 1) return "mixed";
+  return kinds[0];
+}
+
+/* 徽标文案：单一类型复用条目类型短名（与端子 / body 同一份），混合 / 空走专门词条 */
+function assetKindLabel(kind) {
+  if (kind === "mixed") return I18n.t("混合");
+  if (kind === "empty") return I18n.t("空");
+  return assetTypeLabel(kind);
+}
+
+/* 类型徽标（.asset-lib-kindchip）：一眼看出这份素材是文本、图像…还是混合；
+   tooltip 给出逐类型数量，鼠标一停就知道包里到底有什么。 */
+function assetKindChip(a) {
+  const kind = assetKindOf(a);
+  const chip = assetEl("span", "asset-lib-kindchip " + kind, assetKindLabel(kind));
+  chip.title = I18n.t("内容类型：") + assetItemsSummary(a);
+  return chip;
 }
 
 /* 建元素小工具（本文件所有用户数据一律走 textContent，不拼 innerHTML） */
@@ -546,6 +580,21 @@ function ensureAssetsDlg() {
     if (!ev.target || !ev.target.closest || !ev.target.closest(".asset-lib-tree")) return;
     ev.preventDefault();
   });
+  /* 外部文件拖入：库框主体与右栏卡片区（详情态＝追加到所选素材，卡片态＝新建素材）。
+     里层落点（条目行 / 详情列表）各自的 .asset-set-rows / 行会先接管，这里用 skip 让开。 */
+  assetWireFileDrop(host.querySelector(".asset-lib-main-body"), {
+    holder: ASSET_LIB,
+    target: assetDropLibTarget,
+    catRel: () => ASSET_LIB.selCat,
+    skip: (t) => !!t.closest("#assetLibCards"),
+  });
+  assetWireFileDrop(host.querySelector("#assetLibCards"), {
+    holder: ASSET_LIB,
+    target: assetDropLibTarget,
+    catRel: () => ASSET_LIB.selCat,
+    /* 卡片与详情条目列表各自有落点（追加到那份素材），空白处才归这一层 */
+    skip: (t) => !!t.closest(".asset-set-rows") || !!t.closest(".asset-lib-card"),
+  });
   return host;
 }
 
@@ -699,6 +748,8 @@ function paintAssetTree(host) {
     row.appendChild(
       assetEl("span", "asset-lib-assetname", a.displayName || a.folder || ""),
     );
+    /* 类型徽标：文本 / 图像 / 音频 / 视频 / 混合 —— 左树里先看这个再点进去 */
+    row.appendChild(assetKindChip(a));
     row.appendChild(
       assetEl("span", "asset-lib-catchip", String(Number(a.itemCount) || 0)),
     );
@@ -717,6 +768,8 @@ function paintAssetTree(host) {
       ASSET_LIB.expanded[String(a.catRel || "")] = true;
       paintAssetLib();
     };
+    /* 外部文件拖到素材行＝追加成这份素材的内容条目（拖放落点反馈见 assetWireFileDrop） */
+    assetWireFileDrop(row, { holder: ASSET_LIB, target: () => a });
     return row;
   };
   const rowOf = (rel, name, depth, count) => {
@@ -748,6 +801,8 @@ function paintAssetTree(host) {
       ev.stopPropagation();
       assetCatMenu(ev.clientX, ev.clientY, rel, name);
     };
+    /* 外部文件拖到分类行＝在这个分类下新建素材（不是追加到某个已有素材） */
+    assetWireFileDrop(row, { holder: ASSET_LIB, catRel: rel });
     return row;
   };
   /* 一个分类块 = 分类行 ＋（展开时）它下面的素材行 */
@@ -838,6 +893,7 @@ function paintAssetCards(host) {
         I18n.t("该分类本身没有素材，内容在子分类里（左侧选择子分类查看）。"),
       ),
     );
+    host.appendChild(assetDropZoneEl("new"));
     return;
   }
   if (!list.length) {
@@ -854,15 +910,20 @@ function paintAssetCards(host) {
             ),
       ),
     );
+    host.appendChild(assetDropZoneEl("new"));
     return;
   }
   for (const a of list) host.appendChild(assetCard(a, pick));
+  /* 外部文件拖到这里＝在当前分类下新建素材（提示块，落点接线在 ensureAssetsDlg） */
+  host.appendChild(assetDropZoneEl("new"));
 }
 
 function assetCard(a, pick) {
   const card = assetEl("div", "asset-lib-card");
   const head = assetEl("div", "asset-lib-cardhead");
   head.appendChild(assetEl("b", "asset-lib-cardname", a.displayName || a.folder));
+  /* 类型徽标：卡片上先说明「这包是文本 / 图像…还是混合」 */
+  head.appendChild(assetKindChip(a));
   head.appendChild(
     assetEl("span", "asset-lib-cardcount", String(Number(a.itemCount) || 0)),
   );
@@ -876,6 +937,8 @@ function assetCard(a, pick) {
   );
   card.querySelector(".asset-lib-cardsub").title =
     I18n.t("文件夹：") + (a.rel || "") + "\n" + (a.desc || "");
+  /* 外部文件拖到卡片＝追加成这份素材的内容条目（卡片之间的网格空白才是新建素材） */
+  assetWireFileDrop(card, { holder: ASSET_LIB, target: () => a });
   const acts = assetEl("div", "asset-lib-cardacts");
   if (pick) {
     const b = assetBtn(I18n.t("绑定这个素材"), "primary", I18n.t("用该素材绑定当前节点"));
@@ -928,9 +991,13 @@ function paintAssetDetail(host, a) {
   /* 头部左列：标题 / 副标题 / 文件夹行 —— class 取 components.css 里真实存在的那几个
      （.asset-detail-titlewrap / .asset-detail-title / .asset-detail-sub / .asset-detail-rel） */
   const titleWrap = assetEl("div", "asset-detail-titlewrap");
-  titleWrap.appendChild(
+  const titleRow = assetEl("div", "asset-detail-titlerow");
+  titleRow.appendChild(
     assetEl("b", "asset-detail-title", a.displayName || a.folder || ""),
   );
+  /* 类型徽标：详情头与左树 / 卡片同一份判定（文本 / 图像 / 音频 / 视频 / 混合） */
+  titleRow.appendChild(assetKindChip(a));
+  titleWrap.appendChild(titleRow);
   titleWrap.appendChild(
     assetEl(
       "div",
@@ -997,6 +1064,8 @@ function paintAssetDetail(host, a) {
     for (let i = 0; i < rows.length; i++)
       list.appendChild(assetSetRow(rows[i], i, rows.length, ctx));
   }
+  /* 外部文件拖到条目区＝追加成这份素材的内容条目（提示块 ＋ 落点接线，与设置框同一份） */
+  list.appendChild(assetDropZoneEl("add"));
   body.appendChild(list);
   /* 容器空白处落点＝移到末尾（与素材设置框同一口径） */
   assetWireListDrop(
@@ -1004,6 +1073,7 @@ function paintAssetDetail(host, a) {
     ASSET_LIB,
     (from, to) => assetSetMoveItem(from, to, a),
   );
+  assetWireFileDrop(list, { holder: ASSET_LIB, target: () => a });
   wrap.appendChild(body);
   host.appendChild(wrap);
 }
@@ -1106,21 +1176,32 @@ async function assetRenameCategory(rel, name) {
   }
 }
 
+/* 删除分类（文件夹）：**空与非空都能删**（素材 / 子分类 / 手动丢进去的文件一起走，整只文件夹
+   进回收站，可在资源管理器里还原，绝不实删）。有内容时不再拦人 —— 拦了用户只能一个个先移走，
+   操作起来像「删除失效」；改成确认框把「会一起没掉的东西」逐项数清（素材 / 内容条目 / 子分类），
+   并说明引用它们的素材节点会变「素材失联」（节点与连线保留，可手动重绑）。
+   计数按 catRel 前缀自己数一遍（assetCount 只算素材，条目数要说清就得连着 items 一起数）。 */
 async function assetRemoveCategory(rel, name) {
-  const cat = (ASSET_LIB.scan.categories || []).find((c) => c.rel === rel) || {};
-  if ((Number(cat.assetCount) || 0) > 0) {
-    toast(
-      I18n.t("该分类（含子分类）下还有 {n} 个素材：请先移走或删除其中的素材。", {
-        n: cat.assetCount,
-      }),
-      "warn",
-    );
-    return;
-  }
+  if (ASSET_LIB.busy) return;
+  const here = String(rel || "");
+  const inside = (ASSET_LIB.scan.assets || []).filter((a) => {
+    const c = String(a.catRel || "");
+    return c === here || c.startsWith(here + "/");
+  });
+  const nAssets = inside.length;
+  const nItems = inside.reduce((s, a) => s + (Number(a.itemCount) || 0), 0);
+  const nSubs = (ASSET_LIB.scan.categories || []).filter((c) =>
+    String(c.rel || "").startsWith(here + "/"),
+  ).length;
   const sure = await confirmDialog(
-    I18n.t("删除空分类「{name}」？\n\n文件夹会删进系统回收站（可在资源管理器里还原）。", {
-      name: name,
-    }),
+    nAssets
+      ? I18n.t(
+          "删除分类「{name}」？\n\n里面还有 {n} 个素材（共 {m} 条内容）和 {k} 个子分类，会一起删进系统回收站（可在资源管理器里还原）。\n· 引用这些素材的「素材」节点会变成「素材失联」（节点与连线保留，可手动重新绑定）\n· 文件夹里手工放进去的其它文件也一并进回收站\n\n确定删除？",
+          { name: name, n: nAssets, m: nItems, k: nSubs },
+        )
+      : I18n.t("删除分类「{name}」？\n\n文件夹会删进系统回收站（可在资源管理器里还原）。", {
+          name: name,
+        }),
     { title: I18n.t("删除分类"), danger: true, okText: I18n.t("删除") },
   );
   if (!sure) return;
@@ -1132,9 +1213,18 @@ async function assetRemoveCategory(rel, name) {
       return;
     }
     await assetRescan();
-    if (ASSET_LIB.selCat === rel) ASSET_LIB.selCat = "";
+    /* 选中态收口：被删掉的分类本身、以及它下面那份被选中的素材，都不能留在界面上 */
+    if (ASSET_LIB.selCat === here || String(ASSET_LIB.selCat || "").startsWith(here + "/"))
+      ASSET_LIB.selCat = "";
+    if (ASSET_LIB.selAssetId && !assetSummaryById(ASSET_LIB.selAssetId))
+      ASSET_LIB.selAssetId = "";
     paintAssetLib();
-    toast(I18n.t("已删除分类（进系统回收站）：") + name, "ok");
+    toast(
+      nAssets
+        ? I18n.t("已删除分类（含 {n} 个素材，进系统回收站）：", { n: nAssets }) + name
+        : I18n.t("已删除分类（进系统回收站）：") + name,
+      "ok",
+    );
   } finally {
     ASSET_LIB.busy = false;
   }
@@ -1858,9 +1948,10 @@ async function assetItemReplaceFile(aid, itemId, label, type) {
  *   ④ undo()/redo()（app.js · stepHistory）换完画布后调 assetRollbackEdits，
  *      按 prevFile 复制回去（空则清回空），并把它自己产生的「旧的现在态」
  *      记到对面那一格上 —— 所以 redo 也能原样贴回来，不需要提前留副本。
- * 端子同步（无内容自动同步；已有内容要点 ⟳ 才更换）的唯一判据是主进程按字节比的
- * assets:itemSame —— 画布那张图与库里那张图路径永远不同，猜路径必然常亮。 */
-const ASSET_SYNC_PENDING = new Map(); // aid|iid → 连入的写库形状（⟳ 亮着的依据）
+ * 端子同步（连入永不自动写库；一律只亮提示，必须点节点上的「覆盖」并在二次确认后才写）
+ * 的唯一判据是主进程按字节比的 assets:itemSame —— 画布那张图与库里那张图路径永远不同，
+ * 猜路径必然常亮。 */
+const ASSET_SYNC_PENDING = new Map(); // aid|iid → 连入的写库形状（「覆盖」亮着的依据）
 let _assetRollbackBusy = false;
 function assetRollbackBusy() {
   return !!_assetRollbackBusy;
@@ -1948,7 +2039,7 @@ async function assetWriteItem(aid, itemId, payload, opts) {
   };
 }
 
-/** 该条目端子上此刻有没有「连进来了但库里还没有」的新内容（决定 ⟳ 亮不亮） */
+/** 该条目端子上此刻有没有「连进来了但库里还没有」的新内容（决定「覆盖」亮不亮） */
 function assetItemSyncPending(node, idx) {
   if (!node || !isAssetNode(node)) return false;
   const it = assetItems(node)[Number(idx)];
@@ -1961,10 +2052,10 @@ function assetItemSyncValue(node, idx) {
   if (!it || !it.id) return null;
   return ASSET_SYNC_PENDING.get(assetViewKey(node.assetId, it.id)) || null;
 }
-/** 一个条目端子的同步检查，返回 "wrote"（空条目已自动写库）/ "pending"（⟳ 亮起）/
+/** 一个条目端子的同步检查，返回 "pending"（「覆盖」亮起，等用户确认才写库）/
  *  "same"（连入的就是库里这份）/ "none"（没连线或没值）。
- *  需求口径：无内容 → 自动同步；已有内容 → 只点亮 ⟳，等用户点一下才更换（可撤销）。
- *  写进去的永远是「库里这一条此刻没有的那份」：同一条线反复跑不会反复写盘。 */
+ *  需求口径：连入端子只做检查、永不自动写库 —— 库里这条是空的也一样，必须用户点节点上的
+ *  「覆盖」并在二次确认后才换进去（可撤销）；同一条线反复跑不会反复写盘。 */
 async function assetSyncCheckPort(node, idx) {
   if (!isAssetNode(node)) return "none";
   const items = assetItems(node);
@@ -1991,9 +2082,9 @@ async function assetSyncCheckPort(node, idx) {
     it.type === "text"
       ? { content: String(inb.text || "") }
       : { srcPath: String(inb.path || "") };
-  /* 「库里这一条此刻有没有内容、是不是就是连进来的这份」一律问主进程按字节判。
+  /* 「库里这一条此刻是不是就是连进来的这份」一律问主进程按字节判。
      不拿扫描摘要 / 视图缓存里的 bytes 猜：那两者都可能滞后（light 写盘只丢缓存、不重扫），
-     凭滞后值判空会让同一条线每轮运行都重写一次盘，并每次往 .versions 塞一份重复历史。 */
+     凭滞后值判同会让「覆盖」提示该亮时亮不起来（或反之常亮）。 */
   let cmp = null;
   try {
     cmp = await window.api.assetsItemSame(aid, it.id, payload);
@@ -2001,14 +2092,7 @@ async function assetSyncCheckPort(node, idx) {
     cmp = null;
   }
   if (!cmp || !cmp.ok) return "none"; // 素材 / 条目此刻找不到：不亮也不硬写
-  if (Number(cmp.bytes) <= 0) {
-    const r = await assetWriteItem(aid, it.id, payload, {
-      type: it.type,
-      title: it.title,
-      light: true,
-    });
-    return r && r.ok ? "wrote" : "none";
-  }
+  /* 库里这条空不空都不写库：空条目原本会自动同步，现已改为只亮提示，等用户点「覆盖」并确认 */
   if (cmp.same) {
     ASSET_SYNC_PENDING.delete(key);
     return "same";
@@ -2016,7 +2100,8 @@ async function assetSyncCheckPort(node, idx) {
   ASSET_SYNC_PENDING.set(key, inb);
   return "pending";
 }
-/** 点 ⟳：把这一条输入端子连入的内容换进素材库（写盘前旧内容进 .versions，可撤销） */
+/** 点「覆盖」：把这一条输入端子连入的内容换进素材库
+ *  （写盘前由用户二次确认；旧内容进 .versions，可撤销） */
 async function assetItemSyncFromPort(node, idx) {
   const items = assetItems(node);
   const i = Number(idx);
@@ -2031,6 +2116,19 @@ async function assetItemSyncFromPort(node, idx) {
     toast(I18n.t("这个端子目前没有连入内容"), "warn");
     return;
   }
+  /* 覆盖是破坏性写库：先由用户二次确认；取消即原样返回，不写盘、不记撤销账 */
+  const sure = await confirmDialog(
+    I18n.t(
+      "用该端子连入的内容覆盖素材库条目「{title}」？原有内容会进历史版本，可 Ctrl+Z 撤销。",
+      { title: it.title },
+    ),
+    {
+      title: I18n.t("覆盖素材内容"),
+      okText: I18n.t("覆盖"),
+      danger: true,
+    },
+  );
+  if (!sure) return;
   const r = await assetWriteItem(
     aid,
     it.id,
@@ -2040,11 +2138,11 @@ async function assetItemSyncFromPort(node, idx) {
     {
       type: it.type,
       title: it.title,
-      msg: I18n.t("已同步到素材库：") + it.title + I18n.t("（Ctrl+Z 可撤销）"),
+      msg: I18n.t("已覆盖到素材库：") + it.title + I18n.t("（Ctrl+Z 可撤销）"),
     },
   );
   if (!r.ok)
-    toast(I18n.t("同步失败：") + (r.error || I18n.t("未知错误")), "err");
+    toast(I18n.t("覆盖失败：") + (r.error || I18n.t("未知错误")), "err");
 }
 /** 执行前把这条链要用到的素材内容读齐，并做一次端子同步检查。
  *  「读齐」是必须的：valueForInput 是同步取值，库里那份正文得先在缓存里。 */
@@ -2058,19 +2156,13 @@ async function assetRunPrepare(node) {
   await Promise.all(
     items.map((it) => (it.id ? assetItemViewLoaded(aid, it.id) : null)),
   );
-  let wrote = 0;
   let pend = 0;
   for (let i = 0; i < items.length; i++) {
     const s = await assetSyncCheckPort(node, i);
-    if (s === "wrote") wrote++;
-    else if (s === "pending") pend++;
+    if (s === "pending") pend++;
   }
-  if (wrote) await assetRescan();
-  if (wrote || pend) {
-    if (typeof clearDownstream === "function") clearDownstream(node.id);
-    assetViewRerenderSoon();
-  }
-  if (wrote) assetToastAutoSync(wrote);
+  /* 只做检查、不写库：连入不自动覆写，等用户点节点上的「覆盖」并确认；这里最多重画提示 */
+  if (pend) assetViewRerenderSoon();
   return true;
 }
 /** 引擎在 playNodeBody 里调用：本节点自身 + 喂给它的那些素材节点先备好 */
@@ -2084,7 +2176,8 @@ async function assetPrepareForRun(node) {
   }
   if (jobs.length) await Promise.all(jobs);
 }
-/** 引擎在 playNode 末尾调用：本节点刚产出的值若直接喂进某个素材端子，同步检查一遍 */
+/** 引擎在 playNode 末尾调用：本节点刚产出的值若直接喂进某个素材端子，同步检查一遍。
+ *  只点亮「覆盖」提示，绝不自动写库（写库唯一出口是用户点「覆盖」+ 二次确认）。 */
 async function assetSyncConsumers(node) {
   if (!node || !S.wf || !Array.isArray(S.wf.wires)) return;
   const jobs = [];
@@ -2098,31 +2191,15 @@ async function assetSyncConsumers(node) {
       (async () => {
         const i = Number(w.toIndex || 0);
         const items = assetItems(to);
-        if (!items[i]) return null;
+        if (!items[i]) return;
         await assetItemViewLoaded(to.assetId, items[i].id);
-        const s = await assetSyncCheckPort(to, i);
-        return s === "wrote" ? to : null;
+        await assetSyncCheckPort(to, i);
       })(),
     );
   }
   if (!jobs.length) return;
-  const wrote = (await Promise.all(jobs)).filter(Boolean);
-  if (!wrote.length) {
-    assetViewRerenderSoon();
-    return;
-  }
-  await assetRescan();
-  for (const to of wrote)
-    if (typeof clearDownstream === "function") clearDownstream(to.id);
-  assetToastAutoSync(wrote.length);
-}
-function assetToastAutoSync(n) {
-  toast(
-    I18n.t("素材库：{n} 条原本没有内容的条目已自动同步（Ctrl+Z 可撤销）", {
-      n: n,
-    }),
-    "ok",
-  );
+  await Promise.all(jobs);
+  assetViewRerenderSoon();
 }
 /** 按快照上记的那笔账，把库里这一条还原成改之前的样子 */
 function assetRestoreEdit(e) {
@@ -2131,7 +2208,7 @@ function assetRestoreEdit(e) {
   if (!aid || !iid || !assetsApiOk()) return Promise.resolve({ ok: false });
   const abs = String((e && e.prevFile) || "");
   /* 有旧文件 → 从 .versions/ 复制回来（扩展名跟着旧文件走）；
-     没有 → 这一条改之前就是空的，清回空（撤销「自动同步」那一步的落点） */
+     没有 → 这一条改之前就是空的，清回空（撤销一次「覆盖」的落点） */
   if (abs) return window.api.assetsItemUpdateBytes(aid, iid, { srcPath: abs });
   if (String((e && e.type) || "") === "text")
     return window.api.assetsItemUpdateText(aid, iid, "");
@@ -2470,6 +2547,8 @@ function paintAssetSetBody(box, a) {
   const ctx = { asset: a, holder: ASSET_SET, repaint: () => paintAssetSettings() };
   for (let i = 0; i < rows.length; i++)
     list.appendChild(assetSetRow(rows[i], i, rows.length, ctx));
+  /* 外部文件拖到条目区＝追加成这份素材的内容条目（提示块 ＋ 落点接线，与右栏详情同一份） */
+  list.appendChild(assetDropZoneEl("add"));
   box.appendChild(list);
   /* 容器级拖放：拖到列表下方空白 = 移到末尾（与参数面板同一口径） */
   assetWireListDrop(
@@ -2477,6 +2556,7 @@ function paintAssetSetBody(box, a) {
     ASSET_SET,
     (from, to) => assetSetMoveItem(from, to, a),
   );
+  assetWireFileDrop(list, { holder: ASSET_SET, target: () => a });
 }
 
 /* 「内容」条目工具条：＋ 文本（上传 / 手写）/ ＋ 图像 / ＋ 音频 / ＋ 视频
@@ -2599,6 +2679,309 @@ function assetClearRowDrag(list, holder) {
     );
 }
 
+/* ── 从 Windows 资源管理器拖入文件 / 文件夹：素材库与素材设置框统一落点 ──────
+   一个入口 assetWireFileDrop(el, opts) 挂 dragenter / dragover / dragleave / drop：
+     · 取路径必须走 window.api.getPathForFile（Electron 39 里 File.path 已不存在）；
+       桥不在（老壳 / 非桌面环境）就整个不接管，既有内部拖拽照旧。
+     · 内部拖拽优先：条目行重排（holder.dragFrom ≥ 0）与侧栏文件拖拽
+       （application/x-mtnode-files）一律放过，落点冲突时内部赢。
+     · 拖放期间只加 / 去 .asset-drop-hot 视觉态与提示块文案，写库全在 drop 里做。
+   opts:
+     · target()  → 追加目标的素材摘要（有值＝追加内容条目；空 / 不传＝新建素材）
+     · catRel    → 新建素材落进哪个分类（字符串或函数；缺省＝当前选中分类）
+     · holder    → 该区域的内部拖拽状态宿主（ASSET_LIB / ASSET_SET）
+     · skip(t)   → 真＝这一层不接管（交给更里层的落点，避免套娃高亮）
+   返回 true ＝ 已接管。 */
+const ASSET_DROP_INTERNAL = "application/x-mtnode-files";
+
+/* DataTransfer.types 的定长快照（类数组，直接 indexOf 用不了） */
+function assetDropTypes(ev) {
+  const dt = ev && ev.dataTransfer;
+  if (!dt || !dt.types) return [];
+  const out = [];
+  for (let i = 0; i < dt.types.length; i++) out.push(String(dt.types[i]));
+  return out;
+}
+/* 外部文件拖入？（types 缺 Files 时用 files 兜底，兼容壳里 types 不全的情况） */
+function assetDropHasFiles(ev) {
+  const dt = ev && ev.dataTransfer;
+  if (!dt) return false;
+  if (dt.files && dt.files.length) return true;
+  return assetDropTypes(ev).indexOf("Files") >= 0;
+}
+/* 内部拖拽？（行重排 / 侧栏文件拖入画布）—— 外部文件落点必须先让开 */
+function assetDropIsInternal(ev, holder) {
+  if (holder && Number(holder.dragFrom) >= 0) return true;
+  return assetDropTypes(ev).indexOf(ASSET_DROP_INTERNAL) >= 0;
+}
+/* 从 DataTransfer 里取本机绝对路径（去重；缺桥 = 空数组） */
+function assetDropPathsOf(ev) {
+  const api = window.api || {};
+  if (typeof api.getPathForFile !== "function") return [];
+  const dt = ev && ev.dataTransfer;
+  if (!dt || !dt.files) return [];
+  const out = [];
+  for (let i = 0; i < dt.files.length; i++) {
+    let p = "";
+    try {
+      p = String(api.getPathForFile(dt.files[i]) || "");
+    } catch (_) {
+      p = "";
+    }
+    if (p && out.indexOf(p) < 0) out.push(p);
+  }
+  return out;
+}
+
+/* 落点提示块（.asset-drop-zone）：常态说「拖入…即可添加」，拖到头上时改说「松开即可添加」 */
+function assetDropZoneEl(kind) {
+  const z = assetEl("div", "asset-drop-zone");
+  z.dataset.idle =
+    kind === "new"
+      ? I18n.t("将新建素材") + " · " + I18n.t("拖入本机文件 / 文件夹即可添加")
+      : I18n.t("拖入本机文件 / 文件夹即可添加");
+  z.textContent = z.dataset.idle;
+  return z;
+}
+/* 落点高亮：容器与它里面的提示块一起点亮（提示块文案同时切到「松开即可添加」） */
+function assetDropHotSet(el, on) {
+  if (!el) return;
+  el.classList.toggle("asset-drop-hot", !!on);
+  const zones = el.querySelectorAll ? el.querySelectorAll(".asset-drop-zone") : [];
+  for (let i = 0; i < zones.length; i++) {
+    zones[i].classList.toggle("asset-drop-hot", !!on);
+    zones[i].textContent = on
+      ? I18n.t("松开即可添加")
+      : String(zones[i].dataset.idle || "");
+  }
+}
+
+/** 给一个落点挂外部文件拖放。el ＝ 落点元素；opts 见本节开头。 */
+function assetWireFileDrop(el, opts) {
+  if (!el) return false;
+  opts = opts || {};
+  const api = window.api || {};
+  /* 桥不在就不接管：内部拖拽 / 老壳照旧 */
+  if (
+    typeof api.getPathForFile !== "function" ||
+    typeof api.assetsPathKind !== "function"
+  )
+    return false;
+  const holder = opts.holder || null;
+  /* 更里层有落点时不接管这一层（否则套娃高亮、外层先吃掉事件） */
+  const skipAt = (ev) => {
+    if (!opts.skip) return false;
+    const t = ev && ev.target;
+    return !!(t && t.closest && opts.skip(t));
+  };
+  const live = (ev) =>
+    assetDropHasFiles(ev) && !assetDropIsInternal(ev, holder) && !skipAt(ev);
+  el.addEventListener("dragenter", (ev) => {
+    if (!live(ev)) return;
+    ev.preventDefault();
+    assetDropHotSet(el, true);
+  });
+  el.addEventListener("dragover", (ev) => {
+    if (!live(ev)) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
+    assetDropHotSet(el, true);
+  });
+  el.addEventListener("dragleave", (ev) => {
+    /* 移到自己的子元素也算 leave：指针还在里面就不摘高亮 */
+    if (ev.relatedTarget && el.contains && el.contains(ev.relatedTarget)) return;
+    assetDropHotSet(el, false);
+  });
+  el.addEventListener("drop", (ev) => {
+    assetDropHotSet(el, false);
+    if (!live(ev)) return;
+    const paths = assetDropPathsOf(ev);
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!paths.length) return;
+    assetDropHandle(paths, opts);
+  });
+  return true;
+}
+
+/* 库右栏此刻的追加目标：详情态＝正在看的那份素材；卡片态＝无目标（落点用来新建素材） */
+function assetDropLibTarget() {
+  if (ASSET_LIB.mode !== "manage" || !ASSET_LIB.selAssetId) return null;
+  return assetSummaryById(ASSET_LIB.selAssetId);
+}
+
+/* 一次拖入的总分流：有追加目标＝追加内容条目，否则在指定 / 当前分类下新建素材 */
+async function assetDropHandle(paths, opts) {
+  if (ASSET_LIB.busy) return; // 写库忙：不重复接管，避免并发写库
+  const target = typeof opts.target === "function" ? opts.target() : null;
+  if (target && target.id) return assetDropAppend(target, paths);
+  let cat = typeof opts.catRel === "function" ? opts.catRel() : opts.catRel;
+  if (cat == null) cat = ASSET_LIB.selCat;
+  return assetDropNewAsset(paths, String(cat || ""));
+}
+
+/* 逐个问主进程「这是文件还是文件夹」（只读判定，不落任何数据） */
+async function assetDropPathKinds(paths) {
+  const out = [];
+  for (const p of paths) {
+    let k = { path: p, kind: "", name: "" };
+    try {
+      const r = await window.api.assetsPathKind(p);
+      if (r && r.ok)
+        k = { path: p, kind: String(r.kind || ""), name: String(r.name || "") };
+    } catch (_) {}
+    out.push(k);
+  }
+  return out;
+}
+/* 文件名 → 默认素材名（去掉扩展名） */
+function assetDropBaseName(n) {
+  const s = String(n || "");
+  return s.replace(/\.[^./\\]+$/, "") || s;
+}
+
+/* 落点①：左树分类行 / 卡片网格空白 / 库框主体 —— 弹命名框，新建一个素材装这批文件 */
+async function assetDropNewAsset(paths, catRel) {
+  if (ASSET_LIB.busy) return;
+  const kinds = await assetDropPathKinds(paths);
+  const usable = kinds.filter((k) => k.kind);
+  if (!usable.length) {
+    toast(
+      I18n.t("拖入的内容素材库不收：这里只收文本 / 图像 / 音频 / 视频文件或文件夹"),
+      "warn",
+    );
+    return;
+  }
+  const first = usable[0];
+  const def =
+    first.kind === "dir" ? first.name : assetDropBaseName(first.name);
+  const v = await assetFormDialog({
+    title: I18n.t("将新建素材"),
+    okText: I18n.t("创建"),
+    fields: [
+      {
+        key: "name",
+        label: I18n.t("显示名称"),
+        value: def,
+        placeholder: I18n.t("例如：主角人设 / 片头音乐"),
+      },
+    ],
+  });
+  if (!v) return;
+  const name = String(v.name || "").trim() || def;
+  ASSET_LIB.busy = true;
+  try {
+    let asset = null;
+    let added = 0;
+    let skipped = 0;
+    if (first.kind === "dir") {
+      /* 目录整包收进来：复用「上传为新素材」那条 IPC（含命名） */
+      const r = await window.api.assetsImportDir({
+        srcPath: first.path,
+        catRel: catRel,
+        displayName: name,
+      });
+      if (!r || !r.ok) {
+        toast(I18n.t("新建素材失败：") + ((r && r.error) || ""), "err");
+        return;
+      }
+      asset = r.asset;
+      added = Number(r.found) || 0;
+      skipped = Number(r.skipped) || 0;
+    } else {
+      const r = await window.api.assetsCreate({
+        catRel: catRel,
+        displayName: name,
+      });
+      if (!r || !r.ok) {
+        toast(I18n.t("新建素材失败：") + ((r && r.error) || ""), "err");
+        return;
+      }
+      asset = r.asset;
+    }
+    /* 同批其余的：文件逐个追加成内容条目；目录只能一个建一个素材，这里跳过计数 */
+    const rest = usable.slice(1);
+    const files = rest.filter((k) => k.kind === "file").map((k) => k.path);
+    skipped += rest.filter((k) => k.kind === "dir").length;
+    if (files.length && asset && asset.id) {
+      const r2 = await window.api.assetsImportFiles(asset.id, files);
+      if (r2 && r2.ok) {
+        added += Number((r2.items && r2.items.length) || 0);
+        skipped += Number((r2.skipped && r2.skipped.length) || 0);
+        if (r2.asset) asset = r2.asset;
+      } else {
+        skipped += files.length;
+      }
+    }
+    await assetRescan();
+    /* 选择器模式不给切到详情（那里没有「绑定」入口），只把库刷出来 */
+    if (asset && asset.id && ASSET_LIB.mode !== "pick") {
+      ASSET_LIB.selCat = String(asset.catRel || catRel || "");
+      ASSET_LIB.expanded[ASSET_LIB.selCat] = true;
+      ASSET_LIB.selAssetId = String(asset.id);
+    }
+    paintAssetLib();
+    const nm = (asset && (asset.displayName || asset.folder)) || name;
+    toast(
+      skipped
+        ? I18n.t("已上传为素材：{name}（内容 {n} 条 · 跳过 {s} 个不支持的文件）", {
+            name: nm,
+            n: added,
+            s: skipped,
+          })
+        : I18n.t("已上传为素材：{name}（内容 {n} 条）", { name: nm, n: added }),
+      "ok",
+    );
+  } finally {
+    ASSET_LIB.busy = false;
+  }
+}
+
+/* 落点②：左树素材行 / 卡片 / 详情条目列表 / 设置框条目列表 —— 追加成该素材的内容条目 */
+async function assetDropAppend(a, paths) {
+  const target = assetEditAssetFor(a);
+  if (!target || !target.id) return;
+  if (ASSET_LIB.busy) return;
+  const kinds = await assetDropPathKinds(paths);
+  const files = kinds.filter((k) => k.kind === "file").map((k) => k.path);
+  const dirs = kinds.filter((k) => k.kind === "dir").length;
+  if (!files.length) {
+    toast(
+      dirs
+        ? I18n.t("文件夹请拖到素材库空白处（会新建一个素材）")
+        : I18n.t("拖入的内容素材库不收：这里只收文本 / 图像 / 音频 / 视频文件"),
+      "warn",
+    );
+    return;
+  }
+  ASSET_LIB.busy = true;
+  try {
+    const r = await window.api.assetsImportFiles(target.id, files);
+    if (!r || !r.ok) {
+      toast(I18n.t("添加内容失败：") + ((r && r.error) || ""), "err");
+      return;
+    }
+    const added = Number((r.items && r.items.length) || 0);
+    const skip = Number((r.skipped && r.skipped.length) || 0) + dirs;
+    const nm = target.displayName || target.folder || "";
+    await assetEditAfterWrite(
+      target,
+      r.asset,
+      added
+        ? skip
+          ? I18n.t("已添加 {n} 条内容（{s} 个文件类型素材库不收，已跳过）", {
+              n: added,
+              s: skip,
+            })
+          : I18n.t("已添加 {n} 条内容到「{name}」", { n: added, name: nm })
+        : I18n.t("没有可添加的文件：素材库只收文本 / 图像 / 音频 / 视频"),
+      added ? (skip ? "warn" : "ok") : "warn",
+    );
+  } finally {
+    ASSET_LIB.busy = false;
+  }
+}
+
 /** 条目行：素材设置框与素材库右栏详情共用（ctx.asset ＝ 本次编辑的素材；
     ctx.holder ＝ 该列表的拖拽状态宿主；ctx.repaint ＝ 拖拽作废后重画该列表）。
     不传 ctx ＝ 素材设置框（编辑目标回落 ASSET_SET 的素材）。 */
@@ -2659,7 +3042,7 @@ function assetSetRow(r, i, n, ctx) {
   idx.title =
     I18n.t("第 {n} 个输入端子 ↔ 第 {n} 个输出端子", { n: i + 1 }) +
     "\n" +
-    I18n.t("连入即写库（空则自动同步，已有内容则点端子上的 ⟳ 更换），输出即读出该条内容");
+    I18n.t("连入只做检查，点端子上的「覆盖」并确认才写入素材库，输出即读出该条内容");
   row.appendChild(idx);
   const file = document.createElement("button");
   file.type = "button";

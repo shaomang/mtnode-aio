@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1306,6 +1307,123 @@ def _set_voice_weights(weights: dict[str, Any], port: int) -> dict[str, Any]:
     return {"ok": True, "loaded": {"gpt": Path(gpt).name, "sovits": Path(sovits).name, "sec": dt}}
 
 
+# ---------------- 输出容器（media_type）：引擎只认 wav / raw / ogg / aac ----------------
+#
+# api_v2 的 /tts 对 media_type 做**白名单**校验，不在 ["wav","raw","ogg","aac"] 里的
+# 直接 400（body 形如 {"message":"media_type: mp3 is not supported"}）。画布语音节点的
+# 「输出格式」有 mp3、OpenAI 兼容接口的 response_format 还接受 flac/opus/mpeg…，
+# 照原样转发就是每次必 400 —— 而且旧代码把这个 400 的响应体丢掉，最终只剩一句
+# "HTTP Error 400: Bad Request"，用户无从下手（本次 bug 的根因）。
+# 这里统一收敛：引擎自己会的（wav/ogg/aac）直接要；mp3 / flac 先要 wav 再由本机
+# ffmpeg 转码。转码不可用时给一句能照着做的错误，而不是猜。
+ENGINE_MEDIA_TYPES = ("wav", "raw", "ogg", "aac")
+_TRANSCODE_MEDIA_TYPES = ("mp3", "flac")
+_MEDIA_ALIAS = {
+    "wave": "wav",
+    "mpeg": "mp3", "mp4": "mp3", "mpga": "mp3",
+    "oga": "ogg", "opus": "ogg",
+    "m4a": "aac",
+}
+_MEDIA_CONTENT_TYPE = {
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "aac": "audio/aac",
+    "raw": "audio/raw",
+    "mp3": "audio/mpeg",
+    "flac": "audio/flac",
+}
+
+
+def normalize_media_type(value: Any) -> str:
+    """调用方写法（mp3 / mpeg / .flac / auto / 空）→ 规范容器名。"""
+    raw = str(value or "").strip().lower().lstrip(".")
+    if not raw or raw == "auto":
+        return "wav"
+    return _MEDIA_ALIAS.get(raw, raw)
+
+
+def engine_media_type(media_type: str) -> str:
+    """真正发给 api_v2 的 media_type：必须落在它的白名单里，否则引擎 400。"""
+    mt = normalize_media_type(media_type)
+    return mt if mt in ENGINE_MEDIA_TYPES else "wav"
+
+
+def content_type_of(media_type: str) -> str:
+    return _MEDIA_CONTENT_TYPE.get(normalize_media_type(media_type), "audio/wav")
+
+
+def _ffmpeg_exe() -> str:
+    """ffmpeg 位置：PATH > 引擎目录（GPT-SoVITS 的 install 脚本就把它下载在这）> 安装根。"""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    for cand in (ENGINE_DIR / "ffmpeg.exe", ENGINE_DIR / "ffmpeg", ROOT / "ffmpeg.exe"):
+        try:
+            if cand.is_file():
+                return str(cand)
+        except Exception:  # noqa: BLE001
+            pass
+    return ""
+
+
+def _transcode_audio(data: bytes, fmt: str) -> dict[str, Any]:
+    """把引擎出来的 wav 字节转成 mp3 / flac（stdin → stdout，不落临时文件）。"""
+    fmt = normalize_media_type(fmt)
+    exe = _ffmpeg_exe()
+    if not exe:
+        return {
+            "ok": False,
+            "error": "missing_ffmpeg: 本机没有找到 ffmpeg，无法把输出转成 %s（请改用 wav 输出，或在插件里重新安装后端）" % fmt,
+            "errorCode": "missing_ffmpeg",
+            "mediaType": fmt,
+        }
+    cmd = [exe, "-hide_banner", "-loglevel", "error", "-f", "wav", "-i", "pipe:0"]
+    if fmt == "mp3":
+        cmd += ["-codec:a", "libmp3lame", "-b:a", "192k", "-f", "mp3", "-"]
+    elif fmt == "flac":
+        cmd += ["-codec:a", "flac", "-f", "flac", "-"]
+    else:
+        return {"ok": False, "error": "unsupported_media_type: %s" % fmt, "errorCode": "unsupported_media_type"}
+    try:
+        proc = subprocess.run(cmd, input=data, capture_output=True, timeout=300)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "transcode_failed: %s" % e, "errorCode": "transcode_failed"}
+    if proc.returncode != 0 or not proc.stdout:
+        detail = (proc.stderr or b"").decode("utf-8", "replace").strip()[:300]
+        log(f"transcode {fmt} failed rc={proc.returncode}: {detail}")
+        return {
+            "ok": False,
+            "error": "transcode_failed: %s" % (detail or ("ffmpeg rc=%s" % proc.returncode)),
+            "errorCode": "transcode_failed",
+        }
+    log(f"transcoded wav -> {fmt}（{len(data)} -> {len(proc.stdout)} bytes）")
+    return {"ok": True, "audio": proc.stdout, "contentType": content_type_of(fmt), "mediaType": fmt}
+
+
+def _engine_http_error(e: "urllib.error.HTTPError", media_type: str) -> dict[str, Any]:
+    """把引擎的 4xx/5xx 响应体读出来 —— 真原因就在 {"message":…,"Exception":…} 里。"""
+    body = ""
+    try:
+        body = e.read().decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        body = ""
+    detail = body.strip()
+    try:
+        j = json.loads(body)
+        detail = str(j.get("Exception") or j.get("message") or body).strip() or body.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    detail = detail[:400] or str(e)
+    log(f"engine http {e.code} (media_type={media_type}): {detail}")
+    return {
+        "ok": False,
+        "error": detail,
+        "errorCode": "engine_http_%s" % e.code,
+        "engineStatus": int(getattr(e, "code", 0) or 0),
+        "mediaType": media_type,
+    }
+
+
 def synthesize(
     text: str,
     voice_id: str = "",
@@ -1379,6 +1497,14 @@ def synthesize(
            "只有 v3 / v4 生效）")
         )
     log(f"lang: text_lang={text_lang}（策略={pol['mode']} lock={pol['lock']}）prompt_lang={prompt_lang}")
+    # 输出容器：调用方要的（mp3 / flac / opus…）归一后决定「向引擎要什么 + 是否转码」，
+    # 绝不把引擎白名单以外的值转发过去（那是必 400）。认不出的容器**在调引擎之前**就拒掉
+    # —— 否则要先把模型加载起来才等回一个 400，白等几分钟。
+    want_mt = normalize_media_type(media_type)
+    if want_mt not in ENGINE_MEDIA_TYPES and want_mt not in _TRANSCODE_MEDIA_TYPES:
+        return {"ok": False, "error": "unsupported_media_type: %s" % want_mt, "errorCode": "unsupported_media_type"}
+    engine_mt = engine_media_type(want_mt)
+    need_transcode = want_mt in _TRANSCODE_MEDIA_TYPES
     payload: dict[str, Any] = {
         "text": text,
         "text_lang": text_lang,
@@ -1392,7 +1518,7 @@ def synthesize(
         "batch_size": int(extra.get("batch_size", 1)),
         "speed_factor": float(speed),
         "streaming_mode": False,
-        "media_type": str(media_type or "wav"),
+        "media_type": engine_mt,
         "seed": int(extra.get("seed", -1)),
         "sample_steps": int(steps_val),
     }
@@ -1404,11 +1530,24 @@ def synthesize(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with _open(req, timeout=600) as resp:
-            audio = resp.read()
-            ctype = resp.headers.get("content-type") or "audio/wav"
+        try:
+            with _open(req, timeout=600) as resp:
+                audio = resp.read()
+                ctype = resp.headers.get("content-type") or content_type_of(engine_mt)
+        except urllib.error.HTTPError as he:
+            # 引擎 400/500 的响应体里才是真原因（media_type 不支持 / tts failed + 异常），
+            # 旧代码直接 str(e) 只剩 "HTTP Error 400: Bad Request"。
+            return _engine_http_error(he, engine_mt)
         if not audio:
             return {"ok": False, "error": "empty_audio"}
+        if need_transcode:
+            tr = _transcode_audio(audio, want_mt)
+            if not tr.get("ok"):
+                return tr
+            audio = tr["audio"]
+            ctype = tr["contentType"]
+        elif want_mt in _MEDIA_CONTENT_TYPE:
+            ctype = content_type_of(want_mt)
         # 把"这次到底用的是哪份权重"回带给面板/接口：试听中间模型时，
         # 用户必须能确认听到的是第几轮，而不是事后猜。
         wgt = voice.get("weights") or {}
@@ -1429,6 +1568,7 @@ def synthesize(
             "ok": True,
             "audio": audio,
             "contentType": ctype,
+            "mediaType": want_mt,
             "voice": voice["id"] if voice else "",
             "textLang": text_lang,
             "promptLang": prompt_lang,

@@ -398,7 +398,7 @@ function ensureFilePluginEntries() {
    它仍是兜底档:人设与「先读工具描述 / 先加载技能」的动作都在,不会让模型不知道自己能干什么。 */
 const PRESETS = {
   standard:
-    'You are the agent engine inside MTNode, a visual AI-workflow desktop app: a node canvas ordinary users build and re-run. Finish concrete content and file tasks — read and write files, search the web, run commands when needed, and edit the canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Division of labour: field names, enums, port numbering and @-reference syntax are documented in the descriptions of those tools themselves — that is their only source, so read the tool description instead of guessing, and call mtnode_canvas_get before editing. Read the canvas cheaply: detail "standard" (the default) plus ids / sections / bodyLimit; ask for detail:"full" only when you truly need complete bodies or rows. For any canvas discipline, load the matching built-in skill with the skill tool and follow it: mtnode-dev-architect (dev nodes / project module blocks), mtnode-canvas-batch-safety (batch runs + text-to-image), mtnode-canvas-layout-ux (marks, zones, control nodes, tidying a layout), mtnode-media-gen-nodes (music / speech / video backends), mtnode-db-facts (a wired database replica), mtnode-grill-me (ask the whole frontier before building). Behaviour that stays yours: keep text processing separate from image→text — a vision or agent node turns pixels into text, then pure-text nodes consume that text so language steps can use a better model; use mtnode_vision for mid-task pixel reading instead of stuffing images into the prompt; when the user asks for a workflow, build an editable left-to-right pipeline they can re-run with a control ▶ node rather than doing everything yourself; for anything beyond a handful of nodes plan with kind "task" nodes first instead of dumping a mixed graph; for per-item batch prefer ordinary proc_text / proc_image over smart nodes; when you write the prompt/task of a node and it must use the content of another node, reference it as @Title instead of pasting the body of that node inline (a material/asset node is referenced by its entry title, never by its own node title — syntax and the global-broadcast conditions are in the mtnode_canvas_edit description); treat tool receipts (created / updated / warnings) as the only proof of what happened — never invent node titles or claim results that are not in the receipt; work step by step, say what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, a visual AI-workflow desktop app: a node canvas ordinary users build and re-run. Finish concrete content and file tasks — read and write files, search the web, run commands when needed, and edit the canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Division of labour: field names, enums, port numbering and @-reference syntax are documented in the descriptions of those tools themselves — that is their only source, so read the tool description instead of guessing, and call mtnode_canvas_get before editing. Read the canvas cheaply: detail "minimal" (the default) gives a node index only; add ids / sections / bodyLimit and ask for detail "standard" for config fields, or detail:"full" only when you truly need complete bodies or rows. For any canvas discipline, load the matching built-in skill with the skill tool and follow it: mtnode-dev-architect (dev nodes / project module blocks), mtnode-canvas-edit-rules (the full canvas-editing hard rules: task/super/ports/@-refs/save-wait_file/batch/media — mtnode_canvas_edit keeps only the gist), mtnode-canvas-batch-safety (batch runs + text-to-image), mtnode-canvas-layout-ux (marks, zones, control nodes, tidying a layout), mtnode-media-gen-nodes (music / speech / video backends), mtnode-db-facts (a wired database replica), mtnode-grill-me (ask the whole frontier before building). Behaviour that stays yours: keep text processing separate from image→text — a vision or agent node turns pixels into text, then pure-text nodes consume that text so language steps can use a better model; use mtnode_vision for mid-task pixel reading instead of stuffing images into the prompt; when the user asks for a workflow, build an editable left-to-right pipeline they can re-run with a control ▶ node rather than doing everything yourself; for anything beyond a handful of nodes plan with kind "task" nodes first instead of dumping a mixed graph; when you write the prompt/task of a node and it must use the content of another node, reference it as @Title instead of pasting the body of that node inline (a material/asset node is referenced by its entry title, never by its own node title — syntax and the global-broadcast conditions are in the mtnode_canvas_edit description); treat tool receipts (created / updated / warnings) as the only proof of what happened — never invent node titles or claim results that are not in the receipt. Keep long bodies out of the main context: never paste an upstream node body into a prompt/task (write @Title instead), have an agent_task or input_text node write long copy or instructions to a file and report only the path, and describe the shape of a finished text instead of pasting it as an example while building a graph. Keep your closing report tight: what you changed, the artifact paths, and the 1–2 things the user must do — do not restate the whole canvas. Isolate long multi-round work (build → self-check → layout) in a subagent context and take back only the final receipt. Then work step by step, say what you are doing, and end with a clear, complete result.',
   minimal:
     'You are a direct executor. Finish the task with minimal steps and minimal talk; reply only with what matters, and end with the result itself.',
   code:
@@ -1560,10 +1560,11 @@ async function handleRun(params) {
        先定路由:思考档的归一化按路由能力表进行(deepseek-official 固定夹紧)。 */
     const route = routeOfProvider(provider, Array.isArray(mtnodeProviders) ? mtnodeProviders : [])
     /* 思考档一律沿用宿主设置(预设不压档)。归一化收敛在 reasoning-effort.mjs(codex
-       reasoning_effort_for_request 式):旧档 off/none/无/空 → high;按路由能力夹紧
-       (不支持 → 同侧最近低档 → high 兜底,永不硬失败)。同一个 runEffort 三处共用:
-       settings 只写兜底默认(见 applySettings)、runtime key(换档冷起新运行时)、
-       env MTNODE_EFFORT(运行时 mtnode-effort 插件按模型能力再夹一次)。 */
+       reasoning_effort_for_request 式):off/none/无 → off(关闭思考)、空串 / 非法 → high;
+       按路由能力夹紧(不支持 → 同侧最近低档 → high 兜底,永不硬失败;off 不支持则退回最近
+       正档)。同一个 runEffort 三处共用:settings 只写兜底默认(见 applySettings)、
+       runtime key(换档冷起新运行时)、env MTNODE_EFFORT(运行时 mtnode-effort 插件按模型
+       能力再夹一次)。 */
     const rawEffort = String(effort ?? '').trim().toLowerCase()
     const runEffort = effortForRoute(rawEffort, route)
     const settings = applySettings(dshHome, runEffort, mtnodeProviders, permissionPreset, hostPersonaText)
@@ -2041,12 +2042,13 @@ async function closeAllRuntimes() {
 /* 思考强度:档位与归一化的唯一真源在 ./reasoning-effort.mjs(纯函数,codex
    reasoning_effort_for_request 式),gateway 与运行时 mtnode-effort 插件共用。
    要点回顾:
-   - 可选用档 = low/medium/high/xhigh/max(对齐 pi-ai 能力集;无 off/minimal:
-     off 在 agent 链上的语义是旧档「关思考」→ high,minimal 无消费方)。
-   - 旧档 off/none/无/空 与非法值 → high(兜底默认,与历史 normalizeEffort 一致)。
+   - 可选用档 = off/low/medium/high/xhigh/max(对齐 pi-ai 能力集;off = 会话 / 助手
+     「思考强度 · 无」= 关闭思考,只在明确选了 off 时才下发、不参与同侧回退;minimal 无消费方)。
+   - 空串与非法值 → high(兜底默认,与历史 normalizeEffort 一致)。
    - DeepSeek 官方路由(llm-deepseek 适配器)能力 off/low/high/max → 可选用交集
-     low/high/max,medium/xhigh 按「同侧最近低档」回退(medium→low, xhigh→high);
-     目录/pi-ai 等其余路由按全档,模型级精确能力由运行时插件经 ctx.llm 解析后再夹。
+     off/low/high/max:off 原样(关思考),medium/xhigh 按「同侧最近低档」回退
+     (medium→low, xhigh→high);目录/pi-ai 等其余路由按全档,模型级精确能力由运行时插件
+     经 ctx.llm 解析后再夹。
    - 归一化永不硬失败;档位只在 runtime key 与 env MTNODE_EFFORT 里随 run 走,
      settings.yaml 的 llm-deepseek.reasoningEffort 只保留兜底默认(见 applySettings)。 */
 

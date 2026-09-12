@@ -22,6 +22,31 @@
     "【你的任务】以「": "[Your task] As \"",
     "【你的任务】你是主持人，只做聚合与结构化，不新增任何观点。请输出一张「建议卡」，":
       "[Your task] You are the facilitator: only aggregate and structure, never add new opinions. Output one \"advice card\" ",
+    "【你的任务】你是主持人，只决定本轮谁上桌发言：按与问题的相关性挑 2–6 位，**不要全员参与**。":
+      "[Your task] You are the facilitator: decide only who takes the table this round — pick 2–6 experts by relevance to the question; **never invite everyone**.",
+    "【可选专家】": "[Available experts]",
+    "【本轮参与人】": "[Participants this round] ",
+    "【本轮发言（只汇总这些，未参与者本轮没有发言，不得替他们编观点）】":
+      "[Statements this round (summarize only these; non-participants did not speak — never invent views for them)]",
+    "【历史发言（前几轮，供参照，不重复计入本轮结论）】":
+      "[Earlier statements (previous rounds, for reference; not counted again in this round's conclusion)]",
+    "不要自己作答，不要新增观点，也不要解释过程。":
+      "Do not answer yourself, do not add new opinions, and do not explain your process.",
+    "主持人按问题相关性选定本轮参与人。":
+      "The facilitator selected this round's participants by relevance to the question.",
+    "主持人选定": "Facilitator-picked",
+    "候选不足 3 位：本轮全部参与。":
+      "Fewer than 3 candidates — everyone participates this round.",
+    "只输出一个 ```json 围栏，字段：participants（专家姓名数组，姓名必须与上面逐字一致，2–6 位，且不得等于全员）, reason（一句话选人理由）。":
+      "Output exactly one ```json fenced block with fields: participants (array of expert names, spelled exactly as above, 2–6 of them, and never the full roster), reason (one-line rationale).",
+    "按专家画像与问题的相关性选出本轮参与人（主持人选人不可用时的本地回退）。":
+      "Participants chosen locally by expert profile vs. question relevance (fallback when facilitator selection is unavailable).",
+    "按相关性选定": "Picked by relevance",
+    "本轮参与": "Participated this round",
+    "用户 @ 指定：只由被 @ 的专家参与本轮。":
+      "User @ mention: only the @-mentioned expert takes part this round.",
+    "被 @ 指定": "@-mentioned",
+    "（暂无发言）": "(no statements yet)",
     "【已有发言（供你参考并回应，不要重复别人已说的）】":
       "[Earlier statements (reference and respond; don't repeat what others said)]",
     "【用户问题】": "[User question] ",
@@ -68,6 +93,7 @@
     "工具许可表不可用": "Tool permission table unavailable",
     "已存档": "Archived",
     "已录用 ": "Hired ",
+    "，并录入模板库": " — also saved to the template library",
     "已采纳": "Adopted",
     "已采纳为决策记录": "Adopted as a decision record",
     "已采纳为待办": "Adopted as a to-do",
@@ -130,6 +156,8 @@
     "职责一句话，≤60 字": "One-line mandate, ≤60 chars",
     "背景：": "Background: ",
     "自动招聘": "Auto hire",
+    "录用后自动录入模板库（下次可一键套用）":
+      "Save the recruited role to the template library automatically (reusable next time)",
     "至少需要 2 位专家才能开圆桌": "At least 2 experts are needed for a roundtable",
     "表达风格": "Style",
     "表达风格：": "Style: ",
@@ -186,6 +214,8 @@
     "新建专家": "New expert",
     "新建群聊（圆桌：多位专家依次发言）":
       "New group chat (roundtable: experts speak in turn)",
+    "新建群聊（圆桌：主持人挑人、专家并行作答）":
+      "New group chat (roundtable: facilitator picks participants, experts answer in parallel)",
     "给专家发消息…（Enter 发送，Shift+Enter 换行）":
       "Message the expert… (Enter to send, Shift+Enter for newline)",
     /* ── 一人公司：分类树 + 自定义模板（本轮新增） ── */
@@ -346,8 +376,8 @@
     "该会话的专家已删除，只能回看历史":
       "This chat's expert was deleted — only its history can be viewed",
     "专家已删除，只能回看历史": "Expert deleted — only history can be viewed",
-    "向圆桌提问：专家会依次独立发言；也可以 @某位专家定向提问，或点「收敛出建议」。":
-      "Ask the roundtable: experts speak independently in turn; you can also @ an expert for a targeted question, or click \"Converge into advice\".",
+    "向圆桌提问：主持人为本轮挑选相关专家（不全员），被选中的专家并行独立作答，再由主持人 AI 汇总；也可以 @某位专家定向提问，或点「收敛出建议」。":
+      "Ask the roundtable: the facilitator picks relevant experts for this round (never everyone), they answer independently in parallel, and the facilitator AI summarizes; you can also @ an expert for a targeted question, or click \"Converge into advice\".",
     "你只做文本工作：不读写文件、不操作画布。工具回执里没有的结果不要声称已完成。":
       "You only do text work: no reading or writing files, no canvas actions. Never claim something is done unless a tool receipt confirms it.",
     /* 专家卡（app-team-recruit.js renderExpertCard / app-teamview.js 折叠区） */
@@ -507,9 +537,12 @@
     "例如：产品事实库": "e.g. Product fact library",
     "已重命名事实库": "Fact library renamed",
     "删除事实库": "Delete fact library",
-    "删除事实库「{name}」？正文、批注与插图会一并删除，且不可恢复。":
-      "Delete the fact library \"{name}\"? Its body, annotations and images will be deleted permanently.",
+    "删除事实库「{name}」？正文、批注与插图会一并移入系统回收站（可在资源管理器里还原）。":
+      "Delete the fact library \"{name}\"? Its body, annotations and images will be moved to the system recycle bin (you can restore them from File Explorer).",
     "已删除事实库": "Fact library deleted",
+    "已删除事实库「{name}」（进系统回收站）":
+      "Fact library \"{name}\" deleted (moved to the system recycle bin)",
+    "删除该事实库（移入系统回收站）": "Delete this fact library (move to the system recycle bin)",
     "事实库创建失败": "Failed to create the fact library",
     /* 事实库落点：画布文件夹（app-team.js factWorkspace）+ 应用目录 / 项目源码目录守卫（app-factlib.js / main.js） */
     "选择画布文件夹（团队事实库将建在此目录下的「团队事实库」文件夹里）":
@@ -541,11 +574,14 @@
     "文档名称": "Document name",
     "重命名文档": "Rename document",
     "删除文档": "Delete document",
-    "删除文档「{name}」？正文与批注会一并删除，且不可恢复。":
-      "Delete the document \"{name}\"? Its body and annotations will be deleted permanently.",
+    "删除文档「{name}」？正文、批注与插图会移入系统回收站（可在资源管理器里还原）。":
+      "Delete the document \"{name}\"? Its body, annotations and images will be moved to the system recycle bin (you can restore them from File Explorer).",
     "已新建文档「{name}」": "Document \"{name}\" created",
     "已重命名文档": "Document renamed",
     "已删除文档": "Document deleted",
+    "已删除文档「{name}」（进系统回收站）":
+      "Document \"{name}\" deleted (moved to the system recycle bin)",
+    "删除该文档（移入系统回收站）": "Delete this document (move to the system recycle bin)",
     "新建文档失败": "Failed to create the document",
     "例如：产品规格": "e.g. Product spec",
     "由专家建档或手动新建": "Created by an expert or add one manually",
@@ -586,6 +622,16 @@
     "行数": "Rows",
     "列数": "Columns",
     "列": "Column ",
+    /* ── 审阅：公式录入（renderer/math-render.js · 工具栏 $ / $$ 与对话框） ── */
+    "行内公式": "Inline formula",
+    "显示公式": "Display formula",
+    "插入行内公式": "Insert inline formula",
+    "插入显示公式": "Insert display formula",
+    "公式（LaTeX）": "Formula (LaTeX)",
+    "输入 LaTeX 公式，支持上下标、分式、根号、希腊字母、矩阵与 \\text":
+      "Enter a LaTeX formula — sub/superscripts, fractions, radicals, Greek letters, matrices and \\text are supported",
+    "插入公式": "Insert formula",
+    "公式已插入": "Formula inserted",
     /* ── 文件查看：工具条文件徽标 + 右侧只读预览面板（app-fileview.js） ── */
     "文件查看": "File viewer",
     "读": "Read",
@@ -871,6 +917,7 @@
     "批量": "Batch",
     "排版": "Layout",
     "隐藏线": "Hide wires",
+    "查找": "Find",
     "启用": "Enable",
     "清除": "Clear",
     "清空": "Clear all",
@@ -1037,6 +1084,22 @@
     "充值": "Topped up",
     "更新于": "Updated",
     "未查询": "Not queried",
+    /* ── 会话统计 · 费用口径说明（「？」入口，app-cost.js / app-agent.js / app.js） ──
+       每条都是真实存在的口径差，不是安慰话术：折扣 / 赠送抵扣未计入，以及兜底 flash 价
+       与窗口口径（会话 / 轮次 vs 平台按小时按模型）不同，所以显示可能高于实际账单。
+       峰谷本身按调用时刻计价，不再是偏差源，故不再作为口径说明的一行。 */
+    "费用为什么高于实际消费？": "Why is the cost shown higher than what was actually spent?",
+    "估算未计入官方活动折扣与赠送余额抵扣，显示值可能高于实际消费；峰谷按调用时刻计价，与官方账单口径一致。":
+      "The estimate does not include official promos or granted-balance offsets, so the figure shown may exceed what you actually spend; peak/off-peak is priced by the actual call time, matching the official bill.",
+    "价格表里没有的模型（如带日期后缀的内测模型）按 flash 价兜底，这类金额是估算值，已在行末用 * 标出。":
+      "Models missing from the price table (e.g. preview models with a date suffix) fall back to flash pricing; such amounts are estimates and are marked with * at the end of the row.",
+    "估算按「每一次模型请求」累加，包含重试、预热等已发出但平台可能不计费的请求；平台按小时 / 按模型分账，与会话 / 轮次窗口口径不同，两边对不上属正常。":
+      "The estimate sums every model request, including retries and warm-up requests that were sent but may not be billed by the platform; the platform breaks usage down by hour and by model, which is not the same window as a session/round here — a mismatch between the two is expected.",
+    "对账请以 DeepSeek 账单和余额变化为准。":
+      "Token counts themselves are not double counted (they match the sum of per-request usage in the local session log — verify with scripts/audit-token-usage.mjs); for reconciliation, trust DeepSeek's official billing.",
+    "口径：单价与峰谷按官方价格页，token 按上游逐请求返回的 usage 累加。":
+      "Scope: unit prices and peak/off-peak follow the official pricing page; tokens are summed from the per-request usage the upstream returns.",
+    "知道了": "Got it",
     /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ── */
     "模型性能": "Model performance",
     "首 Token 延迟 (TTFT)": "Time to first token (TTFT)",
@@ -1386,6 +1449,10 @@
     " 轮对话（共 ": " rounds (of ",
     " 轮）": " rounds)",
     "在列表最前端载入更早的对话": "Load earlier messages at the top of the list",
+    "显示更早内容（已折叠 {n} 条）": "Show earlier content ({n} collapsed)",
+    "每个会话最多同时渲染 200 条，点击展开更早的 200 条":
+      "Each session renders at most 200 entries at a time; click to unfold 200 earlier ones",
+    "已折叠更早的运行条目：{n}": "Earlier run entries collapsed: {n}",
     "已复制到剪贴板": "Copied to clipboard",
     "已复制思考内容": "Thinking content copied",
     "已恢复单次尝试": "Restored single attempt",
@@ -1513,6 +1580,50 @@
     "深红 Crimson": "Crimson",
     "首 token 平均": "Avg first token",
     "图像输入需要视觉模型": "Image input requires a vision model",
+    /* ── 模型形态识别（文本模型 / 图像生成模型，见 renderer/app-model-kind.js）── */
+    "文本 + 图像（同一端点混合，按模型区分）":
+      "Text + image (mixed on one endpoint, split by model)",
+    "图像生成": "Image generation",
+    "按模型纠正类型": "Fix type from models",
+    "服务商类型与模型形态不符：按模型列表把类型改为对应的文本 / 图像类型，改完图像或文本节点即可选到这些模型":
+      "Provider type does not match its models: set the type to the matching text/image type so image or text nodes can pick these models",
+    "自动识别模型类型": "Auto-detect model type",
+    "按模型 id 识别每个模型是文本模型还是图像生成模型，结果决定它在文本 / 图像节点与保存对话框里是否可选":
+      "Detect whether each model is a text model or an image generator from its id; this decides where it can be picked in text/image nodes",
+    "已识别 ": "Detected ",
+    " 个模型 · 图像 ": " models · image ",
+    " · 文本 ": " · text ",
+    "徽标 = 模型类型（点一下可改）；同一端点混挂文本与图像模型时会自动区分":
+      "Badge = model type (click to change); mixed text/image endpoints are told apart automatically",
+    "点击切回自动识别": "Click to go back to auto-detect",
+    "点击改为另一种（并记住）": "Click to switch to the other type (remembered)",
+    "已手工指定为": "Manually set to ",
+    "自动识别为": "Auto-detected as ",
+    "图像模型": "image model",
+    "图像生成模型": "image generation model",
+    "文本模型": "text model",
+    "原服务商没有": "The previous provider has no ",
+    "，已切到可选的服务商；可在设置 · 模型服务里为它补模型或改模型类型。":
+      "; switched to an available provider. Add models to it or change its model type under Settings · Model services.",
+    "图像服务商": "image provider",
+    "文本服务商": "text provider",
+    "按模型自动识别为": "Auto-detected from models: ",
+    "，类型已相应设置（可在列表里逐模型调整）":
+      ", provider type set accordingly (adjust per model in the list)",
+    "模型（图像生成）": "Model (image generation)",
+    "模型（文本）": "Model (text)",
+    "（形态不符）": "(type mismatch)",
+    "服务商类型与模型不符，已按模型纠正为":
+      "Provider type did not match its models; corrected to ",
+    "服务商类型与所选模型不符，已按模型纠正为":
+      "Provider type did not match the selected model; corrected to ",
+    "（设置 · 模型服务里可核对）":
+      " (verify under Settings · Model services)",
+    "（文本 + 图像混挂，保存时自动拆成两条服务商）":
+      "(text + image mixed; saved as two providers)",
+    "（图像模型）": "(image models)",
+    "（文本模型）": "(text models)",
+    " 个模型": " models",
     "文件不存在或无法预览": "File not found or cannot preview",
     "选择图像（输入节点）": "Choose image (input node)",
     "已解散组（节点保留）": "Ungrouped (nodes kept)",
@@ -1593,6 +1704,14 @@
     "。保存后自动生成模型列表。": ". Model list is generated automatically after saving.",
     "（等待上游输出…）内容只读": "(Waiting for upstream output…) content is read-only",
     "（等待上游输出中）内容只读": "(Waiting for upstream output) content is read-only",
+    /* ── 节点浏览态 · 超长文本护栏 + 文本预览窗 👁（app-nodeview.js / app-canvas.js / app-textpreview.js） ── */
+    "超大文本 · 轻量显示 · {n} 字符": "Very long text · lightweight view · {n} chars",
+    " · 点上方 👁 看全文": " · click 👁 above for the full text",
+    "超大输出 · 轻量显示 · {n} 字符 · 点上方 👁 预览全文":
+      "Very long output · lightweight view · {n} chars · click 👁 above for the full text",
+    "预览全文：在只读大窗里完整阅读本节点文本（可复制，不改内容）":
+      "Preview full text: read this node's text in a read-only window (copyable, content unchanged)",
+    "文本预览窗未就绪": "Text preview is not ready",
     "✕ 删除组（连同内部节点）": "✕ Delete group (including inner nodes)",
     "保存路径（*.md）…": "Save path (*.md)…",
     "标题不唯一，请改用 id：": "Title is not unique, use id instead: ",
@@ -1625,6 +1744,76 @@
     "停止回复（立即中止模型请求）": "Stop reply (abort the model request immediately)",
     "停止运行（立即中止模型请求）": "Stop run (abort the model request immediately)",
     "图像保存节点需要一个图像输入": "Image save node needs one image input",
+    /* ── 保存节点「图像输出」（renderer/app-imageout.js + css/components.css）──
+       尺寸 / 裁剪 / 格式 / 质量那一整块，默认档＝原样复制 */
+    "图像输出 · 尺寸 / 裁剪 / 格式 / 质量":
+      "Image output · size / crop / format / quality",
+    "图像输出：尺寸 / 裁剪 / 格式 / 质量": "Image output: size / crop / format / quality",
+    "图像输出（尺寸 / 裁剪 / 格式 / 质量）": "Image output (size / crop / format / quality)",
+    "图像输出设定…": "Image output settings…",
+    "原样：不缩放，沿用输入图像的像素尺寸（默认）":
+      "As-is: no scaling, keep the input pixel size (default)",
+    "按比例缩放：等比例采样放大 / 缩小，长宽比不变":
+      "Scale by ratio: resample up / down, aspect ratio kept",
+    "自定义尺寸：直接指定输出像素宽高（可单独填一侧，另一侧按原比例）":
+      "Custom size: set output pixel width / height (fill one side to keep the original ratio)",
+    "缩放比例（% · 等比例采样）": "Scale (%) · proportional resample",
+    "输出像素宽 × 高": "Output pixel width × height",
+    "不裁剪：整幅输出（默认）": "No crop: keep the whole frame (default)",
+    "从中间裁：按目标长宽比取源图中央最大的那一块":
+      "Crop center: take the largest centered rect matching the target ratio",
+    "自定义矩形：按源图像素指定 x / y / 宽 / 高":
+      "Custom rect: x / y / width / height in source pixels",
+    "裁剪矩形（源图像素 x / y / 宽 / 高）":
+      "Crop rect (source pixels x / y / w / h)",
+    "PNG · 无损，支持透明背景（默认）":
+      "PNG · lossless, keeps transparency (default)",
+    "JPG · 有损压缩，体积小；不支持透明（透明区自动填白）":
+      "JPG · lossy, small; no transparency (transparent areas filled white)",
+    "JPEG · 与 JPG 相同（后缀写 .jpg）": "JPEG · same as JPG (file suffix .jpg)",
+    "WebP · 有损压缩，体积最小；不支持透明（透明区自动填白）":
+      "WebP · lossy, smallest; no transparency (transparent areas filled white)",
+    "BMP · 未压缩位图，体积大；不支持透明（透明区自动填白）":
+      "BMP · uncompressed bitmap, large; no transparency (transparent areas filled white)",
+    "质量（仅 JPG / WebP 有损压缩生效）":
+      "Quality (applies to lossy JPG / WebP only)",
+    "质量 ": "Quality ",
+    "尺寸 ": "Size ",
+    "缩放 ": "Scale ",
+    "居中裁剪": "center crop",
+    "裁剪 ": "Crop ",
+    "裁剪自源图 ": "cropped from ",
+    "格式 ": "format ",
+    "图像输出：已改过设定（尺寸 / 裁剪 / 格式 / 质量）":
+      "Image output: custom settings (size / crop / format / quality)",
+    /* 头部按钮的两个 hover 提示：渲染层里的字面量换行转义要在键里照样保留（\n），
+       否则 key 对不上，英文界面会退回中文真源 */
+    "图像输出：默认（原样复制，后缀按保存路径）\n\n可改尺寸（等比例缩放 / 自定义像素）、从中间或指定矩形裁剪、换格式（png / jpg / webp / bmp）、有损格式还能调质量。\n单击打开参数面板。":
+      "Image output: default (copy as-is, suffix follows the save path)\n\nYou can change size (proportional scale / custom pixels), crop (center / custom rect), format (png / jpg / webp / bmp) and — for lossy formats — quality.\nClick to open the settings panel.",
+    "图像输出：已改过设定（尺寸 / 裁剪 / 格式 / 质量）\n\n保存时先按这套设定裁剪、缩放、重编码，再写到你指定的路径。\n右键（或单击）打开参数面板。":
+      "Image output: custom settings (size / crop / format / quality)\n\nOn save the image is cropped → scaled → re-encoded by these settings before writing to your path.\nClick (or right-click) to open the settings panel.",
+    "图像输出设定未能应用（已按原样复制）：":
+      "Image output settings could not be applied (copied as-is): ",
+    "实际落盘：": "Actually written: ",
+    "尚未设置保存路径（后缀 ": "No save path yet (suffix ",
+    "尺寸（等比例缩放 / 自定义像素）、裁剪（从中间裁 / 指定矩形）、格式（png / jpg / webp / bmp）、有损压缩质量":
+      "Size (proportional scale / custom pixels), crop (center / custom rect), format (png / jpg / webp / bmp), lossy quality",
+    "恢复为「原样 + PNG」：与改动前的保存行为一致":
+      "Back to “as-is + PNG”: same save behavior as before this feature",
+    "默认「原样 + PNG」与改动前的保存行为完全一致；改设定后每个保存文件都会套用。":
+      "Default “as-is + PNG” behaves exactly as before; once changed, every saved file uses the new setting.",
+    "已恢复默认：原样 + PNG。": "Reset to default: as-is + PNG.",
+    "还没有可预览的源图：先把图像接进来并保存一次，或让上游生成一张图。":
+      "No source image to preview yet: connect an image and save once, or generate one upstream.",
+    "预览失败：无法读取临时图像": "Preview failed: cannot read the temporary image",
+    "正在生成预览…": "Building preview…",
+    "图像编码失败": "Image encoding failed",
+    "图像编码失败（浏览器不支持该格式）":
+      "Image encoding failed (this format is unsupported here)",
+    "图像写入失败": "Writing the image failed",
+    "源图读取失败：": "Cannot read the source image: ",
+    "保存节点接到图像输入时，先按这里的设定裁剪 → 缩放 → 重编码，再写到你指定的路径；默认「原样 + PNG」与原行为完全一致。多图 / 批量保存时每个文件都套同一套设定；聚合模式仍只写第一条中的第一张图。":
+      "When a save node receives an image, it crops → scales → re-encodes by these settings before writing to your path; the default “as-is + PNG” matches the old behavior exactly. Multi-image / batch saves apply the same settings to every file; aggregate mode still writes only the first image of the first entry.",
     "拖拽移动节点（按住手柄拖动）": "Drag to move node (hold the handle)",
     "无可复制的文本（输出为图像）": "No text to copy (output is an image)",
     "新建会话(沿用当前工作目录)": "New session (keep current working directory)",
@@ -1776,7 +1965,7 @@
     "输入 API Key（隐藏显示，仅存本机）": "Enter API Key (hidden; stored on this machine only)",
     "选择服务商后自动载入其模型列表与接口地址。": "Selecting a provider loads its model list and endpoint automatically.",
     "智能节点（读文件 / 联网 / 执行命令）": "Agent Node (read files / network / run commands)",
-    "」· 点击切换（无 / 低 / 中 / 高）": "\" · Click to cycle (Off / Low / Medium / High)",
+    "」· 点击切换（无 / 低 / 中 / 高 / 最强）": "\" · Click to cycle (Off / Low / Medium / High / Max)",
     "本次智能运行的统计（与 dsh 客户端一致）": "Stats for this agent run (same as the dsh client)",
     "复制该会话为新会话(参考 dsh fork)": "Duplicate this session as a new one (like dsh fork)",
     /* ── 会话行内删除（app-assist.js · 两下确认 + 悬停恢复） ── */
@@ -1873,6 +2062,12 @@
     "无法打开路径：": "Cannot open path: ",
     "点击切换查看对应尝试结果，下游节点引用当前选中的尝试内容": "Click to view that attempt's result; downstream nodes use the currently selected attempt",
     "该服务商未填写 API Key（设置 · API/配置）": "This provider has no API Key (Settings · API/Config)",
+    "未找到可用文本服务商（请在设置 · API/配置中配置并填写 API Key）":
+      "No text provider available (configure one with an API Key in Settings · API/Config)",
+    "未找到可用模型（请在设置中选择该服务商的模型）":
+      "No model available (pick a model for this provider in Settings)",
+    "未找到可用模型（请在节点设置中选择该服务商的模型）":
+      "No model available (pick a model for this provider in the node settings)",
     "例如：将输入内容总结为三句话… 输入 @ 引用已连接节点": "e.g. Summarize the input in three sentences… type @ to reference connected nodes",
     "运行智能任务：模型可读文件 / 联网 / 执行命令后完成": "Run agent task: the model can read files / network / run commands, then finish",
     "智能能力（DeepSeek Harness / dsh）": "Agent capability (DeepSeek Harness / dsh)",
@@ -2152,6 +2347,85 @@
     "相对工作目录或绝对路径（*.md）…": "Relative to working directory or absolute path (*.md)…",
     "相对路径需要先设置工作目录（顶栏），或改用绝对路径": "Relative paths need a working directory (toolbar), or use an absolute path"
   };
+  /* ── 本地语音转写（Qwen3-ASR）：renderer/app-asr.js + app-plugins.js 卡片 ── */
+  Object.assign(EN, {
+    "音频转写": "Audio transcript",
+    "本地语音转写（Qwen3-ASR）": "Local Speech-to-Text (Qwen3-ASR)",
+    "本地语音后端尚未安装：请点节点上的「一键安装」或到「插件」里安装「本地语音转写」":
+      "The local speech backend is not installed yet: use “Install” on the node or install “Local Speech-to-Text” from Plugins.",
+    "未检测到可用的 NVIDIA 显卡，本地语音转写不可用（可在插件里选「仍装 CPU 版（很慢）」）":
+      "No usable NVIDIA GPU detected, so local speech-to-text is unavailable (you may still install the CPU build from Plugins — very slow).",
+    "语音后端缺少 Python 环境，请在插件卡片里点「自我修复」":
+      "The speech backend has no Python environment; click “Repair” on the plugin card.",
+    "音频文件不存在或已被移动": "The audio file is missing or was moved.",
+    "已有音视频任务进行中，请稍后再试":
+      "Another audio/video job is running (global limit: 1); please retry later.",
+    "语音后端起不来（已退出），请查看控制台日志或点「自我修复」":
+      "The speech backend exited on startup; check the console log or click “Repair”.",
+    "语音后端启动超时（首次要加载模型，请稍后重试）":
+      "The speech backend timed out on startup (first run loads the model); please retry later.",
+    "音频解码失败（后端缺少 ffmpeg？请在插件里点「自我修复」）":
+      "Audio decoding failed (ffmpeg missing? click “Repair” in Plugins).",
+    "后端缺少 ffmpeg，无法解码该音频格式（请在插件里点「自我修复」）":
+      "The backend has no ffmpeg and cannot decode this format (click “Repair” in Plugins).",
+    "模型加载失败，请查看控制台日志或点「自我修复」":
+      "Model loading failed; check the console log or click “Repair”.",
+    "转写失败": "Transcription failed",
+    "本地语音模块不可用": "The local speech module is unavailable",
+    "已重新转写": "Re-transcribed",
+    "缺语音后端": "Backend missing",
+    "无可用显卡": "No usable GPU",
+    "已转写": "Transcribed",
+    "待转写": "Not transcribed yet",
+    "一键安装": "Install now",
+    "（点 ▶ 运行时自动转写；也可在此直接改错字）":
+      "(Press ▶ to transcribe automatically; you may also fix typos right here)",
+    "重新转写": "Re-transcribe",
+    "术语 / 热词": "Terms / hotwords",
+    "人名、产品名、专业术语，用逗号分隔（提高识别准确率）":
+      "Names, product terms, jargon — comma separated (improves accuracy)",
+    "把音频（音频输入节点 / 素材音频条目 / 语音或音乐产物）接到文字处理节点后，运行时会自动把音频转成文字并注入提示词。模型与后端不随安装包分发，首次使用需下载安装。":
+      "Wire audio (audio input node / asset audio item / speech or music output) into a text node and it is transcribed into the prompt at run time. The model and backend are not bundled: the first use downloads and installs them.",
+    "模型来源": "Model source",
+    "分段模型": "Chunking model",
+    "预计占用": "Estimated size",
+    "模型约 1.9GB + Python 依赖约 3-4GB（CUDA）+ ffmpeg 约 100MB，建议预留 {n}GB 磁盘":
+      "≈1.9GB model + ≈3-4GB Python deps (CUDA) + ≈100MB ffmpeg; reserve about {n}GB of disk.",
+    "本机显卡": "Local GPU",
+    "未检测到 NVIDIA 显卡": "No NVIDIA GPU detected",
+    "安装目录": "Install dir",
+    "尚未选择": "Not chosen yet",
+    "运行状态": "Runtime",
+    "运行中（静默）": "Running (silent)",
+    "已安装 · 未运行": "Installed · not running",
+    "未安装": "Not installed",
+    "未检测到可用的 NVIDIA 显卡：本功能只装 CUDA 版后端，默认不可用。确有需要可在下方勾选「仍装 CPU 版（很慢）」。":
+      "No usable NVIDIA GPU detected: this feature installs the CUDA backend only and is unavailable by default. Tick “Install the CPU build (very slow)” below if you really need it.",
+    "空闲释放（分钟，0 = 不释放）": "Release when idle (minutes; 0 = never)",
+    "全局默认热词（逗号分隔）": "Global default hotwords (comma separated)",
+    "仍装 CPU 版（很慢，仅在无 N 卡时兜底）":
+      "Install the CPU build (very slow; fallback for machines without an NVIDIA GPU)",
+    "已保存语音转写设置": "Speech-to-text settings saved",
+    "选择安装目录": "Choose install dir",
+    "选择已有模型目录": "Choose existing model dir",
+    "查看安装日志": "View install log",
+    "下载并安装（脚本）": "Download & install (script)",
+    "（暂无日志）": "(no log yet)",
+    "开始安装…": "Installing…",
+    "安装失败：": "Install failed: ",
+    "交给 AI 安装 / 自我修复": "Install / repair with AI",
+    "Agent 正在安装…（可关闭此窗，进度在插件卡片上）":
+      "The agent is installing… (you may close this dialog; progress shows on the plugin card)",
+    "安装完成，正在静默启动语音后端…":
+      "Install finished; starting the speech backend silently…",
+    "保存设置": "Save settings",
+    "稍后": "Later",
+    "该目录不可用：": "That directory is not usable: ",
+    "本机无 N 卡 · 查看": "No NVIDIA GPU · details",
+    "安装…": "Install…",
+    "状态与设置": "Status & settings",
+    "停止后端": "Stop backend"
+  });
   Object.assign(EN, {
     "创意工坊": "Creative Workshop",
     "创意工坊：浏览 / 下载公开模板与 Skill，登录后可上传与管理自己的条目":
@@ -3005,6 +3279,8 @@
       "Masked inpainting: the mask button in the node header. Click to toggle on/off (the first time it opens the mask editor); right-click re-opens the editor. Paint the region to repaint in transparent green; the app turns it into an alpha mask where “transparent = editable” and sends it with the image and prompt to gpt-image-2.",
     "【透明背景 · 直出 Alpha】请把主体以外的全部背景生成为真正的透明通道（PNG Alpha）：不要任何底色、不要棋盘格、不要白边或黑边、不要地面投影与光晕；主体边缘干净利落、不留背景残渣。不要把「透明」画成灰色或白色背景，也不要用纯色填充去模拟透明。":
       "[Transparent background · direct alpha] Render everything outside the subject as a real transparent channel (PNG alpha): no base color, no checkerboard, no white or black fringes, no ground shadow, no glow; the subject edges must be clean with no background residue. Do not paint “transparency” as a grey or white background, and do not simulate it with a flat fill.",
+    "【蒙版局部重绘 · 只编辑蒙版透明区域】本次请求带有蒙版（mask），蒙版的透明区域就是唯一允许编辑的区域，不透明区域不在本次编辑范围内。\n1）编辑任务：只把蒙版透明区域内的内容按下面的用户要求修改（把透明区域内的对象改为 / 替换为 / 生成为用户提示词所描述的内容），透明区域之外一律不动。\n2）必须保持：蒙版不透明区域内的构图、相机视角与透视、物体位置与大小、轮廓与边缘、光线方向与色温、景深与虚化、整体色调、材质细节与真实摄影质感完全不变；不裁切、不缩放、不旋转、不平移、不加边框、不重新排版画面。\n3）融合要求：新内容自然位于原来的位置，其阴影、反射、遮挡与接触关系必须符合现场光照与透视，边缘过渡干净自然，不新增任何其他物体，不出现蒙版边界痕迹、色块或接缝。\n除蒙版透明区域内的上述修改外，输出图像必须与输入图像逐像素一致。":
+      "[Masked inpainting · edit only the mask's transparent area] This request carries a mask; the mask's transparent area is the only editable region, and the opaque area is out of scope for this edit.\n1) Edit task: change only the content inside the mask's transparent area according to the user request below (turn / replace / generate the objects inside the transparent area into what the user prompt describes); leave everything outside the transparent area untouched.\n2) Must stay unchanged: within the mask's opaque area, the composition, camera angle and perspective, object position and size, silhouette and edges, light direction and colour temperature, depth of field and blur, overall tonality, material detail and true photographic quality must remain exactly the same; no cropping, scaling, rotation, shifting, border or re-layout of the frame.\n3) Blending: the new content sits naturally in its original place, its shadows, reflections, occlusion and contact relationships must match the scene's lighting and perspective, edges transition cleanly, no extra objects are added, and no mask boundary lines, patches or seams appear.\nApart from the changes inside the mask's transparent area described above, the output image must be pixel-for-pixel identical to the input image.",
     "差分透明算法已禁用：背景已设为「透明」，接口会直出带 Alpha 的 PNG，不必再花 2 倍 Token 做双通道差分。\n如需差分抠图，请把「背景」改回「默认」或「不透明」。":
       "Difference matting is disabled: background is set to “transparent”, so the API returns an alpha PNG directly — no need to spend 2× tokens on two-pass diffing.\nTo use diff matting, set Background back to “default” or “opaque”.",
     "蒙版局部重绘只支持 OpenAI 兼容的图像服务商（gpt-image-2 的 /images/edits）：当前服务商类型为 ":
@@ -3023,8 +3299,8 @@
     "确定并启用": "Apply and enable",
     "这个节点还没有可用的图像输入：请先连入一张图像（首张图会作为蒙版背景），再打开本编辑器。":
       "This node has no usable image input yet: connect an image first (the first image becomes the mask background), then open this editor.",
-    "怎么操作：左键涂抹 = 标记「要重绘」的区域；按住右键涂抹 = 擦除标记。画笔尺寸与羽化半径在左侧工具栏调；方形 / 圆形可按住左键拖出一块区域（按住右键拖 = 从标记里减去）。\n它如何影响图像：确定后，程序把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2——涂抹过（透明绿）的区域才会被重绘，没涂到的区域尽量保留原图。因此提示词只写「要改成什么」即可，例如「把涂抹区域里的水杯换成一束白色郁金香，其他区域保持不变，保持原有光线与视角」。\n注意：这是引导式编辑，不是逐像素的硬限制——蒙版边缘附近仍可能有细微变化；把标记比目标物体稍微放大一圈（覆盖边缘 / 阴影）效果更稳。":
-      "How to use: left-drag to paint the region to repaint; right-drag to erase the paint. Brush size and feather radius are in the left toolbar; rectangle/ellipse let you drag out an area with the left button (right-drag subtracts from the mask).\nHow it affects the image: the app sends image + mask + prompt to gpt-image-2 — only the painted (transparent green) region is repainted, while the rest is kept as close to the original as possible. So write only what should change, e.g. “replace the cup inside the masked area with a bunch of white tulips, keeping everything else, the lighting and the camera angle unchanged”.\nNote: this is guided editing, not a hard per-pixel limit — pixels near the mask edge may still shift slightly; painting a little beyond the target (covering edges and shadows) gives steadier results.",
+    "怎么操作：左键涂抹 = 标记「要重绘」的区域；按住右键涂抹 = 擦除标记。画笔尺寸与羽化半径在左侧工具栏调；方形 / 圆形可按住左键拖出一块区域（按住右键拖 = 从标记里减去）。\n它如何影响图像：确定后，程序把「原图 + 蒙版 + 提示词」一起发给 gpt-image-2——涂抹过（透明绿）的区域才会被重绘，没涂到的区域尽量保留原图。提示词只写「要改成什么」即可：程序会自动追加内置的蒙版要求段（只编辑蒙版透明区域 / 编辑任务 / 必须保持：构图·视角·透视·蒙版外物体·光线方向与色温·摄影质感 / 融合要求：阴影·反射·接触关系符合现场光、不新增物体）。\n注意：这是引导式编辑，不是逐像素的硬限制——蒙版边缘附近仍可能有细微变化；把标记比目标物体稍微放大一圈（覆盖边缘 / 阴影）效果更稳。":
+      "How to use: left-drag to paint the region to repaint; right-drag to erase the paint. Brush size and feather radius are in the left toolbar; rectangle/ellipse let you drag out an area with the left button (right-drag subtracts from the mask).\nHow it affects the image: the app sends image + mask + prompt to gpt-image-2 — only the painted (transparent green) region is repainted, while the rest is kept as close to the original as possible. Just write what should change: the app automatically appends the built-in mask requirement block (edit only the mask's transparent area / edit task / must stay unchanged: composition, camera angle, perspective, everything outside the mask, light direction and colour temperature, photographic quality / blending: shadows, reflections and contact relationships matching the scene light, no extra objects).\nNote: this is guided editing, not a hard per-pixel limit — pixels near the mask edge may still shift slightly; painting a little beyond the target (covering edges and shadows) gives steadier results.",
     "请先在图上涂抹要重绘的区域，再点「确定并启用」":
       "Paint the region to repaint first, then click “Apply and enable”.",
     "蒙版保存失败：": "Failed to save the mask: ",
@@ -3047,8 +3323,8 @@
       "Invalid background (must be transparent/opaque/auto or empty): ",
     "背景已设为「透明」：请求带 background=transparent（强制 output_format=png），接口直出带 Alpha 通道的 PNG。提示词末尾已自动追加「背景必须是真透明通道」的要求，差分透明算法按钮已禁用（接口已经给透明了，不必再花 2 倍 Token）。注意这是「重绘去背」，不是精确抠像；要像素级抠图请把背景改回默认再用差分抠图。\n\n":
       "Background is set to “transparent”: the request carries background=transparent (forcing output_format=png) and the API returns an alpha-channel PNG. A “background must be a real transparent channel” requirement is appended to the prompt, and the difference-matting button is disabled (the API already gives transparency; no need to spend 2× tokens). Note this is “repaint and cut out”, not precise matting — for pixel-level cut-outs set Background back to default and use difference matting.\n\n",
-    "蒙版局部重绘已开启：请求里带 mask（透明区域 = 允许模型重绘，不透明区域 = 尽量保留原图），只对第 1 张 image 生效；蒙版与原图同尺寸原样下发。请把提示词写成「仅修改蒙版透明区域……其他区域保持不变」。\n":
-      "Masked inpainting is enabled: the request carries a mask (transparent area = the model may repaint it; opaque area = keep as close to the original as possible), applied to the first image only; the mask is sent at the image’s native size. Write the prompt as “modify only the transparent area of the mask … keep everything else unchanged”.\n",
+    "蒙版局部重绘已开启：请求里带 mask（透明区域 = 允许模型重绘，不透明区域 = 尽量保留原图），只对第 1 张 image 生效；蒙版与原图同尺寸原样下发。提示词末尾已自动追加内置的蒙版要求段（只编辑蒙版透明区域 / 编辑任务 / 必须保持 / 融合要求），节点正文只需写「要改成什么」。\n":
+      "Masked inpainting is enabled: the request carries a mask (transparent area = the model may repaint it; opaque area = keep as close to the original as possible), applied to the first image only; the mask is sent at the image’s native size. The built-in mask requirement block (edit only the mask's transparent area / edit task / must stay unchanged / blending) is automatically appended to the prompt, so the node body only needs to say what should change.\n",
     "本次以蒙版为准：画幅锁定已跳过（补边会改写第 1 张参考图，蒙版就与原图错位了）。\n":
       "The mask takes precedence: aspect-ratio lock was skipped (padding rewrites the first reference image and the mask would no longer line up).\n",
     "本次请求的 size 跟着首张参考图的像素尺寸走（节点自己选的尺寸不生效）：服务端按 size 出图，size 一旦与蒙版像素不一致就会先重排输入图，蒙版立刻错位、整张主体被重绘。预览里的 image / mask 就是实际下发的路径本身，没有包装。\n":
@@ -3109,6 +3385,9 @@
     "无法读取图像": "Cannot read image",
     "文生图每次只生成 1 张：请改写 prompt 为单张描述；多图请用批量条目 / 多个节点 / attempts×N":
       "Image gen produces 1 image per run: rewrite the prompt for a single image; for many images use batch items / multiple nodes / attempts×N",
+    "保存节点不能接智能处理节点（智能节点自己会写文件，其后接 save 会把会话内容落盘）":
+      "A save node cannot take input from an Agent node (agent_task, or proc_text with agent on): Agent nodes write files themselves — a downstream save would persist session noise",
+    "保存路径后缀与输入类型不符": "Save path extension does not match the input type",
     "无效的图像尺寸（须为可选列表之一）：":
       "Invalid image size (must be one of the allowed list): ",
     " · 可用：": " · available: ",
@@ -3176,6 +3455,8 @@
     "排版失败：": "Layout failed: ",
     "隐藏线：临时把所有连线压到 95% 透明（几乎不可见），排版后看清布局；再次点击恢复":
       "Hide wires: fade every wire to 95% transparency (nearly invisible) so the layout reads clearly; click again to restore",
+    "查找（Ctrl+F）：全局搜索画布 / 会话 / 专家团 / 素材库 / 工具库 / 技能 / 模板 / 手册文档":
+      "Find (Ctrl+F): search across canvases / sessions / teams / assets / tools / skills / templates / manual docs",
     "显示线：恢复所有连线的正常显示":
       "Show wires: restore normal visibility for all wires",
     "已临时隐藏连线（透明度 95%）": "Wires temporarily hidden (95% transparent)",
@@ -3405,16 +3686,45 @@
     "批次拆分已完成。是否进行 AI 重新排版？\n\n将由全局助手分析并调整节点位置，可能需要等待一段时间。":
       "Batch split done. Run AI re-layout?\n\nThe global assistant will analyze and adjust node positions; this may take a while.",
     "节点操作": "Node actions",
-    "查找节点（标题 / 内容）…": "Find nodes (title / content)…",
-    "替换为…": "Replace with…",
-    "上一个（Shift+Enter）": "Previous (Shift+Enter)",
-    "下一个（Enter）": "Next (Enter)",
-    "替换": "Replace",
-    "全部替换": "Replace all",
     "关闭（Esc）": "Close (Esc)",
-    "未找到匹配的节点": "No matching nodes",
-    "请输入要查找的文本": "Enter text to find",
-    "已替换 ": "Replaced ",
+    /* ── 全局搜索浮层（Ctrl+F · renderer/app-search.js） ── */
+    "搜索画布、会话、专家团、素材、工具、技能与文档…":
+      "Search canvases, sessions, expert team, assets, tools, skills, and docs…",
+    "全局搜索": "Global search",
+    "至少输入 2 个字符开始搜索": "Type at least 2 characters to search",
+    "没有匹配的内容": "No matches",
+    "正在搜索…": "Searching…",
+    "正在搜索文件内容…": "Searching file contents…",
+    "显示更多": "Show more",
+    "点开结果后自动关闭": "the panel closes after you open a result",
+    "↑↓ 选择 · Enter 打开 · Esc 关闭": "↑↓ select · Enter open · Esc close",
+    "画布（跨画布）": "Canvases (all canvases)",
+    "会话记录": "Sessions",
+    "素材库与本机文件": "Asset library & local files",
+    "模板商店": "Template store",
+    "手册文档": "Manual & docs",
+    "画布名": "Canvas name",
+    "标注 / 便签": "Drawings / notes",
+    "节点指南": "Node guide",
+    "运行结果": "Run output",
+    "步骤": "Steps",
+    "批次条目": "Batch items",
+    "系统提示": "System prompt",
+    "监视路径": "Watch path",
+    "程序路径": "Program path",
+    "函数 JS": "Function JS",
+    "（未命名节点）": "(untitled node)",
+    "（未命名工具）": "(untitled tool)",
+    "素材条目": "Asset item",
+    "本机文件": "Local file",
+    "文件正文": "File contents",
+    "会话标题": "Session title",
+    "专家": "Expert",
+    "专家会话": "Expert chat",
+    "群聊发言": "Group message",
+    "定位失败：": "Could not jump to the target: ",
+    "找不到该技能正文": "Skill body not found",
+    "模板商店当前离线，未参与搜索": "The template store is offline and was skipped",
     "智能节点不能读取或编辑画布、修改节点图或创建任务。请使用读写文件、联网、命令、技能与识图完成任务。":
       "Agent nodes cannot read or edit the canvas, change the node graph, or create tasks. Use file read/write, network, commands, skills, and vision instead.",
     "本次运行为智能节点：即使审批预设允许，也不可使用读取画布、节点与连线、控制类节点、绘图、排版与成组、应用操作、删除画布。":
@@ -3434,6 +3744,20 @@
       "This session can only access the canvas it belongs to; other canvases are blocked.",
     "工作范围=本会话所属画布：不得读取或操作其他画布内容。":
       "Work scope = the canvas this session belongs to: do not read or modify other canvases.",
+    /* ── 局部画布（scope）：只看 / 只改某一颗超级 · 开发节点内部 ── */
+    "无效的 scope（要给超级 / 开发节点的 id 或唯一标题）：":
+      "Invalid scope (pass a super / dev node id or unique title): ",
+    "scope 界外已跳过：": "Skipped (outside scope): ",
+    "（本次只改 ": " (this call only touches ",
+    "）": ")",
+    "本次编辑被限定在这一颗壳内部：界外节点未改动。":
+      "This edit was confined to one shell: nodes outside it were left untouched.",
+    "当前可见 = 用户正停在的这颗壳内部。":
+      "Visible content = the inside of the shell the user is currently in.",
+    "范围 = 这一颗壳内部：界外节点未返回。":
+      "Scope = the inside of this one shell: nodes outside it are not returned.",
+    "用户当前正停在这颗壳里：{title}（id {id}）。只看 / 只改它内部请传 scope 用这颗壳的标题或 id，配 scopeDepth 决定一层还是整棵 —— 避免整图灌进来浪费 token。":
+      "The user is currently inside this shell: {title} (id {id}). To read or edit only its inside, pass scope with this shell's title or id, plus scopeDepth to choose one level or the whole subtree — this avoids pouring the whole graph into context.",
     "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。":
       "Scope is this canvas. I can view/edit the current canvas nodes and settings.\nTry \"summarize the canvas\" or \"build a xxx workflow\".\nGraph edits ask for confirm; switch work scope to Global to reference other canvases.",
     "跟随当前画布工作目录": "Follows this canvas working directory",
@@ -3891,8 +4215,8 @@
       "Try “Why won’t the gate open?” or “How do I set an API Key?”. Answers use the left-hand manual only.",
     "讨论区": "Forum",
     "MTNode 讨论区": "MTNode Forum",
-    "MTNode 讨论区：与创意工坊同一账户，登录后聊天并同步近 3 天消息":
-      "MTNode Forum: same account as Creative Workshop; chat after sign-in and sync the last 3 days",
+    "MTNode 讨论区：免登录浏览话题与回复；与创意工坊同一账户，登录后可发话题、回帖并改状态":
+      "MTNode Forum: browse topics and replies without signing in; same account as Creative Workshop — sign in to post topics, reply and set status",
     "工作目录（必填）": "Working directory (required)",
     "请选择已存在的文件夹…": "Choose an existing folder…",
     "新建画布必须指定工作目录。智能节点与相对保存路径都相对该目录，缺少目录会导致读写失败。":
@@ -3903,8 +4227,8 @@
     "已内置": "Built-in",
     "内置组件可直接打开；桌宠等可选组件按需下载，不随主程序安装包分发。":
       "Optional add-ons such as the forum and desktop pet are downloaded on demand and are not in the installer.",
-    "小型聊天窗口，与创意工坊共用账户。综合区 / Bug 提交 / 功能改进；本地保存记录并同步近 3 天消息。":
-      "A small chat window sharing the Creative Workshop account. General / Bugs / Ideas; history is kept locally and the last 3 days are synced.",
+    "讨论区窗口，与创意工坊共用账户。免登录即可浏览话题与回复；登录后可发话题、回帖并改状态，话题长期保留。":
+      "A forum window sharing the Creative Workshop account. Topics and replies are browsable without signing in; sign in to post a topic, reply and set status. Topics are kept long-term.",
     "插件：可选组件（桌宠等），按需下载安装": "Plugins: optional components (desktop pet, etc.), download on demand",
     "插件：讨论区等内置组件，以及可下载的桌宠":
       "Plugins: downloadable forum, desktop pet, and other add-ons",
@@ -4043,6 +4367,23 @@
       "Language rejected by the backend policy (adjust the language policy in Plugins or change the text)",
     "音频写盘失败（请检查输出路径是否可写）":
       "Failed to write the audio file (check whether the output path is writable)",
+    "后端不支持该输出格式（请打开插件控制台更新语音后端）":
+      "The backend does not support this output format (open the plugin console and update the speech backend)",
+    "本机缺少 ffmpeg，无法把音频转成 mp3 / flac（请改用 wav 输出，或重新安装语音后端）":
+      "ffmpeg is missing, so the audio cannot be converted to mp3 / flac (switch the output to wav or reinstall the speech backend)",
+    "音频转码失败（请改用 wav 输出，或重新安装语音后端）":
+      "Audio transcoding failed (switch the output to wav or reinstall the speech backend)",
+    "音色缺少参考音频（请在插件里重新添加该音色的参考音频）":
+      "The voice has no reference clip (re-add this voice's reference audio in Plugins)",
+    "后端语种参数无效（请在插件里调整语种策略）":
+      "Invalid language parameter for the backend (adjust the language policy in Plugins)",
+    "后端参考文本语种无效（请在插件里重新添加该音色）":
+      "Invalid reference-text language for the backend (re-add this voice in Plugins)",
+    "后端不接受该文本切分方式（请更新语音后端）":
+      "The backend rejects this text-splitting method (update the speech backend)",
+    "后端返回 HTTP 错误：": "Backend returned an HTTP error: ",
+    "（请打开插件控制台查看日志；若为 400，多为输出格式不被后端支持）":
+      " (open the plugin console for logs; a 400 usually means the output format is unsupported)",
     "无法连接 GPT-SoVITS 后端（后端可能已退出，请重新执行本节点）":
       "Cannot reach the GPT-SoVITS backend (it may have exited — run this node again)",
     "提示词（Structured Caption）": "Prompt (Structured Caption)",
@@ -4139,6 +4480,21 @@
     "就绪": "Ready",
     "中心": "Hub",
     "播放": "Play",
+    /* 音频波形预览器（renderer/app-audioview.js）：方角播放条 + 点波形试听 */
+    "暂停": "Pause",
+    "播放 / 暂停": "Play / Pause",
+    "音频预览": "Audio preview",
+    "总时长": "Total duration",
+    "正在读取波形…": "Reading waveform…",
+    "点波形试听": "Click the waveform to preview",
+    "点击或拖动波形任意位置，从该处试听":
+      "Click or drag anywhere on the waveform to play from there",
+    "文件较大，未生成波形（仍可点击或拖动进度试听）":
+      "File is large, so no waveform was generated (you can still click or drag to preview)",
+    "无法解析该音频的波形（仍可点击或拖动进度试听）":
+      "Could not decode this audio's waveform (you can still click or drag to preview)",
+    "无法播放该音频（本机播放器不支持该格式）":
+      "Cannot play this audio (the local player does not support this format)",
     "点击选择": "Click to select",
     "已处理": "Done",
     "候选": "Option",
@@ -4439,8 +4795,6 @@
     "（无）": "(none)",
     /* ===== 开发节点「建议」（AI 评估下一步 → 多选 → 就地开发） ===== */
     "建议": "Suggest",
-    "建议：弹窗确认后由 AI 依据项目真实代码与开发进度评估下一步（给出 4 条方案 · 可多选 + 补充 · 选完可就地开发）":
-      "Suggest: after a confirmation dialog the AI assesses the next step from the real project code and this module's dev progress (4 options · multi-select + supplement · develop right away)",
     "这是上一次生成的方案（未重新调用模型）。想听新的评估：取消后点「建议」→「确认生成建议」，或用下面的「换一批」。数字键勾选 · Ctrl+Enter 开发 · Esc 取消":
       "These are the previous suggestions (no model call). For a fresh assessment press Another batch below, or cancel and confirm again. Number keys toggle · Ctrl+Enter develops · Esc cancels",
     "生成建议": "Generating suggestions",
@@ -4612,8 +4966,8 @@
     "查看调研进度": "View research progress",
     "这个功能块已经有一轮只读调研在跑（同一块不会重复发起，以免两轮结果互相覆盖）。你可以直接离开去画布上继续操作，或点「查看调研进度」接回去看它读到哪一步；「本轮关注点」要改动得等这轮结束后再生成一轮。":
       "This module block already has a read-only research round running (the same block is never started twice, so two rounds cannot overwrite each other). You can leave and keep working on the canvas, or click \"View research progress\" to see how far it has read; changing \"This round's focus\" has to wait until this round finishes, then start a new round.",
-    "⏳ AI 调研中 · 点「建议」看进度":
-      "⏳ AI researching · click \"Suggest\" to see progress",
+    "⏳ AI 调研中 · 点此看进度":
+      "⏳ AI researching · click here for progress",
     "💡 建议已就绪（未查看）": "💡 Suggestions ready (unviewed)",
     "点击打开调研进度：可「返回」继续后台跑，或「停止生成」":
       "Click to open research progress: \"Back\" keeps it running in the background, or \"Stop generating\"",
@@ -4691,15 +5045,8 @@
     " 次只读调用": " read-only calls",
     "已停止该功能块的建议调研": "Stopped this module block's suggestion research",
     "该功能块已无建议调研": "This module block has no suggestion research running",
-    /* ===== 开发节点：问询（AI 只读回答模块问题） ===== */
+    /* ===== 开发节点：问询（AI 只读回答模块问题 · 卡片按钮已移除，对话框保留） ===== */
     "问询": "Ask",
-    "问询：弹窗确认后由 AI 只读回答关于本模块的问题（不改文件、不改画布）":
-      "Ask: after a confirmation dialog the AI answers questions about this module read-only (no file or canvas changes)",
-    "💬 AI 回答中 · 点「问询」看进度":
-      "💬 AI answering · click \"Ask\" to see progress",
-    "💬 问询已就绪（未查看）": "💬 Ask answer ready (unviewed)",
-    "点击查看 AI 给出的回答（问询只读 · 不改任何文件）":
-      "Click to view the AI's answer (ask is read-only · no file changes)",
     "问询中": "Ask running",
     "已停止该功能块的调研（建议 / 问询）":
       "Stopped this module block's research (suggest / ask)",
@@ -4982,6 +5329,24 @@
     "点击展开 / 收起本段思考": "Click to expand / collapse this thinking block",
     "点击查看本段思考": "Click to view this thinking block",
     "本段思考（模型内部推理，非回复）": "This block is the model's internal reasoning, not the reply",
+  });
+
+  /* 「思考」翻译（右侧小按钮）：默认模型（优先 flash · 无思考）逐段翻译思考内容。
+     只增键，不删改上方既有键。 */
+  Object.assign(EN, {
+    "翻译": "Translate",
+    "翻译中…": "Translating…",
+    "重试翻译": "Retry translate",
+    "译文": "Translation",
+    "⚠ 翻译失败": "⚠ Translation failed",
+    "翻译失败": "Translation failed",
+    "未返回译文": "The model returned no translation",
+    "模型未返回译文": "The model returned no translation",
+    "复制译文到剪贴板": "Copy the translation to the clipboard",
+    "用默认模型（优先 flash · 无思考）翻译这段思考":
+      "Translate this thinking with the default model (flash preferred · no thinking)",
+    "翻译质量校验未通过（模型仍在输出原文）":
+      "Translation check failed (the model is still echoing the source)",
   });
 
   /* ── Remotion 动效视频（应用插件 remotion） ── */
@@ -5289,7 +5654,44 @@
     /* 「强」是共享思考档词汇（AGENT_EFFORT_LABELS）里 xhigh 档的短名（会话 / 助手思考
        强度菜单的「强」档），不再只指开发节点 max 的旧短标：英文按词汇表译为 X-High。 */
     "强": "X-High",
-    /* ── 工具 / 函数节点（T1 渲染层）── 全文案随 T5 统一补，这里先落英文档 */
+  });
+  /* ── 「AI 调用」设定（工具 / 函数节点 · 与开发节点 Agent 设定同一套三格）── */
+  Object.assign(EN, {
+    "AI 调用": "AI call",
+    "AI 调用模型：": "AI call model: ",
+    "AI 调用预设：": "AI call preset: ",
+    "AI 调用：自动（跟随默认）· 点击选择模型 / 预设 / 思考强度":
+      "AI call: Auto (follow default) · click to pick model / preset / thinking effort",
+    "AI 调用：": "AI call: ",
+    " · 点击修改": " · click to change",
+    "（继承自「": " (inherited from \"",
+    "」）· 点击为本节点单独选择": "\") · click to pick one for this node",
+    "生效范围：": "Scope: ",
+    "本工具节点需要借助 AI 时": "whenever this tool node needs AI, it ",
+    "本函数节点需要借助 AI 时": "whenever this function node needs AI, it ",
+    "本功能块的「建议 / 开发 / 细化」":
+      "this block's Suggest / Develop / Refine ",
+    "一律按这里的设定调用模型，改动立即生效。":
+      "always calls models with the settings below; changes take effect immediately.",
+    "未选择：本节点与未自行选择的内部节点跟随默认预设。":
+      "Not set: this node and its inner nodes without their own pick follow the default preset.",
+    "未选择：本节点需要借助 AI 时跟随默认模型。":
+      "Not set: this node follows the default model when it needs AI.",
+    "不指定：本节点与未自行选择的内部节点跟随默认预设。":
+      "Unset: this node and its inner nodes without their own pick follow the default preset.",
+    "本节点已选择：": "This node has picked: ",
+    "；其下未自行选择的内部节点一并使用它。":
+      " ; its inner nodes without their own pick use it too.",
+    "当前继承自「": "Currently inherited from \"",
+    "」：": "\": ",
+    "；在此单独选择后，本节点改用它。":
+      " ; pick one here to make this node use that instead.",
+    "已按本工具节点的「AI 调用」设定运行内部 ":
+      "Ran inner AI nodes with this tool node's AI-call settings: ",
+    " 个 AI 节点": " node(s)",
+  });
+  /* ── 工具 / 函数节点（T1 渲染层）── 全文案随 T5 统一补，这里先落英文档 */
+  Object.assign(EN, {
     "函数": "Function",
     "函数节点（JS 计算 · 参数即端子）": "Function node (JS compute · params as ports)",
     "函数名 fnName（可选）": "Function name fnName (optional)",
@@ -5761,11 +6163,15 @@
     "重命名失败：": "Rename failed: ",
     "已重命名为：": "Renamed to: ",
     "删除「{name}」": "Delete “{name}”",
-    "该分类（含子分类）下还有 {n} 个素材：请先移走或删除其中的素材。":
-      "This category (including subcategories) still holds {n} asset(s): move or delete them first.",
-    "删除空分类「{name}」？\n\n文件夹会删进系统回收站（可在资源管理器里还原）。":
-      "Delete the empty category “{name}”?\n\nThe folder is deleted into the system recycle bin (you can restore it in the file manager).",
+    /* 删除分类：空 / 非空都能删（整只文件夹进回收站）。有内容时确认框把里面的东西数清 ——
+       不再是「非空不许删」，所以这里给的是「会一起没掉什么」，不是「请先移走」。 */
+    "删除分类「{name}」？\n\n里面还有 {n} 个素材（共 {m} 条内容）和 {k} 个子分类，会一起删进系统回收站（可在资源管理器里还原）。\n· 引用这些素材的「素材」节点会变成「素材失联」（节点与连线保留，可手动重新绑定）\n· 文件夹里手工放进去的其它文件也一并进回收站\n\n确定删除？":
+      "Delete the category “{name}”?\n\nIt still holds {n} asset(s) ({m} content item(s)) and {k} subcategor(ies) — all of them go into the system recycle bin together (you can restore them in the file manager).\n· “Asset” nodes referencing them will show “asset unavailable” (nodes and wires stay; you can rebind by hand)\n· Any other files you dropped into that folder go to the recycle bin as well\n\nDelete it?",
+    "删除分类「{name}」？\n\n文件夹会删进系统回收站（可在资源管理器里还原）。":
+      "Delete the category “{name}”?\n\nThe folder is deleted into the system recycle bin (you can restore it in the file manager).",
     "删除分类": "Delete category",
+    "已删除分类（含 {n} 个素材，进系统回收站）：":
+      "Category deleted with {n} asset(s) (moved to the system recycle bin): ",
     "已删除分类（进系统回收站）：":
       "Category deleted (moved to the system recycle bin): ",
     "在资源管理器中打开": "Open in file manager",
@@ -5786,6 +6192,9 @@
     "新建素材失败：": "Failed to create the asset: ",
     "已新建素材：": "Asset created: ",
     "（暂无内容）": "(no content yet)",
+    /* 素材包类型徽标（左树素材行 · 卡片 · 详情头）：单一类型复用「文本 / 图像 / 音频 / 视频」词条 */
+    "混合": "Mixed",
+    "内容类型：": "Content types: ",
     "选择要上传为素材的文件夹": "Choose the folder to upload as an asset",
     "上传失败：": "Upload failed: ",
     "已上传为素材：{name}（内容 {n} 条）": "Uploaded as asset “{name}” ({n} item(s))",
@@ -5851,8 +6260,16 @@
       "” · pairs 1:1 with the output port of the same name · wiring in syncs into that item",
     "）· 文本给字符串 · 图像 / 音频 / 视频给 file:/// URL":
       "” · text yields a string · image / audio / video yield a file:/// URL",
-    "左右两个端子同一条目：连入即写入素材库，输出即读出该条目的内容":
-      "Both ports are the same item: wiring in writes into the library, the output reads that item back",
+    "左右两个端子同一条目：输出即读出该条目的内容，连入只做检查，点「覆盖」才写入素材库":
+      "Both ports are the same item: the output reads that item back, wiring in only checks — click “Overwrite” to write it into the library",
+    "覆盖素材内容": "Overwrite asset content",
+    "覆盖素材内容？": "Overwrite asset content?",
+    "把该端子连入的内容覆盖进素材库（写前会再确认一次，可 Ctrl+Z 撤销）":
+      "Overwrite the library item with what this port carries (you will be asked to confirm first · Ctrl+Z to undo)",
+    "该端子连入的内容与素材库一致，无需覆盖":
+      "This port already matches the library item — nothing to overwrite",
+    "用该端子连入的内容覆盖素材库条目「{title}」？原有内容会进历史版本，可 Ctrl+Z 撤销。":
+      "Overwrite the library item “{title}” with what this port carries? The previous content goes into version history · Ctrl+Z to undo.",
     "内容文件缺失（素材库里的实体文件不在了）":
       "Content file is missing (the physical file is gone from the asset library)",
     "在此输入文本内容（直接写进素材库该条目）":
@@ -5993,8 +6410,8 @@
     "类型在建立时定下（要换类型请新建一条并删掉这条）":
       "The type is fixed at creation (to change it, add a new item and delete this one)",
     "第 {n} 个输入端子 ↔ 第 {n} 个输出端子": "Input port {n} ↔ output port {n}",
-    "连入即写库（空则自动同步，已有内容则点端子上的 ⟳ 更换），输出即读出该条内容":
-      "Wiring into it writes to the library (empty syncs automatically; otherwise press ⟳ on the port), reading out yields this item's content",
+    "连入只做检查，点端子上的「覆盖」并确认才写入素材库，输出即读出该条内容":
+      "Wiring in only checks; press “Overwrite” on the port and confirm to write it into the library — reading out yields this item's content",
     "（还没有内容）": "(no content yet)",
     "库里的实体文件不在了：换一份内容即可恢复":
       "The file is gone from the library: pick new content to restore it",
@@ -6060,6 +6477,31 @@
       "Pick a local text file (.txt / .md / .json …) to import into this body (the old one goes to the versions folder first · undoable)",
     "文本文件过大（素材库的文本条目上限 16MB）":
       "the text file is too large (the asset library caps a text item at 16 MB)",
+    /* ── 拖放落点反馈（素材库左树 / 右栏卡片区 / 素材设置框条目区共用）── */
+    "松开即可添加": "Release to add",
+    "拖入本机文件 / 文件夹即可添加":
+      "Drag a local file / folder here to add it",
+    "将新建素材": "Will create a new asset",
+    "已添加 {n} 条内容到「{name}」":
+      "Added {n} content item(s) to “{name}”",
+    /* 拖入内容被拒 / 落点说清「这一处只收什么」（与上面同一族提示） */
+    "拖入的内容素材库不收：这里只收文本 / 图像 / 音频 / 视频文件或文件夹":
+      "This drop is not accepted here: the asset library only takes text / image / audio / video files or folders",
+    "拖入的内容素材库不收：这里只收文本 / 图像 / 音频 / 视频文件":
+      "This drop is not accepted here: the asset library only takes text / image / audio / video files",
+    "文件夹请拖到素材库空白处（会新建一个素材）":
+      "Drop a folder on the empty area of the asset library (it becomes a new asset)",
+    "没有可添加的文件：素材库只收文本 / 图像 / 音频 / 视频":
+      "No file can be added: the asset library only takes text / image / audio / video",
+    /* 条目只读预览（灯箱）与读不到实体文件时的提示 */
+    "预览这条图像内容（框内看图 · 只读，换图走「更换文件」）":
+      "Preview this image item (view it in a box · read-only; use “Replace file” to swap it)",
+    "只读预览这条正文（要看全 / 临时看一眼用，改内容走「编辑文本」）":
+      "Read-only preview of this body (for a full or quick look; use “Edit text” to change it)",
+    "预览图像内容 · {name}": "Preview image · {name}",
+    "预览文本内容 · {name}": "Preview text · {name}",
+    "这条内容还没有实体文件": "This content item has no file on disk yet",
+    "读取失败：": "Read failed: ",
   });
 
   /* ── 节点「设置」统一跳窗（NODE_SETTINGS_FORMS · 摘要行 · 节拍 / 网络 / 媒体参数）──
@@ -6174,6 +6616,15 @@
     "自动保存：开": "Auto-save: on",
     "自动保存：关": "Auto-save: off",
     "保存路径": "Save path",
+    "文件名": "File name",
+    "后缀待定": "suffix pending",
+    "直接在这里改输出文件名，不必打开 ⚙；文件名默认不带后缀，输入类型确定后自动补 .md / .png / .wav / .mp4。":
+      "Rename the output file right here — no need to open ⚙. The name carries no extension by default; once the input type is known, .md / .png / .wav / .mp4 is appended.",
+    "输入类型已确定，落盘时补此后缀": "Input type is known; this extension is appended on save",
+    "还没连上输入，内容类型未定，暂不决定后缀":
+      "No input wired yet, so the content type — and the extension — is still undecided",
+    "还没连上输入，内容类型未定：先写文件名（可不带后缀），落盘时按输入类型补 ":
+      "No input wired yet, so the content type is undecided: write the file name (extension optional) and the right one is appended on save: ",
     "后缀由连进来的数据类型固定为 ": "The extension is fixed by the wired data type to ",
     "，写错会自动纠正。": " — wrong spellings are corrected automatically.",
     "聚合：全部条目合并保存为 {路径}": "Aggregate: save every item together as {path}",
@@ -6268,6 +6719,94 @@
       "Output file path; a relative path needs a workspace folder in the top bar first. The extension is fixed by the output type (audio follows the chosen format).",
   });
 
+  /* ── 弹窗最小化到状态栏（renderer/app.js 的 ovMin* 一套）+ 本地语音后端后台安装 ── */
+  Object.assign(EN, {
+    "最小化到状态栏": "Minimize to status bar",
+    "点击恢复到对话窗": "Click to restore the dialog",
+    "窗口": "Window",
+    "后台继续安装": "Continue in background",
+    "安装中…（可点「后台继续安装」关闭此窗，进度在插件卡片上）":
+      "Installing… (click \"Continue in background\" to close this window; progress stays on the plugin card)",
+    "安装已在后台继续，可在「插件」卡片查看进度":
+      "Installation continues in the background; see the plugin card for progress",
+    "本地语音后端安装完成，可以开始转写了": "Local speech backend installed — transcription is ready",
+    "本地语音后端安装失败：": "Local speech backend installation failed: ",
+    "安装完成。": "Installation complete.",
+  });
+
+  /* ── 本地语音转写插件控制台 + 便携 ffmpeg 补装（asr/ui、renderer/app-asr.js） ── */
+  Object.assign(EN, {
+    "重新安装 / 补充安装": "Reinstall / complete install",
+    "补装 ffmpeg": "Install ffmpeg",
+    "打开控制台": "Open console",
+    "关闭控制台": "Close console",
+    "ffmpeg（音频解码）": "ffmpeg (audio decoding)",
+    "系统 PATH": "System PATH",
+    "便携版（安装目录内）": "Portable build (inside install dir)",
+    "缺失：无 ffmpeg 时任何音频都无法解码，请点「补装 ffmpeg」":
+      "Missing: without ffmpeg no audio can be decoded — click “Install ffmpeg”",
+    "正在补装便携 ffmpeg…": "Installing portable ffmpeg…",
+    "ffmpeg 已就位。": "ffmpeg is ready.",
+    "便携 ffmpeg 已就位，音频解码恢复可用": "Portable ffmpeg is ready — audio decoding works again",
+    "ffmpeg 补装失败：": "ffmpeg install failed: ",
+    "ffmpeg 已就位": "ffmpeg is ready",
+    "ffmpeg 补装失败，请在控制台重试": "ffmpeg install failed; retry from the console",
+  });
+
+  /* ── 顶栏入口快捷键（renderer/app-keys.js）：按钮 hover 提示里追加「 · 快捷键 X」 ──
+     快捷键本体与动作在 app-keys.js，键位写在 index.html 的 data-shortcut 上；
+     这里只负责把键位并进 data-i18n-title 生成的提示文案，切语言时自动跟着换。 */
+  Object.assign(EN, {
+    "快捷键 {k}": "shortcut {k}",
+  });
+
+  /* ── 专家团：统一编辑所有专家的权限（renderer/app-team-recruit.js ·
+        renderer/app-teamview.js · renderer/index.html 的 #teamPermAllBtn） ── */
+  Object.assign(EN, {
+    "权限": "Permissions",
+    "统一编辑权限": "Edit permissions for all",
+    "统一编辑所有专家的权限": "Edit permissions for all experts",
+    "统一编辑入口未就绪": "The bulk permission editor isn't ready",
+    "把所选范围内全部专家的权限统一设为下面选定的值；选「保持不变」的项维持各专家原样。":
+      "Set every expert in the chosen scope to the values below; items left as “Keep unchanged” stay as they are.",
+    "适用范围": "Scope",
+    "工具许可": "Tool permissions",
+    "工具许可表不可用": "The tool permission table is unavailable",
+    "全部画布": "All canvases",
+    "共 {n} 位专家": "{n} experts",
+    "保持不变": "Keep unchanged",
+    "应用更改": "Apply changes",
+    "没有需要应用的改动": "Nothing to apply",
+    "所选范围内还没有专家": "No experts in the chosen scope",
+    "已统一设置 {n} 位专家的权限": "Updated permissions for {n} experts",
+    "沙箱与越权审批档；专家只能在此档内收窄，不能扩权":
+      "Sandbox and escalation approval preset; experts can only narrow within it, never widen it",
+  });
+
+  /* ── 会话工具条里的 grep 检索摘要（renderer/app-assist.js 的 dshGrepArgLabel ·
+        app-plan.js 的计划面板同源）：入参名转成词条，include → 包括 / exclude → 排除 … ──
+     这些标签都是「一个词」的通用串，别的功能以后可能也想用同一个键，所以只补表里还没有的：
+     已存在的键一概不动（后写的 Object.assign 会悄悄覆盖前一条译文，是最难查的一类回归）。 */
+  (function () {
+    var grepLabels = {
+      "匹配": "Match",
+      "路径": "Path",
+      "包括": "Include",
+      "排除": "Exclude",
+      "通配": "Glob",
+      "输出模式": "Output mode",
+      "多行": "Multiline",
+      "忽略大小写": "Ignore case",
+      "条数上限": "Max results",
+      "偏移": "Offset",
+      "上下文": "Context",
+    };
+    var add = {};
+    for (var gk in grepLabels)
+      if (!Object.prototype.hasOwnProperty.call(EN, gk)) add[gk] = grepLabels[gk];
+    Object.assign(EN, add);
+  })();
+
   var locale = "zh";
 
   function t(key, vars) {
@@ -6355,8 +6894,16 @@
       var key = el.getAttribute("data-i18n-title");
       if (!key) return;
       var val = t(key);
-      /* 顶栏纯 icon 按钮用 data-tip 做即时 hover 提示，避免原生 title 延迟 */
-      if (el.classList && el.classList.contains("btn-ico")) {
+      /* data-shortcut（顶栏入口的全局快捷键，见 renderer/app-keys.js）：
+         hover 提示里同时给出键位，切语言后由这里重算，不会丢。 */
+      var sc = el.getAttribute("data-shortcut");
+      if (sc) val = val + " · " + t("快捷键 {k}", { k: sc });
+      /* 顶栏入口用 data-tip 做即时 hover 提示（原生 title 有延迟）：
+         .btn-ico = 图标按钮，.tb-view = 画布 / 会话 / 专家团三颗视图按钮。 */
+      if (
+        el.classList &&
+        (el.classList.contains("btn-ico") || el.classList.contains("tb-view"))
+      ) {
         el.setAttribute("data-tip", val);
         el.removeAttribute("title");
       } else {
@@ -6386,15 +6933,9 @@
     "（旧内容仍在该素材的 .versions 目录里）":
       " (the previous copy is still in that asset's .versions folder)",
     "这个端子目前没有连入内容": "this port has nothing wired into it right now",
-    "已同步到素材库：": "Synced into the asset library: ",
+    "已覆盖到素材库：": "Overwritten into the asset library: ",
     "（Ctrl+Z 可撤销）": " (Ctrl+Z to undo)",
-    "同步失败：": "Sync failed: ",
-    "素材库：{n} 条原本没有内容的条目已自动同步（Ctrl+Z 可撤销）":
-      "Asset library: {n} empty content entry(s) were synced automatically (Ctrl+Z to undo)",
-    "这个端子连入了新内容，与素材库里那份不同 · 点 ⟳ 才更换（Ctrl+Z 可撤销）":
-      "This port carries new content that differs from the library copy — click ⟳ to replace it (Ctrl+Z to undo)",
-    "同步：把本条目输入端子连入的内容写进素材库（端子无内容时运行到这一步会自动同步）":
-      "Sync: write whatever is wired into this entry's input port into the asset library (empty entries sync automatically when the step runs)",
+    "覆盖失败：": "Overwrite failed: ",
   });
 
   /* ── 素材库 T7：主进程侧（assets-store.js）错误串 ──
@@ -6424,6 +6965,9 @@
     "源文件不存在": "the source file does not exist",
     "没有内容可写入": "there is nothing to write",
     "写入失败": "write failed",
+    /* 回收站两条路都走完东西还在原地（占用）：报失败，绝不糊一个「已删除」的假成功 */
+    "删除失败：里面还有文件正被别的程序占用，请关掉它再重试":
+      "delete failed: a file inside is still in use by another program — close it and try again",
   });
 
   /* ── Puzzle 益智小游戏（app-puzzle.js 框架与顶栏入口共用 UI 词条）── */
@@ -6625,6 +7169,175 @@
     "文件名不能为空": "The file name cannot be empty",
     "文件名不能包含路径分隔符": "The file name cannot contain a path separator",
     "不能改动应用目录本身": "The application folder itself cannot be modified",
+  });
+
+  /* ── 节点「?」说明按钮与说明小窗（renderer/app-nodehelp.js + app-settings.js） ──
+     面向非技术用户的最简语言：每条都是「这个节点是干什么的」一句话。 */
+  Object.assign(EN, {
+    "写文字的地方：在这里打字或粘贴，内容会顺着连线交给后面的节点。":
+      "Where you write text: type or paste here, and it flows along the wire to the next node.",
+    "放图片的地方：选一张本机图片或拖进来，后面的节点就能拿它当参考图。":
+      "Where you put an image: pick one from this computer or drag it in, so later nodes can use it as a reference.",
+    "放音频的地方：选一个本机音频文件，节点会给出它的文件地址，可接给做声音的节点。":
+      "Where you put audio: pick an audio file, and the node hands out its file path for nodes that make sound.",
+    "放视频的地方：选一个本机视频文件，节点会给出它的文件地址，可接给做视频的节点。":
+      "Where you put video: pick a video file, and the node hands out its file path for nodes that make video.",
+    "文件节点：一次导入多个本机文件，当成一批内容交给后面的节点。":
+      "File node: import several files at once and pass them on as one batch.",
+    "素材节点：把素材库里存好的内容取出来用，每条内容就是一个接口。":
+      "Asset node: pull saved content out of the asset library; each entry becomes one port.",
+    "数据表：读一个表格文件，或者让智能体帮你建一张表。":
+      "Data table: read a spreadsheet file, or let the agent build one for you.",
+    "让 AI 处理文字：把要求写进提示词，点 ▶ 就得到结果。":
+      "Let AI work on text: write what you want in the prompt, click ▶ and get the result.",
+    "让 AI 画图：把想要的画面写成提示词，点 ▶ 生成一张图片。":
+      "Let AI draw: describe the picture in the prompt, click ▶ to generate one image.",
+    "生成音乐：写一段风格提示词（可加歌词），点 ▶ 得到一段音乐。":
+      "Make music: write a style prompt (lyrics optional), click ▶ to get a track.",
+    "生成视频：用文字或图片描述画面，点 ▶ 得到一段视频。":
+      "Make video: describe the shot with text or an image, click ▶ to get a clip.",
+    "文字转语音：把文字读出来，点 ▶ 得到一段配音。":
+      "Text to speech: have the text read aloud — click ▶ to get a voice track.",
+    "动效视频：用代码模板渲染出一段 mp4 视频。":
+      "Motion video: render an mp4 from a code template.",
+    "收网络消息：守在一个通道上，收到文字就往后传。":
+      "Receive over the network: watch a channel and pass on any text that arrives.",
+    "发网络消息：把收到的文字发到这个通道的另一端。":
+      "Send over the network: push text to the other end of this channel.",
+    "启动程序：点一下，就打开这个节点绑定的那个程序。":
+      "Launch a program: one click opens the program this node is bound to.",
+    "小计算器：写一小段 JS 代码做计算，输入进去、结果出来。":
+      "Little calculator: a small piece of JS does the math — values in, result out.",
+    "保存结果：把上一步的内容存成文件（文字存成 .md，图片 / 声音 / 视频存成对应格式）。":
+      "Save the result: write the previous step to a file (text as .md; images / audio / video in their own formats).",
+    "保存结果：把上一步的内容存成文件（文字存成 .md）。":
+      "Save the result: write the previous step to a file (text as .md).",
+    "保存图片：把上一步生成的图片存成图片文件。":
+      "Save the image: write the generated image to an image file.",
+    "取出其中一项：把一整批内容挑出单独一条，方便一条一条处理。":
+      "Take one item out: pull a single item out of a batch so you can handle them one by one.",
+    "合成一批：把多个节点的结果合成一整批，后面按批处理。":
+      "Combine into a batch: gather several nodes' results into one batch for batch handling downstream.",
+    "让 AI 自己干活：它能读文件、上网、执行命令，独立把这件事做完。":
+      "Let AI work on its own: it can read files, search the web and run commands to finish the job by itself.",
+    "让 AI 自己干活：不只是写文字，还能读文件、上网、执行命令，把这件事做完。":
+      "Let AI work on its own: not just text — it can read files, search the web and run commands to get this done.",
+    "任务：把一件复杂的事拆成小步骤，按顺序做完，成功或失败都有终点。":
+      "Task: break a complex job into small steps, run them in order, with a success and a failure ending.",
+    "收纳盒：把一堆节点装进一个壳里，展开能看里面，收起能让画布清爽。":
+      "Storage box: put a group of nodes inside one shell — expand to look inside, collapse to keep the canvas tidy.",
+    "等文件：等到指定文件出现，才继续往下走。":
+      "Wait for a file: hold here until the given file appears, then continue.",
+    "定时器：到点或每隔一段时间，自动触发一次。":
+      "Timer: fire once at a set time or every so often.",
+    "等一会儿：先等上几秒，再继续往下走。":
+      "Wait a moment: pause a few seconds, then continue.",
+    "按顺序：把一次触发放成好几路，一个接一个依次发出。":
+      "In order: split one trigger into several outputs and release them one after another.",
+    "凑齐才走：所有上一环都到了，才放行往下走。":
+      "Wait until all arrive: let the flow through only after every upstream branch is done.",
+    "分发：把一次触发同时发给好几路。":
+      "Fan out: send one trigger to several branches at the same time.",
+    "数数：每来 N 次，才放行一次。": "Count: let one pass through every N triggers.",
+    "排队：多路同时进来时只放一路过去，避免几件事撞在一起。":
+      "Take turns: when several branches arrive at once, let only one through so they don't collide.",
+    "判断：按条件选「是」或「否」两条路走。":
+      "Decide: pick the “yes” or the “no” branch by a condition.",
+    "全局节点：把内容广播给所有需要它的节点，用 @ 标题 引用。":
+      "Global node: broadcast its content to every node that needs it — reference it with @Title.",
+    "控制按钮：点一下就跑这一串流程（分起点、成功、失败三种）。":
+      "Control button: one click runs this flow (start, success and failure roles).",
+    "数据库副本：里面是这台机器上存好的真实资料，智能体能查它。":
+      "Database copy: real records stored on this machine, which the agent can look up.",
+    "数据库副本：里面是这台机器上存好的真实资料，可以查、可以算，智能体也用得上。":
+      "Database copy: real records stored on this machine that can be searched and computed, and the agent can use it too.",
+    "工具节点：像一个能重复使用的小工具，参数就是它的接口，智能体也能随时调用它。":
+      "Tool node: a reusable little tool whose parameters are its ports; the agent can call it any time.",
+    "开发节点：代表项目里的一个功能块，展开能看到它里面的结构和代码文件。":
+      "Dev node: stands for one feature block of the project — expand it to see the structure and code files inside.",
+    "开始按钮 ▶：点它就从这里往下跑整条流程。":
+      "Start button ▶: click it to run the whole flow from here.",
+    "成功终点：流程顺利走到这里，就算成功结束。":
+      "Success end: the flow reached here — it finished successfully.",
+    "失败终点：流程走不通时会到这里，算失败结束。":
+      "Failure end: the flow could not go through, so it ends as a failure.",
+    "画布上的一个节点：把上游的内容按它的规则处理后交给下游。":
+      "A node on the canvas: it handles what comes in from upstream by its own rule and passes it on.",
+    "鼠标移开 1 秒后自动关闭":
+      "Closes automatically 1 second after the mouse leaves",
+    "节点说明：点击查看这个节点是干什么的":
+      "Node help: click to see what this node does",
+    "节点说明": "Node help",
+    "节点「?」说明按钮（点击查看该节点是做什么的；取消勾选则隐藏，默认打开）":
+      "Node “?” help button (click to see what the node does; uncheck to hide — on by default)",
+
+    /* ── PDF 生成节点（「文本生成」菜单 · renderer/app-nodes.js savePdfOnce ·
+       renderer/app-canvas.js 设置表单 · 主进程 pdf-write.js） ── */
+    "PDF生成（文本排版成 PDF · 支持公式）":
+      "PDF export (typesets text into a PDF · formulas supported)",
+    "PDF": "PDF",
+    "选择 PDF 保存位置": "Choose where to save the PDF",
+    "用系统默认 PDF 阅读器打开": "Open with the system default PDF reader",
+    "保存路径 / PDF 版面": "Save path / PDF layout",
+    "PDF 版面": "PDF layout",
+    "边距": "Margin",
+    "字号": "Font size",
+    "页码": "Page numbers",
+    "横向": "Landscape",
+    "纵向": "Portrait",
+    "文档标题": "Document title",
+    "可留空；填了就在正文顶部加一行居中大标题（PDF 属性里的标题也用节点标题）":
+      "Leave empty for none; if filled, a centred title line is added on top (the node title is used as the PDF title property)",
+    "当前版面：": "Current layout: ",
+    "接进来的文本按 Markdown 排版成 PDF：标题 / 列表 / 表格 / 代码块 / 图片都渲染，$…$ 与 $$…$$ 公式排成排版结果（与画布预览同一套公式渲染器）。":
+      "The incoming text is laid out as Markdown into a PDF: headings, lists, tables, code blocks and images are rendered, and $…$ / $$…$$ formulas are typeset (same formula renderer as the canvas preview).",
+    "聚合：全部条目合并为一个 PDF（{路径}.pdf）":
+      "Aggregate: all items merged into one PDF ({路径}.pdf)",
+    "批量：保存为 {路径}_{输入节点标题}.pdf":
+      "Batch: saved as {路径}_{input node title}.pdf",
+    "相对工作目录或绝对路径（*.pdf）…":
+      "Relative to the workspace or an absolute path (*.pdf)…",
+    "保存路径（*.pdf）…": "Save path (*.pdf)…",
+    "输出 PDF 路径。有工作目录时可用相对路径；后缀固定 .pdf，写错会自动纠正。":
+      "Output PDF path. With a workspace set you may use a relative path; the extension is always .pdf and is corrected automatically.",
+    "上游输出更新时自动生成 PDF 到指定路径":
+      "Regenerate the PDF at the given path whenever the upstream output changes",
+    "PDF 只在点节点上的 ▶（或控制节点指挥）时生成，接线与上游更新不会自动落盘。":
+      "A PDF is generated only when you click ▶ on the node (or a control node triggers it); wiring and upstream updates never auto-export.",
+    "留空 = 用输入节点标题（相对工作目录或绝对路径 *.pdf）…":
+      "Empty = input node title (relative to the workspace or an absolute *.pdf path)…",
+    "留空 = 用输入节点标题（*.pdf）…": "Empty = input node title (*.pdf)…",
+    "输出 PDF 路径。留空则默认用输入节点的标题命名；有工作目录时可用相对路径；后缀固定 .pdf，写错会自动纠正。":
+      "Output PDF path. Leave empty to name it after the input node's title; with a workspace set a relative path is allowed. The extension is always .pdf and is corrected automatically.",
+    "尚未生成（点击 ▶ 生成 PDF）": "Not generated yet (click ▶ to create the PDF)",
+    "打开 PDF：用系统默认阅读器打开已生成的 PDF":
+      "Open PDF: open the generated PDF in the system default reader",
+    "尚未生成 PDF：点节点上的 ▶ 生成":
+      "No PDF yet — click ▶ on the node to generate it",
+    "点击用系统默认应用打开：": "Click to open with the system default app: ",
+    "还没有生成 PDF——点节点上的 ▶ 生成":
+      "No PDF yet — click ▶ on the node to generate one",
+    "直接在这里改输出文件名，不必打开 ⚙；留空则默认用输入节点的标题命名，落盘时自动补 .pdf。":
+      "Rename the output file right here instead of opening ⚙; leave it empty to use the input node's title and get .pdf appended automatically.",
+    "页面尺寸": "Page size",
+    "页边距": "Page margin",
+    "正文字号": "Body font size",
+    "显示页码": "Show page numbers",
+    "横向纸张（宽表格 / 宽公式更合适）":
+      "Landscape paper (better for wide tables / wide formulas)",
+    "页脚居中显示「当前页 / 总页数」": "Centred “page / total pages” footer",
+    "尚未生成（指定路径后点击 ▶）":
+      "Not generated yet (set a path, then click ▶)",
+    "当前版本没有 PDF 生成通道（缺少 pdf:writeText）":
+      "This build has no PDF generation channel (pdf:writeText missing)",
+    "没有可生成 PDF 的文本输入": "No text input available to generate a PDF",
+    "PDF 生成失败：": "PDF generation failed: ",
+    "已生成 PDF → ": "PDF created → ",
+    " 个 PDF → ": " PDF files → ",
+    "已生成 ": "Created ",
+    "生成 PDF：把上一步的文字排成一份像样的 PDF 文件（标题、表格、列表都会排版，公式会画成真正的数学式子）。":
+      "PDF export: typesets the previous step's text into a presentable PDF file (headings, tables and lists are laid out; formulas are drawn as real math).",
+    "PDF 生成：": "PDF export: ",
   });
 
   function listJoin(arr) {

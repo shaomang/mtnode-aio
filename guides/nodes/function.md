@@ -57,6 +57,17 @@ return { 清单: refs.length + " 张：" + refs.map((r) => r.path).join(" | ") }
 
 代码体写 `return` 即输出；也可以写成 `(input) => ...` 的箭头 / 具名函数，返回函数时自动用 input 再调一次。
 
+### AI 调用（模型 · 预设 · 思考强度）
+节点头部的 🤖 小按钮（或板身「开发」旁的「AI 调用」）给本函数选一套 AI 设定：**模型 / 预设 / 思考强度**三格，与会话同一张档位表、同一套就近继承（自己没选就跟随默认或上层的功能块）。选中后在函数体里用 `mtnode.ai(...)` 真发请求：
+
+```js
+const r = await mtnode.ai("把下面这段总结成三条要点：\n" + input.正文);
+if (!r.ok) throw new Error(r.error);
+return { 要点: r.text };
+```
+
+改了模型选择，下一次运行就按新模型调用（运行时会把自己没选的格落定为当前生效值，随画布保存）。
+
 ### 线程里能做什么（`mtnode` 桥）
 函数体已经**不在渲染进程**，所以没有 `window` / `document` / `window.api.*`；要落地到本机，用注入的 `mtnode`：
 
@@ -71,6 +82,10 @@ return { 清单: refs.length + " 张：" + refs.map((r) => r.path).join(" | ") }
 | `mtnode.log(...)` / `mtnode.progress(0.4, "第 3 批")` | 过程输出与进度（走事件帧回界面，不写 stdout） |
 | `mtnode.readText(p)` / `mtnode.writeText(p, s)` / `mtnode.fileExists(p)` | 本机文件读写 |
 | `mtnode.join(...)` / `mtnode.abs(p)` / `mtnode.cwd()` / `mtnode.platform` | 路径与平台 |
+| `const r = await mtnode.ai("提示词" [, opts])` | 用本节点「AI 调用」选中的模型真发一次文本请求 → `{ ok, text, error, provider, model }`（不抛异常，失败看 `ok === false`） |
+| `mtnode.aiConfig` | 只读摘要 `{ provider, providerName, model, preset, effort }`（节点上「AI 调用」三格当前选了什么） |
+
+`mtnode.ai` 的模型来自节点头部 🤖（或板身「AI 调用」）那三格选择；改了选择，下一次运行就按新模型调用。`opts` 里显式传的 `provider / model / effort / temperature / system / images` 只覆盖这一次调用。没选过模型时它返回 `{ ok: false, error: "…还没选定「AI 调用」模型…" }`，不会静默空跑。
 
 这些外部进程**全部记在本次运行名下**：函数 `return`、被停止或超时的那一刻，主进程按 runId 把它们连同子进程一起收走。`process.exit()` 之类能带走 MTNode 本体的入口在线程里被拦成抛错。
 

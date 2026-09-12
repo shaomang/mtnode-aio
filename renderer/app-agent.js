@@ -753,14 +753,15 @@ function recordDshMetrics(node, m) {
 
 /* 思考强度映射（下发网关前的最后归一，词汇与 dsh/gateway/reasoning-effort.mjs 对齐;
    与 app.js 的 dshEffortOf 同一份实现 —— 本文件在 app.js 之后加载，这份才生效）:
-   - 会话 / 助手 / 智能节点：low/medium/high/xhigh/max 全档原样下发（medium/xhigh 不再拍平）
-   - 旧档 none/off/无/空 与未知值 → high（兜底默认，兼容已存工作流）
-   - 智能文本节点（proc_text agent，自带 无/低/中/高 四档，fromProcText=true）：
-     off → high（agent 链上思考不能关闭）；高 → max（历史口径：文本节点顶档 = dsh 顶档，
-     已存节点语义不变）；低 → low、中 → medium（跟随档位词汇原样） */
+   - 会话 / 助手 / 智能节点：off/low/medium/high/xhigh/max 全档原样下发（off = 「无」＝
+     关闭思考，网关侧命中路由能力即下发 thinking disabled；medium/xhigh 不再拍平）
+   - 空串 / none 与未知值 → high（兜底默认，兼容已存工作流）
+   - 智能文本节点（proc_text agent，自带 无/低/中/高/最强 五档，fromProcText=true）：
+     off（无）→ high（agent 链上思考不能关闭）；高 → max（历史口径：文本节点顶档 = dsh
+     顶档，已存节点语义不变）；低 → low、中 → medium、最强 → max（跟随档位词汇原样） */
 function dshEffortOf(v, fromProcText) {
   let raw = String(v == null || v === "" ? "high" : v).toLowerCase();
-  if (raw === "无" || raw === "off" || raw === "none") return "high";
+  if (raw === "off" || raw === "none" || raw === "无") return fromProcText ? "high" : "off";
   if (raw === "high") return fromProcText ? "max" : "high";
   return AGENT_EFFORT_ORDER.includes(raw) ? raw : "high";
 }
@@ -1305,7 +1306,7 @@ function tokRoundCost(owner, rec) {
     tokCostAdd(acc, bm[k] || {}, at);
     if (acc.amount !== before) any = true;
   }
-  return any ? { currency: acc.currency || "CNY", amount: acc.amount } : null;
+  return any ? { currency: acc.currency || "CNY", amount: acc.amount, estimated: !!acc.estimated } : null;
 }
 /* 一轮的计费用量合计（只判「逐轮之和」是否完整覆盖累计台账，不参与计价） */
 function tokRoundUsage(rec) {
@@ -1442,7 +1443,7 @@ function openModelPerfDialog(owner, bucket, opts) {
     [I18n.t("TTFT 样本数"), String(p.samples)],
     [I18n.t("输出 token"), fmtTok(p.outputTokens)],
     [I18n.t("LLM 用时"), fmtDurLong(p.llmMs)],
-    [I18n.t("费用"), bc ? tokMoney(bc) : "—"],
+    [I18n.t("费用"), bc ? tokCostMark(bc) : "—"],
   ];
   for (const [k, v] of rows) {
     const tr = document.createElement("tr");
@@ -1494,6 +1495,9 @@ function tokCostAdd(acc, b, at) {
   if (!c || !Number.isFinite(Number(c.amount))) return acc;
   acc.amount += Number(c.amount);
   if (!acc.currency) acc.currency = c.currency || "CNY";
+  /* 单价是兜底猜的（价格表里没有的模型按 flash 价）→ 整笔带「估算」标记，
+     展示层用 * 标出，别让人把猜的单价当官方价（见 app-cost.js 口径说明） */
+  if (c.estimated) acc.estimated = true;
   return acc;
 }
 /* 逐模型桶汇总费用（按各桶自己的 at 判峰谷）。仅用于老台账 / 未覆盖尾段；
@@ -1520,12 +1524,15 @@ function tokCostReduce(owner) {
   let amount = 0;
   let currency = "";
   let any = false;
+  /* 有一笔用了兜底单价（价格表里没有的模型）→ 整笔费用标「估算」（UI 加 *） */
+  let estimated = false;
   const covered = { billed: 0, output: 0, reads: 0, writes: 0 };
   for (const rec of rounds) {
     const c = tokRoundCost(owner, rec);
     if (c && Number.isFinite(Number(c.amount))) {
       amount += Number(c.amount);
       if (!currency) currency = c.currency || "CNY";
+      if (c.estimated) estimated = true;
       any = true;
     }
     const u = tokRoundUsage(rec);
@@ -1572,10 +1579,11 @@ function tokCostReduce(owner) {
       }, at);
       amount += acc.amount;
       if (acc.currency && !currency) currency = acc.currency;
+      if (acc.estimated) estimated = true;
       if (amount !== before) any = true;
     }
   }
-  return any ? { currency: currency || "CNY", amount: amount } : null;
+  return any ? { currency: currency || "CNY", amount: amount, estimated: estimated } : null;
 }
 /* 单桶费用：桶自带 at 优先；老台账（桶无 at）用宿主台账 lastAt 兜底判峰谷 */
 function tokCostOfBucket(b, owner) {
@@ -1593,10 +1601,16 @@ function tokMoney(c) {
   } catch {}
   return "—";
 }
+/* 费用展示值：单价是兜底猜的（价格表里没有的模型按 flash 价）→ 追加 * 标记。
+ * 口径解释入口见 app-cost.js costHelpEl()；这里是它旁边那个 * 的来源。 */
+function tokCostMark(c) {
+  if (!c) return "—";
+  return tokMoney(c) + (c.estimated ? "*" : "");
+}
 /* 摘要里的费用片段：算不出费用时返回空串（不显示） */
 function tokCostText(owner) {
   const c = tokCostOf(owner);
-  return c ? "≈" + tokMoney(c) : "";
+  return c ? "≈" + tokCostMark(c) : "";
 }
 /* 余额纯文本：读 app-cost.js 的缓存，没查过 / 非官方路由返回空串 */
 function tokBalanceText() {
@@ -1664,7 +1678,7 @@ function tokRoundsLines(owner, indent) {
         ": " + (rec.turns || 0) + I18n.t(" 轮 · ") + (rec.steps || 0) + I18n.t(" 步") +
         ", " + I18n.t("入") + fmtTok(rt.billedInput) + I18n.t(" · 出") + fmtTok(rt.outputTokens) +
         ", LLM " + fmtDurLong(rt.llmMs) +
-        (rc ? ", " + I18n.t("费用") + " ≈" + tokMoney(rc) : "") +
+        (rc ? ", " + I18n.t("费用") + " ≈" + tokCostMark(rc) : "") +
         ", " + tokRoundPerfLine(rec),
     );
   }
@@ -1685,7 +1699,7 @@ function tokBadgeTitleText(owner) {
         (b.reasoningTokens ? ", " + I18n.t("推理") + " " + fmtTok(b.reasoningTokens) : "") +
         ", " + b.calls + I18n.t(" 次调用, LLM ") + fmtDurLong(b.llmMs) +
         (b.toolMs ? " · " + I18n.t("工具") + " " + fmtDurLong(b.toolMs) : "") +
-        (bc ? ", " + I18n.t("费用") + " ≈" + tokMoney(bc) : "") +
+        (bc ? ", " + I18n.t("费用") + " ≈" + tokCostMark(bc) : "") +
         ", " + tokPerfLine(b),
     );
   }
@@ -1717,7 +1731,7 @@ function tokReportPlain(owner) {
     I18n.t("运行") + " " + t.rounds + " " + I18n.t(" 次 · ") + t.turns + I18n.t(" 轮 · ") + t.steps + I18n.t(" 步"),
   );
   const totalCost = tokCostOf(owner);
-  if (totalCost) L.push(I18n.t("费用") + ": ≈" + tokMoney(totalCost));
+  if (totalCost) L.push(I18n.t("费用") + ": ≈" + tokCostMark(totalCost));
   L.push("");
   L.push(I18n.t("按模型") + ":");
   for (const b of tokViewModels(owner)) {
@@ -1730,7 +1744,7 @@ function tokReportPlain(owner) {
         " · " + I18n.t("输出") + " " + b.outputTokens + " · " + I18n.t("推理") + " " + b.reasoningTokens +
         " · " + b.calls + I18n.t(" 次") + " · LLM " + fmtDurLong(b.llmMs) +
         (b.toolMs ? " · " + I18n.t("工具") + " " + fmtDurLong(b.toolMs) : "") +
-        (bc ? " · " + I18n.t("费用") + " ≈" + tokMoney(bc) : "") +
+        (bc ? " · " + I18n.t("费用") + " ≈" + tokCostMark(bc) : "") +
         " · " + tokPerfLine(b),
     );
   }
@@ -1743,6 +1757,13 @@ function tokReportPlain(owner) {
   if (r && r.lastAt) L.push(I18n.t("最近") + ": " + fmtTime(r.lastAt));
   const bal = tokBalanceText();
   if (bal) L.push(I18n.t("账户余额") + ": " + bal);
+  /* 口径说明随报告一起复制出去：估算未计入官方活动折扣 / 赠送抵扣等，
+     显示值可能高于实际账单，别当官方账单用（峰谷已按调用时刻计价）。 */
+  if (totalCost && typeof costWhyLines === "function") {
+    L.push("");
+    L.push(I18n.t("费用为什么高于实际消费？"));
+    for (const x of costWhyLines()) L.push("  · " + x);
+  }
   return L.join("\n");
 }
 /* 报告 Badge：折叠时一行摘要，点击展开是按模型明细表 */
@@ -1797,6 +1818,12 @@ function tokBadgeEl(owner) {
     } catch {}
   });
   sum.appendChild(copy);
+  /* 折叠态：只要算得出费用，就在摘要行右侧给一个「？」口径入口
+     （为什么显示会高于实际消费；展开态另有「合计」行同名入口）。 */
+  if (tokCostOf(owner)) {
+    const why = typeof costHelpEl === "function" ? costHelpEl() : null;
+    if (why) sum.appendChild(why);
+  }
   /* 折叠态余额 chip（金额 + ⟳ + 取数时间）；非官方路由 / 没 key 时返回 null，不占位 */
   if (typeof balanceChip === "function") {
     let bc = null;
@@ -1871,7 +1898,7 @@ function tokBadgeEl(owner) {
       String(b.calls),
       fmtDurLong(b.llmMs),
       fmtDurLong(b.toolMs),
-      bc ? tokMoney(bc) : "—",
+      bc ? tokCostMark(bc) : "—",
     ];
     for (let i = 0; i < cells.length; i++) {
       const td = document.createElement("td");
@@ -1895,13 +1922,19 @@ function tokBadgeEl(owner) {
     fmtDurLong(t.toolMs),
     (function () {
       const c = tokCostOf(owner);
-      return c ? tokMoney(c) : "—";
+      return c ? tokCostMark(c) : "—";
     })(),
   ];
   for (let i = 0; i < tds.length; i++) {
     const td = document.createElement("td");
     td.textContent = tds[i];
-    if (i === tds.length - 1) td.className = "tok-badge-cost";
+    if (i === tds.length - 1) {
+      td.className = "tok-badge-cost";
+      /* 「合计计费」旁挂口径说明入口（app-cost.js 的 costHelpEl）：
+         点它 / 悬停看「为什么显示会高于实际消费」。只在真能算出费用时出现。 */
+      const why = typeof costHelpEl === "function" ? costHelpEl() : null;
+      if (why) td.appendChild(why);
+    }
     tr.appendChild(td);
   }
   table.appendChild(tr);
@@ -1993,7 +2026,7 @@ function tokBadgeEl(owner) {
         String(rt.calls),
         fmtDurLong(rt.llmMs),
         fmtDurLong(rt.toolMs),
-        rc ? tokMoney(rc) : "—",
+        rc ? tokCostMark(rc) : "—",
       ];
       for (let c = 0; c < cells.length; c++) {
         const td = document.createElement("td");
@@ -2054,7 +2087,7 @@ function tokBadgeTouch(owner, force) {
     const host = tokBadgeHost(owner);
     if (!host) return;
     if (host.classList && host.classList.contains("agent-conv"))
-      fresh.style.margin = "6px 6px 2px";
+      fresh.style.margin = "6px 6px 0";
     host.appendChild(fresh);
     return;
   }
@@ -2090,6 +2123,7 @@ const MTNODE_SKILL_INDEX_TRIM = "noCanvas";
    与画布无关的条目（数据库事实 mtnode-db-facts、需求拷问 mtnode-grill-me 等）照常下发。 */
 const MTNODE_SKILL_CANVAS_ONLY = [
   "mtnode-canvas-batch-safety",
+  "mtnode-canvas-edit-rules",
   "mtnode-canvas-layout-ux",
   "mtnode-dev-architect",
   "mtnode-media-gen-nodes",

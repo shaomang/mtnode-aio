@@ -214,15 +214,18 @@ function uniqueItemFile(itemsDir, itemId, ext, taken) {
 /* ---------------- 回收站 / 版本 ---------------- */
 
 /* 搬进回收站（绝不实删）：优先 await shell.trashItem(abs) 走系统回收站，用户可在资源管理器
- * 「还原」；shell 不可用或抛错时回退到库内 <root>/.trash/<时间戳>__<名字>（rename，失败再
- * 退回复制 + 删除）。返回回退落下时的 .trash 绝对路径；走系统回收站时返回空串
- * （渲染层只用 res.asset / res.removed，不依赖该路径，这里保持一致的空值语义即可）。 */
+ * 「还原」；shell 不可用、抛错、或**兑现了却什么都没搬走**时，回退到库内
+ * <root>/.trash/<时间戳>__<名字>（rename，失败再退回复制 + 删除）。
+ * 两条路都试过之后东西还留在原地（目录里有文件被别的程序占着）才抛错，由调用方回失败 ——
+ * 宁可报「删除失败」，也绝不给一个「已删除」的假成功（删文件夹带内容时踩过这一脚：
+ * 系统回收站对这些目录可能只是回一个 fulfilled，实际一个字节都没动）。 */
 async function moveToTrash(root, abs, label) {
-  if (!fs.existsSync(abs)) return "";
+  const src = path.resolve(abs);
+  if (!fs.existsSync(src)) return "";
   if (shell && typeof shell.trashItem === "function") {
     try {
-      await shell.trashItem(path.resolve(abs));
-      return "";
+      await shell.trashItem(src);
+      if (!fs.existsSync(src)) return "";
     } catch {
       /* 没装 / 被平台拒绝：继续往下走库内 .trash 回退 */
     }
@@ -232,12 +235,14 @@ async function moveToTrash(root, abs, label) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const dest = path.join(td, uniqueName(td, stamp + "__" + safeName(label, "item"), ""));
   try {
-    fs.renameSync(abs, dest);
+    fs.renameSync(src, dest);
   } catch {
     /* 极端情况（占用 / 跨卷）：退回复制 + 删除，保证语义仍是「进回收站」 */
-    copyPath(abs, dest);
-    rmrf(abs);
+    copyPath(src, dest);
+    rmrf(src);
   }
+  if (fs.existsSync(src))
+    throw new Error(t("删除失败：里面还有文件正被别的程序占用，请关掉它再重试"));
   return dest;
 }
 
@@ -993,6 +998,27 @@ function registerAssetsIpc(opts) {
         same: Buffer.compare(wantBuf, fs.readFileSync(cur)) === 0,
         bytes: curSt.size,
       };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  /* 拖入判定：本机路径 → 是文件还是文件夹（只读，不复制任何数据）。
+     拖入目录复用 assets:importDir；拖入文件走 assets:create + assets:importFiles。 */
+  ipcMain.handle("assets:pathKind", (e, arg) => {
+    try {
+      ensureRoot();
+      const raw = typeof arg === "string" ? arg : String((arg && arg.path) || "");
+      const abs = path.resolve(String(raw || "").trim());
+      let st = null;
+      try {
+        st = fs.statSync(abs);
+      } catch (_) {
+        st = null;
+      }
+      if (!st) return { ok: true, kind: "", name: path.basename(abs), exists: false };
+      const kind = st.isDirectory() ? "dir" : st.isFile() ? "file" : "";
+      return { ok: true, kind: kind, name: path.basename(abs), exists: true };
     } catch (err) {
       return fail(err);
     }

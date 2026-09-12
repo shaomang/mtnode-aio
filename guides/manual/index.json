@@ -1,5 +1,5 @@
 {
-  "defaultPage": "overview",
+  "defaultPage": "providers",
   "sections": [
     {
       "id": "start",
@@ -9,84 +9,19 @@
       },
       "pages": [
         {
-          "id": "overview",
-          "title": {
-            "zh": "从这里开始",
-            "en": "Start here"
-          }
-        },
-        {
-          "id": "ui-tour",
-          "title": {
-            "zh": "界面在哪儿",
-            "en": "Where things are"
-          }
-        },
-        {
           "id": "providers",
           "title": {
             "zh": "配置服务商与 API",
             "en": "Providers & API"
           }
-        },
-        {
-          "id": "first-run",
-          "title": {
-            "zh": "第一条工作流",
-            "en": "Your first flow"
-          }
-        },
-        {
-          "id": "shortcuts",
-          "title": {
-            "zh": "快捷键",
-            "en": "Shortcuts"
-          }
         }
       ]
     },
     {
-      "id": "canvas",
+      "id": "content",
       "title": {
-        "zh": "画布与节点",
-        "en": "Canvas & nodes"
-      },
-      "pages": [
-        {
-          "id": "nodes-wires",
-          "title": {
-            "zh": "加节点、连线与 @ 引用",
-            "en": "Nodes, wires, @ refs"
-          }
-        },
-        {
-          "id": "marks-groups",
-          "title": {
-            "zh": "框选、组与排版",
-            "en": "Box, groups, layout"
-          }
-        },
-        {
-          "id": "super-nodes",
-          "title": {
-            "zh": "超级节点（收纳子图）",
-            "en": "Super nodes"
-          }
-        },
-        {
-          "id": "canvas-tools",
-          "title": {
-            "zh": "查找、总览与边栏",
-            "en": "Find, overview, sidebar"
-          }
-        }
-      ]
-    },
-    {
-      "id": "build",
-      "title": {
-        "zh": "做一条工作流",
-        "en": "Build a workflow"
+        "zh": "内容生成",
+        "en": "Content generation"
       },
       "pages": [
         {
@@ -97,20 +32,6 @@
           }
         },
         {
-          "id": "params-runs",
-          "title": {
-            "zh": "参数与运行调试",
-            "en": "Parameters & runs"
-          }
-        },
-        {
-          "id": "batch",
-          "title": {
-            "zh": "批量、拆分与合并",
-            "en": "Batch, split, merge"
-          }
-        },
-        {
           "id": "media-gen",
           "title": {
             "zh": "出音乐 / 语音 / 视频",
@@ -118,26 +39,28 @@
           }
         },
         {
-          "id": "media-net",
+          "id": "ai-review",
           "title": {
-            "zh": "网络与执行节点",
-            "en": "Network & launch"
+            "zh": "AI 审阅：批注与修订",
+            "en": "AI review: notes & revisions"
           }
         },
         {
-          "id": "control-flow",
+          "id": "image-edit",
           "title": {
-            "zh": "控制流与判断",
-            "en": "Control flow & judges"
+            "zh": "图像编辑与蒙版",
+            "en": "Image editing & masks"
           }
-        },
-        {
-          "id": "tools-functions",
-          "title": {
-            "zh": "工具节点与函数节点",
-            "en": "Tool & function nodes"
-          }
-        },
+        }
+      ]
+    },
+    {
+      "id": "assistant",
+      "title": {
+        "zh": "全局助手与工作流",
+        "en": "Assistant & workflows"
+      },
+      "pages": [
         {
           "id": "workflows",
           "title": {
@@ -146,19 +69,35 @@
           }
         },
         {
-          "id": "global-broadcast",
+          "id": "quick-build",
           "title": {
-            "zh": "全局节点广播",
-            "en": "Global node"
+            "zh": "一句话搭工作流",
+            "en": "Build a flow in one sentence"
           }
         }
       ]
     },
     {
-      "id": "agent",
+      "id": "dev",
       "title": {
-        "zh": "AI 干活",
-        "en": "Work with agents"
+        "zh": "开发节点",
+        "en": "Dev nodes"
+      },
+      "pages": [
+        {
+          "id": "dev-nodes",
+          "title": {
+            "zh": "开发节点：让 AI 写项目",
+            "en": "Dev nodes"
+          }
+        }
+      ]
+    },
+    {
+      "id": "session",
+      "title": {
+        "zh": "会话",
+        "en": "Sessions"
       },
       "pages": [
         {
@@ -181,35 +120,48 @@
             "zh": "审批与权限",
             "en": "Approvals"
           }
-        },
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "title": {
+        "zh": "工具与函数节点",
+        "en": "Tool & function nodes"
+      },
+      "pages": [
         {
-          "id": "plugins-skills",
+          "id": "tools-functions",
           "title": {
-            "zh": "插件、技能与 MCP",
-            "en": "Plugins, skills, MCP"
+            "zh": "工具节点与函数节点",
+            "en": "Tool & function nodes"
           }
-        },
+        }
+      ]
+    },
+    {
+      "id": "assets",
+      "title": {
+        "zh": "素材库",
+        "en": "Asset library"
+      },
+      "pages": [
         {
-          "id": "dev-nodes",
+          "id": "asset-library",
           "title": {
-            "zh": "开发节点：让 AI 写项目",
-            "en": "Dev nodes"
+            "zh": "素材库与素材节点",
+            "en": "Asset library"
           }
-        },
-        {
-          "id": "database-nodes",
-          "title": {
-            "zh": "数据库节点与事实纪律",
-            "en": "Database nodes"
-          }
-        },
-        {
-          "id": "fact-library",
-          "title": {
-            "zh": "事实库",
-            "en": "Fact library"
-          }
-        },
+        }
+      ]
+    },
+    {
+      "id": "team",
+      "title": {
+        "zh": "专家团",
+        "en": "Expert team"
+      },
+      "pages": [
         {
           "id": "one-person-company",
           "title": {
@@ -220,38 +172,40 @@
       ]
     },
     {
-      "id": "assets",
+      "id": "community",
       "title": {
-        "zh": "素材与记录",
-        "en": "Assets & history"
+        "zh": "社区",
+        "en": "Community"
       },
       "pages": [
         {
-          "id": "asset-library",
+          "id": "community",
           "title": {
-            "zh": "素材库与素材节点",
-            "en": "Asset library"
+            "zh": "创意工坊与讨论区",
+            "en": "Workshop & forum"
+          }
+        }
+      ]
+    },
+    {
+      "id": "misc",
+      "title": {
+        "zh": "其他",
+        "en": "More"
+      },
+      "pages": [
+        {
+          "id": "nodes-wires",
+          "title": {
+            "zh": "加节点、连线与 @ 引用",
+            "en": "Nodes, wires, @ refs"
           }
         },
         {
-          "id": "editors",
+          "id": "marks-groups",
           "title": {
-            "zh": "Markdown 与代码编辑",
-            "en": "Markdown & code editing"
-          }
-        },
-        {
-          "id": "ai-review",
-          "title": {
-            "zh": "AI 审阅：批注与修订",
-            "en": "AI review: notes & revisions"
-          }
-        },
-        {
-          "id": "workspace",
-          "title": {
-            "zh": "工作目录与存档",
-            "en": "Workspace & archives"
+            "zh": "框选、组与排版",
+            "en": "Box, groups, layout"
           }
         },
         {
@@ -259,66 +213,6 @@
           "title": {
             "zh": "撤销与回滚",
             "en": "Undo & rollback"
-          }
-        }
-      ]
-    },
-    {
-      "id": "app",
-      "title": {
-        "zh": "设置与维护",
-        "en": "Settings & upkeep"
-      },
-      "pages": [
-        {
-          "id": "settings",
-          "title": {
-            "zh": "设置总览",
-            "en": "Settings"
-          }
-        },
-        {
-          "id": "account",
-          "title": {
-            "zh": "登录与账号",
-            "en": "Account & sign-in"
-          }
-        },
-        {
-          "id": "update",
-          "title": {
-            "zh": "版本更新",
-            "en": "Updates"
-          }
-        },
-        {
-          "id": "troubleshoot",
-          "title": {
-            "zh": "排错与诊断",
-            "en": "Troubleshooting"
-          }
-        },
-        {
-          "id": "faq",
-          "title": {
-            "zh": "常见问题",
-            "en": "FAQ"
-          }
-        }
-      ]
-    },
-    {
-      "id": "ref",
-      "title": {
-        "zh": "参考",
-        "en": "Reference"
-      },
-      "pages": [
-        {
-          "id": "node-guide",
-          "title": {
-            "zh": "节点指南索引",
-            "en": "Node guide index"
           }
         },
         {
@@ -329,10 +223,10 @@
           }
         },
         {
-          "id": "manual-notes",
+          "id": "faq",
           "title": {
-            "zh": "这本手册怎么维护",
-            "en": "How this manual is built"
+            "zh": "常见问题",
+            "en": "FAQ"
           }
         }
       ]
