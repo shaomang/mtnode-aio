@@ -1265,6 +1265,96 @@ function openDevProjectRoot(node) {
     );
 }
 
+/* 本节点是否「最外层开发块」（菜单与头部按钮的唯一判定）：devPath 只在这一层设，
+   往下靠就近继承 —— 所以只有它才给「设置项目文件夹」入口，内部子块给「子文件夹」。 */
+function devTopBlockForProjectFolder(node) {
+  return !!(
+    node &&
+    node.kind === "super" &&
+    node.dev &&
+    !node.db &&
+    typeof devIsTopBlock === "function" &&
+    devIsTopBlock(node)
+  );
+}
+
+/* 「设置项目文件夹」：只给最外层开发块。写的是 node.devPath 一处，整棵子树跟着生效
+   （devPathOf / devProjectRootOf 就近继承），因此这里不做路径改写、不动任何子节点。 */
+function promptDevProjectFolder(node) {
+  if (!devTopBlockForProjectFolder(node)) {
+    toast(I18n.t("项目文件夹只能设在最外层开发节点上"), "warn");
+    return;
+  }
+  const cur =
+    typeof devPathOf === "function" ? String(devPathOf(node) || "").trim() : "";
+  openOverlay(I18n.t("设置项目文件夹"), { persistent: true });
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.textContent = I18n.t(
+    "项目文件夹 = 本功能块的项目根（devPath）：开发 / 细化会话的代码搜索、核心文件列表与文件节点都相对它解析，内部子块就近继承，不必重复设置。",
+  );
+  body.appendChild(hint);
+  const row = document.createElement("div");
+  row.className = "n-field";
+  row.appendChild(document.createTextNode(I18n.t("项目文件夹（绝对路径）")));
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.spellcheck = false;
+  inp.placeholder = "E:\\dev\\tools\\my-project";
+  inp.value = cur;
+  row.appendChild(inp);
+  const browse = document.createElement("button");
+  browse.type = "button";
+  browse.className = "mini";
+  browse.textContent = I18n.t("选择文件夹…");
+  browse.title = I18n.t("弹出系统文件夹窗口，选中后填入");
+  browse.onclick = async () => {
+    const r = await window.api
+      .fileOpenDialog({ title: I18n.t("选择项目文件夹"), directory: true })
+      .catch(() => null);
+    const p = r && r.path ? String(r.path) : "";
+    if (!p) return;
+    inp.value = p;
+    inp.focus();
+  };
+  row.appendChild(browse);
+  body.appendChild(row);
+  const foot = $("#ovFoot");
+  const clear = document.createElement("button");
+  clear.className = "mini";
+  clear.textContent = I18n.t("清除");
+  clear.onclick = () => {
+    inp.value = "";
+    inp.focus();
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  cancel.onclick = closeOverlay;
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = I18n.t("确定");
+  ok.onclick = () => {
+    const next = String(inp.value || "").trim();
+    pushHistory();
+    node.devPath = next;
+    closeOverlay();
+    scheduleSave(true);
+    renderCanvas();
+    toast(
+      next
+        ? I18n.t("项目文件夹已设为：") + next
+        : I18n.t("已清除项目文件夹"),
+      "ok",
+    );
+  };
+  foot.appendChild(clear);
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  setTimeout(() => inp.focus(), 0);
+}
+
 /* 编辑核心文件：textarea 每行一个路径；「自动收集 / 清空」只改输入框，
    写入一律走 devCoreFilesSet（归一 + 记历史 + 落盘都在那一处） */
 async function editDevCoreFiles(node) {
@@ -3410,13 +3500,24 @@ async function openPdfSaveTarget(node) {
   window.api.shellOpenPath(target);
 }
 
-/* PDF 生成节点头部的「打开」小按钮（节点上方）：预览 / 编辑态都在。 */
+/* PDF 文件图标（节点头部「打开」按钮用）：纸张 + 折角 + PDF 字样。
+   与 KIND_ICON_SVG 同风格（线性 · stroke=currentColor），文字用 fill=currentColor。 */
+const PDF_OPEN_ICON_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true">' +
+  '<path d="M3.7 2.2h5.2l3.1 3.1v7.4a1 1 0 0 1-1 1H4.7a1 1 0 0 1-1-1V2.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>' +
+  '<path d="M8.8 2.4v3h2.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"/>' +
+  '<text x="8" y="12.2" text-anchor="middle" font-size="5" font-weight="700" font-family="Arial, Helvetica, sans-serif" fill="currentColor" stroke="none">PDF</text>' +
+  "</svg>";
+
+/* PDF 生成节点头部的「打开」小按钮（节点上方）：预览 / 编辑态都在。
+   按钮不用文字，直接用 PDF 图标表示（文案只在 title / aria-label 里）。 */
 function savePdfOpenButtonEl(node) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "n-play n-pdf-open";
-  b.textContent = I18n.t("打开");
+  b.innerHTML = PDF_OPEN_ICON_SVG;
   b.title = I18n.t("打开 PDF：用系统默认阅读器打开已生成的 PDF");
+  b.setAttribute("aria-label", I18n.t("打开 PDF"));
   b.onclick = (ev) => {
     ev.stopPropagation();
     openPdfSaveTarget(node);
@@ -4517,29 +4618,43 @@ function nodeElement(node) {
     chip.textContent = String(nChild);
     chip.title = I18n.t("拖入节点以收纳；拖出以移出");
     head.appendChild(chip);
-    const sf = String(node.subFolder || "").trim();
-    if (sf) {
+    /* 最外层开发块：头部这一格是「项目文件夹」（devPath），且**不显示子文件夹** ——
+       devPath 只在顶层块设、子块就近继承；子文件夹的含义是「工作目录 / 子文件夹」，
+       摆在最外层块上只会被当成项目根。子开发块 / 普通超节点 / 数据库超节点照旧。 */
+    const topDev = devTopBlockForProjectFolder(node);
+    const projRoot =
+      topDev && typeof devPathOf === "function"
+        ? String(devPathOf(node) || "").trim()
+        : "";
+    const sf = topDev ? "" : String(node.subFolder || "").trim();
+    const headPath = topDev ? projRoot : sf;
+    if (headPath) {
       const path = document.createElement("span");
       path.className = "n-super-subfolder";
-      path.textContent = sf;
-      path.title = I18n.t("子文件夹：") + sf;
+      path.textContent =
+        topDev && typeof fileName === "function"
+          ? fileName(headPath)
+          : headPath;
+      path.title = topDev
+        ? I18n.t("项目文件夹：") + headPath
+        : I18n.t("子文件夹：") + headPath;
       head.appendChild(path);
     }
     const folder = document.createElement("button");
     folder.type = "button";
     folder.className =
       "n-super-folder" +
-      (sf ? " on" : "") +
-      (sf ? "" : " lead");
+      (headPath ? " on" : "") +
+      (headPath ? "" : " lead");
     folder.innerHTML = KIND_ICON_SVG.folder;
-    folder.title = I18n.t("设置子文件夹（内部节点默认相对路径）");
-    folder.setAttribute(
-      "aria-label",
-      I18n.t("设置子文件夹（内部节点默认相对路径）"),
-    );
+    folder.title = topDev
+      ? I18n.t("设置项目文件夹（本功能块的项目根 devPath）")
+      : I18n.t("设置子文件夹（内部节点默认相对路径）");
+    folder.setAttribute("aria-label", folder.title);
     folder.onclick = (ev) => {
       ev.stopPropagation();
-      promptSuperSubFolder(node);
+      if (topDev) promptDevProjectFolder(node);
+      else promptSuperSubFolder(node);
     };
     head.appendChild(folder);
     /* 「描述」小按钮：超级节点 body 已封装为文件夹外观，描述改由此处编辑。
@@ -4716,7 +4831,7 @@ function nodeElement(node) {
       typeof window.imageOutButtonEl === "function"
     )
       head.appendChild(window.imageOutButtonEl(node));
-    /* PDF 生成：节点上方（头部）给一枚「打开」小按钮。预览态不渲染可点的预览块，
+    /* PDF 生成：节点上方（头部）给一枚 PDF 图标小按钮。预览态不渲染可点的预览块，
        打开动作只能留在头部这排按钮上。 */
     if (saveMediaKind(node) === "pdf") head.appendChild(savePdfOpenButtonEl(node));
   }
@@ -5997,7 +6112,21 @@ function nodeElement(node) {
           () => toggleSuperOpen(node),
           "expand",
         ),
-        ctxAction(I18n.t("设置子文件夹…"), () => promptSuperSubFolder(node), "folder"),
+        ...(devTopBlockForProjectFolder(node)
+          ? [
+              ctxAction(
+                I18n.t("设置项目文件夹…"),
+                () => promptDevProjectFolder(node),
+                "folder",
+              ),
+            ]
+          : [
+              ctxAction(
+                I18n.t("设置子文件夹…"),
+                () => promptSuperSubFolder(node),
+                "folder",
+              ),
+            ]),
         ctxAction(I18n.t("将选中节点移入此超级节点"), () => {
           const sel = [...(S.selSet || [])]
             .map((id) => nodeById(id))
@@ -7127,7 +7256,7 @@ NODE_BROWSE_BODY.save = function (node, body) {
     prev.appendChild(pre);
   } else if (media === "pdf") {
     /* PDF：预览态不渲染预览图 —— PDF 当不了图片显示，保留 <img> 只会是一块空图；
-       这里只列一行文件名。打开动作在节点头部的「打开」小按钮上（浏览态唯一可点处）。 */
+       这里只列一行文件名。打开动作在节点头部的 PDF 图标小按钮上（浏览态唯一可点处）。 */
     const nm = document.createElement("div");
     nm.className = "sv-pdf-file" + (node.savedPath ? "" : " is-empty");
     nm.id = "svpdfname-" + node.id;

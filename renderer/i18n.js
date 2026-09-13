@@ -5027,6 +5027,23 @@
       "No project root (devPath) yet: set the project path on the top-level block first",
     "最外层（项目）开发节点不列举核心文件":
       "The outermost (project) dev node lists no core files",
+    /* ===== 开发节点：最外层块的「设置项目文件夹」（devPath）===== */
+    "设置项目文件夹": "Set project folder",
+    "设置项目文件夹…": "Set project folder…",
+    "设置项目文件夹（本功能块的项目根 devPath）":
+      "Set the project folder (this block's project root, devPath)",
+    "项目文件夹（绝对路径）": "Project folder (absolute path)",
+    "选择项目文件夹": "Choose project folder",
+    "选择文件夹…": "Choose folder…",
+    "弹出系统文件夹窗口，选中后填入":
+      "Open the system folder picker and fill in the chosen path",
+    "项目文件夹 = 本功能块的项目根（devPath）：开发 / 细化会话的代码搜索、核心文件列表与文件节点都相对它解析，内部子块就近继承，不必重复设置。":
+      "The project folder is this block's project root (devPath): dev / refine sessions search code, core-file lists and file nodes relative to it. Nested blocks inherit it from the nearest ancestor — no need to set it again.",
+    "项目文件夹只能设在最外层开发节点上":
+      "The project folder can only be set on the outermost dev node",
+    "项目文件夹已设为：": "Project folder set to: ",
+    "已清除项目文件夹": "Project folder cleared",
+    "项目文件夹：": "Project folder: ",
     /* ===== 开发节点：运行中徽标 / 呼吸灯边框 ===== */
     "本功能块正在运行（作为超级节点被执行）":
       "This module is running (executed as a super node)",
@@ -7312,6 +7329,7 @@
     "尚未生成（点击 ▶ 生成 PDF）": "Not generated yet (click ▶ to create the PDF)",
     "打开 PDF：用系统默认阅读器打开已生成的 PDF":
       "Open PDF: open the generated PDF in the system default reader",
+    "打开 PDF": "Open PDF",
     "尚未生成 PDF：点节点上的 ▶ 生成":
       "No PDF yet — click ▶ on the node to generate it",
     "点击用系统默认应用打开：": "Click to open with the system default app: ",

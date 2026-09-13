@@ -11253,6 +11253,10 @@ function canvasWorldBounds() {
 
 /** 限制相机平移：视野不得离当前可见内容过远，避免在空白区迷失 */
 function clampCam() {
+  /* 生成高清总览图期间（_capturingCanvas）相机由瓦片循环逐块精确指定：
+     这里再夹一次会把最后一行/列推回可平移范围，那一块的画面就整体左/上移，
+     成图右（下）边多出一条重复内容。故截图期间一律不夹。 */
+  if (S._capturingCanvas) return;
   const bounds = canvasWorldBounds();
   if (!bounds || !S.cam) return;
   const canvas = $("#canvas");
@@ -11445,6 +11449,8 @@ async function exportCanvasOverviewPng() {
       out.toBlob((b) => (b ? resolve(b) : reject(new Error("png"))), "image/png");
     });
 
+    /* 瓦片取完先撤标志，再恢复视角：恢复这一步回到常态（clampCam 生效） */
+    S._capturingCanvas = false;
     S.cam.x = savedCam.x;
     S.cam.y = savedCam.y;
     S.cam.z = savedCam.z;
@@ -11453,7 +11459,6 @@ async function exportCanvasOverviewPng() {
     if (rq && !rqWasHidden) rq.hidden = false;
     if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
     veil = null;
-    S._capturingCanvas = false;
 
     const dest = await window.api.fileSaveDialog({
       title: I18n.t("生成高清总览图"),
@@ -11474,6 +11479,8 @@ async function exportCanvasOverviewPng() {
   } catch (e) {
     toast(I18n.t("生成总览图失败：") + ((e && e.message) || String(e)), "err");
   } finally {
+    /* 无论走哪条路径都在恢复视角前撤掉标志（出错路径靠这里兜底） */
+    S._capturingCanvas = false;
     S.cam.x = savedCam.x;
     S.cam.y = savedCam.y;
     S.cam.z = savedCam.z;
@@ -11481,7 +11488,6 @@ async function exportCanvasOverviewPng() {
     if (canvasEl) canvasEl.classList.remove("is-snapshot");
     if (rq && !rqWasHidden) rq.hidden = false;
     if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
-    S._capturingCanvas = false;
     if (btn) btn.disabled = false;
     renderStatus();
   }

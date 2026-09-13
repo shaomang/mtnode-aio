@@ -4026,6 +4026,27 @@
   background: rgba(56, 214, 255, .12);
 }
 
+/* PDF 生成节点头部的「打开」按钮：用 PDF 图标表示（红色纸 + PDF 字样，不带文字）
+   配色与预览区那枚大按钮同族（PDF 红），一眼能认出是「打开 PDF」 */
+.n-play.n-pdf-open {
+  width: 24px;
+  color: var(--red, #e06c75);
+  border-color: rgba(224, 108, 117, .45);
+  background: rgba(224, 108, 117, .1);
+}
+
+.n-play.n-pdf-open svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.n-play.n-pdf-open:hover {
+  color: #ff9aa2;
+  border-color: var(--red, #e06c75);
+  background: rgba(224, 108, 117, .22);
+}
+
 .n-backend-panel {
   flex: none;
   display: flex;
