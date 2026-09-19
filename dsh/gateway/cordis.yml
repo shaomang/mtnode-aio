@@ -16,6 +16,16 @@
 - id: mtnode-session-resume
   name: './plugins/session-resume-server.mjs'
 
+# 轮内插话与暂停（session/steer + session/pause 桥）：给 SDK server 装两枚可选 JSON-RPC
+# 方法 —— 网关在用户追加即时纠偏时调 session/steer（与上游 session/prompt 同源的
+# createUserMessage → agent.steer，插进当前轮的 steering 位），在用户按 ■ 暂停时调
+# session/pause（agent.cancel({kind:'user'}, {keepInbox:true})：中止本轮但保留已排队消息）。
+# 会话不在 live 回 {ok:false, reason:'no_live_agent'}，两枚方法一律不抛 —— 网关据此把插话
+# 降级为排队、把暂停回落既有终止路径，绝不因插件而把正在跑的轮次判成失败重发。
+# 老运行时没有这两枚方法 = 网关按 unknown-method 回退，行为与接入前一字不变。
+- id: mtnode-session-steer
+  name: './plugins/session-steer-server.mjs'
+
 - id: timer
   name: '@deepseek-ai/cordis-plugin-timer'
 
@@ -84,6 +94,22 @@
   name: './db-plugin.mjs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
+# MTNode 长周期任务工具:属于某个长任务运行的节点经 lt_state 读共享状态、写自己
+# 声明的输出键,经 lt_memory 分层召回长期记忆 / 写入 / 提交候选事实(候选一律由用户
+# 在条带上逐条确认)。宿主持有 run 与记忆库,非长任务轮一律拒绝(同 mtnode_db 口径)。
+- id: mtnode-longtask
+  name: './longtask-plugin.mjs'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+# MTNode 素材库 / 截图工具:mtnode_assets 让「准备素材」类运行能列出素材库
+# （三视图等人设参考）、读出一条内容的绝对路径（交给 mtnode_vision 或交付端子），
+# 并把 MTNode 窗口当下拍成一张静帧 PNG 落到指定绝对路径。素材库根与交付目录都在
+# 工作区之外（沙箱拒读拒写），所以真源在宿主（渲染层读库 / capturePage 截图），
+# 插件只经同一条桥转发。被「素材库与截图」许可拒掉时整只不注册。
+- id: mtnode-assets
+  name: './assets-plugin.mjs'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
 # MTNode 用户工具节点:把画布中的工具节点 / 库中「随时可调用」的工具注册成
 # 会话可见的函数调用工具(func call)。描述子由宿主在每次 run 前经
 # MTNODE_TOOLS_JSON 注入(指纹进 runtime key,工具集变化即冷起新运行时);
@@ -97,7 +123,7 @@
 # 把它们从可见集摘掉（被摘掉的工具整份 schema 不再进请求）。名单 = spawn 时注入的
 # MTNODE_HIDE_TOOLS（逗号分隔规范名，同时进 runtime key 的 hx: 指纹 → 一台运行时一个
 # 形状，绝不在轮内改可见集）。名单为空 / env 缺席 = 不注册任何监听，行为与未接入时
-# 一字不差。MTNode 自有工具的不注册在 canvas-plugin / db-plugin 的注册口，判定的名单
+# 一字不差。MTNode 自有工具的不注册在 canvas-plugin / db-plugin / assets-plugin 的注册口，判定的名单
 # 真源是 dsh/gateway/tool-visibility.mjs。契约见 dsh/DESIGN.md「按运行裁剪可见工具集」。
 - id: mtnode-tool-visibility
   name: './plugins/tool-restrict-plugin.mjs'
@@ -179,7 +205,7 @@
 - id: approval
   name: '@deepseek-ai/dsh-user-approval'
   config:
-    policy: never
+    policy: ask
 
 - id: permission
   name: '@deepseek-ai/dsh-permission-presets'
@@ -203,11 +229,14 @@
         # 桌宠对话：每项工具都走审批，宿主自动放行 web/搜索、拒绝文件/终端/画布
         sandbox: read-only
         approval: ask
-      # Default: confinement stays on, asks stay off. The hosting app switches
+      # Default: confinement stays on, asks stay armed. The hosting app switches
       # the preset per run (settings 段 + 本行 defaultPreset 双写,见 gateway)。
+      # 沙箱拒绝(工作区外的写 / 越权升权)必须能问到用户:审批走宿主交互桥,
+      # 用户可选「允许一次 / 本会话后续都放行 / 拒绝」——故这里不能是 never。
+      # 目录..范围仍由沙箱(workspace-write)收紧,询问只发生在被拒绝的那一刻。
       mtnode-unattended:
         sandbox: workspace-write
-        approval: never
+        approval: ask
     defaultPreset: mtnode-unattended
 
 - id: shell-env
@@ -426,8 +455,10 @@
       CRITICAL: proc_image (text-to-image) produces exactly ONE image per run —
       never write prompts asking for multiple images in one generation; for many
       images use 1:1 batch items, multiple proc_image nodes, or attempts N.
-      Set proc_image size from imageSizes in mtnode_canvas_get (e.g. 2048x1360,
-      1280x1280, auto) according to portrait/landscape/square needs.
+      Set proc_image size from the imageSizes table, fetched with
+      mtnode_canvas_get sections:["refs"] (static tables are never sent by
+      default) — default 2048x1360; pick according to portrait/landscape/square
+      needs.
       Prefer user-editable canvas layouts: createMarks (box/text) to separate
       zones such as edit / docs / process / output, and add control nodes
       (ctrlAction "run" only — never "clear") wired DIRECTLY to each node the

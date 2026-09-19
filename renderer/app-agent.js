@@ -1,5 +1,12 @@
 "use strict";
-/* ============ dsh agent 能力（契约见 dsh/DESIGN.md）============ */
+/* ============ dsh agent 能力（契约见 dsh/DESIGN.md）============
+   ⚠ 本段（dshProvider … dshRunMaxTokens 共 46 个全局函数）在 renderer/app.js 里
+   有一份**逐字同步的第二份**，两份的唯一差别是加载次序：index.html 里 app.js 先加载、
+   本文件后加载 → 运行期生效的是本文件这一份。改这里必须同步改 app.js 那一份。
+   历史上两边漂移过一次（sensenova_gen 的图像输入、isSuperLikeNode 的 tool 变体、
+   save_pdf 默认名三处只写在 app.js 侧 → 三个修复运行期完全没生效），修好后由
+   test/smoke-workspace-project.js [7] 与 test/smoke-resume-on-retry.js [6c] 钉住「两份逐字一致」。
+   行尾一律 LF（本目录其余渲染层文件都是 LF，行尾不同会让上面那条闸门恒红）。 */
 
 /* agent 能力走 DeepSeek 路由：取第一个 DeepSeek 兼容文本服务商 */
 function dshProvider() {
@@ -294,7 +301,12 @@ function imageInputsOf(node, idx) {
   const seen = new Set();
   const pushImg = (src) => {
     if (!src || seen.has(src.id)) return;
-    if (src.kind !== "input_image" && src.kind !== "proc_image") return;
+    if (
+      src.kind !== "input_image" &&
+      src.kind !== "proc_image" &&
+      src.kind !== "sensenova_gen"
+    )
+      return;
     seen.add(src.id);
     out.push({
       id: src.id,
@@ -321,7 +333,7 @@ function collectTaskImagePaths(node, spec, idx) {
   for (const w of wiresTo(node.id)) {
     const src = nodeById(w.from);
     if (!src) continue;
-    if (src.kind === "super") {
+    if (isSuperLikeNode(src)) {
       const portIdx = Number(w.fromIndex || 0);
       if (perItem) {
         const v = valueForInput(src, portIdx, node);
@@ -587,9 +599,12 @@ function ensureDefaultSavePath(node) {
     applySavePathExt(node);
     return;
   }
+  /* PDF 生成不预填路径：它的默认名 = **输入节点**的标题，而且接上之前根本取不到那个名字
+     （见 saveDestBaseAbs / pdfDefaultNameOf）。预填成「PDF生成.pdf」反而盖住正确默认名。 */
+  if (node.kind === "save_pdf") return;
   if (!String(wfWorkspace() || "").trim() && !mediaGenOfBoundSave(node)) return;
-  const ext = saveExtForMedia(saveMediaKind(node));
-  const base = safeFile(node.title || "output") + ext;
+  /* 默认文件名不带后缀：后缀等输入内容类型定下来再决定（未定就写原样，落盘前不猜） */
+  const base = safeFile(node.title || "output");
   node.savePath = applySuperRelToPath(node, base);
 }
 function savePathResolveError(code) {
@@ -751,8 +766,7 @@ function recordDshMetrics(node, m) {
   renderStatus();
 }
 
-/* 思考强度映射（下发网关前的最后归一，词汇与 dsh/gateway/reasoning-effort.mjs 对齐;
-   与 app.js 的 dshEffortOf 同一份实现 —— 本文件在 app.js 之后加载，这份才生效）:
+/* 思考强度映射（下发网关前的最后归一，词汇与 dsh/gateway/reasoning-effort.mjs 对齐）:
    - 会话 / 助手 / 智能节点：off/low/medium/high/xhigh/max 全档原样下发（off = 「无」＝
      关闭思考，网关侧命中路由能力即下发 thinking disabled；medium/xhigh 不再拍平）
    - 空串 / none 与未知值 → high（兜底默认，兼容已存工作流）
@@ -772,8 +786,8 @@ function dshEffortOf(v, fromProcText) {
 function dshCancelActive(runKey) {
   const map = (S && S._runCancels) || {};
   const keys = runKey ? [String(runKey)] : Object.keys(map);
-  /* 判死这一轮：盖终止代号（自增），重发闸据此一次都不重发 —— 需求「停止应当立即停止，
-     而不是进入 5 次重试」。为什么不能只靠删句柄：句柄是本轮运行自己登记的，
+  /* 判死这一轮：盖终止代号（自增），重发闸据此一次都不重发 —— 需求「停止模型或会话时
+     应当立即停止，而不是进入 5 次重试」。为什么不能只靠删句柄：句柄是本轮运行自己登记的，
      本轮还没起 runtime（正在异步装配）或被 finish 抢先删掉时，删句柄这条信号就丢了；
      不带 runKey 的「全部终止」更要盖全局 '*'，连还没占上句柄的在途轮一并判死。
      （真源判据与消费方见 app-db.js dshStopMark / dshRunTask。） */
@@ -789,7 +803,7 @@ function dshCancelActive(runKey) {
     delete map[k];
     list.push({ cancelTag: h.cancelTag || k, workspace: h.workspace });
     /* 用户点「终止」= 这一轮的宿主确认框立刻作废：先本地自毁，不等网关回帧
-       （与 app.js 同名函数保持一致 —— 本文件在 app.js 之后加载，这份才生效） */
+       （否则框还挂着，点「确认」只会写进一个即将被关掉的 socket） */
     if (typeof canvasConfirmDropRun === "function") canvasConfirmDropRun(k);
   }
   if (!list.length) return Promise.resolve();
@@ -2044,17 +2058,34 @@ function tokBadgeEl(owner) {
   det.appendChild(wrap);
   return det;
 }
-/* Badge 该挂到哪个容器：已有 Badge 的父级 → 会话视图 / 助手栏 / 节点内会话 */
+/* 会话面板的尾部容器 = 输入区（.agent-composer）的父级，也就是消息区 + 输入区下面
+   那一格；拿不到（迷你 DOM / 面板还没搭好）退回 .agent-body（同样在输入区之下） */
+function tokAgentTailHost() {
+  try {
+    const inp = document.getElementById("agentInput");
+    const composer = inp && inp.closest ? inp.closest(".agent-composer") : null;
+    const body = (composer && composer.parentElement) || null;
+    if (body) return body;
+  } catch (_) {}
+  return document.querySelector(".agent-body");
+}
+/* Badge 该挂到哪个容器：
+   会话面板 / 助手栏 → 「输入框下面」的尾部容器（.agent-body / #assistPane）——
+   报告不再沉在消息区里（用户报障：要和输入区挤在一起看，长会话还得先拖到底）；
+   节点内会话 → 仍挂消息区（.agent-conv / .chat-list）：节点框高被 convH + inputH 钉死，
+   名片下方没有余量，挂到节点输入框下面会被 .n-proc-row 的 overflow:hidden 裁掉。
+   判定顺序不变：已有 Badge 的父级 → 助手栏 → 当前会话 → 节点会话 → 绑定会话 */
 function tokBadgeHost(owner) {
   if (!owner) return null;
   const sel = '.tok-badge[data-tok-owner="' + tokOwnerId(owner) + '"]';
   const existing = document.querySelector(sel);
   if (existing) return existing.parentElement;
   const sid = String(owner.id || "");
-  if (sid === "assist") return document.getElementById("assistList");
+  if (sid === "assist")
+    return document.getElementById("assistPane") || document.getElementById("assistList");
   if (S.agentActiveId === sid) {
     const list = document.getElementById("agentList");
-    if (list && list.style.display !== "none") return list;
+    if (list && list.style.display !== "none") return tokAgentTailHost();
   }
   const conv = document.querySelector(
     '.wf-node[data-nid="' + sid + '"] .agent-conv',
@@ -2064,6 +2095,32 @@ function tokBadgeHost(owner) {
     '.wf-node[data-nid="' + sid + '"] .chat-list',
   );
   return bound || null;
+}
+/* 报告挂载（会话 / 助手两条渲染路径共用）：先把消息区里残留的旧 Badge 清掉
+   （搬去输入框下面之后它不该再出现在消息流里），尾部容器也只留当前归属这一枚。
+   返回挂好的 Badge；无数据 / 找不到容器时返回 null。 */
+function tokBadgeTailMount(owner, list) {
+  if (!owner) return null;
+  const host = tokBadgeHost(owner);
+  if (!host) return null;
+  try {
+    if (list && list.querySelectorAll) {
+      const stale = list.querySelectorAll(".tok-badge");
+      for (let i = 0; i < stale.length; i++) stale[i].remove();
+    }
+    const kids = host.children || [];
+    for (let i = kids.length - 1; i >= 0; i--) {
+      const c = kids[i];
+      if (c && c.classList && c.classList.contains("tok-badge")) c.remove();
+    }
+  } catch (_) {}
+  const badge = tokBadgeEl(owner);
+  if (!badge) return null;
+  /* 节点内会话：末位外边距归零（报告由 CSS 钉在消息区底部，留缝会让内容从底下露出来） */
+  if (host.classList && host.classList.contains("agent-conv"))
+    badge.style.margin = "6px 6px 0";
+  host.appendChild(badge);
+  return badge;
 }
 /* 局部刷新：找不到宿主就挂到当前可见的会话列表末尾 */
 function tokBadgeTouch(owner, force) {
@@ -2082,13 +2139,8 @@ function tokBadgeTouch(owner, force) {
   const sel = '.tok-badge[data-tok-owner="' + tokOwnerId(owner) + '"]';
   const found = Array.from(document.querySelectorAll(sel));
   if (!found.length) {
-    const fresh = tokBadgeEl(owner);
-    if (!fresh) return;
-    const host = tokBadgeHost(owner);
-    if (!host) return;
-    if (host.classList && host.classList.contains("agent-conv"))
-      fresh.style.margin = "6px 6px 0";
-    host.appendChild(fresh);
+    /* 无 Badge 时补挂：与会话 / 助手渲染同一口径（挂到输入框下面的尾部容器） */
+    tokBadgeTailMount(owner);
     return;
   }
   for (const el of found) {

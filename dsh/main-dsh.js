@@ -8,6 +8,7 @@
 'use strict'
 
 const { spawn } = require('child_process')
+const crypto = require('crypto')
 const { createInterface } = require('readline')
 const { app } = require('electron')
 const path = require('path')
@@ -18,19 +19,27 @@ const {
   getMtnodeAgentSkill,
 } = require('../mtnode-agent-skills-lib.js')
 
-/** 插件安装专用 skill：同步到 dsh-home 供 Agent 调用，但不进入用户技能列表/工坊 */
+/**
+ * 插件安装专用 skill：同步到 dsh-home 供 Agent 调用，但不进入用户技能列表/工坊。
+ * 真源一律是仓库根 `skills/<name>/SKILL.md`（各后端宿主目录不再留副本，
+ * 否则改一处漏一处，Agent 拿到的就是旧提示词）。
+ */
 const INSTALL_SKILL_SOURCES = {
-  'minimax-music3-install': path.join(
-    __dirname, '..', 'music3', 'skills', 'minimax-music3-install', 'SKILL.md',
-  ),
-  'minimax-h3-install': path.join(
-    __dirname, '..', 'h3', 'skills', 'minimax-h3-install', 'SKILL.md',
-  ),
-  'tts-local-install': path.join(
-    __dirname, '..', 'skills', 'tts-local-install', 'SKILL.md',
-  ),
+  'minimax-h3-install': path.join(__dirname, '..', 'skills', 'minimax-h3-install', 'SKILL.md'),
+  'minimax-music3-install': path.join(__dirname, '..', 'skills', 'minimax-music3-install', 'SKILL.md'),
+  'tts-local-install': path.join(__dirname, '..', 'skills', 'tts-local-install', 'SKILL.md'),
+  'llama-local-install': path.join(__dirname, '..', 'skills', 'llama-local-install', 'SKILL.md'),
+  'asr-local-install': path.join(__dirname, '..', 'skills', 'asr-local-install', 'SKILL.md'),
+  'sensenova-local-install': path.join(__dirname, '..', 'skills', 'sensenova-local-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))
+
+/** 技能正文内容指纹（十六进制 sha256，与 ext-repo/build.mjs 的目录字段同算法）。
+ *  用途：在线目录 / 工坊按「已安装 vs 远端」判是否有更新 —— 只看 version 的旧口径
+ *  漏掉了「同版本号改了正文」，用户就永远拿不到新版提示词技能。 */
+function sha256Hex(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex')
+}
 
 /* 统一 Node:gateway 与 dsh 运行时都用 Electron 自带 Node 启动
    (process.execPath + ELECTRON_RUN_AS_NODE=1),用户无需安装 Node,
@@ -58,7 +67,34 @@ function createDshAdapter(opts) {
   let closed = false
   const pending = new Map()
   const activeRuns = new Set()
+  /* 本适配器见过「已要求暂停」的那一轮：reqId -> {at, cancelTag}。
+     pause 是同步往返：宿主这一跳 30s 超时、或网关那 10s 没回音时，暂停很可能已经落地
+     （运行时收到 pause 就在同一拍 abort 收尾，那一轮随之从网关在途表消失）。
+     这时用户再点一次「暂停」不该看到失败 —— 同一条在途轮直接回 ok + idempotent。
+     随该轮 done 事件删除，所以按 cancelTag 兜底匹配也只可能命中「还没收尾」的那一轮
+     （只给了 cancelTag、没给 reqId 的调用就是这么个情形）；整表上限兜底，网关退出即清空。 */
+  const pausedReqIds = new Map()
+  const PAUSED_REQS_MAX = 512
   const onEvent = opts.onEvent || (() => {})
+
+  function notePausedReq(reqId, cancelTag) {
+    const id = reqId == null ? '' : String(reqId).trim()
+    if (!id) return
+    pausedReqIds.set(id, { at: Date.now(), cancelTag: cancelTag ? String(cancelTag) : '' })
+    while (pausedReqIds.size > PAUSED_REQS_MAX) {
+      const oldest = pausedReqIds.keys().next().value
+      if (oldest === undefined) break
+      pausedReqIds.delete(oldest)
+    }
+  }
+
+  /* 这一轮是否已被要求暂停：reqId 最准；只给 cancelTag 时扫表（见上面注释的口径）。 */
+  function seenPausedReq(p) {
+    if (p.reqId && pausedReqIds.has(p.reqId)) return true
+    if (!p.cancelTag) return false
+    for (const e of pausedReqIds.values()) if (e.cancelTag && e.cancelTag === p.cancelTag) return true
+    return false
+  }
 
   function out(msg) {
     if (child && child.stdin && !child.stdin.destroyed) {
@@ -92,6 +128,7 @@ function createDshAdapter(opts) {
       if (msg.event) {
         if (msg.event && msg.event.type === 'done' && msg.event.reqId) {
           activeRuns.delete(msg.event.reqId)
+          pausedReqIds.delete(msg.event.reqId)
         }
         onEvent(msg.event)
         return
@@ -123,6 +160,8 @@ function createDshAdapter(opts) {
         onEvent({ reqId, type: 'error', data: { message: '智能引擎已断开(code=' + code + ')，请重试' } })
         onEvent({ reqId, type: 'done', data: { finalResponse: '' } })
       }
+      /* 引擎都没了，在途轮的暂停存根一并作废（重拉起后的轮次是全新 reqId） */
+      pausedReqIds.clear()
       if (rl) { try { rl.close() } catch {} }
       rl = null
       child = null
@@ -156,6 +195,30 @@ function createDshAdapter(opts) {
         out({ id, method, params })
       })
     })
+  }
+
+  /* steer / pause 的点名参数：只透传最小字段 {reqId|cancelTag, sessionId?, 正文?}。
+     网关按在途表(reqId → 那一轮的 runtime)寻址，用不上工作区，因此不像 run 那样
+     补 dshHome —— 多带无关字段只会让老网关对参数形状产生误解。 */
+  function inflightParams(params) {
+    const p = params || {}
+    const o = {}
+    for (const k of ['reqId', 'cancelTag', 'sessionId']) {
+      const v = p[k] == null ? '' : String(p[k]).trim()
+      if (v) o[k] = v
+    }
+    const text = [p.text, p.content, p.input, p.message].find(
+      (x) => typeof x === 'string' && x.trim(),
+    )
+    if (text) o.text = text
+    if (Array.isArray(p.contentBlocks) && p.contentBlocks.length) o.contentBlocks = p.contentBlocks
+    return o
+  }
+
+  /* 超时文案由 request() 自己铸造（`dsh 请求超时:<method>`），认它即可：
+     超时 ≠ 失败 —— 那一侧的请求很可能已经生效，只是没赶上回音。 */
+  function isTimeoutErr(err) {
+    return /请求超时/.test(String((err && err.message) || err))
   }
 
   return {
@@ -228,6 +291,53 @@ function createDshAdapter(opts) {
       return request('interact', params, 30000)
     },
 
+    /* 插话：往「此刻正在跑的这一轮」的下一步边界投一句话(运行时侧 agent.steer)，
+       不等本轮跑完，模型下一步就带着这句继续。只在本轮真在途时有效。
+       网关回 {ok:false, reason:'unsupported'}(没有在途这一轮 / 老运行时没有该方法)
+       时，调用方一律回落成「排队消息」—— 那是保底路径，不是发送失败。
+       超时单独成形：请求可能已经落进运行时，只是没回音；插话可安全重发
+       (最多让模型多看一眼同一句话)，故回 retryable:true，由调用方决定是否补发。 */
+    steer(params) {
+      const p = inflightParams(params)
+      if (!p.reqId && !p.cancelTag) return Promise.reject(new Error('steer 需要 reqId 或 cancelTag'))
+      if (!p.text && !p.contentBlocks) return Promise.reject(new Error('steer 需要插话正文(text / contentBlocks)'))
+      return request('steer', p, 30000).catch((err) => {
+        if (isTimeoutErr(err)) return { ok: false, reason: 'timeout', retryable: true, error: (err && err.message) || String(err) }
+        throw err
+      })
+    },
+
+    /* 暂停：让正在跑的这一轮停在当前步(cancel{kind:'user'} + keepInbox)——
+       与 cancel 的关键区别是不关 runtime 进程、保留上下文，之后可继续跑。
+       成功后本轮以 done{paused:true} 收尾(网关保证不会有 error)。
+       幂等：同一条在途轮只要见过一次成功的暂停(含超时但可能已落地)，再点暂停直接回
+       ok + idempotent:true —— 告诉调用方「这一轮已经不在往前跑了」，别报失败。 */
+    pause(params) {
+      const p = inflightParams(params)
+      if (!p.reqId && !p.cancelTag) return Promise.reject(new Error('pause 需要 reqId 或 cancelTag'))
+      const again = seenPausedReq(p)
+      return request('pause', p, 30000).then((res) => {
+        if (res && res.ok) {
+          /* 网关会把这一轮真正的 reqId(以及同标签并发时的 reqIds)带回来，按它记账，
+             这样下一次即便只给 reqId 或只给 cancelTag 都认得出来是同一轮。 */
+          const ids = [res.reqId].concat(Array.isArray(res.reqIds) ? res.reqIds : [])
+          for (const id of ids) notePausedReq(id, p.cancelTag || res.cancelTag)
+          return res
+        }
+        if (again) return Object.assign({}, res || {}, { ok: true, paused: true, idempotent: true })
+        return res
+      }, (err) => {
+        const message = (err && err.message) || String(err)
+        if (isTimeoutErr(err)) {
+          /* 请求已经发出去了，只是没赶上回音：先记账，后续同一条轮的再点按幂等成功处理 */
+          notePausedReq(p.reqId, p.cancelTag)
+          return { ok: false, reason: 'timeout', pending: true, error: message }
+        }
+        if (again) return { ok: true, paused: true, idempotent: true }
+        throw err
+      })
+    },
+
     /* 回滚收尾：取回 gateway 侧「无在途 run」时暂存的 journal 帧。
        params {key?, workspace?, sessionId?, roundId?, peek?} → {entries:[{key,data}]} */
     rollbackDrain(params) {
@@ -240,7 +350,7 @@ function createDshAdapter(opts) {
 
     /* ── skills:文件系统技能,$DSH_HOME/skills/<name>/SKILL.md ──
        运行时 skill-filesystem 提供者自动发现 user-dsh 根,无需重启引擎。
-       插件安装用 skill 从 music3/h3 包内同步到 dshHome（升级后覆盖），不进用户技能仓库 UI。
+       插件安装用 skill 从仓库根 skills/ 同步到 dshHome（升级后覆盖），不进用户技能仓库 UI。
        创意工坊 / 扩展目录下载的技能不在此列，本地留存直至用户主动更新。 */
     syncInstallSkills() {
       try {
@@ -355,11 +465,16 @@ function createDshAdapter(opts) {
           let title = ''
           let description = ''
           let version = ''
+          let sha256 = ''
           if (fs.existsSync(skillMd)) {
-            const meta = this._parseSkillMeta(fs.readFileSync(skillMd, 'utf8'))
+            const body = fs.readFileSync(skillMd)
+            const meta = this._parseSkillMeta(body.toString('utf8'))
             title = meta.title || ''
             description = meta.description || ''
             version = meta.version || ''
+            /* 正文内容指纹（与扩展目录 ext-repo/build.mjs 同算法）：
+               在线目录 / 工坊里同版本号但正文改过的技能，靠它才能被判成「有更新」。 */
+            sha256 = sha256Hex(body)
           }
           const builtin = fs.existsSync(path.join(root, e.name, '.builtin'))
           const store = this._readStoreMeta(path.join(root, e.name)) || {}
@@ -368,6 +483,7 @@ function createDshAdapter(opts) {
             title: String(title).slice(0, 80),
             description: String(description).slice(0, 200),
             version: String(store.version || version || '').slice(0, 32),
+            sha256,
             builtin: !!builtin,
             storeId: store.storeId || '',
             storeUpdatedAt: store.updatedAt || 0,
@@ -456,6 +572,16 @@ function createDshAdapter(opts) {
         if (exists && fs.existsSync(path.join(dir, '.builtin'))) {
           return { ok: false, error: '内置技能不可覆盖' }
         }
+        /* 随应用内置的技能（含 skillList 不展示的 .mtnode-internal 一类）同样不许被
+           工坊下载 / 用户新建顶掉：老版本这些名字来自创意工坊，用户机上可能还留着
+           带 .store-meta.json 的同名目录，内置库同步会接管它，这里再堵死反向覆盖。 */
+        if (
+          exists &&
+          (fs.existsSync(path.join(dir, '.mtnode-internal')) ||
+            fs.existsSync(path.join(dir, '.mtnode-builtin')))
+        ) {
+          return { ok: false, error: '内置技能不可覆盖' }
+        }
         if (exists && fs.existsSync(path.join(dir, '.install-only'))) {
           return { ok: false, error: '插件安装技能不可覆盖' }
         }
@@ -530,7 +656,10 @@ function createDshAdapter(opts) {
         ) {
           return { ok: false, error: '插件安装技能不可卸载' }
         }
-        if (fs.existsSync(path.join(dir, '.mtnode-internal'))) {
+        if (
+          fs.existsSync(path.join(dir, '.mtnode-internal')) ||
+          fs.existsSync(path.join(dir, '.mtnode-builtin'))
+        ) {
           return { ok: false, error: 'MTNode 内置技能不可卸载' }
         }
         if (fs.existsSync(path.join(dir, '.builtin'))) {

@@ -1127,6 +1127,42 @@ async function dbLogToStore(db, wf, node, action, q, hits) {
     });
   } catch (_) {}
 }
+/* ---------- 宿主侧 mtnode_assets 事件处理（素材库 / 窗口截图 → 应答） ----------
+   dsh/gateway/assets-plugin.mjs 那只工具的唯一宿主分发口。动作→许可键的映射真源在
+   app-nodes.js 的 assetsToolKeyOf（一个许可项 = 一个工具：整只被拒就整只不注册）。
+   实现体在 app-assets.js（handleAssetEvent，读库 / 读条目 / 拍图落盘）。 */
+function handleAssetToolEvent(data, runKey) {
+  const id = data && data.id;
+  if (!id) return;
+  const reply = (result, error) =>
+    window.api
+      .dshInteract({ kind: "asset", id, result, error: error || undefined })
+      .catch(() => {});
+  const p = (data && data.params) || {};
+  const action = String((data && data.action) || p.action || "list").trim();
+  const key = typeof assetsToolKeyOf === "function" ? assetsToolKeyOf() : "assets_read";
+  const mode =
+    typeof agentToolMode === "function" ? agentToolMode(key, runKey) : "allow";
+  if (mode === "deny") {
+    const err =
+      typeof agentToolDeniedError === "function"
+        ? agentToolDeniedError(key, "mtnode_assets").message
+        : I18n.t("当前工具预设不允许：") + "mtnode_assets";
+    reply({ ok: false, error: err });
+    return;
+  }
+  if (!window.__mtnodeAssetOp) {
+    reply({
+      ok: false,
+      error: I18n.t("素材库界面未就绪（app-assets.js）"),
+    });
+    return;
+  }
+  window.__mtnodeAssetOp({ action: action, params: p })
+    .then((result) => reply(result))
+    .catch((e) => reply({ ok: false, error: String((e && e.message) || e) }));
+}
+
 async function handleDbToolEvent(data, node, wf) {
   const id = data && data.id;
   const reply = (result) =>
@@ -1494,13 +1530,53 @@ function traceCloseThink(tr) {
   if (idx >= 0 && tr.items && tr.items[idx]) tr.items[idx].open = false;
   tr._thinkIdx = -1;
 }
+/* 收口当前开放的正文段（与 traceCloseThink 对称）：清掉段上的「仍在流式增长」标记。
+   渲染层据此区分「还在逐 token 增长的尾段」与「已定稿的正文段」——定稿段一律按
+   markdown 渲染（见 app-assist.js agentLiveSegsEl），否则会话最终答复（按定义就是
+   最后一个正文段）会一直停在未渲染原文的状态，直到本轮整体重绘才变回来。
+   所有原本把 tr._openSay 置 false 的地方（say-end 收尾 / 换 turn / 换 step / 调工具 /
+   报错）都改走这里：语义不变，额外把最后那个 say 段标记为已定稿。 */
+function traceCloseSay(tr) {
+  if (!tr) return;
+  tr._openSay = false;
+  const items = tr.items;
+  const last = items && items.length ? items[items.length - 1] : null;
+  if (last && last.k === "say" && last.open !== false) last.open = false;
+}
+/* ── 续跑起步前摘掉「上一失败轮」的思考段（本 bug 的直接修复）─────────────
+   续跑轮（keepTrace）按续跑契约不 reset 轨迹：已经写出来的**正文**必须留在轨迹里，
+   归档段才能还原「前半 + 续写后半」（见 traceSegmentsOf / dshMsgSegsViewable）。
+   但**思考段不是续写内容**，它是失败那一次尝试的过程记录：续跑轮沿用同一 runKey、
+   同一份轨迹，新思考会并进旧思考段（traceText('think') = 旧 + 新），于是界面上的
+   「思考」框一直挂着上一失败轮的旧思考 —— 用户看到的就是「残留旧的思考内容」，
+   而且它随消息落进 msg.reasoning / msg.segments 后，清空会话再开新一轮照样能翻出来。
+   所以续跑起步前把轨迹里的 think 段整段摘掉（正文 / 工具 / 错误段一字不动），
+   让新一轮的思考从干净的一段开始。判据 = opts.resumeSession（真·续跑起步）：
+   长任务纠错轮那类 keepTrace 不带 resumeSession，不在这里摘。 */
+function traceDropThink(runKey) {
+  const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
+  if (!tr || !Array.isArray(tr.items) || !tr.items.length) return tr || null;
+  tr.items = tr.items.filter((it) => !it || it.k !== "think");
+  /* 段下标 / 流记账一并复位：摘掉思考段后旧下标全失效（不复位会让下一段
+     思考并进一条已经不存在的段，或把收口判到错的那一段上）。 */
+  tr._thinkIdx = -1;
+  tr._toolSeq = Object.create(null);
+  tr._calls = Object.create(null);
+  /* 「正文仍在续写」标记按摘完之后的末段重算：末段仍是那条没收口的 say 就保留
+     （续跑轮的正文接回「前半 + 续写后半」的同一条）；末段已被工具 / 错误 / 思考
+     收过口（此时 open 已是 false）自然判 false，续跑轮的正文另起一段。 */
+  const last = tr.items.length ? tr.items[tr.items.length - 1] : null;
+  tr._openSay = !!(last && last.k === "say" && last.open === true);
+  tr._seg = tr.turn + ":" + tr.step;
+  return tr;
+}
 /* 追加一条轨迹事件。kind = think | say | tool | err；say-end / turn / step 只封口不成段 */
 function tracePush(runKey, kind, txt, ev) {
   if (!kind) return null;
   const tr = traceOf(runKey);
   const e = ev || {};
   if (kind === "say-end") {
-    tr._openSay = false;
+    traceCloseSay(tr);
     return null;
   }
   if (kind === "turn" || kind === "step") {
@@ -1513,7 +1589,7 @@ function tracePush(runKey, kind, txt, ev) {
       tr.turn = traceNum(e.turn, tr.turn);
       traceCloseThink(tr);
     } else tr.step = traceNum(e.step, tr.step);
-    tr._openSay = false;
+    traceCloseSay(tr);
     return null;
   }
   const turn = traceNum(e.turn, tr.turn);
@@ -1524,7 +1600,7 @@ function tracePush(runKey, kind, txt, ev) {
   const seg = turn + ":" + step;
   if (seg !== tr._seg) {
     tr._seg = seg;
-    tr._openSay = false;
+    traceCloseSay(tr);
   }
   const items = tr.items;
   const last = items[items.length - 1];
@@ -1538,10 +1614,12 @@ function tracePush(runKey, kind, txt, ev) {
        时间线；过短的保持开放，本流下一步的思考继续并回来（见 traceThinkCloseIfBig）。
        另一条并发流的工具调用不碰这条流的思考段。 */
     if (traceThinkEventSameStream(tr, e, turn, step)) traceThinkCloseIfBig(tr);
+    /* 工具调用截断的是「正文」续写：已写出来的正文段先收口定稿再落工具段
+       （顺序不能反 —— traceCloseSay 认出的是当时最后那一条 say 段）；
+       思考段的开合交给上面的收口判定。 */
+    traceCloseSay(tr);
     const it = { k: "tool", text: "", step, callId };
     items.push(it);
-    /* 工具调用截断的是「正文」续写：思考段的开合交给上面的收口判定。 */
-    tr._openSay = false;
     return it;
   }
   if (kind === "err") {
@@ -1552,9 +1630,9 @@ function tracePush(runKey, kind, txt, ev) {
       last.text += (last.text ? "\n" : "") + msg;
       return last;
     }
+    traceCloseSay(tr);
     const it = { k: "err", text: msg, step, callId };
     items.push(it);
-    tr._openSay = false;
     return it;
   }
   if (kind !== "think" && kind !== "say") return null;
@@ -1600,6 +1678,10 @@ function tracePush(runKey, kind, txt, ev) {
     };
     items.push(nit);
     tr._thinkIdx = items.length - 1;
+    /* 思考段一旦插进来，「正文仍在续写」的状态就作废（走唯一收口出口，不另写一处
+       赋值）：否则之后的正文会拿末段（think）去判「还能接回那条 say 吗」而失败，
+       于是同一句正文被切成两段。 */
+    traceCloseSay(tr);
     return nit;
   }
   /* 正文段：同一条流开口（真的写了非空白字符）= 该流思考收口，之后的思考另起一段。
@@ -1611,7 +1693,7 @@ function tracePush(runKey, kind, txt, ev) {
     last.text += body;
     return last;
   }
-  const it = { k: "say", text: body, step, callId: "" };
+  const it = { k: "say", text: body, step, callId: "", open: true };
   items.push(it);
   tr._openSay = true;
   return it;
@@ -1840,6 +1922,9 @@ const DSH_TOOLS_DROPPED_BY_NO_CANVAS = [
    按收尾回写本节点的 note / devStatus / devFiles（见 app-assist.js noRead 人设与任务书）；
    mtnode_canvas_edit 仅保留（不用于回写）。合计约 10.0K 字符/步不再重发。 */
 const DSH_TOOLS_DROPPED_BY_NO_READ = ["mtnode_canvas_get", "mtnode_app"];
+/* 长周期任务环节勾了「允许读取画布」（canvasReadOnly）：只放读，改图与应用两件套点名藏掉
+   （整档闸不能开 —— 开了连 mtnode_canvas_get 都不注册，授权就读不到任何东西）。 */
+const DSH_TOOLS_DROPPED_BY_CANVAS_READONLY = ["mtnode_canvas_edit", "mtnode_app"];
 
 /* 按运行要隐藏的工具名（第三个闸：随 run 参数 hideTools 下发网关 → runtime key 的
    hx: 指纹 + spawn env MTNODE_HIDE_TOOLS → 注册口不注册 / mtnode-tool-visibility 插件
@@ -1866,11 +1951,17 @@ function dshHiddenToolsFor(o) {
   }
   names = Array.from(names || []);
   if (!o.dbGrounded) names.push("mtnode_db");
+  /* 长周期任务两件套同理：判据是「这一轮的运行体是不是状态机里的一个环节」
+     （app-longtask.js 造的伪节点带 _lt 标记），不是就点名藏掉 —— 宿主只会回一句
+     「不属于任何长任务」，白占每步重发的工具定义。 */
+  if (!o.ltGrounded) names.push("lt_state", "lt_memory");
   /* 开发绑定会话（noCanvasRead）：读画布两件套点名进名单。走的是「按名字」这条通道
      （不是 MTNODE_NO_CANVAS 整档闸，后者连 mtnode_canvas_edit 一起裁）；本会话不改画布，
      但 mtnode_canvas_edit 仍保留，故不整档裁。若 lean / noCanvas 已经把这些名字裁掉，
      下面 covered 判据让它不重复出现。 */
   if (o.noCanvasRead) for (const n of DSH_TOOLS_DROPPED_BY_NO_READ) names.push(n);
+  /* 只读画布档（长任务环节勾了 canvasRead）：读图留着，改图 / 应用点名藏掉。 */
+  if (o.canvasReadOnly) for (const n of DSH_TOOLS_DROPPED_BY_CANVAS_READONLY) names.push(n);
   const covered = {};
   if (o.lean) for (const n of DSH_TOOLS_DROPPED_BY_LEAN) covered[n] = 1;
   if (o.noCanvas) for (const n of DSH_TOOLS_DROPPED_BY_NO_CANVAS) covered[n] = 1;
@@ -1896,10 +1987,30 @@ function dshResumeDirective(errMsg) {
     I18n.t("【续跑】上一轮回答在中途报错：") +
     (brief || I18n.t("（无错误信息）")) +
     "\n" +
-    I18n.t(
-      "请在原有上下文的基础上，从刚才中断的地方继续把任务做完：直接往下输出剩余内容，" +
-        "不要重复已经写出的部分，也不要重新从头开始或再次复述任务。",
-    )
+    dshResumeInstruction()
+  );
+}
+
+/* 续跑指令的正文（「从中断处接着写」那一段）唯一真源：
+   出错重发的 dshResumeDirective 与「用户暂停后点继续」的 dshPausedResumeDirective 共用，
+   两条路径只是抬头不同（一个报错误、一个是手动暂停）。 */
+function dshResumeInstruction() {
+  return I18n.t(
+    "请在原有上下文的基础上，从刚才中断的地方继续把任务做完：直接往下输出剩余内容，" +
+      "不要重复已经写出的部分，也不要重新从头开始或再次复述任务。",
+  );
+}
+
+/* 暂停后「继续」的指令：与续跑同一口径（沿用那条 dsh 会话、绝不复述任务），
+   但明说这一轮是用户按停的，让模型知道自己上次是被打断而不是自然结束。
+   这两句都是**发给模型**的指令文本 —— 与 dshResumeDirective 同规矩保持中文，
+   不进 i18n 词表（界面语言只决定「交流口味」，另由 I18n.agentLangTaste 那段下达；
+   模型面向的指令在两种界面语言下都该是同一份，见 AGENTS.md「提示词单一真源」）。 */
+function dshPausedResumeDirective() {
+  return (
+    I18n.t("【继续】上一轮回答被你手动暂停在半路，现在已经恢复运行。") +
+    "\n" +
+    dshResumeInstruction()
   );
 }
 
@@ -2014,12 +2125,21 @@ function dshResumeBlockReason(runKey, carriedChars) {
    tools / envPatch 任一漂移时 dshResumableSession 已判 null → resumed=false
    （整轮重发），绝不在配置已变时点名续跑旧会话 —— 哪怕握手能把旧会话恢复为 live，
    恢复出的也是旧配置的上下文。
-   宿主完全没接入续跑（没有会话登记）时也恒为 false，与接入前行为一字不差。 */
-function dshRetryResumed(opts, msg, runKey) {
+   宿主完全没接入续跑（没有会话登记）时也恒为 false，与接入前行为一字不差。
+   carriedChars = 这一轮失败前已累计的正文（dshRunTask 的 carried.length）：
+   与重发闸「优先续跑的三条件」逐条同源 —— 会话在（dshResumableSession 非 null）
+   **且确实攒到了产出**（carriedChars > 0）才算续写。旧口径漏了第二条：会话登记在、
+   一个字都没写出来时，重发闸实际走的是「整轮重发」，这里却报 resumed=true，
+   消费方据此保留了失败轮的残文与思考槽 —— 重发那一轮从零流式，旧思考就一直挂在
+   界面上（「残留旧的思考内容」的成因之一），落盘后还会被翻出来。 */
+function dshRetryResumed(opts, msg, runKey, carriedChars) {
   if (dshResumeUnavailable(msg) || dshResumeCollision(msg)) return false;
   if (opts && opts.resumeSession) return true;
-  return typeof dshResumableSession === "function" &&
-    !!dshResumableSession(runKey);
+  return (
+    typeof dshResumableSession === "function" &&
+    !!dshResumableSession(runKey) &&
+    (Number(carriedChars) || 0) > 0
+  );
 }
 
 /* 重发等待窗口：先占一个「本轮仍在途」的取消句柄，用户此刻按 ■ 也能立刻打断
@@ -2090,11 +2210,18 @@ function dshRunTask(input, opts) {
       }
     },
   });
-  const notifyRetry = (probeOpts, msg, delayMs, carriedChars) => {
+  const notifyRetry = (probeOpts, msg, delayMs, carriedChars, resume) => {
     /* 通知调用方本轮重发的口径（resumed 见 dshRetryResumed）：
-       · resumed=true  → 续写，保留已显示的部分正文 / 工具列表 / 思考槽；
-       · resumed=false → 整轮重发，清掉上一轮残文（否则重发后内容会叠两遍）
-       carriedChars = 这一次重发还替调用方守着多少已写正文（整轮重发记 0） */
+       · resumed=true  → 续写：已显示的部分正文 / 工具列表保留（那是同一轮的内容）；
+                         思考槽由消费方按「本尝试」重置（思考不跨尝试累计）；
+       · resumed=false → 整轮重发：清掉上一轮残文（否则重发后内容会叠两遍）
+       carriedChars = 这一次重发还替调用方守着多少已写正文（整轮重发记 0）。
+       关键：resume 是**这一次重发到底怎么发**的裁定结果（由调用点显式给出，与
+       attempt() 收到的是同一个值），不是「按登记表猜一个」—— 猜错的那一次会让
+       消费方保留一份实际已被整轮重发顶掉的思考槽 / 残文（残留旧思考的成因）。 */
+    const willResume = resume
+      ? true
+      : dshRetryResumed(probeOpts, msg, runKey, carriedChars);
     try {
       if (typeof opts.onEvent === "function")
         opts.onEvent("retry", {
@@ -2102,7 +2229,7 @@ function dshRunTask(input, opts) {
           max: DSH_RETRY_MAX,
           delayMs,
           message: msg,
-          resumed: dshRetryResumed(probeOpts, msg, runKey),
+          resumed: willResume,
           carriedChars: carriedChars || 0,
         });
     } catch (_) {}
@@ -2146,7 +2273,8 @@ function dshRunTask(input, opts) {
          语义撞盘上旧日志、原样透传时在这里兜底；新网关会先转译成
          RESUME_UNAVAILABLE 前缀）。 */
       if (sid && (dshResumeUnavailable(msg) || dshResumeCollision(msg))) {
-        notifyRetry(baseOpts, msg, 0, 0);
+        /* 立刻退回整轮重发：resume=null 显式告诉消费方「失败轮的残文 / 思考槽清掉」 */
+        notifyRetry(baseOpts, msg, 0, 0, null);
         try {
           toast(
             I18n.t("该会话已不可续跑，立即用原任务整轮重发（不计入重发次数）"),
@@ -2171,7 +2299,8 @@ function dshRunTask(input, opts) {
       const next = sess && carried.length > 0 ? { sid: sess.sid, err: msg } : null;
       const resumeBlocked = dshResumeBlockReason(runKey, carried.length);
       const chars = next ? carried.length : 0;
-      notifyRetry(next ? { resumeSession: next.sid } : baseOpts, msg, delayMs, chars);
+      /* 裁定与通知同源：next 是这一次实际怎么发的唯一真源（null = 整轮重发） */
+      notifyRetry(next ? { resumeSession: next.sid } : baseOpts, msg, delayMs, chars, next);
       try {
         toast(
           I18n.t("本轮出错，") +
@@ -2338,6 +2467,79 @@ function autoApproveRunWrite(data, runKey, workspace, callArgs) {
   return true;
 }
 
+/* ── 沙箱拒绝一律问用户（沙箱升权审批的宿主侧）──
+   运行时在沙箱拒绝工作区外的写 / 执行后，会带一句「retry this exact … once with
+   sandbox_permissions + justification」的提示；模型照提示重试时，工具层才发起这次
+   approval/request。宿主在这里做三件事：
+     1) 认出这是「沙箱升权」而不是别的工具许可询问（判据 = reason 前缀）；
+     2) 用户在本会话里已经选过「本会话后续都放行」→ 直接回 allowed-once，不再弹卡；
+     3) 其余走交互卡片，卡片给三个出口：允许一次 / 本会话后续都放行 / 拒绝。
+   逐轮记忆而不是落盘：作用域就是这次运行（会话 = agent:<id>；节点 = 节点 id），
+   启动时清零，与「本会话」的语义一致。记忆键 = runKey + 升权目标模式，认不出模式
+   就只当普通条目（不记忆、每次都问），绝不因为「认不出」而静默放行。 */
+function dshSandboxEscalationReason(data) {
+  const reason = String((data && data.reason) || "");
+  return reason.indexOf("escalate sandbox to ") === 0 ? reason : "";
+}
+function sandboxEscalationModeOf(reason) {
+  const m = /^escalate sandbox to ([a-z-]+):/.exec(String(reason || ""));
+  return m ? m[1] : "";
+}
+function sandboxEscalationJustificationOf(reason) {
+  return String(reason || "").replace(/^escalate sandbox to [a-z-]+:\s*/, "");
+}
+function sandboxSessionModeKey(runKey, mode) {
+  return String(runKey || "") + "|" + String(mode || "");
+}
+function sandboxSessionAllowed(runKey, mode) {
+  const key = sandboxSessionModeKey(runKey, mode);
+  return !!key && !!((S && S._sandboxEscalateOk) || {})[key];
+}
+function rememberSandboxSessionAllow(runKey, mode) {
+  const key = sandboxSessionModeKey(runKey, mode);
+  if (!key || key.indexOf("|") === 0) return false;
+  if (!S._sandboxEscalateOk) S._sandboxEscalateOk = {};
+  S._sandboxEscalateOk[key] = Date.now();
+  return true;
+}
+/* 本会话已放行过的同一个升权模式 → 直接放行（不再打扰用户）；其余交人工卡片。
+   与 autoApproveRunWrite（写根内的自动放行）同一形状：都是替用户回答一帧。 */
+function dshAutoApproveSandboxSession(data, runKey) {
+  const reason = dshSandboxEscalationReason(data);
+  if (!reason) return false;
+  if (!sandboxSessionAllowed(runKey, sandboxEscalationModeOf(reason))) return false;
+  answerSandboxEscalation(data, "allowed-once");
+  return true;
+}
+function answerSandboxEscalation(data, outcome) {
+  try {
+    window.api
+      .dshInteract({ kind: "approval", id: data && data.id, outcome })
+      .catch(() => {});
+  } catch (_) {}
+}
+/* 卡片上「本会话后续都放行」：先记住再回允许一次（本轮这次调用也要能落地）。
+   记忆只按「升权目标模式」记，不按路径：同一模式内放宽到多写一个目录不必反复问；
+   模式更高（如 workspace-write → danger-full-access）仍会重新询问。 */
+function dshApproveSandboxSession(it) {
+  const data = (it && it.data) || {};
+  const mode = sandboxEscalationModeOf(dshSandboxEscalationReason(data));
+  if (mode) {
+    rememberSandboxSessionAllow(it && it.runKey, mode);
+    toast(I18n.t("本会话后续同类沙箱放行已记住：") + mode, "ok");
+  }
+  answerSandboxEscalation(data, "allowed-once");
+}
+/* 交互面板卡片用：沙箱升权请求的展示信息（标题 / 说明 / 目标模式 / 是否可记忆）。 */
+function dshSandboxAskInfo(data) {
+  const reason = dshSandboxEscalationReason(data);
+  if (!reason) return null;
+  return {
+    mode: sandboxEscalationModeOf(reason),
+    justification: sandboxEscalationJustificationOf(reason),
+  };
+}
+
 /* 单次运行（一次请求 = 一轮）：组装 runParams、挂取消句柄、收流式事件 */
 function dshRunOnce(input, opts) {
   opts = opts || {};
@@ -2413,7 +2615,15 @@ function dshRunOnce(input, opts) {
      解析不到对象才退回用户此刻看到的画布。此后工作区、工具快照、数据库接地、
      beginCanvasRun 与画布事件路由全用这一个对象 —— 用户中途切画布，本轮不漂。 */
   if (!boundWf) boundWf = currentVisibleWf() || S.wf;
-  const nodeLock = isCanvasScopedAgentNode(opts.node);
+  /* 长周期任务的 Agent 环节可以按环节勾「允许读取画布」（app-longtask.js 的伪节点把它带在
+     _lt.canvasRead 上）。这一档不是「放开智能节点」：只放**读**，改图与应用两件套仍进
+     hideTools 点名名单；它必须绕开 nodeLock，因为 nodeLock 会连带把运行标成「画布智能节点」
+     （MTNODE_NO_CANVAS → 画布三件套一个都不注册 + 宿主对 get 也一律拒绝 + 人设明文禁止），
+     那样这个开关就是一句兑现不了的承诺。 */
+  const ltCanvasRead = !!(opts.node && opts.node._lt && opts.node._lt.canvasRead);
+  const nodeScoped = isCanvasScopedAgentNode(opts.node);
+  const nodeLock = nodeScoped && !ltCanvasRead;
+  const canvasReadOnly = nodeScoped && ltCanvasRead;
   /* 纯净模式（会话输入区「纯净模式」按钮）：整段 system prompt 置空，
      不含技能索引 / 数据库接地 / 工具策略 / 语言口味 —— 模型输入 = 纯粹的用户输入。
      网关侧 preset 强制走空文本档（pure），引擎人设由 MTNODE_PURE 标记移除。 */
@@ -2458,11 +2668,16 @@ function dshRunOnce(input, opts) {
      专家运行因此能整档摘掉画布 / 应用 / 识图类工具（每步约省 26K 字符）。 */
   const hideToolsOn = dshHiddenToolsFor({
     pure: pureOn,
+    runKey,
     dbGrounded: !!String(dbGrounding || "").trim(),
     lean: leanOn,
     noCanvas: noCanvasOn,
     noCanvasRead: noReadOn,
-    runKey,
+    canvasReadOnly /* 长任务环节的 canvasRead：只读档，点名藏掉改图与应用 */,
+    /* 长任务两件套（lt_state / lt_memory）的接地判据：只有状态机里跑起来的伪节点
+       （app-longtask.js 造的，带 _lt）接得住；普通会话 / 助手 / 普通智能节点不传这个字段，
+       两个名字就进名单 —— 宿主对它们只会回「不属于任何长任务」，白占每步重发的定义。 */
+    ltGrounded: !!(opts.node && opts.node._lt),
   });
   /* 用户工具描述子（func call 单一真源，见 app-tools.js）：本轮绑定画布（= 会话所属画布）
      上的工具节点 + 工具库中开启「随时可调用」的工具。pure 会话不下发（网关不注入运行时，
@@ -2572,6 +2787,9 @@ function dshRunOnce(input, opts) {
             nodeLock,
             noCanvasRead: noReadOn && !noCanvasOn,
             runKey,
+            /* 只读画布档（长任务环节勾了 canvasRead）：就地从伪节点标记算一遍，不引切片外的
+               局部量 —— 分节装配段被 smoke-systemprompt-sections 原样抠出来单独求值。 */
+            canvasReadOnly: !!(opts.node && opts.node._lt && opts.node._lt.canvasRead),
           }),
         },
         {
@@ -2669,8 +2887,12 @@ function dshRunOnce(input, opts) {
   S._runCancels = S._runCancels || {};
   /* 本轮轨迹开一盏：按步切段的运行轨迹与取消句柄同键，互不串台。
      续跑那一轮（keepTrace）例外：失败轮已经写出来的前半正文必须留在轨迹里，
-     续写接在后面，归档段才能还原「前半 + 续写后半」这条完整时间线。 */
+     续写接在后面，归档段才能还原「前半 + 续写后半」这条完整时间线。
+     续跑起步（opts.resumeSession 非空）额外摘掉轨迹里的**思考**段：
+     思考不是续写内容，留着就会让「思考」框一路挂着上一失败轮的旧思考
+     （见 traceDropThink）。 */
   if (!opts.keepTrace) traceReset(runKey);
+  else if (opts.resumeSession) traceDropThink(runKey);
   /* 本次运行的唯一实例标识：同 runKey 可能被连续两轮复用（如「立即终止 + 立刻重发」），
      旧一轮的 finish 只能删自己的条目，绝不能误删新一轮的 —— 否则新一轮会被看门狗
      当成「已手动终止」、回复变成（已终止），两轮乱序。 */
@@ -2702,6 +2924,10 @@ function dshRunOnce(input, opts) {
   beginCanvasRun(boundWf);
   const scopeLock = nodeLock;
   if (scopeLock) S._canvasNodeAgentDepth = (S._canvasNodeAgentDepth || 0) + 1;
+  /* 长任务「只读画布」档也要锁本画布（别的画布看不见），但不能进 nodeLock 那档闸
+     （那档连 mtnode_canvas_get 都不注册）。单独一盏计数，供 restrictOtherCanvases 与
+     「edit / app 仍旧拒」这两处判据用。 */
+  if (canvasReadOnly) S._ltCanvasReadDepth = (S._ltCanvasReadDepth || 0) + 1;
   if (opts.node && boundWf) {
     S.nodeWfId = S.nodeWfId || {};
     S.nodeWfId[opts.node.id] = boundWf.id;
@@ -2759,7 +2985,7 @@ function dshRunOnce(input, opts) {
     /* 有未消费的提问 / 审批卡片时也设独立上限（模型在等用户，但引擎若挂起同样不能无限等） */
     const DSH_IX_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
     let lastActivity = Date.now();
-    const finish = (ok, val) => {
+    const finish = (ok, val, keepRunSession) => {
       if (settled) return;
       settled = true;
       clearInterval(watchdog);
@@ -2785,10 +3011,14 @@ function dshRunOnce(input, opts) {
           0,
           (S._canvasNodeAgentDepth || 1) - 1,
         );
+      if (canvasReadOnly)
+        S._ltCanvasReadDepth = Math.max(0, (S._ltCanvasReadDepth || 1) - 1);
       /* 本轮跑完了（成功）：它登记的可续跑会话就此作废，绝不留给下一次运行 ——
          下一次是新的任务，拿旧会话续跑会把上一轮的上下文灌进来。
-         失败收尾不清：正是失败那一轮留着的会话才是重发闸的续跑原料。 */
-      if (ok && S._runSession) delete S._runSession[runKey];
+         失败收尾不清：正是失败那一轮留着的会话才是重发闸的续跑原料。
+         被用户「⏸暂停」收尾的这一轮也不清（keepRunSession）：暂停不是跑完，
+         会话留在表里，宿主点「继续」时按它点名那条 dsh 会话从中断处接下去。 */
+      if (ok && !keepRunSession && S._runSession) delete S._runSession[runKey];
       if (ok) resolve(val);
       else reject(val instanceof Error ? val : new Error(String(val || "")));
       /* 轮次封口：异步收口账本（等改前正文入完库 → rollbackDrain 补收迟到帧 → 落盘）。
@@ -2888,6 +3118,23 @@ function dshRunOnce(input, opts) {
             handleDbToolEvent(msg.data || {}, opts.node, boundWf);
             return;
           }
+          if (msg.type === "asset") {
+            /* 素材库 / 窗口截图工具（mtnode_assets）：宿主读库、读条目、拍窗口静帧，
+                结果经 dshInteract kind:'asset' 回传。许可闸在 assetToolEventReplied 里
+                按「素材库与截图」（assets_read）判：拒 = ok:false 错误文本回执，
+                会话不中断（与 db / tool-run 同一口径）。 */
+            handleAssetToolEvent(msg.data || {}, runKey);
+            return;
+          }
+          if (msg.type === "lt") {
+            /* 长周期任务两件套（lt_state / lt_memory）：宿主按伪节点找回它属于哪个 run、
+               哪个命名空间，越权写键与非长任务轮都由 app-longtask.js 回错误文本
+               （工具失败但不中断会话，与 db / tool-run 同一口径）。 */
+            try {
+              if (window.LT && window.LT.handleToolEvent) window.LT.handleToolEvent(msg.data || {}, opts.node, boundWf);
+            } catch (_) {}
+            return;
+          }
           if (msg.type === "tool-run") {
             /* 工具节点 func call：宿主执行节点内部图并回执结果；任何失败都以
                错误文本回执（会话不中断），见 app-tools.js handleToolRunEvent。
@@ -2916,6 +3163,9 @@ function dshRunOnce(input, opts) {
               );
               return;
             }
+            /* 本会话已放行过的同类沙箱升权（用户点过「本会话后续都放行」）：
+               直接放行，不弹卡 —— 沙箱拒绝第一次问过，后续同类不再打扰 */
+            if (dshAutoApproveSandboxSession(msg.data || {}, runKey)) return;
             /* 本轮写根内的沙箱升权（团队专家维护事实库）：直接放行，不弹卡片 */
             if (autoApproveRunWrite(msg.data || {}, runKey, workspace, runCallArgs))
               return;
@@ -3013,7 +3263,15 @@ function dshRunOnce(input, opts) {
             if (seenError) {
               finish(false, new Error(String(seenError)));
             } else {
-              finish(true, String(accText || data.finalResponse || ""));
+              /* data.paused = 用户按「⏸暂停」让这一轮停在当前步（网关保证暂停轮不会有
+                 error 事件，所以绝不会被上面的重发闸当 429 类失败连重发 5 次）。
+                 暂停不是跑完：本轮文字照现状定稿，但那可续跑的会话登记要留着，
+                 宿主点「继续」时按它点名原来的 dsh 会话从中断处接下去。 */
+              finish(
+                true,
+                String(accText || data.finalResponse || ""),
+                !!data.paused,
+              );
             }
           }
         }
@@ -3038,6 +3296,10 @@ function dshRunOnce(input, opts) {
 /* 智能任务节点正在跑、且已关联到该会话时,会话页应镜像节点的流式日志 */
 function liveNodeForSession(st) {
   if (!st || !st.id) return null;
+  /* 长任务 Agent 环节的伪节点：它不在任何画布的 nodes 里（下面 scan 扫不到），
+     只有运行期注册表 S.ltLiveNodes[会话id] 认得它（见 app-longtask.js 的
+     ltBindAgentSession / ltReleaseAgentSession，收尾即删除）。 */
+  if (S.ltLiveNodes && S.ltLiveNodes[st.id]) return S.ltLiveNodes[st.id];
   const scan = (wf) => {
     if (!wf || !Array.isArray(wf.nodes)) return null;
     for (const n of wf.nodes) {
@@ -3414,6 +3676,184 @@ function ixReset() {
   S.activeIx = { items: [] };
   renderIxPanel();
 }
+/* ── 询问窗（#ixPanel）位置：可拖出 footer、也要能一键收回 ────────────────
+   原来这只面板钉死在 left:50% / bottom:44px，正好压在状态栏上沿：
+   拷问轮里问题一多，面板就把画布中间那一块盖住，用户想看画布只能先关掉、
+   回来又得重新找。现在头部就是拖拽手柄（拖动改 left/top，位置记 localStorage），
+   拖到窗口底部（footer / 状态栏那一条，容忍 12px 误差）=「收到 footer 里」，
+   面板自动切成一条紧凑条（只留头部计数行，点一下再展开），
+   画布因此完全露出来；双击头部 = 取消自定位置，回到默认的底部居中。 */
+const IXPOS_KEY = "mtnode.ixPanel.pos";
+const IXPOS_DOCK_PX = 12;
+function ixPosLoad() {
+  try {
+    const j = JSON.parse(localStorage.getItem(IXPOS_KEY) || "null");
+    if (j && isFinite(j.left) && isFinite(j.top))
+      return { left: Number(j.left), top: Number(j.top) };
+  } catch (_) {}
+  return null;
+}
+function ixPosSave(p) {
+  try {
+    localStorage.setItem(
+      IXPOS_KEY,
+      JSON.stringify({ left: Math.round(p.left), top: Math.round(p.top) }),
+    );
+  } catch (_) {}
+}
+function ixPosClear() {
+  try {
+    localStorage.removeItem(IXPOS_KEY);
+  } catch (_) {}
+}
+/* 摆放：把记住的位置套上去（没有记录 = 保持 CSS 的底部居中），并夹进视口。
+   收起态（只剩头部）也按整窗高度折算 —— 否则展开时正文会掉到窗口外。 */
+function applyIxPos(el) {
+  if (!el) return;
+  const p = ixPosLoad();
+  if (!p) {
+    ixPosResetStyle(el);
+    return;
+  }
+  const vw = window.innerWidth;
+  const w = el.offsetWidth || 420;
+  const h = el.classList.contains("ix-docked")
+    ? Math.max(el.offsetHeight || 0, Math.round(window.innerHeight * 0.78))
+    : el.offsetHeight || 60;
+  el.style.left = Math.max(4, Math.min(Math.round(p.left), Math.max(4, vw - w - 4))) + "px";
+  el.style.top = Math.max(4, Math.min(Math.round(p.top), Math.max(4, window.innerHeight - h - 8))) + "px";
+  el.style.right = "auto";
+  el.style.bottom = "auto";
+  el.style.transform = "none";
+}
+/* 「收进 footer」判定：拖到窗口底部（footer / 状态栏那一条，容忍 12px 误差）就算。
+   量的是「未收起的整窗」底边，不是当前 rect —— 收起后高度只剩头部，
+   再拿 rect 量会把 bottom 抬起来，状态来回闪。 */
+function ixDockedAt(top, fullH) {
+  const vh = window.innerHeight;
+  return top + Math.max(0, fullH) >= vh - IXPOS_DOCK_PX;
+}
+function ixDockApply(el, docked) {
+  const was = el.classList.contains("ix-docked");
+  el.classList.toggle("ix-docked", docked);
+  if (docked) el.title = I18n.t("已收进底栏：点一下展开，拖回画布上方即恢复");
+  else el.removeAttribute("title");
+  return was !== docked;
+}
+/* 重绘后按记住的位置恢复：位置落在窗口底 → 仍是收起态（只留头部那一条） */
+function ixRestorePos(el) {
+  if (!el) return;
+  const p = ixPosLoad();
+  if (!p) {
+    ixPosResetStyle(el);
+    return;
+  }
+  const fullH = Math.max(el.offsetHeight || 0, Math.round(window.innerHeight * 0.78));
+  ixDockApply(el, ixDockedAt(p.top, fullH));
+  applyIxPos(el);
+}
+/* 回到默认位置：底部居中，紧贴 footer 上沿（CSS 的 left:50% / bottom:44px） */
+function ixPosResetStyle(el) {
+  el.style.left = "";
+  el.style.top = "";
+  el.style.right = "";
+  el.style.bottom = "";
+  el.style.transform = "";
+  el.classList.remove("ix-docked");
+  el.removeAttribute("title");
+}
+/* 头部拖拽（位置记忆 + 底部收起）。按钮 / 输入框上的按下不算拖，避免误触发。 */
+function ixMakeDraggable(box) {
+  const head = box.querySelector(".ix-head");
+  if (!head || head.dataset.drag === "1") return;
+  head.dataset.drag = "1";
+  head.title = I18n.t("按住头部拖动这只窗（拖到底部 = 收进底栏）；双击回到默认位置");
+  head.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    if (ev.target.closest("button,input,textarea,select,a")) return;
+    beginIxDrag(box, head, ev);
+  });
+  /* 双击头部 = 忘掉自定位置，回到默认的底部居中 */
+  head.addEventListener("dblclick", (ev) => {
+    if (ev.target.closest("button,input,textarea,select,a")) return;
+    ixPosClear();
+    ixPosResetStyle(box);
+    const t = box.querySelector(".ix-head");
+    if (t) t.title = I18n.t("按住头部拖动这只窗（拖到底部 = 收进底栏）；双击回到默认位置");
+  });
+  /* 收起成一条时，点一下头部就展开（头部那两个按钮仍然只做它自己的事） */
+  head.addEventListener("click", (ev) => {
+    if (!box.classList.contains("ix-docked")) return;
+    if (ev.target.closest("button,input,textarea,select,a")) return;
+    ixPosClear();
+    ixPosResetStyle(box);
+    const t = box.querySelector(".ix-head");
+    if (t) t.title = I18n.t("按住头部拖动这只窗（拖到底部 = 收进底栏）；双击回到默认位置");
+  });
+  /* 窗口尺寸变了按记住的位置重夹一次：不然改过窗口大小，窗可能落在视口外找不到 */
+  if (window.__ixPosResize !== 1) {
+    window.__ixPosResize = 1;
+    window.addEventListener("resize", () => {
+      const b = document.getElementById("ixPanel");
+      if (b) ixRestorePos(b);
+    });
+  }
+}
+function beginIxDrag(box, head, ev) {
+  ev.preventDefault();
+  const r = box.getBoundingClientRect();
+  const w = r.width;
+  /* 整窗高度：收起态起拖时 rect 只有头部高，用 max-height 口径折算 */
+  const fullH = Math.max(r.height, Math.round(window.innerHeight * 0.78));
+  /* 从 bottom 定位切到 left/top：left/top = 当前视觉位置，切过去不跳 */
+  box.style.left = Math.round(r.left) + "px";
+  box.style.top = Math.round(r.top) + "px";
+  box.style.right = "auto";
+  box.style.bottom = "auto";
+  box.style.transform = "none";
+  box.classList.add("ix-dragging");
+  const sx = ev.clientX;
+  const sy = ev.clientY;
+  let moved = false;
+  let docked = box.classList.contains("ix-docked");
+  let dropTop = r.top;
+  const move = (e) => {
+    const dx = e.clientX - sx;
+    const dy = e.clientY - sy;
+    if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+    moved = true;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    /* 拖拽期间用实时位置落值（applyIxPos 读的是记住的位置，得等 mouseup 才生效）。
+       横向夹在视口内；纵向只保证头部不进窗口顶，下方特意允许一路压到窗口底 ——
+       「收进 footer」就是靠这个落点判定的，按整窗高度硬夹会永远够不到。 */
+    box.style.left =
+      Math.max(4, Math.min(Math.round(r.left + dx), Math.max(4, vw - w - 4))) + "px";
+    const topTarget = r.top + dy;
+    /* 纵向只保证头部不出窗口：下方特意允许一路压到窗口底 ——「收进 footer」
+       就是靠这个落点判定的，按整窗高度硬夹会永远够不到 */
+    box.style.top =
+      Math.max(4, Math.min(Math.round(topTarget), Math.max(4, vh - head.offsetHeight - 4))) + "px";
+    docked = ixDockedAt(topTarget, fullH);
+    ixDockApply(box, docked);
+    dropTop = topTarget;
+  };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    box.classList.remove("ix-dragging");
+    if (!moved) return;
+    /* top 存「拖到的位置」：收起态只剩头部，此时量 offsetTop 拿到的是收起来后的
+       坐标，展开时会整窗往下掉 —— 统一按拖拽落点记，展开 / 收起两边都能还原 */
+    ixPosSave({
+      left: parseFloat(box.style.left) || r.left,
+      top: Math.round(dropTop),
+    });
+    applyIxPos(box);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
 function ixPush(kind, data, runKey, src) {
   if (!S.activeIx) S.activeIx = { items: [] };
   /* 先清孤儿卡，再决定这张要不要收 */
@@ -3662,20 +4102,38 @@ function renderIxPanel() {
     }
     if (it.kind === "approval") {
       const d = it.data;
+      /* 沙箱升权（沙箱拒绝了这次访问）单独成卡：标题点明是「沙箱放行」，正文给出
+         目标模式与模型写的理由，多一个「本会话后续都放行」出口 —— 需求原话就是
+         「问这次是否放行 + 是否本会话后续都放行」。其它工具许可审批维持原样。 */
+      const sb = dshSandboxAskInfo(d);
       const t1 = document.createElement("div");
       t1.className = "ix-title";
-      t1.textContent = I18n.t("🔐 权限审批 · ") + (d.toolName || I18n.t("工具"));
+      t1.textContent = sb
+        ? I18n.t("🧱 沙箱放行 · ") + (d.toolName || I18n.t("工具"))
+        : I18n.t("🔐 权限审批 · ") + (d.toolName || I18n.t("工具"));
       card.appendChild(t1);
-      if (d.reason) {
+      const detailText = sb
+        ? (sb.mode ? I18n.t("沙箱拒绝了这次访问，请确认是否放行。目标权限：") + sb.mode + "\n" : "") +
+          (sb.justification ? I18n.t("说明：") + sb.justification : "")
+        : String(d.reason || "");
+      if (detailText) {
         const r = document.createElement("div");
         r.className = "ix-detail";
-        r.textContent = d.reason;
+        r.textContent = detailText;
         card.appendChild(r);
+      }
+      if (sb) {
+        const note = document.createElement("div");
+        note.className = "ix-detail";
+        note.textContent = I18n.t(
+          "「允许一次」仅这次的调用有效；「本会话后续都放行」记住后，本会话里同类沙箱放行不再询问；「拒绝」则阻止本次调用。",
+        );
+        card.appendChild(note);
       }
       const row = document.createElement("div");
       row.className = "ix-btns";
       const allow = document.createElement("button");
-      allow.className = "mini primary";
+      allow.className = sb ? "mini" : "mini primary";
       allow.textContent = I18n.t("允许一次");
       allow.onclick = () => ixAnswerApproval(it, "allowed-once");
       const deny = document.createElement("button");
@@ -3683,6 +4141,17 @@ function renderIxPanel() {
       deny.textContent = I18n.t("拒绝");
       deny.onclick = () => ixAnswerApproval(it, "rejected");
       row.appendChild(allow);
+      if (sb) {
+        const sess = document.createElement("button");
+        sess.className = "mini primary";
+        sess.textContent = I18n.t("本会话后续都放行");
+        sess.onclick = () => {
+          if (!ixMarkFirstSend(it)) return;
+          dshApproveSandboxSession(it);
+          ixDrop(d.id);
+        };
+        row.appendChild(sess);
+      }
       row.appendChild(deny);
       row.appendChild(ixLaterButton(it));
       row.appendChild(ixAbortButton(it));
@@ -3774,6 +4243,10 @@ function renderIxPanel() {
     }
     box.appendChild(card);
   }
+  /* 每次重绘都把「记住的位置 / 底部收起态」恢复一次：面板是重绘式渲染，
+     位置只挂在样式上，不补这一下拖动过的窗会跳回默认的底部居中。 */
+  ixMakeDraggable(box);
+  ixRestorePos(box);
 }
 
 /* ── 主题(dsh = 默认, industrial = 旧 MTNode, light = 亮色) ── */

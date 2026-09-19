@@ -31,6 +31,8 @@ const {
   releaseLock,
   busyMessage,
 } = require("../media-gen-global-lock.js");
+/* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
+const pluginErrors = require("../plugin-error-repair.js");
 
 const PLUGIN_ID = "minimax-music3";
 const MUSIC3_FEED =
@@ -209,6 +211,19 @@ function broadcast(channel, payload) {
 
 function emitProgress(ev) {
   broadcast("music3:progress", Object.assign({ id: PLUGIN_ID, ts: Date.now() }, ev || {}));
+}
+
+/**
+ * 失败上报：控制台窗内的 toast 只有开着那只窗的人看得到。把同一次失败送到报错总线，
+ * 让主窗口出一份带日志尾部的报告（总线内部吞异常，绝不影响主流程）。
+ */
+function reportErr(code, message, extra) {
+  try {
+    pluginErrors.reportPluginError(
+      PLUGIN_ID,
+      Object.assign({ code, message: String(message || "") }, extra || {}),
+    );
+  } catch {}
 }
 
 function isAlivePid(pid) {
@@ -444,6 +459,7 @@ async function updatePluginRuntime() {
     const msg = String((e && e.message) || e);
     appendConsole("[update] failed: " + msg);
     emitProgress({ phase: "update", step: "error", message: msg, pct: 0, error: true });
+    reportErr("runtime_update_failed", "插件运行时更新失败：" + msg, { phase: "update" });
     return { ok: false, error: msg };
   } finally {
     runtimeUpdating = false;
@@ -1001,7 +1017,10 @@ function runPs(scriptPath, args, opts) {
 
 async function installProject(opts) {
   opts = opts || {};
-  if (installing) return { ok: false, error: "busy" };
+  if (installing) {
+    reportErr("busy", "Music3 已有安装 / 修复任务在跑，本次安装被拒", { phase: "install" });
+    return { ok: false, error: "busy" };
+  }
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
   if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
@@ -1021,6 +1040,9 @@ async function installProject(opts) {
     const free = await freeDiskGb(installDir);
     if (free != null && free < DISK_HINT_GB && !opts.force) {
       installing = false;
+      reportErr("low_disk", `磁盘剩余约 ${free}GB，建议预留 ≥${DISK_HINT_GB}GB（模型约 53GB）`, {
+        phase: "install",
+      });
       return {
         ok: false,
         error: "low_disk",
@@ -1039,6 +1061,7 @@ async function installProject(opts) {
     const msg = String((e && e.message) || e);
     appendConsole("install failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+    reportErr(msg, msg, { phase: "install" });
     return { ok: false, error: msg, agentRecoverable: msg !== "cancelled" && msg !== "busy" };
   }
 }
@@ -1064,7 +1087,6 @@ function syncMusic3InstallSkill() {
   try {
     const skillSrc = join(
       appRoot || path.join(__dirname, ".."),
-      "music3",
       "skills",
       "minimax-music3-install",
       "SKILL.md",
@@ -1193,6 +1215,7 @@ async function agentInstallByAgent(opts) {
     const msg = String((e && e.message) || e);
     appendConsole("[agent-install] dsh.run failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+    reportErr(msg, msg, { phase: "install" });
     return { ok: false, error: msg };
   }
 
@@ -1206,6 +1229,7 @@ async function agentInstallByAgent(opts) {
       dshEventHook = null;
       installing = false;
       emitProgress({ phase: "install", step: "error", message: "cancelled", pct: 0, error: true });
+      reportErr("cancelled", "安装已取消", { phase: "install" });
       return { ok: false, error: "cancelled" };
     }
     const sig = projectSignals(installDir);
@@ -1226,6 +1250,7 @@ async function agentInstallByAgent(opts) {
       dshEventHook = null;
       installing = false;
       emitProgress({ phase: "install", step: "error", message: agentSaidFail, pct: 0, error: true });
+      reportErr(agentSaidFail, agentSaidFail, { phase: "install" });
       return { ok: false, error: agentSaidFail };
     }
     lastPct = Math.min(92, lastPct + 1);
@@ -1290,6 +1315,7 @@ async function agentInstallByAgent(opts) {
   const msg = "agent_install_timeout";
   appendConsole("[agent-install] " + msg);
   emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+  reportErr(msg, "Agent 安装超时（45 分钟未交付）：" + msg, { phase: "install" });
   return { ok: false, error: msg };
 }
 
@@ -1398,7 +1424,9 @@ async function stopBackend() {
 async function ensureBackendReadyForJob() {
   const started = await startBackend();
   if (!started || !started.ok) {
-    return { ok: false, error: (started && started.error) || "backend_start_failed" };
+    const err = (started && started.error) || "backend_start_failed";
+    reportErr(err, String((started && started.message) || err), { phase: "job" });
+    return { ok: false, error: err };
   }
   const port = Number(started.port) || Number(loadConfig().port) || DEFAULT_PORT;
   if (await probeGradio(port)) return { ok: true, port, reused: !!started.reused };
@@ -1412,9 +1440,11 @@ async function ensureBackendReadyForJob() {
     await sleep(1500);
     const meta = loadPidMeta();
     if (meta && meta.pid && !isAlivePid(meta.pid) && !meta.external) {
+      reportErr("backend_exited", "Music3 后端进程已退出（等待就绪期间）", { phase: "job" });
       return { ok: false, error: "backend_exited" };
     }
   }
+  reportErr("backend_start_timeout", "等待 Music3 后端就绪超时（首次要加载模型）", { phase: "job" });
   return { ok: false, error: "backend_start_timeout" };
 }
 
@@ -1424,8 +1454,14 @@ async function startBackend() {
   if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
   const installDir = safe.path;
   const sig = projectSignals(installDir);
-  if (!sig.scaffold) return { ok: false, error: "not_installed" };
-  if (!sig.venv) return { ok: false, error: "no_venv" };
+  if (!sig.scaffold) {
+    reportErr("not_installed", "Music3 后端尚未安装：找不到项目脚手架", { phase: "start" });
+    return { ok: false, error: "not_installed" };
+  }
+  if (!sig.venv) {
+    reportErr("no_venv", "Music3 后端缺少 Python 环境（.venv）", { phase: "start" });
+    return { ok: false, error: "no_venv" };
+  }
 
   const port = Number(cfg.port) || DEFAULT_PORT;
   if (await probeGradio(port)) {
@@ -1473,7 +1509,10 @@ async function startBackend() {
   }
 
   const py = join(installDir, ".venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) return { ok: false, error: "no_venv" };
+  if (!fs.existsSync(py)) {
+    reportErr("no_venv", "Music3 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+    return { ok: false, error: "no_venv" };
+  }
 
   syncPackAppToInstall(installDir);
 
@@ -1519,9 +1558,11 @@ async function startBackend() {
     await new Promise((r) => setTimeout(r, 1500));
     if (!isAlivePid(child.pid)) {
       clearPidMeta();
+      reportErr("backend_exited", "Music3 后端进程启动后退出", { phase: "start" });
       return { ok: false, error: "backend_exited" };
     }
   }
+  reportErr("backend_start_timeout", "等待 Music3 后端就绪超时", { phase: "start" });
   return { ok: false, error: "backend_start_timeout", pid: child.pid, port, starting: true };
 }
 
@@ -1670,6 +1711,31 @@ function isGradioAppError(err) {
   );
 }
 
+/* ── 产物 take 编号：目标文件已存在时固定用 #1、#2 … 标「第几个 take」 ──
+ *  旧版本固定贴 _1，且渲染层把改名后的路径写回节点，于是同一路径反复跑会叠成 foo_1_1_1。
+ *  这里统一：先剥掉末尾的 take 标记（#N 认号，_N / _0N 当旧标记剥掉），
+ *  再从「上一个号 + 1」起找第一个空号 —— 号只增不减，绝不叠加后缀。 */
+function takeStemParts(stem) {
+  let base = String(stem || "");
+  let from = 0;
+  for (let k = 0; k < 8; k++) {
+    const hash = base.match(/#(\d+)$/);
+    if (hash) {
+      const n = Number(hash[1]);
+      if (!from && n > 0) from = n;
+      base = base.slice(0, -hash[0].length);
+      continue;
+    }
+    const legacy = base.match(/_0*[1-9]\d{0,2}$/);
+    if (legacy) {
+      base = base.slice(0, -legacy[0].length);
+      continue;
+    }
+    break;
+  }
+  return { base: base || String(stem || ""), from };
+}
+
 function uniqueFileInDir(dir, preferredName, defaultExt) {
   mk(dir);
   let name = String(preferredName || "").trim() || "out" + (defaultExt || "");
@@ -1680,8 +1746,10 @@ function uniqueFileInDir(dir, preferredName, defaultExt) {
   if (!extMatch && ext) name = baseStem + ext;
   let dest = join(dir, name);
   if (!fs.existsSync(dest)) return { path: dest, filename: name, renamed: false };
-  for (let i = 1; i < 10000; i++) {
-    const fn = baseStem + "_" + i + ext;
+  const tk = takeStemParts(baseStem);
+  const head = tk.base || baseStem;
+  for (let i = tk.from + 1; i < tk.from + 10000; i++) {
+    const fn = head + "#" + i + ext;
     dest = join(dir, fn);
     if (!fs.existsSync(dest)) return { path: dest, filename: fn, renamed: true };
   }
@@ -1871,6 +1939,12 @@ async function generateMusic(params) {
       clearLock();
       appendConsole("[job] backend start failed: " + err);
       emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
+      reportErr(err, "启动后端失败：" + err, {
+        phase: "generate",
+        nodeId,
+        workflowId: String(params.workflowId || ""),
+        nodeKind: "music_gen",
+      });
       resultPayload = { ok: false, error: err, message: "启动后端失败：" + err };
       return resultPayload;
     }
@@ -1908,6 +1982,12 @@ async function generateMusic(params) {
     clearLock();
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
+    reportErr(err, err, {
+      phase: "generate",
+      nodeId,
+      workflowId: String(params.workflowId || ""),
+      nodeKind: "music_gen",
+    });
     resultPayload = {
       ok: false,
       error: err,
@@ -1945,6 +2025,7 @@ function cancelGenerate(nodeId) {
     error: true,
     cancelled: true,
   });
+  reportErr("cancelled", "音乐生成已取消（用户主动停止）", { phase: "generate", nodeId: nid });
   appendConsole("[cancel] generate cancelled node=" + (nid || "?") + " → stop backend");
   return { ok: true, forceKillScheduled: true };
 }
@@ -2063,6 +2144,21 @@ function registerMusic3Ipc(opts) {
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
   getDsh = opts.getDsh || null;
+
+  /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口），
+     之后各失败出口的 reportErr 才有归属与上下文。 */
+  pluginErrors.registerPluginHost({
+    id: PLUGIN_ID,
+    name: "Minimax Music 3",
+    skillName: "minimax-music3-install",
+    getInstallDir: () => loadConfig().installDir || "",
+    tailConsole: (n) => consoleTail(n),
+    selfRepair: (o) => selfRepairFromConsole(o || {}),
+    restart: async () => {
+      await stopBackend();
+      return startBackend();
+    },
+  });
 
   ensureUiRuntime();
   refreshStaleLock();

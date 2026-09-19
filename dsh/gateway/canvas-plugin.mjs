@@ -28,7 +28,7 @@ export const name = 'mtnode-canvas'
 export const inject = ['tools']
 
 const KINDS = [
-  'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'tts_gen', 'video_gen', 'remotion',
+  'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'tts_gen', 'video_gen', 'video_upscale', 'video_interp', 'remotion', 'sensenova_gen',
   'save', 'save_text', 'save_image', 'save_pdf', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
   'agent_task', 'task', 'super', 'db_replica',
@@ -94,21 +94,26 @@ const noCanvasToolsOn = () => envFlagOn(NO_CANVAS_ENV)
 const GET_DESC =
   NODE_LOCK +
   'Read the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\n' +
-  'DEFAULTS TO THE CHEAPEST FORM — detail "minimal": one index line per node, only title / note / kind (标题 / 描述 / 类别), with workflow identity and scopeInfo; no config fields, no bodies, and no wire / mark / group / tree block. Ask for more only when the task needs it:\n' +
-  '- "standard": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps), body *lengths* (no body text) and the build references (kinds, imageSizes, defaultImageSize, markColors, devFuncColors 功能色卡, cam / view).\n' +
-  '- "full": everything incl. body text (input_text.text, prompt, task, goal, jscode), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n' +
-  '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of the heavy blocks (nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认，不必为接线读整图配置）。\n' +
-  '- ports (standard / full): fixed-port nodes (proc_image / tts_gen / video_gen / remotion / judge / tool·function / super boundary) carry ports:[{dir,index,name,kind,connectedTo}] — read the wiring targets before connecting instead of reading a connect error.\n' +
-  'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its own character cost.\n\n' +
-  'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas — you cannot see or open others. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
+  'DEFAULTS TO THE CHEAPEST FORM — detail "minimal": one index line per node (only title / note / kind 标题 / 描述 / 类别) + workflow identity and scopeInfo; no config fields, no bodies, no wire / mark / group / tree block. Ask for more only when needed:\n' +
+  '- "standard": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:["refs"]。\n' +
+  '- "full": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n' +
+  '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n' +
+  '- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / tts_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
+  '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows port 0 = prompt only), and port 1+ accepts text AND image references (connect reference images to port 1+, never port 0). Never infer "this node has no image-reference port" from a short ports list, and never test-wire just to read the warnings.\n' +
+  'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
+  'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
 
 const APP_DESC = NODE_LOCK + `Control the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).
 
 Available actions:
 - status / list_workflows: inspect app + workflow catalog. When the run is locked to its own canvas（会话所属画布：agent_task nodes, agent session, assistant "current" scope）, the catalog contains ONLY that canvas — other workflows are omitted.
 - rename_workflow: rename the canvas this run belongs to (or a specified workflow) — other canvases are rejected when locked
+- create_longtask: store a long-running-task state-machine graph (DAG) into the canvas this run belongs to; the graph and its landing points (super-node shells / generation workflows / deliverable nodes) are placed on the canvas at creation time — nothing runs — and the task stays disabled (the user enables it from the strip to start it). When to use: once a requirements-grilling session has reached consensus — load the mtnode-grill-me skill and follow its graph contract for what goes into graph (the contract is the single source of truth; do not invent fields); pass name = task name, graph = the graph. Rejected with the validation errors if the graph does not pass, so fix and call again.
+- get_longtask: read one existing long-running task in full — its identity (uid / name / ver / enabled), the whole graph definition, and the LIVE run state (run status, per-node status by path, who is blocked, who is being waited on). Pass uid (omit = the canvas's active task). Always call this before update_longtask: the state graph the user wants changed is only knowable from here.
+- update_longtask: replace the graph definition of an EXISTING long-running task in place (same task, same uid; ver +1). When to use: the user asks to change / fix a task chain that already exists — pass uid plus the complete revised graph (not a diff; the graph replaces the old one). The task keeps its name / enabled / run; if a run is in progress it keeps running on the old snapshot (the receipt says so) and the user must re-enable to apply the new graph. Rejected with the validation errors if the graph does not pass, so fix and call again. Creating a brand-new task is create_longtask instead.
 - select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background.
 - undo / redo: undo or redo the last canvas edit — same foreground-only rule (the undo stack belongs to the canvas you see).
+- export_canvas_png: take a high-resolution PNG "photo" of the whole canvas this run belongs to — every node, wire and mark, tiled and stitched exactly like the app's footer camera button (生成高清总览图). Read-only: nothing on the canvas changes. Like select_nodes it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background (switch to it first); the host briefly reveals the canvas and restores the view afterwards, so the user sees a short pan. Pass path to choose an absolute .png destination; omit it and the PNG is written into that canvas's asset folder. The receipt returns the file path — hand it to mtnode_vision when you actually need to READ the picture (OCR / layout / verifying what was built), or give it to the user as a deliverable.
 - list_dsh_plugins: list DSH agent plugins (id, package name, enabled/disabled, core/user). Does not restart the engine.
 
 Needs user confirmation (UI will prompt; may be rejected):
@@ -124,20 +129,20 @@ For creating/editing/wiring/removing NODES or canvas drawings (marks) on the can
    save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则）已迁到
    按需技能 mtnode-agent-skills/mtnode/canvas-edit-rules/SKILL.md —— 工具描述每轮都随
    历史重发，长规则只有「建图 / 连线 / 批量 / 媒体」时才需要，命中再加载即可。 */
-const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。返回是自足的改动回执：计数 + 每个 created / updated 的 x/y/w/h 与端口占用摘要 + warnings，不必再回读画布（detail:"diff" 只要明细）；确要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。
+const EDIT_DESC = NODE_LOCK + `在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。回执自足：计数 + 每个 created / updated 的 x/y/w/h 与端口占用 + warnings，不必回读（detail:"diff" 只要明细）；要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。
 
-create.kind 枚举见 schema：输入 input_*（媒体输入由用户自己选文件）· 处理 proc_text / proc_image / agent_task / db_table · 生成 music_gen / tts_gen / video_gen / remotion · 保存 save · 批次 split / merge · 控制 control / judge / task · 节拍 wait_file / timer / delayer / sequencer / gate / splitter / counter / mutex · 容器与广播 super / db_replica / global / execute · 计算 tool / function。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
+create.kind 枚举见 schema（生成族含 sensenova_gen 本机图像）。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。
 
-端子预检：canvas_get（detail "standard" / "full"）对端子数固定的节点直接回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看它；connect 失败时 warnings 会带候选端子清单与正确接法建议（如单数据端子已被占 → 用 super 汇聚或拆节点），save 的路径后缀按输入类型强制（.md / .yaml / .png / .wav / .mp4）并回 warning，不必等服务商报错。
+端子预检：canvas_get（detail "standard" / "full"）对端子数固定的节点回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看它；connect 失败时 warnings 带候选端子与接法建议；save 的路径后缀按输入类型强制。
 
 不变量（违反即接线错）：
 - 标题必须唯一。
-- 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 以控制线挡下游。
-- proc_image 每次运行只出 1 张图（多图 = 1:1 批量项 / 多个 proc_image 节点 / attempts N）。
-- batchMode "batch" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；要一次看全部用 "agg"。
+- 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 控制线挡下游。
+- 图像生成节点（proc_image / sensenova_gen）每次运行只出 1 张图；sensenova_gen 走本机后端（先装插件 sensenova-local），结果落资产目录、由输出端口 0 交付，不写 outputPath。
+- batchMode "batch" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；一次看全部用 "agg"。
 - 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。
 
-完整硬规则只写在技能 mtnode-canvas-edit-rules（save 与 wait_file、批次与文生图、task 三端、@引用三条件、数据库 / 开发节点 / 排版 / scope 细则都在那里）：建图 / 连线 / 批量 / 媒体前先用 skill 工具加载它。`
+完整硬规则见技能 mtnode-canvas-edit-rules（save 与 wait_file、批次、task 三端、@引用、数据库 / 开发 / 排版 / scope）：建图 / 连线 / 批量 / 媒体前先加载它。`
 
 /* 绘制（mark）字段表：createMarks 用这份表；updateMarks 与旧别名 marks 只指回它，不重复序列化。
    around 的旧别名 nodes 仍被渲染层接受，但不再写进 schema。 */
@@ -210,7 +215,8 @@ const NODE_PROPS = {
   title: { type: 'string', description: '唯一显示标题；@标题 引用它。' },
   tags: { type: 'array', items: { type: 'string' }, description: '节点标签，供 @标签名 引用。' },
   text: { type: 'string', description: 'input_text 正文。' },
-  prompt: { type: 'string', description: 'proc_text / proc_image 提示词（也是 judge 判据）；可写 @标题 / @标签名。' },
+  prompt: { type: 'string', description: 'proc_text / proc_image / sensenova_gen 提示词（也是 judge 判据）；可写 @标题 / @标签名。' },
+  sensenovaPrompt: { type: 'string', description: 'sensenova_gen 提示词别名（与 prompt 同义，两个都收）。' },
   task: { type: 'string', description: 'agent_task 任务描述；可写 @标题 / @标签名。' },
   goal: { type: 'string', description: 'task：本步要达成什么。' },
   steps: { type: 'array', items: { type: 'string' }, description: 'task：有序子步骤标题。' },
@@ -262,17 +268,23 @@ const NODE_PROPS = {
   providerId: { type: 'string', description: 'proc_text / proc_image：API 服务商 id 或名称。' },
   provider: { type: 'string', description: '智能节点路由：deepseek-official / mtnode_<id> / 服务商名。' },
   model: { type: 'string', description: '本节点模型 id（运行中的别改）。' },
-  size: { type: 'string', description: 'proc_image 尺寸，须是 canvas_get 的 imageSizes 之一（如 "2048x1360" / "auto"）。' },
+  size: { type: 'string', description: 'proc_image 尺寸：合法值（imageSizes）用 canvas_get sections:["refs"] 取，缺省 2048x1360。' },
+  ratioBucket: { type: 'string', description: 'sensenova_gen 分辨率桶名（官方 11 个训练桶，如 "1:1" / "16:9"）；width / height 随桶固定，不能自由填。' },
+  numSteps: { type: 'number', description: 'sensenova_gen 采样步数（默认 30）；省显存降它。' },
+  vramMode: { type: 'string', enum: ['full', 'fast', 'balanced', 'low'], description: 'sensenova_gen 显存档位：full（≥48G）· fast（24G 卡档）· balanced / low（逐级卸载到内存）；24G 卡用 fast。' },
+  dtype: { type: 'string', enum: ['bfloat16', 'float16', 'float32'], description: 'sensenova_gen 权重精度（默认 bfloat16）。' },
+  think: { type: 'boolean', description: 'sensenova_gen think 模式（先出思考文本再出图，默认 false）。' },
+  imgCfgScale: { type: 'number', description: 'sensenova_gen 参考图条件强度：1.0 = 关闭（默认），仅图像编辑模式生效。' },
   imgQuality: { type: 'string', enum: ['', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'proc_image 的 quality 直传参数：low/medium/high/xhigh/max；空 = 不传（服务商按 auto）；旧版 DALL·E 的 standard / hd 不要传。' },
   imgBackground: { type: 'string', enum: ['', 'auto', 'opaque', 'transparent'], description: 'proc_image 的 background 直传参数：transparent 直出带 Alpha 的 PNG（自动补「背景透明」提示词并禁用差分抠图 bgRmOn）；opaque；空 = 不传。' },
   maskOn: { type: 'boolean', description: 'proc_image 蒙版局部重绘（透明区 = 重绘，只对第 1 张 image 生效）：maskPath 须由用户在节点头部蒙版编辑器涂抹（Agent 不能代画）；需图像输入 + OpenAI 兼容图像服务商；与 ratioLockOn 同时开以蒙版为准；带蒙版时请求的 size 钉成首张参考图的像素尺寸，节点自己选的 size 这一轮不生效。' },
   remotionSize: { type: 'string', description: 'remotion 分辨率（宽x高）。' },
   fps: { type: 'number', description: 'remotion 帧率 1–60。' },
   attempts: { type: 'number', description: '抽卡次数 1–10（生成类节点）。' },
-  outputPath: { type: 'string', description: 'video_gen / music_gen / tts_gen 输出路径（.mp4 / .wav / .mp3）。' },
+  outputPath: { type: 'string', description: 'video_gen / music_gen / tts_gen 输出路径（.mp4 / .wav / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。' },
   voice: { type: 'string', description: 'tts_gen 音色（留空 = 默认，勿编造）。' },
   speed: { type: 'number', description: 'tts_gen 语速 0.5–2.0。' },
-  videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: 'video_gen：fl2va 首末帧（默认）/ r2v 多参考（端子：1 提示词 · 2–10 参考图 I1–I9 · 11–13 参考视频 V1–V3 · 14–16 参考音频 A1–A3）。' },
+  videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: 'video_gen：fl2va 首末帧（默认）/ r2v 多参考。输入端子（**控制输入恒为端口 0 = 第一个端子**，数据端口从 1 起且与「端子号 / 数据槽号」同号）：fl2va = 控制（0）· 提示词（1）· 首帧（2）· 末帧（3）；r2v = 控制（0）· 提示词（1）· 参考图 I1–I9（2–10）· 参考视频 V1–V3（11–13）· 参考音频 A1–A3（14–16）；自建工作流 = 控制（0）· 文本（1）· 素材（2+）。connect 的 toIndex / fromIndex 用 0 起始端口下标，等于上面括号里的号。' },
   duration: { type: 'number', description: '时长秒：video_gen 4–15，remotion 1–60。' },
   outputRes: { type: 'string', enum: ['auto', '480p', '720p', '1080p'] },
   postEnabled: { type: 'boolean', description: 'video_gen 超分补帧后处理（24G 建议关）。' },
@@ -351,8 +363,10 @@ function jsonResult(value) {
    每节点只有 标题 / 描述(note) / 类别(kind)，重型块只留 nodes（marks / wires / groups /
    taskTree / superTree / tagCatalog / workflows / selection 一概不带），静态词表与视角
    （kinds / imageSizes / markColors / devFuncColors / cam / view）也不带。要配置字段显式传
-   detail:"standard"（配置齐全 + 正文只给 *Len + 建图参考表），要看全文再显式 detail:"full"
-   （配合 ids / sections 收窄）。默认给索引，等于一次读图不再把整图配置灌进长期历史。 */
+   detail:"standard"（配置齐全 + 正文只给 *Len + markColors / devFuncColors / cam / view），
+   要看全文再显式 detail:"full"（配合 ids / sections 收窄）。三张静态建图表（kinds /
+   imageSizes / defaultImageSize）在任何档位都不默认带，显式传 sections:["refs"] 才取得到。
+   默认给索引，等于一次读图不再把整图配置灌进长期历史。 */
 const DEFAULT_GET_DETAIL = 'minimal'
 
 /* 在返回体里带一句体积提示：让模型知道这次读了多少字符、怎么读更省。 */
@@ -563,7 +577,7 @@ export function apply(ctx) {
         type: 'string',
         enum: ['minimal', 'standard', 'full'],
         description:
-          'Node field granularity. DEFAULT (when omitted) = "minimal": per node only title / note / kind (标题 / 描述 / 类别) — no id, no position, no status, no config fields, no bodies, and no heavy block (marks / wires / groups / trees) either. standard = minimal + all per-kind config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text, and the build references (kinds, imageSizes, defaultImageSize, markColors, devFuncColors, cam/view). full = everything incl. full text bodies (input_text.text, prompt, task, goal, jscode), rows, files, steps — you must ask for it explicitly, ideally with ids:[...] so only the nodes you need come back heavy.',
+          'Node field granularity. DEFAULT (when omitted) = "minimal": per node only title / note / kind (标题 / 描述 / 类别) — no id, no position, no status, no config fields, no bodies, and no heavy block (marks / wires / groups / trees) either. standard = minimal + all per-kind config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text, and the build references (markColors, devFuncColors, cam/view) — WITHOUT kinds / imageSizes / defaultImageSize; get those three static tables explicitly with sections:["refs"]. full = everything incl. full text bodies (input_text.text, prompt, task, goal, jscode), rows, files, steps — you must ask for it explicitly, ideally with ids:[...] so only the nodes you need come back heavy.',
       },
       ids: {
         type: 'array',
@@ -585,7 +599,7 @@ export function apply(ctx) {
       bodies: {
         type: 'boolean',
         description:
-          'Include full body text (text/prompt/task/goal). Default: true when detail="full", false otherwise. When false, *Len counts are still returned.',
+          'Include full body text (text/prompt/task/goal, and 素材节点各条目的正文 / 媒体路径). Default: true when detail="full", false otherwise. When false, *Len counts are still returned.',
       },
       bodyLimit: {
         type: 'number',
@@ -596,7 +610,7 @@ export function apply(ctx) {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Whitelist of the heavy top-level blocks: nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection. At detail "minimal" ONLY nodes is returned unless you name others here（只查连线就用 ["nodes","wires"]）; at "standard" / "full" the default is all of them and this list narrows it. The small envelope (workflow, scopeInfo, assistScope / scopeNote) is always included.',
+          'Whitelist of the heavy top-level blocks: nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection, plus refs = 三张静态建图表 kinds / imageSizes / defaultImageSize. At detail "minimal" ONLY nodes is returned unless you name others here（只查连线就用 ["nodes","wires"]）; at "standard" / "full" the default is all of them and this list narrows it — EXCEPT refs: 它在任何档位都默认缺席，只有显式点名才回。The small envelope (workflow, scopeInfo, assistScope / scopeNote) is always included.',
       },
     },
     timeoutMs: 15000,
@@ -639,10 +653,14 @@ export function apply(ctx) {
           'status',
           'list_workflows',
           'rename_workflow',
+          'create_longtask',
+          'get_longtask',
+          'update_longtask',
           'delete_workflow',
           'select_nodes',
           'undo',
           'redo',
+          'export_canvas_png',
           'list_dsh_plugins',
           'install_dsh_plugin',
           'remove_dsh_plugin',
@@ -666,12 +684,29 @@ export function apply(ctx) {
       },
       name: {
         type: 'string',
-        description: 'For rename_workflow: display name.',
+        description:
+          'For rename_workflow / create_longtask: display name (for create_longtask it is optional; defaults to a numbered long-running task name). For update_longtask: optional new name for that task.',
+      },
+      uid: {
+        type: 'string',
+        description:
+          'For get_longtask / update_longtask: target long-running task uid. Omit = the canvas\'s active task.',
+      },
+      graph: {
+        type: 'object',
+        additionalProperties: true,
+        description:
+          'For create_longtask / update_longtask: the long-running-task state-machine graph. For update_longtask pass the COMPLETE revised graph — it replaces the stored definition (not a diff, not just the changed nodes). The graph contract (nodes / edges and their per-kind cfg) is the single source of truth in the mtnode-grill-me skill — do not invent fields.',
       },
       pkg: {
         type: 'string',
         description:
           'For install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin: npm package, GitHub URL, local path, .tgz, or installed package name.',
+      },
+      path: {
+        type: 'string',
+        description:
+          'For export_canvas_png: absolute .png output path. Omit = the PNG is written into the canvas asset folder and that path is returned.',
       },
       plugin: {
         type: 'string',

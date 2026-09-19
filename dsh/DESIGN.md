@@ -72,6 +72,12 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
   审批 answerer;`canvas-plugin.mjs` 注册 `mtnode_canvas_get` /
   `mtnode_canvas_edit`(import `defineTool`,dsh 升级只改 `dsh/`)。帧转发到
   gateway,再由本地协议事件送达 renderer;回答经 `interact` 原路返回。
+  `longtask-plugin.mjs` 是长周期任务系统（状态机）的工具面：注册 `lt_state`（读写本轮共享
+  状态，写只允许本环节声明的输出键）与 `lt_memory`（recall / list / write / propose 四个
+  动作），发 `{t:'lt', id, sessionId, action, params}`,renderer 经 `interact` 的
+  `kind:'lt'` 回 `{t:'lt-result', id, ok, result|error}`。两个工具都由 `isToolHidden` 按
+  运行裁剪（名单在 `tool-visibility.mjs`,渲染层据「这一轮的运行体是不是状态机里的伪节点」
+  决定是否点名藏掉）。真源始终在渲染层与 `longtask-store.js`,网关不存任何长任务状态。
 - **交互桥的归属契约(询问不得成为死卡)**:
   - 真实轮的 dsh session id 由 **gateway 铸造**并显式传给 `harness.run(blocks,
     {sessionId})`(SDK `RunOptions.sessionId`,未知 id = 新建会话);预热轮另铸一个,
@@ -133,6 +139,8 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
 | `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?, resumeSession?}` | 排队一条提示,流式事件直至整轮 idle。`resumeSession`(**断点续跑**,可缺省)= 宿主点名沿用上一轮(崩溃 / 断线 / 超额失败)那次的 dsh session id:网关先按本机会话日志判「盘上有没有这份会话」(第一道闸),续跑轮还会先经 `session/resume` 握手让运行时把旧日志恢复为 live —— 同进程复用 / 跨进程恢复 / `RESUME_UNAVAILABLE` 三态详见「断点续跑契约」;只有**盘上无日志**(状态 C 第 1 条)才"不起 runtime、不消耗任何 token"地只回 `error`(带固定标记 `RESUME_UNAVAILABLE: …`)。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`），工具**仅保留联网搜索**；cordis.yml 用同一标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 插件。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
+| `steer` | `{reqId\|cancelTag, sessionId?, text?\|contentBlocks?}` | **轮内插话**:往**正在跑的这一轮**的下一步边界投一句话(运行时侧 `agent.steer`),不重开轮、不等本轮结束。网关按在途表(`reqId → {runKey, cancelTag, sessionId}`)定位那一轮那台 runtime 的 client,同步下发 `session/steer`(10s)。送达 → `{ok:true, reqId, sessionId, steered:true, reqIds}`;没有在途这一轮 / 那台 runtime 已回收 / **老运行时没有该方法** / 下达超时 → `{ok:false, reason:'unsupported', detail}`,宿主据此回落成普通排队消息。详见「运行中插话与暂停契约」 |
+| `pause` | `{reqId\|cancelTag, sessionId?}` | **轮内暂停**:中止当前请求但**保留 live 会话与收件箱**(运行时侧 `agent.cancel({kind:'user'},{keepInbox:true})`,**不关 runtime**),之后可点名 `run.resumeSession` 从中断处接下去。回执与降级口径同 `steer`(`{ok:true, paused:true}` / `{ok:false, reason:'unsupported'}`)。成功后本轮以 `done{paused:true}` 收尾,**该轮不会有 `error` 事件**(否则宿主的失败重发闸会把一次暂停当 429 类失败连重发 5 次) |
 | `interact` | `{kind:'question'\|'approval'\|'canvas'\|'db'\|'abort', id, answers?\|outcome?\|result?\|error?}` | 回答提问 / 审批 / 画布工具 / 数据库工具结果,按交互 id 路由回对应运行时(`canvas` → `{t:'canvas-result'}`,`db` → `{t:'db-result'}`);`kind:'abort'` 让该次交互以失败收场(工具报错而非空答案)。id 已失效 → `{ok:true, stale:true}`(见「交互桥的归属契约」) |
 | `rollbackDrain` | `{reqId?}` | 回滚收尾拉取:取走 gateway 侧该轮(缺省 = 最近一轮)缓冲的 rollback 帧,返回 `{frames:[…], dropped:n, sealed:true\|false}`,取后即清缓冲。主进程在 `done` / `cancel` / 运行时关闭后各调一次,**账本封口只以本方法的返回值为权威**(事件是推的、drain 是兜底与封口);无缓冲返回 `{frames:[],dropped:0,sealed:true}`。详见「回滚账本与 journal 帧(契约)」 |
 | `providerCatalog` | — | `{deepseek:[…], piai:[…]}` 服务商/模型目录(pi-ai 同源) |
@@ -146,7 +154,12 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 `{name, args}`)、`status`(`{state}`)、`effort`(本轮生效思考档回传,`{requested, effort,
 route}` —— 真实轮起跑前发一次,宿主按它回显「用户选的档 → 该路由实际生效的档」,见
 「思考强度契约」)、`question`(模型提问,`{id, sessionId,
-questions}`)、`approval`(越权审批,`{id, sessionId, toolName, callId?, reason?}`)、
+questions}`)、`approval`(越权审批,`{id, sessionId, toolName, callId?, reason?}` —— 沙箱拒绝
+工作区外的写 / 执行后,运行时会在同一轮给模型一句 `[sandbox: escalation available …]` 提示,
+模型据此带 `sandbox_permissions` + `justification` 重试,工具层才发起这次审批;宿主据此弹
+「沙箱放行」卡,出口为允许一次 / **本会话后续都放行**(宿主按 runKey + 目标模式记住,之后同类
+升权直接回 `allowed-once`,不再打扰)/ 拒绝。故审批档不能是 `never`:该档在审批服务内即判
+rejected,请求进不了宿主 UI,沙箱拒绝就只剩一句失败)、
 `canvas`(画布/应用读写,`{id, sessionId, op:'get'|'edit'|'app', params}` —— 渲染层执行后经 `interact`
 `kind:'canvas'` 回传结果)、`db`(事实库读写,`{id, sessionId, action, params}` —— 经 `interact`
 `kind:'db'` 回传结果;两类帧的 `sessionId` 是发起轮的章,网关据此门控归属)、`ix-drop`(**撤卡通知**,`{id, kind?, reason:'aborted'|'dropped'}`
@@ -154,10 +167,13 @@ questions}`)、`approval`(越权审批,`{id, sessionId, toolName, callId?, reaso
 时是「无归属的全局撤卡帧」,渲染层按 `id` 兜底撤卡。见「交互桥的归属契约」)、
 `journal`(回滚账本帧,`{phase:'begin'|'pre'|'post'|'end',
 rid, sessionId, kind, …}` —— 主进程是唯一落盘者,转给渲染层时剥掉正文,见「回滚账本与
-journal 帧(契约)`)、`session-event`(其余会话事件全量透传)、`usage`、`title`、
+journal 帧(契约)`)、`session-event`(其余会话事件全量透传 —— **插话的注入回执 `agent/inbox/spliced`
+就靠这条回流**，宿主按 `data.inserted` 的文本认回那句插话，见「运行中插话与暂停契约」)、`usage`、`title`、
 `error`、`session`(**本轮 dsh 会话归属**,`{sessionId, resumed}` —— runtime 占用成功即发一次,
 首条 `session.event` 改判权威 id 时再发一次,见「断点续跑契约」)、
-`done`(`{finalResponse, metrics, sessionId, resumed}`;续跑不可用时另带 `resumeUnavailable:true`)。
+`done`(`{finalResponse, metrics, sessionId, resumed}`;续跑不可用时另带 `resumeUnavailable:true`；
+**被宿主暂停的这一轮另带 `paused:true`，且该轮保证不会有 `error` 事件**，否则宿主的失败重发闸会把
+一次暂停当 429 类失败连重发 5 次，见「运行中插话与暂停契约」)。
 所有事件带 `reqId`,对应一次 `run`
 (`ix-drop` 的全局撤卡帧例外:reqId 为空串)。
 
@@ -240,7 +256,7 @@ journal 帧(契约)`)、`session-event`(其余会话事件全量透传)、`usage
   **不注册**:`canvas-plugin.mjs` 的 `register()` 与 `db-plugin.mjs` 的入口各查一次名单。
 - **引擎自带工具**(`create_goal` / `todo_write` / `subagent` 家族 / `job_*` / `ask_user_question`)
   注册在 `@deepseek-ai` 的包里,改不到注册 —— 用官方口子
-  [`ctx.tools.restrict({deny})`](../../dsh/gateway/plugins/tool-restrict-plugin.mjs)。它要求
+  [`ctx.tools.restrict({deny})`](gateway/plugins/tool-restrict-plugin.mjs)。它要求
   **agent 作用域**的 ctx(普通插件 ctx 调用直接抛),且只能裁「该作用域继承来的」工具
   (own-layer 注册不可裁 —— 那正是子代理回执 / 结构化输出机制存活的原因),所以挂在
   `agent/created` 上、在 `agent.ctx.effect(...)` 里装掩码,随该 agent 析构自动解除。
@@ -448,7 +464,100 @@ journal 帧(契约)`)、`session-event`(其余会话事件全量透传)、`usage
 - 会话文件的淘汰属宿主的磁盘清理策略(设置面板的 `dsh-home/sessions` 清理),契约不承诺存在时长:
   删过就是 `RESUME_UNAVAILABLE`(状态 C 第 1 条),宿主退回整轮重发即可,不需要额外状态。
 
+## 运行中插话与暂停契约(运行时 ↔ gateway ↔ 宿主)
+
+> 一条提示**已经跑起来之后**，用户还想做两件事：① 追加一句即时纠偏（不想等本轮跑完，也不想
+> 重开一轮）；② 让这一轮停在当前这一步，但**不丢**上下文和已排队的后续消息，之后还能接着跑。
+> 这就是「插话（steer）」与「暂停（pause）」。两枚运行时原语本来就齐（`@deepseek-ai/dsh-agent`
+> 的 `Agent` 接口：`steer(message)` / `cancel(cause, { keepInbox })`），缺的只是从运行时到界面
+> 的这条接线。**本节锁三层职责、暂停的收尾语义、以及 unknown-method 降级** —— 与「断点续跑契约」
+> 同一套路子（可选 JSON-RPC 方法 + 原型级补丁 + 缺能力即回退，绝不让新功能把老环境打崩）。
+
+### 三层职责（谁只干什么）
+
+| 层 | 落点 | 只负责 | 明确不负责 |
+|---|---|---|---|
+| 运行时（cordis 进程内） | `dsh/gateway/plugins/session-steer-server.mjs`（插件 id `mtnode-session-steer`，挂在 `mtnode-session-resume` 行之后、`# ── user plugins ──` 段之前） | 把 `session/steer` / `session/pause` 两枚**可选** JSON-RPC 方法装到上游 `HarnessSdkJsonRpcServer.prototype.handleRequest` 上：按 `sessionId` 取这台 runtime 的 live agent → `agent.steer(createUserMessage(...))` / `agent.cancel({kind:'user'},{keepInbox:true})` | 不寻址「哪一轮在哪台进程」（网关的事）；不从盘上恢复会话（插话 / 暂停只对正在跑的轮次有意义）；不决定降级成排队还是终止 |
+| 网关 | `dsh/gateway/gateway.mjs`：在途表 `inFlightRuns` / 暂停戳 `pausedRuns` / stdio `case 'steer'`\|`case 'pause'` → `handleInflightRequest` | 把宿主点名（`reqId` 或 `cancelTag`〔+ `sessionId` 收窄〕）解析成**那一轮那台** runtime 的 `client`，同步下发（`INFLIGHT_REQUEST_TIMEOUT_MS = 10s`）；把「送不出去」一律折算成 `{ok:false, reason:'unsupported'}`；并保证**暂停的这一轮只以 `done{paused:true}` 收尾，绝不发 `error`** | 不判断「该不该插话」（宿主只在确实有一轮在跑时才发）；不改 `session/prompt` 的 followup 语义（不插话时行为与接入前一字不变） |
+| 宿主（渲染层） | `dsh/main-dsh.js` 的 `steer/pause` + `preload.js` 的 `dshSteer/dshPause` + `renderer/app-assist.js`（`agentSteerNow` / `agentPauseNow` / `agentResumePaused`），暂停语义由 `renderer/app-db.js` 的 `dshRunOnce` 认 `done.paused` | 决定按哪枚键、失败怎么兜底（**一律回落既有的「发送队列」**）、把插话落成一条 `_kind:'steer'` 气泡并按注入帧升级为「已注入本轮」、暂停期间压住 outbox 排水、点「继续」走 `run.resumeSession` 续跑通道 | 不自己编 `reqId`（渲染层拿不到，一律用 `cancelTag = "agent:"+会话 id` 点名自己那一轮）；不改「■ 终止」的关 runtime 语义；不改 429 自动重发闸的判据 |
+
+- **在途表的建与清**：`claimRuntime` 占用成功即登记（此刻就有 `runKey` / `cancelTag` / 网关铸造的
+  `runSession`），`handleRun` 两处 `emit('session')`（起轮前 + 首条 `session.event` 改判权威 id 后）
+  刷新 `sessionId`，`handleRun` 的 `finally` 调 `clearInFlightRun(reqId)` 与 `keyToReqId` 同进同退。
+  整表上限 `INFLIGHT_RUNS_MAX = 256`，超出丢最早登记的（防泄漏）。收尾之后 `steer/pause` 找不到
+  这一轮 → `unsupported`，宿主自己回落排队 —— 这是**常态而不是错误**（那一轮确实已经跑完了）。
+- **插话消息与普通用户消息同形**：运行时侧用 `@deepseek-ai/dsh-llm` 的
+  `createUserMessage({content:[{type:'text',text}], source:{kind:'user'}})`（与上游 `server.prompt`
+  同源），所以插话在会话日志与宿主投影里不需要任何特殊分支。
+- **注入回执不新增事件名**：运行时把插话拼进收件箱时吐 `agent/inbox/spliced`，网关 `mapNotification`
+  的 default 分支原样透传成 `session-event`；宿主按 `data.inserted` 里的文本认回那句插话，把气泡
+  从「已插话 · 将在下一步生效」升级为「已注入本轮」。这类帧**不参与** token / jobs 记账（token 只在
+  `usage` 增量块累计，jobs 只数 `job/*started`；插话自身的用量在它所属调用的 `usage` 里正常出现）。
+
+### 暂停的收尾语义（最容易做错的一条）
+
+`pause` 落地后，运行时会把当前这一轮以 **aborted** 收流 —— 这在网关看来长得和失败一模一样。
+宿主的失败自动重发闸（见「断点续跑契约」与 `renderer/app-db.js` 的重发链）**只看 `error` 事件**，
+所以一次暂停若漏出 `error`，就会被当成 429 类失败**连着重发 5 轮**（用户按了暂停，模型反而又跑 5 次）。
+网关的保证与实现口径：
+
+1. **先盖戳再下发**：`pausedRuns.set(reqId)` 在 `client.request('session/pause')` 之前 —— 运行时往往
+   在同一拍里就把这一轮 abort 收尾，等 `await` 回来再标记会漏判。任何一条**明确送不出去**的路径
+   （没有在途轮 / runtime 不在池 / 参数不合法 / 运行时拒收）都把戳摘回去，否则那一轮的真实失败会被
+   `handleRun` 误吞成「暂停完成」而丢了报错。
+2. **超时例外（宁少报错，不丢语义）**：10s 没回音时请求很可能已经落进运行时，摘掉戳会让随后的
+   aborted 被报成 `error` → 连重发 5 次；所以超时**保留**标记（回执照样 `unsupported`）。
+3. **两条收尾路径都只发 `done{paused:true}`**：`harness.run` 正常收流 → `emit('done', {…, paused:true})`；
+   抛错（运行时顺手把会话关了 → `TransportClosed` / 「已请求终止」一类）→ `catch` 里在**僵尸清理之后、
+   collision 转译之前**判 `runPaused()`，同样只发 `done{paused:true, finalResponse:''}`。并且 `emit`
+   包装器对已暂停的轮次**吞掉 `error`**（留一行 `pause-swallow-error` 诊断），透给宿主就是没有 error。
+4. **宿主的对应动作**：`dshRunOnce` 认 `data.paused` → 按现状定稿返回，并**保留**该轮登记的可续跑
+   会话（`finish(ok, val, keepRunSession)` 第三参）—— 暂停不是跑完，点「继续」正是按那个 sid
+   `run.resumeSession` 从中断处接下去。「继续」的指令文案与出错续跑共用
+   `dshResumeInstruction()`（`dshPausedResumeDirective` 只多一句「被用户手动暂停」的说明），
+   两条路径不分叉；界面语言不影响发给模型的指令（见 AGENTS.md「提示词单一真源」）。
+5. **暂停期间绝不自动排水**：会话的 `st.outbox`（发送队列）在 `st.paused` 为真时一律不发 —— 用户按停
+   就是「停在这里」，自动排水等于把暂停变成继续。左下角运行队列把暂停列为独立可见态（`state:'paused'`），
+   行内键是「▶ 继续」而不是「■」。
+
+### unknown-method 降级（新功能不得把老环境打崩）
+
+- **两枚方法都是可选的**：插件不调用时行为与接入前一字不变；老运行时没有 `session/steer` /
+  `session/pause` = 上游 `handleRequest` 回 unknown method，网关折算成 `{ok:false, reason:'unsupported'}`。
+  老网关连 `steer` / `pause` 这两枚 stdio 方法都没有 = 错误从 `main.js` 的 catch 成形，落在 `error` 字段。
+- **运行时侧一律不抛**：参数缺失回 `{ok:false, reason:'invalid_params'}`，会话不在 live 回
+  `{ok:false, reason:'no_live_agent'}`，`agent.cancel` 内部异常也吞掉回 `ok:false` —— 抛错会经 JSON-RPC
+  变成 error 响应，把用户**正在跑的那一轮**判成失败并整轮重发；插话失败本该只是「没插进去」。
+- **`ok:false` 不算送达**：网关把运行时明确的 `{ok:false}` 也折算成 `unsupported`（`detail` 记
+  `runtime refused: …`）。按成功回报的话，宿主以为那句话已进本轮 —— 它既没进模型也没进队列，
+  等于**静默丢字**。
+- **宿主的降级必须可解释**（不是"点了没反应"）：
+  · 桥（`window.api.dshSteer` / `dshPause`）压根没有 → 键**整枚不显示**；
+  · 引擎回 unknown method（老网关 / 老运行时）→ 键**还在但置灰**（`.is-unsupported` 类而不是
+    `disabled`：disabled 的按钮在 Chromium 不派发鼠标事件、原生 `title` 也弹不出来），按下去
+    直接走发送队列并说明一次；
+  · 其它失败（这一轮刚好跑完 / runtime 已回收 / 超时）→ 只是「这枪没赶上」，什么都不记，
+    下一轮照样能插话。**「引擎没这枚能力」与「这枪没赶上」必须分开判**（`agentCapabilityMissing`
+    只认 unknown-method 文案），否则一次运气不好就把键永久焊死。
+- 幂等与安全：`steer` 可安全重发（最多让模型多看一眼同一句话），主进程那一跳超时回
+  `{ok:false, reason:'timeout', retryable:true}`；`pause` 按 `reqId` 记账幂等（同一条在途轮再点回
+  `{ok:true, paused:true, idempotent:true}`，超时回 `{…, pending:true}`），记账随该轮 `done` 事件与
+  网关退出清空。
+
+### 与「■ 终止」的分界（三条路，别混）
+
+| 动作 | 运行时原语 | 那一轮的结局 | live 会话 | 已排队消息 | 之后 |
+|---|---|---|---|---|---|
+| ⚡ 插话 | `agent.steer(msg)`（`InboxTarget='next-step'`） | **继续跑**，下一步读到这句 | 保留 | 不动 | 无需任何操作 |
+| ⏸ 暂停 | `agent.cancel({kind:'user'},{keepInbox:true})` | 停在当前这一步，`done{paused:true}` | **保留**（进程不死） | **保留**（不排水） | 「▶ 继续」= `run.resumeSession` 续跑 |
+| ■ 终止 | `cancelRuntime` → `closeRuntimeByKey` | 整轮作废（`error`/aborted 语义照旧） | 关掉 | 按既有口径处理 | 下一轮是全新会话或按既有重发链 |
+
+`keepInbox` 是「暂停」与「终止」的唯一分界：丢了它，暂停就退化成终止（已排队消息与 steering 条目
+一并作废）。回归口径由 `test/smoke-session-steer-pause.js` 钉住（三层各自真跑 / 真抽函数跑）。
+
 ## 回滚账本与 journal 帧(契约)
+
+
 
 > **唯一真源**:主进程落盘、网关转发、渲染层展示三路都按本节字段实现,不得各写一套。
 > 本节只锁契约(字段、路径、归属、语义、失败行为),不锁实现;要改字段,先改这里。

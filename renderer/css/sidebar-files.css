@@ -1,0 +1,367 @@
+/* ============================================================
+ * 画布左侧边栏「文件」页（renderer/app-sidebar-files.js）
+ *   · 顶部 Tabs（节点 / 文件）
+ *   · 目录选择器 + 工具条（搜索 / 类型筛选 / 刷新 / 粘贴）
+ *   · VSCode explorer 式文件树（行内重命名、右键菜单、多选、预览字样）
+ * 亮色主题的差异集中在文件末尾的 body.theme-light 段。
+ * ============================================================ */
+
+/* ── 顶部 Tabs ── */
+.side-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--bd);
+}
+
+.side-tab {
+  flex: 1;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  color: var(--dim, #8b98a8);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 6px;
+  cursor: pointer;
+  letter-spacing: .5px;
+}
+
+.side-tab:hover {
+  color: var(--ink);
+  background: var(--code);
+}
+
+.side-tab.on {
+  color: var(--cyan2, #7fd4e8);
+  background: var(--code);
+  border-color: var(--bd2);
+  font-weight: 600;
+}
+
+/* Tab 互斥：文件页占位时收起节点页的搜索与树，反之亦然 */
+#sidebar.sf-on .sidebar-search,
+#sidebar.sf-on #sideTree {
+  display: none;
+}
+
+#sidebar:not(.sf-on) .side-files {
+  display: none;
+}
+
+/* ── 文件页外框 ── */
+.side-files {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.side-files-root {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  align-items: center;
+  padding: 8px 8px 4px;
+}
+
+.side-files-root select {
+  flex: 1;
+  min-width: 0;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.side-files-root select:focus {
+  border-color: var(--orange);
+}
+
+.side-files-tools {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  align-items: center;
+  padding: 0 8px 6px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.side-files-tools input {
+  flex: 1;
+  min-width: 0;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 5px 7px;
+  font-size: 12px;
+  outline: none;
+}
+
+.side-files-tools input:focus {
+  border-color: var(--orange);
+}
+
+.side-files-tools select {
+  flex: none;
+  max-width: 74px;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 5px 4px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.side-ico-btn {
+  flex: none;
+  background: transparent;
+  color: var(--dim, #8b98a8);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 3px 5px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.side-ico-btn:hover {
+  color: var(--ink);
+  border-color: var(--orange);
+}
+
+.side-txt-btn {
+  padding: 3px 8px;
+}
+
+/* ── 树 ── */
+.side-files-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 4px 10px;
+  font-size: 12px;
+}
+
+.sf-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding-left: calc(2px + var(--sf-depth, 0) * 12px);
+  padding-right: 4px;
+  border-radius: 3px;
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sf-row:hover {
+  background: var(--code);
+}
+
+.sf-row.sel {
+  background: rgba(255, 152, 0, .18);
+  box-shadow: inset 0 0 0 1px rgba(255, 152, 0, .35);
+}
+
+.sf-row.cut {
+  opacity: .5;
+}
+
+.sf-twisty {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--dim, #8b98a8);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.sf-twisty.leaf {
+  cursor: default;
+}
+
+.sf-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: #9aa4b0;
+}
+
+.sf-ico-dir {
+  color: #7fa8d4;
+}
+
+.sf-ico-md {
+  color: #6cb6ff;
+}
+
+.sf-ico-code {
+  color: #c792ea;
+}
+
+.sf-ico-image {
+  color: #e0a458;
+}
+
+.sf-ico-media {
+  color: #5ed3a8;
+}
+
+.sf-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sf-sub {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--dim, #8b98a8);
+  font-size: 11px;
+  opacity: .75;
+}
+
+.sf-name-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--orange);
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.sf-prev {
+  flex: none;
+  color: var(--cyan2, #7fd4e8);
+  border: 1px solid var(--bd2);
+  border-radius: 2px;
+  padding: 0 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sf-prev:hover {
+  border-color: var(--cyan2, #7fd4e8);
+  background: var(--code);
+}
+
+.sf-empty,
+.sf-search-head {
+  color: var(--dim, #8b98a8);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 6px;
+  white-space: pre-wrap;
+}
+
+.sf-search-head {
+  border-bottom: 1px dashed var(--bd);
+  margin-bottom: 2px;
+}
+
+/* ── 右键菜单（瞬时菜单：点外部即收，属允许的两类之一） ── */
+.sf-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+
+.sf-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--ink);
+  border: none;
+  border-radius: 3px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sf-menu-item:hover:not(:disabled) {
+  background: var(--code);
+  color: var(--cyan2, #7fd4e8);
+}
+
+.sf-menu-item:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.sf-menu-item.danger {
+  color: #e06c75;
+}
+
+.sf-menu-item.danger:hover {
+  background: rgba(224, 108, 117, .16);
+  color: #e06c75;
+}
+
+.sf-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--bd);
+}
+
+/* ── 亮色主题 ── */
+body.theme-light .sf-menu {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+
+body.theme-light .sf-ico {
+  color: #6b7280;
+}
+
+body.theme-light .sf-ico-dir {
+  color: #3b7cb8;
+}
+
+body.theme-light .sf-ico-md {
+  color: #1f6feb;
+}
+
+body.theme-light .sf-ico-code {
+  color: #8250df;
+}
+
+body.theme-light .sf-ico-image {
+  color: #b45309;
+}
+
+body.theme-light .sf-ico-media {
+  color: #0f766e;
+}
+
+body.theme-light .sf-row.sel {
+  background: rgba(255, 152, 0, .22);
+}

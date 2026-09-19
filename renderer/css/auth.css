@@ -1,0 +1,340 @@
+/* renderer/css/auth.css — 统一账户：顶栏入口、账户菜单、登录 / 绑定对话框
+   （样式真源；结构与交互见 renderer/app-auth.js，IPC 契约见该文件头注释） */
+
+/* ── 顶栏账户入口 ───────────────────────────────────────────── */
+.btn-account {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 46px;
+  max-width: 128px;
+  padding: 1px 4px;
+}
+
+.btn-account.on {
+  color: var(--orange2);
+}
+
+/* ── 账户菜单（persistent：✕ / Esc / 再点按钮关闭） ─────────────── */
+.account-menu {
+  position: fixed;
+  z-index: 2300;
+  width: 268px;
+  max-width: calc(100vw - 16px);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-top: 3px solid var(--orange);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+  display: none;
+  outline: none;
+}
+
+.account-menu.on {
+  display: block;
+  animation: toastIn .12s ease-out;
+}
+
+.acct-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px 10px;
+  border-bottom: 2px solid var(--bd);
+}
+
+.acct-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.acct-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acct-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 账号 ID 行：可拖选 / 复制，方便用户核对与反馈 */
+.acct-id {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* 名字下方的绑定徽章行（已绑微信 / 已绑手机）：纯展示，不可点击 */
+.acct-badges {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  min-width: 0;
+}
+
+.acct-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  opacity: 0.9;
+}
+
+.acct-badge svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+}
+
+.acct-badge-wechat {
+  color: var(--green, #07c160);
+}
+
+.acct-badge-phone {
+  color: var(--muted);
+}
+
+.acct-badge-txt {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acct-x {
+  flex: none;
+  align-self: flex-start;
+}
+
+.acct-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.acct-item {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.acct-item-primary {
+  text-align: center;
+  justify-content: center;
+}
+
+/* 纯状态行（如「已绑定微信」）：与 acct-item 按钮同尺寸，但不可点击、无 hover */
+.acct-item-static {
+  box-sizing: border-box;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  color: var(--ink);
+  padding: 6px 12px;
+  font-size: 12.5px;
+  letter-spacing: 1px;
+  opacity: 0.72;
+  cursor: default;
+  user-select: none;
+}
+
+.acct-danger {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 40%, var(--bd2));
+}
+
+.acct-danger:hover {
+  color: #fff;
+  background: color-mix(in srgb, var(--red) 70%, transparent);
+}
+
+.acct-note {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--orange2);
+}
+
+/* ── 登录 / 绑定对话框（persistent） ───────────────────────────── */
+.auth-dlg .mt-dialog-box.auth-box {
+  width: min(400px, 94vw);
+  max-height: min(88vh, 680px);
+}
+
+/* 修改昵称：小对话框（复用 auth-fld / auth-go / auth-err），只输入一个字段 */
+.auth-nick-dlg .mt-dialog-box.auth-box {
+  width: min(340px, 94vw);
+  max-height: none;
+}
+
+.auth-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 8px;
+}
+
+.auth-head b {
+  flex: none;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.auth-tab {
+  border: 1px solid var(--bd2);
+  background: var(--code);
+  color: var(--muted);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.auth-tab:hover {
+  color: var(--ink);
+  border-color: var(--orange);
+}
+
+.auth-tab.on {
+  color: var(--orange2);
+  border-color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 14%, var(--code));
+  font-weight: 700;
+}
+
+.auth-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 16px 18px;
+}
+
+.auth-fld {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.auth-fld input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.auth-fld input:focus {
+  border-color: var(--orange);
+}
+
+.auth-code-row {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-code-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.auth-code-row button {
+  flex: none;
+  white-space: nowrap;
+}
+
+.auth-go {
+  width: 100%;
+  padding: 8px 10px;
+}
+
+.auth-back {
+  align-self: center;
+}
+
+.auth-err {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--red);
+  word-break: break-word;
+}
+
+.auth-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* ── 微信登录（唯一通道＝系统默认浏览器） ───────────────────── */
+.auth-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-qr-open {
+  white-space: nowrap;
+}
+
+/* 进入微信页即自动用默认浏览器打开一次；这颗就是主入口，之后点它可再次打开 */
+.auth-qr-open-primary {
+  min-width: 200px;
+  padding: 9px 18px;
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--orange2);
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--bd2));
+}
+
+.auth-qr-open-primary:hover:not(:disabled) {
+  color: #fff;
+  background: color-mix(in srgb, var(--orange) 22%, transparent);
+}
+
+/* 顶栏账户入口按登录方式开关（app-auth.js 的 METHOD_ON）回退隐藏：全关时 init 给 #btnAccount 设 hidden。
+   .btn-stack 的 display:flex 会盖掉浏览器默认 [hidden]，所以这里必须自己压回去 */
+.btn-account[hidden] {
+  display: none !important;
+}
+
+/* 作者样式的 display 会盖掉浏览器默认的 [hidden]，这两处必须自己压回去 */
+.auth-tabs[hidden],
+.auth-err[hidden] {
+  display: none !important;
+}
+
+.auth-qr-status {
+  min-height: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: center;
+}
+
+.auth-qr-status.err {
+  color: var(--red);
+}

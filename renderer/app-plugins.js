@@ -440,6 +440,95 @@ function bindMusic3Progress(host) {
     }
   });
 }
+/* ── YuE2 本地音乐（应用插件 kind yue2）：与 Music3 同族，安装/启停在插件控制台窗内完成 ── */
+async function refreshYuePluginCard(root) {
+  if (!root || !window.api || !window.api.yue2Status) return;
+  const st = await window.api.yue2Status();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: true });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  /* 列表仅保留控制台 运行/停止 互斥开关；后端启停在控制台窗口内操作，避免 play+stop 并存 */
+  if (st.consoleOpen) {
+    addBtn("stop", I18n.t("停止"), async () => {
+      if (window.api.yue2Close) await window.api.yue2Close();
+      refreshYuePluginCard(root);
+    });
+  } else {
+    addBtn("play", I18n.t("运行"), async () => {
+      const r = await window.api.yue2Open();
+      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+      refreshYuePluginCard(root);
+    }, { primary: true });
+  }
+  if (st.updateAvailable && window.api.yue2UpdateRuntime) {
+    addBtn(
+      "update",
+      I18n.t("更新") + (st.latestVersion || st.feedVersion ? " → v" + (st.feedVersion || st.latestVersion) : ""),
+      async () => {
+        if (prog) prog.style.display = "block";
+        if (progTxt) {
+          progTxt.style.display = "block";
+          progTxt.textContent = I18n.t("准备下载…");
+        }
+        const wasOpen = !!st.consoleOpen;
+        if (wasOpen && window.api.yue2Close) await window.api.yue2Close();
+        const r = await window.api.yue2UpdateRuntime();
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        if (r && r.ok) {
+          toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
+          if (wasOpen && window.api.yue2Open) await window.api.yue2Open();
+        } else {
+          toast(I18n.t("安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+        }
+        refreshYuePluginCard(root);
+      },
+      { disabled: !!st.updating || !!st.installing },
+    );
+  }
+  if (prog && (st.installing || st.updating)) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = st.updating ? I18n.t("更新中…") : I18n.t("安装中…");
+    }
+  }
+}
+function bindYueProgress(host) {
+  if (!window.api || !window.api.onYueProgress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onYueProgress((data) => {
+    if (!data || (data.id && data.id !== "yue2-local" && data.id !== "yue")) return;
+    if (data.phase !== "install" && data.phase !== "dsh" && data.phase !== "update") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshYuePluginCard(host);
+      }, 600);
+    }
+  });
+}
 async function refreshH3PluginCard(root) {
   if (!root || !window.api || !window.api.h3Status) return;
   const st = await window.api.h3Status();
@@ -824,8 +913,91 @@ function bindAsrProgress(host) {
   });
 }
 
-function pluginLoc(p, key) {
-  const v = p && p[key];
+/* ---- 本地图像生成（SenseNova-U1.5-8B-MoT）：插件卡片状态 + 控制台入口（sensenova/main-sensenova.js）
+   卡片动作只有「打开控制台 / 关闭控制台」两态（与 yue2 同族：安装 / 启停 / 试生成都在控制台窗里做）。
+   额外给两枚：未安装时的「安装」（脚本快路径，失败再由宿主交棒 Agent）、以及运行中显示当前显存档位。
+   注：新 kind 的按钮图标一律复用 PLUGIN_ACT_SVG 已有的 play / stop / download / gear —— 表里没有的
+   kind 会渲染成无图标的空方块（AGENTS.md 硬约定），所以这里不要自创 action kind。 */
+async function refreshSensenovaPluginCard(root) {
+  if (!root || !window.api || !window.api.sensenovaStatus) return;
+  const st = await window.api.sensenovaStatus();
+  const actions = root.querySelector("[data-plugin-actions]");
+  const prog = root.querySelector("[data-plugin-progress]");
+  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  if (!actions) return;
+  setPluginVer(root, { version: st.version, installed: true });
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, opts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  };
+  const openConsole = async () => {
+    const r = window.api.sensenovaOpen ? await window.api.sensenovaOpen() : { ok: false, error: "no_api" };
+    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+    refreshSensenovaPluginCard(root);
+  };
+  const closeConsole = async () => {
+    if (window.api.sensenovaClose) await window.api.sensenovaClose();
+    refreshSensenovaPluginCard(root);
+  };
+  if (st.consoleOpen) {
+    addBtn("stop", I18n.t("关闭控制台"), closeConsole, { primary: true });
+  } else {
+    addBtn("play", I18n.t("打开控制台"), openConsole, { primary: true });
+  }
+  /* 未装 / 权重没齐：卡片上直接给一键安装（脚本走国内镜像），不必先开控制台 */
+  if (!st.installed || !(st.project && st.project.models)) {
+    addBtn("download", st.installed ? I18n.t("补装权重") : I18n.t("安装（国内镜像）"), async () => {
+      toast(I18n.t("开始安装：权重约 32.66GB，请留意控制台进度…"), "ok");
+      openConsole();
+      const r = window.api.sensenovaInstall ? await window.api.sensenovaInstall({}) : { ok: false, error: "no_api" };
+      if (!r || !r.ok) {
+        const msg = (r && (r.message || r.error)) || "unknown";
+        toast(String(msg).slice(0, 160), "err");
+      }
+      refreshSensenovaPluginCard(root);
+    });
+  }
+  /* 状态入口：显存 / 权重 / 空闲释放一眼可见 */
+  addBtn("gear", I18n.t("状态与设置"), openConsole);
+  if (prog && st.installing) {
+    prog.style.display = "block";
+    if (progTxt) {
+      progTxt.style.display = "block";
+      progTxt.textContent = I18n.t("安装中…");
+    }
+  }
+}
+function bindSensenovaProgress(host) {
+  if (!window.api || !window.api.onSensenovaProgress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onSensenovaProgress((data) => {
+    if (!data || (data.id && data.id !== "sensenova-local")) return;
+    if (data.phase !== "install") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshSensenovaPluginCard(host);
+      }, 600);
+    }
+  });
+}
+
+function pluginLoc(p, key) {  const v = p && p[key];
   if (v && typeof v === "object") {
     const loc = I18n.getLocale && I18n.getLocale() === "en" ? "en" : "zh";
     return v[loc] || v.zh || v.en || "";
@@ -1142,6 +1314,20 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onMusic3ConsoleChanged(() => refreshMusic3PluginCard(card)));
       }
       refreshMusic3PluginCard(card);
+    } else if (item.kind === "yue2" || item.handler === "yue2") {
+      const off = bindYueProgress(card);
+      if (off) offs.push(off);
+      if (window.api && window.api.onYueConsoleChanged) {
+        offs.push(window.api.onYueConsoleChanged(() => refreshYuePluginCard(card)));
+      }
+      refreshYuePluginCard(card);
+    } else if (item.kind === "sensenova" || item.handler === "sensenova") {
+      const off = bindSensenovaProgress(card);
+      if (off) offs.push(off);
+      if (window.api && window.api.onSensenovaConsoleChanged) {
+        offs.push(window.api.onSensenovaConsoleChanged(() => refreshSensenovaPluginCard(card)));
+      }
+      refreshSensenovaPluginCard(card);
     } else if (item.kind === "h3" || item.handler === "h3") {
       const off = bindH3Progress(card);
       if (off) offs.push(off);
@@ -1771,6 +1957,40 @@ function renderDshPluginInfo(p, info) {
   if (p.detail) extInfoDetails(info, I18n.t("配置片段"), p.detail);
 }
 
+/* 技能正文一律走内置 Markdown 阅读 / 编辑器（app.js 的 openMdViewer 虚拟文档模式）：
+   不落临时文件，opts.onSave 收正文、opts.readOnly 只读（内置技能）。 */
+async function openSkillMarkdownViewer(s, opts) {
+  opts = opts || {};
+  if (!s || !window.api || !window.api.skillGet) return false;
+  let body = typeof s._body === "string" ? s._body : "";
+  if (!body) {
+    try {
+      const g = await window.api.skillGet(s.name);
+      if (!g || !g.ok) throw new Error((g && g.error) || I18n.t("未知错误"));
+      body = g.body || "";
+      s._body = body;
+    } catch (e) {
+      toast(I18n.t("加载失败：") + extErrorText(e), "err");
+      return false;
+    }
+  }
+  if (typeof openMdViewer !== "function") {
+    toast(I18n.t("内置 Markdown 编辑器不可用"), "warn");
+    return false;
+  }
+  const readOnly = opts.readOnly != null ? !!opts.readOnly : !!s.builtin;
+  openMdViewer("", {
+    content: body,
+    title: (s.title || s.name) + " · SKILL.md",
+    subtitle:
+      s.name + " · SKILL.md" + (readOnly ? I18n.t(" · 只读") : ""),
+    edit: !readOnly && opts.edit === true,
+    readOnly: readOnly,
+    onSave: opts.onSave,
+  });
+  return true;
+}
+
 /* 右侧详情：技能 */
 function renderExtSkillInfo(s, info) {
   extInfoHead(
@@ -1814,19 +2034,18 @@ function renderExtSkillInfo(s, info) {
     );
   }
   const actions = [];
-  actions.push([s.builtin ? "查看" : "编辑", "", async () => {
+  actions.push([s.builtin ? "阅读" : "编辑", "", async () => {
     if (s.builtin) {
+      /* 内置技能只读：正文用内置 Markdown 阅读器打开（不落到下方 `<pre>` 里看原文） */
       toast(I18n.t("内置技能只读，不可修改"), "warn");
+      await openSkillMarkdownViewer(s, { readOnly: true });
+      return;
     }
     try {
       const g = await window.api.skillGet(s.name);
       if (!g || !g.ok) throw new Error((g && g.error) || I18n.t("未知错误"));
       s._body = g.body || "";
       s.files = g.files || [];
-      if (s.builtin) {
-        paintExtManager();
-        return;
-      }
       extState("skill").editor = { mode: "edit", data: s };
       paintExtManager();
     } catch (e) {
@@ -1966,21 +2185,64 @@ function buildExtEditor(info, kind, st) {
       I18n.t("一句话描述（模型据此判断何时使用）"),
       cur ? cur.description || "" : "",
     );
-    const body = extTextArea(
-      I18n.t("技能内容（Markdown，模型按此执行）…"),
-      cur ? cur._body || "" : "",
-      12,
-    );
+    /* 技能正文不再用裸 textarea：表单里只给「内置 Markdown 编辑器」入口 + 渲染预览，
+       正文草稿留在 bodyText，编辑器保存 / 关窗时回填（见 app.js openMdViewer 虚拟文档模式）。 */
+    let bodyText = cur ? cur._body || "" : "";
+    const mdWrap = document.createElement("div");
+    mdWrap.className = "dsh-skill-md";
+    const mdBtn = document.createElement("button");
+    mdBtn.type = "button";
+    mdBtn.className = "mini";
+    mdBtn.textContent = I18n.t("✎ 用内置 Markdown 编辑器");
+    const mdHint = document.createElement("div");
+    mdHint.className = "dsh-skill-md-hint";
+    const mdPrev = document.createElement("div");
+    mdPrev.className = "dsh-skill-md-prev md";
+    mdPrev.title = I18n.t("点击用内置 Markdown 编辑器打开");
+    const paintSkillBody = () => {
+      const t = String(bodyText || "");
+      const has = !!t.trim();
+      mdPrev.innerHTML = has ? renderMarkdown(t) : "";
+      mdPrev.classList.toggle("empty", !has);
+      mdHint.textContent = has
+        ? I18n.t("已写 {n} 字符 · 点击用内置 Markdown 编辑器查看 / 修改", {
+            n: t.length,
+          })
+        : I18n.t("还没有正文 · 点击用内置 Markdown 编辑器编写");
+    };
+    const openSkillBodyEditor = () => {
+      if (typeof openMdViewer !== "function") {
+        toast(I18n.t("内置 Markdown 编辑器不可用"), "warn");
+        return;
+      }
+      openMdViewer("", {
+        content: String(bodyText || ""),
+        title:
+          (cur ? cur.name : nm.value.trim() || I18n.t("新技能")) + " · SKILL.md",
+        subtitle: I18n.t("技能正文 SKILL.md · 内置 Markdown 编辑器"),
+        edit: true,
+        onSave: (text) => {
+          bodyText = String(text == null ? "" : text);
+          paintSkillBody();
+        },
+      });
+    };
+    mdBtn.onclick = openSkillBodyEditor;
+    mdPrev.onclick = openSkillBodyEditor;
+    mdWrap.appendChild(mdBtn);
+    mdWrap.appendChild(mdHint);
+    mdWrap.appendChild(mdPrev);
+    paintSkillBody();
     form.appendChild(extFieldRow(I18n.t("技能名"), nm));
     form.appendChild(extFieldRow(I18n.t("描述"), desc));
-    form.appendChild(extFieldRow(I18n.t("内容"), body));
+    form.appendChild(extFieldRow(I18n.t("内容"), mdWrap));
     save.textContent = I18n.t(cur ? "保存本机修改" : "创建技能");
     save.onclick = async () => {
       try {
         const rr = await window.api.skillAdd({
           name: (cur ? cur.name : nm.value).trim().toLowerCase(),
           description: desc.value.trim(),
-          body: body.value,
+          body: bodyText,
           overwrite: !!cur,
           files: cur && Array.isArray(cur.files) ? cur.files : undefined,
         });

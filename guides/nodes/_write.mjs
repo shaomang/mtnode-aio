@@ -120,6 +120,30 @@ const diagrams = {
     box(350, 94, 130, 40, "控制下游", GOLD, FILL_C),
     `  <text x="250" y="156" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">端口0=控制 · 端口1+=参考图 / 文本 / 音 / 视频</text>`,
   ].join("\n"), 520, 190),
+  "video_upscale": diagram("video_upscale", [
+    box(20, 30, 90, 36, "脉冲", GOLD, FILL_C),
+    box(20, 84, 90, 36, "视频", CYAN, FILL_D),
+    arrow(110, 48, 156, 64),
+    arrow(110, 102, 156, 86, CYAN),
+    box(156, 44, 140, 68, "视频超分", "#ff8fa3", "#1a1014"),
+    arrow(296, 62, 350, 44, GRN),
+    arrow(296, 96, 350, 112, GOLD),
+    box(350, 24, 130, 40, "视频 · mp4", GRN, "#101610"),
+    box(350, 94, 130, 40, "控制下游", GOLD, FILL_C),
+    `  <text x="250" y="156" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">端口0=控制 · 端口1=源视频 · Real-ESRGAN x4 / x2 → 输出长边</text>`,
+  ].join("\n"), 520, 190),
+  "video_interp": diagram("video_interp", [
+    box(20, 30, 90, 36, "脉冲", GOLD, FILL_C),
+    box(20, 84, 90, 36, "视频", CYAN, FILL_D),
+    arrow(110, 48, 156, 64),
+    arrow(110, 102, 156, 86, CYAN),
+    box(156, 44, 140, 68, "视频补帧", "#ff8fa3", "#1a1014"),
+    arrow(296, 62, 350, 44, GRN),
+    arrow(296, 96, 350, 112, GOLD),
+    box(350, 24, 130, 40, "视频 · mp4", GRN, "#101610"),
+    box(350, 94, 130, 40, "控制下游", GOLD, FILL_C),
+    `  <text x="250" y="156" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">端口0=控制 · 端口1=源视频 · RIFE 2x/4x · fps 按倍数重算</text>`,
+  ].join("\n"), 520, 190),
   "proc_text": diagram("proc_text", [
     box(20, 50, 90, 52, "输入", CYAN, FILL_D),
     arrow(110, 76, 160, 76, CYAN),
@@ -346,7 +370,7 @@ const guides = {
     body: `画布右键 → **处理节点 › 音频生成 › Minimax Music 3**。本地 MiniMax Music 3 后端（Gradio）。**每次运行只生成一个音频文件**（\`.wav\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
 
 ## 端子
-- **输入**：端口 0 = 提示词 · 端口 1 = 歌词 · 端口 2 = 控制输入
+- **输入**：端口 0 = 提示词 · 端口 1 = 歌词（可选，不接则按纯器乐 `[instrumental]` 生成）· 端口 2 = 控制输入
 - **输出**：端口 0 = 音频（下游可试听 / 保存）· 端口 1 = 控制输出
 
 ## 参数
@@ -359,7 +383,7 @@ const guides = {
 ## 注意
 - 全局同一时刻只允许 **1 个音视频任务**（音乐 / 视频互斥），其它任务会排队等待。
 - 每个后端实例全局只有一个，多个音乐节点共享同一后端。
-- 歌词与风格提示词的写法见技能 \`minimax-music-lyrics\` / \`minimax-music-prompt\`。`,
+- 歌词与风格提示词的写法见**内置技能** \`minimax-music-lyrics\`（端口 1）/ \`minimax-music-prompt\`（端口 0）——两份随应用一起发版，**不用再去创意工坊下载**，在会话里打 \`/minimax-music-prompt 你的想法\` 就能直接用。风格提示词的产出形态固定为**一段六句英文散文**：曲风+情绪 → 速度与律动 → 乐器 → 人声 → 段落对比 → 制作混音。`,
   },
   tts_gen: {
     title: "SoVITS 语音生成（GPT-SoVITS）",
@@ -388,7 +412,7 @@ const guides = {
     body: `画布右键 → **处理节点 › 视频生成 › Minimax H3**。本地 MiniMax H3 后端（ComfyUI）。**每次运行只生成一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
 
 ## 端子
-- **输入**：端口 0 = 控制输入（固定）· 端口 1+ = 数据槽（参考图 / 文本 / 参考音频 / 参考视频）
+- **输入**：**端口 0 = 控制输入（固定放在第一个端子，与视频超分 / 补帧 / Remotion 同构）** · **提示词 = 端口 1** · **R2V** 模式：端口 2–10 = 参考图 I1–I9、端口 11–13 = 参考视频 V1–V3、端口 14–16 = 参考音频 A1–A3（三组端子一次排全）· **FL2VA** 模式：端口 2–3 = 首帧 F / 末帧 L。数据端口号与面板 / 文档里的「端子 N」（数据槽号）**完全同号**，与后端 \`ref_image_0..8\` / \`ref_video_0..2\` / \`ref_audio_0..2\` 一一对应；数据线连端口 0 会被挡下（那颗是控制开关）
 - **输出**：端口 0 = 视频（下游可试看）· 端口 1 = 控制输出
 
 ## 参数
@@ -398,7 +422,7 @@ const guides = {
 - **生成模式**：\`fl2va\` = 首末帧（默认）；\`r2v\` = 多参考图
 - **时长**：4–15 秒（默认 5）
 - **分辨率**：auto（按比例默认）/ 480p / 720p / 1080p（显存不足自动降档）
-- **后处理**：4K 超分 + 补帧（默认开；24G 显存建议关以提速）
+- **后处理**：本节点**不再**跑超分 / 补帧——需要时另建 **视频超分** / **视频补帧** 节点单独运行
 - **抽卡次数**：多次尝试（1–10）
 
 ## 自建 ComfyUI 工作流（可选）
@@ -407,17 +431,101 @@ const guides = {
 
 - **库**：工作流存在本机全局库（\`<数据目录>/h3-workflows/\`），在 **H3 管理窗口 · 自建工作流库** 里导入（拖 JSON 文件 / 粘贴 JSON），ComfyUI 的 **API 格式**与 **UI 格式**都能识别（UI 格式自动转 API 格式，自动丢掉 Reroute / Note / 常量原语等前端节点）。「管理」按钮直接打开那个窗口。
 - **打开**：库里每条模板右侧都有「打开」，点一下就在**内嵌的 ComfyUI 编辑器**里编辑这一条（后端没跑会先问一句再拉起）。这只是「拿出去改」，**不会覆盖库里的模板**——改完想回到库里 / 上画布，仍然只有 ComfyUI 里「导出 (API)」→ 回管理窗口「导入 JSON」这一条路。
-- **端子**：图里被「提升为节点参数」的字段会在设置窗口里各占一个参数——**端口 1 = 文本 · 端口 2+ = 素材（图 / 视频 / 音频）**，顺序就是参数表顺序，可用 ▲▼ 调整。默认参数表取扫描建议（提示词 / LoadImage / 种子…），可增删改名。
+- **端子**：图里被「提升为节点参数」的字段会在设置窗口里各占一个数据端子——**数据端子 1 = 文本 · 2+ = 素材（图 / 视频 / 音频）**（v5：端口号 ≡ 数据槽号，**端口 0 仍是控制输入**），顺序就是参数表顺序，可用 ▲▼ 调整。默认参数表取扫描建议（提示词 / LoadImage / 种子…），可增删改名。
 - **直填值**：每个参数都可在设置窗口里直接填值；**端子接了数据时端子优先**，端子没接才用直填值，都没有就沿用工作流 JSON 里的原值。素材填本机绝对路径，生成时自动上传到 ComfyUI。
 - **输出节点**：图里有多个 \`Save*\` 时指定取哪一个当本节点的产物；留空 = 最后一个视频产物。
 - **失效与校验**：↻ 会把参数表与库里最新的图重新同步（图上改掉的落点标「落点已失效」，不静默删）；「校验节点包」按后端 \`/object_info\` 比对自定义节点是否装了（后端没运行则跳过，**不阻断生成**）。
 - 种子沿用节点上的 **种子 / 摇数**：一次执行把该种子统一下发到图里**所有** \`seed\` / \`noise_seed\` 类字段。
-- 自建模式下 **时长 / 分辨率 / 采样 / 4K 超分补帧等内置参数一律失效**（由工作流图自己决定，设置窗口里也不再出现这些项），也不做 24G 钳制；抽卡、进度、取消、输出路径与全局互斥照常。
+- 自建模式下 **时长 / 分辨率 / 采样等内置参数一律失效**（由工作流图自己决定，设置窗口里也不再出现这些项），也不做 24G 钳制；抽卡、进度、取消、输出路径与全局互斥照常。
 
 ## 注意
 - 全局同一时刻只允许 **1 个音视频任务**（音乐 / 视频互斥）。
-- 24G 显存上限会限制分辨率与后处理档位。
+- **本节点只出原生片**：超分 / 补帧已拆成独立节点（处理节点 › 视频生成 › 视频超分 / 视频补帧），按需单独运行，也可串联 **H3 → 视频超分 → 视频补帧**。
+- 24G 显存上限会限制分辨率档位；超分 / 补帧的显存建议见对应节点指南。
 - 参考图 / 参考音频 / 参考视频都可以直接连**图像输入**、**音频输入**、**视频输入**节点：媒体端子给的是 \`file:///…\` URL，本节点会自动归一回本机路径。`,
+  },
+  video_upscale: {
+    title: "视频超分（Real-ESRGAN x4 / x2 · 独立后处理）",
+    body: `画布右键 → **处理节点 › 视频生成 › 视频超分**。给一段**已有视频**单独做超分：Real-ESRGAN 逐帧放大，再缩放到输出长边。它**不再跟着 Minimax H3 生成一起跑**——H3 只出原生片，超分按需单独运行。**每次运行只出一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+
+## 端子
+- **输入**：端口 0 = 控制输入（固定）· 端口 1 = 源视频 · 端口 2+ = 可选素材（渐进展开）
+- **输出**：端口 0 = 视频（下游可试看）· 端口 1 = 控制输出
+
+源视频可以来自 **Minimax H3** 的输出、**视频输入**节点，或任何产出视频的上游；本节点只接受视频，接图像会拒绝。
+
+## 参数
+点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
+
+- **超分倍率**：**x4**（默认，画质最好）或 **x2**（输出只放大 2 倍，更快）。倍率是输出上限：**输出 = min(目标长边, 源长边 × 倍率)** —— x2 时 720p 源出 2560、1080p 源出 3840，不会被目标长边拉成 4 倍。
+- **超分模型**：\`RealESRGAN_x4plus.pth\`（通用 x4）或 \`RealESRGAN_x2plus.pth\`（原生 x2，可选权重）——下发给超分的值必须是**文件名（含扩展名）**，缺扩展名会被判 \`value_not_in_list\` 拒图（应用已自动补齐）。选 **x2 倍率**时若本机有 x2 权重会**自动优先用它**（显存与耗时都低一档）；没有也能跑：用 x4 权重超分后缩到 2 倍。
+- **目标长边（像素）**：1280–7680（默认 3840 = 4K），是**输出长边的上限**；逐帧分块流式下**不再受内存限制**，只是输出尺寸与耗时的选择。x2 倍率时还会被「源长边 × 2」封顶，源分辨率未知时不追加缩放（保留权重原生尺寸）
+- **逐帧批量 per_batch**：每次交给超分模型的帧数（默认 1）；**低显存安全档保持 1**（流式链本来就是逐帧，此项只影响回退到 ComfyUI 图链时的批大小）
+- **分块 tile（像素）**：0–1024（默认 512）。流式超分的**分块大小**：显存只跟它有关，**512 适合 16G 机器**；0 = 后端默认 512
+- **低显存安全档（强制逐帧）**：默认开；开 = **分块 fp16 省显存，16G 机器也能跑 15 秒片**，关 = 按上面的 \`per_batch\` 批量 / 更大分块（更快但更吃显存）
+- **抽卡次数**：多次处理（1–10），多次时输出命名为 \`#1\`、\`#2\` …
+- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）
+
+## 内存 / 显存使用建议
+- **默认走逐帧分块流式链**（\`h3-pack/post/stream_upscale.py\`）：源视频用 PyAV 顺序解码，按 \`tile\` 分块过 Real-ESRGAN，
+  **每帧处理完立刻编码写盘**，常驻内存只跟「一个分块 + 一帧输出画布」有关 —— **与视频时长、分辨率、倍率都无关**，
+  所以 **16G 内存也能完成 15 秒级视频的 x2 / x4 超分**。（旧版把整段视频的帧张量外加 float32 副本攒在 RAM 里，
+  峰值 ≈ 帧数 × 源像素 × 倍率²，15 秒片连 64G 都不够 —— 这条链已改为默认不走。）
+- **显存只跟 tile 与精度有关**：默认分块 512 + fp16；显存偏小或没开安全档时后端会落 fp32、必要时把分块减半。
+  分块越小越省、越大越快；目标长边与视频时长都不影响能不能跑。
+- **音轨原样直拷**：输出容器从源文件直接复制音频包，不重编码。
+- 首次 OOM 时后端会**自动降一档重试一次**（分块减半 + fp32，不动目标长边 / 倍率），结果写在节点状态行上。
+- **兜底链才会回到旧口径**：脚本 / venv 缺失或流式链非 OOM 失败时，后端自动回退 ComfyUI 图链（控制台写明
+  「已回退图路径 + 原因」，日志与旧版一致）：那时整段帧张量攒在 RAM，峰值 ≈ 源像素 × 倍率² × 帧数，
+  长边越大越吃内存 —— 会用 \`--cache-ram\` 限制缓存留存，并可能压长边 / 预缩放源帧。
+- **跑多单不会「越跑越紧」**：流式链每次运行都是独立子进程，进程结束即回收，没有常驻内存累积；只有兜底图链仍走常驻
+  ComfyUI 后端（内存护栏按单收尾量系统内存，超限才后台重启回收，见 H3 控制台「24G 启动优化」）。
+
+## 注意
+- 全局同一时刻只允许 **1 个音视频任务**（音乐 / 语音 / 视频 / 超分 / 补帧互斥），其它任务排队等待。
+- 超分与补帧是两个**互相独立**的节点，可单独用，也可串联：**H3 → 视频超分 → 视频补帧**。
+- 后端没起时节点会先尝试拉起 H3 后端并等待在线，失败会把可照着做的提示写在节点状态行上。
+- 与 H3 生成共用同一套后端与媒体互斥锁；后处理在提交前会先释放生成占用的模型，避免显存叠加。`,
+  },
+  video_interp: {
+    title: "视频补帧（RIFE · 独立后处理）",
+    body: `画布右键 → **处理节点 › 视频生成 › 视频补帧**。给一段**已有视频**单独补帧：RIFE VFI 按倍数插帧，帧率按倍数重算（2x / 4x）。它**不再跟着 Minimax H3 生成一起跑**——H3 只出原生片，补帧按需单独运行。**每次运行只出一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+
+## 端子
+- **输入**：端口 0 = 控制输入（固定）· 端口 1 = 源视频 · 端口 2+ = 可选素材（渐进展开）
+- **输出**：端口 0 = 视频（下游可试看）· 端口 1 = 控制输出
+
+源视频可以来自 **Minimax H3** 的输出、**视频输入**节点，或任何产出视频的上游；本节点只接受视频，接图像会拒绝。
+
+## 参数
+点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
+
+- **补帧倍率**：\`2x\`（推荐）/ \`4x\` / \`1x\`（仅重编码）；fps 按倍数重算（源 24fps → 2x 得 48fps）。逐帧流式下倍率不再受内存限制，只影响输出帧数与耗时
+- **清缓存间隔（帧）**：每 N 帧清一次缓存（默认 2）；流式档每帧算完即写盘，此项只影响回退到 ComfyUI 图链时的表现
+- **逐帧批量 batch_size**：每次交给 RIFE 的帧数（默认 1）；流式档逐帧处理，此项只影响回退到 ComfyUI 图链时的表现
+- **缩放系数 scale_factor**：RIFE 内部缩放系数（默认 1.0 = 原分辨率）；流式档同样生效，不改变输出分辨率
+- **低显存安全档**：默认开；开 = 低精度 fp16 + 逐帧 + 极小缓存清理间隔，峰值最低
+- **抽卡次数**：多次处理（1–10），多次时输出命名为 \`#1\`、\`#2\` …
+- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）
+
+## 内存 / 显存使用建议
+- **默认走逐帧流式链**（\`h3-pack/post/stream_interp.py\`）：源视频用 PyAV 顺序解码，同一时刻只持有**相邻两帧 + 一张中间帧**，
+  **每帧算完立刻编码写盘**，常驻内存只跟「相邻两帧 + 模型」有关 —— **与视频时长、分辨率、倍率都无关**，
+  所以 **16G 内存也能完成 15 秒级视频的 2x / 4x 补帧**。（旧版把整段视频的帧解出来再全片收集补帧结果，
+  15 秒 1080p 30fps 一份帧数组约 11GB、4x 后约 45GB，连 64G 都不够 —— 这条链已改为默认不走。）
+- **显存只跟精度与缩放系数有关**：默认 fp16；显存偏小或没开安全档时后端会落 fp32。倍率越大越慢，但不影响能不能跑。
+- **音轨原样直拷**：输出容器从源文件直接复制音频包，不重编码。
+- 首次 OOM 时后端会**自动降一档重试一次**（精度落 fp32，必要时预缩放长边降一档，倍率不动），结果写在节点状态行上。
+- **兜底链才会回到旧口径**：脚本 / venv / RIFE 权重缺失或流式链非 OOM 失败时，后端自动回退 ComfyUI 图链（控制台写明
+  「已回退图路径 + 原因」，日志与旧版一致）：那时整段帧数组攒在 RAM，长边越大越吃内存，可能压长边 / 预缩放源帧。
+- **跑多单不会「越跑越紧」**：流式链每次运行都是独立子进程，进程结束即回收，没有常驻内存累积；只有兜底图链仍走常驻
+  ComfyUI 后端（内存护栏按单收尾量系统内存，超限才后台重启回收，见 H3 控制台「24G 启动优化」）。
+
+## 注意
+- **音轨原样带走**：源视频的音轨会一起进产物，补帧只改画面帧率。
+- 全局同一时刻只允许 **1 个音视频任务**（音乐 / 语音 / 视频 / 超分 / 补帧互斥），其它任务排队等待。
+- 超分与补帧是两个**互相独立**的节点，可单独用，也可串联：**H3 → 视频超分 → 视频补帧**。
+- 后端没起时节点会先尝试拉起 H3 后端并等待在线，失败会把可照着做的提示写在节点状态行上。`,
   },
   proc_text: {
     title: "文本处理",
@@ -723,7 +831,7 @@ const en = {
   music_gen: { title: "Minimax Music 3 (music generation)", body: `Right-click the canvas → **Process › Audio generation › Minimax Music 3**. Local MiniMax Music 3 backend (Gradio). **Each run produces exactly one audio file** (\`.wav\`) written to the node's own \`outputPath\` — no separate save node needed.
 
 ## Ports
-- **Input**: port 0 = prompt · port 1 = lyrics · port 2 = control input
+- **Input**: port 0 = prompt · port 1 = lyrics (optional — leave it unwired to generate pure instrumental `[instrumental]`) · port 2 = control input
 - **Output**: port 0 = audio (play / save downstream) · port 1 = control output
 
 ## Options
@@ -736,7 +844,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 ## Notes
 - Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive); other tasks queue.
 - One backend instance per plugin; multiple music nodes share it.
-- Lyrics and style prompt conventions live in the \`minimax-music-lyrics\` / \`minimax-music-prompt\` skills.` },
+- Lyrics and style-prompt conventions live in the **built-in skills** \`minimax-music-lyrics\` (port 1) / \`minimax-music-prompt\` (port 0) — both ship with the app, **no Creative Workshop download needed**; type \`/minimax-music-prompt <your idea>\` in a session to use them. A style prompt is delivered as **one English paragraph of six sentences**: style + mood → tempo & groove → instruments → vocals → structure & contrast → production.` },
   tts_gen: { title: "SoVITS speech (GPT-SoVITS)", body: `Right-click the canvas → **Process › Audio generation › SoVITS speech**. Turns text into **speech**: the backend is the local OpenAI-compatible service started by the “GPT-SoVITS speech” plugin. **Each run produces exactly one audio file** (\`.wav\` / \`.mp3\`) written to the node's own \`outputPath\` — no separate save node needed.
 
 ## Ports
@@ -759,7 +867,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
   video_gen: { title: "Minimax H3 (video generation)", body: `Right-click the canvas → **Process › Video generation › Minimax H3**. Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\` — no separate save node needed.
 
 ## Ports
-- **Input**: port 0 = control input (fixed) · port 1+ = data slots (reference images / text / reference audio / reference video)
+- **Input**: **port 0 = control input (pinned first, same shape as video upscale / interpolation / Remotion)** · port 1 = prompt · data ports 2+ = data slots (R2V images 2–10, videos 11–13, audios 14–16; FL2VA first/last frame 2–3). Data port numbers are **identical to the "terminal N" numbers** shown in the panel / docs (and to the backend \`ref_image_0..8\` / \`ref_video_0..2\` / \`ref_audio_0..2\`); a data wire on port 0 is rejected — that one is the control switch
 - **Output**: port 0 = video (preview downstream) · port 1 = control output
 
 ## Options
@@ -769,7 +877,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - **Mode**: \`fl2va\` = first/last frame (default); \`r2v\` = multiple reference images
 - **Duration**: 4–15 s (default 5)
 - **Resolution**: auto (proportional) / 480p / 720p / 1080p (auto-downscaled when VRAM is low)
-- **Post**: 4K upscale + interpolation (on by default; disable on 24G for speed)
+- **Post**: this node **no longer** runs upscale / interpolation — add a **Video upscale** / **Video interpolation** node and run it separately
 - **Attempts**: gacha rolls (1–10)
 
 ## Custom ComfyUI workflow (optional)
@@ -783,13 +891,83 @@ By default the node runs the built-in H3 chain (first/last frame or multi-refere
 - **Output node**: when the graph has several \`Save*\` nodes, pick which artifact this node returns (blank = last video output).
 - **Refresh & validation**: ↻ re-syncs the parameter table with the stored graph (targets that vanished are flagged, never silently deleted); **Validate nodes** diffs node classes against the backend \`/object_info\` (skipped while the backend is down — it never blocks generation).
 - The node's **Seed / Reroll** control drives seeding: one run writes that seed into **every** \`seed\` / \`noise_seed\`-style field in the graph.
-- In custom mode the built-in **duration / resolution / sampler / 4K post** options no longer apply — the graph decides them and the settings window stops showing them; no 24G clamping happens either. Rolls, progress, cancel, output path and the global media lock stay as they are.
+- In custom mode the built-in **duration / resolution / sampler** options no longer apply — the graph decides them and the settings window stops showing them; no 24G clamping happens either. Rolls, progress, cancel, output path and the global media lock stay as they are.
 
 ## Notes
 - Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive).
-- 24G VRAM caps resolution and post-processing tiers.
+- **This node outputs the native clip only**: upscale / interpolation are separate nodes (Process › Video generation › Video upscale / Video interpolation); run them on demand, or chain **H3 → Video upscale → Video interpolation**.
+- 24G VRAM caps the resolution tiers; upscale / interpolation VRAM guidance lives in their own node guides.
 - Reference images / audio / video can come straight from an **image / audio / video input** node: media ports carry a \`file:///…\` URL and this node normalizes it back to a local path.
 - **Sage Attention** (optional speed tier, about 1.5–2×) needs \`triton-windows\` *and* a prebuilt \`sageattention\` wheel matching this venv — one without the other counts as missing. **Nothing breaks when they are absent**: the plugin probes the venv before every run and simply leaves the Sage node out (just slower). Probe and install are one click in the **H3 plugin window → the \`Sage 加速\` button** (it picks the wheel for your Python / torch / CUDA and re-verifies right after).` },
+  video_upscale: { title: "Video upscale (Real-ESRGAN x4 / x2 · standalone post-process)", body: `Right-click the canvas → **Process › Video generation › Video upscale**. Upscales an **existing video** on its own: Real-ESRGAN enlarges each frame, then the result is scaled to the output long side. It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and upscaling runs separately when you ask for it. **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\` — no separate save node needed.
+
+## Ports
+- **Input**: port 0 = control input (fixed) · port 1 = source video · port 2+ = optional material (grows as needed)
+- **Output**: port 0 = video (preview downstream) · port 1 = control output
+
+The source video can come from a **Minimax H3** output, a **video input** node, or any upstream node that produces video; this node only accepts video and refuses images.
+
+## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
+- **Upscale ratio**: **x4** (default, best quality) or **x2** (output magnified 2× only, faster). The ratio caps the output: **output = min(target long side, source long side × ratio)** — with x2 a 720p source yields 2560 and a 1080p source yields 3840, never 4× just because the target says so.
+- **Upscale model**: \`RealESRGAN_x4plus.pth\` (general x4) or \`RealESRGAN_x2plus.pth\` (native x2, optional weight) — the value sent to the upscaler must be the **file name including its extension**; a bare \`RealESRGAN_x4plus\` is rejected with \`value_not_in_list\` (the app appends the extension automatically). With the **x2 ratio** the app **automatically prefers a native x2 weight when one is installed** (one tier lighter on both VRAM and time); without one it still works — the x4 weight upscales and the tail is scaled back down to 2×.
+- **Target long side (px)**: 1280–7680 (default 3840 = 4K) — a **cap** on the output long side; with per-frame tiled streaming it is **no longer limited by system RAM**, it only trades output size against time. With the x2 ratio it is additionally capped at source long side × 2, and no scaling is added when the source size is unknown (the weight's native size is kept)
+- **Per-frame batch (per_batch)**: frames handed to the upscale model at a time (default 1); the **low-VRAM safe tier keeps it at 1** (the stream path is per-frame anyway; this only sets the batch size when falling back to the ComfyUI graph)
+- **Tile (px)**: 0–1024 (default 512). The **tile size** of streaming upscale: VRAM depends only on it, and **512 suits a 16 GB machine**; 0 = backend default 512
+- **Low-VRAM safe tier (force per-frame)**: on by default; on = **tiled fp16 keeps VRAM low — a 16 GB machine can handle a 15-second clip**, off = batch by \`per_batch\` / larger tiles (faster, hungrier)
+- **Attempts**: repeated runs (1–10); multiple outputs are named \`#1\`, \`#2\` …
+- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder)
+
+## RAM / VRAM guidance
+- **By default this runs a per-frame tiled streaming chain** (\`h3-pack/post/stream_upscale.py\`): the source is decoded sequentially with PyAV, upscaled tile by tile according to \`tile\`, and **each frame is encoded to disk as soon as it is done**. Resident memory depends only on one tile plus one output frame — **independent of clip length, resolution and ratio** — so **a 16 GB machine can finish an x2 / x4 upscale of a 15-second clip**. (The old path piled the whole clip's frame tensors plus a float32 copy into RAM — peak ≈ frames × source pixels × ratio², which a 15-second clip can blow past even with 64 GB — and is no longer the default.)
+- **VRAM depends only on the tile and the precision**: default tile 512 + fp16; on low-VRAM machines, or when the safe tier is off, the backend drops to fp32 and halves the tile when needed. Smaller tiles are lighter, larger ones faster; neither the target long side nor the clip length decides whether it fits.
+- **The audio track is copied verbatim**: audio packets go straight from the source file into the output container, no re-encode.
+- On the first OOM the backend **drops one tier and retries once** (tile halved + fp32, target long side / ratio untouched) and reports the result on the node's status line.
+- **Only the fallback chain follows the old rules**: if the script / venv is missing, or the stream path fails for a non-OOM reason, the backend falls back to the ComfyUI graph (the console says “fell back to the graph path + why”, and the logs match the previous release). There the whole clip's frame tensors pile up in RAM — peak ≈ source pixels × ratio² × frames, so a bigger long side costs more RAM; \`--cache-ram\` caps retained caches and the long side / source may be pre-scaled.
+- **Running many clips no longer gets tighter and tighter**: every streaming run is its own subprocess and its memory is reclaimed when it exits. Only the fallback graph chain still uses the resident ComfyUI backend (its memory rail measures system memory per run and recycles the backend in the background when over budget — see “24G startup optimizations” in the H3 console).
+
+## Notes
+- Only **1 audio/video task** is allowed globally at a time (music / speech / video / upscale / interpolation are mutually exclusive); other tasks queue.
+- Upscale and interpolation are two **independent** nodes — use either alone, or chain them: **H3 → Video upscale → Video interpolation**.
+- If the backend is down the node starts the H3 backend and waits for it to come online; failures are written on the node's status line as an actionable hint.
+- It shares the backend and the media mutex with H3 generation; before submitting, post-processing frees the generation models so the two never stack in VRAM.` },
+  video_interp: { title: "Video interpolation (RIFE · standalone post-process)", body: `Right-click the canvas → **Process › Video generation › Video interpolation**. Interpolates an **existing video** on its own: RIFE VFI inserts frames by a multiplier and the frame rate is recomputed from it (2x / 4x). It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and interpolation runs separately when you ask for it. **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\` — no separate save node needed.
+
+## Ports
+- **Input**: port 0 = control input (fixed) · port 1 = source video · port 2+ = optional material (grows as needed)
+- **Output**: port 0 = video (preview downstream) · port 1 = control output
+
+The source video can come from a **Minimax H3** output, a **video input** node, or any upstream node that produces video; this node only accepts video and refuses images.
+
+## Options
+Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
+
+- **Multiplier**: \`2x\` (recommended) / \`4x\` / \`1x\` (re-encode only); the frame rate is recomputed (24 fps source → 48 fps at 2x). With per-frame streaming the multiplier is no longer limited by RAM — it only affects the frame count and the time it takes
+- **Clear-cache interval (frames)**: flush the cache every N frames (default 2); the stream path writes each frame as soon as it is done, so this only affects the ComfyUI graph fallback
+- **Per-frame batch (batch_size)**: frames handed to RIFE at a time (default 1); the stream path is per-frame, so this only affects the ComfyUI graph fallback
+- **Scale factor**: RIFE's internal scale (default 1.0 = source resolution); it applies to the stream path too and never changes the output resolution
+- **Low-VRAM safe tier**: on by default; on = low-precision fp16 plus per-frame handling and a tiny cache interval for the lowest peak
+- **Attempts**: repeated runs (1–10); multiple outputs are named \`#1\`, \`#2\` …
+- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder)
+
+## Memory / VRAM guidance
+- **The per-frame streaming path is the default** (\`h3-pack/post/stream_interp.py\`): the source is decoded sequentially with PyAV and only **two adjacent frames plus one intermediate frame** are held at a time,
+  and **every frame is encoded to disk as soon as it is done**. Resident memory depends only on "two adjacent frames + the model" — **not on clip length, resolution or multiplier**,
+  so **a 16 GB machine can do 2x / 4x interpolation on a 15-second video**. (The old path decoded the whole clip and collected every interpolated frame in a single array — about 11 GB for 15 s of 1080p30, ~45 GB after 4x — so even 64 GB was not enough; that path is no longer used by default.)
+- **VRAM depends only on precision and the scale factor**: fp16 by default; the backend drops to fp32 when VRAM is small or the safe tier is off. A larger multiplier is slower but does not decide whether it runs.
+- **The audio track is copied as is**: the output container copies audio packets straight from the source, no re-encode.
+- On the first OOM the backend **automatically drops one tier and retries once** (precision to fp32, plus one step down in pre-scaled long side if needed; the multiplier is untouched) and reports the result on the node's status line.
+- **Only the fallback path returns to the old behaviour**: when the script / venv / RIFE weights are missing or the stream path fails for a non-OOM reason, the backend falls back to the ComfyUI graph (the console states
+  "已回退图路径" plus the reason, with the same logging as before). That path holds whole frame arrays in RAM, so a larger long side costs more memory and may force the long side down / pre-scaling of source frames.
+- **Running many clips does not get tighter over time**: each streaming run is its own subprocess and everything is reclaimed when it exits, so there is no accumulated resident memory; only the graph fallback still uses the resident
+  ComfyUI backend (its memory guard measures system RAM after each run and restarts in the background only when over budget — see the H3 console's "24G startup optimisation").
+
+## Notes
+- **The audio track is carried over as is**: the source audio goes into the result; interpolation only changes the picture frame rate.
+- Only **1 audio/video task** is allowed globally at a time (music / speech / video / upscale / interpolation are mutually exclusive); other tasks queue.
+- Upscale and interpolation are two **independent** nodes — use either alone, or chain them: **H3 → Video upscale → Video interpolation**.
+- If the backend is down the node starts the H3 backend and waits for it to come online; failures are written on the node's status line as an actionable hint.` },
   proc_text: { title: "Text process", body: `LLM processes upstream text from a prompt. Enable assistant mode for agent tools.
 
 ## Ports
@@ -935,8 +1113,10 @@ In a task control flow, an incoming pulse waits until the **next** scheduled tim
 
 /* 已随发布版同步的节点指南以磁盘 md 为准（正文比这里的内嵌模板新，
    例如「图像生成」的双通道抠图段、「保存」的超级节点路径段）：
-   再生成时不要把它们覆盖回旧内容。 diagrams 仍会刷新。 */
-const diskOwned = new Set(["proc_image", "save"]);
+   再生成时不要把它们覆盖回旧内容。 diagrams 仍会刷新。
+   video_gen / music_gen / tts_gen：磁盘两版都补了「分段衔接 / 后处理独立节点 /
+   插件报错弹窗与自动修复」这些新口径，内嵌模板还没跟上 → 一并交给磁盘。 */
+const diskOwned = new Set(["proc_image", "save", "video_gen", "music_gen", "tts_gen"]);
 
 /* 已移除的节点 kind：清单里不再出现（旧 md 由本次运行后手工删除） */
 const removedKinds = new Set(["chat"]);

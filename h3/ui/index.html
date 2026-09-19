@@ -228,7 +228,7 @@
         <div style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap">
           <button id="btnWfImport" title="导入 ComfyUI 导出的工作流 JSON（API 或 UI 格式均可，自动识别转换）">导入 JSON</button>
           <button id="btnWfPaste" title="把工作流 JSON 文本粘贴进来导入">粘贴导入</button>
-          <button id="btnWfTemplate" title="把内置 FL2VA / R2V 图另存为库里的自定义工作流，可自由编辑">内置图另存</button>
+          <button id="btnWfTemplate" title="把内置 FL2VA / R2V / 南风H3 V10 多参 图另存为库里的自定义工作流，可自由编辑">内置图另存</button>
         </div>
       </div>
       <div class="meta" style="color:var(--muted)">
@@ -239,11 +239,24 @@
     </div>
 
     <div class="card" id="launchOptsCard">
-      <div class="meta">24G 启动优化（默认开 · 下次启动后端生效）</div>
-      <label class="meta"><input type="checkbox" id="optCpuVae" checked /> CPU VAE（减轻解码峰值）</label>
+      <div class="meta">24G 启动优化（除 CPU VAE 外默认开 · 下次启动后端生效）</div>
+      <label class="meta" title="开启会让 VideoVAE 解码 dtype 崩（expected m1 and m2 to have the same dtype, but got: float != struct c10::Half），南风 H3 链（nanfeng_prompt_nodes_v10）直接不可用。口径见技能 minimax-h3-install「启动参数」。">
+        <input type="checkbox" id="optCpuVae" /> CPU VAE（默认关：开启会让 VideoVAE 解码 dtype 崩、南风 H3 链不可用）
+      </label>
       <label class="meta"><input type="checkbox" id="optPinned" checked /> --disable-pinned-memory（允许 CPU offload）</label>
       <label class="meta"><input type="checkbox" id="optFp16" checked /> --fp16-intermediates</label>
       <label class="meta"><input type="checkbox" id="optExpand" checked /> expandable_segments（防碎片 OOM）</label>
+      <label class="meta" title="给 ComfyUI 的系统内存（RAM）缓存一个保留下限：内存吃紧时它才会释放中间产物（整段视频的帧张量，float32 一份就是几十 G）。不给上限时 ComfyUI 默认留到 128G 才放，64G 机器会被跑满，而显存反而空着（超分链是逐帧过 GPU、帧张量攒在 RAM，瓶颈在本机内存）。0 = 不加这个参数。">
+        <input type="checkbox" id="optCacheRam" checked /> 系统内存缓存保留下限
+        <input type="number" id="optCacheRamGb" min="1" max="128" step="1" value="8" style="width:64px" /> GB（默认 8：内存吃紧时释放 ComfyUI 产物缓存，防 64G 被跑满）
+      </label>
+      <label class="meta" title="常驻的 Python 后端跑几单 4K 超分 / 补帧之后，RSS 只涨不落（POST /free 只卸模型、不清 malloc arena）→ 第 N 单可比第 2 单少几十 G 可用内存。开启后：每单收尾量一次系统内存，若「服务守住超过一半内存」或本机已低于硬闸，就在任务之间把后端重启回收（后台等空闲再重启，不打断别的任务；重启要重载一次模型）。关掉 = 只保留单次任务的内存闸与 --cache-ram。">
+        <input type="checkbox" id="optRebuildRam" checked /> 内存护栏：任务之间内存不回收就重启后端
+      </label>
+      <label class="meta" title="后端 BLAS / OpenMP 线程上限：线程池每个线程自带一份 malloc arena 与缓冲，大块张量被摊在多份缓存里就回不到系统。默认 8，0 = 不改这两个环境变量（MALLOC_ARENA_MAX=1 始终会加，它专门压 arena 碎片）。">
+        <input type="number" id="optArenaThreads" min="0" max="64" step="1" value="8" style="width:64px" /> 线程上限（0=不改环境变量）
+      </label>
+      <div class="meta" id="memRailInfo"></div>
       <div class="meta" id="launchOptsNote"></div>
     </div>
   </div>

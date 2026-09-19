@@ -1101,11 +1101,17 @@ async function openTemplateStore() {
     if (tplIsSkill()) {
       const local = findLocalSkill(item.skillName);
       const installed = !!(local && !local.builtin);
+      /* 「有更新」判定：只比 version 会漏掉「同一版本号重新上架（改了正文）」——
+         工坊每次 PATCH 都会刷新 updatedAt，用它兜住这一类；两边都可能缺字段。 */
+      const remoteAt = Number(item.updatedAt) || 0;
+      const localAt = Number(local && local.storeUpdatedAt) || 0;
       const newer =
         installed &&
-        item.version &&
-        local.version &&
-        String(local.version) !== String(item.version);
+        ((item.version &&
+          local.version &&
+          String(local.version) !== String(item.version)) ||
+          (remoteAt && localAt && remoteAt > localAt) ||
+          (remoteAt && !localAt));
       if (installed) {
         row.appendChild(
           mkIconBtn(

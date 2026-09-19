@@ -85,6 +85,14 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 6.2H6.6a3.4 3.4 0 1 0 0 6.8H8.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M10.4 3.6L13 6.2l-2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="btn-ico-txt" data-i18n="重做">重做</span>
     </button>
+    <!-- 复制：在选中节点下方复制一个同类节点（Ctrl+D）。只复制节点「类型」，不复制内容；
+         泛用「文件节点」上传 / 手动转换后 kind 已是更改后的类型，直接按 kind 建新节点即可。
+         快捷键是组合键，不进 app-keys.js 的单键表（也不挂 data-shortcut，避免与「隐藏线」
+         的 D 单键冲突）；动作与 Ctrl+D 同源，都走 app.js 的 duplicateSelectedNodeBelow()。 -->
+    <button id="btnDupNode" class="corner mini btn-ico" data-i18n-title="复制节点（Ctrl+D）：在选中节点下方复制一个同类节点，仅复制类型、不复制内容" data-tip="复制节点（Ctrl+D）：在选中节点下方复制一个同类节点，仅复制类型、不复制内容" aria-label="复制">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.8" y="2.4" width="7.8" height="8.8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.2 13.6H3.6a1.2 1.2 0 0 1-1.2-1.2V5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="btn-ico-txt" data-i18n="复制">复制</span>
+    </button>
     <button id="btnFit" class="corner mini btn-ico" data-shortcut="Space" data-i18n-title="一键居中：缩放并定位到全部节点" data-tip="一键居中：缩放并定位到全部节点" aria-label="居中">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.2V2.5H5.2M10.8 2.5h2.7V5.2M13.5 10.8v2.7H10.8M5.2 13.5H2.5V10.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><rect x="5.2" y="5.2" width="5.6" height="5.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
       <span class="btn-ico-txt" data-i18n="居中">居中</span>
@@ -97,7 +105,7 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.15" opacity=".85"/><path d="M5.6 8h4.8M8 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       <span class="btn-ico-txt" data-i18n="超节点">超节点</span>
     </button>
-    <button id="btnAutoLayout" class="corner mini btn-ico" data-i18n-title="一键排版：按连线关系整理节点位置；可选同时排版超级节点内部（可撤销）" data-tip="一键排版：按连线关系整理节点位置；可选同时排版超级节点内部（可撤销）" aria-label="排版">
+    <button id="btnAutoLayout" class="corner mini btn-ico" data-i18n-title="一键排版：按连线关系整理节点位置；停在超级节点里时默认整理当前这一层；可选同时排版超级节点内部（可撤销）" data-tip="一键排版：按连线关系整理节点位置；停在超级节点里时默认整理当前这一层；可选同时排版超级节点内部（可撤销）" aria-label="排版">
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.2" y="2.4" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="2.4" y="9.2" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.2" y="9.2" width="4.4" height="4.4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
       <span class="btn-ico-txt" data-i18n="排版">排版</span>
     </button>
@@ -215,6 +223,7 @@
         <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
         <div class="agent-body">
           <div class="agent-list" id="agentList"></div>
+          <div class="agent-queue agent-paused" id="agentPaused" hidden></div>
           <div class="agent-queue" id="agentQueue" hidden></div>
           <div class="agent-todo agent-plan" id="agentPlan" hidden></div>
           <div class="agent-todo" id="agentTodo" hidden></div>
@@ -242,6 +251,15 @@
             <div class="agent-composer-card">
               <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
               <div class="agent-composer-actions">
+                <!-- 运行中的两枚实时键（app-assist.js paintAgentInflightButtons 全权接管键面与提示）：
+                     ⚡插话 = 趁本轮还在跑，把这句话塞进下一步边界（steer）；
+                     ⏸暂停 = 让本轮停在当前步并保留上下文，之后可「继续」。
+                     桥没有这枚方法（老主进程 / preload）一律不显示；老网关 / 老运行时
+                     回 unsupported 则置灰留在原地，tooltip 说清楚为什么按不动。
+                     这两枚不挂 data-i18n* —— 键面与 tooltip 都随运行态变（置灰 / 正在暂停），
+                     与 #agentSend 同属「JS 说话」的活控件，静态文案只兜住 JS 来不及画的第一帧。 -->
+                <button type="button" class="agent-send agent-steer" id="agentSteer" style="display:none" title="插话：本轮下一步就听见（不打断当前这一步）">⚡ 插话</button>
+                <button type="button" class="agent-send agent-pause" id="agentPause" style="display:none" title="暂停本轮（保留上下文，可继续）">⏸ 暂停</button>
                 <button type="button" class="agent-send" id="agentSend" data-i18n-title="发送" title="发送">↑</button>
               </div>
             </div>
@@ -382,7 +400,7 @@
   <!-- 初始窗壳；最小化会把它整体搬进 #ovPark，再由 app.js 的 ovShellEnsure 照这个结构补一只
        （app.js 里的 OV_SHELL_HTML 必须与这里保持一致，加元素两边都要改） -->
   <div class="overlay-box">
-    <div class="overlay-head"><b id="ovTitle">设置</b><button type="button" class="ov-min-btn" title="最小化到状态栏" aria-label="最小化到状态栏"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M5 11h14v2H5z"/></svg></button></div>
+    <div class="overlay-head"><b id="ovTitle">设置</b><button type="button" class="ov-min-btn" title="最小化到状态栏" aria-label="最小化到状态栏"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M5 11h14v2H5z"/></svg></button><button type="button" class="ov-close-btn" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/></svg></button></div>
     <div class="overlay-body" id="ovBody"></div>
     <div class="overlay-foot" id="ovFoot"></div>
   </div>
@@ -457,7 +475,18 @@
 <script src="app-rollback.js"></script>
 <script src="app-store.js"></script>
 <script src="app-plugins.js"></script>
+<!-- 插件报错 → 自动修复（自包含：renderer/app-repair.js + css/repair.css）：全局监听主进程
+     推来的插件错误（不等插件对话框打开），用 openOverlay 弹错误报告窗，点「🤖 自动修复」
+     新建一条左侧栏可见会话（工作区 = 该插件 INSTALL_DIR、开「与画布无关」档）把日志与
+     节点上下文交给它修。排在 app-plugins.js 之后 = 与插件生态同一分层；会话能力
+     （newAgentSession / agentSessionSend / setView）与 nodeById 都只在调用期取，
+     所以排在 app-assist.js 之前也没问题。 -->
+<script src="app-repair.js"></script>
 <script src="app-tools.js"></script>
+<!-- 工具构建（renderer/app-toolbuild.js）：文件支持判定 + 节点级登记（上半）、
+     AI 方案 + 二次确认（中段）、构建链与 UI（下半）。排在 app-tools.js 之后：
+     同属工具生态分层；dshRunTask / openOverlay / 路由与预设工具函数都在调用期取。 -->
+<script src="app-toolbuild.js"></script>
 <script src="app-assets.js"></script>
 <script src="app-settings.js"></script>
 <script src="app-assist.js"></script>
@@ -476,7 +505,61 @@
      （focusNode / loadWorkflow / setView / openAssetsLibrary / openNodeGuide …）。
      排在 app-teamview.js 之后：专家团与手册的跳转都要用到它们。 -->
 <script src="app-search.js"></script>
+<!-- 输入框内查找（Ctrl+F）：焦点落在 input / textarea 里时，开一只贴右上角的查找条，
+      在**这一个输入框内部**高亮并循环定位命中；焦点不在可编辑区则整只让位给上面的
+      全局搜索浮层（app.js 的 `if (!inField …)` 分支照旧不抢键）。
+      自包含（renderer/app-find.js + css/find.css），只在调用期取 I18n；键盘监听挂
+      document 捕获段，因此不依赖本行的加载顺序（app.js 先加载也能被它消费掉）。 -->
+<script src="app-find.js"></script>
 <script src="app-plan.js"></script>
+<!-- 长周期任务（LangGraph 式状态机 · 人在环 · 长期记忆）：
+     app-longtask.js = 引擎 / 数据模型 / 记忆 / 交付目录（window.LT，无 UI）；
+     app-longtask-ui.js = 画布上方那根细线 handler 展开出来的状态机编辑器与人工任务卡。
+     两者都只消费既有全局（S / addNode / renderCanvas / openOverlay / toast），
+     不新开框架；主进程侧真源在 longtask-store.js，网关侧在 dsh/gateway/longtask-plugin.mjs。 -->
+<script src="app-longtask.js"></script>
+<!-- 长任务的「产出回流」（自包含新模块，挂 window.LTOUT）：把画布上产出节点的现内容
+     摆进 Agent 环节的 prompt（【产出（以画布为准）】），核对产出有没有被用户改过，
+     判不准就把确认问题落进条带人工卡等用户答复。只调用 app-longtask.js 的登记层与
+     交付节点建法，故必须排在它之后、且不依赖界面脚本（界面只从 run.waits / 节点读结果）。 -->
+<script src="app-longtask-out.js"></script>
+<!-- 长任务的「产物上画布」（自包含新模块，挂 window.LTART）：每个环节完成时清点本次产物，
+     逐件摆成主画布上的产物节点（kind ltart，一件一颗）并排好版（同环节产出节点右侧的空位
+     网格 · 已有节点不挪）。只调用 app-longtask.js 的登记层与 app.js 的 makeNode，
+     故必须排在 app-longtask.js 之后；app-longtask.js 的 ltOutputPublish 按全局判空调用它，
+     模块缺席时静默跳过（产出回流不因此断链）。 -->
+<script src="app-longtask-artifacts.js"></script>
+<!-- 长任务的「超级节点壳 + 生成工作流预置」（自包含新模块，挂 window.LTSHELL）：
+     每个环节的产出 / 产物落进它自己的超级节点子壳（父壳一颗 / 一条任务，懒建 · 删了不偷偷重长），
+     涉及内容生成时在子壳里预置生成节点 + 控制节点，一律不自动运行（由用户点 ▶ 执行）。
+     必须排在 app-longtask.js 与 app-longtask-artifacts.js 之后（用到它们的登记层与 makeNode /
+     superChildrenOf），两份模块都按全局判空调用它，模块缺席时产出回落主画布层。 -->
+<script src="app-longtask-shell.js"></script>
+<!-- 长任务设置的统一可搜索下拉控件（自包含工厂，挂 window.LT.ui.ctl）：
+     输入框只用来过滤，值只能从清单里点出来；模型按服务商分组也走它。
+     必须排在 app-longtask-ui.js 之前 —— 检查器 / 设置窗都从这里取控件。
+     只做控件：不认识任何长任务业务字段，业务语义仍在 app-longtask-ui.js。 -->
+<script src="app-longtask-ctl.js"></script>
+<script src="app-longtask-ui.js"></script>
+<!-- 新建长周期任务对话框（窗口 window.openLtCreateDlg）：条带头部 / 空态 / 设置窗
+     三处「＋ 创建长任务」入口都开它，窗内右上角「手动新建」调 app-longtask-ui.js 的
+     ltNewTask（第二参 = 本窗顶部「Agent 选型」那份继承上下文），故必须排在
+     app-longtask-ui.js 之后；顶部四只选型下拉取自 app-longtask-ctl.js 的 ctl，
+     关窗不丢内容（正文与选型各记一份 localStorage）。自包含 + css/longtask.css 的 .ltc-*。 -->
+<script src="app-longtask-create.js"></script>
+<!-- 新建窗里的「Agent 引导建图」：wrap window.openLtCreateDlg，把 #ltcMain 换成
+     一条专用会话（agentContractSession + _devContract 拷问契约）的对话区，
+     回执解读与「启用并绑定」也在这里；故必须排在 app-longtask-create.js 之后。
+     自包含 + css/longtask.css 的 .ltg-*。 -->
+<script src="app-longtask-guide.js"></script>
+<!-- 任务链修改对话框（窗口 window.ltOpenEditDlg）：条带头部那颗「✎ 修改任务链」
+     （app-longtask-ui.js 的 ltOpenEditDlg）开它；用户写一句修改要求，Agent 用
+     mtnode_app 的 get_longtask / update_longtask 读完现状后原地改图。
+     必须排在 app-longtask-ui.js 与 app-longtask-guide.js 之后：
+       · 前者提供入口与按钮/弹窗样式基座（ltBtn / ltT / openOverlay 调法），
+       · 后者提供回执里的图 JSON 解析（ltgParseGraph）与同一套契约会话口径；
+     自包含 + css/longtask.css 的 .lte-*。 -->
+<script src="app-longtask-edit.js"></script>
 <!-- 统一账户客户端模块（自包含；IPC 契约见文件头注释）——放在 boot 之前，
      顶栏 #btnAccount 已在上方 DOM 里，init 直接接管点击 -->
 <script src="app-auth.js"></script>

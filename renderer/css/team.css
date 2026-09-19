@@ -1,0 +1,1449 @@
+/* ============ 专家团（Team）样式 ============
+ * 归属 renderer/app-team.js 的界面：团队面板 / 项目分组 / 专家卡片 / 专家编辑 /
+ * 招募草稿 / 专家对话。类名统一 .team-* 前缀，配色只取 base.css 的主题变量，
+ * 因此暗色 / 工业 / 亮色三套主题自动跟随（亮色覆盖走 body.theme-light）。
+ */
+
+/* ── 通用 ── */
+.team-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+.team-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.team-toolbar .team-spacer {
+  flex: 1;
+}
+.team-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.team-empty {
+  padding: 22px 14px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--bd2);
+  border-radius: 10px;
+  background: var(--panel2);
+}
+.team-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--bd2);
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+.team-badge.on {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--bd2));
+}
+.team-badge.warn {
+  color: var(--orange);
+  border-color: color-mix(in srgb, var(--orange) 45%, var(--bd2));
+}
+
+/* ── 专家分类树（左栏） ── */
+/* 专家小节头有两个按钮（新建分类 + 新建专家）：只有第一个吃掉右推的空白 */
+.team-sec-head .team-sec-add + .team-sec-add {
+  margin-left: 0;
+}
+.team-cat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-top: 6px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.team-cat-row:hover {
+  background: var(--panel2);
+}
+.team-cat-caret {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+.team-cat-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink);
+}
+.team-cat-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.team-cat-del {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.team-cat-del:hover {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
+.team-cat-kids {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--bd);
+}
+/* 专家头部的分类下拉（详细区） */
+.team-cat-sel {
+  flex: none;
+  max-width: 150px;
+  padding: 4px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+}
+/* 招聘页：分类下拉（同款外观，容器可带标签） */
+.team-cat-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.team-cat-picker .team-cat-select,
+.team-cat-picker select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 200px;
+  padding: 4px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+}
+/* 招聘页：管理分类列表 */
+.team-cat-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.team-cat-manage-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.team-cat-manage-head .team-label {
+  flex: 1;
+  min-width: 0;
+}
+.team-cat-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+.team-cat-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel2);
+}
+.team-cat-manage-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink);
+}
+.team-cat-manage-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.team-cat-manage-del {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.team-cat-manage-del:hover {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
+/* 左栏：分类下的专家项缩进（挂在 .team-cat-kids 里） */
+.team-cat-kids .team-side-item {
+  padding-left: 6px;
+  font-size: 12.5px;
+}
+/* 左栏事实库分组（专家列表末尾，全部分类之后）：库行沿用 .team-side-item 形态；
+   book 图标用主题色，右侧操作按钮只在 hover / 键盘聚焦时出现，常显「＋」＝新建文档；
+   库行下的文档子行沿用 .team-cat-kids 的缩进 + 竖线形态，不新造视觉语言。 */
+.team-side-fact-group {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--bd2);
+}
+.team-side-fact {
+  border-radius: 8px;
+}
+.team-side-fact .team-side-glyph {
+  color: var(--cyan);
+}
+/* 「{n} 篇」文档数与文档行的更新时间都很短，给一点宽度再截断 */
+.team-side-fact .team-side-sub,
+.team-side-fact-doc .team-side-sub {
+  max-width: 90px;
+}
+/* 文档子行容器：沿用 .team-cat-kids 的缩进 + 竖线形态 */
+.team-side-fact-docs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--bd);
+}
+.team-side-fact-docs .team-side-item {
+  padding-left: 6px;
+  font-size: 12.5px;
+}
+.team-side-fact-empty {
+  padding: 6px 8px;
+}
+.team-side-acts {
+  margin-left: auto;
+  flex: none;
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+.team-side-item:hover .team-side-acts,
+.team-side-item:focus-within .team-side-acts {
+  display: flex;
+}
+.team-side-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 4px;
+  cursor: pointer;
+}
+.team-side-act:hover {
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 14%, transparent);
+}
+.team-side-act.danger:hover {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
+
+/* 左栏会话 / 角色行右侧尾部：徽标 + hover 出现的删除按钮；常显的「＋」也放这里。
+   尾部整体靠右，内部元素不再各自 margin-left:auto（避免多个 auto 把间距拉开）。 */
+.team-side-tail {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.team-side-tail .team-side-sub,
+.team-side-tail .team-side-add-chat {
+  margin-left: 0;
+}
+/* 孤儿会话标记（原专家已删除，仅可回看） */
+.team-side-orphan {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ── 项目分组 ── */
+.team-project {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.team-project + .team-project {
+  margin-top: 10px;
+}
+.team-project-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--bd);
+  cursor: pointer;
+}
+.team-project-head:hover {
+  background: color-mix(in srgb, var(--panel2) 80%, var(--bd));
+}
+.team-project-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.team-project-desc {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-project-body {
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+/* ── 专家卡片 ── */
+.team-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--bd);
+  border-left: 3px solid var(--bd2);
+  border-radius: 10px;
+  background: var(--panel2);
+  cursor: pointer;
+  transition: border-color 0.12s, transform 0.12s;
+}
+.team-card:hover {
+  border-color: var(--bd2);
+  transform: translateY(-1px);
+}
+.team-card.on {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cyan) 40%, transparent);
+}
+.team-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+/* 头像：底色 = 主题色（var(--panel2)）+ 细边（var(--bd2)），
+   专家自定义色**只**落在图标描边上（SVG stroke:currentColor，由内联 color 决定）。
+   icon 包一层 span，用 flex + line-height:0 居中，SVG 自身用 width/height 撑满字形盒 ——
+   彻底消除 emoji / 文本基线造成的上下偏移。三档尺寸：默认 34 / sm 24 / lg 56。 */
+.team-avatar {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  overflow: hidden;
+  user-select: none;
+}
+.team-avatar-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  line-height: 0;
+}
+.team-avatar-glyph svg,
+.team-avatar .team-icon {
+  display: block;
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+.team-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.team-avatar.sm {
+  width: 24px;
+  height: 24px;
+}
+.team-avatar.sm .team-avatar-glyph svg,
+.team-avatar.sm .team-icon {
+  width: 14px;
+  height: 14px;
+}
+.team-avatar.lg {
+  width: 56px;
+  height: 56px;
+}
+.team-avatar.lg .team-avatar-glyph svg,
+.team-avatar.lg .team-icon {
+  width: 28px;
+  height: 28px;
+}
+.team-card-id {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.team-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-role {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-tagline {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.team-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.team-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+.team-card-foot .team-spacer {
+  flex: 1;
+}
+
+/* ── 表单（专家编辑 / 招募） ── */
+.team-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.team-section {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+}
+.team-section > .team-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+.team-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.team-row > .team-field {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.team-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.team-field > label,
+.team-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.team-field input[type="text"],
+.team-field input[type="number"],
+.team-field textarea,
+.team-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+}
+.team-field textarea {
+  min-height: 66px;
+  resize: vertical;
+  line-height: 1.55;
+}
+.team-field input:focus,
+.team-field textarea:focus,
+.team-field select:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+/* ── 图标选择器（专家编辑 / 招募）：预览行 + 展开网格 + 分组小标题 ──
+   选中态描边用专家色：JS 只需把格子（或预览头像）的 color 设成专家色，
+   这里用 currentColor 收口，因此三套主题下都不写死颜色。 */
+.team-avatar-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.team-icon-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+/* 预览行：当前头像 + 图标名 + 展开 / 收起 */
+.team-icon-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.team-icon-preview {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px 3px 3px;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  background: var(--panel2);
+  color: var(--ink);
+  font-size: 12px;
+}
+.team-icon-preview-name {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.team-icon-picker-toggle {
+  flex: none;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  background: var(--panel2);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.team-icon-picker-toggle:hover {
+  color: var(--ink);
+  border-color: var(--cyan);
+}
+/* 展开网格：自动填充，格宽自适应 */
+.team-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+.team-icon-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+.team-icon-group:last-child {
+  margin-bottom: 0;
+}
+.team-icon-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.team-icon-cell {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--ink);
+  line-height: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+.team-icon-cell svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+.team-icon-cell:hover {
+  border-color: currentColor;
+  background: color-mix(in srgb, var(--cyan) 12%, var(--panel2));
+}
+.team-icon-cell.on {
+  border-color: currentColor;
+  box-shadow: 0 0 0 1px currentColor;
+  background: color-mix(in srgb, var(--cyan) 16%, var(--panel2));
+}
+/* 旧 emoji 格子（兼容仍在用 .team-glyph 的入口）：同样支持 SVG */
+.team-glyph-grid,
+.team-swatch-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.team-glyph-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(30px, 1fr));
+}
+.team-glyph {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--bd2);
+  background: var(--panel2);
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  line-height: 0;
+  cursor: pointer;
+}
+.team-glyph svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+.team-glyph.on {
+  border-color: currentColor;
+  background: color-mix(in srgb, var(--cyan) 18%, var(--panel2));
+}
+.team-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.team-swatch.on {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+/* 工具许可行：标题与按钮不换行、完整显示；中间描述只占一行，超出用 … 截断，
+   鼠标悬停由 title 属性给完整说明。 */
+.team-perm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.team-perm-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel2);
+}
+.team-perm-row .team-perm-name {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.team-perm-row .team-perm-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-perm-modes {
+  flex: 0 0 auto;
+  display: inline-flex;
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.team-perm-modes button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  flex: none;
+}
+.team-perm-modes button + button {
+  border-left: 1px solid var(--bd2);
+}
+.team-perm-modes button.on {
+  background: color-mix(in srgb, var(--cyan) 22%, var(--panel2));
+  color: var(--ink);
+}
+.team-perm-modes button.on[data-mode="ask"] {
+  background: color-mix(in srgb, var(--orange) 22%, var(--panel2));
+}
+.team-perm-modes button.on[data-mode="deny"] {
+  background: color-mix(in srgb, var(--red) 20%, var(--panel2));
+}
+
+/* ── 招募草稿 ── */
+.team-draft {
+  border: 1px dashed var(--bd2);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px;
+}
+.team-draft .team-draft-brief {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+}
+
+/* ── 专家对话 ── */
+.team-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+.team-chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  padding: 4px 2px;
+}
+.team-msg {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.team-msg .team-msg-body {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--panel2);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.team-msg.me {
+  flex-direction: row-reverse;
+}
+.team-msg.me .team-msg-body {
+  background: color-mix(in srgb, var(--cyan) 12%, var(--panel2));
+  border-color: color-mix(in srgb, var(--cyan) 30%, var(--bd));
+}
+.team-msg .team-msg-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.team-chat-input {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.team-chat-input textarea {
+  flex: 1;
+  min-height: 60px;
+  max-height: 200px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  background: var(--bg2);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.team-chat-input textarea:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+/* ── 亮色主题微调 ── */
+body.theme-light .team-empty,
+body.theme-light .team-project,
+body.theme-light .team-section,
+body.theme-light .team-draft {
+  background: var(--panel);
+}
+
+/* ════════════ 招聘流程（renderer/app-team-recruit.js） ════════════
+   手动模板 + 自动生成共用同一宿主 #teamRecruitDlg（.mt-dialog · persistent）。
+   复用 .team-section / .team-field / .team-glyph / .team-swatch / .team-perm-* 等既有件。 */
+.mt-dialog-box.team-recruit-box {
+  width: min(1060px, 96vw);
+  max-height: min(90vh, 880px);
+}
+.team-recruit-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.team-recruit-tabs {
+  display: inline-flex;
+  gap: 4px;
+}
+.team-recruit-tab {
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 3px 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.team-recruit-tab.on {
+  color: var(--ink);
+  border-color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 18%, var(--panel2));
+}
+.team-recruit-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.team-recruit-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.team-recruit-side {
+  width: 208px;
+  flex: none;
+  overflow: auto;
+  padding: 10px;
+  border-right: 1px solid var(--bd);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.team-recruit-side-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+/* 模板库头部（标题 + 新建模板）与按分类分组 */
+.team-recruit-side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.team-recruit-side-head .team-recruit-side-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-recruit-side-head .mini {
+  flex: none;
+  white-space: nowrap;
+}
+.team-recruit-tpl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.team-recruit-tpl-cat {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.team-recruit-tpl-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.team-recruit-tpl-row .team-recruit-tpl {
+  flex: 1;
+  min-width: 0;
+}
+.team-recruit-tpl-del {
+  flex: none;
+  padding: 2px 5px;
+  color: var(--muted);
+}
+.team-recruit-tpl-del:hover {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--bd2));
+}
+.team-recruit-tpl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: 1px solid var(--bd);
+  border-left: 3px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--ink);
+}
+.team-recruit-tpl:hover {
+  border-color: var(--bd2);
+}
+.team-recruit-tpl.on {
+  border-color: var(--cyan);
+  border-left-color: var(--cyan);
+}
+.team-recruit-tpl-txt {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.team-recruit-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.team-recruit-form {
+  flex: 1.15;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+  gap: 10px;
+}
+.team-recruit-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+  border-left: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+/* ── 右侧只读结构化专家卡（手动预览 + 自动招聘确认卡共用） ──
+   分段：基本信息 / 人设 / 提示词 / 模型 / 权限；字段名 + 值两列，长文自动换行。 */
+.team-expert-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel2);
+}
+.team-expert-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.team-expert-card-id {
+  min-width: 0;
+}
+.team-expert-card-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd);
+}
+.team-expert-card-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.team-expert-card-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.team-expert-card-key {
+  flex: none;
+  width: 60px;
+  color: var(--muted);
+}
+.team-expert-card-val {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  word-break: break-word;
+}
+.team-expert-card-val.long {
+  white-space: pre-wrap;
+}
+/* 模型控制区：模型 / 思考强度 / 预设档 / 温度 四件套（两列栅格） */
+.team-model-ctrl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+  margin-bottom: 10px;
+}
+.team-recruit-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.team-recruit-ok {
+  color: var(--green);
+}
+.team-recruit-err {
+  color: var(--red);
+}
+.team-recruit-warn {
+  color: var(--orange);
+}
+.team-recruit-auto {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.team-recruit-actions {
+  display: flex;
+  gap: 8px;
+}
+/* 自动招聘页的「录用后自动录入模板库」勾选行：与提示文案同一行、不撑满。 */
+.team-recruit-tplchk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  cursor: pointer;
+  user-select: none;
+}
+.team-recruit-tplchk input {
+  margin: 0;
+  cursor: pointer;
+}
+.team-recruit-live {
+  margin: 0;
+  min-height: 84px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.team-recruit-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.team-recruit-card {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  background: var(--panel2);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+button.primary {
+  border-color: var(--cyan) !important;
+  color: var(--ink) !important;
+}
+
+
+/* ═════════════ 群聊 / 圆桌 / 建议卡 ═════════════ */
+
+.team-group-avs {
+  display: flex;
+  align-items: center;
+  gap: -4px;
+  margin-left: 4px;
+}
+.team-group-avs .team-avatar.sm {
+  margin-left: -6px;
+  border: 2px solid var(--panel);
+  box-shadow: none;
+}
+.team-group-avs .team-avatar.sm:first-child {
+  margin-left: 0;
+}
+.team-aggregate-btn {
+  white-space: nowrap;
+}
+
+/* 群聊头部：本轮参与人回执（selectParticipants 决策结果）——
+   常显一行选人理由（过长省略，完整理由挂 title），右侧一枚「主持人选定 / 被 @ 指定」标记。 */
+.team-main-head .team-round-reason {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-round-tag {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 并行作答：每位专家各占一行实时刷新（运行结束后按参与顺序落为署名消息）。 */
+.team-live-row + .team-live-row {
+  margin-top: 6px;
+}
+.team-live-row .dsh-role.live {
+  font-weight: 600;
+}
+
+.team-msg-av {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 6px;
+  border-radius: 6px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  vertical-align: middle;
+}
+.team-msg-av .team-avatar-glyph svg,
+.team-msg-av .team-icon {
+  width: 13px;
+  height: 13px;
+}
+.team-msg-err {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--warn, #ff9d5c);
+  border-radius: 6px;
+  background: rgba(255, 157, 92, 0.1);
+  color: var(--warn, #ff9d5c);
+  font-size: 12px;
+}
+
+.team-advice {
+  border: 1px solid var(--cyan);
+  border-radius: 12px;
+  background: var(--panel2);
+  margin: 10px 0;
+  overflow: hidden;
+}
+.team-advice-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(90deg, rgba(69, 207, 230, 0.14), transparent);
+  border-bottom: 1px solid var(--bd);
+}
+.team-advice-badge {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cyan);
+}
+.team-advice-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-advice-conf {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.team-advice-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.team-advice-sec-t {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.team-advice-concl {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.team-advice-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+.team-advice-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--bd);
+  background: var(--bg2);
+}
+.team-advice-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--cyan);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cyan);
+  font-size: 12px;
+  cursor: pointer;
+}
+.team-advice-btn:hover {
+  background: rgba(69, 207, 230, 0.12);
+}
+.team-advice-btn.ghost {
+  border-color: var(--bd);
+  color: var(--muted);
+}
+.team-advice-done {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ok, #a8e05f);
+}
+.team-advice-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* ── 分类管理（招聘对话框内：改名 / 删除，新建走输入框） ── */
+.team-cat-actions {
+  display: flex;
+  align-items: flex-end;
+}
+.team-cat-body {
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px 2px;
+}
+.team-cat-mng-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--bd);
+}
+.team-cat-mng-row:last-child {
+  border-bottom: none;
+}
+.team-cat-mng-name {
+  font-size: 13px;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ════════════ 统一编辑权限（app-team-recruit.js · 左栏「🔐 权限」入口） ════════════
+   左栏「专家」小节头的权限按钮 + persistent 对话框 #teamPermDlg：
+   适用范围 / 审批档 / 工具许可三块，逐行 select 默认「保持不变」。 */
+.team-sec-head .team-sec-add.team-perm-all {
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.mt-dialog-box.team-perm-box {
+  width: min(600px, 94vw);
+}
+
+.team-perm-body {
+  max-height: min(72vh, 640px);
+  overflow: auto;
+}
+
+.team-perm-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 10px;
+}
+
+.team-perm-scope .team-copy-label {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.team-perm-scope .team-perm-sel {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.team-perm-scope-hint {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.team-perm-block {
+  margin-top: 10px;
+}
+
+.team-perm-block > .team-label {
+  margin-bottom: 6px;
+}
+
+/* 工具栏 select（审批档 / 逐项许可）：与 .team-copy-sel 同一套配色，不另起视觉语言。 */
+.team-perm-sel {
+  flex: 0 0 auto;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.team-perm-sel:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+#teamPermApply[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

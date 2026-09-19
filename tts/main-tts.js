@@ -21,6 +21,8 @@ const { spawn, execFile } = require("child_process");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const { mergeManagedProvider } = require("../config-providers.js");
 const uiBridge = require("./ui-bridge.js");
+/* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
+const pluginErrors = require("../plugin-error-repair.js");
 
 const PLUGIN_ID = "tts-local";
 const TTS_PROVIDER_ID = "tts-local";
@@ -360,6 +362,19 @@ function emitProgress(ev) {
   broadcast("tts:progress", Object.assign({ id: PLUGIN_ID, ts: Date.now() }, ev || {}));
 }
 
+/**
+ * 失败上报：控制台窗内的 toast 只有开着那只窗的人看得到。把同一次失败送到报错总线，
+ * 让主窗口出一份带日志尾部的报告（总线内部吞异常，绝不影响主流程）。
+ */
+function reportErr(code, message, extra) {
+  try {
+    pluginErrors.reportPluginError(
+      PLUGIN_ID,
+      Object.assign({ code, message: String(message || "") }, extra || {}),
+    );
+  } catch {}
+}
+
 function isAlivePid(pid) {
   const n = Number(pid);
   if (!n || n <= 0) return false;
@@ -660,7 +675,10 @@ async function startBackend() {
   if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
   const installDir = safe.path;
   const sig = projectSignals(installDir);
-  if (!sig.ready) return { ok: false, error: "not_installed" };
+  if (!sig.ready) {
+    reportErr("not_installed", "GPT-SoVITS 后端尚未安装", { phase: "start" });
+    return { ok: false, error: "not_installed" };
+  }
 
   const port = Number(cfg.port) || DEFAULT_PORT;
   /* 指纹要在 syncPackToInstall 之前算（sync 会把新代码盖到安装目录，之后就分不出新旧了） */
@@ -714,7 +732,10 @@ async function startBackend() {
   }
 
   const py = join(installDir, ".venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) return { ok: false, error: "no_venv" };
+  if (!fs.existsSync(py)) {
+    reportErr("no_venv", "GPT-SoVITS 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+    return { ok: false, error: "no_venv" };
+  }
 
   syncPackToInstall(installDir);
   mk(path.dirname(consoleLogPath()));
@@ -752,9 +773,11 @@ async function startBackend() {
     await new Promise((r) => setTimeout(r, 1500));
     if (!isAlivePid(child.pid)) {
       clearPidMeta();
+      reportErr("backend_exited", "GPT-SoVITS 后端进程启动后退出", { phase: "start" });
       return { ok: false, error: "backend_exited" };
     }
   }
+  reportErr("backend_start_timeout", "等待 GPT-SoVITS 后端就绪超时", { phase: "start" });
   return { ok: false, error: "backend_start_timeout", pid: child.pid, port };
 }
 
@@ -964,6 +987,7 @@ async function agentInstallByAgent(opts) {
     const msg = String((e && e.message) || e);
     appendConsole("[agent-install] dsh.run failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+    reportErr(msg, msg, { phase: "install" });
     return { ok: false, error: msg };
   }
 
@@ -977,6 +1001,7 @@ async function agentInstallByAgent(opts) {
       dshEventHook = null;
       installing = false;
       emitProgress({ phase: "install", step: "error", message: "cancelled", pct: 0, error: true });
+      reportErr("cancelled", "安装已取消", { phase: "install" });
       return { ok: false, error: "cancelled" };
     }
     const sig = projectSignals(installDir);
@@ -997,6 +1022,7 @@ async function agentInstallByAgent(opts) {
       dshEventHook = null;
       installing = false;
       emitProgress({ phase: "install", step: "error", message: agentSaidFail, pct: 0, error: true });
+      reportErr(agentSaidFail, agentSaidFail, { phase: "install" });
       return { ok: false, error: agentSaidFail };
     }
     lastPct = Math.min(92, lastPct + 1);
@@ -1048,6 +1074,7 @@ async function agentInstallByAgent(opts) {
   const msg = "agent_install_timeout";
   appendConsole("[agent-install] " + msg);
   emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+  reportErr(msg, "Agent 安装超时（45 分钟未交付）：" + msg, { phase: "install" });
   return { ok: false, error: msg };
 }
 
@@ -1055,9 +1082,45 @@ async function agentRecoverInstall(opts) {
   return agentInstallByAgent(Object.assign({}, opts || {}, { mode: "recover" }));
 }
 
+/**
+ * 自我修复：本宿主没有 h3/music3 那种现成的 selfRepairFromConsole，
+ * 等价实现 = 把 console 尾部当失败现场交给 Agent 保底修复（同一套 agentRecoverInstall）。
+ */
+async function selfRepairFromConsole(opts) {
+  opts = opts || {};
+  const cfg = loadConfig();
+  const safe = isSafeInstallDir(cfg.installDir);
+  if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
+  const tail = consoleTail(Number(opts.maxBytes) || 96 * 1024);
+  const logText = String((tail && tail.text) || "").trim();
+  if (!logText) {
+    return {
+      ok: false,
+      error: "empty_console",
+      message: "console 日志为空，请先运行一次合成或安装以产生日志",
+    };
+  }
+  appendConsole("[self-repair] begin · console bytes≈" + logText.length + " → dsh");
+  const r = await agentRecoverInstall({
+    error:
+      "【自我修复任务 · 由你（dsh）分析日志并修复】\n" +
+      "每人环境与报错可能不同：请按 skill「tts-local-install」的目标自行判断根因并动手修复，" +
+      "不要套用不匹配的旧故障剧本；不要盲目重装已就绪的权重。\n" +
+      (opts.error ? "\n=== 本次失败摘要 ===\n" + String(opts.error).slice(0, 4000) + "\n" : "") +
+      "\n=== console 最近尾部 ===\n```\n" +
+      logText.slice(-12000) +
+      "\n```\n",
+  });
+  appendConsole("[self-repair] dsh done ok=" + !!(r && r.ok) + " err=" + ((r && r.error) || ""));
+  return Object.assign({}, r || {}, { selfRepair: true, via: "dsh", consoleBytes: logText.length });
+}
+
 async function installProject(opts) {
   opts = opts || {};
-  if (installing) return { ok: false, error: "busy" };
+  if (installing) {
+    reportErr("busy", "GPT-SoVITS 已有安装 / 修复任务在跑，本次安装被拒", { phase: "install" });
+    return { ok: false, error: "busy" };
+  }
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
   if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
@@ -1123,6 +1186,7 @@ async function installProject(opts) {
     });
     if (msg === "cancelled" || msg === "busy") {
       emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+      reportErr(msg, msg === "busy" ? "已有安装任务在跑" : "安装已取消", { phase: "install" });
       return { ok: false, error: msg, agentRecoverable: false };
     }
     installing = false;
@@ -1718,6 +1782,21 @@ function registerTtsIpc(opts) {
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot;
   getDsh = opts.getDsh || null;
+
+  /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口）。
+     本宿主的自我修复是 selfRepairFromConsole 的等价实现（console 尾部 → agentRecoverInstall）。 */
+  pluginErrors.registerPluginHost({
+    id: PLUGIN_ID,
+    name: "GPT-SoVITS 本地 TTS",
+    skillName: "tts-local-install",
+    getInstallDir: () => loadConfig().installDir || "",
+    tailConsole: (n) => consoleTail(n),
+    selfRepair: (o) => selfRepairFromConsole(o || {}),
+    restart: async () => {
+      await stopBackend();
+      return startBackend();
+    },
+  });
 
   ensureUiRuntime();
   startConsoleLogWatch();

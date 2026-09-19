@@ -1,0 +1,73 @@
+/* 插件报错 → 自动修复（renderer/app-repair.js）：错误报告窗
+   结构：说明 → 键值行（插件 / 错误码 / 节点 / 画布 / INSTALL_DIR / SCAFFOLD_REF / skill）
+        → 错误正文 pre → 可折叠日志尾部 details */
+.plg-repair-hint {
+  margin: 0 0 10px;
+  line-height: 1.6;
+}
+.plg-repair-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.plg-repair-k {
+  flex: 0 0 auto;
+  min-width: 92px;
+  opacity: 0.62;
+}
+.plg-repair-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.plg-repair-sub {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.72;
+}
+.plg-repair-pre {
+  max-height: 200px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.35);
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+/* 错误正文：走主题红，一眼和日志区分开 */
+.plg-repair-err {
+  border-color: rgba(207, 42, 30, 0.45);
+  color: var(--red, #ef5b4c);
+}
+.plg-repair-log {
+  margin: 10px 0 0;
+}
+.plg-repair-log > summary {
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.75;
+  user-select: none;
+}
+.plg-repair-log > summary:hover {
+  opacity: 1;
+}
+
+/* ---- 亮色主题覆盖 ---- */
+body.theme-light .plg-repair-pre {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.14);
+}
+body.theme-light .plg-repair-err {
+  border-color: rgba(207, 42, 30, 0.4);
+  color: #b8241a;
+}

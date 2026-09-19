@@ -87,7 +87,11 @@ function listTools() {
   const root = toolsRoot();
   let names = [];
   try {
-    names = fs.readdirSync(root).filter((f) => f.endsWith(".json"));
+    /* 只认「合法工具 id + .json」：_builtin.json（内置条目的开关覆写）与任何
+       临时 / 备份文件都不会被当成工具条目列出来 */
+    names = fs
+      .readdirSync(root)
+      .filter((f) => f.endsWith(".json") && TOOL_ID_RE.test(f.slice(0, -5)));
   } catch {
     return [];
   }
@@ -139,6 +143,108 @@ function patchGraphName(graph, rootId, oldName, name) {
   }
 }
 
+/* ── 应用内置条目（随包发版的「开箱即用」工具包）────────────────────
+ * 真源：renderer/preset-tools.json（与 renderer 一起随包发；改它 = 改内置清单）。
+ * 库里没有对应文件 —— 内置条目不是用户数据，不该被删 / 改名，也没必要在
+ * %APPDATA% 里存一份副本。列表与读取时现读现拼，id 统一加 "builtin:" 前缀
+ * （用户工具 id 走 genId()，永远不会长这样），所以「插入画布 / 会话随时可调用」
+ * 两条消费路径（都按 id 取全量包）天然认得它。 */
+const BUILTIN_ID_PREFIX = "builtin:";
+let builtinCache = null;
+
+function builtinManifestPath() {
+  return path.join(__dirname, "renderer", "preset-tools.json");
+}
+/* 读内置清单（读不到 / 格式坏 → 空数组，不影响用户工具；结果缓存一份） */
+function builtinTools() {
+  if (builtinCache) return builtinCache;
+  let j = null;
+  try {
+    j = readJson(builtinManifestPath(), null);
+  } catch {}
+  const list = j && Array.isArray(j.tools) ? j.tools : [];
+  const out = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const key = String(raw.key || "").trim();
+    const name = String(raw.name || "").trim();
+    const g = raw.graph && typeof raw.graph === "object" ? raw.graph : {};
+    const nodes = Array.isArray(g.nodes) ? g.nodes : [];
+    if (!key || !name || !nodes.length) continue;
+    out.push({
+      id: BUILTIN_ID_PREFIX + key,
+      kind: raw.kind === "function" ? "function" : "tool",
+      name: name,
+      description: String(raw.description || ""),
+      inputs: normParams(raw.inputs),
+      outputs: normParams(raw.outputs),
+      always: !!raw.always,
+      builtin: true,
+      presets: raw.presets && typeof raw.presets === "object" ? raw.presets : null,
+      graph: {
+        rootId: String(g.rootId || ""),
+        nodes: nodes,
+        wires: Array.isArray(g.wires) ? g.wires : [],
+      },
+      createdAt: Number(raw.createdAt) || 0,
+      updatedAt: Number(raw.updatedAt) || 0,
+    });
+  }
+  builtinCache = out;
+  return out;
+}
+function builtinEntry(id) {
+  const s = String(id || "");
+  if (!s.startsWith(BUILTIN_ID_PREFIX)) return null;
+  const key = s.slice(BUILTIN_ID_PREFIX.length);
+  return builtinTools().find((t) => t.id === s || t.id === BUILTIN_ID_PREFIX + key) || null;
+}
+/* 内置条目也可以有「会话随时可调用」开关：用户开关状态不能写回随包文件，
+    因此在数据目录里存一份覆写 tools/_builtin.json（{ "<key>": bool }，幂等、可删）。
+    这个文件名不以合法工具 id 开头、也不是 <id>.json，用户工具的列举永远不会读到它。 */
+function builtinAlwaysFile() {
+  return path.join(toolsRoot(), "_builtin.json");
+}
+function builtinAlwaysMap() {
+  try {
+    const j = readJson(builtinAlwaysFile(), null);
+    return j && typeof j === "object" && !Array.isArray(j) ? j : {};
+  } catch {
+    return {};
+  }
+}
+function builtinAlwaysOf(id, dflt) {
+  const key = String(id || "").replace(BUILTIN_ID_PREFIX, "");
+  const m = builtinAlwaysMap();
+  return typeof m[key] === "boolean" ? m[key] : !!dflt;
+}
+function writeBuiltinAlways(id, always) {
+  const key = String(id || "").replace(BUILTIN_ID_PREFIX, "");
+  const m = builtinAlwaysMap();
+  m[key] = !!always;
+  writeJson(builtinAlwaysFile(), m);
+}
+/* 列表用：去掉 graph（轻量口径与 listTools 一致）并吃进开关覆写。
+   函数条目的 always 恒 false —— 会话可调用链路执行的是工具节点的内部图，
+   函数包没有那条执行路（渲染层也不给函数条目这个开关，两端口径一致）。 */
+function builtinListEntry(t) {
+  return {
+    id: t.id,
+    kind: entryKind(t),
+    name: t.name,
+    description: t.description,
+    inputs: t.inputs,
+    outputs: t.outputs,
+    always: entryKind(t) === "function" ? false : builtinAlwaysOf(t.id, t.always),
+    builtin: true,
+    presets: t.presets,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    nodeCount: t.graph.nodes.length,
+    wireCount: t.graph.wires.length,
+  };
+}
+
 function registerToolsIpc(opts) {
   opts = opts || {};
   if (typeof opts.getDataDir === "function") getDataDir = opts.getDataDir;
@@ -146,13 +252,24 @@ function registerToolsIpc(opts) {
 
   ipcMain.handle("tools:list", () => {
     try {
-      return { ok: true, tools: listTools() };
+      /* 内置条目排在最前（开箱即用、不随用户保存时间浮动），其后才是用户工具 */
+      const builtins = builtinTools().map(builtinListEntry);
+      return { ok: true, tools: builtins.concat(listTools()) };
     } catch (err) {
       return fail(err);
     }
   });
 
   ipcMain.handle("tools:get", (e, id) => {
+    const bid = builtinEntry(id);
+    if (bid)
+      return {
+        ok: true,
+        tool: Object.assign({}, bid, {
+          always:
+            entryKind(bid) === "function" ? false : builtinAlwaysOf(bid.id, bid.always),
+        }),
+      };
     if (!TOOL_ID_RE.test(String(id || ""))) return badArg(t("非法工具 id"));
     try {
       const j = readTool(String(id));
@@ -205,6 +322,8 @@ function registerToolsIpc(opts) {
   });
 
   ipcMain.handle("tools:delete", (e, id) => {
+    if (builtinEntry(id))
+      return badArg(t("内置工具不可删除（它随应用发版，不是本机数据）"));
     if (!TOOL_ID_RE.test(String(id || ""))) return badArg(t("非法工具 id"));
     try {
       const p = toolPath(String(id));
@@ -219,6 +338,22 @@ function registerToolsIpc(opts) {
   ipcMain.handle("tools:patch", (e, arg) => {
     const id = arg && arg.id;
     const patch = (arg && arg.patch) || {};
+    /* 内置条目：只允许「会话随时可调用」这一个开关（写到数据目录的覆写文件里），
+       改名 / 改描述一律拒绝 —— 随包文件是本机无关的，改了下次升级就没了。 */
+    const bid = builtinEntry(id);
+    if (bid) {
+      try {
+        if (typeof patch.always === "boolean" && entryKind(bid) === "function")
+          return badArg(t("函数条目不支持「会话随时可调用」（该链路跑的是工具节点的内部图）"));
+        if (typeof patch.always === "boolean") {
+          writeBuiltinAlways(bid.id, patch.always);
+          return { ok: true };
+        }
+        return badArg(t("内置工具只能切换「会话随时可调用」，不能改名 / 改描述"));
+      } catch (err) {
+        return fail(err);
+      }
+    }
     if (!TOOL_ID_RE.test(String(id || ""))) return badArg(t("非法工具 id"));
     try {
       const j = readTool(String(id));

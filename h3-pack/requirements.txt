@@ -4,3 +4,8 @@
 modelscope>=1.14.0
 huggingface_hub>=0.26.0
 requests>=2.31.0
+
+# custom_nodes/nanfeng_prompt_nodes_v10（南风提示词 / H3 多参生成）运行时依赖：
+# audio_media_api.py 用 soundfile 读写音频；numpy / aiohttp 已由 ComfyUI 自身
+# requirements 提供，这里不重复装（故意不写死，避免与 ComfyUI 版本冲突）。
+soundfile>=0.12.1

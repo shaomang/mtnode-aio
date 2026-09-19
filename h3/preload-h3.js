@@ -24,6 +24,8 @@ const api = {
   freeDisk: () => ipcRenderer.invoke("h3:freeDisk"),
   setCpuVae: (v) => ipcRenderer.invoke("h3:setCpuVae", v),
   setLaunchOpts: (opts) => ipcRenderer.invoke("h3:setLaunchOpts", opts || {}),
+  /* 独立后处理（超分 / 补帧）：与生成解耦，管理窗 / 画布后处理节点单独调用 */
+  postProcess: (params) => ipcRenderer.invoke("h3:postProcess", params || {}),
   wfList: () => ipcRenderer.invoke("h3:wfList"),
   wfImport: (input) => ipcRenderer.invoke("h3:wfImport", input || {}),
   wfDelete: (id) => ipcRenderer.invoke("h3:wfDelete", id),

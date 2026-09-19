@@ -60,7 +60,9 @@ const STR_REPLACE_MUTATING = new Set(['create', 'str_replace', 'insert'])
 /* 画布 / 应用 / 数据库:真正的快照在宿主侧(渲染层持有画布与事实库),插件只登记一条
    占位,让账本能显式说出「这一轮动过画布/数据库」。只读调用连占位都不发。 */
 const CANVAS_TOOLS = new Set(['mtnode_canvas_edit', 'mtnode_app'])
-const APP_READ_ONLY_ACTIONS = new Set(['', 'status', 'list_workflows', 'select_nodes', 'list_dsh_plugins', 'undo', 'redo'])
+/* get_longtask 只读现况（「任务链修改」的第一步），不记占位；update_longtask 是写操作，
+   故意不在名单里 —— 与建图那只动作同口径，由宿主按改动登记。 */
+const APP_READ_ONLY_ACTIONS = new Set(['', 'status', 'list_workflows', 'select_nodes', 'list_dsh_plugins', 'undo', 'redo', 'get_longtask'])
 const DB_TOOL = 'mtnode_db'
 const DB_READ_ONLY_ACTIONS = new Set(['', 'list', 'query', 'get', 'calc'])
 /* 命令类工具:文件改动不可捕获,只累计次数。 */

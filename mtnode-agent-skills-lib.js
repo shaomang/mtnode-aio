@@ -9,6 +9,7 @@ const CATEGORY_TITLES = {
   mtnode: "MTNode 产品与画布",
   plugins: "插件与后端",
   canvas: "画布工作流模板",
+  music: "音乐生成（MiniMax Music）",
 };
 
 function bundledRoot(appRoot) {
@@ -28,7 +29,7 @@ function readJson(p, fb) {
 }
 
 function parseSkillMeta(text) {
-  const meta = { name: "", title: "", description: "", version: "" };
+  const meta = { name: "", title: "", description: "", version: "", menu: "" };
   /* 先归一换行：SKILL.md 若被 Windows 编辑器存成 CRLF，行尾的 \r 会让
      /^key:\s*(.*)$/ 里的 `.` 吃不掉它（`.` 不匹配 \r），整行匹配失败 →
      front matter 全部读空 → name 退回目录名（如 dev-architect 而不是
@@ -48,6 +49,9 @@ function parseSkillMeta(text) {
       if (k === "title") meta.title = v;
       if (k === "description") meta.description = v;
       if (k === "version") meta.version = v;
+      /* menu: user —— 这条内置技能要在用户的技能列表 / 「/」菜单里出现（标「内置」只读），
+         缺省不写 = 纯内部纪律技能，只进内置索引，不进用户技能清单。 */
+      if (k === "menu") meta.menu = v;
     }
   }
   if (!meta.title) {
@@ -117,6 +121,9 @@ function buildIndexFromTree(root) {
       path: rel,
       version: String(meta.version || "").slice(0, 32),
     };
+    /* front matter 写了 menu: user → 这条内置技能同时进用户的技能清单（标「内置」、只读、
+       不可卸载 / 覆盖），「/」菜单与助手技能菜单都点得到；缺省 = 只进内置索引给模型看。 */
+    if (meta.menu === "user") entry.menu = "user";
     if (!byCategory.has(category)) {
       byCategory.set(category, {
         id: category,
@@ -149,7 +156,7 @@ function renderIndexMd(index) {
     "以下条目仅含摘要。**不要**一次性读取全部 SKILL.md。",
     "",
     "调取方式（任选其一）：",
-    "1. `skill` 工具：`skill` 参数为下表 `name`（已注册到 DSH_HOME/skills，带 `.mtnode-internal` 标记）。",
+    "1. `skill` 工具：`skill` 参数为下表 `name`（已注册到 DSH_HOME/skills：front matter 无 `menu` 的带 `.mtnode-internal` 标记，只在内置索引里对模型可见；写了 `menu: user` 的带 `.builtin` 标记，同时出现在用户技能清单与「/」菜单里，标「内置」只读）。",
     "2. `read` 工具：路径 `$DSH_HOME/mtnode-agent-skills/<path>`。",
     "",
   ];
@@ -232,19 +239,36 @@ function syncMtnodeAgentSkills(dshHome, appRoot) {
     if (!fs.existsSync(skillSrcDir)) continue;
     rmDirSafe(skillDestDir);
     copyDir(skillSrcDir, skillDestDir);
-    fs.writeFileSync(path.join(skillDestDir, ".mtnode-internal"), "1\n", "utf8");
+    /* 两种标记，二选一：
+       - menu: user（如 minimax-music-prompt / -lyrics）→ 写 .builtin（+ .mtnode-builtin
+         作为「这条归内置库管」的出处标记）。这类技能随包内置、替代原先从创意工坊下载的那份，
+         要照常出现在用户技能清单与「/」菜单里，并被宿主按「内置」保护（不可覆盖 / 不可卸载）。
+       - 其余（画布规范 / 开发架构等产品内部纪律）→ 写 .mtnode-internal，skillList 不展示。
+       两边都清掉另一套标记，改 front matter 的 menu 后不必删 dsh-home 也能收敛。 */
+    const visible = sk.menu === "user";
     try {
-      const builtin = path.join(skillDestDir, ".builtin");
-      if (fs.existsSync(builtin)) fs.unlinkSync(builtin);
+      fs.rmSync(path.join(skillDestDir, visible ? ".mtnode-internal" : ".builtin"), { force: true });
+      fs.writeFileSync(
+        path.join(skillDestDir, visible ? ".builtin" : ".mtnode-internal"),
+        "1\n",
+        "utf8",
+      );
+      if (visible) fs.writeFileSync(path.join(skillDestDir, ".mtnode-builtin"), "1\n", "utf8");
+      else fs.rmSync(path.join(skillDestDir, ".mtnode-builtin"), { force: true });
     } catch {}
   }
-  /* 清理已从内置库移除的技能：只删带 .mtnode-internal 标记的目录，用户自建技能不动 */
+  /* 清理已从内置库移除的技能：只删带本机内置标记（.mtnode-internal / .mtnode-builtin）的目录，
+     用户自建技能与工坊下载的技能一律不动 */
   try {
     for (const ent of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
       if (!ent.isDirectory()) continue;
       if (keepNames.has(ent.name)) continue;
       const dir = path.join(skillsRoot, ent.name);
-      if (fs.existsSync(path.join(dir, ".mtnode-internal"))) rmDirSafe(dir);
+      if (
+        fs.existsSync(path.join(dir, ".mtnode-internal")) ||
+        fs.existsSync(path.join(dir, ".mtnode-builtin"))
+      )
+        rmDirSafe(dir);
     }
   } catch {}
   const indexMd = fs.existsSync(path.join(dest, "INDEX.md"))

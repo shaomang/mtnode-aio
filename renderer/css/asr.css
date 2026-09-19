@@ -1,0 +1,181 @@
+/* 本地语音转写（Qwen3-ASR）样式 —— renderer/app-asr.js 专用
+   节点内转写区块（.n-asr-*）+ 安装/状态弹窗（.asr-*）；亮色覆盖在末尾。 */
+
+/* ---- 节点 body 尾部：音频转写区块 ---- */
+.n-asr {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.n-asr-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+.n-asr-lab {
+  font-weight: 600;
+}
+.n-asr-state {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(126, 231, 135, 0.16);
+  color: #7ee787;
+  font-size: 10px;
+}
+.n-asr-state.err {
+  background: rgba(255, 123, 114, 0.16);
+  color: #ff7b72;
+}
+.n-asr-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.n-asr-title {
+  font-size: 11px;
+  opacity: 0.78;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.n-asr .n-asr-text {
+  min-height: 56px;
+  font-size: 12px;
+}
+.n-asr-hot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+.n-asr-hot-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  color: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+/* ---- 安装 / 状态弹窗 ---- */
+.asr-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.asr-kv-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.asr-kv-k {
+  flex: 0 0 96px;
+  opacity: 0.7;
+}
+.asr-kv-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asr-kv-row.err .asr-kv-v {
+  color: #ff7b72;
+}
+.asr-warn {
+  border-left: 3px solid #d29922;
+  padding-left: 8px;
+}
+.asr-prog {
+  margin: 10px 0;
+}
+.asr-prog-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.asr-prog-bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #58a6ff;
+  transition: width 0.3s ease;
+}
+.asr-prog-msg {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.8;
+  word-break: break-all;
+}
+.asr-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+  font-size: 12px;
+}
+.asr-set-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.asr-set-row > span {
+  flex: 0 0 210px;
+  opacity: 0.8;
+}
+.asr-set-row > input[type="text"],
+.asr-set-row > input[type="number"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  color: inherit;
+  padding: 3px 6px;
+}
+.asr-set-row > input[type="checkbox"] {
+  flex: 0 0 auto;
+}
+.asr-log {
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---- 亮色主题覆盖 ---- */
+body.theme-light .n-asr {
+  border-top-color: rgba(0, 0, 0, 0.14);
+}
+body.theme-light .n-asr-hot-input,
+body.theme-light .asr-set-row > input[type="text"],
+body.theme-light .asr-set-row > input[type="number"] {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.18);
+}
+body.theme-light .asr-prog-bar {
+  background: rgba(0, 0, 0, 0.1);
+}
+body.theme-light .asr-log {
+  background: rgba(0, 0, 0, 0.05);
+}

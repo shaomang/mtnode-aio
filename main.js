@@ -35,6 +35,8 @@ const procHost = require("./main-proc-host.js");
 /* 函数节点运行时：一次运行 = 一个 worker 线程 + 一个 runId
    （用户 JS 不再在渲染进程主线程同步执行 —— 修复「跑函数节点把 MTNode 锁死」） */
 const { createFnRuntime } = require("./fn-runtime.js");
+/* 桌面 / 窗口截图（函数节点的 mtnode.screenShot 走它；拍完落盘在数据目录下 captures/） */
+const { createDesktopCapture } = require("./desktop-capture.js");
 const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
@@ -57,24 +59,36 @@ const {
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require("./plugins/main-app-plugins.js");
 const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
+/* 本地音乐生成后端（YuE2）：与 Music3 同族，后端单例独立于 MTNode 生命周期 */
+const { registerYueIpc, shutdownYueUiOnly } = require("./yue/main-yue.js");
 const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
 const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lock.js");
+/* 插件报错总线：各本地后端宿主的失败统一上报；init 推弹窗 + 会话修复，resetDebounce 供修复回执清窗（见 plugin-error-repair.js） */
+const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
 /* 本地语音转写（Qwen3-ASR）：唯一一个「随 MTNode 退出而结束」的本地后端 */
 const { registerAsrIpc, shutdownAsr } = require("./asr/main-asr.js");
+/* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：标准库 HTTP 服务，后端单例独立于 MTNode 生命周期 */
+const { registerSensenovaIpc, shutdownSensenovaUiOnly } = require("./sensenova/main-sensenova.js");
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
 const { registerRollbackIpc } = require("./rollback-store.js");
 const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
+/* 长周期任务系统：运行态 checkpoint / 交付目录 / 长期记忆（SQLite+FTS5），全在数据目录 */
+const { registerLongtaskIpc } = require("./longtask-store.js");
 /* 本机微信 PC 版检测 / 启动：纯主进程、零新依赖，不做注入与本地数据读取 */
 const wechatPc = require("./wechat-pc.js");
 let dshAdapter = null;
 function dshConfig() {
-  const cfg = readJson(join(DATA(), "config.json"), {});
+  /* 只为取 cfg.dsh 下 6 个标量，原本却把整份 config.json（实测几十 MB，91% 是
+     agentSessions 转写）读进来 parse 一遍。改走与 config:load 同一份缓存：
+     启动链上 dsh:config / config:load / localeFromDisk 三次全量读合并成一次。 */
+  const c = loadConfigText(join(DATA(), "config.json"));
+  const cfg = (c && c.obj) || {};
   const d = cfg.dsh || {};
   return {
     enabled: d.enabled !== false,
@@ -112,6 +126,10 @@ function dsh() {
           if (typeof onMusic3DshEvent === "function") onMusic3DshEvent(ev);
         } catch {}
         try {
+          const { onYueDshEvent } = require("./yue/main-yue.js");
+          if (typeof onYueDshEvent === "function") onYueDshEvent(ev);
+        } catch {}
+        try {
           const { onLlamaDshEvent } = require("./llama/main-llama.js");
           if (typeof onLlamaDshEvent === "function") onLlamaDshEvent(ev);
         } catch {}
@@ -122,6 +140,10 @@ function dsh() {
         try {
           const { onAsrDshEvent } = require("./asr/main-asr.js");
           if (typeof onAsrDshEvent === "function") onAsrDshEvent(ev);
+        } catch {}
+        try {
+          const { onSensenovaDshEvent } = require("./sensenova/main-sensenova.js");
+          if (typeof onSensenovaDshEvent === "function") onSensenovaDshEvent(ev);
         } catch {}
       },
     });
@@ -173,7 +195,9 @@ function applyMainLocale(l) {
 }
 function localeFromDisk() {
   try {
-    const cfg = readJson(join(DATA(), "config.json"), {});
+    /* 同 dshConfig：小文件走缓存，避免启动链上为一个小字段整份读 + parse 几十 MB */
+    const c = loadConfigText(join(DATA(), "config.json"));
+    const cfg = (c && c.obj) || {};
     return cfg && cfg.locale === "en" ? "en" : "zh";
   } catch {
     return "zh";
@@ -220,6 +244,79 @@ function writeJson(p, v) {
   fs.renameSync(tmp, p);
 }
 
+/* ── config.json 的读取缓存 + 「内容没变就不落盘」（性能，不改语义）────────────
+   config.json 是「一切设置 + agentSessions 全量转写」的单一文件：本机实测 57.8 MB，
+   其中 91% 是 agentSessions。一次 config:save 原本要走「copyFileSync 整份备份 +
+   读整份 + JSON.parse 整份 + JSON.stringify 整份 + 写整份」≈ 5 趟全量 I/O，全在
+   主进程（它同时还在服务别的 IPC 与 dsh stdio）；启动链上 localeFromDisk /
+   dsh:config / config:load 又把同一份文件整读 + parse 了 3 次。
+
+   两档处理，都不改变任何返回值与落盘字节：
+   · 小文件（≤ CFG_CACHE_MAX_BYTES）：按 (mtimeMs, size) 记住「我们上一次写进去的那一份」
+     的对象与文本 → 后续读全盘命中，合并时不再读盘 + parse，写前还能直接比对新旧文本。
+   · 超大文件：不常驻（一份 55 MB 的 config 常驻 = 文本 ~101 MB + 对象图 ~83 MB 堆，
+     拿内存换 CPU 不划算），但仍在这一次调用里读到文本并比对：**无变化的保存**
+     不再 copyFileSync 一份几十 MB 的备份、也不再重写（同仓 config-providers.js
+     的 `if (changed) { backup; write }` 早就是这个口径）。
+
+   失效口径与渲染层 app-search.js 的 GS.wfCache 同一套（stat 变了就重读）：任何别的
+   写入方（config-providers 的 patchProviders / 启动迁移 / 用户手工恢复备份）都会动
+   mtime 或 size 而命中重读，坏档 / 读不到一律返回 null 交给调用方按旧路径兜底。 */
+const CFG_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+let cfgCache = null; /* { mtimeMs, size, obj, text } | null */
+function statOf(p) {
+  try {
+    return fs.statSync(p);
+  } catch {
+    return null;
+  }
+}
+function parseConfigText(p) {
+  let text = "";
+  try {
+    text = fs.readFileSync(p, "utf8");
+  } catch {
+    return null;
+  }
+  let obj = null;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    return null; /* 坏档：交给调用方按 readJson 的兜底口径处理，且绝不入缓存 */
+  }
+  if (obj === null || typeof obj !== "object") return null;
+  return { obj, text };
+}
+function readConfigCached(p) {
+  const st = statOf(p);
+  if (!st) return null;
+  if (st.size > CFG_CACHE_MAX_BYTES) {
+    cfgCache = null; /* 超大档不值得常驻：顺手丢掉旧缓存，别让它占着内存 */
+    return null;
+  }
+  if (cfgCache && cfgCache.mtimeMs === st.mtimeMs && cfgCache.size === st.size) {
+    return cfgCache;
+  }
+  const got = parseConfigText(p);
+  if (!got) return null;
+  cfgCache = { mtimeMs: st.mtimeMs, size: st.size, obj: got.obj, text: got.text };
+  return cfgCache;
+}
+/* 「这一次要用的对象 + 对应文本」：小文件走常驻缓存，大文件只在这一趟里读，不留存。 */
+function loadConfigText(p) {
+  const c = readConfigCached(p);
+  if (c) return c;
+  const got = parseConfigText(p);
+  return got ? { obj: got.obj, text: got.text } : null;
+}
+function rememberConfigWritten(p, obj, text) {
+  const st = statOf(p);
+  cfgCache =
+    st && st.size <= CFG_CACHE_MAX_BYTES
+      ? { mtimeMs: st.mtimeMs, size: st.size, obj, text }
+      : null;
+}
+
 function backupConfigFile(configPath) {
   try {
     if (!fs.existsSync(configPath)) return;
@@ -247,6 +344,22 @@ const assetDirPath = (wfId) => join(DATA(), "assets", String(wfId));
 const assetDir = (wfId) => mk(assetDirPath(wfId));
 /* 误删画布的回收站：save/<id>.json + assets/<id> 整体搬进 trash/<时间戳>__<id>/ */
 const TRASH_DIR = () => join(DATA(), "trash");
+
+/* ── 桌面 / 窗口截图：函数节点 mtnode.screenShot 的落盘位置 ──────────
+   与画布资产同根（数据目录下），用户升级 / 卸载不会带走；
+   截图目录单独一份 captures/，便于「找那批截图」而不用在画布资产里翻。 */
+const CAPTURE_DIR = () => join(DATA(), "captures");
+function desktopCaptureOf() {
+  return createDesktopCapture({
+    outDir: mk(CAPTURE_DIR()),
+    platform: process.platform,
+  });
+}
+let _desktopCapture = null;
+function desktopCapture() {
+  if (!_desktopCapture) _desktopCapture = desktopCaptureOf();
+  return _desktopCapture;
+}
 
 /* ── 画布备份：每 5 分钟把 save/ 里各工作流 JSON 快照到独立的 save-backups/ 文件夹 ──
    与自动保存链路完全解耦：只做只读复制，绝不写 save/。copyFileSync 保留源文件
@@ -491,40 +604,47 @@ ipcMain.handle("i18n:setLocale", (e, locale) => {
 });
 
 ipcMain.handle("config:load", () =>
-  readJson(join(DATA(), "config.json"), {
-    version: 1,
-    snap: 24,
-    activeWorkflowId: "default",
-    providers: [
-      {
-        id: "deepseek",
-        name: "DeepSeek",
-        type: "text_openai",
-        baseUrl: "https://api.deepseek.com",
-        apiKey: "",
-        models: [
-          "deepseek-v4-flash",
-          "deepseek-v4-pro",
-          "deepseek-v4-flash-vision-exp",
-        ],
-        vision: false,
-      },
-      {
-        id: "gpt_image_2",
-        name: "GPT Image 2",
-        type: "image_openai",
-        baseUrl: "",
-        apiKey: "",
-        models: ["gpt-image-2-vip"],
-      },
-    ],
-  }),
+  (() => {
+    const fp = join(DATA(), "config.json");
+    /* 命中缓存 = 直接交出与磁盘上那一份同源的对象（IPC 会克隆给渲染层，不共享引用）；
+       未命中（首次 / 文件被别处改过 / 坏档）行为与原来的 readJson 逐字一致。 */
+    const c = loadConfigText(fp);
+    if (c) return c.obj;
+    return readJson(fp, {
+      version: 1,
+      snap: 24,
+      activeWorkflowId: "default",
+      providers: [
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          type: "text_openai",
+          baseUrl: "https://api.deepseek.com",
+          apiKey: "",
+          models: [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash-vision-exp",
+          ],
+          vision: false,
+        },
+        {
+          id: "gpt_image_2",
+          name: "GPT Image 2",
+          type: "image_openai",
+          baseUrl: "",
+          apiKey: "",
+          models: ["gpt-image-2-vip"],
+        },
+      ],
+    });
+  })(),
 );
 ipcMain.handle("config:save", (e, cfg) => {
   const fp = join(DATA(), "config.json");
-  backupConfigFile(fp);
-  const existing = readJson(fp, {}) || {};
   const incoming = cfg || {};
+  const c = loadConfigText(fp);
+  const existing = (c && c.obj) || {};
   const next = Object.assign({}, existing, incoming);
   if (Array.isArray(incoming.providers)) {
     const managed = (existing.providers || []).filter(
@@ -542,7 +662,20 @@ ipcMain.handle("config:save", (e, cfg) => {
     }
     next.providers = saved;
   }
-  writeJson(fp, next);
+  const text = JSON.stringify(next, null, 2);
+  /* 与同仓 config-providers.js 的 `if (changed) { backup; write }` 同一口径：
+     落盘字节逐字没变（这类「事件顺手存一下 config」的调用不少）就一次磁盘都不碰 ——
+     再复制一份与现网完全相同的几十 MB 快照没有任何恢复价值，只把 config-backups
+     撑成 GB（本机实测 30 份 = 1.65 GB）。文件读不到 / 坏档时 c 为空，被别处改过时
+     读到的就是那一份新内容、比对必然不等：两种情况都照旧备份 + 落盘。 */
+  if (!(c && c.text === text)) {
+    backupConfigFile(fp);
+    mk(path.dirname(fp));
+    const tmp = fp + ".tmp" + process.pid;
+    fs.writeFileSync(tmp, text, "utf8");
+    fs.renameSync(tmp, fp);
+    rememberConfigWritten(fp, next, text);
+  }
   if (next && (next.locale === "en" || next.locale === "zh")) applyMainLocale(next.locale);
   return { ok: true };
 });
@@ -550,31 +683,74 @@ ipcMain.handle("config:patchProviders", (e, opts) =>
   patchProviders(join(DATA(), "config.json"), opts || {}),
 );
 
+/* save/<id>.json 的「列表元数据」缓存：workflow:list 只需要 id / name / 节点数三个字段，
+   原本每次调用都把每张画布整读 + JSON.parse 一遍（本机实测 32 张 / 6.3 MB，最大一张
+   2.3 MB → 一次 29 ms）。渲染层切画布、左栏刷新、全局搜索、团队视图、跨画布定位都要调
+   它（18 处），是点一下就卡一次的主进程热路径。
+   失效口径同渲染层 app-search.js 的 GS.wfCache：按 (size, mtimeMs) 判定，stat 变了就重读
+   那一个文件；stat 拿不到（文件正被删）时行为与旧的 readJson 兜底完全一致。
+   返回结构、排序、mtime 取值都逐字不变（已用真实数据比对过输出字节）。 */
+const wfListMeta = new Map(); /* 绝对路径 -> { size, mtimeMs, id, name, nodes } */
+function wfListEntry(p, fname) {
+  let st = null;
+  try {
+    st = fs.statSync(p);
+  } catch {}
+  const hit = wfListMeta.get(p);
+  if (st && hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) {
+    return { id: hit.id, name: hit.name, mtime: st.mtimeMs, nodes: hit.nodes };
+  }
+  const j = st ? readJson(p, {}) : {};
+  const id = j.id || fname.slice(0, -5);
+  const out = { id, name: j.name || id, mtime: st ? st.mtimeMs : 0, nodes: (j.nodes || []).length };
+  if (st) wfListMeta.set(p, { size: st.size, mtimeMs: st.mtimeMs, id: out.id, name: out.name, nodes: out.nodes });
+  else wfListMeta.delete(p);
+  return out;
+}
 ipcMain.handle("workflow:list", () => {
   const d = mk(join(DATA(), "save"));
-  return fs
+  const alive = new Set();
+  const rows = fs
     .readdirSync(d)
     .filter((f) => f.endsWith(".json"))
     .map((f) => {
-      const j = readJson(join(d, f), {});
-      const id = j.id || f.slice(0, -5);
-      let mtime = 0;
-      try {
-        mtime = fs.statSync(join(d, f)).mtimeMs;
-      } catch {}
-      return { id, name: j.name || id, mtime, nodes: (j.nodes || []).length };
+      const p = join(d, f);
+      alive.add(p);
+      return wfListEntry(p, f);
     })
     .sort((a, b) => b.mtime - a.mtime);
+  /* 画布被删 / 改名后不留废条目：顺手摘掉已经不在这目录里的键 */
+  for (const p of wfListMeta.keys()) if (!alive.has(p)) wfListMeta.delete(p);
+  return rows;
 });
 ipcMain.handle("workflow:load", (e, id) => {
   if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
   const j = readJson(wfPath(id));
   return j ? { ok: true, data: j } : { ok: false, error: I18n.t("工作流不存在") };
 });
+function writeWorkflowJson(p, obj) {
+  writeJson(p, obj);
+  return { ok: true, mtime: Date.now() };
+}
 ipcMain.handle("workflow:save", (e, { id, data }) => {
   if (!wfIdOk(id)) return { ok: false, error: I18n.t("非法工作流 id") };
-  writeJson(wfPath(id), data);
-  return { ok: true, mtime: Date.now() };
+  /* data 允许是「渲染层已经 JSON.stringify 过的字符串」：persist / persistWf /
+     flushCurrentWf 原本为了剥掉 Promise / 函数这类不可克隆字段，先做一遍
+     JSON.parse(JSON.stringify(wf)) —— 那是在 **UI 线程**上对整张画布（大画布实测
+     几 MB）多跑一趟 parse，之后 IPC 还要再把整棵对象树克隆一次。现在只 stringify
+     一次并以字符串过桥：落盘字节完全不变（仍是 writeJson 的 2 空格缩进格式），
+     省掉的是渲染线程上的 parse + 对象图克隆。旧式直接传对象的调用
+     （smoke.js、新建 / 重命名画布等）行为一字不变，仍按原路 writeJson。 */
+  if (typeof data === "string") {
+    let obj = null;
+    try {
+      obj = JSON.parse(data);
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+    return writeWorkflowJson(wfPath(id), obj);
+  }
+  return writeWorkflowJson(wfPath(id), data);
 });
 /* target 是否严格位于 parentDir 之下（parentDir 本身算越界）。
    一律用 path.resolve 后的绝对路径比较，防 .. / 大小写别名绕过。 */
@@ -1131,7 +1307,9 @@ ipcMain.handle("net:open-debug", (e, o = {}) => {
 /* ---------------- IPC：资产 / 文件 ---------------- */
 
 /* 参考图输入落盘 / 导入上限：长宽任一超过 1080px 时等比缩小（仅 asset:copy、画布包导入等参考用途）。
-   生成输出走 asset:writeBase64，保持 API 返回的原尺寸。 */
+   生成输出走 asset:writeBase64，保持 API 返回的原尺寸。
+   asset:copy 带 native=true 时**原样复制**（不改尺寸、不重编码）—— 泛用「文件节点」载入图像
+   走的就是这一档：把用户给的文件按原样收下，节点上看到的就是原图的真实像素尺寸。 */
 const REF_IMAGE_MAX_DIM = 1080;
 /* 发往 API 的参考图（vision / 图生图 edits）同样上限 1080p */
 const API_REF_IMAGE_MAX_DIM = 1080;
@@ -1184,14 +1362,17 @@ function assetOutExt(srcExt, outExt) {
   return "." + o;
 }
 
-ipcMain.handle("asset:copy", (e, { srcPath, wfId, name }) => {
+ipcMain.handle("asset:copy", (e, { srcPath, wfId, name, native }) => {
   const src = String(srcPath || "");
   if (!src || !fs.existsSync(src)) {
     throw new Error("文件不存在: " + src);
   }
   const srcExt = path.extname(src).toLowerCase().replace(/^\./, "") || "png";
   const raw = fs.readFileSync(src);
-  const { buf, ext } = shrinkImageBuffer(raw, srcExt, REF_IMAGE_MAX_DIM);
+  /* native=true：整份字节原样落盘（尺寸 / 像素 / 编码都不动）；缺省仍按参考图上限缩到 1080 */
+  const { buf, ext } = native
+    ? { buf: raw, ext: srcExt }
+    : shrinkImageBuffer(raw, srcExt, REF_IMAGE_MAX_DIM);
   const dest = join(
     assetDir(wfId),
     String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, ext),
@@ -1296,6 +1477,19 @@ ipcMain.handle("view:captureRect", async (e, rect) => {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
+/* ── 桌面 / 窗口截图（renderer/app-desktop-capture.js 的宿主；函数节点桥见 fnScreenCapture）──
+   :list 列屏幕 / 列窗口（只读，给用户挑「拍哪个」），:shot 拍一张 PNG 落盘并回路径。 */
+ipcMain.handle("desktop:list", async (e, arg) => {
+  const what = String((arg && arg.what) || "screens");
+  const cap = desktopCapture();
+  try {
+    if (what === "windows") return await cap.listWindows();
+    return await cap.listScreens();
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+ipcMain.handle("desktop:shot", async (e, params) => fnScreenCapture("capture", params || {}));
 ipcMain.handle("file:copyAssetTo", (e, { assetPath, destPath }) => {
   mk(path.dirname(destPath));
   fs.copyFileSync(assetPath, destPath);
@@ -2443,6 +2637,9 @@ function fnRuntimeOf() {
          （provider 是渲染层按节点「AI 调用」选定路由解析出的服务商配置，
           含 baseUrl / apiKey / type；调用级显式传的 provider / model 只覆盖这一次）。 */
       aiCall: (spec) => fnAiCall(spec),
+      /* 函数节点的桌面截图后端：mtnode.screenShot(...) / screenList() / windowList()
+         走这里（worker 线程没有任何 Electron 能力）。拍完 PNG 已落盘，回路径即可当图像值。 */
+      screenCapture: (action, params) => fnScreenCapture(action, params),
     });
   return fnRuntime;
 }
@@ -2500,6 +2697,21 @@ async function fnAiCall(spec) {
     out.ok = false;
     out.error = (err && err.message) || String(err);
     return out;
+  }
+}
+/* 函数节点 jscode 里 mtnode.screenShot / screenList / windowList 的执行体（桌面截图）。
+   action：capture 拍一张（落盘返回路径）· screens 列屏幕 · windows 列窗口。
+   失败一律 { ok:false, error }（不抛），与 mtnode.ai 同一口径 —— 用户代码自己决定要不要 throw。 */
+async function fnScreenCapture(action, params) {
+  const act = String(action || "").trim();
+  try {
+    const cap = desktopCapture();
+    if (act === "screens") return await cap.listScreens();
+    if (act === "windows") return await cap.listWindows();
+    if (act === "capture") return await cap.capture(params || {});
+    return { ok: false, error: I18n.t("未知的桌面截图动作：") + (act || "(空)") };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
   }
 }
 ipcMain.handle("fn:run", async (e, o = {}) => {
@@ -3088,6 +3300,7 @@ function appDirDataCandidates() {
       ["讨论区缓存 forum", "forum"],
       ["工坊缓存 store-cache", "store-cache"],
       ["工作流 workflows", "workflows"],
+      ["长周期任务 longtask", "longtask"],
       ["dsh 工作区 dsh-workspace", "dsh-workspace"],
       ["运行日志 dsh.log", "dsh.log"],
       ["错误日志 error.log", "error.log"],
@@ -5652,6 +5865,22 @@ ipcMain.handle("dsh:cancel", (event, params) => dsh().cancel(params));
 
 ipcMain.handle("dsh:interact", (event, params) => dsh().interact(params));
 
+/* 运行中插话 / 暂停（dshSteer / dshPause → 网关 steer / pause）。
+   params = { reqId | cancelTag, sessionId?, text?|contentBlocks?(仅插话) }。
+   两条都是「趁本轮还在跑」的实时操作：任何异常一律 resolve 成 {ok:false,error}，
+   不 reject —— 渲染层拿到失败就当普通错误，不该在控制台里炸出 unhandled rejection。 */
+ipcMain.handle("dsh:steer", (event, params) =>
+  dsh()
+    .steer(params)
+    .catch((e) => ({ ok: false, error: e.message || String(e) }))
+);
+
+ipcMain.handle("dsh:pause", (event, params) =>
+  dsh()
+    .pause(params)
+    .catch((e) => ({ ok: false, error: e.message || String(e) }))
+);
+
 /* 回滚收尾：向网关取回本轮 done 之后才到达的 journal 帧（渲染层封口前调一次）。
    老版网关没有这个 method 时按错误返回，渲染层降级为「只靠事件推」。 */
 ipcMain.handle("dsh:rollbackDrain", (event, params) =>
@@ -5730,7 +5959,9 @@ ipcMain.handle("forum:close", (e) => {
 });
 ipcMain.handle("forum:getAuth", () => {
   /* 登录态统一来自 auth-store（与顶栏 / 商店同源）；config.storeAuth 已废弃。 */
-  const cfg = readJson(join(DATA(), "config.json"), {}) || {};
+  /* 只为拿一个 locale 字段，没必要再整份读 + parse 几十 MB：走 config 缓存 */
+  const c = loadConfigText(join(DATA(), "config.json"));
+  const cfg = (c && c.obj) || {};
   const st = authStore.state();
   return {
     ok: true,
@@ -5893,6 +6124,63 @@ ipcMain.handle("forum:pickImage", async (e) => {
   }
 });
 
+/* ---------------- 插件报错 → 弹窗确认 → 可见会话自动修复：渲染层回执（消费方 renderer/app-repair.js） ---------------- */
+/* 报错总线只负责把错误推成弹窗（pluginRepair:error），「修没修好」只有渲染层那条新建的会话知道，
+   于是收尾两条回执都落在这里：
+   · `pluginRepair:report` —— 用户在那只窗里点了什么（shown / accepted / ignored / console / fail），
+     一律落主日志（error.log），事后能按插件复盘「报错 → 弹窗 → 修没修」整条链；
+   · `pluginRepair:result` —— 那轮修复会话的结论：判成真修好了才清掉该插件该错误码的去抖窗口
+     （同类错误再犯要能重新弹报告，而不是被 60s 窗口吞掉），并把「修完了」广播给所有还开着的窗
+     （主窗的插件卡片由 app-repair.js 自己刷，`pluginRepair:done` 是给各插件控制台窗预留的通知，
+     谁订阅谁刷、没人订阅也无副作用）。
+   两条都只回 { ok }，异常一律不外抛 —— 渲染层本来就吞异常，主进程更不该成为新的报错源。 */
+ipcMain.handle("pluginRepair:report", async (e, payload) => {
+  try {
+    const p = payload && typeof payload === "object" ? payload : {};
+    errLog(
+      "[plugin-repair] " +
+        String(p.event || "?") +
+        " plugin=" + String(p.pluginId || p.pluginName || "") +
+        " code=" + String(p.code || "") +
+        (p.sessionId ? " session=" + String(p.sessionId) : "") +
+        (p.note ? " note=" + String(p.note).replace(/\r?\n/g, " ").slice(0, 300) : ""),
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle("pluginRepair:result", async (e, payload) => {
+  try {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const pluginId = String(p.pluginId || "");
+    const code = String(p.code || "");
+    const repairOk = !!p.repairOk;
+    errLog(
+      "[plugin-repair] result plugin=" + (pluginId || String(p.pluginName || "")) +
+        " code=" + code +
+        " ok=" + (p.ok !== false ? 1 : 0) +
+        " repairOk=" + (repairOk ? 1 : 0) +
+        " outcome=" + String(p.outcome || "") +
+        (p.restarted ? " restarted=1" : "") +
+        (p.reason ? " reason=" + String(p.reason).replace(/\r?\n/g, " ").slice(0, 300) : ""),
+    );
+    if (repairOk) {
+      try { resetDebounce(pluginId, code); } catch {}
+      const notice = { pluginId, code, repairOk: true, sessionId: String(p.sessionId || ""), at: Date.now() };
+      for (const w of BrowserWindow.getAllWindows()) {
+        try {
+          if (!w.isDestroyed()) w.webContents.send("pluginRepair:done", notice);
+        } catch {}
+      }
+    }
+    return { ok: true, repairOk };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 /* ---------------- 窗口 ---------------- */
 
 app.whenReady().then(() => {
@@ -5975,7 +6263,15 @@ app.whenReady().then(() => {
     getAppVersion: () => app.getVersion(),
   });
   /* Music3 / H3 后端不随 MTNode 退出；此处只注册 IPC / 控制台窗 */
+  /* 报错总线先 init：宿主模块在各自 register 里 registerPluginHost，之后失败即上报主窗 */
+  initPluginErrorBus({ getMainWin: () => mainWin });
   registerMusic3Ipc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+  });
+  registerYueIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
     appRoot: __dirname,
@@ -6012,12 +6308,24 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
+  /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图；后端单例不随 MTNode 退出（见 sensenova/main-sensenova.js） */
+  registerSensenovaIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+    /* 画布节点出图直接落应用资产目录（%APPDATA%\pipeline-console\assets\<wfId>，与 proc_image 同一去处），
+       显式传 outputDir 的插件控制台「试生成」不受影响 */
+    assetDirFor: (wfId) => assetDir(wfId),
+  });
   /* 回滚存储：内容寻址对象 + 轮次账本 + GC（渲染层无 fs，字节读写只走这里） */
   registerRollbackIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 工具库：跨画布可复用工具包（<数据目录>/tools/*.json 完整工具包落盘） */
   registerToolsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 素材库：独立于画布的文本/图像/音频/视频内容仓库（用户指定根目录，见 assets-store.js） */
   registerAssetsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* 长周期任务系统：run checkpoint / 交付目录 / 长期记忆库（见 longtask-store.js） */
+  registerLongtaskIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });
@@ -6037,10 +6345,14 @@ app.on("before-quit", () => {
   try { shutdownPet(); } catch {}
   try { shutdownAppPlugins(); } catch {}
   try { shutdownMusic3UiOnly(); } catch {}
+  try { shutdownYueUiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}
   try { shutdownTtsUiOnly(); } catch {}
   try { shutdownRemotionUiOnly(); } catch {}
+  /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
+     这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */
+  try { shutdownSensenovaUiOnly(); } catch {}
   /* 语音转写后端随 MTNode 退出而结束（与上面几个「故意不杀」的后端不同） */
   try { shutdownAsr(); } catch {}
   if (dshAdapter) {

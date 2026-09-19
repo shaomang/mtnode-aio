@@ -652,6 +652,199 @@ function snapshotPriorSessions(key, c) {
   }
 }
 
+/* ── 本轮在途登记表(reqId → 运行现场) ────────────────────────────────────
+   steer / pause 是「往正在跑的这一轮里插一句话」与「让正在跑的这一轮停下来」:
+   宿主手上只有它自己发 run 时编的 reqId、这一轮的 cancelTag(会话 agent:<id> /
+   节点 id / assist)与权威 sessionId,而网关要下发到运行时,必须拿到**那一台**
+   harness.client。tagToKey / keyToReqId 都以 runtime key 为轴,按 reqId 找现场
+   只能整表扫,故再加一张正向表 —— 与 bridgePending 同族:键 = 网关侧能唯一辨识
+   一次交互 / 一轮的编号,值 = 寻址现场。
+   - runKey:这一轮占用的 runtime(claimRuntime 那一刻才成立,所以登记点就在 claim);
+   - sessionId:对宿主报告的权威 id。claim 时先填网关铸造的 runSession,
+     handleRun 的 emit('session')(含首条 session.event 改判后那次)刷新为权威值 ——
+     下发 session/steer / session/pause 时按它点名会话。
+   生命周期:claimRuntime 建 → handleRun 的 finally 清(与 keyToReqId 同进同退);
+   表里只该有真正在途的轮,整表上限 INFLIGHT_RUNS_MAX,超出丢最早登记的(防泄漏)。 */
+const INFLIGHT_RUNS_MAX = 256
+/** @type {Map<string, {reqId: string, runKey: string, cancelTag: string, sessionId: string, startedAt: number}>} */
+const inFlightRuns = new Map()
+
+/* 暂停 / 插话的下达超时:两条都是「趁轮还在跑」的实时操作,10s 内拿不到回音就说明
+   那台运行时根本不会响应(老运行时没有该方法 / 进程将死 / 卡住),按 unsupported 回
+   宿主,宿主据此把这句插话回落成普通排队消息(超时口径参照 RESUME 握手:同为
+   「运行中的一次同步往返」,但插话是即时操作,不给 30s 的读盘预算)。 */
+const INFLIGHT_REQUEST_TIMEOUT_MS = 10000
+
+/* 网关侧「本轮已被要求暂停」标记:reqId -> {at}。pause **下达之前**就先盖戳
+   (见 handleInflightRequest):运行时收到暂停后往往在同一拍里就把这一轮 abort 收尾,
+   等 request 的 await 回来再标记会漏判;下发失败再摘掉。handleRun 靠它把 aborted
+   收成 done{paused:true},绝不 emit('error') —— 宿主的失败重发闸只看 error 事件,
+   一次「暂停」会被它当成 429 类失败连着连重发 5 次。 */
+const pausedRuns = new Map()
+
+function noteInFlightRun(reqId, info) {
+  const id = String(reqId == null ? '' : reqId).trim()
+  if (!id) return
+  const prev = inFlightRuns.get(id)
+  if (prev) {
+    if (info.runKey != null) prev.runKey = String(info.runKey)
+    if (info.cancelTag != null) prev.cancelTag = tagOf(info.cancelTag)
+    if (info.sessionId) prev.sessionId = String(info.sessionId)
+    return
+  }
+  inFlightRuns.set(id, {
+    reqId: id,
+    runKey: String(info.runKey == null ? '' : info.runKey),
+    cancelTag: tagOf(info.cancelTag),
+    sessionId: String(info.sessionId || ''),
+    startedAt: Date.now(),
+  })
+  while (inFlightRuns.size > INFLIGHT_RUNS_MAX) {
+    const oldest = inFlightRuns.keys().next().value
+    if (oldest === undefined) break
+    inFlightRuns.delete(oldest)
+  }
+}
+
+function clearInFlightRun(reqId) {
+  const id = String(reqId == null ? '' : reqId).trim()
+  if (!id) return
+  inFlightRuns.delete(id)
+  pausedRuns.delete(id)
+}
+
+/* 宿主怎么点名这一轮:reqId 最准(它自己编的);只给 cancelTag 时,同一个标签
+   可能并发跑好几轮(某节点批量并行的视觉描述),再按 sessionId 收窄到其中一轮。
+   与 cancel 同规矩:标签命中多轮时不猜测,整组一起下发(cancel 就是整组一起关)。 */
+function findInFlightRuns(p) {
+  const reqId = String(p.reqId == null ? '' : p.reqId).trim()
+  if (reqId) {
+    const e = inFlightRuns.get(reqId)
+    return e ? [e] : []
+  }
+  const tag = tagOf(p.cancelTag)
+  if (!tag) return []
+  const hits = []
+  for (const e of inFlightRuns.values()) if (e.cancelTag === tag) hits.push(e)
+  const sid = String(p.sessionId == null ? '' : p.sessionId).trim()
+  if (!sid || hits.length < 2) return hits
+  const exact = hits.filter((e) => e.sessionId === sid)
+  return exact.length ? exact : hits
+}
+
+/* unsupported = 宿主一律回落「排队」的口径:没有在途这一轮 / 那台 runtime 已不在池里 /
+   老运行时没有 session/steer|pause / 下达超时。detail 只进日志与回执,不参与判定。 */
+function inFlightUnsupported(detail) {
+  return { ok: false, reason: 'unsupported', detail: String(detail || '').slice(0, 200) }
+}
+
+/* 插话正文:宿主可给 contentBlocks(与 session/prompt 同形),也可只给一句纯文本
+   (text / content / input / message 任一)。两种形状都收下,下发时 contentBlocks
+   与 text 同时带上 —— 运行时侧 session/steer 取哪种都取得到。没有正文就不是插话。 */
+function steerContent(p) {
+  const raw = [p.text, p.content, p.input, p.message].find(
+    (x) => typeof x === 'string' && x.trim(),
+  )
+  const text = typeof raw === 'string' ? raw : ''
+  const blocks = Array.isArray(p.contentBlocks) && p.contentBlocks.length
+    ? p.contentBlocks
+    : (text ? [{ type: 'text', text }] : null)
+  if (!blocks) return null
+  return text ? { contentBlocks: blocks, text } : { contentBlocks: blocks }
+}
+
+/* 把 steer / pause 下发给「正在跑这一轮的那台运行时」。
+   同步往返:harness.client.request(method, {sessionId, …}, 10s)。
+   任何一条送不出去都回 unsupported(宿主回落排队),绝不伪造成功。 */
+async function handleInflightRequest(method, p) {
+  const runs = findInFlightRuns(p)
+  if (!runs.length) {
+    const who = String(p.reqId == null ? '' : p.reqId).trim()
+      ? 'reqId=' + String(p.reqId).trim()
+      : 'cancelTag=' + (tagOf(p.cancelTag) || '(无)')
+    diag(`inflight-none method=${method} ${who}`)
+    return inFlightUnsupported(`no in-flight run for ${who}`)
+  }
+  const isPause = method === 'session/pause'
+  const content = isPause ? null : steerContent(p)
+  if (!isPause && !content) return inFlightUnsupported('missing steer content')
+  const done = []
+  let last = inFlightUnsupported('')
+  for (const run of runs) {
+    const sid = run.sessionId || String(p.sessionId == null ? '' : p.sessionId).trim()
+    const entry = run.runKey ? runtimes.get(run.runKey) : null
+    if (!sid) {
+      last = inFlightUnsupported(`no sessionId for reqId=${run.reqId}`)
+      continue
+    }
+    if (!entry) {
+      last = inFlightUnsupported('runtime is not running')
+      continue
+    }
+    /* 暂停:先盖戳再下发(见 pausedRuns 注释);下面任何一条失败路径都摘回去,
+       否则这一轮的真实失败会被 handleRun 误吞成「暂停完成」而丢了报错。 */
+    if (isPause) pausedRuns.set(run.reqId, { at: Date.now() })
+    const undeliverable = (detail) => {
+      if (isPause) pausedRuns.delete(run.reqId)
+      last = inFlightUnsupported(detail)
+    }
+    let harness = null
+    try {
+      harness = await entry.harness
+    } catch (err) {
+      undeliverable(String((err && err.message) || err))
+      continue
+    }
+    const client = harness && harness.client
+    if (!client || typeof client.request !== 'function') {
+      undeliverable('runtime client unavailable')
+      continue
+    }
+    try {
+      const r = await client.request(
+        method,
+        { sessionId: sid, ...(isPause ? {} : content) },
+        INFLIGHT_REQUEST_TIMEOUT_MS,
+      )
+      /* 运行时明确说没接住（ok:false：那台进程里没有这条 live 会话 / 参数不合法）
+         不等于送达。按成功回报的话，宿主会以为这句话已经进了本轮 —— 它既没进模型
+         也没进队列，等于凭空丢掉；所以原样折算成 unsupported 交回宿主回落排队。 */
+      if (r && r.ok === false) {
+        undeliverable(`runtime refused: ${r.reason || "unknown"}`)
+        continue
+      }
+      done.push({ reqId: run.reqId, sessionId: sid })
+      diag(
+        `inflight-ok method=${method} reqId=${run.reqId} sid=${sid} ` +
+        `r=${JSON.stringify(r === undefined ? null : r).slice(0, 120)}`,
+      )
+    } catch (err) {
+      const raw = String((err && err.message) || err)
+      diag(`inflight-fail method=${method} reqId=${run.reqId} sid=${sid} err=${raw.slice(0, 160)}`)
+      /* 超时特例(只影响 pause):请求很可能已经落进运行时、只是 10s 没回音,
+         这时摘掉暂停标记,随后 aborted 收流就会被报成 error → 宿主把它当失败连重发 5 次。
+         宁可多标一次,标记留着(本轮真正常收尾时宿主拿到的仍是完整 finalResponse),
+         回执照样回 unsupported,让宿主回落排队。 */
+      if (isPause && /timed ?out/i.test(raw)) {
+        last = inFlightUnsupported(raw)
+        continue
+      }
+      undeliverable(raw)
+    }
+  }
+  if (!done.length) return last
+  const res = {
+    ok: true,
+    reqId: done[0].reqId,
+    sessionId: done[0].sessionId,
+    reqIds: done.map((d) => d.reqId),
+  }
+  if (isPause) res.paused = true
+  else res.steered = true
+  if (done.length < runs.length) res.failed = runs.length - done.length
+  return res
+}
+
 /* 登记一次运行对 runtime 的占用(同步完成,中间不 await,避免并发 run 抢同一台)。
    sessionId 在登记时就带上:真实轮的 session 由网关铸造(handleRun 的 runSession),
    所以第一帧交互到达前归属判据已经完整,不存在「先放行再补票」的空窗。 */
@@ -669,6 +862,8 @@ function claimRuntime(key, reqId, cancelTag, sessionId) {
       /* 本轮预热轮('ok')的 session,起机预热时补记(见 handleRun);仅用于日志分类 */
       warmSession: '',
     })
+    /* steer / pause 的正向寻址表:reqId -> {runKey, cancelTag, sessionId}(见 inFlightRuns) */
+    noteInFlightRun(reqId, { runKey: key, cancelTag, sessionId })
   }
   const tag = tagOf(cancelTag)
   if (tag) {
@@ -1314,7 +1509,7 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'tool') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
      canvas/db 来自 canvas-plugin/db-plugin、tool 来自 tools-plugin 的 exec agent),
@@ -1454,7 +1649,9 @@ function mapNotification(n, emit, resumeCtx) {
         }
         return
       default:
-        /* 全量透传其余会话事件(permission/preset、approval/* 等) */
+        /* 全量透传其余会话事件(permission/preset、approval/* 等)。
+           steer 的插话回流(再收到一条 agent/inbox/spliced)与 pause 的 aborted 收尾
+           都落在这里:不新增事件名,宿主按 type 自行归类即可。 */
         emit('session-event', { type: ev.type, data: ev.data ?? {} })
         return
     }
@@ -1473,13 +1670,24 @@ async function handleRun(params) {
     resumeSession,
   } = params
   const emitOut = (type, data) => out({ event: { reqId, type, data } })
+  /* 本轮在途登记的键(claimRuntime / emit('session') 按它建,finally 按它清);
+     runPaused() = 宿主是否已对本轮下达 pause —— 暂停后的 aborted 收流不是失败。 */
+  const runIdKey = String(reqId == null ? '' : reqId).trim()
+  const runPaused = () => !!runIdKey && pausedRuns.has(runIdKey)
   /* 失败报文收集:通知流里报过的 error(message,如 turn/end reason error 的 429/5xx)
      与 catch 的 rawMessage 都收进来,finally 收尾时据此给失败轮 runtime 打
      「续跑候选」保活标记(见 markResumeCandidate)。只有 error 事件会写它,
-     其余事件原样透传,语义不变。 */
+     其余事件原样透传,语义不变。
+     唯一的例外是已暂停的这一轮:pause 之后运行时把 turn 以 aborted 收尾,有的实现
+     会把它报成 turn/end reason error —— 绝不能透给宿主(宿主的失败重发闸只看 error,
+     会把一次「暂停」当 429 类失败连重发 5 次,见 pausedRuns),就地吞掉并留一行日志。 */
   let runErrorMsg = ''
   const emit = (type, data) => {
     if (type === 'error' && data && typeof data.message === 'string' && data.message) {
+      if (runPaused()) {
+        diag(`pause-swallow-error reqId=${runIdKey} msg=${data.message.slice(0, 120)}`)
+        return undefined
+      }
       runErrorMsg = data.message
     }
     return emitOut(type, data)
@@ -1623,6 +1831,8 @@ async function handleRun(params) {
        起真实轮之前、而不是等 done 才说;resumed 表示这是沿用上一轮的旧会话。
        运行时若自行另铸 id(版本漂移),首条 session.event 改判权威 id 时会再 emit 一次。 */
     emit('session', { sessionId: sessionOut, resumed })
+    /* 权威 id 同步进在途表:steer / pause 下发给运行时要按它点名会话(见 inFlightRuns) */
+    noteInFlightRun(reqId, { sessionId: sessionOut })
     /* 引擎还在起机时用户就按了 ■：占到位后立刻自毁，不白烧一轮 token */
     if (takeCancelWanted(runTag)) {
       await closeRuntimeByKey(runKey)
@@ -1817,6 +2027,8 @@ async function handleRun(params) {
             if (rebound && rebound !== sessionOut) {
               sessionOut = rebound
               emit('session', { sessionId: rebound, resumed })
+              /* 改判后的权威 id 同样回填在途表,steer / pause 才不会点到没人用的旧 id */
+              noteInFlightRun(reqId, { sessionId: rebound })
             }
           }
         }
@@ -1915,23 +2127,68 @@ async function handleRun(params) {
             if (d && d.model) curModel = String(d.model)
             break
           default:
+            /* 其余事件(含 steer 的插话回流:agent/inbox/spliced / steering 相关、
+               pause 的 turn/end reason aborted)一律不记账:token 只在上面的 usage 增量块
+               累计、jobs 只数 job/*started —— 插话只是往同一棵树里多塞一条用户消息,
+               它自己的用量会在所属那次调用的 usage 里正常出现,不会双计也不会漏账。 */
             if (ev.type.startsWith('job/') && ev.type.endsWith('started')) stats.jobs++
         }
       },
     })
+    /* 暂停收尾:pause 之后运行时让本轮以 aborted 收流,harness.run 照常 resolve
+       (只是再等不到新的 assistant 增量)。宿主据此把界面从「跑着」切回「已暂停」,
+       并且因为**没有 error 事件**,重发闸不会触发。 */
+    const pausedFinish = runPaused()
     emit('done', {
       finalResponse: result.finalResponse,
       metrics: buildMetrics(),
       /* done 也带上本轮权威 session id:宿主据此存档,崩溃/断线后才能点名续跑 */
       sessionId: sessionOut,
       resumed,
+      ...(pausedFinish ? { paused: true } : {}),
     })
     /* harness.run 正常收流但通知里报过错(如 turn/end reason error 的 429/5xx):
-       宿主同样判本轮失败,并会在重发窗口点名续跑 —— 留同样的保活标记 */
+       宿主同样判本轮失败,并会在重发窗口点名续跑 —— 留同样的保活标记。
+       (暂停之后报的错已在 emit 里吞掉,runErrorMsg 只剩暂停前就报过的,照旧保活) */
     if (runErrorMsg) failForResume = runErrorMsg
   } catch (err) {
     const rawMessage = String((err && err.message) || err)
     const message = rawMessage.slice(0, 800)
+    /* 运行时进程已死:清掉池里的僵尸 harness,下次 run 重新 spawn。
+       这段排在最前:它与「本轮结局是什么」无关(进程真死了就得清),暂停轮也不例外。 */
+    if (
+      runKey &&
+      /runtime is not running|TransportClosed|Harness runtime closed|EPIPE|EOF/i.test(
+        message,
+      )
+    ) {
+      const dead = runtimes.get(runKey)
+      if (dead) {
+        runtimes.delete(runKey)
+        resumeCandidates.delete(runKey)
+        closeBridge(runKey)
+        forgetKey(runKey)
+        try {
+          void dead.harness.then((h) => h.close()).catch(() => {})
+        } catch {}
+      }
+    }
+    /* 本轮被宿主暂停:pause 之后 harness.run 的收尾方式不唯一(多数是正常 resolve,
+       运行时可能同时把会话关掉 → 这里抛 TransportClosed / '已请求终止' 一类)。抛到这里
+       的一律**不 emit('error')**,按「暂停完成」收场:宿主的重发闸只看 error 事件,
+       把 aborted 当失败会让一次暂停连烧 5 轮(见 pausedRuns / emit 里的吞错)。
+       放在 collision 转译之前:暂停优先于一切失败语义。 */
+    if (runPaused()) {
+      diag(`pause-finish reqId=${runIdKey || '(无)'} via=catch msg=${message.slice(0, 120)}`)
+      emit('done', {
+        finalResponse: '',
+        metrics: buildMetrics ? buildMetrics() : undefined,
+        sessionId: sessionOut,
+        resumed,
+        paused: true,
+      })
+      return
+    }
     /* 续跑轮在 harness.run 期间撞运行时侧 id collision —— 走到这里说明会话/resume 握手
        未拦截住:老运行时没有该方法而回落原 create 语义,新 runtime 以空 seed create 撞盘上
        旧日志(真正不可恢复的兜底路径,状态 C 第 3 条;握手阶段的恢复失败已在 run 前收场)。
@@ -1949,24 +2206,6 @@ async function handleRun(params) {
           resumeUnavailable: true,
         })
         return
-      }
-    }
-    /* 运行时进程已死:清掉池里的僵尸 harness,下次 run 重新 spawn */
-    if (
-      runKey &&
-      /runtime is not running|TransportClosed|Harness runtime closed|EPIPE|EOF/i.test(
-        message,
-      )
-    ) {
-      const dead = runtimes.get(runKey)
-      if (dead) {
-        runtimes.delete(runKey)
-        resumeCandidates.delete(runKey)
-        closeBridge(runKey)
-        forgetKey(runKey)
-        try {
-          void dead.harness.then((h) => h.close()).catch(() => {})
-        } catch {}
       }
     }
     /* 失败轮以可重发错误收尾 → finally 给 runtime 打「续跑候选」保活标记
@@ -2004,6 +2243,9 @@ async function handleRun(params) {
       /* 本轮已结束：残留的待取消标记属于下一轮之前的心智垃圾，清掉避免误杀 */
       cancelWanted.delete(runTag)
     }
+    /* 本轮到此真的收尾:摘掉在途登记与暂停标记。之后 steer / pause 找不到这一轮,
+       宿主拿到 unsupported 自行回落成普通排队消息(与 cancel 后 tagToKey 清空同理)。 */
+    clearInFlightRun(reqId)
   }
 }
 
@@ -3014,6 +3256,19 @@ rl.on('line', (line) => {
           reply({ ok: true, closed })
           break
         }
+        case 'steer':
+        case 'pause': {
+          /* 运行中插话 / 暂停(宿主只在「本轮还在跑」时发):
+             params = { reqId | cancelTag, sessionId?, text?|contentBlocks?(仅 steer) }
+             → 网关按在途表(reqId → {runKey, cancelTag, sessionId})定位这一轮那台
+             runtime 的 client,同步下发 session/steer / session/pause(10s 超时)。
+             拿不到 runtime / 老运行时没有该方法 → 回 {ok:false, reason:'unsupported'},
+             宿主据此把这句插话回落成排队消息(等本轮 done 再发),绝不因插话失败断会话。
+             pause 成功后本轮以 done{paused:true} 收尾,且不会有 error(见 pausedRuns)。 */
+          const p = msg.params ?? {}
+          reply(await handleInflightRequest(msg.method === 'pause' ? 'session/pause' : 'session/steer', p))
+          break
+        }
         case 'rollbackDrain': {
           /* 取回「无在途 run」时暂存的 journal 帧(后台 job / 子代理迟到写入)。
              params: { key?, workspace?, sessionId?, roundId?, peek? }
@@ -3068,6 +3323,33 @@ rl.on('line', (line) => {
             try {
               pending.socket.write(JSON.stringify({
                 t: 'db-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'lt') {
+            /* 长周期任务工具（lt_state / lt_memory）：run 与记忆库的真源都在宿主。
+               与 canvas / db 同一形状；非长任务轮由宿主回错误文本，会话不中断。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'lt-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
+          } else if (p.kind === 'asset') {
+            /* 素材库 / 截图工具（mtnode_assets）：宿主读完素材库条目、或拍完窗口静帧后
+               把绝对路径回传。与 canvas / db / lt 同一形状：宿主失败＝ok:false + error 文本，
+               运行时工具以失败收场，会话不中断（例如窗口最小化时拍不到画面）。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'asset-result',
                 id: p.id,
                 ok: !err,
                 result: p.result == null ? null : p.result,

@@ -2,6 +2,7 @@
  * 从 ext-repo/ 生成 MTNode 扩展目录（skills 仅取自 ext-repo/skills）。
  * 输出: ext-repo/catalog.json 与 dist/ext-publish/（上传用）。
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +38,7 @@ function readJson(p, fb) {
   }
 }
 function parseSkillMeta(text) {
-  const meta = { name: "", title: "", description: "" };
+  const meta = { name: "", title: "", description: "", version: "" };
   /* 归一换行：CRLF 的 SKILL.md 会让 `(.*)$` 的行匹配整行失败（`.` 不匹配 \r），
      扩展目录里的 name / description 就会变空。 */
   const src = String(text || "").replace(/\r\n?/g, "\n");
@@ -48,9 +49,17 @@ function parseSkillMeta(text) {
     if (!m) continue;
     const k = m[1];
     const v = String(m[2] || "").replace(/^['"]|['"]$/g, "").trim();
-    if (k === "name" || k === "title" || k === "description") meta[k] = v;
+    if (k === "name" || k === "title" || k === "description" || k === "version")
+      meta[k] = v;
   }
   return meta;
+}
+
+/** 技能正文内容指纹（与宿主 dsh/main-dsh.js 的 skillList 同算法）：
+ *  客户端靠它对「已安装 vs 目录里」做强判——只比 version 时，
+ *  同版本改名/改正文（本目录技能默认不写 version）会被当成「已是最新」而不给更新入口。 */
+function sha256Hex(buf) {
+  return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
 function collectSkills() {
@@ -65,11 +74,14 @@ function collectSkills() {
       if (id.endsWith("-install")) continue;
       const md = path.join(root, id, "SKILL.md");
       if (!fs.existsSync(md)) continue;
-      const meta = parseSkillMeta(fs.readFileSync(md, "utf8"));
+      const text = fs.readFileSync(md, "utf8");
+      const meta = parseSkillMeta(text);
       byId.set(id, {
         id,
         name: meta.title || meta.name || id,
         description: meta.description || "",
+        version: meta.version || "",
+        sha256: sha256Hex(Buffer.from(text, "utf8")),
         path: "skills/" + id + "/SKILL.md",
         srcDir: path.join(root, id),
       });

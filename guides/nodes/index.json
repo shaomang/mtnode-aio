@@ -5,13 +5,19 @@
     "input_image",
     "input_audio",
     "input_video",
+    "input_any",
     "asset",
     "input_file",
+    "deliver",
+    "ltout",
+    "ltart",
     "db_table",
     "db_replica",
     "proc_text",
     "proc_image",
+    "sensenova_gen",
     "music_gen",
+    "yue_gen",
     "tts_gen",
     "video_gen",
     "remotion",
@@ -24,6 +30,8 @@
     "global",
     "task",
     "super",
+    "tool",
+    "function",
     "agent_task",
     "execute",
     "control",
@@ -40,6 +48,8 @@
     "counter",
     "mutex",
     "net_recv",
-    "net_send"
+    "net_send",
+    "video_upscale",
+    "video_interp"
   ]
 }

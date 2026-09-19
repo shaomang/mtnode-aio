@@ -776,6 +776,13 @@
   background: linear-gradient(180deg, #14201a, #101713)
 }
 
+/* 交付节点（长周期任务的人工交付落点，kind "deliver"）：暖琥珀 = 「这里在等人」。
+   与 .in（青＝给料）/.sv（绿＝出料）区分开，一眼看得出这一环卡在人工手上。 */
+.wf-node.dlv {
+  border-color: #f0a63a66;
+  background: linear-gradient(180deg, #221a0f, #17120d)
+}
+
 .wf-node.task {
   border-color: #3ecfcf66;
   background: linear-gradient(180deg, #122022, #0e1618);
@@ -1001,7 +1008,7 @@
 /* 超级节点 / 开发节点：body 封装为「包体」面板 —— 只保留渐变 + 阴影，不再嵌套文件夹轮廓
    （描述改由头部「描述」按钮编辑；仅折叠态的 body 加此类，不影响数据库控制台 / 展开态舞台） */
 .wf-node.super > .n-body.super-folder-body {
-  padding: 14px 16px 12px;
+  padding: 14px 20px 12px;
   gap: 8px;
   border-radius: 0 0 4px 4px;
   background:
@@ -1119,6 +1126,40 @@
 /* 展开为内部画布时不需要这些（外壳内是 stage） */
 .wf-node.super.super-open>.n-body>.super-folder {
   display: none;
+}
+
+/* ===== 长周期任务壳（super + ltShellTask）：父壳 / 环节子壳 =====
+   专属色 = 粉紫 #e879b9（与工具紫 / 插件绿 / 工坊橙 / 素材库青 / 讨论蓝一眼区分开），
+   工具库改版后任选一支未占用的色相即可；这里只用一条私有变量，不新增色卡。 */
+.wf-node.super.lt-shell {
+  border-color: rgba(232, 121, 185, .6);
+}
+
+.wf-node.super.lt-shell>.n-head {
+  box-shadow: inset 0 -1px 0 rgba(232, 121, 185, .3);
+}
+
+.wf-node.super.lt-shell.sel {
+  border-color: #e879b9;
+}
+
+.n-chip.n-chip-lt {
+  color: #e879b9;
+  border-color: rgba(232, 121, 185, .45);
+}
+
+.n-chip.n-chip-lt.root {
+  color: #f4a3d0;
+  border-color: rgba(232, 121, 185, .6);
+}
+
+body.theme-light .wf-node.super.lt-shell {
+  border-color: rgba(198, 74, 148, .62);
+}
+
+body.theme-light .n-chip.n-chip-lt {
+  color: #b03a7f;
+  border-color: rgba(198, 74, 148, .45);
 }
 
 /* ===== 数据库超级节点 / 数据库副本 ===== */
@@ -2183,6 +2224,93 @@
   border-color: #38d6ff55;
 }
 
+/* 泛用文件节点（kind input_any）菜单栏的「手动更改类型」四连按钮：文本 / 图像 / 音频 /
+   视频各一枚，点一下就地转换成对应的输入节点。做成一体的小按钮组：只画图标（KIND_ICON_SVG，
+   与节点标题栏同源），名称走 title 提示；与相邻的 .n-play 单按钮同高，一圈青色描边提示
+   这是「转类型」而不是运行类动作。 */
+.wf-node .n-any-conv {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px;
+  border: 1px solid rgba(127, 224, 200, .45);
+  border-radius: 7px;
+}
+
+.wf-node .n-any-conv .n-any-conv-btn {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 5px;
+  color: #7fe0c8;
+  background: rgba(20, 31, 28, .6);
+  border: 1px solid transparent;
+}
+
+.wf-node .n-any-conv .n-any-conv-btn svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.wf-node .n-any-conv .n-any-conv-btn:hover {
+  background: rgba(86, 214, 184, .18);
+  border-color: rgba(127, 224, 200, .6);
+}
+
+/* 泛用文件节点（kind input_any）body：整块就是一颗「上传文件」虚线大按钮 ——
+   与数据库「建表」按钮同一族视觉（虚线框 + 输入族青色），下面一行小字说清右键可手动转类型。 */
+.wf-node .n-any-upload {
+  display: block;
+  width: 100%;
+  flex: 1;
+  min-height: 54px;
+  margin: 0;
+  padding: 10px 0;
+  border-radius: 9px;
+  border: 1px dashed rgba(127, 224, 200, .5);
+  background: rgba(20, 31, 28, .6);
+  color: #7fe0c8;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+
+.wf-node .n-any-upload:hover {
+  border-style: solid;
+  background: rgba(86, 214, 184, .12);
+}
+
+/* 泛用文件节点「解析不出来 · 仅保留路径」：body 上面那行就是这段本机文件路径
+   （只读 · 可选中复制 · 过长省略），下游接线 / @引用 拿到的正是它。 */
+.wf-node .n-any-path {
+  flex: none;
+  max-height: 44px;
+  overflow: auto;
+  padding: 5px 7px;
+  border-radius: 7px;
+  border: 1px solid rgba(127, 224, 200, .28);
+  background: rgba(20, 31, 28, .55);
+  color: #9fe8d5;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  word-break: break-all;
+  user-select: text;
+}
+
+.wf-node .n-any-note {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+  opacity: .8;
+  text-align: center;
+}
+
 /* 图标 / 颜色选择网格（mtDialogForm custom 区域） */
 .exec-icon-grid,
 .exec-color-grid {
@@ -2453,15 +2581,16 @@
   display: none !important;
 }
 
-/* 提高优先级，避免被全局 .port.in{left:3px} / .port.out{right:3px} 盖掉 */
+/* 提高优先级，避免被全局 .port.in{left:4px} / .port.out{right:4px} 盖掉
+   （子画布接线排宽 20px → 内侧端子圆心同样落在排正中：5px + PORT_R） */
 .super-stage .port.out.super-inner-bridge {
-  left: 2px !important;
+  left: 5px !important;
   right: auto !important;
   --rim: #2f88ad;
 }
 
 .super-stage .port.in.super-inner-sink {
-  right: 2px !important;
+  right: 5px !important;
   left: auto !important;
   --rim: #2f9e6e;
 }
@@ -2795,7 +2924,7 @@
 }
 
 /* ===== 端子文字（P/L、序号、成功/失败…）：一律放到节点外侧，与端子同一水平线。
-   相邻端子只有 12px 间距，文字放在端子上方/下方必然压住上下其他端子，
+   相邻端子只有 15px 间距，文字放在端子上方/下方必然压住上下其他端子，
    所以按所在侧出板：输入端子 → 文字在左；输出端子 → 文字在右。 */
 .port-badge {
   position: absolute;
@@ -3898,7 +4027,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 20px;
+  padding: 8px 22px;
   overflow: hidden;
   position: relative;
   z-index: 1
@@ -5057,7 +5186,7 @@
   position: absolute;
   z-index: 0;
   pointer-events: none;
-  width: 16px;
+  width: 20px;
   top: 28px;
   bottom: 0;
   /* 顶到菜单分割线（.n-head 底 28px），占满至底部 */
@@ -5085,7 +5214,7 @@
     inset 2px 0 0 rgba(0, 0, 0, .30),
     inset 3px 0 0 rgba(255, 255, 255, .12),
     inset 4px 0 3px rgba(0, 0, 0, .12);
-  background-position: calc(16px - var(--nw, 200px)) 0, calc(16px - var(--nw, 200px)) 0;
+  background-position: calc(20px - var(--nw, 200px)) 0, calc(20px - var(--nw, 200px)) 0;
 }
 
 /* 展开的超级节点：板内是子画布，卡片接线排让位于子画布左右端子排 */
@@ -5102,7 +5231,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 16px;
+  width: 20px;
   z-index: 0;
   pointer-events: none;
   background: inherit;
@@ -5118,11 +5247,12 @@
   box-shadow: inset 1px 0 0 rgba(0, 0, 0, .45), inset 2px 0 0 rgba(0, 0, 0, .24), inset 3px 0 0 rgba(255, 255, 255, .09), inset 4px 0 3px rgba(0, 0, 0, .10)
 }
 
-/* ===== 端子（DAW 效果器插件式接线口：金属外圈 + 内凹插孔，镶嵌在板内接线排上） ===== */
+/* ===== 端子（DAW 效果器插件式接线口：金属外圈 + 内凹插孔，镶嵌在板内接线排上） =====
+   10px 圆孔（原 8px）+ 20px 宽接线排：圆心距板缘 10px，与 app.js PORT_OFF=9 / PORT_R=5 对齐 */
 .port {
   position: absolute;
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   cursor: crosshair;
   z-index: 3;
@@ -5142,7 +5272,7 @@
 .port::before {
   content: "";
   position: absolute;
-  inset: 2.5px;
+  inset: 3px;
   border-radius: 50%;
   z-index: 1;
   background: radial-gradient(circle at 38% 32%, #2b3442 0%, #03050a 82%);
@@ -5150,40 +5280,45 @@
   transition: background .12s ease, box-shadow .12s ease;
 }
 
-/* 插口底座：透明命中区（接线排本身即端子座），无黑色块，宽度与接线排一致 */
+/* 插口底座：透明命中区（接线排本身即端子座），无黑色块。
+   24×22（原 16×20）——以圆心为中点对称铺开：整条 20px 接线排 + 板外 2px 余量
+   （节点 overflow-clip-margin 44px，板外这 2px 同样可点），鼠标好瞄得多。 */
 .port::after {
   content: "";
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  width: 16px;
-  height: 20px;
+  width: 24px;
+  height: 22px;
   background: transparent;
   box-shadow: none;
 }
 
-/* 底座贴边：输入端子贴左缘、输出端子贴右缘（宽度随接线排，居中于插孔圆心） */
+/* 底座以插孔圆心为中点对称铺开：输入端子圆心距板缘 10px（1px 边框 + 4px 让位 + 5px 半径），
+   24px 宽的底座左移 7px → 正好从板外 2px 铺到板内 22px，整条 20px 接线排都在命中区内 */
 .port.in::after {
-  left: -1px;
+  left: -7px;
   right: auto;
   border-radius: 4px 10px 10px 4px
 }
 
 .port.out::after {
-  right: -1px;
+  right: -7px;
   left: auto;
   border-radius: 10px 4px 4px 10px
 }
 
-/* 超级节点内侧端子：桥端子贴子画布左缘、汇端子贴右缘（覆盖 .port.out/.in 的默认贴边） */
+/* 超级节点内侧端子：桥端子（.out）在子画布左缘、汇端子（.in）在右缘，圆心同样落在
+   20px 端子排正中（left/right 5px + PORT_R）；底座以圆心对称铺开正好盖满这条排，
+   板外那 2px 被子画布 overflow:hidden 裁掉，也不会压到子画布里的节点内容 */
 .port.out.super-inner-bridge::after {
-  left: -1px;
+  left: -7px;
   right: auto;
   border-radius: 4px 10px 10px 4px
 }
 
 .port.in.super-inner-sink::after {
-  right: -1px;
+  right: -7px;
   left: auto;
   border-radius: 10px 4px 4px 10px
 }
@@ -5213,12 +5348,12 @@
 }
 
 .port.in {
-  left: 3px;
+  left: 4px;
   --rim: #2f88ad
 }
 
 .port.out {
-  right: 3px;
+  right: 4px;
   --rim: #2f9e6e
 }
 
@@ -5678,13 +5813,13 @@
 /* ===== 节点浏览态（未选中 = 浏览形态）=====
    全部规则走 .wf-node.browse 前缀，编辑态样式零改动。
    · body 由 app-nodeview.js 填成只读视图 .n-view（纯文本 / Markdown / YAML / 批次条目 / 裸图）。
-   · 内边距收紧但左右仍留 16px，躲开 .wf-node::before/::after 的接线排，不能真贴到 0。
+   · 内边距收紧但左右仍留 20px（= 接线排宽），躲开 .wf-node::before/::after 的接线排，不能真贴到 0。
    · body 变纯文本后 .wf-node 的 mousedown 放行名单不再命中：点击文字 = 拖节点（与超级节点
      折叠卡同一语义，属预期）；纵向滚动交给 .n-view 自身——canvas 的 wheel 对 .wf-node 内
      直接 return（不缩放、不 preventDefault），原生滚动可用，无需改 JS。 */
 .wf-node.browse>.n-body {
   gap: 4px;
-  padding: 6px 16px;
+  padding: 6px 20px;
   overflow: hidden
 }
 
@@ -6007,6 +6142,38 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain
+}
+
+/* 素材节点的浏览态摘要（NODE_BROWSE_BODY.asset）：只列「标题 + 类型徽标」的紧凑清单。
+   一条 = 一行，去卡片边框 / 底色（与 .n-view-entries 同口径：滚动只发生在 .n-view 一层），
+   内容本体（textarea / 缩略图 / 播放器）在点选后才由编辑态 buildAssetBody 渲染。
+   行内复用编辑态的 .n-asset-kind 类型徽标，配色一套，不再各写一份。 */
+.wf-node.browse .n-view-assets {
+  display: flex;
+  flex-direction: column;
+  gap: 3px
+}
+
+.wf-node.browse .n-view-asset {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0
+}
+
+.wf-node.browse .n-view-asset-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.wf-node.browse .n-view-assets .n-asset-kind {
+  flex: none
 }
 
 /* ════════════════════════════════════════════════════════════════════════

@@ -1,0 +1,346 @@
+/* ============ 全局搜索浮层（Ctrl+F · renderer/app-search.js） ============
+ * 居中命令面板式：盖在所有界面之上（z-index 高于素材库 2350 / 二级框 2400 /
+ * 蒙版 2600 / 拖影 10055）。浮层 persistent：只走 Esc / ✕ / 点专注遮罩 /
+ * 再按一次 Ctrl+F 关闭，不挂「点外部即关」。
+ * 呼出即进入专注态：浮层之外的全部界面被主题色遮罩（.gs-scrim）暗化。
+ * ─────────────────────────────────────────────────────────────────── */
+
+.gs-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 24px;
+  pointer-events: none;
+}
+
+.gs-layer[hidden] {
+  display: none !important
+}
+
+/* ── 专注遮罩：贴满视口、垫在搜索框之下，暗化其余界面；点它即关 ── */
+.gs-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: auto;
+  /* 兜底底色（不支持 color-mix 时仍能暗化），随后一行按主题取半透明版：
+     深色主题压暗，浅色主题自动跟随为淡灰 */
+  background: rgba(5, 8, 12, .62);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity .14s ease-out;
+}
+
+.gs-layer.on .gs-scrim {
+  opacity: 1;
+}
+
+.gs-box {
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 96vw);
+  max-height: min(72vh, 720px);
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+  font-size: 13px;
+}
+
+/* 呼出时轻微上浮 + 淡入：与遮罩一起构成「进入专注」的过渡 */
+.gs-layer.on .gs-box {
+  animation: gs-pop .16s ease-out;
+}
+
+@keyframes gs-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(.992);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.gs-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--bd);
+  flex: none;
+}
+
+.gs-ico {
+  flex: none;
+  font-size: 15px;
+  color: var(--cyan);
+  line-height: 1;
+}
+
+.gs-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--ink);
+  font-size: 14px;
+  font-family: inherit;
+  padding: 2px 0;
+}
+
+.gs-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.2em;
+  text-align: right;
+}
+
+.gs-close {
+  flex: none
+}
+
+/* ── 结果分栏（有结果后才出现：全部 + 各分类 + 条目数） ── */
+.gs-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--bd);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.gs-tabs[hidden] {
+  display: none !important
+}
+
+.gs-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--bd2);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.gs-tab:hover {
+  color: var(--ink);
+  border-color: var(--cyan);
+}
+
+.gs-tab.on {
+  color: var(--ink);
+  border-color: var(--cyan);
+  background: rgba(90, 160, 220, .16);
+}
+
+.gs-tab-n {
+  font-variant-numeric: tabular-nums;
+  opacity: .75;
+  font-size: 11px;
+}
+
+.gs-tab.on .gs-tab-n {
+  opacity: .95;
+}
+
+.gs-results {
+  overflow-y: auto;
+  padding: 6px 6px 10px;
+  min-height: 60px;
+}
+
+.gs-empty {
+  padding: 18px 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+  line-height: 1.7;
+}
+
+.gs-cat {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: var(--muted);
+  text-transform: none;
+}
+
+.gs-cat-name {
+  color: var(--muted)
+}
+
+.gs-cat-n {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  opacity: .85;
+}
+
+.gs-cat-loading {
+  font-weight: 400;
+  color: var(--cyan);
+  opacity: .9;
+}
+
+.gs-cat-loading::before {
+  content: "◌ ";
+  animation: gs-spin 1.1s linear infinite;
+  display: inline-block;
+}
+
+@keyframes gs-spin {
+  to {
+    transform: rotate(360deg)
+  }
+}
+
+.gs-row {
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.gs-row:hover,
+.gs-row.on {
+  background: rgba(90, 160, 220, .14);
+}
+
+.gs-row-title {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gs-row-sub {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gs-row-snippet {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 3px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.gs-hit {
+  background: rgba(255, 205, 80, .28);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.gs-more {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 4px 10px 2px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px dashed var(--bd2);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.gs-more:hover {
+  color: var(--ink);
+  border-color: var(--cyan);
+}
+
+.gs-foot {
+  flex: none;
+  padding: 6px 12px;
+  border-top: 1px solid var(--bd);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 命中消息 / 命中行的短暂高亮（点开结果后一眼看到落在哪） */
+.gs-flash {
+  animation: gs-flash 1.8s ease-out;
+}
+
+@keyframes gs-flash {
+  0% {
+    box-shadow: 0 0 0 2px rgba(90, 200, 255, .95);
+    background: rgba(90, 200, 255, .18);
+  }
+
+  100% {
+    box-shadow: none;
+    background: transparent;
+  }
+}
+
+/* ── 浅色主题 ── */
+body.theme-light .gs-scrim {
+  background: rgba(30, 34, 43, .34);
+  background: color-mix(in srgb, var(--bg) 66%, transparent);
+}
+
+body.theme-light .gs-box {
+  background: var(--panel);
+  border-color: var(--bd2);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .28);
+}
+
+body.theme-light .gs-row:hover,
+body.theme-light .gs-row.on {
+  background: rgba(60, 140, 200, .14);
+}
+
+body.theme-light .gs-hit {
+  background: rgba(255, 190, 40, .38);
+}
+
+body.theme-light .gs-tab {
+  border-color: var(--bd2);
+}
+
+body.theme-light .gs-tab.on {
+  background: rgba(60, 140, 200, .16);
+}

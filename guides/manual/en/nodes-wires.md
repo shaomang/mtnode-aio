@@ -9,4 +9,5 @@
 - The ▶ on a node runs that one branch in wire order; once upstream finishes, downstream follows automatically (this can be turned off in the settings).
 - A wire is a data flow: change upstream and re-run it, and downstream updates along with it.
 - Dropping a file onto the canvas creates an input node; dropping an image onto an image input node replaces its image.
+- Type @ in a node prompt to reference upstream nodes: ↑↓ to choose, Enter (or Tab) confirms, Esc cancels.
 - Use super nodes to group several nodes together, which helps the canvas render faster.

@@ -37,7 +37,9 @@ A downstream node receives whatever is wired in as a **connected input** (the sa
 
 ## Browsing and editing content
 
-The body lists items **in order, one row each** (title + type chip + content view) and **scrolls** when there are more than fit:
+**While the node is not selected (preview form) it shows a summary only**: the **Asset** chip plus one line per item (**title + type**). The content itself (text field / thumbnail / player / **Overwrite** button) and the library reads appear **only after you select the node** — with a dozen asset nodes on screen, the unfocused ones no longer spend memory or IPC. To edit content, **click the node first** (a freshly created, still-unbound shell keeps showing its **Bind… / Upload…** entry points).
+
+Once selected, the body lists items **in order, one row each** (title + type chip + content view) and **scrolls** when there are more than fit:
 
 - **Text**: edit in place — typing stays in memory, **the library is written when the field loses focus** (the library is shared app-wide, so it must not hit disk on every keystroke). Don’t want to type? “**Choose / Replace text**” below the field imports a local `.txt` / `.md` / `.json` … file — its body replaces this item (the previous copy goes to the versions folder).
 - **Image**: thumbnail + size info, click for a large preview; “Choose / Replace image” picks a local file and **copies it into the library**.

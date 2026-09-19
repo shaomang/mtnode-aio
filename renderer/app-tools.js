@@ -44,7 +44,9 @@ function toolPackageFromNode(node) {
       kind: p.kind === "image" ? "image" : "text",
     }));
   return {
-    id: String(node.toolLibId || ""),
+    /* builtin: 前缀是应用内置条目的 id，不是可写的库记录（非法工具 id，
+       tools:save 会拒）—— 从内置条目插入的副本再保存时按「新建」走（id 留空） */
+    id: /^builtin:/.test(String(node.toolLibId || "")) ? "" : String(node.toolLibId || ""),
     kind: isFn ? "function" : "tool",
     name: String(c.name || "").trim(),
     description: String(c.description || ""),
@@ -166,6 +168,32 @@ async function saveToolFromCanvas(node) {
   return { ok: true, id: r.id, name: name || pkg.name };
 }
 
+/* 内置条目的参数预设 → 「测试」台预填快照（按参数名匹配，按输入参数序号落位）。
+   只写 test 快照字段，绝不碰运行数据（画布 ▶ 的取数仍只看连线 / 注入）。 */
+function applyToolPresetInputs(node, presets) {
+  if (!node || !presets || typeof presets !== "object") return;
+  const ins = fnToolParamList(node, "in");
+  if (!ins.length) return;
+  const store = isFunctionNode(node) ? "fnTestInputs" : "toolTestInputs";
+  if (!Array.isArray(node[store])) node[store] = [];
+  let hit = false;
+  ins.forEach((p, i) => {
+    const name = String((p && p.name) || "");
+    if (!name) return;
+    const v = presets[name];
+    if (v == null) return;
+    node[store][i] = String(v);
+    hit = true;
+  });
+  if (hit) {
+    /* 与工具库其它写路径同口径：改了画布就排一次自动保存（纯数据环境下 S/scheduleSave
+       可能不在，兜住即可 —— 预填值本就是「锦上添花」，不该让插入失败） */
+    try {
+      if (typeof scheduleSave === "function") scheduleSave();
+    } catch (_) {}
+  }
+}
+
 /* 把工具包插入当前画布（克隆：新 id / 标题唯一化 / 父子归属与连线重建；可重复插入） */
 async function insertToolToCanvas(pkg) {
   if (!S.wf || !Array.isArray(S.wf.nodes)) {
@@ -221,6 +249,10 @@ async function insertToolToCanvas(pkg) {
        函数包＝单节点图，kind 是 "function" 而非 "super"，该折叠口径天然不适用。 */
     if (cp.kind === "super") cp.superOpen = false;
   }
+  /* 内置条目的「参数预设值」（pkg.presets = { 参数名: 字符串 }）：给「测试」台预填
+     一份能直接跑通的样例（如桌面前的屏幕目标），用户点开就能试跑，不必猜格式。
+     只写测试快照字段（fnTestInputs / toolTestInputs），**不参与画布运行**。 */
+  applyToolPresetInputs(rootCp, pkg.presets);
   S.selSet = new Set(cps.map((c) => c.id));
   S.sel = rootCp.id;
   S.selGroup = null;
@@ -397,7 +429,17 @@ function toolsLibRow(tool, host) {
   nmTxt.textContent = tool.name || (isFn ? I18n.t("（未命名函数）") : I18n.t("（未命名工具）"));
   nmTxt.style.cssText =
     "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
-  nm.append(badge, nmTxt);
+  nm.append(badge);
+  /* 内置条目：随应用发版，不能删 / 改名（开关仍可切） */
+  if (tool.builtin) {
+    const bi = document.createElement("span");
+    bi.textContent = I18n.t("内置");
+    bi.style.cssText =
+      "flex:none;font-size:10px;font-weight:700;line-height:1;padding:3px 5px;border-radius:3px;border:1px solid var(--muted);color:var(--muted)";
+    bi.title = I18n.t("随应用发版的内置工具：可直接插入 / 试跑，不能改名或删除");
+    nm.appendChild(bi);
+  }
+  nm.appendChild(nmTxt);
   nm.title = tool.name || "";
   const sub = document.createElement("div");
   sub.style.cssText = "font-size:11px;color:var(--muted)";
@@ -528,7 +570,9 @@ function toolsLibRow(tool, host) {
     }
   };
 
-  row.append(info, tg, btnInsert, btnRename, btnDel);
+  row.append(info, tg, btnInsert);
+  /* 内置条目不给改名 / 删除：随包文件改了下次升级就没，误删还会让用户以为「工具没了」 */
+  if (!tool.builtin) row.append(btnRename, btnDel);
   return row;
 }
 

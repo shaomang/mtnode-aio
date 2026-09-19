@@ -30,6 +30,60 @@ async function reloadConfigProvidersFromDisk() {
   } catch {}
 }
 
+/* ── 设置改动即时生效 ─────────────────────────────────────────────────
+   设置窗不再有「保存并关闭」：任一设置项一改，立刻写进 S.config、该重绘的立刻重绘，
+   然后落盘。configSave 是「全量写 config.json」，主进程每次写前还要备份一份快照
+   （config-backups 只留最近 30 份），逐键写盘会把快照刷成一堆垃圾 —— 所以打字类改动
+   （服务商名称 / 接口地址 / API Key / 端口 / 网格间距）走防抖合并写，下拉、勾选、
+   增删与排序这类离散动作直接写。子对话框（服务商配置卡）与关窗路径一律先 flush。
+   状态回显走窗底那一行小字（settingsSaveStampEl），不再用 toast 打扰用户。 */
+let settingsSaveTimer = null;
+let settingsSaveStampEl = null;
+
+function settingsStamp(text, bad) {
+  if (!settingsSaveStampEl) return;
+  settingsSaveStampEl.textContent = text;
+  settingsSaveStampEl.classList.toggle("settings-stamp-bad", !!bad);
+}
+
+/* 只刷状态行：改动已由别的路径（如 applyTheme）写盘时用，避免同一次改动写两份备份快照 */
+function settingsStampSavedNow() {
+  if (settingsSaveTimer) {
+    clearTimeout(settingsSaveTimer);
+    settingsSaveTimer = null;
+  }
+  settingsStamp(I18n.t("已即时生效 · ") + new Date().toLocaleTimeString(), false);
+}
+
+/* 立刻写盘（顺带取消排队中的防抖写）；返回 promise，供关窗路径 await */
+function settingsSaveNow() {
+  if (settingsSaveTimer) {
+    clearTimeout(settingsSaveTimer);
+    settingsSaveTimer = null;
+  }
+  if (!S.config || !window.api || !window.api.configSave) return Promise.resolve(false);
+  return Promise.resolve(window.api.configSave(S.config)).then(
+    () => {
+      settingsStampSavedNow();
+      return true;
+    },
+    () => {
+      settingsStamp(I18n.t("保存失败：改动只在当前会话内生效"), true);
+      toast(I18n.t("保存失败"), "err");
+      return false;
+    },
+  );
+}
+
+/* 设置项改完统一走这里：省略 ms = 直接写盘；给 ms = 把这段时间内的连续打字合并成一次写 */
+function settingsSaved(ms) {
+  if (!ms) return settingsSaveNow();
+  settingsStamp(I18n.t("正在保存…"), false);
+  if (settingsSaveTimer) clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(settingsSaveNow, ms);
+  return Promise.resolve(false);
+}
+
 function openSettings() {
   reloadConfigProvidersFromDisk().then(() => {
     openSettingsBody();
@@ -38,8 +92,11 @@ function openSettings() {
 
 function openSettingsBody() {
   openOverlay(I18n.t("设置 · APIs/Config"));
-  overlayPersistent = true; // 设置栏：点击外部不关闭，仅通过「取消 / 保存」关闭
+  overlayPersistent = true; // 设置栏：点击外部不关闭，只走窗底那枚「关闭」（改动本身即时生效）
   overlayKind = "settings";
+  /* 每一项改动都直接写进 S.config 并落盘（见文件头「设置改动即时生效」），
+     所以下面所有控件都挂 oninput / onchange 即时处理器，末尾只有一个「关闭」。 */
+  if (!S.config.dsh) S.config.dsh = {};
   const body = $("#ovBody");
   let enterSelEl = null;
 
@@ -107,6 +164,16 @@ function openSettingsBody() {
   snapInp.step = 2;
   snapInp.value = S.config.snap || 24;
   snapInp.style.width = "80px";
+  /* 即时生效：画布的 grid() 每次都重读 S.config.snap，改完不必重开也立刻跟手；
+     打字用 400ms 防抖合并写盘，失焦 / 回车（change）再补一次确定性写入并重绘。
+     命名避开 app.js 的全局 applySnap(s)（那个是画布存档快照，不是一回事） */
+  const commitSnap = (repaint) => {
+    S.config.snap = Math.max(4, Math.min(64, Number(snapInp.value) || 24));
+    settingsSaved(repaint ? 0 : 400);
+    if (repaint) renderCanvas();
+  };
+  snapInp.oninput = () => commitSnap(false);
+  snapInp.onchange = () => commitSnap(true);
   snapRow.appendChild(snapInp);
   body.appendChild(snapRow);
 
@@ -119,6 +186,12 @@ function openSettingsBody() {
   const helpCb = document.createElement("input");
   helpCb.type = "checkbox";
   helpCb.checked = !(S.config && S.config.showNodeHelp === false);
+  /* 即时生效：勾 / 取消后马上重绘画布，节点头部那颗「?」立刻出现或消失 */
+  helpCb.onchange = () => {
+    S.config.showNodeHelp = !!helpCb.checked;
+    settingsSaved(0);
+    renderCanvas();
+  };
   helpRow.appendChild(helpCb);
   helpRow.appendChild(
     document.createTextNode(
@@ -149,8 +222,13 @@ function openSettingsBody() {
   enterRow.appendChild(enterSel);
   body.appendChild(enterRow);
   enterSelEl = enterSel;
+  /* 即时生效：发送行为在下一条消息就按新档位走 */
+  enterSel.onchange = () => {
+    S.config.dsh.chatEnter = enterSel.value;
+    settingsSaved(0);
+  };
 
-  /* 主题(2 款,默认 DSH;即时预览,保存后持久化) */
+  /* 主题(2 款,默认 DSH;选完立刻换肤并由 applyTheme 写盘) */
   const themeRow = document.createElement("label");
   themeRow.className = "n-field";
   themeRow.style.flexDirection = "row";
@@ -164,7 +242,12 @@ function openSettingsBody() {
     themeSel.appendChild(o);
   }
   themeSel.value = (S.config && S.config.theme) || "dsh";
-  themeSel.addEventListener("change", () => applyTheme(themeSel.value));
+  /* applyTheme 内部会自己写盘（全局共用一条路径），这里只补状态行回显，
+     免得同一次换肤写出两份 config-backups 快照 */
+  themeSel.addEventListener("change", () => {
+    applyTheme(themeSel.value);
+    settingsStampSavedNow();
+  });
   themeRow.appendChild(themeSel);
   body.appendChild(themeRow);
   const themeSelEl = themeSel;
@@ -192,6 +275,18 @@ function openSettingsBody() {
     netPortInp.value = String(
       Math.max(1, Math.min(65535, Number(S.config && S.config.netPort) || NET_DEFAULT_PORT)),
     );
+    /* 即时生效：端口只在 netPortOf() 运行时读，改完即被下一个未填端口的网络节点用到；
+       重绘一次画布，把节点上「全局 40999」这类回显也一起跟上 */
+    const commitPort = (repaint) => {
+      S.config.netPort = Math.max(
+        1,
+        Math.min(65535, Number(netPortInp.value) || NET_DEFAULT_PORT),
+      );
+      settingsSaved(repaint ? 0 : 400);
+      if (repaint) renderCanvas();
+    };
+    netPortInp.oninput = () => commitPort(false);
+    netPortInp.onchange = () => commitPort(true);
     row.appendChild(netPortInp);
     sec.appendChild(row);
     const hint = document.createElement("div");
@@ -247,7 +342,7 @@ function openSettingsBody() {
     const changeBtn = document.createElement("button");
     changeBtn.className = "mini";
     changeBtn.textContent = I18n.t("更改目录…");
-    changeBtn.title = I18n.t("选择新的配置数据目录，保存后需重启");
+    changeBtn.title = I18n.t("选择新的配置数据目录；改完需重启应用生效");
 
     const resetBtn = document.createElement("button");
     resetBtn.className = "mini";
@@ -656,6 +751,11 @@ function openSettingsBody() {
     modelRow.appendChild(modelSel);
     sec.appendChild(modelRow);
     dshEls.model = modelSel;
+    /* 即时生效：默认模型在下一次智能运行读配置时生效，改完立刻落盘 */
+    modelSel.onchange = () => {
+      S.config.dsh.model = String(modelSel.value || "").trim();
+      settingsSaved(0);
+    };
 
     /* agent 预设(迁移自 dsh 的 agent-presets) */
     const presetRow = document.createElement("label");
@@ -677,6 +777,11 @@ function openSettingsBody() {
     presetRow.appendChild(presetSel);
     sec.appendChild(presetRow);
     dshEls.preset = presetSel;
+    /* 即时生效：Agent 预设在下一次智能运行时读取 */
+    presetSel.onchange = () => {
+      S.config.dsh.preset = presetSel.value;
+      settingsSaved(0);
+    };
 
     /* Agent 语言口味：跟随顶栏「中 / EN」的语言选择（无独立开关，纯派生），
        这里只把「agent 会用哪种语言交流并期望被这样回答」摊开给用户看见 */
@@ -709,6 +814,12 @@ function openSettingsBody() {
       permSel.appendChild(o);
     }
     permSel.value = S.config.dsh.permissionPreset || "mtnode-unattended";
+    /* 即时生效：走顶栏「审批与权限」同一真源 setPermissionPreset（写盘 + 回刷 + 提示），
+       下一轮智能运行即按新档位放行 */
+    permSel.onchange = () => {
+      setPermissionPreset(permSel.value);
+      settingsStampSavedNow();
+    };
     permRow.appendChild(permSel);
     sec.appendChild(permRow);
     dshEls.permissionPreset = permSel;
@@ -742,6 +853,11 @@ function openSettingsBody() {
     const sndCb = document.createElement("input");
     sndCb.type = "checkbox";
     sndCb.checked = S.config.dsh.doneSound !== false;
+    /* 即时生效：勾 / 取消立刻写盘，下一次长任务结束就按新档位响或不响 */
+    sndCb.onchange = () => {
+      S.config.dsh.doneSound = !!sndCb.checked;
+      settingsSaved(0);
+    };
     sndRow.appendChild(sndCb);
     sndRow.appendChild(
       document.createTextNode(
@@ -758,6 +874,11 @@ function openSettingsBody() {
     sndFile.value = S.config.dsh.doneSoundFile || "";
     sndFile.style.flex = "1";
     sndFile.readOnly = true;
+    /* 音效文件路径：选完 / 清除就立刻写回 S.config 并落盘（本窗不再有「保存」按钮） */
+    const setSoundFile = (el, key) => {
+      S.config.dsh[key] = String(el.value || "").trim();
+      settingsSaved(0);
+    };
     const sndPick = document.createElement("button");
     sndPick.className = "mini";
     sndPick.textContent = I18n.t("替换…");
@@ -766,7 +887,10 @@ function openSettingsBody() {
         title: I18n.t("选择完成音效"),
         filters: [{ name: I18n.t("音频"), extensions: ["mp3", "wav", "ogg", "m4a"] }],
       });
-      if (r && r.path) sndFile.value = r.path;
+      if (r && r.path) {
+        sndFile.value = r.path;
+        setSoundFile(sndFile, "doneSoundFile");
+      }
     };
     const sndPlay = document.createElement("button");
     sndPlay.className = "mini";
@@ -775,7 +899,7 @@ function openSettingsBody() {
     const sndClear = document.createElement("button");
     sndClear.className = "mini";
     sndClear.textContent = I18n.t("清除");
-    sndClear.onclick = () => { sndFile.value = ""; };
+    sndClear.onclick = () => { sndFile.value = ""; setSoundFile(sndFile, "doneSoundFile"); };
     sndFileRow.appendChild(sndFile);
     sndFileRow.appendChild(sndPick);
     sndFileRow.appendChild(sndPlay);
@@ -791,6 +915,11 @@ function openSettingsBody() {
     const askCb = document.createElement("input");
     askCb.type = "checkbox";
     askCb.checked = S.config.dsh.askSound !== false;
+    /* 即时生效：勾 / 取消立刻写盘，下一次模型等待回应就按新档位提示 */
+    askCb.onchange = () => {
+      S.config.dsh.askSound = !!askCb.checked;
+      settingsSaved(0);
+    };
     askRow.appendChild(askCb);
     askRow.appendChild(document.createTextNode(I18n.t("提问/审批提示音（模型等待你回应时弹出并提示）")));
     sec.appendChild(askRow);
@@ -811,7 +940,10 @@ function openSettingsBody() {
         title: I18n.t("选择提示音"),
         filters: [{ name: I18n.t("音频"), extensions: ["mp3", "wav", "ogg", "m4a"] }],
       });
-      if (r && r.path) askFile.value = r.path;
+      if (r && r.path) {
+        askFile.value = r.path;
+        setSoundFile(askFile, "askSoundFile");
+      }
     };
     const askPlay = document.createElement("button");
     askPlay.className = "mini";
@@ -822,7 +954,10 @@ function openSettingsBody() {
     const askClear = document.createElement("button");
     askClear.className = "mini";
     askClear.textContent = I18n.t("清除");
-    askClear.onclick = () => { askFile.value = ""; };
+    askClear.onclick = () => {
+      askFile.value = "";
+      setSoundFile(askFile, "askSoundFile");
+    };
     askFileRow.appendChild(askFile);
     askFileRow.appendChild(askPick);
     askFileRow.appendChild(askPlay);
@@ -852,6 +987,11 @@ function openSettingsBody() {
     );
     sec.appendChild(leanRow);
     dshEls.leanToolPayload = leanCb;
+    /* 即时生效：开关只影响「下一次运行注册哪些工具」，改完立刻落盘即可 */
+    leanCb.onchange = () => {
+      S.config.dsh.leanToolPayload = !!leanCb.checked;
+      settingsSaved(0);
+    };
 
     /* ── 扩展能力（DSH 插件 / 技能 Skills / MCP 服务器）：设置里只留一个整合界面，
        真正的清单与增删改全部收进「管理」对话框（样式统一沿用 DSH 插件那套卡片）。── */
@@ -920,16 +1060,11 @@ function openSettingsBody() {
   /* 提供商配置（模型服务）已挪到函数开头（设置项最前面），这里不再重复渲染 */
 
   const foot = $("#ovFoot");
-  const save = document.createElement("button");
-  save.className = "mini primary";
-  save.textContent = I18n.t("保存设置");
-  save.onclick = async () => {
-    const snap = Math.max(4, Math.min(64, Number(snapInp.value) || 24));
-    S.config.snap = snap;
-    /* 节点「?」说明按钮开关（默认打开；renderCanvas 后即时生效） */
-    S.config.showNodeHelp = !!helpCb.checked;
-
-    if (netPortInp) S.config.netPort = Math.max(1, Math.min(65535, Number(netPortInp.value) || NET_DEFAULT_PORT));
+  /* ── 本窗没有「保存并关闭」：上面每一项都即时生效，这里只剩最后一次收口 + 关窗 ──
+     收口只做两件平时不适合做的事：① 服务商字段去首尾空白并丢掉空名项（平时打字
+     中途清空名称不该让整格服务商凭空消失）；② 把 dsh 各字段与默认档合并一遍，
+     保证老存档里缺的键在写盘后补齐。 */
+  const finalizeSettings = () => {
     for (const p of S.config.providers) {
       p.name = String(p.name || "").trim();
       p.baseUrl = String(p.baseUrl || "").trim();
@@ -959,13 +1094,23 @@ function openSettingsBody() {
       S.config.dsh || {},
       dshEls.collect(),
     );
-    await window.api.configSave(S.config);
+    /* 空名服务商可能在关窗这一刻才被丢掉：把网格里显的回刷成真实列表 */
+    repaintSettingsProvTiles();
+  };
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "mini primary";
+  closeBtn.textContent = I18n.t("关闭");
+  closeBtn.title = I18n.t("改动已即时生效，关窗前自动补一次写盘");
+  closeBtn.onclick = async () => {
+    finalizeSettings();
+    settingsSaveStampEl = null; // 状态行随窗作废
+    await settingsSaveNow();
     closeOverlay();
+    /* 关窗之后再重绘（与旧「保存设置」同一顺序）：画布上的全局端口 / 网格间距 /
+       节点「?」按钮 / 顶栏档位字样一律以最终值为准刷一遍 */
     renderCanvas();
     renderStatus();
     paintApprovalsBtn();
-
-    toast(I18n.t("设置已保存（") + S.config.providers.length + I18n.t(" 个服务商）"), "ok");
   };
   const storageBtn = document.createElement("button");
   storageBtn.className = "mini";
@@ -984,17 +1129,18 @@ function openSettingsBody() {
   helpBtn.textContent = I18n.t("查看说明");
   helpBtn.title = I18n.t("打开使用说明");
   helpBtn.onclick = openHelp;
-  const cancel = document.createElement("button");
-  cancel.className = "mini";
-  cancel.textContent = I18n.t("取消");
-  cancel.onclick = closeOverlay;
+  /* 底部状态行：告诉用户「这一页不需要保存」，并在每次写盘后回显时间戳 */
+  const stamp = document.createElement("span");
+  stamp.className = "settings-save-stamp";
+  stamp.textContent = I18n.t("改动即时生效");
+  settingsSaveStampEl = stamp;
   foot.appendChild(storageBtn);
   foot.appendChild(helpBtn);
   const spacer = document.createElement("span");
   spacer.style.flex = "1";
   foot.appendChild(spacer);
-  foot.appendChild(cancel);
-  foot.appendChild(save);
+  foot.appendChild(stamp);
+  foot.appendChild(closeBtn);
 }
 
 /* 目录中可添加的服务商(与 dsh 一致的全部内置服务商):
@@ -1490,7 +1636,7 @@ function addProviderDialog() {
       (p.baseUrl || I18n.t("（待定）")) +
       I18n.t(" · API 类型 ") +
       p.api +
-      I18n.t("。保存后自动生成模型列表。");
+      I18n.t("。添加后自动生成模型列表。");
   };
   provSel.addEventListener("change", updateInfo);
   ensureProviderCatalog().then(renderCatalog).catch(renderCatalog);
@@ -1556,6 +1702,8 @@ function addProviderDialog() {
         );
       if (!added.length) added.push(mk(all, "text_openai", baseName, p.id));
       for (const a of added) S.config.providers.push(a);
+      /* 即时生效：新服务商当场写盘，不依赖设置页的「保存」（该按钮已取消） */
+      settingsSaved(0);
       closeOverlay();
       openSettings();
       toast(I18n.t("服务商已添加：") + added.map((a) => a.name).join(" / "), "ok");
@@ -1590,6 +1738,8 @@ function addProviderDialog() {
       }
     }
     S.config.providers.push(prov);
+    /* 即时生效：手动添加同样当场写盘 */
+    settingsSaved(0);
     closeOverlay();
     openSettings();
     toast(I18n.t("服务商已添加：") + prov.name, "ok");
@@ -1707,6 +1857,8 @@ function storeItemsFromExtCatalog(j, repo) {
         name: raw.name || raw.id,
         desc: raw.description || "",
         version: raw.version || "",
+        /* 正文内容指纹（build.mjs 生成）：同版本号改了正文也能判出「有更新」 */
+        sha256: String(raw.sha256 || ""),
         kind,
         install: storeResolveUrl(repo.url, raw.install || raw.tgz || ""),
         skillUrl: storeResolveUrl(repo.url, pathRel),
@@ -1866,6 +2018,50 @@ async function openStoreDialog() {
         I18n.t("线上目录暂不可用（") + (e.message || String(e)) + I18n.t("）· 请检查网络或源地址后重试");
     }
   };
+  /* 技能安装 / 更新共用的一步：从线上源拉 SKILL.md 落进本机技能目录。
+     更新必须带 overwrite —— 否则 skillAdd 以「同名技能已存在」拒绝，
+     已安装技能就只能「卸载了再装」，提示词技能改版永远进不来。 */
+  const installSkillFromRepo = async (it, repo, opts) => {
+    opts = opts || {};
+    let mdUrl = it.skillUrl;
+    if (!mdUrl) {
+      const cdn = storeCdnUrl(repo.url);
+      if (!cdn || !String(cdn).includes("jsdelivr")) {
+        throw new Error(I18n.t("该源无法安装技能（需要 jsDelivr 或 MTNode catalog）"));
+      }
+      mdUrl =
+        cdn +
+        (repo.path ? "/" + repo.path : "") +
+        "/" +
+        it.id +
+        "/SKILL.md";
+    }
+    const md = await netText(mdUrl);
+    let desc = it.desc || it.id;
+    const m = md.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (m) {
+      const dm = m[1].match(/^description:\s*(.+)$/m);
+      if (dm) desc = dm[1].replace(/['"]/g, "").trim();
+    }
+    return window.api.skillAdd({
+      name: it.id,
+      description: desc,
+      body: md,
+      overwrite: !!opts.overwrite,
+    });
+  };
+  /* 本机已装技能 vs 线上目录：先比正文指纹 sha256（同版本号改了正文也算有更新），
+     目录没给指纹时退回版本号比较。 */
+  const skillHasUpdate = (it, rec) => {
+    if (!rec) return false;
+    if (it.sha256 && rec.sha256)
+      return String(it.sha256) !== String(rec.sha256);
+    return !!(
+      it.version &&
+      rec.version &&
+      String(it.version) !== String(rec.version)
+    );
+  };
   const render = () => {
     const repo = activeRepo();
     const q = search.value.trim().toLowerCase();
@@ -1910,10 +2106,42 @@ async function openStoreDialog() {
       })();
       const canUninstall = itemKind !== "skills" || !(skillRec && skillRec.builtin);
       if (isInstalled) {
+        const hasUpdate = itemKind === "skills" && skillHasUpdate(it, skillRec);
         const tag = document.createElement("span");
         tag.className = "store-installed";
-        tag.textContent = I18n.t("已安装");
+        tag.textContent = hasUpdate ? I18n.t("有更新") : I18n.t("已安装");
         btns.appendChild(tag);
+        if (itemKind === "skills" && canUninstall) {
+          const upd = document.createElement("button");
+          upd.className = "mini" + (hasUpdate ? " primary" : "");
+          upd.textContent = I18n.t("更新");
+          upd.title = hasUpdate
+            ? I18n.t("线上目录已换新版，点此覆盖本机技能")
+            : I18n.t("重新下载并覆盖本机技能");
+          upd.onclick = async () => {
+            try {
+              if (
+                !(await confirmDialog(
+                  I18n.t("将用线上目录版本覆盖本机技能「{name}」。确定更新？", {
+                    name: it.id,
+                  }),
+                  { title: I18n.t("更新技能") },
+                ))
+              )
+                return;
+              const rr = await installSkillFromRepo(it, repo, {
+                overwrite: true,
+              });
+              if (rr && rr.ok === false) throw new Error(rr.error);
+              toast(I18n.t("已更新 ") + it.id, "ok");
+            } catch (e) {
+              toast(I18n.t("更新失败：") + (e.message || String(e)), "err");
+            }
+            await refreshInstalled();
+            render();
+          };
+          btns.appendChild(upd);
+        }
         if (canUninstall) {
           const rm = document.createElement("button");
           rm.className = "mini danger";
@@ -1951,27 +2179,7 @@ async function openStoreDialog() {
             if (itemKind === "plugins") {
               rr = await window.api.dshPluginAdd(it.install || it.id);
             } else if (itemKind === "skills") {
-              let mdUrl = it.skillUrl;
-              if (!mdUrl) {
-                const cdn = storeCdnUrl(repo.url);
-                if (!cdn || !String(cdn).includes("jsdelivr")) {
-                  throw new Error(I18n.t("该源无法安装技能（需要 jsDelivr 或 MTNode catalog）"));
-                }
-                mdUrl =
-                  cdn +
-                  (repo.path ? "/" + repo.path : "") +
-                  "/" +
-                  it.id +
-                  "/SKILL.md";
-              }
-              const md = await netText(mdUrl);
-              let desc = it.desc || it.id;
-              const m = md.match(/^---\s*\n([\s\S]*?)\n---/);
-              if (m) {
-                const dm = m[1].match(/^description:\s*(.+)$/m);
-                if (dm) desc = dm[1].replace(/['"]/g, "").trim();
-              }
-              rr = await window.api.skillAdd({ name: it.id, description: desc, body: md });
+              rr = await installSkillFromRepo(it, repo);
             } else {
               rr = await window.api.dshMcpAdd({
                 serverName: it.id,
@@ -2200,7 +2408,17 @@ function ensureProvCfgDlg() {
 function closeProvCfgDlg() {
   const host = document.getElementById("provCfgDlg");
   if (host) host.classList.remove("on");
+  /* 收子对话框 = 打字类改动（名称 / Base URL / API Key）的防抖该落地了：
+     设置页没有「保存设置」兜底，这里不 flush 就会丢掉最后一次编辑 */
+  settingsSaveNow();
   repaintSettingsProvTiles();
+  /* 节点上的服务商 / 模型下拉读的是 S.config.providers：改完顺手重绘一次画布，
+     让「加了一家服务商」在画布上立刻可见，而不是等设置窗关掉 */
+  if (typeof renderCanvas === "function") {
+    try {
+      renderCanvas();
+    } catch {}
+  }
 }
 
 function openProviderConfigDialog(prov) {
@@ -2227,6 +2445,9 @@ function openProviderConfigDialog(prov) {
     done.type = "button";
     done.className = "mini primary";
     done.textContent = I18n.t("完成");
+    /* 过去这里没有「保存」是因为整页设置靠底部的「保存设置」收口；现在这一页
+       连那个按钮也去掉了 —— 卡片里的每一项都在改完那一刻写盘，「完成」只收窗 */
+    done.title = I18n.t("这张卡的改动已即时生效，点「完成」收窗");
     done.onclick = () => closeProvCfgDlg();
     footEl.appendChild(done);
   };
@@ -2242,8 +2463,10 @@ function provCard(prov, i, onChange) {
   const card = document.createElement("div");
   card.className = "prov-card";
   /* 类型改 / 排序 / 删除后就地重建这张卡（配置对话框内 = 重画该服务商），
-     不整页重开设置，也避免 openSettings() 重读磁盘把未保存的改动吞掉 */
+     不整页重开设置，也避免 openSettings() 重读磁盘把未保存的改动吞掉。
+     设置页已无「保存设置」：这张卡里的每一项改动都直接落盘（见 settingsSaved）。 */
   const rerender = () => {
+    settingsSaved(0);
     if (typeof onChange === "function") onChange();
   };
   const head = document.createElement("div");
@@ -2383,6 +2606,8 @@ function provCard(prov, i, onChange) {
   nameInp.oninput = () => {
     prov.name = nameInp.value;
     nameSpan.textContent = nameInp.value || I18n.t("（未命名）");
+    /* 打字合并写盘；空名称不立刻把整格服务商弄丢（收口在关窗时做） */
+    settingsSaved(600);
   };
   mkField(I18n.t("名称"), nameInp);
 
@@ -2392,6 +2617,7 @@ function provCard(prov, i, onChange) {
   urlInp.placeholder = "https://api.example.com/v1";
   urlInp.oninput = () => {
     prov.baseUrl = urlInp.value;
+    settingsSaved(600);
   };
   mkField(I18n.t("接口地址 Base URL"), urlInp, true);
 
@@ -2407,6 +2633,7 @@ function provCard(prov, i, onChange) {
     inp.style.flex = "1";
     inp.oninput = () => {
       prov.apiKey = inp.value;
+      settingsSaved(800);
     };
     const cp = document.createElement("button");
     cp.className = "mini";
@@ -2478,6 +2705,9 @@ function provCard(prov, i, onChange) {
       paintModels();
     }
   });
+  /* 模型列表的每一次增删 / 排序都算一次改动；但「刚打开对话框画第一遍」不算，
+     所以用 dirty 位把首次绘制排除掉，避免只是点开看一眼就写一份配置备份 */
+  let modelsDirty = false;
   const paintModels = () => {
     if (!Array.isArray(prov.models)) prov.models = [];
     orderBox.innerHTML = "";
@@ -2647,8 +2877,10 @@ function provCard(prov, i, onChange) {
       empty.textContent = I18n.t("暂无模型，请在下方添加");
       orderBox.appendChild(empty);
     }
+    if (modelsDirty) settingsSaved(300);
   };
   paintModels();
+  modelsDirty = true;
   modelField.appendChild(orderBox);
   const addRow = document.createElement("div");
   addRow.className = "model-order-add";
@@ -2733,6 +2965,7 @@ function provCard(prov, i, onChange) {
     cb.checked = !!prov.vision;
     cb.onchange = () => {
       prov.vision = cb.checked;
+      settingsSaved(0);
     };
     inline.appendChild(cb);
     inline.appendChild(

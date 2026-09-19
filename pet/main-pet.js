@@ -22,7 +22,10 @@ const https = require("https");
 const zlib = require("zlib");
 const { pathToFileURL } = require("url");
 const { spawn } = require("child_process");
+/* 插件报错总线：桌宠（BongoChat）宿主也走同一份上报 / 修复入口 */
+const pluginErrors = require("../plugin-error-repair.js");
 
+const PLUGIN_ID = "bongochat";
 const PET_FEED =
   process.env.MTNODE_PET_URL || "http://mt-agent.com/mtnode/pet";
 const BASE_W = 360;
@@ -117,6 +120,28 @@ function sendProgress(data) {
     const w = getMainWin && getMainWin();
     if (w && !w.isDestroyed()) w.webContents.send("pet:progress", data);
   } catch {}
+}
+
+/**
+ * 失败上报：控制台那侧的 toast / 插件卡片状态只有开着窗的人看得到，把同一次失败送到报错总线，
+ * 让主窗口出一份带上下文的报告（总线内部全程吞异常，绝不影响桌宠原有控制流）。
+ */
+function reportErr(code, message) {
+  try {
+    pluginErrors.reportPluginError(
+      PLUGIN_ID,
+      { code: String(code || ""), message: String(message || "") },
+    );
+  } catch {}
+}
+
+/** 下载链的失败归类：HTTP 状态错 / 网络与超时（其余留给总线按正文认码）。 */
+function downloadErrCode(msg) {
+  const s = String(msg || "");
+  if (/HTTP\s*[45]\d\d/i.test(s)) return "download_http_error";
+  if (/timeout|timed out|ETIMEDOUT|ECONNRESET|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|getaddrinfo/i.test(s))
+    return "download_network_error";
+  return "";
 }
 
 function sendToPet(channel, data) {
@@ -465,7 +490,10 @@ function finalizeInstall(version, source) {
 
 async function installFromLocalPack() {
   const src = localPackDir();
-  if (!src) return { ok: false, error: "no_local_pack" };
+  if (!src) {
+    reportErr("pack_missing", "no_local_pack：随包形象脚手架 pet-pack 不存在，离线回落也没得装");
+    return { ok: false, error: "no_local_pack" };
+  }
   sendProgress({ phase: "copy", percent: 10 });
   rmDirRecursive(runtimeDir());
   copyDirRecursive(src, runtimeDir());
@@ -553,19 +581,24 @@ async function installPet() {
         };
       }
       installing = false;
+      const remoteMsg = String((remoteErr && remoteErr.message) || remoteErr);
+      /* 远程失败 + 离线包也没有 → 真正的安装失败出口（bad_manifest / sha256_mismatch / 下载错误都落在这） */
+      reportErr(downloadErrCode(remoteMsg), remoteMsg);
       return {
         ok: false,
-        error: String((remoteErr && remoteErr.message) || remoteErr),
+        error: remoteMsg,
       };
     }
   } catch (err) {
     installing = false;
+    const msg = String((err && err.message) || err);
+    reportErr(downloadErrCode(msg), msg);
     sendProgress({
       phase: "error",
       percent: 0,
-      error: String((err && err.message) || err),
+      error: msg,
     });
-    return { ok: false, error: String((err && err.message) || err) };
+    return { ok: false, error: msg };
   }
 }
 
@@ -771,6 +804,7 @@ function startDeviceHook() {
   } catch (err) {
     hookStarted = false;
     console.error("[pet] uiohook failed:", err && err.message ? err.message : err);
+    reportErr("device_hook_failed", "uiohook 全局键鼠钩子启动失败：" + String((err && err.message) || err));
     return false;
   }
 }
@@ -876,6 +910,7 @@ function ensureTray() {
     });
   } catch (err) {
     console.error("[pet] tray failed:", err && err.message ? err.message : err);
+    reportErr("tray_failed", "托盘创建失败：" + String((err && err.message) || err));
   }
 }
 
@@ -1087,6 +1122,21 @@ function registerPetIpc(opts) {
   getDataDir = opts.getDataDir;
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
+
+  /* 报错总线：注册宿主。桌宠是「下载形象包」型插件——没有 Agent 安装链、也没有独立控制台日志，
+     所以只给安装目录（= 修复会话的可写工作区）与空日志尾部，失败事实由 reportErr 上报。 */
+  pluginErrors.registerPluginHost({
+    id: PLUGIN_ID,
+    name: "BongoChat",
+    getInstallDir: () => {
+      try {
+        return getDataDir ? join(getDataDir(), "pet", "runtime") : "";
+      } catch {
+        return "";
+      }
+    },
+    tailConsole: () => ({ ok: true, text: "" }),
+  });
 
   ipcMain.handle("pet:status", () => statusForUi());
   ipcMain.handle("pet:install", async () => installPet());

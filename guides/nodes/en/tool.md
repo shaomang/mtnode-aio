@@ -50,7 +50,7 @@ A tool executes its **inner subgraph** (child nodes attached under this node):
 - A tool node can still be @-referenced / broadcast globally as text as before; **what downstream receives is decided by the output port you wired** — an image output port into a save node automatically saves as an image (`.png`), see "What the port type is for" above. For batches use batchMode on its inner or downstream nodes (batch mode processes exactly one item per run).
 
 ## Cross-canvas reuse and "callable anytime"
-The top-bar **Tool library** button (it wears the program's own icon) opens a dialog that lists **only the saved tool / function packages** — nodes are not created there (use the right-click menu above):
+The top-bar **Tool library** button (it wears the program's own icon) opens a dialog that lists the **saved tool / function packages** plus the **built-in entries** shipped with the app (built-ins wear a grey "Built-in" badge: insert / test-run freely, but rename and delete are refused) — nodes are not created there (use the right-click menu above):
 
 - **Save to library**: saves this node plus a snapshot of its inner graph as a tool package (name / description / input-output params — each with its declared type — plus the inner graph JSON).
 - **Insert**: the package can be inserted into any canvas repeatedly (cloned with new ids; inner parent-child relations and wires are rebuilt around the new ids).
@@ -58,3 +58,12 @@ The top-bar **Tool library** button (it wears the program's own icon) opens a di
 
 ## When a tool fails
 If an inner node fails or the tool has no runnable inner nodes, the tool node shows ✕ with the reason; when an agent call fails, the session receives an error text reply — the session is never interrupted.
+
+## Built-in entry: screen / window capture
+One ready-to-use built-in **function package** (a single JS node) that turns "some other screen / some other window" into a PNG image:
+
+- Ports: `target` (`screen` / `window` / `all`, default `screen`), `screen` (device name `\\.\DISPLAY1` / `"x,y"` / index; empty = primary), `window` (a title keyword, a fragment is enough), `x` / `y` / `w` / `h` (optional region inside the captured object) → output **image path** (an image port).
+- It is a **function package**, so it carries no "callable by sessions anytime" switch (that switch only applies to tool nodes); to use it from a session, insert it into a canvas and press ▶, or let the agent call the canvas copy.
+- It runs the main-process desktop capture (`mtnode.screenShot`, PowerShell + GDI on Windows): occluded windows are captured with `PrintWindow`, self-drawn windows (media players…) fall back to copying the screen, and a minimised window is **refused explicitly** instead of returning a black picture. Screenshots land in `captures/` under the app data directory.
+- Insert it into a canvas and press **Test** — the fields come pre-filled with a runnable sample. To see what can be captured, run `mtnode.screenList()` / `mtnode.windowList()` first (also available inside a function node).
+- The output is an image path: wiring it into a **save node** writes a `.png`; hand the path to `mtnode_vision` (agent tool) to actually read the picture.

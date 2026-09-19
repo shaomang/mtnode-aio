@@ -5,7 +5,7 @@
  * 直接显示内容（Markdown / YAML 正确渲染、图像铺满），除节点头部那排小按钮以外没有任何交互。
  * 覆盖：
  *   [1] 形态判定骨架：kind 集合、判定口径、save 旧别名归一、buildBody 入口分流与失败回落
- *   [2] 六个 kind 的浏览态渲染器登记齐全（旧 kind chat 已下线，不再列）；浏览态分支不构造任何输入控件、不挂点击事件
+ *   [2] 八个 kind 的浏览态渲染器登记齐全（旧 kind chat 已下线，不再列）；浏览态分支不构造任何输入控件、不挂点击事件
  *   [3] 编辑态零回归：buildBody 后半段照旧有 textarea / 输出按钮 / 拖宽条
  *   [4] 选中三路径形态同步：.n-resize 快速路径走 setNodeSelClass；改状态不重绘处补 syncNodeForms
  *   [5] 点选即聚焦：markFormFocusAfterRender → renderCanvas 收尾 applyFocusFormAfterRender 接线
@@ -13,7 +13,9 @@
  *   [7] index.html 脚本顺序：app.js → app-nodeview.js → app-canvas.js
  *   [8] detectViewLang 判定样例（vm 加载纯逻辑）
  *   [9] nodeTextViewEl 三语言渲染 + YAML 无行号 + @引用着色不破坏 HTML
- *   [10] 函数节点专项：未选中只显示内容（无输入控件 / 无 onclick / 不用 .n-text 类）·
+ *   [10] 素材节点专项：未选中只显示轻量摘要（标题 + 类型徽标 · 不读素材库、不造
+ *        textarea / img / video / 按钮）· 点选后才回落编辑态 buildAssetBody
+ *   [11] 函数节点专项：未选中只显示内容（无输入控件 / 无 onclick / 不用 .n-text 类）·
  *        点进去才出可编辑代码块（mousedown 放行 → wasBrowse → 编辑态 createJsCodeEditor →
  *        聚焦选择器命中 js-edit-input · CSS 三层叠放收点击）· 数组入参 ×N 摘要真源 */
 const fs = require("fs");
@@ -73,10 +75,12 @@ const BROWSE_END = "/* ── 函数 / 工具节点 body（参数即端子 · �
 const browseRegion = sliceBetween(jsCanvas, BROWSE_MARK, BROWSE_END);
 const editRegion = jsCanvas.slice(jsCanvas.indexOf("function buildBody(node, body) {"));
 
-/* 七个参与浏览态的 kind（函数节点本可复用「代码只读视图」，随工具/函数节点上线而登记，
-   故一并列入）。旧 kind chat 已下线（app.js 的 migrateChatNodeToAgent 把老画布的
-   chat 节点就地归一成 agent_task + chatMode），所以这里不再列 chat —— 之前它留在
-   清单里，本测试自「chat 移除」那一轮起就一直红着，与预设档位改动无关。 */
+/* 参与浏览态的 kind（函数节点本可复用「代码只读视图」，随工具/函数节点上线而登记，
+   故一并列入。素材节点随「未 focus 不显示详细内容」那一轮登记：未选中只列条目标题 +
+   类型徽标，不读素材库、不渲染正文 / 缩略图 / 播放器）。旧 kind chat 已下线（app.js 的
+   migrateChatNodeToAgent 把老画布的 chat 节点就地归一成 agent_task + chatMode），所以
+   这里不再列 chat —— 之前它留在清单里，本测试自「chat 移除」那一轮起就一直红着，
+   与预设档位改动无关。 */
 const KINDS = [
   "input_text",
   "input_image",
@@ -85,6 +89,7 @@ const KINDS = [
   "agent_task",
   "function",
   "save",
+  "asset",
 ];
 
 console.log("\n[1] 形态判定骨架：kind 集合与判定口径");
@@ -121,7 +126,7 @@ console.log("\n[1] 形态判定骨架：kind 集合与判定口径");
   ok(jsCanvas.indexOf("const NODE_BROWSE_KINDS") < at && jsCanvas.indexOf(BROWSE_MARK) < at, "kind 集合与浏览态区块都写在 buildBody 之前");
 }
 
-console.log("\n[2] 六个 kind 的浏览态渲染器登记齐全 + 浏览态零交互构件");
+console.log("\n[2] 八个 kind 的浏览态渲染器登记齐全 + 浏览态零交互构件");
 {
   for (const k of KINDS)
     ok(new RegExp("NODE_BROWSE_BODY\\." + k + "\\s*=").test(jsCanvas), "登记了 NODE_BROWSE_BODY." + k);
@@ -462,7 +467,76 @@ console.log("\n[9] nodeTextViewEl：三语言渲染 + YAML 无行号 + @引用�
   ok(nv.highlightAtRefsHtml("<i>@Alpha</i>", null) === "<i>@Alpha</i>", "无 node（拿不到候选）时不改一个字");
 }
 
-console.log("\n[10] 函数节点：外部只显示内容 · 点进去才出可编辑代码块（本轮 Bug 的两半）");
+console.log("\n[10] 素材节点：未 focus（未选中）只显示轻量摘要 · 不读素材库、不渲染内容本体");
+{
+  const at = jsCanvas.indexOf("NODE_BROWSE_BODY.asset = function (node, body) {");
+  const aBrowse = at >= 0 ? blockFrom(jsCanvas, at) : null;
+  ok(!!aBrowse, "能按锚点切出 NODE_BROWSE_BODY.asset 的渲染器函数体");
+  ok(
+    !!browseRegion && browseRegion.indexOf("NODE_BROWSE_BODY.asset") >= 0,
+    "素材节点渲染器落在「浏览态区块」内（与其余 kind 同一节，注释锚点没漂走）",
+  );
+  if (aBrowse) {
+    /* 资源占用就是这一条：未 focus 时不许把正文 / 缩略图 / 播放器造出来 */
+    ok(
+      !/createElement\("textarea"\)|createElement\("img"\)|createElement\("video"\)|createElement\("button"\)|createElement\("input"\)/.test(
+        aBrowse,
+      ),
+      "浏览态不构造 textarea / img / video / button / input（内容本体只在编辑态出现）",
+    );
+    ok(
+      !/wavePreviewCreate\(|bindImagePreview\(|assetItemOps\(/.test(aBrowse),
+      "浏览态不挂波形预览器 / 图片预览 / 条目操作排（那三样都是编辑态构件）",
+    );
+    /* 资源占用的另一半：未 focus 时不向素材库逐条取正文 */
+    ok(
+      !/assetItemsEnsure\(/.test(aBrowse) && !/assetItemViewLoad\(/.test(aBrowse),
+      "浏览态不向素材库发内容读取（assets:itemRead 只在点选后的编辑态发）",
+    );
+    /* 空壳（未绑定）与内容无关：照旧给绑定 / 上传入口，别让刚建的节点要先猜「点一下」 */
+    ok(
+      /if \(!bound\) \{[\s\S]{0,200}?assetBindBox\(/.test(aBrowse) &&
+        /I18n\.t\("未绑定素材"\)/.test(aBrowse),
+      "未绑定（空壳）照旧渲染 assetBindBox 的绑定 / 上传入口（与内容本体无关）",
+    );
+    ok(
+      !/assetItemOps\(|assetBindBtn\(/.test(aBrowse),
+      "浏览态不挂条目操作排 / 自造按钮（空壳入口复用编辑态那份 assetBindBox）",
+    );
+    ok(
+      /assetItems\(node\)/.test(aBrowse),
+      "摘要只读节点上已存的条目快照 assetItems(node)（id / 标题 / 类型 · 同步取数）",
+    );
+    ok(
+      /n-view-assets/.test(aBrowse) && /n-asset-kind/.test(aBrowse),
+      "清单用 .n-view-assets 行 + 复用编辑态的类型徽标 .n-asset-kind",
+    );
+    ok(
+      /I18n\.t\("素材失联：点选本节点后看详情 \/ 重新绑定"\)/.test(aBrowse),
+      "失联给一句去向（点选本节点 · 端子与连线原样保留）",
+    );
+    ok(
+      /I18n\.t\("该素材还没有内容：点选本节点后逐条查看 \/ 添加"\)/.test(aBrowse),
+      "空素材也有去向句（未 focus 时不显示「设置」按钮）",
+    );
+  }
+  /* 编辑态零回归：点选（拿焦点）后仍是原样那条逐条内容 + 「覆盖」按钮的 body */
+  const es = funcBody(jsCanvas, "function buildAssetBody(node, body)");
+  ok(!!es && /assetItemRow\(node, items\[i\], i, lost\)/.test(es), "编辑态照旧逐条 assetItemRow（标题 + 类型 + 覆盖按钮 + 内容视图）");
+  ok(!!es && /assetItemsEnsure\(node\)/.test(es), "编辑态照旧向库补齐内容（点选后才有内容与缩略图）");
+  ok(
+    /if \(nodeBrowseMode\(node\) && buildBrowseBody\(node, body\)\) return;/.test(jsCanvas),
+    "buildBody 入口分流在素材节点分支之前（未选中不再走 buildAssetBody）",
+  );
+  const kindSet = (jsCanvas.match(/const NODE_BROWSE_KINDS = new Set\(\[([\s\S]*?)\]\)/) || [])[1] || "";
+  ok(/'?"asset"?,/.test(kindSet) || /"asset"/.test(kindSet), "asset 登记进 NODE_BROWSE_KINDS（未选中 = 浏览态）");
+  /* CSS：摘要行要真能对上类名（不然是裸类名 / 无样式） */
+  ok(/\.wf-node\.browse \.n-view-assets \{/.test(css), "canvas.css 有 .wf-node.browse .n-view-assets 规则（清单排版）");
+  ok(/\.wf-node\.browse \.n-view-asset-name \{/.test(css), "canvas.css 有摘要行标题规则（一行裁尾 · 不撑高节点）");
+  ok(/\.wf-node\.browse \.n-view-assets \.n-asset-kind \{/.test(css), "类型徽标在浏览态有 flex:none 钉位（不挤压标题）");
+}
+
+console.log("\n[11] 函数节点：外部只显示内容 · 点进去才出可编辑代码块（本轮 Bug 的两半）");
 {
   const at = jsCanvas.indexOf("NODE_BROWSE_BODY.function = function (node, body) {");
   const fnBrowse = at >= 0 ? blockFrom(jsCanvas, at) : null;

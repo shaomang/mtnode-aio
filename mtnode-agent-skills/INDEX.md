@@ -3,7 +3,7 @@
 以下条目仅含摘要。**不要**一次性读取全部 SKILL.md。
 
 调取方式（任选其一）：
-1. `skill` 工具：`skill` 参数为下表 `name`（已注册到 DSH_HOME/skills，带 `.mtnode-internal` 标记）。
+1. `skill` 工具：`skill` 参数为下表 `name`（已注册到 DSH_HOME/skills：front matter 无 `menu` 的带 `.mtnode-internal` 标记，只在内置索引里对模型可见；写了 `menu: user` 的带 `.builtin` 标记，同时出现在用户技能清单与「/」菜单里，标「内置」只读）。
 2. `read` 工具：路径 `$DSH_HOME/mtnode-agent-skills/<path>`。
 
 ## MTNode 产品与画布
@@ -18,7 +18,14 @@
   - 文件：`mtnode/db-facts/SKILL.md`
 - **mtnode-dev-architect** — 开发节点架构师：用「开发节点」（super + dev:true 的项目功能块）在 MTNode 画布上搭建/分析软件项目架构。模式 A：扫描已有项目，生成覆盖全项目的开发节点架构图（不确定处询问用户）；模式 B：新项目先搭架构、用户明确「确认」后按画布逐块搭建项目。生成开发节点时同步在项目根产出 AGENTS.md 共识文件（目录约定 / 不要修改清单），所有建议 / 开发 / 细化会话先读并遵守，并在最外层建 agent.md 入口文件节点（应用内 Markdown 阅读器可查看 / 编辑 / 保存）。每个功能块可用 devModel / devPreset / devEffort 指定 Agent 模型、预设与思考强度（建议 / 开发 / 细化与问询会话都按这三项下达，三项各自就近向上继承、互不牵连，思考档只由设置决定 · 界面回显即实际下发），可用 devColor 自定义外框颜色，可用 devF
   - 文件：`mtnode/dev-architect/SKILL.md`
-- **mtnode-grill-me** — 拷问我：需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.
+- **mtnode-grill-me** — 拷问我：需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。共识若含审批 / 交付 / 驳回回跳 / 并行 / 子图，产出的是长周期任务图（DAG）JSON。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.
   - 文件：`mtnode/grill-me/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/语音/视频生成节点：MTNode music_gen / tts_gen / video_gen 节点：MiniMax Music 3、SoVITS 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, tts_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
   - 文件：`mtnode/media-gen-nodes/SKILL.md`
+
+## 音乐生成（MiniMax Music）
+
+- **minimax-music-lyrics** — MiniMax Music 歌词：【内置·随应用发版，不需从工坊安装】按 MiniMax Music 官方规范写可演唱的歌词正文：结构标签独占一行（Intro / Verse / Pre-Chorus / Chorus / Bridge / Hook / Solo / Outro）、为唱而写的行长、副歌钩子与主歌对比、括号只用于要发声的衬词，不把舞台指示写进会唱出来的正文。MTNode「Minimax Music 3 / YuE2」节点的歌词端口用它，曲风与人声表演交给 minimax-music-prompt。
+  - 文件：`music/minimax-music-lyrics/SKILL.md`
+- **minimax-music-prompt** — MiniMax Music 提示词：【内置·随应用发版，不需从工坊安装】把一句话想法写成 MiniMax Music 的风格提示词：一段英文散文，六句按 Style+Mood → Tempo/Groove → Instruments → Vocals → Structure → Production 排（写句子、不写逗号标签、不含唱词）。控制曲风、人声、乐器、段落对比与制作；含官方六步、最小改动迭代表与校验清单。MTNode「Minimax Music 3 / YuE2」节点的提示词端口用它。
+  - 文件：`music/minimax-music-prompt/SKILL.md`

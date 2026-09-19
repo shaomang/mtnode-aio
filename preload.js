@@ -61,7 +61,8 @@ contextBridge.exposeInMainWorld('api', {
   wfBackupStatus: () => ipcRenderer.invoke('workflow:backupStatus'),
   wfBackupOpen: () => ipcRenderer.invoke('workflow:backupOpen'),
 
-  assetCopy: (srcPath, wfId, name) => ipcRenderer.invoke('asset:copy', { srcPath, wfId, name }),
+  /* native=true：原样复制（不改尺寸 / 不重编码）—— 泛用「文件节点」载入图像时用它保留原图尺寸 */
+  assetCopy: (srcPath, wfId, name, native) => ipcRenderer.invoke('asset:copy', { srcPath, wfId, name, native: !!native }),
   assetWriteBase64: (wfId, name, base64, ext) => ipcRenderer.invoke('asset:writeBase64', { wfId, name, base64, ext }),
   assetReadDataUrl: (p) => ipcRenderer.invoke('asset:readDataUrl', p),
   assetMeta: (p) => ipcRenderer.invoke('asset:meta', p),
@@ -74,6 +75,11 @@ contextBridge.exposeInMainWorld('api', {
   fileWriteText: (p, c) => ipcRenderer.invoke('file:writeText', { path: p, content: c }),
   fileWriteBytes: (p, data) => ipcRenderer.invoke('file:writeBytes', { path: p, data }),
   captureRect: (rect) => ipcRenderer.invoke('view:captureRect', rect),
+  /* 桌面 / 窗口截图（main.js desktop-capture.js）：拍的不是本窗口，而是别的屏幕 / 别的窗口。
+     desktopList 只读列举（屏幕 / 窗口，用来挑目标），desktopShot 拍一张并回落盘路径。
+     函数节点里的 mtnode.screenShot 走主进程直连，不经这里。 */
+  desktopList: (what) => ipcRenderer.invoke('desktop:list', { what: what || 'screens' }),
+  desktopShot: (params) => ipcRenderer.invoke('desktop:shot', params || {}),
   fileCopyAssetTo: (a, d) => ipcRenderer.invoke('file:copyAssetTo', { assetPath: a, destPath: d }),
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),
@@ -266,6 +272,27 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('appPlugins:windowChanged', handler);
     return () => ipcRenderer.removeListener('appPlugins:windowChanged', handler);
   },
+  /* ── 插件运行期报错 → 交给渲染层弹错误报告窗 + 可见会话自动修复
+      （消费方 renderer/app-repair.js，主进程侧推送与 handler 见 main.js / 各插件宿主）
+      · onPluginRepairError(cb)：主进程 send('pluginRepair:error', payload) —— 启动即订阅，
+        不等插件对话框打开。payload 字段全部可选（缺什么界面就不显示什么）：
+        { pluginId|plugin, pluginName|name, kind, installDir|dir, scaffoldRef|scaffold, skill,
+          code|errorCode, message|error, log|logTail, focus, nodeId, nodeTitle, nodeKind,
+          workflowId, workflowName, marker, resultFile, at }
+      · pluginRepairReport(payload)：渲染层回执本窗的处理（event: shown / accepted /
+        ignored / console / fail），插件侧据此少弹自己那套重复提示。
+      · pluginRepairResult(payload)：自动修复会话跑完的结论
+        { pluginId, code, sessionId, workspace, ok, repairOk, outcome, reason }。
+      后两条主进程 handler 缺省时只是 Promise reject，渲染层已吞异常。 */
+  onPluginRepairError: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (e) { console.error('onPluginRepairError', e); }
+    };
+    ipcRenderer.on('pluginRepair:error', handler);
+    return () => ipcRenderer.removeListener('pluginRepair:error', handler);
+  },
+  pluginRepairReport: (payload) => ipcRenderer.invoke('pluginRepair:report', payload || {}),
+  pluginRepairResult: (payload) => ipcRenderer.invoke('pluginRepair:result', payload || {}),
   onForumAuthChanged: (cb) => {
     const handler = (_e, auth) => {
       try { cb(auth); } catch (_) {}
@@ -333,6 +360,41 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('music3:gpu', handler);
   },
 
+  /* ── 本地音乐生成（YuE2）：方法名与 yue/main-yue.js 的 yue: IPC 通道一一对应 ── */
+  yue2Status: () => ipcRenderer.invoke('yue:getStatus'),
+  yue2Open: () => ipcRenderer.invoke('yue:open'),
+  yue2Close: () => ipcRenderer.invoke('yue:close'),
+  yue2Install: (opts) => ipcRenderer.invoke('yue:install', opts || {}),
+  yue2CancelInstall: () => ipcRenderer.invoke('yue:cancelInstall'),
+  yue2Start: () => ipcRenderer.invoke('yue:start'),
+  yue2Stop: () => ipcRenderer.invoke('yue:stop'),
+  yue2PickInstallDir: () => ipcRenderer.invoke('yue:pickInstallDir'),
+  yue2Generate: (params) => ipcRenderer.invoke('yue:generate', params || {}),
+  yue2CancelGenerate: (nodeId) => ipcRenderer.invoke('yue:cancelGenerate', nodeId),
+  yue2GetLock: () => ipcRenderer.invoke('yue:getLock'),
+  yue2RemovePluginMeta: () => ipcRenderer.invoke('yue:removePluginMeta'),
+  onYueProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('yue:progress', handler);
+    return () => ipcRenderer.removeListener('yue:progress', handler);
+  },
+  onYueConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('yue:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('yue:consoleChanged', handler);
+  },
+  onYueGpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('yue:gpu', handler);
+    return () => ipcRenderer.removeListener('yue:gpu', handler);
+  },
+
   h3Status: () => ipcRenderer.invoke('h3:getStatus'),
   h3UpdateRuntime: () => ipcRenderer.invoke('h3:updateRuntime'),
   h3Open: () => ipcRenderer.invoke('h3:open'),
@@ -346,6 +408,8 @@ contextBridge.exposeInMainWorld('api', {
   h3PickInstallDir: () => ipcRenderer.invoke('h3:pickInstallDir'),
   h3Generate: (params) => ipcRenderer.invoke('h3:generate', params || {}),
   h3CancelGenerate: (nodeId) => ipcRenderer.invoke('h3:cancelGenerate', nodeId),
+  /* 独立后处理（超分 / 补帧）：不再随 h3:generate 内联跑，画布后处理节点单独调用 */
+  h3PostProcess: (params) => ipcRenderer.invoke('h3:postProcess', params || {}),
   h3WorkflowList: () => ipcRenderer.invoke('h3:wfList'),
   h3WorkflowGet: (id) => ipcRenderer.invoke('h3:wfGet', id),
   h3WorkflowValidate: (id) => ipcRenderer.invoke('h3:wfValidate', id),
@@ -476,6 +540,51 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('asr:consoleChanged', handler);
   },
 
+  /* ── 本地图像生成（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图，见 sensenova/main-sensenova.js ── */
+  sensenovaStatus: () => ipcRenderer.invoke('sensenova:getStatus'),
+  sensenovaHealth: (opts) => ipcRenderer.invoke('sensenova:health', opts || {}),
+  sensenovaOpen: () => ipcRenderer.invoke('sensenova:open'),
+  sensenovaClose: () => ipcRenderer.invoke('sensenova:close'),
+  sensenovaInstall: (opts) => ipcRenderer.invoke('sensenova:install', opts || {}),
+  sensenovaAgentInstall: (opts) => ipcRenderer.invoke('sensenova:agentInstall', opts || {}),
+  sensenovaAgentRecoverInstall: (opts) => ipcRenderer.invoke('sensenova:agentRecoverInstall', opts || {}),
+  sensenovaSelfRepair: (opts) => ipcRenderer.invoke('sensenova:selfRepair', opts || {}),
+  sensenovaCancelInstall: () => ipcRenderer.invoke('sensenova:cancelInstall'),
+  sensenovaStart: (opts) => ipcRenderer.invoke('sensenova:start', opts || {}),
+  sensenovaStop: () => ipcRenderer.invoke('sensenova:stop'),
+  sensenovaEnsureReady: (opts) => ipcRenderer.invoke('sensenova:ensureReady', opts || {}),
+  sensenovaForceKill: (reason) => ipcRenderer.invoke('sensenova:forceKill', reason),
+  sensenovaGenerate: (params) => ipcRenderer.invoke('sensenova:generate', params || {}),
+  sensenovaCancelGenerate: (nodeId) => ipcRenderer.invoke('sensenova:cancelGenerate', nodeId),
+  sensenovaGetLock: () => ipcRenderer.invoke('sensenova:getLock'),
+  sensenovaPickInstallDir: () => ipcRenderer.invoke('sensenova:pickInstallDir'),
+  sensenovaSetInstallDir: (dir) => ipcRenderer.invoke('sensenova:setInstallDir', dir),
+  sensenovaSetConfig: (patch) => ipcRenderer.invoke('sensenova:setConfig', patch || {}),
+  sensenovaGpuProbe: () => ipcRenderer.invoke('sensenova:gpuProbe'),
+  sensenovaConsoleTail: (n) => ipcRenderer.invoke('sensenova:consoleTail', n),
+  sensenovaRemovePluginMeta: () => ipcRenderer.invoke('sensenova:removePluginMeta'),
+  onSensenovaProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('sensenova:progress', handler);
+    return () => ipcRenderer.removeListener('sensenova:progress', handler);
+  },
+  onSensenovaConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('sensenova:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('sensenova:consoleChanged', handler);
+  },
+  onSensenovaGpu: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('sensenova:gpu', handler);
+    return () => ipcRenderer.removeListener('sensenova:gpu', handler);
+  },
+
   remotionStatus: () => ipcRenderer.invoke('remotion:getStatus'),  remotionInstall: (opts) => ipcRenderer.invoke('remotion:install', opts || {}),
   remotionOpen: () => ipcRenderer.invoke('remotion:open'),
   remotionClose: () => ipcRenderer.invoke('remotion:close'),
@@ -517,8 +626,11 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   /* ── dsh agent 网关（见 dsh/DESIGN.md）──
-     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'journal'|'canvas'|'db'|'question'|'approval'|'ix-drop'|'error'|'done', data}。
-     'journal' 是回滚帧（改前/改后采样），done 之后到达的帧改由 dshRollbackDrain 取回。 */
+     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'journal'|'canvas'|'db'|'question'|'approval'|'ix-drop'|'session-event'|'error'|'done', data}。
+     'journal' 是回滚帧（改前/改后采样），done 之后到达的帧改由 dshRollbackDrain 取回。
+     'session-event' 是运行时原始帧的透传，插话（dshSteer）的注入回执就靠它：
+     data.type === 'agent/inbox/spliced' 表示那句插话真的进了正在跑的这一轮；
+     暂停（dshPause）之后的收尾则以 done{paused:true} 出现（不会有 error）。 */
   dshConfig: () => ipcRenderer.invoke('dsh:config'),
   dshStatus: () => ipcRenderer.invoke('dsh:status'),
   dshRun: (params, cb) => {
@@ -554,6 +666,13 @@ contextBridge.exposeInMainWorld('api', {
   setLocale: (locale) => ipcRenderer.invoke('i18n:setLocale', locale),
   dshCancel: (params) => ipcRenderer.invoke('dsh:cancel', params),
   dshInteract: (params) => ipcRenderer.invoke('dsh:interact', params),
+  /* 运行中插话 / 暂停（只在「本轮还在跑」时点名那一轮；见 dsh/DESIGN.md）：
+     params {reqId | cancelTag, sessionId?, text?|contentBlocks?（仅插话）}
+     → {ok:true, reqId, sessionId, steered|paused:true}；送不出去时
+     {ok:false, reason:'unsupported'|'timeout', ...}。'unsupported' 是降级口径
+     （老网关 / 老运行时 / 这一轮已经结束），调用方应回落成排队消息，别当发送失败。 */
+  dshSteer: (params) => ipcRenderer.invoke('dsh:steer', params),
+  dshPause: (params) => ipcRenderer.invoke('dsh:pause', params),
   /* 回滚：取回 done 之后才到达的 journal 帧（网关环形缓冲），params {sessionId, roundId} */
   dshRollbackDrain: (params) => ipcRenderer.invoke('dsh:rollbackDrain', params),
   dshProviderCatalog: () => ipcRenderer.invoke('dsh:providerCatalog'),
@@ -566,10 +685,27 @@ contextBridge.exposeInMainWorld('api', {
 
   /* ── 工具库：跨画布可复用工具包（tools-store.js 落盘 <数据目录>/tools/*.json）── */
   toolsList: () => ipcRenderer.invoke('tools:list'),
+
   toolsGet: (id) => ipcRenderer.invoke('tools:get', id),
   toolsSave: (pkg) => ipcRenderer.invoke('tools:save', pkg),
   toolsDelete: (id) => ipcRenderer.invoke('tools:delete', id),
   toolsPatch: (id, patch) => ipcRenderer.invoke('tools:patch', { id, patch }),
+
+  /* ── 长周期任务系统（longtask-store.js）：run checkpoint / 长期记忆 / 交付目录 ──
+     图定义不进这里（随工作流 JSON 自动保存）；这里只存「跑起来才会变的东西」。 */
+  ltRunSave: (wfId, run) => ipcRenderer.invoke('lt:runSave', { wfId, run }),
+  ltRunGet: (wfId, runId) => ipcRenderer.invoke('lt:runGet', { wfId, runId }),
+  ltRunList: (wfId) => ipcRenderer.invoke('lt:runList', { wfId }),
+  ltRunDelete: (wfId, runId) => ipcRenderer.invoke('lt:runDelete', { wfId, runId }),
+  ltMemAdd: (items) => ipcRenderer.invoke('lt:memAdd', { items: items || [] }),
+  ltMemRecall: (opts) => ipcRenderer.invoke('lt:memRecall', opts || {}),
+  ltMemList: (opts) => ipcRenderer.invoke('lt:memList', opts || {}),
+  ltMemGet: (id) => ipcRenderer.invoke('lt:memGet', { id }),
+  ltMemDelete: (ids) => ipcRenderer.invoke('lt:memDelete', { ids: ids || [] }),
+  ltMemStats: () => ipcRenderer.invoke('lt:memStats'),
+  ltDeliverEnsure: (opts) => ipcRenderer.invoke('lt:deliverEnsure', opts || {}),
+  ltDeliverList: (opts) => ipcRenderer.invoke('lt:deliverList', opts || {}),
+  ltDeliverOrphans: (opts) => ipcRenderer.invoke('lt:deliverOrphans', opts || {}),
 
   /* ── 素材库：独立于画布的内容仓库（assets-store.js，根目录由用户指定并记在 config.json）── */
   assetsGetRoot: () => ipcRenderer.invoke('assets:getRoot'),

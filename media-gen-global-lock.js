@@ -72,16 +72,20 @@ function releaseLock(nodeId) {
   if (lock && (!nodeId || lock.nodeId === nodeId)) clearLock();
 }
 
+/** 全局锁被别的任务占着时的文案：本地大模型同一时刻只允许跑一个（一张卡装不下两个）。 */
 function busyMessage(lock) {
   const kind = lock && lock.kind;
   const label =
     kind === "video_gen"
       ? "视频"
-      : kind === "music_gen"
+      : kind === "music_gen" || kind === "yue_gen"
         ? "音乐"
         : kind === "tts_gen"
           ? "语音"
-          : "音视频";
+          : /* 本地图像生成（SenseNova）也是整卡级占用，与音乐 / 视频必须互斥 */
+            kind === "sensenova_gen"
+            ? "图像"
+            : "音视频";
   return (
     "已有" +
     label +

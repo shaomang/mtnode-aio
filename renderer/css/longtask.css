@@ -1,0 +1,2296 @@
+/* ══════════════════════════════════════════════════════════════════════
+ * 长周期任务（LangGraph 式状态机 · 人在环 · 长期记忆）
+ * ----------------------------------------------------------------------
+ * 收起态 = 菜单条与画布之间一根 6px 细线（hover 亮起 cyan），下拉展开后画布与
+ * tabs 整体被推到下方，上方这块就是状态机编辑器 + 实时可视化。细线挂在面板**下沿**
+ * （= 长任务区与画布页签的分界线）：往下拖时线跟着鼠标的 y 走，页签与画布一起下沉。
+ * 配色只走 base.css 的主题变量；呼吸灯沿用 canvas.css 里 devRunBreathe 的写法
+ * （常态与选中两套动画名，避免切选中时动画跳帧）。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* ── 条带骨架 ─────────────────────────────────────────────────── */
+.lt-strip {
+  flex: none;
+  order: -1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  /* 收窄细线与上下的空隙：条带用负外边距抵掉一部分 .wf-wrap 的 padding(10) / gap(8)，
+     线两侧只留约 4px / 2px，不再像悬在正中央。收起态面板 hidden，条带里只剩这根线。 */
+  margin: -6px 0 -6px;
+}
+.lt-grip {
+  flex: none;
+  position: relative;
+  /* 线在面板下沿（= 长任务区与画布页签的分界线）：与面板之间那点空隙由 .lt-body 的
+     margin-top 给，线自己不再另留上边距（空隙统一由条带的负外边距控制）。 */
+  margin-top: 0;
+  height: 6px;
+  box-sizing: border-box;
+  border-radius: 3px;
+  background: var(--bd);
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  opacity: 0.55;
+  transition: opacity 0.12s, background-color 0.12s, box-shadow 0.12s;
+}
+.lt-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+.lt-grip:hover,
+.lt-grip.dragging,
+.lt-grip[data-hover] {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.18);
+  box-shadow: 0 0 0 1px rgba(56, 214, 255, 0.28);
+}
+.lt-grip:hover::after,
+.lt-grip.dragging::after,
+.lt-grip[data-hover]::after {
+  background: var(--cyan);
+}
+/* ── 细线的运行态：收起态只看得见这根线，所以状态直接落在线上 ──────────
+   颜色只由「跑得怎么样」决定：运行中橙、等你处理黄、卡住 / 失败红（三者走呼吸灯），
+   跑完绿（常亮即止）。条带展开态不再换色 —— 拖到下方时线的颜色与
+   收起态一致，颜色只回答「任务在不在跑」。规则放在 hover / dragging 之后，
+   运行态的线在悬停与拖拽中也不变色。 */
+.lt-grip-s-run,
+.lt-grip-s-wait,
+.lt-grip-s-fail,
+.lt-grip-s-ok {
+  opacity: 1;
+}
+.lt-grip-s-run {
+  --lt-glow: 255, 143, 46;
+  background: rgba(255, 143, 46, 0.18);
+}
+.lt-grip-s-wait {
+  --lt-glow: 255, 209, 102;
+  background: rgba(255, 209, 102, 0.18);
+}
+.lt-grip-s-fail {
+  --lt-glow: 255, 95, 86;
+  background: rgba(255, 95, 86, 0.18);
+}
+.lt-grip-s-ok {
+  --lt-glow: 95, 214, 138;
+  background: rgba(95, 214, 138, 0.16);
+}
+.lt-grip-s-run::after {
+  background: var(--orange);
+}
+.lt-grip-s-wait::after {
+  background: var(--yellow);
+}
+.lt-grip-s-fail::after {
+  background: var(--red);
+}
+.lt-grip-s-ok::after {
+  background: var(--green);
+}
+/* 呼吸灯只给「活着的」状态（运行 / 等待 / 卡住）；跑完常亮，不闪。 */
+.lt-grip-s-run,
+.lt-grip-s-wait,
+.lt-grip-s-fail {
+  animation: ltGripBreath 1.9s ease-in-out infinite;
+}
+@keyframes ltGripBreath {
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(var(--lt-glow, 56, 214, 255), 0);
+  }
+  50% {
+    box-shadow: 0 0 10px rgba(var(--lt-glow, 56, 214, 255), 0.75);
+  }
+}
+.lt-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+  /* 不设 max-height：真正的上限 = 此刻画布 tabs 刚好贴住 .wf-wrap 下沿（画布被压成 0 高），
+     由 app-longtask-ui.js 的 ltClampH / ltBodyMaxH 按实测夹。写死 900px 时窗口一矮
+     （900 远大于实际可用高度），tabs / 画布 / 底部状态栏会被一起顶到窗外。 */
+  max-height: none;
+  /* 面板与细线之间也只留 2px（原 4px）：细线上下的空隙整体收窄。 */
+  margin-top: 2px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.lt-body[hidden] {
+  display: none;
+}
+/* 条带展开时让画布「可被压扁」：.fn-canvas 默认咬着 360px 的 min-height 不放，
+   于是细线越往下拖、整块越低，tabs 与画布被推出 .wf-wrap，细线再也拖不回来。
+   展开态把下限归零 —— 拖到底 = 画布归零、tabs 停在 .wf-wrap 下沿（.lt-open 由
+   app-longtask-ui.js 的 ltSetOpen 在展开 / 收起时同步）。 */
+.wf-wrap.lt-open .fn-canvas {
+  min-height: 0;
+}
+.lt-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--panel2);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.lt-spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+.lt-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+}
+.lt-left {
+  flex: 1 1 62%;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lt-right {
+  flex: 1 1 38%;
+  min-width: 280px;
+  max-width: 520px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+/* ── 按钮 / 徽标 ────────────────────────────────────────────────
+   ⚠ 下面这一族「可点件」的悬停态一律写成 `:hover, [data-hover]` 两路（本次需求）：
+   `[data-hover]` 是 ltRenderStrip 重建前后补上的悬停标（app-longtask-ui.js 的
+   ltHoverKey / ltHoverCapture / ltHoverApply）—— 条带在长任务运行期约 90ms 重建一次，
+   只写 `:hover` 时鼠标底下那只元素被换掉，悬停态每帧丢一次 = 按钮频繁闪烁。
+   以后新增可点件照这个口径写：正常态一份、`:hover` 与 `[data-hover]` 并排一份，
+   两路要给**同一份值**（合并进同一条规则即可），否则重建后的补标会与真 hover 不一致。 */
+.lt-btn {
+  flex: none;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+  color: var(--ink);
+  font: 600 12px/1.4 var(--sans);
+  padding: 4px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s, background-color 0.12s, color 0.12s;
+}
+.lt-btn:hover,
+.lt-btn[data-hover] {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+.lt-btn-pri {
+  border-color: rgba(56, 214, 255, 0.55);
+  background: rgba(56, 214, 255, 0.14);
+  color: var(--cyan2);
+}
+.lt-btn-pri:hover,
+.lt-btn-pri[data-hover] {
+  background: rgba(56, 214, 255, 0.24);
+}
+.lt-btn-pri.dim {
+  opacity: 0.55;
+}
+.lt-btn-warn {
+  border-color: rgba(255, 209, 102, 0.5);
+  color: var(--yellow);
+}
+.lt-btn-del {
+  border-color: rgba(255, 95, 86, 0.45);
+  color: var(--red);
+}
+.lt-btn-ico {
+  padding: 4px 6px;
+  min-width: 24px;
+}
+.lt-chip {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 20px;
+  border: 1px solid var(--bd2);
+  background: var(--panel);
+  color: var(--muted);
+  font: 600 11px/1.4 var(--sans);
+  white-space: nowrap;
+}
+.lt-chip-run {
+  border-color: rgba(255, 143, 46, 0.55);
+  color: var(--orange2);
+}
+.lt-chip-wait {
+  border-color: rgba(56, 214, 255, 0.6);
+  color: var(--cyan2);
+  cursor: pointer;
+}
+.lt-chip-wait:hover,
+.lt-chip-wait[data-hover] {
+  background: rgba(56, 214, 255, 0.14);
+}
+.lt-chip-ok {
+  border-color: rgba(95, 214, 138, 0.55);
+  color: var(--green);
+}
+.lt-chip-fail,
+.lt-chip-block {
+  border-color: rgba(255, 95, 86, 0.55);
+  color: var(--red);
+}
+.lt-chip-off {
+  color: var(--muted);
+}
+.lt-chip-mem {
+  border-color: rgba(154, 176, 200, 0.6);
+  color: #9bb0c8;
+  cursor: pointer;
+}
+.lt-chip-mem:hover,
+.lt-chip-mem[data-hover] {
+  background: rgba(154, 176, 200, 0.16);
+}
+/* 当前选型 chip（本轮需求）：条带头常驻的「模型 · 预设 · 思考强度」只读回显。
+   AI 紫（#c792ea，与功能色卡的 ai 同色）与状态 chip 的橙 / 青 / 绿 / 红一眼分开 ——
+   它说的是「用哪只模型」，不是「跑到哪一步了」。完整路由 · 模型 · 预设 · 强度在 title。 */
+.lt-chip-model {
+  border-color: rgba(199, 146, 234, 0.55);
+  color: #c792ea;
+  cursor: default;
+}
+.lt-chip-model:hover {
+  background: rgba(199, 146, 234, 0.14);
+}
+
+/* ── 空态（画布未绑定长任务时给创建入口 · 需求 4 末句）──────────── */
+.lt-empty {
+  margin: auto;
+  max-width: 640px;
+  text-align: center;
+  padding: 18px 10px;
+}
+.lt-empty-ico {
+  font-size: 30px;
+  color: var(--cyan);
+  opacity: 0.8;
+}
+.lt-empty-h {
+  margin: 6px 0;
+  font: 700 15px/1.5 var(--sans);
+}
+.lt-empty-p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.lt-empty-row {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+/* ── 面包屑 + 缩放回显（同一行：不给自己独占一行）───────────────── */
+.lt-crumb {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.lt-crumb-i {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: 600 11px/1.4 var(--sans);
+  padding: 2px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.lt-crumb-i:hover,
+.lt-crumb-i[data-hover] {
+  color: var(--cyan2);
+}
+.lt-crumb-i.on {
+  border-color: var(--bd2);
+  background: var(--panel2);
+  color: var(--ink);
+  cursor: default;
+}
+/* 根条目是本行的「当前任务 + 切换入口」：它不是路径里的一个层级，所以不带 ▸；
+   它自己的「点得开」提示是名字后那个 ▾（写在正文里，见 ltCrumbTaskBtn）。 */
+.lt-crumb-root.on::after {
+  content: "";
+}
+.lt-crumb-i.on::after {
+  content: " ▸";
+  color: var(--muted);
+}
+.lt-crumb-i:last-child::after {
+  content: "";
+}
+/* 根条目 = 当前长任务名（本次需求：以前这里写死「主图」）。它同时是**任务切换入口**，
+   所以比中间那些「路径条目」重一档（字色更亮），并在名字后面自带宽窄不变的 ▾（写在
+   textContent 里，不必靠伪元素），点开时按 .on 亮边 —— 用户一眼看出「这里点得开、
+   而且我正看的是这张任务」。长名字不撑破这一行：限宽 + 省略号（任务名由用户起，可很长）。 */
+.lt-crumb-root {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.lt-crumb-root:hover,
+.lt-crumb-root[data-hover] {
+  color: var(--cyan2);
+}
+/* 展开中：与头部下拉按钮同一份「亮边」口径（.lt-head .lt-btn.on） */
+.lt-crumb-root.on {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+  background: var(--panel2);
+}
+/* 任务清单里「就是当前显示的这张」那一项：带 ✓ 且点不动（它就是此刻图上的这张任务） */
+.lt-more-i.lt-crumb-cur {
+  color: var(--muted);
+  cursor: default;
+}
+.lt-more-i.lt-crumb-cur:hover {
+  background: transparent;
+  border-color: transparent;
+}
+/* 「这张画布还没有长任务」的说明项（点了不做事，也不是按钮手感） */
+.lt-more-i.lt-crumb-none {
+  color: var(--muted);
+  cursor: default;
+  font-size: 11px;
+}
+.lt-more-i.lt-crumb-none:hover {
+  background: transparent;
+  border-color: transparent;
+}
+/* 工具条（.lt-gbar）整条已撤（本次需求）：加节点 / 删除选中早先就搬进了图内右键菜单，
+   那枚缩放回显也不再独占一行 —— 它挂到**第一行**（面包屑那一行）的右端（见下面
+   .lt-crumb .lt-btn-zoom），条带少一行 = 画布多一行高度。
+   加节点按钮那套「小字压暗 + hover 提亮」的口径仍留给右键菜单项（见文件末尾
+   .lt-more-i.lt-btn-add）。 */
+/* 缩放回显：与右边检查器同一份「小件」口径，margin-left:auto 顶到面包屑那一行的最右端。
+   常态压暗，hover 提亮 —— 它同时兼任「滚轮缩放 / 点一下回到 100%」的提示位。 */
+.lt-crumb .lt-btn-zoom {
+  margin-left: auto;
+  font: 700 10px var(--mono);
+  padding: 3px 7px;
+  color: var(--muted);
+}
+.lt-crumb .lt-btn-zoom:hover,
+.lt-crumb .lt-btn-zoom[data-hover] {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+}
+
+/* ── 状态机画布（SVG）──────────────────────────────────────────
+   视觉与**主画布**（canvas.css 的 .fn-canvas）同源：同一份点阵网格背景、
+   同一套 --panel / --bd2 / --bg 变量、同样的 4px 圆角。
+   --lt-grid 由 ltGraphGridSync() 按吸附网格 × viewBox 缩放写进来（默认 24 = 吸附步长），
+   所以点阵间距与节点落点对齐；点径 / 颜色口径照抄 .fn-canvas 的 radial-gradient。 */
+.lt-graph {
+  /* --lt-grid 由 JS 按 snap 间距与 viewBox 缩放同步，保证节点落点与点阵对齐 */
+  --lt-grid: 24px;
+  /* --lt-grid-x / -y 由 ltGraphGridSync() 按 viewBox 平移量写进来：平移时点阵与节点一起走 */
+  --lt-grid-x: 0px;
+  --lt-grid-y: 0px;
+  flex: 1 1 auto;
+  min-height: 160px;
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  overflow: auto;
+  outline: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(122, 138, 146, .16) 1px, transparent 1.5px) var(--lt-grid-x) var(--lt-grid-y) / var(--lt-grid) var(--lt-grid),
+    linear-gradient(180deg, var(--bg), var(--bg2));
+}
+.lt-graph:active,
+.lt-graph.is-panning,
+.lt-graph.is-panning * {
+  cursor: grabbing;
+}
+.lt-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  min-width: 100%;
+}
+.lt-edge {
+  fill: none;
+  stroke: var(--bd2);
+  stroke-width: 2;
+}
+.lt-edge.cond {
+  stroke-dasharray: 5 4;
+  stroke: #6b7482;
+}
+.lt-edge.fired {
+  stroke: var(--cyan);
+  stroke-width: 2.4;
+}
+.lt-edge.sel {
+  stroke: var(--orange);
+  stroke-width: 3;
+}
+/* 连线拖动中的橡皮筋预览（跟随鼠标的临时 path，不参与命中） */
+.lt-edge-temp {
+  stroke: var(--cyan);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  opacity: 0.9;
+  pointer-events: none;
+}
+.lt-edge-label {
+  fill: var(--muted);
+  font: 600 11px var(--sans);
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg2);
+  stroke-width: 3;
+}
+.lt-nd rect {
+  fill: var(--panel);
+  stroke: var(--bd2);
+  stroke-width: 1.5;
+  transition: stroke 0.14s, fill 0.14s;
+}
+.lt-nd {
+  cursor: grab;
+}
+.lt-nd-kind {
+  fill: var(--muted);
+  font: 700 9px var(--mono);
+  letter-spacing: 0.06em;
+}
+.lt-nd-title {
+  fill: var(--ink);
+  font: 700 13px var(--sans);
+}
+.lt-nd-sub {
+  fill: var(--muted);
+  font: 400 10px var(--sans);
+}
+/* 状态节点上的子任务清单（需求 2）：🤖 AI 自动 / ✋ 需人工 / ⤵ 子图成员 / ☐☑ 交付条目。
+   常态压暗成「备注」，只有**需要人工**那几行提到琥珀色 —— 一眼看出哪几条卡在人身上。 */
+.lt-nd-task {
+  fill: var(--muted);
+  font: 400 9.5px var(--sans);
+  pointer-events: none;
+}
+.lt-nd-need {
+  fill: var(--yellow, #e5b567);
+  font-weight: 600;
+}
+.lt-nd-round,
+.lt-nd-drill {
+  fill: var(--cyan);
+  font: 700 9px var(--mono);
+}
+.lt-port {
+  fill: var(--panel2);
+  stroke: var(--cyan);
+  stroke-width: 1.6;
+  cursor: crosshair;
+}
+.lt-port:hover,
+.lt-port[data-hover] {
+  fill: var(--cyan);
+}
+/* kind 主色：与画布 KIND 色同源（canvas.css 730-797 那批 hex） */
+.lt-k-start rect,
+.lt-k-end_ok rect {
+  stroke: rgba(95, 214, 138, 0.75);
+}
+.lt-k-end_fail rect {
+  stroke: rgba(255, 95, 86, 0.75);
+}
+.lt-k-agent rect {
+  stroke: rgba(77, 140, 255, 0.75);
+}
+.lt-k-human rect {
+  stroke: rgba(255, 209, 102, 0.8);
+}
+.lt-k-join rect {
+  stroke: rgba(94, 200, 168, 0.8);
+}
+.lt-k-fork rect {
+  stroke: rgba(255, 143, 46, 0.8);
+}
+.lt-k-map rect,
+.lt-k-sub rect {
+  stroke: rgba(155, 176, 200, 0.8);
+}
+.lt-k-output rect {
+  stroke: rgba(95, 214, 138, 0.7);
+}
+/* 运行态：填充 + 描边双通道，呼吸灯只给「活着的」状态 */
+.lt-s-pending rect {
+  fill: #1d1d1f;
+  stroke-dasharray: 4 3;
+}
+.lt-s-ready rect {
+  fill: #1f2529;
+}
+.lt-s-running rect {
+  fill: #241a12;
+  stroke: var(--orange);
+}
+.lt-s-waiting_human rect,
+.lt-s-waiting_delivery rect {
+  fill: #23211a;
+  stroke: var(--yellow);
+}
+.lt-s-blocked rect,
+.lt-s-failed rect {
+  fill: #241618;
+  stroke: var(--red);
+}
+.lt-s-done rect {
+  fill: #16231b;
+  stroke: var(--green);
+}
+.lt-s-skipped rect {
+  fill: #1b1b1c;
+  stroke: #4a4a4f;
+  opacity: 0.6;
+}
+.lt-nd.sel rect {
+  stroke: var(--cyan2);
+  filter: drop-shadow(0 0 6px rgba(56, 214, 255, 0.55));
+}
+/* 状态 → 呼吸光晕（--lt-glow 是 RGB 三元组，亮色主题自动跟随） */
+.lt-nd.lt-s-running {
+  --lt-glow: 255, 143, 46;
+}
+.lt-nd.lt-s-waiting_human,
+.lt-nd.lt-s-waiting_delivery {
+  --lt-glow: 255, 209, 102;
+}
+.lt-nd.lt-s-blocked {
+  --lt-glow: 255, 95, 86;
+}
+.lt-nd.lt-breath rect {
+  animation: ltBreath 1.9s ease-in-out infinite;
+}
+.lt-nd.lt-breath.sel rect {
+  animation-name: ltBreathSel;
+}
+@keyframes ltBreath {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(var(--lt-glow, 56, 214, 255), 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 9px rgba(var(--lt-glow, 56, 214, 255), 0.72));
+  }
+}
+@keyframes ltBreathSel {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 3px rgba(var(--lt-glow, 56, 214, 255), 0.5));
+  }
+  50% {
+    filter: drop-shadow(0 0 14px rgba(var(--lt-glow, 56, 214, 255), 0.95));
+  }
+}
+/* 节点右下角缩放手柄：拖它调卡片大小，拉宽后说明文字按新宽度重新截断（多看几行）。
+   常态透明 —— 平时不抢视线，悬停 / 按下才显形；光标与主画布同口径 nwse-resize。
+   位置放在这批「rect 通配」规则（`.lt-nd rect` 面板底色 / `.lt-k-* rect` kind 色 /
+   `.lt-nd.sel rect` 选中描边 / `.lt-nd.lt-breath rect` 呼吸光晕）之后，且用
+   `.lt-nd rect.lt-nd-resize`（同为 0,2,1 但更靠后）压过它们 —— 否则手柄会带上 kind 色的
+   1.5px 描边与呼吸动画，看着像卡片角上多了个方块。 */
+.lt-nd rect.lt-nd-resize {
+  fill: transparent;
+  stroke: none;
+  stroke-width: 0;
+  animation: none;
+  filter: none;
+  cursor: nwse-resize;
+}
+.lt-nd rect.lt-nd-resize:hover,
+.lt-nd rect.lt-nd-resize:active,
+.lt-nd rect.lt-nd-resize[data-hover] {
+  fill: var(--cyan);
+  fill-opacity: 0.32;
+  stroke: var(--cyan);
+  stroke-width: 1.5;
+}
+.lt-edge.fired {
+  animation: ltEdgeFlow 1.1s linear infinite;
+}
+@keyframes ltEdgeFlow {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+/* ── 右栏：卡片 / 检查器 / 日志 ──────────────────────────────── */
+.lt-side-h {
+  flex: none;
+  margin: 2px 0 -2px;
+  font: 700 11px/1.4 var(--sans);
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.lt-side-h2 {
+  margin-top: 8px;
+  font: 700 11px/1.4 var(--sans);
+  color: var(--muted);
+}
+.lt-card {
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lt-card-human {
+  border-color: rgba(255, 209, 102, 0.5);
+}
+.lt-card-deliver {
+  border-color: rgba(56, 214, 255, 0.5);
+}
+.lt-card-fail {
+  border-color: rgba(255, 95, 86, 0.5);
+}
+.lt-card-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lt-card-tag {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 209, 102, 0.16);
+  color: var(--yellow);
+  font: 700 10px/1.6 var(--sans);
+}
+.lt-card-deliver .lt-card-tag {
+  background: rgba(56, 214, 255, 0.16);
+  color: var(--cyan2);
+}
+.lt-card-p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.lt-card-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lt-insp {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lt-insp-h {
+  font: 700 12px/1.5 var(--sans);
+  color: var(--cyan2);
+}
+/* 环节检查器顶部那一行「本轮模型：路由 · 模型 · 预设 · 思考强度」（本轮需求）：
+   只读回显，不是控件 —— 左侧一道 AI 紫细边 + 淡底，与下面的可编辑字段区分开；
+   留空的字段就地标「（跟随默认）」，长模型名允许换行，不撑破右栏。 */
+.lt-insp-model {
+  font: 600 11px/1.5 var(--sans);
+  color: #9bb0c8;
+  padding: 3px 7px;
+  border-left: 2px solid rgba(199, 146, 234, 0.7);
+  border-radius: 3px;
+  background: rgba(199, 146, 234, 0.08);
+  word-break: break-word;
+}
+.lt-f {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lt-fl {
+  font: 600 11px/1.4 var(--sans);
+  color: var(--muted);
+}
+.lt-fh {
+  font-size: 10px;
+  line-height: 1.5;
+  color: #7a7f8a;
+}
+.lt-in {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: var(--bg2);
+  color: var(--ink);
+  font: 400 12px/1.5 var(--sans);
+  padding: 4px 6px;
+  resize: vertical;
+}
+/* 多行框（「目标 / 说明」/ 审批理由 / 交付说明…）的默认高度：rows 给的初始高在右栏偏矮，
+   右下角的原生缩放手柄几乎点不着。这里只把下限抬到三行并给右下角留出可抓的一角 ——
+   真正的「用户拖到多高」由 inline height 决定，且由 app-longtask-ui.js 的 LT_TA_H 跨重绘记住
+   （条带运行期约 90ms 重建一次右栏，不记就会「拖高又回弹」）。 */
+textarea.lt-in {
+  min-height: var(--lt-ta-h, 66px);
+  resize: vertical;
+}
+.lt-in:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+.lt-in[disabled] {
+  opacity: 0.62;
+}
+.lt-mini {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.lt-rounds {
+  border-top: 1px dashed var(--bd2);
+  padding-top: 4px;
+}
+.lt-rounds summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+}
+.lt-round {
+  margin: 4px 0;
+  padding: 5px 6px;
+  border-left: 2px solid var(--bd2);
+  background: var(--bg2);
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.lt-tail {
+  padding: 5px 6px;
+  border-radius: 5px;
+  background: var(--code);
+  color: var(--muted);
+  font: 400 10px/1.6 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 150px;
+  overflow: auto;
+}
+.lt-state-k {
+  font: 400 11px/1.6 var(--mono);
+  color: var(--muted);
+  word-break: break-all;
+}
+.lt-ok {
+  color: var(--green);
+  font-size: 12px;
+}
+.lt-warn-row {
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.lt-warn-row.lt-warn {
+  background: rgba(255, 209, 102, 0.1);
+  color: var(--yellow);
+}
+.lt-warn-row.lt-err {
+  background: rgba(255, 95, 86, 0.1);
+  color: var(--red);
+}
+/* ── 交付清单 ─────────────────────────────────────────────────── */
+.lt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px;
+  border: 1px dashed var(--bd2);
+  border-radius: 7px;
+}
+.lt-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lt-item-h {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* 清单条目缺文件名（含后缀）：交付以文件为单位，编辑态就地红字说清要补什么 */
+.lt-item-miss {
+  color: var(--red);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.lt-in-kind {
+  width: 74px;
+  flex: none;
+}
+.lt-in-title {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+.lt-in-req {
+  width: 14px;
+  flex: none;
+  accent-color: var(--cyan);
+}
+.lt-item-tag {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+}
+.lt-item.done .lt-item-tag {
+  color: var(--green);
+}
+.lt-item.pending {
+  border-left: 2px solid var(--orange);
+  padding-left: 5px;
+}
+.lt-item-act {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.lt-item-in {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 2px;
+}
+.lt-path {
+  font: 400 11px/1.5 var(--mono);
+  color: var(--muted);
+  word-break: break-all;
+}
+.lt-opt {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.lt-opt input {
+  accent-color: var(--cyan);
+}
+
+/* ── 任务菜单浮层：任务菜单按钮已移除（功能收进 ⚙ 设置窗），样式一并删掉 ── */
+
+/* ── 记忆 / 历史 run / 体检 ──────────────────────────────────── */
+.lt-mem {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lt-mem-bar,
+.lt-mem-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.lt-mem-bar .lt-in {
+  flex: 1 1 220px;
+  width: auto;
+}
+.lt-mem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 52vh;
+  overflow: auto;
+}
+.lt-mem-i {
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  background: var(--panel2);
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lt-mem-i b {
+  font-size: 13px;
+}
+.lt-mem-meta {
+  font: 400 10px/1.5 var(--mono);
+  color: var(--muted);
+}
+.lt-mem-body {
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+.lt-mem-src {
+  font: 400 10px/1.5 var(--mono);
+  color: #6f7480;
+  word-break: break-all;
+}
+.lt-run,
+.lt-orphan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  background: var(--panel2);
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+.lt-run span,
+.lt-orphan span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.lt-orphan span {
+  font-family: var(--mono);
+  word-break: break-all;
+}
+.lt-set {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 560px;
+}
+
+/* ── 主画布上的交付节点（kind deliver）body ──────────────────── */
+.lt-dlv {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.lt-dlv-h {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.lt-dlv-uid {
+  font: 400 10px/1.4 var(--mono);
+  color: #6f7480;
+  word-break: break-all;
+}
+.lt-dlv-goal {
+  color: var(--ink);
+}
+.lt-dlv-bar {
+  align-self: flex-start;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 209, 102, 0.55);
+  color: var(--yellow);
+  font-weight: 700;
+}
+.lt-dlv-bar.ok {
+  border-color: rgba(95, 214, 138, 0.6);
+  color: var(--green);
+}
+.lt-dlv-i {
+  color: var(--muted);
+  word-break: break-all;
+}
+.lt-dlv-i.done {
+  color: var(--green);
+}
+.lt-dlv-more {
+  color: #6f7480;
+}
+/* md 表：每个输入端子 ↔ 该文件的内容（列 = 文件名 · 内容说明 · 必填/选填 · 格式或大小要求 ·
+   交付状态）。**渲染成真表格**（renderMarkdown 产出 <table>，见 app-longtask-ui.js 的
+   ltDlvTableEl）—— 图省事把 `| a | b |` 源码当等宽文本铺在板身上，用户读到的是分隔符而不是清单。
+   源码没丢：同排「▤ 预览 Markdown」按钮把整份清单交给应用内 Markdown 预览器打开
+   （预览器自带「复制全文」，要取源码也在那个窗里）。 */
+.lt-dlv-mdh {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 3px;
+}
+.lt-dlv-md {
+  margin: 2px 0 0;
+  padding: 4px 5px;
+  max-height: 168px;
+  overflow: auto;
+  border: 1px solid var(--line, #2a2f3a);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.22);
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted);
+  word-break: break-word;
+}
+body.theme-light .lt-dlv-md {
+  background: rgba(0, 0, 0, 0.04);
+}
+.lt-dlv-md table {
+  border-collapse: collapse;
+  margin: 0;
+  font-size: 9.5px;
+}
+.lt-dlv-md th,
+.lt-dlv-md td {
+  border: 1px solid var(--bd2, #3a3a3e);
+  padding: 2px 5px;
+  text-align: left;
+  vertical-align: top;
+}
+.lt-dlv-md th {
+  background: var(--panel2, #232324);
+  color: var(--orange2, #ffb066);
+  white-space: nowrap;
+}
+.lt-dlv-md p {
+  margin: 0;
+}
+/* 渲染器缺席时的回落：等宽源码（保住「看得到 + 可选中复制」） */
+.lt-dlv-md-src {
+  margin: 0;
+  font: 400 9.5px/1.45 var(--mono);
+  white-space: pre;
+  word-break: normal;
+}
+.lt-dlv-sec {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+}
+.lt-dlv-t {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border-top: 1px dashed rgba(255, 255, 255, 0.07);
+}
+body.theme-light .lt-dlv-t {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+.lt-dlv-t.done {
+  opacity: 0.82;
+}
+.lt-dlv-tno {
+  flex: none;
+  min-width: 15px;
+  text-align: center;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  font: 700 9px/1.5 var(--mono);
+  color: var(--muted);
+}
+.lt-dlv-tname {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.lt-dlv-tname.opt {
+  color: var(--muted);
+}
+/* 文件名待补（交付以文件为单位：这一项要交一件文件，却还没有带后缀的文件名）：
+   黄字标出，与「选填」的灰、正常条目的白一眼分开 —— 它不是「可选」，是还没定名。 */
+.lt-dlv-tname.todo {
+  color: var(--yellow);
+  font-style: italic;
+}
+/* 同一条口径的上层提示（节点板身总说一句 / 「＋ 添加文件」对话框里的红字行内提示） */
+.lt-dlv-miss {
+  color: var(--yellow);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.lt-dlv-form .lt-dlv-miss {
+  color: var(--red);
+}
+.lt-dlv-via {
+  flex: none;
+  color: var(--green);
+  font-size: 9.5px;
+}
+.lt-dlv-t .lt-btn {
+  flex: none;
+  margin: 0;
+  padding: 1px 6px;
+  font-size: 9.5px;
+}
+.lt-dlv-fh {
+  color: #6f7480;
+  font-size: 10px;
+}
+/* 「＋ 添加文件」小表单（#overlay 里，persistent） */
+.lt-dlv-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 620px;
+}
+.lt-dlv-fl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.lt-dlv-fl .lt-in {
+  width: 100%;
+}
+.lt-dlv-fc {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+}
+/* 交付放行确认窗（本轮需求）：未交清单 + 交付说明 + 逐轮历史。
+   未交项用等宽小列表，「继续任务」是明确的主按钮 —— 提醒不阻止，但一眼看得出代价。 */
+.lt-rel-form {
+  max-width: 760px;
+}
+.lt-rel-h {
+  font: 700 13px/1.5 var(--sans);
+  color: var(--ink);
+}
+.lt-rel-warn {
+  color: var(--yellow);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.lt-rel-miss {
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  font: 11.5px/1.8 var(--mono);
+  color: var(--ink);
+  max-height: 220px;
+  overflow: auto;
+}
+body.theme-light .lt-rel-miss {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.03);
+}
+.lt-rel-miss .lt-rel-why {
+  color: var(--yellow);
+}
+.lt-rel-hist {
+  border-left: 2px solid rgba(255, 255, 255, 0.12);
+  padding: 2px 0 2px 8px;
+}
+.lt-rel-hist-h {
+  font-size: 11px;
+  color: var(--muted);
+}
+.lt-rel-hist-i {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+.lt-rel-hist-n {
+  color: var(--muted);
+}
+.lt-rel-form textarea.lt-in {
+  max-height: 220px;
+}
+/* 交付节点板身：放行横幅（这一环是带着没交的项继续的）。只有一个说法，
+   与状态键 deliver_missing / manifest.releases 同源（ltReleaseMissingText）。 */
+.lt-dlv-rel {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 190, 90, 0.45);
+  border-radius: 6px;
+  background: rgba(255, 190, 90, 0.08);
+}
+.lt-dlv-rel-h {
+  font: 700 11px/1.6 var(--sans);
+  color: var(--yellow);
+}
+.lt-dlv-rel-b {
+  font: 11px/1.75 var(--mono);
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.lt-dlv-rel-when {
+  color: var(--muted);
+  font-size: 10px;
+}
+/* 清单行上的「未交付·已放行」标记：与已交付的绿、选填的灰分开，一眼看出是放行不是交齐。 */
+.lt-item-tag.rel {
+  color: var(--yellow);
+  border-color: rgba(255, 190, 90, 0.5);
+}
+.lt-dlv .lt-btn {
+  margin-top: 3px;
+}
+
+/* ── 主画布上的产出节点（kind "ltout"）：长任务执行中生成的信息 / 文件内容同步落到这里，
+   正文可直接改。与交付节点 .dlv 同族（都是长任务在主画布上的落点），但语义色不同 ——
+   交付节点是暖琥珀「这里在等人交东西」（.dlv 见 canvas.css），产出节点取靛紫
+   「内容已就位、等你过目/修改」。样式落在 longtask.css：这是长任务的专属落点。 */
+.wf-node.ltout {
+  border-color: #8b7cf066;
+  background: linear-gradient(180deg, #1a1730, #131022);
+}
+body.theme-light .wf-node.ltout {
+  border-color: #a99cf0;
+  background: linear-gradient(180deg, #f3f1fe, #faf9ff);
+}
+/* 产出节点 body：正文 textarea（.n-text，与文本节点同一套交互）+ 只读文件引用清单 */
+.wf-node.ltout .n-text {
+  min-height: 96px;
+}
+.n-ltout-refs {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.n-ltout-refs-cap {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.n-ltout-ref {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink);
+  word-break: break-all;
+}
+.n-ltout-ref-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.n-ltout-ref-meta {
+  flex: none;
+  color: #6f7480;
+  font: 400 10px/1.4 var(--mono);
+}
+
+/* ── 主画布上的产物节点（kind "ltart"）：长任务每个环节完成时，清点出来的产物逐件摆上
+   画布（一件一颗，见 renderer/app-longtask-artifacts.js）。与产出节点同族 —— 青蓝
+   「这次跑出来的东西就在这儿」，比产出节点更实：图片给缩略图、音视频能直接播、
+   文本给一段摘要，底部固定一行完整路径。 */
+.wf-node.ltart {
+  border-color: #5aa9e666;
+  background: linear-gradient(180deg, #12202e, #0e1824);
+}
+body.theme-light .wf-node.ltart {
+  border-color: #7cb6e6;
+  background: linear-gradient(180deg, #eef6fd, #f8fbff);
+}
+.n-ltart-cap {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.n-ltart-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.n-ltart-meta {
+  flex: none;
+  color: var(--muted);
+  font: 400 10px/1.4 var(--mono);
+}
+.n-ltart-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+body.theme-light .n-ltart-stage {
+  background: rgba(0, 0, 0, 0.04);
+}
+.n-ltart-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.n-ltart-media {
+  width: 100%;
+  max-height: 100%;
+}
+.n-ltart-text {
+  margin: 0;
+  padding: 6px 8px;
+  width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+  font: 400 10px/1.45 var(--mono);
+}
+/* 文本产物的 Markdown 只读视图（buildLtartBody）：复用画布 / 审阅同一套 .md 渲染器，
+   但舞台是「居中 + overflow:hidden」的 flex 容器 —— 这里让渲染块自己撑满舞台并滚动，
+   否则超出一屏的内容会被舞台裁掉、也滚不动。 */
+.n-ltart-stage .n-ltart-md {
+  align-self: stretch;
+  width: 100%;
+  max-height: 100%;
+  padding: 6px 8px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.n-ltart-ghost.n-ltart-more {
+  padding: 4px 8px;
+}
+.n-ltart-ghost {
+  padding: 10px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.n-ltart-path {
+  flex: none;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font: 400 10px/1.4 var(--mono);
+}
+
+/* ── 文本产物正文里的 Markdown 子元素 ──────────────────────────────
+   板身只有几百像素宽，通用 .md 那套「12px 基准 + 16px 一级标题 + 橙色标题」
+   放到这里太吵；本块按 10px 板身口径重排标题 / 列表 / 表格 / 代码块 / 引用，
+   并让宽表自己横向滚（不撑破节点）、引用看得出缩进、代码块有底色。
+   选择器同时覆盖两种落点：文本容器 .n-ltart-text（裸文本走 pre / 渲染后是子元素）
+   与长任务 Markdown 只读视图 .n-ltart-md（app-nodeview.js 的 nodeTextViewEl 产物）。
+   颜色全部走主题变量，浅色主题沿用同一套；只有「暗底抬亮 / 浅底压深」的三处
+   （行内代码底、代码块底、表头底）另给 light 覆盖。 */
+.n-ltart-text>*:first-child,
+.n-ltart-md>*:first-child {
+  margin-top: 0;
+}
+.n-ltart-text>*:last-child,
+.n-ltart-md>*:last-child {
+  margin-bottom: 0;
+}
+.n-ltart-text p,
+.n-ltart-text ul,
+.n-ltart-text ol,
+.n-ltart-text dl,
+.n-ltart-text table,
+.n-ltart-text pre,
+.n-ltart-text blockquote,
+.n-ltart-md p,
+.n-ltart-md ul,
+.n-ltart-md ol,
+.n-ltart-md dl,
+.n-ltart-md table,
+.n-ltart-md pre,
+.n-ltart-md blockquote {
+  margin: 0 0 5px;
+}
+.n-ltart-text h1,
+.n-ltart-text h2,
+.n-ltart-text h3,
+.n-ltart-text h4,
+.n-ltart-text h5,
+.n-ltart-text h6,
+.n-ltart-md h1,
+.n-ltart-md h2,
+.n-ltart-md h3,
+.n-ltart-md h4,
+.n-ltart-md h5,
+.n-ltart-md h6 {
+  margin: 6px 0 4px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+.n-ltart-text h1,
+.n-ltart-md h1 {
+  font-size: 13px;
+}
+.n-ltart-text h2,
+.n-ltart-md h2 {
+  font-size: 12px;
+}
+.n-ltart-text h3,
+.n-ltart-md h3 {
+  font-size: 11px;
+}
+.n-ltart-text h4,
+.n-ltart-text h5,
+.n-ltart-text h6,
+.n-ltart-md h4,
+.n-ltart-md h5,
+.n-ltart-md h6 {
+  font-size: 10px;
+}
+.n-ltart-text ul,
+.n-ltart-text ol,
+.n-ltart-md ul,
+.n-ltart-md ol {
+  padding-left: 16px;
+}
+.n-ltart-text li,
+.n-ltart-md li {
+  margin: 1px 0;
+}
+.n-ltart-text li>ul,
+.n-ltart-text li>ol,
+.n-ltart-md li>ul,
+.n-ltart-md li>ol {
+  margin: 2px 0 0;
+}
+.n-ltart-text li::marker,
+.n-ltart-md li::marker {
+  color: var(--muted);
+}
+.n-ltart-text li>input[type="checkbox"],
+.n-ltart-md li>input[type="checkbox"] {
+  margin: 0 3px 0 0;
+  vertical-align: middle;
+}
+/* 宽表在窄板身里自己横向滚，不撑破节点 */
+.n-ltart-text table,
+.n-ltart-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 9.5px;
+}
+.n-ltart-text th,
+.n-ltart-text td,
+.n-ltart-md th,
+.n-ltart-md td {
+  padding: 2px 5px;
+  border: 1px solid var(--bd2);
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+.n-ltart-text th,
+.n-ltart-md th {
+  font-weight: 700;
+  color: var(--ink);
+  background: rgba(127, 138, 156, .16);
+}
+.n-ltart-text code,
+.n-ltart-md code {
+  padding: 0 3px;
+  border: 0;
+  border-radius: 3px;
+  background: rgba(127, 138, 156, .18);
+  color: var(--ink);
+  font: 400 9.5px/1.5 var(--mono);
+  word-break: break-all;
+}
+.n-ltart-text pre,
+.n-ltart-md pre {
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .28);
+  overflow: auto;
+  white-space: pre;
+  font: 400 9.5px/1.5 var(--mono);
+}
+.n-ltart-text pre code,
+.n-ltart-md pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: inherit;
+  line-height: 1.5;
+  word-break: normal;
+}
+.n-ltart-text blockquote,
+.n-ltart-md blockquote {
+  padding: 1px 0 1px 8px;
+  border-left: 2px solid var(--bd2);
+  background: none;
+  color: var(--muted);
+}
+.n-ltart-text hr,
+.n-ltart-md hr {
+  margin: 6px 0;
+  border: 0;
+  border-top: 1px solid var(--bd2);
+}
+.n-ltart-text a,
+.n-ltart-md a {
+  color: var(--cyan2);
+  text-decoration: underline;
+}
+.n-ltart-text img,
+.n-ltart-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+/* 纯文本产物（容器里只有文字）继续按 pre-wrap 排版；一旦里面渲染出 Markdown 元素，
+   换行交给元素自己的块级布局 —— 否则标签之间的源码换行会被放大成一片空行。 */
+.n-ltart-text:has(>*) {
+  white-space: normal;
+}
+body.theme-light .n-ltart-text th,
+body.theme-light .n-ltart-md th {
+  background: rgba(0, 0, 0, .05);
+}
+body.theme-light .n-ltart-text code,
+body.theme-light .n-ltart-md code {
+  background: rgba(0, 0, 0, .06);
+}
+body.theme-light .n-ltart-text pre,
+body.theme-light .n-ltart-md pre {
+  background: rgba(0, 0, 0, .045);
+}
+
+/* ── 产物节点头部的入口（👁 预览全文 / ✎ 编辑保存 / ⇢ 系统程序打开 / 📁 所在文件夹）──
+   并排一排、等宽等高、都不参与 flex 收缩：标题再长也由 .n-title 自己省略号截断，
+   不能把按钮挤变形、挤成两条线或叠在一起（四者都不是「可点一下就好」的装饰，
+   挤没了用户就找不到读全文 / 改几笔存回去 / 用系统程序打开 / 打开所在文件夹的入口）。 */
+.wf-node.ltart .n-head .n-textpeek,
+.wf-node.ltart .n-head .n-ltart-edit,
+.wf-node.ltart .n-head .n-ltart-folder,
+.wf-node.ltart .n-head .n-ltart-open {
+  flex: 0 0 auto;
+  width: 26px;
+  min-width: 26px;
+  margin: 0;
+}
+.wf-node.ltart .n-head .n-title {
+  min-width: 0;
+}
+
+/* ── 亮色主题覆盖：只调底色，描边色自动跟随变量 ───────────────── */
+body.theme-light .lt-body {
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+}
+body.theme-light .lt-s-pending rect,
+body.theme-light .lt-s-skipped rect {
+  fill: #f2f2f3;
+}
+body.theme-light .lt-s-ready rect {
+  fill: #eaf4f8;
+}
+body.theme-light .lt-s-running rect {
+  fill: #fdf1e3;
+}
+body.theme-light .lt-s-waiting_human rect,
+body.theme-light .lt-s-waiting_delivery rect {
+  fill: #fff8e2;
+}
+body.theme-light .lt-s-blocked rect,
+body.theme-light .lt-s-failed rect {
+  fill: #ffeceb;
+}
+body.theme-light .lt-s-done rect {
+  fill: #eaf8ef;
+}
+body.theme-light .lt-edge-label {
+  stroke: #f5f6f8;
+}
+
+/* ══ 新建长周期任务对话框（renderer/app-longtask-create.js）══════════════
+   挂在共享的 #overlay 窗壳里：近全屏 + 右下角可拖调（最小宽 ≥ 50% 视口）。
+   窗壳尺寸由 JS 内联写一次（openOverlay / closeOverlay 每只窗都会清空，不渗到下一只），
+   这里只管窗内结构与拖拽把手。 */
+.ltc {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+.ltc-top {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ltc-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font: 400 12px/1.6 var(--sans);
+}
+.ltc-manual,
+.ltc-cancel {
+  flex: none;
+}
+/* 「创建时的 Agent 选型」一栏（服务商 / 模型 / 预设 / 思考强度）：四只可搜索下拉并排。
+   四列是近全屏窗的常态；窗被拖窄（最小宽 = 视口 50%）时折成两列，不把输入框挤成一条缝。 */
+.ltc-opts {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--code);
+}
+.ltc-opts-h,
+.ltc-opts-miss {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+}
+@media (max-width: 900px) {
+  .ltc-opts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* 新建流程的主区：给 Agent 生成 / 手动模板共用的落点，先留一块虚线占位 */
+.ltc-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--bd2);
+  border-radius: 8px;
+  background: var(--code);
+}
+.ltc-ph {
+  max-width: 560px;
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font: 400 12px/1.7 var(--sans);
+}
+/* 右下角拖拽把手：定位基准是窗壳（position:relative），body 滚动时仍贴窗右下角 */
+.ltc-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 0 55%,
+    var(--bd2) 55% 66%,
+    transparent 66% 74%,
+    var(--bd2) 74% 85%,
+    transparent 85%
+  );
+}
+.ltc-resize:hover {
+  background: linear-gradient(
+    135deg,
+    transparent 0 55%,
+    var(--cyan) 55% 66%,
+    transparent 66% 74%,
+    var(--cyan) 74% 85%,
+    transparent 85%
+  );
+}
+
+/* ══ 新建窗里的「Agent 引导建图」（renderer/app-longtask-guide.js）════════
+   #ltcMain 由虚线占位改成实打实的工作区：左 = 会话消息流 + 输入行，
+   右 = 状态 / 图摘要 / 「启用并绑定」与出口。会话流复用 dshMsgBlock，
+   所以消息本体样式仍归 css/dsh.css，这里只管这块工作区的骨架。 */
+.ltc-main.ltg-host {
+  align-items: stretch;
+  justify-content: flex-start;
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+.ltg {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+.ltg-left {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ltg-conv {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 4px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--code);
+}
+.ltg-conv .dsh-msg {
+  margin: 6px 4px;
+}
+.ltg-conv .ltg-live .dsh-msg-body {
+  white-space: pre-wrap;
+}
+.ltg-intro {
+  padding: 16px;
+  color: var(--muted);
+  font: 400 12px/1.8 var(--sans);
+}
+.ltg-more {
+  padding: 2px 8px;
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+}
+.ltg-row {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.ltg-ta {
+  flex: 1;
+  min-width: 0;
+  min-height: 54px;
+  max-height: 160px;
+  resize: vertical;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--fg);
+  font: 400 12px/1.6 var(--sans);
+}
+.ltg-ta:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+.ltg-right {
+  flex: none;
+  width: 330px;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ltg-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--muted);
+  font: 400 12px/1.5 var(--sans);
+}
+.ltg-status-dot {
+  font-size: 10px;
+  line-height: 1;
+}
+.ltg-status-run .ltg-status-dot {
+  color: var(--cyan);
+}
+.ltg-status-ask .ltg-status-dot {
+  color: var(--yellow);
+}
+.ltg-status-ask {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+.ltg-status-ok .ltg-status-dot {
+  color: var(--green);
+}
+.ltg-sum {
+  padding: 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  font: 400 12px/1.7 var(--sans);
+}
+.ltg-sum-h {
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.ltg-sum-name {
+  color: var(--cyan);
+  margin-bottom: 2px;
+}
+.ltg-sum-i {
+  color: var(--muted);
+}
+.ltg-sum-src {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.ltg-sum-err {
+  margin-top: 6px;
+  color: var(--red);
+}
+.ltg-sum-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ltg-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ltg-note {
+  color: var(--muted);
+  font: 400 11px/1.7 var(--sans);
+}
+
+/* ══ 可搜索下拉控件（renderer/app-longtask-ctl.js · window.LT.ui.ctl）════════
+   长任务的非文字设置统一走它：输入框只用来过滤，值只能从清单里点出来，
+   清单外的字永远提交不进去。视觉复用上方 .lt-f/.lt-fl/.lt-fh/.lt-in，
+   这里只补下拉清单与多选芯片；下拉走文档流（不做绝对定位），
+   免得被 .lt-right / 弹窗 body 的 overflow 裁掉。 */
+.lt-sel {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lt-sel-in {
+  cursor: pointer;
+}
+.lt-sel.open > .lt-sel-in {
+  border-color: var(--cyan);
+}
+.lt-sel-unknown > .lt-sel-in {
+  border-color: rgba(255, 209, 102, 0.6);
+}
+.lt-sel-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 3px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.26);
+}
+.lt-sel-pop[hidden] {
+  display: none;
+}
+.lt-sel-grp {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.lt-sel-g {
+  padding: 3px 6px 1px;
+  font: 700 10px/1.5 var(--sans);
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.lt-sel-o {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--ink);
+  font: 400 12px/1.5 var(--sans);
+}
+.lt-sel-o:hover,
+.lt-sel-o.act,
+.lt-sel-o[data-hover] {
+  background: rgba(56, 214, 255, 0.12);
+}
+.lt-sel-o.on {
+  color: var(--cyan2);
+}
+.lt-sel-o.dis {
+  opacity: 0.45;
+  cursor: default;
+}
+/* 「新建」项：状态键这类允许新造的字段，打字后出现的显式入口（点它才落地） */
+.lt-sel-new {
+  color: var(--cyan2);
+}
+.lt-sel-new .lt-sel-ol {
+  word-break: break-all;
+}
+.lt-sel-ol {
+  flex: 1 1 auto;
+  word-break: break-all;
+}
+.lt-sel-oh {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+}
+.lt-sel-ck {
+  flex: none;
+  color: var(--cyan);
+  font-size: 11px;
+}
+.lt-sel-empty {
+  padding: 5px 6px;
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+}
+.lt-sel-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-height: 18px;
+}
+.lt-sel-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px 1px 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  background: var(--bg2);
+  color: var(--ink);
+  font: 400 11px/1.6 var(--mono);
+}
+.lt-sel-tagn {
+  word-break: break-all;
+}
+.lt-sel-tagx {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+.lt-sel-tagx:hover,
+.lt-sel-tagx[data-hover] {
+  color: var(--red);
+}
+.lt-sel-none {
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+}
+
+/* ══ 头部「⋯ 更多」下拉（renderer/app-longtask-ui.js · ltMenuOpen）════════
+   按钮收纳：启用 / 停用 / 记忆 / 删除任务这些几乎用不上的手动按钮收进一颗。
+   瞬时菜单（点外部 / Esc 即收），所以是浮层里唯一允许「点外部关闭」的一类。
+   面板挂 document.body + position:fixed：.lt-head 是 overflow-x:auto 的容器，
+   挂在里面会被裁掉。z-index 压过顶栏面板（120），低于 #overlay（1300）。 */
+.lt-head .lt-btn:hover,
+.lt-head .lt-btn.on,
+.lt-head .lt-btn.lt-more.on,
+.lt-head .lt-btn[data-hover] {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+.lt-more-pop {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 190px;
+  max-width: 280px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+.lt-more-i {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: 400 12px/1.5 var(--sans);
+  cursor: pointer;
+}
+.lt-more-i:hover {
+  background: rgba(56, 214, 255, 0.12);
+  border-color: var(--bd2);
+}
+.lt-more-i.lt-btn-del:hover {
+  color: var(--red);
+  border-color: var(--red);
+  background: rgba(255, 92, 92, 0.1);
+}
+/* 右键菜单里的「＋ 节点」项：以前平铺在画布上方那条工具条上（.lt-gbar，现整条已撤），
+   同为小字压暗 + hover 提亮的轻量口径，一眼看出是「加东西」而不是「改东西」。 */
+.lt-more-i.lt-btn-add {
+  font-size: 11px;
+  color: var(--muted);
+}
+.lt-more-i.lt-btn-add:hover {
+  color: var(--cyan2);
+}
+.lt-more-sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--bd2);
+}
+
+/* ══ 任务链修改窗（renderer/app-longtask-edit.js · window.ltOpenEditDlg）════
+   与新建窗（.ltc-*）同款：近全屏持久化浮层 + 右下拖拽把手；上面是「改哪张任务」的
+   抬头与输入区（最靠上，进窗就写），下面左 = 会话流、右 = 现况摘要与出口。 */
+.lte {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  min-width: 0;
+  padding: 10px 12px 12px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-align: left;
+}
+.lte-top {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.lte-task {
+  font: 600 14px/1.4 var(--sans);
+  color: var(--fg);
+}
+.lte-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lte-meta-i {
+  padding: 1px 7px;
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  background: var(--panel2);
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+}
+.lte-meta-warn {
+  color: var(--yellow);
+  border-color: rgba(255, 209, 102, 0.5);
+}
+.lte-row {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.lte-ta {
+  flex: 1;
+  min-width: 0;
+  min-height: 58px;
+  max-height: 170px;
+  resize: vertical;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--fg);
+  font: 400 12px/1.6 var(--sans);
+}
+.lte-ta:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+.lte-send {
+  flex: none;
+  min-height: 30px;
+}
+.lte-hint {
+  flex: none;
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+}
+.lte-main {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+.lte-conv {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 4px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--code);
+}
+.lte-conv .dsh-msg {
+  margin: 6px 4px;
+}
+.lte-conv .lte-live .dsh-msg-body {
+  white-space: pre-wrap;
+}
+.lte-intro {
+  padding: 16px;
+  color: var(--muted);
+  font: 400 12px/1.8 var(--sans);
+}
+.lte-more {
+  padding: 2px 8px;
+  color: var(--muted);
+  font: 400 11px/1.6 var(--sans);
+}
+.lte-right {
+  flex: none;
+  width: 320px;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lte-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--muted);
+  font: 400 12px/1.5 var(--sans);
+}
+.lte-status-dot {
+  font-size: 10px;
+  line-height: 1;
+}
+.lte-status-run .lte-status-dot {
+  color: var(--cyan);
+}
+.lte-status-ask {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+.lte-status-ask .lte-status-dot {
+  color: var(--yellow);
+}
+.lte-status-ok .lte-status-dot {
+  color: var(--green);
+}
+.lte-sum {
+  padding: 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  font: 400 12px/1.7 var(--sans);
+}
+.lte-sum-h {
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.lte-sum-i {
+  color: var(--muted);
+}
+.lte-sum-n {
+  color: var(--muted);
+  word-break: break-all;
+}
+.lte-sum-ok {
+  margin-top: 6px;
+  color: var(--green);
+}
+.lte-sum-err {
+  margin-top: 6px;
+  color: var(--yellow);
+}
+.lte-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lte-note {
+  color: var(--muted);
+  font: 400 11px/1.7 var(--sans);
+}
+.lte-resize {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 16px;
+  height: 16px;
+  z-index: 5;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--bd2);
+  border-bottom: 2px solid var(--bd2);
+}
+.lte-resize:hover {
+  border-color: var(--cyan);
+}

@@ -19,6 +19,9 @@ ext-repo/
 ## 添加内容
 
 - **技能**：新建 `skills/my-skill/SKILL.md`（kebab-case 目录名，含 YAML frontmatter）。
+  目录里每条技能除 `name` / `description` 外还带 `version`（frontmatter 有就抄，没有留空）与
+  `sha256`（SKILL.md 正文内容指纹）。客户端用它判断「已安装的技能是不是该更新了」——
+  本目录的技能默认不写 version，**只改正文也能被识别为有更新**，改完记得跑一次 `npm run ext:sync`。
 - **插件**：在 `plugins/<id>/` 放 `plugin.json`，`install` 可以是 npm 包名、GitHub 地址，或相对路径 `.tgz`。
 - **MCP**：在 `mcp/` 放 JSON，字段见 `mcp/memory.json`。
 

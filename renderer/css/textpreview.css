@@ -1,0 +1,221 @@
+/* ===== 文本预览窗（renderer/app-textpreview.js · openTextPreview）=====
+   节点头部「👁」小按钮打开：近乎全屏的只读大窗，完整显示节点文本
+   （Markdown / YAML 按只读视图渲染，纯文本保留换行与缩进），可复制全文。
+
+   持久对话框口径（见 AGENTS.md「对话框 / 参数面板一律 persistent」）：
+   绝不挂「点外部即关」——关闭只走 ✕ / Esc 两条显式路径。
+   蒙层刻意不接收指针事件：画布上的滚轮与拖拽不被这层空壳吞掉（视觉上只做变暗）。 */
+.tv-dlg {
+  position: fixed;
+  inset: 0;
+  z-index: 1190;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 12, 20, .45);
+  pointer-events: none
+}
+
+.tv-dlg.on {
+  display: flex
+}
+
+.tv-box {
+  position: relative;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: min(1200px, 92vw);
+  height: min(860px, 90vh);
+  min-width: 50vw;
+  min-height: 360px;
+  background: var(--panel2);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .35);
+  overflow: hidden;
+  outline: none
+}
+
+.tv-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  z-index: 5;
+  background:
+    linear-gradient(135deg, transparent 0 40%, var(--cyan) 40% 52%, transparent 52% 70%, var(--cyan) 70% 82%, transparent 82%);
+  border-radius: 0 0 10px 0;
+  opacity: .6
+}
+
+.tv-resize:hover {
+  opacity: 1
+}
+
+/* 头部：标题 + 字数 + 操作按钮 */
+.tv-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--bd2)
+}
+
+.tv-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden
+}
+
+.tv-title-dot {
+  color: var(--cyan)
+}
+
+.tv-title b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.tv-meta {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap
+}
+
+.tv-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto
+}
+
+.tv-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: var(--panel2);
+  color: var(--ink);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer
+}
+
+.tv-btn:hover {
+  border-color: var(--cyan);
+  color: var(--cyan)
+}
+
+.tv-btn.on {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(56, 214, 255, .12)
+}
+
+.tv-close {
+  width: 26px;
+  padding: 0
+}
+
+/* 正文：一层滚动（与节点浏览态同款细滚动条） */
+.tv-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bd2) transparent;
+  padding: 14px 20px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink)
+}
+
+.tv-body .node-text-view {
+  flex: none;
+  min-height: 0
+}
+
+.tv-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink)
+}
+
+.tv-md {
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--ink)
+}
+
+.tv-md h1,
+.tv-md h2,
+.tv-md h3,
+.tv-md h4 {
+  line-height: 1.35
+}
+
+/* 超大文本护栏提示：只出现在「Markdown 视图 + 超阈值」这一条路径上 */
+.tv-note {
+  flex: none;
+  padding: 6px 10px;
+  background: rgba(255, 143, 46, .1);
+  border-top: 1px solid var(--bd2);
+  color: var(--orange2, #ffb36b);
+  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px
+}
+
+.tv-note[hidden] {
+  display: none
+}
+
+.tv-note-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--orange, #ff8f2e);
+  border-radius: 3px;
+  background: rgba(255, 143, 46, .08);
+  color: var(--orange2, #ffb36b);
+  font-size: 11px;
+  cursor: pointer
+}
+
+.tv-note-btn:hover {
+  border-color: var(--orange2, #ffb36b);
+  background: rgba(255, 143, 46, .2)
+}
+
+/* 亮色主题：正文与提示在浅底上仍清晰 */
+body.theme-light .tv-dlg {
+  background: rgba(20, 24, 32, .35)
+}
+
+body.theme-light .tv-box {
+  background: var(--panel2);
+  border-color: var(--bd2)
+}
+
+body.theme-light .tv-body,
+body.theme-light .tv-md,
+body.theme-light .tv-pre {
+  color: var(--ink)
+}

@@ -1,0 +1,281 @@
+/* ============================================================================
+ * 文本 → PDF 的打印排版（renderer/css/pdf-print.css）
+ *   只被 renderer/pdf-print.html（隐藏打印窗）载入：不进应用界面。
+ *   页面尺寸 / 方向 / 页边距由主进程 printToPDF 负责（见 pdf-write.js），
+ *   这里只管「纸上长什么样」：正文字体与行距、标题层级、列表、表格、代码块、
+ *   引用、图片、水平线、分页避断。
+ *   公式的几何排版在 css/review.css 的 .rv-* 段（与审阅 / 预览同源），
+ *   本文件只做打印口径的微调（颜色、避断、不裁切）。
+ *   --pdf-font-scale 由页内脚本按节点「字号」档写入。
+ * ========================================================================== */
+
+:root {
+  /* 与 review.css 公式段共用的变量（那边引用了 --muted / --cyan） */
+  --muted: #64748b;
+  --cyan: #0e7490;
+  --pdf-font-scale: 1;
+  --pdf-font: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", system-ui, -apple-system, sans-serif;
+  --pdf-mono: "Cascadia Mono", Consolas, "SFMono-Regular", "DejaVu Sans Mono",
+    ui-monospace, monospace;
+}
+
+@page {
+  size: A4;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #fff;
+}
+
+body {
+  font-family: var(--pdf-font);
+  /* 正文基准 10.5pt ≈ Word 五号，中文 A4 阅读最舒服的一档；字号档在其上缩放 */
+  font-size: calc(10.5pt * var(--pdf-font-scale));
+  line-height: 1.78;
+  color: #111827;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.pdf-doc {
+  /* 边距交给打印参数，正文自身不留白 */
+  margin: 0;
+  padding: 0;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* ── 标题层级（字重 / 间距 / 字号递进；标题后不许分页）────────────────────── */
+.pdf-doc h1,
+.pdf-doc h2,
+.pdf-doc h3,
+.pdf-doc h4,
+.pdf-doc h5,
+.pdf-doc h6 {
+  font-weight: 600;
+  line-height: 1.35;
+  color: #0f172a;
+  break-after: avoid-page;
+  page-break-after: avoid;
+  break-inside: avoid;
+}
+.pdf-doc h1 {
+  font-size: 1.62em;
+  margin: 0 0 0.7em;
+  padding-bottom: 0.28em;
+  border-bottom: 2px solid #e2e8f0;
+}
+.pdf-doc h2 {
+  font-size: 1.32em;
+  margin: 1.5em 0 0.55em;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid #eef2f7;
+}
+.pdf-doc h3 {
+  font-size: 1.14em;
+  margin: 1.3em 0 0.45em;
+}
+.pdf-doc h4 {
+  font-size: 1.04em;
+  margin: 1.1em 0 0.4em;
+}
+.pdf-doc h5,
+.pdf-doc h6 {
+  font-size: 1em;
+  margin: 1em 0 0.35em;
+  color: #334155;
+}
+/* 文档大标题（节点里填了「文档标题」才出现） */
+.pdf-doc .pdf-doc-title {
+  text-align: center;
+  border-bottom: none;
+  margin: 0 0 1.1em;
+  font-size: 1.8em;
+  letter-spacing: 0.02em;
+}
+
+/* ── 段落与行内 ───────────────────────────────────────────────────────── */
+.pdf-doc p {
+  margin: 0.62em 0;
+  text-align: justify;
+  text-justify: inter-ideograph;
+}
+.pdf-doc strong {
+  font-weight: 600;
+}
+.pdf-doc em {
+  font-style: italic;
+}
+.pdf-doc del {
+  color: #94a3b8;
+}
+.pdf-doc a {
+  color: #1d4ed8;
+  text-decoration: none;
+}
+.pdf-doc code {
+  font-family: var(--pdf-mono);
+  font-size: 0.92em;
+  background: #f1f5f9;
+  border: 1px solid #e6ebf2;
+  border-radius: 3px;
+  padding: 0.06em 0.32em;
+}
+.pdf-doc kbd {
+  font-family: var(--pdf-mono);
+  font-size: 0.88em;
+  border: 1px solid #cbd5e1;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.06em 0.36em;
+  background: #f8fafc;
+}
+
+/* ── 列表 ─────────────────────────────────────────────────────────────── */
+.pdf-doc ul,
+.pdf-doc ol {
+  margin: 0.55em 0;
+  padding-left: 1.5em;
+}
+.pdf-doc li {
+  margin: 0.22em 0;
+}
+.pdf-doc li > ul,
+.pdf-doc li > ol {
+  margin: 0.2em 0;
+}
+/* 待办清单（GFM task list） */
+.pdf-doc li.task-list-item {
+  list-style: none;
+  margin-left: -1.2em;
+}
+.pdf-doc li.task-list-item input {
+  margin-right: 0.4em;
+  vertical-align: -0.08em;
+}
+
+/* ── 引用 ─────────────────────────────────────────────────────────────── */
+.pdf-doc blockquote {
+  margin: 0.7em 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 3px solid #cbd5e1;
+  color: #334155;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.pdf-doc blockquote > :first-child {
+  margin-top: 0.2em;
+}
+.pdf-doc blockquote > :last-child {
+  margin-bottom: 0.2em;
+}
+
+/* ── 代码块 ───────────────────────────────────────────────────────────── */
+.pdf-doc pre {
+  margin: 0.75em 0;
+  padding: 0.6em 0.8em;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  font-family: var(--pdf-mono);
+  font-size: 0.86em;
+  line-height: 1.55;
+  /* 长行折行而不是横向裁掉：PDF 没有横向滚动，裁掉就等于丢内容 */
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.pdf-doc pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 1em;
+}
+
+/* ── 表格 ─────────────────────────────────────────────────────────────── */
+.pdf-doc table {
+  width: 100%;
+  margin: 0.8em 0;
+  border-collapse: collapse;
+  font-size: 0.94em;
+  break-inside: auto;
+}
+.pdf-doc thead {
+  display: table-header-group; /* 跨页时表头重复 */
+}
+.pdf-doc th,
+.pdf-doc td {
+  border: 1px solid #cbd5e1;
+  padding: 0.34em 0.6em;
+  vertical-align: top;
+  text-align: left;
+}
+.pdf-doc th {
+  background: #f1f5f9;
+  font-weight: 600;
+}
+.pdf-doc tbody tr:nth-child(even) td {
+  background: #fafbfd;
+}
+.pdf-doc tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* ── 图片与水平线 ─────────────────────────────────────────────────────── */
+.pdf-doc img {
+  max-width: 100%;
+  height: auto;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.pdf-doc p > img:only-child {
+  display: block;
+  margin: 0.6em auto;
+}
+.pdf-doc .pdf-img-missing {
+  color: #94a3b8;
+  font-size: 0.92em;
+}
+.pdf-doc hr {
+  border: none;
+  border-top: 1px solid #dbe2ea;
+  margin: 1.3em 0;
+}
+
+/* ── 公式（打印口径微调；几何排版在 css/review.css 的 .rv-* 段）──────────
+   .rv-m* 自研字形规则只作用于回退结果（.rv-math.rv-legacy，见 review.css）；
+   KaTeX 路径只吃包裹层：这里不覆盖 KaTeX 的几何，只统一显示式公式的打印间距。 */
+.pdf-doc .rv-math {
+  color: inherit;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.pdf-doc .rv-math-display {
+  /* PDF 没有横向滚动：显示式公式超宽时按整块缩放而不是裁掉右边 */
+  overflow: visible;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+/* 显示式公式的垂直间距：两条路径统一成 0.75em（KaTeX 自带的 1em 覆盖掉） */
+.pdf-doc .rv-math-display > .katex-display { margin: 0.75em 0; }
+.pdf-doc .rv-math.rv-legacy.rv-math-display { margin: 0.75em 0; }
+.pdf-doc .rv-math.rv-legacy .rv-mcmd {
+  color: #64748b;
+}
+.pdf-doc .rv-math.rv-legacy .rv-mfrac,
+.pdf-doc .rv-math.rv-legacy .rv-msqrt,
+.pdf-doc .rv-math.rv-legacy .rv-mtable {
+  break-inside: avoid;
+}
+
+/* 横向（landscape）时表格更宽，正文略收紧 */
+.pdf-landscape .pdf-doc {
+  font-size: calc(10.5pt * var(--pdf-font-scale));
+}

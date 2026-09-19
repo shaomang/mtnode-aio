@@ -82,12 +82,40 @@ return { 要点: r.text };
 | `mtnode.log(...)` / `mtnode.progress(0.4, "第 3 批")` | 过程输出与进度（走事件帧回界面，不写 stdout） |
 | `mtnode.readText(p)` / `mtnode.writeText(p, s)` / `mtnode.fileExists(p)` | 本机文件读写 |
 | `mtnode.join(...)` / `mtnode.abs(p)` / `mtnode.cwd()` / `mtnode.platform` | 路径与平台 |
+| `const r = await mtnode.screenShot({ target, screen, window, x, y, w, h })` | **拍屏幕 / 窗口成 PNG**（不只是本窗口，见下）：成功 → `{ ok, path, width, height, method }` |
+| `await mtnode.screenList()` / `await mtnode.windowList()` | 有哪些屏幕 / 哪些窗口可拍（窗口带 `hwnd` / 标题 / 是否可见） |
 | `const r = await mtnode.ai("提示词" [, opts])` | 用本节点「AI 调用」选中的模型真发一次文本请求 → `{ ok, text, error, provider, model }`（不抛异常，失败看 `ok === false`） |
 | `mtnode.aiConfig` | 只读摘要 `{ provider, providerName, model, preset, effort }`（节点上「AI 调用」三格当前选了什么） |
 
 `mtnode.ai` 的模型来自节点头部 🤖（或板身「AI 调用」）那三格选择；改了选择，下一次运行就按新模型调用。`opts` 里显式传的 `provider / model / effort / temperature / system / images` 只覆盖这一次调用。没选过模型时它返回 `{ ok: false, error: "…还没选定「AI 调用」模型…" }`，不会静默空跑。
 
 这些外部进程**全部记在本次运行名下**：函数 `return`、被停止或超时的那一刻，主进程按 runId 把它们连同子进程一起收走。`process.exit()` 之类能带走 MTNode 本体的入口在线程里被拦成抛错。
+
+### 桌面截图（拍别的屏幕 / 别的窗口）
+函数线程里没有 Electron 能力，也没有 `window.api.captureRect`（那只能拍 MTNode 自己这个窗口）；
+要拍**别的屏幕、别的窗口**用主进程给的这三只桥：
+
+```js
+// 有哪些屏幕 / 哪些窗口可拍（先看一眼，拿到 deviceName / 标题关键字 / hwnd）
+const scr = await mtnode.screenList();   // { ok, screens:[{index, deviceName, primary, x, y, width, height}] }
+const win = await mtnode.windowList();   // { ok, windows:[{hwnd, pid, process, title, x, y, width, height, visible}] }
+
+// 拍一张（全部参数都可省）→ { ok, path, width, height, method, bytes }
+const r = await mtnode.screenShot({
+  target: "screen",   // screen(某个屏幕，默认) | window(某个窗口) | all(整块桌面)
+  screen: "1",        // 屏幕名 \\.\DISPLAY1 / "x,y" / 序号(0 起)；省 = 主屏
+  window: "记事本",     // target=window 时用：标题关键字，只写一部分也行
+  x: 10, y: 10, w: 400, h: 300,   // 可选：相对被拍对象左上角的区域，两个必须一起给
+});
+if (!r.ok) throw new Error(r.error);
+return { 图像: r.path };   // 输出端子声明成「图像」即自动成为图像值
+```
+
+- 拍的坐标与像素都是**物理像素**；`target:"all"` 是整块虚拟桌面（多显示器拼一起）。
+- 被遮挡的窗口也能拍到自己的内容（Windows 用 `PrintWindow`）；自绘窗口（播放器等）自动回退复制屏幕；
+  **最小化的窗口会被明确拒绝**（会告诉你「先把它显示出来再拍」），不会给你一张黑图。
+- 截好的 PNG 落在应用数据目录的 `captures/` 下，`path` 直接给图像输出端子，或交给 `mtnode_vision` 识图。
+- 工具库里已有一条开箱即用的内置函数包 **「屏幕 / 窗口截图」**（顶栏「工具库」→ 插入），参数就是上面这几个。
 
 ### 迁移示例：以前用 `window.api` 起程序
 旧写法只能在渲染进程里成立，搬进独立线程后必然报 `window is not defined`（报错里会直接点名这段迁移说明）：

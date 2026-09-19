@@ -228,6 +228,33 @@
   display: none
 }
 
+/* 通用关闭（✕）：紧挨最小化那颗方钮，是每一只 #overlay 弹窗的显式出口。
+   与 .ov-min-btn 同尺寸同风格，不再 margin-left:auto（auto 由最小化那颗吃掉）。 */
+.overlay-head .ov-close-btn {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.overlay-head .ov-close-btn:hover {
+  color: var(--orange2, #ff9f43);
+  border-color: var(--bd2);
+  background: rgba(255, 159, 67, .10)
+}
+
+.overlay-head .ov-close-btn[hidden] {
+  display: none
+}
+
 /* 缓进缓出：最小化时窗壳缩一下淡出，恢复时反过来（时长与 app.js 的 OV_MIN_MS 一致） */
 .overlay-box.ov-min-out {
   animation: ovMinOut .18s ease-in-out forwards
@@ -394,6 +421,19 @@
 }
 
 /* ===== 设置面板 ===== */
+/* 设置窗底部的状态行：本页没有「保存并关闭」，改一处生效一处，
+   这行小字就是唯一的落盘回执（排队中 / 已即时生效 · 时间 / 写盘失败转红） */
+.settings-save-stamp {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.settings-save-stamp.settings-stamp-bad {
+  color: var(--red);
+}
+
 .settings-hint {
   font-size: 12px;
   color: var(--muted);
@@ -870,6 +910,28 @@ button.pk-badge.pk-btn:hover {
   border-color: var(--red);
   color: #ff8a8a;
   background: rgba(255, 80, 80, .16);
+}
+
+/* 已暂停那一行：状态色走琥珀（◉ 在跑 / ○ 等待 / ⏸ 暂停），
+   行内键是「▶ 继续」而不是「■ 终止」—— 它已经没有可停的东西了 */
+.rq-item.is-paused .rq-icon {
+  color: rgb(232, 178, 74);
+  opacity: 1;
+}
+
+.rq-item.is-paused .rq-title {
+  color: rgb(232, 178, 74);
+}
+
+.rq-stop.rq-resume {
+  opacity: 1;
+  color: rgb(232, 178, 74);
+}
+
+.rq-stop.rq-resume:hover {
+  border-color: rgb(232, 178, 74);
+  color: rgb(28, 28, 30);
+  background: rgb(232, 178, 74);
 }
 
 .rq-fold {

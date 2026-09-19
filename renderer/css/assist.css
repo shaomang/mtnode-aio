@@ -833,6 +833,57 @@
   white-space: pre;
 }
 
+/* ===== Markdown 阅读器 · 所见即所得直接编辑（编辑态默认档） =====
+ * 渲染出的正文本体即编辑区（contenteditable），上方一条 Markdown 工具栏
+ * （按钮样式复用 review.css 的 .rv-tool，与「✎ AI 审阅」同一套图标语言）。 */
+.md-viewer-edit {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.md-viewer-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 5px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--bd2);
+  min-height: 32px;
+}
+
+/* 编辑区自身：跟着正文样式走，只补可编辑态的可视反馈 */
+.md-viewer-rich {
+  outline: none;
+  min-height: 320px;
+  cursor: text;
+  caret-color: var(--orange2);
+}
+
+.md-viewer-rich:focus {
+  background: color-mix(in srgb, var(--cyan) 4%, transparent);
+}
+
+.md-viewer-rich[contenteditable="true"] img {
+  cursor: pointer;
+}
+
+.md-viewer-rich[contenteditable="true"] .rv-math {
+  cursor: default;
+}
+
+/* 阅读器里的编辑态提示（底栏 meta）已由 app.js 写入，这里只管不换行 */
+#mdViewerMeta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 数据库图标：金色 */
 .n-drag-handle.db-ico {
   color: #f0c14d

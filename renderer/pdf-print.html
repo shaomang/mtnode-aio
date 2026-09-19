@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>PDF</title>
+<!-- 文本 → PDF 的打印模板（由主进程 pdf-write.js 用隐藏窗口载入）
+     排版：css/pdf-print.css；公式：css/review.css 的 .rv-* 规则 + math-render.js（与审阅同源）
+     + vendor/katex/katex.min.css（KaTeX 字形全靠这份 CSS 定位，缺了导出的 PDF 公式尺寸会错乱） -->
+<link rel="stylesheet" href="css/review.css">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<link rel="stylesheet" href="css/pdf-print.css">
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/katex/katex.min.js"></script>
+<script src="math-render.js"></script>
+<script src="pdf-print.js"></script>
+</head>
+<body>
+<article id="doc" class="pdf-doc"></article>
+</body>
+</html>

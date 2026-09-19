@@ -74,6 +74,13 @@
             "zh": "一句话搭工作流",
             "en": "Build a flow in one sentence"
           }
+        },
+        {
+          "id": "longtask",
+          "title": {
+            "zh": "长周期任务（状态机 · 人在环）",
+            "en": "Long-running tasks (state machine, human in the loop)"
+          }
         }
       ]
     },

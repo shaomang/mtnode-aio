@@ -137,11 +137,13 @@
     if (proj.scaffold) bits.push("脚手架✓");
     if (proj.venv) bits.push("venv✓");
     if (proj.models) bits.push("模型✓");
-    if (proj.hasPost) bits.push("4K后处理✓");
-    else if (proj.venv) bits.push("4K后处理待装");
+    /* 超分 / 补帧已从生成链拆出，是独立后处理能力：这里只报它能不能用（不随生成自动跑） */
+    if (proj.hasPost) bits.push("超分/补帧后处理✓");
+    else if (proj.venv) bits.push("超分/补帧后处理待装");
     diskHint.textContent =
       `建议预留 ≥${st.diskHintGb || 70}GB。` +
-      (bits.length ? " 当前：" + bits.join(" · ") : " 尚未检测到完整安装。");
+      (bits.length ? " 当前：" + bits.join(" · ") : " 尚未检测到完整安装。") +
+      (proj.hasPost ? " 超分 / 补帧为独立节点，按需单独运行。" : "");
 
     const running = !!st.running || !!st.comfyUp;
     svcBadge.textContent = running ? "服务运行中" : "服务关闭";
@@ -202,31 +204,106 @@
   }
 
   function syncLaunchOptsUi(st) {
+    /* 系统内存缓存的保留下限：关掉 = 0（不加 --cache-ram，退回 ComfyUI 默认）。
+     * 这是「超分把 64G 内存跑满、显存空着」那一档的正解开关，默认开 8G。 */
+    const cacheGb = Math.max(0, Math.round(Number(st.optCacheRamGb) || 0));
     const map = [
-      ["optCpuVae", st.cpuVae !== false],
+      /* CPU VAE 默认关：直接回显后端给的布尔值，不再用 !== false 兜成开 */
+      ["optCpuVae", !!st.cpuVae],
       ["optPinned", st.optDisablePinnedMemory !== false],
       ["optFp16", st.optFp16Intermediates !== false],
       ["optExpand", st.optExpandableSegments !== false],
+      ["optCacheRam", cacheGb > 0],
+      ["optRebuildRam", st.optRebuildOnRamHigh !== false],
     ];
     for (const [id, on] of map) {
       const el = $(id);
       if (el && !el._bound) {
         el._bound = true;
-        el.addEventListener("change", async () => {
-          if (!api.setLaunchOpts) return;
-          const r = await api.setLaunchOpts({
-            cpuVae: !!$("optCpuVae").checked,
-            optDisablePinnedMemory: !!$("optPinned").checked,
-            optFp16Intermediates: !!$("optFp16").checked,
-            optExpandableSegments: !!$("optExpand").checked,
-          });
-          const note = $("launchOptsNote");
-          if (note) note.textContent = (r && r.note) || "已保存";
-          logLine("启动优化已保存（下次启动生效）");
-        });
+        el.addEventListener("change", saveLaunchOpts);
       }
       if (el) el.checked = !!on;
     }
+    const gbEl = $("optCacheRamGb");
+    if (gbEl && !gbEl._bound) {
+      gbEl._bound = true;
+      gbEl.addEventListener("change", saveLaunchOpts);
+    }
+    if (gbEl) {
+      gbEl.value = String(cacheGb > 0 ? cacheGb : 8);
+      gbEl.disabled = !$("optCacheRam").checked;
+    }
+    const thEl = $("optArenaThreads");
+    if (thEl && !thEl._bound) {
+      thEl._bound = true;
+      thEl.addEventListener("change", saveLaunchOpts);
+    }
+    if (thEl) {
+      const n = Math.max(0, Math.round(Number(st.optArenaThreads) || 0));
+      thEl.value = String(n > 0 ? n : 0);
+    }
+    renderMemRail(st);
+  }
+
+  /* 内存护栏现状：后端自己报的空闲 / 总内存 + 最近一次回收时间。
+   * 让「跑几单之后内存一路攀升」这件事在管理窗里可读，而不是只留在 console。 */
+  function renderMemRail(st) {
+    const el = $("memRailInfo");
+    if (!el) return;
+    const ram = st.memRail || null;
+    const bits = [];
+    const gb = (v) => (v == null || !isFinite(Number(v)) ? "—" : Math.round(Number(v) * 10) / 10 + "G");
+    if (ram && (ram.free != null || ram.total != null)) {
+      bits.push("系统内存：可用 " + gb(ram.free) + " / 共 " + gb(ram.total));
+    } else {
+      bits.push("系统内存：后端未运行或未上报");
+    }
+    if (st.optRebuildOnRamHigh === false) bits.push("内存护栏已关（进程不再回收）");
+    const at = Number(st.lastRecycleAt) || 0;
+    if (at > 0) {
+      const d = new Date(at);
+      const pad = (n) => String(n).padStart(2, "0");
+      bits.push(
+        "后端最近一次回收：" +
+          d.getFullYear() +
+          "-" +
+          pad(d.getMonth() + 1) +
+          "-" +
+          pad(d.getDate()) +
+          " " +
+          pad(d.getHours()) +
+          ":" +
+          pad(d.getMinutes()),
+      );
+    }
+    el.textContent = bits.join(" · ");
+  }
+
+  /** 启动优化回写：一次把这一区的全部取值交给主进程（保存后下次启动后端生效） */
+  async function saveLaunchOpts() {
+    if (!api.setLaunchOpts) return;
+    const on = $("optCacheRam").checked;
+    const gb = Math.max(1, Math.min(128, Math.round(Number($("optCacheRamGb").value) || 8)));
+    $("optCacheRamGb").disabled = !on;
+    const thEl = $("optArenaThreads");
+    const threads = Math.max(0, Math.min(64, Math.round(Number(thEl && thEl.value) || 0)));
+    if (thEl) thEl.value = String(threads);
+    const r = await api.setLaunchOpts({
+      cpuVae: !!$("optCpuVae").checked,
+      optDisablePinnedMemory: !!$("optPinned").checked,
+      optFp16Intermediates: !!$("optFp16").checked,
+      optExpandableSegments: !!$("optExpand").checked,
+      optCacheRamGb: on ? gb : 0,
+      optRebuildOnRamHigh: !!$("optRebuildRam").checked,
+      optArenaThreads: threads,
+    });
+    const note = $("launchOptsNote");
+    if (note) {
+      note.textContent =
+        (r && r.note) || "已保存" +
+          (on ? "（系统内存缓存保留下限 " + gb + "G）" : "（系统内存缓存用 ComfyUI 默认，无上限）");
+    }
+    logLine("启动优化已保存（下次启动生效）");
   }
 
   function applyGpu(gpu) {
@@ -746,7 +823,12 @@
   if ($("btnWfTemplate")) {
     $("btnWfTemplate").onclick = async () => {
       const doOne = async (mode) => {
-        const label = mode === "r2v" ? "R2V（参考图/视频/音频）" : "FL2VA（首末帧）";
+        const label =
+          mode === "r2v"
+            ? "R2V（参考图/视频/音频）"
+            : mode === "nanfeng"
+              ? "南风H3 V10 多参（NanFengH3MultiReferenceGeneratorV10 → CreateVideo → SaveVideo）"
+              : "FL2VA（首末帧）";
         if (!confirm("把内置 " + label + " 工作流另存为库里的自定义工作流？\n保存后可自由编辑与复制，内置链本身不受影响。")) return false;
         const r = await api.wfTemplateExport(mode);
         if (r && r.ok) {
@@ -758,6 +840,7 @@
         return false;
       };
       if (await doOne("fl2va")) await doOne("r2v");
+      await doOne("nanfeng");
     };
   }
 

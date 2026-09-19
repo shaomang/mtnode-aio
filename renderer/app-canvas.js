@@ -52,10 +52,11 @@ function addMark(kind, x, y) {
     if (host) {
       const o = superInnerOrigin(host);
       const pan = superInnerPan(host);
+      const anchor = superInnerAnchor(host);
       parentSuperId = host.id;
       parentTaskId = host.parentTaskId || "";
-      mx = snap(Math.max(8, x - host.x - o.ox - pan.x));
-      my = snap(Math.max(8, y - host.y - o.oy - pan.y));
+      mx = snap(Math.max(8, x - anchor.x - o.ox - pan.x));
+      my = snap(Math.max(8, y - anchor.y - o.oy - pan.y));
     }
   }
   const m = {
@@ -176,10 +177,11 @@ function makeMarkFromSpec(spec, warnings) {
     if (host) {
       const o = superInnerOrigin(host);
       const pan = superInnerPan(host);
+      const anchor = superInnerAnchor(host);
       m.parentSuperId = host.id;
       m.parentTaskId = host.parentTaskId || "";
-      const lx = snap(Math.max(8, wx - host.x - o.ox - pan.x));
-      const ly = snap(Math.max(8, wy - host.y - o.oy - pan.y));
+      const lx = snap(Math.max(8, wx - anchor.x - o.ox - pan.x));
+      const ly = snap(Math.max(8, wy - anchor.y - o.oy - pan.y));
       m.x = lx;
       m.y = ly;
     }
@@ -1033,6 +1035,38 @@ function textPreviewButtonEl(node) {
   return b;
 }
 
+/* 泛用文件节点（input_any）菜单栏的「手动更改类型」四连图标按钮：文本 / 图像 / 音频 /
+   视频，点一下就地把本节点换成对应的输入节点（逻辑在 app.js 的 convertAnyNodeKind）。
+   按钮只画图标 —— 取 KIND_ICON_SVG 里各输入节点自己的线性图标（与节点标题栏同一份），
+   名称只留 title / aria-label 提示：节点头部按钮排窄，中文短名会把整排撑开。
+   目标清单与右键「转换为输入节点」子菜单共用 INPUT_ANY_TARGETS。 */
+function inputAnyConvertBar(node) {
+  const wrap = document.createElement("span");
+  wrap.className = "n-any-conv";
+  wrap.title = I18n.t("手动更改类型：点击直接转换成对应的输入节点");
+  const targets =
+    typeof INPUT_ANY_TARGETS !== "undefined" && INPUT_ANY_TARGETS.length
+      ? INPUT_ANY_TARGETS
+      : [];
+  for (const t of targets) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "n-play n-any-conv-btn";
+    b.innerHTML =
+      (typeof KIND_ICON_SVG !== "undefined" && KIND_ICON_SVG[t.kind]) || "";
+    b.title = I18n.t("转换为") + I18n.t(t.label);
+    b.setAttribute("aria-label", b.title);
+    b.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof convertAnyNodeKind === "function") convertAnyNodeKind(node, t.kind);
+      else toast(I18n.t("文件节点逻辑未就绪（app.js）"), "warn");
+    };
+    wrap.appendChild(b);
+  }
+  return wrap;
+}
+
 /* 预览按钮（proc_text / proc_image / 智能任务 共用）。
    原来这张排上还有个「API」按钮就地展开 .n-api-panel —— 设置已统一走头部 ⚙ 跳窗，
    这里只剩 ◈ 预览（查看运行时将发送的完整请求），保持原样。 */
@@ -1733,7 +1767,12 @@ function renderNodeSettingsForm() {
   /* 音频节点（保存音频 / 音乐生成 / 语音合成）：表单里补一只方角波形预览器，
      试听与节点 body 里那只同源同行为 */
   try {
-    const media = isSaveNode(d.node) ? saveMediaKind(d.node) : "audio";
+    const media = isSaveNode(d.node)
+      ? saveMediaKind(d.node)
+      : /* SenseNova 图像节点的产物是 PNG，不是音频：绝不能给它挂波形预览器 */
+        d.node.kind === "sensenova_gen"
+        ? "image"
+        : "audio";
     if (isSaveNode(d.node) || isMediaGenNode(d.node)) ensureNodeSettingsWave(d.node, d.root, media);
   } catch (_) {}
 }
@@ -2586,6 +2625,43 @@ registerNodeSettingsForm("music_gen", {
   },
 });
 
+registerNodeSettingsForm("yue_gen", {
+  gearTitle: () => I18n.t("思维链 / 抽卡 / 种子 / 输出路径 / offload"),
+  summary: (node) =>
+    yueGenParamSummaryText(node) +
+    " · " +
+    (node.offload === false
+      ? I18n.t("offload：关")
+      : I18n.t("offload：开")),
+  build: (ctx) => {
+    const node = ctx.node;
+    nsYueGenParamFields(ctx, node);
+    nsMediaGenPathField(ctx, node, "audio");
+    ctx.section(I18n.t("显存"));
+    nsCheck(
+      ctx,
+      I18n.t("auto CPU offload（24G 推荐）"),
+      node.offload !== false,
+      (v) => {
+        node.offload = v;
+      },
+    );
+  },
+});
+
+registerNodeSettingsForm("sensenova_gen", {
+  gearTitle: () =>
+    I18n.t("分辨率桶 / 步数 / CFG / 抽卡 / 种子 / 显存档位 / 精度 / think / 参考图强度"),
+  summary: (node) => sensenovaGenParamSummaryText(node),
+  build: (ctx) => {
+    /* 设置窗放 SenseNova 专有参数（分辨率桶 / 步数 / CFG / 显存档位 / 精度 / think）；
+       没有「输出路径」项：产物由主进程落进应用托管目录（与 proc_image 同一资产链）。
+       参考图端子与图像节点同为泛用增量端子，连线照收 —— 连了图就随 refImages 下发后端，
+       走图像编辑模式（it2i_generate，参考图参与条件生成）。 */
+    nsSensenovaGenParamFields(ctx, ctx.node);
+  },
+});
+
 registerNodeSettingsForm("video_gen", {
   gearTitle: () => I18n.t("模式 / 尺寸 / 采样步数 / 显存优化"),
   summary: (node) =>
@@ -2599,7 +2675,10 @@ registerNodeSettingsForm("video_gen", {
         " · " +
         (node.ratio || "16:9") +
         " · " +
-        (node.outputRes || "auto"),
+        (node.outputRes || "auto") +
+        (typeof videoGenChainTag === "function" && videoGenChainTag(node)
+          ? " · " + videoGenChainTag(node)
+          : ""),
   /* 换工作流来源 = 整张表单换骨（wfMeta 是异步读回来的），靠签名跟着重建 */
   signature: (node) =>
     isCustomVideoGen(node) ? "custom:" + String(node.workflowId || "") : "builtin",
@@ -2641,7 +2720,10 @@ registerNodeSettingsForm("video_gen", {
         "mgmeta",
         (node.videoMode || "fl2va").toUpperCase() +
           " · " +
-          (node.ratio || "16:9"),
+          (node.ratio || "16:9") +
+          (typeof videoGenChainTag === "function" && videoGenChainTag(node)
+            ? " · " + videoGenChainTag(node)
+            : ""),
       );
     nsSelect(
       ctx,
@@ -2668,6 +2750,72 @@ registerNodeSettingsForm("video_gen", {
       },
       { commit: { rerender: true } },
     );
+    /* 分段衔接（长视频无缝衔接）：两种内置模式都支持，勾选后节点多出「↩ 上一段视频」端子
+       （端子数由 videoGenMaxChains 决定 → 必须 rerender 让画布重画端子）。
+       · FL2VA：宿主取上一段末帧充当 first_frame 锚定构图。
+       · R2V ：参考视频节点没有 first_frame，衔接末 N 帧直接占一路 <Video N>（官方语义 = 续写起点），
+               参考视频上限 3 路不变，连满时宿主顶掉最后一路 V3 并在控制台说明。
+       引导帧数 / 重绘幅度两个参数两种模式共用。 */
+    ctx.section(I18n.t("分段衔接（长视频无缝衔接）"));
+    nsCheck(
+      ctx,
+      I18n.t("衔接上一段视频"),
+      node.chainEnabled === true,
+      (v) => {
+        node.chainEnabled = !!v;
+      },
+      {
+        commit: { rerender: true },
+        title: I18n.t(
+          "开启后节点多一个「↩ 上一段视频」输入端子：接上一段的成片，逐段生成即可拼成长视频。内置 FL2VA / R2V 都生效。",
+        ),
+      },
+    );
+    if (node.chainEnabled === true) {
+      nsNumber(
+        ctx,
+        I18n.t("引导帧数"),
+        node.chainFrames != null ? node.chainFrames : 22,
+        { min: 1, max: 60, step: 1, fallback: 22 },
+        (v) => {
+          node.chainFrames = v;
+        },
+      );
+      nsNumber(
+        ctx,
+        I18n.t("重绘幅度"),
+        node.chainDenoise != null ? node.chainDenoise : 1,
+        { min: 0, max: 1, step: 0.01, fallback: 1 },
+        (v) => {
+          node.chainDenoise = v;
+        },
+      );
+      ctx.hint(
+        I18n.t(
+          "重绘幅度 0.3–0.6 = 引导加重绘（推荐）：锚定构图并对引导区域重绘，重置画面状态、降低长视频劣化；填 0 = 纯引导。",
+        ),
+      );
+      if ((node.videoMode || "fl2va") === "r2v") {
+        ctx.hint(
+          I18n.t(
+            "R2V（多参考）：衔接会占用一路参考视频（上限 3 路，连满时顶掉最后一路 V3），提示词按 <Video N> 引用这一路。",
+          ),
+        );
+        nsCheck(
+          ctx,
+          I18n.t("自动补写续写声明"),
+          node.chainMention !== false,
+          (v) => {
+            node.chainMention = !!v;
+          },
+          {
+            title: I18n.t(
+              "运行时在提示词末尾自动补一句官方口径的续写声明（Continue seamlessly from <Video N> …），告诉模型这一路参考视频就是上一段的续写起点。自己已经写过类似要求时可以关掉。",
+            ),
+          },
+        );
+      }
+    }
     nsNumber(
       ctx,
       I18n.t("采样步数"),
@@ -2694,27 +2842,7 @@ registerNodeSettingsForm("video_gen", {
     addOpt("optLowVramAttn", I18n.t("Low VRAM Attention"), I18n.t("按 head 分块降峰值显存"));
     addOpt("optChunkFfn", I18n.t("Chunk FeedForward"), I18n.t("FFN 分块降峰值显存"));
     addOpt("optVramBarrier", I18n.t("VAE 前卸模型"), I18n.t("采样后 unload，避免双 VAE 解码 OOM"));
-    ctx.section(I18n.t("4K 超分补帧（默认开，24G 建议关以提速）"));
-    addOpt("postEnabled", I18n.t("4K 超分补帧"), I18n.t("RIFE 补帧 + Real-ESRGAN x4 超分 → 4K（需安装后处理模型）"));
-    addOpt("postInterp", I18n.t("补帧 RIFE"), I18n.t("低分辨率先补帧，再超分；时序更稳更省显存"));
-    nsSelect(
-      ctx,
-      I18n.t("补帧倍数"),
-      [["1", "1x（关）"], ["2", "2x（推荐）"], ["4", "4x"]],
-      String(node.postInterpMultiplier != null ? node.postInterpMultiplier : 2),
-      (v) => {
-        node.postInterpMultiplier = Number(v);
-      },
-    );
-    nsNumber(
-      ctx,
-      I18n.t("超分批量"),
-      node.postPerBatch != null ? node.postPerBatch : 4,
-      { min: 1, max: 16, step: 1, fallback: 4 },
-      (v) => {
-        node.postPerBatch = v;
-      },
-    );
+    /* 超分 / 补帧已拆成独立节点（video_upscale / video_interp），生成链不再串跑后处理 */
     ctx.section(I18n.t("采样 / 质量 / 输出"));
     nsSelect(
       ctx,
@@ -2816,15 +2944,213 @@ registerNodeSettingsForm("video_gen", {
     advBox.className = "n-api-adv-grid";
     const a = ctx.sub(advBox);
     a.hint(I18n.t("EasyCache 缓存区间"));
-    nsNumber(a, I18n.t("easyReuse"), node.easyReuse != null ? node.easyReuse : 0.2, { fallback: 0.2, step: 0.01 }, (v) => { node.easyReuse = v; });
-    nsNumber(a, I18n.t("easyStart%"), node.easyStart != null ? node.easyStart : 0.15, { fallback: 0.15, step: 0.01 }, (v) => { node.easyStart = v; });
-    nsNumber(a, I18n.t("easyEnd%"), node.easyEnd != null ? node.easyEnd : 0.95, { fallback: 0.95, step: 0.01 }, (v) => { node.easyEnd = v; });
+    /* EasyCache 复用阈值＝画质开关：ComfyUI 原生默认 0.2/0.15/0.95 是按几十步的图像
+     * 模型调的，H3 只有 20 步——起点 0.15 让缓存第 3 步就生效、额度 0.2 又够大，
+     * 结果大段步骤直接复用上一版输出，画面跳变/漂移（实测逐帧差异 max 0.13）。
+     * 这里给质量安全档并限制可填范围（与 h3/main-h3.js EASY_SAFE 同源）。 */
+    nsNumber(a, I18n.t("easyReuse"), node.easyReuse != null ? node.easyReuse : 0.08, { min: 0.01, max: 0.2, fallback: 0.08, step: 0.01 }, (v) => { node.easyReuse = v; });
+    nsNumber(a, I18n.t("easyStart%"), node.easyStart != null ? node.easyStart : 0.30, { min: 0.15, max: 0.6, fallback: 0.30, step: 0.01 }, (v) => { node.easyStart = v; });
+    nsNumber(a, I18n.t("easyEnd%"), node.easyEnd != null ? node.easyEnd : 0.90, { min: 0.6, max: 1, fallback: 0.90, step: 0.01 }, (v) => { node.easyEnd = v; });
     nsNumber(a, I18n.t("LowVRAM head_chunks"), node.lowVramHeadChunks != null ? node.lowVramHeadChunks : 4, { min: 1, fallback: 4, step: 1 }, (v) => { node.lowVramHeadChunks = v; });
     nsNumber(a, I18n.t("ChunkFFN chunks"), node.chunkFfnChunks != null ? node.chunkFfnChunks : 2, { min: 1, fallback: 2, step: 1 }, (v) => { node.chunkFfnChunks = v; });
     nsNumber(a, I18n.t("ChunkFFN seq_threshold"), node.chunkFfnSeqThreshold != null ? node.chunkFfnSeqThreshold : 4096, { min: 256, fallback: 4096, step: 1 }, (v) => { node.chunkFfnSeqThreshold = v; });
     nsCheck(a, I18n.t("Sage 编译（需 Sage 且更慢更占显存）"), !!node.sageCompile, (v) => { node.sageCompile = v; });
     adv.appendChild(advBox);
     ctx.append(adv);
+  },
+});
+
+/* ───────── 视频后处理节点（video_upscale / video_interp）─────────
+   超分 / 补帧从 H3 生成链拆出来后的两个独立节点：设置面板只放本节点的后处理参数
+   与低显存安全档（超分默认走逐帧分块流式链，内存只跟一个分块有关、与时长无关），
+   输出路径沿用媒体生成节点同一套（mediaGenOutputRaw / 后缀 .mp4）。 */
+registerNodeSettingsForm("video_upscale", {
+  gearTitle: () => I18n.t("超分模型 / 倍率 / 目标长边 / 分块流式"),
+  summary: (node) =>
+    I18n.t("超分") +
+    " · x" +
+    String(node.scale === 2 ? 2 : 4) +
+    " · " +
+    videoUpscaleModelLabel(node.model) +
+    " · " +
+    I18n.t("长边") +
+    " " +
+    String(node.targetLongSide != null ? node.targetLongSide : 3840),
+  build: (ctx) => {
+    const node = ctx.node;
+    ctx.section(I18n.t("超分参数"));
+    nsSelect(
+      ctx,
+      "超分倍率",
+      /* 倍率决定输出多大：流式链的内存只跟分块有关，倍率不影响能不能跑，只影响输出尺寸与耗时 */
+      [
+        [4, "x4 倍率（Real-ESRGAN x4plus · 画质最好）"],
+        [2, "x2 倍率（输出只放大 2 倍 · 更快更省显存）"],
+      ],
+      node.scale === 2 ? 2 : 4,
+      (v) => {
+        node.scale = Number(v) === 2 ? 2 : 4;
+      },
+      {
+        title: I18n.t(
+          "输出相对源视频放大的倍数：x2 = 长宽各翻一倍（更快更省显存）；x4 = Real-ESRGAN 原生倍率；逐帧分块流式下倍率不再受内存限制",
+        ),
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("超分模型"),
+      /* 选项值 = 文件名（含 .pth）：ComfyUI 的 model_name 候选是 upscale_models 里的真实文件名 */
+      [
+        [VIDEO_UPSCALE_MODEL_DEFAULT, "Real-ESRGAN x4plus（通用 x4）"],
+        ["RealESRGAN_x2plus.pth", "Real-ESRGAN x2plus（原生 x2 · 更省内存）"],
+      ],
+      videoUpscaleModelValue(node.model),
+      (v) => {
+        node.model = videoUpscaleModelValue(v);
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("目标长边（像素）"),
+      node.targetLongSide != null ? node.targetLongSide : 3840,
+      { min: 1280, max: 7680, step: 16, fallback: 3840, title: I18n.t("输出长边像素上限（1280–7680）；逐帧分块流式下不再受内存限制；x2 倍率时还会被「源长边 × 2」封顶，源分辨率未知时不缩放") },
+      (v) => {
+        node.targetLongSide = v;
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("逐帧批量 per_batch"),
+      node.perBatch != null ? node.perBatch : 1,
+      { min: 1, max: 16, step: 1, fallback: 1, title: I18n.t("每次交给超分模型的帧数；低显存安全档保持 1（流式档逐帧处理，此项只影响图兜底链）") },
+      (v) => {
+        node.perBatch = v;
+      },
+    );
+    ctx.section(I18n.t("24G 安全档"));
+    nsCheck(
+      ctx,
+      I18n.t("低显存安全档（强制逐帧）"),
+      node.lowVram !== false,
+      (v) => {
+        node.lowVram = v;
+        /* 开安全档即回到逐帧；关掉后按上面的 per_batch 批处理 */
+        if (v) node.perBatch = 1;
+      },
+      { title: I18n.t("分块 fp16 省显存，16G 机器也能跑 15 秒片；关闭后按 per_batch 批量，更快但更吃显存") },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("分块 tile（像素）"),
+      node.tile != null ? node.tile : 512,
+      { min: 0, max: 1024, step: 64, fallback: 512, title: I18n.t("流式超分的分块大小（像素）；显存只跟它有关，512 适合 16G 机器，0 = 后端默认 512") },
+      (v) => {
+        node.tile = v;
+      },
+    );
+    ctx.hint(
+      I18n.t(
+        "逐帧分块流式超分：常驻内存只与一个分块有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4K（长边 3840）输出不再受内存限制。",
+      ),
+    );
+    ctx.section(I18n.t("输出"));
+    nsNumber(
+      ctx,
+      I18n.t("抽卡次数"),
+      attemptCount(node),
+      { min: 1, max: 10, step: 1, fallback: 1, title: I18n.t("连续处理次数（1–10）；多次时输出命名为 #1、#2 …") },
+      (v) => {
+        node.attempts = attemptCount({ attempts: v });
+      },
+    );
+    nsMediaGenPathField(ctx, node, "video");
+  },
+});
+
+registerNodeSettingsForm("video_interp", {
+  gearTitle: () => I18n.t("补帧倍率 / 精度 / 逐帧流式"),
+  summary: (node) =>
+    I18n.t("补帧") +
+    " " +
+    String(node.multiplier != null ? node.multiplier : 2) +
+    "x",
+  build: (ctx) => {
+    const node = ctx.node;
+    ctx.section(I18n.t("补帧参数"));
+    nsSelect(
+      ctx,
+      I18n.t("补帧倍率"),
+      /* 倍率决定输出帧数与耗时：流式链的内存只跟相邻两帧有关，倍率不影响能不能跑 */
+      [["2", "2x（推荐 · 更快更省显存）"], ["4", "4x（更流畅 · 耗时更长）"], ["1", "1x（仅重编码）"]],
+      String(node.multiplier != null ? node.multiplier : 2),
+      (v) => {
+        node.multiplier = Math.max(1, Math.min(4, Number(v) || 2));
+      },
+      {
+        title: I18n.t(
+          "输出帧率相对源视频的倍数：逐帧流式下倍率不再受内存限制，只影响输出帧数与耗时",
+        ),
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("清缓存间隔（帧）"),
+      node.clearCacheEvery != null ? node.clearCacheEvery : 2,
+      { min: 1, max: 64, step: 1, fallback: 2, title: I18n.t("每 N 帧清一次缓存；流式档每帧算完即写盘，此项只影响图兜底链") },
+      (v) => {
+        node.clearCacheEvery = v;
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("逐帧批量 batch_size"),
+      node.batchSize != null ? node.batchSize : 1,
+      { min: 1, max: 16, step: 1, fallback: 1, title: I18n.t("每次交给 RIFE 的帧数；流式档逐帧处理，此项只影响图兜底链") },
+      (v) => {
+        node.batchSize = v;
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("缩放系数 scale_factor"),
+      node.scaleFactor != null ? node.scaleFactor : 1.0,
+      { min: 0.25, max: 4, step: 0.05, fallback: 1, title: I18n.t("RIFE 内部缩放系数（1.0=原分辨率）；流式档同样生效，不改变输出分辨率") },
+      (v) => {
+        node.scaleFactor = v;
+      },
+    );
+    ctx.section(I18n.t("24G 安全档"));
+    nsCheck(
+      ctx,
+      I18n.t("低显存安全档"),
+      node.lowVram !== false,
+      (v) => {
+        node.lowVram = v;
+        /* 开安全档即回到最小缓存 + 逐帧 */
+        if (v) {
+          node.clearCacheEvery = 2;
+          node.batchSize = 1;
+        }
+      },
+      { title: I18n.t("低精度 fp16 省显存，16G 机器也能跑 15 秒片；关闭后按更高精度跑，更快但更吃显存") },
+    );
+    ctx.hint(
+      I18n.t(
+        "逐帧流式补帧：常驻内存只与相邻两帧有关，与视频时长无关，16G 机器也能跑 15 秒级视频；4x 倍率同样不再受内存限制，只是耗时更长。",
+      ),
+    );
+    ctx.section(I18n.t("输出"));
+    nsNumber(
+      ctx,
+      I18n.t("抽卡次数"),
+      attemptCount(node),
+      { min: 1, max: 10, step: 1, fallback: 1, title: I18n.t("连续处理次数（1–10）；多次时输出命名为 #1、#2 …") },
+      (v) => {
+        node.attempts = attemptCount({ attempts: v });
+      },
+    );
+    nsMediaGenPathField(ctx, node, "video");
   },
 });
 
@@ -4172,6 +4498,10 @@ function nodeElement(node) {
   /* 素材节点：输入族（.in）底色之外再打 .asset-node，
      供「条目标题行 / 内容视图 / 同步按钮」这套排版取用（见 canvas.css） */
   if (node.kind === "asset") el.classList.add("asset-node");
+  /* 长任务壳（super + ltShellTask）：父壳 / 环节子壳共用一套外观标记 ——
+     头部一枚「长任务」徽标 + 专属色外框（见 canvas.css 的 .lt-shell 一族）。
+     只加类，不改任何字段；壳的归属真源仍是 ltShellTask / ltShellPath。 */
+  if (node.kind === "super" && String(node.ltShellTask || "").trim()) el.classList.add("lt-shell");
   /* 浏览态标记（未选中的文本 / 图像类节点）：形态同时记在 dataset 上，
      供 applyNodeForm 判断「选中 → 编辑态」时就地重建 body（见 buildBody 入口分流） */
   const _browse = nodeBrowseMode(node);
@@ -4296,6 +4626,13 @@ function nodeElement(node) {
     );
     head.appendChild(chip);
   }
+  /* 泛用文件节点：菜单栏（上方那排小按钮）直接给出四种目标输入节点 —— 与 body 的
+     「上传文件」（按文件类型自动转换）互补，这里不必先选文件就能手动指定类型，
+     与右键「转换为输入节点」子菜单同一份真源（INPUT_ANY_TARGETS / convertAnyNodeKind，
+     都在 app.js）。点一下就地换 kind：id / 位置 / 归属不变，Ctrl+Z 可撤销。 */
+  if (node.kind === "input_any") {
+    head.appendChild(inputAnyConvertBar(node));
+  }
   if (node.kind === "input_text" || node.kind === "input_image") {
     if (node.ro) {
       /* 拆分出的只读节点：头部已显示只读徽标，无批量开关 */
@@ -4414,6 +4751,29 @@ function nodeElement(node) {
     String(textPreviewOf(node) || "").trim()
   )
     head.appendChild(textPreviewButtonEl(node));
+  /* 产出节点（kind "ltout"）：正文在板身上直接改（body 的 textarea · 即改即存），头部再给
+     两枚复用既有能力的入口 —— ✎ 内置 Markdown 编辑器（保存写回 node.text）、
+     👁 只读预览全文（app-textpreview.js）。空正文不摆预览按钮（点了只会弹「没有可预览文本」）。 */
+  if (node.kind === "ltout") {
+    head.appendChild(ltoutMdEditButtonEl(node));
+    if (String(node.text == null ? "" : node.text).trim())
+      head.appendChild(textPreviewButtonEl(node));
+  }
+  /* 产物节点（kind "ltart"）：预览在板身上（图片缩略图 / 音视频可直接播 / 文本给摘要），
+     头部给「用系统程序打开」（想用本机别的软件接着处理时不用去找路径）与「📁 打开所在文件夹」
+     （拿产物目录里的其它文件，不用先打开文件再退一级）；文本类产物再多两枚 —— 👁 只读预览全文
+     （板身只给护栏摘要，完整阅读走只读预览窗）与 ✎ 编辑保存（复用应用内可编辑阅读器，
+     保存直接写回磁盘上的产物文件），三枚与 ⇢/📁 同排。 */
+  if (node.kind === "ltart") {
+    head.appendChild(ltartOpenButtonEl(node));
+    if (String(node.ltFile || "").trim()) head.appendChild(ltartFolderButtonEl(node));
+    if (ltartTypeOfNode(node) === "text") {
+      head.appendChild(ltartTextPreviewButtonEl(node));
+      /* ✎ 编辑保存：长任务产出的文本件常常只差几笔，直接在本机编辑器里改并写回原文件；
+         没有文件路径（旧版节点）时不摆空按钮，点了只会弹「没有文件路径」。 */
+      if (String(node.ltFile || "").trim()) head.appendChild(ltartEditButtonEl(node));
+    }
+  }
   if (
     node.kind === "proc_text" ||
     node.kind === "proc_image" ||
@@ -4709,6 +5069,17 @@ function nodeElement(node) {
       toggleSuperOpen(node, !openShell);
     };
     head.appendChild(tog);
+    /* 长任务壳（父壳 / 环节子壳）：头部一枚只读徽标 —— 一眼看清「这是长任务自动建的壳」。
+       徽标只显示不操作（用户要进壳直接双击卡片 / 按 ↪），所以不做按钮。 */
+    if (String(node.ltShellTask || "").trim()) {
+      const ltChip = document.createElement("span");
+      ltChip.className = "n-chip n-chip-lt" + (String(node.ltShellPath || "").trim() ? "" : " root");
+      ltChip.textContent = String(node.ltShellPath || "").trim() ? I18n.t("环节壳") : I18n.t("长任务");
+      ltChip.title = String(node.ltShellTask || "").trim()
+        ? I18n.t("长周期任务的产出壳：") + String(node.ltShellTask || "")
+        : I18n.t("长周期任务的产出壳");
+      head.appendChild(ltChip);
+    }
     /* 数据库超级节点：形态切换 + 编译按钮 + 记录数徽标 */
     if (node.db) {
       const idx = node.dbIndex;
@@ -5065,6 +5436,76 @@ function nodeElement(node) {
       head.appendChild(stop);
     }
   }
+  if (node.kind === "yue_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("音乐");
+    chip.title = I18n.t(
+      "YuE2 · 端子 P=风格提示词 · L=歌词 · ABC=谱面（可选）· 执行时自动启停后端",
+    );
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t("调用 YuE2 本地后端生成音乐");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消生成请求");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  /* SenseNova 本地图像生成：头部与音乐 / 语音节点同构（状态 chip + ◎ 探活 + ▤ 控制台 + ▶/✕）。
+     chip 文案取 sensenovaStatus（后端状态机写的），没有就退到一行画幅摘要 ——
+     用户在画布上一眼能看见「现在到底在等什么」。 */
+  if (node.kind === "sensenova_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("图像");
+    chip.title = I18n.t(
+      "SenseNova-U1.5-8B-MoT（本机出图）· 端子 P=提示词 · 分辨率只能取官方 11 个训练桶 · 执行时自动启停后端",
+    );
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t("调用 SenseNova 本地后端生成图像");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消生成请求");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
   if (node.kind === "video_gen") {
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
@@ -5090,6 +5531,40 @@ function nodeElement(node) {
       const stop = document.createElement("button");
       stop.className = "n-play n-stop";
       stop.title = I18n.t("取消生成请求");
+      stop.onclick = (ev) => {
+        ev.stopPropagation();
+        stopNode(node);
+      };
+      head.appendChild(stop);
+    }
+  }
+  /* 视频后处理（超分 / 补帧）：与 video_gen 同一套头部动作（探活 / 控制台 / ▶ / ✕），
+     但后处理独立于生成 —— 只在用户点 ▶ 或上游控制线触发时才跑。 */
+  if (isVideoPostKind(node)) {
+    const isUpscale = node.kind === "video_upscale";
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t(isUpscale ? "视频超分" : "视频补帧");
+    chip.title = I18n.t("独立后处理 · 执行时自动启停 H3 后端");
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    const b = document.createElement("button");
+    const pending = isNodePending(node);
+    b.className =
+      "n-play" +
+      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
+    b.textContent = node.running || pending ? "…" : "▶";
+    b.title = I18n.t(isUpscale ? "运行视频超分后处理" : "运行视频补帧后处理");
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      playNode(node);
+    };
+    head.appendChild(b);
+    if (node.running) {
+      const stop = document.createElement("button");
+      stop.className = "n-play n-stop";
+      stop.title = I18n.t("取消后处理请求");
       stop.onclick = (ev) => {
         ev.stopPropagation();
         stopNode(node);
@@ -5455,6 +5930,14 @@ function nodeElement(node) {
     };
     head.appendChild(tagBtn);
   }
+  /* 工具构建入口（头部）：🔧 按钮 + 状态徽标（构建中 / 绿灯 / 失败）。只在该处理节点
+     有「吃不下的入线文件」或已有构建记录时出现（toolBuildEntryVisible）。 */
+  {
+    const tbChip = toolBuildStatusChipEl(node);
+    if (tbChip) head.appendChild(tbChip);
+    const tbBtn = toolBuildEntryButtonEl(node);
+    if (tbBtn) head.appendChild(tbBtn);
+  }
   /* 节点「?」说明按钮（自包含模块 renderer/app-nodehelp.js）：
      每个节点头部固定一颗，点击弹出最简语言的说明小窗；设置里可隐藏（默认打开）。
      放在 ✕ 删除键左边：位置全节点一致、最好找，也不会误点删除。 */
@@ -5477,6 +5960,9 @@ function nodeElement(node) {
   const body = document.createElement("div");
   body.className = "n-body";
   buildBody(node, body);
+  /* 工具构建入口（body）：处理节点有吃不下的入线文件 / 已有构建记录时，在正文末尾补
+     一块入口卡（🔧 按钮 + 状态徽标 + 摘要）；普通节点零影响。 */
+  appendToolBuildBody(node, body);
   /* buildBody 可能因 OUTPUT 加宽 node.w，同步到 DOM（超级节点展开态用 expandW/H） */
   {
     const sz =
@@ -5495,16 +5981,17 @@ function nodeElement(node) {
      端子标题与类型一律从 assetItems(node) 取，与引擎取数同一份口径。 */
   const isANode = isAssetNode(node);
   const aItems = isANode ? assetItems(node) : null;
-  /* 壳层（含工具节点变体）的空闲端子判定只看「外侧输入线」：allWiresTo 会把内侧汇流线
-     （to=宿主）一并算进来 → 工具节点上会误判成已占用。函数节点无内部图，仍按全部入线。 */
-  const wiredIn =
-    node.kind === "super"
-      ? superExternalInWiresAll(node).length
-      : allWiresTo(node.id).length;
+  /* 交付节点（kind deliver）：端子 = 还没交的文件项，端子标签就是文件名 ——
+     一眼看得出「这条线喂的是哪个待交付文件」（真源见 app-longtask.js 的 ltDeliverPortItem）。 */
+  const isDNode = node.kind === "deliver" && !!(window.LT && window.LT.deliverPortItem);
   for (let i = 0; i < ic; i++) {
     const p = document.createElement("div");
-    /* 素材节点的端子号就是条目序号（不连续挂线），空闲与否只能逐号问端子 */
-    const spare = isANode ? !assetInPortOccupied(node, i) : i >= wiredIn;
+    /* 空闲（变暗）与否一律问 inPortIsSpare：**所有节点**都逐号看这条端子上挂没挂线。
+       端子号是端子的身份，不是「第几条入线」——按「i ≥ 入线总数」推断，只要端子号不连续
+       （媒体 / 后处理最前面那颗没接线的控制口、删过中间一条线留下的空洞），
+       空着的端子就会被显示成已连接并上色（用户看到的「连别的节点时，第一个未连接的控制被上色」），
+       真接了线的反倒变暗。落点与占用校验共用同一份口径（见 app.js firstFreeInPortIndex）。 */
+    const spare = inPortIsSpare(node, i);
     const ctrlIn = isFnTNode
       ? i === 0
       : node.kind === "super"
@@ -5512,8 +5999,12 @@ function nodeElement(node) {
         : isControlKind(node) ||
           (node.kind === "net_send" && i >= 1) ||
           (node.kind === "music_gen" && i === 2) ||
+          (node.kind === "yue_gen" && i === 3) ||
           (node.kind === "tts_gen" && i === 1) ||
-          (node.kind === "video_gen" && i === 0) ||
+          (node.kind === "video_gen" && i === videoGenControlPort(node)) ||
+          /* 视频超分 / 补帧：控制输入固定在端口 0，与 Remotion / H3 同色（此前漏了这一支，
+             控制圈没上色，用户会把它当普通数据端子去连） */
+          (isVideoPostKind(node) && i === 0) ||
           (node.kind === "remotion" && i === 0);
     /* 端子数据类型（工具 / 函数节点的数据端子 · 素材节点的条目端子才声明）：
        图像单独一色（复用 .img），音频 / 视频各一色（.aud / .vid），不再与文本同色 */
@@ -5521,7 +6012,9 @@ function nodeElement(node) {
       ? fnToolPortKind(node, "in", i)
       : isANode
         ? aItems[i].type
-        : null;
+        : isDNode
+          ? (window.LT.deliverPortItem(node, i) || {}).kind
+          : null;
     p.className =
       "port in" +
       (spare ? " spare" : "") +
@@ -5546,8 +6039,12 @@ function nodeElement(node) {
     let inTitle =
       I18n.t("输入端子 ") +
       (i + 1) +
-      (i >= wiredIn && !hasFixedInPorts(node)
-        ? I18n.t("（空闲，连接后自动新增一个）")
+      (spare
+        ? /* 固定端子逐号空闲；动态端子节点末尾那颗才是「连接后自动新增」，
+             中间的空洞（端子号不连续）连上就是注入这颗 */
+          hasFixedInPorts(node) || i < ic - 1
+          ? I18n.t("（空闲：这条端子还没接线，连上即注入该端子）")
+          : I18n.t("（空闲，连接后自动新增一个）")
         : "");
     if (isFnTNode) {
       const pl = fnToolParamList(node, "in");
@@ -5574,6 +6071,19 @@ function nodeElement(node) {
         "」（" +
         assetItemTypeLabel(it.type) +
         I18n.t("）· 与同名输出端子一一对应 · 连入即同步到该条目");
+    } else if (isDNode) {
+      /* 交付节点：端子标题 = 待交付文件名 + 该文件的内容说明 / 交付要求。
+         名字一律走 window.LT.deliverNameOf（唯一取名口径）：条目没有带后缀的文件名时
+         显式标「文件名待补」，不拿一句话描述冒充文件名。 */
+      const it = window.LT.deliverPortItem(node, i) || {};
+      inTitle =
+        I18n.t("待交付端子「") +
+        String((window.LT.deliverNameOf ? window.LT.deliverNameOf(it) : it.title) || i + 1) +
+        "」" +
+        (it.desc ? I18n.t(" · 内容：") + String(it.desc) : "") +
+        (it.accept ? I18n.t(" · 要求：") + String(it.accept) : "") +
+        (it.required === false ? I18n.t(" · 选填") : "") +
+        I18n.t("（连入即视为已交 · 上传后该端子消失）");
     } else if (node.kind === "gate")
       inTitle = I18n.t("闸门输入 ") + (i + 1) + I18n.t("（需全部到达）");
     else if (node.kind === "mutex")
@@ -5581,17 +6091,34 @@ function nodeElement(node) {
     else if (node.kind === "task")
       inTitle = I18n.t("控制输入（激活内部起点）");
     else if (node.kind === "music_gen")
-      inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : i === 1 ? I18n.t("歌词（含 [Verse]/[Chorus] 等标签）") : I18n.t("控制输入（触发生成）");
+      inTitle = i === 0 ? I18n.t("提示词（Structured Caption）") : i === 1 ? I18n.t("歌词（可选：不接则按纯器乐 [instrumental] 生成）") : I18n.t("控制输入（触发生成）");
+    else if (node.kind === "yue_gen")
+      inTitle =
+        i === 0
+          ? I18n.t("风格提示词（曲风 / 人声 / 乐器 / 情绪）")
+          : i === 1
+            ? I18n.t("歌词（含 [Verse]/[Chorus] 等结构标签）")
+            : i === 2
+              ? I18n.t("ABC 谱（可选：手工谱面，留空则由模型生成）")
+              : I18n.t("控制输入（触发生成）");
     else if (node.kind === "tts_gen")
       inTitle = i === 0 ? I18n.t("待合成文本（语音内容）") : I18n.t("控制输入（触发生成）");
+    else if (node.kind === "sensenova_gen")
+      /* 输入端子与「图像节点」proc_image 同一条泛用增量规则：端口 0 = 提示词，
+         端口 1+ 是按已连线条数增量出的数据槽（文本 / 图像引用都可接） */
+      inTitle =
+        i === 0
+          ? I18n.t("提示词（要画成什么 · 可接文本节点，也可接参考图）")
+          : I18n.t("输入端子 ") + (i + 1) + I18n.t("（数据槽：可接文本 / 图像）");
     else if (node.kind === "net_send")
       inTitle = i === 0 ? I18n.t("信息输入（要发送的文本）") : I18n.t("控制输入（触发发送）");
     else if (node.kind === "video_gen") {
-      if (i === 0) {
+      if (i === videoGenControlPort(node)) {
         inTitle = I18n.t("控制输入（触发生成）");
       } else {
-        const meta = videoGenSlotMeta(node, i);
-        if (meta.kind === "text")
+        const meta = videoGenPortMeta(node, i);
+        if (!meta) inTitle = I18n.t("输入端子 ") + (i + 1);
+        else if (meta.kind === "text")
           inTitle =
             meta.param && meta.param.label
               ? String(meta.param.label)
@@ -5603,9 +6130,18 @@ function nodeElement(node) {
               : meta.key === "last"
                 ? I18n.t("末帧图像")
                 : I18n.t("参考图像 ") + meta.label;
-        } else if (meta.kind === "video") inTitle = I18n.t("参考视频路径 ") + meta.label;
+        } else if (meta.kind === "video")
+          inTitle =
+            meta.key === "chain"
+              ? I18n.t("上一段视频（取其末尾若干帧做段间引导）")
+              : I18n.t("参考视频路径 ") + meta.label;
         else inTitle = I18n.t("参考音频路径 ") + meta.label;
       }
+    } else if (isVideoPostKind(node)) {
+      /* 视频超分 / 补帧：0=控制 · 1=源视频 · 2+=可选素材 */
+      if (i === 0) inTitle = I18n.t("控制输入（触发后处理）");
+      else if (i === 1) inTitle = I18n.t("源视频（待处理的视频）");
+      else inTitle = I18n.t("可选素材 ") + (i - 1);
     } else if (node.kind === "remotion") {
       inTitle =
         i === 0
@@ -5615,13 +6151,19 @@ function nodeElement(node) {
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = (PORT_OFF - PORT_R) + "px";
-    if (isANode || isFnTNode || node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || node.kind === "remotion" || node.kind === "task") {
+    if (isANode || isDNode || isFnTNode || node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || isVideoPostKind(node) || node.kind === "remotion" || node.kind === "task") {
       const badge = document.createElement("span");
       badge.className = "port-badge";
       if (isANode) {
         /* 素材节点输入端子徽标 = 内容条目标题（与 body 里那一行同名，肉眼即可对上） */
         badge.classList.add("zh-label");
         setPortBadgeName(badge, aItems[i].title);
+      } else if (isDNode) {
+        /* 交付节点：徽标 = 该端子对应的待交付文件名（端子标签就是文件名；
+           没有带后缀的文件名时显式标「文件名待补」，与 bindPortTip 同一份取名口径） */
+        badge.classList.add("zh-label");
+        const it0 = window.LT.deliverPortItem(node, i) || {};
+        setPortBadgeName(badge, String((window.LT.deliverNameOf ? window.LT.deliverNameOf(it0) : it0.title) || i + 1));
       } else if (isFnTNode) {
         const pl = fnToolParamList(node, "in");
         badge.classList.add("zh-label");
@@ -5689,21 +6231,49 @@ function nodeElement(node) {
       } else if (node.kind === "music_gen") {
         badge.classList.add("zh-label");
         setPortBadgeName(badge, i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制"));
+      } else if (node.kind === "yue_gen") {
+        badge.classList.add("zh-label");
+        setPortBadgeName(
+          badge,
+          i === 0
+            ? I18n.t("风格")
+            : i === 1
+              ? I18n.t("歌词")
+              : i === 2
+                ? I18n.t("ABC")
+                : I18n.t("控制"),
+        );
+      } else if (node.kind === "sensenova_gen") {
+        badge.classList.add("zh-label");
+        setPortBadgeName(badge, i === 0 ? I18n.t("提示词") : String(i + 1));
       } else if (node.kind === "tts_gen") {
         badge.classList.add("zh-label");
         setPortBadgeName(badge, i === 0 ? I18n.t("文本") : I18n.t("控制"));
       } else if (node.kind === "video_gen") {
-        if (i === 0) {
+        if (i === videoGenControlPort(node)) {
           badge.classList.add("zh-label");
           setPortBadgeName(badge, I18n.t("控制"));
         } else {
-          const meta = videoGenSlotMeta(node, i);
-          if (meta.kind === "text") {
+          const meta = videoGenPortMeta(node, i);
+          if (!meta) {
+            setPortBadgeName(badge, String(i + 1));
+          } else if (meta.kind === "text") {
             badge.classList.add("zh-label");
             setPortBadgeName(badge, I18n.t("提示词"));
           } else {
             setPortBadgeName(badge, meta.label);
           }
+        }
+      } else if (isVideoPostKind(node)) {
+        if (i === 0) {
+          badge.classList.add("zh-label");
+          setPortBadgeName(badge, I18n.t("控制"));
+        } else if (i === 1) {
+          badge.classList.add("zh-label");
+          setPortBadgeName(badge, I18n.t("源视频"));
+        } else {
+          badge.classList.add("zh-label");
+          setPortBadgeName(badge, I18n.t("素材") + " " + (i - 1));
         }
       } else if (node.kind === "remotion") {
         badge.classList.add("zh-label");
@@ -5774,6 +6344,11 @@ function nodeElement(node) {
       else if (outKind === "video") outCls += " vid";
     } else if (node.kind === "judge" || node.kind === "task")
       outCls += oi === 0 ? " yes" : " no";
+    else if (node.kind === "sensenova_gen" && oi === 0)
+      /* SenseNova 图像节点的 0 号输出就是图像端子（与 inferMediaFromSource 判出的
+         连线配色同源）：涂上 .img，用户一眼看得懂「这根线喂给 save_image / 预览」。
+         端口1 仍走下面的控制色（nodeEmitsControlOnPort）。 */
+      outCls += " img";
     else if (
       isControlKind(node) ||
       nodeEmitsControlOnPort(node, oi) ||
@@ -5808,8 +6383,13 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
-    else if (node.kind === "music_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || node.kind === "remotion")
-      outTitle = oi === 0 ? I18n.t("输出端子（输出本节点内容）") : I18n.t("控制输出（生成完成后触发下游控制目标）");
+    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || isVideoPostKind(node) || node.kind === "remotion")
+      outTitle =
+        oi === 0
+          ? node.kind === "sensenova_gen"
+            ? I18n.t("输出端子（本节点生成的图像 · 可直接连图像保存 / 预览）")
+            : I18n.t("输出端子（输出本节点内容）")
+          : I18n.t("控制输出（生成完成后触发下游控制目标）");
     /* 素材节点：输出端子标题 = 内容条目标题；值按类型给（文本 → 字符串，
        图像 / 音频 / 视频 → 该条目的 file:/// URL，与 input_audio / video 同一口径） */
     else if (isANode)
@@ -5835,8 +6415,11 @@ function nodeElement(node) {
       node.kind === "splitter" ||
       node.kind === "task" ||
       node.kind === "music_gen" ||
+      node.kind === "yue_gen" ||
+      node.kind === "sensenova_gen" ||
       node.kind === "tts_gen" ||
       node.kind === "video_gen" ||
+      isVideoPostKind(node) ||
       node.kind === "remotion"
     ) {
       const badge = document.createElement("span");
@@ -5846,8 +6429,11 @@ function nodeElement(node) {
         isFnTNode ||
         node.kind === "task" ||
         node.kind === "music_gen" ||
+        node.kind === "yue_gen" ||
+        node.kind === "sensenova_gen" ||
         node.kind === "tts_gen" ||
         node.kind === "video_gen" ||
+        isVideoPostKind(node) ||
         node.kind === "remotion"
           ? " zh-label"
           : "");
@@ -5865,14 +6451,21 @@ function nodeElement(node) {
             ? oi === 0
               ? I18n.t("成功")
               : I18n.t("失败")
-            : node.kind === "music_gen" ||
-                node.kind === "tts_gen" ||
-                node.kind === "video_gen" ||
-                node.kind === "remotion"
-              ? oi === 0
-                ? I18n.t("内容")
+            : node.kind === "sensenova_gen"
+              ? /* 0 号出的是图，不叫「内容」—— 与 .img 端子配色同一说法 */
+                oi === 0
+                ? I18n.t("图像")
                 : I18n.t("控制")
-              : String(oi + 1),
+              : node.kind === "music_gen" ||
+                  node.kind === "yue_gen" ||
+                  node.kind === "tts_gen" ||
+                  node.kind === "video_gen" ||
+                  isVideoPostKind(node) ||
+                  node.kind === "remotion"
+                ? oi === 0
+                  ? I18n.t("内容")
+                  : I18n.t("控制")
+                : String(oi + 1),
         );
       p.appendChild(badge);
     }
@@ -6059,6 +6652,29 @@ function nodeElement(node) {
           { iconCls: "proc" },
         ),
       );
+    }
+    /* 泛用文件节点：还没上传文件之前，允许手动指定要变成哪一种输入节点（四种本体一律
+       保留，逻辑在 app.js 的 convertAnyNodeKind）。转换后就是一颗普通输入节点 —— 这里
+       不再给任何「退回文件节点」的入口，那四类节点的菜单里也从来没有这条。 */
+    if (node.kind === "input_any") {
+      items.unshift({
+        label: I18n.t("转换为输入节点"),
+        iconKey: "folder",
+        iconCls: "proc",
+        submenu: (typeof INPUT_ANY_TARGETS !== "undefined"
+          ? INPUT_ANY_TARGETS
+          : []
+        ).map((t) =>
+          ctxKindItem(
+            t.kind,
+            I18n.t(t.label),
+            () =>
+              typeof convertAnyNodeKind === "function"
+                ? convertAnyNodeKind(node, t.kind)
+                : toast(I18n.t("文件节点逻辑未就绪（app.js）"), "warn"),
+          ),
+        ),
+      });
     }
     /* 素材节点：绑定 / 上传 / 设置都是对着素材库的动作（实现在 app-assets.js）。
        括号里的说明按全局口径写进 label（悬停展开），失联时「重新绑定」排最前。 */
@@ -6479,6 +7095,9 @@ const NODE_BROWSE_KINDS = new Set([
   "save",
   /* 函数节点：未选中只读显示代码正文，点选即出可编辑代码块（工具节点是 super 变体，不参与） */
   "function",
+  /* 素材节点：未选中只列「素材名 + 每条内容标题 + 类型」（轻量摘要，见
+     NODE_BROWSE_BODY.asset）。焦点态（选中）才逐条渲染正文 / 缩略图 / 播放器。 */
+  "asset",
 ]);
 
 /* 浏览态分流用的 kind 键：旧 save_text / save_image 别名归一到 save */
@@ -7321,6 +7940,76 @@ NODE_BROWSE_BODY.save = function (node, body) {
       );
   }
   body.appendChild(prev);
+};
+
+/* asset：浏览态（未选中）＝**轻量摘要**，只列「素材名 + 每条内容标题 + 类型徽标」。
+   为什么不在这里渲染内容本体：素材节点是「未 focus 也不算小」的那类节点 —— 编辑态 body
+   会为每条内容造一颗 textarea / <img> / <video> / 波形预览器，并向素材库逐条发
+   assets:itemRead 取正文；一屏摆十几颗素材节点时，这些 DOM 与 IPC 会把画布拖慢，
+   而用户此刻并没有在看它们。浏览态只读节点上已经存着的条目快照（assetItems(node)：
+   id / 标题 / 类型），不读库、不造重控件；点选（拿焦点）后回落编辑态 buildAssetBody，
+   正文 / 缩略图 / 播放器与「覆盖」按钮才会出现。
+   未绑定（空壳）与失联不碰内容本体：空壳照旧给「绑定… / 上传…」两颗入口（刚建出来就能用），
+   失联只留一句去向（重绑入口在节点头部 / 右键，端子与连线原样保留）。 */
+NODE_BROWSE_BODY.asset = function (node, body) {
+  const items = assetItems(node);
+  const bound = String(node.assetId || "").trim();
+  const lost = !!(
+    bound &&
+    typeof assetNodeIsLost === "function" &&
+    assetNodeIsLost(node)
+  );
+  /* 空壳（未绑定）与内容无关，照旧给「绑定… / 上传…」入口 —— 刚建出来的节点不给入口
+     等于让人先猜「点一下才有按钮」。失联同理只留一句去向（重绑入口见节点头部 / 右键）。 */
+  if (!bound) {
+    body.appendChild(
+      assetBindBox(
+        node,
+        I18n.t("未绑定素材"),
+        I18n.t("绑定后未选中只显示内容标题；点选本节点才逐条展开内容本体。"),
+        false,
+      ),
+    );
+    return;
+  }
+  if (lost) {
+    const g = document.createElement("div");
+    g.className = "n-view n-view-empty";
+    g.textContent = I18n.t("素材失联：点选本节点后看详情 / 重新绑定");
+    body.appendChild(g);
+    return;
+  }
+  if (!items.length) {
+    const g = document.createElement("div");
+    g.className = "n-view n-view-empty";
+    g.textContent = I18n.t("该素材还没有内容：点选本节点后逐条查看 / 添加");
+    body.appendChild(g);
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "n-view n-view-assets";
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const row = document.createElement("div");
+    row.className = "n-view-asset";
+    const nm = document.createElement("div");
+    nm.className = "n-view-asset-name";
+    nm.textContent = it.title;
+    nm.title =
+      I18n.t("内容端子 ") +
+      (i + 1) +
+      " · " +
+      assetItemTypeLabel(it.type) +
+      "\n" +
+      I18n.t("点选本节点后查看 / 编辑内容本体");
+    row.appendChild(nm);
+    const kind = document.createElement("span");
+    kind.className = "n-asset-kind " + it.type;
+    kind.textContent = assetItemTypeLabel(it.type);
+    row.appendChild(kind);
+    list.appendChild(row);
+  }
+  body.appendChild(list);
 };
 
 /* 数组（批量）参数：值是一串而不是一个 —— 参数摘要里在名字后标 ×N。
@@ -8586,6 +9275,1048 @@ function procReviewOpenEl(node) {
   return b;
 }
 
+/* ═══════════ 工具构建 · 节点入口与方案 / 进度对话框（UI） ═══════════
+ * 判定 / 方案 / 构建链都在 renderer/app-toolbuild.js（上半 · 中段 · 下半），本段只做
+ * 画布上的入口渲染与对话框交互，不改判定与构建逻辑。
+ *
+ * 数据（只读）：node.toolBuild = { ver, status, filePath, fileType, plan, toolLibId,
+ *   toolName, inputParam, builtAt, log:[] }（形态唯一真源 = app-toolbuild.js 上半）。
+ * 构建链调用期入口：window.ToolBuild.buildToolForFile(consumerNode, filePath, plan)
+ *   → Promise<{ ok, toolNode, toolName, toolLibId, error, … }>。
+ * 进度：构建链把过程写进「工具节点 / 处理节点」的 node.toolBuild.log；本窗在构建期间
+ *   轮询（日志增量 + 开发会话正文片段 + 实测结果），不要求构建链反向回调。
+ * 入口显隐：处理节点（fileConsumerAccept 登记的 kind）且「有吃不下的入线文件」或
+ *   「已有构建记录」时才出现；其余节点零影响。
+ * 加载顺序：本文件早于 app-toolbuild.js，所有跨模块函数一律只在调用期取，缺了就降级。
+ * ─────────────────────────────────────────────────────────────── */
+
+/* 是不是「会被文件类型卡住」的处理节点（口径 = 上半 fileConsumerAccept 登记表），
+   或身上已挂着一条工具构建记录（老记录不分 kind 都要能再打开）。 */
+function toolBuildEntryNode(node) {
+  if (!node || !node.id) return false;
+  if (typeof fileConsumerAccept === "function" && fileConsumerAccept(node)) return true;
+  return !!(node.toolBuild && typeof node.toolBuild === "object");
+}
+
+/* 只读状态快照（缺 app-toolbuild.js 时给一份空态，绝不抛） */
+function toolBuildRecordOf(node) {
+  let st = null;
+  if (typeof toolBuildStateOf === "function") {
+    try {
+      st = toolBuildStateOf(node);
+    } catch (_) {
+      st = null;
+    }
+  }
+  return {
+    st: st,
+    status: String((st && st.status) || "idle"),
+    filePath: String((st && st.filePath) || ""),
+    fileType: String((st && st.fileType) || ""),
+    plan: st ? st.plan : "",
+    toolName: String((st && st.toolName) || ""),
+    builtAt: String((st && st.builtAt) || ""),
+    log: (st && Array.isArray(st.log) && st.log) || [],
+  };
+}
+
+/* 进这个节点的全部入线文件路径（去重，按连线顺序） */
+function toolBuildInboundFiles(node) {
+  const out = [];
+  const seen = Object.create(null);
+  if (typeof wireSourceFiles !== "function") return out;
+  const wires = (S && S.wf && S.wf.wires) || [];
+  wires.forEach((w) => {
+    if (!w || String(w.to || "") !== String(node.id || "")) return;
+    let list = [];
+    try {
+      list = wireSourceFiles(w) || [];
+    } catch (_) {
+      list = [];
+    }
+    list.forEach((p) => {
+      const key = String(p == null ? "" : p).trim();
+      if (!key || seen[key]) return;
+      seen[key] = 1;
+      out.push(key);
+    });
+  });
+  return out;
+}
+
+/* 入线里「这个处理节点吃不下」的文件明细（pdf 走 pdf-markdown 链，不计入） */
+function toolBuildUnsupportedList(node) {
+  if (typeof fileSupportDetail !== "function") return [];
+  return toolBuildInboundFiles(node)
+    .map((p) => {
+      try {
+        return fileSupportDetail(node, p);
+      } catch (_) {
+        return null;
+      }
+    })
+    .filter((d) => d && !d.supported && !d.handledElsewhere);
+}
+
+/* 入口是否该出现：有吃不下的入线文件，或已有构建记录（状态 / 文件 / 方案任一非空） */
+function toolBuildEntryVisible(node) {
+  if (!toolBuildEntryNode(node)) return false;
+  if (toolBuildUnsupportedList(node).length) return true;
+  const r = toolBuildRecordOf(node);
+  return !!(node.toolBuild && (r.status !== "idle" || r.filePath || r.plan || r.toolName));
+}
+
+function toolBuildStatusLabel(status) {
+  if (status === "building") return I18n.t("构建中");
+  if (status === "ready") return I18n.t("就绪");
+  if (status === "failed") return I18n.t("构建失败");
+  return "";
+}
+
+/* 头部状态徽标（构建中 / 绿灯 / 失败）；idle 不出徽标 */
+function toolBuildStatusChipEl(node) {
+  const r = toolBuildRecordOf(node);
+  if (!r.status || r.status === "idle") return null;
+  const chip = document.createElement("span");
+  chip.className =
+    "n-chip tb-status tb-status-" + r.status + (r.status === "building" ? " on" : "");
+  chip.textContent = toolBuildStatusLabel(r.status);
+  chip.title =
+    r.status === "building"
+      ? I18n.t("工具构建进行中：可点头部 🔧 查看进度")
+      : r.status === "ready"
+        ? I18n.t("工具构建绿灯：已实测通过并入库")
+        : I18n.t("工具构建失败：点头部 🔧 查看日志");
+  return chip;
+}
+
+function toolBuildEntryTitle(node) {
+  const r = toolBuildRecordOf(node);
+  if (r.status === "building") return I18n.t("工具构建进行中：点击查看方案与进度");
+  if (r.status === "ready")
+    return I18n.t("工具构建已就绪：点击重开方案对话框 / 查看日志 / 重跑实测");
+  if (r.status === "failed") return I18n.t("工具构建失败：点击查看日志并重试");
+  if (toolBuildUnsupportedList(node).length)
+    return I18n.t("该处理节点不支持入线文件，可让 AI 搭一个转换工具");
+  return I18n.t("工具构建");
+}
+
+/* 节点头部按钮：🔧 工具构建（仅入口可见时出现） */
+function toolBuildEntryButtonEl(node) {
+  if (!toolBuildEntryVisible(node)) return null;
+  const r = toolBuildRecordOf(node);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "n-play tb-entry-btn" + (r.status && r.status !== "idle" ? " tb-" + r.status : "");
+  btn.textContent = "🔧";
+  btn.setAttribute("aria-label", I18n.t("工具构建"));
+  btn.title = toolBuildEntryTitle(node);
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    openToolBuildDialog(node);
+  };
+  return btn;
+}
+
+function toolBuildBriefName(pathOrName) {
+  const s = String(pathOrName == null ? "" : pathOrName).trim();
+  return s.split(/[\\/]/).pop() || s;
+}
+
+/* 节点 body 末尾的入口卡：按钮 + 状态徽标 + 一行摘要（自有节点零影响） */
+function appendToolBuildBody(node, body) {
+  if (!body || !toolBuildEntryVisible(node)) return;
+  const r = toolBuildRecordOf(node);
+  const bad = toolBuildUnsupportedList(node);
+  const wrap = document.createElement("div");
+  wrap.className = "tb-card";
+  const head = document.createElement("div");
+  head.className = "tb-card-head";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "tb-body-btn";
+  btn.textContent = "🔧 " + I18n.t("工具构建");
+  btn.title = toolBuildEntryTitle(node);
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    openToolBuildDialog(node);
+  };
+  head.appendChild(btn);
+  const chip = toolBuildStatusChipEl(node);
+  if (chip) head.appendChild(chip);
+  wrap.appendChild(head);
+  const sum = document.createElement("div");
+  sum.className = "tb-card-sum";
+  if (r.status === "ready") sum.textContent = I18n.t("已启用工具：") + (r.toolName || I18n.t("（未命名工具）"));
+  else if (r.status === "building") sum.textContent = I18n.t("正在构建工具…");
+  else if (r.status === "failed") sum.textContent = I18n.t("构建失败，详见日志");
+  else {
+    const names = bad.map((d) => toolBuildBriefName(d.path));
+    const joined =
+      typeof I18n.listJoin === "function" ? I18n.listJoin(names) : names.join("、");
+    sum.textContent = I18n.t("入线文件：") + joined;
+  }
+  wrap.appendChild(sum);
+  body.appendChild(wrap);
+}
+
+/* 方案是否已有内容（结构化对象或纯文本回文都算） */
+function toolBuildPlanEmpty(node) {
+  const r = toolBuildRecordOf(node);
+  if (r.plan && typeof r.plan === "object") return !Object.keys(r.plan).length;
+  return !String(r.plan == null ? "" : r.plan).trim();
+}
+
+/* 方案展示文本（结构化走 toolBuildPlanSummaryText；非 JSON 回文整段展示） */
+function toolBuildPlanDisplay(node) {
+  const r = toolBuildRecordOf(node);
+  if (r.plan && typeof r.plan === "object") {
+    return typeof toolBuildPlanSummaryText === "function"
+      ? toolBuildPlanSummaryText(r.plan)
+      : "";
+  }
+  return String(r.plan == null ? "" : r.plan);
+}
+
+/* 正在构建的那个工具节点（按方案文件路径认；找不到构建中的就退该文件的绿灯工具节点） */
+function toolBuildBuildingToolNode(filePath) {
+  const nodes = (S && S.wf && S.wf.nodes) || [];
+  const p = String(filePath || "");
+  const same = (a, b) =>
+    typeof toolBuildSamePath === "function"
+      ? toolBuildSamePath(a, b)
+      : String(a || "") === String(b || "");
+  let readyHit = null;
+  for (const n of nodes) {
+    const st = n && n.toolBuild;
+    if (!st || typeof st !== "object") continue;
+    if (st.status === "building" && (!p || !st.filePath || same(st.filePath, p))) return n;
+    if (!readyHit && st.status === "ready" && p && same(st.filePath, p)) readyHit = n;
+  }
+  return readyHit;
+}
+
+/* 开发会话正文片段（构建期间「会话输出」栏用；取不到返回 ""） */
+function toolBuildDevSnippet(toolNode) {
+  const sid = String((toolNode && toolNode.toolBuildSessionId) || "");
+  if (!sid || typeof agentSessionById !== "function") return "";
+  let s = null;
+  try {
+    s = agentSessionById(sid);
+  } catch (_) {
+    s = null;
+  }
+  if (!s) return "";
+  const msgs = s.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m && m.role === "assistant" && String(m.content || "").trim()) {
+      const t = String(m.content).replace(/\s+/g, " ").trim();
+      return t.length > 600 ? "…" + t.slice(-600) : t;
+    }
+  }
+  return "";
+}
+
+/* 日志行 → 展示文本（时间 + 级别前缀） */
+function toolBuildLogLine(e) {
+  const at = String((e && e.at) || "");
+  let hms = "";
+  if (at) {
+    const d = new Date(at);
+    if (!isNaN(d.getTime())) hms = d.toTimeString().slice(0, 8);
+  }
+  const lv = String((e && e.level) || "info");
+  const mark = lv === "error" ? "✕ " : lv === "warn" ? "! " : "";
+  return (hms ? hms + " " : "") + mark + String((e && e.text) || "");
+}
+
+/* 工具构建对话框：方案展示（文件类型 / 缺口 / 要点 / 参数表 / 实测用例 / 失败风险）
+   +「确认开发」/「取消」+ 实时进度（构建日志增量 · 开发会话片段 · 实测结果）。
+   persistent（点外部不关）、可最小化；关闭只走窗内按钮 / ✕ / Esc。 */
+function openToolBuildDialog(node, opts) {
+  if (!node) return;
+  const o = opts && typeof opts === "object" ? opts : {};
+  const T = (typeof window === "object" && window && window.ToolBuild) || null;
+  const r0 = toolBuildRecordOf(node);
+  const bad = toolBuildUnsupportedList(node);
+  const filePath = String(o.filePath || r0.filePath || (bad[0] && bad[0].path) || "");
+
+  openOverlay(I18n.t("工具构建") + (node.title ? " · " + node.title : ""), {
+    persistent: true,
+  });
+  const box = document.querySelector("#overlay .overlay-box");
+  if (box) box.classList.add("wide");
+  const body = document.getElementById("ovBody");
+  const foot = document.getElementById("ovFoot");
+  body.innerHTML = "";
+  foot.innerHTML = "";
+
+  const wrap = document.createElement("div");
+  wrap.className = "tb-dlg";
+  body.appendChild(wrap);
+
+  const hint = (text) => {
+    const d = document.createElement("div");
+    d.className = "tb-hint";
+    d.textContent = text;
+    wrap.appendChild(d);
+    return d;
+  };
+  const metaRow = (label, value) => {
+    const row = document.createElement("div");
+    row.className = "tb-meta-row";
+    const l = document.createElement("span");
+    l.className = "tb-meta-label";
+    l.textContent = label;
+    const v = document.createElement("span");
+    v.className = "tb-meta-value";
+    v.textContent = String(value == null ? "" : value);
+    row.append(l, v);
+    wrap.appendChild(row);
+    return v;
+  };
+  const section = (title) => {
+    const h = document.createElement("div");
+    h.className = "tb-sec-title";
+    h.textContent = title;
+    wrap.appendChild(h);
+    return h;
+  };
+
+  hint(
+    I18n.t(
+      "AI 先读一遍这个文件，给出能力缺口与转换方案；确认后才在画布上搭建工具节点并实测。",
+    ),
+  );
+  metaRow(I18n.t("处理节点："), (node.title || "") + (node.kind ? "（" + node.kind + "）" : ""));
+  metaRow(
+    I18n.t("文件类型："),
+    r0.fileType ||
+      (filePath && typeof fileTypeOf === "function" ? fileTypeOf(filePath) : "") ||
+      I18n.t("未知类型"),
+  );
+  metaRow(I18n.t("文件："), filePath || I18n.t("（无）"));
+
+  /* ── 方案 ── */
+  section(I18n.t("方案"));
+  const planBox = document.createElement("pre");
+  planBox.className = "tb-plan";
+  wrap.appendChild(planBox);
+
+  /* ── 实时进度 ── */
+  section(I18n.t("进度"));
+  const progressBox = document.createElement("pre");
+  progressBox.className = "tb-progress";
+  progressBox.hidden = true;
+  wrap.appendChild(progressBox);
+  const sessionBox = document.createElement("pre");
+  sessionBox.className = "tb-session";
+  sessionBox.hidden = true;
+  wrap.appendChild(sessionBox);
+
+  /* ── 日志（默认收起） ── */
+  const logBox = document.createElement("pre");
+  logBox.className = "tb-log";
+  logBox.hidden = true;
+  wrap.appendChild(logBox);
+
+  function paintPlan() {
+    const text = toolBuildPlanDisplay(node);
+    planBox.textContent = text || I18n.t("尚未生成方案");
+  }
+  function paintLog() {
+    const rr = toolBuildRecordOf(node);
+    logBox.textContent = rr.log.length
+      ? rr.log.map(toolBuildLogLine).join("\n")
+      : I18n.t("（无日志）");
+  }
+  function toggleLog() {
+    logBox.hidden = !logBox.hidden;
+    if (!logBox.hidden) {
+      paintLog();
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+  }
+  paintPlan();
+
+  const ui = {
+    busy: false,
+    lines: [],
+    seen: 0,
+    toolSeen: 0,
+    timer: 0,
+    sessionText: "",
+    push(text, level) {
+      const t = String(text == null ? "" : text).trim();
+      if (!t) return;
+      const mark = level === "error" ? "✕ " : level === "warn" ? "! " : "";
+      this.lines.push(mark + t);
+      progressBox.hidden = false;
+      progressBox.textContent = this.lines.join("\n");
+      progressBox.scrollTop = progressBox.scrollHeight;
+    },
+  };
+
+  function pollProgress() {
+    const rr = toolBuildRecordOf(node);
+    if (rr.log.length > ui.seen) {
+      rr.log.slice(ui.seen).forEach((e) => ui.push(e && e.text, e && e.level));
+      ui.seen = rr.log.length;
+    }
+    const toolNode = toolBuildBuildingToolNode(filePath);
+    if (!toolNode) return;
+    const ts = toolBuildRecordOf(toolNode);
+    if (ts.log.length > ui.toolSeen) {
+      ts.log.slice(ui.toolSeen).forEach((e) => ui.push(e && e.text, e && e.level));
+      ui.toolSeen = ts.log.length;
+    }
+    const txt = toolBuildDevSnippet(toolNode);
+    if (txt && txt !== ui.sessionText) {
+      ui.sessionText = txt;
+      sessionBox.hidden = false;
+      sessionBox.textContent = txt;
+      sessionBox.scrollTop = sessionBox.scrollHeight;
+    }
+  }
+
+  /* 方案生成：一次 noCanvas 纯文本运行（app-toolbuild.js 中段），结果写回 node.toolBuild */
+  async function generatePlan() {
+    if (ui.busy) return;
+    if (!filePath) {
+      toast(I18n.t("缺少文件路径"), "err");
+      return;
+    }
+    if (typeof planToolBuildForFile !== "function") {
+      toast(I18n.t("智能运行入口未就绪"), "warn");
+      return;
+    }
+    ui.busy = true;
+    setFoot();
+    planBox.hidden = false;
+    planBox.classList.add("tb-plan-loading");
+    planBox.textContent = I18n.t("正在生成方案…");
+    try {
+      const res = await planToolBuildForFile(filePath, node);
+      const text = String((res && (res.summary || res.text)) || "");
+      const plan = res && res.plan ? res.plan : null;
+      if (typeof ensureToolBuildState === "function") {
+        const st = ensureToolBuildState(node);
+        if (st) {
+          st.filePath = filePath;
+          st.fileType =
+            (typeof fileTypeOf === "function" ? fileTypeOf(filePath) : "") ||
+            String((res && res.fileType) || "") ||
+            st.fileType ||
+            "";
+          st.plan = plan || text || "";
+        }
+        if (typeof scheduleSave === "function") scheduleSave(true);
+      }
+      planBox.classList.remove("tb-plan-loading");
+      planBox.textContent = text || I18n.t("（方案为空）");
+      if (!res || !res.ok)
+        ui.push(I18n.t("方案生成失败：") + String((res && res.error) || ""), "error");
+      else ui.push(I18n.t("方案已生成"));
+      if (typeof renderCanvas === "function") {
+        try {
+          renderCanvas();
+        } catch (_) {}
+      }
+    } catch (err) {
+      planBox.classList.remove("tb-plan-loading");
+      planBox.textContent =
+        I18n.t("方案生成失败：") + ((err && err.message) || String(err || ""));
+    }
+    ui.busy = false;
+    setFoot();
+  }
+
+  /* 确认开发：调构建链（工具节点 → 开发会话 → 本文件实测 → 入工具库），期间轮询进度 */
+  async function runBuild() {
+    if (ui.busy) return;
+    if (!T || typeof T.buildToolForFile !== "function") {
+      ui.push(I18n.t("构建链未就绪（app-toolbuild.js）"), "error");
+      toast(I18n.t("构建链未就绪（app-toolbuild.js）"), "warn");
+      return;
+    }
+    if (!filePath) {
+      toast(I18n.t("缺少文件路径"), "err");
+      return;
+    }
+    ui.busy = true;
+    setFoot();
+    ui.seen = toolBuildRecordOf(node).log.length;
+    ui.toolSeen = 0;
+    ui.push(I18n.t("开始构建：") + filePath);
+    ui.timer = setInterval(pollProgress, 1200);
+    let res = null;
+    try {
+      const plan = toolBuildRecordOf(node).plan;
+      res = await T.buildToolForFile(node, filePath, plan && typeof plan === "object" ? plan : {});
+    } catch (err) {
+      res = { ok: false, error: (err && err.message) || String(err || "") };
+    }
+    if (ui.timer) clearInterval(ui.timer);
+    ui.timer = 0;
+    pollProgress();
+    ui.busy = false;
+    if (res && res.ok)
+      ui.push(I18n.t("构建完成") + " · " + String(res.toolName || ""), "info");
+    else ui.push(I18n.t("构建未通过") + " · " + String((res && res.error) || ""), "error");
+    paintPlan();
+    if (typeof renderCanvas === "function") {
+      try {
+        renderCanvas();
+      } catch (_) {}
+    }
+    setFoot();
+  }
+
+  /* 重跑实测：用登记的文件路径重新试跑当前工具节点（走 app-toolbuild.js 下半） */
+  async function rerunTest() {
+    if (ui.busy) return;
+    const rr = toolBuildRecordOf(node);
+    const toolNode =
+      T && typeof T.toolBuildFindToolNode === "function" ? T.toolBuildFindToolNode(rr.st) : null;
+    if (!toolNode || !T || typeof T.toolBuildTestWithFile !== "function") {
+      if (T && typeof T.toolBuildToolDialog === "function") {
+        T.toolBuildToolDialog(node);
+        return;
+      }
+      toast(I18n.t("试跑入口未就绪（app-tools.js）"), "warn");
+      return;
+    }
+    ui.busy = true;
+    setFoot();
+    ui.push(I18n.t("正在用该文件重跑实测…"));
+    let res = null;
+    try {
+      res = await T.toolBuildTestWithFile(toolNode, rr.filePath);
+    } catch (err) {
+      res = { ok: false, error: (err && err.message) || String(err || "") };
+    }
+    const digest =
+      T && typeof T.toolBuildTestDigest === "function"
+        ? T.toolBuildTestDigest(res)
+        : String((res && res.error) || "");
+    ui.push(digest, res && res.ok ? "info" : "warn");
+    if (typeof renderCanvas === "function") {
+      try {
+        renderCanvas();
+      } catch (_) {}
+    }
+    ui.busy = false;
+    setFoot();
+  }
+
+  function setFoot() {
+    foot.innerHTML = "";
+    const rr = toolBuildRecordOf(node);
+    const hasPlan = !toolBuildPlanEmpty(node);
+    const add = (label, cls, fn, title, enabled) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "mini" + (cls ? " " + cls : "");
+      b.textContent = label;
+      if (title) b.title = title;
+      if (enabled === false) b.disabled = true;
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        fn();
+      };
+      foot.appendChild(b);
+      return b;
+    };
+    add(I18n.t("查看日志"), "", toggleLog, I18n.t("查看工具构建日志"), !ui.busy);
+    add(
+      I18n.t("重新生成方案"),
+      "",
+      generatePlan,
+      I18n.t("让 AI 重新读这个文件并给出方案"),
+      !ui.busy,
+    );
+    if (rr.status === "ready" || rr.status === "failed")
+      add(I18n.t("重跑实测"), "", rerunTest, I18n.t("用该文件重新试跑当前工具节点"), !ui.busy);
+    if (rr.status === "ready" && T && typeof T.toolBuildToolDialog === "function")
+      add(I18n.t("管理工具"), "", () => T.toolBuildToolDialog(node), "", !ui.busy);
+    add(
+      I18n.t("打开工具库"),
+      "",
+      () => {
+        if (typeof openToolsLibrary === "function") openToolsLibrary();
+        else toast(I18n.t("工具库不可用"), "warn");
+      },
+      "",
+      !ui.busy,
+    );
+    add(I18n.t("取消"), "", () => closeOverlay(), "", !ui.busy);
+    if (ui.busy) add(I18n.t("构建中…"), "primary", () => {}, "", false);
+    else if (hasPlan)
+      add(I18n.t("确认开发"), "primary", runBuild, I18n.t("按此方案搭建工具节点并实测"), true);
+    else add(I18n.t("生成方案"), "primary", generatePlan, I18n.t("让 AI 读这个文件并给出转换方案"), true);
+  }
+  setFoot();
+
+  if (o.autoPlan && toolBuildPlanEmpty(node)) generatePlan();
+}
+
+/* 泛用文件节点的 body：一颗「上传文件」按钮 + 一行说明；文件解析不出来时（node.anyFile
+   有值）上面再加一行「只保留的这条本机路径」—— 下游接线 / @引用 拿到的就是它。
+   按钮就是本节点最常用的功能（选任意类型文件 → 就地转成对应输入节点），所以不铺四种
+   类型按钮；手动转类型的入口在节点头部菜单栏的四连小按钮与节点右键菜单里（两处都不给
+   「退回文件节点」的选项）。 */
+function buildInputAnyBody(node, body) {
+  const keptPath = String(node.anyFile || "").trim();
+  if (keptPath) {
+    /* 解析不出来 → 仅保留路径：正文块就是这条路径（可选中复制），文案说清它是什么。
+       不提供正文编辑 —— 本节点对外给的正是这段路径，改了就不是那个文件了。 */
+    const pathEl = document.createElement("div");
+    pathEl.className = "n-any-path";
+    pathEl.textContent = keptPath;
+    pathEl.title = keptPath;
+    body.appendChild(pathEl);
+    const keptNote = document.createElement("div");
+    keptNote.className = "n-any-note";
+    keptNote.textContent = I18n.t(
+      "解析不出文本 · 仅保留文件路径，下游引用到的就是这段路径",
+    );
+    body.appendChild(keptNote);
+  }
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "n-any-upload";
+  pick.textContent =
+    "⬆ " + (keptPath ? I18n.t("重新选择文件") : I18n.t("上传文件"));
+  pick.title = I18n.t(
+    "从本机选一个任意类型的文件 · 按文件类型自动转为文本 / 图像 / 音频 / 视频节点",
+  );
+  pick.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof uploadIntoAnyNode === "function") uploadIntoAnyNode(node);
+    else toast(I18n.t("文件节点逻辑未就绪（app.js）"), "warn");
+  };
+  body.appendChild(pick);
+  const note = document.createElement("div");
+  note.className = "n-any-note";
+  note.textContent = I18n.t("也可点上方按钮或右键本节点 · 手动指定要转成哪种输入节点");
+  body.appendChild(note);
+}
+
+/* 产出节点（kind "ltout"）头部的「✎ 编辑正文」入口：复用 app.js 的内置 Markdown 编辑器
+   （openMdViewer 的虚拟文档形态：content 进、onSave 交回正文），不新造编辑器。
+   保存 / 关窗都把当前正文写回 node.text —— 用户改过之后，后续环节以画布现内容为准。 */
+function ltoutMdEditButtonEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-ltout-md";
+  b.textContent = "✎";
+  b.title = I18n.t(
+    "用内置 Markdown 编辑器打开产出正文：保存即写回本节点，后续环节以你改后的内容为准",
+  );
+  b.setAttribute("aria-label", I18n.t("编辑产出正文（内置 Markdown 编辑器）"));
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof openMdViewer !== "function") {
+      toast(I18n.t("内置 Markdown 编辑器不可用"), "warn");
+      return;
+    }
+    openMdViewer("", {
+      content: String(node.text == null ? "" : node.text),
+      title: node.title || I18n.t("产出"),
+      subtitle: I18n.t("产出节点正文 · 保存即写回节点"),
+      edit: true,
+      onSave: (text) => {
+        node.text = String(text == null ? "" : text);
+        if (typeof scheduleSave === "function") scheduleSave(true);
+        if (typeof renderCanvas === "function") renderCanvas();
+      },
+    });
+  };
+  return b;
+}
+
+/* 产出节点正文（kind "ltout"）：可编辑 textarea（与文本节点同一套 node.text 交互）
+   + 只读的文件引用清单（引擎写进 node.ltRefs，用户不在此编辑，也不参与连线）。
+   节点头部另有两枚复用既有能力的入口（⇢ ltoutMdEditButtonEl / textPreviewButtonEl）。 */
+function buildLtoutBody(node, body) {
+  const ta = document.createElement("textarea");
+  ta.className = "n-text";
+  ta.spellcheck = false;
+  ta.placeholder = I18n.t("长周期任务执行中生成的产出会写在这里 · 可直接编辑");
+  ta.value = node.text || "";
+  ta.addEventListener("input", () => {
+    node.text = ta.value;
+  });
+  body.appendChild(ta);
+  const refs = Array.isArray(node.ltRefs) ? node.ltRefs : [];
+  if (!refs.length) return;
+  const list = document.createElement("div");
+  list.className = "n-ltout-refs";
+  const cap = document.createElement("div");
+  cap.className = "n-ltout-refs-cap";
+  cap.textContent = I18n.t("产出文件（只读）");
+  list.appendChild(cap);
+  for (const f of refs) {
+    const p = String((f && f.path) || "");
+    if (!p) continue;
+    const row = document.createElement("div");
+    row.className = "n-ltout-ref";
+    row.title = p;
+    const name = document.createElement("span");
+    name.className = "n-ltout-ref-name";
+    name.textContent = p.split(/[\\/]/).pop() || p;
+    const meta = document.createElement("span");
+    meta.className = "n-ltout-ref-meta";
+    const size = f && f.size != null ? Number(f.size) : null;
+    meta.textContent =
+      size == null ? "" : size < 1024 ? size + " B" : size < 1048576 ? (size / 1024).toFixed(1) + " KB" : (size / 1048576).toFixed(1) + " MB";
+    row.appendChild(name);
+    row.appendChild(meta);
+    list.appendChild(row);
+  }
+  body.appendChild(list);
+}
+
+/* 产物节点（kind "ltart"）：长周期任务每个环节完成时，清点出来的产物逐件摆上画布
+   （建法与排版权在 renderer/app-longtask-artifacts.js）。板身按产物类型给预览：
+   图片 = 缩略图（可点开灯箱 / 另存为）、视频与音频 = 可直接播、文本 = 读一段摘要，
+   其余文件只给路径与「用系统程序打开」。节点无端子，不参与连线。 */
+function ltartTypeOfNode(node) {
+  const raw = String((node && node.ltType) || "");
+  if (raw) return raw;
+  if (window.LTART && typeof window.LTART.typeOf === "function")
+    return String(window.LTART.typeOf((node && node.ltFile) || "") || "file");
+  const ext = (String((node && node.ltFile) || "").match(/\.([A-Za-z0-9]{1,8})$/) || [])[1] || "";
+  const e = ext.toLowerCase();
+  if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"].indexOf(e) >= 0) return "image";
+  if (["mp4", "mov", "webm", "mkv", "avi", "m4v"].indexOf(e) >= 0) return "video";
+  if (["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"].indexOf(e) >= 0) return "audio";
+  if (["md", "markdown", "txt", "log", "json", "csv", "tsv", "yaml", "yml", "html", "htm", "xml", "srt", "vtt"].indexOf(e) >= 0)
+    return "text";
+  return "file";
+}
+function ltartTypeLabel(type) {
+  if (type === "image") return I18n.t("图像");
+  if (type === "video") return I18n.t("视频");
+  if (type === "audio") return I18n.t("音频");
+  if (type === "text") return I18n.t("文本");
+  return I18n.t("文件");
+}
+function ltartSizeLabel(size) {
+  const n = Number(size);
+  if (!isFinite(n) || n <= 0) return "";
+  /* 复用画布既有的字节格式化（图像元信息那一套），不再抄一份 */
+  return typeof formatBytes === "function" ? formatBytes(n) : "";
+}
+/* 头部「用系统程序打开」：产物是长任务跑出来的文件，用户常要拿本机软件接着处理 */
+function ltartOpenButtonEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-ltart-open";
+  b.textContent = "⇢";
+  b.title = I18n.t("用系统默认程序打开这件产物（路径见节点底部）");
+  b.setAttribute("aria-label", I18n.t("用系统默认程序打开产物"));
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const p = String(node.ltFile || "");
+    if (!p) return;
+    if (!window.api || !window.api.shellOpenPath) {
+      toast(I18n.t("无法打开文件（当前环境不支持）"), "warn");
+      return;
+    }
+    window.api.shellOpenPath(p).catch(() => toast(I18n.t("打开失败：") + p, "err"));
+  };
+  return b;
+}
+/* 产物所在文件夹（纯字符串切分，不改 node 任何字段）：B 端产物常扎堆在一个输出目录里，
+   拿文件夹路径只要把最后一段文件名去掉；两种分隔符都认，根目录（"E:\a" / "/a"）与
+   相对路径都返回盘符 / 根 / 上级，切不出来（无分隔符）返回空串。
+   Windows 与 POSIX 都按「最后一个分隔符」切，不做盘符特判。 */
+function ltartDirOf(p) {
+  const s = String(p == null ? "" : p).trim();
+  if (!s) return "";
+  const i = Math.max(s.lastIndexOf("\\"), s.lastIndexOf("/"));
+  if (i < 0) return "";
+  const dir = s.slice(0, i);
+  if (!dir) return "/";
+  return /^[A-Za-z]:$/.test(dir) ? dir + "\\" : dir;
+}
+/* 头部「📁 打开所在文件夹」（产物节点 ltart）：一件产物跑完，用户的下一个动作常是
+   去产物目录里接着翻别的文件 —— 不用先 ⇢ 打开文件再在文件管理器里退一级。
+   走 shellShowItem（主进程 shell.showItemInFolder）：Windows 资源管理器中定位并选中该文件，
+   与画布别处「在文件夹中显示」同一条通道；没有路径 / 环境不支持 / 打开失败都显式提示，不静默。 */
+function ltartFolderButtonEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-ltart-folder";
+  b.textContent = "📁";
+  b.title = I18n.t("打开这件产物所在的文件夹（在文件管理器中显示）");
+  b.setAttribute("aria-label", I18n.t("打开产物所在文件夹"));
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const p = String(node.ltFile || "");
+    const dir = ltartDirOf(p);
+    if (!dir) {
+      toast(I18n.t("这件产物没有文件路径"), "warn");
+      return;
+    }
+    if (window.api && typeof window.api.shellShowItem === "function") {
+      Promise.resolve()
+        .then(() => window.api.shellShowItem(p))
+        .catch(() => toast(I18n.t("打开失败：") + dir, "err"));
+      return;
+    }
+    if (window.api && window.api.shellOpenPath) {
+      window.api.shellOpenPath(dir).catch(() => toast(I18n.t("打开失败：") + dir, "err"));
+      return;
+    }
+    toast(I18n.t("无法打开文件（当前环境不支持）"), "warn");
+  };
+  return b;
+}
+/* 头部「👁 预览全文」（文本类产物 ltart）：板身只给护栏摘要（截断的只读渲染），
+   整篇按需读一次文件再交给文本预览大窗（renderer/app-textpreview.js）。
+   预览窗本身只读，但本入口把产物路径一并交过去（opts.file），窗内头部因此多出一枚 ✎
+   「一步到编辑」——点它进同一套应用内可编辑阅读器（openTextViewer）保存回原文件。
+   读不到 / 空文件显式 toast（不静默），预览窗未就绪只提示、不阻断重绘链。 */
+function ltartTextPreviewButtonEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-textpeek n-ltart-peek";
+  b.textContent = "👁";
+  b.title = I18n.t("预览全文：在只读大窗里完整阅读这件文本产物（可复制，不改文件）");
+  b.setAttribute("aria-label", I18n.t("预览产物全文（只读大窗）"));
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof openTextPreview !== "function") {
+      toast(I18n.t("文本预览窗未就绪"), "warn");
+      return;
+    }
+    const p = String(node.ltFile || "");
+    if (!p) {
+      toast(I18n.t("这件产物没有文件路径"), "warn");
+      return;
+    }
+    if (!window.api || typeof window.api.fileReadText !== "function") {
+      toast(I18n.t("读不到内容：") + p, "warn");
+      return;
+    }
+    Promise.resolve()
+      .then(() => window.api.fileReadText(p))
+      .then((r) => {
+        const content =
+          r && r.ok !== false && r.exists !== false
+            ? String(r.content == null ? "" : r.content)
+            : "";
+        if (!content.trim()) {
+          toast(I18n.t("读不到内容或文件为空：") + p, "warn");
+          return;
+        }
+        openTextPreview({
+          text: content,
+          title: node.title || "",
+          node: node,
+          /* 文件型预览：本窗头部据此多出一枚 ✎，一步进同一套可编辑阅读器（落盘走 openTextViewer） */
+          file: p,
+          onEdit: (fp) => {
+            if (typeof openTextViewer === "function") openTextViewer(fp);
+            else toast(I18n.t("编辑器未就绪"), "warn");
+          },
+        });
+      })
+      .catch(() => toast(I18n.t("读不到内容或文件为空：") + p, "warn"));
+  };
+  return b;
+}
+/* 头部「✎ 编辑保存」（文本类产物 ltart）：长周期任务产出的文本件常常只差几笔，用户不必
+   ⇢ 交给系统程序、也不必先去找文件路径。复用应用内既有可编辑阅读器（app.js 的
+   openTextViewer：.md 走 Markdown 阅读器、其它文本走行视图，两者都自带「编辑 / 保存」
+   并写回原文件），不另造第二套编辑器。写盘成功后由 saveMdViewer / saveYamlViewer 广播
+   mtnode:file-saved，下面那份监听就地刷新本节点（见 ltartRefreshSavedFile）。 */
+function ltartEditButtonEl(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "n-play n-ltart-edit";
+  b.textContent = "✎";
+  b.title = I18n.t("编辑这件文本产物并保存回文件（Markdown 阅读器 / 行视图，保存写回原文件）");
+  b.setAttribute("aria-label", I18n.t("编辑并保存文本产物"));
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof openTextViewer !== "function") {
+      toast(I18n.t("文本阅读器不可用（当前环境未就绪）"), "warn");
+      return;
+    }
+    const p = String(node.ltFile || "");
+    if (!p) {
+      toast(I18n.t("这件产物没有文件路径"), "warn");
+      return;
+    }
+    if (!window.api || typeof window.api.fileReadText !== "function") {
+      toast(I18n.t("无法编辑这件产物（当前环境不支持读写本地文件）"), "warn");
+      return;
+    }
+    Promise.resolve()
+      .then(() => openTextViewer(p))
+      .catch(() => toast(I18n.t("打开失败：") + p, "err"));
+  };
+  return b;
+}
+/* 保存即刷新产物节点：阅读器每次写盘成功都广播 mtnode:file-saved（detail = { path, source }），
+   这里只更新 ltFile 对得上的产物节点 —— 重读文件指纹写回 ltSize / ltMtime（板身体积文案与
+   文本摘要的 cache bust 都用 ltMtime，不刷新会一直显示旧内容），再整面重渲染一次并落盘。
+   返回更新到的节点数（Promise），便于测试断言。 */
+function ltartRefreshSavedFile(path) {
+  const want = String(path == null ? "" : path).trim();
+  if (!want) return Promise.resolve(0);
+  const nodes =
+    (typeof S !== "undefined" && S && S.wf && Array.isArray(S.wf.nodes) && S.wf.nodes) || [];
+  const hit = nodes.filter(
+    (n) => n && n.kind === "ltart" && String(n.ltFile || "").trim() === want,
+  );
+  if (!hit.length) return Promise.resolve(0);
+  return Promise.resolve()
+    .then(() => {
+      if (!window.api || typeof window.api.fileStat !== "function") return null;
+      return window.api.fileStat(want);
+    })
+    .catch(() => null)
+    .then((st) => {
+      if (st && st.ok !== false) {
+        for (const n of hit) {
+          n.ltSize = Number(st.size) || 0;
+          n.ltMtime = Number(st.mtime) || 0;
+        }
+        if (typeof scheduleSave === "function") scheduleSave(true);
+      }
+      if (typeof renderCanvas === "function") renderCanvas();
+      return hit.length;
+    });
+}
+
+/* 挂一次监听：任何经阅读器写盘的产物都能自动刷新（与 app-teamview.js 的 factlib:saved 同风格）。 */
+if (typeof document !== "undefined" && document.addEventListener)
+  document.addEventListener("mtnode:file-saved", function (ev) {
+    const d = ev && ev.detail;
+    ltartRefreshSavedFile(d && d.path);
+  });
+function buildLtartBody(node, body) {
+  const p = String(node.ltFile || "");
+  const type = ltartTypeOfNode(node);
+  const fp = document.createElement("div");
+  fp.className = "n-ltart-ghost";
+  if (!p) {
+    fp.textContent = I18n.t("这件产物没有文件路径（节点可能来自旧版）");
+    body.appendChild(fp);
+    return;
+  }
+  const cap = document.createElement("div");
+  cap.className = "n-ltart-cap";
+  const name = document.createElement("span");
+  name.className = "n-ltart-name";
+  name.textContent = String(node.ltName || "") || p.split(/[\\/]/).pop() || p;
+  name.title = p;
+  const meta = document.createElement("span");
+  meta.className = "n-ltart-meta";
+  const sizeText = ltartSizeLabel(node.ltSize);
+  meta.textContent = ltartTypeLabel(type) + (sizeText ? " · " + sizeText : "");
+  cap.appendChild(name);
+  cap.appendChild(meta);
+  body.appendChild(cap);
+  const stage = document.createElement("div");
+  stage.className = "n-ltart-stage n-ltart-" + type;
+  const bust = node.ltMtime || node.ltAt || Date.now();
+  const url = typeof fileUrlWithBust === "function" ? fileUrlWithBust(p, bust) : window.api.toFileUrl(p);
+  if (type === "image") {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = name.textContent;
+    img.onerror = () => {
+      stage.innerHTML = "";
+      const g = document.createElement("div");
+      g.className = "n-ltart-ghost";
+      g.textContent = I18n.t("文件不存在或无法预览");
+      stage.appendChild(g);
+    };
+    if (typeof bindImagePreview === "function") bindImagePreview(img, p, name.textContent);
+    if (typeof bindImgSaveAs === "function") bindImgSaveAs(img);
+    stage.appendChild(img);
+  } else if (type === "video") {
+    const v = document.createElement("video");
+    v.src = url;
+    v.controls = true;
+    v.preload = "metadata";
+    v.className = "n-ltart-media";
+    stage.appendChild(v);
+  } else if (type === "audio") {
+    const a = document.createElement("audio");
+    a.src = url;
+    a.controls = true;
+    a.preload = "metadata";
+    a.className = "n-ltart-media";
+    stage.appendChild(a);
+  } else if (type === "text") {
+    const pre = document.createElement("pre");
+    pre.className = "n-ltart-text";
+    pre.textContent = I18n.t("读取中…");
+    stage.appendChild(pre);
+    /* 摘要只读一段（护栏）：节点上不塞整篇，完整阅读走头部 👁（⇢ 仍可交系统程序）。
+       .md / .markdown 走画布 / 审阅同一套只读 Markdown 渲染器（app-nodeview.js 的
+       nodeTextViewEl，与 browseTextEl 同口径），其它文本仍是裸 pre；超长一律截断
+       并提示「点 👁 看全文」。全程只读，不写节点任何字段。 */
+    const want = p;
+    Promise.resolve()
+      .then(() => window.api.fileReadText(want))
+      .then((r) => {
+        if (!pre.isConnected) return;
+        const content =
+          r && r.ok !== false && r.exists !== false
+            ? String(r.content == null ? "" : r.content)
+            : "";
+        if (!content.trim()) {
+          pre.textContent = I18n.t("（空文件或读不出来，用系统程序打开看）");
+          return;
+        }
+        const keepLen = 4000;
+        const clipped = content.length > keepLen;
+        const shown = clipped ? content.slice(0, keepLen) : content;
+        const view =
+          /\.(md|markdown)$/i.test(want) && typeof nodeTextViewEl === "function"
+            ? nodeTextViewEl(shown, { node: node, lang: "md", class: "md n-ltart-md" })
+            : null;
+        if (view) pre.replaceWith(view);
+        else pre.textContent = shown + (clipped ? "\n…" : "");
+        if (clipped) {
+          const more = document.createElement("div");
+          more.className = "n-ltart-ghost n-ltart-more";
+          more.textContent = I18n.t("已截断显示 · 点上方 👁 看全文");
+          body.insertBefore(more, pathEl);
+        }
+      })
+      .catch(() => {
+        if (pre.isConnected) pre.textContent = I18n.t("（读不出来，用系统程序打开看）");
+      });
+  } else {
+    const g = document.createElement("div");
+    g.className = "n-ltart-ghost";
+    g.textContent = I18n.t("这类文件不在节点里预览 · 点上方 ⇢ 用系统程序打开");
+    stage.appendChild(g);
+  }
+  body.appendChild(stage);
+  const pathEl = document.createElement("div");
+  pathEl.className = "n-ltart-path";
+  pathEl.textContent = p;
+  pathEl.title = p;
+  body.appendChild(pathEl);
+}
+
 function buildBody(node, body) {
   /* 浏览态（未选中）优先走只读视图分支；handler 未接管时回落到下方编辑态渲染 */
   if (nodeBrowseMode(node) && buildBrowseBody(node, body)) return;
@@ -8602,6 +10333,41 @@ function buildBody(node, body) {
      改的就是库里那份 —— 删掉画布，内容照样留在素材夹里。 */
   if (node.kind === "asset") {
     buildAssetBody(node, body);
+    return;
+  }
+  /* 产出节点（kind "ltout"）：长周期任务执行中生成的信息 / 文件内容同步落到画布上的
+     可编辑落点。正文 = 节点正文（复用文本节点的 textarea 交互与节点头部的标题编辑入口），
+     下方按只读列出引擎回写的文件引用。用户在这里改过的正文，后续环节以画布现内容为准。 */
+  if (node.kind === "ltout") {
+    buildLtoutBody(node, body);
+    return;
+  }
+  /* 产物节点（kind "ltart"）：长任务每个环节完成时逐件摆上画布的产物 —— 图片缩略图、
+     音视频直接播、文本给摘要，路径与「打开」入口见板身（头部 ⇢）。 */
+  if (node.kind === "ltart") {
+    buildLtartBody(node, body);
+    return;
+  }
+  /* 交付节点（kind "deliver"）：长周期任务在主画布上的人工落点。它像文件节点，但目录由
+     系统按 uid 固定生成，文件既可靠端子连进来、也可直接上传；节点本身只显进度，真正的
+     操作面是顶部条带上的人工任务卡（单一操作面，两处不双写）。渲染由 app-longtask-ui.js 承载。 */
+  if (node.kind === "deliver") {
+    if (window.LT && window.LT.ui && window.LT.ui.deliverBody) window.LT.ui.deliverBody(node, body);
+    else {
+      const orph = document.createElement("div");
+      orph.className = "n-status";
+      orph.textContent = I18n.t("交付节点：长周期任务未就绪");
+      body.appendChild(orph);
+    }
+    return;
+  }
+  /* 泛用文件节点（kind input_any）：body 只有「上传文件」一颗按钮 —— 类型由文件本身决定，
+     不再让用户先想清楚「我这文件该进哪种节点」。没上传之前想手动指定类型有两条入口：
+     节点头部那排「手动更改类型」四连小按钮（见 inputAnyConvertBar），或本节点右键
+     「转换为输入节点」；选定文件后就地转成对应节点，之后不再退回泛用形态（逻辑见 app.js
+     的 uploadIntoAnyNode / convertAnyNodeTo / convertAnyNodeKind）。 */
+  if (node.kind === "input_any") {
+    buildInputAnyBody(node, body);
     return;
   }
   if (node.kind === "input_text") {
@@ -9040,7 +10806,7 @@ function buildBody(node, body) {
       lab.className = "n-prompt-lab";
       lab.textContent = node.agent
         ? I18n.t("任务（输入 / 呼出技能 · @ 引用输入节点）")
-        : I18n.t("提示词 Prompt（@ 引用输入节点 · 输入内容自动附加）");
+        : I18n.t("提示词 Prompt（@ 引用输入节点 · 输入 / 呼出技能）");
       hdr.appendChild(lab);
       f3.appendChild(hdr);
     }
@@ -9057,15 +10823,17 @@ function buildBody(node, body) {
         : node.kind === "proc_text" && node.agent
           ? I18n.t("描述任务…（输入 / 呼出技能，@ 引用已连接节点）")
           : node.kind === "proc_text"
-            ? I18n.t("例如：将输入内容总结为三句话… 输入 @ 引用已连接节点")
+            ? I18n.t(
+                "例如：将输入内容总结为三句话… 输入 @ 引用已连接节点 · 输入 / 或 、 呼出技能",
+              )
             : I18n.t("例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图");
     ta.value = procPromptOf(node);
     const persistPrompt = (v) => setProcPrompt(node, v);
     ta.addEventListener("compositionend", () => {
-      if (isDshTask(node)) slashTick(ta, "node", persistPrompt);
+      if (node.kind === "proc_text") slashTick(ta, "node", persistPrompt);
     });
     ta.addEventListener("keydown", (ev) => {
-      if (isDshTask(node) && slashKey(ta, ev)) return;
+      if (node.kind === "proc_text" && slashKey(ta, ev)) return;
       /* @ 引用菜单吃掉了这次按键（↑↓ / 回车确认 / Tab / Esc）→ 不再往下走，
          否则智能任务节点会在选完引用的同一次回车里顺带把节点跑起来 */
       if (refKey(ta, ev, node)) return;
@@ -9077,7 +10845,7 @@ function buildBody(node, body) {
     });
     ta.addEventListener("click", () => {
       if (S.refMenu) refTick(ta, node);
-      if (isDshTask(node) && S.slashMenu) slashTick(ta, "node", persistPrompt);
+      if (node.kind === "proc_text" && S.slashMenu) slashTick(ta, "node", persistPrompt);
     });
     ta.addEventListener("blur", () =>
       setTimeout(() => {
@@ -10233,6 +12001,136 @@ function buildBody(node, body) {
       st.textContent = node.error;
       body.appendChild(st);
     }
+  } else if (node.kind === "yue_gen") {
+    /* YuE2 音乐节点：未安装警示条（插件 id = yue2-local） */
+    if (!appPluginInstalled("yue2-local")) {
+      const warn = document.createElement("div");
+      warn.className = "n-empty n-plugin-warn";
+      warn.textContent = I18n.t(
+        "⚠ YuE2 插件未安装：请在「插件 · YuE2 本地音乐」中安装后使用本节点",
+      );
+      body.appendChild(warn);
+    }
+    appendYueGenSummaryBody(node, body);
+    appendMediaBackendPanel(body, node);
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const aud = wavePreviewCreate("mgaud-" + node.id);
+    prev.appendChild(aud);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "mgempty-" + node.id;
+    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "mgname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint =
+        (node.output && (node.output.path || node.output.text)) ||
+        mediaGenOutputRaw(node) ||
+        "";
+      if (hint) nameEl.textContent = fileName(hint);
+    }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.yueStatus ||
+      I18n.t("待生成（端子 P=风格提示词 · L=歌词 · ABC=谱面可选）");
+    body.appendChild(st);
+  } else if (node.kind === "sensenova_gen") {
+    /* SenseNova 本地图像生成：未装警示 + 可编辑提示词（支持 @ 引用）+ 参数摘要 +
+       后端状态面板 + 图像预览 + 状态行。点图 = 灯箱（bindImagePreview），
+       与云端文生图 / 保存图像同一交互，不另起一套。 */
+    if (!appPluginInstalled("sensenova-local")) {
+      const warn = document.createElement("div");
+      warn.className = "n-empty n-plugin-warn";
+      warn.textContent = I18n.t(
+        "⚠ SenseNova 插件未安装：请在「插件 · SenseNova 本地图像生成」中安装后使用本节点",
+      );
+      warn.title = I18n.t("插件 · SenseNova 本地图像生成：设置安装目录 → 安装");
+      body.appendChild(warn);
+    }
+    /* 提示词：端子 0（提示词入口）或增量数据槽有文字线时以线为准
+       （见 playSensenovaGenNode / sensenovaGenPromptText），
+       这里填的是「不接线、直接点 ▶」的用法 —— 与 proc_image 一样的习惯动作。 */
+    const f3 = document.createElement("div");
+    f3.className = "n-field n-prompt";
+    const hdr = document.createElement("div");
+    hdr.className = "n-prompt-hdr";
+    const lab = document.createElement("span");
+    lab.className = "n-prompt-lab";
+    lab.textContent = I18n.t("提示词 Prompt（@ 引用输入节点 · 不接线时用它出图）");
+    hdr.appendChild(lab);
+    f3.appendChild(hdr);
+    const ta = document.createElement("textarea");
+    ta.className = "n-text";
+    ta.spellcheck = false;
+    ta.placeholder = I18n.t(
+      "例如：清晨薄雾里的雪山湖泊，写实风光摄影，柔和逆光… 输入 @ 引用已连接节点",
+    );
+    ta.value = String(node.prompt || "");
+    ta.addEventListener("keydown", (ev) => {
+      /* @ 引用菜单吃掉这次按键（↑↓ / 回车确认 / Esc）→ 不再往下走 */
+      if (refKey(ta, ev, node)) return;
+    });
+    ta.addEventListener("click", () => {
+      if (S.refMenu) refTick(ta, node);
+    });
+    ta.addEventListener("blur", () =>
+      setTimeout(() => {
+        closeRefMenu();
+      }, 150),
+    );
+    mountPromptTextarea(f3, ta, node, (v) => {
+      node.prompt = v;
+    });
+    body.appendChild(f3);
+    appendSensenovaGenSummaryBody(node, body);
+    appendMediaBackendPanel(body, node);
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const img = document.createElement("img");
+    img.id = "snimg-" + node.id;
+    img.alt = "";
+    img.style.display = "none";
+    prev.appendChild(img);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "snempty-" + node.id;
+    empty.textContent = I18n.t("图像不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "snname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      /* 预览文件名：实际产出（输出端子结果）；本节点没有可配置的输出路径 */
+      const hint = (node.output && node.output.path) || "";
+      if (hint) nameEl.textContent = fileName(hint);
+    }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
+    if (node.sensenovaStatus || node.error) {
+      const stt = document.createElement("div");
+      stt.className =
+        "n-status" +
+        (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+      stt.textContent = node.error || node.sensenovaStatus;
+      body.appendChild(stt);
+    }
   } else if (node.kind === "tts_gen") {
     /* 未安装警示条（GPT-SoVITS 插件 id = tts-local；安装后 S.plugins 缓存刷新自动消失） */
     if (!appPluginInstalled("tts-local")) {
@@ -10293,7 +12191,12 @@ function buildBody(node, body) {
     meta.id = "mgmeta-" + node.id;
     meta.textContent = isCustomVideoGen(node)
       ? I18n.t("自建") + " · " + ((node.wfMeta && node.wfMeta.title) || String(node.workflowId).slice(0, 10))
-      : (node.videoMode || "fl2va").toUpperCase() + " · " + (node.ratio || "16:9");
+      : (node.videoMode || "fl2va").toUpperCase() +
+        " · " +
+        (node.ratio || "16:9") +
+        (typeof videoGenChainTag === "function" && videoGenChainTag(node)
+          ? " · " + videoGenChainTag(node)
+          : "");
     if (isCustomVideoGen(node)) meta.title = I18n.t("自建 ComfyUI 工作流：点 ⚙ 在设置窗口里换工作流 / 改参数映射");
     body.appendChild(meta);
     appendMediaGenSummaryBody(node, body, "video");
@@ -10332,6 +12235,68 @@ function buildBody(node, body) {
       st.textContent = node.error;
       body.appendChild(st);
     }
+  } else if (isVideoPostKind(node)) {
+    /* 视频超分 / 补帧（拆出生成链的独立后处理）：
+       参数摘要（走 registerNodeSettingsForm 的 summary）+ 输出路径行 + 后端面板
+       + 视频预览 + 状态行，布局与 video_gen 一致。 */
+    appendNodeSettingsSummary(node, body, {
+      text: nodeSettingsSummaryText(node),
+    });
+    appendNodeSettingsSummary(node, body, {
+      slots: [
+        {
+          id: "mgpath-" + node.id,
+          label: I18n.t("输出"),
+          value:
+            mediaGenOutputRaw(node) ||
+            String(node.outputPath || "").trim() ||
+            I18n.t("（未设置）"),
+        },
+      ],
+      gear: false,
+      cls: "mg-sum mg-sum-path",
+      actions: mediaGenPathActionButtons(node, "video"),
+    });
+    appendMediaBackendPanel(body, node);
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const vid = document.createElement("video");
+    vid.id = "mgvid-" + node.id;
+    vid.controls = true;
+    vid.preload = "metadata";
+    prev.appendChild(vid);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "mgempty-" + node.id;
+    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "mgname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint =
+        (node.output && (node.output.path || node.output.text)) ||
+        mediaGenOutputRaw(node) ||
+        "";
+      if (hint) nameEl.textContent = fileName(hint);
+    }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
+    const st = document.createElement("div");
+    st.className =
+      "n-status" +
+      (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+    st.textContent =
+      node.error ||
+      node.videoStatus ||
+      (node.kind === "video_upscale"
+        ? I18n.t("源视频 → Real-ESRGAN 超分（x2 / x4）→ 缩放到输出长边")
+        : I18n.t("源视频 → 逐帧流式 RIFE 补帧（fps 按倍数重算）"));
+    body.appendChild(st);
   } else if (node.kind === "remotion") {
     /* 未安装插件警示条（安装后 S.plugins 缓存刷新，重渲染自动消失） */
     if (!appPluginInstalled("remotion")) {
@@ -10910,21 +12875,39 @@ async function fillPreviews() {
     }
     if (isMediaGenNode(n)) {
       const path = await resolveMediaGenDisplayPath(n);
-      const isVid = n.kind === "video_gen" || n.kind === "remotion";
-      const el = document.querySelector((isVid ? "#mgvid-" : "#mgaud-") + n.id);
-      const empty = document.querySelector("#mgempty-" + n.id);
-      const nameEl = document.querySelector("#mgname-" + n.id);
-      const bust = n.ranAt || 0;
-      /* 配置路径：body 摘要是只读片段，跳窗里可能还开着同一个输入框 → 一起刷 */
-      syncNodeSettingsValue(
-        n,
-        "mgpath",
-        mediaGenOutputRaw(n) || String(n.outputPath || ""),
+      const isVid =
+        n.kind === "video_gen" ||
+        n.kind === "remotion" ||
+        (typeof isVideoPostKind === "function" && isVideoPostKind(n));
+      const isSnImg = n.kind === "sensenova_gen";
+      const el = document.querySelector(
+        (isSnImg ? "#snimg-" : isVid ? "#mgvid-" : "#mgaud-") + n.id,
       );
+      const empty = document.querySelector(
+        (isSnImg ? "#snempty-" : "#mgempty-") + n.id,
+      );
+      const nameEl = document.querySelector(
+        (isSnImg ? "#snname-" : "#mgname-") + n.id,
+      );
+      const bust = n.ranAt || 0;
+      /* 配置路径：body 摘要是只读片段，跳窗里可能还开着同一个输入框 → 一起刷。
+         SenseNova 图像节点没有输出路径字段（产物落应用托管目录）→ 不刷 mgpath。 */
+      if (!isSnImg)
+        syncNodeSettingsValue(
+          n,
+          "mgpath",
+          mediaGenOutputRaw(n) || String(n.outputPath || ""),
+        );
       if (el) {
         if (path) {
           el.src = fileUrlWithBust(path, bust + ":" + path);
           el.dataset.path = path;
+          /* 图像预览：点图开灯箱 + 右键另存，与文生图 / 保存图像同一套绑定 */
+          if (isSnImg) {
+            el.style.display = "";
+            bindImagePreview(el, path, n.title || I18n.t("输出图像"));
+            if (typeof bindImgSaveAs === "function") bindImgSaveAs(el);
+          }
           if (empty) empty.style.display = "none";
           if (nameEl) {
             nameEl.textContent = fileName(path);
@@ -10935,9 +12918,12 @@ async function fillPreviews() {
         } else {
           el.removeAttribute("src");
           el.removeAttribute("data-path");
+          if (isSnImg) el.style.display = "none";
           if (empty) empty.style.display = "";
           if (nameEl) {
-            const configured = mediaGenOutputRaw(n) || "";
+            /* 没有预览图时只有「配置了输出路径」的媒体节点才有文件名可显示；
+               SenseNova 图像节点没有输出路径字段（产物落应用托管目录）→ 留空 */
+            const configured = isSnImg ? "" : mediaGenOutputRaw(n) || "";
             nameEl.textContent = configured ? fileName(configured) : "";
             nameEl.onclick = configured
               ? () => {

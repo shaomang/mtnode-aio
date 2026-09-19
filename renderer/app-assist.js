@@ -19,7 +19,7 @@ async function assistAppSnapshot(opts) {
   }));
   const scopeCurrent = assistScopeIsCurrent();
   const safeApp =
-    "mtnode_app:status|list_workflows|rename_workflow|select_nodes|undo|redo" +
+    "mtnode_app:status|list_workflows|rename_workflow|select_nodes|undo|redo|export_canvas_png" +
     (agentToolAllowed("app_dsh_plugins") ? "|list_dsh_plugins" : "");
   const confirmApp = [
     agentToolAllowed("app_delete") ? "mtnode_app:delete_workflow" : null,
@@ -1088,11 +1088,10 @@ function renderAssistPanel(opts) {
     row.appendChild(body);
     list.appendChild(row);
   }
-  /* 助手栏末尾：同一份 Token 累计报告 Badge（按模型累计，点击展开） */
-  if (typeof tokBadgeEl === "function" && typeof assistTokOwner === "function") {
+  /* 助手栏最底部（输入行下面）：同一份 Token 累计报告 Badge（按模型累计，点击展开） */
+  if (typeof tokBadgeTailMount === "function" && typeof assistTokOwner === "function") {
     try {
-      const badge = tokBadgeEl(assistTokOwner());
-      if (badge) list.appendChild(badge);
+      tokBadgeTailMount(assistTokOwner(), list);
     } catch {}
   }
   const reapplyStick = () => restoreConvStick(list, stickCap);
@@ -1235,11 +1234,11 @@ async function assistSend(text) {
       "」。list_workflows / canvas_get 只会看到本画布。\n" +
       "工具：\n" +
       "- mtnode_canvas_get：读取当前画布（默认 minimal，只回节点索引；要读某节点正文用 ids:[标题或 id] + detail:\"full\"，看连线 / 结构用 sections 收窄）\n" +
-      "- mtnode_app：rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）；delete_workflow 仅可删本画布且需确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n"
+      "- mtnode_app：rename_workflow（仅本画布）/ select_nodes / undo / redo / status / list_workflows（仅本画布）/ export_canvas_png（把整张画布拍成高清 PNG 落盘，仅前台画布，拍完把路径给你）；delete_workflow 仅可删本画布且需确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n"
     : "工作范围：全局。可参考全部画布列表。\n" +
       "工具：\n" +
       "- mtnode_canvas_get：读取当前画布 + 全部画布列表（默认 minimal，只回节点索引；要读某节点正文用 ids:[标题或 id] + detail:\"full\"，看连线 / 结构用 sections 收窄）\n" +
-      "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows；delete_workflow 会弹窗确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n";
+      "- mtnode_app：rename_workflow / select_nodes / undo / redo / status / list_workflows / export_canvas_png（把当前画布拍成高清 PNG 落盘，仅前台画布，拍完把路径给你）；delete_workflow 会弹窗确认；list_dsh_plugins / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin（安装与挂载需确认，插件装在配置目录、升级保留）。\n";
   /* ── systemPrompt 分节（见 app-prompt-sections.js）──────────────────────────
      每段各自独立成节，节序 = 改造前的拼接顺序、节间分隔符传空串 ⇒
      拼出来的字符串与今天逐字节一致；app_state（当前应用状态 JSON，每轮都变的最大头）
@@ -1256,7 +1255,7 @@ async function assistSend(text) {
     "  · 图像参考节点用 kind input_image，把本机绝对路径写进 imagePath（应用会复制进画布资产），已知路径就不要让用户再拖拽；多图 batch:true + imagePaths。\n" +
     "  · 改节点模型：create/update 传 model，文本 / 图像节点配 providerId（服务商 id 或唯一名称），智能任务配 provider（deepseek-official 或 mtnode_<id> / 名称）。\n" +
     "  · 工具回执（created[] / updated[] / hasImage / warnings）才是事实依据：没出现在回执里的结果，不要向用户声称已完成。\n" +
-    "  · 音 / 视频生成节点（music_gen / tts_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；批次与文生图的防 N² 细则见技能 mtnode-canvas-edit-rules（细则再进 mtnode-canvas-batch-safety）。\n";
+    "  · 音 / 视频生成节点（music_gen / tts_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；写 music_gen / yue_gen 的风格提示词与歌词先加载内置技能 minimax-music-prompt / minimax-music-lyrics（提示词 = 一段六句英文散文，不是标签堆）；批次与文生图的防 N² 细则见技能 mtnode-canvas-edit-rules（细则再进 mtnode-canvas-batch-safety）。\n";
   /* @引用、save / wait_file、端子与批次规则已由技能 mtnode-canvas-edit-rules 承载
      （mtnode_canvas_edit 只留卡口与一句指向）；这里只留助手侧的排版动作。 */
   const layoutRules = assistCanvasFree
@@ -1366,17 +1365,22 @@ async function assistSend(text) {
       },
       onEvent: (type, data) => {
         /* 出错自动重发（dshRunTask 触发 retry）：看 resumed 决定清不清残文 ——
-           · resumed=true（续写）：新内容接在同一条逻辑轮次后面，已显示的部分正文 /
-             工具列表 / 思考槽一律保留，直接返回；
-           · resumed=false（整轮重发）：清上一轮的部分正文 / 工具 / 思考槽，
-             重发那一轮从零流式不叠字 */
+           · resumed=true（续写）：已显示的部分正文 / 工具列表保留（那是同一轮的内容）；
+             思考槽照旧清掉 —— 思考不是续写内容，续跑起步时轨迹里的旧思考段也已被
+             摘掉（app-db.js traceDropThink），槽里留着它就会在下一次 reasoning 到达前
+             以旧文本显示出来（残留旧思考）。
+           · resumed=false（整轮重发）：正文 / 工具 / 思考槽全清，重发那一轮从零流式。
+           resumed 由宿主按「这一次实际怎么发」给出（见 app-db.js notifyRetry）。 */
         if (type === "retry") {
+          if (S.thinking) S.thinking.assist = [""];
           if (data && data.resumed) return;
           S.assistPending = "";
           S.assistLiveTools = [];
-          if (S.thinking) S.thinking.assist = [""];
           const el = document.getElementById("assist-stream");
           if (el) el.textContent = "";
+          /* 思考槽就地清一次：renderAssistPanel 会按清空后的缓冲重建这一行 */
+          const th = document.getElementById("assist-think");
+          if (th) th.textContent = "";
           renderAssistPanel();
           return;
         }
@@ -1548,6 +1552,21 @@ function agentSessions() {
       s.titleAuto = !!s.titleAuto;
       s.titleLocked = !!s.titleLocked;
     }
+  /* 计划闸豁免位水合：noPlanFlow（长任务新建窗的引导建图会话）与 ltBound（长任务环节的
+     运行档案会话）都参与 app-plan.js 的 planFlowExemptSession 判据；落盘见 persistAgentSession，
+     这里把从配置载回 / 旧存档缺位的会话归一好，保证重启后这类会话仍不走普通会话计划线。 */
+  for (const s of S.agentSessions)
+    if (s) {
+      s.noPlanFlow = !!s.noPlanFlow;
+      s.ltBound =
+        s.ltBound && typeof s.ltBound === "object"
+          ? {
+              wfId: String(s.ltBound.wfId || ""),
+              runId: String(s.ltBound.runId || ""),
+              path: String(s.ltBound.path || ""),
+            }
+          : null;
+    }
   /* 从配置载回的会话做一次水合（planDelivered / plan → 运行时字段）；
      水合过就有 _planHydrated 标记，后续调用只是几次属性读，开销可忽略。 */
   if (typeof planHydrateSession === "function")
@@ -1675,6 +1694,22 @@ async function persistAgentSession() {
     /* 「与画布无关」开关同样随会话落盘：丢了这一位，重启后可见集就与那份 session
        的历史前缀不一致（网关 nc: / hx: 指纹变化 → 换 runtime 冷起）。 */
     canvasFree: !!s.canvasFree,
+    /* 「本会话不走普通会话计划这条线」：长周期任务新建窗的引导建图会话由
+       app-longtask-guide.js 置位 —— 它的产物只能是长周期任务状态机图，
+       宿主不再给它注入「任务流程 / 交计划块」指令，它回复里的计划块也不弹计划窗
+       （判据见 app-plan.js 的 planFlowExemptSession）。随会话落盘，重启后仍豁免。 */
+    noPlanFlow: !!s.noPlanFlow,
+    /* 长任务环节绑定标记（app-longtask.js 的 ltBindAgentSession 写）：{wfId,runId,path}
+       指向这条会话是哪个 run 的哪个环节的运行档案。与 canvasFree 同级落盘 —— 重启后
+       仍认得出「这条会话归长任务所有」。缺省 null = 普通会话。 */
+    ltBound:
+      s.ltBound && typeof s.ltBound === "object"
+        ? {
+            wfId: String(s.ltBound.wfId || ""),
+            runId: String(s.ltBound.runId || ""),
+            path: String(s.ltBound.path || ""),
+          }
+        : null,
     draft: s._draft || "",
     /* 整对象落盘（含 reasoning / tools / segments）；segments 再限一次长：
        只夹单段字数（段一条不丢，见 agentSegsForDisk），控制 messages.slice(-100)
@@ -1760,6 +1795,52 @@ function newAgentSession() {
   S.agentActiveId = st.id;
   return st;
 }
+/* ── 契约会话通用装配（开发 / 细化 / 问询 / 工具·函数开发 / 长任务引导共用）──
+   「专用会话」= 会话契约 `_devContract` 随每轮系统提示注入（不占用户消息位，见
+   agentSessionSend 的 devContract 注入段），首轮用一条 `_src:"dev-node"` 的关键输入
+   消息起轮（agentSessionSend 的 devContractMsg 分支只读它、不追加第二条用户消息）。
+   过去这段装配散在 app.js / app-tools.js / app-toolbuild.js / app-devnode.js 各自实现，
+   这里收成一个可复用注入点：调用方只给「标题 / 契约正文 / 首轮关键输入 / 归属画布」。
+
+   opts = {
+     title:       会话标题（专用会话的固定口径 → 置 titleLocked，首轮自动命名不再改它）,
+     contract:    契约正文（整份任务书，每轮随系统提示注入；落盘字段 devContract）,
+     kick:        首轮用户关键输入（那条 _src:"dev-node" 消息的正文；可空 = 首轮由调用方自己发）,
+     canvasWfId:  所属画布 id（缺省 = 用户此刻看到的画布）,
+     allowCanvas: 是否允许读画布（缺省 true；false = 置 noCanvasRead 走「不读画布」档）,
+     workspace / provider / model / effort: 可选覆盖（缺省继承新会话默认）。
+   返回新建的会话对象；起轮 / 追问一律走 agentContractRound。 */
+function agentContractSession(opts) {
+  opts = opts || {};
+  const st = newAgentSession();
+  if (String(opts.title || "").trim()) st.title = String(opts.title).trim();
+  /* 标题锁死：契约会话的名字是入口的固定口径，不让首轮自动命名改成正文前 24 字 */
+  st.titleLocked = true;
+  st.titleAuto = false;
+  st.canvasWfId = String(opts.canvasWfId || currentVisibleWfId() || "");
+  /* 「允许读画布」本次会话放开（Gate A 关掉）；「与画布无关」档（Gate B）不适用于契约会话 */
+  st.noCanvasRead = opts.allowCanvas === false;
+  st.canvasFree = false;
+  if (opts.workspace != null) st.workspace = String(opts.workspace || "");
+  if (opts.provider) st.provider = String(opts.provider);
+  if (opts.model != null) st.model = String(opts.model || "");
+  if (opts.effort) st.effort = String(opts.effort);
+  st._devContract = String(opts.contract || "");
+  const kick = String(opts.kick || "").trim();
+  if (kick) st.messages.push({ role: "user", content: kick, _src: "dev-node", at: Date.now() });
+  return st;
+}
+/* 契约会话起一轮（或重新起本轮）：先落盘再发。
+   空文本 + _devContract 标记 = 「按契约跑这条会话里的那条关键输入」，不追加新消息。 */
+async function agentContractRound(st, opts) {
+  opts = opts || {};
+  if (!st || !st.id) return null;
+  await persistAgentSession();
+  return agentSessionSend(
+    "",
+    Object.assign({ _devContract: true, sessionId: st.id }, opts.send || {}),
+  );
+}
 async function archiveAgentSession(id, archived) {
   const list = agentSessions();
   const s = list.find((x) => x.id === id);
@@ -1844,6 +1925,13 @@ async function deleteAgentSessionCore(id) {
   const list = agentSessions();
   const at = list.findIndex((x) => x && x.id === id);
   if (at < 0) return -1;
+  /* 暂停态随会话一起消失（不指望调用方先终止过）：否则被删会话的「已暂停」行
+     可能在下一次队列采集前还挂在左下角，点上去只会得到一句「会话已不存在」 */
+  try {
+    list[at].paused = false;
+    list[at]._pausePending = false;
+    list[at]._roundPaused = false;
+  } catch (_) {}
   detachSessionsFromNodes([id]);
   list.splice(at, 1);
   if (S.agentActiveId === id) S.agentActiveId = (list[0] && list[0].id) || "";
@@ -3865,7 +3953,13 @@ function agentLiveSegsEl(row, st, live, items) {
     } else if (seg.k === "say" || seg.k === "err") {
       const d = document.createElement("div");
       d.className = "dsh-seg dsh-seg-say";
-      if (streaming) {
+      /* 「流式尾段」= 还在逐 token 增长的那一段：只有它走纯文本（省掉每块重渲 markdown）。
+         已收口的正文段（say-end 已到，段上 open=false）虽然仍是尾段，但它已经定稿 ——
+         必须按 markdown 渲染，否则会话最终答复（按定义就是最后一个正文段）会一直以
+         未渲染原文的形态留在屏上，直到本轮整体重绘才变回来（用户看到的「最终答复
+         没渲染 md」）。err 段不参与该判定（可能被后续同 step 的错误续写）。 */
+      const stillStreaming = streaming && !(seg.k === "say" && seg.open === false);
+      if (stillStreaming) {
         /* 正在流的正文段：纯文本 + 旧 id，text 事件就地更新，避免每块重渲 markdown */
         d.id = "agent-stream";
         d.dataset.segIdx = String(i);
@@ -3906,6 +4000,9 @@ function agentLiveSegTail(items, el, kind) {
   if (!items || !items.length || !el) return null;
   const last = items[items.length - 1];
   if (!last || last.k !== kind) return null;
+  /* 已收口的正文段（say-end 已到 = 段定稿）不再是流式尾段：它按定稿的 markdown 渲染，
+     往它里面写纯文本会把渲染结果冲掉 —— 返回 null 让调用方整表重绘（见 agentLiveSegsEl）。 */
+  if (kind === "say" && last.open === false) return null;
   if (Number(el.dataset.segIdx) !== items.length - 1) return null;
   return last;
 }
@@ -3966,6 +4063,240 @@ function updateAgentLiveThink(st) {
   });
 }
 
+/* ══ 消息「复制 / 保存」动作条（会话 · 全局助手 · 专家团单聊共用）══════
+   模型常把答案写成代码块或 Markdown 文档（标题 / 表格 / 列表 / 引用）：在聊天气泡里
+   手动选中复制会把折行、行号、省略号一起带走，想直接拿去用很别扭。这里在消息**最下方**
+   （正文之后、时间行之前）补两枚按钮：
+     · 复制 ＝ 把这条内容原文写进剪贴板；
+     · 保存 ＝ 另存为文件（走主进程 file:saveDialog + file:writeText，位置由用户选，
+       永不落应用目录 —— 见 AGENTS.md「数据不落应用文件夹」）。
+   取哪一份内容（唯一口径，勿在别处另写一套）：
+     · 「纯代码消息」＝ 整条正文除一个围栏代码块外没有别的实质内容 → 取围栏内的代码，
+       保存按语言给扩展名（```python → .py，认不出 → .txt）——这正是用户要拿去跑的东西；
+     · 其余（正文夹代码 / 夹结构）→ 取整条正文原文（Markdown 源），一个字不丢。
+   出现条件（dshMsgNeedActions）：正文含围栏代码块，或含标题 / 表格 / 引用 / 列表这类
+   块级 Markdown 结构。纯段落（只加粗 / 行内码 / 链接）不出现 —— 那种消息沿用时间行里
+   原有的小「复制」按钮，免得一条消息上挂两枚一模一样的「复制」（见 dshMsgBlock 尾部）。
+   按钮是渲染期产物、随消息重绘重建（重绘＝内容变了，正该重建），不额外持久化。 */
+/* 整条消息就是一个围栏代码块（围栏外除空白无内容）：捕获语种与代码正文 */
+const DSH_MSG_CODE_ONLY_RE =
+  /^[ \t]*(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n?[ \t]*\1[ \t]*$/;
+/* 代码围栏语种 → 扩展名（保存纯代码消息用；认不出按 .txt，绝不猜成可执行名） */
+const DSH_CODE_EXT = {
+  javascript: "js",
+  js: "js",
+  mjs: "mjs",
+  cjs: "cjs",
+  jsx: "jsx",
+  typescript: "ts",
+  ts: "ts",
+  tsx: "tsx",
+  vue: "vue",
+  python: "py",
+  py: "py",
+  json: "json",
+  jsonc: "jsonc",
+  html: "html",
+  htm: "html",
+  css: "css",
+  scss: "scss",
+  less: "less",
+  xml: "xml",
+  svg: "svg",
+  yaml: "yaml",
+  yml: "yml",
+  toml: "toml",
+  ini: "ini",
+  sql: "sql",
+  bash: "sh",
+  sh: "sh",
+  shell: "sh",
+  zsh: "sh",
+  powershell: "ps1",
+  ps1: "ps1",
+  bat: "bat",
+  cmd: "bat",
+  java: "java",
+  c: "c",
+  h: "h",
+  cpp: "cpp",
+  "c++": "cpp",
+  hpp: "hpp",
+  cs: "cs",
+  go: "go",
+  rust: "rs",
+  rs: "rs",
+  ruby: "rb",
+  rb: "rb",
+  php: "php",
+  kotlin: "kt",
+  kt: "kt",
+  swift: "swift",
+  lua: "lua",
+  r: "r",
+  dart: "dart",
+  markdown: "md",
+  md: "md",
+  text: "txt",
+  txt: "txt",
+  plaintext: "txt",
+  diff: "diff",
+  csv: "csv",
+};
+/* 这条正文该复制 / 保存什么：纯代码消息取代码，其余取原文 */
+function dshMsgPayload(txt) {
+  const raw = String(txt == null ? "" : txt);
+  const hit = raw.match(DSH_MSG_CODE_ONLY_RE);
+  if (hit) {
+    return {
+      code: true,
+      lang: String(hit[2] || "").trim().toLowerCase(),
+      text: String(hit[3] == null ? "" : hit[3]),
+    };
+  }
+  return { code: false, lang: "", text: raw };
+}
+/* 正文里有没有值得「整段拿走」的东西：围栏代码块，或标题 / 引用 / 表格 / 列表（≥2 行） */
+function dshMsgNeedActions(txt) {
+  const raw = String(txt == null ? "" : txt);
+  if (!raw.trim()) return false;
+  /* 未闭合的围栏也算（流式输出中途）：至少用户能看到按钮 */
+  if (/^[ \t]{0,3}(`{3,}|~{3,})/m.test(raw)) return true;
+  let bullets = 0;
+  for (const ln of raw.split(/\r?\n/)) {
+    const s = ln.trim();
+    if (!s) continue;
+    if (/^#{1,6}[ \t]/.test(s)) return true; /* 标题 */
+    if (/^>[ \t]?/.test(s)) return true; /* 引用 */
+    if (/^\|.*\|$/.test(s)) return true; /* 表格行 */
+    if (/^(?:[-*+]|\d{1,9}[.)])[ \t]+\S/.test(s) && ++bullets >= 2) return true; /* 列表 */
+  }
+  return false;
+}
+/* 另存为文件名：第一个标题当名字（非法字符换空格，最长 60 字），没有就用角色 + 时间戳 */
+function dshMsgFileName(txt, role, ext) {
+  const raw = String(txt == null ? "" : txt);
+  const h = raw.match(/(?:^|\n)[ \t]{0,3}#{1,6}[ \t]+([^\n#]{1,80})/);
+  let base = h ? h[1].replace(/[*_`~]/g, "").trim() : "";
+  if (!base) {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, "0");
+    base =
+      (role === "user" ? I18n.t("我的输入") : I18n.t("AI 回复")) +
+      "-" +
+      d.getFullYear() +
+      p2(d.getMonth() + 1) +
+      p2(d.getDate()) +
+      "-" +
+      p2(d.getHours()) +
+      p2(d.getMinutes());
+  }
+  base = base
+    .replace(/[\\/:*?"<>|\r\n\t]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+  return (base || "message") + "." + ext;
+}
+/* 保存：选位置 → 写盘 → toast 回执；取消不打扰，失败说清楚原因 */
+async function dshMsgSaveContent(text, role, btn) {
+  const payload = dshMsgPayload(text);
+  const api = window.api || {};
+  if (!api.fileSaveDialog || !api.fileWriteText) {
+    toast(I18n.t("保存失败：") + I18n.t("当前环境不支持文件保存"), "err");
+    return;
+  }
+  const ext = payload.code ? DSH_CODE_EXT[payload.lang] || "txt" : "md";
+  let pick = null;
+  try {
+    pick = await api.fileSaveDialog({
+      title: I18n.t("保存消息内容"),
+      defaultName: dshMsgFileName(text, role, ext),
+      filters: payload.code
+        ? [
+            { name: I18n.t("代码文件") + " (*." + ext + ")", extensions: [ext] },
+            { name: I18n.t("全部文件"), extensions: ["*"] },
+          ]
+        : [
+            { name: I18n.t("Markdown 文件"), extensions: ["md"] },
+            { name: I18n.t("文本文件"), extensions: ["txt"] },
+            { name: I18n.t("全部文件"), extensions: ["*"] },
+          ],
+    });
+  } catch (e) {
+    pick = { error: (e && e.message) || String(e) };
+  }
+  if (pick && pick.error) {
+    toast(I18n.t("保存失败：") + pick.error, "err");
+    return;
+  }
+  if (!pick || !pick.path) return; /* 用户取消：静默 */
+  let wr = null;
+  try {
+    wr = await api.fileWriteText(pick.path, payload.text);
+  } catch (e) {
+    wr = { ok: false, error: (e && e.message) || String(e) };
+  }
+  if (!wr || wr.ok === false) {
+    toast(
+      I18n.t("保存失败：") + ((wr && wr.error) || I18n.t("未知错误")),
+      "err",
+    );
+    return;
+  }
+  toast(I18n.t("已保存：") + pick.path, "ok");
+  if (btn) {
+    btn.classList.add("ok");
+    setTimeout(() => btn.classList.remove("ok"), 1200);
+  }
+}
+/* 动作条本体：正文已确定含代码 / Markdown 结构时由 dshMsgBlock 调用（也可被手册问答复用） */
+function dshMsgActionBar(text, role) {
+  const payload = dshMsgPayload(text);
+  const bar = document.createElement("div");
+  bar.className = "dsh-msg-actions";
+  const mk = (label, title) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "dsh-msg-act";
+    b.textContent = label;
+    b.title = title;
+    /* 会话区有拖选 / 点选行为：按钮上的按下与点击都不许冒泡出去 */
+    b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+    return b;
+  };
+  const cp = mk(
+    I18n.t("复制"),
+    payload.code
+      ? I18n.t("复制代码（围栏已去掉）到剪贴板")
+      : I18n.t("复制本条正文原文（Markdown / 代码）到剪贴板"),
+  );
+  cp.addEventListener("click", () => {
+    const done = () => {
+      cp.classList.add("ok");
+      cp.textContent = I18n.t("已复制");
+      toast(I18n.t("已复制"), "ok");
+      setTimeout(() => {
+        cp.classList.remove("ok");
+        cp.textContent = I18n.t("复制");
+      }, 1200);
+    };
+    const fail = () => toast(I18n.t("复制失败"), "err");
+    dshClipboardWrite(payload.text)
+      .then((r) => (r && r.ok === false ? fail() : done()))
+      .catch(fail);
+  });
+  bar.appendChild(cp);
+  const sv = mk(I18n.t("保存"), I18n.t("把本条内容另存为文件"));
+  sv.addEventListener("click", () => dshMsgSaveContent(text, role, sv));
+  bar.appendChild(sv);
+  return bar;
+}
+
 /* 单条消息复制按钮：点击复制本条正文（用户消息放头部、AI 回复放尾部时间行），复制成功后短暂变 ok */
 function dshCopyBtn(m, cls) {
   const b = document.createElement("button");
@@ -4010,6 +4341,23 @@ function dshMsgBlock(m, nodeId, idx, opts) {
   role.className = "dsh-role";
   role.textContent = m.role === "user" ? I18n.t("你") : "AI";
   head.appendChild(role);
+  /* 「⚡插话」气泡：这一句不是新的一轮，而是趁上一轮还在跑时塞进它下一步边界的 ——
+     标出来，用户才知道为什么它下面没有紧跟一条回答（回答在同一个气泡串里继续）。
+     _steerState：'sent' 已递交（等运行时认领）→ 'in' 已注入（收到 agent/inbox/spliced）。 */
+  if (m.role === "user" && m._kind === "steer") {
+    row.classList.add("dsh-msg-steer");
+    const tag = document.createElement("span");
+    tag.className = "dsh-steer-tag" + (m._steerState === "in" ? " is-in" : "");
+    tag.textContent =
+      m._steerState === "in"
+        ? I18n.t("已注入本轮")
+        : I18n.t("已插话 · 将在下一步生效");
+    tag.title =
+      m._steerState === "in"
+        ? I18n.t("运行时已把这句话拼进本轮的收件箱（下一步就读到）")
+        : I18n.t("已递交给正在跑的这一轮，在下一步边界生效；送不进去时自动改走发送队列");
+    head.appendChild(tag);
+  }
   /* 旧渲染（无分段轨迹）的思考块：head 之后单独一行，见下方 row.appendChild */
   let thinkBoxEl = null;
   if (
@@ -4055,8 +4403,14 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     );
     thinkBoxEl = thinkBox;
   }
+  /* 正文含代码块 / Markdown 结构 → 消息最下方补「复制 / 保存」动作条
+     （口径见 dshMsgActionBar 上方注释）。判定提前算：头部 / 时间行原有的小「复制」
+     在动作条已给出「复制」时让位，同一条消息不出现两枚「复制」。 */
+  const actText = String(m.content == null ? "" : m.content);
+  const hasActions = dshMsgNeedActions(actText);
   /* 用户消息的复制按钮留在头部；AI 回复的复制按钮放在尾部与时间同行（仅复制该条回复） */
-  if (m.role === "user") head.appendChild(dshCopyBtn(m, "dsh-msg-copy"));
+  if (m.role === "user" && !hasActions)
+    head.appendChild(dshCopyBtn(m, "dsh-msg-copy"));
   row.appendChild(head);
   if (thinkBoxEl) row.appendChild(thinkBoxEl);
   if (segsView) {
@@ -4105,6 +4459,17 @@ function dshMsgBlock(m, nodeId, idx, opts) {
         '<div class="md">' + renderMarkdown(m.content) + "</div>";
     row.appendChild(body);
   }
+  /* 正文含代码块 / Markdown 结构 → 消息最下方补「复制 / 保存」动作条
+     （口径见 dshMsgActionBar 上方注释；坏了也不拖垮整条消息） */
+  if (hasActions) {
+    try {
+      row.appendChild(dshMsgActionBar(actText, m.role));
+    } catch (e) {
+      try {
+        console.error("消息动作条渲染失败", e);
+      } catch (_) {}
+    }
+  }
   /* 消息末尾：AI 回复带「复制本条回复」小按钮（与时间同行）；用户消息带回滚轮次时，前面加一个小「回滚」按钮 */
   const rbRid = opts && opts.showRollback ? rbLatestRid(m) : "";
   const endTxt = formatMsgTimeSec(m.at || m.createdAt || m.ts);
@@ -4125,7 +4490,8 @@ function dshMsgBlock(m, nodeId, idx, opts) {
       });
       tail.appendChild(rbBtn);
     }
-    if (m.role === "assistant")
+    /* 动作条已给出「复制」的消息不再挂这枚小按钮（同一条消息不出现两枚「复制」） */
+    if (m.role === "assistant" && !hasActions)
       tail.appendChild(dshCopyBtn(m, "dsh-msg-tail-copy"));
     if (endTxt) {
       const tEl = document.createElement("span");
@@ -4506,11 +4872,10 @@ function renderAgentSession(opts) {
     }
     list.appendChild(row);
   }
-  /* 会话末尾：Token 消耗累计报告 Badge（点击展开，按模型分别累计） */
-  if (typeof tokBadgeEl === "function") {
+  /* 会话最底部（输入框下面）：Token 消耗累计报告 Badge（点击展开，按模型分别累计） */
+  if (typeof tokBadgeTailMount === "function") {
     try {
-      const badge = tokBadgeEl(st);
-      if (badge) list.appendChild(badge);
+      tokBadgeTailMount(st, list);
     } catch {}
   }
   const reapplyStick = () => restoreConvStick(list, stickCap);
@@ -4539,6 +4904,30 @@ function renderAgentSession(opts) {
     inp.placeholder = chatEnterSend
       ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能与命令）")
       : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；输入 / 呼出技能与命令）");
+    if (st.ltBound)
+      inp.title = I18n.t("由长任务驱动：你发的消息会排队等本轮结束（不会插话打断）");
+    else inp.removeAttribute("title");
+  }
+  /* 长任务驱动的绑定会话：输入区头部（chips 上方）挂一条归属说明。
+     这条会话的运行由长任务引擎点火（app-longtask.js），用户看到的「运行中」
+     不是等他插话的那一轮 —— 明说「由长任务驱动」，就不会误以为能直接对话打断；
+     真要发消息仍走现成队列（app-boot.js doSend 的忙时入队），发送逻辑一行不改。 */
+  const composer = inp ? inp.closest(".agent-composer") : null;
+  if (composer) {
+    let ltNote = composer.querySelector(".agent-lt-note");
+    if (st.ltBound) {
+      if (!ltNote) {
+        ltNote = document.createElement("div");
+        ltNote.className = "agent-lt-note";
+        composer.insertBefore(ltNote, composer.firstChild);
+      }
+      ltNote.textContent = I18n.t("由长任务驱动 · 这条会话归长周期任务所有");
+      ltNote.title = I18n.t(
+        "过程与结果由长任务自动写入；运行中你发的消息会排在后面等本轮结束，不会打断它",
+      );
+    } else if (ltNote) {
+      ltNote.remove();
+    }
   }
   const presetSel = $("#agentPresetSel");
   if (presetSel) presetSel.value = st.preset || AGENT_PRESET_DEFAULT;
@@ -4648,7 +5037,9 @@ function renderAgentSession(opts) {
   renderSessionFooterStat();
 }
 
-/* 运行中不取消任务：输入框有字就是「加入队列」，没字才是「终止」 */
+/* 运行中不取消任务：输入框有字就是「加入队列」，没字才是「终止」。
+   「⚡插话」「⏸暂停」是另两枚**轮内实时**键（不是把 ■ 拆三色）：只在当前会话确实
+   有一轮在跑时出现，桥不支持（老网关 / 老运行时）就整枚不显示 / 置灰说明。 */
 function paintAgentSendState() {
   const sendBtn = $("#agentSend");
   if (!sendBtn) return;
@@ -4665,6 +5056,70 @@ function paintAgentSendState() {
       ? I18n.t("加入发送队列（不打断当前任务）")
       : I18n.t("终止本会话当前运行（只停这一路）")
     : I18n.t("发送(Enter 发送,Shift+Enter 换行)");
+  paintAgentInflightButtons(st, busy);
+}
+
+/* 两枚轮内实时键的显隐 / 可用性 + 「已暂停」条（三者同源：都看当前会话的在跑状态）
+   降级必须在界面上说得出话：
+     · 桥压根没有这枚方法（老主进程 / 老 preload）→ 整枚不显示（没有可解释的必要）；
+     · 引擎回 unsupported（老网关 / 老运行时）→ 键还在、但改成「按下去也只是排队」：
+       用 .is-unsupported 置灰而**不是** disabled —— disabled 的按钮在 Chromium 里
+       不派发鼠标事件，原生 title 提示也跟着出不来，用户只会觉得点了没反应。 */
+function paintAgentInflightButtons(st, busy) {
+  const b = !!busy && !!st;
+  const steer = document.getElementById("agentSteer");
+  if (steer) {
+    const has = agentSteerCapable();
+    const on = b && has && String(($("#agentInput") || {}).value || "").trim();
+    steer.style.display = on ? "" : "none";
+    steer.classList.toggle("is-unsupported", !!(on && S._steerUnsupported));
+    steer.textContent = I18n.t("⚡ 插话");
+    steer.title =
+      on && S._steerUnsupported
+        ? I18n.t("当前引擎不支持轮内插话（已改走发送队列）")
+        : I18n.t("插话：本轮下一步就听见（不打断当前这一步）");
+    if (!steer._bnd) {
+      steer._bnd = true;
+      steer.onclick = () => {
+        const inp = $("#agentInput");
+        const s = agentSessionState();
+        const body = String((inp && inp.value) || "").trim();
+        if (!s || !body) return;
+        if (inp) inp.value = "";
+        Promise.resolve(agentSteerNow(s, body)).then(() => {
+          paintAgentSendState();
+          if (inp) inp.focus();
+        });
+      };
+    }
+  }
+  const pause = document.getElementById("agentPause");
+  if (pause) {
+    const has = agentPauseCapable();
+    const on = b && has;
+    pause.style.display = on ? "" : "none";
+    pause.classList.toggle("is-unsupported", !!(on && S._pauseUnsupported));
+    /* 暂停请求已经发出去（等那一轮停在当前步）时才真的按不动：
+       这一枚是暂时的，不是能力缺失。 */
+    pause.disabled = !!(on && st && st._pausePending);
+    pause.textContent = pause.disabled
+      ? I18n.t("⏸ 正在暂停")
+      : I18n.t("⏸ 暂停");
+    pause.title =
+      on && S._pauseUnsupported
+        ? I18n.t("当前引擎不支持暂停（可用 ■ 终止这一轮）")
+        : I18n.t("暂停本轮（保留上下文，可继续）");
+    if (!pause._bnd) {
+      pause._bnd = true;
+      pause.onclick = () => {
+        const s = agentSessionState();
+        if (s) Promise.resolve(agentPauseNow(s)).then(() => paintAgentSendState());
+      };
+    }
+  }
+  try {
+    renderAgentPausedBar(st);
+  } catch (_) {}
 }
 
 /* ── 会话侧边栏:按项目目录（工作路径最内层文件夹）归类,支持归档(参考 dsh) ── */
@@ -4806,6 +5261,19 @@ function renderAgentSessionSidebar() {
        开发 / 细化 / 问询 / 建议这类节点绑定会话标题已写着「开发 · 模块名」，
        行内不再追加（两行元信息挤在一起，噪声盖过信息），归属仍留在悬浮说明里。 */
     const canvasShown = sessionIsDevBoundTitle(s) ? "" : sessionCanvasName(s);
+    /* 长任务归属徽标：st.ltBound = 这条会话由长周期任务的某个环节驱动
+       （app-longtask.js 的 ltBindAgentSession 写）。标题前缀「长任务 · 任务名 · 环节」
+       可能被用户改名或行宽省略，所以再挂一枚小徽标 —— 扫一眼列表就能分出
+       「哪条不是我自己的会话」。它说明身份，不随悬停让位（与「▣ 所属画布」不同）。 */
+    let ltEl = null;
+    if (s.ltBound) {
+      ltEl = document.createElement("span");
+      ltEl.className = "side-sess-lt";
+      ltEl.textContent = I18n.t("长任务");
+      ltEl.title = I18n.t(
+        "由长任务驱动：这条会话归长周期任务的环节所有，过程与结果自动写入；你的消息会排队等本轮结束（不打断运行）",
+      );
+    }
     let wfEl = null;
     if (canvasShown) {
       wfEl = document.createElement("span");
@@ -4898,6 +5366,7 @@ function renderAgentSessionSidebar() {
       : I18n.t("尚无对话");
     row.appendChild(stt);
     row.appendChild(nm);
+    if (ltEl) row.appendChild(ltEl);
     if (wfEl) row.appendChild(wfEl);
     row.appendChild(tm);
     row.appendChild(btns);
@@ -5100,7 +5569,9 @@ async function agentEnqueueMessage(st, text, opts) {
   } else renderAgentSessionSidebar();
   /* 入队 = 这条会话的运行态可能刚被延后（跑完还要接下一轮）：队列同步一次 */
   updateRunQueuePanel();
-  toast(I18n.t("已加入发送队列，当前任务继续执行"), "ok");
+  /* _quiet：调用方自己会给一句更准确的说法（如「插话没赶上这一轮」），
+     不再叠一条泛化 toast —— 同一次点击只该有一句解释。 */
+  if (!o._quiet) toast(I18n.t("已加入发送队列，当前任务继续执行"), "ok");
 }
 
 /* 删除一条 / 清空整个队列 */
@@ -5117,13 +5588,304 @@ async function agentClearQueue(st) {
   if (S.agentActiveId === st.id) renderAgentQueueBar(st);
 }
 
+/* ══════════════ 轮内「插话」(steer) 与「暂停」(pause) ══════════════
+   两条实时操作都作用在**正在跑的这一轮**上，与「■ 终止」是三条不同的路：
+     · 插话 = 这一轮继续跑，只是把用户新说的一句话塞进它的下一步边界
+       （运行时 InboxTarget='next-step'：当前这一步不剪断，下一步读到它）；
+     · 暂停 = 中止当前请求，但**保留 live 会话与收件箱**（agent.cancel(...,{keepInbox:true})），
+       网关以 done{paused:true} 收尾且绝不发 error（否则宿主会按失败自动重发 5 轮）；
+     · 终止 = 旧语义，整轮作废、上下文按原样留下，不动队列以外的任何东西。
+   链路：渲染层 window.api.dshSteer / dshPause → 主进程 dsh:steer|dsh:pause →
+   网关按在途表（reqId|cancelTag → 那一轮的 runtime）下发 session/steer|session/pause。
+   渲染层拿不到网关的 reqId（事件在 preload 里按 reqId 过滤掉了），所以一律用
+   cancelTag = "agent:"+会话 id 点名自己那一轮，再带上 sessionId 收窄（同一标签并发时不串台）。
+   任一环节送不出去（老网关 / 老运行时 / 这一轮已经结束）都回 {ok:false,reason:'unsupported'}，
+   宿主一律回落既有的「发送队列」，绝不让用户点了没反应。 */
+
+/* 这一轮当前那条 live dsh 会话 id（app-db.js captureRunSession 登记在 S._runSession[runKey]）。
+   暂停收尾时那份登记特意留着（见 app-db.js finish 的 keepRunSession），「继续」正是按它续跑。 */
+function agentLiveRunSid(st) {
+  if (!st || !st.id) return "";
+  const k = "agent:" + st.id;
+  const e = S._runSession && S._runSession[k];
+  const live = e && e.sid ? String(e.sid) : "";
+  if (live) st._liveSid = live;
+  return live || String(st._liveSid || "");
+}
+/* 桥在不在（老版本主进程 / preload 没有这两个方法）：决定按钮显不显示。
+   unsupported 只做一次性记忆（S._steerUnsupported / S._pauseUnsupported）→ 键面置灰
+   + tooltip 说明，但**照样按得动**：按下去直接排队，不再白跑一趟 IPC。 */
+function agentSteerCapable() {
+  return !!(window.api && typeof window.api.dshSteer === "function");
+}
+function agentPauseCapable() {
+  return !!(window.api && typeof window.api.dshPause === "function");
+}
+/* 「引擎没有这枚能力」与「这一枪没赶上」必须分开：
+   · 老运行时没有 session/steer|session/pause → 回的是 unknown method（网关把它压进
+     detail，形如 "unknown DeepSeek Harness SDK runtime method: session/steer"）；
+   · 老网关连 steer / pause 这两枚 stdio 方法都没有 → 错误从 main.js 的 catch 成形，
+     落在 error 字段上（"unknown method: steer"）。
+   认这两处文案即可。其它 unsupported（没有在途这一轮 / 那台 runtime 已回收 / 下达
+   超时）都只是本轮恰好已经结束，绝不能因此把按钮永久焊死 —— 下一轮照样要能插话。 */
+const DSH_NO_SUCH_METHOD =
+  /unknown[ a-z0-9/-]*method|method not found|no such method|is not a function/i;
+function agentCapabilityMissing(r) {
+  if (!r) return false;
+  return DSH_NO_SUCH_METHOD.test(
+    String((r && r.detail) || "") + " " + String((r && r.error) || ""),
+  );
+}
+
+/* 插话：把这句话塞进正在跑的那一轮。返回 true = 本轮已收到（该清空输入框）。 */
+async function agentSteerNow(st, text) {
+  const body = String(text || "").trim();
+  if (!st || !body) return false;
+  /* 这一轮已经跑完 / 桥没有插话能力 → 没有「本轮」可插，按普通一轮发出去（空闲即直接跑） */
+  if (!agentSteerCapable() || !sessionIsRunning(st)) {
+    await agentSessionSend(body, { sessionId: st.id });
+    return true;
+  }
+  /* 已经知道这台引擎没有这枚方法（置灰态）：不再白跑一趟 IPC，直接排队并说明一次。
+     键照样按得动、话照样送得出去 —— 只是它走的是既有的发送队列。 */
+  if (S._steerUnsupported) {
+    await agentEnqueueMessage(st, body, { sessionId: st.id, _quiet: true });
+    try {
+      toast(I18n.t("当前引擎不支持轮内插话，已按排队发送"), "warn");
+    } catch (_) {}
+    return true;
+  }
+  let r = null;
+  try {
+    r = await window.api.dshSteer({
+      cancelTag: "agent:" + st.id,
+      sessionId: agentLiveRunSid(st),
+      text: body,
+    });
+  } catch (e) {
+    r = { ok: false, reason: "error", detail: String((e && e.message) || e) };
+  }
+  if (r && r.ok) {
+    /* 气泡先按「已插话 · 将在下一步生效」落地；运行时真把它塞进收件箱时会吐一帧
+       agent/inbox/spliced（网关原样透传成 session-event），届时升级为「已注入」。 */
+    st.messages.push({
+      role: "user",
+      content: body,
+      at: Date.now(),
+      _kind: "steer",
+      _steerState: "sent",
+    });
+    st.updatedAt = Date.now();
+    await persistAgentSession();
+    if (S.agentActiveId === st.id) renderAgentSession();
+    else renderAgentSessionSidebar();
+    try {
+      toast(I18n.t("已插话 · 将在下一步生效"), "ok");
+    } catch (_) {}
+    return true;
+  }
+  /* 送不进去 → 回落发送队列（与 Enter 完全同义：本轮结束后自动发出），一句话都不丢。
+     两种失败分开说：
+     · 引擎根本没有这枚方法（老网关 / 老运行时）→ 记一次，按钮从此置灰 + tooltip，
+       免得用户反复点一个永远无效键；
+     · 其它（本轮刚好已经结束 / 那台 runtime 已回收 / 下达超时）→ 什么都不记，
+       下一轮照样还能插话。 */
+  const gap = agentCapabilityMissing(r);
+  if (gap) S._steerUnsupported = true;
+  /* _quiet：这里自己给一句更准确的说法，不叠第二条泛化 toast */
+  await agentEnqueueMessage(st, body, { sessionId: st.id, _quiet: true });
+  try {
+    toast(
+      I18n.t(
+        gap
+          ? "当前引擎不支持轮内插话，已按排队发送"
+          : "插话没赶上这一轮，已加入发送队列",
+      ),
+      "warn",
+    );
+  } catch (_) {}
+  paintAgentSendState();
+  return true;
+}
+
+/* 注入回执：agent/inbox/spliced 的 data.inserted 里能找到这句话 → 标成「已注入」。
+   帧本身不带 sessionId（它就在这轮的 reqId 通道上到达，天然归属本轮），
+   所以按文本认气泡；认不到时把最早那条待注入的插话记为已注入（best-effort）。 */
+function agentMarkSteerInjected(st, data) {
+  const msgs = (st && st.messages) || [];
+  const texts = [];
+  const ins = data && Array.isArray(data.inserted) ? data.inserted : [];
+  for (const m of ins) {
+    const c = m && m.content;
+    if (Array.isArray(c))
+      for (const b of c) if (b && typeof b.text === "string") texts.push(b.text.trim());
+    else if (typeof c === "string") texts.push(c.trim());
+  }
+  let hit = null;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m._kind !== "steer" || m._steerState === "in") continue;
+    const want = String(m.content || "").trim();
+    if (texts.length && texts.indexOf(want) < 0) continue;
+    hit = m;
+    break;
+  }
+  if (!hit) {
+    for (const m of msgs)
+      if (m && m._kind === "steer" && m._steerState !== "in") {
+        hit = m;
+        break;
+      }
+  }
+  if (!hit) return;
+  hit._steerState = "in";
+  if (S.agentActiveId === st.id) {
+    try {
+      renderAgentSession();
+    } catch (_) {}
+  }
+}
+
+/* 暂停：中止当前请求但保留 live 会话（≠ ■ 终止：终止会关掉那一轮，暂停留得住上下文）。
+   成功下发后 UI 立刻进暂停态；本轮真正以 done{paused:true} 收尾时按现状定稿、绝不排水。 */
+async function agentPauseNow(st) {
+  if (!st || !st.id) return;
+  if (!sessionIsRunning(st)) {
+    try {
+      toast(I18n.t("这一轮已经结束了"), "warn");
+    } catch (_) {}
+    return;
+  }
+  if (!agentPauseCapable()) {
+    try {
+      toast(I18n.t("当前版本不支持暂停，可用 ■ 终止这一轮"), "warn");
+    } catch (_) {}
+    return;
+  }
+  /* 置灰态（已知引擎没有 session/pause）：不再白跑 IPC，只把话说清楚。 */
+  if (S._pauseUnsupported) {
+    try {
+      toast(I18n.t("当前引擎不支持暂停（可用 ■ 终止这一轮）"), "warn");
+    } catch (_) {}
+    return;
+  }
+  let r = null;
+  try {
+    r = await window.api.dshPause({
+      cancelTag: "agent:" + st.id,
+      sessionId: agentLiveRunSid(st),
+    });
+  } catch (e) {
+    r = { ok: false, reason: "error", detail: String((e && e.message) || e) };
+  }
+  if (r && (r.ok || r.pending)) {
+    /* ok = 运行时明确接住了；pending = 主进程那一跳没赶上回音（main-dsh 的 pause
+       超时口径 {ok:false,reason:'timeout',pending:true}），暂停很可能已经落地。
+       两种都先进「正在暂停」：真正定稿由那一轮的 done{paused:true} 判 ——
+       它要是自己跑完了，收尾处会把 paused 撤回 false，不会留下假的暂停。 */
+    st._pausePending = true;
+    st.paused = true;
+    if (S.agentActiveId === st.id) {
+      paintAgentSendState();
+      renderAgentPausedBar(st);
+    }
+    updateRunQueuePanel();
+    try {
+      toast(
+        I18n.t(
+          r.ok
+            ? "已暂停 · 点「继续」从中断处接着跑"
+            : "正在暂停 · 本轮会停在当前这一步",
+        ),
+        "ok",
+      );
+    } catch (_) {}
+    return;
+  }
+  /* 只有「引擎没有 session/pause 这枚方法」才值得从此置灰；
+     本轮恰好已经结束 / runtime 已回收，都只是暂时的。 */
+  const gap = agentCapabilityMissing(r);
+  if (gap) S._pauseUnsupported = true;
+  try {
+    toast(
+      I18n.t(
+        gap
+          ? "当前引擎不支持暂停（可用 ■ 终止这一轮）"
+          : "暂停没有下发成功，可用 ■ 终止这一轮",
+      ),
+      "warn",
+    );
+  } catch (_) {}
+}
+
+/* 继续：清暂停态，用「断点续跑」同一通道（runParams.resumeSession）点名被暂停那条
+   dsh 会话，让模型从中断处往下写，不从零重建上下文。 */
+async function agentResumePaused(st) {
+  if (!st || !st.id) return;
+  if (sessionIsRunning(st)) return; /* 已经又跑起来了，别自己挤自己 */
+  const sid = agentLiveRunSid(st);
+  st.paused = false;
+  st._pausePending = false;
+  await persistAgentSession();
+  if (S.agentActiveId === st.id) {
+    paintAgentSendState();
+    renderAgentPausedBar(st);
+  }
+  updateRunQueuePanel();
+  /* 拿不到 sid（重启过 / 运行时已回收）→ 不退化成整段历史重发：
+     下面这句本身就带着「从中断处接下去」的口径，会话历史照旧随普通一轮发出。 */
+  await agentSessionSend(dshPausedResumeDirective(), {
+    sessionId: st.id,
+    resumeSession: sid || undefined,
+    _pausedResume: true,
+  });
+}
+
+/* 输入区上方的「已暂停」条（与发送队列条同风格）：说清楚停在哪、队列还剩几条、怎么接。 */
+function renderAgentPausedBar(st) {
+  const el = document.getElementById("agentPaused");
+  if (!el) return;
+  const on = !!(st && st.paused);
+  if (!on) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "apz-head";
+  const label = document.createElement("span");
+  label.className = "apz-label";
+  const n = st._pausePending
+    ? I18n.t("正在暂停 · 本轮会停在当前这一步")
+    : I18n.t("已暂停 · 上下文与已写出的内容都保留");
+  const more = Array.isArray(st.outbox) && st.outbox.length
+    ? I18n.t(" · 发送队列还有 ") + st.outbox.length + I18n.t(" 条（暂停期间不自动发送）")
+    : "";
+  label.textContent = n + more;
+  head.appendChild(label);
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "apz-go mini";
+  go.textContent = "▶ " + I18n.t("继续");
+  go.title = I18n.t("从中断处接着跑（沿用这条会话的上下文，不重发任务）");
+  go.onclick = () => {
+    go.disabled = true;
+    agentResumePaused(st);
+  };
+  head.appendChild(go);
+  el.appendChild(head);
+}
+
 /* 队首出队发送：本轮彻底结束后调用（会话空闲才发，避免自己挤自己）。
    队列里可能混着 /new、/plan 这类不启动运行的命令 —— 它们同步处理完就继续放行下一条。
-   _draining 闩锁：收尾处与 await 返回后可能同时想排水，必须串行，否则两条消息并发抢同一会话。 */
+   _draining 闩锁：收尾处与 await 返回后可能同时想排水，必须串行，否则两条消息并发抢同一会话。
+   暂停中一律不排水：用户按停就是「停在这里」，排水会把暂停变成继续。 */
 async function agentDrainQueue(st) {
   try {
     if (!st || !Array.isArray(st.outbox) || !st.outbox.length) return;
-    if (st._draining || sessionIsRunning(st)) return;
+    if (st._draining || sessionIsRunning(st) || st.paused) return;
     st._draining = true;
     try {
       while (st.outbox.length && !sessionIsRunning(st)) {
@@ -5179,6 +5941,10 @@ async function agentDrainQueue(st) {
 function renderAgentQueueBar(st) {
   const el = document.getElementById("agentQueue");
   if (!el) return;
+  /* 「已暂停」条要报队列还剩几条：队列一有增减就跟着刷一次（同一处真源，不分叉） */
+  try {
+    renderAgentPausedBar(st);
+  } catch (_) {}
   const list = (st && Array.isArray(st.outbox) ? st.outbox : []).filter(Boolean);
   if (!list.length) {
     el.hidden = true;
@@ -5417,6 +6183,10 @@ async function agentSessionSend(text, opts) {
   } else {
     st = agentSessionState();
   }
+  /* 暂停后点「继续」= 断点续跑轮：opts.resumeSession 点名被暂停那条 dsh 会话。
+     与 dshRunTask 内部的重发续跑同口径 —— 那份 session 里上下文 / 人设 / 工具状态都在，
+     本轮只发「从中断处接着写」这一句，绝不把整段历史再抄一遍（抄一遍等于让模型从头重写）。 */
+  const resumeRound = !!String(opts.resumeSession || "").trim();
   /* 开发 / 细化绑定会话：任务书整份在会话契约 _devContract（发送时注入系统提示），
      首条 _src:"dev-node" 消息只有用户关键输入（本次开发需求 / 细化范围）；
      这里只读它作为最新用户消息，不再追加第二条 */
@@ -5500,7 +6270,7 @@ async function agentSessionSend(text, opts) {
       toast(
         I18n.t("当前权限预设:") +
           cur +
-          I18n.t("。可选:mtnode-unattended(无人值守) / workspace-write(读写·审批) / read-only(只读·审批) / danger-full-access(完全放行)。在 设置 → 智能能力 中切换。"),
+          I18n.t("。可选:mtnode-unattended(无人值守:工作区读写,沙箱拒绝时询问) / workspace-write(读写·逐项审批) / read-only(只读·逐项审批) / danger-full-access(完全放行,不询问)。在 设置 → 智能能力 中切换。"),
         "ok",
       );
     } else if (cmd === "/help") {
@@ -5573,6 +6343,12 @@ async function agentSessionSend(text, opts) {
   /* 新的一轮开始：显示窗口回到默认最近 200 条，更早的可从最前端重新「显示更早内容」 */
   st._visItems = undefined;
   st.running = true;
+  /* 新一轮开跑 = 上一轮的暂停态作废（不管是点「继续」起的这一轮，还是用户直接发新话）。
+     _liveSid 每轮重新捕获：插话 / 暂停都按它点名网关在途表里的那一轮。 */
+  st.paused = false;
+  st._pausePending = false;
+  st._roundPaused = false;
+  st._liveSid = "";
   st._pending = "";
   st._liveTools = [];
   /* 会话开始：开发节点「绑定会话运行中」即时反映到左下角运行队列 */
@@ -5608,7 +6384,8 @@ async function agentSessionSend(text, opts) {
      而不是逼模型再规划一份新的（新旧计划互相覆盖 · 已执行项被重跑） */
   let flowText = "";
   try {
-    if (typeof planFlowInjectText === "function")
+    if (resumeRound) flowText = "";
+    else if (typeof planFlowInjectText === "function")
       flowText = String(planFlowInjectText(st, opts, planExecMsg) || "");
     else if (
       typeof planFlowInjectNeeded === "function" &&
@@ -5632,7 +6409,8 @@ async function agentSessionSend(text, opts) {
     : flowText
       ? flowText + "\n" + t
       : t;
-  let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
+  let input =
+    resumeRound || !hist ? latest : hist + "\n\n用户(最新)：" + latest;
   /* 规划模式：本轮只出计划，不做任何改动（系统提示 + 用户指令双重约束，
      画布 / 应用改动另由宿主在 handleCanvasEvent 中硬性拒绝） */
   const planMode = !!st.planNext;
@@ -5700,6 +6478,9 @@ async function agentSessionSend(text, opts) {
   try {
     const final = await dshRunTask(input, {
       runKey: "agent:" + st.id,
+      /* 暂停后「继续」：点名被暂停那条 dsh 会话走断点续跑通道（网关 session/resume）。
+         拿不到 sid 时这里就是 undefined —— 与旧版一样整轮重发，行为不劣化。 */
+      resumeSession: String(opts.resumeSession || "") || undefined,
       /* Token 台账逐轮明细的标题：调用方（如计划执行器）给的计划任务标题优先，
          缺省由 dshRunTask 用输入文本前 24 字回落 */
       tokTitle: opts.tokTitle || undefined,
@@ -5713,7 +6494,9 @@ async function agentSessionSend(text, opts) {
       provider: (opts.provider || st.provider || "deepseek-official"),
       model: (opts.model || st.model || undefined),
       effort: st.effort || "high",
-      systemPrompt,
+      /* 续跑轮（暂停后点「继续」）不再重复注人设：那份 system 已经落在被暂停的
+         dsh 会话里，再下发一遍只会污染上下文 —— 与 dshRunTask 内部断点续跑同一口径。 */
+      systemPrompt: resumeRound ? "" : systemPrompt,
       pure: pureMode,
       /* Gate A：开发绑定会话不注册读画布工具（判据与落盘同源，见 createDevSessionForNode）。
          dshRunTask 的 baseOpts 原样透传到 dshRunOnce，这一位随每次开轮重新生效，
@@ -5728,16 +6511,22 @@ async function agentSessionSend(text, opts) {
            重绘/滚动打扰用户正在看的其他会话 */
         const mine = S.agentActiveId === st.id;
         /* 出错自动重发（dshRunTask 触发 retry）：看 resumed 决定清不清残文 ——
-           · resumed=true（续写）：新内容接在同一条逻辑轮次后面，已显示的部分正文 /
-             工具列表 / 用量与思考槽一律保留，别把已经说出去的话抹掉；
-           · resumed=false（整轮重发）：先清上一轮的部分正文 / 工具 / 用量与思考槽，
-             重发那一轮从零流式不叠字；等待窗口内会话仍算「在跑」 */
+           · resumed=true（续写）：已显示的部分正文 / 工具列表 / 用量保留（同一轮的内容）；
+             思考槽照旧清掉 —— 思考不是续写内容，续跑起步时轨迹里的旧思考段也已被
+             摘掉（app-db.js traceDropThink），槽里留着它就会在下一次 reasoning 到达前
+             以旧文本显示出来（残留旧思考）。
+           · resumed=false（整轮重发）：正文 / 工具 / 用量 / 思考槽全清，从零流式不叠字。
+           resumed 由宿主按「这一次实际怎么发」给出（见 app-db.js notifyRetry）。 */
         if (type === "retry") {
-          if (data && data.resumed) return;
+          /* 思考槽两种重发都清：它只装「当前这一次尝试」的思考，不跨尝试累计 */
+          if (S.thinking) delete S.thinking["agent:" + st.id];
+          if (data && data.resumed) {
+            if (mine) updateAgentLiveThink(st);
+            return;
+          }
           st._pending = "";
           st._liveTools = [];
           st._usageLive = null;
-          if (S.thinking) delete S.thinking["agent:" + st.id];
           if (mine) {
             try {
               renderAgentSession();
@@ -5795,6 +6584,21 @@ async function agentSessionSend(text, opts) {
           u.cacheReadTokens += Number(data.cacheReadTokens) || 0;
           u.reasoningTokens += Number(data.reasoningTokens) || 0;
           if (mine) renderSessionFooterStat();
+        } else if (type === "say-end") {
+          /* 正文块收尾（网关在块末发 say-end，见 dsh/DESIGN.md）：这一段已经定稿，
+             不再是「流式尾段」。它恰好还是尾段时（= 最终答复那一块，后面没有工具 /
+             思考段会顺手带来重绘）本会话又正看着，就地按段重绘一次 —— 最终答复立刻以
+             markdown 呈现，而不是以未渲染原文的形态留在屏上等本轮 finally 那一帧。 */
+          if (mine) {
+            const items = agentChatSegItems(st) && agentTraceItems("agent:" + st.id);
+            const last = items && items.length ? items[items.length - 1] : null;
+            if (last && last.k === "say" && last.open === false) {
+              try {
+                renderAgentSession();
+              } catch (_) {}
+            }
+          }
+          return;
         } else if (type === "text" && data.text) {
           st._pending = (st._pending || "") + data.text;
           if (mine) {
@@ -5813,6 +6617,11 @@ async function agentSessionSend(text, opts) {
             } else el.textContent = st._pending;
             scrollElToBottomIfStuck($("#agentList"));
           }
+        } else if (type === "session-event" && data && data.type === "agent/inbox/spliced") {
+          /* 插话的注入回执：运行时把这句话拼进收件箱时吐的一帧持久化事件（网关原样
+             透传成 session-event）。它就到达在本轮的通道上，天然归属这一轮 ——
+             按文本认回气泡，把「已插话 · 将在下一步生效」升级成「已注入」。 */
+          agentMarkSteerInjected(st, data.data);
         } else if (type === "error" && data && data.message) {
           if (st._cancelled || isCancelishError(data.message)) return;
           const errLine = "\n⚠ " + data.message;
@@ -5833,6 +6642,11 @@ async function agentSessionSend(text, opts) {
         recordDshMetrics(null, d.metrics);
         st.metrics = d.metrics || null;
         st._usageLive = null;
+        if (d && d.sessionId) st._liveSid = String(d.sessionId);
+        /* 「⏸暂停」收尾：网关把这轮以 done{paused:true} 结束，并且**保证不发 error**
+           （发了就会撞宿主既有的失败自动重发闸门 → 暂停一次反而多跑 5 轮）。
+           这里只记一位，真正的 st.paused 由 finally 统一裁定。 */
+        if (d && d.paused) st._roundPaused = true;
       },
     });
     if (st._cancelled) {
@@ -5937,9 +6751,23 @@ async function agentSessionSend(text, opts) {
       toast(I18n.t("智能会话失败：") + errMsg, "err");
     }
   } finally {
+    /* 暂停态在这里一次定稿：只有真的收到 done{paused:true} 才算暂停（暂停请求发出去了
+       但那一轮恰好正常跑完 = 不算）。■ 终止优先于暂停：用户按停之后又点了终止，
+       就不该留下一条「可继续」的暂停态。已写出的正文在上面按现状归档，不重发、不抹字。 */
+    st.paused = !!st._roundPaused && !st._cancelled;
+    st._roundPaused = false;
+    st._pausePending = false;
     st.running = false;
     st._cancelled = false;
     st._liveTools = [];
+    /* 本轮收尾先把界面落定：st.running 一置 false，live 行就不再算「流式尾段」，
+       这里立刻重绘一次 —— 最终答复（消息已在上面 push 好）马上按 markdown 落定，
+       而不是以未渲染原文的形态留在屏上等 finally 末尾那一帧。旧口径里渲染是
+       finally 的最后一句，前面 persist / 侧栏刷新任一步抛错就轮不到它，屏上就停在
+       流式原文（用户报的「会话最终答复偶尔未正常渲染 md」）。 */
+    try {
+      if (S.agentActiveId === st.id) renderAgentSession();
+    } catch (_) {}
     /* 会话结束：开发节点从运行队列撤下 */
     updateRunQueuePanel();
     const outcome = st._roundOutcome || "ok";
@@ -5962,12 +6790,16 @@ async function agentSessionSend(text, opts) {
         }
       }
     }
-    /* 被「全部终止」打断 → 排队消息留在队列里等用户，不再自动接管发送 */
-    const holdQueue = outcome === "cancelled";
+    /* 被「全部终止」打断 → 排队消息留在队列里等用户，不再自动接管发送。
+       被「⏸暂停」让位的一轮同理，而且更严格：暂停就是「停在这里等我」，
+       排水 / 自愈补发 / 计划续跑全都等用户点「继续」之后再说。 */
+    const holdQueue = outcome === "cancelled" || !!st.paused;
     /* 会话收尾：清单里没跑完的条目按本轮结局定性（红叉 / 问号）。
-       队列里还有下一条要发 → 先不定性，等真正空闲的那轮结束再判 */
+       队列里还有下一条要发 → 先不定性，等真正空闲的那轮结束再判。
+       暂停的一轮不算终账：待办原样留给「继续」之后的那一轮去收尾。 */
     try {
-      if (!hasQueued || holdQueue) agentFinalizeTodos(st, outcome);
+      if (!st.paused && (!hasQueued || outcome === "cancelled"))
+        agentFinalizeTodos(st, outcome);
     } catch (_) {}
     if (S.thinking) delete S.thinking["agent:" + st.id];
     /* 本轮结束 → 刷新「最后对话时间」，侧边栏相对时长随之更新 */

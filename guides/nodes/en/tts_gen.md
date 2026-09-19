@@ -19,5 +19,6 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 
 ## Notes
 - If the backend is missing or stopped the node starts it and waits for it to come online (up to 3 minutes); failures are written on the node's status line as an actionable hint. Installing the backend and preparing voices happens in **Plugins › GPT-SoVITS speech**.
+- **Backend errors pop a dialog**: speech also installs locally, so when that install or the running backend breaks, the main window shows an **error report** (error code, error body, console log tail, the node that failed) and offers **🤖 Auto-repair** — a visible session that works in the `tts-local-install` skill's self-repair mode inside this plugin's **INSTALL_DIR** and, on success, **restarts the speech backend** and refreshes this node's status. Cancelled-by-you / busy / out of disk / driver too old / invalid install directory get the report only, never an auto-repair (see "Plugin error dialogs and auto-repair" in the manual).
 - Speech runs on the same **serial chain** as music / video (one generation task at a time), but SoVITS is a separate process and does **not** hold the app's audio/video global lock — its VRAM is its own budget.
 - One text is enough: feed port 0 from a text input / text process node, or with an `@` reference.

@@ -3,6 +3,8 @@
  * 应用插件目录（右上角「插件」）：
  * 从云端 catalog.json 拉取列表；window 类型可下载 zip 安装，不必升级主程序。
  * 桌宠（pet）仍由主程序实现；讨论区等窗口插件的 UI 从 zip 加载，宿主 IPC 在主程序。
+ * 下载 / 校验 / 解压安装 / 更新任一环节失败都上报插件报错总线（见 plugin-error-repair.js），
+ * 让非后端类插件的报错也在主窗口弹窗，而不是只藏在卡片进度条里。
  */
 const { BrowserWindow, ipcMain, screen, shell } = require("electron");
 const path = require("path");
@@ -11,10 +13,12 @@ const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const zlib = require("zlib");
+/* 插件报错总线：窗口插件没有各自的主进程宿主，失败出口统一往这里报 */
+const pluginErrors = require("../plugin-error-repair.js");
 
 const PLUGIN_FEED =
   process.env.MTNODE_PLUGIN_URL || "http://mt-agent.com/mtnode/plugins";
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "h3", "llama", "tts", "remotion", "asr"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "tts", "remotion", "asr"]);
 const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 80 * 1024 * 1024;
@@ -276,6 +280,8 @@ function normalizePlugin(raw) {
   let kind = String(raw.kind || "").trim().toLowerCase();
   if (!kind && raw.handler === "pet") kind = "pet";
   if (!kind && raw.handler === "music3") kind = "music3";
+  if (!kind && raw.handler === "yue2") kind = "yue2";
+  if (!kind && raw.handler === "sensenova") kind = "sensenova";
   if (!kind && raw.handler === "h3") kind = "h3";
   if (!kind && raw.handler === "llama") kind = "llama";
   if (!kind && raw.handler === "tts") kind = "tts";
@@ -289,7 +295,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "tts" ? "tts" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "tts" ? "tts" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),
@@ -370,8 +376,8 @@ function attachInstalled(plugins) {
         installedVersion: st.version,
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
-    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr") {
-      /* 版本/可更新状态由 music3/h3/llama/tts/remotion/asr 主进程 status 异步判定；此处仅占位 */
+    } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr") {
+      /* 版本/可更新状态由 music3/yue2/sensenova/h3/llama/tts/remotion/asr 主进程 status 异步判定；此处仅占位 */
       out.push(Object.assign({}, p, {
         installed: true,
         installedVersion: p.version || "",
@@ -468,7 +474,7 @@ async function loadCatalog() {
     for (const p of fallback.plugins || []) {
       if (!p || !p.id || have.has(p.id)) continue;
       // Keep built-in handlers (pet/music3) visible even if remote catalog omits them
-      if (p.kind === "music3" || p.handler === "music3" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "pet" || p.handler === "pet") {
+      if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "tts" || p.handler === "tts" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "pet" || p.handler === "pet") {
         list.push(p);
         have.add(p.id);
       }
@@ -521,10 +527,85 @@ function findCatalogPlugin(id) {
   return null;
 }
 
+/* ------------------------------------------------------------------ */
+/* 报错总线：窗口插件的安装链也弹窗                                     */
+/* ------------------------------------------------------------------ */
+
+/** 插件中文名（报告标题用）：优先云端 / 内置目录里的 title，取不到就用 id。 */
+function pluginDisplayName(id) {
+  const sid = String(id || "");
+  try {
+    const spec = findCatalogPlugin(sid);
+    const t = spec && spec.title;
+    const name = String((t && (t.zh || t.en)) || "").trim();
+    if (name) return name;
+  } catch {}
+  return sid;
+}
+
+/**
+ * 按需登记宿主：窗口插件（kind:window）没有自己的主进程模块，启动期不会注册进总线，
+ * 只有真失败过一次才登记。现场 = 该插件在 %APPDATA% 下的安装目录（= 修复会话的可写工作区）；
+ * 这类插件没有 console.log，所以**不注册 tailConsole** —— 报告里 logTail 为空，但报告照发。
+ * 同名 id 已被后端宿主占用时（catalog 里 remotion / minimax-h3 这类）一律不覆盖，沿用其现场入口。
+ */
+function ensureReportHost(id) {
+  const sid = String(id || "");
+  if (!sid) return;
+  try {
+    if (pluginErrors.getPluginHost(sid)) return;
+    pluginErrors.registerPluginHost({
+      id: sid,
+      name: pluginDisplayName(sid),
+      skillName: "",
+      getInstallDir: () => pluginDir(sid),
+    });
+  } catch {}
+}
+
+/** 错误码 → 一眼看懂是哪一步炸的（认不出的码只带原文，不编造结论）。 */
+function installFailHint(code) {
+  const s = String(code || "");
+  if (/^sha256_mismatch/.test(s)) return "安装包校验失败（sha256 与云端目录声明不一致）";
+  if (/^HTTP\s?\d+/.test(s)) return "下载安装包失败（服务端返回 " + s.replace(/^HTTP\s?/, "") + "）";
+  if (/^timeout/.test(s)) return "下载安装包超时";
+  if (/^too_large/.test(s)) return "安装包超过允许体积上限";
+  if (/^ECONN|^ENOTFOUND|^EAI|^EHOST|^ERR_/.test(s)) return "连接插件下载源失败（" + s + "）";
+  if (/^bad_zip_url/.test(s)) return "云端目录里该插件的下载地址不合法（只允许同源 http/https）";
+  if (/^not_window_plugin/.test(s)) return "云端目录里找不到这个可下载的窗口插件";
+  if (/^need_app_update/.test(s)) return "该插件要求的 MTNode 版本高于当前版本";
+  if (/^pack_missing_entry/.test(s)) return "安装包解压后缺少入口 HTML（云端包结构不对）";
+  if (/zip truncated|unsupported zip method/.test(s)) return "安装包损坏或压缩方式不受支持";
+  if (/^bad_id/.test(s)) return "插件 id 不合法";
+  if (/^EACCES|^EPERM|^ENOENT|^ENOSPC/.test(s)) return "写入插件目录失败（" + s + "）";
+  return "";
+}
+
+/**
+ * 失败上报：总线内部吞异常，这里再包一层 —— 安装链绝不能被报告拖住。
+ * extra: { phase: "install" | "update" }
+ */
+function reportErr(id, code, message, extra) {
+  const sid = String(id || "");
+  if (!sid) return;
+  try {
+    ensureReportHost(sid);
+    pluginErrors.reportPluginError(
+      sid,
+      Object.assign({ code: String(code || ""), message: String(message || "") }, extra || {}),
+    );
+  } catch {}
+}
+
 async function installWindowPlugin(id) {
   if (!ID_OK.test(id)) return { ok: false, error: "bad_id" };
-  if (installing[id]) return { ok: false, error: "busy" };
+  if (installing[id]) {
+    reportErr(id, "busy", pluginDisplayName(id) + " 已有下载 / 安装任务在跑，本次被拒", { phase: "install" });
+    return { ok: false, error: "busy" };
+  }
   installing[id] = true;
+  /* 已经装过再点一次就是「更新」：报告按实际动作分类，用户看到的是「更新失败」而不是「安装失败」 */
+  const ctx = { phase: isWindowInstalled(id) ? "update" : "install" };
   sendProgress({ id, phase: "start", percent: 0 });
   try {
     let spec = findCatalogPlugin(id);
@@ -587,8 +668,23 @@ async function installWindowPlugin(id) {
     return { ok: true, version: spec.version || "0.0.0" };
   } catch (err) {
     installing[id] = false;
-    sendProgress({ id, phase: "error", percent: 0, error: String((err && err.message) || err) });
-    return { ok: false, error: String((err && err.message) || err) };
+    const msg = String((err && err.message) || err);
+    const hint = installFailHint(msg);
+    /* 进度与返回值都保持原错误码原文：渲染层 pluginErrText 按整串精确匹配出中文文案 */
+    sendProgress({ id, phase: "error", percent: 0, error: msg });
+    /* 下载 / 校验 / 解压 / 写元数据任一环节炸了都上报：主窗口弹报告（现场 = 该插件安装目录）。
+       code 传原文，由总线自己认码（sha256_mismatch / HTTP 404 / not_window_plugin …），
+       message 里再补一句是哪一步 —— 认不出来的码只带原文，不编造结论。 */
+    reportErr(
+      id,
+      msg,
+      pluginDisplayName(id) +
+        (ctx.phase === "update" ? " 更新失败：" : " 安装失败：") +
+        (hint ? hint + "：" : "") +
+        msg,
+      ctx,
+    );
+    return { ok: false, error: msg };
   }
 }
 

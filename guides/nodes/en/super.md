@@ -14,11 +14,12 @@ Pack related nodes into a subgraph. **Expand** to edit in a shell, or **↪ Ente
 - Drag in / out to pack / unpack
 - Sidebar **Super node** tree: jump in and fit
 
-## Two special modes
+## Three special modes
 
 | Mode | Enable | Purpose |
 | --- | --- | --- |
 | **Dev node** (功能块) | Add via the “Dev node” menu, or set a node to dev | Software project architecture: module → file → class / interface / enum, bound to a project root (`devPath`); header buttons 建议 / 开发 / 细化; elements linked with **relationship wires** (rel) for dependencies / calls |
 | **Database node** | Enable “Beta” in Settings, then add from the context menu | Fact storage: inner “File node / Table”; header **⚙ Compile** produces a “Database replica”; agent nodes query with `mtnode_db` |
+| **Long-task shell** | Nothing to create by hand: the long-running task **places the parent shell and each step's child shell at creation time** (built, never run; a step you add to the graph later is built when it produces output) | Output collection: one “Long task · <task name>” parent shell per task, one child shell per step inside it; output / artifact nodes land in their step's child shell (a read-only badge marks the header; a deleted shell is never silently rebuilt — restore it with “Rebuild shell” in the strip's “⋯ More”) |
 
 See the manual [Super nodes](#super-nodes), [Dev nodes](#dev-nodes), [Database nodes](#database-nodes).

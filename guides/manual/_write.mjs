@@ -1,7 +1,7 @@
 /* one-shot: write the built-in app manual catalog + all diagrams (zh is authored on disk; en pages are kept as-is)
  *
  * 口径（与 guides/manual/README.md §1.5 一致）：
- *   - 目录：本文件的 catalog → index.json（唯一真源）；现行 defaultPage = providers，共 10 章 20 页。
+ *   - 目录：本文件的 catalog → index.json（唯一真源）；现行 defaultPage = providers，共 10 章 21 页。
  *   - 正文：以磁盘上的 guides/manual/<id>.md 为准（磁盘有就原样保留），
  *           重跑本脚本**不会**把新结构覆盖回旧的内嵌模板。
  *   - 内容真源：正文按画布「快速开始」的说明卡片重写（分区 = 章节，卡片 = 页内小节）；
@@ -345,6 +345,7 @@ const catalog = {
       pages: [
         { id: "workflows", title: { zh: "保存、导入导出与工坊", en: "Save, import/export, workshop" } },
         { id: "quick-build", title: { zh: "一句话搭工作流", en: "Build a flow in one sentence" } },
+        { id: "longtask", title: { zh: "长周期任务（状态机 · 人在环）", en: "Long-running tasks (state machine, human in the loop)" } },
       ],
     },
     {

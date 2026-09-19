@@ -315,6 +315,8 @@ function applyLocale(locale, persist) {
   applyLogoSub();
   /* 全局搜索浮层（Ctrl+F）：切语言时重绘占位符与提示文案 */
   if (typeof globalSearchRepaint === "function") globalSearchRepaint();
+  /* 输入框内查找条（Ctrl+F · app-find.js）：同一口径，切语言时重绘文案与计数 */
+  if (typeof fieldFindRepaint === "function") fieldFindRepaint();
   const overlayOpen = $("#overlay") && $("#overlay").style.display === "flex";
   const reopenSettings = overlayKind === "settings" && overlayOpen;
   const reopenTpl = overlayKind === "tplstore" && overlayOpen;
@@ -478,6 +480,20 @@ async function init() {
     sess.noCanvasRead = !!sess.noCanvasRead;
     /* 「与画布无关」（Gate B）同样必须载回原值：丢了这一位 = 可见集漂移 → 换 runtime */
     sess.canvasFree = !!sess.canvasFree;
+    /* 「不走普通会话计划这条线」（长任务新建窗的引导建图会话）：重启后仍豁免 ——
+       否则再跑一轮就会拿到「任务流程 / 交计划块」指令，交出来的就是普通会话计划了。 */
+    sess.noPlanFlow = !!sess.noPlanFlow;
+    /* 长任务环节归属标记（app-longtask.js 的 ltBindAgentSession 写 {wfId,runId,path}）：
+       它同样进 planFlowExemptSession 的豁免判据（app-plan.js），丢了这一位 → 重启后该
+       环节会话又变回普通会话计划线。这里按落盘白名单同口径归一（缺省 null = 普通会话）。 */
+    sess.ltBound =
+      sess.ltBound && typeof sess.ltBound === "object"
+        ? {
+            wfId: String(sess.ltBound.wfId || ""),
+            runId: String(sess.ltBound.runId || ""),
+            path: String(sess.ltBound.path || ""),
+          }
+        : null;
     return sess;
   });
   S.agentActiveId = S.config.agentActiveId || "";
@@ -565,6 +581,15 @@ async function init() {
   };
   $("#btnUndo").onclick = undo;
   $("#btnRedo").onclick = redo;
+  /* 顶栏「复制」（Ctrl+D）：在选中节点下方复制一个同类节点（只复制类型，不复制内容）。
+     与快捷键 Ctrl+D 同一入口 —— 键位在 renderer/app.js 的组合键分支里（app-keys.js
+     只管单键，组合键一律不占）。 */
+  const btnDupNode = $("#btnDupNode");
+  if (btnDupNode)
+    btnDupNode.onclick = () => {
+      if (typeof duplicateSelectedNodeBelow === "function")
+        duplicateSelectedNodeBelow();
+    };
   $("#btnFit").onclick = fitCanvas;
   const btnCanvasShot = $("#btnCanvasShot");
   if (btnCanvasShot) btnCanvasShot.onclick = () => exportCanvasOverviewPng();

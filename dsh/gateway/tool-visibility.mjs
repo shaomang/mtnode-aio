@@ -30,10 +30,14 @@ export const HIDE_ENV = 'MTNODE_HIDE_TOOLS'
 export const HIDEABLE_TOOLS = Object.freeze([
   /* MTNode 自有（注册口直接跳过） */
   'mtnode_app',
+  'mtnode_assets',
   'mtnode_canvas_edit',
   'mtnode_canvas_get',
   'mtnode_db',
   'mtnode_vision',
+  /* 长周期任务两件套（app-longtask.js 造的伪节点之外一律不注册） */
+  'lt_state',
+  'lt_memory',
   /* dsh 引擎自带（agent 作用域 restrict 摘除） */
   'ask_user_question',
   'create_goal',

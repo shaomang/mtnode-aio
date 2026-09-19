@@ -19,10 +19,12 @@ description: MTNode 画布 batchMode=batch 时每次运行只能处理单条输�
 - 每次运行 **只生成 1 张图**
 - prompt 里 **不要**写「生成多张 / 几张图」
 - 需要多图：批量 1 条 1 张、多个 proc_image 节点、或 `attempts`×N
+- **端子**：端口 0 = 提示词 / 文本入口 · **端口 1+ = 数据槽（连一条多一个 · 文本与图像引用都收 —— 图生图的参考图就接这里，勿接端口 0）**；输出 端口 0 = 图像 · 末尾 = 控制输出。空白节点只列得出端口 0，**别据此断定「没有图像参考端子」**：完整口径随 `canvas_get` 的 `ports`（定端口节点）或 `portRule`（增量端子节点）返回，一眼读全，不需要试连一条线看 warnings 反推接法
+- 蒙版局部重绘 / 画幅锁定都只认「第 1 张参考图」：要它们生效，图像输入要连进来（`maskOn` 需连图，服务商须 OpenAI 兼容）
 
 ## 尺寸
 
-- `size` 须为 `mtnode_canvas_get` 返回的 `imageSizes` 之一（如 `2048x1360`、`1280x1280`、`auto`）
+- `size` 须为 `canvas_get` 的 `imageSizes` 之一（如 `2048x1360`、`1280x1280`、`auto`）；这三张静态表（kinds / imageSizes / defaultImageSize）不再随任何快照返回，需要时 `canvas_get` 传 `sections:["refs"]`
 
 ## 智能节点与保存
 

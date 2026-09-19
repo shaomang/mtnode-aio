@@ -1,0 +1,147 @@
+/* ============ 输入框内查找（Ctrl+F · renderer/app-find.js） ============
+ * 焦点在 input / textarea 里时按 Ctrl+F 呼出的框内查找条：贴右上角、不遮输入框本体
+ * （用户要看着输入框里的命中逐条走）。persistent 浮层：只走 Esc / ✕ / 再按一次 Ctrl+F，
+ * 不挂「点外部即关」。层级高于全局搜索（12000）—— 它是在搜索浮层的输入框里也能用的。
+ * ─────────────────────────────────────────────────────────────────── */
+
+.fd-bar {
+  position: fixed;
+  top: 10px;
+  right: 14px;
+  z-index: 12100;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .45);
+  backdrop-filter: blur(10px);
+  font-size: 12.5px;
+  color: var(--ink);
+  font-family: inherit;
+}
+
+.fd-bar.on {
+  display: flex;
+  animation: fd-pop .12s ease-out;
+}
+
+@keyframes fd-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.fd-ico {
+  flex: none;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--cyan);
+}
+
+.fd-input {
+  flex: none;
+  width: 190px;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 2px 0;
+}
+
+.fd-count {
+  flex: none;
+  min-width: 3.2em;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fd-count.fd-empty {
+  color: #e06c6c;
+}
+
+.fd-btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid var(--bd2);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.fd-btn:hover {
+  color: var(--ink);
+  border-color: var(--cyan);
+}
+
+.fd-close {
+  font-size: 11px;
+}
+
+/* 命中不足一屏时不需要提示行；够宽才显示键位提示，免得条子太胖挡视线 */
+.fd-foot {
+  flex: none;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  opacity: 0;
+  transition: max-width .12s ease-out, opacity .12s ease-out;
+}
+
+.fd-bar:hover .fd-foot,
+.fd-bar:focus-within .fd-foot {
+  max-width: 260px;
+  padding-left: 4px;
+  opacity: .9;
+}
+
+/* 命中所在输入框的短暂描边（选区之外再加一层「就在这儿」的提示） */
+.fd-hit {
+  animation: fd-hit 0.7s ease-out;
+}
+
+@keyframes fd-hit {
+  0% {
+    box-shadow: 0 0 0 2px rgba(90, 200, 255, .85);
+  }
+
+  100% {
+    box-shadow: none;
+  }
+}
+
+/* ─ 浅色主题 ── */
+body.theme-light .fd-bar {
+  background: var(--panel);
+  border-color: var(--bd2);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .22);
+}
+
+body.theme-light .fd-count.fd-empty {
+  color: #b3403f;
+}

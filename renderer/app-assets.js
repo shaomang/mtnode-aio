@@ -3488,3 +3488,382 @@ function paintAssetSetFoot(foot, a) {
   cl.onclick = () => closeAssetSettings();
   foot.appendChild(cl);
 }
+
+/* ═══════════ 智能体侧的素材库 / 窗口截图（工具 mtnode_assets）════════════
+   dsh/gateway/assets-plugin.mjs 那只工具的唯一宿主实现，走 dsh/main-dsh.js
+   → 网关 → 渲染层 dshInteract 那条桥（与画布 / 数据库工具同一形状）。
+
+   为什么非走渲染层不可：素材库根目录（config.json 的 assetRoot）与交付目录都在
+   Agent 工作区之外，沙箱里的读文件 / 终端一律够不着；而窗口静帧只能是真正把窗口
+   画在屏幕上的这一层去拍（主进程 webContents.capturePage），工作区外的落盘也只有
+   宿主能写。所以这里读库、拍图、写文件，插件只负责转发与格式化。
+
+   action：list 列库（分类 / 素材 / 条目）、read 取一条内容的绝对路径与正文、
+   screenshot 拍窗口静帧 PNG 落盘。三个动作都属「素材库与截图」这一档许可
+   （assets_read），在 app-db.js 的分发口统一过闸。 */
+
+async function assetAgentRoot() {
+  const r = await window.api.assetsGetRoot();
+  if (!r || r.ok === false) throw new Error((r && r.error) || I18n.t("读取素材库位置失败："));
+  if (!r.configured)
+    throw new Error(
+      I18n.t("素材库还没有指定保存位置（顶栏「素材库」→ 指定根目录）"),
+    );
+  return String(r.path || "");
+}
+
+async function assetAgentScan() {
+  const r = await assetScanCall();
+  if (!r || r.ok === false)
+    throw new Error(r && r.needRoot
+      ? I18n.t("素材库还没有指定保存位置（顶栏「素材库」→ 指定根目录）")
+      : (r && r.error) || I18n.t("扫描素材库失败："));
+  return r;
+}
+
+/* 分类只回个名字（用于给素材路径定位），不把整棵分类树灌进模型上下文 */
+function assetAgentCatNames(scan) {
+  return ((scan && scan.categories) || [])
+    .slice(0, 60)
+    .map((c) => ({ rel: String((c && c.rel) || ""), name: String((c && c.name) || "") }));
+}
+
+function assetAgentAssetBrief(a) {
+  return {
+    id: String((a && a.id) || ""),
+    rel: String((a && a.rel) || ""),
+    displayName: String((a && a.displayName) || ""),
+    desc: String((a && a.desc) || "").slice(0, 160),
+    itemCount: Number((a && a.itemCount) || 0),
+    updatedAt: Number((a && a.updatedAt) || 0),
+    items: ((a && a.items) || []).map((it, i) => ({
+      index: i,
+      id: String((it && it.id) || ""),
+      title: String((it && it.title) || ""),
+      type: String((it && it.type) || "text"),
+    })),
+  };
+}
+
+async function assetAgentList(p) {
+  const root = await assetAgentRoot();
+  const scan = await assetAgentScan();
+  const all = ((scan && scan.scan && scan.scan.assets) || []).filter((a) => a && a.id);
+  const filter = String((p && p.filter) || "").trim();
+  const type = String((p && p.type) || "").trim();
+  let list = all;
+  if (type)
+    list = list.filter((a) =>
+      (a.items || []).some((it) => String((it && it.type) || "") === type),
+    );
+  if (filter) {
+    const q = filter.toLowerCase();
+    list = list.filter((a) =>
+      [
+        String(a.displayName || ""),
+        String(a.rel || ""),
+        String(a.desc || ""),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(q),
+    );
+  }
+  const limit = Math.max(1, Math.min(300, Number((p && p.limit) || 60) || 60));
+  return {
+    ok: true,
+    action: "list",
+    kind: "asset-list",
+    root: root,
+    categories: assetAgentCatNames(scan.scan),
+    total: all.length,
+    matched: list.length,
+    assets: list.slice(0, limit).map(assetAgentAssetBrief),
+    ...(list.length > limit ? { truncated: true } : {}),
+    ...(list.length === 0
+      ? { none: I18n.t("素材库里没有匹配的素材") }
+      : {}),
+    note: I18n.t(
+      "条目 index = 绑定该素材的素材节点上的端子序号；read 可用 id / rel / itemId / index 取具体一条。",
+    ),
+  };
+}
+
+/* id / rel / path 三种定位方式：path 若在库内按相对路径反查，否则直接当本机文件读 */
+function assetAgentFindItem(scan, p) {
+  const assets = ((scan && scan.scan && scan.scan.assets) || []).filter((a) => a && a.id);
+  const id = String((p && p.id) || "").trim();
+  const rel = String((p && p.rel) || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+  const rawPath = String((p && p.path) || "").trim();
+  const norm = (s) => String(s || "").replace(/\\/g, "/").toLowerCase();
+  let asset = null;
+  let filePath = "";
+  if (id) asset = assets.find((a) => String(a.id) === id) || null;
+  if (!asset && rel) asset = assets.find((a) => norm(a.rel) === norm(rel)) || null;
+  if (!asset && rel) asset = assets.find((a) => norm(a.rel).endsWith("/" + norm(rel))) || null;
+  if (!asset && rawPath) {
+    const root = norm((scan && scan.root) || "");
+    const pth = norm(rawPath);
+    if (root && pth.startsWith(root + "/"))
+      asset =
+        assets.find((a) => (a.items || []).some((it) => norm(it.absPath) === pth)) || null;
+    if (!asset) {
+      const hit = assets.find((a) => {
+        const r = norm(a.rel);
+        return r && pth.indexOf("/" + r + "/") >= 0;
+      });
+      if (hit) asset = hit;
+    }
+    if (!asset) filePath = rawPath;
+  }
+  if (!asset && !filePath) return { error: I18n.t("素材库里没有这个素材：") + (id || rel || "") };
+  if (!asset) {
+    return {
+      asset: null,
+      items: [
+        {
+          index: 0,
+          id: "",
+          title: filePath.split(/[\\/]/).pop() || "",
+          type: "",
+          absPath: filePath,
+          text: "",
+          bytes: 0,
+          exists: !!filePath,
+        },
+      ],
+    };
+  }
+  const items = (asset.items || []).map((it, i) => Object.assign({ index: i }, it));
+  const itemId = String((p && p.itemId) || "").trim();
+  const wantType = String((p && p.type) || "").trim();
+  let picked;
+  if (itemId) picked = items.filter((it) => String(it.id) === itemId);
+  else if (p && p.index !== undefined && p.index !== null && Number.isFinite(Number(p.index)))
+    picked = items.filter((it) => Number(it.index) === Math.max(0, Math.floor(Number(p.index))));
+  else if (wantType) picked = items.filter((it) => String(it.type) === wantType);
+  else picked = items.slice(0, 1);
+  if (!picked.length) return { error: I18n.t("该素材里没有匹配的内容条目") };
+  return { asset: asset, items: picked };
+}
+
+async function assetAgentRead(p) {
+  const scan = await assetAgentScan();
+  const hit = assetAgentFindItem(scan, p);
+  if (hit.error) throw new Error(hit.error);
+  const limit = Math.max(1, Math.min(20, Number((p && p.limit) || 3) || 3));
+  const asText = !(p && p.asText === false);
+  const assetId = hit.asset ? String(hit.asset.id || "") : "";
+  const list = [];
+  for (const it of hit.items.slice(0, limit)) {
+    /* 条目里只有 file（相对素材夹）与 absPath（库扫描给的绝对路径）；正文与缺文件
+       判定统一走 assets:itemRead，免得渲染层自己拼路径拼错。 */
+    const out = {
+      index: Number(it.index) || 0,
+      id: String(it.id || ""),
+      title: String(it.title || ""),
+      type: String(it.type || ""),
+      file: String(it.file || ""),
+      path: String(it.absPath || ""),
+      bytes: Number(it.bytes) || 0,
+      exists: !!it.absPath && it.missing !== true,
+    };
+    if (it.id && assetId && !out.path) {
+      const r = await window.api.assetsItemRead(assetId, String(it.id));
+      if (r && r.ok !== false) {
+        out.path = String(r.absPath || "");
+        out.bytes = Number(r.bytes) || out.bytes;
+        out.exists = !!out.path;
+        out.type = String(r.type || out.type);
+        if (asText && out.type === "text") out.text = String(r.text || "");
+      } else if (r && r.error) {
+        out.error = String(r.error);
+        out.exists = false;
+      }
+    } else if (asText && out.type === "text" && out.path) {
+      const tr = await window.api.fileReadText(out.path);
+      if (tr && tr.ok !== false) out.text = String(tr.content || "");
+    }
+    list.push(out);
+  }
+  return {
+    ok: true,
+    action: "read",
+    kind: "asset-read",
+    root: String((scan && scan.root) || ""),
+    asset: hit.asset ? assetAgentAssetBrief(hit.asset) : null,
+    items: list,
+    ...(list.length === 0 ? { none: I18n.t("没有取到内容条目") } : {}),
+    note: I18n.t(
+      "把 items[].path 交给 mtnode_vision 看图，或直接作为交付端子对应的文件路径。",
+    ),
+  };
+}
+
+/* ── 窗口静帧截图：先收瞬时浮层，再等一帧，然后主进程 capturePage 拍整窗 ── */
+function assetAgentShotHide() {
+  const saved = [];
+  const hideSel = ["#ctx", "#imgLb", "#portTip", "#ovMinBar"];
+  for (const sel of hideSel) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    saved.push({ el: el, display: el.style.display, visibility: el.style.visibility });
+    el.style.display = "none";
+  }
+  const menus = document.querySelectorAll(".mt-dialog, .asset-lib-menu, .asset-menu");
+  for (const el of menus) {
+    if (!el || el.offsetParent === null) continue;
+    saved.push({ el: el, display: el.style.display, visibility: el.style.visibility });
+    el.style.display = "none";
+  }
+  for (const el of Array.from(document.querySelectorAll(".hover, .is-hover"))) {
+    el.classList.remove("hover");
+    el.classList.add("is-hover");
+    saved.push({ el: el, cls: true });
+  }
+  return () => {
+    for (const s of saved) {
+      if (s.cls) s.el.classList.remove("is-hover");
+      else {
+        s.el.style.display = s.display;
+        s.el.style.visibility = s.visibility;
+      }
+    }
+  };
+}
+
+function assetAgentWaitPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 60)));
+  });
+}
+
+async function assetAgentShot(params) {
+  const p = params || {};
+  const wf = (typeof canvasTargetWf === "function" && canvasTargetWf()) || S.wf || null;
+  const outPath = String(p.path || "").trim();
+  if (outPath) {
+    if (!isAbsPath(outPath)) throw new Error(I18n.t("path 必须是本机绝对路径：") + outPath);
+    if (!/\.(png|jpg|jpeg|webp)$/i.test(outPath))
+      throw new Error(I18n.t("截图只能保存为 .png / .jpg / .webp：") + outPath);
+  }
+  if (!window.api || !window.api.captureRect) throw new Error(I18n.t("当前环境不支持窗口截图"));
+  const wantW = Math.max(0, Math.round(Number(p.width) || 0));
+  const wantH = Math.max(0, Math.round(Number(p.height) || 0));
+  const asCanvas = p.canvasOnly === true;
+  const hideUI = p.hideUI !== false;
+  if (p.maximize === true && window.api.winMaximize) {
+    /* 只有显式 maximize 才动用户的窗口；默认一整轮都不改窗口尺寸（截图不该把
+       用户的工作区挪走）。窗口放大的还原交给用户（应用自己也有最大化按钮）。 */
+    try {
+      await window.api.winMaximize();
+    } catch (_) {}
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const restoreUI = hideUI ? assetAgentShotHide() : null;
+  let r = null;
+  try {
+    await assetAgentWaitPaint();
+    let rect;
+    if (asCanvas) {
+      const el = $("#canvas") || $("#wfWrap");
+      if (!el) throw new Error(I18n.t("当前没有打开的画布"));
+      const b = el.getBoundingClientRect();
+      rect = { x: b.left, y: b.top, width: b.width, height: b.height };
+    } else {
+      rect = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+    r = await window.api.captureRect(rect);
+  } finally {
+    if (restoreUI) restoreUI();
+  }
+  if (!r || r.ok === false || !r.dataUrl) {
+    const msg = String((r && r.error) || I18n.t("未知错误"));
+    if (/empty/i.test(msg))
+      throw new Error(
+        I18n.t(
+          "截图失败：主进程没取到画面（MTNode 窗口最小化或不可见）。请先把窗口显示出来再拍。",
+        ),
+      );
+    throw new Error(msg);
+  }
+  let img;
+  try {
+    img = await loadDataUrlImage(r.dataUrl);
+  } catch (_) {
+    throw new Error(I18n.t("截图失败：") + "image");
+  }
+  const nativeW = img.naturalWidth || img.width;
+  const nativeH = img.naturalHeight || img.height;
+  let targetW = wantW;
+  let targetH = wantH;
+  if (targetW > 0 && !(targetH > 0)) targetH = Math.max(1, Math.round((targetW * nativeH) / nativeW));
+  if (targetH > 0 && !(targetW > 0)) targetW = Math.max(1, Math.round((targetH * nativeW) / nativeH));
+  let buf;
+  let outW = nativeW;
+  let outH = nativeH;
+  if (targetW > 0 && targetH > 0 && (targetW !== nativeW || targetH !== nativeH)) {
+    const cv = document.createElement("canvas");
+    cv.width = targetW;
+    cv.height = targetH;
+    const g = cv.getContext("2d");
+    if (!g) throw new Error(I18n.t("未知错误"));
+    g.fillStyle = "#0a0e13";
+    g.fillRect(0, 0, targetW, targetH);
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(img, 0, 0, targetW, targetH);
+    buf = base64ToBytes(cv.toDataURL("image/png").split(",")[1]);
+    outW = targetW;
+    outH = targetH;
+  } else {
+    buf = base64ToBytes(String(r.dataUrl).split(",")[1] || "");
+  }
+  let dest = outPath;
+  let storedIn = "file";
+  if (!dest) {
+    if (!wf || !wf.id) throw new Error(I18n.t("当前没有打开的画布"));
+    const w = await window.api.assetWriteBase64(
+      wf.id,
+      "screen-shot-" + Date.now().toString(36),
+      bytesToBase64(buf),
+      "png",
+    );
+    if (!w || w.ok === false || !w.path)
+      throw new Error((w && w.error) || I18n.t("保存失败"));
+    dest = String(w.path);
+    storedIn = "asset";
+  } else {
+    const wr = await window.api.fileWriteBytes(dest, buf);
+    if (wr && wr.ok === false) throw new Error(wr.error || I18n.t("保存失败"));
+  }
+  return {
+    ok: true,
+    action: "screenshot",
+    kind: "screenshot",
+    path: dest,
+    storedIn: storedIn,
+    mode: asCanvas ? "canvas" : "window",
+    width: outW,
+    height: outH,
+    native: { width: nativeW, height: nativeH },
+    pngKB: Math.round(((buf.length || 0) * 3) / 4 / 1024),
+    note: I18n.t(
+      "已是宿主写好的静态 PNG（不是录屏）。要核对图里内容，把 path 交给 mtnode_vision；要真的更大更清楚，先让用户把 MTNode 窗口拉大（或传 maximize:true）。",
+    ),
+  };
+}
+
+/** mtnode_assets 的宿主实现（唯一入口；分发在 renderer/app-db.js）。 */
+async function handleAssetEvent(data) {
+  const p = (data && data.params) || {};
+  const action = String((data && data.action) || p.action || "list").trim();
+  if (action === "list") return await assetAgentList(p);
+  if (action === "read") return await assetAgentRead(p);
+  if (action === "screenshot") return await assetAgentShot(p);
+  throw new Error(I18n.t("未知素材操作：") + action);
+}
+
+window.__mtnodeAssetOp = handleAssetEvent;

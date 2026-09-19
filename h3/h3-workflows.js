@@ -130,8 +130,87 @@ const LEGACY_WIDGET_ORDER = {
   "MiniMaxChunkFeedForward": ["chunks", "seq_threshold"],
 };
 
+/* 南风中文控件（NanFengH3MultiReferenceGeneratorV10）的输入键真源：
+ *   提示词 / 图片1..9 / 视频1..3 / 音频1..3 / 时长秒（中文序号，1-based）。
+ *   h3/main-h3.js 的素材落点改写（ref_image_N → 图片N）也复用 nanfengMaterialField，
+ *   键名要改只改这一处。前缀类节点包与内置两条模板（MiniMaxH3*）互不相关。 */
+const NANFENG_CLASS_RE = /NanFeng/i;
+const NANFENG_FIELD_RE = Object.freeze({
+  prompt: /^提示词$/,
+  image: /^图片[1-9]$/,
+  video: /^视频[1-9]$/,
+  audio: /^音频[1-9]$/,
+  length: /^时长秒$/,
+});
+const NANFENG_MATERIAL_PREFIX = Object.freeze({ image: "图片", video: "视频", audio: "音频" });
+
+/** 南风中文控件的素材键名：index 从 0 起 → 图片1 / 视频2 …；未知 kind 返回空串 */
+function nanfengMaterialField(kind, index) {
+  const p = NANFENG_MATERIAL_PREFIX[String(kind || "")];
+  if (!p) return "";
+  const n = Number(index);
+  if (!Number.isFinite(n) || n < 0) return "";
+  return p + (Math.floor(n) + 1);
+}
+
 /** 参数候选扫描规则：按顺序命中第一条（classRe 与 fieldRe 都需匹配；valueKind 可选约束现值类型） */
 const SCAN_RULES = Object.freeze([
+  /* ── 南风中文控件（NanFengH3MultiReferenceGeneratorV10）──────────────────────
+   * 这类节点的输入控件是中文键，现有英文规则一条都不命中（字段名非 ASCII），
+   * 于是画布 video_gen 的「提升为节点参数」下拉是空的、素材端子也排不出来。
+   * 下面五条只认 NanFeng 类 + 中文键（type / role 与现有 prompt / image / video /
+   * audio / length 语义一致），内置两条模板（MiniMaxH3ImageToVideo /
+   * MiniMaxH3ReferenceToVideo）的英文规则与行为一概不动。 */
+  {
+    id: "nanfeng_prompt",
+    classRe: NANFENG_CLASS_RE,
+    fieldRe: NANFENG_FIELD_RE.prompt,
+    type: "text",
+    label: "画面提示词",
+    role: "prompt",
+    suggested: true,
+    valueKind: "string",
+  },
+  {
+    id: "nanfeng_image",
+    classRe: NANFENG_CLASS_RE,
+    fieldRe: NANFENG_FIELD_RE.image,
+    type: "image",
+    label: "图像素材",
+    role: "image",
+    suggested: true,
+    valueKind: "string",
+  },
+  {
+    id: "nanfeng_video",
+    classRe: NANFENG_CLASS_RE,
+    fieldRe: NANFENG_FIELD_RE.video,
+    type: "video",
+    label: "视频素材",
+    role: "video",
+    suggested: true,
+    valueKind: "string",
+  },
+  {
+    id: "nanfeng_audio",
+    classRe: NANFENG_CLASS_RE,
+    fieldRe: NANFENG_FIELD_RE.audio,
+    type: "audio",
+    label: "音频素材",
+    role: "audio",
+    suggested: true,
+    valueKind: "string",
+  },
+  {
+    id: "nanfeng_length",
+    classRe: NANFENG_CLASS_RE,
+    fieldRe: NANFENG_FIELD_RE.length,
+    type: "number",
+    label: "视频长度（秒）",
+    role: "length",
+    suggested: false,
+    valueKind: "number",
+  },
   {
     id: "h3_prompt",
     classRe: /MiniMaxH3/i,
@@ -1807,6 +1886,9 @@ module.exports = {
   pickOutputNode,
   /* 表与规则（供 UI / 测试引用） */
   SCAN_RULES,
+  NANFENG_CLASS_RE,
+  NANFENG_FIELD_RE,
+  nanfengMaterialField,
   LEGACY_WIDGET_ORDER,
   CONSTANT_CLASSES,
   /* 杂项 */

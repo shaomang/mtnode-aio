@@ -36,6 +36,40 @@
       }
     },
     {
+      "id": "yue2-local",
+      "kind": "yue2",
+      "handler": "yue2",
+      "order": 35,
+      "version": "1.0.0",
+      "minAppVersion": "1.1.28",
+      "icon": "yue2-local.png",
+      "title": {
+        "zh": "YuE2 本地音乐",
+        "en": "YuE2 Local Music"
+      },
+      "subtitle": {
+        "zh": "【插件测试中】本地 YuE2（24G）：歌词 + 风格提示词 → 整曲（人声 + 伴奏），可先出 ABC 乐谱、零样本翻唱；安装/启停后端、GPU 监视；画布「YuE2 音乐生成」节点。安装过程复杂，可能会失败。移除插件不删已装项目。建议预留 ≥30GB 磁盘。",
+        "en": "[Testing] Local YuE2 (24G): lyrics + style prompt → full song (vocals + accompaniment), optional ABC score planning and zero-shot covers; install/start backend, GPU monitor, canvas YuE2 music node. Install is complex and may fail. Removing the plugin keeps your install. Reserve ≥30GB disk."
+      }
+    },
+    {
+      "id": "sensenova-local",
+      "kind": "sensenova",
+      "handler": "sensenova",
+      "order": 36,
+      "version": "1.0.0",
+      "minAppVersion": "1.1.28",
+      "icon": "sensenova-local.png",
+      "title": {
+        "zh": "SenseNova 本地图像生成",
+        "en": "SenseNova Local Image Generation"
+      },
+      "subtitle": {
+        "zh": "【插件测试中】本地 SenseNova-U1.5-8B-MoT 文生图：官方 11 个训练分辨率桶、最高原生 4K；安装走国内镜像（SJTU/阿里云/清华/ModelScope/GitHub 代理），靠分层卸载把 32.66GB 权重装进一张 24G 卡（官方档位）；插件控制台可安装 / 启停 / 试生成 / 看日志，画布「SenseNova 图像生成」节点。需 NVIDIA 显卡：≥24G 显存为官方推荐，20G 起勉强可跑，内存建议 ≥40GB。移除插件不删已装项目。建议预留 ≥60GB 磁盘。",
+        "en": "[Testing] Local SenseNova-U1.5-8B-MoT text-to-image: 11 official resolution buckets, up to native 4K. Install uses CN mirrors (SJTU / Aliyun / Tsinghua / ModelScope / GitHub proxies) and layers offload 32.66GB of weights onto one 24GB GPU (the official tier). The plugin console installs, starts/stops, test-generates and shows logs; adds a canvas SenseNova image node. Needs an NVIDIA GPU: ≥24GB VRAM recommended, 20GB marginal, ~40GB RAM. Removing the plugin keeps your install. Reserve ≥60GB disk."
+      }
+    },
+    {
       "id": "minimax-h3",
       "kind": "h3",
       "handler": "h3",

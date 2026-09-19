@@ -1,0 +1,595 @@
+/* ============================================================
+ * 会话工具条「文件名」→ 右侧文件查看面板（.fp-*）
+ * 逻辑在 renderer/app-fileview.js 第二段（openFilePeek / closeFilePeek）。
+ * 配色一律取主题变量（--code / --ink / --muted / --cyan / --orange），
+ * 语法着色直接复用 css/canvas.css 里 jsHighlightHtml 那套 .jsl-*（亮色在
+ * theme-light.css 已逐条覆盖），所以面板里的代码和函数节点编辑器长一个样。
+ * 字体度量（--fp-fs / --fp-lh / --fp-gw / --fp-pad / --fp-cp）行号槽与代码层共用
+ * 同一份，与 .js-edit 同一个思路：只写一次，两层不会错位。对齐还多一道保险：
+ * 代码层一行一个块级 span.fp-l，行号槽的行数由拆出来的块数决定，两边同数同行高。
+ * ============================================================ */
+
+.fp-host {
+  --fp-fs: 12.5px;
+  --fp-lh: 1.5;
+  --fp-gw: 42px;
+  --fp-pad: 8px;
+  --fp-cp: 14px;
+  /* 全局滚动条宽度（components.css 的 ::-webkit-scrollbar）：折行时镜像层要按它让位 */
+  --fp-sb: 10px;
+  position: fixed;
+  right: 0;
+  /* top / bottom 由 filePeekSyncBounds() 现量顶栏与状态栏后写成内联样式 */
+  top: 52px;
+  bottom: 26px;
+  z-index: 1180;
+  /* 低于 toast（1200）与各对话框（1300+ / 2450），只压住画布与会话列表 */
+  display: none;
+  max-width: calc(100vw - 24px);
+}
+
+.fp-host.on {
+  display: block;
+}
+
+/* 面板里好几块是 flex —— 作者样式会盖过浏览器默认的 [hidden]，
+   所以「JS 用 el.hidden 收起」的那些节点在这儿统一兜住（最近横条 / 提示条 / 渲染按钮）。 */
+.fp-host [hidden] {
+  display: none !important;
+}
+
+.fp-box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  box-shadow: -14px 0 40px rgba(0, 0, 0, .34);
+  overflow: hidden;
+  outline: none;
+}
+
+/* 左边缘拖拽改宽（面板永远贴右，所以只有这一侧可拖） */
+.fp-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 6;
+  cursor: col-resize;
+  background: linear-gradient(90deg, transparent 0 42%, var(--bd2) 42% 58%, transparent 58%);
+}
+
+.fp-resize:hover {
+  background: linear-gradient(90deg, transparent 0 38%, var(--cyan) 38% 62%, transparent 62%);
+}
+
+/* ── 头部：模式徽标 + 文件名 + 元信息 + 动作 ── */
+.fp-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px 5px 15px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--bd);
+}
+
+.fp-mode {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--cyan);
+  color: var(--cyan);
+  font-size: 10.5px;
+  line-height: 1.5;
+  letter-spacing: .5px;
+}
+
+.fp-mode.m-write {
+  border-color: var(--orange);
+  color: var(--orange2);
+}
+
+.fp-mode.m-dir {
+  border-color: var(--bd2);
+  color: var(--muted);
+}
+
+.fp-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.fp-meta {
+  flex: none;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.fp-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.fp-btn {
+  flex: none;
+  box-sizing: border-box;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fp-btn:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+/* 文字按钮（折行 / 源码·渲染）：比图标按钮宽，按内容撑开 */
+.fp-btn-txt {
+  width: auto;
+  padding: 0 7px;
+  font-family: var(--sans);
+  letter-spacing: .3px;
+}
+
+.fp-btn.on {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(56, 214, 255, .12);
+}
+
+.fp-btn.fp-close:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* 第二行：全路径（等宽小字，鼠标悬停有完整 title） */
+.fp-path {
+  flex: none;
+  padding: 3px 10px 6px 15px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--bd);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 最近文件横条：同一面板内切换，不叠第二个实例 */
+.fp-recent {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px 5px 15px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--panel);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.fp-recent-lab {
+  flex: none;
+  color: var(--muted);
+  font-size: 10.5px;
+  letter-spacing: .5px;
+}
+
+.fp-rchip {
+  flex: none;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  background: var(--bg2);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.fp-rchip:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.fp-rchip.cur {
+  border-color: var(--cyan);
+  color: var(--ink);
+  background: rgba(56, 214, 255, .1);
+}
+
+.fp-rchip.m-write {
+  border-left: 2px solid var(--orange);
+}
+
+.fp-rchip.m-dir {
+  border-left: 2px solid var(--muted);
+}
+
+/* 提示条：读不到 / 太大 / 二进制 / 已截断，都写在这儿，不假装文件只有这么多 */
+.fp-note {
+  flex: none;
+  padding: 5px 10px 5px 15px;
+  background: rgba(255, 143, 46, .1);
+  border-bottom: 1px solid var(--bd);
+  color: var(--orange2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── 正文滚动区：一个容器同时管纵向滚动与横向滚动 ── */
+.fp-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: auto;
+  background: var(--code);
+  font-family: var(--mono);
+  font-size: var(--fp-fs);
+  line-height: var(--fp-lh);
+  overscroll-behavior: contain;
+}
+
+/* 行号槽：横向滚动时贴在左边（sticky），纵向跟着内容走 */
+.fp-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  flex: none;
+  /* 关键两行：.fp-scroll 的高度是「看得见的那一屏」（定高），单行 flex 容器的交叉轴
+     尺寸就等于它，默认的 align-items: stretch 于是把行号槽也拉伸成一屏高，再被自己
+     的 overflow: hidden 裁掉 —— 往下滚行号就整段不见了（代码层没裁，所以看起来只有
+     行号少了）。改成按内容长，再用 min-height 兜住短文件时那一截底色。 */
+  align-self: flex-start;
+  min-height: 100%;
+  box-sizing: border-box;
+  /* 宽度跟着最长那个行号走（flex: none + width:auto = max-content），
+     万行以上的大文件不会被固定 42px 裁掉后半截数字 */
+  width: auto;
+  min-width: var(--fp-gw);
+  margin: 0;
+  padding: var(--fp-pad) 7px var(--fp-pad) 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--bd);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--fp-fs);
+  line-height: var(--fp-lh);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: pre;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 代码层：不折行时用 max-content 撑开，整行高亮才真能铺满一行 */
+.fp-code {
+  position: relative;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  min-width: max-content;
+  margin: 0;
+  padding: var(--fp-pad) var(--fp-cp);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: var(--fp-fs);
+  line-height: var(--fp-lh);
+  white-space: pre;
+  tab-size: 4;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 一行一块（JS 里 fvHtmlToRows 拆出来的 span.fp-l）：
+   块级盒子天然一行一个，行号槽与代码层因此逐行严格同数；空行靠 min-height 撑成
+   整行高度，不会缩成 0 行把下面的内容整体顶偏。负 margin + 同宽 padding 让文字
+   起点与原来一致，只把整行底色铺进行号槽旁边的留白里。 */
+.fp-l {
+  display: block;
+  min-height: calc(var(--fp-fs) * var(--fp-lh));
+  margin-left: calc(-1 * var(--fp-cp));
+  padding-left: var(--fp-cp);
+}
+
+/* 跳行标记（read 的 offset）：底色压在字下面，不像绝对定位那条带会盖住正文 */
+.fp-l.cur {
+  background: rgba(56, 214, 255, .13);
+  box-shadow: inset 2px 0 0 var(--cyan);
+}
+
+.fp-scroll.fp-wrap {
+  display: block;
+}
+
+/* 折行后一行代码占好几行，行号槽对不上就干脆收起（Cursor 同口径） */
+.fp-scroll.fp-wrap .fp-gutter {
+  display: none;
+}
+
+.fp-scroll.fp-wrap .fp-code {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.fp-blank,
+.fp-loading {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 26px 18px;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* ── 目录视图 ── */
+.fp-scroll.fp-vdir {
+  display: block;
+  background: var(--panel);
+}
+
+.fp-dir {
+  padding: 8px 8px 16px;
+}
+
+.fp-dir-filter {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: var(--code);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+}
+
+.fp-dir-filter:focus {
+  border-color: var(--cyan);
+}
+
+.fp-dir-rows {
+  display: block;
+}
+
+.fp-dir-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 4px 7px;
+  border: 0;
+  border-bottom: 1px solid var(--bd);
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fp-dir-row:hover {
+  background: var(--panel2);
+  color: var(--cyan);
+}
+
+.fp-dir-n {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.fp-dir-rel {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.fp-dir-sz {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fp-dir-more {
+  padding: 8px 7px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* ── 图片预览 ── */
+.fp-scroll.fp-vimg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg2);
+}
+
+.fp-imgwrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
+  padding: 10px;
+}
+
+.fp-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: var(--code);
+}
+
+/* ── Markdown 渲染视图：版式复用应用内阅读器的 .md-viewer-doc ── */
+.fp-scroll.fp-vmd {
+  display: block;
+  background: var(--panel);
+  font-family: var(--sans);
+  font-size: 13px;
+}
+
+.fp-md {
+  min-height: 100%;
+  padding: 12px 16px 26px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── 编辑视图（文本文件点「编辑」才进，见 app-fileview.js renderFilePeekEditor）──
+   三层同源对齐，样式就是只读代码视图那一套，不另起一份：
+     行号槽 .fp-gutter / 高亮镜像层 .fp-code.fp-mirror / 输入框 .fp-editor。
+   三层共用 --fp-fs / --fp-lh / --fp-pad / --fp-cp（.fp-host 那一份度量），
+   镜像层 pointer-events:none 只负责上色，输入框文字透明只留光标 —— 所以「进编辑态
+   就丢着色」不会再发生，也不会出现两层度量不一致导致的光标漂移。
+   滚动只在输入框上发生：镜像层与行号槽都是 overflow:hidden，由 JS 跟着设 scrollTop
+   （filePeekEditSyncScroll），不出现第二条滚动条，也不会错行。
+   折行跟随头部那颗「折行」按钮：关 = 不折（横向滚动），开 = .fp-wrap 软折（行号槽由
+   上面 .fp-scroll.fp-wrap .fp-gutter 那条收起）。 */
+.fp-scroll.fp-vedit {
+  display: flex;
+  align-items: stretch;
+  /* 滚动交给输入框自己：这里再滚一层会出现两条滚动条 */
+  overflow: hidden;
+  background: var(--code);
+}
+
+.fp-edcols {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 镜像层：只读代码层（.fp-code）的同一份字体、内边距与 .fp-l 行块，绝对铺满输入框底下 */
+.fp-mirror {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.fp-editor {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: var(--fp-pad) var(--fp-cp);
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  resize: none;
+  /* 文字透明、光标留色：正文那层颜色由底下的镜像层给 */
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ink);
+  font-family: var(--mono);
+  font-size: var(--fp-fs);
+  line-height: var(--fp-lh);
+  white-space: pre;
+  tab-size: 4;
+  overflow: auto;
+  /* 纵向滚动条的位置常驻：折行时镜像层按同一宽度折，两层的换行点才会落在同一处 */
+  scrollbar-gutter: stable;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.fp-editor.fp-edwrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 折行时镜像层跟着折，并让出输入框那条常驻滚动条的宽度（--fp-sb 与 components.css 的
+   ::-webkit-scrollbar width 同为 10px），否则两层的内容宽度差一条滚动条、换行点就不一样 */
+.fp-scroll.fp-wrap .fp-mirror {
+  padding-right: calc(var(--fp-cp) + var(--fp-sb));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 选中：默认选中底色是不透明的，会把底下镜像层的文字盖掉 */
+.fp-editor::selection {
+  background: rgba(56, 214, 255, .28);
+}
+
+/* 未保存改动：文件名后面挂一个点（JS 追加 " •"），头部再加一层橙色描边，
+   「有东西没存」不能只靠一个点的颜色去表达。 */
+.fp-host.fp-dirty .fp-name {
+  color: var(--orange2);
+}
+
+.fp-host.fp-dirty .fp-path {
+  border-bottom-color: var(--orange);
+}
+
+/* 撤销 / 重做 / 保存按不动时就该看得出来 */
+.fp-btn[disabled] {
+  opacity: .45;
+  cursor: default;
+}
+
+.fp-btn[disabled]:hover {
+  border-color: var(--bd2);
+  color: var(--muted);
+}

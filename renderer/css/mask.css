@@ -1,0 +1,207 @@
+/* ============================================================================
+   css/mask.css — 图像生成节点「蒙版局部重绘」编辑器（renderer/app-mask.js）
+   ----------------------------------------------------------------------------
+   近乎全屏（默认 min(1240px, 94vw) × min(840px, 92vh)），右下角可拖拽调整大小
+   （resize: both），最小宽度 ≥50vw。persistent：没有「点外部 / 点蒙层关闭」，
+   关闭只走 ✕ / 取消 / Esc / 确定并启用。
+   涂抹区一律用「透明绿」表示可编辑区域 —— 与服务端的 Alpha 语义（透明 = 可编辑）
+   视觉上直接对应。
+   ========================================================================== */
+
+.mask-dlg {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2600;
+  display: none;
+  width: min(1240px, 94vw);
+  height: min(840px, 92vh);
+  min-width: 50vw;
+  min-height: 380px;
+  max-width: 98vw;
+  max-height: 96vh;
+  overflow: hidden;
+  resize: both;
+  flex-direction: column;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  font-family: var(--sans, inherit);
+}
+
+.mask-dlg.on {
+  display: flex;
+}
+
+/* 右下角拖拽把手：原生 resize 的视觉提示（撑在 resize 区域上，不挡点击） */
+.mask-dlg::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, transparent 45%, var(--muted) 46%, var(--muted) 54%, transparent 55%) 0 0/6px 6px,
+    linear-gradient(135deg, transparent 45%, var(--muted) 46%, var(--muted) 54%, transparent 55%) 4px 4px/6px 6px;
+  opacity: .8;
+}
+
+.mask-dlg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--bd);
+  background: var(--panel2);
+  cursor: default;
+}
+
+.mask-dlg-head b {
+  font-size: 13px;
+  letter-spacing: .3px;
+}
+
+.mask-dlg-sub {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mask-dlg-x {
+  align-self: center;
+}
+
+.mask-dlg-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ── 左侧工具栏 ───────────────────────────────────────────────────────── */
+.mask-tools {
+  width: 132px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 9px;
+  border-right: 1px solid var(--bd);
+  overflow-y: auto;
+}
+
+.mask-tool.on {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+  background: rgba(56, 214, 255, .14);
+}
+
+.mask-tools-sep {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--bd);
+}
+
+.mask-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mask-field input[type="range"] {
+  width: 100%;
+}
+
+/* ── 画布舞台 ─────────────────────────────────────────────────────────── */
+.mask-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, .04) 25%, transparent 25%) 0 0/18px 18px,
+    linear-gradient(-45deg, rgba(255, 255, 255, .04) 25%, transparent 25%) 0 9px/18px 18px,
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, .04) 75%) 9px -9px/18px 18px,
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, .04) 75%) -9px 0/18px 18px,
+    var(--bg);
+}
+
+.mask-canvas {
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+  box-shadow: 0 0 0 1px var(--bd2);
+  image-rendering: auto;
+}
+
+.mask-empty {
+  position: absolute;
+  max-width: 420px;
+  padding: 0 18px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ── 操作说明 / 影响说明 ──────────────────────────────────────────────── */
+.mask-note {
+  margin: 0;
+  padding: 8px 12px;
+  max-height: 108px;
+  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.75;
+  color: var(--muted);
+  white-space: pre-line;
+  border-top: 1px solid var(--bd);
+  background: var(--panel2);
+}
+
+.mask-dlg-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--bd);
+}
+
+.mask-primary {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+  background: rgba(56, 214, 255, .14);
+}
+
+/* 节点头部「蒙版局部重绘」小按钮：关闭 = 灰；开启 = 绿（与透明绿蒙版同色） */
+.n-mask-btn {
+  width: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: rgba(154, 160, 168, .08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.n-mask-btn:hover {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(95, 214, 138, .14);
+}
+
+.n-mask-btn.on {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(95, 214, 138, .2);
+  box-shadow: 0 0 6px rgba(95, 214, 138, .45);
+}

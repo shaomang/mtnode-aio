@@ -1,0 +1,180 @@
+/* ============ 工具构建 · UI（renderer/app-canvas.js 的入口与对话框） ============
+ * 三块：
+ *   ① .tb-entry-btn / .tb-status-*  节点头部入口与状态徽标
+ *   ② .tb-card                      节点 body 末尾的入口卡
+ *   ③ .tb-dlg / .tb-plan / .tb-progress / .tb-session / .tb-log  方案 + 进度对话框
+ * 颜色一律走主题变量，亮色主题不需要单独覆盖。
+ * ========================================================================= */
+
+/* ── ① 节点头部入口 ── */
+.n-play.tb-entry-btn {
+  width: 24px;
+  color: var(--orange2, var(--orange));
+  border-color: var(--bd2);
+  background: rgba(255, 143, 46, .08);
+}
+
+.n-play.tb-entry-btn:hover {
+  border-color: var(--orange);
+  background: rgba(255, 143, 46, .2)
+}
+
+.n-play.tb-entry-btn.tb-building {
+  color: var(--cyan2, var(--cyan));
+  border-color: var(--cyan);
+  animation: blink 1s infinite
+}
+
+.n-play.tb-entry-btn.tb-ready {
+  color: var(--green);
+  border-color: var(--green)
+}
+
+.n-play.tb-entry-btn.tb-failed {
+  color: var(--red);
+  border-color: var(--red)
+}
+
+.n-chip.tb-status {
+  letter-spacing: 0;
+  font-size: 9px
+}
+
+.n-chip.tb-status-building {
+  color: var(--cyan2, var(--cyan));
+  border-color: var(--cyan)
+}
+
+.n-chip.tb-status-ready {
+  color: #8dffb5;
+  border-color: var(--green)
+}
+
+.n-chip.tb-status-failed {
+  color: #ffb0b0;
+  border-color: var(--red)
+}
+
+/* ── ② 节点 body 入口卡 ── */
+.wf-node .n-body .tb-card {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 6px;
+  border: 1px dashed var(--bd2);
+  border-radius: 4px;
+  background: rgba(255, 143, 46, .05);
+  min-width: 0
+}
+
+.wf-node .n-body .tb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0
+}
+
+.tb-body-btn {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  letter-spacing: 0;
+  border: 1px solid var(--orange);
+  border-radius: 3px;
+  color: var(--orange2, var(--orange));
+  background: rgba(255, 143, 46, .1);
+  cursor: pointer
+}
+
+.tb-body-btn:hover {
+  border-color: var(--orange);
+  background: rgba(255, 143, 46, .22)
+}
+
+.tb-card-sum {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  word-break: break-all
+}
+
+/* ── ③ 方案 / 进度对话框 ── */
+.tb-dlg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto
+}
+
+.tb-hint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted)
+}
+
+.tb-meta-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  word-break: break-all
+}
+
+.tb-meta-label {
+  flex: none;
+  min-width: 66px;
+  opacity: .7
+}
+
+.tb-meta-value {
+  flex: 1;
+  min-width: 0
+}
+
+.tb-sec-title {
+  margin-top: 2px;
+  font-size: 11.5px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--bd);
+  padding-bottom: 3px
+}
+
+.tb-plan,
+.tb-progress,
+.tb-session,
+.tb-log {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--code);
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto
+}
+
+.tb-plan-loading {
+  color: var(--muted)
+}
+
+.tb-progress {
+  max-height: 200px
+}
+
+.tb-session {
+  max-height: 140px;
+  opacity: .85
+}
+
+.tb-log {
+  max-height: 220px;
+  font-size: 11.5px
+}

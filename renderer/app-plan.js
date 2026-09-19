@@ -177,11 +177,25 @@ function planDefaultProvider() {
   } catch (_) {}
   return "deepseek-official";
 }
+/* 这一条会话是不是「长任务世界」的会话（不适用普通会话的计划 / 任务清单那条线）：
+     · noPlanFlow —— 长周期任务新建窗的引导建图会话（app-longtask-guide.js 置位，见下）；
+     · ltBound    —— 长任务环节的运行档案会话（app-longtask.js 的 ltBindAgentSession 置位）；
+     · ltGuide    —— 引导会话的运行时别名（同 noPlanFlow，旧会话接回时补的那一份）。
+   为什么必须整档豁免：这两个入口的产物只能是**长周期任务状态机图**
+   （mtnode_app 的 create_longtask，或回复里那份图 JSON —— 见技能 mtnode-grill-me 的产出契约）。
+   少这道闸，宿主会把「任务流程」指令（复杂任务 → 本轮只输出 <!--MTNODE-PLAN--> 计划块）
+   塞给引导会话，模型于是交一份普通会话计划 + Todo 清单；用户看到的就是
+   「从长任务创建入口建出来的不是状态机图，而是一份会话计划与任务」。 */
+function planFlowExemptSession(st) {
+  return !!(st && (st.noPlanFlow || st.ltGuide || st.ltBound));
+}
 /* 是否给该轮注入「任务流程」类指令（计划执行器消息 / Skill / 计划进行中 / 弹窗挂起时跳过）。
    具体注入哪一段（重新规划 / 沿用现有计划）由 planFlowInjectText 决定。 */
 function planFlowInjectNeeded(st, opts, planExecMsg) {
   if (!st || planExecMsg) return false;
   if (opts && opts.planFlow === false) return false;
+  /* 长任务世界的会话自带产出契约（状态机图），绝不注入「交计划块」的指令 */
+  if (planFlowExemptSession(st)) return false;
   if (st._planExec || st._planDlgPending) return false;
   return typeof planFlowDirective === "function";
 }
@@ -2284,6 +2298,11 @@ async function planOfferDrain() {
      否则第一个弹窗 resolve 后会提前放行「任务流程」注入） */
 function planMaybeOffer(st, plan) {
   if (!st || !plan) return;
+  /* 长任务世界的会话（引导建图 / 环节运行档案）即使正文里带了计划块也一律不弹：
+     那一段多半是模型没走 create_longtask 的跑偏产物，把它变成普通会话计划
+     正是「长任务创建入口建出来的变普通会话计划」这一 bug。图由
+     app-longtask-guide.js 的兜底落库 / 自动纠偏接手（见 ltgSettle）。 */
+  if (planFlowExemptSession(st)) return;
   /* 弹窗与计划数据都钉上归属会话：确认后只可能开在这条会话上 */
   try {
     plan.sessId = String(st.id || "");

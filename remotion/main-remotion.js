@@ -22,6 +22,8 @@ const {
 const path = require("path");
 const fs = require("fs");
 const { spawn, execFile } = require("child_process");
+/* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 指路），见 plugin-error-repair.js */
+const pluginErrors = require("../plugin-error-repair.js");
 const {
   refreshStaleLock,
   tryAcquireLock,
@@ -141,6 +143,48 @@ function emitProgress(ev) {
   broadcast("remotion:progress", Object.assign({ id: PLUGIN_ID, ts: Date.now() }, ev || {}));
 }
 
+/**
+ * 失败上报：控制台窗内的 toast 只有开着那只窗的人看得到。把同一次失败送到报错总线，
+ * 让主窗口出一份带日志尾部的报告（总线内部吞异常，绝不影响主流程）。
+ * 本宿主没有 Agent 自我修复（安装是 npm install），所以不注册隐藏的 selfRepair 回落入口：
+ * 报告里的「🤖 自动修复」走渲染层那条看得见的会话（工作区 = usableInstallDir()），
+ * 判成修好后由渲染层重跑报错节点收尾（remotion 无常驻服务）。
+ * extra 一律带上 nodeId / nodeKind，报告才指得出是哪张卡住的节点。
+ */
+function reportErr(code, message, extra) {
+  try {
+    pluginErrors.reportPluginError(
+      PLUGIN_ID,
+      Object.assign({ code, message: String(message || "") }, extra || {}),
+    );
+  } catch {}
+}
+
+/**
+ * 安装阶段上报的公共上下文：报告窗靠 nodeId 指认「修完重跑哪个节点」，
+ * remotion 无常驻服务，渲染层那条收尾路径（app-repair.js）没有 nodeId 就只能提示用户手动重装。
+ */
+function installReportCtx(opts) {
+  const o = opts || {};
+  return {
+    phase: "install",
+    nodeId: String(o.nodeId || ""),
+    workflowId: String(o.workflowId || ""),
+    nodeKind: "remotion",
+  };
+}
+
+/** 渲染阶段上报上下文：与 installReportCtx 同一口径，报告窗据此指认「修完重跑哪个节点」。 */
+function renderReportCtx(params, nodeId) {
+  const p = params || {};
+  return {
+    phase: "render",
+    nodeId: String(nodeId || p.nodeId || ""),
+    workflowId: String(p.workflowId || ""),
+    nodeKind: "remotion",
+  };
+}
+
 function consoleTail(maxBytes) {
   try {
     const p = consoleLogPath();
@@ -155,6 +199,60 @@ function consoleTail(maxBytes) {
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+}
+
+/**
+ * 报错总线取「安装目录」：这个目录同时是渲染层「自动修复」会话的可写工作区（INSTALL_DIR），
+ * 所以必须核对它的**可得性**，不能把配置里写过的字符串原样交出去 ——
+ * 用户可能已经把目录删掉 / 换过盘，拿一个不存在的路径去修等于没有现场。
+ * 口径：配置目录存在 → 用它；不存在或没配 → 回落数据目录 %APPDATA%/pipeline-console/remotion
+ * （remotionRoot() 会顺手建出来，至少是一个能落盘、能看到 console.log 的真实现场）。
+ */
+function usableInstallDir() {
+  const cfgDir = String(loadConfig().installDir || "").trim();
+  if (cfgDir) {
+    try {
+      if (fs.existsSync(cfgDir)) return cfgDir;
+    } catch {}
+  }
+  try {
+    return remotionRoot();
+  } catch {
+    return cfgDir || "";
+  }
+}
+
+/**
+ * 注册后的一次性核对：把总线两个取现场入口（installDir / console.log）的实际可得性写进日志。
+ * 出问题时先看这一行，就知道报告里为什么没有目录、或为什么日志尾部是空的。
+ */
+function auditReportBusSources() {
+  const cfgDir = String(loadConfig().installDir || "").trim();
+  let dirExists = false;
+  try {
+    dirExists = !!cfgDir && fs.existsSync(cfgDir);
+  } catch {}
+  const tail = consoleTail(4096);
+  const usable = usableInstallDir();
+  appendConsole(
+    "[repair-bus] host=" +
+      PLUGIN_ID +
+      " installDir=" +
+      (cfgDir || "(未设置)") +
+      (cfgDir ? " exists=" + (dirExists ? 1 : 0) : "") +
+      " reportDir=" +
+      (usable || "(无)") +
+      " runtimeReady=" +
+      (usable && runtimeReadyAt(usable) ? 1 : 0) +
+      " consoleLog=" +
+      (tail && tail.ok ? "readable" : "unreadable:" + String((tail && tail.error) || "")),
+  );
+  if (!dirExists) {
+    appendConsole(
+      "[repair-bus] 安装目录不可得（多半是尚未「下载安装」）：报错报告改用数据目录作现场，修复前先补安装",
+    );
+  }
+  return { installDir: cfgDir, dirExists, reportDir: usable, logOk: !!(tail && tail.ok) };
 }
 
 function sleep(ms) {
@@ -228,6 +326,31 @@ function ensureUiRuntime() {
   copyDirRecursive(srcUi, destUi, []);
 }
 
+/* ── 产物 take 编号：目标文件已存在时固定用 #1、#2 … 标「第几个 take」 ──
+ *  旧版本固定贴 _1，且渲染层把改名后的路径写回节点，于是同一路径反复跑会叠成 foo_1_1_1。
+ *  这里统一：先剥掉末尾的 take 标记（#N 认号，_N / _0N 当旧标记剥掉），
+ *  再从「上一个号 + 1」起找第一个空号 —— 号只增不减，绝不叠加后缀。 */
+function takeStemParts(stem) {
+  let base = String(stem || "");
+  let from = 0;
+  for (let k = 0; k < 8; k++) {
+    const hash = base.match(/#(\d+)$/);
+    if (hash) {
+      const n = Number(hash[1]);
+      if (!from && n > 0) from = n;
+      base = base.slice(0, -hash[0].length);
+      continue;
+    }
+    const legacy = base.match(/_0*[1-9]\d{0,2}$/);
+    if (legacy) {
+      base = base.slice(0, -legacy[0].length);
+      continue;
+    }
+    break;
+  }
+  return { base: base || String(stem || ""), from };
+}
+
 function uniqueFileInDir(dir, preferredName, defaultExt) {
   mk(dir);
   let name = String(preferredName || "").trim() || "out" + (defaultExt || "");
@@ -238,8 +361,10 @@ function uniqueFileInDir(dir, preferredName, defaultExt) {
   if (!extMatch && ext) name = baseStem + ext;
   let dest = join(dir, name);
   if (!fs.existsSync(dest)) return { path: dest, filename: name, renamed: false };
-  for (let i = 1; i < 10000; i++) {
-    const fn = baseStem + "_" + i + ext;
+  const tk = takeStemParts(baseStem);
+  const head = tk.base || baseStem;
+  for (let i = tk.from + 1; i < tk.from + 10000; i++) {
+    const fn = head + "#" + i + ext;
     dest = join(dir, fn);
     if (!fs.existsSync(dest)) return { path: dest, filename: fn, renamed: true };
   }
@@ -335,16 +460,31 @@ function runNpmInstall(installDir, nodeId) {
 
 async function installProject(opts) {
   opts = opts || {};
-  if (installing) return { ok: false, error: "busy" };
+  if (installing) {
+    reportErr("busy", "Remotion 已有安装任务在跑，本次安装被拒", installReportCtx(opts));
+    return { ok: false, error: "busy" };
+  }
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
-  if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
+  if (!safe.ok) {
+    /* 目录没配 / 不合法同样是安装失败出口：总线按码给指路文案（bad_dir / refuse_root / refuse_system） */
+    const code = safe.error === "refuse_root" || safe.error === "refuse_system" ? safe.error : "bad_dir";
+    reportErr(
+      code,
+      code === "bad_dir" && !String(cfg.installDir || "").trim()
+        ? "Remotion 还没有设置安装目录：请先在「插件 · Remotion 动效视频」里选一个普通用户目录，再点「下载安装」"
+        : "Remotion 安装目录不合法（盘根 / 系统目录一律拒绝），请在「插件 · Remotion 动效视频」里重选一个普通用户目录后重试",
+      installReportCtx(opts),
+    );
+    return { ok: false, error: safe.error || "bad_dir" };
+  }
   const installDir = safe.path;
-  mk(installDir);
 
   installing = true;
   installCancel = false;
   try {
+    /* 建目录本身也可能失败（只读盘 / 权限）：放进 try 里，否则异常直接冒出 IPC，报告都不会有一份 */
+    mk(installDir);
     emitProgress({
       phase: "install",
       step: "disk",
@@ -354,6 +494,11 @@ async function installProject(opts) {
     });
     const free = await freeDiskGb(installDir);
     if (free != null && free < DISK_HINT_GB && !opts.force) {
+      reportErr(
+        "low_disk",
+        `磁盘剩余约 ${free}GB，建议预留 ≥${DISK_HINT_GB}GB（remotion 依赖 + 渲染器）`,
+        installReportCtx(opts),
+      );
       return {
         ok: false,
         error: "low_disk",
@@ -416,6 +561,7 @@ async function installProject(opts) {
     const msg = String((e && e.message) || e);
     appendConsole("[install] failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+    reportErr(msg, msg, installReportCtx(opts));
     return { ok: false, error: msg };
   } finally {
     installing = false;
@@ -918,18 +1064,31 @@ function killPidTree(pid) {
 async function renderVideo(params) {
   params = params || {};
   const nodeId = String(params.nodeId || "");
-  if (!nodeId) return { ok: false, error: "missing_node_id" };
+  if (!nodeId) {
+    /* 没有节点 id 也要出声：该码在总线里判成不可自动修，报告只指路，否则节点就是静默失败 */
+    reportErr("missing_node_id", "Remotion 渲染请求缺少节点 id（画布数据异常）", renderReportCtx(params, ""));
+    return { ok: false, error: "missing_node_id" };
+  }
 
   const cfg = loadConfig();
   const installDir = String(cfg.installDir || "").trim();
-  if (!installDir || !fs.existsSync(installDir)) return { ok: false, error: "not_installed" };
-  if (!runtimeReadyAt(installDir)) return { ok: false, error: "not_ready" };
+  if (!installDir || !fs.existsSync(installDir)) {
+    reportErr("not_installed", "Remotion 后端尚未安装（安装目录不存在）", renderReportCtx(params, nodeId));
+    return { ok: false, error: "not_installed" };
+  }
+  if (!runtimeReadyAt(installDir)) {
+    reportErr("not_ready", "Remotion 依赖未就绪：node_modules/remotion 缺失，请在插件卡片点「下载安装」重跑 npm install", renderReportCtx(params, nodeId));
+    return { ok: false, error: "not_ready" };
+  }
 
   const acq = tryAcquireLock({ nodeId, workflowId: params.workflowId || "", kind: "video_gen" });
   if (!acq.ok) {
     const lock = acq.lock;
+    const msg = busyMessage(lock) || "全局音视频锁被另一个节点占着（同一时刻只允许 1 个音乐 / 视频任务）";
     appendConsole("[job] busy_other_node: " + (lock && lock.nodeId ? lock.nodeId : ""));
-    return { ok: false, error: "busy_other_node", lock, message: busyMessage(lock) };
+    /* 锁被占也算失败出口：不报的话节点只是灰在那里，用户不知道该等谁 */
+    reportErr("busy_other_node", msg, renderReportCtx(params, nodeId));
+    return { ok: false, error: "busy_other_node", lock, message: msg };
   }
 
   let written = null;
@@ -960,6 +1119,7 @@ async function renderVideo(params) {
     appendConsole("[job] error: " + err);
     clearLock();
     emitProgress({ phase: "render", nodeId, message: err, error: true, pct: 0 });
+    reportErr(err, err, renderReportCtx(params, nodeId));
     return { ok: false, error: err, message: err };
   }
 }
@@ -986,6 +1146,7 @@ function cancelRender(nodeId) {
     error: true,
     cancelled: true,
   });
+  reportErr("cancelled", "渲染已取消（用户主动停止）", { phase: "render", nodeId: nid || hitNodeId });
   return { ok: true };
 }
 
@@ -1101,6 +1262,20 @@ function registerRemotionIpc(opts) {
 
   ensureUiRuntime();
   refreshStaleLock();
+
+  /* 报错总线：注册宿主。remotion 没有 dsh 安装链（安装 = npm install），所以只给
+     「取可用安装目录」与「取日志尾部」两个能力入口 —— 报告照发，「自动修复」不隐藏；
+     本宿主也无常驻服务，修完由渲染层（app-repair.js 的 resident:false 分支）走
+     「重跑报错节点」收尾，因此不注册 restart / selfRepair。 */
+  pluginErrors.registerPluginHost({
+    id: PLUGIN_ID,
+    name: "Remotion 动效视频",
+    skillName: "",
+    getInstallDir: () => usableInstallDir(),
+    tailConsole: (n) => consoleTail(n),
+  });
+  /* installDir 可得性核对：目录不可得时报告只剩日志尾部一个现场，先记一行说清现状 */
+  auditReportBusSources();
 
   ipcMain.handle("remotion:getStatus", async () => statusForUi());
   ipcMain.handle("remotion:pickInstallDir", async () => pickInstallDir());

@@ -91,16 +91,21 @@ async function main() {
     if (it.skillName) byName.set(String(it.skillName).toLowerCase(), it);
   }
 
+  /* 已改为随应用内置的技能（mtnode-agent-skills/music/）：从工坊下架，不再让用户去装 */
+  const RETIRED_SKILLS = new Set(["minimax-music-prompt", "minimax-music-lyrics"]);
   /* 移除曾误发布的插件安装 skill（不进用户工坊） */
   for (const it of listed.items || []) {
     const sn = String(it.skillName || "").toLowerCase();
-    if (!sn.endsWith("-install")) continue;
+    if (!sn.endsWith("-install") && !RETIRED_SKILLS.has(sn)) continue;
     try {
       await api("DELETE", "/api/skills/" + encodeURIComponent(it.id), null, token);
-      console.log("removed install skill from store", sn);
+      console.log(
+        sn.endsWith("-install") ? "removed install skill from store" : "retired skill from store",
+        sn,
+      );
       byName.delete(sn);
     } catch (e) {
-      console.warn("remove install skill failed", sn, e.message || e);
+      console.warn("remove skill failed", sn, e.message || e);
     }
   }
 

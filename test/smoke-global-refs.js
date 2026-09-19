@@ -281,6 +281,8 @@ const APP_FNS = [
 /* atMentionsOf / atRefSpanEnd 引用的三个切词常量（单行 const，走同一 fnBody 抽取） */
 const AT_REF_CONSTS = ["AT_REF_STOP", "AT_REF_EDGE", "AT_REF_WS_TEXT"];
 vm.runInContext(
+  /* 视频后处理（video_upscale / video_interp）判定：本节夹具不涉及，按非后处理节点回落 */
+  "function isVideoPostKind(){ return false; }\n" +
   extract(appSrc, APP_FNS) +
     "\n" +
     extract(appSrc, AT_REF_CONSTS) +

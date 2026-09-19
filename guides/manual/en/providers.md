@@ -77,7 +77,7 @@ Step 3 · Create and save the key: open the "API Keys" page → click "Create / 
 
 ### Enter the key into MTNode
 
-Open the app's "Settings → Model services (设置 → 模型服务)" → pick or add a provider (Deepseek Official) → paste the API key into the key box → save. After that you can pick that provider's models on a node and use them.
+Open the app's "Settings → Model services (设置 → 模型服务)" → pick or add a provider (Deepseek Official) → paste the API key into the key box and hit Done on that card. Everything on the Settings page **takes effect immediately and saves itself** — there is no "Save settings" button to press, just close the window when you are done. After that you can pick that provider's models on a node and use them.
 
 ### One last reminder
 

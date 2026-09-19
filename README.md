@@ -2,12 +2,12 @@
 
 把复杂 AI 工作流收束到一张可视化画布上的 Windows 桌面工具：文本 / 图像输入、LLM 文本处理与图像生成、音乐 / 视频生成、批量处理、任务控制流、AI Agent 会话，都以节点自由编排。
 
-**永久免费开源**（MIT License）：无收费、无订阅，随版本提供源码包；工作流可导出为 `.mtnodes` 包无损分享。当前版本 **1.2.9**。
+**永久免费开源**（MIT License）：无收费、无订阅，随版本提供源码包；工作流可导出为 `.mtnodes` 包无损分享。当前版本 **1.4.0**（版本号唯一真源是仓库根的 `version` 文件）。
 
 - **下载页面**：[http://mt-agent.com/mtnode](http://mt-agent.com/mtnode)（Windows 安装包与源码包）
 - **应用内手册**（右上角「文档」，源码在 [`guides/manual/`](guides/manual/)，目录见 [`index.json`](guides/manual/index.json)）
 - **节点指南**（节点右键「节点指南」，源码在 [`guides/nodes/`](guides/nodes/)）
-- **变更记录**：[`CHANGELOG-v1.1.md`](CHANGELOG-v1.1.md)
+- **变更记录**：每次发版写进提交说明（提交标题 `发布 vX.Y.Z`），完整历史见 [提交记录](https://github.com/shaomang/mtnode-aio/commits/main)
 
 ## Quick start
 
@@ -37,7 +37,7 @@
 
 ## 安装
 
-从[下载页面](http://mt-agent.com/mtnode)获取 Windows 安装包，一键安装后启动。应用自带更新：有新版本时右上角出现「更新」，确认后差分下载、静默安装并自动重启。
+从[下载页面](http://mt-agent.com/mtnode)获取 Windows 安装包，一键安装后启动。应用自带更新，见下文[版本更新](#版本更新)。
 
 首次启动后到「设置 · API/配置」填写服务商与 API Key 即可开始编排。
 
@@ -74,7 +74,7 @@ npm run release:store # 只出 Store 包（跳过 NSIS 打包与 stage-updates�
 
 ## 版本更新
 
-完整变更记录见 [`CHANGELOG-v1.1.md`](CHANGELOG-v1.1.md)；应用内「设置 · 版本更新」页（[`guides/manual/update.md`](guides/manual/update.md)）说明更新流程。
+应用内置差分更新：发现新版本时右上角出现「更新」，确认后只拉变更块、静默安装并自动重启（Microsoft Store 版由商店负责更新，应用内入口整条隐藏）。更新机制、更新源与环境变量见 [`scripts/UPDATES.md`](scripts/UPDATES.md)；逐版改动见 [提交记录](https://github.com/shaomang/mtnode-aio/commits/main)（每次发版一条 `发布 vX.Y.Z` 提交）。
 
 ## 许可证
 

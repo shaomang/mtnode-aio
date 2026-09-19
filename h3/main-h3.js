@@ -15,6 +15,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const http = require("http");
 const { spawn, execFile } = require("child_process");
 const crypto = require("crypto");
@@ -34,6 +35,8 @@ const {
   busyMessage,
 } = require("../media-gen-global-lock.js");
 const h3wf = require("./h3-workflows.js");
+/* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
+const pluginErrors = require("../plugin-error-repair.js");
 
 const PLUGIN_ID = "minimax-h3";
 const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
@@ -46,6 +49,34 @@ const GENERATE_MAX_MS = 60 * 60 * 1000;
 const CONSOLE_PANE_W = 360;
 const CONSOLE_PANE_MAX_W = 900;
 const CONSOLE_WIN_MIN_W = 420;
+
+/* EasyCache 在 MiniMax H3 上的质量安全档（4090 24G 实测口径，勿按官方默认随手改）。
+ *
+ * ComfyUI 原生 EasyCache 节点自带默认 0.2 / 0.15 / 0.95，那套是按「几十步的图像模型」
+ * 调的；H3 的生成链只有 20 步（官方 template 靠 turbo LoRA 压到 4–8 步、根本不用
+ * EasyCache），起点 0.15 会让缓存从第 3 步就生效，reuse 累计额度 0.2 又够大 ——
+ * 结果第 3 步起大段步骤直接复用上一版输出，实测（864×480 / 20 步 / 同种子）：
+ *   官方默认 0.2/0.15/0.95 → 与关缓存逐帧差异 mean 0.0385、max 0.1323，
+ *                             相邻帧抖动 mean 0.0119（关缓存 0.0092），画面明显跳变/漂移；
+ *   本档     0.08/0.30/0.90 → 差异 mean 0.004、抖动与关缓存基本一致（0.0092），
+ *                             且仍能实打实跳步（有加速收益）。
+ * 所以「开了 EasyCache 画质大幅下降」不是节点开关的问题，是这套复用阈值对 H3 的
+ * 20 步 schedule 太激进。默认值按本档下发；用户在「高级参数」里的自定义值仍尊重，
+ * 但夹到质量安全区间，避免再退回官方默认那种一开就废的档位。 */
+const EASY_SAFE = {
+  /* 三个都是「越小/越晚 = 画质越保真、越不加速」：reuse 小=更少跳步，start 大=更晚
+   * 进缓存，end 小=更早退出。默认值是实测下与关缓存几乎一致、又能跳步的那一档。 */
+  reuse: { min: 0.01, max: 0.2, value: 0.08 },
+  start: { min: 0.15, max: 0.6, value: 0.3 },
+  end: { min: 0.6, max: 1.0, value: 0.9 },
+};
+
+/** 夹取到 [min,max]；非有限数回落到 fallback。 */
+function clampNum(v, min, max, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
 
 const MODELS = {
   fl2va: "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
@@ -68,25 +99,1247 @@ const RATIOS = {
 const VRAM_SAFE_MAX_DIM = 1280;
 const VRAM_SAFE_MAX_MP = 0.98; /* ≈1280×768 */
 
-/* 4K 超分补帧后处理：Real-ESRGAN x4 超分 + RIFE 补帧（原生分辨率补帧→再超分，
- * 峰值显存最低，24G 内稳定）。RIFE 模型由 ComfyUI-Frame-Interpolation 提供，
- * RealESRGAN 走 ComfyUI 原生 UpscaleModelLoader + KJNodes 分块上采样。 */
+/* 独立后处理（超分 / 补帧）模型：两者已从 MiniMax H3 生成链拆出，各自单独成图。
+ *  Real-ESRGAN（x4plus 通用 / x2plus 原生 x2）走 ComfyUI 原生 UpscaleModelLoader +
+ *  KJNodes 分块上采样；RIFE 由 ComfyUI-Frame-Interpolation 提供。
+ *  x2plus 是可选权重：本机没有也能用 x2 倍率（走 x4 模型 + 输出端缩到 2 倍），
+ *  只是中间张量仍按 x4 算 —— 见 pickNativeX2Model / upscaleFactorOfModel。 */
 const POST_MODELS = {
   upscale: "RealESRGAN_x4plus.pth",
+  upscaleX2: "RealESRGAN_x2plus.pth",
   rife: "rife47.pth",
 };
+/* 超分倍率（对外可选项）：2 = 输出相对源放大 2 倍，4 = Real-ESRGAN x4 原生倍率。 */
+const POST_UPSCALE_SCALES = [2, 4];
 
-/* 按比例计算 4K 目标分辨率（长边 3840，短边按比例取偶） */
-function post4kDims(width, height) {
-  const w = Math.max(1, Math.round(Number(width) || 1344));
-  const h = Math.max(1, Math.round(Number(height) || 768));
+/* 后处理 24G 安全档默认值（4090 24G 口径）：超分逐帧（per_batch=1）、RIFE 低显存
+ * （batch_size=1 + 极小 clear_cache）。tile / lowVram 不直接进图（ComfyUI 的
+ * UpscaleModelLoader / ImageUpscaleWithModelBatched 没有这两个输入），
+ * 只在这里换算成 per_batch：lowVram 强制 1。 */
+const POST_SAFE_DEFAULTS = {
+  upscale: { model: POST_MODELS.upscale, scale: 4, targetLongSide: 3840, perBatch: 1, tile: 0, lowVram: true },
+  interp: { multiplier: 2, clearCacheEvery: 2, batchSize: 1, scaleFactor: 1.0 },
+};
+const POST_TARGET_LONG_SIDE_MIN = 1280;
+/* ComfyUI 的 UpscaleModelLoader.model_name 是 combo：候选值 = upscale_models 目录下的
+ * 「文件名（含扩展名）」。画布上老的 video_upscale 节点存的是不带扩展名的
+ * "RealESRGAN_x4plus"，直接下发会被判 value_not_in_list 拒图。 */
+const POST_MODEL_EXTS = [".pth", ".pt", ".safetensors", ".bin", ".onnx"];
+
+/* ── 系统内存（RAM）闸：超分把 64G 内存跑满、显存反而空着 ──────────────────
+ * 成因两层，都在 ComfyUI 侧，节点只是触发器：
+ *  ① 启动参数没给 ComfyUI 的**系统内存缓存**任何上限 → 默认活跃阈值 10% 内存（2–10G）、
+ *     非活跃阈值 100%（最高 128G）：节点产物（整段视频的帧张量，float32 一份就是几十 G）
+ *     会被尽可能久地留在 RAM 里，机器 64G 直接见顶（见 comfy_execution/caching.py
+ *     RAMPressureCache.ram_release 与 execution.py 的 ram_headroom）。
+ *  ② 超分链的峰值本来就是「RAM 里同时躺着帧张量 + 张量 float32 副本」，与显存无关：
+ *     KJNodes 的 ImageUpscaleWithModelBatched 是逐批过 GPU、结果 .cpu() 攒在 RAM，
+ *     最后 torch.cat + .float() 再复制一份 —— 显存空着是正常的，瓶颈在 CPU 侧内存。
+ * 所以这里做两件事：给后端加系统内存保留下限（--cache-ram，可在管理窗关掉），
+ * 以及提交前按「源分辨率 + 帧数」估一次峰值内存，超预算就自动降目标长边（见
+ * resolveUpscaleRamPlan / probeMp4Meta），而不是等机器被跑满。 */
+const POST_CACHE_RAM_ACTIVE_GB = 8;
+/** 系统内存保留比例：峰值预算 = min(可用内存, 总内存的一半) - POST_RAM_RESERVE_GB */
+const POST_RAM_RESERVE_GB = 6;
+
+/* ── 系统内存「持续攀升」护栏（后端进程本身不回收 → 每一单都比上一单更紧） ─────
+ * 上面那套内存闸（估峰值 + --cache-ram + 预缩放）管的是**单次**峰值；实测还有第二层问题：
+ *   ① ComfyUI 是常驻服务（stopBackend 只在用户点「停止」时才杀），`POST /free`
+ *      只卸模型、不清 glibc 的 arena，一个跑了 N 单 4K 超分 / RIFE 的 Python 进程
+ *      RSS 会一路上涨、**永不回落**（Windows 上尤其明显：malloc 不把大块还给系统）；
+ *   ② 于是第 N+1 单的可用内存比第 2 单少得多，内存闸再准也只是「在一台越来越小的机器上收敛」。
+ * 所以护栏要放在**任务之间**：每单收尾时量一次这台机器还剩多少内存、服务占了多少，
+ * 「守住的量 > 一半内存」或「本机已不足 POST_MEM_RAIL_MIN_FREE_GB」就把后端重启回收
+ * （不阻塞本次回执：后台等空闲再重启，下次任务自己拉起）。
+ * 度量取 /system_stats 的 system.ram_free（后端自己报的事实）而不是宿主 os.freemem()：
+ * 同一时刻同口径，算「守住的内存 = 这次量到的空闲 - 任务开始时看到的空闲」时不会被别的程序干扰。 */
+const POST_MEM_RAIL_MIN_FREE_GB = 6;
+/** 服务在两次采样之间「守住」的比例超过它 → 认为进程不回收（默认 0.5 = 一半内存） */
+const POST_MEM_RAIL_KEEP_RATIO = 0.5;
+/** 硬闸：启动任务前空闲内存低于总内存这个比例 → 先回收（哪怕还有余量也别在悬崖边跑） */
+const POST_MEM_RAIL_GUARD_RATIO = 0.35;
+/** /system_stats 内存采样的复用窗口：状态轮询每 4 秒一次，不许每次都打后端 */
+const COMFY_RAM_STATS_TTL_MS = 60000;
+/** 单个 float32 像素占 4 字节；图像张量一律 float32（ComfyUI IMAGE 口径） */
+const BYTES_PER_F32_PX = 4;
+/* OOM 判据：ComfyUI 把 torch 的显存报错放进 execution_error 的 messages，最终落在 err.detail。
+ * 刻意只认「显存不足」这一族（含 Windows 的 "CUDA error: out of memory"），
+ * 别的 CUDA 报错不降档重试，免得掩盖真问题。 */
+const POST_OOM_RE =
+  /out of memory|OutOfMemory|insufficient memory|allocation on device|CUBLAS_STATUS_ALLOC_FAILED|CUDNN_STATUS_ALLOC_FAILED/i;
+
+/* ── 超分引擎选路：逐帧流式（默认）vs ComfyUI 图（兜底） ──────────────────────
+ * 旧图链（LoadVideo → ImageUpscaleWithModelBatched → CreateVideo）把**整段视频的帧张量 +
+ * float32 副本**全攒在系统内存里，峰值 ∝ 时长：15s@720p 走 x4 中间张量就 ~21GB，
+ * 所以 64G 会见顶、16G 根本跑不动（成因见上面 RAM 闸注释与 h3-pack/post/stream_upscale.py 头注释）。
+ * 新链逐帧 decode → 按 tile 分块过模型 → 立刻编码写盘，常驻内存只与「一个 tile + 一帧」有关，
+ * 与时长无关 —— 16G 机器也能跑 15 秒级 x2/x4 超分。
+ * 这里只做选路：能跑流式就走流式；缺脚本 / 缺 venv / 用户显式要图时原样回退旧图（控制台写明原因）。 */
+const POST_STREAM_SCRIPT = "stream_upscale.py";
+/* 流式补帧（RIFE）：脚本与超分同目录随包（h3-pack/post/），权重按 ComfyUI-Frame-Interpolation
+ * 的既有落点探测 —— 顺序与 stream_interp.py 的 RIFE_WEIGHT_PREFERENCE 一字对齐，
+ * 缺权重时选路直接回退图（见 resolvePostEngine 的 interp_weights_missing）。 */
+const POST_STREAM_INTERP_SCRIPT = "stream_interp.py";
+const POST_RIFE_WEIGHT_PREFERENCE = ["rife49.pth", "rife47.pth", "rife417.pth", "rife426.pth"];
+const POST_STREAM_DEFAULT_TILE = 512;
+const POST_STREAM_DEFAULT_OVERLAP = 16;
+const POST_STREAM_DEFAULT_CRF = 17;
+const POST_STREAM_DEFAULT_PRESET = "medium";
+/** fp16 前向的显存下限（GB）：小于它落 fp32（宿主量不到显存时按 lowVram 档算，见 resolvePostOptions） */
+const POST_STREAM_MIN_FP16_VRAM_GB = 6;
+
+/** 源分辨率 → 目标长边像素（按比例，取偶） */
+function postDimsForLongSide(width, height, longSide) {
+  const w = Math.max(1, Math.round(Number(width) || 1));
+  const h = Math.max(1, Math.round(Number(height) || 1));
   const long = Math.max(w, h);
-  const scale = 3840 / long;
-  let tw = Math.round(w * scale);
-  let th = Math.round(h * scale);
-  if (tw % 2) tw += 1;
-  if (th % 2) th += 1;
+  const target = Math.max(1, Math.round(Number(longSide) || long));
+  const scale = target / long;
+  let tw = Math.max(2, Math.round((w * scale) / 2) * 2);
+  let th = Math.max(2, Math.round((h * scale) / 2) * 2);
   return [tw, th];
+}
+
+/* ── 超分倍率（x2 / x4） ───────────────────────────────────────────────────
+ * 倍率决定两件事，二者必须分开看：
+ *  ① 输出尺寸 = min(目标长边, 源长边 × 倍率) —— 「x2」= 画面只放大一倍；
+ *  ② 模型固有倍数（权重名里的 x2 / x4）决定**中间张量**多大 —— 峰值内存的主项。
+ * 本机只有 x4plus 时选 x2 也成立（输出端 ImageScale 从 x4 缩到 2 倍），
+ * 但中间张量仍是 x4 口径，内存估算按模型算而不是按倍率算（见 upscaleFactorOfModel）。 */
+function normalizeUpscaleScale(raw) {
+  const n = Math.round(Number(raw) || 0);
+  return POST_UPSCALE_SCALES.indexOf(n) >= 0 ? n : POST_SAFE_DEFAULTS.upscale.scale;
+}
+
+/** 权重文件名 → 模型固有放大倍数：带 x2 / 2x 的按 2，其余按 x4（Real-ESRGAN 家族口径）。 */
+function upscaleFactorOfModel(name) {
+  return /x2|2x/i.test(String(name == null ? "" : name)) ? 2 : 4;
+}
+
+/** 从本机 upscale_models 清单里挑一个原生 x2 权重（没有就返回空串，走 x4 模型兜底）。 */
+function pickNativeX2Model(available) {
+  if (!Array.isArray(available) || !available.length) return "";
+  const x2 = available.filter((f) => upscaleFactorOfModel(f) === 2);
+  if (!x2.length) return "";
+  const key = (s) => String(s).toLowerCase();
+  for (const f of x2) if (key(f) === key(POST_MODELS.upscaleX2)) return f;
+  return x2[0];
+}
+
+/** 超分输出长边：倍率是上限（x2 不会被目标长边拉到 4 倍），目标长边仍是画质上限。 */
+function upscaleOutputLongSide(targetLongSide, sourceLong, scale) {
+  const k = normalizeUpscaleScale(scale);
+  const cap = Math.max(0, Math.round(Number(sourceLong) || 0)) * k;
+  const want = Math.round(Number(targetLongSide) || 0);
+  if (cap <= 0) return want;
+  if (want <= 0) return cap;
+  return Math.min(want, cap);
+}
+
+/* ─────────────── MP4 元数据（估内存用，不解码视频） ───────────────
+ * 只为「这一单要多少内存」服务：从 moov 里读 mvhd 的时长/时间基、视频轨的 tkhd 宽高与
+ * stts 采样数（= 帧数）。全是容器级字段，不用 ffmpeg / 不用解码，毫秒级。
+ * 读不到（fragmented mp4 / 异常文件）一律返回 null —— 估不出来的路径不阻断任务。 */
+
+/** 会套子 box 的容器（递归只往这些里钻；别的 box 直接跳过，免得白扫几十 MB 的 mdat） */
+const CONTAINER_BOXES = ["moov", "trak", "mdia", "minf", "stbl", "edts", "udta", "meta"];
+
+/** 在 [start,end) 里**递归**找第一个 `type` box（moov 是嵌套的：trak → mdia → minf → stbl →
+ *  stts，hdlr 也藏在 mdia 里，只看某一层会全部漏掉）。返回 { start, end } 或 null。 */
+function findBoxDeep(buf, start, end, type) {
+  let at = start;
+  while (at + 8 <= end) {
+    let size = buf.readUInt32BE(at);
+    const t = buf.toString("latin1", at + 4, at + 8);
+    let head = 8;
+    if (size === 1) {
+      if (at + 16 > end) return null;
+      size = Number(buf.readBigUInt64BE(at + 8));
+      head = 16;
+    } else if (size === 0) {
+      size = end - at;
+    }
+    if (size < head || at + size > end) return null;
+    if (t === type) return { start: at + head, end: at + size };
+    /* 容器：只往会套东西的 box 里钻，别的（mdat / 采样表叶子）不钻，免得白扫几十 MB */
+    if (CONTAINER_BOXES.indexOf(t) >= 0) {
+      const hit = findBoxDeep(buf, at + head, at + size, type);
+      if (hit) return hit;
+    }
+    at += size;
+  }
+  return null;
+}
+
+/** 读一个 moov buffer：时长（秒）/ 视频轨帧数 / 视频轨宽高（按旋转矩阵换算成显示方向） */
+function readMoovMeta(moov) {
+  let duration = 0;
+  let frames = 0;
+  let width = 0;
+  let height = 0;
+  const mvhd = findBoxDeep(moov, 0, moov.length, "mvhd");
+  if (mvhd) {
+    const version = moov[mvhd.start];
+    /* mvhd：ver/flags(4) + ctime + mtime + timescale(4) + duration(4/8)（ISO/IEC 14496-12）。
+     * version 0 的 ctime/mtime 各 4 字节 → timescale 在 +12、duration 在 +16；
+     * version 1 各 8 字节 → +20 / +24。别想当然：实测真实文件（ComfyUI 导出的 mp4）里
+     * 把 ctime 当成 8 字节去读会拿到 timescale=0，读不出时长。 */
+    const tsOff = mvhd.start + (version === 1 ? 20 : 12);
+    const durOff = mvhd.start + (version === 1 ? 24 : 16);
+    const timescale = tsOff + 4 <= mvhd.end ? moov.readUInt32BE(tsOff) : 0;
+    const raw =
+      durOff + 8 <= mvhd.end
+        ? version === 1
+          ? Number(moov.readBigUInt64BE(durOff))
+          : moov.readUInt32BE(durOff)
+        : 0;
+    if (timescale > 0 && raw > 0) duration = raw / timescale;
+  }
+  /* 轨道要从 moov 里逐个 trak 走（hdlr / tkhd / stts 都藏在 trak → mdia → minf → stbl 下），
+   * 只认第一条 hdlr.handler_type == 'vide' 的轨（音轨 tkhd 宽高为 0，认错了估出来是 0）。 */
+  let at = 0;
+  while (at + 8 <= moov.length) {
+    let size = moov.readUInt32BE(at);
+    const t = moov.toString("latin1", at + 4, at + 8);
+    let head = 8;
+    if (size === 1) {
+      if (at + 16 > moov.length) break;
+      size = Number(moov.readBigUInt64BE(at + 8));
+      head = 16;
+    } else if (size === 0) {
+      size = moov.length - at;
+    }
+    if (size < head || at + size > moov.length) break;
+    if (t === "trak") {
+      const trakStart = at + head;
+      const trakEnd = at + size;
+      const hdlr = findBoxDeep(moov, trakStart, trakEnd, "hdlr");
+      /* hdlr：version/flags(4) + pre_defined(4) + handler_type(4) */
+      if (hdlr && moov.toString("latin1", hdlr.start + 8, hdlr.start + 12) === "vide") {
+        const tkhd = findBoxDeep(moov, trakStart, trakEnd, "tkhd");
+        if (tkhd) {
+          const version = moov[tkhd.start];
+          /* version 0：(ver/flags 4)(ctime 4)(mtime 4)(track_id 4)(reserved 4)(duration 4)
+           *             (reserved 8)(layer 2)(alt 2)(volume 2)(reserved 2)(matrix 36)
+           *             → w/h 各 16.16 定长点在 +76 / +80；version 1 表头多 12 字节 → +88 / +92。
+           * （实测 ComfyUI 导出的 mp4 就是 +76 / +80，别把矩阵想成 8 字节对齐。） */
+          const whOff = tkhd.start + (version === 1 ? 88 : 76);
+          if (whOff + 8 <= tkhd.end) {
+            const w = moov.readUInt32BE(whOff) / 65536;
+            const h = moov.readUInt32BE(whOff + 4) / 65536;
+            if (w > 0 && h > 0) {
+              width = Math.round(w);
+              height = Math.round(h);
+            }
+          }
+          /* 旋转矩阵（36 字节 = 9 个 16.16 定长点，a 与 c 是第 1 / 第 5 个）：
+           * a=c=0 或矩阵全零 → 画幅转了 90/270 度（或没写矩阵），显示宽高要对调；
+           * 正常横片是 a=d=1、b=c=0（单位矩阵），绝不能当旋转把宽高换掉。 */
+          const matOff = tkhd.start + (version === 1 ? 52 : 40);
+          if (matOff + 20 <= tkhd.end) {
+            const a = moov.readInt32BE(matOff) / 65536;
+            const c = moov.readInt32BE(matOff + 16) / 65536;
+            const d = moov.readInt32BE(matOff + 20) / 65536;
+            const identity = Math.abs(a - 1) < 0.01 && Math.abs(d - 1) < 0.01 && !c;
+            if (!identity && !a && !c && width && height) {
+              const swap = width;
+              width = height;
+              height = swap;
+            }
+          }
+        }
+        const stts = findBoxDeep(moov, trakStart, trakEnd, "stts");
+        if (stts) {
+          /* stts：ver/flags(4) + entry_count(4) + [sample_count(4) + sample_delta(4)]×N
+           * 帧数 = 各条 sample_count 之和（容器级，不解码）。
+           * 注意 sample_count 在记录首字段 → 偏移是 +8 / +16…，别读成 sample_delta。 */
+          const count = stts.start + 8 <= stts.end ? moov.readUInt32BE(stts.start + 4) : 0;
+          let total = 0;
+          for (let i = 0; i < count; i++) {
+            const off = stts.start + 8 + i * 8;
+            if (off + 8 > stts.end) break;
+            total += moov.readUInt32BE(off);
+          }
+          if (total > 0) frames = total;
+        }
+        break; /* 只认第一条视频轨 */
+      }
+    }
+    at += size;
+  }
+  return { duration, frames, width, height };
+}
+
+/** 读源视频容器元数据（只读头尾两个窗口，不整文件进内存） */
+function probeMp4Meta(filePath) {
+  let fd = null;
+  try {
+    const size = fs.statSync(filePath).size;
+    if (!size || size < 16) return null;
+    fd = fs.openSync(filePath, "r");
+    /* moov 可能在前也可能在后（未 faststart 的导出在尾部），先扫头部；扫不到再扫尾部 24MB */
+    const scan = (offset, len) => {
+      const buf = Buffer.alloc(len);
+      const n = fs.readSync(fd, buf, 0, len, offset);
+      const view = n === len ? buf : buf.subarray(0, n);
+      const found = findBoxDeep(view, 0, view.length, "moov");
+      return found ? view.subarray(found.start, found.end) : null;
+    };
+    const head = scan(0, Math.min(size, 8 * 1024 * 1024));
+    const moov =
+      head ||
+      (size > 8 * 1024 * 1024
+        ? scan(Math.max(0, size - 24 * 1024 * 1024), Math.min(size, 24 * 1024 * 1024))
+        : null);
+    if (!moov) return null;
+    const meta = readMoovMeta(moov);
+    return meta.frames > 0 ? meta : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+/** 系统内存：总 / 可用（GB）。取不到（null）就按「不设预算」处理，绝不误降档。 */
+function systemRamGb() {
+  try {
+    const total = Number(os.totalmem()) / 1024 ** 3;
+    const free = Number(os.freemem()) / 1024 ** 3;
+    return {
+      total: Number.isFinite(total) && total > 0 ? total : null,
+      free: Number.isFinite(free) && free >= 0 ? free : null,
+    };
+  } catch {
+    return { total: null, free: null };
+  }
+}
+
+/** 取 >0 的有限数，否则 null（缺字段 / 0 / NaN 一律当「没量到」） */
+function posNumOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** GB 数值（保留 1 位），给控制台 / 状态回显用 */
+function gb1(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+}
+
+/* ComfyUI 的 /system_stats 里 system.ram_free / ram_total 是字节；
+ * 不同版本可能改用 free_memory（MB）等别名，所以按候选键依次认。
+ * probeComfy 只判状态码，这里顺手把它已经取过的那次响应缓存 60 秒给内存口径复用，
+ * 免得状态轮询每 4 秒各打一次 /system_stats。 */
+let comfyRamStatsCache = { at: 0, port: 0, origin: "", ram: null };
+
+/**
+ * 读一次后端的系统内存事实（空闲 / 总量，GB）。取不到返回 {free:null,total:null}
+ * —— 量不到时所有护栏一律放行，绝不误杀任务。
+ * @param {number} port
+ * @param {{reuse?: boolean}} [opts] reuse=true（默认）时 60 秒内的同端口结果直接复用
+ */
+async function probeComfyRamStats(port, opts) {
+  const p = Number(port) || DEFAULT_PORT;
+  const reuse = !opts || opts.reuse !== false;
+  const now = Date.now();
+  if (reuse && comfyRamStatsCache.ram && comfyRamStatsCache.port === p && now - comfyRamStatsCache.at < COMFY_RAM_STATS_TTL_MS) {
+    return comfyRamStatsCache.ram;
+  }
+  const empty = { free: null, total: null };
+  let json = null;
+  try {
+    const r = await httpJson("GET", `http://127.0.0.1:${p}/system_stats`, null, 2500);
+    json = (r && r.json) || null;
+  } catch {
+    json = null;
+  }
+  const sys = (json && json.system) || {};
+  const bytes = (raw) => {
+    const n = posNumOrNull(raw);
+    return n == null ? null : (n > 1024 * 1024 ? n : n * 1024 * 1024) / 1024 ** 3;
+  };
+  const memPick = (bKeys, mbKeys) => {
+    for (const k of bKeys) {
+      const v = bytes(sys[k]);
+      if (v != null) return v;
+    }
+    for (const k of mbKeys) {
+      const n = posNumOrNull(sys[k]);
+      if (n != null) return n / 1024;
+    }
+    return null;
+  };
+  const ram = {
+    free: memPick(["ram_free"], ["free_memory", "ram_free_mb"]),
+    total: memPick(["ram_total"], ["total_memory", "ram_total_mb"]),
+  };
+  comfyRamStatsCache = { at: now, port: p, origin: "comfy", ram };
+  return ram;
+}
+
+/** 把这次任务前后两次采样的可用内存换算成「服务守住 / 本机紧张」判决。
+ *  usedFrom 为 null（第一单量不到起点）时只能靠绝对水位判，判不出就返回 null = 放行。 */
+function ramRailVerdict(beforeFreeGb, afterFreeGb, totalGb) {
+  const before = posNumOrNull(beforeFreeGb);
+  const after = posNumOrNull(afterFreeGb);
+  const total = posNumOrNull(totalGb);
+  const minFree = total ? total * (1 - POST_MEM_RAIL_GUARD_RATIO) : null;
+  const keptGb = before != null && after != null && before - after > 0 ? before - after : 0;
+  const keptRatio = total ? keptGb / total : null;
+  const tightNow = after != null && (after <= POST_MEM_RAIL_MIN_FREE_GB || (minFree != null && after < minFree));
+  const keepTooMuch = before != null && after != null && keptRatio != null && keptRatio > POST_MEM_RAIL_KEEP_RATIO;
+  return {
+    beforeGb: gb1(before),
+    afterGb: gb1(after),
+    totalGb: gb1(total),
+    keptGb: gb1(keptGb),
+    keptPct: keptRatio == null ? null : Math.round(keptRatio * 100),
+    tightNow,
+    keepTooMuch,
+    recycle: !!(before != null && after != null && (tightNow || keepTooMuch)),
+  };
+}
+
+/**
+ * 等后端空闲（没有别的任务占着媒体锁 / 没有在跑的生成）最多 waitMs。
+ * 回收是「任务之间」的动作：绝不能把另一个正在跑的任务的后端杀掉。
+ */
+async function waitBackendIdle(waitMs) {
+  const deadline = Date.now() + Math.max(0, Number(waitMs) || 0);
+  for (;;) {
+    const lock = refreshStaleLock();
+    if (!lock && !activeGenerate) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(2000);
+  }
+}
+
+/**
+ * 系统内存水位监视：每 2 秒采一次可用内存，记下最低值。
+ * 只服务一件事 —— 把「跑满的是系统内存、显存反而空着」变成控制台里的实测数字，
+ * 用户不必猜是不是显存不够（超分链本来就是逐帧过 GPU、帧张量攒在 RAM）。
+ */
+function startRamWatch() {
+  const start = systemRamGb();
+  const w = {
+    minFree: start.free,
+    total: start.total,
+    stop() {
+      if (w.timer) clearInterval(w.timer);
+      w.timer = null;
+      return w;
+    },
+  };
+  try {
+    w.timer = setInterval(() => {
+      const now = systemRamGb();
+      if (now.free != null && (w.minFree == null || now.free < w.minFree)) w.minFree = now.free;
+    }, 2000);
+    if (w.timer.unref) w.timer.unref();
+  } catch {}
+  return w;
+}
+
+/** 收尾：把这一单实测到的系统内存水位写进控制台（有压力才提醒，正常时只留一行事实）。 */
+function appendPostRamReport(watch, ok) {
+  if (!watch) return;
+  const w = watch.stop();
+  if (w.total == null || w.minFree == null) return;
+  const used = Math.max(0, Math.round(w.total - w.minFree));
+  appendConsole(
+    "[post] " +
+      (ok ? "完成" : "结束") +
+      " · 系统内存最低剩 " +
+      Math.round(w.minFree) +
+      "G / 共 " +
+      Math.round(w.total) +
+      "G（峰值占用约 " +
+      used +
+      "G，均含系统与其它程序）",
+  );
+  if (w.minFree <= 2) {
+    appendConsole(
+      "[post] [warn] 本机系统内存已被跑满：这是超分链的固有峰值（整段视频的帧张量 + float32 副本都在 RAM，" +
+        "逐帧过 GPU，所以显存反而是空的）。已启用 --cache-ram 在内存吃紧时释放 ComfyUI 的产物缓存；" +
+        "仍吃紧请降目标长边 / 缩短时长 / 降帧率，或换内存更大的机器。",
+    );
+  }
+}
+
+/**
+ * 超分单的峰值系统内存估算（GB）。
+ * 峰值 ≈ max(源帧张量, 超分中间张量, 输出尺寸帧张量) + 一份同量级的拼接/float32 暂存 + 固定开销。
+ * 依据 KJNodes ImageUpscaleWithModelBatched 的真实实现（逐批过 GPU → .cpu() 攒着 →
+ * torch.cat → .float() 再复制一份），所以「显存空着、内存见顶」是这条链的常态。
+ * 两个倍数分开算，别混：
+ *  · 中间张量按**模型固有倍数**（权重名 x2 → 4 倍像素，x4 → 16 倍像素）——它是峰值主项，
+ *    且只由源分辨率决定，与目标长边无关（所以只降目标长边对「进超分模型前的那些帧」没用，
+ *    见 resolveUpscaleRamPlan 的预缩放）；
+ *  · 输出张量按**用户选的倍率**（x2 时输出 = 源 × 2，输出端的 ImageScale 把 x4 模型的产物缩回来）。
+ * upscaleOpts 省略时按 x4 模型 + x4 倍率（历史口径）。
+ */
+function estimateUpscaleRamGb(sourceW, sourceH, targetLongSide, frames, upscaleOpts) {
+  const f = Math.max(0, Math.round(Number(frames) || 0));
+  const sw = Math.max(0, Math.round(Number(sourceW) || 0));
+  const sh = Math.max(0, Math.round(Number(sourceH) || 0));
+  if (!f || !sw || !sh) return null;
+  const gb = (px) => (px * f * BYTES_PER_F32_PX) / 1024 ** 3;
+  const opts = upscaleOpts && typeof upscaleOpts === "object" ? upscaleOpts : {};
+  const modelFactor = upscaleFactorOfModel(opts.model || POST_MODELS.upscale);
+  const outScale = normalizeUpscaleScale(opts.scale);
+  const sourceGb = gb(Math.floor(sw / 2) * 2 * (Math.floor(sh / 2) * 2));
+  const mid = gb(Math.floor(sw / 2) * 2 * modelFactor * (Math.floor(sh / 2) * 2 * modelFactor));
+  let target = 0;
+  const long = Math.max(sw, sh);
+  if (Number(targetLongSide) > 0 && long > 0) {
+    const outLong = upscaleOutputLongSide(
+      Math.max(POST_TARGET_LONG_SIDE_MIN, Math.round(Number(targetLongSide))),
+      long,
+      outScale,
+    );
+    const [tw, th] = postDimsForLongSide(sw, sh, Math.max(POST_TARGET_LONG_SIDE_MIN, outLong));
+    target = gb(tw * th);
+  }
+  const peak = Math.max(sourceGb, mid, target);
+  return Math.round((peak + peak * 0.6 + 1.5) * 10) / 10;
+}
+
+/** 按候选的超分参数估峰值（把「预缩放过的源尺寸」也算进去） */
+function estimatePostPeakRamGb(srcW, srcH, upscaleOpts, frames) {
+  const scale = Number(upscaleOpts && upscaleOpts.preScale);
+  const k = Number.isFinite(scale) && scale > 0 && scale < 1 ? scale : 1;
+  const long = Math.max(Number(srcW) || 0, Number(srcH) || 0);
+  const preLong = k < 1 && long > 0 ? Math.max(1, Math.round(long * k)) : 0;
+  const [w, h] = preLong > 0 ? postDimsForLongSide(srcW, srcH, preLong) : [srcW, srcH];
+  return estimateUpscaleRamGb(
+    w,
+    h,
+    (upscaleOpts && upscaleOpts.targetLongSide) || 0,
+    frames,
+    upscaleOpts,
+  );
+}
+
+function planGbText(gb) {
+  return gb == null ? "" : Math.round(Number(gb) * 10) / 10 + "G";
+}
+
+/**
+ * 超分提交前的内存闸。峰值主项是「帧张量 × 模型倍数²（x4 权重 → ×16）」且只由源像素决定，
+ * 所以依次做两件事：
+ *  ① 目标长边二分（区间 [最低档, 请求值]）：目标越小 → 交回 RAM 的帧张量越小；
+ *  ② 到最低档仍超预算 → **进超分前先把源帧整体缩到某个比例**（preScale / preDims）：
+ *     源少 k² 倍，中间张量就少 k² 倍，这是唯一能真正压住峰值的杠杆（代价：最终画面是
+ *     「缩了再放大」，不如直接从源放大细腻，但总比把整机内存跑满强）。
+ * 预算 = min(当前可用内存, 总内存一半) - POST_RAM_RESERVE_GB；取不到元数据 / 系统内存则不调整。
+ * 返回 { opts(含 preScale/preDims), meta, frames, budgetGb, beforeGb, afterGb, downgraded, overBudget }。
+ */
+function resolveUpscaleRamPlan(opts, sourceW, sourceH) {
+  const plan = {
+    meta: null,
+    frames: 0,
+    budgetGb: null,
+    beforeGb: null,
+    afterGb: null,
+    downgraded: false,
+    overBudget: false,
+    stream: false,
+  };
+  let next = Object.assign({}, opts);
+  const src = String(opts && opts.sourcePath ? opts.sourcePath : "");
+  const meta = src ? probeMp4Meta(src) : null;
+  if (!meta) return Object.assign(plan, { opts: next });
+  plan.meta = {
+    duration: Math.round((meta.duration || 0) * 100) / 100,
+    width: meta.width,
+    height: meta.height,
+  };
+  plan.frames = meta.frames;
+  const w = Number(sourceW) || meta.width || 0;
+  const h = Number(sourceH) || meta.height || 0;
+  const ram = systemRamGb();
+  if (ram.total) {
+    const half = ram.total / 2;
+    const usable = Math.min(ram.free != null ? ram.free : half, half);
+    plan.budgetGb = Math.max(2, Math.round((usable - POST_RAM_RESERVE_GB) * 10) / 10);
+  }
+  plan.beforeGb = estimateUpscaleRamGb(w, h, next.targetLongSide, meta.frames, next);
+  /* 流式档（超分 / 补帧共用这条判定）：超分新链逐帧 decode → 分块 → 立刻编码，
+   * 补帧新链逐对插值 → 立刻编码，两者常驻内存都只与「当前那一帧 / tile + 模型」有关、
+   * 与时长无关（见 h3-pack/post/stream_upscale.py 与 stream_interp.py 头注释），
+   * 所以这里**不做任何降档**：不二分目标长边、也不做 preScale 预缩放、更不降倍率
+   * —— 源越清晰成片越好，内存不再是约束。
+   * 上面的 beforeGb 只是旧图链口径的对照数字，照样打进控制台。图档行为一字未变。 */
+  if (String(next.engine || "") === "stream") {
+    plan.stream = true;
+    plan.afterGb = plan.beforeGb;
+    return Object.assign(plan, { opts: next });
+  }
+  if (plan.beforeGb == null || plan.budgetGb == null || plan.beforeGb <= plan.budgetGb) {
+    plan.afterGb = plan.beforeGb;
+    return Object.assign(plan, { opts: next });
+  }
+
+  /* ① 目标长边二分：找「刚好放得进预算」的最大目标（画质损失最小的一档） */
+  const reqTarget = Math.max(
+    POST_TARGET_LONG_SIDE_MIN,
+    Math.round(Number(next.targetLongSide) || POST_TARGET_LONG_SIDE_MIN),
+  );
+  let lo = POST_TARGET_LONG_SIDE_MIN;
+  let hi = reqTarget;
+  let best = null;
+  for (let i = 0; i < 8 && lo <= hi; i++) {
+    const mid = Math.floor((lo + hi) / 2);
+    const probe = Object.assign({}, next, { targetLongSide: mid });
+    const gb = estimatePostPeakRamGb(w, h, probe, meta.frames);
+    if (gb != null && gb <= plan.budgetGb) {
+      best = probe;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (best) {
+    next = best;
+    plan.downgraded = true;
+    plan.afterGb = estimatePostPeakRamGb(w, h, next, meta.frames);
+    return Object.assign(plan, { opts: next });
+  }
+
+  /* ② 目标已到最低档仍超预算（源本身太大）：进超分前预缩放源帧。
+   *    步长 0.1 从大到小试，取「放得进预算且缩得最少」的那一档。 */
+  const long = Math.max(Number(w) || 0, Number(h) || 0);
+  let chosen = null;
+  for (let step = 9; step >= 1; step--) {
+    const k = step / 10;
+    const preLong = Math.max(2, Math.round(long * k));
+    const [pw, ph] = postDimsForLongSide(w, h, preLong);
+    const cand = Object.assign({}, next, { preScale: k, preDims: [pw, ph], targetLongSide: preLong });
+    const gb = estimatePostPeakRamGb(w, h, cand, meta.frames);
+    if (gb != null && gb <= plan.budgetGb) {
+      chosen = { opts: cand, gb };
+      break;
+    }
+  }
+  if (!chosen) {
+    /* 连 0.1 倍都放不进预算：用最小档下发并标 overBudget，让控制台把代价说清楚 */
+    const k = 0.1;
+    const preLong = Math.max(2, Math.round(long * k));
+    const [pw, ph] = postDimsForLongSide(w, h, preLong);
+    const cand = Object.assign({}, next, { preScale: k, preDims: [pw, ph], targetLongSide: preLong });
+    chosen = { opts: cand, gb: estimatePostPeakRamGb(w, h, cand, meta.frames) };
+    plan.overBudget = true;
+  }
+  next = chosen.opts;
+  plan.downgraded = true;
+  plan.afterGb = chosen.gb;
+  return Object.assign(plan, { opts: next });
+}
+
+/* ── 流式超分的运行件定位 ─────────────────────────────────────────────────
+ * 解释器取 ComfyUI 隔离 venv（torch / av / kornia 都装在那里，与安装流程同一路径口径）；
+ * 脚本取 h3-pack 整目录随包（build.json extraResources）——打包态从 process.resourcesPath
+ * 拿（同 bundledPackRoot() 口径），再兜运行时更新包 packRoot()。 */
+
+/** 流式超分用的解释器路径：<ComfyUI 目录>/venv/Scripts/python.exe（不判存在，缺件时供日志指认；
+ *  注意与 installDir 口径的 comfyVenvPython() 区分——这里吃的是 comfyDir() 的结果） */
+function streamVenvPython(comfy) {
+  const c = String(comfy || "");
+  if (!c) return "";
+  return join(c, "venv", "Scripts", "python.exe");
+}
+
+/** 流式超分脚本路径（不保证存在；取不到时返回首选候选，供控制台把缺件说清楚） */
+function streamUpscaleScriptPath() {
+  const cands = [];
+  const push = (p) => {
+    if (p && cands.indexOf(p) < 0) cands.push(p);
+  };
+  push(join(bundledPackRoot(), "post", POST_STREAM_SCRIPT));
+  try {
+    push(join(runtimePackRoot(), "post", POST_STREAM_SCRIPT));
+  } catch {}
+  for (const p of cands) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {}
+  }
+  return cands[0] || "";
+}
+
+/** 流式补帧脚本路径（口径与 streamUpscaleScriptPath 一致：打包态 → 运行时更新包；不保证存在） */
+function streamInterpScriptPath() {
+  const cands = [];
+  const push = (p) => {
+    if (p && cands.indexOf(p) < 0) cands.push(p);
+  };
+  push(join(bundledPackRoot(), "post", POST_STREAM_INTERP_SCRIPT));
+  try {
+    push(join(runtimePackRoot(), "post", POST_STREAM_INTERP_SCRIPT));
+  } catch {}
+  for (const p of cands) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {}
+  }
+  return cands[0] || "";
+}
+
+/* RIFE 权重探测结果的进程内缓存：一个 ComfyUI 目录只 stat 一遍
+ * （流式补帧每单都要选路，权重不会在两次任务之间变，没必要反复读目录） */
+let streamInterpWeightsCache = null; /* { comfy, path } */
+
+/**
+ * 探测本机已装的 RIFE 权重路径（口径与 stream_interp.py 的 _rife_dirs / discover_weights 一致：
+ * custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife → ckpts/rife，先按官方文件名优先，
+ * 再退目录内 rife*.pth 排序）。探测结果按 ComfyUI 目录缓存一次；找不到返回 ""（选路据此回退图）。
+ */
+function streamInterpWeightsPath(comfy) {
+  const root = String(comfy || "");
+  if (!root) return "";
+  if (streamInterpWeightsCache && streamInterpWeightsCache.comfy === root) {
+    return streamInterpWeightsCache.path;
+  }
+  const dirs = [
+    join(root, "custom_nodes", "ComfyUI-Frame-Interpolation", "ckpts", "rife"),
+    join(root, "ckpts", "rife"),
+  ];
+  let found = "";
+  const isFile = (p) => {
+    try {
+      return fs.existsSync(p) && fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
+  for (const d of dirs) {
+    for (const name of POST_RIFE_WEIGHT_PREFERENCE) {
+      if (isFile(join(d, name))) {
+        found = join(d, name);
+        break;
+      }
+    }
+    if (found) break;
+  }
+  if (!found) {
+    for (const d of dirs) {
+      let names = [];
+      try {
+        names = fs
+          .readdirSync(d)
+          .filter((n) => /^rife.*\.pth$/i.test(n))
+          .sort((a, b) => a.localeCompare(b));
+      } catch {
+        names = [];
+      }
+      if (names.length) {
+        found = join(d, names[0]);
+        break;
+      }
+    }
+  }
+  streamInterpWeightsCache = { comfy: root, path: found };
+  return found;
+}
+
+/**
+ * 超分引擎选路（纯函数，只吃事实、不碰文件系统）：给定环境事实决定走「逐帧流式」还是「图」。
+ *  · upscale：默认流式（内存与时长无关）；显式 engine='graph' 或环境缺件时回退图；
+ *  · interp（RIFE 补帧）：同样默认流式（常驻内存只与相邻两帧有关、与时长无关，
+ *    见 h3-pack/post/stream_interp.py 头注释）；缺脚本 / 缺 venv / 缺 RIFE 权重时回退图；
+ *  · 其它 kind → 图（原口径）。
+ * ramInfo: { scriptExists, venvExists, weightsExists, forceGraph }
+ * 返回 { engine:'stream'|'graph', reason }。
+ */
+function resolvePostEngine(kind, opts, ramInfo) {
+  const info = ramInfo && typeof ramInfo === "object" ? ramInfo : {};
+  if (kind === "interp") {
+    const want = String((opts && opts.engine) || "stream").toLowerCase();
+    if (want === "graph" || want === "comfy" || want === "legacy") {
+      return { engine: "graph", reason: "requested_graph" };
+    }
+    const forced = String(info.forceGraph || "");
+    if (forced) return { engine: "graph", reason: forced };
+    if (!info.scriptExists) return { engine: "graph", reason: "interp_script_missing" };
+    if (!info.venvExists) return { engine: "graph", reason: "interp_venv_missing" };
+    if (!info.weightsExists) return { engine: "graph", reason: "interp_weights_missing" };
+    return { engine: "stream", reason: "interp_default_stream" };
+  }
+  if (kind !== "upscale") return { engine: "graph", reason: "kind_not_upscale" };
+  const want = String((opts && opts.engine) || "stream").toLowerCase();
+  if (want === "graph" || want === "comfy" || want === "legacy") {
+    return { engine: "graph", reason: "requested_graph" };
+  }
+  const forced = String(info.forceGraph || "");
+  if (forced) return { engine: "graph", reason: forced };
+  if (!info.scriptExists) return { engine: "graph", reason: "script_missing" };
+  if (!info.venvExists) return { engine: "graph", reason: "venv_missing" };
+  return { engine: "stream", reason: "default_stream" };
+}
+
+/** 补上视频扩展名（与 copyOutputToDir 的落名口径一致） */
+function ensureVideoExt(name) {
+  const n = String(name || "").trim() || "out.mp4";
+  if (JOB_VIDEO_EXT_RE.test(n)) return n;
+  return n + (path.extname(n) || ".mp4");
+}
+
+/**
+ * 逐帧分块流式超分：spawn ComfyUI venv python 跑 h3-pack/post/stream_upscale.py。
+ * 内存与视频时长无关（见脚本头注释），所以 16G 机器也能跑 15 秒级 x2/x4 超分。
+ * 入参：{ py, script, nodeId, sourcePath, outPath, modelPath, scale, targetLongSide,
+ *         tile, overlap, precision, crf, preset, fps }
+ * 进度：脚本 stdout 每帧一行 JSON（meta / progress / done / error）→ emitProgress。
+ * 取消：activeGenerate.abort（用户停止 / 释放显存）→ 向子进程 stdin 写 cancel 后杀掉；
+ *      脚本自己会删半成品（退出码 4）。
+ * 成功 resolve { path, bytes, frames, seconds, peakRamMb, peakVramMb }；
+ * 失败 reject（err.oom = true 表示显存/内存不足，供上层降档重试）。
+ */
+function runStreamUpscaleJob(job) {
+  const j = job || {};
+  const nodeId = String(j.nodeId || "");
+  return new Promise((resolve, reject) => {
+    const args = [
+      String(j.script),
+      "--input",
+      String(j.sourcePath),
+      "--output",
+      String(j.outPath),
+      "--model",
+      String(j.modelPath || ""),
+      "--scale",
+      String(Math.round(Number(j.scale) || 4)),
+      "--target-long-side",
+      String(Math.max(0, Math.round(Number(j.targetLongSide) || 0))),
+      "--tile",
+      String(Math.max(64, Math.round(Number(j.tile) || POST_STREAM_DEFAULT_TILE))),
+      "--overlap",
+      String(Math.max(0, Math.round(Number(j.overlap) || 0))),
+      "--precision",
+      String(j.precision || "fp16"),
+      "--crf",
+      String(Math.max(0, Math.round(Number(j.crf) || POST_STREAM_DEFAULT_CRF))),
+      "--preset",
+      String(j.preset || POST_STREAM_DEFAULT_PRESET),
+      "--progress-every",
+      "1",
+    ];
+    if (Number(j.fps) > 0) args.push("--fps", String(Number(j.fps)));
+    appendConsole("[post] $ " + [String(j.py), ...args].join(" "));
+
+    const env = Object.assign({}, process.env, {
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUNBUFFERED: "1",
+      MALLOC_ARENA_MAX: process.env.MALLOC_ARENA_MAX || "1",
+    });
+    let child;
+    try {
+      child = spawn(String(j.py), args, {
+        cwd: path.dirname(String(j.script)) || undefined,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        env,
+      });
+    } catch (e) {
+      reject(e);
+      return;
+    }
+
+    let stdoutBuf = "";
+    let stderrTail = "";
+    let last = null; /* 最后一条 done / error 回执 */
+    let killed = false;
+    const killChild = (why) => {
+      if (killed) return;
+      killed = true;
+      appendConsole("[post] 流式超分收到停止信号（" + String(why || "cancel") + "）→ 终止子进程");
+      try {
+        child.stdin.write("cancel\n");
+      } catch {}
+      try {
+        child.kill();
+      } catch {}
+    };
+    if (activeGenerate && activeGenerate.nodeId === nodeId) activeGenerate.streamKill = killChild;
+    const poll = setInterval(() => {
+      if (activeGenerate && activeGenerate.abort) killChild("activeGenerate.abort");
+    }, 300);
+
+    const onLine = (line) => {
+      const t = String(line || "").trim();
+      if (!t) return;
+      let ev = null;
+      try {
+        ev = JSON.parse(t);
+      } catch {
+        appendConsole("[post][stream] " + t);
+        return;
+      }
+      if (!ev || typeof ev !== "object") return;
+      if (ev.type === "meta") {
+        appendConsole(
+          "[post] 流式超分启动：" +
+            ev.sourceWidth +
+            "x" +
+            ev.sourceHeight +
+            " → " +
+            ev.outWidth +
+            "x" +
+            ev.outHeight +
+            " · " +
+            String(ev.device || "") +
+            " / " +
+            String(ev.precision || "") +
+            " · tile " +
+            ev.tile +
+            " · 音轨 " +
+            (ev.audio ? "直拷" : "无"),
+        );
+        emitProgress({
+          phase: "post",
+          nodeId,
+          message:
+            "流式超分：" +
+            ev.sourceWidth +
+            "x" +
+            ev.sourceHeight +
+            " → " +
+            ev.outWidth +
+            "x" +
+            ev.outHeight +
+            " · " +
+            String(ev.device || "") +
+            " · tile " +
+            ev.tile,
+          pct: 2,
+        });
+      } else if (ev.type === "progress") {
+        const frames = Number(ev.frames) || 0;
+        const frame = Number(ev.frame) || 0;
+        emitProgress({
+          phase: "post",
+          nodeId,
+          message:
+            "流式超分 " +
+            frame +
+            "/" +
+            frames +
+            " 帧 · 峰值内存 " +
+            gb1((Number(ev.peakRamMb) || 0) / 1024) +
+            "G" +
+            (Number(ev.peakVramMb)
+              ? " · 显存 " + gb1((Number(ev.peakVramMb) || 0) / 1024) + "G"
+              : ""),
+          pct: Math.max(2, Math.min(99, Math.round(Number(ev.pct) || 0))),
+        });
+      } else if (ev.type === "done" || ev.type === "error") {
+        last = ev;
+      } else {
+        appendConsole("[post][stream] " + t);
+      }
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c) => {
+      stdoutBuf += c;
+      let i;
+      while ((i = stdoutBuf.indexOf("\n")) >= 0) {
+        const line = stdoutBuf.slice(0, i);
+        stdoutBuf = stdoutBuf.slice(i + 1);
+        onLine(line);
+      }
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (c) => {
+      stderrTail = (stderrTail + c).slice(-4000);
+      for (const ln of String(c).split(/\r?\n/)) {
+        if (ln.trim()) appendConsole("[post][stream] " + ln.trim());
+      }
+    });
+    child.on("error", (e) => {
+      clearInterval(poll);
+      if (activeGenerate && activeGenerate.nodeId === nodeId) activeGenerate.streamKill = null;
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearInterval(poll);
+      if (activeGenerate && activeGenerate.nodeId === nodeId) activeGenerate.streamKill = null;
+      if (stdoutBuf.trim()) onLine(stdoutBuf);
+      const streamCancelled =
+        killed ||
+        code === 4 ||
+        (last && last.error === "cancelled") ||
+        (activeGenerate && activeGenerate.abort);
+      if (streamCancelled) {
+        const err = new Error("cancelled");
+        err.streamCancelled = true;
+        reject(err);
+        return;
+      }
+      const outPath = String((last && last.output) || j.outPath || "");
+      if (code === 0 && last && last.type === "done" && last.ok && outPath && fs.existsSync(outPath)) {
+        let bytes = 0;
+        try {
+          bytes = fs.statSync(outPath).size || 0;
+        } catch {}
+        resolve({
+          path: outPath,
+          bytes,
+          frames: Number(last.frames) || 0,
+          seconds: Number(last.seconds) || 0,
+          peakRamMb: Number(last.peakRamMb) || 0,
+          peakVramMb: Number(last.peakVramMb) || 0,
+        });
+        return;
+      }
+      /* 没出成片：不留半成品（取消 / OOM / 失败都清掉；脚本自身也会尽力删一遍），
+       * 交回上层决定是降档重试还是回退图路径。 */
+      if (outPath) {
+        try {
+          if (fs.existsSync(outPath)) fs.rmSync(outPath, { force: true });
+        } catch {}
+      }
+      const msg =
+        (last && last.message) || stderrTail.trim() || "stream_upscale.py 退出码 " + code;
+      const err = new Error("stream_upscale_failed: " + String(msg).slice(0, 800));
+      err.code = code;
+      err.detail = String(msg).slice(0, 800);
+      err.oom = code === 3 || !!(last && last.error === "oom") || isPostOomError(msg);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * 逐帧流式补帧：spawn ComfyUI venv python 跑 h3-pack/post/stream_interp.py。
+ * 常驻内存只与「相邻两帧 + 模型」有关、与时长/总帧数无关（见脚本头注释），
+ * 所以 16G 机器也能对 15 秒级视频做 2x / 4x 补帧（旧图链要把整段帧张量攒在 RAM 里）。
+ * 入参：{ py, script, nodeId, sourcePath, outPath, modelPath, comfyRoot, multiplier,
+ *         maxLongSide, scaleFactor, precision, clearCacheEvery, crf, preset, fps }
+ * 进度：脚本 stdout 每帧一行 JSON（meta / progress / done / error）→ emitProgress。
+ * 取消：activeGenerate.abort（用户停止 / 释放显存）→ 向子进程 stdin 写 cancel 后杀掉；
+ *      脚本自己会删半成品（退出码 4）。
+ * 成功 resolve { path, bytes, frames, seconds, peakRamMb, peakVramMb }；
+ * 失败 reject（err.oom = true 表示显存/内存不足，供上层降档重试）。
+ */
+function runStreamInterpJob(job) {
+  const j = job || {};
+  const nodeId = String(j.nodeId || "");
+  return new Promise((resolve, reject) => {
+    const args = [
+      String(j.script),
+      "--input",
+      String(j.sourcePath),
+      "--output",
+      String(j.outPath),
+      "--multiplier",
+      String(Math.max(1, Math.round(Number(j.multiplier) || 2))),
+      "--max-long-side",
+      String(Math.max(0, Math.round(Number(j.maxLongSide) || 0))),
+      "--scale-factor",
+      String(Number(j.scaleFactor) || 1.0),
+      "--precision",
+      String(j.precision || "fp16"),
+      "--clear-cache-every",
+      String(Math.max(1, Math.round(Number(j.clearCacheEvery) || 1))),
+      "--crf",
+      String(Math.max(0, Math.round(Number(j.crf) || POST_STREAM_DEFAULT_CRF))),
+      "--preset",
+      String(j.preset || POST_STREAM_DEFAULT_PRESET),
+      "--progress-every",
+      "1",
+    ];
+    /* 权重：宿主已探到就显式给（免脚本再 stat 一遍）；同时兜 --comfy-root 让脚本自己也能找 */
+    if (j.modelPath) args.push("--model", String(j.modelPath));
+    if (j.comfyRoot) args.push("--comfy-root", String(j.comfyRoot));
+    if (Number(j.fps) > 0) args.push("--fps", String(Number(j.fps)));
+    appendConsole("[post] $ " + [String(j.py), ...args].join(" "));
+
+    const env = Object.assign({}, process.env, {
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUNBUFFERED: "1",
+      MALLOC_ARENA_MAX: process.env.MALLOC_ARENA_MAX || "1",
+    });
+    if (j.comfyRoot) env.MTNODE_COMFY_ROOT = String(j.comfyRoot);
+    let child;
+    try {
+      child = spawn(String(j.py), args, {
+        cwd: path.dirname(String(j.script)) || undefined,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        env,
+      });
+    } catch (e) {
+      reject(e);
+      return;
+    }
+
+    let stdoutBuf = "";
+    let stderrTail = "";
+    let last = null; /* 最后一条 done / error 回执 */
+    let killed = false;
+    const killChild = (why) => {
+      if (killed) return;
+      killed = true;
+      appendConsole("[post] 流式补帧收到停止信号（" + String(why || "cancel") + "）→ 终止子进程");
+      try {
+        child.stdin.write("cancel\n");
+      } catch {}
+      try {
+        child.kill();
+      } catch {}
+    };
+    if (activeGenerate && activeGenerate.nodeId === nodeId) activeGenerate.streamKill = killChild;
+    const poll = setInterval(() => {
+      if (activeGenerate && activeGenerate.abort) killChild("activeGenerate.abort");
+    }, 300);
+
+    const onLine = (line) => {
+      const t = String(line || "").trim();
+      if (!t) return;
+      let ev = null;
+      try {
+        ev = JSON.parse(t);
+      } catch {
+        appendConsole("[post][stream] " + t);
+        return;
+      }
+      if (!ev || typeof ev !== "object") return;
+      if (ev.type === "meta") {
+        appendConsole(
+          "[post] 流式补帧启动：" +
+            ev.sourceWidth +
+            "x" +
+            ev.sourceHeight +
+            " · " +
+            ev.multiplier +
+            "x · RIFE " +
+            String(ev.arch || "") +
+            " · " +
+            String(ev.device || "") +
+            " / " +
+            String(ev.precision || "") +
+            " · 音轨 " +
+            (ev.audio ? "直拷" : "无"),
+        );
+        emitProgress({
+          phase: "post",
+          nodeId,
+          message:
+            "流式补帧：" +
+            ev.sourceWidth +
+            "x" +
+            ev.sourceHeight +
+            " · " +
+            ev.multiplier +
+            "x · RIFE " +
+            String(ev.arch || "") +
+            " · " +
+            String(ev.device || ""),
+          pct: 2,
+        });
+      } else if (ev.type === "progress") {
+        const frames = Number(ev.frames) || 0;
+        const frame = Number(ev.frame) || 0;
+        emitProgress({
+          phase: "post",
+          nodeId,
+          message:
+            "流式补帧 " +
+            frame +
+            "/" +
+            frames +
+            " 帧 · 已出 " +
+            (Number(ev.outFrames) || 0) +
+            " 帧 · 峰值内存 " +
+            gb1((Number(ev.peakRamMb) || 0) / 1024) +
+            "G" +
+            (Number(ev.peakVramMb)
+              ? " · 显存 " + gb1((Number(ev.peakVramMb) || 0) / 1024) + "G"
+              : ""),
+          pct: Math.max(2, Math.min(99, Math.round(Number(ev.pct) || 0))),
+        });
+      } else if (ev.type === "done" || ev.type === "error") {
+        last = ev;
+      } else {
+        appendConsole("[post][stream] " + t);
+      }
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c) => {
+      stdoutBuf += c;
+      let i;
+      while ((i = stdoutBuf.indexOf("\n")) >= 0) {
+        const line = stdoutBuf.slice(0, i);
+        stdoutBuf = stdoutBuf.slice(i + 1);
+        onLine(line);
+      }
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (c) => {
+      stderrTail = (stderrTail + c).slice(-4000);
+      for (const ln of String(c).split(/\r?\n/)) {
+        if (ln.trim()) appendConsole("[post][stream] " + ln.trim());
+      }
+    });
+    child.on("error", (e) => {
+      clearInterval(poll);
+      if (activeGenerate && activeGenerate.nodeId === nodeId) activeGenerate.streamKill = null;
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearInterval(poll);
+      if (activeGenerate && activeGenerate.nodeId === nodeId) activeGenerate.streamKill = null;
+      if (stdoutBuf.trim()) onLine(stdoutBuf);
+      const streamCancelled =
+        killed ||
+        code === 4 ||
+        (last && last.error === "cancelled") ||
+        (activeGenerate && activeGenerate.abort);
+      if (streamCancelled) {
+        const err = new Error("cancelled");
+        err.streamCancelled = true;
+        reject(err);
+        return;
+      }
+      const outPath = String((last && last.output) || j.outPath || "");
+      if (code === 0 && last && last.type === "done" && last.ok && outPath && fs.existsSync(outPath)) {
+        let bytes = 0;
+        try {
+          bytes = fs.statSync(outPath).size || 0;
+        } catch {}
+        resolve({
+          path: outPath,
+          bytes,
+          frames: Number(last.frames) || 0,
+          seconds: Number(last.seconds) || 0,
+          peakRamMb: Number(last.peakRamMb) || 0,
+          peakVramMb: Number(last.peakVramMb) || 0,
+        });
+        return;
+      }
+      /* 没出成片：不留半成品（取消 / OOM / 失败都清掉；脚本自身也会尽力删一遍），
+       * 交回上层决定是降档重试还是回退图路径。 */
+      if (outPath) {
+        try {
+          if (fs.existsSync(outPath)) fs.rmSync(outPath, { force: true });
+        } catch {}
+      }
+      const msg =
+        (last && last.message) || stderrTail.trim() || "stream_interp.py 退出码 " + code;
+      const err = new Error("stream_interp_failed: " + String(msg).slice(0, 800));
+      err.code = code;
+      err.detail = String(msg).slice(0, 800);
+      err.oom = code === 3 || !!(last && last.error === "oom") || isPostOomError(msg);
+      reject(err);
+    });
+  });
 }
 
 let getDataDir = null;
@@ -107,6 +1360,8 @@ let gpuTimer = null;
 let backendProc = null;
 /** @type {{ nodeId: string, abort?: boolean, promptId?: string, req?: import('http').ClientRequest|null }|null} */
 let activeGenerate = null;
+/** 本次进程内是否已为「带 --cpu-vae 启动失败」记过那条指回技能的提示（关闭 CPU VAE 后重新武装）。 */
+let cpuVaeFailHinted = false;
 
 /** dsh.run 鉴权：复用 MTNode 设置里的模型 API Key（非环境变量 / 非强制 deepseek-official）。 */
 function h3DshAuthOrError() {
@@ -202,11 +1457,26 @@ function defaultConfig() {
     cudaPython: "",
     wantRunning: false,
     /* 24G 启动优化：默认开，可在插件控制台关闭 */
-    cpuVae: true,
+    /** CPU VAE 默认关：开启会让 VideoVAE 解码 dtype 崩（float != c10::Half），南风 H3 链不可用。
+     *  真源见技能 skills/minimax-h3-install/SKILL.md「启动参数」。老用户 config.json 里显式存过的
+     *  true 由 loadConfig 的合并保持原值，升级不静默翻转。 */
+    cpuVae: false,
     optDisablePinnedMemory: true,
     optFp16Intermediates: true,
     optExpandableSegments: true,
     optReserveVramGb: 4,
+    /* 后端 BLAS / OpenMP 线程上限：0 = 不改环境变量（留给想自己调的机器）。
+     * 默认 8：线程池每个线程都有自己的 malloc arena 与缓冲，超分链的大块张量被摊在
+     * 多份缓存里就再也回不到系统 —— 这是「内存持续攀升」的第二个来源。 */
+    optArenaThreads: 8,
+    /* ComfyUI 系统内存（RAM）缓存保留下限，单位 GB；0 = 不加 --cache-ram（退回归服务默认）。
+     * 默认 8：超分链要在 RAM 里攒整段视频的帧张量，不给上限时 ComfyUI 会把中间产物留到
+     * 128G 才放，64G 机器必被跑满（而显存空着）。见 POST_CACHE_RAM_ACTIVE_GB 注释。 */
+    optCacheRamGb: POST_CACHE_RAM_ACTIVE_GB,
+    /* 内存护栏：任务之间发现「服务守住的内存 > 一半内存」或本机已低于硬闸 → 重启后端回收。
+     * 默认开：常驻的 Python 进程跑几单 4K 超分 / 补帧后 RSS 只涨不落，不回收就会一单比一单紧。
+     * 关掉 = 只靠 --cache-ram 与提交前内存闸（单次峰值照旧压，进程本身不再重启）。 */
+    optRebuildOnRamHigh: true,
   };
 }
 function loadConfig() {
@@ -349,6 +1619,7 @@ async function updatePluginRuntime() {
     const msg = String((e && e.message) || e);
     appendConsole("[update] failed: " + msg);
     emitProgress({ phase: "update", step: "error", message: msg, pct: 0, error: true });
+    reportErr("runtime_update_failed", "插件运行时更新失败：" + msg, { phase: "update" });
     return { ok: false, error: msg };
   } finally {
     runtimeUpdating = false;
@@ -381,6 +1652,20 @@ function emitProgress(ev) {
   broadcast("h3:progress", Object.assign({ id: PLUGIN_ID, ts: Date.now() }, ev || {}));
 }
 
+/**
+ * 失败上报：控制台窗内的 toast 只有开着那只窗的人看得到，节点状态也只有一行字。
+ * 这里把同一次失败送到报错总线，让主窗口出一份带日志尾部的报告（总线内部吞异常）。
+ * extra 里可带 phase / nodeId / workflowId（= 画布 id），报告靠它归因到出问题的节点。
+ */
+function reportErr(code, message, extra) {
+  try {
+    pluginErrors.reportPluginError(
+      PLUGIN_ID,
+      Object.assign({ code, message: String(message || "") }, extra || {}),
+    );
+  } catch {}
+}
+
 function isAlivePid(pid) {
   const n = Number(pid);
   if (!n || !isFinite(n)) return false;
@@ -410,9 +1695,66 @@ function modelExists(comfy, relParts) {
   }
 }
 
+/* ===== 交付要件清单（安装 / 保底修复 / 自我修复三支共用同一份）=====
+ * Agent 按提示词逐项交付，缺项就是交付缺项：提示词与收尾判定必须同源，否则提示词形同虚设。 */
+/** 随包本地节点包（由 setup_env.ps1 的 Deploy-LocalCustomNode 部署到 ComfyUI\custom_nodes 下） */
+const NANFENG_NODE_PKG = "nanfeng_prompt_nodes_v10";
+/** 4K 超分补帧推荐链必须存在的 custom_nodes 目录 */
+const REQUIRED_CUSTOM_NODE_DIRS = ["ComfyUI-KJNodes", "ComfyUI-Frame-Interpolation"];
+/** TeaCache 已从推荐链移除（只保留 EasyCache 步缓存）：装不装都不算交付缺项 */
+const OPTIONAL_CUSTOM_NODE_DIRS = ["ComfyUI-MiniMaxH3-TeaCache"];
+
+function dirExists(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** 目录内普通文件数（不递归）；目录不存在记 0。 */
+function countDirFiles(dir) {
+  try {
+    let n = 0;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (ent.isFile()) n += 1;
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
+/** 随包本地节点包是否「完整部署」：包目录在 + web/ 在 + 至少一个 *.api.py。
+ *  南风包 __init__.py 的 WEB_DIRECTORY="./web" 指向 web/，*.api.py 注册 /nanfeng/* 等后端路由，
+ *  缺任一项 ComfyUI 启动即报插件注册 / 前端加载错误，所以不能只看包目录存在。 */
+function localCustomNodeOk(comfy, name) {
+  const dir = join(String(comfy || ""), "custom_nodes", String(name || ""));
+  if (!dirExists(dir)) return false;
+  if (!dirExists(join(dir, "web"))) return false;
+  try {
+    return fs.readdirSync(dir).some((f) => /\.api\.py$/i.test(f));
+  } catch {
+    return false;
+  }
+}
+
 function projectSignals(dir) {
   const root = String(dir || "").trim();
-  if (!root) return { exists: false, scaffold: false, venv: false, models: false, ready: false };
+  if (!root) {
+    return {
+      exists: false,
+      scaffold: false,
+      venv: false,
+      models: false,
+      hasPost: false,
+      nanfeng: false,
+      latentFiles: 0,
+      customNodes: false,
+      ready: false,
+      installComplete: false,
+    };
+  }
   const scaffold =
     fs.existsSync(join(root, "app", "pipeline.py")) ||
     fs.existsSync(join(root, "scripts", "setup_env.ps1")) ||
@@ -437,6 +1779,14 @@ function projectSignals(dir) {
       "rife",
       POST_MODELS.rife,
     ]);
+  /* 随包本地节点包：必须完整部署（web/ + *.api.py），否则南风工作流整条链起不来 */
+  const nanfeng = localCustomNodeOk(comfy, NANFENG_NODE_PKG);
+  /* 南风节点把 latent_upscale_models 的 combo 声明为 required：目录空 = /prompt 直接被拒，
+   * 占位文件即可（幂等，真实模型在也算命中） */
+  const latentFiles = comfy ? countDirFiles(join(comfy, "models", "latent_upscale_models")) : 0;
+  /* 4K 超分补帧推荐链的 custom_nodes 清单（KJNodes 分块上采样 + Frame-Interpolation RIFE） */
+  const customNodes =
+    !!comfy && REQUIRED_CUSTOM_NODE_DIRS.every((n) => dirExists(join(comfy, "custom_nodes", n)));
   return {
     exists: fs.existsSync(root),
     scaffold,
@@ -444,9 +1794,37 @@ function projectSignals(dir) {
     models,
     hasRef2va: hasRef,
     hasPost,
+    nanfeng,
+    latentFiles,
+    customNodes,
     ready: scaffold && venv && models,
+    /* 交付要件是否齐（不含 torch 版本 / comfy_kitchen / soundfile 这类要跑 python 的硬校验，
+     * 那些由 healthCheckInstall 的 `python -m app` 收尾判定兜） */
+    installComplete: scaffold && venv && models && hasPost && nanfeng && latentFiles >= 1 && customNodes,
     comfyDir: comfy || "",
   };
+}
+
+/** 交付缺项（中文条目，用于收尾失败时的 reason / console / 进度文案）。空数组 = 文件层面要件齐。 */
+function installDeliverableGaps(sig) {
+  const s = sig || {};
+  const gaps = [];
+  if (!s.scaffold) gaps.push("脚手架缺失（app/scripts/ComfyUI 都没有）");
+  if (!s.venv) gaps.push("ComfyUI\\venv 不存在（隔离 venv 未建）");
+  if (!s.models) gaps.push("主模型权重不全（diffusion_models/" + MODELS.fl2va + "、text_encoders、vae）");
+  if (!s.nanfeng) {
+    gaps.push(
+      "custom_nodes/" + NANFENG_NODE_PKG + " 未完整部署（需包目录 + web/ + *.api.py，Deploy-LocalCustomNode）",
+    );
+  }
+  if (!(Number(s.latentFiles || 0) >= 1)) gaps.push("models/latent_upscale_models 为空（南风节点必填 combo，占位文件即可）");
+  if (!s.customNodes) gaps.push("custom_nodes 缺 " + REQUIRED_CUSTOM_NODE_DIRS.join(" + "));
+  if (!s.hasPost) {
+    gaps.push(
+      "后处理权重不全（models/upscale_models/" + POST_MODELS.upscale + "、ComfyUI-Frame-Interpolation/ckpts/rife/" + POST_MODELS.rife + "）",
+    );
+  }
+  return gaps;
 }
 
 function isSafeInstallDir(dir) {
@@ -902,11 +2280,18 @@ async function statusForUi() {
     lock,
     gpu,
     wantRunning: !!cfg.wantRunning,
-    cpuVae: cfg.cpuVae !== false,
+    /* 与 defaultConfig 同口径：默认关，只回显显式配置值（老用户存过 true 仍是 true） */
+    cpuVae: !!cfg.cpuVae,
     optDisablePinnedMemory: cfg.optDisablePinnedMemory !== false,
     optFp16Intermediates: cfg.optFp16Intermediates !== false,
     optExpandableSegments: cfg.optExpandableSegments !== false,
     optReserveVramGb: Number(cfg.optReserveVramGb) > 0 ? Number(cfg.optReserveVramGb) : 4,
+    optCacheRamGb: Number(cfg.optCacheRamGb) > 0 ? Math.round(Number(cfg.optCacheRamGb)) : 0,
+    /* 内存护栏开关 + 最近一次回收时间：管理窗据此显示「服务进程已经回收过没有」 */
+    optRebuildOnRamHigh: cfg.optRebuildOnRamHigh !== false,
+    optArenaThreads: Number(cfg.optArenaThreads) > 0 ? Math.round(Number(cfg.optArenaThreads)) : 0,
+    lastRecycleAt: Number(cfg.lastRecycleAt) > 0 ? Number(cfg.lastRecycleAt) : 0,
+    memRail: comfyRamStatsCache.ram || null,
     consolePath: consoleLogPath(),
   };
 }
@@ -950,7 +2335,10 @@ function runPs(scriptPath, args, opts) {
 
 async function installProject(opts) {
   opts = opts || {};
-  if (installing) return { ok: false, error: "busy" };
+  if (installing) {
+    reportErr("busy", "H3 已有安装 / 修复任务在跑，本次安装被拒", { phase: "install" });
+    return { ok: false, error: "busy" };
+  }
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
   if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
@@ -970,6 +2358,9 @@ async function installProject(opts) {
     const free = await freeDiskGb(installDir);
     if (free != null && free < DISK_HINT_GB && !opts.force) {
       installing = false;
+      reportErr("low_disk", `磁盘剩余约 ${free}GB，建议预留 ≥${DISK_HINT_GB}GB（模型约 42–65GB）`, {
+        phase: "install",
+      });
       return {
         ok: false,
         error: "low_disk",
@@ -988,6 +2379,7 @@ async function installProject(opts) {
     const msg = String((e && e.message) || e);
     appendConsole("install failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+    reportErr(msg, msg, { phase: "install" });
     return { ok: false, error: msg, agentRecoverable: msg !== "cancelled" && msg !== "busy" };
   }
 }
@@ -1013,7 +2405,6 @@ function syncH3InstallSkill() {
   try {
     const skillSrc = join(
       appRoot || path.join(__dirname, ".."),
-      "h3",
       "skills",
       "minimax-h3-install",
       "SKILL.md",
@@ -1085,16 +2476,59 @@ async function agentInstallByAgent(opts) {
     if (fs.existsSync(resultMarker)) fs.unlinkSync(resultMarker);
   } catch {}
 
+  /* 三支（install / recover / selfRepair）共用同一份交付要件清单：Agent 按提示词逐项交付，
+   * 提示词缺项 = 交付缺项，所以这里每一条都对应收尾判定（installDeliverableGaps / healthCheckInstall）。 */
+  const venvPyRel = "ComfyUI\\venv\\Scripts\\python.exe";
+  const requirements = [
+    `1) 探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）。`,
+    `2) 建立【隔离】ComfyUI venv（禁止 --system-site-packages），在 venv 内装 CUDA torch 与依赖（参考 SCAFFOLD_REF\\scripts\\setup_env.ps1 / repair_torch_kitchen.ps1 / patch_comfy_kitchen_typing.py）。`,
+    `3) torch 版本硬校验：venv 内 torch.__version__ 必须 ≥ 2.9.1 且带 cu130（2.9.1+cu130 或更高的 cu130 构建）。` +
+      `2.6.0+cu124 / cu126 一律不合格——ComfyUI 能启动但 comfy_kitchen 的 cuda backend 会被 disabled，首个 denoise forward 永久卡死。` +
+      `自检（必须打印 ok）：${venvPyRel} -c "import torch;assert torch.cuda.is_available();assert 'cu130' in torch.__version__;import comfy_kitchen;print('ok',torch.__version__,torch.__file__)"；` +
+      `并确认 torch.__file__ 落在 ComfyUI\\venv 内、comfy_kitchen 未被 disabled。`,
+    `4) 自检 venv 内 import soundfile 成功（南风节点音频链依赖，已列在 SCAFFOLD_REF\\requirements.txt）：` +
+      `${venvPyRel} -c "import soundfile;print(soundfile.__version__)"。装不上就是交付缺项，要补到成功为止。`,
+    `5) 下载/就绪模型权重（参考 SCAFFOLD_REF\\scripts\\download_models.ps1）：` +
+      `models\\diffusion_models\\${MODELS.fl2va}、models\\text_encoders\\${MODELS.clip}、models\\vae\\${MODELS.vaeVideo}。`,
+    `6) ComfyUI\\models\\latent_upscale_models 必须 ≥1 个文件（南风节点把它声明成 required combo，空目录会让整单 /prompt 被 value_not_in_list 拒）。` +
+      `缺就补一个合法的空 safetensors 占位（口径见 setup_env.ps1 的 Ensure-LatentUpscalePlaceholder：8 字节长度头 + "{}"），幂等；` +
+      `目录里已有文件（含用户自己的真实放大模型）一律不删不改。`,
+    `7) 后处理权重各就各位（4K 超分 + 补帧）：${POST_MODELS.upscale} → ComfyUI\\models\\upscale_models\\；` +
+      `${POST_MODELS.rife} → ComfyUI\\custom_nodes\\ComfyUI-Frame-Interpolation\\ckpts\\rife\\。`,
+    `8) ComfyUI\\custom_nodes 清单必须含 ${REQUIRED_CUSTOM_NODE_DIRS.join(" + ")}` +
+      `（前者供分块上采样，后者供 RIFE 补帧）；${OPTIONAL_CUSTOM_NODE_DIRS.join(" + ")} 标注为备用（推荐链已移除 TeaCache，只保留 EasyCache 步缓存），没装不算失败。`,
+    `9) 部署随包本地节点包 ${NANFENG_NODE_PKG}：按 setup_env.ps1 的 Deploy-LocalCustomNode 口径，` +
+      `从 INSTALL_DIR\\custom_nodes\\${NANFENG_NODE_PKG} 复制进 ComfyUI\\custom_nodes\\${NANFENG_NODE_PKG}，` +
+      `**必须保留 web\\ 目录与所有 *.api.py**（__init__.py 的 WEB_DIRECTORY="./web" 指向 web\\，*.api.py 注册 /nanfeng/* 后端路由；缺任一项启动即报插件注册 / 前端加载错）。` +
+      `幂等：只补该包，不清空 custom_nodes 下其它节点。`,
+    `10) 冒烟：venv python 下 import comfy_kitchen 与 torch.cuda 可用（即第 3 条那条命令），不要为此启动 ComfyUI 服务。`,
+    `11) 注意力加速（「安装」流程要覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— ` +
+      `口径见 skill「可选依赖」一节（PyPI 上只有老的 sageattention 1.0.6，2.x 走 woct0rdho/SageAttention 的 release wheel，` +
+      `文件名里的 cuNNN / torchX 必须对上本机 CUDA 大版本与 torch 版本）。装完用 venv python 跑 import triton + import sageattention 自检。`,
+    `12) 收尾前自己先跑一次健康检查并在回复里带上退出码：在 INSTALL_DIR 下执行 ${venvPyRel} -m app ` +
+      `（它打印 venv / 模型 / postModels / cuda 的 JSON 报告），退出码 0 才算完成。` +
+      `插件收尾还会再跑一次同样的检查，缺项迟早被判失败，别为了交差先写 ok=true。`,
+  ].join("\n");
+  const disciplines =
+    `纪律（四条，一律遵守）：不要启动 ComfyUI；不要删除用户 output/；模型已齐则勿重下（只补缺的）；` +
+    `Sage 加速（第 11 条）装不上不算失败——跳过即可，画布生成会自动退回非 Sage 链（只是慢 1.5-2×），已探测到可用则勿重复装。\n`;
+  const handoff =
+    `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true，可附 reason= 摘要），回复 install_ok=1 与 cuda_python=<path> torch_file=<path> health_exit=0。\n` +
+    `失败则 ${resultMarker} 写 ok=false 与 reason=<上面哪一条没交付 + 具体报错>`;
+
   const prompt = opts.selfRepair
     ? `请使用 skill「minimax-h3-install」的【自我修复】模式。\n` +
       `当前工作区（可写）= INSTALL_DIR=${installDir}\n` +
       `SCAFFOLD_REF=${pack}（仅参考）\n` +
       `任务：阅读下方 CONSOLE 日志，由你自行分析判断根因并完成修复。每人环境不同，不要套用不匹配的固定剧本。\n` +
-      `skill 中「已知故障」仅当日志证据确实匹配时参考。\n` +
-      `优先修依赖/脚本/配置；模型已齐则勿重下。不要启动 ComfyUI。不要删除 output/。\n` +
-      (failReason ? `\n${failReason}\n` : "") +
+      `skill 中「已知故障」仅当日志证据确实匹配时参考。优先修依赖/脚本/配置。\n` +
+      (failReason ? `\n先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
+      `修复完成后，下面这份交付要件必须【逐条】成立（缺一条就是没修好），已满足的直接跳过：\n` +
+      requirements +
+      `\n` +
+      disciplines +
       `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true，可附 reason=已修复…），回复 repair_ok=1 与简要根因。\n` +
-      `失败则 ${resultMarker} 写 ok=false 与 reason=...`
+      `失败则 ${resultMarker} 写 ok=false 与 reason=<上面哪一条没交付 + 具体报错>`
     : `请使用 skill「minimax-h3-install」${
         mode === "recover" ? "完成或修复安装（保底修复；用户已确认）" : "端到端完成安装（主安装路径）"
       }。\n` +
@@ -1102,15 +2536,11 @@ async function agentInstallByAgent(opts) {
       `SCAFFOLD_REF=${pack}\n` +
       `重要：内置脚手架/脚本仅作参考实现。请以 skill 目标为准自行准备 INSTALL_DIR（可按需从 SCAFFOLD_REF 复制或改写 app/scripts/requirements，也可等价实现）。不要假设插件已替你复制好脚手架。\n` +
       (failReason ? `先前失败原因 / CONSOLE：\n${failReason}\n` : "") +
-      `要求：\n` +
-      `1) 自行探测本机可用 CUDA Python，写入 ${join(installDir, ".cuda-python")}（单行绝对路径）\n` +
-      `2) 建立【隔离】ComfyUI venv（禁止 --system-site-packages）并在 venv 内安装 CUDA torch + 依赖（可参考 SCAFFOLD_REF\\scripts\\setup_env.ps1 / repair_torch_kitchen.ps1）\n` +
-      `3) 下载/就绪模型权重（可参考 SCAFFOLD_REF\\scripts\\download_models.ps1；修复且模型已齐则跳过）\n` +
-      `4) 冒烟：venv python 下 torch.cuda + import comfy_kitchen；确认 torch.__file__ 在 ComfyUI\\venv 内\n` +
-      `5) 注意力加速（「安装」必须覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— 口径见 skill「可选依赖」一节（PyPI 上只有老的 sageattention 1.0.6，2.x 走 woct0rdho/SageAttention 的 release wheel，文件名里的 cuNNN / torchX 必须对上本机 CUDA 大版本与 torch 版本）。装完用 venv python 跑 import triton + import sageattention 自检。**这一步装不上不算失败**：跳过即可，画布生成会自动退回非 Sage 链（只是慢 1.5-2×）。已探测到可用则勿重复装。\n` +
-      `不要启动 ComfyUI。不要删除用户 output/。\n` +
-      `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true），回复 install_ok=1 与 cuda_python=<path> torch_file=<path>。\n` +
-      `失败则 ${resultMarker} 写 ok=false 与 reason=...`;
+      `要求（逐条交付，收尾会按这些判定）：\n` +
+      requirements +
+      `\n` +
+      disciplines +
+      handoff;
 
   try {
     appendConsole("[agent-install] workspace=" + workspace + " permission=danger-full-access");
@@ -1127,6 +2557,7 @@ async function agentInstallByAgent(opts) {
     const msg = String((e && e.message) || e);
     appendConsole("[agent-install] dsh.run failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+    reportErr(msg, msg, { phase: "install" });
     return { ok: false, error: msg };
   }
 
@@ -1139,6 +2570,7 @@ async function agentInstallByAgent(opts) {
       } catch {}
       installing = false;
       emitProgress({ phase: "install", step: "error", message: "cancelled", pct: 0, error: true });
+      reportErr("cancelled", "安装已取消", { phase: "install" });
       return { ok: false, error: "cancelled" };
     }
     const sig = projectSignals(installDir);
@@ -1158,24 +2590,64 @@ async function agentInstallByAgent(opts) {
     if (agentSaidFail) {
       installing = false;
       emitProgress({ phase: "install", step: "error", message: agentSaidFail, pct: 0, error: true });
+      reportErr(agentSaidFail, agentSaidFail, { phase: "install" });
       return { ok: false, error: agentSaidFail };
     }
+    /* 收尾失败一律把 reason= 回写 .h3-agent-result（UI 与事后排查看同一份）。 */
+    const failWith = (reason, extra) => {
+      try {
+        fs.writeFileSync(resultMarker, "ok=false\nreason=" + reason + "\n", "utf8");
+      } catch {}
+      try {
+        dsh.cancel({ reqId });
+      } catch {}
+      installing = false;
+      appendConsole("[agent-install] " + reason);
+      emitProgress({ phase: "install", step: "error", message: reason, pct: 0, error: true });
+      reportErr(reason, reason, { phase: "install" });
+      return Object.assign({ ok: false, error: reason }, extra || {});
+    };
+    const gaps = installDeliverableGaps(sig);
     lastPct = Math.min(92, lastPct + 1);
     emitProgress({
       phase: "install",
       step: mode === "recover" ? "agent_recover" : "agent_install",
       stepLabel,
-      message: sig.models
-        ? "模型已就绪，等待收尾…"
-        : sig.venv
-          ? "环境已就绪，下载/校验模型中…"
-          : mode === "recover"
-            ? "Agent 正在修复安装…"
-            : "Agent 正在安装…",
+      message:
+        marked || sig.installComplete
+          ? gaps.length
+            ? "收尾校验：交付还缺「" + gaps[0] + "」…"
+            : "收尾校验：跑 python -m app 健康检查…"
+          : sig.models
+            ? "模型已就绪，等待收尾…"
+            : sig.venv
+              ? "环境已就绪，下载/校验模型中…"
+              : mode === "recover"
+                ? "Agent 正在修复安装…"
+                : "Agent 正在安装…",
       pct: lastPct,
-      subPct: sig.ready ? 100 : sig.models ? 80 : sig.venv ? 45 : 20,
+      subPct: sig.installComplete ? 100 : sig.models ? 80 : sig.venv ? 45 : 20,
     });
-    if (sig.ready || marked) {
+    /* 成功判定不再只看 .install-ok：先按交付要件清单核文件，再在 INSTALL_DIR 内跑一次
+     * python -m app 健康检查，退出码 0 才算 ready（超时 / 非 0 一律按 reason= 判失败）。 */
+    let hcOk = false;
+    if (sig.installComplete || marked) {
+      if (gaps.length) {
+        if (marked) return failWith("deliverable_missing: " + gaps.join("；"), { missingDeliverables: gaps });
+      } else {
+        const hc = await healthCheckInstall(installDir);
+        if (!hc.ok) {
+          return failWith(
+            "health_check_failed: " +
+              (hc.reason || "exit_not_zero") +
+              (hc.out ? " | " + hc.out.replace(/\s+/g, " ").trim().slice(-400) : ""),
+          );
+        }
+        hcOk = true;
+        appendConsole("[agent-install] health check ok（python -m app 退出码 0）");
+      }
+    }
+    if (hcOk) {
       let cudaPython = cfg.cudaPython || "";
       try {
         const cp = join(installDir, ".cuda-python");
@@ -1222,6 +2694,7 @@ async function agentInstallByAgent(opts) {
   const msg = "agent_install_timeout";
   appendConsole("[agent-install] " + msg);
   emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+  reportErr(msg, "Agent 安装超时（45 分钟未交付）：" + msg, { phase: "install" });
   return { ok: false, error: msg };
 }
 
@@ -1275,6 +2748,58 @@ function runVenvPy(py, code) {
     });
     child.on("close", (c) => resolve({ code: c || 0, out }));
     child.on("error", (e) => resolve({ code: 1, out: String((e && e.message) || e) }));
+  });
+}
+
+/**
+ * 收尾健康检查：在 INSTALL_DIR 内再跑一次 python -m app（脚手架 app/__main__.py 打印
+ * venv / 模型 / postModels / cuda 的 JSON 报告，退出码 0 = 可信）。
+ * 光认 .install-ok 会被 Agent 的一面之词放过，所以 ready 必须以这里为准。
+ * 解释器优先 ComfyUI venv python，退回 .cuda-python 记录的解释器，再退回系统 python。
+ * 返回 { ok, reason, out }；超时按失败处理。
+ */
+function healthCheckInstall(installDir, timeoutMs) {
+  return new Promise((resolve) => {
+    const root = String(installDir || "").trim();
+    if (!root) return resolve({ ok: false, reason: "health_check_no_dir", out: "" });
+    let py = comfyVenvPython(root);
+    if (!py) {
+      try {
+        const cp = join(root, ".cuda-python");
+        if (fs.existsSync(cp)) py = fs.readFileSync(cp, "utf8").trim().split(/\r?\n/)[0] || "";
+      } catch {}
+    }
+    if (!py) py = "python";
+    const ms = Math.max(30000, Number(timeoutMs) || 300000);
+    let out = "";
+    let settled = false;
+    let child;
+    try {
+      child = spawn(py, ["-m", "app"], { cwd: root, windowsHide: true });
+    } catch (e) {
+      return resolve({ ok: false, reason: "health_check_spawn_failed: " + String((e && e.message) || e), out: "" });
+    }
+    const finish = (ok, reason) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok, reason, out: out.slice(-2000) });
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      finish(false, "health_check_timeout_" + Math.round(ms / 1000) + "s");
+    }, ms);
+    if (timer.unref) timer.unref();
+    child.stdout.on("data", (d) => {
+      out += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      out += d.toString();
+    });
+    child.on("error", (e) => finish(false, "health_check_error: " + String((e && e.message) || e)));
+    child.on("close", (c) => finish(c === 0, c === 0 ? "" : "health_check_exit_" + c));
   });
 }
 
@@ -1386,14 +2911,75 @@ async function stopBackend() {
   return { ok: true };
 }
 
+/**
+ * 回收后端进程（内存护栏的动手那一步）：
+ *   · 与 stopBackend 的区别是**不改 wantRunning / 不等用户点启动** —— 它只在服务本该继续
+ *     待命时做一次「重启」：先把 pid 记下来、存好 wantRunning，停掉，再在后台重新拉起，
+ *     重拉失败就报一条可读日志交给下次任务自己启动（不阻塞调用方、不影响任务回执）。
+ *   · 只允许在任务之间调用；waitBackendIdle + 二次确认（锁与 activeGenerate 都空）之内
+ *     才会真的杀进程，绝不打断别的任务。
+ * 调用方拿到的是「有没有动手」的布尔值，回执已经发完，所以这里 await 的只是「空闲」。
+ */
+async function recycleBackendForRam(reason) {
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  if (!backendRunning() && !(await probeComfy(port))) return false;
+  if (!(await waitBackendIdle(30000))) {
+    appendConsole("[mem] 内存护栏：连 30 秒都没等到空闲，本次不回收（下个任务之间再试）");
+    return false;
+  }
+  if (refreshStaleLock() || activeGenerate) return false; /* 二次确认：刚又有任务进来了 */
+  appendConsole("[mem] 内存护栏：回收后端进程" + (reason ? " —— " + reason : ""));
+  await stopBackend();
+  saveConfig({ wantRunning: !!cfg.wantRunning, lastRecycleAt: Date.now() });
+  if (!cfg.wantRunning) return true;
+  setTimeout(() => {
+    startBackend()
+      .then((r) => {
+        appendConsole(
+          r && r.ok
+            ? "[mem] 后端已重启待命 :" + (Number(r.port) || port) + "（内存已回收，下次任务直接复用）"
+            : "[mem] 后端重启失败：" + String((r && r.error) || "unknown") + "（下次任务会自行拉起）",
+        );
+      })
+      .catch((e) => appendConsole("[mem] 后端重启异常：" + String((e && e.message) || e)));
+  }, 300);
+  return true;
+}
+
 /** 任务用：确保 ComfyUI 可用 */
 async function ensureBackendReadyForJob() {
+  /* ① 先用后端自己报的内存事实看一眼：跑过多轮 4K 超分 / 补帧的服务进程 RSS 只涨不落，
+   *    第 N 单比第 2 单的可用内存少得多（见 POST_MEM_RAIL_* 注释）。
+   *    空闲内存已经低于硬闸、又确实是「量到的水位偏低」时，先回收再干活 —— 与其在
+   *    一台被自己撑小的机器上再挤一单，不如花一次重载把内存要回来。 */
+  const cfg0 = loadConfig();
+  const port0 = Number(cfg0.port) || DEFAULT_PORT;
+  const active0 = refreshStaleLock() || !!activeGenerate; /* 有任务在跑就绝不动后端 */
+  if (backendRunning() && !active0 && cfg0.optRebuildOnRamHigh !== false) {
+    const ram = await probeComfyRamStats(port0);
+    if (ram.free != null && ram.total != null) {
+      const verdict = ramRailVerdict(ram.free, ram.free, ram.total);
+      if (verdict.tightNow) {
+        await recycleBackendForRam(
+          "启动任务前本机只剩 " +
+            verdict.afterGb +
+            "G / 共 " +
+            verdict.totalGb +
+            "G（低于硬闸），先回收服务进程再跑",
+        );
+      }
+    }
+  }
   const started = await startBackend();
   if (!started || !started.ok) {
+    const err = (started && started.error) || "backend_start_failed";
+    const detail = String((started && started.message) || "");
+    reportErr(err, detail || err, { phase: "job" });
     return {
       ok: false,
-      error: (started && started.error) || "backend_start_failed",
-      message: (started && started.message) || "",
+      error: err,
+      message: detail,
     };
   }
   const port = Number(started.port) || Number(loadConfig().port) || DEFAULT_PORT;
@@ -1409,6 +2995,7 @@ async function ensureBackendReadyForJob() {
     const meta = loadPidMeta();
     if (meta && meta.pid && !isAlivePid(meta.pid) && !meta.external) {
       const snip = lastConsoleErrorSnippet(1800);
+      reportErr("backend_exited", "ComfyUI 进程退出" + (snip ? "：\n" + snip : ""), { phase: "job" });
       return {
         ok: false,
         error: "backend_exited",
@@ -1419,6 +3006,9 @@ async function ensureBackendReadyForJob() {
     }
   }
   const snip = lastConsoleErrorSnippet(1200);
+  reportErr("backend_start_timeout", "等待 ComfyUI 就绪超时" + (snip ? "；最近日志：\n" + snip : ""), {
+    phase: "job",
+  });
   return {
     ok: false,
     error: "backend_start_timeout",
@@ -1428,14 +3018,34 @@ async function ensureBackendReadyForJob() {
   };
 }
 
+/** 带 --cpu-vae 启动失败：在 console 记一条指回技能的提示（同一次进程只记一次，
+ *  关掉 CPU VAE 后重新武装）。默认已关，会走到这里说明是老配置显式开了它。 */
+function noteCpuVaeLaunchFailure(why) {
+  if (cpuVaeFailHinted) return;
+  cpuVaeFailHinted = true;
+  appendConsole(
+    "[warn] 本次后端启动带了 --cpu-vae 且未能就绪" +
+      (why ? "（" + why + "）" : "") +
+      "。CPU VAE 开启会让 VideoVAE 解码 dtype 崩（expected m1 and m2 to have the same dtype, " +
+      "but got: float != struct c10::Half），南风 H3 链（nanfeng_prompt_nodes_v10）直接不可用。" +
+      "请在控制台「24G 启动优化」区取消勾选 CPU VAE 再重启后端；口径见技能 minimax-h3-install「启动参数」。"
+  );
+}
+
 async function startBackend() {
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
   if (!safe.ok) return { ok: false, error: safe.error || "bad_dir" };
   const installDir = safe.path;
   const sig = projectSignals(installDir);
-  if (!sig.scaffold) return { ok: false, error: "not_installed" };
-  if (!sig.venv) return { ok: false, error: "no_venv" };
+  if (!sig.scaffold) {
+    reportErr("not_installed", "H3 后端尚未安装：找不到 ComfyUI 脚手架", { phase: "start" });
+    return { ok: false, error: "not_installed" };
+  }
+  if (!sig.venv) {
+    reportErr("no_venv", "H3 后端缺少 Python 环境（ComfyUI\\venv）", { phase: "start" });
+    return { ok: false, error: "no_venv" };
+  }
 
   const port = Number(cfg.port) || DEFAULT_PORT;
   if (await probeComfy(port)) {
@@ -1476,18 +3086,31 @@ async function startBackend() {
 
   const comfy = comfyDir(installDir);
   const py = join(comfy, "venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) return { ok: false, error: "no_venv" };
+  if (!fs.existsSync(py)) {
+    reportErr("no_venv", "H3 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+    return { ok: false, error: "no_venv" };
+  }
 
   mk(path.dirname(consoleLogPath()));
   appendConsole("starting ComfyUI…");
   const outFd = fs.openSync(consoleLogPath(), "a");
   const args = ["main.py", "--listen", "127.0.0.1", "--port", String(port)];
-  if (cfg.cpuVae !== false) args.push("--cpu-vae");
+  const launchCpuVae = !!cfg.cpuVae;
+  if (launchCpuVae) args.push("--cpu-vae");
   if (cfg.optDisablePinnedMemory !== false) args.push("--disable-pinned-memory");
   if (cfg.optFp16Intermediates !== false) args.push("--fp16-intermediates");
   const reserveGb = Number(cfg.optReserveVramGb);
   if (Number.isFinite(reserveGb) && reserveGb > 0) {
     args.push("--reserve-vram", String(reserveGb));
+  }
+  /* 系统内存缓存保留下限：ComfyUI 默认非活跃阈值 = 100% 内存（最高 128G），
+   * 会把超分链的整段视频帧张量一直留在 RAM 里 → 64G 机器被跑满。
+   * 给两个阈值（活跃 headroom / 非活跃 headroom）后，内存吃紧时它才开始释放缓存产物。
+   * 0 / 非法值 = 不加这个参数，退回服务默认（留给想自己调的机器）。 */
+  const cacheRamGb = Math.round(Number(cfg.optCacheRamGb));
+  if (Number.isFinite(cacheRamGb) && cacheRamGb > 0) {
+    const inactiveGb = Math.max(1, Math.floor(cacheRamGb / 2));
+    args.push("--cache-ram", String(cacheRamGb), String(inactiveGb));
   }
   const env = Object.assign({}, process.env);
   if (cfg.optExpandableSegments !== false) {
@@ -1497,6 +3120,16 @@ async function startBackend() {
         ? prev + ",expandable_segments:True"
         : "expandable_segments:True";
     }
+  }
+  /* 多线程 arena：默认按核数开一堆 malloc arena，超分链的「整段帧张量」全是大块，
+   * 分散在多个 arena 里时谁都不肯把内存还给系统 → RSS 只涨不落（就是这次要治的「持续攀升」）。
+   * 单 arena + 限线程能把这类碎片压掉一大截（顶多多线程分配串行一点，超分本来也不是 CPU 密集）。 */
+  if (!String(env.MALLOC_ARENA_MAX || "").trim()) env.MALLOC_ARENA_MAX = "1";
+  const arenaThreads = Math.round(Number(cfg.optArenaThreads));
+  if (Number.isFinite(arenaThreads) && arenaThreads > 0) {
+    const n = String(arenaThreads);
+    if (!String(env.OMP_NUM_THREADS || "").trim()) env.OMP_NUM_THREADS = n;
+    if (!String(env.MKL_NUM_THREADS || "").trim()) env.MKL_NUM_THREADS = n;
   }
   appendConsole(
     "[launch] flags=" +
@@ -1528,6 +3161,8 @@ async function startBackend() {
       clearPidMeta();
       const snip = lastConsoleErrorSnippet(1800);
       appendConsole("[start] backend exited early");
+      if (launchCpuVae) noteCpuVaeLaunchFailure("ComfyUI 进程启动后退出");
+      reportErr("backend_exited", "ComfyUI 进程启动后退出" + (snip ? "：\n" + snip : ""), { phase: "start" });
       return {
         ok: false,
         error: "backend_exited",
@@ -1538,6 +3173,10 @@ async function startBackend() {
     }
   }
   const snip = lastConsoleErrorSnippet(1200);
+  if (launchCpuVae) noteCpuVaeLaunchFailure("等待就绪超时");
+  reportErr("backend_start_timeout", "等待 ComfyUI 就绪超时" + (snip ? "；最近日志：\n" + snip : ""), {
+    phase: "start",
+  });
   return {
     ok: false,
     error: "backend_start_timeout",
@@ -1644,7 +3283,14 @@ function calcLength(seconds) {
   return a + ((5 - (a % 17)) % 17);
 }
 
-function buildH3Workflow(params, uploaded, phase) {
+/* 后端 MiniMaxH3ReferenceToVideo 的参考视频硬上限：ref_video_0..2（R2V 模式，与 h3-pack/README.md
+ * 「视频 ≤3」同口径）。分段衔接在 R2V 下要占掉其中一路，所以封顶规则只有这一个真源。 */
+const H3_REF_VIDEO_MAX = 3;
+
+/** 内置图构建。
+ *  notes：可选出参对象，本函数只往里写「需要让用户看见的图层面决策」（目前只有 R2V 分段衔接占用第几路
+ *  参考视频），调用方（generateVideo）负责落日志；不传则不记，图本体不受影响。 */
+function buildH3Workflow(params, uploaded, notes) {
   const nodes = {};
   let id = 1;
   const w = (cls, inputs) => ({ class_type: cls, inputs });
@@ -1652,70 +3298,6 @@ function buildH3Workflow(params, uploaded, phase) {
   const mode = params.mode === "r2v" ? "r2v" : "fl2va";
   const useRef = mode === "r2v";
   const dit = useRef && params.hasRef2va !== false ? MODELS.ref2va : MODELS.fl2va;
-
-  /* 独立后处理阶段：加载阶段一产出的原生视频 → RIFE 补帧 → RealESRGAN 超分
-   * → 缩放到 4K。此时生成模型已释放，仅加载补帧/超分模型，显存压力最小。 */
-  if (phase === "post") {
-    if (!params.postVideoPath) throw new Error("post_video_missing");
-    const loadV = String(id++);
-    nodes[loadV] = w("LoadVideo", { file: params.postVideoPath });
-    const getV = String(id++);
-    nodes[getV] = w("GetVideoComponents", { video: link(loadV, 0) });
-    let framesLink = link(getV, 0);
-    let fps = Number(params.fps) || 24;
-    if (params.postInterp !== false) {
-      const interpNode = String(id++);
-      const mult = Math.max(1, Math.min(8, Math.round(Number(params.postInterpMultiplier) || 2)));
-      nodes[interpNode] = w("RIFE VFI", {
-        ckpt_name: POST_MODELS.rife,
-        frames: framesLink,
-        clear_cache_after_n_frames: 10,
-        multiplier: mult,
-        fast_mode: false,
-        ensemble: true,
-        scale_factor: 1.0,
-        dtype: "float32",
-        torch_compile: false,
-        batch_size: 1,
-      });
-      framesLink = link(interpNode, 0);
-      fps = Math.max(1, Math.round(fps * mult));
-    }
-    const upscaleModelNode = String(id++);
-    nodes[upscaleModelNode] = w("UpscaleModelLoader", { model_name: POST_MODELS.upscale });
-    const upscaleNode = String(id++);
-    nodes[upscaleNode] = w("ImageUpscaleWithModelBatched", {
-      upscale_model: link(upscaleModelNode, 0),
-      images: framesLink,
-      per_batch: Math.max(1, Math.round(Number(params.postPerBatch) || 4)),
-    });
-    framesLink = link(upscaleNode, 0);
-    const [tw, th] = post4kDims(params.width, params.height);
-    const scaleNode = String(id++);
-    nodes[scaleNode] = w("ImageScale", {
-      image: framesLink,
-      upscale_method: "lanczos",
-      width: tw,
-      height: th,
-      crop: "disabled",
-    });
-    framesLink = link(scaleNode, 0);
-    const createVideoNode = String(id++);
-    nodes[createVideoNode] = w("CreateVideo", {
-      images: framesLink,
-      audio: link(getV, 1),
-      fps,
-      bit_depth: Number(params.bitDepth) || 8,
-    });
-    const saveVideoNode = String(id++);
-    nodes[saveVideoNode] = w("SaveVideo", {
-      video: link(createVideoNode, 0),
-      filename_prefix: params.filenamePrefix || "video/MiniMax_H3_post",
-      format: params.videoFormat || "auto",
-      codec: params.videoCodec || "auto",
-    });
-    return nodes;
-  }
 
   const imageNodes = [];
   if (mode === "fl2va") {
@@ -1739,6 +3321,7 @@ function buildH3Workflow(params, uploaded, phase) {
 
   const videoLinks = [];
   const videoAudioLinks = [];
+  const videoNodePairs = [];
   (uploaded.videos || []).forEach((file) => {
     const vn = String(id++);
     nodes[vn] = w("LoadVideo", { file });
@@ -1746,6 +3329,8 @@ function buildH3Workflow(params, uploaded, phase) {
     nodes[gn] = w("GetVideoComponents", { video: link(vn, 0) });
     videoLinks.push(link(gn, 0));
     videoAudioLinks.push(link(gn, 1));
+    /* 记一下这条参考视频占的节点，分段衔接顶替它时要把两个空节点一起摘掉，别留在图里 */
+    videoNodePairs.push([vn, gn]);
   });
 
   const audioLinks = [];
@@ -1754,6 +3339,67 @@ function buildH3Workflow(params, uploaded, phase) {
     nodes[an] = w("LoadAudio", { audio: file });
     audioLinks.push(link(an, 0));
   });
+
+  /* 分段衔接子图（内置 FL2VA / R2V 都生效；自建 ComfyUI 工作流不走这里）：
+   *   上一段成片 → 末尾 chainFrames 帧 = 段间引导窗口（构图 / 角色 / 场景连续性的来源）。
+   * FL2VA：再取该窗口最后一帧（=「帧数-1」）充当锚定构图的首帧；用户自备首帧时尊重用户首帧，
+   *        衔接帧只作兜底（不覆盖）。
+   * R2V ：MiniMaxH3ReferenceToVideo 没有 first_frame，锚只能是「一路参考视频」——该窗口的画面帧
+   *        直接作为 ref_video_k（官方 <Video N> 语义含 video continuation / 续写起点）。
+   *        ref_video_k 收 IMAGE 帧序列（与既有 GetVideoComponents 输出同口径，不必 CreateVideo 回灌
+   *        成 VIDEO 再拆），且只喂画面不喂音轨：窗口只有 N 帧，配整段音轨会音画长度不匹配。
+   * chainDenoise ∈ (0,1) 时落到 BasicScheduler.denoise = 引导加重绘（对引导区域重绘以重置画质，
+   * 抑制长片逐段劣化）；0 / 1 = 纯引导（沿用全局 denoise）。 */
+  const chainFrames = Math.max(1, Math.min(60, Math.round(Number(params.chainFrames) || 22)));
+  let chainAnchor = null;
+  let chainRefVideo = null;
+  let chainVideoNote = "";
+  if (uploaded.chain) {
+    const chainLoadV = String(id++);
+    nodes[chainLoadV] = w("LoadVideo", { file: uploaded.chain });
+    const chainGetV = String(id++);
+    nodes[chainGetV] = w("GetVideoComponents", { video: link(chainLoadV, 0) });
+    /* batch_index 取负数 = 从末尾倒着数：窗口即上一段末尾 chainFrames 帧 */
+    const chainWin = String(id++);
+    nodes[chainWin] = w("ImageFromBatch", {
+      image: link(chainGetV, 0),
+      batch_index: -chainFrames,
+      length: chainFrames,
+    });
+    if (mode === "fl2va") {
+      /* 锚定帧 = 引导窗口最后一帧（等价「帧数-1」；用 -1 使上一段短于窗口时也不越界） */
+      chainAnchor = String(id++);
+      nodes[chainAnchor] = w("ImageFromBatch", {
+        image: link(chainWin, 0),
+        batch_index: -1,
+        length: 1,
+      });
+    } else {
+      /* R2V：末 N 帧窗口就是一路衔接参考视频（ref_video_* 收 IMAGE 帧序列，与既有 V1–V3 同口径，
+       * 不必 CreateVideo 回灌成 VIDEO 再拆）；该路音轨留空。后端只收 3 路（H3_REF_VIDEO_MAX）：
+       * 用户连满时顶掉最后一条 V3，并把话留给上层日志 —— 绝不静默丢。 */
+      const chainImg = link(chainWin, 0);
+      const refsFull = videoLinks.length >= H3_REF_VIDEO_MAX;
+      if (refsFull) {
+        /* 顶掉最后一条 V3：原来那两节点（LoadVideo + GetVideoComponents）一并摘掉，别在图里留孤儿 */
+        const dropped = videoNodePairs[H3_REF_VIDEO_MAX - 1];
+        if (dropped) dropped.forEach((nid) => delete nodes[nid]);
+        videoLinks[H3_REF_VIDEO_MAX - 1] = chainImg;
+        videoAudioLinks[H3_REF_VIDEO_MAX - 1] = null;
+      } else {
+        videoLinks.push(chainImg);
+        videoAudioLinks.push(null);
+      }
+      chainRefVideo = chainImg;
+      chainVideoNote =
+        "分段衔接：上一段末尾 " + chainFrames + " 帧占用 V" + (refsFull ? H3_REF_VIDEO_MAX : videoLinks.length) +
+        (refsFull ? "（该路原有参考视频本段未接入）" : "（续写引导）");
+    }
+  }
+  /* 衔接是否真的进了图（两种模式任一命中即算）：引导加重绘的判据用它，与模式无关 */
+  const chainActive = !!chainAnchor || !!chainRefVideo;
+  /* 衔接占了哪一路参考视频 → 交给调用方落日志（图本体不受影响） */
+  if (notes && chainVideoNote) notes.chainVideo = chainVideoNote;
 
   const vaeVideoNode = String(id++);
   const vaeAudioNode = String(id++);
@@ -1800,7 +3446,9 @@ function buildH3Workflow(params, uploaded, phase) {
     };
     const first = imageNodes.find((x) => x.role === "first");
     const last = imageNodes.find((x) => x.role === "last");
+    /* 有用户首帧则尊重用户首帧；否则用上一段成片的末帧充当锚定构图的首帧（分段衔接） */
     if (first) h3Inputs.first_frame = link(first.nid, 0);
+    else if (chainAnchor) h3Inputs.first_frame = link(chainAnchor, 0);
     if (last) h3Inputs.last_frame = link(last.nid, 0);
     nodes[h3Node] = w("MiniMaxH3ImageToVideo", h3Inputs);
   }
@@ -1811,9 +3459,9 @@ function buildH3Workflow(params, uploaded, phase) {
     const easyNode = String(id++);
     nodes[easyNode] = w("EasyCache", {
       model: link(modelOut, 0),
-      reuse_threshold: Number(params.easyReuse) || 0.2,
-      start_percent: Number(params.easyStart) || 0.15,
-      end_percent: Number(params.easyEnd) || 0.95,
+      reuse_threshold: clampNum(params.easyReuse, EASY_SAFE.reuse.min, EASY_SAFE.reuse.max, EASY_SAFE.reuse.value),
+      start_percent: clampNum(params.easyStart, EASY_SAFE.start.min, EASY_SAFE.start.max, EASY_SAFE.start.value),
+      end_percent: clampNum(params.easyEnd, EASY_SAFE.end.min, EASY_SAFE.end.max, EASY_SAFE.end.value),
       verbose: !!params.easyVerbose,
     });
     modelOut = easyNode;
@@ -1871,11 +3519,16 @@ function buildH3Workflow(params, uploaded, phase) {
   const saveVideoNode = String(id++);
 
   nodes[noiseNode] = w("RandomNoise", { noise_seed: Number(params.seed) || 0 });
+  /* 引导加重绘：分段衔接生效且重绘幅度 ∈ (0,1) 时，用它压低 denoise（对引导区域重绘、重置画面状态）；
+   * 幅度 0 / 1 = 不加引导重绘（纯引导，沿用全局 denoise）。FL2VA / R2V 同口径（该节点与模式无关）。 */
+  const chainRedraw = Number(params.chainDenoise);
+  const useChainRedraw =
+    !!chainActive && Number.isFinite(chainRedraw) && chainRedraw > 0 && chainRedraw < 1;
   nodes[schedNode] = w("BasicScheduler", {
     model: link(shiftNode, 0),
     scheduler: params.scheduler || "simple",
     steps: Number(params.steps) || 20,
-    denoise: Number(params.denoise) || 1,
+    denoise: useChainRedraw ? chainRedraw : Number(params.denoise) || 1,
   });
   nodes[samplerNode] = w("KSamplerSelect", { sampler_name: params.sampler || "res_multistep" });
   nodes[guiderNode] = w("BasicGuider", { model: link(modelForGuider, 0), conditioning: link(h3Node, 0) });
@@ -1925,6 +3578,962 @@ function buildH3Workflow(params, uploaded, phase) {
   });
 
   return nodes;
+}
+
+/* ───────────── 独立后处理（超分 / 补帧，已从生成链拆出） ───────────── */
+
+/** 超分模型名归一：只取文件名，并确保带扩展名（缺省按随包的 .pth 补）。
+ *  兼容三种来源：老节点存的 "RealESRGAN_x4plus"、用户手填的完整路径、已带扩展名的正确值。 */
+function normalizeUpscaleModelName(raw) {
+  let name = String(raw == null ? "" : raw).trim().replace(/[\\/]+$/, "");
+  if (!name) return POST_MODELS.upscale;
+  name = name.split(/[\\/]/).pop();
+  const lower = name.toLowerCase();
+  for (const ext of POST_MODEL_EXTS) if (lower.endsWith(ext)) return name;
+  const defExt = (POST_MODELS.upscale.match(/\.[a-z0-9]+$/i) || [".pth"])[0];
+  return name + defExt;
+}
+
+/** 按 ComfyUI 真实 upscale_models 目录再校一次：
+ *  ① 忽略大小写精确命中 → 用它；② 扩展名不同但文件名唯一（.pt / .safetensors）→ 用它；
+ *  ③ 目录读不到（后端没装 / 路径不对）→ 返回归一化名 + available:null，不阻断，交给 ComfyUI 校验。
+ *  返回 { model, available|null }；available 是该目录实际可用的文件名清单。 */
+function resolveUpscaleModelForComfy(comfy, raw) {
+  const wanted = normalizeUpscaleModelName(raw);
+  const dir = comfy ? join(comfy, "models", "upscale_models") : "";
+  let files = [];
+  try {
+    /* 只看带模型扩展名的文件：目录里的占位说明（put_models_here 之类）ComfyUI 也不会列进 combo */
+    files = fs
+      .readdirSync(dir)
+      .filter((f) => {
+        if (!POST_MODEL_EXTS.some((e) => String(f).toLowerCase().endsWith(e))) return false;
+        try {
+          return fs.statSync(join(dir, f)).isFile();
+        } catch {
+          return false;
+        }
+      });
+  } catch {
+    files = [];
+  }
+  if (!files.length) return { model: wanted, available: null };
+  const key = (s) => String(s).toLowerCase();
+  for (const f of files) if (key(f) === key(wanted)) return { model: f, available: files };
+  const stem = key(wanted).replace(/\.[a-z0-9]+$/, "");
+  const sameStem = files.filter((f) => key(f).replace(/\.[a-z0-9]+$/, "") === stem);
+  if (sameStem.length === 1) return { model: sameStem[0], available: files };
+  return { model: wanted, available: files };
+}
+
+/** 归一化后处理参数：24G 安全档默认（超分逐帧、RIFE 低显存）。 */
+function resolvePostOptions(kind, raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  if (kind === "interp") {
+    const d = POST_SAFE_DEFAULTS.interp;
+    /* 流式补帧档参数（图档不使用 engine / precision / maxLongSide，写进去也不影响旧链）：
+     * precision：默认 fp16；lowVram 档或宿主报来显存偏小（< POST_STREAM_MIN_FP16_VRAM_GB）时落 fp32。
+     * maxLongSide：沿用节点已有值，0 = 不预缩放（补帧不改分辨率；显式给出时才先缩，省显存）。 */
+    const lowVram = o.lowVram !== false; /* 默认开 */
+    const vramGb = Number(o.vramGb) > 0 ? Number(o.vramGb) : null;
+    const smallVram = vramGb != null && vramGb < POST_STREAM_MIN_FP16_VRAM_GB;
+    const precReq = String(o.precision || "").toLowerCase();
+    const precision =
+      precReq === "fp16" || precReq === "fp32" ? precReq : lowVram || smallVram ? "fp32" : "fp16";
+    return {
+      multiplier: Math.max(1, Math.min(4, Math.round(Number(o.multiplier) || d.multiplier))),
+      clearCacheEvery: Math.max(
+        1,
+        Math.min(64, Math.round(Number(o.clearCacheEvery) || d.clearCacheEvery)),
+      ),
+      batchSize: 1, /* 24G 安全档：RIFE 逐帧，忽略更大的请求值 */
+      scaleFactor: Number(o.scaleFactor) || d.scaleFactor,
+      maxLongSide: Math.max(0, Math.round(Number(o.maxLongSide) || 0)),
+      precision: precision,
+      /* 引擎意向：'stream'（默认，内存与时长无关）/ 'graph'（显式要旧链）。
+       * 环境缺件（脚本 / venv / RIFE 权重）时由 resolvePostEngine 决定实际走哪条。 */
+      engine: String(o.engine || "").toLowerCase() === "graph" ? "graph" : "stream",
+      lowVram,
+    };
+  }
+  const d = POST_SAFE_DEFAULTS.upscale;
+  const lowVram = o.lowVram !== false; /* 默认开 */
+  const perBatchReq = Math.max(1, Math.round(Number(o.perBatch) || d.perBatch));
+  /* ── 流式档参数（图档不使用 tile / overlap / precision，写进去也不影响旧链） ──
+   * tile：沿用节点已有 node.tile；未指定（0）时用默认 512 —— 新链的内存只跟 tile 有关。
+   * precision：默认 fp16；lowVram 档或宿主报来显存偏小（< POST_STREAM_MIN_FP16_VRAM_GB）时
+   *   落 fp32，并把「未显式指定」的 tile 减半 —— 显存紧的机器优先跑得起来，而不是跑得快。 */
+  const tileReq = Math.max(0, Math.round(Number(o.tile) || 0));
+  const vramGb = Number(o.vramGb) > 0 ? Number(o.vramGb) : null;
+  const smallVram = vramGb != null && vramGb < POST_STREAM_MIN_FP16_VRAM_GB;
+  const wantFp32 = lowVram || smallVram;
+  const precReq = String(o.precision || "").toLowerCase();
+  const precision =
+    precReq === "fp16" || precReq === "fp32" ? precReq : wantFp32 ? "fp32" : "fp16";
+  const streamTile = tileReq > 0 ? tileReq : POST_STREAM_DEFAULT_TILE;
+  const tile =
+    tileReq > 0 ? tileReq : wantFp32 ? Math.max(64, Math.round(streamTile / 2)) : streamTile;
+  return {
+    model: normalizeUpscaleModelName(o.model || d.model),
+    /* 倍率：2 = 输出只放大 2 倍（更省内存；有原生 x2 权重就顺手用），4 = x4 原生 */
+    scale: normalizeUpscaleScale(o.scale != null ? o.scale : d.scale),
+    targetLongSide: Math.max(
+      POST_TARGET_LONG_SIDE_MIN,
+      Math.round(Number(o.targetLongSide) || d.targetLongSide),
+    ),
+    perBatch: lowVram ? 1 : perBatchReq,
+    tile: tile,
+    overlap: Math.max(0, Math.round(Number(o.overlap) || POST_STREAM_DEFAULT_OVERLAP)),
+    precision: precision,
+    /* 引擎意向：'stream'（默认，内存与时长无关）/ 'graph'（显式要旧链）。
+     * 环境缺件时由 resolvePostEngine 决定实际走哪条，并把结论写回这里。 */
+    engine: String(o.engine || "").toLowerCase() === "graph" ? "graph" : "stream",
+    lowVram,
+  };
+}
+
+/** OOM 自动降一档：流式 = tile 减半 + 精度 fp32（超分）/ 精度 fp32（补帧，倍率不动）；图 = 压低目标长边并强制逐帧；补帧退回 2x + 最小缓存。 */
+function downgradePostOptions(kind, opts) {
+  if (kind === "interp") {
+    /* 流式补帧档：常驻内存只与相邻两帧 + 模型有关，与时长无关 —— 降档只落 fp32
+     * （精度减半 = 激活/权重占用减半），显式给过 maxLongSide 再顺手降一档，
+     * multiplier 不动（用户要的倍率不该被内存策略白降）。图档保持原口径一字未改。 */
+    if (String(opts.engine || "") === "stream") {
+      const cur = Math.max(0, Math.round(Number(opts.maxLongSide) || 0));
+      const nextLong =
+        cur > 0 ? Math.max(640, Math.round((cur * 0.75) / 2) * 2) : 0;
+      return Object.assign({}, opts, {
+        engine: "stream",
+        precision: "fp32",
+        maxLongSide: nextLong,
+      });
+    }
+    return {
+      multiplier: Math.min(2, opts.multiplier),
+      clearCacheEvery: 1,
+      batchSize: 1,
+      scaleFactor: opts.scaleFactor,
+    };
+  }
+  /* 流式档：内存 / 显存都只跟 tile 与精度有关，与目标长边无关（时长也不影响），
+   * 所以降档只做「tile 减半 + fp32」，不再动 targetLongSide / scale —— 画质不被白降。 */
+  if (String(opts.engine || "") === "stream") {
+    return Object.assign({}, opts, {
+      engine: "stream",
+      tile: Math.max(64, Math.round((Number(opts.tile) || POST_STREAM_DEFAULT_TILE) / 2)),
+      precision: "fp32",
+    });
+  }
+  return {
+    model: opts.model,
+    scale: normalizeUpscaleScale(opts.scale),
+    targetLongSide: Math.max(
+      POST_TARGET_LONG_SIDE_MIN,
+      Math.round(opts.targetLongSide / 2),
+    ),
+    perBatch: 1,
+    tile: 0,
+    engine: "graph",
+    precision: opts.precision || "fp16",
+    overlap: opts.overlap,
+    lowVram: true,
+  };
+}
+
+function isPostOomError(e) {
+  const txt = String((e && (e.detail || e.message)) || e || "");
+  return POST_OOM_RE.test(txt);
+}
+
+/**
+ * 独立后处理工作流（与 MiniMax H3 生成彻底解耦）。
+ *   kind='upscale' → Real-ESRGAN 超分（x4 / x2 权重）→ ImageScale 到输出长边；
+ *   kind='interp'  → RIFE VFI 补帧（逐帧、低显存），fps 按倍数重算。
+ * 两者都从源视频取帧与音轨，回 CreateVideo（音轨原样带回）+ SaveVideo。
+ * 参数由 postProcessVideo 归一化后传入（见 resolvePostOptions）。
+ * 输出长边 = min(目标长边, 源长边 × 倍率)：倍率 x2 时不会被目标长边拉成 4 倍；
+ * 源分辨率（params.width / height）缺失时不追加缩放，保留权重原生尺寸。
+ */
+function buildPostWorkflow(params) {
+  const p = params || {};
+  const kind = p.kind === "interp" ? "interp" : "upscale";
+  if (!p.videoPath) throw new Error("post_video_missing");
+  const nodes = {};
+  let id = 1;
+  const w = (cls, inputs) => ({ class_type: cls, inputs });
+  const link = (nodeId, output) => [String(nodeId), output];
+
+  const loadV = String(id++);
+  nodes[loadV] = w("LoadVideo", { file: p.videoPath });
+  const getV = String(id++);
+  nodes[getV] = w("GetVideoComponents", { video: link(loadV, 0) });
+
+  let framesLink = link(getV, 0);
+  let fps = Math.max(1, Number(p.fps) || 24);
+  let tag = "upscaleX4";
+
+  if (kind === "interp") {
+    const it = p.interp || POST_SAFE_DEFAULTS.interp;
+    const mult = Math.max(1, Math.min(8, Math.round(Number(it.multiplier) || 2)));
+    const interpNode = String(id++);
+    nodes[interpNode] = w("RIFE VFI", {
+      ckpt_name: POST_MODELS.rife,
+      frames: framesLink,
+      clear_cache_after_n_frames: Math.max(1, Math.round(Number(it.clearCacheEvery) || 2)),
+      multiplier: mult,
+      fast_mode: false,
+      ensemble: true,
+      scale_factor: Number(it.scaleFactor) || 1.0,
+      dtype: "float32",
+      torch_compile: false,
+      batch_size: Math.max(1, Math.round(Number(it.batchSize) || 1)),
+    });
+    framesLink = link(interpNode, 0);
+    fps = Math.max(1, Math.round(fps * mult));
+    tag = "interp" + mult + "x";
+  } else {
+    const up = p.upscale || POST_SAFE_DEFAULTS.upscale;
+    /* 内存闸要求「进超分前先把源帧缩小」时，先插一层 ImageScale：
+     * 源少 k² 倍，x4 中间张量就少 k² 倍 —— 这是唯一能压住峰值内存的杠杆（目标长边只管
+     * 超分完成后交回 RAM 的那些帧）。见 resolveUpscaleRamPlan 的 preScale。 */
+    const pre = Array.isArray(p.preDims) ? p.preDims : null;
+    if (pre && Number(pre[0]) > 1 && Number(pre[1]) > 1) {
+      const preNode = String(id++);
+      nodes[preNode] = w("ImageScale", {
+        image: framesLink,
+        upscale_method: "lanczos",
+        width: Math.max(2, Math.round(Number(pre[0]))),
+        height: Math.max(2, Math.round(Number(pre[1]))),
+        crop: "disabled",
+      });
+      framesLink = link(preNode, 0);
+    }
+    const upModelNode = String(id++);
+    nodes[upModelNode] = w("UpscaleModelLoader", {
+      model_name: normalizeUpscaleModelName(up.model || POST_MODELS.upscale),
+    });
+    const upNode = String(id++);
+    nodes[upNode] = w("ImageUpscaleWithModelBatched", {
+      upscale_model: link(upModelNode, 0),
+      images: framesLink,
+      per_batch: Math.max(1, Math.round(Number(up.perBatch) || 1)),
+    });
+    framesLink = link(upNode, 0);
+    const longSide = Math.round(Number(up.targetLongSide) || 0);
+    if (longSide > 0 && Number(p.width) > 0 && Number(p.height) > 0) {
+      /* 倍率是输出上限：x2 时把 x4 权重的产物缩回源 ×2（有原生 x2 权重时这里基本是原位）。
+         tag 带上倍率，产物文件名自己说明这一单是几倍。 */
+      const out = upscaleOutputLongSide(
+        longSide,
+        Math.max(Number(p.width), Number(p.height)),
+        up.scale,
+      );
+      const [tw, th] = postDimsForLongSide(p.width, p.height, out);
+      const scaleNode = String(id++);
+      nodes[scaleNode] = w("ImageScale", {
+        image: framesLink,
+        upscale_method: "lanczos",
+        width: tw,
+        height: th,
+        crop: "disabled",
+      });
+      framesLink = link(scaleNode, 0);
+      tag = "upscale" + (normalizeUpscaleScale(up.scale) === 2 ? "X2_" : "") + out;
+    }
+  }
+
+  const createVideoNode = String(id++);
+  nodes[createVideoNode] = w("CreateVideo", {
+    images: framesLink,
+    audio: link(getV, 1),
+    fps,
+    bit_depth: Number(p.bitDepth) || 8,
+  });
+  const saveVideoNode = String(id++);
+  nodes[saveVideoNode] = w("SaveVideo", {
+    video: link(createVideoNode, 0),
+    filename_prefix: p.filenamePrefix || "video/MiniMax_H3_post_" + tag,
+    format: p.videoFormat || "auto",
+    codec: p.videoCodec || "auto",
+  });
+  return nodes;
+}
+
+/**
+ * h3:postProcess —— 超分 / 补帧独立后处理任务。
+ * 入参：{ nodeId, kind:'upscale'|'interp', sourcePath, fps, bitDepth, videoFormat,
+ *         videoCodec, outputDir, filename, sourceWidth, sourceHeight,
+ *         upscale:{model,scale,targetLongSide,perBatch,tile,lowVram,engine,precision,overlap},
+ *         interp:{multiplier,clearCacheEvery,batchSize,scaleFactor,maxLongSide,lowVram,engine,precision} }
+ * 复用全局媒体互斥锁、activeGenerate 取消、ComfyUI /free；提交前后各释放一次生成模型，
+ * 首次 OOM 自动降一档重试一次。超分 / 补帧都走同一套引擎选路（见 resolvePostEngine）：
+ *  · 'stream'（默认）：逐帧流式（超分 h3-pack/post/stream_upscale.py 分块 / 补帧
+ *    h3-pack/post/stream_interp.py 逐对，都是 venv python 子进程）——
+ *    超分常驻内存只与一个 tile 有关、补帧只与相邻两帧 + 模型有关，都与时长无关
+ *    → 16G 机器也能跑 15 秒级视频；
+ *  · 'graph'（兜底）：原 ComfyUI 图链（缺脚本 / 缺 venv / 缺权重 / 流式失败时自动回退）。
+ */
+async function postProcessVideo(params) {
+  const req = params && typeof params === "object" ? params : {};
+  const nodeId = String(req.nodeId || "");
+  if (!nodeId) return { ok: false, error: "missing_node_id" };
+  const kind = req.kind === "interp" ? "interp" : "upscale";
+  const label = kind === "interp" ? "补帧" : "超分";
+  const sourcePath = String(req.sourcePath || "").trim();
+  if (!sourcePath) {
+    return { ok: false, error: "missing_source", message: "缺少输入视频（" + label + "）" };
+  }
+  if (!fs.existsSync(sourcePath)) {
+    return { ok: false, error: "source_missing", message: "输入视频不存在：" + sourcePath };
+  }
+
+  const acq = tryAcquireLock({
+    nodeId,
+    workflowId: String(req.canvasWorkflowId || "").trim(),
+    kind: "video_gen",
+  });
+  if (!acq.ok) {
+    if (acq.error === "missing_node_id") return { ok: false, error: "missing_node_id" };
+    const lock = acq.lock;
+    const msg = busyMessage(lock);
+    appendConsole("[post] busy_other_node: " + ((lock && lock.nodeId) || ""));
+    return { ok: false, error: "busy_other_node", lock, message: msg };
+  }
+
+  /** 系统内存水位监视：记下限，收尾时打印实测峰值（跑满的是内存、不是显存） */
+  let memWatch = null;
+  /* 内存护栏的「这一单开始前，这台机器还剩多少」：任务之间量一次，收尾再量一次，
+   * 差值就是服务进程这一单守住没还的那部分（见 ramRailVerdict）。 */
+  let ramBeforeFreeGb = null;
+  let ramAfterFreeGb = null;
+  let ramTotalGb = null;
+  try {
+    appendConsole("[post] start kind=" + kind + " source=" + sourcePath);
+    emitProgress({ phase: "post", nodeId, message: "正在启动后端…", pct: 2 });
+    memWatch = startRamWatch();
+    const ready = await ensureBackendReadyForJob();
+    if (!ready.ok) {
+      const err = ready.error || "backend_start_failed";
+      const detail = String(ready.message || "").trim();
+      clearLock();
+      appendConsole("[post] backend start failed: " + err);
+      if (detail) appendConsole(detail.slice(0, 2000));
+      emitProgress({
+        phase: "post",
+        nodeId,
+        message: detail ? detail.slice(0, 400) : err,
+        error: true,
+        pct: 0,
+      });
+      reportErr(err, detail || err, {
+        phase: "post",
+        nodeId,
+        workflowId: String(req.canvasWorkflowId || ""),
+        nodeKind: "video_upscale/video_interp",
+      });
+      return {
+        ok: false,
+        error: err,
+        message: detail ? "启动后端失败：" + err + "\n" + detail.slice(0, 1200) : "启动后端失败：" + err,
+      };
+    }
+
+    const cfg = loadConfig();
+    const port = Number(ready.port) || Number(cfg.port) || DEFAULT_PORT;
+    const comfy = comfyDir(cfg.installDir);
+
+    activeGenerate = { nodeId, abort: false, promptId: "", req: null };
+    /* 系统内存水位（只为把「跑满的是内存、不是显存」变成控制台里的实测数字） */
+    memWatch = startRamWatch();
+    /* 内存护栏的起点：这一单开工前，后端自己报的可用 / 总内存（量不到就保持 null，收尾不判） */
+    try {
+      const ram0 = await probeComfyRamStats(port, { reuse: false });
+      ramBeforeFreeGb = ram0.free;
+      ramTotalGb = ram0.total;
+      if (ram0.free != null) {
+        appendConsole(
+          "[mem] 开工前可用内存 " +
+            gb1(ram0.free) +
+            "G" +
+            (ram0.total != null ? " / 共 " + gb1(ram0.total) + "G" : ""),
+        );
+      }
+    } catch {}
+
+    /* 提交前释放生成模型（H3 DiT / VAE），后处理只留超分 / 补帧模型，压低显存峰值 */
+    await comfyFreeModels(port);
+    if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
+
+    const sourceWidth = Number(req.sourceWidth) || Number(req.width) || 0;
+    const sourceHeight = Number(req.sourceHeight) || Number(req.height) || 0;
+    let ramFrames = 0; /* 容器里读到的真实帧数（读取失败保持 0） */
+    let opts = resolvePostOptions(kind, kind === "interp" ? req.interp : req.upscale);
+    if (kind === "upscale") {
+      /* 引擎选路：默认逐帧流式（内存与时长无关，16G 也能跑 15 秒片）；缺脚本 / 缺 venv /
+       * 显式要旧链时回退 ComfyUI 图（见 resolvePostEngine）。流式路径 PyAV 直接读源文件，
+       * 不需要把源视频上传进 ComfyUI/input；图路径才需要（原逻辑挪到下面的图分支）。 */
+      const venvPy = streamVenvPython(comfy);
+      const streamScript = streamUpscaleScriptPath();
+      const pick = resolvePostEngine(kind, opts, {
+        scriptExists: !!streamScript && fs.existsSync(streamScript),
+        venvExists: !!venvPy && fs.existsSync(venvPy),
+      });
+      opts = Object.assign({}, opts, { engine: pick.engine });
+      appendConsole(
+        "[post] 超分引擎 = " +
+          (pick.engine === "stream" ? "逐帧流式（stream_upscale.py）" : "ComfyUI 图（兜底）") +
+          " · 依据=" +
+          pick.reason,
+      );
+      if (pick.engine === "graph") {
+        appendConsole(
+          "[post] 已回退图路径 · 原因=" +
+            pick.reason +
+            (pick.reason === "script_missing"
+              ? "（缺流式脚本 " + streamScript + "）"
+              : pick.reason === "venv_missing"
+                ? "（缺 ComfyUI venv 解释器 " + venvPy + "）"
+                : ""),
+        );
+      }
+      /* 老节点里可能存着不带扩展名的 "RealESRGAN_x4plus"：model_name 是 combo，
+       * 候选 = upscale_models 目录下的文件名，值不对 ComfyUI 直接判 value_not_in_list 拒图。
+       * 这里按真实目录校正（忽略大小写 / 扩展名），仍然对不上就带着可用清单报错，别让用户猜。 */
+      const m = resolveUpscaleModelForComfy(comfy, opts.model);
+      const avail = Array.isArray(m.available) ? m.available : null;
+      const gone = !!(avail && avail.length && !avail.includes(m.model));
+      if (opts.scale === 2 && !gone && upscaleFactorOfModel(m.model) !== 2) {
+        /* 选了 x2 倍率：本机有原生 x2 权重就顺手用（中间张量只有 x4 的 1/4，峰值内存直接降一档）；
+         * 没有也能跑 —— 继续用 x4 权重，靠输出端的 ImageScale 缩到 2 倍，只是内存口径仍按 x4 估。 */
+        const native = pickNativeX2Model(avail);
+        if (native) {
+          appendConsole("[post] 倍率 x2：改用原生 x2 权重 " + native + "（中间张量只有 x4 的 1/4，峰值内存最低）");
+          opts = Object.assign({}, opts, { model: native });
+        } else {
+          appendConsole(
+            "[post] 倍率 x2：本机没找到 x2 权重（" +
+              POST_MODELS.upscaleX2 +
+              "），用 " +
+              m.model +
+              " 超分后缩到 2 倍；中间张量仍按 x4 算，" +
+              "想更省内存可把该权重放进 models/upscale_models 目录",
+          );
+          if (m.model !== opts.model) opts = Object.assign({}, opts, { model: m.model });
+        }
+      } else if (gone) {
+        const list = avail.slice(0, 12).join("、") + (avail.length > 12 ? " …" : "");
+        if (opts.scale === 2 && upscaleFactorOfModel(m.model) === 2) {
+          /* 显式点名 x2 权重但本机没有：倍率本身仍然成立（x4 权重 + 输出端缩到 2 倍），
+           * 不因为缺一个可选权重把整单拒掉，降级并写清楚。 */
+          const fallback = resolveUpscaleModelForComfy(comfy, POST_MODELS.upscale);
+          if (avail.includes(fallback.model)) {
+            appendConsole(
+              "[post] 倍率 x2：x2 权重 " + m.model + " 不存在（该目录可用：" + list + "），" +
+                "改用 " + fallback.model + " 并在输出端缩到 2 倍",
+            );
+            opts = Object.assign({}, opts, { model: fallback.model });
+          } else {
+            throw new Error(
+              "超分模型不存在：ComfyUI/models/upscale_models 里既没有 " +
+                m.model +
+                " 也没有 " +
+                fallback.model +
+                "（该目录可用：" +
+                list +
+                "）",
+            );
+          }
+        } else {
+          throw new Error(
+            "超分模型不存在：ComfyUI/models/upscale_models 里没有 " + m.model + "（该目录可用：" + list + "）",
+          );
+        }
+      } else if (m.model !== opts.model) {
+        appendConsole("[post] upscale model 校正：" + opts.model + " → " + m.model);
+        opts = Object.assign({}, opts, { model: m.model });
+      }
+      /* 内存闸：超分链的峰值是「整段视频的帧张量 + float32 副本」，全在系统内存里，
+       * 显存反而是空的。提交前按源分辨率 + 容器里的帧数估一次：先二分目标长边，
+       * 仍放不进预算就进超分前预缩放源帧（preScale），别等 64G 被跑满
+       * （估不出帧数 / 读不到系统内存时原样放行，不误伤）。 */
+      const ramPlan = resolveUpscaleRamPlan(
+        Object.assign({}, opts, { sourcePath }),
+        sourceWidth,
+        sourceHeight,
+      );
+      if (ramPlan.meta) {
+        ramFrames = ramPlan.frames || 0;
+        appendConsole(
+          "[post] 源视频 " +
+            ramPlan.meta.width +
+            "x" +
+            ramPlan.meta.height +
+            " · " +
+            ramPlan.frames +
+            " 帧 · " +
+            ramPlan.meta.duration +
+            "s → 预计峰值系统内存 " +
+            (planGbText(ramPlan.beforeGb) || "?") +
+            (ramPlan.budgetGb != null ? "（本机预算 " + ramPlan.budgetGb + "G）" : ""),
+        );
+      }
+      if (ramPlan.stream) {
+        appendConsole(
+          "[post] 流式档：常驻内存只与一个 tile 有关、与时长无关（上面的估算只是旧图链口径的对照）" +
+            " → 不做目标长边降档、不做 preScale · tile=" +
+            opts.tile +
+            " · " +
+            opts.precision,
+        );
+      }
+      if (ramPlan.downgraded) {
+        const pre = Array.isArray(ramPlan.opts.preDims) ? ramPlan.opts.preDims : null;        const msg =
+          "超分内存闸：按当前设置预计要 " +
+          planGbText(ramPlan.beforeGb) +
+          " 系统内存（源 " +
+          ramPlan.meta.width +
+          "x" +
+          ramPlan.meta.height +
+          " · " +
+          ramPlan.frames +
+          " 帧），" +
+          (pre
+            ? "已先把源帧缩到 " +
+              pre[0] +
+              "x" +
+              pre[1] +
+              "（" +
+              Math.round(Number(ramPlan.opts.preScale) * 100) +
+              "%）再进超分，目标长边 " +
+              ramPlan.opts.targetLongSide +
+              "px"
+            : "已把目标长边降到 " + ramPlan.opts.targetLongSide + "px") +
+          "（预计 " +
+          planGbText(ramPlan.afterGb) +
+          "）。峰值主项是「源像素 × 中间张量倍数²（x4 权重 = ×16 / x2 权重 = ×4）+ float32 副本」，" +
+          "只跟帧数 / 源尺寸 / 超分倍率有关，所以显存空着是正常的：" +
+          "超分是把帧张量攒在系统内存里、逐帧过 GPU。" +
+          "想省内存可把倍率降到 x2（画面放大 2 倍，中间张量少 4 倍），" +
+          "或减少帧数（缩短时长 / 降帧率）、换内存更大的机器。" +
+          (ramPlan.overBudget ? "（连最小档都超出预算，本单仍有跑满内存的风险。）" : "");
+        appendConsole("[post] " + msg);
+        emitProgress({ phase: "post", nodeId, message: msg, pct: 4 });
+        opts = ramPlan.opts;
+      }
+    }
+    if (kind === "interp") {
+      /* 引擎选路：默认逐帧流式（常驻内存只与相邻两帧 + 模型有关、与时长无关，16G 也能跑 15 秒片）；
+       * 缺脚本 / 缺 venv / 缺 RIFE 权重 / 显式要旧链时回退 ComfyUI 图（见 resolvePostEngine）。
+       * 流式路径 PyAV 直接读源文件，不需要先把源视频上传进 ComfyUI/input（图分支才需要）。 */
+      const venvPy = streamVenvPython(comfy);
+      const streamScript = streamInterpScriptPath();
+      const weightsPath = streamInterpWeightsPath(comfy);
+      const pick = resolvePostEngine(kind, opts, {
+        scriptExists: !!streamScript && fs.existsSync(streamScript),
+        venvExists: !!venvPy && fs.existsSync(venvPy),
+        weightsExists: !!weightsPath,
+      });
+      opts = Object.assign({}, opts, { engine: pick.engine });
+      appendConsole(
+        "[post] 补帧引擎 = " +
+          (pick.engine === "stream" ? "逐帧流式（stream_interp.py）" : "ComfyUI 图（兜底）") +
+          " · 依据=" +
+          pick.reason,
+      );
+      if (pick.engine === "graph") {
+        appendConsole(
+          "[post] 已回退图路径 · 原因=" +
+            pick.reason +
+            (pick.reason === "interp_script_missing"
+              ? "（缺流式脚本 " + streamScript + "）"
+              : pick.reason === "interp_venv_missing"
+                ? "（缺 ComfyUI venv 解释器 " + venvPy + "）"
+                : pick.reason === "interp_weights_missing"
+                  ? "（缺 RIFE 权重，已搜 " +
+                    join(comfy, "custom_nodes", "ComfyUI-Frame-Interpolation", "ckpts", "rife") +
+                    " 与 " +
+                    join(comfy, "ckpts", "rife") +
+                    "）"
+                  : ""),
+        );
+      }
+      if (pick.engine === "stream") {
+        /* 流式判定复用同一条纯函数（resolveUpscaleRamPlan）：它会置 plan.stream=true 后直接返回
+         * ——不做 preScale、不二分目标长边、不降 multiplier。这里只取容器元数据打日志对照。 */
+        const ramPlan = resolveUpscaleRamPlan(
+          Object.assign({}, opts, { sourcePath }),
+          sourceWidth,
+          sourceHeight,
+        );
+        ramFrames = ramPlan.frames || 0;
+        appendConsole(
+          "[post] 流式补帧档：常驻内存只与相邻两帧 + 模型有关、与时长无关 → 不做预缩放 / 不降倍率" +
+            " · 倍率 " +
+            opts.multiplier +
+            "x · " +
+            opts.precision +
+            (opts.maxLongSide > 0 ? " · 预缩放长边 " + opts.maxLongSide : "") +
+            (ramPlan.meta
+              ? " · 源 " +
+                ramPlan.meta.width +
+                "x" +
+                ramPlan.meta.height +
+                " · " +
+                ramPlan.frames +
+                " 帧 · " +
+                ramPlan.meta.duration +
+                "s"
+              : ""),
+        );
+      }
+    }
+    appendConsole(
+      "[post] " + (opts.engine === "stream" ? "流式档" : "24G 安全档") + " opts=" + JSON.stringify(opts),
+    );
+
+    let outPath = "";
+    let meta = null;
+    let lastErr = null;
+
+    /* ── 流式超分：不吃 ComfyUI 图，直接由 venv python 逐帧出片（内存与时长无关） ── */
+    if (kind === "upscale" && opts.engine === "stream") {
+      const streamPy = streamVenvPython(comfy);
+      const streamScript = streamUpscaleScriptPath();
+      const exportDirEarly = String(req.outputDir || "").trim();
+      const preferredEarly = ensureVideoExt(
+        String(req.filename || "").trim() || "post_" + kind + "_" + Date.now(),
+      );
+      const dst = exportDirEarly
+        ? uniqueFileInDir(exportDirEarly, preferredEarly, ".mp4").path
+        : uniqueFileInDir(join(comfy, "output", "post"), preferredEarly, ".mp4").path;
+      const streamModelPath = join(comfy, "models", "upscale_models", opts.model);
+      const runOnce = () =>
+        runStreamUpscaleJob({
+          py: streamPy,
+          script: streamScript,
+          nodeId,
+          sourcePath,
+          outPath: dst,
+          modelPath: streamModelPath,
+          scale: opts.scale,
+          targetLongSide: opts.targetLongSide,
+          tile: opts.tile,
+          overlap: opts.overlap,
+          precision: opts.precision,
+          crf: POST_STREAM_DEFAULT_CRF,
+          preset: POST_STREAM_DEFAULT_PRESET,
+          fps: Number(req.fps) || 0,
+        });
+      let fallbackWhy = "";
+      if (!fs.existsSync(streamModelPath)) {
+        /* 权重文件不在（resolveUpscaleModelForComfy 拿不到清单时会原样透传）：不白起子进程 */
+        fallbackWhy = "超分权重文件不存在：" + streamModelPath;
+      }
+      for (let attempt = 0; attempt < 2 && !outPath && !fallbackWhy; attempt++) {
+        try {
+          const r = await runOnce();
+          outPath = r.path;
+          appendConsole(
+            "[post] 流式超分完成 " +
+              r.path +
+              " · " +
+              r.frames +
+              " 帧 · 耗时 " +
+              r.seconds +
+              "s · 峰值内存 " +
+              gb1((r.peakRamMb || 0) / 1024) +
+              "G" +
+              (r.peakVramMb ? " · 峰值显存 " + gb1(r.peakVramMb / 1024) + "G" : ""),
+          );
+        } catch (e) {
+          if (
+            (e && e.streamCancelled) ||
+            String((e && e.message) || "") === "cancelled" ||
+            (activeGenerate && activeGenerate.abort)
+          ) {
+            throw e;
+          }
+          lastErr = e;
+          if (attempt === 0 && e && e.oom) {
+            /* OOM 降档：流式档 = tile 减半 + 精度 fp32（不动目标长边 / 倍率），重试一次 */
+            appendConsole(
+              "[post] 流式超分 OOM → 降一档重试（tile 减半 + fp32）：" +
+                String(e.detail || e.message).slice(0, 300),
+            );
+            opts = downgradePostOptions(kind, opts);
+            appendConsole("[post] 降档 opts=" + JSON.stringify(opts));
+            continue;
+          }
+          fallbackWhy = String(e.detail || e.message).slice(0, 400);
+        }
+      }
+      if (!outPath) {
+        /* 非 OOM 的流式失败（异常 / 非 0 退出）：按原样回退旧图链，并写明原因 */
+        opts = Object.assign({}, opts, { engine: "graph" });
+        appendConsole(
+          "[post] 流式超分未出片（" +
+            (fallbackWhy || String((lastErr && (lastErr.detail || lastErr.message)) || "unknown").slice(0, 400)) +
+            "）→ 已回退图路径",
+        );
+        try {
+          if (fs.existsSync(dst)) fs.rmSync(dst, { force: true });
+        } catch {}
+      }
+    }
+
+    /* ── 流式补帧：不吃 ComfyUI 图，直接由 venv python 逐对插帧出片（内存与时长无关） ── */
+    if (kind === "interp" && opts.engine === "stream") {
+      const streamPy = streamVenvPython(comfy);
+      const streamScript = streamInterpScriptPath();
+      const weightsPath = streamInterpWeightsPath(comfy);
+      const exportDirEarly = String(req.outputDir || "").trim();
+      const preferredEarly = ensureVideoExt(
+        String(req.filename || "").trim() || "post_" + kind + "_" + Date.now(),
+      );
+      const dst = exportDirEarly
+        ? uniqueFileInDir(exportDirEarly, preferredEarly, ".mp4").path
+        : uniqueFileInDir(join(comfy, "output", "post"), preferredEarly, ".mp4").path;
+      /* 输出帧率：与旧图链口径一致 = 源帧率 × 倍数（时长与播放速度不变，只是更顺滑）；
+       * 源帧率拿不到时省略，交脚本按「容器帧率 × 倍数」自己算。 */
+      const srcFps = Number(req.fps) || 0;
+      const runOnce = () =>
+        runStreamInterpJob({
+          py: streamPy,
+          script: streamScript,
+          nodeId,
+          sourcePath,
+          outPath: dst,
+          modelPath: weightsPath,
+          comfyRoot: comfy,
+          multiplier: opts.multiplier,
+          maxLongSide: opts.maxLongSide,
+          scaleFactor: opts.scaleFactor,
+          precision: opts.precision,
+          clearCacheEvery: opts.clearCacheEvery,
+          crf: POST_STREAM_DEFAULT_CRF,
+          preset: POST_STREAM_DEFAULT_PRESET,
+          fps: srcFps > 0 ? srcFps * opts.multiplier : 0,
+        });
+      let fallbackWhy = "";
+      for (let attempt = 0; attempt < 2 && !outPath && !fallbackWhy; attempt++) {
+        try {
+          const r = await runOnce();
+          outPath = r.path;
+          appendConsole(
+            "[post] 流式补帧完成 " +
+              r.path +
+              " · " +
+              r.frames +
+              " 帧 · 耗时 " +
+              r.seconds +
+              "s · 峰值内存 " +
+              gb1((r.peakRamMb || 0) / 1024) +
+              "G" +
+              (r.peakVramMb ? " · 峰值显存 " + gb1(r.peakVramMb / 1024) + "G" : ""),
+          );
+        } catch (e) {
+          if (
+            (e && e.streamCancelled) ||
+            String((e && e.message) || "") === "cancelled" ||
+            (activeGenerate && activeGenerate.abort)
+          ) {
+            throw e;
+          }
+          lastErr = e;
+          if (attempt === 0 && e && e.oom) {
+            /* OOM 降档：流式补帧档 = 精度落 fp32（显式给过 maxLongSide 再降一档），倍率不动，重试一次 */
+            appendConsole(
+              "[post] 流式补帧 OOM → 降一档重试（精度 fp32）：" +
+                String(e.detail || e.message).slice(0, 300),
+            );
+            opts = downgradePostOptions(kind, opts);
+            appendConsole("[post] 降档 opts=" + JSON.stringify(opts));
+            continue;
+          }
+          fallbackWhy = String(e.detail || e.message).slice(0, 400);
+        }
+      }
+      if (!outPath) {
+        /* 非 OOM 的流式失败（异常 / 非 0 退出）：按原样回退旧图链，并写明原因 */
+        opts = Object.assign({}, opts, { engine: "graph" });
+        appendConsole(
+          "[post] 流式补帧未出片（" +
+            (fallbackWhy || String((lastErr && (lastErr.detail || lastErr.message)) || "unknown").slice(0, 400)) +
+            "）→ 已回退图路径",
+        );
+        try {
+          if (fs.existsSync(dst)) fs.rmSync(dst, { force: true });
+        } catch {}
+      }
+    }
+    /* ── ComfyUI 图路径（补帧 / 流式缺件 / 流式失败后的兜底）：原链一字未改 ── */
+    if (!outPath) {
+      /* LoadVideo 只解析 ComfyUI/input 目录内的文件名：源视频先登记进 input */
+      const videoPath = await uploadFileToComfy(port, sourcePath, "video");
+      appendConsole("[post] source → input/" + videoPath);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const graph = buildPostWorkflow({
+          kind,
+          videoPath,
+          fps: Number(req.fps) || 24,
+          bitDepth: Number(req.bitDepth) || 8,
+          videoFormat: req.videoFormat || "auto",
+          videoCodec: req.videoCodec || "auto",
+          filenamePrefix: String(req.filenamePrefix || "").trim(),
+          width: sourceWidth,
+          height: sourceHeight,
+          upscale: kind === "upscale" ? opts : undefined,
+          interp: kind === "interp" ? opts : undefined,
+        });
+        try {
+          meta = await submitAndWaitComfy(port, crypto.randomUUID(), graph, nodeId, "post", {
+            phase: "post",
+            /* 产物节点 = 图里的 SaveVideo：history 里优先认它（见 pickJobVideoMeta） */
+            preferredNodeId: findVideoOutputNodeId(graph),
+          });
+          lastErr = null;
+          break;
+        } catch (e) {
+          if (String((e && e.message) || "") === "cancelled" || (activeGenerate && activeGenerate.abort)) {
+            throw e;
+          }
+          lastErr = e;
+          if (attempt === 0 && isPostOomError(e)) {
+            appendConsole(
+              "[post] OOM → 降一档重试：" +
+                String((e && (e.detail || e.message)) || e).slice(0, 300),
+            );
+            opts = downgradePostOptions(kind, opts);
+            appendConsole("[post] 降档 opts=" + JSON.stringify(opts));
+            await comfyFreeModels(port);
+            continue;
+          }
+          throw e;
+        }
+      }
+      if (!meta) throw lastErr || new Error("post_failed");
+
+      outPath = comfyOutputPath(comfy, meta.filename, meta.subfolder || "");
+      const exportDir = String(req.outputDir || "").trim();
+      if (exportDir) {
+        const preferred = String(req.filename || "").trim() || meta.filename;
+        outPath = await copyOutputToDir(
+          comfy,
+          meta.filename,
+          meta.subfolder || "",
+          exportDir,
+          preferred,
+        );
+      }
+    }
+
+    if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
+    if (!outPath || !fs.existsSync(outPath)) {
+      throw new Error("output_file_missing: " + (outPath || ""));
+    }
+    let sz = 0;
+    try {
+      sz = fs.statSync(outPath).size || 0;
+    } catch {}
+    if (sz < 64) throw new Error("output_file_empty_or_too_small: " + outPath);
+
+    clearLock();
+    activeGenerate = null;
+    emitProgress({ phase: "post", nodeId, message: label + "完成", pct: 100, done: true });
+    appendConsole("[post] ok kind=" + kind + " path=" + outPath + " bytes=" + sz);
+    appendConsole(
+      "[post] " +
+        (kind === "upscale"
+          ? "倍率 x" +
+            normalizeUpscaleScale(opts.scale) +
+            " · 模型 " +
+            opts.model +
+            " · 输出长边=" +
+            (sourceWidth > 0 && sourceHeight > 0
+              ? upscaleOutputLongSide(
+                  opts.targetLongSide,
+                  Math.max(sourceWidth, sourceHeight),
+                  opts.scale,
+                )
+              : opts.targetLongSide)
+          : "倍率 " + opts.multiplier + "x") +
+        (Array.isArray(opts.preDims) ? " · 超分前源帧 " + opts.preDims.join("x") : "") +
+        (ramFrames > 0
+          ? " · " +
+            ramFrames +
+            " 帧" +
+            (opts.engine === "stream"
+              ? kind === "interp"
+                ? "（流式：常驻内存只与相邻两帧有关，与时长无关）"
+                : "（流式：常驻内存只与一个 tile 有关，与时长无关）"
+              : " · 峰值内存估算 " +
+                planGbText(estimatePostPeakRamGb(sourceWidth, sourceHeight, opts, ramFrames)))
+          : "") +
+        (opts.engine === "stream"
+          ? kind === "interp"
+            ? " · 逐帧流式补帧 · " +
+              opts.precision +
+              (opts.maxLongSide > 0 ? " · 预缩放长边 " + opts.maxLongSide : "")
+            : " · 逐帧流式 tile=" + opts.tile + " · " + opts.precision
+          : "（超分链逐帧过 GPU，占用在 RAM 不在显存）"),
+    );
+    appendPostRamReport(memWatch, true);
+    memWatch = null;
+    return { ok: true, path: outPath, message: "Saved: " + outPath, bytes: sz };
+  } catch (e) {
+    const err = String((e && (e.detail || e.message)) || e);
+    appendConsole("[post] error: " + err);
+    clearLock();
+    activeGenerate = null;
+    emitProgress({ phase: "post", nodeId, message: err, error: true, pct: 0 });
+    reportErr(err, err, {
+      phase: "post",
+      nodeId,
+      workflowId: String(req.canvasWorkflowId || ""),
+      nodeKind: "video_upscale/video_interp",
+    });
+    appendPostRamReport(memWatch, false);
+    memWatch = null;
+    return { ok: false, error: err, message: err };
+  } finally {
+    if (memWatch) appendPostRamReport(memWatch, false);
+    /* 服务常驻：不重启后端，只释放模型显存，避免下次重新加载慢 */
+    try {
+      const cfg = loadConfig();
+      const freePort = Number(cfg.port) || DEFAULT_PORT;
+      await comfyFreeModels(freePort);
+      appendConsole("[post] vram released");
+      /* 内存护栏：/free 只卸模型、不清 glibc arena —— 刚这一单积下的帧张量缓存未必还回系统。
+       * 这里量一次「任务之后还剩多少」，与任务开始时那次比较：
+       * 服务守住超过一半内存 / 本机已低于硬闸 → 把后端回收掉（后台等空闲再重启，不阻塞本次回执）。
+       * 判据只认后端自己报的 fact（同口径），量不到就一条都不动。 */
+      ramAfterFreeGb = (await probeComfyRamStats(freePort, { reuse: false })).free;
+      if (cfg.optRebuildOnRamHigh !== false && ramAfterFreeGb != null && ramBeforeFreeGb != null) {
+        const v = ramRailVerdict(ramBeforeFreeGb, ramAfterFreeGb, ramTotalGb);
+        appendConsole(
+          "[mem] 这一单结束后：可用 " +
+            (v.afterGb == null ? "?" : v.afterGb + "G") +
+            " / 共 " +
+            (v.totalGb == null ? "?" : v.totalGb + "G") +
+            " · 服务这一单守住约 " +
+            (v.keptGb == null ? "?" : v.keptGb + "G") +
+            (v.keptPct == null ? "" : "（" + v.keptPct + "% 内存）") +
+            (v.recycle ? " → 触发回收" : " → 未触发回收"),
+        );
+        if (v.recycle) {
+          await recycleBackendForRam(
+            "超分 / 补帧后服务守住 " +
+              (v.keptGb == null ? "?" : v.keptGb + "G") +
+              "（可用只剩 " +
+              (v.afterGb == null ? "?" : v.afterGb + "G") +
+              "），重启后端把内存还给系统",
+          );
+        }
+      }
+    } catch (e) {
+      appendConsole("[post] free warn: " + String((e && e.message) || e));
+    }
+  }
 }
 
 function uploadFileToComfy(port, filePath, kind) {
@@ -1981,10 +4590,20 @@ function uploadFileToComfy(port, filePath, kind) {
 
 async function copyOutputToDir(comfy, filename, subfolder, exportDir, preferredName) {
   mk(exportDir);
-  const src = join(comfy, "output", subfolder || "", filename);
-  if (!fs.existsSync(src)) throw new Error("output_missing: " + src);
+  /* 后端回报的 subfolder 与实际落点可能不一致（自建工作流的 filename_prefix 层级最常见），
+   *  先按实际位置找，别一上来就 output_missing。 */
+  const src = comfyOutputPath(comfy, filename, subfolder);
+  if (!fs.existsSync(src))
+    throw new Error(
+      "output_missing: " +
+        src +
+        "（后端回报的产物是 output/" +
+        (subfolder ? subfolder + "/" : "") +
+        filename +
+        "，但该文件不存在——请到 ComfyUI 输出目录确认产物是否真的生成）",
+    );
   let destName = preferredName || path.basename(filename);
-  if (!/\.(mp4|webm|mov)$/i.test(destName)) {
+  if (!JOB_VIDEO_EXT_RE.test(destName)) {
     const srcExt = path.extname(filename) || ".mp4";
     destName += srcExt;
   }
@@ -1994,6 +4613,31 @@ async function copyOutputToDir(comfy, filename, subfolder, exportDir, preferredN
     appendConsole("[job] target existed → saved as " + uniq.filename);
   }
   return uniq.path;
+}
+
+/* ── 产物 take 编号：目标文件已存在时固定用 #1、#2 … 标「第几个 take」 ──
+ *  旧版本固定贴 _1，且渲染层把改名后的路径写回节点，于是同一路径反复跑会叠成 foo_1_1_1。
+ *  这里统一：先剥掉末尾的 take 标记（#N 认号，_N / _0N 当旧标记剥掉），
+ *  再从「上一个号 + 1」起找第一个空号 —— 号只增不减，绝不叠加后缀。 */
+function takeStemParts(stem) {
+  let base = String(stem || "");
+  let from = 0;
+  for (let k = 0; k < 8; k++) {
+    const hash = base.match(/#(\d+)$/);
+    if (hash) {
+      const n = Number(hash[1]);
+      if (!from && n > 0) from = n;
+      base = base.slice(0, -hash[0].length);
+      continue;
+    }
+    const legacy = base.match(/_0*[1-9]\d{0,2}$/);
+    if (legacy) {
+      base = base.slice(0, -legacy[0].length);
+      continue;
+    }
+    break;
+  }
+  return { base: base || String(stem || ""), from };
 }
 
 function uniqueFileInDir(dir, preferredName, defaultExt) {
@@ -2006,8 +4650,10 @@ function uniqueFileInDir(dir, preferredName, defaultExt) {
   if (!extMatch && ext) name = baseStem + ext;
   let dest = join(dir, name);
   if (!fs.existsSync(dest)) return { path: dest, filename: name, renamed: false };
-  for (let i = 1; i < 10000; i++) {
-    const fn = baseStem + "_" + i + ext;
+  const tk = takeStemParts(baseStem);
+  const head = tk.base || baseStem;
+  for (let i = tk.from + 1; i < tk.from + 10000; i++) {
+    const fn = head + "#" + i + ext;
     dest = join(dir, fn);
     if (!fs.existsSync(dest)) return { path: dest, filename: fn, renamed: true };
   }
@@ -2429,12 +5075,124 @@ async function installSageAttention(opts) {
     const msg = String((e && e.message) || e);
     appendConsole("[sage] install failed: " + msg);
     emitProgress({ phase: "install", step: "error", stepLabel: "补装 Sage 加速", message: msg, pct: 0, error: true });
+    reportErr("sage_install_failed", "补装 Sage 加速失败：" + msg, { phase: "install" });
     return { ok: false, error: msg === "cancelled" ? "cancelled" : "sage_install_failed", message: msg };
   } finally {
     installing = false;
     invalidateSageProbe();
     ensureSageProbe(installDir);
   }
+}
+
+/** 视频产物扩展名：ComfyUI 把「输入文件预览」与「保存下来的成片」塞在同一个 images 数组里，
+ *  只能靠扩展名 + type 分辨（type = input / temp 的是预览，output 的才是产物）。 */
+const JOB_VIDEO_EXT_RE = /\.(mp4|webm|mkv|mov)$/i;
+
+/** 本次执行该认的产物节点 = 图里最后一个视频类 Save* 节点（多 Save 时末段即最终成片）。
+ *  在 history outputs 里优先认它，避免抓成输入预览。 */
+function findVideoOutputNodeId(graph) {
+  let last = "";
+  for (const [nid, n] of Object.entries(h3wf.isPlainObject(graph) ? graph : {})) {
+    if (h3wf.isVideoOutputClass(n && n.class_type)) last = String(nid);
+  }
+  return last;
+}
+
+/** history 条目是否「输入 / 临时预览」（LoadVideo、LoadImage 这类带 ui 预览的输入节点也会进 history）。 */
+function isInputPreviewEntry(it) {
+  const t = String((it && it.type) || "").toLowerCase();
+  return t === "input" || t === "temp";
+}
+
+/** 内置图（生成 / 超分 / 补帧）的产物判定：从一次执行的 history outputs 里挑「真正保存下来的视频」。
+ *  为什么不能照旧「按节点顺序取第一个带 .mp4 的条目」：
+ *  新版 ComfyUI 里 SaveVideo 与 LoadVideo 的 ui 都是 PreviewVideo，as_dict() 一律写成
+ *  { images:[{filename,subfolder,type}], animated:[true] }（没有 videos 键，老代码那条判据恒空），
+ *  而非产物节点只要返回过 ui 就会进 history。补帧 / 超分图第一步就是 LoadVideo（源视频先 upload
+ *  进 ComfyUI/input，它回报的文件名就是那个上传名），节点编号又最小 → 「第一个 mp4」命中的是
+ *  输入预览（type:"input"、subfolder:""），于是拿 input 里的源文件名去 output 根目录找 →
+ *  output_missing: …\ComfyUI\output\1_1_1_1.mp4（真实成片其实在 …\ComfyUI\output\video\…）。
+ *  r2v 带参考视频时同样走 LoadVideo，所以生成链也走这里。
+ *  规则：① 只认视频扩展名；② 丢掉 input / temp 预览（宁可报「没有产物」，也不把源视频当产物拷出去）；
+ *  ③ preferredNodeId（Save* 节点）命中即用；④ 否则取最后一个。 */
+function pickJobVideoMeta(outputs, preferredNodeId) {
+  const src = h3wf.isPlainObject(outputs) ? outputs : {};
+  const found = [];
+  for (const [nid, o] of Object.entries(src)) {
+    if (!h3wf.isPlainObject(o)) continue;
+    for (const key of ["videos", "gifs", "images"]) {
+      const arr = o[key];
+      if (!Array.isArray(arr)) continue;
+      for (const it of arr) {
+        if (!h3wf.isPlainObject(it)) continue;
+        const fn = String(it.filename || "");
+        if (!JOB_VIDEO_EXT_RE.test(fn) || isInputPreviewEntry(it)) continue;
+        found.push({ nodeId: String(nid), filename: fn, subfolder: String(it.subfolder || ""), type: String(it.type || "") });
+      }
+    }
+  }
+  if (!found.length) return null;
+  const pref = String(preferredNodeId || "");
+  if (pref) {
+    const hit = found.filter((f) => f.nodeId === pref);
+    if (hit.length) return hit[hit.length - 1];
+  }
+  return found[found.length - 1];
+}
+
+/** 在 dir 下按文件名找实际落点（有限深度 / 有限条目，命中多个取最近修改的）。找不到返回 ""。 */
+function findFileUnder(dir, name, maxDepth, budget) {
+  const want = String(name || "").toLowerCase();
+  if (!dir || !want) return "";
+  let left = Number(budget) || 4000;
+  const limit = Number(maxDepth) || 3;
+  const stack = [{ d: dir, depth: 0 }];
+  let hit = "";
+  let hitM = -1;
+  while (stack.length && left-- > 0) {
+    const cur = stack.pop();
+    if (cur.depth > limit) continue;
+    let items = [];
+    try {
+      items = fs.readdirSync(cur.d, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const it of items) {
+      if (left-- <= 0) break;
+      const p = join(cur.d, it.name);
+      if (it.isDirectory()) {
+        stack.push({ d: p, depth: cur.depth + 1 });
+        continue;
+      }
+      if (String(it.name).toLowerCase() !== want) continue;
+      let m = 0;
+      try {
+        m = fs.statSync(p).mtimeMs || 0;
+      } catch {}
+      if (!hit || m >= hitM) {
+        hit = p;
+        hitM = m;
+      }
+    }
+  }
+  return hit;
+}
+
+/** ComfyUI 产物的真实路径：先按后端回报的 subfolder/filename 原样拼；对不上就在 output 下
+ *  按文件名找一次（自建工作流的 filename_prefix 层级、或后端另配了 output 子目录都会导致
+ *  回报路径与拼接路径不一致）。都找不到时仍返回原拼法，让调用方报出「后端说它在哪」。 */
+function comfyOutputPath(comfy, filename, subfolder) {
+  const exact = join(comfy, "output", subfolder || "", String(filename || ""));
+  if (filename && fs.existsSync(exact)) return exact;
+  const hit = findFileUnder(join(comfy, "output"), filename, 3, 4000);
+  if (hit) {
+    appendConsole(
+      "[out] 后端回报的产物位置 output/" + (subfolder ? subfolder + "/" : "") + filename + " 不存在，改用实际落点 " + hit,
+    );
+    return hit;
+  }
+  return exact;
 }
 
 /** 收集一次执行的全部产物（自定义工作流用）：按节点/类别归集，默认取最后一个视频类产物。
@@ -2445,7 +5203,7 @@ function collectJobOutputs(outputs, preferredNodeId) {
     const push = (kind, arr) => {
       if (!Array.isArray(arr)) return;
       for (const it of arr) {
-        if (it && typeof it === "object") found.push({ nodeId: String(nid), kind, filename: String(it.filename || ""), subfolder: String(it.subfolder || ""), type: String(it.type || "") });
+        if (it && typeof it === "object" && !isInputPreviewEntry(it)) found.push({ nodeId: String(nid), kind, filename: String(it.filename || ""), subfolder: String(it.subfolder || ""), type: String(it.type || "") });
       }
     };
     push("video", o && o.videos);
@@ -2454,11 +5212,12 @@ function collectJobOutputs(outputs, preferredNodeId) {
     const imgs = Array.isArray(o && o.images) ? o.images : [];
     for (const im of imgs) {
       if (!im || typeof im !== "object") continue;
+      if (isInputPreviewEntry(im)) continue;
       const fn = String(im.filename || "");
       let kind = "image";
       if (/\.(gif)$/i.test(fn)) kind = "gif";
       else if (/\.(webp)$/i.test(fn)) kind = "webp";
-      else if (/\.(mp4|webm|mov)$/i.test(fn)) kind = "video";
+      else if (JOB_VIDEO_EXT_RE.test(fn)) kind = "video";
       found.push({ nodeId: String(nid), kind, filename: fn, subfolder: String(im.subfolder || ""), type: String(im.type || "") });
     }
   }
@@ -2475,27 +5234,46 @@ function collectJobOutputs(outputs, preferredNodeId) {
   return { meta: found[found.length - 1], collected: found };
 }
 
-/** 把 /prompt 拒绝响应解析成节点/字段级可读错误。 */
+/** 把 /prompt 拒绝响应解析成节点/字段级可读错误。
+ *  ComfyUI 的 message 常常只有一句「Value not in list」，真正有用的信息在
+ *  errors[].details（收到了什么值、可选值有哪些）与 errors[].extra_info.input_name（是哪个字段）。
+ *  一条 errors 出一行，不再只留第一条。 */
 function parsePromptRejection(postedJson) {
   const j = h3wf.isPlainObject(postedJson) ? postedJson : {};
   const out = [];
   const ne = h3wf.isPlainObject(j.node_errors) ? j.node_errors : {};
   for (const [nid, rawErr] of Object.entries(ne)) {
     const e = h3wf.isPlainObject(rawErr) ? rawErr : {};
-    const firstMsg = Array.isArray(e.errors) && e.errors[0] && typeof e.errors[0] === "object"
-      ? String(e.errors[0].message || "")
-      : "";
-    out.push({
-      nodeId: String(nid),
-      classType: String(e.class_type || ""),
-      input: String(e.input || ""),
-      type: String(e.error_type || ""),
-      message: firstMsg || String(e.errors ? JSON.stringify(e.errors).slice(0, 300) : ""),
-    });
+    const errs = Array.isArray(e.errors) ? e.errors : null;
+    if (!errs || !errs.length) {
+      out.push({
+        nodeId: String(nid),
+        classType: String(e.class_type || ""),
+        input: String(e.input || ""),
+        type: String(e.error_type || ""),
+        message: errs ? String(JSON.stringify(errs)).slice(0, 300) : "",
+        details: "",
+      });
+      continue;
+    }
+    for (const raw of errs) {
+      const one = h3wf.isPlainObject(raw)
+        ? raw
+        : { message: typeof raw === "string" ? raw : String(JSON.stringify(raw)) };
+      const extra = h3wf.isPlainObject(one.extra_info) ? one.extra_info : {};
+      out.push({
+        nodeId: String(nid),
+        classType: String(e.class_type || ""),
+        input: String(extra.input_name || e.input || ""),
+        type: String(one.type || e.error_type || ""),
+        message: String(one.message || ""),
+        details: String(one.details || ""),
+      });
+    }
   }
   if (!out.length) {
     const em = j.error && typeof j.error === "object" ? String(j.error.message || "") : "";
-    out.push({ nodeId: "", classType: "", input: "", type: "", message: em || String(j.error || "") || "未知错误" });
+    out.push({ nodeId: "", classType: "", input: "", type: "", message: em || String(j.error || "") || "未知错误", details: "" });
   }
   return out;
 }
@@ -2506,9 +5284,173 @@ function formatPromptRejection(postedJson, workflowTitle) {
   if (!list.length) return head + "无详细信息";
   const lines = list.map((x) => {
     const where = [x.nodeId && "节点 " + x.nodeId, x.classType && ("(" + x.classType + ")"), x.input && ("字段 " + x.input), x.type && ("[" + x.type + "]")].filter(Boolean).join(" ");
-    return (where ? where + "：" : "") + (x.message || "未知错误");
+    let msg = x.message || "未知错误";
+    const details = String(x.details || "").trim();
+    if (details && !msg.includes(details)) {
+      msg += "：" + (details.length > 300 ? details.slice(0, 300) + "…" : details);
+    }
+    return (where ? where + "：" : "") + msg;
   });
   return head + "\n" + lines.join("\n");
+}
+
+/** 已知 ComfyUI 报错签名 → 中文可执行提示（只在 detail 末尾追加，不替换原文）。 */
+const COMFY_SIGNATURE_HINTS = Object.freeze([
+  {
+    re: /No audio stream found in the file\.?/i,
+    hint: "音频素材无音轨：该文件里没有可读的音频轨道，请改接到 视频N 端子，或换一个含音轨的文件",
+  },
+  {
+    re: /expected m1 and m2 to have the same dtype/i,
+    hint: "建议关闭 CPU VAE（后端设置里的 --cpu-vae），或改回内置模板的 VAE 组合",
+  },
+  {
+    re: /value_not_in_list|Value not in list/i,
+    hint: "该字段是下拉候选，取值必须是后端本机目录里真实存在的文件名（含扩展名，如 RealESRGAN_x4plus.pth）：把模型文件放进对应目录，或改回括号里列出的名字",
+  },
+]);
+
+function humanizeComfySignature(text) {
+  const s = String(text || "");
+  if (!s) return "";
+  const out = [];
+  for (const it of COMFY_SIGNATURE_HINTS) {
+    if (it.re.test(s)) out.push(it.hint);
+  }
+  return out.join("；");
+}
+
+/** 取 traceback 末行（execution_error 里 exception_message 偶尔为空时的兜底）。 */
+function lastTracebackLine(traceback) {
+  const tb = Array.isArray(traceback) ? traceback : [];
+  for (let i = tb.length - 1; i >= 0; i--) {
+    const line = String(tb[i] == null ? "" : tb[i]).trim();
+    if (line) return line;
+  }
+  return "";
+}
+
+/** 把 history.status.messages 里的 execution_error 摘成可读原因行。
+ *  status_str 只有一句 'error'，真正有用的 node_id / node_type / exception_type /
+ *  exception_message（必要时 traceback 末行兜底）都在 execution_error 条目里。 */
+function parseExecutionErrorMessages(st) {
+  const msgs = (st && Array.isArray(st.messages) && st.messages) || [];
+  const out = [];
+  for (const m of msgs) {
+    if (!m || m[0] !== "execution_error") continue;
+    const d = h3wf.isPlainObject(m[1]) ? m[1] : {};
+    const where = [
+      d.node_id != null && d.node_id !== "" ? "节点 " + d.node_id : "",
+      d.node_type ? "（" + d.node_type + "）" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const etype = String(d.exception_type || "").trim();
+    let msg = String(d.exception_message || "").trim();
+    if (!msg) msg = lastTracebackLine(d.traceback);
+    let text = (where ? where + "：" : "") + ([etype, msg].filter(Boolean).join(": ") || "未知错误");
+    const hint = humanizeComfySignature(etype + " " + msg);
+    if (hint) text += "｜" + hint;
+    out.push(text);
+  }
+  return out;
+}
+
+/** MP4 家族容器的音轨嗅探（只读盒结构，不解码）。
+ *  返回 { isMp4:true, hasAudio:boolean }；非 MP4 家族 / moov 缺失 / 读失败一律返回 null（不拦截）。 */
+function sniffMp4AudioTrack(filePath) {
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const size = fs.fstatSync(fd).size;
+    if (!size || size < 16) return null;
+    /* 头部 64KB 认首个盒子；尾部 1MB 兜底（非 faststart 的 moov 常挂在文件尾） */
+    const headLen = Math.min(65536, size);
+    const head = Buffer.alloc(headLen);
+    fs.readSync(fd, head, 0, headLen, 0);
+    const firstType = head.length >= 8 ? head.toString("latin1", 4, 8) : "";
+    if (!["ftyp", "moov", "free", "skip", "wide"].includes(firstType)) return null;
+    let tail = Buffer.alloc(0);
+    let tailStart = 0;
+    if (size > headLen) {
+      const tailLen = Math.min(1 << 20, size - headLen);
+      tail = Buffer.alloc(tailLen);
+      fs.readSync(fd, tail, 0, tailLen, size - tailLen);
+      tailStart = size - tailLen;
+    }
+    const findMoov = (buf, base) => {
+      const s = buf.toString("latin1");
+      for (let i = 0; i + 8 <= s.length; i++) {
+        if (s.slice(i + 4, i + 8) === "moov") return base + i;
+      }
+      return -1;
+    };
+    let moovAbs = findMoov(head, 0);
+    if (moovAbs < 0 && tail.length) moovAbs = findMoov(tail, tailStart);
+    if (moovAbs < 0) return null;
+    const hdrLen = Math.min(16, size - moovAbs);
+    const hdr = Buffer.alloc(hdrLen);
+    const got = fs.readSync(fd, hdr, 0, hdrLen, moovAbs);
+    const parsed = readMp4BoxHeader(hdr.subarray(0, got), 0);
+    if (!parsed || parsed.type !== "moov") return null;
+    const moovLen = Math.min(parsed.size, 64 * 1024 * 1024, size - moovAbs);
+    if (moovLen < parsed.header) return null;
+    const moov = Buffer.alloc(moovLen);
+    fs.readSync(fd, moov, 0, moovLen, moovAbs);
+    let hasSoun = false;
+    eachMp4Box(moov, parsed.header, moovLen, (t, ps, pe) => {
+      if (t !== "trak") return;
+      eachMp4Box(moov, ps, pe, (t2, ps2, pe2) => {
+        if (t2 !== "mdia") return;
+        eachMp4Box(moov, ps2, pe2, (t3, ps3, pe3) => {
+          /* hdlr 载荷：version+flags(4) predefined(4) handler_type(4) */
+          if (t3 === "hdlr" && ps3 + 12 <= pe3 && moov.toString("latin1", ps3 + 8, ps3 + 12) === "soun") {
+            hasSoun = true;
+          }
+        });
+      });
+    });
+    return { isMp4: true, hasAudio: hasSoun };
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+/** MP4 盒头：返回 { type, size, header }；size==1 走 64 位，size==0 到结尾。 */
+function readMp4BoxHeader(buf, pos) {
+  if (!buf || pos + 8 > buf.length) return null;
+  let size = buf.readUInt32BE(pos);
+  const type = buf.toString("latin1", pos + 4, pos + 8);
+  let header = 8;
+  if (size === 1) {
+    if (pos + 16 > buf.length) return null;
+    size = buf.readUInt32BE(pos + 8) * 4294967296 + buf.readUInt32BE(pos + 12);
+    header = 16;
+  } else if (size === 0) {
+    size = buf.length - pos;
+  }
+  if (size < header) return null;
+  return { type, size, header };
+}
+
+/** 顺序遍历 [start,end) 内的同级盒，回调 (type, payloadStart, boxEnd)。 */
+function eachMp4Box(buf, start, end, fn) {
+  let pos = start;
+  while (pos + 8 <= end) {
+    const h = readMp4BoxHeader(buf, pos);
+    if (!h) return;
+    const payloadStart = pos + h.header;
+    const boxEnd = Math.min(end, pos + h.size);
+    if (boxEnd <= pos) return;
+    fn(h.type, payloadStart, boxEnd);
+    pos = boxEnd;
+  }
 }
 
 /** 提交 ComfyUI workflow 并轮询等待完成，返回输出视频 meta（filename/subfolder）。
@@ -2518,7 +5460,9 @@ function formatPromptRejection(postedJson, workflowTitle) {
 async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, opts) {
   const options = opts && typeof opts === "object" ? opts : {};
   const label = stage === "post" ? "后处理" : stage === "custom" ? "自建工作流" : "生成";
-  emitProgress({ phase: "generate", nodeId, message: "提交 " + label + "…", pct: 12 });
+  /* 进度相位：独立后处理任务走 phase='post'（节点自己的进度条），其余一律 'generate' */
+  const progPhase = options.phase === "post" ? "post" : "generate";
+  emitProgress({ phase: progPhase, nodeId, message: "提交 " + label + "…", pct: 12 });
   appendConsole("comfy prompt submit (" + stage + ")");
   const posted = await httpJson(
     "POST",
@@ -2570,7 +5514,12 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, op
           st.status_str === "error" ||
           (st.messages || []).some((m) => m && m[0] === "execution_error")
         ) {
-          throw new Error(stage === "post" ? "post_execution_error" : "comfy_execution_error");
+          const err = new Error(stage === "post" ? "post_execution_error" : "comfy_execution_error");
+          /* 节点上直接显示真实原因：节点/类型/异常/消息（traceback 末行兜底），不再只给裸状态码 */
+          const reasons = parseExecutionErrorMessages(st);
+          const head = "ComfyUI 执行出错" + (options.workflowTitle ? "（" + options.workflowTitle + "）" : "") + "：";
+          err.detail = reasons.length ? head + "\n" + reasons.join("\n") : head + "后端未给出具体原因";
+          throw err;
         }
         if (st.completed || item.outputs) {
           const outputs = item.outputs || {};
@@ -2583,19 +5532,8 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, op
             }
             if (st.completed) throw new Error("no_workflow_output");
           } else {
-            for (const o of Object.values(outputs)) {
-              const vids = (o && o.videos) || [];
-              if (vids.length) {
-                videoMeta = vids[0];
-                break;
-              }
-              const imgs = (o && o.images) || [];
-              const mp4 = imgs.find((x) => x && /\.mp4$/i.test(x.filename || ""));
-              if (mp4) {
-                videoMeta = mp4;
-                break;
-              }
-            }
+            /* 产物判定见 pickJobVideoMeta：「取第一个 mp4」会抓成 LoadVideo 的输入预览 */
+            videoMeta = pickJobVideoMeta(outputs, preferredNodeId);
             if (videoMeta) break;
             if (st.completed) throw new Error(stage === "post" ? "no_post_output" : "no_video_output");
           }
@@ -2609,7 +5547,7 @@ async function submitAndWaitComfy(port, clientId, promptGraph, nodeId, stage, op
             const max = Math.max(1, Number(m[1].max) || 1);
             const pct = Math.min(92, 15 + Math.floor((v / max) * 75));
             emitProgress({
-              phase: "generate",
+              phase: progPhase,
               nodeId,
               message: (stage === "post" ? "后处理 " : stage === "custom" ? "执行 " : "采样 ") + v + "/" + max,
               pct,
@@ -2700,6 +5638,12 @@ async function generateVideo(params) {
       const msg = customWorkflowMissingMessage(customWfId);
       appendConsole("[job] reject: " + msg);
       emitProgress({ phase: "generate", nodeId, message: msg, error: true, pct: 0 });
+      reportErr("custom_workflow_missing", msg, {
+        phase: "generate",
+        nodeId,
+        workflowId: String(params.canvasWorkflowId || ""),
+        nodeKind: "video_gen",
+      });
       return { ok: false, error: "custom_workflow_missing", message: msg };
     }
   }
@@ -2744,6 +5688,12 @@ async function generateVideo(params) {
         error: true,
         pct: 0,
       });
+      reportErr(err, detail || err, {
+        phase: "generate",
+        nodeId,
+        workflowId: String(params.canvasWorkflowId || ""),
+        nodeKind: "video_gen",
+      });
       return {
         ok: false,
         error: err,
@@ -2763,7 +5713,7 @@ async function generateVideo(params) {
     const comfy = comfyDir(installDir);
 
     /* 自建工作流：customWorkflowId（H3 库 id）非空 → 走独立执行分支 runCustomWorkflow。
-     * 内置 FL2VA / R2V 两阶段链（含 4K 超分补帧）一字不动（零回归）。 */
+     * 内置 FL2VA / R2V 生成链一字不动（超分 / 补帧已拆到 h3:postProcess，两分支都不再串跑）。 */
     if (customWfId) {
       return await runCustomWorkflow({ params, port, installDir, comfy, wfId: customWfId });
     }
@@ -2829,6 +5779,18 @@ async function generateVideo(params) {
         if (p && fs.existsSync(p)) uploaded.audios.push(await uploadFileToComfy(port, p, "audio"));
       }
     }
+    /* 分段衔接（FL2VA / R2V 通用，两种模式的用法见 buildH3Workflow 里的衔接子图注释）：
+     * 上一段成片登记进 ComfyUI input —— LoadVideo 只认 input 目录里的文件名。
+     * 文件不存在只记一行日志并跳过引导，不报错、不影响本段正常生成。 */
+    const chainPath = String(params.chainVideoPath || "").trim();
+    if (chainPath) {
+      if (fs.existsSync(chainPath)) {
+        uploaded.chain = await uploadFileToComfy(port, chainPath, "video");
+        appendConsole("[generate] chain source → input/" + uploaded.chain);
+      } else {
+        appendConsole("[generate] 衔接视频不存在，已跳过段间引导：" + chainPath);
+      }
+    }
 
     if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
 
@@ -2849,9 +5811,9 @@ async function generateVideo(params) {
       shiftVideo: params.shiftVideo != null ? Number(params.shiftVideo) : 12,
       shiftAudio: params.shiftAudio != null ? Number(params.shiftAudio) : 3,
       optEasyCache: params.optEasyCache !== false,
-      easyReuse: params.easyReuse != null ? Number(params.easyReuse) : 0.2,
-      easyStart: params.easyStart != null ? Number(params.easyStart) : 0.15,
-      easyEnd: params.easyEnd != null ? Number(params.easyEnd) : 0.95,
+      easyReuse: clampNum(params.easyReuse, EASY_SAFE.reuse.min, EASY_SAFE.reuse.max, EASY_SAFE.reuse.value),
+      easyStart: clampNum(params.easyStart, EASY_SAFE.start.min, EASY_SAFE.start.max, EASY_SAFE.start.value),
+      easyEnd: clampNum(params.easyEnd, EASY_SAFE.end.min, EASY_SAFE.end.max, EASY_SAFE.end.value),
       optLowVramAttn: params.optLowVramAttn !== false,
       lowVramHeadChunks: params.lowVramHeadChunks != null ? Number(params.lowVramHeadChunks) : 4,
       optChunkFfn: params.optChunkFfn !== false,
@@ -2869,54 +5831,25 @@ async function generateVideo(params) {
       filenamePrefix: params.filenamePrefix || "video/MiniMax_H3",
       refImageSize: params.refImageSize || "match",
       hasRef2va: sig.hasRef2va,
-      /* 4K 超分补帧后处理 */
-      postEnabled: params.postEnabled !== false,
-      postInterp: params.postInterp !== false,
-      postInterpMultiplier: params.postInterpMultiplier != null ? Number(params.postInterpMultiplier) : 2,
-      postPerBatch: params.postPerBatch != null ? Number(params.postPerBatch) : 4,
+      /* 分段衔接（长视频无缝衔接）：成片走 uploaded.chain，这里只带两个数值参数 */
+      chainFrames: params.chainFrames != null ? Number(params.chainFrames) : 22,
+      chainDenoise: params.chainDenoise != null ? Number(params.chainDenoise) : 1,
     };
 
-    const doPost = params.postEnabled !== false;
     const clientId = crypto.randomUUID();
-    /* 阶段一：生成原生分辨率视频（不含补帧/超分，减少显存峰值） */
-    const promptGraph = buildH3Workflow(wfParams, uploaded);
-    const genMeta = await submitAndWaitComfy(port, clientId, promptGraph, nodeId, "gen");
+    /* 生成只出原生分辨率视频：超分 / 补帧已拆成独立后处理任务
+     * （h3:postProcess → video_upscale / video_interp 节点），此处不再串跑后处理。
+     * 老画布残留的 postEnabled / postInterp* 字段一律忽略，不报错。 */
+    const graphNotes = {};
+    const promptGraph = buildH3Workflow(wfParams, uploaded, graphNotes);
+    /* 分段衔接在 R2V 下占了第几路参考视频（连满时会顶替 V3）→ 落控制台，绝不静默丢 */
+    if (graphNotes.chainVideo) appendConsole("[generate] " + graphNotes.chainVideo);
+    const finalVideoMeta = await submitAndWaitComfy(port, clientId, promptGraph, nodeId, "gen", {
+      /* r2v 的参考视频同样走 LoadVideo → 优先认图里的 Save* 节点，别抓成输入预览 */
+      preferredNodeId: findVideoOutputNodeId(promptGraph),
+    });
 
-    let finalVideoMeta = genMeta;
-    if (doPost) {
-      /* 阶段间：释放全部模型（H3 DiT / VAE），再进入后处理 */
-      await comfyFreeModels(port);
-      if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
-      const genOut = join(comfy, "output", genMeta.subfolder || "", genMeta.filename);
-      if (!fs.existsSync(genOut)) throw new Error("output_file_missing: " + genOut);
-      appendConsole("[post] stage2 超分补帧 → " + genOut);
-      /* LoadVideo 只在 ComfyUI/input 目录内解析 file：folder_paths.exists_annotated_filepath
-       * 对绝对路径 / 越界路径一律判 False，报 "Invalid video file"。
-       * 所以先把阶段一产物登记进 input 目录，后处理图里用返回的 input 内文件名。 */
-      const postInput = await uploadFileToComfy(port, genOut, "video");
-      appendConsole("[post] loaded as input/" + postInput);
-
-      /* 阶段二：加载原生视频 → RIFE 补帧 → RealESRGAN 超分 → 4K */
-      const postGraph = buildH3Workflow(
-        Object.assign({}, wfParams, { postVideoPath: postInput }),
-        uploaded,
-        "post",
-      );
-      finalVideoMeta = await submitAndWaitComfy(
-        port,
-        crypto.randomUUID(),
-        postGraph,
-        nodeId,
-        "post",
-      );
-    }
-
-    let outPath = join(
-      comfy,
-      "output",
-      finalVideoMeta.subfolder || "",
-      finalVideoMeta.filename,
-    );
+    let outPath = comfyOutputPath(comfy, finalVideoMeta.filename, finalVideoMeta.subfolder || "");
     const exportDir = String(params.outputDir || "").trim();
     if (exportDir) {
       const preferred = String(params.filename || "").trim() || finalVideoMeta.filename;
@@ -2950,6 +5883,12 @@ async function generateVideo(params) {
     clearLock();
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
+    reportErr(err, err, {
+      phase: "generate",
+      nodeId,
+      workflowId: String(params.canvasWorkflowId || ""),
+      nodeKind: "video_gen",
+    });
     return { ok: false, error: err, message: err };
   } finally {
     /* 服务常驻：不重启后端；生成结束后释放全部模型显存（H3 DiT / VAE），
@@ -2992,6 +5931,84 @@ async function fetchObjectInfo(port) {
   return data;
 }
 
+/** combo（下拉）字段的落点目录提示：命中就给「请往 ComfyUI/models/<目录> 放文件」的可执行文案。
+ *  只覆盖 H3 / 南风常用的几类；没命中的字段退回通用文案，不猜目录。 */
+const COMBO_FOLDER_HINTS = [
+  { re: /潜空间放大模型|latent_upscale/i, dir: "latent_upscale_models", note: "南风节点要求必填，占位文件即可" },
+  { re: /文本编码器|text_encoder|clip/i, dir: "text_encoders" },
+  { re: /lora/i, dir: "loras" },
+  { re: /vae/i, dir: "vae" },
+  { re: /放大|upscale|esrgan/i, dir: "upscale_models" },
+  { re: /模型|unet|diffusion|checkpoint/i, dir: "diffusion_models" },
+];
+
+function comboFolderTip(field) {
+  const f = String(field || "");
+  for (const h of COMBO_FOLDER_HINTS) {
+    if (h.re.test(f)) {
+      return (
+        "请往 ComfyUI/models/" + h.dir + " 放入至少一个文件" + (h.note ? "（" + h.note + "）" : "") + "，然后刷新"
+      );
+    }
+  }
+  return "该字段是必填下拉，请把对应的模型文件放进 ComfyUI 的模型目录（或在 ComfyUI 里刷新）后重试";
+}
+
+/** 从 /object_info 的一条输入定义里认出 combo：老式 ["a","b"] 与新式 ["COMBO",{options:[…]}] 都认。
+ *  非 combo（"STRING" / "INT" 等）返回 null。 */
+function comboOptionsOf(spec) {
+  if (!Array.isArray(spec) || !spec.length) return null;
+  const meta = h3wf.isPlainObject(spec[1]) ? spec[1] : {};
+  const head = spec[0];
+  if (Array.isArray(head)) return { options: head.map(String), meta };
+  if (typeof head === "string" && head.toUpperCase() === "COMBO") {
+    const list = Array.isArray(meta.options) ? meta.options : [];
+    return { options: list.map(String), meta };
+  }
+  return null;
+}
+
+/** 必填 combo 空值运行时自愈。
+ *  已入列的旧库记录里会残留空串下拉值（面板保存时的默认空值），ComfyUI 会以
+ *  「Value not in list」直接拒单；随包 JSON 的修改不会回滚这些已入列记录，所以运行时补一次。
+ *  刻意只处理「值 === ""」：非空但不存在的值（模型名拼写错误等）照旧让 ComfyUI 报错，不掩盖真实问题。
+ *  返回 { graph, fixed }；某 combo 一个选项都没有时抛可执行的中文错误。 */
+function healEmptyComboInputs(graph, objectInfo) {
+  const fixed = [];
+  if (!objectInfo || !h3wf.isPlainObject(graph)) return { graph, fixed };
+  for (const [nid, node] of Object.entries(graph)) {
+    const nodeObj = h3wf.isPlainObject(node) ? node : null;
+    const cls = nodeObj ? String(nodeObj.class_type || "") : "";
+    const inputs = nodeObj && h3wf.isPlainObject(nodeObj.inputs) ? nodeObj.inputs : null;
+    const info = cls && h3wf.isPlainObject(objectInfo[cls]) ? objectInfo[cls] : null;
+    const infoInput = info && h3wf.isPlainObject(info.input) ? info.input : null;
+    if (!inputs || !infoInput) continue;
+    const schema = {
+      ...(h3wf.isPlainObject(infoInput.required) ? infoInput.required : {}),
+      ...(h3wf.isPlainObject(infoInput.optional) ? infoInput.optional : {}),
+    };
+    for (const [field, raw] of Object.entries(inputs)) {
+      if (raw !== "") continue;
+      const combo = comboOptionsOf(schema[field]);
+      if (!combo) continue;
+      /* 空串本身就是合法选项（可选下拉）时不动它 */
+      if (combo.options.some((o) => String(o).trim() === "")) continue;
+      const options = combo.options.filter((o) => String(o).trim() !== "");
+      if (!options.length) {
+        throw new Error(
+          field + " 没有可选模型：" + comboFolderTip(field) + "（节点 " + nid + " · " + cls + "）",
+        );
+      }
+      const def = combo.meta && combo.meta.default != null ? String(combo.meta.default) : "";
+      const next = def && options.includes(def) ? def : options[0];
+      inputs[field] = next;
+      fixed.push({ nodeId: String(nid), classType: cls, field, to: next });
+      appendConsole("[wf] 必填下拉空值自愈：" + nid + "." + field + " \"\" → " + next);
+    }
+  }
+  return { graph, fixed };
+}
+
 /** /object_info 节点包校验：缺自定义节点 → 警告但不阻断（写入库条目 validation） */
 async function validateWorkflowRecord(id) {
   const store = workflowStore();
@@ -3028,6 +6045,33 @@ async function validateWorkflowRecord(id) {
   };
 }
 
+/** 内置模板的素材落点键名：ref_image_N / ref_video_N / ref_audio_N（N 从 0 起）。 */
+const H3_REF_ALIAS_RE = /^ref_(image|video|audio)_(\d+)$/;
+
+/**
+ * 素材落点改写（南风中文控件）：参数表里可能还留着内置模板的英文落点
+ * （ref_image_N / ref_video_N / ref_audio_N），而目标 H3 节点是
+ * NanFengH3MultiReferenceGeneratorV10 —— 它的控件是中文键「图片N / 视频N / 音频N」
+ * （N 从 1 起，键名真源在 h3-workflows.js 的 nanfengMaterialField）。
+ * 只有「英文键不在该节点 inputs 里、且对应中文键在」时才改写，内置两条模板
+ * （MiniMaxH3ImageToVideo / MiniMaxH3ReferenceToVideo）的英文键原样保留、行为不变。
+ * 必须在 h3wf.normalizeParams 之前调用：后者会把图中不存在的字段判为错误。
+ */
+function remapNanFengRefFields(graph, params) {
+  const list = Array.isArray(params) ? params : [];
+  return list.map((p) => {
+    const src = (p && p.source) || {};
+    const node = graph && graph[String(src.nodeId || "")];
+    const field = String(src.field || "");
+    const m = H3_REF_ALIAS_RE.exec(field);
+    if (!m || !h3wf.isPlainObject(node && node.inputs) || field in node.inputs) return p;
+    const cn = h3wf.nanfengMaterialField(m[1], Number(m[2]));
+    if (!cn || !(cn in node.inputs)) return p;
+    appendConsole("[wf] 素材落点 " + src.nodeId + "." + field + " → " + cn);
+    return { ...p, source: { nodeId: String(src.nodeId), field: cn } };
+  });
+}
+
 /** 自建工作流执行分支（generateVideo 分叉入口）。
  *  单阶段：不追加 4K 超分补帧、不做 24G 钳制、不读 duration/outputRes/post/postEnabled。
  *  抽卡（attempts）/ 进度 / 取消沿用现有链路（activeGenerate + emitProgress + interruptComfy）。 */
@@ -3050,7 +6094,7 @@ async function runCustomWorkflow(ctx) {
   /* 参数映射：节点面板存的自定义表优先；为空时回落智能建议映射 */
   let list = [];
   if (Array.isArray(params.wfParams) && params.wfParams.length) {
-    const n = h3wf.normalizeParams(params.wfParams, graph);
+    const n = h3wf.normalizeParams(remapNanFengRefFields(graph, params.wfParams), graph);
     if (n.errors.length) throw new Error("工作流参数表无效：" + n.errors[0]);
     list = n.params;
   } else {
@@ -3069,6 +6113,19 @@ async function runCustomWorkflow(ctx) {
     if (!fs.existsSync(u.path)) {
       throw new Error("素材文件不存在：" + u.path + "（参数 " + u.key + "）");
     }
+    /* 音频参数防呆：MP4 家族容器但没有 soun 轨 → 提交前拦下（ComfyUI 侧只会回
+       "No audio stream found in the file." 且不带参数名）。非 MP4 / 无法判定不拦截。 */
+    if (u.type === "audio") {
+      const sniff = sniffMp4AudioTrack(u.path);
+      if (sniff && sniff.isMp4 && !sniff.hasAudio) {
+        const hit = list.find((p) => p && p.key === u.key);
+        const label = (hit && hit.label) || u.key;
+        throw new Error(
+          "音频参数「" + label + "」（" + u.key + "）的素材没有音轨：" + u.path +
+            "\n该文件是 MP4 家族容器但没有音频轨，后端读不到声音。改接到 视频N 端子，或换含音轨的文件。",
+        );
+      }
+    }
     uploaded[u.key] = await uploadFileToComfy(port, u.path, u.type);
     appendConsole("[wf] uploaded " + u.key + " (" + u.type + ") → " + uploaded[u.key]);
   }
@@ -3086,6 +6143,19 @@ async function runCustomWorkflow(ctx) {
           .slice(0, 5)
           .join("；"),
     );
+  }
+
+  /* 必填下拉空值自愈：旧库记录里残留的空串 combo 会被 ComfyUI 以「Value not in list」拒单，
+     随包 JSON 的修不回滚已入列记录，只能在这里按真实 /object_info 补一次。
+     后端未起时 fetchObjectInfo 返回 null → 跳过，保持原有报错路径。 */
+  const objectInfo = await fetchObjectInfo(port);
+  if (objectInfo) {
+    const healed = healEmptyComboInputs(applied.graph, objectInfo);
+    if (healed.fixed.length) {
+      appendConsole("[wf] 空值下拉已按后端 schema 自愈 " + healed.fixed.length + " 处");
+    }
+  } else {
+    appendConsole("[wf] 后端未起，跳过硬填下拉空值自愈");
   }
 
   if (activeGenerate && activeGenerate.abort) throw new Error("cancelled");
@@ -3112,7 +6182,7 @@ async function runCustomWorkflow(ctx) {
   }
 
   /* 产物拷贝：真实扩展名（.mp4/.webp/.gif…），取不到回退 .mp4；重名自动序号 */
-  let outPath = join(comfy, "output", meta.subfolder || "", meta.filename);
+  let outPath = comfyOutputPath(comfy, meta.filename, meta.subfolder || "");
   const exportDir = String(params.outputDir || "").trim();
   if (exportDir) {
     const preferred = String(params.filename || "").trim() || meta.filename;
@@ -3144,14 +6214,102 @@ function builtinTemplateGraph(mode) {
     sampler: "res_multistep",
     scheduler: "simple",
     denoise: 1,
-    postEnabled: true,
-    postInterp: true,
   };
   return buildH3Workflow(params, {});
 }
 
+/* 随包工作流（h3-pack/workflows/*.json，API 格式）：与「内置 FL2VA / R2V」两条模板并列，
+ * 是自建工作流库里的第三条。首次启动自动入列（ensureBundledWorkflows），入列后不再覆盖 ——
+ * 用户改名 / 删除都不会被回滚。真源文件随 h3-pack 打包（build.json extraResources 的 workflows/**）。 */
+const BUNDLED_WORKFLOWS = Object.freeze([
+  {
+    file: "nanfeng-h3-v10-multiref.json",
+    title: "南风H3 V10 多参（模板）",
+    source: "bundled:nanfeng-h3-v10-multiref",
+    notes:
+      "南风H3 V10 一体化 Ref2VA：NanFengH3MultiReferenceGeneratorV10 → CreateVideo → SaveVideo。" +
+      "需要 ComfyUI/custom_nodes/nanfeng_prompt_nodes_v10（随包脚手架 setup_env.ps1 自动部署）。",
+  },
+]);
+
+function bundledWorkflowsDir() {
+  return join(packRoot(), "workflows");
+}
+
+/** 随包工作流「已入列」标记：落在数据目录（h3/bundled-workflows.json），保证用户删掉后不再被塞回来。 */
+function bundledSeedMarkerPath() {
+  return join(h3Root(), "bundled-workflows.json");
+}
+
+/** 读一条随包工作流的 API 图（仅供入列 / 另存模板复用，不缓存文件内容）。 */
+function readBundledWorkflowGraph(file) {
+  const p = join(bundledWorkflowsDir(), String(file || ""));
+  const parsed = h3wf.parseImportText(fs.readFileSync(p, "utf8"));
+  return h3wf.normalizeGraph(parsed);
+}
+
+/**
+ * 把随包工作流并入自建工作流库（幂等、不回滚）。
+ * 只对「从未入列过」的条目建记录；标记落 h3/bundled-workflows.json。
+ * 首次入列后顺手跑一次 /object_info 校验（后端没起就记 skipped，与手动导入同口径）。
+ */
+async function ensureBundledWorkflows() {
+  const marker = readJson(bundledSeedMarkerPath(), {}) || {};
+  const seeded = h3wf.isPlainObject(marker.seeded) ? marker.seeded : {};
+  const added = [];
+  for (const spec of BUNDLED_WORKFLOWS) {
+    if (seeded[spec.file]) continue;
+    let norm;
+    try {
+      norm = readBundledWorkflowGraph(spec.file);
+    } catch (e) {
+      appendConsole("[wf-seed] 读取随包工作流失败 " + spec.file + "：" + String((e && e.message) || e));
+      continue;
+    }
+    let rec;
+    try {
+      rec = workflowStore().createFromGraph({
+        title: spec.title,
+        graph: norm.graph,
+        format: norm.format,
+        sourceName: spec.source,
+        template: true,
+        overwrite: false,
+        notes: spec.notes || "",
+      });
+    } catch (e) {
+      appendConsole("[wf-seed] 随包工作流入库失败 " + spec.file + "：" + String((e && e.message) || e));
+      continue;
+    }
+    if (!rec || !rec.ok || !rec.record) continue;
+    seeded[spec.file] = rec.record.id;
+    writeJson(bundledSeedMarkerPath(), { version: 1, updatedAt: new Date().toISOString(), seeded });
+    added.push(rec.record.title);
+    appendConsole("[wf-seed] 随包工作流入列：" + rec.record.title + " (id=" + rec.record.id + ")");
+    /* 后台跑一次 /object_info 校验（不 await：后端没起时这里连不上，别让 wfList 卡住） */
+    validateWorkflowRecord(rec.record.id).catch(() => {});
+  }
+  return { ok: true, added };
+}
+
 async function templateToWorkflow(mode) {
-  const m = mode === "r2v" ? "r2v" : "fl2va";
+  const raw = String(mode || "").trim().toLowerCase();
+  /* 第三条（南风H3 V10 多参）没有运行时拼装的图：真源就是随包 workflows/*.json 里的那条，
+   * 与内置 FL2VA / R2V 并列，可从库里删除后用「内置图另存」再取回。 */
+  if (raw === "nanfeng" || raw === "nanfeng-h3-v10-multiref") {
+    const spec = BUNDLED_WORKFLOWS[0];
+    const norm = readBundledWorkflowGraph(spec.file);
+    return workflowStore().createFromGraph({
+      title: spec.title,
+      graph: norm.graph,
+      format: norm.format,
+      sourceName: spec.source,
+      template: true,
+      overwrite: true,
+      notes: spec.notes || "",
+    });
+  }
+  const m = raw === "r2v" ? "r2v" : "fl2va";
   const title = "内置 " + (m === "r2v" ? "R2V" : "FL2VA") + "（模板）";
   const graph = builtinTemplateGraph(m);
   return workflowStore().createFromGraph({
@@ -3211,6 +6369,7 @@ function cancelGenerate(nodeId) {
     error: true,
     cancelled: true,
   });
+  reportErr("cancelled", "生成已取消（用户主动停止）", { phase: "generate", nodeId: nid });
   appendConsole("[cancel] generate cancelled node=" + (nid || "?") + " → stop backend");
   return { ok: true, forceKillScheduled: true };
 }
@@ -3721,6 +6880,21 @@ function registerH3Ipc(opts) {
   appRoot = opts.appRoot || path.join(__dirname, "..");
   getDsh = opts.getDsh || null;
 
+  /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口），
+     之后各失败出口的 reportErr 才有归属与上下文。 */
+  pluginErrors.registerPluginHost({
+    id: PLUGIN_ID,
+    name: "Minimax H3",
+    skillName: "minimax-h3-install",
+    getInstallDir: () => loadConfig().installDir || "",
+    tailConsole: (n) => consoleTail(n),
+    selfRepair: (o) => selfRepairFromConsole(o || {}),
+    restart: async () => {
+      await stopBackend();
+      return startBackend();
+    },
+  });
+
   ensureUiRuntime();
   refreshStaleLock();
   startGpuPolling();
@@ -3767,10 +6941,14 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:uninstallPreview", async () => uninstallPreview());
   ipcMain.handle("h3:uninstall", async (e, opts) => uninstallProject(opts || {}));
   ipcMain.handle("h3:generate", async (e, params) => generateVideo(params || {}));
+  /* 独立后处理：超分 / 补帧各自一条，与生成解耦（video_upscale / video_interp 节点） */
+  ipcMain.handle("h3:postProcess", async (e, params) => postProcessVideo(params || {}));
   ipcMain.handle("h3:cancelGenerate", async (e, nodeId) => cancelGenerate(nodeId));
   /* 自建工作流库（h3/ui 管理 + 主窗口 video_gen 面板共用） */
   ipcMain.handle("h3:wfList", async () => {
     try {
+      /* 随包工作流（第三条，与内置 FL2VA / R2V 并列）首次访问时入列，幂等且不回滚 */
+      await ensureBundledWorkflows();
       return { ok: true, items: workflowStore().listDetailed(), stats: workflowStore().stats() };
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
@@ -3898,12 +7076,17 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:removePluginMeta", async () => removePluginMetaOnly());
   ipcMain.handle("h3:setCpuVae", async (e, v) => {
     saveConfig({ cpuVae: !!v });
-    return { ok: true, cpuVae: !!v };
+    /* 关掉 CPU VAE 后重新武装启动失败提示 */
+    if (!v) cpuVaeFailHinted = false;
+    return { ok: true, cpuVae: !!loadConfig().cpuVae };
   });
   ipcMain.handle("h3:setLaunchOpts", async (e, opts) => {
     opts = opts || {};
     const patch = {};
-    if (opts.cpuVae != null) patch.cpuVae = !!opts.cpuVae;
+    if (opts.cpuVae != null) {
+      patch.cpuVae = !!opts.cpuVae;
+      if (!patch.cpuVae) cpuVaeFailHinted = false;
+    }
     if (opts.optDisablePinnedMemory != null) {
       patch.optDisablePinnedMemory = !!opts.optDisablePinnedMemory;
     }
@@ -3917,15 +7100,32 @@ function registerH3Ipc(opts) {
       const n = Number(opts.optReserveVramGb);
       if (Number.isFinite(n) && n >= 0) patch.optReserveVramGb = n;
     }
+    /* 系统内存缓存保留下限（GB）；0 = 不加 --cache-ram，退回 ComfyUI 默认 */
+    if (opts.optCacheRamGb != null) {
+      const n = Math.round(Number(opts.optCacheRamGb));
+      if (Number.isFinite(n) && n >= 0) patch.optCacheRamGb = n;
+    }
+    /* 内存护栏：任务之间回收后端进程（治「跑几单之后内存持续攀升」） */
+    if (opts.optRebuildOnRamHigh != null) {
+      patch.optRebuildOnRamHigh = !!opts.optRebuildOnRamHigh;
+    }
+    /* 后端 BLAS / OpenMP 线程上限（也是 arena 碎片的一个杠杆）；0 = 不改环境变量 */
+    if (opts.optArenaThreads != null) {
+      const n = Math.round(Number(opts.optArenaThreads));
+      if (Number.isFinite(n) && n >= 0 && n <= 64) patch.optArenaThreads = n;
+    }
     saveConfig(patch);
     const cfg = loadConfig();
     return {
       ok: true,
-      cpuVae: cfg.cpuVae !== false,
+      cpuVae: !!cfg.cpuVae,
       optDisablePinnedMemory: cfg.optDisablePinnedMemory !== false,
       optFp16Intermediates: cfg.optFp16Intermediates !== false,
       optExpandableSegments: cfg.optExpandableSegments !== false,
       optReserveVramGb: Number(cfg.optReserveVramGb) > 0 ? Number(cfg.optReserveVramGb) : 4,
+      optCacheRamGb: Number(cfg.optCacheRamGb) > 0 ? Math.round(Number(cfg.optCacheRamGb)) : 0,
+      optRebuildOnRamHigh: cfg.optRebuildOnRamHigh !== false,
+      optArenaThreads: Number(cfg.optArenaThreads) > 0 ? Math.round(Number(cfg.optArenaThreads)) : 0,
       note: "下次启动后端时生效",
     };
   });

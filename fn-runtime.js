@@ -332,6 +332,27 @@ function buildMtnodeBridge(deps = {}) {
         return String(p == null ? "" : p);
       }
     },
+    /* ─ 桌面 / 窗口截图（主进程侧 desktop-capture.js 实现 · 落盘后回路径）─────
+       函数节点跑在独立线程里，既没有 `window.api.captureRect`（那只能拍 MTNode
+       自己这个窗口），也没有任何 Electron 能力；要拍**别的屏幕 / 别的窗口**只能
+       借主进程这座桥。三种用法：
+         await mtnode.screenList()                      → 有哪些屏幕可拍
+         await mtnode.windowList()                      → 有哪些窗口可拍（含 hwnd / 标题 / 是否可见）
+         await mtnode.screenShot({ target, ... })       → 拍一张，回 { ok, path, width, height }
+       screenShot 的参数（都能省）：
+         target   "screen"（默认，某个屏幕）| "window"（某个窗口）| "all"（整块桌面）
+         screen   目标屏幕：deviceName（\\.\DISPLAY1）/ "x,y" / 序号（0 起）；省 = 主屏
+         window   目标窗口的标题关键字（可只写一部分，不区分大小写）
+         hwnd/pid 想按窗口句柄 / 进程号点名时用（windowList 里拿得到）
+         x / y    （可选）相对被拍对象左上角的偏移，物理像素
+         w / h    （可选）想要多大，两个必须一起给；省 = 整屏 / 整窗
+       返回的 path 就是本机 PNG 绝对路径：把它交给图像输出端子（端子声明成「图像」即
+       自动成为图像值），或交给 mtnode_vision 识图。失败一律 { ok:false, error }，不抛。 */
+    screenShot: (params) => call("screenShot", params || {}),
+    /* 有哪些屏幕可拍：[{index, deviceName, primary, x, y, width, height}] */
+    screenList: () => call("screenList", {}),
+    /* 有哪些窗口可拍：[{hwnd, pid, process, title, x, y, width, height, visible}] */
+    windowList: () => call("windowList", {}),
   };
   return bridge;
 }
@@ -581,6 +602,11 @@ function createFnRuntime(deps = {}) {
      函数节点的 mtnode.ai(...) 走这里真正发请求；没注入或没选模型时，
      mtnode.ai() 返回明确错误，而不是静默为空。 */
   const aiCallFn = typeof deps.aiCall === "function" ? deps.aiCall : null;
+  /* 可选的桌面截图后端（main.js 注入）：函数节点的 mtnode.screenShot / screenList /
+     windowList 走这里。签名 (action, params)，action ∈ screens | windows | capture；
+     返回值必须是 { ok, … }（实现侧已把异常收口成 { ok:false, error }）。 */
+  const screenCaptureFn =
+    typeof deps.screenCapture === "function" ? deps.screenCapture : null;
 
   /* runId -> state */
   const runs = new Map();
@@ -747,6 +773,20 @@ function createFnRuntime(deps = {}) {
       if (!String(spec.model || "").trim()) spec.model = ai.model;
       if (!spec.provider && ai.provider) spec.provider = ai.provider;
       return await aiCallFn(spec, st);
+    }
+    /* 桌面 / 窗口截图桥：mtnode.screenShot / screenList / windowList 走这里。
+       screenCapture 由 main.js 注入（desktop-capture.js）；没接线时给明确错误，
+       而不是让用户代码拿到 undefined。 */
+    if (action === "screenShot" || action === "screenList" || action === "windowList") {
+      if (!screenCaptureFn)
+        return {
+          ok: false,
+          error:
+            "桌面截图后端未接线（主进程未注入 fnRuntime.screenCapture）：mtnode.screenShot 暂不可用",
+        };
+      const act =
+        action === "screenList" ? "screens" : action === "windowList" ? "windows" : "capture";
+      return await screenCaptureFn(act, p || {});
     }
     return { ok: false, error: "未知的 mtnode 桥调用：" + (action || "(空)") };
   }
