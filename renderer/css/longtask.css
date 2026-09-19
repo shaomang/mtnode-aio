@@ -686,6 +686,11 @@
 .lt-card-fail {
   border-color: rgba(255, 95, 86, 0.5);
 }
+/* 用户「无视报错」放行过的环节（本轮需求）：不再红得刺眼，改成灰琥珀 ——
+   它是「已处理过的报错」，不是还需要你盯着的卡点；卡片文案里写着放行时间与原因。 */
+.lt-card-skipped {
+  border-color: rgba(255, 209, 102, 0.4);
+}
 .lt-card-h {
   display: flex;
   align-items: center;
@@ -713,6 +718,36 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+/* 报错出路控件（本轮需求）：卡住的环节卡片与环节检查器共用同一只盒子 ——
+   一丝红边 + 深底，与「重跑这一环」并排但明显是另一类动作（它不重跑，只放行）。
+   里面的下拉 / 复选框沿用既有的 .lt-f / .lt-in / .lt-errbox-lab，不另造一套控件样式。 */
+.lt-errbox {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 95, 86, 0.35);
+  border-left: 2px solid rgba(255, 95, 86, 0.8);
+  border-radius: 5px;
+  background: rgba(255, 95, 86, 0.07);
+}
+.lt-errbox-h {
+  font: 700 11px/1.5 var(--sans);
+  color: #ffb3ad;
+}
+.lt-errbox-lab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 11px/1.5 var(--sans);
+  color: var(--muted);
+  cursor: pointer;
+}
+.lt-errbox-cb {
+  flex: none;
+  margin: 0;
+  accent-color: #ff5f56;
 }
 .lt-insp {
   display: flex;

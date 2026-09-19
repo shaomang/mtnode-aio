@@ -219,6 +219,12 @@ function ltNormCfg(node) {
     out.retries = c.retries == null ? "" : String(Math.max(0, Math.min(5, Number(c.retries) || 0)));
     out.workspace = ltStr(c.workspace, 1000);
     out.memoryless = !!c.memoryless;
+    /* 出错口径（本轮需求）：这一环报错（重试用尽 / 阻断）时怎么办 ——
+       "" = 停住等人（默认，不静默吞错）；"skip" = 直接无视这次报错往下走。
+       onErrorNext 只在 skip 时有意义：填了「哪一环」就跳到那一环，留空 = 走它自己的下游。
+       这里必须归一化：不归一的话检查器写进去的值会被下一轮 ltNormCfg 洗掉。 */
+    out.onError = c.onError === "skip" ? "skip" : "";
+    out.onErrorNext = ltStr(c.onErrorNext, 120);
   } else if (k === "human") {
     out.mode = c.mode === "deliver" ? "deliver" : "approve";
     out.backTo = ltStr(c.backTo, 60);
@@ -1128,6 +1134,9 @@ function ltGraphSnapshot(wf, uid) {
         status: String(st.status || ""),
         round: Number(st.round) || 0,
         wait: !!(mine.waits || []).find((x) => x && String(x.path || "") === path),
+        /* 用户「无视报错」放行过的那一环：带上放行说明 —— 「改图 / 看现况」的 Agent
+           才知道这里不是正常跑完的（跳过 ≠ 成功）。 */
+        skippedBy: String(st.skippedBy || ""),
       });
     }
   }
@@ -1144,6 +1153,8 @@ function ltGraphSnapshot(wf, uid) {
           steps: Number(mine.steps) || 0,
           graphVersion: Number(mine.graphVersion) || 0,
           waits: (mine.waits || []).length,
+          /* 用户放行过的环节（无视报错）：AI 改图时要知道哪些环节是被人放过去的 */
+          fixes: ltArr(mine.fixes).slice(-20).map((f) => ({ path: f.path, mode: f.mode, target: f.target, by: f.by })),
           nodes,
         }
       : null,
@@ -1186,6 +1197,10 @@ function ltRunNew(task, wfId, opts) {
     memPending: [],
     act: {},
     waits: [],
+    /* 用户「无视报错」的干预痕迹（本轮需求）：一条一环放行一次，记放行时间 / 环节 / 档位
+       （skip 跳过 / err 判失败也继续）/ 跳到哪一环 / 谁放的（user 手动 · auto 图定义）。
+       随 checkpoint 落盘：条带卡片、重开画布后的「已放行」说明都读它。 */
+    fixes: [],
     steps: 0,
     log: [],
     startedAt: ltNow(),
@@ -1257,6 +1272,144 @@ function ltSetStat(run, path, status, extra) {
   if (LT_BREATH[status] || status === "failed" || status === "done") ltTouchGraph();
   return s;
 }
+/* ── 报错出路：无视报错直接进下一环（本轮需求）────────────────────────────
+ * 长任务最伤的体验是「跑到某一环报错就再也动不了」：报错本身是运行事实，但不该让整条链
+ * 停在那儿等人 —— 用户要能当场「无视这次报错」，跳到**指定的下一环**继续。
+ * 两条路都从这里走，口径只有一份：
+ *   · 人手动：条带右栏「卡住的环节」卡片 / 环节检查器 → ltManualResolve（点一次即生效）；
+ *   · 图定义：节点 cfg.onError = "skip"（+ onErrorNext 指定跳到哪一环）→ 报错时就地放行。
+ * 真正的「跳过」动作只落一个函数（ltApplySkip），别的都是它的入口。
+ *
+ * 填的这一环认 **id 或标题**（标题是用户在图里唯一看得出身份的东西）：
+ * 路径段就是 id，所以填 id 时任何层级都对得上；填标题时从当前命名空间往根图各查一遍。*/
+function ltGraphNodesOf(run, prefix) {
+  const g = run && run.inst ? run.inst[prefix || ""] : null;
+  return ltArr(g && g.nodes);
+}
+function ltErrorNextTarget(run, path, raw) {
+  const want = String(raw == null ? "" : raw).trim();
+  if (!want) return "";
+  const prefix = ltPathParent(path);
+  const nodes = ltGraphNodesOf(run, prefix);
+  const hit =
+    nodes.find((n) => String(n.id) === want) || nodes.find((n) => String(n.title || "").trim() === want) || null;
+  const id = hit ? String(hit.id) : want;
+  /* 目标一律落在**本条环节所在的同一个命名空间**里（子图 / 逐项实例内各自算各自的）：
+     跨命名空间跳会跳到别人的图上，那不是「下一环」。 */
+  return ltPathKey(prefix, id);
+}
+/* 报错出口的判据：cfg.onError = "skip" 才算自动放行，其余（含缺省）一律停住等人 */
+function ltErrorSkipOn(node) {
+  return String((node && node.cfg && node.cfg.onError) || "") === "skip";
+}
+/* 把一条卡住的环节**就地放行**（不重跑、不改上游）：只做三件事 ——
+ *   ① 撤掉运行态里的「卡住」证据（err / 子图失败印记 / 等人登记），
+ *   ② 记一条「无视报错」的干预痕迹（run.fixes，随 checkpoint 落盘，界面与日志都读它），
+ *   ③ 点火：有目标就点「本环节→目标」这条边，没目标就点它自己的全部下游边 ——
+ *      与 ltRetryNode / ltRewind 同一套 ready 判据，不另造一条私有跃迁路径。
+ * 明确不碰：不再调 ltPump —— 主循环已经在跑（ltExecAgentBody 的收尾路径）时重入会把
+ * 同一批 ready 抓两遍；用户手动入口自己负责叫 ltPump。返回真实点着火的边数。*/
+async function ltApplySkip(run, path, opts) {
+  if (!run || !path) return 0;
+  const o = ltObj(opts);
+  const loc = ltLocate(run, path);
+  if (!loc) return 0;
+  const st = ltStat(run, path);
+  const target = ltErrorNextTarget(run, path, o.target);
+  /* 子图 / 逐项容器按「内部失败」收尾（ltExecSub 的 failed 判据）：有失败印记就不会点出边，
+     所以放行时必须把印记撤掉，否则「跳过」点了等于没点。 */
+  st.subFailed = false;
+  st.mapFailed = false;
+  st.err = "";
+  st.skippedBy = ltStr(o.reason || ltT("无视报错"), 300);
+  ltDropWait(run, path);
+  run.fixes = ltArr(run.fixes);
+  run.fixes.push({
+    at: ltNow(),
+    path: path,
+    title: ltStr((loc.node && loc.node.title) || path, 80),
+    mode: o.mode === "err" ? "err" : "skip",
+    target: target ? ltStr(target, 200) : "",
+    by: o.by === "auto" ? "auto" : "user",
+    reason: ltStr(o.reason || "", 400),
+  });
+  if (run.fixes.length > 100) run.fixes = run.fixes.slice(-100);
+  if (o.mode === "err") {
+    /* 「无视报错」＝不再拦住流程：这一环判失败但**照常点火下游**，让状态机按图继续收敛
+       （下游用得到它的产出就拿，拿不到也有 join / end_fail 兜底），不是把它挂在那儿等人。 */
+    ltSetStat(run, path, "failed", { err: st.skippedBy });
+    await ltFireOut(run, path);
+    return 1;
+  }
+  ltSetStat(run, path, "skipped");
+  if (target && target !== path) {
+    const edge = ltArr(loc.graph.edges).find((e) => e.from === loc.node.id && ltPathKey(loc.prefix, e.to) === target);
+    if (edge) {
+      run.fired = run.fired || {};
+      run.fired[edge.id] = 1;
+      ltStat(run, target);
+      return 1;
+    }
+    /* 图里没有「本环节 → 目标」这条边（用户手填了不相邻的一环）：只是放它去跑，
+       上游那一份状态不代补（绝不假装它拿得到），真跑起来缺什么由那一环自己说。 */
+    ltStat(run, target);
+    return 0;
+  }
+  await ltFireOut(run, path);
+  return ltArr(loc.graph.edges).filter((e) => e.from === loc.node.id && run.fired && run.fired[e.id]).length;
+}
+/* 自动出口（图定义里勾了「无视报错」）：报错时按 cfg 就地放行，并写一条清楚为什么不拦的日志 */
+async function ltResolveErrorFinal(run, path, node, reason, extra) {
+  const st = ltSetStat(run, path, "failed", Object.assign({ err: ltStr(reason, 600) }, ltObj(extra)));
+  if (!ltErrorSkipOn(node)) return false;
+  const target = String((node.cfg && node.cfg.onErrorNext) || "");
+  const n = await ltApplySkip(run, path, { target: target, by: "auto", reason: ltT("已按图定义无视报错：") + ltStr(reason, 200) });
+  ltLog(
+    run,
+    node.title + ltT(" · 按图定义无视报错，继续往下走") + (target ? ltT("（下一环：") + target + "）" : ltT("（走它自己的下游）")),
+    "warn",
+  );
+  return { st: st, skipped: true, fired: n };
+}
+/* 手动入口（条带卡片 / 检查器唯一落点）：把一条「卡住的环节」当场放行到指定的一环。
+ * 只放行真正卡住的那一国（blocked / failed）—— 正在等人（审批 / 交付）的环节有它自己的
+ * 放行路径（ltHumanResolve），不许从这里绕过「点确认」这一步。 */
+async function ltManualResolve(wf, path, opts) {
+  const o = ltObj(opts);
+  const run = ltCurrentRun(wf);
+  if (!run || !path) return { ok: false, error: ltT("没有启用中的长任务") };
+  const st = run.nodes[path];
+  if (!st) return { ok: false, error: ltT("没有这一环") };
+  if (st.status !== "blocked" && st.status !== "failed") return { ok: false, error: ltT("这一环当前没有报错") };
+  const loc = ltLocate(run, path);
+  if (!loc) return { ok: false, error: ltT("找不到该环节的图定义（图已改版？）") };
+  const mode = o.mode === "err" ? "err" : "skip";
+  const target = String(o.target == null ? "" : o.target).trim();
+  if (mode === "skip" && target) {
+    const lit = ltErrorNextTarget(run, path, target);
+    if (!lit || lit === path) return { ok: false, error: ltT("要跳去的那一环得是图里另一个环节") };
+  }
+  const fired = await ltApplySkip(run, path, {
+    mode: mode,
+    target: target,
+    by: "user",
+    reason: o.reason || (mode === "err" ? ltT("无视报错，判失败但继续") : ltT("无视报错，跳过这一环")),
+  });
+  ltLog(
+    run,
+    loc.node.title + " · " + (mode === "err" ? ltT("无视报错：判失败并继续往下跑") : ltT("无视报错：跳过这一环")) +
+      (mode === "skip" && target ? ltT("，跳到 ") + target : ""),
+    "warn",
+  );
+  /* 用户手势 = 明确的「接着跑」：终局态要解开，否则主循环看一眼 run.status 就不再推进 */
+  run.aborted = false;
+  if (LT_RUN_FINAL[run.status] || run.status === "blocked") run.status = "running";
+  ltSave(run, true);
+  ltPump(run);
+  ltRenderStripSoon();
+  return { ok: true, mode: mode, target: target, fired: fired };
+}
+
 /* 取值：沿命名空间链向上找（子图能看到父图，反向不行） */
 function ltStateGet(run, path, key) {
   let p = String(path || "");
@@ -2817,6 +2970,16 @@ window.LT = {
   rearmSkipped: ltRearmSkipped,
   wouldStall: ltWouldStall,
   allReady: ltAllReady,
+  /* ── 报错出路：无视报错直接进下一环（本轮需求本体）──
+     卡片 / 检查器的唯一落点（ltManualResolve）+ 两条判据与真实施加的口（回归测试直接用它们，
+     不必起整个 run 循环）：ltErrorSkipOn 看图定义勾没勾，ltApplySkip 只做「放行 + 点火」。 */
+  manualResolve: ltManualResolve,
+  errorSkipOn: ltErrorSkipOn,
+  errorNextTarget: ltErrorNextTarget,
+  applySkip: ltApplySkip,
+  resolveErrorFinal: ltResolveErrorFinal,
+  /* run 的终局判据（放行过的环节不再把它算回 blocked）—— 回归直接调它，不必起整条主循环 */
+  settleRunStatus: ltSettleRunStatus,
   /* ── 逐项（map）展开源：查询 / 归一 / 就诊 / 补救（本轮需求：状态机本身不再出错）──
      取不到数组不再判 failed，转等人；这几条口是条带卡片与回归测试的落点。 */
   mapItems: ltMapItems,
@@ -3319,10 +3482,15 @@ async function ltPump(run) {
 function ltSettleRunStatus(run) {
   if (run.status === "cancelled") return;
   const paths = Object.keys(run.nodes);
-  const waiting = paths.filter((p) => run.nodes[p].status === "waiting_human" || run.nodes[p].status === "waiting_delivery");
+  /* 用户「无视报错」放行过的环节（本轮需求）：连它内部的报错一起作废 ——
+     放行的语义是「这一环的事我不再计较」，子图 / 逐项里那些失败的子槽就不该再
+     把整个 run 顶回 blocked（否则点了放行、任务仍显示卡住，正是要修的那种卡死）。 */
+  const waived = paths.filter((p) => run.nodes[p].status === "skipped" && run.nodes[p].skippedBy);
+  const isWaived = (p) => waived.some((w) => p === w || p.indexOf(w + "/") === 0);
+  const waiting = paths.filter((p) => !isWaived(p) && (run.nodes[p].status === "waiting_human" || run.nodes[p].status === "waiting_delivery"));
   const running = paths.filter((p) => run.nodes[p].status === "running");
-  const blocked = paths.filter((p) => run.nodes[p].status === "blocked");
-  const failed = paths.filter((p) => run.nodes[p].status === "failed");
+  const blocked = paths.filter((p) => !isWaived(p) && run.nodes[p].status === "blocked");
+  const failed = paths.filter((p) => !isWaived(p) && run.nodes[p].status === "failed");
   if (running.length) {
     run.status = "running";
     return;
@@ -3955,7 +4123,9 @@ async function ltExecAgentBody(run, path, node, st) {
       }
     }
     if (lastErr) {
-      ltSetStat(run, path, "failed", { err: lastErr });
+      /* 重试用尽 = 这一环真的报错了。默认停住等人（绝不静默吞错）；
+         图定义里勾了「无视报错」就地放行往下走（本轮需求，见 ltResolveErrorFinal）。 */
+      await ltResolveErrorFinal(run, path, node, lastErr, { tries: st.tries });
       ltLog(run, node.title + " · " + ltT("失败"), "err");
       return;
     }
@@ -3987,7 +4157,7 @@ async function ltExecAgentBody(run, path, node, st) {
     }
     /* 纠错轮也补不齐 → 判失败（下游拿不到东西，静默成功最坑） */
     if (missing.length) {
-      ltSetStat(run, path, "failed", { err: ltT("未写回声明的输出键：") + missing.join(", ") });
+      await ltResolveErrorFinal(run, path, node, ltT("未写回声明的输出键：") + missing.join(", "));
       ltLog(run, node.title + " · " + ltT("没写回输出键，判失败"), "err");
       return;
     }
@@ -4217,7 +4387,7 @@ async function ltExecOutput(run, path, node, prefix) {
   const key = String(cfg.key || "");
   const val = key ? ltStateGet(run, path, key) : undefined;
   if (!cfg.path || val === undefined) {
-    ltSetStat(run, path, "failed", { err: ltT("output 需要 path 与已存在的状态键") });
+    await ltResolveErrorFinal(run, path, node, ltT("output 需要 path 与已存在的状态键"));
     return;
   }
   /* 相对输出路径按**本 run 所属画布**的工作目录展开（run.ws 已在首个 Agent 环节绑定；
@@ -4238,20 +4408,24 @@ async function ltExecOutput(run, path, node, prefix) {
     } catch (_) {}
     await ltFireOut(run, path);
   } catch (e) {
-    ltSetStat(run, path, "failed", { err: String((e && e.message) || e) });
+    await ltResolveErrorFinal(run, path, node, String((e && e.message) || e));
   }
 }
 async function ltExecSub(run, path, node) {
   const inner = node.cfg.graph;
   if (!ltArr(inner.nodes).length) {
-    ltSetStat(run, path, "failed", { err: ltT("子图是空的") });
+    await ltResolveErrorFinal(run, path, node, ltT("子图是空的"));
     return;
   }
   const st = ltSetStat(run, path, "running");
   ltInst(run, path, inner);
   st.sub = true;
+  st.subFailed = false;
   await ltPumpInner(run, path);
-  const failed = Object.keys(run.nodes).some((p) => p.indexOf(path + "/") === 0 && run.nodes[p].status === "failed");
+  /* 内部失败判据：① 子命名空间里还有 failed 的槽；② 用户「无视报错」放行过这一环内部
+     （ltApplySkip 撤不掉子槽的终态，只落自己的印记，所以两个都要看）。 */
+  const failed =
+    st.subFailed || Object.keys(run.nodes).some((p) => p.indexOf(path + "/") === 0 && run.nodes[p].status === "failed");
   /* 回写父图的键：从**含子命名空间**的那份状态里取（见 ltStateFlatDeep）——
      子壳里 Agent 写的键才会被收上来，否则声明了也永远是空。 */
   const flat = ltStateFlatDeep(run, path);
@@ -4282,6 +4456,7 @@ async function ltExecMap(run, path, node, prefix) {
   const st = ltSetStat(run, path, "running");
   st.mapWait = false;
   st.err = "";
+  st.mapFailed = false;
   st.mapKey = (src && (src.usedKey || src.key)) || String(node.cfg.overKey || "");
   st.mapTotal = items.length;
   st.mapDone = 0;
@@ -4300,7 +4475,8 @@ async function ltExecMap(run, path, node, prefix) {
   const per = [];
   for (let i = 0; i < items.length; i++) per.push(ltStateFlatDeep(run, ltPathKey(prefix, node.id, i)));
   for (const key of ltArr(node.cfg.outKeys)) ltStatePut(run, parent, key, per.map((f) => (key in f ? f[key] : null)));
-  const anyFail = Object.keys(run.nodes).some((p) => p.indexOf(path + "/") === 0 && run.nodes[p].status === "failed");
+  const anyFail =
+    st.mapFailed || Object.keys(run.nodes).some((p) => p.indexOf(path + "/") === 0 && run.nodes[p].status === "failed");
   ltSetStat(run, path, anyFail ? "failed" : "done");
   if (!anyFail) await ltFireOut(run, path);
 }
@@ -4484,6 +4660,9 @@ function ltRearmSkipped(run) {
   let reset = 0;
   for (const p of Object.keys(run.nodes)) {
     if (run.nodes[p].status !== "skipped") continue;
+    /* 用户「无视报错」放行过的环节**不复活**（本轮需求）：那是他明确的手势，
+       不是旧版误标；把它排回 pending 等于把他的决定悄悄撤回（还再烧一次额度）。 */
+    if (run.nodes[p].skippedBy) continue;
     run.nodes[p].status = "pending";
     run.nodes[p].err = "";
     run.nodes[p].tries = 0;

@@ -600,6 +600,44 @@
     "0 = 不限（默认）；超过上限即转「失败」": "0 = unlimited (default); exceeding the limit turns the step into “failed”",
     "记忆注入 TopK": "Memory injection TopK",
     "每个环节往提示词里塞几条记忆；0 = 不注入": "How many memory entries to inject into each step's prompt; 0 = none",
+    /* ── 报错出路：无视报错直接进下一环（app-longtask.js ltManualResolve · app-longtask-ui.js
+       ltErrEscapeBox）—— 两档出路同一套词：跳过这一环 / 判失败也继续，外加「跳到哪一环」。 ── */
+    "无视这次报错，接着往下跑": "Ignore this error and keep going",
+    "这一环照旧记为失败，但不再拦住流程：下游照常点火，缺的东西由下游自己说（判失败 ≠ 跳过）。":
+      "This step still counts as failed, but no longer blocks the flow: downstream fires as usual and says what it is missing (failed ≠ skipped).",
+    "这一环记为「已跳过」：它留下的东西下游照旧读得到，缺的东西下游自己会说。":
+      "This step is marked “skipped”: whatever it left behind is still readable downstream, and missing pieces are reported downstream.",
+    "跳到哪一环": "Jump to which step",
+    "（不填 = 走它自己的下游）": "(empty = go to its own downstream)",
+    "留空 = 走它自己的下游": "Empty = go to its own downstream",
+    "图里没有别的环节可跳": "No other step in this graph to jump to",
+    "只列同一张图里的环节；留空 = 走它自己的下游": "Lists only steps in the same graph; empty = go to its own downstream",
+    "以后这一环报错都照此放行（写回图定义）": "Always let this step through on error (saved into the graph definition)",
+    "无视报错并继续": "Ignore the error and continue",
+    "无视报错：判失败并继续": "Ignore the error: mark failed and continue",
+    "判失败也继续": "Mark failed and continue",
+    "这一环记为失败，但照常点火下游（不再挂在这儿等人）":
+      "This step is marked failed, but downstream still fires (no longer parked here waiting for a human)",
+    "长任务引擎未就绪：先点「继续」再试": "Long-task engine not ready: click “Continue” and try again",
+    "这一环当前没有报错，放行不了": "This step has no error right now, so it cannot be let through",
+    "已放行：": "Let through: ",
+    "图定义自动放行": "Auto let-through by graph definition",
+    "无视报错，跳过这一环": "Ignoring the error; skipping this step",
+    "无视报错，判失败但继续": "Ignoring the error; marking failed but continuing",
+    "无视报错": "Ignore the error",
+    "按图定义无视报错，继续往下走": " · ignoring the error per graph definition, continuing",
+    "（下一环：": " (next step: ",
+    "（走它自己的下游）": " (goes to its own downstream)",
+    "已按图定义无视报错：": "Ignored the error per graph definition: ",
+    "无视报错：跳过这一环": "Ignoring the error: skipping this step",
+    "无视报错：判失败并继续往下跑": "Ignoring the error: marking failed and continuing",
+    /* 放行入口的失败回执（app-longtask.js ltManualResolve）：说清为什么放行不了 */
+    "没有这一环": "No such step",
+    /* 引擎的失败回执是极短键；卡片上那句长一点的另有一条（两条都留着，别合并 ——
+       合并会让引擎回执在英文界面变成一长句）。 */
+    "这一环当前没有报错": "This step has no error",
+    "要跳去的那一环得是图里另一个环节": "The jump target must be another step in the graph",
+    "找不到该环节的图定义（图已改版？）": "This step's graph definition is missing (graph changed?)",
     /* ── 一人公司 / 专家团（app-team.js · app-teamview.js · app-team-recruit.js） ── */
     " · 运行中": " · running",
     " 位专家": " experts",
@@ -1852,6 +1890,7 @@
     "节点不存在": "Node not found",
     "没有匹配「": "No nodes matching \"",
     "默认画布": "Default canvas",
+    "快速开始": "Quick Start",
     "请求已中止": "Request aborted",
     "删除该条目": "Delete this entry",
     "删除会话「": "Delete session \"",

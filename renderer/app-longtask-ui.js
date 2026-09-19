@@ -2778,10 +2778,23 @@ function ltRenderSide(right, wf, task, run) {
     right.appendChild(ltEl("div", "lt-side-h", ltT("等你处理")));
     for (const w of waits) right.appendChild(ltHumanCard(wf, run, w));
   }
-  const blocked = run ? Object.keys(run.nodes || {}).filter((p) => run.nodes[p].status === "blocked" || run.nodes[p].status === "failed") : [];
-  if (blocked.length) {
+  /* 卡住的环节（含用户「无视报错」放行过的那些 —— 放行只免它的阻拦，不抹掉「它出过错」这个事实，
+   卡片上显式写着已放行，用户仍能一眼看出哪一环没按预期跑完）。 */
+  const stuck =
+    run &&
+    Object.keys(run.nodes || {}).filter((p) => {
+      const s = run.nodes[p].status;
+      if (s !== "blocked" && s !== "failed" && s !== "skipped") return false;
+      if (s === "skipped" && !run.nodes[p].skippedBy) return false;
+      /* 被放行环节**内部**的子槽不再单独列卡：它们随所属环节一起作废（见 ltSettleRunStatus），
+         一颗颗列出来只会再把右栏塞满已经处理过的报错。 */
+      const pre = String(p).indexOf("/") >= 0 ? String(p).slice(0, String(p).lastIndexOf("/")) : "";
+      const ws = pre && run.nodes[pre] ? run.nodes[pre] : null;
+      return !(ws && ws.status === "skipped" && ws.skippedBy);
+    });
+  if (stuck.length) {
     right.appendChild(ltEl("div", "lt-side-h", ltT("卡住的环节")));
-    for (const p of blocked) right.appendChild(ltBlockedCard(wf, run, p));
+    for (const p of stuck) right.appendChild(ltBlockedCard(wf, run, p));
   }
   right.appendChild(ltEl("div", "lt-side-h", ltSel.path ? ltT("检查器") : ltT("图说明")));
   const insp = ltEl("div", "lt-insp");
@@ -2918,6 +2931,11 @@ function ltNodeInspector(box, wf, task, run, path) {
     box.appendChild(loc);
   }
   const save = (patchCfg) => ltCommit(task, () => Object.assign(node.cfg, patchCfg));
+  /* 报错出路（本轮需求）：选中的这一环**正卡着**时，检查器顶上就把放行控件摊出来 ——
+     用户点着那张「a_check · blocked」卡片进来，第一眼看到的不是一堆参数，而是出路。 */
+  if (st && (st.status === "blocked" || st.status === "failed")) {
+    ltErrEscapeBox(box, task, run, path, st.status === "failed" ? "err" : "skip");
+  }
   ltInput(box, ltT("标题"), node.title, (i) => ltCommit(task, () => (node.title = ltStr(i.value, 60) || node.title)));
   /* 「目标 / 说明」是这一栏最常写长文的一格：手动拖出来的高度按 path + 字段名记住，
      条带重绘（运行期约 90ms 一次）后仍还原成用户拖到的那一份（见 LT_TA_H 段）。 */
@@ -3299,14 +3317,114 @@ function ltOverviewInspector(box, wf, task, run) {
     }
   }
 }
+/* ── 报错出路控件（本轮需求本体）：无视报错，直接进下一环 ───────────────────
+ * 长任务最伤的体验是「某一环报错就再也动不了」。这张控件是那条出路的唯一入口，
+ * 卡住的环节卡片与环节检查器都用它（一份实现两处用，判据与文案不许各写一份）：
+ *   · 下拉 = 无视这次报错后进哪一环（留空 = 走本环节自己的下游）；
+ *   · 按钮 = 当场放行（引擎的 LT.manualResolve → applySkip：标记放行 + 点火，不重跑上游）；
+ *   · 勾上「图定义」= 写回 node.cfg.onError / onErrorNext，以后这一环再报错就自动放行。
+ * 两档出路：**跳过这一环**（记为 skipped）与**判失败也继续**（记为 failed，不再挂在这儿等人）。 */
+function ltErrNodeItems(task, run, path) {
+  const wf =
+    (typeof ltRunCanvas === "function" ? ltRunCanvas(run) : null) ||
+    (typeof S !== "undefined" && S ? S.wf : null);
+  const cur = wf ? ltCurGraph(wf) : null;
+  const graph = (cur && cur.graph) || (task && task.graph) || { nodes: [], edges: [] };
+  const selfId = String(path || "").split("/").pop().split("@")[0];
+  return ltArr(graph.nodes)
+    .filter((n) => n && n.id !== selfId)
+    .map((n) => ({ value: String(n.id), label: ltStr(n.title || n.id, 40), hint: String(n.id) }));
+}
+/* 这张 run 所属的画布（与 ltRunCanvas 同一口径；拿不到就退回用户此刻看着的那张） */
+function wfOf(run) {
+  try {
+    const wf = typeof ltRunCanvas === "function" ? ltRunCanvas(run) : null;
+    if (wf) return wf;
+  } catch (_) {}
+  return typeof S !== "undefined" && S ? S.wf : null;
+}
+function ltErrEscapeBox(host, task, run, path, kind) {
+  const st = (run && run.nodes && run.nodes[path]) || null;
+  const loc = run && typeof ltLocate === "function" ? ltLocate(run, path) : null;
+  const node = loc && loc.node ? loc.node : null;
+  if (!node || !node.cfg) return null;
+  const wf = wfOf(run);
+  const box = ltEl("div", "lt-errbox");
+  box.appendChild(ltEl("div", "lt-errbox-h", ltT("无视这次报错，接着往下跑")));
+  box.appendChild(
+    ltEl(
+      "div",
+      "lt-fh",
+      kind === "err"
+        ? ltT("这一环照旧记为失败，但不再拦住流程：下游照常点火，缺的东西由下游自己说（判失败 ≠ 跳过）。")
+        : ltT("这一环记为「已跳过」：它留下的东西下游照旧读得到，缺的东西下游自己会说。"),
+    ),
+  );
+  const items = ltErrNodeItems(task, run, path);
+  const C = ltCtl();
+  let tgt = "";
+  if (C) {
+    C.ltSelField(box, ltT("跳到哪一环"), (node.cfg && node.cfg.onErrorNext) || "", items, (v) => (tgt = v), {
+      allowEmpty: true,
+      emptyLabel: ltT("（不填 = 走它自己的下游）"),
+      emptyText: ltT("图里没有别的环节可跳"),
+      searchPlaceholder: ltT("输入以搜索…"),
+      hint: ltT("只列同一张图里的环节；留空 = 走它自己的下游"),
+    });
+  } else {
+    ltInput(box, ltT("跳到哪一环"), (node.cfg && node.cfg.onErrorNext) || "", (i) => (tgt = i.value.trim()), null, ltT("留空 = 走它自己的下游"));
+  }
+  const chk = ltEl("input", "lt-errbox-cb");
+  chk.type = "checkbox";
+  chk.checked = ltErrorSkipOn(node);
+  const lab = ltEl("label", "lt-errbox-lab");
+  lab.appendChild(chk);
+  lab.appendChild(ltEl("span", null, ltT("以后这一环报错都照此放行（写回图定义）")));
+  box.appendChild(lab);
+  chk.onchange = () => {
+    if (task) ltCommit(task, () => Object.assign(node.cfg, { onError: chk.checked ? "skip" : "" }));
+    else node.cfg.onError = chk.checked ? "skip" : "";
+  };
+  /* 当场放行：唯一落点是引擎的 LT.manualResolve（判据与施加动作都只在引擎里有一份）。
+     引擎不在时**明确说出来**（toast），绝不静默什么都不发生。 */
+  const doFix = (mode) => {
+    const API = window.LT;
+    if (!API || typeof API.manualResolve !== "function") {
+      if (typeof toast === "function") toast(ltT("长任务引擎未就绪：先点「继续」再试"), "warn");
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(API.manualResolve(wf, path, { mode: mode, target: tgt, reason: chk.checked ? ltT("图定义自动放行") : "" })).then(
+      (r) => {
+        if (r && r.ok === false && typeof toast === "function") toast(r.error || ltT("这一环当前没有报错，放行不了"), "warn");
+        if (typeof ltRenderStrip === "function") ltRenderStrip();
+        return r;
+      },
+    );
+  };
+  const row = ltEl("div", "lt-card-row");
+  if (kind === "err") row.appendChild(ltBtn(ltT("无视报错：判失败并继续"), "lt-btn lt-btn-pri", () => doFix("err")));
+  else {
+    row.appendChild(ltBtn(ltT("无视报错并继续"), "lt-btn lt-btn-pri", () => doFix("skip")));
+    row.appendChild(
+      ltBtn(ltT("判失败也继续"), "lt-btn", () => doFix("err"), ltT("这一环记为失败，但照常点火下游（不再挂在这儿等人）")),
+    );
+  }
+  box.appendChild(row);
+  if (st && st.skippedBy) box.appendChild(ltEl("div", "lt-fh", ltT("已放行：") + st.skippedBy));
+  return box;
+}
+
 function ltBlockedCard(wf, run, path) {
   const st = run.nodes[path];
-  const card = ltEl("div", "lt-card lt-card-fail");
+  const skipped = st.status === "skipped";
+  const card = ltEl("div", "lt-card lt-card-fail" + (skipped ? " lt-card-skipped" : ""));
   card.appendChild(ltEl("div", "lt-card-h", ltStr(path.split("/").pop(), 40) + " · " + ltT(st.status)));
-  card.appendChild(ltEl("div", "lt-card-p", st.err || ltT("被阻断")));
+  card.appendChild(ltEl("div", "lt-card-p", st.err || (skipped ? st.skippedBy || ltT("已放行") : ltT("被阻断"))));
   const row = ltEl("div", "lt-card-row");
-  row.appendChild(ltBtn(ltT("重跑这一环"), "lt-btn lt-btn-pri", () => ltRetryNode(wf, path)));
+  /* 已放行的那一环只留「重跑这一环」：它的报错已经不计较了，再摆一次「无视报错」没意义。 */
+  row.appendChild(ltBtn(ltT("重跑这一环"), "lt-btn" + (skipped ? " lt-btn-pri" : ""), () => ltRetryNode(wf, path)));
   card.appendChild(row);
+  if (!skipped) ltErrEscapeBox(card, ltTaskOf(wf, run.taskId), run, path, st.status === "failed" ? "err" : "skip");
   return card;
 }
 

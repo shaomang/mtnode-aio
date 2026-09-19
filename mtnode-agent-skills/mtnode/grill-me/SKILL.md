@@ -99,7 +99,7 @@ description: 需求拷问：把任务映射成决策树，按轮问完整个「�
 | kind | 语义 | 关键 cfg |
 | --- | --- | --- |
 | `start` | 唯一入口（多个会同时开跑） | — |
-| `agent` | 交给智能体做 | `goal`（必填）、`inKeys[]` 吃哪些状态键、`outKeys[]` 产出哪些键（**写回只认这份名单**）、`model`、`preset`、`effort`(`low|medium|high|xhigh|max`)、`canvasRead`(bool，勾选才授权**只读**本画布 —— 这一轮只注册 `mtnode_canvas_get`，改图 / 应用类画布工具不注册)、`retries`、`workspace`、`memoryless` |
+| `agent` | 交给智能体做 | `goal`（必填）、`inKeys[]` 吃哪些状态键、`outKeys[]` 产出哪些键（**写回只认这份名单**）、`model`、`preset`、`effort`(`low|medium|high|xhigh|max`)、`canvasRead`(bool，勾选才授权**只读**本画布 —— 这一轮只注册 `mtnode_canvas_get`，改图 / 应用类画布工具不注册)、`retries`、`workspace`、`memoryless`、`onError`(`"skip"` = 这一环报错（重试用尽 / 缺输出键）时**不卡住**：直接放行往下走；缺省 = 停住等人)、`onErrorNext`(onError 时跳到哪个节点 id，留空 = 走它自己的下游) |
 | `human` | 停下来等人 | `mode`: `approve`（审批）或 `deliver`（内容交付）；`backTo`(驳回回跳到哪个节点 id)、`maxRound`(回跳上限：留空跟随全局，`0`/缺省 = 不限，`1-9` = 上限，超出转失败)；`deliver` 还要给 `items[]` |
 | `join` | 并行等齐 | `mode`: `all`(AND) / `any`(OR) |
 | `fork` | 选路 | 语义全在出边的 `cond` 上；**一条 cond 都不写就等于并行全开** |
@@ -113,6 +113,8 @@ description: 需求拷问：把任务映射成决策树，按轮问完整个「�
 交付清单是**双向**的：应用写 `<画布工作目录>\mtnode-deliverables\<uid>\manifest.json`，也会在重新进入该环节 / 点「继续」时把磁盘上的完成状态（`done` / `value` / `paths` / `choice`）读回来 —— 用户在应用外手改 / 丢文件是生效的。`uid` 由系统生成（`lt<随机>-<环节短名>`，短名可含中文），**不要在图 JSON 里自己编**。
 
 边：`{ id, from, to, label, cond }`。`cond` 是一小段受限 JS 谓词，读得到整份共享状态，返回真值才放行；写错或超时会转成「需人工」而不是把任务崩掉。
+
+**报错不许把整条链卡死**（用户口径）：跑起来后某一环报错（Agent 重试用尽 / 缺输出键 / 条件谓词炸 / 子图里跑坏），用户在条带「卡住的环节」卡上点**「无视报错并继续」**即可当场放行（可指定跳到哪一环，也能勾「以后这一环报错都照此放行」写回图定义）—— 所以**图要留兜底路径**：关键环节后面最好有一条能继续往下走的分支（`end_fail` 或一条无条件出边），别把整张图收在一个必过节点上。
 
 ### 怎么交到用户手上
 

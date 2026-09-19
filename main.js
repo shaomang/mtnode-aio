@@ -3040,10 +3040,13 @@ function packMtNodes(wf) {
   return { buf: Buffer.concat(chunks), assetCount: files.length };
 }
 
-/* 导入落盘：把容器里的资产写回新工作流目录，并把 "@asset/<i>" 占位重映射为新绝对路径 */
-function materializeImport(manifest, files) {
+/* 导入落盘：把容器里的资产写回新工作流目录，并把 "@asset/<i>" 占位重映射为新绝对路径。
+   idPrefix 缺省 "imp_"（用户导入的画布）；首启注入「快速开始」时传 "wf_" ——
+   id 与资产目录必须**同一次**定下来：资产路径是按 id 算出来的，写盘后再改 id
+   会让路径指向一个不存在的目录（首启注入踩过这个坑）。 */
+function materializeImport(manifest, files, idPrefix) {
   const wf = manifest.workflow || {};
-  const newId = "imp_" + Date.now().toString(36);
+  const newId = (idPrefix || "imp_") + Date.now().toString(36);
   const dir = assetDir(newId);
   const used = new Set();
   const map = new Map();
@@ -3233,6 +3236,58 @@ ipcMain.handle("mtnodes:importBase64", (e, base64) => {
     return { ok: false, error: (err && err.message) || String(err) };
   }
 });
+
+/* ── 首启注入「快速开始」画布 ────────────────────────────────────────────
+   需求：app 第一次进入时默认打开「快速开始」这张示例画布（此前是空的 default.json），
+   但新建画布仍然是空画布 —— 所以这里只负责「数据目录里一张画布都没有」时放一张进去，
+   不碰 newWorkflowDialog / 删除后的落点逻辑，也不做任何常驻 UI 入口。
+
+   口径：
+   · 模板随包分发（templates/starter-canvas.mtnodes，build.json files 白名单里），
+     复用既有 .mtnodes 解包 + 导入落盘链：里面引用的应用资产会被写进新画布的
+     assets/<id>/ 并把 "@asset/<i>" 占位重映射成新绝对路径 —— 等于用户手动导入一次。
+   · 只判 save 目录里有没有 <id>.json，**用 existsSync 探测、不 mkdir**：纯读不写盘，
+     不会因为一次启动就在数据目录里留下空文件夹。
+   · 已有画布（含老用户升级）一律不动：升级后不会凭空多出一张画布。
+   · id 用 wf_<时间戳>（与新建画布同形）；名字由模板自带（「快速开始」，走 i18n 词条）。
+   · 任何失败（模板缺失 / 坏档 / 写盘失败）只记日志，然后照旧返回 false 交给
+     ensureWorkflow 走原来的空 default 画布 —— 绝不让首启注入把应用拦在门外。 */
+function starterTemplatePath() {
+  return join(__dirname, "templates", "starter-canvas.mtnodes");
+}
+/* 数据目录里是否已经存在任何画布（严格只看 save/*.json，不含子目录 / 回收站）*/
+function anyWorkflowSaved() {
+  const d = join(DATA(), "save");
+  if (!fs.existsSync(d)) return false;
+  try {
+    return fs.readdirSync(d).some((f) => f.endsWith(".json"));
+  } catch {
+    /* 读不了就当作「没有」会让注入再跑一次，风险大于收益 → 当「有」，不注入 */
+    return true;
+  }
+}
+function ensureStarterWorkflow() {
+  try {
+    if (anyWorkflowSaved()) return false;
+    const tpl = starterTemplatePath();
+    if (!fs.existsSync(tpl)) {
+      errLog("[starter] 随包模板缺失，跳过首启注入：\n" + tpl);
+      return false;
+    }
+    const { manifest, files } = unpackMtNodes(fs.readFileSync(tpl));
+    /* 与「新建画布」同形（wf_<ts>）而不是导入用的 imp_<ts>：id 必须在 materializeImport
+       里一次定下，它同时决定资产目录 assets/<id>/ 与重映射后的绝对路径。 */
+    const wf = materializeImport(manifest, files, "wf_");
+    const id = wf.id;
+    /* 走 writeJson（先 mk 出 save/ 再写，与新建画布落盘同一条路）：save 目录在
+       纯净安装时还不存在，裸 writeFileSync 会因父目录缺失直接失败。 */
+    writeJson(wfPath(id), wf);
+    return true;
+  } catch (err) {
+    errLog("[starter] 首启注入「快速开始」失败：" + String((err && err.message) || err));
+    return false;
+  }
+}
 
 /* 只解析清单中的工作流结构（不落盘资产），供模板商店节点预览 */
 ipcMain.handle("mtnodes:peekBase64", (e, base64) => {
@@ -6208,6 +6263,11 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   migrateLegacyWorkflows();
   migrateLegacyStoreAuth();
+  /* 首启（数据目录里一张画布都没有）放一张随包的「快速开始」示例画布：
+     它写盘后 mtime 最新 → 渲染层 ensureWorkflow 自然把它当默认画布打开；
+     已有画布的用户（含升级）什么都不做。全同步、失败只记日志，不阻塞启动。
+     （这里的 then 回调不是 async，所以不 await —— 它也确实是同步实现。） */
+  ensureStarterWorkflow();
   /* 画布备份：启动片刻后先做一次基线（无改动的后续 tick 自动跳过），之后每 5 分钟一次 */
   setTimeout(workflowBackupTick, 5000);
   setInterval(workflowBackupTick, WF_BACKUP_MS);

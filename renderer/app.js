@@ -28624,6 +28624,14 @@ async function loadWorkflow(id, opts) {
 }
 
 /* ── 画布 Tab 条(Edge 风格):下拉选中或新建画布时加入标签页 ── */
+/* 画布名的显示口径：名字是**用户数据**（存在画布 json 里）不能改，但随包附带的
+   「快速开始」画布有 i18n 词条 —— 英文界面下这些位置走一次词条查表，查不到就原样
+   回显（zh 界面 / 用户自建画布的名字一字不变）。改名窗、判重、落盘一律用原名，
+   所以这只会影响「显示出来的一行字」，不会把英文写进用户的画布数据。 */
+function wfNameLabel(name) {
+  const s = String(name == null ? "" : name);
+  return s ? I18n.t(s) : s;
+}
 function trackWorkflow(id, name) {
   const list = S.config.visitedWorkflows || (S.config.visitedWorkflows = []);
   const ex = list.find((w) => w.id === id);
@@ -28641,10 +28649,10 @@ function renderWfTabs() {
   for (const w of list) {
     const tab = document.createElement("div");
     tab.className = "wf-tab" + (w.id === cur ? " active" : "");
-    tab.title = I18n.t("切换到画布：") + w.name;
+    tab.title = I18n.t("切换到画布：") + wfNameLabel(w.name);
     const nm = document.createElement("span");
     nm.className = "wf-tab-name";
-    nm.textContent = w.name || w.id;
+    nm.textContent = wfNameLabel(w.name) || w.id;
     tab.appendChild(nm);
     const x = document.createElement("button");
     x.className = "wf-tab-close";
@@ -28674,7 +28682,7 @@ async function refreshWfSelect() {
   for (const w of list) {
     const o = document.createElement("option");
     o.value = w.id;
-    o.textContent = w.name + "（" + w.nodes + I18n.t(" 节点）");
+    o.textContent = wfNameLabel(w.name) + "（" + w.nodes + I18n.t(" 节点）");
     sel.appendChild(o);
   }
   /* 选中的那一项必须是「用户正看着的画布」：后台换画布编辑（runAgainstWf）在飞时
