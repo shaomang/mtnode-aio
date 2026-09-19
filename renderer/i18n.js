@@ -6771,6 +6771,13 @@
       "Control signals may only connect to the control input port (port 0)",
     "端口 0 是控制输入端子（不接受数据连线）":
       "Port 0 is the control input — data wires are not accepted",
+    /* 控制端子只与控制端子相连（app-nodes.js · connectError 的端子归类闸） */
+    "该端子是数据端子，不接受控制连线（控制线只能连到控制输入端子）":
+      "This port is a data port — control wires are not accepted (a control wire may only connect to a control input port)",
+    "该端子是控制输入端子，只接受控制连线（数据线请连数据端子）":
+      "This port is the control input — only control wires are accepted (data wires go to data ports)",
+    "控制输入端子已被数据线占用":
+      "The control input already carries a data wire",
     /* 连线校验 · 端子类型匹配（app-nodes.js · connectError）：参数 kind 就是端子的准入类型 */
     "该工具节点的「设置」": "this tool node's Settings",
     "该函数节点的「设置」": "this function node's Settings",

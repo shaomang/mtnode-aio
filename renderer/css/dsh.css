@@ -3454,13 +3454,18 @@ button.mini.btn-sq.tpl-ico {
 
 /* ── 交互面板(dsh 提问 / 审批):窗口下部居中悬浮卡片,不遮挡画布 ─
    头部即拖拽手柄：拖到窗口底部 = 收进 footer 那一条（.ix-docked 压成紧凑条），
-   用户可以先看画布再回来答；双击头部回到默认位置。位置记忆 localStorage。 */
+   用户可以先看画布再回来答；双击头部回到默认位置。位置记忆 localStorage。
+   层级：总在最前（12600）—— 这只窗是「模型正卡在这一问上」的唯一出口，晚答一秒
+   这一轮就白等一秒；被任何浮层盖住就等于「看不见也点不到」。它必须压过全仓所有
+   常规层级：对话框 / 弹窗 100–2400、素材菜单 2600、快照遮罩 5000、节点提示
+   10050–10055、全局搜索 12000、查找栏 12100。JS 侧在「新的一问到达」时还会主动
+   取消收起态并把它夹回视口（app-db.js 的 ixRevealNewCard）。 */
 #ixPanel {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
   bottom: 44px;
-  z-index: 60;
+  z-index: 12600;
   width: 420px;
   max-width: 92vw;
   max-height: 78vh;
@@ -3505,6 +3510,27 @@ button.mini.btn-sq.tpl-ico {
 
 .ix-head:active {
   cursor: grabbing;
+}
+
+/* 新的一问到达时的「看这里」脉冲：一边把收起的窗展开、夹回视口，一边让头部
+   闪两下边框（颜色取 currentColor，跟随主题），用户不用盯着底栏那一条才知道
+   模型在等他。类名由 app-db.js 的 ixRevealNewCard 挂上，1.6 秒后自行摘掉。 */
+#ixPanel .ix-head.ix-attn {
+  animation: ixHeadAttn 0.7s ease-out 2;
+}
+
+@keyframes ixHeadAttn {
+  0% {
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .45), 0 0 0 0 currentColor;
+  }
+
+  40% {
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .45), 0 0 0 3px currentColor;
+  }
+
+  100% {
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .45), 0 0 0 0 currentColor;
+  }
 }
 
 /* 计数标题占满剩余宽度，右侧留给「全部中断」 */

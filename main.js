@@ -1511,6 +1511,24 @@ ipcMain.handle("file:isDir", (e, p) => {
     return false;
   }
 });
+/* 建文件夹（画布工作目录填了不存在的路径时，用户确认后由渲染层调）。
+   语义：已存在且是目录 = 成功（幂等）；命中同名文件 = 失败（绝不覆盖）。
+   recursive 一次补齐整条路径，父目录不存在也能建（用户填 D:\proj\mtnode\out 是常态）。 */
+ipcMain.handle("file:mkdir", (e, p) => {
+  const s = String(p || "").trim();
+  if (!s) return { ok: false, error: I18n.t("未选择") };
+  try {
+    if (fs.existsSync(s)) {
+      return fs.statSync(s).isDirectory()
+        ? { ok: true, path: s, existed: true }
+        : { ok: false, error: I18n.t("该路径已存在同名文件，不能当文件夹用") };
+    }
+    fs.mkdirSync(s, { recursive: true });
+    return { ok: true, path: s, existed: false };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
 /* 单文件信息（数据库「文件节点」导入后取 size/mtime） */
 ipcMain.handle("file:stat", (e, p) => {
   try {
@@ -2505,10 +2523,12 @@ ipcMain.handle("file:saveText", async (e, { name, content }) => {
   }
 });
 ipcMain.handle("file:openDialog", async (e, { title, filters, multi, directory }) => {
+  /* 文件夹选择器允许用户当场新建文件夹（Windows / Linux 的系统对话框本来就有「新建文件夹」，
+     createDirectory 是 macOS 上等价的那个开关 —— 显式传上，三平台口径一致）。 */
   const props = directory
     ? multi
-      ? ["openDirectory", "multiSelections"]
-      : ["openDirectory"]
+      ? ["openDirectory", "multiSelections", "createDirectory"]
+      : ["openDirectory", "createDirectory"]
     : multi
       ? ["openFile", "multiSelections"]
       : ["openFile"];

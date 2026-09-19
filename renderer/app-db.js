@@ -3762,6 +3762,43 @@ function ixPosResetStyle(el) {
   el.classList.remove("ix-docked");
   el.removeAttribute("title");
 }
+/* ── 新的一问到达 = 这只窗必须立刻回到用户眼前 ────────────────────────────
+   位置记忆有可能正停在「收进底栏」（只剩头部一条）或上一轮的旧坐标上：用户不点
+   一下就看不到问题，而模型正卡在这一问上干等。所以每有新卡进来：
+     ① 取消收起态（把正文放开）；
+     ② 把记住的 top 抬到「未收起的整窗完整可见」处 —— 收起态的落点本就贴着窗口底，
+        按原样套上去不只是看不见，下一轮重绘还会被 ixRestorePos 原样收回底栏；
+     ③ 本来就在屏上的窗再让头部闪两下（.ix-head.ix-attn）喊人。
+   抬高口径必须与 ixRestorePos / ixDockedAt 完全一致（未收起的整窗按 78vh 折算），
+   并多留 4px：落点刚好落在「收起判定线」上方，重绘多少次都还是展开态。
+   只在「有新卡进来」时走这条路径：用户自己拖出去 / 主动收起的摆放习惯照旧保留，
+   答题过程中的重绘（ixDrop）不打扰。 */
+let ixFreshCard = false; /* 本次重绘来自新卡到达 */
+let ixFreshPulse = false; /* 到达时这只窗本来就在屏上（才需要闪一下） */
+let ixAttnTimer = 0;
+function ixRevealNewCard(el, pulse) {
+  if (!el) return;
+  /* 先放开收起态再量高度：收起的窗只有头部那样高，按它折算 top 会算出一个
+     仍贴着窗口底的落点，ixRestorePos 又会把窗原样收回底栏。 */
+  el.classList.remove("ix-docked");
+  el.removeAttribute("title");
+  const p = ixPosLoad();
+  if (p) {
+    const vh = window.innerHeight;
+    const fullH = Math.max(el.offsetHeight || 0, Math.round(vh * 0.78));
+    ixPosSave({
+      left: p.left,
+      top: Math.min(p.top, Math.max(4, vh - fullH - (IXPOS_DOCK_PX + 4))),
+    });
+  }
+  ixRestorePos(el);
+  if (!pulse) return;
+  const head = el.querySelector(".ix-head");
+  if (!head) return;
+  head.classList.add("ix-attn");
+  clearTimeout(ixAttnTimer);
+  ixAttnTimer = setTimeout(() => head.classList.remove("ix-attn"), 1600);
+}
 /* 头部拖拽（位置记忆 + 底部收起）。按钮 / 输入框上的按下不算拖，避免误触发。 */
 function ixMakeDraggable(box) {
   const head = box.querySelector(".ix-head");
@@ -3870,6 +3907,10 @@ function ixPush(kind, data, runKey, src) {
       runKey: runKey || "",
       src: src && src.label ? src : null,
     });
+    /* 新的一问：重绘时把窗重新露出来（可能正收在底栏 / 停在旧坐标上）；
+       本来就在屏上的才闪头部，首次弹出只是「出现」，不必喊人 */
+    ixFreshCard = true;
+    ixFreshPulse = !!document.getElementById("ixPanel");
     playIxSound();
   }
   renderIxPanel();
@@ -4064,6 +4105,8 @@ function renderIxPanel() {
   let box = $("#ixPanel");
   if (!items.length) {
     if (box) box.remove();
+    ixFreshCard = false;
+    ixFreshPulse = false;
     return;
   }
   if (!box) {
@@ -4247,6 +4290,14 @@ function renderIxPanel() {
      位置只挂在样式上，不补这一下拖动过的窗会跳回默认的底部居中。 */
   ixMakeDraggable(box);
   ixRestorePos(box);
+  /* 刚收进一张新卡 → 再露一次：取消收起态 + 夹回视口（+ 头部闪两下）。
+     ixRestorePos 只会「照记忆还原」，收起态会被原样还回来，所以必须排在它后面。 */
+  if (ixFreshCard) {
+    const pulse = ixFreshPulse;
+    ixFreshCard = false;
+    ixFreshPulse = false;
+    ixRevealNewCard(box, pulse);
+  }
 }
 
 /* ── 主题(dsh = 默认, industrial = 旧 MTNode, light = 亮色) ── */

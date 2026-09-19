@@ -5934,6 +5934,66 @@ function isControlKind(n) {
       n.kind === "task")
   );
 }
+
+;
+
+
+;
+
+
+
+;
+
+
+/* ── 端子「是控制端子还是数据端子」的单一真源 ──────────────────────────────
+   控制端子只能与控制端子相连（数据端子只能与数据端子相连），判定要用**同一份**
+   端子归类：画布端子配色（app-canvas.js）、接线校验（app-nodes.js connectError）、
+   落点（app-nodes.js addWire）三处都问这里，任一处自算一份就会出现
+   「显示是控制口、却被当成数据口接上」这类错位。
+   数据端子的类型（text / image / video …）另有各节点自己的真源，不在这里判。 */
+function inPortIsControl(node, idx) {
+  if (!node) return false;
+  const i = Number(idx);
+  if (!isFinite(i) || i < 0) return false;
+  if (isFnToolNode(node)) return fnToolInPortIsControl(node, i);
+  if (node.kind === "super") return superInPortIsControl(node, i);
+  if (isControlKind(node)) return true;
+  if (node.kind === "net_send") return i === 1; /* 端口0=信息 · 端口1=控制输入 */
+  if (node.kind === "music_gen") return i === 2;
+  if (node.kind === "yue_gen") return i === 3;
+  if (node.kind === "tts_gen") return i === 1;
+  if (node.kind === "video_gen") return i === videoGenControlPort(node);
+  if (isVideoPostKind(node)) return i === 0;
+  if (node.kind === "remotion") return i === 0;
+  /* 其余节点（含 proc_text / proc_image / 素材 / 全局 …）：端子不声明控制语义 */
+  return false;
+}
+const IN_PORT_DATA_KINDS = {
+  net_send: ["text", "control"],
+  music_gen: ["text", "text", "control"],
+  yue_gen: ["text", "text", "text", "control"],
+  tts_gen: ["text", "control"],
+  remotion: ["control", "text"],
+};
+/* 输入端子声明的类型：控制端子回 "control"；工具 / 函数节点的数据端子回参数声明的
+   text | image；固定端子节点回上表；**没有端子级声明的节点回 null**
+   （＝「任意」：动态端子节点的提示词口、素材 / 全局等都不设限，行为与从前一致）。 */
+function inPortKindOf(node, idx) {
+  if (!node) return null;
+  const i = Number(idx);
+  if (!isFinite(i) || i < 0) return null;
+  if (isFnToolNode(node)) return i === 0 ? "control" : fnToolPortKind(node, "in", i);
+  if (node.kind === "super") return superInPortIsControl(node, i) ? "control" : null;
+  if (isControlKind(node)) return "control";
+  /* H3 的控制口由 videoGenControlPort 给（v5 起恒为端口 0），必须先按节点 kind 收窄，
+     否则任何节点的 0 号端子都会被判成控制端子（普通数据节点的提示词口就此报废）。 */
+  if (node.kind === "video_gen") return i === videoGenControlPort(node) ? "control" : null;
+  const table = IN_PORT_DATA_KINDS[node.kind];
+  if (table) return i < table.length ? table[i] : null;
+  if (isVideoPostKind(node)) return i === 0 ? "control" : null;
+  return null;
+}
+
 function hasFixedInPorts(n) {
   return !!(
     n &&
@@ -20691,7 +20751,9 @@ async function stopNode(node) {
     if (!node.running && !mediaGenWaiters.has(node.id)) return;
     if (mediaGenWaiters.has(node.id)) {
       mediaGenWaiters.delete(node.id);
-      clearPendingRun([node.id]);
+      /* force：本节点是显式停止的，等待态必须立刻摘掉（默认会为「仍在串行链上排队」的
+         节点保留等待态，见 app-nodes.js clearPendingRun） */
+      clearPendingRun([node.id], { force: true });
     }
     stopMediaBackendRunWatcher(node.id);
     stopMediaGenRestoreWatch(node.id);
@@ -30370,6 +30432,203 @@ async function sanitizeInvalidWorkspaces(opts) {
     );
   }
   return cleared.length;
+}
+
+/* ── 工作目录闸门：填目录 / 建目录 / 选目录（三处共用同一套弹窗）────────────────
+   为什么要有这一层：画布上一切真干活的行为（执行节点、保存落盘、新建画布）都要往工作目录
+   写东西。目录空着 → 相对路径解析不出绝对路径；目录填错（被删 / 打错）→ 写入直接失败，
+   而失败点发生在很深的地方，用户看到的只是一句「写入失败」，不知道该改哪。
+   所以在动作起跑前问一次：路径不存在时**先问用户要不要新建**，确认才建（绝不偷偷建），
+   用户也可以直接走系统文件夹选择器当场新建。 */
+
+/* 建文件夹（主进程 file:mkdir）：已存在且是目录也算成功；命中同名文件返回失败，不覆盖 */
+async function createFolderPath(p) {
+  const s = String(p || "").trim();
+  if (!s) return { ok: false, error: I18n.t("未选择") };
+  try {
+    if (window.api && window.api.fileMkdir) return await window.api.fileMkdir(s);
+    if (window.api && window.api.fileWriteText) {
+      /* 老宿主（没有 fileMkdir）兜底：往里面写一个哨兵文件就会连带建出整条路径 */
+      const sentinel = joinPath(s, ".mtnode-ws");
+      const r = await window.api.fileWriteText(sentinel, "");
+      if (r && r.ok === false) return { ok: false, error: r.error || "" };
+      return { ok: true, path: s };
+    }
+    return { ok: false, error: I18n.t("无法新建文件夹") };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
+/* 打开系统文件夹选择器（title 随用途），回路径或空串 */
+async function pickFolderDialogPath(title) {
+  try {
+    const r = await window.api.fileOpenDialog({
+      title: title || I18n.t("选择工作目录"),
+      directory: true,
+    });
+    return (r && r.path) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+/* 「请填写工作目录」窗：输入框 + 浏览… + 确定 / 取消。
+   确定时按现场判定分派：有效 → 回填；不存在 → confirm 问「是否新建」→ 确认才建；
+   命中同名文件 / 建失败 → 窗内报错，改完可再按确定（不关窗、不丢输入）。
+   resolve：填好的路径（含新建成功的），或 null（取消 / 放弃）。 */
+function chooseWorkspaceFolderDialog(opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    if (!S.wf) {
+      resolve(null);
+      return;
+    }
+    const canvasWs = !!opts.canvasWorkspace;
+    openOverlay(opts.title || I18n.t("请填写工作目录"), { persistent: true, min: false });
+    const body = $("#ovBody");
+    body.innerHTML = "";
+    const p = document.createElement("p");
+    p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
+    p.textContent =
+      opts.message ||
+      (canvasWs
+        ? I18n.t(
+            "这张画布还没有有效的工作目录。智能节点读写文件、相对路径保存都相对该目录，请先填写或选择一个文件夹。",
+          )
+        : I18n.t(
+            "这个节点还没有有效的工作目录。它读写文件与相对路径落盘都相对该目录，请先填写或选择一个文件夹。",
+          ));
+    body.appendChild(p);
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:6px;align-items:center";
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.className = "mt-dialog-input";
+    inp.style.cssText = "flex:1;min-width:260px";
+    inp.value = String(opts.initialPath || "").trim();
+    inp.placeholder = I18n.t("工作目录路径（可直接粘贴，或点「浏览…」选择）…");
+    row.appendChild(inp);
+    const br = document.createElement("button");
+    br.type = "button";
+    br.className = "mini";
+    br.textContent = I18n.t("浏览…");
+    br.title = I18n.t("在系统文件夹窗口里选择（窗口里可以直接新建文件夹）");
+    row.appendChild(br);
+    body.appendChild(row);
+    const css = document.createElement("div");
+    css.style.cssText = "margin-top:8px;font-size:12px;line-height:1.7;min-height:18px";
+    body.appendChild(css);
+    const note = document.createElement("div");
+    note.className = "settings-hint";
+    note.style.marginTop = "8px";
+    note.textContent = I18n.t(
+      "路径不存在时会先问你要不要新建该文件夹；也可以直接在文件夹选择窗口里新建。",
+    );
+    body.appendChild(note);
+    const setHint = (text, kind) => {
+      css.textContent = text || "";
+      css.style.color =
+        kind === "err" ? "var(--err,#e5534b)" : kind === "warn" ? "var(--warn,#d29922)" : "";
+    };
+    const foot = $("#ovFoot");
+    foot.innerHTML = "";
+    const cancel = document.createElement("button");
+    cancel.className = "mini";
+    cancel.textContent = I18n.t("取消");
+    const ok = document.createElement("button");
+    ok.className = "mini primary";
+    ok.textContent = I18n.t("确定");
+    let done = false;
+    let creating = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      closeOverlay();
+      resolve(val);
+    };
+    br.onclick = async () => {
+      const picked = await pickFolderDialogPath(opts.title || I18n.t("选择工作目录"));
+      if (!picked) return;
+      inp.value = picked;
+      setHint("");
+    };
+    ok.onclick = async () => {
+      if (creating) return;
+      const v = String(inp.value || "").trim();
+      if (!v) {
+        setHint(I18n.t("请先填写工作目录路径，或点「浏览…」选择一个文件夹。"), "warn");
+        inp.focus();
+        return;
+      }
+      if (v === String(opts.initialPath || "").trim()) {
+        setHint(I18n.t("这个目录不存在或不是有效文件夹，请换一个，或新建它。"), "err");
+        inp.focus();
+        return;
+      }
+      if (await pathIsExistingDir(v)) {
+        setHint("");
+        finish(v);
+        return;
+      }
+      if (await window.api.fileExists(v)) {
+        setHint(I18n.t("这个路径上已经有同名文件，不能当工作目录用。"), "err");
+        inp.focus();
+        return;
+      }
+      setHint(I18n.t("正在创建文件夹…"));
+      creating = true;
+      ok.classList.add("busy");
+      try {
+        const yes = await confirmDialog(
+          I18n.t("这个文件夹还不存在：") + "\n" + v + "\n\n" + I18n.t("要新建它吗？"),
+          { title: I18n.t("新建文件夹"), okText: I18n.t("新建") },
+        );
+        if (done) return;
+        if (!yes) {
+          setHint(I18n.t("已取消新建：请换一个已存在的目录，或再点「确定」重新新建。"), "warn");
+          inp.focus();
+          return;
+        }
+        const r = await createFolderPath(v);
+        if (done) return;
+        if (r && r.ok && (await pathIsExistingDir(v))) {
+          setHint("");
+          toast(I18n.t("已新建工作目录：") + v, "ok");
+          finish(v);
+          return;
+        }
+        setHint(I18n.t("新建文件夹失败：") + ((r && r.error) || ""), "err");
+      } finally {
+        creating = false;
+        ok.classList.remove("busy");
+      }
+    };
+    cancel.onclick = () => finish(null);
+    foot.appendChild(cancel);
+    foot.appendChild(ok);
+    setTimeout(() => {
+      try {
+        inp.focus();
+        inp.select();
+      } catch (_) {}
+    }, 0);
+    /* 兜底：用户用 ✕ / Esc 关掉弹窗（不经过取消按钮）时也得让等待方醒过来 ——
+       轮询到弹窗落地就以当前工作目录结算（它已有效 → 动作照常走；仍无效 → 动作放弃）。 */
+    const guard = setInterval(async () => {
+      if (done) {
+        clearInterval(guard);
+        return;
+      }
+      /* 弹窗宿主还开着（openOverlay 置 flex / closeOverlay 置 none）就继续等 */
+      const host = $("#overlay");
+      if (host && host.style.display !== "none") return;
+      clearInterval(guard);
+      const cur = String((opts.getPath && opts.getPath()) || "").trim();
+      const curOk = !!(cur && (await pathIsExistingDir(cur)));
+      finish(curOk ? cur : "");
+    }, 250);
+  });
 }
 
 /* 某形态（文本 / 图像）可用的服务商：不再只看服务商级 type ——

@@ -83,6 +83,9 @@ contextBridge.exposeInMainWorld('api', {
   fileCopyAssetTo: (a, d) => ipcRenderer.invoke('file:copyAssetTo', { assetPath: a, destPath: d }),
   fileExists: (p) => ipcRenderer.invoke('file:exists', p),
   fileIsDir: (p) => ipcRenderer.invoke('file:isDir', p),
+  /* 建文件夹（画布工作目录填了不存在的路径 → 用户确认新建时用）：已存在且是目录 = 成功，
+     同名文件 = 失败（不覆盖），recursive 一次补齐整条路径 */
+  fileMkdir: (p) => ipcRenderer.invoke('file:mkdir', p),
   fileStat: (p) => ipcRenderer.invoke('file:stat', p),
   /* 音频字节（波形预览器取峰值用，见 renderer/app-audioview.js）：只读，超上限只回体积 */
   fileReadAudio: (p, maxBytes) => ipcRenderer.invoke('file:readAudio', p, maxBytes),

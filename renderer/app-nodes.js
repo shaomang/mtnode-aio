@@ -976,10 +976,20 @@ function addPendingRun(ids) {
   }
 }
 
-function clearPendingRun(ids) {
+/* 清「等待中」标记。
+   ⚠ 排队中的媒体任务（超分 / 补帧 / 生成族）不归这里管：它们的排队真源是媒体串行链的
+   mediaGenWaiters（见 runMediaGenSerial）。控制批次 / 级联批次收尾时会拿整批目标的 id 调本函数，
+   而那一批里「已经进媒体串行链、还没轮到自己起跑」的节点此刻并不在跑 —— 旧写法把它们仍在排队
+   的等待态一并删掉，运行队列里那一行就凭空消失（用户看到的正是「排队中的任务被删了」）：
+   任务其实还在链上，但期间看不见、点不到、『全部终止』也数不到它。
+   所以：仍被媒体串行链持有的 id 一律保留等待态；只有显式停止（opts.force，走 stopNode /
+   全部终止 / 起跑点作废）才连它一起清 —— 那条路径本来就该把排队项作废。 */
+function clearPendingRun(ids, opts) {
   if (!S.pendingRun || !ids) return;
+  const force = !!(opts && opts.force);
   let changed = false;
   for (const id of ids) {
+    if (!force && mediaGenQueueHolds(id)) continue;
     if (S.pendingRun.delete(id)) changed = true;
   }
   if (changed) {
@@ -1288,6 +1298,119 @@ async function runDownstreamCascade(nodes) {
     renderCanvas();
     renderStatus();
   }
+}
+
+/* ── 工作目录闸门（画布行为前置检查）───────────────────────────────────────
+   画布上真干活的行为（执行节点 / 保存落盘 / 新建画布）都要往工作目录写东西：
+   目录空着 → 相对路径解析不出绝对路径；目录填错（被删 / 打错）→ 写到深处才失败，
+   用户只看到一句「写入失败」，不知道改哪。所以起跑前先问一次，缺 / 错就弹窗要求填写：
+   路径不存在时**先问用户要不要新建**，确认才建（绝不偷偷建）。
+   弹窗与「建 / 选」的实现都在 app.js 的 chooseWorkspaceFolderDialog / createFolderPath。 */
+const WS_GATE_LABEL = {
+  canvas: "画布工作目录",
+  node: "节点工作目录",
+};
+
+/* 当前画布的工作目录现场：ok 表示「有效可写」，none 表示空，missing 表示填了但不存在 */
+async function workspaceIssueOf() {
+  const raw = String(wfWorkspace() || "").trim();
+  if (!raw) return { ok: false, none: true, raw, label: WS_GATE_LABEL.canvas };
+  if (await pathIsExistingDir(raw))
+    return { ok: true, none: false, raw, label: WS_GATE_LABEL.canvas };
+  return { ok: false, none: false, missing: true, raw, label: WS_GATE_LABEL.canvas };
+}
+
+/* 节点自己的目录口径（dshWsOf：手填 agentWorkspace / workspace 优先）。
+   没有手填时节点按画布口径走，交回画布闸门统一问。 */
+async function workspaceIssueOfNode(node) {
+  const raw = String(dshWsOf(node) || "").trim();
+  if (!raw) return workspaceIssueOf();
+  if (await pathIsExistingDir(raw))
+    return { ok: true, none: false, raw, label: WS_GATE_LABEL.node };
+  return { ok: false, none: false, missing: true, raw, label: WS_GATE_LABEL.node };
+}
+
+/* 把一次现场的「缺 / 错」问清楚，返回可用的目录；用户放弃则回 ""。
+   路径填错（missing）时预填错的那一条，用户看见自己填的就知道错在哪。 */
+async function resolveWorkspaceIssue(issue, node) {
+  if (!issue || issue.ok) return issue && issue.raw ? String(issue.raw) : "";
+  if (typeof chooseWorkspaceFolderDialog !== "function") return "";
+  const canvasWs = issue.label === WS_GATE_LABEL.canvas;
+  const picked = await chooseWorkspaceFolderDialog({
+    title: I18n.t("请填写工作目录"),
+    message: issue.none
+      ? canvasWs
+        ? I18n.t(
+            "这张画布还没有工作目录。智能节点读写文件、相对路径保存都相对该目录，请先填写或选择一个文件夹。",
+          )
+        : I18n.t(
+            "这个节点还没有工作目录。它读写文件与相对路径落盘都相对该目录，请先填写或选择一个文件夹。",
+          )
+      : I18n.t("这项工作用的工作目录已经不存在了：") +
+        "\n" +
+        String(issue.raw || "") +
+        "\n\n" +
+        I18n.t("请重新填写或选择一个有效的文件夹：你选的这个会记回它的归属处（画布统一目录或该节点）。"),
+    canvasWorkspace: canvasWs,
+    initialPath: issue.none ? "" : String(issue.raw || ""),
+    getPath: () =>
+      canvasWs ? String(wfWorkspace() || "") : String(dshWsOf(node) || ""),
+  });
+  const v = String(picked || "").trim();
+  if (!v) return "";
+  /* 用户刚填 / 选的这个目录要记在**哪一层**：
+     · 画布现场（画布目录空 / 失效）→ 记回画布统一目录（顶栏那一格会跟着变，整张画布一起生效）；
+     · 节点现场（画布已有有效目录，只是这个节点手填的那条失效了）→ 只改这个节点的目录；
+     · 节点现场但画布本来就没有统一目录 → 记回画布：闸门问的是「这项工作用哪个目录」，
+       在画布层落定，后面别的节点就不用再逐个问一遍。 */
+  const manualBefore = String(dshWsOf(node) || "").trim();
+  const canvasBefore = String(wfWorkspace() || "").trim();
+  if (!canvasWs && (manualBefore || canvasBefore)) {
+    if (v !== manualBefore) {
+      setDshWs(node, v);
+      scheduleSave();
+      renderCanvas();
+    }
+  } else if (v !== canvasBefore && S.wf) {
+    S.wf.workspace = v;
+    scheduleSave();
+    renderCanvas();
+  }
+  return v;
+}
+
+/* 唯一入口：画布行为起跑前调用。返回可用目录（含刚新建好的），用户放弃运行则回 ""。
+   并发弹窗去重：控制节点这一批可能同时叫起好几个下游，重入的一律等同一轮结果，
+   不会叠出好几个弹窗、也不会把同一批的一半放过去一半拦下。 */
+function ensureRunWorkspace(node) {
+  if (S._wsGate) return S._wsGate;
+  const issue = node ? workspaceIssueOfNode(node) : workspaceIssueOf();
+  const p = Promise.resolve(issue)
+    .then((cur) => resolveWorkspaceIssue(cur, node))
+    .then((v) => {
+      S._wsGate = null;
+      return v;
+    })
+    .catch(() => {
+      S._wsGate = null;
+      return "";
+    });
+  S._wsGate = p;
+  return p;
+}
+
+/* 用户点节点 ▶ 的统一入口：先过工作目录闸门，再执行；放弃则不起跑、也不报错。
+   内部驱动的执行（控制流 / 级联 / 补跑）直接调 playNode(..., quiet=true)，
+   闸门只在用户真正发起的那一次问（否则一批 N 个下游会连问 N 次）。 */
+async function playUserNode(node, opts) {
+  if (!node) return;
+  const dir = await ensureRunWorkspace(node);
+  if (!dir) {
+    toast(I18n.t("未设置有效的工作目录：已取消本次执行"), "warn");
+    return;
+  }
+  if (isSaveNode(node)) return saveNodeAction(node, { skipWsGate: true });
+  await playNode(node, false, opts || {});
 }
 
 async function playNode(node, quiet, opts) {
@@ -5124,15 +5247,32 @@ function bumpNodeStop(node) {
 function runBatchStopped(node) {
   return !!(node && node._aborted);
 }
-/* 媒体节点还额外看排队代号：入队后被单独停止过 → 作废 */
+/* 媒体节点是否已被终止。
+   只认 _aborted：全仓唯一的「停止」入口 bumpNodeStop 一定同时置 _aborted 与递增 _stopTick
+   （app.js stopNode / stopAllRuns / abortTaskTree 都走它），所以「本批被作废」这件事
+   _aborted 是充分且唯一可靠的判据。旧写法还 OR 一个 _stopTick !== _runTick：
+   那是个**派生量** —— 任何一个入口只要碰过 _stopTick 而没置 _aborted（或相反），
+   排队中的任务就会在出队那一刻被静默判死（提示「已终止（排队中的生成任务已取消）」并从
+   运行队列消失），而用户从没停过它。排队项要不要作废另有两条独立证据，不会漏杀：
+     · 显式停止：_aborted（本函数）+ stopNode / stopAllMediaGen 把条目从 mediaGenWaiters 摘掉；
+     · 全局终止：runMediaGenSerial 出队时比对的 seq（GLOBAL_STOP_SEQ）。
+   所以这里退回单一判据，杜绝「排队中被误删」。 */
 function mediaRunStopped(node) {
-  if (!node) return false;
-  if (node._aborted) return true;
-  return (Number(node._stopTick) || 0) !== (Number(node._runTick) || 0);
+  return !!(node && node._aborted);
 }
 
 /* 媒体生成排队表：nodeId -> entry（终止时整表清空 = 排队项作废） */
 const mediaGenWaiters = new Map();
+/* 仍在媒体串行链上排队（还没起跑）的节点 id 集合：运行队列 / 等待态的唯一真源。
+   排队项从入队到出队（或显式停止）都在 mediaGenWaiters 里，所以「它还在等」这件事
+   有独立证据，不必依赖随时会被别的批次清掉的 S.pendingRun（见 clearPendingRun 的注释）。 */
+function mediaGenQueuedIds() {
+  return new Set(mediaGenWaiters.keys());
+}
+function mediaGenQueueHolds(id) {
+  const key = id == null ? "" : String(id);
+  return !!key && mediaGenWaiters.has(key);
+}
 /* 「后端锁恢复」轮询：nodeId -> interval id（终止时必须关掉，否则会把节点重新标成运行中） */
 const mediaGenRestoreTimers = new Map();
 
@@ -8316,7 +8456,17 @@ async function saveNodeOnce(node, quiet, opts) {
   return saveMediaFileOnce(node, quiet, media);
 }
 
-async function saveNodeAction(node) {
+async function saveNodeAction(node, opts) {
+  opts = opts || {};
+  /* 用户点保存节点的 ▶：先过工作目录闸门（保存本来就往那个目录写）。
+     控制流 / 级联内部叫起的保存走 skipWsGate，不重复问。 */
+  if (!opts.skipWsGate) {
+    const dir = await ensureRunWorkspace(node);
+    if (!dir) {
+      toast(I18n.t("未设置有效的工作目录：已取消本次保存"), "warn");
+      return;
+    }
+  }
   beginNodeRun(node);
   /* 保存节点独立于会话/智能助手：手动 ▶ 直接保存来自输入的内容 */
   /* PDF 生成没配路径时默认写「输入节点标题.pdf」（saveDestBaseAbs 兜底），
@@ -8823,6 +8973,15 @@ async function runControlledNode(n, seen, viaIndexes, sourceId) {
 async function playControlNode(node, seen) {
   /* 用户直接点控制节点 ▶（没有外层批次）= 重新开始：解除「全部终止」的短窗口拦截 */
   if (!seen) S._lastStopAllAt = 0;
+  /* 用户起跑前的统一前置：工作目录缺 / 错先问清楚
+     （内部批次驱动的那一层带 seen 再入，不重复问） */
+  if (!seen) {
+    const dir = await ensureRunWorkspace(node);
+    if (!dir) {
+      toast(I18n.t("未设置有效的工作目录：已取消本次运行"), "warn");
+      return;
+    }
+  }
   seen = seen || new Set();
   if (!node || seen.has(node.id)) return;
   seen.add(node.id);
@@ -9654,6 +9813,34 @@ function fileWireSupportError(from, fi, to) {
   });
 }
 
+
+/* 普通（动态端子）目标节点的**控制输入端子** = 数据端子之后那颗：
+   端子数由 inputCount 按已挂数据线顺延（max(1, 数据线数 + 1)），所以没接线时它还不存在
+   → 返回 null（调用方回落既有占用判定）。数据端子 = inPortKindOf 有声明（text / image /
+   any）或已挂数据线的端子：控制线绝不能占端口 0 的提示词 / 文本入口，也绝不能顶掉
+   已挂数据的端子。控制线的落点（addWire）与接线校验（connectError）共用这一个函数，
+   保证「校验的那颗端子 = 实际落线的那颗」。 */
+function dataNodeControlInPort(node) {
+  if (!node || !S.wf) return null;
+  const ic = (Number(inputCount(node)) || 0) - 1;
+  if (ic < 0) return null;
+  const wiredIn = (i) =>
+    (S.wf.wires || []).some(
+      (w) => !w.rel && w.to === node.id && Number(w.toIndex) === i,
+    );
+  for (let i = 0; i <= ic; i++) {
+    if (inPortIsControl(node, i)) return wiredIn(i) ? null : i; /* 已是控制端子 */
+    if (wiredIn(i)) continue; /* 已被数据线占了 → 试下一个 */
+    /* 任意端子：只有**不声明数据类型**的才收控制线（动态节点顺延出的那颗；
+       端口 0 的提示词口是一条真数据通道，不算） */
+    if (inPortKindOf(node, i) == null) return i;
+  }
+  /* 一颗都没挑到（未接线 / 空洞都被占）→ 用 inputCount 顺延出的那颗新端子收下 */
+  const nxt = ic + 1;
+  if (inPortIsControl(node, nxt)) return nxt;
+  return inPortKindOf(node, nxt) == null ? nxt : null;
+}
+
 function connectError(fromId, toId, toIndex, fromIndex) {
   const from = nodeById(fromId),
     to = nodeById(toId);
@@ -9910,6 +10097,30 @@ function connectError(fromId, toId, toIndex, fromIndex) {
     )
       return I18n.t("控制输入端子已被数据线占用");
   }
+    /* ── 控制端子只与控制端子相连 · 数据端子只与数据端子相连 ────────────────────
+     端子归类走共享真源 app.js 的 inPortIsControl / inPortKindOf（画布端子配色、
+     接线校验、拖线落点三处同一份）：控制信号只落控制输入端子，数据线不占控制端子。
+     两条边界：
+       · 只在**显式指定端子**时判（toIndex != null）。拖到节点身上 / agent connect
+         没带端子号时落点由 addWire 决定（数据线跳过控制端子、控制线走
+         dataNodeControlInPort），这里不抢着拒绝。
+       · 工具 / 函数节点除外 —— 它们的参数端子有自己那套按参数类型逐颗报错的文案
+         （「端口 0 是控制输入端子…」「控制信号只能连到控制输入端子（端口 0）」），
+         不能抢在它们前面把文案换掉。
+     前面对媒体节点的专用分支同样先行（文案与判定顺序不变），这里只收口它们漏掉的错位连接。 */
+  if (!isFnToolNode(to) && toIndex != null && (fromCtrl || inPortIsControl(to, toIndex))) {
+    if (fromCtrl) {
+      const hit =
+        inPortIsControl(to, Number(toIndex)) ||
+        inPortKindOf(to, Number(toIndex)) === "control";
+      if (!hit)
+        return I18n.t("该端子是数据端子，不接受控制连线（控制线只能连到控制输入端子）");
+    } else if (inPortIsControl(to, Number(toIndex))) {
+      return I18n.t("该端子是控制输入端子，只接受控制连线（数据线请连数据端子）");
+    }
+  }
+  
+
   /* 超级节点：外侧输入与内侧汇流共用 to=host，占用检测只看外侧输入（含控制线） */
   if (to.kind === "super") {
     const toolFixed = isToolNode(to);
@@ -10200,9 +10411,21 @@ function addWire(fromId, toId, toIndex, opts) {
   if (toIndex == null && toN && !hasFixedInPorts(toN)) {
     /* 动态端子节点：落点 = 第一个**空闲**端子号（与 inPortIsSpare / connectError 同一口径）。
        端子号连续时它与「入线总数」完全等价（行为不变）；有空洞时补空洞，
-       而不是把线堆到空洞之后 —— 否则空洞那颗端子永远接不上。 */
-    const free = firstFreeInPortIndex(toN);
-    if (free != null) idx = free;
+       而不是把线堆到空洞之后 —— 否则空洞那颗端子永远接不上。
+       控制线例外：控制端子只与控制端子相连 → 落「数据端子之后那颗」控制端子
+       （dataNodeControlInPort，与 connectError 同一份判定），绝不占端口 0 的提示词入口。 */
+    if (fromN && isControlKind(fromN)) {
+      const ctrlPort = typeof dataNodeControlInPort === "function" ? dataNodeControlInPort(toN) : null;
+      if (ctrlPort != null) idx = ctrlPort;
+    } else {
+      const free = firstFreeInPortIndex(toN);
+      if (free != null) idx = free;
+      /* 数据线绝不落进控制端子（画布上那颗 .ctrl）；挑到控制端子就往后挪一颗 */
+      if (inPortKindOf(toN, idx) === "control") {
+        const next = (Number(inputCount(toN)) || 0) - 1;
+        if (next > idx && inPortKindOf(toN, next) !== "control") idx = next;
+      }
+    }
   }
   if (
     toIndex == null &&

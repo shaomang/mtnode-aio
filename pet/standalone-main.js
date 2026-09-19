@@ -22,6 +22,8 @@ const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
 const { pathToFileURL } = require("url");
+/* 对话服务商解析（官方 DeepSeek 路由 / mtnode_* 路由 / 模型回落）唯一真源 */
+const PetProvider = require("./pet-provider.js");
 
 const BASE_W = 360;
 const BASE_H = 360;
@@ -859,92 +861,24 @@ function appConfigPath() {
   return join(DATA, "config.json");
 }
 
+/* 对话服务商解析真源 = pet/pet-provider.js（纯函数，供 smoke-pet-deepseek.js 直测）。
+   为什么必须同源：官方 DeepSeek 走 llm-deepseek 路由（"deepseek-official"），
+   既不在 mtnode_* 路由表里，也不是普通第三方行 —— 任何一处漏掉它就表现为
+   「桌宠里选不到官方供应商 / 选了也被降级成别家」。 */
+function readAppConfig() {
+  return readJson(appConfigPath(), {}) || {};
+}
 function listTextProviders() {
-  const appCfg = readJson(appConfigPath(), {}) || {};
-  const providers = Array.isArray(appCfg.providers) ? appCfg.providers : [];
-  const out = [];
-  providers.forEach((p, i) => {
-    if (!p || p.type !== "text_openai") return;
-    if (!String(p.baseUrl || "").trim() || !String(p.apiKey || "").trim()) return;
-    const models = (Array.isArray(p.models) ? p.models : [])
-      .map((m) => (typeof m === "string" ? m : m && m.id))
-      .filter(Boolean)
-      .map(String);
-    if (!models.length) return;
-    out.push({
-      id: String(p.id || "p" + (i + 1)),
-      name: String(p.name || p.id || "provider"),
-      baseUrl: String(p.baseUrl || ""),
-      models,
-    });
-  });
-  return out;
+  return PetProvider.listTextProviders(readAppConfig());
 }
-
 function resolveChatProvider(cfg) {
-  const appCfg = readJson(appConfigPath(), {}) || {};
-  const providers = Array.isArray(appCfg.providers) ? appCfg.providers : [];
-  const textsFull = providers.filter(
-    (p) =>
-      p &&
-      p.type === "text_openai" &&
-      String(p.baseUrl || "").trim() &&
-      String(p.apiKey || "").trim() &&
-      (Array.isArray(p.models) ? p.models : []).length,
-  );
-  let p =
-    (cfg.chatProviderId &&
-      textsFull.find(
-        (x) => x.id === cfg.chatProviderId || x.name === cfg.chatProviderId,
-      )) ||
-    textsFull[0] ||
-    null;
-  if (!p) return null;
-  const models = (Array.isArray(p.models) ? p.models : [])
-    .map((m) => (typeof m === "string" ? m : m && m.id))
-    .filter(Boolean)
-    .map(String);
-  const model =
-    (cfg.chatModel && models.includes(String(cfg.chatModel))
-      ? String(cfg.chatModel)
-      : models[0]) || "deepseek-v4-flash";
-  return { provider: p, model: String(model) };
+  return PetProvider.resolveChatProvider(cfg, readAppConfig());
 }
-
-function isDeepseekHost(baseUrl) {
-  try {
-    return new URL(baseUrl).hostname.toLowerCase().includes("deepseek");
-  } catch {
-    return false;
-  }
-}
-
 function mtnodePiProvidersFromApp() {
-  const out = [];
-  const appCfg = readJson(appConfigPath(), {}) || {};
-  const providers = Array.isArray(appCfg.providers) ? appCfg.providers : [];
-  providers.forEach((p, i) => {
-    if (!p || p.type !== "text_openai" || !String(p.apiKey || "").trim()) return;
-    if (isDeepseekHost(p.baseUrl)) return;
-    if (!String(p.baseUrl || "").trim() || !(p.models || []).length) return;
-    out.push({
-      route: p.id || "p" + (i + 1),
-      name: p.name || p.id,
-      baseUrl: p.baseUrl,
-      apiKey: p.apiKey,
-      api: p.api || "openai-completions",
-      models: (p.models || [])
-        .map((m) => (typeof m === "string" ? m : m && m.id))
-        .filter(Boolean),
-    });
-  });
-  return out;
+  return PetProvider.mtnodePiProviders(readAppConfig());
 }
-
 function dshRouteForProvider(p) {
-  if (!p) return "deepseek-official";
-  if (isDeepseekHost(p.baseUrl)) return "deepseek-official";
-  return "mtnode_" + String(p.id || "p");
+  return PetProvider.dshRouteForProvider(p);
 }
 
 function petWorkspaceDir(sessionIndex, epoch, clearGen) {
@@ -1093,15 +1027,7 @@ function isWebToolName(name) {
 }
 
 function resolveDeepseekWebSearchKey() {
-  const appCfg = readJson(appConfigPath(), {}) || {};
-  const providers = Array.isArray(appCfg.providers) ? appCfg.providers : [];
-  for (const p of providers) {
-    if (!p || p.type !== "text_openai") continue;
-    if (!String(p.apiKey || "").trim()) continue;
-    if (!isDeepseekHost(p.baseUrl)) continue;
-    return String(p.apiKey).trim();
-  }
-  return "";
+  return PetProvider.deepseekWebSearchKey(readAppConfig());
 }
 
 function isAskToolName(name) {
@@ -1787,10 +1713,13 @@ function registerIpc() {
   ipcMain.handle("pet:switchSession", (_e, index) => switchChatSession(index));
   ipcMain.handle("pet:listProviders", () => {
     const cfg = loadConfig();
+    const appCfg = readAppConfig();
     return {
       ok: true,
-      providers: listTextProviders(),
-      chatProviderId: cfg.chatProviderId || "",
+      providers: PetProvider.listTextProviders(appCfg),
+      /* 存的是官方那一行的行 id（真机 "deepseek"）时归一成下拉选项值
+         "deepseek-official"，否则面板会把「存的是官方」显示成别家 */
+      chatProviderId: PetProvider.routeNameOf(cfg.chatProviderId, appCfg),
       chatModel: cfg.chatModel || "",
     };
   });

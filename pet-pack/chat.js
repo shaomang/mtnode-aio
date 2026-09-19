@@ -533,15 +533,25 @@
 
   function fillModels(provId, selectedModel) {
     modelSel.innerHTML = "";
-    const p = providers.find((x) => x.id === provId) || providers[0];
+    /* 只在没点名的兜底时才回落到第一家：点名的服务商已在列表里（DeepSeek 官方
+       现在也是其中一项）就按它填模型，否则「选中的服务商」与实际模型对不上 */
+    const hit = providers.find((x) => x.id === provId);
+    const p = hit || providers[0];
     const models = (p && p.models) || [];
+    let matched = false;
     models.forEach((m) => {
       const o = document.createElement("option");
       o.value = m;
       o.textContent = m;
-      if (selectedModel && m === selectedModel) o.selected = true;
+      if (selectedModel && m === selectedModel) {
+        o.selected = true;
+        matched = true;
+      }
       modelSel.appendChild(o);
     });
+    if (selectedModel && !matched && modelSel.firstChild) {
+      modelSel.firstChild.selected = true;
+    }
   }
 
   async function openProvPanel() {

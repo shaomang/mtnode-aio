@@ -237,7 +237,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: mtnode-unattended
+    defaultPreset: bongochat
 
 - id: shell-env
   name: '@deepseek-ai/dsh-shell-env'

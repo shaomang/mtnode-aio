@@ -4909,7 +4909,7 @@ function nodeElement(node) {
           : I18n.t("运行：基于提示词与输入内容生成图像");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -4955,7 +4955,7 @@ function nodeElement(node) {
       : I18n.t("按序执行：从起点沿控制流跑到成功/失败终点");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5192,7 +5192,7 @@ function nodeElement(node) {
       : I18n.t("保存输出到本地");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      saveNodeAction(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     /* 图像输出设定（尺寸 / 裁剪 / 格式 / 质量）：仅当这个保存节点按图像保存时出现。
@@ -5218,7 +5218,7 @@ function nodeElement(node) {
       : I18n.t("开始监视文件");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node, false);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5337,7 +5337,7 @@ function nodeElement(node) {
     b.title = I18n.t("强制放行（清除到达状态并启用目标）");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playGateNode(node, false);
+      playUserNode(node);
     };
     head.appendChild(b);
   }
@@ -5422,7 +5422,7 @@ function nodeElement(node) {
     b.title = I18n.t("调用 Minimax Music 3 后端生成");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5456,7 +5456,7 @@ function nodeElement(node) {
     b.title = I18n.t("调用 YuE2 本地后端生成音乐");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5492,7 +5492,7 @@ function nodeElement(node) {
     b.title = I18n.t("调用 SenseNova 本地后端生成图像");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5524,7 +5524,7 @@ function nodeElement(node) {
     b.title = I18n.t("调用 Minimax H3 后端生成");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5558,7 +5558,7 @@ function nodeElement(node) {
     b.title = I18n.t(isUpscale ? "运行视频超分后处理" : "运行视频补帧后处理");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5589,7 +5589,7 @@ function nodeElement(node) {
     b.title = I18n.t("调用 GPT-SoVITS 后端合成语音");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5629,7 +5629,7 @@ function nodeElement(node) {
     b.title = I18n.t("生成动效代码并本地渲染视频");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5705,7 +5705,7 @@ function nodeElement(node) {
       : I18n.t("运行函数：执行 JS 代码");
     b.onclick = (ev) => {
       ev.stopPropagation();
-      playNode(node);
+      playUserNode(node);
     };
     head.appendChild(b);
     if (node.running) {
@@ -5992,20 +5992,10 @@ function nodeElement(node) {
        空着的端子就会被显示成已连接并上色（用户看到的「连别的节点时，第一个未连接的控制被上色」），
        真接了线的反倒变暗。落点与占用校验共用同一份口径（见 app.js firstFreeInPortIndex）。 */
     const spare = inPortIsSpare(node, i);
-    const ctrlIn = isFnTNode
-      ? i === 0
-      : node.kind === "super"
-        ? superInPortIsControl(node, i)
-        : isControlKind(node) ||
-          (node.kind === "net_send" && i >= 1) ||
-          (node.kind === "music_gen" && i === 2) ||
-          (node.kind === "yue_gen" && i === 3) ||
-          (node.kind === "tts_gen" && i === 1) ||
-          (node.kind === "video_gen" && i === videoGenControlPort(node)) ||
-          /* 视频超分 / 补帧：控制输入固定在端口 0，与 Remotion / H3 同色（此前漏了这一支，
-             控制圈没上色，用户会把它当普通数据端子去连） */
-          (isVideoPostKind(node) && i === 0) ||
-          (node.kind === "remotion" && i === 0);
+    /* 控制端子判定走共享真源 inPortIsControl（app.js）：与接线校验 / 落点同一份归类，
+       画布上涂成 .ctrl 的那颗就是「只能接控制线」的那颗。 */
+    const ctrlIn = inPortIsControl(node, i);
+
     /* 端子数据类型（工具 / 函数节点的数据端子 · 素材节点的条目端子才声明）：
        图像单独一色（复用 .img），音频 / 视频各一色（.aud / .vid），不再与文本同色 */
     const inKind = isFnTNode
@@ -10840,7 +10830,7 @@ function buildBody(node, body) {
       if (node.kind === "agent_task" && ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
         if (S.refMenu || S.slashMenu) return; /* 菜单打开时 Enter 只选条目 */
-        playNode(node);
+        playUserNode(node);
       }
     });
     ta.addEventListener("click", () => {
