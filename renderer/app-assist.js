@@ -2001,7 +2001,7 @@ function renderAgentComposer() {
       (st.pure ? I18n.t("纯净") + " · " : "") + agentPresetLabel(st.preset) + " · " + agentModelName(st);
   const mt = document.getElementById("agentModelTrigger");
   if (mt) {
-    mt.dataset.i18nTitle = "预设 / 模型 / 思考强度";
+    mt.dataset.i18nTitle = "模型提供商 / 预设 / 模型 / 思考强度";
     mt.title = I18n.t(mt.dataset.i18nTitle);
   }
   const wv = document.getElementById("agentWsTriggerVal");
@@ -2054,6 +2054,45 @@ function renderAgentComposer() {
   if (rp) rp.hidden = !(st._planDelivered && !st.running);
   paintAgentToolsChip();
 }
+/* 会话侧「模型提供商」那一格 / 那一页的唯一真源。
+   清单 = app-agent.js 的 agentRouteGroupsNow()（DeepSeek 官方 + 已配置的其它文本服务商），
+   与开发节点 · AI 调用弹层 · 助手栏「供应商」下拉同一批服务商，不另拼一份名单。 */
+function agentProviderGroupsNow() {
+  try {
+    if (typeof agentRouteGroupsNow === "function") return agentRouteGroupsNow() || [];
+  } catch (_) {}
+  return [];
+}
+/* 当前会话的供应商：st.provider 常驻有值，空 = DeepSeek 官方路由（老会话口径） */
+function agentSessionProviderRoute(st) {
+  const r = String((st && st.provider) || "").trim();
+  if (r) return r;
+  try {
+    return String(preferredAgentProviderRoute() || "").trim() || "deepseek-official";
+  } catch (_) {
+    return "deepseek-official";
+  }
+}
+/* 会话侧「供应商」格的回显名（id → 服务商名；id 已不在配置里就照实显示 id） */
+function agentProviderNameNow(route) {
+  const r = String(route || "").trim() || "deepseek-official";
+  const hit = agentProviderGroupsNow().filter((g) => g.id === r)[0];
+  if (hit && hit.name) return hit.name;
+  return r;
+}
+/* 会话菜单的格子：标签 + 当前值 + ›（根页的每一行都是它） */
+function agentMenuItemCell(menu, label, value, pane) {
+  const c = document.createElement("button");
+  c.className = "agent-menu-cell";
+  c.innerHTML =
+    '<span class="agent-menu-cell-label"></span>' +
+    '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
+  c.querySelector(".agent-menu-cell-label").textContent = I18n.t(label);
+  c.querySelector(".agent-menu-cell-value").textContent = value;
+  c.onclick = () => { menu.dataset.pane = pane; buildAgentModelMenu(); };
+  menu.appendChild(c);
+  return c;
+}
 function buildAgentModelMenu() {
   const menu = document.getElementById("agentModelMenu");
   if (!menu) return;
@@ -2065,38 +2104,65 @@ function buildAgentModelMenu() {
     buildAgentModelMenu();
   };
   if (pane === "root") {
-    const pc = document.createElement("button");
-    pc.className = "agent-menu-cell";
-    pc.innerHTML =
-      '<span class="agent-menu-cell-label">' + I18n.t("预设") + '</span>' +
-      '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
-    pc.querySelector(".agent-menu-cell-value").textContent = agentPresetLabel(st.preset);
-    pc.onclick = () => { menu.dataset.pane = "preset"; buildAgentModelMenu(); };
-    menu.appendChild(pc);
-    const mc = document.createElement("button");
-    mc.className = "agent-menu-cell";
-    mc.innerHTML =
-      '<span class="agent-menu-cell-label">' + I18n.t("模型") + '</span>' +
-      '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
-    mc.querySelector(".agent-menu-cell-value").textContent = agentModelName(st);
-    mc.onclick = () => { menu.dataset.pane = "model"; buildAgentModelMenu(); };
-    menu.appendChild(mc);
-    const ec = document.createElement("button");
-    ec.className = "agent-menu-cell";
-    ec.innerHTML =
-      '<span class="agent-menu-cell-label">' + I18n.t("思考强度") + '</span>' +
-      '<span class="agent-menu-cell-value"></span><span class="agent-menu-cell-chevron">›</span>';
-    ec.querySelector(".agent-menu-cell-value").textContent = agentEffortDisplayLabel(st);
-    ec.onclick = () => { menu.dataset.pane = "effort"; buildAgentModelMenu(); };
-    menu.appendChild(ec);
+    /* 第一格 = 模型提供商（本次需求）：所有模型选择都要有提供商选项，会话这一处
+       此前只能看当前供应商、换不了（st.provider 只在没值时兜底默认路由）。
+       选完提供商，第二格「模型」只列这一家的模型。 */
+    agentMenuItemCell(menu, "模型提供商", agentProviderNameNow(agentSessionProviderRoute(st)), "provider");
+    agentMenuItemCell(menu, "预设", agentPresetLabel(st.preset), "preset");
+    agentMenuItemCell(menu, "模型", agentModelName(st), "model");
+    agentMenuItemCell(menu, "思考强度", agentEffortDisplayLabel(st), "effort");
     return;
   }
   const bk = document.createElement("button");
   bk.className = "agent-menu-back";
-  const backLabel = pane === "model" ? I18n.t("模型") : pane === "preset" ? I18n.t("预设") : I18n.t("思考强度");
+  const backLabel =
+    pane === "model"
+      ? I18n.t("模型")
+      : pane === "preset"
+        ? I18n.t("预设")
+        : pane === "provider"
+          ? I18n.t("模型提供商")
+          : I18n.t("思考强度");
   bk.textContent = "← " + backLabel;
   bk.onclick = back;
   menu.appendChild(bk);
+  if (pane === "provider") {
+    /* 供应商清单：当前这一家打 ✓。选一家 = 连模型一起拨过去（模型跟着服务商走），
+       该家第一只模型成为新选择 —— 否则会留下「A 家的模型配 B 家路由」这种只到
+       运行时才炸的组合。选完自动进「模型」格，接着挑具体模型。 */
+    const cur = agentSessionProviderRoute(st);
+    const groups = agentProviderGroupsNow();
+    if (!groups.length) {
+      const e = document.createElement("div");
+      e.className = "agent-menu-empty";
+      e.textContent = I18n.t("没有可用的模型");
+      menu.appendChild(e);
+      return;
+    }
+    for (const g of groups) {
+      const on = g.id === cur;
+      const opt = document.createElement("button");
+      opt.className = "agent-menu-option" + (on ? " selected" : "");
+      opt.innerHTML =
+        '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+        '<span class="agent-menu-check">' + (on ? "✓" : "") + "</span>";
+      opt.querySelector(".agent-menu-option-name").textContent = g.name || g.id;
+      opt.title = g.id;
+      opt.onclick = () => {
+        if (g.id !== cur) {
+          st.provider = g.id;
+          st.model = (g.models && g.models[0]) || "";
+          persistAgentSession();
+          renderAgentSession();
+          renderAgentSessionSidebar();
+        }
+        menu.dataset.pane = "model";
+        buildAgentModelMenu();
+      };
+      menu.appendChild(opt);
+    }
+    return;
+  }
   if (pane === "preset") {
     /* 用归一后的档位 id 比较：历史会话存的旧 id（sketch）也要能正确打上 ✓ */
     const curPreset = agentPresetById(st.preset).id;
@@ -2114,20 +2180,13 @@ function buildAgentModelMenu() {
     return;
   }
   if (pane === "model") {
-    /* 模型清单只列**当前供应商**的模型（本次需求）：供应商在会话头部那一格已经定了
+    /* 模型清单只列**当前供应商**的模型（本次需求）：供应商在上一格「模型提供商」已经定了
        （会话 st.provider 常驻有值），模型这一格再摊出别家的模型，点一下就会把供应商
        悄悄改掉 —— 用户看到的「选模型」实际是「连供应商一起换」，正是这次要修的误选。
-       换供应商请走头部「供应商」那一格（它换完会把模型重置为该家第一只）。 */
-    const dp = dshProvider();
-    const groups = [];
-    groups.push({ id: "deepseek-official", name: (dp && dp.name) || I18n.t("DeepSeek 官方"), models: (dp && dp.models) || [] });
-    for (const p of mtnodePiProviders()) {
-      const models = (p && p.models) || [];
-      if (models.length) groups.push({ id: "mtnode_" + p.route, name: p.name, models });
-    }
-    const cur = groups.filter((g) => g.id === (st.provider || "deepseek-official"))[0] || null;
+       换供应商请走「模型提供商」那一格（它换完会把模型重置为该家第一只）。 */
+    const cur = agentProviderGroupsNow().filter((g) => g.id === agentSessionProviderRoute(st))[0] || null;
     /* 会话存的供应商已不在配置里（服务商被删 / 旧会话）：不静默切到别家，
-       照实说明并指向头部那一格，让用户自己选一个存在的供应商。 */
+       照实说明并指向「模型提供商」那一格，让用户自己选一个存在的供应商。 */
     if (!cur) {
       const e = document.createElement("div");
       e.className = "agent-menu-empty";

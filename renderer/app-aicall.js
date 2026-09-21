@@ -604,6 +604,7 @@
   let _aiPane = "model";
 
   const AI_PANES = [
+    { key: "provider", label: "模型提供商" },
     { key: "preset", label: "预设" },
     { key: "model", label: "模型" },
     { key: "effort", label: "思考强度" },
@@ -614,8 +615,31 @@
     return p ? p.label : "模型";
   }
 
+  /* 本节点选用的模型提供商路由：本节点已选 → 否则就近继承到的生效值 → 都没有交默认。
+     弹层「模型提供商」这一格显示 / 写回都用它（与 aiModelOwn 的 provider 同源）。 */
+  function aiProviderRouteNow(node) {
+    const own = String((node && node.aiProvider) || "").trim();
+    if (own) return own;
+    if (node && node.dev) {
+      const dev = String(node.devProvider || "").trim();
+      if (dev) return dev;
+    }
+    const eff = aiResolvedModel(node);
+    if (eff && eff.provider) return String(eff.provider);
+    try {
+      return String(preferredAgentProviderRoute() || "").trim() || "deepseek-official";
+    } catch (_) {
+      return "deepseek-official";
+    }
+  }
+
   function aiPaneCell(node, pane) {
     const s = aiResolvedOf(node);
+    if (pane === "provider")
+      return {
+        value: aiRouteName(aiProviderRouteNow(node)),
+        tip: I18n.t("模型提供商：") + aiModelDialogText(node),
+      };
     if (pane === "preset")
       return {
         value: s.preset
@@ -677,6 +701,42 @@
     if (onclick) b.onclick = onclick;
     list.appendChild(b);
     return b;
+  }
+
+  /* 模型提供商格（本次需求）：所有模型选择处都要有提供商选项 —— 此前「模型」格只能按
+     服务商分组跨家点，本节点 / 就近继承选的是哪一家看不出来、也点不了。
+     选一家 = 连模型一起拨过去（模型第一只），本节点就此显式选定（不再继承）；
+     这一格换了之后「模型」格接着列这一家的模型（弹层保持打开，用户接着挑）。 */
+  function renderAiProviderPane(list, node) {
+    const cur = aiProviderRouteNow(node);
+    let groups = [];
+    try {
+      groups =
+        typeof agentRouteGroupsNow === "function" ? agentRouteGroupsNow() || [] : [];
+    } catch (_) {
+      groups = [];
+    }
+    if (!groups.length) groups = aiModelGroups();
+    for (const g of groups) {
+      const on = g.id === cur;
+      aiPopOption(
+        list,
+        g.name || g.id,
+        on,
+        () => {
+          const m = ((g.models || [])[0] || "").trim();
+          /* 这一家清单为空也要记下路由（aiProvider），否则「选了家却回到自动」看不出为什么 */
+          applyAiCallSetting(node, "model", m, g.id, {
+            keepOpen: true,
+            keepPane: true,
+            absentOk: true,
+          });
+          _aiPane = "model";
+          renderAiCallPop();
+        },
+        g.id,
+      );
+    }
   }
 
   function renderAiPresetPane(list, node) {
@@ -794,7 +854,8 @@
     const list = el.querySelector(".dev-model-list");
     if (list) {
       list.innerHTML = "";
-      if (pane === "preset") renderAiPresetPane(list, node);
+      if (pane === "provider") renderAiProviderPane(list, node);
+      else if (pane === "preset") renderAiPresetPane(list, node);
       else if (pane === "effort") renderAiEffortPane(list, node);
       else renderAiModelPane(list, node);
     }
@@ -832,6 +893,15 @@
 
   function aiScopeText(node, pane) {
     const s = aiResolvedOf(node);
+    if (pane === "provider") {
+      const eff = aiResolvedModel(node);
+      return aiScopeLine(
+        aiRouteName(aiProviderRouteNow(node)),
+        eff && eff.source,
+        !!(eff && eff.inherited),
+        I18n.t("未选择：本节点需要借助 AI 时跟随默认模型提供商。"),
+      );
+    }
     if (pane === "effort") {
       if (!s.effort) return I18n.t("未选择：跟随默认思考档（标准）。");
       return (
@@ -888,10 +958,11 @@
     return aiEffortName({ effort: s.effort }) + aiInheritSuffix(s.effortSource, node);
   }
 
-  /* 三格共用写回：key = "preset" | "model" | "effort"（model 另带 route）；
+  /* 四格共用写回：key = "provider" | "preset" | "model" | "effort"（model 另带 route）；
      空值 = 清除本节点选择。写节点 → 存盘 → 就地刷新按钮 → 重绘画布（弹层保持打开，
-     用户还要接着改别的格；这是 persistent 面板，不点外部收起）。 */
-  function applyAiCallSetting(node, key, value, route) {
+     用户还要接着改别的格；这是 persistent 面板，不点外部收起）。
+     opts.keepPane = 重绘后停在哪一格（「模型提供商」那一格换完要接着挑模型）。 */
+  function applyAiCallSetting(node, key, value, route, opts) {
     if (!node || !aiCallTarget(node)) return;
     const k = String(key || "model");
     pushHistory();
@@ -900,13 +971,23 @@
       k === "model" ? !String(node.aiModel || "").trim() : false;
     if (k === "preset") node.aiPreset = aiPresetKnown(value);
     else if (k === "effort") node.aiEffort = aiEffortKnown(value);
-    else {
+    else if (k === "provider") {
+      /* 「模型提供商」那一格跟随默认 = 清除本节点的提供商与模型（回到默认路由） */
+      node.aiModel = "";
+      node.aiProvider = "";
+      if (!wasUnset) {
+        node.aiPreset = aiPresetKnown(AGENT_PRESET_DEFAULT);
+        node.aiEffort = aiEffortKnown("high");
+      }
+    } else {
       const m = String(value || "").trim();
       node.aiModel = m;
-      node.aiProvider = m ? String(route || "").trim() : "";
+      /* 常规：选了模型才记路由（模型与提供商成对）；「模型提供商」那一格例外（absentOk）：
+         即便这一家清单为空也把路由记下，用户明确选了哪一家不再被抹成「自动」。 */
+      node.aiProvider = (m || (opts && opts.absentOk)) ? String(route || "").trim() : "";
       /* 清掉模型选择 = 回到「跟随默认」：预设 / 思考强度也退回新建时的默认补种，
          否则会留下上一轮选择里的档位，与新节点的表现不一致。 */
-      if (!m && !wasUnset) {
+      if (!m && !wasUnset && !(opts && opts.absentOk)) {
         node.aiPreset = aiPresetKnown(AGENT_PRESET_DEFAULT);
         node.aiEffort = aiEffortKnown("high");
       }
@@ -922,6 +1003,7 @@
     }
     scheduleSave(true);
     aiCallButtonRefresh(node);
+    if (opts && opts.keepPane) _aiPane = String(opts.keepPane);
     try {
       renderCanvas();
       renderAiCallPop();

@@ -1115,6 +1115,103 @@ function openSettingsBody() {
     if (tailSecs[k]) body.appendChild(tailSecs[k]);
   }
 
+  /* ── 手动更新（设置最底部，整页最后一项）──
+     正常更新只在线上版本号比本机新时才可用；极小更新 / 测试包常常是同一个版本号，
+     版本比较这一步会把它们整条挡掉。这里给一条手动通道：不比对版本号，直接用当前
+     更新源里那份包重装一遍 —— 下载（差分包）→ 后台静默安装 → 装完自动重开，
+     与正常更新完全同一条链（主进程 updater.js 的 update:reinstallSame）。 */
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("手动更新（同版本号重装）");
+    sec.appendChild(secTitle);
+
+    const hint = document.createElement("div");
+    hint.className = "n-field";
+    hint.textContent = I18n.t(
+      "普通更新只在线上版本号更高时才可用。这里不比对版本号：直接用更新源里那份安装包重装一遍，适合极小更新与测试。下载与静默安装过程与正常更新完全一致，安装时应用会短暂重启。",
+    );
+    sec.appendChild(hint);
+
+    const verEl = document.createElement("div");
+    verEl.className = "n-field";
+    verEl.style.fontSize = "12px";
+    verEl.style.opacity = "0.9";
+    verEl.textContent = I18n.t("当前版本：v") + (S.appVersion || "");
+    sec.appendChild(verEl);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "n-field";
+    btnRow.style.flexDirection = "row";
+    btnRow.style.gap = "8px";
+    btnRow.style.flexWrap = "wrap";
+
+    const reBtn = document.createElement("button");
+    reBtn.className = "mini";
+    reBtn.textContent = I18n.t("立即手动更新（重装更新源那份包）");
+    reBtn.title = I18n.t(
+      "不比对版本号，直接用更新源里那份包重装一次（极小更新与测试用）",
+    );    reBtn.onclick = async () => {
+      if (!window.api || !window.api.updateReinstallSame) {
+        toast(I18n.t("当前版本不支持手动更新"), "err");
+        return;
+      }
+      const ver = S.appVersion || "";
+      const yes = await confirmDialog(
+        I18n.t("确定手动更新？") +
+          "\n" +
+          I18n.t(
+            "将不比对版本号，直接用更新源里那份安装包重装一次（可能是同一个版本号 v",
+          ) +
+          ver +
+          I18n.t(
+            "）。下载完成后会在后台静默安装并自动重新打开应用；期间请先保存当前工作。",
+          ),
+        { title: I18n.t("手动更新"), okText: I18n.t("开始更新") },
+      );
+      if (!yes) return;
+      reBtn.disabled = true;
+      const old = reBtn.textContent;
+      reBtn.textContent = I18n.t("正在检查并下载…");
+      try {
+        const r = await window.api.updateReinstallSame();
+        if (r && r.store) {
+          toast(
+            I18n.t(
+              "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新",
+            ),
+            "ok",
+          );
+          return;
+        }
+        if (r && r.ok === false) {
+          toast(I18n.t("更新失败：") + (r.error || I18n.t("未知错误")), "err");
+          return;
+        }
+        if (r && r.downloading) {
+          toast(I18n.t("开始下载更新（差分包）…"), "ok");
+          return;
+        }
+        if (r && r.readyToRestart) {
+          toast(I18n.t("更新已下载完毕：将后台静默安装，完成后自动重新打开应用"), "ok");
+          return;
+        }
+        toast(I18n.t("已开始手动更新，将后台静默安装"), "ok");
+      } catch (e) {
+        toast(I18n.t("更新失败：") + ((e && e.message) || String(e)), "err");
+      } finally {
+        reBtn.disabled = false;
+        reBtn.textContent = old;
+      }
+    };
+    btnRow.appendChild(reBtn);
+    sec.appendChild(btnRow);
+    /* 手动更新是偶尔用一次的入口：放在设置整页最底部（其余沉底小节之后） */
+    body.appendChild(sec);
+  }
+
   dshEls.collect = () => ({
     model: dshEls.model.value.trim(),
     preset: dshEls.preset.value,

@@ -85,7 +85,7 @@ Questions such as module trade-offs and technology choices are put to you by the
 - **项目根目录 (Project root directory)**: the absolute path of the project root. The outermost block fills it in once and child blocks inherit the nearest one; the project root is the agent's workspace root.
 - **所属上层 (Parent)**: which layer this block hangs on, decided by the super node it sits in.
 - **元素类型 (Element type)**: module / file / class / interface / enum — this decides the nature of the block.
-- **模型 + 路由 (Model + route)**: which model this block's sessions use (Suggest / Develop / Refine all use it).
+- **模型提供商 + 模型 (Model provider + model)**: which provider this block's sessions run on, and which model (Suggest / Develop / Refine all use it). The first cell of the 🧠 dialog is the model provider; once picked, the next cell, model, lists only that provider's models, and switching provider moves the model along with it.
 - **预设档 (Preset)**: 极简模式 (Minimal) / 标准模式 (Standard) / 思维精简 (Lean Thinking) / PTC 模式 (PTC) / 创造模式 (Creative) — this decides the persona and the tool surface.
 - **思考强度 (Thinking effort)**: 轻 (Light) / 标准 (Standard) / 强 (Strong) / 最强 (Max) — what the UI echoes is what is actually sent.
 - **外框颜色 (Frame color)**: taken from the function color card: core runtime / canvas & interaction / AI & agents / data & storage / media & local backends / plugins & ecosystem / build & diagnostics / tests & quality.

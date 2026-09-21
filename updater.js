@@ -28,6 +28,10 @@ let downloading = false;
 let downloaded = false;
 let lastError = "";
 let started = false;
+/** 手动「同版本号重装」：置位后 electron-updater 的 isUpdateAvailable 放行同版本，
+    下载与静默安装链完全复用（见 patchSameVersionGate / update:reinstallSame）。
+    只在本条链里短暂置位，常规检查与后台检查一律仍按「版本号更新才可用」判定。 */
+let forceSameVersion = false;
 /** 用户已主动点过「下载更新」，下载完后弹重启提示 */
 let promptRestartAfterDownload = false;
 /** 正在展示「请重启」对话框，避免重复弹 */
@@ -108,6 +112,26 @@ function statusPayload() {
   };
 }
 
+/**
+ * 「同版本号重装」闸门：
+ * electron-updater 的 isUpdateAvailable() 里有一句 `if (semver.eq(latest, current)) return false;`
+ * —— 线上版本号与当前版本相同时（极小更新 / 测试包）连「有更新」都判不出来，
+ * allowDowngrade 也只放行「线上更旧」，管不了「完全相同」。
+ * 这里只包一层：forceSameVersion 置位期间直接判为可用，让 check → download → quitAndInstall
+ * 这条既有链原样跑完（安装过程与正常更新完全一致：差分下载 + 静默 NSIS 安装 + 装完自动重开）。
+ * 未置位时原样调用原实现，常规检查 / 后台检查的行为一字不变。
+ */
+function patchSameVersionGate() {
+  if (!autoUpdater || typeof autoUpdater.isUpdateAvailable !== "function") return;
+  if (autoUpdater.__mtnodeSameVersionGate) return;
+  const orig = autoUpdater.isUpdateAvailable.bind(autoUpdater);
+  autoUpdater.isUpdateAvailable = function (updateInfo) {
+    if (forceSameVersion && updateInfo && updateInfo.version) return true;
+    return orig(updateInfo);
+  };
+  autoUpdater.__mtnodeSameVersionGate = true;
+}
+
 function bindInstallDirectory() {
   try {
     const exe = app.getPath("exe");
@@ -136,6 +160,8 @@ function setupAutoUpdater() {
   /* 用户稍后退出时也会装上已下载的包 */
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowDowngrade = false;
+  /* 同版本号重装开关（默认关；只在 update:reinstallSame 里短暂打开） */
+  patchSameVersionGate();
   try {
     autoUpdater.forceDevUpdateConfig = false;
   } catch (_) {}
@@ -201,7 +227,13 @@ function setupAutoUpdater() {
   });
 }
 
-async function checkForUpdates(quiet) {
+/**
+ * 检查更新。
+ * opts 省略 = 常规检查：只有线上版本号更新时才置 latestInfo（行为与旧版一致）。
+ * opts.sameVersion = 手动「同版本号重装」：放行同版本，latestInfo 照收（见 update:reinstallSame）。
+ */
+async function checkForUpdates(quiet, opts) {
+  const sameVersion = !!(opts && opts.sameVersion);
   /* Store（MSIX）版：连检查都不发起（不发 update:error，避免误报「更新失败」） */
   if (isStorePackage()) return statusPayload();
   setupAutoUpdater();
@@ -210,13 +242,20 @@ async function checkForUpdates(quiet) {
     if (!quiet) send("update:error", { error: r.error || "updater unavailable" });
     return r;
   }
+  /* 与 update-not-available 同一口径：一次检查结束时若引擎没判出可用，
+     latestInfo 必须是空（下载链只认这一次的结论）。 */
+  latestInfo = null;
   try {
     lastError = "";
+    if (sameVersion) forceSameVersion = true;
     const result = await autoUpdater.checkForUpdates();
     if (result && result.updateInfo) {
       const cur = app.getVersion();
       const next = result.updateInfo.version;
-      if (next && next !== cur) {
+      if (sameVersion) {
+        /* 同版本重装：只要线上拿得到版本号就收（相同 / 更新 / 更旧都算一次重装源） */
+        latestInfo = next ? result.updateInfo : null;
+      } else if (next && next !== cur) {
         latestInfo = result.updateInfo;
       }
     }
@@ -225,7 +264,65 @@ async function checkForUpdates(quiet) {
     lastError = String((e && e.message) || e);
     if (!quiet) send("update:error", { error: lastError });
     return statusPayload();
+  } finally {
+    forceSameVersion = false;
   }
+}
+
+/**
+ * 手动「同版本号重装」：不比对版本号，直接用当前更新源里那份包重装一遍。
+ * 与正常更新的唯一差别就是跳过版本比较；下载（差分包）→ 静默安装 → 装完自动重开
+ * 全部走 downloadUpdate / quitAndInstall 同一份实现。
+ */
+async function reinstallSameVersion() {
+  if (isStorePackage()) return storeBlocked();
+  setupAutoUpdater();
+  if (!autoUpdater) {
+    const r = statusPayload();
+    return { ok: false, error: r.error || "updater unavailable", supported: false };
+  }
+  if (downloading) return { ok: true, downloading: true, version: app.getVersion() };
+  if (downloaded && latestInfo) {
+    /* 已经下好一份包且知道是哪个版本：直接走既有的重启提示，不再重复下载 */
+    const ver = latestInfo.version || app.getVersion();
+    await promptRestartToFinish(ver);
+    return { ok: true, downloaded: true, readyToRestart: true, version: ver };
+  }
+  /* 走一趟「放行同版本」的检查：拿到更新源上的版本号与 updateInfo 才能下载 */
+  const cur = app.getVersion();
+  try {
+    await checkForUpdates(true, { sameVersion: true });
+  } catch (e) {
+    lastError = String((e && e.message) || e);
+  }
+  if (!latestInfo) {
+    return {
+      ok: false,
+      error: lastError || "no_update_source",
+      currentVersion: cur,
+    };
+  }
+  const ver = latestInfo.version || cur;
+  /* 与顶栏「检查更新」同一条提示口径：下完弹「立即安装并重启 / 稍后」 */
+  promptRestartAfterDownload = true;
+  const dl = await downloadUpdate();
+  if (!dl.ok) {
+    promptRestartAfterDownload = false;
+    return dl;
+  }
+  /* downloadUpdate 在事件回调里也会弹窗；若已同步完成则这里再兜底一次 */
+  if (downloaded && promptRestartAfterDownload) {
+    promptRestartAfterDownload = false;
+    await promptRestartToFinish(ver);
+  }
+  return {
+    ok: true,
+    downloading: !downloaded,
+    downloaded: !!downloaded,
+    readyToRestart: !!downloaded,
+    version: ver,
+    currentVersion: cur,
+  };
 }
 
 async function downloadUpdate() {
@@ -314,6 +411,11 @@ function registerUpdateIpc(getWin) {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     return checkForUpdates(!!(opts && opts.quiet));
   });
+  /* 设置最底部的「手动更新」：同版本号也照装一次（见 reinstallSameVersion） */
+  ipcMain.handle("update:reinstallSame", async () => {
+    mainWinRef = typeof getWin === "function" ? getWin() : getWin;
+    return reinstallSameVersion();
+  });
   ipcMain.handle("update:download", async () => {
     mainWinRef = typeof getWin === "function" ? getWin() : getWin;
     return downloadUpdate();
@@ -380,6 +482,17 @@ function registerUpdateIpc(getWin) {
   });
 }
 
+/** 重置运行态：仅供冒烟测试在同一进程里逐场景复测（生产路径从不调用） */
+function __testResetState() {
+  downloading = false;
+  downloaded = false;
+  latestInfo = null;
+  lastError = "";
+  forceSameVersion = false;
+  promptRestartAfterDownload = false;
+  restartPromptOpen = false;
+}
+
 function I18nSafe(s) {
   try {
     const I18n = require("./renderer/i18n.js");
@@ -411,4 +524,8 @@ module.exports = {
   isStorePackage,
   statusPayload,
   UPDATE_FEED,
+  /* 同版本号重装（设置最底部的手动更新入口）：供冒烟测试直接驱动同一条链 */
+  reinstallSameVersion,
+  /* 重置运行态：仅供冒烟测试在同一进程里跑多场景（生产不调用） */
+  __testResetState,
 };

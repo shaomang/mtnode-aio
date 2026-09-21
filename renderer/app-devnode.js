@@ -3217,8 +3217,8 @@ function devAgentModelText(node) {
   return eff ? devAgentRouteName(eff.provider) + " · " + eff.model : "";
 }
 
-/* 弹层顶部一句话说明：pane = "preset" | "model" | "effort"，说清「这一格现在
-   生效的是什么、是谁定的」（继承时点名上层功能块），未选则说明跟随默认。 */
+/* 弹层顶部一句话说明：pane = "provider" | "preset" | "model" | "effort"，说清「这一格
+   现在生效的是什么、是谁定的」（继承时点名上层功能块），未选则说明跟随默认。 */
 function devScopeLine(value, srcNode, inherited, unsetText) {
   if (!value) return unsetText;
   if (inherited)
@@ -3252,6 +3252,13 @@ function devModelScopeText(node, pane) {
   const p = String(pane || "model");
   if (p === "effort") return devEffortScopeText(node);
   const s = devAgentSettingsOf(node);
+  if (p === "provider")
+    return devScopeLine(
+      devAgentRouteName(devProviderRouteNow(node)),
+      s.providerSource,
+      !!(s.provider && s.inherited),
+      I18n.t("未选择：本功能块与子功能块跟随默认模型提供商。"),
+    );
   if (p === "preset")
     return devScopeLine(
       s.preset ? devPresetName(s.preset) : "",
@@ -3400,9 +3407,10 @@ function devModelButtonRefresh(node) {
    cell + pane 语义：点某格就把下面的清单切成那一格的档位，格子上回显的是
    「本块 + 就近继承」的生效值（↩ = 来自上层功能块）。 */
 let _devModelNode = null; /* 正在选择的节点 */
-let _devModelPane = "model"; /* 当前格：preset | model | effort */
+let _devModelPane = "model"; /* 当前格：provider | preset | model | effort */
 
 const DEV_AGENT_PANES = [
+  { key: "provider", label: "模型提供商" },
   { key: "preset", label: "预设" },
   { key: "model", label: "模型" },
   { key: "effort", label: "思考强度" },
@@ -3413,9 +3421,30 @@ function devAgentPaneLabel(key) {
   return p ? p.label : "模型";
 }
 
+/* 本块选用的服务商路由：本块已选 → 否则就近继承到的生效值 → 都没有才交给默认路由。
+   弹层「模型提供商」这一格显示 / 写回都用它（与 devModelOwn 的 provider 同源）。 */
+function devProviderRouteNow(node) {
+  const own = String((node && node.devProvider) || "").trim();
+  if (own) return own;
+  const s = devAgentSettingsOf(node);
+  if (s && s.provider) return String(s.provider);
+  try {
+    return String(preferredAgentProviderRoute() || "").trim() || "deepseek-official";
+  } catch (_) {
+    return "deepseek-official";
+  }
+}
+
 /* 三格各自回显的值：显示生效值（继承来的也要看得见），不是本块已存值 */
 function devAgentPaneCell(node, pane) {
   const s = devAgentSettingsOf(node);
+  if (pane === "provider")
+    return {
+      value:
+        devAgentRouteName(devProviderRouteNow(node)) +
+        (!String((node && node.devProvider) || "").trim() && s.provider ? " ↩" : ""),
+      tip: I18n.t("模型提供商：") + devModelDialogText(node),
+    };
   if (pane === "preset")
     return {
       value: s.preset
@@ -3529,6 +3558,43 @@ function devRenderEffortPane(list, node) {
   }
 }
 
+/* 模型提供商格（本次需求）：所有模型选择处都要有提供商选项 —— 此前「模型」格只能按
+   服务商分组跨家点，本块 / 就近继承选的是哪一家看不出来、也点不了。
+   选一家 = 连模型一起拨过去（模型第一只），本块就此显式选定（不再继承）；
+   这一格换了之后「模型」格接着列这一家的模型（弹层保持打开，用户接着挑）。 */
+function devRenderProviderPane(list, node) {
+  const cur = devProviderRouteNow(node);
+  let groups = [];
+  try {
+    groups =
+      typeof agentRouteGroupsNow === "function" ? agentRouteGroupsNow() || [] : [];
+  } catch (_) {
+    groups = [];
+  }
+  if (!groups.length)
+    groups = devAgentModelGroups().map((g) => ({
+      id: g.id,
+      name: g.name,
+      models: g.models || [],
+    }));
+  for (const g of groups) {
+    const on = g.id === cur;
+    devPopOption(
+      list,
+      g.name || g.id,
+      on,
+      () => {
+        const m = (g.models && g.models[0]) || "";
+        /* 这一家清单为空也要记下路由（devProvider），否则「选了家却回到自动」看不出为什么 */
+        applyDevAgentSetting(node, "model", m, g.id, { keepOpen: true, absentOk: true });
+        _devModelPane = "model";
+        renderDevModelPop();
+      },
+      g.id,
+    );
+  }
+}
+
 /* 模型格：按服务商分组的模型清单（本块自选项打勾，继承项由顶部说明点名） */
 function devRenderModelPane(list, node) {
   const own = devModelOwn(node);
@@ -3603,7 +3669,8 @@ function renderDevModelPop() {
   const list = el.querySelector(".dev-model-list");
   if (list) {
     list.innerHTML = "";
-    if (pane === "preset") devRenderPresetPane(list, node);
+    if (pane === "provider") devRenderProviderPane(list, node);
+    else if (pane === "preset") devRenderPresetPane(list, node);
     else if (pane === "effort") devRenderEffortPane(list, node);
     else devRenderModelPane(list, node);
   }
@@ -3625,10 +3692,12 @@ function renderDevModelPop() {
   }
 }
 
-/* 三格共用的写回：key = "preset" | "model" | "effort"（model 另带 route）；
+/* 四格共用的写回：key = "provider" | "preset" | "model" | "effort"（model 另带 route）；
    value 传空 = 清除本块选择。写节点 → 存盘 → 收起弹层 → 重绘画布。
-   预设只认在册档位（旧 id 归一），思考档只认档位词汇表内值，脏值当清除处理。 */
-function applyDevAgentSetting(node, key, value, route) {
+   预设只认在册档位（旧 id 归一），思考档只认档位词汇表内值，脏值当清除处理。
+   opts.keepOpen = 用户还要接着改别的格（「模型提供商」那一格换完要接着挑模型）：
+   弹层留着、当前格切到「模型」，不收起。 */
+function applyDevAgentSetting(node, key, value, route, opts) {
   if (!node || node.kind !== "super" || !node.dev) return;
   const k = String(key || "model");
   pushHistory();
@@ -3637,10 +3706,12 @@ function applyDevAgentSetting(node, key, value, route) {
   else {
     const m = String(value || "").trim();
     node.devModel = m;
-    node.devProvider = m ? String(route || "").trim() : "";
+    /* 常规：选了模型才记路由（模型与路由成对）；「模型提供商」那一格例外（absentOk）：
+       即便这一家清单为空也把路由记下，用户明确选了哪一家不再被抹成「自动」。 */
+    node.devProvider = (m || (opts && opts.absentOk)) ? String(route || "").trim() : "";
   }
   scheduleSave(true);
-  if (S.uiDevModelNode === node.id) closeDevModelPicker();
+  if (S.uiDevModelNode === node.id && !(opts && opts.keepOpen)) closeDevModelPicker();
   devModelButtonRefresh(node);
   try {
     renderCanvas();

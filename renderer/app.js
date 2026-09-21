@@ -4901,6 +4901,33 @@ function agentRouteOptions() {
   return routes;
 }
 
+/* 全部可选「模型提供商 / 服务商」分组：[{ id: 智能路由, name: 服务商显示名, models: [模型 id] }]。
+   模型选择处加「模型提供商」选项的唯一真源（会话输入区菜单 / 开发节点 Agent 设定 /
+   AI 调用弹层都取它）：同一批服务商只在这里列一次，别处不再各拼一份名单。
+   deepseek-official 的显示名 = 配置里那家 DeepSeek 服务商的名字，取不到才退回「DeepSeek 官方」；
+   没配 API Key / 没模型的 mtnode 服务商不进清单（与 agentRouteOptions 同口径）。 */
+function agentRouteGroupsNow() {
+  const out = [];
+  try {
+    const dp = dshProvider();
+    out.push({
+      id: "deepseek-official",
+      name: (dp && dp.name) || I18n.t("DeepSeek 官方"),
+      models: agentModelsForRoute("deepseek-official").map(String),
+    });
+  } catch (_) {}
+  try {
+    for (const p of mtnodePiProviders()) {
+      out.push({
+        id: "mtnode_" + p.route,
+        name: p.name || p.route,
+        models: (p.models || []).map(String),
+      });
+    }
+  } catch (_) {}
+  return out;
+}
+
 function agentModelFitsRoute(route, model) {
   const m = String(model || "").trim();
   if (!m) return false;

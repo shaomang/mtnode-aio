@@ -1795,6 +1795,14 @@
     "错误:": "Error:",
     "服务商": "Provider",
     "供应商": "Provider",
+    "模型提供商": "Model provider",
+    "模型提供商：": "Model provider: ",
+    "模型提供商 / 预设 / 模型 / 思考强度":
+      "Model provider / preset / model / thinking effort",
+    "未选择：本功能块与子功能块跟随默认模型提供商。":
+      "Not set: this block and its sub-blocks follow the default model provider.",
+    "未选择：本节点需要借助 AI 时跟随默认模型提供商。":
+      "Not set: this node follows the default model provider when it needs AI.",
     "来源:": "Source:",
     "来源：": "Source: ",
     "连接 ": "Connected ",
@@ -3621,6 +3629,24 @@
     "已选择稍后；退出应用时将后台静默安装并自动重新打开":
       "Will silently install and reopen when you quit the app",
     "更新失败：": "Update failed: ",
+    /* 设置最底部的「手动更新（同版本号重装）」：不比对版本号，直接重装更新源里那份包 */
+    "手动更新（同版本号重装）": "Manual update (reinstall same version)",
+    "普通更新只在线上版本号更高时才可用。这里不比对版本号：直接用更新源里那份安装包重装一遍，适合极小更新与测试。下载与静默安装过程与正常更新完全一致，安装时应用会短暂重启。":
+      "Regular updates only work when the online version number is higher. This one skips the version comparison and reinstalls the package already on the update server — handy for tiny patches and testing. Download and silent install behave exactly like a normal update; the app restarts briefly while installing.",
+    "立即手动更新（重装更新源那份包）": "Manual update (reinstall the package on the server)",
+    "不比对版本号，直接用更新源里那份包重装一次（极小更新与测试用）":
+      "Skip the version comparison and reinstall the package on the update server (for tiny patches and testing)",
+    "确定手动更新？": "Start a manual update?",
+    "将不比对版本号，直接用更新源里那份安装包重装一次（可能是同一个版本号 v":
+      "The version number will not be compared; the installer on the update server reinstalls directly (it may well be the same version v",
+    "）。下载完成后会在后台静默安装并自动重新打开应用；期间请先保存当前工作。":
+      "). After downloading it installs silently in the background and the app reopens automatically — save your work first.",
+    "手动更新": "Manual update",
+    "开始更新": "Start update",
+    "正在检查并下载…": "Checking and downloading…",
+    "已开始手动更新，将后台静默安装":
+      "Manual update started — it will install silently in the background",
+    "当前版本不支持手动更新": "This build does not support manual updates",
     "Microsoft Store（MSIX）版不支持应用内更新，请在 Microsoft Store 中获取更新":
       "The Microsoft Store (MSIX) build does not support in-app updates — get updates from the Microsoft Store",
     "发现新版本，点击下载并安装": "New version available — click to download & install",

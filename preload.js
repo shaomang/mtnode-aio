@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('api', {
   updateDownload: () => ipcRenderer.invoke('update:download'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
   updateConfirmAndStart: () => ipcRenderer.invoke('update:confirmAndStart'),
+  /* 设置最底部「手动更新」：同版本号也照装一次（极小更新 / 测试用；安装链与正常更新一致） */
+  updateReinstallSame: () => ipcRenderer.invoke('update:reinstallSame'),
   onUpdateEvent: (cb) => {
     const chans = [
       'update:available',
