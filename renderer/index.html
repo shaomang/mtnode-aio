@@ -7,6 +7,11 @@
      'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
 <title>MTNode AI编排器</title>
 <link rel="stylesheet" href="style.css">
+<!-- AI 事实库（renderer/app-ai-facts.js 的查阅弹窗 + 左栏那一行）的样式：
+     style.css 内部按 @import 串起 css/*.css，本文件独立成一份、用 <link> 跟在它后面
+     （晚于 style.css 生效，同优先级时以本文件为准）；配色一律用 base.css 的主题变量，
+     不新造配色体系。 -->
+<link rel="stylesheet" href="css/ai-facts.css">
 <!-- KaTeX 公式排版样式（vendor/katex/，含 fonts/）：字形位置全靠这份 CSS 定位，
      与 vendor/katex/katex.min.js 成对出现；本文件与 pdf-print.html 必须同步挂载。 -->
 <link rel="stylesheet" href="vendor/katex/katex.min.css">
@@ -524,8 +529,9 @@
      交付节点建法，故必须排在它之后、且不依赖界面脚本（界面只从 run.waits / 节点读结果）。 -->
 <script src="app-longtask-out.js"></script>
 <!-- 长任务的「产物上画布」（自包含新模块，挂 window.LTART）：每个环节完成时清点本次产物，
-     逐件摆成主画布上的产物节点（kind ltart，一件一颗）并排好版（同环节产出节点右侧的空位
-     网格 · 已有节点不挪）。只调用 app-longtask.js 的登记层与 app.js 的 makeNode，
+     先按「关键文件」口径挑一道（报告文档 / 数据表 / 成品图才摆；中间件、日志、音视频不占画布），
+     再把挑出来的逐件摆成主画布上的产物节点（kind ltart，一件一颗）并排好版（同环节产出节点
+     右侧的空位网格 · 已有节点不挪）。只调用 app-longtask.js 的登记层与 app.js 的 makeNode，
      故必须排在 app-longtask.js 之后；app-longtask.js 的 ltOutputPublish 按全局判空调用它，
      模块缺席时静默跳过（产出回流不因此断链）。 -->
 <script src="app-longtask-artifacts.js"></script>
@@ -585,6 +591,11 @@
 <!-- 团队事实库（左栏专家列表末尾的入口）：路径解析 / 读写 / 建库；
      放在 app-review.js 之后，审阅对话框打开事实库时按调用期取 window.MTNodeFactLib -->
 <script src="app-factlib.js"></script>
+<!-- AI 事实库（新增的独立存储，给 AI 读的极简条例）：路径解析 / 读写 / 工具动作 / 查阅弹窗；
+     挂 window.MTNodeAiFacts + 全局 aiFacts* 别名。放在 app-factlib.js 之后（同层相邻，
+     两者之间没有调用关系）；左栏入口在 app-teamview.js，但那个文件的脚本行排在更前面，
+     所以它对本模块的调用一律在调用期按 typeof 取用，不依赖装载顺序。 -->
+<script src="app-ai-facts.js"></script>
 <!-- 画布左侧边栏「文件」页（VSCode explorer 式文件树 / 预览 / 重命名·复制·剪切·删除 / 拖入画布）：
      自包含（renderer/app-sidebar-files.js + css/sidebar-files.css）。必须排在 app.js 之后——
      它包装 renderSidebar，并在调用期取 openFilePeek（app-fileview.js）与

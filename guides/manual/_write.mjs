@@ -383,6 +383,7 @@ const catalog = {
       title: { zh: "专家团", en: "Expert team" },
       pages: [
         { id: "one-person-company", title: { zh: "AI 团队与多角色", en: "AI team & roles" } },
+        { id: "ai-facts", title: { zh: "AI 事实库（给 AI 读的条例库）", en: "AI fact library" } },
       ],
     },
     {

@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-09-14T20:30:25.613Z",
+  "updatedAt": "2026-09-21T07:38:51.895Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -8,6 +8,14 @@
       "id": "mtnode",
       "title": "MTNode 产品与画布",
       "skills": [
+        {
+          "id": "ai-facts",
+          "name": "mtnode-ai-facts",
+          "title": "AI 事实库",
+          "description": "每张画布一份的极简条例库（工具 mtnode_facts，动作 list/query/get/write/delete/pin）：索引项目内容时先查它；建完项目架构 / 工作流、定下约定与路径后，把关键结论（模块划分、关键文件与路径、约定及其来源、端口与数据流、命令入口、已知坑）沉淀成极简条例。先 query 再 write，冲突以现文件与数据库为准。Use when indexing project content, or recording / recalling a project's architecture or workflow key points.",
+          "path": "mtnode/ai-facts/SKILL.md",
+          "version": ""
+        },
         {
           "id": "canvas-batch-safety",
           "name": "mtnode-canvas-batch-safety",
@@ -87,6 +95,20 @@
           "path": "music/minimax-music-prompt/SKILL.md",
           "version": "",
           "menu": "user"
+        }
+      ]
+    },
+    {
+      "id": "plugins",
+      "title": "插件与后端",
+      "skills": [
+        {
+          "id": "plugin-dev",
+          "name": "mtnode-plugin-dev",
+          "title": "MTNode 插件开发规范",
+          "description": "MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。",
+          "path": "plugins/plugin-dev/SKILL.md",
+          "version": ""
         }
       ]
     }

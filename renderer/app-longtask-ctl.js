@@ -666,6 +666,40 @@
       const g = routes.filter((x) => x.id === ltcS(r))[0];
       return g ? g.models.slice() : [];
     };
+    /* 模型按服务商收窄的清单（本次需求）：前面的「服务商 / 路由」已经选定时，
+        后面的模型格就只该列出这一家的模型 —— 跨服务商把整个清单摊在模型格里，
+        用户会在「A 家路由」下点到「B 家的模型」，要么被拨走路由、要么配出一个
+        只在运行时才炸的组合（长任务面板现在直接就地 toast 拦下，观感仍是「选错」）。
+        路由留空（还没选）时仍给全部分组：那种场景下清单本身就是选型入口，
+        选中即把路由一并拨正（与 app-longtask-create.js 的建图选型同一口径）。 */
+    /* 模型按服务商分组（可搜索）：跨组选中即等于连服务商一起改，不会留下
+       「A 家的模型配 B 家路由」这种只在运行时才炸的组合。
+       每项 value = 「路由|模型」成对编码（与 app.js 的 wfBuildAgentPicker 同口径）：
+       两家服务商有同名模型时裸模型 id 无法分辨，回显 / ✓ 必须按完整 key 命中，
+       否则只会标在第一组、选第二家被静默拨到第一家路由。hint 带服务商名，
+       下拉里一眼看得出归属，也能按服务商名搜索。 */
+    const modelGroups = routes
+      .filter((g) => g.models.length)
+      .map((g) => ({
+        group: g.name,
+        items: g.models.map((m) => ({ value: ltaKeyOf(g.id, m), label: m, hint: g.name })),
+      }));
+    /* 模型按服务商收窄的清单（本次需求）：前面的「服务商 / 路由」已经选定时，
+       后面的模型格就只该列出这一家的模型 —— 把整个跨服务商清单摊在模型格里，
+       用户会在「A 家路由」下点到「B 家的模型」，要么被拨走路由、要么配出一个只在
+       运行时才炸的组合（面板虽会就地 toast 拦下，观感仍是「选错」）。
+       路由留空（还没选）时仍给全部分组：那种场景下模型清单本身就是选型入口，
+       选中即把路由一并拨正（与 app-longtask-create.js 的建图选型同一口径）。 */
+    const modelGroupsFor = (r) => {
+      const s = ltcS(r).trim();
+      if (!s) return modelGroups;
+      return routes
+        .filter((g) => g.id === s && g.models.length)
+        .map((g) => ({
+          group: g.name,
+          items: g.models.map((m) => ({ value: ltaKeyOf(g.id, m), label: m, hint: g.name })),
+        }));
+    };
     /* 某个路由下「模型留空时真正生效」的那一只：先问真源 preferredAgentModelForRoute
        （它认得用户当前选的模型 S.assistModel），真源没加载才退回该路由清单首个。
        UI 的「跟随默认」提示按它显示 —— 不再拿清单首项冒充默认模型：用户当前选的
@@ -714,18 +748,10 @@
       routes: routes,
       defaults: defaults,
       providerOptions: routes.map((g) => ({ value: g.id, label: g.name, hint: g.id })),
-      /* 模型按服务商分组（可搜索）：跨组选中即等于连服务商一起改，不会留下
-         「A 家的模型配 B 家路由」这种只在运行时才炸的组合。
-         每项 value = 「路由|模型」成对编码（与 app.js 的 wfBuildAgentPicker 同口径）：
-         两家服务商有同名模型时裸模型 id 无法分辨，回显 / ✓ 必须按完整 key 命中，
-         否则只会标在第一组、选第二家被静默拨到第一家路由。hint 带服务商名，
-         下拉里一眼看得出归属，也能按服务商名搜索。 */
-      modelGroups: routes
-        .filter((g) => g.models.length)
-        .map((g) => ({
-          group: g.name,
-          items: g.models.map((m) => ({ value: ltaKeyOf(g.id, m), label: m, hint: g.name })),
-        })),
+      /* 全量模型分组（= 路由还没选时的清单，调用方按 provider 收窄走 modelGroupsFor） */
+      modelGroups: modelGroups,
+      /* 按服务商收窄后的模型分组：模型格的前一格（服务商 / 路由）已选定时只列这一家 */
+      modelGroupsFor: modelGroupsFor,
       presetOptions: presetSrc.map((p) => ({
         value: ltcS(p.id),
         label: p.labelKey ? ltcT(p.labelKey) : ltcS(p.id),
@@ -747,11 +773,47 @@
     };
   }
 
+  /* ── 模型格的选项清单：按「服务商 / 路由」收窄（本次需求）────────────────
+     同一个控件在两处当模型格用（检查器 / 建图选型 / 条带 chip 面板），收窄口径只能有一份：
+       · 路由已选定 → 只列这一家的模型（选不到别家的，也就不存在「选 B 家落到 A 家」）；
+       · 路由留空 → 给全部分组（清单本身就是选型入口，选中即把路由一并拨正）；
+       · 控件当前值若不在收窄后的清单里（老数据 / 刚换过服务商留下的裸 id）→ 补进
+         「（不属于该服务商）」一组：不静默把它改掉，用户看得见原因、也看得见该改哪一格。
+     返回的就是 normOptions 能吃的那份数组，调用方直接 opt.handle.setOptions(...)。 */
+  function ltcModelScopeOpts(AO, route, handle) {
+    const A = AO || {};
+    const r = ltcS(route).trim();
+    const list =
+      r && typeof A.modelGroupsFor === "function" ? A.modelGroupsFor(r) : A.modelGroups || [];
+    const groups = Array.isArray(list) ? list.slice() : [];
+    const cur = handle && typeof handle.value === "function" ? ltcS(handle.value()).trim() : "";
+    if (!cur) return groups;
+    const known = groups.some((g) =>
+      (Array.isArray(g.items) ? g.items : []).some((it) => ltcS(it && it.value) === cur),
+    );
+    if (known) return groups;
+    /* 成对编码「路由|模型」的历史值：显示成模型名（用户认的是模型，不是编码），
+       hint 里带上它原本属于哪家 —— 「为什么它不在上面这一家的表里」一眼就有答案。 */
+    const sp = ltaSplitKey(cur);
+    const own = sp.provider || (typeof A.routeOfModel === "function" ? ltcS(A.routeOfModel(sp.model)) : "");
+    const ownName = own && typeof A.routeName === "function" ? ltcS(A.routeName(own)) || own : own;
+    const note = ownName
+      ? ltcT("（属于「{route}」）", { route: ownName })
+      : ltcT("（不属于该服务商）");
+    return groups.concat([
+      {
+        group: ltcT("（不属于该服务商）"),
+        items: [{ value: cur, label: sp.model || cur, hint: note }],
+      },
+    ]);
+  }
+
   const API = {
     ltSelField,
     ltMultiSelField,
     normOptions,
     toOptions: normOptions,
+    modelScopeOpts: ltcModelScopeOpts,
     agentOpts: ltAgentOpts,
   };
 

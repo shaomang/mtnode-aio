@@ -48,11 +48,9 @@ window.addEventListener("unhandledrejection", (ev) => {
    —— 不再自动补回被删的默认项、不再改写已有项的模型列表、不再强制重排、
    也不再剔除无 Key 的 stability/mj，否则设置里删除/编辑/排序都会在重启
    或再次打开设置时被改回去（gpt-image 删不掉、配置一改就还原的根因）。 */
-const DEEPSEEK_DEFAULT_MODELS = [
-  "deepseek-v4-flash",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp",
-];
+/* 新安装（或用户清空了整份服务商列表）时的默认清单：只有 flash / pro 两个模型，
+   并默认勾选「支持视觉」（vision-exp 不再默认塞进清单）。 */
+const DEEPSEEK_DEFAULT_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"];
 
 function ensureDefaultProviders() {
   const provs = Array.isArray(S.config.providers)
@@ -77,7 +75,7 @@ function ensureDefaultProviders() {
       baseUrl: "https://api.deepseek.com",
       apiKey: "",
       models: DEEPSEEK_DEFAULT_MODELS.slice(),
-      vision: false,
+      vision: true,
     });
   }
   if (!removed.has("gpt_image_2")) {

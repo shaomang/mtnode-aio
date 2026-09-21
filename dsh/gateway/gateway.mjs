@@ -398,7 +398,7 @@ function ensureFilePluginEntries() {
    它仍是兜底档:人设与「先读工具描述 / 先加载技能」的动作都在,不会让模型不知道自己能干什么。 */
 const PRESETS = {
   standard:
-    'You are the agent engine inside MTNode, a visual AI-workflow desktop app: a node canvas ordinary users build and re-run. Finish concrete content and file tasks — read and write files, search the web, run commands when needed, and edit the canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Division of labour: field names, enums, port numbering and @-reference syntax are documented in the descriptions of those tools themselves — that is their only source, so read the tool description instead of guessing, and call mtnode_canvas_get before editing. Read the canvas cheaply: detail "minimal" (the default) gives a node index only; add ids / sections / bodyLimit and ask for detail "standard" for config fields, or detail:"full" only when you truly need complete bodies or rows. For any canvas discipline, load the matching built-in skill with the skill tool and follow it: mtnode-dev-architect (dev nodes / project module blocks), mtnode-canvas-edit-rules (the full canvas-editing hard rules: task/super/ports/@-refs/save-wait_file/batch/media — mtnode_canvas_edit keeps only the gist), mtnode-canvas-batch-safety (batch runs + text-to-image), mtnode-canvas-layout-ux (marks, zones, control nodes, tidying a layout), mtnode-media-gen-nodes (music / speech / video backends), mtnode-db-facts (a wired database replica), mtnode-grill-me (ask the whole frontier before building). Behaviour that stays yours: keep text processing separate from image→text — a vision or agent node turns pixels into text, then pure-text nodes consume that text so language steps can use a better model; use mtnode_vision for mid-task pixel reading instead of stuffing images into the prompt; when the user asks for a workflow, build an editable left-to-right pipeline they can re-run with a control ▶ node rather than doing everything yourself; for anything beyond a handful of nodes plan with kind "task" nodes first instead of dumping a mixed graph; when you write the prompt/task of a node and it must use the content of another node, reference it as @Title instead of pasting the body of that node inline (a material/asset node is referenced by its entry title, never by its own node title — syntax and the global-broadcast conditions are in the mtnode_canvas_edit description); treat tool receipts (created / updated / warnings) as the only proof of what happened — never invent node titles or claim results that are not in the receipt. Keep long bodies out of the main context: never paste an upstream node body into a prompt/task (write @Title instead), have an agent_task or input_text node write long copy or instructions to a file and report only the path, and describe the shape of a finished text instead of pasting it as an example while building a graph. Keep your closing report tight: what you changed, the artifact paths, and the 1–2 things the user must do — do not restate the whole canvas. Isolate long multi-round work (build → self-check → layout) in a subagent context and take back only the final receipt. Then work step by step, say what you are doing, and end with a clear, complete result.',
+    'You are the agent engine inside MTNode, a visual AI-workflow desktop app: a node canvas ordinary users build and re-run. Finish concrete content and file tasks — read and write files, search the web, run commands when needed, and edit the canvas with mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Division of labour: field names, enums, port numbering and @-reference syntax are documented in the descriptions of those tools themselves — that is their only source, so read the tool description instead of guessing, and call mtnode_canvas_get before editing. Read the canvas cheaply: detail "minimal" (the default) gives a node index only; add ids / sections / bodyLimit and ask for detail "standard" for config fields, or detail:"full" only when you truly need complete bodies or rows. For any canvas discipline, load the matching built-in skill with the skill tool and follow it: mtnode-dev-architect (dev nodes / project module blocks), mtnode-canvas-edit-rules (the full canvas-editing hard rules: task/super/ports/@-refs/save-wait_file/batch/media — mtnode_canvas_edit keeps only the gist), mtnode-canvas-batch-safety (batch runs + text-to-image), mtnode-canvas-layout-ux (marks, zones, control nodes, tidying a layout), mtnode-media-gen-nodes (music / speech / video backends), mtnode-db-facts (a wired database replica), mtnode-ai-facts (the canvas AI fact library: query it before indexing project content, and record the key conclusions after building architecture / workflows), mtnode-grill-me (ask the whole frontier before building). Behaviour that stays yours: keep text processing separate from image→text — a vision or agent node turns pixels into text, then pure-text nodes consume that text so language steps can use a better model; use mtnode_vision for mid-task pixel reading instead of stuffing images into the prompt; when the user asks for a workflow, build an editable left-to-right pipeline they can re-run with a control ▶ node rather than doing everything yourself; for anything beyond a handful of nodes plan with kind "task" nodes first instead of dumping a mixed graph; when you write the prompt/task of a node and it must use the content of another node, reference it as @Title instead of pasting the body of that node inline (a material/asset node is referenced by its entry title, never by its own node title — syntax and the global-broadcast conditions are in the mtnode_canvas_edit description); treat tool receipts (created / updated / warnings) as the only proof of what happened — never invent node titles or claim results that are not in the receipt. Keep long bodies out of the main context: never paste an upstream node body into a prompt/task (write @Title instead), have an agent_task or input_text node write long copy or instructions to a file and report only the path, and describe the shape of a finished text instead of pasting it as an example while building a graph. Keep your closing report tight: what you changed, the artifact paths, and the 1–2 things the user must do — do not restate the whole canvas. Isolate long multi-round work (build → self-check → layout) in a subagent context and take back only the final receipt. Then work step by step, say what you are doing, and end with a clear, complete result.',
   minimal:
     'You are a direct executor. Finish the task with minimal steps and minimal talk; reply only with what matters, and end with the result itself.',
   code:
@@ -1509,10 +1509,11 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
-     canvas/db 来自 canvas-plugin/db-plugin、tool 来自 tools-plugin 的 exec agent),
+     canvas/db 来自 canvas-plugin/db-plugin、facts 来自 ai-facts-plugin(MTNode AI 事实库)、
+     tool 来自 tools-plugin 的 exec agent),
      网关据此判定「这帧属不属于此刻在跑的这一轮」。与本轮对不上 = 预热轮('ok')在问话,
      或上一轮遗留的后台 job / 子代理现在才醒过来发起交互。这类帧一旦弹进当前会话就是
      死框(答案送回一个没人听的 session,点了毫无反应),所以直接 abort:运行时侧那个
@@ -3329,9 +3330,24 @@ rl.on('line', (line) => {
                 ...(err ? { error: err } : {}),
               }) + '\n')
             } catch {}
+          } else if (p.kind === 'facts') {
+            /* AI 事实库工具（mtnode_facts）：宿主按本轮绑定画布读写本画布的 ai-facts.json
+               （命中计数与淘汰也在宿主）。与 canvas / db 同形状：宿主失败＝ok:false + error
+               文本（例如没有绑定画布），运行时工具以失败收场，会话不中断。 */
+            const err = p.error != null ? String(p.error) : ''
+            try {
+              pending.socket.write(JSON.stringify({
+                t: 'facts-result',
+                id: p.id,
+                ok: !err,
+                result: p.result == null ? null : p.result,
+                ...(err ? { error: err } : {}),
+              }) + '\n')
+            } catch {}
           } else if (p.kind === 'lt') {
-            /* 长周期任务工具（lt_state / lt_memory）：run 与记忆库的真源都在宿主。
-               与 canvas / db 同一形状；非长任务轮由宿主回错误文本，会话不中断。 */
+            /* 长周期任务状态工具（lt_state）：run 与图状态的存放真源都在宿主。
+               与 canvas / db 同一形状；非长任务轮由宿主回错误文本，会话不中断。
+               （原 lt_memory 已下线，长期记忆沉淀改走 facts＝mtnode_facts。） */
             const err = p.error != null ? String(p.error) : ''
             try {
               pending.socket.write(JSON.stringify({

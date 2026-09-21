@@ -8,6 +8,8 @@
 
 ## MTNode 产品与画布
 
+- **mtnode-ai-facts** — AI 事实库：每张画布一份的极简条例库（工具 mtnode_facts，动作 list/query/get/write/delete/pin）：索引项目内容时先查它；建完项目架构 / 工作流、定下约定与路径后，把关键结论（模块划分、关键文件与路径、约定及其来源、端口与数据流、命令入口、已知坑）沉淀成极简条例。先 query 再 write，冲突以现文件与数据库为准。Use when indexing project content, or recording / recalling a project's architecture or workflow key points.
+  - 文件：`mtnode/ai-facts/SKILL.md`
 - **mtnode-canvas-batch-safety** — 画布批量与文生图防 N²：MTNode 画布 batchMode=batch 时每次运行只能处理单条输入，禁止把整批 N 条重复塞进每次运行；文生图 proc_image 每次只出 1 张。Use when designing batch workflows, proc_image, split nodes, or user reports duplicate API calls / token explosion.
   - 文件：`mtnode/canvas-batch-safety/SKILL.md`
 - **mtnode-canvas-edit-rules** — 画布编辑硬规则：MTNode 画布建图 / 连线 / 批量的完整硬规则：kind 速查、task 三端、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图、数据库 / 开发节点 / 排版 / scope 细则。Use when creating, wiring, batching or laying out canvas nodes, or when a wire/tool receipt looks wrong. 这些规则不写在 mtnode_canvas_edit 描述里，按需加载本技能。
@@ -29,3 +31,8 @@
   - 文件：`music/minimax-music-lyrics/SKILL.md`
 - **minimax-music-prompt** — MiniMax Music 提示词：【内置·随应用发版，不需从工坊安装】把一句话想法写成 MiniMax Music 的风格提示词：一段英文散文，六句按 Style+Mood → Tempo/Groove → Instruments → Vocals → Structure → Production 排（写句子、不写逗号标签、不含唱词）。控制曲风、人声、乐器、段落对比与制作；含官方六步、最小改动迭代表与校验清单。MTNode「Minimax Music 3 / YuE2」节点的提示词端口用它。
   - 文件：`music/minimax-music-prompt/SKILL.md`
+
+## 插件与后端
+
+- **mtnode-plugin-dev** — MTNode 插件开发规范：MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。
+  - 文件：`plugins/plugin-dev/SKILL.md`

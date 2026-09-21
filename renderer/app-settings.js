@@ -90,6 +90,60 @@ function openSettings() {
   });
 }
 
+/* ===== DeepSeek 官方充值通道（新安装默认没有 Key 时给出的第一个指引） =====
+   口径：默认服务商 DeepSeek（id "deepseek"，baseUrl 指向 api.deepseek.com）的 API Key
+   为空时 —— 也就是刚装好、还没填过 Key 的默认状态 —— 在「提供商配置」上方显示一条
+   醒目横幅，点一下在浏览器里打开官方充值页 https://platform.deepseek.com/ 。
+   填了 Key（任何非空值）就立刻收起；在服务商配置对话框里改 Key 时即时回刷
+   （见 repaintSettingsTopup，卡里 Key 输入框与关窗路径各调一次），不必重开设置。 */
+const DEEPSEEK_TOPUP_URL = "https://platform.deepseek.com/";
+
+function deepseekTopupNeeded() {
+  const list = (S.config && Array.isArray(S.config.providers)
+    ? S.config.providers
+    : []
+  ).filter((p) => p && String(p.id || "") === "deepseek");
+  if (!list.length) return false;
+  /* 以「当前优先使用」的那一条为准：官方默认项被留空 Key 就是新安装的样子 */
+  const p = list[0];
+  return !String(p.apiKey || "").trim();
+}
+
+function deepseekTopupBanner() {
+  const bar = document.createElement("div");
+  bar.className = "ds-topup";
+  const text = document.createElement("div");
+  text.className = "ds-topup-text";
+  const b = document.createElement("b");
+  b.textContent = I18n.t("尚未填写 DeepSeek API Key");
+  text.appendChild(b);
+  const desc = document.createElement("span");
+  desc.textContent = I18n.t(
+    "首次使用请先在下方「提供商配置」里填入 Key；还没有余额可先到官方充值通道充值。",
+  );
+  text.appendChild(desc);
+  const link = document.createElement("a");
+  link.className = "ds-topup-link";
+  link.href = DEEPSEEK_TOPUP_URL;
+  link.textContent = I18n.t("DeepSeek 官方充值通道") + " ↗";
+  link.title = DEEPSEEK_TOPUP_URL + I18n.t("（在浏览器中打开）");
+  link.onclick = (ev) => {
+    ev.preventDefault();
+    try {
+      if (window.api && window.api.openExternal) {
+        window.api.openExternal(DEEPSEEK_TOPUP_URL);
+        return;
+      }
+    } catch {}
+    try {
+      window.open(DEEPSEEK_TOPUP_URL, "_blank");
+    } catch {}
+  };
+  bar.appendChild(text);
+  bar.appendChild(link);
+  return bar;
+}
+
 function openSettingsBody() {
   openOverlay(I18n.t("设置 · APIs/Config"));
   overlayPersistent = true; // 设置栏：点击外部不关闭，只走窗底那枚「关闭」（改动本身即时生效）
@@ -132,6 +186,22 @@ function openSettingsBody() {
     provTitleRow.appendChild(add);
     provSec.appendChild(provTitleRow);
 
+    /* 无 Key（新安装默认）时的 DeepSeek 官方充值通道：就在「提供商配置」标题下方、
+       服务商网格上方，填了 Key 立刻收起 */
+    const topupSlot = document.createElement("div");
+    topupSlot.className = "ds-topup-slot";
+    const paintTopup = () => {
+      topupSlot.innerHTML = "";
+      if (!deepseekTopupNeeded()) {
+        topupSlot.style.display = "none";
+        return;
+      }
+      topupSlot.style.display = "";
+      topupSlot.appendChild(deepseekTopupBanner());
+    };
+    paintTopup();
+    provSec.appendChild(topupSlot);
+
     const grid = document.createElement("div");
     grid.className = "prov-tiles";
     const paintTiles = () => {
@@ -145,8 +215,11 @@ function openSettingsBody() {
         grid.appendChild(empty);
       }
     };
-    /* 配置对话框关窗后回刷网格（改过名称 / 删过服务商都在这里体现） */
+    /* 配置对话框关窗后回刷网格（改过名称 / 删过服务商都在这里体现）；
+       充值横幅跟着 Key 走：刚填上 Key 就收起、清空 Key 就回来。
+       两个句柄都注册给 repaintSettingsProvTiles / repaintSettingsTopup。 */
     settingsProvTilesRepaint = paintTiles;
+    settingsTopupRepaint = paintTopup;
     paintTiles();
     provSec.appendChild(grid);
     body.appendChild(provSec);
@@ -2354,12 +2427,23 @@ async function validateProviderApiKey(prov, btn) {
   }
 }
 
-/* 提供商网格的回刷句柄：设置窗重开时重绑，配置对话框关窗时回刷一次 */
+/* 提供商网格的回刷句柄：设置窗重开时重绑，配置对话框关窗时回刷一次。
+   旁边的 settingsTopupRepaint 只管「无 Key 时的 DeepSeek 官方充值通道」那条横幅，
+   可以单独调用（在 Key 输入框里打字就即时收起 / 回来，不必等关窗）。 */
 let settingsProvTilesRepaint = null;
+let settingsTopupRepaint = null;
 function repaintSettingsProvTiles() {
   if (typeof settingsProvTilesRepaint === "function") {
     try {
       settingsProvTilesRepaint();
+    } catch {}
+  }
+  repaintSettingsTopup();
+}
+function repaintSettingsTopup() {
+  if (typeof settingsTopupRepaint === "function") {
+    try {
+      settingsTopupRepaint();
     } catch {}
   }
 }
@@ -2621,6 +2705,38 @@ function provCard(prov, i, onChange) {
   };
   mkField(I18n.t("接口地址 Base URL"), urlInp, true);
 
+  /* DeepSeek 官方服务商卡：没填 Key 时在 API Key 上方给一行官方充值通道，
+     地址就贴在手边（与设置页顶部那条横幅同源，都用 DEEPSEEK_TOPUP_URL） */
+  const isDsOfficial =
+    String(prov.id || "") === "deepseek" ||
+    /deepseek/i.test(String(prov.baseUrl || ""));
+  if (isDsOfficial && !String(prov.apiKey || "").trim()) {
+    const hint = document.createElement("div");
+    hint.className = "ds-topup-hint";
+    hint.appendChild(
+      document.createTextNode(I18n.t("还没有 API Key？官方充值通道：")),
+    );
+    const a = document.createElement("a");
+    a.className = "ds-topup-link";
+    a.href = DEEPSEEK_TOPUP_URL;
+    a.textContent = DEEPSEEK_TOPUP_URL;
+    a.title = DEEPSEEK_TOPUP_URL + I18n.t("（在浏览器中打开）");
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      try {
+        if (window.api && window.api.openExternal) {
+          window.api.openExternal(DEEPSEEK_TOPUP_URL);
+          return;
+        }
+      } catch {}
+      try {
+        window.open(DEEPSEEK_TOPUP_URL, "_blank");
+      } catch {}
+    };
+    hint.appendChild(a);
+    gridEl.appendChild(hint);
+  }
+
   const keyRow = mkField("API Key", (() => {
     const wrap = document.createElement("div");
     wrap.style.display = "flex";
@@ -2634,6 +2750,8 @@ function provCard(prov, i, onChange) {
     inp.oninput = () => {
       prov.apiKey = inp.value;
       settingsSaved(800);
+      /* DeepSeek 官方这条：清空 Key 横幅立刻回来、填上立刻收起（关窗时还会再对齐一次） */
+      if (isDsOfficial) repaintSettingsTopup();
     };
     const cp = document.createElement("button");
     cp.className = "mini";

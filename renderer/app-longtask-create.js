@@ -187,6 +187,13 @@ function ltcAgentRow(wrap) {
     const r = AO.routeOfModel(m);
     return r ? AO.keyOf(r, m) : m;
   };
+  /* 模型格收窄（本次需求）：上一格「服务商 / 路由」一旦选定，模型清单就只列这一家的模型。
+     清单现取现算（ltCtl().modelScopeOpts 同一份口径，检查器 / chip 面板共用），
+     路由换了就地 setOptions 重列表格，不整窗重建（窗内其它未提交输入不丢）。 */
+  const modelOptsNow = (route) => C.modelScopeOpts(AO, route, hs.model);
+  const refreshModelOpts = () => {
+    if (hs.model) hs.model.setOptions(modelOptsNow(cfg.provider));
+  };
   hs.provider = C.ltSelField(
     row,
     ltcT("服务商 / 路由"),
@@ -199,8 +206,10 @@ function ltcAgentRow(wrap) {
       const m = String(cfg.model || "");
       if (m && patch.provider && AO.modelsOf(patch.provider).indexOf(m) < 0) patch.model = "";
       commit(patch);
-      /* 成对回显：路由换了（或被清空）后模型格的值要跟着换成新的「路由|模型」 */
+      /* 成对回显：路由换了（或被清空）后模型格的值要跟着换成新的「路由|模型」，
+         模型清单同步收窄到这家（选不到别家的模型） */
       if (hs.model) hs.model.setValue(ltcModelKey(patch.provider, cfg.model), true);
+      refreshModelOpts();
       refreshHints();
     },
     Object.assign({ hint: defHintText(), emptyText: ltcT("没有可用的服务商") }, pickCfg),
@@ -210,7 +219,7 @@ function ltcAgentRow(wrap) {
     row,
     ltcT("模型"),
     ltcModelKey(cfg.provider, cfg.model),
-    AO.modelGroups,
+    modelOptsNow(cfg.provider),
     (v) => {
       const key = String(v || "").trim();
       if (!key) {
@@ -260,6 +269,9 @@ function ltcAgentRow(wrap) {
       const n = Object.assign(ltcAgentEmpty(), next || {});
       for (const k of LTC_AGENT_FIELDS) cfg[k] = n[k];
       ltcAgentSave(cfg);
+      /* 静默回填可能带来另一家服务商：模型清单先跟着收窄，再回填各格显示值
+         （否则旧清单里没有这一家的模型，模型格会显示成「不在清单里」） */
+      refreshModelOpts();
       for (const k of LTC_AGENT_FIELDS) {
         if (!hs[k] || typeof hs[k].setValue !== "function") continue;
         /* 模型格的显示值是「路由|模型」成对编码，落盘仍是裸模型 id —— 静默回填时现拼 */
@@ -318,7 +330,7 @@ function openLtCreateDlg(wf) {
   const cancel = ltcEl("button", "lt-btn ltc-cancel", ltcT("取消"));
   cancel.type = "button";
   cancel.id = "ltcCancel";
-  cancel.title = ltcT("关窗；已写的内容与 Agent 选型会保留，下次打开接着写");
+  cancel.title = ltcT("关窗：已写的内容与 Agent 选型会保留（下次打开接着写）；会话不接回，每次打开本窗都是全新会话");
   cancel.onclick = () => closeOverlay();
   top.appendChild(cancel);
   wrap.appendChild(top);

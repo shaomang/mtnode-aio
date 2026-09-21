@@ -17,7 +17,8 @@
  * 三处真源，各管各的：
  *   图定义   → wf.longtask（随工作流 JSON 自动保存，跟着 tab 走）
  *   运行态   → 主进程 longtask-store.js（<数据目录>/longtask/runs/<wfId>/<runId>.json）
- *   长期记忆 → 主进程 longtask-store.js（memory.db：SQLite + FTS5，三层作用域）
+ *   长期记忆 → AI 事实库固定文件（<画布文件夹>/团队事实库/AI/ai-facts.json，渲染层入口
+ *               window.MTNodeAiFacts；与记忆沉淀同一份真源，见 app-ai-facts.js）
  * 启用中跑的是**热更新的图**（graphVersion）：改图**当场换进正在跑的 run**（ltApplyGraphToRun）
  * —— 已有进度按 path 迁移（内容没改的环节一步不重跑），改过内容的已收尾环节连同下游重排，
  * 新加的环节立刻按新图续跑，用户不需要重新启用 / 重启任务。「重新启用」从此只剩「新建一个 run、
@@ -47,7 +48,11 @@ const LT_DEF_RETRY = 2; /* agent 失败重试次数（共 3 跑） */
 const LT_DEF_MAX_ROUND = 0; /* 驳回回跳最大轮数；0 = 不限（默认不限制回跳次数） */
 const LT_DEF_TOPK = 8; /* 记忆注入 TopK */
 const LT_LOG_MAX = 200;
-const LT_VAL_MAX = 6000; /* 单个状态值写进 prompt 的截断长度 */
+const LT_VAL_MAX = 6000; /* 单个状态值写进 prompt 的截断长度（**声明了输入键**时按它） */
+/* 「整份共享状态」自动列进提示词时的两个上限：键数与单值摘要长度（没声明输入键的环节用）。
+   没有这两个顶，跑了几十环的 run 会把上百个键（每个最长 6000 字）整份灌进 prompt。 */
+const LT_STATE_LIST_MAX = 200; /* 自动列出的键数上限（键名一个不落的兜底顶，防病态 run） */
+const LT_STATE_BRIEF = 600; /* 自动列出时单个值的摘要长度上限（更长的只报字数） */
 /* 交付放行（本轮需求）：说明上限与 run 里每环最多留多少轮放行记录。
    放在顶部是因为 window.LT 的导出在文件中部就要求值（TDZ：常量声明必须早于使用）。 */
 const LT_RELEASE_NOTE_MAX = 4000; /* 交付说明上限（与驳回理由同一量级） */
@@ -91,6 +96,10 @@ function ltCfgPatch(patch) {
 function ltStr(v, max) {
   const s = String(v == null ? "" : v);
   return max && s.length > max ? s.slice(0, max) + "…" : s;
+}
+/* 压成单行：日志与卡片摘要都是单行排的短文，谓词里的换行会把那一行顶乱 */
+function ltOneLine(v) {
+  return String(v == null ? "" : v).replace(/\s+/g, " ").trim();
 }
 function ltArr(v) {
   return Array.isArray(v) ? v : [];
@@ -332,6 +341,12 @@ function ltValidate(graph) {
     }
     if (n.kind === "human" && n.cfg.mode === "deliver" && !ltArr(n.cfg.items).length) {
       out.push({ level: "warn", msg: ltStr(n.title, 20) + ltT("：交付任务清单是空的"), nodeId: n.id });
+    }
+    if (n.kind === "output") {
+      /* 落盘环节的两件必填（本轮 Bug 的另一半）：跑起来会尽量自动兜底
+         （键按整份共享状态找、路径按工作目录补），但**先提醒**比让用户等运行报错强。 */
+      if (!String(n.cfg.key || "").trim()) out.push({ level: "warn", msg: ltStr(n.title, 20) + ltT("：还没选要落盘的状态键"), nodeId: n.id });
+      if (!String(n.cfg.path || "").trim()) out.push({ level: "warn", msg: ltStr(n.title, 20) + ltT("：还没填落盘路径（跑起来会兜底到工作目录）"), nodeId: n.id });
     }
     if (n.kind === "map" && !String(n.cfg.overKey || "").trim()) {
       out.push({ level: "err", msg: ltStr(n.title, 20) + ltT("：map 没指定要展开的数组状态键 overKey"), nodeId: n.id });
@@ -1191,7 +1206,7 @@ function ltRunNew(task, wfId, opts) {
        重试 / 回跳 / 重启续跑都复用同一条会话，不会每执行一次就刷出一条新的
        （见 ltBindAgentSession / ltReleaseAgentSession）。 */
     sessions: {},
-    /* 待确认候选记忆（本 run 里 lt_memory propose / 正文 memory 块提出的；见 ltMemPropose）：
+    /* 待确认候选记忆（本 run 里正文 memory 块提出的；见 ltMemPropose）：
        随 checkpoint 落盘，启动 / 续跑 / 切画布后由 ltMemSyncPending 重新合并进 ltMemPending
        —— 候选不再只在内存里（重启即消失）。用户接受 / 驳回后从这份摘掉。 */
     memPending: [],
@@ -1410,7 +1425,155 @@ async function ltManualResolve(wf, path, opts) {
   return { ok: true, mode: mode, target: target, fired: fired };
 }
 
-/* 取值：沿命名空间链向上找（子图能看到父图，反向不行） */
+/* ── 「强行进入下一状态」：run 级的手动推进（本次需求）──────────────────────
+ * 需求原话：**实际本身就不应当出现任何 state 错误导致无法进行**，另外还要留一条手动出路。
+ * 这一节就是那条出路的 run 级入口（单环节那条仍在 ltErrEscapeBox → ltManualResolve）：
+ *
+ *  ① ltForcedNode() 认「这一环节是被用户按停止按下来的」—— 那种 blocked 不是报错，
+ *     强行推进的正确语义是**排回队列再跑**，不是跳过它（跳过等于把没做完的活丢掉）；
+ *  ② 真出错的 blocked / failed 走 ltApplySkip（与单环节卡片同一个实现：留痕 + 撤等人 +
+ *     点火下游，不另造一条跃迁路径）；用得上 onErrorNext 就按它跳，否则走自己的下游；
+ *  ③ 人在等（审批 / 交付）的环节**不从这里绕过**：那是用户自己要做的判断，越过它等于代他点确认。
+ * 全部做完再解开 aborted 与终局态、点火、收敛状态 —— 状态机从它自己的事实重算，不会因此错乱。 */
+/* 判据：这一环是不是「被停止 / 中断按下来」的（不是报错）。
+ * 停止文案在运行时按当时的界面语言写进 st.err，而用户可能中途切过语言，所以**两种语言的文案都认**；
+ * 两种都不中（真报错、旧版留下的别的说明）就按「报错放行」处理 —— 误判成放行比误判成重跑安全。 */
+function ltForcedNode(st) {
+  const e = String((st && st.err) || "").trim();
+  return (
+    e === ltT("已手动停止") ||
+    e === "Stopped manually" ||
+    e === ltT("已中断（应用重启或任务停止）") ||
+    e === "已中断（应用重启或任务停止）" ||
+    e === "Interrupted (app restarted or task stopped)"
+  );
+}
+async function ltForceAdvance(wf, opts) {
+  const o = ltObj(opts);
+  const run = o.run || ltCurrentRun(wf);
+  if (!run) return { ok: false, error: ltT("没有启用中的长任务") };
+  if (run.status === "done") return { ok: false, error: ltT("这一轮已经跑完了，没有要推进的状态") };
+  /* 先取清单再动手：放行本身会改状态（blocked → skipped / failed），边遍历边改会漏人 */
+  const paths = Object.keys(run.nodes || {});
+  const stuck = paths.filter((p) => {
+    const s = String((run.nodes[p] && run.nodes[p].status) || "");
+    return s === "blocked" || s === "failed";
+  });
+  if (!stuck.length && !run.aborted && !LT_RUN_FINAL[String(run.status || "")] && run.status !== "blocked") {
+    return { ok: false, error: ltT("这一轮没有卡住的环节，也没有可推进的状态") };
+  }
+  const byUser = ltT("用户手动强行进入下一状态");
+  const requeued = [];
+  const released = [];
+  const details = [];
+  const errs = [];
+  for (const p of stuck) {
+    const loc = ltLocate(run, p);
+    if (!loc || !loc.node) continue;
+    const node = loc.node;
+    if (ltForcedNode(run.nodes[p])) {
+      /* 停止 / 中断按下来的那一环：排回队列接着跑（它不是坏掉，是被叫停的） */
+      ltSetStat(run, p, "pending", { err: "", tries: 0 });
+      run.nodes[p].skippedBy = "";
+      ltDropWait(run, p);
+      requeued.push(p);
+      details.push({ path: p, title: node.title, mode: "requeue" });
+      continue;
+    }
+    const target = ltStr(node.cfg && node.cfg.onErrorNext, 80);
+    try {
+      await ltApplySkip(run, p, { mode: "skip", target: target, by: "user", reason: byUser });
+    } catch (e) {
+      errs.push(ltStr(((e && e.message) || e) || ltT("放行失败"), 200));
+      continue;
+    }
+    released.push(p);
+    details.push({ path: p, title: node.title, mode: "skip", target: target });
+  }
+  run.fixes = ltArr(run.fixes);
+  if (released.length || requeued.length) {
+    run.fixes.push({ at: ltNow(), path: "", title: ltT("整个任务"), mode: "force", target: "", by: "user", reason: byUser, count: released.length + requeued.length });
+    if (run.fixes.length > 100) run.fixes = run.fixes.slice(-100);
+  }
+  run.aborted = false;
+  if (LT_RUN_FINAL[String(run.status || "")] || run.status === "blocked") run.status = "running";
+  ltLog(
+    run,
+    ltT("强行进入下一状态：放行 ") + released.length + ltT(" 个卡住的环节、") + requeued.length + ltT(" 个被停止的环节重新排队"),
+    "warn",
+  );
+  ltSave(run, true);
+  ltPump(run);
+  ltRenderStripSoon();
+  return { ok: true, released: released.length, requeued: requeued.length, details: details, errs: errs };
+}
+
+/* ── 「本不该出现的 state 错误」：把结论性的图问题就地补好（本次需求）────────────
+ * 需求原话：**实际本身就不应当出现任何 state 错误导致无法进行**。图里真正会「炸」的只有
+ * 三种（缺起点 / 缺终点 / 空图）：它们不是用户在链条中间遇到的状态，而是链条**根本立不起来**。
+ * 所以这里不把它们当作「拦人的报错」，而是就地补出缺的那一头（新节点是普通环节，用户照样能改），
+ * 补不动（一个节点都没有）也明说原因。ltValidate 的判据一个字没动 —— 补完之后它自然通过。 */
+function ltFreshNodeId(g, base) {
+  const used = Object.create(null);
+  for (const n of ltArr(g.nodes)) used[String(n.id)] = 1;
+  let id = String(base || "start");
+  let i = 2;
+  while (used[id]) id = base + i++;
+  return id;
+}
+function ltAutoRepairGraph(graph) {
+  const fixed = [];
+  if (!graph || typeof graph !== "object" || Array.isArray(graph)) return { fixes: fixed, note: ltT("图定义不可用") };
+  const raw = ltArr(graph.nodes).slice();
+  if (!raw.length) return { fixes: fixed, note: ltT("图是空的：先加一个 Agent 任务或人工任务") };
+  const kindsOf = (id) => {
+    const n = raw.filter((x) => String(x.id) === String(id))[0];
+    return String((n && n.kind) || "");
+  };
+  const noIn = (n) => !ltArr(graph.edges).some((e) => String(e.to) === String(n.id));
+  const noOut = (n) => !ltArr(graph.edges).some((e) => String(e.from) === String(n.id));
+  const edgeId = () => ltUid("e");
+  /* ① 缺起点：补一个真的起点，并从它搭到「没人喂」的那些环节（以及没东西可指时的新终点）。
+        只从**新起点**发边 —— 绝不往用户已有环节之间乱加线。 */
+  const starts = raw.filter((n) => String(n.kind) === "start");
+  let madeStart = "";
+  if (!starts.length) {
+    const id = ltFreshNodeId(graph, "start");
+    madeStart = id;
+    raw.push({ id: id, kind: "start", x: 40, y: 40, title: ltT("起点"), cfg: {} });
+    const orphan = raw.filter((n) => String(n.kind) !== "start" && String(n.kind) !== "end_ok" && String(n.kind) !== "end_fail" && noIn(n));
+    const targets = orphan.length ? orphan : raw.filter((n) => String(n.kind) !== "start" && String(n.kind) !== "end_ok" && String(n.kind) !== "end_fail" && noOut(n));
+    for (const n of targets) graph.edges.push({ id: edgeId(), from: id, to: String(n.id), label: "", cond: "" });
+    fixed.push(ltT("补了一个起点（原来没有 start：任务根本没法开跑）"));
+  }
+  /* ② 缺终点：叶子（没下游的业务环节）都要有地方可去才收得了尾 */
+  const leaves = raw.filter((n) => {
+    const k = String(n.kind);
+    if (k === "start" || k === "end_ok" || k === "end_fail") return false;
+    return noOut(n) || String(n.id) === madeStart;
+  });
+  if (!raw.some((n) => String(n.kind) === "end_ok") && !raw.some((n) => String(n.kind) === "end_fail")) {
+    const eid = ltFreshNodeId(graph, "end");
+    raw.push({ id: eid, kind: "end_ok", x: 640, y: 40, title: ltT("完成"), cfg: {} });
+    const src = leaves.length ? leaves : raw.filter((n) => String(n.kind) !== "end_ok" && String(n.kind) !== "end_fail");
+    for (const n of src) graph.edges.push({ id: edgeId(), from: String(n.id), to: eid, label: "", cond: "" });
+    fixed.push(ltT("补了一个成功终点（原来没有 end_ok：跑完无处可去）"));
+  } else if (!raw.some((n) => String(n.kind) === "end_ok")) {
+    const eid = ltFreshNodeId(graph, "end");
+    raw.push({ id: eid, kind: "end_ok", x: 640, y: 40, title: ltT("完成"), cfg: {} });
+    const src = leaves.length ? leaves : raw.filter((n) => String(n.kind) !== "end_ok" && String(n.kind) !== "end_fail");
+    for (const n of src) graph.edges.push({ id: edgeId(), from: String(n.id), to: eid, label: "", cond: "" });
+    fixed.push(ltT("补了一个成功终点（原来只有失败终点：成功那条路无处可去）"));
+  }
+  graph.nodes = raw;
+  /* ③ 补完再验一次：还有 err（如 agent 没写目标）就不是这里能替用户决定的事了，如实留着 */
+  const left = ltValidate(graph).filter((x) => x.level === "err");
+  if (left.length) fixed.push(ltT("还有这些要你自己改：") + left.map((x) => x.msg).join("；"));
+  return { fixes: fixed, left: left };
+}
+
+/* 取值：沿命名空间链向上找（子图能看到父图，反向不行）—— **链上专用**口径，
+   只认自己与自己的祖先层。要读「整份共享状态」用 ltStateFlat / ltStateRead / ltStateWhere。 */
 function ltStateGet(run, path, key) {
   let p = String(path || "");
   for (;;) {
@@ -1424,31 +1587,98 @@ function ltStateGet(run, path, key) {
 function ltStatePut(run, path, key, value) {
   ltNS(run, path)[String(key)] = value;
 }
-function ltStateFlat(run, path) {
-  const out = {};
-  let p = String(path || "");
+/* 命名空间链：自己 → 父 → 根（近的在前） */
+function ltPathChain(path) {
   const chain = [];
-  for (;;) {
+  for (let p = String(path || ""); ; p = ltPathParent(p)) {
     chain.push(p);
     if (!p) break;
-    p = ltPathParent(p);
   }
-  chain.reverse(); /* 远的先来，近的覆盖 */
-  for (const seg of chain) {
-    const ns = run.ns[seg];
+  return chain;
+}
+/* 链上的一份扁平状态（近的覆盖远的）—— 子图 / 逐项容器的**收集口径**：
+   容器回写父图的键必须来自「自己人」（自己 / 祖先 / 自己的下级命名空间），
+   别处同名键不许冒充子图产出（见 ltStateFlatDeep）*/
+function ltStateChain(run, path) {
+  const out = {};
+  const chain = ltPathChain(path);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const ns = run.ns[chain[i]];
     if (ns) for (const k of Object.keys(ns)) out[k] = ns[k];
   }
   return out;
 }
+/* 「整份共享状态」（本轮 Bug 的根因修复）：长任务的键是**一个 run 一份共享状态**，
+   命名空间只负责分层隔离（子图 / 逐项实例），平级环节之间本该互相看得见。
+   只沿链向上找的老口径有个致命缺口：平级 Agent 环节把声明键写在自己那一层
+   （ns["<环节 id>"]，见 ltRecoverOutKeys / lt_state 的 write），对下游**永远不可见** ——
+   于是 Agent 提示词的【当前状态】恒为空、条件边读 state.<键> 恒 undefined、
+   产出节点判「键不存在」而失败（用户报的 save_report · failed 就是这一条）。
+   口径：链上（自己 → 父 → 根）最优先，其次是同 run 其余命名空间（近 → 深 → 远）。
+   **map 的逐项实例（路径带 @）不参与**：各项互相看不见是承诺，否则 N 个实例的
+   item / __index / 每项产物会互相串味。 */
+function ltStateFlat(run, path) {
+  const out = {};
+  const chain = ltPathChain(path);
+  const onChain = new Set(chain);
+  const R = ltNsRange(run, path);
+  /* 链外先写（近的覆盖远的），链上随后压上去 —— 自己这一层与祖先永远最优先 */
+  for (const list of [R.far, R.deep, R.near]) {
+    for (const p of list) {
+      if (onChain.has(p)) continue;
+      const ns = run.ns[p];
+      if (ns) for (const k of Object.keys(ns)) out[k] = ns[k];
+    }
+  }
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const ns = run.ns[chain[i]];
+    if (ns) for (const k of Object.keys(ns)) out[k] = ns[k];
+  }
+  return out;
+}
+/* 单键读取（与 ltStateFlat 同一份可见域口径）+ **带出处**：链上优先，其次链外（近 → 深 → 远）。
+   出处是给产出环节用的：这份值是从哪一层取到的，要能说清楚（自动修复必须留痕，绝不悄悄换料）。
+   同名键在多个环节里都写过时，与 ltStateFlat 的合流口径取同一份：**后写回的那一份为准**
+   （run.ns 的建库顺序 = 环节执行顺序，所以「后建的那层」就是更新的那份）——
+   两个口子要是各认各的，Agent 看到的值与产出节点落盘的值会不是同一份。 */
+function ltStateWhere(run, path, key) {
+  const k = String(key || "");
+  if (!k) return null;
+  const chain = ltPathChain(path);
+  const onChain = new Set(chain);
+  for (const p of chain) {
+    const ns = run.ns[p];
+    if (ns && Object.prototype.hasOwnProperty.call(ns, k)) return { key: k, value: ns[k], path: p };
+  }
+  const R = ltNsRange(run, path);
+  for (const list of [R.near, R.deep, R.far]) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const p = list[i];
+      if (onChain.has(p)) continue;
+      const ns = run.ns[p];
+      if (ns && Object.prototype.hasOwnProperty.call(ns, k)) return { key: k, value: ns[k], path: p };
+    }
+  }
+  return null;
+}
+function ltStateRead(run, path, key) {
+  const hit = ltStateWhere(run, path, key);
+  return hit ? hit.value : undefined;
+}
+/* 某个命名空间在不在本环节的链上（自己 / 祖先）：产出环节的自动修复据此决定要不要留痕 */
+function ltStateOnChain(path, p) {
+  return ltPathChain(path).indexOf(String(p || "")) >= 0;
+}
 
 /* 「本环节 + 它下面的全部子命名空间」的一份扁平状态（容器收子节点写的键时用）：
- * ltStateFlat 只沿链**向上**取（子图能看到父图、反向不行），而容器（sub / map 实例）
- * 要回写父图的键，恰恰要从**子命名空间**里收 —— 子壳里 Agent 写的 shot_list / 每项的
+ * 基底只取链上（ltStateChain，子图能看到父图），要回写父图的键还要从**子命名空间**里收 ——
+ * 子壳里 Agent 写的 shot_list / 每项的
  * shot_file 都落在 ns["<容器>/<子节点>"] 里。不收子空间 = 回写键永远是空
  * （校验里那句「回写键在子图里没有生产者」的承诺就落空了）。
  * 只收 path 之下的命名空间：别的实例（shots@3 之于 shots@5）互不可见。 */
 function ltStateFlatDeep(run, path) {
-  const out = ltStateFlat(run, path);
+  /* 基底取**链上口径**（ltStateChain）：容器收子节点的键时，绝不能让链外同名键冒充子图产出 */
+  const out = ltStateChain(run, path);
   const pre = String(path || "") + "/";
   for (const p of Object.keys(run.ns || {})) {
     if (p.indexOf(pre) !== 0) continue;
@@ -1457,23 +1687,65 @@ function ltStateFlatDeep(run, path) {
   }
   return out;
 }
-/* ── 记忆系统：分层召回 / 候选确认 / 与事实库双向同步 ───────────── */
+/* ── 记忆系统：召回 / 候选确认 / 沉淀（真源 = 本画布的 AI 事实库固定文件）──
+ * 长期记忆与 AI 事实库合并后只有一份存储：<画布文件夹>\团队事实库\AI\ai-facts.json
+ * （见下方 ltFactsApi 段）。召回与沉淀都走它的唯一入口 window.MTNodeAiFacts，
+ * 不再走主进程 memory.db，也不再与「专家团事实库」Markdown 双向同步。 */
 function ltMemScopeArgs(wf) {
-  /* 作用域由 xx 与所属画布 ID 一起定：工作目录取自**这张画布**（不是 S.wf 那张），
-     否则用户在任务跑着时切画布，记忆会记到别人的项目 / 画布名下。 */
+  /* 归属由所属画布定：画布 ID 取自**这张画布**（不是 S.wf 那张），否则用户在任务跑着时
+     切画布，记忆会记到别人的画布名下。 */
   return { ws: ltWfWorkspace(wf), wf: wf && wf.id ? String(wf.id) : "" };
 }
+/* 召回：从本画布的 AI 事实库查（有关键词 = 命中条目按库内打分排序；没有 = 列全部）。
+   返回形状沿用老口径（id / title / body / type / scope / layer / src），提示词与条带都不用改。 */
 async function ltMemRecall(q, wf, limit) {
-  const a = ltMemScopeArgs(wf);
+  const api = ltFactsApi();
+  if (!api || typeof api.op !== "function") return [];
+  const topk = Math.max(1, Number(limit) || ltCfg().topk);
+  const cid = ltMemScopeArgs(wf).wf;
+  const kw = String(q || "").trim();
+  const pick = (r) =>
+    ltArr(r && r.entries)
+      .slice(0, topk)
+      .map((e) => ({
+        id: ltStr(e.id, 200),
+        title: ltStr(e.title, 300),
+        body: ltStr(e.text == null ? e.body : e.text, LT_VAL_MAX),
+        type: ltStr(e.type, 40) || "fact",
+        scope: "canvas",
+        layer: "ai-facts",
+        src: ltStr(e.src, 300),
+      }));
   try {
-    const r = await window.api.ltMemRecall({ q: String(q || ""), ws: a.ws, wf: a.wf, limit: Number(limit) || ltCfg().topk });
-    return r && r.ok ? ltArr(r.items) : [];
+    let out = kw ? pick(await api.op({ action: "query", params: { q: kw, limit: topk } }, cid)) : [];
+    /* 关键词太窄（整句目标当关键词）常常一条也命不中：退到「列全部」（库内按热度排序），
+       别让「没命中」变成「这一轮一条长期记忆都没有」。 */
+    if (!out.length) out = pick(await api.op({ action: "list", params: {} }, cid));
+    return out;
   } catch (_) {
     return [];
   }
 }
+/* 沉淀：直接写进上面那份固定文件（同标题 = upsert 同一条，不再整批重复入库）。 */
 function ltMemAdd(items) {
-  return window.api.ltMemAdd(ltArr(items).filter(Boolean)).catch(() => null);
+  const list = ltArr(items).filter(Boolean);
+  if (!list.length) return Promise.resolve(null);
+  const api = ltFactsApi();
+  if (!api || typeof api.op !== "function") return Promise.resolve(null);
+  const cid = ltStr((list.find((it) => it && it.wf) || {}).wf, 200);
+  const records = list.map((it) => ({
+    id: ltStr(it.id, 200),
+    title: ltStr(it.title, 300),
+    text: ltStr(it.body == null ? it.text : it.body, LT_VAL_MAX),
+    type: ltStr(it.type, 40),
+    tags: ltStr(it.tags, 200),
+    src: ltStr(it.src, 300),
+  }));
+  try {
+    return Promise.resolve(api.op({ action: "write", params: { records: records } }, cid)).catch(() => null);
+  } catch (_) {
+    return Promise.resolve(null);
+  }
 }
 /* 待确认候选记忆的条数（条带徽标用） */
 function ltMemPendingCount() {
@@ -1581,148 +1853,16 @@ function ltMemRejectAll() {
   ltTouchGraph();
   return all.length;
 }
-/* ── 事实库 ↔ 记忆库：接的是专家团事实库真源（window.MTNodeFactLib）────────
- * 事实库的真源不是「随手挑一个目录」，而是**每张画布一份**的库：<画布文件夹>\团队事实库\
- * <doc>.md（+ <doc>.review.json），配置锚在 S.config.team.canvases[].fact 上。
- * 所以主口径读写都走 MTNodeFactLib：导入逐个 listDocs + readDoc，导出 ensureDocByName +
- * writeDoc（落盘即广播 factlib:saved，左栏专家文档行会即时刷新）。
- * 「选一个外部目录导入 / 导出」降级为第二入口（第三方 Markdown 库，与专家团结算无关）。
- * 粒度分工：事实库是**人读的文档**，记忆库是**可检索的条目** —— 这里按 {1,3} 级标题切分。 */
-function ltFactLibApi() {
-  return typeof window !== "undefined" && window.MTNodeFactLib ? window.MTNodeFactLib : null;
-}
-/* 稳定 id：同一张画布 + 同一篇文档 + 同一个标题 → 同一个 id。lt:memAdd 按 id upsert，
-   所以反复导入同一份事实库是「刷新」而不是「再加一份」（旧实现每次导入都整批重复入库）。 */
-function ltMemStableId(scope, src, title) {
-  const s = [scope.ws || "", scope.wf || "", String(src || ""), String(title || "")].join("\u0001");
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
-  }
-  return "fx" + h.toString(16) + String(s.length).slice(-4);
-}
-function ltFactSections(text, fallbackTitle) {
-  const out = [];
-  for (const sec of String(text || "").split(/\n(?=#{1,3}\s)/).slice(0, 24)) {
-    const m = /^#{1,3}\s*(.+)$/m.exec(sec);
-    const title = (m ? m[1] : String(fallbackTitle || "")).trim().slice(0, 200);
-    const body = sec.replace(/^#{1,3}\s*.*$/m, "").trim().slice(0, 3000);
-    if (body.length < 8) continue;
-    out.push({ title, body });
-  }
-  return out;
-}
-function ltReEsc(s) {
-  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-/* 事实库 → 记忆库。dir 非空 = 外部目录（第二入口）；否则读本画布的专家团事实库。 */
-async function ltSyncFactLibToMemory(dir) {
-  const wf = typeof S !== "undefined" ? S.wf : null;
-  if (!wf) return { ok: false, error: ltT("当前没有打开的画布") };
-  const scope = ltMemScopeArgs(wf);
-  const sources = []; /* {name, text} —— src 一律存文档名（不存绝对路径：库搬家就失效） */
-  if (dir) {
-    let files = [];
-    try {
-      const r = await window.api.fileReadDir(String(dir));
-      files = ltArr((r && (r.entries || r.items || r.files)) || []).filter((f) => f && String(f.name || f).endsWith(".md"));
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) };
-    }
-    for (const f of files) {
-      const name = String((f && f.name) || f);
-      const full = String((f && (f.path || f.fullPath)) || "").trim() || String(dir).replace(/[\\/]+$/, "") + "\\" + name;
-      try {
-        const rr = await window.api.fileReadText(full);
-        const text = rr && rr.ok ? String(rr.content || "") : String(rr || "");
-        if (text.trim()) sources.push({ name: name, text: text });
-      } catch (_) {}
-    }
-  } else {
-    const lib = ltFactLibApi();
-    const docs = lib ? ltArr(lib.listDocs(wf.id)) : [];
-    if (!lib || !docs.length) {
-      return { ok: false, error: ltT("这张画布还没有专家团事实库文档：先在左侧「团队事实库」建库 / 建档，或改用「从外部目录导入」") };
-    }
-    for (const d of docs) {
-      try {
-        const r = await lib.readDoc(d);
-        const text = r && r.ok ? String(r.content || "") : "";
-        if (text.trim()) sources.push({ name: ltStr(d.name, 200) || ltStr(d.file, 200), text: text });
-      } catch (_) {}
-    }
-  }
-  let n = 0;
-  for (const s of sources) {
-    const items = ltFactSections(s.text, s.name.replace(/\.md$/i, "")).map((sec) =>
-      Object.assign({}, scope, {
-        id: ltMemStableId(scope, s.name, sec.title),
-        title: sec.title,
-        body: sec.body,
-        type: "fact",
-        tags: "factlib",
-        src: s.name,
-      }),
-    );
-    if (items.length) {
-      await ltMemAdd(items);
-      n += items.length;
-    }
-  }
-  return { ok: true, added: n, files: sources.length };
-}
-/* 记忆库 → 事实库。主口径写进本画布库里的固定一篇（幂等：同一标题不重复追加）；
-   给了 dir 就写外部目录，按天命名，且**读回已有正文再追加**（同日再导出不再整份覆盖）。 */
-async function ltSyncMemoryToFactLib(items, dir) {
-  const list = ltArr(items).filter(Boolean);
-  if (!list.length) return { ok: false, error: ltT("没有选中的记忆条目") };
-  const wf = typeof S !== "undefined" ? S.wf : null;
-  const head = "# " + ltT("长任务记忆沉淀") + "\n\n> " + ltT("由 MTNode 长周期任务的记忆库同步过来，供专家团作为事实来源之一；同一标题只保留最先写入的一份。") + "\n\n";
-  const sectionOf = (it) => "## " + String(it.title || "").trim() + "\n\n" + String(it.body || "") + "\n\n" + (it.src ? "来源：" + String(it.src) + "\n\n" : "");
-  const appendNew = (old, list) => {
-    let text = String(old || "");
-    if (!text.trim()) text = head;
-    else text = text.replace(/\s*$/, "") + "\n\n";
-    let added = 0;
-    for (const it of list) {
-      const title = String(it.title || "").trim();
-      if (!title) continue;
-      if (new RegExp("^#{1,6}\\s*" + ltReEsc(title) + "\\s*$", "m").test(text)) continue;
-      text += sectionOf(it);
-      added++;
-    }
-    return { text: text, added: added };
-  };
-  if (dir) {
-    const name = "长任务记忆-" + new Date().toISOString().slice(0, 10) + ".md";
-    const full = String(dir).replace(/[\\/]+$/, "") + "\\" + name;
-    let old = "";
-    try {
-      const rr = await window.api.fileReadText(full);
-      old = rr && rr.ok ? String(rr.content || "") : "";
-    } catch (_) {}
-    const merged = appendNew(old, list);
-    if (!merged.added) return { ok: true, path: full, added: 0 };
-    try {
-      const r = await window.api.fileWriteText(full, merged.text);
-      return r === false ? { ok: false, error: ltT("写入失败") } : { ok: true, path: full, added: merged.added };
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) };
-    }
-  }
-  const lib = ltFactLibApi();
-  if (!wf || !lib || typeof lib.ensureDocByName !== "function") {
-    return { ok: false, error: ltT("专家团事实库不可用") };
-  }
-  const doc = await lib.ensureDocByName(wf.id, ltT("长任务记忆沉淀"));
-  if (!doc) {
-    return { ok: false, error: ltT("这张画布还没有专家团事实库：先在左侧「团队事实库」建库，或改用「导出到外部目录」") };
-  }
-  const cur = await lib.readDoc(doc);
-  const merged = appendNew(cur && cur.content, list);
-  if (!merged.added) return { ok: true, path: String(doc.file || ""), added: 0 };
-  const ok = await lib.writeDoc(doc, merged.text);
-  return ok ? { ok: true, path: String(doc.file || ""), added: merged.added } : { ok: false, error: ltT("写入失败") };
+/* ── 记忆沉淀：直接写「AI 事实库」固定文件 ────────────────────────────────
+ * 长期记忆与 AI 事实库已是**同一份真源**：<画布文件夹>\团队事实库\AI\ai-facts.json
+ * （每张画布一份、路径固定，宿主侧落盘守卫见 ai-facts-store.js）。所以这里**不再**与
+ * 「专家团事实库」（人读的 Markdown 文档）双向同步 —— 导入 / 导出那两条路径连同按钮一并
+ * 撤掉（旧口径是「事实库 = 人读文档、记忆库 = 可检索条目」两套存储互相搬，现在只有这一份）。
+ * 读写一律走它的唯一所有者 window.MTNodeAiFacts：渲染层不自己拼路径、不自己写文件，
+ * 否则计数 / 淘汰 / 落盘守卫会各自一份。 */
+function ltFactsApi() {
+  if (typeof window === "undefined") return null;
+  return window.MTNodeAiFacts || window.MTNodeAIFacts || null;
 }
 
 /* ─ 交付目录：固定路径 + manifest 双向 ─────────────────────────── */
@@ -2804,16 +2944,17 @@ async function ltOutputPublish(run, path, data) {
   return node;
 }
 
-/* ── Agent 会话侧的 lt_state / lt_memory 工具应答（网关桥帧）─────
+/* ── Agent 会话侧的 lt_state 工具应答（网关桥帧）─────
  * 帧由 dsh 推来（type:'lt'），归属校验在网关侧做（sessionId 必须属于在跑的轮）；
- * 这里再按「本轮的伪节点 id」找回 run 与图节点，越权一律回错误文本。 */
+ * 这里再按「本轮的伪节点 id」找回 run 与图节点，越权一律回错误文本。
+ * 原 lt_memory 已下线：长期记忆沉淀改走 mtnode_facts（宿主按绑定画布读写 ai-facts.json）。 */
 function ltCtxOfNode(node) {
   const id = String((node && node.id) || "");
   if (!id || id.indexOf("ltr_") !== 0) return null;
   for (const r of LT_RUNS.values()) {
     /* 两处都查：run.paths 是本轮新写的归属表，run.agentNode 是老版本 / 旧 checkpoint
        落盘过的登记表（路径 → 伪节点 id）。只查一处会让「应用重启后继续跑」的环节
-       拿不到归属 —— lt_state / lt_memory 会被自己人拒掉。 */
+       拿不到归属 —— lt_state 会被自己人拒掉。 */
     for (const map of [r.paths, r.agentNode]) {
       if (!map) continue;
       for (const p of Object.keys(map)) {
@@ -2833,13 +2974,11 @@ async function ltHandleToolEvent(data, node, wf) {
   if (!id) return;
   const ctx = ltCtxOfNode(node);
   if (!ctx) {
-    reply(null, ltT("当前任务不属于任何启用中的长任务：lt_state / lt_memory 只在长任务的 Agent 节点里可用"));
+    reply(null, ltT("当前任务不属于任何启用中的长任务：lt_state 只在长任务的 Agent 节点里可用"));
     return;
   }
   const run = ctx.run;
   const path = ctx.path;
-  /* 记忆作用域按**本 run 所属画布**（帧里带来的 wf 优先；用户切走时别按 S.wf 记到别人家） */
-  const memWf = wf || ltRunCanvas(run) || (typeof S !== "undefined" ? S.wf : null);
   try {
     const action = String(data.action || (data.op || ""));
     const p = ltObj(data.params);
@@ -2848,7 +2987,7 @@ async function ltHandleToolEvent(data, node, wf) {
       const flat = ltStateFlat(run, path);
       const out = {
         ok: true,
-        state: p.key ? { [String(p.key)]: ltStateGet(run, path, p.key) } : flat,
+        state: p.key ? { [String(p.key)]: ltStateRead(run, path, p.key) } : flat,
         allowedWrite: gNode && gNode.cfg ? ltArr(gNode.cfg.outKeys) : [],
         node: { path, title: gNode ? gNode.title : "", kind: gNode ? gNode.kind : "" },
         waits: (run.waits || []).length,
@@ -2875,25 +3014,9 @@ async function ltHandleToolEvent(data, node, wf) {
       reply({ ok: true, written: keys });
       return;
     }
-    if (action === "recall" || action === "list") {
-      const items = await ltMemRecall(String(p.q || ""), memWf, Number(p.limit) || ltCfg().topk);
-      reply({ ok: true, count: items.length, items: items.map((i) => ({ id: i.id, scope: i.scope, layer: i.layer, type: i.type, title: i.title, body: ltStr(i.body, 1200), src: i.src })) });
-      return;
-    }
-    if (action === "write") {
-      const scope = ltMemScopeArgs(memWf);
-      const items = ltArr(p.items).map((it) => Object.assign({}, scope, ltObj(it), { src: ltStr(ltObj(it).src || "agent", 300) }));
-      if (!items.length) {
-        reply(null, ltT("write 需要 items"));
-        return;
-      }
-      const r = await window.api.ltMemAdd(items);
-      reply(r && r.ok ? { ok: true, ids: r.ids } : { ok: false, error: (r && r.error) || ltT("写入失败") });
-      return;
-    }
-    if (action === "propose") {
-      const n = ltMemPropose(ltArr(p.items), "agent:" + (node && node.title ? node.title : path), run);
-      reply({ ok: true, proposed: n, note: n ? ltT("候选已进入条带待确认清单（随本次运行的检查点落盘，重启 / 切画布后仍在），用户接受后才写入记忆库") : ltT("没有合法条目") });
+    if (action === "recall" || action === "list" || action === "write" || action === "propose") {
+      /* 原 lt_memory 的四个动作随工具下线：长期记忆沉淀改走 mtnode_facts（AI 事实库）。 */
+      reply(null, ltT("lt_memory 已下线：长期记忆改用 mtnode_facts（本画布的 AI 事实库）记录"));
       return;
     }
     reply(null, ltT("未知的 lt 动作：") + action);
@@ -2965,6 +3088,8 @@ window.LT = {
   stat: ltStat,
   stateFlat: ltStateFlat,
   stateGet: ltStateGet,
+  stateRead: ltStateRead,
+  stateWhere: ltStateWhere,
   nodeAt: ltNodeAt,
   rewind: ltRewind,
   rearmSkipped: ltRearmSkipped,
@@ -2974,6 +3099,13 @@ window.LT = {
      卡片 / 检查器的唯一落点（ltManualResolve）+ 两条判据与真实施加的口（回归测试直接用它们，
      不必起整个 run 循环）：ltErrorSkipOn 看图定义勾没勾，ltApplySkip 只做「放行 + 点火」。 */
   manualResolve: ltManualResolve,
+  /* ── 「强行进入下一状态」（本次需求）：run 级的手动推进 ──
+     条带头那颗 ⏭ 的落点：真出错的环节按 ltApplySkip 放行（同一个实现，不另造跃迁路径），
+     被「停止」按下来的环节排回队列重跑，人在等的环节不从这里绕过。
+     autoRepairGraph 把「缺起点 / 缺终点 / 空图」这类结论性图问题就地补好（回归直接调它）。 */
+  forceAdvance: ltForceAdvance,
+  autoRepairGraph: ltAutoRepairGraph,
+  forcedNode: ltForcedNode,
   errorSkipOn: ltErrorSkipOn,
   errorNextTarget: ltErrorNextTarget,
   applySkip: ltApplySkip,
@@ -3332,6 +3464,34 @@ function ltLocate(run, path) {
 }
 
 
+/* 条件谓词里除注入的 input 之外，**再**给这三个当词法变量（见下「写法兼容」）：
+ * UI 提示与技能文档写的是 input.state.<键>，而模型 / 用户裸写 state.<键> 的同样常见
+ * （旧文档只说「读得到整份共享状态」，没点名怎么读）。执行器（fn-runtime）只绑
+ * input / mtnode，裸名一跑就 ReferenceError，整条边把任务卡成 blocked —— 就是
+ * 「route · blocked / state is not defined」那个现场。 */
+const LT_COND_BINDINGS = ["state", "node", "runId"];
+/* 谓词写成函数 / 箭头函数体（fn-runtime 会用 input 再调一次）：这种写法不加前导绑定，
+ * 前导语句会把「一个表达式」变成两条语句，可读性与语义都跟着变。 */
+function ltCondFnSource(s) {
+  const t = String(s || "").trim();
+  return /^(async\s+)?function\b/.test(t) || /^(async\s*)?(\([^)]*\)|[\w$]+)\s*=>/.test(t);
+}
+/* 「某某 is not defined」且那个名字正是我们要注入的绑定之一 —— 只有这种错才值得重跑一次 */
+function ltCondBareNameErr(err) {
+  const m = /^([A-Za-z_$][\w$]*)\s+is not defined/.exec(String(err || "").trim());
+  return !!(m && LT_COND_BINDINGS.indexOf(m[1]) >= 0);
+}
+/* 谓词被写成了**一行表达式**（实测现场：`state.pool_ok === false`、`input.state.pool_ok !== false`
+ * —— 模型把 cond 当表达式字段写，没写 return）。判据：没有任何 return、没有语句分隔符 / 换行。
+ * 这种源在「函数体」口径下只会得到一个 undefined：边既不点火也不报错，下游被静默跳过 ——
+ * 比报错更难查，所以再按表达式求一次（见下 ②）。 */
+function ltCondExprLike(s) {
+  const t = String(s || "").trim();
+  return !!t && !/\breturn\b/.test(t) && t.indexOf(";") < 0 && t.indexOf("\n") < 0;
+}
+/* 裸名前导绑定（改名不改语义） */
+const LT_COND_BIND = "const { state, node, runId } = input || {};\n;";
+
 /* 条件边求值：受限 JS 谓词，走 js-exec 主进程 worker（共识 q32）。
  * 抛错 / 超时 / 没结果一律判「需人工」—— 绝不在判据不明时默默选路。 */
 async function ltCondEval(run, path, cond) {
@@ -3339,15 +3499,46 @@ async function ltCondEval(run, path, cond) {
   if (!code) return { ok: true, pass: true };
   const loc = ltLocate(run, path);
   const flat = ltStateFlat(run, path);
-  try {
-    const r = await window.mtnodeJsExec.run(code, { state: flat, node: loc && loc.node ? { id: loc.node.id, kind: loc.node.kind, title: loc.node.title } : {}, runId: run.runId }, { timeoutMs: 15000 });
-    if (!r || !r.ok) return { ok: false, err: ltStr((r && r.error) || ltT("谓词执行失败"), 300) };
-    const v = r.value;
-    const pass = typeof v === "boolean" ? v : typeof v === "object" && v ? v.pass !== false && v.value !== false : !!v;
-    return { ok: true, pass };
-  } catch (e) {
-    return { ok: false, err: String((e && e.message) || e) };
+  const input = {
+    state: flat,
+    node: loc && loc.node ? { id: loc.node.id, kind: loc.node.kind, title: loc.node.title } : {},
+    runId: run.runId,
+  };
+  const attempt = async (src) => {
+    try {
+      const r = await window.mtnodeJsExec.run(src, input, { timeoutMs: 15000 });
+      if (!r || !r.ok) return { ok: false, err: ltStr((r && r.error) || ltT("谓词执行失败"), 300) };
+      const v = r.value;
+      const pass = typeof v === "boolean" ? v : typeof v === "object" && v ? v.pass !== false && v.value !== false : !!v;
+      return { ok: true, pass, def: v !== undefined };
+    } catch (e) {
+      return { ok: false, err: ltStr(String((e && e.message) || e), 300) };
+    }
+  };
+  let r = await attempt(code);
+  /* ① 写法兼容（「route · blocked — state is not defined」）：谓词里**裸写**
+     state / node / runId 时，按 fn-runtime 的口径只绑了 input，于是 ReferenceError 把
+     一条本来算得出来的边判成需人工、整条链停在那儿。这里**改名不改语义**地补上绑定重跑：
+     只对这三个名字的 is-not-defined 生效，函数体写法不掺和，别的错（真写错名字 /
+     语法错 / 超时）照旧一路判失败 —— 绝不在判据不明时偷偷放行。 */
+  if (!r.ok && ltCondBareNameErr(r.err) && !ltCondFnSource(code)) {
+    const r2 = await attempt(LT_COND_BIND + code);
+    if (r2.ok || !ltCondBareNameErr(r2.err)) r = r2;
   }
+  /* ② 表达式直写兼容（同一现场的另一半：`state.pool_ok === false` 连 return 都没写）：
+     函数体口径下它算完了却没有值，于是这条边既不点火也不报错，下游被静默跳过。
+     单表达式 + 没有值与 return 才按 `return (表达式)` 再求一次；结果仍是没值就照旧。 */
+  if (r.ok && !r.def && ltCondExprLike(code)) {
+    const r3 = await attempt(LT_COND_BIND + "return (" + code + ");");
+    if (r3.ok && r3.def) r = r3;
+  }
+  if (!r.ok) {
+    return {
+      ok: false,
+      err: r.err + "\n" + ltT("条件谓词里读共享状态请写 input.state.<键>（裸写 state.<键> / node / runId 也认）"),
+    };
+  }
+  return r;
 }
 
 /* 点火出边 */
@@ -3374,7 +3565,7 @@ async function ltFireOut(run, path) {
       const r = await ltCondEval(run, path, e.cond);
       if (!r.ok) {
         ltSetStat(run, path, "blocked", { err: r.err, needHuman: true });
-        ltLog(run, ltT("条件求值失败，转需人工：") + r.err, "err");
+        ltLog(run, ltT("条件求值失败，转需人工：") + r.err + ltT("；谓词：") + ltStr(ltOneLine(e.cond), 120), "err");
         return;
       }
       if (r.pass) {
@@ -3399,7 +3590,7 @@ async function ltFireOut(run, path) {
     const r = await ltCondEval(run, path, e.cond);
     if (!r.ok) {
       ltSetStat(run, path, "blocked", { err: r.err, needHuman: true });
-      ltLog(run, ltT("条件求值失败，转需人工：") + r.err, "err");
+      ltLog(run, ltT("条件求值失败，转需人工：") + r.err + ltT("；谓词：") + ltStr(ltOneLine(e.cond), 120), "err");
       return;
     }
     if (r.pass) fire(e);
@@ -3567,7 +3758,7 @@ async function ltExecNode(run, path) {
 
 /* ── Agent 节点：一个可续跑的 dsh 会话 ─────────────────────────────
  * 复用会话基建（gateway run + resumeSession + 断点重发 + 回滚 + Token 台账），
- * 只是宿主换成「伪节点」：id 里带 runId 与路径，lt_state / lt_memory 的桥帧据此
+ * 只是宿主换成「伪节点」：id 里带 runId 与路径，lt_state 的桥帧据此
  * 反查归属（见 ltHandleToolEvent），越权的写回一律被宿主拒。 */
 /* 本环节真正生效的选型（provider / model / preset / effort）：cfg 里写了的照用；
  * 留空 = 跟随默认 → **在这里就把「用户当前的选择」定下来**，不再把空值往下传。
@@ -3628,7 +3819,7 @@ function ltPseudoNode(run, path, gNode) {
     preset: sel.preset,
     effort: sel.effort,
     workspace: String(gNode.cfg.workspace || ""),
-    /* 长任务标记：dshHiddenToolsFor 据此放行 lt_state / lt_memory；noCanvasRead 据此裁画布 */
+    /* 长任务标记：dshHiddenToolsFor 据此放行 lt_state；noCanvasRead 据此裁画布 */
     _lt: { runId: run.runId, path: path, canvasRead: !!gNode.cfg.canvasRead },
     _ltRunId: run.runId,
     _ltPath: path,
@@ -3752,13 +3943,21 @@ function ltAgentPrompt(run, path, gNode, mem) {
   L.push("");
   L.push("本环节目标：\n" + (gNode.cfg.goal || "(未填写)"));
   if (String(gNode.cfg.note || "").trim()) L.push("\n补充说明：\n" + gNode.cfg.note);
+  /* 「整份共享状态」是共享的，但**不能整份灌进提示词**：跑了几十环的 run 有上百个键、
+     每个键最长 6000 字 —— 全列=单轮 prompt 爆炸（Token 全花在抄状态，还挤掉真正的目标）。
+     声明了输入键的按声明列全（用户点名要的）；没声明的列**全部键名**，短值直接给、
+     长文只报字数（全文用 lt_state 读，正是提示词里那行「更多用 lt_state 读」的出路）。 */
   const inKeys = ltArr(gNode.cfg.inKeys);
-  const keys = inKeys.length ? inKeys : Object.keys(flat);
+  const keys = inKeys.length ? inKeys : Object.keys(flat).slice(0, LT_STATE_LIST_MAX);
   if (keys.length) {
-    L.push("\n【当前状态（只列了声明的输入键；更多用 lt_state 读）】");
+    L.push(
+      inKeys.length
+        ? "\n【当前状态（只列了声明的输入键；更多用 lt_state 读）】"
+        : "\n【当前状态（本环节没声明输入键：下面是全部状态键；长文只报字数，看全文用 lt_state 读）】",
+    );
     for (const k of keys) {
       if (!Object.prototype.hasOwnProperty.call(flat, k)) continue;
-      L.push("- " + k + " = " + ltBrief(flat[k]));
+      L.push(inKeys.length ? "- " + k + " = " + ltBrief(flat[k]) : ltStateBriefLine(k, flat[k]));
     }
   }
   /* 产出回流：把画布上「产出节点」的现内容摆到状态之后 —— 用户改过的产出算数，
@@ -3768,7 +3967,7 @@ function ltAgentPrompt(run, path, gNode, mem) {
     if (outSec) L.push("\n【产出（以画布为准）】\n" + outSec);
   }
   if (mem && mem.length) {
-    L.push("\n【长期记忆（分级召回 · 越靠近本任务越靠前）】");
+    L.push("\n【长期记忆（本画布 AI 事实库召回 · 按命中与热度排序）】");
     for (const m of mem) L.push("- [" + m.id + " · " + m.title + "]（" + (m.layer || m.scope) + "/" + m.type + "）" + ltStr(m.body, 600));
     L.push(ltT("记忆只是提示，不是事实源；与现文件或事实库冲突时以现文件为准，并说明分歧。"));
   }
@@ -3800,16 +3999,17 @@ function ltAgentPrompt(run, path, gNode, mem) {
     /* 说在前面：漏写会被判环节失败（宿主会先自动纠错重问，但那是兜底，不是让你省这一步）。 */
     L.push(ltT("回答收尾前务必逐键确认上面这些键都已写回 —— 漏一个本环节就判失败。"));
   } else {
-    L.push(ltT("本环节没有声明输出键：把结论用 lt_memory 提议记入记忆（propose），并在正文里讲清做了什么。"));
+    L.push(ltT("本环节没有声明输出键：在正文里讲清做了什么，必要时按下面第 ② 条的 json 块把该记的结论沉淀下来。"));
   }
   L.push("");
   /* 长期记忆纪律：每个环节都要跑，不依赖本环节是否声明输出键 —— 提示词不写这一段，
-     用户说过的口径与偏好就永远进不了记忆库（本次 Bug 的唯一根因）。 */
+     用户说过的口径与偏好就永远进不了记忆库（本次 Bug 的唯一根因）。
+     lt_memory 工具已下线（长期记忆沉淀改走 mtnode_facts，见技能 mtnode-ai-facts），
+     这里只留宿主仍会回收的 json 兜底块 —— 不写会指向不存在的工具。 */
   L.push(ltT("【长期记忆纪律】每轮收尾自检一次，别把该记的东西留在会话里："));
-  L.push(ltT("① 用户明确说过的指示 / 已确认事项 / 偏好与习惯 / 术语口径 / 关键决定 —— 立即用 lt_memory 的 write 入库（用户直说，不必等确认）。"));
-  L.push(ltT("② 你自己推断出的结论 / 决定 —— 用 lt_memory 的 propose 交用户确认，别直接当既定事实写。"));
-  L.push(ltT("③ 没把握调工具时，可在正文末尾给一个 json 块兜底：{\"memory\":[{title, body, type, scope}]}（宿主会回收 memory / propose 键）。"));
-  L.push(ltT("④ 已在本轮【长期记忆】里列出的条目不要重复写。"));
+  L.push(ltT("① 用户明确说过的指示 / 已确认事项 / 偏好与习惯 / 术语口径 / 关键决定 —— 值当沉淀的用 mtnode_facts（本画布 AI 事实库）写进极简条例。"));
+  L.push(ltT("② 没把握调工具时，可在正文末尾给一个 json 块兜底：{\"memory\":[{title, body, type, scope}]}（宿主会回收 memory / propose 键）。"));
+  L.push(ltT("③ 已在本轮【长期记忆】里列出的条目不要重复写。"));
   L.push("");
   L.push(ltT("【边界】只写你自己声明的输出键；需要用户给的东西就说清楚缺什么（清单会进条带的人工任务卡）。"));
   if (gNode.cfg.canvasRead)
@@ -3817,9 +4017,17 @@ function ltAgentPrompt(run, path, gNode, mem) {
   else L.push(ltT("本环节不授权读写画布。"));
   return L.join("\n");
 }
-function ltBrief(v) {
+function ltBrief(v, max) {
   const s = typeof v === "string" ? v : JSON.stringify(v);
-  return ltStr(s == null ? "" : s, LT_VAL_MAX);
+  return ltStr(s == null ? "" : s, Number(max) || LT_VAL_MAX);
+}
+/* 自动列出的状态一行：短值直接给，长文只报字数（看全文走 lt_state）——
+   键名一个不落，内容不整份灌进提示词。 */
+function ltStateBriefLine(k, v) {
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  const t = s == null ? "" : String(s);
+  if (t.length <= LT_STATE_BRIEF) return "- " + k + " = " + t;
+  return "- " + k + ltT(" = （长文 ") + t.length + ltT(" 字符，用 lt_state 读全文）");
 }
 function ltDeliverDirOf(run, path) {
   /* 上游最近的交付节点目录（同命名空间往上看）：Agent 要知道用户给的东西落在哪 */
@@ -4040,7 +4248,7 @@ async function ltExecAgentBody(run, path, node, st) {
       : await ltMemRecall(cfg.goal || node.title, ltRunCanvas(run), ltCfg().topk);
   const prompt = ltAgentPrompt(run, path, node, mem);
   const pn = ltPseudoNode(run, path, node);
-  /* 归属登记：伪节点 id → 本轮路径。lt_state / lt_memory 的桥帧靠它反查 run 与命名空间
+  /* 归属登记：伪节点 id → 本轮路径。lt_state 的桥帧靠它反查 run 与命名空间
      （见 ltCtxOfNode）；agentNode 是老口径的同一份表，两个都写，冷启动也能对上。 */
   run.paths = run.paths || {};
   run.paths[path] = pn.id;
@@ -4382,24 +4590,62 @@ async function ltExecHuman(run, path, node) {
   ltPushWait(run, path, "approve", node);
   ltLog(run, node.title + " · " + ltT("等你审批"), "warn");
 }
+/* 自动兜底的输出文件名：<本环节标题>.md（去掉路径分隔符与 Windows 非法字符；
+   标题被清空就退回 output.md）—— 留空路径不再是失败，只是少了一份用户手写的落点。 */
+function ltOutputAutoName(node) {
+  const base = String((node && node.title) || "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "-")
+    .replace(/^[.\s]+/, "")
+    .replace(/[.\s]+$/, "")
+    .slice(0, 60);
+  return (base || "output") + ".md";
+}
+/* 落盘环节判失败时的补语：把**此刻可见的状态键**与出路一并写清 ——
+   用户报错时能直接看明白「该改哪个键 / 有没有键可选」，不用猜。 */
+function ltOutputHint(run, path, key) {
+  const L = [];
+  L.push(key ? ltT("取不到状态键「") + key + ltT("」的值（它现在不存在，或上游还没写回）") : ltT("本环节还没选要落盘的状态键"));
+  const keys = Object.keys(ltStateFlat(run, path));
+  if (keys.length) L.push(ltT("现在可见的状态键：") + keys.slice(0, 20).join("、"));
+  L.push(ltT("把「取哪个状态键 / 写到哪个文件」填对后重跑本环节即可。"));
+  return "\n" + L.join("\n");
+}
+/* 落盘环节（output）：把**一个状态键**写成一份文件。
+ * 取值口径：链上优先 → 同 run 其余环节。Agent 环节把声明键写在自己那一层
+ * （ns["<环节 id>"]），产出节点是它的**平级**，链上永远看不见 —— 用户报的
+ * 「save_report · failed：output 需要 path 与已存在的状态键」就是这条看不见。
+ * 取自链外时报一行「已自动修复」（点名是谁的键），绝不悄悄换料。
+ * 路径留空同样自动兜底（工作目录 + 本环节标题 + .md）：写不进文件才叫真失败。
+ * 两样都取不到才判失败，并把现在可见的键写进说明（见 ltOutputHint）。 */
 async function ltExecOutput(run, path, node, prefix) {
   const cfg = node.cfg;
-  const key = String(cfg.key || "");
-  const val = key ? ltStateGet(run, path, key) : undefined;
-  if (!cfg.path || val === undefined) {
-    await ltResolveErrorFinal(run, path, node, ltT("output 需要 path 与已存在的状态键"));
-    return;
-  }
+  const key = String(cfg.key || "").trim();
+  const hit = ltStateWhere(run, path, key);
   /* 相对输出路径按**本 run 所属画布**的工作目录展开（run.ws 已在首个 Agent 环节绑定；
      没跑到过 Agent 环节就用所属画布的工作目录）：用户切画布时输出不许落进别人的项目。 */
   const ws = String(run.ws || ltWfWorkspace(ltRunCanvas(run)) || "");
-  const abs = /^[A-Za-z]:[\\/]/.test(cfg.path) || !ws ? cfg.path : window.api.pathJoin(ws, cfg.path.replace(/^[\\/]+/, ""));
-  const body = typeof val === "string" ? val : JSON.stringify(val, null, 2);
+  let to = String(cfg.path || "").trim();
+  const autoPath = !to;
+  if (autoPath && hit && ws) to = window.api.pathJoin(ws, ltOutputAutoName(node));
+  if (!hit || !to) {
+    await ltResolveErrorFinal(run, path, node, ltT("output 需要 path 与已存在的状态键") + ltOutputHint(run, path, key));
+    return;
+  }
+  const abs = /^[A-Za-z]:[\\/]/.test(to) || !ws ? to : window.api.pathJoin(ws, to.replace(/^[\\/]+/, ""));
+  const body = typeof hit.value === "string" ? hit.value : JSON.stringify(hit.value, null, 2);
+  /* 自动修复留痕（键来自链外的平级环节）+ 路径兜底留痕：两条都写进运行日志，用户看得见 */
+  if (!ltStateOnChain(path, hit.path)) {
+    const src = ltNodeAt(run, hit.path);
+    ltLog(run, node.title + ltT(" · 已自动修复：状态键「") + key + ltT("」取自 ") + ltStr((src && src.title) || hit.path, 40) + "（" + String(hit.path || "") + "）", "warn");
+  }
+  if (autoPath) ltLog(run, node.title + ltT(" · 已自动修复：没填落盘路径，写到 ") + abs, "warn");
   try {
     const r = await window.api.fileWriteText(abs, body);
     if (r === false) throw new Error(ltT("写入失败"));
     ltStatePut(run, prefix, "path", abs);
-    ltSetStat(run, path, "done");
+    /* 成功即清掉上一轮留下的 err：卡片上那行 ⚠ 是按 st.err 现算的，
+       重跑成功却还挂着老错误说明，用户会当成「又出错了」（Agent 环节同样是起跑即清）。 */
+    ltSetStat(run, path, "done", { err: "" });
     ltLog(run, node.title + " · " + abs, "");
     /* 落盘内容同步写进画布上的「产出节点」（正文 + 该文件引用），用户可查阅 / 修改；
        改过以后后续环节以画布现内容为准（见 ltOutputDirty）。 */
@@ -4704,8 +4950,26 @@ async function ltEnable(wf, taskUid, opts) {
   ltEnsure(wf);
   const task = ltTaskOf(wf, taskUid) || ltActiveTask(wf);
   if (!task) return { ok: false, error: ltT("还没有长周期任务：先在条带里新建一个") };
-  const errs = ltValidate(task.graph).filter((x) => x.level === "err");
-  if (errs.length) return { ok: false, error: errs[0].msg, errs };
+  let errs = ltValidate(task.graph).filter((x) => x.level === "err");
+  let repaired = [];
+  /* 「本不该出现的 state 错误」闸（本次需求）：缺起点 / 缺终点这类是**结论性**的图问题，
+     不是用户在链条中间会遇到的状态。先就地补好（补不动才报），不让它拦住「开始长任务」；
+     补出来的新节点是普通环节，用户在图上照样能改。（补的是 task.graph 本体，写回图定义。） */
+  if (errs.length) {
+    const fix = ltAutoRepairGraph(task.graph);
+    repaired = ltArr(fix.fixes);
+    errs = ltValidate(task.graph).filter((x) => x.level === "err");
+    if (repaired.length && errs.length) {
+      return {
+        ok: false,
+        error: ltStr(repaired[repaired.length - 1], 400),
+        errs,
+        repaired,
+        hit: "repaired-partial",
+      };
+    }
+    if (errs.length) return { ok: false, error: errs[0].msg, errs, hit: "graph" };
+  }
   ltFillUids(task.graph);
   task.ver = (Number(task.ver) || 1) + 1;
   task.graph.ver = task.ver;
@@ -4723,11 +4987,12 @@ async function ltEnable(wf, taskUid, opts) {
   LT_RUNS.set(run.runId, run);
   task.activeRun = run.runId;
   ltLog(run, ltT("已启用并绑定本画布 · 图版本 v") + task.ver);
+  if (repaired.length) ltLog(run, ltT("图里缺的那一头已就地补好：") + repaired.join("；"), "warn");
   ltSave(run, true);
   ltMemSyncPending(wf.id); /* 换 run = 换候选归属：清单与当前画布的 run checkpoint 对齐（见 ltMemSyncPending） */
   ltPersistWf(wf);
   ltPump(run);
-  return { ok: true, run };
+  return { ok: true, run, repaired: repaired };
 }
 function ltFillUids(graph) {
   for (const n of ltArr(graph && graph.nodes)) {
@@ -4835,6 +5100,32 @@ function ltCurrentRun(wf) {
   if (!t || !t.activeRun) return null;
   return LT_RUNS.get(t.activeRun) || null;
 }
+/* 落盘环节的**自动修复重排队**（用户报的那条错误以后不再需要人工收拾）：
+ * 这一环的失败口径是「键 / 路径没取到」，而这两样本地就能定（引擎按整份共享状态取键、
+ * 路径留空自动兜底），重跑一次只写一个文件、**不花任何 Token**。
+ * 三条闸，一条都不许省：
+ *   ① 只认 output 环节（Agent / 子图 / map 的重跑要烧 Token，绝不自动重排）；
+ *   ② **它要的值现在真的取得到**（ltStateWhere 命中）—— 取不到就照旧留着失败，绝不猜；
+ *   ③ 这一环没有被用户手动放行过（run.fixes 里有它的记录 = 用户已对这次失败做过判断，
+ *      系统不许推翻）。 */
+function ltHealOutputNodes(run) {
+  let healed = 0;
+  for (const p of Object.keys(run.nodes || {})) {
+    const st = run.nodes[p];
+    if (!st || st.status !== "failed") continue;
+    const n = ltNodeAt(run, p);
+    if (!n || n.kind !== "output") continue;
+    if (ltArr(run.fixes).some((f) => f && String(f.path || "") === p)) continue;
+    if (!ltStateWhere(run, p, String((n.cfg && n.cfg.key) || "").trim())) continue;
+    /* 重排走**「重跑这一环」同一套跃迁**（ltRewind）：本环节与它的下游一起回 pending、
+       撤掉回跳集内部那条点火记录。只把这一环排回 pending 是不够的 —— 它跑完再点火下游时，
+       下游还停在 skipped（终态）上，run 会二次收成 stalled，变成「修了还要再点一次」。 */
+    ltRewind(run, p);
+    healed++;
+  }
+  if (healed) ltLog(run, ltT("落盘环节的失败已自动修复（状态键现在取得到），重新排队 ") + healed + ltT(" 个环节"));
+  return healed;
+}
 function ltStop(wf) {
   const run = ltCurrentRun(wf);
   if (!run) return false;
@@ -4886,6 +5177,8 @@ async function ltResume(wf, runId) {
   for (const p of Object.keys(run.nodes || {})) {
     if (run.nodes[p].status === "blocked" && run.nodes[p].err === mark) run.nodes[p].status = "pending";
   }
+  /* 落盘环节的失败现场顺手自愈一次（见 ltHealOutputNodes）：键取得到就重排，取不到就不动 */
+  ltHealOutputNodes(run);
   run.aborted = false;
   run.booted = true;
   run.status = "running";

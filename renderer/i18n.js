@@ -271,6 +271,28 @@
     "；自动补写回中 ": "; writing them back automatically ",
     "纠错轮出错：": "Repair round failed: ",
     "【自动纠错 · 补写回】": "[auto-repair · write-back]",
+    /* 长任务 Agent 提示词的【当前状态】段（app-longtask.js ltStateBriefLine）：共享状态是整份可见的，
+       但长文不整份灌进 prompt，只报字数并指向 lt_state。 */
+    " = （长文 ": " = (long text, ",
+    " 字符，用 lt_state 读全文）": " chars — read the full text with lt_state)",
+    /* 落盘环节（app-longtask.js ltExecOutput / ltOutputHint / ltOutputAutoName）：键按整份共享状态
+       找（取自平级环节时留痕）、路径留空自动兜底；两样都取不到才判失败，失败说明里带可见键清单。 */
+    "output 需要 path 与已存在的状态键": "output needs a path and an existing state key",
+    /* 续跑时的落盘环节自愈（app-longtask.js ltHealOutputNodes）：键现在取得到就重排，取不到不动 */
+    "落盘环节的失败已自动修复（状态键现在取得到），重新排队 ": "Failed write-files steps were auto-repaired (their state key is readable now); re-queued ",
+    " 个环节": " step(s)",
+    " · 已自动修复：状态键「": " · auto-repaired: state key \"",
+    "」取自 ": "\" taken from ",
+    " · 已自动修复：没填落盘路径，写到 ": " · auto-repaired: no output path set, wrote to ",
+    "取不到状态键「": "Cannot read state key \"",
+    "」的值（它现在不存在，或上游还没写回）": "\" — it does not exist yet, or no upstream step has written it back",
+    "本环节还没选要落盘的状态键": "This step has not picked a state key to save",
+    "现在可见的状态键：": "State keys visible now: ",
+    "把「取哪个状态键 / 写到哪个文件」填对后重跑本环节即可。":
+      "Fix \"which state key\" / \"which file\" and re-run this step.",
+    /* 启用前的图校验（app-longtask.js ltValidate）：落盘环节两件必填缺了先提醒 */
+    "：还没选要落盘的状态键": ": no state key picked to save",
+    "：还没填落盘路径（跑起来会兜底到工作目录）": ": no output path set (the run falls back to the workspace folder)",
     "启用并绑定": "Enable & bind",
     /* 长任务画布本轮三条（需求 1-3）：分割线按画布记 / 状态节点列子任务 / 滚轮缩放 */
     "滚轮缩放 · 点一下回到 100%": "Scroll to zoom · click to reset to 100%",
@@ -309,6 +331,9 @@
     "」：在跑的 run 会被停止，它在主画布上的交付节点会被收走，历史 run 记录一并删除。交付目录里的文件不会被删。确定删除？":
       "”: a running run is stopped, its delivery nodes on the canvas are removed, and its run history is deleted. Files in the delivery folder are NOT deleted. Delete it?",
     "重新启用（新 run）": "Re-enable (new run)",
+    /* 条带右端的「▶ 启用并绑定」提为常驻主按钮后，「⋯ 更多」里那颗同名重复项收敛成
+       「按当前图重跑」——它是 run 还活着时唯一能开新 run 的入口，名字与主按钮区分开。 */
+    "按当前图重跑": "Re-run with the current graph",
     "停用解绑": "Disable & unbind",
     "等你处理": "Waiting for you",
     "待确认记忆": "Memories to confirm",
@@ -335,6 +360,11 @@
     "这张画布还没有长任务": "This canvas has no long-running task yet",
     "（就是当前显示的这张）": " (the one currently shown)",
     " · 切到这张长任务": " · switch to this long task",
+    /* 下钻（子图 / 逐项并行）后的回程（app-longtask-ui.js ltRenderGraph）：
+       以前面包屑里只有任务切换 + 路径条目，进了子图回不到外层图，这条是补上的出路。 */
+    "← 返回外层": "← Back to outer graph",
+    "退回上一层子图；退到最外层图后这枚按钮收起":
+      "Back up one subgraph level; the button hides once you are at the outermost graph",
     "新建一张长周期任务（手动模板或交给 Agent 建图）":
       "Create a long-running task (manual template or let an agent draft the graph)",
     "新建长周期任务": "New long-running task",
@@ -350,6 +380,8 @@
        取消 = 只关窗，正文与选型都留在 localStorage，重新打开原样回填 */
     "关窗；已写的内容与 Agent 选型会保留，下次打开接着写":
       "Closes the window; what you typed and the agent picks are kept — reopen and continue.",
+    "关窗：已写的内容与 Agent 选型会保留（下次打开接着写）；会话不接回，每次打开本窗都是全新会话":
+      "Closes the window: what you typed and the agent picks are kept (reopen and continue); the session is not re-adopted — every time this window opens it is a brand-new session.",
     "Agent 选型：本次创建就用这套模型 / 预设 / 思考强度（可全部留空跟随默认；建成后仍可逐个节点改）。":
       "Agent picks: this creation uses these model / preset / thinking settings (leave all empty to follow the default; you can still change each node afterwards).",
     "模型清单还没就绪：建成后可在节点检查器里改":
@@ -390,10 +422,10 @@
     "（更早的内容在会话视图里）": "(Earlier content is in the session view)",
     "还没有图：等 Agent 问清楚并落库后，这里会出现节点 / 连线摘要与「启用并绑定」。":
       "No graph yet: once the agent has finished asking and stored it, the node / edge summary and “Enable & bind” appear here.",
-    "「稍后」只是关窗，会话不会丢：它就在左侧栏里，重新打开本窗即可接着聊。想从空白模板起步，用右上角「＋ 手动新建」。":
-      "“Later” only closes the window — the session stays in the left sidebar, reopen this window to continue. For a blank template use “＋ Create manually” at the top right.",
-    "引导会话留在左侧栏，下次打开本窗接着聊":
-      "The guide session stays in the left sidebar; reopen this window to continue.",
+    "「稍后」只是关窗，会话不会丢：它就在左侧栏里，随时能自己点开看。想从空白模板起步，用右上角「＋ 手动新建」。":
+      "“Later” only closes the window — the session stays in the left sidebar and you can open it any time. For a blank template use “＋ Create manually” at the top right.",
+    "这条引导会话留在左侧栏只作历史；下次打开本窗是一条全新会话（不继承上下文）":
+      "This guide session stays in the left sidebar as history only; reopening this window starts a brand-new session (no inherited context).",
     "来源：create_longtask 回执（已落库）":
       "Source: create_longtask receipt (stored)",
     "来源：助手回复里的图 JSON（尚未落库；点「启用并绑定」会按它新建一个任务）":
@@ -430,8 +462,13 @@
       "Switch to the agent session view to see this guide session's full history",
     "停掉正在跑的这一轮（会话留着，随时可以接着说）":
       "Stop the running round (the session stays; continue any time)",
-    "先关窗：引导会话留在左侧栏，下次打开本窗接着聊":
-      "Close for now: the guide session stays in the left sidebar; reopen this window to continue",
+    "先关窗：这条引导会话留在左侧栏只作历史；下次打开本窗是一条全新会话":
+      "Close for now: this guide session stays in the left sidebar as history only; reopening this window starts a brand-new session",
+    "按住往下拖：把输入框拉高（双击回到默认高度）":
+      "Drag down to make the input box taller (double-click to reset to the default height)",
+    /* 本次需求：新建窗每次打开都是全新会话（清空会话，不接回上一条引导会话）。 */
+    "每次打开本窗都是全新会话（不继承上次的上下文）：上一次那条引导会话留在左侧栏只作历史；你写的正文与上面的 Agent 选型会原样回来。":
+      "Every time this window opens, it is a brand-new session (no context from last time): the previous guide session stays in the left sidebar as history only, while what you typed and the agent picks above come back as-is.",
     "把想法写进下面的输入框（越具体越好），点「发送」：Agent 会先用内置技能「拷问我」，每轮在「🐋 模型等待你的回应」卡片里一次问满，你在卡片里作答；共识后它把长周期任务图落库，右栏会给图摘要与「启用并绑定」。":
       "Describe the idea in the box below (the more specific the better) and hit “Send”: the agent first loads the built-in “Grill me” skill, then asks each round's whole frontier in the “🐋 Model is waiting for your reply” card and you answer there. Once you agree, it stores the long-running-task graph, and the right column shows the graph summary with “Enable & bind”.",
     "来源：create_longtask 回执（已落库 · 任务 uid ":
@@ -561,10 +598,30 @@
     "（跟随默认）": " (follows default)",
     "没有可用的服务商": "No provider available",
     "没有可用的模型": "No model available",
+    /* 模型格按「服务商 / 路由」收窄后，控件里那个不属于该服务商的历史值
+       （老数据 / 刚换过服务商留下的裸 id）单独成组列出，说明它为什么不在本表里。 */
+    "（不属于该服务商）": "(not from this provider)",
+    /* 那个历史值原本属于哪一家：收窄后的模型格里就地说明归属（占位符 = 服务商名）。 */
+    "（属于「{route}」）": "(belongs to \"{route}\")",
     "留空 = 用全局默认预设": "Empty = use the global default preset",
     "留空 = 用全局默认思考强度": "Empty = use the global default thinking effort",
     "模型选型继承自创建时的默认（{route} · {model}）；改动任意一项即不再继承":
       "Model choice inherited from the default captured at creation time ({route} · {model}); changing any field ends the inheritance",
+    /* ── 条带头模型 chip 的选型面板（app-longtask-ui.js · ltAgentPanelOpen）──
+       chip 从「只读回显」变成「选型入口」：点它开四格（服务商路由 / 模型 / 预设 /
+       思考强度），改动即写回本任务**还留空**的那些 Agent 环节（含子图）。 */
+    "这一轮跑哪只模型（共 {n} 个 Agent 环节）": "Which model this round runs (across {n} agent steps)",
+    "改动即写回本任务全部 Agent 环节（含子图）里还留空的那几个；某一环单独指定过，就去检查器里改它":
+      "A change is written back to the agent steps of this task (subgraphs included) that are still left empty; a step you already set individually is edited in its inspector",
+    "　点这里改选型（改动即写回本任务全部 Agent 环节（含子图）里还留空的那几个）":
+      "　Click to change the model choice (a change is written back to the agent steps of this task, subgraphs included, that are still left empty)",
+    "已把 {field} 写进 {n} 个 Agent 环节（原来留空的那几个）":
+      "Wrote {field} into {n} agent step(s) that were left empty",
+    "{field}：本任务没有留空的环节（都各自指定过，去检查器里改）":
+      "{field}: no empty agent step in this task (each was set individually — change it in its inspector)",
+    "这只模型属于「{route}」：先把上面的服务商 / 路由改成它，再选模型":
+      "That model belongs to “{route}”: set the provider / route above to it first, then pick the model",
+    "模型选型控件未就绪": "The model picker control is not ready",
     "重试次数": "Retries",
     "{n} 次": "{n}×",
     "跟随全局默认 {n}": "Follow global default {n}",
@@ -638,6 +695,41 @@
     "这一环当前没有报错": "This step has no error",
     "要跳去的那一环得是图里另一个环节": "The jump target must be another step in the graph",
     "找不到该环节的图定义（图已改版？）": "This step's graph definition is missing (graph changed?)",
+    /* ── 「强行进入下一状态」（本次需求 · app-longtask.js ltForceAdvance / app-longtask-ui.js
+       ltForceAdvanceBtn）：条带头的 run 级出路。施加动作只在引擎里有一份，界面只报告结果。 ── */
+    "⏭ 强行进入下一状态": "⏭ Force next state",
+    "强行进入下一状态": "Force next state",
+    "强行推进": "Force ahead",
+    "把卡住的环节放行、把被停止的环节排回队列，让状态机按图继续往下走（下一次先试「▶ 继续」）":
+      "Let blocked steps through and requeue stopped steps so the state machine keeps moving (try “▶ Continue” first next time)",
+    "强行进入下一状态：把卡住的环节按「放行」处理（记为已跳过、照常点火下游，不假装它做成了）":
+      "Force next state: blocked steps are “let through” (marked skipped, downstream still fires — never pretending they succeeded).",
+    "被「停止」按下来的环节重新排回队列接着跑；正在等你确认的环节不动。确定继续？":
+      "Steps stopped by “Stop” are requeued to run again; steps waiting on your confirmation are left alone. Continue?",
+    "这一轮没有卡住的环节：已按「继续」恢复现场": "No blocked step in this run: restored the scene via “Continue”",
+    "这一轮已经跑完了，没有要推进的状态": "This run already finished; there is no state to advance",
+    "这一轮没有卡住的环节，也没有可推进的状态": "This run has no blocked step and no state to advance",
+    "没有启用中的长任务": "No enabled long task",
+    "已强行推进：放行 ": "Forced ahead: let through ",
+    " 个环节、": " step(s), ",
+    " 个环节重新排队": " step(s) requeued",
+    "强行推进失败": "Force-advance failed",
+    "放行失败": "Failed to let through",
+    "用户手动强行进入下一状态": "User forced the next state manually",
+    "强行进入下一状态：放行 ": "Force next state: let through ",
+    " 个卡住的环节、": " blocked step(s), ",
+    " 个被停止的环节重新排队": " stopped step(s) requeued",
+    "整个任务": "Whole task",
+    /* ── 结论性图问题就地补好（本次需求 · app-longtask.js ltAutoRepairGraph / ltEnable）──
+       「缺起点 / 缺终点 / 空图」不是链条中间的状态，而是链条立不起来；先补，补不动才说。 ── */
+    "补了一个起点（原来没有 start：任务根本没法开跑）": "Added a start node (there was no start, so the task could not begin at all)",
+    "补了一个成功终点（原来没有 end_ok：跑完无处可去）": "Added a success end (there was no end_ok, so a finished run had nowhere to go)",
+    "补了一个成功终点（原来只有失败终点：成功那条路无处可去）":
+      "Added a success end (only a failure end existed, so the success path had nowhere to go)",
+    "图里缺的那一头已就地补好：": "The missing end of the graph was patched in place: ",
+    "还有这些要你自己改：": "These still need your own fix: ",
+    "图定义不可用": "Graph definition is unusable",
+    "图是空的：先加一个 Agent 任务或人工任务": "The graph is empty: add an Agent task or a human task first",
     /* ── 一人公司 / 专家团（app-team.js · app-teamview.js · app-team-recruit.js） ── */
     " · 运行中": " · running",
     " 位专家": " experts",
@@ -1222,6 +1314,103 @@
       "Fact library module is not ready — cannot rename the document",
     "事实库模块未就绪，无法删除文档":
       "Fact library module is not ready — cannot delete the document",
+    /* ── AI 事实库（renderer/app-ai-facts.js）· 左栏入口 + 查阅弹窗 ──
+       与团队事实库（人读 md）是两套独立存储：这里是「给 AI 读的极简条例」，
+       落 <画布文件夹>/团队事实库/AI/ai-facts.json；口径见 docs/fact-library.md 与本模块文件头。 */
+    "AI 事实库": "AI fact library",
+    "{n} 条": "{n} items",
+    "AI 事实库还不可用": "The AI fact library is not available yet",
+    "先在左侧选中一张画布（AI 事实库一张画布一份），再来建库。":
+      "Select a canvas on the left first (one AI fact library per canvas), then create the library.",
+    "AI 事实库模块未就绪，无法打开":
+      "AI fact library module is not ready — cannot open it",
+    /* app-db.js handleAiFactsToolEvent 的两条：模块未装载时回给 AI 的错误文本。 */
+    "AI 事实库模块未就绪（app-ai-facts.js）":
+      "AI fact library module is not ready (app-ai-facts.js)",
+    "AI 事实库写入失败": "Failed to write the AI fact library",
+    "AI 事实库中没有该条例：": "No such entry in the AI fact library: ",
+    "当前没有绑定画布": "No canvas is bound",
+    "未知动作：": "Unknown action: ",
+    "写入需要给出 records 或 record（标题或正文不能都为空）":
+      "write needs records or record (title and body cannot both be empty)",
+    "选择画布文件夹（AI 事实库将建在此目录下的「团队事实库/AI」里）":
+      "Choose the canvas folder (the AI fact library is created in its \"团队事实库/AI\" subfolder)",
+    "选择画布文件夹…": "Choose canvas folder…",
+    "这张画布还没有画布文件夹（顶栏「工作目录」为空）。先选一个文件夹，AI 事实库就会建在它的「团队事实库/AI」里。":
+      "This canvas has no folder yet (the top bar's \"Workspace\" is empty). Pick a folder first — the AI fact library is then created in its \"团队事实库/AI\" subfolder.",
+    "条数 {n} / 上限 {cap}": "{n} entries / cap {cap}",
+    "上限": "Cap",
+    "上限（超出后先淘汰未固定 pin 的低分条例；固定（★）的永不淘汰）":
+      "Cap (when exceeded, unpinned low-score entries are evicted first; pinned ★ entries are never evicted)",
+    "上限必须是 1–1000 之间的整数": "The cap must be an integer between 1 and 1000",
+    "上限已改为 {cap}": "Cap changed to {cap}",
+    "上限已改为 {cap}，淘汰 {n} 条低分条例":
+      "Cap changed to {cap}; evicted {n} low-score entries",
+    "固定（pin）的条例已占满上限（{cap}），超额条目保留不再淘汰":
+      "Pinned entries already fill the cap ({cap}); the extras are kept and nothing is evicted",
+    "搜索条例（标题或正文）…": "Search entries (title or body)…",
+    "＋ 新建条例": "＋ New entry",
+    "标题（一行，便于检索）": "Title (one line, easy to search)",
+    "正文（给 AI 读的极简条例，一行到几行）":
+      "Body (a minimal entry for the AI to read — one to a few lines)",
+    "标题或正文不能都为空": "Title and body cannot both be empty",
+    "命中 {n}": "hits {n}",
+    "分数 {n}": "score {n}",
+    "固定这条（永不淘汰，也不受上限影响）":
+      "Pin this entry (never evicted, not subject to the cap)",
+    "取消固定（允许按分数淘汰）": "Unpin (allow eviction by score)",
+    "删除条例": "Delete entry",
+    "删除条例「{title}」？删除后不可恢复。":
+      "Delete the entry \"{title}\"? This cannot be undone.",
+    "已保存条例": "Entry saved",
+    "已更新同名条例": "Updated the existing entry with the same title",
+    "已删除条例": "Entry deleted",
+    "还没有条例": "No entries yet",
+    "没有匹配的条例": "No matching entries",
+    "换个关键词，或清空搜索框看全部。":
+      "Try another keyword, or clear the search box to see everything.",
+    "Agent 在建架构 / 建工作流时会自动把关键结论沉淀成极简条例；也可以在这里手动新增。":
+      "The agent distils key conclusions into minimal entries while building architecture or workflows; you can also add one here by hand.",
+    /* ── AI 事实库（补充口径）：类型 / 标签 / 来源 · 待确认（AI propose + 用户 confirm）·
+       零命中 7 天保护期 · 写 +0.5 权重 · 最近淘汰回看 · 导出 ── */
+    "类型（架构 / 约定 / 命令 / 坑…）":
+      "Type (architecture / convention / command / pitfall…)",
+    "标签（逗号分隔，最多 8 个）": "Tags (comma-separated, up to 8)",
+    "来源（哪份文件 / 哪次确认）": "Source (which file / which confirmation)",
+    "权重 {n}": "weight {n}",
+    "零命中保护期（剩 {n} 天）": "New-entry protection ({n} days left)",
+    "另有 {n} 条处于零命中保护期（{days} 天内不淘汰）":
+      "{n} more entries are inside the zero-hit protection window (kept for {days} days)",
+    "正文超过约 {n} 字，建议精简成一句能传意的话":
+      "The body is longer than ~{n} characters — consider trimming it to one meaningful sentence",
+    "有 {n} 条条例正文超过约 200 字，建议精简成一句能传意的话（已照常保存）：":
+      "{n} entries have a body longer than ~200 characters — consider trimming each to one meaningful sentence (saved as is): ",
+    "待确认": "Pending",
+    "待确认 {n} 条": "{n} pending",
+    "待确认（{n} 条 AI 提议）": "Pending ({n} AI proposals)",
+    "待确认的提议已超过 {cap} 条，请先确认或清掉一些":
+      "More than {cap} proposals are pending — confirm or clear some first",
+    "AI 提议": "AI proposal",
+    "确认这条 AI 提议，收进库里": "Accept this AI proposal into the library",
+    "驳回这条提议（直接删掉）": "Reject this proposal (it is deleted)",
+    "驳回": "Reject",
+    "全部确认": "Accept all",
+    "把待确认区里的提议全部收进库": "Accept every proposal in the pending area",
+    "全部驳回": "Reject all",
+    "已确认该条例": "Entry accepted",
+    "已确认 {n} 条提议": "Accepted {n} proposals",
+    "已驳回该提议": "Proposal rejected",
+    "已清空待确认区": "Pending area cleared",
+    "最近淘汰（{n} 条）": "Recently evicted ({n})",
+    "导出 AI 事实库": "Export the AI fact library",
+    "导出…": "Export…",
+    "把整库另存成一份 JSON（备份 / 迁移用）":
+      "Save the whole library as a JSON file (for backup / migration)",
+    "已导出到 {file}": "Exported to {file}",
+    "导出失败": "Export failed",
+    "库还是空的，没有可导出的条例": "The library is still empty — nothing to export",
+    "请给出画布文件夹的绝对路径": "Give an absolute path for the canvas folder",
+    "update 需要给出 id": "update needs an id",
     /* ── 审阅：插图 / 插表格（app-review.js 事实库与节点的共用工具栏） ── */
     "插入图片": "Insert image",
     "插入表格": "Insert table",
@@ -1951,6 +2140,9 @@
     "已复制请求": "Request copied",
     "已复制摘要": "Summary copied",
     "已手动停止": "Stopped manually",
+    /* 「强行进入下一状态」认「被停止 / 中断按下来」的环节要用它（app-longtask.js ltForcedNode）：
+       用户中途切过界面语言时，st.err 里那份文案是当时语言的，所以两种都要有词条。 */
+    "已中断（应用重启或任务停止）": "Interrupted (app restarted or task stopped)",
     "已新建会话": "New session created",
     "引擎未连接": "Engine not connected",
     "预览失败：": "Preview failed: ",
@@ -2539,6 +2731,12 @@
     "一句话描述（模型据此判断何时使用）": "One-line description (the model uses this to decide when to use it)",
     "运行：基于提示词与输入内容生成图像": "Run: generate an image from the prompt and input",
     "支持视觉（图片输入转为多模态消息）": "Vision (image input becomes multimodal messages)",
+    "尚未填写 DeepSeek API Key": "DeepSeek API key not set yet",
+    "首次使用请先在下方「提供商配置」里填入 Key；还没有余额可先到官方充值通道充值。":
+      "Fill in your key under Provider configuration below to get started; if you have no balance yet, top up via the official channel first.",
+    "DeepSeek 官方充值通道": "DeepSeek official top-up",
+    "还没有 API Key？官方充值通道：": "No API key yet? Official top-up channel: ",
+    "（在浏览器中打开）": " (opens in your browser)",
     "MTNode AI编排器 发生错误": "MTNode AI Orchestrator encountered an error",
     "⧗ 动画（图像 → GIF 帧动画）": "⧗ Anim (image → GIF frame animation)",
     "保存输出到本地（YAML / 图像）": "Save output locally (YAML / image)",
@@ -4108,6 +4306,8 @@
     "画布上没有节点": "No nodes on the canvas",
     "已整理排版": "Layout tidied",
     "已整理排版（含超级节点内部）": "Layout tidied (including super insides)",
+    "排版提示：「{label}」这层仍是长条（宽 {w} × 高 {h}），已尽量收窄；可删减节点或手动微调后再排。":
+      "Layout note: level “{label}” is still a long strip ({w} × {h}); it has been narrowed as much as possible — remove nodes or adjust manually and lay out again.",
     "已紧凑排版": "Compact layout applied",
     "排版失败：": "Layout failed: ",
     "隐藏线：临时把所有连线压到 95% 透明（几乎不可见），排版后看清布局；再次点击恢复":
@@ -8079,6 +8279,20 @@
     "桌面截图后端未接线（主进程未注入 fnRuntime.screenCapture）：mtnode.screenShot 暂不可用":
       "the desktop capture backend is not wired (main.js did not inject fnRuntime.screenCapture): mtnode.screenShot is unavailable",
     "未知的桌面截图动作：": "unknown desktop capture action: ",
+    "PDF 解析后端未接线（主进程未注入 fnRuntime.pdfConvert）：mtnode.readPdf 暂不可用":
+      "the PDF parsing backend is not wired (main.js did not inject fnRuntime.pdfConvert): mtnode.readPdf is unavailable",
+    "未知的 PDF 解析动作：": "unknown PDF parsing action: ",
+    "PDF 写出后端未接线（主进程未注入 fnRuntime.pdfWrite）：mtnode.writePdf 暂不可用":
+      "the PDF writing backend is not wired (main.js did not inject fnRuntime.pdfWrite): mtnode.writePdf is unavailable",
+    /* 函数运行桥（fn-runtime.js）的兜底报错两类：①「桥没接线」（主进程没注入对应
+       后端）②「未知动作」。fn-runtime 跑在 worker 线程、不 require 本文件，文案在
+       主进程 / 渲染层两个界面语言下都得有译文；未知动作的后缀 「(空)」半角括号也
+       一并给词条（桌面截图那条 unknown action 同样用它兜底）。 */
+    "mtnode 桥未接线（缺少 call）": "the mtnode bridge is not wired (missing call)",
+    "mtnode.ai：函数节点的 AI 调用后端未接线（主进程未注入 fnRuntime.aiCall）":
+      "mtnode.ai: the function node's AI call backend is not wired (main.js did not inject fnRuntime.aiCall)",
+    "未知的 mtnode 桥调用：": "unknown mtnode bridge call: ",
+    "(空)": "(empty)",
   });
 
   /* ── Puzzle 益智小游戏（app-puzzle.js 框架与顶栏入口共用 UI 词条）── */

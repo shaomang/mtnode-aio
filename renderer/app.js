@@ -216,9 +216,9 @@ const KIND_CLS = {
      系统建、用户可改可删，手动入口（右键 / 复制 / 模板 / 搜索）被 LT.LOCKED 挡掉；
      外观走 .ltout 一族，配色与既有语义见 css/longtask.css。 */
   ltout: "ltout",
-  /* 产物节点（kind ltart）：长周期任务每个环节完成时，把清点出来的产物**逐件**摆到画布上的
-     落点（一件产物一颗）。系统建、用户可删可挪；手动入口（右键 / 复制 / 模板 / 搜索）被
-     LT.LOCKED 挡掉；外观走 .ltart 一族，配色见 css/longtask.css。无端子（连不了线）。 */
+  /* 产物节点（kind ltart）：长周期任务每个环节完成时，把清点并挑出的**关键文件**逐件摆到
+     画布上的落点（一件产物一颗）。系统建、用户可删可挪；手动入口（右键 / 复制 / 模板 / 搜索）
+     被 LT.LOCKED 挡掉；外观走 .ltart 一族，配色见 css/longtask.css。无端子（连不了线）。 */
   ltart: "ltart",
   /* 音频 / 视频输入：与图像输入同族（in 青色描边），nodeElement 再补 .in-media */
   input_audio: "in",
@@ -860,8 +860,9 @@ const NODE_DEFAULTS = {
     ltPath: "",
     ltAt: 0,
   },
-  /* 产物节点（kind ltart）：长周期任务每个环节完成时，把这次跑出来的东西**逐件**摆上画布
-     （一件产物一颗，见 renderer/app-longtask-artifacts.js）。ltFile 是产物的绝对路径，
+  /* 产物节点（kind ltart）：长周期任务每个环节完成时，把这次跑出来的**关键文件**（报告文档 /
+     数据表 / 成品图）逐件摆上画布（一件一颗，见 renderer/app-longtask-artifacts.js；中间件 /
+     日志 / 音视频不占画布）。ltFile 是产物的绝对路径，
      ltType 决定渲染形态（image / video / audio / text / file），ltSize / ltMtime 供预览
      bust 与改后重读。系统建（LT.LOCKED），用户可删可挪，不参与连线。 */
   ltart: {
@@ -4276,6 +4277,14 @@ function tidyLayoutScope(nodes, opts) {
 function enterTask(node, opts) {
   opts = opts || {};
   if (!node || node.kind !== "task") return;
+  /* 进任务 = 换一层画布：先把「壳内焦点」放开（本次修复）。
+     两层焦点同时活着时，作用域判定里超级节点优先（nodeInCurrentScope 的 sf 分支），
+     于是「点了 ↪ 进了子任务」画面上却仍是那颗壳的内部，连取景都会跳到画面外的子节点
+     （enterTask 下面的 tidyLayoutScope 会 fit 本任务的子节点）；而面包屑的「← 返回」
+     先退超级节点 —— 看着像又往里进了一层，要退回外层得点两次。
+     放开后：进去就是本任务的内部画布，「← 返回」退一层即达外层；那颗壳仍留在画布上，
+     随时可再 ↪ / 双击进去（侧栏进壳那条路 focusSuperFromSidebar 照旧先摆好所属任务）。 */
+  if (currentSuperFocus()) setSuperFocus("", { render: false });
   setTaskFocus(node.id, { render: false });
   const kids = taskChildrenOf(node.id);
   if (kids.length) {
@@ -4644,13 +4653,21 @@ function renderTaskCrumb() {
     setTaskFocus("");
   };
   el.appendChild(root);
+  /* 中间这一整段「路径条目」（画布 → 任务… → 壳…）整体包一层可压缩容器（.task-crumb-path）。
+     为什么：.task-crumb 是定宽（min(38%,380px)）+ overflow:hidden 的一行，而路径条目一律
+     flex:none —— 层级一多 / 标题一长，最末尾那枚「← 返回」就被整颗裁掉，进了子任务反而
+     找不到返回外层的地方。包一层后由路径区自己压缩（条目各自可省略），返回钮永远留在
+     可见区内；层级再多也只是路径区里的条目变窄。 */
+  const path = document.createElement("span");
+  path.className = "task-crumb-path";
+  el.appendChild(path);
   if (focus) {
     const chain = taskAncestorChain(focus);
     chain.forEach((n, i) => {
       const sep = document.createElement("span");
       sep.className = "task-crumb-sep";
       sep.textContent = "/";
-      el.appendChild(sep);
+      path.appendChild(sep);
       const b = document.createElement("button");
       b.type = "button";
       b.className =
@@ -4662,7 +4679,7 @@ function renderTaskCrumb() {
         resetSuperFocus();
         enterTask(n, { toast: false });
       };
-      el.appendChild(b);
+      path.appendChild(b);
     });
   }
   if (sf) {
@@ -4676,7 +4693,7 @@ function renderTaskCrumb() {
       const sep = document.createElement("span");
       sep.className = "task-crumb-sep";
       sep.textContent = "/";
-      el.appendChild(sep);
+      path.appendChild(sep);
       const b = document.createElement("button");
       b.type = "button";
       b.className =
@@ -4687,7 +4704,7 @@ function renderTaskCrumb() {
         ev.stopPropagation();
         enterSuper(n, { toast: false });
       };
-      el.appendChild(b);
+      path.appendChild(b);
     });
   }
   const back = document.createElement("button");

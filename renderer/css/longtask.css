@@ -167,6 +167,13 @@
   flex-direction: column;
   gap: 6px;
 }
+/* 右栏 = 检查器 / 人工任务卡 / 记忆 / 交付清单，内容常比可视区高，所以它自己就是
+   条带的滚动容器。运行期它会被 ltRenderStrip() 整块重建（约 90ms 一次），
+   **滚动位置不是由浏览器锚定保的**：重建前后各走一步，按栏名把 scrollTop 记下来再贴回去
+   （app-longtask-ui.js 的 ltScrollSnapshot / ltScrollRebind / LT_SCROLL）——
+   不这么做就是「往下滚着看，手一停就被顶回顶上」（本需求）。
+   所以这里不写 overflow-anchor: none：位置的真源只有一处（LT_SCROLL 那两张表），
+   不掺浏览器那套按内容锚定的启发式，免得两边各拉一半、滚动条来回跳。 */
 .lt-right {
   flex: 1 1 38%;
   min-width: 280px;
@@ -226,6 +233,17 @@
   padding: 4px 6px;
   min-width: 24px;
 }
+/* 「⏭ 强行进入下一状态」（本次需求）：run 停在手上时的统一出路，与「▶ 继续」的主按钮区分开 ——
+   继续是「接着跑」，它是「把卡住的一次性推过去」，所以用黄档（.lt-btn-warn 同色系）而不是青。 */
+.lt-btn-force {
+  border-color: rgba(255, 209, 102, 0.5);
+  color: var(--yellow);
+}
+.lt-btn-force:hover,
+.lt-btn-force[data-hover] {
+  background: rgba(255, 209, 102, 0.16);
+  border-color: rgba(255, 209, 102, 0.85);
+}
 .lt-chip {
   flex: none;
   padding: 3px 8px;
@@ -270,16 +288,45 @@
 .lt-chip-mem[data-hover] {
   background: rgba(154, 176, 200, 0.16);
 }
-/* 当前选型 chip（本轮需求）：条带头常驻的「模型 · 预设 · 思考强度」只读回显。
+/* 当前选型 chip（本轮需求）：条带头常驻的「模型 · 预设 · 思考强度」回显。
    AI 紫（#c792ea，与功能色卡的 ai 同色）与状态 chip 的橙 / 青 / 绿 / 红一眼分开 ——
-   它说的是「用哪只模型」，不是「跑到哪一步了」。完整路由 · 模型 · 预设 · 强度在 title。 */
+   它说的是「用哪只模型」，不是「跑到哪一步了」。它**同时是选型入口**（本轮需求）：
+   点它开四格面板（.lt-mdl），所以是可点件，悬停态按可点件口径写 `:hover, [data-hover]`
+   两路（与其它 .lt-chip 一视同仁：条带重建后悬停标要能续上，不然运行期一直闪）。 */
 .lt-chip-model {
   border-color: rgba(199, 146, 234, 0.55);
   color: #c792ea;
-  cursor: default;
+  cursor: pointer;
 }
-.lt-chip-model:hover {
+.lt-chip-model:hover,
+.lt-chip-model[data-hover],
+.lt-chip-model.on {
   background: rgba(199, 146, 234, 0.14);
+  border-color: rgba(199, 146, 234, 0.85);
+}
+
+/* ── 模型 chip 的选型面板（renderer/app-longtask-ui.js · ltAgentPanelOpen）──
+   挂在 .lt-more-pop 这只瞬时菜单里的自定义内容块（ltMenuOpen 的 { el } 项）：
+   四格走可搜索下拉控件（.lt-sel / .lt-f 原样复用），所以这里只给面板自身的
+   宽度、间距与抬头；下拉清单仍是文档流，不会被裁。
+   min-width 比 .lt-more-pop 的 190 宽一些：四格的 label + 输入框挤在 190 里会换行。 */
+.lt-mdl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 268px;
+  max-width: 320px;
+  padding: 2px 2px 4px;
+}
+.lt-mdl-h {
+  font: 700 11px/1.5 var(--sans);
+  color: #c792ea;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--bd2);
+}
+/* 面板里的下拉清单比检查器里更靠下：面板本身就在浮层里，清单再叠一层给足高度 */
+.lt-mdl .lt-sel-pop {
+  max-height: 180px;
 }
 
 /* ── 空态（画布未绑定长任务时给创建入口 · 需求 4 末句）──────────── */
@@ -349,6 +396,24 @@
 }
 .lt-crumb-i:last-child::after {
   content: "";
+}
+/* 下钻态末尾跟着「← 返回外层」（见 ltRenderGraph）：末尾那件不再是「最后一层路径」，
+   所以上面:last-child 收不住它的 ▸ —— 这里按「后面跟的是返回按钮」再收一次，
+   免得当前这一层后面挂着一个「里面还有一层」的箭头（其实是退出去的动作）。 */
+.lt-crumb-i.on:has(+ .lt-crumb-back)::after {
+  content: "";
+}
+/* 「← 返回外层」不是路径里的一个层级，而是「退出去」的动作：比路径条目亮一档、
+   常态就带一圈边（层级再多也总在面包屑里点得着）。悬停两路沿用 .lt-crumb-i 那一份
+   （:hover, [data-hover]），它本身就是 .lt-crumb-i 的一员。 */
+.lt-crumb-back {
+  color: var(--cyan2);
+  border-color: var(--bd);
+}
+.lt-crumb-back:hover,
+.lt-crumb-back[data-hover] {
+  color: var(--ink);
+  border-color: var(--cyan);
 }
 /* 根条目 = 当前长任务名（本次需求：以前这里写死「主图」）。它同时是**任务切换入口**，
    所以比中间那些「路径条目」重一档（字色更亮），并在名字后面自带宽窄不变的 ▾（写在
@@ -1782,9 +1847,18 @@ body.theme-light .lt-edge-label {
 }
 
 /* ══ 新建窗里的「Agent 引导建图」（renderer/app-longtask-guide.js）════════
-   #ltcMain 由虚线占位改成实打实的工作区：左 = 会话消息流 + 输入行，
-   右 = 状态 / 图摘要 / 「启用并绑定」与出口。会话流复用 dshMsgBlock，
-   所以消息本体样式仍归 css/dsh.css，这里只管这块工作区的骨架。 */
+   #ltcMain 由虚线占位改成实打实的工作区：
+   左 = **会话消息流** + 拖高的分隔条 + **底部整行输入 / 发送**，右 = 状态 / 图摘要 /
+   「启用并绑定」与出口。会话流复用 dshMsgBlock，所以消息本体样式仍归 css/dsh.css，
+   这里只管这块工作区的骨架。
+
+   「发送框在下方」是本次需求：它原来是左栏第一格（消息流上面），用户要的是会话消息的
+   发送放在底部；同时它**不许溜到右边去** —— 发送行必须整行待在左栏里，输入框按 flex
+   收缩铺满（.ltg-ta 的 flex 由 app-longtask-guide.js 的 ltgInputApply 写 inline 的
+   flex:1 1 auto；写成 flex:none 就会以 textarea 默认内在宽为基准、把发送按钮挤出左栏
+   压在右栏上），左栏自己再兜一道 overflow:hidden，任何时候都不会横向顶出栏外。
+   DOM 顺序 = conv → split → row：消息流在上、发送框在最下，拖高只从输入框那边分走
+   高度（.ltg-conv 的 min-height:0 + overflow:auto 让消息流先缩）。 */
 .ltc-main.ltg-host {
   align-items: stretch;
   justify-content: flex-start;
@@ -1807,11 +1881,103 @@ body.theme-light .lt-edge-label {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* 横向兜底：发送行再怎么算也不会把内容顶出左栏去压右栏（用户报障：发送跑到右边出界）。
+     纵向留给 flex 分配（.ltg-conv 的 min-height:0 让消息流先让位），不设 overflow-y。
+     ✱ 这里必须是 clip，不能是 hidden（本次修复的真根因）：按 CSS 规范，一轴写 hidden 时
+     另一轴的 visible 会被抬成 auto —— 左栏就被悄悄变成一个纵向滚动容器。而全局
+     `button:active { transform: translateY(1px) }`（css/layout.css）在**按下发送键的那一帧**
+     把发送按钮（左栏最后一格）的下沿顶出 1px，正好让左栏溢出 1px → 发送按钮右缘立刻冒出
+     一条滚动条，还把整栏内容挤窄 10px（用户报障：消息框点发送，鼠标按下瞬间右侧出现滚动条）。
+     实测（真跑应用 + CDP 逐帧量）：按下那一帧 .ltg-left clientWidth 1028 → 1018、
+     scrollHeight 507 → 508；改成 clip 后按下仍是 1028/1028，滚动条不再出现。
+     clip 不是滚动容器（纵向保持 visible）：横轴照样裁住，纵轴任何 1px 生长都不再顶出滚动条。
+     下面那 1px 下内边距是配套的：按下位移要落在**有地方**的地方 —— 不留这 1px，按钮下沿
+     会正好压在左栏下沿上，press 时那 1px 就被 clip 裁掉（不冒滚动条了，但按钮底边少一行）。
+     留一像素余量后：按下时按钮正好落进这一格，既不越界、也不被裁。 */
+  padding-bottom: 1px;
+  overflow-x: clip;
+}
+/* 发送行：整行占满左栏、待在会话流下面（左栏最后一格；width 兜 100%，
+   框自己再由 ltgInputApply 写在 inline 上的 flex:1 1 auto + width:100% 铺满除按钮外的全部） */
+.ltg-row {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+/* 输入框：高度由 app-longtask-guide.js 的 ltgInputApply 写在 inline style 上
+   （flex:1 1 auto + 具体 px），所以这里不设 height / max-height —— 只兜一个下限，
+   免得 inline 高度还没落上的那一帧被压没。resize:none = 上面那条 .ltg-split
+   才是唯一的拖高入口。 */
+.ltg-ta {
+  flex: 1 1 auto;
+  /* width 与 inline 那份（ltgInputApply 写 100%）同值：宽度归 inline 表达，
+     inline 缺席（还没落上的那一帧）或写成 flex:none 时，这里兜住同一份宽度。 */
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  resize: none;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--fg);
+  font: 400 12px/1.6 var(--sans);
+}
+.ltg-ta:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+/* 发送框上沿的拖高分隔条：往下拖 = 输入框变高（双击回到默认高度）。
+   观感对齐会话左栏拖手 / 长任务细线：常态细线 + hover 高亮 + 中间一道短杠。 */
+.ltg-split {
+  flex: none;
+  position: relative;
+  height: 12px;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  opacity: .7;
+  transition: opacity .12s, background-color .12s;
+}
+.ltg-split::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 46px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+.ltg-split:hover,
+.ltg-split.dragging {
+  opacity: 1;
+  background: rgba(128, 128, 128, .14);
+}
+.ltg-split:hover::after,
+.ltg-split.dragging::after {
+  background: var(--cyan);
+}
+/* 拖动中：整窗光标锁成上下箭头、禁选，指针划出分隔条也不丢跟手感 */
+body.ltg-split-drag {
+  cursor: ns-resize;
+  user-select: none;
 }
 .ltg-conv {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
   overflow: auto;
+  /* 滚动条槽恒定预留（本次修复）：空窗时消息流装得下，发出第一条消息后内容一高，
+     滚动条才第一次出现 —— 那一刻正好压在「点发送」的手底下，紧贴会话区右缘冒出来一条，
+     还会把消息挤窄 10px（同 .n-prompt / .fp-scroll 那份口径）。
+     stable = 无论出不出滚动条，内容宽度都一样：本条只把滚动条的**出现**去掉，
+     不隐藏滚动条本身（消息多了照样能滚）。 */
+  scrollbar-gutter: stable;
   padding: 6px 4px;
   border: 1px solid var(--bd2);
   border-radius: 8px;
@@ -1833,35 +1999,13 @@ body.theme-light .lt-edge-label {
   color: var(--muted);
   font: 400 11px/1.6 var(--sans);
 }
-.ltg-row {
-  flex: none;
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-.ltg-ta {
-  flex: 1;
-  min-width: 0;
-  min-height: 54px;
-  max-height: 160px;
-  resize: vertical;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid var(--bd2);
-  border-radius: 8px;
-  background: var(--panel2);
-  color: var(--fg);
-  font: 400 12px/1.6 var(--sans);
-}
-.ltg-ta:focus {
-  outline: none;
-  border-color: var(--cyan);
-}
 .ltg-right {
   flex: none;
   width: 330px;
   min-height: 0;
   overflow: auto;
+  /* 与左栏同一口径：图摘要 / 提示长出来时不让内容宽度抖（脚本顺序与主栏一致） */
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 8px;

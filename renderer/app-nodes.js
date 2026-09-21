@@ -13260,8 +13260,11 @@ function collectCanvasEditToolKeys(params) {
   const removeMarksList = Array.isArray(params.removeMarks)
     ? params.removeMarks
     : [];
+  /* agent 驱动编辑的自动排版闸：建图 / 连线 / 改标注 / 删除 / 改尺寸 → 自动排版；
+     用户自己拖动或表单改 x/y 不走 applyCanvasEdit，天然不触发。 */
+  const wantsLayout = canvasEditWantsLayout(params, creates);
   const doLayout =
-    params.layout === true || (params.layout !== false && creates.length > 0);
+    params.layout === true || (params.layout !== false && wantsLayout);
   const aliasKind = new Map();
   for (const spec of creates) {
     if (!spec) continue;
@@ -14960,40 +14963,620 @@ function alignLayerToParents(col, inEdges, nodeMap, gapY, originY, outEdges) {
   resolveLayerOverlaps(col, gapY);
 }
 
+/* ============ 新版自动排版引擎（2026 · 替代旧分层装箱） ============
+   目标（与需求一一对应，调用方 = agent 自动编辑 / 一键排版 / 局部排版 / 壳内排版）：
+     ① 每个可排层级的整体包围盒收进 16:9 ~ 9:16；
+     ② 连线节点就近（层内重心排序 + 跨层纵向对齐），上游在左或上，
+        交叉只做「重心 + 局部搜索」的廉价近似，不跑最优解；
+     ③ 整块形状聚集、尽量接近正方形（紧凑间距 + 长宽比收敛）；
+     ④ 优化只用「贪心分层 + 有限次局部搜索（8 趟内、60ms 上限、确定性）」。
+
+   管线：分层（layoutEdgeSets + assignLayoutLayers + orderLayersByBarycenter）
+        → 层/列放置（超宽层折行，列内按邻居中心垂直对齐）
+        → 孤立节点填空（就近可编辑区）
+        → 局部搜索（同列交换 / 单节点微调 / 全局间距缩放，按目标函数取最优）
+        → 长宽比收敛（先间距、后只缩 >480px 的大节点，小节点不动）
+        → 收尾（平移避障 + 兜底防重叠，原有能力）。
+
+   注：本轮需求限定「用户自己的手动编辑不触发排版」——本引擎只在排版按钮与
+   agent 驱动的画布编辑里跑；applyCanvasEdit 的触发闸见 canvasEditWantsLayout。 */
+
+/** 长宽比目标：宽高比落在 [1/R, R] 内视为「方形聚集」（R=16/9） */
+const LAYOUT_RATIO_R = 16 / 9;
+/** 只缩这个尺寸以上的节点（需求：硬约束优先时可缩节点，但小节点不动） */
+const LAYOUT_SHRINK_MIN = 480;
+/** 缩大节点的最大倍率：只对大节点生效，小节点一律不动 */
+const LAYOUT_SHRINK_MAX = 1.5;
+/** 节点尺寸下限（比这更小就不缩了，宁可放宽长宽比） */
+const LAYOUT_MIN_W = 160;
+const LAYOUT_MIN_H = 120;
+/** 局部搜索趟数与时限（「不要消耗资源过多」的硬预算） */
+const LAYOUT_REFINE_PASS = 8;
+const LAYOUT_REFINE_MS = 60;
+/** 长宽比收敛后仍差到多少倍才放弃（放弃 → 告警，不硬压） */
+const LAYOUT_RATIO_GIVEUP = LAYOUT_RATIO_R * 1.5;
+/** 列内纵向间距不超过这个值：硬塞成 3000px 高的竖列只是换了个难看的长条 */
+const LAYOUT_MAX_STACK_H = 2600;
+/** 长宽比惩罚权重：让局部搜索愿意为「更方」付一点连线代价 */
+const LAYOUT_COST_ASPECT = 0.35;
+/** 排完这层是否满足 16:9 ~ 9:16（以「可见尺寸」计，含展开的壳层） */
+function layoutRatioOk(w, h) {
+  if (!(w > 0) || !(h > 0)) return true;
+  const r = w / h;
+  return r <= LAYOUT_RATIO_R && r >= 1 / LAYOUT_RATIO_R;
+}
+function layoutNodeShrinkable(n) {
+  const sz = layoutNodeSize(n);
+  return Math.max(sz.w, sz.h) > LAYOUT_SHRINK_MIN;
+}
+/** 层内纵向放置顺序：邻居中心均值（入边权重 2 / 出边权重 1）→ 越靠上的排越前 */
+function layoutVerticalKey(n, inEdges, allIn, allOut, centerOf) {
+  let sum = 0,
+    wsum = 0;
+  const acc = (id, w) => {
+    const c = centerOf(id);
+    if (c == null) return;
+    sum += c * w;
+    wsum += w;
+  };
+  for (const id of allIn[n.id] || []) acc(id, 2);
+  for (const id of allOut[n.id] || []) acc(id, 1);
+  return wsum ? sum / wsum : null;
+}
+function layoutSortColumn(col, inEdges, allIn, allOut, centerOf) {
+  const keyed = col.map((n, i) => ({
+    n,
+    i,
+    k: layoutVerticalKey(n, inEdges, allIn, allOut, centerOf),
+  }));
+  keyed.sort((a, b) => {
+    if (a.k != null && b.k != null && Math.abs(a.k - b.k) > 1) return a.k - b.k;
+    /* 无邻居 / 邻居位置相同的并列项：用户可编辑 / 控制的节点靠上（沿用旧口径） */
+    const pr = layoutNodePriority(a.n) - layoutNodePriority(b.n);
+    if (pr) return pr;
+    return a.i - b.i;
+  });
+  return keyed.map((x) => x.n);
+}
+function layoutColumnWidth(col) {
+  return Math.max(40, ...(col || []).map((n) => layoutNodeSize(n).w));
+}
+function layoutColumnHeight(col, gapY) {
+  if (!col || !col.length) return 0;
+  return col.reduce((s, n) => s + layoutNodeSize(n).h, 0) + gapY * (col.length - 1);
+}
+/** 折几行最像正方形（需求 ①③）：n 列按行均分，模拟每种行数的包围盒，
+ *  取「宽高比最贴近 16:9」的那种；并列时取行数少的（更扁平、更好读）。
+ *  rowGap 必须与真正装箱时用的行间距一致（列装箱用 gapY*1.6、组件装箱用 compGapY），
+ *  否则估出来的比值和落地的比值对不上，拐点会选错。 */
+function layoutPickRows(n, colW, colH, gapX, rowGap) {
+  if (n <= 1) return 1;
+  const blockOf = (R) => {
+    const per = Math.ceil(n / R);
+    let w = 0;
+    let h = 0;
+    let rowW = 0;
+    let rowH = 0;
+    let cnt = 0;
+    for (let i = 0; i < n; i++) {
+      if (cnt === per) {
+        w = Math.max(w, rowW);
+        h += rowH + rowGap;
+        rowW = 0;
+        rowH = 0;
+        cnt = 0;
+      }
+      rowW += colW[i] + gapX;
+      rowH = Math.max(rowH, colH[i]);
+      cnt++;
+    }
+    w = Math.max(w, rowW);
+    h += rowH;
+    return { w: Math.max(1, w), h: Math.max(1, h) };
+  };
+  let bestR = 1;
+  let bestScore = Infinity;
+  for (let R = 1; R <= n; R++) {
+    const b = blockOf(R);
+    const r = b.w / b.h;
+    const inside = r <= LAYOUT_RATIO_R && r >= 1 / LAYOUT_RATIO_R;
+    const score = (inside ? 0 : 10) + Math.abs(Math.log(r / LAYOUT_RATIO_R));
+    if (score < bestScore - 1e-9) {
+      bestScore = score;
+      bestR = R;
+    }
+  }
+  return bestR;
+}
+function layoutPlaceLayer(nodes, wires, origin, opts) {
+  opts = opts || {};
+  const gapX = opts.gapX != null ? opts.gapX : 80;
+  const gapY = opts.gapY != null ? opts.gapY : 48;
+  /* hard 边（无环）决定分层；all 边（含软约束）决定减交叉与垂直靠拢 */
+  const { inEdges, outEdges, allIn, allOut } = layoutEdgeSets(nodes, wires);
+  const cols = assignLayoutLayers(nodes, inEdges, outEdges);
+  orderLayersByBarycenter(cols, allIn, allOut);
+  const placed = new Map();
+  const filled = [];
+
+  /* ── 需求 ②③：列顺序 = 层顺序，再把列从左到右、逐行往下折 ──────────────
+     列的先后 = 层的先后，绝不重排（这是「上游在左或在上」的充分条件）：
+     每条硬边都从层号小的节点指向层号大的节点；两列要么在同一行里靠左，
+     要么落在更下面的行里 —— 两种情形都满足需求 ②，不靠任何启发式去凑。
+     折几行由「宽高比最贴近 16:9」决定（需求 ①③）；某一层比行还高时，
+     把它拆成并排子列（层内顺序不动），避免出现一根竖塔。 */
+  const base = [];
+  cols.forEach((col) => {
+    if (col && col.length) base.push({ col: col });
+  });
+  if (!base.length) return nodesBBox(nodes);
+  const maxColH0 = Math.max(40, ...base.map((g) => layoutColumnHeight(g.col, gapY)));
+  const colSplitH = Math.max(900, Math.min(LAYOUT_MAX_STACK_H, maxColH0));
+  const columns = [];
+  for (const g of base) {
+    const h = layoutColumnHeight(g.col, gapY);
+    const need = h > colSplitH ? Math.ceil(h / colSplitH) : 1;
+    const per = Math.max(1, Math.ceil(g.col.length / need));
+    for (let i = 0; i < g.col.length; i += per)
+      columns.push({ col: g.col.slice(i, i + per) });
+  }
+  const colW = columns.map((c) => layoutColumnWidth(c.col));
+  const colH = columns.map((c) => layoutColumnHeight(c.col, gapY));
+  const rows = layoutPickRows(columns.length, colW, colH, gapX, gapY * 1.6);
+  const perRow = Math.max(1, Math.ceil(columns.length / rows));
+  let y = origin.y;
+  for (let i0 = 0; i0 < columns.length; i0 += perRow) {
+    const slice = columns.slice(i0, i0 + perRow);
+    let cx = origin.x;
+    let rowH = 0;
+    for (const c of slice) {
+      /* 列内纵序：无邻居位置可参时退化为「可编辑 / 控制节点靠上」 */
+      const sorted = layoutSortColumn(c.col, inEdges, allIn, allOut, () => null);
+      let cy = y;
+      for (const n of sorted) {
+        const sz = layoutNodeSize(n);
+        n.x = snap(cx);
+        n.y = snap(cy);
+        placed.set(n.id, n);
+        cy += sz.h + gapY;
+      }
+      rowH = Math.max(rowH, cy - gapY - y);
+      cx += layoutColumnWidth(sorted) + gapX;
+    }
+    y += rowH + gapY * 1.6;
+  }
+  /* 列内按邻居中心再收一遍：连线更短、交叉更少（x 不变，列结构不破） */
+  {
+    const pairList = [];
+    const seenPair = new Set();
+    for (const n of nodes) {
+      for (const t of outEdges[n.id] || []) {
+        const k = n.id + "\u0000" + t;
+        if (seenPair.has(k)) continue;
+        seenPair.add(k);
+        pairList.push({ from: n.id, to: t });
+      }
+    }
+    layoutStackColumnsToNeighbors(nodes, pairList, gapY);
+  }
+  /* 孤立（无连线）节点：不散落，补在既有内容的右侧、与首列同高 */
+  for (const n of nodes) if (placed.has(n.id)) filled.push(n);
+  if (placed.size < nodes.length) {
+    let fx = origin.x;
+    let fy = origin.y;
+    const bb0 = nodesBBox(filled);
+    if (bb0) {
+      fx = snap(bb0.maxX + gapX);
+      fy = snap(bb0.minY);
+    }
+    let cx = fx;
+    let cy = fy;
+    let colH = 0;
+    for (const n of nodes) {
+      if (placed.has(n.id)) continue;
+      const sz = layoutNodeSize(n);
+      if (colH + sz.h > LAYOUT_MAX_STACK_H && cy > fy) {
+        cx += gapX + 320;
+        cy = fy;
+        colH = 0;
+      }
+      n.x = snap(cx);
+      n.y = snap(cy);
+      placed.set(n.id, n);
+      cy += sz.h + gapY;
+      colH += sz.h + gapY;
+    }
+  }
+  return nodesBBox(nodes);
+}
+/** 列内「靠拢邻居中心」的优先级收尾 —— 缩小连线跨度、间接减交叉。
+ *  x 不动（列结构 = 层顺序，是硬约束），列的纵向起点也不动（免得长到下一行去），
+ *  只把列内节点重排：按「邻居中心均值」定序。
+ *  每趟只在「中心连线交叉数变少，或交叉持平而总代价变小」时接受，否则整体回退。
+ *  确定性、无随机；2 趟足够。 */
+function layoutStackColumnsToNeighbors(nodes, pairs, gapY) {
+  if (typeof layoutCostOf !== "function" || typeof layoutSegCross !== "function") return;
+  if (nodes.length < 3) return;
+  /* 需求 ④（有界优化）：这一步要对每列做交叉度量（O(连线²)），大图上不划算 ——
+     总工作量按「连线² × 列数」封顶，超了就停手（按规模算，不看时钟，保证确定性）。 */
+  const workCap = 150000;
+  const perTrial = pairs.length * pairs.length + pairs.length * nodes.length;
+  let work = 0;
+  const inCol = new Map();
+  for (const n of nodes) {
+    if (!inCol.has(n.x)) inCol.set(n.x, []);
+    inCol.get(n.x).push(n);
+  }
+  const centerOf = (id) => {
+    const m = nodes.find((x) => x.id === id);
+    if (!m) return null;
+    const sz = layoutNodeSize(m);
+    return { x: m.x + sz.w / 2, y: m.y + sz.h / 2 };
+  };
+  const crossNow = () => {
+    let c = 0;
+    for (let i = 0; i < pairs.length; i++) {
+      for (let j = i + 1; j < pairs.length; j++) {
+        const a = pairs[i],
+          b = pairs[j];
+        if (a.from === b.from || a.to === b.to || a.from === b.to || a.to === b.from) continue;
+        const ca = centerOf(a.from),
+          cb = centerOf(a.to),
+          cc = centerOf(b.from),
+          cd = centerOf(b.to);
+        if (!ca || !cb || !cc || !cd) continue;
+        if (layoutSegCross(ca.x, ca.y, cb.x, cb.y, cc.x, cc.y, cd.x, cd.y)) c++;
+      }
+    }
+    return c;
+  };
+  let bestCross = crossNow();
+  let bestCost = layoutCostOf(nodes, pairs, null);
+  for (let pass = 0; pass < 2; pass++) {
+    for (const col of inCol.values()) {
+      if (col.length < 2) continue;
+      if (work + perTrial > workCap) return; /* 预算到顶：保留已接受的结果，直接收手 */
+      work += perTrial;
+      const want = new Map();
+      for (const n of col) {
+        let sum = 0,
+          k = 0;
+        for (const p of pairs) {
+          const other = p.from === n.id ? p.to : p.to === n.id ? p.from : null;
+          if (!other) continue;
+          const c = centerOf(other);
+          if (!c) continue;
+          sum += c.y;
+          k++;
+        }
+        want.set(n.id, k ? sum / k : n.y + layoutNodeSize(n).h / 2);
+      }
+      const before = col.map((n) => ({ n, y: n.y }));
+      /* 列的起始 y 保持不变：只换顺序，不让这一列长到下一行的地盘里 */
+      const top = Math.min(...col.map((n) => n.y));
+      const order = col.slice().sort((a, b) => want.get(a.id) - want.get(b.id) || a.y - b.y);
+      let cy = top;
+      for (const n of order) {
+        n.y = snap(cy);
+        cy += layoutNodeSize(n).h + gapY;
+      }
+      const c = crossNow();
+      const cost = layoutCostOf(nodes, pairs, null);
+      if (c < bestCross || (c === bestCross && cost < bestCost - 1e-6)) {
+        bestCross = c;
+        bestCost = cost;
+      } else {
+        for (const b of before) b.n.y = b.y;
+      }
+    }
+  }
+}
+
+/* 两条「节点中心连线」是否交叉 —— 交叉度量用（不做精确几何，够用且便宜） */
+function layoutSegCross(ax, ay, bx, by, cx, cy, dx, dy) {
+  const d = (ax - bx) * (cy - dy) - (ay - by) * (cx - dx);
+  if (!d) return false;
+  const t = ((ax - cx) * (cy - dy) - (ay - cy) * (cx - dx)) / d;
+  const u = ((ax - cx) * (ay - by) - (ay - cy) * (ax - bx)) / d;
+  return t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98;
+}
+function layoutCrossPairs(items) {
+  let n = 0;
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i],
+        b = items[j];
+      if (a.from === b.from || a.to === b.to || a.from === b.to || a.to === b.from) continue;
+      if (layoutSegCross(a.fx, a.fy, a.tx, a.ty, b.fx, b.fy, b.tx, b.ty)) n++;
+    }
+  }
+  return n;
+}
+/** 点到线段距离（排版代价用，够精确且便宜） */
+function layoutPointSegDist(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const L2 = dx * dx + dy * dy;
+  if (!L2) return Math.hypot(px - x1, py - y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / L2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+const LAYOUT_DIR_PEN = 0.6;
+/** 目标函数 ②+③：交叉 / 上游方向 / 就近（连线长度）/ 连线穿块 / 锚点位移。
+ *  长宽比不进目标函数 —— 它是「最后收敛」的约束（间距 + 缩大节点）；
+ *  若当成代价项，优化器会靠「把所有节点塞进一列」把比值打正，图会彻底散架。 */
+function layoutCostOf(nodes, pairs, anchors) {
+  const map = new Map();
+  for (const n of nodes) map.set(n.id, n);
+  const items = [];
+  let len = 0;
+  let dir = 0;
+  for (const p of pairs) {
+    const a = map.get(p.from);
+    const b = map.get(p.to);
+    if (!a || !b) continue;
+    const sa = layoutNodeSize(a);
+    const sb = layoutNodeSize(b);
+    const ax = a.x + sa.w / 2,
+      ay = a.y + sa.h / 2,
+      bx = b.x + sb.w / 2,
+      by = b.y + sb.h / 2;
+    items.push({ from: p.from, to: p.to, fx: ax, fy: ay, tx: bx, ty: by });
+    len += Math.sqrt(Math.abs(bx - ax) * Math.abs(bx - ax) + Math.abs(by - ay) * Math.abs(by - ay));
+    /* 规则 2：上游必须在左边或上边（允许 ±40px 容差，不强求严格列对齐） */
+    if (ax > bx + 40 && ay > by + 40) dir++;
+  }
+  /* 连线穿块：直线从无关方块身上跨过去 —— 真实画布可辨性的主指标 */
+  let pen = 0;
+  for (const it of items) {
+    for (const n of nodes) {
+      if (n.id === it.from || n.id === it.to) continue;
+      const sz = layoutNodeSize(n);
+      const cx = n.x + sz.w / 2;
+      const cy = n.y + sz.h / 2;
+      if (layoutPointSegDist(cx, cy, it.fx, it.fy, it.tx, it.ty) < Math.min(sz.w, sz.h) / 2) pen++;
+    }
+  }
+  const bb = nodesBBox(nodes);
+  const spread = bb ? Math.max(1, bb.maxX - bb.minX + (bb.maxY - bb.minY)) : 1;
+  let anchor = 0;
+  if (anchors) {
+    for (const n of nodes) {
+      const a = anchors.get(n.id);
+      if (!a) continue;
+      anchor += Math.abs(n.x - a.x) + Math.abs(n.y - a.y);
+    }
+  }
+  const cnt = Math.max(1, items.length);
+  const cntAll = Math.max(1, nodes.length);
+  const span = Math.max(1, spread);
+  return (
+    layoutCrossPairs(items) * 10 +
+    dir * 6 * cntAll +
+    pen * 2 * cnt +
+    (len / cnt / span) * 6 +
+    (anchor / cntAll / (span * 0.02)) * 6
+  );
+}
+/** 规则 ③：间距整体缩放 —— 每趟把「全局间距系数」换一档，取目标函数最优的一档 */
+const LAYOUT_SPREAD_STEPS = [1, 0.9, 0.8, 1.15, 1.3, 0.95, 1.06];
+function layoutRelaxWithScale(nodes, origin, scale) {
+  for (const n of nodes) {
+    n.x = snap(origin.x + (n.x - origin.x) * scale);
+    n.y = snap(origin.y + (n.y - origin.y) * scale);
+  }
+}
+function layoutRefinePlacement(nodes, pairs, anchors, opts) {
+  if (!nodes || nodes.length < 3) return;
+  opts = opts || {};
+  const budget = opts.budget != null ? opts.budget : LAYOUT_REFINE_MS;
+  const t0 = Date.now();
+  const bb0 = nodesBBox(nodes);
+  const origin = bb0 ? { x: snap(bb0.minX), y: snap(bb0.minY) } : { x: 0, y: 0 };
+  const neigh = new Map();
+  const addN = (a, b) => {
+    if (!neigh.has(a)) neigh.set(a, new Set());
+    neigh.get(a).add(b);
+  };
+  for (const p of pairs) {
+    addN(p.from, p.to);
+    addN(p.to, p.from);
+  }
+  let best = layoutCostOf(nodes, pairs, anchors);
+  const posOf = (n) => ({ x: n.x, y: n.y });
+  const apply = (fn) => {
+    const before = nodes.map(posOf);
+    fn();
+    const c = layoutCostOf(nodes, pairs, anchors);
+    if (c < best - 1e-6) {
+      best = c;
+      return true;
+    }
+    nodes.forEach((n, i) => {
+      n.x = before[i].x;
+      n.y = before[i].y;
+    });
+    return false;
+  };
+  /* 同列候选集：按 x 分组后逐对交换（O(Σ col²) 且每轮只接受真变好的） */
+  const groups = new Map();
+  for (const n of nodes) {
+    const key = Math.round(n.x / 8) * 8;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(n);
+  }
+  const nx = (v) => snap(v);
+  for (let pass = 0; pass < LAYOUT_REFINE_PASS; pass++) {
+    if (Date.now() - t0 > budget) break;
+    let improved = false;
+    for (const g of groups.values()) {
+      if (g.length < 2) continue;
+      for (let i = 0; i < g.length; i++) {
+        for (let j = i + 1; j < g.length; j++) {
+          if (Date.now() - t0 > budget) break;
+          const a = g[i],
+            b = g[j];
+          const ax = a.x,
+            ay = a.y,
+            bx = b.x,
+            by = b.y;
+          if (apply(() => {
+            a.x = bx;
+            a.y = by;
+            b.x = ax;
+            b.y = ay;
+          }))
+            improved = true;
+        }
+      }
+      /* 列内微调：贴邻居中心（就地挪一格再看是否变好） */
+      for (const n of g) {
+        if (Date.now() - t0 > budget) break;
+        const ns = neigh.get(n.id);
+        if (!ns || !ns.size) continue;
+        let sum = 0,
+          k = 0;
+        for (const id of ns) {
+          const m = nodes.find((x) => x.id === id);
+          if (!m) continue;
+          sum += m.y + layoutNodeSize(m).h / 2;
+          k++;
+        }
+        if (!k) continue;
+        const want = snap(sum / k - layoutNodeSize(n).h / 2);
+        if (Math.abs(want - n.y) < 8) continue;
+        const was = n.y;
+        if (
+          !apply(() => {
+            n.y = want;
+          })
+        )
+          n.y = was;
+      }
+    }
+    /* 间距档位（整层缩放） */
+    for (const s of LAYOUT_SPREAD_STEPS) {
+      if (s === 1) continue;
+      if (Date.now() - t0 > budget) break;
+      if (
+        apply(() => layoutRelaxWithScale(nodes, origin, s))
+      )
+        improved = true;
+    }
+    if (!improved) break;
+  }
+}
+/** 需求 ① 的硬约束收敛：先间距、再只缩 >480px 的大节点（小节点不动）。 */
+function layoutScaleHugeNodes(nodes, s) {
+  for (const n of nodes) {
+    if (!layoutNodeShrinkable(n)) continue;
+    const w = Math.max(LAYOUT_MIN_W, snap((Number(n.w) || 240) * s));
+    const h = Math.max(LAYOUT_MIN_H, snap((Number(n.h) || 160) * s));
+    n.w = w;
+    n.h = h;
+    if (n.kind === "super" && n.superOpen) {
+      n.expandW = Math.max(320, snap((Number(n.expandW) || 720) * s));
+      n.expandH = Math.max(220, snap((Number(n.expandH) || 480) * s));
+    }
+  }
+}
+/** 需求 ① 的硬约束收敛：先间距、再只缩 >480px 的大节点（小节点不动）。
+ *  只处理「太宽」这一侧 —— 太窄（竖长条）时缩节点只会让它更窄，
+ *  那种情况交给告警，不拿可读性换一个假比值。 */
+function layoutFitAspect(nodes, pairs, anchors) {
+  const bb0 = nodesBBox(nodes);
+  if (!bb0 || nodes.length < 2) return { ok: true, scaled: 1 };
+  const w0 = Math.max(1, bb0.maxX - bb0.minX);
+  const h0 = Math.max(1, bb0.maxY - bb0.minY);
+  if (layoutRatioOk(w0, h0)) return { ok: true, scaled: 1 };
+  /* 太窄（竖长条）：缩节点只会更窄，不可能收敛 —— 直接交给调用方告警。
+     需求 ① 的冲突口径是「硬约束优先但不硬凑」，所以宁可如实报 false。 */
+  if (w0 / h0 <= LAYOUT_RATIO_R) return { ok: false, scaled: 1 };
+  if (!nodes.some((n) => layoutNodeShrinkable(n))) return { ok: false, scaled: 1 };
+  const minX = bb0.minX;
+  const minY = bb0.minY;
+  const sizeAfter = (n, sc) => {
+    const sz = layoutNodeSize(n);
+    if (!layoutNodeShrinkable(n)) return sz;
+    return { w: Math.max(LAYOUT_MIN_W, sz.w * sc), h: Math.max(LAYOUT_MIN_H, sz.h * sc) };
+  };
+  const ratioAt = (sc) => {
+    let w = 1;
+    let h = 1;
+    for (const n of nodes) {
+      const sz = sizeAfter(n, sc);
+      w = Math.max(w, n.x + sz.w - minX);
+      h = Math.max(h, n.y + sz.h - minY);
+    }
+    return w / h;
+  };
+  /* 从小到大挑第一档能收进 16:9 的缩放；一档都不行就不动尺寸（可读性优先） */
+  let pick = 1;
+  for (const sc of LAYOUT_SHRINK_STEPS) {
+    if (layoutRatioOk(ratioAt(sc), 1)) {
+      pick = sc;
+      break;
+    }
+  }
+  if (pick >= 1) return { ok: false, scaled: 1 };
+  layoutScaleHugeNodes(nodes, pick);
+  const bb2 = nodesBBox(nodes);
+  const w2 = bb2 ? Math.max(1, bb2.maxX - bb2.minX) : w0;
+  const h2 = bb2 ? Math.max(1, bb2.maxY - bb2.minY) : h0;
+  return { ok: layoutRatioOk(w2, h2), scaled: pick };
+}
+/** 收敛长宽比时允许对大节点（>480px）做的缩放档位：最多缩到 2/3。
+ *  再小就不是「排版」而是「毁图」了 —— 一档都不行就如实报 ratioOk=false 让调用方告警。 */
+const LAYOUT_SHRINK_STEPS = [0.95, 0.9, 0.82, 0.75, 0.67];
 function layoutFlowComponent(nodes, wires, origin, opts) {
   if (!nodes.length) return { w: 0, h: 0 };
   opts = opts || {};
   const gapX = opts.gapX != null ? opts.gapX : 80;
   const gapY = opts.gapY != null ? opts.gapY : 48;
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  /* hard 边（无环）决定分层；all 边（含软约束）决定减交叉与垂直靠拢 */
   const { inEdges, outEdges, allIn, allOut } = layoutEdgeSets(nodes, wires);
-  const cols = assignLayoutLayers(nodes, inEdges, outEdges);
-  orderLayersByBarycenter(cols, allIn, allOut);
+  const cols0 = assignLayoutLayers(nodes, inEdges, outEdges);
+  orderLayersByBarycenter(cols0, allIn, allOut);
+  /* 折行（列顺序 = 层顺序，按行折起）由 layoutPlaceLayer 一并决定：
+     它自己会挑「最贴近 16:9」的行数，组件装箱再用 layoutPickRows 收敛一次。 */
+  layoutPlaceLayer(nodes, wires, origin, { gapX, gapY });
 
-  const colWidths = cols.map((col) =>
-    Math.max(40, ...(col || []).map((n) => layoutNodeSize(n).w)),
-  );
-  let x = origin.x;
-  for (let i = 0; i < cols.length; i++) {
-    const col = cols[i] || [];
-    if (!col.length) continue;
-    for (const n of col) n.x = snap(x);
-    alignLayerToParents(col, allIn, nodeMap, gapY, origin.y, allOut);
-    for (let pass = 0; pass < 2; pass++) {
-      alignLayerToParents(col, allIn, nodeMap, gapY, origin.y, allOut);
-    }
-    x += colWidths[i] + gapX;
+  /* 目标函数用：硬边对（上游→下游，用于方向惩罚）与全部边对（用于交叉 / 就近） */
+  const pairs = [];
+  const seen = new Set();
+  const pushPair = (from, to) => {
+    if (!from || !to || from === to) return;
+    const k = from + "\u0000" + to;
+    if (seen.has(k)) return;
+    seen.add(k);
+    pairs.push({ from, to });
+  };
+  for (const n of nodes) {
+    for (const t of outEdges[n.id] || []) pushPair(n.id, t);
+    for (const t of allOut[n.id] || []) pushPair(n.id, t);
   }
+  const anchors = new Map();
+  for (const n of nodes) anchors.set(n.id, { x: n.x, y: n.y });
+  layoutRefinePlacement(nodes, pairs, anchors);
+  const fit = layoutFitAspect(nodes, pairs, anchors);
 
   const bb = nodesBBox(nodes);
-  if (!bb) return { w: 0, h: 0 };
-  return { w: bb.maxX - bb.minX, h: bb.maxY - bb.minY, minX: bb.minX, minY: bb.minY };
+  if (!bb) return { w: 0, h: 0, ratioOk: true, scaled: 1 };
+  const outW = bb.maxX - bb.minX;
+  const outH = bb.maxY - bb.minY;
+  return {
+    w: outW,
+    h: outH,
+    minX: bb.minX,
+    minY: bb.minY,
+    ratioOk: layoutRatioOk(outW, outH),
+    scaled: fit.scaled,
+  };
 }
 
-function layoutFlow(nodes, wires, origin, obstacles) {
+function layoutFlow(nodes, wires, origin, obstacles, opts) {
   /* 不写死间距：有 relation 线时 layoutFlowEx 自动放宽走廊 */
-  layoutFlowEx(nodes, wires, origin, obstacles, {});
+  layoutFlowEx(nodes, wires, origin, obstacles, opts || {});
 }
 
 /* 关系线主导的图（开发节点架构图）需要更宽的间距：直线才少穿方块、少叠在一起 */
@@ -15004,8 +15587,13 @@ function relWiresIn(wires) {
   return false;
 }
 
+/** 自动排版主入口（所有入口共用这一套引擎）。
+ *  返回 { ok, nodes, ratioOk, w, h, scaled } —— 调用方据此提示 / 记警告。
+ *  需求：① 每层包围盒收进 16:9~9:16；② 上游在左或上、连线就近、少交叉；
+ *        ③ 整块聚集、接近方形；④ 只用廉价的贪心 + 有限次局部搜索（不跑最优解）。 */
 function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
-  if (!nodes.length) return;
+  if (!nodes || !nodes.length) return { ok: false, nodes: 0, ratioOk: true };
+  origin = origin || { x: snap(48), y: snap(48) };
   /* 关系线也参与排版：按箭头定向，成环的降级为软约束（见 layoutEdgeSets） */
   opts = opts || {};
   const hasRel = relWiresIn(wires);
@@ -15035,39 +15623,82 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
         ? 160
         : 120;
   const maxRowW = opts.maxRowW != null ? opts.maxRowW : 4400;
+  /* 整体长宽收敛盒：不折行的 4400 上限之外，再按 16:9 反推一个「封顶高」 */
+  const ratioBoxW = Math.max(maxRowW, 4400);
+  const ratioBoxH = ratioBoxW / LAYOUT_RATIO_R;
   const components = findLayoutComponents(nodes, wires);
   components.sort((a, b) => b.nodes.length - a.nodes.length);
+
+  /* agent 显式给的坐标当起始锚点（需求：仍参与排版，但尽量少位移） */
+  const anchorOf = new Map();
+  if (opts.preferAnchor) for (const n of nodes) anchorOf.set(n.id, { x: n.x, y: n.y });
 
   let cursorX = origin.x;
   let cursorY = origin.y;
   let rowMaxH = 0;
   const compOpts = Object.assign({}, opts, { gapX, gapY });
+  const placed = [];
 
+  const laid = [];
   for (const comp of components) {
     const relOrigin = { x: 0, y: 0 };
+    /* 连通分量内部沿用自身包围盒起算（形状 ③ 在 layoutFlowComponent 内收敛） */
     layoutFlowComponent(comp.nodes, comp.wires, relOrigin, compOpts);
-    const compBb = nodesBBox(comp.nodes);
-    if (!compBb) continue;
-    const w = compBb.maxX - compBb.minX;
-    const h = compBb.maxY - compBb.minY;
-
-    if (cursorX > origin.x && cursorX + w > origin.x + maxRowW) {
-      cursorX = origin.x;
-      cursorY += rowMaxH + compGapY;
-      rowMaxH = 0;
+    const bb0 = nodesBBox(comp.nodes);
+    if (!bb0) continue;
+    laid.push({ comp: comp, bb: bb0, w: bb0.maxX - bb0.minX, h: bb0.maxY - bb0.minY });
+  }
+  if (laid.length) {
+    /* 组件之间也按 16:9 收敛（需求 ①③）：选「摆几行」，而不是一路右排到 4400 上限，
+       否则多张互不相连的小图会被排成一条横贯长带。 */
+    const rowsWant = layoutPickRows(
+      laid.length,
+      laid.map((c) => c.w),
+      laid.map((c) => c.h),
+      compGapX,
+      compGapY,
+    );
+    const perRow = Math.max(1, Math.ceil(laid.length / rowsWant));
+    let k = 0;
+    for (const item of laid) {
+      if (k > 0 && k % perRow === 0) {
+        cursorX = origin.x;
+        cursorY += rowMaxH + compGapY;
+        rowMaxH = 0;
+      }
+      const dx = cursorX - item.bb.minX;
+      const dy = cursorY - item.bb.minY;
+      for (const n of item.comp.nodes) {
+        n.x = snap(n.x + dx);
+        n.y = snap(n.y + dy);
+      }
+      for (const n of item.comp.nodes) placed.push(n);
+      cursorX += item.w + compGapX;
+      rowMaxH = Math.max(rowMaxH, item.h);
+      k++;
     }
-
-    const dx = cursorX - compBb.minX;
-    const dy = cursorY - compBb.minY;
-    for (const n of comp.nodes) {
-      n.x = snap(n.x + dx);
-      n.y = snap(n.y + dy);
-    }
-    cursorX += w + compGapX;
-    rowMaxH = Math.max(rowMaxH, h);
   }
 
-  const sh = shiftToClear(nodes, obstacles || []);
+  let sh = shiftToClear(nodes, obstacles || []);
+  /* 锚点优先：用户给过 x/y 时，整体位移取「更省位移」的那一侧 */
+  if (opts.preferAnchor && anchorOf.size) {
+    let sx = 0,
+      sy = 0,
+      k = 0;
+    for (const n of nodes) {
+      const a = anchorOf.get(n.id);
+      if (!a) continue;
+      sx += n.x - a.x;
+      sy += n.y - a.y;
+      k++;
+    }
+    if (k) {
+      const bx = snap(-sx / k);
+      const by = snap(-sy / k);
+      if (Math.abs(bx) + Math.abs(by) < Math.abs(sh.x) + Math.abs(sh.y))
+        sh = { x: bx, y: by };
+    }
+  }
   if (sh.x || sh.y) {
     for (const n of nodes) {
       n.x = snap(n.x + sh.x);
@@ -15078,6 +15709,53 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
   /* 兜底防重叠：任何残余重叠（绘制尺寸 ≠ 存储尺寸、跨组件装箱误差、障碍物误判、
      尺寸漂移等）都在这里按最小位移推开，保证排版结果互不压住 */
   resolvePlacedOverlaps(nodes, obstacles || []);
+
+  const bb = nodesBBox(nodes);
+  let ratioOk = true;
+  let scaled = 1;
+  let outW = bb ? bb.maxX - bb.minX : 0;
+  let outH = bb ? bb.maxY - bb.minY : 0;
+  if (bb && !layoutRatioOk(outW, outH)) {
+    /* 需求 ① 硬约束优先：先间距、再只缩 >480px 的大节点（小节点不动）；
+       缩完仍放不下 → 放宽比值，由调用方 toast 告警 */
+    const allIn2 = {};
+    const outEdges2 = {};
+    const pairs = [];
+    const seen = new Set();
+    for (const n of nodes) {
+      allIn2[n.id] = [];
+      outEdges2[n.id] = [];
+    }
+    for (const w of wires || []) {
+      if (!w || w.rel || !allIn2[w.to] || !outEdges2[w.from]) continue;
+      allIn2[w.to].push(w.from);
+      outEdges2[w.from].push(w.to);
+      const k = w.from + "\u0000" + w.to;
+      if (!seen.has(k)) {
+        seen.add(k);
+        pairs.push({ from: w.from, to: w.to });
+      }
+    }
+    const fit = layoutFitAspect(nodes, pairs, anchorOf.size ? anchorOf : null);
+    scaled = fit.scaled;
+    resolvePlacedOverlaps(nodes, obstacles || []);
+    const bb2 = nodesBBox(nodes);
+    outW = bb2 ? bb2.maxX - bb2.minX : outW;
+    outH = bb2 ? bb2.maxY - bb2.minY : outH;
+    ratioOk = layoutRatioOk(outW, outH);
+  }
+  /* 折行上限护栏：整层宽超过一次装箱宽度时，把封顶高按 16:9 交回调用方参考，
+     真正收不进去的长条由 ratioOk=false 触发告警（不硬压、不牺牲可读性） */
+  return {
+    ok: true,
+    nodes: nodes.length,
+    w: outW,
+    h: outH,
+    ratioOk,
+    scaled,
+    ratioBoxW,
+    ratioBoxH,
+  };
 }
 
 function nodesBBox(nodes) {
@@ -17030,6 +17708,61 @@ function collectEditStaticWarnings(touchedIds, warnings) {
   }
 }
 
+/* ============ 自动排版的触发闸（2026 需求） ============
+   用户自己动手的编辑（拖动节点、面板里改 x/y、改正文）一律**不触发**自动排版，
+   排版只走两条路：① 用户点「一键排版」按钮；② agent 驱动的那笔画布编辑里
+   带有「建图 / 连线 / 改标注 / 删除 / 改尺寸」时自动执行。
+   （用户拖动 / 改数值走 app.js 的指针与表单路径，根本不进 applyCanvasEdit，
+     所以本闸只需管 agent 这一侧。） */
+function canvasEditWantsLayout(params, creates) {
+  if (!params) return false;
+  if (params.layout === true) return true;
+  const cre = Array.isArray(creates)
+    ? creates
+    : Array.isArray(params.create)
+      ? params.create
+      : [];
+  if (cre.length) return true;
+  const upd = Array.isArray(params.update) ? params.update : [];
+  for (const spec of upd) {
+    if (!spec) continue;
+    if (spec.w != null || spec.h != null || spec.width != null || spec.height != null)
+      return true;
+    if (spec.layout === true) return true;
+  }
+  if (Array.isArray(params.superConnect) && params.superConnect.length) return true;
+  if (Array.isArray(params.connect) && params.connect.length) return true;
+  if (Array.isArray(params.disconnect) && params.disconnect.length) return true;
+  if (Array.isArray(params.remove) && params.remove.length) return true;
+  if (Array.isArray(params.createMarks) && params.createMarks.length) return true;
+  if (Array.isArray(params.marks) && params.marks.length) return true;
+  if (Array.isArray(params.updateMarks) && params.updateMarks.length) return true;
+  if (Array.isArray(params.removeMarks) && params.removeMarks.length) return true;
+  if (params.group) return true;
+  return false;
+}
+/* 每笔编辑里「排了哪些层级、各层收进 16:9~9:16 没有」——收不进的层级名与尺寸
+   交给调用方去 toast（排版本身不弹窗，回执里的 warnings 才是唯一出口）。 */
+function canvasEditLayoutReport() {
+  const groups = S._editLayoutGroups;
+  if (!groups || !groups.size) return { levels: 0, ratioOk: true, worst: "", w: 0, h: 0 };
+  let ratioOk = true;
+  let worst = "";
+  let w = 0;
+  let h = 0;
+  for (const g of groups.values()) {
+    const r = g.report;
+    if (r && r.ratioOk === false) {
+      ratioOk = false;
+      if (!worst) {
+        worst = g.label || "";
+        w = r.w || 0;
+        h = r.h || 0;
+      }
+    }
+  }
+  return { levels: groups.size, ratioOk, worst, w, h };
+}
 async function applyCanvasEdit(params, ctx) {
   params = params || {};
   /* 二次防线：这是真正改图并落盘的入口，绑定画布若已被删除就直接抛错，
@@ -17075,8 +17808,9 @@ async function applyCanvasEdit(params, ctx) {
      大调用（架构图、批量建图）的 connect / createMarks / group 引用被截掉的
      alias 全部落空，曾导致超级节点 / 开发节点架构图建成半成品（孤儿节点）。
      null.push 崩溃根因已修，大调用现在可安全完整执行。 */
+  const wantsLayout = canvasEditWantsLayout(params, creates);
   const doLayout =
-    params.layout === true || (params.layout !== false && creates.length > 0);
+    params.layout === true || (params.layout !== false && wantsLayout);
 
   /* ── 局部画布（scope）：写入侧的越界闸 ──────────────────────────────
      需求：编辑工具要能「只改某一颗超级 / 开发节点内部」。传了 scope 就把这次调用
@@ -17524,9 +18258,10 @@ async function applyCanvasEdit(params, ctx) {
       const tid = nodeParentTaskId(n) || "";
       const sid = nodeParentSuperId(n) || "";
       const key = tid + "|" + sid;
-      if (!groups.has(key)) groups.set(key, { tid, sid, list: [] });
+      if (!groups.has(key)) groups.set(key, { tid, sid, key, list: [] });
       groups.get(key).list.push(n);
     }
+    S._editLayoutGroups = groups;
     for (const g of groups.values()) {
       const list = g.list;
       const set = new Set(list.map((n) => n.id));
@@ -17541,7 +18276,31 @@ async function applyCanvasEdit(params, ctx) {
         : createdLive.length && params.layout !== true
           ? layoutOrigin(obstacles)
           : { x: snap(48), y: snap(48) };
-      layoutFlow(list, S.wf.wires || [], origin, obstacles);
+      /* agent 显式给过 x/y 的老节点当起始锚点：仍参与排版，但尽量少位移；
+         本次新建的节点不算锚点（它们还没被用户摆过） */
+      const anchored = list.some((n) => createdLive.indexOf(n) < 0);
+      const report = layoutFlowEx(
+        list,
+        S.wf.wires || [],
+        origin,
+        obstacles,
+        anchored ? { preferAnchor: true } : {},
+      );
+      g.report = report;
+      const host = g.sid && !g.tid ? nodeById(g.sid) : null;
+      g.label = host ? host.title || host.id : I18n.t("顶层画布");
+      if (report && report.ratioOk === false) {
+        warnings.push(
+          I18n.t(
+            "排版提示：「{label}」这层仍是长条（宽 {w} × 高 {h}），已尽量收窄；可删减节点或手动微调后再排。",
+            {
+              label: g.label || "",
+              w: Math.round(report.w || 0),
+              h: Math.round(report.h || 0),
+            },
+          ),
+        );
+      }
     }
     /* 壳层按新的内容范围撑开，否则子块 / 关系线被 720×480 默认舞台裁掉 */
     fitAllOpenSuperShells();

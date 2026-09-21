@@ -3295,6 +3295,19 @@ body.theme-light .n-chip.n-chip-lt {
   border: none
 }
 
+/* 路径区（画布 → 任务 → 子任务 → 壳）：整行里唯一可压缩的一段，条目超宽先压这里。
+   末尾那枚「← 返回」（.task-crumb-back，flex:none）在它外面 —— 层级再多也裁不到，
+   前面几个层级仍看得见（条目自己按 .task-crumb-item 的省略号收窄）。 */
+.task-crumb-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  /* 只收不放：内容短时这一行仍贴着字（不白占 38%），内容超宽时才压自己 */
+  flex: 0 1 auto;
+  overflow: hidden
+}
+
 .task-crumb-item {
   background: transparent;
   border: none;
@@ -3304,6 +3317,9 @@ body.theme-light .n-chip.n-chip-lt {
   border-radius: 3px;
   font-size: 12px;
   max-width: 120px;
+  /* 可压缩：本条放不下时先窄自己（配下面的省略号），而不是把返回钮挤出这一行 */
+  flex: 0 1 auto;
+  min-width: 44px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap

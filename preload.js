@@ -710,6 +710,13 @@ contextBridge.exposeInMainWorld('api', {
   ltDeliverList: (opts) => ipcRenderer.invoke('lt:deliverList', opts || {}),
   ltDeliverOrphans: (opts) => ipcRenderer.invoke('lt:deliverOrphans', opts || {}),
 
+  /* ── AI 事实库（ai-facts-store.js）：固定文件 <画布文件夹>/团队事实库/AI/ai-facts.json
+     的主进程读写 + 落盘守卫（不得落在应用目录内），首次载入时承接旧长期记忆的一次性迁移。
+     canvasDir = 渲染层解析出的画布文件夹绝对路径（落点由主进程拼固定三段，调用方给不出第二个）。 */
+  aiFactsPathOf: (canvasDir) => ipcRenderer.invoke('aifact:pathOf', { canvasDir }),
+  aiFactsLoad: (canvasDir, opts) => ipcRenderer.invoke('aifact:load', Object.assign({ canvasDir }, opts || {})),
+  aiFactsSave: (canvasDir, data) => ipcRenderer.invoke('aifact:save', { canvasDir, data }),
+
   /* ── 素材库：独立于画布的内容仓库（assets-store.js，根目录由用户指定并记在 config.json）── */
   assetsGetRoot: () => ipcRenderer.invoke('assets:getRoot'),
   assetsSetRoot: (p) => ipcRenderer.invoke('assets:setRoot', p),

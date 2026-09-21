@@ -71,6 +71,8 @@ The function body is **no longer in the renderer**, so there is no `window` / `d
 | `mtnode.log(...)` / `mtnode.progress(0.4, "batch 3")` | Progress output (sent to the UI as events, not to stdout) |
 | `mtnode.readText(p)` / `mtnode.writeText(p, s)` / `mtnode.fileExists(p)` | Local file reads and writes |
 | `mtnode.join(...)` / `mtnode.abs(p)` / `mtnode.cwd()` / `mtnode.platform` | Paths and platform |
+| `const r = await mtnode.readPdf(pathOrBytes [, opts])` | **Parse the text layer of a local PDF → Markdown** (the same kernel as "drop in a PDF"; read-only, nothing written to disk): success → `{ ok, markdown, pages, formulas, warning }`; failure → `{ ok:false, error:{ code, message } }` (e.g. `encrypted` / `not_pdf`) |
+| `await mtnode.pdfInfo(pathOrBytes)` | Lightweight probe for a parseable PDF (does not inflate content streams): `{ ok, isPdf, parseable, pages, encrypted, warning }` |
 
 All of these external processes are **booked under this run**: the instant the function `return`s, is stopped or times out, the main process reclaims them — children included — by runId. Entries that could take down MTNode itself, like `process.exit()`, are turned into a thrown error inside the thread.
 

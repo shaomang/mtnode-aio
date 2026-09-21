@@ -798,7 +798,7 @@ export function apply(ctx) {
       },
       layout: {
         type: 'boolean',
-        description: '自动排版（分层左到右、互不重叠）：create 非空时默认 true，只有你自己给了 x/y 时才传 false。',
+        description: '自动排版：改结构的编辑默认自动执行，传 false 跳过。',
       },
       setWorkflowName: {
         type: 'string',

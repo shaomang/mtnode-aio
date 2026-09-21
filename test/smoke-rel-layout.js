@@ -121,6 +121,18 @@ const LAYOUT_FNS = [
   "snap",
   "LAYOUT_REL_GAP_X",
   "LAYOUT_REL_GAP_Y",
+  "LAYOUT_RATIO_R",
+  "LAYOUT_SHRINK_MIN",
+  "LAYOUT_SHRINK_MAX",
+  "LAYOUT_MIN_W",
+  "LAYOUT_MIN_H",
+  "LAYOUT_REFINE_PASS",
+  "LAYOUT_REFINE_MS",
+  "LAYOUT_RATIO_GIVEUP",
+  "LAYOUT_MAX_STACK_H",
+  "LAYOUT_COST_ASPECT",
+  "LAYOUT_DIR_PEN",
+  "LAYOUT_SPREAD_STEPS",
   "relWiresIn",
   "layoutEdgeSets",
   "nodesBBox",
@@ -135,11 +147,30 @@ const LAYOUT_FNS = [
   "rectsOverlap",
   "shiftToClear",
   "layoutOrigin",
+  "layoutRatioOk",
+  "layoutNodeShrinkable",
+  "layoutVerticalKey",
+  "layoutSortColumn",
+  "layoutColumnWidth",
+  "layoutColumnHeight",
+  "layoutPickRows",
+  "layoutPlaceLayer",
+  "LAYOUT_SHRINK_STEPS",
+  "layoutStackColumnsToNeighbors",
+  "layoutSegCross",
+  "layoutCrossPairs",
+  "layoutPointSegDist",
+  "layoutCostOf",
+  "layoutRelaxWithScale",
+  "layoutRefinePlacement",
+  "layoutScaleHugeNodes",
+  "layoutFitAspect",
   "layoutFlowComponent",
   "layoutFlowEx",
   "LAYOUT_OVERLAP_PAD",
   "LAYOUT_OVERLAP_MAX_PASS",
   "resolvePlacedOverlaps",
+  "canvasEditWantsLayout",
 ];
 
 const S = { wf: { nodes: [], wires: [] }, config: { snap: 8 } };
@@ -544,11 +575,15 @@ for (let i = 0; i < S.wf.nodes.length; i++)
       overlap++;
   }
 ok(overlap === 0, "排版后没有互相压住的方块（重叠 " + overlap + " 对）");
+/* 需求 ② 的口径是「上游在左**或**在上」：同一行里靠左，折到下一行时靠上。
+   只要求严格靠左会与需求 ①（整体收进 16:9，长图必须折行）互相打架。 */
 const badDir = hardPairs.filter((p) => {
   const [f, t] = p.split("->");
-  return byId2[f].x > byId2[t].x;
+  const a = byId2[f],
+    b = byId2[t];
+  return a.x > b.x + 8 && a.y > b.y + 8;
 });
-ok(badDir.length === 0, "每条硬边都从左层指向右层（反向 " + badDir.length + " 条）");
+ok(badDir.length === 0, "每条硬边都满足「上游在左或在上」（违反 " + badDir.length + " 条）");
 
 /* ============ [2b] 展开超级节点（绘制尺寸 > 存储尺寸）参与排版不重叠 ============ */
 console.log("\n[2b] 展开超级节点 / 障碍物按绘制尺寸参与排版");
@@ -962,6 +997,160 @@ ok(
   "箭头 marker 随状态切换配色（常态 / 关联 / 选中 / 淡出）",
 );
 S.selWire = null;
+
+/* ================== [8] 新自动排版算法 ==================
+ * 需求口径：① 每层包围盒收进 16:9 ~ 9:16（收不进就告警，不许硬凑）
+ *          ② 上游在左或上（每条硬边）、连线的节点相近、少交叉
+ *          ③ 整块尽量聚成方形，不散开
+ *          ④ 优化有界：确定性、无随机、小图快 */
+console.log("\n[8] 自动排版算法：形状 / 方向 / 聚焦 / 确定性 / 时延");
+
+/* 造 4 层 × N 个并排节点的「宽图」—— 面积上放得进 16:9，必须真的收进去 */
+function gridSample(n) {
+  const nodes = [];
+  const wires = [];
+  let k = 0;
+  for (let L = 0; L < 4; L++)
+    for (let i = 0; i < n; i++)
+      nodes.push({ id: "g" + L + "_" + i, x: i * 400, y: L * 300, w: 288, h: 192 });
+  for (let L = 0; L + 1 < 4; L++)
+    for (let i = 0; i < n; i++)
+      wires.push({ id: "gw" + ++k, from: "g" + L + "_" + i, to: "g" + (L + 1) + "_" + i });
+  return { nodes, wires };
+}
+{
+  const g = gridSample(4);
+  S.wf.nodes = g.nodes.map((x) => Object.assign({}, x));
+  S.wf.wires = g.wires.map((x) => Object.assign({}, x));
+  const r8 = ex("layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 8, y: 8 }, [], {})");
+  const ratio = r8.w / Math.max(1, r8.h);
+  ok(
+    r8.ratioOk === true && ratio <= 16 / 9 + 0.02 && ratio >= 9 / 16 - 0.02,
+    "需求①：放得下的图必须收进 16:9~9:16（" +
+      Math.round(r8.w) +
+      "×" +
+      Math.round(r8.h) +
+      " = " +
+      ratio.toFixed(2) +
+      "）",
+  );
+  /* 分层是硬顺序：同一条链上的节点必须左右/上下单调，不能把下游摆到上游左边 */
+  const pos8 = new Map(S.wf.nodes.map((n) => [n.id, n]));
+  let bad8 = 0;
+  for (const w of g.wires) {
+    const a = pos8.get(w.from);
+    const b = pos8.get(w.to);
+    if (a.x > b.x + 8 && a.y > b.y + 8) bad8++;
+  }
+  ok(bad8 === 0, "需求②：每条硬边都满足「上游在左或在上」（违反 " + bad8 + " 条）");
+
+  /* ③ 聚成方形：面积别比「紧贴的最小包围」大出一大截 */
+  const r2 = ex("layoutFlowEx(S.wf.nodes.map((n) => Object.assign({}, n)), S.wf.wires, { x: 8, y: 8 }, [], {})");
+  ok(
+    Math.abs(r2.w - r8.w) < 1e-6 && Math.abs(r2.h - r8.h) < 1e-6,
+    "需求④：同一输入两次排版结果完全一致（无随机源）",
+  );
+}
+
+/* 长链不再抽成一条横贯长带：折成正形网格，并保持「上游在左或在上」 */
+{
+  const nodes = [];
+  const wires = [];
+  for (let i = 0; i < 9; i++) nodes.push({ id: "c" + i, x: i * 400, y: 0, w: 288, h: 192 });
+  for (let i = 0; i + 1 < 9; i++) wires.push({ id: "cw" + i, from: "c" + i, to: "c" + (i + 1) });
+  S.wf.nodes = nodes;
+  S.wf.wires = wires;
+  const r9 = ex("layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 8, y: 8 }, [], {})");
+  const pos9 = new Map(S.wf.nodes.map((n) => [n.id, n]));
+  let rev9 = 0;
+  for (const w of wires) {
+    const a = pos9.get(w.from);
+    const b = pos9.get(w.to);
+    if (a.x > b.x + 8 && a.y > b.y + 8) rev9++;
+  }
+  const rows9 = new Set(S.wf.nodes.map((n) => n.y)).size;
+  ok(
+    r9.ratioOk === true && rows9 >= 2,
+    "需求①③：9 连长链折成正形网格收进 16:9（" +
+      Math.round(r9.w) +
+      "×" +
+      Math.round(r9.h) +
+      " · " +
+      rows9 +
+      " 行）",
+  );
+  ok(rev9 === 0, "折行后仍满足「上游在左或在上」（违反 " + rev9 + " 条）");
+}
+
+/* 结构上就收不进 16:9 的图：如实报 ratioOk=false，且不为凑比值糟蹋节点尺寸 */
+{
+  const nodes = [
+    { id: "b0", x: 0, y: 0, w: 2600, h: 220 },
+    { id: "b1", x: 0, y: 400, w: 2600, h: 220 },
+    { id: "b2", x: 0, y: 800, w: 2600, h: 220 },
+  ];
+  const wires = [
+    { id: "bw0", from: "b0", to: "b1" },
+    { id: "bw1", from: "b1", to: "b2" },
+  ];
+  S.wf.nodes = nodes;
+  S.wf.wires = wires;
+  const rb = ex("layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 8, y: 8 }, [], {})");
+  ok(rb.ratioOk === false, "需求①：结构上收不进 16:9 的图如实报 ratioOk=false（交给调用方告警）");
+  ok(
+    rb.scaled === 1 && nodes.every((n) => n.w === 2600 && n.h === 220),
+    "收不进时不硬缩节点凑比值（scaled=" + rb.scaled + "，节点尺寸原样）",
+  );
+}
+
+/* 需求④：有界优化 —— 大批量图也不超时（预算 60ms 局部搜索 + 折行打包） */
+{
+  const big = gridSample(8);
+  S.wf.nodes = big.nodes;
+  S.wf.wires = big.wires;
+  const t0 = Date.now();
+  const rb = ex("layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 8, y: 8 }, [], {})");
+  const ms = Date.now() - t0;
+  ok(ms <= 300, "需求④：32 节点图排版在预算内完成（" + ms + "ms ≤ 300ms）");
+  let ovB = 0;
+  for (let i = 0; i < big.nodes.length; i++)
+    for (let j = i + 1; j < big.nodes.length; j++) {
+      const a = big.nodes[i],
+        b = big.nodes[j];
+      if (a.x < b.x + 288 - 1 && b.x < a.x + 288 - 1 && a.y < b.y + 192 - 1 && b.y < a.y + 192 - 1)
+        ovB++;
+    }
+  ok(ovB === 0 && rb.nodes === big.nodes.length, "32 节点图排版后互不重叠（重叠 " + ovB + " 对）");
+
+  /* 稠密大图：收尾的交叉度量必须封顶，否则会退化成秒级（曾实测 2.2s） */
+  const nodes = [];
+  const wires = [];
+  let k = 0;
+  for (let i = 0; i < 80; i++) nodes.push({ id: "d" + i, x: 0, y: 0, w: 288, h: 192 });
+  for (let i = 0; i < 80; i++)
+    for (let j = 1; j <= 5; j++) if (i + j < 80) wires.push({ id: "dw" + ++k, from: "d" + i, to: "d" + (i + j) });
+  S.wf.nodes = nodes;
+  S.wf.wires = wires;
+  const t1 = Date.now();
+  ex("layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 8, y: 8 }, [], {})");
+  const ms1 = Date.now() - t1;
+  ok(
+    ms1 <= 1500,
+    "需求④：80 节点 / " + wires.length + " 连线的稠密图排版仍有界（" + ms1 + "ms ≤ 1500ms）",
+  );
+}
+
+/* 自动执行闸：agent 每次「改图」都要触发排版（用户拖拽不走这条路，不受影响） */
+{
+  const wants = ex("canvasEditWantsLayout");
+  ok(wants({ create: [{ alias: "a", kind: "input_text" }] }, [{}]) === true, "编辑闸：建图 → 排版");
+  ok(wants({ connect: [{ from: "a", to: "b" }] }, []) === true, "编辑闸：连线 → 排版");
+  ok(wants({ remove: ["x"] }, []) === true, "编辑闸：删节点 → 排版");
+  ok(wants({ createMarks: [{ kind: "box" }] }, []) === true, "编辑闸：加标注 → 排版");
+  ok(wants({ update: [{ w: 400 }] }, []) === true, "编辑闸：改尺寸 → 排版");
+  ok(wants({ update: [{ title: "只改标题" }] }, []) === false, "编辑闸：只改文本（不动几何）→ 不排版");
+  ok(wants({}, []) === false, "编辑闸：空编辑 → 不排版");
+}
 
 console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");
 if (fails) {

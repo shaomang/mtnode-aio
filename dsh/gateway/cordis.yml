@@ -94,9 +94,17 @@
   name: './db-plugin.mjs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
+# MTNode AI 事实库工具:任何 Agent 会话 / 专家 / 节点默认可用 mtnode_facts 索引本画布的
+# AI 事实库（每张画布一份极简条例库,list/query/get/write/delete/pin;宿主按绑定画布放行,
+# 没有绑定画布则回错误文本,会话不中断）。
+- id: mtnode-ai-facts
+  name: './ai-facts-plugin.mjs'
+  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
 # MTNode 长周期任务工具:属于某个长任务运行的节点经 lt_state 读共享状态、写自己
-# 声明的输出键,经 lt_memory 分层召回长期记忆 / 写入 / 提交候选事实(候选一律由用户
-# 在条带上逐条确认)。宿主持有 run 与记忆库,非长任务轮一律拒绝(同 mtnode_db 口径)。
+# 声明的输出键。长期结论的沉淀改走 mtnode_facts（本画布 AI 事实库）;原 lt_memory 已下线
+# （recall / list / write / propose 四个动作一并摘掉）。宿主持有 run,
+# 非长任务轮一律拒绝(同 mtnode_db 口径)。
 - id: mtnode-longtask
   name: './longtask-plugin.mjs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -182,7 +190,7 @@
   name: '@deepseek-ai/dsh-sandbox-local'
   config:
     # win32 console-flash workaround: noop runner (see gateway.mjs applySandboxWorkaround)
-    runnerCommand: ["C:\\nvm4w\\nodejs\\node.exe", "E:\\dev\\tools\\pipeline-console\\dsh\\gateway\\noop-runner.cjs"]
+    runnerCommand: ["E:\\dev\\tools\\pipeline-console\\node_modules\\electron\\dist\\electron.exe", "E:\\dev\\tools\\pipeline-console\\dsh\\gateway\\noop-runner.cjs"]
     runnerFailureSignatures: ['noop-runner:']
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
@@ -237,7 +245,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: bongochat
+    defaultPreset: mtnode-unattended
 
 - id: shell-env
   name: '@deepseek-ai/dsh-shell-env'

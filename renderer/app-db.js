@@ -1370,6 +1370,30 @@ async function handleDbToolEvent(data, node, wf) {
     reply({ ok: false, error: (e && e.message) || String(e) });
   }
 }
+/* ---------- 宿主侧 mtnode_facts 事件处理（AI 事实库读写 → 应答） ---------- */
+function handleAiFactsToolEvent(data, wf) {
+  const id = data && data.id;
+  if (!id) return;
+  const reply = (result, error) =>
+    window.api
+      .dshInteract({ kind: "facts", id, result, error: error || undefined })
+      .catch(() => {});
+  const canvasId = String((wf && wf.id) || "");
+  if (!canvasId) {
+    reply({ ok: false, error: I18n.t("当前没有绑定画布") });
+    return;
+  }
+  const A = window.MTNodeAiFacts;
+  if (!A || typeof A.op !== "function") {
+    reply({ ok: false, error: I18n.t("AI 事实库模块未就绪（app-ai-facts.js）") });
+    return;
+  }
+  const p = (data && data.params) || {};
+  const action = String((data && data.action) || p.action || "list").trim();
+  Promise.resolve(A.op({ action: action, params: p }, canvasId))
+    .then((result) => reply(result))
+    .catch((e) => reply({ ok: false, error: String((e && e.message) || e) }));
+}
 /* ---------- Agent 语言口味：界面语言 = agent 的交流与回答语言 ----------
    文案真源在 renderer/i18n.js 的 agentLangTaste()，这里只做兜底封装；
    所有 agent 运行（会话 / 智能节点 / 助手 / 计划子任务 / 开发节点建议·问询·开发）
@@ -1951,10 +1975,10 @@ function dshHiddenToolsFor(o) {
   }
   names = Array.from(names || []);
   if (!o.dbGrounded) names.push("mtnode_db");
-  /* 长周期任务两件套同理：判据是「这一轮的运行体是不是状态机里的一个环节」
+  /* 长周期任务状态工具同理：判据是「这一轮的运行体是不是状态机里的一个环节」
      （app-longtask.js 造的伪节点带 _lt 标记），不是就点名藏掉 —— 宿主只会回一句
-     「不属于任何长任务」，白占每步重发的工具定义。 */
-  if (!o.ltGrounded) names.push("lt_state", "lt_memory");
+     「不属于任何长任务」，白占每步重发的工具定义。lt_memory 已下线，不再出现在这份名单里。 */
+  if (!o.ltGrounded) names.push("lt_state");
   /* 开发绑定会话（noCanvasRead）：读画布两件套点名进名单。走的是「按名字」这条通道
      （不是 MTNODE_NO_CANVAS 整档闸，后者连 mtnode_canvas_edit 一起裁）；本会话不改画布，
      但 mtnode_canvas_edit 仍保留，故不整档裁。若 lean / noCanvas 已经把这些名字裁掉，
@@ -2674,9 +2698,10 @@ function dshRunOnce(input, opts) {
     noCanvas: noCanvasOn,
     noCanvasRead: noReadOn,
     canvasReadOnly /* 长任务环节的 canvasRead：只读档，点名藏掉改图与应用 */,
-    /* 长任务两件套（lt_state / lt_memory）的接地判据：只有状态机里跑起来的伪节点
+    /* 长任务状态工具（lt_state）的接地判据：只有状态机里跑起来的伪节点
        （app-longtask.js 造的，带 _lt）接得住；普通会话 / 助手 / 普通智能节点不传这个字段，
-       两个名字就进名单 —— 宿主对它们只会回「不属于任何长任务」，白占每步重发的定义。 */
+       这个名字就进名单 —— 宿主对它只会回「不属于任何长任务」，白占每步重发的定义。
+       （原 lt_memory 已下线，长期记忆沉淀改走 mtnode_facts。） */
     ltGrounded: !!(opts.node && opts.node._lt),
   });
   /* 用户工具描述子（func call 单一真源，见 app-tools.js）：本轮绑定画布（= 会话所属画布）
@@ -3118,6 +3143,13 @@ function dshRunOnce(input, opts) {
             handleDbToolEvent(msg.data || {}, opts.node, boundWf);
             return;
           }
+          if (msg.type === "facts") {
+            /* AI 事实库工具（mtnode_facts）：宿主按本轮绑定画布读写本画布的 ai-facts.json，
+               结果经 dshInteract kind:'facts' 回传。没有绑定画布就回错误文本（会话不中断，
+               与 db / tool-run 同一口径）。实现体在 app-ai-facts.js。 */
+            handleAiFactsToolEvent(msg.data || {}, boundWf);
+            return;
+          }
           if (msg.type === "asset") {
             /* 素材库 / 窗口截图工具（mtnode_assets）：宿主读库、读条目、拍窗口静帧，
                 结果经 dshInteract kind:'asset' 回传。许可闸在 assetToolEventReplied 里
@@ -3127,9 +3159,9 @@ function dshRunOnce(input, opts) {
             return;
           }
           if (msg.type === "lt") {
-            /* 长周期任务两件套（lt_state / lt_memory）：宿主按伪节点找回它属于哪个 run、
+            /* 长周期任务状态工具（lt_state）：宿主按伪节点找回它属于哪个 run、
                哪个命名空间，越权写键与非长任务轮都由 app-longtask.js 回错误文本
-               （工具失败但不中断会话，与 db / tool-run 同一口径）。 */
+               （工具失败但不中断会话，与 db / tool-run 同一口径）。原 lt_memory 已下线。 */
             try {
               if (window.LT && window.LT.handleToolEvent) window.LT.handleToolEvent(msg.data || {}, opts.node, boundWf);
             } catch (_) {}

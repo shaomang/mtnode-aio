@@ -35,9 +35,9 @@ export const HIDEABLE_TOOLS = Object.freeze([
   'mtnode_canvas_get',
   'mtnode_db',
   'mtnode_vision',
-  /* 长周期任务两件套（app-longtask.js 造的伪节点之外一律不注册） */
+  /* 长周期任务状态工具（app-longtask.js 造的伪节点之外一律不注册）；
+     lt_memory 已下线 —— 长期记忆的沉淀改走 mtnode_facts（AI 事实库）。 */
   'lt_state',
-  'lt_memory',
   /* dsh 引擎自带（agent 作用域 restrict 摘除） */
   'ask_user_question',
   'create_goal',

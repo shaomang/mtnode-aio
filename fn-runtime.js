@@ -15,7 +15,10 @@
  *      `terminate()`。线程内注入 mtnode 桥：
  *        exec / spawn / wait / kill / killAll（全部经隐藏进程宿主 main-proc-host.js，
  *        并把 runId 绑到本次运行）、sleep / now / log / progress、
- *        以及本地 fs / path 直用 Node 实现（fileExists / readText / writeText / join / abs）。
+ *        以及本地 fs / path 直用 Node 实现（fileExists / readText / writeText / join / abs）、
+ *        PDF 解析（readPdf / pdfInfo，经主进程注入的 pdfConvert 复用 pdf:parse 内核），
+ *        以及 PDF 写出（writePdf，经主进程注入的 pdfWrite 复用 pdf-write.js /
+ *        pdf:writeText 的同一份写盘内核 —— 与「PDF生成」节点同源）。
  *      并 scrub process.exit / abort / kill / die 等能伤主进程或其它线程的入口。
  *   ② 主进程调度半 createFnRuntime()：
  *      一次函数节点运行 = 一个 worker + 一个 runId；运行结束 / 取消 / 超时立刻
@@ -158,6 +161,43 @@ function toProcTarget(t) {
     return out;
   }
   return {};
+}
+
+/* PDF 桥的入参归一：readPdf(路径) / readPdf({ path }) / readPdf(路径, {…}) /
+   readPdf({ bytes }) / readPdf(缓冲区) —— 主进程侧 pdfLoadBuffer 已认完整口径，
+   这里只把「第二参 opts」并进对象，并对字符串按路径归类（像 mtnode.readText）。 */
+function pdfArg(a, b) {
+  if (typeof a === "string") {
+    const p = { path: a };
+    if (b && typeof b === "object") Object.assign(p, b);
+    return p;
+  }
+  if (a && typeof a === "object") {
+    const p = Object.assign({}, a);
+    if (b && typeof b === "object") Object.assign(p, b);
+    return p;
+  }
+  if (a != null) return b && typeof b === "object" ? Object.assign({ bytes: a }, b) : { bytes: a };
+  return b && typeof b === "object" ? Object.assign({}, b) : {};
+}
+
+/* PDF 写出桥的入参归一：writePdf({ text, outPath }) / writePdf(路径, 正文) /
+   writePdf({ path, text })。与 mtnode.writeText 同一手感 —— 纯字符串两参时按
+   「第一参 = 输出路径、第二参 = 正文」理解（照 mtnode.writeText(file, text) 的读法），
+   一步到位写好路径就写对文件，不必记对象字段名。 */
+function pdfWriteArg(a, b) {
+  if (typeof a === "string") {
+    const p = { outPath: a };
+    if (typeof b === "string") p.text = b;
+    else if (b && typeof b === "object") Object.assign(p, b);
+    return p;
+  }
+  if (a && typeof a === "object") {
+    const p = Object.assign({}, a);
+    if (typeof b === "string" && p.text == null) p.text = b;
+    return p;
+  }
+  return b && typeof b === "object" ? Object.assign({}, b) : {};
 }
 
 function fmtLogArg(v) {
@@ -353,6 +393,35 @@ function buildMtnodeBridge(deps = {}) {
     screenList: () => call("screenList", {}),
     /* 有哪些窗口可拍：[{hwnd, pid, process, title, x, y, width, height, visible}] */
     windowList: () => call("windowList", {}),
+    /* ─ PDF 解析（主进程侧 main.js 的 pdfLoadBuffer / pdfParseBuffer / pdfProbeBuffer
+       内核，与「拖入 PDF」链同一份实现，绝不另写解析器）──────────────
+       函数线程里没有 Electron 能力，读 PDF 只能借主进程这座桥。两种用法：
+         await mtnode.readPdf(路径或字节[, opts])  → 抽文本层，回 { ok, markdown, pages, formulas, warning }
+         await mtnode.pdfInfo(路径或字节)          → 轻量探一下，回 { ok, isPdf, parseable, pages, encrypted, warning }
+       参数（readPdf 第一参 / opts.path / opts.bytes 都能给，字符串快写时按路径 —— 像 mtnode.readText）：
+         path / file 本机 PDF 绝对路径；bytes Buffer / ArrayBuffer / TypedArray；base64 / data:[…] / data:application/pdf;base64,… 也认
+       返回的成功形状与失败形状（{ ok:false, error:{ code, message } }）都与主进程 pdf:parse / pdf:probe
+       一模一样；只解析文本层（加密 / 扫描件给明确错误或警告），只读本机文件、绝不落盘。
+       失败一律 { ok:false, error }，不抛 —— 用户代码自己决定要不要 throw。 */
+    readPdf: (a, b) => call("readPdf", pdfArg(a, b)),
+    pdfInfo: (a, b) => call("pdfInfo", pdfArg(a, b)),
+    /* ─ PDF 写出（主进程侧 pdf-write.js 的 writeTextPdf 内核，与「PDF生成」节点
+       经 preload.fileWritePdf → pdf:writeText 的**同一份实现**，绝不另写排版器）───
+       与 mtnode.readPdf 互为反向：一读一写，都借主进程这座桥（隐藏 BrowserWindow +
+       printToPDF，公式走 renderer/math-render.js 同一套渲染器）。两种用法：
+         await mtnode.writePdf({ text, outPath[, 版面项] })   → { ok, path, bytes, ms, warning? }
+         await mtnode.writePdf(outPath, text)                 → 同一结果（照 writeText 的读法）
+       参数（outPath 必填）：
+         text       正文（Markdown；公式支持 $…$ / $$…$$ / \(…\) / \[…\]）
+         outPath    输出 .pdf 绝对路径（本机路径，主进程侧也会纠一次后缀）
+         title      文档标题（PDF 元数据 / 窗口标题）
+         docTitle   正文顶部额外渲染的大标题（留空 = 不加）
+         pageSize   A4（默认）/ A3 / A5 / Letter / Legal    landscape  是否横向
+         margin     none / narrow / normal（默认）/ wide      fontScale  s / m（默认）/ l
+         pageNumbers  页脚「当前页 / 总页数」（默认 false —— 与节点默认 true 不同，写清楚）
+       只写用户指定的本机路径：落在应用目录内一律拒绝（数据不落应用文件夹）。
+       失败一律 { ok:false, error }，不抛 —— 用户代码自己决定要不要 throw。 */
+    writePdf: (a, b) => call("writePdf", pdfWriteArg(a, b)),
   };
   return bridge;
 }
@@ -607,6 +676,16 @@ function createFnRuntime(deps = {}) {
      返回值必须是 { ok, … }（实现侧已把异常收口成 { ok:false, error }）。 */
   const screenCaptureFn =
     typeof deps.screenCapture === "function" ? deps.screenCapture : null;
+  /* 可选的 PDF 解析后端（main.js 注入）：函数节点的 mtnode.readPdf / mtnode.pdfInfo
+     走这里。签名 (action, params)，action ∈ read | info；返回值必须是 { ok, … }
+     （实现侧已把异常收口成 { ok:false, error }）。 */
+  const pdfConvertFn =
+    typeof deps.pdfConvert === "function" ? deps.pdfConvert : null;
+  /* 可选的 PDF 写出后端（main.js 注入）：函数节点的 mtnode.writePdf(...) 走这里。
+     与 pdfConvert（读方向）成对 —— 写方向的真源是主进程 pdf-write.js 的 writeTextPdf，
+     即「PDF生成」节点经 pdf:writeText 用的同一份内核。 */
+  const pdfWriteFn =
+    typeof deps.pdfWrite === "function" ? deps.pdfWrite : null;
 
   /* runId -> state */
   const runs = new Map();
@@ -787,6 +866,43 @@ function createFnRuntime(deps = {}) {
       const act =
         action === "screenList" ? "screens" : action === "windowList" ? "windows" : "capture";
       return await screenCaptureFn(act, p || {});
+    }
+    /* PDF 解析桥：mtnode.readPdf / mtnode.pdfInfo 走这里。
+       pdfConvert 由 main.js 注入（复用 pdf:parse / pdf:probe 的同一份内核）；
+       没接线时给明确错误，而不是让用户代码拿到 undefined。 */
+    if (action === "readPdf" || action === "pdfInfo") {
+      if (!pdfConvertFn)
+        return {
+          ok: false,
+          error:
+            "PDF 解析后端未接线（主进程未注入 fnRuntime.pdfConvert）：mtnode.readPdf 暂不可用",
+        };
+      return await pdfConvertFn(action === "pdfInfo" ? "info" : "read", p || {});
+    }
+    /* PDF 写出桥：mtnode.writePdf(...) 走这里。pdfWrite 由 main.js 注入
+       （复用 pdf-write.js 的 writeTextPdf，也就是 pdf:writeText 的同一份内核）；
+       没接线时给明确错误，而不是让用户代码拿到 undefined。 */
+    if (action === "writePdf") {
+      if (!pdfWriteFn)
+        return {
+          ok: false,
+          error:
+            "PDF 写出后端未接线（主进程未注入 fnRuntime.pdfWrite）：mtnode.writePdf 暂不可用",
+        };
+      const outPath = String(
+        p.outPath == null ? (p.path == null ? "" : p.path) : p.outPath,
+      ).trim();
+      if (!outPath)
+        return { ok: false, error: "mtnode.writePdf：缺少输出路径 outPath" };
+      const text = p.text == null ? "" : String(p.text);
+      if (!text.trim())
+        return {
+          ok: false,
+          error: "mtnode.writePdf：没有可生成 PDF 的文本输入（text 为空）",
+        };
+      return await pdfWriteFn(
+        Object.assign({}, p, { outPath: outPath, text: text }),
+      );
     }
     return { ok: false, error: "未知的 mtnode 桥调用：" + (action || "(空)") };
   }
@@ -1120,6 +1236,7 @@ module.exports = {
   toProcSpec,
   toProcTarget,
   fmtLogArg,
+  pdfWriteArg,
   buildMtnodeBridge,
   scrubProcess,
   withConsoleCapture,

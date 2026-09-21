@@ -80,6 +80,9 @@ const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
 /* 长周期任务系统：运行态 checkpoint / 交付目录 / 长期记忆（SQLite+FTS5），全在数据目录 */
 const { registerLongtaskIpc } = require("./longtask-store.js");
+/* AI 事实库（每张画布一份的极简条例库）：固定文件 <画布文件夹>/团队事实库/AI/ai-facts.json
+   的主进程读写 + 落盘守卫，并承接旧长期记忆的一次性迁移（见 ai-facts-store.js） */
+const { registerAiFactsIpc } = require("./ai-facts-store.js");
 /* 本机微信 PC 版检测 / 启动：纯主进程、零新依赖，不做注入与本地数据读取 */
 const wechatPc = require("./wechat-pc.js");
 let dshAdapter = null;
@@ -621,12 +624,10 @@ ipcMain.handle("config:load", () =>
           type: "text_openai",
           baseUrl: "https://api.deepseek.com",
           apiKey: "",
-          models: [
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "deepseek-v4-flash-vision-exp",
-          ],
-          vision: false,
+          /* 新安装默认只带两个模型（flash / pro）；vision-exp 不进默认清单，
+             要识图在设置里自己加，或让 proc_text 自动切到其它视觉服务商。 */
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+          vision: true,
         },
         {
           id: "gpt_image_2",
@@ -2660,6 +2661,15 @@ function fnRuntimeOf() {
       /* 函数节点的桌面截图后端：mtnode.screenShot(...) / screenList() / windowList()
          走这里（worker 线程没有任何 Electron 能力）。拍完 PNG 已落盘，回路径即可当图像值。 */
       screenCapture: (action, params) => fnScreenCapture(action, params),
+      /* 函数节点的 PDF 解析后端：mtnode.readPdf(...) / pdfInfo(...) 走这里。
+         直接复用 pdf:parse / pdf:probe 的同一份内核（pdfLoadBuffer / pdfParseBuffer /
+         pdfProbeBuffer），只读用户本机文件、只回传结果，绝不落盘。 */
+      pdfConvert: (action, params) => fnPdfRead(action, params),
+      /* 函数节点的 PDF 写出后端：mtnode.writePdf(...) 走这里（worker 线程没有
+         Electron 能力，建不了隐藏打印窗）。直接复用 pdf-write.js 的 writeTextPdf ——
+         也就是「PDF生成」节点经 pdf:writeText 用的同一份内核，排版 / 公式完全同源。
+         只写用户显式给出的本机路径，落在应用目录内一律拒绝（数据不落应用文件夹）。 */
+      pdfWrite: (params) => fnPdfWrite(params),
     });
   return fnRuntime;
 }
@@ -2732,6 +2742,57 @@ async function fnScreenCapture(action, params) {
     return { ok: false, error: I18n.t("未知的桌面截图动作：") + (act || "(空)") };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
+  }
+}
+/* 函数节点 jscode 里 mtnode.readPdf(...) / pdfInfo(...) 的执行体（PDF 解析）。
+   action：read 抽文本层（回 markdown，与 pdf:parse 同形）· info 轻量探测（与 pdf:probe 同形）。
+   入参直接交给 pdfLoadBuffer（认路径 / Buffer / ArrayBuffer / TypedArray / {path} / {bytes} /
+   {base64} / {data:[…]} / data:application/pdf;base64,…）；**只读本机文件，绝不落盘**。
+   失败一律 { ok:false, error:{ code, message } }（不抛），与 mtnode.ai / screenShot 同一口径。 */
+async function fnPdfRead(action, params) {
+  const act = String(action || "").trim() || "read";
+  const arg = params && typeof params === "object" ? params : {};
+  const loaded = pdfLoadBuffer(arg);
+  if (loaded.error) {
+    if (act === "info") {
+      return {
+        ok: false,
+        isPdf: false,
+        parseable: false,
+        pages: 0,
+        encrypted: false,
+        warning: loaded.error.message,
+        error: loaded.error,
+      };
+    }
+    return { ok: false, error: loaded.error };
+  }
+  try {
+    if (act === "info") return pdfProbeBuffer(loaded.buf);
+    if (act === "read") return pdfParseBuffer(loaded.buf);
+    return { ok: false, error: { code: "bad_action", message: I18n.t("未知的 PDF 解析动作：") + act } };
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    const code = act === "info" ? "corrupt" : "parse_failed";
+    if (act === "info") {
+      return { ok: false, isPdf: true, parseable: false, pages: 0, encrypted: false, warning: message, error: { code, message } };
+    }
+    return { ok: false, error: { code, message } };
+  }
+}
+/* 函数节点 jscode 里 mtnode.writePdf(...) 的执行体（文本 / Markdown → PDF 落盘）。
+   与 fnPdfRead 互为反向：那边借主进程读 PDF，这边借主进程**写** PDF —— 走的正是
+   pdf:writeText 的同一份内核（pdf-write.js 的 writeTextPdf：隐藏打印窗 + printToPDF，
+   公式复用 renderer/math-render.js，数据不落应用目录）。**不另写第二套排版器**。
+   参数（与 writeTextPdf 同口径）：{ text, outPath, title, docTitle, baseDir, pageSize,
+   landscape, margin, fontScale, pageNumbers } —— text / outPath 由桥侧先校验过。
+   失败一律 { ok:false, error }（不抛），与 mtnode.ai / screenShot / readPdf 同一口径。 */
+async function fnPdfWrite(params) {
+  const arg = params && typeof params === "object" ? params : {};
+  try {
+    return await pdfWrite.writeTextPdf(arg);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
   }
 }
 ipcMain.handle("fn:run", async (e, o = {}) => {
@@ -6406,6 +6467,9 @@ app.whenReady().then(() => {
   registerAssetsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 长周期任务系统：run checkpoint / 交付目录 / 长期记忆库（见 longtask-store.js） */
   registerLongtaskIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* AI 事实库：固定文件读写 / 落盘守卫 / 旧长期记忆一次性迁移（见 ai-facts-store.js）。
+     必须排在上一条之后 —— 迁移要读的 <数据目录>/longtask/memory.db 由 longtask-store 定位。 */
+  registerAiFactsIpc({ t: (s) => I18n.t(s) });
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });

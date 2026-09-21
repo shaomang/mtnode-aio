@@ -847,6 +847,66 @@ if (typeof document !== "undefined" && document.addEventListener)
     teamViewRefreshFactStats(d && d.file);
   });
 
+/* ── AI 事实库（renderer/app-ai-facts.js）左栏入口 ──────────────────────────────
+   它是**另一套存储**（给 AI 读的极简条例，落 <画布文件夹>/团队事实库/AI/ai-facts.json），
+   与上面的「一般事实库」（人读 md）互不影响：本文件只加一行入口，一般库行 / 文档行的
+   行为与顺序一行不改。
+   本模块与 app-ai-facts.js 的装载顺序：本文件在 index.html 里排在更前面，所以这里**一律
+   在调用期按 typeof 取用**全局 aiFacts* 函数，缺席就显示占位、点了给一句提示，绝不抛。 */
+
+/* 把「n 条」写进行右侧小字。取不到条数就显示「—」（不报错）：
+   0 条要分两种情况 —— 真·空库（库路径解析得出）与「还不知道库在哪」（这张画布没有画布文件夹），
+   后者再静默探一次路径。两次都是 silent：不建文件、不弹目录选择。 */
+function teamViewAiFactCount(canvasId, sub) {
+  if (!sub) return;
+  if (typeof aiFactsCountOf !== "function") {
+    sub.textContent = "—";
+    return;
+  }
+  Promise.resolve()
+    .then(function () {
+      return aiFactsCountOf(canvasId);
+    })
+    .then(
+      function (n) {
+        var k = Math.max(0, Number(n) || 0);
+        if (k > 0 || typeof aiFactsPathOf !== "function") {
+          sub.textContent = teamViewT("{n} 条", { n: String(k) });
+          return null;
+        }
+        return Promise.resolve(aiFactsPathOf(canvasId, { silent: true })).then(function (p) {
+          sub.textContent = p && p.file ? teamViewT("{n} 条", { n: "0" }) : "—";
+        });
+      },
+      function () {
+        sub.textContent = "—";
+      },
+    );
+}
+
+/* 保存广播（aifact:saved）后只刷这一行的条数：不整面重渲染，避免打断用户输入 / 滚动位置。 */
+function teamViewAiFactRefresh(canvasId) {
+  var pane = document.getElementById("teamPane");
+  if (!pane || typeof pane.querySelectorAll !== "function") return 0;
+  var want = str(canvasId);
+  var rows = pane.querySelectorAll(".team-side-ai-fact");
+  var n = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var cid = row.getAttribute ? str(row.getAttribute("data-aifact-canvas")) : "";
+    if (!cid || (want && cid !== want)) continue;
+    var sub = row.querySelector ? row.querySelector(".team-side-sub") : null;
+    teamViewAiFactCount(cid, sub);
+    n++;
+  }
+  return n;
+}
+if (typeof document !== "undefined" && document.addEventListener)
+  document.addEventListener("aifact:saved", function (ev) {
+    var d = ev && ev.detail;
+    teamViewAiFactRefresh(d && d.canvasId);
+  });
+
 /* 点库行：建库（幂等）+ 打开首篇文档审阅。
    openFactReview 接收单篇文档记录 { file, name, reviewFile, assetsDir }
    （assetsDir 为库级共享插图目录，同库多篇文档共用一份 assets/）。 */
@@ -1027,6 +1087,31 @@ function teamViewFactDocRow(canvasId, doc) {
   return row;
 }
 
+/* AI 事实库入口行：始终显示（一般事实库未建也显示）——
+   它是给 AI 读的极简条例库，与上面人读的一般事实库是两套存储，不该因为「一般库还没建」
+   就藏起来。点整行开查阅弹窗；右侧小字异步显示条数（见 teamViewAiFactCount）。 */
+function teamViewAiFactRow(canvasId) {
+  var cid = str(canvasId);
+  var row = teamViewEl("div", "team-side-item team-side-ai-fact");
+  row.setAttribute("data-aifact-canvas", cid);
+  var glyph = teamViewEl("span", "team-side-glyph team-side-icon");
+  if (typeof teamIconSvg === "function")
+    glyph.innerHTML = teamIconSvg("brain", { size: 15 });
+  row.appendChild(glyph);
+  row.appendChild(teamViewEl("span", "team-side-name", teamViewT("AI 事实库")));
+  var sub = teamViewEl("span", "team-side-sub", "");
+  row.appendChild(sub);
+  teamViewAiFactCount(cid, sub);
+  row.addEventListener("click", function () {
+    if (typeof aiFactsOpenDlg !== "function") {
+      toast(teamViewT("AI 事实库模块未就绪，无法打开"), "err");
+      return;
+    }
+    aiFactsOpenDlg(cid);
+  });
+  return row;
+}
+
 /* 事实库分组本体：库行（book 图标 + 库名 + 文档数 + 新建文档 ＋；已建库才给
    「打开所在文件夹 / ✕ 删除事实库」两个 hover 操作按钮）+ 库行下的文档子行；空库给提示。 */
 function teamViewFactRow(st) {
@@ -1101,6 +1186,10 @@ function teamViewFactRow(st) {
     }
     wrap.appendChild(kids);
   }
+
+  /* AI 事实库入口放在**文档列表之后**：一般库行 / 文档行的顺序与行为一行不改，
+     新入口只是分组末尾多出来的一行（一般库未建也显示）。 */
+  wrap.appendChild(teamViewAiFactRow(canvasId));
   return wrap;
 }
 

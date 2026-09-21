@@ -93,6 +93,14 @@ function ltTaHSet(el, key) {
 /* 把记下的高度贴回这只框（新建 / 重建时调一次） */
 function ltTaHApply(el, key) {
   const h = ltTaH(key);
+  if (el && key) {
+    /* 滚动位置保护（本需求）：多行框自己那条滚动条也按同一个稳定 key 记 —— 内容比框高时
+       用户滚到哪儿，右栏重建后仍停在哪儿（见下面 ltScrollSnapshot 段；属性与高度表同键，
+       两边永远命中同一条记录）。 */
+    try {
+      if (el.setAttribute) el.setAttribute("data-lt-scroll", "ta:" + String(key));
+    } catch (_) {}
+  }
   if (!el || !h) return el;
   try {
     if (el.style) el.style.height = h + "px";
@@ -131,6 +139,271 @@ function ltTaHBind(el, key) {
      高度没变也照记 —— 值就是用户当下定的那一份，重建后还原的仍是它。 */
   el.addEventListener("blur", () => ltTaHSet(el, key));
   return el;
+}
+
+/* ── 滚动位置保护（本需求）：重绘不许把「滚到哪了」冲掉 ──────────────────
+ * 症状：条带右栏（检查器 / 人工任务卡 / 记忆 / 交付清单）内容比可视区高，用户往下滚着
+ * 看，滚了一会儿迎面一股力把它**顶回顶上** —— 手一停就往回弹，长任务跑着时尤其明显
+ * （= 「文本框无法下拉，会自动弹回」）。
+ * 起因与高度回弹同源：右栏在运行期被 ltRenderStrip() 整块重建（Agent 每段流式正文都叫
+ * 一次 ltRenderStripSoon，app-longtask.js 的 onEvent → 90ms 节流），新建出来的 .lt-right
+ * scrollTop = 0，浏览器那点「滚动锚定」在整块换子元素时保不住阅读位置。多行框（「目标 /
+ * 说明」/ 审批理由）里自己那条滚动条同理：新长出来的 textarea 没有 scrollTop。
+ * 口径与 LT_DRAFTS / LT_TA_H 同源：**按稳定 key 记滚动位置**，重建前采一帧、重建后
+ * 原样贴回；key 与形状无关（栏名 / data-lt-scroll / 环节 path + 字段名），重建前后对得上。
+ *   ① 两栏（.lt-right / .lt-left）与头部（.lt-head，横向滚）按栏名记；
+ *   ② 多行框按「环节 path + 字段名」（就是草稿 / 高度表那套 key，挂 data-lt-hk），
+ *      条带里其它自带滚动条的小块（.lt-tail / 交付清单…）按 data-lt-scroll 记。
+ * 只增不减、只写不读也安全：key 是内容位置，不是身份，值一直是「用户当下滚到的那一格」。
+ * 迷你 DOM（纯 Node 回归）量不到 scrollTop / scrollHeight 时一律返回 0，不写脏值。 */
+const LT_SCROLL = Object.create(null); /* key → { top, h, ch }（ch = 记录时的内容高，见 ltScrollRestore） */
+function ltScrollTopNow(el) {
+  try {
+    const t = Number(el && el.scrollTop);
+    return isFinite(t) && t > 0 ? t : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+function ltScrollHNow(el) {
+  try {
+    const h = Number(el && el.clientHeight);
+    return isFinite(h) && h > 0 ? h : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+function ltScrollCHNow(el) {
+  try {
+    const c = Number(el && el.scrollHeight);
+    return isFinite(c) && c > 0 ? c : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+/* 这一件（栏 / 多行框 / 自带滚动条的小块）的滚动 key：显式给的 key 优先，
+   再回落 data-lt-scroll（小块自己写）、data-lt-hk（多行框，与草稿 / 高度同键）、类名（两栏 + 头部）。 */
+function ltScrollKeyOf(el, key) {
+  const k = String(key || "");
+  if (k) return k;
+  try {
+    if (el && el.getAttribute) {
+      const s = el.getAttribute("data-lt-scroll");
+      if (s) return String(s);
+      const hk = el.getAttribute("data-lt-hk");
+      if (hk) return "ta:" + String(hk);
+    }
+  } catch (_) {}
+  const cls = String((el && el.className) || "");
+  for (const c of ["lt-right", "lt-left", "lt-head", "lt-tail", "lt-dlv-md", "lt-mem-list"]) {
+    if (cls.split(/\s+/).indexOf(c) >= 0) return "col:" + c;
+  }
+  return "";
+}
+/* 重建前采一帧：记下 top / 可视高 / 内容高（内容矮于可视区 = 没得滚，别记）。 */
+function ltScrollSave(el, key) {
+  const k = ltScrollKeyOf(el, key);
+  if (!k) return 0;
+  const top = ltScrollTopNow(el);
+  if (!top) {
+    delete LT_SCROLL[k]; /* 已经回到顶上（用户自己滚回去的）→ 不必再记，免得把新内容按旧位置钉住 */
+    return 0;
+  }
+  LT_SCROLL[k] = { top: top, h: ltScrollHNow(el), ch: ltScrollCHNow(el) };
+  return top;
+}
+/* 重建后贴回：能贴多少贴多少（新内容更矮时由浏览器夹取，绝不把画面滚出内容外）。
+   内容高度没大变（流式只在末尾追加）→ 原样回；明显变高 → 按比例换算 —— 与长会话那套
+   「用户上翻就停在原地、不许拽回底部」的语义一致（app.js 的 restoreStickPos 同款口径）。
+   hover 悬停态（[data-hover]）多一层保险：调用方（ltScrollRebind）在**同一个微任务**里把
+   data-hover 补上，浏览器还没绘制这一帧，所以视觉上不会闪；这里再顺手走一遍
+   ltHoverHere()，是为了「补标那一步被别处错过」时不留下一个空悬停态。 */
+function ltScrollRestore(el, key) {
+  const k = ltScrollKeyOf(el, key);
+  if (!k) return 0;
+  const s = LT_SCROLL[k];
+  if (!el || !s || !s.top) return 0;
+  const ch = ltScrollCHNow(el);
+  let want = s.top;
+  if (s.ch && ch && Math.abs(ch - s.ch) > 24) {
+    const max0 = Math.max(0, ch - (ltScrollHNow(el) || s.h || 0));
+    want = Math.round((s.top * ch) / s.ch);
+    if (want > max0) want = max0;
+  }
+  try {
+    el.scrollTop = want;
+  } catch (_) {}
+  return ltScrollTopNow(el);
+}
+/* 一栏里所有自带滚动条的小块：栏级 key（两栏 / 头部）之外，逐个按自己的 key 记 / 还原。
+   快照刻意分开存：栏级与块级可能撞在同一个 key 上（多行框就在栏里），共用一格会互相覆盖。 */
+const LT_SCROLL_SUB = Object.create(null); /* key → { top, h, ch } */
+function ltScrollCollect(root, out) {
+  if (!root) return out || [];
+  const list = out || [];
+  try {
+    if (root.querySelectorAll) {
+      for (const el of Array.from(root.querySelectorAll("[data-lt-scroll],[data-lt-hk]"))) {
+        const k = ltScrollKeyOf(el, "");
+        if (k) list.push({ el, key: k });
+      }
+    }
+  } catch (_) {}
+  return list;
+}
+function ltScrollSaveSub(list) {
+  for (const it of list || []) {
+    const top = ltScrollTopNow(it.el);
+    if (!top) {
+      delete LT_SCROLL_SUB[it.key];
+      continue;
+    }
+    LT_SCROLL_SUB[it.key] = { top, h: ltScrollHNow(it.el), ch: ltScrollCHNow(it.el) };
+  }
+}
+function ltScrollRestoreSub(list) {
+  for (const it of list || []) {
+    const s = LT_SCROLL_SUB[it.key];
+    if (!it.el || !s || !s.top) continue;
+    const ch = ltScrollCHNow(it.el);
+    let want = s.top;
+    if (s.ch && ch && Math.abs(ch - s.ch) > 24) {
+      const max0 = Math.max(0, ch - (ltScrollHNow(it.el) || s.h || 0));
+      want = Math.round((s.top * ch) / s.ch);
+      if (want > max0) want = max0;
+    }
+    try {
+      it.el.scrollTop = want;
+    } catch (_) {}
+  }
+}
+/* 整条条带的滚动快照：重建前（ltRenderStrip 最开始）采，重建之后（同一处收尾）贴回。
+   **采帧这一刻就是唯一可信的时刻**：它跑在任何 DOM 被拆掉之前，两栏还挂在文档里，
+   scrollTop 是真的。以前这里只收集元素引用、把「读位置」留到收尾的 ltScrollApply，
+   结果是拿**尸体**读数：重建一开始旧右栏就被摘出文档，浏览器把它（连同所有后代）的
+   scrollTop 归零，那之后再读就是 0 —— 刚记下的位置被当成「用户自己滚回顶上了」删掉，
+   新栏永远停在顶上。长任务跑着时条带约 90ms 重绘一次，于是「手一停就被顶回顶上」
+   反复发生（本次需求；回归就钉在 test/smoke-longtask-strip-scroll.js 的
+   「[5] 真跑：老栏被摘出文档（浏览器把它的 scrollTop 归零）也不丢位置」那一档）。
+   所以：采帧即落表（saved 标一下，收尾不再重复读旧元素）。 */
+function ltScrollSnapshot() {
+  const ui = LT_UI;
+  if (!ui) return null;
+  const snap = { parts: [], subs: [] };
+  for (const [el, key] of [[ui.right, "col:lt-right"], [ui.left, "col:lt-left"], [ui.head, "col:lt-head"]]) {
+    if (el) snap.parts.push({ el, key });
+  }
+  try {
+    if (ui.head) snap.subs = snap.subs.concat(ltScrollCollect(ui.head, []));
+    if (ui.right) snap.subs = snap.subs.concat(ltScrollCollect(ui.right, []));
+    if (ui.left) snap.subs = snap.subs.concat(ltScrollCollect(ui.left, []));
+  } catch (_) {}
+  ltScrollApply(snap);
+  return snap;
+}
+/* 把「此刻滚到哪」落进 LT_SCROLL：采帧时调一次就够了（此刻元素还活着，读数是真的）。
+   已经落过表的快照（saved）再调就是空转 —— 收尾那一刻旧元素已被摘出文档，
+   再读只会把真读数覆盖成 0（见 ltScrollSnapshot 的说明）。 */
+function ltScrollApply(snap) {
+  if (!snap || snap.saved) return;
+  for (const p of snap.parts) ltScrollSave(p.el, p.key);
+  ltScrollSaveSub(snap.subs);
+  snap.saved = true;
+}
+/* 收尾：这一步在**新**DOM 长好之后跑 —— 位置在采帧时已经落表，这里只管把它贴回
+  新元素（旧元素已被摘出文档，读不出东西，也不再回读）。 */
+function ltScrollRebind(snap) {
+  if (!snap) return;
+  ltScrollApply(snap); /* 采帧时已经落表 → 这里是空转，只兜住「别处直接调 rebind」的旧用法 */
+  for (const p of snap.parts) {
+    const live = p.key === "col:lt-right" ? LT_UI && LT_UI.right : p.key === "col:lt-left" ? LT_UI && LT_UI.left : LT_UI && LT_UI.head;
+    if (live) ltScrollRestore(live, p.key);
+  }
+  try {
+    const fresh = [];
+    if (LT_UI && LT_UI.head) ltScrollCollect(LT_UI.head, fresh);
+    if (LT_UI && LT_UI.right) ltScrollCollect(LT_UI.right, fresh);
+    if (LT_UI && LT_UI.left) ltScrollCollect(LT_UI.left, fresh);
+    ltScrollRestoreSub(fresh);
+  } catch (_) {}
+  /* 滚动条一动，鼠标底下的那件可能换成了别的（指针正好压在刚滚出来的那一件上）：
+     这里再补一次悬停标，让「滚动 + 悬停」同时发生时的悬停态也续得上（同一个微任务内，不闪）。 */
+  try {
+    if (typeof ltHoverHere === "function") ltHoverHere();
+  } catch (_) {}
+}
+/* 给一只自带滚动条的块 / 多行框贴上滚动 key（手搓的那些控件用它；ltInput 与 ltTaHApply
+   已各自贴过自己的那一份）。key 为空的（拿不到身份）就不贴 —— 宁可这次不保，也不乱记。 */
+function ltScrollBind(el, key) {
+  const k = String(key || "");
+  if (!el || !k) return el;
+  try {
+    if (el.setAttribute) el.setAttribute("data-lt-scroll", k.indexOf(":") > 0 ? k : "ta:" + k);
+  } catch (_) {}
+  return el;
+}
+
+/* ── 按住保护（本次需求）：鼠标按在条带里的可点件上时，条带一次都不许重建 ─────
+ * 症状：长任务执行过程中，按钮等 UI 悬停时疯狂闪烁、**按不动** —— 鼠标压在按钮上，
+ * 眼睛看到的是它亮 / 灭乱跳；手指按下去那一下更是直接失效（这次 click 没有落到任何
+ * 新元素上，因为 mouseup 之前那只按钮已经被 ~90ms 一次的重绘换掉了）。
+ * 已有的两条解法都盖不住这一格：ltColHold 只认右栏的「打字 / 框选 / 栏内按住」，
+ * 左栏（用户悬停 / 点击的多是那里的节点与端子）与头部按钮要的是「按住期间整块别动」；
+ * 悬停补标（ltHoverKey 一族）只管**视觉**上的悬停态，不保证 mouseup 落点还在。
+ * 口径：pointerdown 落在条带内**除输入框以外**的可点件上 → 从按下列松手之间冻结整条条带
+ * 的重绘（ltRenderStrip 直接早退），被推迟的那一次由 ltRenderWhenFocusLeaves 在松手后
+ * 立刻兑现 —— 运行态更新一条都不丢，只是晚了几百毫秒。
+ * 为什么把输入框排除在外：在文本框里拖选文字属于「正在编辑的控件」，那条路由 ltColHold
+ * 按栏保留（右栏不动），而左栏（SVG 图）与头部没有可编辑控件；排除掉它们，用户在图里
+ * 拖节点 / 拖连线的手势仍走各自原有的路径（拖动本身每帧同步活图，不依赖这次重绘）。
+ * 也只在「条带里」生效：画布 / 别的浮层上的按下与条带无关，绝不跟着冻。 */
+let ltStripHold = { el: null, at: 0 };
+function ltStripOf(el) {
+  const s = LT_UI && LT_UI.strip;
+  if (!s || !el) return false;
+  try {
+    return !!(s.contains && s.contains(el));
+  } catch (_) {
+    return false;
+  }
+}
+function ltStripHoldArm(target) {
+  ltStripHold = { el: null, at: 0 };
+  if (!target || target.nodeType !== 1) return;
+  if (!ltStripOf(target)) return;
+  if (ltEditHost(target)) return; /* 输入框 / 富文本：交给 ltColHold 那一路（打字与框选各有保护） */
+  ltStripHold = { el: target, at: Date.now() }; /* 原样记下这一件，只为「还按着」这一件事 */
+}
+/* 此刻整条条带要不要冻住：指针还按着当初那一件（还挂在文档里）才算 —— 条带被收起 /
+   切画布 / 那一件已被换掉时自动放行，绝不把界面长期冻死。 */
+function ltStripHoldNow() {
+  const h = ltStripHold;
+  if (!h || !h.el) return false;
+  try {
+    if (typeof h.el.isConnected === "boolean" && !h.el.isConnected) {
+      ltStripHold = { el: null, at: 0 };
+      return false;
+    }
+  } catch (_) {}
+  return true;
+}
+function ltStripHoldRelease() {
+  if (!ltStripHold.el) return;
+  ltStripHold = { el: null, at: 0 };
+  /* 松手 = 这次交互结束：按住的这段时间攒下的重绘立刻兑现（不兑现就要等下一次焦点变化） */
+  try {
+    if (typeof ltRenderFlushDeferred === "function") ltRenderFlushDeferred();
+  } catch (_) {}
+}
+/* 这一帧能不能重建：右栏「占着」（打字 / 框选 / 栏内按住，见 ltColHold）或整条条带被按住
+   → 先记下「稍后要重绘」（ltRenderWhenFocusLeaves 会在松手 / 焦点离开时兑现），本轮不拆任何 DOM。
+   三种重建路（空态 / 按栏保留 / 整块）共用这一份。 */
+function ltDeferBecauseHold() {
+  if (!ltStripHoldNow()) return false;
+  try {
+    if (typeof ltRenderWhenFocusLeaves === "function") ltRenderWhenFocusLeaves();
+  } catch (_) {}
+  return true;
 }
 
 /* ── 焦点保护：正在输入的那一栏，重绘时原样留下 ─────────────────────────
@@ -284,12 +557,38 @@ let ltHoldBound = false;
 function ltHoldBind() {
   if (ltHoldBound || typeof document === "undefined") return;
   ltHoldBound = true;
-  document.addEventListener("pointerdown", (ev) => ltHoldArm(ev && ev.target), true);
-  document.addEventListener("pointerup", () => ltHoldRelease(), true);
-  document.addEventListener("pointercancel", () => ltHoldRelease(), true);
+  document.addEventListener(
+    "pointerdown",
+    (ev) => {
+      const t = ev && ev.target;
+      ltHoldArm(t);
+      /* 条带按住保护（本次需求）：整条条带冻不冻由这一条单独记（见 ltStripHold 段） */
+      if (typeof ltStripHoldArm === "function") ltStripHoldArm(t);
+    },
+    true,
+  );
+  document.addEventListener(
+    "pointerup",
+    () => {
+      ltHoldRelease();
+      if (typeof ltStripHoldRelease === "function") ltStripHoldRelease();
+    },
+    true,
+  );
+  document.addEventListener(
+    "pointercancel",
+    () => {
+      ltHoldRelease();
+      if (typeof ltStripHoldRelease === "function") ltStripHoldRelease();
+    },
+    true,
+  );
   /* 窗口失焦（切到别的程序 / 被原生下拉抢走）：按住态不许留成悬挂，否则这一栏再也不更新 */
   try {
-    window.addEventListener("blur", () => ltHoldRelease());
+    window.addEventListener("blur", () => {
+      if (typeof ltStripHoldRelease === "function") ltStripHoldRelease();
+      ltHoldRelease();
+    });
   } catch (_) {}
 }
 /* 这一栏此刻可不可以原地留下（不许重建）：正在打字 / 正在框选 / 鼠标正按在栏里 */
@@ -305,6 +604,9 @@ let ltRenderWaitOff = null; /* 这一轮监听的解绑函数（兑现 / 提前�
 function ltColHoldNow() {
   const main = LT_UI && LT_UI.main;
   if (!main) return false;
+  /* 整条条带被按住（鼠标还压在按钮 / 图里的可点件上）：先不兑现这次重绘 —— 兑现就等于在
+     松手之前把鼠标底下那一件换掉，这一次 click 又要作废（见 ltStripHold 段）。 */
+  if (typeof ltStripHoldNow === "function" && ltStripHoldNow()) return true;
   const l = ltColOf(main, "lt-left");
   const r = ltColOf(main, "lt-right");
   if (ltFocusInside(l) || ltFocusInside(r)) return true;
@@ -784,6 +1086,13 @@ function ltRenderStrip() {
   if (LT_UI.body.hidden) return;
   const wf = typeof S !== "undefined" ? S.wf : null;
   if (!wf) return;
+  /* 按住保护（本次需求）：鼠标还按在条带里的可点件上 → 这一帧整块不重建。
+     按钮「悬停闪烁 / 按不动」的根因就是这一帧把鼠标底下那只 DOM 换掉（见 ltStripHold 段）；
+     被推迟的那一次重绘由松手路径（ltStripHoldRelease → ltRenderFlushDeferred）兑现。 */
+  if (typeof ltStripHoldNow === "function" && ltStripHoldNow()) {
+    ltRenderWhenFocusLeaves();
+    return;
+  }
   /* 悬停保护（本次需求）：重建前先采一帧「指针压着哪几件」（存进 LT_UI.hoverKeys，供
      各条重建路收尾时补标），重建后补标 —— 鼠标停在按钮 / 图节点上不动时，悬停态不再被
      ~90ms 一次的重绘打断（见 ltHoverKey 段）。 */
@@ -793,10 +1102,14 @@ function ltRenderStrip() {
   } catch (_) {
     LT_UI.hoverKeys = [];
   }
+  /* 滚动位置保护（本需求）：重建前先采一帧「两栏 / 头部 / 多行框滚到哪了」，重建后贴回
+     —— 见上面 ltScrollSnapshot 段。采在 ltEnsure 之前：此刻两栏还是上一帧那批真元素。 */
+  const scrollSnap = typeof ltScrollSnapshot === "function" ? ltScrollSnapshot() : null;
   ltEnsure(wf);
   ltRenderHead(wf);
   ltRenderMain(wf);
   ltHoverHere();
+  if (typeof ltScrollRebind === "function") ltScrollRebind(scrollSnap);
 }
 /* 细线的状态色：'' | run | wait | fail | ok（与 ltStatusChip 的映射同源）。
    颜色只回答「跑得怎么样」，展开 / 拖拽一律不改色 —— 拖到下方时线保持原样。 */
@@ -901,6 +1214,142 @@ function ltAgentOptsNow() {
   const C = ltCtl();
   return C && typeof C.agentOpts === "function" ? C.agentOpts() : null;
 }
+/* 本任务里全部 Agent 环节（含子图 / 逐项并行，任意层深）。头部模型 chip 的面板用它做
+   「改哪些环节」的落点：子图里的 Agent 与顶层的一视同仁，否则用户改了顶层的模型、
+   子图还在用老选型，跑起来才知道没生效。 */
+function ltAgentNodes(task) {
+  const out = [];
+  const walk = (g, depth) => {
+    if (!g || depth > 12) return;
+    for (const n of ltArr(g.nodes)) {
+      if (!n) continue;
+      if (n.kind === "agent") out.push(n);
+      else if ((n.kind === "sub" || n.kind === "map") && n.cfg && n.cfg.graph) walk(n.cfg.graph, depth + 1);
+    }
+  };
+  walk(task && task.graph, 0);
+  return out;
+}
+/* 选型四件的写回口径：**只写还留空的那些环节**。
+   留空 = 这一环跟随默认；用户在条带上一改，要改的正是这些「自己没有主张」的环节，
+   而某一环被单独指定过（检查器里选过）就保留它自己的主张，不被条带覆盖。
+   返回值 = 真正被写到的环节数（一处没写到时调用方如实说明，不谎报「已改完」）。 */
+function ltAgentFillBlank(task, key, value) {
+  const k = String(key || "");
+  if (!k) return 0;
+  let hit = 0;
+  for (const n of ltAgentNodes(task)) {
+    if (!n.cfg || typeof n.cfg !== "object") continue;
+    if (String(n.cfg[k] || "").trim()) continue;
+    n.cfg[k] = String(value == null ? "" : value);
+    hit++;
+  }
+  if (hit) ltCommit(task, () => {});
+  return hit;
+}
+/* 面板里的口径说明（抬头下一行）：**改动即写回本任务还留空的那几个 Agent 环节（含子图）**。
+   某一环在检查器里单独指定过就不动它 —— 这是写回口径的一部分，面板上先说清，
+   免得用户以为「改了条带却没生效」（其实是那一环有自己的主张）。 */
+function ltAgentScopeHint() {
+  return ltT("改动即写回本任务全部 Agent 环节（含子图）里还留空的那几个；某一环单独指定过，就去检查器里改它");
+}
+/* ── 头部模型 chip 的选型面板（本轮需求）──────────────────────────────
+   此前这枚 chip 只读：看得到「这一轮用哪只模型」，要改就得先下钻到某一环、再翻检查器。
+   现在点它即开面板，四格（服务商路由 / 模型 / 预设 / 思考强度）就是检查器那四格用的
+   同一份控件与同一份清单（window.LT.ui.ctl 的 ltSelField + agentOpts()，不复制清单）。
+   面板是**瞬时菜单**（挂 ltMenuOpen、带 data-lt-menu 锚点身份、头部重建后由 ltMenuReadopt
+   认回）：它只有下拉选项、没有待提交的文本，与「⋯ 更多」/ 右键菜单同一类浮层。 */
+function ltAgentPanelOpen(wf, chip) {
+  const C = ltCtl();
+  const AO = ltAgentOptsNow();
+  if (!C || !AO || typeof C.ltSelField !== "function") {
+    if (typeof toast === "function") toast(ltT("模型选型控件未就绪"), "warn");
+    return;
+  }
+  const task = ltActiveTask(wf) || ltEnabledTask(wf);
+  if (!task) return;
+  const box = ltEl("div", "lt-mdl");
+  box.appendChild(ltEl("div", "lt-mdl-h", ltT("这一轮跑哪只模型（共 {n} 个 Agent 环节）", { n: ltAgentNodes(task).length })));
+  /* 口径先说一次（四格下不再各挂一遍，免得面板被四行同样的说明撑高）：
+     改动即写回本任务**还留空**的那些 Agent 环节（含子图）；单独指定过的环节不被覆盖。 */
+  box.appendChild(ltEl("div", "lt-fh", ltAgentScopeHint()));
+  /* 成对编码（「路由|模型」）与检查器同口径：跨服务商有同名模型时，裸 id 分辨不出归属。
+     这里仍只改 provider / model 两个字段，编码法复用 AO.keyOf / splitKey。 */
+  const modelKey = (sel) => {
+    const m = String(sel.model || "").trim();
+    if (!m) return "";
+    const r = AO.routeOfModel(m);
+    return AO.keyOf(sel.provider, m) || (r ? AO.keyOf(r, m) : m);
+  };
+  const sel0 = ltAgentSelRead(null, AO);
+  const pickCfg = {
+    allowEmpty: true,
+    emptyLabel: ltT("跟随默认"),
+    searchPlaceholder: ltT("输入以搜索…"),
+  };
+  /* 改动即写回（只填空着的环节），写完当场 toast 说明落到几处、口径是什么 */
+  const write = (label, key, value) => {
+    const n = ltAgentFillBlank(task, key, value);
+    if (n) toast(ltT("已把 {field} 写进 {n} 个 Agent 环节（原来留空的那几个）", { field: label, n: n }), "ok");
+    else toast(ltT("{field}：本任务没有留空的环节（都各自指定过，去检查器里改）", { field: label }), "warn");
+  };
+  let hModel = null;
+  /* 模型格清单按「服务商 / 路由」收窄（本次需求）：上一格已选定哪家，模型就只列哪家；
+     路由留空时给全部分组（那种场景下模型清单本身就是选型入口，选中即把路由一并拨正）。
+     口径与检查器 / 建图选型同一份（ctl.modelScopeOpts）。 */
+  const modelOptsNow = (route) =>
+    typeof C.modelScopeOpts === "function" ? C.modelScopeOpts(AO, route, hModel) : AO.modelGroups;
+  const hProv = C.ltSelField(
+    box,
+    ltT("服务商 / 路由"),
+    sel0.provider,
+    AO.providerOptions,
+    (v) => {
+      write(ltT("服务商 / 路由"), "provider", v);
+      /* 换了路由，原模型多半不属于新路由：成对回显跟着换成新的「路由|模型」，
+         免得面板上显示的仍是旧组合（写回口径不变，仍是两个裸字符串字段）。
+         取的是面板此刻显示的那只模型（不是某个环节的 cfg）—— 回显永远跟用户刚点的这一步走。 */
+      const m = hModel ? String(hModel.value() || "").trim() : "";
+      if (hModel) hModel.setValue(AO.keyOf(v, m) || m, true);
+      /* 模型清单同步收窄到这家：值已回显好，再重列不丢当前选中 */
+      if (hModel) hModel.setOptions(modelOptsNow(v));
+    },
+    Object.assign({ emptyText: ltT("没有可用的服务商") }, pickCfg),
+  );
+  hModel = C.ltSelField(
+    box,
+    ltT("模型"),
+    modelKey(sel0),
+    modelOptsNow(sel0.provider),
+    (v) => {
+      const key = String(v || "").trim();
+      if (!key) {
+        write(ltT("模型"), "model", "");
+        return;
+      }
+      /* 成对编码：选中即把 provider 与 model 一起拨正（splitKey 拆出路由部分）；
+         选的是「跟随默认」那条空键（没带路由）时，先按清单反查它属于哪个服务商，
+         免得把 A 家的模型直接配到 B 家路由上（那种组合只在运行时才炸）。 */
+      const sp = AO.splitKey(key);
+      const route = sp.provider || AO.routeOfModel(sp.model);
+      if (route && (!hProv || !String(hProv.value() || "").trim())) {
+        write(ltT("服务商 / 路由"), "provider", route);
+        if (hProv) hProv.setValue(route, true);
+      }
+      if (route && hProv && String(hProv.value() || "").trim() !== route) {
+        /* 已经有明确路由而这只模型不属于它：不成对写入，如实说清（不去凑一个错组合） */
+        toast(ltT("这只模型属于「{route}」：先把上面的服务商 / 路由改成它，再选模型", { route: AO.routeName(route) }), "warn");
+        return;
+      }
+      write(ltT("模型"), "model", sp.model);
+    },
+    Object.assign({ emptyText: ltT("没有可用的模型") }, pickCfg),
+  );
+  C.ltSelField(box, ltT("预设"), sel0.preset, AO.presetOptions, (v) => write(ltT("预设"), "preset", v), pickCfg);
+  /* 思考强度：留空的环节跑 S.assistEffort；引擎白名单已在 AO.effortOptions 里过滤过 */
+  C.ltSelField(box, ltT("思考强度"), sel0.effort, AO.effortOptions, (v) => write(ltT("思考强度"), "effort", v), pickCfg);
+  ltMenuOpen(chip, [{ el: box }]);
+}
 function ltRenderHead(wf) {
   const head = LT_UI.head;
   /* 头部整块重建：挂在头部按钮上的那只下拉要跟着搬家 —— 先记下它的锚点身份，
@@ -926,17 +1375,35 @@ function ltRenderHead(wf) {
   if (ltMemPendingCount()) head.appendChild(Object.assign(ltEl("span", "lt-chip lt-chip-mem lt-breath", ltT("待确认记忆") + " ×" + ltMemPendingCount()), { onclick: () => ltMemPendingDlg() }));
   const errs = task ? ltValidate(task.graph).filter((x) => x.level === "err") : [];
   if (errs.length) head.appendChild(Object.assign(ltEl("span", "lt-chip lt-chip-fail", ltT("图有问题") + " ×" + errs.length), { title: errs[0].msg, onclick: () => ltProblemsDlg(task) }));
-  /* 当前选型回显（本轮需求）：条带头常驻一枚模型 chip —— 长任务跑起来时这条带就是
-     用户最常盯的地方，「这一轮到底用哪只模型 / 哪档预设 / 哪档思考强度」不该只藏在
+  /* 当前选型回显 + 选型入口（本轮需求）：条带头常驻一枚模型 chip —— 长任务跑起来时这条带
+     就是用户最常盯的地方，「这一轮到底用哪只模型 / 哪档预设 / 哪档思考强度」不该只藏在
      节点检查器里。数据源与图内卡片摘要、检查器那一行同一份（ltAgentSelRead +
-     ltAgentOptsNow），只读、不落存储。chip 只放短名（窄窗里别一枚 chip 吃掉整条带），
-     完整的「路由 · 模型 · 预设 · 思考强度」进 title，hover 即见。 */
-  {
+     ltAgentOptsNow），chip 的正文只是只读回显。chip 只放短名（窄窗里别一枚 chip 吃掉整条
+     带），完整的「本轮模型：路由 · 模型 · 预设 · 思考强度」与「点开的范围口径」进 title。
+     **它现在也是选型入口**：点它即开四格面板（ltAgentPanelOpen，控件与清单都复用
+     app-longtask-ctl.js 那一份），不必先下钻某一环再翻检查器。锚点身份写在 data-lt-menu 上，
+     头部重建后由 ltMenuReadopt 认回来（否则跑起来时 ~90ms 一次的重建会把开着的面板收掉）。 */
+  if (task) {
     const AOhead = ltAgentOptsNow();
     const selHead = ltAgentSelRead(null, AOhead);
     const p = ltAgentSelParts(selHead, AOhead);
-    const chip = ltEl("span", "lt-chip lt-chip-model", ltT("模型") + " " + ltAgentModelShort(selHead.model) + " · " + p.preset + " · " + p.effort);
-    chip.title = ltAgentSelText(selHead, AOhead);
+    const chip = ltBtn(
+      ltT("模型") + " " + ltAgentModelShort(selHead.model) + " · " + p.preset + " · " + p.effort,
+      "lt-chip lt-chip-model",
+      null,
+      ltAgentSelText(selHead, AOhead) + ltT("　点这里改选型（改动即写回本任务全部 Agent 环节（含子图）里还留空的那几个）"),
+    );
+    try {
+      chip.setAttribute("data-lt-menu", "lt-model");
+    } catch (_) {}
+    chip.onclick = (ev) => {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      if (ltMenuIsOpen(chip)) {
+        ltMenuClose();
+        return;
+      }
+      ltAgentPanelOpen(wf, chip);
+    };
     head.appendChild(chip);
   }
   const sp = ltEl("div", "lt-spacer");
@@ -944,20 +1411,50 @@ function ltRenderHead(wf) {
   /* ── 按钮收纳（本次需求）────────────────────────────────────────────
      以前这里平铺七八颗按钮（启用 / 停止 / 重新启用 / 停用解绑 / 记忆 / 删除 / ⚙ / ✕），
      可绝大多数只在极少数场景用一次，把条带挤得满满当当。现在的口径：
-       · 常驻只留「用得上的」：任务卡住时的「▶ 继续」「■ 停止」、「✎ 修改任务链」（本次新增的
+       · 右端第一颗是「▶ 启用并绑定」主按钮（本次需求：把「开始长任务」从 ⋯ 更多 提到条带
+         右端常驻，措辞与应用内手册的「▶ 启用并绑定」一致）；「run 还活着」（正在跑 / 停在
+         等你处理）时它不出现 —— 那时新开一个 run 只会把用户手里这条顶掉；run 一停下来
+         （终局 / 卡住 / 已停止）它就回来，与「▶ 继续」并排：一个接着跑，一个按当前图重开；
+       · 常驻只留「用得上的」：任务卡住时的「▶ 继续」「⏭ 强行进入下一状态」（本次需求：run 停在手上
+     时的统一出路 —— 报错停住 / 被停止 / 收成卡住一次推进）、「■ 停止」、「✎ 修改任务链」（本次新增的
          主入口）、「⚙ 设置」（任务切换 / 历史 run / 交付目录体检 / 图校验都在这只窗里）、
          「✕ 收起条带」；无任务时仍是「＋ 创建长任务」；
-       · 其余（启用并绑定 / 重新启用 / 停用解绑 / 记忆 / 历史 run / 交付体检 / 图校验 /
+       · 其余（按当前图重跑 / 停用解绑 / 记忆 / 历史 run / 交付体检 / 图校验 /
          删除任务）一律收进「⋯ 更多」下拉（见 ltMoreBtn）。
      下拉是**瞬时菜单**（没有待提交的输入）：点外部 / Esc 即收，符合 AGENTS 的浮层分类。 */
   if (!task) {
     head.appendChild(ltBtn(ltT("＋ 创建长任务"), "lt-btn-pri", () => openLtCreateDlg(wf)));
   } else {
+    /* 「▶ 启用并绑定」= 按当前图定义拍一张快照开一个 run（图改过就用新版跑）：落点就是
+       ltEnable，与「⋯ 更多」里那颗「按当前图重跑」同一处逻辑，不双写。 */
+    const runLive = !!(run && (run.status === "running" || run.status === "waiting"));
+    if (!runLive) {
+      head.appendChild(
+        ltBtn(
+          ltT("▶ 启用并绑定"),
+          "lt-btn-pri",
+          async () => {
+            const r = await ltEnable(wf, task.uid, {});
+            if (!r.ok) toast(ltT("启用失败：") + (r.error || ""), "err");
+            else toast(ltT("长周期任务已启用并绑定本画布"), "ok");
+            ltRenderStrip();
+          },
+          ltT("按当前图定义拍一张快照开一个 run（图改过就用新版跑）"),
+        ),
+      );
+    }
     if (run && (run.status === "blocked" || run.status === "failed" || run.status === "stalled" || run.status === "cancelled")) {
       head.appendChild(ltBtn(ltT("▶ 继续"), "lt-btn-pri", async () => {
         await ltResume(wf, run.runId);
         ltRenderStrip();
       }));
+    }
+    /* 「⏭ 强行进入下一状态」（本次需求）：run 停在手上时的统一出路 —— 报错停住 / 被停止 /
+       收成卡住都在这里一次推进（施加动作只在引擎的 LT.forceAdvance 里有一份）。它排在
+       「▶ 启用并绑定」「▶ 继续」之后：先接着跑，实在推不动才强行推进。 */
+    if (run) {
+      const forceBtn = ltForceAdvanceBtn(wf, run);
+      if (forceBtn) head.appendChild(forceBtn);
     }
     if (task.enabled && run && run.status !== "done")
       head.appendChild(ltBtn(ltT("■ 停止"), "lt-btn", () => { ltStop(wf); ltRenderStrip(); }));
@@ -1050,6 +1547,9 @@ function ltMenuOutside(ev) {
   ltMenuClose();
 }
 /* 打开一只以 anchor 为锚的下拉；items = [{ label, cls, title, on }]，{ sep:true } 画分隔线。
+   另收一种 **{ el: HTMLElement }（自定义内容项）**：不套按钮外壳，把这块 DOM 原样塞进来 ——
+   头部模型 chip 的面板（四格可搜索下拉）走它。菜单本体仍由这里统管（贴锚点 / 点外部收 /
+   Esc 收 / 头部重建后按 data-lt-menu 认回锚点），自定义块不重复实现一遍瞬态浮层。
    右键菜单（图内空白 / 节点 / 连线）不给锚点，改传 pt = { x, y } 的**鼠标屏幕坐标**：
    菜单落在光标右下方（右下溢出窗外就往回收），与主画布 #ctx 同一手感。 */
 function ltMenuOpen(anchor, items, pt) {
@@ -1060,6 +1560,10 @@ function ltMenuOpen(anchor, items, pt) {
   el.setAttribute("role", "menu");
   for (const it of items || []) {
     if (!it) continue;
+    if (it.el && it.el.nodeType === 1) {
+      el.appendChild(it.el);
+      continue;
+    }
     if (it.sep) {
       el.appendChild(ltEl("div", "lt-more-sep"));
       continue;
@@ -1138,22 +1642,16 @@ function ltMoreBtn(wf, task) {
   })();
   const needShell = !!(runNow && (runNow.shellGone || runNow.shellWarned));
   const menu = [
+      /* 与条带右端那颗常驻主按钮「▶ 启用并绑定」是同一处逻辑（ltEnable），所以这里按需求
+         收敛成一颗、并明确标注「按当前图重跑」——它是 run 还活着时唯一能开新 run 的入口
+         （主按钮那时不出现），不与右端主按钮同名重复。 */
       {
-        label: ltT("▶ 启用并绑定"),
-        title: ltT("按当前图定义拍一张快照开一个 run（图改过就用新版跑）"),
-        on: async () => {
-          const r = await ltEnable(wf, task.uid, {});
-          if (!r.ok) toast(ltT("启用失败：") + (r.error || ""), "err");
-          else toast(ltT("长周期任务已启用并绑定本画布"), "ok");
-          ltRenderStrip();
-        },
-      },
-      {
-        label: ltT("重新启用（新 run）"),
+        label: ltT("按当前图重跑"),
         title: ltT("按当前图定义从起点重跑（正在跑的 run 会被替换）"),
         on: async () => {
           const r = await ltEnable(wf, task.uid, {});
           if (!r.ok) toast(ltT("启用失败：") + (r.error || ""), "err");
+          else toast(ltT("长周期任务已启用并绑定本画布"), "ok");
           ltRenderStrip();
         },
       },
@@ -1167,7 +1665,7 @@ function ltMoreBtn(wf, task) {
         },
       },
       { sep: true },
-      { label: ltT("记忆"), title: ltT("长任务记忆沉淀：查 / 记 / 导出到事实库"), on: () => ltMemoryDlg() },
+      { label: ltT("记忆"), title: ltT("长任务记忆沉淀"), on: () => ltMemoryDlg() },
       { label: ltT("历史 run"), title: ltT("看这张任务跑过的每一轮 run 与它们的图版本"), on: () => ltRunsDlg(wf) },
       { label: ltT("交付目录体检"), title: ltT("扫交付目录：报告缺项 / 孤儿，只报告不删"), on: () => ltOrphanDlg(wf) },
       { label: ltT("任务图校验"), title: ltT("按引擎规则校验当前这张图，列出 err / warn"), on: () => ltProblemsDlg(task) },
@@ -1201,6 +1699,73 @@ function ltMoreBtn(wf, task) {
   };
   return b;
 }
+
+/* ── 「⏭ 强行进入下一状态」（本次需求）：条带头的 run 级出路 ─────────────────
+ * 需求原话：**未正确实现错误时手动强行进入下一状态**，而且**本身就不应当出现任何 state
+ * 错误导致无法进行**。两件事各归各位：
+ *   · 图「立不起来」（缺起点 / 缺终点 / 空图）→ 引擎的 ltEnable 会先就地补好再开跑；
+ *   · 跑到一半卡住 / 停住 / 报错（用户按过停止、报错停在这一环）→ 就是这颗按钮。
+ * 施加动作只落引擎的 LT.forceAdvance（放行 = ltApplySkip 同一实现、停止 = 排回队列重跑），
+ * 界面只负责「说清楚会发生什么」+ 报告结果，绝不自己改 run（与 ltErrEscapeBox 同一纪律）。
+ * 可见口径与「▶ 继续」同档：run 非 running / done 时露出（卡住 / 失败 / 停住 / 已停止都要有出路）。 */
+function ltForceStuck(wf) {
+  const run = ltCurrentRun(wf);
+  if (!run) return null;
+  const paths = Object.keys(run.nodes || {});
+  const stop = [];
+  const errs = [];
+  for (const p of paths) {
+    const s = String((run.nodes[p] && run.nodes[p].status) || "");
+    if (s !== "blocked" && s !== "failed") continue;
+    if (typeof LT.forcedNode === "function" && LT.forcedNode(run.nodes[p])) stop.push(p);
+    else errs.push(p);
+  }
+  return { run: run, stop: stop, errs: errs };
+}
+function ltForceAdvanceBtn(wf, run) {
+  if (!run || run.status === "running" || run.status === "done") return null;
+  const info = ltForceStuck(wf) || { run: run, stop: [], errs: [] };
+  const n = info.stop.length + info.errs.length;
+  return ltBtn(
+    ltT("⏭ 强行进入下一状态") + (n ? " · " + n : ""),
+    "lt-btn lt-btn-force",
+    async () => {
+      const ok =
+        typeof confirmDialog === "function"
+          ? await confirmDialog(
+              ltT("强行进入下一状态：把卡住的环节按「放行」处理（记为已跳过、照常点火下游，不假装它做成了）") +
+                " " +
+                ltT("被「停止」按下来的环节重新排回队列接着跑；正在等你确认的环节不动。确定继续？"),
+              { title: ltT("强行进入下一状态"), okText: ltT("强行推进"), cancelText: ltT("取消") },
+            )
+          : true;
+      if (!ok) return;
+      const API = window.LT;
+      if (!API || typeof API.forceAdvance !== "function") {
+        if (typeof toast === "function") toast(ltT("长任务引擎未就绪：先点「继续」再试"), "warn");
+        return;
+      }
+      /* 没有任何环节卡住（run 停在手上却没有可放行的人）时，顺手按「继续」的口径恢复现场 ——
+         不让用户对着一颗点了没反应的按钮发呆。 */
+      if (!info.stop.length && !info.errs.length) {
+        await ltResume(wf, run.runId);
+        toast(ltT("这一轮没有卡住的环节：已按「继续」恢复现场"), "warn");
+        ltRenderStrip();
+        return;
+      }
+      const r = await API.forceAdvance(wf, { run: run });
+      if (r && r.ok) {
+        toast(ltT("已强行推进：放行 ") + r.released + ltT(" 个环节、") + r.requeued + ltT(" 个环节重新排队"), "ok");
+        if (ltArr(r.errs).length && typeof toast === "function") toast(ltStr(r.errs[0], 160), "warn");
+      } else if (typeof toast === "function") {
+        toast((r && r.error) || ltT("强行推进失败"), "warn");
+      }
+      ltRenderStrip();
+    },
+    ltT("把卡住的环节放行、把被停止的环节排回队列，让状态机按图继续往下走（下一次先试「▶ 继续」）"),
+  );
+}
+
 /* 头部那颗「✎ 修改任务链」的落点：弹窗模块（renderer/app-longtask-edit.js）挂的就是它。
    模块没加载（脚本分层 / 单测环境）时不静默失败，明确告诉用户去哪找。 */
 function ltOpenEditDlg(wf, uid) {
@@ -1269,20 +1834,39 @@ function ltFootClose(label, cls) {
   foot.appendChild(ltBtn(ltT(label || "关闭"), cls || "lt-btn", () => closeOverlay()));
 }
 
+/* 记住「此刻活着的两栏」：滚动位置的采集 / 还原（ltScrollSnapshot 段）与各条早退路
+   都要按栏名找到当下这一帧的元素。栏一被换掉就立刻更新，绝不指向已摘出文档的旧节点。 */
+function ltTrackCols(left, right) {
+  if (!LT_UI) return;
+  /* 只覆盖真的给了的那一栏（另一栏原样留着）：空态那一步左右都没给（清成 null），
+     而「只重建另一栏」的两条早退路会把自己那一栏继续沿用上一帧的 —— 传 undefined
+     就当「这一栏不动」，免得一次局部重建把另一栏的登记抹掉（贴回时就找不到它了）。 */
+  if (left) LT_UI.left = left;
+  if (right) LT_UI.right = right;
+  if (left === null) LT_UI.left = null;
+  if (right === null) LT_UI.right = null;
+}
+
 /* ── 主区：左 = 状态机图（可编辑），右 = 检查器 / 人工任务卡 ─────── */
 function ltRenderMain(wf) {
   const main = LT_UI.main;
   const task = ltActiveTask(wf) || ltEnabledTask(wf);
   if (!task) {
-    /* 没任务可画 = 空态整块重建：用户正占着某一栏（打字 / 框选 / 鼠标按着）时先等一等，
+    /* 没任务可画 = 空态整块重建：用户正占着某一栏（打字 / 框选 / 鼠标按着 / 悬停）时先等一等，
        免得刚写下的字与刚框出来的选区被空态顶掉 —— 与下面「按栏保留」同一口径。 */
     if (typeof ltColHold === "function" && (ltColHold(ltColOf(main, "lt-right")) || ltColHold(ltColOf(main, "lt-left")))) {
       ltRenderWhenFocusLeaves();
       ltHoverHere();
       return;
     }
+    /* 整条条带被按住（鼠标按在头部按钮 / 图里的可点件上）→ 这一帧谁也不拆 */
+    if (typeof ltDeferBecauseHold === "function" && ltDeferBecauseHold()) {
+      ltHoverHere();
+      return;
+    }
     main.innerHTML = "";
     main.appendChild(ltEmptyState(wf));
+    ltTrackCols(null, null);
     ltHoverHere();
     return;
   }
@@ -1293,12 +1877,19 @@ function ltRenderMain(wf) {
      typeof 兜一层：纯 Node 的迷你 DOM 回归（test/smoke-longtask-refocus.js）只搬得动其中几个函数。 */
   const oldLeft = ltColOf(main, "lt-left");
   const oldRight = ltColOf(main, "lt-right");
+  /* 整条条带被按住（鼠标按在头部按钮 / 图里的可点件上）→ 两栏都原地留下：
+     这一次点击的 mouseup 一定落回原来那一件，不会被 ~90ms 一次的重绘换成新元素。 */
+  if (typeof ltDeferBecauseHold === "function" && ltDeferBecauseHold()) {
+    ltHoverHere();
+    return;
+  }
   const holdRight = ltFocusCol(oldRight) || (typeof ltColHold === "function" && ltColHold(oldRight));
   if (holdRight) {
     for (const c of Array.from(main.children)) if (c !== oldRight) main.removeChild(c);
     const left = ltEl("div", "lt-left");
     main.insertBefore(left, oldRight);
     ltRenderGraph(left, wf, task, run, graph);
+    ltTrackCols(left, oldRight);
     ltRenderWhenFocusLeaves();
     ltHoverHere();
     return;
@@ -1309,6 +1900,7 @@ function ltRenderMain(wf) {
     const right = ltEl("div", "lt-right");
     main.appendChild(right);
     ltRenderSide(right, wf, task, run);
+    ltTrackCols(oldLeft, right);
     ltRenderWhenFocusLeaves();
     ltHoverHere();
     return;
@@ -1320,6 +1912,7 @@ function ltRenderMain(wf) {
   main.appendChild(right);
   ltRenderGraph(left, wf, task, run, graph);
   ltRenderSide(right, wf, task, run);
+  ltTrackCols(left, right);
   ltHoverHere();
 }
 function ltEmptyState(wf) {
@@ -2000,6 +2593,24 @@ function ltRenderGraph(left, wf, task, run, graph) {
   const rootBtn = ltCrumbTaskBtn(wf, task, 0);
   crumb.appendChild(rootBtn);
   ltDrill.forEach((d, i) => mk(d.title || ltT("子图"), i + 1));
+  /* 下钻态再加一枚「← 返回外层」（本次修复）：以前面包屑里根本没有「回根图」的条目 ——
+     根条目那颗按钮是任务切换清单（点当前那张什么都不做），中间几级路径条目最浅也只到
+     第 1 层（mk 收栈是 slice(0, depth)，depth 从 1 起），于是双击子图 / 点「⤵ 下钻编辑
+     子图」进去之后就再也退不回外层图，只能换任务或收起整条条带。
+     现在逐层退回：点一下退一级，退到根图这枚按钮自己消失（界面里再没有别的「回根」
+     入口，所以它必须稳）；深浅仍可直接点路径条目跳层。 */
+  if (ltDrill.length) {
+    const back = ltEl("button", "lt-crumb-i lt-crumb-back", ltT("← 返回外层"));
+    back.type = "button";
+    back.title = ltT("退回上一层子图；退到最外层图后这枚按钮收起");
+    back.onclick = () => {
+      ltDrill = ltDrill.slice(0, ltDrill.length - 1);
+      ltSel.path = "";
+      ltSel.edge = "";
+      ltRenderStrip();
+    };
+    crumb.appendChild(back);
+  }
   const rv = run && run.graph ? Number(run.graph.ver) || 1 : 0;
   if (run && rv && Number(task.ver) > rv) {
     const hint = ltEl("span", "lt-crumb-hint", ltT("图已改到 v") + task.ver + ltT("，当前 run 仍按启用那刻的 v") + rv + ltT(" 在跑（重新启用才生效）"));
@@ -2780,9 +3391,15 @@ function ltRenderSide(right, wf, task, run) {
   }
   /* 卡住的环节（含用户「无视报错」放行过的那些 —— 放行只免它的阻拦，不抹掉「它出过错」这个事实，
    卡片上显式写着已放行，用户仍能一眼看出哪一环没按预期跑完）。 */
-  const stuck =
-    run &&
-    Object.keys(run.nodes || {}).filter((p) => {
+  /* 卡住清单**必须落成一个数组**：以前写成 `const stuck = run && Object.keys(...).filter(...)`，
+     run 为空（任务存着 activeRun、但内存里那份 run 还没认领 / 已被回收）时它等于 null，
+     下一行 `stuck.length` 当场抛异常 —— 异常从 ltRenderMain 冒到 ltRenderStrip，
+     后面的 ltScrollRebind 再也跑不到：右栏被清空、滚动位置归零，
+     于是每次约 90ms 一次的重绘都把用户正在读的那一栏顶回顶上（本次需求的根因）。
+     `run && []` 这个短路写法本身就是 null；一律用 ltArr 归一，后面只管用。 */
+  const hasRun = !!run;
+  const stuck = hasRun
+    ? Object.keys(run.nodes || {}).filter((p) => {
       const s = run.nodes[p].status;
       if (s !== "blocked" && s !== "failed" && s !== "skipped") return false;
       if (s === "skipped" && !run.nodes[p].skippedBy) return false;
@@ -2791,7 +3408,8 @@ function ltRenderSide(right, wf, task, run) {
       const pre = String(p).indexOf("/") >= 0 ? String(p).slice(0, String(p).lastIndexOf("/")) : "";
       const ws = pre && run.nodes[pre] ? run.nodes[pre] : null;
       return !(ws && ws.status === "skipped" && ws.skippedBy);
-    });
+    })
+    : ltArr(null);
   if (stuck.length) {
     right.appendChild(ltEl("div", "lt-side-h", ltT("卡住的环节")));
     for (const p of stuck) right.appendChild(ltBlockedCard(wf, run, p));
@@ -2813,6 +3431,31 @@ function ltField(parent, label, el, hint) {
   parent.appendChild(row);
   return el;
 }
+/* 这格属于谁：一路往上找到检查器标题（ltNodeInspector / ltEdgeInspector / ltHumanCard 都写
+   .lt-insp-h，内容形如「Agent 任务 · 第一个 Agent 任务 · 运行中」）。取不到就回落栏名 ——
+   迷你 DOM / 老运行时拿不到结构时，退化成「这一栏的第几格」，仍比不做保护强。 */
+function ltScrollScopeOf(el) {
+  let p = el && el.parentNode;
+  for (let d = 0; d < 8 && p; d++, p = p.parentNode) {
+    try {
+      const cls = String((p && p.className) || "");
+      if (cls.split(/\s+/).indexOf("lt-insp-h") >= 0) {
+        /* 状态后缀（「 · 运行中」这类）会随运行态改，不参与 key：按第一个「 · 」切掉 */
+        const t = String(p.textContent || "").trim();
+        const cut = t.indexOf(" · ");
+        return cut > 0 ? t.slice(0, cut) : t;
+      }
+      if (cls.split(/\s+/).indexOf("lt-right") >= 0) return "lt-right";
+    } catch (_) {}
+  }
+  return "";
+}
+/* 没有显式 key 的多行框：按「属于谁 + 字段名」现拼一把稳定 key（重建前后同值）。
+   同一个检查器里字段名唯一（「目标 / 说明」「标签」「条件…」），所以这一把够稳。 */
+function ltInputScrollKey(el, label) {
+  const scope = ltScrollScopeOf(el) || "lt-right";
+  return "ta:" + scope + "::" + String(label || "");
+}
 function ltInput(parent, label, val, on, type, hint) {
   const i = ltEl(type === "area" ? "textarea" : "input", "lt-in");
   if (type !== "area") i.type = type || "text";
@@ -2825,6 +3468,12 @@ function ltInput(parent, label, val, on, type, hint) {
     if (hkey) {
       ltTaHApply(i, hkey);
       ltTaHBind(i, hkey);
+    } else {
+      /* 没给 hkey 的多行框（连线条件 / 记忆正文 / 交付说明…）也要吃滚动保护：
+         按「属于谁 + 字段名」给它一把稳定 key（见 ltInputScrollKey）。 */
+      try {
+        if (i.setAttribute) i.setAttribute("data-lt-scroll", ltInputScrollKey(i, label));
+      } catch (_) {}
     }
   }
   return ltField(parent, label, i, hint);
@@ -2942,16 +3591,15 @@ function ltNodeInspector(box, wf, task, run, path) {
   ltInput(box, ltT("目标 / 说明"), node.cfg.goal, (i) => save({ goal: i.value }), "area", null, ltDraftKey(path, "goal"));
   if (node.kind === "agent") {
     const C = ltCtl();
-    const known = ltKnownKeyOptions(task, run);
-    if (C) {
-      C.ltMultiSelField(box, ltT("输入状态键"), ltArr(node.cfg.inKeys), known, (v) => save({ inKeys: v }),
-        ltKeyOpt({ hint: ltT("留空 = 自动看全部状态"), emptyLabel: ltT("留空 = 全部状态") }));
-      C.ltMultiSelField(box, ltT("输出状态键"), ltArr(node.cfg.outKeys), known, (v) => save({ outKeys: v }),
-        ltKeyOpt({ hint: ltT("Agent 只被授权写这些键"), allowNew: true }));
-    } else {
-      ltInput(box, ltT("输入状态键"), (node.cfg.inKeys || []).join(", "), (i) => save({ inKeys: i.value.split(/[,，\s]+/).filter(Boolean) }), null, ltT("逗号分隔 · 留空 = 自动看全部状态"));
-      ltInput(box, ltT("输出状态键"), (node.cfg.outKeys || []).join(", "), (i) => save({ outKeys: i.value.split(/[,，\s]+/).filter(Boolean) }), null, ltT("Agent 只被授权写这些键"));
-    }
+    /* 「输入状态键 / 输出状态键」两格本轮整体撤掉（本次需求：暴露给用户、用户也不知道怎么用）——
+       它们是引擎的内部机制，不是用户要填的参数，判定口径写在这里：
+         · 输入：不留 inKeys 就是引擎的默认口径 —— 本环节在线时间线之前**声明的全部状态键**
+           都摆进提示词（ltAgentPrompt 的 inKeys.length ? inKeys : Object.keys(flat)），
+           比让用户在几十个键里手工勾选更准；
+         · 输出：新 Agent 环节建出来就带 outKeys: ["result"]（ltAddNode），连到「写文件 /
+           逐项并行」时 ltPreselectAfterWire 还会按上游声明自动预选目标键；
+           老任务里已写下的 cfg.outKeys 一字不动，照旧生效、照旧落盘。
+       所以撤掉这两格不改任何运行语义，只是把内部键从用户面前收回去。 */
     /* 模型选型：与会话（助手栏供应商 / 模型下拉、智能节点面板）同一批真源 ——
        清单由 app-longtask-ctl.js 的 ltAgentOpts() 提供；输入框只用来搜索，
        选不到的值提交不进去，避免手打模型名 / 路由名拼错后静默不生效。
@@ -3007,6 +3655,11 @@ function ltNodeInspector(box, wf, task, run, path) {
         return r ? AO.keyOf(r, m) : m;
       };
       let hModel = null;
+      /* 模型格清单按「服务商 / 路由」收窄（本次需求）：上一格选定了哪家，模型就只列哪家。
+         口径只有一份（ctl.modelScopeOpts，与建图选型 / 条带 chip 面板共用）；
+         路由换了就地 setOptions 重列表格，不重建右栏（未提交输入不丢）。 */
+      const modelOptsNow = (route) =>
+        typeof C.modelScopeOpts === "function" ? C.modelScopeOpts(AO, route, hModel) : AO.modelGroups;
       const hProv = C.ltSelField(
         box,
         ltT("服务商 / 路由"),
@@ -3022,6 +3675,8 @@ function ltNodeInspector(box, wf, task, run, path) {
           if (!keep) save({ model: "" });
           /* 成对回显：路由换了（或被清空）后模型格的值要跟着换成新的「路由|模型」 */
           if (hModel) hModel.setValue(keep ? ltNodeModelKey(v, m) : "", true);
+          /* 模型清单同步收窄到这家：值已回显好，再重列不丢当前选中 */
+          if (hModel) hModel.setOptions(modelOptsNow(v));
           refreshHints();
         },
         Object.assign({ hint: defHintText(), emptyText: ltT("没有可用的服务商") }, pickCfg),
@@ -3031,7 +3686,7 @@ function ltNodeInspector(box, wf, task, run, path) {
         box,
         ltT("模型"),
         ltNodeModelKey(node.cfg.provider, node.cfg.model),
-        AO.modelGroups,
+        modelOptsNow(node.cfg.provider),
         (v) => {
           const key = String(v || "").trim();
           if (!key) {
@@ -3220,7 +3875,12 @@ function ltNodeInspector(box, wf, task, run, path) {
       ltRenderStrip();
     }));
   }
-  if (st && st.tail) box.appendChild(ltEl("div", "lt-tail", ltStr(st.tail, 1200)));
+  if (st && st.tail) {
+    const tail = ltEl("div", "lt-tail", ltStr(st.tail, 1200));
+    /* 尾段几十行时自己也滚（CSS 的 max-height + overflow:auto）：同上，按栏内位置记一份 */
+    ltScrollBind(tail, "col:lt-tail");
+    box.appendChild(tail);
+  }
   /* ── 产出与生成（本轮需求）：这一环节的产出 / 产物落进它自己的超级节点子壳，
      涉及内容生成时在子壳里**预置好生成工作流但一律不运行**（由用户点 ▶ 执行）。
      所以这里只问两件事：要不要生成内容、用哪几种生成。
@@ -3285,7 +3945,7 @@ function ltEdgeInspector(box, wf, task, edgeId) {
   box.appendChild(ltEl("div", "lt-insp-h", (a ? a.title : e.from) + " → " + (b ? b.title : e.to)));
   const save = (patch) => ltCommit(task, () => Object.assign(e, patch));
   ltInput(box, ltT("标签"), e.label, (i) => save({ label: i.value }));
-  ltInput(box, ltT("条件（受限 JS，可选）"), e.cond, (i) => save({ cond: i.value }), "area", ltT("拿得到 input.state（整份共享状态）；return 真值 = 放行。留空 = 无条件。抛错转「需人工」"));
+  ltInput(box, ltT("条件（受限 JS，可选）"), e.cond, (i) => save({ cond: i.value }), "area", ltT("拿得到 input.state（整份共享状态，也可直接写 state.<键>）与 input.node / input.runId；写 return 真值 = 放行，直接写一行表达式（如 state.ok === false）也认。留空 = 无条件。抛错转「需人工」"));
   box.appendChild(ltBtn(ltT("删除这条连线"), "lt-btn lt-btn-del", () => {
     g.edges = ltArr(g.edges).filter((x) => x.id !== edgeId);
     ltSel.edge = "";
@@ -3312,7 +3972,7 @@ function ltOverviewInspector(box, wf, task, run) {
     if (keys.length) {
       box.appendChild(ltEl("div", "lt-side-h2", ltT("共享状态")));
       for (const k of keys.slice(0, 40)) {
-        box.appendChild(ltEl("div", "lt-state-k", k + " = " + ltBrief(ltStateGet(run, "", k))));
+        box.appendChild(ltEl("div", "lt-state-k", k + " = " + ltBrief(ltStateRead(run, "", k))));
       }
     }
   }
@@ -3414,6 +4074,9 @@ function ltErrEscapeBox(host, task, run, path, kind) {
   return box;
 }
 
+/* 「⏭ 强行进入下一状态」的两个 helper（ltForceStuck / ltForceAdvanceBtn）定义在文件上部、
+   ltOpenEditDlg 之前 —— ltRenderHead 的头部片段是「ltRenderHead → ltMenuClose」这一段，
+   把它们塞在 ltErrEscapeBox 旁边会被头部 / 菜单的静态断言误当成「头部行为」读进去。 */
 function ltBlockedCard(wf, run, path) {
   const st = run.nodes[path];
   const skipped = st.status === "skipped";
@@ -3473,6 +4136,8 @@ function ltMapCard(wf, run, w) {
   const paste = ltEl("textarea", "lt-in lt-in-why");
   paste.placeholder = ltT("也可以直接粘贴一份 JSON 数组当展开源（第一行以 [ 开头）");
   paste.rows = 3;
+  /* 重建后滚到哪儿还停在哪儿（key 用这一环 path，见 ltScrollSnapshot 段） */
+  ltScrollBind(paste, ltDraftKey(wpath, "mapPaste"));
   card.appendChild(paste);
   function resolve(key, pasted) {
     const API = window.LT;
@@ -3585,8 +4250,9 @@ function ltHumanCard(wf, run, w) {
     why.placeholder = ltT("意见 / 理由（驳回时必填，上游 Agent 会读到）");
     why.rows = 2;
     /* 这张卡在运行期会被反复重绘：手动拖出来的高度也按同一个草稿键记住（见 LT_TA_H 段），
-       不然写到一半顺手拉高的框，下一次重绘又缩回两行。 */
+       不然写到一半顺手拉高的框，下一次重绘又缩回两行。框里自己那条滚动条同样按这个键保。 */
     ltTaHBind(why, whyKey);
+    ltScrollBind(why, "ta:" + whyKey);
     card.appendChild(why);
     const row = ltEl("div", "lt-card-row");
     row.appendChild(ltBtn(ltT("✓ 通过"), "lt-btn lt-btn-pri", async () => {
@@ -3662,6 +4328,9 @@ function ltHumanReleaseDialog(wf, w, st, node, items, noteIn) {
   const note = ltDraftBind(ltEl("textarea", "lt-in"), key);
   note.rows = 4;
   note.placeholder = ltT("例：第三份素材还没拿到原始文件，先用占位版推进；额外交付：成片的一版竖屏裁剪，下一轮补交");
+  /* 与审批理由框同一套：手动拖出来的高度也按同一个草稿键记住（重建 / 重开不回弹） */
+  ltTaHBind(note, key);
+  ltScrollBind(note, "ta:" + key);
   lab.appendChild(note);
   wrap.appendChild(lab);
   if (recs.length) {
@@ -3711,6 +4380,17 @@ function ltHumanReleaseDialog(wf, w, st, node, items, noteIn) {
   foot.appendChild(back);
   foot.appendChild(go);
 }
+/* ── 交付清单条目的输入草稿（本次恶性 bug 的第二道保险）──────────────────
+ * 症状：长任务右栏交付卡里把「文本条目」写完，鼠标一移开（点到别处 / 画布上），刚写的那段字没了。
+ * 根因是清单在代码里有好几份拷贝（run 快照 / 图定义 cfg.items / 画布上的交付节点 ltItems），
+ * 而画布侧的同步链以**节点上的那一份**为准，会把旧的一份整份推回运行态与图定义（见 commit 里的
+ * 说明）；条目输入原本只在 change（= 失焦那一刻）才把值读进条目，被顶掉的那一帧就再也拿不回来。
+ * 口径与审批卡的理由框（ltDraftBind）**完全同源**：key = 环节路径 + 条目 id + 字段名
+ * ——「只增不减」地记着，重绘按 key 还原；提交成功（走 commit 那一条）才清。
+ * 条目 id 由 ltNormItem 归一（`it1…`），同一条 run 里逐帧稳定，所以 key 与「这一帧长什么样」无关。 */
+function ltItemDraftKey(path, it, field) {
+  return ltDraftKey(String(path || "") + ":it:" + String((it && it.id) || ""), field);
+}
 /* 清单编辑器：图定义里（editing=true）与运行时卡片里共用一份渲染。
  * path = 运行态时该环节的路径（卡片改的是 run.nodes[path].items，不能借选中态猜）。 */
 function ltChecklistEditor(parent, wf, task, node, itemsIn, editing, path) {
@@ -3723,17 +4403,61 @@ function ltChecklistEditor(parent, wf, task, node, itemsIn, editing, path) {
   /* 上一次放行记录（未交清单 + 说明）：编辑器提交清单时一起落盘，
      免得「放行后又补交一件」把交付目录里的《未交付说明》整段抹掉。 */
   const lastRec = runSt && ltReleaseRecs(runSt.deliverReleases).length ? ltReleaseRecs(runSt.deliverReleases).slice(-1)[0] : null;
-  const commit = async () => {
+  /* 本帧长出来的那些输入框的草稿键（见 ltItemDraftKey）：提交成功即记账清掉。
+     草稿只兜「还没提交就被重绘换掉」的那一段输入，提交过的值有它自己的家（下面那几处）。 */
+  const draftKeys = [];
+  /* 给一张输入控件挂草稿保护（本帧的每只框各挂一次）：还原草稿 → 持续记录 → 登记待清。
+     返回原控件，调用处写法不变。 */
+  const guard = (el, it, field) => {
+    const k = path ? ltItemDraftKey(path, it, field) : "";
+    if (!el || !k) return el;
+    /* 键挂到元素上（data-lt-hk 与「手动拖高 / 滚动位置」同一个键）：
+       提交时按**触发提交的那一只框**认草稿（见 commit(only)），不必每个处理器各记一份。 */
+    try {
+      if (el.setAttribute) el.setAttribute("data-lt-hk", k);
+    } catch (_) {}
+    ltDraftBind(el, k);
+    if (typeof ltScrollBind === "function") ltScrollBind(el, k);
+    if (draftKeys.indexOf(k) < 0) draftKeys.push(k);
+    return el;
+  };
+  /* 这次提交是**哪一格**触发的：从事件目标上取回它的草稿键（取不到 → 清本帧全部）。 */
+  const draftKeyOf = (ev) => {
+    try {
+      const el = ev && ev.target;
+      return String((el && el.getAttribute && el.getAttribute("data-lt-hk")) || "");
+    } catch (_) {
+      return "";
+    }
+  };
+  const commit = async (ev) => {
+    const only = draftKeyOf(ev);
     if (editing) {
       task.ver = (Number(task.ver) || 1) + 1;
       if (typeof scheduleSave === "function") scheduleSave(true);
     } else {
-      node.cfg.items = JSON.parse(JSON.stringify(items));
+      /* 清单**就地**落定（数组与条目对象都不换新的）：本帧的 items / 各格处理器手里的 it /
+         运行态 st.items / 图定义 cfg.items / 画布节点 ltItems —— 从这一句起**是同一份东西**，
+         任何一处改其余几处立刻看得见。换对象（原来那种 JSON 深拷贝）会让「这一帧里再改一格」
+         写进一份谁也不认的旧数组 / 旧条目（症状与「写完就没」一样，只是更隐蔽）。 */
+      node.cfg.items = items;
       const st = runSt;
       if (st) {
-        st.items = JSON.parse(JSON.stringify(items));
+        st.items = items;
         if (!st.dir) st.dir = node.cfg.dir || "";
       }
+      /* 画布上那颗交付节点（kind deliver）：它自己那一份 ltItems 也是「清单的第 N 份拷贝」，
+         而**它是画布侧同步链（ltDeliverSyncFromNode，权威 = 节点上的清单）读的那一份** ——
+         卡片这边提交时不同步写它，用户在这里填的内容就会在「移开焦点 → 画布侧同步一次」
+         时被节点上那份旧清单整份顶回运行态与图定义，输入框当场变空（本次恶性 bug 的根因）。
+         口径与 ltDeliverSyncFromNode 一致：**提交即把三份（运行态 / 图定义 / 画布节点）
+         写同源、写同步**，谁也不许留下一份旧的等下一次同步来盖。 */
+      try {
+        if (typeof ltDeliverNodeOf === "function") {
+          const dn = ltDeliverNodeOf(node.cfg.uid);
+          if (dn) dn.ltItems = items;
+        }
+      } catch (_) {}
       const dir = await ltDeliverWrite(node.cfg.uid, items, {
         note: lastRec ? lastRec.note : "",
         missing: lastRec ? lastRec.missing : [],
@@ -3741,6 +4465,10 @@ function ltChecklistEditor(parent, wf, task, node, itemsIn, editing, path) {
       if (dir && st) st.dir = dir;
       ltSave2(run);
     }
+    /* 提交成功只清**这一格**的草稿（同一张卡上另一格还没提交的那段字照旧留着，
+       不然「改了文件名」会把隔壁文本框里写了一半的内容一起抹掉）；认不出是哪一格时退回清本帧全部。 */
+    if (only) ltDraftClear(only);
+    else for (const k of draftKeys) ltDraftClear(k);
     ltRenderStrip();
   };
   items.forEach((it, i) => {
@@ -3755,22 +4483,24 @@ function ltChecklistEditor(parent, wf, task, node, itemsIn, editing, path) {
       kind.appendChild(o);
     }
     kind.disabled = !editing;
-    kind.onchange = async () => {
+    kind.onchange = async (ev) => {
       it.kind = kind.value;
-      await commit();
+      await commit(ev);
     };
     head.appendChild(kind);
     const title = ltEl("input", "lt-in lt-in-title");
     title.value = (it.kind === "file" || it.kind === "media") ? it.file || it.title || "" : it.title || "";
     title.disabled = !editing;
+    /* 文件名 / 标题这一格同样吃草稿保护：改到一半移开焦点（或画布侧同步一次）不许把名字吞掉 */
+    guard(title, it, "title");
     /* 文件 / 媒体条目这一格是**交付物文件名**（file 字段 · 交付以文件为单位）：
        改动同时写回 title —— show 入口与旧档（只有 title）都按 title 兜底，两处同值才不会
        出现「字段里改了名字、节点上还是旧名」。文本 / 选项条目这一格仍是描述性标题。 */
-    title.onchange = async () => {
+    title.onchange = async (ev) => {
       const v = ltStr(title.value, 200);
       it.title = v;
       if (it.kind === "file" || it.kind === "media") it.file = v;
-      await commit();
+      await commit(ev);
     };
     head.appendChild(title);
     const req = ltEl("input", "lt-in-req");
@@ -3778,9 +4508,9 @@ function ltChecklistEditor(parent, wf, task, node, itemsIn, editing, path) {
     req.checked = it.required !== false;
     req.title = ltT("必填 / 选填");
     req.disabled = !editing;
-    req.onchange = async () => {
+    req.onchange = async (ev) => {
       it.required = req.checked;
-      await commit();
+      await commit(ev);
     };
     head.appendChild(req);
     /* 条目标签：已交付 / 未交付·已放行 / 文件名待补 / Agent 追加 —— 一列看清这一项的状态。
@@ -3825,9 +4555,10 @@ function ltChecklistEditor(parent, wf, task, node, itemsIn, editing, path) {
     desc.value = it.desc || "";
     desc.placeholder = ltT("要什么、什么格式、给谁看");
     desc.disabled = !editing;
-    desc.onchange = async () => {
+    guard(desc, it, "desc");
+    desc.onchange = async (ev) => {
       it.desc = ltStr(desc.value, 4000);
-      await commit();
+      await commit(ev);
     };
     itemBox.appendChild(desc);
     if (editing && it.kind === "choice") {
@@ -3874,7 +4605,7 @@ function ltChecklistEditor(parent, wf, task, node, itemsIn, editing, path) {
         }));
         itemBox.appendChild(row2);
       } else {
-        ltItemInput(itemBox, it, commit, path, node.cfg.uid, editing, !!(node && node.cfg && node.cfg.mode === "deliver"));
+        ltItemInput(itemBox, it, commit, path, node.cfg.uid, editing, !!(node && node.cfg && node.cfg.mode === "deliver"), guard);
       }
     }
     box.appendChild(itemBox);
@@ -3895,20 +4626,28 @@ function ltSave2(run) {
 /* 交付录入：文件 / 媒体走目录复制，文本 / 选项就地填。
  * isDeliver = 所属人工节点是否「内容交付」模式（由 ltChecklistEditor 判定后传入）：
  * 本函数形参里没有 node（只有 uid），直接引用外层 node 会抛 ReferenceError（历史 bug）。 */
-function ltItemInput(parent, it, commit, path, uid, editing, isDeliver) {
+function ltItemInput(parent, it, commit, path, uid, editing, isDeliver, guardIn) {
   const box = parent;
   const wrap = ltEl("div", "lt-item-in");
+  /* 草稿保护（由调用方 ltChecklistEditor 传进来；可省 —— 老调用处只传 7 个参数，行为一字不变） */
+  const guard = typeof guardIn === "function" ? (el, field) => guardIn(el, it, field) : () => {};
+  /* 提交时把**触发它的那一格**交回上层：上层据此只清这一格的草稿（不碰隔壁那格写了一半的字）。
+     交不出去（老调用处只给得到 commit()）时退回上层的兜底口径，行为与从前一致。 */
+  const commitFrom = (ev) => (ev && ev.target ? commit(ev) : commit());
   if (it.kind === "text") {
     const ta = ltEl("textarea", "lt-in");
     ta.rows = 3;
     ta.value = it.value || "";
     ta.placeholder = ltT("直接在这里写");
-    ta.onchange = async () => {
+    /* 重建后滚到哪儿还停在哪儿：清单项自己就是稳定的身份（uid + 项 id） */
+    ltScrollBind(ta, "ta:deliver:" + String(uid || "") + ":" + String(it.id || ""));
+    guard(ta, "value");
+    ta.onchange = async (ev) => {
       it.value = ta.value;
       it.done = !!ta.value.trim();
       it.deliveredVia = ltT("手填");
       it.at = ltNow();
-      await commit();
+      await commitFrom(ev);
     };
     wrap.appendChild(ta);
   } else if (it.kind === "choice") {
@@ -3920,7 +4659,7 @@ function ltItemInput(parent, it, commit, path, uid, editing, isDeliver) {
       inp.type = it.multi ? "checkbox" : "radio";
       inp.name = "ltc_" + it.id;
       inp.checked = (it.choice || []).indexOf(o) >= 0;
-      inp.onchange = async () => {
+      inp.onchange = async (ev) => {
         if (it.multi) {
           const cur = new Set(it.choice || []);
           if (inp.checked) cur.add(o);
@@ -3930,7 +4669,7 @@ function ltItemInput(parent, it, commit, path, uid, editing, isDeliver) {
         it.done = !!ltArr(it.choice).length;
         it.deliveredVia = ltT("勾选");
         it.at = ltNow();
-        await commit();
+        await commitFrom(ev);
       };
       lab.appendChild(inp);
       lab.appendChild(ltEl("span", null, o));
@@ -4166,107 +4905,17 @@ function ltSettingsDlg() {
   box.appendChild(ltEl("div", "lt-fh", ltT("条带展开高度用鼠标在细线上拖，位置与高度自动记住（跨画布统一）。")));
   ltFootClose("完成并关闭", "lt-btn lt-btn-pri");
 }
-/* 记忆管理：列表 + 检索 + 手动新增 + 删除 + 与事实库双向同步 */
+/* 记忆管理：改走新库（AI 事实库）—— 直接打开 / 复用它的查阅弹窗（app-ai-facts.js）：
+   列表 / 检索 / 新建 / 待确认 / 淘汰记录全在那边一份（检索能力不丢），这里不再另建一套面板。
+   旧的「从专家团事实库导入 / 从外部目录导入 / 导出到专家团事实库（或外部目录）」三个按钮
+   随双向同步一起撤掉：长期记忆与 AI 事实库已是同一份固定文件，不需要再互相搬。 */
 function ltMemoryDlg() {
-  const ov = openOverlay(ltT("长期记忆"), { persistent: true });
-  void ov;
-  const body = document.getElementById("ovBody");
-  const foot = document.getElementById("ovFoot");
-  if (!body) return;
   const wf = typeof S !== "undefined" ? S.wf : null;
-  const wrap = ltEl("div", "lt-mem");
-  body.appendChild(wrap);
-  const q = ltEl("input", "lt-in");
-  q.placeholder = ltT("检索（关键词；中文按子串包含匹配）…");
-  q.onkeydown = (e) => {
-    if (e.key === "Enter") load();
-  };
-  const bar = ltEl("div", "lt-mem-bar");
-  bar.appendChild(q);
-  bar.appendChild(ltBtn(ltT("检索"), "lt-btn", load));
-  bar.appendChild(ltBtn(ltT("全部"), "lt-btn", () => {
-    q.value = "";
-    load();
-  }));
-  /* 主口径 = 本画布的专家团事实库（真源 window.MTNodeFactLib，锚在 S.config.team 上）；
-     外部目录导入保留为第二入口（第三方 Markdown 库）。 */
-  bar.appendChild(ltBtn(ltT("从专家团事实库导入"), "lt-btn", async () => {
-    const r = await ltSyncFactLibToMemory();
-    toast(r.ok ? ltT("已导入 ") + r.added + ltT(" 条（来自 ") + r.files + ltT(" 篇文档）") : r.error, r.ok ? "ok" : "err");
-    load();
-  }));
-  bar.appendChild(ltBtn(ltT("从外部目录导入"), "lt-btn", async () => {
-    const dir = await window.api.fileOpenDialog({ title: ltT("选择外部事实库目录（读其中的 Markdown / 文本作为事实）"), directory: true });
-    const p = (dir && dir.path) || "";
-    if (!p) return;
-    const r = await ltSyncFactLibToMemory(p);
-    toast(r.ok ? ltT("已导入 ") + r.added + ltT(" 条（来自 ") + r.files + ltT(" 篇文档）") : r.error, r.ok ? "ok" : "err");
-    load();
-  }));
-  bar.appendChild(ltBtn(ltT("候选待确认 ×" + ltMemPendingCount()), "lt-btn lt-btn-warn", () => ltMemPendingDlg()));
-  wrap.appendChild(bar);
-  const list = ltEl("div", "lt-mem-list");
-  wrap.appendChild(list);
-  const add = ltEl("div", "lt-mem-add");
-  const at = ltEl("input", "lt-in");
-  at.placeholder = ltT("标题");
-  const ab = ltEl("textarea", "lt-in");
-  ab.placeholder = ltT("正文（一条一个主题）");
-  ab.rows = 2;
-  add.appendChild(at);
-  add.appendChild(ab);
-  add.appendChild(
-    ltBtn(ltT("＋ 手动记一条"), "lt-btn lt-btn-pri", async () => {
-      if (!at.value.trim() || !ab.value.trim()) {
-        toast(ltT("标题和正文都要填"), "warn");
-        return;
-      }
-      await ltMemAdd([Object.assign(ltMemScopeArgs(wf), { title: at.value, body: ab.value, type: "fact", src: "manual" })]);
-      at.value = "";
-      ab.value = "";
-      load();
-    }),
-  );
-  wrap.appendChild(add);
-  if (foot) {
-    foot.innerHTML = "";
-    foot.appendChild(ltBtn(ltT("关闭"), "lt-btn", () => closeOverlay()));
+  if (typeof aiFactsOpenDlg !== "function") {
+    toast(ltT("AI 事实库模块未就绪，无法打开"), "err");
+    return;
   }
-  async function load() {
-    list.innerHTML = "";
-    const items = q.value.trim() ? await ltMemRecall(q.value, wf, 40) : ltArr((await window.api.ltMemList(Object.assign(ltMemScopeArgs(wf), { limit: 80 }))).items);
-    if (!items.length) list.appendChild(ltEl("div", "lt-fh", ltT("还没有记忆条目：跑长任务时让 Agent 提议，或上面手动记一条")));
-    for (const it of items) {
-      const row = ltEl("div", "lt-mem-i");
-      row.appendChild(ltEl("b", null, it.title));
-      row.appendChild(ltEl("span", "lt-mem-meta", it.scope + "/" + it.type + (it.layer ? "(" + it.layer + ")" : "") + " · " + new Date(it.updated || it.created).toLocaleDateString()));
-      row.appendChild(ltEl("div", "lt-mem-body", ltStr(it.body, 600)));
-      if (it.src) row.appendChild(ltEl("div", "lt-mem-src", ltStr(it.src, 200)));
-      const acts = ltEl("div", "lt-item-act");
-      /* 有本画布的专家团事实库就写进库里那篇固定文档（落盘即广播 factlib:saved，左栏即时刷新）；
-         没有库就退到「选一个外部目录」，别让这一条记忆无处可去。 */
-      const libDocCount = ltArr(ltFactLibApi() && wf ? ltFactLibApi().listDocs(wf.id) : []).length;
-      acts.appendChild(ltBtn(libDocCount ? ltT("导出到专家团事实库") : ltT("导出到外部目录"), "lt-btn lt-btn-ico", async () => {
-        if (libDocCount) {
-          const r = await ltSyncMemoryToFactLib([it]);
-          toast(r.ok ? ltT("已写出：") + r.path : r.error, r.ok ? "ok" : "err");
-          return;
-        }
-        const dir = await window.api.fileOpenDialog({ title: ltT("选择要写出的外部事实库目录"), directory: true });
-        const p = (dir && dir.path) || "";
-        if (!p) return;
-        const r = await ltSyncMemoryToFactLib([it], p);
-        toast(r.ok ? ltT("已写出：") + r.path : r.error, r.ok ? "ok" : "err");
-      }));
-      acts.appendChild(ltBtn(ltT("删除"), "lt-btn lt-btn-ico", async () => {
-        await window.api.ltMemDelete([it.id]);
-        load();
-      }));
-      row.appendChild(acts);
-      list.appendChild(row);
-    }
-  }
-  load();
+  aiFactsOpenDlg(wf && wf.id ? wf.id : "");
 }
 function ltMemPendingDlg() {
   if (!ltMemPending.length) {

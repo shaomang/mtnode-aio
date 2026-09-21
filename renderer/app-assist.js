@@ -1214,7 +1214,7 @@ async function assistSend(text) {
      参数机制（字段 / 枚举 / 端子 / alias）的唯一真源 = mtnode_canvas_get 与
      mtnode_canvas_edit 的工具描述与参数表；完整操作规范的唯一真源 = 内置技能
      （mtnode-dev-architect / mtnode-canvas-edit-rules / mtnode-canvas-batch-safety /
-     mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）。下面各节只留
+     mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）。下面各节只留
      「每轮都要照做的行为纪律」——同一规则不再抄第二遍，省下的就是每一步都在付的固定 token。 */
   const superConnectRule = assistCanvasFree
     ? ""
@@ -2114,43 +2114,53 @@ function buildAgentModelMenu() {
     return;
   }
   if (pane === "model") {
-    const groups = [];
+    /* 模型清单只列**当前供应商**的模型（本次需求）：供应商在会话头部那一格已经定了
+       （会话 st.provider 常驻有值），模型这一格再摊出别家的模型，点一下就会把供应商
+       悄悄改掉 —— 用户看到的「选模型」实际是「连供应商一起换」，正是这次要修的误选。
+       换供应商请走头部「供应商」那一格（它换完会把模型重置为该家第一只）。 */
     const dp = dshProvider();
+    const groups = [];
     groups.push({ id: "deepseek-official", name: (dp && dp.name) || I18n.t("DeepSeek 官方"), models: (dp && dp.models) || [] });
     for (const p of mtnodePiProviders()) {
       const models = (p && p.models) || [];
       if (models.length) groups.push({ id: "mtnode_" + p.route, name: p.name, models });
     }
+    const cur = groups.filter((g) => g.id === (st.provider || "deepseek-official"))[0] || null;
+    /* 会话存的供应商已不在配置里（服务商被删 / 旧会话）：不静默切到别家，
+       照实说明并指向头部那一格，让用户自己选一个存在的供应商。 */
+    if (!cur) {
+      const e = document.createElement("div");
+      e.className = "agent-menu-empty";
+      e.textContent = I18n.t("没有可用的模型");
+      menu.appendChild(e);
+      return;
+    }
+    const gh = document.createElement("div");
+    gh.className = "agent-menu-group-title";
+    gh.textContent = cur.name;
+    menu.appendChild(gh);
     let any = 0;
-    for (const g of groups) {
-      if (!g.models.length) continue;
-      const gh = document.createElement("div");
-      gh.className = "agent-menu-group-title";
-      gh.textContent = g.name;
-      menu.appendChild(gh);
-      for (const m of g.models) {
-        any++;
-        const opt = document.createElement("button");
-        opt.className = "agent-menu-option" + (st.provider === g.id && st.model === m ? " selected" : "");
-        opt.innerHTML =
-          '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
-          '<span class="agent-menu-check"></span>';
-        opt.querySelector(".agent-menu-option-name").textContent = m;
-        opt.onclick = () => {
-          st.provider = g.id;
-          st.model = m;
-          persistAgentSession();
-          closeAgentMenus();
-          renderAgentSession();
-          renderAgentSessionSidebar();
-        };
-        menu.appendChild(opt);
-      }
+    for (const m of cur.models) {
+      any++;
+      const opt = document.createElement("button");
+      opt.className = "agent-menu-option" + (st.model === m ? " selected" : "");
+      opt.innerHTML =
+        '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+        '<span class="agent-menu-check">' + (st.model === m ? "✓" : "") + "</span>";
+      opt.querySelector(".agent-menu-option-name").textContent = m;
+      opt.onclick = () => {
+        st.model = m;
+        persistAgentSession();
+        closeAgentMenus();
+        renderAgentSession();
+        renderAgentSessionSidebar();
+      };
+      menu.appendChild(opt);
     }
     if (!any) {
       const e = document.createElement("div");
       e.className = "agent-menu-empty";
-      e.textContent = I18n.t("暂无模型");
+      e.textContent = I18n.t("没有可用的模型");
       menu.appendChild(e);
     }
   } else {
@@ -2189,6 +2199,7 @@ const SKILL_MENU_TAX = {
   "mtnode-canvas-edit-rules": ["workflow", "画布规范"],
   "mtnode-canvas-layout-ux": ["workflow", "画布规范"],
   "mtnode-db-facts": ["workflow", "画布规范"],
+  "mtnode-ai-facts": ["workflow", "画布规范"],
   "mtnode-media-gen-nodes": ["workflow", "画布规范"],
   "mtnode-dev-architect": ["workflow", "开发架构"],
   "compose-novel-from-canvas": ["prompt", "小说写作"],
@@ -6462,7 +6473,7 @@ async function agentSessionSend(text, opts) {
         "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
         "改画布纪律：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
         "引用画布内容纪律：为某个节点写 prompt/task 而要用画布上别的节点的内容时，一律在 prompt/task 里写 @标题（连线源；全局广播须同时满足三条件），不要把那个节点的正文复制粘贴进去；素材节点本身不是 @ 候选，写 @内容条目标题只引那一条、且只有已连线接进本节点的端子可引；@引用的三条件与语法见技能 mtnode-canvas-edit-rules。\n" +
-        "要建开发节点、批次 / 文生图链、连线 / 建图、整理排版或接数据库副本时，先用 skill 工具加载对应内置技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
+        "要建开发节点、批次 / 文生图链、连线 / 建图、整理排版、接数据库副本或索引 / 沉淀项目关键信息时，先用 skill 工具加载对应内置技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
         "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     }
   }

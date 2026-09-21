@@ -444,6 +444,62 @@
   background: rgba(255, 143, 46, .05);
 }
 
+/* 新安装默认没有 DeepSeek API Key 时，「提供商配置」上方那条官方充值通道横幅。
+   只在 Key 为空（默认状态）时出现，点右侧链接在浏览器打开 platform.deepseek.com */
+.ds-topup-slot {
+  margin: 8px 0 0;
+}
+
+.ds-topup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border: 1px solid rgba(90, 200, 250, .45);
+  border-left: 3px solid var(--cyan);
+  border-radius: 5px;
+  background: rgba(90, 200, 250, .07);
+}
+
+.ds-topup-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.ds-topup-text b {
+  color: var(--fg, #e8e8e8);
+  font-size: 12.5px;
+  letter-spacing: .3px;
+}
+
+.ds-topup-link {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--orange2);
+  text-decoration: underline;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ds-topup-link:hover {
+  color: #fff;
+}
+
+/* 服务商配置卡里那一行「还没有 API Key？官方充值通道：<url>」 */
+.ds-topup-hint {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
 /* 提供商配置（设置最前面）：两列网格，每格只显示服务商名称（标题），
    点击该格弹出该服务商的具体配置对话框（.prov-cfg-box） */
 .prov-tiles {

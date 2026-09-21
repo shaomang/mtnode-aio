@@ -15,7 +15,9 @@
  *     共识后用 mtnode_app 的 create_longtask 落库；禁止把问题编成正文列表、
  *     禁止手改 wf.longtask、禁止用画布写工具去画状态机图。
  *   · 对话区复用 dshMsgBlock 渲染该会话消息流（思考 / 工具 chips 同会话视图口径），
- *     并挂窗口级重绘钩子（wrap renderAgentSession）+ 运行期轮询兜底，窗内实时。
+ *     并挂窗口级重绘钩子（wrap renderAgentSession）+ 运行期轮询兜底，窗内实时；
+ *     **会话消息的输入 / 发送整行在对话区下方**（左栏最后一格，绝不溜到右边去），
+ *     上沿一条拖高的分隔条（往下拖 = 框变高）。
  *   · 拿到 create_longtask 回执（或回复里那份图 JSON）→ 图**创建那一刻**就在条带上显示
  *     （引擎的 ltTaskReveal 收尾：「创建即显示」，不要求先绑定），右栏给图摘要与
  *     「▶ 启用并绑定」（点它才开始跑）；「中断本轮 / 稍后」两个出口常驻。
@@ -36,6 +38,10 @@ const LTG_POLL_MS = 1200;
 /* 窗内没发出去的那段正文（「内容」的另一半是 app-longtask-create.js 的 Agent 选型）：
    关窗 / 最小化 / 重启都得原样回来 —— 创建窗是持久化浮层，不能让用户白写一遍。 */
 const LTG_DRAFT_KEY = "ltCreateDraft";
+/* 契约里写明「本窗不接回旧会话」，免得模型自己在回复里说「接着上次那条聊」。
+   与 ltgMount 的行为配套：开窗一律 sid:""，每条引导会话都是全新的。 */
+const LTG_FRESH_NOTE =
+  "本窗每次打开都是一条全新会话（不继承上一条引导会话的上下文）：从零开始问，不要假设自己记得上一次的任务。";
 function ltgDraftLoad() {
   try {
     return String(localStorage.getItem(LTG_DRAFT_KEY) || "");
@@ -75,6 +81,81 @@ function ltgClip(v, n) {
   const s = String(v == null ? "" : v);
   return n && s.length > n ? s.slice(0, n) + "…" : s;
 }
+
+/* ── 引导输入框的高度（本需求：发送框在场、能往下拉高）────────────────────
+   发送框整行放在**底部**（对话区下面），是左栏的最后一格；对话越长，越是它跟
+   消息流分地方。口径：拖的分隔条（.ltg-split）往下拖 = 输入框变高，上下限都夹死。
+   上限除固定值外还按窗口高的一半现算：小窗口里把输入框拉成半屏是用户自己的选择，
+   但绝不允许它把消息流整格吃掉（空间还不够时由 flex 让消息流先缩，见 .ltg-conv
+   的 min-height:0，发送框自己绝不被顶出窗口）。 */
+const LTG_TA_MIN = 72;
+const LTG_TA_MAX = 520;
+let LTG_INPUT_H = 108;
+/* 高度夹取：夹在 [LTG_TA_MIN, min(LTG_TA_MAX, 半屏)]，再兜「量不出来 / 非法值」
+   （NaN、字符串）回落到当下这份高度 —— 任何输入都不会把框压没，也不会写出 NaN px。 */
+function ltgInputClamp(h) {
+  const n = Math.round(Number(h));
+  if (!isFinite(n)) return LTG_INPUT_H;
+  let max = LTG_TA_MAX;
+  if (typeof window !== "undefined" && window && Number(window.innerHeight) > 0)
+    max = Math.max(LTG_TA_MIN, Math.min(max, Math.round(Number(window.innerHeight) / 2)));
+  return Math.max(LTG_TA_MIN, Math.min(max, n));
+}
+/* 宽度必须由这里显式写死：宽度归 inline 表达，textarea 退回浏览器默认宽时右边留一大块空白。
+   高度同样只由 inline 表达（原因见 ltgInputClamp 上面那段）。
+   **flex 也必须是可收缩的**：发送行是「框 + 发送按钮」的 flex 行，若写成 flex:none，
+   textarea 会以「默认内在宽（约 20 列）」为 flex 基准而压不下去 —— 框独占整行、
+   发送按钮被挤出左栏压在右栏上（用户报障：会话消息发送跑到右边、出界）。
+   flex:1 1 auto = 以这里写的 width 为基准、按 flex 规则收缩，框铺满除按钮外的全部宽度。 */
+function ltgInputApply(ta) {
+  if (!ta || !ta.style) return;
+  ta.style.flex = "1 1 auto";
+  ta.style.width = "100%";
+  ta.style.height = LTG_INPUT_H + "px";
+}
+/* 分隔条拖拽：挂 pointercapture，指针划出窗格也照跟；松手落在同一只窗的指针上即可。
+   方向：分隔条是输入框的**上沿**（发送框在底部，分隔条压在它顶上）—— 往下拖 =
+   输入框变高，所以高度增量是「按下点到当下点的位移取反」（拖手自己会跟着输入框走，
+   位移幅度略有出入，但方向与手感对；这是「发送框在底部」这套排布下的正确符号）。
+   双击 = 回到默认高度（与「会话左栏宽度拖手」「长任务细线」同一口径）。 */
+function ltgSplitBind(split, ta) {
+  if (!split || !ta || split._ltgSplitBound) return;
+  split._ltgSplitBound = true;
+  let drag = null;
+  split.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    drag = { y: ev.clientY, h: ta.offsetHeight || LTG_INPUT_H };
+    split.classList.add("dragging");
+    try {
+      split.setPointerCapture(ev.pointerId);
+    } catch (_) {}
+    document.body.classList.add("ltg-split-drag");
+  });
+  split.addEventListener("pointermove", (ev) => {
+    if (!drag) return;
+    ev.preventDefault();
+    LTG_INPUT_H = ltgInputClamp(drag.h - (ev.clientY - drag.y));
+    ltgInputApply(ta);
+  });
+  const end = (ev) => {
+    if (!drag) return;
+    drag = null;
+    split.classList.remove("dragging");
+    try {
+      if (ev) split.releasePointerCapture(ev.pointerId);
+    } catch (_) {}
+    document.body.classList.remove("ltg-split-drag");
+  };
+  split.addEventListener("pointerup", end);
+  split.addEventListener("pointercancel", end);
+  split.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    LTG_INPUT_H = 108;
+    ltgInputApply(ta);
+  });
+}
 function ltgVisibleWf() {
   if (typeof currentVisibleWf === "function") {
     const w = currentVisibleWf();
@@ -100,6 +181,8 @@ function ltgContractText() {
   return (
     LTG_MARK +
     "\n本会话的唯一目标：把用户的模糊想法问清楚，产出一张**可直接启用**的「长周期任务图」（状态机 DAG），并用 mtnode_app 的 create_longtask 落库到当前画布。" +
+    "\n" +
+    LTG_FRESH_NOTE +
     "\n\n第一步（硬要求）：用 skill 工具加载内置技能 mtnode-grill-me，并严格照它的纪律执行。" +
     "\n每一轮提问都必须调用 ask_user_question 工具（MTNode 会弹出「🐋 模型等待你的回应」询问窗，用户在窗内点选项 / 填空作答）：" +
     "\n· 一轮 = 一次调用，把该轮整个「前沿」的全部问题放进 questions[]（一次问满，3–7 题为宜），禁止一题一题地弹；" +
@@ -128,8 +211,9 @@ function ltgSession() {
   }
   return null;
 }
-/* 找一条可接回的引导会话：契约正文认领 + 同一张画布 + 未归档。
-   取最后一条（用户可能开过多轮引导，最近那条才是有上下文的）。 */
+/* 找一条「长任务建图」契约会话（契约正文认领 + 同一张画布 + 未归档），取最后一条。
+   本次需求之后本窗**不再调用它**（开窗一律全新会话）；留着是因为它同时是
+   「这条会话算不算长任务世界的会话」的判据来源，接回以外的用途仍按它认。 */
 function ltgFindSession(wf) {
   const id = wf && wf.id ? String(wf.id) : "";
   const list = typeof agentSessions === "function" ? agentSessions() : [];
@@ -190,10 +274,18 @@ function ltgMount(wf) {
   host.classList.add("ltg-host");
 
   const box = ltgEl("div", "ltg");
-  /* 左：对话区（消息流 + 输入行） */
+  /* 左：对话区（消息流）+ 拖高分隔条 + **底部整行**输入 / 发送。
+     本需求：会话消息的发送放在下方，不再占左栏第一格 —— 也不许溜到右边去（发送行
+     是左栏内的整行：输入框 flex 收缩铺满，按钮贴着框的右下，绝不出栏、不压右栏）。
+     顺序 = DOM 顺序：conv → split（压在发送框上沿，往下拖 = 框变高）→ row（最后一格）。 */
   const left = ltgEl("div", "ltg-left");
   const conv = ltgEl("div", "ltg-conv");
   left.appendChild(conv);
+  /* 发送行上沿的分隔条：往下拖 = 输入框变高（上限 / 下限见 ltgInputClamp）。 */
+  const split = ltgEl("div", "ltg-split");
+  split.id = "ltgSplit";
+  split.title = ltgT("按住往下拖：把输入框拉高（双击回到默认高度）");
+  left.appendChild(split);
   const row = ltgEl("div", "ltg-row");
   const ta = document.createElement("textarea");
   ta.className = "ltg-ta";
@@ -233,7 +325,7 @@ function ltgMount(wf) {
   );
   acts.appendChild(
     ltgBtn(ltgT("稍后"), "lt-btn", () => ltgLater(), {
-      title: ltgT("先关窗：引导会话留在左侧栏，下次打开本窗接着聊"),
+      title: ltgT("先关窗：这条引导会话留在左侧栏只作历史；下次打开本窗是一条全新会话"),
     }),
   );
   right.appendChild(acts);
@@ -242,7 +334,7 @@ function ltgMount(wf) {
       "div",
       "ltg-note",
       ltgT(
-        "「稍后」只是关窗，会话不会丢：它就在左侧栏里，重新打开本窗即可接着聊。想从空白模板起步，用右上角「＋ 手动新建」。",
+        "「稍后」只是关窗，会话不会丢：它就在左侧栏里，随时能自己点开看。想从空白模板起步，用右上角「＋ 手动新建」。",
       ),
     ),
   );
@@ -250,13 +342,14 @@ function ltgMount(wf) {
     ltgEl(
       "div",
       "ltg-note",
-      ltgT("关窗（取消 / Esc）不会丢掉你写的正文与上面的 Agent 选型：下次打开本窗原样回来。"),
+      ltgT(
+        "每次打开本窗都是全新会话（不继承上次的上下文）：上一次那条引导会话留在左侧栏只作历史；你写的正文与上面的 Agent 选型会原样回来。",
+      ),
     ),
   );
   box.appendChild(right);
   host.appendChild(box);
 
-  const st = ltgFindSession(wf || ltgVisibleWf());
   const draft = ltgDraftLoad();
   ta.value = draft;
   LTG = {
@@ -266,25 +359,23 @@ function ltgMount(wf) {
     status,
     sum,
     ta,
-    sid: st ? st.id : "",
+    /* 本次需求：开窗一律是**全新会话**（空对话、不接回上一条引导会话）。
+       上一次的引导会话留在左侧栏只作历史，本窗不再认领它 —— 见下面那段注释。 */
+    sid: "",
     sig: "",
     found: null,
     /* 兜底落库的记名（同一份图只建一次，见 ltgAutoBuildOnce） */
     autoBuilt: "",
     draft,
   };
-  /* 接回一条已有引导会话：它自己的选型才是这套「创建时选型」的现况，回填四个下拉
-     （没有会话 = 保留上次关窗时用户选的那套；两处都空则显示「跟随默认」）。 */
-  if (st && typeof window.ltCreateAgentSet === "function") {
-    try {
-      window.ltCreateAgentSet({ provider: st.provider, model: st.model, preset: st.preset, effort: st.effort });
-    } catch (_) {}
-  }
-  /* 接回旧会话：把「本轮从第几条消息起」的基线对齐到现有消息数 —— 开窗（一条新消息都没有）
-     不算「没交图」，绝不因为打开窗口就替用户多发一轮纠偏（见 ltgSettle）。 */
-  if (st) st._ltgRoundFrom = (st.messages || []).length;
+  /* 本窗不再接回旧引导会话（本次需求：从零开始新建任务 = 清空会话）。
+   旧会话（含上一轮没问完的那条）留在左侧栏，随时可以自己点开看 / 接着聊；
+   本窗要的是干净上下文：不继承它的问题、不继承它那份图摘要，也不因为它「没交图」纠偏。
+   选型仍以上面「Agent 选型」那一栏为准（用户这次显式选的；没选过就跟随默认）。 */
+  ltgInputApply(ta);
+  ltgSplitBind(split, ta);
   ltgHookRepaint();
-  ltgPaint(st || null);
+  ltgPaint(null);
   ltgStartPoll();
 }
 
@@ -958,7 +1049,7 @@ function ltgLater() {
   } catch (_) {}
   if (typeof persistAgentSession === "function")
     Promise.resolve(persistAgentSession()).catch(() => {});
-  if (st) toast(ltgT("引导会话留在左侧栏，下次打开本窗接着聊"), "ok");
+  if (st) toast(ltgT("这条引导会话留在左侧栏只作历史；下次打开本窗是一条全新会话（不继承上下文）"), "ok");
 }
 function ltgGotoSession() {
   const st = ltgSession();

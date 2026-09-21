@@ -84,6 +84,8 @@ return { 要点: r.text };
 | `mtnode.join(...)` / `mtnode.abs(p)` / `mtnode.cwd()` / `mtnode.platform` | 路径与平台 |
 | `const r = await mtnode.screenShot({ target, screen, window, x, y, w, h })` | **拍屏幕 / 窗口成 PNG**（不只是本窗口，见下）：成功 → `{ ok, path, width, height, method }` |
 | `await mtnode.screenList()` / `await mtnode.windowList()` | 有哪些屏幕 / 哪些窗口可拍（窗口带 `hwnd` / 标题 / 是否可见） |
+| `const r = await mtnode.readPdf(路径或字节 [, opts])` | **解析本机 PDF 文本层 → Markdown**（与「拖入 PDF」同一份内核，只读、不落盘）：成功 → `{ ok, markdown, pages, formulas, warning }`；失败 → `{ ok:false, error:{ code, message } }`（如 `encrypted` / `not_pdf`） |
+| `await mtnode.pdfInfo(路径或字节)` | 轻量探一下是不是可解析 PDF（不解压内容流）：`{ ok, isPdf, parseable, pages, encrypted, warning }` |
 | `const r = await mtnode.ai("提示词" [, opts])` | 用本节点「AI 调用」选中的模型真发一次文本请求 → `{ ok, text, error, provider, model }`（不抛异常，失败看 `ok === false`） |
 | `mtnode.aiConfig` | 只读摘要 `{ provider, providerName, model, preset, effort }`（节点上「AI 调用」三格当前选了什么） |
 
