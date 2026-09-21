@@ -43,15 +43,20 @@ function jsonResult(value) {
   return [{ type: 'text', text: String(text).slice(0, 40000) }]
 }
 
-/** 参数 kind ∈ text|image → JSON schema 属性类型（image 传本地绝对路径字符串） */
+/** 参数 kind ∈ text|image → JSON schema 属性类型（image 传本地绝对路径字符串）。
+ *  参数描述优先用工具作者写的「参数说明」（description）——「描述自足」判据里
+ *  「每个参数含义」的落地处；optional:true 的参数不再标 required，**未标注 = 必填**
+ *  （与历史口径一致，老工具包行为不变）。 */
 function paramSchema(p, i) {
   const kind = p && p.kind === 'image' ? 'image' : 'text'
   const base =
     kind === 'image'
       ? { type: 'string', description: '图片参数：本地图片文件的绝对路径（应用内资产路径或磁盘绝对路径）' }
       : { type: 'string', description: '文本参数' }
-  if (p && p.name) base.description = p.name + '：' + base.description
-  base.required = true
+  const own = p && typeof p.description === 'string' ? p.description.trim() : ''
+  if (p && p.name) base.description = p.name + '：' + (own || base.description)
+  else if (own) base.description = own
+  if (!(p && p.optional === true)) base.required = true
   return base
 }
 
@@ -138,25 +143,46 @@ export function apply(ctx) {
     const inputs = Array.isArray(tool.inputs) ? tool.inputs : []
     const parameters = {}
     const inputKeys = []
+    /* 入参清单（名字 + 可选标记 + 参数说明）：与 schema 的 properties 一一对应 ——
+       重名参数会被上面的去重跳掉，所以清单按**实际注册的**那些条目收集，不按下标对齐 */
+    const inLines = []
     for (let i = 0; i < inputs.length; i++) {
       const p = inputs[i] || {}
       const key = String(p.name || 'arg' + (i + 1))
       if (parameters[key] !== undefined) continue
       parameters[key] = paramSchema(p, i)
       inputKeys.push(key)
+      const own = typeof p.description === 'string' ? p.description.trim() : ''
+      inLines.push(key + (p.optional === true ? '（可选）' : '') + (own ? '：' + own : ''))
     }
     const outputDesc = (Array.isArray(tool.outputs) ? tool.outputs : [])
-      .map((o) => (o && o.name) || '')
+      .map((o) => {
+        const nm = (o && o.name) || ''
+        const od = o && typeof o.description === 'string' ? o.description.trim() : ''
+        return nm ? (od ? nm + '（' + od + '）' : nm) : ''
+      })
       .filter(Boolean)
       .join('、')
+
+    /* 「至少给一个」的参数组（工具级 atLeastOne）：[[名字, 名字], …] */
+    const groups = (Array.isArray(tool.atLeastOne) ? tool.atLeastOne : [])
+      .filter((g) => Array.isArray(g) && g.length)
+      .map((g) => g.join(' / '))
 
     const nameHuman = String(tool.name || tool.toolName || '')
     const descText =
       `用户工具节点「${nameHuman}」：${String(tool.description || '').slice(0, MAX_DESC)}` +
-      (inputKeys.length
-        ? `\n入参：${inputKeys.join('、')}`
+      (inLines.length
+        ? `\n入参：${inLines.join('；')}`
         : '\n无入参') +
+      (groups.length ? `\n以下参数至少给一个：${groups.join('；')}` : '') +
       (outputDesc ? `\n返回：${outputDesc}` : '\n无返回值（执行副作用）') +
+      (String(tool.limits || '').trim()
+        ? `\n限制与失败情形：${String(tool.limits).trim().slice(0, MAX_DESC)}`
+        : '') +
+      (String(tool.example || '').trim()
+        ? `\n最小调用示例（args 一份完整 JSON）：${String(tool.example).trim().slice(0, MAX_DESC)}`
+        : '') +
       '\n调用本工具会在 MTNode 画布/工具库上运行该工具节点（固定入出参的容器图），返回各输出端子的值。'
 
     const toolKey = tool.key

@@ -17,6 +17,20 @@ Click **Settings** in the node header to open the settings window (every paramet
 Adding/removing a param adds/removes a port; deleting a param drops its wires too; changing a type changes the port itself (it is re-coloured and downstream reads it with the new type).
 **Reordering params**: drag the ⠿ handle on a param row to insert it anywhere, or use the ▲▼ buttons at the row end to move one step — param order is port order, and wired data lines follow the param (they never drift onto another param).
 
+## Self-sufficient description (so the agent gets it right first time)
+When the agent calls a tool, the model **only sees what the tool itself says** (name / description / param table / per-param notes / call example / limits) — it cannot see your inner sub-graph. With thin information it can only guess and retry. The Settings window has six slots; fill them in:
+
+1. **Purpose (description)**: what it does, when to use it, what to watch out for.
+2. **A note for every input**: what goes into that slot (format, where it comes from, extension or not).
+3. **A note for every output**: what comes back (especially names like “bytes”).
+4. **Optionality**: tick **Optional** for params that may be omitted (unticked = required); express “one of these two” in **At least one of** (one group per line, names separated by `/`).
+5. **Call example**: one minimal working JSON (keys = input names). Failure receipts send it back to the agent, and the Test dialog can **Fill from call example**.
+6. **Limits and failure cases**: when it fails (output must be absolute; paths inside the app install folder are refused; a missing file errors out…).
+
+- Descriptions, examples and param notes may use `{{outDir}}`: on a real call it is replaced by this machine's writable **user output folder**, so the model never has to guess where to write.
+- A yellow “Description not self-sufficient (missing …)” line on the card means some slot is still empty; it disappears once filled. It **only warns — it never blocks saving or running**.
+- Built-in tools shipped with the app follow all six; copies already inserted on a canvas are **refreshed from the built-in latest when the canvas is opened** (param count and order never change, so existing wires stay put).
+
 ## Develop (session bound to this tool)
 Tool nodes support **Develop** too (button under the card, same mechanism as function nodes):
 

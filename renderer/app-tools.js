@@ -602,10 +602,60 @@ function agentToolAsciiName(name, key) {
 
 function toolParamEntry(p) {
   const name = String((p && p.name) || "").trim();
-  return {
+  const e = {
     name: name,
     kind: p && p.kind === "image" ? "image" : "text",
   };
+  /* 参数说明 / 可选位随描述子下发给模型（schema 的 required 与参数描述都按它拼） */
+  const desc = String((p && p.description) || "").trim();
+  if (desc) e.description = desc;
+  if (p && p.optional === true) e.optional = true;
+  return e;
+}
+
+/* ── 工具描述里的 {{outDir}} 占位展开 ───────────────────────────────
+ * 模型无外部信息时最缺的就是「我能写到哪个真实路径」：应用安装目录会被写盘内核拒绝，
+ * 而模型自己猜的目录多半不存在。约定工具作者在描述 / 示例 / 参数说明里写 {{outDir}}，
+ * 宿主在拼描述子时展开成**本机真实可写的用户输出目录绝对路径**（数据目录下的 exports/）。
+ * 取不到（纯数据环境 / 非 Electron）时退回一句中文说明，绝不编造路径。 */
+let _toolEnvCache = null;
+async function toolEnvInfo() {
+  if (_toolEnvCache) return _toolEnvCache;
+  let out = { dataDir: "", outDir: "" };
+  try {
+    const r =
+      window.api && typeof window.api.toolsEnv === "function"
+        ? await window.api.toolsEnv()
+        : null;
+    if (r && r.ok)
+      out = { dataDir: String(r.dataDir || ""), outDir: String(r.outDir || "") };
+  } catch (_) {}
+  /* 只缓存成功结果：首次拿不到（api 未就绪）时下次再试，不把空值永久化 */
+  if (out.outDir) _toolEnvCache = out;
+  return out;
+}
+function toolDescExpandText(text, env) {
+  const s = String(text == null ? "" : text);
+  if (!s || s.indexOf("{{outDir}}") < 0) return s;
+  const dir = String((env && env.outDir) || "").trim();
+  return s.replace(/\{\{outDir\}\}/g, dir || I18n.t("本机用户数据目录"));
+}
+/* 描述子整体展开（只碰文案字段；参数表 / key / toolName 一律不动，指纹与定位不受影响） */
+function toolDescExpand(d, env) {
+  if (!d) return d;
+  const out = Object.assign({}, d);
+  out.description = toolDescExpandText(d.description, env);
+  out.example = toolDescExpandText(d.example, env);
+  out.limits = toolDescExpandText(d.limits, env);
+  const mapList = (list) =>
+    (Array.isArray(list) ? list : []).map((p) => {
+      const e = Object.assign({}, p);
+      if (e.description) e.description = toolDescExpandText(e.description, env);
+      return e;
+    });
+  out.inputs = mapList(d.inputs);
+  out.outputs = mapList(d.outputs);
+  return out;
 }
 
 /* 画布工具节点 → 描述子（key = cn:<nodeId>；不携带内部图——节点已在画布上） */
@@ -619,6 +669,12 @@ function canvasToolDescriptor(node) {
     toolName: agentToolAsciiName(nm, key),
     name: nm || I18n.t("未命名工具"),
     description: String(c.description || ""),
+    /* 「描述自足」剩余字段：示例 / 限制 / 参数组「至少给一个」（缺省空 = 未写） */
+    example: String(c.example || ""),
+    limits: String(c.limits || ""),
+    atLeastOne: Array.isArray(c.atLeastOne)
+      ? c.atLeastOne.map((g) => (Array.isArray(g) ? g.slice() : []))
+      : [],
     inputs: fnToolParamList(node, "in").map(toolParamEntry),
     outputs: fnToolParamList(node, "out").map(toolParamEntry),
     origin: "canvas",
@@ -635,6 +691,11 @@ function libToolDescriptor(t) {
     toolName: agentToolAsciiName(nm, key),
     name: nm || I18n.t("未命名工具"),
     description: String((t && t.description) || ""),
+    example: String((t && t.example) || ""),
+    limits: String((t && t.limits) || ""),
+    atLeastOne: Array.isArray(t && t.atLeastOne)
+      ? t.atLeastOne.map((g) => (Array.isArray(g) ? g.slice() : []))
+      : [],
     inputs: ((t && t.inputs) || []).map(toolParamEntry),
     outputs: ((t && t.outputs) || []).map(toolParamEntry),
     origin: "lib",
@@ -656,8 +717,11 @@ async function agentUserToolsSnapshot(wf) {
     seenName.add(d.toolName);
   };
   const nodes = (wf && Array.isArray(wf.nodes) && wf.nodes) || [];
+  /* {{outDir}} 展开一次、整批共用（本机固定目录 → 描述子稳定，运行时指纹不因此抖动） */
+  const env = await toolEnvInfo();
   for (const n of nodes) {
-    if (n && isToolNode(n) && !isSuperIoNode(n)) push(canvasToolDescriptor(n));
+    if (n && isToolNode(n) && !isSuperIoNode(n))
+      push(toolDescExpand(canvasToolDescriptor(n), env));
   }
   try {
     const r = await window.api.toolsList();
@@ -666,7 +730,7 @@ async function agentUserToolsSnapshot(wf) {
       /* 函数条目不进 Agent 可调用清单：func-call 的执行链（runCanvasToolNodeForAgent）
          跑的是工具节点的内置子图，函数包没有这条执行路（清单里也不给它开关） */
       if (t && t.always && toolEntryKind(t) !== "function")
-        push(libToolDescriptor(t));
+        push(toolDescExpand(libToolDescriptor(t), env));
     }
   } catch (_) {}
   return { descs: descs, byKey: byKey };
@@ -709,6 +773,175 @@ function agentToolResultPayload(outputs, node) {
   };
 }
 
+/* 工具用法摘要（执行前预检的提示与失败回执共用）：只用工具自己给出的信息 ——
+   用途 / 入参清单（含义 + 必填或可选）/「至少给一个」的参数组 / 返回项 /
+   限制与失败情形 / 最小调用示例。模型接到这段话就能一次改对，不必反复试错。 */
+function toolUsageSummary(desc) {
+  const d = desc || {};
+  const ins = Array.isArray(d.inputs) ? d.inputs : [];
+  const lines = [];
+  lines.push(
+    I18n.t("工具「{name}」的合法用法：", {
+      name: String(d.name || d.toolName || ""),
+    }),
+  );
+  const use = String(d.description || "").trim();
+  if (use) lines.push(I18n.t("· 用途：") + use.slice(0, 300));
+  if (ins.length) {
+    for (const p of ins) {
+      const nm = String((p && p.name) || "");
+      const kindTxt =
+        p && p.kind === "image"
+          ? I18n.t("（图像 · 本机绝对路径）")
+          : I18n.t("（文本）");
+      const need =
+        p && p.optional === true ? I18n.t(" · 可选") : I18n.t(" · 必填");
+      const pd = String((p && p.description) || "").trim();
+      lines.push("· " + nm + kindTxt + need + (pd ? "：" + pd : ""));
+    }
+  } else {
+    lines.push(I18n.t("· 无入参"));
+  }
+  const groups = Array.isArray(d.atLeastOne) ? d.atLeastOne : [];
+  for (const g of groups)
+    if (Array.isArray(g) && g.length)
+      lines.push(I18n.t("· 以下参数至少给一个：") + g.join(" / "));
+  const outs = (Array.isArray(d.outputs) ? d.outputs : [])
+    .map((o) => String((o && o.name) || ""))
+    .filter(Boolean);
+  if (outs.length) lines.push(I18n.t("· 返回：") + outs.join("、"));
+  const limits = String(d.limits || "").trim();
+  if (limits) lines.push(I18n.t("· 限制与失败情形：") + limits);
+  const ex = String(d.example || "").trim();
+  if (ex) lines.push(I18n.t("· 最小调用示例（args 一份完整 JSON）：") + ex);
+  return lines.join("\n");
+}
+
+/* 执行前预检（不跑工具内部图，省一轮无效执行）：
+   ① 未标 optional 的入参一个都没给值 → 缺必填参数；
+   ② 「至少给一个」的参数组整组为空。
+   返回错误文本（"" = 通过）；细节交给调用方拼用法摘要。 */
+function agentToolPrecheck(desc, args) {
+  const ins = Array.isArray(desc && desc.inputs) ? desc.inputs : [];
+  const a = args || {};
+  const rawOf = (i) => {
+    const p = ins[i] || {};
+    if (a[p.name] !== undefined) return a[p.name];
+    if (a["arg" + (i + 1)] !== undefined) return a["arg" + (i + 1)];
+    return null;
+  };
+  const emptyOf = (raw, kind) => {
+    const v = agentArgValue(raw, kind);
+    if (v == null) return true;
+    if (v.kind === "image") return !String(v.path || "").trim();
+    return !String(v.text == null ? "" : v.text).trim();
+  };
+  const miss = [];
+  for (let i = 0; i < ins.length; i++) {
+    const p = ins[i] || {};
+    if (p.optional === true) continue;
+    if (emptyOf(rawOf(i), p.kind))
+      miss.push(String(p.name || I18n.t("参数 ") + (i + 1)));
+  }
+  if (miss.length) return I18n.t("缺少必填参数：") + miss.join("、");
+  const groups = Array.isArray(desc && desc.atLeastOne) ? desc.atLeastOne : [];
+  for (const g of groups) {
+    if (!Array.isArray(g) || !g.length) continue;
+    const any = g.some((nm) => {
+      const i = ins.findIndex(
+        (p) => p && String(p.name || "") === String(nm),
+      );
+      if (i < 0) return false;
+      return !emptyOf(rawOf(i), ins[i].kind);
+    });
+    if (!any)
+      return I18n.t("以下参数至少要给一个：") + g.join(" / ");
+  }
+  return "";
+}
+
+/* 内置 / 库条目的「文案真源」：优先取包内根节点的 toolConfig（插入画布时用的就是它），
+   缺失才退回包顶层字段。只读文案类字段，参数表另按名字逐格对齐。 */
+function builtinToolTextOf(pkg) {
+  const g = (pkg && pkg.graph) || {};
+  const nodes = Array.isArray(g.nodes) ? g.nodes : [];
+  const root =
+    nodes.find(
+      (x) => x && String(x.id || "") === String(g.rootId || ""),
+    ) ||
+    nodes[0] ||
+    null;
+  const c =
+    root && root.toolConfig && typeof root.toolConfig === "object"
+      ? root.toolConfig
+      : null;
+  if (c) return c;
+  if (!pkg) return null;
+  return {
+    name: pkg.name,
+    description: pkg.description,
+    example: pkg.example,
+    limits: pkg.limits,
+    atLeastOne: pkg.atLeastOne,
+    inputs: pkg.inputs,
+    outputs: pkg.outputs,
+  };
+}
+
+/* 把内置最新文案刷进画布上的副本（返回是否有改动 · 幂等）：
+   覆盖**文案类字段**（描述 / 调用示例 / 限制与失败情形 /「至少给一个」组 / 每个参数的
+   说明与可选位），参数个数与顺序永不动 —— 参数即端子，改结构会把已连的线错位。
+   参数按**名字**对齐：名字对不上的参数原样保留（只刷新文案，不动端子归属）。 */
+function copyBuiltinTextIntoNode(node, pkg) {
+  if (!node || !isToolNode(node) || !pkg) return false;
+  ensureFnToolNodeState(node);
+  const c = node.toolConfig;
+  const src = builtinToolTextOf(pkg);
+  if (!c || !src) return false;
+  let changed = false;
+  for (const k of ["description", "example", "limits"]) {
+    const v = String(src[k] == null ? "" : src[k]);
+    if (String(c[k] == null ? "" : c[k]) !== v) {
+      c[k] = v;
+      changed = true;
+    }
+  }
+  const groups = Array.isArray(src.atLeastOne)
+    ? src.atLeastOne
+        .map((g) => (Array.isArray(g) ? g.slice() : []))
+        .filter((g) => g.length >= 2)
+    : [];
+  if (JSON.stringify(c.atLeastOne || []) !== JSON.stringify(groups)) {
+    c.atLeastOne = groups;
+    changed = true;
+  }
+  for (const dir of ["in", "out"]) {
+    const key = dir === "in" ? "inputs" : "outputs";
+    const srcList = Array.isArray(src[key]) ? src[key] : [];
+    const dstList = Array.isArray(c[key]) ? c[key] : [];
+    for (const sp of srcList) {
+      const nm = String((sp && sp.name) || "");
+      const dp = dstList.find((p) => p && String(p.name || "") === nm);
+      if (!dp) continue;
+      const sd = String((sp && sp.description) || "");
+      if (String(dp.description || "") !== sd) {
+        if (sd) dp.description = sd;
+        else delete dp.description;
+        changed = true;
+      }
+      if (dir === "in") {
+        const so = sp && sp.optional === true;
+        if ((dp.optional === true) !== so) {
+          if (so) dp.optional = true;
+          else delete dp.optional;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 /* 运行一个画布内的工具节点（Agent 入参经 _agentCallArgs 注入端子；quiet 无弹层；
    结束后返回 {payload}，失败抛 Error 文本） */
 async function runCanvasToolNodeForAgent(node, desc, args) {
@@ -717,6 +950,10 @@ async function runCanvasToolNodeForAgent(node, desc, args) {
     throw new Error(I18n.t("工具「{name}」正在运行，请稍后再调用", { name: desc.name || node.title || "" }));
   if (typeof runToolNode !== "function")
     throw new Error(I18n.t("工具节点执行引擎未就绪"));
+  /* 执行前预检：缺必填 / 参数组整组为空 → 当场回错误（回执里会附完整用法摘要），
+     不白跑一轮内部图（可能含真实 API 调用） */
+  const pre = agentToolPrecheck(desc, args);
+  if (pre) throw new Error(pre);
   const inputs = desc.inputs || [];
   /* 端子对齐（契约 docs/tool-function-nodes.md §2）：输入端子 0 = 控制入（固定），
      参数 i 对应端子 i+1 → vals[i+1]；外部连线语义与 internalValueIntoSuper 的
@@ -858,8 +1095,44 @@ async function handleToolRunEvent(data, runCtx) {
     const payload = await executeAgentToolCall(desc, args, (runCtx && runCtx.wf) || S.wf);
     await answer(payload, undefined);
   } catch (err) {
-    await answer(undefined, (err && err.message) || String(err));
+    /* 失败回执一律附「合法用法摘要 + 最小示例」（不中断会话）：模型下一轮能一次改对，
+       不再「同一条错反复试」——工具描述里本来就有这些信息，只是要送到它手上。 */
+    const msg = (err && err.message) || String(err);
+    await answer(undefined, msg + "\n\n" + toolUsageSummary(desc));
   }
+}
+
+/* 打开画布时刷新内置工具副本的文案（返回改过的节点数）：
+   画布上的工具节点是插入内置条目时的深拷贝 —— 内置条目后来把描述 / 参数说明 / 可选位 /
+   调用示例 / 限制改准了，副本不会自动跟过去，而 Agent 调用时**画布副本优先**于库里那一份，
+   于是「改准了内置工具描述」对已插入的节点等于没改。这里按内置最新刷一遍文案类字段
+   （参数个数与顺序永不动，见 copyBuiltinTextIntoNode）。 */
+async function refreshBuiltinToolCopies(wf) {
+  const nodes = (wf && Array.isArray(wf.nodes) && wf.nodes) || [];
+  const targets = nodes.filter(
+    (n) =>
+      n &&
+      isToolNode(n) &&
+      !isSuperIoNode(n) &&
+      /^builtin:/.test(String(n.toolLibId || "")),
+  );
+  if (!targets.length) return 0;
+  let changed = 0;
+  for (const n of targets) {
+    let pkg = null;
+    try {
+      const r = await window.api.toolsGet(n.toolLibId);
+      pkg = r && r.ok && r.tool ? r.tool : null;
+    } catch (_) {}
+    if (!pkg) continue;
+    if (copyBuiltinTextIntoNode(n, pkg)) changed++;
+  }
+  if (changed && typeof scheduleSave === "function") {
+    try {
+      scheduleSave(true);
+    } catch (_) {}
+  }
+  return changed;
 }
 
 /* ═══════════ 通用「试跑」台（工具 / 函数节点头部「测试」→ 独立对话框） ═══════════
@@ -1125,6 +1398,45 @@ function openNodeTestDialog(node) {
 
   /* ── 输入字段：每个输入参数一个 ── */
   section(I18n.t("输入参数（端子 1..n · 端子 0 = 控制入）"));
+  /* 工具节点：有「调用示例」就一键填入 —— 与 Agent 拿到的是同一份示例，
+     用户点一下就能看到「填成什么样算对」（示例键 = 参数名，缺的位保持原样）。 */
+  if (isTool) {
+    const ex = String(
+      (node.toolConfig && node.toolConfig.example) || "",
+    ).trim();
+    let exObj = null;
+    if (ex) {
+      try {
+        const o = JSON.parse(ex);
+        if (o && typeof o === "object" && !Array.isArray(o)) exObj = o;
+      } catch (_) {}
+    }
+    const bar = document.createElement("div");
+    bar.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap";
+    if (exObj) {
+      const fillBtn = document.createElement("button");
+      fillBtn.type = "button";
+      fillBtn.className = "mini";
+      fillBtn.textContent = I18n.t("按调用示例填入");
+      fillBtn.title = ex;
+      fillBtn.onclick = () => {
+        ins.forEach((p, i) => {
+          if (Object.prototype.hasOwnProperty.call(exObj, p.name))
+            testVals[i] = String(exObj[p.name] == null ? "" : exObj[p.name]);
+        });
+        /* 重新打开（同一只对话框 · 重建 body）：填入值立刻可见 */
+        openNodeTestDialog(node);
+      };
+      bar.appendChild(fillBtn);
+    }
+    const exHint = document.createElement("span");
+    exHint.style.cssText = "font-size:11px;opacity:.66;word-break:break-all";
+    exHint.textContent = exObj
+      ? I18n.t("调用示例：") + ex
+      : I18n.t("还没有调用示例（在该节点「设置」里写一份，Agent 与你都会用到）");
+    bar.appendChild(exHint);
+    wrap.appendChild(bar);
+  }
   if (!ins.length)
     hint(I18n.t("（无输入参数 · 在「设置」里添加）"));
   ins.forEach((p, i) => {
@@ -1138,7 +1450,12 @@ function openNodeTestDialog(node) {
       " · " +
       (p.name || I18n.t("参数 ") + (i + 1)) +
       (isImg ? I18n.t("（图像）") : I18n.t("（文本）")) +
-      (isArr ? I18n.t(" · 数组端子（JS 里拿到数组 · 一行一条）") : "");
+      (p.optional === true ? I18n.t(" · 可选") : "") +
+      (isArr ? I18n.t(" · 数组端子（JS 里拿到数组 · 一行一条）") : "") +
+      /* 参数说明原样带出来（与 Agent 看到的同一份）：填之前就知道这一格该写什么 */
+      (String(p.description || "").trim()
+        ? " — " + String(p.description).trim()
+        : "");
     wrap.appendChild(lab);
     const store = (v) => {
       testVals[i] = v;

@@ -695,6 +695,8 @@ contextBridge.exposeInMainWorld('api', {
   toolsSave: (pkg) => ipcRenderer.invoke('tools:save', pkg),
   toolsDelete: (id) => ipcRenderer.invoke('tools:delete', id),
   toolsPatch: (id, patch) => ipcRenderer.invoke('tools:patch', { id, patch }),
+  /* 工具运行环境（只读）：数据目录与用户输出目录（Agent 描述里的 {{outDir}} 展开用） */
+  toolsEnv: () => ipcRenderer.invoke('tools:env'),
 
   /* ── 长周期任务系统（longtask-store.js）：run checkpoint / 长期记忆 / 交付目录 ──
      图定义不进这里（随工作流 JSON 自动保存）；这里只存「跑起来才会变的东西」。 */

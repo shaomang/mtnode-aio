@@ -9074,6 +9074,71 @@
         "生成类型": "Generation types",
         "要预置哪几种生成节点（平行摆在同一颗子壳里，各自带提示词与参数）":
           "Which generation nodes to preset (placed side by side in the same step shell, each with its own prompt and settings)",
+        /* ── 工具节点「描述自足」（Agent 只凭工具给的信息就能正确调用）──
+           数据字段：参数说明 / 可选位 / 调用示例 / 限制与失败情形 /「至少给一个」；
+           消费方：app-tools.js 的描述子与失败回执、app-canvas.js 的设置面板与卡片提醒、
+           app.js 的 toolSelfSuffMissing 自检、dsh/gateway/tools-plugin.mjs 的 schema。 */
+        "本机用户数据目录": "this machine's user-data folder",
+        "工具「{name}」的合法用法：": "Valid usage of tool \"{name}\":",
+        "· 用途：": "· Purpose: ",
+        "· 无入参": "· No inputs",
+        "· 以下参数至少给一个：": "· Provide at least one of: ",
+        "· 返回：": "· Returns: ",
+        "· 限制与失败情形：": "· Limits and failure cases: ",
+        "· 最小调用示例（args 一份完整 JSON）：":
+          "· Minimal call example (args, a complete JSON object): ",
+        "（图像 · 本机绝对路径）": " (image · absolute local path)",
+        "（文本）": " (text)",
+        " · 可选": " · optional",
+        " · 必填": " · required",
+        "缺少必填参数：": "Missing required parameter(s): ",
+        "以下参数至少要给一个：": "Provide at least one of: ",
+        "按调用示例填入": "Fill from call example",
+        "调用示例：": "Call example: ",
+        "还没有调用示例（在该节点「设置」里写一份，Agent 与你都会用到）":
+          "No call example yet (write one in this node's Settings — both you and the agent use it)",
+        "用途（描述）": "purpose (description)",
+        "每个入参的说明": "description of every input",
+        "每个出参的说明": "description of every output",
+        "最小调用示例": "minimal call example",
+        "调用示例（不是合法 JSON 对象）":
+          "call example (not a valid JSON object)",
+        "调用示例（键不是入参名：": "call example (keys are not input names: ",
+        "限制与失败情形": "limits and failure cases",
+        "「至少给一个」的参数组（引用了不存在的入参名）":
+          "at-least-one parameter group (references an input that does not exist)",
+        "参数说明（这个参数该填什么 · 给 Agent 看）":
+          "Parameter description (what goes here · shown to the agent)",
+        "参数说明：拼进给模型的参数描述与失败回执（描述自足判据的一项）":
+          "Parameter description: goes into the model-facing parameter schema and failure receipts (one of the self-sufficient-description criteria)",
+        "（函数节点不参与 Agent 调用）":
+          " (function nodes are not callable by the agent)",
+        "可选参数：给模型看的必填列表不含它（不勾 = 必填）":
+          "Optional parameter: the model-facing required list excludes it (unchecked = required)",
+        "可选": "Optional",
+        "调用示例 example（一份完整的最小成功调用 · JSON 对象 · 键 = 参数名）":
+          "Call example (one complete minimal successful call · JSON object · keys = input names)",
+        "会随失败回执一起发给 Agent：接到错误后它照这份示例改参数就能调对":
+          "Sent with failure receipts: on error the agent can fix its arguments from this example",
+        "限制与失败情形 limits（什么情况下会失败 · 路径与格式规则等）":
+          "Limits and failure cases (when it fails · path and format rules, etc.)",
+        "例：输出路径必须是绝对路径；落在应用安装目录内会被拒绝；文件不存在会报错":
+          "e.g. the output path must be absolute; a path inside the app install folder is refused; a missing file errors out",
+        "至少给一个 atLeastOne（一行一组，组内用 / 分隔；如：Markdown内容 / 源文件路径）":
+          "At least one of (one group per line, names separated by /; e.g. Markdown内容 / 源文件路径)",
+        "这一组参数至少要给一个（Agent 调用前的预检按它判，不用跑一轮内部图才发现）":
+          "At least one of this group must be given (the pre-call check uses it, so you do not burn a run to find out)",
+        "描述还不自足（Agent 只凭这些信息可能调不对），缺：":
+          "Description is not self-sufficient yet (the agent may call it wrong with only this), missing: ",
+        "。补齐后 Agent 才能一次调对。":
+          ". Fill these in so the agent gets it right the first time.",
+        "描述自足检查通过：用途 / 参数含义 / 可选性 / 输出说明 / 调用示例 / 限制与失败情形齐全。":
+          "Self-sufficient description check passed: purpose / parameter meanings / optionality / output meanings / call example / limits are all present.",
+        "描述不自足（缺 ": "Description not self-sufficient (missing ",
+        "）：头部「设置」里补齐，Agent 才能一次调对":
+          "): fill it in via the header Settings so the agent gets it right the first time",
+        "点头部「设置」补描述 / 参数说明 / 调用示例 / 限制与失败情形":
+          "Open header Settings to add the description / parameter descriptions / call example / limits",
       };
       var out = {};
       for (var k in add)

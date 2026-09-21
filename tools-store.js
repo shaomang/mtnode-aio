@@ -51,15 +51,36 @@ function fail(err) {
 function genId() {
   return "tl" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
-/* 参数表归一：确保 [{name, kind}]，kind 只认 text | image（缺省 text） */
-function normParams(list) {
+/* 参数表归一：确保 [{name, kind[, description][, optional]}]，kind 只认 text | image
+   （缺省 text）。
+   description = 参数说明（入出参都存），供 Agent 侧拼「这个参数该填什么」；
+   optional = 可选位（只在输入侧有意义：给模型的 required 列表据此生成），
+   **未标注 = 必填**（老工具包口径不变）。 */
+function normParams(list, dir) {
   if (!Array.isArray(list)) return [];
+  const inSide = dir === "in";
   return list.map((e, i) => {
     if (e == null || typeof e !== "object") e = {};
     const name = String(e.name == null ? "" : e.name).trim();
     const kind = String(e.kind || "text");
-    return { name: name || t("参数 ") + (i + 1), kind: PARAM_KINDS[kind] ? kind : "text" };
+    const p = { name: name || t("参数 ") + (i + 1), kind: PARAM_KINDS[kind] ? kind : "text" };
+    const desc = String(e.description == null ? "" : e.description).trim();
+    if (desc) p.description = desc;
+    if (inSide && e.optional === true) p.optional = true;
+    return p;
   });
+}
+/* 参数组「至少给一个」（工具级 · Agent 侧预检与描述用）：[[参数名, 参数名], …]，
+   非数组 / 元素不足两个名字的组一律丢弃（归一幂等）。 */
+function normAtLeastOne(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((g) =>
+      Array.isArray(g)
+        ? g.map((s) => String(s == null ? "" : s).trim()).filter(Boolean)
+        : [],
+    )
+    .filter((g) => g.length >= 2);
 }
 function readTool(id) {
   const p = toolPath(id);
@@ -176,8 +197,12 @@ function builtinTools() {
       kind: raw.kind === "function" ? "function" : "tool",
       name: name,
       description: String(raw.description || ""),
-      inputs: normParams(raw.inputs),
-      outputs: normParams(raw.outputs),
+      /* 「描述自足」的可机检字段（缺省空 = 未写，读取不报错；冒烟另按硬判据检查） */
+      example: String(raw.example || ""),
+      limits: String(raw.limits || ""),
+      atLeastOne: normAtLeastOne(raw.atLeastOne),
+      inputs: normParams(raw.inputs, "in"),
+      outputs: normParams(raw.outputs, "out"),
       always: !!raw.always,
       builtin: true,
       presets: raw.presets && typeof raw.presets === "object" ? raw.presets : null,
@@ -233,6 +258,9 @@ function builtinListEntry(t) {
     kind: entryKind(t),
     name: t.name,
     description: t.description,
+    example: t.example,
+    limits: t.limits,
+    atLeastOne: t.atLeastOne,
     inputs: t.inputs,
     outputs: t.outputs,
     always: entryKind(t) === "function" ? false : builtinAlwaysOf(t.id, t.always),
@@ -296,8 +324,12 @@ function registerToolsIpc(opts) {
         kind: pkg.kind === "function" ? "function" : "tool",
         name: name,
         description: String(pkg.description || ""),
-        inputs: normParams(pkg.inputs),
-        outputs: normParams(pkg.outputs),
+        /* 「描述自足」的工具级字段（Agent 侧描述子 / 失败回执 / 冒烟同一份数据） */
+        example: String(pkg.example || ""),
+        limits: String(pkg.limits || ""),
+        atLeastOne: normAtLeastOne(pkg.atLeastOne),
+        inputs: normParams(pkg.inputs, "in"),
+        outputs: normParams(pkg.outputs, "out"),
         always: !!pkg.always,
         graph: {
           rootId: String(g.rootId || ""),
@@ -366,10 +398,32 @@ function registerToolsIpc(opts) {
         patchGraphName(j.graph, j.graph && j.graph.rootId, oldName, name);
       }
       if (typeof patch.description === "string") j.description = patch.description;
+      if (typeof patch.example === "string") j.example = patch.example;
+      if (typeof patch.limits === "string") j.limits = patch.limits;
+      if (patch.atLeastOne !== undefined) j.atLeastOne = normAtLeastOne(patch.atLeastOne);
       if (typeof patch.always === "boolean") j.always = patch.always;
       j.updatedAt = Date.now();
       writeTool(j);
       return { ok: true };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  /* 渲染层需要的工具运行环境（只读）：数据目录 +「用户输出目录」。
+     用途：Agent 侧工具描述里的 {{outDir}} 占位要展开成**本机真实可写的绝对路径** ——
+     否则模型只能猜一个目录（常猜进应用安装目录，被写盘内核拒绝）。
+     顺手确保该目录存在（写盘内核会建父目录，这里建的是推荐落点本身，幂等）。 */
+  ipcMain.handle("tools:env", () => {
+    try {
+      const d = String(getDataDir() || "").trim();
+      const outDir = d ? path.join(d, "exports") : "";
+      if (outDir) {
+        try {
+          fs.mkdirSync(outDir, { recursive: true });
+        } catch (_) {}
+      }
+      return { ok: true, dataDir: d, outDir: outDir };
     } catch (err) {
       return fail(err);
     }

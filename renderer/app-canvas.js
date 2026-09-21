@@ -8615,6 +8615,59 @@ function buildFnToolSettings(node, isTool) {
         };
         row.appendChild(rm);
         listEl.appendChild(row);
+        /* 「描述自足」第二行：参数说明（给 Agent 看的「这个参数该填什么」）+ 可选位。
+           参数说明入出参都可写；可选位只在输入侧且工具节点上有意义（给模型的 required
+           列表据此生成 —— 函数节点不进 Agent 可调用清单，不显示它）。
+           改完不重建面板（说明 / 可选位不进 signature），但重新取一次参数数组再写，
+           避免与「改名字触发的结构归一」抢同一个数组引用。 */
+        const sub = document.createElement("div");
+        sub.style.cssText =
+          "display:flex;gap:6px;align-items:center;padding:0 0 4px 18px";
+        const pd = document.createElement("input");
+        pd.type = "text";
+        pd.value = String(list[i].description || "");
+        pd.placeholder = I18n.t("参数说明（这个参数该填什么 · 给 Agent 看）");
+        pd.style.cssText = "flex:1;min-width:0;font-size:11.5px";
+        pd.title = I18n.t(
+          "参数说明：拼进给模型的参数描述与失败回执（描述自足判据的一项）",
+        );
+        pd.addEventListener("input", () => {
+          list[i].description = pd.value;
+        });
+        pd.addEventListener("change", () => {
+          const cur = fnToolParamList(node, dir);
+          if (cur[i]) cur[i].description = pd.value;
+          scheduleSave();
+        });
+        sub.appendChild(pd);
+        if (dir === "in" && !isTool) {
+          const fl = document.createElement("span");
+          fl.style.cssText = "flex:none;font-size:11px;opacity:.6";
+          fl.textContent = I18n.t("（函数节点不参与 Agent 调用）");
+          sub.appendChild(fl);
+        }
+        if (dir === "in" && isTool) {
+          const ol = document.createElement("label");
+          ol.style.cssText =
+            "display:flex;align-items:center;gap:3px;flex:none;font-size:11px;opacity:.9;cursor:pointer;white-space:nowrap";
+          ol.title = I18n.t(
+            "可选参数：给模型看的必填列表不含它（不勾 = 必填）",
+          );
+          const oc = document.createElement("input");
+          oc.type = "checkbox";
+          oc.style.flex = "none";
+          oc.checked = list[i].optional === true;
+          oc.addEventListener("change", () => {
+            const cur = fnToolParamList(node, dir);
+            if (cur[i]) cur[i].optional = !!oc.checked;
+            scheduleSave();
+          });
+          const ot = document.createElement("span");
+          ot.textContent = I18n.t("可选");
+          ol.append(oc, ot);
+          sub.appendChild(ol);
+        }
+        listEl.appendChild(sub);
       }
     };
     paint();
@@ -8635,6 +8688,88 @@ function buildFnToolSettings(node, isTool) {
   };
   renderParams("in", I18n.t("输入参数（端子 1..n · 端子 0 = 控制入）"));
   renderParams("out", I18n.t("输出参数（端子 0..n-1 · 末位 = 控制出）"));
+  /* ── 工具节点专属：「描述自足」剩下三格 + 自检提醒 ─────────────────────
+     调用示例 / 限制与失败情形 /「至少给一个」的参数组只描述调用方式，不参与端子计算
+     （参数即端子不受影响）；提醒只列出缺哪几项，绝不阻断保存。 */
+  if (isTool) {
+    const cfgNow =
+      node.toolConfig && typeof node.toolConfig === "object" ? node.toolConfig : {};
+    const exLab = field(
+      I18n.t("调用示例 example（一份完整的最小成功调用 · JSON 对象 · 键 = 参数名）"),
+    );
+    const exInp = document.createElement("textarea");
+    exInp.rows = 3;
+    exInp.value = String(cfgNow.example || "");
+    exInp.style.cssText = "width:100%;font-size:12px";
+    exInp.placeholder =
+      '{"输出路径": "…\\出.pdf", "Markdown内容": "# 标题"}';
+    exInp.title = I18n.t(
+      "会随失败回执一起发给 Agent：接到错误后它照这份示例改参数就能调对",
+    );
+    exInp.addEventListener("input", () => {
+      node.toolConfig.example = exInp.value;
+    });
+    exInp.addEventListener("change", () => scheduleSave());
+    exLab.appendChild(exInp);
+
+    const lmLab = field(
+      I18n.t("限制与失败情形 limits（什么情况下会失败 · 路径与格式规则等）"),
+    );
+    const lmInp = document.createElement("textarea");
+    lmInp.rows = 2;
+    lmInp.value = String(cfgNow.limits || "");
+    lmInp.style.cssText = "width:100%;font-size:12px";
+    lmInp.placeholder = I18n.t(
+      "例：输出路径必须是绝对路径；落在应用安装目录内会被拒绝；文件不存在会报错",
+    );
+    lmInp.addEventListener("input", () => {
+      node.toolConfig.limits = lmInp.value;
+    });
+    lmInp.addEventListener("change", () => scheduleSave());
+    lmLab.appendChild(lmInp);
+
+    const grLab = field(
+      I18n.t(
+        "至少给一个 atLeastOne（一行一组，组内用 / 分隔；如：Markdown内容 / 源文件路径）",
+      ),
+    );
+    const grInp = document.createElement("input");
+    grInp.type = "text";
+    grInp.value = (Array.isArray(cfgNow.atLeastOne) ? cfgNow.atLeastOne : [])
+      .map((g) => (Array.isArray(g) ? g.join(" / ") : ""))
+      .filter(Boolean)
+      .join("\n");
+    grInp.style.cssText = "width:100%;font-size:12px";
+    grInp.title = I18n.t(
+      "这一组参数至少要给一个（Agent 调用前的预检按它判，不用跑一轮内部图才发现）",
+    );
+    grInp.addEventListener("change", () => {
+      node.toolConfig.atLeastOne = String(grInp.value || "")
+        .split(/\r?\n/)
+        .map((l) => l.split(/[\/,，、]/).map((s) => s.trim()).filter(Boolean))
+        .filter((g) => g.length >= 2);
+      scheduleSave();
+    });
+    grLab.appendChild(grInp);
+
+    /* 自检提醒：只提示、不阻断（随包内置工具由冒烟测试硬性拦下） */
+    const miss =
+      typeof toolSelfSuffMissing === "function" ? toolSelfSuffMissing(node) : [];
+    const warn = document.createElement("div");
+    warn.style.cssText =
+      "font-size:11.5px;line-height:1.5;border-radius:6px;padding:6px 8px;" +
+      (miss.length
+        ? "color:#e8bf5a;background:rgba(232,191,90,.12);border:1px solid rgba(232,191,90,.42)"
+        : "opacity:.72");
+    warn.textContent = miss.length
+      ? I18n.t("描述还不自足（Agent 只凭这些信息可能调不对），缺：") +
+        miss.join("、") +
+        I18n.t("。补齐后 Agent 才能一次调对。")
+      : I18n.t(
+          "描述自足检查通过：用途 / 参数含义 / 可选性 / 输出说明 / 调用示例 / 限制与失败情形齐全。",
+        );
+    wrap.appendChild(warn);
+  }
   /* 仅函数节点：按当前入参 / 出参名生成 JS 脚手架。只有点这个按钮才动代码，
      参数增删不实时改写；已有代码非空时先弹确认（覆盖 / 取消），绝不静默毁掉手写代码。 */
   if (!isTool) {
@@ -8792,6 +8927,24 @@ function buildFnToolBodyMain(node, body, isTool) {
   }
   const sum = fnToolOutSummaryEl(node);
   if (sum) body.appendChild(sum);
+  /* 工具节点的「描述自足」提醒（卡片上只留一行黄字，完整缺项与输入框在头部「设置」里）：
+     描述不自足时 Agent 只凭工具自己给的信息可能调不对 —— 只提示，不阻断任何操作。 */
+  if (isTool && typeof toolSelfSuffMissing === "function") {
+    const missTool = toolSelfSuffMissing(node);
+    if (missTool.length) {
+      const w = document.createElement("div");
+      w.style.cssText =
+        "flex:none;font-size:10.5px;line-height:1.35;color:#e8bf5a;background:rgba(232,191,90,.12);border:1px solid rgba(232,191,90,.4);border-radius:5px;padding:3px 6px";
+      w.textContent =
+        I18n.t("描述不自足（缺 ") +
+        missTool.join("、") +
+        I18n.t("）：头部「设置」里补齐，Agent 才能一次调对");
+      w.title = I18n.t(
+        "点头部「设置」补描述 / 参数说明 / 调用示例 / 限制与失败情形",
+      );
+      body.appendChild(w);
+    }
+  }
   /* 函数 / 工具节点下方「开发」：弹窗填本次要改 / 扩展什么 → 确认后新建绑定会话在其中运行。
      复用开发节点那套按钮样式（.n-dev-info / .n-dev-btns / .n-dev-open），不新增 CSS 规则；
      函数节点实现（对话框 + 会话创建 + 契约）在 app-tools.js developFunctionNode；

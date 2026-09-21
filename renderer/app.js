@@ -6560,10 +6560,15 @@ function notePortKindFix(node, dir, idx, fix, name) {
   if (node._portKindFix.indexOf(msg) < 0) node._portKindFix.push(msg);
   while (node._portKindFix.length > 4) node._portKindFix.shift();
 }
-/* 单条参数归一：确保 {name, kind[, list]}，name 空补默认名，kind 只认 text|image（缺省 text）。
+/* 单条参数归一：确保 {name, kind[, list][, description][, optional]}，name 空补默认名，
+   kind 只认 text|image（缺省 text）。
    dir = "in" 时保留 list 布尔（列表入参：一条线喂一组值，供 fnToolPortIsList 判定）；
    dir = "out"（含省略）时一律清掉 list —— 列表只是输入侧的取值语义，输出方向「参数即端子」
-   的端子表必须与 kind 一一对应，留着它会让输出端子被曲解成可展开的多值端子。 */
+   的端子表必须与 kind 一一对应，留着它会让输出端子被曲解成可展开的多值端子。
+   description（参数说明）入出参都保留：它是「描述自足」六项判据里「每个参数含义」的载体，
+   Agent 侧最终会拼进给模型的参数描述（见 dsh/gateway/tools-plugin.mjs）。
+   optional（可选位）只在输入侧保留：给模型的 required 列表据此生成；**未标注 = 必填**
+   （与历史口径一致，老工具包升级后行为不变）。 */
 function normFnToolEntry(e, i, dir) {
   if (e == null || typeof e !== "object") e = {};
   const name = String(e.name == null ? "" : e.name).trim();
@@ -6571,6 +6576,9 @@ function normFnToolEntry(e, i, dir) {
   if (kind !== "image") kind = "text";
   const p = { name: name, kind: kind };
   if (dir === "in") p.list = e.list === true || e.list === "true";
+  const desc = String(e.description == null ? "" : e.description).trim();
+  if (desc) p.description = desc;
+  if (dir === "in" && e.optional === true) p.optional = true;
   return p;
 }
 /* 结构归一（幂等）：工具节点补 toolConfig，函数节点补字符串/数组字段；
@@ -6610,6 +6618,22 @@ function ensureFnToolNodeState(node) {
         : {};
     if (typeof c.name !== "string") c.name = "";
     if (typeof c.description !== "string") c.description = "";
+    /* 「描述自足」的工具级字段（给 Agent 看，缺省空串 = 未写，不报错）：
+       · example   一份完整的最小成功调用（JSON 文本，键 = 参数名）——失败回执 / 冒烟 / 测试台都用它；
+       · limits    会失败的情形与限制（如路径规则、必须存在的目录、输入形式）；
+       · atLeastOne 参数组「至少给一个」：[[参数名, 参数名], …]（每组 ≥ 2 个名字才保留）。
+       参数即端子，这三个字段不参与端子计算，只描述调用方式。 */
+    if (typeof c.example !== "string") c.example = "";
+    if (typeof c.limits !== "string") c.limits = "";
+    if (!Array.isArray(c.atLeastOne)) c.atLeastOne = [];
+    else
+      c.atLeastOne = c.atLeastOne
+        .map((g) =>
+          Array.isArray(g)
+            ? g.map((s) => String(s == null ? "" : s).trim()).filter(Boolean)
+            : [],
+        )
+        .filter((g) => g.length >= 2);
     if (!Array.isArray(c.inputs)) c.inputs = [];
     if (!Array.isArray(c.outputs)) c.outputs = [];
     c.inputs = c.inputs.map((e, i) => {
@@ -6625,6 +6649,53 @@ function ensureFnToolNodeState(node) {
     node.toolConfig = c;
   }
 }
+/* 「描述自足」自检（与 test/smoke-tools.js 的内置工具硬判据同一口径）：
+   返回缺失项的中文名数组，空数组 = 达标。只判「写没写」，不判写得好不好。
+   六项判据的落地：用途（description）/ 每个入参含义 / 每个出参含义 / 最小调用示例
+   （必须是键为入参名的合法 JSON 对象）/ 限制与失败情形 / 可选性（参数说明里写清，
+   真正可选的参数必须标 optional；「至少给一个」的参数组只能引用存在的入参名）。
+   工具节点仅提示、不阻断保存；随包内置工具由冒烟测试硬性拦下。 */
+function toolSelfSuffMissing(node) {
+  if (!node || !isToolNode(node)) return [];
+  const c =
+    node.toolConfig && typeof node.toolConfig === "object" ? node.toolConfig : {};
+  const ins = Array.isArray(c.inputs) ? c.inputs : [];
+  const outs = Array.isArray(c.outputs) ? c.outputs : [];
+  const names = ins.map((p) => String((p && p.name) || ""));
+  const miss = [];
+  if (!String(c.description || "").trim()) miss.push(I18n.t("用途（描述）"));
+  if (ins.some((p) => !String((p && p.description) || "").trim()))
+    miss.push(I18n.t("每个入参的说明"));
+  if (outs.some((p) => !String((p && p.description) || "").trim()))
+    miss.push(I18n.t("每个出参的说明"));
+  const ex = String(c.example || "").trim();
+  if (!ex) miss.push(I18n.t("最小调用示例"));
+  else {
+    let obj = null;
+    try {
+      obj = JSON.parse(ex);
+    } catch (_) {}
+    if (!obj || typeof obj !== "object" || Array.isArray(obj))
+      miss.push(I18n.t("调用示例（不是合法 JSON 对象）"));
+    else {
+      const bad = Object.keys(obj).filter((k) => names.indexOf(k) < 0);
+      if (bad.length)
+        miss.push(
+          I18n.t("调用示例（键不是入参名：") + bad.join("、") + I18n.t("）"),
+        );
+    }
+  }
+  if (!String(c.limits || "").trim()) miss.push(I18n.t("限制与失败情形"));
+  const groups = Array.isArray(c.atLeastOne) ? c.atLeastOne : [];
+  if (
+    groups.some((g) =>
+      (Array.isArray(g) ? g : []).some((nm) => names.indexOf(String(nm)) < 0),
+    )
+  )
+    miss.push(I18n.t("「至少给一个」的参数组（引用了不存在的入参名）"));
+  return miss;
+}
+
 /* 工具名与标题联动：设置里改 toolConfig.name 时，只要标题还是旧名（或尚未命名时的
    默认「工具[N]」）就同步改名，否则视为手动改过标题、name 独立。 */
 function applyToolConfigName(node, name) {
@@ -28664,6 +28735,15 @@ async function loadWorkflow(id, opts) {
   trackWorkflow(id, S.wf.name);
   try { restoreMediaGenLocks(); } catch {}
   try { ensureMediaBackendProbesForWorkflow({ reset: true }); } catch {}
+  /* 内置工具的文案刷新：画布上的工具节点是插入时的深拷贝，内置条目后来改准了描述 /
+     参数说明 / 可选位 / 调用示例 / 限制，副本不会自动跟过去 —— 而 Agent 调用时画布副本
+     优先于工具库条目，于是「改了内置描述」对已插入的节点等于没改。这里按内置最新刷新
+     文案类字段（参数个数与顺序永不动）。 */
+  try {
+    if (typeof refreshBuiltinToolCopies === "function") {
+      if (await refreshBuiltinToolCopies(S.wf)) renderCanvas();
+    }
+  } catch (_) {}
   toast(I18n.t("已打开画布：") + (S.wf.name || id), "ok");
 }
 
