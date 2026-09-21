@@ -20,7 +20,7 @@ description: 在当前画布生成可编辑、可一键重跑的数据流工作�
 
 - 用户要填的：`input_text` / `input_image`（可编辑，靠**画布上方**）
 - 生成/转换：普通 `proc_text` / `proc_image`（单次生成用它们；要读已有文件再合并才用 `agent_task`）
-- 落盘：仅接在**非智能** proc 之后的 `save_text` / `save_image`
+- 落盘：仅接在**非智能** proc 之后的 `save_text` / `save_image`；要交**文档 / 报告 / 可打印成品**时改用 `save_pdf`（上游文本 → PDF），把保存路径放在用户可编辑区并配一句路径提示文案
 - 一键重跑：`control`（`ctrlAction: run`，**不要创建** `clear`「清空」控制节点）**直接连线到每一个**需要一键重跑的节点（处理 / 保存 / 媒体等）
 - `createMarks`：框体分区（编辑区 / 处理区 / 输出区），`around` 包住对应节点；短说明用 text 标注
 
@@ -32,6 +32,7 @@ description: 在当前画布生成可编辑、可一键重跑的数据流工作�
 - `remotion`（Remotion 动效视频节点）**仅当已安装「remotion」应用插件时使用**；描述文本来自连线端口1（文本源），节点上可设 `duration`（秒 1–60）/ `fps`（1–60）/ `remotionSize`（如 `1280x720`、`1920x1080`、`720x1280`、`1080x1920`）/ `providerId` + `model`。与 music_gen/video_gen 相反：remotion 没有 `outputPath`，渲染出的 mp4 由**下游保存节点**落盘（`savePath` 用 `.mp4`），所以它后面要接一个 `save` 节点
 - 批量 `batchMode:batch` 时不要把整批 N 条再塞进每一次运行（防 N²）
 - 文生图一次不要要求「生成多张」；一跑只出 1 张
+- `save_pdf`（PDF生成）**不自动落盘**：接线与上游更新都不会生成，只有点 ▶ 或由 control 指挥才出一份 PDF——所以 control 必须**直接连线**到 `save_pdf` 才有一键重跑；它只收文本输入（图像 / 音视频接不了）
 - 控制流不会沿数据线传导：control 必须与每个目标节点**直接连线**，不要指望连到一个节点就带动整条链
 - 不要删除或挡住正在运行的节点
 

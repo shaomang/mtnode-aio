@@ -216,7 +216,8 @@ function highlightAtRefsHtml(html, node) {
  * 同一个节点改走轻量路径后只剩十几个 DOM 节点。
  * 阈值定在「一屏读得完」的规模：超过后浏览态只出「整块纯文本 + 字符数」这一种最便宜的形态，
  * 一次 textContent，不做语言判定、不做 @ 着色、不建块级 DOM。
- * 完整内容不丢：节点头部 👁 预览窗会以全量渲染显示（app-textpreview.js），
+ * 完整内容不丢：轻量视图本身就是整块纯文本（内容一字不少，只放弃 Markdown / YAML / @ 着色），
+ * 需要完整渲染时走节点头部对应的编辑入口（ltout 的 ✎ / ltart 的 ✎ 阅读器）；
  * 输出面板正文也走同一条护栏（browseOutTextView 不经过这里）。 */
 const NODE_VIEW_LONG_CHARS = 6000;
 const NODE_VIEW_LONG_LINES = 240;
@@ -265,18 +266,11 @@ function nodeViewLongEl(raw, opts) {
   box.appendChild(body);
   const meta = document.createElement("div");
   meta.className = "ntv-long-meta";
-  /* 头部有 👁 预览全文的节点才提示「点上方看全文」，免得指向一枚不存在的按钮 */
-  const canPeek =
-    !!o.node &&
-    (o.node.kind === "input_text" ||
-      o.node.kind === "proc_text" ||
-      o.node.kind === "proc_image" ||
-      o.node.kind === "agent_task");
+  /* 纯字符数小字：只说明这不是完整渲染，不再指向任何预览入口（本轮已移除只读预览窗） */
   meta.textContent =
-    (typeof I18n !== "undefined"
-      ? I18n.t("超大文本 · 轻量显示 · {n} 字符", { n: text.length }) +
-        (canPeek ? I18n.t(" · 点上方 👁 看全文") : "")
-      : text.length + " chars");
+    typeof I18n !== "undefined"
+      ? I18n.t("超大文本 · 轻量显示 · {n} 字符", { n: text.length })
+      : text.length + " chars";
   box.appendChild(meta);
   return box;
 }

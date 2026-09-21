@@ -9,7 +9,7 @@ Pack related nodes into a subgraph. **Expand** to edit in a shell, or **↪ Ente
 - **Inner bridge (left) / sink (right)**: expanded shell or full-canvas left/right edges after Enter
 
 ## Common actions
-- Toolbar **Wrap super**: merge selection
+- Toolbar **Wrap super**: merge selection; with a **single super node selected, click again to unwrap it** (contents move back out as they are, the empty shell is deleted)
 - Header: subfolder, Enter, expand / collapse
 - Drag in / out to pack / unpack
 - Sidebar **Super node** tree: jump in and fit

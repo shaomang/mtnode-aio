@@ -5922,7 +5922,7 @@ body.theme-light .n-chip.n-chip-lt {
 /* 超长文本的轻量视图（app-nodeview.js 的 nodeViewLongEl）：
    整块纯文本 + 一行字符数小字，不做 Markdown / YAML 结构渲染、不做 @引用着色。
    这是「超长文本 → 画布卡顿」的护栏：一次 innerHTML 而不是几十万个节点。
-   完整渲染看节点头部 👁 预览窗（app-textpreview.js）。 */
+   内容一字不少（只在 .ntv-long-body 里滚动读），本轮已移除只读预览大窗。 */
 .wf-node.browse .n-view .ntv-long {
   display: flex;
   flex-direction: column;
@@ -5944,7 +5944,7 @@ body.theme-light .n-chip.n-chip-lt {
 
 /* 超长输出正文的轻量显示（app-canvas.js 的 browseOutTextView）：
    OUTPUT 面板里不做整篇 Markdown 结构渲染，只出整块纯文本 + 一行字符数。
-   完整内容看节点头部 👁 预览窗。 */
+   正文整块可滚动，本轮已移除只读预览大窗与头部 👁。 */
 .wf-node.browse .n-out-long {
   display: flex;
   flex-direction: column;

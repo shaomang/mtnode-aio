@@ -106,7 +106,7 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3.2" width="7.2" height="5.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" stroke-dasharray="2 1.4"/><rect x="6.4" y="7" width="7.2" height="5.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
       <span class="btn-ico-txt" data-i18n="组">组</span>
     </button>
-    <button id="btnWrapSuper" class="corner mini btn-ico" data-i18n-title="超节点：将选中节点合并为展开的超级节点（覆盖选区范围）" data-tip="超节点：将选中节点合并为展开的超级节点（覆盖选区范围）" aria-label="超节点">
+    <button id="btnWrapSuper" class="corner mini btn-ico" data-i18n-title="超节点：将选中节点合并为展开的超级节点（覆盖选区范围）；选中单个超级节点时再点一次 = 拆开它（内容原样移回外层，空壳删除）" data-tip="超节点：将选中节点合并为展开的超级节点（覆盖选区范围）；选中单个超级节点时再点一次 = 拆开它（内容原样移回外层，空壳删除）" aria-label="超节点">
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.15" opacity=".85"/><path d="M5.6 8h4.8M8 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       <span class="btn-ico-txt" data-i18n="超节点">超节点</span>
     </button>
@@ -584,10 +584,6 @@
      故只要在脚本全部加载完成前就位即可（init 首个 await 之前不渲染正文）。 -->
 <script src="math-render.js"></script>
 <script src="app-review.js"></script>
-<!-- 文本预览窗（节点头部 👁 · openTextPreview）：只读大窗 + 长文本完整渲染；
-     自包含（renderer/app-textpreview.js + css/textpreview.css）。必须排在 app-nodeview.js
-     之后（调用期取 nodeTextViewEl / detectViewLang），app-canvas.js 按调用期取它。 -->
-<script src="app-textpreview.js"></script>
 <!-- 团队事实库（左栏专家列表末尾的入口）：路径解析 / 读写 / 建库；
      放在 app-review.js 之后，审阅对话框打开事实库时按调用期取 window.MTNodeFactLib -->
 <script src="app-factlib.js"></script>

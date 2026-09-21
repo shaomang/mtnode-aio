@@ -2865,6 +2865,59 @@ function superHostAtWorld(x, y) {
     findOpenSuperAtWorld(x, y) || findSuperAtWorld(x, y, new Set(), false)
   );
 }
+/** 拖拽落定的外接矩形容错（世界像素）：光标已经不在任何壳上时，节点外接矩形再向外
+    放宽这么多仍算「贴着壳沿松手」。取值远小于一个节点（240x160）的体量，避免把
+    「拖到壳旁边的空白处」误吞回壳里。 */
+const DRAG_RECT_TOL = 16;
+/** 矩形包容档要求的最小实质重叠（世界像素）：两个方向都要压住这么多，才算「节点还在壳上」。
+    只挨着一两像素（或光标已拖远）时判为出壳，用户不会被壳沿「粘住」。 */
+const DRAG_RECT_MIN_OVERLAP = 8;
+/** 拖拽落定专用：哪颗展开壳与该节点外接世界矩形相交（容错档，只在外接矩形上做
+    tol 外扩，避免「贴着壳沿松手」被弹走）。与 findOpenSuperAtWorld 同一套可见性 /
+    层级 / 任务层过滤，只把点位判据放宽成矩形判据。 */
+function findOpenSuperContainingRect(r, exceptIds, tol) {
+  if (!r) return null;
+  const pad = Number.isFinite(tol) ? Math.max(0, Number(tol)) : 0;
+  const skip = exceptIds || new Set();
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const x0r = r.x - pad;
+  const y0r = r.y - pad;
+  const x1r = r.x + r.w + pad;
+  const y1r = r.y + r.h + pad;
+  let best = null;
+  let bestArea = Infinity;
+  for (const n of (S.wf && S.wf.nodes) || []) {
+    if (!n || n.kind !== "super" || !n.superOpen) continue;
+    if (skip.has(n.id)) continue;
+    if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
+    if (currentSuperFocus()) {
+      /* 全屏进入态（子画布）：只有当层的直接子壳被画出来，也才是可投的落点 */
+      if (nodeParentSuperId(n) !== currentSuperFocus()) continue;
+    }
+    if (nodeParentSuperId(n) && !nodeInCurrentScope(n)) continue;
+    const wp = nodeWorldPos(n);
+    const sz = superDisplaySize(n);
+    const o = superInnerOrigin(n);
+    const x0 = wp.x + o.ox;
+    const y0 = wp.y + o.oy;
+    const x1 = wp.x + sz.w - 8;
+    const y1 = wp.y + sz.h - 10;
+    /* 外接矩形（含容错外扩）与壳命中区要有实质重叠：只挨着一两像素不算 ——
+       光标已经拖到壳外老远、节点又只剩一丝边上时，用户的意思是「拿出来」。 */
+    const ox = Math.min(x1r, x1) - Math.max(x0r, x0);
+    const oy = Math.min(y1r, y1) - Math.max(y0r, y0);
+    if (ox < DRAG_RECT_MIN_OVERLAP || oy < DRAG_RECT_MIN_OVERLAP) continue;
+    /* 中心仍要落在命中区内：否则「拖到壳旁边的空白处」会被整组吞回壳里 */
+    if (cx < x0 || cx > x1 || cy < y0 || cy > y1) continue;
+    const area = sz.w * sz.h;
+    if (area < bestArea) {
+      best = n;
+      bestArea = area;
+    }
+  }
+  return best;
+}
 function promptSuperSubFolder(node) {
   if (!node || node.kind !== "super") return;
   openOverlay(I18n.t("超级节点子文件夹"), { persistent: true });
@@ -2987,7 +3040,7 @@ function pruneInvalidSuperBoundaryWires() {
   S.wf.wires = S.wf.wires.filter((w) => wireKeepsSuperBoundary(w));
   return before - S.wf.wires.length;
 }
-function finalizeNodeDragNest(ids, curWorld) {
+function finalizeNodeDragNest(ids, curWorld, cursorPt) {
   const focusId = currentSuperFocus();
   /* 全屏进入态（子画布）里也能再往里套：当层的直接子壳同样是落点宿主，
      坐标本来就是舞台坐标，宿主原点走 superInnerAnchor 即可（不再整体提前返回）。 */
@@ -3016,6 +3069,44 @@ function finalizeNodeDragNest(ids, curWorld) {
     const sz = nodeDrawSize(n);
     return { x: w.x + sz.w / 2, y: w.y + sz.h / 2 };
   };
+  const rectOf = (n) => {
+    const w = worldOf(n);
+    const sz = nodeDrawSize(n);
+    return { x: w.x, y: w.y, w: sz.w, h: sz.h };
+  };
+  /* ── 落点判据（拖拽落定专用） ──────────────────────────────────────────
+     旧口径只看「节点中点是否落在壳的可见矩形里」，于是展开态下最容易踩的两脚：
+       ① 想留在壳里、只把节点往壳的边缘挪一点 → 节点比壳的下沿/右沿伸出去，中点一过界
+          就被判成「出壳」→ 归属被改写成画布顶层、视觉上整块弹出去，看着就是「挪不动」；
+       ② 想把它拖出去 → 得把中点也拖出壳外才算数，光标明明已经在外面了，节点仍被拽回去。
+     改成与用户所见对齐的判据（从强到弱三档）：
+       A. 鼠标压着的展开壳 —— 最强；光标在壳里就是「留下 / 进这颗壳」；
+       B. 光标落在节点本体上（外扩 DRAG_RECT_TOL 内）、人已经离开任何壳时：节点外接世界
+          矩形仍与某颗展开壳有实质重叠 → 仍认那颗壳（贴着壳沿松手不算出壳）；
+       C. 以上都不中（光标已不在节点上、或整颗都拖到壳外）→ 按老口径走中点判定，
+          中点也不再命中就是出壳（多选整组进来 / 单颗拖进壳的既有行为不变）。 */
+  const dragDropHost = (n, c) => {
+    const cur =
+      cursorPt && Number.isFinite(cursorPt.x) && Number.isFinite(cursorPt.y)
+        ? findOpenSuperAtWorld(cursorPt.x, cursorPt.y, skipHosts)
+        : null;
+    if (cur) return canMoveNodeIntoSuper(cur, n) ? cur : null;
+    const r = rectOf(n);
+    const onNode =
+      !!cursorPt &&
+      Number.isFinite(cursorPt.x) &&
+      Number.isFinite(cursorPt.y) &&
+      cursorPt.x >= r.x - DRAG_RECT_TOL &&
+      cursorPt.x <= r.x + r.w + DRAG_RECT_TOL &&
+      cursorPt.y >= r.y - DRAG_RECT_TOL &&
+      cursorPt.y <= r.y + r.h + DRAG_RECT_TOL;
+    if (onNode) {
+      const byRect = findOpenSuperContainingRect(r, skipHosts, DRAG_RECT_TOL);
+      if (byRect) return canMoveNodeIntoSuper(byRect, n) ? byRect : null;
+    }
+    const byCenter = findOpenSuperAtWorld(c.x, c.y, skipHosts);
+    return byCenter && canMoveNodeIntoSuper(byCenter, n) ? byCenter : null;
+  };
   /* 整组只认一个落点宿主：拖动是「一整把」移动，命中一颗展开壳就整组一起进去
      （不能只把中点已在壳内的那几个塞进去、剩下几个留在外面 —— 多选拖入会因此散架）。
      按选中顺序找第一个命中的成员定宿主（与那颗节点落点所见一致，也让「拖一颗出去」
@@ -3028,8 +3119,8 @@ function finalizeNodeDragNest(ids, curWorld) {
     const key = Math.round(c.x) + ":" + Math.round(c.y);
     if (seenCenters.has(key)) continue;
     seenCenters.add(key);
-    const hit = findOpenSuperAtWorld(c.x, c.y, skipHosts);
-    if (hit && canMoveNodeIntoSuper(hit, n)) {
+    const hit = dragDropHost(n, c);
+    if (hit) {
       pick = n;
       pickHit = hit.id;
       break;
@@ -3647,6 +3738,22 @@ function inferMediaFromSource(from, fromIndex) {
   /* 音视频输入节点：输出的就是这个本机文件（值见 mediaInputValueOf），按文件类型判定 */
   if (from.kind === "input_audio") return "audio";
   if (from.kind === "input_video") return "video";
+  /* 保存节点：接出来的是「本次保存的那份内容」，媒体类型按保存节点自己的口径判
+     （save_pdf 恒 text —— 它的内容是 PDF 落盘地址，缺这一支会被下面按输入值误判成 image，
+     下游保存 / 预览就会报「图像保存需要图像来源」）。
+     typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱，沙箱里不一定带这几个帮手。 */
+  if (typeof isSaveNode === "function" && isSaveNode(from)) {
+    if (from.kind === "save_pdf") return "text";
+    const m =
+      typeof saveMediaKind === "function" ? saveMediaKind(from) : "text";
+    if (m === "image" || m === "audio" || m === "video") return m;
+    /* 文本保存：落盘路径上写死过可辨认后缀时也认（与 saveMediaCertain 同一口径） */
+    const p = String(from.savedPath || from.savePath || "");
+    if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(p)) return "image";
+    if (/\.(wav|flac|mp3)$/i.test(p)) return "audio";
+    if (/\.mp4$/i.test(p)) return "video";
+    return "text";
+  }
   if (from.kind === "split" || from.kind === "merge") {
     const v = valueForInput(from, 0);
     if (v && v.kind === "image") return "image";
@@ -4089,7 +4196,9 @@ function outputCount(n) {
   if (n.kind === "ltout") return 0;
   /* 产物节点（ltart）：每件产物一颗的展示落点，同样不向下游出数据 */
   if (n.kind === "ltart") return 0;
-  if (isSaveNode(n)) return 0;
+  /* 保存节点：唯一输出端子 = 本次保存的那份内容（保存什么就给下游什么，
+     取值见 saveNodeOutputValue）—— 数据端子，不占控制语义。 */
+  if (isSaveNode(n)) return 1;
   if (isExecEnd(n)) return 0;
   if (n.kind === "execute") return 0; /* 执行节点：独立工具 · 无输出 */
   /* 素材节点：输出端子 = 内容条目（第 i 出 = 第 i 个条目的内容），无控制输出端子 */
@@ -4519,6 +4628,150 @@ function moveNodesOutOfSuper(nodes) {
   pruneInvalidSuperBoundaryWires();
   scheduleSave(true);
   return list.length;
+}
+/** 顶栏「超节点」的二次点击对象：只选中了一颗**普通超级节点**时返回它，否则 null。
+    只收 kind==="super" 且既不是工具节点变体（参数即端子的那种）、也不是开发节点 /
+    数据库节点的那种壳 —— 后两者拆掉会连带删掉绑定会话 / 副本，不是「把内容挪出去」的语义。 */
+function plainSuperForUnwrap() {
+  const ns = selNodes().filter(Boolean);
+  if (ns.length !== 1) return null;
+  const n = ns[0];
+  if (!n || n.kind !== "super" || n.dev || n.db) return null;
+  if (typeof isToolNode === "function" && isToolNode(n)) return null;
+  return n;
+}
+/** 顶栏「超节点」按钮点击：单选中一颗普通超级节点 = 二次点击 → 拆壳；否则框选合并。
+    为什么：合并与撤销合并是同一个动作的正反面，理应由同一个开关承担（与「组」按钮同口径：
+    选中组后再点一次解散），用户不必再去右键菜单里逐个「移出超级节点」再手删空壳。 */
+function onWrapSuperButton() {
+  const host = plainSuperForUnwrap();
+  if (host) return unwrapSuperToOuter(host);
+  return wrapSelectionAsSuper();
+}
+/** 把一段舞台坐标（父壳 / 根画布的坐标系）换算成另一层容器的本地坐标（**不吸网格**）。
+ *  换算原点与「节点塞进壳里」共用 superInnerAnchor（根画布 = 世界坐标；全屏进入态 = 舞台坐标），
+ *  避免各写各的在这儿偏出一格。是否吸网格由调用方决定 —— 拆壳要整组刚性平移（同一个
+ *  差值），这里再 snap 一次会把组内相对距离改掉。 */
+function outerLocalTarget(x, y, hostSuperId) {
+  if (!hostSuperId) return { x: Number(x) || 0, y: Number(y) || 0 };
+  const p = nodeById(hostSuperId);
+  if (!p) return { x: Number(x) || 0, y: Number(y) || 0 };
+  const o = superInnerOrigin(p);
+  const pan = superInnerPan(p);
+  const a = superInnerAnchor(p);
+  return {
+    x: (Number(x) || 0) - a.x - o.ox - pan.x,
+    y: (Number(y) || 0) - a.y - o.oy - pan.y,
+  };
+}
+/** 拆开一颗普通超级节点：内部内容（含内部绘制）按原本位置关系整体移到外层，再删除空壳。
+ *  「原本位置关系」= 用户当前看到的那一份位置（nodeWorldPos 的口径：展开壳算上壳层原点与内部平移，
+ *  全屏进入态本来就是舞台坐标）—— 整组按**同一个网格差值**刚性平移回外层，子节点之间的相对
+ *  距离、以及绘制（框 / 文字 / 箭头）与节点的相对位置都不变。
+ *  连线一律不动：内部线两端都还在，自然继续有效；跨壳边界的线由 deleteNodes 连带清理。
+ *  路径（save 的 subFolder 前缀等）与既有右键「移出超级节点」同口径：原样保留，不改写。 */
+async function unwrapSuperToOuter(host) {
+  if (!host || host.kind !== "super") return null;
+  const kids = (S.wf.nodes || []).filter((n) => n && n.parentSuperId === host.id);
+  const kidIds = new Set(kids.map((n) => n.id));
+  /* 先把每个孩子当前看到的世界坐标抓下来：壳层一删，nodeWorldPos 的父级链就没了 */
+  const worlds = new Map();
+  for (const n of kids) worlds.set(n.id, nodeWorldPos(n));
+  /* 壳内绘制：拆壳前先按「拆完之后的相对位置」预绑一次，挪完再重绑，框 / 标注仍贴合原节点 */
+  const innerMarks = (S.wf.marks || []).filter((m) => markParentSuperId(m) === host.id);
+  const binds = captureMarkBindings(kids.concat([host]));
+  const bindById = new Map(binds.map((b) => [b.id, b]));
+  /* 归属判定：绑到壳外节点（且没有任何内部节点的）绘制跟着壳走；
+     只罩着壳（含壳）的绘制算壳内内容，重绑时 captureMarkBindings 只喂内部节点、自然剥掉壳那一条。 */
+  const inShell = (b) =>
+    !!(b && b.nodeIds && b.nodeIds.some((id) => kidIds.has(id)));
+  pushHistory();
+  const hostParentSuper = nodeParentSuperId(host) || "";
+  const hostParentTask = nodeParentTaskId(host) || "";
+  const markDel = new Set();
+  for (const m of innerMarks) {
+    /* 绑不到任何内部节点的绘制（只罩着壳 / 绑的是壳外节点）：跟着壳走，否则会悬在无关节点上 */
+    if (!inShell(bindById.get(m.id))) markDel.add(m.id);
+  }
+  /* 整组刚性平移：差值只取一次（取组内居中那个孩子的网格差），整组按同一个 (dx,dy) 落位。
+     逐个 snap 会改掉孩子之间的距离，整组刚性平移则原样保住「原本位置关系」；
+     末端只取整、不再吸网格（再 snap 一次同样会改相对距离）。
+     根层不换算坐标系（前缀为空 → 差值恒为 0，一动不动最忠实），只有跨壳时才整组吸网格。 */
+  const anchor = kids[Math.floor(kids.length / 2)] || null;
+  const aWorld = anchor ? worlds.get(anchor.id) : { x: 0, y: 0 };
+  const dx = anchor && hostParentSuper ? snap(aWorld.x) - aWorld.x : 0;
+  const dy = anchor && hostParentSuper ? snap(aWorld.y) - aWorld.y : 0;
+  for (const n of kids) {
+    const wp = worlds.get(n.id) || { x: n.x || 0, y: n.y || 0 };
+    const p = outerLocalTarget(wp.x, wp.y, hostParentSuper);
+    n.parentSuperId = hostParentSuper;
+    n.parentTaskId = hostParentTask;
+    n.x = Math.round(p.x + dx);
+    n.y = Math.round(p.y + dy);
+  }
+  for (const m of innerMarks) {
+    if (markDel.has(m.id)) continue;
+    const b = bindById.get(m.id);
+    const x2 = m.x2 != null ? Number(m.x2) : null;
+    const y2 = m.y2 != null ? Number(m.y2) : null;
+    const p = outerLocalTarget(Number(m.x) || 0, Number(m.y) || 0, hostParentSuper);
+    m.parentSuperId = hostParentSuper;
+    m.parentTaskId = hostParentTask;
+    m.x = Math.round(p.x + dx);
+    m.y = Math.round(p.y + dy);
+    if (x2 != null && y2 != null) {
+      const p2 = outerLocalTarget(x2, y2, hostParentSuper);
+      m.x2 = Math.round(p2.x + dx);
+      m.y2 = Math.round(p2.y + dy);
+    }
+    const nb = b && b.nodeIds && b.nodeIds.length === 1 ? nodeById(b.nodeIds[0]) : null;
+    if (m.kind === "box" && b && b.pad != null) {
+      /* 框：紧贴它罩住的那批节点（保持原来的留白），别把壳的尺寸带出来 */
+      const ns = (b.nodeIds || []).map((id) => nodeById(id)).filter(Boolean);
+      const bb = ns.length ? nodesBBox(ns) : null;
+      if (bb) {
+        m.x = Math.round(bb.minX - b.pad);
+        m.y = Math.round(bb.minY - b.pad);
+        m.w = Math.round(Math.max(40, bb.maxX - bb.minX + b.pad * 2));
+        m.h = Math.round(Math.max(40, bb.maxY - bb.minY + b.pad * 2));
+      }
+    } else if (m.kind === "arrow" && b && b.fromOff && b.toOff) {
+      const fn = nodeById(b.fromId);
+      const tn = nodeById(b.toId);
+      if (fn) {
+        m.x = Math.round(fn.x + b.fromOff.dx);
+        m.y = Math.round(fn.y + b.fromOff.dy);
+      }
+      if (tn) {
+        m.x2 = Math.round(tn.x + b.toOff.dx);
+        m.y2 = Math.round(tn.y + b.toOff.dy);
+      }
+    } else if (nb && b && b.anchorOff) {
+      m.x = Math.round(nb.x + b.anchorOff.dx);
+      m.y = Math.round(nb.y + b.anchorOff.dy);
+    }
+  }
+  const moved = kids.length;
+  const dropped = markDel.size;
+  /* 停在壳里点的话：拆完壳就回到它的外层（focus 的那颗壳已不在，deleteNodes 也会兜底） */
+  if (currentSuperFocus() === host.id) setSuperFocus(hostParentSuper, { render: false });
+  S.sel = null;
+  if (S.selSet) S.selSet.clear();
+  await deleteNodes([host.id], true);
+  rebindMarksAfterLayout(binds.filter((b) => inShell(b) && !markDel.has(b.id)));
+  if (S.selMark === host.id) S.selMark = null;
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  toast(
+    I18n.t("已拆开超节点：") +
+      I18n.t("移出 ") +
+      moved +
+      I18n.t(" 个节点") +
+      (dropped ? I18n.t(" · 清理 ") + dropped + I18n.t(" 项内部绘制") : ""),
+    "ok",
+  );
+  return host;
 }
 /** 框选合并：新建展开超级节点，外框覆盖选区（类似组框），并把选中节点收纳进去 */
 function wrapSelectionAsSuper() {
@@ -6178,7 +6431,12 @@ function isTextSource(n) {
     n.kind === "remotion" ||
     n.kind === "super" ||
     n.kind === "function" ||
-    isToolNode(n)
+    isToolNode(n) ||
+    /* 保存节点：唯一输出端子给的就是本次保存的内容 —— 文本类保存（含 PDF：内容是落盘地址）
+       因此可进文本端子 / 可被 @ 引用 / 可进全局广播。图像 / 音频 / 视频类保存不算文本来源，
+       既避免 @ 候选里冒出这些节点，也不让它们被当文本喂进纯文本处理。
+       （typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱，沙箱里不一定带这个帮手） */
+    (typeof saveNodeOutputsText === "function" && saveNodeOutputsText(n))
   );
 }
 function isImageSource(n) {
@@ -12879,9 +13137,10 @@ function clearDownstream(startId) {
     }
     if (S.thinking && S.thinking[n.id]) S.thinking[n.id] = [];
     if (isSaveNode(n)) {
-      /* 上游失效：清除「已保存」状态，避免预览继续显示旧文件 */
+      /* 上游失效：清除「已保存」状态，避免预览继续显示旧文件 / 输出端子继续给旧内容 */
       n.savedPaths = [];
       n.savedPath = "";
+      n.savedBody = "";
       n.savedAt = 0;
     }
   };
@@ -13010,6 +13269,7 @@ function clearNodeRunState(cp) {
   if (isSaveNode(cp)) {
     cp.savedPaths = [];
     cp.savedPath = "";
+    cp.savedBody = "";
     cp.savedAt = 0;
   }
   if (cp.kind === "wait_file") {
@@ -13340,7 +13600,11 @@ function isRefTextSourceKind(src) {
       src.kind === "proc_text" ||
       src.kind === "agent_task" ||
       src.kind === "merge" ||
-      src.kind === "split")
+      src.kind === "split" ||
+      /* 保存节点：文本类保存（含 PDF：内容是落盘地址）接进下游时，把「本次保存的内容」
+         当背景块注入 —— 与 isTextSource 同一份判定，图像 / 音视频类保存不进文本流
+         （typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱） */
+      (typeof saveNodeOutputsText === "function" && saveNodeOutputsText(src)))
   );
 }
 
@@ -13638,7 +13902,80 @@ function valueForInput(src, idx, consumer, seen) {
       ? { kind: "image", path: r.output.path }
       : null;
   }
+  /* 保存节点：唯一输出端子 = 本次保存的同一份内容（保存什么就往下游给什么）。
+     取数只在这里算一份 —— 下游（proc_text / 保存 / 合并 / 智能节点 / @ 引用 / 预览）
+     一律经 valueForInput 拿到，并沿新线继续走失效级联。
+     typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱，沙箱里不一定带这两个帮手。 */
+  if (
+    typeof isSaveNode === "function" &&
+    isSaveNode(src) &&
+    typeof saveNodeOutputValue === "function"
+  )
+    return saveNodeOutputValue(src, seen);
   return null;
+}
+
+/* ── 保存节点的输出内容（唯一输出端子 · 单一真源）────────────────────────────
+   「输出内容与保存内容一致」：
+   - PDF 生成（save_pdf）：内容就是落盘的 PDF 地址（与 savedPath 严格一致）；
+   - 图像 / 音频 / 视频保存：内容是最后落盘的那个文件，值形状与对应媒体节点同口径；
+   - 文本保存（含批量 / 聚合 YAML）：内容是最后写盘的那份正文（savedBody，与 yamlSaveBody
+     的落盘正文一致）；
+   - 还没落过盘（savedPath / savedBody 都空）→ 回落上游输入值，让「先连线后运行」时
+     下游先取到源头内容，不必先点一次 ▶ 才连得上。
+   取值全程复用 valueForInput / valueFromWire，不另算一套。 */
+
+/* 最后落盘的那个文件：批量保存的 savedPath 是「基准路径」，真文件在 savedPaths 里 */
+function lastSavedFilePath(node) {
+  const list = Array.isArray(node && node.savedPaths) ? node.savedPaths : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = String(list[i] || "").trim();
+    if (p) return p;
+  }
+  return String((node && node.savedPath) || "").trim();
+}
+/* 保存节点的输出是不是文本类（文本保存 / 聚合 YAML / PDF：PDF 的内容是落盘地址）：
+   isTextSource 与 @ 引用候选共用一份判定，图像 / 音视频类保存不算文本来源。 */
+function saveNodeOutputsText(node) {
+  if (!isSaveNode(node)) return false;
+  if (node.kind === "save_pdf") return true;
+  return saveMediaKind(node) === "text";
+}
+/* 还没落盘时的回落：取上游输入值（哪条先有值用哪条，与保存取数同一条 valueFromWire；
+   seen 里按 "save:<id>" 记一次，挡住 保存 → 保存 的取值环）。 */
+function saveUpstreamValue(node, seen) {
+  if (!node || !S.wf) return null;
+  const guard = seen instanceof Set ? seen : new Set();
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src || isControlKind(src)) continue;
+    const v = valueFromWire(w, node, 0, guard);
+    if (v) return v;
+  }
+  return null;
+}
+function saveNodeOutputValue(node, seen) {
+  if (!isSaveNode(node)) return null;
+  const guard = seen instanceof Set ? seen : new Set();
+  const key = "save:" + node.id;
+  if (guard.has(key)) return null;
+  guard.add(key);
+  const saved = String(node.savedPath || "").trim();
+  if (node.kind === "save_pdf")
+    return saved || lastSavedFilePath(node)
+      ? { kind: "text", text: saved || lastSavedFilePath(node) }
+      : saveUpstreamValue(node, guard);
+  const media = saveMediaKind(node);
+  if (media === "image" || media === "audio" || media === "video") {
+    const p = lastSavedFilePath(node);
+    if (!p) return saveUpstreamValue(node, guard);
+    if (media === "image") return { kind: "image", path: p };
+    return { kind: media, path: p, url: mediaFileUrlOf(p), text: p };
+  }
+  const body = node.savedBody;
+  if (typeof body === "string" && body.length) return { kind: "text", text: body };
+  if (saved) return { kind: "text", text: saved };
+  return saveUpstreamValue(node, guard);
 }
 
 /* 输入节点的继承值（取第一个输入） */
@@ -16576,6 +16913,7 @@ function cloneNodesDeep(srcs, opts) {
     if (isSaveNode(cp)) {
       cp.savedPaths = [];
       cp.savedPath = "";
+      cp.savedBody = "";
       /* 使用相对路径的保存节点：不复制保存目标（相对路径仍指向源同一位置） */
       if (String(cp.savePath || "").trim() && !isAbsPath(cp.savePath))
         cp.savePath = "";
@@ -16649,6 +16987,126 @@ function copiedSuperIdsOf(cps) {
   const s = new Set();
   for (const c of cps) if (c && c.kind === "super") s.add(c.id);
   return s;
+}
+/* ── Ctrl+C / Ctrl+V 的归属判定（画布复制节点 vs 输入框里复制文字）────────────────
+   本轮修的 bug：点一颗文本节点后按 Ctrl+C 复制不出节点。两个成因都是「这次按键归谁」没判据：
+     ① 点选浏览态节点会把焦点落进它自己的主输入框（保「点文字就能直接打字」的手感），
+        而全局快捷键里那句 `if (inField) return;` 一刀切，Ctrl+C 于是整个让给了输入框；
+     ② 画布 .fn-canvas 是 user-select:none，节点 / 空白 / 手柄的 mousedown 又普遍
+        preventDefault（阻止原生拖选）—— 浏览器因此既不移焦点也不清选区，页面上更早留下的一段
+        选区会一直挂着，Ctrl+C 里那句「有选区就交给浏览器」便永远命中（点画布也清不掉它）。
+   两处都收口在这里：
+     · canvasPointerReleaseFocus（画布上按下鼠标）先把「画布之外的输入焦点 + 残留选区」放下；
+     · canvasClipboardKey 再判这次 Ctrl+C / Ctrl+V 归画布还是归输入框。
+   口径：
+     · 真有文字选区（画布之外的选区，或画布里的输入控件 / 可复制文本区 / 文字标注）→ 浏览器原生；
+     · 焦点在画布之外的输入区（会话 / 弹窗 / 设置…）→ 同样交给浏览器；
+     · 其余场合（画布焦点，或焦点就在画布节点的输入框里）→ 复制 / 粘贴节点与绘制。
+   粘贴再分一层：焦点在节点输入框里时，只有「最近一次复制的是节点」才粘贴节点，否则让编辑器
+   原生粘贴文字（nodeClipIsFresh）。 */
+const SELECTABLE_TEXT_HOSTS =
+  ".assist-list, .agent-list, .agent-body, .chat-list, .agent-conv, .n-out, " +
+  ".app-docs-article, .app-docs-box, .md, .dsh-msg-body, .overlay, .mt-dialog";
+/* 内部节点粘贴板是不是「用户最近一次复制的来源」。置真：画布拿走 Ctrl+C 复制了节点；
+   置假：任何一次真正的文字复制（copy 事件 / 应用自己的「复制」出口 / 切走窗口）。
+   这样在节点的输入框里按 Ctrl+V 不会被节点粘贴板抢走文字粘贴。 */
+let nodeClipIsFresh = false;
+/* 页面上那段选区是不是「用户真想复制的文字」：
+   · 画布之外的选区一律算（画布点击会先把残留选区清掉，这里不再二次猜测）；
+   · 画布之内只有输入控件 / 可复制文本区 / 文字标注（.mk-text）才算 ——
+     画布本身 user-select:none，别处留下的陈旧选区不能挡住「复制节点」。 */
+function textSelectionWantsNativeCopy() {
+  const sel = window.getSelection && window.getSelection();
+  if (!sel || sel.isCollapsed || !String(sel).length) return false;
+  const EDITABLE =
+    'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]';
+  for (const raw of [sel.anchorNode, sel.focusNode]) {
+    if (!raw) continue;
+    const el = raw.nodeType === 1 ? raw : raw.parentElement;
+    if (!el || typeof el.closest !== "function") continue;
+    if (!el.closest(".fn-canvas")) return true;
+    if (el.closest(EDITABLE) || el.closest(".mk-text") || el.closest(SELECTABLE_TEXT_HOSTS))
+      return true;
+  }
+  return false;
+}
+/* 文字复制出口（navigator.clipboard.writeText / preload 桥）不触发 copy 事件，但它们同样意味着
+   「用户手里的粘贴板是一份文字」—— 包一层，让内部节点粘贴板及时退位（否则在节点输入框里粘贴
+   文字会被当成「粘贴节点」）。包不上（对象只读）就退回 copy 事件 / 切窗口两条路。 */
+(function watchTextCopyOutlets() {
+  try {
+    const cb = navigator.clipboard;
+    if (cb && typeof cb.writeText === "function") {
+      const orig = cb.writeText.bind(cb);
+      cb.writeText = function (t) {
+        nodeClipIsFresh = false;
+        return orig(t);
+      };
+    }
+  } catch (_) {}
+  try {
+    const a = window.api;
+    if (a && typeof a.clipboardWriteText === "function") {
+      const orig = a.clipboardWriteText.bind(a);
+      a.clipboardWriteText = function (t) {
+        nodeClipIsFresh = false;
+        return orig(t);
+      };
+    }
+  } catch (_) {}
+})();
+/* Ctrl+C / Ctrl+V 归谁：返回 true = 已被画布消费（调用方直接 return，不再往下走快捷键）。
+   inField = 事件目标（真实按键时即当前焦点控件）是不是输入框 / 文本域 / 富文本。
+   assistPane 那条「焦点在助手栏就不复制节点」的老判据已去掉：焦点落在助手输入框属于 inField
+   分支（原生），而落在助手栏空白/气泡上（非输入控件）时按 Ctrl+C 正是要复制已选中的节点。 */
+function canvasClipboardKey(ev, key, inField) {
+  const ae = document.activeElement;
+  const focusEl =
+    ev && ev.target && ev.target.nodeType === 1
+      ? ev.target
+      : ae && ae.nodeType === 1
+        ? ae
+        : null;
+  const closest = (sel) =>
+    !!(focusEl && typeof focusEl.closest === "function" && focusEl.closest(sel));
+  /* 焦点就在画布节点的输入框里也算「画布」—— 点节点本来就会把焦点落到它上面；
+     画布上的文字标注（.mk-text 富文本）是纯文字编辑，不在此列，一律让给浏览器。 */
+  const inCanvasField = closest(".fn-canvas") && !closest(".mk-text");
+  if (textSelectionWantsNativeCopy()) {
+    if (key === "c") nodeClipIsFresh = false; /* 用户复制的是文字 */
+    return false;
+  }
+  if (inField && !inCanvasField) return false; /* 会话 / 弹窗 / 设置等输入区：原生复制粘贴 */
+  if (key === "v") {
+    /* 节点自己的输入框里：最近复制的是节点才粘贴节点，否则让编辑器粘贴文字 */
+    if (inField && !nodeClipIsFresh) return false;
+    const clip = nodeClipboard || {};
+    if (!((clip.nodes || []).length + (clip.marks || []).length)) {
+      /* 粘贴板空：画布焦点下照旧提示一句，输入框里不打扰 */
+      if (!inField) {
+        ev.preventDefault();
+        toast(I18n.t("粘贴板为空，请先 Ctrl+C 复制节点"), "warn");
+      }
+      return false;
+    }
+    ev.preventDefault();
+    pasteNodesFromClipboard();
+    return true;
+  }
+  const hasSel = currentSelection().length > 0 || selectedMarks().length > 0;
+  if (hasSel) {
+    ev.preventDefault();
+    copyNodesToClipboard();
+    const clip = nodeClipboard || {};
+    nodeClipIsFresh = !!((clip.nodes || []).length + (clip.marks || []).length);
+    return true;
+  }
+  if (!inField) {
+    ev.preventDefault();
+    toast(I18n.t("请先选中节点或绘制"), "warn");
+    return true;
+  }
+  return false;
 }
 /* 复制：把选中的节点连同其全部后代（任意深度的任务子节点 / 超级节点内部节点）与选中绘制
    存入临时粘贴板（仅保存最近一次）。保持两端都在复制集内的连线；内部父子归属在粘贴时重建。 */
@@ -16896,11 +17354,15 @@ function syncGroupBtns() {
   const bs = $("#btnWrapSuper");
   if (bs) {
     const canWrap = selNodes().some((n) => n && !isSuperIoNode(n));
-    bs.classList.toggle("on", canWrap);
-    bs.disabled = !canWrap;
-    bs.title = I18n.t(
-      "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）",
-    );
+    /* 正好选中一颗普通超级节点 → 这一格翻转成「拆开」：文案、高亮、点击行为三处同步 */
+    const unwrap = plainSuperForUnwrap();
+    bs.classList.toggle("on", !!unwrap || canWrap);
+    bs.disabled = !unwrap && !canWrap;
+    bs.title = unwrap
+      ? I18n.t("拆开超节点：内容原样移回外层，并删除这颗空壳")
+      : I18n.t(
+          "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）；选中单个超级节点时再点一次 = 拆开它（内容原样移回外层，空壳删除）",
+        );
   }
 }
 
@@ -18418,6 +18880,43 @@ async function promptBuildWorkflow(pt, retryState) {
 }
 
 
+/* 画布上按下鼠标前先把「上一个输入区」放下：焦点从画布之外的输入控件收回、残留的文字选区清掉。
+   浏览器本该这么做，但画布 .fn-canvas 是 user-select:none、节点 / 空白 / 手柄的 mousedown 又
+   普遍 preventDefault（阻止原生拖选），于是焦点与选区都被留在原地 —— 用户先在会话输入框打过字
+   （或先选了一段文字）再点节点，Ctrl+C 就会被它们吃掉，看起来就是「复制不了节点」（本轮修的 bug）。
+   放行：指针落在当前持有焦点的那颗节点内部（就地打字不打断）；画布之外的点击根本不进来。
+   返回是否真的放下了什么，便于回归测试直接跑这段判据。 */
+function canvasPointerReleaseFocus(ev) {
+  const t = ev && ev.target && ev.target.nodeType === 1 ? ev.target : null;
+  if (!t || typeof t.closest !== "function" || !t.closest(".fn-canvas")) return false;
+  let changed = false;
+  const ae = document.activeElement;
+  if (
+    ae &&
+    ae.nodeType === 1 &&
+    ae !== document.body &&
+    ae !== document.documentElement
+  ) {
+    const tag = String(ae.tagName || "").toLowerCase();
+    const isField =
+      ae.isContentEditable || tag === "input" || tag === "textarea" || tag === "select";
+    const owner = t.closest(".wf-node");
+    const keep =
+      !!owner && typeof owner.contains === "function" && owner.contains(ae);
+    if (isField && !keep) {
+      try {
+        ae.blur();
+        changed = true;
+      } catch (_) {}
+    }
+  }
+  const sel = window.getSelection && window.getSelection();
+  if (sel && !sel.isCollapsed && typeof sel.removeAllRanges === "function") {
+    sel.removeAllRanges();
+    changed = true;
+  }
+  return changed;
+}
 function bindCanvas() {
   const canvas = $("#canvas");
   /* 绘制文字编辑中，点画布任何其它位置（空白 / 节点 / 组 / 手柄 / 工具条）都要先退出编辑态：
@@ -18425,6 +18924,10 @@ function bindCanvas() {
      握着 activeElement，而重绘又被 isMarkTextEditing() defer 掉 —— 点哪儿都 unfocus 不了。
      捕获阶段统一补一次 blur（见 markTextBlurOnOutsidePointer）。 */
   document.addEventListener("mousedown", markTextBlurOnOutsidePointer, true);
+  /* 画布上按下鼠标 = 用户离开了原来的输入区：把焦点从画布之外的输入控件收回、把残留的
+     文字选区清掉（浏览器本该做，被 user-select:none + 各处 preventDefault 挡掉了）。不做这件事，
+     会话输入框里的焦点与上一次选中的一段文字会一直挂着，Ctrl+C 永远轮不到复制节点。 */
+  document.addEventListener("mousedown", canvasPointerReleaseFocus, true);
   /* 捕获阶段监听：即使鼠标在节点 / 组内部（其冒泡阶段可能 stopPropagation 或拦截事件），
      中键平移也能优先接管，避免节点过大挡住画布时无法拖动 */
   canvas.addEventListener(
@@ -18945,7 +19448,10 @@ function bindCanvas() {
       }
       let nested = false;
       if (wasMoved) {
-        nested = finalizeNodeDragNest(dragIds, curWorld);
+        /* 落点归属按「松手时光标在哪」定：光标压在展开壳上就进那颗壳，在壳外就出壳
+           （三级落点判据见 finalizeNodeDragNest；此处只算一次 toStage） */
+        const dropPt = toStage(ev.clientX, ev.clientY);
+        nested = finalizeNodeDragNest(dragIds, curWorld, dropPt);
         if (hadNested) nested = true;
       }
       clearSuperDropHot(!!nested);
@@ -19248,10 +19754,16 @@ function bindCanvas() {
     },
     true,
   );
-  /* 允许浏览器原生全选（Ctrl+A）的容器：输入框由 inField 单独放行，这里是输出 / 弹层等可复制文本区 */
-  const SELECTABLE_TEXT_HOSTS =
-    ".assist-list, .agent-list, .agent-body, .chat-list, .agent-conv, .n-out, " +
-    ".app-docs-article, .app-docs-box, .md, .dsh-msg-body, .overlay, .mt-dialog";
+  /* 允许浏览器原生全选（Ctrl+A）的容器 = 模块级 SELECTABLE_TEXT_HOSTS（输入框由 inField 放行），
+     与 Ctrl+C / Ctrl+V 的归属判定同源，定义见 canvasClipboardKey 那一段。
+     再补两条复位：任何一次真正的文字复制 / 切走窗口，都把「节点粘贴板就是最新一次复制」
+     这个标记清掉 —— Ctrl+V 在节点输入框里据此判「粘贴文字」还是「粘贴节点」。 */
+  document.addEventListener("copy", () => {
+    nodeClipIsFresh = false;
+  });
+  window.addEventListener("blur", () => {
+    nodeClipIsFresh = false;
+  });
 
   window.addEventListener("keydown", (ev) => {
     const tag = (ev.target.tagName || "").toLowerCase();
@@ -19296,6 +19808,12 @@ function bindCanvas() {
         closeDevColorPicker();
       return;
     }
+    /* Ctrl+C / Ctrl+V 的归属（画布复制节点 / 输入框复制文字）必须先于下面这句「输入中直接
+       返回」判定：点选节点会把焦点落进本节点输入框，早退就等于永远复制不到节点（本轮修的 bug）。
+       判据与理由见 canvasClipboardKey。 */
+    if (mod && !ev.altKey && !ev.shiftKey && (key === "c" || key === "v")) {
+      if (canvasClipboardKey(ev, key, inField)) return;
+    }
     /* 节点 / 绘制文字等输入中：不触发任何画布快捷键。
        @ 引用菜单由输入框自己的 keydown 调 refKey 处理——这里不能再调一次，
        否则一次上下键会被消费两遍（跳两格）。 */
@@ -19313,39 +19831,7 @@ function bindCanvas() {
       selectAllNodesInScope();
       return;
     }
-    /* Ctrl+C：有文字选区时交给浏览器复制；否则把选中的节点（含子节点）/ 绘制存入临时粘贴板 */
-    if (mod && key === "c") {
-      const sel = window.getSelection && window.getSelection();
-      if (sel && !sel.isCollapsed && String(sel).length) return;
-      const assistPane = document.getElementById("assistPane");
-      if (
-        assistPane &&
-        ((ev.target && assistPane.contains(ev.target)) ||
-          (document.activeElement &&
-            assistPane.contains(document.activeElement)))
-      )
-        return;
-      ev.preventDefault();
-      if (!copyNodesToClipboard())
-        toast(I18n.t("请先选中节点或绘制"), "warn");
-      return;
-    }
-    /* Ctrl+V：把粘贴板中的节点 / 绘制粘贴到当前视口中心（输入框 / 文字选区内不拦截，交给原生粘贴） */
-    if (mod && key === "v") {
-      const sel = window.getSelection && window.getSelection();
-      if (sel && !sel.isCollapsed && String(sel).length) return;
-      const assistPane = document.getElementById("assistPane");
-      if (
-        assistPane &&
-        ((ev.target && assistPane.contains(ev.target)) ||
-          (document.activeElement &&
-            assistPane.contains(document.activeElement)))
-      )
-        return;
-      ev.preventDefault();
-      pasteNodesFromClipboard();
-      return;
-    }
+    /* Ctrl+C / Ctrl+V 已在上方（inField 早退之前）判定并消费，这里不再重复处理。 */
     /* Ctrl+D：在选中节点下方复制一个同类节点（只复制类型，不复制内容）。
        与顶栏「复制」按钮同一入口（#btnDupNode，接线在 app-boot.js）；
        组合键不进 app-keys.js 的单键表，故不会与「隐藏线」的 D 单键冲突。 */

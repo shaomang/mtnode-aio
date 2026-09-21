@@ -27,8 +27,6 @@
 /* 输入框内查找条（焦点在输入框里按 Ctrl+F · renderer/app-find.js + css/find.css）；
    层级高于全局搜索：它是在搜索框 / 会话输入框 / 节点提示词里也能用的框内查找。 */
 @import url("./css/find.css");
-/* 文本预览窗：节点头部 👁 打开的只读大窗（renderer/app-textpreview.js）；亮色覆盖在文件末尾 */
-@import url("./css/textpreview.css");
 /* 插件报错 → 自动修复：错误报告窗（renderer/app-repair.js） */
 @import url("./css/repair.css");
 /* 工具构建：节点入口 / 状态徽标 / 方案 + 进度对话框（renderer/app-toolbuild.js · app-canvas.js） */

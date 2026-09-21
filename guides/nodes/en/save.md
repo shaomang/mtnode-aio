@@ -4,7 +4,7 @@
 
 One save node infers type from its input (legacy save_text / save_image upgrade on load):
 
-- **text** → `.yaml`
+- **text** → `.md` (batch / aggregate entries still use `.yaml`)
 - **image** → `.png`
 - **audio** (music gen) → `.wav`
 - **video** (video gen) → `.mp4`
@@ -30,4 +30,10 @@ A save node copies images **as-is** by default (suffix follows the save path, no
 
 ## Ports
 - **In**: text / image / audio / video
-- **Out**: none
+- **Out**: 1 port = **the content saved this run** (whatever was written is what flows downstream; it is a data port):
+  - text save (batch / aggregate `.yaml` too) → the body written last
+  - image / audio / video save → the file written last
+  - PDF generation → the path of the written PDF
+  - nothing saved yet → the upstream input value, so you can wire it before pressing ▶
+
+  So a save node can feed further nodes (text processing / another save / merge / smart nodes) and can be `@referenced` (text-type saves). Save → save never cascades automatically: the downstream save node still needs its own ▶.

@@ -217,14 +217,11 @@
     "（读不出来，用系统程序打开看）": "(unreadable — open it with the system app)",
     "这类文件不在节点里预览 · 点上方 ⇢ 用系统程序打开":
       "This file type is not previewed in the node · click ⇢ above to open it with the system app",
-    /* 文本产物的板身渲染与「👁 读全文」出口（app-canvas.js 的 ltart 文本分支）：
-       头部预览按钮说明 / 读取中的占位 / 读不出来的提示 / 板身截断后的提示。 */
-    "预览全文：在只读大窗里完整阅读这件文本产物（可复制，不改文件）":
-      "Preview the full text: read this artifact's text in a read-only window (copyable, the file is not changed)",
-    "预览产物全文（只读大窗）": "Preview the artifact text in full (read-only window)",
+    /* 文本产物的板身渲染（app-canvas.js 的 ltart 文本分支）：读取中的占位 /
+       读不出来的提示 / 板身截断后的提示（截断后的出口是头部 ✎ 编辑阅读器）。 */
     "（空文件或读不出来）": "(empty file or unreadable)",
-    "文本过长已在板身截断，点 👁 看全文":
-      "Text is too long and was truncated in the node — click 👁 to read it in full",
+    "已截断显示 · 点上方 ✎ 编辑看全文":
+      "Truncated — click ✎ above to open the editor and read it in full",
     /* 文本产物的「✎ 编辑保存」入口（app-canvas.js 的 ltartEditButtonEl）：
        按钮 tooltip / aria-label / 两条通道缺失时的显式提示（都不静默、不阻断重绘）。 */
     "编辑这件文本产物并保存回文件（Markdown 阅读器 / 行视图，保存写回原文件）":
@@ -1716,6 +1713,14 @@
     "组": "Group",
     "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）":
       "Super: wrap selection into an expanded super node (fits selection bounds)",
+    "超节点：将选中节点合并为展开的超级节点（覆盖选区范围）；选中单个超级节点时再点一次 = 拆开它（内容原样移回外层，空壳删除）":
+      "Super: wrap selection into an expanded super node (fits selection bounds); with a single super node selected, click again to unwrap it (contents move back out as they are, the empty shell is deleted)",
+    "拆开超节点：内容原样移回外层，并删除这颗空壳":
+      "Unwrap super node: contents move back out as they are, and the empty shell is deleted",
+    "已拆开超节点：": "Super node unwrapped: ",
+    "移出 ": "Moved out ",
+    " 项内部绘制": " inner drawing(s)",
+    "清理 ": "cleaned up ",
     "请先框选 / 选中要合并的节点": "Select nodes to wrap first",
     "请选择同一层级内的节点（不能跨超级节点边界）":
       "Select nodes at the same level (not across super-node boundaries)",
@@ -2540,14 +2545,10 @@
     "。添加后自动生成模型列表。": ". Model list is generated automatically once added.",
     "（等待上游输出…）内容只读": "(Waiting for upstream output…) content is read-only",
     "（等待上游输出中）内容只读": "(Waiting for upstream output) content is read-only",
-    /* ── 节点浏览态 · 超长文本护栏 + 文本预览窗 👁（app-nodeview.js / app-canvas.js / app-textpreview.js） ── */
+    /* ── 节点浏览态 · 超长文本护栏（app-nodeview.js / app-canvas.js）──
+       本轮已移除只读预览大窗与头部 👁，超长文本只降级成轻量纯文本，不再指向任何预览入口。 */
     "超大文本 · 轻量显示 · {n} 字符": "Very long text · lightweight view · {n} chars",
-    " · 点上方 👁 看全文": " · click 👁 above for the full text",
-    "超大输出 · 轻量显示 · {n} 字符 · 点上方 👁 预览全文":
-      "Very long output · lightweight view · {n} chars · click 👁 above for the full text",
-    "预览全文：在只读大窗里完整阅读本节点文本（可复制，不改内容）":
-      "Preview full text: read this node's text in a read-only window (copyable, content unchanged)",
-    "文本预览窗未就绪": "Text preview is not ready",
+    "超大输出 · 轻量显示 · {n} 字符": "Very long output · lightweight view · {n} chars",
     "✕ 删除组（连同内部节点）": "✕ Delete group (including inner nodes)",
     "保存路径（*.md）…": "Save path (*.md)…",
     "标题不唯一，请改用 id：": "Title is not unique, use id instead: ",
@@ -2562,6 +2563,9 @@
     "目录暂不可用（引擎未连接）": "Catalog unavailable (engine not connected)",
     "取消归档,回到对应目录分组": "Unarchive, return to its folder group",
     "输出端子（输出本节点内容）": "Output port (outputs this node's content)",
+    "保存结果": "Saved result",
+    "输出端子（本次保存的内容 · 与落盘内容一致）":
+      "Output port (the content saved this run, identical to what was written)",
     "拖动移动组 · 双击重命名": "Drag to move group · Double-click to rename",
     "文件太小，不是有效的画布包": "File too small; not a valid canvas pack",
     "已保存聚合 YAML → ": "Saved aggregate YAML → ",

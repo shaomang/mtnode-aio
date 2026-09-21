@@ -11,3 +11,4 @@
 - Dropping a file onto the canvas creates an input node; dropping an image onto an image input node replaces its image.
 - Type @ in a node prompt to reference upstream nodes: ↑↓ to choose, Enter (or Tab) confirms, Esc cancels.
 - Use super nodes to group several nodes together, which helps the canvas render faster.
+- The toolbar **Wrap super** merges the selection in one click; with a single super node selected, click it again to unwrap it (contents move back out as they are, the empty shell is deleted).

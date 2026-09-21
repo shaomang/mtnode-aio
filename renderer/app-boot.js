@@ -600,7 +600,9 @@ async function init() {
     };
   $("#btnGroup").onclick = toggleGroupAction;
   const btnWrapSuper = $("#btnWrapSuper");
-  if (btnWrapSuper) btnWrapSuper.onclick = () => wrapSelectionAsSuper();
+  /* 顶栏「超节点」：无单个超节点被选中时 = 框选合并；正好选中一颗普通超级节点时
+     = 二次点击 → 拆开它（内容移回外层 + 删除空壳）。分叉在 onWrapSuperButton 里。 */
+  if (btnWrapSuper) btnWrapSuper.onclick = () => onWrapSuperButton();
   const btnAutoLayout = $("#btnAutoLayout");
   if (btnAutoLayout) btnAutoLayout.onclick = () => oneClickAutoLayout();
   const btnHideWires = $("#btnHideWires");

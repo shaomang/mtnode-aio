@@ -1004,37 +1004,6 @@ function statusOf(node) {
   return { cls: "", txt: I18n.t("○ 未处理 · 点击 ▶ 基于提示词+输入处理") };
 }
 
-/* 文本预览按钮（节点头部 👁）：打开只读大窗完整读一遍节点文本
-   （renderer/app-textpreview.js 的 openTextPreview）。只读、不改节点、不触发运行；
-   没有可预览文本的节点不显示这枚按钮（点了只会弹「还没有可预览的文本」）。 */
-function textPreviewButtonEl(node) {
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = "n-play n-textpeek";
-  b.textContent = "👁";
-  b.title = I18n.t("预览全文：在只读大窗里完整阅读本节点文本（可复制，不改内容）");
-  b.onclick = (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (typeof openTextPreview !== "function") {
-      toast(I18n.t("文本预览窗未就绪"), "warn");
-      return;
-    }
-    /* 普通（非智能）文本处理节点：预览**输出**（结果正文）；
-       其余文本节点的正文就在 node.text（输入内容）上。 */
-    const isProc = node.kind === "proc_text" || node.kind === "proc_image";
-    if (isProc) {
-      const o = node.output;
-      if (o && o.kind === "text" && String(o.text || "").trim()) {
-        openTextPreview({ text: o.text, node: node, title: node.title || "" });
-        return;
-      }
-    }
-    openTextPreview({ text: node.text, node: node, title: node.title || "" });
-  };
-  return b;
-}
-
 /* 泛用文件节点（input_any）菜单栏的「手动更改类型」四连图标按钮：文本 / 图像 / 音频 /
    视频，点一下就地把本节点换成对应的输入节点（逻辑在 app.js 的 convertAnyNodeKind）。
    按钮只画图标 —— 取 KIND_ICON_SVG 里各输入节点自己的线性图标（与节点标题栏同一份），
@@ -4742,33 +4711,21 @@ function nodeElement(node) {
     };
     head.appendChild(modeBtn);
   }
-  /* 👁 预览全文（文本节点）：input_text 是画布上最长正文最常待的地方，
-     浏览态又按护栏把超长正文降级成轻量纯文本 —— 只有预览窗能完整读一遍，
-     所以这枚按钮不能只挂在处理节点上。空节点不摆空按钮。 */
-  if (
-    node.kind === "input_text" &&
-    typeof textPreviewOf === "function" &&
-    String(textPreviewOf(node) || "").trim()
-  )
-    head.appendChild(textPreviewButtonEl(node));
   /* 产出节点（kind "ltout"）：正文在板身上直接改（body 的 textarea · 即改即存），头部再给
-     两枚复用既有能力的入口 —— ✎ 内置 Markdown 编辑器（保存写回 node.text）、
-     👁 只读预览全文（app-textpreview.js）。空正文不摆预览按钮（点了只会弹「没有可预览文本」）。 */
+     一枚复用既有能力的入口 —— ✎ 内置 Markdown 编辑器（保存写回 node.text）。
+     这里只留这一枚：原先并排的 👁 只读预览与它功能重复，已按需求移除。 */
   if (node.kind === "ltout") {
     head.appendChild(ltoutMdEditButtonEl(node));
-    if (String(node.text == null ? "" : node.text).trim())
-      head.appendChild(textPreviewButtonEl(node));
   }
   /* 产物节点（kind "ltart"）：预览在板身上（图片缩略图 / 音视频可直接播 / 文本给摘要），
      头部给「用系统程序打开」（想用本机别的软件接着处理时不用去找路径）与「📁 打开所在文件夹」
-     （拿产物目录里的其它文件，不用先打开文件再退一级）；文本类产物再多两枚 —— 👁 只读预览全文
-     （板身只给护栏摘要，完整阅读走只读预览窗）与 ✎ 编辑保存（复用应用内可编辑阅读器，
-     保存直接写回磁盘上的产物文件），三枚与 ⇢/📁 同排。 */
+     （拿产物目录里的其它文件，不用先打开文件再退一级）；文本类产物再多一枚 ✎ 编辑保存
+     （复用应用内可编辑阅读器，保存直接写回磁盘上的产物文件），与 ⇢/📁 同排。
+     原先文本类还有一枚 👁 只读预览，与 ✎ 完全重复，已按需求移除。 */
   if (node.kind === "ltart") {
     head.appendChild(ltartOpenButtonEl(node));
     if (String(node.ltFile || "").trim()) head.appendChild(ltartFolderButtonEl(node));
     if (ltartTypeOfNode(node) === "text") {
-      head.appendChild(ltartTextPreviewButtonEl(node));
       /* ✎ 编辑保存：长任务产出的文本件常常只差几笔，直接在本机编辑器里改并写回原文件；
          没有文件路径（旧版节点）时不摆空按钮，点了只会弹「没有文件路径」。 */
       if (String(node.ltFile || "").trim()) head.appendChild(ltartEditButtonEl(node));
@@ -4780,10 +4737,6 @@ function nodeElement(node) {
     node.kind === "agent_task"
   ) {
     head.append(...apiPreviewButtons(node));
-    /* 👁 预览全文：只在该节点真有可预览文本时出现（空节点不摆空按钮）。
-       文本预览窗未加载（异常环境）时不摆按钮，绝不让重绘链断在这里。 */
-    if (typeof textPreviewOf === "function" && String(textPreviewOf(node) || "").trim())
-      head.appendChild(textPreviewButtonEl(node));
     if (node.kind === "proc_image") {
       head.appendChild(bgRmButtonEl(node));
       /* 画幅锁定：菜单栏小按钮，与首参考图保持一致长宽比（补边生图 → 出图裁回） */
@@ -6392,6 +6345,9 @@ function nodeElement(node) {
     /* 音频 / 视频输入：唯一的输出端子给的就是这个本机文件的 file:/// URL */
     else if (node.kind === "input_audio" || node.kind === "input_video")
       outTitle = I18n.t("输出该文件的 URL（file:///… · 可连进媒体参考端子）");
+    /* 保存节点：唯一输出端子 = 本次保存的那份内容（保存什么就给下游什么） */
+    else if (isSaveNode(node))
+      outTitle = I18n.t("输出端子（本次保存的内容 · 与落盘内容一致）");
     else if (isControlKind(node))
       outTitle = I18n.t("输出端子（连接到要控制的节点）");
     else outTitle = I18n.t("输出端子（输出本节点内容）");
@@ -6401,6 +6357,7 @@ function nodeElement(node) {
     if (
       isANode ||
       isFnTNode ||
+      isSaveNode(node) ||
       node.kind === "sequencer" ||
       node.kind === "splitter" ||
       node.kind === "task" ||
@@ -6417,6 +6374,7 @@ function nodeElement(node) {
         "port-badge" +
         (isANode ||
         isFnTNode ||
+        isSaveNode(node) ||
         node.kind === "task" ||
         node.kind === "music_gen" ||
         node.kind === "yue_gen" ||
@@ -6434,6 +6392,10 @@ function nodeElement(node) {
         const pl = fnToolParamList(node, "out");
         if (oi >= outDataN) setPortBadgeName(badge, I18n.t("控制"));
         else setPortBadgeName(badge, (pl[oi] && pl[oi].name) || String(oi + 1));
+      } else if (isSaveNode(node)) {
+        /* 保存节点：唯一输出端子徽标 —— 与媒体生成节点的「内容 / 控制」区分开，
+           一眼看得出这根线给的是「刚保存的那份结果」 */
+        setPortBadgeName(badge, I18n.t("保存结果"));
       } else
         setPortBadgeName(
           badge,
@@ -7660,7 +7622,8 @@ function browseProcOutEl(node) {
 /* 输出正文（浏览态）：短输出照旧 Markdown 渲染；
    超长输出降级成「整块纯文本 + 一行字符数」——一次 renderMarkdown 就能把几万字符
    摊成几万个 DOM 节点，而画布每次重绘都要重建一遍，这就是「超长文本 → 画布卡顿」
-   的主因。完整内容看节点头部 👁 预览窗（app-textpreview.js，full 渲染不降级）。 */
+   的主因。超长输出改走「整块纯文本 + 一行字符数」的轻量形态，正文就在 .n-out-long-body
+   里可滚动读全（不再有只读预览大窗可跳，见本轮「移除预览、只留编辑」）。 */
 function browseOutTextView(text) {
   const txt = String(text == null ? "" : text);
   if (typeof nodeViewIsLong === "function" && nodeViewIsLong(txt)) {
@@ -7673,7 +7636,7 @@ function browseOutTextView(text) {
     const meta = document.createElement("div");
     meta.className = "n-out-long-meta";
     meta.textContent = I18n.t(
-      "超大输出 · 轻量显示 · {n} 字符 · 点上方 👁 预览全文",
+      "超大输出 · 轻量显示 · {n} 字符",
       { n: txt.length },
     );
     box.appendChild(meta);
@@ -10084,7 +10047,7 @@ function ltoutMdEditButtonEl(node) {
 
 /* 产出节点正文（kind "ltout"）：可编辑 textarea（与文本节点同一套 node.text 交互）
    + 只读的文件引用清单（引擎写进 node.ltRefs，用户不在此编辑，也不参与连线）。
-   节点头部另有两枚复用既有能力的入口（⇢ ltoutMdEditButtonEl / textPreviewButtonEl）。 */
+   节点头部另有一枚复用既有能力的入口（✎ ltoutMdEditButtonEl）。 */
 function buildLtoutBody(node, body) {
   const ta = document.createElement("textarea");
   ta.className = "n-text";
@@ -10223,66 +10186,12 @@ function ltartFolderButtonEl(node) {
   };
   return b;
 }
-/* 头部「👁 预览全文」（文本类产物 ltart）：板身只给护栏摘要（截断的只读渲染），
-   整篇按需读一次文件再交给文本预览大窗（renderer/app-textpreview.js）。
-   预览窗本身只读，但本入口把产物路径一并交过去（opts.file），窗内头部因此多出一枚 ✎
-   「一步到编辑」——点它进同一套应用内可编辑阅读器（openTextViewer）保存回原文件。
-   读不到 / 空文件显式 toast（不静默），预览窗未就绪只提示、不阻断重绘链。 */
-function ltartTextPreviewButtonEl(node) {
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = "n-play n-textpeek n-ltart-peek";
-  b.textContent = "👁";
-  b.title = I18n.t("预览全文：在只读大窗里完整阅读这件文本产物（可复制，不改文件）");
-  b.setAttribute("aria-label", I18n.t("预览产物全文（只读大窗）"));
-  b.onclick = (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (typeof openTextPreview !== "function") {
-      toast(I18n.t("文本预览窗未就绪"), "warn");
-      return;
-    }
-    const p = String(node.ltFile || "");
-    if (!p) {
-      toast(I18n.t("这件产物没有文件路径"), "warn");
-      return;
-    }
-    if (!window.api || typeof window.api.fileReadText !== "function") {
-      toast(I18n.t("读不到内容：") + p, "warn");
-      return;
-    }
-    Promise.resolve()
-      .then(() => window.api.fileReadText(p))
-      .then((r) => {
-        const content =
-          r && r.ok !== false && r.exists !== false
-            ? String(r.content == null ? "" : r.content)
-            : "";
-        if (!content.trim()) {
-          toast(I18n.t("读不到内容或文件为空：") + p, "warn");
-          return;
-        }
-        openTextPreview({
-          text: content,
-          title: node.title || "",
-          node: node,
-          /* 文件型预览：本窗头部据此多出一枚 ✎，一步进同一套可编辑阅读器（落盘走 openTextViewer） */
-          file: p,
-          onEdit: (fp) => {
-            if (typeof openTextViewer === "function") openTextViewer(fp);
-            else toast(I18n.t("编辑器未就绪"), "warn");
-          },
-        });
-      })
-      .catch(() => toast(I18n.t("读不到内容或文件为空：") + p, "warn"));
-  };
-  return b;
-}
 /* 头部「✎ 编辑保存」（文本类产物 ltart）：长周期任务产出的文本件常常只差几笔，用户不必
    ⇢ 交给系统程序、也不必先去找文件路径。复用应用内既有可编辑阅读器（app.js 的
    openTextViewer：.md 走 Markdown 阅读器、其它文本走行视图，两者都自带「编辑 / 保存」
    并写回原文件），不另造第二套编辑器。写盘成功后由 saveMdViewer / saveYamlViewer 广播
-   mtnode:file-saved，下面那份监听就地刷新本节点（见 ltartRefreshSavedFile）。 */
+   mtnode:file-saved，下面那份监听就地刷新本节点（见 ltartRefreshSavedFile）。
+   这是文本类产物头部唯一的文本入口 —— 原先并排的 👁 只读预览与它完全重复，已移除。 */
 function ltartEditButtonEl(node) {
   const b = document.createElement("button");
   b.type = "button";
@@ -10410,10 +10319,10 @@ function buildLtartBody(node, body) {
     pre.className = "n-ltart-text";
     pre.textContent = I18n.t("读取中…");
     stage.appendChild(pre);
-    /* 摘要只读一段（护栏）：节点上不塞整篇，完整阅读走头部 👁（⇢ 仍可交系统程序）。
+    /* 摘要只读一段（护栏）：节点上不塞整篇，要改 / 要读完走头部 ✎（⇢ 仍可交系统程序）。
        .md / .markdown 走画布 / 审阅同一套只读 Markdown 渲染器（app-nodeview.js 的
        nodeTextViewEl，与 browseTextEl 同口径），其它文本仍是裸 pre；超长一律截断
-       并提示「点 👁 看全文」。全程只读，不写节点任何字段。 */
+       并提示「点上方 ✎ 可编辑看全文」。全程只读，不写节点任何字段。 */
     const want = p;
     Promise.resolve()
       .then(() => window.api.fileReadText(want))
@@ -10439,7 +10348,7 @@ function buildLtartBody(node, body) {
         if (clipped) {
           const more = document.createElement("div");
           more.className = "n-ltart-ghost n-ltart-more";
-          more.textContent = I18n.t("已截断显示 · 点上方 👁 看全文");
+          more.textContent = I18n.t("已截断显示 · 点上方 ✎ 编辑看全文");
           body.insertBefore(more, pathEl);
         }
       })

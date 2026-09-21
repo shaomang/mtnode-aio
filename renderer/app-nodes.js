@@ -8019,13 +8019,16 @@ async function saveTextAgg(node, quiet) {
     if (!quiet) toast(I18n.t("没有可保存的文本输入"), "warn");
     return false;
   }
-  const r = await window.api.fileWriteText(dest, yamlSaveBody(entries));
+  const yaml = yamlSaveBody(entries);
+  const r = await window.api.fileWriteText(dest, yaml);
   if (!r.ok) {
     if (!quiet) toast(I18n.t("保存失败"), "err");
     return false;
   }
   node.savedPath = dest;
   node.savedPaths = [dest];
+  /* 落盘正文留一份：保存节点的输出端子给的就是这份内容（见 app.js saveNodeOutputValue） */
+  node.savedBody = yaml;
   node.savedAt = Date.now();
   if (!quiet) toast(I18n.t("已保存聚合 YAML → ") + dest, "ok");
   return true;
@@ -8038,6 +8041,8 @@ async function saveTextOnce(node, quiet) {
   if (!destBase0) return false;
   if (titles) {
     const paths = [];
+    /* 最后写盘的那份正文：保存节点的输出端子给的就是它（批量 = 最后一个条目那份） */
+    let lastBody = "";
     for (let idx = 0; idx < titles.length; idx++) {
       const entries = [];
       for (const w of wiresTo(node.id)) {
@@ -8054,12 +8059,14 @@ async function saveTextOnce(node, quiet) {
       }
       if (!entries.length) continue;
       const p = batchOutPath(destBase0, titles[idx], ".yaml");
-      const r = await window.api.fileWriteText(p, yamlSaveBody(entries));
+      const body = yamlSaveBody(entries);
+      const r = await window.api.fileWriteText(p, body);
       if (!r.ok) {
         if (!quiet) toast(I18n.t("保存失败：") + p, "err");
         continue;
       }
       paths.push(p);
+      lastBody = body;
     }
     if (!paths.length) {
       if (!quiet) toast(I18n.t("没有可保存的文本输入"), "warn");
@@ -8067,6 +8074,7 @@ async function saveTextOnce(node, quiet) {
     }
     node.savedPaths = paths;
     node.savedPath = destBase0;
+    node.savedBody = lastBody;
     node.savedAt = Date.now();
     if (!quiet)
       toast(
@@ -8110,6 +8118,8 @@ async function saveTextOnce(node, quiet) {
   }
   node.savedPath = destBase;
   node.savedPaths = [destBase];
+  /* 落盘正文留一份：保存节点的输出端子给的就是这份内容（见 app.js saveNodeOutputValue） */
+  node.savedBody = yaml;
   node.savedAt = Date.now();
   if (!quiet) toast(I18n.t("已保存 YAML → ") + destBase, "ok");
   return true;
@@ -8534,10 +8544,13 @@ async function autoSaveSaves(forceWired, skipIds) {
     if (n.kind === "save_pdf") continue;
     if (skip && skip.has(n.id)) continue;
     if (!n.savePath) continue;
-    const wired = wiresTo(n.id).some((w) => {
-      const src = nodeById(w.from);
-      return src && !isControlKind(src);
-    });
+    const srcs = wiresTo(n.id)
+      .map((w) => nodeById(w.from))
+      .filter((s) => s && !isControlKind(s));
+    const wired = srcs.length > 0;
+    /* 保存 → 保存：只由保存节点喂料的这一颗不跟着自动落盘（否则上游每次保存都会级联
+       再写一遍）。它仍可以手动 ▶，也可以接控制节点指挥。 */
+    if (wired && srcs.every((s) => isSaveNode(s))) continue;
     if (forceWired) {
       /* 上游输出刚更新：只要连着保存节点就落盘，无需再点 ▶ */
       if (!wired) continue;
@@ -8684,6 +8697,7 @@ function invalidateControlRunTargets(nodes) {
     if (isSaveNode(n)) {
       n.savedPaths = [];
       n.savedPath = "";
+      n.savedBody = "";
       n.savedAt = 0;
     }
   }
@@ -8903,6 +8917,7 @@ function applyClearOutput(node) {
   if (isSaveNode(node)) {
     node.savedPaths = [];
     node.savedPath = "";
+    node.savedBody = "";
     node.savedAt = 0;
   }
   if (node.kind === "wait_file") {
@@ -9671,8 +9686,16 @@ function wouldCycle(fromId, toId, toIndex, fromIndex) {
    其余节点仍按节点 kind 判定（行为逐字不变）。 */
 function wireActsAsImage(from, fi) {
   if (!from) return false;
-  /* 素材节点：整节点没有单一媒体类型可看 —— 只有条目端子说得出这条线是不是图像 */
-  if (isFnToolNode(from) || isAssetNode(from))
+  /* 素材节点：整节点没有单一媒体类型可看 —— 只有条目端子说得出这条线是不是图像。
+     保存节点同理：它的唯一输出端子给的是「本次保存的内容」，是不是图像要看保存节点
+     自己的口径（inferMediaFromSource / saveMediaKind）。图像保存的输出因此能继续
+     接进图像目标（另一个图像保存 / 图像端子），PDF 与文本保存仍按文本线走。
+     （typeof 守卫：本函数会被冒烟脚本按函数体抠进沙箱） */
+  if (
+    isFnToolNode(from) ||
+    isAssetNode(from) ||
+    (typeof isSaveNode === "function" && isSaveNode(from))
+  )
     return wireSourceMediaType(from, fi) === "image";
   return isImageSource(from);
 }
@@ -10522,12 +10545,15 @@ function addWire(fromId, toId, toIndex, opts) {
   }
   /* 输出节点连到保存节点：自动开启保存，上游更新时落盘，无需再点 ▶。
      扩展名沿用既有 applySavePathExt —— 它经 saveMediaKind 按「真正接出来的那个端子」
-     判定媒体（工具 / 函数节点的图像端子 → 自动 .png）。 */
+     判定媒体（工具 / 函数节点的图像端子 → 自动 .png）。
+     保存 → 保存 例外：下游保存拿到的是上游保存的结果，自动打开会在上游每次落盘时
+     级联再写一遍（还可能来回写）—— 不置 auto、也不替它定后缀，交给用户手动 ▶。 */
   if (
     to &&
     (isSaveNode(to)) &&
     from &&
-    !isControlKind(from)
+    !isControlKind(from) &&
+    !isSaveNode(from)
   ) {
     /* PDF 生成只有「点 ▶ 才生成」一种口径：接线不打开自动保存、不因此落盘 */
     if (to.kind !== "save_pdf") to.auto = true;

@@ -328,12 +328,6 @@ function ensureReviewDlg() {
 
 function openReviewDlg() {
   const h = ensureReviewDlg();
-  /* 同级浮层互斥：本窗与文本预览窗（app-textpreview.js）叠在一起时只留一个 */
-  if (typeof closeTextPreview === "function") {
-    try {
-      closeTextPreview();
-    } catch (_) {}
-  }
   h.classList.add("on");
   document.body.classList.add("review-lock");
   h.querySelector("#reviewBox").focus();
