@@ -1,0 +1,9 @@
+.venv/
+models/
+outputs/
+__pycache__/
+*.pyc
+*.whl
+.install-ok
+.yue2-agent-result
+.cuda-python

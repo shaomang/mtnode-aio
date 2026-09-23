@@ -1,0 +1,8 @@
+# Qwen3-ASR 本地语音识别后端依赖（只用标准库做 HTTP 服务，这里只有推理依赖）
+# 注意：torch 不写在本文件里 —— 由 scripts/install.ps1 按本机 NVIDIA 驱动
+# 选 cu13x / cu12x（或 -Cpu）的官方 index-url 单独安装，因为清华镜像上只有 CPU 轮子。
+numpy>=1.24
+soundfile>=0.12
+transformers>=4.57.0
+modelscope>=1.18.0
+funasr>=1.1.0

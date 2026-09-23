@@ -1,0 +1,25 @@
+# SenseNova（SenseNova-U1.5-8B-MoT）本地图像生成后端依赖
+#
+# 说明：
+#   * HTTP 服务只用 Python 标准库，本文件里全是「推理依赖」。
+#   * torch / torchvision **不写在本文件里** —— 由 scripts/install.ps1 单独装，原因：
+#       - 官方 requirements.txt 用 `--extra-index-url https://download.pytorch.org/whl/cu128`
+#         钉 torch==2.8.0 / torchvision==0.23.0（cu128），而清华 PyPI 镜像上只有 CPU 轮子；
+#       - 国内要优先走 SJTU / 阿里云的 pytorch-wheels 镜像，失败才回退官方 index。
+#   * sensenova_u1 推理包本身**不在 PyPI**（PyPI 上 404，已核实），官方口径是从仓库装：
+#     `pip install <仓库>/... --no-deps`（见 docs/installation_CN.md 的 pip 兼容安装段），
+#     由 scripts/install.ps1 从 GitHub tag 归档 tarball 装（直连失败逐个试国内 gh 代理）。
+#   * modelscope：权重主下载源（国内快、免翻墙）；huggingface_hub 是回退源。
+#   * 版本区间与上游 pyproject.toml [project].dependencies 保持一致（tag comfyui-v0.3.0）。
+
+accelerate>=1.1,<2
+huggingface-hub>=0.34,<2
+safetensors>=0.4.3,<1
+sentencepiece==0.2.1
+numpy>=1.24,<3
+pillow==12.0.0
+tqdm==4.67.1
+packaging==25.0
+httpx>=0.27,<1
+transformers>=4.57.1,<6
+modelscope>=1.20.0

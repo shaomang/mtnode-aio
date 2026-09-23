@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 170" width="580" height="170">
+  <rect width="580" height="170" fill="#0d1016"/>
+  <defs>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
+  </defs>
+  <rect x="20" y="50" width="120" height="48" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="80" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输入节点</text>
+  <text x="80" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">文本 / 图像</text>
+  <line x1="140" y1="74" x2="172" y2="74" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
+  <rect x="172" y="50" width="130" height="48" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="237" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">处理节点</text>
+  <text x="237" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">文本 / 图像生成</text>
+  <line x1="302" y1="74" x2="334" y2="74" stroke="#ff8f2e" stroke-width="1.8" marker-end="url(#arr-orange)"/>
+  <rect x="334" y="50" width="110" height="48" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="389" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">保存节点</text>
+  <text x="389" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">.md / .png</text>
+  <line x1="444" y1="74" x2="476" y2="74" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <rect x="476" y="50" width="90" height="48" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="521" y="78" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">▶ 控制节点</text>
+  <text x="20" y="140" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">上游改完重跑，下游跟着更新；控制节点 ▶ 用控制线直连到每个该重跑的节点</text>
+  <text x="290" y="158" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">输入 → 处理 → 保存，再用控制节点 ▶ 一键重跑整条链</text>
+</svg>

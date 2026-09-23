@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SenseNova 图像生成 · 本地后端</title>
+  <style>
+    :root {
+      --bg: #0f1218;
+      --panel: #171b24;
+      --text: #e8ecf4;
+      --muted: #9aa3b5;
+      --accent: #4dd8ff;
+      --accent2: #a78bfa;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+      --danger: #ff6b6b;
+      --border: #2a3140;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--text);
+      font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
+      height: 100%;
+    }
+    .wrap { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    .sub { color: var(--muted); font-size: 12px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    button {
+      border: 1px solid var(--border); background: #222836; color: var(--text);
+      border-radius: 8px; padding: 7px 12px; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: #14303d; border-color: #1f6d86; }
+    button.violet { background: #241a3d; border-color: #5b43a0; }
+    button.danger { background: #3a2228; border-color: #8a3a45; color: #ffc9c9; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.mini { padding: 4px 9px; font-size: 12px; }
+    input, select, textarea {
+      background: #0c0f14; color: var(--text); border: 1px solid var(--border);
+      border-radius: 7px; padding: 6px 8px; font: inherit;
+    }
+    textarea { width: 100%; min-height: 56px; resize: vertical; font: 12px/1.4 ui-monospace, Consolas, monospace; }
+    input[type="number"] { width: 86px; }
+    .path {
+      flex: 1; min-width: 140px; padding: 7px 10px; border-radius: 8px;
+      background: var(--panel); border: 1px solid var(--border);
+      color: var(--muted); word-break: break-all; font-size: 12px;
+    }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .bar {
+      height: 10px; background: #0c0f14; border-radius: 999px; overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .bar > i {
+      display: block; height: 100%; width: 0%;
+      background: linear-gradient(90deg, #1f6d86, #4dd8ff);
+      transition: width 0.25s ease;
+    }
+    .bar.gpu > i { background: linear-gradient(90deg, #2f9e6b, #3ecf8e); }
+    .bar.util > i { background: linear-gradient(90deg, #b8860b, #f0b429); }
+    .meta { color: var(--muted); font-size: 12px; }
+    .kv { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+    .kv > .k { color: var(--muted); min-width: 148px; }
+    .kv > .v { flex: 1; word-break: break-all; }
+    #log {
+      flex: 1; min-height: 140px; overflow: auto; white-space: pre-wrap;
+      font: 11px/1.4 ui-monospace, Consolas, monospace;
+      background: #0c0f14; border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px; color: #c5d0e6;
+    }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; border: 1px solid var(--border);
+    }
+    .badge.on { color: var(--ok); border-color: #2f6b4e; }
+    .badge.off { color: var(--muted); }
+    .badge.warn { color: var(--warn); border-color: #6b5418; }
+    .badge.mock { color: #d9caff; border-color: #5b43a0; background: #241a3d; }
+    .notice {
+      background: #102430; border: 1px solid #1f6d86; border-radius: 10px;
+      padding: 8px 10px; color: #b8e6f7; font-size: 12px; line-height: 1.5;
+    }
+    .warn { color: var(--warn); }
+    .danger-text { color: var(--danger); }
+    #outImg { max-width: 220px; max-height: 160px; border: 1px solid var(--border); border-radius: 8px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="notice">
+      本地 <b>SenseNova-U1.5-8B-MoT</b> 文生图 / 图像编辑（8B MoT · 权重约 32.66GB）。画布节点执行时会
+      <strong>自动启动后端 → 首次加载权重 → 出 PNG → 回填路径</strong>，无需手动启停。
+      权重比 24G 显存大，靠<b>分层卸载</b>（不活跃的层留在主内存）跑起来：加载要几分钟、
+      空闲若干分钟后会自动释放显存。安装全程走面向中国的镜像（SJTU / 阿里云 / 清华 / ModelScope / GitHub 代理）。
+    </div>
+
+    <div>
+      <h1>SenseNova 图像生成
+        <span class="badge off" id="badgeSvc">读取中…</span>
+        <span class="badge off" id="badgeModels">权重 —</span>
+        <span class="badge off" id="badgeLock">全局锁空闲</span>
+        <span class="badge off" id="badgeAttn" title="注意力档位：Windows 无 flash-attn 轮子，正常应为 sdpa">注意力 —</span>
+        <span class="badge off" id="badgeVram" title="显存档位：24G 卡用 fast，OOM 依次降 balanced / low">显存 —</span>
+      </h1>
+      <div class="sub"><span id="diskLine">建议预留磁盘</span> · <span id="gpuLine">显卡 —</span></div>
+    </div>
+
+    <div class="card">
+      <div class="kv"><span class="k">模型（ModelScope）</span><span class="v" id="vModel">—</span></div>
+      <div class="kv"><span class="k">安装目录</span><span class="v path" id="vDir">未设置</span></div>
+      <div class="kv"><span class="k">当前状态</span><span class="v" id="vState">—</span></div>
+      <div class="row">
+        <button id="btnDir">选择安装目录…</button>
+        <button class="primary" id="btnInstall">安装（脚本 · 国内镜像）</button>
+        <button class="violet" id="btnAgentInstall" title="脚本装不上时交给 AI 按 skill 安装 / 修复">交给 AI 安装</button>
+        <button class="danger" id="btnCancel" disabled>取消安装</button>
+      </div>
+      <div class="row">
+        <button id="btnStart" title="调试用；正常请从画布节点执行">手动启动后端</button>
+        <button id="btnStop" title="调试用">停止后端</button>
+        <button class="danger" id="btnForceKill" title="立刻结束后台进程，把显存与主内存还给系统">立即释放显存</button>
+        <button id="btnCloseWin" style="margin-left:auto">关闭窗口</button>
+      </div>
+      <div class="meta" id="progMsg">就绪</div>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="meta" id="subMsg"></div>
+      <div class="bar" style="height:7px"><i id="subBar"></i></div>
+    </div>
+
+    <div class="card">
+      <div class="meta">试生成一张（与画布节点走同一条链路，用来验证安装是否真能出图）</div>
+      <textarea id="inPrompt" placeholder="一只戴着宇航头盔的橘猫，漂浮在空间站舷窗前，地球在背景里发光">一只戴着宇航头盔的橘猫，漂浮在空间站舷窗前，地球在背景里发光</textarea>
+      <div class="row">
+        <span class="meta">画幅</span><select id="inRatio"></select>
+        <span class="meta">步数</span><input id="inSteps" type="number" min="1" max="200" value="50" />
+        <span class="meta">CFG</span><input id="inCfg" type="number" step="0.1" min="0" max="20" value="4" />
+        <span class="meta">种子</span><input id="inSeed" type="number" min="0" value="0" />
+        <label class="meta"><input id="inThink" type="checkbox" /> think</label>
+        <button class="primary" id="btnGen">生成</button>
+        <button class="danger" id="btnGenCancel" disabled>取消生成</button>
+        <img id="outImg" alt="" />
+      </div>
+      <div class="meta" id="genMsg">—</div>
+    </div>
+
+    <div class="card">
+      <div class="meta">GPU 显存 <span id="gpuMemTxt">—</span></div>
+      <div class="bar gpu"><i id="gpuMemBar"></i></div>
+      <div class="meta">GPU 利用率 <span id="gpuUtilTxt">—</span></div>
+      <div class="bar util"><i id="gpuUtilBar"></i></div>
+    </div>
+
+    <div class="card" style="flex:1; min-height:0">
+      <div class="row">
+        <div class="meta">后端 Console（console.log 尾部）</div>
+        <button class="mini" id="btnClearLog" style="margin-left:auto">清空视图</button>
+      </div>
+      <div id="log">（暂无日志）</div>
+    </div>
+
+    <div class="card">
+      <div class="kv"><span class="k">显存档位（vramMode）</span>
+        <select id="inVramMode">
+          <option value="">后端默认（fast · 24G 卡档）</option>
+          <option value="fast">fast · 24G 推荐</option>
+          <option value="balanced">balanced · 更省显存，更慢</option>
+          <option value="low">low · 最省显存，最慢</option>
+          <option value="full">full · 不卸载（需 ≥48G）</option>
+        </select>
+      </div>
+      <div class="kv"><span class="k">空闲多少分钟自动释放（0 = 不释放）</span>
+        <input id="inIdle" type="number" min="0" max="240" />
+      </div>
+      <div class="kv"><span class="k">忽略硬件门槛（显存 &lt;20GB / 内存 &lt;32GB 仍要装）</span>
+        <input id="inForce" type="checkbox" />
+      </div>
+      <div class="row">
+        <button class="primary" id="btnSaveCfg">保存设置</button>
+        <span class="meta" id="cfgMsg"></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="ui.js"></script>
+</body>
+</html>

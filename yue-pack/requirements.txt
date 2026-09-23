@@ -1,0 +1,12 @@
+# YuE2 本地音乐生成后端依赖（HTTP 服务只用标准库，这里只有推理依赖）
+# 注意：torch / torchaudio 不写在本文件里 —— 由 scripts/install.ps1 按本机 NVIDIA 驱动
+# 选 cu13x / cu12x（或 -Cpu）的官方 index-url 单独安装，因为清华镜像上只有 CPU 轮子。
+# yue2 推理包本身不在 PyPI：由 scripts/install.ps1 从 m-a-p/YuE2-3B 取官方
+# yue2_infer-0.1.5-py3-none-any.whl 后 pip 安装（失败回退官方仓库 git+https://github.com/multimodal-art-projection/YuE.git）。
+# gradio：宿主只用 `python -m app.ui` 启动，入口 app/ui.py 需要它；缺失时入口会打
+# `MTNODE_MISSING_DEP=gradio`。版本区间与 music3-pack 的 Gradio 契约对齐。
+gradio>=4.44,<6
+huggingface_hub==0.36.2
+numpy>=1.24
+soundfile>=0.12.1
+transformers>=4.57.6

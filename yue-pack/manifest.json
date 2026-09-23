@@ -1,0 +1,25 @@
+{
+  "id": "yue2-local",
+  "name": "YuE2 本地音乐生成",
+  "version": "1.0.1",
+  "minAppVersion": "1.1.28",
+  "title": {
+    "zh": "YuE2 本地音乐生成",
+    "en": "YuE2 Local Music Generation"
+  },
+  "subtitle": {
+    "zh": "基于 m-a-p/YuE2-3B + YuE2-Vae 的本地整曲生成（人声 + 伴奏）：符号规划（旋律/和弦 ABC 乐谱）、48kHz 立体声、零样本翻唱，24G 显存本机离线跑。",
+    "en": "Local full-song generation (vocals + accompaniment) with m-a-p/YuE2-3B + YuE2-Vae: symbolic planning (melody/chord ABC score), 48kHz stereo, zero-shot covers, offline on a 24GB GPU."
+  },
+  "model": "m-a-p/YuE2-3B",
+  "vae": "m-a-p/YuE2-Vae",
+  "inferPackage": "yue2_infer-0.1.5-py3-none-any.whl",
+  "entry": "app",
+  "apiPort": 8773,
+  "diskHintGb": 30,
+  "chainOfThought": ["full", "melody", "off"],
+  "notes": {
+    "zh": "本地 HTTP 服务由 MTNode 负责启停，端口 8773，接口 /health /generate /progress /cancel /shutdown；产物 audio.flac + score.abc + 语义 token 全部落调用方给的 outputDir。",
+    "en": "MTNode starts/stops the local HTTP service (port 8773): /health /generate /progress /cancel /shutdown. Artifacts (audio.flac + score.abc + semantic tokens) are written into the caller-provided outputDir."
+  }
+}

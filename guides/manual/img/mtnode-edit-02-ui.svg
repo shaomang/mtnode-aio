@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 172" width="580" height="172">
+  <rect width="580" height="172" fill="#0d1016"/>
+  <defs>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
+  </defs>
+  <rect x="20" y="50" width="110" height="48" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="75" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">原图</text>
+  <text x="75" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">（第 1 张）</text>
+  <line x1="130" y1="74" x2="160" y2="74" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
+  <rect x="160" y="50" width="130" height="48" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="225" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">涂抹蒙版</text>
+  <text x="225" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">透明区 = 重绘</text>
+  <line x1="290" y1="74" x2="320" y2="74" stroke="#ff8f2e" stroke-width="1.8" marker-end="url(#arr-orange)"/>
+  <rect x="320" y="50" width="150" height="48" rx="6" fill="#161020" stroke="#c792ea" stroke-width="1.6"/>
+  <text x="395" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">局部重绘</text>
+  <text x="395" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">只描述重绘区</text>
+  <line x1="470" y1="74" x2="500" y2="74" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
+  <rect x="500" y="50" width="70" height="48" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="535" y="78" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">保存</text>
+  <text x="20" y="132" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">蒙版要亲手涂，AI 无法代画；带蒙版时请求尺寸被钉成首张参考图的像素尺寸</text>
+  <text x="20" y="150" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">模型不遵循蒙版时，MTNode 也会强制蒙版外像素不被改动</text>
+  <text x="290" y="160" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">原图 → 涂抹蒙版（透明区 = 重绘）→ 局部重绘 → 保存</text>
+</svg>

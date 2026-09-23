@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 196" width="580" height="196">
+  <rect width="580" height="196" fill="#0d1016"/>
+  <defs>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
+  </defs>
+  <rect x="16" y="44" width="140" height="46" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="86" y="71" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">生成一次文本</text>
+  <line x1="156" y1="67" x2="196" y2="67" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
+  <rect x="196" y="44" width="140" height="46" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="266" y="71" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">输出框 · 审阅</text>
+  <line x1="336" y1="67" x2="376" y2="67" stroke="#ff8f2e" stroke-width="1.8" marker-end="url(#arr-orange)"/>
+  <rect x="376" y="44" width="180" height="46" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="466" y="71" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">批注：全文 / 局部</text>
+  <rect x="16" y="120" width="180" height="46" rx="6" fill="#161020" stroke="#c792ea" stroke-width="1.6"/>
+  <text x="106" y="147" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">让 AI 依据批注修订</text>
+  <line x1="196" y1="143" x2="236" y2="143" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
+  <rect x="236" y="120" width="160" height="46" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="316" y="147" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">每版完整留存</text>
+  <line x1="396" y1="143" x2="436" y2="143" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <rect x="436" y="120" width="130" height="46" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="501" y="147" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">采用当前版写回</text>
+  <text x="16" y="186" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">仅当前版可编辑；回滚 = 该版重设为当前可编辑，其后各版作废但仍可回看</text>
+  <text x="290" y="184" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">输出框点「审阅」→ 全文 / 局部批注 → 让 AI 依据批注修订 → 采用当前版写回节点</text>
+</svg>

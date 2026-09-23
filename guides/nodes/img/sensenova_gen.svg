@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 230" width="560" height="230">
+  <rect width="560" height="230" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <!-- 输入端子：0=提示词文本 · 1=控制输入 -->
+  <rect x="16" y="52" width="104" height="34" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="68" y="74" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">提示词</text>
+  <rect x="16" y="118" width="104" height="34" rx="6" fill="#101820" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="68" y="140" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">控制输入</text>
+  <line x1="120" y1="69" x2="176" y2="86" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="120" y1="135" x2="176" y2="122" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <!-- 节点本体：本机 SenseNova-U1.5-8B-MoT 后端（文生图 · 官方 11 个训练桶） -->
+  <rect x="178" y="52" width="158" height="104" rx="6" fill="#1a1016" stroke="#ff5ea8" stroke-width="1.6"/>
+  <text x="257" y="88" text-anchor="middle" fill="#e8eef6" font-size="13" font-family="Segoe UI,sans-serif">SenseNova</text>
+  <text x="257" y="108" text-anchor="middle" fill="#9aa6b6" font-size="11" font-family="Segoe UI,sans-serif">U1.5-8B-MoT · 本机</text>
+  <text x="257" y="126" text-anchor="middle" fill="#9aa6b6" font-size="11" font-family="Segoe UI,sans-serif">11 个训练分辨率桶</text>
+  <text x="257" y="144" text-anchor="middle" fill="#9aa6b6" font-size="11" font-family="Segoe UI,sans-serif">分层卸载 · 24G 可跑</text>
+  <!-- 输出端子：0=图像 · 1=控制 -->
+  <line x1="336" y1="90" x2="394" y2="76" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="336" y1="118" x2="394" y2="150" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="396" y="56" width="148" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="470" y="80" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">图像 · png</text>
+  <rect x="396" y="130" width="148" height="40" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="470" y="154" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">控制下游</text>
+  <text x="280" y="216" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">产物自动落资产目录 · 连图即图像编辑（参考图参与条件）· 全局仅 1 个音视频任务</text>
+</svg>

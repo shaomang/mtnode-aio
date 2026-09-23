@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 230" width="560" height="230">
+  <rect width="560" height="230" fill="#0d1016"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/>
+    </marker>
+  </defs>
+  <!-- 输入端子：0=风格提示词 · 1=歌词 · 2=ABC 谱（可选）· 3=控制输入 -->
+  <rect x="16" y="26" width="104" height="34" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="68" y="48" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">风格提示词</text>
+  <rect x="16" y="72" width="104" height="34" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="68" y="94" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">歌词</text>
+  <rect x="16" y="118" width="104" height="34" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="68" y="140" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">ABC 谱（可选）</text>
+  <rect x="16" y="164" width="104" height="34" rx="6" fill="#101820" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="68" y="186" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">控制输入</text>
+  <line x1="120" y1="43" x2="176" y2="70" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="120" y1="89" x2="176" y2="92" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="120" y1="135" x2="176" y2="114" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="120" y1="181" x2="176" y2="140" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <!-- 节点本体：本地 YuE2 后端（歌词 → 整曲） -->
+  <rect x="178" y="46" width="158" height="118" rx="6" fill="#1a1014" stroke="#ff8fa3" stroke-width="1.6"/>
+  <text x="257" y="96" text-anchor="middle" fill="#e8eef6" font-size="13" font-family="Segoe UI,sans-serif">YuE2</text>
+  <text x="257" y="116" text-anchor="middle" fill="#9aa6b6" font-size="11" font-family="Segoe UI,sans-serif">歌词 → 整曲</text>
+  <text x="257" y="134" text-anchor="middle" fill="#9aa6b6" font-size="11" font-family="Segoe UI,sans-serif">可编辑 ABC 谱面</text>
+  <!-- 输出端子：0=音频 · 1=控制 -->
+  <line x1="336" y1="88" x2="394" y2="76" stroke="#5fd68a" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="336" y1="122" x2="394" y2="150" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr)"/>
+  <rect x="396" y="56" width="148" height="40" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="470" y="80" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">音频 · wav</text>
+  <rect x="396" y="130" width="148" height="40" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="470" y="154" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">控制下游</text>
+  <text x="280" y="220" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">自带输出路径 · ABC 谱可手写 · 全局仅 1 个音视频任务</text>
+</svg>

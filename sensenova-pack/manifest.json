@@ -1,0 +1,25 @@
+{
+  "id": "sensenova-local",
+  "name": "SenseNova 本地图像生成",
+  "version": "1.0.0",
+  "minAppVersion": "1.1.28",
+  "title": {
+    "zh": "SenseNova 本地图像生成",
+    "en": "SenseNova Local Image Generation"
+  },
+  "subtitle": {
+    "zh": "基于 SenseNova/SenseNova-U1.5-8B-MoT 的本地文生图（原生统一多模态、官方 11 个训练分辨率、最高原生 4K）：离线跑在本机一张 24G 显卡上，靠分层卸载把 32.66GB 权重装下。",
+    "en": "Local text-to-image with SenseNova/SenseNova-U1.5-8B-MoT (native unified multimodal, 11 trained resolution buckets, up to native 4K), running offline on one 24GB GPU via layer offloading of the 32.66GB weights."
+  },
+  "model": "sensenova/SenseNova-U1.5-8B-MoT",
+  "modelModelScope": "SenseNova/SenseNova-U1.5-8B-MoT",
+  "inferPackage": "github:OpenSenseNova/SenseNova-U1@comfyui-v0.3.0",
+  "entry": "app",
+  "apiPort": 8774,
+  "diskHintGb": 60,
+  "vramModes": ["full", "fast", "balanced", "low"],
+  "notes": {
+    "zh": "本地 HTTP 服务由 MTNode 负责启停，端口 8774，接口 /health /generate /progress /cancel /shutdown；产物 PNG（可带 .think.txt 与 settings.json）落调用方给的 outputDir。权重约 32.66GB（ModelScope 优先下载），bf16 装不进 24G 显存，默认走 fast 分层卸载。",
+    "en": "MTNode starts/stops the local HTTP service on port 8774: /health /generate /progress /cancel /shutdown. The PNG (plus optional .think.txt and settings.json) is written into the caller-provided outputDir. Weights are ~32.66GB (ModelScope first) and do not fit 24GB VRAM in bf16, so fast layer offloading is the default."
+  }
+}

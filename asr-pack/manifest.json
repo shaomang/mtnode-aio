@@ -1,0 +1,21 @@
+{
+  "id": "asr-local",
+  "name": "Qwen3-ASR 本地语音识别",
+  "version": "1.0.0",
+  "minAppVersion": "1.1.26",
+  "title": {
+    "zh": "Qwen3-ASR 本地语音识别",
+    "en": "Qwen3-ASR Local ASR"
+  },
+  "subtitle": {
+    "zh": "基于 Qwen3-ASR-0.6B 的本地语音转文字：fsmn-vad 静音分段、长音频不限时长、OpenAI 兼容 /v1/audio/transcriptions。",
+    "en": "Local speech-to-text with Qwen3-ASR-0.6B: fsmn-vad segmentation, unlimited audio length, OpenAI-compatible /v1/audio/transcriptions."
+  },
+  "model": "Qwen/Qwen3-ASR-0.6B",
+  "vadModel": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+  "source": "modelscope",
+  "hfFallbackEndpoint": "https://hf-mirror.com",
+  "entry": "app",
+  "apiPort": 8772,
+  "diskHintGb": 8
+}

@@ -1,0 +1,406 @@
+{
+  "_comment": "MTNode 应用内置工具库条目（随包发版 · 不是用户数据）。列表与读取由根目录 tools-store.js 现读现拼：id 统一加 'builtin:' 前缀，用户工具永远撞不上；条目不可改名 / 删除，只有「会话随时可调用」开关写进 <数据目录>/tools/_builtin.json。graph = 插入画布即用的内部图快照（与用户保存的工具包同一份格式）。",
+  "version": 1,
+  "tools": [
+    {
+      "key": "desktop-capture",
+      "kind": "function",
+      "name": "屏幕 / 窗口截图",
+      "description": "拍屏幕或窗口并保存成 PNG 图像：target 选 screen（某个屏幕）/ window（某个窗口）/ all（整块桌面）；window 填窗口标题关键字（可只写一部分）；x/y/w/h 可选，限定被拍对象内的区域。走 mtnode.screenShot（主进程 PowerShell + GDI），拍完回本机 PNG 绝对路径——图像输出端子直接把它当图像值，保存节点会自动按 .png 落盘。先跑一次「屏幕 / 窗口清单」看有哪些屏幕与窗口可拍。",
+      "always": false,
+      "inputs": [
+        { "name": "target", "kind": "text" },
+        { "name": "screen", "kind": "text" },
+        { "name": "window", "kind": "text" },
+        { "name": "x", "kind": "text" },
+        { "name": "y", "kind": "text" },
+        { "name": "w", "kind": "text" },
+        { "name": "h", "kind": "text" }
+      ],
+      "outputs": [{ "name": "图像路径", "kind": "image" }],
+      "presets": {
+        "target": "screen",
+        "screen": "",
+        "window": "",
+        "x": "",
+        "y": "",
+        "w": "",
+        "h": ""
+      },
+      "graph": {
+        "rootId": "preset-shot-root",
+        "wires": [],
+        "nodes": [
+          {
+            "id": "preset-shot-root",
+            "kind": "function",
+            "title": "屏幕 / 窗口截图",
+            "x": 0,
+            "y": 0,
+            "w": 420,
+            "h": 260,
+            "fnName": "屏幕 / 窗口截图",
+            "description": "拍屏幕 / 窗口成 PNG（mtnode.screenShot）",
+            "inputs": [
+              { "name": "target", "kind": "text" },
+              { "name": "screen", "kind": "text" },
+              { "name": "window", "kind": "text" },
+              { "name": "x", "kind": "text" },
+              { "name": "y", "kind": "text" },
+              { "name": "w", "kind": "text" },
+              { "name": "h", "kind": "text" }
+            ],
+            "outputs": [{ "name": "图像路径", "kind": "image" }],
+            "jscode": "// 屏幕 / 窗口截图 → PNG 图像路径（内置工具 · 可改）\n// 端子：target(1) screen(2) window(3) x(4) y(5) w(6) h(7)\n//   target  = screen(默认，某个屏幕) / window(某个窗口) / all(整块桌面)\n//   screen  = 屏幕名 \\\\.\\DISPLAY1 / \"x,y\" / 序号(0 起)；留空 = 主屏\n//   window  = 窗口标题关键字（可只写一部分，不区分大小写）\n//   x/y/w/h = 可选：被拍对象左上角为原点的偏移与尺寸（像素）\nconst pick = (v, i) => {\n  let s = v;\n  if (s && typeof s === \"object\") s = s.text != null ? s.text : s.path;\n  s = s == null ? \"\" : String(s).trim();\n  return s || String(input[\"$\" + i] || \"\").trim();\n};\nconst optNum = (s) => {\n  s = String(s == null ? \"\" : s).trim();\n  if (s === \"\") return null;\n  const n = Number(s);\n  return Number.isFinite(n) ? Math.round(n) : null;\n};\nconst target = (pick(input.target, 1) || \"screen\").toLowerCase();\nconst x = optNum(pick(input.x, 4));\nconst y = optNum(pick(input.y, 5));\nconst w = optNum(pick(input.w, 6));\nconst h = optNum(pick(input.h, 7));\nif (typeof mtnode.screenShot !== \"function\")\n  throw new Error(\"当前 MTNode 不支持桌面截图（需要 desktop-capture 能力）\");\nconst r = await mtnode.screenShot({\n  target: target,\n  screen: pick(input.screen, 2),\n  window: pick(input.window, 3),\n  x: x,\n  y: y,\n  w: w,\n  h: h,\n});\nif (!r || r.ok === false)\n  throw new Error((r && r.error) || \"截图失败\");\nmtnode.log(\n  \"已拍 \" + (r.target || target) + \" → \" + r.path + \"（\" + r.width + \"x\" + r.height + \" · \" + (r.method || \"\") + \"）\",\n);\n// 输出端子声明成「图像」→ 直接给路径字符串也会被补成图像值\nreturn { 图像路径: r.path };"
+          }
+        ]
+      }
+    },
+    {
+      "key": "pdf-to-markdown",
+      "kind": "tool",
+      "name": "PDF 转 Markdown",
+      "description": "把本机 PDF 的文本层转成 Markdown：输入 PDF 绝对路径，回整篇 Markdown，可选再落盘到你指定的 .md 路径。走主进程的 PDF 解析内核（与「拖入 PDF」同一份实现），只读本机文件、不联网。注意：只解析文本层 —— 加密 PDF 会明确报错；扫描件 / 图片版 PDF 没有文本层，同样明确报错并提示需要 OCR，不会回一篇空文档；缺字体映射 / 复杂公式等以警告写进节点日志。",
+      "always": true,
+      "limits": "只解析 PDF 的文本层，不做 OCR：加密 PDF 直接报错；扫描件 / 图片版 PDF 没有文本层，同样报错（不会回一篇空文档）。只读本机文件、不联网；缺字体映射或复杂公式时以警告写进节点日志（不中断）。",
+      "example": "{\"PDF路径\":\"D:\\\\docs\\\\报告.pdf\",\"输出Markdown路径\":\"{{outDir}}\\\\报告.md\"}",
+      "inputs": [
+        {
+          "name": "PDF路径",
+          "kind": "text",
+          "description": "本机 PDF 文件的绝对路径（如 D:\\\\docs\\\\报告.pdf）；文件必须存在且未加密。"
+        },
+        {
+          "name": "输出Markdown路径",
+          "kind": "text",
+          "optional": true,
+          "description": "可选：要把 Markdown 落盘时的本机 .md 绝对路径（建议写到 {{outDir}} 下）；留空 = 只回 Markdown 文本、不落盘。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Markdown",
+          "kind": "text",
+          "description": "PDF 文本层转出的整篇 Markdown 正文。"
+        },
+        {
+          "name": "文件路径",
+          "kind": "text",
+          "description": "实际落盘的 .md 文件绝对路径；没给输出路径时是空字符串。"
+        }
+      ],
+      "presets": {
+        "PDF路径": "D:\\docs\\example.pdf",
+        "输出Markdown路径": ""
+      },
+      "graph": {
+        "rootId": "preset-pdfmd-root",
+        "wires": [
+          {
+            "id": "preset-pdfmd-w1",
+            "from": "preset-pdfmd-root",
+            "to": "preset-pdfmd-fn",
+            "fromIndex": 1,
+            "toIndex": 1
+          },
+          {
+            "id": "preset-pdfmd-w2",
+            "from": "preset-pdfmd-root",
+            "to": "preset-pdfmd-fn",
+            "fromIndex": 2,
+            "toIndex": 2
+          },
+          {
+            "id": "preset-pdfmd-w3",
+            "from": "preset-pdfmd-fn",
+            "to": "preset-pdfmd-root",
+            "fromIndex": 0,
+            "toIndex": 0
+          },
+          {
+            "id": "preset-pdfmd-w4",
+            "from": "preset-pdfmd-fn",
+            "to": "preset-pdfmd-root",
+            "fromIndex": 1,
+            "toIndex": 1
+          }
+        ],
+        "nodes": [
+          {
+            "id": "preset-pdfmd-root",
+            "kind": "super",
+            "title": "PDF 转 Markdown",
+            "x": 0,
+            "y": 0,
+            "w": 320,
+            "h": 220,
+            "note": "",
+            "expandW": 720,
+            "expandH": 480,
+            "superOpen": false,
+            "subFolder": "",
+            "innerPanX": 0,
+            "innerPanY": 0,
+            "parentTaskId": "",
+            "parentSuperId": "",
+            "db": false,
+            "dbMode": "super",
+            "tool": true,
+            "toolConfig": {
+              "name": "PDF 转 Markdown",
+              "description": "把本机 PDF 的文本层转成 Markdown：输入 PDF 绝对路径，回整篇 Markdown，可选再落盘到你指定的 .md 路径。走主进程的 PDF 解析内核（与「拖入 PDF」同一份实现），只读本机文件、不联网。注意：只解析文本层 —— 加密 PDF 会明确报错；扫描件 / 图片版 PDF 没有文本层，同样明确报错并提示需要 OCR，不会回一篇空文档；缺字体映射 / 复杂公式等以警告写进节点日志。",
+              "limits": "只解析 PDF 的文本层，不做 OCR：加密 PDF 直接报错；扫描件 / 图片版 PDF 没有文本层，同样报错（不会回一篇空文档）。只读本机文件、不联网；缺字体映射或复杂公式时以警告写进节点日志（不中断）。",
+              "example": "{\"PDF路径\":\"D:\\\\docs\\\\报告.pdf\",\"输出Markdown路径\":\"{{outDir}}\\\\报告.md\"}",
+              "inputs": [
+                {
+                  "name": "PDF路径",
+                  "kind": "text",
+                  "description": "本机 PDF 文件的绝对路径（如 D:\\\\docs\\\\报告.pdf）；文件必须存在且未加密。"
+                },
+                {
+                  "name": "输出Markdown路径",
+                  "kind": "text",
+                  "optional": true,
+                  "description": "可选：要把 Markdown 落盘时的本机 .md 绝对路径（建议写到 {{outDir}} 下）；留空 = 只回 Markdown 文本、不落盘。"
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "Markdown",
+                  "kind": "text",
+                  "description": "PDF 文本层转出的整篇 Markdown 正文。"
+                },
+                {
+                  "name": "文件路径",
+                  "kind": "text",
+                  "description": "实际落盘的 .md 文件绝对路径；没给输出路径时是空字符串。"
+                }
+              ]
+            },
+            "toolTestInputs": []
+          },
+          {
+            "id": "preset-pdfmd-fn",
+            "kind": "function",
+            "title": "PDF 文本层 → Markdown",
+            "x": 80,
+            "y": 60,
+            "w": 460,
+            "h": 320,
+            "parentTaskId": "",
+            "parentSuperId": "preset-pdfmd-root",
+            "fnName": "PDF 转 Markdown",
+            "description": "mtnode.readPdf 抽文本层 → Markdown；给了输出路径再 mtnode.writeText 落盘",
+            "inputs": [
+              {
+                "name": "PDF路径",
+                "kind": "text"
+              },
+              {
+                "name": "输出Markdown路径",
+                "kind": "text"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "Markdown",
+                "kind": "text"
+              },
+              {
+                "name": "文件路径",
+                "kind": "text"
+              }
+            ],
+            "jscode": "// PDF → Markdown（内置工具 · 可改）\n// 端子：PDF路径(1) · 输出Markdown路径(2) → 输出：Markdown(0) · 文件路径(1)\n//   只解析 PDF 的文本层（不做 OCR）：加密件 / 扫描件一律明确报错，绝不回一篇空文档。\nconst pick = (v, i) => {\n  let s = v;\n  if (s && typeof s === \"object\") s = s.text != null ? s.text : s.path;\n  s = s == null ? \"\" : String(s).trim();\n  return s || String(input[\"$\" + i] || \"\").trim();\n};\nconst pdfPath = pick(input[\"PDF路径\"], 1);\nconst outPath = pick(input[\"输出Markdown路径\"], 2);\nif (!pdfPath) throw new Error(\"PDF 转 Markdown：缺少 PDF 路径（输入端子 1）\");\nif (typeof mtnode.readPdf !== \"function\")\n  throw new Error(\"当前 MTNode 不支持 PDF 解析（需要 mtnode.readPdf 能力）\");\nmtnode.log(\"解析 PDF：\" + pdfPath);\nconst r = await mtnode.readPdf(pdfPath);\nif (!r || r.ok === false) {\n  const e = r && r.error;\n  const code = e && e.code ? String(e.code) : \"\";\n  const msg = (e && e.message) || (typeof e === \"string\" ? e : \"\") || \"解析失败\";\n  if (code === \"encrypted\")\n    throw new Error(\"PDF 已加密，无法解析文本（本工具只解析未加密 PDF 的文本层）：\" + msg);\n  throw new Error(\"PDF 解析失败：\" + msg);\n}\nconst md = String(r.markdown == null ? \"\" : r.markdown);\nconst warning = String(r.warning || \"\").trim();\nif (!md.trim())\n  throw new Error(\n    \"这个 PDF 没有可提取的文本层（可能是扫描件 / 图片版 PDF；本工具只解析文本层、不做 OCR）\" +\n      (warning ? \"：\" + warning : \"\"),\n  );\nif (warning) mtnode.log(\"提醒：\" + warning);\nlet file = \"\";\nconst outAbs = outPath ? mtnode.abs(outPath) : \"\";\nif (outAbs) file = mtnode.writeText(outAbs, md);\nelse mtnode.log(\"未给「输出Markdown路径」→ 只回 Markdown 文本，不落盘\");\nmtnode.log(\n  \"已转 \" + (r.pages || 0) + \" 页 · \" + md.length + \" 字\" + (file ? \" → \" + file : \"\"),\n);\nreturn { Markdown: md, 文件路径: file };"
+          }
+        ]
+      }
+    },
+    {
+      "key": "markdown-to-pdf",
+      "kind": "tool",
+      "name": "Markdown 转 PDF",
+      "description": "把 Markdown / 纯文本排版成一份 PDF 落盘：直接给正文（Markdown内容），或给一份本机 .md / .txt 绝对路径（源文件路径）；输出路径必填（本机 .pdf 绝对路径，写成别的后缀会自动纠正）。走主进程与「PDF生成」节点完全同一份内核（隐藏打印窗 + printToPDF：标题层级、段落两端对齐、列表、引用、表格跨页重复表头、代码块折行、图片自适应），公式用应用内同一套渲染器排版（$…$ / $$…$$ / \\(…\\) / \\[…\\]，与画布预览同源）。回实际落盘路径与文件字节数，供下游继续用。用户数据不落应用目录：输出路径落在应用目录内一律拒绝。与「PDF 转 Markdown」条目互为反向（那一支只读、不落盘）。",
+      "always": true,
+      "limits": "输出路径必给：必须是本机 .pdf 绝对路径（写别的后缀会自动纠正）；落在 MTNode 应用安装目录内一律拒绝，请写到自己的项目目录或 {{outDir}} 下（父目录不存在会自动创建）。「Markdown内容」与「源文件路径」至少给一个，两个都空会报错；「源文件路径」只认本机 .md / .txt 文件（读不到会明确报错）。公式支持 $…$ 与 $$…$$（与画布预览同一套渲染器）；图片相对路径以「源文件路径」所在目录为基准。",
+      "example": "{\"Markdown内容\":\"# 标题\\n\\n正文一段。\",\"源文件路径\":\"\",\"输出路径\":\"{{outDir}}\\\\example.pdf\"}",
+      "atLeastOne": [["Markdown内容", "源文件路径"]],
+      "inputs": [
+        {
+          "name": "Markdown内容",
+          "kind": "text",
+          "optional": true,
+          "description": "要排版的 Markdown / 纯文本正文（直接写内容）；与「源文件路径」至少给一个，正文优先。"
+        },
+        {
+          "name": "源文件路径",
+          "kind": "text",
+          "optional": true,
+          "description": "可选：本机 .md / .txt 文件的绝对路径（「Markdown内容」留空时读它）；与「Markdown内容」至少给一个。"
+        },
+        {
+          "name": "输出路径",
+          "kind": "text",
+          "description": "必填：PDF 落盘的本机绝对路径（如 {{outDir}}\\\\报告.pdf），写在应用安装目录内会被拒绝；后缀不是 .pdf 会自动纠正。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "文件路径",
+          "kind": "text",
+          "description": "实际落盘的 PDF 绝对路径。"
+        },
+        {
+          "name": "字节数",
+          "kind": "text",
+          "description": "生成的 PDF 文件大小（字节，十进制数字字符串）。"
+        }
+      ],
+      "presets": {
+        "Markdown内容": "# 标题\n\n正文一段。\n\n- 一\n- 二\n\n$$E = mc^2$$\n",
+        "源文件路径": "",
+        "输出路径": "D:\\docs\\example.pdf"
+      },
+      "graph": {
+        "rootId": "preset-md2pdf-root",
+        "wires": [
+          {
+            "id": "preset-md2pdf-w1",
+            "from": "preset-md2pdf-root",
+            "to": "preset-md2pdf-fn",
+            "fromIndex": 1,
+            "toIndex": 1
+          },
+          {
+            "id": "preset-md2pdf-w2",
+            "from": "preset-md2pdf-root",
+            "to": "preset-md2pdf-fn",
+            "fromIndex": 2,
+            "toIndex": 2
+          },
+          {
+            "id": "preset-md2pdf-w3",
+            "from": "preset-md2pdf-root",
+            "to": "preset-md2pdf-fn",
+            "fromIndex": 3,
+            "toIndex": 3
+          },
+          {
+            "id": "preset-md2pdf-w4",
+            "from": "preset-md2pdf-fn",
+            "to": "preset-md2pdf-root",
+            "fromIndex": 0,
+            "toIndex": 0
+          },
+          {
+            "id": "preset-md2pdf-w5",
+            "from": "preset-md2pdf-fn",
+            "to": "preset-md2pdf-root",
+            "fromIndex": 1,
+            "toIndex": 1
+          }
+        ],
+        "nodes": [
+          {
+            "id": "preset-md2pdf-root",
+            "kind": "super",
+            "title": "Markdown 转 PDF",
+            "x": 0,
+            "y": 0,
+            "w": 320,
+            "h": 220,
+            "note": "",
+            "expandW": 720,
+            "expandH": 480,
+            "superOpen": false,
+            "subFolder": "",
+            "innerPanX": 0,
+            "innerPanY": 0,
+            "parentTaskId": "",
+            "parentSuperId": "",
+            "db": false,
+            "dbMode": "super",
+            "tool": true,
+            "toolConfig": {
+              "name": "Markdown 转 PDF",
+              "description": "把 Markdown / 纯文本排版成一份 PDF 落盘：直接给正文（Markdown内容），或给一份本机 .md / .txt 绝对路径（源文件路径）；输出路径必填（本机 .pdf 绝对路径，写成别的后缀会自动纠正）。走主进程与「PDF生成」节点完全同一份内核（隐藏打印窗 + printToPDF：标题层级、段落两端对齐、列表、引用、表格跨页重复表头、代码块折行、图片自适应），公式用应用内同一套渲染器排版（$…$ / $$…$$ / \\(…\\) / \\[…\\]，与画布预览同源）。回实际落盘路径与文件字节数，供下游继续用。用户数据不落应用目录：输出路径落在应用目录内一律拒绝。与「PDF 转 Markdown」条目互为反向（那一支只读、不落盘）。",
+              "limits": "输出路径必给：必须是本机 .pdf 绝对路径（写别的后缀会自动纠正）；落在 MTNode 应用安装目录内一律拒绝，请写到自己的项目目录或 {{outDir}} 下（父目录不存在会自动创建）。「Markdown内容」与「源文件路径」至少给一个，两个都空会报错；「源文件路径」只认本机 .md / .txt 文件（读不到会明确报错）。公式支持 $…$ 与 $$…$$（与画布预览同一套渲染器）；图片相对路径以「源文件路径」所在目录为基准。",
+              "example": "{\"Markdown内容\":\"# 标题\\n\\n正文一段。\",\"源文件路径\":\"\",\"输出路径\":\"{{outDir}}\\\\example.pdf\"}",
+              "atLeastOne": [["Markdown内容", "源文件路径"]],
+              "inputs": [
+                {
+                  "name": "Markdown内容",
+                  "kind": "text",
+                  "optional": true,
+                  "description": "要排版的 Markdown / 纯文本正文（直接写内容）；与「源文件路径」至少给一个，正文优先。"
+                },
+                {
+                  "name": "源文件路径",
+                  "kind": "text",
+                  "optional": true,
+                  "description": "可选：本机 .md / .txt 文件的绝对路径（「Markdown内容」留空时读它）；与「Markdown内容」至少给一个。"
+                },
+                {
+                  "name": "输出路径",
+                  "kind": "text",
+                  "description": "必填：PDF 落盘的本机绝对路径（如 {{outDir}}\\\\报告.pdf），写在应用安装目录内会被拒绝；后缀不是 .pdf 会自动纠正。"
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "文件路径",
+                  "kind": "text",
+                  "description": "实际落盘的 PDF 绝对路径。"
+                },
+                {
+                  "name": "字节数",
+                  "kind": "text",
+                  "description": "生成的 PDF 文件大小（字节，十进制数字字符串）。"
+                }
+              ]
+            },
+            "toolTestInputs": []
+          },
+          {
+            "id": "preset-md2pdf-fn",
+            "kind": "function",
+            "title": "Markdown → PDF 落盘",
+            "x": 80,
+            "y": 60,
+            "w": 460,
+            "h": 320,
+            "parentTaskId": "",
+            "parentSuperId": "preset-md2pdf-root",
+            "fnName": "Markdown 转 PDF",
+            "description": "正文（或本机 .md 文件）→ mtnode.writePdf 落盘 PDF；与「PDF生成」节点共用 pdf-write.js 内核",
+            "inputs": [
+              {
+                "name": "Markdown内容",
+                "kind": "text"
+              },
+              {
+                "name": "源文件路径",
+                "kind": "text"
+              },
+              {
+                "name": "输出路径",
+                "kind": "text"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "文件路径",
+                "kind": "text"
+              },
+              {
+                "name": "字节数",
+                "kind": "text"
+              }
+            ],
+            "jscode": "// Markdown → PDF（内置工具 · 可改）\n// 端子：Markdown内容(1) · 源文件路径(2) · 输出路径(3) → 输出：文件路径(0) · 字节数(1)\n//   正文优先：Markdown内容 直接写，留空则读「源文件路径」这份本机 .md / .txt。\n//   落盘一律走 mtnode.writePdf（主进程 pdf-write.js，与「PDF生成」节点同一份内核）。\nconst pick = (v, i) => {\n  let s = v;\n  if (s && typeof s === \"object\") s = s.text != null ? s.text : s.path;\n  s = s == null ? \"\" : String(s);\n  return s.trim() ? s : String(input[\"$\" + i] || \"\");\n};\nconst fnDirOf = (p) => {\n  const seg = String(p || \"\").split(/[\\\\/]+/);\n  seg.pop();\n  return seg.join(\"\\\\\");\n};\nconst inlineMd = pick(input[\"Markdown内容\"], 1);\nconst srcPath = pick(input[\"源文件路径\"], 2)\n  .trim()\n  .replace(/^\"|\"$/g, \"\");\nconst outPath = pick(input[\"输出路径\"], 3)\n  .trim()\n  .replace(/^\"|\"$/g, \"\");\nif (!outPath)\n  throw new Error(\n    \"Markdown 转 PDF：缺少输出路径（输入端子 3，要本机 .pdf 绝对路径）\",\n  );\nif (typeof mtnode.writePdf !== \"function\")\n  throw new Error(\"当前 MTNode 不支持 PDF 生成（需要 mtnode.writePdf 能力）\");\nlet md = inlineMd;\nlet baseDir = \"\";\nif (!md.trim()) {\n  if (!srcPath)\n    throw new Error(\n      \"Markdown 转 PDF：没有正文 —— 要么在「Markdown内容」里直接给 Markdown，要么在「源文件路径」给一份本机 .md / .txt 绝对路径\",\n    );\n  if (typeof mtnode.readText !== \"function\")\n    throw new Error(\"当前 MTNode 不支持读本机文本（需要 mtnode.readText 能力）\");\n  const file = mtnode.abs(srcPath);\n  try {\n    md = mtnode.readText(file);\n  } catch (e) {\n    throw new Error(\n      \"Markdown 转 PDF：读不到「源文件路径」这份文件（\" +\n        file +\n        \"）：\" +\n        ((e && e.message) || e),\n    );\n  }\n  if (!String(md || \"\").trim())\n    throw new Error(\"Markdown 转 PDF：源文件是空的（\" + file + \"）\");\n  // 源文件里的相对图片路径按「源文件所在目录」解析（按用户填的原文算，不随归一变形）\n  baseDir = fnDirOf(srcPath);\n}\nmtnode.log(\"生成 PDF：\" + outPath + \"（\" + md.length + \" 字）\");\nconst r = await mtnode.writePdf({\n  text: md,\n  outPath: mtnode.abs(outPath),\n  title: \"Markdown\",\n  baseDir: baseDir,\n  pageSize: \"A4\",\n  margin: \"normal\",\n  fontScale: \"m\",\n  pageNumbers: true,\n});\nif (!r || r.ok === false)\n  throw new Error(\"生成 PDF 失败：\" + ((r && r.error) || \"未知原因\"));\nconst dest = String(r.path || mtnode.abs(outPath));\nif (r.warning) mtnode.log(\"提醒：\" + r.warning);\nmtnode.log(\"已生成 PDF → \" + dest + \"（\" + (r.bytes || 0) + \" 字节）\");\nreturn { 文件路径: dest, 字节数: String(r.bytes || 0) };"
+          }
+        ]
+      }
+    }
+  ]
+}

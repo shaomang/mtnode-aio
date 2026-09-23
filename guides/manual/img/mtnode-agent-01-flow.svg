@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 166" width="580" height="166">
+  <rect width="580" height="166" fill="#0d1016"/>
+  <defs>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
+  </defs>
+  <rect x="20" y="50" width="180" height="48" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="110" y="78" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">一句话：输入 → 处理 → 产物</text>
+  <line x1="200" y1="74" x2="240" y2="74" stroke="#38d6ff" stroke-width="1.8" marker-end="url(#arr-cyan)"/>
+  <rect x="240" y="50" width="150" height="48" rx="6" fill="#161020" stroke="#c792ea" stroke-width="1.6"/>
+  <text x="315" y="71.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">助手建节点</text>
+  <text x="315" y="84.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">连线 / 排版</text>
+  <line x1="390" y1="74" x2="430" y2="74" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
+  <rect x="430" y="50" width="130" height="48" rx="6" fill="#101610" stroke="#5fd68a" stroke-width="1.6"/>
+  <text x="495" y="78" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">改输入 · 点 ▶</text>
+  <text x="20" y="140" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">也可以用 / 或 、 打开「生成工作流」工具；不满意随时 Ctrl+Z 撤销</text>
+  <text x="290" y="154" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">一句话交给右侧栏助手 → 助手在本画布建节点 / 连线 / 排版 → 你改输入、点 ▶ 重跑</text>
+</svg>

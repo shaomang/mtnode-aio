@@ -1,0 +1,10 @@
+.venv/
+models/
+outputs/
+src/
+__pycache__/
+*.pyc
+.install-ok
+.sensenova-agent-result
+.attn-backend
+.modelscope-cache/

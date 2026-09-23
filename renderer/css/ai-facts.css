@@ -1,0 +1,303 @@
+/* ============ AI 事实库（renderer/app-ai-facts.js）· 左栏入口 + 查阅弹窗样式 ============
+   配色一律用 base.css 的主题变量（--panel / --bd2 / --cyan / --muted …），浅色主题自动跟随，
+   不新造配色体系；圆角与字号照既有的对话框（components.css / team.css / longtask.css）取值。
+   前缀 .aif-*（AI facts）只服务这一个模块，别的窗不会命中。 */
+
+/* ── 专家团左栏那一行：沿用 team.css 的 .team-side-item 形态，只加极小补充 ── */
+/* brain 图标用与一般事实库（book）同一档主题色：两行都是「库」，靠名字区分就够 */
+.team-side-ai-fact .team-side-glyph {
+  color: var(--cyan);
+}
+/* 「n 条」很短：给一点宽度再截断（与 .team-side-fact .team-side-sub 同口径） */
+.team-side-ai-fact .team-side-sub {
+  max-width: 90px;
+}
+
+/* ── 弹窗本体：.overlay-body 里的一整块（走 openOverlay 的默认宽 min(900px, 100%)）── */
+.aif {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* 顶部信息行：文件绝对路径（只读输入框，可选中复制）+ 条数 / 上限 + cap 输入 + 搜索 + 新建 */
+.aif-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--bd2);
+}
+.aif-path {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--bd);
+  border-radius: 5px;
+  background: var(--code);
+  color: var(--muted);
+  font: 400 11.5px/1.5 var(--mono);
+  padding: 4px 6px;
+  cursor: text;
+}
+.aif-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.aif-count {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.aif-cap {
+  width: 72px;
+  box-sizing: border-box;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: var(--bg2);
+  color: var(--ink);
+  font: 400 12px/1.5 var(--sans);
+  padding: 3px 6px;
+}
+.aif-search {
+  flex: 1;
+  min-width: 160px;
+  box-sizing: border-box;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: var(--bg2);
+  color: var(--ink);
+  font: 400 12px/1.5 var(--sans);
+  padding: 4px 8px;
+}
+.aif-cap:focus,
+.aif-search:focus,
+.aif-in:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+.aif-cap:disabled,
+.aif-search:disabled {
+  opacity: 0.55;
+}
+
+/* ── 列表 ── */
+.aif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.aif-row {
+  border: 1px solid var(--bd);
+  border-left: 3px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+  padding: 8px 10px;
+}
+/* 固定（pin）的条例给一条青色左沿：一眼看出「它不会被淘汰」 */
+.aif-row.pinned {
+  border-left-color: var(--cyan);
+}
+.aif-row-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aif-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aif-score {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.aif-row-acts {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* pin 开着时给黄色实心星（与其它「已启用」态同档，不另造色） */
+.aif-pin.on {
+  color: var(--yellow);
+  border-color: rgba(255, 209, 102, 0.45);
+}
+/* 正文是**给 AI 读的条例**：保留换行原样显示（pre-wrap），不做 Markdown 渲染 */
+.aif-text {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── 内联编辑器（新建与编辑共用） ── */
+.aif-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--cyan);
+  border-radius: 6px;
+  background: var(--panel2);
+  padding: 8px 10px;
+}
+.aif-in {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: var(--bg2);
+  color: var(--ink);
+  font: 400 12px/1.5 var(--sans);
+  padding: 4px 6px;
+}
+textarea.aif-in {
+  resize: vertical;
+  min-height: 66px;
+}
+.aif-acts {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ── 空态 / 不可用态 ── */
+.aif-empty {
+  border: 1px dashed var(--bd2);
+  border-radius: 6px;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+.aif-empty-h {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.aif-empty-p {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+
+/* ════════ 补充口径（类型 / 标签 / 来源 · 待确认区 · 最近淘汰）════════
+   与上面同一套变量与取值，只加区块，不改既有类；空区块用 :empty 自己收起，
+   所以「没有提议 / 没有淘汰记录」时这三段完全不占位。 */
+
+/* ── 区块小标题（待确认 / 最近淘汰共用）── */
+.aif-sub {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* ── 待确认区（AI propose 出来的提议）：库列表之上，一条虚线框 = 「还没进库」── */
+.aif-prop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aif-prop:empty {
+  display: none;
+}
+.aif-prop-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 标题占左，两个动作按钮整体推到右边（与 .aif-row-acts 同视觉口径） */
+.aif-prop-h .mini:first-of-type {
+  margin-left: auto;
+}
+.aif-prop-row {
+  border: 1px dashed var(--bd2);
+  border-left: 3px solid var(--yellow);
+  border-radius: 6px;
+  background: var(--panel2);
+  padding: 8px 10px;
+}
+
+/* ── 内联编辑器的「类型 / 标签 / 来源」一行：三个等宽小输入 ── */
+.aif-fields {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.aif-fields .aif-in {
+  flex: 1 1 150px;
+  min-width: 120px;
+}
+
+/* ── 检索辅助 / 来源 / 保护期：条目底部的小圆角标签 ── */
+.aif-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.aif-chip {
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.aif-chip-tag {
+  color: var(--cyan);
+}
+.aif-chip-src {
+  max-width: 320px;
+}
+/* 保护期给黄色：与 pin（青色）区分 —— 它只是「新」，不代表用户固定过 */
+.aif-chip-prot {
+  color: var(--yellow);
+}
+
+/* ── 最近淘汰（写进文件的 log）：只读回看，弱化在弹窗底部 ── */
+.aif-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--bd2);
+}
+.aif-log:empty {
+  display: none;
+}
+.aif-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.aif-log-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aif-log-meta {
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+}

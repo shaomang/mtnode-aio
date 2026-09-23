@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 200" width="620" height="200">
+  <rect width="620" height="200" fill="#0d1016"/>
+  <defs>
+  <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f0c14d"/></marker>
+  <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#38d6ff"/></marker>
+  <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff8f2e"/></marker>
+  <marker id="arr-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5fd68a"/></marker>
+  <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b6b"/></marker>
+  <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c792ea"/></marker>
+  </defs>
+  <rect x="16" y="44" width="180" height="44" rx="6" fill="#1a140e" stroke="#ff8f2e" stroke-width="1.6"/>
+  <text x="106" y="63.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">全局助手 ✦</text>
+  <text x="106" y="76.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">看画布 · 改画布</text>
+  <rect x="16" y="100" width="180" height="44" rx="6" fill="#161020" stroke="#c792ea" stroke-width="1.6"/>
+  <text x="106" y="119.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">智能节点</text>
+  <text x="106" y="132.5" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">读文件 + 多步 + 写文件</text>
+  <rect x="16" y="156" width="180" height="44" rx="6" fill="#1a1610" stroke="#f0c14d" stroke-width="1.6"/>
+  <text x="106" y="182" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">开发节点的开发 / 细化</text>
+  <line x1="196" y1="66" x2="240" y2="66" stroke="#ff8f2e" stroke-width="1.8" marker-end="url(#arr-orange)"/>
+  <line x1="196" y1="122" x2="240" y2="122" stroke="#c792ea" stroke-width="1.8" marker-end="url(#arr-purple)"/>
+  <line x1="196" y1="178" x2="240" y2="178" stroke="#f0c14d" stroke-width="1.8" marker-end="url(#arr-gold)"/>
+  <rect x="240" y="44" width="360" height="156" rx="6" fill="#101820" stroke="#38d6ff" stroke-width="1.6"/>
+  <text x="420" y="100" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">四组开关</text>
+  <text x="420" y="113" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">· 模型：flash 级够用，长文 / 写代码换更强</text>
+  <text x="420" y="126" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">· 预设档：决定人设与工具面</text>
+  <text x="420" y="139" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">· 思考强度：off / low / high / max</text>
+  <text x="420" y="152" text-anchor="middle" fill="#e8eef6" font-size="12" font-family="Segoe UI,sans-serif">· 工具许可与审批：放开哪些工具、哪些动作要弹窗</text>
+  <text x="310" y="188" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">会话的三个入口与四组开关：模型 · 预设档 · 思考强度 · 工具许可 / 审批</text>
+</svg>
