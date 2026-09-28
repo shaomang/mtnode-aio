@@ -14,13 +14,19 @@
      · 手工覆盖 = 设置页模型行右侧的分类徽标可点，写进 config.modelKinds
        （{ "<providerId>": { "<modelId>": "text" | "image" } }），覆盖永远赢过识别。
      · 目录提示 = S.providerCatalog（pi-ai 目录 + DeepSeek 官方）里带 input 字段的
-       模型（如 deepseek-v4-flash-vision-exp = input ["text","image"]）只说明**能
+       模型（如 deepseek-flash = input ["text","image"]）只说明**能
        吃图**（视觉输入）≠ 出图，不参与形态判定，只作为视觉能力的补充判据。
 
    本模块是纯函数段（不碰 DOM / 不依赖 S），可被 test/ 直接切片真跑。
    取值口径统一走 modelKindOf / providerKinds / providerHasKind，
    渲染层各处（设置页模型徽标、节点设置的服务商 / 模型下拉、运行期兜底、
-   导入导出解析）一律不自己写 id 前缀判断。 */
+   导入导出解析）一律不自己写 id 前缀判断。
+
+   同文件下半段还放**服务商模型策略**（同一批纯函数口径，见下面
+   「服务商模型策略：白名单 / 黑名单 / 停用 / 三档超时」一节）：
+   providerModelFilter（白名单先收窄 + 黑名单再剔除）、providerDisabled、
+   providerSelectableModels（模型选择器统一取用）、providerTimeoutTiers、
+   deepseekRouteSelectable。设置页服务商卡片读写这些字段，主进程按三档发请求。 */
 
 /* ── 图像模型家族特征词（小写子串匹配） ──
    只放「几乎只可能是图像生成」的词；"vision" / "image" 之外的通用词不收，
@@ -85,7 +91,7 @@ const IMAGE_MODEL_MARKERS = [
 ];
 
 /* ── 明确的文本模型特征词：用来把「同一 id 里既像图像又像文本」的情况拉回文本 ──
-   例如 kimi-k2.6 / deepseek-v4-flash 这类明显是对话模型（含 flux 等词的极少见）。 */
+   例如 kimi-k2.6 / deepseek-flash 这类明显是对话模型（含 flux 等词的极少见）。 */
 const TEXT_MODEL_MARKERS = [
   "deepseek",
   "gpt-4",
@@ -198,10 +204,15 @@ function providerHasKind(cfg, prov, kind) {
   return providerKinds(cfg, prov).indexOf(kind) >= 0;
 }
 
-/* 该服务商里属于指定形态的模型列表（保持原顺序） */
+/* 该服务商里属于指定形态的模型列表（保持原顺序）。
+   先过服务商白 / 黑名单（providerModelFilter）—— 节点设置的服务商 / 模型下拉、节点「无模型」
+   闸门都取这一份，被策略剔除的模型因此既选不到、也用不了（白 / 黑名单说的是「这个模型不许用」）。
+   注意**停用只影响可见性、不影响这里**：disabled 的服务商不进制选择器，但画布上早就绑着它的
+   节点照旧能跑（停用是「把它收起来」，不是「把已有画布打断」）。 */
 function modelsOfKind(cfg, prov, kind) {
-  const models = (prov && Array.isArray(prov.models) ? prov.models : []) || [];
-  return models.filter((m) => modelKindOf(cfg, prov && prov.id, m) === kind);
+  return providerModelFilter(prov, prov && prov.models).filter(
+    (m) => modelKindOf(cfg, prov && prov.id, m) === kind,
+  );
 }
 
 /* 服务商「默认形态」：用于「添加服务商」与错配兜底 ——
@@ -229,6 +240,148 @@ function catalogModelAcceptsImage(catalog, modelId) {
     }
   }
   return false;
+}
+
+/* ═══════════ 服务商模型策略：白名单 / 黑名单 / 停用 / 三档超时 ═══════════
+   对标 OpenCode 的 provider 配置，服务商记录多了四个**可选**字段（老配置不填 = 行为一字不变，
+   缺省值必须与现状完全一致）：
+     · modelAllow  字符串，逗号 / 空格分隔的模型名通配模式。**白名单先收窄**：非空时只保留命中的模型。
+     · modelDeny   字符串，同格式。**黑名单再剔除**：在白名单结果上删掉命中的模型。
+     · disabled    布尔，停用该服务商（配置与密钥保留，只是不进模型选择器、不参与智能路由）。
+     · timeoutConnect / timeoutHeader / timeoutChunk  数字（毫秒）：建立连接 / 首个响应字节 /
+       分块之间的空闲三档超时，缺省 300000（只影响主进程发请求，见 main.js 的四段看门狗）。
+   通配语义照 OpenCode：`*` 匹配零个或多个字符、`?` 匹配一个字符，其余字符按字面量（正则元字符
+   一律转义）；匹配对象是模型 id，大小写不敏感更友好。
+   本段是纯函数段（不碰 DOM / 不依赖 S），test/smoke-provider-policy.js 直接 require 真跑。 */
+const TIMEOUT_DEFAULT_MS = 300000;
+
+/* 单个字面量字符的正则转义（通配符不在此列，由调用方单独拼接） */
+function escapeRegExpLiteral(ch) {
+  return String(ch == null ? "" : ch).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/* 通配模式 → 正则：* = 零或多个、? = 恰好一个，其余字面量；整体锚定 + 大小写不敏感。
+   空模式返回 null（调用方跳过），避免空串变成「匹配一切」。 */
+function modelGlobToRegExp(pattern) {
+  const p = String(pattern == null ? "" : pattern).trim();
+  if (!p) return null;
+  let src = "";
+  for (const ch of p) {
+    if (ch === "*") src += ".*";
+    else if (ch === "?") src += ".";
+    else src += escapeRegExpLiteral(ch);
+  }
+  return new RegExp("^" + src + "$", "i");
+}
+
+/* 模式串 → 模式数组：逗号（中英）/ 分号 / 空白（含换行）分隔，去空、去重、保持书写顺序 */
+function modelPatterns(text) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of String(text == null ? "" : text).split(/[,，;；\s]+/)) {
+    const p = raw.trim();
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+/* 模型 id 是否命中这批模式中的任意一个 */
+function modelMatchesPatterns(modelId, patterns) {
+  const id = String(modelId == null ? "" : modelId).trim();
+  if (!id) return false;
+  for (const p of patterns || []) {
+    const re = modelGlobToRegExp(p);
+    if (re && re.test(id)) return true;
+  }
+  return false;
+}
+
+/* 服务商是否停用：只有显式 disabled === true 才算（缺省 / 老配置一律照旧可用） */
+function providerDisabled(prov) {
+  return !!(prov && prov.disabled === true);
+}
+
+/* 单个模型 id 是否通过该服务商的白 / 黑名单（先白名单收窄、再黑名单剔除） */
+function providerModelAllowed(prov, modelId) {
+  if (!prov) return true;
+  const allow = modelPatterns(prov.modelAllow);
+  if (allow.length && !modelMatchesPatterns(modelId, allow)) return false;
+  const deny = modelPatterns(prov.modelDeny);
+  if (deny.length && modelMatchesPatterns(modelId, deny)) return false;
+  return true;
+}
+
+/* 服务商「模型过滤」唯一入口：先白名单收窄、再黑名单剔除。
+   allow / deny 都留空 ⇒ 原样返回（老配置行为一字不变）；models 省略时取 prov.models。
+   幂等：对已经过滤过的清单再过滤一次结果不变（调用点可以放心叠加）。 */
+function providerModelFilter(prov, models) {
+  const src = Array.isArray(models)
+    ? models
+    : (prov && Array.isArray(prov.models) ? prov.models : []) || [];
+  const list = src.map((m) => String(m));
+  if (!prov) return list;
+  const allowRe = modelPatterns(prov.modelAllow)
+    .map(modelGlobToRegExp)
+    .filter(Boolean);
+  const denyRe = modelPatterns(prov.modelDeny)
+    .map(modelGlobToRegExp)
+    .filter(Boolean);
+  if (!allowRe.length && !denyRe.length) return list;
+  return list.filter((id) => {
+    if (allowRe.length && !allowRe.some((re) => re.test(id))) return false;
+    if (denyRe.some((re) => re.test(id))) return false;
+    return true;
+  });
+}
+
+/* 模型选择器取用的清单：停用的服务商一律返回空表 —— 它在设置里仍可见 / 可编辑 / 可恢复，
+   只是不出现在任何「给用户选模型」的地方。 */
+function providerSelectableModels(prov) {
+  if (providerDisabled(prov)) return [];
+  return providerModelFilter(prov, prov && prov.models);
+}
+
+/* 三档请求超时（毫秒）：连接 / 首字节 / 分块之间空闲，缺省 300000；
+   非数字或 <= 0 一律按缺省（0 在这里不做「不设时限」解释 —— 那档只有生图路径有）。 */
+function providerTimeoutTiers(prov) {
+  const pick = (k) => {
+    const n = Number(prov && prov[k]);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : TIMEOUT_DEFAULT_MS;
+  };
+  return {
+    timeoutConnect: pick("timeoutConnect"),
+    timeoutHeader: pick("timeoutHeader"),
+    timeoutChunk: pick("timeoutChunk"),
+  };
+}
+
+/* 随 spec 下发给主进程的三档超时字段（缺省 300000）：渲染层唯一出处。
+   主进程 timeoutTiersOf(spec, spec.provider) 优先读这几个显式字段，再退到服务商对象。 */
+function providerTimeoutSpec(prov) {
+  const t = providerTimeoutTiers(prov);
+  return {
+    timeoutConnect: t.timeoutConnect,
+    timeoutHeader: t.timeoutHeader,
+    timeoutChunk: t.timeoutChunk,
+  };
+}
+
+/* 「DeepSeek 官方」路由是否可选：配置里那家 DeepSeek 服务商被停用时，官方路由一并消失
+   （一家 DeepSeek 都没配 ⇒ 目录兜底路由照旧可选，与停用功能上线前完全一致）。 */
+function deepseekRouteSelectable(cfg) {
+  const ds = [];
+  for (const p of (cfg && cfg.providers) || []) {
+    if (!p || p.type !== "text_openai" || !String(p.baseUrl || "").trim()) continue;
+    let host = "";
+    try {
+      host = new URL(p.baseUrl).hostname.toLowerCase();
+    } catch {}
+    if (host.includes("deepseek")) ds.push(p);
+  }
+  if (!ds.length) return true;
+  return ds.some((p) => !providerDisabled(p));
 }
 
 /* ── 与执行路径对接的小工具 ── */
@@ -272,6 +425,7 @@ if (typeof module !== "undefined" && module.exports) {
     KIND_IMAGE,
     IMAGE_MODEL_MARKERS,
     TEXT_MODEL_MARKERS,
+    TIMEOUT_DEFAULT_MS,
     inferModelKind,
     modelKindOverride,
     modelKindOf,
@@ -283,5 +437,16 @@ if (typeof module !== "undefined" && module.exports) {
     modelKindForNode,
     providerTypeForKind,
     correctedTypeForModel,
+    /* 服务商模型策略：白名单 / 黑名单 / 停用 / 三档超时 */
+    modelGlobToRegExp,
+    modelPatterns,
+    modelMatchesPatterns,
+    providerDisabled,
+    providerModelAllowed,
+    providerModelFilter,
+    providerSelectableModels,
+    providerTimeoutTiers,
+    providerTimeoutSpec,
+    deepseekRouteSelectable,
   };
 }

@@ -870,6 +870,88 @@ function openSettingsBody() {
       );
     sec.appendChild(langTasteHint);
 
+    /* ── 子代理（delegation）：嵌套深度 + 后台并行 + fork 型 + 总开关 ──
+       对标 OpenCode 的 subagent_depth / task 权限：dsh 自带的委派深度默认是 3 层，
+       容易「子代理再派子代理」把 token 烧干；这里默认收紧到 1 层，并允许整套关掉。
+       值存 S.config.dsh.subagent，由主进程 main.js 的 syncSubagentPolicy 落进
+       dsh 组合（cordis.yml 的 subagent* 8 行，见 dsh-agent-policy.js）。
+       生效口径与权限预设同源：**下一个新会话**用新值，正在跑的会话沿用原设置。 */
+    {
+      const sub = (S.config.dsh.subagent = Object.assign(
+        { enabled: true, fork: true, background: true, depth: 1 },
+        S.config.dsh.subagent || {},
+      ));
+      if ([0, 1, 2].indexOf(Number(sub.depth)) < 0) sub.depth = 1;
+      sub.enabled = sub.enabled !== false;
+      sub.fork = sub.fork !== false;
+      sub.background = sub.background !== false;
+
+      const subHead = document.createElement("div");
+      subHead.className = "settings-hint";
+      subHead.style.fontWeight = "600";
+      subHead.textContent = I18n.t("子代理（委派）");
+      sec.appendChild(subHead);
+
+      const depthRow = document.createElement("label");
+      depthRow.className = "n-field";
+      depthRow.appendChild(
+        document.createTextNode(I18n.t("子代理嵌套深度（0 = 禁止委派）")),
+      );
+      const depthSel = document.createElement("select");
+      [
+        ["0", "0 · 禁止委派（模型侧不再有委派工具）"],
+        ["1", "1 · 只允许一层（默认）"],
+        ["2", "2 · 允许两层"],
+      ].forEach((pair) => {
+        const o = document.createElement("option");
+        o.value = pair[0];
+        o.textContent = I18n.t(pair[1]);
+        depthSel.appendChild(o);
+      });
+      depthSel.value = String(Number(sub.depth));
+      depthSel.onchange = () => {
+        S.config.dsh.subagent.depth = Number(depthSel.value) || 0;
+        settingsSaved(0);
+      };
+      depthRow.appendChild(depthSel);
+      sec.appendChild(depthRow);
+
+      const subChecks = [
+        [
+          "enabled",
+          "允许子代理委派（总开关：取消后模型看不到任何委派工具）",
+        ],
+        [
+          "background",
+          "允许后台并行委派（取消后子代理只在前台同步跑，一次一个）",
+        ],
+        ["fork", "允许 fork 型子代理（复制当前上下文另起一个子会话）"],
+      ];
+      subChecks.forEach((pair) => {
+        const row = document.createElement("label");
+        row.className = "n-field";
+        row.style.flexDirection = "row";
+        row.style.alignItems = "center";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!sub[pair[0]];
+        cb.onchange = () => {
+          S.config.dsh.subagent[pair[0]] = !!cb.checked;
+          settingsSaved(0);
+        };
+        row.appendChild(cb);
+        row.appendChild(document.createTextNode(I18n.t(pair[1])));
+        sec.appendChild(row);
+      });
+
+      const subHint = document.createElement("div");
+      subHint.className = "settings-hint";
+      subHint.textContent = I18n.t(
+        "这几项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。深度只约束「子代理再派子代理」，不影响你自己发起的一次委派。",
+      );
+      sec.appendChild(subHint);
+    }
+
     /* 权限预设(dsh permission-presets:沙箱模式 + 审批策略,热重载生效) */
     const permRow = document.createElement("label");
     permRow.className = "n-field";
@@ -1739,11 +1821,11 @@ function addProviderDialog() {
   };
 
   srcSel.addEventListener("change", () => {
-    const manual = srcSel.value === "manual";
-    const paste = srcSel.value === "paste";
-    catBox.style.display = paste ? "none" : "";
-    manBox.style.display = manual ? "" : "none";
-    pasteBox.style.display = paste ? "" : "none";
+    /* 三种模式各自只显示自己那一块：手动配置 = 自定义服务商，
+       上方的「服务商目录」下拉（及名称 / API Key 那两个目录专用输入）一块都不该留。 */
+    catBox.style.display = srcSel.value === "catalog" ? "" : "none";
+    manBox.style.display = srcSel.value === "manual" ? "" : "none";
+    pasteBox.style.display = srcSel.value === "paste" ? "" : "none";
   });
 
   const renderCatalog = () => {
@@ -1882,6 +1964,11 @@ function addProviderDialog() {
     {
       if (!mNameInp.value.trim()) {
         toast(I18n.t("请填写服务商名称"), "warn");
+        return;
+      }
+      /* 自定义服务商没有目录兜底：接口地址必填，否则保存下来也建不出任何请求 */
+      if (!mUrlInp.value.trim()) {
+        toast(I18n.t("请填写接口地址 Base URL"), "warn");
         return;
       }
       prov = {
@@ -2475,6 +2562,163 @@ function openAddStoreSource() {
   foot.appendChild(ok);
 }
 
+/* 实时获取该服务商当前可用的模型列表（设置 · 服务商卡片「获取模型」）：
+   OpenAI 兼容走主进程 GET <base>/v1/models（或 /models）——**纯 HTTP 元信息读取，
+   不调用任何 AI，零 Token 消耗**；Stability 再回退账户信息里的 engines。
+   结果落进一个多选对话框：已配的自动勾上（取消勾选 = 只保留不删），新增的默认勾上，
+   一键批量加入模型列表；同时按模型元信息标出「能吃图 / 画图」，顺手勾上「支持视觉」。
+   拿不到（老网关没有 /models、Key 无权限）就如实报错，退回手工填写。 */
+async function fetchModelsToProvider(prov, btn) {
+  if (!prov) return;
+  const apiKey = String(prov.apiKey || "").trim();
+  const baseUrl = String(prov.baseUrl || "").trim();
+  if (!baseUrl) {
+    toast(I18n.t("未配置接口地址（设置 · API/配置）"), "warn");
+    return;
+  }
+  if (!apiKey) {
+    toast(I18n.t("请填写 API Key"), "warn");
+    return;
+  }
+  const label = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = I18n.t("读取中…");
+  }
+  let r = null;
+  try {
+    if (!window.api || !window.api.apiListModels) throw new Error(I18n.t("当前版本不支持读取模型列表"));
+    r = await window.api.apiListModels({
+      type: prov.type || "text_openai",
+      baseUrl,
+      apiKey,
+    });
+  } catch (e) {
+    r = { ok: false, error: (e && e.message) || String(e) };
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = label || I18n.t("获取模型");
+    }
+  }
+  if (!r || !r.ok) {
+    const detail = (r && r.error) || "";
+    toast(
+      (detail || I18n.t("获取模型列表失败")) + I18n.t("（可继续手工添加模型）"),
+      "err",
+    );
+    return;
+  }
+  const live = (r.models || []).map(String);
+  const meta = new Map(
+    (r.meta || []).filter((m) => m && m.id).map((m) => [String(m.id), m]),
+  );
+  const have = new Set(
+    (Array.isArray(prov.models) ? prov.models : []).map(String),
+  );
+  const added = live.filter((m) => !have.has(m));
+  if (!live.length) return;
+  openOverlay(I18n.t("获取模型列表"));
+  overlayPersistent = true;
+  const body = $("#ovBody");
+  const hint = document.createElement("div");
+  hint.className = "settings-hint";
+  hint.textContent = I18n.t(
+    "已从服务商接口读取到可用模型（只读元信息，未消耗任何 Token）。勾选要加入下方模型列表的条目：已配置的默认勾上（取消勾选只是不重复添加，不会删除已有项）。",
+  );
+  body.appendChild(hint);
+  const list = document.createElement("div");
+  list.className = "model-pick-list";
+  const boxes = [];
+  const mkRow = (id, fresh) => {
+    const row = document.createElement("label");
+    row.className = "mp-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.value = id;
+    boxes.push(cb);
+    const name = document.createElement("span");
+    name.className = "mp-name";
+    name.textContent = id;
+    row.appendChild(cb);
+    row.appendChild(name);
+    const mt = meta.get(id);
+    const kind = modelKindOf(S.config, prov.id, id);
+    const tag = document.createElement("span");
+    tag.className =
+      "pk-badge pk-" + (kind === "image" ? "image" : "text");
+    tag.textContent =
+      kind === "image" ? I18n.t("图像") : I18n.t("文本");
+    row.appendChild(tag);
+    if (mt && mt.input) {
+      const vis = document.createElement("span");
+      vis.className = "pk-badge pk-mix";
+      vis.textContent = I18n.t("能吃图");
+      vis.title = I18n.t("该模型支持图片输入（视觉输入），不是「会画图」");
+      row.appendChild(vis);
+    }
+    if (fresh) {
+      const nw = document.createElement("span");
+      nw.className = "mp-new";
+      nw.textContent = I18n.t("新发现");
+      row.appendChild(nw);
+    }
+    list.appendChild(row);
+  };
+  for (const id of live) mkRow(id, !have.has(id));
+  body.appendChild(list);
+  const state = document.createElement("div");
+  state.className = "settings-hint";
+  state.textContent = I18n.t("共 {n} 个模型 · 新发现 {m} 个")
+    .replace("{n}", String(live.length))
+    .replace("{m}", String(added.length));
+  body.appendChild(state);
+  const foot = $("#ovFoot");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  cancel.onclick = closeOverlay;
+  const okBtn = document.createElement("button");
+  okBtn.type = "button";
+  okBtn.className = "mini primary";
+  okBtn.textContent = I18n.t("加入所选模型");
+  okBtn.onclick = () => {
+    /* 勾选顺序 = 服务商返回顺序 = 新的使用优先级（已有的排在最前，保持原顺序） */
+    const picked = boxes.filter((b) => b.checked).map((b) => String(b.value));
+    const kept = (Array.isArray(prov.models) ? prov.models : []).filter((m) =>
+      have.has(String(m)),
+    );
+    if (picked.length) prov.models = Array.from(new Set(kept.concat(picked)));
+    /* 元信息里明确「能吃图」→ 顺手勾上视觉支持（只加不减，不覆盖用户已有的选择） */
+    const vision = picked.some((m) => meta.get(m) && meta.get(m).input);
+    if (vision && !prov.vision) prov.vision = true;
+    closeOverlay();
+    settingsSaved(0);
+    /* 回刷设置页（模型列表 / 形态标签）与画布节点的服务商下拉。
+       服务商配置对话框是设置窗之上的一层独立浮层（#provCfgDlg 压着 #overlay），
+       先把子浮层收掉再原地重画设置正文：不叠第二层设置窗，也不重读磁盘把刚写进去的
+       改动顶掉（内存 S.config 就是刚保存的那一份）。 */
+    closeProvCfgDlg();
+    openSettingsBody();
+    if (typeof settingsProvTilesRepaint === "function") settingsProvTilesRepaint();
+    if (typeof renderCanvas === "function") {
+      try {
+        renderCanvas();
+      } catch {}
+    }
+    toast(
+      I18n.t("已加入 {n} 个模型（新发现 {m} 个）")
+        .replace("{n}", String(picked.length))
+        .replace("{m}", String(added.length)),
+      "ok",
+    );
+  };
+  foot.appendChild(cancel);
+  foot.appendChild(okBtn);
+}
+
 /* 设置页：无 Token 消耗校验 API Key（主进程 GET /models 等） */
 async function validateProviderApiKey(prov, btn) {
   const apiKey = String((prov && prov.apiKey) || "").trim();
@@ -2549,13 +2793,23 @@ function repaintSettingsTopup() {
 function provTile(prov, i) {
   const tile = document.createElement("button");
   tile.type = "button";
-  tile.className = "prov-tile" + (i === 0 ? " pri" : "");
+  const off = typeof providerDisabled === "function" && providerDisabled(prov);
+  tile.className = "prov-tile" + (i === 0 ? " pri" : "") + (off ? " off" : "");
   tile.title =
-    (i === 0 ? I18n.t("当前优先使用") + " · " : "") + I18n.t("点击配置该服务商");
+    (i === 0 ? I18n.t("当前优先使用") + " · " : "") +
+    I18n.t("点击配置该服务商") +
+    /* 停用只影响「出现在模型选择器里」，卡片照旧留着、可编辑、可恢复 */
+    (off ? " · " + I18n.t("已停用") : "");
   const name = document.createElement("span");
   name.className = "prov-tile-name";
   name.textContent = prov.name || I18n.t("（未命名）");
   tile.appendChild(name);
+  if (off) {
+    const tag = document.createElement("span");
+    tag.className = "prov-tile-off";
+    tag.textContent = I18n.t("已停用");
+    tile.appendChild(tag);
+  }
   tile.onclick = () => openProviderConfigDialog(prov);
   return tile;
 }
@@ -3024,6 +3278,17 @@ function provCard(prov, i, onChange) {
       row.appendChild(grip);
       row.appendChild(idxEl);
       row.appendChild(name);
+      /* 被白 / 黑名单排除的模型：照旧留在表里（还要能调优先级 / 删掉），但标出来
+         「模型选择器里不会出现」—— 规则的效果一眼可见，不必去别处猜为什么选不到 */
+      if (!providerModelAllowed(prov, mid)) {
+        const out = document.createElement("span");
+        out.className = "pk-badge pk-mix";
+        out.textContent = I18n.t("策略外");
+        out.title = I18n.t(
+          "该模型被白名单 / 黑名单排除，不会出现在任何模型选择器里（这里仍可调顺序或删除）",
+        );
+        row.appendChild(out);
+      }
       row.appendChild(kindBtn);
       row.appendChild(up);
       row.appendChild(down);
@@ -3160,6 +3425,21 @@ function provCard(prov, i, onChange) {
     );
   };
   kindRow.appendChild(detectBtn);
+  /* 实时获取：向服务商自身的 /models 端点要一份当前可用模型（纯 HTTP 元信息读取，
+     不调用 AI、不消耗 Token），多选后批量加入上面的模型列表；老网关没有该端点时
+     如实报错，用户继续手工添加。 */
+  const fetchBtn = document.createElement("button");
+  fetchBtn.type = "button";
+  fetchBtn.className = "mini";
+  fetchBtn.textContent = I18n.t("获取模型");
+  fetchBtn.title = I18n.t(
+    "实时向服务商接口读取当前可用的模型列表并一键加入（只读元信息，不消耗 Token）",
+  );
+  fetchBtn.onclick = (ev) => {
+    ev.preventDefault();
+    fetchModelsToProvider(prov, fetchBtn);
+  };
+  kindRow.appendChild(fetchBtn);
   const kindNote = document.createElement("span");
   kindNote.className = "settings-hint";
   kindNote.style.margin = "0";
@@ -3169,6 +3449,132 @@ function provCard(prov, i, onChange) {
   kindRow.appendChild(kindNote);
   modelField.appendChild(kindRow);
   gridEl.appendChild(modelField);
+
+  /* ── 模型白 / 黑名单（对标 OpenCode 的 provider 配置）──
+     两个文本框都是**可选**字段：留空 = 不限制（老配置什么都不填 ⇒ 行为一字不变）。
+     通配语义 * 零或多个字符、? 一个字符，其余字符按字面量；匹配对象是模型 id、大小写不敏感。
+     白名单先收窄、黑名单再剔除，之后所有「给用户选模型」的地方（节点设置 / 智能会话 /
+     全局助手 / 开发节点的下拉，以及上面这份模型列表的徽标）都按过滤结果说话。 */
+  const allowInp = document.createElement("input");
+  allowInp.type = "text";
+  allowInp.value = String(prov.modelAllow || "");
+  allowInp.placeholder = "deepseek-*";
+  allowInp.oninput = () => {
+    prov.modelAllow = allowInp.value;
+    paintPolicyNote();
+    settingsSaved(600);
+  };
+  /* 失焦 / 回车时才重画模型行徽标：打字过程中不整表重排，看得见效果又不必等 */
+  allowInp.onchange = () => {
+    prov.modelAllow = allowInp.value;
+    paintModels();
+  };
+  mkField(I18n.t("模型白名单"), allowInp, true);
+
+  const denyInp = document.createElement("input");
+  denyInp.type = "text";
+  denyInp.value = String(prov.modelDeny || "");
+  denyInp.placeholder = "*-vision *-exp";
+  denyInp.oninput = () => {
+    prov.modelDeny = denyInp.value;
+    paintPolicyNote();
+    settingsSaved(600);
+  };
+  denyInp.onchange = () => {
+    prov.modelDeny = denyInp.value;
+    paintModels();
+  };
+  mkField(I18n.t("模型黑名单"), denyInp, true);
+
+  const policyHint = document.createElement("div");
+  policyHint.className = "settings-hint pf-wide";
+  policyHint.style.margin = "0";
+  policyHint.textContent = I18n.t(
+    "留空 = 不限制；支持 * 与 ? 通配；白名单先收窄，黑名单再剔除",
+  );
+  gridEl.appendChild(policyHint);
+  /* 规则生效后的实时小结（写不出「结果」用户就得一个个去数） */
+  const policyNote = document.createElement("div");
+  policyNote.className = "settings-hint pf-wide";
+  policyNote.style.margin = "0";
+  gridEl.appendChild(policyNote);
+  function paintPolicyNote() {
+    const nAllow = modelPatterns(prov.modelAllow).length;
+    const nDeny = modelPatterns(prov.modelDeny).length;
+    const all = Array.isArray(prov.models) ? prov.models.length : 0;
+    const keep = providerModelFilter(prov, prov.models).length;
+    if (!nAllow && !nDeny) {
+      policyNote.textContent = I18n.t("当前不限制：全部 ") + all + I18n.t(" 个模型都可用");
+      return;
+    }
+    policyNote.textContent =
+      I18n.t("白名单 ") +
+      nAllow +
+      I18n.t(" 条 · 黑名单 ") +
+      nDeny +
+      I18n.t(" 条 · 过滤后可用 ") +
+      keep +
+      " / " +
+      all;
+  }
+  paintPolicyNote();
+
+  /* ── 请求超时（三档，毫秒）──
+     连接 = 建立 TCP 连接；首字节 = 发出请求后等第一个响应字节；分块 = 响应数据块之间的空闲。
+     任一档到点都会中断这次请求，并报明是哪一档超时。留空 / 非正数 = 用缺省 300000
+     （老配置不填这几个字段 ⇒ 与现状完全一致）。 */
+  const mkTimeoutField = (label, key) => {
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "0";
+    inp.step = "1000";
+    inp.placeholder = "300000";
+    const n = Number(prov[key]);
+    inp.value = Number.isFinite(n) && n > 0 ? String(Math.round(n)) : "";
+    inp.oninput = () => {
+      const v = Number(inp.value);
+      if (inp.value.trim() !== "" && Number.isFinite(v) && v > 0) prov[key] = Math.round(v);
+      /* 清空 = 回到缺省：把这个键删掉，读的时候一律按 300000 */
+      else delete prov[key];
+      settingsSaved(600);
+    };
+    mkField(I18n.t(label), inp);
+  };
+  mkTimeoutField("连接超时（毫秒）", "timeoutConnect");
+  mkTimeoutField("首字节超时（毫秒）", "timeoutHeader");
+  mkTimeoutField("分块超时（毫秒）", "timeoutChunk");
+  const tmoHint = document.createElement("div");
+  tmoHint.className = "settings-hint pf-wide";
+  tmoHint.style.margin = "0";
+  tmoHint.textContent = I18n.t(
+    "三档都是毫秒，缺省 300000；留空即用缺省。哪一档等超了就在报错里写明哪一档",
+  );
+  gridEl.appendChild(tmoHint);
+
+  /* ── 停用该服务商 ──
+     停用只影响**可见性**：它不再出现在任何模型选择器里（节点 / 会话 / 助手 / 开发节点，
+     以及「DeepSeek 官方」这条路由），但配置与密钥原样保留，卡片也照旧在这里，
+     随时取消勾选即可恢复。画布上早就绑着它的节点不受影响（跑的还是原配置）。 */
+  const offRow = document.createElement("label");
+  offRow.className = "pf pf-inline";
+  const offCb = document.createElement("input");
+  offCb.type = "checkbox";
+  offCb.checked = typeof providerDisabled === "function" && providerDisabled(prov);
+  offCb.onchange = () => {
+    if (offCb.checked) prov.disabled = true;
+    else delete prov.disabled; /* 取消勾选就删键，老配置里根本没有它 */
+    settingsSaved(0);
+    /* 服务商网格上的「已停用」角标立刻回刷 */
+    if (typeof settingsProvTilesRepaint === "function") settingsProvTilesRepaint();
+  };
+  offRow.appendChild(offCb);
+  offRow.appendChild(document.createTextNode(I18n.t("停用该服务商")));
+  gridEl.appendChild(offRow);
+  const offHint = document.createElement("div");
+  offHint.className = "settings-hint pf-wide";
+  offHint.style.margin = "0";
+  offHint.textContent = I18n.t("停用后不出现在模型选择器里（配置与密钥保留）");
+  gridEl.appendChild(offHint);
 
   /* 视觉开关：只要这家有文本模型就显示（混合端点也常靠它走图生文，
      以前只认 type === text_openai，配成 image_* 的混合端点就没法勾） */

@@ -50,15 +50,18 @@
  * 一、单价与费用（纯函数，不碰 DOM）
  * ============================================================ */
 
-/* DeepSeek 官方单价：¥ / 百万 token（高峰时段） */
+/* DeepSeek 官方单价：¥ / 百万 token（高峰时段）
+   deepseek-flash（V4.1-Flash）= 现行 flash 档；deepseek-v4-flash 与
+   deepseek-v4-flash-vision-exp 已下线，请求由 V4.1-Flash 承接并按 Flash 价计费
+   （旧 id 仍按前缀命中本表 flash 行），所以两行同价。 */
 const DS_PRICE = {
-  "deepseek-v4-flash": { cacheHit: 0.1, cacheMiss: 3.0, output: 9.0 },
+  "deepseek-flash": { cacheHit: 0.04, cacheMiss: 2.0, output: 8.0 },
+  "deepseek-v4-flash": { cacheHit: 0.04, cacheMiss: 2.0, output: 8.0 },
   "deepseek-v4-pro": { cacheHit: 0.3, cacheMiss: 9.0, output: 27.0 },
-  "deepseek-v4-flash-vision-exp": { cacheHit: 0.1, cacheMiss: 3.0, output: 9.0 },
 };
 
 /* 未知 DeepSeek 模型的兜底档（按 flash 价） */
-const DS_FLASH_ID = "deepseek-v4-flash";
+const DS_FLASH_ID = "deepseek-flash";
 
 /* 峰谷：空闲时段单价 = 高峰 × 该比例（官方为空闲半价） */
 const DS_OFFPEAK_RATIO = 0.5;

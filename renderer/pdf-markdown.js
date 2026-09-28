@@ -499,7 +499,7 @@ async function pdfVisionParse(pdfPath, parse, ctl, opts) {
       markdown: "",
       error: pdfT(
         "未配置支持识图的模型：请在「设置 → 模型服务」里给服务商勾选「支持视觉」，" +
-          "并把视觉模型排到该服务商列表最前（DeepSeek 官方不支持识图）",
+          "并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）",
       ),
     };
   }

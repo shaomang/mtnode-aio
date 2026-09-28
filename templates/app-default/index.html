@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 新建应用的默认页（Hello world）：一个基于 Markdown 的欢迎页，用来告诉零基础用户
+         「在会话栏说一句话，这个页面就会变成你要的样子」。
+         纯静态、单文件、离线可用：正文是 <script type="text/markdown"> 里的真 Markdown，
+         由页内一段极小渲染器画出来；不依赖宿主能力也能正常显示。
+         占位符 {{APP_NAME}} 由主进程 apps-store.js 写入应用目录时替换。 -->
+    <title>{{APP_NAME}}</title>
+    <style>
+      /* 工程笔记本：深墨底 + 一根竖线串起三步 + 细线分隔。
+         材料只有线、留白和一点工具库紫：没有位图、没有发光、没有玻璃、没有渐变字。 */
+      :root {
+        --bg: #0a0c12;
+        --bg2: #0e1119;
+        --rule: #1d2230;
+        --rule2: #2a3143;
+        --ink: #e9ecf4;
+        --ink2: #aab3c7;
+        --muted: #7d879c;
+        --violet: #c792ea;
+        --violet-dim: #8a68a8; /* 只当描边 / 箭头：压在深底上还能看见（≈4.5:1） */
+        --sans: system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+          "PingFang SC", "Hiragino Sans GB", sans-serif;
+        --mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas,
+          "Liberation Mono", monospace;
+        --ease: cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      * { box-sizing: border-box; }
+
+      html { height: 100%; font-size: 16px; }
+
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--ink);
+        font: 400 15px/1.7 var(--sans);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+        overflow-y: auto;
+        /* 浏览器自己的表面也归这套设计：选区、光标、滚动条 */
+        accent-color: var(--violet);
+        caret-color: var(--violet);
+        scrollbar-width: thin;
+        scrollbar-color: var(--rule2) transparent;
+      }
+
+      ::selection { background: rgba(199, 146, 234, 0.26); color: #fff; }
+
+      :focus-visible {
+        outline: 2px solid var(--violet);
+        outline-offset: 2px;
+        border-radius: 3px;
+      }
+
+      /* ── 自绘标题栏（窗口 frame:false：这一条既当标题栏，也是拖动区） ── */
+      .app { min-height: 100vh; display: flex; flex-direction: column; position: relative; }
+
+      /* 页面底色就是 MTNode 自己的深墨底，不再铺第二层纹理：
+         方格纸那种两轴网格是「AI 味」的典型花纹，主界面到处是平底 + 细线，
+         这一页跟着来才像同一个产品（材料只剩线、留白和一个紫点）。 */
+
+      .bar {
+        position: relative;
+        flex: none;
+        height: 46px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px 0 14px;
+        border-bottom: 1px solid var(--rule);
+        background: var(--bg2);
+        -webkit-app-region: drag;
+        user-select: none;
+      }
+
+      .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+      .mark { display: block; width: 20px; height: 20px; color: var(--violet); flex: none; }
+
+      .brand-name {
+        min-width: 0;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--ink2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .bar-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+      .chip {
+        -webkit-app-region: no-drag;
+        font: 600 12px/1 var(--sans);
+        letter-spacing: 0.06em;
+        color: var(--ink2);
+        background: transparent;
+        border: 1px solid var(--rule2);
+        border-radius: 999px;
+        padding: 5px 10px;
+        cursor: pointer;
+        transition: color 160ms var(--ease), border-color 160ms var(--ease), background 160ms var(--ease);
+      }
+      .chip:hover { color: var(--ink); border-color: var(--violet-dim); background: rgba(199, 146, 234, 0.08); }
+      .chip[aria-pressed="true"] { color: var(--violet); border-color: var(--violet-dim); }
+
+      .x {
+        -webkit-app-region: no-drag;
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        color: var(--muted);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: color 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease);
+      }
+      .x:hover { color: var(--ink); background: rgba(233, 236, 244, 0.06); border-color: var(--rule2); }
+      .x svg { width: 12px; height: 12px; }
+
+      /* ── 正文 ── */
+      .page {
+        position: relative;
+        flex: 1 1 auto;
+        width: 100%;
+        max-width: 1020px;
+        margin: 0 auto;
+        padding: 60px 56px 44px;
+      }
+
+      .page > h1 {
+        margin: 0 0 18px;
+        font-size: 40px;
+        line-height: 1.18;
+        font-weight: 700;
+        letter-spacing: -0.022em;
+        text-wrap: balance;
+        max-width: 24ch;
+      }
+
+      .page > p {
+        margin: 0 0 40px;
+        font-size: 17px;
+        line-height: 1.68;
+        color: var(--ink2);
+        max-width: 52ch;
+      }
+
+      .page strong { color: var(--ink); font-weight: 650; }
+      .page code {
+        font: 500 0.92em/1 var(--mono);
+        background: rgba(233, 236, 244, 0.07);
+        border: 1px solid var(--rule);
+        border-radius: 4px;
+        padding: 2px 5px;
+      }
+      .page a { color: var(--violet); text-underline-offset: 3px; }
+
+      /* 三步：一根竖线 + 圆形编号。序列本身携带信息，所以编号是内容不是装饰。 */
+      .page ol.steps {
+        position: relative;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+        display: grid;
+        gap: 22px;
+      }
+      .page ol.steps::before {
+        content: "";
+        position: absolute;
+        left: 16px;
+        top: 34px;
+        bottom: 34px;
+        width: 1px;
+        background: var(--rule2);
+        transform-origin: top center;
+      }
+      .page ol.steps > li {
+        position: relative;
+        counter-increment: step;
+        padding-left: 54px;
+        min-height: 34px;
+        max-width: 62ch;
+      }
+      .page ol.steps > li::before {
+        content: counter(step, decimal);
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 33px;
+        height: 33px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--rule2);
+        border-radius: 50%;
+        background: var(--bg);
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0;
+      }
+      /* 每一步就是一句话：加粗的那半句就是它的名字，**不另起一行**做小标题
+         （标题上方压一行小字是 craft-floor 明令禁掉的花样，也免得「：」掉到行首） */
+      .page ol.steps > li:first-child { font-size: 17px; line-height: 1.65; color: var(--ink); }
+      .page ol.steps > li:first-child > strong:first-child { color: var(--violet); }
+      .page ol.steps > li:not(:first-child) { font-size: 15px; color: var(--ink2); }
+
+      .page blockquote {
+        margin: 46px 0 0;
+        padding: 18px 0 0;
+        border-top: 1px solid var(--rule);
+        color: var(--ink2);
+        font-size: 14px;
+        max-width: 62ch;
+      }
+
+      .page ul { margin: 0 0 26px; padding-left: 20px; color: var(--ink2); }
+      .page h2 { margin: 40px 0 14px; font-size: 20px; letter-spacing: -0.01em; }
+      .page h3 { margin: 30px 0 10px; font-size: 16px; letter-spacing: -0.005em; }
+      .page hr { height: 1px; border: 0; background: var(--rule); margin: 32px 0; }
+      .page pre {
+        margin: 0 0 26px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        border: 1px solid var(--rule);
+        border-radius: 8px;
+        background: var(--bg2);
+        font: 400 12.5px/1.7 var(--mono);
+        color: var(--ink2);
+      }
+      .page pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+      /* 脚注：与正文同一根竖轴（同宽同边距），把视线交给下面的会话栏。
+         窗口矮时内容要滚动，所以这条钉在底部，箭头一直指着会话栏那边。 */
+      .foot {
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        flex: none;
+        width: 100%;
+        max-width: 1020px;
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 56px 14px;
+        border-top: 1px solid var(--rule);
+        background: var(--bg);
+        color: var(--ink2);
+        font-size: 12px;
+        letter-spacing: 0.03em;
+      }
+      .foot svg { width: 12px; height: 12px; color: var(--violet-dim); flex: none; }
+
+      /* ── 自适应：窗口最小 640×480，开发页预览列约 520px ── */
+      @media (max-width: 900px) {
+        .page { padding: 44px 34px 34px; }
+        .page > h1 { font-size: 33px; }
+        .page > p { font-size: 16px; margin-bottom: 32px; }
+        .foot { padding: 12px 34px 14px; }
+      }
+      @media (max-width: 620px) {
+        html { font-size: 15px; }
+        .page { padding: 32px 22px 26px; }
+        .page > h1 { font-size: 27px; max-width: none; }
+        .page > p { font-size: 15px; }
+        .page ol.steps { gap: 18px; }
+        .page ol.steps > li { padding-left: 44px; }
+        .page ol.steps > li::before { width: 27px; height: 27px; font-size: 12px; }
+        .page ol.steps::before { left: 13px; top: 28px; bottom: 28px; }
+        .page ol.steps > li:first-child { font-size: 16.5px; }
+        .page blockquote { margin-top: 32px; }
+        .foot { padding: 10px 22px 12px; }
+      }
+      @media (max-height: 560px) {
+        .page { padding-top: 26px; padding-bottom: 20px; }
+      }
+
+      /* 一个作者化的入场：竖线画出、三步依次落位。一次到位，不散点开花。 */
+      @media (prefers-reduced-motion: no-preference) {
+        .page ol.steps::before { animation: draw 520ms var(--ease) both; }
+        .page ol.steps > li { animation: rise 480ms var(--ease) both; }
+        .page ol.steps > li:nth-child(1) { animation-delay: 90ms; }
+        .page ol.steps > li:nth-child(2) { animation-delay: 160ms; }
+        .page ol.steps > li:nth-child(3) { animation-delay: 230ms; }
+      }
+      .still .page ol.steps::before,
+      .still .page ol.steps > li { animation: none !important; }
+
+      @keyframes draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+      @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="bar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">
+            <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="4" cy="9" r="2.2" />
+              <circle cx="13.6" cy="4.2" r="2.2" />
+              <circle cx="13.6" cy="13.8" r="2.2" />
+              <path d="M6 8.2 11.5 5.1M6 9.8l5.5 3.1" stroke-linecap="round" />
+            </svg>
+          </span>
+          <span class="brand-name">{{APP_NAME}}</span>
+        </div>
+        <div class="bar-actions">
+          <button type="button" class="chip" id="langBtn" aria-pressed="false">EN</button>
+          <button type="button" class="x" id="closeBtn" hidden>
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M2 2l8 8M10 2l-8 8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="page" id="page"></main>
+
+      <footer class="foot">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <path d="M6 1v9M2.5 7 6 10.5 9.5 7" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span id="footText"></span>
+      </footer>
+    </div>
+
+    <!-- 正文：真 Markdown（中 / 英两块，按界面语言选一块渲染） -->
+    <script type="text/markdown" data-lang="zh">
+# 你的应用，从这句话开始
+
+在 MTNode「应用中心 → 开发」的**会话栏**里写下你想要什么 —— 这个页面就会变成你要的样子。
+
+1. **说一句就行**：比如「做一个便签墙，能加、能删、能保存」。
+2. **马上看到变化**：说完这一句，这个页面会自己刷新成新的样子。
+3. **不满意就继续说**：「标题大一点」「换成浅色」「加个搜索框」，一轮一轮改到满意。
+
+> 不用写代码，也不用看懂任何技术名词。
+    </script>
+
+    <script type="text/markdown" data-lang="en">
+# Your app starts with one sentence
+
+Write what you want in the **chat box** under App Center → Develop, and this page becomes it.
+
+1. **One sentence is enough**: for example, “a sticky-note wall I can add to, delete from and keep”.
+2. **Watch it change**: once you send that sentence, this page reloads itself into the new version.
+3. **Keep talking**: “a bigger title”, “a light theme”, “add a search box” — round by round, until it fits.
+
+> No code, and no technical vocabulary needed.
+    </script>
+
+    <script>
+      (function () {
+        "use strict";
+
+        /* ── 极小 Markdown 渲染器（块 + 行内语义子集，够改写这页正文用） ── */
+        function esc(s) {
+          return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        }
+        function inline(s) {
+          let t = esc(s);
+          t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+          t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+          t = t.replace(/(^|[\s(])\*([^*]+)\*/g, "$1<em>$2</em>");
+          t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+          return t;
+        }
+        function render(md) {
+          const src = String(md == null ? "" : md).replace(/\r\n?/g, "\n").replace(/^\n+|\s+$/g, "");
+          const out = [];
+          let list = null; /* "ol" | "ul" */
+          let fence = false; /* 代码围栏开着？ */
+          const closeList = () => {
+            if (list) {
+              out.push("</" + list + ">");
+              list = null;
+            }
+          };
+          for (const raw of src.split("\n")) {
+            const line = raw.replace(/\s+$/, "");
+            /* 代码围栏先判：围栏里整行照抄（只转义），不当 Markdown 解析；
+               空白行也要留着，不然代码块会被压成一行 */
+            if (/^```/.test(line)) {
+              closeList();
+              out.push(fence ? "</code></pre>" : "<pre><code>");
+              fence = !fence;
+              continue;
+            }
+            if (fence) {
+              out.push(esc(raw));
+              continue;
+            }
+            if (/^\s*$/.test(line)) {
+              closeList();
+              continue;
+            }
+            let m;
+            if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+              closeList();
+              const lv = m[1].length;
+              out.push("<h" + lv + ">" + inline(m[2]) + "</h" + lv + ">");
+              continue;
+            }
+            if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) {
+              closeList();
+              out.push("<hr />");
+              continue;
+            }
+            if ((m = line.match(/^\s*>\s?(.*)$/))) {
+              closeList();
+              out.push("<blockquote>" + inline(m[1]) + "</blockquote>");
+              continue;
+            }
+            if ((m = line.match(/^\s*(\d+)[.)]\s+(.*)$/))) {
+              if (list !== "ol") {
+                closeList();
+                out.push('<ol class="steps">');
+                list = "ol";
+              }
+              out.push("<li>" + inline(m[2]) + "</li>");
+              continue;
+            }
+            if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+              if (list !== "ul") {
+                closeList();
+                out.push("<ul>");
+                list = "ul";
+              }
+              out.push("<li>" + inline(m[1]) + "</li>");
+              continue;
+            }
+            closeList();
+            out.push("<p>" + inline(line) + "</p>");
+          }
+          closeList();
+          if (fence) out.push("</code></pre>"); /* 围栏没关（写漏了）也要收口 */
+          return out.join("\n");
+        }
+
+        /* ── 语言：按系统语言选一块，右上角可手动切 ── */
+        const blocks = {};
+        document.querySelectorAll('script[type="text/markdown"]').forEach((el) => {
+          blocks[el.dataset.lang || ""] = el.textContent || "";
+        });
+        /* 底部这条 = 把视线直接交给下面的会话栏（不说「应用中心 / 目录」这类内部话） */
+        const foot = {
+          zh: "说第一句就会变成你的应用 · 内容存在 <数据目录>\\apps-data\\<应用名>\\，在应用里可改",
+          en: "One sentence turns it into your app · data lives in <data dir>\\apps-data\\<app>, changeable in the app",
+        };
+        const params = new URLSearchParams(location.search || "");
+        const forced = params.get("lang");
+        let langs = [];
+        try {
+          langs = JSON.parse(sessionStorage.getItem("mtnode-app-lang") || "null") || [];
+        } catch (_) {}
+        let lang =
+          forced === "zh" || forced === "en"
+            ? forced
+            : langs[0] === "zh" || langs[0] === "en"
+              ? langs[0]
+              : /^zh\b|^zh-/i.test(navigator.language || "") || /^zh/i.test(navigator.language || "")
+                ? "zh"
+                : "en";
+
+        const page = document.getElementById("page");
+        const langBtn = document.getElementById("langBtn");
+        const footText = document.getElementById("footText");
+
+        function paint() {
+          page.innerHTML = render(blocks[lang] || blocks.zh || "");
+          document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+          document.title = (blocks[lang] || "").match(/^#\s+(.+)$/m)?.[1] || "{{APP_NAME}}";
+          footText.textContent = foot[lang] || foot.zh;
+          langBtn.textContent = lang === "zh" ? "EN" : "中";
+          langBtn.title = lang === "zh" ? "Switch to English" : "切换到中文";
+          langBtn.setAttribute("aria-label", langBtn.title);
+          langBtn.setAttribute("aria-pressed", lang === "en" ? "true" : "false");
+          try {
+            sessionStorage.setItem("mtnode-app-lang", JSON.stringify([lang]));
+          } catch (_) {}
+        }
+
+        langBtn.onclick = () => {
+          lang = lang === "zh" ? "en" : "zh";
+          paint();
+        };
+
+        /* 截图 / 录屏时把入场动画按住（?still=1），别让元素停在动画中途 */
+        if (params.get("still") === "1") document.body.classList.add("still");
+
+        /* 关自己窗口：只有宿主在的时候才给按钮（没有桥就不假装能关） */
+        const closeBtn = document.getElementById("closeBtn");
+        const host = window.appHost || null;
+        if (host && typeof host.close === "function") {
+          closeBtn.hidden = false;
+          closeBtn.title = lang === "zh" ? "关闭" : "Close";
+          closeBtn.setAttribute("aria-label", closeBtn.title);
+          closeBtn.onclick = () => host.close();
+        }
+
+        paint();
+      })();
+    </script>
+  </body>
+</html>

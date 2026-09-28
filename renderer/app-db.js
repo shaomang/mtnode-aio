@@ -2200,6 +2200,23 @@ function dshRetryWait(runKey, delayMs) {
 
 /* 一次智能运行的唯一入口：失败自动等一会儿（首错 30s、第 2 次起 60s）再重发（见上），真正发请求的是 dshRunOnce。
    重发的新默认是「优先续跑」：拿得到本轮会话就发续跑指令接着写，续不上才整轮重发。 */
+/* 本轮随消息下发的图像附件（本机绝对路径数组）。真源 = **这一轮新增**的那段正文里的
+   内嵌图行（会话 / 开发节点正文框写的 `![名称](绝对路径)`，解析在共享模块
+   renderer/app-inline-img.js 的 absImgPaths 里）。
+   为什么只认这一轮：历史轮的图早就随历史落在会话上下文里（运行时每步都会带上），
+   宿主每轮再发一遍 = 同一张图反复计费；暂停续跑轮同理，那份会话里图已经在上下文里。
+   网关侧（dsh/gateway/gateway.mjs 的 attachImages）把这些路径写进附件对象库
+   （<DSH_HOME>/attachments/v1，内容寻址），再把用户消息拼成「文本块 + image 内容块」。
+   共享模块缺席（老构建 / 切片冒烟）→ 空数组，行为与改动前一字不差。 */
+function dshRunImages(text) {
+  const m = typeof window !== "undefined" ? window.MTInlineImg : null;
+  if (!m || typeof m.absImgPaths !== "function") return [];
+  try {
+    return m.absImgPaths(text);
+  } catch (_) {
+    return [];
+  }
+}
 function dshRunTask(input, opts) {
   opts = opts || {};
   const runKey = dshRunKeyOf(opts);
@@ -2716,7 +2733,7 @@ function dshRunOnce(input, opts) {
      同源成分 —— 先把它们全定成局部量，探针与 runParams 共用同一份取值：
      本轮探针与续跑重发之间这些成分若漂移，网关会另起 runtime（即便握手把旧会话
     恢复出来，也是旧配置的上下文），所以它们必须进签名（见 dshRunSigOf 注释）。 */
-  const runModel = opts.model || d.model || "deepseek-v4-flash";
+  const runModel = opts.model || d.model || "deepseek-flash";
   const runMaxTokens = (() => {
     const t = effectiveDshMaxTokens(d.maxTokens);
     return t > 0 ? t : undefined;

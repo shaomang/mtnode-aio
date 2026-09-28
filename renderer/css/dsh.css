@@ -4621,6 +4621,28 @@ button.dsh-xlate-copy:hover {
   color: #e8dcc8
 }
 
+/* 用户消息正文里的内嵌图（正文里的一行 ![名称](绝对路径)）：
+   就地渲染成缩略图，点击开灯箱看原图 —— 观感与输入框上方的胶囊条
+   （.ii-line-chip-thumb）同族，历史消息回看时按当时的引用原样显示。
+   渲染见 renderer/app-assist.js 的 dshUserBodyHtml。 */
+.dsh-msg-body img.dsh-msg-img {
+  display: inline-block;
+  max-width: 180px;
+  max-height: 120px;
+  width: auto;
+  height: auto;
+  margin: 3px 4px 3px 0;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+  vertical-align: top;
+  cursor: zoom-in
+}
+
+.dsh-msg-body img.dsh-msg-img:hover {
+  border-color: var(--cyan)
+}
+
 .dsh-msg.hist-collapsed {
   cursor: pointer
 }

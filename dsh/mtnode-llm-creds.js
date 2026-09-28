@@ -120,10 +120,10 @@ function resolveDshRunAuth(dataDir) {
   let model = String(dshCfg.model || "").trim();
   if (!model) {
     if (provider === "deepseek-official" && dsProv) {
-      model = modelIdsOf(dsProv)[0] || "deepseek-v4-flash";
+      model = modelIdsOf(dsProv)[0] || "deepseek-flash";
     } else {
       const mp = piProvs.find((x) => "mtnode_" + x.route === provider);
-      model = (mp && mp.models && mp.models[0]) || "deepseek-v4-flash";
+      model = (mp && mp.models && mp.models[0]) || "deepseek-flash";
     }
   }
 

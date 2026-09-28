@@ -46,7 +46,7 @@ const accepted = await req('run', {
   reqId: 'real-1',
   workspace,
   input: '在1分钟内做一件小事：在工作目录里写一个文件 hello.txt，内容是「智能能力已接通」，然后回复我确认。',
-  model: 'deepseek-v4-flash',
+  model: 'deepseek-flash',
   maxTokens: 49152,
   apiKey: key,
   baseUrl: 'https://api.deepseek.com',

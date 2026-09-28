@@ -2,8 +2,15 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; frame-src https://open.weixin.qq.com http://mt-agent.com https://mt-agent.com; connect-src 'self'"><!-- frame-src：微信扫码登录把开放平台 qrconnect 页内嵌在登录对话框里（app-auth.js 的 authQrFrame），
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: http://mt-agent.com https://mt-agent.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'; frame-src https://open.weixin.qq.com http://mt-agent.com https://mt-agent.com mtnode-preview:; connect-src 'self'"><!-- frame-src：微信扫码登录把开放平台 qrconnect 页内嵌在登录对话框里（app-auth.js 的 authQrFrame），
      扫码确认后该页会自己跳到服务端回调域（默认 http://mt-agent.com，见 main.js 的 MTNODE_STORE_URL），两处都要放行。
+     frame-src 里的 mtnode-preview:：应用中心「开发」页中栏的实时预览 iframe（renderer/app-apps-dev.js 的
+     #appsDevFrame）src 就是这个主进程登记的标准 / 安全协议（apps-store.js 的 PREVIEW_SCHEME / registerPreviewProtocol）。
+     少放行它 = Chromium 在发出 frame 请求之前就拦掉这次导航（协议层根本收不到请求），
+     iframe 停在 about:blank、中栏只剩白底 —— 表现就是「预览未显示默认界面」。
+     img-src 里的 mt-agent.com：应用中心的图标（http://mt-agent.com/mtnode/apps/catalog.json 里条目声明的 icon）
+     是云端图，只能靠它显示（renderer/app-apps.js 的 appsIconUrl；加载失败一律回落成首字母占位块）；
+     目录正文仍由主进程 apps-store.js 拉取并缓存，渲染层不直连网络。
      'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
 <title>MTNode AI编排器</title>
 <link rel="stylesheet" href="style.css">
@@ -28,6 +35,15 @@
       <button type="button" id="btnPuzzle" class="corner mini btn-stack btn-puzzle" data-i18n-title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" aria-label="益智小游戏">
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5V4.6h3.1V2.4h2.8v2.2h3.1v3.1h-1.6a1.4 1.4 0 0 0 0 2.8h1.6v1.2H9.4v1.8H6.6V12.5H3.5z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
         <span class="btn-stack-txt" data-i18n="游戏">游戏</span>
+      </button>
+      <!-- 「应用」= 应用中心（renderer/app-apps.js 的 openAppsHub）：主窗口内整屏浮层页，
+           左导航「应用 / 库 / 开发」，云端目录下载 zip（sha256 校验）解包到应用根目录，
+           已下载的应用开独立窗口运行。**只对白名单账号露出**（app-apps.js 的
+           APPS_USER_WHITELIST，当前 ms2308）：默认 hidden，登录态变化时由它同步显隐。
+           不挂 data-shortcut —— 它是白名单入口，不占全局单键。 -->
+      <button type="button" id="btnApps" class="corner mini btn-stack btn-apps" hidden aria-hidden="true" data-i18n-title="应用：浏览云端应用目录，下载到本机后用独立窗口运行（已下载的应用在「库」里管理）" title="应用：浏览云端应用目录，下载到本机后用独立窗口运行（已下载的应用在「库」里管理）" aria-label="应用">
+        <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="4.8" height="4.8" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="8.8" y="2.2" width="4.8" height="4.8" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="2.2" y="8.8" width="4.8" height="4.8" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M11.2 8.6v5.2M8.8 11.4l2.4 2.4 2.4-2.4" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="btn-stack-txt" data-i18n="应用">应用</span>
       </button>
       <button type="button" id="btnDocs" class="corner mini btn-stack btn-docs" data-i18n-title="使用手册：界面说明与常见问题" title="使用手册：界面说明与常见问题">
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h7.4A1.4 1.4 0 0 1 12.2 4v9.2H4.6A1.2 1.2 0 0 1 3.4 12V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M12.2 13.2h.8V4.4A1.4 1.4 0 0 0 11.6 3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M5.6 5.2h4.2M5.6 7.4h4.2M5.6 9.6h2.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>
@@ -420,10 +436,39 @@
 <div id="toastBox"></div>
 
 
+<!-- ── preload 别名表（每个窗口一份**专属** preload，各自只暴露一个 global，别名即契约）──────
+     新增 / 改名任何一个内容窗口时，这张表与下面的脚本加载顺序一起同步：
+
+       preload.js                      →  window.api         主窗口（renderer/index.html）本窗口
+       preload-app.js                  →  window.appHost     **应用窗口**：用户自建应用（apps-store.js
+                                                            loadFile 应用自己的 index.html），只有
+                                                            文本/图像生成 + 本机存储 + 账号摘要。
+                                                            ← 无画布、无文件系统、无账号 token；
+                                                            服务商与 API Key 只留主进程。
+       plugins/preload-window.js       →  window.pluginApi  窗口插件 / 讨论区
+                                       →  window.forumApi
+       pet/preload-pet.js              →  window.petApi     桌宠（含 pet-pack 同名副本）
+       asr/preload-asr.js              →  window.asrApi     插件控制台（其余同口径：h3Api / music3Api /
+       h3/preload-h3.js                →  window.h3Api       yueApi / sensenovaApi / ttsApi / llamaApi /
+       …（每个 <插件>/preload-<插件>.js）                      remotionApi …）
+
+     每个 preload 一律白名单转发：不暴露 ipcRenderer / Node / 文件系统 / 账号 token。
+     脚本加载顺序 = 模块分层（renderer/*.js 只在调用期按 typeof 取彼此，故顺序只在注释写明依赖时
+     才必须严格；带「必须排在 X 之后」注释的行不要挪动）。
+     新增渲染层模块时按分层插行：应用（apps）主窗口面板走生态 / 商店那一层（排在 app-store.js
+     之后、与 app-plugins.js 相邻），它只经 window.api.apps* 与主进程 apps-store.js 对话。 -->
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/katex/katex.min.js"></script>
 <script src="i18n.js"></script>
 <script src="dsh-plugin-copy.js"></script>
+<!-- 内嵌图片共享模块（renderer/app-inline-img.js + css/inline-img.css）：粘贴 / 拖入 /
+     落盘 / 引用登记 / 无引用回收一套 API（出口 window.MTInlineImg），供审阅编辑器
+     （app-review.js）、节点正文框与会话 / 助手输入框共用 —— 富文本侧走 bindEditor（插 <img>），
+     两只 <textarea> 输入框（#agentInput / #assistInput，接线在 app-assist.js 末段）
+     走 bindTextarea（正文里插一行 ![名称](绝对路径) + 输入区上方胶囊条）。
+     无加载期依赖（window.api / I18n / mtDialogForm 全在调用期取），故只要排在用它的
+     app.js 之前即可；审阅侧同样按调用期取用。 -->
+<script src="app-inline-img.js"></script>
 <script src="app.js"></script>
 <!-- 模型形态识别（文本 / 图像生成）：纯函数段，设置页模型徽标、节点服务商 / 模型
      下拉、运行期兜底、导入导出解析共用同一份判定（见 renderer/app-model-kind.js）。
@@ -480,6 +525,31 @@
 <script src="app-rollback.js"></script>
 <script src="app-store.js"></script>
 <script src="app-plugins.js"></script>
+<!-- 应用中心（renderer/app-apps.js + css/apps.css · 顶栏「应用」入口）：主窗口内整屏浮层页，
+     左导航「应用 / 库 / 开发」；云端目录 / 下载（zip + sha256 校验 + 解包到应用根目录）/
+     已下载应用（打开 · 更新 · 卸载）全部走 window.api.apps*（主进程 apps-store.js）。
+     入口只对白名单账号露出（APPS_USER_WHITELIST），登录态变化时自己同步显隐，
+     所以它在 app-auth.js（统一账户模块）之前加载也没问题 —— 订阅走调用期探测 + 文档解析完补订一次。 -->
+<script src="app-apps.js"></script>
+<!-- 用户自建应用的新建流程 + 开发页归属（renderer/app-app-flow.js）：库页 / 开发页的
+     「＋ 新建应用」（appsCreateDialog → 主进程 apps:create 建目录与 app.json → 同名画布走既有
+     workflow:save → 画布上建开发节点 → 打开并居中）、开发页按应用过滤会话（appSessionsOf）、
+     「打开画布」（openAppCanvas）。紧跟应用中心之后加载：入口按钮由 app-apps.js 按
+     typeof 探测着挂；它内部对 openOverlay / addNode / loadWorkflow / agentSessions 也一律在
+     调用期取，与这些模块的加载顺序无关。 -->
+<script src="app-app-flow.js"></script>
+<!-- 开发页三栏（renderer/app-apps-dev.js + css/apps.css 的 .apps-dev-*）：左 = 该应用的会话列表
+     （借用 app-assist.js 的 renderAgentSessionSidebar）· 中 = iframe 实时预览应用静态页
+     （mtnode-preview:// 标准协议，主进程 apps-store.js）· 右 = 会话正文 · 下 = 输入框
+     （会话视图那只 .agent-composer 原样搬进来用）。右栏看哪条会话 = 本页自己的**显示覆盖**
+     （app-assist.js 的 agentViewOverrideSet / agentViewIs）：计划 / 任务清单 / 发送队列 /
+     已暂停四块面板一律只按右栏这条会话渲染，会话页的选中项与它自己的内容全程一字不动
+     （首轮态覆盖值 = 空 → 占位空会话，四块面板全空）。三条列标题条等高（--apps-dev-colhead-h）。
+     首轮输入 = 在该应用的开发节点上点「开发」并提交（app-boot.js 的 doSend 在空闲发文本时
+     先问 appsDevComposerSend）；每轮结束后按应用目录内容快照决定要不要重载预览。紧跟应用
+     中心与应用归属之后加载即可 —— 它依赖的 renderAgentSession / createDevSessionForNode /
+     persistWf / agentSessionSend 全在调用期取。 -->
+<script src="app-apps-dev.js"></script>
 <!-- 插件报错 → 自动修复（自包含：renderer/app-repair.js + css/repair.css）：全局监听主进程
      推来的插件错误（不等插件对话框打开），用 openOverlay 弹错误报告窗，点「🤖 自动修复」
      新建一条左侧栏可见会话（工作区 = 该插件 INSTALL_DIR、开「与画布无关」档）把日志与
@@ -569,6 +639,14 @@
 <!-- 统一账户客户端模块（自包含；IPC 契约见文件头注释）——放在 boot 之前，
      顶栏 #btnAccount 已在上方 DOM 里，init 直接接管点击 -->
 <script src="app-auth.js"></script>
+<!-- 账户充值（钱包，自包含新模块，挂 window.MtWallet）：账号菜单里的「余额」行与「充值」入口
+     （app-auth.js 的 paintMenu 按判空调用，模块缺席则整块不显示），以及充值对话框
+     （档位 / 自定义金额 → 服务端下单 → 支付宝付款码 → 轮询入账 → 刷新余额）。
+     必须排在 app-auth.js 之后（要用它的 MTNodeAuth.refresh 同步账号快照）、app.js 之后
+     （要用 openOverlay / closeOverlay）；样式在 css/wallet.css（经 style.css @import）。
+     测试期入口只对白名单账号显示（app-wallet.js 的 VISIBLE_USERS，与云端
+     MTNODE_RECHARGE_USERS 同口径），服务端另有 403 RECHARGE_NOT_OPEN 兜底。 -->
+<script src="app-wallet.js"></script>
 <script src="app-boot.js"></script>
 <!-- 顶栏入口的全局快捷键（1 画布 / 2 会话 / 3 专家团 / Space 居中 / D 隐藏线 /
      J 插件 / K 工具库 / L 素材库；自包含，键位单一真源 = index.html 的 data-shortcut）。

@@ -29,8 +29,8 @@
 
 - **内容唯一依据**是画布「快速开始」的说明卡片：分区顺序 = 章节顺序，卡片 = 页内小节；卡片里没有的内容不写，卡片里有的必须落到正文，画布给多少写多少、宁短不编。
 - 页骨架：`# 页标题` → `> 一句话目标：`（由该分区的说明改写）→ 图（只有关键页有）→ `## <卡片标题>`（去掉 ①② 序号）→ 卡片内【…】降为 `###`。
-- 分区 → 页：1.准备工作 → `providers`；2.内容生成（①文本 ②图像 → `io-proc`，③音乐 ④语音 ⑤视频 ⑥Remotion → `media-gen`，⑦审阅 → `ai-review`，⑧蒙版 → `image-edit`）；3.全局助手与工作流 → `workflows`、`quick-build`（另含 `longtask`：快速开始卡片没有这一页，长周期任务上线后补进本章）；4.开发节点 → `dev-nodes`；5.会话 → `dsh`、`agent-nodes`、`approvals`；6.工具 / 函数节点 → `tools-functions`；7.素材库 → `asset-library`；8.专家团 → `one-person-company`；9.社区 → `community`；其他 → `nodes-wires`、`marks-groups`、`rollback`、`glossary`、`faq`。
-- 配图只给 10 个关键页：`providers`(start-01-ui)、`io-proc`(flow-01-ui)、`media-gen`(flow-02-flow)、`ai-review`(edit-01-ui)、`image-edit`(edit-02-ui)、`workflows`(canvas-01-flow)、`quick-build`(agent-01-flow)、`dev-nodes`(app-01-ui)、`agent-nodes`(agent-02-ui)、`tools-functions`(canvas-02-ui)。
+- 分区 → 页：1.准备工作 → `providers`；2.内容生成（①文本 ②图像 → `io-proc`，③音乐 ④语音 ⑤视频 ⑥Remotion → `media-gen`，⑦审阅 → `ai-review`，⑧蒙版 → `image-edit`）；3.全局助手与工作流 → `workflows`、`quick-build`（另含 `longtask`：快速开始卡片没有这一页，长周期任务上线后补进本章）；4.开发节点 → `dev-nodes`；5.会话 → `dsh`、`agent-nodes`、`approvals`；6.工具 / 函数节点 → `tools-functions`；7.素材库 → `asset-library`；8.专家团 → `one-person-company`；9.社区 → `community`；其他 → `nodes-wires`、`marks-groups`、`rollback`、`glossary`、`faq`。`app-dev`（开发一个应用）是后补进第 4 章 `dev` 的第 2 页：快速开始卡片里没有它，随「应用（窗口插件）开发」契约与 `templates/app-scaffold/` 上线补进本章。
+- 配图只给 11 个关键页：`providers`(start-01-ui)、`io-proc`(flow-01-ui)、`media-gen`(flow-02-flow)、`ai-review`(edit-01-ui)、`image-edit`(edit-02-ui)、`workflows`(canvas-01-flow)、`quick-build`(agent-01-flow)、`dev-nodes`(app-01-ui)、`app-dev`(app-02-ui)、`agent-nodes`(agent-02-ui)、`tools-functions`(canvas-02-ui)。
 - 术语统一用「思考强度」（英文 thinking effort）。
 
 ## 2. IPC 契约
@@ -45,7 +45,7 @@
 
 - `docs:load` 的 `locale`：`"en"` 开头走 `en/<id>.md`；**英文页不存在则自动回落中文** `<id>.md`（`main.js:358-368`）。`assets` 是 `{ 原图相对路径: "data:<mime>;base64,…" }`，由 `renderGuideMarkdown`（`app.js:8340`）回填进 `<img src>`。
 - 支持的内联图类型：`.svg/.png/.webp/.gif/.jpg/.jpeg`（`main.js:390-401`）。
-- `catalog` 结构：`{ defaultPage, sections:[{ id, title:{zh,en}, pages:[{ id, title:{zh,en} }] }] }`；`defaultPage` 缺省回落 `"overview"`（`app.js:8845-8847`）——注意那只是**代码兜底**，现行 `index.json` 里 `defaultPage` 已改为 `"providers"`，共 10 章 22 页，章节顺序与画布「快速开始」的十个分区一一对应（`longtask` 是后补进第 3 章 `assistant` 的第 3 页、`ai-facts` 是后补进第 8 章 `team` 的第 2 页，两张页在快速开始卡片里都没有，前者随长周期任务上线、后者随 AI 事实库上线补进本章），`overview` 已不存在。
+- `catalog` 结构：`{ defaultPage, sections:[{ id, title:{zh,en}, pages:[{ id, title:{zh,en} }] }] }`；`defaultPage` 缺省回落 `"overview"`（`app.js:8845-8847`）——注意那只是**代码兜底**，现行 `index.json` 里 `defaultPage` 已改为 `"providers"`，共 10 章 23 页，章节顺序与画布「快速开始」的十个分区一一对应（`longtask` 是后补进第 3 章 `assistant` 的第 3 页、`ai-facts` 是后补进第 8 章 `team` 的第 2 页、`app-dev` 是后补进第 4 章 `dev` 的第 2 页，这三张页在快速开始卡片里都没有，随各自功能上线补进本章），`overview` 已不存在。
 - 主进程根目录固定为 `join(__dirname, "guides", "manual")`（`main.js:408-410`），打包后随 asar 携带；**不读用户数据目录、不联网**。
 
 ## 3. 页面 id 与 `#id` 深链接

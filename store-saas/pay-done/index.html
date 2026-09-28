@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 支付同步跳回页（return_url）。站点任何地方都没有入口，也不被索引：
+     只有从支付宝收银台付完款跳回来时才会被看到。
+     ⚠ 这一页**不参与入账**：入账只认服务端验签过的异步 notify 与 trade.query 轮询，
+     所以这页挂了 / 被用户提前关掉，钱照样会到账（客户端充值窗在轮询）。别在这里加业务逻辑。 -->
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>支付完成 · MTNode</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: #f5f6f8; color: #1f2430;
+    font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .card {
+    width: 100%; max-width: 460px; background: #fff; border: 1px solid #e3e6ec;
+    border-radius: 14px; padding: 34px 30px 28px; text-align: center;
+    box-shadow: 0 8px 30px rgba(20, 26, 40, .07);
+  }
+  .tick {
+    width: 62px; height: 62px; margin: 0 auto 18px; border-radius: 50%;
+    background: #e8f7ee; display: flex; align-items: center; justify-content: center;
+  }
+  .tick svg { width: 32px; height: 32px; }
+  h1 { margin: 0 0 8px; font-size: 20px; font-weight: 650; letter-spacing: .2px; }
+  p { margin: 0 0 6px; color: #5b6474; font-size: 14px; }
+  .app { color: #1f2430; font-weight: 600; }
+  .hint {
+    margin-top: 20px; padding-top: 16px; border-top: 1px dashed #e3e6ec;
+    font-size: 13px; color: #7b8494;
+  }
+  .close {
+    margin-top: 16px; padding: 9px 22px; border-radius: 9px; cursor: pointer;
+    border: 1px solid #d6dae2; background: #fbfbfd; color: #3a4152; font-size: 14px;
+  }
+  .close:hover { border-color: #b9bfcc; background: #f2f4f8; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #14171d; color: #e6e9f0; }
+    .card { background: #1b1f27; border-color: #2b313c; box-shadow: none; }
+    .tick { background: #1d3327; }
+    p { color: #a7afc0; }
+    .app { color: #e6e9f0; }
+    .hint { color: #828b9c; border-top-color: #2b313c; }
+    .close { background: #232833; border-color: #343b48; color: #d7dce6; }
+    .close:hover { background: #2b3140; }
+  }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="tick" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#22a05b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4.5 12.5l5 5 10-11"></path>
+      </svg>
+    </div>
+    <h1>支付完成</h1>
+    <p>请回到 <span class="app">MTNode</span> 客户端查看余额与充值记录。</p>
+    <p>到账由服务端异步确认，通常几秒内完成；这一页可以直接关掉。</p>
+    <div class="hint">
+      如果客户端里余额还没变，稍等几秒或点充值窗里的「我已完成支付」手动刷新一次。<br>
+      长时间未到账请把订单号发给管理员核对（管理台可查单与补单）。
+    </div>
+    <button class="close" type="button" id="btnClose">关闭本页</button>
+  </main>
+<script>
+  // 只做一个「尝试关窗」的动作：由脚本打开的页面才关得掉，关不掉也不影响任何东西。
+  document.getElementById("btnClose").addEventListener("click", function () {
+    try { window.close(); } catch (e) { /* 忽略 */ }
+    setTimeout(function () { try { window.close(); } catch (e) { /* 忽略 */ } }, 60);
+  });
+</script>
+</body>
+</html>

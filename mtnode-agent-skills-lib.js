@@ -7,6 +7,7 @@ const INDEX_FORMAT = "mtnode-agent-skills-index-v1";
 const LIB_DIR = "mtnode-agent-skills";
 const CATEGORY_TITLES = {
   mtnode: "MTNode 产品与画布",
+  app: "应用开发",
   plugins: "插件与后端",
   canvas: "画布工作流模板",
   music: "音乐生成（MiniMax Music）",
@@ -362,6 +363,7 @@ function mtnodeAgentSkillIndex(dshHome, appRoot) {
 module.exports = {
   LIB_DIR,
   INDEX_FORMAT,
+  CATEGORY_TITLES,
   bundledRoot,
   dshLibRoot,
   parseSkillMeta,

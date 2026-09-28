@@ -87,7 +87,7 @@ if (!router || !/routing/i.test(router.description || '')) {
 console.log('[2] plugin descriptions present')
 
 const accepted = await req('run', {
-  reqId: runReqId, workspace, input: '测试任务', model: 'deepseek-v4-flash',
+  reqId: runReqId, workspace, input: '测试任务', model: 'deepseek-flash',
   maxTokens: 4096, apiKey: 'not-a-real-key', baseUrl: 'https://api.deepseek.com',
   systemPrompt: '', dshHome: home,
 })

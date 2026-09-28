@@ -1,26 +1,31 @@
 "use strict";
 /* ============ 处理（Play / 批量） ============ */
 
+/* 正文里内嵌图像已经下发过的路径：同一次请求里不再作为连线图 / 广播图重复下发
+   （顺序与去重口径与 mergeImagePaths 一致：同一路径只留第一次出现的那条） */
+function imagesNotInBody(paths, bodyBlocks) {
+  const seenBody = new Set(
+    (bodyBlocks || []).map((b) => String((b && b.path) || "")).filter(Boolean),
+  );
+  const out = [];
+  const seen = new Set();
+  for (const p of paths || []) {
+    const s = String(p || "");
+    if (!s || seen.has(s) || seenBody.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
 function buildSpec(node, prov, idx, skillWrap) {
   /* 图像参数（quality / background / 蒙版）先归一，旧画布缺字段也拿得到确定值 */
   if (node.kind === "proc_image" && typeof normalizeImgParams === "function")
     normalizeImgParams(node);
-  const ins = inputValuesFor(node, idx);
   const images = [];
-  const imageSources = [];
-  for (const i of ins) {
-    if (i.value && i.value.kind === "image") {
-      images.push(i.value.path);
-      /* 批次图像：把条目标题（源文件名 / 角色名）写入背景，模型才能知道当前是哪张图 */
-      imageSources.push({
-        title: i.title || I18n.t("图像"),
-        text:
-          I18n.t("（图像输入）") +
-          "\n" +
-          I18n.t("标题：") +
-          (i.title || I18n.t("图像")),
-      });
-    }
+  for (const it of inputValuesFor(node, idx)) {
+    const v = it && it.value;
+    if (v && v.kind === "image" && v.path) images.push(v.path);
   }
   const runPrompt = procPromptForRun(node);
   const refs = resolveRefs(runPrompt, node, idx);
@@ -37,25 +42,25 @@ function buildSpec(node, prov, idx, skillWrap) {
   for (const src of globalRefSourcesForRun(node, runPrompt)) {
     if (wiredFrom.has(src.id)) continue;
     const v = valueForInput(src, idx);
-    if (v && v.kind === "image") {
+    if (v && v.kind === "image" && v.path) {
       images.push(v.path);
-      imageSources.push({
-        title: itemTitleOf(src, idx) || I18n.t("图像"),
-        text:
-          I18n.t("（图像输入）") +
-          "\n" +
-          I18n.t("标题：") +
-          (itemTitleOf(src, idx) || I18n.t("图像")),
-      });
     }
   }
-  /* 图生图：连线图已可能被 @ 引用进 refImages，再 concat 会翻倍；文生图背景仍可带标题说明 */
+  /* 图生图：连线图已可能被 @ 引用进 refImages，再 concat 会翻倍；文生图背景仍可带标题说明。
+     正文里内嵌的图像（refs.bodyImageBlocks）已按位置写进正文，其路径也从连线 / 广播图里剔掉，
+     同一张图不重复下发（图像本身仍走 refImages → spec.images 的真多模态链路）。
+     文生图不带文本块（与相册口径一致：避免图像说明进提示词）。 */
+  const bodyBlocks = refs.bodyImageBlocks || [];
   const sources =
-    node.kind === "proc_image"
-      ? refs.textSources || []
-      : (refs.textSources || []).concat(imageSources);
-  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含连线图 + 广播图 */
-  const mergedImages = runImagePaths(node, idx, refs, images);
+    node.kind === "proc_image" ? [] : (refs.textSources || []).concat(bodyBlocks);
+  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含连线图 + 广播图；
+     正文里出现过的图不再作为连线 / 广播图重复下发 */
+  const mergedImages = runImagePaths(
+    node,
+    idx,
+    refs,
+    imagesNotInBody(images, bodyBlocks),
+  );
   return {
     provider: prov,
     kind:
@@ -87,10 +92,17 @@ function buildSpec(node, prov, idx, skillWrap) {
 }
 
 /* 流式文本调用：resolve {text, reasoning}；reasoning 增量回调（思考内容，按尝试槽存储）；
-   delta 增量回调（正文流式） */
+   delta 增量回调（正文流式）。
+   三档请求超时（连接 / 首字节 / 分块空闲）在这里随 spec 显式下发：主进程优先读这几个字段，
+   缺省 300000（见 main.js 的 timeoutTiersOf / attachRequestWatchdog 与 app-model-kind.js
+   的 providerTimeoutSpec）——老配置没填这几个字段时行为与服务商缺省完全一致。 */
 function apiCallTextStream(spec, onReasoning, onDelta) {
+  const out =
+    spec && typeof providerTimeoutSpec === "function"
+      ? Object.assign({}, spec, providerTimeoutSpec(spec.provider || {}))
+      : spec;
   return new Promise((resolve, reject) => {
-    window.api.apiCallStream(spec, (ev) => {
+    window.api.apiCallStream(out, (ev) => {
       if (ev.type === "reasoning") {
         if (onReasoning) onReasoning(ev.text || "");
       } else if (ev.type === "delta") {
@@ -118,8 +130,10 @@ function assetName(node, itemTitle, attemptT, tag) {
   );
 }
 
+/* 视觉提示：DeepSeek 官方现由 deepseek-flash（V4.1-Flash，原生多模态）识图，
+   旧的 deepseek-v4-flash-vision-exp 已下线。 */
 const VISION_HINT =
-  "未添加多模态模型（请在设置中添加支持识图的模型，例如 DeepSeek-V4-Flash-Vision-Exp，或为该文本服务商勾选「支持视觉」）";
+  "未添加多模态模型（DeepSeek 官方默认的 deepseek-flash 即可识图；其它服务商请在设置中添加支持识图的模型，或为该文本服务商勾选「支持视觉」）";
 
 /* 文本节点接入图像时的多模态校验：当前服务商无视觉模型且未勾选视觉则拒绝 */
 function ensureVision(prov, images) {
@@ -201,6 +215,10 @@ async function runDshOnce(node, spec, attemptT, images) {
   node._pendingAnswer = "";
   /* 智能任务：会话模式多轮；普通模式仅本次消息（历史已在 playNode 清空） */
   const sent = procPromptForRun(node);
+  /* 正文里的内嵌图像胶囊 token（proc_text 的提示词 / agent_task 的任务）：会话模式的
+     「历史 + 最新一句」用的是原始正文，这里换成可读注记，免得「@img:xxxxxxx」原样漏给
+     agent（图片本体已由 buildSpec → spec.images 下发，见 resolveRefs）。 */
+  const sentAsk = promptCapsulesToText(sent, node);
   const skillWrap = await resolveSkillSlash(sent, { denyCanvasSkills: true });
   const skillLatest = skillWrap ? skillTaskPrompt(skillWrap) : "";
   if (skillWrap && spec) {
@@ -212,7 +230,7 @@ async function runDshOnce(node, spec, attemptT, images) {
   }
   if (node.kind === "agent_task") {
     if (!Array.isArray(node.messages)) node.messages = [];
-    const cur = String(sent || "").trim();
+    const cur = String(sentAsk || "").trim();
     const lm = node.messages[node.messages.length - 1];
     if (cur && !(lm && lm.role === "user" && lm.content === cur)) {
       node.messages.push({ role: "user", content: cur, at: Date.now() });
@@ -227,7 +245,7 @@ async function runDshOnce(node, spec, attemptT, images) {
         .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
         .join("\n\n")
     : "";
-  let latest = skillLatest || String(sent || "").trim() || spec.prompt;
+  let latest = skillLatest || String(sentAsk || "").trim() || spec.prompt;
   /* 复杂任务计划：注入「任务流程」指令（Skill / 计划执行器 / 已判定过跳过） */
   let planFlowInjected = false; /* 本次运行是否被要求「按契约输出计划块」（漏弹自愈的闸门） */
   if (
@@ -431,6 +449,10 @@ function resolveRefsAgg(prompt, node) {
   const tagBlocks = [];
   const seenTagNodes = new Set();
   const cands = aggCandidates(node);
+  /* 正文里的内嵌图像胶囊块（与 resolveRefs 同口径）：token → 就地一行
+     「（图像输入）标题：…」+「图 N」+ 路径并进 refImages（随后走既有通路下发） */
+  const cap = resolvePromptCapsules(prompt, node, refImages);
+  prompt = cap.prompt;
   /* !@数据库标题 引用：先替换为可读指针 */
   const bang = resolveDbBangRefs(prompt, node);
   prompt = bang.prompt;
@@ -457,7 +479,13 @@ function resolveRefsAgg(prompt, node) {
     /* 与 resolveRefs 一致：按请求包中参考图顺序编号 */
     return I18n.t("第{n}张参考图", { n: n + 1 });
   });
-  return { prompt: out, refImages, unresolved: [...unresolved], tagBlocks };
+  return {
+    prompt: out,
+    refImages,
+    unresolved: [...unresolved],
+    tagBlocks,
+    bodyImageBlocks: cap.blocks,
+  };
 }
 
 /* 聚合模式：所有条目的内容合并为一次请求（每条目作为独立输入块） */
@@ -480,6 +508,7 @@ function buildSpecAgg(node, prov, skillWrap) {
           "\n" +
           I18n.t("标题：") +
           (it.title || src.title || I18n.t("图像")),
+        oncePrompt: true,
       });
     }
   }
@@ -498,6 +527,7 @@ function buildSpecAgg(node, prov, skillWrap) {
           "\n" +
           I18n.t("标题：") +
           (it.title || src.title || I18n.t("图像")),
+        oncePrompt: true,
       });
     }
   }
@@ -509,14 +539,15 @@ function buildSpecAgg(node, prov, skillWrap) {
       skillWrap.raw,
       skillTaskPrompt(skillWrap),
     );
-  /* 聚合图生图：去掉「（图像输入）」标题块，避免与「第 N 张参考图」重复说明 */
-  const promptBlocks =
-    node.kind === "proc_image"
-      ? textBlocks.filter((b) => {
-          const t = String(b.text || "");
-          return !t.startsWith(I18n.t("（图像输入）"));
-        })
-      : textBlocks;
+  /* 聚合图生图：去掉「（图像输入）」标题块，避免与「第 N 张参考图」重复说明。
+     正文里内嵌的图像块（refs.bodyImageBlocks）同口径：它们已按位置写进正文本体，
+     不必在【背景信息】里再来一遍（图像本身仍走 refImages → spec.images）。
+     过滤只认「带 oncePrompt 标记的图像块」，不按文本前缀猜。 */
+  const capBlocks = refs.bodyImageBlocks || [];
+  const isImgGen = node.kind === "proc_image";
+  const promptBlocks = textBlocks
+    .filter((b) => !(isImgGen && b.oncePrompt))
+    .concat(isImgGen ? [] : capBlocks);
   const useBlocks = dedupeBlockTitles(
     promptBlocks.concat(refs.tagBlocks || []),
   );
@@ -526,8 +557,15 @@ function buildSpecAgg(node, prov, skillWrap) {
       "\n\n【内容】\n" +
       refs.prompt
     : refs.prompt;
-  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含各条目图 + 广播图 */
-  const mergedImages = runImagePaths(node, undefined, refs, images, true);
+  /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含各条目图 + 广播图；
+     正文里出现过的图不再作为条目 / 广播图重复下发 */
+  const mergedImages = runImagePaths(
+    node,
+    undefined,
+    refs,
+    imagesNotInBody(images, capBlocks),
+    true,
+  );
   return {
     provider: prov,
     kind:
@@ -681,7 +719,7 @@ async function previewNode(node) {
       I18n.t("服务商：") +
       provName +
       I18n.t("\n模型：") +
-      (node.model || d.model || "deepseek-v4-flash") +
+      (node.model || d.model || "deepseek-flash") +
       I18n.t("\n工作目录：") +
       (dshWorkspaceOf(node) || I18n.t("（应用默认数据目录）")) +
       I18n.t("\n输入节点：") +
@@ -6409,6 +6447,18 @@ async function playRemotionNode(node, quiet) {
     return;
   }
 
+  /* ── 「无模型」闸门：与 proc_text / proc_image 同一判据（remotion 要文本模型）──
+     本机没有该服务商 / 模型一律不起跑、不弹模型错误窗；用户亲手点 ▶ 才给一次提示。 */
+  {
+    const mg = nodeModelGate(node);
+    if (!mg.ok) {
+      node.error = mg.reason;
+      node.remotionStatus = mg.reason;
+      renderCanvas();
+      if (!quiet) toast(mg.reason, "warn");
+      return;
+    }
+  }
   /* 服务商 / 模型校验（与 proc_text 一致：text_openai 服务商 + API Key） */
   let prov = (S.config.providers || []).find((p) => p.id === node.providerId);
   if (!prov) {
@@ -6892,6 +6942,20 @@ async function playNodeBody(node, quiet, opts) {
       clearPendingEarly();
       node.error = ev.reason || I18n.t(VISION_HINT);
       renderCanvas();
+      return;
+    }
+  }
+  /* ── 「无模型」闸门（本轮需求）──
+     本机没有该节点要用的服务商 / 模型（他人模板、配置里删过东西、模型不可见）时
+     **不起跑**：不改用户数据、不弹模型错误窗，只在用户亲手点启动（节点 ▶）时给一次
+     提示；自动级联 / 控制批次驱动（quiet）只把原因写在节点上，免得一次刷出一串提示。 */
+  if (typeof nodeModelGate === "function") {
+    const mg = nodeModelGate(node);
+    if (!mg.ok) {
+      clearPendingEarly();
+      node.error = mg.reason;
+      renderCanvas();
+      if (!quiet) toast(mg.reason, "warn");
       return;
     }
   }
@@ -8987,6 +9051,9 @@ async function runControlledNode(n, seen, viaIndexes, sourceId) {
 
 async function playControlNode(node, seen) {
   /* 用户直接点控制节点 ▶（没有外层批次）= 重新开始：解除「全部终止」的短窗口拦截 */
+  /* userFired：这一层是用户亲手点的（没有外层批次）；下面「无模型」提示只在它上面弹一次，
+     批次驱动的再入（seen 已带）只把原因写回节点，不重复弹。 */
+  const userFired = !seen;
   if (!seen) S._lastStopAllAt = 0;
   /* 用户起跑前的统一前置：工作目录缺 / 错先问清楚
      （内部批次驱动的那一层带 seen 再入，不重复问） */
@@ -9035,12 +9102,34 @@ async function playControlNode(node, seen) {
     return;
   }
   const fillOnly = !!node.ctrlFillOnly;
-  const runnable = fillOnly
+  let runnable = fillOnly
     ? runnable0.filter((n) => n.kind === "control" || !nodeHasOutputContent(n))
     : runnable0;
   if (!runnable.length) {
     toast(I18n.t("补缺：已连接节点均已有输出，无需执行"), "ok");
     return;
+  }
+  /* ── 「无模型」的节点不允许启动（本轮需求）──
+     本机没有它要用的服务商 / 模型时一律不起跑（原因写回节点），用户亲手点 ▶ 时弹一次
+     提示并点名是哪几个节点；其余节点照跑（一个坏节点不该拖住整批），全是无模型节点
+     则整批不起跑。自动批次驱动的再入（userFired=false）不弹窗。 */
+  const blocked = runnable
+    .map((n) => ({ n, g: nodeModelGate(n) }))
+    .filter((x) => !x.g.ok);
+  if (blocked.length) {
+    for (const x of blocked) x.n.error = x.g.reason;
+    if (userFired) {
+      toast(
+        I18n.t("无模型，未启动：") +
+          I18n.listJoin(blocked.map((x) => x.n.title)) +
+          I18n.t("（请在各自节点的设置里选好服务商与模型）"),
+        "warn",
+      );
+      renderCanvas();
+    }
+    const blockedNodes = blocked.map((x) => x.n);
+    runnable = runnable.filter((n) => !blockedNodes.includes(n));
+    if (!runnable.length) return;
   }
   const running = runnable.filter((n) => n.running && n.kind !== "control");
   if (running.length) {
@@ -13956,7 +14045,8 @@ async function ensureVisionInspectPermission(params) {
   return S._visionInspectAsking;
 }
 
-/* 解析识图路由：供应商顺序 → 模型顺序；DeepSeek 等无图主机排到末尾；失败可重试下一路由 */
+/* 解析识图路由：供应商顺序 → 模型顺序；目录已标注能吃图的模型排前面，
+   只在服务商上勾了「支持视觉」的手填模型降到次选；失败可重试下一路由 */
 function resolveVisionInspectRoutes(preferredModel) {
   const want = String(preferredModel || "").trim();
   const preferred = [];
@@ -13982,15 +14072,15 @@ function resolveVisionInspectRoutes(preferredModel) {
        识图候选只从它们的文本模型里挑，图像生成模型不参与 */
     if (!providerHasKind(S.config, p, "text")) continue;
     if (!String(p.apiKey || "").trim() || !String(p.baseUrl || "").trim()) continue;
-    const softHost = providerHostBlocksVision(p);
     const route = "mtnode_" + p.id;
     const vis = visionModelsForProvider(route);
     if (vis.length) {
-      /* 目录已声明 image 的模型可直连，不因 deepseek 主机名降级 */
+      /* 目录已声明 image 的模型（如 DeepSeek 官方的 deepseek-flash）可直连 */
       for (const m of vis) push(p, m.id, m.name || m.id, false);
     } else if (p.vision && Array.isArray(p.models) && p.models.length) {
+      /* 目录没标注、只在服务商上勾了「支持视觉」的手填模型：降到次选 */
       for (const id of modelsOfKind(S.config, p, "text"))
-        push(p, String(id), String(id), softHost || true);
+        push(p, String(id), String(id), true);
     }
   }
   let cands = preferred.concat(fallback);
@@ -14071,7 +14161,7 @@ async function applyVisionInspect(params, runKey) {
     return {
       ok: false,
       error: I18n.t(
-        "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，勾选「支持视觉」，并把视觉模型排到该服务商列表最前（DeepSeek 官方不支持识图）",
+        "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，勾选「支持视觉」，并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）",
       ),
     };
   }
@@ -17230,26 +17320,28 @@ function resolveAgentProviderRoute(token, warnings) {
 function agentModelsForRoute(route) {
   const catalog = S.providerCatalog || {
     deepseek: [
-      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+      { id: "deepseek-flash", name: "DeepSeek-V4.1-Flash", input: ["text", "image"] },
       { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
-      {
-        id: "deepseek-v4-flash-vision-exp",
-        name: "DeepSeek-V4-Flash-Vision-Exp",
-        input: ["text", "image"],
-      },
     ],
     piai: [],
   };
+  /* 服务商白 / 黑名单：这条路由下「真正可选」的模型清单（白名单先收窄、黑名单再剔除） */
+  const pf =
+    typeof providerModelFilter === "function" ? providerModelFilter : null;
   if (route === "deepseek-official") {
     const dp = dshProvider();
     if (dp && Array.isArray(dp.models) && dp.models.length)
-      return dp.models.map((m) => String(m));
+      return (pf ? pf(dp, dp.models) : dp.models).map((m) => String(m));
     return (catalog.deepseek || []).map((m) => m.id);
   }
   if (String(route || "").startsWith("mtnode_")) {
     const id = route.slice("mtnode_".length);
     const p = (S.config.providers || []).find((x) => x.id === id);
-    return ((p && p.models) || []).map((m) => String(m));
+    /* 停用只影响「出现在选择器里」：这条路由的模型清单照旧给全（过了白 / 黑名单），
+       画布上早就绑着它的节点不受可见性影响，避免开了节点设置就被悄悄换服务商 */
+    return (pf ? pf(p, p && p.models) : (p && p.models) || []).map((m) =>
+      String(m),
+    );
   }
   return [];
 }

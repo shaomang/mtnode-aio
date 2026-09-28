@@ -304,6 +304,23 @@ diagrams["mtnode-canvas-02-ui"] = {
   ],
 };
 
+/* 开发一个应用（app-dev） */
+diagrams["mtnode-app-02-ui"] = {
+  w: 620,
+  h: 200,
+  caption: "应用 = 静态前端 + 宿主能力桥；模型与工具留在主程序 / 画布一侧",
+  items: [
+    bx(16, 44, 170, 46, "应用窗口\n静态 HTML / JS / CSS", CYAN, FILL_D),
+    ar(186, 67, 232, 67, CYAN),
+    bx(232, 44, 200, 46, "appHost 能力桥\ndataGet / dataSet · authMe\nstoreRequest · pickImage", PUR, FILL_U),
+    ar(432, 67, 478, 67, PUR),
+    bx(478, 44, 126, 46, "主进程\n数据目录 / 凭据", GOLD, FILL_C),
+    bx(16, 118, 170, 46, "降级：桥不在也能跑\n内存态 + 明确提示", ORNG, FILL_P),
+    bx(232, 118, 372, 46, "模型 API 与工具不在应用窗口里\n要内建 LLM / 图像 / 语音 → 升级为本地后端插件（主进程 + 控制台 + 画布节点）", GRN, FILL_G),
+    tx(16, 190, "数据只走 dataGet / dataSet（落 %APPDATA%\\pipeline-console\\app-plugins\\<id>），绝不写应用目录", "#5a6472", 11),
+  ],
+};
+
 
 /* ─────────────────────────── 写图 ─────────────────────────── */
 let svgCount = 0;
@@ -353,6 +370,7 @@ const catalog = {
       title: { zh: "开发节点", en: "Dev nodes" },
       pages: [
         { id: "dev-nodes", title: { zh: "开发节点：让 AI 写项目", en: "Dev nodes" } },
+        { id: "app-dev", title: { zh: "开发一个应用", en: "Build an app" } },
       ],
     },
     {

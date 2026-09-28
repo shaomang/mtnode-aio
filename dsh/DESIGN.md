@@ -137,7 +137,7 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | method | params | 语义 |
 |---|---|---|
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
-| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?, resumeSession?}` | 排队一条提示,流式事件直至整轮 idle。`resumeSession`(**断点续跑**,可缺省)= 宿主点名沿用上一轮(崩溃 / 断线 / 超额失败)那次的 dsh session id:网关先按本机会话日志判「盘上有没有这份会话」(第一道闸),续跑轮还会先经 `session/resume` 握手让运行时把旧日志恢复为 live —— 同进程复用 / 跨进程恢复 / `RESUME_UNAVAILABLE` 三态详见「断点续跑契约」;只有**盘上无日志**(状态 C 第 1 条)才"不起 runtime、不消耗任何 token"地只回 `error`(带固定标记 `RESUME_UNAVAILABLE: …`)。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`），工具**仅保留联网搜索**；cordis.yml 用同一标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 插件。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」 |
+| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?, resumeSession?, images?}` | 排队一条提示,流式事件直至整轮 idle。`resumeSession`(**断点续跑**,可缺省)= 宿主点名沿用上一轮(崩溃 / 断线 / 超额失败)那次的 dsh session id:网关先按本机会话日志判「盘上有没有这份会话」(第一道闸),续跑轮还会先经 `session/resume` 握手让运行时把旧日志恢复为 live —— 同进程复用 / 跨进程恢复 / `RESUME_UNAVAILABLE` 三态详见「断点续跑契约」;只有**盘上无日志**(状态 C 第 1 条)才"不起 runtime、不消耗任何 token"地只回 `error`(带固定标记 `RESUME_UNAVAILABLE: …`)。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`），工具**仅保留联网搜索**；cordis.yml 用同一标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 插件。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `steer` | `{reqId\|cancelTag, sessionId?, text?\|contentBlocks?}` | **轮内插话**:往**正在跑的这一轮**的下一步边界投一句话(运行时侧 `agent.steer`),不重开轮、不等本轮结束。网关按在途表(`reqId → {runKey, cancelTag, sessionId}`)定位那一轮那台 runtime 的 client,同步下发 `session/steer`(10s)。送达 → `{ok:true, reqId, sessionId, steered:true, reqIds}`;没有在途这一轮 / 那台 runtime 已回收 / **老运行时没有该方法** / 下达超时 → `{ok:false, reason:'unsupported', detail}`,宿主据此回落成普通排队消息。详见「运行中插话与暂停契约」 |
 | `pause` | `{reqId\|cancelTag, sessionId?}` | **轮内暂停**:中止当前请求但**保留 live 会话与收件箱**(运行时侧 `agent.cancel({kind:'user'},{keepInbox:true})`,**不关 runtime**),之后可点名 `run.resumeSession` 从中断处接下去。回执与降级口径同 `steer`(`{ok:true, paused:true}` / `{ok:false, reason:'unsupported'}`)。成功后本轮以 `done{paused:true}` 收尾,**该轮不会有 `error` 事件**(否则宿主的失败重发闸会把一次暂停当 429 类失败连重发 5 次) |
@@ -187,6 +187,20 @@ journal 帧(契约)`)、`session-event`(其余会话事件全量透传 —— **
 > `tool` 事件的 `turn` / `step` 同源(`event.data`)。这三者与 `say-end` 都只是**增量字段 /
 > 新增事件**:既有事件名与语义一字未改,老渲染层忽略即可,不影响 `finalResponse`、`usage`
 > 与回滚链路。渲染层据此 + `turn/start`、`step/start`(走 `session-event` 透传)按步切段。
+
+### 图像附件(`run.images`)
+
+`run.images`(**本轮新增的图像附件**,可缺省)= 宿主给出的**本机图片绝对路径**数组。
+网关按 `dsh-attachment-local` 的内容寻址布局把图写入
+`<DSH_HOME>/attachments/v1/objects/<sha 前2位>/<sha256>`,并把本轮用户消息拼成
+「文本块 + image 内容块」(`attachImages`;`sharp` 为可选依赖:探测不到的条目**跳过**,
+绝不阻断任务)。**只发本轮新增的图**:图进的是本轮这条用户消息,此后它随会话历史一直在
+上下文里(运行时重放历史时图一并带上),宿主每轮再发一遍 = 同一张图反复计费 —— 渲染层
+因此只从**这一轮**的正文里取图(`renderer/app-db.js` 的 `dshRunImages` →
+`renderer/app-inline-img.js` 的 `absImgPaths`;会话 / 开发节点正文框写的是
+`![名称](绝对路径)` 图行),暂停后的续跑轮("继续")也不再下发。缺省 / 空数组 = 纯文本轮,
+行为与接入前一字不变;宿主正文里的图行原样留在消息里,界面回看时按它显示缩略图 ——
+下发与回看是两条互不依赖的路径(见 `renderer/app-assist.js` 的 `dshUserBodyHtml`)。
 
 ## 思考强度契约(gateway ↔ 运行时 ↔ 宿主)
 
@@ -764,7 +778,7 @@ journal 帧(契约)`)、`session-event`(其余会话事件全量透传 —— **
 ```jsonc
 "dsh": {
   "enabled": true,                 // 总开关;关掉 = 全产品退回原行为
-  "model": "deepseek-v4-flash",    // agent 功能默认模型
+  "model": "deepseek-flash",    // agent 功能默认模型
   "maxTokens": 49152,
   "defaultWorkspace": "",          // agent 节点默认工作目录(文件夹窗口选择)
   "preset": "minimal",             // agent 预设(默认档 = minimal): minimal/standard/lean/code/cordis

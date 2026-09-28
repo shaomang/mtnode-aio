@@ -67,7 +67,7 @@ function listTextProviders(appCfg) {
       id: DEEPSEEK_OFFICIAL_ROUTE,
       name: "DeepSeek 官方",
       baseUrl: DEFAULT_DEEPSEEK_BASE,
-      models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
+      models: ["deepseek-flash", "deepseek-v4-pro"],
     });
   }
   providers.forEach((p, i) => {
@@ -111,7 +111,7 @@ function resolveChatProvider(cfg, appCfg) {
   const wantModel = String(c.chatModel || "").trim();
   /* 只认「这个服务商真有的模型」：选过别家之后旧模型仍留在配置里时，
      按旧模型下发会被对端 404（模型不存在），所以落到该服务商的首个模型。 */
-  const model = (wantModel && models.includes(wantModel) ? wantModel : models[0]) || "deepseek-v4-flash";
+  const model = (wantModel && models.includes(wantModel) ? wantModel : models[0]) || "deepseek-flash";
   return { provider: p, model: String(model) };
 }
 

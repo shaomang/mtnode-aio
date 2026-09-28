@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<!-- frame-src 必须同时放行「微信 qrconnect」与「本站回调域」：扫码确认后微信会把 iframe 跳到
+     MTNODE_WECHAT_REDIRECT（线上是 apex mt-agent.com，再 301 到 www），两跳都要在名单里。
+     少了本站域 → 浏览器在发请求前就拦掉跳转 → 服务端收不到 callback → 没有 ticket →
+     轮询永远 pending 直到设备码过期（线上实测踩过：日志里只有 poll、零 callback）。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src https://open.weixin.qq.com https://mt-agent.com https://www.mt-agent.com; object-src 'none'; base-uri 'self'">
+<title>MTNode 管理平台</title>
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+<!-- 登录：微信扫码（仅此一条路；网站与客户端都不设入口） -->
+<section id="login" class="login hidden">
+  <div class="login-card">
+    <h1>MTNode 管理平台</h1>
+    <p class="login-sub">仅限管理员微信扫码登录 · 本页面不对外提供入口</p>
+    <div id="qrBox" class="qr-box">
+      <div id="qrTip" class="qr-tip">正在准备二维码…</div>
+    </div>
+    <a id="lnkNewWin" class="qr-alt hidden" target="_blank" rel="noopener noreferrer">二维码区域显示「已阻止此内容」？在新窗口打开扫码页</a>
+    <div id="loginStatus" class="login-status">正在获取二维码…</div>
+    <button id="btnRetry" class="btn hidden">重新获取二维码</button>
+    <p class="login-foot">若提示「该微信未绑定任何账号」，请先在 MTNode 客户端用管理员账号登录并绑定微信。</p>
+  </div>
+</section>
+
+<!-- 主界面 -->
+<section id="app" class="app hidden">
+  <header class="topbar">
+    <div class="brand">MTNode 管理平台</div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-view="overview">概览</button>
+      <button class="tab" data-view="orders">订单</button>
+      <button class="tab" data-view="users">用户</button>
+      <button class="tab" data-view="ledger">流水</button>
+    </nav>
+    <div class="who">
+      <span id="whoName"></span>
+      <span id="whoExpire" class="muted"></span>
+      <button id="btnLogout" class="btn btn-ghost">退出</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- 概览 -->
+    <section id="view-overview" class="view">
+      <div class="cards" id="ovCards"></div>
+      <h2>链路自检</h2>
+      <div class="panel" id="ovHealth"></div>
+      <h2>待人工处理</h2>
+      <div class="panel" id="ovAttention"></div>
+    </section>
+
+    <!-- 订单 -->
+    <section id="view-orders" class="view hidden">
+      <div class="toolbar">
+        <select id="fStatus">
+          <option value="">全部状态</option>
+          <option value="pending">pending 待支付</option>
+          <option value="paid">paid 已支付</option>
+          <option value="partial_refunded">partial_refunded 部分退款</option>
+          <option value="refunded">refunded 已退款</option>
+          <option value="paid_mismatch">paid_mismatch 金额不符</option>
+          <option value="expired">expired 已过期</option>
+          <option value="closed">closed 已关单</option>
+        </select>
+        <input id="fQuery" type="search" placeholder="订单号 / 用户名 / 昵称 / 交易号">
+        <button id="btnSearch" class="btn">查询</button>
+        <span class="spacer"></span>
+        <button id="btnCsvOrders" class="btn btn-ghost">导出订单 CSV</button>
+      </div>
+      <div class="table-wrap"><table id="tblOrders"></table></div>
+      <div class="pager" id="pgOrders"></div>
+    </section>
+
+    <!-- 用户 -->
+    <section id="view-users" class="view hidden">
+      <div class="toolbar">
+        <input id="fUserQuery" type="search" placeholder="用户名 / 昵称 / 账号ID / 手机号">
+        <button id="btnUserSearch" class="btn">查询</button>
+      </div>
+      <div class="table-wrap"><table id="tblUsers"></table></div>
+      <div class="pager" id="pgUsers"></div>
+    </section>
+
+    <!-- 流水 -->
+    <section id="view-ledger" class="view hidden">
+      <div class="toolbar">
+        <select id="fLedgerType">
+          <option value="">全部类型</option>
+          <option value="recharge">recharge 充值入账</option>
+          <option value="refund">refund 退款</option>
+          <option value="adjust">adjust 人工调账</option>
+          <option value="mismatch">mismatch 金额不符留痕</option>
+        </select>
+        <input id="fLedgerUser" type="search" placeholder="账号ID（可留空）">
+        <button id="btnLedgerSearch" class="btn">查询</button>
+        <span class="spacer"></span>
+        <button id="btnCsvLedger" class="btn btn-ghost">导出流水 CSV</button>
+      </div>
+      <div class="table-wrap"><table id="tblLedger"></table></div>
+    </section>
+  </main>
+</section>
+
+<!-- 弹窗：退款 / 调账（persistent：只能点按钮或 Esc 关闭，点外部不关） -->
+<div id="dlg" class="dlg-mask hidden">
+  <div class="dlg-box" role="dialog" aria-modal="true">
+    <h3 id="dlgTitle"></h3>
+    <div id="dlgBody" class="dlg-body"></div>
+    <div class="dlg-foot">
+      <button id="dlgCancel" class="btn btn-ghost">取消</button>
+      <button id="dlgOk" class="btn btn-primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="admin.js"></script>
+</body>
+</html>

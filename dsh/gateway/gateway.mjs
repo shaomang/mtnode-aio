@@ -3186,10 +3186,12 @@ rl.on('line', (line) => {
           break
         case 'providerCatalog':
           reply({
+            /* DeepSeek 官方：V4.1-Flash（deepseek-flash）原生多模态，能直接吃图；
+               V4-Flash 与 V4-Flash-Vision-Exp 已下线（旧模型名由服务端临时转发到
+               V4.1-Flash，按 Flash 价计费），目录不再列。 */
             deepseek: [
-              { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text'] },
+              { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text', 'image'] },
               { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text'] },
-              { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek-V4-Flash-Vision-Exp', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text', 'image'] },
             ],
             piai: piAiCatalog(),
           })

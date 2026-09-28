@@ -435,6 +435,16 @@
       var idLine = el("div", "acct-sub acct-id", u.id ? String(u.id) : "—");
       if (u.id) idLine.title = String(u.id);
       meta.appendChild(idLine);
+      /* 余额行：只对充值白名单账号显示（测试期 = ms2308，见 app-wallet.js 的 VISIBLE_USERS）。
+         余额来自账号快照的 balanceCents（云端 publicUser 下发，主进程 auth-store 已放行该字段）；
+         MtWallet 模块缺席时整块不显示，不影响原有菜单。 */
+      if (window.MtWallet && window.MtWallet.visibleFor(u)) {
+        var balLine = el("div", "acct-sub acct-balance");
+        balLine.appendChild(el("span", "", T("余额：")));
+        balLine.appendChild(el("b", "", window.MtWallet.money(window.MtWallet.balanceOf(u))));
+        balLine.title = T("点「账户充值」查看明细与付款");
+        meta.appendChild(balLine);
+      }
     } else {
       meta.appendChild(
         el(
@@ -481,6 +491,18 @@
             }),
           );
         }
+      }
+      /* 充值入口：与余额行同一道判空（测试期只对白名单账号显示）。
+         打开的是 app-wallet.js 的充值对话框（persistent + 可最小化）。
+         文案用「账户充值」而不是「充值」：后者在 i18n 里已是费用面板的流水类型标签
+         （"Topped up"），同一个键两种语义会让英文界面串味。 */
+      if (window.MtWallet && window.MtWallet.visibleFor(u)) {
+        body.appendChild(
+          menuItem(T("账户充值"), function () {
+            closeAccountMenu();
+            window.MtWallet.open();
+          }),
+        );
       }
       body.appendChild(
         menuItem(T("修改昵称"), function () {

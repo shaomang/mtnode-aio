@@ -107,6 +107,11 @@ const __FAKES__ = [
   "allImageItems",
   "valueFromWire",
   "resolveDbBangRefs", // !@数据库 引用：原样返回正文
+  /* 内嵌图像胶囊 token：resolveRefs 的首段（token → 「（图像输入）」+ 图像路径），
+     与本判定无关的下游，整段替掉；真源覆盖见 test/smoke-inline-img.js [3] */
+  "resolvePromptCapsules",
+  /* 同上：judge 的判据里把 @img: token 换成可读注记（样本里没有 token → 原样返回） */
+  "promptCapsulesToText",
   "nodeParentSuperId", // 超级节点隧穿：样本里没有壳层
   "superExternalInWires",
   "superInternalOutFeeds",
@@ -186,6 +191,9 @@ const sandbox = {
   },
   valueFromWire: (w) => sandbox.valueForInput(G("nodeById")((w || {}).from)),
   resolveDbBangRefs: (p) => ({ prompt: String(p || ""), dbs: [] }),
+  /* 内嵌图像胶囊：本判定的样本里没有 @img: token → 原样放行、零图像块（口径同真源空跑） */
+  resolvePromptCapsules: (p) => ({ prompt: String(p == null ? "" : p), blocks: [] }),
+  promptCapsulesToText: (p) => String(p == null ? "" : p),
   nodeParentSuperId: (n) => (n && n.parentSuperId) || "",
   superExternalInWires: () => [],
   superInternalOutFeeds: () => [],
@@ -273,6 +281,9 @@ const APP_FNS = [
   "collectTagRefContent",
   "resolveRefs",
   "mergeImagePaths",
+  /* 本次运行真正下发的图像序列（buildSpec / buildSpecAgg 都经它收口，含 @ 引用图：
+     内嵌图像胶囊也走这条通路 → 抽真实实现，别在测试里另写一份） */
+  "runImagePaths",
   "assemblePrompt",
   /* 判断节点（本轮补上双条件） */
   "parseJudgeYesNo",
@@ -287,7 +298,7 @@ vm.runInContext(
     "\n" +
     extract(appSrc, AT_REF_CONSTS) +
     "\n" +
-    extract(nodesSrc, ["isAutoProcKind", "buildSpec", "procSourcesOf"]) +
+    extract(nodesSrc, ["isAutoProcKind", "buildSpec", "procSourcesOf", "imagesNotInBody"]) +
     "\n" +
     extract(dbSrc, ["procPromptOf", "procPromptForRun"]) +
     "\n/* 真实加载顺序里 app-agent.js 最后覆盖同名 imageInputsOf */\n" +

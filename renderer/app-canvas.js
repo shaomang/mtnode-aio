@@ -2152,8 +2152,21 @@ function nsDuration(ctx, labelText, sec, opts, onChange) {
 function nsProviderModelFields(ctx, node) {
   const kind = modelKindForNode(node);
   const allProvs = S.config.providers || [];
-  const hasKind = (p) => providerHasKind(S.config, p, kind);
+  const hasKind = (p) =>
+    /* 停用的服务商不进模型选择器（设置里仍可见、可编辑、可恢复） */
+    !(typeof providerDisabled === "function" && providerDisabled(p)) &&
+    providerHasKind(S.config, p, kind);
   const provs = allProvs.filter(hasKind);
+  /* 节点已经绑着这家、而用户把它停用了：不能因为「收起来」就静默把节点改到别家 ——
+     把当前这家（标「已停用」）留在表里回显，用户在设置里取消勾选后原样生效。 */
+  const bound = allProvs.find((p) => p.id === node.providerId);
+  const boundOff = !!(
+    bound &&
+    typeof providerDisabled === "function" &&
+    providerDisabled(bound) &&
+    providerHasKind(S.config, bound, kind)
+  );
+  if (boundOff && !provs.some((p) => p.id === bound.id)) provs.unshift(bound);
   const switchedAway = !provs.some((p) => p.id === node.providerId);
   if (switchedAway) {
     /* 现服务商一个该形态的模型都没有（老画布 / 配置改过）：退回第一家可用服务商，
@@ -2169,11 +2182,14 @@ function nsProviderModelFields(ctx, node) {
     for (const p of provs) {
       const o = document.createElement("option");
       o.value = p.id;
+      const off = typeof providerDisabled === "function" && providerDisabled(p);
       o.textContent =
         p.name +
-        (providerKinds(S.config, p).length > 1
-          ? " · " + I18n.t(kind === "image" ? "图像模型" : "文本模型")
-          : "");
+        (off
+          ? " · " + I18n.t("已停用")
+          : providerKinds(S.config, p).length > 1
+            ? " · " + I18n.t(kind === "image" ? "图像模型" : "文本模型")
+            : "");
       if (p.id === node.providerId) o.selected = true;
       provSel.appendChild(o);
     }
@@ -2188,6 +2204,14 @@ function nsProviderModelFields(ctx, node) {
     ctx.commit({ history: true, rerender: true, rebuild: true });
   });
   ctx.field(I18n.t("服务商（自动读取全局 API 配置）"), provSel);
+  if (boundOff && node.providerId === bound.id) {
+    /* 停用 ≠ 删掉：说清它为什么标着「已停用」、怎么恢复 —— 节点本身没被改过 */
+    ctx.hint(
+      I18n.t(
+        "该服务商已被停用：不再出现在别处的模型选择里；设置 · 模型服务里取消「停用该服务商」即可恢复。本节点仍按原配置运行。",
+      ),
+    );
+  }
   if (switchedAway) {
     /* 原服务商被换掉一定有原因，必须写出来：用户看到的服务商变了却不知道为什么，
        会以为画布被改坏了。这里说明「它没有该形态的模型」并指向设置页。 */
@@ -2201,15 +2225,30 @@ function nsProviderModelFields(ctx, node) {
   const mod = document.createElement("select");
   {
     /* 只列该形态的模型；节点现存模型若不是这个形态（老画布 / 手工改过配置）
-       也补进列表并标注，保住原值不静默改掉，用户看得见原因。 */
+       也补进列表并标注，保住原值不静默改掉，用户看得见原因。
+       「本机不存在」＝这只模型根本不在本机该服务商的清单里（模型不可见）——
+       照实标注并留在第一项回显，节点摘要会写「无模型」，点 ▶ 会提示重选。 */
     const models = modelsOfKind(S.config, prov, kind);
-    const cur = node.model || models[0] || "";
+    const cur = String(node.model || "").trim() || models[0] || "";
     if (cur && !models.includes(cur)) models.unshift(cur);
+    if (!models.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = I18n.t("（无模型）");
+      mod.appendChild(o);
+    }
+    const inProv = (m) =>
+      !!(prov && Array.isArray(prov.models) && prov.models.map(String).includes(String(m)));
     for (const m of models) {
       const o = document.createElement("option");
       o.value = m;
       o.textContent =
-        m + (modelKindOf(S.config, prov && prov.id, m) === kind ? "" : " " + I18n.t("（形态不符）"));
+        m +
+        (inProv(m)
+          ? modelKindOf(S.config, prov && prov.id, m) === kind
+            ? ""
+            : " " + I18n.t("（形态不符）")
+          : " " + I18n.t("（本机不存在）"));
       mod.appendChild(o);
     }
     mod.value = cur;
@@ -2237,14 +2276,26 @@ function nsTemperatureField(ctx, node) {
   );
 }
 
-/* 一行摘要：服务商 · 模型 ·（尺寸）·（温度） */
+/* 一行摘要：服务商 · 模型 ·（尺寸）·（温度）。解析不出可用模型时照实写「无模型」
+   （本轮需求：模型不可见不再弹任何提示，改在节点头上一眼看清；判据同启动闸门）。 */
 function nsApiSummary(node) {
   const parts = [];
   const p = ((S.config && S.config.providers) || []).find(
     (x) => x.id === node.providerId,
   );
-  parts.push((p && p.name) || I18n.t("（未选择服务商）"));
-  if (node.model) parts.push(String(node.model));
+  const mg =
+    typeof nodeModelGate === "function" ? nodeModelGate(node) : { ok: true };
+  if (!mg.ok) {
+    /* 点名「原来那一份」本机没有的服务商 / 模型，用户才知道要改哪一个 */
+    const stale =
+      typeof nodeModelStaleLabel === "function" ? nodeModelStaleLabel(node) : "";
+    parts.push(
+      I18n.t("无模型") + (stale ? " · " + stale + I18n.t("（本机不存在）") : ""),
+    );
+  } else {
+    parts.push((p && p.name) || I18n.t("（未选择服务商）"));
+    if (node.model) parts.push(String(node.model));
+  }
   if (node.kind === "proc_image") {
     parts.push(
       IMAGE_SIZES.includes(node.size) ? node.size : DEFAULT_IMAGE_SIZE,
@@ -2268,20 +2319,16 @@ function nsApiSummary(node) {
 function nsAgentFields(ctx, node) {
   const catalog = S.providerCatalog || {
     deepseek: [
-      { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+      { id: "deepseek-flash", name: "DeepSeek-V4.1-Flash", input: ["text", "image"] },
       { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
-      {
-        id: "deepseek-v4-flash-vision-exp",
-        name: "DeepSeek-V4-Flash-Vision-Exp",
-        input: ["text", "image"],
-      },
     ],
     piai: [],
   };
   const mtnode = mtnodePiProviders();
   const modelsFor = (prov) => {
     if (prov === "deepseek-official") {
-      /* 仅显示已添加的模型:优先用配置的 DeepSeek 服务商模型,否则目录默认 */
+      /* 仅显示已添加的模型:优先用配置的 DeepSeek 服务商模型,否则目录默认。
+         dshProvider() 交出的 models 已过白 / 黑名单（且停用时它本身返回 null）。 */
       const dp = dshProvider();
       if (dp && Array.isArray(dp.models) && dp.models.length)
         return dp.models.map((m) => ({ id: String(m), name: "" }));
@@ -2309,18 +2356,54 @@ function nsAgentFields(ctx, node) {
   });
   ctx.field(I18n.t("预设（与智能会话一致）"), ps);
   const provSel = document.createElement("select");
+  /* 这两个在块里算出来、块外收尾（「供应商」字段之后的提示行）还要用，所以在块外声明 */
+  let dsOk = true;
+  let boundOffProv = null;
   {
-    /* 供应商用各自名称(DeepSeek 官方路由显示为配置的 DeepSeek 服务商名称) */
+    /* 供应商用各自名称(DeepSeek 官方路由显示为配置的 DeepSeek 服务商名称)；
+       官方路由对应的 DeepSeek 服务商被停用时，这条整体不列（mtnode_ 那些由
+       mtnodePiProviders 过滤，停用的不会出现在这里） */
     const dp = dshProvider();
-    const o = document.createElement("option");
-    o.value = "deepseek-official";
-    o.textContent = (dp && dp.name) || I18n.t("DeepSeek 官方");
-    provSel.appendChild(o);
+    dsOk =
+      typeof deepseekRouteSelectable === "function"
+        ? deepseekRouteSelectable(S.config)
+        : true;
+    /* 节点已经绑着这条路由、只是对应服务商被停用：留住它回显（标「已停用」），
+       否则 syncAgentProviderRoute 会把节点悄悄改到别家 */
+    const keepDs = dsOk || curProv === "deepseek-official";
+    if (keepDs) {
+      const o = document.createElement("option");
+      o.value = "deepseek-official";
+      o.textContent =
+        ((dp && dp.name) || I18n.t("DeepSeek 官方")) +
+        (dsOk ? "" : " · " + I18n.t("已停用"));
+      provSel.appendChild(o);
+    }
     for (const p of mtnode) {
       const o2 = document.createElement("option");
       o2.value = "mtnode_" + p.route;
       o2.textContent = p.name;
       provSel.appendChild(o2);
+    }
+    /* 节点绑着的那家被停用了（不在上面的表里）：补进来回显，别让节点被换掉。
+       这里用 options 遍历判存在，不用 querySelector —— 与下面同一套做法 */
+    const haveCur = [...provSel.options].some((o) => o.value === curProv);
+    boundOffProv =
+      curProv.indexOf("mtnode_") === 0 && !haveCur
+        ? ((S.config.providers || []).find(
+            (x) => "mtnode_" + x.id === curProv,
+          ) || null)
+        : null;
+    if (
+      boundOffProv &&
+      typeof providerDisabled === "function" &&
+      providerDisabled(boundOffProv)
+    ) {
+      const o3 = document.createElement("option");
+      o3.value = curProv;
+      o3.textContent =
+        (boundOffProv.name || boundOffProv.id) + " · " + I18n.t("已停用");
+      provSel.appendChild(o3);
     }
   }
   /* 仅显示已添加的供应商(DeepSeek 官方 + MTNode 服务商) */
@@ -2338,10 +2421,18 @@ function nsAgentFields(ctx, node) {
     ctx.commit({ history: true, rerender: true, rebuild: true });
   });
   ctx.field(I18n.t("供应商"), provSel);
+  if ((!dsOk && curProv === "deepseek-official") || boundOffProv) {
+    /* 停用 ≠ 删掉：节点没被改过，说清怎么恢复 */
+    ctx.hint(
+      I18n.t(
+        "该服务商已被停用：不再出现在别处的模型选择里；设置 · 模型服务里取消「停用该服务商」即可恢复。本节点仍按原配置运行。",
+      ),
+    );
+  }
   const mod = document.createElement("select");
   {
     const items = modelsFor(curProv);
-    const cur = node.model || (items[0] && items[0].id) || "deepseek-v4-flash";
+    const cur = node.model || (items[0] && items[0].id) || "deepseek-flash";
     const list = items.slice();
     if (cur && !list.some((x) => x.id === cur)) list.unshift({ id: cur, name: "" });
     const vis = new Set(visionModelsForProvider(curProv).map((m) => m.id));
@@ -4841,7 +4932,7 @@ function nodeElement(node) {
         ib.title =
           I18n.t("已连接图像输入：") +
           I18n.listJoin(imgIn.map((n) => n.title)) +
-          I18n.t("\n在任务描述中用 @标题 引用图像；运行时会自动使用视觉模型（DeepSeek 官方不支持图像，需支持视觉的服务商，如 opencode 等）");
+          I18n.t("\n在任务描述中用 @标题 引用图像；运行时会自动使用视觉模型（DeepSeek 官方用 deepseek-flash 识图，也可改用其它支持识图的服务商）");
         head.appendChild(ib);
       }
     }
@@ -11833,15 +11924,20 @@ function buildBody(node, body) {
           ? I18n.t("裁决：否（未达成）")
           : I18n.t("等待裁决 · 右上 是 / 下 否");
     body.appendChild(st);
+    /* 判断标准也是「正文框」（与 proc_text 的提示词 / agent_task 的任务同款正文框口径）：
+       走 mountPromptTextarea 拿到内嵌图像胶囊块。judge 的判据是纯文本判读
+       （resolveRefs 不参与），故 opts.refs=false 关掉 @ 引用菜单与 @ 高亮，只留胶囊。 */
+    const f3 = document.createElement("div");
+    f3.className = "n-field n-prompt";
     const ta = document.createElement("textarea");
     ta.className = "n-text";
     ta.spellcheck = false;
     ta.placeholder = I18n.t("判断标准（可选，默认用所属任务的目标）");
     ta.value = node.prompt || "";
-    ta.addEventListener("input", () => {
-      node.prompt = ta.value;
-    });
-    body.appendChild(ta);
+    mountPromptTextarea(f3, ta, node, (v) => {
+      node.prompt = v;
+    }, { refs: false });
+    body.appendChild(f3);
     if (node.error) {
       const err = document.createElement("div");
       err.className = "n-status err";

@@ -12,6 +12,25 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { sendSmsCode, smsProviderStatus, SMS_CODE_TTL_MS } from "./sms-provider.mjs";
 import { createAccountStore } from "./account-store.mjs";
+import {
+  alipayStatus,
+  alipayPrecreate,
+  alipayPagePayUrl,
+  alipayQuery,
+  alipayClose,
+  alipayRefund,
+  parseNotifyForm,
+  normalizeNotify,
+} from "./alipay-provider.mjs";
+import { qrDataUrl } from "./qr-encode.mjs";
+import {
+  createWallet,
+  makeOrderId,
+  validateAmount,
+  RECHARGE_TIERS_CENTS,
+  RECHARGE_MIN_CENTS,
+  RECHARGE_MAX_CENTS,
+} from "./wallet.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
@@ -19,6 +38,10 @@ const FILE_DIR = path.join(DATA_DIR, "files");
 const SKILL_DIR = path.join(DATA_DIR, "skills");
 const PREV_DIR = path.join(DATA_DIR, "previews");
 const FORUM_IMG_DIR = path.join(DATA_DIR, "forum-images");
+// 应用市场（用户 / 云端分发的本机小应用）：zip 落 APP_DIR，图标落 APP_ICON_DIR，
+// 记录进 db.json 的 apps[]（与 templates / skills 同一套存储口径）。
+const APP_DIR = path.join(DATA_DIR, "apps");
+const APP_ICON_DIR = path.join(DATA_DIR, "app-icons");
 const DB_PATH = path.join(DATA_DIR, "db.json");
 // 账户存储抽象层：users / sessions / identities 三个键经 account-store 读写
 // （默认 json 后端仍落 DATA_DIR/db.json，或由 MTNODE_ACCOUNT_STORE 切到 aliyun-tablestore）。
@@ -44,6 +67,17 @@ const MAX_SKILL = 200 * 1024;
 const MAX_SKILL_FILE = 200 * 1024;
 const MAX_SKILL_EXTRA_FILES = 32;
 const MAX_PREVIEW = 500 * 1024;
+// 应用包（zip）：24MB 原始体积 —— base64 后约 32MB，仍在 MAX_BODY（40MB）与
+// nginx client_max_body_size 40m 之内；图标沿用预览图口径（png/jpeg/webp，≤500KB）。
+const MAX_APP_ZIP = 24 * 1024 * 1024;
+// 应用 id = 客户端安装目录名（apps-store.js 的 safeAppId 同一口径）：
+// 2-64 位字母/数字/._-，统一小写入库；Windows 保留名不可用。
+const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
+const WIN_RESERVED = new Set([
+  "con", "prn", "aux", "nul",
+  "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+  "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+]);
 const SESSION_MS = 30 * 24 * 3600 * 1000;
 // 短信频控口径见 docs/auth-design.md 第 8 节（服务端内存态，重启清零）。
 const SMS_COOLDOWN_MS = 60 * 1000; // 单号 60 秒冷却
@@ -67,6 +101,53 @@ const WECHAT_DEVICE_MS = 5 * 60 * 1000; // device_code 有效期 5 分钟
 const WECHAT_TICKET_MS = 5 * 60 * 1000; // 一次性 ticket 有效期 5 分钟
 const WECHAT_POLL_INTERVAL = 2; // 客户端轮询间隔（秒）
 
+// —— 充值（支付宝当面付）与独立管理平台（口径见 docs/recharge-design.md）——
+// 充值白名单：测试期只有名单内账号能下单 / 看钱包（客户端「充值」入口同样只对 ms2308 显示）。
+const RECHARGE_USERS = splitSet(process.env.MTNODE_RECHARGE_USERS, "ms2308");
+// 管理平台管理员判据（三条任一命中即可）：
+//   ① isAdmin(u)（= MTNODE_STORE_ADMINS，默认 ms2308）
+//   ② username ∈ MTNODE_ADMIN_USERS（默认 ms2308）
+//   ③ 该账号绑定的微信 unionid ∈ MTNODE_ADMIN_WECHAT_UNIONIDS（可选 env 兜底）
+const ADMIN_EXTRA_USERS = splitSet(process.env.MTNODE_ADMIN_USERS, "ms2308");
+const ADMIN_WECHAT_UNIONIDS = splitSet(process.env.MTNODE_ADMIN_WECHAT_UNIONIDS, "");
+// 管理平台会话：独立短会话（8 小时、只对 /api/admin/* 生效、与客户端 Bearer 分开存 db.json）。
+const ADMIN_SESSION_MS = 8 * 3600 * 1000;
+// 频控（沿用短信那套「单 IP 每小时」口径）：登录发起 30 / 轮询 600 / 下单 60 / 查单刷新 120。
+const ADMIN_LOGIN_IP_HOURLY_MAX = 30;
+const ADMIN_POLL_IP_HOURLY_MAX = 600;
+const RECHARGE_CREATE_IP_HOURLY_MAX = 60;
+const WALLET_REFRESH_IP_HOURLY_MAX = 120;
+// 微信归属映射：`unionid:username` 或 `unionid:userId`，多条用逗号 / 分号 / 空白分隔。
+// 用途：未登录扫码且该 unionid 无人占用时，命中映射就直接绑到旧账号并登录它，
+// 不再新建一个只有微信身份的临时 uid（「同一个人两个账号」的根因）。
+const WECHAT_OWNER_MAP = parseOwnerMap(process.env.MTNODE_WECHAT_OWNER_MAP);
+// 管理平台静态页目录（本机联调用；线上由 nginx 从 /var/www/mtnode/admin/ 直发）。
+const ADMIN_WEB_DIR = path.join(ROOT, process.env.MTNODE_ADMIN_WEB_DIR || "admin");
+
+function splitSet(raw, dflt) {
+  return new Set(
+    String(raw == null || raw === "" ? dflt : raw)
+      .split(/[,;\s]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function parseOwnerMap(raw) {
+  const m = new Map();
+  for (const part of String(raw || "").split(/[,;\s]+/)) {
+    const s = part.trim();
+    if (!s) continue;
+    const i = s.indexOf(":");
+    if (i <= 0 || i === s.length - 1) {
+      console.warn("[store] MTNODE_WECHAT_OWNER_MAP 条目格式应为 unionid:username，已跳过：" + s);
+      continue;
+    }
+    m.set(s.slice(0, i).trim(), s.slice(i + 1).trim());
+  }
+  return m;
+}
+
 function mkdirp(p) {
   fs.mkdirSync(p, { recursive: true });
 }
@@ -74,6 +155,8 @@ mkdirp(FILE_DIR);
 mkdirp(SKILL_DIR);
 mkdirp(PREV_DIR);
 mkdirp(FORUM_IMG_DIR);
+mkdirp(APP_DIR);
+mkdirp(APP_ICON_DIR);
 
 function emptyDb() {
   return {
@@ -82,10 +165,17 @@ function emptyDb() {
     identities: [],
     templates: [],
     skills: [],
+    // 应用市场：用户自建 / 云端分发的小应用（zip 落 DATA_DIR/apps）
+    apps: [],
     likes: [],
     skillLikes: [],
     forumTopics: [],
     forumReplies: [],
+    // 充值账本：订单与流水（余额在账户行的 balanceCents，见 wallet.mjs）
+    rechargeOrders: [],
+    rechargeLedger: [],
+    // 管理平台独立短会话（与账户 sessions 分开，不进 Tablestore）
+    adminSessions: [],
   };
 }
 
@@ -102,6 +192,7 @@ function loadDb() {
     if (!Array.isArray(d.identities)) d.identities = [];
     if (!Array.isArray(d.templates)) d.templates = [];
     if (!Array.isArray(d.skills)) d.skills = [];
+    if (!Array.isArray(d.apps)) d.apps = [];
     if (!Array.isArray(d.likes)) d.likes = [];
     if (!Array.isArray(d.skillLikes)) d.skillLikes = [];
     if ("forumMessages" in d) {
@@ -110,6 +201,9 @@ function loadDb() {
     }
     if (!Array.isArray(d.forumTopics)) d.forumTopics = [];
     if (!Array.isArray(d.forumReplies)) d.forumReplies = [];
+    if (!Array.isArray(d.rechargeOrders)) d.rechargeOrders = [];
+    if (!Array.isArray(d.rechargeLedger)) d.rechargeLedger = [];
+    if (!Array.isArray(d.adminSessions)) d.adminSessions = [];
     return d;
   } catch {
     return emptyDb();
@@ -289,6 +383,9 @@ function publicUser(u) {
     },
     downloadsReceived: u.downloadsReceived || 0,
     likesReceived: u.likesReceived || 0,
+    // 余额（分）：客户端只对充值白名单账号展示，但字段一律随本人快照下发，
+    // 避免「服务端有余额、客户端要再打一次接口」。他人摘要走 publicTemplate/publicSkill，不含此字段。
+    balanceCents: Number.isFinite(Number(u.balanceCents)) ? Math.round(Number(u.balanceCents)) : 0,
     createdAt: u.createdAt,
     isAdmin: isAdmin(u),
   };
@@ -452,6 +549,117 @@ async function applyUserPatch(id, patch) {
     else db.users.push(next);
   }
   return next;
+}
+
+/* ========================================================================== *
+ * 充值账本（订单 / 流水 / 余额）—— 逻辑全在 wallet.mjs，这里只做接线与鉴权
+ * ========================================================================== */
+
+const wallet = createWallet({ db, saveDb, applyUserPatch });
+
+/** 充值白名单（测试期只放 ms2308）：客户端入口同样只对白名单账号显示。 */
+function rechargeAllowed(u) {
+  return !!u && (RECHARGE_USERS.has(String(u.username || "").toLowerCase()) || isAdmin(u));
+}
+
+/* ========================================================================== *
+ * 管理平台会话（独立 8 小时短会话，只对 /api/admin/* 生效）
+ *   与客户端 Bearer 完全分开：管理页 token 泄露也打不了客户端账号，且能单独失效。
+ *   存 db.json（不进 Tablestore —— 它是「一次登录一张票」，不是账户数据）。
+ * ========================================================================== */
+
+/** 管理员判据：isAdmin ∪ MTNODE_ADMIN_USERS ∪ 微信 unionid 白名单（三条任一命中）。 */
+function adminEligible(u) {
+  if (!u) return false;
+  if (isAdmin(u)) return true;
+  if (ADMIN_EXTRA_USERS.has(String(u.username || "").toLowerCase())) return true;
+  const uin = String(u.wechatUnionId || "").trim();
+  return !!(uin && ADMIN_WECHAT_UNIONIDS.has(uin.toLowerCase()));
+}
+
+function adminSessions() {
+  if (!Array.isArray(db.adminSessions)) db.adminSessions = [];
+  return db.adminSessions;
+}
+
+function pruneAdminSessions(t) {
+  const arr = adminSessions();
+  const keep = arr.filter((s) => s.expiresAt > t);
+  if (keep.length !== arr.length) db.adminSessions = keep;
+  return keep;
+}
+
+async function issueAdminSession(u) {
+  const token = "adm_" + crypto.randomBytes(24).toString("hex");
+  const t = now();
+  pruneAdminSessions(t);
+  db.adminSessions.push({
+    tokenHash: hashToken(token),
+    userId: u.id,
+    createdAt: t,
+    expiresAt: t + ADMIN_SESSION_MS,
+  });
+  await saveDb();
+  return token;
+}
+
+async function revokeAdminSession(token) {
+  const th = hashToken(String(token || ""));
+  const before = adminSessions().length;
+  db.adminSessions = adminSessions().filter((s) => s.tokenHash !== th);
+  if (db.adminSessions.length !== before) await saveDb();
+  return db.adminSessions.length !== before;
+}
+
+/** 解析管理会话；顺带复核管理员资格（名单被改后旧票立刻失效）。 */
+function authAdmin(req) {
+  const m = /^Bearer\s+(adm_\S+)$/i.exec(String(req.headers.authorization || ""));
+  if (!m) return null;
+  const th = hashToken(m[1]);
+  const t = now();
+  const sess = pruneAdminSessions(t).find((s) => s.tokenHash === th);
+  if (!sess) return null;
+  const u = db.users.find((x) => x.id === sess.userId) || null;
+  if (!u || !adminEligible(u)) return null;
+  return { user: u, session: sess, token: m[1] };
+}
+
+/* ---------- 单 IP 每小时频控（管理页登录 / 充值下单 / 查单刷新共用一套桶） ---------- */
+
+const ipBuckets = new Map(); // key|ip -> [ts]
+
+function ipGate(key, ip, max) {
+  const k = key + "|" + ip;
+  const t = now();
+  const arr = (ipBuckets.get(k) || []).filter((x) => t - x < 3600 * 1000);
+  if (arr.length >= max) {
+    ipBuckets.set(k, arr);
+    return { ok: false, retryAfter: Math.ceil((arr[0] + 3600 * 1000 - t) / 1000) };
+  }
+  return { ok: true, key: k, arr };
+}
+
+function ipCommit(gate) {
+  if (!gate || !gate.ok) return;
+  gate.arr.push(now());
+  ipBuckets.set(gate.key, gate.arr);
+  if (ipBuckets.size > 2000) {
+    const t = now();
+    for (const [k, arr] of ipBuckets) {
+      const keep = arr.filter((x) => t - x < 3600 * 1000);
+      if (keep.length) ipBuckets.set(k, keep);
+      else ipBuckets.delete(k);
+    }
+  }
+}
+
+function rateLimited(res, gate) {
+  return send(res, 429, {
+    ok: false,
+    code: "RATE_LIMITED",
+    error: "请求过于频繁，请稍后再试",
+    retryAfter: gate.retryAfter,
+  });
 }
 
 /* ---------- 统一账户层：登录 / 二次验证 / 绑定 ---------- */
@@ -811,6 +1019,9 @@ async function resolveWechatOwner({ userId, unionid, openid, nickname }) {
       db.sessions = (db.sessions || []).filter((s) => s.userId !== owner.id);
       await accountStore.deleteUser(owner.id);
       db.users = (db.users || []).filter((u) => u.id !== owner.id);
+      // 清掉临时账号残留的身份索引（占位 username 等）：删号不会自动清身份，
+      // 不清就会永久占着那个占位名（悬挂条目指向已不存在的 userId）。
+      await ensureIdentityIndex();
     } catch (e) {
       // 改写失败：回滚身份归属，避免微信落在半合并状态。
       await identityRelease("wechat_unionid", uin, me.id);
@@ -823,6 +1034,43 @@ async function resolveWechatOwner({ userId, unionid, openid, nickname }) {
 
   // ④ 属于正常账号：冲突，绝不静默换号。
   return { ok: false, conflict: true, owner: wechatOwnerPublic(owner) };
+}
+
+/**
+ * 微信归属映射（MTNODE_WECHAT_OWNER_MAP=`unionid:username` 或 `unionid:userId`，可多条）。
+ *
+ * 为什么需要它：未登录直接扫码时，服务端**无法**从微信侧得知这个 unionid 属于哪个老账号
+ * （微信不返回手机号），原逻辑只能新建一个「只有微信身份」的临时 uid —— 于是同一个人
+ * 有了 ms2308 与临时号两个账号。配了映射就明确归位：命中即把微信绑到旧账号并登录它。
+ *
+ * 安全边界：
+ *   · 只在 unionid **无人占用**、或占用者是「可合并的微信临时账号」时才动手；
+ *     已绑在别的正常账号上时一律返回 null，交现有冲突流程（409 WECHAT_OWNED_BY_OTHER）处理，
+ *     绝不静默换号。
+ *   · 映射目标账号不存在时只告警、按普通流程走（不新建、不猜测）。
+ * @returns {Promise<null|{user:object, merged:boolean, mergedFrom:object|null}>}
+ */
+async function loginWithOwnerMap({ unionid, openid, nickname, current }) {
+  const uin = String(unionid || "").trim();
+  const want = uin ? WECHAT_OWNER_MAP.get(uin) : "";
+  if (!want) return null;
+  const target = findUserByName(want) || db.users.find((u) => u.id === want) || null;
+  if (!target) {
+    console.warn("[store] MTNODE_WECHAT_OWNER_MAP 指向的账号不存在，按普通流程处理：" + want);
+    return null;
+  }
+  if (current && current.id === target.id) return null; // 已经归位，无需动作
+  if (current && !isMergeableWechatTempUser(current, uin)) return null; // 别人正常账号的微信：不碰
+  const r = await resolveWechatOwner({ userId: target.id, unionid: uin, openid, nickname });
+  if (!r.ok) {
+    console.warn("[store] 微信归属映射落库失败（" + want + "）：" + (r.error || r.code || "conflict"));
+    return null;
+  }
+  console.log(
+    "[store] 微信已按归属映射归到账号 " + target.username + "（" + target.id + "）" +
+      (r.merged ? "，并合并了临时账号 " + ((r.mergedFrom && r.mergedFrom.id) || "") : ""),
+  );
+  return { user: r.user, merged: !!r.merged, mergedFrom: r.mergedFrom || null };
 }
 
 async function wechatFetchJson(target, timeoutMs) {
@@ -1428,6 +1676,283 @@ function imageMimeFromPath(p) {
   return "image/jpeg";
 }
 
+/* ========================================================================== *
+ * 充值 / 管理平台助手
+ * ========================================================================== */
+
+/** 纯文本响应（支付宝异步通知只认 `success` / `failure` 文本）。 */
+function sendText(res, status, text) {
+  const body = String(text == null ? "" : text);
+  res.writeHead(status, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    "Cache-Control": "no-store",
+  });
+  res.end(body);
+}
+
+/** 支付宝时间（东八区 `yyyy-MM-dd HH:mm:ss`）→ 毫秒时间戳；解析失败返回 0。 */
+function parseAlipayTime(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(String(text || "").trim());
+  if (!m) return 0;
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 8, +m[5], +m[6]);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** 管理页静态资源的 MIME（本机联调用；线上由 nginx 直发 /var/www/mtnode/admin/）。 */
+function adminWebMime(file) {
+  if (file.endsWith(".html")) return "text/html; charset=utf-8";
+  if (file.endsWith(".css")) return "text/css; charset=utf-8";
+  if (file.endsWith(".js") || file.endsWith(".mjs")) return "text/javascript; charset=utf-8";
+  if (file.endsWith(".json")) return "application/json; charset=utf-8";
+  if (file.endsWith(".svg")) return "image/svg+xml";
+  if (file.endsWith(".png")) return "image/png";
+  if (file.endsWith(".ico")) return "image/x-icon";
+  return "application/octet-stream";
+}
+
+/** 关单（尽力而为）：支付宝侧关掉未付款交易，避免用户在过期订单上付款。失败只记日志。 */
+async function closeOrderBestEffort(order) {
+  if (!alipayStatus().configured) return;
+  try {
+    const r = await alipayClose(order.id);
+    if (r.ok || r.notExist) wallet.markClosed(order.id, r.tradeNo || "");
+    else console.warn("[recharge] 关单未成功 " + order.id + "：" + (r.subCode || r.code || "") + " " + (r.error || ""));
+  } catch (e) {
+    console.warn("[recharge] 关单异常 " + order.id + "：" + ((e && e.message) || e));
+  }
+}
+
+/**
+ * 主动向支付宝核对一笔订单（轮询兜底 / 手动补单共用）：
+ * TRADE_SUCCESS|TRADE_FINISHED → 入账（幂等）；TRADE_CLOSED → 标关闭；其余 → 仍未支付。
+ */
+async function syncOrderFromAlipay(order, source) {
+  if (!order) return { ok: false, code: "ORDER_NOT_FOUND", error: "订单不存在" };
+  const st = alipayStatus();
+  if (!st.configured) {
+    return { ok: false, code: "ALIPAY_UNAVAILABLE", error: "支付宝支付通道未配置（缺少 " + st.missing.join(" / ") + "）" };
+  }
+  if (order.status !== "pending" && order.status !== "expired" && order.status !== "closed") {
+    return { ok: true, unchanged: true, order };
+  }
+  const q = await alipayQuery(order.id);
+  if (!q.ok) {
+    // 交易还不存在 + 本地已过期 → 顺手关单，保持两边一致
+    if (q.notExist && order.status === "pending" && order.expiresAt <= now()) {
+      wallet.expireDue();
+      await closeOrderBestEffort(order);
+      await saveDb();
+    }
+    return { ok: false, code: q.code, error: q.error, subCode: q.subCode };
+  }
+  const status = q.tradeStatus;
+  if (status === "TRADE_SUCCESS" || status === "TRADE_FINISHED") {
+    const r = await wallet.creditPaid({
+      order,
+      tradeNo: q.tradeNo,
+      amountCents: q.amountCents,
+      buyerId: q.buyerId,
+      paidAt: parseAlipayTime(q.paidAt) || now(),
+      source: String(source || "query"),
+    });
+    return r.ok ? { ok: true, paid: true, order: r.order, code: r.code || "" } : r;
+  }
+  if (status === "TRADE_CLOSED") {
+    wallet.expireDue();
+    wallet.markClosed(order.id, q.tradeNo);
+    await saveDb();
+    return { ok: true, closed: true, order };
+  }
+  return { ok: true, pending: true, tradeStatus: status, order };
+}
+
+/** 管理平台鉴权闸：无票 / 失效 → 401（重新扫码）；票还有效但名单已改 → 403（无权）。 */
+function requireAdmin(req, res) {
+  const m = /^Bearer\s+(adm_\S+)$/i.exec(String(req.headers.authorization || ""));
+  if (!m) {
+    send(res, 401, { ok: false, code: "ADMIN_UNAUTHORIZED", error: "管理平台未登录" });
+    return null;
+  }
+  const a = authAdmin(req);
+  if (!a) {
+    /* authAdmin 对「票不存在 / 已过期」和「票在但资格被撤」都回 null，这里分开：
+       前者是认证失败（401，客户端据此清票回登录页），后者是授权失败（403，票本身没坏）。
+       混成一个 403 会让「会话过期」在语义上变成「你没权限」，也不符合 HTTP 口径。 */
+    const th = hashToken(m[1]);
+    const alive = adminSessions().some((s) => s.tokenHash === th && Number(s.expiresAt) > now());
+    if (alive) {
+      send(res, 403, { ok: false, code: "ADMIN_FORBIDDEN", error: "该账号已不在管理平台名单内" });
+    } else {
+      send(res, 401, { ok: false, code: "ADMIN_UNAUTHORIZED", error: "管理会话无效或已过期，请重新扫码登录" });
+    }
+    return null;
+  }
+  return a;
+}
+
+/* ========================================================================== *
+ * 应用市场（用户 / 云端分发的本机小应用）
+ *   · 存储沿用既有口径：记录进 db.json 的 apps[]，zip 落 DATA_DIR/apps/<id>.zip，
+ *     图标落 DATA_DIR/app-icons/<id>.<ext>（与 templates / skills 同源）。
+ *   · 静态目录 http://mt-agent.com/mtnode/apps/catalog.json 与 /api/apps* 共用同一份
+ *     条目字段（appCatalogEntry）：手写清单（store-saas/apps/catalog.json）与接口不会漂移。
+ *   · 详见 docs/apps-market.md。
+ * ========================================================================== */
+
+/** 应用 id（= 客户端安装目录名）合法化：统一小写，非法返回 ""。 */
+function normalizeAppId(raw) {
+  const s = String(raw == null ? "" : raw).trim().toLowerCase();
+  if (!APP_ID_RE.test(s)) return "";
+  if (s.endsWith(".") || WIN_RESERVED.has(s)) return "";
+  return s;
+}
+
+/**
+ * 只读 zip 中央目录拿条目名（不引第三方依赖）。
+ * 坏包 / 路径越界一律抛错 —— 上传阶段就拦住，别让客户端在解包时才炸。
+ */
+function zipEntryNames(buf) {
+  const floor = Math.max(0, buf.length - 66000);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= floor; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("不是有效的 zip（找不到中央目录）");
+  const count = buf.readUInt16LE(eocd + 10);
+  const offset = buf.readUInt32LE(eocd + 16);
+  const names = [];
+  let o = offset;
+  for (let i = 0; i < count; i++) {
+    if (o + 46 > buf.length || buf.readUInt32LE(o) !== 0x02014b50) throw new Error("zip 中央目录损坏");
+    const nameLen = buf.readUInt16LE(o + 28);
+    const extraLen = buf.readUInt16LE(o + 30);
+    const cmtLen = buf.readUInt16LE(o + 32);
+    const raw = buf.toString("utf8", o + 46, o + 46 + nameLen);
+    o += 46 + nameLen + extraLen + cmtLen;
+    const norm = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!norm || norm.endsWith("/")) continue;
+    if (norm.includes("..") || norm.includes(":")) throw new Error("zip 内含非法路径：" + norm);
+    names.push(norm);
+  }
+  if (!names.length) throw new Error("zip 里没有文件");
+  return names;
+}
+
+function decodeAppZip(b64) {
+  const buf = decodeUtf8Base64(b64);
+  if (buf.length > MAX_APP_ZIP) throw new Error("应用包不能超过 " + Math.floor(MAX_APP_ZIP / 1024 / 1024) + "MB");
+  const pk = buf[0] === 0x50 && buf[1] === 0x4b &&
+    (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07);
+  if (!pk) throw new Error("不是 zip（缺少 PK 头）");
+  return buf;
+}
+
+/** 包内入口页：优先清单声明的 entry，其次顶层 index.html，再其次唯一的顶层 html。 */
+function detectAppEntry(rawEntry, names) {
+  const declared = String(rawEntry == null ? "" : rawEntry).replace(/\\/g, "/").replace(/^\/+/, "");
+  if (declared) {
+    if (declared.includes("..") || declared.includes(":") || !/\.html?$/i.test(declared)) return "";
+    if (!names.includes(declared)) throw new Error("包内找不到清单声明的入口页：" + declared);
+    return declared;
+  }
+  if (names.includes("index.html")) return "index.html";
+  const top = names.filter((n) => /\.html?$/i.test(n) && !n.includes("/"));
+  return top.length === 1 ? top[0] : "";
+}
+
+function appIconPath(id) {
+  for (const ext of ["png", "jpg", "webp"]) {
+    const p = path.join(APP_ICON_DIR, id + "." + ext);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** 图标在静态目录里的相对地址（icons/<id>.<ext>）：客户端把它解析到 /mtnode/apps/ 下，
+ *  与 zipUrl 的 `<id>.zip` 同一套「相对目录」口径（deploy.sh 会把图标装进该目录）。 */
+function appIconRel(id) {
+  const p = appIconPath(id);
+  return p ? "icons/" + id + "." + path.extname(p).slice(1).toLowerCase() : "";
+}
+
+function writeAppIcon(id, icon) {
+  clearAppIcon(id);
+  fs.writeFileSync(path.join(APP_ICON_DIR, id + "." + icon.ext), icon.buf);
+}
+
+function clearAppIcon(id) {
+  for (const ext of ["png", "jpg", "webp"]) {
+    try { fs.unlinkSync(path.join(APP_ICON_DIR, id + "." + ext)); } catch {}
+  }
+}
+
+/**
+ * 应用条目统一字段口径 —— /api/apps* 与 /mtnode/apps/catalog.json **共用这一份**：
+ * id / title / version / desc / icon / zipUrl / sha256 / owner 为主字段，
+ * 另给 description / url 两个同义字段与 entry / tags / bytes / downloads / 时间戳，
+ * 便于静态清单与客户端目录（apps-store.js parseCatalogDoc）两侧直接消费。
+ * zipUrl 与 icon 都用**相对本目录**的写法（`<id>.zip` / `icons/<id>.<ext>`），客户端把它们
+ * 解析到 http://mt-agent.com/mtnode/apps/ 下（apps-store.js 的 resolveZipUrl / appsIconUrl）。
+ */
+function appCatalogEntry(a) {
+  const owner = db.users.find((u) => u.id === a.userId);
+  const zipUrl = a.id + ".zip";
+  return {
+    id: a.id,
+    title: a.title,
+    version: a.version || "1.0.0",
+    desc: a.description || "",
+    description: a.description || "",
+    icon: appIconRel(a.id) || String(a.icon || ""),
+    zipUrl: zipUrl,
+    url: zipUrl,
+    sha256: a.sha256 || "",
+    owner: owner ? (owner.username || owner.id) : a.userId,
+    entry: a.entry || "index.html",
+    tags: Array.isArray(a.tags) ? a.tags : [],
+    bytes: a.bytes || 0,
+    downloads: a.downloads || 0,
+    createdAt: a.createdAt,
+    updatedAt: a.updatedAt,
+  };
+}
+
+/** 接口回给客户端 / 管理侧的完整条目 = 统一字段 + 归属与权限标记。 */
+function publicApp(a, viewer) {
+  const viewerId = viewer && viewer.id;
+  const owner = db.users.find((u) => u.id === a.userId);
+  return Object.assign({}, appCatalogEntry(a), {
+    ownerUser: owner
+      ? { id: owner.id, username: owner.username, nickname: owner.nickname }
+      : { id: a.userId, username: "", nickname: "" },
+    hasIcon: !!appIconPath(a.id),
+    mine: !!(viewerId && viewerId === a.userId),
+    canDelete: !!(viewerId && (viewerId === a.userId || isAdmin(viewer))),
+  });
+}
+
+/** 静态目录文档：把这份 JSON 原样写到 /var/www/mtnode/apps/catalog.json 即是线上目录。 */
+function appCatalogDoc() {
+  const apps = (db.apps || [])
+    .slice()
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .map(appCatalogEntry);
+  return {
+    version: 1,
+    updatedAt: new Date(now()).toISOString(),
+    feed: "http://mt-agent.com/mtnode/apps",
+    apps: apps,
+  };
+}
+
+/** 更新时版本 +1：x.y.z → x.y.(z+1)；其它形态退回「追加 .1」再走 normalizeVersion 校验。 */
+function bumpAppVersion(v) {
+  const s = String(v || "").trim() || "1.0.0";
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(s);
+  return m ? m[1] + "." + m[2] + "." + (Number(m[3]) + 1) : s + ".1";
+}
+
 async function handle(req, res) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -1457,11 +1982,22 @@ async function handle(req, res) {
   };
 
   if (method === "GET" && p === "/api/health") {
+    const pay = alipayStatus();
     return send(res, 200, {
       ok: true,
       service: "mtnode-store",
       templates: db.templates.length,
       skills: db.skills.length,
+      apps: (db.apps || []).length,
+      // 充值链路自检：部署后 curl 一眼看出凭据是否就位（不含任何密钥材料）
+      recharge: {
+        orders: (db.rechargeOrders || []).length,
+        ledger: (db.rechargeLedger || []).length,
+        payConfigured: pay.configured,
+        payMissing: pay.configured ? [] : pay.missing,
+        notifyConfigured: pay.hasNotifyUrl,
+        adminWeb: fs.existsSync(path.join(ADMIN_WEB_DIR, "index.html")),
+      },
     });
   }
 
@@ -1750,6 +2286,7 @@ async function handle(req, res) {
     wechatDevices.delete(deviceCode);
     let created = false;
     let bound = false;
+    let mappedOwner = null;
     if (t.bindUserId) {
       const r = await resolveWechatOwner({
         userId: t.bindUserId,
@@ -1785,7 +2322,19 @@ async function handle(req, res) {
       });
     }
     let u = identityGet("wechat_unionid", t.unionid);
-    if (!u) {
+    // 归属映射（MTNODE_WECHAT_OWNER_MAP）：把该微信归到配置的旧账号，不再新建临时 uid。
+    // 命中不了（未配置 / 目标账号不存在 / 该微信已绑在别的正常账号上）就按原流程走。
+    const mapped = await loginWithOwnerMap({
+      unionid: t.unionid,
+      openid: t.openid,
+      nickname: t.nickname,
+      current: u,
+    });
+    if (mapped) {
+      u = mapped.user;
+      bound = !!mapped.merged; // 复用 merged 语义：告知客户端「临时账号已合并进来」
+      mappedOwner = mapped.mergedFrom || null;
+    } else if (!u) {
       const r = await ensureWechatUser(t.unionid, t.openid, t.nickname);
       u = r.user;
       created = r.created;
@@ -1801,6 +2350,9 @@ async function handle(req, res) {
       user: publicUser(u),
       created,
       bound,
+      mapped: !!mapped,
+      merged: !!(mapped && mapped.merged),
+      mergedFrom: mappedOwner,
     });
   }
 
@@ -2522,6 +3074,280 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, item: publicSkill(t, user) });
   }
 
+  /* ====================================================================== *
+   * 应用市场（列表 / 详情 / 下载 / 上传 / 更新 / 删除 / 静态目录口径）
+   * 口径见 docs/apps-market.md：owner 一律由服务端按登录态绑定，改 / 删仅 owner。
+   * ====================================================================== */
+
+  if (method === "GET" && p === "/api/apps") {
+    const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const owner = String(url.searchParams.get("owner") || "").trim().toLowerCase();
+    const sort = String(url.searchParams.get("sort") || "new").trim().toLowerCase();
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.get("pageSize") || "20", 10) || 20));
+    let list = (db.apps || []).slice();
+    // 按 owner 过滤：username 或 userId 都认（上传脚本用 ?owner=<自己> 找自己的应用）
+    if (owner) {
+      list = list.filter((a) => {
+        const u = db.users.find((x) => x.id === a.userId);
+        const name = u ? String(u.username || "").toLowerCase() : "";
+        return name === owner || String(a.userId).toLowerCase() === owner;
+      });
+    }
+    if (q) {
+      list = list.filter((a) => {
+        const e = appCatalogEntry(a);
+        return [e.id, e.title, e.desc, e.owner, (e.tags || []).join(" ")]
+          .join(" ")
+          .toLowerCase()
+          .includes(q);
+      });
+    }
+    if (sort === "downloads") {
+      list.sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || (b.createdAt || 0) - (a.createdAt || 0));
+    } else if (sort === "title") {
+      list.sort((a, b) => String(a.title).localeCompare(String(b.title), "zh"));
+    } else {
+      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    }
+    const total = list.length;
+    const items = list.slice((page - 1) * pageSize, page * pageSize).map((a) => publicApp(a, user));
+    return send(res, 200, { ok: true, items, total, page, pageSize });
+  }
+
+  // 静态目录口径（与手写清单 store-saas/apps/catalog.json 同一份字段）：
+  // 把它原样落成 /var/www/mtnode/apps/catalog.json，即为客户端读的那个线上目录。
+  if (method === "GET" && (p === "/api/apps/catalog" || p === "/api/apps/catalog.json")) {
+    return send(res, 200, appCatalogDoc());
+  }
+
+  const appOne = /^\/api\/apps\/([^/]+)$/.exec(p);
+  const appFileR = /^\/api\/apps\/([^/]+)\/file$/.exec(p);
+  const appIconR = /^\/api\/apps\/([^/]+)\/icon$/.exec(p);
+
+  if (appFileR && method === "GET") {
+    const a = (db.apps || []).find((x) => x.id === appFileR[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    const fp = path.join(APP_DIR, a.id + ".zip");
+    if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
+    const buf = fs.readFileSync(fp);
+    const sha = crypto.createHash("sha256").update(buf).digest("hex");
+    a.downloads = (a.downloads || 0) + 1;
+    const owner = db.users.find((u) => u.id === a.userId);
+    if (owner) await applyUserPatch(owner.id, { downloadsReceived: (owner.downloadsReceived || 0) + 1 });
+    await saveDb();
+    if (url.searchParams.get("format") === "raw") {
+      return sendBin(res, 200, buf, "application/zip", {
+        "X-Content-SHA256": sha,
+        "Content-Disposition": 'attachment; filename="' + a.id + '.zip"',
+      });
+    }
+    return send(res, 200, {
+      ok: true,
+      id: a.id,
+      title: a.title,
+      version: a.version,
+      entry: a.entry || "index.html",
+      bytes: buf.length,
+      sha256: sha,
+      zipUrl: a.id + ".zip",
+      base64: buf.toString("base64"),
+    });
+  }
+
+  if (appIconR && method === "GET") {
+    const a = (db.apps || []).find((x) => x.id === appIconR[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    const fp = appIconPath(a.id);
+    if (!fp) return send(res, 404, { ok: false, error: "无图标" });
+    return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "public, max-age=3600" });
+  }
+
+  if (appOne && method === "GET") {
+    const a = (db.apps || []).find((x) => x.id === appOne[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    return send(res, 200, { ok: true, item: publicApp(a, user) });
+  }
+
+  // 上传：必须登录，owner 由服务端绑定当前登录用户（客户端传的 userId 一律忽略）。
+  if (method === "POST" && p === "/api/apps") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "上传应用需要登录" });
+    const b = await jsonBody();
+    requireFields(b, ["id", "title"]);
+    const id = normalizeAppId(b.id);
+    if (!id) {
+      return send(res, 400, {
+        ok: false,
+        error: "应用 id 不合法（2-64 位字母 / 数字 / . _ -，不能是 Windows 保留名；统一小写）",
+      });
+    }
+    if ((db.apps || []).some((x) => x.id === id)) {
+      return send(res, 409, {
+        ok: false,
+        code: "APP_EXISTS",
+        error: "该应用 id 已存在；更新请用 PATCH /api/apps/" + id + "（仅 id 的所有者可改）",
+      });
+    }
+    const title = String(b.title).trim().slice(0, 80);
+    if (!title) return send(res, 400, { ok: false, error: "标题不能为空" });
+    const description = String(b.description != null ? b.description : b.desc || "").trim().slice(0, 2000);
+    let version;
+    try {
+      version = normalizeVersion(b.version, "1.0.0");
+    } catch (e) {
+      return send(res, 400, { ok: false, error: e.message || String(e) });
+    }
+    let buf;
+    try {
+      buf = decodeAppZip(b.zipBase64 != null ? b.zipBase64 : b.fileBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "不是有效的小应用 zip：" + (e.message || e) });
+    }
+    let entry = "";
+    try {
+      entry = detectAppEntry(b.entry, zipEntryNames(buf));
+    } catch (e) {
+      return send(res, 400, { ok: false, error: e.message || String(e) });
+    }
+    if (!entry) {
+      return send(res, 400, { ok: false, error: "包内找不到入口页（顶层需有 index.html，或显式传 entry）" });
+    }
+    let icon = null;
+    try {
+      icon = decodePreview(b.iconBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
+    }
+    fs.writeFileSync(path.join(APP_DIR, id + ".zip"), buf);
+    if (icon) writeAppIcon(id, icon);
+    const a = {
+      id,
+      userId: user.id,
+      title,
+      description,
+      icon: String(b.icon || "").trim().slice(0, 300),
+      version,
+      tags: parseTags(b.tags),
+      entry,
+      bytes: buf.length,
+      sha256: crypto.createHash("sha256").update(buf).digest("hex"),
+      downloads: 0,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    db.apps.push(a);
+    await saveDb();
+    return send(res, 200, { ok: true, item: publicApp(a, user), catalog: appCatalogEntry(a) });
+  }
+
+  // 更新：仅 owner 可改；覆盖文件（zip / 图标）并让版本 +1（显式传 version 时以传入为准）。
+  if (appOne && method === "PATCH") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const a = (db.apps || []).find((x) => x.id === appOne[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能更新自己的应用" });
+    const b = await jsonBody();
+    // 先全部校验、再落盘 / 改内存：中途报错时库与磁盘都不留半成品（失败绝不改内存记录）。
+    let nextTitle = null;
+    if (b.title != null) {
+      nextTitle = String(b.title).trim().slice(0, 80);
+      if (!nextTitle) return send(res, 400, { ok: false, error: "标题不能为空" });
+    }
+    const nextDesc =
+      b.description != null || b.desc != null
+        ? String(b.description != null ? b.description : b.desc).trim().slice(0, 2000)
+        : null;
+    const nextTags = b.tags != null ? parseTags(b.tags) : null;
+    const nextIcon = b.icon != null ? String(b.icon).trim().slice(0, 300) : null;
+    let iconBuf = null;
+    let clearIcon = false;
+    if (b.iconBase64 === "") {
+      clearIcon = true;
+    } else if (b.iconBase64) {
+      try {
+        iconBuf = decodePreview(b.iconBase64);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
+      }
+    }
+    const rawZip = b.zipBase64 != null ? b.zipBase64 : b.fileBase64;
+    let zipBuf = null;
+    let nextEntry = null;
+    if (rawZip) {
+      try {
+        zipBuf = decodeAppZip(rawZip);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: "不是有效的小应用 zip：" + (e.message || e) });
+      }
+      try {
+        nextEntry = detectAppEntry(b.entry, zipEntryNames(zipBuf));
+      } catch (e) {
+        return send(res, 400, { ok: false, error: e.message || String(e) });
+      }
+      if (!nextEntry) {
+        return send(res, 400, { ok: false, error: "包内找不到入口页（顶层需有 index.html，或显式传 entry）" });
+      }
+    } else if (b.entry != null) {
+      const fp = path.join(APP_DIR, a.id + ".zip");
+      if (!fs.existsSync(fp)) return send(res, 400, { ok: false, error: "应用包缺失，请重新上传 zip" });
+      try {
+        nextEntry = detectAppEntry(b.entry, zipEntryNames(fs.readFileSync(fp)));
+      } catch (e) {
+        return send(res, 400, { ok: false, error: e.message || String(e) });
+      }
+      if (!nextEntry) return send(res, 400, { ok: false, error: "入口页不合法" });
+    }
+    const bumped = b.version == null;
+    let nextVersion;
+    try {
+      nextVersion = normalizeVersion(bumped ? bumpAppVersion(a.version) : b.version, a.version || "1.0.0");
+    } catch (e) {
+      return send(res, 400, { ok: false, error: e.message || String(e) });
+    }
+
+    if (zipBuf) {
+      fs.writeFileSync(path.join(APP_DIR, a.id + ".zip"), zipBuf);
+      a.bytes = zipBuf.length;
+      a.sha256 = crypto.createHash("sha256").update(zipBuf).digest("hex");
+    }
+    if (clearIcon) clearAppIcon(a.id);
+    else if (iconBuf) writeAppIcon(a.id, iconBuf);
+
+    if (nextTitle != null) a.title = nextTitle;
+    if (nextDesc != null) a.description = nextDesc;
+    if (nextTags != null) a.tags = nextTags;
+    if (nextIcon != null) a.icon = nextIcon;
+    if (nextEntry != null) a.entry = nextEntry;
+    a.version = nextVersion;
+    a.updatedAt = now();
+    await saveDb();
+    return send(res, 200, {
+      ok: true,
+      bumped,
+      item: publicApp(a, user),
+      catalog: appCatalogEntry(a),
+    });
+  }
+
+  if (appOne && method === "DELETE") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const idx = (db.apps || []).findIndex((x) => x.id === appOne[1]);
+    if (idx < 0) return send(res, 404, { ok: false, error: "应用不存在" });
+    const a = db.apps[idx];
+    if (a.userId !== user.id && !isAdmin(user)) {
+      return send(res, 403, { ok: false, error: "只能删除自己的应用" });
+    }
+    const owner = db.users.find((u) => u.id === a.userId) || user;
+    await applyUserPatch(owner.id, {
+      downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (a.downloads || 0)),
+    });
+    db.apps.splice(idx, 1);
+    try { fs.unlinkSync(path.join(APP_DIR, a.id + ".zip")); } catch {}
+    clearAppIcon(a.id);
+    await saveDb();
+    return send(res, 200, { ok: true });
+  }
+
   // —— 论坛（长期保留）——
   // 列表：免登录，只回标题与元数据（不含正文），支持 q/status/sort/page/pageSize。
   if (method === "GET" && p === "/api/forum/topics") {
@@ -2687,8 +3513,611 @@ async function handle(req, res) {
     return sendBin(res, 200, buf, imageMimeFromPath(fp));
   }
 
+  /* ====================================================================== *
+   * 充值（支付宝当面付）—— 测试期仅白名单账号（默认 ms2308）可用
+   * ====================================================================== */
+
+  // 客户端拉配置：档位 / 上下限 / 支付宝是否配好 / 本账号是否开放充值。
+  if (method === "GET" && p === "/api/wallet/config") {
+    const st = alipayStatus();
+    return send(res, 200, {
+      ok: true,
+      // alipay_page = 电脑网站支付（浏览器收银台）· alipay_f2f = 当面付（窗内二维码）。
+      // 由 MTNODE_ALIPAY_CHANNEL 决定，客户端据此决定「显示二维码」还是「显示去支付按钮」。
+      channel: st.channel === "precreate" ? "alipay_f2f" : "alipay_page",
+      tiersCents: RECHARGE_TIERS_CENTS.slice(),
+      minCents: RECHARGE_MIN_CENTS,
+      maxCents: RECHARGE_MAX_CENTS,
+      orderTtlMs: 15 * 60 * 1000,
+      payConfigured: st.configured,
+      sandbox: st.sandbox,
+      missing: st.missing,
+      opened: rechargeAllowed(user),
+    });
+  }
+
+  // 钱包摘要：余额 + 最近订单 + 最近流水（含退款负项）。
+  if (method === "GET" && p === "/api/wallet/summary") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    if (!rechargeAllowed(user)) {
+      return send(res, 403, { ok: false, code: "RECHARGE_NOT_OPEN", error: "充值功能尚未对该账号开放" });
+    }
+    const limit = Math.min(100, Number(url.searchParams.get("limit")) || 20);
+    return send(res, 200, { ok: true, user: publicUser(user), wallet: wallet.summarize(user, limit) });
+  }
+
+  // 下单：先向支付宝预下单成功、再建本地订单（避免「本地有单、支付宝没有」的孤儿单）。
+  if (method === "POST" && p === "/api/wallet/recharge/create") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    if (!rechargeAllowed(user)) {
+      return send(res, 403, { ok: false, code: "RECHARGE_NOT_OPEN", error: "充值功能尚未对该账号开放" });
+    }
+    const st = alipayStatus();
+    if (!st.configured) {
+      return send(res, 503, {
+        ok: false,
+        code: "ALIPAY_UNAVAILABLE",
+        error: "支付宝支付通道未配置（缺少 " + st.missing.join(" / ") + "）",
+        missing: st.missing,
+      });
+    }
+    const b = await jsonBody();
+    const rawAmt = b.amountCents != null ? b.amountCents : Number(b.amountYuan) * 100;
+    const amountCents = Math.round(Number(rawAmt));
+    const verr = validateAmount(amountCents);
+    if (verr) {
+      return send(res, 400, {
+        ok: false,
+        code: "INVALID_AMOUNT",
+        error: verr,
+        minCents: RECHARGE_MIN_CENTS,
+        maxCents: RECHARGE_MAX_CENTS,
+      });
+    }
+    const ip = clientIp(req);
+    const gate = ipGate("recharge-create", ip, RECHARGE_CREATE_IP_HOURLY_MAX);
+    if (!gate.ok) return rateLimited(res, gate);
+
+    // 顺手把本地过期单结掉（并去支付宝关单），再限同账号未支付单数量，防堆积。
+    const due = wallet.expireDue();
+    for (const o of due) await closeOrderBestEffort(o);
+    const pendingMine = wallet.listOrders({ userId: user.id, status: "pending", pageSize: 50 }).items;
+    if (pendingMine.length >= 10) {
+      if (due.length) await saveDb();
+      return send(res, 429, { ok: false, code: "TOO_MANY_PENDING", error: "未支付订单过多，请先完成支付或等其过期" });
+    }
+    ipCommit(gate);
+
+    const outTradeNo = makeOrderId();
+    const subject = "MTNode 账户充值";
+    const bodyText = "账号 " + (user.username || user.id) + " 充值 " + (amountCents / 100).toFixed(2) + " 元";
+    /* 通道二选一（MTNODE_ALIPAY_CHANNEL，默认 page）：
+       · page      电脑网站支付：只生成签名跳转 URL，不调接口 → 客户端用系统浏览器打开收银台。
+                   线上实测该 APPID 已签约这个产品，而当面付回 ACQ.ACCESS_FORBIDDEN（未签约）。
+       · precreate 当面付：POST 拿 qr_code，服务端自绘二维码，客户端窗内扫码。
+       两条通道的入账口径完全一样：异步 notify（验签 + 幂等）为主，trade.query 轮询兜底。 */
+    const usePage = st.channel !== "precreate";
+    let pay = null;
+    if (usePage) {
+      pay = alipayPagePayUrl({ outTradeNo, totalAmountCents: amountCents, subject, body: bodyText, timeoutExpress: "15m" });
+    } else {
+      pay = await alipayPrecreate({ outTradeNo, totalAmountCents: amountCents, subject, body: bodyText, timeoutExpress: "15m" });
+    }
+    if (!pay.ok) {
+      if (due.length) await saveDb();
+      return send(res, 502, {
+        ok: false,
+        code: pay.code || "ALIPAY_ERROR",
+        error: pay.error || (usePage ? "生成支付宝收银台链接失败" : "支付宝预下单失败"),
+        subCode: pay.subCode || "",
+        subMsg: pay.subMsg || "",
+      });
+    }
+    const order = wallet.createOrder({
+      user,
+      amountCents,
+      clientIp: ip,
+      id: outTradeNo,
+      channel: usePage ? "alipay_page" : "alipay_f2f",
+    });
+    wallet.attachQr(order.id, usePage
+      ? { payUrl: pay.url }
+      : { qrCode: pay.qrCode, qrDataUrl: qrDataUrl(pay.qrCode, { title: "支付宝付款码" }) });
+    await saveDb();
+    console.log("[recharge] 下单 " + order.id + " " + amountCents + " 分 · " + (usePage ? "page.pay" : "当面付") + " · " + (user.username || user.id));
+    return send(res, 200, {
+      ok: true,
+      order: wallet.publicOrder(order),
+      expiresIn: Math.max(0, Math.ceil((order.expiresAt - now()) / 1000)),
+    });
+  }
+
+  // 订单状态（客户端 2 秒轮询）：只回自己的单；顺带做惰性过期。
+  if (method === "GET" && p === "/api/wallet/recharge/order") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    if (!rechargeAllowed(user)) {
+      return send(res, 403, { ok: false, code: "RECHARGE_NOT_OPEN", error: "充值功能尚未对该账号开放" });
+    }
+    const id = String(url.searchParams.get("id") || "");
+    const order = wallet.getOrder(id);
+    if (!order || order.userId !== user.id) {
+      return send(res, 404, { ok: false, code: "ORDER_NOT_FOUND", error: "订单不存在" });
+    }
+    if (order.status === "pending" && order.expiresAt <= now()) {
+      wallet.expireDue();
+      await closeOrderBestEffort(order);
+      await saveDb();
+    }
+    return send(res, 200, {
+      ok: true,
+      order: wallet.publicOrder(order),
+      serverTime: now(),
+      expiresIn: Math.max(0, Math.ceil((order.expiresAt - now()) / 1000)),
+    });
+  }
+
+  // 「我已完成支付」：主动向支付宝查单并入账（notify 丢失时的兜底）。
+  if (method === "POST" && p === "/api/wallet/recharge/refresh") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    if (!rechargeAllowed(user)) {
+      return send(res, 403, { ok: false, code: "RECHARGE_NOT_OPEN", error: "充值功能尚未对该账号开放" });
+    }
+    const b = await jsonBody();
+    const id = String(b.id || b.orderId || "");
+    const order = wallet.getOrder(id);
+    if (!order || order.userId !== user.id) {
+      return send(res, 404, { ok: false, code: "ORDER_NOT_FOUND", error: "订单不存在" });
+    }
+    const gate = ipGate("wallet-refresh", clientIp(req), WALLET_REFRESH_IP_HOURLY_MAX);
+    if (!gate.ok) return rateLimited(res, gate);
+    ipCommit(gate);
+    const r = await syncOrderFromAlipay(order, "query");
+    if (!r.ok) {
+      return send(res, 502, {
+        ok: false,
+        code: r.code || "ALIPAY_ERROR",
+        error: r.error || "查询支付宝交易失败",
+        order: wallet.publicOrder(order),
+      });
+    }
+    return send(res, 200, {
+      ok: true,
+      paid: !!r.paid,
+      closed: !!r.closed,
+      tradeStatus: r.tradeStatus || "",
+      code: r.code || "",
+      order: wallet.publicOrder(order),
+      balanceCents: wallet.balanceOf(user),
+    });
+  }
+
+  // 支付宝异步通知：验签为准，成功必须回纯文本 `success`，否则支付宝会重试。
+  if (method === "POST" && p === "/api/pay/alipay/notify") {
+    const raw = (await readBody(req)).toString("utf8");
+    const params = parseNotifyForm(raw);
+    const n = normalizeNotify(params);
+    if (!n.ok) {
+      console.warn("[recharge] 通知被拒（" + n.reason + "）out_trade_no=" + (params.out_trade_no || "无"));
+      return sendText(res, 400, "failure");
+    }
+    // 非成功状态（WAIT_BUYER_PAY / TRADE_CLOSED）：已收到，回 success 止住重试。
+    if (!n.accepted) return sendText(res, 200, "success");
+    const order = wallet.getOrder(n.outTradeNo);
+    if (!order) {
+      console.warn("[recharge] 通知对应订单不存在：" + n.outTradeNo);
+      return sendText(res, 200, "success");
+    }
+    try {
+      const r = await wallet.creditPaid({
+        order,
+        tradeNo: n.tradeNo,
+        amountCents: n.amountCents,
+        buyerId: n.buyerId,
+        paidAt: parseAlipayTime(n.paidAt) || now(),
+        source: "notify",
+      });
+      console.log(
+        "[recharge] 通知入账 " + order.id + " → " + order.status +
+          (r.duplicated ? "（重复通知，已幂等）" : "") +
+          (r.code === "AMOUNT_MISMATCH" ? "（金额不符，待人工处理）" : "") +
+          (r.latePaid ? "（过期后到账）" : ""),
+      );
+      return sendText(res, 200, "success");
+    } catch (e) {
+      console.error("[recharge] 入账失败，等支付宝重试：" + ((e && e.message) || e));
+      return sendText(res, 500, "failure");
+    }
+  }
+
+  // 支付通道自检（不含任何密钥材料）：部署后一眼看出缺哪个 env。
+  if (method === "GET" && p === "/api/pay/alipay/status") {
+    return send(res, 200, { ok: true, alipay: alipayStatus() });
+  }
+
+  /* ====================================================================== *
+   * 管理平台（独立界面 · 仅 ms2308 微信扫码 · 网站不设入口）
+   * ====================================================================== */
+
+  // 扫码登录第 1 步：拿 device_code 与 qrconnect 地址（管理页用 iframe 内嵌）。
+  if (method === "POST" && p === "/api/admin/login/wechat/start") {
+    if (!wechatConfigured()) {
+      return send(res, 503, { ok: false, code: "WECHAT_UNAVAILABLE", error: "微信登录未配置" });
+    }
+    const gate = ipGate("admin-login", clientIp(req), ADMIN_LOGIN_IP_HOURLY_MAX);
+    if (!gate.ok) return rateLimited(res, gate);
+    ipCommit(gate);
+    pruneWechat();
+    const deviceCode = crypto.randomBytes(16).toString("hex");
+    const state = crypto.randomBytes(16).toString("hex");
+    wechatDevices.set(deviceCode, {
+      state,
+      createdAt: now(),
+      expiresAt: now() + WECHAT_DEVICE_MS,
+      ticket: "",
+      bindUserId: "", // 管理页永远不是「绑定」意图
+      admin: true,
+    });
+    wechatStates.set(state, deviceCode);
+    const authUrl =
+      "https://open.weixin.qq.com/connect/qrconnect?appid=" + encodeURIComponent(WECHAT_APPID) +
+      "&redirect_uri=" + encodeURIComponent(WECHAT_REDIRECT) +
+      "&response_type=code&scope=snsapi_login" +
+      "&state=" + encodeURIComponent(state) +
+      "#wechat_redirect";
+    return send(res, 200, {
+      ok: true,
+      deviceCode,
+      device_code: deviceCode,
+      authUrl,
+      expiresIn: Math.floor(WECHAT_DEVICE_MS / 1000),
+      interval: WECHAT_POLL_INTERVAL,
+    });
+  }
+
+  // 扫码登录第 2 步：轮询 → 校验管理员资格 → 发 8 小时独立会话。**绝不新建账号**。
+  if (method === "POST" && p === "/api/admin/login/wechat/poll") {
+    if (!wechatConfigured()) {
+      return send(res, 503, { ok: false, code: "WECHAT_UNAVAILABLE", error: "微信登录未配置" });
+    }
+    const gate = ipGate("admin-poll", clientIp(req), ADMIN_POLL_IP_HOURLY_MAX);
+    if (!gate.ok) return rateLimited(res, gate);
+    ipCommit(gate);
+    pruneWechat();
+    const b = await jsonBody();
+    const deviceCode = String(b.deviceCode || b.device_code || "").trim();
+    if (!deviceCode) return send(res, 400, { ok: false, code: "CODE_EXPIRED", error: "缺少 deviceCode" });
+    const dev = wechatDevices.get(deviceCode);
+    if (!dev || dev.expiresAt <= now()) {
+      wechatDevices.delete(deviceCode);
+      return send(res, 400, { ok: false, code: "CODE_EXPIRED", error: "二维码已过期，请重新扫码" });
+    }
+    if (!dev.ticket) return send(res, 200, { ok: true, status: "pending" });
+    const t = peekWechatTicket(dev.ticket);
+    if (!t) {
+      wechatDevices.delete(deviceCode);
+      return send(res, 400, { ok: false, code: "CODE_EXPIRED", error: "二维码已过期，请重新扫码" });
+    }
+    consumeWechatTicket(dev.ticket);
+    wechatDevices.delete(deviceCode);
+
+    let u = identityGet("wechat_unionid", t.unionid);
+    const mapped = await loginWithOwnerMap({
+      unionid: t.unionid,
+      openid: t.openid,
+      nickname: t.nickname,
+      current: u,
+    });
+    if (mapped) u = mapped.user;
+    if (!u) {
+      return send(res, 403, {
+        ok: false,
+        code: "ADMIN_REQUIRED",
+        error: "该微信未绑定任何账号；请先在 MTNode 客户端用管理员账号登录并绑定微信",
+      });
+    }
+    if (!adminEligible(u)) {
+      return send(res, 403, { ok: false, code: "ADMIN_FORBIDDEN", error: "该账号不是管理平台管理员" });
+    }
+    if (t.openid && u.wechatOpenId !== t.openid) u = (await applyUserPatch(u.id, { wechatOpenId: t.openid })) || u;
+    const token = await issueAdminSession(u);
+    await saveDb();
+    console.log("[admin] 管理员登录成功：" + (u.username || u.id));
+    return send(res, 200, {
+      ok: true,
+      status: "done",
+      token,
+      user: publicUser(u),
+      expiresIn: Math.floor(ADMIN_SESSION_MS / 1000),
+    });
+  }
+
+  if (method === "POST" && p === "/api/admin/logout") {
+    const m = /^Bearer\s+(adm_\S+)$/i.exec(String(req.headers.authorization || ""));
+    if (m) await revokeAdminSession(m[1]);
+    return send(res, 200, { ok: true });
+  }
+
+  if (method === "GET" && p === "/api/admin/overview") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    return send(res, 200, {
+      ok: true,
+      admin: publicUser(a.user),
+      sessionExpiresAt: a.session.expiresAt,
+      stats: wallet.stats(),
+      alipay: alipayStatus(),
+      wechat: { configured: wechatConfigured(), ownerMapEntries: WECHAT_OWNER_MAP.size },
+      config: {
+        tiersCents: RECHARGE_TIERS_CENTS.slice(),
+        minCents: RECHARGE_MIN_CENTS,
+        maxCents: RECHARGE_MAX_CENTS,
+        rechargeUsers: Array.from(RECHARGE_USERS),
+      },
+    });
+  }
+
+  if (method === "GET" && p === "/api/admin/orders") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const r = wallet.listOrders({
+      userId: url.searchParams.get("userId") || "",
+      status: url.searchParams.get("status") || "",
+      q: url.searchParams.get("q") || "",
+      page: Number(url.searchParams.get("page")) || 1,
+      pageSize: Number(url.searchParams.get("pageSize")) || 20,
+    });
+    return send(res, 200, {
+      ok: true,
+      total: r.total,
+      page: r.page,
+      pageSize: r.pageSize,
+      items: r.items.map((o) => wallet.adminOrder(o)),
+    });
+  }
+
+  const adminOrderR = /^\/api\/admin\/orders\/([^/]+)$/.exec(p);
+  if (adminOrderR && method === "GET") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const order = wallet.getOrder(decodeURIComponent(adminOrderR[1]));
+    if (!order) return send(res, 404, { ok: false, code: "ORDER_NOT_FOUND", error: "订单不存在" });
+    const entries = wallet
+      .listLedger({ limit: 200 })
+      .filter((e) => e.orderId === order.id)
+      .map((e) => wallet.adminLedger(e));
+    return send(res, 200, { ok: true, order: wallet.adminOrder(order), ledger: entries });
+  }
+
+  // 手动补单：主动查支付宝交易状态并入账（notify 丢失 / 用户提前关窗时用）。
+  const adminRecheckR = /^\/api\/admin\/orders\/([^/]+)\/recheck$/.exec(p);
+  if (adminRecheckR && method === "POST") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const order = wallet.getOrder(decodeURIComponent(adminRecheckR[1]));
+    if (!order) return send(res, 404, { ok: false, code: "ORDER_NOT_FOUND", error: "订单不存在" });
+    const r = await syncOrderFromAlipay(order, "admin_recheck");
+    if (!r.ok) {
+      return send(res, 502, {
+        ok: false,
+        code: r.code || "ALIPAY_ERROR",
+        error: r.error || "查询支付宝交易失败",
+        order: wallet.adminOrder(order),
+      });
+    }
+    console.log("[admin] 补单 " + order.id + " → " + order.status + " by " + (a.user.username || a.user.id));
+    return send(res, 200, {
+      ok: true,
+      paid: !!r.paid,
+      closed: !!r.closed,
+      unchanged: !!r.unchanged,
+      tradeStatus: r.tradeStatus || "",
+      code: r.code || "",
+      order: wallet.adminOrder(order),
+    });
+  }
+
+  // 退款：先本地预检（余额够不够）→ 调支付宝 → 成功才记账。
+  const adminRefundR = /^\/api\/admin\/orders\/([^/]+)\/refund$/.exec(p);
+  if (adminRefundR && method === "POST") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const orderId = decodeURIComponent(adminRefundR[1]);
+    const b = await jsonBody();
+    const amountCents = Math.round(Number(b.amountCents));
+    const note = String(b.note || "").trim();
+    const pre = wallet.canRefund({ orderId, amountCents, user: null });
+    // 订单/账号不存在 → 404；余额不足、超可退额、金额非法 → 400（管理页据此分别提示）
+    if (!pre.ok) {
+      return send(res, pre.code === "ORDER_NOT_FOUND" || pre.code === "USER_NOT_FOUND" ? 404 : 400, {
+        ok: false,
+        code: pre.code,
+        error: pre.error,
+      });
+    }
+    if (!note) return send(res, 400, { ok: false, code: "NOTE_REQUIRED", error: "退款必须填写原因" });
+    const st = alipayStatus();
+    if (!st.configured) {
+      return send(res, 503, {
+        ok: false,
+        code: "ALIPAY_UNAVAILABLE",
+        error: "支付宝支付通道未配置（缺少 " + st.missing.join(" / ") + "）",
+      });
+    }
+    const outRequestNo = String(b.outRequestNo || "").trim() ||
+      orderId + "_r" + ((pre.order.refunds || []).length + 1) + "_" + crypto.randomBytes(2).toString("hex");
+    const ar = await alipayRefund({
+      outTradeNo: orderId,
+      refundAmountCents: amountCents,
+      outRequestNo,
+      refundReason: note,
+    });
+    if (!ar.ok) {
+      return send(res, 502, {
+        ok: false,
+        code: ar.code || "ALIPAY_ERROR",
+        error: ar.error || "支付宝退款失败",
+        subCode: ar.subCode || "",
+        subMsg: ar.subMsg || "",
+      });
+    }
+    const r = await wallet.refundOrder({
+      orderId,
+      amountCents,
+      outRequestNo,
+      tradeNo: ar.tradeNo,
+      note,
+      operator: a.user.username || a.user.id,
+      fundChange: ar.fundChange,
+    });
+    if (!r.ok) return send(res, 400, { ok: false, code: r.code, error: r.error });
+    console.log(
+      "[admin] 退款 " + orderId + " " + amountCents + " 分 by " + (a.user.username || a.user.id) +
+        (ar.fundChange === "N" ? "（支付宝返回 fund_change=N，可能是重复请求）" : ""),
+    );
+    return send(res, 200, {
+      ok: true,
+      order: wallet.adminOrder(r.order),
+      ledger: wallet.adminLedger(r.ledger),
+      fundChange: ar.fundChange,
+      balanceCents: wallet.balanceOf(db.users.find((u) => u.id === r.order.userId) || {}),
+    });
+  }
+
+  if (method === "GET" && p === "/api/admin/users") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const pageSize = Math.min(200, Math.max(1, Number(url.searchParams.get("pageSize")) || 50));
+    const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+    let arr = (db.users || []).slice();
+    if (q) {
+      arr = arr.filter(
+        (u) =>
+          String(u.username || "").toLowerCase().includes(q) ||
+          String(u.nickname || "").toLowerCase().includes(q) ||
+          String(u.id || "").toLowerCase().includes(q) ||
+          String(u.phone || "").includes(q),
+      );
+    }
+    arr.sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0));
+    const total = arr.length;
+    const start = (page - 1) * pageSize;
+    return send(res, 200, {
+      ok: true,
+      total,
+      page,
+      pageSize,
+      items: arr.slice(start, start + pageSize).map((u) => ({
+        id: u.id,
+        username: u.username,
+        nickname: u.nickname,
+        phone: u.phone ? maskPhone(u.phone) : "",
+        wechatBound: !!u.wechatUnionId,
+        hasPassword: !!u.pass,
+        balanceCents: wallet.balanceOf(u),
+        isAdmin: isAdmin(u),
+        adminEligible: adminEligible(u),
+        createdAt: u.createdAt,
+      })),
+    });
+  }
+
+  // 人工调账（赠送 / 扣减）：备注必填，全部进流水。
+  const adminAdjustR = /^\/api\/admin\/users\/([^/]+)\/adjust$/.exec(p);
+  if (adminAdjustR && method === "POST") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const key = decodeURIComponent(adminAdjustR[1]);
+    const target = (db.users || []).find((u) => u.id === key) || findUserByName(key);
+    if (!target) return send(res, 404, { ok: false, code: "USER_NOT_FOUND", error: "账号不存在" });
+    const b = await jsonBody();
+    const r = await wallet.adjustBalance({
+      user: target,
+      deltaCents: Math.round(Number(b.deltaCents)),
+      note: String(b.note || ""),
+      operator: a.user.username || a.user.id,
+    });
+    if (!r.ok) return send(res, 400, { ok: false, code: r.code, error: r.error });
+    console.log(
+      "[admin] 调账 " + (target.username || target.id) + " " + r.ledger.deltaCents + " 分 by " +
+        (a.user.username || a.user.id) + "：" + r.ledger.note,
+    );
+    const out = { ok: true, balanceCents: r.balanceCents, ledger: wallet.adminLedger(r.ledger) };
+    // 调的是自己 → 顺带回最新账号摘要，客户端 / 管理页立即同步
+    if (target.id === a.user.id) out.user = publicUser(target);
+    return send(res, 200, out);
+  }
+
+  if (method === "GET" && p === "/api/admin/ledger") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const items = wallet
+      .listLedger({
+        userId: url.searchParams.get("userId") || "",
+        type: url.searchParams.get("type") || "",
+        limit: Number(url.searchParams.get("limit")) || 50,
+      })
+      .map((e) => wallet.adminLedger(e));
+    return send(res, 200, { ok: true, items });
+  }
+
+  // CSV 导出（UTF-8 BOM，Excel 双击不乱码）。
+  if (method === "GET" && p === "/api/admin/export.csv") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const kind = String(url.searchParams.get("kind") || "orders") === "ledger" ? "ledger" : "orders";
+    const buf = Buffer.from(wallet.csv(kind), "utf8");
+    const name = "mtnode-" + kind + "-" + new Date().toISOString().slice(0, 10) + ".csv";
+    return sendBin(res, 200, buf, "text/csv; charset=utf-8", {
+      "Content-Disposition": 'attachment; filename="' + name + '"',
+      "Cache-Control": "no-store",
+    });
+  }
+
+  // /admin（无尾斜杠）→ /admin/：否则页内相对资源（admin.css / admin.js）会解析到根路径而 404
+  if (method === "GET" && url.pathname === "/admin") {
+    res.writeHead(302, { Location: "/admin/", "Cache-Control": "no-store" });
+    return res.end();
+  }
+
+  // 管理平台静态页（本机联调；线上由 nginx 从 /var/www/mtnode/admin/ 直发，网站不设入口）。
+  const adminWebR = method === "GET" ? /^\/admin(?:\/(.*))?$/.exec(p) : null;
+  if (adminWebR) {
+    const rootDir = path.resolve(ADMIN_WEB_DIR);
+    const rel = String(adminWebR[1] || "").replace(/^\/+/, "") || "index.html";
+    if (rel.includes("\0")) return send(res, 400, { ok: false, error: "非法路径" });
+    const fp = path.resolve(rootDir, rel);
+    if (fp !== rootDir && !fp.startsWith(rootDir + path.sep)) {
+      return send(res, 403, { ok: false, error: "非法路径" });
+    }
+    if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) {
+      return send(res, 404, { ok: false, error: "not found" });
+    }
+    return sendBin(res, 200, fs.readFileSync(fp), adminWebMime(fp), { "Cache-Control": "no-store" });
+  }
+
   send(res, 404, { ok: false, error: "not found" });
 }
+
+/* ---------- 充值订单过期清扫：每分钟把到期未支付单标 expired，并去支付宝关单 ---------- */
+const ORDER_SWEEP_MS = 60 * 1000;
+setInterval(async () => {
+  let dirty = false;
+  try {
+    const before = adminSessions().length;
+    pruneAdminSessions(now());
+    dirty = adminSessions().length !== before;
+    const due = wallet.expireDue();
+    if (due.length) {
+      dirty = true;
+      for (const o of due) await closeOrderBestEffort(o);
+      console.log("[recharge] 过期清扫：" + due.length + " 单已标记 expired");
+    }
+    if (dirty) await saveDb();
+  } catch (e) {
+    console.error("[recharge] 过期清扫失败：" + ((e && e.message) || e));
+  }
+}, ORDER_SWEEP_MS);
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch((e) => {
@@ -2712,5 +4141,39 @@ server.listen(PORT, HOST, () => {
       sms.id +
       (sms.dev ? "（开发模式：验证码只打日志，生产必须配置 MTNODE_SMS_PROVIDER 与 MTNODE_SMS_* 凭据）" : "") +
       (sms.configured ? "" : " [未配置，缺少 " + (sms.missing || []).join(" / ") + "，短信接口返回 503 SMS_UNAVAILABLE]"),
+  );
+  const pay = alipayStatus();
+  console.log(
+    "[mtnode-store] alipay pay: " +
+      (pay.configured
+        ? "已配置 appid=" + pay.appId + " · 通道=" + (pay.channel === "precreate" ? "当面付（窗内扫码）" : "电脑网站支付（浏览器收银台）") +
+          (pay.sandbox ? "（沙箱网关）" : "") + (pay.hasNotifyUrl ? " · notify 已配" : " · notify 未配（只靠轮询/补单）") +
+          (pay.channel === "precreate" ? "" : (pay.hasReturnUrl ? " · return 已配" : " · return 未配（付完停在支付宝成功页）"))
+        : "[未配置，缺少 " + (pay.missing || []).join(" / ") + "，下单返回 503 ALIPAY_UNAVAILABLE · " +
+          "生成密钥：node alipay-keygen.mjs（见 docs/recharge-design.md §凭据）]") +
+      (pay.keyError ? " · " + pay.keyError : ""),
+  );
+  // notify 地址填错（apex 被 301 / 本机地址 / 非 https）＝「支付成功但收不到异步通知」，
+  // 只在日志与健康检查里提醒，不拦启动：轮询兜底仍能把单查回来。
+  if (pay.notifyWarning) console.warn("[mtnode-store] alipay notify 体检：" + pay.notifyWarning);
+  // 网关写错（/router/rest）不会报错，而是所有接口 302 到登录页 —— 启动就把体检结论打出来。
+  if (pay.gatewayWarning) console.warn("[mtnode-store] alipay 网关体检：" + pay.gatewayWarning);
+  if (pay.returnWarning) console.warn("[mtnode-store] alipay return_url 体检：" + pay.returnWarning);
+  console.log(
+    "[mtnode-store] recharge: 白名单=" + (Array.from(RECHARGE_USERS).join(",") || "（空）") +
+      " · 订单=" + (db.rechargeOrders || []).length + " 流水=" + (db.rechargeLedger || []).length +
+      " · 管理会话=" + (db.adminSessions || []).length,
+  );
+  console.log(
+    "[mtnode-store] admin platform: 判据=isAdmin ∪ MTNODE_ADMIN_USERS(" +
+      (Array.from(ADMIN_EXTRA_USERS).join(",") || "空") + ") ∪ unionid 白名单(" + ADMIN_WECHAT_UNIONIDS.size +
+      " 条) · 微信归属映射 " + WECHAT_OWNER_MAP.size + " 条 · 静态页 " +
+      (fs.existsSync(path.join(ADMIN_WEB_DIR, "index.html")) ? ADMIN_WEB_DIR : "（未找到，本机 /admin 返回 404）"),
+  );
+  console.log(
+    "[mtnode-store] apps market: 应用=" + (db.apps || []).length + " · zip=" + APP_DIR +
+      " · 图标=" + APP_ICON_DIR +
+      "（静态目录 /mtnode/apps/catalog.json 与 GET /api/apps/catalog 同一份字段；" +
+      "zipUrl / icon 相对该目录）",
   );
 });

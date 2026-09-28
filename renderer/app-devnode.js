@@ -216,10 +216,265 @@ function devDraftSet(node, field, text) {
 /* 草稿 → mtDialogForm 的 textarea 参数（带内容时打上「已恢复」提示标记） */
 function devDraftTextareaOpts(node, field, base) {
   const draft = devDraftOf(node, field);
+  /* 建议 / 询问 / 需求草稿这三个正文框复用会话侧同一套嵌图能力（见下段）：
+     弹窗建好后把它们接上共享模块的 textarea 版（粘贴 / 拖入 / 图片胶囊条）。
+     其余草稿字段（细化 / 工具 / 函数）不加这一行，保持纯文本 textarea。 */
+  if (DEV_EMBED_FIELDS.indexOf(field) >= 0) devEmbedSchedule(node);
   return Object.assign({}, base || {}, {
     value: draft || String((base && base.value) || ""),
     draft: !!draft.trim(),
   });
+}
+
+/* ---------- 正文框嵌图：复用会话侧同一套组件（粘贴 / 拖入 / 胶囊条 / 删除） ----------
+ * 需求：开发节点的「建议 / 询问 / 需求草稿」三个正文框要能吃图片 —— 粘贴（含截图）、
+ *      拖入本机图片、插入后以胶囊条逐个列出、点 ✕ 删除；其余 textarea 保持现状。
+ * 复用：一套能力全在 renderer/app-inline-img.js（window.MTInlineImg）的 textarea 版上，
+ *      与会话 / 助手输入框（app-assist.js 的 chatInlineImgTick）同一份内核、同一套外观：
+ *      · bindTextarea(ta, {target, onInserted, onChanged}) —— 粘贴（截图走主进程
+ *        clipboardReadImage）/ 拖入（有本机路径就直接引用那个绝对路径，取不到路径读 Blob）
+ *        一律在光标处插一行独占的 ![名称](引用)；
+ *      · 胶囊条 —— 调用方按 imgLines(ta.value) 渲染 .ii-line-chips（#行号 + 缩略图 +
+ *        名称 + ✕）：点胶囊选中正文那一行、点缩略图开灯箱、✕ 删掉整行。
+ * 落盘口径（与画布 / 审阅 / 会话同一套）：拖入的图片有本机路径就直接引用，不复制文件；
+ *      剪贴板截图没有路径，先落盘成真文件（项目根下 .mtnode-input/，没设项目根退回数据目录
+ *      devnode-input/）再引用 —— 绝不写一行指向不存在文件的引用。
+ * 兜底：共享模块没就绪（老构建 / 切片冒烟）时胶囊条保持空，textarea 行为与改动前一致。
+ */
+const DEV_EMBED_FIELDS = ["suggest", "ask", "dev"]; /* 允许嵌图的草稿字段（其余纯文本） */
+function devEmbedModule() {
+  return window.MTInlineImg || null;
+}
+/* 截图落盘目录：与开发会话的工作区同一处 —— 项目根下 .mtnode-input/
+   （会话侧 chatImgDirFor 同一条口径；模型在同一个工作区里读得到） */
+function devEmbedImgDir(node) {
+  const root = String((typeof devPathOf === "function" ? devPathOf(node) : "") || "").trim();
+  if (!root || typeof joinPath !== "function") return "";
+  return joinPath(root, ".mtnode-input");
+}
+/* base64 → 字节（file:writeBytes 只认字节，字符串会被当 utf8 写坏）。
+   先归一 data URL 前缀（共享模块 stripDataUrl 同一口径）：剪贴板里的图片文件项 /
+   内存 Blob 经 FileReader 出来的是整条 data:image/png;base64,…，直接 atob 会抛错。 */
+function devEmbedImgBytes(b64) {
+  const m = devEmbedModule();
+  const raw =
+    m && typeof m.stripDataUrl === "function"
+      ? m.stripDataUrl(b64)
+      : String(b64 || "").replace(/^data:[^,]*,/, "");
+  const bin = atob(raw);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+/* 共享模块的 saveBase64 钩子：把「没有本机路径」的图片来源（截图 / 内存 Blob）落成真文件。
+   命名 paste-<时间戳36进制>.<ext>；同一毫秒多张也不会重名。失败回 null（模块自己提示）。 */
+async function devEmbedWriteBase64(picked, node) {
+  const ext =
+    String((picked && picked.ext) || ".png").replace(/^\./, "").toLowerCase() || "png";
+  let dir = devEmbedImgDir(node);
+  if (!dir) {
+    /* 没设项目根：退回应用数据目录（绝不落应用安装目录，见 AGENTS.md 数据纪律） */
+    try {
+      const r = await window.api.dataGetRoot();
+      if (r && r.ok && r.path) dir = joinPath(String(r.path), "devnode-input");
+    } catch (_) {
+      dir = "";
+    }
+  }
+  if (!dir) return null;
+  const dest = joinPath(dir, "paste-" + Date.now().toString(36) + "." + ext);
+  try {
+    const w = await window.api.fileWriteBytes(dest, devEmbedImgBytes(picked && picked.base64));
+    if (w && w.ok === false) return null;
+  } catch (_) {
+    return null;
+  }
+  /* 名称 = 图行里的「名称」：截图一律叫「截图」，来源是图片文件时用原文件名（剥扩展名） */
+  const nm = String((picked && picked.name) || "")
+    .replace(/\.[^.\\/]+$/, "")
+    .trim();
+  const generic = !nm || /^(screenshot|image|blob|clipboard|untitled)$/i.test(nm);
+  return { path: dest, alt: generic ? I18n.t("截图") : nm };
+}
+/* 胶囊条容器：插在正文框正上方（会话侧 chatImgStripEl 同一口径 —— 容器自己还在
+   文档里就复用，切弹窗 / 重建不会留下一串旧条）。 */
+function devEmbedStripEl(ta) {
+  if (ta._iiStrip && ta._iiStrip.isConnected) return ta._iiStrip;
+  const host = ta.parentElement;
+  if (!host) return null;
+  const box = document.createElement("div");
+  box.className = "ii-line-chips";
+  box.hidden = true;
+  host.insertBefore(box, ta);
+  ta._iiStrip = box;
+  return box;
+}
+/* 点 / 删之前按当前正文重算一次：「同一行」的偏移（胶囊是按某一帧正文画的，
+   正文若从别的路径变过，拿旧偏移去选 / 去删就会动到别的行）。找不到 = 那行已经没了。 */
+function devEmbedLineNow(ta, l) {
+  const m = devEmbedModule();
+  if (!m || typeof m.imgLines !== "function" || !ta || !l) return null;
+  const lines = m.imgLines(ta.value);
+  let hit = lines.find((x) => x.start === l.start && x.ref === l.ref);
+  if (!hit) hit = lines.find((x) => x.n === l.n && x.ref === l.ref);
+  if (!hit) hit = lines.find((x) => x.ref === l.ref);
+  return hit || null;
+}
+/* 点胶囊：光标进正文那一行并整行选中（「一一对应」看得见） */
+function devEmbedLineFocus(ta, l) {
+  const now = devEmbedLineNow(ta, l);
+  if (!now) return;
+  try {
+    ta.focus();
+    ta.setSelectionRange(now.start, now.end);
+  } catch (_) {}
+}
+/* ✕：删掉整行（连同它独占的那个换行），删完派一次 input 让既有监听同步
+   （mtDialogForm 的草稿留存 onText → devDraftSet 就挂在 input 上，不必另加钩子） */
+function devEmbedLineRemove(ta, l, rerender) {
+  const now = devEmbedLineNow(ta, l);
+  if (!now) {
+    /* 正文已经不是画胶囊时那一帧了：只按现正文重画，绝不按旧偏移乱删 */
+    if (typeof rerender === "function") rerender();
+    return;
+  }
+  const v = String(ta.value || "");
+  let s = now.start;
+  let e = now.end;
+  if (v.slice(e, e + 1) === "\n") e++;
+  else if (v.slice(s - 1, s) === "\n") s--;
+  ta.value = v.slice(0, s) + v.slice(e);
+  try {
+    ta.setSelectionRange(s, s);
+  } catch (_) {}
+  try {
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  } catch (_) {}
+  if (typeof rerender === "function") rerender();
+  /* 「删除图」：这一行没了 → 本功能落盘的那张图（.mtnode-input/paste-*.ext）若别处
+     一处引用都没有，随这次删除回收（会话侧 chatImgGcSoon 同一份判据）。 */
+  devEmbedGcSoon([now.ref]);
+}
+/* 内嵌图回收入口（会话侧的 chatImgGcSoon：候选只认本功能自己落的图 + 命名） */
+function devEmbedGcSoon(paths) {
+  if (typeof chatImgGcSoon === "function") chatImgGcSoon(paths);
+}
+/* 胶囊条渲染（幂等：正文签名没变就不动 DOM，弹窗重绘 / 输入期间不会被反复重建） */
+function devEmbedStripRender(ta) {
+  const m = devEmbedModule();
+  if (!m || typeof m.imgLines !== "function" || !ta || !ta.isConnected) return;
+  const lines = m.imgLines(ta.value);
+  const box = devEmbedStripEl(ta);
+  if (!box) return;
+  const sig = lines.map((l) => l.n + ":" + l.ref).join("\n");
+  if (box._iiSig === sig) return;
+  box._iiSig = sig;
+  box.innerHTML = "";
+  box.hidden = !lines.length;
+  if (!lines.length) return;
+  for (const l of lines) {
+    const chip = document.createElement("div");
+    chip.className = "ii-line-chip";
+    chip.title =
+      I18n.t("第 ") + l.n + I18n.t(" 行 · 点击定位到正文里的这一行") + "\n" + l.ref;
+    /* 缩略图：本机绝对路径 / file:/// 直接显示；相对引用没有基准目录 → 退回图标 */
+    const thumb = document.createElement(l.url ? "img" : "span");
+    thumb.className = "ii-line-chip-thumb";
+    if (l.url) {
+      thumb.src = l.url;
+      thumb.alt = l.alt || "";
+      thumb.loading = "lazy";
+      if (typeof openImageLightbox === "function")
+        thumb.onclick = (ev) => {
+          ev.stopPropagation();
+          openImageLightbox(l.ref, m.baseName(l.ref) || l.alt || "");
+        };
+    } else {
+      thumb.textContent = "🖼";
+    }
+    chip.appendChild(thumb);
+    const idx = document.createElement("b");
+    idx.className = "ii-line-chip-idx";
+    idx.textContent = "#" + l.n; /* 与正文行号一一对应 */
+    chip.appendChild(idx);
+    const nm = document.createElement("span");
+    nm.className = "ii-line-chip-name";
+    /* 显示正文里那个「名称」（与 ![名称](路径) 逐字对应），没有才退回文件名 */
+    nm.textContent = l.alt || m.baseName(l.ref) || "";
+    chip.appendChild(nm);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "ii-line-chip-x";
+    x.textContent = "✕";
+    x.title = I18n.t("从正文里删掉这一行");
+    x.onclick = (ev) => {
+      ev.stopPropagation();
+      devEmbedLineRemove(ta, l, () => devEmbedStripRender(ta));
+    };
+    chip.appendChild(x);
+    chip.onclick = () => devEmbedLineFocus(ta, l);
+    box.appendChild(chip);
+  }
+}
+/* 把一只 mtDialogForm 的 textarea 接上共享模块的 textarea 版嵌图能力（幂等）：
+   bindTextarea 自己就是幂等的（ta._iiLineBound），重复调用没有副作用。 */
+function devEmbedUpgrade(ta, node) {
+  const m = devEmbedModule();
+  if (!ta || !m || typeof m.bindTextarea !== "function") return false;
+  /* 「清空草稿」判据用：这一帧正文里有哪几张图 */
+  if (!Array.isArray(ta._iiChipRefs)) ta._iiChipRefs = m.imgLines(ta.value).map((l) => l.ref);
+  m.bindTextarea(ta, {
+    /* 目标：直接引用本机绝对路径（开发节点没有事实库、也不复制文件），
+       截图走 saveBase64 钩子先落盘成真文件；正文写的就是那条绝对路径 */
+    target: () => ({
+      kind: "path",
+      name: "",
+      saveBase64: (picked) => devEmbedWriteBase64(picked, node),
+    }),
+    /* 插入成功：共享模块是直接改 value（不派 input），故这里补派一次让草稿留存跟上
+       （mtDialogForm 的 onText → devDraftSet 挂在 input 上），再刷一次胶囊条 */
+    onInserted: () => {
+      try {
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      } catch (_) {}
+      devEmbedStripRender(ta);
+    },
+    onChanged: () => {
+      devEmbedStripRender(ta);
+      ta._iiChipRefs = m.imgLines(ta.value).map((l) => l.ref);
+    },
+  });
+  /* 「清空草稿」是 mtDialogForm 直接写 ta.value（不派 input）：这里跟上，把胶囊条也清掉。
+     弹窗换过一茬后本监听失效（旧 textarea 已不在文档里），不会误动新框。 */
+  const body = ta.parentElement;
+  if (body && !ta._devEmbedClearHook) {
+    ta._devEmbedClearHook = true;
+    body.addEventListener("click", (ev) => {
+      if (!body.contains(ta)) return;
+      const btn =
+        ev.target && ev.target.closest ? ev.target.closest(".mt-form-draft button") : null;
+      if (!btn || String(ta.value || "").trim()) return;
+      if (ta._iiStrip) ta._iiStrip._iiSig = null;
+      devEmbedStripRender(ta);
+      /* 「清空框」：草稿被清空 = 那几张图失去这一处引用 → 交给回收判定
+         （必须先取清空前的记录：此刻框里已经什么都没有了） */
+      const lost = ta._iiChipRefs || [];
+      ta._iiChipRefs = [];
+      if (lost.length) devEmbedGcSoon(lost);
+    });
+  }
+  devEmbedStripRender(ta);
+  return true;
+}
+/* 弹窗（mtDialogForm 同步建 DOM）建好后动手：只认当前那只 #mtDlgBody 里的正文框 */
+function devEmbedSchedule(node) {
+  setTimeout(() => {
+    const body = document.getElementById("mtDlgBody");
+    if (!body) return;
+    const ta = body.querySelector("textarea.mt-form-input");
+    if (!ta || !body.contains(ta)) return;
+    devEmbedUpgrade(ta, node || null);
+  }, 0);
 }
 
 /* ---------- 进度上下文（喂给 AI 的「当前开发进度」） ---------- */
@@ -1227,6 +1482,13 @@ function devSuggestJobRun(job) {
   dshRunTask(devSuggestPrompt(node, job.focus), {
     workspace: devPathOf(node) || "",
     runKey: devSuggestRunKey(node),
+    /* 「本轮关注点」框里的内嵌图（粘贴 / 拖入）同样要真正下发：正文里的图行
+       （路径文本）留给模型读，图本体经网关 attachImages 转成 image 内容块。
+       只发这一次调研自己的图 —— 上一轮的图不在这里，也不会被重发。 */
+    images:
+      typeof dshRunImages === "function" && job.focus
+        ? dshRunImages(job.focus)
+        : undefined,
     preset: st.preset || AGENT_PRESET_DEFAULT,
     effort: st.effort || "high",
     provider: eff ? eff.provider : undefined,
@@ -2925,7 +3187,12 @@ function toggleDevColorPicker(node, anchor) {
 
 /* 当前可用的智能路由（DeepSeek 官方 + 已配置的其它文本服务商） */
 function devAgentRoutes() {
-  const out = ["deepseek-official"];
+  /* 官方路由对应的 DeepSeek 服务商被停用 ⇒ 这条整体不列（与 agentRouteOptions 同口径） */
+  const dsOk =
+    typeof deepseekRouteSelectable === "function"
+      ? deepseekRouteSelectable(S.config)
+      : true;
+  const out = dsOk ? ["deepseek-official"] : [];
   const add = (r) => {
     const v = String(r || "").trim();
     if (v && out.indexOf(v) < 0) out.push(v);

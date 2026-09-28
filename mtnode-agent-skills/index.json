@@ -1,9 +1,32 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-09-21T07:38:51.895Z",
+  "updatedAt": "2026-09-28T11:26:45.146Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
+    {
+      "id": "app",
+      "title": "应用开发",
+      "skills": [
+        {
+          "id": "impeccable",
+          "name": "impeccable",
+          "title": "Impeccable（前端设计规范）",
+          "description": "Use when the user wants to design, redesign, shape, critique, audit, polish, clarify, distill, harden, optimize, adapt, animate, colorize, extract, or otherwise improve a frontend interface. Covers websites, landing pages, dashboards, product UI, app shells, components, forms, settings, onboarding, and empty states. Handles UX review, visual hierarchy, information architecture, cognitive load, acc",
+          "path": "app/impeccable/SKILL.md",
+          "version": "4.4.0",
+          "menu": "user"
+        },
+        {
+          "id": "app-dev",
+          "name": "mtnode-app-dev",
+          "title": "MTNode 应用开发",
+          "description": "开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、桌面外壳与运行时能力（模型 API / 工具）的正确接法、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/。",
+          "path": "app/app-dev/SKILL.md",
+          "version": ""
+        }
+      ]
+    },
     {
       "id": "mtnode",
       "title": "MTNode 产品与画布",

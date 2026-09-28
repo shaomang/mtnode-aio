@@ -7,6 +7,10 @@
 @import url("./css/assist.css");
 @import url("./css/theme-light.css");
 @import url("./css/puzzle.css");
+/* 内嵌图片共享样式：粘贴 / 拖入 / 落盘 / 无引用回收那套能力的对话框与编辑器内图片
+   （renderer/app-inline-img.js）；审阅 / 节点正文框 / 会话输入框三处共用。
+   排在 review.css 之前：审阅侧若有更具体的覆盖，由其后的 review.css 决定。 */
+@import url("./css/inline-img.css");
 @import url("./css/review.css");
 /* 图像生成 · 蒙版局部重绘编辑器（renderer/app-mask.js） */
 @import url("./css/mask.css");
@@ -34,3 +38,8 @@
 /* 长周期任务：画布上方细线 handler ⇄ 状态机编辑器 + 人工任务卡 + 交付节点 body
    （renderer/app-longtask.js / app-longtask-ui.js）；亮色覆盖在文件末尾。 */
 @import url("./css/longtask.css");
+/* 应用中心（顶栏「应用」）：整屏浮层页 #appsHub（左导航 应用 / 库 / 开发）
+   （renderer/app-apps.js）；亮色覆盖在文件末尾。 */
+@import url("./css/apps.css");
+/* 账户充值（钱包）：充值对话框 + 账号菜单余额行（renderer/app-wallet.js） */
+@import url("./css/wallet.css");

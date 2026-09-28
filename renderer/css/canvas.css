@@ -4584,6 +4584,85 @@ body.theme-light .n-chip.n-chip-lt {
   color: #e0a0ff
 }
 
+/* ---- 提示词正文框的内嵌图像胶囊块（renderer/app.js 的 promptCapsule*）----
+   .pc-slot 是正文里 token 的占位：文字不可见但宽度原样保留 —— 镜像层与 textarea 的
+   断行因此严格同源（光标 / 选区 / @ 高亮都不会漂）。.pc-pill 是绝对定位盖在它上面的
+   胶囊（缩略图 + 文件名 + 悬停 ✕）：自身不参与排版，改高度 / 字号都挤不动正文。
+   z-index 2 > textarea 的 1 且 .n-prompt-hl 不是层叠上下文，故胶囊画在 textarea 之上、
+   能收到指针事件（点胶囊本体落光标、点 ✕ 删图）；镜像层的 pointer-events:none 由
+   .pc-pill 自己放行。 */
+.n-prompt-hl .pc-slot {
+  visibility: hidden
+}
+
+.n-prompt-hl .pc-pill {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px 0 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: auto;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: var(--panel2);
+  color: var(--ink);
+  font-size: 10.5px;
+  line-height: 1;
+  cursor: default;
+  user-select: none
+}
+
+.n-prompt-hl .pc-thumb {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-left: 1px;
+  object-fit: cover;
+  border-radius: 2px;
+  background: var(--code);
+  pointer-events: none
+}
+
+.n-prompt-hl .pc-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none
+}
+
+.n-prompt-hl .pc-del {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s
+}
+
+.n-prompt-hl .pc-pill:hover .pc-del {
+  opacity: 1
+}
+
+.n-prompt-hl .pc-del:hover {
+  background: var(--red);
+  color: #fff
+}
+
 .n-text.n-text-layered {
   position: relative;
   z-index: 1;

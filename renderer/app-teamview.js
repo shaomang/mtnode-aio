@@ -295,15 +295,22 @@ function teamViewEnsure() {
   };
 }
 
-/* ── 供应商 / 模型选项（与 app-assist.js renderAgentSession 同一口径） ── */
+/* ── 供应商 / 模型选项（与 app-assist.js renderAgentSession 同一口径） ──
+   停用的服务商不进这张表（mtnode_ 由 mtnodePiProviders 过滤、官方路由由
+   deepseekRouteSelectable 判定）；模型清单已过白 / 黑名单。 */
 function teamViewProviders() {
   var out = [];
   try {
     var dp = typeof dshProvider === "function" ? dshProvider() : null;
-    out.push({
-      id: "deepseek-official",
-      name: (dp && dp.name) || teamViewT("DeepSeek 官方"),
-    });
+    var dsOk =
+      typeof deepseekRouteSelectable === "function"
+        ? deepseekRouteSelectable(S.config)
+        : true;
+    if (dsOk)
+      out.push({
+        id: "deepseek-official",
+        name: (dp && dp.name) || teamViewT("DeepSeek 官方"),
+      });
     (typeof mtnodePiProviders === "function" ? mtnodePiProviders() : []).forEach(
       function (p) {
         out.push({ id: "mtnode_" + p.route, name: p.name || p.route });
@@ -338,7 +345,7 @@ function teamViewModelsFor(prov) {
       out = ((mp && mp.models) || []).slice();
     }
   } catch (_) {}
-  if (!out.length) out = ["deepseek-v4-flash"];
+  if (!out.length) out = ["deepseek-flash"];
   return out;
 }
 

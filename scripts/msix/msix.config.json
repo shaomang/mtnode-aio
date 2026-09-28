@@ -1,0 +1,65 @@
+{
+  // MSIX / Store 打包的「账号级」常量配置（JSONC：与 build.json 同样按去注释方式解析）。
+  // 集中放在这里，是为了让 identityName / publisher 这类【ASCII 硬校验】字段只改一处，
+  // 不散落进命令行参数 —— Store 对包身份（Package identity）是严格校验，中文或非法字符直接拒收。
+  // 除特别说明外，字段值一律保持 ASCII、不含中文。
+  // 取值位置速查：Partner Center → 应用身份/属性 → 「包标识」；应用信息 → 名称/说明；属性 → 「兼容性 / Windows 版本要求」。
+
+  // 包名（Package name）。= 在 Partner Center 创建应用时【保留产品名】后系统给出的包名（不是商店显示名）。
+  // 硬校验：ASCII 字母开头，仅允许字母/数字/句点，禁止中文，且必须与清单 <Identity Name> 逐字符一致。
+  // 已填真值（Partner Center 保留产品名返回的包名）；含句点是合法且常见的形式。
+  // 配套的包系列名称（Package family name）= ms2308.MTNodeAI_rs9nxh8g698pc（后段是发布者哈希，由下方 publisher 决定）。
+  // Store 报「无效的软件包标识名称」就是这一项不符；包名或发布者任一改动都会连带「系列名称」报错。
+  "identityName": "ms2308.MTNodeAI",
+
+  // 清单 <Application Id>（同时决定快捷方式 / 通知的 AUMID：<identityName>!<applicationId>）。
+  // ASCII 且不含中文；通常固定为一个短标识，改了会让已安装用户的快捷方式与通知通道失效，尽量不再变动。
+  // Partner Center 不直接展示此值，取自生成的包清单（生成 MSIX 时由本配置写入）。
+  // 当前 AUMID = ms2308.MTNodeAI!MTNodeAIO（本机试装的启动/卸载命令用它）。
+  "applicationId": "MTNodeAIO",
+
+  // 发布者 Subject（Publisher）。必须与【上传账号的发布者证书 Subject】逐字符一致，Store 与本地安装都会校验。
+  // 已填真值：Partner Center → 属性 → 「包标识（Package identity）」→ Publisher，整串逐字符复制。
+  // 个人 / 未经组织认证的账号，这里就是一串 GUID（不是账号名 ms2308），属正常现象；
+  // 面向用户展示的名字用下方 publisherDisplayName。此项决定「系列名称」的发布者哈希段，写错必被拒。
+  // 若用自签证书做本机侧载试装，该证书 Subject 必须与此值完全相同（--selfsign 会照此建证书）。禁止中文。
+  "publisher": "CN=4F34BBEB-5CC5-4A80-868E-25BCDFFC8F91",
+
+  // 发布者显示名称（商店页面「由 … 发布」处展示）。Partner Center → 账户设置 → 组织信息 / 发布者显示名称。
+  // 这是面向用户展示的名字，可与 publisher 的证书主题不同。
+  "publisherDisplayName": "ms2308",
+
+  // 商店显示名（Store listing 标题）。Partner Center → 应用信息（App info）→ 名称。
+  // 这里是唯一允许出现中文的展示字段，与 NSIS 快捷方式名（build.json nsis.shortcutName）保持一致。
+  "displayName": "MTNode AI编排器",
+
+  // 商店说明文案。Partner Center → 应用信息 → 简短说明 / 详细描述；需与实际功能一致（AI 工作流编排、本地后端）。
+  // 长度遵守商店限制（简短说明一般 ≤ 500 字符），措辞需与审核材料一致以免被驳回。
+  "description": "MTNode AI编排器：可视化 AI 工作流编排桌面应用。在画布上串联文本 / 图像 / 音视频生成节点与智能体，支持数据库事实库、开发节点架构与本地后端（音乐、视频、TTS、llama.cpp），运行在本机。",
+
+  // 磁贴 / 启动画面的背景色（sRGB，十六进制或 Transparent），用于占位图与清单 <VisualElements BackgroundColor>。
+  // 与 Partner Center 上传的图标 / 截图底色协调即可；无对应后台字段，取自品牌主色。
+  "backgroundColor": "#ffffff",
+
+  // 支持语言列表。Partner Center → 商店媒体与语言 / 可用语言。清单 <Resources> 会按此生成。
+  "languages": ["zh-CN", "en-US"],
+
+  // 最低 Windows 10 版本 = 清单 <TargetDeviceFamily MinVersion>。
+  // Partner Center → 属性 → 「系统要求 / Windows 版本要求」中选定的最低版本，两处必须一致。
+  "minVersion": "10.0.17763.0",
+
+  // 已测试最高版本 = 清单 <TargetDeviceFamily MaxVersionTested>。
+  // Partner Center → 属性 → 兼容性（最高已测试版本）；高于此版本的系统仍可安装，但按未测试处理。
+  "maxVersionTested": "10.0.22621.0",
+
+  // 启动的可执行文件名。必须 = build.json 的 win.executableName + '.exe'（当前为 MTNodeAIO），
+  // 写入清单 <Application Executable>；不一致会导致包安装后无法启动。
+  "executable": "MTNodeAIO.exe",
+
+  // 应用能力声明（Capabilities）。
+  // - runFullTrust：Electron 主进程需完整信任，且要拉起本地后端子进程（无沙箱模型）。
+  // - internetClient：出方向访问模型 API（DeepSeek / MTNode 服务商、更新源 mt-agent.com）。
+  // - privateNetworkClientServer：net_recv / net_send 节点与本地后端宿主（music3 / h3 / tts / llama 等）
+  //   在 localhost 监听并回连端口所需；缺省会让局域网与回环监听被系统拦截。
+  "capabilities": ["runFullTrust", "internetClient", "privateNetworkClientServer"]
+}

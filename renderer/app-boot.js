@@ -48,9 +48,10 @@ window.addEventListener("unhandledrejection", (ev) => {
    —— 不再自动补回被删的默认项、不再改写已有项的模型列表、不再强制重排、
    也不再剔除无 Key 的 stability/mj，否则设置里删除/编辑/排序都会在重启
    或再次打开设置时被改回去（gpt-image 删不掉、配置一改就还原的根因）。 */
-/* 新安装（或用户清空了整份服务商列表）时的默认清单：只有 flash / pro 两个模型，
-   并默认勾选「支持视觉」（vision-exp 不再默认塞进清单）。 */
-const DEEPSEEK_DEFAULT_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"];
+/* 新安装（或用户清空了整份服务商列表）时的默认清单：flash（V4.1-Flash，原生
+   多模态、能直接吃图）+ pro 两个模型，并默认勾选「支持视觉」
+   （vision-exp 已下线、不再进清单）。 */
+const DEEPSEEK_DEFAULT_MODELS = ["deepseek-flash", "deepseek-v4-pro"];
 
 function ensureDefaultProviders() {
   const provs = Array.isArray(S.config.providers)
@@ -818,6 +819,19 @@ async function init() {
       const live = liveNodeForSession(st);
       const raw = inp ? String(inp.value || "") : "";
       const t = raw.trim();
+      /* 开发页（renderer/app-apps-dev.js）的首轮优先：它的输入框就是这一只，首轮输入
+         等同「在该应用的开发节点上点开发并提交」（新建绑定会话 + 契约注入），由开发页
+         接管这一发 —— 不受「当前活动会话正忙 → 进它的发送队列」影响（那会话可能压根
+         不是这个应用的）。返回 false = 不是首轮 / 开发页没开着 → 走下面的原路。 */
+      if (
+        t &&
+        typeof appsDevComposerSend === "function" &&
+        appsDevComposerSend(raw)
+      ) {
+        if (inp) inp.value = "";
+        st._draft = "";
+        return;
+      }
       if (st.running || live) {
         /* 会话未结束又发消息 → 进「发送队列」，绝不打断前面的任务。
            只有输入框为空时点 ■ 才是「终止本轮」（节点绑定则终止该节点）。 */

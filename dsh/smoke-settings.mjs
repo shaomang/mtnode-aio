@@ -61,7 +61,7 @@ try {
 
 // Real run carrying preset=minimal
 const accepted = await req('run', {
-  reqId: 'preset-1', workspace, input: '回复一句话确认你已就位,不要解释。', model: 'deepseek-v4-flash',
+  reqId: 'preset-1', workspace, input: '回复一句话确认你已就位,不要解释。', model: 'deepseek-flash',
   maxTokens: 4096, apiKey: key, baseUrl: 'https://api.deepseek.com', systemPrompt: '', preset: 'minimal', dshHome: home,
 })
 console.log('[4] run accepted:', JSON.stringify(accepted).slice(0, 60))

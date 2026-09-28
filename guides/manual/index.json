@@ -97,6 +97,13 @@
             "zh": "开发节点：让 AI 写项目",
             "en": "Dev nodes"
           }
+        },
+        {
+          "id": "app-dev",
+          "title": {
+            "zh": "开发一个应用",
+            "en": "Build an app"
+          }
         }
       ]
     },

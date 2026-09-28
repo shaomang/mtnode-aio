@@ -25,7 +25,7 @@ A public catalog: template canvases (whole workflows) and skills (Skill, a SKILL
 
 1. **创意工坊 (Creative Workshop)** in the top bar; switch between the **模板 (Templates) / 技能 (Skills)** panes, and sort by tags, popularity (downloads / likes) or newest, with search as well.
 2. Preview read-only first, then **下载到本机 / 下载 (Download to this machine / Download)**.
-   - **Template** = a canvas you can import; during import, a provider or model your machine does not have is asked about one by one and batch-replaced with your own.
+   - **Template** = a canvas you can import; if it references a provider or model your machine does not have, nothing pops up — those nodes silently become **No model**, and only when you press ▶ do you get a prompt to pick a provider and model again in the node settings.
    - **Skill** = once downloaded to this machine, agent nodes can call it with `/`; when the workshop has a newer version you update it by hand, because the local copy does not follow automatically.
 
 ### Track two: I want to share my own things
@@ -74,7 +74,7 @@ Bringing a minimal reproduction is far more useful than pasting a whole log.
    - **Template** → imported as a new canvas; **skill** → written into your local skills directory and called by agent nodes with `/`.
    - Components such as plugins and the forum are **downloaded on demand**, not in the installer; installing one restarts the engine, so let any running task finish first.
 2. After importing someone else's canvas, check item by item: providers and models, save paths, and whether any node needs a local backend (H3 / Music 3 / TTS / llama).
-   - When the canvas references a provider / model your machine does not have, it asks one by one and batch-replaces them with your own.
+   - When the canvas references a provider / model your machine does not have, nothing pops up: those nodes silently become **No model** (the node header names the missing one), and pressing ▶ is what prompts you to pick a provider and model again.
 3. A node missing a plugin or a backend will not run — read the node notes before pressing ▶.
 
 ### Upgrading and uninstalling

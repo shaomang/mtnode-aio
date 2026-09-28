@@ -1210,6 +1210,38 @@
     "该编辑操作在当前浏览器不受支持": "This editing action is not supported in your browser",
     "请先等该节点运行完成再审阅": "Wait for the node to finish running before reviewing",
     "该节点还没有文本输出，请先运行一次再审阅": "No text output yet — run the node once first",
+    /* 本轮补齐：审阅窗本体（app-review.js）与节点头部按钮提示（app-canvas.js）此前只有中文键 */
+    "原始": "Original",
+    "拖拽右下角调整大小": "Drag the bottom-right corner to resize",
+    "审阅 · ": "AI Review · ",
+    "全文": "Full text",
+    "AI 修订": "AI revision ",
+    "链接文字": "link text",
+    "该版本的批注": "Annotations in this version",
+    "该版本没有批注": "No annotations in this version",
+    "暂无批注 · 添加批注后顶部会出现「让 AI 修订」":
+      "No annotations yet · the “Ask AI to revise” button appears at the top once you add one",
+    "删除批注": "Delete annotation",
+    "批注锚点文字已变更，可能已失效": "Anchor text changed — the annotation may be stale",
+    "只读回看，无法定位正文": "Read-only view — the passage cannot be located",
+    "未能在正文中找到该批注片段": "Could not find that annotated passage in the text",
+    "模型未返回修订正文": "The model returned no revised text",
+    "回滚后该版成为当前可编辑版，其后的版本将被删除、不可恢复":
+      "After rollback this version becomes the current editable one; later versions are deleted and cannot be recovered",
+    "确定回滚到该版本？其后的版本将被删除，不可恢复。":
+      "Roll back to this version? Later versions will be deleted and cannot be recovered.",
+    "已回滚，该版现在是当前可编辑版":
+      "Rolled back — this version is now the current editable one",
+    "局部 · 被批注片段：": "Local · annotated passage: ",
+    "对本节点输出做所见即所得全文/局部批注，并让 AI 依据批注逐轮修订出新版本（可回看 / 回滚）。":
+      "Annotate this node's output (whole text or a passage) in a WYSIWYG editor and have the AI revise it round by round from your annotations (every version can be reviewed / rolled back).",
+    /* 修订提示词：英文界面下发英文版；正文语言仍由用户文档本身决定 */
+    "你是一位严谨的文字审阅与修订助手。":
+      "You are a rigorous text review and revision assistant.",
+    "请依据文档全文与用户的全部批注，产出一份修订后的完整 Markdown 正文。":
+      "Using the full document and all of the user's annotations, produce a complete revised Markdown text.",
+    "要求：只输出修订后的 Markdown 正文本身，不要任何解释、不要前言后语、不要包在代码块里；未被批注点名的段落，如无必要请原样保留；被批注的段落请认真按其意见修改。":
+      "Requirements: output only the revised Markdown text itself — no explanation, no preamble or closing remarks, and do not wrap it in a code block; leave passages that no annotation points at unchanged unless there is a reason to change them; revise the annotated passages carefully according to their notes.",
     /* ── 审阅：事实库目标（app-review.js · openFactReview） ── */
     "事实库": "Fact library",
     "事实库模块未就绪，无法打开审阅": "Fact library module is not ready — cannot open review",
@@ -1427,8 +1459,30 @@
     "图片保存失败：": "Failed to save the image: ",
     "该目标不支持从剪贴板插入图片，请选择本机图片文件":
       "This target does not support pasting images from the clipboard — choose a local image file instead",
+    "图片落盘失败，无法插入":
+      "Failed to write the image to disk — cannot insert it",
+    /* ── 会话 / 助手输入框：正文里的内嵌图行 + 输入区上方那排胶囊（app-assist.js） ── */
+    "截图": "Screenshot",
+    "第 ": "Line ",
+    " 行 · 点击定位到正文里的这一行":
+      " · click to jump to this line in the message",
+    "从正文里删掉这一行": "Delete this line from the message",
     "已从磁盘删除 ": "Deleted from disk ",
     " 个无引用图片": " unreferenced image(s)",
+    /* ── 提示词正文框的内嵌图像胶囊块（renderer/app.js 的 promptCapsule*） ── */
+    "删除这张内嵌图片": "Remove this inline image",
+    "已删除内嵌图片": "Inline image removed",
+    "已删除内嵌图片（资产文件保留）": "Inline image removed (asset file kept)",
+    "插入图片失败：": "Failed to insert the image: ",
+    "没有打开的画布，无法落盘图片":
+      "No canvas is open — cannot save the image to disk",
+    "该来源没有可落盘的图片数据": "This source carries no image data to save",
+    "（内嵌图片：{name}）": "(inline image: {name})",
+    "（图像输入）标题：{name}\n图 {n}": "(Image input) Title: {name}\nImage {n}",
+    "拖入文件": "Dropped file",
+    "剪贴板截图": "Clipboard screenshot",
+    "所属节点：": "Node: ",
+    "时间：": "Time: ",
     "输入行数与列数（含表头行）":
       "Enter the number of rows and columns (header row included)",
     "行数": "Rows",
@@ -2953,6 +3007,16 @@
     "例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图": "e.g. Cyberpunk city at night… type @ to reference connected nodes/reference images",
     "描述任务…（Enter 换行，Ctrl+Enter 发送）": "Describe the task… (Enter newline, Ctrl+Enter send)",
     "任务完成音效（仅当智能任务运行超过 5 分钟后完成时触发）": "Task completion sound (only when an agent task finishes after running more than 5 minutes)",
+    /* 设置 · 智能能力 · 子代理（委派策略，写进 cordis.yml 的 subagent* 8 行，见 dsh-agent-policy.js） */
+    "子代理（委派）": "Subagents (delegation)",
+    "子代理嵌套深度（0 = 禁止委派）": "Subagent nesting depth (0 = delegation off)",
+    "0 · 禁止委派（模型侧不再有委派工具）": "0 · Delegation off (no delegation tool reaches the model)",
+    "1 · 只允许一层（默认）": "1 · One level only (default)",
+    "2 · 允许两层": "2 · Allow two levels",
+    "允许子代理委派（总开关：取消后模型看不到任何委派工具）": "Allow subagent delegation (master switch: unchecking hides every delegation tool from the model)",
+    "允许后台并行委派（取消后子代理只在前台同步跑，一次一个）": "Allow background parallel delegation (unchecked: subagents run in the foreground, one at a time)",
+    "允许 fork 型子代理（复制当前上下文另起一个子会话）": "Allow fork-type subagents (copy the current context into a child session)",
+    "这几项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。深度只约束「子代理再派子代理」，不影响你自己发起的一次委派。": "These are written into the dsh composition (cordis.yml) and apply to the next new session; a session already running keeps the previous values. Depth only limits a subagent delegating further — it never blocks a delegation you start yourself.",
     /* 设置 · 智能能力：精简工具负载（工具可见集裁剪，见 docs/codex-agent-benchmark.md） */
     "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）": "Lean tool payload (do not register optional tools such as app control / vision subagent; about 4.7K fewer characters per step; takes effect on the next run)",
     "输入消息…（Enter 换行，Ctrl+Enter 发送）": "Enter a message… (Enter newline, Ctrl+Enter send)",
@@ -3017,6 +3081,7 @@
     "多次尝试：并行运行 N 次（1-10）。N>1 时输出面板出现 1..N 方块 Tab，": "Multi-attempt: run N times in parallel (1-10). When N>1, 1..N square tabs appear on the output panel,",
     "多次尝试：并行运行 N 次（1-10）。N>1 时输出下方出现 1..N 方块 Tab，": "Multi-attempt: run N times in parallel (1-10). When N>1, 1..N square tabs appear below the output,",
     "未添加多模态模型（请在设置中为该文本服务商勾选「支持视觉」，并选择支持识图的多模态模型）": "No multimodal model added (in Settings, enable \"Vision\" for this text provider and choose a multimodal model that supports images)",
+    "未添加多模态模型（DeepSeek 官方默认的 deepseek-flash 即可识图；其它服务商请在设置中添加支持识图的模型，或为该文本服务商勾选「支持视觉」）": "No multimodal model added (DeepSeek Official's default deepseek-flash already reads images; for another provider, add a multimodal model in Settings or enable \"Vision\" for that text provider)",
     "设置后,本画布创建的所有智能节点都固定使用该工作目录(节点内只读);留空则每个节点单独设置": "Once set, all agent nodes created on this canvas use this working directory (read-only inside the node); leave empty to set each node separately",
     "智能模式：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成（需配置文本服务商，见帮助）": "Agent mode: the prompt becomes the task; the model can read files / network / run commands, then finish (requires a text provider; see Help)",
     "</b> 个节点组成一个组（快捷键 G）。组标题仅用于显示；点击组框可整体移动 / 缩放 / 删除。": "</b> nodes into a group (shortcut G). The group title is display-only; click the group box to move / scale / delete it as a whole.",
@@ -3027,7 +3092,7 @@
     "这是<b>智能会话</b>画布:可读文件 / 联网 / 执行命令，也可修改当前画布（会弹窗确认，拒绝即停止）。画布上的智能节点不能改图。直接描述你要完成的任务即可。":
       "This is an <b>agent session</b> canvas: the model can read files / network / run commands, and can edit the current canvas (asks for confirm; reject stops the run). Canvas agent nodes cannot edit the graph. Just describe the task you want done.",
     "检测到图像输入，但已保存的服务商都没有视觉模型；请在「模型服务」添加支持图像的服务商（如 opencode 等）并选择其视觉模型": "Image input detected, but none of the saved providers have a vision model; in \"Model services\" add a provider that supports images (e.g. opencode) and select its vision model",
-    "\n在任务描述中用 @标题 引用图像；运行时会自动使用视觉模型（DeepSeek 官方不支持图像，需支持视觉的服务商，如 opencode 等）": "\nIn the task description, use @title to reference images; a vision model is used automatically at runtime (DeepSeek Official does not support images; you need a vision-capable provider such as opencode)",
+    "\n在任务描述中用 @标题 引用图像；运行时会自动使用视觉模型（DeepSeek 官方用 deepseek-flash 识图，也可改用其它支持识图的服务商）": "\nIn the task description, use @title to reference images; a vision model is used automatically at runtime (DeepSeek Official's deepseek-flash reads images; another vision-capable provider works too)",
     "并行运行 <b>N</b> 次该节点（N 为 1-10 的整数）。N &gt; 1 时：运行后输出面板（Output 下一行）出现 <b>1..N 方块 Tab</b>，": "Run this node <b>N</b> times in parallel (N is an integer from 1-10). When N &gt; 1: after running, the output panel (the row below Output) shows <b>1..N square tabs</b>,",
     "命令:/new 新会话 · /compact 压缩上文 · /plan 规划模式 · /rename 标题 · /export 导出会话 · /permissions 查看权限预设": "Commands: /new new session · /compact compact context · /plan plan mode · /rename title · /export export session · /permissions view permission preset",
     "纯净模式": "Pure mode",
@@ -3454,22 +3519,29 @@
     "画布工作目录": "Canvas working directory",
     "全局助手工作目录": "Global assistant working directory",
     "智能会话": "Agent session",
-    "无效服务商 / 模型": "Invalid provider / model",
-    "检测到无效模型配置": "Invalid model configuration detected",
-    "当前画布含有本机不存在的服务商或模型（常见于他人模板）。接下来将按每个无效服务商分别询问，批量替换为你自己的服务商。":
-      "This canvas references providers or models that are not on this machine (common with shared templates). You will be asked for each invalid provider so you can batch-replace them with your own.",
-    "检测到无效服务商 / 模型「": "Invalid provider / model \"",
-    "」，影响节点：": "\" affects nodes: ",
-    " …共 ": " …total ",
-    "。请选择要批量替换成的本地服务商与模型。":
-      ". Choose a local provider and model to batch-replace them.",
-    "替换为服务商": "Replace with provider",
-    "跳过此服务商": "Skip this provider",
-    "批量替换": "Batch replace",
+    /* ── 「无模型」（模型不可见不再弹提示，改成静默的派生状态）──
+       判据唯一真源 = renderer/app.js 的 nodeModelGate / nodeModelStaleLabel：节点头摘要与
+       节点设置照实显示，画布加载 / 切画布 / 导入模板全程零弹窗，用户点 ▶ 启动时才提示一次。
+       原来那套「无效服务商 / 模型」逐个询问 + 批量替换弹窗与整批词条已随功能一并移除。 */
+    "无模型": "No model",
+    "（无模型）": "(no model)",
+    "（本机不存在）": "(not on this machine)",
+    "无模型：本机没有该节点的服务商「{name}」，请在节点设置里重新选择服务商与模型":
+      "No model: provider \"{name}\" is not on this machine — pick a provider and model in the node settings",
+    "无模型：该节点还没选服务商，请在节点设置里选好服务商与模型":
+      "No model: this node has no provider yet — pick a provider and model in the node settings",
+    "无模型：该服务商在本机没有可用模型，请在设置 · 模型服务里补上模型":
+      "No model: this provider has no usable model on this machine — add one in Settings · Model services",
+    "无模型：服务商「{name}」在本机没有这一形态的模型，请在设置 · 模型服务里补上模型或改模型类型":
+      "No model: provider \"{name}\" has no model of this kind on this machine — add one or fix the model kind in Settings · Model services",
+    "无模型：模型「{model}」在本机不存在，请在节点设置里重新选择模型":
+      "No model: \"{model}\" is not on this machine — pick another model in the node settings",
+    "无模型：本机没有带 API Key 的文本服务商，请在设置 · 模型服务里配一家":
+      "No model: no text provider with an API Key on this machine — set one up in Settings · Model services",
+    "无模型，未启动：": "No model, not started: ",
+    "（请在各自节点的设置里选好服务商与模型）":
+      " (pick a provider and model in each node's settings)",
     "（无可用模型）": "(No models available)",
-    "（请先在设置中添加服务商）": "(Add a provider in Settings first)",
-    "请先在设置中添加可用的服务商": "Add an available provider in Settings first",
-    "请选择模型": "Choose a model",
     "工作目录无效，已改用默认目录": "Working directory was invalid; using the default directory",
     "下载": "Download",
     "点赞": "Like",
@@ -4066,12 +4138,60 @@
     "暂无模型，请在下方添加": "No models yet — add below",
     "添加模型 id，如 gpt-4o-mini": "Add model id, e.g. gpt-4o-mini",
     "模型已存在": "Model already listed",
+    "获取模型": "Fetch models",
+    "实时向服务商接口读取当前可用的模型列表并一键加入（只读元信息，不消耗 Token）":
+      "Read the provider's currently available models live and add them in one click (read-only metadata, no tokens spent)",
+    "获取模型列表": "Fetch model list",
+    "获取模型列表失败": "Could not fetch the model list",
+    "（可继续手工添加模型）": " (you can keep adding models manually)",
+    "接口地址需以 http(s):// 开头": "The endpoint must start with http(s)://",
+    "无响应": "No response",
+    "当前版本不支持读取模型列表": "This version cannot read the model list",
+    "已从服务商接口读取到可用模型（只读元信息，未消耗任何 Token）。勾选要加入下方模型列表的条目：已配置的默认勾上（取消勾选只是不重复添加，不会删除已有项）。":
+      "Live models were read from the provider endpoint (read-only metadata, no tokens spent). Tick the ones to add to the model list below: already-configured models are ticked by default (unticking only skips re-adding, it never removes an existing entry).",
+    "能吃图": "Takes images",
+    "该模型支持图片输入（视觉输入），不是「会画图」":
+      "This model accepts image input (vision input) — it does not generate images",
+    "新发现": "New",
+    "共 {n} 个模型 · 新发现 {m} 个": "{n} models · {m} new",
+    "加入所选模型": "Add selected models",
+    "已加入 {n} 个模型（新发现 {m} 个）": "Added {n} models ({m} new)",
     "添加": "Add",
     "提高供应商优先级": "Higher provider priority",
     "降低供应商优先级": "Lower provider priority",
     "供应商使用优先级（越小越优先）": "Provider priority (lower # = higher)",
     "（供应商与模型均可排序，越靠前优先级越高）":
       "(Reorder providers and models — higher in the list = higher priority)",
+
+    /* ── 服务商模型策略：白名单 / 黑名单 / 停用 / 三档请求超时 ──
+       设置页服务商配置对话框的字段与提示，以及主进程三档超时的报错文案。
+       「已停用」复用上面插件那条（Disabled），这里不重复登记。 */
+    "模型白名单": "Model allowlist",
+    "模型黑名单": "Model denylist",
+    "留空 = 不限制；支持 * 与 ? 通配；白名单先收窄，黑名单再剔除":
+      "Leave empty = no restriction; * and ? wildcards are supported; the allowlist narrows first, then the denylist removes",
+    "当前不限制：全部 ": "No restriction: all ",
+    " 个模型都可用": " models are usable",
+    "白名单 ": "Allowlist ",
+    " 条 · 黑名单 ": " entries · denylist ",
+    " 条 · 过滤后可用 ": " entries · usable after filtering ",
+    "连接超时（毫秒）": "Connect timeout (ms)",
+    "首字节超时（毫秒）": "First-byte timeout (ms)",
+    "分块超时（毫秒）": "Chunk idle timeout (ms)",
+    "三档都是毫秒，缺省 300000；留空即用缺省。哪一档等超了就在报错里写明哪一档":
+      "All three are in milliseconds and default to 300000; leave empty for the default. A timeout names the tier that expired",
+    "停用该服务商": "Disable this provider",
+    "停用后不出现在模型选择器里（配置与密钥保留）":
+      "Disabled providers disappear from the model pickers (config and key are kept)",
+    "策略外": "Excluded",
+    "该服务商已被停用：不再出现在别处的模型选择里；设置 · 模型服务里取消「停用该服务商」即可恢复。本节点仍按原配置运行。":
+      "This provider is disabled, so it no longer shows up in the other model pickers; uncheck Disable this provider under Settings · Model services to bring it back. This node still runs with its original config.",
+    "该模型被白名单 / 黑名单排除，不会出现在任何模型选择器里（这里仍可调顺序或删除）":
+      "This model is excluded by the allowlist / denylist and will not appear in any model picker (you can still reorder or remove it here)",
+    "请求超时（{tier}）": "Request timed out ({tier})",
+    "连接超时": "connect timeout",
+    "首字节超时": "first-byte timeout",
+    "分块超时": "chunk timeout",
     "会话模式：开 · 保留多轮对话历史（再点关闭）":
       "Chat mode: on · keep multi-turn history (click again to turn off)",
     "会话模式：关 · 每次 ▶ 都是新对话，输入框内容保留（点击开启）":
@@ -4085,8 +4205,8 @@
       "Describe the task… (each ▶ is a fresh chat; text is kept; click 💬 for chat mode; type / for skills)",
     "识图：完全放行（随权限预设）": "Vision: full access (via permission preset)",
     "已尝试：": "Tried:",
-    "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，勾选「支持视觉」，并把视觉模型排到该服务商列表最前（DeepSeek 官方不支持识图）":
-      "No vision model available; in Model services put a vision-capable provider first, enable Vision, and put a vision model at the top of that provider (DeepSeek Official cannot read images)",
+    "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，勾选「支持视觉」，并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）":
+      "No vision model available; in Model services put a vision-capable provider first, enable Vision, and put a vision model at the top of that provider (DeepSeek Official reads images with deepseek-flash)",
     "下载到画布": "Download to canvas",
     "（空画布）": "(Empty canvas)",
     "缩略图 ": "Thumb ",
@@ -8088,6 +8208,42 @@
     Object.assign(EN, add);
   })();
 
+  /* ── 用户自建应用 · 新建流程（renderer/app-app-flow.js）──
+     只补表里还没有的键：已存在的通用串（创建 / 取消 / 未知错误…）一概不动 ——
+     后写的 Object.assign 会悄悄覆盖前一条译文，是最难查的一类回归。 */
+  (function () {
+    var appNewLabels = {
+      "新建应用": "New app",
+      "应用标题": "App title",
+      "给用户看的名字（库页卡片与窗口标题都用它）":
+        "The name users see (used on the library card and the window title)",
+      "文件夹名": "Folder name",
+      "4–64 位字母 / 数字 / 下划线 / 连字符，不能含点、空格或中文（它同时是这张画布的 id）":
+        "4–64 letters / digits / underscore / hyphen; no dots, spaces or non-ASCII characters (it is also this canvas's id)",
+      "应用会建在应用库根目录下的这个文件夹里（根目录可在库页修改）":
+        "The app is created in this folder under the apps root folder (the root can be changed from the library page)",
+      "应用目录：": "App folder: ",
+      "请填写应用标题": "Please enter an app title",
+      "文件夹名不合法：": "Invalid folder name: ",
+      "该文件夹名已存在：": "That folder name already exists: ",
+      "新建应用失败：": "Could not create the app: ",
+      "应用目录已建好，但画布保存失败：":
+        "The app folder was created, but saving the canvas failed: ",
+      "已新建应用：": "App created: ",
+      "应用 id 不合法": "Invalid app id",
+      "该应用的画布不存在（可能在别处被删了）":
+        "This app's canvas does not exist (it may have been deleted elsewhere)",
+      "这个应用给用户做什么（待补全）。":
+        "What this app does for the user (still to be filled in).",
+      "入口 index.html + app.json；宿主能力走 window.appHost（文本 / 图像生成、本机存储、账号摘要），模型与工具留在主进程与画布一侧。":
+        "Entry point index.html + app.json; host capabilities go through window.appHost (text / image generation, local storage, account summary), while models and tools stay on the main-process and canvas side.",
+    };
+    var add = {};
+    for (var ak in appNewLabels)
+      if (!Object.prototype.hasOwnProperty.call(EN, ak)) add[ak] = appNewLabels[ak];
+    Object.assign(EN, add);
+  })();
+
   var locale = "zh";
 
   function t(key, vars) {
@@ -8524,6 +8680,75 @@
     "文件名不能为空": "The file name cannot be empty",
     "文件名不能包含路径分隔符": "The file name cannot contain a path separator",
     "不能改动应用目录本身": "The application folder itself cannot be modified",
+  });
+
+  /* ── 账户充值（钱包）：账号菜单的余额行与「账户充值」入口 + 充值对话框
+        （renderer/app-wallet.js · app-auth.js paintMenu · css/wallet.css）──
+        菜单项用「账户充值」而不是「充值」：后者已是费用面板的流水类型标签（"Topped up"），
+        同键两义会让英文界面串味。带变量的文案一律走 {占位} 键 + I18n.t 第二参。 */
+  Object.assign(EN, {
+    "余额：": "Balance: ",
+    "余额：{amount}": "Balance: {amount}",
+    "点「账户充值」查看明细与付款": "Click “Top up account” for details and payment",
+    "账户充值": "Top up account",
+    "当前余额": "Current balance",
+    "充值金额": "Top-up amount",
+    "自定义金额（元）": "Custom amount (CNY)",
+    "生成支付宝付款码": "Generate Alipay QR code",
+    "请选择或输入充值金额": "Please choose or enter a top-up amount",
+    "充值金额需在 {min} – {max} 之间": "The top-up amount must be between {min} and {max}",
+    "用支付宝扫码付款": "Scan the code with Alipay to pay",
+    "支付宝付款码": "Alipay payment QR code",
+    /* 电脑网站支付通道（浏览器收银台）：与窗内扫码是两套文案，按订单带的字段选用 */
+    "去支付宝付款": "Pay with Alipay",
+    "打开支付宝收银台": "Open the Alipay cashier",
+    "重新打开收银台": "Reopen the cashier",
+    "在浏览器里完成支付": "Complete the payment in your browser",
+    "会在系统浏览器里打开支付宝收银台，可用手机支付宝扫码付款":
+      "The Alipay cashier opens in your system browser — scan its code with the Alipay mobile app to pay",
+    "无法自动打开浏览器，请手动访问：{url}": "Could not open your browser automatically — please visit: {url}",
+    "剩余 {t}": "Time left {t}",
+    "我已完成支付": "I have paid",
+    "放弃本单": "Discard this order",
+    "订单号：{id}": "Order no.: {id}",
+    "充值成功": "Top-up successful",
+    "充值成功，余额已更新": "Top-up successful — your balance has been updated",
+    "{amount} 已到账": "{amount} credited",
+    "订单已过期": "Order expired",
+    "请重新发起充值": "Please start a new top-up",
+    "实付金额与订单不符": "The paid amount does not match the order",
+    "已记录，请联系管理员核对后处理": "Recorded — please contact the administrator to review and resolve it",
+    "支付宝侧还未收到款项，请稍等或重新扫码":
+      "Alipay has not confirmed the payment yet — please wait a moment or scan the code again",
+    "最近订单": "Recent orders",
+    "金额": "Amount",
+    "待支付": "Pending",
+    "已支付": "Paid",
+    "部分退款": "Partially refunded",
+    "已退款": "Refunded",
+    "已过期": "Expired",
+    "已关单": "Closed",
+    "金额不符": "Amount mismatch",
+    "暂无充值记录": "No top-up records yet",
+    "余额变动": "Balance changes",
+    "变动": "Change",
+    "变动后余额": "Balance after",
+    "充值入账": "Top-up credit",
+    "退款": "Refund",
+    "人工调账": "Manual adjustment",
+    "充值到账后可在余额中查看；如长时间未到账，请用「我已完成支付」核对或联系管理员。":
+      "Top-ups show up in your balance once credited; if it takes too long, use “I have paid” to re-check or contact the administrator.",
+    /* 服务端错误码文案（store-saas 的 code → 用户可读） */
+    "支付通道尚未配置，暂时无法充值": "The payment channel is not configured yet — top-up is unavailable",
+    "充值功能尚未对该账号开放": "Top-up is not open for this account yet",
+    "金额无效": "Invalid amount",
+    "未支付订单过多，请先完成或等其过期":
+      "Too many unpaid orders — complete them first or wait for them to expire",
+    "请求过于频繁，请稍后再试": "Too many requests — please try again later",
+    "订单不存在或已失效": "The order does not exist or is no longer valid",
+    "支付宝接口异常，请稍后重试": "Alipay API error — please try again later",
+    "请先登录": "Please sign in first",
+    "请求失败（HTTP {code}）": "Request failed (HTTP {code})",
   });
 
   /* ── 节点「?」说明按钮与说明小窗（renderer/app-nodehelp.js + app-settings.js） ──
@@ -9143,6 +9368,231 @@
           "): fill it in via the header Settings so the agent gets it right the first time",
         "点头部「设置」补描述 / 参数说明 / 调用示例 / 限制与失败情形":
           "Open header Settings to add the description / parameter descriptions / call example / limits",
+      };
+      var out = {};
+      for (var k in add)
+        if (!Object.prototype.hasOwnProperty.call(EN, k)) out[k] = add[k];
+      return out;
+    })(),
+  );
+
+  /* ── 应用中心（renderer/app-apps.js + css/apps.css）：顶栏「应用」入口、
+     整屏浮层页的「应用 / 库 / 开发」三页、云端目录与已下载应用的卡片 / 列表 / 按钮、
+     同名目录冲突（覆盖 / 改名 / 取消）、卸载确认、导出 zip 与变更探测结果 ──
+     首条是**有意覆盖**既有键：`应用` 老译文是「App」（节点右键菜单的工具分组标签），
+     这里作为「应用中心」的入口与导航名统一改读「Apps」（同一条键在英文界面下两处都通顺），
+     所以它必须走 Object.assign 而不是下面那道「只补缺键」的闸。 */
+  Object.assign(EN, {
+    "应用": "Apps",
+  });
+
+  /* 其余键只补缺、不改既有译文（与上方最后一块同一写法） */
+  Object.assign(
+    EN,
+    (function () {
+      var add = {
+        /* 顶栏入口 / 页面骨架 */
+        "应用：浏览云端应用目录，下载到本机后用独立窗口运行（已下载的应用在「库」里管理）":
+          "Apps: browse the cloud app catalog, download to this computer and run in a separate window (downloaded apps are managed under Library)",
+        "库": "Library",
+        "浏览云端目录 · 下载到本机后用独立窗口运行":
+          "Browse the cloud catalog · download and run in a separate window",
+        "本机已下载的应用：打开 · 更新 · 卸载":
+          "Apps downloaded to this computer: open · update · uninstall",
+        "应用根目录 · 导出应用包 · 变更探测":
+          "App root folder · Export a package · Change probe",
+        "搜索应用…": "Search apps…",
+        "返回 MTNode": "Back to MTNode",
+        "返回 MTNode 界面（Esc 同效）": "Back to the MTNode interface (Esc works too)",
+        "应用服务未就绪（主进程应用宿主尚未接入）":
+          "The apps service is not ready (the main-process app host is not wired yet)",
+        /* 云端目录状态 */
+        "正在拉取云端应用目录…": "Loading the cloud app catalog…",
+        "正在读取本机应用…": "Reading local apps…",
+        "目录已更新": "Catalog updated",
+        "云端目录已更新（": "Cloud catalog updated (",
+        "云端目录暂时拉不到，显示的是本机缓存（":
+          "The cloud catalog is unreachable right now — showing the local cache (",
+        "云端目录暂时拉不到：显示的是本机缓存":
+          "The cloud catalog is unreachable right now — showing the local cache",
+        "云端目录为空或还没发布：可以先看看「库」里已下载的应用":
+          "The cloud catalog is empty or has not been published yet — you can look at downloaded apps under Library first",
+        "云端目录里还没有应用：稍后重新进入本页会自动再拉一次。":
+          "There are no apps in the cloud catalog yet — reopening this page will fetch it again.",
+        "拿不到应用目录：请检查网络，稍后重新进入本页再试。":
+          "Cannot get the app catalog: check your network, then reopen this page to retry.",
+        "云端返回：": "Cloud returned: ",
+        "没有匹配「": "No app matches “",
+        "」的应用": "”",
+        /* 下载 / 安装 */
+        "下载地址": "Download URL",
+        "校验 sha256": "sha256",
+        "校验并解包…": "Verifying and unpacking…",
+        "准备下载…": "Preparing the download…",
+        "下载中 ": "Downloading ",
+        "处理中…": "Working…",
+        "下载失败：": "Download failed: ",
+        "同名应用已存在": "An app with the same name already exists",
+        "同名应用已存在：请选择覆盖 / 改名 / 取消":
+          "An app with the same name already exists: choose overwrite / rename / cancel",
+        "应用根目录里已经有一个同名目录「":
+          "The app root folder already contains a folder with the same name, “",
+        "」，这次要装的是「": "”, and this install is “",
+        "」。": "”.",
+        "覆盖 = 只替换上次装进去的应用文件（该应用自己的存储与画布保留）；改名 = 装成另一个目录，两份并存；取消 = 什么都不做。":
+          "Overwrite = replace only the app files installed last time (this app's own storage and canvas are kept); Rename = install into another folder, keeping both; Cancel = do nothing.",
+        "（同名目录已存在，已改名安装）":
+          " (a folder with the same name existed, so it was installed under a new name)",
+        "请先在设置里指定应用根目录": "Set the app root folder first",
+        "还没指定应用根目录：下载前要先选一个文件夹":
+          "No app root folder set yet: choose a folder before downloading",
+        /* 主进程 apps-store.js 的失败码（appsErrText 按码出词，与 app-plugins.js 的
+           pluginErrText 同一口径；码的真源是 installFailHint / uninstallApp / openAppWindow） */
+        "尚未指定应用安装根目录": "No app install root folder has been chosen yet",
+        "该应用已有安装任务在跑": "This app already has an install running",
+        "应用 id 不合法": "Invalid app id",
+        "云端目录里找不到这个应用": "This app is not in the cloud catalog",
+        "云端目录里该应用的下载地址不合法":
+          "The download URL declared for this app in the cloud catalog is not allowed",
+        "安装包校验失败（sha256 与云端目录声明不一致）":
+          "Package check failed (sha256 does not match what the cloud catalog declares)",
+        "安装包解压后缺少入口页": "The package has no entry page after unpacking",
+        "下载超时": "Download timed out",
+        "安装包超过允许体积上限": "The package exceeds the allowed size limit",
+        "该应用不在本机": "That app is not on this computer",
+        "应用入口页不存在": "The app's entry page does not exist",
+        /* 库页 / 根目录 */
+        "应用根目录": "App root folder",
+        "应用根目录已设置：": "App root folder set: ",
+        "未设置": "Not set",
+        "未设置：下载前会先让你选一个文件夹":
+          "Not set: you will be asked to choose a folder before the first download",
+        "更改…": "Change…",
+        "设置失败：": "Setup failed: ",
+        "选择应用根目录失败：": "Choosing the app root folder failed: ",
+        "还没设置应用根目录": "No app root folder set yet",
+        "已下载": "Downloaded",
+        "已下载 ": "Downloaded ",
+        " 个应用": " app(s)",
+        "还没有下载任何应用：到「应用」页挑一个下载，它会装进应用根目录。":
+          "No app downloaded yet: pick one on the Apps page and it will be installed into the app root folder.",
+        "去「应用」页看看": "Go to the Apps page",
+        "本机还没有已下载的应用": "No app has been downloaded yet",
+        /* 打开 / 更新 / 卸载 */
+        "在独立窗口里运行这个应用": "Run this app in its own window",
+        "为一个应用开独立窗口（位置与「库」页的「运行」相同；应用本体不依赖宿主桥也能跑）":
+          "Opens a separate window for an app (same as “Run” on the Library page; the app itself also runs without the host bridge)",
+        "这个应用已经开着独立窗口（再点一次把它调到前台）":
+          "This app already has its own window open (click again to bring it to the front)",
+        "更新到 v": "Update to v",
+        "可更新": "Update available",
+        "可更新：云端 v": "Update available: cloud v",
+        "需要更新的 MTNode": "Needs a newer MTNode",
+        "该应用要求的 MTNode 版本高于当前版本":
+          "This app requires a newer MTNode than the one installed",
+        "卸载应用": "Uninstall app",
+        "确定卸载「": "Uninstall “",
+        "」？只删除它的应用子文件夹（": "”? Only its own app sub-folder is deleted (",
+        "）；画布、会话、它的数据文件夹与其它用户内容一概不动。":
+          "); its data folder, canvases, sessions and every other user file are untouched.",
+        "卸载只删该应用自己的子文件夹，画布 / 会话 / 其它用户内容不动":
+          "Uninstalling deletes only this app's own sub-folder; canvases, sessions and other user content are untouched",
+        /* 应用数据文件夹（默认 <数据目录>/apps-data/<id>/，可在应用窗口或库页改） */
+        "应用数据文件夹": "App data folder",
+        "数据文件夹": "Data folder",
+        "读取中…": "Loading…",
+        "自定义位置": "Custom location",
+        "这个应用的数据文件夹由用户改过；默认位置是 ": "this app's data folder was changed by the user; the default is ",
+        "还没写过数据": "No data written yet",
+        "数据文件夹已改为：": "Data folder changed to: ",
+        "已恢复默认数据文件夹（原目录数据留在原处）：":
+          "Back to the default data folder (files in the old folder stay where they are): ",
+        "恢复默认失败：": "Restoring the default failed: ",
+        "还没设置数据文件夹": "No data folder has been set yet",
+        "读不到数据文件夹：": "Cannot read the data folder: ",
+        "应用数据超出上限（2MB）": "App data exceeds the 2MB limit",
+        "数据文件名不合法": "Invalid data file name",
+        "请选择数据文件夹": "Choose a data folder",
+        "数据文件夹不能落在应用目录内": "The data folder cannot live inside the app folder",
+        "选择这个应用的数据文件夹": "Choose this app's data folder",
+        "选择数据文件夹失败": "Choosing the data folder failed",
+        "无法打开文件夹：": "Cannot open the folder: ",
+        "需要你先选择数据文件夹": "You need to choose the data folder yourself",
+        "应用宿主未初始化（缺少数据目录）": "The app host is not initialized (no data directory)",
+        "已卸载：": "Uninstalled: ",
+        "（已放进回收站）": " (moved to the recycle bin)",
+        "卸载失败：": "Uninstall failed: ",
+        "｜注意：它当前绑定着开发节点": " | note: it is currently bound to a dev node",
+        /* 卡片详情 */
+        "应用 id": "App id",
+        "入口页": "Entry page",
+        "需要的 MTNode 版本": "Required MTNode version",
+        "大小": "Size",
+        "占用": "On disk",
+        "安装时间": "Installed",
+        "本机目录": "Local folder",
+        "窗口尺寸": "Window size",
+        "本机 ": "local ",
+        "查看详情": "Details",
+        "收起详情": "Hide details",
+        "（这个应用还没写描述）": "(this app has no description yet)",
+        "清单损坏": "Broken manifest",
+        "这个目录里没有可读的 app.json（可能是手改坏了）：删掉重装即可恢复":
+          "This folder has no readable app.json (it may have been edited by hand): delete and reinstall it to recover",
+        "有专属画布": "Has its own canvas",
+        "这个应用目录里存着自己的一张画布（": "This app folder holds a canvas of its own (",
+        "）；卸载不会动它": "); uninstalling does not touch it",
+        /* 开发页：导出包 / 变更探测 / 开发绑定 */
+        "导出应用包": "Export app package",
+        "导出 zip": "Export zip",
+        "导出失败：": "Export failed: ",
+        "已导出：": "Exported: ",
+        "把某个已下载应用打成 zip（只含 app.json / 入口页 / assets，不含画布与该应用的存储），可用于搬家或上架云端目录。":
+          "Pack one downloaded app into a zip (only app.json / the entry page / assets — no canvas and no app storage); useful for moving to another computer or publishing to the cloud catalog.",
+        "变更探测": "Change probe",
+        "探测变更": "Probe changes",
+        "探测失败：": "Probe failed: ",
+        "对应用根目录下的每个应用算一份快照（文件数 / 字节 / 最新修改时间）并与上一份比对，看出哪些应用被改过（首次运行只落基线）。":
+          "Takes a snapshot of every app under the app root folder (file count / bytes / latest mtime) and compares it with the previous one, showing which apps have changed (the first run only records a baseline).",
+        "已落基线：本次记下 ": "Baseline recorded: noted ",
+        " 个应用，下次探测才有对照。":
+          " app(s); the next probe will have something to compare against.",
+        "新增 ": "Added ",
+        "变更": "Changed",
+        " · 变更 ": " · changed ",
+        " · 移除 ": " · removed ",
+        " · 未变 ": " · unchanged ",
+        "开发绑定": "Dev binding",
+        "开发绑定：已绑定": "Dev binding: bound",
+        "开发绑定：未绑定": "Dev binding: not bound",
+        "当前画布上的开发节点把该应用目录作为项目根（devPath）：":
+          "Dev nodes on the current canvas use this app folder as the project root (devPath): ",
+        "当前画布上没有开发节点把这个应用目录设为项目根（在顶层开发块「项目文件夹」里指向它即可绑定）":
+          "No dev node on the current canvas uses this app folder as the project root (point the top-level dev block's “project folder” at it to bind)",
+        "当前画布还没有项目根（在顶层开发块里设置「项目文件夹」）":
+          "The current canvas has no project root yet (set “project folder” on the top-level dev block)",
+        "当前画布项目根：": "Current canvas project root: ",
+        "本机还没有应用与当前画布的开发节点绑定":
+          "No app on this computer is bound to a dev node on the current canvas",
+        "已绑定开发的应用：": "Apps bound to dev: ",
+        "把某个应用目录设为当前画布顶层开发节点的「项目文件夹」（devPath），该应用就与开发节点绑定：库页那一行会显示「开发绑定：已绑定」，开发 / 细化会话的工作区也跟着它走。":
+          "Set an app folder as the “project folder” (devPath) of the top-level dev node on the current canvas and that app is bound to the dev node: the Library row shows “Dev binding: bound”, and dev / refine sessions use it as their workspace.",
+        /* 开发页顶部菜单条（renderer/app-apps-dev.js + css/apps.css）：
+           只允许一行，放不下的项收进「更多 ▾」。 */
+        "刷新预览": "Reload preview",
+        "维持状态": "Keep state",
+        "＋ 新开发会话": "＋ New dev session",
+        "更多": "More",
+        "更多（放不下的项在这里）：": "More (the items that did not fit): ",
+        "点击在资源管理器中打开": "Click to open it in File Explorer",
+        /* 开发页中栏预览兜底（renderer/app-apps-dev.js 的 appsDevPreviewStatMsg）：
+           拿不到应用目录 / 入口页时盖在 iframe 上的可读提示 + 「重试」（「重试」词条已有）。 */
+        "还没有可预览的应用：先新建或安装一个应用":
+          "No app to preview yet: create or install one first",
+        "正在读取应用目录…": "Reading the app folder…",
+        "预览不可用：": "Preview unavailable: ",
+        "读不到该应用目录（可能在别处被删了）":
+          "Cannot read this app folder (it may have been deleted elsewhere)",
       };
       var out = {};
       for (var k in add)

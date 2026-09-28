@@ -144,7 +144,7 @@
   name: '@deepseek-ai/dsh-agent-default-model'
   config:
     provider: deepseek-official
-    model: deepseek-v4-flash
+    model: deepseek-flash
 
 - id: jobs
   name: '@deepseek-ai/dsh-jobs-local'
@@ -356,6 +356,10 @@
     provider: spawn
     toolName: subagent
     backgroundMode: continuable
+    # 委派嵌套上限:0 禁止委派,dsh 自身默认 3。MTNode 默认收紧到 1(与 OpenCode 的
+    # subagent_depth 默认一致);用户在「设置 · 智能能力 · 子代理」改了之后,由宿主
+    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。
+    maxDepth: 1
 
 - id: tool-subagent-fork
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -364,6 +368,8 @@
     provider: fork
     toolName: subagent_fork
     backgroundMode: one-shot
+    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。
+    maxDepth: 1
 
 - id: tool-subagent-report
   name: '@deepseek-ai/dsh-tool-subagent-report'

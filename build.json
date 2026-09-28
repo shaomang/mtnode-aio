@@ -1,0 +1,278 @@
+{
+  "appId": "com.mtnode.pipeline-console",
+  "productName": "MTNode AI编排器",
+  "directories": {
+    "output": "dist"
+  },
+  "files": [
+    "main.js",
+    "main-exec-launch.js",
+    "main-proc-host.js",
+    "fn-runtime.js",
+    "desktop-capture.js",
+    "pdf-math.js",
+    "pdf-doc.js",
+    "pdf-write.js",
+    "preload.js",
+    "preload-app.js",
+    "config-providers.js",
+    "dsh-agent-policy.js",
+    "auth-store.js",
+    "tools-store.js",
+    "assets-store.js",
+    "apps-store.js",
+    "wechat-pc.js",
+    "wechat-fastlogin.js",
+    "media-gen-global-lock.js",
+    "plugin-error-repair.js",
+    "mtnode-agent-skills-lib.js",
+    "db-store.js",
+    "rollback-store.js",
+    "longtask-store.js",
+    "ai-facts-store.js",
+    "mtnode-agent-skills/**",
+    "renderer/**",
+    "pet/main-pet.js",
+    "pet/standalone-main.js",
+    "pet/pet-provider.js",
+    "pet/preload-pet.js",
+    "pet/chat-ui/**",
+    "music3/**",
+    "yue/**",
+    "h3/**",
+    "llama/**",
+    "tts/**",
+    "asr/**",
+    "sensenova/**",
+    "remotion/**",
+    "plugins/**",
+    "forum/**",
+    "dsh/main-dsh.js",
+    "dsh/mtnode-llm-creds.js",
+    "dsh/DESIGN.md",
+    "dsh/README.md",
+    "guides/**",
+    "skills/**",
+    "templates/**",
+    "package.json",
+    "version",
+    "updater.js",
+    "crash-report.js",
+    "!pet-pack/**",
+    "!smoke.js",
+
+    /* ── 依赖减重（体检工具 scripts/app-deps-usage.mjs 度量；electron-builder 的
+       files 取反规则同样作用于自动收集的 node_modules，见
+       app-builder-lib/out/util/appFileCopier.js computeNodeModuleFileSets）──
+       只剪「本机运行期一定加载不到」的东西：异平台原生二进制、编译中间产物、
+       sourcemap、node-gyp 输入。任何可能被 require 的代码与懒加载分支都不动。
+
+       能力组（@opentelemetry/* · @aws-sdk/* · @smithy/* · @aws-crypto/* ·
+       @mistralai/mistralai · @deepseek-ai/dsh-web-app/-frontend 及其独占下游）
+       实测只存在于 dsh/gateway/node_modules，摘除由 dsh/after-pack.cjs 按
+       docs/app-deps-capability.json 生效，这里**不加**对应取反：根 node_modules
+       里同名的那几个（commander · picomatch · picocolors · escape-string-regexp ·
+       @types/debug）在 app 树入口闭包里仍可达（docs/app-deps-prune.json 的
+       trees.app：live=440.95MB / dead=0），网关树判定不适用于这棵树。 */
+    "!node_modules/**/prebuilds/{darwin,linux,linuxmusl,freebsd}{,-*}",
+    "!node_modules/**/prebuilds/{darwin,linux,linuxmusl,freebsd}*/**",
+    "!node_modules/**/prebuilds/win32-arm64{,.node}",
+    "!node_modules/**/prebuilds/win32-arm64/**",
+    "!node_modules/**/prebuilds/*-arm64*",
+    "!node_modules/**/prebuilds/*-arm64*/**",
+    "!node_modules/better-sqlite3/deps/**",
+    "!node_modules/better-sqlite3/src/**",
+    "!node_modules/uiohook-napi/libuiohook/**",
+    "!node_modules/uiohook-napi/src/**",
+    "!node_modules/**/*.{map,lib,iobj,ipdb,tlog,exp,recipe,vcxproj,vcxproj.filters,sln,gyp,gypi,Makefile2,lastbuildstate}",
+    "!node_modules/**/*.d.{ts,cts,mts}",
+  ],
+  "asar": true,
+  "asarUnpack": [
+    "**/node_modules/uiohook-napi/**",
+    "**/node_modules/node-gyp-build/**"
+  ],
+  "extraResources": [
+    {
+      "from": "node_modules/uiohook-napi",
+      "to": "uiohook-napi",
+      "filter": [
+        "**/*",
+        "!libuiohook/**",
+        "!src/**",
+        "!build/Release/obj/**",
+        "!build/*.sln",
+        "!build/**/*.vcxproj*",
+        "!build/**/*.{lib,iobj,ipdb,exp,tlog,recipe,lastbuildstate}",
+        "!prebuilds/{darwin,linux,linuxmusl,freebsd}*/**",
+        "!prebuilds/win32-arm64/**",
+        "!**/*.{d.ts,d.cts,d.mts,map,pdb,obj,o,a,cc,gyp,gypi}",
+        "!**/{README,CHANGELOG,HISTORY,CONTRIBUTING,SERCURITY,CODE_OF_CONDUCT,AUTHORS}*",
+        "!**/*.md"
+      ]
+    },
+    {
+      "from": "node_modules/node-gyp-build",
+      "to": "node-gyp-build",
+      "filter": ["**/*", "!**/*.{d.ts,map,md}", "!tests/**"]
+    },
+    {
+      "from": "pet-pack",
+      "to": "pet-pack",
+      "filter": [
+        "app.js",
+        "index.html",
+        "style.css",
+        "chat.html",
+        "chat.js",
+        "persona.html",
+        "preload-pet.js",
+        "manifest.json",
+        "live2d.bundle.js",
+        "models/**",
+        "vendor/**"
+      ]
+    },
+    {
+      "from": "music3-pack",
+      "to": "music3-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "prompts/**",
+        "workflows/**",
+        "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    },
+    {
+      "from": "yue-pack",
+      "to": "yue-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    },
+    {
+      "from": "h3-pack",
+      "to": "h3-pack",
+      "filter": [
+        "app/**",
+        "post/**",
+        "scripts/**",
+        "custom_nodes/**",
+        "workflows/**",
+        "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    },
+    {
+      "from": "llama-pack",
+      "to": "llama-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "templates/**",
+        "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    },
+    {
+      "from": "tts-pack",
+      "to": "tts-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    },
+    {
+      "from": "remotion-pack",
+      "to": "remotion-pack",
+      "filter": [
+        "manifest.json",
+        "package.json",
+        "tsconfig.json",
+        "src/**",
+        "render.mjs",
+        "install.cmd",
+        "README.md",
+        ".gitignore"
+      ]
+    },
+    {
+      "from": "asr-pack",
+      "to": "asr-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    },
+    {
+      "from": "sensenova-pack",
+      "to": "sensenova-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
+        "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    }
+  ],
+  "afterPack": "dsh/after-pack.cjs",
+  /* normal：多核压缩，明显快于 maximum；体积通常接近 */
+  "compression": "normal",
+  "electronVersion": "39.8.10",
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "http://mt-agent.com/mtnode/updates"
+    }
+  ],
+  "win": {
+    /* 仅 nsis：打包过程会生成 win-unpacked，无需再打一份 dir */
+    "icon": "build/icon.ico",
+    "target": [
+      { "target": "nsis", "arch": ["x64"] }
+    ],
+    "executableName": "MTNodeAIO"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "MTNode AI编排器",
+    "include": "installer.nsh",
+    "runAfterFinish": true,
+    "artifactName": "MTNodeAIO-Setup-${version}.${ext}",
+    "differentialPackage": true
+  }
+}

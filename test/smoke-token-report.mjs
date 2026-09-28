@@ -273,7 +273,7 @@ near(bucketCost("deepseek-v4-pro", { cacheReadTokens: 1e6 }).amount, 0.3, "缓�
 near(bucketCost("deepseek-v4-pro", { inputTokens: 1e6 }).amount, 9.0, "未命中 1M 按 v4-pro ¥9/1M");
 near(bucketCost("deepseek-v4-pro", { outputTokens: 1e6 }).amount, 27.0, "输出 1M 按 v4-pro ¥27/1M");
 near(bucketCost("deepseek-v4-pro", { cacheWriteTokens: 1e6 }).amount, 9.0, "缓存写计入未命中单价");
-near(bucketCost("deepseek-v4-flash", { inputTokens: 1e6 }).amount, 3.0, "v4-flash 未命中 1M = ¥3");
+near(bucketCost("deepseek-v4-flash", { inputTokens: 1e6 }).amount, 2.0, "v4-flash（已下线别名，按 V4.1-Flash 计费）未命中 1M = ¥2");
 ok(bucketCost("gpt-4o", { inputTokens: 1e6 }) === null, "未知模型单价 → 不计费（null）");
 ok(
   bucketCost("deepseek-v4-pro", { inputTokens: 1e6 }, "mtnode_openrouter") === null,
@@ -289,7 +289,7 @@ ok(ctx.fmtMoney(0.227725) === "¥0.23", "fmtMoney 统一两位小数：" + ctx.f
 /* 6b. 多模型汇总：v4-pro 一笔 + v4-flash 一笔，非官方模型不计入 */
 const totalCost = ctx.costOfOwner(st);
 ok(!!totalCost, "官方路由台账能算出总费用");
-near(totalCost.amount, 0.2259 + 0.001825, "总费用 = 两个官方模型各自计价之和");
+near(totalCost.amount, 0.2259 + 0.00124, "总费用 = 两个官方模型各自计价之和");
 ok(totalCost.currency === "CNY", "费用币种为 CNY");
 
 /* 6c. 未知单价不计费：只含非官方模型的服务台账 → null */
@@ -321,10 +321,10 @@ const T_WEEKEND = Date.UTC(2026, 0, 10, 2, 0, 0); /* 周六 10:00 北京 → 空
 
 /* 7a. 未知 DeepSeek 模型 → flash 价（estimated 标记），不再返回 null */
 const unk = bucketCost("deepseek-v5", { inputTokens: 1e6 });
-near(unk.amount, 3.0, "未知 deepseek 模型未命中 1M 按 flash ¥3 兜底");
+near(unk.amount, 2.0, "未知 deepseek 模型未命中 1M 按 flash ¥2 兜底");
 ok(unk.estimated === true, "兜底价带 estimated 标记");
 ok(unk.offPeak === false, "无时刻信息按高峰（estimated 兜底也是高峰价）");
-near(bucketCost("deepseek-chat", { outputTokens: 1e6 }).amount, 9.0, "deepseek-chat 输出 1M 按 flash ¥9");
+near(bucketCost("deepseek-chat", { outputTokens: 1e6 }).amount, 8.0, "deepseek-chat 输出 1M 按 flash ¥8");
 ok(bucketCost("gpt-4o", { inputTokens: 1e6 }) === null, "非 DeepSeek 未知模型仍不猜价（null）");
 
 /* 7b. 峰谷：同样 token，高峰全价 / 空闲半价 */
@@ -332,7 +332,7 @@ near(bucketCost("deepseek-v4-pro", { inputTokens: 1e6, at: T_PEAK }).amount, 9.0
 const off = bucketCost("deepseek-v4-pro", { inputTokens: 1e6, at: T_OFF });
 near(off.amount, 4.5, "空闲时段半价 ¥4.5");
 ok(off.offPeak === true, "空闲桶带 offPeak 标记");
-near(bucketCost("deepseek-v4-flash", { outputTokens: 1e6, at: T_OFF }).amount, 4.5, "flash 输出空闲半价");
+near(bucketCost("deepseek-v4-flash", { outputTokens: 1e6, at: T_OFF }).amount, 4.0, "flash 输出空闲半价");
 near(bucketCost("deepseek-v4-pro", { cacheReadTokens: 1e6, at: T_WEEKEND }).amount, 0.15, "周末缓存命中半价");
 near(
   ctx.costOfBucket({ baseUrl: "https://api.deepseek.com/v1" }, "deepseek-v4-pro", { inputTokens: 1e6 }, T_OFF).amount,

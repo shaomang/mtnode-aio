@@ -878,17 +878,14 @@ function fillAssistModelControls() {
     o.textContent = label;
     sel.appendChild(o);
   };
-  /* 每次从当前配置读取，避免首次绑定时的空目录快照 */
+  /* 每次从当前配置读取，避免首次绑定时的空目录快照。
+     dshProvider() 的 models 已过白 / 黑名单；停用的服务商由 dshProvider / mtnodePiProviders
+     过滤掉，因此这里不会出现任何停用服务商。 */
   const modelsFor = (prov) => {
     const catalog = S.providerCatalog || {
       deepseek: [
-        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+        { id: "deepseek-flash", name: "DeepSeek-V4.1-Flash", input: ["text", "image"] },
         { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
-        {
-          id: "deepseek-v4-flash-vision-exp",
-          name: "DeepSeek-V4-Flash-Vision-Exp",
-          input: ["text", "image"],
-        },
       ],
       piai: [],
     };
@@ -922,7 +919,13 @@ function fillAssistModelControls() {
   const dp = dshProvider();
   let curProv = S.assistProvider || "deepseek-official";
   provSel.innerHTML = "";
-  addOpt(provSel, "deepseek-official", (dp && dp.name) || I18n.t("DeepSeek 官方"));
+  /* 官方路由对应的 DeepSeek 服务商被停用时，这条整体不列（与节点设置 / 会话菜单同口径） */
+  const dsOk =
+    typeof deepseekRouteSelectable === "function"
+      ? deepseekRouteSelectable(S.config)
+      : true;
+  if (dsOk)
+    addOpt(provSel, "deepseek-official", (dp && dp.name) || I18n.t("DeepSeek 官方"));
   for (const p of mtnode) addOpt(provSel, "mtnode_" + p.route, p.name);
   if (![...provSel.options].some((o) => o.value === curProv)) {
     curProv = preferredAgentProviderRoute();
@@ -1127,6 +1130,10 @@ function renderAssistPanel(opts) {
     /* 折叠等事后高度变化：再按锚点还原一次（贴底滚到底，未贴底保持原位） */
     requestAnimationFrame(() => restoreConvStick(list, stickCap));
   }
+  /* 助手输入框上方的内嵌图胶囊条（本文件末段；幂等，每轮只做签名比对） */
+  try {
+    chatInlineImgTick();
+  } catch (_) {}
 }
 
 function clearAssistChat() {
@@ -1545,6 +1552,11 @@ function agentSessions() {
      开轮时按当时画布补绑一次并落盘，见 app-db.js dshRunTask 的 boundWf 解析。 */
   for (const s of S.agentSessions)
     if (s && typeof s.canvasWfId !== "string") s.canvasWfId = "";
+  /* 所属应用水合：新建开发会话时带上的 appId 标记（开发页按它过滤会话，见
+     renderer/app-app-flow.js 的 appSessionsOf）。老存档没有这一位 → 规范成空串 =
+     不属于任何应用；只在读列表时归一，不动 60 条截断与其它任何逻辑。 */
+  for (const s of S.agentSessions)
+    if (s && typeof s.appId !== "string") s.appId = "";
   /* 标题标记水合：titleAuto（被引擎首轮自动命名过）/ titleLocked（用户手改过）
      归一成布尔 —— 老存档没这两位就是 false，不报错也不给旧会话凭空上锁。 */
   for (const s of S.agentSessions)
@@ -1624,6 +1636,91 @@ function activeAgentId() {
   }
   return S.agentActiveId;
 }
+
+/* ── 会话视图「本页显示哪条会话」（显示覆盖）─────────────────────────────────
+   默认 = 用户选中的那条（S.agentActiveId，会话页一字不改）。应用中心的「应用 → 开发」
+   三栏页开着时，右栏要显示该页左栏那条开发会话 —— 走这里的显式覆盖，**绝不写
+   S.agentActiveId**：开发页开着 / 关着的整个过程中，会话页的选中项、正文与四块面板的
+   归属都保持原样（离开开发页即撤掉覆盖，见 app-apps-dev.js 的 appsDevViewClear）。
+   历史 bug：开发页直接把 S.agentActiveId 拨过去（清面板与拨 id 两步不同步、或那条会话
+   已不在时那一步被静默跳过），于是会话页里**正在跑的另一条会话**的计划 / 任务清单 /
+   发送队列会原样留在开发页右栏（用户看到的「点开开发页，右栏冒出进行中的计划表」）。
+   覆盖值：
+     · ""（空串）= 覆盖开着但**本页还没有会话**（开发页首轮态）→ 用占位空会话渲染：
+       正文与四块面板一律为空，绝不回落到会话页的当前会话；
+     · 会话 id    = 本页显示这条（它若已不在，同样落到占位空会话）。
+   只影响「看」：渲染 / 滚动 / 「用户是不是正看着它」的判断统一走 agentViewIs() /
+   agentViewHas()；写操作一律由调用方点名真实会话 id（发送 / 排队 / 暂停 / 终止本来
+   就带 sessionId），所以占位空会话永远不会被写到。 */
+let AGENT_VIEW_OVERRIDE = null; /* null = 没有覆盖；"" 或 会话 id = 覆盖值 */
+let AGENT_VIEW_BLANK = null; /* 覆盖态下的占位空会话（只在内存里：不注册、不落盘） */
+function agentViewOverrideOn() {
+  return AGENT_VIEW_OVERRIDE !== null;
+}
+function agentViewOverrideId() {
+  return AGENT_VIEW_OVERRIDE === null ? "" : String(AGENT_VIEW_OVERRIDE || "");
+}
+/* 开启 / 切换覆盖（id 为空 = 本页还没有会话：渲染成空，不回落） */
+function agentViewOverrideSet(id) {
+  const next = String(id || "");
+  if (AGENT_VIEW_OVERRIDE === next) return;
+  AGENT_VIEW_OVERRIDE = next;
+  /* 换页 / 换会话 = 新的空态：上一只占位里被改过的选项不再沿用 */
+  AGENT_VIEW_BLANK = null;
+}
+/* 撤掉覆盖：回到会话页自己的选中项（离开开发页时调用，调用方随后重绘一次） */
+function agentViewOverrideClear() {
+  if (AGENT_VIEW_OVERRIDE === null) return;
+  AGENT_VIEW_OVERRIDE = null;
+  AGENT_VIEW_BLANK = null;
+}
+/* 覆盖态下的占位空会话：没有消息 / 没有计划 / 没有待办 / 没有队列，一切渲染都是空 */
+function agentViewBlankSt() {
+  if (AGENT_VIEW_BLANK) return AGENT_VIEW_BLANK;
+  AGENT_VIEW_BLANK = {
+    /* 非法会话 id：写路径一律点名真实 id，永不落到它身上 */
+    id: "\u0000agent-view-blank",
+    title: I18n.t("新会话"),
+    workspace: "",
+    canvasWfId: "",
+    preset: AGENT_PRESET_DEFAULT,
+    provider: "deepseek-official",
+    model: "",
+    effort: "high",
+    pure: false,
+    messages: [],
+    archived: false,
+    updatedAt: Date.now(),
+  };
+  return AGENT_VIEW_BLANK;
+}
+/* 视图会话 id：覆盖态 = 覆盖值（空串 = 空态 / 那条会话已不在）；否则 = 用户选中的 */
+function agentViewId() {
+  if (!agentViewOverrideOn()) return activeAgentId();
+  const id = agentViewOverrideId();
+  if (!id) return "";
+  const list = agentSessions();
+  return list.some((s) => s.id === id) ? id : "";
+}
+/* 「用户是不是正看着这条会话」的唯一判据（渲染 / 反馈 / 计划面板刷新都走它）。
+   非覆盖态与老写法（S.agentActiveId 直比）完全等价。 */
+function agentViewHas(id) {
+  const sid = String(id || "");
+  if (!sid) return false;
+  if (agentViewOverrideOn()) return agentViewOverrideId() === sid;
+  return String(S.agentActiveId) === sid;
+}
+function agentViewIs(st) {
+  return !!st && agentViewHas(st.id);
+}
+/* 左栏点会话行 = 「我要看这条」：开发页开着时切的是**本页显示的会话**（覆盖值），
+   会话页的选中项（S.agentActiveId）一个字都不动；不在覆盖态时就是老行为。 */
+function agentSelectSession(id) {
+  const sid = String(id || "");
+  if (!sid) return;
+  if (agentViewOverrideOn()) agentViewOverrideSet(sid);
+  else S.agentActiveId = sid;
+}
 /* 按 id 取会话：取不到就是 null —— 绝不回退到「当前活动会话」。
    计划等有明确归属（owner）的调用必须走它，否则用户一切换会话，
    剩余任务就会发进别的会话（runKey / outbox / 上下文全部串台）。 */
@@ -1635,6 +1732,17 @@ function agentSessionById(id) {
 }
 function agentSessionState() {
   const list = agentSessions();
+  /* 覆盖态（应用开发页开着）：只认本页显示的那条会话；本页还没有会话、或它已不在
+     → 占位空会话。绝不回落到会话页的当前会话 —— 那正是开发页右栏冒出「他会话的
+     计划 / 任务清单 / 发送队列」的来源（见上面 agentViewOverrideSet 的说明）。 */
+  if (agentViewOverrideOn()) {
+    const viewId = agentViewId();
+    const st0 =
+      (viewId ? list.find((s) => s.id === viewId) : null) || agentViewBlankSt();
+    if (st0.provider == null) st0.provider = "deepseek-official";
+    if (st0._draft == null) st0._draft = st0.draft || "";
+    return st0;
+  }
   let st = list.find((s) => s.id === activeAgentId());
   if (!st) {
     st = {
@@ -1682,6 +1790,9 @@ async function persistAgentSession() {
     workspace: s.workspace || "",
     /* 所属画布 id：随会话落盘，重启后仍归它自己那张图 */
     canvasWfId: s.canvasWfId || "",
+    /* 所属应用 id：开发页按它过滤会话（不限条数、不参与 60 条截断口径）；
+       空串 = 不属于任何应用（普通会话、旧存档） */
+    appId: s.appId || "",
     preset: s.preset || AGENT_PRESET_DEFAULT,
     provider: s.provider || "deepseek-official",
     model: s.model || "",
@@ -1925,6 +2036,12 @@ async function deleteAgentSessionCore(id) {
   const list = agentSessions();
   const at = list.findIndex((x) => x && x.id === id);
   if (at < 0) return -1;
+  /* 内嵌图回收的候选：这条会话自己引用过的图（消息 / 未发的草稿）。
+     必须在摘掉之前取 —— 摘掉之后就找不到这条会话了。 */
+  const imgCands =
+    typeof chatImgSessionCandidates === "function"
+      ? chatImgSessionCandidates(list[at])
+      : [];
   /* 暂停态随会话一起消失（不指望调用方先终止过）：否则被删会话的「已暂停」行
      可能在下一次队列采集前还挂在左下角，点上去只会得到一句「会话已不存在」 */
   try {
@@ -1936,6 +2053,8 @@ async function deleteAgentSessionCore(id) {
   list.splice(at, 1);
   if (S.agentActiveId === id) S.agentActiveId = (list[0] && list[0].id) || "";
   await persistAgentSession();
+  /* 会话没了 = 它的内嵌图失去最后一处引用（还有别处引用就保留）：去抖回收 */
+  if (imgCands.length && typeof chatImgGcSoon === "function") chatImgGcSoon(imgCands);
   renderAgentSessionSidebar();
   renderAgentSession();
   return at;
@@ -1981,7 +2100,7 @@ function agentModelName(st) {
   const models = dp && dp.models ? dp.models : [];
   const prov = st.provider || "deepseek-official";
   if (prov === "deepseek-official") {
-    return st.model || (models[0] ? models[0] : "deepseek-v4-flash");
+    return st.model || (models[0] ? models[0] : "deepseek-flash");
   }
   const mp = mtnodePiProviders().find((x) => "mtnode_" + x.route === prov);
   const ms = (mp && mp.models) || [];
@@ -2592,19 +2711,14 @@ function ensureProviderCatalog() {
               ? r.deepseek
               : [
                   {
-                    id: "deepseek-v4-flash",
-                    name: "DeepSeek-V4-Flash",
-                    input: ["text"],
+                    id: "deepseek-flash",
+                    name: "DeepSeek-V4.1-Flash",
+                    input: ["text", "image"],
                   },
                   {
                     id: "deepseek-v4-pro",
                     name: "DeepSeek-V4-Pro",
                     input: ["text"],
-                  },
-                  {
-                    id: "deepseek-v4-flash-vision-exp",
-                    name: "DeepSeek-V4-Flash-Vision-Exp",
-                    input: ["text", "image"],
                   },
                 ],
           piai: (r && r.piai) || [],
@@ -2615,19 +2729,14 @@ function ensureProviderCatalog() {
         S.providerCatalog = {
           deepseek: [
             {
-              id: "deepseek-v4-flash",
-              name: "DeepSeek-V4-Flash",
-              input: ["text"],
+              id: "deepseek-flash",
+              name: "DeepSeek-V4.1-Flash",
+              input: ["text", "image"],
             },
             {
               id: "deepseek-v4-pro",
               name: "DeepSeek-V4-Pro",
               input: ["text"],
-            },
-            {
-              id: "deepseek-v4-flash-vision-exp",
-              name: "DeepSeek-V4-Flash-Vision-Exp",
-              input: ["text", "image"],
             },
           ],
           piai: [],
@@ -3493,7 +3602,7 @@ function agentCarryThinkOpenState(st, msg, runKey) {
    需求：会话里的每一段「思考」旁边给一个小按钮，点了就把这段思考翻译出来给用户看。
    口径（三条，缺一不可）：
      · 默认模型：路由取「默认智能路由」（preferredAgentProviderRoute），
-       模型优先该路由下的 flash 档（如 deepseek-v4-flash），该档不可用时退回默认模型；
+       模型优先该路由下的 flash 档（如 deepseek-flash），该档不可用时退回默认模型；
      · 无思考：spec.effort = "off" ⇒ main.js applyTextThinkingEffort 下发
        thinking:{type:"disabled"}，翻译请求不带推理，快且省；
      · 译文校验 + 逐档重试：实测 flash 会原样复述英文原文或只回「以下是翻译：」，
@@ -4399,6 +4508,70 @@ function dshCopyBtn(m, cls) {
   return b;
 }
 
+/* ── 用户消息正文里的内嵌图：整行 `![名称](绝对路径)` 就地渲染成缩略图 ──
+   图行是「那时那张图」的原始记录（正文框插入时的原样），所以历史消息回看时
+   缩略图照旧在（与运行链是否可下发无关）；点缩略图开灯箱看原图。
+   其余行照旧纯文本 + 链接；相对引用的图行没有基准目录 → 保留原文
+   （与输入框胶囊条同一口径：显示不出来的不假装显示）。 */
+/* 转义：全局 escapeHtml 缺席时（单文件切片冒烟）就地兜一份，与本文件其余守卫同口径 */
+function dshEscHtml(s) {
+  if (typeof escapeHtml === "function") return escapeHtml(s);
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function dshUserImgHtml(l, m) {
+  const name =
+    l.alt || (m && typeof m.baseName === "function" ? m.baseName(l.ref) : "") || "";
+  const p = m && typeof m.localPathOfRef === "function" ? m.localPathOfRef(l.ref) : "";
+  return (
+    '<img class="dsh-msg-img" src="' +
+    dshEscHtml(l.url) +
+    '" alt="' +
+    dshEscHtml(name) +
+    '"' +
+    (p ? ' data-dsh-img-path="' + dshEscHtml(p) + '"' : "") +
+    ' title="' +
+    dshEscHtml(I18n.t("点击查看大图")) +
+    '">'
+  );
+}
+function dshUserBodyHtml(text) {
+  const raw = String(text == null ? "" : text);
+  const m = window.MTInlineImg;
+  if (!m || typeof m.imgLines !== "function") return plainTextToLinkHtml(raw);
+  const byStart = new Map();
+  for (const l of m.imgLines(raw)) if (l.url) byStart.set(l.start, l);
+  if (!byStart.size) return plainTextToLinkHtml(raw);
+  /* 逐行处理再按 \n 拼回：正文整块是 white-space: pre-wrap，只有原样保留换行，
+     非图行那部分的排版才与改动前一致。 */
+  let off = 0;
+  const out = [];
+  for (const line of raw.split("\n")) {
+    const hit = byStart.get(off);
+    off += line.length + 1;
+    out.push(hit ? dshUserImgHtml(hit, m) : plainTextToLinkHtml(line));
+  }
+  return out.join("\n");
+}
+/* 点缩略图 → 灯箱（路径取 data 属性；src 是 file:/// URL，灯箱要的是本机路径） */
+function bindDshUserImgOpen(body) {
+  if (!body || !body.querySelector || !body.querySelector("img.dsh-msg-img")) return;
+  body.addEventListener("click", (ev) => {
+    const img =
+      ev.target && ev.target.closest ? ev.target.closest("img.dsh-msg-img") : null;
+    if (!img) return;
+    ev.stopPropagation();
+    if (typeof openImageLightbox !== "function") return;
+    const p =
+      String(img.getAttribute("data-dsh-img-path") || "").trim() ||
+      String(img.getAttribute("src") || "");
+    if (!p) return;
+    openImageLightbox(p, img.getAttribute("alt") || "");
+  });
+}
 function dshMsgBlock(m, nodeId, idx, opts) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
@@ -4523,8 +4696,10 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     }
     const body = document.createElement("div");
     body.className = "dsh-msg-body";
-    if (m.role === "user") body.innerHTML = plainTextToLinkHtml(m.content);
-    else
+    if (m.role === "user") {
+      body.innerHTML = dshUserBodyHtml(m.content);
+      bindDshUserImgOpen(body);
+    } else
       body.innerHTML =
         '<div class="md">' + renderMarkdown(m.content) + "</div>";
     row.appendChild(body);
@@ -4710,7 +4885,7 @@ async function rbAskRollback(m, nodeId) {
         if (st) {
           dropped = rbDropRoundMessages(st.messages || [], rid);
           await persistAgentSession();
-          if (S.agentActiveId === st.id) renderAgentSession({ forceStick: true });
+          if (agentViewIs(st)) renderAgentSession({ forceStick: true });
           else renderAgentSessionSidebar();
         }
       }
@@ -5006,13 +5181,8 @@ function renderAgentSession(opts) {
   if (provSel && modelSel) {
     const catalog = S.providerCatalog || {
       deepseek: [
-        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", input: ["text"] },
+        { id: "deepseek-flash", name: "DeepSeek-V4.1-Flash", input: ["text", "image"] },
         { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", input: ["text"] },
-        {
-          id: "deepseek-v4-flash-vision-exp",
-          name: "DeepSeek-V4-Flash-Vision-Exp",
-          input: ["text", "image"],
-        },
       ],
       piai: [],
     };
@@ -5025,10 +5195,17 @@ function renderAgentSession(opts) {
       sel.appendChild(o);
       return o;
     };
-    /* 供应商用各自名称(DeepSeek 官方路由显示为配置的 DeepSeek 服务商名称) */
+    /* 供应商用各自名称(DeepSeek 官方路由显示为配置的 DeepSeek 服务商名称)；
+       官方路由对应的 DeepSeek 服务商被停用时这条不列，mtnode_ 那些由
+       mtnodePiProviders 过滤（停用的不进清单） */
     const mtnode = mtnodePiProviders();
     const dp = dshProvider();
-    addOpt(provSel, "deepseek-official", (dp && dp.name) || I18n.t("DeepSeek 官方"), null);
+    const dsOk =
+      typeof deepseekRouteSelectable === "function"
+        ? deepseekRouteSelectable(S.config)
+        : true;
+    if (dsOk)
+      addOpt(provSel, "deepseek-official", (dp && dp.name) || I18n.t("DeepSeek 官方"), null);
     for (const p of mtnode)
       addOpt(provSel, "mtnode_" + p.route, p.name, null);
     /* 仅显示已添加的供应商(DeepSeek 官方 + MTNode 服务商);
@@ -5052,7 +5229,7 @@ function renderAgentSession(opts) {
     };
     const fillModels = (prov) => {
       const items = modelsFor(prov);
-      const cur = st.model || (items[0] && items[0].id) || "deepseek-v4-flash";
+      const cur = st.model || (items[0] && items[0].id) || "deepseek-flash";
       modelSel.innerHTML = "";
       const list = items.slice();
       if (cur && !list.some((x) => x.id === cur)) list.unshift({ id: cur, name: "" });
@@ -5127,6 +5304,10 @@ function paintAgentSendState() {
       : I18n.t("终止本会话当前运行（只停这一路）")
     : I18n.t("发送(Enter 发送,Shift+Enter 换行)");
   paintAgentInflightButtons(st, busy);
+  /* 输入框上方的内嵌图胶囊条：与正文里的图行一一对应（本文件末段） */
+  try {
+    chatInlineImgTick();
+  } catch (_) {}
 }
 
 /* 两枚轮内实时键的显隐 / 可用性 + 「已暂停」条（三者同源：都看当前会话的在跑状态）
@@ -5256,19 +5437,29 @@ function startSessionTitleEdit(s, nameEl) {
   input.addEventListener("mousedown", (ev) => ev.stopPropagation());
 }
 function renderAgentSessionSidebar() {
-  const active = activeAgentId();
-  const list = agentSessions();
+  /* 开发页（renderer/app-apps-dev.js）借用本函数：它的三栏页开着时，这里只渲染该应用
+     自己的会话（宿主给 sessions），并写进开发页左栏容器；活跃行也以宿主的判断为准
+     （首轮态 = 还没有本应用的会话 → 无活跃行）。宿主不在 → 逐字走原来的总会话视图，
+     #agentSideList 的渲染一字未改。 */
+  const host = typeof appsDevSidebarHost === "function" ? appsDevSidebarHost() : null;
+  const all = agentSessions();
+  const active = host ? String(host.active || "") : activeAgentId();
+  const list = host && Array.isArray(host.sessions) ? host.sessions : all;
   const activeSt = list.find((s) => s.id === active);
   /* 只写会话视图自己的容器 #agentSideList。
      历史遗留 bug：以前同时写入画布边栏 #sideTree，会话每次运行 / 每个工具事件
      都会重绘它 → 用户在画布上会「突然」看到左侧栏变成会话列表。
      规则：画布边栏只放节点/绘图/超级节点；会话列表只在会话视图内。 */
   const targets = [];
-  const t2 = $("#agentSideList");
+  const t2 = host ? host.listEl : $("#agentSideList");
   if (t2)
     targets.push({
       el: t2,
-      filter: $("#agentSideFilter") ? $("#agentSideFilter").value.trim().toLowerCase() : "",
+      filter: host
+        ? String(host.filter || "").trim().toLowerCase()
+        : $("#agentSideFilter")
+          ? $("#agentSideFilter").value.trim().toLowerCase()
+          : "",
     });
   if (!targets.length) return;
 
@@ -5441,7 +5632,8 @@ function renderAgentSessionSidebar() {
     row.appendChild(tm);
     row.appendChild(btns);
     row.onclick = async () => {
-      S.agentActiveId = s.id;
+      /* 开发页开着时点行 = 切「本页显示的会话」（不动会话页的选中项） */
+      agentSelectSession(s.id);
       await persistAgentSession();
       renderAgentSession();
       renderAgentSessionSidebar();
@@ -5493,12 +5685,15 @@ function renderAgentSessionSidebar() {
 /* 相对时长会一直变化：定时只刷新文本节点，不重绘列表（避免滚动位置跳动） */
 let _agentSideTimeTimer = null;
 function tickAgentSideTimes() {
-  const box = $("#agentSideList");
-  if (!box) return;
-  const nodes = box.querySelectorAll(".side-sess-time[data-ts]");
-  for (const el of nodes) {
-    const txt = formatRelTime(Number(el.dataset.ts) || 0);
-    if (el.textContent !== txt) el.textContent = txt;
+  /* 两个宿主：总会话视图的 #agentSideList 与开发页左栏的 #appsDevSideList
+     （renderer/app-apps-dev.js；同一份行渲染，谁在就刷谁） */
+  for (const box of [$("#agentSideList"), $("#appsDevSideList")]) {
+    if (!box) continue;
+    const nodes = box.querySelectorAll(".side-sess-time[data-ts]");
+    for (const el of nodes) {
+      const txt = formatRelTime(Number(el.dataset.ts) || 0);
+      if (el.textContent !== txt) el.textContent = txt;
+    }
   }
 }
 function startAgentSideTimeTicker() {
@@ -5633,7 +5828,7 @@ async function agentEnqueueMessage(st, text, opts) {
   });
   st.updatedAt = Date.now();
   await persistAgentSession();
-  if (S.agentActiveId === st.id) {
+  if (agentViewIs(st)) {
     renderAgentQueueBar(st);
     $("#agentInput") && $("#agentInput").focus();
   } else renderAgentSessionSidebar();
@@ -5649,13 +5844,13 @@ async function agentRemoveQueued(st, id) {
   if (!st || !Array.isArray(st.outbox)) return;
   st.outbox = st.outbox.filter((x) => x.id !== id);
   await persistAgentSession();
-  if (S.agentActiveId === st.id) renderAgentQueueBar(st);
+  if (agentViewIs(st)) renderAgentQueueBar(st);
 }
 async function agentClearQueue(st) {
   if (!st || !Array.isArray(st.outbox) || !st.outbox.length) return;
   st.outbox = [];
   await persistAgentSession();
-  if (S.agentActiveId === st.id) renderAgentQueueBar(st);
+  if (agentViewIs(st)) renderAgentQueueBar(st);
 }
 
 /* ══════════════ 轮内「插话」(steer) 与「暂停」(pause) ══════════════
@@ -5747,7 +5942,7 @@ async function agentSteerNow(st, text) {
     });
     st.updatedAt = Date.now();
     await persistAgentSession();
-    if (S.agentActiveId === st.id) renderAgentSession();
+    if (agentViewIs(st)) renderAgentSession();
     else renderAgentSessionSidebar();
     try {
       toast(I18n.t("已插话 · 将在下一步生效"), "ok");
@@ -5809,7 +6004,7 @@ function agentMarkSteerInjected(st, data) {
   }
   if (!hit) return;
   hit._steerState = "in";
-  if (S.agentActiveId === st.id) {
+  if (agentViewIs(st)) {
     try {
       renderAgentSession();
     } catch (_) {}
@@ -5855,7 +6050,7 @@ async function agentPauseNow(st) {
        它要是自己跑完了，收尾处会把 paused 撤回 false，不会留下假的暂停。 */
     st._pausePending = true;
     st.paused = true;
-    if (S.agentActiveId === st.id) {
+    if (agentViewIs(st)) {
       paintAgentSendState();
       renderAgentPausedBar(st);
     }
@@ -5897,7 +6092,7 @@ async function agentResumePaused(st) {
   st.paused = false;
   st._pausePending = false;
   await persistAgentSession();
-  if (S.agentActiveId === st.id) {
+  if (agentViewIs(st)) {
     paintAgentSendState();
     renderAgentPausedBar(st);
   }
@@ -5966,7 +6161,7 @@ async function agentDrainQueue(st) {
         }
         const item = st.outbox.shift();
         await persistAgentSession();
-        if (S.agentActiveId === st.id) renderAgentQueueBar(st);
+        if (agentViewIs(st)) renderAgentQueueBar(st);
         /* 出队发送：队列少一条、这条会话即将接下一轮运行 → 左下角同步一次 */
         updateRunQueuePanel();
         if (!item || !item.text) continue;
@@ -6104,7 +6299,7 @@ function agentApplyTodoWrite(st, args) {
     .filter((x) => !hidden.has(x.content));
   st.todosAt = Date.now();
   persistAgentSession().catch(() => {});
-  if (S.agentActiveId === st.id) renderAgentTodoPanel(st);
+  if (agentViewIs(st)) renderAgentTodoPanel(st);
   return true;
 }
 /* 一轮结束给「没跑完」的条目定性：
@@ -6123,7 +6318,7 @@ function agentFinalizeTodos(st, outcome) {
   }
   if (!changed) return;
   persistAgentSession().catch(() => {});
-  if (S.agentActiveId === st.id) renderAgentTodoPanel(st);
+  if (agentViewIs(st)) renderAgentTodoPanel(st);
 }
 async function agentTodoRemove(st, content) {
   if (!st || !Array.isArray(st.todos)) return;
@@ -6440,7 +6635,7 @@ async function agentSessionSend(text, opts) {
   if (!S.thinking) S.thinking = {};
   S.thinking["agent:" + st.id] = [""];
   await persistAgentSession();
-  if (S.agentActiveId === st.id) renderAgentSession({ forceStick: true });
+  if (agentViewIs(st)) renderAgentSession({ forceStick: true });
   else renderAgentSessionSidebar();
   /* 已回滚轮次的消息不进上下文（rbActiveMessages 无标记时直接复用原数组，不复制） */
   const rbHistSrc =
@@ -6546,8 +6741,15 @@ async function agentSessionSend(text, opts) {
       "\n【任务书结束】";
   }
   try {
+    /* 本轮的图像附件（只发这一轮新增的图）：本轮正文里的内嵌图行 → 网关 attachImages
+       → 用户消息的 image 内容块（模型这才真正「看见」那张图，而不是只读到一行路径）。
+       续跑轮（暂停后点「继续」）不下发：那份会话里图已在上下文里，重发等于再计一次费。
+       图行本身仍原样留在消息正文里，所以回看历史消息时缩略图照旧（见 dshMsgBlock）。 */
+    const roundImages =
+      resumeRound || typeof dshRunImages !== "function" ? [] : dshRunImages(t);
     const final = await dshRunTask(input, {
       runKey: "agent:" + st.id,
+      images: roundImages.length ? roundImages : undefined,
       /* 暂停后「继续」：点名被暂停那条 dsh 会话走断点续跑通道（网关 session/resume）。
          拿不到 sid 时这里就是 undefined —— 与旧版一样整轮重发，行为不劣化。 */
       resumeSession: String(opts.resumeSession || "") || undefined,
@@ -6579,7 +6781,7 @@ async function agentSessionSend(text, opts) {
       onEvent: (type, data) => {
         /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
            重绘/滚动打扰用户正在看的其他会话 */
-        const mine = S.agentActiveId === st.id;
+        const mine = agentViewIs(st);
         /* 出错自动重发（dshRunTask 触发 retry）：看 resumed 决定清不清残文 ——
            · resumed=true（续写）：已显示的部分正文 / 工具列表 / 用量保留（同一轮的内容）；
              思考槽照旧清掉 —— 思考不是续写内容，续跑起步时轨迹里的旧思考段也已被
@@ -6797,7 +6999,7 @@ async function agentSessionSend(text, opts) {
       /* 规划模式跑完：标记「计划待执行」，输入区浮现「▶ 执行计划」 */
       if (planMode) {
         st._planDelivered = true;
-        if (S.agentActiveId === st.id)
+        if (agentViewIs(st))
           toast(I18n.t("计划已生成：点击「执行计划」开始实施"), "ok");
       }
     }
@@ -6836,7 +7038,7 @@ async function agentSessionSend(text, opts) {
        finally 的最后一句，前面 persist / 侧栏刷新任一步抛错就轮不到它，屏上就停在
        流式原文（用户报的「会话最终答复偶尔未正常渲染 md」）。 */
     try {
-      if (S.agentActiveId === st.id) renderAgentSession();
+      if (agentViewIs(st)) renderAgentSession();
     } catch (_) {}
     /* 会话结束：开发节点从运行队列撤下 */
     updateRunQueuePanel();
@@ -6853,7 +7055,7 @@ async function agentSessionSend(text, opts) {
             st.plan = null;
           }
         } catch (_) {}
-        if (S.agentActiveId === st.id) {
+        if (agentViewIs(st)) {
           try {
             toast(I18n.t("已终止：本会话的计划清单已清除"), "warn");
           } catch (_) {}
@@ -6877,7 +7079,7 @@ async function agentSessionSend(text, opts) {
     await persistAgentSession();
     renderAgentSessionSidebar();
     /* 只在当前查看本会话时重绘会话区;否则仅刷新侧边栏运行状态,不打扰其他会话视图 */
-    if (S.agentActiveId === st.id) renderAgentSession();
+    if (agentViewIs(st)) renderAgentSession();
     syncAgentTaskFromSession(st.id);
     endSaveNodeHold();
     /* 本轮真正结束 → 自动发送排队中的下一条消息 */
@@ -6928,7 +7130,7 @@ async function agentSessionSend(text, opts) {
         ) {
           st._planFixRounds = (Number(st._planFixRounds) || 0) + 1;
           try {
-            if (S.agentActiveId === st.id)
+            if (agentViewIs(st))
               toast(I18n.t("检测到计划未弹出，已自动要求重新生成一次"), "warn");
           } catch (_) {}
           await agentSessionSend(planFixDirective(), {
@@ -6940,5 +7142,353 @@ async function agentSessionSend(text, opts) {
     } catch (_) {}
     if (!holdQueue) agentDrainQueue(st);
   }
+}
+
+/* ═══════════ 会话 / 助手输入框的内嵌图像（正文一行 ![名称](绝对路径) + 胶囊条） ═══════════
+   为什么不把输入框换成富文本：这两只 <textarea> 的取值 / 草稿 / 队列 / 斜杠命令 /
+   Enter 发送全挂在 .value 上（app-boot.js），换成 contenteditable 等于把这些链全改一遍。
+   所以「内嵌图」在这里就是正文里的一行 Markdown，能力全部复用共享模块
+   （renderer/app-inline-img.js 的 textarea 版）：粘贴 / 拖入 → 在光标处插一行
+   ![名称](绝对路径)，正文里那一行就是唯一真源 —— 发送、草稿、命令都原样走老路。
+
+   两条来源，两条落盘口径（与画布 / 审阅同一套）：
+     · 资源管理器拖入 / 从浏览器复制图片文件：有本机路径 → 直接引用那个绝对路径（不复制文件）；
+     · 剪贴板截图（window.api.clipboardReadImage）：只有 base64、没有路径 → 先落盘成真文件
+       （优先会话 / 助手的工作目录下的 .mtnode-input/，没有工作目录退回数据目录 chat-input/），
+       再引用落出来的绝对路径 —— 绝不写一行指向不存在文件的引用（模型读不到、图也显示不出来）。
+
+   胶囊条 = 正文里图行的「所见即所得」投影：一枚胶囊对一行（#行号 + 缩略图 + 文件名 + ✕），
+   点胶囊把光标定位并选中正文那一行，✕ 删掉整行。渲染是幂等的（按正文签名比对），
+   所以挂在既有重绘点（paintAgentSendState / renderAssistPanel）上，切会话、
+   恢复草稿、发完清空都能同步，不需要另加监听。 */
+const CHAT_IMG_SPECS = [
+  /* ws：落盘目录的基准（现取 —— 切会话 / 换工作目录后仍然正确） */
+  { id: "agentInput", ws: () => agentRunWorkspace(agentSessionState()) },
+  { id: "assistInput", ws: () => assistDisplayWorkspace() },
+];
+
+function chatImgModule() {
+  return window.MTInlineImg || null;
+}
+function chatImgInput(spec) {
+  const el = document.getElementById(spec.id);
+  return el && /^textarea$/i.test(el.tagName || "") ? el : null;
+}
+/* 落盘目录：工作目录下 .mtnode-input/（相对路径的基准就在旁边，模型也读得到） */
+function chatImgDirFor(ws) {
+  const base = String(ws || "").trim();
+  if (!base) return "";
+  return joinPath(base, ".mtnode-input");
+}
+/* base64 → 字节（file:writeBytes 只认字节，字符串会被当 utf8 写坏）。
+   先归一 data URL 前缀：来源可能是整条 data:image/png;base64,…（FileReader 的形态），
+   直接 atob 会抛 InvalidCharacterError —— 表现就是「图片落盘失败，无法插入」。
+   stripDataUrl 是共享模块的同一份口径（模块没就绪时本地兜一道，绝不写坏字节）。 */
+function chatImgBytes(b64) {
+  const m = chatImgModule();
+  const raw =
+    m && typeof m.stripDataUrl === "function"
+      ? m.stripDataUrl(b64)
+      : String(b64 || "").replace(/^data:[^,]*,/, "");
+  const bin = atob(raw);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+/* 共享模块的 saveBase64 钩子：把「没有本机路径」的图片来源落成一张真文件。
+   命名 paste-<时间戳36进制>.<ext>；同一毫秒多张也不会重名。失败回 null（模块自己提示）。 */
+async function chatImgWriteBase64(picked, wsGetter) {
+  const ext =
+    String((picked && picked.ext) || ".png").replace(/^\./, "").toLowerCase() || "png";
+  let dir = "";
+  try {
+    dir = chatImgDirFor(wsGetter ? wsGetter() : "");
+  } catch (_) {
+    dir = "";
+  }
+  if (!dir) {
+    /* 没设工作目录：退回应用数据目录（绝不落应用安装目录，见 AGENTS.md 数据纪律） */
+    try {
+      const r = await window.api.dataGetRoot();
+      if (r && r.ok && r.path) dir = joinPath(String(r.path), "chat-input");
+    } catch (_) {
+      dir = "";
+    }
+  }
+  if (!dir) return null;
+  const dest = joinPath(dir, "paste-" + Date.now().toString(36) + "." + ext);
+  try {
+    const w = await window.api.fileWriteBytes(dest, chatImgBytes(picked && picked.base64));
+    if (w && w.ok === false) return null;
+  } catch (_) {
+    return null;
+  }
+  /* 名称 = 图行里的「名称」：剪贴板位图（截图）统一叫「截图」，
+     来源是图片文件时用原文件名（剥掉扩展名） */
+  const nm = String((picked && picked.name) || "")
+    .replace(/\.[^.\\/]+$/, "")
+    .trim();
+  const generic = !nm || /^(screenshot|image|blob|clipboard|untitled)$/i.test(nm);
+  return { path: dest, alt: generic ? I18n.t("截图") : nm };
+}
+/* 输入框上方的胶囊条容器：会话 = .agent-composer-card 之前（chips 之下、卡片之上）；
+   助手 = .assist-input-row 之前。输入区被搬到应用开发页时容器随它一起走，
+   所以复用判据是「容器自己还在文档里」而不是「锚点还在不在」。 */
+function chatImgStripEl(ta) {
+  if (ta._iiStrip && ta._iiStrip.isConnected) return ta._iiStrip;
+  const card = ta.closest(".agent-composer-card") || ta.closest(".assist-input-row");
+  const host = card ? card.parentElement : ta.parentElement;
+  if (!host) return null;
+  const box = document.createElement("div");
+  box.className = "ii-line-chips";
+  box.hidden = true;
+  if (card) host.insertBefore(box, card);
+  else host.appendChild(box);
+  ta._iiStrip = box;
+  return box;
+}
+/* 点 / 删之前按当前正文重算一次：「同一行」的偏移（胶囊是按某一帧正文画的；
+   正文若从别的路径变过，拿旧偏移去选 / 去删就会动到别的行）。找不到 = 那行已经没了。 */
+function chatImgLineNow(ta, l) {
+  const m = chatImgModule();
+  if (!m || !ta || !l) return null;
+  const lines = m.imgLines(ta.value);
+  let hit = lines.find((x) => x.start === l.start && x.ref === l.ref);
+  if (!hit) hit = lines.find((x) => x.n === l.n && x.ref === l.ref);
+  if (!hit) hit = lines.find((x) => x.ref === l.ref);
+  return hit || null;
+}
+/* 点胶囊：光标进正文那一行并整行选中（「一一对应」看得见） */
+function chatImgLineFocus(ta, l) {
+  const now = chatImgLineNow(ta, l);
+  if (!now) return;
+  try {
+    ta.focus();
+    ta.setSelectionRange(now.start, now.end);
+  } catch (_) {}
+}
+/* ✕：删掉整行（连同它独占的那个换行），删完派一次 input 事件让既有监听同步
+   （发送键态 / 斜杠候选 / 胶囊条自己都挂在 input 上，不必到处加钩子） */
+function chatImgLineRemove(ta, l, spec) {
+  const now = chatImgLineNow(ta, l);
+  if (!now) {
+    /* 正文已经不是画胶囊时那一帧了：只把胶囊条按现正文重画，绝不按旧偏移乱删 */
+    if (spec) chatImgStripRender(spec, ta);
+    return;
+  }
+  const v = String(ta.value || "");
+  let s = now.start;
+  let e = now.end;
+  if (v.slice(e, e + 1) === "\n") e++;
+  else if (v.slice(s - 1, s) === "\n") s--;
+  ta.value = v.slice(0, s) + v.slice(e);
+  try {
+    ta.setSelectionRange(s, s);
+  } catch (_) {}
+  try {
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  } catch (_) {}
+  /* 「删除图」：这一行没了 → 本功能落的图若别处（会话消息 / 画布节点 / 其它输入框）
+     一处引用都没有，就随这次删除回收（去抖一轮，连着删几张只跑一次）。 */
+  chatImgGcSoon([now.ref]);
+}
+/* 胶囊条渲染（幂等：正文签名没变就不动 DOM，流式重绘期间不会被反复重建） */
+function chatImgStripRender(spec, ta) {
+  const m = chatImgModule();
+  if (!m || !ta || !ta.isConnected) return;
+  const lines = m.imgLines(ta.value);
+  const box = chatImgStripEl(ta);
+  if (!box) return;
+  const sig = spec.id + "|" + lines.map((l) => l.n + ":" + l.ref).join("\n");
+  if (box._iiSig === sig) return;
+  box._iiSig = sig;
+  box.innerHTML = "";
+  box.hidden = !lines.length;
+  if (!lines.length) return;
+  for (const l of lines) {
+    const chip = document.createElement("div");
+    chip.className = "ii-line-chip";
+    chip.title =
+      I18n.t("第 ") +
+      l.n +
+      I18n.t(" 行 · 点击定位到正文里的这一行") +
+      "\n" +
+      l.ref;
+    /* 缩略图：本机绝对路径 / file:/// 直接显示；相对引用没有基准目录 → 退回图标 */
+    const thumb = document.createElement(l.url ? "img" : "span");
+    thumb.className = "ii-line-chip-thumb";
+    if (l.url) {
+      thumb.src = l.url;
+      thumb.alt = l.alt || "";
+      thumb.loading = "lazy";
+      if (typeof openImageLightbox === "function")
+        thumb.onclick = (ev) => {
+          ev.stopPropagation();
+          openImageLightbox(l.ref, m.baseName(l.ref) || l.alt || "");
+        };
+    } else {
+      thumb.textContent = "🖼";
+    }
+    chip.appendChild(thumb);
+    const idx = document.createElement("b");
+    idx.className = "ii-line-chip-idx";
+    idx.textContent = "#" + l.n; /* 与正文行号一一对应 */
+    chip.appendChild(idx);
+    const nm = document.createElement("span");
+    nm.className = "ii-line-chip-name";
+    /* 显示正文里那个「名称」（与 ![名称](路径) 逐字对应），没有才退回文件名 */
+    nm.textContent = l.alt || m.baseName(l.ref) || "";
+    chip.appendChild(nm);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "ii-line-chip-x";
+    x.textContent = "✕";
+    x.title = I18n.t("从正文里删掉这一行");
+    x.onclick = (ev) => {
+      ev.stopPropagation();
+      chatImgLineRemove(ta, l, spec);
+    };
+    chip.appendChild(x);
+    chip.onclick = () => chatImgLineFocus(ta, l);
+    box.appendChild(chip);
+  }
+}
+/* 绑定 + 刷新（幂等）：挂在既有重绘点上，每轮只做一次签名比对 */
+function chatInlineImgTick() {
+  const m = chatImgModule();
+  if (!m || typeof m.bindTextarea !== "function") return;
+  for (const spec of CHAT_IMG_SPECS) {
+    const ta = chatImgInput(spec);
+    if (!ta) continue;
+    /* 「清空框」判据用：这一帧正文里有哪几张图（绑定那一刻先按现值定一次） */
+    if (!Array.isArray(ta._iiChipRefs))
+      ta._iiChipRefs = m.imgLines(ta.value).map((l) => l.ref);
+    m.bindTextarea(ta, {
+      /* 目标：直接引用本机绝对路径（没有事实库、也不复制文件；正文写的就是绝对路径） */
+      target: () => ({
+        kind: "path",
+        name: "",
+        saveBase64: (picked) => chatImgWriteBase64(picked, spec.ws),
+      }),
+      /* 插入成功：派一次 input 事件（发送键态 / 胶囊条都随它同步），并直接刷一次胶囊条 */
+      onInserted: () => {
+        try {
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+        } catch (_) {}
+        chatImgStripRender(spec, ta);
+      },
+      onChanged: () => {
+        chatImgStripRender(spec, ta);
+        /* 「清空框」= 输入框里原本有图，这一次改动把最后一张图也去掉了：
+           记下那几张，交给回收判定（还在会话消息 / 画布里的照旧保留）。 */
+        const before = ta._iiChipRefs || [];
+        const now = m.imgLines(ta.value).map((l) => l.ref);
+        ta._iiChipRefs = now;
+        const lost = before.filter((r) => now.indexOf(r) < 0);
+        if (lost.length && !now.length) chatImgGcSoon(lost);
+      },
+    });
+    chatImgStripRender(spec, ta);
+  }
+}
+
+/* ═══════════ 输入框内嵌图的无引用回收（删图 / 清空框 / 删会话） ═══════════
+   候选 = 本功能自己落盘的那一类图（<工作区>/.mtnode-input/、数据目录 chat-input /
+        devnode-input 下的 paste-<时间戳36进制>.<ext>，见共享模块 isChatInputImage）。
+   引用 = 现存的每一处：全部会话的消息 / 草稿 / 发件箱、画布节点任何字段（登记表不算）、
+        两只输入框与开发草稿框的当前正文。
+   从资源管理器拖进来的图是用户自己的文件（正文按绝对路径引用那条原文件），
+   目录与命名两条都不合 → 从不进候选集，永不被本功能删。 */
+/* 全部会话（含归档）里出现过的内嵌图路径 */
+function chatImgSessionRefs(out) {
+  const m = chatImgModule();
+  const list = (typeof agentSessions === "function" ? agentSessions() : S.agentSessions) || [];
+  if (!m || typeof m.imgRefsIn !== "function") return out;
+  for (const st of list) {
+    if (!st) continue;
+    out.push(
+      ...m.imgRefsIn({
+        messages: st.messages || [],
+        draft: st._draft || st.draft || "",
+        outbox: st.outbox || [],
+      }),
+    );
+  }
+  return out;
+}
+/* 一个会话里的内嵌图（删会话时拿它当候选：消息 + 未发的草稿） */
+function chatImgSessionCandidates(st) {
+  const m = chatImgModule();
+  if (!st || !m || typeof m.imgRefsIn !== "function") return [];
+  return m.imgRefsIn({
+    messages: st.messages || [],
+    draft: st._draft || st.draft || "",
+    outbox: st.outbox || [],
+  });
+}
+/* 现存的每一处引用（画布 + 全部会话 + 输入框 / 草稿框当前正文） */
+function chatImgRefs() {
+  const m = chatImgModule();
+  const out = [];
+  if (!m || typeof m.imgRefsIn !== "function") return out;
+  for (const spec of CHAT_IMG_SPECS) {
+    const ta = chatImgInput(spec);
+    if (ta) out.push(...m.imgRefsIn(String(ta.value || "")));
+  }
+  /* 开发节点草稿框（同一个 mtDialogForm 宿主，正文框是 textarea.mt-form-input）：
+     弹窗里当前草稿写着的图同样算在用（草稿本身随节点落盘，见 node.devDraft） */
+  try {
+    for (const ta of document.querySelectorAll("textarea.mt-form-input"))
+      out.push(...m.imgRefsIn(String(ta.value || "")));
+  } catch (_) {}
+  /* 画布节点（正文框引用同一张图时也算在用；登记表不算引用，与画布侧同一口径） */
+  if (typeof S !== "undefined" && S.wf && Array.isArray(S.wf.nodes))
+    out.push(...m.imgRefsIn({ nodes: S.wf.nodes }, { skipKeys: ["inlineImgs"] }));
+  return chatImgSessionRefs(out);
+}
+/* 回收一批候选：只留本功能自己的图（目录 + 命名两条），再与全部引用比对，没引用才删盘。
+   删盘由主进程校验（chat-input:deleteImages），目录 / 命名不合规一律 skipped。 */
+async function chatImgGc(paths, opts) {
+  const m = chatImgModule();
+  const api = typeof window !== "undefined" ? window.api : null;
+  const empty = { removed: [], skipped: [] };
+  if (!m || typeof m.isChatInputImage !== "function" || typeof m.orphanImages !== "function")
+    return empty;
+  if (!api || typeof api.chatInputDeleteImages !== "function") return empty;
+  const cands = (paths || []).filter((p) => m.isChatInputImage(p));
+  if (!cands.length) return empty;
+  const orphans = m.orphanImages(cands, chatImgRefs());
+  if (!orphans.length) return empty;
+  let r = null;
+  try {
+    r = await api.chatInputDeleteImages(orphans);
+  } catch (_) {
+    r = null;
+  }
+  const removed = (r && r.removed) || [];
+  if (removed.length && !(opts && opts.quiet))
+    toast(I18n.t("已从磁盘删除 ") + removed.length + I18n.t(" 个无引用图片"), "ok");
+  return { removed, skipped: (r && r.skipped) || [] };
+}
+/* 去抖回收（300ms）：候选先攒着，连删多张 / 清空框只跑一轮 */
+let _chatImgGcTimer = null;
+let _chatImgGcPending = [];
+function chatImgGcSoon(paths) {
+  for (const p of paths || []) if (p) _chatImgGcPending.push(p);
+  if (!_chatImgGcPending.length) return;
+  if (_chatImgGcTimer) clearTimeout(_chatImgGcTimer);
+  _chatImgGcTimer = setTimeout(() => {
+    _chatImgGcTimer = null;
+    const list = _chatImgGcPending;
+    _chatImgGcPending = [];
+    Promise.resolve(chatImgGc(list)).catch(() => {});
+  }, 300);
+}
+/* 删会话（或删节点带走的会话）后回收它的内嵌图：候选来自那条会话自己，
+   而它已从列表摘掉 → 引用集合天然不含它，还剩谁引用就保留给谁。 */
+function chatImgGcForSessions(sessions) {
+  const paths = [];
+  for (const st of sessions || []) paths.push(...chatImgSessionCandidates(st));
+  if (paths.length) chatImgGcSoon(paths);
 }
 

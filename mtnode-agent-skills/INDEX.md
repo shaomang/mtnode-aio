@@ -6,6 +6,13 @@
 1. `skill` 工具：`skill` 参数为下表 `name`（已注册到 DSH_HOME/skills：front matter 无 `menu` 的带 `.mtnode-internal` 标记，只在内置索引里对模型可见；写了 `menu: user` 的带 `.builtin` 标记，同时出现在用户技能清单与「/」菜单里，标「内置」只读）。
 2. `read` 工具：路径 `$DSH_HOME/mtnode-agent-skills/<path>`。
 
+## 应用开发
+
+- **impeccable** — Impeccable（前端设计规范）：Use when the user wants to design, redesign, shape, critique, audit, polish, clarify, distill, harden, optimize, adapt, animate, colorize, extract, or otherwise improve a frontend interface. Covers websites, landing pages, dashboards, product UI, app shells, components, forms, settings, onboarding, and empty states. Handles UX review, visual hierarchy, information architecture, cognitive load, acc
+  - 文件：`app/impeccable/SKILL.md`
+- **mtnode-app-dev** — MTNode 应用开发：开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、桌面外壳与运行时能力（模型 API / 工具）的正确接法、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/。
+  - 文件：`app/app-dev/SKILL.md`
+
 ## MTNode 产品与画布
 
 - **mtnode-ai-facts** — AI 事实库：每张画布一份的极简条例库（工具 mtnode_facts，动作 list/query/get/write/delete/pin）：索引项目内容时先查它；建完项目架构 / 工作流、定下约定与路径后，把关键结论（模块划分、关键文件与路径、约定及其来源、端口与数据流、命令入口、已知坑）沉淀成极简条例。先 query 再 write，冲突以现文件与数据库为准。Use when indexing project content, or recording / recalling a project's architecture or workflow key points.

@@ -21,6 +21,7 @@
  *      待办/链接/行内码/代码块/水平线/图片/表格）+ 撤销重做；
  *      事实库目标下插图会复制进库级 assets/ 并以相对路径写回该文档 md（剪贴板 / 截图粘贴、
  *      拖拽、本机文件都支持），只有「库内所有文档全部版本」都不引用的图片才从磁盘回收；
+ *      这套插图能力本体在 renderer/app-inline-img.js（审阅 / 节点正文框 / 会话输入框三处共用）；
  *   4) 批注：全文批注 + 局部批注（拖选正文 → 右侧浮空便笺绑定该段）；
  *   5) 出现首个批注后顶部出现醒目的「让 AI 修订」按钮；点击把「当前全文 + 历史全部批注」
  *      用该节点自身 provider+model 重新提交，生成新一版并进入下一轮批注；每版全文按轮
@@ -32,6 +33,8 @@
  *
  * 依赖（均在同画布运行期全局可用）：nodeById / S / scheduleSave / renderCanvas / toast /
  * I18n / window.marked / window.MTMathRender（renderer/math-render.js，公式渲染）/
+ * window.MTInlineImg（renderer/app-inline-img.js：内嵌图片的粘贴 / 拖入 / 落盘 / 引用登记 /
+ * 无引用回收，本文件只留「审阅当前文档 → 图片来源目标」的适配层）/
  * apiCallTextStream / pushHistory / clearDownstream / procPromptOf 等。本文件在 index.html
  * 里最后加载，故引用只发生在函数调用期。
  */
@@ -469,7 +472,13 @@ function renderFactSettings(h) {
   const fillModels = (provId, curModel) => {
     modelSel.innerHTML = "";
     const p = provs.find((x) => x.id === provId);
-    const models = (p && p.models ? p.models.slice() : []) || [];
+    /* 模型清单过该服务商的白 / 黑名单（白名单先收窄、黑名单再剔除）：
+       选择器里只出现真正可用的模型 */
+    const all = p && p.models ? p.models.slice() : [];
+    const models =
+      typeof providerModelFilter === "function"
+        ? providerModelFilter(p, all)
+        : all || [];
     const cur = String(curModel || (models[0] || "")).trim();
     if (cur && models.indexOf(cur) < 0) models.unshift(cur);
     if (!models.length) {
@@ -510,7 +519,12 @@ function renderFactSettings(h) {
   };
   provSel.addEventListener("change", () => {
     const p = provs.find((x) => x.id === provSel.value);
-    const m = p && p.models && p.models.length ? p.models[0] : "";
+    /* 默认模型也要落在白 / 黑名单之内（列表里第一个可选模型） */
+    const list =
+      typeof providerModelFilter === "function"
+        ? providerModelFilter(p, p && p.models)
+        : (p && p.models) || [];
+    const m = list.length ? list[0] : "";
     patchFact({ providerId: provSel.value, model: m });
     fillModels(provSel.value, m);
   });
@@ -817,24 +831,10 @@ function renderEditor() {
         /* 批注锚点自动重锚 */
         reAnchorNotesAfterEdit();
       });
-      /* 图片粘贴（剪贴板 / 截图）与拖拽（本机文件） */
-      ed.addEventListener("paste", (ev) => onRichPaste(ev, ed));
-      ed.addEventListener("dragover", (ev) => {
-        const dt = ev.dataTransfer;
-        if (dt && Array.from(dt.types || []).indexOf("Files") >= 0) {
-          ev.preventDefault();
-          dt.dropEffect = "copy";
-        }
-      });
-      ed.addEventListener("drop", (ev) => onRichDrop(ev, ed));
-      /* 插图选中态：点中图片加 .rv-img-sel（同时只留一张），样式见 review.css */
-      ed.addEventListener("click", (ev) => {
-        const hit = ev.target && ev.target.tagName === "IMG" ? ev.target : null;
-        Array.from(ed.querySelectorAll("img.rv-img-sel")).forEach((im) => {
-          if (im !== hit) im.classList.remove("rv-img-sel");
-        });
-        if (hit) hit.classList.add("rv-img-sel");
-      });
+      /* 图片：粘贴（剪贴板 / 截图）、拖入（本机文件）、编辑器内图片选中态，一律走共享模块
+         renderer/app-inline-img.js（审阅编辑器 / 节点正文框 / 会话输入框三处共用；
+         .ii-rich 与 .ii-img-sel 的样式在 css/inline-img.css）。 */
+      rvBindImgEditor(ed);
       box.appendChild(ed);
       box.scrollTop = 0;
     } else {
@@ -964,23 +964,8 @@ function rvFactPaths() {
     assetsDir: assetsDir,
   };
 }
-/* 本机路径 → 可显示的 file:/// URL（复用画布层的统一口径，缺桥时回退）。 */
-function rvFileUrl(p) {
-  const s = String(p || "").trim();
-  if (!s) return "";
-  if (/^file:\/\//i.test(s)) return s;
-  try {
-    if (typeof mediaFileUrlOf === "function") {
-      const u = mediaFileUrlOf(s);
-      if (u) return u;
-    }
-  } catch (_) {}
-  try {
-    if (window.api && window.api.toFileUrl)
-      return String(window.api.toFileUrl(s) || "") || s;
-  } catch (_) {}
-  return s;
-}
+/* 本机路径 → 可显示的 file:/// URL：实现在共享模块（app-inline-img.js 的 fileUrl），
+   本文件保留旧名的薄包装（转换链路 rvRewriteImgSrc 与冒烟测试按名取用）。 */
 /* 相对引用判断：非协议、非绝对路径、非 data URL。 */
 function rvIsRelSrc(src) {
   const s = String(src || "").trim();
@@ -1497,14 +1482,8 @@ function applyToolbarToRich(action, ed) {
         return true;
       }
       case "image": {
-        const range = rvRangeIn(ed);
-        reviewImageDialog().then(async (picked) => {
-          if (!picked) return;
-          const saved = await rvSaveImage(picked);
-          if (!saved) return;
-          rvRestoreRange(range, ed);
-          rvInsertImgRich(saved);
-        });
+        /* 记选区 → 选图 → 落盘 → 还原选区 → 插入，整套在共享模块里（app-inline-img.js） */
+        rvInsertImgFromPicker(ed);
         return true;
       }
       case "table": {
@@ -1565,25 +1544,16 @@ function wrapInlineRich(tag) {
   }
   placeCaretAfter(wrap);
 }
+/* 光标处插入（表格 / 公式 / 任务清单 / 链接 / 代码块共用）：插入实现已抽到共享模块
+   renderer/app-inline-img.js 的 insertAtCaret（编辑器由调用方给定，不再认死某个选择器）。 */
 function insertRichNode(frag) {
-  const sel = window.getSelection();
-  const ed = document.querySelector(".review-editor .rv-rich");
-  if (sel && sel.rangeCount && sel.anchorNode && ed && ed.contains(sel.anchorNode)) {
-    const r = sel.getRangeAt(0);
-    r.deleteContents();
-    r.insertNode(frag.nodeType ? frag : document.createRange().createContextualFragment(frag));
-    placeCaretAfter(frag.lastChild || frag);
-  } else if (ed) {
-    ed.appendChild(frag.nodeType ? frag : document.createRange().createContextualFragment(frag));
-  }
+  const m = rvInlineImg();
+  if (!m) return;
+  m.insertAtCaret(rvRichEditor(), frag);
 }
 function placeCaretAfter(el) {
-  const sel = window.getSelection();
-  const r = document.createRange();
-  r.setStartAfter(el);
-  r.collapse(true);
-  sel.removeAllRanges();
-  sel.addRange(r);
+  const m = rvInlineImg();
+  if (m) return m.placeCaretAfter(el);
 }
 function undoRedo(redo) {
   const host = document.getElementById("reviewBox");
@@ -1600,104 +1570,121 @@ function undoRedo(redo) {
   } catch (_) {}
 }
 
-/* ---------- 图片 / 表格插入（事实库插图 + 剪贴板 / 截图 / 拖拽） ---------- */
+/* ---------- 图片：能力本体在共享模块（renderer/app-inline-img.js） ----------
+ * 粘贴 / 拖入 / 落盘 / <img> 插入 / 引用登记 / 无引用回收已全部抽到 window.MTInlineImg，
+ * 供审阅编辑器、节点正文框、会话输入框三处共用；本段只留「审阅当前文档 → 图片来源目标」
+ * 的适配层，以及审阅侧沿用旧名的薄包装（调用点与冒烟测试按名取用）。 */
+
+function rvInlineImg() {
+  return window.MTInlineImg || null;
+}
+/* 审阅编辑器元素（共享模块的插入 / 绑定都以「编辑器元素」为参数）。 */
+function rvRichEditor() {
+  return document.querySelector(".review-editor .rv-rich");
+}
+/* 图片来源目标：fact 目标 = 图片复制进库级 assets/ 并以相对路径引用 + 库级无引用回收；
+   node 目标 = 直接引用本机绝对路径（没有 assets/ 目录，回收不参与）。
+   refTexts 返回 null = 该文档当前版本链尚未就绪 → 模块不做回收（避免误删在用图片）。 */
+function rvImgTarget() {
+  const lib = rvFactLib();
+  if (!rvTargetIs("fact")) {
+    return {
+      kind: "path",
+      lib: lib,
+      name: String((_rv.target && _rv.target.name) || ""),
+    };
+  }
+  const paths = rvFactPaths();
+  if (!paths) return null;
+  const fact = rvFactOf() || {};
+  return {
+    kind: "fact",
+    lib: lib,
+    dir: paths.dir,
+    assetsDir: paths.assetsDir,
+    name: paths.name,
+    file: paths.file,
+    reviewFile: paths.reviewFile,
+    /* 当前文档的 sidecar 可能落后于内存 → 磁盘扫描时跳过它，用内存版本链代替 */
+    skipSidecar: String(fact.reviewFile || ""),
+    refTexts: () => {
+      const d = reviewDoc();
+      if (!d || !d.review || !Array.isArray(d.review.versions)) return null;
+      const out = [];
+      for (const v of d.review.versions) out.push(v && v.text);
+      return out;
+    },
+  };
+}
+/* 共享模块的选项：目标现取（切换文档 / 版本后仍然正确）；粘贴拖入仅编辑态放行；
+   插入成功后的收尾 = 标脏 + 把编辑器 DOM 落回当前版 + 刷底部条。 */
+function rvImgOpts() {
+  return {
+    target: rvImgTarget,
+    canEdit: () => !!_rv.editing,
+    onInserted: () => {
+      _rv.dirty = true;
+      commitEditorToDoc();
+      renderFootbarBox();
+    },
+  };
+}
+function rvBindImgEditor(ed) {
+  const m = rvInlineImg();
+  if (!m || !ed) return;
+  m.bindEditor(ed, rvImgOpts());
+}
+function rvInsertImgFromPicker(ed) {
+  const m = rvInlineImg();
+  if (!m) return;
+  m.insertFromPicker(ed, rvImgOpts());
+}
 
 /* 记住 / 还原富文本选区（开对话框后选区会丢，插入前要还原）。 */
 function rvRangeIn(ed) {
-  try {
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount && sel.anchorNode && ed && ed.contains(sel.anchorNode))
-      return sel.getRangeAt(0).cloneRange();
-  } catch (_) {}
-  return null;
+  const m = rvInlineImg();
+  return m ? m.rangeIn(ed) : null;
 }
 function rvRestoreRange(range, ed) {
+  const m = rvInlineImg();
+  if (m) return m.restoreRange(range, ed);
   try {
-    if (range) {
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
     if (ed) ed.focus();
   } catch (_) {}
 }
 
-/* 小对话框：选择本机图片文件 / 从剪贴板粘贴（截图）。
-   返回 Promise<{srcPath|base64,name,ext}|null>；两张按钮点下即取图并关闭。 */
+/* 图片落盘 → { rel: 写回 md 的引用, abs: 可显示 URL, alt }（目标由上面描述符给出）。 */
+function rvSaveImage(picked) {
+  const m = rvInlineImg();
+  return m ? m.saveImage(picked, rvImgTarget()) : Promise.resolve(null);
+}
+/* 富文本插入 <img>（src = 可显示绝对 URL，data-rv-src = 写回 md 的引用）。 */
+function rvInsertImgRich(saved) {
+  const m = rvInlineImg();
+  if (m) m.insertImgRich(rvRichEditor(), saved, rvImgOpts());
+}
+/* 插图小对话框：选择本机图片文件 / 从剪贴板粘贴（截图）。 */
 function reviewImageDialog() {
-  return new Promise((resolve) => {
-    let done = false;
-    const fin = (v) => {
-      if (done) return;
-      done = true;
-      resolve(v);
-    };
-    try {
-      mtDialogForm({
-        title: I18n.t("插入图片"),
-        msg: rvTargetIs("fact")
-          ? I18n.t("图片会复制到事实库的 assets 目录，正文以相对路径引用")
-          : I18n.t("图片以本机绝对路径引用"),
-        custom: (c, select) => {
-          const wrap = document.createElement("div");
-          wrap.className = "rv-pick-btns";
-          const mk = (label, hint, fn) => {
-            const b = document.createElement("button");
-            b.type = "button";
-            b.className = "rv-img-pick";
-            const t = document.createElement("b");
-            t.textContent = label;
-            b.appendChild(t);
-            if (hint) {
-              const h = document.createElement("span");
-              h.textContent = hint;
-              b.appendChild(h);
-            }
-            b.onclick = () => fn(select);
-            wrap.appendChild(b);
-          };
-          mk(
-            I18n.t("选择图片文件…"),
-            I18n.t("从本机选择 png / jpg / webp / gif / bmp"),
-            async (sel) => {
-              const r = await window.api.fileOpenDialog({
-                title: I18n.t("选择图片"),
-                filters: [
-                  {
-                    name: I18n.t("图像"),
-                    extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
-                  },
-                  { name: I18n.t("全部文件"), extensions: ["*"] },
-                ],
-              });
-              const p = (r && r.path) || "";
-              if (!p) return;
-              sel({ srcPath: p, name: rvBaseName(p), ext: rvExtOf(p) });
-            },
-          );
-          mk(
-            I18n.t("从剪贴板粘贴（截图）"),
-            I18n.t("复制图片或截图后点这里"),
-            async (sel) => {
-              const r = await window.api.clipboardReadImage();
-              if (!r || !r.ok) {
-                toast(I18n.t("剪贴板里没有图片"), "warn");
-                return;
-              }
-              sel({ base64: r.base64, name: "screenshot", ext: ".png" });
-            },
-          );
-          c.appendChild(wrap);
-        },
-        actions: [{ id: "cancel", label: I18n.t("取消") }],
-      }).then(
-        (res) => fin(res && res.custom ? res.custom : null),
-        () => fin(null),
-      );
-    } catch (_) {
-      fin(null);
-    }
-  });
+  const m = rvInlineImg();
+  return m ? m.pickImage(rvImgTarget) : Promise.resolve(null);
+}
+
+/* 纯函数与整轮回收：兼容旧名（同上下文脚本与 test/smoke-factlib.js 按名取用）。 */
+function rvCollectImgRefs(texts) {
+  const m = rvInlineImg();
+  return m ? m.collectImgRefs(texts) : new Set();
+}
+function rvGcOrphanImages() {
+  const m = rvInlineImg();
+  if (m) m.gcOrphanImages(rvImgTarget());
+}
+async function rvRunGc() {
+  const m = rvInlineImg();
+  if (m) await m.runGc(rvImgTarget());
+}
+function rvFileUrl(p) {
+  const m = rvInlineImg();
+  return m ? m.fileUrl(p) : String(p || "").trim();
 }
 
 /* 小对话框：表格行列数。返回 Promise<{rows,cols}|null>。 */
@@ -1824,77 +1811,6 @@ function rvInsertMathRich(tex, display) {
   toast(I18n.t("公式已插入"), "ok");
 }
 
-function rvBaseName(p) {
-  const s = String(p || "").replace(/[\\/]+$/, "");
-  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
-  return i >= 0 ? s.slice(i + 1) : s;
-}
-function rvExtOf(p) {
-  const b = rvBaseName(p);
-  const i = b.lastIndexOf(".");
-  return i > 0 ? b.slice(i).toLowerCase() : "";
-}
-
-/* 把选中的图片落盘并算出「相对引用 + 可显示 URL + alt」。
-   fact 目标 → 复制进 assets/（相对路径写回 md）；node 目标 → 直接引用本机绝对路径。 */
-async function rvSaveImage(picked) {
-  const lib = rvFactLib();
-  const a = window.api;
-  const paths = rvFactPaths();
-  if (rvTargetIs("fact") && paths && paths.assetsDir) {
-    if (!a || typeof a.factSaveImage !== "function") {
-      toast(I18n.t("事实库模块未就绪，无法插入图片"), "err");
-      return null;
-    }
-    const r = await a.factSaveImage({
-      dir: paths.assetsDir,
-      srcPath: (picked && picked.srcPath) || "",
-      base64: (picked && picked.base64) || "",
-      name: String((picked && picked.name) || "image").replace(/\s+/g, "-"),
-      ext: (picked && picked.ext) || "",
-    });
-    if (!r || !r.ok) {
-      toast(I18n.t("图片保存失败：") + ((r && r.error) || ""), "err");
-      return null;
-    }
-    const rel = "assets/" + r.name;
-    const abs = rvFileUrl(lib ? lib.joinPath(paths.dir, rel) : rel);
-    return { rel: rel, abs: abs, alt: lib ? lib.stripExt(r.name) : r.name };
-  }
-  const p = String((picked && picked.srcPath) || "").trim();
-  if (!p) {
-    toast(
-      I18n.t("该目标不支持从剪贴板插入图片，请选择本机图片文件"),
-      "warn",
-    );
-    return null;
-  }
-  return {
-    rel: p,
-    abs: rvFileUrl(p),
-    alt: lib ? lib.stripExt(rvBaseName(p)) : rvBaseName(p),
-  };
-}
-
-/* 富文本插入 <img>（src = 可显示绝对 URL，data-rv-src = 写回 md 的引用）。 */
-function rvInsertImgRich(saved) {
-  const ed = document.querySelector(".review-editor .rv-rich");
-  if (!ed || !saved) return;
-  const html =
-    '<img src="' +
-    escAttr(saved.abs) +
-    '" data-rv-src="' +
-    escAttr(saved.rel) +
-    '" alt="' +
-    escAttr(saved.alt || "") +
-    '">';
-  insertRichNode(document.createRange().createContextualFragment(html));
-  _rv.dirty = true;
-  commitEditorToDoc();
-  renderFootbarBox();
-  rvGcOrphanImages();
-}
-
 /* 源码模式：在光标处插入一段 Markdown 文本，并同步当前版本。 */
 function rvInsertSourceText(ta, text) {
   const a = ta.selectionStart;
@@ -1940,230 +1856,6 @@ function rvTableMd(rows, cols) {
     out.push("| " + row.join(" | ") + " |");
   }
   return out.join("\n");
-}
-
-/* 富文本粘贴：剪贴板位图（含截图）直接落盘插图，纯文本粘贴不拦截。 */
-function onRichPaste(ev, ed) {
-  if (!_rv.editing) return;
-  const dt = ev.clipboardData;
-  let file = null;
-  if (dt) {
-    for (const it of Array.from(dt.items || [])) {
-      if (it.kind === "file" && /^image\//i.test(it.type || "")) {
-        file = it.getAsFile();
-        if (file) break;
-      }
-    }
-    if (!file) {
-      for (const f of Array.from(dt.files || [])) {
-        if (/^image\//i.test(f.type || "")) {
-          file = f;
-          break;
-        }
-      }
-    }
-  }
-  if (file) {
-    ev.preventDefault();
-    rvInsertFromBlob(file, ed);
-    return;
-  }
-  /* 无文件项、且不是文本 / 文件粘贴（多为截图）→ 走主进程剪贴板取图 */
-  const types = dt ? Array.from(dt.types || []) : [];
-  const hasText = types.some((t) => /^text\//i.test(t) || t === "text");
-  const hasFiles = types.indexOf("Files") >= 0;
-  if (dt && !hasText && !hasFiles) {
-    ev.preventDefault();
-    rvInsertFromClipboard(ed);
-  }
-}
-function onRichDrop(ev, ed) {
-  if (!_rv.editing) return;
-  const dt = ev.dataTransfer;
-  if (!dt) return;
-  const files = Array.from(dt.files || []).filter((f) =>
-    /^image\//i.test(f.type || ""),
-  );
-  if (!files.length) return;
-  ev.preventDefault();
-  const f = files[0];
-  let p = "";
-  try {
-    if (window.api && window.api.getPathForFile)
-      p = String(window.api.getPathForFile(f) || "");
-  } catch (_) {}
-  if (p) {
-    rvSaveImage({ srcPath: p, name: rvBaseName(p), ext: rvExtOf(p) }).then(
-      (saved) => {
-        if (saved) rvInsertImgRich(saved);
-      },
-    );
-  } else {
-    rvInsertFromBlob(f, ed);
-  }
-}
-/* 图片 Blob → base64 → 落盘 → 插入（拖拽 / 剪贴板文件项）。 */
-function rvInsertFromBlob(file, ed) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    const dataUrl = String(reader.result || "");
-    if (!dataUrl) return;
-    const m = /^data:([^;,]+)/i.exec(dataUrl);
-    const mime = (m && m[1]) || "image/png";
-    const ext = "." + mime.replace(/^image\//i, "").replace(/^jpeg$/i, "jpg");
-    const range = rvRangeIn(ed);
-    rvSaveImage({
-      base64: dataUrl,
-      name: file.name ? rvBaseName(file.name) : "image",
-      ext: ext,
-    }).then((saved) => {
-      if (!saved) return;
-      rvRestoreRange(range, ed);
-      rvInsertImgRich(saved);
-    });
-  };
-  reader.onerror = () => {};
-  try {
-    reader.readAsDataURL(file);
-  } catch (_) {}
-}
-/* 主进程剪贴板位图 → 落盘 → 插入。 */
-function rvInsertFromClipboard(ed) {
-  const a = window.api;
-  if (!a || typeof a.clipboardReadImage !== "function") return;
-  const range = rvRangeIn(ed);
-  Promise.resolve(a.clipboardReadImage()).then(
-    (r) => {
-      if (!r || !r.ok) {
-        toast(I18n.t("剪贴板里没有图片"), "warn");
-        return;
-      }
-      return rvSaveImage({ base64: r.base64, name: "screenshot", ext: ".png" }).then(
-        (saved) => {
-          if (!saved) return;
-          rvRestoreRange(range, ed);
-          rvInsertImgRich(saved);
-        },
-      );
-    },
-    () => {},
-  );
-}
-
-/* 纯函数：从若干版本文本收集被引用的图片（原始引用 + 文件名两种形态）。
-   GC 与测试共用，保证「任一留存版本引用到的文件都不删」。 */
-function rvCollectImgRefs(texts) {
-  const refs = new Set();
-  for (const t of texts || []) {
-    const s0 = String(t || "");
-    const re = /!\[[^\]]*\]\(\s*([^)\s]+)/g;
-    let m;
-    while ((m = re.exec(s0))) {
-      const s = m[1].replace(/^<|>$/g, "").replace(/\\/g, "/");
-      refs.add(s);
-      const i = s.lastIndexOf("/");
-      refs.add(i >= 0 ? s.slice(i + 1) : s);
-    }
-  }
-  return refs;
-}
-/* 孤立图片回收：assets/ 是库级共享目录，只有「库内所有文档的全部版本」都不引用的
-   图片才经主进程从磁盘删除（跨文档引用一律保留，避免别的文档 / 回看 / 回滚断图）。 */
-let _rvGcTimer = null;
-function rvGcOrphanImages() {
-  if (!rvTargetIs("fact")) return;
-  if (_rvGcTimer) clearTimeout(_rvGcTimer);
-  _rvGcTimer = setTimeout(() => {
-    _rvGcTimer = null;
-    rvRunGc();
-  }, 300);
-}
-/* 收集库内「所有文档 · 全部版本」引用的图片：
-   · 当前文档用内存版本链（可能含尚未落盘的编辑，比 sidecar 新）；
-   · 其它文档读各自 sidecar 的 versions；
-   · 每篇文档的 md 正文也计入（无 sidecar / 手改 md 的引用同样不误删）。 */
-async function rvCollectLibImgRefs(lib, paths, a) {
-  const texts = [];
-  const cur = reviewDoc();
-  if (cur && cur.review && Array.isArray(cur.review.versions))
-    for (const v of cur.review.versions) texts.push(v && v.text);
-  const curReview = String((rvFactOf() || {}).reviewFile || "")
-    .replace(/\\/g, "/")
-    .toLowerCase();
-  const dir = String((paths && paths.dir) || "");
-  let list = [];
-  if (dir) {
-    try {
-      const r = await a.fileListDir(dir);
-      list = (r && r.ok && r.list) || [];
-    } catch (_) {
-      list = [];
-    }
-  }
-  for (const f of list) {
-    if (!f || f.isDir) continue;
-    const rel = String(f.rel || f.name || "");
-    const low = rel.toLowerCase();
-    const isReview = low.endsWith(".review.json");
-    if (!isReview && !low.endsWith(".md")) continue;
-    const abs = lib.joinPath(dir, rel);
-    if (isReview) {
-      /* 当前文档的 sidecar 可能落后于内存 → 用内存版本链，跳过磁盘上的这份 */
-      if (abs.replace(/\\/g, "/").toLowerCase() === curReview) continue;
-      let d = null;
-      try {
-        d = await lib.readReview({ reviewFile: abs });
-      } catch (_) {}
-      if (d && Array.isArray(d.versions))
-        for (const v of d.versions) texts.push(v && v.text);
-    } else {
-      let r2 = null;
-      try {
-        r2 = await lib.readDoc({ file: abs });
-      } catch (_) {}
-      if (r2 && r2.content) texts.push(r2.content);
-    }
-  }
-  return rvCollectImgRefs(texts);
-}
-async function rvRunGc() {
-  if (!rvTargetIs("fact")) return;
-  const n = reviewDoc();
-  const paths = rvFactPaths();
-  const lib = rvFactLib();
-  const a = window.api;
-  if (!n || !paths || !paths.assetsDir || !lib) return;
-  if (!a || typeof a.fileListDir !== "function" || typeof a.factDeleteImages !== "function")
-    return;
-  const refs = await rvCollectLibImgRefs(lib, paths, a);
-  let list = [];
-  try {
-    const r = await a.fileListDir(paths.assetsDir);
-    list = (r && r.ok && r.list) || [];
-  } catch (_) {
-    return;
-  }
-  const orphans = [];
-  for (const f of list) {
-    if (!f || f.isDir) continue;
-    const rel = String(f.rel || f.name || "").replace(/\\/g, "/");
-    const i = rel.lastIndexOf("/");
-    const base = i >= 0 ? rel.slice(i + 1) : rel;
-    if (refs.has(rel) || refs.has("assets/" + rel) || refs.has(base)) continue;
-    orphans.push(lib.joinPath(paths.assetsDir, rel));
-  }
-  if (!orphans.length) return;
-  try {
-    const d = await a.factDeleteImages(orphans);
-    const removed = (d && d.removed) || [];
-    if (removed.length)
-      toast(
-        I18n.t("已从磁盘删除 ") +
-          removed.length +
-          I18n.t(" 个无引用图片"),
-        "ok",
-      );
-  } catch (_) {}
 }
 
 /* ---------- 局部批注：浮空便笺 ---------- */

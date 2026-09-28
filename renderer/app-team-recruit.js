@@ -2838,10 +2838,21 @@
      改动即 syncForm → paintPreview；模型选项走供应商目录 + teamViewModelsFor。 */
   function providerList() {
     if (typeof teamViewProviders === "function") return teamViewProviders();
-    var out = [{ id: "deepseek-official", name: T("DeepSeek 官方") }];
+    var out = [];
+    /* 兜底（teamViewProviders 不在时的沙箱 / 老环境）：官方路由被停用就同样不列 */
+    try {
+      if (
+        typeof deepseekRouteSelectable !== "function" ||
+        deepseekRouteSelectable(S.config)
+      )
+        out.push({ id: "deepseek-official", name: T("DeepSeek 官方") });
+    } catch (_) {
+      out.push({ id: "deepseek-official", name: T("DeepSeek 官方") });
+    }
     var groups = typeof devAgentModelGroups === "function" ? devAgentModelGroups() : [];
     groups.forEach(function (g) {
-      if (g && g.id && g.id !== "deepseek-official") out.push({ id: g.id, name: g.name || g.id });
+      if (g && g.id && g.id !== "deepseek-official" && !out.some(function (x) { return x.id === g.id; }))
+        out.push({ id: g.id, name: g.name || g.id });
     });
     return out;
   }

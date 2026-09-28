@@ -8,9 +8,20 @@ WorkingDirectory=/opt/mtnode-store
 Environment=PORT=8787
 Environment=HOST=127.0.0.1
 Environment=DATA_DIR=/opt/mtnode-store/data
+# 充值（钱包）测试期闸门：只有名单内的账号能看到充值入口、也只有它们能下单
+# （服务端 403 RECHARGE_NOT_OPEN 兜底，客户端另有一道同名判空）。完全测试通过后再放开。
+Environment=MTNODE_RECHARGE_USERS=ms2308
+# 管理台可登录账号（并集口径：MTNODE_STORE_ADMINS ∪ 本项 ∪ MTNODE_ADMIN_WECHAT_UNIONIDS）。
+Environment=MTNODE_ADMIN_USERS=ms2308
+# 管理台静态页目录（相对 WorkingDirectory；nginx 另有一份 /var/www/mtnode/admin）。
+Environment=MTNODE_ADMIN_WEB_DIR=admin
 # 短信 / 微信等服务商凭据只进本机环境文件（600 权限，不入库、不提交）。
 # 账户存储后端 MTNODE_ACCOUNT_STORE（json 默认 / aliyun-tablestore）与
 # Tablestore 连接参数 MTNODE_OTS_* 也从该环境文件注入。
+# 充值相关凭据同样只走该文件（键名清单见 docs/recharge-design.md §凭据）：
+#   MTNODE_ALIPAY_APPID / MTNODE_ALIPAY_PRIVATE_KEY(_PATH) / MTNODE_ALIPAY_PUBLIC_KEY(_PATH)
+#   MTNODE_ALIPAY_NOTIFY_URL / MTNODE_ALIPAY_GATEWAY / MTNODE_WECHAT_OWNER_MAP
+# EnvironmentFile 排在 Environment= 之后，所以环境文件里的同名键优先（可不改本文件调闸门）。
 # 前缀 "-" = 文件不存在时也允许启动，避免首次部署失败。
 EnvironmentFile=-/etc/mtnode-store.env
 ExecStart=/usr/bin/node /opt/mtnode-store/server.mjs

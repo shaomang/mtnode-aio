@@ -8,14 +8,22 @@
    test/smoke-workspace-project.js [7] 与 test/smoke-resume-on-retry.js [6c] 钉住「两份逐字一致」。
    行尾一律 LF（本目录其余渲染层文件都是 LF，行尾不同会让上面那条闸门恒红）。 */
 
-/* agent 能力走 DeepSeek 路由：取第一个 DeepSeek 兼容文本服务商 */
+/* agent 能力走 DeepSeek 路由：取第一个 **未停用** 的 DeepSeek 兼容文本服务商。
+   返回的是一份浅拷贝，models 已过白 / 黑名单 —— 拿到的模型清单就是「真正可选」的那份，
+   会话 / 助手 / 开发节点的下拉不必各自再过滤；这家服务商被停用时返回 null（该路由不出现，
+   设置里它照旧可见、可编辑、可恢复）。 */
 function dshProvider() {
   const provs = (S.config && S.config.providers) || [];
+  const pf =
+    typeof providerSelectableModels === "function" ? providerSelectableModels : null;
+  const off = typeof providerDisabled === "function" ? providerDisabled : null;
   for (const p of provs) {
     if (p.type !== "text_openai" || !p.baseUrl) continue;
+    if (off && off(p)) continue;
     try {
       const host = new URL(p.baseUrl).hostname.toLowerCase();
-      if (host.includes("deepseek")) return p;
+      if (host.includes("deepseek"))
+        return pf ? Object.assign({}, p, { models: pf(p) }) : p;
     } catch {}
   }
   return null;
@@ -87,9 +95,39 @@ function agentRouteFromProviderId(providerId) {
 }
 
 function agentRouteOptions() {
-  const routes = new Set(["deepseek-official"]);
+  const routes = new Set();
+  /* DeepSeek 官方路由：配置里那家 DeepSeek 服务商被停用时它一并消失 */
+  const dsOk =
+    typeof deepseekRouteSelectable === "function"
+      ? deepseekRouteSelectable(S.config)
+      : true;
+  if (dsOk) routes.add("deepseek-official");
   for (const p of mtnodePiProviders()) routes.add("mtnode_" + p.route);
   return routes;
+}
+
+/* 这条路由对应的服务商只是被「停用」，而不是被删掉 / 改名。
+   停用只把它从选择器里收起来：节点上早就绑着它的**不能因此被改到别家** ——
+   syncAgentProviderRoute 只在路由真的不存在时才兜底换路由，这里把「停用」摘出去，
+   用户取消勾选后原样生效（配置与密钥一直都在）。 */
+function agentRouteDisabled(route) {
+  const r = String(route || "").trim();
+  if (!r) return false;
+  if (r === "deepseek-official")
+    return (
+      typeof deepseekRouteSelectable === "function" &&
+      !deepseekRouteSelectable(S.config)
+    );
+  if (r.indexOf("mtnode_") !== 0) return false;
+  const id = r.slice("mtnode_".length);
+  const p = ((S.config && S.config.providers) || []).find(
+    (x) => x && String(x.id || "") === id,
+  );
+  return !!(
+    p &&
+    typeof providerDisabled === "function" &&
+    providerDisabled(p)
+  );
 }
 
 /* 全部可选「模型提供商 / 服务商」分组：[{ id: 智能路由, name: 服务商显示名, models: [模型 id] }]。
@@ -101,11 +139,17 @@ function agentRouteGroupsNow() {
   const out = [];
   try {
     const dp = dshProvider();
-    out.push({
-      id: "deepseek-official",
-      name: (dp && dp.name) || I18n.t("DeepSeek 官方"),
-      models: agentModelsForRoute("deepseek-official").map(String),
-    });
+    /* 官方路由被停用（配置里那家 DeepSeek 服务商 disabled）时整条不进清单 */
+    const dsOk =
+      typeof deepseekRouteSelectable === "function"
+        ? deepseekRouteSelectable(S.config)
+        : true;
+    if (dsOk)
+      out.push({
+        id: "deepseek-official",
+        name: (dp && dp.name) || I18n.t("DeepSeek 官方"),
+        models: agentModelsForRoute("deepseek-official").map(String),
+      });
   } catch (_) {}
   try {
     for (const p of mtnodePiProviders()) {
@@ -147,7 +191,11 @@ function syncAgentProviderRoute(node, opts) {
   let route = prevRoute;
 
   if (!route || !routes.has(route)) {
-    if (fromApi && routes.has(fromApi)) route = fromApi;
+    /* 只是被停用 ⇒ 保持原路由不动（运行时照旧按原配置走），也不动模型；
+       路由真的不存在（服务商被删 / 改 id）才回退到可用路由 */
+    if (route && agentRouteDisabled(route)) {
+      /* 保持 route 不变 */
+    } else if (fromApi && routes.has(fromApi)) route = fromApi;
     else route = preferredAgentProviderRoute();
   }
 
@@ -312,16 +360,6 @@ function visionModelsForProvider(providerId) {
   return out;
 }
 
-/* DeepSeek 官方纯文本模型不支持图；目录中带 image 的多模态模型除外。
-   无图主机上的「手填 vision」兜底仍应降到次选。 */
-function providerHostBlocksVision(p) {
-  if (!p || !p.baseUrl) return false;
-  try {
-    const host = new URL(String(p.baseUrl).trim()).hostname.toLowerCase();
-    if (host.includes("deepseek")) return true;
-  } catch {}
-  return false;
-}
 /* 节点已连接的图像输入节点（含全局节点广播） */
 function imageInputsOf(node, idx) {
   const out = [];
@@ -400,12 +438,20 @@ function visionCandidatesForNode(node) {
       });
     }
   };
-  pushRoute(
-    "deepseek-official",
-    providerDisplayName("deepseek-official"),
-  );
+  /* 官方路由对应的 DeepSeek 服务商被停用 ⇒ 这条候选整体不列（与各处选择器同口径） */
+  const dsOk =
+    typeof deepseekRouteSelectable === "function"
+      ? deepseekRouteSelectable(S.config)
+      : true;
+  if (dsOk)
+    pushRoute(
+      "deepseek-official",
+      providerDisplayName("deepseek-official"),
+    );
   for (const p of S.config.providers || []) {
     if (p.type && p.type !== "text_openai") continue;
+    /* 停用的服务商不进这张候选表（设置里它照旧可见、可编辑、可恢复） */
+    if (typeof providerDisabled === "function" && providerDisabled(p)) continue;
     /* 无 Key 的不列入（无法实际调用）；与 mtnode 路由一致 */
     if (!String(p.apiKey || "").trim()) continue;
     pushRoute("mtnode_" + p.id, p.name || p.id);
@@ -849,24 +895,31 @@ function stripStreamErrors(text) {
     .trim();
 }
 
-/* mtnode 服务商(非 DeepSeek 官方)同步给引擎:经 pi-ai 手写 profile 路由 */
+/* mtnode 服务商(非 DeepSeek 官方)同步给引擎:经 pi-ai 手写 profile 路由。
+   停用的服务商不进这张表 = 不出现在任何模型选择器里（设置里仍可见 / 可编辑 / 可恢复）；
+   models 过白 / 黑名单：白名单先收窄、黑名单再剔除，两份都留空就是原来的清单。 */
 function mtnodePiProviders() {
   const out = [];
   const provs = (S.config && S.config.providers) || [];
+  const pf =
+    typeof providerSelectableModels === "function" ? providerSelectableModels : null;
+  const off = typeof providerDisabled === "function" ? providerDisabled : null;
   provs.forEach((p, i) => {
     if (p.type !== "text_openai" || !String(p.apiKey || "").trim()) return;
+    if (off && off(p)) return;
     let host = "";
     try { host = new URL(p.baseUrl || "").hostname.toLowerCase(); } catch {}
     if (host.includes("deepseek")) return; /* DeepSeek 走官方路由 */
     /* 引擎只注册 baseUrl 与模型齐全的服务商 */
-    if (!String(p.baseUrl || "").trim() || !(p.models || []).length) return;
+    const models = pf ? pf(p) : p.models || [];
+    if (!String(p.baseUrl || "").trim() || !models.length) return;
     out.push({
       route: p.id || "p" + (i + 1),
       name: p.name || p.id,
       baseUrl: p.baseUrl,
       apiKey: p.apiKey,
       api: p.api || "openai-completions",
-      models: p.models || [],
+      models,
     });
   });
   return out;
@@ -2110,7 +2163,8 @@ function tokBadgeHost(owner) {
   const sid = String(owner.id || "");
   if (sid === "assist")
     return document.getElementById("assistPane") || document.getElementById("assistList");
-  if (S.agentActiveId === sid) {
+  /* 归属当前正在看的会话（含开发页的显示覆盖）→ 徽标挂到消息流尾 */
+  if (typeof agentViewHas === "function" ? agentViewHas(sid) : S.agentActiveId === sid) {
     const list = document.getElementById("agentList");
     if (list && list.style.display !== "none") return tokAgentTailHost();
   }

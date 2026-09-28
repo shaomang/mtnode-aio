@@ -1,0 +1,909 @@
+/* renderer/app-apps.js — 应用中心（顶栏「应用」）的整屏浮层页 + 本机应用库 + 开发者面板
+   ─────────────────────────────────────────────────────────────────────────────
+   #appsHub 挂在 document.body 上 · position:fixed inset:0：**连顶栏（菜单栏）一起盖住**，
+   整屏交给应用开发（顶栏与应用开发无关）；出口只有侧栏第一行的「返回 MTNode」与 Esc
+   （Esc 由 app-apps.js 监听）。z-index 90 < #overlay 的 100，所以后打开的对话框（设置 /
+   插件 / 工坊 / 确认框）一定压在本页之上，本页永不顶掉别人。
+   **没有标题栏**：页名在左侧导航里（选中态即页名），顶部只有「品牌 + 返回 MTNode」一行。
+   配色一律用 base.css 的主题变量（亮色主题靠变量自动跟随），只有按钮专属蓝写在 layout.css。 */
+
+/* display:flex 会盖掉浏览器默认的 [hidden]，必须自己压回去（同 .btn-account[hidden]） */
+.apps-hub[hidden] {
+  display: none !important;
+}
+
+.apps-hub {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* ── 左导航（应用 / 库 / 开发） ── */
+.apps-hub-side {
+  flex: none;
+  width: 176px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 10px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border-right: 2px solid var(--bd);
+}
+
+/* 侧栏第一行＝品牌 + 「返回 MTNode」（去掉标题栏后，这是本页唯一的常驻退出钮，
+   按钮写全名而不是一个 ✕，所以字号压到 10.5px 才放得下 176px 侧栏） */
+.apps-hub-sidehead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 0 6px;
+}
+
+.apps-hub-brand {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #6db4ff;
+}
+
+.apps-hub-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.apps-hub-navbtn {
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+
+.apps-hub-navbtn.on {
+  border-color: #6db4ff;
+  color: #9ecdff;
+}
+
+.apps-hub-sidefoot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.apps-hub-footline {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.apps-hub-footdim {
+  opacity: .8;
+}
+
+/* ── 右侧主区 ── */
+.apps-hub-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 正文顶部的搜索条（只有应用页出现搜索框；「刷新」按钮已去掉，手动重拉没必要：
+      目录在本页打开与每次下载结束时都会自动重拉；剩搜索一个零件，不再独占一行） ── */
+.apps-hub-headacts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.apps-hub-search {
+  width: 200px;
+  font-size: 11.5px;
+}
+
+.apps-hub-close {
+  flex: none;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+.apps-hub-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── 通用零件 ── */
+.apps-hint,
+.apps-sec-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  letter-spacing: .3px;
+}
+
+.apps-empty {
+  padding: 34px 16px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--muted);
+  border: 2px dashed var(--bd);
+  border-radius: 8px;
+}
+
+.apps-empty-sm {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
+.apps-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.apps-badge-on {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.apps-badge-off {
+  color: var(--muted);
+}
+
+.apps-badge-upd {
+  color: var(--orange2);
+  border-color: var(--orange);
+}
+
+.apps-badge-bad {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.apps-prog {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 5px;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--code);
+}
+
+.apps-prog>i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #6db4ff, #9ecdff);
+  transition: width .18s linear;
+}
+
+.apps-prog.err>i {
+  background: var(--red);
+}
+
+.apps-prog-txt {
+  grid-column: 1 / -1;
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: .3px;
+  word-break: break-all;
+}
+
+/* ── 应用页：卡片网格（Microsoft Store 观感：封面 + 标题 + 版本 + 描述 + 动作） ── */
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.apps-tile {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 4px 10px;
+  padding: 12px;
+  border: 2px solid var(--bd);
+  border-radius: 10px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+}
+
+.apps-tile.open {
+  border-color: #6db4ff;
+}
+
+.apps-tile-cover,
+.apps-row-cover {
+  grid-row: 1;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--code);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.apps-row-cover {
+  width: 40px;
+  height: 40px;
+}
+
+.apps-ico-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.apps-tile-ph {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--cyan2);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.apps-row-cover .apps-tile-ph {
+  width: 26px;
+  height: 26px;
+  font-size: 15px;
+}
+
+.apps-tile-info {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.apps-tile-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-tile-ver {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-top: 1px;
+}
+
+.apps-tile-desc {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin-top: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.apps-tile-badges {
+  margin-top: 6px;
+}
+
+.apps-tile-acts,
+.apps-row-acts {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.apps-row-acts {
+  grid-column: auto;
+  margin-top: 0;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* ── 详情块（应用页展开 / 开发页结果表） ── */
+.apps-detail {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--code);
+}
+
+.apps-detail-inline {
+  margin-top: 8px;
+}
+
+.apps-detail-full {
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.apps-detail-rows {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.apps-detail-row {
+  display: flex;
+  gap: 8px;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.apps-detail-k {
+  flex: none;
+  width: 116px;
+  color: var(--muted);
+  letter-spacing: .3px;
+}
+
+.apps-detail-v {
+  min-width: 0;
+  color: var(--ink);
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+/* ── 库页：行式列表 + 根目录一行 ── */
+.apps-rootline {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 2px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 11px;
+}
+
+.apps-rootline-k {
+  flex: none;
+  color: var(--muted);
+  letter-spacing: .5px;
+}
+
+.apps-rootline-v {
+  min-width: 0;
+  flex: 1;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 那一行右侧的动作组（数据文件夹那一条：打开 / 更改… / 恢复默认 + 状态徽标） */
+.apps-rootline-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.apps-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.apps-row {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  grid-template-rows: auto auto auto;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 2px solid var(--bd);
+  border-radius: 10px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+}
+
+.apps-row-info {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.apps-row-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-row-meta {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-top: 1px;
+}
+
+.apps-row-path {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-row-badges {
+  margin-top: 5px;
+}
+
+/* ── 开发页：分节 ── */
+.apps-sec {
+  padding: 12px;
+  border: 2px solid var(--bd);
+  border-radius: 10px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.apps-sec h3 {
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #9ecdff;
+}
+
+.apps-select {
+  max-width: 320px;
+  font-size: 11.5px;
+}
+
+/* ── 同名目录冲突：覆盖 / 改名 / 取消（persistent：点外部不关，只走三个按钮 / Esc） ── */
+.apps-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(5, 8, 12, .72);
+}
+
+.apps-modal-box {
+  width: min(92%, 520px);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-top: 3px solid #6db4ff;
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .6);
+  overflow: hidden;
+}
+
+.apps-modal-head {
+  padding: 9px 12px;
+  border-bottom: 2px solid var(--bd);
+  font-size: 12.5px;
+  letter-spacing: 1px;
+  color: #9ecdff;
+}
+
+.apps-modal-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.apps-modal-foot {
+  padding: 10px 12px;
+  border-top: 2px solid var(--bd);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 亮色主题：封面与详情底的对比度（其余全靠变量自动跟随） */
+body.theme-light .apps-tile-ph {
+  color: var(--cyan2);
+}
+/* ───────────────── 开发页（renderer/app-apps-dev.js） ─────────────────
+   三栏 + 底部输入框：左 = 该应用的会话列表 · 中 = iframe 实时预览 · 右 = 会话正文 ·
+   下 = 输入框（会话视图那只 .agent-composer 原样搬进来）。配色全走主题变量。 */
+
+.apps-dev {
+  flex: 1 1 auto;
+  min-height: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.apps-dev-topbar {
+  position: relative;
+  flex: none;
+}
+
+.apps-dev-head {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 上方菜单条只允许一行：溢出不再折行，由 app-apps-dev.js 的 appsDevFitHead()
+     把优先级最低的项搬进「更多 ▾」（.apps-dev-more-pop）。 */
+  flex-wrap: nowrap;
+  overflow: hidden;
+  padding: 8px 10px;
+  border: 2px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 11px;
+}
+
+/* 菜单条上可搬运的一项（主行与「更多」面板共用同一个元素，搬的是 DOM 不是复制） */
+.apps-dev-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.apps-dev-appgrp {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.apps-dev-head .apps-dev-app {
+  max-width: 220px;
+}
+
+/* 应用根目录：路径（等宽、可省略）+ 更改…；点路径 = 在资源管理器中打开 */
+.apps-dev-root {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.apps-dev-root-v {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 4px;
+  border: 0;
+  border-bottom: 1px dashed var(--bd2);
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.apps-dev-root-v:hover {
+  color: var(--ink);
+  border-bottom-color: var(--cyan2, var(--bd2));
+}
+
+/* 「更多 ▾」：放不下的项都在它下面 */
+.apps-dev-morebtn {
+  flex: none;
+}
+
+.apps-dev-more-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 10px;
+  z-index: 6;
+  min-width: 232px;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 2px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.42);
+}
+
+.apps-dev-more-pop .apps-dev-slot {
+  flex: 0 0 auto;
+}
+
+.apps-dev-more-pop .apps-dev-slot[data-label]:not([data-label=""])::before {
+  content: attr(data-label);
+  flex: none;
+  min-width: 60px;
+  color: var(--muted);
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+}
+
+.apps-dev-more-pop .apps-dev-slot .apps-dev-sw {
+  flex: 1 1 auto;
+}
+
+.apps-dev-more-pop .apps-dev-root-v {
+  max-width: 176px;
+}
+
+body.theme-light .apps-dev-more-pop {
+  box-shadow: 0 14px 30px rgba(20, 26, 40, 0.18);
+}
+
+.apps-dev-head-k {
+  color: var(--muted);
+  letter-spacing: .5px;
+}
+
+.apps-dev-sw {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.apps-dev-stat {
+  flex: 0 1 auto;
+  margin-left: auto;
+  /* 预览状态是「刚才那一轮到底刷新了没」的唯一反馈：再挤也给它 96px，别压成只剩省略号 */
+  min-width: 96px;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: .3px;
+}
+
+.apps-dev-warn {
+  flex: none;
+  padding: 6px 10px;
+  border: 2px solid var(--bd2);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #f5b451;
+}
+
+.apps-dev-warn[hidden] {
+  display: none !important;
+}
+
+/* 「更多 ▾」面板：.apps-dev-more-pop 自己写了 display:flex，会盖掉浏览器默认的
+   [hidden]{display:none} —— 不压回去，工具栏右下角就常驻一只**空的浮窗**
+   （面板是 absolute 挂在 .apps-dev-topbar 上、紧跟「＋新建应用」那一行，看起来就是
+   「新建下方一块空白框」）。同口径见第 10 行的 .apps-hub[hidden] 与上面的 .apps-dev-warn[hidden]。 */
+.apps-dev-more-pop[hidden] {
+  display: none !important;
+}
+
+/* 三栏：左固定宽，中（预览）与右（正文）各占一半，都能收缩。
+   --apps-dev-colhead-h = 三条列标题条的**统一高度**（左「会话」/ 中「预览」/ 右会话名）：
+   高度只在这里写一处，其余两条腿禁止各自长高（历史 bug：左栏搜索框用的是浏览器默认的
+   type=search 样式，把整条标题条撑高，三栏标题就再也等不了高）。 */
+.apps-dev-cols {
+  --apps-dev-colhead-h: 38px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.apps-dev-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 2px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+/* 列标题条：固定高度 + 内容一律垂直居中 → 三栏天然等高（见上面 --apps-dev-colhead-h） */
+.apps-dev-colhead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--apps-dev-colhead-h, 38px);
+  padding: 0 8px;
+  /* 固定高度下不让任何子项把内容顶出去（超高一律裁掉，条高绝不变） */
+  overflow: hidden;
+  border-bottom: 2px solid var(--bd);
+  font-size: 11px;
+  letter-spacing: .5px;
+  color: var(--muted);
+}
+
+/* 左栏搜索框：只定宽度与不参与伸缩 —— 配色 / 内边距 / 字号一律走 base.css 的全局输入
+   样式（节点里是 type="text"，不再是吃浏览器默认样式的 type="search"） */
+.apps-dev-q {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 120px;
+}
+
+/* 右栏标题条：该开发会话的名字（与左「会话」/ 中「预览」同风格；过长省略号收尾） */
+.apps-dev-turn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-dev-url {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-dev-side .agent-side-list {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 预览：iframe 占满中栏；底下白底（应用页多半是浅色） */
+.apps-dev-framewrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+
+.apps-dev-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+/* 中栏兜底提示层（renderer/app-apps-dev.js 的 appsDevPreviewStatMsg）：
+   拿不到应用目录 / 入口页时盖在 iframe 上给可读提示 + 「重试」，
+   免得用户只看到一片白底、以为预览坏了。 */
+.apps-dev-framestat {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  background: var(--panel);
+}
+
+.apps-dev-framestat-txt {
+  max-width: 460px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+/* 右栏：会话正文（#agentList / 队列 / 计划 / 待办都是搬进来的原节点） */
+.apps-dev-conv > .agent-list {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 首轮态：还没有这个应用的开发会话 → 正文先藏着，只留一句引导（DOM 不重建） */
+.apps-dev-draft {
+  margin: auto;
+  padding: 18px 20px;
+  font-size: 11.5px;
+  line-height: 1.9;
+  color: var(--muted);
+  text-align: center;
+}
+
+.apps-dev-conv.is-draft > .agent-list,
+.apps-dev-conv.is-draft > #agentPaused,
+.apps-dev-conv.is-draft > #agentQueue,
+.apps-dev-conv.is-draft > #agentPlan,
+.apps-dev-conv.is-draft > #agentTodo {
+  display: none !important;
+}
+
+.apps-dev-conv:not(.is-draft) > .apps-dev-draft {
+  display: none !important;
+}
+
+/* 底部输入框行：搬来的 .agent-composer 保持自己那份样式（含模型菜单浮层） */
+.apps-dev-composer {
+  flex: none;
+  padding-top: 10px;
+  border-top: 2px solid var(--bd);
+  background: var(--panel);
+}
+
+/* 折叠的工具区（导出应用包 / 变更探测 / 开发绑定） */
+.apps-sec-more {
+  flex: none;
+  border: 2px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 8px 12px;
+}
+
+.apps-sec-more > summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  letter-spacing: .5px;
+  color: var(--muted);
+}
+
+.apps-sec-more > .apps-sec {
+  margin-top: 10px;
+}

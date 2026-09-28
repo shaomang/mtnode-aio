@@ -1,0 +1,121 @@
+# Building an app
+
+> One-liner: turn a small tool into an MTNode **app** — a static front-end bundle (HTML / JS / CSS) that opens as its own window from the **App Center**.
+
+![App window and host capabilities](img/mtnode-app-01-ui.svg)
+*App = static front-end + host capability bridge; models and tools stay in MTNode itself*
+
+## What an app is
+
+An MTNode "app" is plain **static** HTML / JS / CSS (plus icons and static data), with no Node dependency.
+The host loads it in its own window and injects a **capability bridge**.
+
+Two host flavours expose different bridge names (the scaffold detects both, so you never branch by hand):
+
+| Host | Bridge | Installed where | Data written where |
+| --- | --- | --- | --- |
+| **App Center** (top bar "Apps"; self-built or downloaded) | `window.appHost` | App install root `<id>\` (changeable on the Library page) | `<data dir>\apps-data\<id>\data.json` (changeable in the window) |
+| Plugin window (`kind: "window"` card in the Plugins dialog) | `window.pluginApi` (= `window.forumApi`) | `<data dir>\app-plugins\<id>\runtime\` | `<data dir>\app-plugins\<id>\data.json` |
+
+**Do not confuse this with local backend plugins**: music3 / H3 / TTS / llama cards are **local backend plugins** (they also ship a console window and canvas nodes) — a much bigger thing.
+
+### Where it lives, where it runs
+
+| Location | Contents |
+| --- | --- |
+| App install root `<id>\` | the app's static files (**update / uninstall replaces the whole folder — never write data here**) |
+| `<data dir>\apps-data\<id>\data.json` | the app's own data (the **default data root**, written atomically through the bridge) |
+| `<data dir>\apps-data\<id>\dataDir.json` | that app's data-folder pointer (only exists if the user changed it; changing it does not move data) |
+| `<id>\installed.json` | host-recorded version / entry / source |
+
+## Four hard rules
+
+1. **Static only**: HTML / JS / CSS, resources referenced relatively (`./app.js`, `./assets/a.png`). There is no `window.api` in an app window (that is the main window's bridge).
+2. **Runs without the host**: the bridge may be absent (opening `index.html` directly in a browser). The app must still start, degrade, and say "not saved" instead of going blank.
+3. **Content must land on disk**: persist through the bridge (`appHost.dataWrite` / legacy `dataSet`) — do **not** use `localStorage` as storage and do **not** write into the app folder.
+   Auto-save (dirty flag + debounce) plus a forced flush before the window closes is the default, courtesy of the scaffold's `store.js` + `close.js`.
+4. **Only call what the host actually has**: probe first (`typeof host.dataWrite === "function"`), never fake success and never silently drop data.
+
+## Minimal structure
+
+```
+my-app/
+  index.html    entry (app.json's entry, default index.html)
+  apphost.js    bridge detection and degradation (scaffold's AppHost)
+  store.js      persistence: dirty flag + debounced auto-save + flush()
+  close.js      shutdown hooks: AppClose.on(cb), run before the host closes the window
+  app.js        your logic
+  style.css     styles
+  app.json      self-describing metadata (title / version / window size / entry)
+  assets/…      icons and static files
+```
+
+`app.json` uses the same field names as the cloud catalog entry (`id` / `kind: "window"` / `entry` / `version` / `title` / `subtitle` / `icon` / `window`).
+The window geometry and card info that actually apply come from the **cloud catalog entry**; `app.json` exists so a bundle describes itself for local development and pre-release checks.
+
+## What the host gives an app (appHost)
+
+Probe before calling: `typeof host.dataWrite === "function"`, otherwise take the degraded branch. The scaffold wraps this as `window.AppHost.cap`.
+
+| Capability | App Center window (`appHost`) | Plugin window (`pluginApi`) |
+| --- | --- | --- |
+| Read / write all data | `dataRead()` / `dataWrite(data)` | `dataGet()` / `dataSet(data)` |
+| Data folder | `dataDirGet()` / `dataDirPick()` / `dataDirOpen()` / `dataDirReset()` | — |
+| Account summary | `account()` | `authGetState()` / `authMe()` / `onAuthChanged(cb)` |
+| Store requests | — | `storeRequest({ method, path, json })` (credentials stay in the main process) |
+| Image picking / caching | — | `pickImage()` / `compressImage()` / `cacheImage(id, base64)` / `readCachedImage(id)` |
+| Window lifecycle | `close()` / `quit()` / `onWillClose(cb)` | `close()` / `onShown(cb)` |
+
+### Closing properly (every app needs this)
+
+Wire your close button to `AppHost.close()`. The host does **not** destroy the window directly: it first sends `apps:willClose`,
+waits for everything registered through `AppClose.on(...)` to finish (up to 1.5 seconds), and only then closes — and quitting MTNode
+(`before-quit`) takes the same path. So put "flush pending writes + unsubscribe" inside `AppClose.on`.
+`AppHost.quit()` quits MTNode itself and is only for apps that ship their own quit button.
+
+### The data folder (every app needs this)
+
+- Default location: `<data dir>\apps-data\<id>\` — it follows MTNode's data directory, never the app install folder.
+- The user can change it **inside the app window** (or from the App Center Library row) to a folder of their own.
+  The path can only come from a folder pick **the user performed in the system dialog** — an app cannot pass a path.
+- Changing it does **not** move data: the new folder takes effect immediately and files in the old one stay put.
+  "Back to default" only removes the pointer; it deletes nothing.
+- The host only writes to "the default data root + the folder the user picked", with a fixed file name (`data.json`, legacy `store.json` accepted),
+  always atomically (tmp + rename) and capped at 2MB per file.
+
+## No model API and no tools inside an app window
+
+This is the easiest trap: **an app window gets neither the model API nor MTNode's tools** (no `chat` / `generateText`, no server-side LLM completion route).
+
+- Prompt / copywriting helpers: the app builds the prompt and the UI, and generation goes to a **canvas workflow** (text processing, image generation, agent nodes) or to the global assistant ✦.
+- If the app really needs built-in LLM / image / speech: upgrade to a **local backend plugin** — its main-process host reuses the model key from Settings → Model services and its own console UI consumes it.
+
+## Building one from scratch
+
+1. Copy the bundled scaffold `templates/app-scaffold/` (`index.html` + `apphost.js` + `store.js` + `close.js` + `app.js` + `style.css` + `app.json`)
+   into the app's source directory.
+2. Replace the placeholders: `app.json`'s `id` / `title` / `subtitle` / `icon` / `version` / `window`, plus the titles, copy and icon glyph in `index.html`.
+3. Write the real logic in `app.js`; keep data in `Store` (which uses `AppHost.getData` / `setData`) — do **not** use `localStorage` as storage and do not write files into the app folder.
+4. A `frame:false` window has no system title bar, so ship your own close button calling `close()` (the scaffold already does, and hangs the flush off the shutdown hook).
+5. Publish: zip the app folder (the root is the app folder) → upload → add `zipUrl` + `sha256` + `entry` + `window` to the cloud catalog entry.
+6. Verify: install / update → open the window → change something → close and reopen (the content is still there) → change the data folder
+   (data follows, the old folder is still there) → opening `index.html` directly in a browser still works (the degraded notice shows) →
+   data lands in `<data dir>\apps-data\<id>\data.json`.
+
+## Common mistakes
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Blank or fully transparent window | absolute resource paths (`/app.js`), or no background painted (windows are transparent by default) | use relative paths; paint a background and rounded corners on the root container |
+| Buttons do not react | the button sits inside the drag region (`-webkit-app-region: drag`) | add `no-drag` (`-webkit-app-region: no-drag`) |
+| Window cannot be closed | `frame:false` without a close button | add one calling `AppHost.close()` (legacy `pluginApi.close()`) |
+| Data disappears after restart | `localStorage` was used, or a fake success when the host was absent | store through `Store` / `dataWrite`; say "not saved" in the UI when the host is missing |
+| The last edit is lost when the window closes | `close()` was called without flushing | register `store.flush()` in `AppClose.on(cb)` (the scaffold's `close.js` does it) |
+| Host calls fail from an iframe | the bridge is injected into the top document only | call the host from the top document and `postMessage` the result into the iframe |
+| Reading local files fails | an app window has no Node and no file access | upgrade to a local backend plugin when file/directory access is needed |
+| 404 on another machine | a drive letter or `..` in a resource path | keep resources inside the app folder and reference them relatively |
+
+## Next
+
+- Want a plugin with a backend / console / canvas nodes: that is a **local backend plugin** (see the built-in skill `mtnode-plugin-dev`), not an app.
+- Want AI to finish the app: say a sentence in the chat box on App Center → Develop; or hand the requirement to the global assistant ✦ and say "follow the mtnode-app-dev contract and start from templates/app-scaffold".

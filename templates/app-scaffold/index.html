@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 应用窗口走 file:// 装载：资源全用相对路径；CSP 允许 'self'（含 file:// 同目录）+ 内联样式 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'"
+    />
+    <title>MTNode 应用脚手架</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <!-- 透明无框窗口：整块自己画背景与圆角；拖动区靠 .drag 上的 -webkit-app-region -->
+    <div class="app">
+      <header class="app-head drag">
+        <div class="app-head-main">
+          <span class="app-logo" aria-hidden="true">
+            <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="4" cy="9" r="2.2" />
+              <circle cx="13.6" cy="4.2" r="2.2" />
+              <circle cx="13.6" cy="13.8" r="2.2" />
+              <path d="M6 8.2 11.5 5.1M6 9.8l5.5 3.1" stroke-linecap="round" />
+            </svg>
+          </span>
+          <div class="app-titles">
+            <b id="appTitle">MTNode 应用脚手架</b>
+            <span id="appSub">复制进应用安装子文件夹后替换占位符</span>
+          </div>
+        </div>
+        <div class="app-head-actions">
+          <button id="langBtn" class="icon-btn no-drag" type="button" title="Switch to English" aria-label="Switch to English">EN</button>
+          <button id="btnClose" class="icon-btn no-drag" type="button" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M2 2l8 8M10 2l-8 8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- 降级横幅：appHost 缺席 / 接口被裁剪时这里必须出现，而不是白屏 -->
+      <div id="capBar" class="cap-bar" hidden></div>
+
+      <main class="app-body">
+        <!-- 上手说明：与新建应用的默认欢迎页（templates/app-default/index.html）逐字同一段话。
+             两份语言都在 DOM 里（[data-lang]），由 <html lang> 选一份显示（见 style.css，
+             首帧不会两套叠在一起）；app.js 的语言按钮只改 <html lang>。
+             改应用时这两段可以整块删掉。 -->
+        <section class="intro">
+          <h1 class="intro-h" data-lang="zh">你的应用，从这句话开始</h1>
+          <h1 class="intro-h" data-lang="en">Your app starts with one sentence</h1>
+          <p class="intro-p" data-lang="zh">在 MTNode「应用中心 → 开发」的<b>会话栏</b>里写下你想要什么 —— 这个页面就会变成你要的样子。</p>
+          <p class="intro-p" data-lang="en">Write what you want in the <b>chat box</b> under App Center → Develop, and this page becomes it.</p>
+          <ol class="intro-steps">
+            <li data-lang="zh"><b>说一句就行</b>：比如「做一个便签墙，能加、能删、能保存」。</li>
+            <li data-lang="en"><b>One sentence is enough</b>: for example, “a sticky-note wall I can add to, delete from and keep”.</li>
+            <li data-lang="zh"><b>马上看到变化</b>：说完这一句，这个页面会自己刷新成新的样子。</li>
+            <li data-lang="en"><b>Watch it change</b>: once you send that sentence, this page reloads itself into the new version.</li>
+            <li data-lang="zh"><b>不满意就继续说</b>：「标题大一点」「换成浅色」「加个搜索框」，一轮一轮改到满意。</li>
+            <li data-lang="en"><b>Keep talking</b>: “a bigger title”, “a light theme”, “add a search box” — round by round, until it fits.</li>
+          </ol>
+          <p class="intro-note" data-lang="zh">不用写代码，也不用看懂任何技术名词。下面这块便签是示例，替换掉它就是你的应用。</p>
+          <p class="intro-note" data-lang="en">No code, and no technical vocabulary needed. The note demo below is sample content — replace it and the app is yours.</p>
+        </section>
+
+        <label class="field">
+          <span class="field-label" data-lang="zh">一条便签（内容会自动存进数据文件夹）</span>
+          <span class="field-label" data-lang="en">A note (saved into your data folder automatically)</span>
+          <input id="noteInput" class="field-input" type="text" placeholder="写点什么，回车保存" autocomplete="off" />
+        </label>
+
+        <div class="row">
+          <button id="btnAdd" class="btn primary" type="button">
+            <span data-lang="zh">保存便签</span><span data-lang="en">Save note</span>
+          </button>
+          <button id="btnClear" class="btn" type="button">
+            <span data-lang="zh">清空</span><span data-lang="en">Clear</span>
+          </button>
+          <span id="saveHint" class="hint"></span>
+        </div>
+
+        <ul id="noteList" class="list"></ul>
+
+        <!-- 数据文件夹：默认跟着 MTNode 数据目录走（<数据目录>/apps-data/<id>/），
+             用户可以在窗口里改成自己的文件夹；改完不搬旧数据，原目录内容原样留着。 -->
+        <section id="dataRow" class="data-row">
+          <div class="data-head">
+            <span class="data-k" data-lang="zh">数据文件夹</span>
+            <span class="data-k" data-lang="en">Data folder</span>
+            <span id="dataDirVal" class="data-v">—</span>
+          </div>
+          <div id="dataCap" class="data-cap"></div>
+          <div class="row">
+            <button id="btnDataOpen" class="btn" type="button">
+              <span data-lang="zh">打开数据文件夹</span><span data-lang="en">Open data folder</span>
+            </button>
+            <button id="btnDataPick" class="btn" type="button">
+              <span data-lang="zh">更改…</span><span data-lang="en">Change…</span>
+            </button>
+            <button id="btnDataDefault" class="btn" type="button" hidden>
+              <span data-lang="zh">回到默认位置</span><span data-lang="en">Back to default</span>
+            </button>
+          </div>
+        </section>
+
+        <dl class="kv">
+          <dt data-lang="zh">应用 id</dt>
+          <dt data-lang="en">App id</dt>
+          <dd id="kvId">—</dd>
+          <dt data-lang="zh">账号</dt>
+          <dt data-lang="en">Account</dt>
+          <dd id="kvAccount">—</dd>
+          <dt data-lang="zh">落盘</dt>
+          <dt data-lang="en">Storage</dt>
+          <dd id="kvStore">—</dd>
+        </dl>
+      </main>
+
+      <footer class="app-foot">
+        <span data-lang="zh">应用只做前端；模型与工具留在 MTNode 主程序 / 画布一侧。关闭窗口前会自动存盘。</span>
+        <span data-lang="en">Apps are front-end only; models and tools stay in MTNode itself. Your work is saved before the window closes.</span>
+      </footer>
+    </div>
+
+    <script src="./apphost.js"></script>
+    <script src="./store.js"></script>
+    <script src="./close.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

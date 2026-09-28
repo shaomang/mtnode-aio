@@ -357,7 +357,7 @@ if (!(st && st.ok && st.result && st.result.gateway)) fail('本地协议没通:s
 ok(true, '本地协议可用:status → gateway ' + st.result.gateway)
 
 /* [1] 空 input:护栏在,不 spawn 运行时、不建桥 */
-await req('run', { reqId: 'smoke-empty', workspace: WS, input: '   ', model: 'deepseek-v4-flash' })
+await req('run', { reqId: 'smoke-empty', workspace: WS, input: '   ', model: 'deepseek-flash' })
 const emptyErr = await nextEvent((e) => e.reqId === 'smoke-empty' && e.type === 'error', 5000, 'error(空任务)')
 if (!/任务内容为空/.test(String(emptyErr.data && emptyErr.data.message))) {
   fail('空 input 报的不是「任务内容为空」:' + JSON.stringify(emptyErr.data))
@@ -371,7 +371,7 @@ const RUN1 = 'smoke-run-1'
 const TAG1 = 'smoke-gate-1'
 await req('run', {
   reqId: RUN1, workspace: WS, input: '门控冒烟:这一轮不该收到别人的询问窗',
-  model: 'deepseek-v4-flash', maxTokens: 4096, apiKey: 'smoke-not-a-real-key',
+  model: 'deepseek-flash', maxTokens: 4096, apiKey: 'smoke-not-a-real-key',
   baseUrl: 'http://127.0.0.1:9', systemPrompt: '', dshHome: HOME,
   permissionPreset: 'mtnode-unattended', cancelTag: TAG1,
 })
@@ -480,7 +480,7 @@ const RUN2 = 'smoke-run-2'
 const TAG2 = 'smoke-gate-2'
 const portsBefore = bridgePorts.length
 await req('run', {
-  reqId: RUN2, workspace: WS, input: '门控冒烟:第二轮', model: 'deepseek-v4-flash',
+  reqId: RUN2, workspace: WS, input: '门控冒烟:第二轮', model: 'deepseek-flash',
   maxTokens: 4096, apiKey: 'smoke-not-a-real-key', baseUrl: 'http://127.0.0.1:9',
   systemPrompt: '', dshHome: HOME, permissionPreset: 'mtnode-unattended', cancelTag: TAG2,
 })

@@ -1,0 +1,269 @@
+/* app.js — 脚手架逻辑：宿主探测 → 降级横幅 → 数据文件夹（可改）→ 便签落盘 → 关窗收尾
+ *
+ * 应用的三件基础设施都在这一个例子里（照抄改业务即可）：
+ *   1) 落盘：Store.create(...) 包一层「脏标记 + 防抖自动存盘」，关窗前由 AppClose 强制冲刷；
+ *   2) 数据文件夹：显示当前落点、可在窗口里改（dataDirPick，只有用户亲自选过的那一次生效）、
+ *      一键在资源管理器中打开；宿主不给这套能力时整块隐藏，不假装能改；
+ *   3) 正确关闭：关闭按钮走 appHost.close()，宿主先发 willClose 让本页收尾（写盘 + 退订），
+ *      本页再回包；主程序退出时同样走这一条。
+ *
+ * 契约要点（详见 mtnode-app-dev 技能）：
+ *  - 只调 window.AppHost 里探测过的能力；
+ *  - appHost 缺席时功能退化成内存态，界面明确说「不会保存」，不静默丢数据；
+ *  - 应用侧不碰凭据、不自己拼本机路径（落盘一律交宿主）。
+ */
+(function () {
+  "use strict";
+
+  var H = window.AppHost || {
+    cap: { host: false, data: false, dataDir: false, dataDirPick: false, account: false, net: false, close: false, shown: false },
+    getData: async function () {
+      return { ok: false, data: null };
+    },
+    setData: async function () {
+      return { ok: false, error: "no_host" };
+    },
+    accountText: async function () {
+      return "未接入宿主";
+    },
+    on: function () {
+      return false;
+    },
+    onShown: function () {
+      return false;
+    },
+    offAll: function () {},
+    close: function () {},
+    quit: function () {},
+  };
+  var AC = window.AppClose || { on: function () {}, flush: async function () {} };
+  var Store = window.Store;
+
+  var $ = function (id) {
+    return document.getElementById(id);
+  };
+
+  /* 便签数据：形状与 data.json 里落盘的对象一致 */
+  var state = { notes: [] };
+  var store =
+    Store && Store.create
+      ? Store.create({ host: H, file: "data.json", debounceMs: 400, initial: state })
+      : null;
+  /* 没带 store.js 时的兜底：直接整份写（老应用就是这写法，照样能跑） */
+  function saveNow() {
+    if (store) return store.flush();
+    return H.setData(state);
+  }
+
+  /* 语言：只改 <html lang>，显示哪一份由 style.css 的 [data-lang] 规则决定
+     （首帧就不会两套文案叠在一起）；没有 JS 时中文那份照常显示。 */
+  var lang = /^zh/i.test(navigator.language || "") ? "zh" : "en";
+  function paintLang() {
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+    var btn = $("langBtn");
+    if (!btn) return;
+    btn.textContent = lang === "zh" ? "EN" : "中";
+    btn.title = lang === "zh" ? "Switch to English" : "切换到中文";
+    btn.setAttribute("aria-label", btn.title);
+  }
+  var langBtn = $("langBtn");
+  if (langBtn)
+    langBtn.addEventListener("click", function () {
+      lang = lang === "zh" ? "en" : "zh";
+      paintLang();
+    });
+  paintLang();
+
+  /* ── 能力横幅：桥缺席 / 接口被裁剪时这里必须出现，而不是白屏 ── */
+  function setCapBar() {
+    var bar = $("capBar");
+    var missing = [];
+    if (!H.cap.host) missing.push("宿主未接入（在浏览器里打开？）");
+    else {
+      if (!H.cap.data) missing.push("数据读写接口缺失");
+      if (!H.cap.account) missing.push("账号接口缺失");
+      if (!H.cap.net) missing.push("服务端请求接口缺失");
+    }
+    if (!missing.length) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    bar.textContent = "降级运行：" + missing.join(" · ") + " —— 便签只留在内存，关窗即丢。";
+  }
+
+  function persistText() {
+    return H.cap.data ? "由宿主落盘（data.json）" : "内存（不保存）";
+  }
+
+  function hint(text, kind) {
+    var el = $("saveHint");
+    el.textContent = text;
+    el.dataset.kind = kind || "";
+    if (!text) return;
+    setTimeout(function () {
+      if (el.textContent === text) el.textContent = "";
+    }, 2400);
+  }
+
+  function render() {
+    var ul = $("noteList");
+    ul.textContent = "";
+    for (var i = 0; i < state.notes.length; i++) {
+      var li = document.createElement("li");
+      li.className = "list-item";
+      li.textContent = state.notes[i];
+      ul.appendChild(li);
+    }
+    $("kvStore").textContent = persistText();
+  }
+
+  /* ── 数据文件夹：显示 / 打开 / 改 ── */
+  function renderDataDir(info) {
+    var box = $("dataRow");
+    var val = $("dataDirVal");
+    var capLine = $("dataCap");
+    var inf = info && info.ok !== false ? info : null;
+    if (!inf) {
+      val.textContent = "—";
+      val.title = "";
+      capLine.textContent =
+        H.cap.dataDir
+          ? "读不到数据文件夹：" + ((info && info.error) || "未知错误")
+          : "本版本宿主没有「数据文件夹」这套能力：数据由宿主保管，应用看不到路径。";
+      $("btnDataPick").hidden = true;
+      $("btnDataOpen").hidden = true;
+      $("btnDataDefault").hidden = true;
+      return;
+    }
+    val.textContent = String(inf.dir || "");
+    val.title = String(inf.dir || "");
+    capLine.textContent = inf.def
+      ? "默认位置（跟着 MTNode 的数据目录走）"
+      : "自定义位置（你亲自选的）";
+    box.dataset.custom = inf.def ? "" : "1";
+    $("btnDataPick").hidden = !H.cap.dataDirPick;
+    $("btnDataOpen").hidden = !H.cap.dataDirOpen;
+    $("btnDataDefault").hidden = !!inf.def;
+  }
+
+  async function refreshDataDir() {
+    if (!H.cap.dataDir) {
+      renderDataDir(null);
+      return null;
+    }
+    var r = await H.dataDirGet();
+    renderDataDir(r);
+    return r;
+  }
+
+  async function boot() {
+    setCapBar();
+    if (store) {
+      var loaded = await store.load();
+      if (loaded.ok && loaded.data && Array.isArray(loaded.data.notes)) {
+        state.notes = loaded.data.notes.map(String);
+      }
+      store.on(function (ev, arg) {
+        if (ev === "saved") hint("已保存");
+        else if (ev === "fail") hint("保存失败：" + String(arg || ""), "warn");
+      });
+    } else {
+      /* 没带 store.js：老写法兜底（读一次就够） */
+      var r = await H.getData();
+      if (r.ok && r.data && Array.isArray(r.data.notes)) state.notes = r.data.notes.map(String);
+    }
+    $("kvId").textContent = H.id || (H.host && H.host.id) || "（未知 id）";
+    $("kvAccount").textContent = await H.accountText();
+    render();
+    await refreshDataDir();
+
+    /* 窗口又被显示 / 置顶：刷新账号与数据文件夹（用户可能在别处改过） */
+    H.onShown(async function () {
+      $("kvAccount").textContent = await H.accountText();
+      await refreshDataDir();
+    });
+
+    /* 关窗收尾：先冲刷未落盘的内容，再退订事件 —— 宿主会等这一步（上限 1.5s） */
+    AC.on(function () {
+      return Promise.all([saveNow(), Promise.resolve(H.offAll())]);
+    });
+  }
+
+  function addNote() {
+    var input = $("noteInput");
+    var text = String(input.value || "").trim();
+    if (!text) return;
+    state.notes.push(text);
+    input.value = "";
+    render();
+    if (store) store.set({ notes: state.notes });
+    else
+      H.setData({ notes: state.notes }).then(function (w) {
+        hint(w && w.ok !== false ? "已保存" : "宿主不可用：本条只留在内存", w && w.ok !== false ? "" : "warn");
+      });
+  }
+
+  function clearNotes() {
+    state.notes = [];
+    render();
+    if (store) store.set({ notes: [] });
+    else H.setData({ notes: [] });
+  }
+
+  /* 换数据文件夹：只有用户亲自点、亲自选目录那一次才生效（宿主侧同样只认它） */
+  async function pickDataDir() {
+    if (!H.cap.dataDirPick) return;
+    var before = await H.dataDirGet();
+    var r = await H.dataDirPick();
+    if (!r || r.canceled) return;
+    if (r.ok === false) {
+      hint("选择失败：" + (r.error || ""), "warn");
+      return;
+    }
+    await saveNow(); /* 换目录前把还没写的内容落到**旧**目录，不丢 */
+    await refreshDataDir();
+    var moved = r.dir && before && before.dir && r.dir !== before.dir;
+    hint(moved ? "已切换数据文件夹（原目录内容留在原处）" : "已设置数据文件夹");
+    /* 新目录当场生效：把当前内存态写过去（不搬旧数据，旧文件原样留在原处） */
+    if (store) {
+      store.reset(state);
+      store.set(state);
+    } else {
+      H.setData(state);
+    }
+  }
+
+  async function openDataDir() {
+    if (!H.cap.dataDirOpen) return;
+    var r = await H.dataDirOpen();
+    if (r && r.ok === false) hint("打不开文件夹：" + (r.error || ""), "warn");
+  }
+
+  async function resetDataDir() {
+    if (!H.cap.dataDirReset) return;
+    await saveNow(); /* 先把内容留在当前（自定义）目录，再切回默认 */
+    var r = await H.dataDirReset();
+    if (r && r.ok === false) {
+      hint("切回默认失败：" + (r.error || ""), "warn");
+      return;
+    }
+    await refreshDataDir();
+    hint("已回到默认数据文件夹（原目录内容留在原处）");
+  }
+
+  $("btnAdd").addEventListener("click", addNote);
+  $("btnClear").addEventListener("click", clearNotes);
+  $("btnClose").addEventListener("click", function () {
+    saveNow();
+    H.close();
+  });
+  $("btnDataPick").addEventListener("click", pickDataDir);
+  $("btnDataOpen").addEventListener("click", openDataDir);
+  $("btnDataDefault").addEventListener("click", resetDataDir);
+  $("noteInput").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") addNote();
+  });
+
+  boot();
+})();

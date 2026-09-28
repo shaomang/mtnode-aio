@@ -232,14 +232,25 @@ ok(
   /width:\s*10px/.test(scrollbarRule),
   "classic 滚动条宽度有共同来源（components.css ::-webkit-scrollbar width:10px → 两侧扣掉同一宽度）",
 );
-/* 派生选择器（.xxx .n-text / .n-text.n-y）可能悄悄只给一层加度量，全量扫一遍 */
+/* 派生选择器（.xxx .n-text / .n-text.n-y）可能悄悄只给一层加度量，全量扫一遍。
+   只看「主语就是层本身」的规则：层内某个子元素自己的排版（内嵌图像胶囊块的
+   .pc-pill / .pc-thumb / .pc-name / .pc-del，见 renderer/css/canvas.css）不是在给
+   镜像层加度量，不该算旁路 —— 层与 transparent textarea 的对齐不受它们影响。 */
+const subjOf = (part) => {
+  const seg = String(part || "")
+    .trim()
+    .split(/\s+|>/)
+    .filter(Boolean);
+  return seg[seg.length - 1] || "";
+};
 const stray = [];
 for (const r of ALL_RULES) {
   if (TA_TARGETS.concat([".n-text.n-text-layered"]).some((t) => r.parts.indexOf(t) >= 0))
     continue;
   if (HL_TARGETS.some((t) => r.parts.indexOf(t) >= 0)) continue;
-  const touchesT = r.parts.some((p) => /\.n-text\b/.test(p));
-  const touchesH = r.parts.some((p) => /n-prompt-hl/.test(p));
+  const subj = r.parts.map(subjOf).filter(Boolean);
+  const touchesT = subj.some((p) => /\.n-text\b/.test(p));
+  const touchesH = subj.some((p) => /n-prompt-hl/.test(p));
   if (!touchesT && !touchesH) continue;
   for (const p of METRICS)
     if (r.decls[p] !== undefined) stray.push(r.file + ":" + r.sel + "{" + p + ":" + r.decls[p] + "}");
@@ -275,6 +286,12 @@ const sandbox = {
   /* 候选清单只影响 @ 是否着色，与本轮排版一致性无关 → 测试侧替身 */
   refCandidates: () => [{ id: "nA", title: "素材甲" }],
   refTagCandidates: () => ["资料"],
+  /* 内嵌图像胶囊（登记表 / token 扫描）与本切片（镜像层正文同源）无关 → 替身：
+     本切片的节点是 proc_image，真源 promptCapsuleSupported 对它同样回 false、
+     登记表同样为空；有一条真实的「不支持 → 不盖胶囊」分支被跑到。真源覆盖见
+     test/smoke-inline-img.js 的 [3]（编号注入）与 [5]（镜像层缩略图） */
+  promptCapsuleSupported: () => false,
+  promptCapsuleMap: () => new Map(),
 };
 vm.createContext(sandbox);
 vm.runInContext(
@@ -338,16 +355,23 @@ ok(
   "没有残留的 endsWith(\"\\n\") 手工补换行 hack（分支补行正是漂移来源）",
 );
 ok(
-  /promptRefBackdropHtml\(\s*String\(\s*ta\.value\s*\|\|\s*""\s*\)\s*,\s*node\s*\)/.test(HL),
-  "镜像层正文直接取 textarea 当前值（唯一真源），且空值兜底",
+  /promptRefBackdropHtml\(\s*String\(\s*ta\.value\s*\|\|\s*""\s*\)\s*,\s*node\s*(?:,\s*ta\.__mtPromptOpts\s*,?\s*)?\)/.test(
+    HL,
+  ),
+  "镜像层正文直接取 textarea 当前值（唯一真源），且空值兜底（正文框自身的 refs / 胶囊口径随第三参一并传下去）",
 );
-eqStr(
-  (function () {
-    const m = HL.match(/innerHTML\s*=\s*([^;]+);/);
-    return m ? m[1].trim() : "<无>";
-  })(),
-  'promptRefBackdropHtml(String(ta.value || ""), node)',
-  "innerHTML 只有这一处赋值（不存在第二条写回路径把正文改写成长度不同的版本）",
+/* 这一处写回后来多带了第三参（ta.__mtPromptOpts，见 mountPromptTextarea），
+   正文仍只有一处 innerHTML 赋值、且取值口径不变 */
+const innerHtmlAsg = (function () {
+  const m = HL.match(/innerHTML\s*=\s*([^;]+);/);
+  return m ? m[1].replace(/\s+/g, " ").trim() : "<无>";
+})();
+ok(
+  innerHtmlAsg.indexOf('promptRefBackdropHtml( String(ta.value || ""), node') === 0 &&
+    (HL.match(/\.innerHTML\s*=/g) || []).length === 1,
+  "innerHTML 只有这一处赋值（不存在第二条写回路径把正文改写成长度不同的版本）（得到 " +
+    JSON.stringify(innerHtmlAsg) +
+    "）",
 );
 ok(
   HL.indexOf("hl.scrollTop = ta.scrollTop") >= 0 &&

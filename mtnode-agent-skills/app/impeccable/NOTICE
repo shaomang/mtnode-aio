@@ -1,0 +1,26 @@
+Impeccable — design guidance for AI coding agents
+Upstream: https://github.com/pbakaus/impeccable  ·  docs: https://impeccable.style
+Copyright 2025 Paul Bakaus
+
+This directory is a modified copy of the upstream `impeccable` skill
+(`SKILL.md`, `reference/**`, `scripts/impeccable.cmd`, `scripts/VERSION`),
+redistributed under the Apache License, Version 2.0 — the full license text
+ships next to this file as `LICENSE`. Upstream copyright and license notices
+are retained.
+
+Local modifications (nothing else differs from upstream):
+
+- front matter: added `title` and `menu: user` (so the skill shows up in
+  MTNode's user skill list); `argument-hint` no longer advertises the
+  removed commands.
+- `SKILL.md`: added the "MTNode 本地口径" section (first-use engine install,
+  engine location `%USERPROFILE%\.impeccable\bin\`, launcher-unavailable
+  fallback), rewrote the Setup path to this skill's own folder, removed the
+  native and live-browser command rows, and dropped the Pin / Hooks / Doctor
+  sections.
+- `reference/`: removed `ios.md`, `android.md`, `adapt.native.md`,
+  `audit.native.md` (no native delivery surface here) and `live.md`,
+  `live-setup.md`, `generate.md`, `hooks.md`, `doctor.md` (they need a live
+  browser session and the not-shipped console tooling).
+
+No warranty of any kind is provided; see `LICENSE` for the terms.

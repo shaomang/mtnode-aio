@@ -1,0 +1,111 @@
+/* ============ 内嵌图片共享样式（renderer/app-inline-img.js）============
+   粘贴 / 拖入 / 落盘 / 引用登记 / 无引用回收那套能力的样式，三处共用：
+   审阅编辑器（app-review.js 的 .rv-rich，经 bindEditor 挂上 .ii-rich）、
+   画布节点正文框、会话 / 助手输入框（textarea，经 bindTextarea 挂上 .ii-line-input，
+   正文里是一行 ![名称](绝对路径)，上面那排胶囊条就是 .ii-line-chips）。
+   配色一律用 base.css 的主题变量。 */
+
+/* ── 插图小对话框（mtDialogForm 的 custom 区）：选择图片文件 / 从剪贴板粘贴 ── */
+.ii-pick-btns { display: flex; flex-direction: column; gap: 8px; }
+.ii-img-pick {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  text-align: left; cursor: pointer;
+  border: 1px solid var(--bd2); background: var(--panel2);
+  color: var(--ink); border-radius: 6px; padding: 9px 12px;
+}
+.ii-img-pick b { font-size: 13px; }
+.ii-img-pick span { font-size: 11px; color: var(--muted); }
+.ii-img-pick:hover {
+  border-color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, var(--panel2));
+}
+
+/* ── 编辑区内的内嵌图片：受控尺寸（不撑破正文，也不糊）+ 点击选中态 ──
+   选中态由 app-inline-img.js 的 bindEditor 加 .ii-img-sel（同时只留一张）。 */
+.ii-rich img {
+  max-width: 100%;
+  max-height: 420px;
+  height: auto;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2);
+  vertical-align: top;
+}
+.ii-rich img.ii-img-sel {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cyan) 45%, transparent);
+}
+
+/* ── 输入框上方的一排内嵌图胶囊（会话 #agentInput / 助手 #assistInput）──
+   一枚胶囊 = 正文里的一行 ![名称](绝对路径)（#行号与正文行号一一对应）：
+   点胶囊 → 选中正文那一行；点缩略图 → 灯箱看图；✕ → 删掉整行。
+   容器由 app-assist.js 的 chatImgStripEl 插在输入区上方，随输入区一起走。 */
+.ii-line-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: none;
+  padding: 0 4px 8px;
+}
+.ii-line-chips[hidden] { display: none; }
+.ii-line-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel2);
+  cursor: pointer;
+}
+.ii-line-chip:hover { border-color: var(--cyan); }
+.ii-line-chip-thumb {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: var(--panel);
+  object-fit: cover;
+  font-size: 15px;
+  color: var(--muted);
+}
+img.ii-line-chip-thumb { cursor: zoom-in; }
+.ii-line-chip-idx {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  color: var(--cyan2);
+}
+.ii-line-chip-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ii-line-chip-x {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+.ii-line-chip-x:hover {
+  border-color: var(--bd2);
+  color: var(--ink);
+  background: var(--panel);
+}

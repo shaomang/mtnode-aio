@@ -25,7 +25,28 @@ UPLOAD_FILES = (
     "deploy.sh",
     "patch-nginx.py",
     "seed-skills.mjs",
+    # 充值 / 钱包（见 docs/recharge-design.md）
+    "wallet.mjs",
+    "alipay-provider.mjs",
+    "alipay-keygen.mjs",
+    # 线上只读探针：查这个 APPID 到底签约了哪些支付产品（控制台看不到接口权限）
+    "alipay-probe.mjs",
+    "qr-encode.mjs",
+    "migrate-wechat-owner.mjs",
 )
+# 管理台静态页（独立界面，站点不设入口）：整目录上传，deploy.sh 同时装进
+# /opt/mtnode-store/admin（服务自身 /admin/ 路由）与 /var/www/mtnode/admin（nginx 静态）。
+ADMIN_LOCAL = ROOT / "admin"
+REMOTE_ADMIN = REMOTE_TMP + "/admin"
+# 支付同步跳回页（return_url，支付宝收银台付完款跳回这里）：整目录上传，
+# deploy.sh 装进 /var/www/mtnode/pay-done（nginx 静态）。站点无入口、noindex、不参与入账。
+PAYDONE_LOCAL = ROOT / "pay-done"
+REMOTE_PAYDONE = REMOTE_TMP + "/pay-done"
+# 应用目录静态清单与 zip / 图标（客户端读 http://mt-agent.com/mtnode/apps/catalog.json，
+# 条目里的 zipUrl / icon 相对该目录）：整目录上传，deploy.sh 装进 /var/www/mtnode/apps。
+# catalog.json 手写或由 `python upload-app.py --catalog-out apps/catalog.json` 生成。
+APPS_LOCAL = ROOT / "apps"
+REMOTE_APPS = REMOTE_TMP + "/apps"
 SKILLS_LOCAL = ROOT.parent / "ext-repo" / "skills"
 REMOTE_SKILLS = "/tmp/mtnode-store-skills"
 
@@ -143,6 +164,24 @@ def main() -> None:
                 continue
             sftp.put(str(src), REMOTE_TMP + "/" + name)
             print("put", name)
+        if ADMIN_LOCAL.is_dir():
+            rm_tree(sftp, REMOTE_ADMIN)
+            n = put_dir(sftp, ADMIN_LOCAL, REMOTE_ADMIN)
+            print("uploaded admin", n, "files to", REMOTE_ADMIN)
+        else:
+            print("skip missing admin/")
+        if PAYDONE_LOCAL.is_dir():
+            rm_tree(sftp, REMOTE_PAYDONE)
+            n = put_dir(sftp, PAYDONE_LOCAL, REMOTE_PAYDONE)
+            print("uploaded pay-done", n, "files to", REMOTE_PAYDONE)
+        else:
+            print("skip missing pay-done/")
+        if APPS_LOCAL.is_dir():
+            rm_tree(sftp, REMOTE_APPS)
+            n = put_dir(sftp, APPS_LOCAL, REMOTE_APPS)
+            print("uploaded apps", n, "files to", REMOTE_APPS)
+        else:
+            print("skip missing apps/")
         if SKILLS_LOCAL.is_dir():
             rm_tree(sftp, REMOTE_SKILLS)
             n = put_dir(sftp, SKILLS_LOCAL, REMOTE_SKILLS)
@@ -152,6 +191,9 @@ def main() -> None:
     run(c, "chmod +x /tmp/mtnode-store-upload/deploy.sh && bash /tmp/mtnode-store-upload/deploy.sh")
     c.close()
     print("ok http://mt-agent.com/mtnode/store-api/api/health")
+    print("apps: http://mt-agent.com/mtnode/apps/catalog.json （静态清单 + <id>.zip / icons/）")
+    print("      上传自己的应用包：python upload-app.py --zip <AppName>.zip --id <app-id> --title <标题>")
+    print("admin: https://www.mt-agent.com/mtnode/admin/  (站点无入口，仅白名单微信扫码登录)")
     print("seed hint:")
     print(
         "  MTNODE_STORE_URL=http://127.0.0.1:8787 "
@@ -159,6 +201,22 @@ def main() -> None:
         "MTNODE_STORE_PASS_FILE=/opt/mtnode-store/.store-pass "
         "node /opt/mtnode-store/seed-skills.mjs"
     )
+    print("微信归属迁移 hint（先 dry-run，确认无误再去掉 --dry-run）:")
+    print(
+        "  cd /opt/mtnode-store && set -a && . /etc/mtnode-store.env && set +a && "
+        "node migrate-wechat-owner.mjs --unionid=<unionid> --target=ms2308 --dry-run"
+    )
+    print("充值通道 hint（支付宝当面付 · 公钥模式，详见 docs/recharge-design.md §凭据）:")
+    print("  1) 服务器上生成应用密钥对（私钥只落 /etc/mtnode-store/alipay，0600，不进仓库不打印）:")
+    print("     cd /opt/mtnode-store && node alipay-keygen.mjs --appid <开放平台APPID> --print env")
+    print("  2) 把打印出的「应用公钥」裸 base64 粘到 开放平台 → 应用 → 开发设置 → 接口加签方式")
+    print("     （自定义密钥/公钥模式，官方口径 https://opendocs.alipay.com/common/055l5k）")
+    print("  3) 控制台返回的「支付宝公钥」存成 /etc/mtnode-store/alipay/alipay_public_key.pem")
+    print("  4) 把 --print env 那段（APPID / _PRIVATE_KEY_PATH / _PUBLIC_KEY_PATH / _NOTIFY_URL）")
+    print("     追加进 /etc/mtnode-store.env → systemctl restart mtnode-store")
+    print("     注意 NOTIFY_URL 必须用 www 域名：apex 会 301，支付宝不跟随重定向 = 丢异步通知")
+    print("  5) 自检：curl -s https://www.mt-agent.com/mtnode/store-api/api/pay/alipay/status")
+    print("     → configured:true 且 notifyWarning 为空")
 
 
 if __name__ == "__main__":

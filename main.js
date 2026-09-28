@@ -50,7 +50,11 @@ function gifenc() {
 
 /* dsh agent 适配器（网关侧车）：全部 dsh 能力经此模块，契约见 dsh/DESIGN.md。
    本文件与渲染层不 import 任何 dsh 代码，dsh 升级只触及 dsh/gateway/。 */
-const { createDshAdapter } = require("./dsh/main-dsh.js");
+const { createDshAdapter, GATEWAY_PATH: DSH_GATEWAY_PATH } = require("./dsh/main-dsh.js");
+/* 子代理策略（嵌套深度 / 后台并行委派 / fork / 总开关）→ 只改写 cordis.yml 里
+   subagent* 这 8 行的配置值与 disabled 取值；dsh 三层契约一字未动。
+   口径与网关的 applyCordisPreset 同源：新运行时（新会话）首个回合即用所选值。 */
+const { applySubagentPolicy, policyFromConfig } = require("./dsh-agent-policy.js");
 const I18n = require("./renderer/i18n.js");
 const {
   registerUpdateIpc,
@@ -78,6 +82,9 @@ const pdfWrite = require("./pdf-write.js");
 const { registerRollbackIpc } = require("./rollback-store.js");
 const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
+/* 应用宿主（用户自建应用）：根目录 / 云端目录 / 安装·更新·卸载 / 导出 zip / 变更探测 /
+   独立窗口（preload-app.js 的 window.appHost），见 apps-store.js */
+const { registerAppsIpc, shutdownApps, setQuitHandler, mirrorAppCanvas } = require("./apps-store.js");
 /* 长周期任务系统：运行态 checkpoint / 交付目录 / 长期记忆（SQLite+FTS5），全在数据目录 */
 const { registerLongtaskIpc } = require("./longtask-store.js");
 /* AI 事实库（每张画布一份的极简条例库）：固定文件 <画布文件夹>/团队事实库/AI/ai-facts.json
@@ -96,7 +103,7 @@ function dshConfig() {
   return {
     enabled: d.enabled !== false,
     nodePath: typeof d.nodePath === "string" ? d.nodePath : "",
-    model: typeof d.model === "string" && d.model ? d.model : "deepseek-v4-flash",
+    model: typeof d.model === "string" && d.model ? d.model : "deepseek-flash",
     maxTokens: (() => {
       const n = Number(d.maxTokens);
       return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
@@ -109,6 +116,36 @@ function dshLog(p) {
   try {
     fs.appendFileSync(join(DATA(), "dsh.log"), "[" + new Date().toISOString() + "] " + p + "\n");
   } catch {}
+}
+/* 把用户设置的子代理策略写进 dsh 组合（cordis.yml）。
+   写入点：应用启动时（起网关之前）+ 每次 config:save 之后。
+   字节真的变了才落盘（同 config.json 的「相同就不碰磁盘」口径），落盘走 tmp+rename 原子替换，
+   免得与网关自己的改写（权限预设 / win32 sandbox 补丁）撞成半截文件。
+   失败只记日志：组合改不动不该把应用启动或配置保存带崩。 */
+function subagentPolicyPath() {
+  try {
+    return path.join(path.dirname(DSH_GATEWAY_PATH), "cordis.yml");
+  } catch {
+    return "";
+  }
+}
+function syncSubagentPolicy(cfg) {
+  const fp = subagentPolicyPath();
+  if (!fp) return { ok: false, reason: "网关路径不可用" };
+  try {
+    if (!fs.existsSync(fp)) return { ok: false, reason: "cordis.yml 不存在" };
+    const text = fs.readFileSync(fp, "utf8");
+    const r = applySubagentPolicy(text, policyFromConfig(cfg));
+    if (!r.changed) return { ok: true, changed: false };
+    const tmp = fp + ".tmp" + process.pid;
+    fs.writeFileSync(tmp, r.text, "utf8");
+    fs.renameSync(tmp, fp);
+    dshLog("subagent policy applied: " + JSON.stringify(policyFromConfig(cfg)));
+    return { ok: true, changed: true };
+  } catch (e) {
+    dshLog("subagent policy failed: " + ((e && e.message) || String(e)));
+    return { ok: false, reason: (e && e.message) || String(e) };
+  }
 }
 function dsh() {
   if (!dshAdapter) {
@@ -624,9 +661,9 @@ ipcMain.handle("config:load", () =>
           type: "text_openai",
           baseUrl: "https://api.deepseek.com",
           apiKey: "",
-          /* 新安装默认只带两个模型（flash / pro）；vision-exp 不进默认清单，
-             要识图在设置里自己加，或让 proc_text 自动切到其它视觉服务商。 */
-          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+          /* 新安装默认只带两个模型（flash / pro）；deepseek-flash = V4.1-Flash
+             原生多模态（能识图），旧的 vision-exp 已下线、不进默认清单。 */
+          models: ["deepseek-flash", "deepseek-v4-pro"],
           vision: true,
         },
         {
@@ -678,6 +715,8 @@ ipcMain.handle("config:save", (e, cfg) => {
     rememberConfigWritten(fp, next, text);
   }
   if (next && (next.locale === "en" || next.locale === "zh")) applyMainLocale(next.locale);
+  /* 子代理策略随配置一起落进 cordis.yml（不返回给渲染层，失败只进 dsh.log） */
+  syncSubagentPolicy(next);
   return { ok: true };
 });
 ipcMain.handle("config:patchProviders", (e, opts) =>
@@ -731,6 +770,18 @@ ipcMain.handle("workflow:load", (e, id) => {
 });
 function writeWorkflowJson(p, obj) {
   writeJson(p, obj);
+  /* 应用画布（wf.appId 由「新建应用」流程写入）：数据目录这份落盘后，顺手在应用目录里
+     镜像一份同名的 <AppName>.mtnodes（整目录搬走时不丢画布；导出 zip 不含它）。
+     best-effort：镜像失败只记日志，绝不让画布保存返回错误。 */
+  try {
+    const app = obj && typeof obj === "object" ? String(obj.appId || "") : "";
+    if (app) {
+      const r = mirrorAppCanvas(app, obj);
+      if (r && r.ok === false) errLog("[apps] 画布镜像失败：" + ((r && r.error) || ""));
+    }
+  } catch (err) {
+    errLog("[apps] 画布镜像异常：" + String((err && err.message) || err));
+  }
   return { ok: true, mtime: Date.now() };
 }
 ipcMain.handle("workflow:save", (e, { id, data }) => {
@@ -1307,11 +1358,16 @@ ipcMain.handle("net:open-debug", (e, o = {}) => {
 
 /* ---------------- IPC：资产 / 文件 ---------------- */
 
-/* 参考图输入落盘 / 导入上限：长宽任一超过 1080px 时等比缩小（仅 asset:copy、画布包导入等参考用途）。
-   生成输出走 asset:writeBase64，保持 API 返回的原尺寸。
+/* 资产落盘口径（asset:copy、asset:writeBase64、画布包导入同源）：
+   长边上限 1280px —— 长宽任一超过即等比缩小；**幂等**：已达标（长边 ≤1280px）时字节原样落盘，
+   不重编码、不改尺寸，且目标文件已存在且字节一致时直接跳过写盘（重复落盘同一张图零副作用）。
+   单张上限 4MB —— 超限一律拒绝并回明确错误，绝不悄悄写下一张撑爆磁盘 / 撑爆下游接口的图。
    asset:copy 带 native=true 时**原样复制**（不改尺寸、不重编码）—— 泛用「文件节点」载入图像
-   走的就是这一档：把用户给的文件按原样收下，节点上看到的就是原图的真实像素尺寸。 */
-const REF_IMAGE_MAX_DIM = 1080;
+   走的就是这一档：把用户给的文件按原样收下，节点上看到的就是原图的真实像素尺寸（单张 4MB 上限同样生效）。 */
+const ASSET_IMAGE_MAX_DIM = 1280;
+const ASSET_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
+/* 画布包导入沿用同一长边口径（原名保留，调用点不散落） */
+const REF_IMAGE_MAX_DIM = ASSET_IMAGE_MAX_DIM;
 /* 发往 API 的参考图（vision / 图生图 edits）同样上限 1080p */
 const API_REF_IMAGE_MAX_DIM = 1080;
 /* 透明图差分抠图的锚定参考图（第 1 通道基准）：**不缩放**原尺寸下发。
@@ -1348,6 +1404,34 @@ function shrinkImageBuffer(raw, ext, maxDim) {
   };
 }
 
+/* 单张资产超限的错误正文：带实际大小与口径，渲染层可直接提示用户（不吞成「写入失败」）。 */
+function assetTooLargeError(bytes, shrunk) {
+  const mb = (bytes / (1024 * 1024)).toFixed(1);
+  return (
+    I18n.t("图片过大") +
+    "：" +
+    mb +
+    "MB（" +
+    bytes +
+    " 字节），超过单张 4MB 上限" +
+    (shrunk ? "（按长边 " + ASSET_IMAGE_MAX_DIM + "px 压缩后仍超限）" : "（原样复制档同样受该上限约束）") +
+    "，已拒绝落盘"
+  );
+}
+
+/* 幂等落盘：目标文件已存在且与待写字节完全一致 → 跳过写盘（不刷 mtime、不重复落盘）。
+   返回是否真的写了盘。 */
+function writeAssetBytes(dest, buf) {
+  try {
+    if (fs.existsSync(dest) && fs.statSync(dest).size === buf.length) {
+      const old = fs.readFileSync(dest);
+      if (old.equals(buf)) return false;
+    }
+  } catch {}
+  fs.writeFileSync(dest, buf);
+  return true;
+}
+
 function assetOutExt(srcExt, outExt) {
   const s = String(srcExt || "")
     .toLowerCase()
@@ -1370,26 +1454,38 @@ ipcMain.handle("asset:copy", (e, { srcPath, wfId, name, native }) => {
   }
   const srcExt = path.extname(src).toLowerCase().replace(/^\./, "") || "png";
   const raw = fs.readFileSync(src);
-  /* native=true：整份字节原样落盘（尺寸 / 像素 / 编码都不动）；缺省仍按参考图上限缩到 1080 */
+  /* native=true：整份字节原样落盘（尺寸 / 像素 / 编码都不动）；缺省按资产落盘口径缩到长边
+     1280px（已达标时字节原样，不重编码、不改写）。两条路都过单张 4MB 上限。 */
+  const shrunk = !native;
   const { buf, ext } = native
     ? { buf: raw, ext: srcExt }
-    : shrinkImageBuffer(raw, srcExt, REF_IMAGE_MAX_DIM);
+    : shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
+  if (buf.length > ASSET_IMAGE_MAX_BYTES) {
+    throw new Error(assetTooLargeError(buf.length, shrunk));
+  }
   const dest = join(
     assetDir(wfId),
     String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, ext),
   );
-  fs.writeFileSync(dest, buf);
-  return { ok: true, path: dest };
+  const written = writeAssetBytes(dest, buf);
+  return { ok: true, path: dest, bytes: buf.length, written };
 });
 ipcMain.handle("asset:writeBase64", (e, { wfId, name, base64, ext }) => {
   const srcExt = String(ext || "png").toLowerCase().replace(/^\./, "");
-  const raw = Buffer.from(String(base64), "base64");
+  /* 容错：渲染层可能送来整条 data URL（FileReader 的形态）。Buffer.from(x,"base64") 对
+     data URL 不报错、只静默写出坏字节 —— 先剥前缀，坏图也能在源头堵住。 */
+  const raw = Buffer.from(factStripDataUrl(base64), "base64");
+  /* 与 asset:copy 同口径：长边 >1280px 等比缩小（已达标字节原样），单张 >4MB 拒绝并回明确错误。 */
+  const { buf, ext: outExt } = shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
+  if (buf.length > ASSET_IMAGE_MAX_BYTES) {
+    return { ok: false, error: assetTooLargeError(buf.length, true) };
+  }
   const dest = join(
     assetDir(wfId),
-    String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, srcExt),
+    String(name).replace(/[^\w.-]/g, "_") + assetOutExt(srcExt, outExt),
   );
-  fs.writeFileSync(dest, raw);
-  return { ok: true, path: dest };
+  const written = writeAssetBytes(dest, buf);
+  return { ok: true, path: dest, bytes: buf.length, written };
 });
 ipcMain.handle("asset:readDataUrl", (e, p) => {
   const buf = fs.readFileSync(p);
@@ -1429,6 +1525,106 @@ ipcMain.handle("asset:meta", (e, p) => {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }
+});
+
+/* ---------------- 资产图像删除（目录白名单校验） ----------------
+   只删**工作流资产目录** <数据目录>/assets/<wfId>/ 下的直属图像文件；白名单按数据目录现算
+   （不持久化、不认渲染层传来的任意路径），应用目录内一律拒绝 —— 守卫写法与 fact:deleteImages 同源：
+   不在白名单 = skipped，删失败 = failed，逐条处理绝不整体中断，回执自足（removed / skipped / failed）。 */
+const ASSET_IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
+/* 返回可删的规范化绝对路径；不合格一律返回 ""（调用方记 skipped）。 */
+function assetImageGuard(file) {
+  const src = String(file || "").trim();
+  if (!src || !path.isAbsolute(src)) return "";
+  const f = path.resolve(src);
+  if (f === path.parse(f).root) return "";
+  if (!ASSET_IMAGE_EXTS.has(path.extname(f).toLowerCase())) return "";
+  if (isInsideAppDir(f)) return "";
+  /* 白名单：父目录必须正好是 <数据目录>/assets/<wfId>（单层工作流资产目录） */
+  if (path.dirname(path.dirname(f)) !== path.resolve(join(DATA(), "assets"))) return "";
+  return f;
+}
+ipcMain.handle("asset:deleteImages", (e, opts) => {
+  const list = Array.isArray(opts && opts.paths) ? opts.paths : [];
+  const removed = [];
+  const skipped = [];
+  const failed = [];
+  for (const raw of list) {
+    const s = String(raw || "").trim();
+    if (!s) continue;
+    try {
+      const abs = assetImageGuard(s);
+      if (!abs) {
+        skipped.push(s);
+        continue;
+      }
+      if (fs.existsSync(abs)) {
+        if (!fs.statSync(abs).isFile()) {
+          skipped.push(abs);
+          continue;
+        }
+        fs.unlinkSync(abs);
+      }
+      removed.push(abs);
+    } catch {
+      failed.push(s);
+    }
+  }
+  return { ok: true, removed, skipped, failed };
+});
+
+/* ---------------- 输入框 / 草稿框内嵌图删除（目录 + 命名双白名单） ----------------
+   这两类图是「本功能自己落的临时图」：renderer/app-assist.js 的 chatImgWriteBase64 与
+   renderer/app-devnode.js 的 devEmbedWriteBase64 把剪贴板截图 / 内存 Blob 落成
+   <工作区>/.mtnode-input/、<数据目录>/chat-input|devnode-input/ 下的
+   paste-<时间戳36进制>.<ext>，正文（消息 / 草稿）按绝对路径引用它。
+   渲染层只在「这一行已从框里删掉 / 框被清空 / 会话被删除」且别处一处引用都没有时才来删。
+   两道判据同时满足才可删（与 renderer/app-inline-img.js 的 isChatInputImage 同源）：
+     ① 父目录名 ∈ {.mtnode-input, chat-input, devnode-input}；
+     ② 文件名 = paste-<36进制时间戳>.<图像扩展名>。
+   用户手动放进这些目录的图（名字不合规）、从资源管理器拖入被正文引用的本机图片
+   （目录不合规）一律 skipped —— 用户自己的文件绝不被本功能删。
+   回执与 asset:deleteImages 同形：逐条处理绝不整体中断，{ ok, removed, skipped, failed }。 */
+const CHAT_IMG_DIR_NAMES = new Set([".mtnode-input", "chat-input", "devnode-input"]);
+const CHAT_IMG_NAME_RE = /^paste-[0-9a-z]+\.(png|jpe?g|webp|gif|bmp)$/i;
+function chatInputImageGuard(file) {
+  const src = String(file || "").trim();
+  if (!src || !path.isAbsolute(src)) return "";
+  const f = path.resolve(src);
+  if (f === path.parse(f).root) return "";
+  if (!ASSET_IMAGE_EXTS.has(path.extname(f).toLowerCase())) return "";
+  if (isInsideAppDir(f)) return "";
+  if (!CHAT_IMG_DIR_NAMES.has(path.basename(path.dirname(f)))) return "";
+  if (!CHAT_IMG_NAME_RE.test(path.basename(f))) return "";
+  return f;
+}
+ipcMain.handle("chat-input:deleteImages", (e, opts) => {
+  const list = Array.isArray(opts && opts.paths) ? opts.paths : [];
+  const removed = [];
+  const skipped = [];
+  const failed = [];
+  for (const raw of list) {
+    const s = String(raw || "").trim();
+    if (!s) continue;
+    try {
+      const abs = chatInputImageGuard(s);
+      if (!abs) {
+        skipped.push(s);
+        continue;
+      }
+      if (fs.existsSync(abs)) {
+        if (!fs.statSync(abs).isFile()) {
+          skipped.push(abs);
+          continue;
+        }
+        fs.unlinkSync(abs);
+      }
+      removed.push(abs);
+    } catch {
+      failed.push(s);
+    }
+  }
+  return { ok: true, removed, skipped, failed };
 });
 
 ipcMain.handle("file:readText", (e, p) => {
@@ -4691,7 +4887,101 @@ function effectiveTimeout(timeoutMs) {
   return Number.isFinite(t) && t > 0 ? t : 0;
 }
 
-async function fetchJson(url, opts, timeoutMs = 180000, reqKey) {
+/* ═══════════════ 请求三档超时（连接 / 首字节 / 分块空闲） ═══════════════
+   对标 OpenCode 的 provider 配置：服务商记录可带 timeoutConnect / timeoutHeader /
+   timeoutChunk（毫秒），分别管「建立连接」「首个响应字节」「响应数据分块之间的空闲」。
+   数值来源优先级：渲染层随 spec 显式下发的字段 > 服务商对象上的字段 > 缺省 300000。
+   缺省值与老行为对齐（文本请求过去是整档 180000，现在三档各自 300000）；
+   timeoutMs 传 0 的调用（生图 / 取回生成结果）仍是不设时限，一个定时器都不挂。 */
+const TIMEOUT_DEFAULT_MS = 300000;
+/* 三档的名字（报错用；与渲染层 app-model-kind.js 的同名常量各自独立） */
+const TIMEOUT_TIER_LABEL = {
+  connect: "连接超时",
+  header: "首字节超时",
+  chunk: "分块超时",
+};
+function timeoutTierMs(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : TIMEOUT_DEFAULT_MS;
+}
+/* 从若干来源对象（spec / provider）里取三档数值：先命中先赢，取不到用缺省 */
+function timeoutTiersOf() {
+  const srcs = Array.prototype.slice.call(arguments).filter(Boolean);
+  const pick = (k) => {
+    for (const s of srcs) {
+      const n = Number(s[k]);
+      if (Number.isFinite(n) && n > 0) return Math.round(n);
+    }
+    return TIMEOUT_DEFAULT_MS;
+  };
+  return {
+    connect: pick("timeoutConnect"),
+    header: pick("timeoutHeader"),
+    chunk: pick("timeoutChunk"),
+  };
+}
+/* 三档看门狗：挂在 http/https 的 ClientRequest 上，任一档到点就回调 onTimeout(档位名)。
+   阶段推进：建连 → 收到 socket connect ⇒ 首字节档；收到响应体第一块 ⇒ 分块空闲档
+   （此后每来一块都重置，块与块之间超时才算超时）。
+   返回 { noteData, stop } —— 调用方在 resolve / reject / 出错 / 中止的**每一条出口**都要
+   stop()，否则定时器会泄漏（也可能是进程退出前的最后一次请求被挂着）。 */
+function attachRequestWatchdog(req, tiers, onTimeout) {
+  let timer = null;
+  let phase = "connect";
+  let stopped = false;
+  const clearTimer = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  const stop = () => {
+    stopped = true;
+    clearTimer();
+  };
+  const arm = (name, ms) => {
+    if (stopped) return;
+    clearTimer();
+    phase = name;
+    timer = setTimeout(() => {
+      timer = null;
+      if (stopped) return;
+      stopped = true;
+      onTimeout(TIMEOUT_TIER_LABEL[name] || I18n.t("请求超时"));
+    }, ms);
+    /* Electron 主进程常驻，不需要 unref；但别让定时器成为进程退出的阻碍 */
+    if (timer && typeof timer.unref === "function") timer.unref();
+  };
+  arm("connect", tiers.connect);
+  try {
+    req.on("socket", (s) => {
+      if (!s || stopped) return;
+      const toHeader = () => {
+        if (!stopped && phase === "connect") arm("header", tiers.header);
+      };
+      /* 连接中的 socket：TCP 建好（connect）就进首字节档；已连接的复用 socket 直接进 */
+      if (s.connecting) s.once("connect", toHeader);
+      else toHeader();
+    });
+  } catch {}
+  return {
+    /* 响应体来了一块：首字节档 → 分块空闲档，块与块之间重置 */
+    noteData: () => {
+      if (!stopped) arm("chunk", tiers.chunk);
+    },
+    stop,
+  };
+}
+/* 三档超时的统一报错：既有「请求超时」前缀 + 是哪一档，触发后 destroy 掉这次请求 */
+function timeoutErrorOf(tierLabel) {
+  return new Error(
+    I18n.t("请求超时（{tier}）").replace("{tier}", String(tierLabel || "")),
+  );
+}
+
+/* tiers = 三档超时（连接 / 首字节 / 分块空闲，见 timeoutTiersOf）；缺省即 300000。
+   timeoutMs 传 0 = 不设时限（生图那条路），此时 tiers 不生效、也不挂任何定时器。 */
+async function fetchJson(url, opts, timeoutMs = 180000, reqKey, tiers) {
   const u = new URL(url);
   const lib = u.protocol === "https:" ? https : http;
   const headers = Object.assign({ Connection: "close" }, opts.headers || {});
@@ -4737,8 +5027,12 @@ async function fetchJson(url, opts, timeoutMs = 180000, reqKey) {
       { method: opts.method || "GET", headers },
       (res) => {
         const chunks = [];
-        res.on("data", (c) => chunks.push(c));
+        res.on("data", (c) => {
+          if (wd) wd.noteData();
+          chunks.push(c);
+        });
         res.on("end", () => {
+          if (wd) wd.stop();
           const text = Buffer.concat(chunks).toString("utf8");
           let j = null;
           try {
@@ -4746,13 +5040,35 @@ async function fetchJson(url, opts, timeoutMs = 180000, reqKey) {
           } catch {}
           resolve({ status: res.statusCode, j, text });
         });
-        res.on("error", (e) => reject(e));
+        res.on("error", (e) => {
+          if (wd) wd.stop();
+          reject(e);
+        });
       },
     );
+    /* timeoutMs 传 0 = 不设时限（生图 / 取回生成结果那条路），一个定时器都不挂。
+       没显式给 tiers 的调用（校验 Key / 读模型列表 / 查余额这类元信息请求）沿用自己那一档
+       时限当三档的兜底 —— 人家的本意就是「这个请求最多等这么久」。 */
     const tmoJson = effectiveTimeout(timeoutMs);
-    if (tmoJson)
-      req.setTimeout(tmoJson, () => req.destroy(new Error(I18n.t("请求超时"))));
-    req.on("error", (e) => reject(e));
+    const wd = tmoJson
+      ? attachRequestWatchdog(
+          req,
+          tiers ||
+            timeoutTiersOf({
+              timeoutConnect: tmoJson,
+              timeoutHeader: tmoJson,
+              timeoutChunk: tmoJson,
+            }),
+          (tierLabel) => req.destroy(timeoutErrorOf(tierLabel)),
+        )
+      : null;
+    req.on("error", (e) => {
+      if (wd) wd.stop();
+      reject(e);
+    });
+    req.on("close", () => {
+      if (wd) wd.stop();
+    });
     if (reqKey) registerRequest(reqKey, req);
     if (payload) req.write(payload);
     req.end();
@@ -5494,8 +5810,16 @@ async function apiCall({
   quality,
   background,
   maskPath,
+  timeoutConnect,
+  timeoutHeader,
+  timeoutChunk,
 }) {
   checkProvider(provider);
+  /* 三档超时（连接 / 首字节 / 分块空闲）：spec 显式下发 > 服务商对象 > 缺省 300000 */
+  const tiers = timeoutTiersOf(
+    { timeoutConnect, timeoutHeader, timeoutChunk },
+    provider,
+  );
   const req = buildRequestSpec(
     provider,
     kind,
@@ -5522,9 +5846,11 @@ async function apiCall({
         headers: req.headers,
         body: JSON.stringify(req.body),
       },
-      /* 文本保留默认 3 分钟时限；MJ 自定义接口是生图，不设上限 */
+      /* 文本走三档超时（连接 / 首字节 / 分块空闲，见 tiers）；
+         MJ 自定义接口是生图，不设上限（0 = 一个定时器都不挂） */
       kind === "text" ? undefined : 0,
       abKey,
+      tiers,
     );
     if (status >= 400) throw new Error(apiErr(status, j, text));
     if (kind === "text") {
@@ -5656,6 +5982,141 @@ async function validateApiKey(provider) {
   return { ok: true };
 }
 
+/* 只取文档口径的模型 id：字符串直用；对象取 id / model / name（部分网关会
+   回 {id, name} 甚至 {model}）。去重、去空、保持服务端顺序。 */
+function modelIdList(pool) {
+  const out = [];
+  const seen = new Set();
+  for (const m of Array.isArray(pool) ? pool : []) {
+    const id = String(
+      m == null ? "" : typeof m === "object" ? m.id || m.model || m.name || "" : m,
+    ).trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/* 归一化 baseUrl → OpenAI 兼容的 GET <base>/models：
+   · 已带 /models、/chat/completions、/images/generations 等端点后缀 → 回到其上一级的 /v1；
+   · 只到主机名 / 只有 /v1 → 补 /v1/models 与 /models 两档，由调用方依次尝试。 */
+function modelsEndpointsOf(baseUrl) {
+  const clean = String(baseUrl || "").trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(clean)) return [];
+  const strip = clean
+    .replace(/\/(chat\/completions|completions|images\/(generations|edits)|embeddings|models)$/i, "")
+    .replace(/\/+$/, "");
+  const out = [];
+  if (/\/v\d+$/i.test(strip)) out.push(strip + "/models");
+  else out.push(strip + "/v1/models", strip + "/models");
+  return out.filter((u, i) => out.indexOf(u) === i);
+}
+
+/* 供应商元信息（<base>/models）：部分网关会带 name / input / modality /
+   capabilities / type / context_length 等字段，能顺手识别「能吃图（视觉输入）」
+   与「图像生成模型」。**这不是 AI 调用**：一次 GET，不产生任何 Token。 */
+function modelMetaRows(pool) {
+  return (Array.isArray(pool) ? pool : [])
+    .filter((m) => m && typeof m === "object")
+    .map((m) => {
+      const id = String(m.id || m.model || m.name || "").trim();
+      if (!id) return null;
+      const caps = [
+        ...(Array.isArray(m.input) ? m.input : []),
+        ...(Array.isArray(m.modalities) ? m.modalities : []),
+        ...(Array.isArray(m.capabilities) ? m.capabilities : []),
+        ...(Array.isArray(m.type) ? m.type : []),
+        ...(m.type && !Array.isArray(m.type) ? [m.type] : []),
+      ]
+        .map((v) => String(v || "").toLowerCase())
+        .join(" ");
+      return {
+        id,
+        name: String(m.name || "").trim(),
+        contextWindow: Number(m.context_window || m.context_length || m.contextWindow) || 0,
+        /* 能吃图 = 输入侧有多模态能力（≠ 画图） */
+        input: /image|vision|multimodal|看图|视觉/.test(caps),
+        /* 画图 = 声明了图像生成类能力（OpenAI 兼容网关里 gpt-image / dall-e 家族） */
+        image:
+          /image[_ -]?generation|generation image|text-to-image|txt2img|images\/generations/.test(caps) ||
+          /gpt-image|dall-e|dalle|stable-diffusion|flux|seedream|qwen-image/i.test(id),
+      };
+    })
+    .filter(Boolean);
+}
+
+/* 实时获取服务商模型列表（设置 · 服务商卡片「获取模型」按钮）：
+   OpenAI 兼容走 GET /models；Stability 先试 /models、失败回退账户信息里的
+   engines（两档都拿不到时再退回本地已配模型）。全程只读、不发起推理。 */
+async function listProviderModels(provider) {
+  const p = provider || {};
+  const base = String(p.baseUrl || "").trim().replace(/\/+$/, "");
+  const apiKey = String(p.apiKey || "").trim();
+  if (!base) return { ok: false, error: I18n.t("未配置接口地址（设置 · API/配置）") };
+  if (!apiKey) return { ok: false, error: I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）") };
+  if (!/^https?:\/\//i.test(base)) {
+    return { ok: false, error: I18n.t("接口地址需以 http(s):// 开头") };
+  }
+  let endpoints = modelsEndpointsOf(base);
+  if (p.type === "image_stability")
+    endpoints = [base + "/v1/user/account"].concat(endpoints);
+  if (!endpoints.length) return { ok: false, error: I18n.t("未配置接口地址（设置 · API/配置）") };
+  const headers = {
+    Authorization: "Bearer " + apiKey,
+    Accept: "application/json",
+  };
+  let last = { status: 0, j: null, text: "" };
+  for (const url of endpoints) {
+    let got = null;
+    try {
+      got = await fetchJson(url, { method: "GET", headers }, 20000);
+    } catch (err) {
+      last = { status: 0, j: null, text: String((err && err.message) || err) };
+      continue;
+    }
+    last = got;
+    /* 账户端点：授权失败要如实报错，别把 401 当「这个端点没有」继续试 */
+    if (got.status === 401 || got.status === 403) {
+      return { ok: false, error: I18n.t("API Key 验证失败") };
+    }
+    if (got.status >= 400) continue;
+    const j = got.j;
+    const pool =
+      (j && (j.data || j.models)) ||
+      (j && j.engines) ||
+      (Array.isArray(j) ? j : null);
+    const models = modelIdList(pool);
+    if (!models.length) continue;
+    return {
+      ok: true,
+      models,
+      meta: modelMetaRows(
+        (j && (j.data || j.models)) || (j && j.engines) || (Array.isArray(j) ? j : []),
+      ),
+      endpoint: url,
+    };
+  }
+  return {
+    ok: false,
+    error:
+      I18n.t("获取模型列表失败") +
+      "：" +
+      (last.status >= 400 ? apiErr(last.status, last.j, last.text) : last.text || I18n.t("无响应")),
+  };
+}
+
+ipcMain.handle("api:listModels", async (e, provider) => {
+  try {
+    return await listProviderModels(provider || {});
+  } catch (err) {
+    return {
+      ok: false,
+      error: I18n.t("获取模型列表失败") + "：" + ((err && err.message) || String(err)),
+    };
+  }
+});
+
 ipcMain.handle("api:validateKey", async (e, provider) => {
   try {
     return await validateApiKey(provider || {});
@@ -5742,7 +6203,11 @@ function extractChatContent(j) {
        delta.content → 正文（emit('delta')）
      [DONE] 或流结束 → resolve({text, reasoning})；
    - 服务端忽略 stream 参数返回普通 JSON → 单次解析 message.content / reasoning_content；
-   - HTTP ≥400 → reject（带 httpStatus，由调用方回退非流式）。 */
+   - HTTP ≥400 → reject（带 httpStatus，由调用方回退非流式）；
+   - 超时是三档看门狗（连接 / 首字节 / 分块之间的空闲，见 attachRequestWatchdog）：
+     数值取 req.timeouts（渲染层随 spec 下发）> req.provider.timeout* > 缺省 300000，
+     任一档到点 destroy 该请求并抛「请求超时（连接超时 / 首字节超时 / 分块超时）」；
+     结束 / 出错 / 被中止的每一条出口都 stop() 看门狗（定时器不泄漏）。 */
 function streamTextChat(req, emit) {
   const u = new URL(req.url);
   const lib = u.protocol === "https:" ? https : http;
@@ -5752,7 +6217,10 @@ function streamTextChat(req, emit) {
     "Content-Length": payload.length,
     Connection: "close",
   });
+  /* 三档超时：渲染层随 spec 显式下发 > 服务商对象上的字段 > 缺省 300000 */
+  const tiers = timeoutTiersOf(req.timeouts, req.provider);
   return new Promise((resolve, reject) => {
+    let wd = null;
     const rq = lib.request(
       u,
       { method: req.method || "POST", headers },
@@ -5765,14 +6233,17 @@ function streamTextChat(req, emit) {
         const finish = (t, r) => {
           if (!finished) {
             finished = true;
+            if (wd) wd.stop();
             resolve({ text: t, reasoning: r });
           }
         };
         if (res.statusCode >= 400) {
           res.on("data", (c) => {
+            if (wd) wd.noteData();
             buf += c.toString("utf8");
           });
           res.on("end", () => {
+            if (wd) wd.stop();
             let j = null;
             try {
               j = JSON.parse(buf);
@@ -5784,6 +6255,7 @@ function streamTextChat(req, emit) {
           return;
         }
         res.on("data", (c) => {
+          if (wd) wd.noteData();
           buf += c.toString("utf8");
           let i;
           while ((i = buf.indexOf("\n")) >= 0) {
@@ -5817,6 +6289,7 @@ function streamTextChat(req, emit) {
           }
         });
         res.on("end", () => {
+          if (wd) wd.stop();
           if (sse) {
             finish(text, reasoning);
             return;
@@ -5829,15 +6302,64 @@ function streamTextChat(req, emit) {
           if (c.reasoning) emit("reasoning", { text: c.reasoning });
           finish(c.text || text, c.reasoning || reasoning);
         });
-        res.on("error", (e) => reject(e));
+        res.on("error", (e) => {
+          if (wd) wd.stop();
+          reject(e);
+        });
       },
     );
-    rq.setTimeout(180000, () => rq.destroy(new Error(I18n.t("请求超时"))));
-    rq.on("error", (e) => reject(e));
+    wd = attachRequestWatchdog(rq, tiers, (tierLabel) =>
+      rq.destroy(timeoutErrorOf(tierLabel)),
+    );
+    rq.on("error", (e) => {
+      if (wd) wd.stop();
+      reject(e);
+    });
+    rq.on("close", () => {
+      if (wd) wd.stop();
+    });
     if (req.abKey) registerRequest(req.abKey, rq);
     rq.write(payload);
     rq.end();
   });
+}
+
+/* 应用宿主（apps-store.js 的 appHost.textGenStream）模型调用：与下面 api:callStream 同一份内核
+   （buildRequestSpec + streamTextChat），差别只在「服务商 / Key / 模型由 apps-store 从本机配置解析、
+   应用窗口只能给 prompt / messages / 温度等白名单字段」，事件也推给发起调用那个应用窗口自己。
+   接口不支持 stream（HTTP 4xx）时回退非流式单次请求，口径与节点调用一致。 */
+async function appsAiCallStream(spec, emit) {
+  checkProvider(spec.provider);
+  const req = buildRequestSpec(
+    spec.provider,
+    spec.kind,
+    spec.model,
+    spec.prompt,
+    spec.texts,
+    spec.images,
+    spec.refImage,
+    spec.temperature,
+    spec.size,
+    spec.chatMessages,
+    spec.effort,
+    undefined,
+    { quality: spec.quality, background: spec.background },
+    spec.maxTokens,
+  );
+  /* 三档超时随 spec 下发（渲染层从该服务商配置带过来），缺省 300000 */
+  req.timeouts = timeoutTiersOf(spec, spec.provider);
+  try {
+    const { text, reasoning } = await streamTextChat(req, emit);
+    emit("done", { text, reasoning });
+    return { ok: true, text, reasoning };
+  } catch (err) {
+    if (err && err.httpStatus >= 400 && spec.kind === "text") {
+      const r = await apiCall(spec);
+      emit("done", { text: r.text || "" });
+      return { ok: true, text: r.text || "" };
+    }
+    throw err;
+  }
 }
 
 /* 流式调用 IPC：事件经 webContents.send('api:streamEvent', {reqId, type, ...}) 推送。
@@ -5876,6 +6398,8 @@ ipcMain.handle("api:callStream", async (e, spec) => {
       spec.maxTokens,
     );
     if (spec.abKey) req.abKey = spec.abKey;
+    /* 三档超时随 spec 下发（渲染层从该服务商配置带过来），缺省 300000 */
+    req.timeouts = timeoutTiersOf(spec, spec.provider);
     const { text, reasoning } = await streamTextChat(req, emit);
     emit("done", { text, reasoning });
     return { ok: true };
@@ -6335,6 +6859,11 @@ app.whenReady().then(() => {
   applyMainLocale(localeFromDisk());
   crashReport.installAppHandlers();
   /* dsh 网关随应用启动(幂等,失败不阻塞应用;引擎自愈见 main-dsh.js) */
+  /* 起网关之前先把子代理策略写进 cordis.yml：否则首次启动（以及升级后第一次启动）
+     还是按 dsh 自带的 maxDepth 3 在跑。配置读不到时按默认策略（深度 1）收口。 */
+  try {
+    syncSubagentPolicy(readJson(path.join(DATA(), "config.json"), {}));
+  } catch {}
   dsh().ensureStarted().catch(() => {});
   mainWin = new BrowserWindow({
     width: 1500,
@@ -6359,6 +6888,9 @@ app.whenReady().then(() => {
   mainWin.webContents.on("will-navigate", (ev, url) => {
     const cur = mainWin.webContents.getURL();
     if (url && url !== cur) {
+      /* 开发页预览（renderer/app-apps-dev.js 的 iframe）走 mtnode-preview:// 自定义协议
+         （apps-store.js 注册）：那是本机应用目录自己的静态页，放行不拦。 */
+      if (/^mtnode-preview:/i.test(url)) return;
       ev.preventDefault();
       if (/^https?:\/\//i.test(url) || /^file:/i.test(url)) {
         openContentViewDialog({
@@ -6470,6 +7002,22 @@ app.whenReady().then(() => {
   /* AI 事实库：固定文件读写 / 落盘守卫 / 旧长期记忆一次性迁移（见 ai-facts-store.js）。
      必须排在上一条之后 —— 迁移要读的 <数据目录>/longtask/memory.db 由 longtask-store 定位。 */
   registerAiFactsIpc({ t: (s) => I18n.t(s) });
+  /* 应用宿主（用户自建应用）：根目录（config.json 的 apps.installDir，默认 <数据目录>/apps）/
+     云端目录拉取与缓存 / 安装·更新（同名冲突三态）· 卸载 / 导出 zip / 变更探测 / 独立窗口。
+     模型与图像生成只借这里的 apiCall / streamTextChat 内核，服务商与 Key 由 apps-store 自己
+     从本机配置解析 —— 应用窗口（window.appHost）见不到 Key、画布与文件系统。 */
+  registerAppsIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    getAppVersion: () => app.getVersion(),
+    t: (s) => I18n.t(s),
+    authState: () => authStore.state(),
+    aiCall: (spec) => apiCall(spec),
+    aiCallStream: (spec, emit) => appsAiCallStream(spec, emit),
+  });
+  /* 应用窗口里的 appHost.quit()：先把该应用收尾关掉，再请主进程走正常退出流程
+     （before-quit → shutdownApps 再收一遍，幂等；见 apps-store.js 的 quitFromAppWindow） */
+  setQuitHandler(() => app.quit());
   mainWin.webContents.once("did-finish-load", () => {
     startBackgroundCheck(() => mainWin);
   });
@@ -6488,6 +7036,7 @@ app.on("before-quit", () => {
   try { procHost.killAll().catch(() => {}); } catch {}
   try { shutdownPet(); } catch {}
   try { shutdownAppPlugins(); } catch {}
+  try { shutdownApps(); } catch {}
   try { shutdownMusic3UiOnly(); } catch {}
   try { shutdownYueUiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}

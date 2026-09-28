@@ -828,7 +828,7 @@ Requirements:
 - imagePath must be an absolute path on THIS machine (workflow asset path, screenshot file, etc.).
 - question: what to look for (Chinese OK). Be specific.
 - FIRST CALL in this app requires user permission (host shows Allow once / Always allow / Deny), unless the user already set Always allow / full-access / session allow in the top-right Approvals button.
-- The host picks a vision model by provider order then model order in Settings → Model services (DeepSeek text models cannot read images; use deepseek-v4-flash-vision-exp or another vision-capable OpenAI-compatible provider).
+- The host picks a vision model by provider order then model order in Settings → Model services (DeepSeek Official's deepseek-flash reads images natively; any other vision-capable OpenAI-compatible provider works too).
 - Prefer this over attaching large image batches to the main agent prompt (saves tokens; avoids N² batch mistakes).
 - Do not use for generating new images — only for understanding existing ones.`
 

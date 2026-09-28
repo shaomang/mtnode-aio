@@ -9,7 +9,7 @@
 | 索引 | `index.json` / `INDEX.md` | 仅摘要，注入 Agent 系统提示；指引何时调取 |
 | 正文 | `<category>/<id>/SKILL.md` | 完整流程，按需 `skill` 或 `read` 加载 |
 
-运行时同步到 `<DSH_HOME>/mtnode-agent-skills/`，并注册到 `<DSH_HOME>/skills/<name>/`（带 `.mtnode-internal`，不出现在用户技能列表）。
+运行时同步到 `<DSH_HOME>/mtnode-agent-skills/`，并注册到 `<DSH_HOME>/skills/<name>/`（缺省带 `.mtnode-internal`，不出现在用户技能列表；写了 `menu: user` 的带 `.builtin`，会出现）。
 
 ## 维护
 
@@ -20,6 +20,7 @@
 ## 目录约定
 
 - `mtnode/` — 产品行为、画布、编译、媒体生成等
+- `app/` — 应用（窗口插件）开发：应用契约、appHost 能力桥、脚手架（面向用户，`menu: user`）
 - `music/` — 音乐生成内容的写作规范（风格提示词 / 歌词），面向用户，可被 `/技能名` 点名
 - `plugins/` — 插件安装/排障（与 `-install` 技能互补，偏编排与验收）
 - `canvas/` — 画布编排模式与复杂工作流模板

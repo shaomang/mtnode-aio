@@ -5070,14 +5070,22 @@ const PROVIDER_TYPE_LABELS = [
    smoke-resume-on-retry.js [6c]），改这里必须同步改 app-agent.js 那一份 —— 两边内容
    必须逐字一致（含行尾 LF），否则 test/smoke-workspace-project.js [7] 的「两份逐字一致」判红。 */
 
-/* agent 能力走 DeepSeek 路由：取第一个 DeepSeek 兼容文本服务商 */
+/* agent 能力走 DeepSeek 路由：取第一个 **未停用** 的 DeepSeek 兼容文本服务商。
+   返回的是一份浅拷贝，models 已过白 / 黑名单 —— 拿到的模型清单就是「真正可选」的那份，
+   会话 / 助手 / 开发节点的下拉不必各自再过滤；这家服务商被停用时返回 null（该路由不出现，
+   设置里它照旧可见、可编辑、可恢复）。 */
 function dshProvider() {
   const provs = (S.config && S.config.providers) || [];
+  const pf =
+    typeof providerSelectableModels === "function" ? providerSelectableModels : null;
+  const off = typeof providerDisabled === "function" ? providerDisabled : null;
   for (const p of provs) {
     if (p.type !== "text_openai" || !p.baseUrl) continue;
+    if (off && off(p)) continue;
     try {
       const host = new URL(p.baseUrl).hostname.toLowerCase();
-      if (host.includes("deepseek")) return p;
+      if (host.includes("deepseek"))
+        return pf ? Object.assign({}, p, { models: pf(p) }) : p;
     } catch {}
   }
   return null;
@@ -5149,9 +5157,39 @@ function agentRouteFromProviderId(providerId) {
 }
 
 function agentRouteOptions() {
-  const routes = new Set(["deepseek-official"]);
+  const routes = new Set();
+  /* DeepSeek 官方路由：配置里那家 DeepSeek 服务商被停用时它一并消失 */
+  const dsOk =
+    typeof deepseekRouteSelectable === "function"
+      ? deepseekRouteSelectable(S.config)
+      : true;
+  if (dsOk) routes.add("deepseek-official");
   for (const p of mtnodePiProviders()) routes.add("mtnode_" + p.route);
   return routes;
+}
+
+/* 这条路由对应的服务商只是被「停用」，而不是被删掉 / 改名。
+   停用只把它从选择器里收起来：节点上早就绑着它的**不能因此被改到别家** ——
+   syncAgentProviderRoute 只在路由真的不存在时才兜底换路由，这里把「停用」摘出去，
+   用户取消勾选后原样生效（配置与密钥一直都在）。 */
+function agentRouteDisabled(route) {
+  const r = String(route || "").trim();
+  if (!r) return false;
+  if (r === "deepseek-official")
+    return (
+      typeof deepseekRouteSelectable === "function" &&
+      !deepseekRouteSelectable(S.config)
+    );
+  if (r.indexOf("mtnode_") !== 0) return false;
+  const id = r.slice("mtnode_".length);
+  const p = ((S.config && S.config.providers) || []).find(
+    (x) => x && String(x.id || "") === id,
+  );
+  return !!(
+    p &&
+    typeof providerDisabled === "function" &&
+    providerDisabled(p)
+  );
 }
 
 /* 全部可选「模型提供商 / 服务商」分组：[{ id: 智能路由, name: 服务商显示名, models: [模型 id] }]。
@@ -5163,11 +5201,17 @@ function agentRouteGroupsNow() {
   const out = [];
   try {
     const dp = dshProvider();
-    out.push({
-      id: "deepseek-official",
-      name: (dp && dp.name) || I18n.t("DeepSeek 官方"),
-      models: agentModelsForRoute("deepseek-official").map(String),
-    });
+    /* 官方路由被停用（配置里那家 DeepSeek 服务商 disabled）时整条不进清单 */
+    const dsOk =
+      typeof deepseekRouteSelectable === "function"
+        ? deepseekRouteSelectable(S.config)
+        : true;
+    if (dsOk)
+      out.push({
+        id: "deepseek-official",
+        name: (dp && dp.name) || I18n.t("DeepSeek 官方"),
+        models: agentModelsForRoute("deepseek-official").map(String),
+      });
   } catch (_) {}
   try {
     for (const p of mtnodePiProviders()) {
@@ -5209,7 +5253,11 @@ function syncAgentProviderRoute(node, opts) {
   let route = prevRoute;
 
   if (!route || !routes.has(route)) {
-    if (fromApi && routes.has(fromApi)) route = fromApi;
+    /* 只是被停用 ⇒ 保持原路由不动（运行时照旧按原配置走），也不动模型；
+       路由真的不存在（服务商被删 / 改 id）才回退到可用路由 */
+    if (route && agentRouteDisabled(route)) {
+      /* 保持 route 不变 */
+    } else if (fromApi && routes.has(fromApi)) route = fromApi;
     else route = preferredAgentProviderRoute();
   }
 
@@ -5374,16 +5422,6 @@ function visionModelsForProvider(providerId) {
   return out;
 }
 
-/* DeepSeek 官方纯文本模型不支持图；目录中带 image 的多模态模型除外。
-   无图主机上的「手填 vision」兜底仍应降到次选。 */
-function providerHostBlocksVision(p) {
-  if (!p || !p.baseUrl) return false;
-  try {
-    const host = new URL(String(p.baseUrl).trim()).hostname.toLowerCase();
-    if (host.includes("deepseek")) return true;
-  } catch {}
-  return false;
-}
 /* 节点已连接的图像输入节点（含全局节点广播） */
 function imageInputsOf(node, idx) {
   const out = [];
@@ -5462,12 +5500,20 @@ function visionCandidatesForNode(node) {
       });
     }
   };
-  pushRoute(
-    "deepseek-official",
-    providerDisplayName("deepseek-official"),
-  );
+  /* 官方路由对应的 DeepSeek 服务商被停用 ⇒ 这条候选整体不列（与各处选择器同口径） */
+  const dsOk =
+    typeof deepseekRouteSelectable === "function"
+      ? deepseekRouteSelectable(S.config)
+      : true;
+  if (dsOk)
+    pushRoute(
+      "deepseek-official",
+      providerDisplayName("deepseek-official"),
+    );
   for (const p of S.config.providers || []) {
     if (p.type && p.type !== "text_openai") continue;
+    /* 停用的服务商不进这张候选表（设置里它照旧可见、可编辑、可恢复） */
+    if (typeof providerDisabled === "function" && providerDisabled(p)) continue;
     /* 无 Key 的不列入（无法实际调用）；与 mtnode 路由一致 */
     if (!String(p.apiKey || "").trim()) continue;
     pushRoute("mtnode_" + p.id, p.name || p.id);
@@ -5911,24 +5957,31 @@ function stripStreamErrors(text) {
     .trim();
 }
 
-/* mtnode 服务商(非 DeepSeek 官方)同步给引擎:经 pi-ai 手写 profile 路由 */
+/* mtnode 服务商(非 DeepSeek 官方)同步给引擎:经 pi-ai 手写 profile 路由。
+   停用的服务商不进这张表 = 不出现在任何模型选择器里（设置里仍可见 / 可编辑 / 可恢复）；
+   models 过白 / 黑名单：白名单先收窄、黑名单再剔除，两份都留空就是原来的清单。 */
 function mtnodePiProviders() {
   const out = [];
   const provs = (S.config && S.config.providers) || [];
+  const pf =
+    typeof providerSelectableModels === "function" ? providerSelectableModels : null;
+  const off = typeof providerDisabled === "function" ? providerDisabled : null;
   provs.forEach((p, i) => {
     if (p.type !== "text_openai" || !String(p.apiKey || "").trim()) return;
+    if (off && off(p)) return;
     let host = "";
     try { host = new URL(p.baseUrl || "").hostname.toLowerCase(); } catch {}
     if (host.includes("deepseek")) return; /* DeepSeek 走官方路由 */
     /* 引擎只注册 baseUrl 与模型齐全的服务商 */
-    if (!String(p.baseUrl || "").trim() || !(p.models || []).length) return;
+    const models = pf ? pf(p) : p.models || [];
+    if (!String(p.baseUrl || "").trim() || !models.length) return;
     out.push({
       route: p.id || "p" + (i + 1),
       name: p.name || p.id,
       baseUrl: p.baseUrl,
       apiKey: p.apiKey,
       api: p.api || "openai-completions",
-      models: p.models || [],
+      models,
     });
   });
   return out;
@@ -14677,20 +14730,720 @@ function escapePromptHl(s) {
     .replace(/>/g, "&gt;");
 }
 
+/* ============ 提示词正文框 · 内嵌图像胶囊块 ============
+   适用正文框（promptCapsuleSupported）：proc_text / agent_task 的提示词·任务，judge 的判断标准。
+   架构不变：仍是 textarea + 高亮镜像层（.n-prompt-hl），不改成 contenteditable，
+   refTick / refKey / slashTick 的分层照旧 —— 胶囊只借用镜像层「显示」，正文真值仍是 textarea.value。
+
+   口径：
+   · 正文里的 token = "@img:" + 7 位 base36 id（定长 → 排版宽度恒定）；
+   · 镜像层把 token 原样渲染成一个不可见的占位 span（.pc-slot，宽度 = token 自身的排版宽度），
+     再把绝对定位的胶囊块（.pc-pill：缩略图 + 文件名 + 悬停 ✕）盖在它的矩形上；
+     镜像层与 textarea 的断行因此严格同源，光标 / 选区 / @ 高亮都不会漂。
+   · id → { path, name, src, nodeId, at } 的登记表挂在节点上（node.inlineImgs），
+     随画布 JSON 一起落盘（persist → wfSave），不另开存储、不写旁路文件。
+   · 图片本体即时落盘到 <数据目录>/assets/<wfId>/（assetCopy / assetWriteBase64，
+     与画布其它节点同一去处、同一长边 1280px + 单张 4MB 口径），同时记进 wf.inlineAssets 台账。
+   · ✕ 删除 / 正文框清空 / 删节点：走统一的无引用回收（gcCanvasInlineImages）——
+     本功能创建的图在「一处引用都没有」之后才删盘（画布节点任何字段、会话、输入框都算引用），
+     用户手动放进资产目录的素材与别处产物从不进候选集，永不被自动删。
+   · 运行期：resolveRefs 把 token 就地换成一行「（图像输入）标题：…」+「图 N」（N = 该正文框
+     里第几张图，按出现顺序），并把路径并进 refImages
+     （proc_text 多模态 / agent_task 交给 agent 看图，走的就是这条既有通路）；
+     逐图内容块另交 buildSpec 写进【背景信息】，同一张图只下发一次。 */
+const PROMPT_CAP_ID_LEN = 7;
+/* 定长 id：正则与登记 id 的位数由同一个常量派生，改位数不会两处对不上 */
+const PROMPT_CAP_SRC_RE =
+  "@img:([0-9a-z]{" + PROMPT_CAP_ID_LEN + "})(?![0-9a-z])";
+/* 登记来源（粘贴 / 从资源管理器拖入 / 剪贴板位图）的中文标签 */
+const PROMPT_CAP_SRC_LABELS = {
+  paste: "粘贴",
+  drop: "拖入文件",
+  clipboard: "剪贴板截图",
+};
+
+/* 哪些节点的正文框支持内嵌图像胶囊（范围：proc_text / agent_task 的提示词·任务 + judge 判断标准） */
+function promptCapsuleSupported(node) {
+  if (!node) return false;
+  return (
+    node.kind === "proc_text" || node.kind === "agent_task" || node.kind === "judge"
+  );
+}
+function promptCapsuleToken(id) {
+  return "@img:" + String(id || "");
+}
+/* 登记表读写（node.inlineImgs = [{ id, path, name, src, nodeId, at }]） */
+function promptCapsuleList(node) {
+  const arr = node && node.inlineImgs;
+  return Array.isArray(arr) ? arr.filter((e) => e && e.id && e.path) : [];
+}
+function promptCapsuleMap(node) {
+  const m = new Map();
+  for (const e of promptCapsuleList(node)) m.set(String(e.id), e);
+  return m;
+}
+function promptCapsuleRegister(node, entry) {
+  if (!node || !entry || !entry.id) return entry;
+  const rest = (Array.isArray(node.inlineImgs) ? node.inlineImgs : []).filter(
+    (e) => e && String(e.id) !== String(entry.id),
+  );
+  node.inlineImgs = rest.concat([entry]);
+  return entry;
+}
+function promptCapsuleUnregister(node, id) {
+  if (!node || !Array.isArray(node.inlineImgs)) return;
+  node.inlineImgs = node.inlineImgs.filter(
+    (e) => !e || String(e.id) !== String(id),
+  );
+}
+function promptCapsuleNewId(node) {
+  const used = new Set(promptCapsuleList(node).map((e) => String(e.id)));
+  for (let i = 0; i < 200; i++) {
+    const id = Math.random()
+      .toString(36)
+      .slice(2, 2 + PROMPT_CAP_ID_LEN)
+      .padEnd(PROMPT_CAP_ID_LEN, "0");
+    if (!used.has(id)) return id;
+  }
+  return Date.now()
+    .toString(36)
+    .slice(-PROMPT_CAP_ID_LEN)
+    .padStart(PROMPT_CAP_ID_LEN, "0");
+}
+/* 正文里按出现顺序扫出的胶囊 token */
+function promptCapsuleTokens(text) {
+  const s = String(text == null ? "" : text);
+  const out = [];
+  const re = new RegExp(PROMPT_CAP_SRC_RE, "g");
+  let m;
+  while ((m = re.exec(s)))
+    out.push({ id: m[1], raw: m[0], start: m.index, end: m.index + m[0].length });
+  return out;
+}
+/* token → 就地一行「（图像输入）标题：…」+「图 N」，路径并进 refImages；
+   认不出的 token 原样保留（绝不动用户正文）。
+   N = 该正文框里第几张图（按 token 出现顺序），与正文行里的编号一一对应；
+   认得的 token 同时记下逐图内容块，供 resolveRefs 按位置写进正文。
+   返回 { prompt, blocks }：prompt = 换掉 token 的正文，blocks = 逐图内容块
+   [{ id, title, text, path, index }]（index 从 0 起 = 图 N-1）。 */
+function resolvePromptCapsules(prompt, node, refImages) {
+  const s = String(prompt == null ? "" : prompt);
+  const out = { prompt: s, blocks: [] };
+  if (!Array.isArray(refImages)) return out;
+  const toks = promptCapsuleSupported(node) ? promptCapsuleTokens(s) : [];
+  if (!toks.length) return out;
+  const reg = promptCapsuleMap(node);
+  let buf = "";
+  let last = 0;
+  for (const t of toks) {
+    const e = reg.get(t.id);
+    if (!e || !e.path) continue;
+    buf += s.slice(last, t.start);
+    let n = refImages.indexOf(e.path);
+    if (n < 0) {
+      refImages.push(e.path);
+      n = refImages.length - 1;
+    }
+    /* 正文框里的图像按出现顺序编号（图 1、图 2…），不是请求里的参考图序号 */
+    const no = out.blocks.length + 1;
+    const title = e.name || fileName(e.path) || I18n.t("图像");
+    const line = I18n.t("（图像输入）标题：{name}\n图 {n}", {
+      name: title,
+      n: no,
+    });
+    out.blocks.push({
+      id: e.id,
+      title,
+      text: line,
+      path: e.path,
+      index: no - 1,
+    });
+    buf += line;
+    last = t.end;
+  }
+  buf += s.slice(last);
+  out.prompt = buf;
+  return out;
+}
+/* 只把 token 换成可读注记（judge 的判断标准是纯文本判读，不认图） */
+function promptCapsulesToText(text, node) {
+  const s = String(text == null ? "" : text);
+  const toks = promptCapsuleSupported(node) ? promptCapsuleTokens(s) : [];
+  if (!toks.length) return s;
+  const reg = promptCapsuleMap(node);
+  let out = "";
+  let last = 0;
+  for (const t of toks) {
+    const e = reg.get(t.id);
+    if (!e) continue;
+    out +=
+      s.slice(last, t.start) +
+      I18n.t("（内嵌图片：{name}）", { name: e.name || fileName(e.path) });
+    last = t.end;
+  }
+  out += s.slice(last);
+  return out;
+}
+
+/* ---------- 落盘：粘贴 / 拖入的图片 → <数据目录>/assets/<wfId>/ ----------
+   文件名前缀走共享模块的 CANVAS_IMG_PREFIX（"pc_"）—— 落盘命名与回收判据同源，不各写一份；
+   落盘成功后把这张图记进 wf.inlineAssets 台账（见 wfInlineAssetRemember）：
+   节点登记表会随节点一起消失（删节点），台账不会，回收才认得这是「本功能落的图」。 */
+function canvasInlineImgPrefix() {
+  const m = inlineImgMod();
+  const p = m && m.CANVAS_IMG_PREFIX;
+  return typeof p === "string" && p ? p : "pc_";
+}
+async function savePromptCapsuleImage(picked) {
+  const wf = (typeof S !== "undefined" && S.wf) || null;
+  if (!wf || !wf.id) throw new Error(I18n.t("没有打开的画布，无法落盘图片"));
+  const api = window.api;
+  if (!api) throw new Error(I18n.t("插入图片失败：") + I18n.t("写入失败"));
+  const src = String((picked && picked.srcPath) || "").trim();
+  const base = String((picked && picked.base64) || "").trim();
+  const name = String((picked && picked.name) || "image");
+  const stem =
+    String(name).replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").slice(0, 40) ||
+    "image";
+  const uniq =
+    canvasInlineImgPrefix() +
+    stem +
+    "_" +
+    Date.now().toString(36) +
+    "_" +
+    Math.floor(Math.random() * 1e4);
+  if (src) {
+    const r = await api.assetCopy(src, wf.id, uniq);
+    if (!r || !r.path) throw new Error(I18n.t("插入图片失败：") + I18n.t("复制失败"));
+    wfInlineAssetRemember(r.path);
+    return { path: r.path, name };
+  }
+  if (base) {
+    const r = await api.assetWriteBase64(
+      wf.id,
+      uniq,
+      base,
+      (picked && picked.ext) || ".png",
+    );
+    if (!r || !r.ok || !r.path)
+      throw new Error(
+        I18n.t("插入图片失败：") + ((r && r.error) || I18n.t("写入失败")),
+      );
+    wfInlineAssetRemember(r.path);
+    return { path: r.path, name };
+  }
+  throw new Error(I18n.t("该来源没有可落盘的图片数据"));
+}
+
+/* ---------- 插入 / 删除 ---------- */
+/* 在光标处插入 token（替换选区）→ 登记 → 落回正文 → 重画胶囊 */
+function insertPromptCapsuleEntry(ta, node, persistPrompt, entry) {
+  if (!ta || !node || !entry || !entry.id) return false;
+  const v = String(ta.value || "");
+  const a = Math.max(
+    0,
+    Math.min(ta.selectionStart == null ? v.length : ta.selectionStart, v.length),
+  );
+  const b = Math.max(
+    a,
+    Math.min(ta.selectionEnd == null ? a : ta.selectionEnd, v.length),
+  );
+  const token = promptCapsuleToken(entry.id);
+  /* 紧跟正文（非空白）时补一个空格，与 @ 引用补空格同一口径，token 不会和正文粘成一个词 */
+  const next = v.charAt(b);
+  const ins = token + (next && !/\s/.test(next) ? " " : "");
+  ta.value = v.slice(0, a) + ins + v.slice(b);
+  const np = a + ins.length;
+  promptCapsuleRegister(node, entry);
+  if (typeof persistPrompt === "function") persistPrompt(ta.value);
+  else if (typeof setProcPrompt === "function") setProcPrompt(node, ta.value);
+  try {
+    ta.focus();
+    ta.setSelectionRange(np, np);
+  } catch (_) {}
+  syncPromptRefBackdrop(ta, node);
+  if (typeof scheduleSave === "function") scheduleSave(true);
+  return true;
+}
+/* 落盘（异步）→ 光标处插胶囊：图片本体与登记表都就绪后才动正文 */
+async function insertPromptCapsuleFromPicked(ta, node, persistPrompt, picked) {
+  if (!ta || !node || !picked) return false;
+  const sel = {
+    start: ta.selectionStart == null ? 0 : ta.selectionStart,
+    end: ta.selectionEnd == null ? 0 : ta.selectionEnd,
+  };
+  let saved = null;
+  try {
+    saved = await savePromptCapsuleImage(picked);
+  } catch (e) {
+    toast(I18n.t("插入图片失败：") + ((e && e.message) || e), "err");
+    return false;
+  }
+  /* 落盘是异步的：写完把选区还原到发起时那一处（用户中途可能点到别处），越界一律夹回 */
+  try {
+    const len = String(ta.value || "").length;
+    ta.setSelectionRange(Math.min(sel.start, len), Math.min(sel.end, len));
+  } catch (_) {}
+  return insertPromptCapsuleEntry(ta, node, persistPrompt, {
+    id: promptCapsuleNewId(node),
+    path: saved.path,
+    name: saved.name || fileName(saved.path),
+    src: String((picked && picked.src) || "paste"),
+    nodeId: node.id,
+    at: Date.now(),
+  });
+}
+/* ✕ 删除：正文摘 token → 注销登记 → 没别处引用才把资产图删盘 */
+function removePromptCapsule(ta, node, id, persistPrompt) {
+  const v = String(ta.value || "");
+  const t = promptCapsuleTokens(v).find((x) => x.id === id);
+  if (!t) return;
+  const gone = promptCapsuleList(node).find((e) => String(e.id) === String(id));
+  ta.value = v.slice(0, t.start) + v.slice(t.end);
+  promptCapsuleUnregister(node, id);
+  if (typeof persistPrompt === "function") persistPrompt(ta.value);
+  else if (typeof setProcPrompt === "function") setProcPrompt(node, ta.value);
+  try {
+    ta.focus();
+    ta.setSelectionRange(t.start, t.start);
+  } catch (_) {}
+  syncPromptRefBackdrop(ta, node);
+  if (typeof scheduleSave === "function") scheduleSave(true);
+  /* 删盘走统一的无引用回收（gcCanvasInlineImages）：候选 = 本功能创建的图，
+     引用 = 现存的每一处（画布节点 / 会话 / 输入框），一处都没有才真删。
+     回执按「这一张有没有真被删掉」给，与旧文案一致。 */
+  if (gone && gone.path) {
+    const key = inlineImgPathKey(gone.path);
+    Promise.resolve(gcCanvasInlineImages({ quiet: true })).then(
+      (r) =>
+        toast(
+          ((r && r.removed) || []).some((p) => inlineImgPathKey(p) === key)
+            ? I18n.t("已删除内嵌图片")
+            : I18n.t("已删除内嵌图片（资产文件保留）"),
+          "ok",
+        ),
+      () => toast(I18n.t("已删除内嵌图片（资产文件保留）"), "ok"),
+    );
+    return;
+  }
+  /* 登记表里没有这一条（老存档 / 之前手工删过）：仍排一轮回收 —— 台账认得那张图，
+     一处引用都没有就该收拾掉，只是这一轮没有「确定删掉的是哪一张」的回执。 */
+  gcCanvasInlineImagesSoon(0);
+  toast(I18n.t("已删除内嵌图片（资产文件保留）"), "ok");
+}
+
+/* ============ 无引用回收：画布资产目录里的内嵌图 ============
+   候选 = 本功能创建并登记过的图：wf.inlineAssets 台账（落盘那一刻记下，节点删了也还认得）
+        ∪ 各节点登记表 node.inlineImgs（历史画布没有台账，靠它兜底）。
+   引用 = 现存的每一处引用（collectInlineImgRefs）—— 画布节点任何字段（input_image /
+        生成节点 / save 节点 / 运行结果里的路径都算）、正文里真的还写着 token 的内嵌图、
+        全部会话的消息与草稿、两个输入框的当前正文。
+   只删「本功能创建 ∧ 一处引用都没有」的图：用户手动放进资产目录的素材、别处（素材库 /
+   生成节点 / save）产出的文件从不进候选集，永不被自动删；删盘再由主进程按
+   <数据目录>/assets/<wfId>/ 白名单复核（目录外一律 skipped），两道闸都在。
+   触发点（本函数只被这些地方叫）：✕ 删图 / 正文框被清空 / 删节点 / 删会话（带走的内嵌图）。
+   删画布不在这里：整条 <数据目录>/assets/<wfId>/ 随画布一起进回收站（main.js workflow:delete），
+   画布没了，它名下的内嵌图自然一份不剩。 */
+function inlineImgMod() {
+  return (typeof window !== "undefined" && window.MTInlineImg) || null;
+}
+/* 比较用的路径键（真源在共享模块，模块没就绪时兜一份同口径的） */
+function inlineImgPathKey(p) {
+  const m = inlineImgMod();
+  if (m && typeof m.normImgPath === "function") return m.normImgPath(p);
+  return String(p == null ? "" : p).replace(/\\/g, "/").toLowerCase();
+}
+/* 台账：wf.inlineAssets = [{ path, at }]（随画布 JSON 一起落盘；撤销不回退它 —— 它是
+   「这张图是本功能落的」的账，不是画布内容） */
+function wfInlineAssets() {
+  const wf = typeof S !== "undefined" ? S.wf : null;
+  if (!wf) return [];
+  if (!Array.isArray(wf.inlineAssets)) wf.inlineAssets = [];
+  return wf.inlineAssets;
+}
+function wfInlineAssetRemember(path) {
+  const p = String(path || "").trim();
+  if (!p) return false;
+  const list = wfInlineAssets();
+  const key = inlineImgPathKey(p);
+  if (list.some((e) => e && inlineImgPathKey(e.path) === key)) return false;
+  list.push({ path: p, at: Date.now() });
+  return true;
+}
+function wfInlineAssetForget(keys) {
+  if (!S || !S.wf || !Array.isArray(S.wf.inlineAssets)) return;
+  S.wf.inlineAssets = S.wf.inlineAssets.filter(
+    (e) => !(e && keys.has(inlineImgPathKey(e.path))),
+  );
+}
+/* token 可能落在这些字段里（proc_text / judge 的 prompt、agent_task 的 task） */
+const PROMPT_CAP_FIELDS = ["prompt", "task"];
+/* 正文里真的写着 token 的内嵌图 = 在用（登记了但正文没 token 的 = 已从框里删掉，不算引用） */
+function canvasCapsuleTextRefs(out) {
+  const one = (node, text) => {
+    const reg = promptCapsuleMap(node);
+    if (!reg.size) return;
+    for (const t of promptCapsuleTokens(String(text || ""))) {
+      const e = reg.get(t.id);
+      if (e && e.path) out.push(String(e.path));
+    }
+  };
+  for (const n of (S.wf && S.wf.nodes) || []) {
+    if (!promptCapsuleSupported(n)) continue;
+    for (const f of PROMPT_CAP_FIELDS) one(n, n[f]);
+  }
+  /* agent_task 发送后 task 被清空、正文暂存在 S.agentTaskSent：那里同样是在用 */
+  const sent = S.agentTaskSent || null;
+  if (sent)
+    for (const id of Object.keys(sent)) one(nodeById(id), sent[id]);
+}
+/* 「已引用」全量：画布节点全部字段 + 正文 token + 全部会话 + 输入框当前正文。
+   递归扫描节点字段时跳过 node.inlineImgs —— 登记表是「发过这张图」的账，
+   不是「现在还在用」的引用（否则从框里删掉的图永远退不了休）。 */
+function collectInlineImgRefs() {
+  const m = inlineImgMod();
+  const refs = [];
+  canvasCapsuleTextRefs(refs);
+  if (m && typeof m.imgRefsIn === "function") {
+    refs.push(
+      ...m.imgRefsIn(
+        { nodes: (S.wf && S.wf.nodes) || [] },
+        { skipKeys: ["inlineImgs"] },
+      ),
+    );
+    /* 全部会话（含归档）：消息 / 草稿 / 发件箱里的图都不算孤儿 */
+    const sessions =
+      (typeof agentSessions === "function" ? agentSessions() : S.agentSessions) || [];
+    for (const st of sessions) {
+      if (!st) continue;
+      refs.push(
+        ...m.imgRefsIn({
+          messages: st.messages || [],
+          draft: st._draft || st.draft || "",
+          outbox: st.outbox || [],
+        }),
+      );
+    }
+    /* 输入框当前正文（会话 / 助手 / 开发草稿框，真源在 app-assist.js 的 chatImgRefs） */
+    if (typeof chatImgRefs === "function") {
+      try {
+        refs.push(...(chatImgRefs() || []));
+      } catch (_) {}
+    }
+  }
+  return refs;
+}
+/* 候选：本功能创建过的内嵌图（台账 ∪ 节点登记表） */
+function canvasInlineImgCandidates() {
+  const out = [];
+  for (const e of wfInlineAssets()) if (e && e.path) out.push(String(e.path));
+  for (const n of (S.wf && S.wf.nodes) || [])
+    for (const e of promptCapsuleList(n)) out.push(String(e.path));
+  return out;
+}
+/* 回收一轮：候选 - 引用 = 孤儿 → 主进程按目录白名单删盘 → 清台账 / 登记表。
+   返回 { removed, skipped }（removed = 真删掉的原始路径）。 */
+async function gcCanvasInlineImages(opts) {
+  const o = opts || {};
+  const api = typeof window !== "undefined" ? window.api : null;
+  if (!S || !S.wf || !S.wf.id) return { removed: [], skipped: [] };
+  if (!api || typeof api.assetDeleteImages !== "function") return { removed: [], skipped: [] };
+  const cands = canvasInlineImgCandidates();
+  if (!cands.length) return { removed: [], skipped: [] };
+  const m = inlineImgMod();
+  const orphans =
+    m && typeof m.orphanImages === "function"
+      ? m.orphanImages(cands, collectInlineImgRefs())
+      : [];
+  if (!orphans.length) return { removed: [], skipped: [] };
+  let r = null;
+  try {
+    r = await api.assetDeleteImages(orphans);
+  } catch (_) {
+    r = null;
+  }
+  const removed = (r && r.removed) || [];
+  if (removed.length) {
+    const keys = new Set(removed.map(inlineImgPathKey));
+    wfInlineAssetForget(keys);
+    for (const n of S.wf.nodes || []) {
+      if (!Array.isArray(n.inlineImgs)) continue;
+      const rest = n.inlineImgs.filter(
+        (e) => !(e && keys.has(inlineImgPathKey(e.path))),
+      );
+      if (rest.length !== n.inlineImgs.length) n.inlineImgs = rest;
+    }
+    if (typeof scheduleSave === "function") scheduleSave();
+    if (!o.quiet)
+      toast(
+        I18n.t("已从磁盘删除 ") + removed.length + I18n.t(" 个无引用图片"),
+        "ok",
+      );
+  }
+  return { removed, skipped: (r && r.skipped) || [] };
+}
+/* 去抖回收（300ms）：连着删几张（✕ / 清空框 / 删节点）只跑一轮 */
+let _canvasImgGcTimer = null;
+function gcCanvasInlineImagesSoon(delay) {
+  if (_canvasImgGcTimer) clearTimeout(_canvasImgGcTimer);
+  const wait = delay == null ? 300 : Math.max(0, Number(delay) || 0);
+  _canvasImgGcTimer = setTimeout(() => {
+    _canvasImgGcTimer = null;
+    Promise.resolve(gcCanvasInlineImages()).catch(() => {});
+  }, wait);
+}
+
+/* ---------- 镜像层上的胶囊块 ---------- */
+/* 给每个 token 占位 span 盖一个胶囊块（绝对定位、不参与排版）：
+   · 位置 / 尺寸取自占位 span 的矩形，除以该元素实测渲染倍率（画布缩放 ≠100% 时
+     getBoundingClientRect 是屏幕 px，left / top 要的是本地 px，与 caretXY 同一口径）；
+   · 矩形换算到「滚动内容坐标」：+ hl.scrollTop / scrollLeft，胶囊随正文一起滚；
+   · 缩略图走 file:/// URL（mediaFileUrlOf），不读盘、不进内存；
+   · 点胶囊本体 = 光标落到 token 之后；点 ✕ = 删掉这张内嵌图片。 */
+function syncPromptCapsules(hl, ta, node, persistPrompt) {
+  if (!hl || !ta || !promptCapsuleSupported(node)) return;
+  const slots = hl.querySelectorAll(".pc-slot");
+  if (!slots.length) return;
+  const reg = promptCapsuleMap(node);
+  if (!reg.size) return;
+  const hb = hl.getBoundingClientRect();
+  const kx = hl.offsetWidth > 0 ? hb.width / hl.offsetWidth : 1;
+  const ky = hl.offsetHeight > 0 ? hb.height / hl.offsetHeight : 1;
+  const lineH = parseFloat(getComputedStyle(hl).lineHeight) || 0;
+  const title = String(node.title || node.id || "");
+  for (const slot of Array.from(slots)) {
+    const id = String(slot.getAttribute("data-pc") || "");
+    const e = reg.get(id);
+    if (!e) continue;
+    const sb = slot.getBoundingClientRect();
+    const w = sb.width / (kx || 1);
+    const sh = sb.height / (ky || 1);
+    if (!(w > 0) || !(sh > 0)) continue;
+    const h = Math.max(sh, lineH || sh);
+    const pill = document.createElement("div");
+    pill.className = "pc-pill";
+    pill.dataset.pc = id;
+    pill.style.left =
+      (sb.left - hb.left) / (kx || 1) - hl.clientLeft + hl.scrollLeft + "px";
+    pill.style.top =
+      (sb.top - hb.top) / (ky || 1) -
+      hl.clientTop +
+      hl.scrollTop -
+      (h - sh) / 2 +
+      "px";
+    pill.style.width = w + "px";
+    pill.style.height = h + "px";
+    pill.title =
+      String(e.name || fileName(e.path) || "") +
+      "\n" +
+      I18n.t("来源：") +
+      I18n.t(PROMPT_CAP_SRC_LABELS[e.src] || "粘贴") +
+      "\n" +
+      I18n.t("所属节点：") +
+      title +
+      "\n" +
+      I18n.t("时间：") +
+      new Date(Number(e.at) || 0).toLocaleString();
+    const img = document.createElement("img");
+    img.className = "pc-thumb";
+    img.alt = "";
+    img.src = mediaFileUrlOf(e.path);
+    img.addEventListener("error", () => {
+      img.style.visibility = "hidden";
+    });
+    const nm = document.createElement("span");
+    nm.className = "pc-name";
+    nm.textContent = String(e.name || fileName(e.path) || "");
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "pc-del";
+    del.textContent = "✕";
+    del.title = I18n.t("删除这张内嵌图片");
+    del.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+    del.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      removePromptCapsule(ta, node, id, persistPrompt);
+    });
+    pill.addEventListener("mousedown", (ev) => {
+      if (ev.target === del) return;
+      /* 点胶囊本体：光标落到 token 之后（胶囊不参与排版，点它不该把光标丢到别处） */
+      ev.preventDefault();
+      const t = promptCapsuleTokens(String(ta.value || "")).find(
+        (x) => x.id === id,
+      );
+      if (!t) return;
+      try {
+        ta.focus();
+        ta.setSelectionRange(t.end, t.end);
+      } catch (_) {}
+    });
+    pill.appendChild(img);
+    pill.appendChild(nm);
+    pill.appendChild(del);
+    /* 胶囊盖在 textarea 之上（z-index 2）：拖到它头上的图片文件要接住，
+       否则这次拖拽会穿透到画布级 drop（= 新建节点）。 */
+    pill.addEventListener("dragover", (ev) => promptCapsuleDragOver(ev, node));
+    pill.addEventListener("drop", (ev) =>
+      promptCapsuleDrop(ev, ta, node, persistPrompt),
+    );
+    /* token 文字交给胶囊盖住：占位宽度仍原样保留，镜像层断行与 textarea 一致 */
+    slot.style.visibility = "hidden";
+    hl.appendChild(pill);
+  }
+}
+
+/* ---------- 粘贴 / 拖入绑定（图片 → 光标处胶囊块；文本粘贴一律不拦） ---------- */
+function promptCapsulePickedFromFile(file) {
+  return new Promise((resolve) => {
+    if (!file) return resolve(null);
+    let p = "";
+    try {
+      if (window.api && window.api.getPathForFile)
+        p = String(window.api.getPathForFile(file) || "");
+    } catch (_) {}
+    if (p) return resolve({ srcPath: p, name: fileName(p), ext: extOf(p) });
+    const rd = new FileReader();
+    rd.onload = () => {
+      const dataUrl = String(rd.result || "");
+      if (!dataUrl) return resolve(null);
+      const m = /^data:([^;,]+)/i.exec(dataUrl);
+      const mime = (m && m[1]) || "image/png";
+      /* base64 只留裸片段：assetWriteBase64 / fileWriteBytes 那一路不认 data URL 前缀
+         （Buffer.from(x,"base64") 会静默写出坏字节，图看着像坏了还不报错）。
+         归一函数与共享模块同源（inlineImgMod 就是 window.MTInlineImg）。 */
+      const mod = inlineImgMod();
+      const b64 =
+        mod && typeof mod.stripDataUrl === "function"
+          ? mod.stripDataUrl(dataUrl)
+          : dataUrl.replace(/^data:[^,]*,/, "");
+      resolve({
+        base64: b64,
+        name: String(file.name || "image"),
+        ext: "." + mime.replace(/^image\//i, "").replace(/^jpeg$/i, "jpg"),
+      });
+    };
+    rd.onerror = () => resolve(null);
+    try {
+      rd.readAsDataURL(file);
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+function promptCapsuleClipboardFile(ev) {
+  const dt = ev.clipboardData;
+  if (!dt) return null;
+  for (const it of Array.from(dt.items || []))
+    if (it.kind === "file" && /^image\//i.test(it.type || "")) {
+      const f = it.getAsFile();
+      if (f) return f;
+    }
+  for (const f of Array.from(dt.files || []))
+    if (/^image\//i.test(f.type || "")) return f;
+  return null;
+}
+/* 拖入的图片文件 → 光标处胶囊块。正文框本体与「已经盖在正文上的胶囊」共用这一对处理器：
+   胶囊是 z-index 2 的元素，拖到它头上时事件不会落到 textarea（兄弟元素），
+   不接一手的话这次拖拽会落到画布级 drop 上（= 新建节点），与用户意图相反。 */
+function promptCapsuleDragOver(ev, node) {
+  const dt = ev.dataTransfer;
+  if (!promptCapsuleSupported(node) || !dt) return;
+  if (Array.from(dt.types || []).indexOf("Files") < 0) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  dt.dropEffect = "copy";
+}
+function promptCapsuleDrop(ev, ta, node, persistPrompt) {
+  const dt = ev.dataTransfer;
+  if (!promptCapsuleSupported(node) || !dt) return;
+  const file = Array.from(dt.files || []).find((f) =>
+    /^image\//i.test(f.type || ""),
+  );
+  if (!file) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  promptCapsulePickedFromFile(file).then((picked) => {
+    if (picked)
+      insertPromptCapsuleFromPicked(ta, node, persistPrompt, {
+        srcPath: picked.srcPath,
+        base64: picked.base64,
+        name: picked.name,
+        ext: picked.ext,
+        src: "drop",
+      });
+  });
+}
+function bindPromptCapsuleIO(ta, node, persistPrompt) {
+  ta.addEventListener("paste", (ev) => {
+    if (!promptCapsuleSupported(node)) return;
+    const dt = ev.clipboardData;
+    const file = promptCapsuleClipboardFile(ev);
+    if (file) {
+      ev.preventDefault();
+      promptCapsulePickedFromFile(file).then((picked) => {
+        if (picked)
+          insertPromptCapsuleFromPicked(ta, node, persistPrompt, {
+            srcPath: picked.srcPath,
+            base64: picked.base64,
+            name: picked.name,
+            ext: picked.ext,
+            src: "paste",
+          });
+      });
+      return;
+    }
+    /* 无文件项、且既不是文本也不是文件（多为截图）→ 走主进程剪贴板位图 */
+    const types = dt ? Array.from(dt.types || []) : [];
+    const hasText = types.some((t) => /^text\//i.test(t) || t === "text");
+    const hasFiles = types.indexOf("Files") >= 0;
+    if (!dt || hasText || hasFiles) return;
+    ev.preventDefault();
+    const api = window.api;
+    if (!api || typeof api.clipboardReadImage !== "function") return;
+    Promise.resolve(api.clipboardReadImage()).then(
+      (r) => {
+        if (!r || !r.ok) {
+          toast(I18n.t("剪贴板里没有图片"), "warn");
+          return null;
+        }
+        return insertPromptCapsuleFromPicked(ta, node, persistPrompt, {
+          base64: r.base64,
+          name: "screenshot",
+          ext: ".png",
+          src: "clipboard",
+        });
+      },
+      () => {},
+    );
+  });
+  /* dragover 也要就地消费：画布级的拖入（拖到空白处建节点）不能把这次拖拽也吃掉 */
+  ta.addEventListener("dragover", (ev) => promptCapsuleDragOver(ev, node));
+  ta.addEventListener("drop", (ev) => promptCapsuleDrop(ev, ta, node, persistPrompt));
+}
+
 /* 高亮层与 textarea 严格同源：正文一律用 textarea 的实际值，末尾恒定追加同一行占位。
    （行尾换行在 pre-wrap 镜像层里会被折叠掉，所以恒定补 "\n" 而不是按 endsWith 手工补换行，
    两层的行位置始终一致，滚动位置也能一一对应。） */
 const PROMPT_HL_TAIL = "\n";
 
-function promptRefBackdropHtml(text, node) {
-  const cands = refCandidates(node);
-  const tags = new Set(refTagCandidates(node));
-  return (
-    eachAtMention(
-      text,
-      atRefNamesFor(cands),
+/* opts.refs === false（judge 的判断标准这类「@ 不会被解析」的正文框）：不做 @ 高亮。
+   胶囊 token 与该开关无关，照旧占位 + 盖胶囊（见 syncPromptCapsules）。 */
+function promptRefBackdropHtml(text, node, opts) {
+  const refsOn = !(opts && opts.refs === false);
+  const cands = refsOn ? refCandidates(node) : [];
+  const tags = refsOn ? new Set(refTagCandidates(node)) : new Set();
+  const names = refsOn ? atRefNamesFor(cands) : [];
+  const plainSeg = (seg) => {
+    if (!refsOn) return escapePromptHl(seg);
+    return eachAtMention(
+      seg,
+      names,
       escapePromptHl,
-      (h, seg) => {
+      (h, s) => {
         const key = h.name || h.token;
         const tag = tagByAtToken(key);
         const cls = findCandidateByTitle(cands, key)
@@ -14698,10 +15451,30 @@ function promptRefBackdropHtml(text, node) {
           : tag && tags.has(tag)
             ? "at-ref-tag"
             : "";
-        return cls ? '<span class="' + cls + '">' + escapePromptHl(seg) + "</span>" : null;
+        return cls ? '<span class="' + cls + '">' + escapePromptHl(s) + "</span>" : null;
       },
-    ) + PROMPT_HL_TAIL
-  );
+    );
+  };
+  const s = String(text == null ? "" : text);
+  const reg = promptCapsuleSupported(node) ? promptCapsuleMap(node) : new Map();
+  let out = "";
+  let last = 0;
+  if (reg.size) {
+    for (const t of promptCapsuleTokens(s)) {
+      if (!reg.has(t.id)) continue; /* 登记表里没有的 token 当普通文本（可见），不盖胶囊 */
+      if (t.start > last) out += plainSeg(s.slice(last, t.start));
+      /* token 原样占位（宽度 = 它自己的排版宽度）但不可见：胶囊块由 syncPromptCapsules 盖上去 */
+      out +=
+        '<span class="pc-slot" data-pc="' +
+        escapePromptHl(t.id) +
+        '">' +
+        escapePromptHl(t.raw) +
+        "</span>";
+      last = t.end;
+    }
+  }
+  if (last < s.length) out += plainSeg(s.slice(last));
+  return out + PROMPT_HL_TAIL;
 }
 
 function syncPromptRefBackdrop(ta, node) {
@@ -14710,12 +15483,18 @@ function syncPromptRefBackdrop(ta, node) {
   const hl = wrap && wrap.querySelector(".n-prompt-hl");
   if (!hl) return;
   /* 与 textarea 完全相同的文本，占位已在 promptRefBackdropHtml 内统一追加 */
-  hl.innerHTML = promptRefBackdropHtml(String(ta.value || ""), node);
+  hl.innerHTML = promptRefBackdropHtml(
+    String(ta.value || ""),
+    node,
+    ta.__mtPromptOpts,
+  );
   hl.scrollTop = ta.scrollTop;
   hl.scrollLeft = ta.scrollLeft;
+  /* 胶囊块必须等高亮层落定（innerHTML + 滚动位置）之后再按 token 的实际矩形贴上去 */
+  syncPromptCapsules(hl, ta, node, ta.__mtPromptPersist);
 }
 
-function mountPromptTextarea(f3, ta, node, persistPrompt) {
+function mountPromptTextarea(f3, ta, node, persistPrompt, opts) {
   const wrap = document.createElement("div");
   wrap.className = "n-prompt-wrap";
   const hl = document.createElement("div");
@@ -14724,13 +15503,30 @@ function mountPromptTextarea(f3, ta, node, persistPrompt) {
   wrap.appendChild(hl);
   wrap.appendChild(ta);
   ta.classList.add("n-text-layered");
+  /* 正文框自身的可选口径 + 落回回调：syncPromptRefBackdrop（镜像层重画）与胶囊块
+     都从这里取，不必给既有调用点再加参数。 */
+  ta.__mtPromptOpts = opts || null;
+  ta.__mtPromptPersist =
+    typeof persistPrompt === "function" ? persistPrompt : null;
+  const refsOn = !(opts && opts.refs === false);
   const syncHl = () => syncPromptRefBackdrop(ta, node);
   ta.addEventListener("input", () => {
     persistPrompt(ta.value);
-    refTick(ta, node);
+    if (refsOn) refTick(ta, node);
     syncHl();
     if (node.kind === "proc_text") slashTick(ta, "node", persistPrompt);
   });
+  /* 内嵌图的「清空框」回收：这一次输入把原本有内容的正文框清空了 → 本框登记的内嵌图
+     若已一处引用都没有，随清空一起回收（只在「有 → 空」这一跳触发，不逐键回收；
+     单独一只监听，不动上面那只有关高亮 / 斜杠菜单的顺序）。 */
+  if (promptCapsuleSupported(node)) {
+    ta._mtPromptHadText = !!String(ta.value || "").trim();
+    ta.addEventListener("input", () => {
+      const has = !!String(ta.value || "").trim();
+      if (!has && ta._mtPromptHadText) gcCanvasInlineImagesSoon();
+      ta._mtPromptHadText = has;
+    });
+  }
   ta.addEventListener("scroll", () => {
     closeRefMenu();
     closeSlashMenu();
@@ -14744,6 +15540,8 @@ function mountPromptTextarea(f3, ta, node, persistPrompt) {
     ta.addEventListener(ev, syncHl);
   f3.appendChild(wrap);
   syncHl();
+  /* 内嵌图像胶囊块：粘贴 / 从资源管理器拖入图片 → 光标处生成胶囊（只在支持的范围里挂） */
+  if (promptCapsuleSupported(node)) bindPromptCapsuleIO(ta, node, persistPrompt);
 }
 
 function resolveRefs(prompt, node, idx, opts) {
@@ -14751,6 +15549,13 @@ function resolveRefs(prompt, node, idx, opts) {
   const unresolved = new Set();
   const textSources = [];
   const seen = new Set();
+  const bodyImageBlocks = [];
+  /* 正文里的内嵌图像胶囊块：token → 就地一行「（图像输入）标题：…」+「图 N」，路径并进
+     refImages（随后走既有通路下发：proc_text 多模态、agent_task 的 spec.images）；
+     bodyImageBlocks 交给 buildSpec，按同一顺序写进【背景信息】并防重复下发。 */
+  const cap = resolvePromptCapsules(prompt, node, refImages);
+  prompt = cap.prompt;
+  for (const b of cap.blocks) bodyImageBlocks.push(b);
   /* !@数据库标题 引用：先替换为可读指针（并收集引用库供 dbNodesForRun/接地用） */
   const bang = resolveDbBangRefs(prompt, node);
   prompt = bang.prompt;
@@ -14900,7 +15705,13 @@ function resolveRefs(prompt, node, idx, opts) {
     }
     return raw;
   });
-  return { prompt: out, refImages, unresolved: [...unresolved], textSources };
+  return {
+    prompt: out,
+    refImages,
+    unresolved: [...unresolved],
+    textSources,
+    bodyImageBlocks,
+  };
 }
 
 /* 合并参考图路径：@ 引用优先（与「第 N 张」一致），再补连线输入；同路径只保留一次 */
@@ -16588,6 +17399,12 @@ async function deleteNodes(ids, quiet) {
     .map((m) => m.id);
   if (markDel.length) deleteMarks(markDel, true);
   S.wf.nodes = S.wf.nodes.filter((n) => !set.has(n.id));
+  /* 内嵌图回收（「删节点」）：被删节点登记过的图就算登记表随节点没了，wf.inlineAssets
+     台账也还认得它 —— 一处引用都没有才删盘（去抖一轮，批量删不重复跑）。
+     被删节点带走的智能会话，其输入框落盘的图同口径回收（app-assist.js）。 */
+  gcCanvasInlineImagesSoon();
+  if (linkedSessions.length && typeof chatImgGcForSessions === "function")
+    chatImgGcForSessions(linkedSessions);
   /* 删掉的节点里若有设置窗正在绑着的那个：窗必须一起关（它写的是孤儿对象），
      并明确告知用户窗为什么不见了。后面的 renderCanvas / scheduleSave 由本函数收尾。 */
   closeNodeSettingsDialogIfStale({
@@ -27120,8 +27937,12 @@ async function playJudgeNode(node, quiet) {
   const runP = (async () => {
     try {
       const parent = nodeById(node.parentTaskId);
-      const goal =
-        String((node.prompt || "").trim() || (parent && parent.goal) || "").trim();
+      /* 判断标准里的内嵌图像胶囊 token 换成可读注记：judge 只做文本判读（images: []），
+         不能让「@img:xxxxxxx」原样漏进判据。 */
+      const goal = promptCapsulesToText(
+        String((node.prompt || "").trim() || (parent && parent.goal) || "").trim(),
+        node,
+      );
       if (!goal) {
         node.error = I18n.t("请先填写任务目标或判断标准");
         return null;
@@ -27141,7 +27962,9 @@ async function playJudgeNode(node, quiet) {
         addBit(src, null);
       const prov = pickTextProviderForJudge(node);
       if (!prov) {
-        node.error = I18n.t("未配置带 API Key 的文本服务商");
+        /* 无模型（本机没有带 Key 的文本服务商）：不起跑；用户亲手点 ▶ 才提示一次 */
+        node.error = I18n.t("无模型：本机没有带 API Key 的文本服务商，请在设置 · 模型服务里配一家");
+        if (!quiet) toast(node.error, "warn");
         return "blocked";
       }
       const prompt =
@@ -30012,6 +30835,11 @@ function createDevSessionForNode(node, mode, req) {
     workspace: devPathOf(node) || dshWorkspaceOf(node),
     /* 开发 / 细化绑定会话：所属画布 = 该功能块所在画布（不是开轮时用户看到的画布） */
     canvasWfId: canvasWfIdForNode(node),
+    /* 所属应用：该功能块（或它所在画布）属于某个「应用」时带上（renderer/app-app-flow.js
+       的 appIdOfDevNode）——开发页按它过滤会话；不属于任何应用就是空串。
+       总会话视图与 #agentSideList 的渲染逻辑不看这一位，一字未改。 */
+    appId:
+      (typeof appIdOfDevNode === "function" ? appIdOfDevNode(node) : "") || "",
     preset: (st && st.preset) || AGENT_PRESET_DEFAULT,
     provider: (eff && eff.provider) || "deepseek-official",
     model: (eff && eff.model) || "",
@@ -30295,6 +31123,9 @@ async function startDevAskSession(node, question) {
     workspace: devPathOf(node) || dshWorkspaceOf(node),
     /* 问询会话同样归属该功能块所在画布 */
     canvasWfId: canvasWfIdForNode(node),
+    /* 与「开发 / 细化」同口径带上所属应用（开发页按 appId 过滤会话） */
+    appId:
+      (typeof appIdOfDevNode === "function" ? appIdOfDevNode(node) : "") || "",
     preset: (st && st.preset) || AGENT_PRESET_DEFAULT,
     provider: (eff && eff.provider) || "deepseek-official",
     model: (eff && eff.model) || "",
@@ -31256,7 +32087,12 @@ function chooseWorkspaceFolderDialog(opts) {
 function apiProvidersForKind(kind) {
   const list = (S.config && S.config.providers) || [];
   const want = kind === "proc_image" || kind === "image" ? "image" : "text";
-  return list.filter((p) => providerHasKind(S.config, p, want));
+  /* 停用的服务商不进模型选择器（设置里仍可见、可编辑、可恢复） */
+  return list.filter(
+    (p) =>
+      !(typeof providerDisabled === "function" && providerDisabled(p)) &&
+      providerHasKind(S.config, p, want),
+  );
 }
 
 function agentProviderRouteValid(route) {
@@ -31278,265 +32114,126 @@ function apiProviderValid(providerId, kind) {
   return providerHasKind(S.config, p, want);
 }
 
-/* 按「无效服务商键」分组：每组稍后单独弹窗批量替换 */
-function collectInvalidProviderGroups(wf) {
-  const map = new Map();
-  const bump = (key, meta, node) => {
-    let g = map.get(key);
-    if (!g) {
-      g = Object.assign({ key, nodes: [] }, meta);
-      map.set(key, g);
+/* ── 「无模型」判定（本轮需求：模型不可见一律不弹提示，静默当作无模型）────────────
+   节点本次要用的模型解析不出来 = 无模型，三种情形：
+     · 本机没有该节点绑的服务商（他人模板 / 配置里删掉了这家）；
+     · 该服务商在本机没有这一形态的模型（文本节点要文本模型、图像节点要图像模型）；
+     · 节点存着的模型不在本机清单里（模型不可见）—— 以前会弹错并逐个询问替换，
+       现在一律静默。
+   这是**派生状态**，不改用户数据（不复位服务商 / 不吞掉原模型值），画布加载、
+   切画布、导入模板全程零弹窗；节点头摘要与设置面板照实显示「无模型」，
+   启动闸门（节点 ▶ / 控制 ▶）按它拦下并给一次提示 —— 判据只有这一份。 */
+function nodeModelGate(node) {
+  if (!node) return { ok: true };
+  const isAgent =
+    node.kind === "agent_task" || (node.kind === "proc_text" && !!node.agent);
+  const model = String(node.model || "").trim();
+  if (isAgent) {
+    const route = String(node.provider || "").trim() || "deepseek-official";
+    if (!agentProviderRouteValid(route)) {
+      return {
+        ok: false,
+        reason: I18n.t(
+          "无模型：本机没有该节点的服务商「{name}」，请在节点设置里重新选择服务商与模型",
+          { name: route },
+        ),
+      };
     }
-    g.nodes.push(node);
-  };
-  for (const n of (wf && wf.nodes) || []) {
-    const agentish =
-      n.kind === "agent_task" ||
-      (n.kind === "proc_text" && n.agent);
-    if (agentish) {
-      const route = String(n.provider || "deepseek-official").trim() || "deepseek-official";
-      if (!agentProviderRouteValid(route)) {
-        bump("agent:" + route, {
-          mode: "agent",
-          type: "text",
-          badLabel: route,
-          modelOnly: false,
-        }, n);
-      } else {
-        const models = agentModelsForRoute(route);
-        if (n.model && models.length && !models.includes(String(n.model))) {
-          bump("agent-model:" + route + ":" + n.model, {
-            mode: "agent",
-            type: "text",
-            badLabel: route + " · " + n.model,
-            modelOnly: true,
-            keepRoute: route,
-          }, n);
-        }
-      }
-      continue;
+    const models = agentModelsForRoute(route).map(String);
+    if (!models.length) {
+      return { ok: false, reason: I18n.t("无模型：该服务商在本机没有可用模型，请在设置 · 模型服务里补上模型") };
     }
-    if (n.kind !== "proc_text" && n.kind !== "proc_image")
-      continue;
-    const pid = String(n.providerId || "").trim();
-    if (!apiProviderValid(pid, n.kind)) {
-      bump("api:" + (pid || "(empty)") + ":" + n.kind, {
-        mode: "api",
-        type: n.kind === "proc_image" ? "image" : "text",
-        badLabel: pid || I18n.t("（未设置）"),
-        modelOnly: false,
-        nodeKind: n.kind,
-      }, n);
-    } else {
-      const p = (S.config.providers || []).find((x) => x.id === pid);
-      /* 模型可用性按形态判：只有该服务商里属于本节点形态的模型才算有效
-         （同一端点混挂文本 / 图像时，选错形态的模型以前查不出来）。 */
-      const models = modelsOfKind(S.config, p, n.kind === "proc_image" ? "image" : "text").map(String);
-      if (n.model && models.length && !models.includes(String(n.model))) {
-        bump("api-model:" + pid + ":" + n.model, {
-          mode: "api",
-          type: n.kind === "proc_image" ? "image" : "text",
-          badLabel: (p.name || pid) + " · " + n.model,
-          modelOnly: true,
-          keepProviderId: pid,
-          nodeKind: n.kind,
-        }, n);
-      }
+    if (model && !models.includes(model)) {
+      return {
+        ok: false,
+        reason: I18n.t(
+          "无模型：模型「{model}」在本机不存在，请在节点设置里重新选择模型",
+          { model: model },
+        ),
+      };
     }
+    return { ok: true, model: model || models[0] };
   }
-  return [...map.values()];
-}
-
-function promptReplaceProviderGroup(group) {
-  return new Promise((resolve) => {
-    openOverlay(I18n.t("无效服务商 / 模型"));
-    overlayPersistent = true;
-    const body = $("#ovBody");
-    const foot = $("#ovFoot");
-    body.innerHTML = "";
-    const titles = group.nodes
-      .map((n) => n.title || n.id)
-      .filter(Boolean)
-      .slice(0, 12);
-    const more =
-      group.nodes.length > titles.length
-        ? I18n.t(" …共 ") + group.nodes.length + I18n.t(" 个节点")
-        : "";
-    const p = document.createElement("p");
-    p.style.cssText = "margin:0 0 10px; line-height:1.7; font-size:13px";
-    p.textContent =
-      I18n.t("检测到无效服务商 / 模型「") +
-      group.badLabel +
-      I18n.t("」，影响节点：") +
-      titles.join("、") +
-      more +
-      I18n.t("。请选择要批量替换成的本地服务商与模型。");
-    body.appendChild(p);
-
-    const provLab = document.createElement("label");
-    provLab.className = "n-field";
-    provLab.style.display = "block";
-    provLab.style.marginBottom = "8px";
-    provLab.appendChild(document.createTextNode(I18n.t("替换为服务商")));
-    const provSel = document.createElement("select");
-    provSel.className = "n-field";
-    provSel.style.width = "100%";
-    const modelLab = document.createElement("label");
-    modelLab.className = "n-field";
-    modelLab.style.display = "block";
-    modelLab.appendChild(document.createTextNode(I18n.t("模型")));
-    const modelSel = document.createElement("select");
-    modelSel.className = "n-field";
-    modelSel.style.width = "100%";
-
-    const fillModels = () => {
-      modelSel.innerHTML = "";
-      let models = [];
-      if (group.mode === "agent") {
-        models = agentModelsForRoute(provSel.value).map((id) => ({
-          id,
-          name: id,
-        }));
-      } else {
-        const p = (S.config.providers || []).find((x) => x.id === provSel.value);
-        models = ((p && p.models) || []).map((id) => ({ id, name: id }));
-      }
-      if (!models.length) {
-        const o = document.createElement("option");
-        o.value = "";
-        o.textContent = I18n.t("（无可用模型）");
-        modelSel.appendChild(o);
-        return;
-      }
-      for (const m of models) {
-        const o = document.createElement("option");
-        o.value = m.id;
-        o.textContent = m.name || m.id;
-        modelSel.appendChild(o);
-      }
-    };
-
-    if (group.mode === "agent") {
-      const dp = dshProvider();
-      {
-        const o = document.createElement("option");
-        o.value = "deepseek-official";
-        o.textContent = (dp && dp.name) || I18n.t("DeepSeek 官方");
-        provSel.appendChild(o);
-      }
-      for (const p of mtnodePiProviders()) {
-        const o = document.createElement("option");
-        o.value = "mtnode_" + p.route;
-        o.textContent = p.name;
-        provSel.appendChild(o);
-      }
-      if (group.modelOnly && group.keepRoute) {
-        const hit = [...provSel.options].some((o) => o.value === group.keepRoute);
-        if (hit) provSel.value = group.keepRoute;
-      }
-    } else {
-      const list = apiProvidersForKind(group.type);
-      if (!list.length) {
-        const o = document.createElement("option");
-        o.value = "";
-        o.textContent = I18n.t("（请先在设置中添加服务商）");
-        provSel.appendChild(o);
-      } else {
-        for (const p of list) {
-          const o = document.createElement("option");
-          o.value = p.id;
-          o.textContent = p.name || p.id;
-          provSel.appendChild(o);
-        }
-        if (group.modelOnly && group.keepProviderId) {
-          const hit = list.some((p) => p.id === group.keepProviderId);
-          if (hit) provSel.value = group.keepProviderId;
-        }
-      }
-    }
-    provSel.onchange = fillModels;
-    fillModels();
-    provLab.appendChild(provSel);
-    modelLab.appendChild(modelSel);
-    body.appendChild(provLab);
-    body.appendChild(modelLab);
-
-    foot.innerHTML = "";
-    let done = false;
-    const finish = (val) => {
-      if (done) return;
-      done = true;
-      closeOverlay();
-      resolve(val);
-    };
-    const skip = document.createElement("button");
-    skip.className = "mini";
-    skip.textContent = I18n.t("跳过此服务商");
-    skip.onclick = () => finish(null);
-    const ok = document.createElement("button");
-    ok.className = "mini primary";
-    ok.textContent = I18n.t("批量替换");
-    ok.onclick = () => {
-      const pv = provSel.value;
-      const mv = modelSel.value;
-      if (!pv) {
-        toast(I18n.t("请先在设置中添加可用的服务商"), "warn");
-        return;
-      }
-      if (!mv) {
-        toast(I18n.t("请选择模型"), "warn");
-        return;
-      }
-      if (group.mode === "agent") finish({ route: pv, model: mv });
-      else finish({ providerId: pv, model: mv });
-    };
-    foot.appendChild(skip);
-    foot.appendChild(ok);
-  });
-}
-
-async function sanitizeInvalidProviders(wf, opts) {
-  opts = opts || {};
-  if (!wf) return 0;
-  const groups = collectInvalidProviderGroups(wf);
-  if (!groups.length) return 0;
-  if (!opts.quiet) {
-    await showInfoOverlay(
-      I18n.t("检测到无效模型配置"),
-      I18n.t(
-        "当前画布含有本机不存在的服务商或模型（常见于他人模板）。接下来将按每个无效服务商分别询问，批量替换为你自己的服务商。",
+  /* 要云端模型的节点：文本 / 图像 / remotion（remotion 与文本节点一样要文本模型） */
+  if (
+    node.kind !== "proc_text" &&
+    node.kind !== "proc_image" &&
+    node.kind !== "remotion"
+  )
+    return { ok: true };
+  const pid = String(node.providerId || "").trim();
+  if (!pid) {
+    return { ok: false, reason: I18n.t("无模型：该节点还没选服务商，请在节点设置里选好服务商与模型") };
+  }
+  const p = (S.config.providers || []).find((x) => x.id === pid);
+  if (!p) {
+    return {
+      ok: false,
+      reason: I18n.t(
+        "无模型：本机没有该节点的服务商「{name}」，请在节点设置里重新选择服务商与模型",
+        { name: pid },
       ),
-      groups
-        .map(
-          (g) =>
-            "· " +
-            g.badLabel +
-            " → " +
-            g.nodes.length +
-            I18n.t(" 个节点"),
-        )
-        .join("\n"),
+    };
+  }
+  const want = node.kind === "proc_image" ? "image" : "text";
+  /* 形态判定（apiProviderValid）与模型表都走 app-model-kind.js：服务商级的 type 不算数，
+     「这家有没有文本 / 图像模型」按它的模型清单算。 */
+  const noKindReason = () =>
+    I18n.t(
+      "无模型：服务商「{name}」在本机没有这一形态的模型，请在设置 · 模型服务里补上模型或改模型类型",
+      { name: p.name || pid },
     );
+  if (!apiProviderValid(pid, node.kind)) return { ok: false, reason: noKindReason() };
+  const models = modelsOfKind(S.config, p, want).map(String);
+  if (!models.length) return { ok: false, reason: noKindReason() };
+  if (model && !models.includes(model)) {
+    return {
+      ok: false,
+      reason: I18n.t(
+        "无模型：模型「{model}」在本机不存在，请在节点设置里重新选择模型",
+        { model: model },
+      ),
+    };
   }
-  let nChanged = 0;
-  for (const g of groups) {
-    const pick = await promptReplaceProviderGroup(g);
-    if (!pick) continue;
-    for (const node of g.nodes) {
-      if (g.mode === "agent") {
-        node.provider = pick.route;
-        node.model = pick.model;
-        node.vision = null;
-      } else {
-        node.providerId = pick.providerId;
-        node.model = pick.model;
-      }
-      nChanged++;
-    }
-  }
-  if (nChanged) scheduleSave(true);
-  return nChanged;
+  return { ok: true, provider: p, model: model || models[0] };
 }
+
+/* 无模型节点「原来那一份」的服务商 / 模型名（摘要与提示里点名，用户知道要改哪一个）。
+   只报本机确实找不到的那一份，能解析出来的不重复报。 */
+function nodeModelStaleLabel(node) {
+  if (!node) return "";
+  const parts = [];
+  const model = String(node.model || "").trim();
+  const isAgent =
+    node.kind === "agent_task" || (node.kind === "proc_text" && !!node.agent);
+  if (isAgent) {
+    const route = String(node.provider || "").trim() || "deepseek-official";
+    const routeBad = !agentProviderRouteValid(route);
+    if (routeBad) parts.push(route);
+    if (
+      model &&
+      (routeBad || !agentModelsForRoute(route).map(String).includes(model))
+    )
+      parts.push(model);
+    return parts.join(" · ");
+  }
+  const pid = String(node.providerId || "").trim();
+  const p = pid ? (S.config.providers || []).find((x) => x.id === pid) : null;
+  /* 服务商这一份先判：本机没有这家、或这家在本机没有该形态的模型 */
+  const provBad = !!pid && (!p || !apiProviderValid(pid, node.kind));
+  if (provBad) parts.push((p && p.name) || pid);
+  if (model) {
+    /* 服务商没问题时，剩下的唯一可能就是「这只模型不在本机清单里」 */
+    const want = node.kind === "proc_image" ? "image" : "text";
+    const models =
+      p && !provBad ? modelsOfKind(S.config, p, want).map(String) : [];
+    if (provBad || !models.includes(model)) parts.push(model);
+  }
+  return parts.join(" · ");
+}
+
+/* 模型侧不再有「本机没有的服务商 / 模型」逐个询问弹窗：这类配置一律静默当作无模型
+   （判据见 nodeModelGate），只在用户点启动（▶）时提示一次。 */
 
 async function sanitizeWfEnvironment(opts) {
   opts = opts || {};
@@ -31544,7 +32241,6 @@ async function sanitizeWfEnvironment(opts) {
   S._sanitizingEnv = true;
   try {
     await sanitizeInvalidWorkspaces(opts);
-    if (S.wf) await sanitizeInvalidProviders(S.wf, opts);
   } finally {
     S._sanitizingEnv = false;
   }

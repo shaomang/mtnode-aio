@@ -1,0 +1,364 @@
+/* renderer/css/wallet.css — 账户充值（钱包）对话框与账号菜单余额行
+   样式真源；结构与交互见 renderer/app-wallet.js，服务端口径见 docs/recharge-design.md */
+
+/* ── 账号菜单里的余额行 ───────────────────────────────────── */
+.acct-balance {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--orange2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.acct-balance b {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ── 对话框主体 ───────────────────────────────────────────── */
+.wallet-root {
+  display: grid;
+  gap: 14px;
+  padding: 4px 2px 8px;
+  width: 100%;
+  min-width: 520px;
+  max-width: 720px;
+  /* 弹窗主体比 720 宽时居中：贴左会让右侧空一大块、视觉重心偏掉 */
+  margin: 0 auto;
+}
+
+.wl-k {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: .4px;
+}
+
+.wl-balance {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--orange);
+  border-radius: 8px;
+}
+
+.wl-v {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .5px;
+}
+
+.wl-balance .wl-btn {
+  margin-left: auto;
+}
+
+/* 提示条 */
+.wl-notice {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--bd2);
+  background: var(--panel2);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.wl-notice.err {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.wl-notice.ok {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.wl-notice.hidden {
+  display: none;
+}
+
+/* 金额选择 */
+.wl-pick {
+  display: grid;
+  gap: 10px;
+}
+
+.wl-tiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wl-tier {
+  min-width: 78px;
+  padding: 8px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.wl-tier:hover {
+  border-color: var(--orange2);
+}
+
+.wl-tier.on {
+  border-color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 16%, var(--panel2));
+  color: var(--orange2);
+  font-weight: 600;
+}
+
+.wl-custom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wl-custom input {
+  width: 168px;
+  padding: 7px 10px;
+  background: var(--bg2);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wl-custom input:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+
+.wl-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 按钮 */
+.wl-btn {
+  padding: 8px 14px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.wl-btn:hover:not(:disabled) {
+  border-color: var(--orange2);
+}
+
+.wl-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.wl-btn.primary {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: #1a1206;
+  font-weight: 600;
+  justify-self: start;
+}
+
+.wl-btn.primary:hover:not(:disabled) {
+  background: var(--orange2);
+  border-color: var(--orange2);
+}
+
+.wl-btn.ghost {
+  background: transparent;
+}
+
+.wl-btn.sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* 二维码区 */
+.wl-qr {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+}
+
+.wl-qr.hidden {
+  display: none;
+}
+
+.wl-qr-left {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+
+/* 电脑网站支付通道：左栏不是二维码，而是一个「打开收银台」大按钮 + 一句说明 */
+.wl-pay-open {
+  min-width: 196px;
+  padding: 14px 18px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.wl-pay-hint {
+  max-width: 210px;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.wl-qr-img {
+  width: 196px;
+  height: 196px;
+  background: #fff;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.wl-qr-amount {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--orange2);
+  font-variant-numeric: tabular-nums;
+}
+
+.wl-qr-right {
+  display: grid;
+  gap: 8px;
+  align-content: center;
+}
+
+.wl-qr-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.wl-qr-count {
+  font-size: 13px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.wl-qr-count.warn {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.wl-qr-sub {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.wl-qr-ok {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--green);
+}
+
+.wl-qr-bad {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--red);
+}
+
+/* 历史 */
+.wl-history {
+  display: grid;
+  gap: 8px;
+}
+
+.wl-h-title {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.wl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.wl-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.wl-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--bd);
+  color: var(--ink);
+}
+
+.wl-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.wl-table td.pos {
+  color: var(--green);
+}
+
+.wl-table td.neg {
+  color: var(--red);
+}
+
+.wl-table td.mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.wl-table td.st {
+  white-space: nowrap;
+}
+
+.wl-table .st-paid {
+  color: var(--green);
+}
+
+.wl-table .st-pending {
+  color: var(--yellow);
+}
+
+.wl-table .st-expired,
+.wl-table .st-closed,
+.wl-table .st-refunded,
+.wl-table .st-partial_refunded,
+.wl-table .st-paid_mismatch {
+  color: var(--red);
+}
+
+/* 底部 */
+.wl-foot-tip {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wallet-root .muted,
+.wl-qr-sub.muted {
+  color: var(--muted);
+}

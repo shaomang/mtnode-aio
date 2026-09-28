@@ -245,7 +245,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       /* 节点原来指的可能是本机配置里已不存在的服务商：回落第一个文本服务商再预览 */
       if (!S.config.providers.some((p) => p.id === n2b.providerId)) n2b.providerId = t1 && t1.id;
       const prov = S.config.providers.find((p) => p.id === n2b.providerId);
-      n2b.model = 'deepseek-v4-flash';
+      n2b.model = 'deepseek-flash';
       prov.apiKey = 'sk-test-123';
       const spec0 = buildSpec(n2b, prov, 0);
       log('spec temperature=' + spec0.temperature);
@@ -862,7 +862,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       renderCanvas();
       log('stop btn hidden after=' + (document.querySelector('.wf-node[data-nid="' + stNode.id + '"] .n-stop') === null));
 
-      // —— 多模态识图：无视觉模型时阻止；有 DeepSeek vision-exp 时同服务商切换；有其它视觉服务商时可切换并运行 ——
+      // —— 多模态识图：无视觉档时阻止；DeepSeek 官方目录里 flash 是视觉档 → 同服务商自动切换；无本地档时切到勾了「支持视觉」的服务商 ——
       addNode('input_image', 700, 2750);
       const vi = S.wf.nodes[S.wf.nodes.length - 1];
       vi.imageAsset = (await window.api.assetWriteBase64(S.wf.id, 'vi_src', (() => { const c = document.createElement('canvas'); c.width = 4; c.height = 4; const x = c.getContext('2d'); x.fillStyle = '#123456'; x.fillRect(0, 0, 4, 4); return c.toDataURL('image/png').split(',')[1]; })(), 'png')).path;
@@ -872,48 +872,55 @@ mockServer.listen(0, '127.0.0.1', () => {
       const dsProv = S.config.providers.find((p) => p.id === 'deepseek');
       const dsModelsSaved = (dsProv && dsProv.models && dsProv.models.slice()) || [];
       const catSaved = S.providerCatalog;
-      if (dsProv) dsProv.models = ['deepseek-v4-flash', 'deepseek-v4-pro'];
+      /* 本机 config 可能另有勾了「支持视觉」的服务商：先全部关掉，三条断言才可复现（末尾原样还原） */
+      const visFlagsSaved = [];
+      S.config.providers.forEach((p) => { if (p.type === 'text_openai' && p.vision) { visFlagsSaved.push([p, p.vision]); p.vision = false; } });
+      connect(vi.id, vp.id, 0);
+      const mockCount0 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).exists ? (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length : 0;
+      /* [1] 目录里谁都没标 image、服务商也没勾视觉 → 拒绝并提示，不发请求 */
+      if (dsProv) dsProv.models = ['deepseek-v4-pro'];
       S.providerCatalog = {
         deepseek: [
-          { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', input: ['text'] },
+          { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', input: ['text'] },
           { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', input: ['text'] },
         ],
         piai: [],
       };
-      vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-flash';
-      connect(vi.id, vp.id, 0);
-      const mockCount0 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).exists ? (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length : 0;
+      vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-pro';
       await playNode(vp, false);
       const mockCount1 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length;
       log('vision blocked=' + (vp.error && vp.error.indexOf('未添加多模态模型') >= 0) + ' noRequest=' + (mockCount1 === mockCount0));
+      /* [2] 目录把 deepseek-flash 标成能吃图 → 同一服务商自动切到它（当前 pro 不是视觉档） */
       S.providerCatalog = {
         deepseek: [
-          { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', input: ['text'] },
+          { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', input: ['text', 'image'] },
           { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', input: ['text'] },
-          { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek-V4-Flash-Vision-Exp', input: ['text', 'image'] },
         ],
         piai: [],
       };
-      if (dsProv) dsProv.models = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
-      vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-flash'; vp.error = null; vp.output = null;
+      if (dsProv) dsProv.models = ['deepseek-v4-pro', 'deepseek-flash'];
+      if (dsProv) dsProv.vision = true;
+      vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-pro'; vp.error = null; vp.output = null;
       const localVis = ensureProcTextVision(vp, { notify: false });
-      log('vision localSwitch=' + (!!localVis.ok && localVis.switched && vp.model === 'deepseek-v4-flash-vision-exp' && vp.providerId === 'deepseek'));
-      if (dsProv) dsProv.models = ['deepseek-v4-flash', 'deepseek-v4-pro'];
+      log('vision localSwitch=' + (!!localVis.ok && localVis.switched && vp.model === 'deepseek-flash' && vp.providerId === 'deepseek'));
+      /* [3] 本地既无视觉档也没勾视觉 → 切到勾了「支持视觉」的服务商并真跑一次 */
+      if (dsProv) { dsProv.models = ['deepseek-v4-pro']; dsProv.vision = false; }
       S.providerCatalog = {
         deepseek: [
-          { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', input: ['text'] },
+          { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', input: ['text'] },
           { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', input: ['text'] },
         ],
         piai: [],
       };
       S.config.providers.push({ id: 'vision1', name: 'Vision', type: 'text_openai', baseUrl: 'http://127.0.0.1:' + ${MOCK_PORT}, apiKey: 'k', models: ['vision-model'], vision: true });
-      vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-flash'; vp.error = null; vp.output = null;
+      vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-pro'; vp.error = null; vp.output = null;
       const auto = ensureProcTextVision(vp, { notify: false });
       log('vision autoSwitch=' + (!!auto.ok && auto.switched && vp.providerId === 'vision1' && vp.model === 'vision-model'));
       await playNode(vp, false);
       const mockCount2 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length;
       log('vision runs=' + (vp.output && vp.output.kind === 'text') + ' requestSent=' + (mockCount2 > mockCount1));
       if (dsProv) dsProv.models = dsModelsSaved;
+      visFlagsSaved.forEach(([p, v]) => { p.vision = v; });
       S.providerCatalog = catSaved;
 
       // —— 撤销 / 重做 ——
@@ -1048,7 +1055,7 @@ mockServer.listen(0, '127.0.0.1', () => {
       const agM = S.wf.nodes[S.wf.nodes.length - 1];
       agM.title = '模型任务';
       agM.provider = 'deepseek-official';
-      agM.model = 'deepseek-v4-flash';
+      agM.model = 'deepseek-flash';
       const rAg = await applyCanvasOp('edit', {
         update: [{ title: '模型任务', provider: 'deepseek-official', model: 'deepseek-v4-pro' }],
         layout: false,

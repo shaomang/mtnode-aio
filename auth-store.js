@@ -27,6 +27,7 @@ const USER_FIELDS = [
   "bindings",
   "downloadsReceived",
   "likesReceived",
+  "balanceCents",
   "createdAt",
   "isAdmin",
 ];

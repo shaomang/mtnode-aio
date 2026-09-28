@@ -463,6 +463,25 @@ button:disabled {
   color: var(--orange2)
 }
 
+/* 顶栏「应用」＝应用中心（renderer/app-apps.js 的 openAppsHub · 整屏浮层页）：专属蓝，
+   与文档 / 讨论 / 审批（中性）、插件（绿）、工具库（紫）、素材库（青）、工坊（橙）一眼分家。
+   入口只对白名单账号露出（app-apps.js 的 APPS_USER_WHITELIST），默认 hidden。 */
+.topbar .btn-apps {
+  color: #6db4ff
+}
+
+.topbar .btn-apps:hover,
+.topbar .btn-apps.on {
+  border-color: #6db4ff;
+  color: #9ecdff
+}
+
+/* .btn-stack 的 display:flex 会盖掉浏览器默认 [hidden]（与 .btn-account[hidden] 同口径）：
+   白名单外的账号必须真的不占位，所以这里自己压回去 */
+.topbar .btn-apps[hidden] {
+  display: none !important;
+}
+
 .btn-update {
   box-sizing: border-box;
   min-width: 58px;
@@ -567,12 +586,13 @@ button:disabled {
   border-color: var(--orange)
 }
 
-/* 右上角「文档 / 讨论 / 审批」：尺寸统一到第二排的图标按钮（.btn-ico 的 36×32、
+/* 右上角「文档 / 讨论 / 审批 / 应用」：尺寸统一到第二排的图标按钮（.btn-ico 的 36×32、
    14px 图标 + 9px 文字），此前走 .btn-stack 的 46px → 同风格却比第二排宽 10px。
-   只作用于这三个；账户入口（.btn-account）有自己的宽度规则，保持不动。 */
+   只作用于这四个；账户入口（.btn-account）有自己的宽度规则，保持不动。 */
 .topbar .btn-docs,
 .topbar .btn-forum,
-.topbar .btn-approvals {
+.topbar .btn-approvals,
+.topbar .btn-apps {
   width: auto;
   min-width: 36px;
   padding: 2px 4px 1px;
@@ -580,7 +600,8 @@ button:disabled {
 
 .topbar .btn-docs .btn-stack-ico,
 .topbar .btn-forum .btn-stack-ico,
-.topbar .btn-approvals .btn-stack-ico {
+.topbar .btn-approvals .btn-stack-ico,
+.topbar .btn-apps .btn-stack-ico {
   width: 14px;
   height: 14px
 }

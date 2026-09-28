@@ -1303,12 +1303,22 @@ function planLiveSettle(live, err) {
 /* ---- live 刷新：与 planTouch 同一口径——只有用户正在看这条会话才重绘 ----
  * 事件很密（逐 token），所以按 PLAN_LIVE_RENDER_MS 做 trailing 节流：
  * 窗口内的多次事件合并成一次面板局部刷新；期间切走会话自然不再刷。 */
+/* 「用户是不是正看着这条会话」：判据与 app-assist.js 同源（agentViewIs —— 应用开发页
+   开着时它认的是那页右栏的显示覆盖，而不是会话页的选中项）。单测沙箱只抠本文件时
+   agentViewIs 不在，回落到老判据 S.agentActiveId === st.id，断言口径不变。 */
+function planViewIs(st) {
+  if (typeof agentViewIs === "function") return !!agentViewIs(st);
+  return !!(
+    typeof S !== "undefined" &&
+    S &&
+    st &&
+    String(S.agentActiveId) === String(st.id)
+  );
+}
 function planLiveRenderNow(st) {
   try {
     if (
-      typeof S !== "undefined" &&
-      S &&
-      S.agentActiveId === (st && st.id) &&
+      planViewIs(st) &&
       typeof renderAgentPlanPanel === "function"
     )
       renderAgentPlanPanel(st);
@@ -1600,8 +1610,7 @@ function planTouch(st) {
       persistAgentSession().catch(() => {});
   } catch (_) {}
   try {
-    if (typeof S !== "undefined" && S && S.agentActiveId === (st && st.id))
-      renderAgentPlanPanel(st);
+    if (planViewIs(st)) renderAgentPlanPanel(st);
   } catch (_) {}
 }
 /* 从 st.plan 派生运行时执行器：只排未完成项（同 parallel 组仍会并发成一步） */
@@ -1692,8 +1701,7 @@ function planDrop(st, reason) {
       persistAgentSession().catch(() => {});
   } catch (_) {}
   try {
-    if (typeof S !== "undefined" && S && S.agentActiveId === st.id)
-      renderAgentPlanPanel(st);
+    if (planViewIs(st)) renderAgentPlanPanel(st);
   } catch (_) {}
   return had;
 }
@@ -1879,7 +1887,7 @@ function planExecDone(st) {
       left ? "warn" : "ok",
     );
   } catch (_) {}
-  if (S.agentActiveId === st.id) {
+  if (planViewIs(st)) {
     try {
       renderAgentSession();
     } catch (_) {}
@@ -2001,7 +2009,7 @@ async function planRunParallel(st, tasks) {
   try {
     renderAgentSessionSidebar();
   } catch (_) {}
-  if (S.agentActiveId === owner.id) {
+  if (planViewIs(owner)) {
     try {
       renderAgentSession();
     } catch (_) {}
@@ -2251,7 +2259,7 @@ async function planOfferDrain() {
               await persistAgentSession();
             } catch (_) {}
             try {
-              if (S.agentActiveId === item.st.id) renderAgentSession();
+              if (planViewIs(item.st)) renderAgentSession();
               else renderAgentSessionSidebar();
             } catch (_) {}
           }

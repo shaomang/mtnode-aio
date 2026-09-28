@@ -536,6 +536,23 @@
   white-space: nowrap;
 }
 
+/* 停用的服务商：卡片照旧留着（可编辑、可恢复），只是整体压暗并挂一枚「已停用」角标
+   —— 它在模型选择器里不出现，但在设置里必须一眼看得出为什么不在 */
+.prov-tile.off {
+  opacity: 0.62;
+}
+
+.prov-tile-off {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--line, #3a4250);
+  border-radius: 4px;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .prov-tiles .settings-hint {
   grid-column: 1 / -1;
 }
@@ -804,6 +821,61 @@ button.pk-badge.pk-btn:hover {
 .model-order-add input {
   flex: 1;
   min-width: 0
+}
+
+/* ── 「获取模型」多选列表：实时从服务商 /models 拉到的当前可用模型 ──
+   只读元信息、零 Token；行样式沿用模型列表（.model-order-row）那套观感 */
+.model-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow: auto;
+  margin: 6px 0;
+  padding: 6px;
+  background: var(--code);
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+}
+
+.model-pick-list .mp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.model-pick-list .mp-row:hover {
+  background: rgba(255, 255, 255, .05)
+}
+
+.model-pick-list input[type="checkbox"] {
+  flex: none;
+  width: auto;
+  margin: 0;
+}
+
+.model-pick-list .mp-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-pick-list .mp-new {
+  flex: none;
+  font-size: 10px;
+  color: var(--cyan2);
+  border: 1px solid var(--cyan2);
+  border-radius: 3px;
+  padding: 0 5px;
+  white-space: nowrap;
 }
 
 .pf .pw-wrap {

@@ -1,21 +1,61 @@
 # ===== 依赖 / 构建产物 =====
 node_modules/
 dist/
-dist_check/
+dist_check*/
+out/
+release/
+*.blockmap
+*.nsis.7z
 
-# ===== 编译与打包脚本 / 资源（不入库，避免误上传）=====
-build.json
+# ===== 打包资源（不入库，避免误上传）=====
+# 注意：build/ 只放打包图标等本机资源；build.json（打包白名单）是版本真源之一，
+#       必须入库 —— 发布链 scripts/release-git.mjs 会审计这类漏传。
 build/
 installer.nsh
-scripts/
 
 # ===== 运行时数据 / 日志 =====
 data/
-docs/
 *.log
 dist/pet-publish/
+dsh-home/
+dsh-home-*/ 
 
-# ===== 桌宠可选包源（入库；勿打进安装包，见 build.json !pet-pack/**）=====
+# ===== 一次性取证 / 临时脚本与输出（开发会话产物，勿上传）=====
+.tmp-*
+.tmp*
+*.tmp
+*.bak
+*.orig
+*.rej
+*.old
+rebuild.log
+
+# ===== 编辑器 / 操作系统杂项 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== 凭据 / 密钥 / 本机配置（一律不入库）=====
+# .env.example / *.example 模板仍入库（照抄即可，不含真实值）
+.env
+.env.*
+!.env.example
+!*.env.example
+*.api-key
+.api-key
+.api-token
+.deployed.json
+.want-deployed.json
+.install-ok
+registry.json
+*.local.json
+sftp.json
+
+# 桌宠可选包源（入库；勿打进安装包，见 build.json !pet-pack/**）
 # pet-pack/ 保留在仓库，供开发回退安装与 release:pet 打包
 
 # ===== dsh 集成（见 dsh/DESIGN.md）=====
@@ -24,10 +64,37 @@ dsh/gateway/node_modules/
 dsh/gateway/pnpm-lock.yaml
 dsh/smoke-home*/
 dsh/smoke-ws*/
-test/
 .deploy-tts/
 
+# ===== 第三方本地工具目录 / 存档 =====
+# .impeccable/ 是 impeccable 技能的本机工作目录（截图 + 中间产物），不入库；
+# 注意：技能本体在 mtnode-agent-skills/app/impeccable/，那份要随包发版。
+.impeccable/
+
+# ===== 本机服务运行时数据（store-saas/data/ 含账号与订单，勿上传）=====
+store-saas/data/
+
+# ===== Python 缓存 / 虚拟环境 / 本机后端产物（勿上传）=====
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 .commandcode/
+
+# ===== 模型权重（体积大，本机下载产物不入库）=====
+# 注意：不整类忽略音视频（pet-pack 下有入库的示例资源）；
+#       安装包 / 临时产物另行按名字忽略，见上。
+*.safetensors
+*.ckpt
+*.pth
+*.gguf
+*.onnx
 
 # ===== 证书 / 私钥（本机 SSL 落地材料，一律不入库）=====
 # 阿里云 CAS 证书包（.pem/.key/.csr 等）只放本机，不进公开仓库（origin: mtnode-aio）
@@ -38,3 +105,6 @@ ssl/
 *.csr
 *.pfx
 *.p12
+*.jks
+*.keystore
+id_rsa*

@@ -1,0 +1,28 @@
+{
+  "id": "my-app",
+  "kind": "window",
+  "entry": "index.html",
+  "version": "1.0.0",
+  "minAppVersion": "1.2.0",
+  "title": {
+    "zh": "我的应用",
+    "en": "My App"
+  },
+  "subtitle": {
+    "zh": "一句话说明这个应用做什么",
+    "en": "One-liner about this app"
+  },
+  "icon": "my-app.png",
+  "window": {
+    "width": 380,
+    "height": 520,
+    "minWidth": 280,
+    "minHeight": 320,
+    "frame": false,
+    "transparent": true,
+    "alwaysOnTop": true,
+    "skipTaskbar": true
+  },
+  "description": "复制本脚手架后：替换 id / title / subtitle / icon 占位符，实现在 app.js 里写。字段口径与云端 catalog.json 词条一致（id / kind / entry / version / minAppVersion / title / subtitle / icon / window）。permissions 里的 storage = 数据的读写落盘、dataDir = 数据文件夹（显示 / 更改 / 打开）、account = 账号摘要；脚手架三件基础设施（正确关闭 + 内容落盘 + 数据文件夹）默认都用到。",
+  "permissions": ["storage", "dataDir", "account"]
+}

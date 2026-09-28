@@ -68,6 +68,12 @@ contextBridge.exposeInMainWorld('api', {
   assetWriteBase64: (wfId, name, base64, ext) => ipcRenderer.invoke('asset:writeBase64', { wfId, name, base64, ext }),
   assetReadDataUrl: (p) => ipcRenderer.invoke('asset:readDataUrl', p),
   assetMeta: (p) => ipcRenderer.invoke('asset:meta', p),
+  /* 删工作流资产目录里的图像：只删 <数据目录>/assets/<wfId>/ 下的直属图像文件（主进程按目录白名单
+     校验，目录外的路径一律 skipped）。入参 = 绝对路径数组，返回 { ok, removed, skipped, failed }。 */
+  assetDeleteImages: (paths) => ipcRenderer.invoke('asset:deleteImages', { paths: paths || [] }),
+  /* 删输入框 / 草稿框内嵌图（本功能自己落的临时图）：只删 .mtnode-input / chat-input /
+     devnode-input 目录下 paste-<时间戳>.<ext> 那一类（主进程双白名单校验，不合规一律 skipped）。 */
+  chatInputDeleteImages: (paths) => ipcRenderer.invoke('chat-input:deleteImages', { paths: paths || [] }),
 
   fileReadText: (p) => ipcRenderer.invoke('file:readText', p),
   guideLoad: (id, locale) => ipcRenderer.invoke('guide:load', { id, locale }),
@@ -615,6 +621,8 @@ contextBridge.exposeInMainWorld('api', {
   apiAbort: (key) => ipcRenderer.invoke('api:abort', key),
   apiPreview: (spec) => ipcRenderer.invoke('api:preview', spec),
   apiValidateKey: (provider) => ipcRenderer.invoke('api:validateKey', provider),
+  /* 实时取服务商模型列表（GET <base>/v1/models 等，只读、零 Token 消耗） */
+  apiListModels: (provider) => ipcRenderer.invoke('api:listModels', provider),
   apiDeepseekBalance: (provider) => ipcRenderer.invoke('api:deepseekBalance', provider),
 
   /* 流式调用：回调接收 {type:'reasoning'|'delta'|'done'|'error', text?, error?}；
@@ -720,6 +728,60 @@ contextBridge.exposeInMainWorld('api', {
   aiFactsPathOf: (canvasDir) => ipcRenderer.invoke('aifact:pathOf', { canvasDir }),
   aiFactsLoad: (canvasDir, opts) => ipcRenderer.invoke('aifact:load', Object.assign({ canvasDir }, opts || {})),
   aiFactsSave: (canvasDir, data) => ipcRenderer.invoke('aifact:save', { canvasDir, data }),
+
+  /* ── 应用宿主（apps-store.js）：用户自建应用的根目录 / 云端目录 / 安装·更新·卸载 /
+        导出 zip / 变更探测 / 独立窗口。根目录设置写在 <数据目录>/config.json 的
+        apps.installDir，解析结果落在应用目录内一律拒绝（升级 / 卸载会带走用户的应用）。
+        应用窗口**内部**的桥另有一份：preload-app.js 的 window.appHost（无画布 / 无文件系统 /
+        无账号 token），与本表互不重叠。 */
+  appsRootGet: () => ipcRenderer.invoke('apps:rootGet'),
+  appsRootSet: (p) => ipcRenderer.invoke('apps:rootSet', p),
+  /* 弹系统目录选择框并落 config：回 { ok, path, previous, changed } / { ok:false, canceled:true } */
+  appsRootPick: () => ipcRenderer.invoke('apps:rootPick'),
+  appsList: () => ipcRenderer.invoke('apps:list'),
+  /* 新建应用：{ name 标题, id 文件夹名 } → 建 <root>/<id>/ + app.json；
+     画布（id = 文件夹名）由渲染层紧接着走既有 wfSave 建（见 renderer/app-app-flow.js）。 */
+  appsCreate: (name, id) => ipcRenderer.invoke('apps:create', { name, id }),
+  appsCatalog: () => ipcRenderer.invoke('apps:catalog'),
+  /* 安装 / 更新：同名目录已存在且没给 mode 时回三态
+     { ok:false, conflict:true, choices:['overwrite','rename','cancel'], existing }，由界面弹窗；
+     用户选完再带 mode='overwrite' | 'rename' 调一次（'cancel' 只关窗，不调）。 */
+  appsInstall: (id, mode) => ipcRenderer.invoke('apps:install', { id, mode: mode || '' }),
+  appsUninstall: (id) => ipcRenderer.invoke('apps:uninstall', { id }),
+  appsExportZip: (id) => ipcRenderer.invoke('apps:exportZip', { id }),
+  appsProbeChanges: () => ipcRenderer.invoke('apps:probeChanges'),
+  /* 开发页（renderer/app-apps-dev.js）预览：回 { ok, url, entry, dir, files, bytes, mtimeMs }
+     —— url = mtnode-preview://<appId>/<entry>（主进程注册的标准协议，同源解析相对资源、
+     响应给 HTML 注入页面状态小助手，供重载预览时存 / 恢复页面状态）；
+     快照（文件数 / 字节 / 最新 mtime）供每轮开发结束后判断要不要重载预览。 */
+  appsDevPreview: (id) => ipcRenderer.invoke('apps:devPreview', { id }),
+  appsOpenWindow: (id) => ipcRenderer.invoke('apps:openWindow', { id }),
+  /* 关掉**发起这次调用**窗口所属的应用（应用窗口里的 appHost.close 走同一通道） */
+  appsCloseWindow: () => ipcRenderer.invoke('apps:closeWindow'),
+  appsIsOpen: (id) => ipcRenderer.invoke('apps:isOpen', { id }),
+  /* 应用数据文件夹（应用中心库页 / 开发页那一行）：
+     info = 默认数据根或用户选过的那个（回 { ok, id, dir, root, def, exists, files }）；
+     dataDirPick **必须用户亲自选**（弹系统目录框，agent 不能代选）；reset 回到默认数据根。
+     应用窗口内部另有一份：preload-app.js 的 appHost.dataDirGet / dataDirPick / dataRead / dataWrite。 */
+  appsDataInfo: (id) => ipcRenderer.invoke('apps:dataInfo', { id }),
+  appsDataDirPick: (id) => ipcRenderer.invoke('apps:dataDirPick', { id }),
+  appsDataDirReset: (id) => ipcRenderer.invoke('apps:dataDirReset', { id }),
+  /* 安装进度：{ id, phase:'start'|'download'|'extract'|'conflict'|'done'|'error', percent, got?, total?, version?, error? } */
+  onAppsProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('apps:progress', handler);
+    return () => ipcRenderer.removeListener('apps:progress', handler);
+  },
+  /* 应用窗口开关：{ id, open } */
+  onAppsWindowChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('apps:windowChanged', handler);
+    return () => ipcRenderer.removeListener('apps:windowChanged', handler);
+  },
 
   /* ── 素材库：独立于画布的内容仓库（assets-store.js，根目录由用户指定并记在 config.json）── */
   assetsGetRoot: () => ipcRenderer.invoke('assets:getRoot'),
