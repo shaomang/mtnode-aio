@@ -507,8 +507,15 @@ if (opt.dryRun) {
     console.log('  分类（前 15）：' + topList.map(([k, v]) => `${k} ${v}`).join(' · '));
   }
   console.log('\n[干跑] 审计 + 分类完成：未暂存、未提交、未打 tag、未 push。');
+  if (!entries.length) {
+    console.log('[干跑] 工作区已干净：没有待提交的改动（发版链上这一步会是 no-op）。');
+  }
+  const tagExists =
+    git(['rev-parse', '-q', '--verify', `refs/tags/v${ver}`], { allowFail: true }).code === 0;
   console.log(
-    `[干跑] 正式跑会提交为：发布 v${ver}（源码同步，web/更新通道由 OSS 发布）${opt.tag ? `，并打 tag v${ver}` : ''}${opt.push ? `，再 push origin ${branch}` : ''}`,
+    `[干跑] 正式跑会提交为：发布 v${ver}（源码同步，web/更新通道由 OSS 发布）` +
+      (opt.tag ? (tagExists ? `；tag v${ver} 已存在将跳过` : `，并打 tag v${ver}`) : '；--no-tag') +
+      (opt.push ? `，再 push origin ${branch}` : '；--no-push 不推远端'),
   );
   process.exit(0);
 }
